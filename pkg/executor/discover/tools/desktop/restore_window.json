@@ -1,0 +1,18 @@
+{
+  "description": "Restore a minimized window to normal. Returns: 'restored {title}'. Works for windows minimized to the taskbar. Does NOT work for apps that are closed to the system tray — those need to be clicked on the tray icon to restore. Example: {\"title\": \"Notepad\"}",
+  "name": "restore_window",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle"
+      },
+      "title": {
+        "type": "string",
+        "description": "Window title (alternative to hwnd)"
+      }
+    },
+    "required": []
+  }
+}

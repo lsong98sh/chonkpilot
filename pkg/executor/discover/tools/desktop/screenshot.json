@@ -1,0 +1,18 @@
+{
+  "description": "Take a screenshot of the screen or a specific window. Returns: 'data:image/png;base64,...' format. The base64 part can be passed to write_file with type='base64;image/png'. Window capture behavior: if the window is minimized, the screenshot captures the window's last known content (may be stale). If obscured by other windows, the captured content includes whatever is visible on screen (overlapping windows WILL appear in the screenshot). For clean window-only captures, use focus_window first to bring the target to foreground. Example: {} (fullscreen) or {\"window\": \"Notepad\"}",
+  "name": "screenshot",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle (optional, takes fullscreen if omitted)"
+      },
+      "window": {
+        "type": "string",
+        "description": "Window title to capture (alternative to hwnd)"
+      }
+    },
+    "required": []
+  }
+}

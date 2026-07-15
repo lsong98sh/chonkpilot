@@ -1,0 +1,26 @@
+{
+  "description": "Scroll the page with the mouse wheel. Returns: 'scrolled ({delta_x}, {delta_y}) in {steps} steps'. The delta values are divided equally across 'steps' — e.g. delta_y=500, steps=5 rolls the wheel 5 times, each step applying 100px of scroll. Example: {\"delta_y\": 500}",
+  "name": "web_scroll_wheel",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "delta_x": {
+        "type": "number",
+        "description": "Horizontal scroll amount (total pixels, divided across steps)"
+      },
+      "delta_y": {
+        "type": "number",
+        "description": "Vertical scroll amount (total pixels, divided across steps. E.g. delta_y=500, steps=5 → 5 scrolls of 100px each)"
+      },
+      "steps": {
+        "type": "number",
+        "description": "Number of discrete scroll events. Total delta is divided equally across steps (default 1). More steps = smoother scrolling"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers"
+      }
+    },
+    "required": []
+  }
+}

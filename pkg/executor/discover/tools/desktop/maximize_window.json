@@ -1,0 +1,18 @@
+{
+  "description": "Maximize a window. Returns: 'maximized {title}'. Example: {\"title\": \"Notepad\"}",
+  "name": "maximize_window",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle"
+      },
+      "title": {
+        "type": "string",
+        "description": "Window title (alternative to hwnd)"
+      }
+    },
+    "required": []
+  }
+}

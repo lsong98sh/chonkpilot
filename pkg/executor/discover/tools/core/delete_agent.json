@@ -1,0 +1,16 @@
+{
+  "description": "Delete an agent by name. Only agents created by LLM can be deleted. Returns confirmation. Example: {\"name\": \"my_agent\"}",
+  "name": "delete_agent",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Agent name to delete"
+      }
+    },
+    "required": [
+      "name"
+    ]
+  }
+}

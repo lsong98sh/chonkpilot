@@ -1,0 +1,18 @@
+{
+  "description": "Minimize a window. Returns confirmation. Example: {\"title\": \"Notepad\"}",
+  "name": "minimize_window",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle"
+      },
+      "title": {
+        "type": "string",
+        "description": "Window title (alternative to hwnd)"
+      }
+    },
+    "required": []
+  }
+}

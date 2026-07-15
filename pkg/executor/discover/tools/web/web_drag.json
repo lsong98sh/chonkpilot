@@ -1,0 +1,35 @@
+{
+  "description": "Drag the mouse from one coordinate to another. Returns: 'dragged from ({from_x},{from_y}) to ({to_x},{to_y})'. Note: only coordinates are supported (no CSS selector). To drag an element, first get its position via browser APIs, then use those coordinates. Example: {\"from_x\": 0, \"from_y\": 0, \"to_x\": 100, \"to_y\": 200}",
+  "name": "web_drag",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "from_x": {
+        "type": "number",
+        "description": "Starting X coordinate (pixel)"
+      },
+      "from_y": {
+        "type": "number",
+        "description": "Starting Y coordinate (pixel)"
+      },
+      "to_x": {
+        "type": "number",
+        "description": "Ending X coordinate (pixel)"
+      },
+      "to_y": {
+        "type": "number",
+        "description": "Ending Y coordinate (pixel)"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers"
+      }
+    },
+    "required": [
+      "from_x",
+      "from_y",
+      "to_x",
+      "to_y"
+    ]
+  }
+}

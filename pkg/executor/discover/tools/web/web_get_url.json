@@ -1,0 +1,9 @@
+{
+  "description": "Get the current page URL. Returns the URL as string. Example: {}",
+  "name": "web_get_url",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

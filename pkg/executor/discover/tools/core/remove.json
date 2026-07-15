@@ -1,0 +1,15 @@
+{
+  "description": "Remove one or more files or directories recursively (like rm -rf). All files are snapshotted before removal so they can be restored via rollback. Example: {\"paths\": [\"build/cache\", \"temp.log\"]}",
+  "name": "remove",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "paths": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Array of file or directory paths to remove."
+      }
+    },
+    "required": ["paths"]
+  }
+}

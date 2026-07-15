@@ -1,0 +1,44 @@
+{
+  "description": "Spawn a sub-executor with its own context window (independent conversation). A 'sub-executor' is a separate chonkpilot-executor process that runs independently — its tool calls, LLM interactions, and responses don't pollute your main context. Use for delegating complex sub-tasks or when the main context is getting large. Returns the sub-session's final response text (plain text answer), or a sub_session_id if async=true. For async: use process_task_status(sub_session_id) to poll and get the result later. For continuing a previous sub-session: set session_id to the sub_session_id returned from a prior call_llm call. Note: session_ids are transient — they expire when their sub-executor process exits (sync mode) or after a period of inactivity. If you pass an expired/invalid session_id, you will get an error like 'session not found' — create a new call_llm instead.",
+  "name": "call_llm",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Required. Human-readable title for this sub-task. Shown in the Task panel's sub-session tree"
+      },
+      "prompt": {
+        "type": "string",
+        "description": "The prompt for the sub-session"
+      },
+      "prompt-file": {
+        "type": "string",
+        "description": "Path to a file containing the prompt text (alternative to prompt)"
+      },
+      "system-prompt": {
+        "type": "string",
+        "description": "Optional system prompt"
+      },
+      "session_id": {
+        "type": "string",
+        "description": "Optional. Set to a sub_session_id from a previous call_llm to continue that conversation (picks up where it left off). Expired/invalid session_id returns 'session not found' error."
+      },
+      "agent": {
+        "type": "string",
+        "description": "Optional agent name. Must match an agent created with add_agent (case-sensitive). The agent's system prompt is prepended before common rules"
+      },
+      "async": {
+        "type": "boolean",
+        "description": "If true, returns sub_session_id immediately. Poll with process_task_status to get the result. If false/omit, blocks and returns the final response as plain text"
+      },
+      "show_window": {
+        "type": "boolean",
+        "description": "If true, opens a visible Windows console window showing the sub-executor's live output (stdout/stderr). Useful for debugging when the sub-task isn't behaving as expected. Default: hidden (sub-executor runs silently in background)"
+      }
+    },
+    "required": [
+      "title"
+    ]
+  }
+}

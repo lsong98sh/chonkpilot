@@ -1,0 +1,24 @@
+{
+  "description": "Type text at the current cursor position. If window or hwnd is specified, the target window is focused first. Returns confirmation. Example: {\"text\": \"Hello, World!\"}",
+  "name": "type_text",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Text to type"
+      },
+      "window": {
+        "type": "string",
+        "description": "Window title to focus before typing"
+      },
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle (HWND) to focus before typing"
+      }
+    },
+    "required": [
+      "text"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Get the outer HTML of an element. Example: {\"selector\": \"#main\"}",
+  "name": "web_get_html",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector"
+      }
+    },
+    "required": [
+      "selector"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "description": "Create one or more directories. Creates parent directories as needed (like mkdir -p). Example: {\"_\": [\"src/components\", \"dist\"]}",
+  "name": "make_directory",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Array of directory paths to create."
+      }
+    },
+    "required": ["paths"]
+  }
+}

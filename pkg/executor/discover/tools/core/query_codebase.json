@@ -1,0 +1,38 @@
+{
+  "description": "Query the codebase index (requires codebase indexing to be enabled). Supports two search modes: (1) target: glob file path pattern with ** support (e.g. '**/index.vue' finds all index.vue files; 'src/**/*.go' finds all Go files under src/). (2) content: search by summary/keyword (SQL LIKE). Either target or content must be provided (at least one). Both = AND combination. Returns: list of matching file paths, language, and indexed summary. Examples: {\"target\": \"**/index.vue\"}, {\"content\": \"api handler\"}, {\"target\": \"src/**/*.ts\", \"content\": \"router\"}.",
+  "name": "query_codebase",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Query type: overview, search, symbol, file, deps, usages. If omitted but target or content is provided, automatically runs file listing mode."
+      },
+      "target": {
+        "type": "string",
+        "description": "File path glob pattern, supports ** (globstar) for recursive matching. Examples: '**/index.vue', 'src/**/*.ts'."
+      },
+      "content": {
+        "type": "string",
+        "description": "Search keywords for file summary/content (SQL LIKE search on indexed summaries)."
+      },
+      "keywords": {
+        "type": "string",
+        "description": "Keywords for 'search' query."
+      },
+      "name": {
+        "type": "string",
+        "description": "Symbol name for 'symbol' or 'usages' query."
+      },
+      "path": {
+        "type": "string",
+        "description": "File path for 'file' or 'deps' query (relative to project root)."
+      },
+      "file": {
+        "type": "string",
+        "description": "Specific file path for 'usages' query (narrow scope)."
+      }
+    },
+    "required": []
+  }
+}

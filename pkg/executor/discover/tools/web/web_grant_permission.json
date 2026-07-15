@@ -1,0 +1,19 @@
+{
+  "description": "Grant browser permissions. Returns: 'granted {N} permission(s)'. Valid permission names: 'notifications', 'geolocation', 'videoCapture', 'audioCapture', 'midi', 'clipboardRead', 'clipboardWrite', 'persistentStorage', 'backgroundSync', 'paymentHandler'. Unknown/typo'd names are silently ignored. Example: {\"permissions\": [\"notifications\", \"geolocation\"]}",
+  "name": "web_grant_permission",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "permissions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Array of permission names. Valid: notifications, geolocation, videoCapture, audioCapture, midi, clipboardRead, clipboardWrite, persistentStorage, backgroundSync, paymentHandler. Unknown names silently ignored."
+      }
+    },
+    "required": [
+      "permissions"
+    ]
+  }
+}

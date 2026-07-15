@@ -1,0 +1,22 @@
+{
+  "description": "Scroll the mouse wheel. Returns confirmation. Example: {\"delta_y\": -300}",
+  "name": "scroll_wheel",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "delta_x": {
+        "type": "number",
+        "description": "Horizontal scroll amount"
+      },
+      "delta_y": {
+        "type": "number",
+        "description": "Vertical scroll amount"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers"
+      }
+    },
+    "required": []
+  }
+}

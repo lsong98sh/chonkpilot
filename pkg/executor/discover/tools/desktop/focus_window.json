@@ -1,0 +1,18 @@
+{
+  "description": "Bring a window to the foreground. Returns: 'focused {title}'. Works for visible windows and windows minimized to the taskbar. Does NOT work for apps that are closed to the system tray — those need to be clicked on the tray icon to restore. If focus_window returns success but the window doesn't appear, the app is likely in the tray (use screenshot to verify). Example: {\"title\": \"Notepad\"}",
+  "name": "focus_window",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle"
+      },
+      "title": {
+        "type": "string",
+        "description": "Window title (alternative to hwnd)"
+      }
+    },
+    "required": []
+  }
+}

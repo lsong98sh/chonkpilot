@@ -1,0 +1,21 @@
+{
+  "description": "Generate a unified diff between two files. Returns unified diff text, or 'no differences' if files are identical. Example: {\"file1\": \"old.txt\", \"file2\": \"new.txt\"}",
+  "name": "diff",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "file1": {
+        "type": "string",
+        "description": "Path to first file"
+      },
+      "file2": {
+        "type": "string",
+        "description": "Path to second file"
+      }
+    },
+    "required": [
+      "file1",
+      "file2"
+    ]
+  }
+}

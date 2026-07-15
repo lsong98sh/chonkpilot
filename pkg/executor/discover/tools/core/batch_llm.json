@@ -1,0 +1,20 @@
+{
+  "description": "Execute batch LLM tasks defined in a Pipeline JSON file. Processes tasks with a sliding-window parallel worker pool. Each task gets a fresh stateless LLM call (system_prompt + task.prompt, no history). Results are saved to DB as sub-sessions — IDE can view the conversation history. The Pipeline JSON file is updated in real-time (task status, retry_count, last_task_id) — user can read it to monitor progress.\n\nPipeline JSON structure:\n{\n  \"system_prompt\": \"You are an expert...\",\n  \"submit_prompt\": \"Check results, then call batch_llm again if needed\",\n  \"tasks\": [\n    {\"id\": 1, \"name\": \"Task 1\", \"prompt\": \"Write code for...\", \"submit_prompt\": \"Please review the output\", \"retry\": 3},\n    {\"id\": 2, \"name\": \"Task 2\", \"prompt\": \"Write docs for...\"}\n  ]\n}\n\nBehavior:\n- count=1 (default): execute ONE task. If task has submit_prompt (task-level \u003e global), return result + submit_prompt to main LLM for review. If no submit_prompt, auto-loop continues until all done.\n- count\u003e1: execute up to 'count' tasks concurrently (sliding window). Always auto-loop until all tasks done. Ignores submit_prompt.\n- Auto-loop: continuously pick pending tasks as workers become available until all tasks are completed, then return 'all done'.\n- Retry: each task has 'retry' (default 3). On failure, retry_count++ and re-queue. Exhausted retries → status='error' (skipped).\n\nIMPORTANT usage guide:\n1. Decompose the problem first: split work into independent tasks, each with a clear, self-contained prompt.\n2. Each task prompt must include ALL necessary context (file paths, schemas, conventions, rules). The sub-LLM is stateless and does NOT see previous tasks or session history.\n3. Use note_write to capture project-wide context, then tell each task to 'read note XXX for context' to reduce prompt size.\n4. For count=1 with submit_prompt: use this to have the main LLM verify the ONE task's output and decide next steps.\n5. For count\u003e1: use this for bulk processing where tasks are truly independent (no inter-task dependencies).\n6. The JSON filename can be anywhere in the workdir. Use relative paths like 'pipeline/my_batch.json'.\n\nExample: {\"filename\": \"pipeline/tasks.json\", \"count\": 3}",
+  "name": "batch_llm",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "filename": {
+        "type": "string",
+        "description": "Path to Pipeline JSON file (relative to workdir, or absolute)"
+      },
+      "count": {
+        "type": "number",
+        "description": "Number of concurrent workers (1-10). Default: 1. count=1 respects submit_prompt; count\u003e1 always auto-loops."
+      }
+    },
+    "required": [
+      "filename"
+    ]
+  }
+}

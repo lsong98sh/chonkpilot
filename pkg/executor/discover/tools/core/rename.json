@@ -1,0 +1,28 @@
+{
+  "description": "Rename/move one or more files or directories. Each item is evaluated in order. On Windows, case-only renames (e.g. 'foo.txt' → 'Foo.txt') are handled automatically via a two-step rename. Example: {\"_\": [{\"from\": \"old.go\", \"to\": \"new.go\"}, {\"from\": \"temp\", \"to\": \"archive/temp\"}]}",
+  "name": "rename",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "pairs": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string",
+              "description": "Source path."
+            },
+            "to": {
+              "type": "string",
+              "description": "Destination path."
+            }
+          },
+          "required": ["from", "to"]
+        },
+        "description": "Array of rename operations."
+      }
+    },
+    "required": ["pairs"]
+  }
+}

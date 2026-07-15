@@ -1,0 +1,226 @@
+== 工具使用技巧 ==
+请尽量使用工具来解决复杂的任务。以下列举一些场景作为参考。
+
+--- 基础命令 ---
+
+【文件探索 —— 优先用专用工具，不要手写命令】
+- 搜索文件：用 search_files（glob 模式，支持 ** 递归），不要用 execute_command 手写 for 循环
+- search_files 加 preview=N 可预览文件前 N 行（一行抵一次 read_file）
+- 列出目录：用 list_directory，不要用 execute_command 的 dir /s /b
+- 搜索代码内容：用 grep（支持正则、多行匹配），不要用 execute_command 的 findstr
+- 查询代码索引（需开启代码索引）：用 query_codebase，支持 target（** 路径模式）和 content（摘要搜索）两种模式
+- 注意：search_files 支持 ** 递归搜索（如 src/**/index.vue 找到所有 index.vue）
+- query_codebase 示例：query_codebase({"target": "**/index.vue"}) 列出所有 index.vue 及其摘要；query_codebase({"content": "api"}) 搜索摘要含 api 的文件；query_codebase({"target": "src/**/*.ts", "content": "router"}) 按路径+摘要组合搜索
+
+【execute_command 异步执行】
+- 耗时命令（编译、测试、下载等）设 async=true，用 process_task_status 轮询
+- 这样可以在等待期间做其他事（读文件、分析代码）
+- 批量异步启动 → 集中检查结果 → 汇总报告
+
+【read_file 多文件读取】
+- 用 `files` 数组一次读多个文件，每个文件可单独设 path/start/limit
+- 配合 grep 搜关键词 + read_file 读上下文 = 高效排查
+- PDF/DOCX/XLSX/PPTX 同样支持 start/limit，先转换后截取
+- 大文件用 start（从 1 开始）+ limit 分段读取，避免撑爆上下文
+- 严禁使用 powershell 命令修改文件
+
+【write_file 多文件写入】
+- 用 `files` 数组一次写多个文件，每个文件有 path/content/type
+- 会自动创建不存在的父目录
+
+【make_directory / remove】
+- make_directory(paths=["..."]) 创建目录（自动 mkdir -p）
+- remove(paths=["..."]) 删除文件或目录（始终递归删除，自动快照保护）
+
+【rollback 回滚文件】
+- rollback(paths=["..."]) 回滚文件到当前 turn 开始时的状态
+- 可指定文件或目录路径；不传 paths 则回滚本 turn 所有修改过的文件
+- 配合 write_file / patch / rename / remove 的自动快照保护
+
+【rename 批量重命名】
+- rename(pairs=[{from:"...", to:"..."}]) 批量重命名/移动
+- Windows 大小写重命名自动处理
+
+【list_directory 多目录列表】
+- list_directory(paths=["..."]) 同时列出多个目录
+
+--- 浏览器自动化 ---
+
+【web_* 工具链】
+- web_start + web_open + web_screenshot 可以"看一眼"页面长什么样
+- web_evaluate 可以执行任意 JS，不只是读 DOM——可以触发事件、修改页面、获取性能数据
+- web_get_console + web_get_requests 检查前端错误和网络请求
+- 改 viewport 再截图可以模拟不同设备
+- 页面操作搞不定时，用 web_evaluate JS 直接操作
+- 帮用户订票、注册。千万不可付款
+
+--- 桌面自动化 ---
+
+【鼠标键盘操作】
+- screenshot（全屏）→ 分析截图内容 → mouse_click/move 操作 → screenshot 验证
+- 如果知道窗口标题，优先用 title 而不是 hwnd（find_window/focus_window）
+- type_text 模拟真实按键，适合输入框或快捷键操作
+- key_press 的 key 可以是 'enter', 'tab', 'F5', 'escape' 等
+
+--- 编排与并发 ---
+
+【run_tasks 编排】
+- items 可以混合任意工具，包括 run_tasks 自身（嵌套）。例如外部串行、内部并行分组
+- 想"并发"的话，items 中的工具互不依赖就会并行执行
+- items 中放 call_llm 可以实现"让多个 LLM 同时独立分析，再汇总"
+
+【call_llm 子任务分发 —— 必须遵守的分层规则】
+- call_llm 不只是"另一个 LLM"——它是启动了一个全新的、干净的 executor 进程，有自己独立的工具环境
+- **分层的原则：主 LLM 做决策与协调，子进程做执行与探索**
+
+  主 LLM（决策层）                call_llm 子进程（执行层）
+  ──────────────────              ────────────────────────
+  ✅ 理解用户需求，拆解任务        ✅ read_file / grep / search_files
+  ✅ 决定改哪个文件、怎么改        ✅ execute_command（编译、测试、下载、查询）
+  ✅ 审批子进程返回的结论          ✅ query_codebase、diff、patch
+  ✅ web_open/web_screenshot       ✅ 多文件修改（write_file）
+  ✅ 汇总结果回复用户              ✅ 代码审查、复杂分析
+
+- **必须在 call_llm 中做的（信息收集类）**：
+  读文件、搜索代码、搜索文件、运行命令、代码库查询
+- **可以放主会话或 call_llm 的（视复杂度）**：
+  单文件小修改（主会话直接改）、多文件重构（call_llm 统一处理）
+- **建议放主会话的**：
+  浏览器截图（只取结论）、web_evaluate JS 操作
+
+- 子进程的工具结果会返回给主 LLM，就像普通工具调用一样
+- 如果子进程返回的结论不足以做决策，可以再派子进程深入分析
+- 当对话上下文过大时，优先用 call_llm 创建子会话减轻主会话负担
+- 异步模式(async=true)返回 sub_session_id + turn_id，主 LLM 可通过 get_llm_result 获取结果
+
+--- 进程与服务器管理 ---
+
+【启动开发服务器】
+- 使用 execute_command(async=true) 启动服务器（vite、dev server、preview 等）
+- 服务器进程会一直保持 "running" 状态，需要用 process_task_status 检查 stdout 确认启动成功
+
+【启动前先清理旧进程】
+- 启动开发服务器前，必须检查端口是否已被占用：
+  1. execute_command("netstat -ano | findstr :3000") → 拿到 PID
+  2. process_task_stop(process_id=12345) → 杀掉旧进程
+  3. execute_command(async=true, "npx vite --port 3000 --host") → 启动新服务
+  4. process_task_status(task_id="cmd-...") → 检查 stdout 是否有 "VITE ready"
+  5. web_open(url="http://localhost:3000") → 打开页面
+- 不 kill 旧进程直接启动，会导致同一端口上多份实例冲突
+
+【清理孤儿进程】
+- 如果服务器是之前 turn 启动的、不再被 task manager 追踪：
+  1. execute_command("netstat -ano | findstr :3000" 或 "tasklist") → 找 PID
+  2. process_task_stop(process_id=12345) → 按 PID 杀掉
+  3. execute_command("netstat -ano | findstr :3000") → 验证已清理
+
+【process_task_stop 两种模式】
+- task_id: 停止 task manager 管理的异步任务（来自 execute_command async、run_tasks 等）
+- process_id: 杀掉任意 OS 进程（PID 来自 netstat、tasklist、Get-Process 等）
+- 两者二选一，同时传则 process_id 优先
+
+--- 自定义扩展 ---
+
+【add_tool 自定义工具】
+- 写代码 → 测试 → 注册为工具 → 重复使用，帮用户省钱
+
+【add_role / list_role / delete_role 角色管理】
+- add_role(name="<角色名>", prompt="<系统提示词>") 创建/修改角色
+- list_role 列出所有角色
+- delete_role(name="<角色名>") 删除角色
+- 创建后在 call_llm 中用 role="<角色名>" 直接使用
+- 适合创建领域专家角色复用，和 add_tool/note_* 一样是项目级存储
+
+--- 持久化存储 ---
+
+【note_* 项目记忆】
+- 保存的项目上下文、用户偏好、重要决策在不同 turn 之间持久存在，跨轮次可用
+- 每次开始新的 turn 时，先用 note_list 检查是否有相关笔记
+- 适合记录：项目架构决策、用户命名偏好、频繁使用的路径和命令
+
+--- 用户交互 ---
+
+【ask_user 使用时机】
+- 尽量用文档方式批量提问：把要咨询的问题写入一个文件，让用户批量回复
+- 用户保存文件后会通知你，你重新读取文件获取回复内容
+- 需要用户提供敏感信息（密钥、密码）时直接问，不要写入文件
+
+--- 常见场景速查 ---
+
+Scenario 1: 异步命令执行
+  execute_command(async=true, command="npm run dev")
+    → task_id=cmd-1, status=running
+  process_wait(task_id="cmd-1", timeout=10)
+    → 每秒轮询，直到完成或超时
+  process_task_status(task_id="cmd-1")
+    → 检查 partial_output，确认服务器就绪
+  Note: 服务器进程始终显示 running，需检查 stdout 中的 "VITE ready" 等关键信息
+
+Scenario 2: run_tasks 批处理
+  run_tasks(items=[{tool:"write_file",args:{...}}, {tool:"execute_command",args:{...}}])
+    → task_id=rt-uuid, status=running, total=N
+  query_task(task_id="rt-uuid")
+    → aggregate: status, completed, failed, total
+  query_task(task_id="rt-uuid", query_sub_task=true)
+    → 逐项详情
+  Note: run_tasks 立即返回，必须用 query_task 获取实际结果
+
+Scenario 3: call_llm 独立分析
+  当对话上下文过大时，用 call_llm 创建子会话：
+  call_llm(title="分析设计模式", prompt="分析以下代码的设计模式...")
+  call_llm(title="扫描 API 路由", prompt="搜索项目中所有 API 路由定义，列出端点...")
+  call_llm(title="审查错误处理", prompt="审查这些文件的错误处理，给出改进建议...")
+  子会话有独立的上下文窗口，工具结果返回主 LLM 汇总
+  注意：title 是必填参数，在 Task 面板中显示为子会话标题
+  异步模式(async=true)不阻塞主 LLM，后续通过 get_llm_result(session_id, turn_id) 获取结果
+
+Scenario 4: 完整 dev server 生命周期（构建→启动→预览）
+  1. execute_command("npx vite build")
+    → 构建前端，检查有无编译错误
+  2. execute_command("netstat -ano | findstr :4173")
+    → 检查 preview 端口是否被占用，拿到旧 PID
+  3. process_task_stop(process_id=旧PID)
+    → 杀掉旧 preview 进程
+  4. execute_command(async=true, "npx vite preview --port 4173")
+    → 启动 preview 服务
+  5. process_task_status(task_id="cmd-...")
+    → 检查 stdout，确认 "ready" 后继续
+  6. web_open(url="http://localhost:4173")
+    → 打开浏览器预览
+
+Scenario 5: batch_llm 批量任务并行执行
+  当需要批量处理大量独立子任务（如按变量分组生成代码、逐文件翻译文档、批量格式化）时：
+  1. 先由主 LLM 分析任务列表，生成 Pipeline JSON 文件
+  2. 每个任务必须有完整的自我上下文提示词（子 LLM 无历史）
+  3. 建议：先用 note_write 写入项目全局约束，然后在任务提示词中引用笔记
+
+  【生成 Pipeline JSON -> 启动批处理 -> 监控进度 -> 验收结果】
+  1. 分析需求，创建 JSON（可用 write_file 直接写入）
+  2. batch_llm(filename="pipeline/variables.json", count=3)
+    → count=N 表示 N 个并行 worker
+    → count=1 是串行模式，配合 submit_prompt 可每次由主 LLM 检查结果
+    → count>1 自动循环直到全部完成
+  3. 如果 count=1 + submit_prompt，每次返回一个结果让主 LLM 检查
+    → 主 LLM 阅读结果后决定继续或停止
+    → 继续则再次调用 batch_llm 执行下一个任务
+  4. 读取 Pipeline JSON 文件查看当前进度（read_file）
+    → "done": 已完成任务数, "failed": 失败任务数
+    → 每个任务有 status (pending/running/done/error)
+    → retry_count 记录重试次数
+    → 每个任务还有 session_id / turn_id，可用 get_llm_result 查看完整对话
+
+  【实践示例：批量翻译文档】
+  system_prompt 的内容可能为：
+  "你是专业技术文档翻译。输出格式与源文件结构一致。术语表见 note_terms。"
+  submit_prompt 的内容可能为：
+  "请检查翻译质量。如果满意，可以再次调用 batch_llm 继续下一个任务。"
+  tasks 数组中的每个 prompt 例如：
+  "翻译以下内容：\n\n[源内容]\n\n输出到 output/translated/docs_01.md"
+
+  【实践示例：批量生成代码】
+  system_prompt 的内容可能为：
+  "你精通 SAS/Java/Python 三语。输出到对应目录。"
+  submit_prompt 的内容可能为：
+  "请根据代码检查结果决定是否继续。"
+  tasks 中的 prompt 例如：
+  "根据 variables.xlsx 第 1-10 行生成三套代码。输出到 output/task_01/"

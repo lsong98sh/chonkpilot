@@ -1,0 +1,34 @@
+{
+  "description": "Set position/size of a window. Returns: 'window resized to {w}x{h}+{x}+{y}'. Example: {\"title\": \"Notepad\", \"width\": 800, \"height\": 600}",
+  "name": "set_window_rect",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle"
+      },
+      "title": {
+        "type": "string",
+        "description": "Window title (alternative to hwnd)"
+      },
+      "x": {
+        "type": "number",
+        "description": "Left position"
+      },
+      "y": {
+        "type": "number",
+        "description": "Top position"
+      },
+      "width": {
+        "type": "number",
+        "description": "Window width"
+      },
+      "height": {
+        "type": "number",
+        "description": "Window height"
+      }
+    },
+    "required": []
+  }
+}

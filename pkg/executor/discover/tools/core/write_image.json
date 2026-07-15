@@ -1,0 +1,23 @@
+{
+    "name": "write_image",
+    "description": "Render SVG, HTML, or Mermaid diagram content to a PNG image file using a headless browser. Use this to create diagrams, charts, or visualizations. Output is saved as a PNG file in the project directory.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "filename": {
+                "type": "string",
+                "description": "Output image filename (relative to project work directory, e.g. 'diagram.png' or 'docs/flowchart.png')"
+            },
+            "type": {
+                "type": "string",
+                "enum": ["svg", "html", "mermaid"],
+                "description": "Content type: 'svg' for SVG markup, 'html' for a full HTML page, 'mermaid' for Mermaid diagram syntax"
+            },
+            "content": {
+                "type": "string",
+                "description": "The source content to render. For type=svg: raw SVG markup (e.g. '<svg>...</svg>'). For type=html: a complete HTML document. For type=mermaid: Mermaid diagram syntax (e.g. 'graph TD; A-->B;')"
+            }
+        },
+        "required": ["filename", "type", "content"]
+    }
+}

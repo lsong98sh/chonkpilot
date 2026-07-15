@@ -1,0 +1,21 @@
+{
+  "description": "Create or update an agent. Returns: 'agent {name} saved'. Agents define specialized system prompts that are reusable with call_llm(agent=\"\u003cname\u003e\", ...). Agent name rules: lowercase, letters + digits + hyphens only (no spaces, no underscores), kebab-case recommended. Agent names are case-sensitive — \"Python\" and \"python\" are different agents. Use list_agent to see available agents. Example: add_agent(name=\"python-expert\", prompt=\"You are a Python expert.\")",
+  "name": "add_agent",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Agent name. Must match: lowercase letters, digits, hyphens only. Case-sensitive. Example: 'python-expert'"
+      },
+      "prompt": {
+        "type": "string",
+        "description": "System prompt for this agent. Common rules are automatically prepended"
+      }
+    },
+    "required": [
+      "name",
+      "prompt"
+    ]
+  }
+}

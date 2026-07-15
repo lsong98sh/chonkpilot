@@ -1,0 +1,28 @@
+{
+  "description": "Release a held keyboard key. Returns confirmation. Example: {\"key\": \"shift\"}",
+  "name": "key_up",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "key": {
+        "type": "string",
+        "description": "Virtual key code or name"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers"
+      },
+      "window": {
+        "type": "string",
+        "description": "Window title to focus before pressing the key"
+      },
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle (HWND) to focus before pressing the key"
+      }
+    },
+    "required": [
+      "key"
+    ]
+  }
+}

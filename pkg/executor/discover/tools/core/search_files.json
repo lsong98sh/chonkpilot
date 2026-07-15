@@ -1,0 +1,24 @@
+{
+  "description": "Search files by name pattern (glob). Returns list of matching file paths, one per line. Supports ** (globstar) for recursive matching. Optional preview=N reads first N lines of each file. Cap at 50. Example: {\"pattern\": \"src/**/index.vue\", \"preview\": 5}",
+  "name": "search_files",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "Search pattern (glob, e.g. '*.go'). Supports ** for recursive matching."
+      },
+      "root": {
+        "type": "string",
+        "description": "Directory to search (defaults to project root)"
+      },
+      "preview": {
+        "type": "integer",
+        "description": "Optional: read first N lines of each file (capped at 50). 0 or omit = no preview"
+      }
+    },
+    "required": [
+      "pattern"
+    ]
+  }
+}

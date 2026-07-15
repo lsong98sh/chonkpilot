@@ -1,0 +1,22 @@
+{
+  "description": "Scroll to a specific element or pixel position. Returns: 'scrolled to ({x}, {y})'. Example: {\"selector\": \"#footer\"}",
+  "name": "web_scroll_to",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector to scroll to"
+      },
+      "x": {
+        "type": "number",
+        "description": "X scroll position"
+      },
+      "y": {
+        "type": "number",
+        "description": "Y scroll position"
+      }
+    },
+    "required": []
+  }
+}

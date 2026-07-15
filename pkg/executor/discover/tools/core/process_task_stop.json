@@ -1,0 +1,18 @@
+{
+  "description": "Stop a running task or kill an OS process. Two modes: (1) task_id: stop a task managed by this agent (from execute_command async, run_tasks, call_llm). (2) process_id: kill any OS process by PID (found via netstat, tasklist, Get-Process). If both provided, process_id takes priority. Returns: 'task {task_id} stopped' or 'process {pid} killed'. Example (task): {\"task_id\": \"cmd-1\"}. Example (process): {\"process_id\": 12345}",
+  "name": "process_task_stop",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Task ID to stop (from execute_command async, run_tasks, etc.)"
+      },
+      "process_id": {
+        "type": "number",
+        "description": "OS process PID to kill (found via netstat, tasklist, Get-Process)"
+      }
+    },
+    "required": []
+  }
+}

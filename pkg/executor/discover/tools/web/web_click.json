@@ -1,0 +1,26 @@
+{
+  "description": "Click on an element by CSS selector or pixel coordinates. Returns: 'clicked at ({x}, {y})'. Example: {\"selector\": \"#submit-btn\"} or {\"x\": 100, \"y\": 200}",
+  "name": "web_click",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector of element to click"
+      },
+      "x": {
+        "type": "number",
+        "description": "X coordinate (alternative to selector)"
+      },
+      "y": {
+        "type": "number",
+        "description": "Y coordinate (alternative to selector)"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers: 'ctrl', 'shift', 'alt', 'meta'"
+      }
+    },
+    "required": []
+  }
+}

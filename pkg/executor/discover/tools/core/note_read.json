@@ -1,0 +1,16 @@
+{
+  "description": "Retrieve a note by its title. Example: {\"title\": \"Architecture\"}",
+  "name": "note_read",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Note title"
+      }
+    },
+    "required": [
+      "title"
+    ]
+  }
+}

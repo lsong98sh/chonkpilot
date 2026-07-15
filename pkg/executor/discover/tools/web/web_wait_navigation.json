@@ -1,0 +1,14 @@
+{
+  "description": "Wait for the page to finish loading. Returns: 'navigation completed'. Example: {\"timeout\": 15000}",
+  "name": "web_wait_navigation",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "timeout": {
+        "type": "number",
+        "description": "Timeout in seconds (default 10)"
+      }
+    },
+    "required": []
+  }
+}

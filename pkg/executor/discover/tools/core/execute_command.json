@@ -1,0 +1,20 @@
+{
+  "description": "Execute a shell command. Commands run in the project's work directory by default. Sync mode (async=false): returns combined stdout+stderr output after command exits. Async mode (async=true): returns task_id immediately; poll with process_task_status for partial_output later. For long-running servers (npm run dev, python -m http.server), ALWAYS use async=true to avoid timeout. If you need to run a command in a different directory, prefix with 'cd \u003cdir\u003e \u0026\u0026' (e.g. 'cd subdir \u0026\u0026 npm install'). Example: {\"command\": \"echo hello\"}",
+  "name": "execute_command",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Shell command to execute"
+      },
+      "async": {
+        "type": "boolean",
+        "description": "If true, returns immediately with task_id. Poll with process_task_status."
+      }
+    },
+    "required": [
+      "command"
+    ]
+  }
+}

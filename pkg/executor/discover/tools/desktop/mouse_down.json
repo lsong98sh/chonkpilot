@@ -1,0 +1,18 @@
+{
+  "description": "Press and hold a mouse button. Returns confirmation. Example: {\"button\": \"left\"}",
+  "name": "mouse_down",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "button": {
+        "type": "string",
+        "description": "Mouse button to press"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers"
+      }
+    },
+    "required": []
+  }
+}

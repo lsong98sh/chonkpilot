@@ -1,0 +1,28 @@
+{
+  "description": "Replace text in a file (find-and-replace). Returns: 'replaced in {path} ({N} replacements)'. Supports both literal string match (default) and regex matching (set 'regex: true'). When 'old' is empty: prepends 'new' at the beginning of the file. When 'new' is empty: deletes all occurrences of 'old'. With regex: use $1, $2 in 'new' to reference capture groups from 'old'. Example (literal): {\"path\": \"main.go\", \"old\": \"fmt.Println\", \"new\": \"log.Println\"}. Example (regex): {\"path\": \"main.go\", \"old\": \"fmt\\.(Print|Sprintf)\", \"new\": \"log.$1\", \"regex\": true}. Example (prepend): {\"path\": \"main.go\", \"new\": \"// header comment\\n\", \"old\": \"\"}. Example (delete): {\"path\": \"main.go\", \"old\": \"obsolete_call()\", \"new\": \"\"}",
+  "name": "replace",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the file"
+      },
+      "old": {
+        "type": "string",
+        "description": "Text to search for. If empty, 'new' is prepended at the start of the file"
+      },
+      "new": {
+        "type": "string",
+        "description": "Replacement text. If empty, all matches of 'old' are deleted. With regex, use $1/$2 for capture groups"
+      },
+      "regex": {
+        "type": "boolean",
+        "description": "If true, treat 'old' as a regex pattern; 'new' can use $1, $2 etc. for capture groups. Default: false (literal match)"
+      }
+    },
+    "required": [
+      "path"
+    ]
+  }
+}

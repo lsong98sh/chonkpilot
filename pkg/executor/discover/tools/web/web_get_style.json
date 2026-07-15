@@ -1,0 +1,20 @@
+{
+  "description": "Get computed style of an element. Example: {\"selector\": \".btn\", \"property\": \"color\"}",
+  "name": "web_get_style",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector"
+      },
+      "property": {
+        "type": "string",
+        "description": "CSS property name (optional, returns all if omitted)"
+      }
+    },
+    "required": [
+      "selector"
+    ]
+  }
+}

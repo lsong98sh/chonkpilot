@@ -1,0 +1,28 @@
+{
+  "description": "Search file contents with a regex pattern. Returns JSON array of matches: [{\"file\": \"...\", \"line\": N, \"content\": \"...\"}, ...]. Supports file_pattern (glob, e.g. '*.go') to filter by filename, path to limit search to a subdirectory, and limit (max matches, default 200). Example: {\"pattern\": \"func.*Handler\", \"file_pattern\": \"*.go\", \"path\": \"./src\"}",
+  "name": "grep",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "Regex pattern to search for"
+      },
+      "file_pattern": {
+        "type": "string",
+        "description": "Optional glob pattern to filter by filename (e.g. '*.go', '*_test.go')"
+      },
+      "path": {
+        "type": "string",
+        "description": "Subdirectory to search in (relative to work dir). Defaults to whole project"
+      },
+      "limit": {
+        "type": "number",
+        "description": "Max matches (default 200, capped at 1000). Set 0 for unlimited"
+      }
+    },
+    "required": [
+      "pattern"
+    ]
+  }
+}

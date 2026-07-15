@@ -1,0 +1,21 @@
+{
+  "description": "Set browser viewport size. Returns confirmation. Example: {\"width\": 1920, \"height\": 1080}",
+  "name": "web_set_viewport",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "width": {
+        "type": "number",
+        "description": "Viewport width in pixels"
+      },
+      "height": {
+        "type": "number",
+        "description": "Viewport height in pixels"
+      }
+    },
+    "required": [
+      "width",
+      "height"
+    ]
+  }
+}

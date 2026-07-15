@@ -1,0 +1,9 @@
+{
+  "description": "Get network request history from the page. Returns list of requested URLs and their status. Example: {}",
+  "name": "web_get_requests",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

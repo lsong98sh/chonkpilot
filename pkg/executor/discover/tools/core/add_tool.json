@@ -1,0 +1,29 @@
+{
+  "description": "Register a new custom tool. Returns: 'tool {name} registered'. Once registered, the tool is added to the system prompt and available by name in all subsequent calls. The 'parameters' field must be a valid JSON Schema object defining the tool's arguments (see example). The 'command' field supports {param_name} placeholders that are replaced with actual parameter values at call time. Example: add_tool(name=\"weather\", description=\"Get weather for a city\", parameters={\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}}, command=\"curl wttr.in/{city}\")",
+  "name": "add_tool",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Tool name (lowercase snake_case, used as identifier)"
+      },
+      "description": {
+        "type": "string",
+        "description": "Description of what the tool does"
+      },
+      "command": {
+        "type": "string",
+        "description": "Shell command template with {param_name} placeholders that get replaced by parameter values"
+      },
+      "parameters": {
+        "type": "object",
+        "description": "JSON Schema for tool parameters. Example: {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}}}"
+      }
+    },
+    "required": [
+      "name",
+      "description"
+    ]
+  }
+}

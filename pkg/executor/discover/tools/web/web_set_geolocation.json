@@ -1,0 +1,21 @@
+{
+  "description": "Override browser geolocation. Returns confirmation. Example: {\"latitude\": 39.9, \"longitude\": 116.4}",
+  "name": "web_set_geolocation",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "latitude": {
+        "type": "number",
+        "description": "Latitude"
+      },
+      "longitude": {
+        "type": "number",
+        "description": "Longitude"
+      }
+    },
+    "required": [
+      "latitude",
+      "longitude"
+    ]
+  }
+}

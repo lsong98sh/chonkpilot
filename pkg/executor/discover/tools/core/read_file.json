@@ -1,0 +1,32 @@
+{
+  "description": "Read contents of one or more files. Text/code files return raw content. PDF/DOCX/XLSX/PPTX are converted to text/markdown. Binary files return data:...;base64,... format. Each file can have its own start/limit for partial reads. Example: {\"_\": [{\"path\": \"main.go\", \"start\": 1, \"limit\": 50}]}",
+  "name": "read_file",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "File path."
+            },
+            "start": {
+              "type": "integer",
+              "description": "Optional. 1-based start line."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Optional. Max lines to read."
+            }
+          },
+          "required": ["path"]
+        },
+        "description": "Array of file read requests."
+      }
+    },
+    "required": ["files"]
+  }
+}

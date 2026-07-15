@@ -1,0 +1,77 @@
+:root {
+  /* Layout */
+  --sidebar-width: 260px;
+  --sidebar-collapsed-width: 48px;
+  --codeview-width: 400px;
+  --toolbar-height: 44px;
+  --task-panel-height: 200px;
+
+  /* Colors - Light theme (default) */
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e9ecef;
+  --bg-surface: #dee2e6;
+  --bg-hover: #e9ecef;
+  --text-primary: #212529;
+  --text-secondary: #495057;
+  --text-muted: #6c757d;
+  --accent: #4361ee;
+  --accent-hover: #3a56d4;
+  --success: #2d9f4e;
+  --warning: #e8a317;
+  --danger: #dc3545;
+  --border: #dee2e6;
+  --panel-bg: #ffffff;
+  --toolbar-bg: #ffffff;
+  --input-bg: #ffffff;
+
+  /* Typography */
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+  --font-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+}
+
+/* Dark theme */
+[data-theme="dark"] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #181825;
+  --bg-tertiary: #11111b;
+  --bg-surface: #313244;
+  --bg-hover: #45475a;
+  --text-primary: #cdd6f4;
+  --text-secondary: #a6adc8;
+  --text-muted: #6c7086;
+  --accent: #89b4fa;
+  --accent-hover: #74c7ec;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --danger: #f38ba8;
+  --border: #313244;
+  --panel-bg: #1e1e2e;
+  --toolbar-bg: #181825;
+  --input-bg: #313244;
+}
+
+/* Nord theme */
+[data-theme="nord"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-tertiary: #434c5e;
+  --bg-surface: #4c566a;
+  --bg-hover: #434c5e;
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  --text-muted: #81a1c1;
+  --accent: #88c0d0;
+  --accent-hover: #8fbcbb;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --danger: #bf616a;
+  --border: #4c566a;
+  --panel-bg: #2e3440;
+  --toolbar-bg: #3b4252;
+  --input-bg: #434c5e;
+}

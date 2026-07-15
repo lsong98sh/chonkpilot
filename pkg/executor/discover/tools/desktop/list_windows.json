@@ -1,0 +1,9 @@
+{
+  "description": "List all top-level windows on the desktop. Returns list with hwnd, title, size, position, and class for each window. Note: hidden windows (minimized to system tray) have empty titles and are NOT included in the list — even though their process may still be running. If you can't find an app here but know it's running, use Get-Process via execute_command to confirm it's alive, then operate its system tray icon. Windows marked '(hidden)' were returned by the OS but are not visible — focus_window/restore_window may still work on them (e.g. taskbar-minimized windows), but will NOT work for tray-only apps. Example: {}",
+  "name": "list_windows",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

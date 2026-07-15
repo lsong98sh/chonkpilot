@@ -1,0 +1,26 @@
+{
+  "description": "Click the mouse at specified coordinates. Returns: 'clicked at ({x}, {y})'. Example: {\"x\": 100, \"y\": 200, \"button\": \"left\"}",
+  "name": "mouse_click",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "x": {
+        "type": "number",
+        "description": "X coordinate"
+      },
+      "y": {
+        "type": "number",
+        "description": "Y coordinate"
+      },
+      "button": {
+        "type": "string",
+        "description": "Mouse button: 'left', 'right', 'middle'"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers: 'ctrl', 'shift', 'alt', 'meta'"
+      }
+    },
+    "required": []
+  }
+}

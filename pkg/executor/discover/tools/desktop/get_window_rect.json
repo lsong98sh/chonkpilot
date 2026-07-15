@@ -1,0 +1,18 @@
+{
+  "description": "Get position and size of a window. Returns: 'rect: left={x}, top={y}, width={w}, height={h}'. Example: {\"title\": \"Notepad\"}",
+  "name": "get_window_rect",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle"
+      },
+      "title": {
+        "type": "string",
+        "description": "Window title (alternative to hwnd)"
+      }
+    },
+    "required": []
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "description": "Release a held mouse button. Example: {\"button\": \"left\"}",
+  "name": "mouse_up",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "button": {
+        "type": "string",
+        "description": "Mouse button to release"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers"
+      }
+    },
+    "required": []
+  }
+}

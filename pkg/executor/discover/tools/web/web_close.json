@@ -1,0 +1,9 @@
+{
+  "description": "Close the browser and release all resources. Returns: 'browser closed'. Example: {}",
+  "name": "web_close",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

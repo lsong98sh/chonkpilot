@@ -1,0 +1,9 @@
+{
+  "description": "List all custom tools registered via add_tool. Returns a list with name, type (command/meta), and description. Example: {}",
+  "name": "list_tool",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Get the current page title. Example: {}",
+  "name": "web_get_title",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

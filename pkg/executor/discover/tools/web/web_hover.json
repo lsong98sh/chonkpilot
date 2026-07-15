@@ -1,0 +1,26 @@
+{
+  "description": "Hover the mouse over an element or at coordinates. Returns: 'hovered at ({x}, {y})'. Example: {\"selector\": \".menu-item\"}",
+  "name": "web_hover",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector to hover over"
+      },
+      "x": {
+        "type": "number",
+        "description": "X coordinate"
+      },
+      "y": {
+        "type": "number",
+        "description": "Y coordinate"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers"
+      }
+    },
+    "required": []
+  }
+}

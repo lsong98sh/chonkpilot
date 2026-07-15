@@ -1,0 +1,20 @@
+{
+  "description": "Query the status and results of a run_tasks task. Returns aggregate results by default (status, total, completed, failed). Add 'query_sub_task: true' to get detailed sub-task results (may be large). You can also pass multiple IDs in task_ids array to query several at once.",
+  "name": "query_task",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "Task ID from run_tasks (e.g., 'rt-uuid')"
+      },
+      "query_sub_task": {
+        "type": "boolean",
+        "description": "If true, include detailed sub-task results. Default: false (aggregate only)"
+      }
+    },
+    "required": [
+      "task_id"
+    ]
+  }
+}

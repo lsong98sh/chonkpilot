@@ -1,0 +1,28 @@
+{
+  "description": "Press and release a keyboard key. Returns confirmation. Example: {\"key\": \"enter\"} or {\"key\": \"F5\"}",
+  "name": "key_press",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "key": {
+        "type": "string",
+        "description": "Virtual key code or name (e.g. 'enter', 'tab', 'a', 'F5')"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers (e.g. ['ctrl', 'shift'])"
+      },
+      "window": {
+        "type": "string",
+        "description": "Window title to focus before pressing the key"
+      },
+      "hwnd": {
+        "type": "number",
+        "description": "Window handle (HWND) to focus before pressing the key"
+      }
+    },
+    "required": [
+      "key"
+    ]
+  }
+}

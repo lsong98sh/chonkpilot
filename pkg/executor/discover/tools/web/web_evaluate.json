@@ -1,0 +1,16 @@
+{
+  "description": "Evaluate JavaScript in the page. Returns the result as JSON string. Example: {\"js\": \"document.title\"}",
+  "name": "web_evaluate",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "js": {
+        "type": "string",
+        "description": "JavaScript code to execute"
+      }
+    },
+    "required": [
+      "js"
+    ]
+  }
+}

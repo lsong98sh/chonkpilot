@@ -1,0 +1,16 @@
+{
+  "description": "Navigate to a URL in the browser. Waits for page load. Returns: 'navigated to {url}, title: {page_title}'. Example: {\"url\": \"https://example.com\"}",
+  "name": "web_open",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "URL to navigate to"
+      }
+    },
+    "required": [
+      "url"
+    ]
+  }
+}

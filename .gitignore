@@ -1,0 +1,64 @@
+# Build output
+build/*.exe
+build/bin/
+build/check_pptx.py
+build/fetch_*.ps1
+/chonkpilot.exe
+
+# Go
+*.test
+*.out
+*.test.exe
+vendor/
+go.work
+go.work.sum
+
+# IDE workspace files
+.ide/
+build/.ide/
+
+# Frontend build output
+frontend/dist/
+frontend/node_modules/
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# IDE metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment / secrets
+.env
+*.env.local
+*.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Temp files
+tmp/
+temp/
+
+# OS generated
+*.cab
+*.lnk
+
+# Project notes / docs (local)
+/AGENTS.md
+/TODO.md
+/硬编码参数分析.md
+
+# Test directories
+/test_tools/
+/test_rollback/
+
+# Local tools (not for git)
+/tools/

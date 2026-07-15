@@ -1,0 +1,9 @@
+{
+  "description": "List all saved notes with previews. Returns a list of note titles and previews. Example: {}",
+  "name": "note_list",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

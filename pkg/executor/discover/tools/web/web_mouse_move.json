@@ -1,0 +1,25 @@
+{
+  "description": "Move the mouse to absolute page coordinates. Returns confirmation. Example: {\"x\": 500, \"y\": 300}",
+  "name": "web_mouse_move",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "x": {
+        "type": "number",
+        "description": "Target X coordinate"
+      },
+      "y": {
+        "type": "number",
+        "description": "Target Y coordinate"
+      },
+      "modifiers": {
+        "type": "array",
+        "description": "Keyboard modifiers"
+      }
+    },
+    "required": [
+      "x",
+      "y"
+    ]
+  }
+}

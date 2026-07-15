@@ -1,0 +1,9 @@
+{
+  "description": "List all saved agents with their prompts.",
+  "name": "list_agent",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

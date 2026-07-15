@@ -1,0 +1,16 @@
+{
+  "description": "Delete a note by title. Returns confirmation. Example: {\"title\": \"Architecture\"}",
+  "name": "note_delete",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Note title to delete"
+      }
+    },
+    "required": [
+      "title"
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "description": "Wait. Two mutually exclusive modes: (1) task_id mode: polls that task every 1s until done/error or timeout. (2) duration mode: simple sleep for N seconds (returns 'waited Ns'). If both task_id and duration are passed: task_id takes priority, duration is silently ignored. If only timeout is passed with no task_id: timeout has no effect (sleep mode ignores timeout). Returns (duration mode): 'waited 5.0s'. Returns (task_id mode): final task status with result details.",
+  "name": "process_wait",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "duration": {
+        "type": "number",
+        "description": "Sleep duration in seconds (sleep mode). Only used when task_id is NOT provided."
+      },
+      "task_id": {
+        "type": "string",
+        "description": "Task ID to wait for (polling mode). Polls every 1s until done/error or timeout. Mutually exclusive with duration."
+      },
+      "timeout": {
+        "type": "number",
+        "description": "Max wait time in seconds for polling mode only (default: 30). Ignored in duration/sleep mode."
+      }
+    },
+    "required": []
+  }
+}

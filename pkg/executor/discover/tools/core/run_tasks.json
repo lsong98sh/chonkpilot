@@ -1,0 +1,20 @@
+{
+  "description": "Execute a list of sub-tasks. IMPORTANT: unlike execute_command.async, this 'async' parameter controls whether sub-tasks run concurrently or sequentially — the function ALWAYS returns immediately with a task_id in both modes. async=true: sub-tasks run in parallel (no order guarantee). async=false (default): sub-tasks run one-by-one in array order. Use query_task to poll results. Example (sequential): {\"items\": [{\"tool\":\"write_file\",\"args\":{\"path\":\"a.txt\",\"content\":\"hello\"}}, {\"tool\":\"read_file\",\"args\":{\"path\":\"a.txt\"}}]}",
+  "name": "run_tasks",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "items": {
+        "type": "array",
+        "description": "Array of sub-tasks to execute. Each item: {tool, args}. Valid tools: write_file, read_file, execute_command, call_llm, patch_file, glob, grep, search, web_fetch, process_task_status, process_wait, query_task, rename_file, delete_file, run_tasks. Note: run_tasks ALWAYS returns immediately — even async=false only means sub-tasks are sequential, not that the function blocks."
+      },
+      "async": {
+        "type": "boolean",
+        "description": "Controls sub-task scheduling, NOT whether this function blocks (it never blocks). true=parallel (concurrent), false=sequential (one by one in array order). Default: false."
+      }
+    },
+    "required": [
+      "items"
+    ]
+  }
+}

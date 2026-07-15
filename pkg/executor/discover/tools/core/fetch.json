@@ -1,0 +1,28 @@
+{
+  "description": "Make an HTTP request to fetch a URL. Returns formatted response: 'HTTP {code} {status}\\n\\n=== Headers ===\\n{headers}\\n\\n=== Body ===\\n{body}'. For large responses exceeding the threshold (~100KB), the body is saved to a .ide/fetch_*.txt file instead — read that file with read_file to get the full content. Example: {\"url\": \"https://api.example.com/data\", \"method\": \"GET\"}",
+  "name": "fetch",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "URL to fetch"
+      },
+      "method": {
+        "type": "string",
+        "description": "HTTP method (GET, POST, PUT, etc.)"
+      },
+      "body": {
+        "type": "string",
+        "description": "Request body (for POST/PUT)"
+      },
+      "headers": {
+        "type": "object",
+        "description": "HTTP headers as key-value pairs"
+      }
+    },
+    "required": [
+      "url"
+    ]
+  }
+}

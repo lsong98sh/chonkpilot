@@ -1,0 +1,18 @@
+{
+  "description": "Take a screenshot of the current page. Returns a data URL: 'data:image/png;base64,...'. The base64 part can be passed to write_file with type='base64;image/png'. When full_page=true and page height exceeds max_height, the screenshot is truncated/cropped at max_height. Example: {\"full_page\": true}",
+  "name": "web_screenshot",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "full_page": {
+        "type": "boolean",
+        "description": "Capture full page (not just viewport)"
+      },
+      "max_height": {
+        "type": "number",
+        "description": "Max height in pixels for full-page capture. If page is taller, screenshot is truncated at this height (default: 10000)"
+      }
+    },
+    "required": []
+  }
+}

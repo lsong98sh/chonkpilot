@@ -1,0 +1,17 @@
+{
+  "description": "List contents of one or more directories. Each directory returns a formatted listing with name, type (dir/file), size, and modification time. Example: {\"_\": [\"/home/user/project/src\", \"/home/user/project/dist\"]}",
+  "name": "list_directory",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Array of directory paths."
+      }
+    },
+    "required": ["paths"]
+  }
+}

@@ -1,0 +1,102 @@
+@import './variables.css';
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background-color var(--transition-normal), color var(--transition-normal);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-hover);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Element Plus dark mode overrides */
+.el-dialog {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.el-dialog__title {
+  color: var(--text-primary) !important;
+}
+
+.el-drawer {
+  background: var(--bg-secondary) !important;
+  border-left: 1px solid var(--border) !important;
+}
+
+.el-drawer__header {
+  color: var(--text-primary) !important;
+  margin-bottom: 12px !important;
+}
+
+.el-drawer__title {
+  color: var(--text-primary) !important;
+}
+
+.el-overlay {
+  background: rgba(0, 0, 0, 0.4) !important;
+}
+
+/* Dropdown menus */
+.el-dropdown-menu {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.el-dropdown-menu__item {
+  color: var(--text-primary) !important;
+}
+
+.el-dropdown-menu__item:hover {
+  background: var(--bg-hover) !important;
+}
+
+/* Input */
+.el-input__wrapper {
+  background: var(--input-bg) !important;
+  box-shadow: 0 0 0 1px var(--border) inset !important;
+}
+
+.el-input__inner {
+  color: var(--text-primary) !important;
+}
+
+/* Button overrides for toolbar */
+.toolbar-btn .el-button {
+  background: transparent !important;
+  border: 1px solid transparent !important;
+}
+
+.toolbar-btn .el-button:hover {
+  background: var(--bg-hover) !important;
+}
+
+/* Tag */
+.el-tag {
+  border: none !important;
+}

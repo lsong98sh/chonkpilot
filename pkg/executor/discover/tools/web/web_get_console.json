@@ -1,0 +1,9 @@
+{
+  "description": "Get accumulated console log messages from the page. Example: {}",
+  "name": "web_get_console",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

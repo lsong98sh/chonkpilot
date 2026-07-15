@@ -1,0 +1,32 @@
+{
+  "description": "Write text or binary content to one or more files (creates or overwrites). Each file has its own path, content, and optional type. For binary files, set type='base64;MIME' (e.g. 'base64;image/png'). Example: {\"_\": [{\"path\": \"hello.go\", \"content\": \"package main\"}]}",
+  "name": "write_file",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "File path."
+            },
+            "content": {
+              "type": "string",
+              "description": "File content."
+            },
+            "type": {
+              "type": "string",
+              "description": "Optional. 'base64;MIME' for binary."
+            }
+          },
+          "required": ["path", "content"]
+        },
+        "description": "Array of file write requests."
+      }
+    },
+    "required": ["files"]
+  }
+}

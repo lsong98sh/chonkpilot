@@ -1,0 +1,20 @@
+{
+  "description": "Save a note for later retrieval. If title exists, updates it; otherwise creates new. Returns confirmation. Example: {\"title\": \"Architecture\", \"content\": \"Using microservices\"}",
+  "name": "note_write",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Note title"
+      },
+      "content": {
+        "type": "string",
+        "description": "Note content"
+      }
+    },
+    "required": [
+      "title"
+    ]
+  }
+}

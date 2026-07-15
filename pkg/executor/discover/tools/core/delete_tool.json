@@ -1,0 +1,16 @@
+{
+  "description": "Delete a custom tool by name. Only tools created by LLM can be deleted. Returns confirmation. Example: {\"name\": \"my_tool\"}",
+  "name": "delete_tool",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Tool name to delete"
+      }
+    },
+    "required": [
+      "name"
+    ]
+  }
+}

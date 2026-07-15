@@ -1,0 +1,16 @@
+{
+  "description": "Get text content of an element by CSS selector. Example: {\"selector\": \"h1\"}",
+  "name": "web_get_text",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector"
+      }
+    },
+    "required": [
+      "selector"
+    ]
+  }
+}

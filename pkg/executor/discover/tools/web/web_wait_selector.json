@@ -1,0 +1,20 @@
+{
+  "description": "Wait for an element to appear on the page. Returns 'element appeared' or timeout error. Example: {\"selector\": \".loading-done\", \"timeout\": 5000}",
+  "name": "web_wait_selector",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector to wait for"
+      },
+      "timeout": {
+        "type": "number",
+        "description": "Timeout in seconds (default 10)"
+      }
+    },
+    "required": [
+      "selector"
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "description": "Type text into an input element. Returns: 'typed {N} characters into {selector}'. Example: {\"selector\": \"#search\", \"text\": \"hello world\"}",
+  "name": "web_type",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "selector": {
+        "type": "string",
+        "description": "CSS selector of the input element"
+      },
+      "text": {
+        "type": "string",
+        "description": "Text to type"
+      },
+      "delay": {
+        "type": "number",
+        "description": "Delay between keystrokes in ms (default 50)"
+      }
+    },
+    "required": [
+      "selector",
+      "text"
+    ]
+  }
+}

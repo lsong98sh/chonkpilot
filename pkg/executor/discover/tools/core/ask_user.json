@@ -1,0 +1,24 @@
+{
+  "description": "Ask the user a question and wait for a response. Example: {\"question\": \"Please select an option\", \"options\": [\"Build\", \"Test\"]}",
+  "name": "ask_user",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "question": {
+        "type": "string",
+        "description": "Question to ask the user"
+      },
+      "options": {
+        "type": "array",
+        "description": "Optional list of answer options (strings)"
+      },
+      "custom": {
+        "type": "boolean",
+        "description": "If true, allow free-form text input"
+      }
+    },
+    "required": [
+      "question"
+    ]
+  }
+}
