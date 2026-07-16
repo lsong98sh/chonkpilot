@@ -28,6 +28,10 @@
         "type": "string",
         "description": "Optional agent name. Must match an agent created with add_agent (case-sensitive). The agent's system prompt is prepended before common rules"
       },
+      "llm-ref": {
+        "type": "string",
+        "description": "Optional. Name of an LLM configured in LLMs list. When set, overrides the parent's LLM protocol/model/key for this sub-executor. Must match the 'name' field of a configured LLM provider"
+      },
       "async": {
         "type": "boolean",
         "description": "If true, returns sub_session_id immediately. Poll with process_task_status to get the result. If false/omit, blocks and returns the final response as plain text"

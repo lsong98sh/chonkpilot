@@ -57,7 +57,7 @@ type batchCtx struct {
 	workDir         string
 	dbDir           string
 	parentSession   string // main session ID (parent for sub-sessions)
-	llmProvider     string
+	llmProtocol     string
 	llmModel        string
 	llmAPIKey       string
 	llmAPIURL       string
@@ -73,7 +73,7 @@ type batchCtx struct {
 func HandleBatchLLM(
 	logger *zap.Logger,
 	workDir, dbDir, session string,
-	llmProvider, llmModel, llmAPIKey, llmAPIURL string,
+	llmProtocol, llmModel, llmAPIKey, llmAPIURL string,
 	thinking bool, reasoningEffort string,
 	writeEvent func(string, map[string]interface{}),
 	dispatch dispatchFunc,
@@ -124,7 +124,7 @@ func HandleBatchLLM(
 		workDir:         workDir,
 		dbDir:           dbDir,
 		parentSession:   session,
-		llmProvider:     llmProvider,
+		llmProtocol:     llmProtocol,
 		llmModel:        llmModel,
 		llmAPIKey:       llmAPIKey,
 		llmAPIURL:       llmAPIURL,
@@ -346,7 +346,7 @@ func executeTask(ctx *batchCtx, pipeline *Pipeline, task *PipelineTask, subSessi
 	}
 
 	// Create LLM client
-	client := llm.NewClient(ctx.llmProvider, ctx.llmModel, ctx.llmAPIKey, ctx.llmAPIURL, ctx.logger)
+	client := llm.NewClient(ctx.llmProtocol, ctx.llmModel, ctx.llmAPIKey, ctx.llmAPIURL, ctx.logger)
 
 	// Build tool definitions: filter web tools if no Chrome
 	allTools := discover.NewDiscoverer().ListBuiltinTools()

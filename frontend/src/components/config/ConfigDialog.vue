@@ -248,7 +248,7 @@ const visible = ref(false)
 const tab = ref('llm')
 
 const defaultLLM = () => ({
-  name: '', provider: 'deepseek', apiKey: '', model: 'deepseek-v4-flash',
+  name: '', protocol: 'openai', apiKey: '', model: 'deepseek-v4-flash',
   baseUrl: 'https://api.deepseek.com', temperature: 0.7, maxTokens: 4096,
   thinking: true, reasoningEffort: '',
 })

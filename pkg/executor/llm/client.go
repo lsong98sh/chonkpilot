@@ -67,10 +67,10 @@ type Client struct {
 }
 
 // NewClient creates a new LLM client.
-func NewClient(providerName, model, apiKey, apiURL string, logger *zap.Logger) *Client {
+func NewClient(protocol, model, apiKey, apiURL string, logger *zap.Logger) *Client {
 	var provider Provider
 
-	switch providerName {
+	switch protocol {
 	case "openai":
 		provider = &OpenAIProvider{
 			Model:   model,

@@ -65,8 +65,8 @@ func SaveProjectAgents(db *sql.DB, agents []models.AgentConfig) error {
 func UpdateProjectAgent(db *sql.DB, agent models.AgentConfig, id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.Exec(
-		`UPDATE project_agents SET title=?, use_case=?, prompt=?, source=NULLIF(?,''), updated_at=? WHERE id=?`,
-		agent.Title, agent.UseCase, agent.Prompt, agent.Source, now, id,
+		`UPDATE project_agents SET title=?, use_case=?, prompt=?, llm_ref=NULLIF(?,''), source=NULLIF(?,''), updated_at=? WHERE id=?`,
+		agent.Title, agent.UseCase, agent.Prompt, agent.LLMRef, agent.Source, now, id,
 	)
 	return err
 }
@@ -88,7 +88,7 @@ func GetProjectAgentByID(db *sql.DB, id int64) (*models.AgentConfig, error) {
 func GetProjectAgentByTitle(db *sql.DB, title string) (*models.AgentConfig, int64, error) {
 	var a models.AgentConfig
 	var id int64
-	err := db.QueryRow(`SELECT id, title, use_case, prompt, source, created_at, updated_at FROM project_agents WHERE title=?`, title).Scan(&id, &a.Title, &a.UseCase, &a.Prompt, &a.Source, &a.CreatedAt, &a.UpdatedAt)
+	err := db.QueryRow(`SELECT id, title, use_case, prompt, llm_ref, source, created_at, updated_at FROM project_agents WHERE title=?`, title).Scan(&id, &a.Title, &a.UseCase, &a.Prompt, &a.LLMRef, &a.Source, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, 0, nil

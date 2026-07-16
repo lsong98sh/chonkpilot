@@ -59,8 +59,8 @@ func TestParseArgs(t *testing.T) {
 	if ea.TurnID != "" {
 		t.Errorf("TurnID = %q, want empty", ea.TurnID)
 	}
-	if ea.LLMProvider != "openai" {
-		t.Errorf("LLMProvider = %q", ea.LLMProvider)
+	if ea.LLMProtocol != "openai" {
+		t.Errorf("LLMProtocol = %q", ea.LLMProtocol)
 	}
 	if ea.LLMModel != "gpt-4o" {
 		t.Errorf("LLMModel = %q", ea.LLMModel)
@@ -163,8 +163,8 @@ func TestParseArgs_AllFields(t *testing.T) {
 	if ea.OutputFormat != "json" {
 		t.Error("OutputFormat mismatch")
 	}
-	if ea.LLMProvider != "openai" {
-		t.Error("LLMProvider mismatch")
+	if ea.LLMProtocol != "openai" {
+		t.Error("LLMProtocol mismatch")
 	}
 	if ea.LLMModel != "gpt-4" {
 		t.Error("LLMModel mismatch")

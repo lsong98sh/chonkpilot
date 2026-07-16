@@ -27,7 +27,7 @@ import (
 // All execution goes through TaskManager so process_task_stop can cancel it.
 func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engine,
 	tm *run.TaskManager,
-	llmProvider, llmModel, llmAPIKey, llmAPIURL string,
+	llmProtocol, llmModel, llmAPIKey, llmAPIURL string,
 	thinking bool, reasoningEffort string,
 	writeEvent func(string, map[string]interface{}), onProgress func(map[string]interface{}),
 	args map[string]interface{}, depth int) *types.ToolResult {
@@ -158,8 +158,8 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engin
 	}
 
 	// Pass LLM config to sub-executor so it uses the same provider/api key
-	if llmProvider != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--llm-provider=%s", llmProvider))
+	if llmProtocol != "" {
+		subArgs = append(subArgs, fmt.Sprintf("--llm-provider=%s", llmProtocol))
 	}
 	if llmModel != "" {
 		subArgs = append(subArgs, fmt.Sprintf("--llm-model=%s", llmModel))

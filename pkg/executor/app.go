@@ -32,7 +32,7 @@ type ExecutorArgs struct {
 	Tools            string
 	ToolsFile        string
 	OutputFormat     string // stdout or json
-	LLMProvider      string
+	LLMProtocol      string
 	LLMModel         string
 	LLMAPIKey        string
 	LLMAPIURL        string
@@ -134,7 +134,7 @@ func ParseArgs(args []string) (*ExecutorArgs, error) {
 		} else if strings.HasPrefix(arg, "--output=") {
 			ea.OutputFormat = arg[len("--output="):]
 		} else if strings.HasPrefix(arg, "--llm-provider=") {
-			ea.LLMProvider = arg[len("--llm-provider="):]
+			ea.LLMProtocol = arg[len("--llm-provider="):]
 		} else if strings.HasPrefix(arg, "--llm-model=") {
 			ea.LLMModel = arg[len("--llm-model="):]
 		} else if strings.HasPrefix(arg, "--llm-api-key=") {
@@ -397,7 +397,7 @@ func Run(args []string) error {
 	}
 
 	logger.Info("LLM config resolved",
-		zap.String("provider", ea.LLMProvider),
+		zap.String("protocol", ea.LLMProtocol),
 		zap.String("model", ea.LLMModel),
 		zap.Bool("reasoning", ea.Thinking),
 		zap.String("reasoningEffort", ea.ReasoningEffort),
@@ -485,7 +485,7 @@ func detectMode(ea *ExecutorArgs) string {
 // printBanner prints the startup banner to stdout.
 func printBanner(ea *ExecutorArgs, mode string) {
 	fmt.Fprintf(os.Stdout, "肥猫启动中... V1.0 - %s 模式\n", mode)
-	fmt.Fprintf(os.Stdout, "LLM: %s/%s\n", ea.LLMProvider, ea.LLMModel)
+	fmt.Fprintf(os.Stdout, "LLM: %s/%s\n", ea.LLMProtocol, ea.LLMModel)
 	reasoningStr := "off"
 	if ea.Thinking {
 		reasoningStr = "on"

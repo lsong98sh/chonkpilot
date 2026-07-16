@@ -112,7 +112,7 @@ func TestProcessSimplifiedTurn(t *testing.T) {
 		{Role: "tool", Content: `{"tool_call_id":"tc1","name":"read_file","result":"package main\nfunc main() {}"}`},
 	}
 
-	result := processSimplifiedTurn(turn)
+	result := processSimplifiedTurn(turn, "")
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages (user + simplified assistant), got %d", len(result))
 	}

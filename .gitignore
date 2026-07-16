@@ -56,6 +56,9 @@ temp/
 /TODO.md
 /硬编码参数分析.md
 
+# Embedded executor (built by build.ps1)
+/internal/embed/executor.exe
+
 # Test directories
 /test_tools/
 /test_rollback/

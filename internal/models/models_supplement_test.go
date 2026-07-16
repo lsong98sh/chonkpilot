@@ -33,7 +33,7 @@ func TestNewNote(t *testing.T) {
 func TestLLMProvider_JSONRoundTrip(t *testing.T) {
 	p := LLMProvider{
 		Name:            "test",
-		Provider:        "openai",
+		Protocol:        "openai",
 		APIKey:          "sk-test-key",
 		Model:           "gpt-4",
 		BaseURL:         "https://api.openai.com/v1",
@@ -56,8 +56,8 @@ func TestLLMProvider_JSONRoundTrip(t *testing.T) {
 	if got.Name != p.Name {
 		t.Errorf("Name = %q, want %q", got.Name, p.Name)
 	}
-	if got.Provider != p.Provider {
-		t.Errorf("Provider = %q, want %q", got.Provider, p.Provider)
+	if got.Protocol != p.Protocol {
+		t.Errorf("Protocol = %q, want %q", got.Protocol, p.Protocol)
 	}
 	if got.APIKey != p.APIKey {
 		t.Errorf("APIKey = %q, want %q", got.APIKey, p.APIKey)
@@ -85,7 +85,7 @@ func TestLLMProvider_JSONRoundTrip(t *testing.T) {
 func TestLLMProvider_DefaultValues(t *testing.T) {
 	p := LLMProvider{
 		Name:     "default-test",
-		Provider: "anthropic",
+		Protocol: "anthropic",
 		APIKey:   "sk-xxx",
 	}
 
@@ -157,8 +157,8 @@ func TestToolConfig_WithParameters(t *testing.T) {
 func TestUserConfig(t *testing.T) {
 	uc := UserConfig{
 		LLMs: []LLMProvider{
-			{Name: "provider1", Provider: "openai", APIKey: "key1"},
-			{Name: "provider2", Provider: "anthropic", APIKey: "key2"},
+			{Name: "provider1", Protocol: "openai", APIKey: "key1"},
+			{Name: "provider2", Protocol: "anthropic", APIKey: "key2"},
 		},
 		DefaultLLM:        1,
 		Theme:             "dark",

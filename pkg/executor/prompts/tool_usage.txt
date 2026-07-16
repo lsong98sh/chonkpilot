@@ -124,11 +124,11 @@
 【add_tool 自定义工具】
 - 写代码 → 测试 → 注册为工具 → 重复使用，帮用户省钱
 
-【add_role / list_role / delete_role 角色管理】
-- add_role(name="<角色名>", prompt="<系统提示词>") 创建/修改角色
-- list_role 列出所有角色
-- delete_role(name="<角色名>") 删除角色
-- 创建后在 call_llm 中用 role="<角色名>" 直接使用
+【add_agent / list_agent / delete_agent 角色管理】
+- add_agent(agent="<agent名>", prompt="<系统提示词>") 创建/修改 agent
+- list_agent 列出所有 agent
+- delete_agent(agent="<agent名>") 删除 agent
+- 创建后在 call_llm 中用 agent="<agent名>" 直接使用
 - 适合创建领域专家角色复用，和 add_tool/note_* 一样是项目级存储
 
 --- 持久化存储 ---

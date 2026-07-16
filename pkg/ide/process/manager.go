@@ -445,7 +445,14 @@ func (em *ExecutorManager) Stop() {
 // findExecutorPath finds the executor executable.
 // Intentionally duplicated in pkg/executor/toolhandler/call_llm.go (different binaries).
 func findExecutorPath() string {
-	// First check same directory as the current executable
+	// First check ~/.chonkpilot/bin/executor.exe (extracted from embedded binary on startup)
+	if home, err := os.UserHomeDir(); err == nil {
+		binPath := filepath.Join(home, ".chonkpilot", "bin", "executor.exe")
+		if _, err := os.Stat(binPath); err == nil {
+			return binPath
+		}
+	}
+	// Fallback: check same directory as the current executable
 	exe, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exe)

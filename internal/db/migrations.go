@@ -139,6 +139,7 @@ func RunMigrations(db *sql.DB) error {
 	// Run optional migrations for existing databases (safe to fail if already applied)
 	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN parent_id TEXT DEFAULT NULL`)
 	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`)
+	_, _ = db.Exec(`ALTER TABLE project_agents ADD COLUMN llm_ref TEXT DEFAULT ''`)
 
 	// Migrate turns table: drop q/a columns (old schema)
 	var hasQCol int

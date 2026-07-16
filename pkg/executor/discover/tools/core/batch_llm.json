@@ -10,7 +10,11 @@
       },
       "count": {
         "type": "number",
-        "description": "Number of concurrent workers (1-10). Default: 1. count=1 respects submit_prompt; count\u003e1 always auto-loops."
+        "description": "Number of concurrent workers (1-10). Default: 1. count=1 respects submit_prompt; count>1 always auto-loops."
+      },
+      "llm-ref": {
+        "type": "string",
+        "description": "Optional. Name of an LLM configured in LLMs list. When set, uses this LLM's protocol/model/key for all tasks, overriding the parent's LLM config"
       }
     },
     "required": [

@@ -278,8 +278,14 @@
             <el-col :span="6">
               <el-input v-model="editing.data.title" placeholder="标题" size="small" />
             </el-col>
-            <el-col :span="18">
+            <el-col :span="8">
               <el-input v-model="editing.data.useCase" placeholder="使用场景" size="small" />
+            </el-col>
+            <el-col :span="10">
+              <el-select v-model="editing.data.llmRef" placeholder="LLM（继承父进程）" size="small" clearable style="width:100%">
+                <el-option label="（继承父进程）" value="" />
+                <el-option v-for="llm in llmOptions" :key="llm.name" :label="llm.label" :value="llm.name" />
+              </el-select>
             </el-col>
           </el-row>
           <el-input
@@ -499,6 +505,14 @@ async function saveContextConfig() {
   }
 }
 
+const llmOptions = computed(() => {
+  if (!config.value?.llms) return []
+  return config.value.llms.map(llm => ({
+    name: llm.name || '',
+    label: llm.name ? `${llm.name} (${llm.protocol || llm.model || ''})` : '',
+  })).filter(l => l.name)
+})
+
 const promptDesc = computed(() => {
   const descs = {
     system: '定义 AI 助手的角色和行为。',
@@ -538,7 +552,7 @@ const promptTextMap = {
 }
 
 const emptyAgent = () => ({
-  title: '', useCase: '', prompt: '', _source: '',
+  title: '', useCase: '', prompt: '', _source: '', llmRef: '',
 })
 
 const emptyTool = () => ({

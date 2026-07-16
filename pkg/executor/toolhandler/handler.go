@@ -49,7 +49,7 @@ type Handler struct {
 	NoChrome        bool                    // true if Chrome is not available
 	CodeIndexer     *codeindex.Indexer      // codebase indexer (nil if disabled)
 	FileVersioner   *fileversions.Versioner // file version snapshot (nil if disabled)
-	LLMProvider     string                  // LLM provider for sub-executors
+	LLMProtocol     string                  // LLM protocol for sub-executors
 	LLMModel        string                  // LLM model name
 	LLMAPIKey       string                  // LLM API key
 	LLMAPIURL       string                  // LLM API base URL

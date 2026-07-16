@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/chonkpilot/chonkpilot/internal/db"
+	"github.com/chonkpilot/chonkpilot/internal/embed"
 	"github.com/chonkpilot/chonkpilot/pkg/chrome"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/codeindex"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/llm"
@@ -80,6 +81,20 @@ func (a *App) startup(ctx context.Context) {
 		}
 		return nil
 	})
+
+	// Extract embedded executor.exe to ~/.chonkpilot/bin/ if not already present
+	homeDir, _ := os.UserHomeDir() //nolint:errcheck
+	if homeDir != "" {
+		exeDir := filepath.Join(homeDir, ".chonkpilot", "bin")
+		exePath := filepath.Join(exeDir, "executor.exe")
+		if _, err := os.Stat(exePath); os.IsNotExist(err) {
+			if p, err := embed.ExtractExecutor(exeDir); err != nil {
+				a.logger.Warn("failed to extract embedded executor", zap.Error(err))
+			} else {
+				a.logger.Info("extracted embedded executor", zap.String("path", p))
+			}
+		}
+	}
 
 	// Auto-detect Java/Python/Node.js environments
 	a.detectRuntimeEnvironments()
@@ -169,7 +184,7 @@ func (a *App) autoScanCodebase() {
 	}
 	llmCfg := cfg.LLMs[cfg.DefaultLLM]
 
-	client := llm.NewClient(llmCfg.Provider, llmCfg.Model, llmCfg.APIKey, llmCfg.BaseURL, a.logger)
+	client := llm.NewClient(llmCfg.Protocol, llmCfg.Model, llmCfg.APIKey, llmCfg.BaseURL, a.logger)
 	caller := func(systemPrompt, userPrompt string) (string, error) {
 		ch, err := client.Chat([]llm.Message{
 			{Role: "system", Content: systemPrompt},

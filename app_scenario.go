@@ -215,7 +215,7 @@ func (a *App) resolveLLMConfig() (provider, model, apiKey, apiURL string) {
 		uc := a.userCfg.Get()
 		if uc.DefaultLLM < len(uc.LLMs) {
 			p := uc.LLMs[uc.DefaultLLM]
-			provider = p.Provider
+			provider = p.Protocol
 			model = p.Model
 			apiKey = p.APIKey
 			apiURL = p.BaseURL

@@ -13,9 +13,10 @@ import (
 
 // HandleAddAgent creates or updates an agent (agent role).
 func HandleAddAgent(dbDir string, args map[string]interface{}) *types.ToolResult {
-	name, _ := args["name"].(string)
+	agentName, _ := args["name"].(string)
 	prompt, _ := args["prompt"].(string)
-	if name == "" {
+	llmRef, _ := args["llm-ref"].(string)
+	if agentName == "" {
 		return &types.ToolResult{Success: false, Error: "name is required", Tool: "add_agent"}
 	}
 	if prompt == "" {
@@ -34,15 +35,16 @@ func HandleAddAgent(dbDir string, args map[string]interface{}) *types.ToolResult
 	}
 
 	newAgent := models.AgentConfig{
-		Title:  name,
+		Title:  agentName,
 		Prompt: prompt,
+		LLMRef: llmRef,
 		Source: "llm",
 	}
 
 	// Replace if exists, otherwise append
 	replaced := false
 	for i, a := range agents {
-		if a.Title == name {
+		if a.Title == agentName {
 			agents[i] = newAgent
 			replaced = true
 			break
@@ -58,7 +60,7 @@ func HandleAddAgent(dbDir string, args map[string]interface{}) *types.ToolResult
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("agent saved: %s. Use call_llm(agent=\"%s\", ...) to invoke it", name, name),
+		Output:  fmt.Sprintf("agent saved: %s. Use call_llm(agent=\"%s\", ...) to invoke it", agentName, agentName),
 		Tool:    "add_agent",
 	}
 }
@@ -94,7 +96,11 @@ func HandleListAgent(dbDir string, args map[string]interface{}) *types.ToolResul
 		if source == "" {
 			source = "user"
 		}
-		buf.WriteString(fmt.Sprintf("[%s] (%s)\n  %s\n", a.Title, source, preview))
+		if a.UseCase != "" {
+			buf.WriteString(fmt.Sprintf("[%s] (%s) - %s\n  %s\n", a.Title, source, a.UseCase, preview))
+		} else {
+			buf.WriteString(fmt.Sprintf("[%s] (%s)\n  %s\n", a.Title, source, preview))
+		}
 	}
 
 	return &types.ToolResult{

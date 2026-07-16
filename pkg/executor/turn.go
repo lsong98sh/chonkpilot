@@ -49,7 +49,7 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 		if ea.LLMName != "" {
 			for _, llmCfg := range ucfg.LLMs {
 				if llmCfg.Name == ea.LLMName {
-					ea.LLMProvider = llmCfg.Provider
+					ea.LLMProtocol = llmCfg.Protocol
 					ea.LLMModel = llmCfg.Model
 					ea.LLMAPIKey = llmCfg.APIKey
 					ea.LLMAPIURL = llmCfg.BaseURL
@@ -94,13 +94,13 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 		}
 	}
 
-	client := llm.NewClient(ea.LLMProvider, ea.LLMModel, ea.LLMAPIKey, ea.LLMAPIURL, logger)
+	client := llm.NewClient(ea.LLMProtocol, ea.LLMModel, ea.LLMAPIKey, ea.LLMAPIURL, logger)
 
 	// Determine if running standalone (no pipe, stdout format)
 	isStandalone := ea.PipePath == "" && ea.OutputFormat == "stdout"
 
 	logger.Info("executeTurn config",
-		zap.String("provider", ea.LLMProvider),
+		zap.String("protocol", ea.LLMProtocol),
 		zap.String("model", ea.LLMModel),
 		zap.Int("maxTokens", ea.LLMMaxTokens),
 		zap.Float64("temperature", ea.LLMTemperature),
@@ -158,6 +158,30 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 								systemPromptText = commonPrompt + "\n\n" + a.Prompt
 							} else {
 								systemPromptText = a.Prompt
+							}
+							// Agent-specific LLM override
+							if a.LLMRef != "" && ucfg != nil {
+								for _, llmCfg := range ucfg.LLMs {
+									if llmCfg.Name == a.LLMRef {
+										ea.LLMProtocol = llmCfg.Protocol
+										ea.LLMModel = llmCfg.Model
+										ea.LLMAPIKey = llmCfg.APIKey
+										ea.LLMAPIURL = llmCfg.BaseURL
+										if !ea.ThinkingSet {
+											ea.Thinking = llmCfg.Thinking
+										}
+										if ea.ReasoningEffort == "" {
+											ea.ReasoningEffort = llmCfg.ReasoningEffort
+										}
+										if llmCfg.MaxTokens > 0 {
+											ea.LLMMaxTokens = llmCfg.MaxTokens
+										}
+										if llmCfg.Temperature > 0 {
+											ea.LLMTemperature = llmCfg.Temperature
+										}
+										break
+									}
+								}
 							}
 							break
 						}
@@ -223,7 +247,7 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 
 	// Initialize tool handler (after ensureSessionAndTurn may have set ea.TurnID)
 	handler := toolhandler.NewHandler(ea.WorkDir, ea.DBWorkDir(), ea.SessionID, ea.TurnID, logger)
-	handler.LLMProvider = ea.LLMProvider
+	handler.LLMProtocol = ea.LLMProtocol
 	handler.LLMModel = ea.LLMModel
 	handler.LLMAPIKey = ea.LLMAPIKey
 	handler.LLMAPIURL = ea.LLMAPIURL

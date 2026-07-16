@@ -31,7 +31,7 @@ func NewConfig(key, value string) *Config {
 // LLMProvider holds a single LLM provider configuration as shown in the UI.
 type LLMProvider struct {
 	Name            string  `json:"name"`
-	Provider        string  `json:"provider"`
+	Protocol        string  `json:"protocol"`
 	APIKey          string  `json:"apiKey"`
 	Model           string  `json:"model"`
 	BaseURL         string  `json:"baseUrl"`
@@ -93,6 +93,7 @@ type AgentConfig struct {
 	Title     string `json:"title"`
 	UseCase   string `json:"useCase"`
 	Prompt    string `json:"prompt"`
+	LLMRef    string `json:"llmRef,omitempty"` // name of the LLM to use; empty = inherit from parent
 	Source    string `json:"_source,omitempty"` // "system" | "llm" | "" (user-managed)
 	CreatedAt string `json:"created_at,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`

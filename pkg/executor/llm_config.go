@@ -60,7 +60,7 @@ func classifyLLMError(err error) (LLMErrorCode, bool) {
 // ReasoningEffort is only overridden from config if user didn't explicitly set --reasoning=on/off.
 func resolveLLMConfig(ea *ExecutorArgs) error {
 	// Step 1: CLI params directly set — if any is set, use them as-is
-	if ea.LLMProvider != "" || ea.LLMModel != "" || ea.LLMAPIKey != "" || ea.LLMAPIURL != "" {
+	if ea.LLMProtocol != "" || ea.LLMModel != "" || ea.LLMAPIKey != "" || ea.LLMAPIURL != "" {
 		return nil
 	}
 
@@ -92,8 +92,8 @@ func resolveLLMConfig(ea *ExecutorArgs) error {
 			if err := json.Unmarshal(data, &cfg); err != nil {
 				return fmt.Errorf("invalid JSON in --llm-config-file: %w", err)
 			}
-			if cfg.Provider != "" {
-				ea.LLMProvider = cfg.Provider
+			if cfg.Protocol != "" {
+				ea.LLMProtocol = cfg.Protocol
 			}
 			if cfg.Model != "" {
 				ea.LLMModel = cfg.Model
@@ -105,7 +105,7 @@ func resolveLLMConfig(ea *ExecutorArgs) error {
 				ea.LLMAPIURL = cfg.BaseURL
 			}
 			applyReasoningFromConfig(cfg)
-			if ea.LLMProvider != "" || ea.LLMModel != "" || ea.LLMAPIKey != "" {
+			if ea.LLMProtocol != "" || ea.LLMModel != "" || ea.LLMAPIKey != "" {
 				return nil
 			}
 		}
@@ -120,17 +120,24 @@ func resolveLLMConfig(ea *ExecutorArgs) error {
 		if err == nil && len(data) > 0 {
 			var userCfg models.UserConfig
 			if err := json.Unmarshal(data, &userCfg); err == nil && len(userCfg.LLMs) > 0 {
+				// Migration compat: old format used "provider" field (json: "provider")
+				// instead of "protocol" (json: "protocol"). Detect and map.
+				for i := range userCfg.LLMs {
+					if userCfg.LLMs[i].Protocol == "" {
+						userCfg.LLMs[i].Protocol = migrateOldProvider(data, i)
+					}
+				}
 				idx := userCfg.DefaultLLM
 				if idx < 0 || idx >= len(userCfg.LLMs) {
 					idx = 0
 				}
 				llmCfg := userCfg.LLMs[idx]
-				ea.LLMProvider = llmCfg.Provider
+				ea.LLMProtocol = llmCfg.Protocol
 				ea.LLMModel = llmCfg.Model
 				ea.LLMAPIKey = llmCfg.APIKey
 				ea.LLMAPIURL = llmCfg.BaseURL
 				applyReasoningFromConfig(llmCfg)
-				if ea.LLMProvider != "" || ea.LLMModel != "" || ea.LLMAPIKey != "" {
+				if ea.LLMProtocol != "" || ea.LLMModel != "" || ea.LLMAPIKey != "" {
 					return nil
 				}
 			}
@@ -139,4 +146,29 @@ func resolveLLMConfig(ea *ExecutorArgs) error {
 
 	// Step 5: nothing found
 	return fmt.Errorf("no LLM configuration found (checked CLI params, --llm-config-file, .ide/ide.db config, ~/.chonkpilot/config.json)")
+}
+
+// migrateOldProvider detects the old "provider" JSON field and maps it to a "protocol" value.
+// Old values: "deepseek" → "openai", "glm" → "claude".
+// Returns "" if no old-format field is detected or the field is empty.
+func migrateOldProvider(data []byte, idx int) string {
+	var rawCfg struct {
+		LLMs []struct {
+			Provider string `json:"provider"`
+		} `json:"llms"`
+	}
+	if err := json.Unmarshal(data, &rawCfg); err != nil {
+		return ""
+	}
+	if idx < 0 || idx >= len(rawCfg.LLMs) {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(rawCfg.LLMs[idx].Provider)) {
+	case "deepseek":
+		return "openai"
+	case "glm":
+		return "claude"
+	default:
+		return ""
+	}
 }

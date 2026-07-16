@@ -189,7 +189,7 @@ func generateSessionSummary(ea *ExecutorArgs, logger *zap.Logger) {
 	).Replace(summaryTemplate)
 
 	// 5. Call LLM (non-streaming, no tools)
-	client := llm.NewClient(ea.LLMProvider, ea.LLMModel, ea.LLMAPIKey, ea.LLMAPIURL, logger)
+	client := llm.NewClient(ea.LLMProtocol, ea.LLMModel, ea.LLMAPIKey, ea.LLMAPIURL, logger)
 	ch, err := client.Chat([]llm.Message{
 		{Role: "user", Content: userContent},
 	}, llm.ChatOptions{

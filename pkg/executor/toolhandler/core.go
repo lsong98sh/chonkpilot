@@ -59,7 +59,7 @@ func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers["call_llm"] = types.DepthAware(func(args map[string]interface{}, depth int) *types.ToolResult {
 		return call_llm.HandleCallLLM(h.Logger, h.Session, h.TurnID, h.Engine,
 			h.TaskMgr,
-			h.LLMProvider, h.LLMModel, h.LLMAPIKey, h.LLMAPIURL,
+			h.LLMProtocol, h.LLMModel, h.LLMAPIKey, h.LLMAPIURL,
 			h.Thinking, h.ReasoningEffort,
 			h.WriteEvent, h.OnProgress, args, depth)
 	})
@@ -107,7 +107,7 @@ func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers["batch_llm"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return batch_llm.HandleBatchLLM(
 			h.Logger, h.WorkDir, h.DBDir, h.Session,
-			h.LLMProvider, h.LLMModel, h.LLMAPIKey, h.LLMAPIURL,
+			h.LLMProtocol, h.LLMModel, h.LLMAPIKey, h.LLMAPIURL,
 			h.Thinking, h.ReasoningEffort,
 			h.WriteEvent,
 			func(toolName string, a map[string]interface{}, depth int) *types.ToolResult {

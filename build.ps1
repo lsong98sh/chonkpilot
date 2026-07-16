@@ -19,6 +19,12 @@ function Build-Executor {
     $f = Get-Item (Join-Path $ProjectRoot "build\executor.exe")
     $mb = [Math]::Round($f.Length/1MB, 1)
     Write-Host "  executor.exe: $mb MB" -ForegroundColor Green
+
+    # Copy to internal/embed so the IDE binary embeds the real executor
+    $embedDir = Join-Path $ProjectRoot "internal\embed"
+    $null = New-Item -ItemType Directory -Path $embedDir -Force
+    Copy-Item (Join-Path $ProjectRoot "build\executor.exe") (Join-Path $embedDir "executor.exe") -Force
+    Write-Host "  -> internal/embed/executor.exe ($mb MB)" -ForegroundColor Green
 }
 
 function Build-IDE {
@@ -81,14 +87,14 @@ try {
     Set-Location $ProjectRoot
     $null = New-Item -ItemType Directory -Path (Join-Path $ProjectRoot "build") -Force
 
-    # Resolve build order: ide runs first (it includes npm build internally), then executor
+    # Resolve build order: executor first (for IDE embedding), then ide
     $ordered = @()
     if ($all) {
-        $ordered = @('ide', 'executor')
+        $ordered = @('executor', 'ide')
     } else {
+        if ('executor' -in $Target) { $ordered += 'executor' }
         if ('web' -in $Target) { $ordered += 'web' }
         if ('ide' -in $Target) { $ordered += 'ide' }
-        if ('executor' -in $Target) { $ordered += 'executor' }
     }
 
     Write-Host "=== Build order: $($ordered -join ' → ') ===" -ForegroundColor Cyan
