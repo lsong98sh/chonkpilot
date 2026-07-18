@@ -24,6 +24,7 @@ type strictSQLDB interface {
 // and summary generation/loading.
 type Manager struct {
 	workDir             string
+	db                  *sql.DB
 	keepFullTurns       int // N: turns closest to current that stay fully raw
 	keepSimplifiedTurns int // M: turns before that get simplified to thinking
 	// minCompressToken is enforced externally; compression is skipped
@@ -31,12 +32,16 @@ type Manager struct {
 }
 
 // NewManager creates a new context manager with default settings.
-func NewManager(workDir string) *Manager {
-	return &Manager{
+func NewManager(workDir string, sqlDB ...*sql.DB) *Manager {
+	m := &Manager{
 		workDir:             workDir,
 		keepFullTurns:       5,
 		keepSimplifiedTurns: 15,
 	}
+	if len(sqlDB) > 0 {
+		m.db = sqlDB[0]
+	}
+	return m
 }
 
 // BuildLLMContext processes raw DB messages into the three-layer output:
@@ -236,9 +241,10 @@ func processSimplifiedTurn(turn []*models.Message, workDir string) []llm.Message
 
 	// Track pending tool_call info for pairing
 	type pendingCall struct {
-		id   string
-		name string
-		args json.RawMessage
+		id    string
+		name  string
+		args  json.RawMessage
+		brief string // first 3 lines of reasoning from DB
 	}
 	var pending *pendingCall
 
@@ -261,9 +267,10 @@ func processSimplifiedTurn(turn []*models.Message, workDir string) []llm.Message
 						thinkingParts = append(thinkingParts, "→ [tool: "+pending.name+" was cancelled]")
 					}
 					pending = &pendingCall{
-						id:   tc.ToolCallID,
-						name: tc.Name,
-						args: json.RawMessage(tc.Arguments),
+						id:    tc.ToolCallID,
+						name:  tc.Name,
+						args:  json.RawMessage(tc.Arguments),
+						brief: m.Brief,
 					}
 				}
 			}
@@ -278,8 +285,13 @@ func processSimplifiedTurn(turn []*models.Message, workDir string) []llm.Message
 						resultContent = tp.Result
 					}
 				}
-				// Simplify using the tool's simplifier
-				summary := toolhandler.SimplifyToolCallWithWorkDir(pending.name, pending.args, resultContent, workDir)
+				// Use brief from DB when available, otherwise simplify from scratch
+				var summary string
+				if pending.brief != "" {
+					summary = pending.brief
+				} else {
+					summary = toolhandler.SimplifyToolCallWithWorkDir(pending.name, pending.args, resultContent, workDir)
+				}
 				thinkingParts = append(thinkingParts, "→ "+summary)
 				pending = nil
 			}
@@ -309,13 +321,20 @@ func (m *Manager) loadSummary(sessionID string) string {
 		return ""
 	}
 	var summary string
-	_ = db.WithDB(m.workDir, func(sqlDB *sql.DB) error {
+	doQuery := func(sqlDB *sql.DB) {
 		s, err := db.GetLatestSummary(sqlDB, sessionID)
 		if err == nil {
 			summary = s
 		}
-		return nil
-	})
+	}
+	if m.db != nil {
+		doQuery(m.db)
+	} else {
+		_ = db.WithDB(m.workDir, func(sqlDB *sql.DB) error {
+			doQuery(sqlDB)
+			return nil
+		})
+	}
 	return summary
 }
 

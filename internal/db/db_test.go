@@ -371,11 +371,11 @@ func TestSetAndGetConfig(t *testing.T) {
 	_, db, cleanup := setupTestDB(t)
 	defer cleanup()
 
-	if err := SetConfig(db, "llm.provider", "openai"); err != nil {
+	if err := SetConfig(db, "llm.protocol", "openai"); err != nil {
 		t.Fatalf("SetConfig() failed: %v", err)
 	}
 
-	val, err := GetConfig(db, "llm.provider")
+	val, err := GetConfig(db, "llm.protocol")
 	if err != nil {
 		t.Fatalf("GetConfig() failed: %v", err)
 	}

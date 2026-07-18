@@ -38,7 +38,7 @@ func HandleMakeDirectory(workDir string, args map[string]interface{}) *types.Too
 			errs = append(errs, "invalid path (must be non-empty string)")
 			continue
 		}
-		resolved, errMsg := SanitizePath(p, workDir)
+		resolved, errMsg := resolveWritePath(p, workDir)
 		if errMsg != "" {
 			errs = append(errs, fmt.Sprintf("%s: %s", p, errMsg))
 			continue
@@ -116,7 +116,7 @@ func HandleRemove(workDir string, versioner *fileversions.Versioner, turnID stri
 			errs = append(errs, "invalid path (must be non-empty string)")
 			continue
 		}
-		resolved, errMsg := SanitizePath(p, workDir)
+		resolved, errMsg := resolveWritePath(p, workDir)
 		if errMsg != "" {
 			errs = append(errs, fmt.Sprintf("%s: %s", p, errMsg))
 			continue

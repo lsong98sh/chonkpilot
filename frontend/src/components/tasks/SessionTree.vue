@@ -51,6 +51,7 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { listAllSessions } from '../../api/session'
 import { useSession } from '../../composables/useSession'
+import bridge from '../../utils/bridge'
 import EmptyState from '../common/EmptyState.vue'
 
 const emit = defineEmits(['session-selected'])
@@ -67,16 +68,20 @@ function getStatus(sessionId) {
 }
 
 async function loadSessions() {
-  if (loading.value) return // prevent concurrent reloads causing flickering
+  if (loading.value) return
   loading.value = true
   try {
+    // No parent session — show empty (never show ALL sub-sessions)
+    if (!currentParentId.value) {
+      sessions.value = []
+      selectedId.value = null
+      emit('session-selected', null)
+      return
+    }
     const res = await listAllSessions()
     const all = res.sessions || []
-    // Filter: only show sub-sessions for the current parent (or all if no parent set)
-    let filtered = all.filter(s => s.parent_id && s.parent_id !== '')
-    if (currentParentId.value) {
-      filtered = filtered.filter(s => s.parent_id === currentParentId.value)
-    }
+    // Only sub-sessions matching the current parent
+    const filtered = all.filter(s => s.parent_id === currentParentId.value)
     // Sort by created_at descending
     filtered.sort((a, b) => {
       const ta = a.created_at || a.createdAt || ''
@@ -85,11 +90,9 @@ async function loadSessions() {
     })
     sessions.value = filtered
     if (filtered.length === 0) {
-      // No sub-sessions — clear selection to avoid stale content in SessionChat
       selectedId.value = null
       emit('session-selected', null)
     } else if (!selectedId.value) {
-      // Auto-select the most recent sub-session
       handleSelect(filtered[0])
     }
   } catch (e) {
@@ -115,34 +118,53 @@ function debouncedLoadSessions() {
 }
 
 // Watch subSessionStatus for new sub-sessions and refresh the list (debounced)
+// Auto-select newest sub-session if current selection is not running.
 watch(subSessionStatus, (statusMap) => {
+  let hasNew = false
   for (const sid of Object.keys(statusMap)) {
     const exists = sessions.value.some(s => s.session_id === sid)
     if (!exists) {
-      debouncedLoadSessions()
+      hasNew = true
       break
     }
   }
+  if (hasNew) {
+    // Only auto-select newest if current selection is idle/completed/error
+    if (!selectedId.value || getStatus(selectedId.value) !== 'running') {
+      selectedId.value = null // force loadSessions to auto-select first (newest)
+    }
+    debouncedLoadSessions()
+  }
 }, { deep: true })
 
-// When the main session loads, switch to its sub-sessions
+// When the main session loads, switch to its sub-sessions.
+// Also handles session:select events ({ detail: { session } } or { detail: { session_id } }).
+// When session_id is null, clear the tree.
 function handleSessionLoaded(event) {
-  const sid = event.detail?.session_id
-  if (!sid) return
-  currentParentId.value = sid
-  selectedId.value = null // force re-select
+  let sid = event.detail?.session_id
+  if (!sid && event.detail?.session) {
+    sid = event.detail.session.session_id || event.detail.session.id
+  }
+  currentParentId.value = sid || ''
+  selectedId.value = null
+  // loadSessions handles both empty parent (clears tree) and valid parent (filters)
   loadSessions()
 }
 
 onMounted(() => {
   loadSessions()
   window.addEventListener('session:loaded', handleSessionLoaded)
+  window.addEventListener('session:select', handleSessionLoaded)
+  // Backup refresh: when batch_llm creates new sub-sessions, the IDE emits
+  // session:refresh for the sub-session. Listen for it and reload the list.
+  bridge.on('session:refresh', debouncedLoadSessions)
 })
 
 defineExpose({ loadSessions })
 
 onUnmounted(() => {
   window.removeEventListener('session:loaded', handleSessionLoaded)
+  window.removeEventListener('session:select', handleSessionLoaded)
   teardown()
 })
 </script>

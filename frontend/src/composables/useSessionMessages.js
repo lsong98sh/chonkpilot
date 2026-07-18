@@ -17,6 +17,11 @@ export function useSessionMessages() {
   const turnActive = ref(false)
   let hasAssistantText = false
 
+  // Track last-seen index per turn to prevent duplicate chunk appends
+  // When the same chunk index arrives twice (e.g. from event re-delivery),
+  // we skip the duplicate to avoid content inflation.
+  let lastTextIndex = -1
+
   /**
    * Process a stream token (reasoning / tool_call / tool_result / text).
    * Caller is responsible for filtering by turn_id or session_id before calling this.
@@ -25,6 +30,7 @@ export function useSessionMessages() {
     turnActive.value = true
 
     if (data.type === 'reasoning') {
+      // Reasoning events don't carry a reliable Index, so always process them.
       // Append to last reasoning message, or create new one
       const last = messages.value[messages.value.length - 1]
       if (last && last.type === 'reasoning' && last.role === 'assistant') {
@@ -68,7 +74,13 @@ export function useSessionMessages() {
       }
       hasAssistantText = false
     } else {
-      // Regular text — append to last text message or create new one
+      // Regular text — append to last text message or create new one.
+      // Deduplicate by index: skip if this index was already processed.
+      if (data.index !== undefined && data.index <= lastTextIndex) {
+        return
+      }
+      lastTextIndex = data.index !== undefined ? data.index : lastTextIndex + 1
+
       if (!hasAssistantText) {
         messages.value.push({
           id: Date.now().toString() + 't',
@@ -92,6 +104,7 @@ export function useSessionMessages() {
    */
   function handleDone() {
     hasAssistantText = false
+    lastTextIndex = -1
     turnActive.value = false
   }
 
@@ -171,6 +184,7 @@ export function useSessionMessages() {
     messages.value = []
     turnActive.value = false
     hasAssistantText = false
+    lastTextIndex = -1
   }
 
   return {

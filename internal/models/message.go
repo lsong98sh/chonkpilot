@@ -11,6 +11,7 @@ type Message struct {
 	Role      string `json:"role"` // system / user / assistant / tool
 	Type      string `json:"type"` // text / reasoning / tool_call / tool_result
 	Content   string `json:"content"`
+	Brief     string `json:"brief,omitempty"` // first 3 lines of reasoning for tool_call messages
 	CreatedAt string `json:"created_at"`
 }
 

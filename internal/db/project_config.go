@@ -17,20 +17,17 @@ func GetProjectAgents(db *sql.DB) ([]models.AgentConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to query project_agents: %w", err)
 	}
-	defer rows.Close()
-
-	var agents []models.AgentConfig
-	for rows.Next() {
-		var a models.AgentConfig
-		if err := rows.Scan(&a.ID, &a.Title, &a.UseCase, &a.Prompt, &a.Source, &a.CreatedAt, &a.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan project_agents: %w", err)
-		}
-		agents = append(agents, a)
+	agentsPtr, err := scanAll(rows, func(a *models.AgentConfig) []any {
+		return []any{&a.ID, &a.Title, &a.UseCase, &a.Prompt, &a.Source, &a.CreatedAt, &a.UpdatedAt}
+	})
+	if err != nil {
+		return nil, err
 	}
-	if agents == nil {
-		agents = []models.AgentConfig{}
+	agents := make([]models.AgentConfig, len(agentsPtr))
+	for i, a := range agentsPtr {
+		agents[i] = *a
 	}
-	return agents, rows.Err()
+	return agents, nil
 }
 
 // SaveProjectAgents replaces all project agent configurations.
@@ -72,9 +69,9 @@ func UpdateProjectAgent(db *sql.DB, agent models.AgentConfig, id int64) error {
 }
 
 // GetProjectAgentByID returns a single project agent by id.
-func GetProjectAgentByID(db *sql.DB, id int64) (*models.AgentConfig, error) {
+func GetProjectAgentByID(sqlDB *sql.DB, id int64) (*models.AgentConfig, error) {
 	var a models.AgentConfig
-	err := db.QueryRow(`SELECT id, title, use_case, prompt, source, created_at, updated_at FROM project_agents WHERE id=?`, id).Scan(&id, &a.Title, &a.UseCase, &a.Prompt, &a.Source, &a.CreatedAt, &a.UpdatedAt)
+	err := sqlDB.QueryRow(`SELECT id, title, use_case, prompt, source, created_at, updated_at FROM project_agents WHERE id=?`, id).Scan(&a.ID, &a.Title, &a.UseCase, &a.Prompt, &a.Source, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil

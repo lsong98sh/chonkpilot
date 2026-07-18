@@ -1,7 +1,3 @@
-param(
-    [string[]]$Target = @('all')
-)
-
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $env:GOROOT = "e:\GoDev\go"
 $goPathBin = (go env GOPATH 2>$null) + "\bin"
@@ -48,6 +44,8 @@ function Build-IDE {
     wails build -clean -tags devtools -ldflags "-H windowsgui" -o chonkpilot.exe 2>&1
     if ($LASTEXITCODE -ne 0) { throw "wails build failed" }
     Move-IDEOutput
+    # Clean up intermediate executor artifact — only the embedded copy matters
+    Remove-Item (Join-Path $ProjectRoot "build\executor.exe") -Force -ErrorAction SilentlyContinue
 }
 
 function Move-IDEOutput {
@@ -63,48 +61,13 @@ function Move-IDEOutput {
     Write-Host "  chonkpilot.exe: $mb MB" -ForegroundColor Green
 }
 
-function Build-Web {
-    Write-Host "=== Build frontend ===" -ForegroundColor Cyan
-    Set-Location (Join-Path $ProjectRoot "frontend")
-    npm install 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
-    npm run build 2>&1 | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
-    Write-Host "  Frontend build done" -ForegroundColor Green
-}
-
-# --- Resolve & Execute ---
-$all = $Target -eq 'all'
-$valid = @('ide', 'executor', 'web', 'all')
-foreach ($t in $Target) {
-    if ($t -notin $valid) {
-        Write-Host "Unknown: '$t'. Valid: ide, executor, web (all = all three)" -ForegroundColor Red
-        exit 1
-    }
-}
-
 try {
     Set-Location $ProjectRoot
     $null = New-Item -ItemType Directory -Path (Join-Path $ProjectRoot "build") -Force
 
-    # Resolve build order: executor first (for IDE embedding), then ide
-    $ordered = @()
-    if ($all) {
-        $ordered = @('executor', 'ide')
-    } else {
-        if ('executor' -in $Target) { $ordered += 'executor' }
-        if ('web' -in $Target) { $ordered += 'web' }
-        if ('ide' -in $Target) { $ordered += 'ide' }
-    }
-
-    Write-Host "=== Build order: $($ordered -join ' → ') ===" -ForegroundColor Cyan
-    foreach ($t in $ordered) {
-        switch ($t) {
-            'web'      { Build-Web }
-            'ide'      { Build-IDE }
-            'executor' { Build-Executor }
-        }
-    }
+    Write-Host "=== Build order: executor → ide ===" -ForegroundColor Cyan
+    Build-Executor
+    Build-IDE
 
     $elapsed = [Math]::Round(((Get-Date) - $startTime).TotalSeconds, 1)
     Write-Host "=== Build done ($elapsed s) ===" -ForegroundColor Green

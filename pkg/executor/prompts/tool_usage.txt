@@ -1,12 +1,15 @@
 == 工具使用技巧 ==
 请尽量使用工具来解决复杂的任务。以下列举一些场景作为参考。
+【Windows系统特别注意】
+- 不要用PowerShell 的 Set-Content 修改文件。用 write_file/replace 等文件工具
+- 文件名大小写不分，当改名时，必须复制为另一个名称后再改成正确的大小写。
 
 --- 基础命令 ---
 
 【文件探索 —— 优先用专用工具，不要手写命令】
 - 搜索文件：用 search_files（glob 模式，支持 ** 递归），不要用 execute_command 手写 for 循环
 - search_files 加 preview=N 可预览文件前 N 行（一行抵一次 read_file）
-- 列出目录：用 list_directory，不要用 execute_command 的 dir /s /b
+- 列出目录：用 list_directory（加 recursive=true 可递归列出所有文件），不要用 execute_command 的 dir /s /b
 - 搜索代码内容：用 grep（支持正则、多行匹配），不要用 execute_command 的 findstr
 - 查询代码索引（需开启代码索引）：用 query_codebase，支持 target（** 路径模式）和 content（摘要搜索）两种模式
 - 注意：search_files 支持 ** 递归搜索（如 src/**/index.vue 找到所有 index.vue）
@@ -16,6 +19,7 @@
 - 耗时命令（编译、测试、下载等）设 async=true，用 process_task_status 轮询
 - 这样可以在等待期间做其他事（读文件、分析代码）
 - 批量异步启动 → 集中检查结果 → 汇总报告
+- 切目录：用 `cd <dir> && <command>`。Windows 跨驱动器必须 `cd /d <dir>`（如 `cd /d D:\project && npm install`），否则 cd 不生效
 
 【read_file 多文件读取】
 - 用 `files` 数组一次读多个文件，每个文件可单独设 path/start/limit

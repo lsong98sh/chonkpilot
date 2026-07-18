@@ -133,6 +133,30 @@ export namespace main {
 	        this.title = source["title"];
 	    }
 	}
+	export class deleteScenarioArgs {
+	    id: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new deleteScenarioArgs(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	    }
+	}
+	export class saveScenarioArgs {
+	    scenario: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new saveScenarioArgs(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.scenario = source["scenario"];
+	    }
+	}
 	export class sendChatArgs {
 	    session_id: string;
 	    turn_id: string;

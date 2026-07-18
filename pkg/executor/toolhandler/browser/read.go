@@ -17,8 +17,13 @@ func HandleWebGetText(bm *BrowserManager, args map[string]interface{}) *types.To
 		return &types.ToolResult{Success: false, Error: "selector is required", Tool: "web_get_text"}
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_text"}
+	}
+
 	var text string
-	ctx, err := bm.EnsureTab()
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_text"}
 	}
@@ -32,7 +37,12 @@ func HandleWebGetText(bm *BrowserManager, args map[string]interface{}) *types.To
 
 // HandleWebGetHTML gets HTML content of an element or full page.
 func HandleWebGetHTML(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	ctx, err := bm.EnsureTab()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_html"}
+	}
+
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_html"}
 	}
@@ -61,8 +71,13 @@ func HandleWebGetStyle(bm *BrowserManager, args map[string]interface{}) *types.T
 		return &types.ToolResult{Success: false, Error: "selector and property are required", Tool: "web_get_style"}
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_style"}
+	}
+
 	var value string
-	ctx, err := bm.EnsureTab()
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_style"}
 	}
@@ -81,8 +96,13 @@ func HandleWebGetStyle(bm *BrowserManager, args map[string]interface{}) *types.T
 
 // HandleWebGetURL gets the current URL of the page.
 func HandleWebGetURL(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_url"}
+	}
+
 	var url string
-	ctx, err := bm.EnsureTab()
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_url"}
 	}
@@ -95,8 +115,13 @@ func HandleWebGetURL(bm *BrowserManager, args map[string]interface{}) *types.Too
 
 // HandleWebGetTitle gets the page title.
 func HandleWebGetTitle(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_title"}
+	}
+
 	var title string
-	ctx, err := bm.EnsureTab()
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_title"}
 	}
@@ -109,27 +134,37 @@ func HandleWebGetTitle(bm *BrowserManager, args map[string]interface{}) *types.T
 
 // HandleWebGetConsole gets console logs from the browser.
 func HandleWebGetConsole(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_console"}
+	}
 
-	if len(bm.consoleLogs) == 0 {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	if len(inst.consoleLogs) == 0 {
 		return &types.ToolResult{Success: true, Output: "(no console output)", Tool: "web_get_console"}
 	}
 
-	logs := strings.Join(bm.consoleLogs, "\n")
-	bm.consoleLogs = nil
+	logs := strings.Join(inst.consoleLogs, "\n")
+	inst.consoleLogs = nil
 	return &types.ToolResult{Success: true, Output: logs, Tool: "web_get_console"}
 }
 
 // HandleWebGetRequests gets recorded network requests.
 func HandleWebGetRequests(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_get_requests"}
+	}
+
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
 
 	filter, _ := args["filter"].(string)
 
 	var records []RequestRecord
-	for _, r := range bm.requestLogs {
+	for _, r := range inst.requestLogs {
 		if filter != "" && !strings.Contains(r.URL, filter) {
 			continue
 		}

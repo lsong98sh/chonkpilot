@@ -21,35 +21,33 @@ type scenario struct {
 	Category    string `json:"category"`
 }
 
-// GetScenarios returns available scenarios.
+// GetScenarios returns available scenarios from scenario.db.
 func (a *App) GetScenarios() (map[string]interface{}, error) {
-	scenarios := []scenario{
-		{ID: "web-app", Name: "Web Application", Description: "Full-stack web application", Category: "scenario"},
-		{ID: "blog", Name: "Blog System", Description: "Blog website with posts and comments", Category: "scenario"},
-	}
-	return map[string]interface{}{"scenarios": scenarios}, nil
+	return a.GetScenarioList()
 }
 
 type applyScenarioArgs struct {
 	ScenarioID string `json:"scenario_id"`
 }
 
-// ApplyScenario applies a scenario (TODO).
+// ApplyScenario is deprecated — scenarios are read from scenario.db directly.
+// Kept for Wails binding compatibility; returns an error to indicate it should not be called.
 func (a *App) ApplyScenario(args applyScenarioArgs) error {
-	_ = args.ScenarioID
-	return nil
+	return fmt.Errorf("ApplyScenario is deprecated, use SetActiveScenario instead")
 }
 
 // ─── AI Optimize Agent ──────────────────────────────────────
 
 // OptimizeAgentPrompt optimizes an agent's system prompt via LLM streaming.
 func (a *App) OptimizeAgentPrompt(data map[string]interface{}) error {
+	a.optimizeMu.Lock()
+	defer a.optimizeMu.Unlock()
 	title, _ := data["title"].(string)
 	useCase, _ := data["useCase"].(string)
 	currentPrompt, _ := data["prompt"].(string)
 
-	provider, model, apiKey, apiURL := a.resolveLLMConfig()
-	if provider == "" {
+	protocol, model, apiKey, apiURL := a.resolveLLMConfig()
+	if protocol == "" {
 		a.push("optimize:error", map[string]string{"message": "no LLM configuration found. Please configure a default LLM in Settings."})
 		return fmt.Errorf("no LLM config")
 	}
@@ -64,7 +62,7 @@ Current Prompt:
 
 Please provide an improved version of the prompt. Return ONLY the optimized prompt text, no explanations or markdown formatting. The prompt should be concise yet comprehensive, with clear instructions for the AI agent.`, title, useCase, currentPrompt)
 
-	client := llm.NewClient(provider, model, apiKey, apiURL, a.logger)
+	client := llm.NewClient(protocol, model, apiKey, apiURL, a.logger)
 	messages := []llm.Message{{Role: "user", Content: optPrompt}}
 
 	stream, err := client.Chat(messages, llm.ChatOptions{
@@ -166,14 +164,14 @@ func (a *App) GeneratePrompts(data map[string]interface{}) error {
 		}
 	}
 
-	provider, model, apiKey, apiURL := a.resolveLLMConfig()
-	if provider == "" {
+	protocol, model, apiKey, apiURL := a.resolveLLMConfig()
+	if protocol == "" {
 		a.push("generate:error", map[string]string{"message": "no LLM configuration found. Please configure a default LLM in Settings."})
 		return fmt.Errorf("no LLM config")
 	}
 
 	prompt := analyzer.MetaPrompt(analysis)
-	client := llm.NewClient(provider, model, apiKey, apiURL, a.logger)
+	client := llm.NewClient(protocol, model, apiKey, apiURL, a.logger)
 	messages := []llm.Message{{Role: "user", Content: prompt}}
 
 	stream, err := client.Chat(messages, llm.ChatOptions{
@@ -210,12 +208,12 @@ func (a *App) GeneratePrompts(data map[string]interface{}) error {
 	return nil
 }
 
-func (a *App) resolveLLMConfig() (provider, model, apiKey, apiURL string) {
+func (a *App) resolveLLMConfig() (protocol, model, apiKey, apiURL string) {
 	if a.userCfg != nil {
 		uc := a.userCfg.Get()
 		if uc.DefaultLLM < len(uc.LLMs) {
 			p := uc.LLMs[uc.DefaultLLM]
-			provider = p.Protocol
+			protocol = p.Protocol
 			model = p.Model
 			apiKey = p.APIKey
 			apiURL = p.BaseURL

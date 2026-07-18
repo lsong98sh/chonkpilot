@@ -162,7 +162,6 @@ func TestUserConfig(t *testing.T) {
 		},
 		DefaultLLM:        1,
 		Theme:             "dark",
-		LastWorkDir:       "/home/user/project",
 		ChromePath:        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 		MaxToolIterations: 800,
 		ResponseTimeout:   180,

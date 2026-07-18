@@ -1,5 +1,5 @@
 {
-  "description": "Retrieve the LLM response text from a specific turn in a sub-session. Use this to get the final reply of a call_llm or batch_llm sub-task after it has completed. Returns the assistant's full text response for the requested turn. If the turn or session doesn't exist, returns an error. Tip: sub_session_id and turn_id are returned by call_llm (sync/async) and written to batch_llm's pipeline JSON file.",
+  "description": "Retrieve the LLM response text from specific turns in a sub-session. Use this to get the final reply of a call_llm or batch_llm sub-task after it has completed. Returns the assistant's full text response for the requested turn(s). Supports up to 20 turn_ids at once. If a turn or session doesn't exist, returns an error for that entry. Tip: sub_session_id and turn_id are returned by call_llm (sync/async) and written to batch_llm's pipeline JSON file.",
   "name": "get_llm_result",
   "parameters": {
     "type": "object",
@@ -8,14 +8,16 @@
         "type": "string",
         "description": "Required. The sub-session ID returned by call_llm (or written to pipeline JSON by batch_llm)"
       },
+      "turn_ids": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Required (or turn_id). Array of turn IDs to retrieve results for. Max 20 items."
+      },
       "turn_id": {
         "type": "string",
-        "description": "Required. The turn ID returned by call_llm (or written to pipeline JSON by batch_llm)"
+        "description": "Deprecated, use turn_ids instead. Single turn ID for backward compatibility."
       }
     },
-    "required": [
-      "session_id",
-      "turn_id"
-    ]
+    "required": ["session_id"]
   }
 }

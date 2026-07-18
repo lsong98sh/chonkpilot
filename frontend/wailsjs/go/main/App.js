@@ -38,6 +38,10 @@ export function DeleteNote(arg1) {
   return window['go']['main']['App']['DeleteNote'](arg1);
 }
 
+export function DeleteScenario(arg1) {
+  return window['go']['main']['App']['DeleteScenario'](arg1);
+}
+
 export function DeleteSession(arg1) {
   return window['go']['main']['App']['DeleteSession'](arg1);
 }
@@ -52,6 +56,10 @@ export function DuplicateFile(arg1) {
 
 export function GeneratePrompts(arg1) {
   return window['go']['main']['App']['GeneratePrompts'](arg1);
+}
+
+export function GetActiveScenario() {
+  return window['go']['main']['App']['GetActiveScenario']();
 }
 
 export function GetAllConfig() {
@@ -120,6 +128,10 @@ export function GetPrompt(arg1) {
 
 export function GetRecentDirs() {
   return window['go']['main']['App']['GetRecentDirs']();
+}
+
+export function GetScenarioList() {
+  return window['go']['main']['App']['GetScenarioList']();
 }
 
 export function GetScenarios() {
@@ -254,6 +266,10 @@ export function SaveProjectTools(arg1) {
   return window['go']['main']['App']['SaveProjectTools'](arg1);
 }
 
+export function SaveScenario(arg1) {
+  return window['go']['main']['App']['SaveScenario'](arg1);
+}
+
 export function SaveUserConfig(arg1) {
   return window['go']['main']['App']['SaveUserConfig'](arg1);
 }
@@ -264,6 +280,10 @@ export function SearchProjectFiles(arg1) {
 
 export function SendChatMessage(arg1) {
   return window['go']['main']['App']['SendChatMessage'](arg1);
+}
+
+export function SetActiveScenario(arg1) {
+  return window['go']['main']['App']['SetActiveScenario'](arg1);
 }
 
 export function SetActiveSession(arg1) {
@@ -286,10 +306,18 @@ export function UnsubscribeSession(arg1) {
   return window['go']['main']['App']['UnsubscribeSession'](arg1);
 }
 
+export function UnwatchDir(arg1) {
+  return window['go']['main']['App']['UnwatchDir'](arg1);
+}
+
 export function UpdateSessionTitle(arg1, arg2) {
   return window['go']['main']['App']['UpdateSessionTitle'](arg1, arg2);
 }
 
 export function UpdateTaskStatus(arg1) {
   return window['go']['main']['App']['UpdateTaskStatus'](arg1);
+}
+
+export function WatchDir(arg1) {
+  return window['go']['main']['App']['WatchDir'](arg1);
 }

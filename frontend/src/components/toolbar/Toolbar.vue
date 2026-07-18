@@ -38,6 +38,12 @@
         <el-icon><Setting /></el-icon>
         <span class="tb-label">设置</span>
       </el-button>
+
+      <!-- Scenarios -->
+      <el-button size="small" class="tb-btn" title="场景" @click="$emit('open-scenario')">
+        <el-icon><Collection /></el-icon>
+        <span class="tb-label">场景</span>
+      </el-button>
     </div>
 
     <div class="toolbar-center">
@@ -161,7 +167,7 @@ const props = defineProps({
   taskVisible: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['open-config', 'open-analyze', 'open-session', 'toggle-chat', 'toggle-filetree', 'toggle-tasks', 'open-dir', 'search-file'])
+const emit = defineEmits(['open-config', 'open-analyze', 'open-session', 'open-scenario', 'toggle-chat', 'toggle-filetree', 'toggle-tasks', 'open-dir', 'search-file'])
 
 const searchQuery = ref('')
 const recentDirs = ref([])

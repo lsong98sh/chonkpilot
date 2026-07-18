@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot/internal/models"
 )
@@ -34,9 +35,10 @@ func GetTurn(db *sql.DB, turnID string) (*models.Turn, error) {
 
 // UpdateTurnResult updates the score of a turn.
 func UpdateTurnResult(db *sql.DB, turnID string, score int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := db.Exec(
-		`UPDATE turns SET score = ?, updated_at = CURRENT_TIMESTAMP WHERE turn_id = ?`,
-		score, turnID,
+		`UPDATE turns SET score = ?, updated_at = ? WHERE turn_id = ?`,
+		score, now, turnID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update turn result: %w", err)
@@ -53,18 +55,7 @@ func GetTurnsBySession(db *sql.DB, sessionID string) ([]*models.Turn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get turns: %w", err)
 	}
-	defer rows.Close()
-
-	var turns []*models.Turn
-	for rows.Next() {
-		t := &models.Turn{}
-		if err := rows.Scan(&t.TurnID, &t.SessionID, &t.Score, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan turn: %w", err)
-		}
-		turns = append(turns, t)
-	}
-	if turns == nil {
-		turns = []*models.Turn{}
-	}
-	return turns, rows.Err()
+	return scanAll(rows, func(t *models.Turn) []any {
+		return []any{&t.TurnID, &t.SessionID, &t.Score, &t.CreatedAt, &t.UpdatedAt}
+	})
 }

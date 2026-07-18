@@ -4,9 +4,24 @@
     <div v-if="taskProgress" class="task-progress-bar">{{ taskProgress }}</div>
     <InputBox @send="handleSend" @cancel="handleCancel" :loading="isLoading">
       <template #controls>
-        <el-select v-model="selectedLLM" placeholder="Default LLM" size="small" clearable class="llm-select">
-            <el-option v-for="llm in llmList" :key="llm.name" :label="llm.name" :value="llm.name" />
-          </el-select>
+        <el-popover trigger="click" placement="top-end" :width="160" popper-class="llm-popover" v-model:visible="llmPopoverVisible">
+          <template #reference>
+            <el-tag size="small" type="info" style="cursor:pointer">
+              {{ selectedLLMLabel }}
+            </el-tag>
+          </template>
+          <div class="popover-list">
+            <div
+              v-for="llm in llmList"
+              :key="llm.name"
+              class="popover-item"
+              :class="{ active: selectedLLM === llm.name }"
+              @click="selectLLM(llm.name)"
+            >
+              {{ llm.name }}
+            </div>
+          </div>
+        </el-popover>
           <el-tooltip content="Thinking mode" placement="top">
             <el-button
               size="small"
@@ -39,7 +54,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { sendChatMessage, cancelChat } from '../../api/chat'
 import { createSession, getLatestSessionID, getSession } from '../../api/session'
 import { getUserConfig } from '../../api/config'
@@ -89,6 +104,17 @@ const llmList = ref([])
 const selectedLLM = ref('')
 const thinkEnabled = ref(true)
 const effortLevel = ref('high')
+const llmPopoverVisible = ref(false)
+
+const selectedLLMLabel = computed(() => {
+  if (!selectedLLM.value) return 'Default LLM'
+  return selectedLLM.value
+})
+
+function selectLLM(name) {
+  selectedLLM.value = name
+  llmPopoverVisible.value = false
+}
 
 function toggleEffort() {
   effortLevel.value = effortLevel.value === 'high' ? 'max' : 'high'
@@ -126,75 +152,84 @@ async function handleSend(text) {
   showReasoning.value = true
   collapseReasoningKey.value++
 
-  const unsubToken = bridge.on('chat:token', (data) => {
+  // Unified llm:event — handle all LLM stream events in one handler.
+  // Filter by session_id to only process events for the current main session.
+  const unsubLLMEvent = bridge.on('llm:event', (data) => {
+    // Skip events for sub-sessions (different session_id)
+    if (currentSessionId.value && data.session_id && data.session_id !== currentSessionId.value) return
+    // Also filter by turn_id for backward compatibility
     if (data.turn_id && currentTurnId.value && data.turn_id !== currentTurnId.value) return
-    // When first text token arrives after reasoning, collapse thinking
-    if (showReasoning.value && data.type && data.type === 'text') {
-      showReasoning.value = false
-      collapseReasoningKey.value++
+
+    const et = data._event_type || ''
+
+    // message_chunk / tool_call / tool_result — stream content
+    if (et === 'message_chunk' || et === 'tool_call' || et === 'tool_result') {
+      // When first text token arrives after reasoning, collapse thinking
+      if (showReasoning.value && data.type && data.type === 'text') {
+        showReasoning.value = false
+        collapseReasoningKey.value++
+      }
+      handleToken(data)
+      return
     }
-    handleToken(data)
-  })
-  activeUnsubs.push(unsubToken)
 
-  const unsubDone = bridge.on('chat:done', (data) => {
-    if (data.turn_id && currentTurnId.value && data.turn_id !== currentTurnId.value) return
-    handleDone()
-    cleanupAndFinish()
-  })
-  activeUnsubs.push(unsubDone)
+    // complete — turn finished
+    if (et === 'complete') {
+      handleDone()
+      cleanupAndFinish()
+      return
+    }
 
-  const unsubError = bridge.on('chat:error', (data) => {
-    if (data.turn_id && currentTurnId.value && data.turn_id !== currentTurnId.value) return
-    handleError(data)
-    cleanupAndFinish()
-  })
-  activeUnsubs.push(unsubError)
+    // error — turn failed
+    if (et === 'error') {
+      handleError(data)
+      cleanupAndFinish()
+      return
+    }
 
-  const unsubProgress = bridge.on('chat:progress', (data) => {
-    if (data.turn_id && currentTurnId.value && data.turn_id !== currentTurnId.value) return
-    if (data?.task_id) {
-      taskProgress.value = `Running task ${data.completed || 0}/${data.total || '?'}`
-      if (data.failed > 0) taskProgress.value += ` (${data.failed} failed)`
+    // tool_progress — task progress bar
+    if (et === 'tool_progress') {
+      if (data?.task_id) {
+        taskProgress.value = `Running task ${data.completed || 0}/${data.total || '?'}`
+        if (data.failed > 0) taskProgress.value += ` (${data.failed} failed)`
+      }
+      return
+    }
+
+    // llm_error — LLM error with retry info
+    if (et === 'llm_error') {
+      const code = data.code || 'ERR_LLM_UNKNOWN'
+      const msg = data.message || 'Unknown LLM error'
+      const retryable = data.retryable === true
+      const attempt = data.retry_attempt || 1
+      const maxRetries = data.retry_count || 1
+      let displayMsg = `[${code}] ${msg}`
+      if (retryable && attempt <= maxRetries) {
+        taskProgress.value = `LLM error, retrying ${attempt}/${maxRetries}...`
+      } else {
+        addMessage('assistant', `LLM Error: ${displayMsg}`, 'text')
+        taskProgress.value = ''
+        cleanupAndFinish()
+      }
+      return
+    }
+
+    // llm_retry — retry progress
+    if (et === 'llm_retry') {
+      const attempt = data.retry_attempt || 1
+      const maxRetries = data.retry_count || 1
+      const waitSec = data.wait_seconds || 5
+      taskProgress.value = `LLM retry ${attempt}/${maxRetries} (waiting ${waitSec}s)...`
+      return
     }
   })
-  activeUnsubs.push(unsubProgress)
+  activeUnsubs.push(unsubLLMEvent)
 
+  // executor_done — executor process exited
   const unsubExecutorDone = bridge.on('chat:executor_done', () => {
     cleanupAndFinish()
   })
   activeUnsubs.push(unsubExecutorDone)
-
-  // Handle LLM errors with error code and retry info
-  const unsubLLMError = bridge.on('chat:llm_error', (data) => {
-    if (data.turn_id && currentTurnId.value && data.turn_id !== currentTurnId.value) return
-    const code = data.code || 'ERR_LLM_UNKNOWN'
-    const msg = data.message || 'Unknown LLM error'
-    const retryable = data.retryable === true
-    const attempt = data.retry_attempt || 1
-    const maxRetries = data.retry_count || 1
-    let displayMsg = `[${code}] ${msg}`
-    if (retryable && attempt <= maxRetries) {
-      // Wait for retry — don't show final error yet
-      taskProgress.value = `LLM error, retrying ${attempt}/${maxRetries}...`
-    } else {
-      // Final error — show in chat
-      addMessage('assistant', `LLM Error: ${displayMsg}`, 'text')
-      taskProgress.value = ''
-      cleanupAndFinish()
-    }
-  })
-  activeUnsubs.push(unsubLLMError)
-
-  // Handle LLM retry progress
-  const unsubLLMRetry = bridge.on('chat:llm_retry', (data) => {
-    if (data.turn_id && currentTurnId.value && data.turn_id !== currentTurnId.value) return
-    const attempt = data.retry_attempt || 1
-    const maxRetries = data.retry_count || 1
-    const waitSec = data.wait_seconds || 5
-    taskProgress.value = `LLM retry ${attempt}/${maxRetries} (waiting ${waitSec}s)...`
-  })
-  activeUnsubs.push(unsubLLMRetry)
 
   function cleanupAndFinish() {
     activeUnsubs.forEach(fn => { try { fn() } catch(_) {} })
@@ -350,7 +385,24 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.llm-select {
-  width: 120px;
+:deep(.popover-list) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+:deep(.popover-item) {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-primary, #333);
+  transition: background 0.12s;
+}
+:deep(.popover-item:hover) {
+  background: var(--bg-hover, #f0f0f0);
+}
+:deep(.popover-item.active) {
+  background: var(--accent, #409eff);
+  color: #fff;
 }
 </style>

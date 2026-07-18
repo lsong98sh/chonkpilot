@@ -2,13 +2,52 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"runtime"
 	"time"
+	"unicode/utf8"
 
 	"go.uber.org/zap"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
+
+// decodeWinConsole converts a byte slice from the Windows console code page to UTF-8.
+// On English/other-language Windows, it falls through if the output is already valid UTF-8
+// or if decoding as GBK/CP936 fails.
+func decodeWinConsole(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// Fast path: valid UTF-8, no conversion needed
+	if utf8.Valid(raw) {
+		return string(raw)
+	}
+
+	// Try GBK (CodePage 936, common on Chinese Windows)
+	// Use simplifiedchinese.HZGB2312 / simplifiedchinese.GBK
+	result, _, err := transform.Bytes(simplifiedchinese.GBK.NewDecoder(), raw)
+	if err == nil {
+		return string(result)
+	}
+
+	// Fallback: try CodePage 850 (Western European) which is common on non-Chinese systems
+	result, _, err = transform.Bytes(charmap.CodePage850.NewDecoder(), raw)
+	if err == nil {
+		return string(result)
+	}
+
+	// Last resort: return the original bytes as-is (might still have garbled chars)
+	return string(raw)
+}
+
+// decodeWinStderr decodes stderr output; same as decodeWinConsole but may emit a warning.
+func decodeWinStderr(raw []byte) string {
+	return decodeWinConsole(raw)
+}
 
 // ToolResult holds the result of a tool execution.
 type ToolResult struct {
@@ -20,8 +59,10 @@ type ToolResult struct {
 
 // Engine executes tool calls from the LLM.
 type Engine struct {
-	logger  *zap.Logger
-	WorkDir string
+	logger         *zap.Logger
+	WorkDir        string
+	CommandTimeout time.Duration // max execution time per command; 0 = no limit
+	cancelCtx      context.Context // cancellation context from Handler.SetCancelContext
 }
 
 // NewEngine creates a new tool execution engine.
@@ -33,11 +74,33 @@ func NewEngine(workDir string, logger *zap.Logger) *Engine {
 	}
 }
 
+// SetCancelCtx sets the cancellation context so ExecuteShell can be aborted
+// when CancelChat is triggered (e.g., for custom tools / MCP tools).
+func (e *Engine) SetCancelCtx(ctx context.Context) {
+	e.cancelCtx = ctx
+}
+
 // Execute runs a tool command and returns the result.
 func (e *Engine) Execute(command string, args []string) *ToolResult {
 	start := time.Now()
 
-	cmd := exec.Command(command, args...)
+	ctx := context.Background()
+	if e.cancelCtx != nil {
+		// Merge cancel context so CommandTimeout still applies independently
+		var cancel context.CancelFunc
+		if e.CommandTimeout > 0 {
+			ctx, cancel = context.WithTimeout(e.cancelCtx, e.CommandTimeout)
+		} else {
+			ctx, cancel = context.WithCancel(e.cancelCtx)
+		}
+		defer cancel()
+	} else if e.CommandTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.CommandTimeout)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Dir = e.WorkDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -50,10 +113,12 @@ func (e *Engine) Execute(command string, args []string) *ToolResult {
 			zap.Error(err),
 			zap.Int64("duration_ms", duration),
 		)
+		stdoutStr := decodeWinConsole(stdout.Bytes())
+		stderrStr := decodeWinStderr(stderr.Bytes())
 		return &ToolResult{
 			Success:    false,
-			Output:     stdout.String(),
-			Error:      fmt.Sprintf("%s: %s", err.Error(), stderr.String()),
+			Output:     stdoutStr,
+			Error:      fmt.Sprintf("%s: %s", err.Error(), stderrStr),
 			DurationMs: duration,
 		}
 	}
@@ -66,7 +131,7 @@ func (e *Engine) Execute(command string, args []string) *ToolResult {
 
 	return &ToolResult{
 		Success:    true,
-		Output:     stdout.String(),
+		Output:     decodeWinConsole(stdout.Bytes()),
 		DurationMs: duration,
 	}
 }

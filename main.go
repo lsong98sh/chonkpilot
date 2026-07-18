@@ -10,10 +10,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
-	icfg "github.com/chonkpilot/chonkpilot/internal/config"
 	"github.com/chonkpilot/chonkpilot/pkg/ide/config"
 	"github.com/chonkpilot/chonkpilot/pkg/ide/folder"
 	"github.com/chonkpilot/chonkpilot/pkg/ide/recent"
@@ -94,15 +94,33 @@ func main() {
 		logger.Fatal("WebView2 Runtime check failed", zap.Error(err))
 	}
 
-	// Ensure global config has Chrome path and execution parameter defaults
-	if _, err := icfg.EnsureUserConfig(); err != nil {
-		logger.Warn("user config init warning", zap.Error(err))
-	}
-
-	// User config
+	// User config (NewUserConfigManager internally calls EnsureUserConfig for Chrome/defaults)
 	userCfg, err := config.NewUserConfigManager(logger)
 	if err != nil {
 		logger.Warn("user config init warning", zap.Error(err))
+	}
+
+	// Reconfigure logger with user-configured log level
+	logLevel := zapcore.DebugLevel
+	if userCfg != nil {
+		gc := userCfg.Get()
+		if gc.LogLevel != "" {
+			switch strings.ToLower(gc.LogLevel) {
+			case "debug":
+				logLevel = zapcore.DebugLevel
+			case "info":
+				logLevel = zapcore.InfoLevel
+			case "warn":
+				logLevel = zapcore.WarnLevel
+			case "error":
+				logLevel = zapcore.ErrorLevel
+			}
+		}
+	}
+	devCfg := zap.NewDevelopmentConfig()
+	devCfg.Level = zap.NewAtomicLevelAt(logLevel)
+	if l, err := devCfg.Build(); err == nil {
+		logger = l
 	}
 
 	// Recent manager
@@ -150,7 +168,7 @@ func main() {
 	fileCore := zapcore.NewCore(
 		zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()),
 		zapcore.AddSync(&lazyLogWriter{path: lazyLogPath}),
-		zapcore.DebugLevel,
+		logLevel,
 	)
 	// Combine stderr + file cores
 	existingCore := logger.Core()

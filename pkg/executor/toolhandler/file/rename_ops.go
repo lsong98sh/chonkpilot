@@ -46,12 +46,12 @@ func HandleRename(workDir string, versioner *fileversions.Versioner, turnID stri
 			continue
 		}
 
-		fromResolved, errMsg := SanitizePath(from, workDir)
+		fromResolved, errMsg := resolveWritePath(from, workDir)
 		if errMsg != "" {
 			errs = append(errs, fmt.Sprintf("%s: %s", from, errMsg))
 			continue
 		}
-		toResolved, errMsg := SanitizePath(to, workDir)
+		toResolved, errMsg := resolveWritePath(to, workDir)
 		if errMsg != "" {
 			errs = append(errs, fmt.Sprintf("%s: %s", to, errMsg))
 			continue

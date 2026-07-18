@@ -131,7 +131,10 @@ func GetVersions(db *sql.DB, filePath, workDir string) ([]VersionRecord, error) 
 	if err != nil {
 		return nil, err
 	}
-	results := scanVersions(rows)
+	results, scanErr := scanVersions(rows)
+	if scanErr != nil {
+		return nil, scanErr
+	}
 	if len(results) > 0 {
 		// Update file_path to current path if changed
 		_, _ = db.Exec(`UPDATE file_versions SET file_path = ? WHERE file_uid = ? AND file_path != ?`, filePath, uid, filePath)
@@ -143,7 +146,10 @@ func GetVersions(db *sql.DB, filePath, workDir string) ([]VersionRecord, error) 
 	if err != nil {
 		return nil, err
 	}
-	results = scanVersions(rows)
+	results, scanErr = scanVersions(rows)
+	if scanErr != nil {
+		return nil, scanErr
+	}
 	if len(results) > 0 {
 		// Update UID for future lookups
 		_, _ = db.Exec(`UPDATE file_versions SET file_uid = ? WHERE file_path = ? AND file_uid != ?`, uid, filePath, uid)
@@ -151,7 +157,7 @@ func GetVersions(db *sql.DB, filePath, workDir string) ([]VersionRecord, error) 
 	return results, nil
 }
 
-func scanVersions(rows *sql.Rows) []VersionRecord {
+func scanVersions(rows *sql.Rows) ([]VersionRecord, error) {
 	defer rows.Close()
 	var results []VersionRecord
 	for rows.Next() {
@@ -161,7 +167,7 @@ func scanVersions(rows *sql.Rows) []VersionRecord {
 		}
 		results = append(results, vr)
 	}
-	return results
+	return results, rows.Err()
 }
 
 // GetVersionContent retrieves full version data by ID.
@@ -202,7 +208,7 @@ func GetTurnVersions(db *sql.DB, turnID string) ([]VersionRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	return scanVersions(rows), nil
+	return scanVersions(rows)
 }
 
 // DeleteByTurnID removes all version records for a given turn.
@@ -217,7 +223,7 @@ func GetTurnVersionsByPathPrefix(db *sql.DB, turnID, pathPrefix string) ([]Versi
 	if err != nil {
 		return nil, err
 	}
-	return scanVersions(rows), nil
+	return scanVersions(rows)
 }
 
 // DeleteByFile removes version records for a specific file in a turn.

@@ -17,6 +17,22 @@ import (
 // globalTaskID is a monotonic counter for generating unique task IDs.
 var globalTaskID int64
 
+// maxOutputBytes limits the total accumulated command output to prevent unbounded memory growth.
+const maxOutputBytes = 1 * 1024 * 1024 // 1 MB
+
+// writeOutput writes a line to the buffer, truncating if the limit is exceeded.
+// Returns true if the line was written (or line was empty), false if limit exceeded.
+func writeOutput(buf *bytes.Buffer, line string) bool {
+	if buf.Len() >= maxOutputBytes {
+		return false
+	}
+	n, _ := buf.WriteString(line + "\n")
+	if n > 0 && buf.Len() >= maxOutputBytes {
+		buf.WriteString("...(output truncated, limit exceeded)")
+	}
+	return true
+}
+
 // TaskInfo holds the state of an async task.
 type TaskInfo struct {
 	ID      string   `json:"task_id"`
@@ -58,6 +74,12 @@ type RunTaskState struct {
 	cancel    chan struct{}  // closed when StopRunTask is called
 }
 
+// maxTasks limits the number of completed tasks kept in memory to prevent unbounded growth.
+const maxTasks = 200
+
+// maxRunTasks limits the number of completed run_tasks states kept in memory.
+const maxRunTasks = 50
+
 // TaskManager manages async tasks.
 type TaskManager struct {
 	mu    sync.Mutex
@@ -65,6 +87,10 @@ type TaskManager struct {
 
 	runTasksMu sync.Mutex
 	runTasks   map[string]*RunTaskState
+
+	// taskOrder tracks insertion order for FIFO eviction of completed tasks
+	taskOrder    []string
+	runTaskOrder []string
 }
 
 // NewTaskManager creates a new TaskManager.
@@ -73,6 +99,54 @@ func NewTaskManager() *TaskManager {
 		tasks:    make(map[string]*TaskInfo),
 		runTasks: make(map[string]*RunTaskState),
 	}
+}
+
+// gcTasks evicts oldest completed tasks when the map exceeds maxTasks.
+func (tm *TaskManager) gcTasks() {
+	if len(tm.tasks) <= maxTasks {
+		return
+	}
+	evict := len(tm.tasks) - maxTasks
+	for i := 0; i < evict && i < len(tm.taskOrder); i++ {
+		id := tm.taskOrder[i]
+		if info, ok := tm.tasks[id]; ok {
+			info.mu.RLock()
+			status := info.Status
+			info.mu.RUnlock()
+			if status != "running" {
+				delete(tm.tasks, id)
+			}
+		}
+	}
+	// Compact taskOrder: remove evicted entries
+	keep := tm.taskOrder[:0]
+	for _, id := range tm.taskOrder {
+		if _, ok := tm.tasks[id]; ok {
+			keep = append(keep, id)
+		}
+	}
+	tm.taskOrder = keep
+}
+
+// gcRunTasks evicts oldest completed run_tasks when the map exceeds maxRunTasks.
+func (tm *TaskManager) gcRunTasks() {
+	if len(tm.runTasks) <= maxRunTasks {
+		return
+	}
+	evict := len(tm.runTasks) - maxRunTasks
+	for i := 0; i < evict && i < len(tm.runTaskOrder); i++ {
+		id := tm.runTaskOrder[i]
+		if rs, ok := tm.runTasks[id]; ok && rs.Status != "running" {
+			delete(tm.runTasks, id)
+		}
+	}
+	keep := tm.runTaskOrder[:0]
+	for _, id := range tm.runTaskOrder {
+		if _, ok := tm.runTasks[id]; ok {
+			keep = append(keep, id)
+		}
+	}
+	tm.runTaskOrder = keep
 }
 
 // StartCommand starts a shell command asynchronously and returns a task ID.
@@ -89,6 +163,8 @@ func (tm *TaskManager) StartCommand(workDir, cmdStr string) string {
 
 	tm.mu.Lock()
 	tm.tasks[id] = info
+	tm.taskOrder = append(tm.taskOrder, id)
+	tm.gcTasks()
 	tm.mu.Unlock()
 
 	go tm.runCommand(info, workDir, cmdStr)
@@ -109,6 +185,8 @@ func (tm *TaskManager) StartOperation(name string, fn func(cancel <-chan struct{
 
 	tm.mu.Lock()
 	tm.tasks[id] = info
+	tm.taskOrder = append(tm.taskOrder, id)
+	tm.gcTasks()
 	tm.mu.Unlock()
 
 	go func() {
@@ -142,6 +220,8 @@ func (tm *TaskManager) SyncOperation(name string, fn func(cancel <-chan struct{}
 
 	tm.mu.Lock()
 	tm.tasks[id] = info
+	tm.taskOrder = append(tm.taskOrder, id)
+	tm.gcTasks()
 	tm.mu.Unlock()
 
 	output, err := fn(info.cancel)
@@ -214,7 +294,7 @@ func (tm *TaskManager) runCommand(info *TaskInfo, workDir, cmdStr string) {
 			}
 			line := scanner.Text()
 			info.mu.Lock()
-			info.buf.WriteString(line + "\n")
+			writeOutput(&info.buf, line)
 			info.mu.Unlock()
 		}
 	}()
@@ -228,7 +308,7 @@ func (tm *TaskManager) runCommand(info *TaskInfo, workDir, cmdStr string) {
 			}
 			line := scanner.Text()
 			info.mu.Lock()
-			info.buf.WriteString(line + "\n")
+			writeOutput(&info.buf, line)
 			info.mu.Unlock()
 		}
 	}()
@@ -325,6 +405,8 @@ func (tm *TaskManager) StoreRunTask(id string, items []models.ToolCallItem, asyn
 		started: time.Now(),
 		cancel:  make(chan struct{}),
 	}
+	tm.runTaskOrder = append(tm.runTaskOrder, id)
+	tm.gcRunTasks()
 	tm.runTasksMu.Unlock()
 }
 

@@ -43,20 +43,18 @@ function scrollBottom() { messageListRef.value?.scrollBottom() }
 defineExpose({ scrollTop, scrollBottom })
 const unsubs = []
 
-// ── Event handlers (with session filtering) ──
-function onToken(data) {
-  if (!props.sessionId || data?.sub_session_id !== props.sessionId) return
-  handleToken(data)
-}
-
-function onDone(data) {
-  if (!props.sessionId || data?.sub_session_id !== props.sessionId) return
-  handleDone()
-}
-
-function onError(data) {
-  if (!props.sessionId || data?.sub_session_id !== props.sessionId) return
-  handleError(data)
+// ── Unified llm:event handler (filter by session_id) ──
+function onLLMEvent(data) {
+  if (!props.sessionId || data?.session_id !== props.sessionId) return
+  const et = data._event_type || ''
+  if (et === 'message_chunk' || et === 'tool_call' || et === 'tool_result') {
+    handleToken(data)
+  } else if (et === 'complete') {
+    handleDone()
+  } else if (et === 'error') {
+    handleError(data)
+  }
+  // llm_error/llm_retry etc. are not rendered in SessionChat
 }
 
 function onSessionRefresh(data) {
@@ -86,9 +84,7 @@ watch(() => props.sessionId, (newId, oldId) => {
 })
 
 onMounted(() => {
-  unsubs.push(bridge.on('sub:token', onToken))
-  unsubs.push(bridge.on('sub:done', onDone))
-  unsubs.push(bridge.on('sub:error', onError))
+  unsubs.push(bridge.on('llm:event', onLLMEvent))
   unsubs.push(bridge.on('session:refresh', onSessionRefresh))
   if (props.sessionId) {
     doSubscribe(props.sessionId)

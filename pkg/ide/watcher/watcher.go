@@ -3,6 +3,8 @@ package watcher
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -14,13 +16,35 @@ type EventPusher interface {
 	Push(event string, data interface{})
 }
 
-// FileWatcher monitors file changes in the work directory.
+// FileNode describes a single file/directory entry pushed to the frontend.
+type FileNode struct {
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	IsDir bool   `json:"is_dir"`
+}
+
+// FileWatcher monitors file changes only in directories that have been
+// explicitly registered via WatchDir (lazy, expand-driven watching).
+//
+// Events are deduplicated in a queue and processed on a 60ms tick.
+// For each changed directory, its current contents are read and pushed
+// as a "file:dir-contents" event so the frontend can do incremental updates.
 type FileWatcher struct {
 	workDir string
 	watcher *fsnotify.Watcher
 	logger  *zap.Logger
 	pusher  EventPusher
-	done    chan struct{}
+
+	// Track which directories are currently being watched
+	watched map[string]bool
+	mu      sync.RWMutex
+
+	// Event queue: dedup by file path
+	queue   map[string]fsnotify.Event
+	queueMu sync.Mutex
+	timer   *time.Timer
+
+	done chan struct{}
 }
 
 // NewFileWatcher creates a new FileWatcher.
@@ -28,6 +52,8 @@ func NewFileWatcher(workDir string, logger *zap.Logger) *FileWatcher {
 	return &FileWatcher{
 		workDir: workDir,
 		logger:  logger,
+		watched: make(map[string]bool),
+		queue:   make(map[string]fsnotify.Event),
 		done:    make(chan struct{}),
 	}
 }
@@ -37,7 +63,7 @@ func (fw *FileWatcher) SetPusher(pusher EventPusher) {
 	fw.pusher = pusher
 }
 
-// Start begins watching the work directory for file changes.
+// Start begins the file watcher. Only the root directory is initially watched.
 func (fw *FileWatcher) Start() error {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -45,102 +71,212 @@ func (fw *FileWatcher) Start() error {
 	}
 	fw.watcher = w
 
-	// Add work directory and subdirectories (excluding .ide, .git, node_modules)
-	added := 0
-	walkErr := filepath.Walk(fw.workDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			name := info.Name()
-			if name == ".ide" || name == ".git" || name == "node_modules" {
-				return filepath.SkipDir
-			}
-			if addErr := w.Add(path); addErr != nil {
-				fw.logger.Warn("watcher add dir failed", zap.String("dir", path), zap.Error(addErr))
-				return nil // continue walking, don't abort
-			}
-			added++
-		}
-		return nil
-	})
-	if walkErr != nil {
-		fw.logger.Warn("file walk error", zap.Error(walkErr))
+	// Watch root directory so we can detect new top-level files/dirs
+	if err := w.Add(fw.workDir); err != nil {
+		fw.logger.Warn("watch root failed", zap.String("dir", fw.workDir), zap.Error(err))
 	}
-	fw.logger.Info("FileWatcher started", zap.Int("directories", added))
 
+	// Root is always watched
+	fw.mu.Lock()
+	fw.watched[fw.workDir] = true
+	fw.mu.Unlock()
+
+	fw.logger.Info("FileWatcher started, root dir watched")
 	go fw.loop()
 	return nil
 }
 
+// WatchDir adds a directory to the watcher (called when tree node expands).
+func (fw *FileWatcher) WatchDir(path string) {
+	fw.mu.Lock()
+	if fw.watched[path] {
+		fw.mu.Unlock()
+		return
+	}
+	fw.watched[path] = true
+	fw.mu.Unlock()
+
+	if fw.watcher != nil {
+		if err := fw.watcher.Add(path); err != nil {
+			fw.logger.Warn("watch add failed", zap.String("dir", path), zap.Error(err))
+		} else {
+			fw.logger.Debug("watch added", zap.String("dir", path))
+		}
+	}
+	// Push initial contents so the frontend has a baseline
+	fw.pushDirContents(path)
+}
+
+// UnwatchDir removes a directory from the watcher (called when tree node collapses).
+func (fw *FileWatcher) UnwatchDir(path string) {
+	fw.mu.Lock()
+	if !fw.watched[path] {
+		fw.mu.Unlock()
+		return
+	}
+	delete(fw.watched, path)
+	fw.mu.Unlock()
+
+	if fw.watcher != nil {
+		if err := fw.watcher.Remove(path); err != nil {
+			// Ignore "non-existent" errors for already-removed dirs
+			if !strings.Contains(err.Error(), "non-existent") {
+				fw.logger.Warn("watch remove failed", zap.String("dir", path), zap.Error(err))
+			}
+		} else {
+			fw.logger.Debug("watch removed", zap.String("dir", path))
+		}
+	}
+}
+
+// pushDirContents reads the directory and pushes a file:dir-contents event.
+func (fw *FileWatcher) pushDirContents(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var children []FileNode
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") && e.Name() != ".ide" {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, "-wal") || strings.HasSuffix(name, "-shm") || strings.HasSuffix(name, "~") || strings.HasPrefix(name, "~$") {
+			continue
+		}
+		children = append(children, FileNode{
+			Name:  name,
+			Path:  filepath.Join(dir, name),
+			IsDir: e.IsDir(),
+		})
+	}
+	if fw.pusher != nil {
+		fw.pusher.Push("file:dir-contents", map[string]interface{}{
+			"dir":      dir,
+			"children": children,
+		})
+	}
+}
+
+// enqueue adds a fsnotify event to the dedup queue.
+func (fw *FileWatcher) enqueue(event fsnotify.Event) {
+	fw.queueMu.Lock()
+	fw.queue[event.Name] = event
+	fw.queueMu.Unlock()
+	fw.armTimer()
+}
+
+// snapshotQueue atomically copies and clears the event queue.
+func (fw *FileWatcher) snapshotQueue() map[string]fsnotify.Event {
+	fw.queueMu.Lock()
+	if len(fw.queue) == 0 {
+		fw.queueMu.Unlock()
+		return nil
+	}
+	batch := fw.queue
+	fw.queue = make(map[string]fsnotify.Event)
+	fw.queueMu.Unlock()
+	return batch
+}
+
+// armTimer starts the 60ms processing timer.
+func (fw *FileWatcher) armTimer() {
+	fw.queueMu.Lock()
+	if fw.timer != nil {
+		fw.timer.Stop()
+	}
+	fw.timer = time.AfterFunc(60*time.Millisecond, fw.processBatch)
+	fw.queueMu.Unlock()
+}
+
+// processBatch drains the event queue and sends aggregated updates.
+func (fw *FileWatcher) processBatch() {
+	batch := fw.snapshotQueue()
+	if len(batch) == 0 {
+		return
+	}
+
+	// Collect unique parent directories from events
+	dirsToRefresh := make(map[string]bool)
+	for path, evt := range batch {
+		parentDir := filepath.Dir(path)
+
+		// Only refresh directories that are currently being watched
+		fw.mu.RLock()
+		watched := fw.watched[parentDir]
+		fw.mu.RUnlock()
+		if !watched {
+			continue
+		}
+
+		// For file modifications, also push a file:changed event (for open file refresh)
+		if evt.Op&fsnotify.Write != 0 {
+			if fw.pusher != nil {
+				op := "modified"
+				fw.pusher.Push("file:changed", map[string]interface{}{
+					"path": path,
+					"op":   op,
+					"dir":  parentDir,
+				})
+			}
+		}
+
+		// Check if this is a new subdirectory (added to tracked dir)
+		if evt.Op&fsnotify.Create != 0 {
+			if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+				parentDir = path
+			}
+		}
+		dirsToRefresh[parentDir] = true
+	}
+
+	// Push new contents for each changed directory
+	for dir := range dirsToRefresh {
+		fw.pushDirContents(dir)
+	}
+
+	// If more events arrived during processing, schedule another round
+	fw.queueMu.Lock()
+	if len(fw.queue) > 0 && fw.timer == nil {
+		fw.timer = time.AfterFunc(60*time.Millisecond, fw.processBatch)
+	}
+	fw.queueMu.Unlock()
+}
+
 func (fw *FileWatcher) loop() {
-	// Debounce per directory: map[parentDir]lastEventTime
-	debounce := make(map[string]time.Time)
-	debounceInterval := 300 * time.Millisecond
-
-	// Periodic cleanup: remove debounce entries older than 5 seconds
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case event, ok := <-fw.watcher.Events:
 			if !ok {
 				return
 			}
-
-			// Debounce by parent directory: skip duplicate bursts within 300ms
-			parentDir := filepath.Dir(event.Name)
-			now := time.Now()
-			if last, ok := debounce[parentDir]; ok && now.Sub(last) < debounceInterval {
-				continue
-			}
-			debounce[parentDir] = now
-
-			// Push to frontend
-			if fw.pusher != nil {
-				op := "modified"
-				if event.Op&fsnotify.Create != 0 {
-					op = "created"
-				} else if event.Op&fsnotify.Remove != 0 {
-					op = "deleted"
-				} else if event.Op&fsnotify.Rename != 0 {
-					op = "renamed"
-				}
-				fw.pusher.Push("file:changed", map[string]interface{}{
-					"path": event.Name,
-					"op":   op,
-					"dir":  parentDir,
-				})
-			}
+			fw.enqueue(event)
 
 		case err, ok := <-fw.watcher.Errors:
 			if !ok {
 				return
 			}
 			fw.logger.Error("Watcher error", zap.Error(err))
-			// Notify frontend of watcher error
 			if fw.pusher != nil {
 				fw.pusher.Push("file:watcher-error", map[string]interface{}{
 					"error": err.Error(),
 				})
 			}
-		case <-ticker.C:
-			// Clean up stale debounce entries (older than 5 seconds)
-			cutoff := time.Now().Add(-5 * time.Second)
-			for dir, t := range debounce {
-				if t.Before(cutoff) {
-					delete(debounce, dir)
-				}
-			}
+
 		case <-fw.done:
 			return
 		}
 	}
 }
 
-// Stop stops the file watcher.
+// Stop stops the file watcher and removes all watched directories.
 func (fw *FileWatcher) Stop() {
+	fw.queueMu.Lock()
+	if fw.timer != nil {
+		fw.timer.Stop()
+		fw.timer = nil
+	}
+	fw.queueMu.Unlock()
 	close(fw.done)
 	if fw.watcher != nil {
 		fw.watcher.Close()

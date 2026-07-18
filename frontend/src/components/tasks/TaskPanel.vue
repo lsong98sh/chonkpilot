@@ -66,7 +66,7 @@ import { useTask } from '../../composables/useTask'
 
 const emit = defineEmits(['session-selected'])
 
-// Singleton task progress tracking (auto-subscribes to chat:progress)
+// Singleton task progress tracking (auto-subscribes to llm:event/tool_progress)
 const { teardown: taskTeardown } = useTask()
 
 const treePanel = ref(null)
@@ -125,16 +125,19 @@ function onStartResize(e) {
   window.addEventListener('mousemove', onMove, { passive: false, capture: true })
 }
 
+const sessionSelectHandler = (e) => {
+  const session = e.detail?.session
+  if (!session || !session.session_id) {
+    selectedSession.value = null
+  }
+}
+
 onMounted(() => {
-  window.addEventListener('session:select', (e) => {
-    const session = e.detail?.session
-    if (!session || !session.session_id) {
-      selectedSession.value = null
-    }
-  })
+  window.addEventListener('session:select', sessionSelectHandler)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('session:select', sessionSelectHandler)
   taskTeardown()
 })
 </script>

@@ -30,16 +30,30 @@ func FormatErr(err error) string {
 	return err.Error()
 }
 
-// BrowserManager manages a single headless/full browser instance.
+// BrowserInstance holds the state for a single browser instance.
+type BrowserInstance struct {
+	mu          sync.Mutex
+	allocCtx    context.Context
+	allocCancel context.CancelFunc
+	tabCtx      context.Context
+	tabCancel   context.CancelFunc
+	consoleLogs []string
+	requestLogs []RequestRecord
+	ready       bool
+	WindowWidth  int // browser window width (default 1280)
+	WindowHeight int // browser window height (default 800)
+	LogCap       int // console log entry cap (default 500)
+}
+
+// BrowserManager manages multiple browser instances keyed by ID.
 type BrowserManager struct {
-	mu            sync.Mutex
-	allocCtx      context.Context
-	allocCancel   context.CancelFunc
-	tabCtx        context.Context
-	tabCancel     context.CancelFunc
-	consoleLogs   []string
-	requestLogs   []RequestRecord
-	ready         bool
+	mu           sync.Mutex
+	instances    map[string]*BrowserInstance
+	lastID       string // tracks the most recently used instance ID
+	nextID       int    // for generating unique IDs
+	WindowWidth  int    // default window width for new instances
+	WindowHeight int    // default window height for new instances
+	LogCap       int    // default log cap for new instances
 }
 
 // RequestRecord stores a single network request.
@@ -51,25 +65,96 @@ type RequestRecord struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
-// NewBrowserManager creates a new BrowserManager.
-func NewBrowserManager() *BrowserManager {
-	return &BrowserManager{}
+// Package-level cancel context — set by Handler.PropagateConfig for long-running web ops.
+var globalCancelCtx context.Context
+
+// SetCancelCtx sets the cancellation context for the browser package.
+func SetCancelCtx(ctx context.Context) {
+	globalCancelCtx = ctx
 }
 
-// EnsureTab returns a tab context; creates one lazily.
-func (bm *BrowserManager) EnsureTab() (context.Context, error) {
+// cancelCtxFor creates a context that is cancelled when either the parent or the global cancel fires.
+func cancelCtxFor(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	if globalCancelCtx != nil {
+		go func() {
+			select {
+			case <-globalCancelCtx.Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return ctx, cancel
+}
+
+// NewBrowserManager creates a new BrowserManager with sensible defaults.
+func NewBrowserManager() *BrowserManager {
+	return &BrowserManager{
+		instances:    make(map[string]*BrowserInstance),
+		WindowWidth:  1280,
+		WindowHeight: 800,
+		LogCap:       500,
+	}
+}
+
+// browserIDFromArgs extracts optional browser_id from args.
+func browserIDFromArgs(args map[string]interface{}) string {
+	id, _ := args["browser_id"].(string)
+	return id
+}
+
+// getInstance returns a BrowserInstance for the given browser_id.
+// If browser_id is empty:
+//   - If only one instance exists, returns it
+//   - If zero instances, returns an error
+//   - If multiple instances, returns an error asking for browser_id
+func (bm *BrowserManager) getInstance(browserID string) (*BrowserInstance, error) {
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
 
-	if bm.allocCtx == nil {
+	id := browserID
+	if id == "" {
+		if bm.lastID != "" {
+			id = bm.lastID
+		} else if len(bm.instances) == 1 {
+			for k := range bm.instances {
+				id = k
+			}
+		} else if len(bm.instances) == 0 {
+			return nil, fmt.Errorf("browser instance not found (call web_start first)")
+		} else {
+			return nil, fmt.Errorf("browser_id is required (multiple instances running)")
+		}
+	}
+
+	inst, ok := bm.instances[id]
+	if !ok {
+		return nil, fmt.Errorf("browser instance '%s' not found", id)
+	}
+	return inst, nil
+}
+
+// generateID creates a unique instance ID.
+func (bm *BrowserManager) generateID() string {
+	bm.nextID++
+	return fmt.Sprintf("b%d", bm.nextID)
+}
+
+// EnsureTab returns a tab context for the given instance; creates one lazily.
+func (inst *BrowserInstance) EnsureTab() (context.Context, error) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
+	if inst.allocCtx == nil {
 		return nil, fmt.Errorf("browser not started")
 	}
-	if !bm.ready {
-		ctx, cancel := chromedp.NewContext(bm.allocCtx, chromedp.WithLogf(func(format string, args ...interface{}) {
+	if !inst.ready {
+		ctx, cancel := chromedp.NewContext(inst.allocCtx, chromedp.WithLogf(func(format string, args ...interface{}) {
 		}))
-		bm.tabCtx = ctx
-		bm.tabCancel = cancel
-		bm.ready = true
+		inst.tabCtx = ctx
+		inst.tabCancel = cancel
+		inst.ready = true
 
 		chromedp.ListenTarget(ctx, func(ev interface{}) {
 			switch e := ev.(type) {
@@ -80,12 +165,15 @@ func (bm *BrowserManager) EnsureTab() (context.Context, error) {
 					parts = append(parts, val)
 				}
 				line := fmt.Sprintf("[%s] %s", e.Type.String(), strings.Join(parts, " "))
-				bm.mu.Lock()
-				bm.consoleLogs = append(bm.consoleLogs, line)
-				if len(bm.consoleLogs) > 500 {
-					bm.consoleLogs = bm.consoleLogs[len(bm.consoleLogs)-500:]
+				inst.mu.Lock()
+				inst.consoleLogs = append(inst.consoleLogs, line)
+				if len(inst.consoleLogs) > inst.LogCap {
+					n := len(inst.consoleLogs) - inst.LogCap
+					newLogs := make([]string, inst.LogCap)
+					copy(newLogs, inst.consoleLogs[n:])
+					inst.consoleLogs = newLogs
 				}
-				bm.mu.Unlock()
+				inst.mu.Unlock()
 
 			case *network.EventRequestWillBeSent:
 				rec := RequestRecord{
@@ -94,28 +182,28 @@ func (bm *BrowserManager) EnsureTab() (context.Context, error) {
 					Type:      string(e.Type),
 					Timestamp: time.Now().UnixMilli(),
 				}
-				bm.mu.Lock()
-				bm.requestLogs = append(bm.requestLogs, rec)
-				if len(bm.requestLogs) > 500 {
-					bm.requestLogs = bm.requestLogs[len(bm.requestLogs)-500:]
+				inst.mu.Lock()
+				inst.requestLogs = append(inst.requestLogs, rec)
+				if len(inst.requestLogs) > inst.LogCap {
+					inst.requestLogs = inst.requestLogs[len(inst.requestLogs)-inst.LogCap:]
 				}
-				bm.mu.Unlock()
+				inst.mu.Unlock()
 
 			case *network.EventResponseReceived:
 				url := e.Response.URL
 				statusCode := e.Response.Status
-				bm.mu.Lock()
-				for i := len(bm.requestLogs) - 1; i >= 0; i-- {
-					if bm.requestLogs[i].URL == url && bm.requestLogs[i].Status == 0 {
-						bm.requestLogs[i].Status = int(statusCode)
+				inst.mu.Lock()
+				for i := len(inst.requestLogs) - 1; i >= 0; i-- {
+					if inst.requestLogs[i].URL == url && inst.requestLogs[i].Status == 0 {
+						inst.requestLogs[i].Status = int(statusCode)
 						break
 					}
 				}
-				bm.mu.Unlock()
+				inst.mu.Unlock()
 			}
 		})
 	}
-	return bm.tabCtx, nil
+	return inst.tabCtx, nil
 }
 
 // ─── Actions for mouse operations ────────────
@@ -198,23 +286,23 @@ func KeyUpAction(key string) chromedp.Action {
 
 // KeyCodeMap provides a rough DOM code mapping for common keys.
 var KeyCodeMap = map[string]string{
-	"Enter":     "Enter",
-	"Tab":       "Tab",
-	"Backspace": "Backspace",
-	"Delete":    "Delete",
-	"Escape":    "Escape",
-	"ArrowUp":   "ArrowUp",
-	"Up":        "ArrowUp",
-	"ArrowDown": "ArrowDown",
-	"Down":      "ArrowDown",
-	"ArrowLeft": "ArrowLeft",
-	"Left":      "ArrowLeft",
+	"Enter":      "Enter",
+	"Tab":        "Tab",
+	"Backspace":  "Backspace",
+	"Delete":     "Delete",
+	"Escape":     "Escape",
+	"ArrowUp":    "ArrowUp",
+	"Up":         "ArrowUp",
+	"ArrowDown":  "ArrowDown",
+	"Down":       "ArrowDown",
+	"ArrowLeft":  "ArrowLeft",
+	"Left":       "ArrowLeft",
 	"ArrowRight": "ArrowRight",
-	"Right":     "ArrowRight",
-	"Home":      "Home",
-	"End":       "End",
-	"PageUp":    "PageUp",
-	"PageDown":  "PageDown",
+	"Right":      "ArrowRight",
+	"Home":       "Home",
+	"End":        "End",
+	"PageUp":     "PageUp",
+	"PageDown":   "PageDown",
 }
 
 // MapKeyToCode maps a key name to its DOM code.
@@ -252,15 +340,8 @@ func GetElementCenterFromNode(ctx context.Context, node *cdp.Node) (float64, flo
 
 // ─── Handler functions ───────────────────────
 
-// HandleWebStart starts the browser.
+// HandleWebStart starts a new browser instance.
 func HandleWebStart(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
-
-	if bm.allocCtx != nil {
-		return &types.ToolResult{Success: false, Error: "browser already running, call web_close first", Tool: "web_start"}
-	}
-
 	headless := true
 	if v, ok := args["headless"].(bool); ok {
 		headless = v
@@ -275,18 +356,35 @@ func HandleWebStart(bm *BrowserManager, args map[string]interface{}) *types.Tool
 	)
 	if !headless {
 		opts = append(opts,
-			chromedp.Flag("window-size", "1280,800"),
+			chromedp.Flag("window-size", fmt.Sprintf("%d,%d", bm.WindowWidth, bm.WindowHeight)),
 		)
 	}
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	bm.allocCtx = allocCtx
-	bm.allocCancel = allocCancel
-	bm.ready = false
-	bm.consoleLogs = nil
-	bm.requestLogs = nil
 
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("browser started (headless: %v)", headless), Tool: "web_start"}
+	inst := &BrowserInstance{
+		allocCtx:    allocCtx,
+		allocCancel: allocCancel,
+		ready:       false,
+		WindowWidth:  bm.WindowWidth,
+		WindowHeight: bm.WindowHeight,
+		LogCap:       bm.LogCap,
+	}
+
+	bm.mu.Lock()
+	id := bm.generateID()
+	bm.instances[id] = inst
+	bm.lastID = id
+	bm.mu.Unlock()
+
+	return &types.ToolResult{
+		Success: true,
+		Output:  fmt.Sprintf("browser started (headless: %v), browser_id: %s", headless, id),
+		Tool:    "web_start",
+		RawResult: map[string]interface{}{
+			"browser_id": id,
+		},
+	}
 }
 
 // HandleWebOpen navigates to a URL.
@@ -296,30 +394,46 @@ func HandleWebOpen(bm *BrowserManager, tm *task.TaskManager, logger *zap.Logger,
 		return &types.ToolResult{Success: false, Error: "url is required", Tool: "web_open"}
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_open"}
+	}
+
 	_, output, err := tm.SyncOperation("web_open", func(cancel <-chan struct{}) (string, error) {
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
+
+		// Wire cancel channel into chromedp context
+		runCtx, runCancel := context.WithCancel(ctx)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
 
 		domains := []chromedp.Action{
 			runtime.Enable(),
 			network.Enable(),
 		}
-		if err := chromedp.Run(ctx, domains...); err != nil {
+		if err := chromedp.Run(runCtx, domains...); err != nil {
 			return "", fmt.Errorf("enable domains failed: %s", err.Error())
 		}
 
-		if err := chromedp.Run(ctx, chromedp.Navigate(url)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.Navigate(url)); err != nil {
 			return "", fmt.Errorf("navigation failed: %s", err.Error())
 		}
 
-		if err := chromedp.Run(ctx, chromedp.WaitReady("body")); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.WaitReady("body")); err != nil {
 			logger.Warn("wait ready after navigation failed", zap.String("url", url), zap.Error(err))
 		}
 
 		var title string
-		_ = chromedp.Run(ctx, chromedp.Title(&title))
+		_ = chromedp.Run(runCtx, chromedp.Title(&title))
 		return fmt.Sprintf("navigated to %s, title: %s", url, title), nil
 	})
 
@@ -333,10 +447,19 @@ func HandleWebOpen(bm *BrowserManager, tm *task.TaskManager, logger *zap.Logger,
 
 // HandleWebScreenshot takes a screenshot of the current page.
 func HandleWebScreenshot(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	ctx, err := bm.EnsureTab()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_screenshot"}
 	}
+
+	ctx, err := inst.EnsureTab()
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_screenshot"}
+	}
+
+	// Wrap with global cancel context so CancelChat can abort long screenshots
+	screenshotCtx, screenshotCancel := cancelCtxFor(ctx)
+	defer screenshotCancel()
 
 	fullPage := false
 	if v, ok := args["full_page"].(bool); ok {
@@ -350,7 +473,7 @@ func HandleWebScreenshot(bm *BrowserManager, args map[string]interface{}) *types
 
 	var buf []byte
 	if fullPage {
-		_ = chromedp.Run(ctx,
+		_ = chromedp.Run(screenshotCtx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				_, _, err := runtime.Evaluate(fmt.Sprintf(
 					`document.documentElement.style.minHeight = Math.min(document.documentElement.scrollHeight, %d) + 'px'`, maxHeight,
@@ -358,7 +481,7 @@ func HandleWebScreenshot(bm *BrowserManager, args map[string]interface{}) *types
 				return err
 			}),
 		)
-		if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := chromedp.Run(screenshotCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			var err error
 			buf, err = page.CaptureScreenshot().
 				WithFormat(page.CaptureScreenshotFormatPng).
@@ -369,7 +492,7 @@ func HandleWebScreenshot(bm *BrowserManager, args map[string]interface{}) *types
 			return &types.ToolResult{Success: false, Error: fmt.Sprintf("full page screenshot failed: %s", err.Error()), Tool: "web_screenshot"}
 		}
 	} else {
-		if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := chromedp.Run(screenshotCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			var err error
 			buf, err = page.CaptureScreenshot().
 				WithFormat(page.CaptureScreenshotFormatPng).
@@ -394,31 +517,66 @@ func HandleWebScreenshot(bm *BrowserManager, args map[string]interface{}) *types
 	}
 }
 
-// HandleWebClose closes the browser.
+// HandleWebClose closes a browser instance.
 func HandleWebClose(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
+	browserID := browserIDFromArgs(args)
+
 	bm.mu.Lock()
-	defer bm.mu.Unlock()
-
-	if bm.allocCtx == nil {
-		return &types.ToolResult{Success: true, Output: "browser not running", Tool: "web_close"}
+	var inst *BrowserInstance
+	var ok bool
+	id := browserID
+	if id == "" {
+		// Close all instances if no ID specified
+		if len(bm.instances) == 0 {
+			bm.mu.Unlock()
+			return &types.ToolResult{Success: true, Output: "no browser instances running", Tool: "web_close"}
+		}
+		// Close last used, or if only one, close that
+		if bm.lastID != "" {
+			id = bm.lastID
+		}
+		if id != "" {
+			inst, ok = bm.instances[id]
+		}
+		if !ok {
+			// If lastID not set or not found, close the first one
+			for k, v := range bm.instances {
+				id = k
+				inst = v
+				break
+			}
+		}
+	} else {
+		inst, ok = bm.instances[id]
+		if !ok {
+			bm.mu.Unlock()
+			return &types.ToolResult{Success: false, Error: fmt.Sprintf("browser instance '%s' not found", id), Tool: "web_close"}
+		}
 	}
 
-	if bm.tabCancel != nil {
-		bm.tabCancel()
-		bm.tabCancel = nil
+	delete(bm.instances, id)
+	if bm.lastID == id {
+		bm.lastID = ""
 	}
-	bm.tabCtx = nil
-	bm.ready = false
+	bm.mu.Unlock()
 
-	if bm.allocCancel != nil {
-		bm.allocCancel()
-		bm.allocCancel = nil
+	// Cleanup outside lock
+	if inst.tabCancel != nil {
+		inst.tabCancel()
+		inst.tabCancel = nil
 	}
-	bm.allocCtx = nil
-	bm.consoleLogs = nil
-	bm.requestLogs = nil
+	inst.tabCtx = nil
+	inst.ready = false
 
-	return &types.ToolResult{Success: true, Output: "browser closed", Tool: "web_close"}
+	if inst.allocCancel != nil {
+		inst.allocCancel()
+		inst.allocCancel = nil
+	}
+	inst.allocCtx = nil
+	inst.consoleLogs = nil
+	inst.requestLogs = nil
+
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("browser instance '%s' closed", id), Tool: "web_close"}
 }
 
 // ─── Simplify Functions ───

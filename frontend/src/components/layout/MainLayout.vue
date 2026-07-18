@@ -12,6 +12,7 @@
       @open-dir="handleOpenDir"
       @search-file="handleSearchFile"
       @open-analyze="analyzeDialog.open()"
+      @open-scenario="handleOpenScenario"
     />
 
     <div class="body-area">
@@ -60,24 +61,24 @@
           <span v-show="chatOpen">CHAT</span>
           <el-tag v-if="chatSessionId" size="small" type="info" class="chat-session-tag">#{{ chatSessionId.slice(0, 8) }}</el-tag>
           <div class="header-spacer" />
-          <el-tooltip content="Scroll to top" placement="bottom">
-            <el-button size="small" text @click="chatScrollTop">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <line x1="12" y1="20" x2="12" y2="7"/>
-                <polyline points="5,14 12,7 19,14"/>
-                <line x1="4" y1="12" x2="20" y2="12"/>
-              </svg>
-            </el-button>
-          </el-tooltip>
-          <el-tooltip content="Scroll to bottom" placement="bottom">
-            <el-button size="small" text @click="chatScrollBottom">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <line x1="12" y1="4" x2="12" y2="17"/>
-                <polyline points="5,10 12,17 19,10"/>
-                <line x1="4" y1="12" x2="20" y2="12"/>
-              </svg>
-            </el-button>
-          </el-tooltip>
+          <el-popover trigger="click" placement="bottom-end" :width="160" popper-class="scenario-popover" v-model:visible="scenarioPopoverVisible">
+            <template #reference>
+              <el-tag size="small" :type="activeScenarioId ? 'info' : 'danger'" style="cursor:pointer">
+                {{ activeScenarioLabel }}
+              </el-tag>
+            </template>
+            <div class="popover-list">
+              <div
+                v-for="s in scenarioOptions"
+                :key="s.id"
+                class="popover-item"
+                :class="{ active: activeScenarioId === s.id }"
+                @click="selectScenario(s.id)"
+              >
+                {{ s.name }}
+              </div>
+            </div>
+          </el-popover>
           <el-button
             text
             size="small"
@@ -93,6 +94,7 @@
     </div>
 
     <ConfigDialog ref="configDialog" />
+    <ScenarioDialog ref="scenarioDialog" @changed="loadScenarioOptions" />
     <SessionDrawer ref="sessionDrawer" @session-selected="handleSessionSelected" />
     <AnalyzeDialog ref="analyzeDialog" />
     <AskUserDialog />
@@ -107,6 +109,7 @@ import FileTree from '../filetree/FileTree.vue'
 import TaskPanel from '../tasks/TaskPanel.vue'
 import ChatPanel from '../chat/ChatPanel.vue'
 import ConfigDialog from '../config/ConfigDialog.vue'
+import ScenarioDialog from '../scenario/ScenarioDialog.vue'
 import SessionDrawer from '../sessions/SessionDrawer.vue'
 import AnalyzeDialog from '../config/AnalyzeDialog.vue'
 import AskUserDialog from '../chat/AskUserDialog.vue'
@@ -135,6 +138,7 @@ const resizingRow = ref(false)
 const resizingChat = ref(false)
 const topRowFraction = ref(0.65)
 const configDialog = ref(null)
+const scenarioDialog = ref(null)
 const sessionDrawer = ref(null)
 const analyzeDialog = ref(null)
 
@@ -142,6 +146,22 @@ const sidebarPanel = ref(null)
 const chatPanel = ref(null)
 const chatPanelRef = ref(null)
 const chatSessionId = ref(null)
+
+const activeScenarioId = ref(0)
+const scenarioOptions = ref([])
+const scenarioPopoverVisible = ref(false)
+
+const activeScenarioLabel = computed(() => {
+  if (!activeScenarioId.value) return '选择场景'
+  const found = scenarioOptions.value.find(s => s.id === activeScenarioId.value)
+  return found ? found.name : '选择场景'
+})
+
+function selectScenario(id) {
+  activeScenarioId.value = id
+  onScenarioChange(id)
+  scenarioPopoverVisible.value = false
+}
 
 const topRowHeight = computed(() => taskOpen.value ? `calc(${topRowFraction.value * 100}% - 2px)` : '100%')
 const bottomRowHeight = computed(() => `calc(${(1 - topRowFraction.value) * 100}% - 2px)`)
@@ -157,11 +177,33 @@ function toggleChat() { chatOpen.value = !chatOpen.value }
 function toggleFiletree() { filetreeOpen.value = !filetreeOpen.value }
 function toggleTasks() { taskOpen.value = !taskOpen.value }
 
-function chatScrollTop() {
-  chatPanelRef.value?.scrollTop?.()
+async function loadScenarioOptions() {
+  try {
+    const res = await window.go.main.App.GetScenarioList()
+    scenarioOptions.value = res.scenarios || []
+    const activeRes = await window.go.main.App.GetActiveScenario()
+    if (activeRes?.prompt) {
+      // Find matching scenario
+      const found = scenarioOptions.value.find(s => s.systemPrompt === activeRes.prompt)
+      activeScenarioId.value = found ? found.id : (scenarioOptions.value[0]?.id || null)
+    } else if (scenarioOptions.value.length > 0) {
+      // Auto-select first scenario if none active
+      activeScenarioId.value = scenarioOptions.value[0].id
+      await window.go.main.App.SetActiveScenario(activeScenarioId.value)
+    } else {
+      activeScenarioId.value = null
+    }
+  } catch (_) {
+    scenarioOptions.value = []
+  }
 }
-function chatScrollBottom() {
-  chatPanelRef.value?.scrollBottom?.()
+
+async function onScenarioChange(id) {
+  try {
+    await window.go.main.App.SetActiveScenario(id || 0)
+  } catch (e) {
+    console.error('Failed to set active scenario:', e)
+  }
 }
 
 function openIDEConfig() {
@@ -189,6 +231,8 @@ watch(workDir, () => {
 
 onMounted(async () => {
   await loadConfig()
+  // Load scenario options
+  loadScenarioOptions()
   // Listen for .git creation/deletion to refresh VCS icon
   unsubFileChanged = window.runtime?.EventsOn('file:changed', (data) => {
     const path = data?.path || ''
@@ -219,6 +263,11 @@ function handleConfigOpenTab(e) {
 
 function handleOpenConfig() {
   configDialog.value?.open()
+}
+
+function handleOpenScenario() {
+  scenarioDialog.value?.open()
+  loadScenarioOptions()
 }
 
 function handleSessionSelected(session) {
@@ -373,6 +422,29 @@ function onStartResizeRow(e) {
 .header-spacer {
   flex: 1;
   min-width: 0;
+}
+.chat-session-tag {
+  flex-shrink: 0;
+}
+:deep(.popover-list) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+:deep(.popover-item) {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-primary, #333);
+  transition: background 0.12s;
+}
+:deep(.popover-item:hover) {
+  background: var(--bg-hover, #f0f0f0);
+}
+:deep(.popover-item.active) {
+  background: var(--accent, #409eff);
+  color: #fff;
 }
 
 .header-settings-icon {

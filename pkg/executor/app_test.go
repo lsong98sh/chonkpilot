@@ -39,7 +39,7 @@ func TestParseArgs(t *testing.T) {
 		"--work-dir=" + workDir,
 		"--prompt=Hello",
 		"--session-id=session-1",
-		"--llm-provider=openai",
+		"--llm-protocol=openai",
 		"--llm-model=gpt-4o",
 		"--output=json",
 	}
@@ -123,10 +123,9 @@ func TestParseArgs_AllFields(t *testing.T) {
 		"--system-prompt=Be helpful",
 		"--session-id=session-1",
 		"--pipe-path=/tmp/pipe",
-		"--parent-pipe-path=/tmp/parent",
 		"--tools=[{\"name\":\"test\"}]",
 		"--output=json",
-		"--llm-provider=openai",
+		"--llm-protocol=openai",
 		"--llm-model=gpt-4",
 		"--llm-api-key=sk-test",
 		"--llm-api-url=https://api.openai.com/v1",
@@ -153,9 +152,6 @@ func TestParseArgs_AllFields(t *testing.T) {
 	}
 	if ea.PipePath != "/tmp/pipe" {
 		t.Error("PipePath mismatch")
-	}
-	if ea.ParentPipePath != "/tmp/parent" {
-		t.Error("ParentPipePath mismatch")
 	}
 	if ea.Tools != `[{"name":"test"}]` {
 		t.Error("Tools mismatch")

@@ -19,8 +19,20 @@ import (
 // registerBuiltinTools populates the dispatch table for all built-in tools.
 func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers = map[string]types.ToolHandler{}
+	h.registerFileTools()
+	h.registerSearchTools()
+	h.registerExecutionTools()
+	h.registerNoteTools()
+	h.registerCodebaseTools()
+	h.registerFileOpsTools()
+	h.registerAgentTools()
+	h.registerCustomToolTools()
+	h.registerDesktopTools()
+	h.registerBrowserTools()
+}
 
-	// File operations
+// registerFileTools registers read/write/patch file operations.
+func (h *Handler) registerFileTools() {
 	h.toolHandlers["read_file"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleReadFile(h.WorkDir, args)
 	})
@@ -36,8 +48,10 @@ func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers["patch"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandlePatch(h.WorkDir, h.FileVersioner, h.TurnID, args)
 	})
+}
 
-	// Search
+// registerSearchTools registers grep, search_files, list_directory, fetch.
+func (h *Handler) registerSearchTools() {
 	h.toolHandlers["grep"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleGrep(h.WorkDir, args)
 	})
@@ -48,20 +62,25 @@ func (h *Handler) registerBuiltinTools() {
 		return file.HandleListDirectory(h.WorkDir, args)
 	})
 	h.toolHandlers["fetch"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
-		return file.HandleFetch(h.WorkDir, args, file.DefaultFetchConfig())
+		return file.HandleFetch(h.WorkDir, args, file.FetchConfig{
+			MaxBodySize: h.FetchMaxBodySizeKB * 1024,
+		})
 	})
+}
 
-	// Execution
+// registerExecutionTools registers execute_command, run_tasks, call_llm, ask_user, task management.
+func (h *Handler) registerExecutionTools() {
 	h.toolHandlers["execute_command"] = types.Wrap(h.handleExecuteCommand)
 	h.toolHandlers["run_tasks"] = types.DepthAware(func(args map[string]interface{}, depth int) *types.ToolResult {
 		return call_llm.HandleForeach(h.TaskMgr, h.Dispatch, h.OnProgress, args, depth)
 	})
 	h.toolHandlers["call_llm"] = types.DepthAware(func(args map[string]interface{}, depth int) *types.ToolResult {
-		return call_llm.HandleCallLLM(h.Logger, h.Session, h.TurnID, h.Engine,
+		return call_llm.HandleCallLLM(h.Logger, h.Session, h.TurnID, h.WorkDir, h.DBDir,
 			h.TaskMgr,
 			h.LLMProtocol, h.LLMModel, h.LLMAPIKey, h.LLMAPIURL,
 			h.Thinking, h.ReasoningEffort,
-			h.WriteEvent, h.OnProgress, args, depth)
+			h.WriteEvent, h.OnProgress, h.CodeIndexer, args, depth,
+			h.Dispatch)
 	})
 	h.toolHandlers["ask_user"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return call_llm.HandleAskUser(h.WriteEvent, args)
@@ -78,8 +97,10 @@ func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers["process_task_stop"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return run.HandleProcessTaskStop(h.TaskMgr, args)
 	})
+}
 
-	// Notes
+// registerNoteTools registers note CRUD operations.
+func (h *Handler) registerNoteTools() {
 	h.toolHandlers["note_write"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return note.HandleNoteWrite(h.WorkDir, args)
 	})
@@ -92,18 +113,16 @@ func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers["note_delete"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return note.HandleNoteDelete(h.WorkDir, args)
 	})
+}
 
-	// Codebase
+// registerCodebaseTools registers the codebase query tool.
+func (h *Handler) registerCodebaseTools() {
 	h.toolHandlers["query_codebase"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleQueryCodebase(h.CodeIndexer, args)
 	})
-
-	// LLM result query
 	h.toolHandlers["get_llm_result"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return llmresult.HandleGetLLMResult(h.DBDir, args)
 	})
-
-	// Batch LLM
 	h.toolHandlers["batch_llm"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return batch_llm.HandleBatchLLM(
 			h.Logger, h.WorkDir, h.DBDir, h.Session,
@@ -114,34 +133,33 @@ func (h *Handler) registerBuiltinTools() {
 				return h.Dispatch(toolName, a, depth)
 			},
 			h.NoChrome,
+			h.CodeIndexer,
 			args,
 		).ToToolResult()
 	})
+}
 
-	// File rollback
+// registerFileOpsTools registers rollback, make_directory, remove, rename, write_image.
+func (h *Handler) registerFileOpsTools() {
 	h.toolHandlers["rollback"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return restore.HandleRollback(h.FileVersioner, h.TurnID, args)
 	})
-
-	// Directory operations
 	h.toolHandlers["make_directory"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleMakeDirectory(h.WorkDir, args)
 	})
 	h.toolHandlers["remove"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleRemove(h.WorkDir, h.FileVersioner, h.TurnID, args)
 	})
-
-	// Rename / move
 	h.toolHandlers["rename"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleRename(h.WorkDir, h.FileVersioner, h.TurnID, args)
 	})
-
-	// Image rendering (SVG/HTML/Mermaid → PNG via headless Chrome)
 	h.toolHandlers["write_image"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return writeimage.HandleWriteImage(h.WorkDir, h.NoChrome, args)
 	})
+}
 
-	// Agent management
+// registerAgentTools registers add_agent, list_agent, delete_agent.
+func (h *Handler) registerAgentTools() {
 	h.toolHandlers["add_agent"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return agent.HandleAddAgent(h.DBDir, args)
 	})
@@ -151,8 +169,10 @@ func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers["delete_agent"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return agent.HandleDeleteAgent(h.DBDir, args)
 	})
+}
 
-	// Custom tools
+// registerCustomToolTools registers add_tool, list_tool, get_tool, delete_tool.
+func (h *Handler) registerCustomToolTools() {
 	h.toolHandlers["add_tool"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return tool.HandleAddTool(h.DBDir, args)
 	})
@@ -165,8 +185,10 @@ func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers["delete_tool"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return tool.HandleDeleteTool(h.DBDir, args)
 	})
+}
 
-	// Desktop/OS
+// registerDesktopTools registers screenshot, mouse, keyboard, window operations.
+func (h *Handler) registerDesktopTools() {
 	h.toolHandlers["screenshot"] = types.Wrap(desktop.HandleScreenshot)
 	h.toolHandlers["mouse_click"] = types.Wrap(desktop.HandleMouseClick)
 	h.toolHandlers["mouse_down"] = types.Wrap(desktop.HandleMouseDown)
@@ -185,8 +207,10 @@ func (h *Handler) registerBuiltinTools() {
 	h.toolHandlers["minimize_window"] = types.Wrap(desktop.HandleMinimizeWindow)
 	h.toolHandlers["maximize_window"] = types.Wrap(desktop.HandleMaximizeWindow)
 	h.toolHandlers["restore_window"] = types.Wrap(desktop.HandleRestoreWindow)
+}
 
-	// Web browser tools (registered in main toolHandlers; noChrome guard in Dispatch)
+// registerBrowserTools registers all web browser automation tools.
+func (h *Handler) registerBrowserTools() {
 	h.toolHandlers["web_start"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return browser.HandleWebStart(h.Browser, args)
 	})

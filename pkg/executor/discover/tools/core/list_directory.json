@@ -1,5 +1,5 @@
 {
-  "description": "List contents of one or more directories. Each directory returns a formatted listing with name, type (dir/file), size, and modification time. Example: {\"_\": [\"/home/user/project/src\", \"/home/user/project/dist\"]}",
+  "description": "List contents of one or more directories. Each directory returns a formatted listing with name, type (dir/file), size, and modification time. When recursive is true, lists all files recursively using relative paths from the root directory. Example: {\"_\": [\"/home/user/project/src\"], \"recursive\": true}",
   "name": "list_directory",
   "parameters": {
     "type": "object",
@@ -10,6 +10,10 @@
           "type": "string"
         },
         "description": "Array of directory paths."
+      },
+      "recursive": {
+        "type": "boolean",
+        "description": "If true, recursively list all files and subdirectories. When false (default), only lists one level."
       }
     },
     "required": ["paths"]

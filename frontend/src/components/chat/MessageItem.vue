@@ -332,6 +332,11 @@ const formattedTime = computed(() => {
   overflow-wrap: anywhere;
 }
 
+.message-content :deep(ol),
+.message-content :deep(ul) {
+  padding-left: 1em;
+}
+
 /* Markdown tables: ensure visible borders on any background */
 .message-content :deep(table) {
   border-collapse: collapse;

@@ -65,20 +65,9 @@ func ListNotes(db *sql.DB) ([]*models.Note, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list notes: %w", err)
 	}
-	defer rows.Close()
-
-	var notes []*models.Note
-	for rows.Next() {
-		n := &models.Note{}
-		if err := rows.Scan(&n.Title, &n.Content, &n.CreatedAt, &n.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan note: %w", err)
-		}
-		notes = append(notes, n)
-	}
-	if notes == nil {
-		notes = []*models.Note{}
-	}
-	return notes, rows.Err()
+	return scanAll(rows, func(n *models.Note) []any {
+		return []any{&n.Title, &n.Content, &n.CreatedAt, &n.UpdatedAt}
+	})
 }
 
 // DeleteNote removes a note by title.

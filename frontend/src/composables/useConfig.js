@@ -23,7 +23,7 @@ let unsub = null
 async function loadConfigInternal() {
   try {
     const res = await getAllConfig()
-    config.value = res.config || res || {}
+    config.value = { ...(res.config || {}), llms: res.llms, workDir: res.workDir, projectTools: res.projectTools }
   } catch (e) {
     console.error('[useConfig] Failed to load config:', e)
   } finally {

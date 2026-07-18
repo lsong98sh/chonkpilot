@@ -27,7 +27,6 @@ type ExecutorArgs struct {
 	SessionID        string
 	TurnID           string
 	PipePath         string
-	ParentPipePath   string
 	PipeAddr         string
 	Tools            string
 	ToolsFile        string
@@ -52,12 +51,11 @@ type ExecutorArgs struct {
 	LLMStreamTimeout     time.Duration // idle timeout between stream chunks
 
 	// Runtime overrides (from chat page controls)
-	LLMName string // --llm: select LLM provider by name from ~/.chonkpilot/config.json
+	LLMName string // --llm: select LLM by name from ~/.chonkpilot/config.json
 	Effort  string // --effort: reasoning effort override (high/max)
 
 	KeepFullTurns            int           // context compression: turns to keep fully raw (default 5)
 	KeepSimplifiedTurns      int           // context compression: turns to keep simplified (default 15)
-	ForceCompressThreshold   int           // token threshold for forced compression (default 80000)
 	ForeachConcurrency       int           // parallel goroutines for foreach (1-10, default 5)
 	ForeachMaxDepth          int           // max nested depth for foreach (1-10, default 5)
 	FetchTimeout             int           // HTTP fetch timeout in seconds (default 300)
@@ -125,16 +123,14 @@ func ParseArgs(args []string) (*ExecutorArgs, error) {
 			ea.PipePath = arg[len("--pipe-path="):]
 		} else if strings.HasPrefix(arg, "--pipe-addr=") {
 			ea.PipeAddr = arg[len("--pipe-addr="):]
-		} else if strings.HasPrefix(arg, "--parent-pipe-path=") {
-			ea.ParentPipePath = arg[len("--parent-pipe-path="):]
 		} else if strings.HasPrefix(arg, "--tools=") {
 			ea.Tools = arg[len("--tools="):]
 		} else if strings.HasPrefix(arg, "--tools-file=") {
 			ea.ToolsFile = arg[len("--tools-file="):]
 		} else if strings.HasPrefix(arg, "--output=") {
 			ea.OutputFormat = arg[len("--output="):]
-		} else if strings.HasPrefix(arg, "--llm-provider=") {
-			ea.LLMProtocol = arg[len("--llm-provider="):]
+		} else if strings.HasPrefix(arg, "--llm-protocol=") {
+			ea.LLMProtocol = arg[len("--llm-protocol="):]
 		} else if strings.HasPrefix(arg, "--llm-model=") {
 			ea.LLMModel = arg[len("--llm-model="):]
 		} else if strings.HasPrefix(arg, "--llm-api-key=") {
@@ -165,9 +161,6 @@ func ParseArgs(args []string) (*ExecutorArgs, error) {
 		} else if strings.HasPrefix(arg, "--keep-simplified-turns=") {
 			v := arg[len("--keep-simplified-turns="):]
 			ea.KeepSimplifiedTurns, _ = strconv.Atoi(v)
-		} else if strings.HasPrefix(arg, "--force-compress-threshold=") {
-			v := arg[len("--force-compress-threshold="):]
-			ea.ForceCompressThreshold, _ = strconv.Atoi(v)
 		} else if strings.HasPrefix(arg, "--foreach-concurrency=") {
 			v := arg[len("--foreach-concurrency="):]
 			ea.ForeachConcurrency, _ = strconv.Atoi(v)
@@ -313,26 +306,6 @@ func Run(args []string) error {
 		zap.String("turn_id", ea.TurnID),
 	)
 
-	// Override log level from DB config if available
-	dbLogPath := filepath.Join(ea.DBWorkDir(), ".ide", "ide.db")
-	if _, statErr := os.Stat(dbLogPath); statErr == nil {
-		if sqlDB, openErr := db.Open(ea.DBWorkDir()); openErr == nil {
-			if lv, getErr := db.GetConfig(sqlDB, "logLevel"); getErr == nil && lv != "" {
-				switch strings.ToLower(lv) {
-				case "debug":
-					logLevel.SetLevel(zap.DebugLevel)
-				case "info":
-					logLevel.SetLevel(zap.InfoLevel)
-				case "warn":
-					logLevel.SetLevel(zap.WarnLevel)
-				case "error":
-					logLevel.SetLevel(zap.ErrorLevel)
-				}
-			}
-			db.Close(sqlDB)
-		}
-	}
-
 	// Read prompt content
 	promptContent := ""
 	if ea.PromptFile != "" {
@@ -363,22 +336,6 @@ func Run(args []string) error {
 		systemPrompt = string(data)
 	}
 
-	// Load retry config from DB (CLI args take precedence)
-	if ea.RetryCount == 0 && hasIDEConfig(ea) {
-		if sqlDB, err := db.Open(ea.DBWorkDir()); err == nil {
-			if v, err := db.GetConfig(sqlDB, "retry_count"); err == nil && v != "" {
-				if n, err2 := strconv.Atoi(v); err2 == nil {
-					ea.RetryCount = n
-				}
-			}
-			if v, err := db.GetConfig(sqlDB, "retry_delay"); err == nil && v != "" {
-				if n, err2 := strconv.Atoi(v); err2 == nil {
-					ea.RetryDelay = n
-				}
-			}
-			db.Close(sqlDB)
-		}
-	}
 	if ea.RetryDelay <= 0 {
 		ea.RetryDelay = 5 // default 5s
 	}
@@ -549,11 +506,11 @@ func printHelp() {
   --reasoning=<on|off>            思考链（默认 on）
   --think=<on|off>                思考链（--reasoning 别名）
   --effort=<high|max>             推理强度（默认 high）
-  --llm=<name>                    按名称选择 LLM 提供商（覆盖默认配置）
+  --llm=<name>                    按名称选择 LLM（覆盖默认配置）
   --verbose                       详细输出模式
   --log-level=<level>             日志级别（debug/info/warn/error，默认 error）
   --llm-config-file=<path>        LLM 配置文件
-  --llm-provider=<name>           LLM 提供商
+  --llm-protocol=<name>           LLM 协议（openai / claude）
   --llm-model=<model>             模型名称
   --llm-api-key=<key>             API Key
   --llm-api-url=<url>             API Endpoint

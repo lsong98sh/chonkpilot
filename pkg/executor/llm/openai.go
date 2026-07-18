@@ -98,11 +98,14 @@ func (r *streamIdleReader) Close() error {
 	return r.reader.Close()
 }
 
-// makeLLMClient creates an http.Client with ResponseHeaderTimeout for time-to-first-token.
-func makeLLMClient(firstTokenTimeout time.Duration) *http.Client {
+// makeLLMClient creates an http.Client with configurable timeouts.
+func makeLLMClient(firstTokenTimeout time.Duration, tlsHandshakeTimeout time.Duration) *http.Client {
+	if tlsHandshakeTimeout <= 0 {
+		tlsHandshakeTimeout = 30 * time.Second
+	}
 	transport := &http.Transport{
 		ResponseHeaderTimeout: firstTokenTimeout,
-		TLSHandshakeTimeout:   30 * time.Second,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
 		DisableKeepAlives:     true,
 	}
 	if firstTokenTimeout <= 0 {
@@ -171,7 +174,7 @@ func (p *OpenAIProvider) Chat(messages []Message, options ChatOptions) (<-chan S
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", p.APIKey))
 
-	client := makeLLMClient(options.ResponseTimeout)
+	client := makeLLMClient(options.ResponseTimeout, options.TLSHandshakeTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("API request failed: %w", err)

@@ -298,15 +298,17 @@ func cleanupTempDB(ea *ExecutorArgs) {
 	}
 }
 
-// eventWithCtx injects session_id and turn_id into an event payload.
+// eventWithCtx injects session_id and turn_id into an event payload if not already present.
+// Sub-executors (batch_llm, call_llm) set their own session_id/turn_id before calling writeEvent,
+// so eventWithCtx must not overwrite them.
 func eventWithCtx(ea *ExecutorArgs, payload map[string]interface{}) map[string]interface{} {
 	if payload == nil {
 		payload = make(map[string]interface{})
 	}
-	if ea.SessionID != "" {
+	if _, ok := payload["session_id"]; !ok && ea.SessionID != "" {
 		payload["session_id"] = ea.SessionID
 	}
-	if ea.TurnID != "" {
+	if _, ok := payload["turn_id"]; !ok && ea.TurnID != "" {
 		payload["turn_id"] = ea.TurnID
 	}
 	return payload

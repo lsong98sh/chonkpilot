@@ -41,14 +41,29 @@ func HandleWebClick(bm *BrowserManager, tm *task.TaskManager, args map[string]in
 		clickCount = int64(v)
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_click"}
+	}
+
 	_, output, err := tm.SyncOperation("web_click", func(cancel <-chan struct{}) (string, error) {
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
 
+		runCtx, runCancel := context.WithCancel(ctx)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+
 		if sel != "" {
-			if err := chromedp.Run(ctx,
+			if err := chromedp.Run(runCtx,
 				chromedp.Click(sel, chromedp.BySearch),
 			); err != nil {
 				return "", fmt.Errorf("click '%s' failed: %s", sel, err.Error())
@@ -56,7 +71,7 @@ func HandleWebClick(bm *BrowserManager, tm *task.TaskManager, args map[string]in
 			return fmt.Sprintf("clicked %s", sel), nil
 		}
 
-		if err := chromedp.Run(ctx, MouseClickAction(x, y, cdpButton, clickCount)); err != nil {
+		if err := chromedp.Run(runCtx, MouseClickAction(x, y, cdpButton, clickCount)); err != nil {
 			return "", fmt.Errorf("click at (%.0f, %.0f) failed: %s", x, y, err.Error())
 		}
 		return fmt.Sprintf("clicked at (%.0f, %.0f)", x, y), nil
@@ -83,13 +98,28 @@ func HandleWebType(bm *BrowserManager, tm *task.TaskManager, args map[string]int
 		delay = v
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_type"}
+	}
+
 	_, output, err := tm.SyncOperation("web_type", func(cancel <-chan struct{}) (string, error) {
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
 
-		if err := chromedp.Run(ctx,
+		runCtx, runCancel := context.WithCancel(ctx)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+
+		if err := chromedp.Run(runCtx,
 			chromedp.Click(sel, chromedp.BySearch),
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				_, _, err := runtime.Evaluate(`document.activeElement.select()`).Do(ctx)
@@ -100,12 +130,17 @@ func HandleWebType(bm *BrowserManager, tm *task.TaskManager, args map[string]int
 		}
 
 		if delay < 10 {
-			if err := chromedp.Run(ctx, TextInputAction(text)); err != nil {
+			if err := chromedp.Run(runCtx, TextInputAction(text)); err != nil {
 				return "", fmt.Errorf("type text failed: %s", err.Error())
 			}
 		} else {
 			for _, ch := range text {
-				if err := chromedp.Run(ctx, TextInputAction(string(ch))); err != nil {
+				select {
+				case <-cancel:
+					return "", fmt.Errorf("cancelled")
+				default:
+				}
+				if err := chromedp.Run(runCtx, TextInputAction(string(ch))); err != nil {
 					return "", fmt.Errorf("type char failed: %s", err.Error())
 				}
 				time.Sleep(time.Duration(delay) * time.Millisecond)
@@ -133,15 +168,30 @@ func HandleWebHover(bm *BrowserManager, tm *task.TaskManager, args map[string]in
 		return &types.ToolResult{Success: false, Error: "either selector or (x,y) required", Tool: "web_hover"}
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_hover"}
+	}
+
 	_, output, err := tm.SyncOperation("web_hover", func(cancel <-chan struct{}) (string, error) {
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
 
+		runCtx, runCancel := context.WithCancel(ctx)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+
 		if sel != "" {
 			var rectStr string
-			if err := chromedp.Run(ctx,
+			if err := chromedp.Run(runCtx,
 				chromedp.Evaluate(fmt.Sprintf(`(() => {
 					const el = document.querySelector('%s');
 					if (!el) return '';
@@ -163,13 +213,13 @@ func HandleWebHover(bm *BrowserManager, tm *task.TaskManager, args map[string]in
 				return "", fmt.Errorf("parse element position failed: %s", err.Error())
 			}
 
-			if err := chromedp.Run(ctx, MouseMoveAction(pos.X, pos.Y)); err != nil {
+			if err := chromedp.Run(runCtx, MouseMoveAction(pos.X, pos.Y)); err != nil {
 				return "", fmt.Errorf("hover failed: %s", err.Error())
 			}
 			return fmt.Sprintf("hovered %s at (%.0f, %.0f)", sel, pos.X, pos.Y), nil
 		}
 
-		if err := chromedp.Run(ctx, MouseMoveAction(x, y)); err != nil {
+		if err := chromedp.Run(runCtx, MouseMoveAction(x, y)); err != nil {
 			return "", fmt.Errorf("hover at (%.0f, %.0f) failed: %s", x, y, err.Error())
 		}
 		return fmt.Sprintf("hovered at (%.0f, %.0f)", x, y), nil
@@ -193,13 +243,28 @@ func HandleWebDrag(bm *BrowserManager, tm *task.TaskManager, args map[string]int
 		return &types.ToolResult{Success: false, Error: "from_x, from_y, to_x, to_y required", Tool: "web_drag"}
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_drag"}
+	}
+
 	_, output, err := tm.SyncOperation("web_drag", func(cancel <-chan struct{}) (string, error) {
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
 
-		if err := chromedp.Run(ctx,
+		runCtx, runCancel := context.WithCancel(ctx)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+
+		if err := chromedp.Run(runCtx,
 			MouseMoveAction(fromX, fromY),
 			MouseDownAction(fromX, fromY, input.Left),
 			MouseMoveAction(toX, toY),
@@ -220,7 +285,12 @@ func HandleWebDrag(bm *BrowserManager, tm *task.TaskManager, args map[string]int
 
 // HandleWebMouseDown handles mouse down event in browser.
 func HandleWebMouseDown(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	ctx, err := bm.EnsureTab()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_mouse_down"}
+	}
+
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_mouse_down"}
 	}
@@ -250,7 +320,12 @@ func HandleWebMouseDown(bm *BrowserManager, args map[string]interface{}) *types.
 
 // HandleWebMouseUp handles mouse up event in browser.
 func HandleWebMouseUp(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	ctx, err := bm.EnsureTab()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_mouse_up"}
+	}
+
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_mouse_up"}
 	}
@@ -280,7 +355,12 @@ func HandleWebMouseUp(bm *BrowserManager, args map[string]interface{}) *types.To
 
 // HandleWebMouseMove moves mouse to coordinates in browser.
 func HandleWebMouseMove(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	ctx, err := bm.EnsureTab()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_mouse_move"}
+	}
+
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_mouse_move"}
 	}
@@ -299,7 +379,12 @@ func HandleWebMouseMove(bm *BrowserManager, args map[string]interface{}) *types.
 
 // HandleWebScrollWheel scrolls the browser page.
 func HandleWebScrollWheel(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	ctx, err := bm.EnsureTab()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_scroll_wheel"}
+	}
+
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_scroll_wheel"}
 	}
@@ -337,14 +422,29 @@ func HandleWebScrollTo(bm *BrowserManager, tm *task.TaskManager, args map[string
 		return &types.ToolResult{Success: false, Error: "either selector or (x,y) required", Tool: "web_scroll_to"}
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_scroll_to"}
+	}
+
 	_, output, err := tm.SyncOperation("web_scroll_to", func(cancel <-chan struct{}) (string, error) {
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
 
+		runCtx, runCancel := context.WithCancel(ctx)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+
 		if hasSel && sel != "" {
-			if err := chromedp.Run(ctx,
+			if err := chromedp.Run(runCtx,
 				chromedp.ActionFunc(func(ctx context.Context) error {
 					_, _, err := runtime.Evaluate(fmt.Sprintf(
 						`document.querySelector('%s').scrollIntoView({behavior:'instant',block:'center'})`, sel,
@@ -357,7 +457,7 @@ func HandleWebScrollTo(bm *BrowserManager, tm *task.TaskManager, args map[string
 			return "scrolled to " + sel, nil
 		}
 
-		if err := chromedp.Run(ctx,
+		if err := chromedp.Run(runCtx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				_, _, err := runtime.Evaluate(fmt.Sprintf(`window.scrollTo(%.0f, %.0f)`, x, y)).Do(ctx)
 				return err

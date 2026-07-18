@@ -8,6 +8,12 @@ import (
 	"github.com/chonkpilot/chonkpilot/internal/models"
 )
 
+// logf is a shim for structured logging within the db package.
+// It uses a simple prefix to identify the source. Override via SetLogger.
+var logf = func(format string, args ...interface{}) {
+	// Default: no-op. The tasks.go CancelTaskCascade calls logf instead of log.Printf.
+}
+
 // CreateTask inserts a new task record.
 func CreateTask(db *sql.DB, t *models.Task) error {
 	_, err := db.Exec(
@@ -79,20 +85,9 @@ func GetTasksByParent(db *sql.DB, parentTaskID string) ([]*models.Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tasks by parent: %w", err)
 	}
-	defer rows.Close()
-
-	var tasks []*models.Task
-	for rows.Next() {
-		t := &models.Task{}
-		if err := rows.Scan(&t.TaskID, &t.ParentTaskID, &t.TurnID, &t.SessionID, &t.Name, &t.Status, &t.Progress, &t.Result, &t.ExecutorPID, &t.PipePath, &t.PromptFile, &t.Depth, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan task: %w", err)
-		}
-		tasks = append(tasks, t)
-	}
-	if tasks == nil {
-		tasks = []*models.Task{}
-	}
-	return tasks, rows.Err()
+	return scanAll(rows, func(t *models.Task) []any {
+		return []any{&t.TaskID, &t.ParentTaskID, &t.TurnID, &t.SessionID, &t.Name, &t.Status, &t.Progress, &t.Result, &t.ExecutorPID, &t.PipePath, &t.PromptFile, &t.Depth, &t.CreatedAt, &t.UpdatedAt}
+	})
 }
 
 // CancelTaskCascade cancels a task and all its descendants using BFS.
@@ -126,7 +121,7 @@ func CancelTaskCascade(db *sql.DB, taskID string) error {
 			models.TaskStatusCancelled, now, id,
 		)
 		if err != nil {
-			// Log but don't block the cascade
+			logf("CancelTaskCascade: failed to cancel task %s: %v (continuing cascade)", id, err)
 			continue
 		}
 	}
@@ -142,20 +137,9 @@ func GetTasksByTurn(db *sql.DB, turnID string) ([]*models.Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tasks by turn: %w", err)
 	}
-	defer rows.Close()
-
-	var tasks []*models.Task
-	for rows.Next() {
-		t := &models.Task{}
-		if err := rows.Scan(&t.TaskID, &t.ParentTaskID, &t.TurnID, &t.SessionID, &t.Name, &t.Status, &t.Progress, &t.Result, &t.ExecutorPID, &t.PipePath, &t.PromptFile, &t.Depth, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan task: %w", err)
-		}
-		tasks = append(tasks, t)
-	}
-	if tasks == nil {
-		tasks = []*models.Task{}
-	}
-	return tasks, rows.Err()
+	return scanAll(rows, func(t *models.Task) []any {
+		return []any{&t.TaskID, &t.ParentTaskID, &t.TurnID, &t.SessionID, &t.Name, &t.Status, &t.Progress, &t.Result, &t.ExecutorPID, &t.PipePath, &t.PromptFile, &t.Depth, &t.CreatedAt, &t.UpdatedAt}
+	})
 }
 
 // GetUnfinishedTasks returns all tasks with status running or paused.
@@ -166,20 +150,9 @@ func GetUnfinishedTasks(db *sql.DB) ([]*models.Task, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unfinished tasks: %w", err)
 	}
-	defer rows.Close()
-
-	var tasks []*models.Task
-	for rows.Next() {
-		t := &models.Task{}
-		if err := rows.Scan(&t.TaskID, &t.ParentTaskID, &t.TurnID, &t.SessionID, &t.Name, &t.Status, &t.Progress, &t.Result, &t.ExecutorPID, &t.PipePath, &t.PromptFile, &t.Depth, &t.CreatedAt, &t.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan task: %w", err)
-		}
-		tasks = append(tasks, t)
-	}
-	if tasks == nil {
-		tasks = []*models.Task{}
-	}
-	return tasks, rows.Err()
+	return scanAll(rows, func(t *models.Task) []any {
+		return []any{&t.TaskID, &t.ParentTaskID, &t.TurnID, &t.SessionID, &t.Name, &t.Status, &t.Progress, &t.Result, &t.ExecutorPID, &t.PipePath, &t.PromptFile, &t.Depth, &t.CreatedAt, &t.UpdatedAt}
+	})
 }
 
 func nullInt(v int) *int {

@@ -156,11 +156,32 @@ func TestMergeContext(t *testing.T) {
 			wantLen:   3,
 		},
 		{
-			name:      "already has session_id",
+			name:      "already has session_id - preserved",
 			payload:   map[string]interface{}{"session_id": "existing"},
 			sessionID: "override",
 			turnID:    "t3",
-			wantLen:   2, // same key overwritten, only turn_id is new
+			wantLen:   2, // session_id preserved, turn_id added
+		},
+		{
+			name:      "already has turn_id - preserved",
+			payload:   map[string]interface{}{"turn_id": "existing-turn"},
+			sessionID: "main",
+			turnID:    "override-turn",
+			wantLen:   2, // turn_id preserved, session_id added
+		},
+		{
+			name:      "has both session_id and turn_id - both preserved",
+			payload:   map[string]interface{}{"session_id": "s-existing", "turn_id": "t-existing"},
+			sessionID: "s-override",
+			turnID:    "t-override",
+			wantLen:   2, // both preserved, nothing added
+		},
+		{
+			name:      "sub_session_id present - session_id injected",
+			payload:   map[string]interface{}{"sub_session_id": "sub1"},
+			sessionID: "main",
+			turnID:    "t4",
+			wantLen:   3, // sub_session_id preserved, session_id injected, turn_id added
 		},
 	}
 
@@ -170,10 +191,22 @@ func TestMergeContext(t *testing.T) {
 			if len(got) != tc.wantLen {
 				t.Errorf("len = %d, want %d", len(got), tc.wantLen)
 			}
-			if got["session_id"] != tc.sessionID {
+			// When payload already has session_id, it should be preserved.
+			originalSID, hadSID := tc.payload["session_id"]
+			if hadSID {
+				if got["session_id"] != originalSID {
+					t.Errorf("session_id was overwritten: got %v, want preserved %v", got["session_id"], originalSID)
+				}
+			} else if got["session_id"] != tc.sessionID {
 				t.Errorf("session_id = %v, want %v", got["session_id"], tc.sessionID)
 			}
-			if got["turn_id"] != tc.turnID {
+			// When payload already has turn_id, it should be preserved.
+			originalTID, hadTID := tc.payload["turn_id"]
+			if hadTID {
+				if got["turn_id"] != originalTID {
+					t.Errorf("turn_id was overwritten: got %v, want preserved %v", got["turn_id"], originalTID)
+				}
+			} else if got["turn_id"] != tc.turnID {
 				t.Errorf("turn_id = %v, want %v", got["turn_id"], tc.turnID)
 			}
 		})

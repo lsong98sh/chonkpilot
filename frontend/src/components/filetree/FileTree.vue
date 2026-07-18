@@ -7,8 +7,11 @@
       :props="defaultProps"
       node-key="path"
       highlight-current
+      v-model:expanded-keys="expandedKeys"
       @node-click="handleNodeClick"
       @node-contextmenu="handleNodeContextMenu"
+      @node-expand="handleNodeExpand"
+      @node-collapse="handleNodeCollapse"
       :filter-node-method="filterNode"
     >
       <template #default="{ data }">
@@ -68,6 +71,12 @@ import { getFileTree, getFileTreeChildren, createFileInDir, createDirInDir, rena
 import { useFileTree } from '../../composables/useFileTree'
 
 const treeRef = ref(null)
+
+// expandedKeys tracks which directories are expanded;
+// v-model:expanded-keys="expandedKeys" on el-tree keeps it in sync.
+// Before reload, we save and restore it so expanded folders don't collapse
+// when a file changes in a different directory (which triggers reloadRoot fallback).
+const expandedKeys = ref([])
 
 const { loading, onFileChanged, teardown } = useFileTree()
 
@@ -230,11 +239,57 @@ onMounted(() => {
   document.addEventListener('click', documentClickHandler)
   document.addEventListener('keydown', onKeyDown)
   window.addEventListener('file:search', onFileSearch)
-  onFileChanged((changedDir) => {
-    reloadNode(changedDir)
+  // Batch handler: receive array of {dir, children} from the queue.
+  // Do incremental tree update with el-tree's remove/append — no reload or refresh.
+  onFileChanged((changes) => {
+    const tree = treeRef.value
+    if (!tree) return
+    const saved = [...expandedKeys.value]
+    for (const { dir, children } of changes) {
+      const parentNode = tree.getNode(dir)
+      if (!parentNode || !parentNode.childNodes) continue
+      // Transform watcher children (name/path/is_dir) to tree node format (label/path/is_dir/isLeaf)
+      const newNodes = children.map(c => ({
+        label: c.name,
+        path: c.path,
+        is_dir: c.is_dir,
+        isLeaf: !c.is_dir,
+      }))
+      // Build lookup maps for fast diff (both keyed by label for correct comparison)
+      const newByLabel = new Map(newNodes.map(c => [c.label, c]))
+      const oldByLabel = new Map(parentNode.childNodes.map(c => [c.data.label, c]))
+      // Remove items that no longer exist
+      for (const [label, childNode] of oldByLabel) {
+        if (!newByLabel.has(label)) {
+          tree.remove(childNode)
+        }
+      }
+      // Add items that are new (at correct sorted position)
+      for (let i = 0; i < newNodes.length; i++) {
+        const child = newNodes[i]
+        if (!oldByLabel.has(child.label)) {
+          const nextSibling = newNodes[i + 1]
+          const nextNode = nextSibling ? oldByLabel.get(nextSibling.label) : null
+          if (nextNode) {
+            tree.insert(child, parentNode, nextNode)
+          } else {
+            tree.append(child, parentNode)
+          }
+        }
+      }
+    }
+    nextTick(() => { expandedKeys.value = saved })
   })
   // Auto-expand the root so the first-level files are visible immediately
-  nextTick(() => reloadRoot())
+  nextTick(() => {
+    reloadRoot()
+    // After root loads, watch all currently expanded dirs
+    nextTick(() => {
+      for (const key of expandedKeys.value) {
+        window.go.main.App.WatchDir(key)
+      }
+    })
+  })
 })
 
 onUnmounted(() => {
@@ -417,15 +472,17 @@ async function cancelEdit() {
 async function reloadNodeAsync(path) {
   const tree = treeRef.value
   if (!tree) return
+  const saved = [...expandedKeys.value]
   const node = tree.getNode(path)
   if (node && node.loaded) {
     node.loaded = false
     node.loadData()
     // Wait for lazy load to complete (local FS read is fast)
     await new Promise((r) => setTimeout(r, 200))
-    return
+  } else {
+    doReloadRoot()
   }
-  reloadRoot()
+  nextTick(() => { expandedKeys.value = saved })
 }
 
 async function startInlineRename(path, oldName) {
@@ -630,24 +687,82 @@ async function loadNode(node, resolve) {
 function reloadNode(path) {
   const tree = treeRef.value
   if (!tree) return
+  const saved = [...expandedKeys.value]
   const node = tree.getNode(path)
   if (node && node.loaded) {
     node.loaded = false
     node.loadData()
-    return
+  } else {
+    // Node not found (e.g. file in root workDir or not yet visited).
+    // Reload the root listing to pick up root-level changes.
+    doReloadRoot()
   }
-  // Node not found (e.g. file in root workDir or not yet visited).
-  // Reload the root listing to pick up root-level changes.
-  reloadRoot()
+  nextTick(() => { expandedKeys.value = saved })
 }
 
 function reloadRoot() {
+  const tree = treeRef.value
+  if (!tree) return
+  const saved = [...expandedKeys.value]
+  doReloadRoot()
+  nextTick(() => { expandedKeys.value = saved })
+}
+
+function doReloadRoot() {
   const tree = treeRef.value
   if (!tree) return
   const root = tree.store?.root
   if (!root) return
   root.loaded = false
   root.loadData()
+}
+
+// ─── Expand/collapse watch (recursive) ───────────
+
+// Determine path separator from an existing path (cross-platform).
+function getSep(path) {
+  return path.indexOf('/') !== -1 ? '/' : '\\'
+}
+
+// Get all expanded keys that are strict descendants of parentPath.
+function descendantKeys(parentPath) {
+  const sep = getSep(parentPath)
+  const prefix = parentPath + sep
+  return expandedKeys.value.filter(k => k.startsWith(prefix))
+}
+
+function watchDirRecursive(data) {
+  if (!data.is_dir) return
+  window.go.main.App.WatchDir(data.path)
+  // After el-tree loads children and restores sub-expansions,
+  // re-watch any descendants that are also expanded
+  nextTick(() => {
+    for (const key of descendantKeys(data.path)) {
+      window.go.main.App.WatchDir(key)
+    }
+  })
+}
+
+function unwatchDirRecursive(data) {
+  if (!data.is_dir) return
+  // Recursively unwatch all descendant expanded dirs
+  const descendants = descendantKeys(data.path)
+  for (const key of descendants) {
+    window.go.main.App.UnwatchDir(key)
+  }
+  // Remove descendant keys from expandedKeys (el-tree removes the collapsed dir itself)
+  const removeSet = new Set(descendants)
+  expandedKeys.value = expandedKeys.value.filter(k => !removeSet.has(k))
+  // Unwatch this dir
+  window.go.main.App.UnwatchDir(data.path)
+}
+
+function handleNodeExpand(data) {
+  watchDirRecursive(data)
+}
+
+function handleNodeCollapse(data) {
+  unwatchDirRecursive(data)
 }
 
 // ─── File open ───────────────────────────────────

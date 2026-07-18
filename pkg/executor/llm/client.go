@@ -17,15 +17,16 @@ type Message struct {
 
 // ChatOptions holds options for chat completion.
 type ChatOptions struct {
-	Stream            bool
-	Model             string
-	Tools             []ToolDefinition // tool definitions to pass to LLM
-	Temperature       float64          // 0~2, works in non-thinking mode
-	MaxTokens         int              // max output tokens
-	Thinking          bool             // enable thinking mode (extra_body thinking.type)
-	ReasoningEffort   string           // low/medium/high/max (DeepSeek reasoning_effort)
-	ResponseTimeout time.Duration    // max time to wait for first response token (0 = no timeout)
-	StreamTimeout     time.Duration    // max idle time between stream chunks (0 = no timeout)
+	Stream              bool
+	Model               string
+	Tools               []ToolDefinition // tool definitions to pass to LLM
+	Temperature         float64          // 0~2, works in non-thinking mode
+	MaxTokens           int              // max output tokens
+	Thinking            bool             // enable thinking mode (extra_body thinking.type)
+	ReasoningEffort     string           // low/medium/high/max (DeepSeek reasoning_effort)
+	ResponseTimeout     time.Duration    // max time to wait for first response token (0 = no timeout)
+	StreamTimeout       time.Duration    // max idle time between stream chunks (0 = no timeout)
+	TLSHandshakeTimeout time.Duration    // TLS handshake timeout (0 = default 30s)
 }
 
 // ToolDefinition is a tool definition for LLM function calling requests.
@@ -104,4 +105,17 @@ func NewClient(protocol, model, apiKey, apiURL string, logger *zap.Logger) *Clie
 // Chat sends a chat completion request.
 func (c *Client) Chat(messages []Message, options ChatOptions) (<-chan StreamEvent, error) {
 	return c.provider.Chat(messages, options)
+}
+
+// MaskAPIKey returns a truncated API key showing only the first 5 characters,
+// with the rest replaced by asterisks. Returns "(empty)" for empty input.
+// Use this for all log/display output involving API keys.
+func MaskAPIKey(key string) string {
+	if key == "" {
+		return "(empty)"
+	}
+	if len(key) <= 5 {
+		return key[:len(key)] + "****"
+	}
+	return key[:5] + "****"
 }

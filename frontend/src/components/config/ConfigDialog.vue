@@ -7,10 +7,10 @@
             <el-icon><Plus /></el-icon> 添加 LLM
           </el-button>
         </div>
-        <el-table :data="form.llms" size="small" style="width: 100%" empty-text="未配置 LLM Provider">
+        <el-table :data="form.llms" size="small" style="width: 100%" empty-text="未配置 LLM">
           <el-table-column label="#" type="index" width="40" />
           <el-table-column label="名称" prop="name" min-width="120" />
-          <el-table-column label="Provider" prop="provider" width="100" />
+          <el-table-column label="Protocol" prop="protocol" width="100" />
           <el-table-column label="模型" prop="model" min-width="120" />
           <el-table-column label="默认" width="70" align="center">
             <template #default="{ $index }">
@@ -78,6 +78,14 @@
           </el-table-column>
         </el-table>
       </el-tab-pane>
+      <!-- 代码索引 tab -->
+      <el-tab-pane label="代码索引" name="codeIndex">
+        <el-form label-position="top" size="small">
+          <el-form-item label="代码索引温度">
+            <el-input-number v-model="form.codeIndexTemperature" :min="0" :max="1" :step="0.05" controls-position="right" :style="{ width: '180px' }" />
+          </el-form-item>
+        </el-form>
+      </el-tab-pane>
       <el-tab-pane label="常规" name="general">
             <el-form label-position="top" size="small">
               <el-row :gutter="12">
@@ -137,6 +145,62 @@
                   </el-form-item>
                 </el-col>
               </el-row>
+              <!-- 工具执行 -->
+              <el-divider />
+              <el-row :gutter="12">
+                <el-col :span="12">
+                  <el-form-item label="工具嵌套深度">
+                    <el-input-number v-model="form.toolMaxDepth" :min="1" :max="20" controls-position="right" :style="{ width: '180px' }" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="任务轮询间隔(ms)">
+                    <el-input-number v-model="form.taskPollIntervalMs" :min="50" :max="2000" :step="50" controls-position="right" :style="{ width: '180px' }" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <!-- 搜索限制 -->
+              <el-divider />
+              <el-row :gutter="12">
+                <el-col :span="12">
+                  <el-form-item label="搜索结果上限">
+                    <el-input-number v-model="form.searchMaxResults" :min="10" :max="5000" :step="10" controls-position="right" :style="{ width: '180px' }" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="HTTP获取最大大小(KB)">
+                    <el-input-number v-model="form.fetchMaxBodySizeKB" :min="1" :max="10000" :step="10" controls-position="right" :style="{ width: '180px' }" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <!-- 浏览器 -->
+              <el-divider />
+              <el-row :gutter="12">
+                <el-col :span="8">
+                  <el-form-item label="浏览器窗口宽度">
+                    <el-input-number v-model="form.browserWindowWidth" :min="800" :max="3840" :step="100" controls-position="right" :style="{ width: '180px' }" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="浏览器窗口高度">
+                    <el-input-number v-model="form.browserWindowHeight" :min="600" :max="2160" :step="100" controls-position="right" :style="{ width: '180px' }" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="8">
+                  <el-form-item label="控制台日志上限">
+                    <el-input-number v-model="form.browserLogCap" :min="100" :max="5000" :step="100" controls-position="right" :style="{ width: '180px' }" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <!-- LLM 网络 -->
+              <el-divider />
+              <el-row :gutter="12">
+                <el-col :span="12">
+                  <el-form-item label="TLS握手超时(秒)">
+                    <el-input-number v-model="form.llmTLSHandshakeTimeout" :min="5" :max="120" controls-position="right" :style="{ width: '180px' }" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
             </el-form>
           </el-tab-pane>
         </el-tabs>
@@ -151,10 +215,10 @@
             </el-form-item>
           </el-col>
           <el-col :span="12">
-            <el-form-item label="Provider">
-              <el-select v-model="editLLMDialog.data.provider">
-                <el-option label="DeepSeek" value="deepseek" />
-                <el-option label="GLM" value="glm" />
+            <el-form-item label="Protocol">
+              <el-select v-model="editLLMDialog.data.protocol">
+                <el-option label="OpenAI" value="openai" />
+                <el-option label="Claude" value="claude" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -268,6 +332,20 @@ const form = reactive({
   theme: 'light',
   retryCount: 0,
   retryDelay: 5,
+  // 代码索引
+  codeIndexTemperature: 0.1,
+  // 工具执行
+  toolMaxDepth: 5,
+  taskPollIntervalMs: 200,
+  // 搜索限制
+  searchMaxResults: 200,
+  fetchMaxBodySizeKB: 100,
+  // 浏览器
+  browserWindowWidth: 1280,
+  browserWindowHeight: 800,
+  browserLogCap: 500,
+  // LLM 网络
+  llmTLSHandshakeTimeout: 30,
 })
 
 // Edit LLM state (shared for global + project)
@@ -343,28 +421,56 @@ async function confirmEditMCP() {
   editMCPDialog.data.name = name
   editMCPDialog.data.url = url
 
-  // For new MCP servers, validate and discover tools via backend
-  if (editMCPDialog.index === -1) {
-    savingMcp.value = true
-    try {
-      const result = await window.go.main.App.DiscoverMCPServerTools(name, url)
-      // Attach discovered tools to the server config
-      editMCPDialog.data.discoveredTools = result.tools || []
+  // Always discover tools (both new and edit)
+  savingMcp.value = true
+  try {
+    const result = await window.go.main.App.DiscoverMCPServerTools(name, url)
+    const tools = result.tools || []
+    const transport = result.transport || 'direct'
+
+    // Build tool list for preview dialog
+    const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    const toolItems = tools.map((t, i) =>
+      `<div style="padding:12px;${i < tools.length - 1 ? 'border-bottom:1px solid #e8e8e8;' : ''}">
+         <div style="font-weight:500;font-size:13px;line-height:1.4;">${esc(t.name)}</div>
+         <div style="font-size:11px;color:#999;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.4;margin-top:2px;">${esc(t.description || '')}</div>
+       </div>`
+    ).join('')
+
+    await ElMessageBox.confirm(
+      `<div style="width:394px;">
+         <div style="margin-bottom:8px;font-size:13px;color:#666;">
+           共 <strong>${tools.length}</strong> 个工具，传输方式：<strong>${transport}</strong>
+         </div>
+         <div style="max-height:235px;overflow-y:auto;border:1px solid #e0e0e0;border-radius:4px;">
+           ${toolItems || '<div style="padding:12px;color:#999;">未发现工具</div>'}
+         </div>
+       </div>`,
+      'MCP 工具发现结果',
+      {
+        dangerouslyUseHTMLString: true,
+        width: '420px',
+        confirmButtonText: '确认保存',
+        cancelButtonText: '取消',
+      }
+    )
+
+    // User confirmed — save server config with discovered tools and transport
+    editMCPDialog.data.discoveredTools = tools
+    editMCPDialog.data.transport = transport
+    if (editMCPDialog.index === -1) {
       form.mcpServers.push({ ...editMCPDialog.data })
-      editMCPDialog.visible = false
-    } catch (err) {
-      const msg = typeof err === 'string' ? err : (err?.message || '验证 MCP Server 失败')
-      ElMessage.error(msg)
-      return
-    } finally {
-      savingMcp.value = false
+    } else {
+      form.mcpServers[editMCPDialog.index] = { ...editMCPDialog.data }
     }
-  } else {
-    // Editing existing server — keep existing discoveredTools
-    const existing = form.mcpServers[editMCPDialog.index]
-    editMCPDialog.data.discoveredTools = existing?.discoveredTools || []
-    form.mcpServers[editMCPDialog.index] = { ...editMCPDialog.data }
     editMCPDialog.visible = false
+  } catch (err) {
+    // User clicked cancel/close on messagebox is not an error
+    if (err === 'cancel' || err === 'close') return
+    const msg = typeof err === 'string' ? err : (err?.message || '验证 MCP Server 失败')
+    ElMessage.error(msg)
+  } finally {
+    savingMcp.value = false
   }
 }
 
@@ -387,11 +493,36 @@ async function loadConfig() {
     if (uc.logLevel !== undefined) form.logLevel = uc.logLevel
     if (uc.retryCount !== undefined) form.retryCount = uc.retryCount
     if (uc.retryDelay !== undefined) form.retryDelay = uc.retryDelay
+    if (uc.codeIndexTemperature !== undefined) form.codeIndexTemperature = uc.codeIndexTemperature
+    if (uc.toolMaxDepth !== undefined) form.toolMaxDepth = uc.toolMaxDepth
+    if (uc.taskPollIntervalMs !== undefined) form.taskPollIntervalMs = uc.taskPollIntervalMs
+    if (uc.searchMaxResults !== undefined) form.searchMaxResults = uc.searchMaxResults
+    if (uc.fetchMaxBodySizeKB !== undefined) form.fetchMaxBodySizeKB = uc.fetchMaxBodySizeKB
+    if (uc.browserWindowWidth !== undefined) form.browserWindowWidth = uc.browserWindowWidth
+    if (uc.browserWindowHeight !== undefined) form.browserWindowHeight = uc.browserWindowHeight
+    if (uc.browserLogCap !== undefined) form.browserLogCap = uc.browserLogCap
+    if (uc.llmTLSHandshakeTimeout !== undefined) form.llmTLSHandshakeTimeout = uc.llmTLSHandshakeTimeout
   } catch (e) { console.warn('[ConfigDialog] Failed to load user config:', e) }
 }
 
 async function save() {
   try {
+    // Basic validation: ensure at least one LLM with required fields
+    if (!form.llms || form.llms.length === 0) {
+      ElMessage.warning('至少配置一个 LLM')
+      return
+    }
+    for (let i = 0; i < form.llms.length; i++) {
+      const llm = form.llms[i]
+      if (!llm.name?.trim()) {
+        ElMessage.warning(`第 ${i + 1} 个 LLM 缺少名称`)
+        return
+      }
+      if (!llm.model?.trim()) {
+        ElMessage.warning(`LLM "${llm.name}" 缺少模型名`)
+        return
+      }
+    }
     await saveUserConfig({
       llms: form.llms,
       defaultLLM: form.defaultLLM,
@@ -407,6 +538,15 @@ async function save() {
       logLevel: form.logLevel,
       retryCount: form.retryCount,
       retryDelay: form.retryDelay,
+      codeIndexTemperature: form.codeIndexTemperature,
+      toolMaxDepth: form.toolMaxDepth,
+      taskPollIntervalMs: form.taskPollIntervalMs,
+      searchMaxResults: form.searchMaxResults,
+      fetchMaxBodySizeKB: form.fetchMaxBodySizeKB,
+      browserWindowWidth: form.browserWindowWidth,
+      browserWindowHeight: form.browserWindowHeight,
+      browserLogCap: form.browserLogCap,
+      llmTLSHandshakeTimeout: form.llmTLSHandshakeTimeout,
     })
     visible.value = false
   } catch (e) {

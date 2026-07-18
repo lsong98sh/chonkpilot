@@ -1,6 +1,7 @@
 package batch_llm
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,8 +12,10 @@ import (
 
 	"github.com/chonkpilot/chonkpilot/internal/db"
 	"github.com/chonkpilot/chonkpilot/internal/models"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/codeindex"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/discover"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/llm"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/sessionutil"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -44,6 +47,7 @@ type Pipeline struct {
 type BatchLLMArgs struct {
 	Filename string `json:"filename"`
 	Count    int    `json:"count,omitempty"`
+	PoolSize int    `json:"pool_size,omitempty"` // sub-session pool reuse; default = count (max 10)
 }
 
 // ─── Dispatch callback (avoids circular import of toolhandler) ─────────────
@@ -66,6 +70,27 @@ type batchCtx struct {
 	writeEvent      func(eventType string, payload map[string]interface{})
 	dispatch        dispatchFunc
 	noChrome        bool
+	codeIndexer     *codeindex.Indexer
+}
+
+// Package-level cancellation — set by toolhandler.PropagateConfig.
+var batchCancelCtx context.Context
+
+// SetCancelCtx sets the cancellation context for batch_llm operations.
+func SetCancelCtx(ctx context.Context) {
+	batchCancelCtx = ctx
+}
+
+// checkCancel returns the cancellation error if cancelled.
+func checkCancel() error {
+	if batchCancelCtx != nil {
+		select {
+		case <-batchCancelCtx.Done():
+			return batchCancelCtx.Err()
+		default:
+		}
+	}
+	return nil
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -78,6 +103,7 @@ func HandleBatchLLM(
 	writeEvent func(string, map[string]interface{}),
 	dispatch dispatchFunc,
 	noChrome bool,
+	codeIndexer *codeindex.Indexer,
 	args map[string]interface{},
 ) *BatchResult {
 
@@ -93,6 +119,14 @@ func HandleBatchLLM(
 	}
 	if a.Count > 10 {
 		a.Count = 10
+	}
+	// Pool size defaults to count; cap at 10.
+	poolSize := a.PoolSize
+	if poolSize <= 0 {
+		poolSize = a.Count
+	}
+	if poolSize > 10 {
+		poolSize = 10
 	}
 
 	// Resolve pipeline path
@@ -133,6 +167,7 @@ func HandleBatchLLM(
 		writeEvent:      writeEvent,
 		dispatch:        dispatch,
 		noChrome:        noChrome,
+		codeIndexer:     codeIndexer,
 	}
 
 	// Count how many we'll run this time
@@ -161,7 +196,7 @@ func HandleBatchLLM(
 		createSubSessions(ctx, []string{subSession}, pipeline.SystemPrompt[:min(80, len(pipeline.SystemPrompt))])
 		if ctx.writeEvent != nil {
 			ctx.writeEvent("progress", map[string]interface{}{
-				"sub_session_id": subSession,
+				"session_id": subSession,
 				"message":        "started",
 			})
 		}
@@ -173,7 +208,7 @@ func HandleBatchLLM(
 			markTaskDone(pipelinePath, pipeline, task.ID, "error", pipeline.LastTaskID, subSession, result.turnID)
 			if ctx.writeEvent != nil {
 				ctx.writeEvent("error", map[string]interface{}{
-					"sub_session_id": subSession,
+					"session_id": subSession,
 					"error":          result.err,
 				})
 			}
@@ -190,22 +225,14 @@ func HandleBatchLLM(
 		}
 	}
 
-	// Auto-loop: run batch in background, wait for all tasks
-	workerSubSessions := make([]string, a.Count)
-	for i := 0; i < a.Count; i++ {
-		workerSubSessions[i] = uuid.New().String()
+	// Auto-loop: run batch in background, wait for all tasks.
+	// Create pool sessions upfront for reuse across tasks.
+	poolSessions := make([]string, poolSize)
+	for i := 0; i < poolSize; i++ {
+		sid := uuid.New().String()
+		poolSessions[i] = sid
 	}
-	createSubSessions(ctx, workerSubSessions, pipeline.SystemPrompt[:min(80, len(pipeline.SystemPrompt))])
-
-	// Notify frontend about new sub-sessions so Task panel refreshes
-	for _, subSess := range workerSubSessions {
-		if ctx.writeEvent != nil {
-			ctx.writeEvent("progress", map[string]interface{}{
-				"sub_session_id": subSess,
-				"message":        "pending",
-			})
-		}
-	}
+	createSubSessions(ctx, poolSessions, pipeline.SystemPrompt[:min(80, len(pipeline.SystemPrompt))])
 
 	// Sliding window execution
 	var mu sync.Mutex
@@ -215,8 +242,32 @@ func HandleBatchLLM(
 	done := false
 
 	for !done {
+		// Check cancellation at top of each loop iteration
+		if err := checkCancel(); err != nil {
+			// Mark running tasks as cancelled and return partial results
+			mu.Lock()
+			for i := nextIdx; i < len(pipeline.Tasks); i++ {
+				markTaskDone(pipelinePath, pipeline, pipeline.Tasks[i].ID, "error", pipeline.LastTaskID, "", "cancelled")
+			}
+			mu.Unlock()
+			return &BatchResult{
+				Success:  false,
+				Done:     false,
+				Output:   "batch_llm cancelled",
+				Filename: a.Filename,
+			}
+		}
 		mu.Lock()
 		// Fill available slots
+		//
+		// Locking pattern:
+		//   mu.Lock() at line 259 / entry.
+		//   For pending tasks: unlock → launch goroutine → re-lock for next iteration check.
+		//   For `continue` (non-pending): lock stays held (nextIdx is only accessed here).
+		//   After loop: mu.Unlock() releases the entry lock (or the last re-acquired lock).
+		//
+		// This ensures the goroutine (activeCount--) can proceed between Unlock and
+		// re-Lock, while the rest of the loop runs under the lock.
 		for activeCount < a.Count && nextIdx < len(pipeline.Tasks) {
 			if pipeline.Tasks[nextIdx].Status != "pending" {
 				nextIdx++
@@ -224,17 +275,25 @@ func HandleBatchLLM(
 			}
 			task := &pipeline.Tasks[nextIdx]
 			task.Status = "running"
-			workerID := activeCount
-			subSess := workerSubSessions[workerID]
 			activeCount++
-			mu.Unlock()
+			nextIdx++   // increment before releasing the lock
+			mu.Unlock() // release so goroutines can modify activeCount
 
+			// Each task reuses a session from the pool by task ID.
 			wg.Add(1)
-			go func(t *PipelineTask, subSession string) {
+			go func(t *PipelineTask) {
 				defer wg.Done()
+
+				// Pick session from pool by task ID (stable mapping)
+				poolIdx := (t.ID - 1) % len(poolSessions)
+				if poolIdx < 0 {
+					poolIdx = 0
+				}
+				subSession := poolSessions[poolIdx]
+
 				if ctx.writeEvent != nil {
 					ctx.writeEvent("progress", map[string]interface{}{
-						"sub_session_id": subSession,
+						"session_id": subSession,
 						"message":        fmt.Sprintf("Task #%d (%s)", t.ID, t.Name),
 					})
 				}
@@ -250,7 +309,7 @@ func HandleBatchLLM(
 						mu.Unlock()
 						if ctx.writeEvent != nil {
 							ctx.writeEvent("progress", map[string]interface{}{
-								"sub_session_id": subSession,
+								"session_id": subSession,
 								"message":        fmt.Sprintf("retry %d/%d", t.RetryCount, t.Retry),
 							})
 						}
@@ -259,7 +318,7 @@ func HandleBatchLLM(
 					markTaskDone(pipelinePath, pipeline, t.ID, "error", pipeline.LastTaskID, subSession, r.turnID)
 					if ctx.writeEvent != nil {
 						ctx.writeEvent("error", map[string]interface{}{
-							"sub_session_id": subSession,
+							"session_id": subSession,
 							"error":          r.err,
 						})
 					}
@@ -269,17 +328,20 @@ func HandleBatchLLM(
 				mu.Lock()
 				activeCount--
 				mu.Unlock()
-			}(task, subSess)
+			}(task)
 
+			// Re-acquire lock for the next iteration's condition check / continue.
+			// This also lets the for-loop exit with the lock held, so the
+			// mu.Unlock() below is the single matching release.
 			mu.Lock()
-			nextIdx++
-			mu.Unlock()
 		}
 		mu.Unlock()
 
+		mu.Lock()
 		if activeCount == 0 && nextIdx >= len(pipeline.Tasks) {
 			done = true
 		}
+		mu.Unlock()
 
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -289,16 +351,6 @@ func HandleBatchLLM(
 	// All done — re-read pipeline to get final status
 	finalPipeline, _ := readPipeline(pipelinePath)
 	allComplete := allDone(finalPipeline.Tasks)
-
-	// Emit completion for any sub-sessions still showing "pending"
-	for _, subSess := range workerSubSessions {
-		if ctx.writeEvent != nil {
-			ctx.writeEvent("complete", map[string]interface{}{
-				"sub_session_id": subSess,
-				"output":         "batch completed",
-			})
-		}
-	}
 
 	return &BatchResult{
 		Success:  true,
@@ -319,31 +371,38 @@ type taskResult struct {
 func executeTask(ctx *batchCtx, pipeline *Pipeline, task *PipelineTask, subSession string) taskResult {
 	turnID := uuid.New().String()
 
-	// Create turn in DB — use sub-session ID so Task panel can find it
+	// Create turn in DB and save user message — single connection
 	if ctx.dbDir != "" {
 		sqlDB, err := db.Open(ctx.dbDir)
 		if err == nil {
 			turn := models.NewTurn(turnID, subSession)
 			_ = db.CreateTurn(sqlDB, turn)
-			db.Close(sqlDB)
-		}
-	}
 
-	// Save user message to DB
-	if ctx.dbDir != "" {
-		sqlDB, err := db.Open(ctx.dbDir)
-		if err == nil {
 			msg := models.NewMessage(uuid.New().String(), turnID, "user", "text", task.Prompt)
 			_ = db.AddMessage(sqlDB, msg)
+
 			db.Close(sqlDB)
 		}
 	}
 
-	// Build LLM messages (no history — just system_prompt + task.prompt)
-	messages := []llm.Message{
-		{Role: "system", Content: pipeline.SystemPrompt},
-		{Role: "user", Content: task.Prompt},
+	// ── Load session history (for retry tasks with existing session) ──
+	var historyMessages []llm.Message
+	if task.SessionID != "" && ctx.dbDir != "" {
+		sqlDB, err := db.Open(ctx.dbDir)
+		if err == nil {
+			historyMessages, _ = sessionutil.LoadSessionMessages(sqlDB, task.SessionID)
+			db.Close(sqlDB)
+		}
 	}
+
+	// Build LLM messages
+	var messages []llm.Message
+	// History first (if any — from previous retry attempt)
+	messages = append(messages, historyMessages...)
+	// System prompt
+	messages = append(messages, llm.Message{Role: "system", Content: pipeline.SystemPrompt})
+	// Current task prompt
+	messages = append(messages, llm.Message{Role: "user", Content: task.Prompt})
 
 	// Create LLM client
 	client := llm.NewClient(ctx.llmProtocol, ctx.llmModel, ctx.llmAPIKey, ctx.llmAPIURL, ctx.logger)
@@ -359,156 +418,255 @@ func executeTask(ctx *batchCtx, pipeline *Pipeline, task *PipelineTask, subSessi
 	}
 	toolDefs := toLLMToolDefs(filtered)
 
-	// Tool loop
-	maxIter := 100
-	var fullContent strings.Builder
+	runner := &llm.TurnRunner{
+		Client:   client,
+		Logger:   ctx.logger,
+		CancelCx: batchCancelCtx,
+		Callbacks: llm.TurnCallbacks{
+			OnChunk: func(chunk llm.StreamEvent) {
+				if ctx.writeEvent == nil {
+					return
+				}
+				payload := map[string]interface{}{
+					"session_id": subSession,
+					"task_id":        task.ID,
+					"task_name":      task.Name,
+				}
+				if chunk.ReasoningContent != "" {
+					payload["content"] = chunk.ReasoningContent
+					payload["type"] = "reasoning"
+					payload["index"] = chunk.Index
+				}
+				if chunk.Content != "" {
+					payload["content"] = chunk.Content
+					payload["type"] = "text"
+					payload["index"] = chunk.Index
+				}
+				if chunk.Error != nil {
+					payload["error"] = chunk.Error.Error()
+				}
+				ctx.writeEvent("message_chunk", payload)
+			},
 
-	for iter := 0; iter < maxIter; iter++ {
-		// Call LLM
-		stream, err := client.Chat(messages, llm.ChatOptions{
-			Stream:          true,
-			Tools:           toolDefs,
-			Model:           ctx.llmModel,
-			Temperature:     0.7,
-			MaxTokens:       65535,
-			Thinking:        ctx.thinking,
-			ReasoningEffort: ctx.reasoningEffort,
-		})
-		if err != nil {
-			return taskResult{err: fmt.Sprintf("LLM call failed: %v", err)}
-		}
+			OnAssistantMsg: func(msg llm.Message) ([]string, error) {
+				toolCallIDs := saveAssistantMsg(ctx, turnID, msg)
+				return toolCallIDs, nil
+			},
 
-		// Read stream, collect text + tool calls
-		var toolCalls []*llm.ToolCall
-		var textContent, reasoningContent strings.Builder
+			OnToolCall: func(tc llm.ToolCall, args map[string]interface{}) (string, error) {
+				ctx.logger.Info("batch_llm: dispatching tool",
+					zap.String("tool", tc.Function.Name),
+					zap.String("tool_call_id", tc.ID),
+					zap.Any("args", args),
+				)
+				if ctx.writeEvent != nil {
+					ctx.writeEvent("tool_call", map[string]interface{}{
+						"session_id": subSession,
+						"task_id":        task.ID,
+						"task_name":      task.Name,
+						"tool":           tc.Function.Name,
+						"tool_call_id":   tc.ID,
+						"arguments":      tc.Function.Arguments,
+					})
+				}
+				return "", nil
+			},
 
-		for chunk := range stream {
-			if chunk.Error != nil {
-				return taskResult{err: fmt.Sprintf("LLM stream error: %v", chunk.Error)}
-			}
-			if chunk.ReasoningContent != "" {
-				reasoningContent.WriteString(chunk.ReasoningContent)
-			}
-			if chunk.Content != "" {
-				textContent.WriteString(chunk.Content)
-			}
-			if chunk.ToolCall != nil {
-				toolCalls = append(toolCalls, chunk.ToolCall)
-			}
-		}
-
-		// Build assistant message
-		assistantMsg := llm.Message{
-			Role:             "assistant",
-			Content:          textContent.String(),
-			ReasoningContent: reasoningContent.String(),
-		}
-		if len(toolCalls) > 0 {
-			assistantMsg.ToolCalls = make([]llm.ToolCall, len(toolCalls))
-			for i, tc := range toolCalls {
-				assistantMsg.ToolCalls[i] = *tc
-			}
-		}
-		messages = append(messages, assistantMsg)
-		fullContent.WriteString(textContent.String())
-
-		// Save assistant message to DB
-		saveAssistantMsg(ctx, turnID, assistantMsg)
-
-		// No tool calls → done
-		if len(toolCalls) == 0 {
-			break
-		}
-
-		// Process each tool call
-		for _, tc := range toolCalls {
-			// Parse arguments
-			var args map[string]interface{}
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				ctx.logger.Warn("batch_llm: failed to parse tool call arguments", zap.Error(err), zap.String("raw", tc.Function.Arguments))
-				errMsg := llm.Message{
+			OnToolResult: func(tc llm.ToolCall, resultStr string, success bool) error {
+				if ctx.writeEvent != nil {
+					ctx.writeEvent("tool_result", map[string]interface{}{
+						"session_id": subSession,
+						"task_id":        task.ID,
+						"task_name":      task.Name,
+						"tool":           tc.Function.Name,
+						"tool_call_id":   tc.ID,
+						"success":        success,
+						"result":         resultStr,
+					})
+				}
+				saveToolMsg(ctx, turnID, llm.Message{
 					Role:       "tool",
 					ToolCallID: tc.ID,
-					Content:    fmt.Sprintf(`{"error":"failed to parse arguments: %s"}`, err.Error()),
+					Content:    resultStr,
+				}, tc.Function.Name)
+				return nil
+			},
+
+			OnIterationEnd: func(iter int, reasoningContent string, toolCallMsgIDs []string) {
+				if reasoningContent != "" && len(toolCallMsgIDs) > 0 {
+					brief := extractBrief(reasoningContent)
+					sqlDB, err := db.Open(ctx.dbDir)
+					if err != nil {
+						return
+					}
+					defer db.Close(sqlDB)
+					for _, msgID := range toolCallMsgIDs {
+						_ = db.UpdateMessageBrief(sqlDB, msgID, brief)
+					}
 				}
-				messages = append(messages, errMsg)
-				continue
-			}
+			},
 
-			ctx.logger.Info("batch_llm: dispatching tool",
-				zap.String("tool", tc.Function.Name),
-				zap.String("tool_call_id", tc.ID),
-				zap.Any("args", args),
-			)
-
-			// Emit tool call event for IDE Task panel tracking
-			if ctx.writeEvent != nil {
-				ctx.writeEvent("tool_call", map[string]interface{}{
-					"sub_session_id": subSession,
+			OnLLMError: func(code, message string, retryable bool, attempt, maxAttempts int) {
+				if ctx.writeEvent == nil {
+					return
+				}
+				ctx.writeEvent("llm_error", map[string]interface{}{
+					"session_id": subSession,
 					"task_id":        task.ID,
 					"task_name":      task.Name,
-					"tool":           tc.Function.Name,
-					"arguments":      tc.Function.Arguments,
+					"code":           code,
+					"message":        message,
+					"retryable":      retryable,
+					"retry_attempt":  attempt,
+					"retry_count":    maxAttempts,
 				})
-			}
+			},
 
-			// Dispatch tool via callback (routes to Handler.Dispatch)
-			result := ctx.dispatch(tc.Function.Name, args, 0)
-
-			// Format result
-			resultStr := types.FormatToolResultJSON(tc.Function.Name, result)
-
-			// Emit tool result event
-			if ctx.writeEvent != nil {
-				ctx.writeEvent("tool_result", map[string]interface{}{
-					"sub_session_id": subSession,
+			OnLLMRetry: func(attempt, maxAttempts int, waitSeconds int) {
+				if ctx.writeEvent == nil {
+					return
+				}
+				ctx.writeEvent("llm_retry", map[string]interface{}{
+					"session_id": subSession,
 					"task_id":        task.ID,
 					"task_name":      task.Name,
-					"tool":           tc.Function.Name,
-					"success":        result.Success,
-					"result":         resultStr,
+					"retry_attempt":  attempt,
+					"retry_count":    maxAttempts,
+					"wait_seconds":   waitSeconds,
 				})
-			}
-
-			// Add and persist tool result message
-			toolResultMsg := llm.Message{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Content:    resultStr,
-			}
-			messages = append(messages, toolResultMsg)
-			saveToolMsg(ctx, turnID, toolResultMsg, tc.Function.Name)
-		}
+			},
+		},
+		Dispatch: func(toolName string, args map[string]interface{}, depth int) (string, bool, error) {
+			result := ctx.dispatch(toolName, args, depth)
+			resultStr := types.FormatToolResultJSON(toolName, result)
+			return resultStr, result.Success, nil
+		},
 	}
 
-	output := fullContent.String()
+	result, err := runner.Run(llm.TurnConfig{
+		Messages:          messages,
+		Tools:             toolDefs,
+		MaxIter:           100,
+		MaxAttempts:       3,
+		RetryDelaySeconds: 5,
+		MaxTokens:         65535,
+		Temperature:       0.7,
+		Thinking:          ctx.thinking,
+		ReasoningEffort:   ctx.reasoningEffort,
+	})
+
+	output := ""
+	if result != nil {
+		output = result.Content
+	}
+
+	errorStr := ""
+	if err != nil {
+		errorStr = err.Error()
+	} else if result != nil && result.Cancelled {
+		errorStr = "cancelled"
+	}
 
 	// Emit complete event so frontend marks sub-session as done
 	if ctx.writeEvent != nil {
 		ctx.writeEvent("complete", map[string]interface{}{
-			"sub_session_id": subSession,
+			"session_id": subSession,
 			"task_id":        task.ID,
 			"task_name":      task.Name,
 			"output":         output,
 		})
 	}
 
-	return taskResult{output: output, turnID: turnID}
+	// ── Flush code index changes made by this task ──
+	if ctx.codeIndexer != nil {
+		n := ctx.codeIndexer.FlushChangedFiles()
+		if n > 0 {
+			ctx.logger.Info("batch_llm: flushed code index changes",
+				zap.String("sub_session", subSession),
+				zap.Int("task_id", task.ID),
+				zap.Int("count", n))
+		}
+	}
+
+	// ── Generate sub-session summary (async) ──
+	if ctx.dbDir != "" && subSession != "" && turnID != "" {
+		go generateSubSessionSummary(ctx.logger, ctx.llmProtocol, ctx.llmModel,
+			ctx.llmAPIKey, ctx.llmAPIURL, ctx.dbDir, subSession, turnID)
+	}
+
+	return taskResult{output: output, err: errorStr, turnID: turnID}
 }
 
 // ─── DB helpers ──────────────────────────────────────────────────────────────
 
-func saveAssistantMsg(ctx *batchCtx, turnID string, msg llm.Message) {
+// extractBrief returns the first 3 non-empty lines of text.
+func extractBrief(text string) string {
+	lines := strings.SplitN(text, "\n", 4)
+	var brief strings.Builder
+	count := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if count > 0 {
+			brief.WriteString("\n")
+		}
+		brief.WriteString(trimmed)
+		count++
+		if count >= 3 {
+			break
+		}
+	}
+	return brief.String()
+}
+
+func saveAssistantMsg(ctx *batchCtx, turnID string, msg llm.Message) []string {
 	if ctx.dbDir == "" {
-		return
+		return nil
 	}
 	sqlDB, err := db.Open(ctx.dbDir)
 	if err != nil {
-		return
+		return nil
 	}
 	defer db.Close(sqlDB)
-	dbMsg := models.NewMessage(uuid.New().String(), turnID, "assistant", "text", msg.Content)
-	_ = db.AddMessage(sqlDB, dbMsg)
+
+	var toolCallIDs []string
+
+	// 1. Reasoning content (if any)
+	if msg.ReasoningContent != "" {
+		dbMsg := models.NewMessage(uuid.New().String(), turnID, "assistant", "reasoning", msg.ReasoningContent)
+		_ = db.AddMessage(sqlDB, dbMsg)
+	}
+
+	// 2. Text content (if any)
+	if msg.Content != "" {
+		dbMsg := models.NewMessage(uuid.New().String(), turnID, "assistant", "text", msg.Content)
+		_ = db.AddMessage(sqlDB, dbMsg)
+	}
+
+	// 3. Tool calls (if any)
+	if len(msg.ToolCalls) > 0 {
+		for _, tc := range msg.ToolCalls {
+			tcPayload, err := json.Marshal(models.ToolCallPayload{
+				ToolCallID: tc.ID,
+				Name:       tc.Function.Name,
+				Arguments:  tc.Function.Arguments,
+			})
+			if err != nil {
+				ctx.logger.Warn("saveAssistantMsg: marshal tool call failed", zap.Error(err))
+				continue
+			}
+			dbMsg := models.NewMessage(uuid.New().String(), turnID, "assistant", "tool_call", string(tcPayload))
+			if err := db.AddMessage(sqlDB, dbMsg); err != nil {
+				ctx.logger.Warn("saveAssistantMsg: save tool call failed", zap.Error(err))
+				continue
+			}
+			toolCallIDs = append(toolCallIDs, dbMsg.MessageID)
+		}
+	}
+
+	return toolCallIDs
 }
 
 func saveToolMsg(ctx *batchCtx, turnID string, msg llm.Message, toolName string) {
@@ -520,8 +678,15 @@ func saveToolMsg(ctx *batchCtx, turnID string, msg llm.Message, toolName string)
 		return
 	}
 	defer db.Close(sqlDB)
-	msgType := "tool"
-	dbMsg := models.NewMessage(uuid.New().String(), turnID, msg.Role, msgType, msg.Content)
+	toolResult, err := json.Marshal(models.ToolResultPayload{
+		ToolCallID: msg.ToolCallID,
+		Name:       toolName,
+		Result:     msg.Content,
+	})
+	if err != nil {
+		return
+	}
+	dbMsg := models.NewMessage(uuid.New().String(), turnID, msg.Role, "tool_result", string(toolResult))
 	_ = db.AddMessage(sqlDB, dbMsg)
 }
 
@@ -555,6 +720,9 @@ func readPipeline(path string) (*Pipeline, error) {
 	for i := range p.Tasks {
 		if p.Tasks[i].Retry <= 0 {
 			p.Tasks[i].Retry = 3 // default retry count
+		}
+		if p.Tasks[i].Status == "" {
+			p.Tasks[i].Status = "pending"
 		}
 	}
 	return &p, nil
@@ -666,4 +834,129 @@ func parseArgs(args map[string]interface{}, target interface{}) error {
 		return err
 	}
 	return json.Unmarshal(data, target)
+}
+
+// ─── Sub-session summary helpers ────────────────────────────────────────────
+
+// generateSubSessionSummary generates and saves a session summary for a sub-session.
+func generateSubSessionSummary(logger *zap.Logger, llmProtocol, llmModel, llmAPIKey, llmAPIURL string,
+	dbDir, sessionID, turnID string) {
+
+	sqlDB, err := db.Open(dbDir)
+	if err != nil {
+		logger.Warn("batch_llm summary: failed to open DB", zap.Error(err))
+		return
+	}
+	defer db.Close(sqlDB)
+
+	turnMessages, err := db.GetMessagesByTurn(sqlDB, turnID)
+	if err != nil {
+		logger.Warn("batch_llm summary: failed to load turn messages", zap.Error(err))
+		return
+	}
+	latestTurnText := batchFormatTurnSummary(turnMessages)
+	if latestTurnText == "" {
+		return
+	}
+
+	oldSummary, err := db.GetLatestSummary(sqlDB, sessionID)
+	if err != nil || oldSummary == "" {
+		oldSummary = "{}"
+	}
+
+	userContent := "Summarize the following conversation turn and update the existing summary.\n\n" +
+		"Existing summary:\n" + oldSummary + "\n\n" +
+		"New turn:\n" + latestTurnText + "\n\n" +
+		"Output a JSON object with keys: goals, completed, current_state, next_steps. Keep it concise (2-3 sentences per field)."
+
+	client := llm.NewClient(llmProtocol, llmModel, llmAPIKey, llmAPIURL, logger)
+	ch, err := client.Chat([]llm.Message{
+		{Role: "user", Content: userContent},
+	}, llm.ChatOptions{
+		Model:       llmModel,
+		Temperature: 0.1,
+		MaxTokens:   4096,
+	})
+	if err != nil {
+		logger.Warn("batch_llm summary: LLM call failed", zap.Error(err))
+		return
+	}
+
+	var result strings.Builder
+	for evt := range ch {
+		if evt.Error != nil {
+			logger.Warn("batch_llm summary: LLM stream error", zap.Error(evt.Error))
+			return
+		}
+		result.WriteString(evt.Content)
+	}
+
+	summaryJSON := strings.TrimSpace(result.String())
+	if summaryJSON == "" {
+		logger.Warn("batch_llm summary: empty response from LLM")
+		return
+	}
+
+	if !json.Valid([]byte(summaryJSON)) {
+		logger.Warn("batch_llm summary: response is not valid JSON",
+			zap.String("raw", batchTruncateStr(summaryJSON, 200)))
+		return
+	}
+
+	if err := db.SaveSummary(sqlDB, sessionID, summaryJSON, turnID); err != nil {
+		logger.Warn("batch_llm summary: failed to save", zap.Error(err))
+		return
+	}
+
+	logger.Info("batch_llm summary: sub-session summary updated",
+		zap.String("session_id", sessionID),
+		zap.Int("summary_bytes", len(summaryJSON)))
+}
+
+func batchFormatTurnSummary(messages []*models.Message) string {
+	var b strings.Builder
+	for i, m := range messages {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		switch m.Role {
+		case "user":
+			b.WriteString("User:\n")
+			b.WriteString(m.Content)
+		case "assistant":
+			switch m.Type {
+			case "text":
+				b.WriteString("Assistant:\n")
+				b.WriteString(m.Content)
+			case "reasoning":
+				b.WriteString("[thinking]\n")
+				b.WriteString(m.Content)
+			case "tool_call":
+				var tc models.ToolCallPayload
+				if err := json.Unmarshal([]byte(m.Content), &tc); err == nil {
+					b.WriteString("[tool: ")
+					b.WriteString(tc.Name)
+					b.WriteString("]\n")
+					b.WriteString(tc.Arguments)
+				}
+			}
+		case "tool":
+			var tp models.ToolResultPayload
+			if err := json.Unmarshal([]byte(m.Content), &tp); err == nil {
+				b.WriteString("[result]\n")
+				b.WriteString(tp.Result)
+			} else {
+				b.WriteString("[result]\n")
+				b.WriteString(m.Content)
+			}
+		}
+	}
+	return b.String()
+}
+
+func batchTruncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

@@ -3,6 +3,8 @@ package file
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +15,36 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
+)
+
+// Package-level config — set by executor at startup from UserConfig.
+var (
+	GrepMaxResults        int = 200  // default max grep matches
+	cancelCtx             context.Context // cancellation context, set by Handler.PropagateConfig
+)
+
+// SetCancelCtx sets the cancellation context for long-running operations.
+func SetCancelCtx(ctx context.Context) {
+	cancelCtx = ctx
+}
+
+// checkCancel returns the cancellation error if the context has been cancelled,
+// or nil if the context is still active or not set.
+func checkCancel() error {
+	if cancelCtx != nil {
+		select {
+		case <-cancelCtx.Done():
+			return cancelCtx.Err()
+		default:
+		}
+	}
+	return nil
+}
+
+var (
+	GrepMaxResultsCap     int = 1000 // hard cap
+	FetchDownloadMaxBytes int = 100 * 1024 // max HTTP fetch download size (100KB)
+	SearchPreviewMaxLines int = 50   // max lines in search_files preview
 )
 
 // ContainsGlobstar returns true if pattern contains ** (globstar).
@@ -71,6 +103,10 @@ func searchWalkGlob(root string, pattern string) ([]string, error) {
 		if err != nil {
 			return nil
 		}
+		// Check cancellation every entry
+		if err := checkCancel(); err != nil {
+			return err
+		}
 		if d.IsDir() {
 			if SkipDirs[d.Name()] {
 				return filepath.SkipDir
@@ -108,14 +144,18 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 
 	// Optional path prefix filter (subdir)
 	pathPrefix, _ := args["path"].(string)
-	if pathPrefix != "" && !filepath.IsAbs(pathPrefix) {
-		pathPrefix = filepath.Join(workDir, pathPrefix)
-	} else if pathPrefix == "" {
+	if pathPrefix != "" {
+		resolved, errMsg := resolveReadPath(pathPrefix, workDir)
+		if errMsg != "" {
+			return &types.ToolResult{Success: false, Error: errMsg, Tool: "grep"}
+		}
+		pathPrefix = resolved
+	} else {
 		pathPrefix = workDir
 	}
 
-	// LLM can also set limit; cap at 1000
-	maxMatches := 200
+	// LLM can also set limit; cap at GrepMaxResultsCap
+	maxMatches := GrepMaxResults
 	if v, ok := args["limit"].(float64); ok {
 		limit := int(v)
 		if limit < 0 {
@@ -124,10 +164,10 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 		}
 		maxMatches = limit
 		if maxMatches == 0 {
-			maxMatches = 200
+			maxMatches = GrepMaxResults
 		}
-		if maxMatches > 1000 {
-			maxMatches = 1000
+		if maxMatches > GrepMaxResultsCap {
+			maxMatches = GrepMaxResultsCap
 		}
 	}
 
@@ -142,6 +182,10 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 	walkFn := func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
+		}
+		// Check cancellation every directory entry
+		if err := checkCancel(); err != nil {
+			return err
 		}
 		if info.IsDir() && SkipDirs[info.Name()] {
 			return filepath.SkipDir
@@ -198,6 +242,12 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 		lineNum := 0
 		for scanner.Scan() {
 			lineNum++
+			// Check cancellation on every 500th line (avoid excessive checks on tight loops)
+			if lineNum%500 == 0 {
+				if err := checkCancel(); err != nil {
+					return err
+				}
+			}
 			if maxMatches > 0 && len(matches) >= maxMatches {
 				break
 			}
@@ -213,7 +263,16 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 		return nil
 	}
 
-	_ = filepath.Walk(pathPrefix, walkFn)
+	walkErr := filepath.Walk(pathPrefix, walkFn)
+
+	// Check if cancelled during walk
+	if errors.Is(walkErr, context.Canceled) {
+		return &types.ToolResult{
+			Success: true,
+			Output:  fmt.Sprintf("grep cancelled. Found %d partial matches before cancellation.", len(matches)),
+			Tool:    "grep",
+		}
+	}
 
 	if len(matches) == 0 {
 		return &types.ToolResult{Success: true, Output: "no matches found", Tool: "grep"}
@@ -394,11 +453,11 @@ func HandleSearchFiles(workDir string, args map[string]interface{}) *types.ToolR
 	// Optional root directory
 	root := workDir
 	if r, ok := args["root"].(string); ok && r != "" {
-		if filepath.IsAbs(r) {
-			root = r
-		} else {
-			root = filepath.Join(workDir, r)
+		resolved, errMsg := resolveReadPath(r, workDir)
+		if errMsg != "" {
+			return &types.ToolResult{Success: false, Error: errMsg, Tool: "search_files"}
 		}
+		root = resolved
 	}
 
 	// Optional preview lines
@@ -408,8 +467,8 @@ func HandleSearchFiles(workDir string, args map[string]interface{}) *types.ToolR
 		if preview < 0 {
 			preview = 0
 		}
-		if preview > 50 {
-			preview = 50
+		if preview > SearchPreviewMaxLines {
+			preview = SearchPreviewMaxLines
 		}
 	}
 
@@ -423,6 +482,14 @@ func HandleSearchFiles(workDir string, args map[string]interface{}) *types.ToolR
 	}
 
 	if err != nil {
+		// Check if cancelled during walk
+		if errors.Is(err, context.Canceled) {
+			return &types.ToolResult{
+				Success: true,
+				Output:  fmt.Sprintf("search_files cancelled. Found %d partial matches before cancellation.", len(matches)),
+				Tool:    "search_files",
+			}
+		}
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("invalid glob: %s", err.Error()), Tool: "search_files"}
 	}
 
@@ -492,6 +559,8 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 		}
 	}
 
+	recursive, _ := args["recursive"].(bool)
+
 	var outputs []string
 	var errs []string
 
@@ -503,31 +572,46 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 		}
 
 		dir := p
-		if !filepath.IsAbs(dir) {
-			dir = filepath.Join(workDir, dir)
-		}
-		dir = filepath.Clean(dir)
-
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %s", p, err))
+		resolved, errMsg := resolveReadPath(dir, workDir)
+		if errMsg != "" {
+			errs = append(errs, fmt.Sprintf("%s: %s", p, errMsg))
 			continue
 		}
+		dir = resolved
 
-		var buf strings.Builder
-		for _, e := range entries {
-			prefix := ""
-			if e.IsDir() {
-				prefix = "[dir] "
+		if recursive {
+			out, err := listDirectoryRecursive(dir, workDir)
+			if errors.Is(err, context.Canceled) {
+				outputs = append(outputs, fmt.Sprintf("=== %s ===\n(listing cancelled)", p))
+				continue
 			}
-			info, _ := e.Info()
-			if info != nil {
-				fmt.Fprintf(&buf, "%s%s (%d bytes)\n", prefix, e.Name(), info.Size())
-			} else {
-				fmt.Fprintf(&buf, "%s%s\n", prefix, e.Name())
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %s", p, err))
+				continue
 			}
+			outputs = append(outputs, fmt.Sprintf("=== %s ===\n%s", p, out))
+		} else {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %s", p, err))
+				continue
+			}
+
+			var buf strings.Builder
+			for _, e := range entries {
+				prefix := ""
+				if e.IsDir() {
+					prefix = "[dir] "
+				}
+				info, _ := e.Info()
+				if info != nil {
+					fmt.Fprintf(&buf, "%s%s (%d bytes)\n", prefix, e.Name(), info.Size())
+				} else {
+					fmt.Fprintf(&buf, "%s%s\n", prefix, e.Name())
+				}
+			}
+			outputs = append(outputs, fmt.Sprintf("=== %s ===\n%s", p, strings.TrimSpace(buf.String())))
 		}
-		outputs = append(outputs, fmt.Sprintf("=== %s ===\n%s", p, strings.TrimSpace(buf.String())))
 	}
 
 	if len(errs) > 0 {
@@ -547,4 +631,62 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 		Output:  strings.Join(outputs, "\n\n"),
 		Tool:    "list_directory",
 	}
+}
+
+// listDirectoryRecursive walks dir recursively and returns a formatted listing.
+// Each line is a relative path prefixed with [dir] for directories.
+// Stops after maxListDirEntries to prevent unbounded output.
+const maxListDirEntries = 5000
+
+func listDirectoryRecursive(dir, workDir string) (string, error) {
+	var buf strings.Builder
+	count := 0
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		// Check cancellation every 500 entries
+		if count%500 == 0 {
+			if err := checkCancel(); err != nil {
+				return err
+			}
+		}
+		// Stop when limit reached
+		if count >= maxListDirEntries {
+			return filepath.SkipAll
+		}
+		// Skip root dir itself
+		if path == dir {
+			return nil
+		}
+		// Skip known ignored directories
+		if d.IsDir() && SkipDirs[d.Name()] {
+			return filepath.SkipDir
+		}
+
+		rel, _ := filepath.Rel(dir, path)
+		info, _ := d.Info()
+		size := int64(0)
+		if info != nil {
+			size = info.Size()
+		}
+		prefix := ""
+		if d.IsDir() {
+			prefix = "[dir] "
+		}
+		if info != nil {
+			fmt.Fprintf(&buf, "%s%s (%d bytes)\n", prefix, rel, size)
+		} else {
+			fmt.Fprintf(&buf, "%s%s\n", prefix, rel)
+		}
+		count++
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if count >= maxListDirEntries {
+		fmt.Fprintf(&buf, "... (limit of %d entries reached)", maxListDirEntries)
+	}
+	return strings.TrimSpace(buf.String()), nil
 }

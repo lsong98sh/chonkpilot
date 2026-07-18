@@ -60,7 +60,6 @@ type UserConfig struct {
 	DefaultLLM        int                `json:"defaultLLM"`
 	MCPServers        []MCPServerConfig  `json:"mcpServers,omitempty"`
 	Theme             string             `json:"theme"`
-	LastWorkDir       string             `json:"lastWorkDir"`
 	ActiveSessionID   string             `json:"activeSessionID,omitempty"`
 	ChromePath        string             `json:"chromePath,omitempty"`        // cached Chrome path from auto-discovery
 	MaxToolIterations int                `json:"maxToolIterations,omitempty"` // 0=unlimited, default 800
@@ -69,10 +68,7 @@ type UserConfig struct {
 	LogLevel          string             `json:"logLevel,omitempty"`          // debug/info/warn/error
 	RetryCount        int                `json:"retryCount,omitempty"`        // LLM retry attempts
 	RetryDelay        int                `json:"retryDelay,omitempty"`        // seconds between retries
-	// Context compression
-	KeepFullTurns            int `json:"keepFullTurns,omitempty"`            // turns to keep fully raw (default 5)
-	KeepSimplifiedTurns      int `json:"keepSimplifiedTurns,omitempty"`      // turns to keep simplified (default 15)
-	ForceCompressThreshold   int `json:"forceCompressThreshold,omitempty"`   // token threshold for forced compression (default 80000)
+	// Context compression（由项目 DB 的 keep_full_turns / keep_simplified_turns 管理，不在用户配置中）
 	// Background tasks
 	ForeachConcurrency int `json:"foreachConcurrency,omitempty"` // parallel goroutines for foreach (1-10, default 5)
 	ForeachMaxDepth    int `json:"foreachMaxDepth,omitempty"`    // max nested depth for foreach (1-10, default 5)
@@ -85,6 +81,25 @@ type UserConfig struct {
 	JavaPath   string `json:"javaPath,omitempty"`
 	PythonPath string `json:"pythonPath,omitempty"`
 	NodePath   string `json:"nodePath,omitempty"`
+
+	// Code index
+	CodeIndexTemperature float64 `json:"codeIndexTemperature,omitempty"` // code index LLM temperature (default 0.1)
+
+	// Tool execution
+	ToolMaxDepth      int `json:"toolMaxDepth,omitempty"`      // max nested tool call depth (default 5)
+	TaskPollIntervalMs int `json:"taskPollIntervalMs,omitempty"` // tool handler poll interval in ms (default 200)
+
+	// Search limits
+	SearchMaxResults  int `json:"searchMaxResults,omitempty"`   // max grep/glob results (default 200)
+	FetchMaxBodySizeKB int `json:"fetchMaxBodySizeKB,omitempty"` // max HTTP fetch body in KB (default 100)
+
+	// Browser defaults
+	BrowserWindowWidth  int `json:"browserWindowWidth,omitempty"`  // browser window width (default 1280)
+	BrowserWindowHeight int `json:"browserWindowHeight,omitempty"` // browser window height (default 800)
+	BrowserLogCap       int `json:"browserLogCap,omitempty"`       // browser console log entry cap (default 500)
+
+	// LLM network
+	LLMTLSHandshakeTimeout int `json:"llmTLSHandshakeTimeout,omitempty"` // TLS handshake timeout in seconds (default 30)
 }
 
 // AgentConfig holds a single agent configuration as shown in the UI.
@@ -105,6 +120,7 @@ type MCPServerConfig struct {
 	URL             string               `json:"url"`
 	Enabled         bool                 `json:"enabled"`
 	Description     string               `json:"description,omitempty"`
+	Transport       string               `json:"transport,omitempty"` // "direct" or "sse"
 	DiscoveredTools []MCPServerToolConfig `json:"discoveredTools,omitempty"`
 }
 

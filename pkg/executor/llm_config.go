@@ -55,7 +55,7 @@ func classifyLLMError(err error) (LLMErrorCode, bool) {
 }
 
 // resolveLLMConfig resolves LLM configuration using the chain:
-// CLI params → --llm-config-file → .ide/ide.db config → ~/.chonkpilot/config.json → error.
+// CLI params → --llm-config-file → ~/.chonkpilot/config.json → error.
 // It modifies ea in-place.
 // ReasoningEffort is only overridden from config if user didn't explicitly set --reasoning=on/off.
 func resolveLLMConfig(ea *ExecutorArgs) error {
@@ -120,13 +120,6 @@ func resolveLLMConfig(ea *ExecutorArgs) error {
 		if err == nil && len(data) > 0 {
 			var userCfg models.UserConfig
 			if err := json.Unmarshal(data, &userCfg); err == nil && len(userCfg.LLMs) > 0 {
-				// Migration compat: old format used "provider" field (json: "provider")
-				// instead of "protocol" (json: "protocol"). Detect and map.
-				for i := range userCfg.LLMs {
-					if userCfg.LLMs[i].Protocol == "" {
-						userCfg.LLMs[i].Protocol = migrateOldProvider(data, i)
-					}
-				}
 				idx := userCfg.DefaultLLM
 				if idx < 0 || idx >= len(userCfg.LLMs) {
 					idx = 0
@@ -145,30 +138,7 @@ func resolveLLMConfig(ea *ExecutorArgs) error {
 	}
 
 	// Step 5: nothing found
-	return fmt.Errorf("no LLM configuration found (checked CLI params, --llm-config-file, .ide/ide.db config, ~/.chonkpilot/config.json)")
+	return fmt.Errorf("no LLM configuration found (checked CLI params, --llm-config-file, ~/.chonkpilot/config.json)")
 }
 
-// migrateOldProvider detects the old "provider" JSON field and maps it to a "protocol" value.
-// Old values: "deepseek" → "openai", "glm" → "claude".
-// Returns "" if no old-format field is detected or the field is empty.
-func migrateOldProvider(data []byte, idx int) string {
-	var rawCfg struct {
-		LLMs []struct {
-			Provider string `json:"provider"`
-		} `json:"llms"`
-	}
-	if err := json.Unmarshal(data, &rawCfg); err != nil {
-		return ""
-	}
-	if idx < 0 || idx >= len(rawCfg.LLMs) {
-		return ""
-	}
-	switch strings.ToLower(strings.TrimSpace(rawCfg.LLMs[idx].Provider)) {
-	case "deepseek":
-		return "openai"
-	case "glm":
-		return "claude"
-	default:
-		return ""
-	}
-}
+

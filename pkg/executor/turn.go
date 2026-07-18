@@ -1,15 +1,19 @@
 package executor
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	icfg "github.com/chonkpilot/chonkpilot/internal/config"
 	"github.com/chonkpilot/chonkpilot/internal/db"
+	"github.com/chonkpilot/chonkpilot/internal/models"
 	"github.com/chonkpilot/chonkpilot/pkg/chrome"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/codeindex"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/llm"
@@ -26,8 +30,359 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 	// Set TEMP/TMP to .ide/tmp so all temp files go into the project's .ide directory
 	setTempDir(ea.WorkDir, ea.TempIDEDir)
 
-	// Apply global config defaults (Chrome path, MaxToolIterations, timeouts)
-	// from ~/.chonkpilot/config.json — fills in defaults and saves back if needed.
+	// Load user config (Chrome path, MaxToolIterations, timeouts, LLM override)
+	ucfg, chromeOK := loadUserConfig(ea, logger)
+
+	// ── Codebase index config (cached per executor process) ──
+	codebaseEnabled, codebaseExtensions := loadCodebaseConfig(ea)
+
+	client := llm.NewClient(ea.LLMProtocol, ea.LLMModel, ea.LLMAPIKey, ea.LLMAPIURL, logger)
+	logger.Debug("LLM client created",
+		zap.String("apiKey", llm.MaskAPIKey(ea.LLMAPIKey)),
+	)
+
+	// Determine if running standalone (no pipe, stdout format)
+	isStandalone := ea.PipePath == "" && ea.OutputFormat == "stdout"
+
+	logger.Info("executeTurn config",
+		zap.String("protocol", ea.LLMProtocol),
+		zap.String("model", ea.LLMModel),
+		zap.Int("maxTokens", ea.LLMMaxTokens),
+		zap.Float64("temperature", ea.LLMTemperature),
+		zap.Int("maxToolIterations", ea.LLMMaxToolIterations),
+		zap.Duration("responseTimeout", ea.LLMResponseTimeout),
+		zap.Duration("streamTimeout", ea.LLMStreamTimeout),
+		zap.Int("retryCount", ea.RetryCount),
+		zap.Int("retryDelay", ea.RetryDelay),
+	)
+
+	// Prepare messages: load history from DB if applicable
+	var messages []llm.Message
+
+	// ── Open project DB once for the entire turn ──
+	var sqlDB *sql.DB
+	if hasIDEConfig(ea) {
+		sqlDB, _ = db.Open(ea.DBWorkDir())
+		if sqlDB != nil {
+			defer db.Close(sqlDB)
+		}
+	}
+
+	if sqlDB != nil && (ea.SessionID != "" || ea.TurnID != "") {
+		// Ensure session+turn records exist in DB, write user message if needed
+		ensureSessionAndTurn(ea, prompt, logger, sqlDB)
+
+		// Load session history from DB for multi-turn context
+		if dbMessages, err := loadSessionHistory(ea, ea.SessionID, sqlDB); err != nil {
+			logger.Warn("Failed to load session history", zap.Error(err))
+		} else {
+			messages = append(messages, dbMessages...)
+			logger.Info("Loaded session history",
+				zap.Int("messages", len(dbMessages)),
+				zap.Int("total_messages", len(messages)),
+			)
+		}
+	}
+
+	// Build system messages (prompts from DB, fixed prompt, tool usage, scenario, codebase notice)
+	sysMessages, err := buildSystemMessages(ea, sqlDB, systemPrompt, prompt, ucfg, codebaseEnabled, codebaseExtensions, logger)
+	if err != nil {
+		return nil, err
+	}
+	messages = append(messages, sysMessages...)
+
+	// Initialize tool handler (after ensureSessionAndTurn may have set ea.TurnID)
+	handler := initToolHandler(ea, sqlDB, ucfg, chromeOK, codebaseEnabled, codebaseExtensions, client, outWriter, logger)
+
+	// Set up cancellation context so CancelChat -> KillExecutor can gracefully
+	// abort long-running tool operations (grep, search_files, web_open, etc.)
+	handler.SetCancelContext(context.Background())
+
+	// ── Build TurnRunner callbacks ──
+	// These bridge the generic TurnRunner to executor-specific side effects
+	// (DB persistence, IDE event emission, standalone stdout output).
+
+	// Track section headers for standalone non-verbose output
+	var sectionPrinted string // "thinking" | "reply" | "tool"
+
+	runner := &llm.TurnRunner{
+		Client:   client,
+		Logger:   logger,
+		CancelCx: handler.CancelCtx,
+		Dispatch: func(toolName string, args map[string]interface{}, depth int) (string, bool, error) {
+			result := handler.Dispatch(toolName, args, depth)
+			resultStr := types.FormatToolResultJSON(toolName, result)
+			return resultStr, result.Success, nil
+		},
+		Callbacks: llm.TurnCallbacks{
+			// Reload tools each iteration (for add_tool/delete_tool changes)
+			ReloadTools: func() []llm.ToolDefinition {
+				return loadAllToolDefs(ea, logger, chromeOK)
+			},
+
+			OnIterationStart: func(iter int) {
+				if isStandalone && !ea.Verbose {
+					if iter == 0 {
+						if prompt != "" {
+							fmt.Fprintf(os.Stdout, "> %s\n\n", prompt)
+						}
+						fmt.Fprintf(os.Stdout, "正在思考...\n")
+					} else {
+						fmt.Fprintf(os.Stdout, "\n继续思考 (%d)...\n", iter+1)
+					}
+				}
+			},
+
+			OnChunk: func(chunk llm.StreamEvent) {
+				if chunk.ReasoningContent != "" {
+					if isStandalone {
+						if ea.Verbose {
+							writeSSEToStdout("", chunk.ReasoningContent, reasoningChunk)
+						} else {
+							if sectionPrinted != "thinking" {
+								fmt.Fprintf(os.Stdout, "\n--- thinking ---\n")
+								sectionPrinted = "thinking"
+							}
+							fmt.Fprint(os.Stdout, chunk.ReasoningContent)
+						}
+					} else {
+						outWriter.WriteEvent("message_chunk", eventWithCtx(ea, map[string]interface{}{
+							"content": chunk.ReasoningContent,
+							"type":    "reasoning",
+							"index":   chunk.Index,
+						}))
+					}
+				}
+				if chunk.Content != "" {
+					if isStandalone {
+						if ea.Verbose {
+							writeSSEToStdout(chunk.Content, "", contentChunk)
+						} else {
+							if sectionPrinted == "thinking" {
+								fmt.Fprintf(os.Stdout, "\n\n--- reply ---\n")
+								sectionPrinted = "reply"
+							} else if sectionPrinted != "reply" {
+								fmt.Fprintf(os.Stdout, "\n--- reply ---\n")
+								sectionPrinted = "reply"
+							}
+							fmt.Fprint(os.Stdout, chunk.Content)
+						}
+					} else {
+						outWriter.WriteEvent("message_chunk", eventWithCtx(ea, map[string]interface{}{
+							"content": chunk.Content,
+							"type":    "text",
+							"index":   chunk.Index,
+						}))
+					}
+				}
+			},
+
+			OnAssistantMsg: func(msg llm.Message) ([]string, error) {
+				// Persist assistant message to DB
+				toolCallMsgIDs := saveAssistantMessage(ea, msg, logger, sqlDB)
+				return toolCallMsgIDs, nil
+			},
+
+			OnToolCall: func(tc llm.ToolCall, args map[string]interface{}) (string, error) {
+				if !isStandalone || ea.Verbose {
+					argsJSON := json.RawMessage(tc.Function.Arguments)
+					callSimplified := tc.Function.Name + "(" + types.FormatToolCallArgs(argsJSON) + ")"
+					outWriter.WriteEvent("tool_call", eventWithCtx(ea, map[string]interface{}{
+						"tool":         tc.Function.Name,
+						"tool_call_id": tc.ID,
+						"arguments":    tc.Function.Arguments,
+						"simplified":   callSimplified,
+					}))
+				} else {
+					if sectionPrinted != "tool" {
+						fmt.Fprintf(os.Stdout, "\n--- tool ---\n")
+						sectionPrinted = "tool"
+					}
+					argsJSON, _ := json.Marshal(args)
+					fmt.Fprintf(os.Stdout, "→ %s(%s)\n", tc.Function.Name, string(argsJSON))
+				}
+				// No DB persistence here — the caller handles tool call msg IDs via OnAssistantMsg
+				return "", nil
+			},
+
+			OnToolResult: func(tc llm.ToolCall, resultStr string, success bool) error {
+				if !isStandalone || ea.Verbose {
+					argsJSON := json.RawMessage(tc.Function.Arguments)
+					resultSimplified := types.SimplifyToolCall(tc.Function.Name, argsJSON, resultStr)
+					outWriter.WriteEvent("tool_result", eventWithCtx(ea, map[string]interface{}{
+						"tool":         tc.Function.Name,
+						"tool_call_id": tc.ID,
+						"success":      success,
+						"result":       resultStr,
+						"simplified":   resultSimplified,
+					}))
+				} else {
+					fmt.Fprintf(os.Stdout, "← %s\n", resultStr)
+				}
+				// Persist tool result message to DB
+				toolResultMsg := llm.Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    resultStr,
+				}
+				saveToolMessage(ea, toolResultMsg, tc.Function.Name, logger, sqlDB)
+				return nil
+			},
+
+			OnIterationEnd: func(iter int, reasoningContent string, toolCallMsgIDs []string) {
+				// Brief extraction: first 3 lines of reasoning content
+				if reasoningContent != "" && len(toolCallMsgIDs) > 0 {
+					brief := extractBrief(reasoningContent)
+					for _, msgID := range toolCallMsgIDs {
+						if err := db.UpdateMessageBrief(sqlDB, msgID, brief); err != nil {
+							logger.Warn("failed to update tool_call brief", zap.String("message_id", msgID), zap.Error(err))
+						}
+					}
+				}
+			},
+
+			OnLLMError: func(code, message string, retryable bool, attempt, maxAttempts int) {
+				if outWriter != nil {
+					payload := map[string]interface{}{
+						"code":          code,
+						"message":       message,
+						"retryable":     retryable,
+						"retry_count":   maxAttempts,
+						"retry_attempt": attempt,
+						"turn_id":       ea.TurnID,
+						"session_id":    ea.SessionID,
+					}
+					outWriter.WriteEvent("llm_error", eventWithCtx(ea, payload))
+				}
+			},
+
+			OnLLMRetry: func(attempt, maxAttempts int, waitSeconds int) {
+				if outWriter != nil {
+					outWriter.WriteEvent("llm_retry", eventWithCtx(ea, map[string]interface{}{
+						"retry_attempt": attempt,
+						"retry_count":   maxAttempts,
+						"wait_seconds":  waitSeconds,
+					}))
+				}
+			},
+		},
+	}
+
+	// In verbose mode, print the assembled outgoing request
+	if isStandalone && ea.Verbose {
+		initialToolDefs := loadAllToolDefs(ea, logger, chromeOK)
+		printOutgoingMessages(ea, messages, initialToolDefs)
+	}
+
+	maxAttempts := ea.RetryCount + 1
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+
+	result, err := runner.Run(llm.TurnConfig{
+		Messages:            messages,
+		MaxIter:             ea.LLMMaxToolIterations,
+		MaxAttempts:         maxAttempts,
+		MaxTokens:           ea.LLMMaxTokens,
+		Temperature:         ea.LLMTemperature,
+		Thinking:            ea.Thinking,
+		ReasoningEffort:     ea.ReasoningEffort,
+		ResponseTimeout:     ea.LLMResponseTimeout,
+		StreamTimeout:       ea.LLMStreamTimeout,
+		TLSHandshakeTimeout: resolveTLSHandshakeTimeout(func() int {
+			if ucfg != nil {
+				return ucfg.LLMTLSHandshakeTimeout
+			}
+			return 0
+		}()),
+		RetryDelaySeconds: ea.RetryDelay,
+	})
+
+	fullResponseContent := ""
+	if result != nil {
+		fullResponseContent = result.Content
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Print separator in standalone mode
+	if isStandalone {
+		if ea.Verbose {
+			writeSSEStop()
+		} else {
+			fmt.Fprintln(os.Stdout)
+		}
+	}
+
+	// ── Flush code index changes ──
+	// Batch-enqueue all files modified during this turn and wake the worker.
+	n := handler.FlushCodeIndex()
+	if n > 0 {
+		logger.Info("codeindex: flushed changed files after tool loop", zap.Int("count", n))
+	}
+
+	// ── Asynchronous summary generation ──
+	// Runs in background; uses the same LLM client config.
+	if hasIDEConfig(ea) && ea.SessionID != "" && ea.TurnID != "" {
+		go generateSessionSummary(ea, logger)
+	}
+
+	return &TurnResult{
+		TurnID: ea.TurnID,
+		A:      fullResponseContent,
+		Score:  0,
+	}, nil
+}
+
+// defaultCodebaseExtensions is the fallback list when project config has none.
+var defaultCodebaseExtensions = []string{".go", ".js", ".ts", ".jsx", ".tsx", ".vue", ".py", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt"}
+
+// Per-process cache for codebase config — loaded once from DB and reused.
+var (
+	cachedCBEnabled    bool
+	cachedCBExtensions []string
+	cbConfigOnce       sync.Once
+)
+
+// loadCodebaseConfig reads codebase index config from the project DB.
+// Results are cached for the lifetime of the executor process (sync.Once),
+// so successive calls within the same turn don't re-open the DB.
+func loadCodebaseConfig(ea *ExecutorArgs) (enabled bool, extensions []string) {
+	cbConfigOnce.Do(func() {
+		cachedCBExtensions = defaultCodebaseExtensions
+		if !hasIDEConfig(ea) {
+			return
+		}
+		sqlDB, err := db.Open(ea.DBWorkDir())
+		if err != nil {
+			return
+		}
+		defer db.Close(sqlDB)
+		if v, err := db.GetConfig(sqlDB, "codebase_index.enabled"); err == nil && v == "true" {
+			cachedCBEnabled = true
+		}
+		if v, err := db.GetConfig(sqlDB, "codebase_index.extensions"); err == nil && v != "" {
+			var exts []string
+			if json.Unmarshal([]byte(v), &exts) == nil && len(exts) > 0 {
+				cachedCBExtensions = exts
+			}
+		}
+	})
+	return cachedCBEnabled, cachedCBExtensions
+}
+
+// resolveTLSHandshakeTimeout returns the TLS handshake timeout from UserConfig or the default 30s.
+func resolveTLSHandshakeTimeout(tlsTimeoutSec int) time.Duration {
+	if tlsTimeoutSec > 0 {
+		return time.Duration(tlsTimeoutSec) * time.Second
+	}
+	return 30 * time.Second
+}
+
+// loadUserConfig loads user config from ~/.chonkpilot/config.json and applies LLM name override.
+func loadUserConfig(ea *ExecutorArgs, logger *zap.Logger) (*models.UserConfig, bool) {
 	var chromeOK bool
 	ucfg, err := icfg.EnsureUserConfig()
 	if err != nil {
@@ -76,123 +431,74 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 		ea.ReasoningEffort = ea.Effort
 	}
 
-	// ── Codebase index config ──
-	codebaseEnabled := false
-	codebaseExtensions := []string{".go", ".js", ".ts", ".jsx", ".tsx", ".vue", ".py", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt"}
-	if hasIDEConfig(ea) {
-		if sqlDB, err := db.Open(ea.DBWorkDir()); err == nil {
-			if v, err := db.GetConfig(sqlDB, "codebase_index.enabled"); err == nil && v == "true" {
-				codebaseEnabled = true
-			}
-			if v, err := db.GetConfig(sqlDB, "codebase_index.extensions"); err == nil && v != "" {
-				var exts []string
-				if json.Unmarshal([]byte(v), &exts) == nil && len(exts) > 0 {
-					codebaseExtensions = exts
-				}
-			}
-			db.Close(sqlDB)
-		}
-	}
+	return ucfg, chromeOK
+}
 
-	client := llm.NewClient(ea.LLMProtocol, ea.LLMModel, ea.LLMAPIKey, ea.LLMAPIURL, logger)
-
-	// Determine if running standalone (no pipe, stdout format)
-	isStandalone := ea.PipePath == "" && ea.OutputFormat == "stdout"
-
-	logger.Info("executeTurn config",
-		zap.String("protocol", ea.LLMProtocol),
-		zap.String("model", ea.LLMModel),
-		zap.Int("maxTokens", ea.LLMMaxTokens),
-		zap.Float64("temperature", ea.LLMTemperature),
-		zap.Int("maxToolIterations", ea.LLMMaxToolIterations),
-		zap.Duration("responseTimeout", ea.LLMResponseTimeout),
-		zap.Duration("streamTimeout", ea.LLMStreamTimeout),
-		zap.Int("retryCount", ea.RetryCount),
-		zap.Int("retryDelay", ea.RetryDelay),
-	)
-
-	// Prepare messages: load history from DB if applicable
-	var messages []llm.Message
-
-	if hasIDEConfig(ea) && (ea.SessionID != "" || ea.TurnID != "") {
-		// Ensure session+turn records exist in DB, write user message if needed
-		ensureSessionAndTurn(ea, prompt, logger)
-
-		// Load session history from DB for multi-turn context
-		if dbMessages, err := loadSessionHistory(ea, ea.SessionID); err != nil {
-			logger.Warn("Failed to load session history", zap.Error(err))
-		} else {
-			messages = append(messages, dbMessages...)
-			logger.Info("Loaded session history",
-				zap.Int("messages", len(dbMessages)),
-				zap.Int("total_messages", len(messages)),
-			)
-		}
-	}
-
+// buildSystemMessages loads prompts from DB, assembles system messages including
+// fixed prompt, tool usage, custom prompt, scenario, and codebase notice.
+func buildSystemMessages(ea *ExecutorArgs, sqlDB *sql.DB, systemPrompt string, prompt string, ucfg *models.UserConfig, codebaseEnabled bool, codebaseExtensions []string, logger *zap.Logger) ([]llm.Message, error) {
 	// ── Load prompts from DB (with embedded fallbacks) ──
 	systemPromptText := prompts.DefaultSystemPrompt
 	toolUsageText := prompts.DefaultToolUsage
-	if hasIDEConfig(ea) {
-		if sqlDB, err := db.Open(ea.DBWorkDir()); err == nil {
-			// Try project_prompts table first, fallback to legacy config table
-			if v, err := db.GetProjectPrompt(sqlDB, "system_prompt"); err == nil && v != "" {
-				systemPromptText = v
-			} else if v, err := db.GetConfig(sqlDB, "system_prompt"); err == nil && v != "" {
-				systemPromptText = v
-			}
-			if v, err := db.GetProjectPrompt(sqlDB, "tool_usage_prompt"); err == nil && v != "" {
-				toolUsageText = v
-			} else if v, err := db.GetConfig(sqlDB, "tool_usage_prompt"); err == nil && v != "" {
-				toolUsageText = v
-			}
-			// Agent-specific system prompt overrides the global one
-			if ea.Agent != "" {
-				agents, err := db.GetProjectAgents(sqlDB)
-				if err == nil {
-					for _, a := range agents {
-						if a.Title == ea.Agent && a.Prompt != "" {
-							// Prepend common rules from DB (user-editable via add_agent)
-							commonPrompt, _ := db.GetConfig(sqlDB, "agent.common.system_prompt")
-							if commonPrompt != "" {
-								systemPromptText = commonPrompt + "\n\n" + a.Prompt
-							} else {
-								systemPromptText = a.Prompt
-							}
-							// Agent-specific LLM override
-							if a.LLMRef != "" && ucfg != nil {
-								for _, llmCfg := range ucfg.LLMs {
-									if llmCfg.Name == a.LLMRef {
-										ea.LLMProtocol = llmCfg.Protocol
-										ea.LLMModel = llmCfg.Model
-										ea.LLMAPIKey = llmCfg.APIKey
-										ea.LLMAPIURL = llmCfg.BaseURL
-										if !ea.ThinkingSet {
-											ea.Thinking = llmCfg.Thinking
-										}
-										if ea.ReasoningEffort == "" {
-											ea.ReasoningEffort = llmCfg.ReasoningEffort
-										}
-										if llmCfg.MaxTokens > 0 {
-											ea.LLMMaxTokens = llmCfg.MaxTokens
-										}
-										if llmCfg.Temperature > 0 {
-											ea.LLMTemperature = llmCfg.Temperature
-										}
-										break
+	if sqlDB != nil {
+		// Try project_prompts table first, fallback to legacy config table
+		if v, err := db.GetProjectPrompt(sqlDB, "system_prompt"); err == nil && v != "" {
+			systemPromptText = v
+		} else if v, err := db.GetConfig(sqlDB, "system_prompt"); err == nil && v != "" {
+			systemPromptText = v
+		}
+		if v, err := db.GetProjectPrompt(sqlDB, "tool_usage_prompt"); err == nil && v != "" {
+			toolUsageText = v
+		} else if v, err := db.GetConfig(sqlDB, "tool_usage_prompt"); err == nil && v != "" {
+			toolUsageText = v
+		}
+		// Agent-specific system prompt overrides the global one
+		if ea.Agent != "" {
+			agents, err := db.GetProjectAgents(sqlDB)
+			if err == nil {
+				for _, a := range agents {
+					if a.Title == ea.Agent && a.Prompt != "" {
+						// Prepend common rules from DB (user-editable via add_agent)
+						commonPrompt, _ := db.GetConfig(sqlDB, "agent.common.system_prompt")
+						if commonPrompt != "" {
+							systemPromptText = commonPrompt + "\n\n" + a.Prompt
+						} else {
+							systemPromptText = a.Prompt
+						}
+						// Agent-specific LLM override
+						if a.LLMRef != "" && ucfg != nil {
+							for _, llmCfg := range ucfg.LLMs {
+								if llmCfg.Name == a.LLMRef {
+									ea.LLMProtocol = llmCfg.Protocol
+									ea.LLMModel = llmCfg.Model
+									ea.LLMAPIKey = llmCfg.APIKey
+									ea.LLMAPIURL = llmCfg.BaseURL
+									if !ea.ThinkingSet {
+										ea.Thinking = llmCfg.Thinking
 									}
+									if ea.ReasoningEffort == "" {
+										ea.ReasoningEffort = llmCfg.ReasoningEffort
+									}
+									if llmCfg.MaxTokens > 0 {
+										ea.LLMMaxTokens = llmCfg.MaxTokens
+									}
+									if llmCfg.Temperature > 0 {
+										ea.LLMTemperature = llmCfg.Temperature
+									}
+									break
 								}
 							}
-							break
 						}
+						break
 					}
 				}
 			}
-			db.Close(sqlDB)
 		}
 	}
 
 	// ── Assemble system messages ──
+	var messages []llm.Message
+
 	// 1. Fixed prompt (always present)
 	fixedPrompt := "你的名字是肥猫，一个人工智能助理。你运行在" + runtime.GOOS + "环境中。当前工作目录：" + ea.WorkDir
 
@@ -234,6 +540,11 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 		messages = append(messages, llm.Message{Role: "system", Content: systemPrompt})
 	}
 
+	// 3b. Scenario prompt: appended after the regular system prompt
+	if scenarioPrompt := os.Getenv("CHONKPILOT_SCENARIO_PROMPT"); scenarioPrompt != "" {
+		messages = append(messages, llm.Message{Role: "system", Content: scenarioPrompt})
+	}
+
 	// 4. Codebase index notice (if enabled)
 	if codebaseEnabled {
 		cbNotice := fmt.Sprintf("[代码库索引已启用] 你可以使用 query_codebase 工具查询项目结构、符号定义、文件依赖等。索引的文件类型：%s", strings.Join(codebaseExtensions, ", "))
@@ -245,7 +556,12 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 		messages = append(messages, llm.Message{Role: "user", Content: prompt})
 	}
 
-	// Initialize tool handler (after ensureSessionAndTurn may have set ea.TurnID)
+	return messages, nil
+}
+
+// initToolHandler creates and configures the tool handler with LLM config,
+// UserConfig limits, security rules, chrome, file versioner, code indexer, and event callbacks.
+func initToolHandler(ea *ExecutorArgs, sqlDB *sql.DB, ucfg *models.UserConfig, chromeOK bool, codebaseEnabled bool, codebaseExtensions []string, client *llm.Client, outWriter *output.Writer, logger *zap.Logger) *toolhandler.Handler {
 	handler := toolhandler.NewHandler(ea.WorkDir, ea.DBWorkDir(), ea.SessionID, ea.TurnID, logger)
 	handler.LLMProtocol = ea.LLMProtocol
 	handler.LLMModel = ea.LLMModel
@@ -253,6 +569,36 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 	handler.LLMAPIURL = ea.LLMAPIURL
 	handler.Thinking = ea.Thinking
 	handler.ReasoningEffort = ea.ReasoningEffort
+	// Apply configurable limits from UserConfig
+	if ucfg != nil {
+		if ucfg.ToolMaxDepth > 0 {
+			handler.MaxDepth = ucfg.ToolMaxDepth
+		}
+		if ucfg.TaskPollIntervalMs > 0 {
+			handler.TaskPollIntervalMs = ucfg.TaskPollIntervalMs
+		}
+		if ucfg.SearchMaxResults > 0 {
+			handler.SearchMaxResults = ucfg.SearchMaxResults
+		}
+		if ucfg.FetchMaxBodySizeKB > 0 {
+			handler.FetchMaxBodySizeKB = ucfg.FetchMaxBodySizeKB
+		}
+		if ucfg.BrowserWindowWidth > 0 {
+			handler.Browser.WindowWidth = ucfg.BrowserWindowWidth
+		}
+		if ucfg.BrowserWindowHeight > 0 {
+			handler.Browser.WindowHeight = ucfg.BrowserWindowHeight
+		}
+		if ucfg.BrowserLogCap > 0 {
+			handler.Browser.LogCap = ucfg.BrowserLogCap
+		}
+	}
+	// Propagate config values to subpackage-level variables (grep, fetch, search, etc.)
+	handler.PropagateConfig()
+
+	// Apply project_security rules from DB (if any entries configured)
+	handler.SetSecurityFromDB()
+
 	if !chromeOK {
 		handler.SetNoChrome()
 	}
@@ -267,13 +613,17 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 		codebaseDB, err := codeindex.OpenCodebaseDB(ea.DBWorkDir())
 		if err == nil {
 			// Create LLMCaller that wraps the client for non-streaming index analysis
+			codeIndexTemp := 0.1
+			if ucfg != nil && ucfg.CodeIndexTemperature > 0 {
+				codeIndexTemp = ucfg.CodeIndexTemperature
+			}
 			caller := func(systemPrompt, userPrompt string) (string, error) {
 				ch, err := client.Chat([]llm.Message{
 					{Role: "system", Content: systemPrompt},
 					{Role: "user", Content: userPrompt},
 				}, llm.ChatOptions{
 					Model:       ea.LLMModel,
-					Temperature: 0.1, // low temp for deterministic extraction
+					Temperature: codeIndexTemp,
 					MaxTokens:   resolveMaxTokens(ea),
 				})
 				if err != nil {
@@ -311,374 +661,5 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 		})
 	}
 
-	// Load initial tool definitions for verbose printing
-	verboseToolDefs := loadAllToolDefs(ea, logger, chromeOK)
-	// In verbose mode, print the assembled outgoing request
-	if isStandalone && ea.Verbose {
-		printOutgoingMessages(ea, messages, verboseToolDefs)
-	}
-
-	maxToolIterations := ea.LLMMaxToolIterations
-	if maxToolIterations <= 0 {
-		maxToolIterations = 800
-	}
-	var fullResponse strings.Builder
-
-	// saveAccumulatedState persists partial assistant message and tool results to DB
-	// before reporting an LLM error, so the accumulated work is not lost.
-	saveAccumulatedState := func(textContent, reasoningContent string, toolMsgs []llm.Message) {
-		if ea.TurnID == "" {
-			return
-		}
-		if textContent != "" || reasoningContent != "" || len(toolMsgs) > 0 {
-			// Save partial assistant message
-			partialMsg := llm.Message{
-				Role:             "assistant",
-				Content:          textContent,
-				ReasoningContent: reasoningContent,
-			}
-			saveAssistantMessage(ea, partialMsg, logger)
-		}
-		// Tool results are already saved in the tool processing loop (saveToolMessage)
-		// No extra action needed — they are already persisted.
-	}
-
-	// emitLLMError emits a detailed LLM error event to IDE
-	emitLLMError := func(code LLMErrorCode, message string, retryable bool, attempt, maxRetries int) {
-		if outWriter != nil {
-			payload := map[string]interface{}{
-				"code":         string(code),
-				"message":      message,
-				"retryable":    retryable,
-				"retry_count":  maxRetries,
-				"retry_attempt": attempt,
-				"turn_id":      ea.TurnID,
-				"session_id":   ea.SessionID,
-			}
-			outWriter.WriteEvent("llm_error", eventWithCtx(ea, payload))
-		}
-	}
-
-	// emitLLMRetry emits a retry progress event to IDE
-	emitLLMRetry := func(attempt, maxRetries int, waitSeconds int) {
-		if outWriter != nil {
-			payload := map[string]interface{}{
-				"retry_attempt": attempt,
-				"retry_count":  maxRetries,
-				"wait_seconds": waitSeconds,
-			}
-			outWriter.WriteEvent("llm_retry", eventWithCtx(ea, payload))
-		}
-	}
-
-	for iter := 0; iter < maxToolIterations; iter++ {
-		if isStandalone && !ea.Verbose {
-			if iter == 0 {
-				if prompt != "" {
-					fmt.Fprintf(os.Stdout, "> %s\n\n", prompt)
-				}
-				fmt.Fprintf(os.Stdout, "正在思考...\n")
-			} else {
-				fmt.Fprintf(os.Stdout, "\n继续思考 (%d)...\n", iter+1)
-			}
-		}
-
-		// Reload tool definitions each iteration so add_tool/delete_tool changes take effect
-		toolDefs := loadAllToolDefs(ea, logger, chromeOK)
-
-		var toolCalls []*llm.ToolCall
-		var textContent strings.Builder
-		var reasoningContent strings.Builder
-		sectionPrinted := "" // tracks which section header was printed last
-
-		// Call LLM with retry support (including stream errors)
-		llmSucceeded := false
-		var llmStream <-chan llm.StreamEvent
-		maxRetries := ea.RetryCount + 1 // RetryCount = retries beyond the first attempt
-		if maxRetries <= 0 {
-			maxRetries = 1 // at least one attempt
-		}
-
-	llmAttemptLoop:
-		for attempt := 1; attempt <= maxRetries; attempt++ {
-			var err error
-			maxTokens := ea.LLMMaxTokens
-			if maxTokens <= 0 {
-				maxTokens = 65535
-			}
-			temp := ea.LLMTemperature
-			if temp <= 0 {
-				temp = 0.7
-			}
-			llmStream, err = client.Chat(messages, llm.ChatOptions{
-				Stream:            true,
-				Tools:             toolDefs,
-				Temperature:       temp,
-				MaxTokens:         maxTokens,
-				Thinking:          ea.Thinking,
-				ReasoningEffort:   ea.ReasoningEffort,
-				ResponseTimeout: ea.LLMResponseTimeout,
-				StreamTimeout:     ea.LLMStreamTimeout,
-			})
-			if err != nil {
-				// Initial LLM call failed — classify and handle
-				code, retryable := classifyLLMError(err)
-				isLastAttempt := attempt >= maxRetries
-
-				// Save accumulated state before reporting error
-				saveAccumulatedState(textContent.String(), reasoningContent.String(), nil)
-
-				if !retryable || isLastAttempt {
-					fmt.Fprintf(os.Stderr, "ERROR: LLM API call failed (iter=%d, attempt=%d/%d): %s\n",
-						iter, attempt, maxRetries, err.Error())
-					emitLLMError(code, err.Error(), retryable, attempt, maxRetries)
-					return nil, fmt.Errorf("LLM %s: %s", code, err.Error())
-				}
-
-				// Retryable — emit error + retry event, wait, then continue loop
-				fmt.Fprintf(os.Stderr, "WARN: LLM API call failed (iter=%d, attempt=%d/%d), retrying in %ds: %s\n",
-					iter, attempt, maxRetries, ea.RetryDelay, err.Error())
-				emitLLMError(code, err.Error(), true, attempt, maxRetries)
-				emitLLMRetry(attempt, maxRetries, ea.RetryDelay)
-				for i := 0; i < ea.RetryDelay; i++ {
-					time.Sleep(1 * time.Second)
-				}
-				continue
-			}
-
-			// Stream reading loop — errors here are also retryable
-			streamOk := true
-		StreamLoop:
-			for chunk := range llmStream {
-				if chunk.Error != nil {
-					code, retryable := classifyLLMError(chunk.Error)
-					isLastAttempt := attempt >= maxRetries
-
-					// Save partial state
-					saveAccumulatedState(textContent.String(), reasoningContent.String(), nil)
-
-					if !retryable || isLastAttempt {
-						fmt.Fprintf(os.Stderr, "ERROR: LLM stream error (iter=%d, attempt=%d/%d): %s\n",
-							iter, attempt, maxRetries, chunk.Error.Error())
-						emitLLMError(code, chunk.Error.Error(), retryable, attempt, maxRetries)
-						return nil, fmt.Errorf("LLM stream error: %s", chunk.Error.Error())
-					}
-
-					// Retryable stream error — emit retry event, wait, restart Chat call
-					fmt.Fprintf(os.Stderr, "WARN: LLM stream error (iter=%d, attempt=%d/%d), retrying in %ds: %s\n",
-						iter, attempt, maxRetries, ea.RetryDelay, chunk.Error.Error())
-					emitLLMError(code, chunk.Error.Error(), true, attempt, maxRetries)
-					emitLLMRetry(attempt, maxRetries, ea.RetryDelay)
-					for i := 0; i < ea.RetryDelay; i++ {
-						time.Sleep(1 * time.Second)
-					}
-					streamOk = false
-					break StreamLoop
-				}
-				if chunk.ReasoningContent != "" {
-					reasoningContent.WriteString(chunk.ReasoningContent)
-					if isStandalone {
-						if ea.Verbose {
-							writeSSEToStdout("", chunk.ReasoningContent, reasoningChunk)
-						} else {
-							if sectionPrinted != "thinking" {
-								fmt.Fprintf(os.Stdout, "\n--- thinking ---\n")
-								sectionPrinted = "thinking"
-							}
-							fmt.Fprint(os.Stdout, chunk.ReasoningContent)
-						}
-					} else {
-						outWriter.WriteEvent("message_chunk", eventWithCtx(ea, map[string]interface{}{
-							"content": chunk.ReasoningContent,
-							"type":    "reasoning",
-							"index":   chunk.Index,
-						}))
-					}
-				}
-				if chunk.Content != "" {
-					textContent.WriteString(chunk.Content)
-					if isStandalone {
-						if ea.Verbose {
-							writeSSEToStdout(chunk.Content, "", contentChunk)
-						} else {
-							if sectionPrinted == "thinking" {
-								fmt.Fprintf(os.Stdout, "\n\n--- reply ---\n")
-								sectionPrinted = "reply"
-							} else if sectionPrinted != "reply" {
-								fmt.Fprintf(os.Stdout, "\n--- reply ---\n")
-								sectionPrinted = "reply"
-							}
-							fmt.Fprint(os.Stdout, chunk.Content)
-						}
-					} else {
-						outWriter.WriteEvent("message_chunk", eventWithCtx(ea, map[string]interface{}{
-							"content": chunk.Content,
-							"type":    "text",
-							"index":   chunk.Index,
-						}))
-					}
-				}
-				if chunk.ToolCall != nil {
-					toolCalls = append(toolCalls, chunk.ToolCall)
-				}
-			}
-
-			if streamOk {
-				llmSucceeded = true
-				break llmAttemptLoop
-			}
-			// stream failed, retry next attempt (re-enter retry loop)
-		}
-
-		if !llmSucceeded {
-			return nil, fmt.Errorf("LLM call failed after %d attempts", maxRetries)
-		}
-
-		// Print stop/separator
-		if isStandalone {
-			if ea.Verbose {
-				writeSSEStop()
-			} else {
-				fmt.Fprintln(os.Stdout)
-			}
-		}
-
-		// Add assistant message with accumulated text and reasoning content
-		assistantMsg := llm.Message{
-			Role:             "assistant",
-			Content:          textContent.String(),
-			ReasoningContent: reasoningContent.String(),
-		}
-		if len(toolCalls) > 0 {
-			assistantMsg.ToolCalls = make([]llm.ToolCall, len(toolCalls))
-			for i, tc := range toolCalls {
-				assistantMsg.ToolCalls[i] = *tc
-			}
-		}
-		messages = append(messages, assistantMsg)
-		fullResponse.WriteString(textContent.String())
-
-		// Persist assistant message to DB
-		saveAssistantMessage(ea, assistantMsg, logger)
-
-		// No tool calls → we're done
-		if len(toolCalls) == 0 {
-			break
-		}
-
-		logger.Info("Processing tool calls",
-			zap.Int("iteration", iter),
-			zap.Int("tool_calls", len(toolCalls)),
-		)
-
-		// Process each tool call
-		for _, tc := range toolCalls {
-			// Parse arguments (supports both JSON object and JSON array inputs)
-			var raw interface{}
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &raw); err != nil {
-				logger.Warn("Failed to parse tool call arguments", zap.Error(err), zap.String("raw", tc.Function.Arguments))
-				toolResultMsg := llm.Message{
-					Role:       "tool",
-					ToolCallID: tc.ID,
-					Content:    fmt.Sprintf(`{"error":"failed to parse arguments: %s"}`, err.Error()),
-				}
-				messages = append(messages, toolResultMsg)
-				saveToolMessage(ea, toolResultMsg, tc.Function.Name, logger)
-				continue
-			}
-			var args map[string]interface{}
-			switch v := raw.(type) {
-			case map[string]interface{}:
-				args = v
-			case []interface{}:
-				args = map[string]interface{}{"": v}
-			default:
-				logger.Warn("Unexpected arguments type", zap.Any("type", fmt.Sprintf("%T", raw)))
-				toolResultMsg := llm.Message{
-					Role:       "tool",
-					ToolCallID: tc.ID,
-					Content:    `{"error":"arguments must be a JSON object or array"}`,
-				}
-				messages = append(messages, toolResultMsg)
-				saveToolMessage(ea, toolResultMsg, tc.Function.Name, logger)
-				continue
-			}
-
-			logger.Info("Dispatching tool",
-				zap.String("tool", tc.Function.Name),
-				zap.String("tool_call_id", tc.ID),
-				zap.Any("args", args),
-			)
-
-			// Report tool call event (suppressed in standalone non-verbose mode)
-			if !isStandalone || ea.Verbose {
-				argsJSON := json.RawMessage(tc.Function.Arguments)
-				callSimplified := tc.Function.Name + "(" + types.FormatToolCallArgs(argsJSON) + ")"
-				outWriter.WriteEvent("tool_call", eventWithCtx(ea, map[string]interface{}{
-					"tool":         tc.Function.Name,
-					"tool_call_id": tc.ID,
-					"arguments":    tc.Function.Arguments,
-					"simplified":   callSimplified,
-				}))
-			} else {
-				// Non-verbose: concise tool section header on first call
-				if sectionPrinted != "tool" {
-					fmt.Fprintf(os.Stdout, "\n--- tool ---\n")
-					sectionPrinted = "tool"
-				}
-				argsJSON, _ := json.Marshal(args)
-				fmt.Fprintf(os.Stdout, "→ %s(%s)\n", tc.Function.Name, string(argsJSON))
-			}
-
-			// Dispatch tool
-			result := handler.Dispatch(tc.Function.Name, args, 0)
-
-			// Format result
-			resultStr := types.FormatToolResultJSON(tc.Function.Name, result)
-
-			// Report tool result event (suppressed in standalone non-verbose mode)
-			if !isStandalone || ea.Verbose {
-				argsJSON := json.RawMessage(tc.Function.Arguments)
-				resultSimplified := types.SimplifyToolCall(tc.Function.Name, argsJSON, resultStr)
-				outWriter.WriteEvent("tool_result", eventWithCtx(ea, map[string]interface{}{
-					"tool":         tc.Function.Name,
-					"tool_call_id": tc.ID,
-					"success":      result.Success,
-					"result":       resultStr,
-					"simplified":   resultSimplified,
-				}))
-			} else {
-				// Non-verbose: concise result line
-				fmt.Fprintf(os.Stdout, "← %s\n", resultStr)
-			}
-
-			// Add and persist tool result message
-			toolResultMsg := llm.Message{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Content:    resultStr,
-			}
-			messages = append(messages, toolResultMsg)
-			saveToolMessage(ea, toolResultMsg, tc.Function.Name, logger)
-		}
-	}
-
-	// ── Flush code index changes ──
-	// Batch-enqueue all files modified during this turn and wake the worker.
-	n := handler.FlushCodeIndex()
-	if n > 0 {
-		logger.Info("codeindex: flushed changed files after tool loop", zap.Int("count", n))
-	}
-
-	// ── Asynchronous summary generation ──
-	// Runs in background; uses the same LLM client config.
-	if hasIDEConfig(ea) && ea.SessionID != "" && ea.TurnID != "" {
-		go generateSessionSummary(ea, logger)
-	}
-
-	return &TurnResult{
-		TurnID: ea.TurnID,
-		A:      fullResponse.String(),
-		Score:  0,
-	}, nil
+	return handler
 }

@@ -17,6 +17,7 @@ const iconNames = [
   'ChatDotSquare', 'List', 'Delete', 'Close',
   'Document', 'Check', 'Collection', 'Loading',
   'WarningFilled', 'Refresh', 'Plus', 'Lightning', 'ArrowRight',
+  'CloseFilled', 'CircleCheckFilled',
 ]
 for (const name of iconNames) {
   app.component(name, ElementPlusIconsVue[name])

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot/internal/db"
@@ -157,6 +159,7 @@ func (a *App) GetMessageContent(sessionID string, itemKeys []string) (map[string
 				content, err := db.GetToolResultByCallID(sqlDB, sessionID, tcID)
 				if err != nil {
 					result[key] = nil
+					a.logger.Debug("GetMessageContent: tool_call not found", zap.String("tool_call_id", tcID), zap.Error(err))
 					continue
 				}
 				result[key] = content
@@ -165,6 +168,7 @@ func (a *App) GetMessageContent(sessionID string, itemKeys []string) (map[string
 				msg, err := db.GetMessage(sqlDB, msgID)
 				if err != nil {
 					result[key] = nil
+					a.logger.Debug("GetMessageContent: message not found", zap.String("message_id", msgID), zap.Error(err))
 					continue
 				}
 				result[key] = msg.Content
@@ -365,29 +369,51 @@ func (a *App) SendChatMessage(args sendChatArgs) (map[string]string, error) {
 	if args.SessionID == "" {
 		return nil, fmt.Errorf("session_id required")
 	}
-	if args.Q != "" {
-		db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+
+	turnID := uuid.New().String()
+
+	// Persist turn + user message in a single DB session, propagating errors.
+	if err := db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		// Auto-title from first user message (best-effort)
+		if args.Q != "" {
 			session, err := db.GetSession(sqlDB, args.SessionID)
 			if err == nil && session.Title == "" {
 				title := args.Q
 				if len(title) > 40 {
 					title = title[:40]
 				}
-				db.UpdateSessionTitle(sqlDB, args.SessionID, title)
+				if uerr := db.UpdateSessionTitle(sqlDB, args.SessionID, title); uerr != nil {
+					a.logger.Warn("failed to auto-title session", zap.String("session_id", args.SessionID), zap.Error(uerr))
+				}
 			}
-			return nil
-		})
-	}
-	turnID := uuid.New().String()
-	turn := models.NewTurn(turnID, args.SessionID)
-	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
-		return db.CreateTurn(sqlDB, turn)
-	})
-	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		}
+
+		turn := models.NewTurn(turnID, args.SessionID)
+		if err := db.CreateTurn(sqlDB, turn); err != nil {
+			return fmt.Errorf("create turn: %w", err)
+		}
 		msg := models.NewMessage(uuid.New().String(), turnID, "user", "text", args.Q)
-		return db.AddMessage(sqlDB, msg)
-	})
+		if err := db.AddMessage(sqlDB, msg); err != nil {
+			return fmt.Errorf("add message: %w", err)
+		}
+		return nil
+	}); err != nil {
+		a.logger.Error("SendChatMessage: failed to persist turn/message", zap.Error(err))
+		return nil, fmt.Errorf("failed to persist chat data: %w", err)
+	}
 	go func() {
+		// Check if cancellation was requested before the goroutine started
+		stop := make(chan struct{}, 1)
+		a.pendingCancels.LoadOrStore(turnID, stop)
+		select {
+		case <-stop:
+			a.pendingCancels.Delete(turnID)
+			a.logger.Debug("StartChat goroutine aborted by CancelChat before executor started",
+				zap.String("turn_id", turnID))
+			return
+		default:
+		}
+
 		cfg := a.userCfg.Get()
 		var extraArgs []string
 		if cfg.LogLevel != "" {
@@ -399,14 +425,16 @@ func (a *App) SendChatMessage(args sendChatArgs) (map[string]string, error) {
 		if cfg.RetryDelay > 0 {
 			extraArgs = append(extraArgs, fmt.Sprintf("--retry-delay=%d", cfg.RetryDelay))
 		}
-		if cfg.KeepFullTurns > 0 {
-			extraArgs = append(extraArgs, fmt.Sprintf("--keep-full-turns=%d", cfg.KeepFullTurns))
+		// KeepFullTurns / KeepSimplifiedTurns — read from ConfigManager cache, not disk
+		if val, ok := a.cfg.Get("keep_full_turns"); ok && val != "" {
+			if n, e := strconv.Atoi(val); e == nil && n > 0 {
+				extraArgs = append(extraArgs, fmt.Sprintf("--keep-full-turns=%d", n))
+			}
 		}
-		if cfg.KeepSimplifiedTurns > 0 {
-			extraArgs = append(extraArgs, fmt.Sprintf("--keep-simplified-turns=%d", cfg.KeepSimplifiedTurns))
-		}
-		if cfg.ForceCompressThreshold > 0 {
-			extraArgs = append(extraArgs, fmt.Sprintf("--force-compress-threshold=%d", cfg.ForceCompressThreshold))
+		if val, ok := a.cfg.Get("keep_simplified_turns"); ok && val != "" {
+			if n, e := strconv.Atoi(val); e == nil && n > 0 {
+				extraArgs = append(extraArgs, fmt.Sprintf("--keep-simplified-turns=%d", n))
+			}
 		}
 		if cfg.ForeachConcurrency > 0 {
 			extraArgs = append(extraArgs, fmt.Sprintf("--foreach-concurrency=%d", cfg.ForeachConcurrency))
@@ -423,7 +451,26 @@ func (a *App) SendChatMessage(args sendChatArgs) (map[string]string, error) {
 		if cfg.AskUserTimeout > 0 {
 			extraArgs = append(extraArgs, fmt.Sprintf("--ask-user-timeout=%d", cfg.AskUserTimeout))
 		}
+		// Pass active scenario system prompt as env var for executor to read
+		_ = db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+			if prompt, err := db.GetConfig(sqlDB, "scenario_system_prompt"); err == nil && prompt != "" {
+				os.Setenv("CHONKPILOT_SCENARIO_PROMPT", prompt)
+			} else {
+				os.Unsetenv("CHONKPILOT_SCENARIO_PROMPT")
+			}
+			return nil
+		})
+		// Check cancellation again before the final StartExecutor call
+		select {
+		case <-stop:
+			a.pendingCancels.Delete(turnID)
+			a.logger.Debug("StartChat goroutine aborted before StartExecutor",
+				zap.String("turn_id", turnID))
+			return
+		default:
+		}
 		a.em.StartExecutor(args.SessionID, turnID, args.LLM, args.Think, args.Effort, extraArgs...)
+		a.pendingCancels.Delete(turnID)
 	}()
 	return map[string]string{"turn_id": turnID}, nil
 }
@@ -437,6 +484,17 @@ func (a *App) CancelChat(args cancelChatArgs) error {
 	if args.TurnID == "" {
 		return fmt.Errorf("turn_id required")
 	}
+
+	// Signal the StartChat goroutine to abort before executor starts (if still in setup phase)
+	if v, ok := a.pendingCancels.Load(args.TurnID); ok {
+		if ch, ok := v.(chan struct{}); ok {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
+		}
+	}
+
 	if err := a.em.KillExecutor(args.TurnID); err != nil {
 		a.logger.Warn("kill executor failed", zap.String("turn_id", args.TurnID), zap.Error(err))
 	}

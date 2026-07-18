@@ -22,7 +22,7 @@ var mermaidJS string
 // svgTemplate wraps raw SVG markup in a minimal HTML page.
 // No CSS affecting SVGs — any styling on <svg> can collapse height to 0.
 const svgTemplate = `<!DOCTYPE html>
-<html><body style="margin:0;background:white;">%s</body></html>`
+<html><body style="margin:0;background:white;font-family:'Microsoft YaHei','PingFang SC','SimHei',sans-serif;">%s</body></html>`
 
 // mermaidTemplate builds a self-contained HTML page that renders Mermaid diagrams.
 // Uses mermaid.render() (sync-style Promise API) for reliable results,
@@ -30,12 +30,12 @@ const svgTemplate = `<!DOCTYPE html>
 func mermaidTemplate(content string) string {
 	jsContent, _ := json.Marshal(content)
 	return fmt.Sprintf(`<!DOCTYPE html>
-<html><body style="margin:0;background:white;">
+<html><body style="margin:0;background:white;font-family:'Microsoft YaHei','PingFang SC','SimHei',sans-serif;">
 <div id="o"></div>
 <script>%s</script>
 <script>
-mermaid.initialize({startOnLoad:false,securityLevel:'loose',theme:'default'});
-mermaid.render('s', %s).then(function(r){
+mermaid.initialize({startOnLoad:false,securityLevel:'loose',theme:'default',fontFamily:'"Microsoft YaHei","PingFang SC","SimHei",sans-serif'});
+	mermaid.render('s', %s).then(function(r){
 	document.getElementById('o').innerHTML = r.svg;
 });
 </script>

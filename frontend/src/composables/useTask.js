@@ -1,12 +1,13 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import bridge from '../utils/bridge'
 import { getTasksByTurn, updateTaskStatus } from '../api/task'
+import { useSession } from './useSession'
 
 /**
  * Shared reactive task execution state.
  *
  * Singleton + bridge event pattern (same as useCodebaseStatus).
- * Automatically listens for `chat:progress` push events from Go backend.
+ * Automatically listens for `llm:event` (tool_progress) push events from Go backend.
  *
  * Usage:
  *   const { tasks, progressMap, loadTasks, teardown } = useTask()
@@ -37,8 +38,9 @@ let unsub = null
 function subscribe() {
   refCount++
   if (unsub) return // already subscribed
-  // Listen for real-time task progress from executor
-  unsub = bridge.on('chat:progress', (data) => {
+  // Listen for real-time task progress from executor via unified llm:event
+  unsub = bridge.on('llm:event', (data) => {
+    if (data?._event_type !== 'tool_progress') return
     if (!data?.task_id) return
     const turnId = data.turn_id || '__default__'
     if (!progressByTurn.value[turnId]) {
@@ -64,6 +66,12 @@ function unsubscribe() {
 
 export function useTask() {
   subscribe()
+
+  // Cascade: watch chat session change → auto-clear task state
+  const { currentSessionId } = useSession()
+  watch(currentSessionId, () => {
+    reset()
+  })
 
   async function loadTasks(turnId) {
     loading.value = true
@@ -98,6 +106,15 @@ export function useTask() {
     return progressMap.value[turnId] || null
   }
 
+  /**
+   * Clear all task state. Called when session changes so stale task data
+   * from the previous session does not linger in the UI.
+   */
+  function reset() {
+    tasks.value = []
+    progressByTurn.value = {}
+  }
+
   function teardown() {
     unsubscribe()
   }
@@ -110,6 +127,7 @@ export function useTask() {
     loadTasks,
     updateTask,
     getProgress,
+    reset,
     teardown,
   }
 }

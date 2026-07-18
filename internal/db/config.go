@@ -95,20 +95,9 @@ func GetRulesByCategory(db *sql.DB, category string) ([]*models.Rule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rules by category: %w", err)
 	}
-	defer rows.Close()
-
-	var rules []*models.Rule
-	for rows.Next() {
-		r := &models.Rule{}
-		if err := rows.Scan(&r.Name, &r.Category, &r.Content, &r.CreatedAt, &r.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan rule: %w", err)
-		}
-		rules = append(rules, r)
-	}
-	if rules == nil {
-		rules = []*models.Rule{}
-	}
-	return rules, rows.Err()
+	return scanAll(rows, func(r *models.Rule) []any {
+		return []any{&r.Name, &r.Category, &r.Content, &r.CreatedAt, &r.UpdatedAt}
+	})
 }
 
 // DeleteRule deletes a rule by name.

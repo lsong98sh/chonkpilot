@@ -1,16 +1,11 @@
 package call_llm
 
 import (
-	"bufio"
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"syscall"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,19 +13,43 @@ import (
 
 	"github.com/chonkpilot/chonkpilot/internal/db"
 	"github.com/chonkpilot/chonkpilot/internal/models"
-	"github.com/chonkpilot/chonkpilot/pkg/executor/engine"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/codeindex"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/discover"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/llm"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/sessionutil"
 	run "github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/task"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
 )
 
-// HandleCallLLM reads a prompt from a temp file and launches a sub-executor process.
-// All execution goes through TaskManager so process_task_stop can cancel it.
-func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engine,
+// Package-level cancellation — set by toolhandler.PropagateConfig.
+var callCancelCtx context.Context
+var callCancelFunc context.CancelFunc
+
+// SetCancelCtx sets the cancellation context for call_llm operations.
+func SetCancelCtx() {
+	callCancelCtx, callCancelFunc = context.WithCancel(context.Background())
+}
+
+// Cancel triggers cancellation for call_llm operations.
+func Cancel() {
+	if callCancelFunc != nil {
+		callCancelFunc()
+	}
+}
+
+// HandleCallLLM runs a sub-task in the current process using TurnRunner,
+// with its own session/turn in DB and independent LLM tool loop.
+// dispatch is the Handler's tool dispatch function, used for tool execution.
+// codeIndexer is the project's codebase indexer (nil if disabled) — changes made
+// by this sub-turn are flushed to the index queue on completion.
+func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, dbDir string,
 	tm *run.TaskManager,
 	llmProtocol, llmModel, llmAPIKey, llmAPIURL string,
 	thinking bool, reasoningEffort string,
 	writeEvent func(string, map[string]interface{}), onProgress func(map[string]interface{}),
-	args map[string]interface{}, depth int) *types.ToolResult {
+	codeIndexer *codeindex.Indexer,
+	args map[string]interface{}, depth int,
+	dispatch func(toolName string, args map[string]interface{}, depth int) *types.ToolResult) *types.ToolResult {
 
 	if depth >= 5 {
 		return &types.ToolResult{
@@ -51,10 +70,9 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engin
 	}
 
 	promptFile, _ := args["prompt-file"].(string)
-
-	// If no prompt-file but prompt text is given, write it to a temp file
+	var promptText string
 	if promptFile == "" {
-		promptText, _ := args["prompt"].(string)
+		promptText, _ = args["prompt"].(string)
 		if promptText == "" {
 			return &types.ToolResult{
 				Success: false,
@@ -62,42 +80,21 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engin
 				Tool:    "call_llm",
 			}
 		}
-		tmpFile, err := os.CreateTemp("", "call_llm_prompt_*.txt")
+	} else {
+		// Read prompt from file
+		content, err := os.ReadFile(promptFile)
 		if err != nil {
 			return &types.ToolResult{
 				Success: false,
-				Error:   fmt.Sprintf("failed to create temp file: %s", err.Error()),
+				Error:   fmt.Sprintf("failed to read prompt file: %s", err.Error()),
 				Tool:    "call_llm",
 			}
 		}
-		if _, err := tmpFile.WriteString(promptText); err != nil {
-			os.Remove(tmpFile.Name())
-			return &types.ToolResult{
-				Success: false,
-				Error:   fmt.Sprintf("failed to write temp file: %s", err.Error()),
-				Tool:    "call_llm",
-			}
-		}
-		tmpFile.Close()
-		promptFile = tmpFile.Name()
-		defer os.Remove(promptFile)
-	}
-
-	if !filepath.IsAbs(promptFile) {
-		promptFile = filepath.Join(eng.WorkDir, promptFile)
-	}
-
-	if _, err := os.Stat(promptFile); os.IsNotExist(err) {
-		return &types.ToolResult{
-			Success: false,
-			Error:   fmt.Sprintf("prompt file not found: %s", promptFile),
-			Tool:    "call_llm",
-		}
+		promptText = string(content)
 	}
 
 	systemPrompt, _ := args["system-prompt"].(string)
 	agent, _ := args["agent"].(string)
-	showWindow, _ := args["show_window"].(bool)
 
 	// Determine sub-session: use provided session_id for continuation, or create new
 	subSessionID, _ := args["session_id"].(string)
@@ -106,17 +103,17 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engin
 	}
 	subTurnID := uuid.New().String()
 
-	// Create sub-session in DB with retry (can fail under concurrent sub-executor access)
+	// Create sub-session in DB
 	if session != "" {
 		var sessErr error
 		for attempt := 0; attempt < 3; attempt++ {
-			sqlDB, err := db.Open(eng.WorkDir)
+			sqlDB, err := db.Open(workDir)
 			if err != nil {
 				sessErr = err
 				time.Sleep(time.Duration(attempt+1) * 300 * time.Millisecond)
 				continue
 			}
-			subSession := models.NewSession(subSessionID, session, eng.WorkDir, title)
+			subSession := models.NewSession(subSessionID, session, workDir, title)
 			sessErr = db.CreateSession(sqlDB, subSession)
 			db.Close(sqlDB)
 			if sessErr == nil {
@@ -129,125 +126,278 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engin
 		}
 	}
 
-	// ── Create parent-side TCP listener for child events ──
-	pipeAddr := ""
-	var subListener net.Listener
-	if writeEvent != nil {
-		subListener, _ = net.Listen("tcp", "127.0.0.1:0")
-		if subListener != nil {
-			pipeAddr = subListener.Addr().String()
+	// Create sub-turn + save user message
+	if workDir != "" {
+		sqlDB, err := db.Open(workDir)
+		if err == nil {
+			turn := models.NewTurn(subTurnID, subSessionID)
+			_ = db.CreateTurn(sqlDB, turn)
+			msg := models.NewMessage(uuid.New().String(), subTurnID, "user", "text", promptText)
+			_ = db.AddMessage(sqlDB, msg)
+			db.Close(sqlDB)
 		}
 	}
 
-	// ── Build sub-executor args ───────────────────────────
-	subArgs := []string{
-		fmt.Sprintf("--work-dir=%s", eng.WorkDir),
-		fmt.Sprintf("--prompt-file=%s", promptFile),
-		fmt.Sprintf("--session-id=%s", subSessionID),
-		fmt.Sprintf("--turn-id=%s", subTurnID),
-		"--output=json",
-	}
-	if pipeAddr != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--pipe-addr=%s", pipeAddr))
-	}
-	if systemPrompt != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--system-prompt=%s", systemPrompt))
-	}
-	if agent != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--agent=%s", agent))
+	// ── Load session history (if continuing an existing session) ──
+	var historyMessages []llm.Message
+	if subSessionID != "" && args["session_id"] != nil {
+		sqlDB, err := db.Open(dbDir)
+		if err == nil {
+			historyMessages, _ = sessionutil.LoadSessionMessages(sqlDB, subSessionID)
+			db.Close(sqlDB)
+		}
 	}
 
-	// Pass LLM config to sub-executor so it uses the same provider/api key
-	if llmProtocol != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--llm-provider=%s", llmProtocol))
+	// ── Build messages ──
+	var messages []llm.Message
+	// Prepend history (loaded messages come first for context)
+	messages = append(messages, historyMessages...)
+	// Add current prompt
+	messages = append(messages, llm.Message{Role: "user", Content: promptText})
+	// System prompts first
+	if systemPrompt != "" {
+		messages = append([]llm.Message{{Role: "system", Content: systemPrompt}}, messages...)
 	}
-	if llmModel != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--llm-model=%s", llmModel))
+	if agent != "" {
+		messages = append([]llm.Message{{Role: "system", Content: "You are " + agent + ". Follow the persona strictly."}}, messages...)
 	}
-	if llmAPIKey != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--llm-api-key=%s", llmAPIKey))
-	}
-	if llmAPIURL != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--llm-api-url=%s", llmAPIURL))
-	}
-	if thinking {
-		subArgs = append(subArgs, "--think=on")
-	} else {
-		subArgs = append(subArgs, "--think=off")
-	}
-	if reasoningEffort != "" {
-		subArgs = append(subArgs, fmt.Sprintf("--effort=%s", reasoningEffort))
+
+	// ── Create LLM client ──
+	client := llm.NewClient(llmProtocol, llmModel, llmAPIKey, llmAPIURL, logger)
+
+	// ── Build tool definitions ──
+	allTools := discover.NewDiscoverer().ListBuiltinTools()
+	toolDefs := make([]llm.ToolDefinition, 0, len(allTools))
+	for _, t := range allTools {
+		paramsJSON, _ := json.Marshal(t.Parameters)
+		toolDefs = append(toolDefs, llm.ToolDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  json.RawMessage(paramsJSON),
+		})
 	}
 
 	async, _ := args["async"].(bool)
-	logMode := "sync"
-	if async {
-		logMode = "async"
-	}
 
-	// ── Launch via TaskManager ────────────────────────────
-	// All sub-executor processes go through TM so they are cancelable
-	// via process_task_stop and their results are queryable via query_task.
+	// ── Launch via TaskManager ──
 	taskID := tm.StartOperation(fmt.Sprintf("call_llm(%s)", title), func(cancel <-chan struct{}) (string, error) {
-		// Manage listener lifecycle inside the operation
-		if subListener != nil {
-			defer subListener.Close()
-			go forwardSubPipe(logger, subListener, subSessionID, subTurnID, depth, writeEvent)
-		}
-
-		execPath := findExecutorPath()
-		cmd := exec.Command(execPath, subArgs...)
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-
-		if showWindow && runtime.GOOS == "windows" {
-			cmd.SysProcAttr = &syscall.SysProcAttr{
-				CreationFlags: 0x00000010, // CREATE_NEW_CONSOLE
-			}
-		}
-
-		logger.Info("CallLLM launching sub-executor",
-			zap.String("mode", logMode),
-			zap.String("sub_turn_id", subTurnID),
-			zap.Bool("show_window", showWindow),
-		)
-
-		if err := cmd.Start(); err != nil {
-			return "", fmt.Errorf("failed to start sub-executor: %w", err)
-		}
-
-		// Wait for completion or cancellation
-		done := make(chan error, 1)
+		// Create a context that cancels when either the task is stopped or global cancel fires
+		done := make(chan struct{}, 1)
 		go func() {
-			done <- cmd.Wait()
+			select {
+			case <-cancel:
+				Cancel()
+			case <-done:
+			}
 		}()
+		defer func() { done <- struct{}{} }()
 
-		select {
-		case <-cancel:
-			logger.Warn("CallLLM cancelled", zap.String("sub_turn_id", subTurnID))
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-			}
-			return "", fmt.Errorf("cancelled")
-		case err := <-done:
-			if err != nil {
-				logger.Warn("CallLLM sub-executor failed",
-					zap.Error(err),
-					zap.String("stderr", stderr.String()),
-				)
-				return "", fmt.Errorf("sub-executor failed: %s\nstderr: %s", err.Error(), stderr.String())
-			}
-			// Read result from DB instead of parsing stdout — more reliable
-			resultContent := readTurnResult(eng.WorkDir, subTurnID)
-			if resultContent == "" {
-				resultContent = parseLLMOutput(stdout.Bytes())
-			}
-			logger.Info("CallLLM completed",
-				zap.String("sub_turn_id", subTurnID),
-			)
-			return resultContent, nil
+		runner := &llm.TurnRunner{
+			Client:   client,
+			Logger:   logger,
+			CancelCx: callCancelCtx,
+			Dispatch: func(toolName string, args map[string]interface{}, depth int) (string, bool, error) {
+				result := dispatch(toolName, args, depth)
+				resultStr := types.FormatToolResultJSON(toolName, result)
+				return resultStr, result.Success, nil
+			},
+			Callbacks: llm.TurnCallbacks{
+				OnChunk: func(chunk llm.StreamEvent) {
+					if writeEvent != nil {
+						payload := map[string]interface{}{
+							"session_id": subSessionID,
+							"sub_turn_id":    subTurnID,
+							"depth":          depth + 1,
+						}
+						if chunk.ReasoningContent != "" {
+							payload["content"] = chunk.ReasoningContent
+							payload["type"] = "reasoning"
+							payload["index"] = chunk.Index
+						}
+						if chunk.Content != "" {
+							payload["content"] = chunk.Content
+							payload["type"] = "text"
+							payload["index"] = chunk.Index
+						}
+						if chunk.Error != nil {
+							payload["error"] = chunk.Error.Error()
+						}
+						writeEvent("message_chunk", payload)
+					}
+				},
+				OnAssistantMsg: func(msg llm.Message) ([]string, error) {
+					if workDir == "" {
+						return nil, nil
+					}
+					sqlDB, err := db.Open(workDir)
+					if err != nil {
+						return nil, nil
+					}
+					defer db.Close(sqlDB)
+
+					var toolCallIDs []string
+
+					// Save reasoning
+					if msg.ReasoningContent != "" {
+						dbMsg := models.NewMessage(uuid.New().String(), subTurnID, "assistant", "reasoning", msg.ReasoningContent)
+						_ = db.AddMessage(sqlDB, dbMsg)
+					}
+					// Save text
+					if msg.Content != "" {
+						dbMsg := models.NewMessage(uuid.New().String(), subTurnID, "assistant", "text", msg.Content)
+						_ = db.AddMessage(sqlDB, dbMsg)
+					}
+					// Save tool calls (for brief tracking)
+					if len(msg.ToolCalls) > 0 {
+						for _, tc := range msg.ToolCalls {
+							tcPayload, _ := json.Marshal(models.ToolCallPayload{
+								ToolCallID: tc.ID,
+								Name:       tc.Function.Name,
+								Arguments:  tc.Function.Arguments,
+							})
+							dbMsg := models.NewMessage(uuid.New().String(), subTurnID, "assistant", "tool_call", string(tcPayload))
+							if err := db.AddMessage(sqlDB, dbMsg); err == nil {
+								toolCallIDs = append(toolCallIDs, dbMsg.MessageID)
+							}
+						}
+					}
+					return toolCallIDs, nil
+				},
+				OnToolCall: func(tc llm.ToolCall, args map[string]interface{}) (string, error) {
+					if writeEvent != nil {
+						writeEvent("tool_call", map[string]interface{}{
+							"session_id": subSessionID,
+							"sub_turn_id":    subTurnID,
+							"depth":          depth + 1,
+							"tool":           tc.Function.Name,
+							"tool_call_id":   tc.ID,
+							"arguments":      tc.Function.Arguments,
+						})
+					}
+					return "", nil
+				},
+				OnToolResult: func(tc llm.ToolCall, resultStr string, success bool) error {
+					if writeEvent != nil {
+						writeEvent("tool_result", map[string]interface{}{
+							"session_id": subSessionID,
+							"sub_turn_id":    subTurnID,
+							"depth":          depth + 1,
+							"tool":           tc.Function.Name,
+							"tool_call_id":   tc.ID,
+							"success":        success,
+							"result":         resultStr,
+						})
+					}
+					// Save tool result message to DB
+					if workDir != "" {
+						sqlDB, err := db.Open(workDir)
+						if err == nil {
+							toolResultPayload, _ := json.Marshal(models.ToolResultPayload{
+								ToolCallID: tc.ID,
+								Name:       tc.Function.Name,
+								Result:     resultStr,
+							})
+							dbMsg := models.NewMessage(uuid.New().String(), subTurnID, "tool", "tool_result", string(toolResultPayload))
+							_ = db.AddMessage(sqlDB, dbMsg)
+							db.Close(sqlDB)
+						}
+					}
+					return nil
+				},
+
+				OnIterationEnd: func(iter int, reasoningContent string, toolCallMsgIDs []string) {
+					if reasoningContent == "" || len(toolCallMsgIDs) == 0 || workDir == "" {
+						return
+					}
+					brief := extractBrief(reasoningContent)
+					sqlDB, err := db.Open(workDir)
+					if err != nil {
+						return
+					}
+					defer db.Close(sqlDB)
+					for _, msgID := range toolCallMsgIDs {
+						_ = db.UpdateMessageBrief(sqlDB, msgID, brief)
+					}
+				},
+
+				OnLLMError: func(code, message string, retryable bool, attempt, maxAttempts int) {
+					if writeEvent != nil {
+						writeEvent("llm_error", map[string]interface{}{
+							"session_id": subSessionID,
+							"sub_turn_id":    subTurnID,
+							"depth":          depth + 1,
+							"code":           code,
+							"message":        message,
+							"retryable":      retryable,
+							"retry_attempt":  attempt,
+							"retry_count":    maxAttempts,
+						})
+					}
+				},
+
+				OnLLMRetry: func(attempt, maxAttempts int, waitSeconds int) {
+					if writeEvent != nil {
+						writeEvent("llm_retry", map[string]interface{}{
+							"session_id": subSessionID,
+							"sub_turn_id":    subTurnID,
+							"depth":          depth + 1,
+							"retry_attempt":  attempt,
+							"retry_count":    maxAttempts,
+							"wait_seconds":   waitSeconds,
+						})
+					}
+				},
+
+				OnComplete: func(result *llm.TurnResult) {
+					if writeEvent != nil {
+						writeEvent("complete", map[string]interface{}{
+							"session_id": subSessionID,
+							"sub_turn_id":    subTurnID,
+							"depth":          depth + 1,
+							"result":         result.Content,
+							"cancelled":      result.Cancelled,
+						})
+					}
+				},
+			},
 		}
+
+		runResult, err := runner.Run(llm.TurnConfig{
+			Messages:          messages,
+			Tools:             toolDefs,
+			MaxIter:           100,
+			MaxAttempts:       3,
+			RetryDelaySeconds: 5,
+			MaxTokens:         65535,
+			Temperature:       0.7,
+			Thinking:          thinking,
+			ReasoningEffort:   reasoningEffort,
+		})
+
+		if err != nil {
+			return "", err
+		}
+		if runResult.Cancelled {
+			return "", fmt.Errorf("cancelled")
+		}
+
+		// ── Flush code index changes made by this sub-turn ──
+		if codeIndexer != nil {
+			n := codeIndexer.FlushChangedFiles()
+			if n > 0 {
+				logger.Info("call_llm: flushed code index changes",
+					zap.String("sub_session", subSessionID),
+					zap.Int("count", n))
+			}
+		}
+
+		// ── Generate sub-session summary (async) ──
+		if dbDir != "" && subSessionID != "" && subTurnID != "" {
+			go generateSubSessionSummary(logger, llmProtocol, llmModel, llmAPIKey, llmAPIURL,
+				dbDir, subSessionID, subTurnID)
+		}
+
+		return runResult.Content, nil
 	})
 
 	if async {
@@ -256,7 +406,7 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engin
 			Output:  fmt.Sprintf("task_id=%s status=running", taskID),
 			Tool:    "call_llm",
 			RawResult: map[string]interface{}{
-				"sub_session_id": subSessionID,
+				"session_id": subSessionID,
 				"sub_turn_id":    subTurnID,
 			},
 		}
@@ -275,18 +425,17 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engin
 					Output:  info.Output,
 					Tool:    "call_llm",
 					RawResult: map[string]interface{}{
-						"sub_session_id": subSessionID,
+						"session_id": subSessionID,
 						"sub_turn_id":    subTurnID,
 					},
 				}
 			}
-			// error or stopped
 			return &types.ToolResult{
 				Success: false,
 				Error:   info.Error,
 				Tool:    "call_llm",
 				RawResult: map[string]interface{}{
-					"sub_session_id": subSessionID,
+					"session_id": subSessionID,
 					"sub_turn_id":    subTurnID,
 				},
 			}
@@ -295,101 +444,158 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, eng *engine.Engin
 	}
 }
 
-// forwardSubPipe listens on a TCP connection for child executor events
-// and forwards them upstream via writeEvent with sub-session metadata injected.
-func forwardSubPipe(logger *zap.Logger, listener net.Listener, subSessionID, subTurnID string, depth int, writeEvent func(string, map[string]interface{})) {
-	conn, err := listener.Accept()
+// generateSubSessionSummary generates and saves a session summary for a sub-session.
+// Runs asynchronously; errors are logged but never returned.
+func generateSubSessionSummary(logger *zap.Logger, llmProtocol, llmModel, llmAPIKey, llmAPIURL string,
+	dbDir, sessionID, turnID string) {
+
+	sqlDB, err := db.Open(dbDir)
 	if err != nil {
+		logger.Warn("call_llm summary: failed to open DB", zap.Error(err))
 		return
-	}
-	defer conn.Close()
-
-	decoder := json.NewDecoder(conn)
-	for {
-		var event struct {
-			Type    string                 `json:"type"`
-			Payload map[string]interface{} `json:"payload"`
-		}
-		if err := decoder.Decode(&event); err != nil {
-			break
-		}
-
-		if event.Payload == nil {
-			event.Payload = make(map[string]interface{})
-		}
-		event.Payload["sub_session_id"] = subSessionID
-		event.Payload["sub_turn_id"] = subTurnID
-		event.Payload["depth"] = depth + 1
-
-		if writeEvent != nil {
-			writeEvent(event.Type, event.Payload)
-		}
-	}
-}
-
-// readTurnResult reads the assistant's final reply from DB for a given turn.
-// Falls back to empty string if DB access fails or no assistant message found.
-func readTurnResult(workDir, turnID string) string {
-	sqlDB, err := db.Open(workDir)
-	if err != nil {
-		return ""
 	}
 	defer db.Close(sqlDB)
 
-	messages, err := db.GetMessagesByTurn(sqlDB, turnID)
+	// Load current turn's messages and format as readable conversation
+	turnMessages, err := db.GetMessagesByTurn(sqlDB, turnID)
 	if err != nil {
-		return ""
+		logger.Warn("call_llm summary: failed to load turn messages", zap.Error(err))
+		return
+	}
+	latestTurnText := formatTurnSummary(turnMessages)
+	if latestTurnText == "" {
+		return
 	}
 
-	// Return the last non-empty assistant message
-	var last string
-	for _, msg := range messages {
-		if msg.Role == "assistant" && msg.Content != "" {
-			last = msg.Content
-		}
+	// Load old summary (if any)
+	oldSummary, err := db.GetLatestSummary(sqlDB, sessionID)
+	if err != nil || oldSummary == "" {
+		oldSummary = "{}"
 	}
-	return last
+
+	// Build the summary prompt
+	userContent := "Summarize the following conversation turn and update the existing summary.\n\n" +
+		"Existing summary:\n" + oldSummary + "\n\n" +
+		"New turn:\n" + latestTurnText + "\n\n" +
+		"Output a JSON object with keys: goals, completed, current_state, next_steps. Keep it concise (2-3 sentences per field)."
+
+	// Call LLM (non-streaming, no tools)
+	client := llm.NewClient(llmProtocol, llmModel, llmAPIKey, llmAPIURL, logger)
+	ch, err := client.Chat([]llm.Message{
+		{Role: "user", Content: userContent},
+	}, llm.ChatOptions{
+		Model:       llmModel,
+		Temperature: 0.1,
+		MaxTokens:   4096,
+	})
+	if err != nil {
+		logger.Warn("call_llm summary: LLM call failed", zap.Error(err))
+		return
+	}
+
+	var result strings.Builder
+	for evt := range ch {
+		if evt.Error != nil {
+			logger.Warn("call_llm summary: LLM stream error", zap.Error(evt.Error))
+			return
+		}
+		result.WriteString(evt.Content)
+	}
+
+	summaryJSON := strings.TrimSpace(result.String())
+	if summaryJSON == "" {
+		logger.Warn("call_llm summary: empty response from LLM")
+		return
+	}
+
+	// Validate JSON
+	if !json.Valid([]byte(summaryJSON)) {
+		logger.Warn("call_llm summary: response is not valid JSON",
+			zap.String("raw", truncateStr(summaryJSON, 200)))
+		return
+	}
+
+	// Save to DB
+	if err := db.SaveSummary(sqlDB, sessionID, summaryJSON, turnID); err != nil {
+		logger.Warn("call_llm summary: failed to save", zap.Error(err))
+		return
+	}
+
+	logger.Info("call_llm summary: sub-session summary updated",
+		zap.String("session_id", sessionID),
+		zap.Int("summary_bytes", len(summaryJSON)))
 }
 
-// parseLLMOutput parses the JSON event output from a sub-executor and extracts the result.
-func parseLLMOutput(stdout []byte) string {
-	s := bufio.NewScanner(bytes.NewReader(stdout))
-	for s.Scan() {
-		line := s.Text()
-		if line == "" {
-			continue
+// formatTurnSummary formats a turn's DB messages into readable text for summary generation.
+func formatTurnSummary(messages []*models.Message) string {
+	var b strings.Builder
+	for i, m := range messages {
+		if i > 0 {
+			b.WriteString("\n")
 		}
-		var event struct {
-			Type    string                 `json:"type"`
-			Payload map[string]interface{} `json:"payload"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		if event.Type == "complete" {
-			if r, ok := event.Payload["result"]; ok {
-				return fmt.Sprintf("%v", r)
+		switch m.Role {
+		case "user":
+			b.WriteString("User:\n")
+			b.WriteString(m.Content)
+		case "assistant":
+			switch m.Type {
+			case "text":
+				b.WriteString("Assistant:\n")
+				b.WriteString(m.Content)
+			case "reasoning":
+				b.WriteString("[thinking]\n")
+				b.WriteString(m.Content)
+			case "tool_call":
+				var tc models.ToolCallPayload
+				if err := json.Unmarshal([]byte(m.Content), &tc); err == nil {
+					b.WriteString("[tool: ")
+					b.WriteString(tc.Name)
+					b.WriteString("]\n")
+					b.WriteString(tc.Arguments)
+				}
+			}
+		case "tool":
+			var tp models.ToolResultPayload
+			if err := json.Unmarshal([]byte(m.Content), &tp); err == nil {
+				b.WriteString("[result]\n")
+				b.WriteString(tp.Result)
+			} else {
+				b.WriteString("[result]\n")
+				b.WriteString(m.Content)
 			}
 		}
 	}
-	return string(stdout)
+	return b.String()
 }
 
-// findExecutorPath finds the executor executable.
-func findExecutorPath() string {
-	exe, err := os.Executable()
-	if err == nil {
-		dir := filepath.Dir(exe)
-		executorPath := filepath.Join(dir, "executor.exe")
-		if _, err := os.Stat(executorPath); err == nil {
-			return executorPath
+// extractBrief returns the first 3 non-empty lines of a text.
+func extractBrief(text string) string {
+	lines := strings.SplitN(text, "\n", 4)
+	var brief strings.Builder
+	count := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
 		}
-		executorPath = filepath.Join(dir, "executor")
-		if _, err := os.Stat(executorPath); err == nil {
-			return executorPath
+		if count > 0 {
+			brief.WriteString("\n")
+		}
+		brief.WriteString(trimmed)
+		count++
+		if count >= 3 {
+			break
 		}
 	}
-	return "executor"
+	return brief.String()
+}
+
+// truncateStr truncates a string to maxLen chars, appending "..." if truncated.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 func init() {

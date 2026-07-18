@@ -22,24 +22,26 @@ func HandleDiff(workDir string, args map[string]interface{}) *types.ToolResult {
 		return &types.ToolResult{Success: false, Error: "both file1 and file2 are required", Tool: "diff"}
 	}
 
-	if !filepath.IsAbs(file1) {
-		file1 = filepath.Join(workDir, file1)
+	resolved1, errMsg := resolveReadPath(file1, workDir)
+	if errMsg != "" {
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("file1: %s", errMsg), Tool: "diff"}
 	}
-	if !filepath.IsAbs(file2) {
-		file2 = filepath.Join(workDir, file2)
+	resolved2, errMsg := resolveReadPath(file2, workDir)
+	if errMsg != "" {
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("file2: %s", errMsg), Tool: "diff"}
 	}
 
-	data1, err := os.ReadFile(file1)
+	data1, err := os.ReadFile(resolved1)
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to read %s: %s", file1, err.Error()), Tool: "diff"}
 	}
-	data2, err := os.ReadFile(file2)
+	data2, err := os.ReadFile(resolved2)
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to read %s: %s", file2, err.Error()), Tool: "diff"}
 	}
 
-	rel1 := file1
-	rel2 := file2
+	rel1 := resolved1
+	rel2 := resolved2
 	if wd := workDir; wd != "" {
 		if r, err := filepath.Rel(wd, file1); err == nil {
 			rel1 = r
@@ -77,11 +79,12 @@ func HandlePatch(workDir string, versioner *fileversions.Versioner, turnID strin
 		return &types.ToolResult{Success: false, Error: "diff content is required", Tool: "patch"}
 	}
 
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(workDir, target)
+	resolved, errMsg := resolveWritePath(target, workDir)
+	if errMsg != "" {
+		return &types.ToolResult{Success: false, Error: errMsg, Tool: "patch"}
 	}
 
-	data, err := os.ReadFile(target)
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to read target: %s", err.Error()), Tool: "patch"}
 	}
@@ -91,15 +94,15 @@ func HandlePatch(workDir string, versioner *fileversions.Versioner, turnID strin
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("patch apply failed: %s", err.Error()), Tool: "patch"}
 	}
 
-	snapshotBeforeWrite(versioner, target, workDir, turnID)
+	snapshotBeforeWrite(versioner, resolved, workDir, turnID)
 
-	if err := os.WriteFile(target, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(resolved, []byte(newContent), 0644); err != nil {
 		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to write: %s", err.Error()), Tool: "patch"}
 	}
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("patch applied to %s (%d bytes written)", target, len(newContent)),
+		Output:  fmt.Sprintf("patch applied to %s (%d bytes written)", resolved, len(newContent)),
 		Tool:    "patch",
 	}
 }

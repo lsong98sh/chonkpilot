@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/chonkpilot/chonkpilot/internal/config"
 	"github.com/chonkpilot/chonkpilot/internal/models"
 	"go.uber.org/zap"
 )
@@ -23,6 +24,8 @@ type UserConfigManager struct {
 }
 
 // NewUserConfigManager creates a UserConfigManager that stores config under the user's home directory.
+// Uses EnsureUserConfig (internal/config) for initial load to avoid redundant disk I/O
+// and ensure default values (Chrome path, timeouts) are applied.
 func NewUserConfigManager(logger *zap.Logger) (*UserConfigManager, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -41,13 +44,19 @@ func NewUserConfigManager(logger *zap.Logger) (*UserConfigManager, error) {
 		path: path,
 		log:  logger,
 	}
-	if err := uc.Load(); err != nil {
-		uc.log.Warn("Failed to load user config, using defaults", zap.Error(err))
+	// Load via internal/config.EnsureUserConfig — reads once, applies defaults (Chrome, timeouts),
+	// and writes back if needed. Falls back to direct Load if the init path fails.
+	if initCfg, initErr := config.EnsureUserConfig(); initErr == nil && initCfg != nil {
+		uc.cfg = initCfg
+	} else {
+		if loadErr := uc.Load(); loadErr != nil {
+			uc.log.Warn("Failed to load user config, using defaults", zap.Error(loadErr))
+		}
 	}
 	return uc, nil
 }
 
-// Load reads the user config from disk.
+// Load reads the user config from disk and applies default values for missing fields.
 func (uc *UserConfigManager) Load() error {
 	uc.mu.Lock()
 	defer uc.mu.Unlock()
@@ -65,6 +74,16 @@ func (uc *UserConfigManager) Load() error {
 	// Ensure slices are not nil
 	if cfg.LLMs == nil {
 		cfg.LLMs = []models.LLMProvider{}
+	}
+	// Apply safe defaults for missing fields (consistent with internal/config/init.go)
+	if cfg.MaxToolIterations == 0 {
+		cfg.MaxToolIterations = 800
+	}
+	if cfg.ResponseTimeout == 0 {
+		cfg.ResponseTimeout = 180
+	}
+	if cfg.StreamTimeout == 0 {
+		cfg.StreamTimeout = 180
 	}
 	uc.cfg = &cfg
 	return nil
@@ -107,21 +126,6 @@ func (uc *UserConfigManager) SetTheme(theme string) error {
 	uc.cfg.Theme = theme
 	uc.mu.Unlock()
 	return uc.Save()
-}
-
-// SetLastWorkDir updates the last used work directory and persists.
-func (uc *UserConfigManager) SetLastWorkDir(dir string) error {
-	uc.mu.Lock()
-	uc.cfg.LastWorkDir = dir
-	uc.mu.Unlock()
-	return uc.Save()
-}
-
-// GetLastWorkDir returns the last used work directory.
-func (uc *UserConfigManager) GetLastWorkDir() string {
-	uc.mu.RLock()
-	defer uc.mu.RUnlock()
-	return uc.cfg.LastWorkDir
 }
 
 // saveUnsafe writes config without locking (caller must hold lock).

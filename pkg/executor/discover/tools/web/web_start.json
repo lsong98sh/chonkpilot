@@ -1,5 +1,5 @@
 {
-  "description": "Start a headless Chrome browser instance. Chrome is auto-discovered via PATH, registry, and common install paths (no external process manager). Returns: 'browser started (headless: true/false)'. Example: {\"headless\": true}",
+  "description": "Start a headless Chrome browser instance. Chrome is auto-discovered via PATH, registry, and common install paths (no external process manager). Returns: 'browser started (headless: true/false), browser_id: b{N}'. Example: {\"headless\": true}",
   "name": "web_start",
   "parameters": {
     "type": "object",

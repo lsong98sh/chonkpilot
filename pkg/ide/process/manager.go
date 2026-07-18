@@ -392,8 +392,15 @@ func mergeContext(payload map[string]interface{}, sessionID, turnID string) map[
 	if payload == nil {
 		payload = make(map[string]interface{})
 	}
-	payload["session_id"] = sessionID
-	payload["turn_id"] = turnID
+	// Only inject session_id/turn_id if not already present.
+	// Sub-executors (batch_llm, call_llm) set their own session_id/turn_id,
+	// which must be preserved for correct frontend routing.
+	if _, ok := payload["session_id"]; !ok {
+		payload["session_id"] = sessionID
+	}
+	if _, ok := payload["turn_id"]; !ok {
+		payload["turn_id"] = turnID
+	}
 	return payload
 }
 

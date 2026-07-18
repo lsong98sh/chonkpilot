@@ -18,3 +18,9 @@ var DefaultToolUsage string
 //
 //go:embed summary_prompt.txt
 var DefaultSummaryPrompt string
+
+// DefaultScenarioPrompt is the default scenario content embedded into the binary.
+// Used to seed scenario.db on first launch.
+//
+//go:embed system_scenario.txt
+var DefaultScenarioPrompt string

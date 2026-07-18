@@ -1,5 +1,5 @@
 {
-  "description": "Execute a shell command. Commands run in the project's work directory by default. Sync mode (async=false): returns combined stdout+stderr output after command exits. Async mode (async=true): returns task_id immediately; poll with process_task_status for partial_output later. For long-running servers (npm run dev, python -m http.server), ALWAYS use async=true to avoid timeout. If you need to run a command in a different directory, prefix with 'cd \u003cdir\u003e \u0026\u0026' (e.g. 'cd subdir \u0026\u0026 npm install'). Example: {\"command\": \"echo hello\"}",
+  "description": "Execute a shell command. Commands run in the project's work directory by default. Sync mode (async=false): returns combined stdout+stderr output after command exits. Async mode (async=true): returns task_id immediately; poll with process_task_status for partial_output later. For long-running servers (npm run dev, python -m http.server), ALWAYS use async=true to avoid timeout. To run in a different directory, prefix with 'cd <dir> &&' (e.g. 'cd subdir && npm install'). On Windows: use 'cd /d' for cross-drive changes (e.g. 'cd /d D:\\project && npm install'), otherwise cd silently fails across drives. Example: {\"command\": \"echo hello\"}",
   "name": "execute_command",
   "parameters": {
     "type": "object",

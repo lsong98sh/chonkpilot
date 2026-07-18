@@ -1,7 +1,9 @@
 package toolhandler
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,8 +58,8 @@ type mcpToolCallPayload struct {
 }
 
 // handleMCPTool dispatches a tool call to an MCP server via JSON-RPC.
+// Tries direct POST first; if that fails with non-JSON response, falls back to SSE transport.
 func (h *Handler) handleMCPTool(tool models.ToolConfig, args map[string]interface{}) *types.ToolResult {
-	// Extract MCP connection info from tool parameters
 	params, ok := tool.Parameters.(map[string]interface{})
 	if !ok {
 		return &types.ToolResult{
@@ -77,7 +79,25 @@ func (h *Handler) handleMCPTool(tool models.ToolConfig, args map[string]interfac
 		}
 	}
 
-	// Build JSON-RPC request
+	transport, _ := params["transport"].(string)
+
+	// If transport is known to be SSE, skip direct POST attempt
+	if transport == "sse" {
+		return trySSEMCPCall(serverURL, mcpToolName, args, tool.Name)
+	}
+
+	// Try direct POST first (works for non-SSE MCP servers)
+	if result := tryDirectMCPCall(serverURL, mcpToolName, args); result != nil {
+		return result
+	}
+
+	// Fallback: SSE transport
+	return trySSEMCPCall(serverURL, mcpToolName, args, tool.Name)
+}
+
+// tryDirectMCPCall POSTs tools/call directly to the server URL.
+// Returns nil if the response is not valid JSON-RPC (likely SSE-based server).
+func tryDirectMCPCall(serverURL, mcpToolName string, args map[string]interface{}) *types.ToolResult {
 	reqBody := mcpRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -87,59 +107,185 @@ func (h *Handler) handleMCPTool(tool models.ToolConfig, args map[string]interfac
 			Arguments: args,
 		},
 	}
-
 	reqData, err := json.Marshal(reqBody)
 	if err != nil {
-		return &types.ToolResult{
-			Success: false,
-			Tool:    tool.Name,
-			Error:   fmt.Sprintf("failed to marshal MCP request: %s", err.Error()),
-		}
+		return &types.ToolResult{Success: false, Tool: mcpToolName, Error: fmt.Sprintf("marshal: %s", err.Error())}
 	}
 
-	// Send HTTP POST to MCP server
 	client := &http.Client{Timeout: mcpRequestTimeout}
 	resp, err := client.Post(serverURL, "application/json", bytes.NewReader(reqData))
 	if err != nil {
-		return &types.ToolResult{
-			Success: false,
-			Tool:    tool.Name,
-			Error:   fmt.Sprintf("MCP server unreachable (%s): %s", serverURL, err.Error()),
-		}
+		return &types.ToolResult{Success: false, Tool: mcpToolName, Error: fmt.Sprintf("unreachable (%s): %s", serverURL, err.Error())}
 	}
 	defer resp.Body.Close()
 
 	respData, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return &types.ToolResult{
-			Success: false,
-			Tool:    tool.Name,
-			Error:   fmt.Sprintf("failed to read MCP response: %s", err.Error()),
-		}
+		return &types.ToolResult{Success: false, Tool: mcpToolName, Error: fmt.Sprintf("read: %s", err.Error())}
 	}
 
-	// Parse JSON-RPC response
+	// Try to parse as JSON-RPC
 	var mcpResp mcpResponse
 	if err := json.Unmarshal(respData, &mcpResp); err != nil {
-		return &types.ToolResult{
-			Success: false,
-			Tool:    tool.Name,
-			Error:   fmt.Sprintf("invalid MCP response (not JSON-RPC): %s", err.Error()),
-		}
+		// Not valid JSON-RPC — likely SSE-based server, fall through to SSE transport
+		return nil
 	}
 
 	if mcpResp.Error != nil {
 		return &types.ToolResult{
 			Success: false,
-			Tool:    tool.Name,
+			Tool:    mcpToolName,
 			Error:   fmt.Sprintf("MCP error [%d]: %s", mcpResp.Error.Code, mcpResp.Error.Message),
 		}
 	}
 
-	// Try to extract meaningful output from the result
-	output := string(mcpResp.Result)
+	return formatMCPResult(mcpResp.Result, serverURL, mcpToolName)
+}
+
+// trySSEMCPCall connects to SSE, gets a session, posts tools/call, reads response from SSE.
+func trySSEMCPCall(serverURL, mcpToolName string, args map[string]interface{}, toolName string) *types.ToolResult {
+	base := strings.TrimRight(serverURL, "/")
+	sseURL := base + "/sse"
+	msgBase := base + "/message"
+
+	ctx, cancel := context.WithTimeout(context.Background(), mcpRequestTimeout)
+	defer cancel()
+
+	// 1. Connect to SSE to get sessionId
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sseURL, nil)
+	if err != nil {
+		return &types.ToolResult{Success: false, Tool: toolName, Error: fmt.Sprintf("create SSE req: %s", err.Error())}
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return &types.ToolResult{Success: false, Tool: toolName, Error: fmt.Sprintf("SSE connect: %s", err.Error())}
+	}
+	defer resp.Body.Close()
+
+	// Read sessionId from SSE stream
+	br := bufio.NewReader(resp.Body)
+	var sessionID string
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return &types.ToolResult{Success: false, Tool: toolName, Error: fmt.Sprintf("SSE read: %s", err.Error())}
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if strings.Contains(data, "sessionId") {
+				if idx := strings.Index(data, "sessionId="); idx >= 0 {
+					sessionID = data[idx+len("sessionId="):]
+				}
+				break
+			}
+		}
+	}
+	if sessionID == "" {
+		return &types.ToolResult{Success: false, Tool: toolName, Error: "no sessionId from SSE"}
+	}
+
+	// 2. Build tools/call request
+	rpcBody := mcpRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params: mcpToolCallPayload{
+			Name:      mcpToolName,
+			Arguments: args,
+		},
+	}
+	rpcData, err := json.Marshal(rpcBody)
+	if err != nil {
+		return &types.ToolResult{Success: false, Tool: toolName, Error: fmt.Sprintf("marshal: %s", err.Error())}
+	}
+
+	msgURL := fmt.Sprintf("%s?sessionId=%s", msgBase, sessionID)
+
+	// 3. POST to message endpoint
+	postReq, err := http.NewRequestWithContext(ctx, http.MethodPost, msgURL, bytes.NewReader(rpcData))
+	if err != nil {
+		return &types.ToolResult{Success: false, Tool: toolName, Error: fmt.Sprintf("create POST: %s", err.Error())}
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+
+	postResp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		return &types.ToolResult{Success: false, Tool: toolName, Error: fmt.Sprintf("POST: %s", err.Error())}
+	}
+	defer postResp.Body.Close()
+
+	// Check POST body (some servers respond inline)
+	postBody, postErr := io.ReadAll(postResp.Body)
+	if postErr == nil && len(bytes.TrimSpace(postBody)) > 0 {
+		var mcpResp mcpResponse
+		if json.Unmarshal(postBody, &mcpResp) == nil {
+			if mcpResp.Error != nil {
+				return &types.ToolResult{
+					Success: false,
+					Tool:    toolName,
+					Error:   fmt.Sprintf("MCP error [%d]: %s", mcpResp.Error.Code, mcpResp.Error.Message),
+				}
+			}
+			return formatMCPResult(mcpResp.Result, serverURL, mcpToolName)
+		}
+	}
+
+	// 4. Read response from SSE stream
+	type sseResult struct {
+		data json.RawMessage
+		err  error
+	}
+	resultCh := make(chan sseResult, 1)
+
+	go func() {
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				resultCh <- sseResult{err: err}
+				return
+			}
+			line = strings.TrimRight(line, "\r\n")
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
+				var raw json.RawMessage
+				if json.Unmarshal([]byte(data), &raw) == nil {
+					resultCh <- sseResult{data: raw}
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case r := <-resultCh:
+		if r.err != nil {
+			return &types.ToolResult{Success: false, Tool: toolName, Error: fmt.Sprintf("SSE read: %s", r.err.Error())}
+		}
+		var mcpResp mcpResponse
+		if err := json.Unmarshal(r.data, &mcpResp); err != nil {
+			return &types.ToolResult{Success: false, Tool: toolName, Error: fmt.Sprintf("invalid SSE JSON-RPC: %s", err.Error())}
+		}
+		if mcpResp.Error != nil {
+			return &types.ToolResult{
+				Success: false,
+				Tool:    toolName,
+				Error:   fmt.Sprintf("MCP error [%d]: %s", mcpResp.Error.Code, mcpResp.Error.Message),
+			}
+		}
+		return formatMCPResult(mcpResp.Result, serverURL, mcpToolName)
+	case <-ctx.Done():
+		return &types.ToolResult{Success: false, Tool: toolName, Error: "timeout waiting for SSE response"}
+	}
+}
+
+// formatMCPResult extracts and formats the content from a JSON-RPC result.
+func formatMCPResult(rawResult json.RawMessage, serverURL, mcpToolName string) *types.ToolResult {
+	output := string(rawResult)
 	var resultObj map[string]interface{}
-	if json.Unmarshal(mcpResp.Result, &resultObj) == nil {
+	if json.Unmarshal(rawResult, &resultObj) == nil {
 		if content, ok := resultObj["content"]; ok {
 			switch c := content.(type) {
 			case string:
@@ -155,7 +301,7 @@ func (h *Handler) handleMCPTool(tool models.ToolConfig, args map[string]interfac
 	return &types.ToolResult{
 		Success: true,
 		Output:  output,
-		Tool:    tool.Name,
+		Tool:    mcpToolName,
 		RawResult: map[string]interface{}{
 			"server_url":    serverURL,
 			"mcp_tool_name": mcpToolName,
@@ -189,8 +335,8 @@ func (h *Handler) handleAutoMCPTool(toolName string, args map[string]interface{}
 		}
 	}
 
-	// Look up server URL from user config
-	serverURL := lookupMCPServerURL(serverName)
+	// Look up server URL and transport from user config
+	serverURL, transport := lookupMCPServerConfig(serverName)
 	if serverURL == "" {
 		return &types.ToolResult{
 			Success: false,
@@ -231,6 +377,7 @@ func (h *Handler) handleAutoMCPTool(toolName string, args map[string]interface{}
 		Parameters: map[string]interface{}{
 			"server_url":    serverURL,
 			"mcp_tool_name": mcpToolName,
+			"transport":     transport,
 		},
 	}
 	return h.handleMCPTool(tool, args)
@@ -267,18 +414,19 @@ func parseMCPToolName(remainder string) (serverName, toolName string) {
 	return remainder, ""
 }
 
-// lookupMCPServerURL finds the URL for a named MCP server in user config.
-func lookupMCPServerURL(name string) string {
+// lookupMCPServerConfig finds the URL and transport for a named MCP server in user config.
+// Returns ("", "") if not found.
+func lookupMCPServerConfig(name string) (url, transport string) {
 	ucfg, err := icfg.EnsureUserConfig()
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	for _, srv := range ucfg.MCPServers {
 		if srv.Name == name && srv.Enabled {
-			return srv.URL
+			return srv.URL, srv.Transport
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // SetFetchTimeout sets the HTTP fetch timeout (re-export from file package).

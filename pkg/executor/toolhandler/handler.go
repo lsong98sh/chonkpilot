@@ -1,9 +1,11 @@
 package toolhandler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -13,25 +15,13 @@ import (
 	"github.com/chonkpilot/chonkpilot/pkg/executor/engine"
 	run "github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/task"
 	"github.com/chonkpilot/chonkpilot/pkg/fileversions"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/batch_llm"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/browser"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/call_llm"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/file"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
 	"go.uber.org/zap"
 )
-
-// skipDirs are directories that grep and search_files skip by default.
-var skipDirs = map[string]bool{
-	".git":         true,
-	"node_modules": true,
-	".trae":        true,
-	".chonkpilot":  true,
-	"__pycache__":  true,
-	".venv":        true,
-	"venv":         true,
-	"build":        true,
-	"dist":         true,
-	".next":        true,
-	".nuxt":        true,
-}
 
 // Handler dispatches tool calls to their respective handlers.
 type Handler struct {
@@ -41,7 +31,7 @@ type Handler struct {
 	Session         string
 	TurnID          string
 	Engine          *engine.Engine
-	MaxDepth        int
+	MaxDepth        int           // max nested tool call depth
 	OnProgress      func(map[string]interface{})
 	WriteEvent      func(eventType string, payload map[string]interface{})
 	Browser         *browser.BrowserManager // browser automation (web_* tools)
@@ -49,13 +39,19 @@ type Handler struct {
 	NoChrome        bool                    // true if Chrome is not available
 	CodeIndexer     *codeindex.Indexer      // codebase indexer (nil if disabled)
 	FileVersioner   *fileversions.Versioner // file version snapshot (nil if disabled)
+	CancelCtx       context.Context         // cancellation context, derived from IDE-level CancelChat
+	CancelFunc      context.CancelFunc      // cancel function for this handler's execution
 	LLMProtocol     string                  // LLM protocol for sub-executors
 	LLMModel        string                  // LLM model name
 	LLMAPIKey       string                  // LLM API key
 	LLMAPIURL       string                  // LLM API base URL
 	Thinking        bool                    // reasoning enabled
 	ReasoningEffort string                  // reasoning effort level
-	toolHandlers    map[string]types.ToolHandler // built-in tool dispatch table
+	// Configurable limits
+	TaskPollIntervalMs int // polling interval for async tasks in ms (default 200)
+	SearchMaxResults   int // max grep/glob results (default 200)
+	FetchMaxBodySizeKB int // max HTTP fetch body size in KB (default 100)
+	toolHandlers       map[string]types.ToolHandler // built-in tool dispatch table
 }
 
 // NewHandler creates a new tool handler.
@@ -63,18 +59,68 @@ type Handler struct {
 // dbDir:   DB operations directory (real .ide or temp .ide).
 func NewHandler(workDir, dbDir, session, turnID string, logger *zap.Logger) *Handler {
 	h := &Handler{
-		Logger:   logger,
-		WorkDir:  workDir,
-		DBDir:    dbDir,
-		Session:  session,
-		TurnID:   turnID,
-		Engine:   engine.NewEngine(workDir, logger),
-		MaxDepth: 5,
-		Browser:  browser.NewBrowserManager(),
-		TaskMgr:  run.NewTaskManager(),
+		Logger:            logger,
+		WorkDir:           workDir,
+		DBDir:             dbDir,
+		Session:           session,
+		TurnID:            turnID,
+		Engine:            engine.NewEngine(workDir, logger),
+		MaxDepth:          5,
+		TaskPollIntervalMs: 200,
+		SearchMaxResults:  200,
+		FetchMaxBodySizeKB: 100,
+		Browser:           browser.NewBrowserManager(),
+		TaskMgr:           run.NewTaskManager(),
 	}
 	h.registerBuiltinTools()
 	return h
+}
+
+// PropagateConfig propagates Handler config fields to subpackage-level variables.
+// Must be called after all Handler fields have been set from UserConfig.
+func (h *Handler) PropagateConfig() {
+	file.GrepMaxResults = h.SearchMaxResults
+	file.FetchDownloadMaxBytes = h.FetchMaxBodySizeKB * 1024
+	if h.FetchMaxBodySizeKB > 0 {
+		file.SetFetchTimeout(h.FetchMaxBodySizeKB * 10) // rough heuristic: 1KB → 10s timeout
+	}
+	if h.CancelCtx != nil {
+		file.SetCancelCtx(h.CancelCtx)
+		browser.SetCancelCtx(h.CancelCtx)
+		batch_llm.SetCancelCtx(h.CancelCtx)
+		call_llm.SetCancelCtx()
+	}
+}
+
+// SetCancelContext sets the cancellation context and propagates it to subpackages.
+// Called once per turn from executeTurn, before the tool loop starts.
+func (h *Handler) SetCancelContext(ctx context.Context) {
+	h.CancelCtx, h.CancelFunc = context.WithCancel(ctx)
+	file.SetCancelCtx(h.CancelCtx)
+	browser.SetCancelCtx(h.CancelCtx)
+	batch_llm.SetCancelCtx(h.CancelCtx)
+	call_llm.SetCancelCtx()
+	if h.Engine != nil {
+		h.Engine.SetCancelCtx(h.CancelCtx)
+	}
+}
+
+// SetSecurityFromDB loads project_security entries from DB and sets the package-level checker.
+// If the DB cannot be opened or has no entries, the checker stays nil (no restrictions).
+func (h *Handler) SetSecurityFromDB() {
+	sqlDB, err := db.Open(h.DBDir)
+	if err != nil {
+		return
+	}
+	defer db.Close(sqlDB)
+	entries, err := db.GetProjectSecurity(sqlDB)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	checker := file.NewSecurityChecker(entries, h.WorkDir)
+	file.SetSecurityChecker(checker)
+	h.Logger.Info("project security enabled",
+		zap.Int("rules", len(entries)))
 }
 
 // SetNoChrome marks that Chrome is not available on this system.
@@ -176,10 +222,14 @@ func getCustomToolFromDB(dbDir, toolName string) *models.ToolConfig {
 
 // escapeShellArg escapes cmd.exe metacharacters in a string.
 // Prevents shell injection when substituting parameter values into command templates.
+// Covers: ^ & | < > ( ) % ! — % prevents environment variable expansion (e.g. %PATH%),
+// and ! prevents delayed variable expansion in cmd.exe.
 func escapeShellArg(s string) string {
 	// In cmd.exe, these characters have special meaning outside quotes:
 	// & | < > ( ) ^ and must be escaped with ^
-	special := []string{"^", "&", "|", "<", ">", "(", ")"}
+	// % triggers environment variable expansion (e.g. %PATH%)
+	// ! triggers delayed variable expansion
+	special := []string{"^", "&", "|", "<", ">", "(", ")", "%", "!"}
 	for _, c := range special {
 		s = strings.ReplaceAll(s, c, "^"+c)
 	}
@@ -210,6 +260,7 @@ func (h *Handler) handleCustomTool(name, command string, args map[string]interfa
 }
 
 // sanitizePath resolves a user-provided path and ensures it stays within workDir.
+// On Windows, comparison is case-insensitive to handle drive letter case differences.
 // Returns the resolved absolute path, or empty string with an error message.
 func (h *Handler) sanitizePath(userPath string) (string, string) {
 	if userPath == "" {
@@ -221,8 +272,17 @@ func (h *Handler) sanitizePath(userPath string) (string, string) {
 	}
 	resolved = filepath.Clean(resolved)
 
-	// Ensure resolved path is within workDir
-	if !strings.HasPrefix(resolved, filepath.Clean(h.WorkDir)+string(filepath.Separator)) && resolved != filepath.Clean(h.WorkDir) {
+	workDirClean := filepath.Clean(h.WorkDir)
+	prefix := workDirClean + string(filepath.Separator)
+
+	var inside bool
+	if runtime.GOOS == "windows" {
+		inside = strings.HasPrefix(strings.ToLower(resolved), strings.ToLower(prefix)) ||
+			strings.EqualFold(resolved, workDirClean)
+	} else {
+		inside = strings.HasPrefix(resolved, prefix) || resolved == workDirClean
+	}
+	if !inside {
 		return "", fmt.Sprintf("path %s is outside workspace %s", userPath, h.WorkDir)
 	}
 	return resolved, ""
@@ -265,55 +325,13 @@ func (h *Handler) handleExecuteCommand(args map[string]interface{}) *types.ToolR
 				Tool:    "execute_command",
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(time.Duration(h.TaskPollIntervalMs) * time.Millisecond)
 	}
-}
-
-// parseArgs extracts arguments from the args map using JSON marshal/unmarshal for type safety.
-func parseArgs[T any](args map[string]interface{}, target *T) error {
-	data, err := json.Marshal(args)
-	if err != nil {
-		return fmt.Errorf("failed to marshal args: %w", err)
-	}
-	if err := json.Unmarshal(data, target); err != nil {
-		return fmt.Errorf("failed to unmarshal args: %w", err)
-	}
-	return nil
 }
 
 // ─── Tool Simplify Functions ───
 
-type executeCommandArgs struct {
-	Command string `json:"command"`
-	Async   bool   `json:"async,omitempty"`
-}
-
-func simplifyExecuteCommand(argsJSON json.RawMessage, result string) string {
-	var a executeCommandArgs
-	if err := json.Unmarshal(argsJSON, &a); err != nil {
-		return "execute_command"
-	}
-	var tr types.ToolResult
-	if err := json.Unmarshal([]byte(result), &tr); err != nil {
-		return fmt.Sprintf("execute_command(%s)", types.TruncateStr(a.Command, 80))
-	}
-	if a.Async {
-		return fmt.Sprintf("execute_command(async): %s", tr.Output)
-	}
-	lines := 0
-	if tr.Output != "" {
-		lines = strings.Count(tr.Output, "\n")
-	}
-	if tr.Success {
-		return fmt.Sprintf("execute_command(%s): ok, %d lines",
-			types.TruncateStr(a.Command, 60), lines)
-	}
-	return fmt.Sprintf("execute_command(%s): failed, exit=%s",
-		types.TruncateStr(a.Command, 60), types.TruncateStr(tr.Error, 80))
-}
-
 func init() {
-	types.RegisterSimplify("execute_command", simplifyExecuteCommand)
 	types.RegisterSimplify("batch_llm", simplifyBatchLLM)
 }
 

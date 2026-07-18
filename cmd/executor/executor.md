@@ -14,11 +14,10 @@ workdir 下有 .ide/ide.db
 ### LLM 配置降级链
 
 ```
-1. --llm-provider / --llm-model / --llm-api-key / --llm-api-url 命令行参数
+1. --llm-protocol / --llm-model / --llm-api-key / --llm-api-url 命令行参数
 2. --llm-config-file 指向的 JSON 文件
-3. .ide/ide.db 的 config 表中读取
-4. ~/.chonkpilot/config.json 中读取第一个 LLM 配置
-5. 以上均无 → 报错退出
+3. ~/.chonkpilot/config.json 中读取第一个 LLM 配置
+4. 以上均无 → 报错退出
 ```
 
 ## 运行模式
@@ -51,7 +50,7 @@ workdir 下有 .ide/ide.db
 | `--verbose` | 否 | 详细输出模式（仅独立运行、无管道时有效） | 不输出 |
 | `--log-level=<level>` | 否 | 日志级别：`debug` / `info` / `warn` / `error` | 默认 `error` |
 | `--llm-config-file=<path>` | 否 | LLM 配置文件路径（JSON 格式） | 按降级链查找 → 报错 |
-| `--llm-provider=<name>` | 否 | LLM 提供商（deepseek / glm 等） | 按降级链查找 |
+| `--llm-protocol=<name>` | 否 | LLM 协议（openai / claude） | 按降级链查找 |
 | `--llm-model=<model>` | 否 | 模型名称（如 deepseek-v4-pro） | 按降级链查找 |
 | `--llm-api-key=<key>` | 否 | API Key | 按降级链查找 |
 | `--llm-api-url=<url>` | 否 | API Endpoint URL | 按降级链查找 |
@@ -81,7 +80,7 @@ workdir 下有 .ide/ide.db
 
 ```json
 {
-  "provider": "openai",
+  "protocol": "openai",
   "model": "deepseek-v4-pro",
   "apiKey": "sk-xxxxxxxxxxxx",
   "baseUrl": "https://api.deepseek.com",

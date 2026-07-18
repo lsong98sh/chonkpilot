@@ -79,7 +79,7 @@ func (p *ClaudeProvider) Chat(messages []Message, options ChatOptions) (<-chan S
 	req.Header.Set("x-api-key", p.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	client := makeLLMClient(options.ResponseTimeout)
+	client := makeLLMClient(options.ResponseTimeout, options.TLSHandshakeTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("API request failed: %w", err)

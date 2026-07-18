@@ -141,6 +141,9 @@ func RunMigrations(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`)
 	_, _ = db.Exec(`ALTER TABLE project_agents ADD COLUMN llm_ref TEXT DEFAULT ''`)
 
+	// Add brief column to messages table for tool_call thinking snippets
+	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN brief TEXT DEFAULT ''`)
+
 	// Migrate turns table: drop q/a columns (old schema)
 	var hasQCol int
 	_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('turns') WHERE name='q'`).Scan(&hasQCol)

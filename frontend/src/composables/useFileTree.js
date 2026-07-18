@@ -1,4 +1,4 @@
-import { ref, computed, onUnmounted } from 'vue'
+import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import bridge from '../utils/bridge'
 import { getFileTree, getFileTreeChildren } from '../api/file'
@@ -7,62 +7,87 @@ import { getFileTree, getFileTreeChildren } from '../api/file'
  * Shared reactive file tree state and operations.
  *
  * Singleton pattern: module-level refs are shared across all consumers.
- * Auto-subscribes to Go's `file:changed` and `file:watcher-error` push events.
+ * Subscribes to Go's `file:dir-contents` and `file:watcher-error` push events.
+ *
+ * File change events are collected into a queue (Map of dir → {dir,children})
+ * and flushed after 300ms of quiescence. The callback receives an array of
+ * DirContent objects so the consumer can do incremental updates with a single
+ * expanded-keys save/restore cycle, preventing auto-collapse.
  *
  * Usage:
- *   const { loading, reloadRoot, reloadNode } = useFileTree()
+ *   const { loading, onFileChanged, teardown } = useFileTree()
+ *   onFileChanged((changes) => { ... })
+ *     // changes: [{dir: string, children: [{name,path,is_dir}]}, ...]
  */
 
 // Singleton reactive state
 const loading = ref(false)
 const lastChangedDir = ref('')
 
-// Debounce timer for file:changed events
-let debounceTimer = null
+// Event queue: Map<dir, {dir, children}> – dedup by directory path
+const changeMap = new Map()
+
+let flushTimer = null
+let batchCallback = null
 
 // Subscription ref-counting
 let refCount = 0
-let unsubFileChanged = null
+let unsubDirContents = null
 let unsubFileWatcherError = null
-
-let onChangedCallback = null
 
 function subscribe() {
   refCount++
-  if (unsubFileChanged) return // already subscribed
-  unsubFileChanged = bridge.on('file:changed', (data) => {
-    const changedDir = data?.dir
-    if (!changedDir) return
-    lastChangedDir.value = changedDir
-
-    // Global debounce: only fire within a 500ms window
-    if (debounceTimer) clearTimeout(debounceTimer)
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null
-      if (onChangedCallback) {
-        onChangedCallback(changedDir)
-      }
-    }, 500)
+  if (unsubDirContents) return // already subscribed
+  unsubDirContents = bridge.on('file:dir-contents', (data) => {
+    const dir = data?.dir
+    if (!dir) return
+    lastChangedDir.value = dir
+    changeMap.set(dir, { dir, children: data.children || [] })
+    scheduleFlush()
   })
   unsubFileWatcherError = bridge.on('file:watcher-error', (data) => {
     ElMessage.error(data?.error || `File watcher error: ${JSON.stringify(data)}`)
   })
 }
 
+function scheduleFlush() {
+  if (flushTimer) clearTimeout(flushTimer)
+  flushTimer = setTimeout(flushQueue, 300)
+}
+
+function flushQueue() {
+  flushTimer = null
+  if (changeMap.size === 0) return
+
+  // Snapshot and clear
+  const changes = [...changeMap.values()]
+  changeMap.clear()
+
+  if (batchCallback) {
+    batchCallback(changes)
+  }
+
+  // If more events arrived during callback, schedule another flush
+  if (changeMap.size > 0) {
+    scheduleFlush()
+  }
+}
+
 function unsubscribe() {
   refCount--
-  if (refCount <= 0 && unsubFileChanged) {
-    unsubFileChanged()
-    unsubFileChanged = null
+  if (refCount <= 0 && unsubDirContents) {
+    unsubDirContents()
+    unsubDirContents = null
     if (unsubFileWatcherError) {
       unsubFileWatcherError()
       unsubFileWatcherError = null
     }
-    if (debounceTimer) {
-      clearTimeout(debounceTimer)
-      debounceTimer = null
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = null
     }
-    onChangedCallback = null
+    changeMap.clear()
+    batchCallback = null
     refCount = 0
   }
 }
@@ -75,11 +100,12 @@ export function useFileTree() {
   }
 
   /**
-   * Register a callback that fires when files change (debounced).
-   * Only one callback at a time (last one wins) — sufficient for single-consumer usage.
+   * Register a callback that fires when file changes are batched (debounced).
+   * The callback receives an array of DirContent objects:
+   *   { dir: string, children: [{name, path, is_dir}] }
    */
   function onFileChanged(cb) {
-    onChangedCallback = cb
+    batchCallback = cb
   }
 
   /**
@@ -119,10 +145,6 @@ export function useFileTree() {
     onFileChanged,
     loadRootTree,
     loadChildren,
-    reloadRoot() {
-      // Provided for backward compatibility; FileTree.vue manages its own el-tree ref.
-      // The actual reloadRoot/reloadNode is in FileTree.vue because it needs the treeRef.
-    },
     // Lifecycle
     teardown,
   }

@@ -22,14 +22,29 @@ func HandleWebEvaluate(bm *BrowserManager, tm *task.TaskManager, args map[string
 		return &types.ToolResult{Success: false, Error: "js is required", Tool: "web_evaluate"}
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_evaluate"}
+	}
+
 	_, output, err := tm.SyncOperation("web_evaluate", func(cancel <-chan struct{}) (string, error) {
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
 
+		runCtx, runCancel := context.WithCancel(ctx)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
+
 		var result interface{}
-		if err := chromedp.Run(ctx, chromedp.Evaluate(js, &result)); err != nil {
+		if err := chromedp.Run(runCtx, chromedp.Evaluate(js, &result)); err != nil {
 			return "", fmt.Errorf("js eval failed: %s", err.Error())
 		}
 
@@ -52,22 +67,35 @@ func HandleWebWaitSelector(bm *BrowserManager, tm *task.TaskManager, args map[st
 		return &types.ToolResult{Success: false, Error: "selector is required", Tool: "web_wait_selector"}
 	}
 
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_wait_selector"}
+	}
+
 	_, output, err := tm.SyncOperation("web_wait_selector", func(cancel <-chan struct{}) (string, error) {
 		timeout := 10.0
 		if v, ok := args["timeout"].(float64); ok && v > 0 {
 			timeout = v
 		}
 
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
 
-		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-		defer timeoutCancel()
+		// Derive from ctx so cancelling the task also triggers the timeout
+		runCtx, runCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
 
 		var found bool
-		if err := chromedp.Run(timeoutCtx,
+		if err := chromedp.Run(runCtx,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				var exists bool
 				for {
@@ -110,21 +138,33 @@ func HandleWebWaitSelector(bm *BrowserManager, tm *task.TaskManager, args map[st
 
 // HandleWebWaitNavigation waits for page navigation to complete.
 func HandleWebWaitNavigation(bm *BrowserManager, tm *task.TaskManager, args map[string]interface{}) *types.ToolResult {
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_wait_navigation"}
+	}
+
 	_, output, err := tm.SyncOperation("web_wait_navigation", func(cancel <-chan struct{}) (string, error) {
 		timeout := 10.0
 		if v, ok := args["timeout"].(float64); ok && v > 0 {
 			timeout = v
 		}
 
-		ctx, err := bm.EnsureTab()
+		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
 		}
 
-		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-		defer timeoutCancel()
+		runCtx, runCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer runCancel()
+		go func() {
+			select {
+			case <-cancel:
+				runCancel()
+			case <-runCtx.Done():
+			}
+		}()
 
-		if err := chromedp.Run(timeoutCtx,
+		if err := chromedp.Run(runCtx,
 			chromedp.WaitReady("body"),
 		); err != nil {
 			return "", fmt.Errorf("navigation did not complete within %.0fs: %s", timeout, err.Error())
@@ -151,7 +191,12 @@ func HandleWebSetViewport(bm *BrowserManager, args map[string]interface{}) *type
 		return &types.ToolResult{Success: false, Error: "width and height are required", Tool: "web_set_viewport"}
 	}
 
-	ctx, err := bm.EnsureTab()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_set_viewport"}
+	}
+
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_set_viewport"}
 	}
@@ -167,7 +212,12 @@ func HandleWebSetViewport(bm *BrowserManager, args map[string]interface{}) *type
 
 // HandleWebSetGeolocation sets geolocation override.
 func HandleWebSetGeolocation(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	ctx, err := bm.EnsureTab()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_set_geolocation"}
+	}
+
+	ctx, err := inst.EnsureTab()
 	if err != nil {
 		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_set_geolocation"}
 	}
@@ -206,10 +256,16 @@ var ModifierKeyCodes = map[string]string{
 
 // HandleWebGrantPermission grants browser permissions.
 func HandleWebGrantPermission(bm *BrowserManager, args map[string]interface{}) *types.ToolResult {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
+	inst, err := bm.getInstance(browserIDFromArgs(args))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_grant_permission"}
+	}
 
-	if bm.allocCtx == nil {
+	inst.mu.Lock()
+	allocCtx := inst.allocCtx
+	inst.mu.Unlock()
+
+	if allocCtx == nil {
 		return &types.ToolResult{Success: false, Error: "browser not started", Tool: "web_grant_permission"}
 	}
 
@@ -239,7 +295,7 @@ func HandleWebGrantPermission(bm *BrowserManager, args map[string]interface{}) *
 		}
 	}
 
-	if err := chromedp.Run(bm.allocCtx,
+	if err := chromedp.Run(allocCtx,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			return browser.GrantPermissions(perms).WithOrigin("").Do(ctx)
 		}),

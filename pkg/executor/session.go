@@ -94,15 +94,18 @@ func printOutgoingMessages(ea *ExecutorArgs, messages []llm.Message, toolDefs []
 //	Full turns (N) → raw (unchanged)
 //	Simplified turns (M) → tool_call+tool_result condensed to thinking text
 //	Older turns → replaced by summary (when available)
-func loadSessionHistory(ea *ExecutorArgs, sessionID string) ([]llm.Message, error) {
+func loadSessionHistory(ea *ExecutorArgs, sessionID string, sqlDB *sql.DB) ([]llm.Message, error) {
 	if !hasIDEConfig(ea) {
 		return nil, nil
 	}
-	sqlDB, err := db.Open(ea.DBWorkDir())
-	if err != nil {
-		return nil, err
+	if sqlDB == nil {
+		var err error
+		sqlDB, err = db.Open(ea.DBWorkDir())
+		if err != nil {
+			return nil, err
+		}
+		defer db.Close(sqlDB)
 	}
-	defer db.Close(sqlDB)
 
 	// Load raw messages from DB
 	rawMessages, err := db.GetMessagesBySession(sqlDB, sessionID)
@@ -121,7 +124,7 @@ func loadSessionHistory(ea *ExecutorArgs, sessionID string) ([]llm.Message, erro
 	}
 
 	// Create context manager and apply settings
-	mgr := context.NewManager(ea.WorkDir)
+	mgr := context.NewManager(ea.WorkDir, sqlDB)
 	mgr.SetKeepFullTurns(fullTurns)
 	mgr.SetKeepSimplifiedTurns(simplifiedTurns)
 
@@ -280,15 +283,18 @@ func formatTurnForSummary(messages []*models.Message) string {
 //  1. IDE mode: turn already exists in DB → loads user message from DB
 //  2. Create mode: turn doesn't exist → creates session+turn, writes user msg
 //  3. Standalone continuation: --session-id set, no turn-id → auto-creates turn
-func ensureSessionAndTurn(ea *ExecutorArgs, prompt string, logger *zap.Logger) {
+func ensureSessionAndTurn(ea *ExecutorArgs, prompt string, logger *zap.Logger, sqlDB *sql.DB) {
 	if !hasIDEConfig(ea) {
 		return
 	}
-	sqlDB, err := db.Open(ea.DBWorkDir())
-	if err != nil {
-		return
+	if sqlDB == nil {
+		var err error
+		sqlDB, err = db.Open(ea.DBWorkDir())
+		if err != nil {
+			return
+		}
+		defer db.Close(sqlDB)
 	}
-	defer db.Close(sqlDB)
 
 	// Create session if not exists
 	if ea.SessionID != "" {
@@ -354,24 +360,27 @@ func ensureSessionAndTurn(ea *ExecutorArgs, prompt string, logger *zap.Logger) {
 
 // saveAssistantMessage persists an assistant message to the DB.
 // It saves separate rows for reasoning, text, and each tool_call within the message.
-func saveAssistantMessage(ea *ExecutorArgs, msg llm.Message, logger *zap.Logger) {
+// Returns the message IDs of saved tool_call messages.
+func saveAssistantMessage(ea *ExecutorArgs, msg llm.Message, logger *zap.Logger, sqlDB *sql.DB) []string {
+	var toolCallIDs []string
 	if ea.WorkDir == "" || ea.TurnID == "" {
-		return
+		return toolCallIDs
 	}
-	var sqlDB *sql.DB
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		sqlDB, err = db.Open(ea.DBWorkDir())
-		if err == nil {
-			break
+	if sqlDB == nil {
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			sqlDB, err = db.Open(ea.DBWorkDir())
+			if err == nil {
+				break
+			}
+			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 		}
-		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+		if err != nil {
+			logger.Error("saveAssistantMessage: failed to open DB after retries", zap.Error(err))
+			return toolCallIDs
+		}
+		defer db.Close(sqlDB)
 	}
-	if err != nil {
-		logger.Error("saveAssistantMessage: failed to open DB after retries", zap.Error(err))
-		return
-	}
-	defer db.Close(sqlDB)
 
 	// 1. Reasoning content (if any)
 	if msg.ReasoningContent != "" {
@@ -399,29 +408,34 @@ func saveAssistantMessage(ea *ExecutorArgs, msg llm.Message, logger *zap.Logger)
 		dbMsg := models.NewMessage(uuid.New().String(), ea.TurnID, "assistant", "tool_call", string(tcPayload))
 		if err := db.AddMessage(sqlDB, dbMsg); err != nil {
 			logger.Error("saveAssistantMessage: failed to save tool_call", zap.String("tool", tc.Function.Name), zap.Error(err))
+		} else {
+			toolCallIDs = append(toolCallIDs, dbMsg.MessageID)
 		}
 	}
+
+	return toolCallIDs
 }
 
 // saveToolMessage persists a tool result message to the DB.
-func saveToolMessage(ea *ExecutorArgs, msg llm.Message, toolName string, logger *zap.Logger) {
+func saveToolMessage(ea *ExecutorArgs, msg llm.Message, toolName string, logger *zap.Logger, sqlDB *sql.DB) {
 	if ea.WorkDir == "" || ea.TurnID == "" {
 		return
 	}
-	var sqlDB *sql.DB
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		sqlDB, err = db.Open(ea.DBWorkDir())
-		if err == nil {
-			break
+	if sqlDB == nil {
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			sqlDB, err = db.Open(ea.DBWorkDir())
+			if err == nil {
+				break
+			}
+			time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
 		}
-		time.Sleep(time.Duration(attempt+1) * 200 * time.Millisecond)
+		if err != nil {
+			logger.Error("saveToolMessage: failed to open DB after retries", zap.Error(err))
+			return
+		}
+		defer db.Close(sqlDB)
 	}
-	if err != nil {
-		logger.Error("saveToolMessage: failed to open DB after retries", zap.Error(err))
-		return
-	}
-	defer db.Close(sqlDB)
 
 	toolResult, _ := json.Marshal(models.ToolResultPayload{
 		ToolCallID: msg.ToolCallID,
@@ -432,4 +446,27 @@ func saveToolMessage(ea *ExecutorArgs, msg llm.Message, toolName string, logger 
 	if err := db.AddMessage(sqlDB, dbMsg); err != nil {
 		logger.Error("saveToolMessage: failed to save tool_result", zap.String("tool", toolName), zap.Error(err))
 	}
+}
+
+// extractBrief returns the first 3 non-empty lines of a text.
+// Used to create a concise thinking summary for tool_call messages.
+func extractBrief(text string) string {
+	lines := strings.SplitN(text, "\n", 4)
+	var brief strings.Builder
+	count := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if count > 0 {
+			brief.WriteString("\n")
+		}
+		brief.WriteString(trimmed)
+		count++
+		if count >= 3 {
+			break
+		}
+	}
+	return brief.String()
 }

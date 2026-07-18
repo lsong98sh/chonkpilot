@@ -17,6 +17,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot/internal/db"
 	"github.com/chonkpilot/chonkpilot/internal/embed"
+	"github.com/chonkpilot/chonkpilot/internal/models"
 	"github.com/chonkpilot/chonkpilot/pkg/chrome"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/codeindex"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/llm"
@@ -44,6 +45,14 @@ type App struct {
 	muSubscribers      sync.RWMutex
 	sessionSubscribers map[string]bool // session_id → active subscriber
 	codebasePollerStop chan struct{}    // stop signal for codebase status poller
+
+	// pendingCancels tracks turnIDs whose StartChat goroutine should abort
+	// before calling StartExecutor. Guards the race between CancelChat and
+	// the async goroutine in StartChat.
+	pendingCancels sync.Map // map[string]chan struct{}
+
+	// optimizeMu serializes OptimizeAgentPrompt calls so only one runs at a time.
+	optimizeMu sync.Mutex
 }
 
 // NewApp creates a new App.
@@ -55,6 +64,7 @@ func NewApp(workDir string, logger *zap.Logger, userCfg *config.UserConfigManage
 		userCfg:            userCfg,
 		recentMgr:          recentMgr,
 		sessionSubscribers: make(map[string]bool),
+		codebasePollerStop: make(chan struct{}),
 	}
 	a.em = process.NewExecutorManager(workDir, logger)
 	a.fw = watcher.NewFileWatcher(workDir, logger)
@@ -82,16 +92,66 @@ func (a *App) startup(ctx context.Context) {
 		return nil
 	})
 
-	// Extract embedded executor.exe to ~/.chonkpilot/bin/ if not already present
+	// Seed default scenario from embedded system_scenario.txt into scenario.db if empty
+	if _, err := a.GetScenarioList(); err == nil {
+		sdb, err := db.OpenScenarioDB()
+		if err == nil {
+			scenarios, err := db.GetAllScenarios(sdb)
+			if err == nil && len(scenarios) == 0 {
+				defaultSc := &models.ScenarioConfig{
+					Name:         "默认场景",
+					Description:  "默认的场景配置",
+					SystemPrompt: prompts.DefaultScenarioPrompt,
+				}
+				if err := db.SaveScenario(sdb, defaultSc); err != nil {
+					a.logger.Warn("failed to seed default scenario", zap.Error(err))
+				} else {
+					a.logger.Info("seeded default scenario from system_scenario.txt")
+					// Auto-select the first scenario as active
+					_ = db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+						return db.SetConfig(sqlDB, "scenario_system_prompt", prompts.DefaultScenarioPrompt)
+					})
+				}
+			}
+			sdb.Close()
+		}
+	}
+
+	// Extract embedded executor.exe to ~/.chonkpilot/bin/ if IDE is newer
 	homeDir, _ := os.UserHomeDir() //nolint:errcheck
 	if homeDir != "" {
 		exeDir := filepath.Join(homeDir, ".chonkpilot", "bin")
 		exePath := filepath.Join(exeDir, "executor.exe")
-		if _, err := os.Stat(exePath); os.IsNotExist(err) {
+
+		// Get IDE's own mod time as version anchor
+		ideExe, err := os.Executable()
+		var ideModTime time.Time
+		if err == nil {
+			if fi, err := os.Stat(ideExe); err == nil {
+				ideModTime = fi.ModTime()
+			}
+		}
+
+		needExtract := false
+		if fi, err := os.Stat(exePath); os.IsNotExist(err) {
+			needExtract = true
+		} else if err == nil && !ideModTime.IsZero() && fi.ModTime().Before(ideModTime) {
+			// Existing executor is older than IDE → re-extract
+			needExtract = true
+			a.logger.Info("executor is stale, re-extracting",
+				zap.Time("executor_mtime", fi.ModTime()),
+				zap.Time("ide_mtime", ideModTime))
+		}
+
+		if needExtract {
 			if p, err := embed.ExtractExecutor(exeDir); err != nil {
 				a.logger.Warn("failed to extract embedded executor", zap.Error(err))
 			} else {
 				a.logger.Info("extracted embedded executor", zap.String("path", p))
+				// Sync extracted executor's timestamp with IDE so we don't re-extract next time
+				if !ideModTime.IsZero() {
+					os.Chtimes(exePath, ideModTime, ideModTime)
+				}
 			}
 		}
 	}
@@ -113,7 +173,9 @@ func (a *App) autoScanCodebase() {
 
 	var enabled string
 	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
-		_ = sqlDB.QueryRow(`SELECT value FROM config WHERE key='codebase_index.enabled'`).Scan(&enabled)
+		if err := sqlDB.QueryRow(`SELECT value FROM config WHERE key='codebase_index.enabled'`).Scan(&enabled); err != nil {
+			a.logger.Warn("autoScanCodebase: cannot read codebase_index.enabled", zap.Error(err))
+		}
 		return nil
 	})
 	if enabled != "true" {
@@ -122,7 +184,9 @@ func (a *App) autoScanCodebase() {
 
 	var extensions string
 	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
-		_ = sqlDB.QueryRow(`SELECT value FROM config WHERE key='codebase_index.extensions'`).Scan(&extensions)
+		if err := sqlDB.QueryRow(`SELECT value FROM config WHERE key='codebase_index.extensions'`).Scan(&extensions); err != nil {
+			a.logger.Warn("autoScanCodebase: cannot read codebase_index.extensions", zap.Error(err))
+		}
 		return nil
 	})
 	if extensions == "" {
@@ -524,11 +588,9 @@ func (a *App) shutdown(ctx context.Context) {
 }
 
 // pollCodebaseStatus periodically reads codebase.db and pushes status to frontend.
+// The codebasePollerStop channel is initialized in NewApp. shutdown() closes it to
+// signal termination. This function is called exactly once from startup().
 func (a *App) pollCodebaseStatus() {
-	if a.codebasePollerStop != nil {
-		return // already running
-	}
-	a.codebasePollerStop = make(chan struct{})
 
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -666,54 +728,43 @@ func (a *App) UnsubscribeSession(sessionID string) {
 }
 
 // ─── Executor event routing → Wails Events ────────────────
+//
+// All LLM-related events go through a single "llm:event" channel.
+// Frontend components filter by session_id in the payload.
+// Non-LLM events (executor_done, ask_user) use dedicated channels.
 
 func (a *App) onExecutorEvent(eventType string, payload map[string]interface{}) {
-	_, isSub := payload["sub_session_id"]
-
-	var prefix string
-	if isSub {
-		prefix = "sub:"
-	} else {
-		prefix = "chat:"
+	// Inject the original executor event type so the frontend can distinguish
+	// message_chunk from complete, error, llm_error, progress, etc.
+	if _, ok := payload["_event_type"]; !ok {
+		payload["_event_type"] = eventType
 	}
 
-	// For sub-session events, notify subscribers if DB state changed
-	if isSub {
-		switch eventType {
-		case "tool_call", "tool_result", "complete", "error":
-			if sessionID, ok := payload["sub_session_id"].(string); ok && sessionID != "" {
-				a.muSubscribers.RLock()
-				subscribed := a.sessionSubscribers[sessionID]
-				a.muSubscribers.RUnlock()
-				if subscribed {
-					a.push("session:refresh", map[string]interface{}{
-						"session_id": sessionID,
-					})
-				}
-			}
-		}
+	// Normalize tool_call/tool_result event type field for frontend
+	switch eventType {
+	case "tool_call":
+		payload["type"] = "tool_call"
+	case "tool_result":
+		payload["type"] = "tool_result"
 	}
 
 	switch eventType {
-	case "message_chunk":
-		a.push(prefix+"token", payload)
-	case "tool_call":
-		payload["type"] = "tool_call"
-		a.push(prefix+"token", payload)
-	case "tool_result":
-		payload["type"] = "tool_result"
-		a.push(prefix+"token", payload)
-	case "complete":
-		a.push(prefix+"done", payload)
-	case "error":
-		a.push(prefix+"error", payload)
-	case "tool_progress":
-		a.push(prefix+"progress", payload)
 	case "executor_done":
-		a.push(prefix+"executor_done", payload)
+		a.push("chat:executor_done", payload)
 	case "ask_user":
 		a.push("ask_user", payload)
+	case "complete", "error":
+		// Turn ended — notify frontend via llm:event for live updates,
+		// and session:refresh so session tree can reload DB-persisted state.
+		a.push("llm:event", payload)
+		if sessionID, ok := payload["session_id"].(string); ok && sessionID != "" {
+			a.push("session:refresh", map[string]interface{}{
+				"session_id": sessionID,
+			})
+		}
 	default:
-		a.push(prefix+eventType, payload)
+		// All LLM stream events (message_chunk, tool_call, tool_result,
+		// tool_progress, llm_error, llm_retry, progress, etc.)
+		a.push("llm:event", payload)
 	}
 }

@@ -344,7 +344,6 @@ function openDBConfigInSettings() {
   const key = currentFile.value.path.replace('db://', '')
   // Map config key to Settings tab name
   const tabMap = {
-    project_llms: 'llm',
     project_agents: 'agents',
     project_tools: 'tools',
   }

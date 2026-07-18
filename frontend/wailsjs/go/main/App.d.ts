@@ -21,6 +21,8 @@ export function DeleteFilePath(arg1:string):Promise<Record<string, any>>;
 
 export function DeleteNote(arg1:string):Promise<Record<string, any>>;
 
+export function DeleteScenario(arg1:main.deleteScenarioArgs):Promise<void>;
+
 export function DeleteSession(arg1:string):Promise<void>;
 
 export function DiscoverMCPServerTools(arg1:string,arg2:string):Promise<Record<string, any>>;
@@ -28,6 +30,8 @@ export function DiscoverMCPServerTools(arg1:string,arg2:string):Promise<Record<s
 export function DuplicateFile(arg1:string):Promise<Record<string, any>>;
 
 export function GeneratePrompts(arg1:Record<string, any>):Promise<void>;
+
+export function GetActiveScenario():Promise<Record<string, any>>;
 
 export function GetAllConfig():Promise<Record<string, any>>;
 
@@ -62,6 +66,8 @@ export function GetProjectTools():Promise<Record<string, any>>;
 export function GetPrompt(arg1:string):Promise<Record<string, string>>;
 
 export function GetRecentDirs():Promise<Record<string, any>>;
+
+export function GetScenarioList():Promise<Record<string, any>>;
 
 export function GetScenarios():Promise<Record<string, any>>;
 
@@ -129,11 +135,15 @@ export function SaveProjectSecurity(arg1:Record<string, any>):Promise<void>;
 
 export function SaveProjectTools(arg1:Record<string, any>):Promise<void>;
 
+export function SaveScenario(arg1:main.saveScenarioArgs):Promise<Record<string, any>>;
+
 export function SaveUserConfig(arg1:Record<string, any>):Promise<void>;
 
 export function SearchProjectFiles(arg1:string):Promise<Array<main.SearchResult>>;
 
 export function SendChatMessage(arg1:main.sendChatArgs):Promise<Record<string, string>>;
+
+export function SetActiveScenario(arg1:number):Promise<void>;
 
 export function SetActiveSession(arg1:string):Promise<void>;
 
@@ -145,6 +155,10 @@ export function SubscribeSession(arg1:string):Promise<void>;
 
 export function UnsubscribeSession(arg1:string):Promise<void>;
 
+export function UnwatchDir(arg1:string):Promise<void>;
+
 export function UpdateSessionTitle(arg1:string,arg2:string):Promise<void>;
 
 export function UpdateTaskStatus(arg1:main.updateTaskArgs):Promise<void>;
+
+export function WatchDir(arg1:string):Promise<void>;

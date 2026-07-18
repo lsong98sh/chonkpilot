@@ -2,10 +2,10 @@
  * SSE → Bridge Push
  *
  * 原先通过 HTTP EventSource 连接 /api/events 获取实时推送，
- * 现在改为通过 Bridge Push 接收 Go 端主动推送的事件。
+ * 现在改为通过 Bridge Push 接收 Go 端主动推送的事件（统一 llm:event 通道）。
  *
  * 使用方式:
- *   sse.on("chat:token", data => console.log(data))
+ *   sse.on("message", data => console.log(data))
  *   sse.connect(sessionId)  // 保留兼容性
  *   sse.disconnect()
  */
@@ -33,20 +33,20 @@ class SSEConnection {
 
   on(event, callback) {
     // 映射 SSE 事件名到 bridge 事件名
-    const bridgeEvent = event === 'message' ? 'chat:*' : event
-    if (bridgeEvent === 'chat:*') {
-      // 监听所有 chat: 前缀的事件
-      const unsub1 = bridge.on('chat:token', (data) => {
-        if (data.content) callback({ type: 'token', payload: data })
+    // 统一 llm:event 通道，通过 _event_type 区分事件类型
+    if (event === 'message') {
+      const unsub = bridge.on('llm:event', (data) => {
+        const et = data?._event_type || ''
+        if (et === 'message_chunk') {
+          if (data.content) callback({ type: 'token', payload: data })
+        } else if (et === 'complete') {
+          callback({ type: 'done', payload: data })
+        } else if (et === 'error') {
+          callback({ type: 'error', payload: data })
+        }
       })
-      const unsub2 = bridge.on('chat:done', (data) => {
-        callback({ type: 'done', payload: data })
-      })
-      const unsub3 = bridge.on('chat:error', (data) => {
-        callback({ type: 'error', payload: data })
-      })
-      this._unsubs.push(unsub1, unsub2, unsub3)
-      return () => { unsub1(); unsub2(); unsub3() }
+      this._unsubs.push(unsub)
+      return unsub
     }
     const unsub = bridge.on(event, callback)
     this._unsubs.push(unsub)

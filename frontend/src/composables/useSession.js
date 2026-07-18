@@ -37,24 +37,19 @@ function subscribe() {
     }
   })
 
-  const statusEvents = [
-    ['sub:token', 'running'],
-    ['sub:progress', 'running'],
-    ['sub:llm_retry', 'running'],
-    ['sub:done', 'completed'],
-    ['sub:executor_done', 'completed'],
-    ['sub:error', 'error'],
-    ['sub:llm_error', 'error'],
-  ]
+  // Unified llm:event — track session status by session_id.
+  // All LLM events (main & sub) go through this single channel.
+  const unsubLLMEvent = bridge.on('llm:event', (data) => {
+    const sid = data?.session_id
+    if (!sid) return
 
-  for (const [eventName, status] of statusEvents) {
-    const unsub = bridge.on(eventName, (data) => {
-      if (data?.sub_session_id) {
-        subSessionStatus.value[data.sub_session_id] = status
-      }
-    })
-    unsubSubs.push(unsub)
-  }
+    const et = data._event_type || ''
+    let status = 'running'
+    if (et === 'complete') status = 'completed'
+    else if (et === 'error' || et === 'llm_error') status = 'error'
+    subSessionStatus.value[sid] = status
+  })
+  unsubSubs.push(unsubLLMEvent)
 }
 
 function unsubscribe() {

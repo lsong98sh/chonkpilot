@@ -45,20 +45,9 @@ func ListSessions(db *sql.DB) ([]*models.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}
-	defer rows.Close()
-
-	var sessions []*models.Session
-	for rows.Next() {
-		s := &models.Session{}
-		if err := rows.Scan(&s.SessionID, &s.ParentID, &s.WorkDir, &s.Title, &s.CreatedAt, &s.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan session: %w", err)
-		}
-		sessions = append(sessions, s)
-	}
-	if sessions == nil {
-		sessions = []*models.Session{}
-	}
-	return sessions, rows.Err()
+	return scanAll(rows, func(s *models.Session) []any {
+		return []any{&s.SessionID, &s.ParentID, &s.WorkDir, &s.Title, &s.CreatedAt, &s.UpdatedAt}
+	})
 }
 
 // ListTopLevelSessions returns only top-level sessions (parent_id = ''),
@@ -199,6 +188,9 @@ func collectDescendantIDs(tx *sql.Tx, rootID string) ([]string, error) {
 			}
 		}
 		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate child sessions of %s: %w", current, err)
+		}
 	}
 
 	return ids, nil

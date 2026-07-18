@@ -15,6 +15,10 @@
       "delay": {
         "type": "number",
         "description": "Delay between keystrokes in ms (default 50)"
+      },
+      "browser_id": {
+        "type": "string",
+        "description": "Browser instance ID (returned by web_start). If not specified and only one instance exists, that instance is used."
       }
     },
     "required": [

@@ -6,9 +6,19 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sync"
 
 	"github.com/chonkpilot/chonkpilot/internal/models"
 	"github.com/chonkpilot/chonkpilot/pkg/chrome"
+)
+
+// execOnce ensures EnsureUserConfig is cached within a single executor process.
+// Each executor process handles one conversation turn, so caching is safe:
+// UI changes are picked up by the next executor process (fresh start).
+var (
+	execCfg    *models.UserConfig
+	execCfgErr error
+	execOnce   sync.Once
 )
 
 const (
@@ -29,8 +39,18 @@ func UserConfigPath() (string, error) {
 // EnsureUserConfig reads the global config, fills in defaults for Chrome path
 // and execution parameters, and writes back if anything changed.
 //
-// Called by both IDE and executor at startup so they behave consistently.
+// Within an executor process the result is cached (sync.Once) — redundant calls
+// within the same process return the cached value without re-reading disk.
+// IDE side calls this once at startup and does not share the cache.
 func EnsureUserConfig() (*models.UserConfig, error) {
+	execOnce.Do(func() {
+		execCfg, execCfgErr = ensureUserConfigUncached()
+	})
+	return execCfg, execCfgErr
+}
+
+// ensureUserConfigUncached reads config from disk, applies defaults, and writes back if changed.
+func ensureUserConfigUncached() (*models.UserConfig, error) {
 	path, err := UserConfigPath()
 	if err != nil {
 		return nil, err
@@ -72,6 +92,42 @@ func EnsureUserConfig() (*models.UserConfig, error) {
 	}
 	if cfg.StreamTimeout == 0 {
 		cfg.StreamTimeout = defaultStreamTimeout
+		changed = true
+	}
+	if cfg.CodeIndexTemperature == 0 {
+		cfg.CodeIndexTemperature = 0.1
+		changed = true
+	}
+	if cfg.ToolMaxDepth == 0 {
+		cfg.ToolMaxDepth = 5
+		changed = true
+	}
+	if cfg.TaskPollIntervalMs == 0 {
+		cfg.TaskPollIntervalMs = 200
+		changed = true
+	}
+	if cfg.SearchMaxResults == 0 {
+		cfg.SearchMaxResults = 200
+		changed = true
+	}
+	if cfg.FetchMaxBodySizeKB == 0 {
+		cfg.FetchMaxBodySizeKB = 100
+		changed = true
+	}
+	if cfg.BrowserWindowWidth == 0 {
+		cfg.BrowserWindowWidth = 1280
+		changed = true
+	}
+	if cfg.BrowserWindowHeight == 0 {
+		cfg.BrowserWindowHeight = 800
+		changed = true
+	}
+	if cfg.BrowserLogCap == 0 {
+		cfg.BrowserLogCap = 500
+		changed = true
+	}
+	if cfg.LLMTLSHandshakeTimeout == 0 {
+		cfg.LLMTLSHandshakeTimeout = 30
 		changed = true
 	}
 

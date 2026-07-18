@@ -11,6 +11,10 @@
       "max_height": {
         "type": "number",
         "description": "Max height in pixels for full-page capture. If page is taller, screenshot is truncated at this height (default: 10000)"
+      },
+      "browser_id": {
+        "type": "string",
+        "description": "Browser instance ID (returned by web_start). If not specified and only one instance exists, that instance is used."
       }
     },
     "required": []

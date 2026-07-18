@@ -48,6 +48,122 @@ var SkipDirs = map[string]bool{
 	".nuxt":        true,
 }
 
+// ─── Project Security Checker ─────────────────────────────────
+
+// securityChecker is the package-level security checker, set by Handler at startup.
+// nil means no restrictions (backward compatible).
+var securityChecker *SecurityChecker
+
+// SetSecurityChecker sets the package-level security checker.
+// Call once at startup before any tool invocation.
+func SetSecurityChecker(sc *SecurityChecker) {
+	securityChecker = sc
+}
+
+// SecurityEntry represents one project_security rule.
+type SecurityEntry struct {
+	Dir      string
+	Writable bool
+}
+
+// SecurityChecker validates file operations against project security rules.
+// If no entries are configured, all operations are allowed (backward compatible).
+// If entries exist, read/write operations must target paths within allowed dirs.
+// Use NewSecurityChecker to create from DB result entries.
+type SecurityChecker struct {
+	entries []SecurityEntry
+}
+
+// NewSecurityChecker creates a SecurityChecker from project_security entries.
+// supply nil/empty entries for "allow all" mode.
+func NewSecurityChecker(entries []map[string]interface{}, workDir string) *SecurityChecker {
+	sc := &SecurityChecker{}
+	for _, e := range entries {
+		if dir, ok := e["dir"].(string); ok && dir != "" {
+			resolved := dir
+			if !filepath.IsAbs(resolved) {
+				resolved = filepath.Join(workDir, resolved)
+			}
+			resolved = filepath.Clean(resolved)
+			writable, _ := e["writable"].(bool)
+			sc.entries = append(sc.entries, SecurityEntry{
+				Dir:      resolved,
+				Writable: writable,
+			})
+		}
+	}
+	return sc
+}
+
+// hasEntries returns true if any security rules are configured.
+func (sc *SecurityChecker) hasEntries() bool {
+	return len(sc.entries) > 0
+}
+
+// isAllowed checks if the resolved path falls within any allowed directory.
+// If allowedDirs is empty, all paths are allowed.
+func (sc *SecurityChecker) isAllowed(path string) bool {
+	if !sc.hasEntries() {
+		return true
+	}
+	cleanPath := filepath.Clean(path)
+	for _, e := range sc.entries {
+		// Check if path is inside this entry's directory
+		if cleanPath == e.Dir || strings.HasPrefix(cleanPath, e.Dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// CanRead checks if a resolved path can be read.
+func (sc *SecurityChecker) CanRead(path string) bool {
+	return sc.isAllowed(path)
+}
+
+// CanWrite checks if a resolved path can be written.
+func (sc *SecurityChecker) CanWrite(path string) bool {
+	if !sc.hasEntries() {
+		return true
+	}
+	cleanPath := filepath.Clean(path)
+	for _, e := range sc.entries {
+		if !e.Writable {
+			continue
+		}
+		if cleanPath == e.Dir || strings.HasPrefix(cleanPath, e.Dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveReadPath sanitizes a user-provided path and checks project security for read.
+// Returns resolved absolute path or empty string with error message.
+func resolveReadPath(userPath, workDir string) (string, string) {
+	resolved, errMsg := SanitizePath(userPath, workDir)
+	if errMsg != "" {
+		return "", errMsg
+	}
+	if securityChecker != nil && !securityChecker.CanRead(resolved) {
+		return "", fmt.Sprintf("path %s is not allowed for read by project security rules", userPath)
+	}
+	return resolved, ""
+}
+
+// resolveWritePath sanitizes a user-provided path and checks project security for write.
+// Returns resolved absolute path or empty string with error message.
+func resolveWritePath(userPath, workDir string) (string, string) {
+	resolved, errMsg := SanitizePath(userPath, workDir)
+	if errMsg != "" {
+		return "", errMsg
+	}
+	if securityChecker != nil && !securityChecker.CanWrite(resolved) {
+		return "", fmt.Sprintf("path %s is not allowed for write by project security rules", userPath)
+	}
+	return resolved, ""
+}
+
 // HandleReadFile reads the contents of one or more files.
 func HandleReadFile(workDir string, args map[string]interface{}) *types.ToolResult {
 	raw, ok := args["files"]
@@ -100,7 +216,7 @@ func HandleReadFile(workDir string, args map[string]interface{}) *types.ToolResu
 	var errs []string
 
 	for _, req := range reqs {
-		resolved, errMsg := SanitizePath(req.path, workDir)
+		resolved, errMsg := resolveReadPath(req.path, workDir)
 		if errMsg != "" {
 			errs = append(errs, fmt.Sprintf("%s: %s", req.path, errMsg))
 			continue
@@ -210,7 +326,7 @@ func HandleWriteFile(workDir string, codeIndexer *codeindex.Indexer, versioner *
 		}
 		contentType, _ := m["type"].(string)
 
-		resolved, errMsg := SanitizePath(path, workDir)
+		resolved, errMsg := resolveWritePath(path, workDir)
 		if errMsg != "" {
 			errs = append(errs, fmt.Sprintf("%s: %s", path, errMsg))
 			continue
@@ -278,7 +394,7 @@ func HandleReplace(workDir string, engine *engine.Engine, codeIndexer *codeindex
 		return &types.ToolResult{Success: false, Error: "at least one of 'old' or 'new' must differ", Tool: "replace"}
 	}
 
-	resolved, errMsg := SanitizePath(path, workDir)
+	resolved, errMsg := resolveWritePath(path, workDir)
 	if errMsg != "" {
 		return &types.ToolResult{Success: false, Error: errMsg, Tool: "replace"}
 	}
@@ -353,37 +469,6 @@ func snapshotBeforeWrite(versioner *fileversions.Versioner, resolvedPath, workDi
 		}
 	}
 	versioner.Snapshot(turnID, relPath)
-}
-
-// HandleExecuteCommand executes a shell command.
-func HandleExecuteCommand(workDir string, engine *engine.Engine, taskMgr interface {
-	StartCommand(workDir, cmdStr string) string
-}, args map[string]interface{}) *types.ToolResult {
-	cmdStr, _ := args["command"].(string)
-	if cmdStr == "" {
-		return &types.ToolResult{Success: false, Error: "command is required", Tool: "execute_command"}
-	}
-
-	async, _ := args["async"].(bool)
-	if async {
-		taskID := taskMgr.StartCommand(workDir, cmdStr)
-		return &types.ToolResult{
-			Success: true,
-			Output:  fmt.Sprintf("task_id=%s status=running", taskID),
-			Tool:    "execute_command",
-		}
-	}
-
-	result := engine.ExecuteShell(cmdStr)
-	out := result.Output
-	if out == "" {
-		out = result.Error
-	}
-	return &types.ToolResult{
-		Success: result.Success,
-		Output:  strings.TrimSpace(out),
-		Tool:    "execute_command",
-	}
 }
 
 // ─── Simplify Types & Functions ───

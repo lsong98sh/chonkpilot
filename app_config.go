@@ -4,7 +4,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot/internal/db"
@@ -40,6 +43,11 @@ func (a *App) GetAllConfig() (map[string]interface{}, error) {
 			"config":       configs,
 			"workDir":      a.workDir,
 			"projectTools": projectTools,
+		}
+		// Include user-level LLM list so agent editor can reference them by name
+		if a.userCfg != nil {
+			uc := a.userCfg.Get()
+			result["llms"] = uc.LLMs
 		}
 		return nil
 	})
@@ -316,6 +324,77 @@ func (a *App) SaveUserConfig(body map[string]interface{}) error {
 			cfg.NodePath = s
 		}
 	}
+	if v, ok := body["logLevel"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.LogLevel = s
+		}
+	}
+	if v, ok := body["retryCount"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.RetryCount = int(n)
+		}
+	}
+	if v, ok := body["retryDelay"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.RetryDelay = int(n)
+		}
+	}
+	if v, ok := body["codeIndexTemperature"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.CodeIndexTemperature = n
+		}
+	}
+	if v, ok := body["toolMaxDepth"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.ToolMaxDepth = int(n)
+		}
+	}
+	if v, ok := body["taskPollIntervalMs"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.TaskPollIntervalMs = int(n)
+		}
+	}
+	if v, ok := body["searchMaxResults"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.SearchMaxResults = int(n)
+		}
+	}
+	if v, ok := body["fetchMaxBodySizeKB"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.FetchMaxBodySizeKB = int(n)
+		}
+	}
+	if v, ok := body["browserWindowWidth"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.BrowserWindowWidth = int(n)
+		}
+	}
+	if v, ok := body["browserWindowHeight"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.BrowserWindowHeight = int(n)
+		}
+	}
+	if v, ok := body["browserLogCap"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.BrowserLogCap = int(n)
+		}
+	}
+	if v, ok := body["llmTLSHandshakeTimeout"]; ok {
+		switch n := v.(type) {
+		case float64:
+			cfg.LLMTLSHandshakeTimeout = int(n)
+		}
+	}
 	if err := a.userCfg.Update(cfg); err != nil {
 		return err
 	}
@@ -425,13 +504,34 @@ func (a *App) SaveProjectSecurity(data map[string]interface{}) error {
 // ─── User Configuration ─────────────────────────────────────
 
 // DiscoverMCPServerTools calls tools/list on an MCP server URL to discover available tools.
-// This is a Wails-bound method called from the frontend when adding/editing an MCP server.
-func (a *App) DiscoverMCPServerTools(name, url string) (map[string]interface{}, error) {
+// url convention: base URL of the MCP server, e.g. "http://localhost:5612/mcp" or "http://localhost:5612/myserver/mcp"
+//   - Direct POST: tries POST to url directly (for non-SSE MCP servers)
+//   - SSE transport: connects to {url}/sse → gets sessionId → POST {url}/message?sessionId=X → reads response from SSE stream
+func (a *App) DiscoverMCPServerTools(name, rawURL string) (map[string]interface{}, error) {
 	matched, _ := regexp.MatchString(`^[a-zA-Z][a-zA-Z0-9_]*$`, name)
 	if !matched {
 		return nil, fmt.Errorf("invalid MCP server name '%s': must start with a letter and contain only letters, digits, and underscores", name)
 	}
 
+	baseURL := strings.TrimRight(rawURL, "/")
+
+	// First, try direct POST (simpler, some MCP servers support it)
+	a.logger.Debug("[MCP] direct POST", zap.String("url", baseURL))
+	if result, err := a.discoverViaDirectPost(baseURL); err == nil {
+		result["transport"] = "direct"
+		return result, nil
+	}
+
+	// Fallback: SSE transport
+	result, err := a.discoverViaSSE(baseURL)
+	if err == nil {
+		result["transport"] = "sse"
+	}
+	return result, err
+}
+
+// discoverViaDirectPost tries a simple POST JSON-RPC to the URL.
+func (a *App) discoverViaDirectPost(url string) (map[string]interface{}, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	reqBody := map[string]interface{}{
 		"jsonrpc": "2.0",
@@ -445,15 +545,152 @@ func (a *App) DiscoverMCPServerTools(name, url string) (map[string]interface{}, 
 
 	resp, err := client.Post(url, "application/json", bytes.NewReader(reqData))
 	if err != nil {
-		return nil, fmt.Errorf("cannot connect to MCP server: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	respData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
+	respData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(respData)) == 0 {
+		return nil, fmt.Errorf("empty response")
+	}
+
+	return parseToolsListResponse(respData)
+}
+
+// discoverViaSSE connects to {base}/sse, gets a session, posts {base}/message?sessionId=X, reads response from SSE.
+func (a *App) discoverViaSSE(base string) (map[string]interface{}, error) {
+	sseURL := base + "/sse"
+	msgBase := base + "/message"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	a.logger.Debug("[MCP] SSE connecting", zap.String("sseURL", sseURL))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sseURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create SSE request: %w", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("connect SSE: %w", err)
+	}
+	defer resp.Body.Close()
+
+	a.logger.Debug("[MCP] SSE connected, reading session...")
+
+	// Read SSE stream to get sessionId
+	br := bufio.NewReader(resp.Body)
+	var sessionID string
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("read SSE: %w", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			a.logger.Debug("[MCP] SSE event", zap.String("data", data))
+			if strings.Contains(data, "sessionId") {
+				if idx := strings.Index(data, "sessionId="); idx >= 0 {
+					sessionID = data[idx+len("sessionId="):]
+				}
+				break
+			}
+		}
+	}
+
+	if sessionID == "" {
+		return nil, fmt.Errorf("no sessionId from SSE endpoint")
+	}
+	msgURL := fmt.Sprintf("%s?sessionId=%s", msgBase, sessionID)
+	a.logger.Debug("[MCP] message URL", zap.String("msgURL", msgURL))
+
+	// Build JSON-RPC tools/list request
+	rpcBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/list",
+	}
+	rpcData, err := json.Marshal(rpcBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	// POST to message endpoint
+	postReq, err := http.NewRequestWithContext(ctx, http.MethodPost, msgURL, bytes.NewReader(rpcData))
+	if err != nil {
+		return nil, fmt.Errorf("create POST: %w", err)
+	}
+	postReq.Header.Set("Content-Type", "application/json")
+
+	a.logger.Debug("[MCP] POSTing tools/list...")
+	postResp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		return nil, fmt.Errorf("POST message: %w", err)
+	}
+	defer postResp.Body.Close()
+
+	a.logger.Debug("[MCP] POST response", zap.Int("status", postResp.StatusCode))
+
+	// Some MCP servers respond inline in the POST body
+	postBody, postErr := io.ReadAll(postResp.Body)
+	if postErr == nil && len(bytes.TrimSpace(postBody)) > 0 {
+		a.logger.Debug("[MCP] POST body", zap.String("body", string(postBody)))
+		if result, err := parseToolsListResponse(postBody); err == nil {
+			return result, nil
+		}
+	}
+
+	// The response may come through the SSE stream. Continue reading SSE.
+	a.logger.Debug("[MCP] waiting for SSE response...")
+	type sseResult struct {
+		data json.RawMessage
+		err  error
+	}
+	resultCh := make(chan sseResult, 1)
+
+	go func() {
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				resultCh <- sseResult{err: fmt.Errorf("SSE read: %w", err)}
+				return
+			}
+			line = strings.TrimRight(line, "\r\n")
+			if strings.HasPrefix(line, "data: ") {
+				data := strings.TrimPrefix(line, "data: ")
+				var raw json.RawMessage
+				if json.Unmarshal([]byte(data), &raw) == nil {
+					resultCh <- sseResult{data: raw}
+					return
+				}
+			}
+		}
+	}()
+
+	select {
+	case r := <-resultCh:
+		if r.err != nil {
+			return nil, r.err
+		}
+		return parseToolsListResponse(r.data)
+	case <-ctx.Done():
+		return nil, fmt.Errorf("timeout waiting for MCP tools/list response")
+	}
+}
+
+// parseToolsListResponse parses a JSON-RPC tools/list response.
+func parseToolsListResponse(data []byte) (map[string]interface{}, error) {
 	var mcpResp struct {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      int             `json:"id"`
@@ -464,7 +701,7 @@ func (a *App) DiscoverMCPServerTools(name, url string) (map[string]interface{}, 
 			Data    interface{} `json:"data,omitempty"`
 		} `json:"error,omitempty"`
 	}
-	if err := json.Unmarshal(respData, &mcpResp); err != nil {
+	if err := json.Unmarshal(data, &mcpResp); err != nil {
 		return nil, fmt.Errorf("invalid JSON-RPC response: %w", err)
 	}
 	if mcpResp.Error != nil {

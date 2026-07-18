@@ -20,6 +20,22 @@ type fileNode struct {
 	Children []*fileNode `json:"children,omitempty"`
 }
 
+// WatchDir starts watching a directory for changes (called when tree node expands).
+func (a *App) WatchDir(path string) {
+	if a.fw == nil {
+		return
+	}
+	a.fw.WatchDir(path)
+}
+
+// UnwatchDir stops watching a directory (called when tree node collapses).
+func (a *App) UnwatchDir(path string) {
+	if a.fw == nil {
+		return
+	}
+	a.fw.UnwatchDir(path)
+}
+
 // GetFileTree returns the file tree for the given path (or workDir).
 func (a *App) GetFileTree(path string) (map[string]interface{}, error) {
 	targetPath := path
