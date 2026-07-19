@@ -40,6 +40,10 @@ type ExecutorManager struct {
 	records map[string]*ExecutorRecord // keyed by turn_id
 
 	onEvent EventCallback
+
+	// Daemon mode (one long-lived executor process)
+	daemonCmd   *exec.Cmd
+	daemonStdin io.WriteCloser
 }
 
 // NewExecutorManager creates a new ExecutorManager.
@@ -113,7 +117,8 @@ func startExecutorWithJob(cmd *exec.Cmd) (uintptr, error) {
 		return 0, fmt.Errorf("CreateJobObject failed: %w", err)
 	}
 	info := &jobObjectExtendedLimitInfo{}
-	info.BasicLimitInformation.LimitFlags = jobObjectLimitKillOnJobClose
+	info.BasicLimitInformation.LimitFlags = 0 // Don't use KILL_ON_JOB_CLOSE — Chrome is a child process and would be killed when executor exits
+	_ = jobObjectLimitKillOnJobClose // keep the constant for reference
 	infoSize := unsafe.Sizeof(*info)
 	ret, _, err := procSetInfoJob.Call(job, jobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(info)), infoSize)
 	if ret == 0 {
@@ -294,6 +299,25 @@ func (em *ExecutorManager) readExecutorEvents(reader io.Reader, sessionID, turnI
 				if parts.eventType != "" && parts.payload != "" && em.onEvent != nil {
 					var payload map[string]interface{}
 					if err := json.Unmarshal([]byte(parts.payload), &payload); err == nil {
+						pType, _ := payload["type"].(string)
+						content, _ := payload["content"].(string)
+						cLen := len(content)
+						cPreview := ""
+						if cLen > 0 {
+							if cLen > 50 {
+								cPreview = content[:50] + "..."
+							} else {
+								cPreview = content
+							}
+						}
+						em.logger.Debug("[EVTLOG] Executor→IDE(SSE)",
+							zap.String("event_type", parts.eventType),
+							zap.String("type", pType),
+							zap.Int("clen", cLen),
+							zap.String("preview", cPreview),
+							zap.String("session_id", sessionID),
+							zap.String("turn_id", turnID),
+						)
 						em.onEvent(parts.eventType, mergeContext(payload, sessionID, turnID))
 					}
 				}
@@ -311,6 +335,26 @@ func (em *ExecutorManager) readExecutorEvents(reader io.Reader, sessionID, turnI
 			if !ok {
 				payload = raw
 			}
+			// Log raw executor event for diagnostic
+			pType, _ := payload["type"].(string)
+			content, _ := payload["content"].(string)
+			cLen := len(content)
+			cPreview := ""
+			if cLen > 0 {
+				if cLen > 50 {
+					cPreview = content[:50] + "..."
+				} else {
+					cPreview = content
+				}
+			}
+			em.logger.Debug("[EVTLOG] Executor→IDE",
+				zap.String("event_type", eventType),
+				zap.String("type", pType),
+				zap.Int("clen", cLen),
+				zap.String("preview", cPreview),
+				zap.String("session_id", sessionID),
+				zap.String("turn_id", turnID),
+			)
 			em.onEvent(eventType, mergeContext(payload, sessionID, turnID))
 		}
 	}
@@ -432,12 +476,10 @@ func (em *ExecutorManager) KillExecutor(turnID string) error {
 
 // Stop kills all running executors and cleans up.
 func (em *ExecutorManager) Stop() {
+	// Stop per-turn executors
 	em.mu.Lock()
-	defer em.mu.Unlock()
-
 	for turnID, record := range em.records {
 		if record.Cmd != nil && record.Cmd.Process != nil {
-			// Kill via job object (handles children)
 			if record.jobHandle != 0 {
 				procTerminateJob.Call(record.jobHandle, 1)
 			}
@@ -446,7 +488,245 @@ func (em *ExecutorManager) Stop() {
 		closeJobHandle(record.jobHandle)
 		delete(em.records, turnID)
 	}
+	em.mu.Unlock()
+
+	// Stop daemon executor (if running)
+	em.stopDaemon()
+
 	em.logger.Info("All executors shut down")
+}
+
+// ─── Daemon mode ──────────────────────────────────────────
+
+// StartDaemon starts the long-lived executor daemon process.
+// It spawns executor.exe with --internal and connects to its stdin/stdout.
+func (em *ExecutorManager) StartDaemon(workDir string) error {
+	em.mu.Lock()
+	defer em.mu.Unlock()
+
+	if em.daemonCmd != nil && em.daemonCmd.Process != nil {
+		// Already running
+		return nil
+	}
+
+	execPath := findExecutorPath()
+	args := []string{
+		"--internal",
+		fmt.Sprintf("--work-dir=%s", workDir),
+		"--output=json",
+	}
+
+	em.logger.Info("Starting executor daemon",
+		zap.String("execPath", execPath),
+		zap.String("workDir", workDir),
+	)
+
+	cmd := exec.Command(execPath, args...)
+	if runtime.GOOS == "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+		}
+	}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("daemon stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		stdin.Close()
+		return fmt.Errorf("daemon stdout pipe: %w", err)
+	}
+
+	// Capture stderr to log file
+	stderrLog := filepath.Join(workDir, ".ide", "logs", "executor_daemon_stderr.log")
+	_ = os.MkdirAll(filepath.Dir(stderrLog), 0755)
+	stderrFile, err := os.OpenFile(stderrLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err == nil {
+		cmd.Stderr = stderrFile
+	}
+
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		if stderrFile != nil {
+			stderrFile.Close()
+		}
+		return fmt.Errorf("daemon start: %w", err)
+	}
+
+	em.daemonCmd = cmd
+	em.daemonStdin = stdin
+
+	em.logger.Info("Executor daemon started", zap.Int("pid", cmd.Process.Pid))
+
+	// Read daemon stdout events in background
+	go em.readDaemonEvents(stdout)
+
+	// Monitor daemon exit in background
+	go func() {
+		err := cmd.Wait()
+		em.mu.Lock()
+		em.daemonCmd = nil
+		em.daemonStdin = nil
+		em.mu.Unlock()
+		em.logger.Info("Executor daemon exited", zap.Error(err))
+		if stderrFile != nil {
+			stderrFile.Close()
+		}
+	}()
+
+	return nil
+}
+
+// SendTurn sends a start_turn command to the daemon via stdin.
+func (em *ExecutorManager) SendTurn(sessionID, turnID, llmName, thinkEnabled, effort string, extraArgs []string) error {
+	em.mu.Lock()
+	stdin := em.daemonStdin
+	em.mu.Unlock()
+
+	if stdin == nil {
+		return fmt.Errorf("daemon not running")
+	}
+
+	cmd := map[string]interface{}{
+		"cmd":        "start_turn",
+		"session_id": sessionID,
+		"turn_id":    turnID,
+		"llm":        llmName,
+		"think":      thinkEnabled,
+		"effort":     effort,
+		"extra_args": extraArgs,
+	}
+
+	em.logger.Debug("SendTurn to daemon",
+		zap.String("session_id", sessionID),
+		zap.String("turn_id", turnID),
+	)
+
+	em.mu.Lock()
+	defer em.mu.Unlock()
+	return json.NewEncoder(stdin).Encode(cmd)
+}
+
+// CancelDaemonSession sends a cancel_session command to the daemon.
+func (em *ExecutorManager) CancelDaemonSession(sessionID string) error {
+	em.mu.Lock()
+	stdin := em.daemonStdin
+	em.mu.Unlock()
+
+	if stdin == nil {
+		return nil // daemon not running, nothing to cancel
+	}
+
+	cmd := map[string]interface{}{
+		"cmd":        "cancel_session",
+		"session_id": sessionID,
+	}
+
+	em.logger.Info("CancelDaemonSession", zap.String("session_id", sessionID))
+
+	em.mu.Lock()
+	defer em.mu.Unlock()
+	return json.NewEncoder(stdin).Encode(cmd)
+}
+
+// IsDaemonRunning returns true if the daemon process is alive.
+func (em *ExecutorManager) IsDaemonRunning() bool {
+	em.mu.Lock()
+	defer em.mu.Unlock()
+	return em.daemonCmd != nil && em.daemonCmd.Process != nil && em.daemonCmd.ProcessState == nil
+}
+
+// stopDaemon sends shutdown and waits for the daemon to exit.
+// Called by Stop().
+func (em *ExecutorManager) stopDaemon() {
+	em.mu.Lock()
+	stdin := em.daemonStdin
+	cmd := em.daemonCmd
+	em.mu.Unlock()
+
+	if stdin == nil {
+		return
+	}
+
+	// Send shutdown command
+	shutdown := map[string]interface{}{"cmd": "shutdown"}
+	em.mu.Lock()
+	json.NewEncoder(stdin).Encode(shutdown)
+	stdin.Close()
+	em.mu.Unlock()
+
+	// Wait for process to exit (with timeout)
+	if cmd != nil {
+		done := make(chan struct{})
+		go func() {
+			cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			em.logger.Warn("daemon did not exit in time, killing")
+			cmd.Process.Kill()
+		}
+	}
+}
+
+// readDaemonEvents reads JSON event lines from daemon stdout.
+func (em *ExecutorManager) readDaemonEvents(reader io.Reader) {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var raw map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			continue
+		}
+
+		if em.onEvent == nil {
+			continue
+		}
+
+		eventType, _ := raw["type"].(string)
+		payload, ok := raw["payload"].(map[string]interface{})
+		if !ok {
+			payload = raw
+		}
+
+		// Log daemon executor event for diagnostic
+		pType, _ := payload["type"].(string)
+		content, _ := payload["content"].(string)
+		cLen := len(content)
+		cPreview := ""
+		if cLen > 0 {
+			if cLen > 50 {
+				cPreview = content[:50] + "..."
+			} else {
+				cPreview = content
+			}
+		}
+		sID, _ := payload["session_id"].(string)
+		tID, _ := payload["turn_id"].(string)
+		em.logger.Debug("[EVTLOG] Daemon→IDE",
+			zap.String("event_type", eventType),
+			zap.String("type", pType),
+			zap.Int("clen", cLen),
+			zap.String("preview", cPreview),
+			zap.String("session_id", sID),
+			zap.String("turn_id", tID),
+		)
+
+		em.onEvent(eventType, payload)
+	}
+
+	if err := scanner.Err(); err != nil {
+		em.logger.Warn("Daemon stdout scanner error", zap.Error(err))
+	}
 }
 
 // findExecutorPath finds the executor executable.

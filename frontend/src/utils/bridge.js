@@ -1,43 +1,90 @@
 /**
  * Bridge — Wails Go → JS 事件通信层
  *
- * RPC 调用已迁移到 Wails 编译时绑定（wailsjs/go/main/App），
- * 不再通过 bridge.invoke 动态查找。
- *
- * 事件监听 (Wails Events):
- *   const unsub = bridge.on('chat:token', data => { ... })
- *   unsub() // 取消监听
+ * 内部维护回调注册表，每个事件名称只注册一个 Wails handler。
+ * bridge.on('event', cb) 注册回调，返回的 unsub() 只移除自己的回调，
+ * 不会影响其他组件对该事件的监听。
  */
+
+// 回调注册表: { eventName: Set<callback> }
+const _callbackRegistry = {}
+
+// 是否为每个事件注册过 Wails 级别的 handler
+function ensureWailsHandler(event) {
+  if (_callbackRegistry[event]?._wailsRegistered) return
+  if (!_callbackRegistry[event]) {
+    _callbackRegistry[event] = new Set()
+  }
+  _callbackRegistry[event]._wailsRegistered = true
+
+  if (window.runtime?.EventsOn) {
+    window.runtime.EventsOn(event, (data) => {
+      _callbackRegistry[event].forEach(cb => {
+        try { cb(data) } catch (e) { console.warn('[bridge] handler error:', e) }
+      })
+    })
+  }
+}
+
+function needsFallback() {
+  return !window.runtime?.EventsOn
+}
+
+function ensureFallbackHandler(event) {
+  if (_callbackRegistry[event]?._fallbackRegistered) return
+  if (!_callbackRegistry[event]) {
+    _callbackRegistry[event] = new Set()
+  }
+  _callbackRegistry[event]._fallbackRegistered = true
+
+  if (needsFallback()) {
+    const handler = (e) => {
+      _callbackRegistry[event].forEach(cb => {
+        try { cb(e.detail) } catch (err) { console.warn('[bridge] fallback handler error:', err) }
+      })
+    }
+    window.addEventListener('bridge:' + event, handler)
+    // 存储 handler 引用以便移除
+    _callbackRegistry[event]._fallbackHandler = handler
+  }
+}
 
 const bridge = {
   /**
-   * 监听 Go 端通过 Wails runtime.EventsEmit 推送的事件。
-   * 返回取消监听的函数。
+   * 监听事件。返回取消监听的函数，调用后只移除当前回调。
    */
   on(event, callback) {
-    if (window.runtime?.EventsOn) {
-      window.runtime.EventsOn(event, callback)
-      return () => {
-        if (window.runtime?.EventsOff) {
+    if (needsFallback()) {
+      ensureFallbackHandler(event)
+    } else {
+      ensureWailsHandler(event)
+    }
+
+    _callbackRegistry[event].add(callback)
+
+    // 返回 unsub 函数，只移除自己的回调
+    return () => {
+      _callbackRegistry[event]?.delete(callback)
+      // 没有回调了 → 清理 Wails handler
+      if (_callbackRegistry[event]?.size === 0) {
+        if (!needsFallback() && window.runtime?.EventsOff) {
           window.runtime.EventsOff(event)
         }
+        delete _callbackRegistry[event]
       }
     }
-    // Fallback for dev mode without Wails runtime
-    console.warn('bridge: Wails runtime not available, using CustomEvent fallback')
-    const handler = (e) => callback(e.detail)
-    window.addEventListener('bridge:' + event, handler)
-    return () => window.removeEventListener('bridge:' + event, handler)
   },
 
   /**
-   * 移除监听。
+   * 移除特定回调（兼容旧用法）。
    */
   off(event, callback) {
-    if (window.runtime?.EventsOff) {
-      window.runtime.EventsOff(event)
-    } else {
-      window.removeEventListener('bridge:' + event, callback)
+    _callbackRegistry[event]?.delete(callback)
+    if (_callbackRegistry[event]?.size === 0) {
+      if (!needsFallback() && window.runtime?.EventsOff) {
+        window.runtime.EventsOff(event)
+      }
+      delete _callbackRegistry[event]
     }
   },
 }

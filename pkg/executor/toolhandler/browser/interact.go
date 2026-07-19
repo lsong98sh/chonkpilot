@@ -52,7 +52,8 @@ func HandleWebClick(bm *BrowserManager, tm *task.TaskManager, args map[string]in
 			return "", err
 		}
 
-		runCtx, runCancel := context.WithCancel(ctx)
+		const clickTimeout = 15 * time.Second
+		runCtx, runCancel := context.WithTimeout(ctx, clickTimeout)
 		defer runCancel()
 		go func() {
 			select {
@@ -109,7 +110,8 @@ func HandleWebType(bm *BrowserManager, tm *task.TaskManager, args map[string]int
 			return "", err
 		}
 
-		runCtx, runCancel := context.WithCancel(ctx)
+		const opTimeout = 15 * time.Second
+		runCtx, runCancel := context.WithTimeout(ctx, opTimeout)
 		defer runCancel()
 		go func() {
 			select {
@@ -179,7 +181,7 @@ func HandleWebHover(bm *BrowserManager, tm *task.TaskManager, args map[string]in
 			return "", err
 		}
 
-		runCtx, runCancel := context.WithCancel(ctx)
+		runCtx, runCancel := context.WithTimeout(ctx, 15*time.Second)
 		defer runCancel()
 		go func() {
 			select {
@@ -254,7 +256,7 @@ func HandleWebDrag(bm *BrowserManager, tm *task.TaskManager, args map[string]int
 			return "", err
 		}
 
-		runCtx, runCancel := context.WithCancel(ctx)
+		runCtx, runCancel := context.WithTimeout(ctx, 15*time.Second)
 		defer runCancel()
 		go func() {
 			select {
@@ -433,7 +435,7 @@ func HandleWebScrollTo(bm *BrowserManager, tm *task.TaskManager, args map[string
 			return "", err
 		}
 
-		runCtx, runCancel := context.WithCancel(ctx)
+		runCtx, runCancel := context.WithTimeout(ctx, 15*time.Second)
 		defer runCancel()
 		go func() {
 			select {

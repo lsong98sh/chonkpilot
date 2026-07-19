@@ -68,7 +68,7 @@ type UserConfig struct {
 	LogLevel          string             `json:"logLevel,omitempty"`          // debug/info/warn/error
 	RetryCount        int                `json:"retryCount,omitempty"`        // LLM retry attempts
 	RetryDelay        int                `json:"retryDelay,omitempty"`        // seconds between retries
-	// Context compression（由项目 DB 的 keep_full_turns / keep_simplified_turns 管理，不在用户配置中）
+	// Context compression（由项目 DB 的 keep_full_turns / compress_token_threshold 管理，不在用户配置中）
 	// Background tasks
 	ForeachConcurrency int `json:"foreachConcurrency,omitempty"` // parallel goroutines for foreach (1-10, default 5)
 	ForeachMaxDepth    int `json:"foreachMaxDepth,omitempty"`    // max nested depth for foreach (1-10, default 5)

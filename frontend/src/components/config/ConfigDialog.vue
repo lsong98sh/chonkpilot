@@ -1,5 +1,6 @@
 <template>
-  <el-dialog v-model="visible" title="设置" width="680px" append-to-body destroy-on-close draggable>
+  <el-dialog v-model="visible" title="设置" width="680px" append-to-body destroy-on-close draggable class="settings-dialog">
+    <div class="dialog-body-scroll">
     <el-tabs v-model="tab">
       <el-tab-pane label="LLM" name="llm">
         <div class="toolbar-actions">
@@ -87,7 +88,7 @@
         </el-form>
       </el-tab-pane>
       <el-tab-pane label="常规" name="general">
-            <el-form label-position="top" size="small">
+            <el-form label-position="left" label-width="150px" size="small">
               <el-row :gutter="12">
                 <el-col :span="12">
                   <el-form-item label="日志级别">
@@ -109,101 +110,90 @@
                   </el-form-item>
                 </el-col>
               </el-row>
-              <el-divider />
               <el-row :gutter="12">
                 <el-col :span="12">
                   <el-form-item label="LLM 重试次数">
-                    <el-input-number v-model="form.retryCount" :min="0" :max="10" />
-                    <span class="form-hint">0 = LLM 出错不重试</span>
+                    <el-input-number v-model="form.retryCount" :min="0" :max="10" controls-position="right" />
+                    <span class="form-hint">0 = 不重试</span>
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
-                  <el-form-item label="重试间隔（秒）">
-                    <el-input-number v-model="form.retryDelay" :min="1" :max="120" />
-                    <span class="form-hint">重试间等待时间</span>
+                  <el-form-item label="重试间隔(秒)">
+                    <el-input-number v-model="form.retryDelay" :min="1" :max="120" controls-position="right" />
                   </el-form-item>
                 </el-col>
               </el-row>
-              <el-divider />
               <el-row :gutter="12">
-                <el-col :span="8">
-                  <el-form-item label="最大工具迭代次数">
-                    <el-input-number v-model="form.maxToolIterations" :min="0" :max="2000" :step="50" />
-                    <span class="form-hint">0 = 不限 | 默认 800</span>
+                <el-col :span="12">
+                  <el-form-item label="最大工具迭代">
+                    <el-input-number v-model="form.maxToolIterations" :min="0" :max="2000" :step="50" controls-position="right" />
                   </el-form-item>
                 </el-col>
-                <el-col :span="8">
-                  <el-form-item label="响应超时（秒）">
-                    <el-input-number v-model="form.responseTimeout" :min="0" :max="600" :step="30" />
-                    <span class="form-hint">0 = 不超时 | 默认 180</span>
-                  </el-form-item>
-                </el-col>
-                <el-col :span="8">
-                  <el-form-item label="流空闲超时（秒）">
-                    <el-input-number v-model="form.streamTimeout" :min="0" :max="600" :step="30" />
-                    <span class="form-hint">0 = 不超时 | 默认 180</span>
+                <el-col :span="12">
+                  <el-form-item label="响应超时(秒)">
+                    <el-input-number v-model="form.responseTimeout" :min="0" :max="600" :step="30" controls-position="right" />
                   </el-form-item>
                 </el-col>
               </el-row>
-              <!-- 工具执行 -->
-              <el-divider />
               <el-row :gutter="12">
+                <el-col :span="12">
+                  <el-form-item label="流空闲超时(秒)">
+                    <el-input-number v-model="form.streamTimeout" :min="0" :max="600" :step="30" controls-position="right" />
+                  </el-form-item>
+                </el-col>
                 <el-col :span="12">
                   <el-form-item label="工具嵌套深度">
-                    <el-input-number v-model="form.toolMaxDepth" :min="1" :max="20" controls-position="right" :style="{ width: '180px' }" />
+                    <el-input-number v-model="form.toolMaxDepth" :min="1" :max="20" controls-position="right" />
                   </el-form-item>
                 </el-col>
+              </el-row>
+              <el-row :gutter="12">
                 <el-col :span="12">
                   <el-form-item label="任务轮询间隔(ms)">
-                    <el-input-number v-model="form.taskPollIntervalMs" :min="50" :max="2000" :step="50" controls-position="right" :style="{ width: '180px' }" />
+                    <el-input-number v-model="form.taskPollIntervalMs" :min="50" :max="2000" :step="50" controls-position="right" />
                   </el-form-item>
                 </el-col>
-              </el-row>
-              <!-- 搜索限制 -->
-              <el-divider />
-              <el-row :gutter="12">
                 <el-col :span="12">
                   <el-form-item label="搜索结果上限">
-                    <el-input-number v-model="form.searchMaxResults" :min="10" :max="5000" :step="10" controls-position="right" :style="{ width: '180px' }" />
-                  </el-form-item>
-                </el-col>
-                <el-col :span="12">
-                  <el-form-item label="HTTP获取最大大小(KB)">
-                    <el-input-number v-model="form.fetchMaxBodySizeKB" :min="1" :max="10000" :step="10" controls-position="right" :style="{ width: '180px' }" />
+                    <el-input-number v-model="form.searchMaxResults" :min="10" :max="5000" :step="10" controls-position="right" />
                   </el-form-item>
                 </el-col>
               </el-row>
-              <!-- 浏览器 -->
-              <el-divider />
               <el-row :gutter="12">
-                <el-col :span="8">
+                <el-col :span="12">
+                  <el-form-item label="HTTP 获取(KB)">
+                    <el-input-number v-model="form.fetchMaxBodySizeKB" :min="1" :max="10000" :step="10" controls-position="right" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
                   <el-form-item label="浏览器窗口宽度">
-                    <el-input-number v-model="form.browserWindowWidth" :min="800" :max="3840" :step="100" controls-position="right" :style="{ width: '180px' }" />
-                  </el-form-item>
-                </el-col>
-                <el-col :span="8">
-                  <el-form-item label="浏览器窗口高度">
-                    <el-input-number v-model="form.browserWindowHeight" :min="600" :max="2160" :step="100" controls-position="right" :style="{ width: '180px' }" />
-                  </el-form-item>
-                </el-col>
-                <el-col :span="8">
-                  <el-form-item label="控制台日志上限">
-                    <el-input-number v-model="form.browserLogCap" :min="100" :max="5000" :step="100" controls-position="right" :style="{ width: '180px' }" />
+                    <el-input-number v-model="form.browserWindowWidth" :min="800" :max="3840" :step="100" controls-position="right" />
                   </el-form-item>
                 </el-col>
               </el-row>
-              <!-- LLM 网络 -->
-              <el-divider />
               <el-row :gutter="12">
                 <el-col :span="12">
-                  <el-form-item label="TLS握手超时(秒)">
-                    <el-input-number v-model="form.llmTLSHandshakeTimeout" :min="5" :max="120" controls-position="right" :style="{ width: '180px' }" />
+                  <el-form-item label="浏览器窗口高度">
+                    <el-input-number v-model="form.browserWindowHeight" :min="600" :max="2160" :step="100" controls-position="right" />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="控制台日志上限">
+                    <el-input-number v-model="form.browserLogCap" :min="100" :max="5000" :step="100" controls-position="right" />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+              <el-row :gutter="12">
+                <el-col :span="12">
+                  <el-form-item label="TLS 握手超时(秒)">
+                    <el-input-number v-model="form.llmTLSHandshakeTimeout" :min="5" :max="120" controls-position="right" />
                   </el-form-item>
                 </el-col>
               </el-row>
             </el-form>
           </el-tab-pane>
         </el-tabs>
+      </div>
 
       <!-- Edit LLM Dialog (shared for global + project) -->
     <el-dialog v-model="editLLMDialog.visible" title="编辑 LLM Provider" width="520px" append-to-body>
@@ -574,8 +564,36 @@ defineExpose({ open })
 </script>
 
 <style scoped>
-:deep(.el-dialog__body) {
+.settings-dialog :deep(.el-dialog) {
+  max-height: 680px;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-dialog :deep(.el-dialog__body) {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   padding-top: 8px;
+}
+
+.dialog-body-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.dialog-body-scroll :deep(.el-tabs) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog-body-scroll :deep(.el-tabs__content) {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .toolbar-actions {
@@ -610,5 +628,17 @@ defineExpose({ open })
   color: var(--text-muted);
   margin-top: 12px;
   padding: 0 4px;
+}
+
+.settings-dialog :deep(.el-form-item) {
+  margin-bottom: 6px;
+}
+
+.settings-dialog :deep(.el-input-number) {
+  width: 100%;
+}
+
+.settings-dialog :deep(.el-select) {
+  width: 100%;
 }
 </style>

@@ -20,13 +20,22 @@ import (
 	"github.com/chonkpilot/chonkpilot/pkg/executor/output"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/prompts"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/browser"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
 	"github.com/chonkpilot/chonkpilot/pkg/fileversions"
 	"go.uber.org/zap"
 )
 
-// executeTurn performs the actual turn execution with tool call loop support.
+// executeTurn is a convenience wrapper around executeTurnWith.
 func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *output.Writer, logger *zap.Logger) (*TurnResult, error) {
+	return executeTurnWith(ea, prompt, systemPrompt, outWriter, logger, nil, nil, nil)
+}
+
+// executeTurnWith performs turn execution with optional external dependencies.
+//   - extSQLDB: if non-nil, use this shared DB connection instead of opening a new one
+//   - extBrowserMgr: if non-nil, use this existing BrowserManager instead of creating a fresh one
+//   - extCancelCtx: if non-nil, use as the base cancellation context
+func executeTurnWith(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *output.Writer, logger *zap.Logger, extSQLDB *sql.DB, extBrowserMgr *browser.BrowserManager, extCancelCtx context.Context) (*TurnResult, error) {
 	// Set TEMP/TMP to .ide/tmp so all temp files go into the project's .ide directory
 	setTempDir(ea.WorkDir, ea.TempIDEDir)
 
@@ -61,11 +70,19 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 
 	// ── Open project DB once for the entire turn ──
 	var sqlDB *sql.DB
-	if hasIDEConfig(ea) {
+	var dbOwned bool // true if we opened the DB ourselves
+	if extSQLDB != nil {
+		sqlDB = extSQLDB
+	} else if hasIDEConfig(ea) {
 		sqlDB, _ = db.Open(ea.DBWorkDir())
 		if sqlDB != nil {
-			defer db.Close(sqlDB)
+			dbOwned = true
 		}
+	}
+	if dbOwned {
+		// Fresh executor process: clear any stale compress locks from previous crashes.
+		db.DeleteConfigLike(sqlDB, "compress_lock:%")
+		defer db.Close(sqlDB)
 	}
 
 	if sqlDB != nil && (ea.SessionID != "" || ea.TurnID != "") {
@@ -93,10 +110,16 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 
 	// Initialize tool handler (after ensureSessionAndTurn may have set ea.TurnID)
 	handler := initToolHandler(ea, sqlDB, ucfg, chromeOK, codebaseEnabled, codebaseExtensions, client, outWriter, logger)
+	if extBrowserMgr != nil {
+		handler.Browser = extBrowserMgr
+	}
 
-	// Set up cancellation context so CancelChat -> KillExecutor can gracefully
-	// abort long-running tool operations (grep, search_files, web_open, etc.)
-	handler.SetCancelContext(context.Background())
+	// Set up cancellation context
+	cancelBase := context.Background()
+	if extCancelCtx != nil {
+		cancelBase = extCancelCtx
+	}
+	handler.SetCancelContext(cancelBase)
 
 	// ── Build TurnRunner callbacks ──
 	// These bridge the generic TurnRunner to executor-specific side effects
@@ -304,6 +327,12 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 	}
 
 	if err != nil {
+		if !isStandalone || ea.Verbose {
+			outWriter.WriteEvent("error", eventWithCtx(ea, map[string]interface{}{
+				"code":    "ERR_TURN_FAILED",
+				"message": err.Error(),
+			}))
+		}
 		return nil, err
 	}
 
@@ -321,6 +350,16 @@ func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *outpu
 	n := handler.FlushCodeIndex()
 	if n > 0 {
 		logger.Info("codeindex: flushed changed files after tool loop", zap.Int("count", n))
+	}
+
+	// ── Write completion event (non-standalone mode or verbose) ──
+	if ea.TurnID != "" {
+		if !isStandalone || ea.Verbose {
+			outWriter.WriteEvent("complete", eventWithCtx(ea, map[string]interface{}{
+				"result": fullResponseContent,
+				"score":  0,
+			}))
+		}
 	}
 
 	// ── Asynchronous summary generation ──

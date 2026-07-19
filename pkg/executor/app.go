@@ -54,8 +54,8 @@ type ExecutorArgs struct {
 	LLMName string // --llm: select LLM by name from ~/.chonkpilot/config.json
 	Effort  string // --effort: reasoning effort override (high/max)
 
-	KeepFullTurns            int           // context compression: turns to keep fully raw (default 5)
-	KeepSimplifiedTurns      int           // context compression: turns to keep simplified (default 15)
+	KeepFullTurns          int // context compression: turns to keep fully raw (default 6)
+	CompressTokenThreshold int // compression token threshold for simplified zone (default 80000)
 	ForeachConcurrency       int           // parallel goroutines for foreach (1-10, default 5)
 	ForeachMaxDepth          int           // max nested depth for foreach (1-10, default 5)
 	FetchTimeout             int           // HTTP fetch timeout in seconds (default 300)
@@ -158,9 +158,9 @@ func ParseArgs(args []string) (*ExecutorArgs, error) {
 		} else if strings.HasPrefix(arg, "--keep-full-turns=") {
 			v := arg[len("--keep-full-turns="):]
 			ea.KeepFullTurns, _ = strconv.Atoi(v)
-		} else if strings.HasPrefix(arg, "--keep-simplified-turns=") {
-			v := arg[len("--keep-simplified-turns="):]
-			ea.KeepSimplifiedTurns, _ = strconv.Atoi(v)
+		} else if strings.HasPrefix(arg, "--compress-token-threshold=") {
+			v := arg[len("--compress-token-threshold="):]
+			ea.CompressTokenThreshold, _ = strconv.Atoi(v)
 		} else if strings.HasPrefix(arg, "--foreach-concurrency=") {
 			v := arg[len("--foreach-concurrency="):]
 			ea.ForeachConcurrency, _ = strconv.Atoi(v)
@@ -384,26 +384,10 @@ func Run(args []string) error {
 	}
 
 	// Process the turn
-	result, err := executeTurn(ea, promptContent, systemPrompt, outWriter, logger)
+	_, err = executeTurn(ea, promptContent, systemPrompt, outWriter, logger)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %s\n", err.Error())
-		if !isStandalone || ea.Verbose {
-			outWriter.WriteEvent("error", eventWithCtx(ea, map[string]interface{}{
-				"code":    "ERR_EXECUTION_FAILED",
-				"message": err.Error(),
-			}))
-		}
 		return err
-	}
-
-	// Write result
-	if ea.TurnID != "" {
-		if !isStandalone || ea.Verbose {
-			outWriter.WriteEvent("complete", eventWithCtx(ea, map[string]interface{}{
-				"result": result.A,
-				"score":  result.Score,
-			}))
-		}
 	}
 
 	// In non-verbose standalone mode, print a summary line with session/turn IDs
@@ -441,7 +425,7 @@ func detectMode(ea *ExecutorArgs) string {
 
 // printBanner prints the startup banner to stdout.
 func printBanner(ea *ExecutorArgs, mode string) {
-	fmt.Fprintf(os.Stdout, "肥猫启动中... V1.0 - %s 模式\n", mode)
+	fmt.Fprintf(os.Stdout, "肥猫启动中... 1.01 - %s 模式\n", mode)
 	fmt.Fprintf(os.Stdout, "LLM: %s/%s\n", ea.LLMProtocol, ea.LLMModel)
 	reasoningStr := "off"
 	if ea.Thinking {

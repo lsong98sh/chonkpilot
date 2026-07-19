@@ -209,19 +209,22 @@
           <el-form label-position="top" size="small" class="context-form">
             <el-row :gutter="12">
               <el-col :span="8">
-                <el-form-item label="保留完整对话内容的轮次（默认5）">
+                <el-form-item label="保留完整对话内容的轮次（默认6）">
                   <el-input-number v-model="keepFullTurns" :min="1" :max="50" :step="1" />
                 </el-form-item>
               </el-col>
-              <el-col :span="8">
-                <el-form-item label="简化工具调用信息轮次（默认15）">
-                  <el-input-number v-model="keepSimplifiedTurns" :min="0" :max="100" :step="5" />
+              <el-col :span="12">
+                <el-form-item label="简化区 Token 压缩阈值（默认 80000）">
+                  <el-input-number v-model="compressTokenThreshold"
+                    :min="10000" :max="500000" :step="10000" />
                 </el-form-item>
               </el-col>
             </el-row>
             <p class="form-description">
-              三层压缩策略：最近的 <strong>N</strong> 轮（如当前对话、最近思考）保留全部原始消息 → 再之前的 <strong>M-N</strong> 轮只保留简化后的工具对和思考文本（移除详细的工具参数和返回值）→ 更早的轮次被 LLM 生成的摘要替代（如有可用摘要）。<br>
-              示例：N=5, M=15 → 第 1-5 轮完整保留，第 6-15 轮仅保留工具名+结果摘要，第 16+ 轮用会话摘要代替。
+              保留最近的 <strong>N</strong> 轮为完整内容 → 之前的轮次简化为工具摘要 → 当简化区总 token 数超过阈值时，自动压缩为 LLM 摘要。
+              简化区的计算方式为：简化区所有消息字符数 / 4 + 已有摘要字符数 / 4。<br>
+              示例：N=6, 阈值=80000 → 第 1-6 轮完整保留，第 7+ 轮简化，简化区超过约 32 万字符时触发压缩。
+              压缩在每轮结束后异步执行，同一会话的压缩互斥进行，不会重复触发。
             </p>
           </el-form>
         </el-tab-pane>
@@ -442,8 +445,8 @@ const optimizing = ref(false)
 // 代码索引 & 上下文压缩 settings (project-level)
 const codebaseIndexEnabled = ref(false)
 const codebaseIndexExtensions = ref('.go,.js,.ts,.jsx,.tsx,.vue,.py,.rs,.java,.c,.cpp,.h,.hpp,.cs,.rb,.php,.swift,.kt')
-const keepFullTurns = ref(5)
-const keepSimplifiedTurns = ref(15)
+const keepFullTurns = ref(6)
+const compressTokenThreshold = ref(80000)
 const tableMaxHeight = ref(600)
 const configRoot = ref(null)
 
@@ -499,7 +502,7 @@ async function saveCodebaseConfig() {
 async function saveContextConfig() {
   try {
     await setConfig('keep_full_turns', String(keepFullTurns.value))
-    await setConfig('keep_simplified_turns', String(keepSimplifiedTurns.value))
+    await setConfig('compress_token_threshold', String(compressTokenThreshold.value))
   } catch (e) {
     console.warn('[IDEConfig] Failed to save context config:', e)
   }
@@ -672,8 +675,8 @@ async function loadAll() {
     const c = res.config || res
     if (c['codebase_index.enabled'] !== undefined) codebaseIndexEnabled.value = c['codebase_index.enabled'] === 'true'
     if (c['codebase_index.extensions']) codebaseIndexExtensions.value = c['codebase_index.extensions']
-    if (c['keep_full_turns'] !== undefined) keepFullTurns.value = parseInt(c['keep_full_turns']) || 5
-    if (c['keep_simplified_turns'] !== undefined) keepSimplifiedTurns.value = parseInt(c['keep_simplified_turns']) || 15
+    if (c['keep_full_turns'] !== undefined) keepFullTurns.value = parseInt(c['keep_full_turns']) || 6
+    if (c['compress_token_threshold'] !== undefined) compressTokenThreshold.value = parseInt(c['compress_token_threshold']) || 80000
   } catch (_) {}
 }
 
@@ -1008,7 +1011,7 @@ watch(codebaseIndexExtensions, () => {
 watch(keepFullTurns, () => {
   saveContextConfig()
 })
-watch(keepSimplifiedTurns, () => {
+watch(compressTokenThreshold, () => {
   saveContextConfig()
 })
 

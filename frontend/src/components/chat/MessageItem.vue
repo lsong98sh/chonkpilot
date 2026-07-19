@@ -74,7 +74,7 @@
         <span v-if="loadingMore" class="loading-icon">...</span>
       </div>
       <div v-if="!collapsed" class="section-body">
-        <div class="pair-section">
+        <div v-if="!message.isOrphaned" class="pair-section">
           <div class="pair-sub-label">Arguments</div>
           <pre class="force-wrap">{{ prettyArgs }}</pre>
         </div>

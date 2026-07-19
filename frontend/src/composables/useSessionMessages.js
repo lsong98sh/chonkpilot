@@ -15,12 +15,7 @@ import { ElMessage } from 'element-plus'
 export function useSessionMessages() {
   const messages = ref([])
   const turnActive = ref(false)
-  let hasAssistantText = false
-
-  // Track last-seen index per turn to prevent duplicate chunk appends
-  // When the same chunk index arrives twice (e.g. from event re-delivery),
-  // we skip the duplicate to avoid content inflation.
-  let lastTextIndex = -1
+  let currentSection = null // 'reasoning', 'text', or null — tracks what type we're currently building
 
   /**
    * Process a stream token (reasoning / tool_call / tool_result / text).
@@ -29,24 +24,8 @@ export function useSessionMessages() {
   function handleToken(data) {
     turnActive.value = true
 
-    if (data.type === 'reasoning') {
-      // Reasoning events don't carry a reliable Index, so always process them.
-      // Append to last reasoning message, or create new one
-      const last = messages.value[messages.value.length - 1]
-      if (last && last.type === 'reasoning' && last.role === 'assistant') {
-        last.content += (data.content || '')
-      } else {
-        messages.value.push({
-          id: Date.now().toString() + 'r',
-          role: 'assistant',
-          type: 'reasoning',
-          content: data.content || '',
-          createdAt: new Date().toISOString(),
-        })
-      }
-      hasAssistantText = false
-    } else if (data.type === 'tool_call') {
-      // Create a tool_pair message (pending tool result)
+    // tool_call — always creates a new entry
+    if (data.type === 'tool_call') {
       const callSimplified = data.simplified || (data.tool + '(...)')
       messages.value.push({
         role: 'assistant',
@@ -62,9 +41,12 @@ export function useSessionMessages() {
         id: 'tp_' + data.tool_call_id,
         createdAt: new Date().toISOString(),
       })
-      hasAssistantText = false
-    } else if (data.type === 'tool_result') {
-      // Find matching tool_pair and update with result
+      currentSection = null // next reasoning/text starts fresh
+      return
+    }
+
+    // tool_result — merge into matching tool_pair, discard if not found
+    if (data.type === 'tool_result') {
       const pair = messages.value.find(m => m.type === 'tool_pair' && m.tool_call_id === data.tool_call_id)
       if (pair) {
         pair.status = data.success === false ? 'failed' : 'done'
@@ -72,29 +54,28 @@ export function useSessionMessages() {
         pair.result = data.content || data.result || ''
         pair.result_success = data.success !== false
       }
-      hasAssistantText = false
-    } else {
-      // Regular text — append to last text message or create new one.
-      // Deduplicate by index: skip if this index was already processed.
-      if (data.index !== undefined && data.index <= lastTextIndex) {
-        return
-      }
-      lastTextIndex = data.index !== undefined ? data.index : lastTextIndex + 1
+      currentSection = null // next reasoning/text starts fresh
+      return
+    }
 
-      if (!hasAssistantText) {
-        messages.value.push({
-          id: Date.now().toString() + 't',
-          role: 'assistant',
-          type: 'text',
-          content: data.content || '',
-          createdAt: new Date().toISOString(),
-        })
-        hasAssistantText = true
-      } else {
-        const last = messages.value[messages.value.length - 1]
-        if (last) {
-          last.content += data.content || ''
-        }
+    // reasoning or text (reply) — determine if new round
+    const sectionKey = data.type === 'reasoning' ? 'reasoning' : 'text'
+
+    if (currentSection !== sectionKey) {
+      // Type changed (vs previous section) → new round, start fresh
+      messages.value.push({
+        id: Date.now().toString() + (sectionKey === 'reasoning' ? 'r' : 't'),
+        role: 'assistant',
+        type: sectionKey,
+        content: data.content || '',
+        createdAt: new Date().toISOString(),
+      })
+      currentSection = sectionKey
+    } else {
+      // Same type → append to current section
+      const last = messages.value[messages.value.length - 1]
+      if (last) {
+        last.content += (data.content || '')
       }
     }
   }
@@ -103,8 +84,7 @@ export function useSessionMessages() {
    * Handle stream completion (done event).
    */
   function handleDone() {
-    hasAssistantText = false
-    lastTextIndex = -1
+    currentSection = null
     turnActive.value = false
   }
 
@@ -120,7 +100,7 @@ export function useSessionMessages() {
       content: `Error: ${data.message || data.code || 'Unknown error'}`,
       createdAt: new Date().toISOString(),
     })
-    hasAssistantText = false
+    currentSection = null
     turnActive.value = false
   }
 
@@ -164,7 +144,7 @@ export function useSessionMessages() {
     if (!sessionId) return
     messages.value = []
     turnActive.value = false
-    hasAssistantText = false
+    currentSection = null
     try {
       const { getTurnsBySession } = await import('../api/session')
       const res = await getTurnsBySession(sessionId, true) // brief=true: omit large content
@@ -183,8 +163,7 @@ export function useSessionMessages() {
   function teardown() {
     messages.value = []
     turnActive.value = false
-    hasAssistantText = false
-    lastTextIndex = -1
+    currentSection = null
   }
 
   return {

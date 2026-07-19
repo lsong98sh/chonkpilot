@@ -83,7 +83,8 @@ function scrollBottom() {
   messageListRef.value?.scrollBottom()
 }
 defineExpose({ scrollTop, scrollBottom })
-const activeUnsubs = []
+const turnUnsubs = []    // 每轮监听器（llm:event, chat:executor_done），cleanupAndFinish 时清除
+const permanentUnsubs = []  // 挂载时监听器（config:refresh, session:refresh），onUnmounted 时清除
 const taskProgress = ref('')
 const showReasoning = ref(true)
 const collapseReasoningKey = ref(0)
@@ -93,10 +94,7 @@ function handleCancelLLM() {
   if (currentTurnId.value) {
     cancelChat(currentTurnId.value)
   }
-  activeUnsubs.forEach(fn => { try { fn() } catch(_) {} })
-  activeUnsubs.length = 0
-  isLoading.value = false
-  currentTurnId.value = null
+  cleanupAndFinish()
 }
 
 // Runtime LLM controls
@@ -223,20 +221,13 @@ async function handleSend(text) {
       return
     }
   })
-  activeUnsubs.push(unsubLLMEvent)
+  turnUnsubs.push(unsubLLMEvent)
 
   // executor_done — executor process exited
   const unsubExecutorDone = bridge.on('chat:executor_done', () => {
     cleanupAndFinish()
   })
-  activeUnsubs.push(unsubExecutorDone)
-
-  function cleanupAndFinish() {
-    activeUnsubs.forEach(fn => { try { fn() } catch(_) {} })
-    activeUnsubs.length = 0
-    isLoading.value = false
-    currentTurnId.value = null
-  }
+  turnUnsubs.push(unsubExecutorDone)
 
   try {
     // Send with runtime overrides and get the server-generated turn_id
@@ -247,6 +238,14 @@ async function handleSend(text) {
     addMessage('assistant', `Error: ${e.message}`, 'text')
     cleanupAndFinish()
   }
+}
+
+function cleanupAndFinish() {
+  turnUnsubs.forEach(fn => { try { fn() } catch(_) {} })
+  turnUnsubs.length = 0
+  isLoading.value = false
+  currentTurnId.value = null
+  handleDone() // Reset stream state: turnActive=false, collapse reasoning, reset dedup index
 }
 
 function handleCancel() {
@@ -326,7 +325,7 @@ onMounted(() => {
       }
     } catch (_) { /* ignore */ }
   })
-  activeUnsubs.push(unsubRefresh)
+  permanentUnsubs.push(unsubRefresh)
   // Cancel LLM when session:cancel-llm event fires (from SessionDrawer)
   window.addEventListener('session:cancel-llm', handleCancelLLM)
   // Clear chat when current session is deleted
@@ -346,15 +345,15 @@ onMounted(() => {
       }
     }
   })
-  activeUnsubs.push(unsubSessionRefresh)
+  permanentUnsubs.push(unsubSessionRefresh)
 })
 
 onUnmounted(() => {
   window.removeEventListener('session:select', handleSessionSelect)
   window.removeEventListener('session:cancel-llm', handleCancelLLM)
   // Clean up any bridge listeners that may still be active mid-turn
-  activeUnsubs.forEach(fn => fn())
-  activeUnsubs.length = 0
+  permanentUnsubs.forEach(fn => fn())
+  permanentUnsubs.length = 0
   resetMessages()
 })
 </script>

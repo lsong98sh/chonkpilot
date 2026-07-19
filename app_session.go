@@ -425,15 +425,15 @@ func (a *App) SendChatMessage(args sendChatArgs) (map[string]string, error) {
 		if cfg.RetryDelay > 0 {
 			extraArgs = append(extraArgs, fmt.Sprintf("--retry-delay=%d", cfg.RetryDelay))
 		}
-		// KeepFullTurns / KeepSimplifiedTurns — read from ConfigManager cache, not disk
+		// KeepFullTurns / CompressTokenThreshold — read from ConfigManager cache, not disk
 		if val, ok := a.cfg.Get("keep_full_turns"); ok && val != "" {
 			if n, e := strconv.Atoi(val); e == nil && n > 0 {
 				extraArgs = append(extraArgs, fmt.Sprintf("--keep-full-turns=%d", n))
 			}
 		}
-		if val, ok := a.cfg.Get("keep_simplified_turns"); ok && val != "" {
+		if val, ok := a.cfg.Get("compress_token_threshold"); ok && val != "" {
 			if n, e := strconv.Atoi(val); e == nil && n > 0 {
-				extraArgs = append(extraArgs, fmt.Sprintf("--keep-simplified-turns=%d", n))
+				extraArgs = append(extraArgs, fmt.Sprintf("--compress-token-threshold=%d", n))
 			}
 		}
 		if cfg.ForeachConcurrency > 0 {
@@ -460,16 +460,22 @@ func (a *App) SendChatMessage(args sendChatArgs) (map[string]string, error) {
 			}
 			return nil
 		})
-		// Check cancellation again before the final StartExecutor call
+		// Check cancellation again before the final SendTurn call
 		select {
 		case <-stop:
 			a.pendingCancels.Delete(turnID)
-			a.logger.Debug("StartChat goroutine aborted before StartExecutor",
+			a.logger.Debug("StartChat goroutine aborted before SendTurn",
 				zap.String("turn_id", turnID))
 			return
 		default:
 		}
-		a.em.StartExecutor(args.SessionID, turnID, args.LLM, args.Think, args.Effort, extraArgs...)
+
+		// Send turn to daemon executor (long-lived process that persists browser state)
+		if err := a.em.SendTurn(args.SessionID, turnID, args.LLM, args.Think, args.Effort, extraArgs); err != nil {
+			// Fallback: start per-turn executor if daemon is not running
+			a.logger.Warn("SendTurn failed, falling back to per-turn executor", zap.Error(err))
+			a.em.StartExecutor(args.SessionID, turnID, args.LLM, args.Think, args.Effort, extraArgs...)
+		}
 		a.pendingCancels.Delete(turnID)
 	}()
 	return map[string]string{"turn_id": turnID}, nil
@@ -495,9 +501,25 @@ func (a *App) CancelChat(args cancelChatArgs) error {
 		}
 	}
 
-	if err := a.em.KillExecutor(args.TurnID); err != nil {
+	// Try daemon cancel first (long-lived executor mode)
+	if err := a.em.CancelDaemonSession(args.TurnID); err == nil {
+		// Daemon found and cancelled by session
+	} else if err := a.em.KillExecutor(args.TurnID); err != nil {
+		// Look up session_id from DB for daemon cancel
+		sessionID := ""
+		_ = db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+			turn, err := db.GetTurn(sqlDB, args.TurnID)
+			if err == nil && turn != nil {
+				sessionID = turn.SessionID
+			}
+			return nil
+		})
+		if sessionID != "" {
+			a.em.CancelDaemonSession(sessionID)
+		}
 		a.logger.Warn("kill executor failed", zap.String("turn_id", args.TurnID), zap.Error(err))
 	}
+
 	if err := db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
 		return db.UpdateTaskStatus(sqlDB, args.TurnID, models.TaskStatusCancelled, 0, "cancelled by user")
 	}); err != nil {

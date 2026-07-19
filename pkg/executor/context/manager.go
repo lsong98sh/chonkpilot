@@ -20,23 +20,19 @@ type strictSQLDB interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
 }
 
-// Manager handles conversation context, three-layer message compression,
-// and summary generation/loading.
+// Manager handles conversation context, two-layer message compression
+// (full turns → simplified turns → summary), and summary loading.
 type Manager struct {
-	workDir             string
-	db                  *sql.DB
-	keepFullTurns       int // N: turns closest to current that stay fully raw
-	keepSimplifiedTurns int // M: turns before that get simplified to thinking
-	// minCompressToken is enforced externally; compression is skipped
-	// when estimated tokens are below this threshold.
+	workDir       string
+	db            *sql.DB
+	keepFullTurns int // N: turns closest to current that stay fully raw
 }
 
 // NewManager creates a new context manager with default settings.
 func NewManager(workDir string, sqlDB ...*sql.DB) *Manager {
 	m := &Manager{
-		workDir:             workDir,
-		keepFullTurns:       5,
-		keepSimplifiedTurns: 15,
+		workDir:       workDir,
+		keepFullTurns: 6,
 	}
 	if len(sqlDB) > 0 {
 		m.db = sqlDB[0]
@@ -44,12 +40,11 @@ func NewManager(workDir string, sqlDB ...*sql.DB) *Manager {
 	return m
 }
 
-// BuildLLMContext processes raw DB messages into the three-layer output:
+// BuildLLMContext processes raw DB messages into the two-layer output:
 //
-//	Current turn (always fully included)
-//	→ keepFullTurns:  raw (unchanged)
-//	→ keepSimplifiedTurns: tool_call+tool_result pairs simplified to thinking text
-//	→ older turns (if any): replaced with summary from DB (when available)
+//	Last keepFullTurns:  raw (unchanged)
+//	→ older turns: tool_call+tool_result pairs simplified to thinking text
+//	→ summary from DB (when available) prepended at the start
 //
 // The current turn is detected as the last "user" message.
 func (m *Manager) BuildLLMContext(allMessages []*models.Message, currentSessionID string) []llm.Message {
@@ -65,40 +60,43 @@ func (m *Manager) BuildLLMContext(allMessages []*models.Message, currentSessionI
 	if fullStart < 0 {
 		fullStart = 0
 	}
-	simplifiedStart := totalTurns - m.keepFullTurns - m.keepSimplifiedTurns
-	if simplifiedStart < 0 {
-		simplifiedStart = 0
-	}
 
 	var result []llm.Message
-	var summaryLoaded bool
+
+	// Summary at the start (when there are turns beyond full window)
+	if fullStart > 0 {
+		summary := m.loadSummary(currentSessionID)
+		if summary != "" {
+			result = append(result, llm.Message{
+				Role:    "system",
+				Content: "[History Summary]\n" + summary,
+			})
+		}
+	}
 
 	for i, turn := range turns {
-		switch {
-		case i >= fullStart:
-			// Layer 1: Full — keep as-is
+		if i >= fullStart {
+			// Full — keep as-is
 			result = append(result, processFullTurn(turn)...)
-
-		case i >= simplifiedStart:
-			// Layer 2: Simplified — tool pairs → thinking
+		} else {
+			// Simplified — tool pairs → thinking
 			result = append(result, processSimplifiedTurn(turn, m.workDir)...)
-
-		default:
-			// Layer 3: Summarized — replaced by summary text (once)
-			if !summaryLoaded {
-				summary := m.loadSummary(currentSessionID)
-				if summary != "" {
-					result = append(result, llm.Message{
-						Role:    "system",
-						Content: "[History Summary]\n" + summary,
-					})
-				}
-				summaryLoaded = true
-			}
 		}
 	}
 
 	return result
+}
+
+// EstimateSimplifiedTokens roughly estimates the token count of content
+// that would appear in the simplified zone (all turns before the last N).
+// Uses len/4 as a rough token estimate.
+func EstimateSimplifiedTokens(messages []*models.Message, summary string) int {
+	total := 0
+	for _, m := range messages {
+		total += len(m.Content) / 4
+	}
+	total += len(summary) / 4
+	return total
 }
 
 // groupTurns splits a flat message list into turn groups.
@@ -338,27 +336,9 @@ func (m *Manager) loadSummary(sessionID string) string {
 	return summary
 }
 
-// ShouldCompress checks whether the conversation context needs compression.
-func (m *Manager) ShouldCompress(turnCount int, estimatedTokens int) bool {
-	if estimatedTokens > 80000 {
-		return true
-	}
-	if turnCount > m.keepFullTurns+m.keepSimplifiedTurns && estimatedTokens > 3000 {
-		return true
-	}
-	return false
-}
-
 // SetKeepFullTurns sets the number of fully preserved turns (N).
 func (m *Manager) SetKeepFullTurns(n int) {
 	if n > 0 {
 		m.keepFullTurns = n
-	}
-}
-
-// SetKeepSimplifiedTurns sets the number of simplified turns (M).
-func (m *Manager) SetKeepSimplifiedTurns(mVal int) {
-	if mVal > 0 {
-		m.keepSimplifiedTurns = mVal
 	}
 }

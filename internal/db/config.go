@@ -197,3 +197,13 @@ func DeleteConfig(db *sql.DB, key string) error {
 	}
 	return nil
 }
+
+// DeleteConfigLike removes config entries where key matches a LIKE pattern.
+// Use '%' as wildcard, e.g. "compress_lock:%" deletes all compress_lock keys.
+func DeleteConfigLike(db *sql.DB, pattern string) error {
+	_, err := db.Exec(`DELETE FROM config WHERE key LIKE ?`, pattern)
+	if err != nil {
+		return fmt.Errorf("failed to delete config by pattern %s: %w", pattern, err)
+	}
+	return nil
+}

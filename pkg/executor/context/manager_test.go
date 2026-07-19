@@ -32,32 +32,28 @@ func TestNewManager(t *testing.T) {
 	if m == nil {
 		t.Fatal("NewManager() returned nil")
 	}
+	if m.keepFullTurns != 6 {
+		t.Errorf("expected default keepFullTurns=6, got %d", m.keepFullTurns)
+	}
 }
 
-func TestShouldCompress(t *testing.T) {
-	workDir, cleanup := setupContextTest(t)
-	defer cleanup()
-
-	m := NewManager(workDir)
-
-	// Few turns, few tokens — no compression
-	if m.ShouldCompress(3, 1000) {
-		t.Error("ShouldCompress(3, 1000) should be false")
+func TestEstimateSimplifiedTokens(t *testing.T) {
+	msgs := []*models.Message{
+		{Role: "user", Content: "hello world"},                                                  // 11 chars
+		{Role: "assistant", Content: "this is a longer response message for testing purposes"},   // 51 chars
+		{Role: "user", Content: "short"},                                                         // 5 chars
 	}
 
-	// Many turns but few tokens — no compression (below min token threshold)
-	if m.ShouldCompress(30, 1000) {
-		t.Error("ShouldCompress(30, 1000) should be false (below min token threshold)")
+	total := EstimateSimplifiedTokens(msgs, "summary text") // 11 chars
+	// (11+51+5)/4 + 11/4 = 67/4 + 11/4 = 16 + 2 = 18
+	if total < 10 || total > 30 {
+		t.Errorf("expected reasonable token estimate, got %d", total)
 	}
 
-	// Many turns, many tokens — compression
-	if !m.ShouldCompress(30, 50000) {
-		t.Error("ShouldCompress(30, 50000) should be true")
-	}
-
-	// Few turns but massive tokens — compression
-	if !m.ShouldCompress(3, 90000) {
-		t.Error("ShouldCompress(3, 90000) should be true (exceeds max token threshold)")
+	// Empty messages
+	empty := EstimateSimplifiedTokens(nil, "")
+	if empty != 0 {
+		t.Errorf("expected 0 for empty input, got %d", empty)
 	}
 }
 
@@ -129,10 +125,10 @@ func TestProcessSimplifiedTurn(t *testing.T) {
 
 func TestBuildLLMContext(t *testing.T) {
 	m := NewManager("/tmp/test")
-	m.SetKeepFullTurns(1)
-	m.SetKeepSimplifiedTurns(1)
+	m.SetKeepFullTurns(2)
 
-	// 4 turns: current + 3 history
+	// 4 turns with keepFullTurns=2:
+	// turn 3-4 = full, turn 1-2 = simplified
 	msgs := []*models.Message{
 		{Role: "user", Content: "turn 1"},
 		{Role: "assistant", Content: "response 1", Type: "text"},
@@ -144,15 +140,37 @@ func TestBuildLLMContext(t *testing.T) {
 		{Role: "assistant", Content: "response 4", Type: "text"},
 	}
 
-	// With keepFullTurns=1 and keepSimplifiedTurns=1:
-	// turn 4 = full, turn 3 = simplified, turn 1-2 = summarized (no summary in DB → skipped)
 	result := m.BuildLLMContext(msgs, "test-session")
 	if len(result) == 0 {
 		t.Fatal("BuildLLMContext returned empty")
 	}
 
-	// Should include: turn3 simplified (1 assistant msg) + turn4 full (user + assistant)
-	if len(result) < 3 {
-		t.Errorf("expected at least 3 messages, got %d", len(result))
+	// Should include: turn1 user + turn1 simplified assistant + turn2 user + turn2 simplified assistant
+	// + turn3 user + turn3 assistant + turn4 user + turn4 assistant = 8 messages
+	// (no summary since session has no DB-backed summary)
+	if len(result) != 8 {
+		t.Errorf("expected 8 messages, got %d (full=2, remaining simplified)", len(result))
+	}
+}
+
+func TestBuildLLMContextOneTurn(t *testing.T) {
+	m := NewManager("/tmp/test")
+
+	msgs := []*models.Message{
+		{Role: "user", Content: "only turn"},
+		{Role: "assistant", Content: "only response", Type: "text"},
+	}
+
+	result := m.BuildLLMContext(msgs, "test-session")
+	if len(result) != 2 {
+		t.Errorf("expected 2 messages, got %d", len(result))
+	}
+}
+
+func TestBuildLLMContextEmpty(t *testing.T) {
+	m := NewManager("/tmp/test")
+	result := m.BuildLLMContext(nil, "test-session")
+	if result != nil {
+		t.Error("expected nil for empty input")
 	}
 }

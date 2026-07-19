@@ -89,11 +89,10 @@ func printOutgoingMessages(ea *ExecutorArgs, messages []llm.Message, toolDefs []
 }
 
 // loadSessionHistory loads all previous messages in a session from the DB and
-// processes them through the three-layer context manager:
+// processes them through the two-layer context manager:
 //
-//	Full turns (N) → raw (unchanged)
-//	Simplified turns (M) → tool_call+tool_result condensed to thinking text
-//	Older turns → replaced by summary (when available)
+//	Last keepFullTurns → raw (unchanged)
+//	Older turns → tool_call+tool_result condensed to thinking text (with summary from DB when available)
 func loadSessionHistory(ea *ExecutorArgs, sessionID string, sqlDB *sql.DB) ([]llm.Message, error) {
 	if !hasIDEConfig(ea) {
 		return nil, nil
@@ -114,28 +113,23 @@ func loadSessionHistory(ea *ExecutorArgs, sessionID string, sqlDB *sql.DB) ([]ll
 	}
 
 	// Context compression: CLI/global config takes precedence, fall back to DB config
-	fullTurns := db.GetConfigInt(sqlDB, "keep_full_turns", 5)
-	simplifiedTurns := db.GetConfigInt(sqlDB, "keep_simplified_turns", 15)
+	fullTurns := db.GetConfigInt(sqlDB, "keep_full_turns", 6)
 	if ea.KeepFullTurns > 0 {
 		fullTurns = ea.KeepFullTurns
-	}
-	if ea.KeepSimplifiedTurns > 0 {
-		simplifiedTurns = ea.KeepSimplifiedTurns
 	}
 
 	// Create context manager and apply settings
 	mgr := context.NewManager(ea.WorkDir, sqlDB)
 	mgr.SetKeepFullTurns(fullTurns)
-	mgr.SetKeepSimplifiedTurns(simplifiedTurns)
 
-	// Build three-layer context
+	// Build context
 	result := mgr.BuildLLMContext(rawMessages, sessionID)
 
 	return result, nil
 }
 
 // generateSessionSummary asynchronously updates the session summary after a turn completes.
-// It checks compression thresholds and only runs when history is deep enough to benefit.
+// It checks compression thresholds and only runs when the simplified zone meets the token threshold.
 // Runs in a background goroutine — errors are logged but never returned.
 func generateSessionSummary(ea *ExecutorArgs, logger *zap.Logger) {
 	if !hasIDEConfig(ea) || ea.SessionID == "" || ea.TurnID == "" {
@@ -149,16 +143,28 @@ func generateSessionSummary(ea *ExecutorArgs, logger *zap.Logger) {
 	}
 	defer db.Close(sqlDB)
 
-	// 1. Check if compression is needed
-	fullTurns := db.GetConfigInt(sqlDB, "keep_full_turns", 5)
-	simplifiedTurns := db.GetConfigInt(sqlDB, "keep_simplified_turns", 15)
-
-	turns, err := db.GetTurnsBySession(sqlDB, ea.SessionID)
-	if err != nil || len(turns) <= fullTurns+simplifiedTurns {
-		return // Not enough turns to benefit from summary
+	// ── 1. Check if compression is already in progress for this session ──
+	lockKey := "compress_lock:" + ea.SessionID
+	locked, err := db.GetConfig(sqlDB, lockKey)
+	if err == nil && locked == "true" {
+		logger.Debug("summary: skipped (compression already in progress)",
+			zap.String("session_id", ea.SessionID))
+		return
 	}
 
-	// 2. Load old summary (if any)
+	// ── 2. Read config values ──
+	fullTurns := db.GetConfigInt(sqlDB, "keep_full_turns", 6)
+	compressThreshold := db.GetConfigInt(sqlDB, "compress_token_threshold", 80000)
+	if ea.CompressTokenThreshold > 0 {
+		compressThreshold = ea.CompressTokenThreshold
+	}
+
+	turns, err := db.GetTurnsBySession(sqlDB, ea.SessionID)
+	if err != nil || len(turns) <= fullTurns {
+		return // Not enough turns — no simplified zone
+	}
+
+	// ── 3. Load old summary ──
 	oldSummary, err := db.GetLatestSummary(sqlDB, ea.SessionID)
 	if err != nil {
 		logger.Warn("summary: failed to load old summary", zap.Error(err))
@@ -168,18 +174,49 @@ func generateSessionSummary(ea *ExecutorArgs, logger *zap.Logger) {
 		oldSummary = "{}"
 	}
 
-	// 3. Load current turn's messages and format as readable conversation
-	turnMessages, err := db.GetMessagesByTurn(sqlDB, ea.TurnID)
-	if err != nil {
-		logger.Warn("summary: failed to load turn messages", zap.Error(err))
-		return
-	}
-	latestTurnText := formatTurnForSummary(turnMessages)
-	if latestTurnText == "" {
+	// ── 4. Load all simplified zone turns (everything before the last N) ──
+	simplifiedTurns := turns[:len(turns)-fullTurns]
+
+	// 4a. Estimate simplified zone tokens (rough: len/4 per message)
+	estimatedTokens := estimateTokensForTurns(sqlDB, simplifiedTurns, oldSummary)
+
+	if estimatedTokens < compressThreshold {
+		logger.Debug("summary: skipped (tokens below threshold)",
+			zap.Int("estimated", estimatedTokens),
+			zap.Int("threshold", compressThreshold),
+			zap.Int("simplified_turns", len(simplifiedTurns)))
 		return
 	}
 
-	// 4. Build the summary prompt (fill template placeholders)
+	// ── 5. Acquire compress lock ──
+	if err := db.SetConfig(sqlDB, lockKey, "true"); err != nil {
+		logger.Warn("summary: failed to acquire compress lock", zap.Error(err))
+		return
+	}
+	defer db.SetConfig(sqlDB, lockKey, "") // release on exit
+
+	// ── 6. Format all simplified zone turns into summary input ──
+	var allLatestText strings.Builder
+	for _, turn := range simplifiedTurns {
+		turnMessages, err := db.GetMessagesByTurn(sqlDB, turn.TurnID)
+		if err != nil {
+			logger.Warn("summary: failed to load turn messages", zap.String("turn_id", turn.TurnID), zap.Error(err))
+			return
+		}
+		text := formatTurnForSummary(turnMessages)
+		if text != "" {
+			allLatestText.WriteString(text)
+			allLatestText.WriteString("\n---\n")
+		}
+	}
+
+	summaryInput := allLatestText.String()
+	if summaryInput == "" {
+		logger.Debug("summary: all simplified turns are empty, nothing to compress")
+		return
+	}
+
+	// ── 7. Build the summary prompt (fill template placeholders) ──
 	summaryTemplate := prompts.DefaultSummaryPrompt
 	if sp, err := db.GetProjectPrompt(sqlDB, "summary_prompt"); err == nil && sp != "" {
 		summaryTemplate = sp
@@ -188,10 +225,10 @@ func generateSessionSummary(ea *ExecutorArgs, logger *zap.Logger) {
 	}
 	userContent := strings.NewReplacer(
 		"{old_summary}", oldSummary,
-		"{latest_turn}", latestTurnText,
+		"{latest_turn}", summaryInput,
 	).Replace(summaryTemplate)
 
-	// 5. Call LLM (non-streaming, no tools)
+	// ── 8. Call LLM (non-streaming, no tools, no retry) ──
 	client := llm.NewClient(ea.LLMProtocol, ea.LLMModel, ea.LLMAPIKey, ea.LLMAPIURL, logger)
 	ch, err := client.Chat([]llm.Message{
 		{Role: "user", Content: userContent},
@@ -220,22 +257,51 @@ func generateSessionSummary(ea *ExecutorArgs, logger *zap.Logger) {
 		return
 	}
 
-	// 6. Validate it's parseable JSON (basic check)
+	// ── 9. Validate it's parseable JSON (basic check) ──
 	if !json.Valid([]byte(summaryJSON)) {
 		logger.Warn("summary: response is not valid JSON", zap.String("raw", truncateStr(summaryJSON, 200)))
 		return
 	}
 
-	// 7. Save to DB
+	// ── 10. Save to DB ──
 	if err := db.SaveSummary(sqlDB, ea.SessionID, summaryJSON, ea.TurnID); err != nil {
 		logger.Warn("summary: failed to save", zap.Error(err))
 		return
 	}
 
+	// ── 11. Update session title from overall_goals ──
+	var summaryData struct {
+		OverallGoals string `json:"overall_goals"`
+	}
+	if err := json.Unmarshal([]byte(summaryJSON), &summaryData); err == nil && summaryData.OverallGoals != "" {
+		if err := db.UpdateSessionTitle(sqlDB, ea.SessionID, summaryData.OverallGoals); err != nil {
+			logger.Warn("summary: failed to update session title", zap.Error(err))
+		} else {
+			logger.Debug("summary: session title updated", zap.String("title", summaryData.OverallGoals))
+		}
+	}
+
 	logger.Info("summary: session summary updated",
 		zap.Int("turn_count", len(turns)),
+		zap.Int("simplified_turns_compressed", len(simplifiedTurns)),
 		zap.Int("summary_bytes", len(summaryJSON)),
-	)
+		zap.Int("estimated_tokens", estimatedTokens))
+}
+
+// estimateTokensForTurns roughly estimates the token count for a set of turns
+// combined with the existing summary text. Uses len/4 as a rough approximation.
+func estimateTokensForTurns(sqlDB *sql.DB, turns []*models.Turn, summary string) int {
+	total := len(summary) / 4
+	for _, turn := range turns {
+		msgs, err := db.GetMessagesByTurn(sqlDB, turn.TurnID)
+		if err != nil {
+			continue
+		}
+		for _, m := range msgs {
+			total += len(m.Content) / 4
+		}
+	}
+	return total
 }
 
 // formatTurnForSummary formats a turn's DB messages into a readable conversation log.

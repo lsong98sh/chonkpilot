@@ -159,6 +159,11 @@ func (a *App) startup(ctx context.Context) {
 	// Auto-detect Java/Python/Node.js environments
 	a.detectRuntimeEnvironments()
 
+	// Start executor daemon for long-lived browser sessions
+	if err := a.em.StartDaemon(a.workDir); err != nil {
+		a.logger.Warn("failed to start executor daemon", zap.Error(err))
+	}
+
 	runtime.LogInfo(a.ctx, "ChonkPilot IDE running")
 }
 
@@ -734,6 +739,28 @@ func (a *App) UnsubscribeSession(sessionID string) {
 // Non-LLM events (executor_done, ask_user) use dedicated channels.
 
 func (a *App) onExecutorEvent(eventType string, payload map[string]interface{}) {
+	// Log executor→frontend event for diagnostic
+	pType, _ := payload["type"].(string)
+	sID, _ := payload["session_id"].(string)
+	tID, _ := payload["turn_id"].(string)
+	content, _ := payload["content"].(string)
+	cLen := len(content)
+	cPreview := ""
+	if cLen > 0 {
+		if cLen > 50 {
+			cPreview = content[:50] + "..."
+		} else {
+			cPreview = content
+		}
+	}
+	a.logger.Info("[EVTLOG] IDE→Frontend",
+		zap.String("et", eventType),
+		zap.String("type", pType),
+		zap.Int("clen", cLen),
+		zap.String("preview", cPreview),
+		zap.String("session_id", sID),
+		zap.String("turn_id", tID),
+	)
 	// Inject the original executor event type so the frontend can distinguish
 	// message_chunk from complete, error, llm_error, progress, etc.
 	if _, ok := payload["_event_type"]; !ok {

@@ -74,25 +74,19 @@ func TestConfigInt(t *testing.T) {
 	defer Close(sqlDB)
 
 	// Set configs
-	if err := SetConfig(sqlDB, "keep_full_turns", "5"); err != nil {
+	if err := SetConfig(sqlDB, "keep_full_turns", "6"); err != nil {
 		t.Fatalf("SetConfig failed: %v", err)
 	}
-	if err := SetConfig(sqlDB, "keep_simplified_turns", "15"); err != nil {
-		t.Fatalf("SetConfig failed: %v", err)
-	}
-	if err := SetConfig(sqlDB, "min_compress_token", "3000"); err != nil {
+	if err := SetConfig(sqlDB, "compress_token_threshold", "80000"); err != nil {
 		t.Fatalf("SetConfig failed: %v", err)
 	}
 
 	// Read back
-	if v := GetConfigInt(sqlDB, "keep_full_turns", 3); v != 5 {
-		t.Fatalf("keep_full_turns = %d, expected 5", v)
+	if v := GetConfigInt(sqlDB, "keep_full_turns", 3); v != 6 {
+		t.Fatalf("keep_full_turns = %d, expected 6", v)
 	}
-	if v := GetConfigInt(sqlDB, "keep_simplified_turns", 10); v != 15 {
-		t.Fatalf("keep_simplified_turns = %d, expected 15", v)
-	}
-	if v := GetConfigInt(sqlDB, "min_compress_token", 1000); v != 3000 {
-		t.Fatalf("min_compress_token = %d, expected 3000", v)
+	if v := GetConfigInt(sqlDB, "compress_token_threshold", 50000); v != 80000 {
+		t.Fatalf("compress_token_threshold = %d, expected 80000", v)
 	}
 
 	// Non-existent key — should return default

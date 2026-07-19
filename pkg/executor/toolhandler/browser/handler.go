@@ -142,6 +142,8 @@ func (bm *BrowserManager) generateID() string {
 }
 
 // EnsureTab returns a tab context for the given instance; creates one lazily.
+// If the existing tab context has been cancelled (e.g. due to CDP connection issues
+// between tool calls), it recreates the tab automatically.
 func (inst *BrowserInstance) EnsureTab() (context.Context, error) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
@@ -149,12 +151,74 @@ func (inst *BrowserInstance) EnsureTab() (context.Context, error) {
 	if inst.allocCtx == nil {
 		return nil, fmt.Errorf("browser not started")
 	}
+
+	// Check if the alloc context itself is cancelled — if so the browser is gone.
+	select {
+	case <-inst.allocCtx.Done():
+		return nil, fmt.Errorf("browser allocator context cancelled: %w", inst.allocCtx.Err())
+	default:
+	}
+
+	// If tab exists but its context is cancelled, reset so we recreate it below.
+	if inst.ready && inst.tabCtx != nil {
+		select {
+		case <-inst.tabCtx.Done():
+			// Tab context was cancelled between tool calls; clean up and recreate.
+			inst.tabCancel()
+			inst.ready = false
+		default:
+			// Tab is still healthy, return as-is.
+			return inst.tabCtx, nil
+		}
+	}
+
 	if !inst.ready {
-		ctx, cancel := chromedp.NewContext(inst.allocCtx, chromedp.WithLogf(func(format string, args ...interface{}) {
-		}))
+		ctx, cancel := chromedp.NewContext(inst.allocCtx)
 		inst.tabCtx = ctx
 		inst.tabCancel = cancel
 		inst.ready = true
+
+		// ── Warm up: trigger browser allocation with long-lived tabCtx ──
+		// Without this, the first chromedp.Run(runCtx, ...) in a handler
+		// will call Allocate(runCtx, ...), which internally calls:
+		//   exec.CommandContext(runCtx, chromePath, args...)
+		//   NewBrowser(runCtx, wsURL, ...)
+		//         └─ go b.run(runCtx)
+		// Both the Chrome process and the browser event loop are then tied
+		// to runCtx. When the handler returns and cancels runCtx, Chrome
+		// gets killed by exec.CommandContext's kill-on-cancel behaviour.
+		//
+		// By doing a warm-up Run with the persistent tabCtx, we ensure
+		// Allocate uses the long-lived tabCtx, and subsequent handler
+		// Run calls (with short-lived runCtx) skip Allocate entirely
+		// because c.Browser is already set.
+		if err := chromedp.Run(ctx); err != nil {
+			// If warmup fails, don't block — the first real Run will fail too
+			// and report the error properly.
+		}
+
+		// Start a keepalive goroutine that periodically pings the browser
+		// via chromedp.Run (not raw CDP) to keep the DevTools connection alive.
+		// This prevents Chrome from closing when there's a gap between tool calls.
+		go func() {
+			ticker := time.NewTicker(8 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					pingCtx, pingCancel := context.WithTimeout(ctx, 4*time.Second)
+					// Execute a lightweight real CDP command to keep the
+					// DevTools WebSocket connection alive. A no-op ActionFunc
+					// does NOT generate any CDP traffic, so Chrome's idle
+					// timer expires and closes the browser window.
+					var v interface{}
+					_ = chromedp.Run(pingCtx, chromedp.Evaluate("1+1", &v))
+					pingCancel()
+				}
+			}
+		}()
 
 		chromedp.ListenTarget(ctx, func(ev interface{}) {
 			switch e := ev.(type) {
@@ -353,6 +417,11 @@ func HandleWebStart(bm *BrowserManager, args map[string]interface{}) *types.Tool
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("mute-audio", true),
+		chromedp.Flag("keep-alive-for-test", true),
+		chromedp.Flag("autoplay-policy", "no-user-gesture-required"),
+		chromedp.Flag("disable-session-crashed-bubble", true),
+		chromedp.Flag("no-crash-upload", true),
+		chromedp.Flag("disable-features", "ChromeWhatsNewUI,TranslateUI,ChromeCleanup,MediaRouter"),
 	)
 	if !headless {
 		opts = append(opts,
@@ -405,8 +474,8 @@ func HandleWebOpen(bm *BrowserManager, tm *task.TaskManager, logger *zap.Logger,
 			return "", err
 		}
 
-		// Wire cancel channel into chromedp context
-		runCtx, runCancel := context.WithCancel(ctx)
+		// Wire cancel channel into chromedp context with timeout
+		runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
 		defer runCancel()
 		go func() {
 			select {
