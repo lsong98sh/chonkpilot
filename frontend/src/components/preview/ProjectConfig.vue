@@ -126,14 +126,14 @@
               <el-table-column label="信任目录" min-width="300">
                 <template #default="{ $index }">
                   <div class="security-dir-row">
-                    <el-input v-model="securityList[$index].dir" size="small" placeholder="C:\path\to\trusted" />
+                    <el-input v-model="securityList[$index].dir" size="small" placeholder="C:\path\to\trusted" @change="saveSecurity" />
                     <el-button size="small" @click="selectSecurityDir($index)">...</el-button>
                   </div>
                 </template>
               </el-table-column>
               <el-table-column label="读写" width="80" align="center">
                 <template #default="{ $index }">
-                  <el-checkbox v-model="securityList[$index].writable" size="small" />
+                  <el-checkbox v-model="securityList[$index].writable" size="small" @change="saveSecurity" />
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="70" align="center">

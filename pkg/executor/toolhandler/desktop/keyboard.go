@@ -16,7 +16,7 @@ func HandleTypeText(args map[string]interface{}) *types.ToolResult {
 
 	text, _ := args["text"].(string)
 	if text == "" {
-		return &types.ToolResult{Success: false, Error: "text is required", Tool: "type_text"}
+		return &types.ToolResult{Success: false, Error: "text is required", Output: "❌ 输入文本失败：缺少文本内容", Tool: "type_text"}
 	}
 
 	hwndVal, hasHWND := args["hwnd"].(float64)
@@ -24,7 +24,7 @@ func HandleTypeText(args map[string]interface{}) *types.ToolResult {
 	if hasHWND || hasTitle {
 		hwnd, err := ResolveWindow(hwndVal, winTitle)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "type_text"}
+			return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 输入文本失败：%s", err.Error()), Tool: "type_text"}
 		}
 		ForceForegroundWindow(uintptr(hwnd))
 		time.Sleep(time.Millisecond * 200)
@@ -48,7 +48,7 @@ func HandleTypeText(args map[string]interface{}) *types.ToolResult {
 			SendKeyUnicode(unichar, true)
 		}
 	}
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("typed %d chars", len(text)), Tool: "type_text"}
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("⌨️ 已输入 %d 字符", len(text)), Tool: "type_text", RawResult: map[string]interface{}{"action": "typetext", "text": text, "char_count": len(text)}}
 }
 
 // HandleKeyPress handles key_press tool.
@@ -58,12 +58,12 @@ func HandleKeyPress(args map[string]interface{}) *types.ToolResult {
 
 	key, _ := args["key"].(string)
 	if key == "" {
-		return &types.ToolResult{Success: false, Error: "key is required", Tool: "key_press"}
+		return &types.ToolResult{Success: false, Error: "key is required", Output: "❌ 按键失败：缺少按键名称", Tool: "key_press"}
 	}
 
 	vk, ok := VKMap[strings.ToLower(key)]
 	if !ok {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("unknown key: %s", key), Tool: "key_press"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("unknown key: %s", key), Output: fmt.Sprintf("❌ 按键失败：未知按键 %s", key), Tool: "key_press"}
 	}
 
 	hwndVal, hasHWND := args["hwnd"].(float64)
@@ -71,7 +71,7 @@ func HandleKeyPress(args map[string]interface{}) *types.ToolResult {
 	if hasHWND || hasTitle {
 		hwnd, err := ResolveWindow(hwndVal, winTitle)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "key_press"}
+			return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 按键失败：%s", err.Error()), Tool: "key_press"}
 		}
 		ForceForegroundWindow(uintptr(hwnd))
 		time.Sleep(time.Millisecond * 200)
@@ -86,7 +86,7 @@ func HandleKeyPress(args map[string]interface{}) *types.ToolResult {
 			for j := len(modVks) - 1; j >= 0; j-- {
 				SendKey(modVks[j], true)
 			}
-			return &types.ToolResult{Success: false, Error: "SendInput failed to inject modifier key event", Tool: "key_press"}
+			return &types.ToolResult{Success: false, Error: "SendInput failed to inject modifier key event", Output: "❌ 按键失败：发送修饰键事件失败", Tool: "key_press"}
 		}
 		time.Sleep(time.Millisecond * 30)
 	}
@@ -95,23 +95,31 @@ func HandleKeyPress(args map[string]interface{}) *types.ToolResult {
 		for i := len(modVks) - 1; i >= 0; i-- {
 			SendKey(modVks[i], true)
 		}
-		return &types.ToolResult{Success: false, Error: "SendInput failed to inject key event", Tool: "key_press"}
+		return &types.ToolResult{Success: false, Error: "SendInput failed to inject key event", Output: "❌ 按键失败：发送按键事件失败", Tool: "key_press"}
 	}
 	time.Sleep(time.Millisecond * 30)
 
 	if !SendKey(vk, true) {
-		return &types.ToolResult{Success: false, Error: "SendInput failed to inject key up event", Tool: "key_press"}
+		return &types.ToolResult{Success: false, Error: "SendInput failed to inject key up event", Output: "❌ 按键失败：发送按键释放事件失败", Tool: "key_press"}
 	}
 	time.Sleep(time.Millisecond * 30)
 
 	for i := len(modVks) - 1; i >= 0; i-- {
 		if !SendKey(modVks[i], true) {
-			return &types.ToolResult{Success: false, Error: "SendInput failed to inject modifier key up event", Tool: "key_press"}
+			return &types.ToolResult{Success: false, Error: "SendInput failed to inject modifier key up event", Output: "❌ 按键失败：发送修饰键释放事件失败", Tool: "key_press"}
 		}
 		time.Sleep(time.Millisecond * 30)
 	}
 
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("key pressed: %s", key), Tool: "key_press"}
+	modRaw, _ = args["modifiers"].([]interface{})
+	modList := make([]string, 0, len(modRaw))
+	for _, m := range modRaw {
+		if s, ok := m.(string); ok {
+			modList = append(modList, s)
+		}
+	}
+
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("⌨️ 按键已按下：%s", key), Tool: "key_press", RawResult: map[string]interface{}{"action": "keypress", "key": key, "modifiers": modList}}
 }
 
 // HandleKeyDown handles key_down tool.
@@ -121,12 +129,12 @@ func HandleKeyDown(args map[string]interface{}) *types.ToolResult {
 
 	key, _ := args["key"].(string)
 	if key == "" {
-		return &types.ToolResult{Success: false, Error: "key is required", Tool: "key_down"}
+		return &types.ToolResult{Success: false, Error: "key is required", Output: "❌ 按键按住失败：缺少按键名称", Tool: "key_down"}
 	}
 
 	vk, ok := VKMap[strings.ToLower(key)]
 	if !ok {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("unknown key: %s", key), Tool: "key_down"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("unknown key: %s", key), Output: fmt.Sprintf("❌ 按键按住失败：未知按键 %s", key), Tool: "key_down"}
 	}
 
 	hwndVal, hasHWND := args["hwnd"].(float64)
@@ -134,14 +142,14 @@ func HandleKeyDown(args map[string]interface{}) *types.ToolResult {
 	if hasHWND || hasTitle {
 		hwnd, err := ResolveWindow(hwndVal, winTitle)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "key_down"}
+			return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 按键按住失败：%s", err.Error()), Tool: "key_down"}
 		}
 		ForceForegroundWindow(uintptr(hwnd))
 		time.Sleep(time.Millisecond * 200)
 	}
 
 	SendKey(vk, false)
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("key held down: %s", key), Tool: "key_down"}
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("⌨️ 按键已按住：%s", key), Tool: "key_down", RawResult: map[string]interface{}{"action": "keydown", "key": key}}
 }
 
 // HandleKeyUp handles key_up tool.
@@ -151,12 +159,12 @@ func HandleKeyUp(args map[string]interface{}) *types.ToolResult {
 
 	key, _ := args["key"].(string)
 	if key == "" {
-		return &types.ToolResult{Success: false, Error: "key is required", Tool: "key_up"}
+		return &types.ToolResult{Success: false, Error: "key is required", Output: "❌ 按键释放失败：缺少按键名称", Tool: "key_up"}
 	}
 
 	vk, ok := VKMap[strings.ToLower(key)]
 	if !ok {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("unknown key: %s", key), Tool: "key_up"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("unknown key: %s", key), Output: fmt.Sprintf("❌ 按键释放失败：未知按键 %s", key), Tool: "key_up"}
 	}
 
 	hwndVal, hasHWND := args["hwnd"].(float64)
@@ -164,14 +172,14 @@ func HandleKeyUp(args map[string]interface{}) *types.ToolResult {
 	if hasHWND || hasTitle {
 		hwnd, err := ResolveWindow(hwndVal, winTitle)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "key_up"}
+			return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 按键释放失败：%s", err.Error()), Tool: "key_up"}
 		}
 		ForceForegroundWindow(uintptr(hwnd))
 		time.Sleep(time.Millisecond * 200)
 	}
 
 	SendKey(vk, true)
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("key released: %s", key), Tool: "key_up"}
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("⌨️ 按键已释放：%s", key), Tool: "key_up", RawResult: map[string]interface{}{"action": "keyup", "key": key}}
 }
 
 func init() {

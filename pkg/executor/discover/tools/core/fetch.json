@@ -1,5 +1,5 @@
 {
-  "description": "Make an HTTP request to fetch a URL. Returns formatted response: 'HTTP {code} {status}\\n\\n=== Headers ===\\n{headers}\\n\\n=== Body ===\\n{body}'. For large responses exceeding the threshold (~100KB), the body is saved to a .ide/fetch_*.txt file instead — read that file with read_file to get the full content. Example: {\"url\": \"https://api.example.com/data\", \"method\": \"GET\"}",
+  "description": "Make an HTTP request to fetch a URL. Returns formatted response: 'HTTP {code} {status}\\n\\n=== Headers ===\\n{headers}\\n\\n=== Body ===\\n{body}'. For large responses exceeding the threshold (~100KB), the body is saved to a .ide/fetch_*.txt file instead — read that file with read_file to get the full content. Supports file download (save_as), multipart form upload (form/form_files), custom headers/cookies, timeout control, redirect following, and encoding conversion. Example: {\"url\": \"https://api.example.com/data\", \"method\": \"GET\"}",
   "name": "fetch",
   "parameters": {
     "type": "object",
@@ -10,15 +10,51 @@
       },
       "method": {
         "type": "string",
-        "description": "HTTP method (GET, POST, PUT, etc.)"
+        "description": "HTTP method (GET, POST, PUT, DELETE, PATCH, etc.)"
       },
       "body": {
         "type": "string",
-        "description": "Request body (for POST/PUT)"
+        "description": "Request body (for POST/PUT/PATCH)"
       },
       "headers": {
         "type": "object",
         "description": "HTTP headers as key-value pairs"
+      },
+      "save_as": {
+        "type": "string",
+        "description": "Download response body to this file path (relative or absolute). When set, returns file path and size instead of inline body."
+      },
+      "form": {
+        "type": "object",
+        "description": "Multipart/form-data form fields as key-value pairs. When set, body and Content-Type are ignored; method is forced to POST."
+      },
+      "form_files": {
+        "type": "array",
+        "description": "Files to include in multipart/form-data upload. Each item: {\"field\": \"field_name\", \"path\": \"/path/to/file\"}. Requires form parameter to be set; method forced to POST.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "field": { "type": "string", "description": "Form field name" },
+            "path": { "type": "string", "description": "File path (relative or absolute)" }
+          },
+          "required": ["field", "path"]
+        }
+      },
+      "cookies": {
+        "type": "object",
+        "description": "Cookie key-value pairs to include in the request (e.g. {\"session\": \"abc123\"})"
+      },
+      "timeout": {
+        "type": "number",
+        "description": "Request timeout in seconds (default: 30, minimum: 10)"
+      },
+      "follow_redirect": {
+        "type": "boolean",
+        "description": "Whether to follow HTTP redirects (default: true)"
+      },
+      "encoding": {
+        "type": "string",
+        "description": "Response body encoding for non-UTF-8 responses. Supported: utf-8, gbk, big5, shift_jis, euc-jp, euc-kr, iso-8859-1 (default: utf-8)"
       }
     },
     "required": [

@@ -104,3 +104,21 @@ export function openWithDefault(path) {
 export function openWithDialog(path) {
   return OpenWithDialog(path)
 }
+
+// ─── 新增 API 绑定 ─────────────────
+
+export function loadInitData() {
+  return window.go.main.App.LoadInitData()
+}
+
+export function saveFileTreeState(state) {
+  return window.go.main.App.SaveFileTreeState(state)
+}
+
+export function saveWindowState(state) {
+  return window.go.main.App.SaveWindowState(state)
+}
+
+export function saveFileTreeWidth(width) {
+  return window.go.main.App.SaveFileTreeWidth(width)
+}

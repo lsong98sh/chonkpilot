@@ -1,7 +1,6 @@
 package tool
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -21,16 +20,18 @@ func HandleAddTool(dbDir string, args map[string]interface{}) *types.ToolResult 
 
 	if name == "" {
 		return &types.ToolResult{
-			Success: false,
-			Error:   "name is required",
-			Tool:    "add_tool",
+			Success:   false,
+			Error:     "name is required",
+			Tool:      "add_tool",
+			RawResult: map[string]interface{}{"name": name},
 		}
 	}
 	if description == "" {
 		return &types.ToolResult{
-			Success: false,
-			Error:   "description is required",
-			Tool:    "add_tool",
+			Success:   false,
+			Error:     "description is required",
+			Tool:      "add_tool",
+			RawResult: map[string]interface{}{"name": name},
 		}
 	}
 
@@ -38,9 +39,10 @@ func HandleAddTool(dbDir string, args map[string]interface{}) *types.ToolResult 
 	for _, r := range name {
 		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_') {
 			return &types.ToolResult{
-				Success: false,
-				Error:   fmt.Sprintf("invalid tool name '%s': must be lowercase snake_case (a-z, 0-9, _)", name),
-				Tool:    "add_tool",
+				Success:   false,
+				Error:     fmt.Sprintf("invalid tool name '%s': must be lowercase snake_case (a-z, 0-9, _)", name),
+				Tool:      "add_tool",
+				RawResult: map[string]interface{}{"name": name},
 			}
 		}
 	}
@@ -51,23 +53,26 @@ func HandleAddTool(dbDir string, args map[string]interface{}) *types.ToolResult 
 		params, ok := args["parameters"].(map[string]interface{})
 		if !ok {
 			return &types.ToolResult{
-				Success: false,
-				Tool:    "add_tool",
-				Error:   "mcp tool requires parameters with 'server_url' and 'mcp_tool_name'",
+				Success:   false,
+				Tool:      "add_tool",
+				Error:     "mcp tool requires parameters with 'server_url' and 'mcp_tool_name'",
+				RawResult: map[string]interface{}{"name": name},
 			}
 		}
 		if _, hasURL := params["server_url"]; !hasURL {
 			return &types.ToolResult{
-				Success: false,
-				Tool:    "add_tool",
-				Error:   "mcp tool requires 'server_url' in parameters (e.g. http://localhost:8081/mcp)",
+				Success:   false,
+				Tool:      "add_tool",
+				Error:     "mcp tool requires 'server_url' in parameters (e.g. http://localhost:8081/mcp)",
+				RawResult: map[string]interface{}{"name": name},
 			}
 		}
 		if _, hasName := params["mcp_tool_name"]; !hasName {
 			return &types.ToolResult{
-				Success: false,
-				Tool:    "add_tool",
-				Error:   "mcp tool requires 'mcp_tool_name' in parameters (the tool name exposed by the MCP server)",
+				Success:   false,
+				Tool:      "add_tool",
+				Error:     "mcp tool requires 'mcp_tool_name' in parameters (the tool name exposed by the MCP server)",
+				RawResult: map[string]interface{}{"name": name},
 			}
 		}
 
@@ -78,14 +83,14 @@ func HandleAddTool(dbDir string, args map[string]interface{}) *types.ToolResult 
 	// Open DB
 	sqlDB, err := db.Open(dbDir)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "add_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "add_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 	defer db.Close(sqlDB)
 
 	// Read existing tools
 	tools, err := db.GetProjectTools(sqlDB)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load tools: %s", err.Error()), Tool: "add_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load tools: %s", err.Error()), Tool: "add_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	// Build tool config
@@ -125,23 +130,26 @@ func HandleAddTool(dbDir string, args map[string]interface{}) *types.ToolResult 
 
 	// Save back to DB
 	if err := db.SaveProjectTools(sqlDB, tools); err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save tools: %s", err.Error()), Tool: "add_tool"}
-	}
-
-	msg := fmt.Sprintf("registered custom tool '%s'", name)
-	if replaced {
-		msg = fmt.Sprintf("updated custom tool '%s'", name)
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save tools: %s", err.Error()), Tool: "add_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	zap.S().Infof("Custom tool registered via add_tool: name=%s", name)
 
+	category := tool.Type
+	if category == "" {
+		category = "command"
+	}
+
 	return &types.ToolResult{
 		Success: true,
-		Output:  msg,
+		Output:  fmt.Sprintf("🔧 已添加工具: %s", name),
 		Tool:    "add_tool",
 		RawResult: map[string]interface{}{
-			"name":        name,
-			"description": description,
+			"name":       name,
+			"type":       tool.Type,
+			"category":   category,
+			"replaced":   replaced,
+			"parameters": args["parameters"],
 		},
 	}
 }
@@ -160,24 +168,33 @@ func HandleListTool(dbDir string, args map[string]interface{}) *types.ToolResult
 	}
 
 	if len(tools) == 0 {
-		return &types.ToolResult{Success: true, Output: "no custom tools found", Tool: "list_tool"}
+		return &types.ToolResult{Success: true, Output: "📋 0 个工具", Tool: "list_tool", RawResult: map[string]interface{}{"tools": []interface{}{}}}
 	}
 
 	var buf strings.Builder
+	var toolItems []map[string]interface{}
 	for _, t := range tools {
-		meta := "command"
+		category := "command"
 		if t.Type == "meta" {
-			meta = "meta"
+			category = "meta"
 		} else if t.Type == "mcp" {
-			meta = "mcp"
+			category = "mcp"
 		}
-		buf.WriteString(fmt.Sprintf("- %s (%s): %s\n", t.Name, meta, t.Description))
+		buf.WriteString(fmt.Sprintf("- %s (%s): %s\n", t.Name, category, t.Description))
+		toolItems = append(toolItems, map[string]interface{}{
+			"name":        t.Name,
+			"description": t.Description,
+			"category":    category,
+		})
 	}
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  strings.TrimSpace(buf.String()),
+		Output:  fmt.Sprintf("📋 %d 个工具", len(tools)),
 		Tool:    "list_tool",
+		RawResult: map[string]interface{}{
+			"tools": toolItems,
+		},
 	}
 }
 
@@ -185,18 +202,18 @@ func HandleListTool(dbDir string, args map[string]interface{}) *types.ToolResult
 func HandleGetTool(dbDir string, args map[string]interface{}) *types.ToolResult {
 	name, _ := args["name"].(string)
 	if name == "" {
-		return &types.ToolResult{Success: false, Error: "name is required", Tool: "get_tool"}
+		return &types.ToolResult{Success: false, Error: "name is required", Tool: "get_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	sqlDB, err := db.Open(dbDir)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "get_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "get_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 	defer db.Close(sqlDB)
 
 	tools, err := db.GetProjectTools(sqlDB)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load tools: %s", err.Error()), Tool: "get_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load tools: %s", err.Error()), Tool: "get_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	var tool *models.ToolConfig
@@ -207,27 +224,27 @@ func HandleGetTool(dbDir string, args map[string]interface{}) *types.ToolResult 
 		}
 	}
 	if tool == nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("custom tool not found: %s", name), Tool: "get_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("custom tool not found: %s", name), Tool: "get_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
-	paramsStr := ""
-	if tool.Parameters != nil {
-		p, _ := json.MarshalIndent(tool.Parameters, "", "  ")
-		paramsStr = string(p)
-	}
-
-	output := fmt.Sprintf("name: %s\ntype: %s\ndescription: %s\nsource: %s\n", tool.Name, tool.Type, tool.Description, tool.Source)
-	if tool.Command != "" {
-		output += fmt.Sprintf("command: %s\n", tool.Command)
-	}
-	if paramsStr != "" {
-		output += fmt.Sprintf("parameters:\n%s\n", paramsStr)
+	category := tool.Type
+	if category == "" {
+		category = "command"
 	}
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  strings.TrimSpace(output),
+		Output:  fmt.Sprintf("🔧 工具: %s", name),
 		Tool:    "get_tool",
+		RawResult: map[string]interface{}{
+			"name":        tool.Name,
+			"description": tool.Description,
+			"parameters":  tool.Parameters,
+			"category":    category,
+			"type":        tool.Type,
+			"command":     tool.Command,
+			"source":      tool.Source,
+		},
 	}
 }
 
@@ -235,18 +252,18 @@ func HandleGetTool(dbDir string, args map[string]interface{}) *types.ToolResult 
 func HandleDeleteTool(dbDir string, args map[string]interface{}) *types.ToolResult {
 	name, _ := args["name"].(string)
 	if name == "" {
-		return &types.ToolResult{Success: false, Error: "name is required", Tool: "delete_tool"}
+		return &types.ToolResult{Success: false, Error: "name is required", Tool: "delete_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	sqlDB, err := db.Open(dbDir)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "delete_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "delete_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 	defer db.Close(sqlDB)
 
 	tools, err := db.GetProjectTools(sqlDB)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load tools: %s", err.Error()), Tool: "delete_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load tools: %s", err.Error()), Tool: "delete_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	// Find and check ownership
@@ -256,7 +273,7 @@ func HandleDeleteTool(dbDir string, args map[string]interface{}) *types.ToolResu
 		if t.Name == name {
 			found = true
 			if t.Source != "llm" {
-				return &types.ToolResult{Success: false, Error: fmt.Sprintf("tool '%s' was not created by LLM and cannot be deleted", name), Tool: "delete_tool"}
+				return &types.ToolResult{Success: false, Error: fmt.Sprintf("tool '%s' was not created by LLM and cannot be deleted", name), Tool: "delete_tool", RawResult: map[string]interface{}{"name": name}}
 			}
 			continue
 		}
@@ -264,19 +281,20 @@ func HandleDeleteTool(dbDir string, args map[string]interface{}) *types.ToolResu
 	}
 
 	if !found {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("custom tool not found: %s", name), Tool: "delete_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("custom tool not found: %s", name), Tool: "delete_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	if err := db.SaveProjectTools(sqlDB, filtered); err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save tools: %s", err.Error()), Tool: "delete_tool"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save tools: %s", err.Error()), Tool: "delete_tool", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	zap.S().Infof("Custom tool deleted: %s", name)
 
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("custom tool deleted: %s", name),
-		Tool:    "delete_tool",
+		Success:   true,
+		Output:    fmt.Sprintf("🗑️ 已删除工具: %s", name),
+		Tool:      "delete_tool",
+		RawResult: map[string]interface{}{"name": name},
 	}
 }
 

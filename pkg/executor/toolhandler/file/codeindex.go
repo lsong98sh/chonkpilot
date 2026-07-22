@@ -19,6 +19,10 @@ func HandleQueryCodebase(codeIndexer *codeindex.Indexer, args map[string]interfa
 			Success: false,
 			Error:   "codebase indexing is not enabled for this project",
 			Tool:    "query_codebase",
+			Output:  "❌ 代码库索引未启用",
+			RawResult: map[string]interface{}{
+				"error": "codebase indexing is not enabled for this project",
+			},
 		}
 	}
 
@@ -59,6 +63,10 @@ func HandleQueryCodebase(codeIndexer *codeindex.Indexer, args map[string]interfa
 			Success: false,
 			Error:   fmt.Sprintf("unknown query type: %s (supported: overview, search, symbol, file, deps, usages)", queryType),
 			Tool:    "query_codebase",
+			Output:  fmt.Sprintf("❌ 未知的查询类型：%s", queryType),
+			RawResult: map[string]interface{}{
+				"error": fmt.Sprintf("unknown query type: %s", queryType),
+			},
 		}
 	}
 }
@@ -66,7 +74,15 @@ func HandleQueryCodebase(codeIndexer *codeindex.Indexer, args map[string]interfa
 func queryOverview(db *sql.DB, codeIndexer *codeindex.Indexer) *types.ToolResult {
 	overview, err := codeindex.GetOverview(db)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   err.Error(),
+			Tool:    "query_codebase",
+			Output:  "❌ 获取代码库概览失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
+		}
 	}
 
 	pending, indexing, failed, failedExhausted := codeIndexer.QueueStats()
@@ -81,21 +97,52 @@ func queryOverview(db *sql.DB, codeIndexer *codeindex.Indexer) *types.ToolResult
 	overviewJSON, _ := json.MarshalIndent(overview, "", "  ")
 	return &types.ToolResult{
 		Success: true,
-		Output:  statusLine + "Codebase Overview:\n" + string(overviewJSON),
+		Output:  fmt.Sprintf("✅ 代码库概览\n\n%s%s", statusLine, string(overviewJSON)),
 		Tool:    "query_codebase",
+		RawResult: map[string]interface{}{
+			"overview": overview,
+			"stats": map[string]interface{}{
+				"pending":  pending,
+				"indexing": indexing,
+				"failed":   failed,
+			},
+		},
 	}
 }
 
 func querySearch(db *sql.DB, workDir, keywords string) *types.ToolResult {
 	if keywords == "" {
-		return &types.ToolResult{Success: false, Error: "keywords is required for search query", Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   "keywords is required for search query",
+			Tool:    "query_codebase",
+			Output:  "❌ 缺少 keywords 参数",
+			RawResult: map[string]interface{}{
+				"error": "keywords is required for search query",
+			},
+		}
 	}
 	results, err := codeindex.SearchFiles(db, keywords)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   err.Error(),
+			Tool:    "query_codebase",
+			Output:  "❌ 搜索失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
+		}
 	}
 	if len(results) == 0 {
-		return &types.ToolResult{Success: true, Output: "No matching files found.", Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  "⚠️ 未找到匹配的文件",
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"results": []interface{}{},
+			},
+		}
 	}
 
 	// Validate each result file still exists; clean up stale indices
@@ -107,7 +154,14 @@ func querySearch(db *sql.DB, workDir, keywords string) *types.ToolResult {
 	}
 
 	if len(valid) == 0 {
-		return &types.ToolResult{Success: true, Output: "No matching files found (all were stale and cleaned up).", Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  "⚠️ 未找到匹配的文件（所有索引已过期并清理）",
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"results": []interface{}{},
+			},
+		}
 	}
 
 	var b strings.Builder
@@ -118,19 +172,60 @@ func querySearch(db *sql.DB, workDir, keywords string) *types.ToolResult {
 			b.WriteString(fmt.Sprintf("      %s\n", fi.Summary))
 		}
 	}
-	return &types.ToolResult{Success: true, Output: b.String(), Tool: "query_codebase"}
+
+	// Build raw results
+	var rawResults []map[string]interface{}
+	for _, fi := range valid {
+		rawResults = append(rawResults, map[string]interface{}{
+			"path":     fi.Path,
+			"language": fi.Language,
+			"summary":  fi.Summary,
+		})
+	}
+
+	return &types.ToolResult{
+		Success: true,
+		Output:  fmt.Sprintf("✅ 搜索完成：找到 %d 个文件\n\n%s", len(valid), b.String()),
+		Tool:    "query_codebase",
+		RawResult: map[string]interface{}{
+			"results": rawResults,
+		},
+	}
 }
 
 func querySymbol(db *sql.DB, name string) *types.ToolResult {
 	if name == "" {
-		return &types.ToolResult{Success: false, Error: "name is required for symbol query", Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   "name is required for symbol query",
+			Tool:    "query_codebase",
+			Output:  "❌ 缺少 name 参数",
+			RawResult: map[string]interface{}{
+				"error": "name is required for symbol query",
+			},
+		}
 	}
 	symbols, err := codeindex.FindSymbol(db, name)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   err.Error(),
+			Tool:    "query_codebase",
+			Output:  "❌ 查询符号失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
+		}
 	}
 	if len(symbols) == 0 {
-		return &types.ToolResult{Success: true, Output: fmt.Sprintf("No symbols found matching \"%s\".", name), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  fmt.Sprintf("⚠️ 未找到符号 \"%s\"", name),
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"symbols": []interface{}{},
+			},
+		}
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Found %d symbols matching \"%s\":\n", len(symbols), name))
@@ -143,18 +238,53 @@ func querySymbol(db *sql.DB, name string) *types.ToolResult {
 			b.WriteString(fmt.Sprintf("       %s\n", s.DocSummary))
 		}
 	}
-	return &types.ToolResult{Success: true, Output: b.String(), Tool: "query_codebase"}
+
+	// Build raw results
+	var rawSymbols []map[string]interface{}
+	for _, s := range symbols {
+		rawSymbols = append(rawSymbols, map[string]interface{}{
+			"name":       s.Name,
+			"kind":       s.Kind,
+			"signature":  s.Signature,
+			"doc_summary": s.DocSummary,
+		})
+	}
+
+	return &types.ToolResult{
+		Success: true,
+		Output:  fmt.Sprintf("✅ 找到 %d 个符号\n\n%s", len(symbols), b.String()),
+		Tool:    "query_codebase",
+		RawResult: map[string]interface{}{
+			"symbols": rawSymbols,
+		},
+	}
 }
 
 func queryFile(db *sql.DB, codeIndexer *codeindex.Indexer, path string) *types.ToolResult {
 	if path == "" {
-		return &types.ToolResult{Success: false, Error: "path is required for file query", Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   "path is required for file query",
+			Tool:    "query_codebase",
+			Output:  "❌ 缺少 path 参数",
+			RawResult: map[string]interface{}{
+				"error": "path is required for file query",
+			},
+		}
 	}
 
 	// Validate file still exists; if not, cleanup and return
 	workDir := codeIndexer.WorkDir()
 	if !validateFileExists(db, workDir, path) {
-		return &types.ToolResult{Success: true, Output: fmt.Sprintf("File \"%s\" no longer exists on disk (stale index cleaned up).", path), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  fmt.Sprintf("⚠️ 文件 \"%s\" 已不存在（已清理过期索引）", path),
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"path":  path,
+				"found": false,
+			},
+		}
 	}
 
 	queuedPaths, _ := codeindex.ListQueuedPaths(db)
@@ -168,13 +298,37 @@ func queryFile(db *sql.DB, codeIndexer *codeindex.Indexer, path string) *types.T
 
 	fi, err := codeindex.GetFileIndex(db, path)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   err.Error(),
+			Tool:    "query_codebase",
+			Output:  "❌ 查询文件索引失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
+		}
 	}
 	if fi == nil {
 		if isQueued {
-			return &types.ToolResult{Success: true, Output: fmt.Sprintf("⏳ File \"%s\" is queued for indexing (pending in queue).", path), Tool: "query_codebase"}
+			return &types.ToolResult{
+				Success: true,
+				Output:  fmt.Sprintf("⏳ 文件 \"%s\" 正在等待索引", path),
+				Tool:    "query_codebase",
+				RawResult: map[string]interface{}{
+					"path":   path,
+					"status": "queued",
+				},
+			}
 		}
-		return &types.ToolResult{Success: true, Output: fmt.Sprintf("File \"%s\" is not indexed yet.", path), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  fmt.Sprintf("⚠️ 文件 \"%s\" 尚未索引", path),
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"path":   path,
+				"status": "not_indexed",
+			},
+		}
 	}
 
 	header := ""
@@ -183,25 +337,66 @@ func queryFile(db *sql.DB, codeIndexer *codeindex.Indexer, path string) *types.T
 	}
 
 	out, _ := json.MarshalIndent(fi, "", "  ")
-	return &types.ToolResult{Success: true, Output: header + string(out), Tool: "query_codebase"}
+	return &types.ToolResult{
+		Success: true,
+		Output:  fmt.Sprintf("✅ 文件信息：%s\n\n%s%s", path, header, string(out)),
+		Tool:    "query_codebase",
+		RawResult: map[string]interface{}{
+			"file":  fi,
+			"path":  path,
+			"found": true,
+		},
+	}
 }
 
 func queryDeps(db *sql.DB, workDir, path string) *types.ToolResult {
 	if path == "" {
-		return &types.ToolResult{Success: false, Error: "path is required for deps query", Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   "path is required for deps query",
+			Tool:    "query_codebase",
+			Output:  "❌ 缺少 path 参数",
+			RawResult: map[string]interface{}{
+				"error": "path is required for deps query",
+			},
+		}
 	}
 
 	// Validate file still exists; if not, cleanup and return
 	if !validateFileExists(db, workDir, path) {
-		return &types.ToolResult{Success: true, Output: fmt.Sprintf("File \"%s\" no longer exists on disk (stale index cleaned up).", path), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  fmt.Sprintf("⚠️ 文件 \"%s\" 已不存在（已清理过期索引）", path),
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"path":  path,
+				"found": false,
+			},
+		}
 	}
 
 	fi, err := codeindex.GetFileIndex(db, path)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   err.Error(),
+			Tool:    "query_codebase",
+			Output:  "❌ 查询依赖失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
+		}
 	}
 	if fi == nil {
-		return &types.ToolResult{Success: true, Output: fmt.Sprintf("File \"%s\" is not indexed.", path), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  fmt.Sprintf("⚠️ 文件 \"%s\" 尚未索引", path),
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"path":   path,
+				"status": "not_indexed",
+			},
+		}
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Dependencies for %s:\n", path))
@@ -214,43 +409,116 @@ func queryDeps(db *sql.DB, workDir, path string) *types.ToolResult {
 	if len(fi.Exports) > 0 {
 		b.WriteString(fmt.Sprintf("  Exports: %s\n", strings.Join(fi.Exports, ", ")))
 	}
-	return &types.ToolResult{Success: true, Output: b.String(), Tool: "query_codebase"}
+	return &types.ToolResult{
+		Success: true,
+		Output:  fmt.Sprintf("✅ 依赖信息：%s\n\n%s", path, b.String()),
+		Tool:    "query_codebase",
+		RawResult: map[string]interface{}{
+			"path":    path,
+			"imports": fi.Imports,
+			"exports": fi.Exports,
+			"external_deps": fi.ExternalDeps,
+		},
+	}
 }
 
 func queryUsages(db *sql.DB, workDir, name, fileFilter string) *types.ToolResult {
 	if name == "" {
-		return &types.ToolResult{Success: false, Error: "name is required for usages query", Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   "name is required for usages query",
+			Tool:    "query_codebase",
+			Output:  "❌ 缺少 name 参数",
+			RawResult: map[string]interface{}{
+				"error": "name is required for usages query",
+			},
+		}
 	}
 
 	if fileFilter != "" {
 		// Validate file still exists
 		if !validateFileExists(db, workDir, fileFilter) {
-			return &types.ToolResult{Success: true, Output: fmt.Sprintf("File \"%s\" no longer exists on disk (stale index cleaned up).", fileFilter), Tool: "query_codebase"}
+			return &types.ToolResult{
+				Success: true,
+				Output:  fmt.Sprintf("⚠️ 文件 \"%s\" 已不存在", fileFilter),
+				Tool:    "query_codebase",
+				RawResult: map[string]interface{}{
+					"file_filter": fileFilter,
+					"found":       false,
+				},
+			}
 		}
 		fi, err := codeindex.GetFileIndex(db, fileFilter)
 		if err != nil || fi == nil {
-			return &types.ToolResult{Success: true, Output: fmt.Sprintf("File \"%s\" not indexed.", fileFilter), Tool: "query_codebase"}
+			return &types.ToolResult{
+				Success: true,
+				Output:  fmt.Sprintf("⚠️ 文件 \"%s\" 尚未索引", fileFilter),
+				Tool:    "query_codebase",
+				RawResult: map[string]interface{}{
+					"file_filter": fileFilter,
+					"status":      "not_indexed",
+				},
+			}
 		}
 		for _, imp := range fi.Imports {
 			if strings.Contains(strings.ToLower(imp), strings.ToLower(name)) {
 				out, _ := json.MarshalIndent(fi, "", "  ")
-				return &types.ToolResult{Success: true, Output: fmt.Sprintf("References found in %s:\n%s", fileFilter, string(out)), Tool: "query_codebase"}
+				return &types.ToolResult{
+					Success: true,
+					Output:  fmt.Sprintf("✅ 在 %s 中找到引用：\n%s", fileFilter, string(out)),
+					Tool:    "query_codebase",
+					RawResult: map[string]interface{}{
+						"file":  fi,
+						"found": true,
+					},
+				}
 			}
 		}
 		for _, exp := range fi.Exports {
 			if strings.Contains(strings.ToLower(exp), strings.ToLower(name)) {
-				return &types.ToolResult{Success: true, Output: fmt.Sprintf("Symbol \"%s\" is exported by %s.", name, fileFilter), Tool: "query_codebase"}
+				return &types.ToolResult{
+					Success: true,
+					Output:  fmt.Sprintf("✅ 符号 \"%s\" 由 %s 导出", name, fileFilter),
+					Tool:    "query_codebase",
+					RawResult: map[string]interface{}{
+						"file":  fileFilter,
+						"found": true,
+					},
+				}
 			}
 		}
-		return &types.ToolResult{Success: true, Output: fmt.Sprintf("No references to \"%s\" found in %s.", name, fileFilter), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  fmt.Sprintf("⚠️ 在 %s 中未找到 \"%s\" 的引用", fileFilter, name),
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"file_filter": fileFilter,
+				"found":       false,
+			},
+		}
 	}
 
 	results, err := codeindex.SearchFiles(db, name)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   err.Error(),
+			Tool:    "query_codebase",
+			Output:  "❌ 查询引用失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
+		}
 	}
 	if len(results) == 0 {
-		return &types.ToolResult{Success: true, Output: fmt.Sprintf("No usages found for \"%s\".", name), Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  fmt.Sprintf("⚠️ 未找到 \"%s\" 的引用", name),
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"results": []interface{}{},
+			},
+		}
 	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Files referencing \"%s\":\n", name))
@@ -260,7 +528,24 @@ func queryUsages(db *sql.DB, workDir, name, fileFilter string) *types.ToolResult
 			b.WriteString(fmt.Sprintf("      %s\n", fi.Summary))
 		}
 	}
-	return &types.ToolResult{Success: true, Output: b.String(), Tool: "query_codebase"}
+
+	var rawResults []map[string]interface{}
+	for _, fi := range results {
+		rawResults = append(rawResults, map[string]interface{}{
+			"path":     fi.Path,
+			"language": fi.Language,
+			"summary":  fi.Summary,
+		})
+	}
+
+	return &types.ToolResult{
+		Success: true,
+		Output:  fmt.Sprintf("✅ 找到 %d 个文件引用 \"%s\"\n\n%s", len(results), name, b.String()),
+		Tool:    "query_codebase",
+		RawResult: map[string]interface{}{
+			"results": rawResults,
+		},
+	}
 }
 
 // ──────── File Validation ────────
@@ -293,19 +578,43 @@ func queryFileList(db *sql.DB, workDir, target, content string) *types.ToolResul
 		var err error
 		results, err = codeindex.SearchFiles(db, content)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+			return &types.ToolResult{
+				Success: false,
+				Error:   err.Error(),
+				Tool:    "query_codebase",
+				Output:  "❌ 搜索失败",
+				RawResult: map[string]interface{}{
+					"error": err.Error(),
+				},
+			}
 		}
 	} else {
 		// No content filter — get all done files
 		rows, err := db.Query(`SELECT path, language, summary FROM files WHERE status='done' ORDER BY path LIMIT 100`)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+			return &types.ToolResult{
+				Success: false,
+				Error:   err.Error(),
+				Tool:    "query_codebase",
+				Output:  "❌ 查询失败",
+				RawResult: map[string]interface{}{
+					"error": err.Error(),
+				},
+			}
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var fi codeindex.FileIndex
 			if err := rows.Scan(&fi.Path, &fi.Language, &fi.Summary); err != nil {
-				return &types.ToolResult{Success: false, Error: err.Error(), Tool: "query_codebase"}
+				return &types.ToolResult{
+					Success: false,
+					Error:   err.Error(),
+					Tool:    "query_codebase",
+					Output:  "❌ 读取数据失败",
+					RawResult: map[string]interface{}{
+						"error": err.Error(),
+					},
+				}
 			}
 			results = append(results, fi)
 		}
@@ -332,7 +641,16 @@ func queryFileList(db *sql.DB, workDir, target, content string) *types.ToolResul
 		} else if content != "" {
 			msg = fmt.Sprintf("No files matching content=\"%s\" in codebase index.", content)
 		}
-		return &types.ToolResult{Success: true, Output: msg, Tool: "query_codebase"}
+		return &types.ToolResult{
+			Success: true,
+			Output:  "⚠️ " + msg,
+			Tool:    "query_codebase",
+			RawResult: map[string]interface{}{
+				"results": []interface{}{},
+				"target":  target,
+				"content": content,
+			},
+		}
 	}
 
 	var b strings.Builder
@@ -349,7 +667,26 @@ func queryFileList(db *sql.DB, workDir, target, content string) *types.ToolResul
 			b.WriteString(fmt.Sprintf("      %s\n", fi.Summary))
 		}
 	}
-	return &types.ToolResult{Success: true, Output: b.String(), Tool: "query_codebase"}
+
+	var rawResults []map[string]interface{}
+	for _, fi := range results {
+		rawResults = append(rawResults, map[string]interface{}{
+			"path":     fi.Path,
+			"language": fi.Language,
+			"summary":  fi.Summary,
+		})
+	}
+
+	return &types.ToolResult{
+		Success: true,
+		Output:  fmt.Sprintf("✅ 找到 %d 个文件\n\n%s", len(results), b.String()),
+		Tool:    "query_codebase",
+		RawResult: map[string]interface{}{
+			"results": rawResults,
+			"target":  target,
+			"content": content,
+		},
+	}
 }
 
 // matchTargetGlob checks if a relative path matches a glob pattern.

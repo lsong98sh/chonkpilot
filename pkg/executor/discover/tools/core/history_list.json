@@ -1,0 +1,14 @@
+{
+  "description": "List all version records from the version history. Optionally filter by turn_id. Output is grouped by turn_id with each entry showing version number, file path, and timestamp. Auto-snapshots are shown as 'snap' instead of a version number.",
+  "name": "history_list",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "turn_id": {
+        "type": "string",
+        "description": "Optional. Filter to a specific turn. Lists all turns if omitted."
+      }
+    },
+    "required": []
+  }
+}

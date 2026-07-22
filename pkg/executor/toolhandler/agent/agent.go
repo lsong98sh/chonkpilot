@@ -17,21 +17,21 @@ func HandleAddAgent(dbDir string, args map[string]interface{}) *types.ToolResult
 	prompt, _ := args["prompt"].(string)
 	llmRef, _ := args["llm-ref"].(string)
 	if agentName == "" {
-		return &types.ToolResult{Success: false, Error: "name is required", Tool: "add_agent"}
+		return &types.ToolResult{Success: false, Error: "name is required", Tool: "add_agent", RawResult: map[string]interface{}{"name": agentName}}
 	}
 	if prompt == "" {
-		return &types.ToolResult{Success: false, Error: "prompt is required", Tool: "add_agent"}
+		return &types.ToolResult{Success: false, Error: "prompt is required", Tool: "add_agent", RawResult: map[string]interface{}{"name": agentName}}
 	}
 
 	sqlDB, err := db.Open(dbDir)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "add_agent"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "add_agent", RawResult: map[string]interface{}{"name": agentName}}
 	}
 	defer db.Close(sqlDB)
 
 	agents, err := db.GetProjectAgents(sqlDB)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load agents: %s", err.Error()), Tool: "add_agent"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load agents: %s", err.Error()), Tool: "add_agent", RawResult: map[string]interface{}{"name": agentName}}
 	}
 
 	newAgent := models.AgentConfig{
@@ -55,13 +55,16 @@ func HandleAddAgent(dbDir string, args map[string]interface{}) *types.ToolResult
 	}
 
 	if err := db.SaveProjectAgents(sqlDB, agents); err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save agents: %s", err.Error()), Tool: "add_agent"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save agents: %s", err.Error()), Tool: "add_agent", RawResult: map[string]interface{}{"name": agentName}}
 	}
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("agent saved: %s. Use call_llm(agent=\"%s\", ...) to invoke it", agentName, agentName),
+		Output:  fmt.Sprintf("已添加 agent: %s", agentName),
 		Tool:    "add_agent",
+		RawResult: map[string]interface{}{
+			"name": agentName,
+		},
 	}
 }
 
@@ -79,7 +82,7 @@ func HandleListAgent(dbDir string, args map[string]interface{}) *types.ToolResul
 	}
 
 	if len(agents) == 0 {
-		return &types.ToolResult{Success: true, Output: "no agents found", Tool: "list_agent"}
+		return &types.ToolResult{Success: true, Output: "📋 0 个 agent", Tool: "list_agent", RawResult: map[string]interface{}{"agents": []interface{}{}}}
 	}
 
 	sort.Slice(agents, func(i, j int) bool {
@@ -87,6 +90,7 @@ func HandleListAgent(dbDir string, args map[string]interface{}) *types.ToolResul
 	})
 
 	var buf strings.Builder
+	var agentItems []map[string]interface{}
 	for _, a := range agents {
 		preview := a.Prompt
 		if len(preview) > 120 {
@@ -101,12 +105,19 @@ func HandleListAgent(dbDir string, args map[string]interface{}) *types.ToolResul
 		} else {
 			buf.WriteString(fmt.Sprintf("[%s] (%s)\n  %s\n", a.Title, source, preview))
 		}
+		agentItems = append(agentItems, map[string]interface{}{
+			"name":   a.Title,
+			"source": source,
+		})
 	}
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  strings.TrimSpace(buf.String()),
+		Output:  fmt.Sprintf("📋 %d 个 agent", len(agents)),
 		Tool:    "list_agent",
+		RawResult: map[string]interface{}{
+			"agents": agentItems,
+		},
 	}
 }
 
@@ -114,18 +125,18 @@ func HandleListAgent(dbDir string, args map[string]interface{}) *types.ToolResul
 func HandleDeleteAgent(dbDir string, args map[string]interface{}) *types.ToolResult {
 	name, _ := args["name"].(string)
 	if name == "" {
-		return &types.ToolResult{Success: false, Error: "name is required", Tool: "delete_agent"}
+		return &types.ToolResult{Success: false, Error: "name is required", Tool: "delete_agent", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	sqlDB, err := db.Open(dbDir)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "delete_agent"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "delete_agent", RawResult: map[string]interface{}{"name": name}}
 	}
 	defer db.Close(sqlDB)
 
 	agents, err := db.GetProjectAgents(sqlDB)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load agents: %s", err.Error()), Tool: "delete_agent"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to load agents: %s", err.Error()), Tool: "delete_agent", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	// Find and check ownership
@@ -136,9 +147,10 @@ func HandleDeleteAgent(dbDir string, args map[string]interface{}) *types.ToolRes
 			found = true
 			if a.Source != "llm" {
 				return &types.ToolResult{
-					Success: false,
-					Error:   fmt.Sprintf("agent '%s' was not created by LLM and cannot be deleted", name),
-					Tool:    "delete_agent",
+					Success:   false,
+					Error:     fmt.Sprintf("agent '%s' was not created by LLM and cannot be deleted", name),
+					Tool:      "delete_agent",
+					RawResult: map[string]interface{}{"name": name},
 				}
 			}
 			continue
@@ -148,20 +160,22 @@ func HandleDeleteAgent(dbDir string, args map[string]interface{}) *types.ToolRes
 
 	if !found {
 		return &types.ToolResult{
-			Success: false,
-			Error:   fmt.Sprintf("agent not found: %s", name),
-			Tool:    "delete_agent",
+			Success:   false,
+			Error:     fmt.Sprintf("agent not found: %s", name),
+			Tool:      "delete_agent",
+			RawResult: map[string]interface{}{"name": name},
 		}
 	}
 
 	if err := db.SaveProjectAgents(sqlDB, filtered); err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save agents: %s", err.Error()), Tool: "delete_agent"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save agents: %s", err.Error()), Tool: "delete_agent", RawResult: map[string]interface{}{"name": name}}
 	}
 
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("agent deleted: %s", name),
-		Tool:    "delete_agent",
+		Success:   true,
+		Output:    fmt.Sprintf("🗑️ 已删除 agent: %s", name),
+		Tool:      "delete_agent",
+		RawResult: map[string]interface{}{"name": name},
 	}
 }
 

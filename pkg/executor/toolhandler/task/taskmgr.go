@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -13,6 +14,15 @@ import (
 
 	"github.com/chonkpilot/chonkpilot/internal/models"
 )
+
+// mapToEnvSlice converts a map[string]string to a slice of "KEY=VALUE" strings.
+func mapToEnvSlice(env map[string]string) []string {
+	s := make([]string, 0, len(env))
+	for k, v := range env {
+		s = append(s, fmt.Sprintf("%s=%s", k, v))
+	}
+	return s
+}
 
 // globalTaskID is a monotonic counter for generating unique task IDs.
 var globalTaskID int64
@@ -150,7 +160,8 @@ func (tm *TaskManager) gcRunTasks() {
 }
 
 // StartCommand starts a shell command asynchronously and returns a task ID.
-func (tm *TaskManager) StartCommand(workDir, cmdStr string) string {
+// env: optional custom environment variables merged with current process env (nil or empty map = inherit current env).
+func (tm *TaskManager) StartCommand(workDir, cmdStr string, env map[string]string) string {
 	id := fmt.Sprintf("cmd-%d", atomic.AddInt64(&globalTaskID, 1))
 
 	info := &TaskInfo{
@@ -167,7 +178,7 @@ func (tm *TaskManager) StartCommand(workDir, cmdStr string) string {
 	tm.gcTasks()
 	tm.mu.Unlock()
 
-	go tm.runCommand(info, workDir, cmdStr)
+	go tm.runCommand(info, workDir, cmdStr, env)
 	return id
 }
 
@@ -238,7 +249,7 @@ func (tm *TaskManager) SyncOperation(name string, fn func(cancel <-chan struct{}
 	return id, output, err
 }
 
-func (tm *TaskManager) runCommand(info *TaskInfo, workDir, cmdStr string) {
+func (tm *TaskManager) runCommand(info *TaskInfo, workDir, cmdStr string, env map[string]string) {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("cmd", "/c", cmdStr)
@@ -247,6 +258,9 @@ func (tm *TaskManager) runCommand(info *TaskInfo, workDir, cmdStr string) {
 	}
 	if workDir != "" {
 		cmd.Dir = workDir
+	}
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), mapToEnvSlice(env)...)
 	}
 
 	info.mu.Lock()

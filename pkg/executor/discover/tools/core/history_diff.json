@@ -1,0 +1,22 @@
+{
+  "description": "Compare two versions of the same file within a turn. Shows a unified diff between version_a and version_b with the diffmatchpatch algorithm. Output includes a header showing the turn and versions being compared, followed by the unified diff. If the versions are identical, shows a warning instead.",
+  "name": "history_diff",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "turn_id": {
+        "type": "string",
+        "description": "Required. Turn ID containing both versions."
+      },
+      "version_a": {
+        "type": "integer",
+        "description": "Required. Older version number."
+      },
+      "version_b": {
+        "type": "integer",
+        "description": "Required. Newer version number."
+      }
+    },
+    "required": ["turn_id", "version_a", "version_b"]
+  }
+}

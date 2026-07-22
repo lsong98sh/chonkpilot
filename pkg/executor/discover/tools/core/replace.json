@@ -1,28 +1,59 @@
 {
-  "description": "Replace text in a file (find-and-replace). Returns: 'replaced in {path} ({N} replacements)'. Supports both literal string match (default) and regex matching (set 'regex: true'). When 'old' is empty: prepends 'new' at the beginning of the file. When 'new' is empty: deletes all occurrences of 'old'. With regex: use $1, $2 in 'new' to reference capture groups from 'old'. Example (literal): {\"path\": \"main.go\", \"old\": \"fmt.Println\", \"new\": \"log.Println\"}. Example (regex): {\"path\": \"main.go\", \"old\": \"fmt\\.(Print|Sprintf)\", \"new\": \"log.$1\", \"regex\": true}. Example (prepend): {\"path\": \"main.go\", \"new\": \"// header comment\\n\", \"old\": \"\"}. Example (delete): {\"path\": \"main.go\", \"old\": \"obsolete_call()\", \"new\": \"\"}",
+  "description": "Replace text in files (find-and-replace). Supports three modes: (1) 'files' array for multi-file precise replace, (2) 'file_pattern' glob for batch replace, (3) 'path' for single-file (legacy). Priority: files > file_pattern > path. Returns: number of replacements made. When 'old' is empty: prepends 'new' at the beginning of each file. When 'new' is empty: deletes all occurrences of 'old'. With regex: use $1, $2 in 'new' to reference capture groups. Use dry_run=true to preview changes. Example (files array): {\"files\": [{\"path\": \"a.go\", \"old\": \"fmt.Println\", \"new\": \"log.Println\"}], \"dry_run\": true}. Example (multi): {\"file_pattern\": \"*.go\", \"old\": \"fmt.Println\", \"new\": \"log.Println\", \"dry_run\": true}. Example (single): {\"path\": \"main.go\", \"old\": \"fmt.Println\", \"new\": \"log.Println\"}",
   "name": "replace",
   "parameters": {
     "type": "object",
     "properties": {
       "path": {
         "type": "string",
-        "description": "Path to the file"
+        "description": "Path to the file (single-file mode)"
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "文件路径"
+            },
+            "old": {
+              "type": "string",
+              "description": "要替换的文本（可选，继承顶层 old）"
+            },
+            "new": {
+              "type": "string",
+              "description": "替换为的文本（可选，继承顶层 new）"
+            },
+            "regex": {
+              "type": "boolean",
+              "description": "是否 regex（可选，继承顶层 regex）"
+            }
+          },
+          "required": ["path"]
+        },
+        "description": "多文件替换数组。每项有 path，可选 old/new/regex（继承顶层值）。优先级高于 file_pattern 和 path。"
+      },
+      "file_pattern": {
+        "type": "string",
+        "description": "Glob pattern for batch multi-file replace (e.g. '*.go', 'src/**/*.js')"
       },
       "old": {
         "type": "string",
-        "description": "Text to search for. If empty, 'new' is prepended at the start of the file"
+        "description": "Text to search for. If empty, 'new' is prepended at the start of each file."
       },
       "new": {
         "type": "string",
-        "description": "Replacement text. If empty, all matches of 'old' are deleted. With regex, use $1/$2 for capture groups"
+        "description": "Replacement text. If empty, all matches of 'old' are deleted. With regex, use $1/$2 for capture groups."
       },
       "regex": {
         "type": "boolean",
-        "description": "If true, treat 'old' as a regex pattern; 'new' can use $1, $2 etc. for capture groups. Default: false (literal match)"
+        "description": "If true, treat 'old' as a regex pattern; 'new' can use $1, $2 etc. for capture groups. Default: false (literal match)."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "If true, preview replacements without actually modifying files."
       }
-    },
-    "required": [
-      "path"
-    ]
+    }
   }
 }

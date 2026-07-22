@@ -1,0 +1,18 @@
+{
+  "description": "Explicitly archive the current file content as a versioned snapshot. Version numbers auto-increment within each turn (0, 1, 2...). Use before making significant changes to create a recoverable checkpoint. The archived version can be previewed with history_take, compared with history_diff, or restored with history_rollback.",
+  "name": "history_put",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Required. File path to archive."
+      },
+      "turn_id": {
+        "type": "string",
+        "description": "Optional. Turn ID. Uses current turn if omitted."
+      }
+    },
+    "required": ["path"]
+  }
+}

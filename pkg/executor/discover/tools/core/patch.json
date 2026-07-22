@@ -1,21 +1,25 @@
 {
-  "description": "Apply a unified diff to a file. Returns: 'patch applied to {target} ({N} bytes written)'. Example: {\"target\": \"main.go\", \"diff\": \"--- a/main.go\\n+++ b/main.go\\n@@ -1,3 +1,4 @@\\n+// comment\\n\"}",
   "name": "patch",
+  "description": "Apply unified diff to files. Supports single-file mode (target+diff) and multi-file mode (files array). Multi-file mode uses per-file atomicity: each file is independently applied in memory — if any hunk fails, that file is skipped (rolled back), while other files succeed. Use dry_run=true to preview. Returns: multi-file results with === section separators.",
   "parameters": {
     "type": "object",
     "properties": {
-      "target": {
-        "type": "string",
-        "description": "Target file path"
+      "target": { "type": "string", "description": "Single target file path (v1 compat, use with diff)" },
+      "diff": { "type": "string", "description": "Single diff content (v1 compat, use with target)" },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string", "description": "Target file path" },
+            "diff": { "type": "string", "description": "Unified diff content" }
+          },
+          "required": ["path", "diff"]
+        },
+        "description": "Multi-file diff array. Each item has path and diff."
       },
-      "diff": {
-        "type": "string",
-        "description": "Unified diff content to apply"
-      }
-    },
-    "required": [
-      "target",
-      "diff"
-    ]
+      "dry_run": { "type": "boolean", "description": "If true, preview changes without modifying files." },
+      "format": { "type": "string", "enum": ["text", "json"], "description": "Output format: 'text' (default) or 'json'." }
+    }
   }
 }

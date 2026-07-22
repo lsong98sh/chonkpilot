@@ -1,0 +1,19 @@
+{
+  "description": "Set the IDE file tree state on the actual UI: expand/collapse a directory node, or select a file/directory. Blocks until the frontend completes the operation. Returns success or error message. Only directories support expand/collapse — files will silently succeed (no-op) for those operations.",
+  "name": "set_ide_filetree_status",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operate": {
+        "type": "string",
+        "enum": ["expand", "collapse", "select"],
+        "description": "\"expand\" — expand a directory in the file tree (only valid for directories). \"collapse\" — collapse a directory in the file tree (only valid for directories). \"select\" — select (highlight) a file or directory in the file tree."
+      },
+      "target": {
+        "type": "string",
+        "description": "Absolute path of the target file or directory in the file tree."
+      }
+    },
+    "required": ["operate", "target"]
+  }
+}

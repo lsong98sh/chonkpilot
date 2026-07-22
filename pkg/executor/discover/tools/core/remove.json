@@ -1,5 +1,5 @@
 {
-  "description": "Remove one or more files or directories recursively (like rm -rf). All files are snapshotted before removal so they can be restored via rollback. Example: {\"paths\": [\"build/cache\", \"temp.log\"]}",
+  "description": "Remove one or more files or directories recursively (like rm -rf). All files are snapshotted before removal so they can be restored via rollback. Use dry_run=true to preview. Use file_pattern for glob-based batch deletion. Example: {\"paths\": [\"build/cache\", \"temp.log\"]} or {\"file_pattern\": \"*.tmp\", \"dry_run\": true}",
   "name": "remove",
   "parameters": {
     "type": "object",
@@ -8,8 +8,15 @@
         "type": "array",
         "items": { "type": "string" },
         "description": "Array of file or directory paths to remove."
+      },
+      "file_pattern": {
+        "type": "string",
+        "description": "Glob pattern for batch deletion (e.g. '*.tmp', 'build/**/*.log')."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "If true, preview what would be removed without actually deleting."
       }
-    },
-    "required": ["paths"]
+    }
   }
 }

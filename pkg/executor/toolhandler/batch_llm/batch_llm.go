@@ -814,17 +814,32 @@ func fail(reason, msg string) *BatchResult {
 // ToToolResult converts BatchResult to *types.ToolResult for the dispatch system.
 func (r *BatchResult) ToToolResult() *types.ToolResult {
 	if r.Success {
+		emoji := "✅"
+		if !r.Done {
+			emoji = "⚙️"
+		}
 		return &types.ToolResult{
 			Success: true,
-			Output:  r.Output,
+			Output:  fmt.Sprintf("%s %s", emoji, r.Output),
 			Tool:    "batch_llm",
+			RawResult: map[string]interface{}{
+				"done":          r.Done,
+				"output":        r.Output,
+				"filename":      r.Filename,
+				"submit_prompt": r.SubmitPrompt,
+			},
 		}
 	}
 	return &types.ToolResult{
 		Success: false,
 		Error:   r.Error,
 		Tool:    "batch_llm",
-		Output:  r.Output,
+		Output:  fmt.Sprintf("❌ %s", r.Output),
+		RawResult: map[string]interface{}{
+			"error":    r.Error,
+			"output":   r.Output,
+			"filename": r.Filename,
+		},
 	}
 }
 

@@ -33,7 +33,15 @@ func HandleAskUser(writeEvent func(string, map[string]interface{}), args map[str
 
 	question, _ := args["question"].(string)
 	if question == "" {
-		return &types.ToolResult{Success: false, Error: "question is required", Tool: "ask_user"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   "question is required",
+			Tool:    "ask_user",
+			Output:  "❌ 缺少 question 参数",
+			RawResult: map[string]interface{}{
+				"error": "question is required",
+			},
+		}
 	}
 
 	optionsRaw, _ := args["options"].([]interface{})
@@ -56,6 +64,10 @@ func askUserIDE(writeEvent func(string, map[string]interface{}), question string
 			Success: false,
 			Error:   fmt.Sprintf("failed to create ask_user listener: %s", err.Error()),
 			Tool:    "ask_user",
+			Output:  "❌ 创建监听失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
 		}
 	}
 	defer listener.Close()
@@ -77,6 +89,10 @@ func askUserIDE(writeEvent func(string, map[string]interface{}), question string
 			Success: false,
 			Error:   fmt.Sprintf("ask_user pipe accept timeout or error: %s", err.Error()),
 			Tool:    "ask_user",
+			Output:  "❌ 等待用户响应超时",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
 		}
 	}
 	defer conn.Close()
@@ -91,20 +107,31 @@ func askUserIDE(writeEvent func(string, map[string]interface{}), question string
 			Success: false,
 			Error:   fmt.Sprintf("failed to read ask_user response: %s", err.Error()),
 			Tool:    "ask_user",
+			Output:  "❌ 读取用户响应失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
 		}
 	}
 
 	if response.Custom != "" {
 		return &types.ToolResult{
 			Success: true,
-			Output:  fmt.Sprintf("user answered: %s (custom: %s)", response.Answer, response.Custom),
+			Output:  fmt.Sprintf("💬 user answered: %s (custom: %s)", response.Answer, response.Custom),
 			Tool:    "ask_user",
+			RawResult: map[string]interface{}{
+				"answer": response.Answer,
+				"custom": response.Custom,
+			},
 		}
 	}
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("user answered: %s", response.Answer),
+		Output:  fmt.Sprintf("💬 user answered: %s", response.Answer),
 		Tool:    "ask_user",
+		RawResult: map[string]interface{}{
+			"answer": response.Answer,
+		},
 	}
 }
 
@@ -159,14 +186,21 @@ func askUserStdio(question string, optionsRaw []interface{}, custom bool) *types
 	if response.Custom != "" {
 		return &types.ToolResult{
 			Success: true,
-			Output:  fmt.Sprintf("user answered: %s (custom: %s)", response.Answer, response.Custom),
+			Output:  fmt.Sprintf("💬 user answered: %s (custom: %s)", response.Answer, response.Custom),
 			Tool:    "ask_user",
+			RawResult: map[string]interface{}{
+				"answer": response.Answer,
+				"custom": response.Custom,
+			},
 		}
 	}
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("user answered: %s", response.Answer),
+		Output:  fmt.Sprintf("💬 user answered: %s", response.Answer),
 		Tool:    "ask_user",
+		RawResult: map[string]interface{}{
+			"answer": response.Answer,
+		},
 	}
 }
 

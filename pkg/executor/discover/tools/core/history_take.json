@@ -1,0 +1,18 @@
+{
+  "description": "Retrieve and preview a specific version's file content from history. Does NOT write to disk — only displays the content. The output shows a header with turn_id, version number, file path, and timestamp, followed by the file content between separator lines.",
+  "name": "history_take",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "turn_id": {
+        "type": "string",
+        "description": "Required. Turn ID the version belongs to."
+      },
+      "version": {
+        "type": "integer",
+        "description": "Required. Version number to retrieve (0, 1, 2, ...)."
+      }
+    },
+    "required": ["turn_id", "version"]
+  }
+}

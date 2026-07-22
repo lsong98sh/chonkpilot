@@ -15,27 +15,33 @@ func HandleNoteWrite(workDir string, args map[string]interface{}) *types.ToolRes
 	title, _ := args["title"].(string)
 	content, _ := args["content"].(string)
 	if title == "" {
-		return &types.ToolResult{Success: false, Error: "title is required", Tool: "note_write"}
+		return &types.ToolResult{Success: false, Error: "title is required", Tool: "note_write", RawResult: map[string]interface{}{"title": title}}
 	}
 
 	sqlDB, err := db.Open(workDir)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "note_write"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "note_write", RawResult: map[string]interface{}{"title": title}}
 	}
 	defer db.Close(sqlDB)
 
 	// Try update first; if not found, create new
+	created := false
 	if err := db.UpdateNote(sqlDB, title, content); err != nil {
 		note := models.NewNote(title, content)
 		if err := db.CreateNote(sqlDB, note); err != nil {
-			return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save note: %s", err.Error()), Tool: "note_write"}
+			return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to save note: %s", err.Error()), Tool: "note_write", RawResult: map[string]interface{}{"title": title}}
 		}
+		created = true
 	}
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("note saved: %s", title),
+		Output:  fmt.Sprintf("📝 笔记已保存：%s", title),
 		Tool:    "note_write",
+		RawResult: map[string]interface{}{
+			"title":   title,
+			"created": created,
+		},
 	}
 }
 
@@ -43,24 +49,30 @@ func HandleNoteWrite(workDir string, args map[string]interface{}) *types.ToolRes
 func HandleNoteRead(workDir string, args map[string]interface{}) *types.ToolResult {
 	title, _ := args["title"].(string)
 	if title == "" {
-		return &types.ToolResult{Success: false, Error: "title is required", Tool: "note_read"}
+		return &types.ToolResult{Success: false, Error: "title is required", Tool: "note_read", RawResult: map[string]interface{}{"title": title}}
 	}
 
 	sqlDB, err := db.Open(workDir)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "note_read"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "note_read", RawResult: map[string]interface{}{"title": title}}
 	}
 	defer db.Close(sqlDB)
 
 	note, err := db.GetNote(sqlDB, title)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "note_read"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "note_read", RawResult: map[string]interface{}{"title": title}}
 	}
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("title: %s\ncontent:\n%s", note.Title, note.Content),
+		Output:  fmt.Sprintf("📝 笔记：%s（%d 字符）", note.Title, len(note.Content)),
 		Tool:    "note_read",
+		RawResult: map[string]interface{}{
+			"title":      note.Title,
+			"content":    note.Content,
+			"created_at": note.CreatedAt,
+			"updated_at": note.UpdatedAt,
+		},
 	}
 }
 
@@ -78,9 +90,10 @@ func HandleNoteList(workDir string, args map[string]interface{}) *types.ToolResu
 	}
 
 	if len(notes) == 0 {
-		return &types.ToolResult{Success: true, Output: "no notes found", Tool: "note_list"}
+		return &types.ToolResult{Success: true, Output: "📝 0 条笔记", Tool: "note_list", RawResult: map[string]interface{}{"notes": []interface{}{}}}
 	}
 
+	var noteItems []map[string]interface{}
 	var buf strings.Builder
 	for _, n := range notes {
 		preview := n.Content
@@ -88,11 +101,17 @@ func HandleNoteList(workDir string, args map[string]interface{}) *types.ToolResu
 			preview = preview[:100] + "..."
 		}
 		buf.WriteString(fmt.Sprintf("[%s] %s\n  %s\n", n.UpdatedAt[:10], n.Title, preview))
+		noteItems = append(noteItems, map[string]interface{}{
+			"title":      n.Title,
+			"preview":    preview,
+			"updated_at": n.UpdatedAt,
+		})
 	}
 	return &types.ToolResult{
-		Success: true,
-		Output:  strings.TrimSpace(buf.String()),
-		Tool:    "note_list",
+		Success:   true,
+		Output:    fmt.Sprintf("📝 %d 条笔记", len(notes)),
+		Tool:      "note_list",
+		RawResult: map[string]interface{}{"notes": noteItems},
 	}
 }
 
@@ -100,23 +119,24 @@ func HandleNoteList(workDir string, args map[string]interface{}) *types.ToolResu
 func HandleNoteDelete(workDir string, args map[string]interface{}) *types.ToolResult {
 	title, _ := args["title"].(string)
 	if title == "" {
-		return &types.ToolResult{Success: false, Error: "title is required", Tool: "note_delete"}
+		return &types.ToolResult{Success: false, Error: "title is required", Tool: "note_delete", RawResult: map[string]interface{}{"title": title}}
 	}
 
 	sqlDB, err := db.Open(workDir)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "note_delete"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("db open failed: %s", err.Error()), Tool: "note_delete", RawResult: map[string]interface{}{"title": title}}
 	}
 	defer db.Close(sqlDB)
 
 	if err := db.DeleteNote(sqlDB, title); err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "note_delete"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "note_delete", RawResult: map[string]interface{}{"title": title}}
 	}
 
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("note deleted: %s", title),
-		Tool:    "note_delete",
+		Success:   true,
+		Output:    fmt.Sprintf("🗑️ 笔记已删除：%s", title),
+		Tool:      "note_delete",
+		RawResult: map[string]interface{}{"title": title},
 	}
 }
 

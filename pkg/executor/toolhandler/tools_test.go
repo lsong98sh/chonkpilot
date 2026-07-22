@@ -429,17 +429,17 @@ func TestGrep(t *testing.T) {
 	})
 }
 
-func TestSearchFiles(t *testing.T) {
+func TestGrepOnlyFiles(t *testing.T) {
 	dir := t.TempDir()
-	writeTestFile(t, filepath.Join(dir, "main.go"), "")
-	writeTestFile(t, filepath.Join(dir, "util.js"), "")
-	writeTestFile(t, filepath.Join(dir, "styles.css"), "")
+	writeTestFile(t, filepath.Join(dir, "main.go"), "package main\nfunc main() {}\n")
+	writeTestFile(t, filepath.Join(dir, "util.js"), "function helper() {}\n")
+	writeTestFile(t, filepath.Join(dir, "styles.css"), "body { color: red; }\n")
 	h := newTestHandler(t, dir)
 
-	t.Run("glob match", func(t *testing.T) {
-		res := h.Dispatch("search_files", map[string]interface{}{"pattern": "*.go", "path": dir}, 0)
+	t.Run("glob match via grep only_files", func(t *testing.T) {
+		res := h.Dispatch("grep", map[string]interface{}{"pattern": "main", "file_pattern": "*.go", "path": dir, "only_files": true}, 0)
 		if !r(res) {
-			t.Fatalf("search_files failed: %s", res.Error)
+			t.Fatalf("grep only_files failed: %s", res.Error)
 		}
 		if !strings.Contains(res.Output, "main.go") {
 			t.Fatalf("expected main.go in results: %s", res.Output)
@@ -449,10 +449,10 @@ func TestSearchFiles(t *testing.T) {
 		}
 	})
 
-	t.Run("non-glob name", func(t *testing.T) {
-		res := h.Dispatch("search_files", map[string]interface{}{"pattern": "main.go", "path": dir}, 0)
+	t.Run("only_files without pattern lists all matching files", func(t *testing.T) {
+		res := h.Dispatch("grep", map[string]interface{}{"pattern": ".*", "file_pattern": "*.go", "path": dir, "only_files": true}, 0)
 		if !r(res) {
-			t.Fatalf("search_files failed: %s", res.Error)
+			t.Fatalf("grep only_files failed: %s", res.Error)
 		}
 		if !strings.Contains(res.Output, "main.go") {
 			t.Fatalf("expected main.go: %s", res.Output)
@@ -574,8 +574,9 @@ func TestNoteTools(t *testing.T) {
 		if !r(res) {
 			t.Fatalf("note_read failed: %s", res.Error)
 		}
-		if !strings.Contains(res.Output, "test content") {
-			t.Fatalf("expected 'test content' in note: %s", res.Output)
+		rr, _ := res.RawResult.(map[string]interface{})
+		if rr == nil || rr["content"] != "test content" {
+			t.Fatalf("expected 'test content' in note result")
 		}
 	})
 
@@ -584,8 +585,32 @@ func TestNoteTools(t *testing.T) {
 		if !r(res) {
 			t.Fatalf("note_list failed: %s", res.Error)
 		}
-		if !strings.Contains(res.Output, "test-note") {
-			t.Fatalf("expected 'test-note' in note list: %s", res.Output)
+		rr, _ := res.RawResult.(map[string]interface{})
+		if rr == nil {
+			t.Fatal("expected non-nil RawResult")
+		}
+		notesRaw, _ := rr["notes"].([]interface{})
+		// []map[string]interface{} stored as []interface{} after JSON round-trip
+		if len(notesRaw) != 1 {
+			// Also try direct comparison when not JSON-round-tripped
+			if notesMap, ok := rr["notes"].([]map[string]interface{}); ok {
+				if len(notesMap) == 1 {
+					if notesMap[0]["title"] == "test-note" {
+						return // OK
+					}
+				}
+				notesRaw = make([]interface{}, len(notesMap))
+				for i, n := range notesMap {
+					notesRaw[i] = n
+				}
+			}
+		}
+		if len(notesRaw) != 1 {
+			t.Fatalf("expected 1 note, got %d (raw=%v)", len(notesRaw), rr["notes"])
+		}
+		note, _ := notesRaw[0].(map[string]interface{})
+		if note["title"] != "test-note" {
+			t.Fatalf("expected note title 'test-note', got %v", note["title"])
 		}
 	})
 
@@ -687,12 +712,20 @@ func TestAsyncExecuteCommand(t *testing.T) {
 			t.Fatalf("expected task_id in output: %s", res.Output)
 		}
 
-		// Extract task_id — parse "task_id=cmd-1 status=running"
+		// Extract task_id - try RawResult first, then fallback to Output parsing
 		taskID := ""
-		for _, part := range strings.Fields(res.Output) {
-			if strings.HasPrefix(part, "task_id=") {
-				taskID = strings.TrimPrefix(part, "task_id=")
-				break
+		if rr, ok := res.RawResult.(map[string]interface{}); ok {
+			if tid, ok := rr["task_id"].(string); ok {
+				taskID = tid
+			}
+		}
+		if taskID == "" {
+			// Fallback: parse from Output
+			for _, part := range strings.Fields(res.Output) {
+				if strings.HasPrefix(part, "task_id=") {
+					taskID = strings.TrimPrefix(part, "task_id=")
+					break
+				}
 			}
 		}
 		if taskID == "" {

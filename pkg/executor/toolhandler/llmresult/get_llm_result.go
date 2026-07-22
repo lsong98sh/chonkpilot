@@ -22,6 +22,10 @@ func HandleGetLLMResult(dbDir string, args map[string]interface{}) *types.ToolRe
 			Success: false,
 			Error:   "'session_id' is required",
 			Tool:    "get_llm_result",
+			Output:  "❌ 缺少 session_id 参数",
+			RawResult: map[string]interface{}{
+				"error": "'session_id' is required",
+			},
 		}
 	}
 
@@ -49,6 +53,10 @@ func HandleGetLLMResult(dbDir string, args map[string]interface{}) *types.ToolRe
 			Success: false,
 			Error:   "'turn_ids' or 'turn_id' is required",
 			Tool:    "get_llm_result",
+			Output:  "❌ 缺少 turn_ids 或 turn_id 参数",
+			RawResult: map[string]interface{}{
+				"error": "'turn_ids' or 'turn_id' is required",
+			},
 		}
 	}
 	if len(turnIDs) > 20 {
@@ -61,6 +69,11 @@ func HandleGetLLMResult(dbDir string, args map[string]interface{}) *types.ToolRe
 			Success: false,
 			Error:   fmt.Sprintf("failed to open database: %s", err.Error()),
 			Tool:    "get_llm_result",
+			Output:  "❌ 打开数据库失败",
+			RawResult: map[string]interface{}{
+				"error":  err.Error(),
+				"db_dir": dbDir,
+			},
 		}
 	}
 	defer db.Close(sqlDB)
@@ -101,12 +114,32 @@ func HandleGetLLMResult(dbDir string, args map[string]interface{}) *types.ToolRe
 			Success: false,
 			Error:   fmt.Sprintf("failed to marshal results: %s", err.Error()),
 			Tool:    "get_llm_result",
+			Output:  "❌ 序列化结果失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
+		}
+	}
+
+	// Count successful vs error results
+	totalTurns := len(turnIDs)
+	successCount := 0
+	for _, v := range results {
+		if m, ok := v.(map[string]interface{}); ok {
+			if _, hasContent := m["content"]; hasContent {
+				successCount++
+			}
 		}
 	}
 
 	return &types.ToolResult{
 		Success: true,
-		Output:  string(outputJSON),
+		Output:  fmt.Sprintf("✅ 获取到 %d/%d 个 turn 的 LLM 结果\n\n%s", successCount, totalTurns, string(outputJSON)),
 		Tool:    "get_llm_result",
+		RawResult: map[string]interface{}{
+			"results":       results,
+			"total_turns":   totalTurns,
+			"success_count": successCount,
+		},
 	}
 }

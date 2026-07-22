@@ -1,10 +1,12 @@
 package browser
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"strings"
 	"sync"
 	"time"
@@ -446,9 +448,13 @@ func HandleWebStart(bm *BrowserManager, args map[string]interface{}) *types.Tool
 	bm.lastID = id
 	bm.mu.Unlock()
 
+	headlessStr := "headed"
+	if headless {
+		headlessStr = "headless"
+	}
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("browser started (headless: %v), browser_id: %s", headless, id),
+		Output:  fmt.Sprintf("🌐 浏览器已启动（%s，ID=%s）", headlessStr, id),
 		Tool:    "web_start",
 		RawResult: map[string]interface{}{
 			"browser_id": id,
@@ -460,15 +466,16 @@ func HandleWebStart(bm *BrowserManager, args map[string]interface{}) *types.Tool
 func HandleWebOpen(bm *BrowserManager, tm *task.TaskManager, logger *zap.Logger, args map[string]interface{}) *types.ToolResult {
 	url, _ := args["url"].(string)
 	if url == "" {
-		return &types.ToolResult{Success: false, Error: "url is required", Tool: "web_open"}
+		return &types.ToolResult{Success: false, Error: "url is required", Output: "❌ 打开页面失败：url 参数缺失", Tool: "web_open"}
 	}
 
 	inst, err := bm.getInstance(browserIDFromArgs(args))
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "web_open"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Output: "❌ " + err.Error(), Tool: "web_open"}
 	}
 
-	_, output, err := tm.SyncOperation("web_open", func(cancel <-chan struct{}) (string, error) {
+	var pageTitle string
+	_, _, err = tm.SyncOperation("web_open", func(cancel <-chan struct{}) (string, error) {
 		ctx, err := inst.EnsureTab()
 		if err != nil {
 			return "", err
@@ -503,14 +510,27 @@ func HandleWebOpen(bm *BrowserManager, tm *task.TaskManager, logger *zap.Logger,
 
 		var title string
 		_ = chromedp.Run(runCtx, chromedp.Title(&title))
+		pageTitle = title
 		return fmt.Sprintf("navigated to %s, title: %s", url, title), nil
 	})
 
+	if err != nil {
+		return &types.ToolResult{
+			Success: false,
+			Error:   FormatErr(err),
+			Output:  fmt.Sprintf("❌ 打开页面失败：%s", FormatErr(err)),
+			Tool:    "web_open",
+		}
+	}
+
 	return &types.ToolResult{
-		Success: err == nil,
-		Output:  output,
-		Error:   FormatErr(err),
+		Success: true,
+		Output:  fmt.Sprintf("🌐 已打开页面：%s", pageTitle),
 		Tool:    "web_open",
+		RawResult: map[string]interface{}{
+			"url":   url,
+			"title": pageTitle,
+		},
 	}
 }
 
@@ -573,15 +593,25 @@ func HandleWebScreenshot(bm *BrowserManager, args map[string]interface{}) *types
 	}
 
 	encoded := base64.StdEncoding.EncodeToString(buf)
-	dataURL := "data:image/png;base64," + encoded
+
+	// Decode PNG to get dimensions
+	imgWidth := 0
+	imgHeight := 0
+	if imgConfig, err := png.DecodeConfig(bytes.NewReader(buf)); err == nil {
+		imgWidth = imgConfig.Width
+		imgHeight = imgConfig.Height
+	}
+
 	return &types.ToolResult{
 		Success: true,
-		Output:  dataURL,
+		Output:  fmt.Sprintf("📸 页面截图完成（PNG，%d 字节）", len(buf)),
 		Tool:    "web_screenshot",
 		RawResult: map[string]interface{}{
-			"mime_type": "image/png",
-			"encoding":  "base64",
-			"size":      len(buf),
+			"image_base64": encoded,
+			"mime_type":    "image/png",
+			"size":         len(buf),
+			"width":        imgWidth,
+			"height":       imgHeight,
 		},
 	}
 }
@@ -598,7 +628,7 @@ func HandleWebClose(bm *BrowserManager, args map[string]interface{}) *types.Tool
 		// Close all instances if no ID specified
 		if len(bm.instances) == 0 {
 			bm.mu.Unlock()
-			return &types.ToolResult{Success: true, Output: "no browser instances running", Tool: "web_close"}
+			return &types.ToolResult{Success: true, Output: "🌐 没有正在运行的浏览器实例", Tool: "web_close"}
 		}
 		// Close last used, or if only one, close that
 		if bm.lastID != "" {
@@ -619,7 +649,7 @@ func HandleWebClose(bm *BrowserManager, args map[string]interface{}) *types.Tool
 		inst, ok = bm.instances[id]
 		if !ok {
 			bm.mu.Unlock()
-			return &types.ToolResult{Success: false, Error: fmt.Sprintf("browser instance '%s' not found", id), Tool: "web_close"}
+			return &types.ToolResult{Success: false, Error: fmt.Sprintf("browser instance '%s' not found", id), Output: fmt.Sprintf("❌ 浏览器实例 '%s' 未找到", id), Tool: "web_close"}
 		}
 	}
 
@@ -645,7 +675,14 @@ func HandleWebClose(bm *BrowserManager, args map[string]interface{}) *types.Tool
 	inst.consoleLogs = nil
 	inst.requestLogs = nil
 
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("browser instance '%s' closed", id), Tool: "web_close"}
+	return &types.ToolResult{
+		Success: true,
+		Output:  "🌐 浏览器已关闭",
+		Tool:    "web_close",
+		RawResult: map[string]interface{}{
+			"browser_id": id,
+		},
+	}
 }
 
 // ─── Simplify Functions ───

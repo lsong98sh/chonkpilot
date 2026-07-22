@@ -3,6 +3,7 @@ export namespace fileversions {
 	export class VersionContent {
 	    id: number;
 	    turn_id: string;
+	    version: number;
 	    file_uid: string;
 	    file_path: string;
 	    created_at: string;
@@ -16,6 +17,7 @@ export namespace fileversions {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.turn_id = source["turn_id"];
+	        this.version = source["version"];
 	        this.file_uid = source["file_uid"];
 	        this.file_path = source["file_path"];
 	        this.created_at = source["created_at"];
@@ -25,6 +27,7 @@ export namespace fileversions {
 	export class VersionRecord {
 	    id: number;
 	    turn_id: string;
+	    version: number;
 	    file_uid: string;
 	    file_path: string;
 	    created_at: string;
@@ -37,6 +40,7 @@ export namespace fileversions {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.turn_id = source["turn_id"];
+	        this.version = source["version"];
 	        this.file_uid = source["file_uid"];
 	        this.file_path = source["file_path"];
 	        this.created_at = source["created_at"];

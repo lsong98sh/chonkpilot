@@ -1,6 +1,32 @@
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
+/** Compute total content size of a tool_pair (arguments + result) in bytes. */
+function computeContentSize(callArgs, result) {
+  let sz = 0
+  if (callArgs) sz += typeof callArgs === 'string' ? callArgs.length : JSON.stringify(callArgs).length
+  if (result) sz += result.length
+  return sz
+}
+
+/**
+ * Build a brief (≤160 chars) for the tool_pair line from call + result info.
+ */
+function computeBrief(tool, simplified, resultSimplified, status, resultSuccess) {
+  let brief = simplified || (tool + '(...)')
+  if (status === 'done') {
+    const rb = resultSimplified || 'ok'
+    brief += '  ' + rb
+  } else if (status === 'failed') {
+    const rb = resultSimplified || 'failed'
+    brief += '  ' + rb
+  }
+  if (brief.length > 160) {
+    brief = brief.slice(0, 157) + '...'
+  }
+  return brief
+}
+
 /**
  * Shared session message management.
  *
@@ -27,7 +53,7 @@ export function useSessionMessages() {
     // tool_call — always creates a new entry
     if (data.type === 'tool_call') {
       const callSimplified = data.simplified || (data.tool + '(...)')
-      messages.value.push({
+      const msg = {
         role: 'assistant',
         type: 'tool_pair',
         tool_call_id: data.tool_call_id,
@@ -40,7 +66,10 @@ export function useSessionMessages() {
         result_success: null,
         id: 'tp_' + data.tool_call_id,
         createdAt: new Date().toISOString(),
-      })
+      }
+      msg.brief = computeBrief(msg.tool, msg.simplified, null, 'pending', null)
+      msg.content_size = computeContentSize(data.arguments, null)
+      messages.value.push(msg)
       currentSection = null // next reasoning/text starts fresh
       return
     }
@@ -53,6 +82,8 @@ export function useSessionMessages() {
         pair.result_simplified = data.simplified || ''
         pair.result = data.content || data.result || ''
         pair.result_success = data.success !== false
+        pair.brief = computeBrief(pair.tool, pair.simplified, pair.result_simplified, pair.status, pair.result_success)
+        pair.content_size = computeContentSize(pair.arguments, pair.result)
       }
       currentSection = null // next reasoning/text starts fresh
       return
@@ -110,19 +141,33 @@ export function useSessionMessages() {
    */
   function dbMsgToView(dbMsg) {
     if (dbMsg.type === 'tool_pair') {
+      const simplified = dbMsg.simplified || ''
+      const resultSimplified = dbMsg.result_simplified || ''
+      const status = dbMsg.status || 'done'
+      const resultSuccess = dbMsg.result_success !== false
+      // recompute brief for historical messages
+      let brief = simplified || (dbMsg.tool + '(...)')
+      if (status === 'done') {
+        brief += '  ' + (resultSimplified || 'ok')
+      } else if (status === 'failed') {
+        brief += '  ' + (resultSimplified || 'failed')
+      }
+      if (brief.length > 160) brief = brief.slice(0, 157) + '...'
       return {
         id: 'tp_' + (dbMsg.tool_call_id || Math.random().toString(36).slice(2, 10)),
         role: dbMsg.role || 'assistant',
         type: 'tool_pair',
         tool_call_id: dbMsg.tool_call_id,
         tool: dbMsg.tool,
-        simplified: dbMsg.simplified || '',
-        result_simplified: dbMsg.result_simplified || '',
-        status: dbMsg.status || 'done',
+        simplified: simplified,
+        result_simplified: resultSimplified,
+        status: status,
+        brief: brief,
+        content_size: computeContentSize(dbMsg.arguments, dbMsg.result),
         arguments: dbMsg.arguments || '',
         result: dbMsg.result || '',
         has_more: !!dbMsg.has_more,
-        result_success: dbMsg.result_success !== false,
+        result_success: resultSuccess,
         createdAt: dbMsg.created_at,
       }
     }

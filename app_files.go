@@ -4,11 +4,17 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/chonkpilot/chonkpilot/internal/db"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // ─── File operations ───────────────────────────────────────
@@ -29,11 +35,12 @@ func (a *App) WatchDir(path string) {
 }
 
 // UnwatchDir stops watching a directory (called when tree node collapses).
-func (a *App) UnwatchDir(path string) {
+// recursive=true also unwatches all watched subdirectories.
+func (a *App) UnwatchDir(path string, recursive bool) {
 	if a.fw == nil {
 		return
 	}
-	a.fw.UnwatchDir(path)
+	a.fw.UnwatchDir(path, recursive)
 }
 
 // GetFileTree returns the file tree for the given path (or workDir).
@@ -87,7 +94,7 @@ func readDirChildren(dir string) []*fileNode {
 	}
 	var nodes []*fileNode
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".ide" {
+		if strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		name := entry.Name()
@@ -102,6 +109,13 @@ func readDirChildren(dir string) []*fileNode {
 		}
 		nodes = append(nodes, child)
 	}
+	// Sort: directories first, then by name
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].IsDir != nodes[j].IsDir {
+			return nodes[i].IsDir
+		}
+		return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name)
+	})
 	return nodes
 }
 
@@ -297,4 +311,389 @@ func (a *App) OpenWithDialog(path string) (map[string]interface{}, error) {
 		return nil, err
 	}
 	return map[string]interface{}{"code": "OK"}, nil
+}
+
+// ─── File tree state persistence (DB-backed) ───────────────
+
+// LoadInitData loads all initial data for the file tree in one call.
+// Returns: { treeData, expandedKeys, selectedKey, workDir, filetreeWidth }
+func (a *App) LoadInitData() (map[string]interface{}, error) {
+	// 1. Read saved state from DB
+	var savedTreeJSON, savedExpandedJSON, selectedPath string
+	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		savedTreeJSON, _ = db.GetConfig(sqlDB, "filetree-data")
+		savedExpandedJSON, _ = db.GetConfig(sqlDB, "filetree-expanded-key")
+		selectedPath, _ = db.GetConfig(sqlDB, "filetree-selected-path")
+		return nil
+	})
+
+	// No saved state → return first level
+	if savedTreeJSON == "" {
+		children := readDirChildren(a.workDir)
+		treeData := make([]map[string]interface{}, 0)
+		for _, c := range children {
+			treeData = append(treeData, nodeToMap(c, a.workDir))
+		}
+		return map[string]interface{}{
+			"treeData":      treeData,
+			"expandedKeys":  []string{},
+			"selectedKey":   "",
+			"workDir":       a.workDir,
+			"filetreeWidth": 280,
+		}, nil
+	}
+
+	// 2. Parse saved expanded keys
+	var savedExpanded []string
+	json.Unmarshal([]byte(savedExpandedJSON), &savedExpanded)
+	if savedExpanded == nil {
+		savedExpanded = []string{}
+	}
+
+	// Convert saved relative expanded keys to absolute
+	expandedSet := make(map[string]bool)
+	for _, rel := range savedExpanded {
+		absPath := filepath.Join(a.workDir, rel)
+		expandedSet[absPath] = true
+	}
+
+	// 3. Parse saved tree and diff against filesystem
+	var savedTree []map[string]interface{}
+	json.Unmarshal([]byte(savedTreeJSON), &savedTree)
+
+	treeData := diffTreeWithFS(savedTree, a.workDir, expandedSet, a.workDir)
+
+	// 4. Filter expandedKeys: only keep ones that still exist in tree
+	validExpanded := make([]string, 0)
+	validExpandedSet := collectAllDirPaths(treeData, a.workDir)
+	for absPath := range expandedSet {
+		if validExpandedSet[absPath] {
+			validExpanded = append(validExpanded, absPath)
+		}
+	}
+
+	// 5. Read window state
+	filetreeWidth := 280
+	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		filetreeWidth = db.GetConfigInt(sqlDB, "filetree-window-width", 280)
+		return nil
+	})
+
+	// Also restore window position
+	var windowState struct {
+		Width     int  `json:"width"`
+		Height    int  `json:"height"`
+		X         int  `json:"x"`
+		Y         int  `json:"y"`
+		Maximized bool `json:"maximized"`
+	}
+	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		ws, _ := db.GetConfig(sqlDB, "window")
+		if ws != "" {
+			json.Unmarshal([]byte(ws), &windowState)
+		}
+		return nil
+	})
+	if windowState.Width > 0 && a.ctx != nil {
+		runtime.WindowSetSize(a.ctx, windowState.Width, windowState.Height)
+		runtime.WindowSetPosition(a.ctx, windowState.X, windowState.Y)
+		if windowState.Maximized {
+			runtime.WindowMaximise(a.ctx)
+		}
+	}
+
+	// 6. Start watchers
+	a.fw.WatchDir(a.workDir)
+	for _, p := range validExpanded {
+		a.fw.WatchDir(p)
+	}
+
+	return map[string]interface{}{
+		"treeData":      treeData,
+		"expandedKeys":  validExpanded,
+		"selectedKey":   selectedPath,
+		"workDir":       a.workDir,
+		"filetreeWidth": filetreeWidth,
+	}, nil
+}
+
+// SaveFileTreeState persists file tree state to ide.db config table.
+// state contains: { tree, expanded_dirs, selected_path }
+func (a *App) SaveFileTreeState(state map[string]interface{}) error {
+	return db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		// Save tree data (with relative paths)
+		if tree, ok := state["snapshot"]; ok {
+			relTree := convertPathsToRelative(tree, a.workDir)
+			data, _ := json.Marshal(relTree)
+			if data != nil {
+				db.SetConfig(sqlDB, "filetree-data", string(data))
+			}
+		}
+		// Save expanded dirs (relative paths)
+		if dirs, ok := state["expanded_dirs"].([]interface{}); ok {
+			var relDirs []string
+			for _, d := range dirs {
+				if ds, ok := d.(string); ok {
+					rel, _ := filepath.Rel(a.workDir, ds)
+					relDirs = append(relDirs, rel)
+				}
+			}
+			data, _ := json.Marshal(relDirs)
+			if data != nil {
+				db.SetConfig(sqlDB, "filetree-expanded-key", string(data))
+			}
+		}
+		// Save selected path
+		if sel, ok := state["selected_path"].(string); ok && sel != "" {
+			rel, _ := filepath.Rel(a.workDir, sel)
+			db.SetConfig(sqlDB, "filetree-selected-path", rel)
+		}
+		return nil
+	})
+}
+
+// SaveWindowState persists window position/size to ide.db config table.
+func (a *App) SaveWindowState(state map[string]interface{}) error {
+	data, _ := json.Marshal(state)
+	return db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		return db.SetConfig(sqlDB, "window", string(data))
+	})
+}
+
+// SaveFileTreeWidth persists the file tree panel width.
+func (a *App) SaveFileTreeWidth(width int) error {
+	return db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		return db.SetConfig(sqlDB, "filetree-window-width", fmt.Sprintf("%d", width))
+	})
+}
+
+// ─── Helper: convert fileNode to map for frontend ──────────
+
+func nodeToMap(n *fileNode, workDir string) map[string]interface{} {
+	m := map[string]interface{}{
+		"label":  n.Name,
+		"path":   n.Path,
+		"is_dir": n.IsDir,
+	}
+	if n.IsDir {
+		m["children"] = []interface{}{}
+		m["_loaded"] = false
+	}
+	return m
+}
+
+// Helper: diff saved tree against filesystem
+func diffTreeWithFS(saved []map[string]interface{}, workDir string, expandedSet map[string]bool, baseDir string) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0)
+	// Read actual disk entries
+	diskEntries, _ := os.ReadDir(baseDir)
+	diskMap := make(map[string]bool)
+	for _, e := range diskEntries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, "-wal") || strings.HasSuffix(name, "-shm") || strings.HasSuffix(name, "~") || strings.HasPrefix(name, "~$") {
+			continue
+		}
+		diskMap[name] = e.IsDir()
+	}
+
+	// Build a map from saved nodes for quick lookup
+	savedMap := make(map[string]map[string]interface{})
+	for _, node := range saved {
+		if name, ok := node["name"].(string); ok {
+			savedMap[name] = node
+		}
+	}
+
+	// Process existing + new
+	allNames := make(map[string]bool)
+	for name := range diskMap {
+		allNames[name] = true
+	}
+	for name := range savedMap {
+		allNames[name] = true
+	}
+
+	for name := range allNames {
+		absPath := filepath.Join(baseDir, name)
+		isDir, onDisk := diskMap[name]
+		savedNode, wasSaved := savedMap[name]
+
+		if !onDisk {
+			// Deleted - skip entirely
+			continue
+		}
+
+		node := map[string]interface{}{
+			"label":  name,
+			"path":   absPath,
+			"is_dir": isDir,
+		}
+
+		if isDir {
+			inExpanded := expandedSet[absPath]
+
+			if wasSaved {
+				if children, ok := savedNode["children"].([]interface{}); ok && len(children) > 0 {
+					// Has saved children data
+					if inExpanded {
+						// Was expanded → diff children recursively
+						var savedChildren []map[string]interface{}
+						for _, c := range children {
+							if cm, ok := c.(map[string]interface{}); ok {
+								savedChildren = append(savedChildren, cm)
+							}
+						}
+						childResult := diffTreeWithFS(savedChildren, workDir, expandedSet, absPath)
+						var childList []interface{}
+						for _, cr := range childResult {
+							childList = append(childList, cr)
+						}
+						node["children"] = childList
+						node["_loaded"] = true
+					} else {
+						// Not expanded - check if children are virtual or real
+						firstChild := children[0]
+						if fc, ok := firstChild.(map[string]interface{}); ok {
+							if isVirtual, _ := fc["virtual"].(bool); isVirtual {
+								// Virtual placeholder - keep
+								node["children"] = children
+								node["_loaded"] = false
+							} else {
+								// Real data - recurse to check for expanded grandchildren
+								var savedChildren []map[string]interface{}
+								for _, c := range children {
+									if cm, ok := c.(map[string]interface{}); ok {
+										savedChildren = append(savedChildren, cm)
+									}
+								}
+								childResult := diffTreeWithFS(savedChildren, workDir, expandedSet, absPath)
+								var childList []interface{}
+								for _, cr := range childResult {
+									childList = append(childList, cr)
+								}
+								node["children"] = childList
+								node["_loaded"] = false
+							}
+						} else {
+							node["children"] = children
+							node["_loaded"] = false
+						}
+					}
+				} else {
+					// No saved children
+					if inExpanded {
+						// Expanded but no children data - read from disk
+						diskChildren := readDirChildren(absPath)
+						var childList []interface{}
+						for _, dc := range diskChildren {
+							childList = append(childList, nodeToMap(dc, workDir))
+						}
+						node["children"] = childList
+						node["_loaded"] = true
+					} else {
+						node["children"] = []interface{}{
+							map[string]interface{}{
+								"label":   ".",
+								"virtual": true,
+								"isLeaf":  true,
+							},
+						}
+						node["_loaded"] = false
+					}
+				}
+			} else {
+				// New directory not in saved state
+				if inExpanded {
+					diskChildren := readDirChildren(absPath)
+					var childList []interface{}
+					for _, dc := range diskChildren {
+						childList = append(childList, nodeToMap(dc, workDir))
+					}
+					node["children"] = childList
+					node["_loaded"] = true
+				} else {
+					node["children"] = []interface{}{}
+					node["_loaded"] = false
+				}
+			}
+		}
+
+		result = append(result, node)
+	}
+
+	// Sort: directories first, then by name
+	sort.Slice(result, func(i, j int) bool {
+		di, _ := result[i]["is_dir"].(bool)
+		dj, _ := result[j]["is_dir"].(bool)
+		if di != dj {
+			return di
+		}
+		ni, _ := result[i]["label"].(string)
+		nj, _ := result[j]["label"].(string)
+		return ni < nj
+	})
+
+	return result
+}
+
+// Helper: collect all directory paths from tree
+func collectAllDirPaths(nodes []map[string]interface{}, workDir string) map[string]bool {
+	result := make(map[string]bool)
+	for _, n := range nodes {
+		if isDir, ok := n["is_dir"].(bool); ok && isDir {
+			if path, ok := n["path"].(string); ok {
+				result[path] = true
+				if children, ok := n["children"].([]interface{}); ok {
+					var childMaps []map[string]interface{}
+					for _, c := range children {
+						if cm, ok := c.(map[string]interface{}); ok {
+							childMaps = append(childMaps, cm)
+						}
+					}
+					for k, v := range collectAllDirPaths(childMaps, workDir) {
+						result[k] = v
+					}
+				}
+			}
+		}
+	}
+	return result
+}
+
+// Helper: convert absolute paths in tree data to relative paths for storage
+func convertPathsToRelative(tree interface{}, workDir string) interface{} {
+	switch t := tree.(type) {
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for k, v := range t {
+			if k == "path" {
+				if s, ok := v.(string); ok {
+					rel, err := filepath.Rel(workDir, s)
+					if err == nil {
+						result[k] = rel
+					} else {
+						result[k] = v
+					}
+				} else {
+					result[k] = convertPathsToRelative(v, workDir)
+				}
+			} else if k == "children" {
+				result[k] = convertPathsToRelative(v, workDir)
+			} else {
+				result[k] = v
+			}
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(t))
+		for i, v := range t {
+			result[i] = convertPathsToRelative(v, workDir)
+		}
+		return result
+	default:
+		return tree
+	}
 }

@@ -29,6 +29,8 @@ export function DiscoverMCPServerTools(arg1:string,arg2:string):Promise<Record<s
 
 export function DuplicateFile(arg1:string):Promise<Record<string, any>>;
 
+export function FileTreeOperateDone(arg1:string):Promise<void>;
+
 export function GeneratePrompts(arg1:Record<string, any>):Promise<void>;
 
 export function GetActiveScenario():Promise<Record<string, any>>;
@@ -91,6 +93,8 @@ export function ListAllSessions():Promise<Record<string, any>>;
 
 export function ListSessions():Promise<Record<string, any>>;
 
+export function LoadInitData():Promise<Record<string, any>>;
+
 export function LoadMissingAgentsFromResource():Promise<Record<string, any>>;
 
 export function OpenDevTools():Promise<void>;
@@ -127,6 +131,12 @@ export function RestoreVersion(arg1:number):Promise<void>;
 
 export function RevealInExplorer(arg1:string):Promise<Record<string, any>>;
 
+export function SaveFileTreeSnapshot(arg1:string,arg2:Record<string, any>):Promise<void>;
+
+export function SaveFileTreeState(arg1:Record<string, any>):Promise<void>;
+
+export function SaveFileTreeWidth(arg1:number):Promise<void>;
+
 export function SaveNote(arg1:Record<string, any>):Promise<Record<string, any>>;
 
 export function SaveProjectAgents(arg1:Record<string, any>):Promise<void>;
@@ -138,6 +148,8 @@ export function SaveProjectTools(arg1:Record<string, any>):Promise<void>;
 export function SaveScenario(arg1:main.saveScenarioArgs):Promise<Record<string, any>>;
 
 export function SaveUserConfig(arg1:Record<string, any>):Promise<void>;
+
+export function SaveWindowState(arg1:Record<string, any>):Promise<void>;
 
 export function SearchProjectFiles(arg1:string):Promise<Array<main.SearchResult>>;
 
@@ -155,7 +167,7 @@ export function SubscribeSession(arg1:string):Promise<void>;
 
 export function UnsubscribeSession(arg1:string):Promise<void>;
 
-export function UnwatchDir(arg1:string):Promise<void>;
+export function UnwatchDir(arg1:string,arg2:boolean):Promise<void>;
 
 export function UpdateSessionTitle(arg1:string,arg2:string):Promise<void>;
 

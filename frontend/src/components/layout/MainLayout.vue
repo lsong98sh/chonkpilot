@@ -60,6 +60,11 @@
           <el-icon><ChatDotSquare /></el-icon>
           <span v-show="chatOpen">CHAT</span>
           <el-tag v-if="chatSessionId" size="small" type="info" class="chat-session-tag">#{{ chatSessionId.slice(0, 8) }}</el-tag>
+          <el-tooltip content="New Session" placement="bottom" :show-after="600">
+            <el-button text size="small" class="new-session-btn" @click="handleNewSession">
+              <el-icon><CirclePlus /></el-icon>
+            </el-button>
+          </el-tooltip>
           <div class="header-spacer" />
           <el-popover trigger="click" placement="bottom-end" :width="160" popper-class="scenario-popover" v-model:visible="scenarioPopoverVisible">
             <template #reference>
@@ -124,6 +129,7 @@ const CodeView = defineAsyncComponent({
 })
 import { ElMessage } from 'element-plus'
 import { openDir, getAllConfig } from '../../api/config'
+import { CirclePlus } from '@element-plus/icons-vue'
 
 const workDir = ref('')
 const vcsInfo = ref({ git: false, svn: false })
@@ -255,6 +261,12 @@ onBeforeUnmount(() => {
 
 function handleSessionLoaded(e) {
   chatSessionId.value = e.detail?.session_id || null
+}
+
+function handleNewSession() {
+  window.dispatchEvent(new CustomEvent('session:select', {
+    detail: { session_id: null }
+  }))
 }
 
 function handleConfigOpenTab(e) {
@@ -425,6 +437,13 @@ function onStartResizeRow(e) {
 }
 .chat-session-tag {
   flex-shrink: 0;
+}
+.new-session-btn {
+  margin-left: 0 !important;
+  color: var(--text-muted);
+}
+.new-session-btn:hover {
+  color: var(--accent);
 }
 :deep(.popover-list) {
   display: flex;

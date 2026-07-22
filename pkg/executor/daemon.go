@@ -16,13 +16,17 @@ import (
 	"github.com/chonkpilot/chonkpilot/internal/db"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/output"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/browser"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
 )
 
 // DaemonCommand is a command sent from IDE to the daemon executor via stdin.
 type DaemonCommand struct {
-	Cmd       string   `json:"cmd"`       // start_turn | cancel_session | shutdown
+	Cmd       string   `json:"cmd"`       // start_turn | cancel_session | shutdown | tool_result
 	SessionID string   `json:"session_id,omitempty"`
 	TurnID    string   `json:"turn_id,omitempty"`
+	UUID      string   `json:"uuid,omitempty"`      // for tool_result routing
+	Status    string   `json:"status,omitempty"`     // for tool_result
+	Tool      string   `json:"tool,omitempty"`       // for tool_result
 	LLM       string   `json:"llm,omitempty"`
 	Think     string   `json:"think,omitempty"`
 	Effort    string   `json:"effort,omitempty"`
@@ -49,8 +53,9 @@ type Daemon struct {
 	sqlDB     *sql.DB // shared DB connection for all workers
 	eaBase    *ExecutorArgs // base args parsed from CLI flags
 
-	mu      sync.Mutex
-	workers map[string]*SessionWorker // sessionID → worker
+	mu          sync.Mutex
+	workers     map[string]*SessionWorker          // sessionID → worker
+	toolWaiters map[string]chan *types.ToolResult  // UUID → channel for tool_result routing
 }
 
 // RunDaemon starts the daemon loop.
@@ -143,6 +148,8 @@ func RunDaemon(args []string) error {
 			d.handleStartTurn(cmd, outWriter, logger)
 		case "cancel_session":
 			d.handleCancelSession(cmd, logger)
+		case "tool_result":
+			d.handleToolResult(cmd)
 		case "shutdown":
 			logger.Info("Daemon shutting down")
 			d.shutdownAll()
@@ -319,7 +326,10 @@ func (w *SessionWorker) processTurn(d *Daemon, cmd DaemonCommand, logger *zap.Lo
 
 	// ── Execute the turn with shared DB and existing BrowserManager ──
 	// Completion/error events are emitted inside executeTurnWith.
-	result, err := executeTurnWith(ea, "", "", d.outWriter, logger, d.sqlDB, w.browserMgr, w.cancelCtx)
+	waitFn := func(uuid string) *types.ToolResult {
+		return d.waitToolResult(w.cancelCtx, uuid)
+	}
+	result, err := executeTurnWith(ea, "", "", d.outWriter, logger, d.sqlDB, w.browserMgr, w.cancelCtx, waitFn)
 
 	elapsed := time.Since(start)
 	if err != nil {
@@ -337,6 +347,61 @@ func (w *SessionWorker) processTurn(d *Daemon, cmd DaemonCommand, logger *zap.Lo
 		zap.Duration("elapsed", elapsed),
 		zap.Bool("has_result", result != nil),
 	)
+}
+
+// ─── Tool result routing ─────────────────────────────
+
+// waitToolResult registers a UUID and blocks until the IDE sends a tool_result
+// command via stdin with the matching UUID. Returns the tool result.
+// If ctx is cancelled (e.g. by CancelSession), returns a cancelled result.
+// Designed to be passed to the tool handler as WaitToolResult callback.
+func (d *Daemon) waitToolResult(ctx context.Context, uuid string) *types.ToolResult {
+	ch := make(chan *types.ToolResult, 1)
+	d.mu.Lock()
+	if d.toolWaiters == nil {
+		d.toolWaiters = make(map[string]chan *types.ToolResult)
+	}
+	d.toolWaiters[uuid] = ch
+	d.mu.Unlock()
+
+	// Block until resolved or cancelled
+	select {
+	case result := <-ch:
+		return result
+	case <-ctx.Done():
+		// Clean up waiter entry if not yet resolved
+		d.mu.Lock()
+		delete(d.toolWaiters, uuid)
+		d.mu.Unlock()
+		return &types.ToolResult{
+			Success: false,
+			Error:   "file tree capture cancelled",
+			Tool:    "",
+		}
+	}
+}
+
+// handleToolResult handles a tool_result command from IDE.
+// Routes the result to the goroutine waiting for the UUID.
+func (d *Daemon) handleToolResult(cmd DaemonCommand) {
+	d.mu.Lock()
+	ch, ok := d.toolWaiters[cmd.UUID]
+	if ok {
+		delete(d.toolWaiters, cmd.UUID)
+	}
+	d.mu.Unlock()
+
+	if !ok {
+		d.logger.Warn("tool_result: unknown UUID", zap.String("uuid", cmd.UUID))
+		return
+	}
+
+	success := cmd.Status == "completed" || cmd.Status == "done"
+	ch <- &types.ToolResult{
+		Success: success,
+		Output:  cmd.Status,
+		Tool:    cmd.Tool,
+	}
 }
 
 // ─── Helpers ───────────────────────────────────────────────

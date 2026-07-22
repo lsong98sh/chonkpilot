@@ -28,14 +28,14 @@ import (
 
 // executeTurn is a convenience wrapper around executeTurnWith.
 func executeTurn(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *output.Writer, logger *zap.Logger) (*TurnResult, error) {
-	return executeTurnWith(ea, prompt, systemPrompt, outWriter, logger, nil, nil, nil)
+	return executeTurnWith(ea, prompt, systemPrompt, outWriter, logger, nil, nil, nil, nil)
 }
 
 // executeTurnWith performs turn execution with optional external dependencies.
 //   - extSQLDB: if non-nil, use this shared DB connection instead of opening a new one
 //   - extBrowserMgr: if non-nil, use this existing BrowserManager instead of creating a fresh one
 //   - extCancelCtx: if non-nil, use as the base cancellation context
-func executeTurnWith(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *output.Writer, logger *zap.Logger, extSQLDB *sql.DB, extBrowserMgr *browser.BrowserManager, extCancelCtx context.Context) (*TurnResult, error) {
+func executeTurnWith(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *output.Writer, logger *zap.Logger, extSQLDB *sql.DB, extBrowserMgr *browser.BrowserManager, extCancelCtx context.Context, waitToolResult func(uuid string) *types.ToolResult) (*TurnResult, error) {
 	// Set TEMP/TMP to .ide/tmp so all temp files go into the project's .ide directory
 	setTempDir(ea.WorkDir, ea.TempIDEDir)
 
@@ -109,7 +109,7 @@ func executeTurnWith(ea *ExecutorArgs, prompt, systemPrompt string, outWriter *o
 	messages = append(messages, sysMessages...)
 
 	// Initialize tool handler (after ensureSessionAndTurn may have set ea.TurnID)
-	handler := initToolHandler(ea, sqlDB, ucfg, chromeOK, codebaseEnabled, codebaseExtensions, client, outWriter, logger)
+	handler := initToolHandler(ea, sqlDB, ucfg, chromeOK, codebaseEnabled, codebaseExtensions, client, outWriter, logger, waitToolResult)
 	if extBrowserMgr != nil {
 		handler.Browser = extBrowserMgr
 	}
@@ -600,7 +600,7 @@ func buildSystemMessages(ea *ExecutorArgs, sqlDB *sql.DB, systemPrompt string, p
 
 // initToolHandler creates and configures the tool handler with LLM config,
 // UserConfig limits, security rules, chrome, file versioner, code indexer, and event callbacks.
-func initToolHandler(ea *ExecutorArgs, sqlDB *sql.DB, ucfg *models.UserConfig, chromeOK bool, codebaseEnabled bool, codebaseExtensions []string, client *llm.Client, outWriter *output.Writer, logger *zap.Logger) *toolhandler.Handler {
+func initToolHandler(ea *ExecutorArgs, sqlDB *sql.DB, ucfg *models.UserConfig, chromeOK bool, codebaseEnabled bool, codebaseExtensions []string, client *llm.Client, outWriter *output.Writer, logger *zap.Logger, waitToolResult func(uuid string) *types.ToolResult) *toolhandler.Handler {
 	handler := toolhandler.NewHandler(ea.WorkDir, ea.DBWorkDir(), ea.SessionID, ea.TurnID, logger)
 	handler.LLMProtocol = ea.LLMProtocol
 	handler.LLMModel = ea.LLMModel
@@ -699,6 +699,10 @@ func initToolHandler(ea *ExecutorArgs, sqlDB *sql.DB, ucfg *models.UserConfig, c
 			outWriter.WriteEvent(eventType, eventWithCtx(ea, payload))
 		})
 	}
+
+	// Wire up async tool result waiter (daemon mode)
+	// If waitToolResult is nil (standalone mode), tools that need it will error
+	handler.WaitToolResult = waitToolResult
 
 	return handler
 }

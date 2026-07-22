@@ -56,6 +56,10 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 			Success: false,
 			Error:   fmt.Sprintf("call_llm max depth %d exceeded", 5),
 			Tool:    "call_llm",
+			Output:  fmt.Sprintf("❌ 嵌套深度 %d 超过上限 %d", depth, 5),
+			RawResult: map[string]interface{}{
+				"error": fmt.Sprintf("max depth %d exceeded", 5),
+			},
 		}
 	}
 
@@ -66,6 +70,10 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 			Success: false,
 			Error:   "'title' is required — provide a human-readable description for this sub-task",
 			Tool:    "call_llm",
+			Output:  "❌ 缺少 title 参数",
+			RawResult: map[string]interface{}{
+				"error": "'title' is required",
+			},
 		}
 	}
 
@@ -78,6 +86,10 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 				Success: false,
 				Error:   "either 'prompt' (text) or 'prompt-file' (path) is required",
 				Tool:    "call_llm",
+				Output:  "❌ 缺少 prompt 或 prompt-file 参数",
+				RawResult: map[string]interface{}{
+					"error": "either 'prompt' or 'prompt-file' is required",
+				},
 			}
 		}
 	} else {
@@ -88,6 +100,10 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 				Success: false,
 				Error:   fmt.Sprintf("failed to read prompt file: %s", err.Error()),
 				Tool:    "call_llm",
+				Output:  fmt.Sprintf("❌ 读取 prompt 文件失败：%s", promptFile),
+				RawResult: map[string]interface{}{
+					"error": err.Error(),
+				},
 			}
 		}
 		promptText = string(content)
@@ -403,11 +419,14 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 	if async {
 		return &types.ToolResult{
 			Success: true,
-			Output:  fmt.Sprintf("task_id=%s status=running", taskID),
+			Output:  fmt.Sprintf("⚙️ call_llm 已异步启动（task_id=%s, session_id=%s）", taskID, subSessionID),
 			Tool:    "call_llm",
 			RawResult: map[string]interface{}{
-				"session_id": subSessionID,
-				"sub_turn_id":    subTurnID,
+				"session_id":  subSessionID,
+				"sub_turn_id": subTurnID,
+				"task_id":     taskID,
+				"status":      "running",
+				"async":       true,
 			},
 		}
 	}
@@ -416,17 +435,27 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 	for {
 		info, err := tm.GetStatus(taskID)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "call_llm"}
+			return &types.ToolResult{
+				Success: false,
+				Error:   err.Error(),
+				Tool:    "call_llm",
+				Output:  "❌ 查询任务状态失败",
+				RawResult: map[string]interface{}{
+					"error":    err.Error(),
+					"task_id":  taskID,
+				},
+			}
 		}
 		if info.Status != "running" {
 			if info.Status == "done" {
 				return &types.ToolResult{
 					Success: true,
-					Output:  info.Output,
+					Output:  fmt.Sprintf("✅ call_llm 执行成功（%s）\n\n%s", subSessionID, info.Output),
 					Tool:    "call_llm",
 					RawResult: map[string]interface{}{
-						"session_id": subSessionID,
-						"sub_turn_id":    subTurnID,
+						"session_id":   subSessionID,
+						"sub_turn_id":  subTurnID,
+						"status":       "done",
 					},
 				}
 			}
@@ -434,9 +463,12 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 				Success: false,
 				Error:   info.Error,
 				Tool:    "call_llm",
+				Output:  fmt.Sprintf("❌ call_llm 执行失败（%s）", subSessionID),
 				RawResult: map[string]interface{}{
-					"session_id": subSessionID,
-					"sub_turn_id":    subTurnID,
+					"session_id":  subSessionID,
+					"sub_turn_id": subTurnID,
+					"status":      "error",
+					"error":       info.Error,
 				},
 			}
 		}

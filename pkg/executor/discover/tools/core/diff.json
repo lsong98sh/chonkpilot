@@ -1,21 +1,47 @@
 {
-  "description": "Generate a unified diff between two files. Returns unified diff text, or 'no differences' if files are identical. Example: {\"file1\": \"old.txt\", \"file2\": \"new.txt\"}",
+  "description": "Generate a unified diff between files or directories. Returns unified diff text with emoji-prefixed summary (📋 for differences, ⚠️ for identical). Supports directory comparison (path:[dir1,dir2]), multi-pair comparison (files:[{path,path2}]), and legacy mode (file1+file2).",
   "name": "diff",
   "parameters": {
     "type": "object",
     "properties": {
+      "path": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "Compare two paths. Both must be files or both directories. Directories are recursively compared, showing diffs for paired files, and marking files as added/deleted."
+      },
       "file1": {
         "type": "string",
-        "description": "Path to first file"
+        "description": "Path to first file (legacy mode, use with file2)"
       },
       "file2": {
         "type": "string",
-        "description": "Path to second file"
+        "description": "Path to second file (legacy mode, use with file1)"
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string", "description": "First file path"},
+            "path2": {"type": "string", "description": "Second file path"}
+          }
+        },
+        "description": "Multi-pair comparison. Each item has path and path2."
+      },
+      "file_pattern": {
+        "type": "string",
+        "description": "Glob pattern to filter files when comparing directories (e.g. '*.go' to only compare Go files). Only used with path:[dir1,dir2]."
+      },
+      "format": {
+        "type": "string",
+        "enum": ["text", "json"],
+        "description": "Output format. 'text' (default) returns human-readable emoji-prefixed unified diff. 'json' returns a structured JSON array.",
+        "default": "text"
       }
-    },
-    "required": [
-      "file1",
-      "file2"
-    ]
+    }
   }
 }

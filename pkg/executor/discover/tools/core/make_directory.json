@@ -1,5 +1,5 @@
 {
-  "description": "Create one or more directories. Creates parent directories as needed (like mkdir -p). Example: {\"_\": [\"src/components\", \"dist\"]}",
+  "description": "Create one or more directories. Creates parent directories as needed (like mkdir -p). Shows a summary with a creation checklist when multiple directories are created. Example: {\"_\": [\"src/components\", \"dist\"]}",
   "name": "make_directory",
   "parameters": {
     "type": "object",

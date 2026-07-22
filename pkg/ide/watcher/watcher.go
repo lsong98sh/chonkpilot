@@ -87,6 +87,7 @@ func (fw *FileWatcher) Start() error {
 }
 
 // WatchDir adds a directory to the watcher (called when tree node expands).
+// The frontend calls getFileTreeChildren via API, not via watcher push.
 func (fw *FileWatcher) WatchDir(path string) {
 	fw.mu.Lock()
 	if fw.watched[path] {
@@ -103,28 +104,43 @@ func (fw *FileWatcher) WatchDir(path string) {
 			fw.logger.Debug("watch added", zap.String("dir", path))
 		}
 	}
-	// Push initial contents so the frontend has a baseline
-	fw.pushDirContents(path)
 }
 
 // UnwatchDir removes a directory from the watcher (called when tree node collapses).
-func (fw *FileWatcher) UnwatchDir(path string) {
+// If recursive=true, also removes all watched subdirectories with dirPath/ prefix.
+func (fw *FileWatcher) UnwatchDir(dirPath string, recursive bool) {
 	fw.mu.Lock()
-	if !fw.watched[path] {
-		fw.mu.Unlock()
-		return
-	}
-	delete(fw.watched, path)
-	fw.mu.Unlock()
+	defer fw.mu.Unlock()
 
-	if fw.watcher != nil {
-		if err := fw.watcher.Remove(path); err != nil {
-			// Ignore "non-existent" errors for already-removed dirs
-			if !strings.Contains(err.Error(), "non-existent") {
-				fw.logger.Warn("watch remove failed", zap.String("dir", path), zap.Error(err))
+	if recursive {
+		// Find all watched dirs with given prefix
+		prefix := dirPath
+		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+			prefix += string(filepath.Separator)
+		}
+		for watchedPath := range fw.watched {
+			if watchedPath == dirPath || strings.HasPrefix(watchedPath, prefix) {
+				delete(fw.watched, watchedPath)
+				if fw.watcher != nil {
+					if err := fw.watcher.Remove(watchedPath); err != nil {
+						if !strings.Contains(err.Error(), "non-existent") {
+							fw.logger.Warn("watch remove failed", zap.String("dir", watchedPath), zap.Error(err))
+						}
+					}
+				}
 			}
-		} else {
-			fw.logger.Debug("watch removed", zap.String("dir", path))
+		}
+	} else {
+		if !fw.watched[dirPath] {
+			return
+		}
+		delete(fw.watched, dirPath)
+		if fw.watcher != nil {
+			if err := fw.watcher.Remove(dirPath); err != nil {
+				if !strings.Contains(err.Error(), "non-existent") {
+					fw.logger.Warn("watch remove failed", zap.String("dir", dirPath), zap.Error(err))
+				}
+			}
 		}
 	}
 }
@@ -137,7 +153,7 @@ func (fw *FileWatcher) pushDirContents(dir string) {
 	}
 	var children []FileNode
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".") && e.Name() != ".ide" {
+		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		name := e.Name()
@@ -224,8 +240,31 @@ func (fw *FileWatcher) processBatch() {
 		// Check if this is a new subdirectory (added to tracked dir)
 		if evt.Op&fsnotify.Create != 0 {
 			if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+				// Auto-watch the new directory so files inside it are tracked
+				fw.mu.Lock()
+				if !fw.watched[path] {
+					fw.watched[path] = true
+					if fw.watcher != nil {
+						fw.watcher.Add(path)
+					}
+				}
+				fw.mu.Unlock()
+				// Also refresh the parent so the frontend sees the new child
+				dirsToRefresh[parentDir] = true
 				parentDir = path
 			}
+		}
+
+		// Clean up stale watched entries when a directory is renamed or deleted
+		if evt.Op&(fsnotify.Rename|fsnotify.Remove) != 0 {
+			fw.mu.Lock()
+			if fw.watched[path] {
+				delete(fw.watched, path)
+				if fw.watcher != nil {
+					fw.watcher.Remove(path) // clean up fsnotify handle, ignore error
+				}
+			}
+			fw.mu.Unlock()
 		}
 		dirsToRefresh[parentDir] = true
 	}

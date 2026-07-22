@@ -54,6 +54,10 @@ export function DuplicateFile(arg1) {
   return window['go']['main']['App']['DuplicateFile'](arg1);
 }
 
+export function FileTreeOperateDone(arg1) {
+  return window['go']['main']['App']['FileTreeOperateDone'](arg1);
+}
+
 export function GeneratePrompts(arg1) {
   return window['go']['main']['App']['GeneratePrompts'](arg1);
 }
@@ -178,6 +182,10 @@ export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }
 
+export function LoadInitData() {
+  return window['go']['main']['App']['LoadInitData']();
+}
+
 export function LoadMissingAgentsFromResource() {
   return window['go']['main']['App']['LoadMissingAgentsFromResource']();
 }
@@ -250,6 +258,18 @@ export function RevealInExplorer(arg1) {
   return window['go']['main']['App']['RevealInExplorer'](arg1);
 }
 
+export function SaveFileTreeSnapshot(arg1, arg2) {
+  return window['go']['main']['App']['SaveFileTreeSnapshot'](arg1, arg2);
+}
+
+export function SaveFileTreeState(arg1) {
+  return window['go']['main']['App']['SaveFileTreeState'](arg1);
+}
+
+export function SaveFileTreeWidth(arg1) {
+  return window['go']['main']['App']['SaveFileTreeWidth'](arg1);
+}
+
 export function SaveNote(arg1) {
   return window['go']['main']['App']['SaveNote'](arg1);
 }
@@ -272,6 +292,10 @@ export function SaveScenario(arg1) {
 
 export function SaveUserConfig(arg1) {
   return window['go']['main']['App']['SaveUserConfig'](arg1);
+}
+
+export function SaveWindowState(arg1) {
+  return window['go']['main']['App']['SaveWindowState'](arg1);
 }
 
 export function SearchProjectFiles(arg1) {
@@ -306,8 +330,8 @@ export function UnsubscribeSession(arg1) {
   return window['go']['main']['App']['UnsubscribeSession'](arg1);
 }
 
-export function UnwatchDir(arg1) {
-  return window['go']['main']['App']['UnwatchDir'](arg1);
+export function UnwatchDir(arg1, arg2) {
+  return window['go']['main']['App']['UnwatchDir'](arg1, arg2);
 }
 
 export function UpdateSessionTitle(arg1, arg2) {

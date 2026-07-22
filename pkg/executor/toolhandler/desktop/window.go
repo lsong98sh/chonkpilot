@@ -158,7 +158,7 @@ func HandleFindWindow(args map[string]interface{}) *types.ToolResult {
 	} else if title != "" {
 		hwnd, err = FindWindowByTitle(title)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: fmt.Sprintf("window not found: %s", err.Error()), Tool: "find_window"}
+			return &types.ToolResult{Success: false, Error: fmt.Sprintf("window not found: %s", err.Error()), Output: fmt.Sprintf("❌ 查找窗口失败：%s", err.Error()), Tool: "find_window"}
 		}
 	} else {
 		ret, _, _ := GetForegroundWindow.Call()
@@ -167,9 +167,10 @@ func HandleFindWindow(args map[string]interface{}) *types.ToolResult {
 
 	info := GetWindowInfo(hwnd)
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("found window: %s (hwnd=%d, class=%s, rect=%dx%d+%d+%d)", info.Title, info.Hwnd, info.Class, info.Width, info.Height, info.Left, info.Top),
-		Tool:    "find_window",
+		Success:   true,
+		Output:    fmt.Sprintf("🔍 已找到窗口：%s", info.Title),
+		Tool:      "find_window",
+		RawResult: map[string]interface{}{"title": info.Title, "hwnd": info.Hwnd, "class": info.Class, "rect": map[string]interface{}{"x": info.Left, "y": info.Top, "width": info.Width, "height": info.Height}},
 	}
 }
 
@@ -187,18 +188,25 @@ func HandleListWindows(args map[string]interface{}) *types.ToolResult {
 		infos = infos[:50]
 	}
 
-	lines := make([]string, 0, len(infos))
-	for _, info := range infos {
-		vis := ""
-		if !info.Visible {
-			vis = " (hidden)"
-		}
-		lines = append(lines, fmt.Sprintf("hwnd=%d %s [%dx%d+%d+%d] class=%s%s", info.Hwnd, info.Title, info.Width, info.Height, info.Left, info.Top, info.Class, vis))
+	type windowItem struct {
+		Title   string `json:"title"`
+		Hwnd    uintptr `json:"hwnd"`
+		Width   int32  `json:"width"`
+		Height  int32  `json:"height"`
+		X       int32  `json:"x"`
+		Y       int32  `json:"y"`
+		Visible bool   `json:"visible"`
 	}
+	winList := make([]windowItem, 0, len(infos))
+	for _, info := range infos {
+		winList = append(winList, windowItem{Title: info.Title, Hwnd: info.Hwnd, Width: info.Width, Height: info.Height, X: info.Left, Y: info.Top, Visible: info.Visible})
+	}
+
 	return &types.ToolResult{
-		Success: true,
-		Output:  strings.Join(lines, "\n"),
-		Tool:    "list_windows",
+		Success:   true,
+		Output:    fmt.Sprintf("📋 列出 %d 个窗口", len(infos)),
+		Tool:      "list_windows",
+		RawResult: map[string]interface{}{"windows": winList},
 	}
 }
 
@@ -209,14 +217,15 @@ func HandleGetWindowRectFn(args map[string]interface{}) *types.ToolResult {
 
 	hwnd, err := ResolveWindow(hwndVal, title)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "get_window_rect"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 获取窗口位置失败：%s", err.Error()), Tool: "get_window_rect"}
 	}
 
 	info := GetWindowInfo(hwnd)
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("%s hwnd=%d rect=%d %d %d %d", info.Title, info.Hwnd, info.Left, info.Top, info.Width, info.Height),
-		Tool:    "get_window_rect",
+		Success:   true,
+		Output:    fmt.Sprintf("📐 %s：%dx%d+%d+%d", info.Title, info.Width, info.Height, info.Left, info.Top),
+		Tool:      "get_window_rect",
+		RawResult: map[string]interface{}{"title": info.Title, "hwnd": info.Hwnd, "x": info.Left, "y": info.Top, "width": info.Width, "height": info.Height},
 	}
 }
 
@@ -227,7 +236,7 @@ func HandleSetWindowRect(args map[string]interface{}) *types.ToolResult {
 
 	hwnd, err := ResolveWindow(hwndVal, title)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "set_window_rect"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 设置窗口位置失败：%s", err.Error()), Tool: "set_window_rect"}
 	}
 
 	x, ok1 := args["x"].(float64)
@@ -235,15 +244,17 @@ func HandleSetWindowRect(args map[string]interface{}) *types.ToolResult {
 	w, ok3 := args["width"].(float64)
 	hgt, ok4 := args["height"].(float64)
 	if !ok1 || !ok2 || !ok3 || !ok4 {
-		return &types.ToolResult{Success: false, Error: "x, y, width, height required", Tool: "set_window_rect"}
+		return &types.ToolResult{Success: false, Error: "x, y, width, height required", Output: "❌ 设置窗口位置失败：缺少坐标或尺寸参数", Tool: "set_window_rect"}
 	}
 
 	SetWindowPos.Call(uintptr(hwnd), 0, uintptr(int32(x)), uintptr(int32(y)),
 		uintptr(int32(w)), uintptr(int32(hgt)), SwpNoZOrder)
+	titleStr := GetWindowTitle(hwnd)
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("window set to %dx%d+%d+%d", int32(w), int32(hgt), int32(x), int32(y)),
-		Tool:    "set_window_rect",
+		Success:   true,
+		Output:    fmt.Sprintf("📐 窗口位置已设置：%dx%d+%d+%d", int32(w), int32(hgt), int32(x), int32(y)),
+		Tool:      "set_window_rect",
+		RawResult: map[string]interface{}{"title": titleStr, "hwnd": uintptr(hwnd), "x": int32(x), "y": int32(y), "width": int32(w), "height": int32(hgt)},
 	}
 }
 
@@ -254,15 +265,16 @@ func HandleFocusWindow(args map[string]interface{}) *types.ToolResult {
 
 	hwnd, err := ResolveWindow(hwndVal, title)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "focus_window"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 窗口聚焦失败：%s", err.Error()), Tool: "focus_window"}
 	}
 
 	SetForegroundWindow.Call(uintptr(hwnd))
 	titleStr := GetWindowTitle(hwnd)
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("window focused: %s (hwnd=%d)", titleStr, hwnd),
-		Tool:    "focus_window",
+		Success:   true,
+		Output:    fmt.Sprintf("🎯 窗口已聚焦：%s", titleStr),
+		Tool:      "focus_window",
+		RawResult: map[string]interface{}{"title": titleStr, "hwnd": uintptr(hwnd)},
 	}
 }
 
@@ -273,15 +285,16 @@ func HandleMinimizeWindow(args map[string]interface{}) *types.ToolResult {
 
 	hwnd, err := ResolveWindow(hwndVal, title)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "minimize_window"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 窗口最小化失败：%s", err.Error()), Tool: "minimize_window"}
 	}
 
 	ShowWindow.Call(uintptr(hwnd), SwMinimize)
 	titleStr := GetWindowTitle(hwnd)
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("window minimized: %s (hwnd=%d)", titleStr, hwnd),
-		Tool:    "minimize_window",
+		Success:   true,
+		Output:    fmt.Sprintf("🗕️ 窗口已最小化：%s", titleStr),
+		Tool:      "minimize_window",
+		RawResult: map[string]interface{}{"title": titleStr, "hwnd": uintptr(hwnd)},
 	}
 }
 
@@ -292,15 +305,16 @@ func HandleMaximizeWindow(args map[string]interface{}) *types.ToolResult {
 
 	hwnd, err := ResolveWindow(hwndVal, title)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "maximize_window"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 窗口最大化失败：%s", err.Error()), Tool: "maximize_window"}
 	}
 
 	ShowWindow.Call(uintptr(hwnd), SwMaximize)
 	titleStr := GetWindowTitle(hwnd)
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("window maximized: %s (hwnd=%d)", titleStr, hwnd),
-		Tool:    "maximize_window",
+		Success:   true,
+		Output:    fmt.Sprintf("🗖️ 窗口已最大化：%s", titleStr),
+		Tool:      "maximize_window",
+		RawResult: map[string]interface{}{"title": titleStr, "hwnd": uintptr(hwnd)},
 	}
 }
 
@@ -311,15 +325,16 @@ func HandleRestoreWindow(args map[string]interface{}) *types.ToolResult {
 
 	hwnd, err := ResolveWindow(hwndVal, title)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: err.Error(), Tool: "restore_window"}
+		return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 窗口恢复失败：%s", err.Error()), Tool: "restore_window"}
 	}
 
 	ShowWindow.Call(uintptr(hwnd), SwRestore)
 	titleStr := GetWindowTitle(hwnd)
 	return &types.ToolResult{
-		Success: true,
-		Output:  fmt.Sprintf("window restored: %s (hwnd=%d)", titleStr, hwnd),
-		Tool:    "restore_window",
+		Success:   true,
+		Output:    fmt.Sprintf("🗗️ 窗口已恢复：%s", titleStr),
+		Tool:      "restore_window",
+		RawResult: map[string]interface{}{"title": titleStr, "hwnd": uintptr(hwnd)},
 	}
 }
 

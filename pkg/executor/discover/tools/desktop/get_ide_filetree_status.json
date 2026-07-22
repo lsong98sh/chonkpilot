@@ -1,0 +1,15 @@
+{
+  "description": "Get the IDE file tree status. Reads the ACTUAL visible file tree from the IDE UI frontend, NOT from the filesystem. This ensures the tree matches exactly what the user sees. Sends a capture request to the frontend and blocks until the frontend has built and saved the snapshot. Returns a tree with summary stats (dir count, file count) and the expanded/collapsed state of directories. Call with action=\"read_snapshot\" to read the last saved snapshot without triggering a new capture.",
+  "name": "get_ide_filetree_status",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["capture", "read_snapshot"],
+        "description": "\"capture\" (default) — requests the frontend to snapshot the visible file tree. Blocks until the snapshot is ready, then returns the tree with stats. \"read_snapshot\" — reads the previously saved snapshot (no blocking)."
+      }
+    },
+    "required": []
+  }
+}

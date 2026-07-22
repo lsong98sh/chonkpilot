@@ -1,0 +1,45 @@
+{
+  "description": "Execute a Python script from inline content (scriptcontent) or an existing file (file). The two sources are mutually exclusive. Script content is written to a temporary file under .ide/tmp/scripts/, executed with the detected Python interpreter, and then deleted. Returns stdout and stderr. Supports pip dependency auto-install, CLI arguments, and async execution mode. The 'python' parameter allows specifying a custom interpreter path; otherwise, auto-detects from PATH.",
+  "name": "execute_python_script",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "dir": {
+        "type": "string",
+        "description": "Working directory for execution (absolute path). If empty, defaults to the project root."
+      },
+      "scriptcontent": {
+        "type": "string",
+        "description": "The complete Python script content to execute. Mutually exclusive with 'file'."
+      },
+      "file": {
+        "type": "string",
+        "description": "Path to an existing Python file to execute. Mutually exclusive with 'scriptcontent'."
+      },
+      "args": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Command-line arguments to pass to the script."
+      },
+      "pip": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "List of pip packages to auto-install before running the script. Idempotent — skips already-installed packages."
+      },
+      "async": {
+        "type": "boolean",
+        "description": "If true, runs the script asynchronously and returns a task_id immediately. Use process_task_status/process_wait to check completion. Default: false.",
+        "default": false
+      },
+      "python": {
+        "type": "string",
+        "description": "Path to the Python interpreter. If empty, auto-detects (python then python3) from system PATH."
+      }
+    },
+    "required": []
+  }
+}

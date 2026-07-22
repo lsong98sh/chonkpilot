@@ -28,7 +28,7 @@ func TestListBuiltinTools(t *testing.T) {
 			t.Errorf("tool %s has empty description", tool.Name)
 		}
 	}
-	essential := []string{"read_file", "write_file", "execute_command", "search_files", "list_directory", "run_tasks", "call_llm"}
+	essential := []string{"read_file", "write_file", "execute_command", "grep", "list_directory", "run_tasks", "call_llm"}
 	for _, name := range essential {
 		if !names[name] {
 			t.Errorf("essential tool %q not found", name)

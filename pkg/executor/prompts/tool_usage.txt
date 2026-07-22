@@ -7,12 +7,11 @@
 --- 基础命令 ---
 
 【文件探索 —— 优先用专用工具，不要手写命令】
-- 搜索文件：用 search_files（glob 模式，支持 ** 递归），不要用 execute_command 手写 for 循环
-- search_files 加 preview=N 可预览文件前 N 行（一行抵一次 read_file）
+- 搜索文件/内容：用 grep（支持正则、多行匹配），加 only_files=true 可只搜文件名
+- grep 示例：grep({"pattern": "func.*Handler", "file_pattern": "*.go"}) 搜含特定内容的文件
+- grep 示例：grep({"only_files": true, "file_pattern": "*.vue"}) 按文件名搜文件（替代 search_files）
 - 列出目录：用 list_directory（加 recursive=true 可递归列出所有文件），不要用 execute_command 的 dir /s /b
-- 搜索代码内容：用 grep（支持正则、多行匹配），不要用 execute_command 的 findstr
 - 查询代码索引（需开启代码索引）：用 query_codebase，支持 target（** 路径模式）和 content（摘要搜索）两种模式
-- 注意：search_files 支持 ** 递归搜索（如 src/**/index.vue 找到所有 index.vue）
 - query_codebase 示例：query_codebase({"target": "**/index.vue"}) 列出所有 index.vue 及其摘要；query_codebase({"content": "api"}) 搜索摘要含 api 的文件；query_codebase({"target": "src/**/*.ts", "content": "router"}) 按路径+摘要组合搜索
 
 【execute_command 异步执行】
@@ -47,6 +46,21 @@
 
 【list_directory 多目录列表】
 - list_directory(paths=["..."]) 同时列出多个目录
+- 默认递归列出全部文件（设 recursive=false 只看一层）
+- 支持 type 过滤（"file"/"dir"/"all"）和 sort 排序（"name"/"size"/"date"）
+
+【diff 文件对比】
+- diff(file1="a.txt", file2="b.txt") 对比两个文件
+- diff(files=[{path:"a.go", path2:"b.go"}]) 多组同时对比
+
+【replace 文本替换】
+- replace(path="main.go", old="...", new="...") 单文件替换
+- replace(file_pattern="*.go", old="...", new="...") 批量替换
+- 加 dry_run=true 预览改动再执行
+
+【remove 删除】
+- remove(paths=["temp.log"]) 删除指定文件/目录
+- remove(file_pattern="*.tmp", dry_run=true) 按 glob 批量删除，支持预览
 
 --- 浏览器自动化 ---
 

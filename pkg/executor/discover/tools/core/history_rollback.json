@@ -1,0 +1,32 @@
+{
+  "description": "Rollback files to a previous version state. Restores files to the version saved at the beginning of the turn (pre-turn state) by default. Supports: (1) version-specific restore with 'version' parameter, (2) glob pattern filtering with 'file_pattern', (3) specific path restore with 'paths' array, (4) dry-run preview with 'dry_run'. When 'version' is specified, restores to that exact version without deleting records. Without 'version', restores first snapshot and deletes version records.",
+  "name": "history_rollback",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "turn_id": {
+        "type": "string",
+        "description": "Required. Turn ID to rollback from."
+      },
+      "paths": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional. File or directory paths to rollback. Omit to rollback all files modified in the turn."
+      },
+      "file_pattern": {
+        "type": "string",
+        "description": "Optional. Glob pattern to filter files (e.g. '*.go', 'src/**/*.ts')."
+      },
+      "version": {
+        "type": "integer",
+        "description": "Optional. Version number to restore to. If omitted, restores to first snapshot (pre-turn state)."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "Optional. Preview what would be restored without executing.",
+        "default": false
+      }
+    },
+    "required": ["turn_id"]
+  }
+}

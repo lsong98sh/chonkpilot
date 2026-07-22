@@ -51,6 +51,10 @@ func HandleForeach(tm *task.TaskManager,
 			Success: false,
 			Error:   fmt.Sprintf("max depth %d exceeded", defaultMaxDepth),
 			Tool:    "run_tasks",
+			Output:  fmt.Sprintf("❌ 嵌套深度 %d 超过上限 %d", depth, defaultMaxDepth),
+			RawResult: map[string]interface{}{
+				"error": fmt.Sprintf("max depth %d exceeded", defaultMaxDepth),
+			},
 		}
 	}
 
@@ -61,6 +65,10 @@ func HandleForeach(tm *task.TaskManager,
 			Success: false,
 			Error:   "items array is required and must be non-empty",
 			Tool:    "run_tasks",
+			Output:  "❌ items 参数必须是非空数组",
+			RawResult: map[string]interface{}{
+				"error": "items array is required and must be non-empty",
+			},
 		}
 	}
 
@@ -89,10 +97,13 @@ func HandleForeach(tm *task.TaskManager,
 		// Async: return immediately with task_id
 		return &types.ToolResult{
 			Success: true,
-			Output:  fmt.Sprintf("task_id=%s status=running total=%d", taskID, len(items)),
+			Output:  fmt.Sprintf("⚙️ run_tasks 已异步启动（task_id=%s, total=%d）", taskID, len(items)),
 			Tool:    "run_tasks",
 			RawResult: map[string]interface{}{
 				"task_id": taskID,
+				"total":   len(items),
+				"status":  "running",
+				"async":   true,
 			},
 		}
 	}
@@ -101,18 +112,35 @@ func HandleForeach(tm *task.TaskManager,
 	for {
 		state, err := tm.GetRunTaskState(taskID)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "run_tasks"}
+			return &types.ToolResult{
+				Success: false,
+				Error:   err.Error(),
+				Tool:    "run_tasks",
+				Output:  "❌ 查询任务状态失败",
+				RawResult: map[string]interface{}{
+					"error":   err.Error(),
+					"task_id": taskID,
+				},
+			}
 		}
 		if state.Status != "running" {
 			elapsed := time.Since(start)
-			output := fmt.Sprintf("task_id=%s completed=%d failed=%d total=%d elapsed=%s",
-				taskID, state.Completed, state.Failed, state.Total, elapsed)
+			emoji := "✅"
+			if state.Failed > 0 && state.Completed == 0 {
+				emoji = "❌"
+			} else if state.Failed > 0 {
+				emoji = "⚠️"
+			}
 			return &types.ToolResult{
 				Success: state.Failed == 0,
-				Output:  output,
+				Output:  fmt.Sprintf("%s run_tasks 完成：成功=%d 失败=%d 总计=%d（%s）", emoji, state.Completed, state.Failed, state.Total, elapsed),
 				Tool:    "run_tasks",
 				RawResult: map[string]interface{}{
-					"task_id": taskID,
+					"task_id":   taskID,
+					"completed": state.Completed,
+					"failed":    state.Failed,
+					"total":     state.Total,
+					"elapsed":   elapsed.String(),
 				},
 			}
 		}

@@ -1,5 +1,5 @@
 {
-  "description": "Query the status of an async process by task_id. Returns: status (running/done/error), elapsed (seconds), and partial_output (stdout/stderr captured so far). For server processes, status stays 'running' — check partial_output for startup logs (e.g. 'VITE ready') to confirm success. Also supports querying run_tasks sub-items by ID like 'rt-uuid/item-3'.",
+  "description": "Query the status of an async process by task_id. Returns: status (running/done/error), elapsed (seconds), and partial_output (stdout/stderr captured so far). For server processes, status stays 'running' — check partial_output for startup logs (e.g. 'VITE ready') to confirm success. Also supports querying run_tasks sub-items by ID like 'rt-uuid/item-3'. When follow=true, polls every 1 second until task completes or timeout is reached, returning new output incrementally.",
   "name": "process_task_status",
   "parameters": {
     "type": "object",
@@ -7,6 +7,14 @@
       "task_id": {
         "type": "string",
         "description": "Task ID from execute_command async or sub-item ID like 'rt-uuid/item-N'"
+      },
+      "follow": {
+        "type": "boolean",
+        "description": "If true, poll every 1 second and return new output incrementally until task completes or timeout is reached"
+      },
+      "timeout": {
+        "type": "number",
+        "description": "Maximum seconds to wait when follow=true (default: 30)"
       }
     },
     "required": [

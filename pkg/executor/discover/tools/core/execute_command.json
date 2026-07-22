@@ -1,5 +1,5 @@
 {
-  "description": "Execute a shell command. Commands run in the project's work directory by default. Sync mode (async=false): returns combined stdout+stderr output after command exits. Async mode (async=true): returns task_id immediately; poll with process_task_status for partial_output later. For long-running servers (npm run dev, python -m http.server), ALWAYS use async=true to avoid timeout. To run in a different directory, prefix with 'cd <dir> &&' (e.g. 'cd subdir && npm install'). On Windows: use 'cd /d' for cross-drive changes (e.g. 'cd /d D:\\project && npm install'), otherwise cd silently fails across drives. Example: {\"command\": \"echo hello\"}",
+  "description": "Execute a shell command. Sync mode (async=false): returns combined stdout+stderr output after command exits. Async mode (async=true): returns task_id immediately; poll with process_task_status for partial_output later. Timeout mode: if timeout is set and command doesn't finish within that duration, it auto-converts to async mode — returns task_id + partial output up to that point. For long-running servers (npm run dev, python -m http.server), ALWAYS use async=true to avoid timeout. Use cwd to specify a working directory (cross-platform, no need to prefix with 'cd /d'). Defaults to project root. Use env to pass custom environment variables (merged with current environment). Example: {\"command\": \"npm run build\", \"cwd\": \"./frontend\"}",
   "name": "execute_command",
   "parameters": {
     "type": "object",
@@ -11,6 +11,18 @@
       "async": {
         "type": "boolean",
         "description": "If true, returns immediately with task_id. Poll with process_task_status."
+      },
+      "cwd": {
+        "type": "string",
+        "description": "Working directory for the command (relative or absolute). Cross-platform - uses forward slashes. Default: project root."
+      },
+      "env": {
+        "type": "object",
+        "description": "Custom environment variables as key-value pairs. Merged with current process environment (user-provided values override inherited ones). Example: {\"NODE_ENV\": \"production\", \"PORT\": \"3000\"}"
+      },
+      "timeout": {
+        "type": "integer",
+        "description": "Timeout in seconds. When set, if the command doesn't finish within this duration, it auto-converts to async mode — returns task_id, partial_output up to that point, and a message. The process keeps running in background. Example: 30"
       }
     },
     "required": [

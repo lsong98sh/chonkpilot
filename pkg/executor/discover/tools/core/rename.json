@@ -1,6 +1,6 @@
 {
-  "description": "Rename/move one or more files or directories. Each item is evaluated in order. On Windows, case-only renames (e.g. 'foo.txt' → 'Foo.txt') are handled automatically via a two-step rename. Example: {\"_\": [{\"from\": \"old.go\", \"to\": \"new.go\"}, {\"from\": \"temp\", \"to\": \"archive/temp\"}]}",
   "name": "rename",
+  "description": "Rename/move one or more files or directories. Supports pairs mode (v1 compat) and rule-based mode (file_pattern + replace/prefix/suffix/extension). Rule-based mode: find files matching file_pattern, apply prefix → suffix → replace → extension renaming rules. Use dry_run=true to preview. Supports overwrite flag for existing file conflicts. Returns results with === section separators.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -9,20 +9,45 @@
         "items": {
           "type": "object",
           "properties": {
-            "from": {
-              "type": "string",
-              "description": "Source path."
-            },
-            "to": {
-              "type": "string",
-              "description": "Destination path."
-            }
+            "from": { "type": "string", "description": "Source path." },
+            "to": { "type": "string", "description": "Destination path." }
           },
           "required": ["from", "to"]
         },
-        "description": "Array of rename operations."
+        "description": "Array of rename operations (v1 compat)."
+      },
+      "file_pattern": {
+        "type": "string",
+        "description": "Glob pattern to match files for rule-based renaming."
+      },
+      "replace": {
+        "type": "object",
+        "properties": {
+          "from": { "type": "string", "description": "String to replace in filename (before extension)." },
+          "to": { "type": "string", "description": "Replacement string." }
+        },
+        "description": "Replace rule: {from, to} applied to filenames (before extension)."
+      },
+      "prefix": {
+        "type": "string",
+        "description": "Prefix to add to filenames (before extension)."
+      },
+      "suffix": {
+        "type": "string",
+        "description": "Suffix to add to filenames (before extension)."
+      },
+      "extension": {
+        "type": "string",
+        "description": "Target file extension (e.g. '.md'). Replaces existing extension."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "If true, preview changes without actually renaming."
+      },
+      "overwrite": {
+        "type": "boolean",
+        "description": "If true, allow overwriting existing files."
       }
-    },
-    "required": ["pairs"]
+    }
   }
 }

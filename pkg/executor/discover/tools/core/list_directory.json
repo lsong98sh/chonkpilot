@@ -1,19 +1,31 @@
 {
-  "description": "List contents of one or more directories. Each directory returns a formatted listing with name, type (dir/file), size, and modification time. When recursive is true, lists all files recursively using relative paths from the root directory. Example: {\"_\": [\"/home/user/project/src\"], \"recursive\": true}",
+  "description": "List contents of one or more directories. Each directory returns a formatted listing with name, type (dir/file), size, and modification time. Recursive by default (set recursive=false for single-level). Supports type filter (file/dir/all) and sort (name/size/date). Example: {\"paths\": [\"./src\"]} or {\"paths\": [\"./src\"], \"type\": \"file\", \"sort\": \"size\"}",
   "name": "list_directory",
   "parameters": {
     "type": "object",
     "properties": {
       "paths": {
         "type": "array",
-        "items": {
-          "type": "string"
-        },
-        "description": "Array of directory paths."
+        "description": "Array of directory paths.",
+        "items": {"type": "string"}
       },
       "recursive": {
         "type": "boolean",
-        "description": "If true, recursively list all files and subdirectories. When false (default), only lists one level."
+        "description": "If true, recursively list all files. Default: true."
+      },
+      "type": {
+        "type": "string",
+        "enum": ["all", "file", "dir"],
+        "description": "Filter: 'file' = files only, 'dir' = dirs only, 'all' = both. Default: 'all'."
+      },
+      "sort": {
+        "type": "string",
+        "enum": ["name", "size", "date", "type"],
+        "description": "Sort order: 'name' (default), 'size', 'date' (newest first), or 'type' (by extension)."
+      },
+      "depth": {
+        "type": "integer",
+        "description": "Recursion depth limit. 0 = unlimited (default). Only applies when recursive=true."
       }
     },
     "required": ["paths"]

@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -576,6 +577,60 @@ func (a *App) RestoreVersion(versionID int64) error {
 	return v.RestoreVersion(versionID)
 }
 
+// SaveFileTreeSnapshot is called by the frontend when it has captured the visible
+// file tree snapshot in response to a filetree:capture event from the executor.
+// It merges the snapshot into .ide/filetree_state.json alongside existing state.
+func (a *App) SaveFileTreeSnapshot(requestID string, snapshot map[string]interface{}) error {
+	ideDir := filepath.Join(a.workDir, ".ide")
+	if err := os.MkdirAll(ideDir, 0755); err != nil {
+		return err
+	}
+
+	stateFile := filepath.Join(ideDir, "filetree_state.json")
+
+	// Read existing state (if any)
+	var state map[string]interface{}
+	existing, err := os.ReadFile(stateFile)
+	if err == nil {
+		json.Unmarshal(existing, &state)
+	}
+	if state == nil {
+		state = make(map[string]interface{})
+	}
+
+	// Merge snapshot
+	state["snapshot"] = snapshot
+	state["snapshot_request_id"] = requestID
+	state["snapshot_captured_at"] = time.Now().UnixMilli()
+	state["version"] = 2
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(stateFile, data, 0644); err != nil {
+		return err
+	}
+
+	// Send tool_result to daemon, so the blocking get_ide_filetree_status handler
+	// can unblock and read the snapshot
+	if a.em != nil {
+		_ = a.em.SendToolResult(requestID, "completed", "get_ide_filetree_status")
+	}
+
+	return nil
+}
+
+// FileTreeOperateDone is called by the frontend after it has performed a
+// file tree operation (expand/collapse/select) requested by the executor.
+// It sends a tool_result command to the daemon to unblock the waiting handler.
+func (a *App) FileTreeOperateDone(requestID string) error {
+	if a.em != nil {
+		return a.em.SendToolResult(requestID, "completed", "set_ide_filetree_status")
+	}
+	return nil
+}
+
 // shutdown is called by Wails when the app shuts down.
 func (a *App) shutdown(ctx context.Context) {
 	if a.codebasePollerStop != nil {
@@ -780,6 +835,12 @@ func (a *App) onExecutorEvent(eventType string, payload map[string]interface{}) 
 		a.push("chat:executor_done", payload)
 	case "ask_user":
 		a.push("ask_user", payload)
+	case "filetree:capture":
+		// Executor requests a UI file tree snapshot — forward to frontend
+		a.push("filetree:capture", payload)
+	case "filetree:set":
+		// Executor requests a UI file tree operation — forward to frontend
+		a.push("filetree:set", payload)
 	case "complete", "error":
 		// Turn ended — notify frontend via llm:event for live updates,
 		// and session:refresh so session tree can reload DB-persisted state.

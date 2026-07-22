@@ -21,8 +21,8 @@ type ToolDefinition struct {
 // ToolParameters represents the JSON Schema parameters of a tool.
 type ToolParameters struct {
 	Type       string                  `json:"type"`
-	Properties map[string]ToolProperty `json:"properties"`
-	Required   []string                `json:"required"`
+	Properties map[string]ToolProperty `json:"properties,omitempty"`
+	Required   []string                `json:"required,omitempty"`
 }
 
 // ToolProperty represents a single property in the tool parameters.

@@ -18,7 +18,7 @@ func HandleMouseMove(args map[string]interface{}) *types.ToolResult {
 	x, ok1 := args["x"].(float64)
 	y, ok2 := args["y"].(float64)
 	if !ok1 || !ok2 {
-		return &types.ToolResult{Success: false, Error: "x and y required", Tool: "mouse_move"}
+		return &types.ToolResult{Success: false, Error: "x and y required", Output: "❌ 鼠标移动失败：缺少坐标参数", Tool: "mouse_move"}
 	}
 
 	modRaw, _ := args["modifiers"].([]interface{})
@@ -30,7 +30,7 @@ func HandleMouseMove(args map[string]interface{}) *types.ToolResult {
 	SendMouseEvent(MouseEventMove|MouseEventAbsolute,
 		int32(x*65535.0/float64(fullRect.Right)),
 		int32(y*65535.0/float64(fullRect.Bottom)), 0)
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("mouse moved to (%.0f, %.0f)", x, y), Tool: "mouse_move"}
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("🖱️ 已移动 (%.0f, %.0f)", x, y), Tool: "mouse_move", RawResult: map[string]interface{}{"action": "mousemove", "x": x, "y": y}}
 }
 
 // HandleMouseDown handles mouse_down tool.
@@ -54,7 +54,11 @@ func HandleMouseDown(args map[string]interface{}) *types.ToolResult {
 		flags = MouseEventLeftDown
 	}
 	SendMouseEvent(flags, 0, 0, 0)
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("mouse %s down", btnStr), Tool: "mouse_down"}
+	btn := btnStr
+	if btn == "" {
+		btn = "left"
+	}
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("🖱️ 鼠标按键已按下"), Tool: "mouse_down", RawResult: map[string]interface{}{"action": "mousedown", "button": btn}}
 }
 
 // HandleMouseUp handles mouse_up tool.
@@ -78,7 +82,11 @@ func HandleMouseUp(args map[string]interface{}) *types.ToolResult {
 		flags = MouseEventLeftUp
 	}
 	SendMouseEvent(flags, 0, 0, 0)
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("mouse %s up", btnStr), Tool: "mouse_up"}
+	btn := btnStr
+	if btn == "" {
+		btn = "left"
+	}
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("🖱️ 鼠标按键已释放"), Tool: "mouse_up", RawResult: map[string]interface{}{"action": "mouseup", "button": btn}}
 }
 
 // HandleMouseClick handles mouse_click tool.
@@ -101,7 +109,7 @@ func HandleMouseClick(args map[string]interface{}) *types.ToolResult {
 	if hasHWND || hasTitle {
 		hwnd, err := ResolveWindow(hwndVal, winTitle)
 		if err != nil {
-			return &types.ToolResult{Success: false, Error: err.Error(), Tool: "mouse_click"}
+			return &types.ToolResult{Success: false, Error: err.Error(), Output: fmt.Sprintf("❌ 鼠标点击失败：%s", err.Error()), Tool: "mouse_click"}
 		}
 		ForceForegroundWindow(uintptr(hwnd))
 		time.Sleep(time.Millisecond * 200)
@@ -145,15 +153,11 @@ func HandleMouseClick(args map[string]interface{}) *types.ToolResult {
 		SendMouseEvent(upFlag, 0, 0, 0)
 	}
 
-	posStr := ""
-	if hasX && hasY {
-		posStr = fmt.Sprintf(" at (%.0f, %.0f)", x, y)
+	btn := btnStr
+	if btn == "" {
+		btn = "left"
 	}
-	clickType := "click"
-	if doubleClick {
-		clickType = "double-click"
-	}
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("mouse %s %s%s", btnStr, clickType, posStr), Tool: "mouse_click"}
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("🖱️ 已点击 (%.0f, %.0f)", x, y), Tool: "mouse_click", RawResult: map[string]interface{}{"x": x, "y": y, "button": btn}}
 }
 
 // HandleScrollWheel handles scroll_wheel tool.
@@ -175,7 +179,7 @@ func HandleScrollWheel(args map[string]interface{}) *types.ToolResult {
 	if deltaY != 0 {
 		SendMouseEvent(MouseEventWheel, 0, 0, uint32(int32(deltaY)))
 	}
-	return &types.ToolResult{Success: true, Output: fmt.Sprintf("scrolled (%.0f, %.0f)", deltaX, deltaY), Tool: "scroll_wheel"}
+	return &types.ToolResult{Success: true, Output: fmt.Sprintf("🖱️ 已滚动 (%.0f, %.0f)", deltaX, deltaY), Tool: "scroll_wheel", RawResult: map[string]interface{}{"action": "scrollwheel", "delta_x": deltaX, "delta_y": deltaY}}
 }
 
 func init() {

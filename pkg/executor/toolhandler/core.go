@@ -1,15 +1,18 @@
 package toolhandler
 
 import (
+	"os/exec"
+
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/agent"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/batch_llm"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/browser"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/call_llm"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/desktop"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/file"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/history"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/llmresult"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/note"
-	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/restore"
+	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/python"
 	run "github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/task"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/tool"
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
@@ -50,13 +53,10 @@ func (h *Handler) registerFileTools() {
 	})
 }
 
-// registerSearchTools registers grep, search_files, list_directory, fetch.
+// registerSearchTools registers grep, list_directory, fetch.
 func (h *Handler) registerSearchTools() {
 	h.toolHandlers["grep"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleGrep(h.WorkDir, args)
-	})
-	h.toolHandlers["search_files"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
-		return file.HandleSearchFiles(h.WorkDir, args)
 	})
 	h.toolHandlers["list_directory"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleListDirectory(h.WorkDir, args)
@@ -97,6 +97,13 @@ func (h *Handler) registerExecutionTools() {
 	h.toolHandlers["process_task_stop"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return run.HandleProcessTaskStop(h.TaskMgr, args)
 	})
+
+	// Python script execution — only register if python is available in PATH
+	if _, err := exec.LookPath("python"); err == nil {
+		h.toolHandlers["execute_python_script"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+			return python.HandleExecutePythonScript(h.WorkDir, h.TaskMgr, args)
+		})
+	}
 }
 
 // registerNoteTools registers note CRUD operations.
@@ -139,10 +146,23 @@ func (h *Handler) registerCodebaseTools() {
 	})
 }
 
-// registerFileOpsTools registers rollback, make_directory, remove, rename, write_image.
+// registerFileOpsTools registers history_rollback, history_put, history_take, history_diff, history_list,
+// make_directory, remove, rename, write_image.
 func (h *Handler) registerFileOpsTools() {
-	h.toolHandlers["rollback"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
-		return restore.HandleRollback(h.FileVersioner, h.TurnID, args)
+	h.toolHandlers["history_rollback"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+		return history.HandleRollback(h.FileVersioner, h.WorkDir, h.TurnID, args)
+	})
+	h.toolHandlers["history_put"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+		return history.HandlePut(h.FileVersioner, h.TurnID, args)
+	})
+	h.toolHandlers["history_take"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+		return history.HandleTake(h.FileVersioner, args)
+	})
+	h.toolHandlers["history_diff"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+		return history.HandleDiff(h.FileVersioner, args)
+	})
+	h.toolHandlers["history_list"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+		return history.HandleList(h.FileVersioner, args)
 	})
 	h.toolHandlers["make_directory"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
 		return file.HandleMakeDirectory(h.WorkDir, args)
@@ -207,6 +227,12 @@ func (h *Handler) registerDesktopTools() {
 	h.toolHandlers["minimize_window"] = types.Wrap(desktop.HandleMinimizeWindow)
 	h.toolHandlers["maximize_window"] = types.Wrap(desktop.HandleMaximizeWindow)
 	h.toolHandlers["restore_window"] = types.Wrap(desktop.HandleRestoreWindow)
+	h.toolHandlers["get_ide_filetree_status"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+		return desktop.HandleGetFileTreeStatus(h.WorkDir, h.WriteEvent, h.WaitToolResult, args)
+	})
+	h.toolHandlers["set_ide_filetree_status"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+		return desktop.HandleSetFileTreeStatus(h.WorkDir, h.WriteEvent, h.WaitToolResult, args)
+	})
 }
 
 // registerBrowserTools registers all web browser automation tools.

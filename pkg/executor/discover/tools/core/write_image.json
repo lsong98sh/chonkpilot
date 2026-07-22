@@ -1,6 +1,6 @@
 {
     "name": "write_image",
-    "description": "Render SVG, HTML, or Mermaid diagram content to a PNG image file using a headless browser. Use this to create diagrams, charts, or visualizations. Output is saved as a PNG file in the project directory.",
+    "description": "Render diagram content to a PNG image file. Supports SVG, HTML, Mermaid, Graphviz DOT, and PlantUML formats. Output is saved as a PNG file in the project directory.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -10,12 +10,16 @@
             },
             "type": {
                 "type": "string",
-                "enum": ["svg", "html", "mermaid"],
-                "description": "Content type: 'svg' for SVG markup, 'html' for a full HTML page, 'mermaid' for Mermaid diagram syntax"
+                "enum": ["svg", "html", "mermaid", "dot", "graphviz", "plantuml"],
+                "description": "Content type: 'svg' for SVG markup, 'html' for a full HTML page, 'mermaid' for Mermaid diagram syntax, 'dot' or 'graphviz' for Graphviz DOT language, 'plantuml' for PlantUML diagram syntax"
             },
             "content": {
                 "type": "string",
-                "description": "The source content to render. For type=svg: raw SVG markup (e.g. '<svg>...</svg>'). For type=html: a complete HTML document. For type=mermaid: Mermaid diagram syntax (e.g. 'graph TD; A-->B;')"
+                "description": "The source content to render. For type=svg: raw SVG markup (e.g. '<svg>...</svg>'). For type=html: a complete HTML document. For type=mermaid: Mermaid diagram syntax (e.g. 'graph TD; A-->B;'). For type=dot/graphviz: Graphviz DOT language (e.g. 'digraph G { A -> B }'). For type=plantuml: PlantUML diagram syntax (e.g. '@startuml\\nAlice -> Bob: Hello\\n@enduml')"
+            },
+            "plantuml_server": {
+                "type": "string",
+                "description": "Optional custom PlantUML server URL (e.g. 'http://localhost:8080'). Only used when type='plantuml'. Defaults to 'http://www.plantuml.com' if not specified."
             }
         },
         "required": ["filename", "type", "content"]

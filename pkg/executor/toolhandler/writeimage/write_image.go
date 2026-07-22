@@ -1,17 +1,24 @@
 package writeimage
 
 import (
+	"bytes"
+	"compress/flate"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
+	"github.com/goccy/go-graphviz"
 
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
 )
@@ -54,17 +61,24 @@ func HandleWriteImage(workDir string, noChrome bool, args map[string]interface{}
 	content, _ := args["content"].(string)
 
 	if filename == "" {
-		return &types.ToolResult{Success: false, Error: "filename is required", Tool: "write_image"}
+		return &types.ToolResult{Success: false, Error: "filename is required", Tool: "write_image", RawResult: map[string]interface{}{"filename": filename}}
 	}
 	if content == "" {
-		return &types.ToolResult{Success: false, Error: "content is required", Tool: "write_image"}
+		return &types.ToolResult{Success: false, Error: "content is required", Tool: "write_image", RawResult: map[string]interface{}{"filename": filename}}
+	}
+
+	// Handle Graphviz DOT: pure Go rendering, no Chrome needed
+	switch strings.ToLower(imgType) {
+	case "dot", "graphviz":
+		return handleGraphviz(workDir, filename, content, imgType)
 	}
 
 	if noChrome {
 		return &types.ToolResult{
-			Success: false,
-			Error:   "Chrome/Chromium browser not found on this system. Cannot render images. Install Google Chrome or Microsoft Edge.",
-			Tool:    "write_image",
+			Success:   false,
+			Error:     "Chrome/Chromium browser not found on this system. Cannot render images. Install Google Chrome or Microsoft Edge.",
+			Tool:      "write_image",
+			RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType},
 		}
 	}
 
@@ -77,24 +91,36 @@ func HandleWriteImage(workDir string, noChrome bool, args map[string]interface{}
 		html = content
 	case "mermaid":
 		html = mermaidTemplate(content)
+	case "plantuml":
+		server := "http://www.plantuml.com"
+		if s, ok := args["plantuml_server"].(string); ok && s != "" {
+			server = strings.TrimRight(s, "/")
+		}
+		encoded := encodePlantUML(content)
+		svg, err := fetchPlantUMLSVG(server, encoded)
+		if err != nil {
+			return &types.ToolResult{Success: false, Error: fmt.Sprintf("plantuml fetch failed: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
+		}
+		html = fmt.Sprintf(svgTemplate, svg)
 	default:
 		return &types.ToolResult{
-			Success: false,
-			Error:   fmt.Sprintf("unsupported type '%s': must be 'svg', 'html', or 'mermaid'", imgType),
-			Tool:    "write_image",
+			Success:   false,
+			Error:     fmt.Sprintf("unsupported type '%s': must be 'svg', 'html', 'mermaid', 'dot', 'graphviz', or 'plantuml'", imgType),
+			Tool:      "write_image",
+			RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType},
 		}
 	}
 
 	// Write HTML to temp file
 	tmpFile, err := os.CreateTemp("", "write_image_*.html")
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to create temp file: %s", err.Error()), Tool: "write_image"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to create temp file: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
 	}
 	tmpPath := tmpFile.Name()
 	if _, err := tmpFile.WriteString(html); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to write temp file: %s", err.Error()), Tool: "write_image"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to write temp file: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
 	}
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
@@ -156,29 +182,92 @@ func HandleWriteImage(workDir string, noChrome bool, args map[string]interface{}
 		}),
 	)
 	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("screenshot failed: %s", err.Error()), Tool: "write_image"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("screenshot failed: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
 	}
 
 	if len(buf) == 0 {
-		return &types.ToolResult{Success: false, Error: "screenshot returned empty result", Tool: "write_image"}
+		return &types.ToolResult{Success: false, Error: "screenshot returned empty result", Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
 	}
 
-	// Save output file
+	return saveImage(workDir, filename, imgType, buf)
+}
+
+// handleGraphviz renders DOT content to PNG using pure Go graphviz library.
+func handleGraphviz(workDir, filename, content, imgType string) *types.ToolResult {
+	g, err := graphviz.New(context.Background())
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("graphviz init error: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
+	}
+	defer g.Close()
+
+	graph, err := graphviz.ParseBytes([]byte(content))
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("graphviz parse error: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
+	}
+
+	var buf bytes.Buffer
+	if err := g.Render(context.Background(), graph, graphviz.PNG, &buf); err != nil {
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("graphviz render error: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
+	}
+
+	pngBytes := buf.Bytes()
+	if len(pngBytes) == 0 {
+		return &types.ToolResult{Success: false, Error: "graphviz render returned empty result", Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
+	}
+
+	return saveImage(workDir, filename, imgType, pngBytes)
+}
+
+// encodePlantUML encodes PlantUML content using deflate + custom base64 encoding.
+func encodePlantUML(content string) string {
+	var buf bytes.Buffer
+	zw, _ := flate.NewWriter(&buf, flate.BestCompression)
+	zw.Write([]byte(content))
+	zw.Close()
+	encoded := base64.NewEncoding("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_").EncodeToString(buf.Bytes())
+	return encoded
+}
+
+// fetchPlantUMLSVG fetches SVG content from a PlantUML server for the given encoded diagram.
+func fetchPlantUMLSVG(server, encoded string) (string, error) {
+	url := fmt.Sprintf("%s/plantuml/svg/%s", server, encoded)
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("plantuml server unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read plantuml response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("plantuml server returned status %d: %s", resp.StatusCode, string(body))
+	}
+	return string(body), nil
+}
+
+// saveImage writes the PNG buffer to a file and returns a success ToolResult.
+func saveImage(workDir, filename, imgType string, buf []byte) *types.ToolResult {
 	outPath := filepath.Join(workDir, filename)
 	// Ensure parent directory exists
 	if parent := filepath.Dir(outPath); parent != "" {
 		if err := os.MkdirAll(parent, 0755); err != nil {
-			return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to create output directory: %s", err.Error()), Tool: "write_image"}
+			return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to create output directory: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
 		}
 	}
 	if err := os.WriteFile(outPath, buf, 0644); err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to write image: %s", err.Error()), Tool: "write_image"}
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("failed to write image: %s", err.Error()), Tool: "write_image", RawResult: map[string]interface{}{"filename": filename, "size_bytes": 0, "type": imgType}}
 	}
-
-	sizeKB := len(buf) / 1024
+	sizeBytes := len(buf)
 	return &types.ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("image saved: %s (%d KB, type=%s)", filename, sizeKB, imgType),
+		Output:  fmt.Sprintf("🖼️ 图片已保存：%s（%d）", filename, sizeBytes),
 		Tool:    "write_image",
+		RawResult: map[string]interface{}{
+			"filename":   filename,
+			"size_bytes": sizeBytes,
+			"type":       imgType,
+		},
 	}
 }

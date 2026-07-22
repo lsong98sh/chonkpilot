@@ -17,6 +17,7 @@ type FileUID string
 type VersionRecord struct {
 	ID        int64  `json:"id"`
 	TurnID    string `json:"turn_id"`
+	Version   int    `json:"version"`
 	FileUID   string `json:"file_uid"`
 	FilePath  string `json:"file_path"`
 	CreatedAt string `json:"created_at"`
@@ -60,11 +61,22 @@ func migrate(db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+
+	// Add version column (existing snapshots get version=-1)
+	_, colErr := db.Exec(`ALTER TABLE file_versions ADD COLUMN version INTEGER NOT NULL DEFAULT -1`)
+	if colErr != nil {
+		// Column may already exist — ignore
+	}
+
 	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_fv_uid ON file_versions(file_uid)`)
 	if err != nil {
 		return err
 	}
 	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_fv_path ON file_versions(file_path)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_fv_turn_version ON file_versions(turn_id, version)`)
 	return err
 }
 
@@ -106,7 +118,7 @@ func Snapshot(db *sql.DB, turnID, filePath, workDir string) (bool, error) {
 	}
 
 	now := time.Now().Format(time.RFC3339)
-	_, err = db.Exec(`INSERT INTO file_versions (turn_id, file_uid, file_path, content, created_at) VALUES (?, ?, ?, ?, ?)`,
+	_, err = db.Exec(`INSERT INTO file_versions (turn_id, file_uid, file_path, content, created_at, version) VALUES (?, ?, ?, ?, ?, -1)`,
 		turnID, string(uid), filePath, data, now)
 	if err != nil {
 		return false, err
@@ -127,7 +139,7 @@ func GetVersions(db *sql.DB, filePath, workDir string) ([]VersionRecord, error) 
 	uid := string(ComputeFileUID(absPath))
 
 	// 1. Try by UID
-	rows, err := db.Query(`SELECT id, turn_id, file_uid, file_path, created_at FROM file_versions WHERE file_uid = ? ORDER BY id`, uid)
+	rows, err := db.Query(`SELECT id, turn_id, file_uid, file_path, created_at, version FROM file_versions WHERE file_uid = ? ORDER BY id`, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +154,7 @@ func GetVersions(db *sql.DB, filePath, workDir string) ([]VersionRecord, error) 
 	}
 
 	// 2. Fallback by file_path
-	rows, err = db.Query(`SELECT id, turn_id, file_uid, file_path, created_at FROM file_versions WHERE file_path = ? ORDER BY id`, filePath)
+	rows, err = db.Query(`SELECT id, turn_id, file_uid, file_path, created_at, version FROM file_versions WHERE file_path = ? ORDER BY id`, filePath)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +174,7 @@ func scanVersions(rows *sql.Rows) ([]VersionRecord, error) {
 	var results []VersionRecord
 	for rows.Next() {
 		var vr VersionRecord
-		if err := rows.Scan(&vr.ID, &vr.TurnID, &vr.FileUID, &vr.FilePath, &vr.CreatedAt); err != nil {
+		if err := rows.Scan(&vr.ID, &vr.TurnID, &vr.FileUID, &vr.FilePath, &vr.CreatedAt, &vr.Version); err != nil {
 			continue
 		}
 		results = append(results, vr)
@@ -172,9 +184,9 @@ func scanVersions(rows *sql.Rows) ([]VersionRecord, error) {
 
 // GetVersionContent retrieves full version data by ID.
 func GetVersionContent(db *sql.DB, versionID int64) (*VersionContent, error) {
-	row := db.QueryRow(`SELECT id, turn_id, file_uid, file_path, content, created_at FROM file_versions WHERE id = ?`, versionID)
+	row := db.QueryRow(`SELECT id, turn_id, file_uid, file_path, content, created_at, version FROM file_versions WHERE id = ?`, versionID)
 	var vc VersionContent
-	if err := row.Scan(&vc.ID, &vc.TurnID, &vc.FileUID, &vc.FilePath, &vc.Content, &vc.CreatedAt); err != nil {
+	if err := row.Scan(&vc.ID, &vc.TurnID, &vc.FileUID, &vc.FilePath, &vc.Content, &vc.CreatedAt, &vc.Version); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -204,7 +216,7 @@ func RestoreVersion(db *sql.DB, versionID int64, workDir string) error {
 
 // GetTurnVersions returns all version records for a given turn.
 func GetTurnVersions(db *sql.DB, turnID string) ([]VersionRecord, error) {
-	rows, err := db.Query(`SELECT id, turn_id, file_uid, file_path, created_at FROM file_versions WHERE turn_id = ? ORDER BY id`, turnID)
+	rows, err := db.Query(`SELECT id, turn_id, file_uid, file_path, created_at, version FROM file_versions WHERE turn_id = ? ORDER BY id`, turnID)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +231,7 @@ func DeleteByTurnID(db *sql.DB, turnID string) error {
 
 // GetTurnVersionsByPathPrefix returns all version records for a turn where file_path starts with the given prefix.
 func GetTurnVersionsByPathPrefix(db *sql.DB, turnID, pathPrefix string) ([]VersionRecord, error) {
-	rows, err := db.Query(`SELECT id, turn_id, file_uid, file_path, created_at FROM file_versions WHERE turn_id = ? AND file_path LIKE ? ORDER BY id`, turnID, pathPrefix+"%")
+	rows, err := db.Query(`SELECT id, turn_id, file_uid, file_path, created_at, version FROM file_versions WHERE turn_id = ? AND file_path LIKE ? ORDER BY id`, turnID, pathPrefix+"%")
 	if err != nil {
 		return nil, err
 	}
@@ -244,8 +256,7 @@ func DeleteByFile(db *sql.DB, turnID, filePath, workDir string) error {
 
 	n, _ := result.RowsAffected()
 	if n == 0 {
-		// Try file_path fallback
-		_, _ = db.Exec(`DELETE FROM file_versions WHERE turn_id = ? AND file_path = ?`, turnID, filePath)
+		// Try file_path fallback (already executed above as safety net)
 	}
 	return nil
 }
@@ -343,4 +354,76 @@ func RestoreTurnAndDelete(db *sql.DB, turnID, workDir string) (int, []error) {
 	}
 
 	return restored, errs
+}
+
+// ──────── Versioned operations ────────
+
+// NextVersion returns the next version number for a turn (0, 1, 2, ...).
+func NextVersion(db *sql.DB, turnID string) (int, error) {
+	var maxVer int
+	err := db.QueryRow(`SELECT COALESCE(MAX(version), -1) FROM file_versions WHERE turn_id = ?`, turnID).Scan(&maxVer)
+	if err != nil {
+		return 0, err
+	}
+	return maxVer + 1, nil
+}
+
+// PutVersion inserts a new versioned record for a file in a turn.
+// version is auto-incremented within the turn.
+func PutVersion(db *sql.DB, turnID, filePath, workDir string) (int, error) {
+	absPath := filePath
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(workDir, filePath)
+	}
+
+	uid := string(ComputeFileUID(absPath))
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return -1, fmt.Errorf("read file: %w", err)
+	}
+
+	filePath = filepath.ToSlash(filePath)
+	ver, err := NextVersion(db, turnID)
+	if err != nil {
+		return -1, fmt.Errorf("next version: %w", err)
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	_, err = db.Exec(`INSERT INTO file_versions (turn_id, file_uid, file_path, content, created_at, version) VALUES (?, ?, ?, ?, ?, ?)`,
+		turnID, string(uid), filePath, data, now, ver)
+	if err != nil {
+		return -1, fmt.Errorf("insert version: %w", err)
+	}
+	return ver, nil
+}
+
+// GetVersionByTurnAndVersion retrieves version content by turn_id + version number.
+func GetVersionByTurnAndVersion(db *sql.DB, turnID string, version int) (*VersionContent, error) {
+	row := db.QueryRow(`SELECT id, turn_id, file_uid, file_path, content, created_at, version FROM file_versions WHERE turn_id = ? AND version = ?`, turnID, version)
+	var vc VersionContent
+	if err := row.Scan(&vc.ID, &vc.TurnID, &vc.FileUID, &vc.FilePath, &vc.Content, &vc.CreatedAt, &vc.Version); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &vc, nil
+}
+
+// GetAllTurns returns all distinct turn_ids in the versions table, ordered by id.
+func GetAllTurns(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT turn_id FROM file_versions ORDER BY turn_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var turns []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			continue
+		}
+		turns = append(turns, t)
+	}
+	return turns, rows.Err()
 }

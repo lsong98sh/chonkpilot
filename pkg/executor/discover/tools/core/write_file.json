@@ -1,5 +1,5 @@
 {
-  "description": "Write text or binary content to one or more files (creates or overwrites). Each file has its own path, content, and optional type. For binary files, set type='base64;MIME' (e.g. 'base64;image/png'). Example: {\"_\": [{\"path\": \"hello.go\", \"content\": \"package main\"}]}",
+  "description": "Write text or binary content to one or more files (creates or overwrites). Each file has its own path, content, and optional type. For binary files, set type='base64;MIME' (e.g. 'base64;image/png'). Supports template variable replacement via 'template' parameter, dry-run preview, automatic backup (.bak), and unified diff output after write. Example: {\"files\": [{\"path\": \"hello.go\", \"content\": \"package main\"}]}",
   "name": "write_file",
   "parameters": {
     "type": "object",
@@ -15,16 +15,49 @@
             },
             "content": {
               "type": "string",
-              "description": "File content."
+              "description": "File content. Supports {{var}} template placeholders when 'template' is set."
             },
             "type": {
               "type": "string",
-              "description": "Optional. 'base64;MIME' for binary."
+              "description": "Optional. 'base64;MIME' for binary (e.g. 'base64;image/png')."
+            },
+            "show_diff": {
+              "type": "string",
+              "description": "Optional. Overrides top-level show_diff for this file. \"true\"=return unified diff, \"stat\"=only line stats."
+            },
+            "backup": {
+              "type": "boolean",
+              "description": "Optional. Overrides top-level backup for this file. When true, auto-backup existing file as {path}.bak."
+            },
+            "template": {
+              "type": "object",
+              "description": "Optional. Merged with top-level template (file-level wins). Template variables {{var}} in content are replaced."
             }
           },
           "required": ["path", "content"]
         },
         "description": "Array of file write requests."
+      },
+      "show_diff": {
+        "type": "string",
+        "description": "Default for all files. \"true\"=return unified diff, \"stat\"=only line stats (e.g. '+42行 / -15行')."
+      },
+      "backup": {
+        "type": "boolean",
+        "description": "Default for all files. When true, auto-backup existing file as {path}.bak before overwriting."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "Preview mode. When true, does not write to disk. Shows content preview (new file) or diff (existing file)."
+      },
+      "template": {
+        "type": "object",
+        "description": "Default template variables for all files. Values replace {{varName}} placeholders in content. File-level template merges on top (file-level wins). Example: {\"name\": \"MyApp\", \"port\": 8080}."
+      },
+      "format": {
+        "type": "string",
+        "enum": ["text", "json"],
+        "description": "Output format. \"text\" (default) for human-readable, \"json\" for structured JSON."
       }
     },
     "required": ["files"]

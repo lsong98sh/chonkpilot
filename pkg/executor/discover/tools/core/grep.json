@@ -1,16 +1,20 @@
 {
-  "description": "Search file contents with a regex pattern. Returns JSON array of matches: [{\"file\": \"...\", \"line\": N, \"content\": \"...\"}, ...]. Supports file_pattern (glob, e.g. '*.go') to filter by filename, path to limit search to a subdirectory, and limit (max matches, default 200). Example: {\"pattern\": \"func.*Handler\", \"file_pattern\": \"*.go\", \"path\": \"./src\"}",
+  "description": "Search files by content and/or filename. Returns matching lines with file:line:content format. Use only_files=true to just list files by name pattern (replaces search_files). Supports file_pattern (glob, e.g. '*.go') to filter by filename, path to limit search to a subdirectory, limit/max_matches (max matches, default 200), and context (lines of context before/after match). Example: {\"pattern\": \"func.*Handler\", \"file_pattern\": \"*.go\", \"path\": \"./src\"}",
   "name": "grep",
   "parameters": {
     "type": "object",
     "properties": {
       "pattern": {
         "type": "string",
-        "description": "Regex pattern to search for"
+        "description": "Regex pattern to search for (in content mode). In only_files mode with no file_pattern, treated as file glob pattern."
+      },
+      "only_files": {
+        "type": "boolean",
+        "description": "If true, only return matching file paths (no content search). Use with file_pattern to find files by name. Replaces search_files."
       },
       "file_pattern": {
         "type": "string",
-        "description": "Optional glob pattern to filter by filename (e.g. '*.go', '*_test.go')"
+        "description": "Optional glob pattern to filter by filename (e.g. '*.go', '*_test.go'). Comma-separated for multiple patterns."
       },
       "path": {
         "type": "string",
@@ -19,6 +23,14 @@
       "limit": {
         "type": "number",
         "description": "Max matches (default 200, capped at 1000). Set 0 for unlimited"
+      },
+      "max_matches": {
+        "type": "number",
+        "description": "Alias for limit. Max matches to return (default 200, capped at 1000)"
+      },
+      "context": {
+        "type": "number",
+        "description": "Number of context lines to show before and after each match. Default 0."
       }
     },
     "required": [

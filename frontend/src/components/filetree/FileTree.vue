@@ -1,45 +1,30 @@
 <template>
   <div class="file-tree" @contextmenu="onTreeContextMenu">
-    <el-tree
-      ref="treeRef"
-      lazy
-      :load="loadNode"
-      :props="defaultProps"
-      node-key="path"
-      highlight-current
-      v-model:expanded-keys="expandedKeys"
-      @node-click="handleNodeClick"
-      @node-contextmenu="handleNodeContextMenu"
-      @node-expand="handleNodeExpand"
-      @node-collapse="handleNodeCollapse"
-      :filter-node-method="filterNode"
-    >
-      <template #default="{ data }">
-        <span class="tree-node">
-          <el-icon class="node-icon" :size="14">
-            <Folder v-if="data.is_dir" />
-            <Collection v-else-if="isDBConfig(data)" />
-            <Document v-else />
-          </el-icon>
-          <span v-show="editingPath !== data.path" class="node-label">{{ data.label }}</span>
-          <el-input
-            v-if="editingPath === data.path"
-            ref="editInputRef"
-            v-model="editingValue"
-            size="small"
-            class="inline-edit-input"
-            @keyup.enter="confirmEdit"
-            @keyup.escape="cancelEdit"
-            @blur="confirmEdit"
-            @mousedown.stop
-            @click.stop
-          />
-          <el-tag v-if="isDBConfig(data)" size="small" type="info" class="db-tag">DB</el-tag>
-        </span>
-      </template>
-    </el-tree>
+    <!-- 递归渲染 treeData -->
+    <TreeNode
+      v-for="node in treeData"
+      :key="node.path"
+      :node="node"
+      :depth="0"
+      :selected-key="selectedKey"
+      :editing-path="editingPath"
+      :editing-value="editingValue"
+      :search-query="searchQuery"
+      @toggle="onToggle"
+      @row-click="onRowClick"
+      @context-menu="onRowContextMenu"
+      @update:editing-value="editingValue = $event"
+      @confirm-edit="confirmEdit"
+      @cancel-edit="cancelEdit"
+    />
 
-    <!-- Context menu -->
+    <!-- 空状态 -->
+    <div v-if="treeData.length === 0" class="tree-empty">
+      <p v-if="_cachedWorkDir">文件夹为空</p>
+      <p v-else>尚未打开项目</p>
+    </div>
+
+    <!-- 右键菜单 -->
     <div
       v-if="ctxMenu.visible"
       class="context-menu"
@@ -64,39 +49,171 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { Folder, Document, Collection, Plus, FolderOpened, CopyDocument, Edit, Delete, Link, Rank, Top, Upload } from '@element-plus/icons-vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
-import { getFileTree, getFileTreeChildren, createFileInDir, createDirInDir, renameFile, deleteFilePath, duplicateFile, revealInExplorer, openWithDefault, openWithDialog } from '../../api/file'
+import { getFileTree, getFileTreeChildren, createFileInDir, createDirInDir, renameFile, deleteFilePath, duplicateFile, revealInExplorer, openWithDefault, openWithDialog, loadInitData, saveFileTreeState, saveWindowState } from '../../api/file'
 import { useFileTree } from '../../composables/useFileTree'
+import bridge from '../../utils/bridge'
+import TreeNode from './TreeNode.vue'
 
-const treeRef = ref(null)
+// ─── 响应式状态 ───────────────────────
 
-// expandedKeys tracks which directories are expanded;
-// v-model:expanded-keys="expandedKeys" on el-tree keeps it in sync.
-// Before reload, we save and restore it so expanded folders don't collapse
-// when a file changes in a different directory (which triggers reloadRoot fallback).
-const expandedKeys = ref([])
+const treeData = ref([])
+const selectedKey = ref('')
+const searchQuery = ref('')
 
-const { loading, onFileChanged, teardown } = useFileTree()
+const _cachedWorkDir = ref('')
+let _unsubCapture = null
+let _unsubSet = null
+const _cleanup = []
 
-const defaultProps = {
-  children: 'children',
-  label: 'label',
-  isLeaf: 'isLeaf',
+const { onFileChanged, teardown } = useFileTree()
+
+// ─── 键盘导航用的扁平列表 ────────────
+
+/** 仅用于 ArrowUp/ArrowDown 键盘导航 */
+const _navFlatNodes = computed(() => {
+  const result = []
+  function walk(nodes) {
+    for (const node of nodes) {
+      result.push(node)
+      if (node.is_dir && node.expanded && node.children) {
+        walk(node.children)
+      }
+    }
+  }
+  walk(treeData.value)
+  return result
+})
+
+// ─── 工具函数 ────────────────────────
+
+function treeNode(raw) {
+  const node = {
+    label: raw.name,
+    path: raw.path.replace(/\\/g, '/'),
+    is_dir: raw.is_dir,
+  }
+  if (raw.is_dir) {
+    node.children = []
+    node.expanded = false
+    node._loading = false
+  }
+  return node
 }
 
-// ─── Context menu state ──────────────────────────
+function normalizeTreeDataPaths(nodes) {
+  if (!nodes) return []
+  for (const n of nodes) {
+    if (n.path) n.path = n.path.replace(/\\/g, '/')
+    if (n.children) normalizeTreeDataPaths(n.children)
+  }
+  return nodes
+}
+
+function getParentPath(path) {
+  if (!path) return ''
+  const idx = path.lastIndexOf('/')
+  const bidx = path.lastIndexOf('\\')
+  return path.substring(0, Math.max(idx, bidx)) || ''
+}
+
+function isDBConfig(data) {
+  return data.path && data.path.startsWith('db://')
+}
+
+function sortChildren(children) {
+  children.sort((a, b) => (b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0))
+}
+
+// ─── 数据加载 ────────────────────────
+
+async function loadDirChildren(dirNode) {
+  try {
+    const res = await getFileTreeChildren(dirNode.path)
+    const raw = res.children || []
+
+    // 按 path 索引旧 children（保留引用，expanded、children 等状态不动）
+    const oldByPath = {}
+    if (dirNode.children) {
+      for (const c of dirNode.children) {
+        oldByPath[c.path] = c
+      }
+    }
+
+    const merged = []
+    for (const r of raw) {
+      const normalizedPath = r.path.replace(/\\/g, '/')
+      const old = oldByPath[normalizedPath]
+      if (old) {
+        // 已存在：只更新 label（文件名可能变了），保留 expanded/children 等状态
+        old.label = r.name
+        merged.push(old)
+      } else {
+        // 新增：创建新节点
+        merged.push(treeNode(r))
+      }
+    }
+
+    dirNode.children = merged
+    sortChildren(dirNode.children)
+    dirNode._loading = false
+  } catch (_) {
+    dirNode.children = []
+    dirNode._loading = false
+  }
+}
+
+// ─── 展开 / 折叠 ─────────────────────
+
+async function onToggle(node) {
+  // node 是 treeData 中的真实节点（TreeNode 直接传递引用）
+  if (!node || !node.is_dir) return
+  if (node._loading) return
+
+  // 折叠
+  if (node.expanded) {
+    node.expanded = false
+    window.go.main.App.UnwatchDir(node.path, true).catch(() => {})
+    saveFileTreeSnapshot()
+    return
+  }
+
+  // 展开
+  node.expanded = true
+  node._loading = true
+  await loadDirChildren(node)
+  window.go.main.App.WatchDir(node.path).catch(() => {})
+  saveFileTreeSnapshot()
+}
+
+
+// ─── 节点交互 ────────────────────────
+
+function onRowClick(node) {
+  selectedKey.value = node.path
+
+  if (node.is_dir) {
+    onToggle(node)
+  } else {
+    if (isDBConfig(node)) {
+      const key = node.path.replace('db://', '')
+      window.dispatchEvent(new CustomEvent('file:open', {
+        detail: { path: node.path, isDBConfig: true, dbKey: key }
+      }))
+    } else {
+      window.dispatchEvent(new CustomEvent('file:open', { detail: { path: node.path } }))
+    }
+  }
+}
+
+// ─── 右键菜单 ────────────────────────
 
 const ctxMenu = reactive({
-  visible: false,
-  x: 0,
-  y: 0,
-  data: null,
-  isDir: false,
-  isDB: false,
-  style: {},
-  items: [],
+  visible: false, x: 0, y: 0,
+  data: null, isDir: false, isDB: false,
+  style: {}, items: [],
 })
 
 const dirMenu = [
@@ -126,79 +243,41 @@ const fileMenu = [
   { key: 'delete', label: '删除', icon: Delete, danger: true },
 ]
 
-// ─── Inline edit state ──────────────────────────
-
-const editingPath = ref('')   // path of node currently being edited (empty = none)
-const editingValue = ref('')  // current value in the inline input
-const editingOrigPath = ref('') // original path (for temp files created by newFile/newFolder)
-const editingIsNew = ref(false) // true if this was just created (cancel = delete)
-const editInputRef = ref(null)
-
-function isDBConfig(data) {
-  return data.path && data.path.startsWith('db://')
-}
-
-function getWorkDir() {
-  // The workDir is the root of the tree; we can get it from tree root's first child's parent path,
-  // or more simply from the tree state. For our purposes, basePath is the parent directory of the ctx node.
-  return ''
-}
-
-function handleNodeContextMenu(event, data, node) {
+function onRowContextMenu(event, node) {
   event.preventDefault()
   event.stopPropagation()
-
-  openContextMenu(event, data)
+  openContextMenu(event, node)
 }
 
 function onTreeContextMenu(e) {
   e.preventDefault()
-  // Check if click target is NOT on a tree node → show root directory menu
-  if (!e.target.closest('.el-tree-node')) {
-    const tree = treeRef.value
-    if (!tree) return
-    const root = tree.store?.root
-    if (!root || root.childNodes.length === 0) return
-    const firstPath = root.childNodes[0].data?.path
-    if (!firstPath) return
-    const rootPath = getParentPath(firstPath)
-    if (!rootPath) return
-    const rootName = rootPath.split(/[/\\]/).filter(Boolean).pop() || rootPath
-    openContextMenu(e, { path: rootPath, label: rootName, is_dir: true, isRoot: true })
+  if (!e.target.closest('.tree-row') && treeData.value.length > 0) {
+    const rootName = _cachedWorkDir.value
+      ? (_cachedWorkDir.value.split(/[/\\]/).filter(Boolean).pop() || _cachedWorkDir.value)
+      : ''
+    openContextMenu(e, { path: _cachedWorkDir.value, label: rootName, is_dir: true, isRoot: true })
   }
 }
 
 function openContextMenu(event, data) {
   let x = event.clientX
   let y = event.clientY
-
-  const isDir = data.is_dir
   const isRoot = data.isRoot
-
-  // Build menu items: root menu removes rename
+  const isDir = data.is_dir
   let items
   if (isRoot) {
-    items = []
-    for (const item of dirMenu) {
-      if (item.key === 'rename' || item.key === 'delete') continue // root: no rename, no delete
-      items.push(item)
-    }
+    items = dirMenu.filter(item => item.key !== 'rename' && item.key !== 'delete')
   } else if (isDir) {
     items = dirMenu
   } else {
     items = fileMenu
   }
-
-  const itemCount = items.length
-  const menuHeight = itemCount * 30 + 8
-  const menuWidth = 200
-
-  if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 12
-  if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 12
-
+  const mc = items.length
+  const mw = 200
+  if (x + mw > window.innerWidth) x = window.innerWidth - mw - 12
+  if (y + mc * 30 + 8 > window.innerHeight) y = window.innerHeight - mc * 30 - 20
   ctxMenu.visible = true
-  ctxMenu.x = x
-  ctxMenu.y = y
+  ctxMenu.x = x; ctxMenu.y = y
   ctxMenu.data = data
   ctxMenu.isDir = isDir
   ctxMenu.isDB = isDBConfig(data)
@@ -206,152 +285,132 @@ function openContextMenu(event, data) {
   ctxMenu.items = items
 }
 
-function closeContextMenu() {
-  ctxMenu.visible = false
-}
+function closeContextMenu() { ctxMenu.visible = false }
 
 function documentClickHandler(e) {
-  if (e.button !== 0) return // only left-click closes the context menu
+  if (e.button !== 0) return
   closeContextMenu()
 }
 
-// ─── Keyboard shortcuts ──────────────────────────
+// ─── 键盘快捷键 ───────────────────────
 
 function onKeyDown(e) {
-  // F2: inline rename the currently selected node
+  if (editingPath.value) return
+
+  // 如果焦点在输入框内，不处理
+  const tag = document.activeElement?.tagName?.toLowerCase()
+  if (tag === 'input' || tag === 'textarea') return
+  if (!selectedKey.value) return
+
+  const selNode = findNode(treeData.value, selectedKey.value)
+
   if (e.key === 'F2') {
-    // Don't trigger if we're already editing
-    if (editingPath.value) return
-    const tree = treeRef.value
-    if (!tree) return
-    const currentKey = tree.getCurrentKey()
-    if (!currentKey) return
-    const node = tree.getNode(currentKey)
-    if (!node || !node.data || node.data.path.startsWith('db://')) return
-    // workDir root is not a real node in tree data, skip level-0
-    const targetNode = node.parent?.level === 0 ? null : node
-    if (!targetNode) return
-    doRename(targetNode.data.path, targetNode.data.label)
+    if (!selNode || selNode.path.startsWith('db://')) return
+    doRename(selNode.path, selNode.label)
+  }
+
+  if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault()
+    const flat = _navFlatNodes.value
+    if (flat.length === 0) return
+    const idx = flat.findIndex(n => n.path === selectedKey.value)
+    let newIdx
+    if (e.key === 'ArrowUp') {
+      newIdx = idx <= 0 ? flat.length - 1 : idx - 1
+    } else {
+      newIdx = idx >= flat.length - 1 ? 0 : idx + 1
+    }
+    selectedKey.value = flat[newIdx].path
+    document.querySelector(`[data-path="${CSS.escape(flat[newIdx].path)}"]`)?.scrollIntoView({ block: 'nearest' })
+  }
+
+  if (e.key === 'ArrowRight' && selNode) {
+    e.preventDefault()
+    // 文件上无效
+    if (!selNode.is_dir) return
+    // 未展开 → 展开
+    if (!selNode.expanded) {
+      onToggle(selNode)
+      return
+    }
+    // 已展开且有子节点 → 跳到第一个子节点
+    if (selNode.children && selNode.children.length > 0) {
+      selectedKey.value = selNode.children[0].path
+    }
+  }
+
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault()
+    // 已展开的目录：折叠
+    if (selNode && selNode.is_dir && selNode.expanded) {
+      onToggle(selNode)
+      return
+    }
+    // 文件 或 已折叠的目录：跳到上级目录
+    const parentPath = getParentPath(selectedKey.value)
+    if (parentPath) {
+      const parent = findNode(treeData.value, parentPath)
+      if (parent && parent.is_dir) {
+        selectedKey.value = parent.path
+        return
+      }
+    }
+    // 已在最上层 → 跳到第一个节点
+    const flat = _navFlatNodes.value
+    if (flat.length > 0) {
+      selectedKey.value = flat[0].path
+    }
+  }
+
+  if (e.key === 'Enter') {
+    if (selNode && selNode.is_dir) {
+      onToggle(selNode)
+    } else if (selNode) {
+      onRowClick(selNode)
+    }
   }
 }
 
-onMounted(() => {
-  document.addEventListener('click', documentClickHandler)
-  document.addEventListener('keydown', onKeyDown)
-  window.addEventListener('file:search', onFileSearch)
-  // Batch handler: receive array of {dir, children} from the queue.
-  // Do incremental tree update with el-tree's remove/append — no reload or refresh.
-  onFileChanged((changes) => {
-    const tree = treeRef.value
-    if (!tree) return
-    const saved = [...expandedKeys.value]
-    for (const { dir, children } of changes) {
-      const parentNode = tree.getNode(dir)
-      if (!parentNode || !parentNode.childNodes) continue
-      // Transform watcher children (name/path/is_dir) to tree node format (label/path/is_dir/isLeaf)
-      const newNodes = children.map(c => ({
-        label: c.name,
-        path: c.path,
-        is_dir: c.is_dir,
-        isLeaf: !c.is_dir,
-      }))
-      // Build lookup maps for fast diff (both keyed by label for correct comparison)
-      const newByLabel = new Map(newNodes.map(c => [c.label, c]))
-      const oldByLabel = new Map(parentNode.childNodes.map(c => [c.data.label, c]))
-      // Remove items that no longer exist
-      for (const [label, childNode] of oldByLabel) {
-        if (!newByLabel.has(label)) {
-          tree.remove(childNode)
-        }
-      }
-      // Add items that are new (at correct sorted position)
-      for (let i = 0; i < newNodes.length; i++) {
-        const child = newNodes[i]
-        if (!oldByLabel.has(child.label)) {
-          const nextSibling = newNodes[i + 1]
-          const nextNode = nextSibling ? oldByLabel.get(nextSibling.label) : null
-          if (nextNode) {
-            tree.insert(child, parentNode, nextNode)
-          } else {
-            tree.append(child, parentNode)
-          }
-        }
-      }
+// ─── 内联编辑 ────────────────────────
+
+const editingPath = ref('')
+const editingValue = ref('')
+const editingOrigPath = ref('')
+const editingIsNew = ref(false)
+
+/** 查找 treeData 中的节点（仅用于键盘导航和内联编辑等少数组件内操作） */
+function findNode(nodes, targetPath) {
+  for (const n of nodes) {
+    if (n.path === targetPath) return n
+    if (n.children) {
+      const found = findNode(n.children, targetPath)
+      if (found) return found
     }
-    nextTick(() => { expandedKeys.value = saved })
-  })
-  // Auto-expand the root so the first-level files are visible immediately
-  nextTick(() => {
-    reloadRoot()
-    // After root loads, watch all currently expanded dirs
-    nextTick(() => {
-      for (const key of expandedKeys.value) {
-        window.go.main.App.WatchDir(key)
-      }
-    })
-  })
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', documentClickHandler)
-  document.removeEventListener('keydown', onKeyDown)
-  window.removeEventListener('file:search', onFileSearch)
-  teardown()
-})
-
-function onFileSearch(e) {
-  nextTick(() => {
-    treeRef.value?.filter(e.detail?.query || '')
-  })
+  }
+  return null
 }
 
-// ─── Context menu actions ────────────────────────
-
-async function handleCtxAction(key) {
-  const data = ctxMenu.data
-  closeContextMenu()
-  if (!data) return
-
-  switch (key) {
-    case 'newFile':
-      await startInlineCreate(data.path, false)
-      break
-    case 'newFolder':
-      await startInlineCreate(data.path, true)
-      break
-    case 'copyPath':
-      await copyToClipboard(data.path)
-      break
-    case 'copyRelativePath':
-      await copyRelativePath(data.path)
-      break
-    case 'copyFilename':
-      await copyToClipboard(data.label)
-      break
-    case 'revealInExplorer':
-      await doReveal(data.path)
-      break
-    case 'rename':
-      await doRename(data.path, data.label)
-      break
-    case 'delete':
-      await doDelete(data.path, data.label, data.is_dir)
-      break
-    case 'duplicate':
-      await doDuplicate(data.path)
-      break
-    case 'open':
-      await doOpen(data.path)
-      break
-    case 'openWith':
-      await doOpenWith(data.path)
-      break
+async function refreshDirInTree(dirPath) {
+  const normalized = dirPath.replace(/\\/g, '/')
+  const node = findNode(treeData.value, normalized)
+  if (node && node.is_dir) {
+    await loadDirChildren(node)
+  } else if (normalized === _cachedWorkDir.value) {
+    try {
+      const res = await getFileTree('')
+      const raw = res.tree?.children || []
+      treeData.value = raw
+        .filter(n => n.name !== '.ide')
+        .map(n => treeNode(n))
+      sortChildren(treeData.value)
+    } catch (_) {
+      treeData.value = []
+    }
   }
 }
 
 async function startInlineCreate(dirPath, isDir) {
-  const defaultName = isDir ? 'untitled' : 'untitled'
-  // Find a unique default name by retry
+  const defaultName = 'untitled'
   let name = defaultName
   let attempt = 0
   let newPath
@@ -368,25 +427,19 @@ async function startInlineCreate(dirPath, isDir) {
     } catch (_) {
       attempt++
       if (attempt > 100) throw _
-      name = `${defaultName} ${attempt + 1}`
+      name = defaultName + ' ' + (attempt + 1)
     }
   }
 
-  // Reload the parent directory and wait for tree to update
-  await reloadNodeAsync(dirPath)
+  await refreshDirInTree(dirPath)
 
-  // Find the new node and start editing
-  const tree = treeRef.value
-  if (tree) {
-    const node = tree.getNode(newPath)
-    if (node) {
-      // Expand parent so the new node is visible
-      const parent = tree.getNode(dirPath)
-      if (parent) parent.expand()
-      // Select the new node
-      tree.setCurrentKey(newPath)
-    }
+  // 确保目录已展开
+  const parent = findNode(treeData.value, dirPath)
+  if (parent && !parent.expanded) {
+    await onToggle(parent)
   }
+
+  selectedKey.value = newPath
 
   editingPath.value = newPath
   editingValue.value = ''
@@ -394,16 +447,8 @@ async function startInlineCreate(dirPath, isDir) {
   editingIsNew.value = true
 
   await nextTick()
-  // Focus and select all text in the input
-  const input = editInputRef.value
-  if (input) {
-    input.focus()
-    // el-input exposes the native input via inputRef
-    const nativeInput = input.$el?.querySelector('input')
-    if (nativeInput) {
-      nativeInput.select()
-    }
-  }
+  const input = document.querySelector('.inline-edit-input input')
+  if (input) input.focus()
 }
 
 async function confirmEdit() {
@@ -419,35 +464,33 @@ async function confirmEdit() {
   editingOrigPath.value = ''
   editingIsNew.value = false
 
+  const parentDir = getParentPath(origPath)
+
   if (!val || val === oldName) {
-    // No change: if new, delete the temp file/folder
     if (isNew) {
-      try {
-        await deleteFilePath(origPath)
-      } catch (e) { console.warn('[FileTree] Failed to delete temp file on cancel:', e) }
+      try { await deleteFilePath(origPath) } catch (_) {}
     }
-    reloadNode(getParentPath(origPath))
+    await refreshDirInTree(parentDir)
     return
   }
 
   if (isNew) {
     try {
       await renameFile(origPath, val)
-      ElMessage.success(`已创建: ${val}`)
+      ElMessage.success('已创建: ' + val)
     } catch (e) {
       ElMessage.error(e?.message || '创建失败')
       try { await deleteFilePath(origPath) } catch (_) {}
     }
   } else {
-    // Rename existing file
     try {
       await renameFile(path, val)
-      ElMessage.success(`已重命名为: ${val}`)
+      ElMessage.success('已重命名为: ' + val)
     } catch (e) {
       ElMessage.error(e?.message || '重命名失败')
     }
   }
-  reloadNode(getParentPath(origPath))
+  await refreshDirInTree(parentDir)
 }
 
 async function cancelEdit() {
@@ -455,373 +498,340 @@ async function cancelEdit() {
   const path = editingPath.value
   const origPath = editingOrigPath.value
   const isNew = editingIsNew.value
-
   editingPath.value = ''
   editingValue.value = ''
   editingOrigPath.value = ''
   editingIsNew.value = false
-
   if (isNew) {
     try {
       await deleteFilePath(origPath)
-      reloadNode(getParentPath(origPath))
+      await refreshDirInTree(getParentPath(origPath))
     } catch (_) {}
-  }
-}
-
-async function reloadNodeAsync(path) {
-  const tree = treeRef.value
-  if (!tree) return
-  const saved = [...expandedKeys.value]
-  const node = tree.getNode(path)
-  if (node && node.loaded) {
-    node.loaded = false
-    node.loadData()
-    // Wait for lazy load to complete (local FS read is fast)
-    await new Promise((r) => setTimeout(r, 200))
-  } else {
-    doReloadRoot()
-  }
-  nextTick(() => { expandedKeys.value = saved })
-}
-
-async function startInlineRename(path, oldName) {
-  // Cancel any ongoing inline create
-  if (editingPath.value) {
-    await cancelEdit()
-    await new Promise((r) => setTimeout(r, 100))
-  }
-
-  // Find the tree node
-  const tree = treeRef.value
-  const node = tree?.getNode(path)
-  if (!node) return
-
-  // Ensure parent is expanded so node is visible
-  const parent = tree?.getNode(getParentPath(path))
-  if (parent && !parent.expanded) {
-    parent.expand()
-    await new Promise((r) => setTimeout(r, 200))
-  }
-
-  // Scroll node into view
-  node.expand() // no-op for files, ensures visibility
-
-  editingPath.value = path
-  editingValue.value = oldName
-  editingOrigPath.value = path
-  editingIsNew.value = false
-
-  await nextTick()
-  const input = editInputRef.value
-  if (input) {
-    input.focus()
-    const nativeInput = input.$el?.querySelector('input')
-    if (nativeInput) {
-      // Move cursor to end, then select all after a tick
-      nativeInput.setSelectionRange(oldName.length, oldName.length)
-      setTimeout(() => {
-        try { nativeInput.select() } catch (e) { console.warn('[FileTree] Failed to select input:', e) }
-      }, 0)
-    }
   }
 }
 
 async function doRename(path, oldName) {
   if (editingPath.value) {
-    // Already editing something, cancel it first
     await cancelEdit()
-    await new Promise((r) => setTimeout(r, 100))
+    await new Promise(r => setTimeout(r, 100))
   }
-  await startInlineRename(path, oldName)
+  editingPath.value = path
+  editingValue.value = oldName
+  editingOrigPath.value = path
+  editingIsNew.value = false
+  await nextTick()
+  const input = document.querySelector('.inline-edit-input input')
+  if (input) {
+    input.focus()
+    input.setSelectionRange(oldName.length, oldName.length)
+    setTimeout(() => { try { input.select() } catch (_) {} }, 0)
+  }
+}
+
+// ─── 右键菜单动作 ────────────────────
+
+async function handleCtxAction(key) {
+  const data = ctxMenu.data
+  closeContextMenu()
+  if (!data) return
+  switch (key) {
+    case 'newFile': await startInlineCreate(data.path, false); break
+    case 'newFolder': await startInlineCreate(data.path, true); break
+    case 'copyPath': await copyToClipboard(data.path); break
+    case 'copyRelativePath': await copyRelativePath(data.path); break
+    case 'copyFilename': await copyToClipboard(data.label); break
+    case 'revealInExplorer': await doReveal(data.path); break
+    case 'rename': await doRename(data.path, data.label); break
+    case 'delete': await doDelete(data.path, data.label, data.is_dir); break
+    case 'duplicate': await doDuplicate(data.path); break
+    case 'open': await doOpen(data.path); break
+    case 'openWith': await doOpenWith(data.path); break
+  }
 }
 
 async function doDelete(path, label, isDir) {
   try {
     const type = isDir ? '文件夹' : '文件'
     await ElMessageBox.confirm(
-      `确定要删除${type} "${label}" 吗？${isDir ? '文件夹内的所有内容将被删除。' : ''}`,
+      '确定要删除' + type + ' "' + label + '" 吗？' + (isDir ? '文件夹内的所有内容将被删除。' : ''),
       '删除确认',
-      {
-        confirmButtonText: '删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-        confirmButtonClass: 'el-button--danger',
-      }
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' }
     )
     await deleteFilePath(path)
-    ElMessage.success(`已删除: ${label}`)
-    reloadNode(getParentPath(path))
-  } catch (_) {
-    // cancelled
-  }
+    ElMessage.success('已删除: ' + label)
+    await refreshDirInTree(getParentPath(path))
+  } catch (_) {}
 }
 
 async function doDuplicate(path) {
   try {
     const res = await duplicateFile(path)
-    ElMessage.success(`已复制: ${res.path}`)
-    reloadNode(getParentPath(path))
+    ElMessage.success('已复制: ' + res.path)
+    await refreshDirInTree(getParentPath(path))
   } catch (e) {
     ElMessage.error(e?.message || '复制失败')
   }
 }
 
 async function doReveal(path) {
-  try {
-    await revealInExplorer(path)
-  } catch (e) {
-    ElMessage.error(e?.message || '打开资源管理器失败')
-  }
+  try { await revealInExplorer(path) } catch (_) { ElMessage.error('打开资源管理器失败') }
 }
 
 async function doOpen(path) {
-  try {
-    await openWithDefault(path)
-  } catch (e) {
-    ElMessage.error(e?.message || '打开失败')
-  }
+  try { await openWithDefault(path) } catch (_) { ElMessage.error('打开失败') }
 }
 
 async function doOpenWith(path) {
-  try {
-    await openWithDialog(path)
-  } catch (e) {
-    ElMessage.error(e?.message || '打开失败')
-  }
+  try { await openWithDialog(path) } catch (_) { ElMessage.error('打开失败') }
 }
 
 async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制到剪贴板')
   } catch (_) {
-    // Fallback
     const ta = document.createElement('textarea')
     ta.value = text
     document.body.appendChild(ta)
     ta.select()
     document.execCommand('copy')
     document.body.removeChild(ta)
-    ElMessage.success('已复制到剪贴板')
   }
+  ElMessage.success('已复制到剪贴板')
 }
 
 async function copyRelativePath(absPath) {
-  // Derive relative path from the tree root directory
-  // We'll get workDir from the root node's first loaded child
-  const tree = treeRef.value
-  if (!tree) return copyToClipboard(absPath)
-  const root = tree.store?.root
-  let workDir = ''
-  if (root && root.childNodes && root.childNodes.length > 0) {
-    // The root's children have paths rooted at workDir; use the first child
-    const firstChild = root.childNodes[0]
-    if (firstChild && firstChild.data) {
-      // Derive: node path = workDir + relative. So workDir = first file's path - first file's name
-      const fp = firstChild.data.path
-      if (fp) {
-        const fn = firstChild.data.label
-        workDir = fp.substring(0, fp.length - fn.length)
-      }
-    }
-  }
-  if (workDir && absPath.startsWith(workDir)) {
-    const rel = absPath.substring(workDir.length)
-    await copyToClipboard(rel)
+  if (_cachedWorkDir.value && absPath.startsWith(_cachedWorkDir.value)) {
+    await copyToClipboard(absPath.substring(_cachedWorkDir.value.length))
   } else {
     await copyToClipboard(absPath)
   }
 }
 
-function getParentPath(path) {
-  if (!path) return ''
-  const idx = path.lastIndexOf('/')
-  const bidx = path.lastIndexOf('\\')
-  const sep = idx > bidx ? '/' : '\\'
-  const p = path.substring(0, Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')))
-  return p || ''
+// ─── 搜索过滤 ────────────────────────
+
+function onFileSearch(e) {
+  searchQuery.value = e.detail?.query || ''
 }
 
-// ─── Tree operations ─────────────────────────────
+// ─── 持久化 ──────────────────────────
 
-/**
- * Lazy load function for el-tree.
- * node.level === 0 → root placeholder, load first-level from getFileTree.
- * Otherwise → call getFileTreeChildren(dir) for that directory.
- */
-async function loadNode(node, resolve) {
-  try {
-    let children
-    if (node.level === 0) {
-      // Root: fetch first level
-      const res = await getFileTree('')
-      children = res.tree?.children || []
-    } else {
-      // Child directory: lazy load
-      const res = await getFileTreeChildren(node.data.path)
-      children = res.children || []
+function buildTreeSnapshot() {
+  if (treeData.value.length === 0) return null
+
+  const rootName = _cachedWorkDir.value
+    ? (_cachedWorkDir.value.split(/[/\\]/).filter(Boolean).pop() || _cachedWorkDir.value)
+    : ''
+
+  function snap(node) {
+    if (!node) return null
+    const result = {
+      name: node.label,
+      path: node.path,
+      is_dir: !!node.is_dir,
+      expanded: !!node.expanded,
     }
-    // Sort: directories first, files second
-    children.sort((a, b) => (b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0))
-    const treeNodes = children
-      .filter((n) => n.name !== '.ide') // hide .ide directory
-      .map((n) => ({
-      label: n.name,
-      path: n.path,
-      is_dir: n.is_dir,
-      children: n.children,
-      isLeaf: !n.is_dir,
-    }))
-    resolve(treeNodes)
-  } catch (_) {
-    resolve([])
+    if (node.is_dir && node.expanded && node.children && node.children.length > 0) {
+      result.children = []
+      for (const child of node.children) {
+        const childSnap = snap(child)
+        if (childSnap) result.children.push(childSnap)
+      }
+    }
+    return result
+  }
+
+  const children = []
+  for (const child of treeData.value) {
+    const node = snap(child)
+    if (node) children.push(node)
+  }
+
+  return {
+    name: rootName,
+    path: _cachedWorkDir.value,
+    is_dir: true,
+    expanded: true,
+    children,
   }
 }
 
-/**
- * Reload a specific node's children (e.g. after a file change).
- * Falls back to reloading all visible root-level children if the exact
- * node is not found (e.g. file created directly in the root workDir).
- */
-function reloadNode(path) {
-  const tree = treeRef.value
-  if (!tree) return
-  const saved = [...expandedKeys.value]
-  const node = tree.getNode(path)
-  if (node && node.loaded) {
-    node.loaded = false
-    node.loadData()
-  } else {
-    // Node not found (e.g. file in root workDir or not yet visited).
-    // Reload the root listing to pick up root-level changes.
-    doReloadRoot()
+function saveFileTreeSnapshot() {
+  saveFileTreeState({
+    snapshot: buildTreeSnapshot(),
+    selected_path: selectedKey.value || '',
+  }).catch(() => {})
+}
+
+function restoreExpandedState(nodes, snapshot) {
+  if (!snapshot) return
+  for (const n of nodes) {
+    const snap = snapshot.find(s => s.path === n.path)
+    if (snap) {
+      n.expanded = snap.expanded
+      if (snap.children && n.children) {
+        restoreExpandedState(n.children, snap.children)
+      }
+    }
   }
-  nextTick(() => { expandedKeys.value = saved })
 }
 
-function reloadRoot() {
-  const tree = treeRef.value
-  if (!tree) return
-  const saved = [...expandedKeys.value]
-  doReloadRoot()
-  nextTick(() => { expandedKeys.value = saved })
+// ─── Executor 操作 ──────────────────
+
+async function doFileTreeOperate(operate, target) {
+  const normalized = target.replace(/\\/g, '/')
+
+  switch (operate) {
+    case 'expand': {
+      const node = findNode(treeData.value, normalized)
+      if (node && node.is_dir) {
+        if (!node.expanded) {
+          node.expanded = true
+          node._loading = true
+          await loadDirChildren(node)
+          window.go.main.App.WatchDir(node.path).catch(() => {})
+        } else {
+          await loadDirChildren(node)
+        }
+        saveFileTreeSnapshot()
+      }
+      break
+    }
+    case 'collapse': {
+      const node = findNode(treeData.value, normalized)
+      if (node && node.is_dir && node.expanded) {
+        await onToggle(node)
+      }
+      break
+    }
+    case 'select': {
+      const parts = normalized.split('/')
+      for (let i = 1; i < parts.length; i++) {
+        const dirPath = parts.slice(0, i).join('/')
+        const dirNode = findNode(treeData.value, dirPath)
+        if (dirNode && dirNode.is_dir && !dirNode.expanded) {
+          await onToggle(dirNode)
+        }
+      }
+      selectedKey.value = normalized
+      break
+    }
+  }
 }
 
-function doReloadRoot() {
-  const tree = treeRef.value
-  if (!tree) return
-  const root = tree.store?.root
-  if (!root) return
-  root.loaded = false
-  root.loadData()
-}
+// ─── 生命周期 ────────────────────────
 
-// ─── Expand/collapse watch (recursive) ───────────
+onMounted(() => {
+  document.addEventListener('click', documentClickHandler)
+  document.addEventListener('keydown', onKeyDown)
+  window.addEventListener('file:search', onFileSearch)
 
-// Determine path separator from an existing path (cross-platform).
-function getSep(path) {
-  return path.indexOf('/') !== -1 ? '/' : '\\'
-}
+  // 初始化加载
+  loadInitData().then(result => {
+    treeData.value = normalizeTreeDataPaths(result.treeData || [])
+    _cachedWorkDir.value = (result.workDir || '').replace(/\\/g, '/')
+    selectedKey.value = result.selectedKey || ''
 
-// Get all expanded keys that are strict descendants of parentPath.
-function descendantKeys(parentPath) {
-  const sep = getSep(parentPath)
-  const prefix = parentPath + sep
-  return expandedKeys.value.filter(k => k.startsWith(prefix))
-}
+    if (result.snapshot) {
+      restoreExpandedState(treeData.value, result.snapshot.children || [])
+    }
 
-function watchDirRecursive(data) {
-  if (!data.is_dir) return
-  window.go.main.App.WatchDir(data.path)
-  // After el-tree loads children and restores sub-expansions,
-  // re-watch any descendants that are also expanded
-  nextTick(() => {
-    for (const key of descendantKeys(data.path)) {
-      window.go.main.App.WatchDir(key)
+    if (result.filetreeWidth) {
+      window.dispatchEvent(new CustomEvent('filetree:resize', { detail: { width: result.filetreeWidth } }))
+    }
+  }).catch(() => {
+    treeData.value = []
+    _cachedWorkDir.value = ''
+  })
+
+  // watcher 推送
+  onFileChanged((changes) => {
+    for (const { dir, children } of changes) {
+      const normalized = dir.replace(/\\/g, '/')
+      const node = findNode(treeData.value, normalized)
+
+      if (node && node.is_dir && node.expanded) {
+        // 展开的目录：替换子节点
+        node.children = (children || []).map(c => treeNode(c))
+        sortChildren(node.children)
+      } else if (!node && _cachedWorkDir.value && normalized === _cachedWorkDir.value) {
+        // 根目录变更
+        treeData.value = (children || [])
+          .filter(c => c.name !== '.ide')
+          .map(c => treeNode(c))
+        sortChildren(treeData.value)
+      }
+      // 未展开的目录：跳过
+    }
+    nextTick(() => saveFileTreeSnapshot())
+  })
+
+  watch(treeData, () => { saveFileTreeSnapshot() }, { deep: true })
+  watch(selectedKey, () => { saveFileTreeSnapshot() })
+
+  // executor: filetree:capture
+  const unsubCapture = bridge.on('filetree:capture', async (data) => {
+    const requestID = data?.request_id
+    if (!requestID) return
+    const snapshot = buildTreeSnapshot()
+    if (snapshot) {
+      try { await window.go.main.App.SaveFileTreeSnapshot(requestID, snapshot) } catch (_) {}
     }
   })
-}
 
-function unwatchDirRecursive(data) {
-  if (!data.is_dir) return
-  // Recursively unwatch all descendant expanded dirs
-  const descendants = descendantKeys(data.path)
-  for (const key of descendants) {
-    window.go.main.App.UnwatchDir(key)
+  // executor: filetree:set
+  const unsubSet = bridge.on('filetree:set', async (data) => {
+    const { request_id, operate, target } = data || {}
+    if (!request_id || !operate || !target) return
+    try {
+      await doFileTreeOperate(operate, target)
+      await window.go.main.App.FileTreeOperateDone(request_id)
+    } catch (e) {
+      console.error('[FileTree] set failed:', e)
+      window.go.main.App.FileTreeOperateDone(request_id).catch(() => {})
+    }
+  })
+
+  _unsubCapture = unsubCapture
+  _unsubSet = unsubSet
+
+  // 窗口大小持久化
+  const onWindowResize = () => {
+    clearTimeout(window._resizeTimer)
+    window._resizeTimer = setTimeout(() => {
+      saveWindowState({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        x: window.screenX,
+        y: window.screenY,
+        maximized: false,
+      }).catch(() => {})
+    }, 1000)
   }
-  // Remove descendant keys from expandedKeys (el-tree removes the collapsed dir itself)
-  const removeSet = new Set(descendants)
-  expandedKeys.value = expandedKeys.value.filter(k => !removeSet.has(k))
-  // Unwatch this dir
-  window.go.main.App.UnwatchDir(data.path)
-}
+  window.addEventListener('resize', onWindowResize)
+  _cleanup.push(() => window.removeEventListener('resize', onWindowResize))
+})
 
-function handleNodeExpand(data) {
-  watchDirRecursive(data)
-}
-
-function handleNodeCollapse(data) {
-  unwatchDirRecursive(data)
-}
-
-// ─── File open ───────────────────────────────────
-
-function handleNodeClick(data) {
-  if (data.is_dir) return
-  if (isDBConfig(data)) {
-    const key = data.path.replace('db://', '')
-    window.dispatchEvent(new CustomEvent('file:open', { detail: { path: data.path, isDBConfig: true, dbKey: key } }))
-  } else {
-    window.dispatchEvent(new CustomEvent('file:open', { detail: { path: data.path } }))
-  }
-}
-
-// ─── Filter / search ─────────────────────────────
-
-function filterNode(value, data) {
-  if (!value) return true
-  return data.label.toLowerCase().includes(value.toLowerCase())
-}
-
-
+onUnmounted(() => {
+  document.removeEventListener('click', documentClickHandler)
+  document.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('file:search', onFileSearch)
+  if (_unsubCapture) _unsubCapture()
+  if (_unsubSet) _unsubSet()
+  for (const fn of _cleanup) fn()
+  teardown()
+})
 </script>
 
 <style scoped>
 .file-tree {
   height: 100%;
   position: relative;
+  overflow-y: auto;
+  overflow-x: hidden;
+  user-select: none;
 }
 
-.el-tree {
-  background: transparent;
-}
-
-.tree-node {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.db-tag {
-  transform: scale(0.75);
-  margin-left: 2px;
-  line-height: 14px;
-  height: 16px;
-  padding: 0 4px;
-}
-
-.node-icon {
-  flex-shrink: 0;
-  color: var(--text-secondary);
-}
-
-.el-tree :deep(.el-tree-node__content) {
-  height: 28px;
-}
-
-/* ─── Context menu ────────────────────── */
-
+/* ─── Context Menu ── */
 .context-menu {
   position: fixed;
   z-index: 9999;
@@ -830,9 +840,8 @@ function filterNode(value, data) {
   background: var(--bg-elevated, #fff);
   border: 1px solid var(--border, #ddd);
   border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
 }
-
 .context-menu-item {
   display: flex;
   align-items: center;
@@ -841,36 +850,34 @@ function filterNode(value, data) {
   font-size: 13px;
   cursor: pointer;
   color: var(--text-primary, #333);
+.file-tree:focus-within .tree-row.selected {
+  background: var(--el-color-primary-light-9, #ecf5ff);
+  color: var(--el-color-primary, #409eff);
+}
   white-space: nowrap;
 }
-
 .context-menu-item:hover {
   background: var(--bg-hover, #f0f0f0);
 }
-
 .context-menu-item.danger {
   color: var(--el-color-danger, #f56c6c);
 }
-
 .context-menu-item.danger:hover {
   background: var(--el-color-danger-light-9, #fef0f0);
 }
-
 .context-menu-separator {
   height: 1px;
   margin: 4px 8px;
   background: var(--border, #ddd);
 }
 
-/* ─── Inline edit ────────────────────── */
-
-.inline-edit-input {
-  width: calc(100% - 30px);
-}
-
-.inline-edit-input :deep(.el-input__wrapper) {
-  padding: 0 4px;
-  height: 24px;
-  border-radius: 3px;
+/* ─── Empty State ── */
+.tree-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary, #888);
+  font-size: 13px;
 }
 </style>

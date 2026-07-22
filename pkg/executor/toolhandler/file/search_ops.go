@@ -7,14 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot/pkg/executor/toolhandler/types"
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/encoding/traditionalchinese"
+	"golang.org/x/text/transform"
 )
 
 // Package-level config — set by executor at startup from UserConfig.
@@ -44,7 +53,6 @@ func checkCancel() error {
 var (
 	GrepMaxResultsCap     int = 1000 // hard cap
 	FetchDownloadMaxBytes int = 100 * 1024 // max HTTP fetch download size (100KB)
-	SearchPreviewMaxLines int = 50   // max lines in search_files preview
 )
 
 // ContainsGlobstar returns true if pattern contains ** (globstar).
@@ -125,29 +133,97 @@ func searchWalkGlob(root string, pattern string) ([]string, error) {
 	return matches, err
 }
 
+// grepMatch represents a single grep match result.
+type grepMatch struct {
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Content string `json:"content"`
+}
+
+// clampMaxMatches clamps a limit to valid range [1, GrepMaxResultsCap] with default GrepMaxResults.
+func clampMaxMatches(limit int) int {
+	if limit < 0 {
+		return GrepMaxResults
+	}
+	if limit == 0 {
+		return GrepMaxResults
+	}
+	if limit > GrepMaxResultsCap {
+		return GrepMaxResultsCap
+	}
+	return limit
+}
+
 // ──────── Grep ────────
 
 // HandleGrep searches file contents using a regular expression.
+// Supports only_files (return file paths only), context (lines before/after each match),
+// file_pattern (glob), path (subdirectory limit), limit/max_matches (max results).
 func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
-	pattern, ok := args["pattern"].(string)
-	if !ok || pattern == "" {
-		return &types.ToolResult{Success: false, Error: "parameter 'pattern' (regex string) is required", Tool: "grep"}
+	pattern, _ := args["pattern"].(string)
+	onlyFiles, _ := args["only_files"].(bool)
+
+	// Pattern is required when not in only_files mode
+	if pattern == "" && !onlyFiles {
+		return &types.ToolResult{
+			Success: false,
+			Error:   "parameter 'pattern' (regex string) is required when only_files is false",
+			Tool:    "grep",
+			Output:  "❌ 缺少 pattern 参数",
+			RawResult: map[string]interface{}{
+				"error": "parameter 'pattern' is required when only_files is false",
+			},
+		}
 	}
 
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("invalid regex: %s", err.Error()), Tool: "grep"}
+	// Context lines before/after each match
+	contextLines := 0
+	if v, ok := args["context"].(float64); ok {
+		contextLines = int(v)
+		if contextLines < 0 {
+			contextLines = 0
+		}
+	}
+
+	var re *regexp.Regexp
+	var reErr error
+	if !onlyFiles && pattern != "" {
+		re, reErr = regexp.Compile(pattern)
+		if reErr != nil {
+			return &types.ToolResult{
+				Success: false,
+				Error:   fmt.Sprintf("invalid regex: %s", reErr.Error()),
+				Tool:    "grep",
+				Output:  "❌ 无效的正则表达式",
+				RawResult: map[string]interface{}{
+					"error": reErr.Error(),
+				},
+			}
+		}
 	}
 
 	// Optional file name glob pattern(s) — comma-separated for multiple patterns
 	filePatterns := parseFilePatterns(args)
+
+	// In only_files mode: if no file_pattern but pattern is set, use pattern as file glob
+	if onlyFiles && len(filePatterns) == 0 && pattern != "" {
+		filePatterns = []string{pattern}
+	}
 
 	// Optional path prefix filter (subdir)
 	pathPrefix, _ := args["path"].(string)
 	if pathPrefix != "" {
 		resolved, errMsg := resolveReadPath(pathPrefix, workDir)
 		if errMsg != "" {
-			return &types.ToolResult{Success: false, Error: errMsg, Tool: "grep"}
+			return &types.ToolResult{
+				Success: false,
+				Error:   errMsg,
+				Tool:    "grep",
+				Output:  "❌ 路径解析错误",
+				RawResult: map[string]interface{}{
+					"error": errMsg,
+				},
+			}
 		}
 		pathPrefix = resolved
 	} else {
@@ -157,27 +233,18 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 	// LLM can also set limit; cap at GrepMaxResultsCap
 	maxMatches := GrepMaxResults
 	if v, ok := args["limit"].(float64); ok {
-		limit := int(v)
-		if limit < 0 {
-			m := &types.ToolResult{Success: false, Error: "limit must be non-negative", Tool: "grep"}
-			return m
-		}
-		maxMatches = limit
-		if maxMatches == 0 {
-			maxMatches = GrepMaxResults
-		}
-		if maxMatches > GrepMaxResultsCap {
-			maxMatches = GrepMaxResultsCap
-		}
+		maxMatches = clampMaxMatches(int(v))
+	} else if v, ok := args["limit"].(int); ok {
+		maxMatches = clampMaxMatches(v)
+	}
+	// max_matches is an alias for limit (supports int from Go map literals and float64 from JSON)
+	if v, ok := args["max_matches"].(float64); ok {
+		maxMatches = clampMaxMatches(int(v))
+	} else if v, ok := args["max_matches"].(int); ok {
+		maxMatches = clampMaxMatches(v)
 	}
 
-	type match struct {
-		File    string `json:"file"`
-		Line    int    `json:"line"`
-		Content string `json:"content"`
-	}
-
-	var matches []match
+	var matches []grepMatch
 
 	walkFn := func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -216,7 +283,13 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 			relPath = path
 		}
 
-		// Open file and stream line by line
+		if onlyFiles {
+			// only_files mode: just collect matching file paths (filePatterns already handles glob)
+			matches = append(matches, grepMatch{File: relPath})
+			return nil
+		}
+
+		// Open file and detect binary
 		f, err := os.Open(path)
 		if err != nil {
 			return nil
@@ -236,13 +309,22 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 			return nil
 		}
 
+		if contextLines > 0 && re != nil {
+			// Context mode: read all lines, find matches, expand to context ranges
+			fileMatches := grepWithContext(f, re, contextLines, maxMatches)
+			for _, m := range fileMatches {
+				m.File = relPath
+				matches = append(matches, m)
+			}
+			return nil
+		}
+
+		// Standard streaming mode (no context)
 		scanner := bufio.NewScanner(f)
-		// Increase buffer for long lines (default 64KB, use 1MB)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 		lineNum := 0
 		for scanner.Scan() {
 			lineNum++
-			// Check cancellation on every 500th line (avoid excessive checks on tight loops)
 			if lineNum%500 == 0 {
 				if err := checkCancel(); err != nil {
 					return err
@@ -252,8 +334,8 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 				break
 			}
 			line := scanner.Text()
-			if re.MatchString(line) {
-				matches = append(matches, match{
+			if re != nil && re.MatchString(line) {
+				matches = append(matches, grepMatch{
 					File:    relPath,
 					Line:    lineNum,
 					Content: strings.TrimSpace(line),
@@ -268,23 +350,179 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 	// Check if cancelled during walk
 	if errors.Is(walkErr, context.Canceled) {
 		return &types.ToolResult{
-			Success: true,
-			Output:  fmt.Sprintf("grep cancelled. Found %d partial matches before cancellation.", len(matches)),
-			Tool:    "grep",
+			Success:   true,
+			Output:    fmt.Sprintf("⚠️ grep 已取消。找到 %d 个部分匹配。", len(matches)),
+			Tool:      "grep",
+			RawResult: map[string]interface{}{"matches": matches, "cancelled": true, "count": len(matches)},
 		}
 	}
 
 	if len(matches) == 0 {
-		return &types.ToolResult{Success: true, Output: "no matches found", Tool: "grep"}
+		return &types.ToolResult{
+			Success:   true,
+			Output:    "⚠️ 未找到匹配",
+			Tool:      "grep",
+			RawResult: map[string]interface{}{"matches": []grepMatch{}, "count": 0},
+		}
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "Found %d matches:\n\n", len(matches))
-	for _, m := range matches {
-		fmt.Fprintf(&out, "%s:%d:\t%s\n", m.File, m.Line, m.Content)
+	if onlyFiles {
+		fmt.Fprintf(&out, "Found %d files:\n", len(matches))
+		for _, m := range matches {
+			fmt.Fprintf(&out, "  %s\n", m.File)
+		}
+	} else if contextLines > 0 {
+		// Context output: group by file, show ranges with line numbers
+		out.WriteString(formatContextMatches(matches, contextLines))
+	} else {
+		fmt.Fprintf(&out, "Found %d matches:\n\n", len(matches))
+		for _, m := range matches {
+			fmt.Fprintf(&out, "%s:%d:\t%s\n", m.File, m.Line, m.Content)
+		}
 	}
 
-	return &types.ToolResult{Success: true, Output: out.String(), Tool: "grep"}
+	// Build raw matches for AI consumption
+	var rawMatches []map[string]interface{}
+	for _, m := range matches {
+		rawMatches = append(rawMatches, map[string]interface{}{
+			"file":    m.File,
+			"line":    m.Line,
+			"content": m.Content,
+		})
+	}
+
+	emoji := "✅"
+	summary := fmt.Sprintf("grep 搜索完成：找到 %d 个匹配", len(matches))
+	output := fmt.Sprintf("%s %s\n\n%s", emoji, summary, out.String())
+
+	return &types.ToolResult{
+		Success: true,
+		Output:  output,
+		Tool:    "grep",
+		RawResult: map[string]interface{}{
+			"matches": rawMatches,
+			"count":   len(matches),
+		},
+	}
+}
+
+// fileContainsPattern checks if a file contains at least one match for the given regex.
+func fileContainsPattern(path string, re *regexp.Regexp) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// Binary detection
+	header := make([]byte, 1024)
+	n, _ := io.ReadFull(f, header)
+	if n > 0 {
+		if bytes.IndexByte(header[:n], 0) >= 0 {
+			return false
+		}
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return false
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		if re.MatchString(scanner.Text()) {
+			return true
+		}
+	}
+	return false
+}
+
+// grepWithContext reads a file, finds all regex matches, and returns matches with
+// surrounding context lines. Overlapping/adjacent context ranges are merged.
+func grepWithContext(f *os.File, re *regexp.Regexp, context, maxMatches int) []grepMatch {
+	// Read all lines into memory
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		if err := checkCancel(); err != nil {
+			break
+		}
+		lines = append(lines, scanner.Text())
+	}
+
+	// Find all matching line numbers
+	var matchLines []int
+	for i, line := range lines {
+		if re.MatchString(line) {
+			matchLines = append(matchLines, i+1) // 1-based
+			if maxMatches > 0 && len(matchLines) >= maxMatches {
+				break
+			}
+		}
+	}
+
+	if len(matchLines) == 0 {
+		return nil
+	}
+
+	// Expand to context ranges and merge overlaps
+	type intRange struct{ start, end int }
+	var ranges []intRange
+	for _, ml := range matchLines {
+		start := ml - context
+		if start < 1 {
+			start = 1
+		}
+		end := ml + context
+		if end > len(lines) {
+			end = len(lines)
+		}
+		if len(ranges) == 0 {
+			ranges = append(ranges, intRange{start, end})
+			continue
+		}
+		// Merge if overlapping or adjacent (gap <= 1)
+		last := &ranges[len(ranges)-1]
+		if start <= last.end+1 {
+			if end > last.end {
+				last.end = end
+			}
+		} else {
+			ranges = append(ranges, intRange{start, end})
+		}
+	}
+
+	// Build match entries for each range
+	var matches []grepMatch
+	for _, r := range ranges {
+		var rangeContent strings.Builder
+		for i := r.start - 1; i < r.end; i++ {
+			rangeContent.WriteString(fmt.Sprintf("%d\t%s\n", i+1, lines[i]))
+		}
+		matches = append(matches, grepMatch{
+			Line:    r.start,
+			Content: strings.TrimRight(rangeContent.String(), "\n"),
+		})
+	}
+	return matches
+}
+
+// formatContextMatches formats context-aware results grouped by file.
+func formatContextMatches(matches []grepMatch, context int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Found %d matches:\n", len(matches))
+	currentFile := ""
+	for _, m := range matches {
+		if m.File != currentFile {
+			if currentFile != "" {
+				b.WriteString("\n")
+			}
+			currentFile = m.File
+		}
+		b.WriteString(fmt.Sprintf("%s:%d-%d:\n%s\n", m.File, m.Line, m.Line+strings.Count(m.Content, "\n"), m.Content))
+	}
+	return b.String()
 }
 
 // parseFilePatterns extracts file_pattern from args. Supports comma-separated string patterns.
@@ -303,6 +541,26 @@ func parseFilePatterns(args map[string]interface{}) []string {
 	return patterns
 }
 
+// findFilesByGlob returns absolute paths of files matching the given glob pattern.
+// Supports ** (globstar) for recursive matching. Used by replace and remove for file_pattern mode.
+func findFilesByGlob(workDir, pattern string) ([]string, error) {
+	var matches []string
+	if ContainsGlobstar(pattern) {
+		var err error
+		matches, err = searchWalkGlob(workDir, pattern)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		matches, err := filepath.Glob(filepath.Join(workDir, pattern))
+		if err != nil {
+			return nil, err
+		}
+		return matches, nil
+	}
+	return matches, nil
+}
+
 var fetchTimeout = 300 * time.Second
 
 // SetFetchTimeout sets the HTTP fetch timeout in seconds (clamped to >= 10).
@@ -315,11 +573,42 @@ func SetFetchTimeout(seconds int) {
 
 // ──────── Fetch ────────
 
-// HandleFetch performs an HTTP request and writes output to a file if body exceeds threshold.
+// getEncoding returns the encoding.Encoding for the given name string.
+// Supported: utf-8, gbk, big5, shift_jis, euc-jp, euc-kr, iso-8859-1.
+// Returns nil for utf-8 (no conversion needed).
+func getEncoding(name string) encoding.Encoding {
+	switch strings.ToLower(name) {
+	case "gbk", "gb2312", "gb18030":
+		return simplifiedchinese.GBK
+	case "big5":
+		return traditionalchinese.Big5
+	case "shift_jis", "shift-jis", "sjis":
+		return japanese.ShiftJIS
+	case "euc-jp", "eucjp":
+		return japanese.EUCJP
+	case "euc-kr", "euckr":
+		return korean.EUCKR
+	case "iso-8859-1", "latin1":
+		return charmap.ISO8859_1
+	default:
+		return nil // utf-8 or unknown, treat as utf-8
+	}
+}
+
+// HandleFetch performs an HTTP request with enhanced capabilities: file download,
+// multipart form upload, cookie support, timeout control, redirect control, and encoding.
 func HandleFetch(workDir string, args map[string]interface{}, config FetchConfig) *types.ToolResult {
 	url, ok := args["url"].(string)
 	if !ok || url == "" {
-		return &types.ToolResult{Success: false, Error: "parameter 'url' is required", Tool: "fetch"}
+		return &types.ToolResult{
+			Success: false,
+			Error:   "parameter 'url' is required",
+			Tool:    "fetch",
+			Output:  "❌ 缺少 url 参数",
+			RawResult: map[string]interface{}{
+				"error": "parameter 'url' is required",
+			},
+		}
 	}
 
 	method := "GET"
@@ -327,20 +616,112 @@ func HandleFetch(workDir string, args map[string]interface{}, config FetchConfig
 		method = strings.ToUpper(m)
 	}
 
+	// ── resolve save_as path ──
+	saveAs := ""
+	if sa, ok := args["save_as"].(string); ok && sa != "" {
+		if filepath.IsAbs(sa) {
+			saveAs = sa
+		} else {
+			saveAs = filepath.Join(workDir, sa)
+		}
+	}
+
+	// ── build request body ──
 	var bodyReader io.Reader
-	if bodyStr, ok := args["body"].(string); ok && bodyStr != "" {
+	var contentType string
+
+	// form/form_files: multipart/form-data
+	if form, ok := args["form"].(map[string]interface{}); ok && len(form) > 0 {
+		method = "POST"
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+
+		// text fields
+		for k, v := range form {
+			if vs, ok := v.(string); ok {
+				writer.WriteField(k, vs)
+			}
+		}
+
+		// file fields
+		if formFiles, ok := args["form_files"].([]interface{}); ok {
+			for _, f := range formFiles {
+				fm, ok := f.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				field, _ := fm["field"].(string)
+				fpath, _ := fm["path"].(string)
+				if field == "" || fpath == "" {
+					continue
+				}
+				absPath := fpath
+				if !filepath.IsAbs(absPath) {
+					absPath = filepath.Join(workDir, absPath)
+				}
+				file, err := os.Open(absPath)
+				if err != nil {
+					return &types.ToolResult{
+						Success: false,
+						Error:   fmt.Sprintf("failed to open form file %s: %s", fpath, err.Error()),
+						Tool:    "fetch",
+						Output:  fmt.Sprintf("❌ 无法打开表单文件 %s", fpath),
+						RawResult: map[string]interface{}{
+							"error": fmt.Sprintf("failed to open form file %s: %s", fpath, err.Error()),
+						},
+					}
+				}
+				part, err := writer.CreateFormFile(field, filepath.Base(absPath))
+				if err != nil {
+					file.Close()
+					return &types.ToolResult{
+						Success: false,
+						Error:   fmt.Sprintf("failed to create form file %s: %s", fpath, err.Error()),
+						Tool:    "fetch",
+						Output:  fmt.Sprintf("❌ 无法创建表单文件字段 %s", fpath),
+						RawResult: map[string]interface{}{
+							"error": fmt.Sprintf("failed to create form file %s: %s", fpath, err.Error()),
+						},
+					}
+				}
+				io.Copy(part, file)
+				file.Close()
+			}
+		}
+
+		writer.Close()
+		bodyReader = body
+		contentType = writer.FormDataContentType()
+	} else if bodyStr, ok := args["body"].(string); ok && bodyStr != "" {
 		bodyReader = bytes.NewReader([]byte(bodyStr))
 	}
 
-	req, err := http.NewRequest(method, url, bodyReader)
+	// ── build context with timeout ──
+	timeoutSec := 30
+	if t, ok := args["timeout"].(float64); ok && t >= 10 {
+		timeoutSec = int(t)
+	} else if t, ok := args["timeout"].(int); ok && t >= 10 {
+		timeoutSec = t
+	}
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
 		return &types.ToolResult{
 			Success: false,
 			Error:   fmt.Sprintf("failed to create request: %s", err.Error()),
 			Tool:    "fetch",
+			Output:  "❌ 创建 HTTP 请求失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
 		}
 	}
 
+	// ── headers ──
 	if headers, ok := args["headers"].(map[string]interface{}); ok {
 		for k, v := range headers {
 			if vs, ok := v.(string); ok {
@@ -349,10 +730,25 @@ func HandleFetch(workDir string, args map[string]interface{}, config FetchConfig
 		}
 	}
 
+	// ── cookies ──
+	if cookies, ok := args["cookies"].(map[string]interface{}); ok && len(cookies) > 0 {
+		var cookieParts []string
+		for k, v := range cookies {
+			if vs, ok := v.(string); ok {
+				cookieParts = append(cookieParts, fmt.Sprintf("%s=%s", k, vs))
+			}
+		}
+		if len(cookieParts) > 0 {
+			req.Header.Set("Cookie", strings.Join(cookieParts, "; "))
+		}
+	}
+
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", "ChonkPilot/1.0")
 	}
-	if bodyReader != nil && req.Header.Get("Content-Type") == "" {
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	} else if bodyReader != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
@@ -361,13 +757,43 @@ func HandleFetch(workDir string, args map[string]interface{}, config FetchConfig
 		maxBodySize = 100 * 1024 // default 100KB
 	}
 
-	client := &http.Client{Timeout: fetchTimeout}
+	// ── build HTTP client ──
+	followRedirect := true
+	if fr, ok := args["follow_redirect"].(bool); ok {
+		followRedirect = fr
+	}
+
+	client := &http.Client{}
+	if !followRedirect {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
+		// Check for context deadline exceeded (timeout)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return &types.ToolResult{
+				Success: false,
+				Error:   fmt.Sprintf("request timed out after %ds", timeoutSec),
+				Tool:    "fetch",
+				Output:  fmt.Sprintf("❌ 请求超时（%ds）", timeoutSec),
+				RawResult: map[string]interface{}{
+					"error":      fmt.Sprintf("request timed out after %ds", timeoutSec),
+					"timeout":    timeoutSec,
+					"status":     "timeout",
+				},
+			}
+		}
 		return &types.ToolResult{
 			Success: false,
 			Error:   fmt.Sprintf("request failed: %s", err.Error()),
 			Tool:    "fetch",
+			Output:  "❌ HTTP 请求失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
 		}
 	}
 	defer resp.Body.Close()
@@ -378,9 +804,68 @@ func HandleFetch(workDir string, args map[string]interface{}, config FetchConfig
 			Success: false,
 			Error:   fmt.Sprintf("failed to read response: %s", err.Error()),
 			Tool:    "fetch",
+			Output:  "❌ 读取响应体失败",
+			RawResult: map[string]interface{}{
+				"error": err.Error(),
+			},
 		}
 	}
 
+	// ── encoding conversion ──
+	encName := "utf-8"
+	if enc, ok := args["encoding"].(string); ok && enc != "" {
+		encName = enc
+	}
+	if enc := getEncoding(encName); enc != nil {
+		decoded, _, err := transform.String(enc.NewDecoder(), string(respBody))
+		if err == nil {
+			respBody = []byte(decoded)
+		}
+	}
+
+	// ── save_as: download mode ──
+	if saveAs != "" {
+		dir := filepath.Dir(saveAs)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return &types.ToolResult{
+				Success: false,
+				Error:   fmt.Sprintf("failed to create directory for save_as: %s", err.Error()),
+				Tool:    "fetch",
+				Output:  fmt.Sprintf("❌ 创建保存目录失败：%s", saveAs),
+				RawResult: map[string]interface{}{
+					"error":    err.Error(),
+					"saved_to": saveAs,
+				},
+			}
+		}
+		if err := os.WriteFile(saveAs, respBody, 0644); err != nil {
+			return &types.ToolResult{
+				Success: false,
+				Error:   fmt.Sprintf("failed to write save_as file: %s", err.Error()),
+				Tool:    "fetch",
+				Output:  fmt.Sprintf("❌ 写入文件失败：%s", saveAs),
+				RawResult: map[string]interface{}{
+					"error":    err.Error(),
+					"saved_to": saveAs,
+				},
+			}
+		}
+		sizeMB := float64(len(respBody)) / (1024 * 1024)
+		outputMsg := fmt.Sprintf("✅ 已下载到 %s (%.2fMB)，状态码 %d", saveAs, sizeMB, resp.StatusCode)
+		return &types.ToolResult{
+			Success: resp.StatusCode < 500,
+			Output:  outputMsg,
+			Tool:    "fetch",
+			RawResult: map[string]interface{}{
+				"status_code": resp.StatusCode,
+				"content_type": resp.Header.Get("Content-Type"),
+				"body_length":  len(respBody),
+				"saved_to":     saveAs,
+			},
+		}
+	}
+
+	// ── normal mode: format response ──
 	var headerBuf strings.Builder
 	for k, vals := range resp.Header {
 		for _, v := range vals {
@@ -439,107 +924,6 @@ func DefaultFetchConfig() FetchConfig {
 	}
 }
 
-// ──────── Search/Glob Files ────────
-
-// HandleSearchFiles searches for files by glob pattern.
-// Supports ** (globstar) for recursive directory matching.
-// Optional preview=N reads first N lines of each file with comment/content stats.
-func HandleSearchFiles(workDir string, args map[string]interface{}) *types.ToolResult {
-	pattern, ok := args["pattern"].(string)
-	if !ok || pattern == "" {
-		return &types.ToolResult{Success: false, Error: "parameter 'pattern' (glob string) is required", Tool: "search_files"}
-	}
-
-	// Optional root directory
-	root := workDir
-	if r, ok := args["root"].(string); ok && r != "" {
-		resolved, errMsg := resolveReadPath(r, workDir)
-		if errMsg != "" {
-			return &types.ToolResult{Success: false, Error: errMsg, Tool: "search_files"}
-		}
-		root = resolved
-	}
-
-	// Optional preview lines
-	preview := 0
-	if v, ok := args["preview"].(float64); ok {
-		preview = int(v)
-		if preview < 0 {
-			preview = 0
-		}
-		if preview > SearchPreviewMaxLines {
-			preview = SearchPreviewMaxLines
-		}
-	}
-
-	var matches []string
-	var err error
-
-	if ContainsGlobstar(pattern) {
-		matches, err = searchWalkGlob(root, pattern)
-	} else {
-		matches, err = filepath.Glob(filepath.Join(root, pattern))
-	}
-
-	if err != nil {
-		// Check if cancelled during walk
-		if errors.Is(err, context.Canceled) {
-			return &types.ToolResult{
-				Success: true,
-				Output:  fmt.Sprintf("search_files cancelled. Found %d partial matches before cancellation.", len(matches)),
-				Tool:    "search_files",
-			}
-		}
-		return &types.ToolResult{Success: false, Error: fmt.Sprintf("invalid glob: %s", err.Error()), Tool: "search_files"}
-	}
-
-	if len(matches) == 0 {
-		return &types.ToolResult{Success: true, Output: "no files match the pattern", Tool: "search_files"}
-	}
-
-	var out strings.Builder
-	fmt.Fprintf(&out, "Found %d files:\n", len(matches))
-
-	if preview > 0 {
-		out.WriteString("\n")
-	}
-
-	for _, m := range matches {
-		rel, _ := filepath.Rel(root, m)
-		out.WriteString("  " + rel + "\n")
-
-		if preview > 0 {
-			previewContent(m, &out, preview)
-		}
-	}
-
-	return &types.ToolResult{Success: true, Output: out.String(), Tool: "search_files"}
-}
-
-// previewContent reads first N lines of a file and writes a formatted preview to out.
-func previewContent(path string, out *strings.Builder, n int) {
-	f, err := os.Open(path)
-	if err != nil {
-		out.WriteString("    (unable to read)\n")
-		return
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for i := 0; i < n && scanner.Scan(); i++ {
-		line := scanner.Text()
-		// Truncate long lines for display
-		display := line
-		if len(display) > 120 {
-			display = display[:120] + "..."
-		}
-		out.WriteString("    " + display + "\n")
-	}
-}
-
-// HandleGlobFiles is an alias to HandleSearchFiles for compatibility.
-var HandleGlobFiles = HandleSearchFiles
-
 // HandleListDirectory lists files and subdirectories in a directory.
 func HandleListDirectory(workDir string, args map[string]interface{}) *types.ToolResult {
 	raw, ok := args["paths"]
@@ -548,6 +932,10 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 			Success: false,
 			Error:   "arguments must be a JSON array",
 			Tool:    "list_directory",
+			Output:  "❌ 缺少 paths 参数",
+			RawResult: map[string]interface{}{
+				"error": "arguments must be a JSON array",
+			},
 		}
 	}
 	rawPaths, ok := raw.([]interface{})
@@ -556,10 +944,27 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 			Success: false,
 			Error:   "expected a non-empty array of path strings",
 			Tool:    "list_directory",
+			Output:  "❌ paths 必须是非空数组",
+			RawResult: map[string]interface{}{
+				"error": "expected a non-empty array of path strings",
+			},
 		}
 	}
 
-	recursive, _ := args["recursive"].(bool)
+	// Default recursive = true (v2 change: was false in v1)
+	recursive := true
+	if v, ok := args["recursive"].(bool); ok {
+		recursive = v
+	}
+
+	typeFilter, _ := args["type"].(string) // "file", "dir", or "all" (default)
+	sortBy, _ := args["sort"].(string)     // "name" (default), "size", or "date"
+
+	// depth: recursion limit (0 = unlimited)
+	depth := 0
+	if d, ok := args["depth"].(float64); ok && d > 0 {
+		depth = int(d)
+	}
 
 	var outputs []string
 	var errs []string
@@ -580,7 +985,7 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 		dir = resolved
 
 		if recursive {
-			out, err := listDirectoryRecursive(dir, workDir)
+			out, err := listDirectoryRecursive(dir, workDir, typeFilter, sortBy, depth)
 			if errors.Is(err, context.Canceled) {
 				outputs = append(outputs, fmt.Sprintf("=== %s ===\n(listing cancelled)", p))
 				continue
@@ -589,7 +994,7 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 				errs = append(errs, fmt.Sprintf("%s: %s", p, err))
 				continue
 			}
-			outputs = append(outputs, fmt.Sprintf("=== %s ===\n%s", p, out))
+			outputs = append(outputs, out)
 		} else {
 			entries, err := os.ReadDir(dir)
 			if err != nil {
@@ -598,19 +1003,33 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 			}
 
 			var buf strings.Builder
-			for _, e := range entries {
-				prefix := ""
-				if e.IsDir() {
-					prefix = "[dir] "
+			// Single-level tree: render each entry as a tree leaf
+			dirCount := 0
+			fileCount := 0
+			var totalSize int64
+			for i, e := range entries {
+				isLast := i == len(entries)-1
+				connector := "├── "
+				if isLast {
+					connector = "└── "
 				}
 				info, _ := e.Info()
+				var size int64
 				if info != nil {
-					fmt.Fprintf(&buf, "%s%s (%d bytes)\n", prefix, e.Name(), info.Size())
+					size = info.Size()
+					totalSize += size
+				}
+				if e.IsDir() {
+					dirCount++
+					fmt.Fprintf(&buf, "%s%s/ (%s)\n", connector, e.Name(), formatFileSize(size))
 				} else {
-					fmt.Fprintf(&buf, "%s%s\n", prefix, e.Name())
+					fileCount++
+					fmt.Fprintf(&buf, "%s%s (%s)\n", connector, e.Name(), formatFileSize(size))
 				}
 			}
-			outputs = append(outputs, fmt.Sprintf("=== %s ===\n%s", p, strings.TrimSpace(buf.String())))
+			stats := fmt.Sprintf("📋 目录列表 — %s\n=== 统计 ===\n  目录: %d 个，文件: %d 个，总计: %s\n=== 内容 ===\n%s",
+				p, dirCount, fileCount, formatFileSize(totalSize), strings.TrimRight(buf.String(), "\n"))
+			outputs = append(outputs, stats)
 		}
 	}
 
@@ -622,71 +1041,225 @@ func HandleListDirectory(workDir string, args map[string]interface{}) *types.Too
 		result += "errors:\n" + strings.Join(errs, "\n")
 		return &types.ToolResult{
 			Success: false,
-			Output:  result,
+			Output:  fmt.Sprintf("❌ 目录列表存在错误（%d 个错误）\n\n%s", len(errs), result),
 			Tool:    "list_directory",
+			RawResult: map[string]interface{}{
+				"paths":  rawPaths,
+				"errors": errs,
+			},
 		}
 	}
 	return &types.ToolResult{
 		Success: true,
-		Output:  strings.Join(outputs, "\n\n"),
+		Output:  fmt.Sprintf("✅ 已列出 %d 个目录\n\n%s", len(rawPaths), strings.Join(outputs, "\n\n")),
 		Tool:    "list_directory",
+		RawResult: map[string]interface{}{
+			"paths": rawPaths,
+		},
 	}
 }
 
 // listDirectoryRecursive walks dir recursively and returns a formatted listing.
-// Each line is a relative path prefixed with [dir] for directories.
+// Output format: tree structure with 📋 prefix header, stats, and tree connectors.
 // Stops after maxListDirEntries to prevent unbounded output.
 const maxListDirEntries = 5000
 
-func listDirectoryRecursive(dir, workDir string) (string, error) {
-	var buf strings.Builder
+func listDirectoryRecursive(dir, workDir, typeFilter, sortBy string, maxDepth int) (string, error) {
+	var entries []fileEntry
 	count := 0
+	dirCount := 0
+	fileCount := 0
+	var totalSize int64
+
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		// Check cancellation every 500 entries
 		if count%500 == 0 {
 			if err := checkCancel(); err != nil {
 				return err
 			}
 		}
-		// Stop when limit reached
-		if count >= maxListDirEntries {
-			return filepath.SkipAll
-		}
-		// Skip root dir itself
 		if path == dir {
 			return nil
 		}
-		// Skip known ignored directories
+
+		// Check depth limit
+		rel, _ := filepath.Rel(dir, path)
+		if maxDepth > 0 {
+			parts := strings.Split(rel, string(filepath.Separator))
+			if len(parts) > maxDepth {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+
 		if d.IsDir() && SkipDirs[d.Name()] {
 			return filepath.SkipDir
 		}
 
-		rel, _ := filepath.Rel(dir, path)
+		// Apply type filter
+		if typeFilter == "file" && d.IsDir() {
+			return nil
+		}
+		if typeFilter == "dir" && !d.IsDir() {
+			return nil
+		}
+
 		info, _ := d.Info()
-		size := int64(0)
+		var size int64
 		if info != nil {
 			size = info.Size()
+			totalSize += size
 		}
-		prefix := ""
 		if d.IsDir() {
-			prefix = "[dir] "
-		}
-		if info != nil {
-			fmt.Fprintf(&buf, "%s%s (%d bytes)\n", prefix, rel, size)
+			dirCount++
 		} else {
-			fmt.Fprintf(&buf, "%s%s\n", prefix, rel)
+			fileCount++
 		}
+		entries = append(entries, fileEntry{
+			name:  rel,
+			isDir: d.IsDir(),
+			size:  size,
+			modTime: func() time.Time { if info != nil { return info.ModTime() }; return time.Time{} }(),
+		})
 		count++
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	if count >= maxListDirEntries {
-		fmt.Fprintf(&buf, "... (limit of %d entries reached)", maxListDirEntries)
+
+	// Sort entries
+	switch sortBy {
+	case "size":
+		sort.Slice(entries, func(i, j int) bool { return entries[i].size < entries[j].size })
+	case "date":
+		sort.Slice(entries, func(i, j int) bool { return entries[i].modTime.After(entries[j].modTime) })
+	case "type":
+		sort.Slice(entries, func(i, j int) bool {
+			extI := strings.ToLower(filepath.Ext(entries[i].name))
+			extJ := strings.ToLower(filepath.Ext(entries[j].name))
+			if extI != extJ {
+				return extI < extJ
+			}
+			return strings.ToLower(entries[i].name) < strings.ToLower(entries[j].name)
+		})
+	default: // "name"
+		sort.Slice(entries, func(i, j int) bool {
+			ai := strings.ToLower(entries[i].name)
+			aj := strings.ToLower(entries[j].name)
+			return ai < aj
+		})
 	}
-	return strings.TrimSpace(buf.String()), nil
+
+	// Build tree output
+	var buf strings.Builder
+	baseName := filepath.Base(dir)
+
+	// Render tree using the relative paths from walk
+	// Group by directory for tree rendering
+	dirTree := buildDirTree(entries)
+	renderTree(&buf, dirTree, "", baseName)
+
+	limitNote := ""
+	if count >= maxListDirEntries {
+		limitNote = fmt.Sprintf("\n... (limit of %d entries reached)", maxListDirEntries)
+	}
+
+	content := strings.TrimRight(buf.String(), "\n") + limitNote
+	stats := fmt.Sprintf("📋 目录列表 — %s\n=== 统计 ===\n  目录: %d 个，文件: %d 个，总计: %s\n=== 内容 ===\n%s",
+		baseName, dirCount, fileCount, formatFileSize(totalSize), content)
+	return stats, nil
+}
+
+// treeNode represents a single node in the directory tree.
+type treeNode struct {
+	name     string
+	isDir    bool
+	size     int64
+	modTime  time.Time
+	children []*treeNode
+}
+
+// buildDirTree converts a flat sorted entry list into a tree structure.
+func buildDirTree(entries []fileEntry) *treeNode {
+	root := &treeNode{name: "", isDir: true}
+
+	for _, e := range entries {
+		parts := strings.Split(e.name, string(filepath.Separator))
+		node := root
+		for i, part := range parts {
+			isLast := i == len(parts)-1
+			found := false
+			for _, child := range node.children {
+				if child.name == part {
+					node = child
+					found = true
+					break
+				}
+			}
+			if !found {
+				child := &treeNode{name: part, isDir: !isLast || e.isDir, size: e.size, modTime: e.modTime}
+				node.children = append(node.children, child)
+				node = child
+			}
+		}
+	}
+	return root
+}
+
+// renderTree renders a treeNode structure as a tree-formatted string.
+func renderTree(buf *strings.Builder, node *treeNode, prefix string, name string) {
+	if name != "" {
+		buf.WriteString(name)
+		if node.isDir {
+			buf.WriteString("/")
+		}
+		buf.WriteString("\n")
+	}
+
+	for i, child := range node.children {
+		isLast := i == len(node.children)-1
+		connector := "├── "
+		childPrefix := prefix + "│   "
+		if isLast {
+			connector = "└── "
+			childPrefix = prefix + "    "
+		}
+		buf.WriteString(prefix + connector)
+		buf.WriteString(child.name)
+		if child.isDir {
+			buf.WriteString("/")
+		}
+		buf.WriteString(fmt.Sprintf(" (%s)", formatFileSize(child.size)))
+		if !child.modTime.IsZero() {
+			buf.WriteString(fmt.Sprintf("  %s", child.modTime.Format("2006-01-02")))
+		}
+		buf.WriteString("\n")
+
+		if len(child.children) > 0 {
+			// Recurse into this child to render its grandchildren
+			renderTree(buf, child, childPrefix, "")
+		}
+	}
+}
+
+type fileEntry struct {
+	name    string
+	isDir   bool
+	size    int64
+	modTime time.Time
+}
+
+func formatFileSize(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	} else if size < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	} else {
+		return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+	}
 }

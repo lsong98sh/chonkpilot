@@ -630,6 +630,32 @@ func (em *ExecutorManager) CancelDaemonSession(sessionID string) error {
 	return json.NewEncoder(stdin).Encode(cmd)
 }
 
+// SendToolResult sends a tool_result command to the daemon, routing the result
+// to a goroutine waiting for the matching UUID.
+// Called by the IDE after it has completed an async operation requested by an executor tool.
+func (em *ExecutorManager) SendToolResult(uuid, status, tool string) error {
+	em.mu.Lock()
+	stdin := em.daemonStdin
+	em.mu.Unlock()
+
+	if stdin == nil {
+		return fmt.Errorf("daemon not running")
+	}
+
+	cmd := map[string]interface{}{
+		"cmd":    "tool_result",
+		"uuid":   uuid,
+		"status": status,
+		"tool":   tool,
+	}
+
+	em.logger.Debug("SendToolResult", zap.String("uuid", uuid), zap.String("status", status))
+
+	em.mu.Lock()
+	defer em.mu.Unlock()
+	return json.NewEncoder(stdin).Encode(cmd)
+}
+
 // IsDaemonRunning returns true if the daemon process is alive.
 func (em *ExecutorManager) IsDaemonRunning() bool {
 	em.mu.Lock()

@@ -1,5 +1,5 @@
 {
-  "description": "Read contents of one or more files. Text/code files return raw content. PDF/DOCX/XLSX/PPTX are converted to text/markdown. Binary files return data:...;base64,... format. Each file can have its own start/limit for partial reads. Example: {\"_\": [{\"path\": \"main.go\", \"start\": 1, \"limit\": 50}]}",
+  "description": "Read contents of one or more files. Text/code files return raw content with rich metadata (language, line count, file size). PDF/DOCX/XLSX/PPTX are converted to text/markdown. Binary files return data:...;base64,... format. Supports partial reads via start/limit, tail (last N lines), multi-segment ranges, line number display, encoding override, and metadata-only mode. Example: {\"files\": [{\"path\": \"main.go\", \"start\": 1, \"limit\": 50, \"line_numbers\": true}]}",
   "name": "read_file",
   "parameters": {
     "type": "object",
@@ -20,6 +20,35 @@
             "limit": {
               "type": "integer",
               "description": "Optional. Max lines to read."
+            },
+            "line_numbers": {
+              "type": "boolean",
+              "description": "Optional. Show line numbers on the left side of each line. Default false."
+            },
+            "tail": {
+              "type": "integer",
+              "description": "Optional. Read the last N lines of the file. Overrides start/limit."
+            },
+            "encoding": {
+              "type": "string",
+              "description": "Optional. File encoding (utf-8, gbk, shift-jis, big5, euc-jp, etc.). Default 'auto' which detects encoding automatically."
+            },
+            "info": {
+              "type": "boolean",
+              "description": "Optional. Only return file metadata (name, size, lines, mod time, encoding), no content. Default false."
+            },
+            "ranges": {
+              "type": "array",
+              "description": "Optional. Multi-segment read. Array of [start, end] pairs, e.g. [[1,20], [100,150]]. Overrides start/limit/tail.",
+              "items": {
+                "type": "array",
+                "prefixItems": [
+                  { "type": "integer", "description": "Start line (1-based)" },
+                  { "type": "integer", "description": "End line (inclusive)" }
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
             }
           },
           "required": ["path"]
