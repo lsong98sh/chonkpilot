@@ -1,14 +1,14 @@
 <template>
   <div class="chat-panel">
-    <MessageList ref="messageListRef" :messages="messages" :turn-active="isLoading" :collapse-reasoning="collapseReasoningKey" :session-id="currentSessionId" />
+    <MessageList ref="messageListRef" :messages="messages" :turn-active="isLoading" :session-id="currentSessionId" :has-more="hasMore" :loading-more="loadingMore" @load-more="loadMoreMessages" />
     <div v-if="taskProgress" class="task-progress-bar">{{ taskProgress }}</div>
     <InputBox @send="handleSend" @cancel="handleCancel" :loading="isLoading">
       <template #controls>
-        <el-popover trigger="click" placement="top-end" :width="160" popper-class="llm-popover" v-model:visible="llmPopoverVisible">
+        <Popover placement="top-end" :width="160">
           <template #reference>
-            <el-tag size="small" type="info" style="cursor:pointer">
+            <Tag type="info" style="cursor:pointer">
               {{ selectedLLMLabel }}
-            </el-tag>
+            </Tag>
           </template>
           <div class="popover-list">
             <div
@@ -21,33 +21,23 @@
               {{ llm.name }}
             </div>
           </div>
-        </el-popover>
-          <el-tooltip content="Thinking mode" placement="top">
-            <el-button
-              size="small"
-              :type="thinkEnabled ? 'primary' : 'default'"
-              @click="thinkEnabled = !thinkEnabled"
-              circle
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2a7 7 0 0 0-7 7c0 2.5 1.5 4.7 3.5 5.8V17a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-2.2A7 7 0 0 0 12 2z"/>
-                <path d="M9 18h6"/>
-                <path d="M10 22h4"/>
-              </svg>
-            </el-button>
-          </el-tooltip>
-          <el-tooltip :content="'Effort: ' + effortLevel" placement="top">
-            <el-button
-              size="small"
-              :type="effortLevel === 'max' ? 'primary' : 'default'"
-              @click="toggleEffort"
-              circle
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 2L2 12h4v8h12v-8h4L12 2z"/>
-              </svg>
-            </el-button>
-          </el-tooltip>
+        </Popover>
+          <Button
+            text
+            class="icon-btn"
+            title="Thinking mode"
+            @click="thinkEnabled = !thinkEnabled""
+          >
+            <Icon name="think" :size="14" :color="thinkEnabled ? '#1890ff' : '#999'" />
+          </Button>
+          <Button
+            text
+            class="icon-btn"
+            :title="'Effort: ' + effortLevel"
+            @click="toggleEffort"
+          >
+            <Icon name="effort" :size="14" :color="effortLevel === 'max' ? '#1890ff' : '#999'" />
+          </Button>
         </template>
       </InputBox>
   </div>
@@ -56,24 +46,26 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { sendChatMessage, cancelChat } from '../../api/chat'
-import { createSession, getLatestSessionID, getSession } from '../../api/session'
+import { createSession, getLatestSessionID, getSession, getActiveSessionID, setActiveSessionID } from '../../api/session'
 import { getUserConfig } from '../../api/config'
 import bridge from '../../utils/bridge'
 import MessageList from './MessageList.vue'
 import InputBox from './InputBox.vue'
-import { useSessionMessages } from '../../composables/useSessionMessages'
-import { useSession } from '../../composables/useSession'
-
+import Icon from '../icon/Icon.vue'
+import { Button, Tag, Popover } from '../ui'
+import { createSessionMessages } from '../../utils/sessionMessages'
 const {
   messages, turnActive: _turnActive,
+  hasMore, loadingMore,
   handleToken, handleDone, handleError,
-  loadMessages, teardown: resetMessages,
-} = useSessionMessages()
+  loadMessages, loadMoreMessages, teardown: resetMessages,
+} = createSessionMessages()
 
-const { currentSessionId } = useSession()
+const currentSessionId = ref(null)
 
 const messageListRef = ref(null)
 const isLoading = ref(false)
+const isInitializing = ref(true) // 防止 initSession 完成前用户快速发消息
 const currentTurnId = ref(null)
 
 function scrollTop() {
@@ -84,10 +76,10 @@ function scrollBottom() {
 }
 defineExpose({ scrollTop, scrollBottom })
 const turnUnsubs = []    // 每轮监听器（llm:event, chat:executor_done），cleanupAndFinish 时清除
-const permanentUnsubs = []  // 挂载时监听器（config:refresh, session:refresh），onUnmounted 时清除
+const permanentUnsubs = []  // 挂载时监听器（config:refresh, session:event, session:cancel-llm），onUnmounted 时清除
 const taskProgress = ref('')
 const showReasoning = ref(true)
-const collapseReasoningKey = ref(0)
+// collapseReasoning replaced by bridge.emit('message:collapse-reasoning')
 
 // Cancel LLM handler — called from SessionDrawer via custom event
 function handleCancelLLM() {
@@ -95,6 +87,26 @@ function handleCancelLLM() {
     cancelChat(currentTurnId.value)
   }
   cleanupAndFinish()
+  // Also cancel any pending ask_user dialogs
+  import('../../utils/askUserManager').then(({ askUserManager }) => {
+    askUserManager.cancelAll()
+  })
+}
+
+// Unified session event handler — replaces session:select + session:loaded CustomEvents
+function handleSessionEvent(data) {
+  if (!data) return
+  if (data.type === 'selected') {
+    if (data.session_id) {
+      // NOTE: currentSessionId may already be set by SessionDrawer before the backend
+      // event arrives. Always reload to ensure messages are fetched.
+      loadSessionMessages(data.session_id)
+    }
+  } else if (data.type === 'cleared') {
+    currentSessionId.value = null
+    currentTurnId.value = null
+    resetMessages()
+  }
 }
 
 // Runtime LLM controls
@@ -129,14 +141,15 @@ function addMessage(role, content, type, createdAt) {
 }
 
 async function handleSend(text) {
-  if (!text.trim() || isLoading.value) return
+  if (!text.trim() || isLoading.value || isInitializing.value) return
 
   // Auto-create session if none exists (null = empty session, not yet in DB)
   if (!currentSessionId.value) {
     try {
       const s = await createSession('', '')
-      currentSessionId.value = s.session_id || s.id
-      window.dispatchEvent(new CustomEvent('session:loaded', { detail: { session_id: currentSessionId.value } }))
+      const sid = s.session_id || s.id
+      currentSessionId.value = sid
+      setActiveSessionID(sid).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
     } catch (e) {
       addMessage('assistant', `Error: 创建会话失败 — ${e.message}`, 'text')
       return
@@ -148,44 +161,36 @@ async function handleSend(text) {
 
   // Reset reasoning display for new turn
   showReasoning.value = true
-  collapseReasoningKey.value++
+  bridge.emit('message:collapse-reasoning')
 
   // Unified llm:event — handle all LLM stream events in one handler.
-  // Filter by session_id to only process events for the current main session.
   const unsubLLMEvent = bridge.on('llm:event', (data) => {
-    // Skip events for sub-sessions (different session_id)
     if (currentSessionId.value && data.session_id && data.session_id !== currentSessionId.value) return
-    // Also filter by turn_id for backward compatibility
     if (data.turn_id && currentTurnId.value && data.turn_id !== currentTurnId.value) return
 
     const et = data._event_type || ''
 
-    // message_chunk / tool_call / tool_result — stream content
     if (et === 'message_chunk' || et === 'tool_call' || et === 'tool_result') {
-      // When first text token arrives after reasoning, collapse thinking
       if (showReasoning.value && data.type && data.type === 'text') {
         showReasoning.value = false
-        collapseReasoningKey.value++
+        bridge.emit('message:collapse-reasoning')
       }
       handleToken(data)
       return
     }
 
-    // complete — turn finished
     if (et === 'complete') {
       handleDone()
       cleanupAndFinish()
       return
     }
 
-    // error — turn failed
     if (et === 'error') {
       handleError(data)
       cleanupAndFinish()
       return
     }
 
-    // tool_progress — task progress bar
     if (et === 'tool_progress') {
       if (data?.task_id) {
         taskProgress.value = `Running task ${data.completed || 0}/${data.total || '?'}`
@@ -194,7 +199,6 @@ async function handleSend(text) {
       return
     }
 
-    // llm_error — LLM error with retry info
     if (et === 'llm_error') {
       const code = data.code || 'ERR_LLM_UNKNOWN'
       const msg = data.message || 'Unknown LLM error'
@@ -212,7 +216,6 @@ async function handleSend(text) {
       return
     }
 
-    // llm_retry — retry progress
     if (et === 'llm_retry') {
       const attempt = data.retry_attempt || 1
       const maxRetries = data.retry_count || 1
@@ -223,14 +226,12 @@ async function handleSend(text) {
   })
   turnUnsubs.push(unsubLLMEvent)
 
-  // executor_done — executor process exited
   const unsubExecutorDone = bridge.on('chat:executor_done', () => {
     cleanupAndFinish()
   })
   turnUnsubs.push(unsubExecutorDone)
 
   try {
-    // Send with runtime overrides and get the server-generated turn_id
     const thinkFlag = thinkEnabled.value ? 'on' : 'off'
     const result = await sendChatMessage(currentSessionId.value, '', text, selectedLLM.value, thinkFlag, effortLevel.value)
     currentTurnId.value = result.turn_id
@@ -241,11 +242,11 @@ async function handleSend(text) {
 }
 
 function cleanupAndFinish() {
-  turnUnsubs.forEach(fn => { try { fn() } catch(_) {} })
+  turnUnsubs.forEach(fn => { try { fn() } catch(e) { console.error('[ChatPanel] turnUnsubs cleanup error:', e) } })
   turnUnsubs.length = 0
   isLoading.value = false
   currentTurnId.value = null
-  handleDone() // Reset stream state: turnActive=false, collapse reasoning, reset dedup index
+  handleDone()
 }
 
 function handleCancel() {
@@ -255,67 +256,68 @@ function handleCancel() {
   cleanupAndFinish()
 }
 
-// Load history turns/messages for a session
 async function loadSessionMessages(sessionId) {
   if (!sessionId) return
   currentSessionId.value = sessionId
   await loadMessages(sessionId)
 }
 
-// Auto-load session: try activeSessionID from config first, fall back to most recent
 async function initSession() {
   try {
-    // Load LLM list from user config for the dropdown
-    const ures = await getUserConfig()
-    const uc = ures.config || ures
-    if (uc.llms && uc.llms.length > 0) {
-      llmList.value = uc.llms
-      const defaultIdx = (uc.defaultLLM !== undefined && uc.defaultLLM >= 0 && uc.defaultLLM < uc.llms.length) ? uc.defaultLLM : 0
-      const defaultLLM = uc.llms[defaultIdx]
-      if (defaultLLM) {
-        thinkEnabled.value = defaultLLM.thinking !== false
-        if (defaultLLM.reasoningEffort) {
-          effortLevel.value = defaultLLM.reasoningEffort
+    try {
+      const ures = await getUserConfig()
+      const uc = ures.config || ures
+      if (uc.llms && uc.llms.length > 0) {
+        llmList.value = uc.llms
+        const defaultIdx = (uc.defaultLLM !== undefined && uc.defaultLLM >= 0 && uc.defaultLLM < uc.llms.length) ? uc.defaultLLM : 0
+        const defaultLLM = uc.llms[defaultIdx]
+        if (defaultLLM) {
+          thinkEnabled.value = defaultLLM.thinking !== false
+          if (defaultLLM.reasoningEffort) {
+            effortLevel.value = defaultLLM.reasoningEffort
+          }
+          selectedLLM.value = defaultLLM.name
         }
-        selectedLLM.value = defaultLLM.name
       }
-    }
-    // Find the session with the most recent message (top session)
-    const res = await getLatestSessionID()
-    const topSessionID = res?.session_id
-    if (topSessionID) {
-      await loadSessionMessages(topSessionID)
-      window.dispatchEvent(new CustomEvent('session:loaded', { detail: { session_id: topSessionID } }))
-      return
-    }
-  } catch (e) { console.warn('[ChatPanel] Failed to init session:', e) }
-  // No recent messages found — stay in empty state
-  currentSessionId.value = null
-  window.dispatchEvent(new CustomEvent('session:select', { detail: { session: null } }))
-  window.dispatchEvent(new CustomEvent('session:loaded', { detail: { session_id: null } }))
-}
 
-async function handleSessionSelect(event) {
-  const session = event.detail?.session
-  if (!session || !session.session_id) {
-    // Null session — clear chat and reset to empty state
+      const activeRes = await getActiveSessionID()
+      let targetSessionID = activeRes?.session_id || null
+
+      if (targetSessionID) {
+        try {
+          const sessionRes = await getSession(targetSessionID)
+          const session = sessionRes?.session
+          if (session && !session.parent_id) {
+            await loadSessionMessages(targetSessionID)
+            setActiveSessionID(targetSessionID).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
+            return
+          }
+        } catch (e) { console.error('[ChatPanel] getSession error:', e) }
+      }
+
+      const res = await getLatestSessionID()
+      const topSessionID = res?.session_id
+      if (topSessionID) {
+        await loadSessionMessages(topSessionID)
+        setActiveSessionID(topSessionID).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
+        return
+      }
+    } catch (e) { console.warn('[ChatPanel] Failed to init session:', e) }
     currentSessionId.value = null
-    currentTurnId.value = null
-    resetMessages()
-    window.dispatchEvent(new CustomEvent('session:loaded', { detail: { session_id: null } }))
-    return
-  }
-  try {
-    await loadSessionMessages(session.session_id)
+    setActiveSessionID('').catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
   } finally {
-    window.dispatchEvent(new CustomEvent('session:loaded', { detail: { session_id: session.session_id } }))
+    isInitializing.value = false
   }
 }
 
 onMounted(() => {
   initSession()
-  window.addEventListener('session:select', handleSessionSelect)
-  // Reload LLM list when config changes
+  const unsubSessionSelected = bridge.on('session:selected', (data) => {
+    currentSessionId.value = data?.session_id || null
+  })
+  permanentUnsubs.push(unsubSessionSelected)
+  const unsubSessionEvent = bridge.on('session:event', handleSessionEvent)
+  permanentUnsubs.push(unsubSessionEvent)
   const unsubRefresh = bridge.on('config:refresh', async () => {
     try {
       const ures = await getUserConfig()
@@ -323,12 +325,10 @@ onMounted(() => {
       if (uc.llms && uc.llms.length > 0) {
         llmList.value = uc.llms
       }
-    } catch (_) { /* ignore */ }
+    } catch (e) { console.warn('[ChatPanel] config:refresh error:', e) }
   })
   permanentUnsubs.push(unsubRefresh)
-  // Cancel LLM when session:cancel-llm event fires (from SessionDrawer)
   window.addEventListener('session:cancel-llm', handleCancelLLM)
-  // Clear chat when current session is deleted
   const unsubSessionRefresh = bridge.on('session:refresh', async () => {
     if (currentSessionId.value) {
       try {
@@ -339,7 +339,6 @@ onMounted(() => {
           resetMessages()
         }
       } catch (_) {
-        // Session likely doesn't exist — clear
         currentSessionId.value = null
         resetMessages()
       }
@@ -349,9 +348,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('session:select', handleSessionSelect)
   window.removeEventListener('session:cancel-llm', handleCancelLLM)
-  // Clean up any bridge listeners that may still be active mid-turn
   permanentUnsubs.forEach(fn => fn())
   permanentUnsubs.length = 0
   resetMessages()

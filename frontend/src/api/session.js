@@ -1,4 +1,4 @@
-import { ListSessions, ListAllSessions, CreateSession, GetSession, DeleteSession, UpdateSessionTitle, GetTurnsBySession, GetLatestSessionID, GetMessageContent, SubscribeSession, UnsubscribeSession } from '../../wailsjs/go/main/App'
+import { ListSessions, ListAllSessions, CreateSession, GetSession, DeleteSession, UpdateSessionTitle, GetTurnsBySession, GetTurnsPaginated, GetLatestSessionID, GetActiveSessionID, SetActiveSessionID, GetMessageContent, SubscribeSession, UnsubscribeSession } from '../../wailsjs/go/main/App'
 
 export function listSessions() {
   return ListSessions()
@@ -28,12 +28,20 @@ export function getTurnsBySession(sessionId, brief = true) {
   return GetTurnsBySession(sessionId, brief)
 }
 
+export function getTurnsPaginated(sessionId, beforeTurnId, targetMessages = 50, targetBytes = 200 * 1024) {
+  return GetTurnsPaginated(sessionId, beforeTurnId, targetMessages, targetBytes)
+}
+
 export function getLatestSessionID() {
   return GetLatestSessionID()
 }
 
-export function getMessageContent(sessionId, itemKeys) {
-  return GetMessageContent(sessionId, itemKeys)
+export function getActiveSessionID() {
+  return GetActiveSessionID()
+}
+
+export function setActiveSessionID(sessionId) {
+  return SetActiveSessionID(sessionId)
 }
 
 export function subscribeSession(sessionId) {

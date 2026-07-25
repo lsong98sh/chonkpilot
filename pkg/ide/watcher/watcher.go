@@ -47,6 +47,13 @@ type FileWatcher struct {
 	done chan struct{}
 }
 
+// toSlash converts backslashes to forward slashes for consistent path handling.
+// All paths stored in the `watched` map and all paths sent to the frontend
+// use forward slashes, regardless of the OS convention.
+func toSlash(p string) string {
+	return strings.ReplaceAll(p, "\\", "/")
+}
+
 // NewFileWatcher creates a new FileWatcher.
 func NewFileWatcher(workDir string, logger *zap.Logger) *FileWatcher {
 	return &FileWatcher{
@@ -71,6 +78,9 @@ func (fw *FileWatcher) Start() error {
 	}
 	fw.watcher = w
 
+	// Normalize workDir to forward slashes for consistent watched map keys
+	fw.workDir = toSlash(fw.workDir)
+
 	// Watch root directory so we can detect new top-level files/dirs
 	if err := w.Add(fw.workDir); err != nil {
 		fw.logger.Warn("watch root failed", zap.String("dir", fw.workDir), zap.Error(err))
@@ -89,6 +99,7 @@ func (fw *FileWatcher) Start() error {
 // WatchDir adds a directory to the watcher (called when tree node expands).
 // The frontend calls getFileTreeChildren via API, not via watcher push.
 func (fw *FileWatcher) WatchDir(path string) {
+	path = toSlash(path)
 	fw.mu.Lock()
 	if fw.watched[path] {
 		fw.mu.Unlock()
@@ -109,15 +120,12 @@ func (fw *FileWatcher) WatchDir(path string) {
 // UnwatchDir removes a directory from the watcher (called when tree node collapses).
 // If recursive=true, also removes all watched subdirectories with dirPath/ prefix.
 func (fw *FileWatcher) UnwatchDir(dirPath string, recursive bool) {
+	dirPath = toSlash(dirPath)
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
 	if recursive {
-		// Find all watched dirs with given prefix
-		prefix := dirPath
-		if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-			prefix += string(filepath.Separator)
-		}
+		prefix := dirPath + "/"
 		for watchedPath := range fw.watched {
 			if watchedPath == dirPath || strings.HasPrefix(watchedPath, prefix) {
 				delete(fw.watched, watchedPath)
@@ -145,12 +153,14 @@ func (fw *FileWatcher) UnwatchDir(dirPath string, recursive bool) {
 	}
 }
 
-// pushDirContents reads the directory and pushes a file:dir-contents event.
+// pushDirContents reads the directory and pushes a file:dir-contents event
+// with all paths normalized to forward slashes.
 func (fw *FileWatcher) pushDirContents(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
+	dir = toSlash(dir) // normalize the dir key for the frontend
 	var children []FileNode
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".") {
@@ -162,7 +172,7 @@ func (fw *FileWatcher) pushDirContents(dir string) {
 		}
 		children = append(children, FileNode{
 			Name:  name,
-			Path:  filepath.Join(dir, name),
+			Path:  toSlash(filepath.Join(dir, name)),
 			IsDir: e.IsDir(),
 		})
 	}
@@ -215,7 +225,10 @@ func (fw *FileWatcher) processBatch() {
 	// Collect unique parent directories from events
 	dirsToRefresh := make(map[string]bool)
 	for path, evt := range batch {
+		// Normalize to forward slashes for consistent watched map lookup
+		normalizedPath := toSlash(path)
 		parentDir := filepath.Dir(path)
+		parentDir = toSlash(parentDir)
 
 		// Only refresh directories that are currently being watched
 		fw.mu.RLock()
@@ -230,7 +243,7 @@ func (fw *FileWatcher) processBatch() {
 			if fw.pusher != nil {
 				op := "modified"
 				fw.pusher.Push("file:changed", map[string]interface{}{
-					"path": path,
+					"path": normalizedPath,
 					"op":   op,
 					"dir":  parentDir,
 				})
@@ -242,8 +255,8 @@ func (fw *FileWatcher) processBatch() {
 			if fi, err := os.Stat(path); err == nil && fi.IsDir() {
 				// Auto-watch the new directory so files inside it are tracked
 				fw.mu.Lock()
-				if !fw.watched[path] {
-					fw.watched[path] = true
+				if !fw.watched[normalizedPath] {
+					fw.watched[normalizedPath] = true
 					if fw.watcher != nil {
 						fw.watcher.Add(path)
 					}
@@ -251,15 +264,15 @@ func (fw *FileWatcher) processBatch() {
 				fw.mu.Unlock()
 				// Also refresh the parent so the frontend sees the new child
 				dirsToRefresh[parentDir] = true
-				parentDir = path
+				parentDir = normalizedPath
 			}
 		}
 
 		// Clean up stale watched entries when a directory is renamed or deleted
 		if evt.Op&(fsnotify.Rename|fsnotify.Remove) != 0 {
 			fw.mu.Lock()
-			if fw.watched[path] {
-				delete(fw.watched, path)
+			if fw.watched[normalizedPath] {
+				delete(fw.watched, normalizedPath)
 				if fw.watcher != nil {
 					fw.watcher.Remove(path) // clean up fsnotify handle, ignore error
 				}

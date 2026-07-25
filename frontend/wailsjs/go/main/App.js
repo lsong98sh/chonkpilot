@@ -66,6 +66,10 @@ export function GetActiveScenario() {
   return window['go']['main']['App']['GetActiveScenario']();
 }
 
+export function GetActiveSessionID() {
+  return window['go']['main']['App']['GetActiveSessionID']();
+}
+
 export function GetAllConfig() {
   return window['go']['main']['App']['GetAllConfig']();
 }
@@ -158,6 +162,10 @@ export function GetTurnsBySession(arg1, arg2) {
   return window['go']['main']['App']['GetTurnsBySession'](arg1, arg2);
 }
 
+export function GetTurnsPaginated(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GetTurnsPaginated'](arg1, arg2, arg3, arg4);
+}
+
 export function GetUserConfig() {
   return window['go']['main']['App']['GetUserConfig']();
 }
@@ -188,6 +196,10 @@ export function LoadInitData() {
 
 export function LoadMissingAgentsFromResource() {
   return window['go']['main']['App']['LoadMissingAgentsFromResource']();
+}
+
+export function LogWeb(arg1, arg2) {
+  return window['go']['main']['App']['LogWeb'](arg1, arg2);
 }
 
 export function OpenDevTools() {
@@ -310,8 +322,8 @@ export function SetActiveScenario(arg1) {
   return window['go']['main']['App']['SetActiveScenario'](arg1);
 }
 
-export function SetActiveSession(arg1) {
-  return window['go']['main']['App']['SetActiveSession'](arg1);
+export function SetActiveSessionID(arg1) {
+  return window['go']['main']['App']['SetActiveSessionID'](arg1);
 }
 
 export function SetConfig(arg1, arg2) {

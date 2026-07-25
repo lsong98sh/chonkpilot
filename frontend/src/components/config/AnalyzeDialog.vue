@@ -1,365 +1,383 @@
 <template>
-  <el-dialog v-model="visible" title="Initialize" width="760px" class="ana-dialog" draggable @open="loadTechInfo" @closed="reset">
-    <div class="ana-body">
-
-    <!-- Manual tech selection -->
-    <div v-if="!generating && !analysisDone" class="step-analyze">
-      <div class="desc">
-        <p>Select the tech stack of your project and generate agent prompts for development, testing, code review, security, and deployment.</p>
-      </div>
-
-      <!-- Project type override -->
-      <div class="override-row">
-        <span class="override-label">Type:</span>
-        <el-select v-model="overrideProjectType" class="override-select">
-          <el-option
-            v-for="t in projectTypes"
-            :key="t.value"
-            :label="t.label"
-            :value="t.value"
-          />
-        </el-select>
-      </div>
-
-      <div class="override-row">
-        <span class="override-label">Frontend:</span>
-        <div class="checkbox-group-wrap">
-          <div class="checkbox-sub-label">Frameworks</div>
-          <el-checkbox-group v-model="overrideFrontend">
-            <el-checkbox v-for="o in techOptions['前端框架'] || []" :key="o" :label="o" :value="o" size="small" />
-          </el-checkbox-group>
-          <div class="checkbox-sub-label">Libraries</div>
-          <el-checkbox-group v-model="overrideFrontend">
-            <el-checkbox v-for="o in techOptions['前端组件库'] || []" :key="o" :label="o" :value="o" size="small" />
-          </el-checkbox-group>
-          <div class="custom-add-row">
-            <el-input v-model="customFrontend" size="small" placeholder="Custom..." class="custom-input" @keyup.enter="addCustomFrontend" />
-            <el-button size="small" @click="addCustomFrontend">+</el-button>
-          </div>
-        </div>
-      </div>
-      <div class="override-row">
-        <span class="override-label">Backend:</span>
-        <div class="checkbox-group-wrap">
-          <div class="checkbox-sub-label">Languages</div>
-          <el-checkbox-group v-model="overrideBackend">
-            <el-checkbox v-for="o in techOptions['后端语言'] || []" :key="o" :label="o" :value="o" size="small" />
-          </el-checkbox-group>
-          <div class="checkbox-sub-label">Frameworks</div>
-          <el-checkbox-group v-model="overrideBackend">
-            <el-checkbox v-for="o in techOptions['后端框架'] || []" :key="o" :label="o" :value="o" size="small" />
-          </el-checkbox-group>
-          <div class="custom-add-row">
-            <el-input v-model="customBackend" size="small" placeholder="Custom..." class="custom-input" @keyup.enter="addCustomBackend" />
-            <el-button size="small" @click="addCustomBackend">+</el-button>
-          </div>
-        </div>
-      </div>
-      <div class="override-row">
-        <span class="override-label">Architecture:</span>
-        <div class="checkbox-group-wrap">
-          <el-checkbox-group v-model="overrideArchitecture">
-            <el-checkbox v-for="o in techOptions['架构'] || []" :key="o" :label="o" :value="o" size="small" />
-          </el-checkbox-group>
-          <div class="custom-add-row">
-            <el-input v-model="customArchitecture" size="small" placeholder="Custom..." class="custom-input" @keyup.enter="addCustomArchitecture" />
-            <el-button size="small" @click="addCustomArchitecture">+</el-button>
-          </div>
-        </div>
-      </div>
-      <div class="override-row">
-        <span class="override-label">Extra:</span>
-        <div class="checkbox-group-wrap">
-          <div class="checkbox-sub-label">Databases</div>
-          <el-checkbox-group v-model="overrideExtra">
-            <el-checkbox v-for="o in techOptions['数据库'] || []" :key="o" :label="o" :value="o" size="small" />
-          </el-checkbox-group>
-          <div class="checkbox-sub-label">Build Tools</div>
-          <el-checkbox-group v-model="overrideExtra">
-            <el-checkbox v-for="o in techOptions['构建工具'] || []" :key="o" :label="o" :value="o" size="small" />
-          </el-checkbox-group>
-          <div class="checkbox-sub-label">Containers</div>
-          <el-checkbox-group v-model="overrideExtra">
-            <el-checkbox v-for="o in techOptions['容器化'] || []" :key="o" :label="o" :value="o" size="small" />
-          </el-checkbox-group>
-          <div class="custom-add-row">
-            <el-input v-model="customExtra" size="small" placeholder="Custom..." class="custom-input" @keyup.enter="addCustomExtra" />
-            <el-button size="small" @click="addCustomExtra">+</el-button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Generate button -->
-      <div class="generate-section">
-        <el-button
-          type="primary"
-          :loading="generating"
-          :disabled="generating"
-          @click="doGenerate"
-        >
-          <el-icon><MagicStick /></el-icon>
-          {{ generating ? 'Generating...' : 'Generate Prompts' }}
-        </el-button>
-      </div>
-    </div>
-
-    <!-- Streaming markdown (during LLM generation) -->
-    <div v-if="generating" class="step-prompts">
-      <div class="section-title">Generating Prompts...</div>
-      <div class="streaming-preview">
-        <MarkdownRender :content="streamRawContent || ''" />
-      </div>
-      <div class="prompt-actions">
-        <el-button @click="backToStart" :disabled="generating">
-          <el-icon><Refresh /></el-icon> Cancel
-        </el-button>
-      </div>
-    </div>
-
-    <!-- Step 2: Generated prompts -->
-    <div v-if="analysisDone" class="step-prompts">
-      <div class="section-title">Generated Prompts</div>
-      <div class="prompt-tabs">
-        <el-tabs v-model="activePromptTab" type="border-card">
-          <el-tab-pane
-            v-for="p in generatedPrompts"
-            :key="p.category"
-            :label="p.useCase"
-            :name="p.category"
-          >
-            <div class="prompt-card">
-              <div class="prompt-desc">{{ p.description }}</div>
-              <div class="prompt-toggle">
-                <el-button
-                  text
-                  size="small"
-                  :type="!promptPreviewMode ? 'primary' : ''"
-                  @click="promptPreviewMode = false"
-                >Code</el-button>
-                <el-button
-                  text
-                  size="small"
-                  :type="promptPreviewMode ? 'primary' : ''"
-                  @click="promptPreviewMode = true"
-                >Preview</el-button>
-              </div>
-              <el-input
-                v-if="!promptPreviewMode"
-                v-model="editedPrompts[activePromptTab]"
-                type="textarea"
-                :rows="12"
-                class="prompt-textarea"
-              />
-              <div v-else class="prompt-preview">
-                <MarkdownRender :content="editedPrompts[activePromptTab] || ''" />
-              </div>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
-      </div>
-
-      <div class="prompt-actions">
-        <el-button @click="backToStart">
-          <el-icon><Refresh /></el-icon> Modify &amp; Regenerate
-        </el-button>
-        <el-button type="primary" @click="saveAsAgents">
-          <el-icon><FolderOpened /></el-icon> Save as Agents
-        </el-button>
-      </div>
-    </div>
-  </div>
-</el-dialog>
+  <div />
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, h, defineComponent } from 'vue'
 import {
   getTechInfo,
   generatePrompts,
   getProjectAgents,
   saveProjectAgents,
 } from '../../api/config'
-import { ElMessage } from 'element-plus'
+import { Button, Input, Textarea, Select, Tabs, message } from '../ui'
+import Icon from '../icon/Icon.vue'
 import MarkdownRender from '@ashlesss/markstream-vue'
 import '@ashlesss/markstream-vue/index.css'
+import { dialog } from '../dialog'
 
-const visible = ref(false)
-const generating = ref(false)
-const projectTypes = ref([])
-const techOptions = ref({})
-const generatedPrompts = ref([])
-const analysisDone = ref(false)
-const activePromptTab = ref('')
-const editedPrompts = reactive({})
-const promptPreviewMode = ref(false)
-
-const overrideProjectType = ref('')
-const overrideFrontend = ref([])
-const overrideBackend = ref([])
-const overrideArchitecture = ref([])
-const overrideExtra = ref([])
-const customFrontend = ref('')
-const customBackend = ref('')
-const customArchitecture = ref('')
-const customExtra = ref('')
-const streamingProgress = ref('')
-const streamRawContent = ref('')
+let handle = null
 let streamAbortController = null
 
-function addCustomFrontend() {
-  const v = customFrontend.value.trim()
-  if (v && !overrideFrontend.value.includes(v)) {
-    overrideFrontend.value = [...overrideFrontend.value, v]
-  }
-  customFrontend.value = ''
-}
+function open() {
+  const generating = ref(false)
+  const projectTypes = ref([])
+  const techOptions = ref({})
+  const generatedPrompts = ref([])
+  const analysisDone = ref(false)
+  const activePromptTab = ref('')
+  const editedPrompts = reactive({})
+  const promptPreviewMode = ref(false)
 
-function addCustomBackend() {
-  const v = customBackend.value.trim()
-  if (v && !overrideBackend.value.includes(v)) {
-    overrideBackend.value = [...overrideBackend.value, v]
-  }
-  customBackend.value = ''
-}
+  const overrideProjectType = ref('')
+  const overrideFrontend = ref([])
+  const overrideBackend = ref([])
+  const overrideArchitecture = ref([])
+  const overrideExtra = ref([])
+  const customFrontend = ref('')
+  const customBackend = ref('')
+  const customArchitecture = ref('')
+  const customExtra = ref('')
+  const streamRawContent = ref('')
 
-function addCustomExtra() {
-  const v = customExtra.value.trim()
-  if (v && !overrideExtra.value.includes(v)) {
-    overrideExtra.value = [...overrideExtra.value, v]
-  }
-  customExtra.value = ''
-}
-
-function addCustomArchitecture() {
-  const v = customArchitecture.value.trim()
-  if (v && !overrideArchitecture.value.includes(v)) {
-    overrideArchitecture.value = [...overrideArchitecture.value, v]
-  }
-  customArchitecture.value = ''
-}
-
-async function loadTechInfo() {
-  try {
-    const res = await getTechInfo()
-    projectTypes.value = res.types || []
-    techOptions.value = res.options || {}
-    overrideProjectType.value = projectTypes.value[0]?.value || ''
-  } catch (e) {
-    console.error('Load tech info failed:', e)
-    ElMessage.error('Failed to load tech options')
-  }
-}
-
-function doGenerate() {
-  generating.value = true
-  streamingProgress.value = 'Generating...'
-  streamRawContent.value = ''
-  const payload = {
-    analysis: null,
-    projectType: overrideProjectType.value,
-    frontend: overrideFrontend.value,
-    backend: overrideBackend.value,
-    architecture: overrideArchitecture.value,
-    extra: overrideExtra.value,
+  function toggleCheckbox(list, item) {
+    const idx = list.value.indexOf(item)
+    if (idx >= 0) {
+      list.value = list.value.filter(v => v !== item)
+    } else {
+      list.value = [...list.value, item]
+    }
   }
 
-  streamAbortController = generatePrompts(payload,
-    (token) => {
-      streamRawContent.value += token
-      streamingProgress.value = streamingProgress.value.length > 60
-        ? 'Generating... ' + token.slice(0, 40)
-        : streamingProgress.value + token
-    },
-    (prompts) => {
-      generatedPrompts.value = prompts || []
-      if (generatedPrompts.value.length > 0) {
-        activePromptTab.value = generatedPrompts.value[0].category
-        for (const p of generatedPrompts.value) {
-          editedPrompts[p.category] = p.prompt
+  function renderCheckboxGroup(options, modelValue, onToggle) {
+    return h('div', { class: 'native-checkbox-group' },
+      (options || []).map(o =>
+        h('label', { class: 'checkbox-item', key: o }, [
+          h('input', {
+            type: 'checkbox',
+            value: o,
+            checked: modelValue.value.includes(o),
+            onChange: () => onToggle(modelValue, o),
+          }),
+          h('span', null, o),
+        ])
+      )
+    )
+  }
+
+  function renderCustomAddRow(modelValue, customVal, addFn) {
+    return h('div', { class: 'custom-add-row' }, [
+      h('input', {
+        class: 'b-input custom-input',
+        value: customVal.value,
+        onInput: (e) => { customVal.value = e.target.value },
+        placeholder: 'Custom...',
+        onKeyup: (e) => { if (e.key === 'Enter') addFn() },
+      }),
+      h(Button, { size: 'small', onClick: addFn }, () => '+'),
+    ])
+  }
+
+  function addCustomFrontend() {
+    const v = customFrontend.value.trim()
+    if (v && !overrideFrontend.value.includes(v)) {
+      overrideFrontend.value = [...overrideFrontend.value, v]
+    }
+    customFrontend.value = ''
+  }
+
+  function addCustomBackend() {
+    const v = customBackend.value.trim()
+    if (v && !overrideBackend.value.includes(v)) {
+      overrideBackend.value = [...overrideBackend.value, v]
+    }
+    customBackend.value = ''
+  }
+
+  function addCustomExtra() {
+    const v = customExtra.value.trim()
+    if (v && !overrideExtra.value.includes(v)) {
+      overrideExtra.value = [...overrideExtra.value, v]
+    }
+    customExtra.value = ''
+  }
+
+  function addCustomArchitecture() {
+    const v = customArchitecture.value.trim()
+    if (v && !overrideArchitecture.value.includes(v)) {
+      overrideArchitecture.value = [...overrideArchitecture.value, v]
+    }
+    customArchitecture.value = ''
+  }
+
+  async function loadTechInfo() {
+    try {
+      const res = await getTechInfo()
+      projectTypes.value = res.types || []
+      techOptions.value = res.options || {}
+      overrideProjectType.value = projectTypes.value[0]?.value || ''
+    } catch (e) {
+      console.error('Load tech info failed:', e)
+      message.error('Failed to load tech options')
+    }
+  }
+
+  function doGenerate() {
+    generating.value = true
+    streamRawContent.value = ''
+    const payload = {
+      analysis: null,
+      projectType: overrideProjectType.value,
+      frontend: overrideFrontend.value,
+      backend: overrideBackend.value,
+      architecture: overrideArchitecture.value,
+      extra: overrideExtra.value,
+    }
+
+    streamAbortController = generatePrompts(payload,
+      (token) => {
+        streamRawContent.value += token
+      },
+      (prompts) => {
+        generatedPrompts.value = prompts || []
+        if (generatedPrompts.value.length > 0) {
+          activePromptTab.value = generatedPrompts.value[0].category
+          for (const p of generatedPrompts.value) {
+            editedPrompts[p.category] = p.prompt
+          }
+          promptPreviewMode.value = true
+          analysisDone.value = true
         }
-        promptPreviewMode.value = true
-        analysisDone.value = true
+        generating.value = false
+        streamRawContent.value = ''
+        streamAbortController = null
+      },
+      (errMsg) => {
+        console.error('Generate failed:', errMsg)
+        message.error('Prompt generation failed: ' + errMsg)
+        generating.value = false
+        streamRawContent.value = ''
+        streamAbortController = null
       }
-      generating.value = false
-      streamingProgress.value = ''
-      streamRawContent.value = ''
-      streamAbortController = null
-    },
-    (errMsg) => {
-      console.error('Generate failed:', errMsg)
-      ElMessage.error('Prompt generation failed: ' + errMsg)
-      generating.value = false
-      streamingProgress.value = ''
-      streamRawContent.value = ''
+    )
+  }
+
+  async function saveAsAgents() {
+    try {
+      let existingAgents = []
+      try {
+        const res = await getProjectAgents()
+        existingAgents = res.agents || []
+      } catch (e) { console.warn('[AnalyzeDialog] Failed to load existing agents:', e) }
+
+      const userAgents = existingAgents.filter(a => a._source !== 'llm')
+      const newAgents = generatedPrompts.value.map(p => ({
+        title: p.useCase,
+        useCase: p.category,
+        prompt: editedPrompts[p.category] || p.prompt,
+        _source: 'llm',
+      }))
+      const merged = [...userAgents, ...newAgents]
+      await saveProjectAgents({ agents: merged })
+      message.success('Prompts saved as agents')
+      handle?.close()
+    } catch (e) {
+      console.error('Save agents failed:', e)
+      message.error('Failed to save: ' + (e.message || 'unknown error'))
+    }
+  }
+
+  function backToStart() {
+    analysisDone.value = false
+    generatedPrompts.value = []
+    generating.value = false
+    streamRawContent.value = ''
+    if (streamAbortController) {
+      streamAbortController.abort()
       streamAbortController = null
     }
-  )
-}
-
-async function saveAsAgents() {
-  try {
-    let existingAgents = []
-    try {
-      const res = await getProjectAgents()
-      existingAgents = res.agents || []
-    } catch (e) { console.warn('[AnalyzeDialog] Failed to load existing agents:', e) }
-
-    const userAgents = existingAgents.filter(a => a._source !== 'llm')
-
-    const newAgents = generatedPrompts.value.map(p => ({
-      title: p.useCase,
-      useCase: p.category,
-      prompt: editedPrompts[p.category] || p.prompt,
-      _source: 'llm',
-    }))
-
-    const merged = [...userAgents, ...newAgents]
-    await saveProjectAgents({ agents: merged })
-
-    ElMessage.success('Prompts saved as agents')
-    visible.value = false
-  } catch (e) {
-    console.error('Save agents failed:', e)
-    ElMessage.error('Failed to save: ' + (e.message || 'unknown error'))
   }
-}
 
-function backToStart() {
-  analysisDone.value = false
-  generatedPrompts.value = []
-  generating.value = false
-  streamRawContent.value = ''
-  if (streamAbortController) {
-    streamAbortController.abort()
-    streamAbortController = null
+  function reset() {
+    generating.value = false
+    generatedPrompts.value = []
+    analysisDone.value = false
+    promptPreviewMode.value = false
+    streamRawContent.value = ''
+    overrideFrontend.value = []
+    overrideBackend.value = []
+    overrideArchitecture.value = []
+    overrideExtra.value = []
+    customFrontend.value = ''
+    customBackend.value = ''
+    customArchitecture.value = ''
+    customExtra.value = ''
   }
-}
 
-function reset() {
-  generating.value = false
-  generatedPrompts.value = []
-  analysisDone.value = false
-  promptPreviewMode.value = false
-  streamRawContent.value = ''
-  overrideFrontend.value = []
-  overrideBackend.value = []
-  overrideArchitecture.value = []
-  overrideExtra.value = []
-  customFrontend.value = ''
-  customBackend.value = ''
-  customArchitecture.value = ''
-  customExtra.value = ''
-}
+  loadTechInfo()
 
-function open() {
-  visible.value = true
+  handle = dialog.show(defineComponent({
+    setup() {
+      return () => h('div', { class: 'ana-body' }, [
+        // Manual tech selection
+        (!generating.value && !analysisDone.value)
+          ? [
+              h('div', { class: 'desc' }, [
+                h('p', null, 'Select the tech stack of your project and generate agent prompts for development, testing, code review, security, and deployment.'),
+              ]),
+              // Project type
+              h('div', { class: 'override-row' }, [
+                h('span', { class: 'override-label' }, 'Type:'),
+                h(Select, {
+                  modelValue: overrideProjectType.value,
+                  'onUpdate:modelValue': (v) => { overrideProjectType.value = v },
+                  class: 'override-select',
+                  options: projectTypes.value.map(t => ({ label: t.label, value: t.value })),
+                }),
+              ]),
+              // Frontend
+              h('div', { class: 'override-row' }, [
+                h('span', { class: 'override-label' }, 'Frontend:'),
+                h('div', { class: 'checkbox-group-wrap' }, [
+                  h('div', { class: 'checkbox-sub-label' }, 'Frameworks'),
+                  renderCheckboxGroup(techOptions.value['前端框架'], overrideFrontend, toggleCheckbox),
+                  h('div', { class: 'checkbox-sub-label' }, 'Libraries'),
+                  renderCheckboxGroup(techOptions.value['前端组件库'], overrideFrontend, toggleCheckbox),
+                  renderCustomAddRow(overrideFrontend, customFrontend, addCustomFrontend),
+                ]),
+              ]),
+              // Backend
+              h('div', { class: 'override-row' }, [
+                h('span', { class: 'override-label' }, 'Backend:'),
+                h('div', { class: 'checkbox-group-wrap' }, [
+                  h('div', { class: 'checkbox-sub-label' }, 'Languages'),
+                  renderCheckboxGroup(techOptions.value['后端语言'], overrideBackend, toggleCheckbox),
+                  h('div', { class: 'checkbox-sub-label' }, 'Frameworks'),
+                  renderCheckboxGroup(techOptions.value['后端框架'], overrideBackend, toggleCheckbox),
+                  renderCustomAddRow(overrideBackend, customBackend, addCustomBackend),
+                ]),
+              ]),
+              // Architecture
+              h('div', { class: 'override-row' }, [
+                h('span', { class: 'override-label' }, 'Architecture:'),
+                h('div', { class: 'checkbox-group-wrap' }, [
+                  renderCheckboxGroup(techOptions.value['架构'], overrideArchitecture, toggleCheckbox),
+                  renderCustomAddRow(overrideArchitecture, customArchitecture, addCustomArchitecture),
+                ]),
+              ]),
+              // Extra
+              h('div', { class: 'override-row' }, [
+                h('span', { class: 'override-label' }, 'Extra:'),
+                h('div', { class: 'checkbox-group-wrap' }, [
+                  h('div', { class: 'checkbox-sub-label' }, 'Databases'),
+                  renderCheckboxGroup(techOptions.value['数据库'], overrideExtra, toggleCheckbox),
+                  h('div', { class: 'checkbox-sub-label' }, 'Build Tools'),
+                  renderCheckboxGroup(techOptions.value['构建工具'], overrideExtra, toggleCheckbox),
+                  h('div', { class: 'checkbox-sub-label' }, 'Containers'),
+                  renderCheckboxGroup(techOptions.value['容器化'], overrideExtra, toggleCheckbox),
+                  renderCustomAddRow(overrideExtra, customExtra, addCustomExtra),
+                ]),
+              ]),
+              // Generate button
+              h('div', { class: 'generate-section' }, [
+                h(Button, {
+                  type: 'primary',
+                  loading: generating.value,
+                  disabled: generating.value,
+                  onClick: doGenerate,
+                }, () => [
+                  h(Icon, { name: 'magic-stick', size: 14 }),
+                  generating.value ? 'Generating...' : 'Generate Prompts',
+                ]),
+              ]),
+            ]
+          : null,
+
+        // Streaming markdown
+        generating.value
+          ? h('div', { class: 'step-prompts' }, [
+              h('div', { class: 'section-title' }, 'Generating Prompts...'),
+              h('div', { class: 'streaming-preview' }, [
+                h(MarkdownRender, { content: streamRawContent.value || '' }),
+              ]),
+              h('div', { class: 'prompt-actions' }, [
+                h(Button, { onClick: backToStart, disabled: generating.value }, () => [
+                  h(Icon, { name: 'refresh', size: 14 }),
+                  ' Cancel',
+                ]),
+              ]),
+            ])
+          : null,
+
+        // Generated prompts
+        analysisDone.value
+          ? h('div', { class: 'step-prompts' }, [
+              h('div', { class: 'section-title' }, 'Generated Prompts'),
+              h('div', { class: 'prompt-tabs' }, (() => {
+                const tabSlots = {}
+                generatedPrompts.value.forEach(p => {
+                  tabSlots[p.category] = () =>
+                    h('div', { class: 'prompt-card' }, [
+                      h('div', { class: 'prompt-desc' }, p.description),
+                      h('div', { class: 'prompt-toggle' }, [
+                        h(Button, { text: true, size: 'small', type: !promptPreviewMode.value ? 'primary' : '', onClick: () => { promptPreviewMode.value = false } }, () => 'Code'),
+                        h(Button, { text: true, size: 'small', type: promptPreviewMode.value ? 'primary' : '', onClick: () => { promptPreviewMode.value = true } }, () => 'Preview'),
+                      ]),
+                      !promptPreviewMode.value
+                        ? h(Textarea, {
+                            modelValue: editedPrompts[activePromptTab.value],
+                            'onUpdate:modelValue': (v) => { editedPrompts[activePromptTab.value] = v },
+                            rows: 12,
+                            class: 'prompt-textarea',
+                          })
+                        : h('div', { class: 'prompt-preview' }, [
+                            h(MarkdownRender, { content: editedPrompts[activePromptTab.value] || '' }),
+                          ]),
+                    ])
+                })
+                return h(Tabs, {
+                  tabs: generatedPrompts.value.map(p => ({ name: p.category, label: p.useCase })),
+                  modelValue: activePromptTab.value,
+                  'onUpdate:modelValue': (v) => { activePromptTab.value = v },
+                }, tabSlots)
+              })()),
+              h('div', { class: 'prompt-actions' }, [
+                h(Button, { onClick: backToStart }, () => [
+                  h(Icon, { name: 'refresh', size: 14 }),
+                  ' Modify & Regenerate',
+                ]),
+                h(Button, { type: 'primary', onClick: saveAsAgents }, () => [
+                  h(Icon, { name: 'folder-opened', size: 14 }),
+                  ' Save as Agents',
+                ]),
+              ]),
+            ])
+          : null,
+      ])
+    }
+  }), {
+    title: 'Initialize',
+    width: 760,
+    closable: true,
+    bodyClass: 'analyze-dialog-body',
+    onAction: (action) => {
+      if (action === 'close' || action === 'cancel') {
+        if (streamAbortController) {
+          streamAbortController.abort()
+          streamAbortController = null
+        }
+        reset()
+        handle.close()
+      }
+    }
+  })
 }
 
 defineExpose({ open })
 </script>
 
-<style scoped>
-.ana-dialog :deep(.el-dialog__body) {
+<style>
+.analyze-dialog-body {
   padding-top: 8px;
   overflow: hidden;
 }
@@ -417,6 +435,26 @@ defineExpose({ open })
 
 .checkbox-sub-label:first-child {
   margin-top: 0;
+}
+
+.native-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.checkbox-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox-item input[type="checkbox"] {
+  cursor: pointer;
 }
 
 .custom-add-row {
@@ -480,10 +518,6 @@ defineExpose({ open })
   display: flex;
   gap: 0;
   margin-bottom: 8px;
-}
-
-.prompt-toggle .el-button + .el-button {
-  margin-left: 0;
 }
 
 .prompt-actions {

@@ -56,7 +56,7 @@
 【replace 文本替换】
 - replace(path="main.go", old="...", new="...") 单文件替换
 - replace(file_pattern="*.go", old="...", new="...") 批量替换
-- 加 dry_run=true 预览改动再执行
+- 【强制规则】必须先 dry_run=true 预览改动，确认无误后再去掉 dry_run 执行。禁止直接修改而不预览。
 
 【remove 删除】
 - remove(paths=["temp.log"]) 删除指定文件/目录

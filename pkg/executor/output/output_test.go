@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewWriter_Empty(t *testing.T) {
-	w := NewWriter("", "stdout", "")
+	w := NewWriter("", "stdout")
 	if w == nil {
 		t.Fatal("NewWriter() returned nil")
 	}
@@ -16,7 +16,7 @@ func TestNewWriter_Empty(t *testing.T) {
 }
 
 func TestNewWriter_JSONOutput(t *testing.T) {
-	w := NewWriter("", "json", "")
+	w := NewWriter("", "json")
 	if w == nil {
 		t.Fatal("NewWriter() returned nil")
 	}
@@ -34,7 +34,7 @@ func TestWriteEvent_JSONOutput(t *testing.T) {
 	oldStdout := os.Stdout
 	os.Stdout = wPipe
 
-	writer := NewWriter("", "json", "")
+	writer := NewWriter("", "json")
 	if writer == nil {
 		t.Fatal("NewWriter() returned nil")
 	}
@@ -93,7 +93,7 @@ func TestWriteEvent_StdoutFormat(t *testing.T) {
 	oldStdout := os.Stdout
 	os.Stdout = wPipe
 
-	writer := NewWriter("", "stdout", "")
+	writer := NewWriter("", "stdout")
 	writer.WriteEvent("test_event", map[string]interface{}{
 		"message": "hello",
 	})
@@ -127,7 +127,7 @@ func TestWriteEvent_MultipleEvents(t *testing.T) {
 	oldStdout := os.Stdout
 	os.Stdout = wPipe
 
-	writer := NewWriter("", "json", "")
+	writer := NewWriter("", "json")
 	writer.WriteEvent("event_1", map[string]interface{}{"seq": 1})
 	writer.WriteEvent("event_2", map[string]interface{}{"seq": 2})
 	writer.Close()
@@ -159,7 +159,7 @@ func TestWriteEvent_NilPayload(t *testing.T) {
 	oldStdout := os.Stdout
 	os.Stdout = wPipe
 
-	writer := NewWriter("", "json", "")
+	writer := NewWriter("", "json")
 	// This should not panic
 	writer.WriteEvent("nil_payload", nil)
 	writer.Close()

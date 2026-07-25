@@ -1,145 +1,162 @@
 <template>
-  <el-dialog v-model="visible" title="场景管理" width="90vw" top="5vh" append-to-body destroy-on-close draggable class="scenario-dialog">
-    <div class="dialog-content">
-      <!-- List View -->
-      <template v-if="!editing">
-        <div class="toolbar-actions">
-          <el-button size="small" type="primary" @click="startAdd">
-            <el-icon><Plus /></el-icon> 添加场景
-          </el-button>
-        </div>
-        <el-table :data="scenarios" size="small" style="width: 100%" empty-text="暂无场景" class="scenario-table">
-          <el-table-column label="名称" prop="name" min-width="160" />
-          <el-table-column label="说明" prop="description" min-width="200" show-overflow-tooltip />
-          <el-table-column label="操作" width="160" align="center" fixed="right">
-            <template #default="{ row }">
-              <el-button text size="small" @click="startEdit(row)">编辑</el-button>
-              <el-button text size="small" type="danger" @click="handleDelete(row)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </template>
-
-      <!-- Edit View -->
-      <template v-else>
-        <div class="edit-header">
-          <el-button size="small" @click="cancelEdit">返回列表</el-button>
-          <span class="edit-title">{{ isNew ? '添加场景' : '编辑场景' }}</span>
-          <el-button size="small" type="primary" @click="confirmEdit">保存</el-button>
-        </div>
-        <el-form label-position="top" size="small" class="edit-form">
-          <el-row :gutter="12">
-            <el-col :span="6">
-              <el-form-item label="名称">
-                <el-input v-model="form.name" placeholder="场景名称" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="18">
-              <el-form-item label="说明">
-                <el-input v-model="form.description" placeholder="场景说明" />
-              </el-form-item>
-            </el-col>
-          </el-row>
-          <el-form-item label="系统提示词" class="prompt-form-item">
-            <el-input
-              v-model="form.systemPrompt"
-              type="textarea"
-              :rows="20"
-              class="prompt-editor"
-              placeholder="输入场景的系统提示词，选择此场景后会自动覆盖默认系统提示词"
-            />
-          </el-form-item>
-        </el-form>
-      </template>
-    </div>
-  </el-dialog>
+  <div />
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ref, h, defineComponent } from 'vue'
+import { message, confirm } from '../ui'
+import { Input, Textarea, Button, Table } from '../ui'
+import Icon from '../icon/Icon.vue'
+import { dialog } from '../dialog'
 
 const emit = defineEmits(['changed'])
 
-const visible = ref(false)
-const scenarios = ref([])
-const editing = ref(false)
-const isNew = ref(false)
-const form = ref({ name: '', description: '', systemPrompt: '' })
-
 function open() {
-  visible.value = true
-  loadList()
-}
-defineExpose({ open })
+  const scenarios = ref([])
+  const editing = ref(false)
+  const isNew = ref(false)
+  const form = ref({ name: '', description: '', systemPrompt: '' })
 
-function startAdd() {
-  isNew.value = true
-  form.value = { name: '', description: '', systemPrompt: '' }
-  editing.value = true
-}
-
-function startEdit(row) {
-  isNew.value = false
-  form.value = { ...row }
-  editing.value = true
-}
-
-function cancelEdit() {
-  editing.value = false
-}
-
-async function confirmEdit() {
-  try {
-    const res = await window.go.main.App.SaveScenario({ scenario: form.value })
-    if (res?.scenario) {
-      ElMessage.success(isNew.value ? '场景已创建' : '场景已更新')
+  async function loadList() {
+    try {
+      const res = await window.go.main.App.GetScenarioList()
+      scenarios.value = res.scenarios || []
+    } catch (e) {
+      scenarios.value = []
     }
+  }
+
+  function startAdd() {
+    isNew.value = true
+    form.value = { name: '', description: '', systemPrompt: '' }
+    editing.value = true
+  }
+
+  function startEdit(row) {
+    isNew.value = false
+    form.value = { ...row }
+    editing.value = true
+  }
+
+  function cancelEdit() {
     editing.value = false
-    await loadList()
-    emit('changed')
-  } catch (e) {
-    ElMessage.error('保存失败: ' + (e.message || e))
   }
+
+  async function confirmEdit() {
+    try {
+      const res = await window.go.main.App.SaveScenario({ scenario: form.value })
+      if (res?.scenario) {
+        message.success(isNew.value ? '场景已创建' : '场景已更新')
+      }
+      editing.value = false
+      await loadList()
+      emit('changed')
+    } catch (e) {
+      message.error('保存失败: ' + (e.message || e))
+    }
+  }
+
+  async function handleDelete(row) {
+    try {
+      await confirm(`确定删除场景「${row.name}」？`, '确认删除')
+      await window.go.main.App.DeleteScenario({ id: row.id })
+      message.success('场景已删除')
+      await loadList()
+      emit('changed')
+    } catch (e) {
+      if (e !== 'cancel') message.error('删除失败: ' + (e.message || e))
+    }
+  }
+
+  loadList()
+
+  const columns = [
+    { label: '名称', prop: 'name', minWidth: 160 },
+    { label: '说明', prop: 'description', minWidth: 200 },
+    { label: '操作', type: 'action', width: 160, align: 'center' },
+  ]
+
+  const handle = dialog.show(defineComponent({
+    setup() {
+      return () => h('div', { class: 'dialog-content' }, [
+        !editing.value
+          ? [
+              h('div', { class: 'toolbar-actions' }, [
+                h(Button, { size: 'small', type: 'primary', onClick: startAdd }, () => [
+                  h(Icon, { name: 'plus', size: 14 }),
+                  ' 添加场景',
+                ]),
+              ]),
+              h(Table, {
+                columns,
+                data: scenarios.value,
+                emptyText: '暂无场景',
+              }, {
+                action: ({ row }) => [
+                  h(Button, { text: true, size: 'small', onClick: () => startEdit(row) }, () => '编辑'),
+                  h(Button, { text: true, size: 'small', type: 'danger', onClick: () => handleDelete(row) }, () => '删除'),
+                ]
+              }),
+            ]
+          : [
+              h('div', { class: 'edit-header' }, [
+                h(Button, { size: 'small', onClick: cancelEdit }, () => '返回列表'),
+                h('span', { class: 'edit-title' }, isNew.value ? '添加场景' : '编辑场景'),
+                h(Button, { size: 'small', type: 'primary', onClick: confirmEdit }, () => '保存'),
+              ]),
+              h('form', { class: 'b-form edit-form' }, () => [
+                h('div', { class: 'b-row' }, () => [
+                  h('div', { class: 'b-col b-col--6' }, () => h('div', { class: 'b-form-item' }, [
+                    h('label', { class: 'b-form-label' }, '名称'),
+                    h(Input, {
+                      modelValue: form.value.name,
+                      'onUpdate:modelValue': (v) => { form.value.name = v },
+                      placeholder: '场景名称',
+                    }),
+                  ])),
+                  h('div', { class: 'b-col b-col--18' }, () => h('div', { class: 'b-form-item' }, [
+                    h('label', { class: 'b-form-label' }, '说明'),
+                    h(Input, {
+                      modelValue: form.value.description,
+                      'onUpdate:modelValue': (v) => { form.value.description = v },
+                      placeholder: '场景说明',
+                    }),
+                  ])),
+                ]),
+                h('div', { class: 'b-form-item prompt-form-item' }, [
+                  h('label', { class: 'b-form-label' }, '系统提示词'),
+                  h(Textarea, {
+                    modelValue: form.value.systemPrompt,
+                    'onUpdate:modelValue': (v) => { form.value.systemPrompt = v },
+                    rows: 20,
+                    placeholder: '输入场景的系统提示词，选择此场景后会自动覆盖默认系统提示词',
+                  }),
+                ]),
+              ]),
+            ],
+      ])
+    }
+  }), {
+    title: '场景管理',
+    width: '90vw',
+    bodyClass: 'scenario-dialog-body',
+    closable: true,
+    onAction: (action) => {
+      if (action === 'close' || action === 'cancel') handle.close()
+    }
+  })
 }
 
-async function handleDelete(row) {
-  try {
-    await ElMessageBox.confirm(`确定删除场景「${row.name}」？`, '确认删除', { type: 'warning' })
-    await window.go.main.App.DeleteScenario({ id: row.id })
-    ElMessage.success('场景已删除')
-    await loadList()
-    emit('changed')
-  } catch (e) {
-    if (e !== 'cancel') ElMessage.error('删除失败: ' + (e.message || e))
-  }
-}
-
-async function loadList() {
-  try {
-    const res = await window.go.main.App.GetScenarioList()
-    scenarios.value = res.scenarios || []
-  } catch (e) {
-    scenarios.value = []
-  }
-}
+defineExpose({ open })
 </script>
 
-<style scoped>
-.scenario-dialog :deep(.el-dialog) {
-  max-height: 680px;
-  display: flex;
-  flex-direction: column;
-}
-.scenario-dialog :deep(.el-dialog__header) {
-  flex-shrink: 0;
-}
-.scenario-dialog :deep(.el-dialog__body) {
-  flex: 1;
-  overflow: hidden;
+<style>
+.scenario-dialog-body {
   padding: 16px;
+  flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .dialog-content {
   flex: 1;
@@ -183,19 +200,9 @@ async function loadList() {
   min-height: 0;
   margin-bottom: 0;
 }
-.prompt-form-item :deep(.el-form-item__content) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
 .prompt-editor {
   font-family: var(--font-mono, 'Cascadia Code', 'JetBrains Mono', monospace) !important;
   flex: 1;
   min-height: 0;
-}
-.prompt-editor :deep(textarea) {
-  height: 100% !important;
-  resize: vertical;
 }
 </style>

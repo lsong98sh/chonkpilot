@@ -2,16 +2,17 @@
   <Transition name="fade">
     <div v-if="visible" class="error-banner" :type="type">
       <span class="error-text">{{ message }}</span>
-      <el-button text size="small" @click="visible = false">
-        <el-icon><Close /></el-icon>
-      </el-button>
+      <Button text size="small" @click="visible = false">
+        <Icon name="close" />
+      </Button>
     </div>
   </Transition>
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
-import { Close } from '@element-plus/icons-vue'
+import { ref, onUpdated, onUnmounted } from 'vue'
+import Icon from '../icon/Icon.vue'
+import { Button } from '../ui'
 
 const props = defineProps({
   message: { type: String, default: '' },
@@ -21,15 +22,18 @@ const props = defineProps({
 
 const visible = ref(false)
 let closeTimer = null
+let prevMessage = ''
 
-watch(() => props.message, (val) => {
-  if (closeTimer) clearTimeout(closeTimer)
-  if (val) {
+onUpdated(() => {
+  const msg = props.message
+  if (msg && msg !== prevMessage) {
+    if (closeTimer) clearTimeout(closeTimer)
     visible.value = true
     if (props.autoClose > 0) {
       closeTimer = setTimeout(() => { visible.value = false }, props.autoClose)
     }
   }
+  prevMessage = msg
 })
 
 onUnmounted(() => {

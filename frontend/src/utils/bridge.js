@@ -1,9 +1,11 @@
 /**
- * Bridge — Wails Go → JS 事件通信层
+ * Bridge — Wails Go → JS 事件通信层 + 前端 EventBus
  *
  * 内部维护回调注册表，每个事件名称只注册一个 Wails handler。
  * bridge.on('event', cb) 注册回调，返回的 unsub() 只移除自己的回调，
  * 不会影响其他组件对该事件的监听。
+ * bridge.emit('event', data) 用于前端组件间通信（EventBus），
+ * 同时支持 Wails runtime 事件和前端自定义事件。
  */
 
 // 回调注册表: { eventName: Set<callback> }
@@ -86,6 +88,19 @@ const bridge = {
       }
       delete _callbackRegistry[event]
     }
+  },
+
+  /**
+   * 前端 EventBus — 组件间通信
+   * 向所有注册了该事件的回调广播数据，无需经过 Wails runtime。
+   * 支持所有通过 bridge.on() 注册的回调（包括 Wails 事件和纯前端事件）。
+   */
+  emit(event, data) {
+    const cbs = _callbackRegistry[event]
+    if (!cbs || cbs.size === 0) return
+    cbs.forEach(cb => {
+      try { cb(data) } catch (e) { console.warn('[bridge] emit handler error:', e) }
+    })
   },
 }
 

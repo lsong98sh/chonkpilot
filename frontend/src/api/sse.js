@@ -22,7 +22,6 @@ class SSEConnection {
   connect(sessionId) {
     // Bridge Push 不需要连接——事件会自动推送到前端
     // 只需要设置监听即可
-    console.log('[bridge] connected (session:', sessionId, ')')
     this._emit('connected', {})
   }
 

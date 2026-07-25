@@ -94,7 +94,7 @@ func RunDaemon(args []string) error {
 	applyGlobalConfig(ea)
 
 	// ── Initialize output writer (stdout → IDE) ──
-	outWriter := output.NewWriter(ea.PipePath, ea.OutputFormat, ea.PipeAddr)
+	outWriter := output.NewWriter(ea.PipePath, ea.OutputFormat)
 	defer outWriter.Close()
 
 	// ── Open shared DB connection ──
@@ -425,8 +425,6 @@ func parseDaemonArgs(args []string) (*ExecutorArgs, error) {
 			ea.LogLevel = arg[len("--log-level="):]
 		} else if strings.HasPrefix(arg, "--pipe-path=") {
 			ea.PipePath = arg[len("--pipe-path="):]
-		} else if strings.HasPrefix(arg, "--pipe-addr=") {
-			ea.PipeAddr = arg[len("--pipe-addr="):]
 		} else if strings.HasPrefix(arg, "--llm=") {
 			ea.LLMName = arg[len("--llm="):]
 		} else if strings.HasPrefix(arg, "--effort=") {
@@ -465,7 +463,6 @@ func buildTurnArgs(base *ExecutorArgs, cmd DaemonCommand) *ExecutorArgs {
 		TempIDEDir:            base.TempIDEDir,
 		OutputFormat:          base.OutputFormat,
 		PipePath:              base.PipePath,
-		PipeAddr:              base.PipeAddr,
 		LogLevel:              base.LogLevel,
 		LLMName:               base.LLMName,
 		Effort:                base.Effort,

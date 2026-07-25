@@ -112,6 +112,28 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 	systemPrompt, _ := args["system-prompt"].(string)
 	agent, _ := args["agent"].(string)
 
+	// ── Resolve BlockedTools for the specified agent ──
+	var blockedTools []string
+	if agent != "" && workDir != "" {
+		sqlDB, err := db.Open(workDir)
+		if err == nil {
+			agents, err := db.GetProjectAgents(sqlDB)
+			if err == nil {
+				for _, a := range agents {
+					if a.Title == agent {
+						blockedTools = a.BlockedTools
+						logger.Debug("call_llm: resolved agent blocked tools",
+							zap.String("agent", agent),
+							zap.Int("blocked_count", len(blockedTools)),
+						)
+						break
+					}
+				}
+			}
+			db.Close(sqlDB)
+		}
+	}
+
 	// Determine sub-session: use provided session_id for continuation, or create new
 	subSessionID, _ := args["session_id"].(string)
 	if subSessionID == "" {
@@ -193,6 +215,15 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 		})
 	}
 
+	// ── Filter tools by agent's BlockedTools ──
+	if len(blockedTools) > 0 {
+		toolDefs = filterToolsByAgent(toolDefs, blockedTools)
+		logger.Debug("call_llm: filtered tools by agent blocked list",
+			zap.String("agent", agent),
+			zap.Int("remaining", len(toolDefs)),
+		)
+	}
+
 	async, _ := args["async"].(bool)
 
 	// ── Launch via TaskManager ──
@@ -213,6 +244,10 @@ func HandleCallLLM(logger *zap.Logger, session, turnID string, workDir string, d
 			Logger:   logger,
 			CancelCx: callCancelCtx,
 			Dispatch: func(toolName string, args map[string]interface{}, depth int) (string, bool, error) {
+				// Inject call_llm's session as parent session for sub-executor tools
+				if toolName == "batch_llm" || toolName == "call_llm" {
+					args["_batch_parent_session"] = subSessionID
+				}
 				result := dispatch(toolName, args, depth)
 				resultStr := types.FormatToolResultJSON(toolName, result)
 				return resultStr, result.Success, nil
@@ -628,6 +663,25 @@ func truncateStr(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// filterToolsByAgent filters out blocked tools from the tool definition list.
+// If blockedTools is empty/nil, all tools are returned (no filtering).
+func filterToolsByAgent(allTools []llm.ToolDefinition, blockedTools []string) []llm.ToolDefinition {
+	if len(blockedTools) == 0 {
+		return allTools
+	}
+	blocked := make(map[string]struct{}, len(blockedTools))
+	for _, name := range blockedTools {
+		blocked[name] = struct{}{}
+	}
+	filtered := make([]llm.ToolDefinition, 0, len(allTools))
+	for _, t := range allTools {
+		if _, ok := blocked[t.Name]; !ok {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 func init() {

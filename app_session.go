@@ -15,6 +15,7 @@ import (
 	"github.com/chonkpilot/chonkpilot/internal/db"
 	"github.com/chonkpilot/chonkpilot/internal/models"
 	"github.com/google/uuid"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"go.uber.org/zap"
 )
 
@@ -113,21 +114,50 @@ func (a *App) GetLatestSessionID() (map[string]interface{}, error) {
 	return map[string]interface{}{"session_id": sessionID}, nil
 }
 
-// SetActiveSession saves the active session ID to user config.
-func (a *App) SetActiveSession(sessionID string) error {
-	if a.userCfg == nil {
-		return nil
+// GetActiveSessionID returns the active session ID from ide.db config table.
+func (a *App) GetActiveSessionID() (map[string]interface{}, error) {
+	var sessionID string
+	err := db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		var err error
+		sessionID, err = db.GetConfig(sqlDB, "active_session_id")
+		return err
+	})
+	if err != nil {
+		return nil, err
 	}
-	cfg := a.userCfg.Get()
-	cfg.ActiveSessionID = sessionID
-	return a.userCfg.Update(cfg)
+	return map[string]interface{}{"session_id": sessionID}, nil
+}
+
+// SetActiveSessionID saves the active session ID to ide.db config table
+// and broadcasts a session:event to all frontend components.
+// When sessionID is empty, broadcasts type: "cleared" to reset all components.
+func (a *App) SetActiveSessionID(sessionID string) error {
+	err := db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		return db.SetConfig(sqlDB, "active_session_id", sessionID)
+	})
+	if err != nil {
+		return err
+	}
+	// Broadcast unified session:event to all frontend components
+	eventType := "selected"
+	if sessionID == "" {
+		eventType = "cleared"
+	}
+	payload := map[string]interface{}{
+		"type":       eventType,
+		"session_id": sessionID,
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "session:event", payload)
+	}
+	// Also emit to the internal EventBus so Go components can listen
+	if a.EventBus != nil {
+		a.EventBus.EmitSimple("session:event", payload)
+	}
+	return nil
 }
 
 // GetTurnsBySession returns all turns and messages for a session.
-// tool_call + tool_result messages are paired into tool_pair messages for
-// compact frontend rendering.
-// When brief=true, large content fields (reasoning content, tool_pair result)
-// are omitted and can be fetched on demand via GetMessageContent.
 func (a *App) GetTurnsBySession(sessionID string, brief bool) (map[string]interface{}, error) {
 	var turns []*models.Turn
 	var rawMessages []*models.Message
@@ -145,6 +175,38 @@ func (a *App) GetTurnsBySession(sessionID string, brief bool) (map[string]interf
 	}
 	messages := pairToolMessages(rawMessages, brief)
 	return map[string]interface{}{"turns": turns, "messages": messages}, nil
+}
+
+
+// GetTurnsPaginated returns turns and messages in batches determined by content size.
+// beforeTurnID="" retrieves the latest batch; otherwise retrieves turns before that turn.
+// targetMessages and targetBytes control the batch size (dynamic accumulation).
+func (a *App) GetTurnsPaginated(sessionID string, beforeTurnID string, targetMessages int, targetBytes int) (map[string]interface{}, error) {
+	var turns []*models.Turn
+	var messages []*models.Message
+	hasMore := false
+	err := db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		var err error
+		turns, hasMore, err = db.GetTurnsPaginated(sqlDB, sessionID, beforeTurnID, targetMessages, targetBytes)
+		if err != nil {
+			return err
+		}
+		var turnIDs []string
+		for _, t := range turns {
+			turnIDs = append(turnIDs, t.TurnID)
+		}
+		messages, err = db.GetMessagesByTurnIDs(sqlDB, turnIDs)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	paired := pairToolMessages(messages, true)
+	return map[string]interface{}{
+		"turns":    turns,
+		"messages": paired,
+		"has_more": hasMore,
+	}, nil
 }
 
 // GetMessageContent returns full content for messages that were

@@ -3,7 +3,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUpdated, onUnmounted } from 'vue'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -50,16 +50,19 @@ onUnmounted(() => {
   }
 })
 
-// Update editor content when modelValue changes externally
-watch(() => props.modelValue, (val) => {
-  if (editor && val !== editor.getValue()) {
-    editor.setValue(val || '')
-  }
-})
+let prevModelValue = ''
+let prevLanguage = ''
 
-// Update language when type changes
-watch(() => props.language, (lang) => {
-  if (editor) {
+// ── onUpdated replaces 2 watches: sync Monaco with prop changes ──
+onUpdated(() => {
+  const mv = props.modelValue
+  if (editor && mv !== prevModelValue && mv !== editor.getValue()) {
+    editor.setValue(mv || '')
+  }
+  prevModelValue = mv
+
+  const lang = props.language
+  if (editor && lang !== prevLanguage) {
     const monacoLang = getMonacoLanguage(lang)
     const model = editor.getModel()
     if (model) {
@@ -68,6 +71,7 @@ watch(() => props.language, (lang) => {
       })
     }
   }
+  prevLanguage = lang
 })
 </script>
 

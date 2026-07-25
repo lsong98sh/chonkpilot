@@ -1,5 +1,15 @@
 <template>
   <div class="message-list" ref="listRef" @scroll="onScroll">
+    <!-- Top indicator: shown when near top -->
+    <div v-if="isAtTop && messages.length > 0" class="top-indicator">
+      <template v-if="loadingMore">
+        <span class="load-more-spinner"></span> 加载中...
+      </template>
+      <template v-else-if="!hasMore">
+        到顶了
+      </template>
+    </div>
+
     <WelcomeMessage v-if="messages.length === 0" />
     <MessageItem
       v-for="(msg, i) in messages"
@@ -8,88 +18,93 @@
       :session-id="sessionId"
       :show-header="i === 0 || messages[i-1].role !== msg.role"
       :is-active="turnActive"
-      :collapse-key="collapseReasoning"
+     
     />
-    <!-- Floating scroll buttons -->
-    <el-tooltip content="Scroll to top" placement="right">
-      <el-button v-if="!isAtTop" size="small" circle class="scroll-float-btn scroll-float-top" @click="scrollTop">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <line x1="12" y1="20" x2="12" y2="7"/>
-          <polyline points="5,14 12,7 19,14"/>
-          <line x1="4" y1="12" x2="20" y2="12"/>
-        </svg>
-      </el-button>
-    </el-tooltip>
-    <el-tooltip content="Scroll to bottom" placement="left">
-      <el-button v-if="!isAtBottom" size="small" circle class="scroll-float-btn scroll-float-bottom" @click="scrollBottom">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <line x1="12" y1="4" x2="12" y2="17"/>
-          <polyline points="5,10 12,17 19,10"/>
-          <line x1="4" y1="12" x2="20" y2="12"/>
-        </svg>
-      </el-button>
-    </el-tooltip>
+    <Button v-if="!isAtTop" circle class="scroll-float-btn scroll-float-top" @click="scrollTop" title="Scroll to top">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="12" y1="20" x2="12" y2="7"/>
+        <polyline points="5,14 12,7 19,14"/>
+        <line x1="4" y1="12" x2="20" y2="12"/>
+      </svg>
+    </Button>
+    <Button v-if="!isAtBottom" circle class="scroll-float-btn scroll-float-bottom" @click="scrollBottom" title="Scroll to bottom">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="12" y1="4" x2="12" y2="17"/>
+        <polyline points="5,10 12,17 19,10"/>
+        <line x1="4" y1="12" x2="20" y2="12"/>
+      </svg>
+    </Button>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, onUpdated, nextTick, onUnmounted } from 'vue'
 import WelcomeMessage from './WelcomeMessage.vue'
 import MessageItem from './MessageItem.vue'
+import { Button } from '../ui'
+import bridge from '../../utils/bridge'
 
 const props = defineProps({
   messages: { type: Array, default: () => [] },
   turnActive: { type: Boolean, default: false },
-  collapseReasoning: { type: Number, default: 0 }, // bump to signal reasoning collapse
   sessionId: { type: String, default: null },
+  hasMore: { type: Boolean, default: true },
+  loadingMore: { type: Boolean, default: false },
 })
+
+const emit = defineEmits(['loadMore'])
 
 const listRef = ref(null)
 const autoScroll = ref(true)
 const isAtTop = ref(true)
 const isAtBottom = ref(true)
-const SCROLL_THRESHOLD = 20 // px from bottom to consider "at bottom"
+const SCROLL_THRESHOLD = 20
+const LOAD_MORE_THRESHOLD = 150  // px from top to trigger loadMore
+let toppedOut = false  // true = already triggered loadMore at top, reset on scroll-down
 
-// When a new turn starts, re-enable auto-scroll
-watch(() => props.turnActive, (val) => {
-  if (val) {
+// ── Replace all 5 watches with onUpdated + EventBus ──
+// Track previous value for detecting turnActive transitions
+const prevTurnActive = ref(false)
+
+function doScroll() {
+  nextTick(() => scrollToBottom())
+}
+
+function onCollapseReasoning() {
+  autoScroll.value = true
+  nextTick(async () => {
+    await nextTick()
+    scrollToBottom()
+  })
+}
+
+onUpdated(() => {
+  const ta = props.turnActive
+  // When turn becomes active, re-enable auto-scroll
+  if (ta && !prevTurnActive.value) {
     autoScroll.value = true
+  }
+  prevTurnActive.value = ta
+
+  // Auto-scroll on any content change
+  if (!autoScroll.value) return
+  if (!ta) {
+    // Turn just ended: double nextTick for render
+    nextTick(async () => {
+      await nextTick()
+      scrollToBottom()
+    })
+  } else {
     nextTick(() => scrollToBottom())
   }
 })
 
-// When messages change, auto-scroll if enabled
-watch(() => props.messages.length, async () => {
-  if (!autoScroll.value) return
-  await nextTick()
-  scrollToBottom()
+let _unsubCollapse = null
+onMounted(() => {
+  _unsubCollapse = bridge.on('message:collapse-reasoning', onCollapseReasoning)
 })
-
-// Also watch content changes (streaming) to auto-scroll
-watch(() => {
-  const m = props.messages
-  if (m.length === 0) return ''
-  return m[m.length - 1].content
-}, async () => {
-  if (!autoScroll.value) return
-  await nextTick()
-  scrollToBottom()
-})
-
-// When turn ends (streaming done), collapse thinking then scroll
-watch(() => props.turnActive, async (val) => {
-  if (!val) {
-    await nextTick()
-    await nextTick()
-    scrollToBottom()
-  }
-})
-
-// When reasoning collapses (text reply starts), re-scroll
-watch(() => props.collapseReasoning, async () => {
-  await nextTick()
-  await nextTick()
-  scrollToBottom()
+onUnmounted(() => {
+  if (_unsubCollapse) _unsubCollapse()
 })
 
 function scrollToBottom() {
@@ -105,6 +120,24 @@ function onScroll() {
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD
   isAtBottom.value = atBottom
   autoScroll.value = atBottom
+
+  // Load more: trigger when near top, but only once per scroll-up cycle.
+  // toppedOut stays true until user scrolls down past threshold.
+  if (el.scrollTop <= LOAD_MORE_THRESHOLD) {
+    if (!toppedOut && props.hasMore && !props.loadingMore) {
+      toppedOut = true
+      const prevHeight = el.scrollHeight
+      emit('loadMore')
+      // Restore scroll position after messages are prepended
+      nextTick(() => {
+        nextTick(() => {
+          if (listRef.value) {
+            listRef.value.scrollTop = listRef.value.scrollHeight - prevHeight
+          }
+        })
+      })
+    }
+  }
 }
 
 function scrollTop() {
@@ -117,9 +150,32 @@ function scrollBottom() {
 
 defineExpose({ scrollTop, scrollBottom })
 
-onMounted(() => onScroll())</script>
+onMounted(() => onScroll())
+</script>
 
 <style scoped>
+.top-indicator {
+  text-align: center;
+  padding: 8px;
+  color: var(--text-muted, #888);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.load-more-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border, #ddd);
+  border-top-color: var(--accent, #007bff);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 .message-list {
   flex: 1;
   overflow-y: auto;

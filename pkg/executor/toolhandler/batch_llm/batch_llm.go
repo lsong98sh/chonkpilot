@@ -114,6 +114,14 @@ func HandleBatchLLM(
 	if a.Filename == "" {
 		return fail("args", "filename is required")
 	}
+
+	logger.Info("batch_llm: starting",
+		zap.String("session_id", session),
+		zap.String("workDir", workDir),
+		zap.String("dbDir", dbDir),
+		zap.String("filename", a.Filename),
+		zap.Int("count", a.Count),
+	)
 	if a.Count <= 0 {
 		a.Count = 1
 	}
@@ -537,6 +545,10 @@ func executeTask(ctx *batchCtx, pipeline *Pipeline, task *PipelineTask, subSessi
 			},
 		},
 		Dispatch: func(toolName string, args map[string]interface{}, depth int) (string, bool, error) {
+			// Inject batch_llm's sub-session as parent for nested call_llm/batch_llm
+			if toolName == "batch_llm" || toolName == "call_llm" {
+				args["_batch_parent_session"] = subSession
+			}
 			result := ctx.dispatch(toolName, args, depth)
 			resultStr := types.FormatToolResultJSON(toolName, result)
 			return resultStr, result.Success, nil
@@ -774,6 +786,9 @@ func allDone(tasks []PipelineTask) bool {
 
 func createSubSessions(ctx *batchCtx, sessionIDs []string, title string) {
 	if ctx.dbDir == "" || ctx.parentSession == "" {
+		ctx.logger.Warn("batch_llm: createSubSessions skipped - dbDir or parentSession empty",
+			zap.String("dbDir", ctx.dbDir),
+			zap.String("parentSession", ctx.parentSession))
 		return
 	}
 	sqlDB, err := db.Open(ctx.dbDir)
@@ -783,12 +798,48 @@ func createSubSessions(ctx *batchCtx, sessionIDs []string, title string) {
 	}
 	defer db.Close(sqlDB)
 
+	ctx.logger.Info("batch_llm: creating sub-sessions",
+		zap.String("parentSession", ctx.parentSession),
+		zap.String("workDir", ctx.workDir),
+		zap.String("dbDir", ctx.dbDir),
+		zap.Int("count", len(sessionIDs)),
+		zap.String("title", title))
+
 	for _, sid := range sessionIDs {
 		subSession := models.NewSession(sid, ctx.parentSession, ctx.workDir, title)
+		ctx.logger.Info("batch_llm: creating sub-session record",
+			zap.String("session_id", sid),
+			zap.String("parent_id", ctx.parentSession),
+			zap.String("workDir", ctx.workDir),
+			zap.String("title", title))
 		if err := db.CreateSession(sqlDB, subSession); err != nil {
 			ctx.logger.Warn("batch_llm: failed to create sub-session",
 				zap.String("session_id", sid), zap.Error(err))
 		}
+		// Notify frontend about new sub-session
+		if ctx.writeEvent != nil {
+			ctx.writeEvent("subsession:new", map[string]interface{}{
+				"session_id": sid,
+				"parent_id":  ctx.parentSession,
+			})
+		}
+	}
+	// 验证：检查子会话是否实际写入
+	if verifyDB, err := db.Open(ctx.dbDir); err == nil {
+		for _, sid := range sessionIDs {
+			if _, err := db.GetSession(verifyDB, sid); err != nil {
+				ctx.logger.Warn("batch_llm: VERIFY FAILED - sub-session not found after create",
+					zap.String("session_id", sid),
+					zap.String("parent_id", ctx.parentSession),
+					zap.Error(err))
+			} else {
+				ctx.logger.Info("batch_llm: verify OK - sub-session found",
+					zap.String("session_id", sid))
+			}
+		}
+		db.Close(verifyDB)
+	} else {
+		ctx.logger.Warn("batch_llm: failed to open DB for verification", zap.Error(err))
 	}
 }
 

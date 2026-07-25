@@ -2,78 +2,58 @@
   <div class="code-view" :class="{ empty: !currentFile }">
     <template v-if="currentFile">
       <div class="code-header">
-        <!-- Tree selector when filetree is hidden -->
-        <el-select
+        <Select
           v-if="!filetreeVisible"
           v-model="treeSelectValue"
-          size="small"
           class="tree-selector"
           placeholder="Select file..."
           filterable
+          :options="fileOptions"
           @change="onTreeSelect"
-        >
-          <el-option
-            v-for="f in flatFiles"
-            :key="f.path"
-            :label="f.name"
-            :value="f.path"
-          />
-        </el-select>
+        />
         <span class="file-path">{{ currentFile.path }}</span>
         <span v-if="fileDeleted" class="deleted-badge">DELETED</span>
         <span class="file-type-tag">{{ renderType }}</span>
-        <!-- DB Config action bar -->
         <template v-if="isDBConfig">
-          <el-tag size="small" type="warning" effect="plain" class="db-config-tag">DB Config</el-tag>
-          <el-button size="small" text type="primary" @click="openDBConfigInSettings">
-            <el-icon><Setting /></el-icon> Open in Settings
-          </el-button>
+          <Tag size="small" type="warning" class="db-config-tag">DB Config</Tag>
+          <Button size="small" text type="primary" @click="openDBConfigInSettings">
+            <Icon name="setting" /> Open in Settings
+          </Button>
         </template>
-        <!-- Source/Preview toggle for markdown and html -->
         <span v-if="renderType === 'markdown' || renderType === 'html'" class="source-toggle">
-          <el-button text size="small" :type="showSource ? 'primary' : ''" @click="showSource = true">Code</el-button>
-          <el-button text size="small" :type="!showSource ? 'primary' : ''" @click="showSource = false">Preview</el-button>
+          <Button text :type="showSource ? 'primary' : ''" @click="showSource = true">Code</Button>
+          <Button text :type="!showSource ? 'primary' : ''" @click="showSource = false">Preview</Button>
         </span>
-        <!-- Version history / diff button (code files only) -->
-        <el-button v-if="renderType === 'code'" size="small" text type="info" @click="showVersionDiff = true">
-          <el-icon><Clock /></el-icon> Diff With
-        </el-button>
+        <Button v-if="renderType === 'code'" text type="info" @click="versionDiffRef?.open(currentFile.path)">
+          <Icon name="clock" /> Diff With
+        </Button>
       </div>
-      <!-- Version diff dialog -->
-      <VersionDiffDialog v-model="showVersionDiff" :file-path="currentFile.path" />
+      <VersionDiffDialog ref="versionDiffRef" />
       <div class="code-content" :class="{ 'no-pad': noPadTypes.includes(renderType) }">
-        <!-- Loading -->
         <div v-if="loading" class="loading-state">
-          <el-icon class="is-loading" :size="24"><Loading /></el-icon>
+          <Icon name="loading" :size="24" class="is-loading" />
           <span>Loading...</span>
         </div>
-        <!-- Code via Monaco Editor -->
         <div v-else-if="renderType === 'code'" ref="monacoContainer" class="monaco-container" />
-        <!-- Markdown: preview mode (default) -->
         <MarkdownRender
           v-else-if="renderType === 'markdown' && !showSource"
           :content="codeContent"
           class="markdown-preview"
         />
-        <!-- Markdown: source mode -->
         <pre v-else-if="renderType === 'markdown' && showSource" class="source-code"><code>{{ codeContent }}</code></pre>
-        <!-- PDF via native iframe (most reliable for browser PDF viewer) -->
         <iframe
           v-else-if="renderType === 'pdf'"
           :src="fileRawUrl"
           class="pdf-preview"
           frameborder="0"
         />
-        <!-- HTML: preview mode (default) -->
         <iframe
           v-else-if="renderType === 'html' && !showSource"
           :src="fileRawUrl"
           class="html-preview"
           frameborder="0"
         />
-        <!-- HTML: source mode -->
         <pre v-else-if="renderType === 'html' && showSource" class="source-code"><code>{{ codeContent }}</code></pre>
-        <!-- Image via native img with wheel zoom + drag-to-pan via scroll -->
         <div
           v-else-if="renderType === 'image'"
           ref="imageContainer"
@@ -91,47 +71,40 @@
           />
           <span class="image-zoom-label">{{ Math.round(imageZoom * 100) }}%</span>
         </div>
-        <!-- Office via Flyfish FileViewer (docx/xlsx/pptx + legacy doc/xls/ppt) -->
         <FileViewer
           v-else-if="renderType === 'docx' || renderType === 'xlsx' || renderType === 'pptx'"
           :url="fileRawUrl"
           :name="currentFile.name"
           class="file-preview-container"
         />
-        <!-- Audio -->
         <audio
           v-else-if="renderType === 'audio'"
           :src="fileRawUrl"
           controls
           class="media-preview"
         />
-        <!-- Video -->
         <video
           v-else-if="renderType === 'video'"
           :src="fileRawUrl"
           controls
           class="media-preview"
         />
-        <!-- Hex dump for unknown binary files -->
         <HexView
           v-else-if="renderType === 'hex'"
           :path="currentFile.path"
           class="file-preview-container"
         />
-        <!-- Unsupported -->
         <div v-else-if="renderType === 'unsupported'" class="unsupported-state">
-          <el-icon :size="48" color="var(--text-muted)"><WarningFilled /></el-icon>
+          <Icon name="warning-filled" :size="48" color="var(--text-muted)" />
           <p>Preview not available for this file type</p>
         </div>
-        <!-- Project Config (ide.db) -->
         <ProjectConfig v-else-if="renderType === 'ide-config'" />
-        <!-- Plain text fallback -->
         <pre v-else><code>{{ codeContent }}</code></pre>
       </div>
     </template>
     <template v-else>
       <div class="empty-state">
-        <el-icon :size="48" color="var(--text-muted)"><Document /></el-icon>
+        <Icon name="document" :size="48" color="var(--text-muted)" />
         <p>Select a file to preview</p>
         <p class="hint">Choose a file from the explorer sidebar</p>
       </div>
@@ -140,8 +113,8 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { Clock, Document, Loading, WarningFilled } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import Icon from '../icon/Icon.vue'
 import { FileViewer } from '@file-viewer/vue3'
 import '@file-viewer/vue3/dist/file-viewer3.css'
 import '@file-viewer/preset-office'
@@ -151,6 +124,7 @@ import '@ashlesss/markstream-vue/index.css'
 import { readFile, getFileTree, getFileUrl, getFileUrlSync, warmUpHttpConfig } from '../../api/file'
 import ProjectConfig from '../preview/ProjectConfig.vue'
 import VersionDiffDialog from './VersionDiffDialog.vue'
+import { Button, Tag, Select } from '../ui'
 import bridge from '../../utils/bridge'
 
 const props = defineProps({
@@ -166,14 +140,18 @@ const showSource = ref(false)
 const imageZoom = ref(1)
 const naturalSize = ref({ w: 0, h: 0 })
 const imageContainer = ref(null)
-const imageDrag = ref(null) // { startX, startY, scrollLeft, scrollTop }
+const imageDrag = ref(null)
 const flatFiles = ref([])
 const treeSelectValue = ref('')
-const rawUrlKey = ref(0) // increment to re-evaluate fileRawUrl after HTTP cache is ready
-const showVersionDiff = ref(false)
+const rawUrlKey = ref(0)
+const versionDiffRef = ref(null)
 let monacoInstance = null
 
-// Flatten file tree for dropdown selector
+const fileOptions = computed(() => flatFiles.value.map(f => ({
+  label: f.name,
+  value: f.path,
+})))
+
 function flattenTree(node, list = []) {
   if (!node) return list
   if (node.type === 'file') {
@@ -202,7 +180,6 @@ function onTreeSelect(path) {
   }
 }
 
-// Image zoom: explicit pixel size for all zoom levels → scroll bars appear when > container
 const imgStyle = computed(() => {
   const z = imageZoom.value
   const { w, h } = naturalSize.value
@@ -226,10 +203,8 @@ function onImgWheel(e) {
   imageZoom.value = Math.max(0.1, Math.min(5, Math.round((imageZoom.value + delta) * 100) / 100))
 }
 
-// Image drag-to-pan: uses scrollLeft/scrollTop, works at any zoom level with scrollbars
 function onImgMouseDown(e) {
   if (!imageContainer.value) return
-  // Only left button
   if (e.button !== 0) return
   imageDrag.value = {
     startX: e.clientX,
@@ -259,18 +234,12 @@ function onImgMouseUp() {
   window.removeEventListener('mouseup', onImgMouseUp)
 }
 
-// File type lists
 const codeExtensions = ['js', 'ts', 'py', 'go', 'java', 'css', 'json', 'xml', 'yaml', 'yml', 'sh', 'bat', 'sql', 'rs', 'vue', 'cpp', 'c', 'h', 'hpp', 'swift', 'kt', 'rb', 'php', 'pl', 'r', 'm', 'properties', 'log', 'yamllog']
 const noPadTypes = ['code', 'pdf', 'docx', 'xlsx', 'pptx', 'image', 'audio', 'video', 'markdown', 'html', 'ide-config']
-// flyfish handles: docx, xlsx, pptx (also doc/xls/ppt)
-// image -> native img
-// pdf -> native iframe
-// markdown -> markstream-vue
 const binaryTypes = ['docx', 'xlsx', 'pptx', 'image', 'audio', 'video']
 const hexExtensions = ['exe', 'dll', 'so', 'bin', 'obj', 'lib', 'dylib', 'class', 'pyc', 'o', 'a', 'out', 'wasm', 'dat']
 const unsupportedExtensions = ['zip', '7z', 'rar', 'tar', 'gz']
 
-// Map binary file extensions to preview types handled by flyfish
 function getBinaryType(ext) {
   const docx = ['docx', 'doc']
   const xlsx = ['xlsx', 'xls']
@@ -291,14 +260,12 @@ function getExtension(path) {
   return path?.split('.').pop()?.toLowerCase() || ''
 }
 
-// Detect backup/temp files: *~, ~$*, *.swp, *.swo
 function isBackupFile(path) {
   if (!path) return false
   const name = path.split('\\').pop()?.split('/').pop() || ''
   return name.endsWith('~') || name.startsWith('~$') || name.endsWith('.swp') || name.endsWith('.swo')
 }
 
-// Detect ide.db file (must be named ide.db exactly, not based on extension)
 function isIdeDbFile(path) {
   if (!path) return false
   const name = path.split('\\').pop()?.split('/').pop() || ''
@@ -306,7 +273,6 @@ function isIdeDbFile(path) {
 }
 
 const fileRawUrl = computed(() => {
-  // rawUrlKey triggers recomputation after HTTP cache is warmed up
   void rawUrlKey.value
   if (!currentFile.value) return ''
   return getFileUrlSync(currentFile.value.path)
@@ -315,11 +281,8 @@ const fileRawUrl = computed(() => {
 const renderType = computed(() => {
   if (!currentFile.value) return ''
   const path = currentFile.value.path
-  // ide.db → full IDE config editor (check before db:// since db://ide.db is also IDE config)
   if (isIdeDbFile(path)) return 'ide-config'
-  // DB config → no file content, navigation to settings handled in handleFileOpen
   if (path && path.startsWith('db://')) return 'none'
-  // Backup files → unsupported
   if (isBackupFile(path)) return 'unsupported'
   const ext = getExtension(path)
   if (ext === 'md') return 'markdown'
@@ -330,7 +293,6 @@ const renderType = computed(() => {
   if (binType) return binType
   if (hexExtensions.includes(ext)) return 'hex'
   if (unsupportedExtensions.includes(ext)) return 'unsupported'
-  // Default to text fallback
   return 'text'
 })
 
@@ -342,7 +304,6 @@ const isDBConfig = computed(() => {
 function openDBConfigInSettings() {
   if (!currentFile.value?.path) return
   const key = currentFile.value.path.replace('db://', '')
-  // Map config key to Settings tab name
   const tabMap = {
     project_agents: 'agents',
     project_tools: 'tools',
@@ -414,21 +375,17 @@ async function handleFileOpen(event) {
     const path = event.detail?.path
     if (!path) return
 
-    console.log('[CodeView] file:open', path, 'isIdeDbFile:', isIdeDbFile(path))
-
     fileDeleted.value = false
     loading.value = true
     currentFile.value = { path, name: path.split('\\').pop()?.split('/').pop() || path }
     codeContent.value = ''
     showSource.value = false
 
-    // Clean up old Monaco instance
     if (monacoInstance) {
       monacoInstance.dispose()
       monacoInstance = null
     }
 
-    // DB config → navigate to settings panel (unless it's ide.db preview)
     if ((event.detail?.isDBConfig || path.startsWith('db://')) && path !== 'db://ide.db') {
       const key = event.detail?.dbKey || path.replace('db://', '')
       const tabMap = { project_agents: 'agents', project_tools: 'tools' }
@@ -440,9 +397,7 @@ async function handleFileOpen(event) {
 
     const ext = getExtension(path)
 
-    // ide.db → don't try to read SQLite binary, ProjectConfig handles it
     if (isIdeDbFile(path)) {
-      console.log('[CodeView] rendering ProjectConfig for:', path)
       loading.value = false
       return
     }
@@ -451,9 +406,7 @@ async function handleFileOpen(event) {
       const binType = getBinaryType(ext)
       const isPdf = ext === 'pdf'
       if (binType || isPdf || hexExtensions.includes(ext) || unsupportedExtensions.includes(ext)) {
-        // Binary/raw files: just set the URL, Flyfish/iframe/audio/video/HexView handles the rest
       } else {
-        // Text files: read content for Monaco / markdown / html source / plain text
         const result = await readFile(path)
         codeContent.value = result.content || ''
       }
@@ -472,44 +425,26 @@ async function handleFileOpen(event) {
   }
 }
 
-watch(renderType, async () => {
-  if (renderType.value !== 'code' && monacoInstance) {
-    monacoInstance.dispose()
-    monacoInstance = null
-  }
-})
-
-/**
- * Handle file:changed event — if the currently open file was modified,
- * re-read its content and update the editor.
- */
 async function onFileChanged(data) {
   const changedPath = data?.path
   if (!changedPath || !currentFile.value) return
 
   const ext = getExtension(changedPath)
-  // Skip binary files, DB config, ide.db — those don't need live reload
   if (getBinaryType(ext) || ext === 'pdf' || hexExtensions.includes(ext) || unsupportedExtensions.includes(ext)) return
   if (currentFile.value.path.startsWith('db://') || isIdeDbFile(currentFile.value.path)) return
 
-  // Normalize paths for comparison (both are platform-native full paths)
   if (changedPath !== currentFile.value.path) return
 
-  console.log('[CodeView] file changed externally:', changedPath, 'op:', data.op)
-
-  // Mark as deleted if the file was removed
   if (data.op === 'deleted') {
     fileDeleted.value = true
     return
   }
 
-  console.log('[CodeView] file changed externally, reloading:', changedPath)
   try {
     const result = await readFile(changedPath)
     const newContent = result.content || ''
     if (newContent !== codeContent.value) {
       codeContent.value = newContent
-      // If Monaco is active, update its content directly
       if (monacoInstance) {
         monacoInstance.setValue(newContent)
       }
@@ -525,8 +460,7 @@ onMounted(() => {
   window.addEventListener('file:open', handleFileOpen)
   unsubFileChanged = bridge.on('file:changed', onFileChanged)
   loadFileTree()
-  // Warm up HTTP config cache for binary file previews
-  warmUpHttpConfig().then(() => { rawUrlKey.value++ }).catch(() => {})
+  warmUpHttpConfig().then(() => { rawUrlKey.value++ }).catch(e => console.warn('[CodeView] warmUpHttpConfig error:', e))
 })
 
 onUnmounted(() => {
@@ -536,7 +470,7 @@ onUnmounted(() => {
     monacoInstance.dispose()
     monacoInstance = null
   }
-  onImgMouseUp() // clean up image drag listeners
+  onImgMouseUp()
 })
 </script>
 
@@ -630,14 +564,12 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
-/* Monaco fills container */
 .monaco-container {
   width: 100%;
   flex: 1;
   min-height: 0;
 }
 
-/* FileViewer (Flyfish) + media preview container */
 .file-preview-container {
   width: 100%;
   height: 100%;
@@ -652,7 +584,6 @@ onUnmounted(() => {
   margin: auto;
 }
 
-/* PDF iframe preview */
 .pdf-preview {
   width: 100%;
   flex: 1;
@@ -660,7 +591,6 @@ onUnmounted(() => {
   border: none;
 }
 
-/* HTML iframe preview */
 .html-preview {
   width: 100%;
   flex: 1;
@@ -668,8 +598,6 @@ onUnmounted(() => {
   border: none;
 }
 
-
-/* Markdown preview via markstream-vue */
 .markdown-preview {
   width: 100%;
   flex: 1;
@@ -681,7 +609,6 @@ onUnmounted(() => {
   line-height: 1.7;
 }
 
-/* Source/Preview toggle */
 .source-toggle {
   display: flex;
   align-items: center;
@@ -690,7 +617,6 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-/* Image preview area: scrollable container */
 .image-preview-area {
   width: 100%;
   flex: 1;
@@ -727,7 +653,6 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* Source code view */
 .source-code {
   margin: 0;
   padding: 16px;

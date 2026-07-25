@@ -1,12 +1,12 @@
 <template>
   <div class="empty-state">
-    <el-icon :size="36" color="var(--text-muted)"><FolderDelete /></el-icon>
+    <Icon name="folder-delete" :size="36" color="var(--text-muted)" />
     <p>{{ message }}</p>
   </div>
 </template>
 
 <script setup>
-import { FolderDelete } from '@element-plus/icons-vue'
+import Icon from '../icon/Icon.vue'
 
 defineProps({
   message: { type: String, default: 'No data' },

@@ -11,13 +11,9 @@
       </svg>
       <template v-if="!loading">
         <span class="sb-label">{{ files }} 索引</span>
-        <el-progress
-          v-if="!ok"
-          :percentage="progress"
-          :stroke-width="8"
-          :show-text="false"
-          class="sb-progress"
-        />
+        <div v-if="!ok" class="b-progress sb-progress">
+          <div class="b-progress-bar" :style="{ width: progress + '%' }"></div>
+        </div>
       </template>
       <span v-else class="sb-label sb-loading">加载中</span>
     </div>
@@ -44,63 +40,17 @@
         <path d="M14 3l-4 18" />
       </svg>
     </div>
-
-    <!-- Codebase config dialog -->
-    <el-dialog
-      v-model="dialogVisible"
-      title="代码索引配置"
-      width="600px"
-      :close-on-click-modal="true"
-      top="10vh"
-      draggable
-    >
-      <div class="codebase-config-preview">
-        <!-- Status summary -->
-        <div class="ccp-status">
-          <div class="ccp-row">
-            <span>待索引: <strong>{{ pending }}</strong></span>
-            <span>已完成: <strong>{{ files }}</strong></span>
-            <span>索引中: <strong>{{ indexing }}</strong></span>
-            <span>合计: <strong>{{ totalFiles }}</strong></span>
-            <span v-if="failed > 0" class="status-failed">重试中: <strong>{{ failed }}</strong></span>
-            <span v-if="failedExhausted > 0" class="status-exhausted">错误: <strong>{{ failedExhausted }}</strong></span>
-          </div>
-          <el-progress
-            :percentage="progress"
-            :status="ok ? 'success' : (failedExhausted > 0 ? 'exception' : undefined)"
-            :stroke-width="14"
-            :show-text="false"
-          />
-          <div class="ccp-meta">
-            <span v-if="!ok || failedExhausted > 0" class="status-active">
-              ⏳ {{ indexing }} 正在索引 · {{ pending }} 待处理
-              <template v-if="failed > 0"> · {{ failed }} 重试中</template>
-              <template v-if="failedExhausted > 0"> · ❌ {{ failedExhausted }} 错误</template>
-            </span>
-            <span v-else class="status-done">✓ {{ files }} 个文件已索引</span>
-          </div>
-        </div>
-
-        <!-- Actions -->
-        <div class="ccp-actions">
-          <el-button size="small" @click="clearIndex" :disabled="!enabled">清空</el-button>
-          <el-button size="small" type="primary" @click="reindex" :loading="reindexing" :disabled="!enabled">重新索引</el-button>
-          <el-button v-if="failed > 0 || failedExhausted > 0" size="small" type="warning" @click="retryFailed">重试失败项</el-button>
-        </div>
-
-        <p class="ccp-hint">配置更多代码索引选项（排除目录、支持的文件扩展名等），可在 IDE Config → 代码索引 中调整。</p>
-      </div>
-    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { useCodebaseStatus } from '../../composables/useCodebaseStatus'
+import { ref, computed, onUnmounted, h, defineComponent } from 'vue'
+import { Button, message } from '../ui'
+import * as cs from '../../utils/codebaseStatus'
+import { dialog } from '../dialog'
 
 const emit = defineEmits(['open-config'])
-const { files, pending, indexing, failed, failedExhausted, totalFiles, total, progress, ok, loading, teardown, resetFailed } = useCodebaseStatus()
+const { files, pending, indexing, failed, failedExhausted, totalFiles, total, progress, ok, loading, resetFailed } = cs
 
 const statusTitle = computed(() => {
   if (loading.value) return '代码索引：加载中'
@@ -111,54 +61,99 @@ const statusTitle = computed(() => {
   return s
 })
 
-const dialogVisible = ref(false)
 const reindexing = ref(false)
 const enabled = ref(true)
 
-const storeTeardown = teardown
 
 function openDevTools() {
   window.go.main.App.OpenDevTools()
 }
 
 function openCodebaseConfig() {
-  dialogVisible.value = true
+  const handle = dialog.show(defineComponent({
+    setup() {
+      const { files, pending, indexing, failed, failedExhausted, totalFiles, progress, ok, resetFailed } = cs
+      const localReindexing = ref(false)
+      const localEnabled = ref(true)
+
+      async function clearIndex() {
+        try {
+          await window.go.main.App.ClearCodebaseIndex()
+          message.success('索引已清空')
+          handle.close()
+        } catch (e) {
+          message.error('清空失败: ' + (e.message || ''))
+        }
+      }
+
+      async function reindex() {
+        try {
+          localReindexing.value = true
+          const count = await window.go.main.App.ReindexCodebase()
+          message.success(`重新索引完成，已入队 ${count} 个文件`)
+          handle.close()
+        } catch (e) {
+          message.error('重新索引失败: ' + (e.message || ''))
+        } finally {
+          localReindexing.value = false
+        }
+      }
+
+      async function retryFailed() {
+        try {
+          await resetFailed()
+          message.success('失败项已重置为待索引')
+        } catch (e) {
+          message.error('重置失败: ' + (e.message || ''))
+        }
+      }
+
+      return () => h('div', { class: 'codebase-config-preview' }, [
+        h('div', { class: 'ccp-status' }, [
+          h('div', { class: 'ccp-row' }, [
+            h('span', null, [h('span', '待索引: '), h('strong', String(pending.value))]),
+            h('span', null, [h('span', '已完成: '), h('strong', String(files.value))]),
+            h('span', null, [h('span', '索引中: '), h('strong', String(indexing.value))]),
+            h('span', null, [h('span', '合计: '), h('strong', String(totalFiles.value))]),
+            failed.value > 0 ? h('span', { class: 'status-failed' }, [h('span', '重试中: '), h('strong', String(failed.value))]) : null,
+            failedExhausted.value > 0 ? h('span', { class: 'status-exhausted' }, [h('span', '错误: '), h('strong', String(failedExhausted.value))]) : null,
+          ]),
+          h('div', { class: 'b-progress', style: { marginBottom: '8px' } }, [
+            h('div', { class: 'b-progress-bar', style: { width: progress.value + '%' } }),
+          ]),
+          h('div', { class: 'ccp-meta' }, [
+            (!ok.value || failedExhausted.value > 0)
+              ? h('span', { class: 'status-active' }, [
+                  `⏳ ${indexing.value} 正在索引 · ${pending.value} 待处理`,
+                  failed.value > 0 ? ` · ${failed.value} 重试中` : '',
+                  failedExhausted.value > 0 ? ` · ❌ ${failedExhausted.value} 错误` : '',
+                ])
+              : h('span', { class: 'status-done' }, `✓ ${files.value} 个文件已索引`),
+          ]),
+        ]),
+        h('div', { class: 'ccp-actions' }, [
+          h(Button, { size: 'small', onClick: clearIndex, disabled: !localEnabled.value }, () => '清空'),
+          h(Button, { size: 'small', type: 'primary', onClick: reindex, loading: localReindexing.value, disabled: !localEnabled.value }, () => '重新索引'),
+          (failed.value > 0 || failedExhausted.value > 0)
+            ? h(Button, { size: 'small', type: 'warning', onClick: retryFailed }, () => '重试失败项')
+            : null,
+        ]),
+        h('p', { class: 'ccp-hint' }, '配置更多代码索引选项（排除目录、支持的文件扩展名等），可在 IDE Config → 代码索引 中调整。'),
+      ])
+    }
+  }), {
+    title: '代码索引配置',
+    width: 600,
+    closable: true,
+    bodyClass: 'codebase-config-body',
+    onAction: (action) => {
+      if (action === 'close' || action === 'cancel') handle.close()
+    }
+  })
 }
 
 function openConfig() {
   emit('open-config')
-}
-
-async function clearIndex() {
-  try {
-    await window.go.main.App.ClearCodebaseIndex()
-    ElMessage.success('索引已清空')
-    dialogVisible.value = false
-  } catch (e) {
-    ElMessage.error('清空失败: ' + (e.message || ''))
-  }
-}
-
-async function reindex() {
-  try {
-    reindexing.value = true
-    const count = await window.go.main.App.ReindexCodebase()
-    ElMessage.success(`重新索引完成，已入队 ${count} 个文件`)
-    dialogVisible.value = false
-  } catch (e) {
-    ElMessage.error('重新索引失败: ' + (e.message || ''))
-  } finally {
-    reindexing.value = false
-  }
-}
-
-async function retryFailed() {
-  try {
-    await resetFailed()
-    ElMessage.success('失败项已重置为待索引')
-  } catch (e) {
-    ElMessage.error('重置失败: ' + (e.message || ''))
-  }
 }
 
 onUnmounted(() => {
@@ -207,15 +202,26 @@ onUnmounted(() => {
   width: 60px;
   margin-left: 4px;
 }
-.sb-progress :deep(.el-progress-bar__outer) {
+.b-progress {
+  height: 8px;
   background: var(--bg-hover, #e0e0e0);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.b-progress-bar {
+  height: 100%;
+  background: var(--accent, #409eff);
+  border-radius: 4px;
+  transition: width 0.3s ease;
 }
 .sb-sep {
   opacity: 0.3;
   margin: 0 2px;
 }
+</style>
 
-/* Dialog styles */
+<!-- Dialog content styles (unscoped for dialog.show() rendering) -->
+<style>
 .codebase-config-preview {
   padding: 4px 0;
 }
@@ -249,8 +255,8 @@ onUnmounted(() => {
   margin: 0;
   opacity: 0.7;
 }
-.status-active  { color: var(--el-color-warning); }
-.status-done    { color: var(--el-color-success); }
-.status-failed  { color: var(--el-color-warning); font-weight: 500; }
-.status-exhausted { color: var(--el-color-danger); font-weight: 500; }
+.status-active  { color: var(--warning, #e6a23c); }
+.status-done    { color: var(--success, #67c23a); }
+.status-failed  { color: var(--warning, #e6a23c); font-weight: 500; }
+.status-exhausted { color: var(--danger, #f56c6c); font-weight: 500; }
 </style>

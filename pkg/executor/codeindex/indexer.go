@@ -25,6 +25,7 @@ type Indexer struct {
 	logger   *zap.Logger
 	workDir  string
 	extMap   map[string]bool // allowed extensions (with dot, e.g. ".go")
+	skipDirs map[string]bool // directories to skip during scan
 
 	workerStop chan struct{}
 	workerWg   sync.WaitGroup
@@ -42,7 +43,7 @@ type Indexer struct {
 }
 
 // NewIndexer creates a new Indexer.
-func NewIndexer(codebaseDB *sql.DB, workDir string, extensions []string, caller LLMCaller, logger *zap.Logger) *Indexer {
+func NewIndexer(codebaseDB *sql.DB, workDir string, extensions []string, skipDirs []string, caller LLMCaller, logger *zap.Logger) *Indexer {
 	extMap := make(map[string]bool)
 	for _, ext := range extensions {
 		e := strings.TrimSpace(ext)
@@ -51,12 +52,17 @@ func NewIndexer(codebaseDB *sql.DB, workDir string, extensions []string, caller 
 		}
 		extMap[strings.ToLower(e)] = true
 	}
+	sd := make(map[string]bool)
+	for _, d := range skipDirs {
+		sd[strings.TrimSpace(d)] = true
+	}
 	return &Indexer{
 		db:                codebaseDB,
 		caller:            caller,
 		logger:            logger,
 		workDir:           workDir,
 		extMap:            extMap,
+		skipDirs:          sd,
 		workerStop:        make(chan struct{}),
 		wakeup:            make(chan struct{}, 1),
 		workerConcurrency: 5,
@@ -66,8 +72,8 @@ func NewIndexer(codebaseDB *sql.DB, workDir string, extensions []string, caller 
 }
 
 // NewScanner creates an Indexer in scan-only mode (no worker, no LLM caller).
-func NewScanner(codebaseDB *sql.DB, workDir string, extensions []string, logger *zap.Logger) *Indexer {
-	return NewIndexer(codebaseDB, workDir, extensions, nil, logger)
+func NewScanner(codebaseDB *sql.DB, workDir string, extensions []string, skipDirs []string, logger *zap.Logger) *Indexer {
+	return NewIndexer(codebaseDB, workDir, extensions, skipDirs, nil, logger)
 }
 
 // ──────── Lifecycle ────────
@@ -402,16 +408,19 @@ func (idx *Indexer) Enqueue(path string) {
 func (idx *Indexer) ScanProject() error {
 	idx.logger.Info("codeindex starting project scan", zap.String("dir", idx.workDir))
 
-	skipDirs := map[string]bool{
-		"node_modules": true,
-		".git":         true,
-		".svn":         true,
-		"__pycache__":  true,
-		".next":        true,
-		"dist":         true,
-		"build":        true,
-		"vendor":       true,
-		".tox":         true,
+	skipDirs := idx.skipDirs
+	if len(skipDirs) == 0 {
+		skipDirs = map[string]bool{
+			"node_modules": true,
+			".git":         true,
+			".svn":         true,
+			"__pycache__":  true,
+			".next":        true,
+			"dist":         true,
+			"build":        true,
+			"vendor":       true,
+			".tox":         true,
+		}
 	}
 
 	var enqueued int

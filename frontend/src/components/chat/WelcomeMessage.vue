@@ -1,23 +1,24 @@
 <template>
   <div class="welcome">
-    <el-icon :size="40" color="var(--accent)"><ChatDotRound /></el-icon>
+    <Icon name="chat-dot-round" :size="40" color="var(--accent)" />
     <h2>ChonkPilot</h2>
     <p>AI-powered code development assistant</p>
     <div class="suggestions">
-      <el-tag
+      <Tag
         v-for="s in suggestions"
         :key="s"
         @click="$emit('suggest', s)"
         class="suggestion-tag"
       >
         {{ s }}
-      </el-tag>
+      </Tag>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ChatDotRound } from '@element-plus/icons-vue'
+import Icon from '../icon/Icon.vue'
+import { Tag } from '../ui'
 
 defineEmits(['suggest'])
 

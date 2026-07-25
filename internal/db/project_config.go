@@ -13,21 +13,27 @@ import (
 
 // GetProjectAgents returns all project agent configurations.
 func GetProjectAgents(db *sql.DB) ([]models.AgentConfig, error) {
-	rows, err := db.Query(`SELECT id, title, use_case, prompt, source, created_at, updated_at FROM project_agents ORDER BY id`)
+	rows, err := db.Query(`SELECT id, title, use_case, prompt, COALESCE(llm_ref,''), COALESCE(blocked_tools,''), source, created_at, updated_at FROM project_agents ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query project_agents: %w", err)
 	}
-	agentsPtr, err := scanAll(rows, func(a *models.AgentConfig) []any {
-		return []any{&a.ID, &a.Title, &a.UseCase, &a.Prompt, &a.Source, &a.CreatedAt, &a.UpdatedAt}
-	})
-	if err != nil {
-		return nil, err
+	defer rows.Close()
+
+	var agents []models.AgentConfig
+	for rows.Next() {
+		var a models.AgentConfig
+		var blockedToolsStr string
+		err := rows.Scan(&a.ID, &a.Title, &a.UseCase, &a.Prompt, &a.LLMRef, &blockedToolsStr, &a.Source, &a.CreatedAt, &a.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan agent: %w", err)
+		}
+		// Parse blocked_tools JSON
+		if blockedToolsStr != "" {
+			json.Unmarshal([]byte(blockedToolsStr), &a.BlockedTools)
+		}
+		agents = append(agents, a)
 	}
-	agents := make([]models.AgentConfig, len(agentsPtr))
-	for i, a := range agentsPtr {
-		agents[i] = *a
-	}
-	return agents, nil
+	return agents, rows.Err()
 }
 
 // SaveProjectAgents replaces all project agent configurations.
@@ -43,14 +49,19 @@ func SaveProjectAgents(db *sql.DB, agents []models.AgentConfig) error {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	stmt, err := tx.Prepare(`INSERT INTO project_agents (title, use_case, prompt, source, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?,''), ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO project_agents (title, use_case, prompt, llm_ref, blocked_tools, source, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?,''), NULLIF(?,''), NULLIF(?,''), ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare insert project_agents: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, a := range agents {
-		if _, err := stmt.Exec(a.Title, a.UseCase, a.Prompt, a.Source, now, now); err != nil {
+		blockedToolsJSON, _ := json.Marshal(a.BlockedTools)
+		blockedStr := string(blockedToolsJSON)
+		if blockedStr == "null" {
+			blockedStr = ""
+		}
+		if _, err := stmt.Exec(a.Title, a.UseCase, a.Prompt, a.LLMRef, blockedStr, a.Source, now, now); err != nil {
 			return fmt.Errorf("failed to insert project_agent: %w", err)
 		}
 	}
@@ -61,9 +72,14 @@ func SaveProjectAgents(db *sql.DB, agents []models.AgentConfig) error {
 // UpdateProjectAgent updates a single project agent identified by id.
 func UpdateProjectAgent(db *sql.DB, agent models.AgentConfig, id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+	blockedToolsJSON, _ := json.Marshal(agent.BlockedTools)
+	blockedStr := string(blockedToolsJSON)
+	if blockedStr == "null" {
+		blockedStr = ""
+	}
 	_, err := db.Exec(
-		`UPDATE project_agents SET title=?, use_case=?, prompt=?, llm_ref=NULLIF(?,''), source=NULLIF(?,''), updated_at=? WHERE id=?`,
-		agent.Title, agent.UseCase, agent.Prompt, agent.LLMRef, agent.Source, now, id,
+		`UPDATE project_agents SET title=?, use_case=?, prompt=?, llm_ref=NULLIF(?,''), blocked_tools=NULLIF(?,''), source=NULLIF(?,''), updated_at=? WHERE id=?`,
+		agent.Title, agent.UseCase, agent.Prompt, agent.LLMRef, blockedStr, agent.Source, now, id,
 	)
 	return err
 }
@@ -71,12 +87,16 @@ func UpdateProjectAgent(db *sql.DB, agent models.AgentConfig, id int64) error {
 // GetProjectAgentByID returns a single project agent by id.
 func GetProjectAgentByID(sqlDB *sql.DB, id int64) (*models.AgentConfig, error) {
 	var a models.AgentConfig
-	err := sqlDB.QueryRow(`SELECT id, title, use_case, prompt, source, created_at, updated_at FROM project_agents WHERE id=?`, id).Scan(&a.ID, &a.Title, &a.UseCase, &a.Prompt, &a.Source, &a.CreatedAt, &a.UpdatedAt)
+	var blockedToolsStr string
+	err := sqlDB.QueryRow(`SELECT id, title, use_case, prompt, COALESCE(llm_ref,''), COALESCE(blocked_tools,''), source, created_at, updated_at FROM project_agents WHERE id=?`, id).Scan(&a.ID, &a.Title, &a.UseCase, &a.Prompt, &a.LLMRef, &blockedToolsStr, &a.Source, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if blockedToolsStr != "" {
+		json.Unmarshal([]byte(blockedToolsStr), &a.BlockedTools)
 	}
 	return &a, nil
 }
@@ -85,7 +105,8 @@ func GetProjectAgentByID(sqlDB *sql.DB, id int64) (*models.AgentConfig, error) {
 func GetProjectAgentByTitle(db *sql.DB, title string) (*models.AgentConfig, int64, error) {
 	var a models.AgentConfig
 	var id int64
-	err := db.QueryRow(`SELECT id, title, use_case, prompt, llm_ref, source, created_at, updated_at FROM project_agents WHERE title=?`, title).Scan(&id, &a.Title, &a.UseCase, &a.Prompt, &a.LLMRef, &a.Source, &a.CreatedAt, &a.UpdatedAt)
+	var blockedToolsStr string
+	err := db.QueryRow(`SELECT id, title, use_case, prompt, COALESCE(llm_ref,''), COALESCE(blocked_tools,''), source, created_at, updated_at FROM project_agents WHERE title=?`, title).Scan(&id, &a.Title, &a.UseCase, &a.Prompt, &a.LLMRef, &blockedToolsStr, &a.Source, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, 0, nil
@@ -93,6 +114,9 @@ func GetProjectAgentByTitle(db *sql.DB, title string) (*models.AgentConfig, int6
 		return nil, 0, err
 	}
 	a.ID = id
+	if blockedToolsStr != "" {
+		json.Unmarshal([]byte(blockedToolsStr), &a.BlockedTools)
+	}
 	return &a, id, nil
 }
 

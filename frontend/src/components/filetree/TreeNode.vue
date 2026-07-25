@@ -1,6 +1,5 @@
 <template>
   <div>
-    <!-- 当前节点行 -->
     <div
       class="tree-row"
       :class="{
@@ -13,7 +12,6 @@
       @click="$emit('row-click', node)"
       @contextmenu.prevent="$emit('context-menu', $event, node)"
     >
-      <!-- 文件夹：始终显示展开箭头 -->
       <span v-if="node.is_dir" class="arrow" @click.stop="$emit('toggle', node)">
         <svg
           v-if="!node.expanded"
@@ -34,21 +32,25 @@
       </span>
       <span v-else class="arrow-placeholder" />
 
-      <!-- 图标 -->
-      <el-icon class="node-icon" :size="14" :color="getIconColor(node)">
-        <Folder v-if="node.is_dir" />
-        <Collection v-else-if="isDBConfig(node)" />
-        <Document v-else />
-      </el-icon>
+      <!-- Directory icons -->
+      <Icon v-if="node.is_dir" :name="node.expanded ? 'folder-opened' : 'folder'" :size="14" :color="getIconColor(node)" class="node-icon" />
+      <!-- DB config icon (special file) -->
+      <span v-else-if="isDBConfig(node)" class="node-icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="getIconColor(node)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <ellipse cx="12" cy="5" rx="9" ry="3" />
+          <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+          <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+        </svg>
+      </span>
+      <!-- Regular file icon -->
+      <Icon v-else name="document" :size="14" :color="getIconColor(node)" class="node-icon" />
 
-      <!-- 标签 / 内联编辑框 -->
       <span v-if="editingPath !== node.path" class="node-label">{{ node.label }}</span>
-      <el-input
+      <Input
         v-else
         ref="editInputRef"
         :model-value="editingValue"
         @update:model-value="$emit('update:editingValue', $event)"
-        size="small"
         class="inline-edit-input"
         @keyup.enter="$emit('confirm-edit')"
         @keyup.escape="$emit('cancel-edit')"
@@ -57,14 +59,11 @@
         @click.stop
       />
 
-      <!-- DB 标签 -->
-      <el-tag v-if="isDBConfig(node)" size="small" type="info" class="db-tag">DB</el-tag>
+      <Tag v-if="isDBConfig(node)" size="small" type="info" class="db-tag">DB</Tag>
 
-      <!-- 加载中指示器 -->
       <span v-if="node.is_dir && node.expanded && node._loading" class="loading-indicator">⋯</span>
     </div>
 
-    <!-- 递归渲染子节点（仅当目录展开且有子节点时） -->
     <template v-if="node.is_dir && node.expanded && visibleChildren.length > 0">
       <TreeNode
         v-for="child in visibleChildren"
@@ -88,7 +87,8 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Folder, Document, Collection } from '@element-plus/icons-vue'
+import Icon from '../icon/Icon.vue'
+import { Tag, Input } from '../ui'
 
 defineOptions({ name: 'TreeNode' })
 
@@ -162,7 +162,6 @@ function getFileIconColor(ext) {
   return colors[ext] || '#888'
 }
 
-/** 搜索过滤：只返回匹配的子节点（自身匹配 或 有匹配的后代） */
 const visibleChildren = computed(() => {
   if (!props.searchQuery) return props.node.children || []
   const q = props.searchQuery.toLowerCase()
@@ -224,7 +223,7 @@ const visibleChildren = computed(() => {
   margin: 0 2px;
 }
 .tree-row.is-dir .node-icon {
-  color: var(--el-color-warning, #e6a23c);
+  color: #e6a23c;
 }
 
 .node-label {
@@ -238,7 +237,7 @@ const visibleChildren = computed(() => {
 .inline-edit-input {
   width: calc(100% - 40px);
 }
-.inline-edit-input :deep(.el-input__wrapper) {
+.inline-edit-input :deep(.b-input-wrapper) {
   padding: 0 4px;
   height: 24px;
   border-radius: 3px;

@@ -97,6 +97,8 @@ func RunMigrations(db *sql.DB) error {
 			title TEXT NOT NULL,
 			use_case TEXT DEFAULT '',
 			prompt TEXT NOT NULL,
+			llm_ref TEXT DEFAULT NULL,
+			blocked_tools TEXT DEFAULT '',
 			source TEXT DEFAULT 'user',
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -140,6 +142,7 @@ func RunMigrations(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE sessions ADD COLUMN parent_id TEXT DEFAULT NULL`)
 	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN type TEXT DEFAULT 'text'`)
 	_, _ = db.Exec(`ALTER TABLE project_agents ADD COLUMN llm_ref TEXT DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE project_agents ADD COLUMN blocked_tools TEXT DEFAULT ''`)
 
 	// Add brief column to messages table for tool_call thinking snippets
 	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN brief TEXT DEFAULT ''`)

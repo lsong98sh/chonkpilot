@@ -7,133 +7,133 @@
 
       <!-- Open Directory: click to open, dropdown for recent dirs -->
       <div class="open-group">
-        <el-button size="small" class="tb-btn open-btn" title="打开目录" @click="handleOpenClick">
-          <el-icon><FolderOpened /></el-icon>
+        <Button class="tb-btn open-btn" title="打开目录" @click="handleOpenClick">
+          <Icon name="folder-opened" />
           <span class="tb-label">打开</span>
-        </el-button>
-        <el-dropdown trigger="click" @command="handleRecentDir">
-          <el-button size="small" class="tb-btn dropdown-arrow" title="最近目录">
-            <el-icon><ArrowDown /></el-icon>
-          </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item
+        </Button>
+        <div class="dropdown-trigger" ref="recentDirsTriggerRef">
+          <Button class="tb-btn dropdown-arrow" title="最近目录" @click="toggleRecentDirs">
+            <Icon name="arrow-down" />
+          </Button>
+          <Teleport to="body">
+            <div v-if="showRecentDirs" class="b-dropdown-popper" :style="recentDirsPopperStyle" @click.stop>
+              <div
                 v-for="dir in recentDirs"
                 :key="dir"
-                :command="dir"
+                class="b-dropdown-item"
+                @click="handleRecentDir(dir)"
               >
-                <el-icon><Folder /></el-icon>
+                <Icon name="folder" />
                 <span class="recent-item">{{ dir }}</span>
-              </el-dropdown-item>
-              <el-dropdown-item v-if="recentDirs.length === 0" disabled>
+              </div>
+              <div v-if="recentDirs.length === 0" class="b-dropdown-item is-disabled">
                 暂无最近目录
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+              </div>
+            </div>
+          </Teleport>
+        </div>
       </div>
 
       <!-- Settings -->
-      <el-button size="small" class="tb-btn" title="设置" @click="$emit('open-config')">
-        <el-icon><Setting /></el-icon>
+      <Button class="tb-btn" title="设置" @click="$emit('open-config')">
+        <Icon name="setting" />
         <span class="tb-label">设置</span>
-      </el-button>
+      </Button>
 
       <!-- Scenarios -->
-      <el-button size="small" class="tb-btn" title="场景" @click="$emit('open-scenario')">
-        <el-icon><Collection /></el-icon>
+      <Button class="tb-btn" title="场景" @click="$emit('open-scenario')">
+        <Icon name="collection" />
         <span class="tb-label">场景</span>
-      </el-button>
+      </Button>
     </div>
 
     <div class="toolbar-center">
-      <!-- Global search with autocomplete -->
+      <!-- Global search with custom dropdown -->
       <div class="search-wrapper">
-        <el-autocomplete
-          v-model="searchQuery"
-          :fetch-suggestions="searchSuggestions"
-          placeholder="搜索文件..."
-          size="small"
-          clearable
-          popper-class="search-popper"
-          :trigger-on-focus="false"
-          :debounce="300"
-          value-key="path"
-          @select="handleSearchSelect"
-          @keyup.enter="handleSearchEnter"
-        >
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-          <template #default="{ item }">
-            <div class="search-result-item">
-              <el-tag size="small" :type="item.matchType === 'filename' ? '' : (item.matchType === 'symbol' ? 'warning' : 'info')" class="search-tag">
-                {{ item.matchType === 'filename' ? '文件名' : (item.matchType === 'symbol' ? '符号' : '路径') }}
-              </el-tag>
-              <span class="search-filename">{{ basename(item.path) }}</span>
-              <span class="search-path">{{ item.path }}</span>
+        <div class="search-input-wrap">
+          <Icon name="search" class="search-prefix" />
+          <input
+            v-model="searchQuery"
+            placeholder="搜索文件..."
+            @keyup.enter="handleSearchEnter"
+            @input="onSearchInput"
+            @focus="showSearchResults = true"
+            @blur="hideSearchResults"
+          />
+          <Teleport to="body">
+            <div v-if="showSearchResults && searchResults.length > 0" class="search-popper" :style="searchPopperStyle">
+              <div
+                v-for="item in searchResults"
+                :key="item.path"
+                class="search-result-item"
+                @mousedown.prevent="handleSearchSelect(item)"
+              >
+                <Tag :type="item.matchType === 'filename' ? 'info' : (item.matchType === 'symbol' ? 'warning' : 'success')" size="mini">
+                  {{ item.matchType === 'filename' ? '文件名' : (item.matchType === 'symbol' ? '符号' : '路径') }}
+                </Tag>
+                <span class="search-filename">{{ basename(item.path) }}</span>
+                <span class="search-path">{{ item.path }}</span>
+              </div>
             </div>
-          </template>
-        </el-autocomplete>
+          </Teleport>
+        </div>
       </div>
     </div>
     <div class="toolbar-right">
       <!-- Theme -->
-      <el-dropdown trigger="click" @command="setTheme">
-        <el-button size="small" class="tb-btn" title="主题">
-          <el-icon><MagicStick /></el-icon>
+      <div class="dropdown-trigger" ref="themeTriggerRef">
+        <Button class="tb-btn" title="主题" @click="toggleThemeDropdown">
+          <Icon name="magic-stick" />
           <span class="tb-label">主题</span>
-        </el-button>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item
+        </Button>
+        <Teleport to="body">
+          <div v-if="showThemeDropdown" class="b-dropdown-popper" :style="themePopperStyle" @click.stop>
+            <div
               v-for="t in themes"
               :key="t.id"
-              :command="t.id"
+              class="b-dropdown-item"
+              @click="setTheme(t.id)"
             >
-              <el-icon v-if="currentTheme === t.id"><Check /></el-icon>
-              <span v-else style="display:inline-block;width:14px" />
+              <Icon v-if="currentTheme === t.id" name="check" />
+              <span v-else style="display:inline-block;width:16px" />
               {{ t.label }}
-            </el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
+            </div>
+          </div>
+        </Teleport>
+      </div>
 
       <!-- Sessions -->
-      <el-button size="small" class="tb-btn" title="会话" @click="$emit('open-session')">
-        <el-icon><MessageBox /></el-icon>
+      <Button class="tb-btn" title="会话" @click="$emit('open-session')">
+        <Icon name="message-box" />
         <span class="tb-label">会话</span>
-      </el-button>
+      </Button>
 
       <!-- Tasks toggle -->
-      <el-button
-        size="small"
+      <Button
         class="tb-btn"
         :title="taskVisible ? '隐藏任务' : '显示任务'"
         @click="$emit('toggle-tasks')"
       >
-        <el-icon :color="taskVisible ? 'var(--accent)' : ''"><List /></el-icon>
-      </el-button>
+        <Icon name="list" :color="taskVisible ? 'var(--accent)' : ''" />
+      </Button>
 
       <!-- Filetree toggle -->
-      <el-button
-        size="small"
+      <Button
         class="tb-btn"
         :title="filetreeVisible ? '隐藏文件树' : '显示文件树'"
         @click="$emit('toggle-filetree')"
       >
-        <el-icon :color="filetreeVisible ? 'var(--accent)' : ''"><Folder /></el-icon>
-      </el-button>
+        <Icon name="folder" :color="filetreeVisible ? 'var(--accent)' : ''" />
+      </Button>
 
       <!-- Chat toggle -->
-      <el-button
-        size="small"
+      <Button
         class="tb-btn"
         :title="chatVisible ? '隐藏聊天' : '显示聊天'"
         @click="$emit('toggle-chat')"
       >
-        <el-icon :color="chatVisible ? 'var(--accent)' : ''"><ChatDotSquare /></el-icon>
-      </el-button>
+        <Icon name="chat-dot-square" :color="chatVisible ? 'var(--accent)' : ''" />
+      </Button>
 
       <!-- Window controls (frameless) -->
       <span class="win-controls-sep" />
@@ -157,9 +157,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { getRecentDirs, saveRecentDir, openDirDialog } from '../../api/config'
 import { WindowMinimise, WindowToggleMaximise, WindowIsMaximised, Quit } from '../../../wailsjs/runtime/runtime'
+import { Button, Tag } from '../ui'
+import Icon from '../icon/Icon.vue'
 
 const props = defineProps({
   chatVisible: { type: Boolean, default: true },
@@ -170,9 +172,17 @@ const props = defineProps({
 const emit = defineEmits(['open-config', 'open-analyze', 'open-session', 'open-scenario', 'toggle-chat', 'toggle-filetree', 'toggle-tasks', 'open-dir', 'search-file'])
 
 const searchQuery = ref('')
+const searchResults = ref([])
 const recentDirs = ref([])
 const currentTheme = ref('light')
 const isMaximized = ref(false)
+
+const showRecentDirs = ref(false)
+const showThemeDropdown = ref(false)
+const showSearchResults = ref(false)
+
+const recentDirsTriggerRef = ref(null)
+const themeTriggerRef = ref(null)
 
 const themes = [
   { id: 'light', label: '浅色' },
@@ -180,10 +190,48 @@ const themes = [
   { id: 'nord', label: 'Nord' },
 ]
 
+const recentDirsPopperStyle = computed(() => {
+  if (!recentDirsTriggerRef.value) return {}
+  const rect = recentDirsTriggerRef.value.getBoundingClientRect()
+  return {
+    position: 'fixed',
+    top: rect.bottom + 4 + 'px',
+    left: rect.left + 'px',
+    minWidth: rect.width + 'px',
+    zIndex: 9999,
+  }
+})
+
+const themePopperStyle = computed(() => {
+  if (!themeTriggerRef.value) return {}
+  const rect = themeTriggerRef.value.getBoundingClientRect()
+  return {
+    position: 'fixed',
+    top: rect.bottom + 4 + 'px',
+    left: rect.left + 'px',
+    minWidth: rect.width + 'px',
+    zIndex: 9999,
+  }
+})
+
+const searchPopperStyle = computed(() => {
+  const el = document.querySelector('.search-input-wrap')
+  if (!el) return {}
+  const rect = el.getBoundingClientRect()
+  return {
+    position: 'fixed',
+    top: rect.bottom + 2 + 'px',
+    left: rect.left + 'px',
+    width: rect.width + 'px',
+    zIndex: 9999,
+  }
+})
+
 function setTheme(id) {
   currentTheme.value = id
   document.documentElement.setAttribute('data-theme', id)
   localStorage.setItem('chonkpilot-theme', id)
+  showThemeDropdown.value = false
 }
 
 function minimizeWin() { WindowMinimise() }
@@ -217,6 +265,7 @@ async function handleRecentDir(dir) {
     await loadRecentDirs()
   } catch (e) { console.warn('[Toolbar] Failed to save recent dir:', e) }
   emit('open-dir', dir)
+  showRecentDirs.value = false
 }
 
 function basename(path) {
@@ -224,16 +273,18 @@ function basename(path) {
   return parts[parts.length - 1] || path
 }
 
-async function searchSuggestions(query, cb) {
-  if (!query || !query.trim()) {
-    cb([])
+async function onSearchInput() {
+  const q = searchQuery.value.trim()
+  if (!q) {
+    searchResults.value = []
     return
   }
   try {
-    const results = await window.go.main.App.SearchProjectFiles(query.trim()) || []
-    cb(results.slice(0, 15))
+    const results = await window.go.main.App.SearchProjectFiles(q) || []
+    searchResults.value = results.slice(0, 15)
+    showSearchResults.value = true
   } catch (_) {
-    cb([])
+    searchResults.value = []
   }
 }
 
@@ -241,16 +292,54 @@ function handleSearchSelect(item) {
   if (item?.path) {
     emit('search-file', item.path)
   }
+  showSearchResults.value = false
 }
 
 function handleSearchEnter() {
   if (!searchQuery.value.trim()) return
-  // Fetch results first, then open the first one
   window.go.main.App.SearchProjectFiles(searchQuery.value.trim()).then((results) => {
     if (results && results.length > 0 && results[0].path) {
       emit('search-file', results[0].path)
     }
   }).catch(() => {})
+  showSearchResults.value = false
+}
+
+function hideSearchResults() {
+  // Use setTimeout to allow click on result item to fire first
+  setTimeout(() => {
+    showSearchResults.value = false
+  }, 200)
+}
+
+function toggleRecentDirs() {
+  showRecentDirs.value = !showRecentDirs.value
+  if (showRecentDirs.value) {
+    showThemeDropdown.value = false
+  }
+}
+
+function toggleThemeDropdown() {
+  showThemeDropdown.value = !showThemeDropdown.value
+  if (showThemeDropdown.value) {
+    showRecentDirs.value = false
+  }
+}
+
+function handleClickOutside(e) {
+  if (showRecentDirs.value && recentDirsTriggerRef.value && !recentDirsTriggerRef.value.contains(e.target)) {
+    // Check if click is inside the popper
+    const popper = document.querySelector('.b-dropdown-popper')
+    if (popper && !popper.contains(e.target)) {
+      showRecentDirs.value = false
+    }
+  }
+  if (showThemeDropdown.value && themeTriggerRef.value && !themeTriggerRef.value.contains(e.target)) {
+    const popper = document.querySelector('.b-dropdown-popper')
+    if (popper && !popper.contains(e.target)) {
+      showThemeDropdown.value = false
+    }
+  }
 }
 
 async function loadRecentDirs() {
@@ -267,7 +356,6 @@ if (saved) {
   currentTheme.value = saved
   document.documentElement.setAttribute('data-theme', saved)
 } else {
-  // Try to load theme from user config (set via Settings dialog)
   window.go.main.App.GetUserConfig().then((res) => {
     const cfg = res && res.config
     if (cfg && cfg.theme) {
@@ -281,6 +369,12 @@ onMounted(() => {
   loadRecentDirs()
   syncMaximizeState()
   window.addEventListener('resize', syncMaximizeState)
+  document.addEventListener('click', handleClickOutside, true)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside, true)
+  window.removeEventListener('resize', syncMaximizeState)
 })
 </script>
 
@@ -297,9 +391,9 @@ onMounted(() => {
   /* frameless drag region */
   --wails-draggable: drag;
 }
-.toolbar :deep(.el-button),
-.toolbar :deep(.el-input),
-.toolbar :deep(.el-dropdown) {
+.toolbar :deep(.b-btn),
+.toolbar :deep(.b-input),
+.toolbar :deep(.b-tag) {
   --wails-draggable: no-drag;
 }
 
@@ -370,9 +464,37 @@ onMounted(() => {
   min-width: 160px;
   max-width: 380px;
 }
-.search-wrapper :deep(.el-input__wrapper) {
+
+.search-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
   background: var(--input-bg);
   border-radius: 6px;
+  border: 1px solid var(--border);
+  padding: 0 8px;
+  gap: 4px;
+}
+
+.search-input-wrap input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text-primary);
+  outline: none;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.search-input-wrap input::placeholder {
+  color: var(--text-muted);
+}
+
+.search-prefix {
+  flex-shrink: 0;
+  color: var(--text-muted);
 }
 
 .toolbar-right {
@@ -400,8 +522,12 @@ onMounted(() => {
 .search-result-item {
   display: flex;
   flex-direction: column;
-  padding: 4px 0;
+  padding: 6px 8px;
   gap: 2px;
+  cursor: pointer;
+}
+.search-result-item:hover {
+  background: var(--bg-hover);
 }
 .search-filename {
   font-size: 13px;
@@ -415,17 +541,58 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.search-tag {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-}
 
 .open-group .dropdown-arrow {
   border-radius: 0 4px 4px 0;
   padding: 0 4px;
   min-width: unset;
+}
+
+/* Dropdown popper (Teleported) */
+.b-dropdown-popper {
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  padding: 4px 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.b-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.b-dropdown-item:hover {
+  background: var(--bg-hover);
+}
+
+.b-dropdown-item.is-disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.b-dropdown-item.is-disabled:hover {
+  background: transparent;
+}
+
+/* Search popper */
+.search-popper {
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  padding: 4px 0;
+  max-height: 360px;
+  overflow-y: auto;
 }
 
 /* ── Window controls (frameless) ── */

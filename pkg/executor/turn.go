@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -651,9 +652,22 @@ func initToolHandler(ea *ExecutorArgs, sqlDB *sql.DB, ucfg *models.UserConfig, c
 	if codebaseEnabled {
 		codebaseDB, err := codeindex.OpenCodebaseDB(ea.DBWorkDir())
 		if err == nil {
-			// Create LLMCaller that wraps the client for non-streaming index analysis
+			// Read project config temperature (overrides user config)
+			var tempStr string
+			db.WithDB(ea.DBWorkDir(), func(sqlDB *sql.DB) error {
+				sqlDB.QueryRow(`SELECT value FROM config WHERE key='codebase_index.temperature'`).Scan(&tempStr)
+				return nil
+			})
+			projTemp := 0.0
+			if tempStr != "" {
+				if t, err := strconv.ParseFloat(tempStr, 64); err == nil && t > 0 {
+					projTemp = t
+				}
+			}
 			codeIndexTemp := 0.1
-			if ucfg != nil && ucfg.CodeIndexTemperature > 0 {
+			if projTemp > 0 {
+				codeIndexTemp = projTemp
+			} else if ucfg != nil && ucfg.CodeIndexTemperature > 0 {
 				codeIndexTemp = ucfg.CodeIndexTemperature
 			}
 			caller := func(systemPrompt, userPrompt string) (string, error) {
@@ -677,7 +691,7 @@ func initToolHandler(ea *ExecutorArgs, sqlDB *sql.DB, ucfg *models.UserConfig, c
 				}
 				return result.String(), nil
 			}
-			idxer := codeindex.NewIndexer(codebaseDB, ea.WorkDir, codebaseExtensions, caller, logger)
+			idxer := codeindex.NewIndexer(codebaseDB, ea.WorkDir, codebaseExtensions, nil, caller, logger)
 			// DO NOT call idxer.Start() here — the IDE's Indexer runs continuously
 			// and processes all queued items. The executor only enqueues files
 			// via MarkChanged/FlushChangedFiles.

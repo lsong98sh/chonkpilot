@@ -444,7 +444,8 @@ func (a *App) GetProjectAgents() (map[string]interface{}, error) {
 		return err
 	})
 	if err != nil {
-		return nil, err
+		a.logger.Error("GetProjectAgents failed", zap.Error(err))
+		return nil, fmt.Errorf("GetProjectAgents: %w", err)
 	}
 	return map[string]interface{}{"agents": agents}, nil
 }
@@ -783,6 +784,7 @@ func (a *App) LoadMissingAgentsFromResource() (map[string]interface{}, error) {
 		for _, name := range names {
 			title, useCase, prompt, err := prompts.ReadAgent(name)
 			if err != nil {
+				a.logger.Warn("LoadMissingAgents: skip agent file", zap.String("name", name), zap.Error(err))
 				continue
 			}
 
@@ -807,7 +809,8 @@ func (a *App) LoadMissingAgentsFromResource() (map[string]interface{}, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		a.logger.Error("LoadMissingAgentsFromResource failed", zap.Error(err))
+		return nil, fmt.Errorf("LoadMissingAgentsFromResource: %w", err)
 	}
 	if inserted > 0 {
 		a.push("config:refresh", map[string]interface{}{})

@@ -3,9 +3,9 @@
     <div class="hex-toolbar">
       <span class="hex-info">{{ totalBytes }} bytes</span>
       <span v-if="truncated" class="hex-truncated">(showing first {{ displayedBytes }} bytes)</span>
-      <el-button v-if="hasMore" size="small" text type="primary" @click="loadMore">
-        Load next {{ pageSize }} bytes
-      </el-button>
+      <Button v-if="hasMore" text type="primary" @click="loadMore">
+        Load next {{ PAGE_SIZE }} bytes
+      </Button>
     </div>
     <div class="hex-content" ref="hexContainer">
       <div class="hex-header">
@@ -23,8 +23,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { getFileUrl } from '../../api/file.js'
+import { Button } from '../ui'
 
 const props = defineProps({
   path: { type: String, required: true },

@@ -104,14 +104,15 @@ type UserConfig struct {
 
 // AgentConfig holds a single agent configuration as shown in the UI.
 type AgentConfig struct {
-	ID        int64  `json:"id,omitempty"`
-	Title     string `json:"title"`
-	UseCase   string `json:"useCase"`
-	Prompt    string `json:"prompt"`
-	LLMRef    string `json:"llmRef,omitempty"` // name of the LLM to use; empty = inherit from parent
-	Source    string `json:"_source,omitempty"` // "system" | "llm" | "" (user-managed)
-	CreatedAt string `json:"created_at,omitempty"`
-	UpdatedAt string `json:"updated_at,omitempty"`
+	ID        int64    `json:"id,omitempty"`
+	Title     string   `json:"title"`
+	UseCase   string   `json:"useCase"`
+	Prompt    string   `json:"prompt"`
+	LLMRef    string   `json:"llmRef,omitempty"`    // name of the LLM to use; empty = inherit from parent
+	Source    string   `json:"_source,omitempty"`   // "system" | "llm" | "" (user-managed)
+	BlockedTools []string `json:"blockedTools,omitempty"` // 禁用的工具名列表；空/nil = 全部可用（黑名单模式）
+	CreatedAt string   `json:"created_at,omitempty"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
 }
 
 // MCPServerConfig holds a single MCP server configuration.

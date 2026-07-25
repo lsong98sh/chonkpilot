@@ -1,155 +1,144 @@
 <template>
-  <el-drawer
-    v-model="visible"
-    title="Session History"
-    :size="360"
-    :show-close="false"
-    class="session-drawer"
-  >
-    <template #header>
+  <div class="drawer-shell" v-if="visible">
+    <div class="drawer-overlay" @click="close" />
+    <div class="drawer-content" :style="{ width: '360px' }">
       <div class="drawer-header">
-        <span>Sessions</span>
-        <el-button size="small" type="primary" @click="handleCreate">
-          + New
-        </el-button>
-      </div>
-    </template>
-
-    <div class="session-list">
-      <EmptyState v-if="sessions.length === 0" message="No sessions yet" />
-
-      <div
-        v-for="session in sessions"
-        :key="session.session_id"
-        class="session-card"
-        :class="{ active: session.session_id === currentSessionId }"
-        @click="handleSelect(session)"
-      >
-        <div class="session-info">
-          <div class="session-title">{{ session.title || 'Untitled' }}</div>
-          <div class="session-meta">
-            <span class="session-id">#{{ session.session_id?.slice(0, 8) }}</span>
-            <span v-if="session.turn_count" class="turn-count">
-              {{ session.turn_count }} turns
-            </span>
-          </div>
-          <div v-if="session.work_dir" class="session-dir" :title="session.work_dir">
-            <el-icon><FolderOpened /></el-icon>
-            {{ session.work_dir }}
-          </div>
+        <div class="drawer-header-row">
+          <span style="font-weight:600">Sessions</span>
+          <Button size="small" type="primary" @click="handleCreate">
+            + New
+          </Button>
         </div>
-        <div class="session-actions">
-          <el-button
-            size="small"
-            text
-            title="Rename session"
-            @click.stop="handleRename(session)"
-          >
-            <el-icon><Edit /></el-icon>
-          </el-button>
-          <el-button
-            size="small"
-            text
-            type="danger"
-            title="Delete session"
-            @click.stop="handleDelete(session)"
-          >
-            <el-icon><Delete /></el-icon>
-          </el-button>
+      </div>
+
+      <div class="session-list">
+        <EmptyState v-if="sessions.length === 0" message="No sessions yet" />
+
+        <div
+          v-for="session in sessions"
+          :key="session.session_id"
+          class="session-card"
+          :class="{ active: session.session_id === currentSessionId }"
+          @click="handleSelect(session)"
+        >
+          <div class="session-info">
+            <div class="session-title">{{ session.title || 'Untitled' }}</div>
+            <div class="session-meta">
+              <span class="session-id">#{{ session.session_id?.slice(0, 8) }}</span>
+              <span v-if="session.turn_count" class="turn-count">
+                {{ session.turn_count }} turns
+              </span>
+            </div>
+            <div v-if="session.work_dir" class="session-dir" :title="session.work_dir">
+              <Icon name="folder-opened" />
+              {{ session.work_dir }}
+            </div>
+          </div>
+          <div class="session-actions">
+            <Button
+              size="small"
+              text
+              title="Rename session"
+              @click.stop="handleRename(session)"
+            >
+              <Icon name="edit" />
+            </Button>
+            <Button
+              size="small"
+              text
+              type="danger"
+              title="Delete session"
+              @click.stop="handleDelete(session)"
+            >
+              <Icon name="delete" />
+            </Button>
+          </div>
         </div>
       </div>
     </div>
-  </el-drawer>
+  </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { ElMessageBox } from 'element-plus'
-import { Edit } from '@element-plus/icons-vue'
-import { updateSessionTitle } from '../../api/session'
-import { useSession } from '../../composables/useSession'
+import { ref } from 'vue'
+import { confirm } from '../ui'
+import { message } from '../ui'
+import Icon from '../icon/Icon.vue'
+import { Button } from '../ui'
 import EmptyState from '../common/EmptyState.vue'
+import bridge from '../../utils/bridge'
+import * as sessionApi from '../../api/session'
 
-const emit = defineEmits(['session-selected'])
-
-const { sessions, currentSessionId, loadSessions, createSession, deleteSession, teardown } = useSession()
-
+const sessions = ref([])
+const currentSessionId = ref(null)
 const visible = ref(false)
 
 async function handleSelect(session) {
   currentSessionId.value = session.session_id
-  emit('session-selected', session)
+  sessionApi.setActiveSessionID(session.session_id).catch(e => console.warn('[SessionDrawer] setActiveSessionID error:', e))
+  bridge.emit('session:selected', { session_id: session.session_id })
   visible.value = false
 }
 
 async function handleDelete(session) {
-  // 1. Confirm
   try {
-    await ElMessageBox.confirm(
+    const confirmed = await confirm(
       `确定要删除会话 #${session.session_id?.slice(0, 8)}？`,
-      '确认删除',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+      '确认删除'
     )
+    if (!confirmed) return
   } catch {
-    return // user cancelled
+    return
   }
 
-  // 2. Stop LLM if this is the current session
   const wasCurrent = session.session_id === currentSessionId.value
   if (wasCurrent) {
     window.dispatchEvent(new CustomEvent('session:cancel-llm'))
   }
 
-  // 3. Delete from DB
-  await deleteSession(session.session_id)
+  await sessionApi.deleteSession(session.session_id)
+  sessions.value = sessions.value.filter(s => s.session_id !== session.session_id)
+  bridge.emit('session:selected', { session_id: null })
 
-  // 4. Handle post-deletion UI
   const remaining = sessions.value
   if (remaining.length === 0) {
-    // No sessions left → set to null (no DB insert), close drawer
     currentSessionId.value = null
-    emit('session-selected', { session_id: null })
+    sessionApi.setActiveSessionID('').catch(e => console.warn('[SessionDrawer] setActiveSessionID error:', e))
     visible.value = false
   } else if (wasCurrent) {
-    // Was current session, pick first remaining
     const next = remaining[0]
     currentSessionId.value = next.session_id
-    emit('session-selected', next)
+    sessionApi.setActiveSessionID(next.session_id).catch(e => console.warn('[SessionDrawer] setActiveSessionID error:', e))
   }
 }
 
 async function handleRename(session) {
-  try {
-    const { value: newName } = await ElMessageBox.prompt(
-      'Enter a new name for this session',
-      'Rename Session',
-      {
-        inputValue: session.title || '',
-        confirmButtonText: 'OK',
-        cancelButtonText: 'Cancel',
-      }
-    )
-    if (newName) {
-      await updateSessionTitle(session.session_id, newName)
-      await loadSessions()
-    }
-  } catch (e) {
-    // User cancelled or error
-    if (e !== 'cancel') {
-      console.error('Failed to rename session:', e)
+  const newName = prompt('Enter a new name for this session', session.title || '')
+  if (newName) {
+    try {
+      await sessionApi.updateSessionTitle(session.session_id, newName)
+      sessions.value = (await sessionApi.listSessions()).sessions || []
+    } catch (e) {
+      message.error('Failed to rename: ' + (e.message || e))
     }
   }
 }
 
 async function handleCreate() {
   currentSessionId.value = null
-  emit('session-selected', { session_id: null })
+  sessionApi.setActiveSessionID('').catch(e => console.warn('[SessionDrawer] setActiveSessionID error:', e))
+  bridge.emit('session:selected', { session_id: null })
   visible.value = false
 }
 
-function open() {
+async function open() {
   visible.value = true
-  loadSessions()
+  try {
+    const res = await sessionApi.listSessions()
+    sessions.value = res.sessions || []
+  } catch (e) {
+    console.warn('[SessionDrawer] Failed to load sessions:', e)
+  }
 }
 
 function close() {
@@ -160,7 +149,38 @@ defineExpose({ open, close })
 </script>
 
 <style scoped>
+.drawer-shell {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  z-index: 1000;
+}
+.drawer-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.3);
+}
+.drawer-content {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  background: var(--bg-primary);
+  border-left: 1px solid var(--border);
+  box-shadow: -2px 0 8px rgba(0,0,0,0.1);
+  display: flex;
+  flex-direction: column;
+}
 .drawer-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.drawer-header-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -169,9 +189,12 @@ defineExpose({ open, close })
 }
 
 .session-list {
+  flex: 1;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 16px;
 }
 
 .session-card {

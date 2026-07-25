@@ -27,7 +27,6 @@ type ExecutorArgs struct {
 	SessionID        string
 	TurnID           string
 	PipePath         string
-	PipeAddr         string
 	Tools            string
 	ToolsFile        string
 	OutputFormat     string // stdout or json
@@ -121,8 +120,6 @@ func ParseArgs(args []string) (*ExecutorArgs, error) {
 			ea.LogLevel = arg[len("--log-level="):]
 		} else if strings.HasPrefix(arg, "--pipe-path=") {
 			ea.PipePath = arg[len("--pipe-path="):]
-		} else if strings.HasPrefix(arg, "--pipe-addr=") {
-			ea.PipeAddr = arg[len("--pipe-addr="):]
 		} else if strings.HasPrefix(arg, "--tools=") {
 			ea.Tools = arg[len("--tools="):]
 		} else if strings.HasPrefix(arg, "--tools-file=") {
@@ -344,7 +341,7 @@ func Run(args []string) error {
 	applyGlobalConfig(ea)
 
 	// Initialize output writer
-	outWriter := output.NewWriter(ea.PipePath, ea.OutputFormat, ea.PipeAddr)
+	outWriter := output.NewWriter(ea.PipePath, ea.OutputFormat)
 	defer outWriter.Close()
 
 	// Resolve LLM configuration from the chain
@@ -486,7 +483,6 @@ func printHelp() {
   --tools-file=<path>             自定义工具文件
   --output=<format>               输出方式（stdout/json，默认 stdout）
   --pipe-path=<path>              命名管道路径
-  --pipe-addr=<path>              子进程事件管道地址
   --reasoning=<on|off>            思考链（默认 on）
   --think=<on|off>                思考链（--reasoning 别名）
   --effort=<high|max>             推理强度（默认 high）

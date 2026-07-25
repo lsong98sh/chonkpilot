@@ -1,118 +1,148 @@
 <template>
   <div class="main-layout">
-    <Toolbar
-      :chat-visible="chatOpen"
-      :filetree-visible="filetreeOpen"
-      :task-visible="taskOpen"
-      @open-config="handleOpenConfig"
-      @open-session="sessionDrawer.open()"
-      @toggle-chat="toggleChat"
-      @toggle-filetree="toggleFiletree"
-      @toggle-tasks="toggleTasks"
-      @open-dir="handleOpenDir"
-      @search-file="handleSearchFile"
-      @open-analyze="analyzeDialog.open()"
-      @open-scenario="handleOpenScenario"
-    />
-
-    <div class="body-area">
-      <div class="content-area">
-        <div class="top-row" :style="{ height: topRowHeight }">
-          <div v-show="filetreeOpen" ref="sidebarPanel" class="filetree-panel" :style="{ width: sidebarWidth + 'px' }">
-            <div class="panel-header">
-              <el-icon><Folder /></el-icon>
-              <el-tooltip :content="workDir" placement="top" :show-after="300">
-                <span class="header-path" :title="workDir">{{ displayPath }}</span>
-              </el-tooltip>
-              <el-icon v-if="vcsInfo.git" class="vcs-icon vcs-git" title="Git">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                  <path d="M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256 0-1.123.404-2.336 1.078-3.144-.292-.741-.247-2.314.09-2.965.898-.112 2.111.36 2.83 1.01.853-.269 1.752-.404 2.853-.404 1.1 0 1.999.135 2.807.382.696-.629 1.932-1.1 2.83-.988.315.606.36 2.179.067 2.942.72.854 1.101 2 1.101 3.167 0 2.763-2.089 4.852-5.098 5.234.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786 4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1 5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313-.247-.607-.517-.966-1.034-1.033-.27-.023-.359-.135-.359-.27 0-.27.45-.471.898-.471.652 0 1.213.404 1.797 1.235.45.651.921.943 1.483.943.561 0 .92-.202 1.437-.719.382-.381.674-.718.944-.943"/>
-                </svg>
-              </el-icon>
-              <el-icon v-if="vcsInfo.svn" class="vcs-icon vcs-svn" title="SVN">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" width="16" height="16">
-                  <ellipse cx="12" cy="14" rx="7" ry="4"/>
-                  <circle cx="8" cy="14" r="0.6" fill="currentColor"/>
-                  <circle cx="16" cy="14" r="0.6" fill="currentColor"/>
-                  <circle cx="12" cy="10" r="0.6" fill="currentColor"/>
-                  <path d="M7 14 Q5 12 6 9"/>
-                  <path d="M17 14 Q19 12 18 9"/>
-                  <path d="M11 6 L10 8 M13 6 L14 8"/>
-                </svg>
-              </el-icon>
-              <el-icon class="header-settings-icon" title="IDE Config" @click="openIDEConfig"><Setting /></el-icon>
-            </div>
-            <FileTree class="panel-scroll" />
-          </div>
-          <div v-show="filetreeOpen" class="resizer resizer-col" :class="{ active: resizingSidebar }" @mousedown="onStartResizeSidebar" />
-          <div class="preview-panel">
-            <CodeView :filetree-visible="filetreeOpen" />
-          </div>
-        </div>
-        <div v-show="taskOpen" class="resizer resizer-row" :class="{ active: resizingRow }" @mousedown="onStartResizeRow" />
-        <div v-show="taskOpen" class="bottom-row" :style="{ height: bottomRowHeight }">
-          <TaskPanel class="task-panel-full" />
-        </div>
-      </div>
-      <div v-show="chatOpen" class="resizer resizer-col" :class="{ active: resizingChat }" @mousedown="onStartResizeChat" />
-      <div v-show="chatOpen" ref="chatPanel" class="chat-panel" :style="{ width: chatWidth + 'px' }">
-        <div class="panel-header">
-          <el-icon><ChatDotSquare /></el-icon>
-          <span v-show="chatOpen">CHAT</span>
-          <el-tag v-if="chatSessionId" size="small" type="info" class="chat-session-tag">#{{ chatSessionId.slice(0, 8) }}</el-tag>
-          <el-tooltip content="New Session" placement="bottom" :show-after="600">
-            <el-button text size="small" class="new-session-btn" @click="handleNewSession">
-              <el-icon><CirclePlus /></el-icon>
-            </el-button>
-          </el-tooltip>
-          <div class="header-spacer" />
-          <el-popover trigger="click" placement="bottom-end" :width="160" popper-class="scenario-popover" v-model:visible="scenarioPopoverVisible">
-            <template #reference>
-              <el-tag size="small" :type="activeScenarioId ? 'info' : 'danger'" style="cursor:pointer">
-                {{ activeScenarioLabel }}
-              </el-tag>
-            </template>
-            <div class="popover-list">
-              <div
-                v-for="s in scenarioOptions"
-                :key="s.id"
-                class="popover-item"
-                :class="{ active: activeScenarioId === s.id }"
-                @click="selectScenario(s.id)"
-              >
-                {{ s.name }}
+    <SplitPanel direction="vertical" :gap="0" :panes="outerConfig">
+      <template #pane-0>
+        <Toolbar
+          :chat-visible="chatOpen"
+          :filetree-visible="filetreeOpen"
+          :task-visible="taskOpen"
+          @open-config="handleOpenConfig"
+          @open-session="sessionDrawer.open()"
+          @toggle-chat="toggleChat"
+          @toggle-filetree="toggleFiletree"
+          @toggle-tasks="toggleTasks"
+          @open-dir="handleOpenDir"
+          @search-file="handleSearchFile"
+          @open-analyze="analyzeDialog.open()"
+          @open-scenario="handleOpenScenario"
+        />
+      </template>
+      <template #pane-1>
+        <SplitPanel direction="horizontal" :gap="4" gap-color="var(--border)" :panes="bodyConfig">
+          <template #pane-0>
+            <SplitPanel direction="vertical" :gap="4" gap-color="var(--border)" :panes="topBottomConfig">
+              <template #pane-0>
+                <SplitPanel direction="horizontal" :gap="4" gap-color="var(--border)" :panes="filetreeConfig">
+                  <template #pane-0>
+                    <div class="filetree-panel">
+                      <div class="panel-header">
+                        <Icon name="folder" />
+                        <span class="header-path" :title="workDir">{{ displayPath }}</span>
+                        <Icon v-if="vcsInfo.git" name="git" class="vcs-icon vcs-git" title="Git" />
+                        <Icon v-if="vcsInfo.svn" name="svn" class="vcs-icon vcs-svn" title="SVN" />
+                        <Icon name="setting" class="header-settings-icon" title="IDE Config" @click="openIDEConfig" />
+                      </div>
+                      <FileTree class="panel-scroll" />
+                    </div>
+                  </template>
+                  <template #pane-1><CodeView /></template>
+                </SplitPanel>
+              </template>
+              <template #pane-1>
+                <SplitPanel direction="horizontal" :gap="4" gap-color="var(--border)" :panes="taskConfig">
+                  <template #pane-0>
+                    <div class="panel-inner">
+                      <div class="panel-header">
+                        <Icon name="list" />
+                        <span>SESSIONS</span>
+                        <div class="header-spacer" />
+                        <Button text @click="loadSessions" class="icon-btn" title="Refresh session list">
+                          <Icon name="refresh" :size="14" color="#000" />
+                        </Button>
+                      </div>
+                      <SessionTree ref="sessionTreeRef" class="panel-scroll" />
+                    </div>
+                  </template>
+                  <template #pane-1>
+                    <div class="panel-inner">
+                      <div class="panel-header">
+                        <Icon name="chat-dot-square" />
+                        <span>SESSION DETAIL</span>
+                        <template v-if="selectedSessionId">
+                          <Tag size="small" type="info" class="session-id-tag">#{{ selectedSessionId.slice(0, 8) }}</Tag>
+                          <span v-if="turnCount > 0" class="turn-count">{{ turnCount }} turns</span>
+                        </template>
+                        <div class="header-spacer" />
+                        <template v-if="selectedSessionId">
+                          <Button text @click="chatScrollTop" title="Scroll to top">
+                            <Icon name="arrow-up" />
+                          </Button>
+                          <Button text @click="chatScrollBottom" title="Scroll to bottom">
+                            <Icon name="arrow-down" />
+                          </Button>
+                        </template>
+                      </div>
+                      <SessionChat
+                        ref="sessionChatRef"
+                        :session-id="selectedSessionId"
+                        @turn-count-change="onTurnCountChange"
+                        class="panel-scroll"
+                      />
+                    </div>
+                  </template>
+                </SplitPanel>
+              </template>
+            </SplitPanel>
+          </template>
+          <template #pane-1>
+            <div class="panel-inner">
+              <div class="panel-header">
+                <Icon name="chat-dot-square" />
+                <span v-show="chatOpen">CHAT</span>
+                <Tag v-if="chatSessionId" size="small" type="info" class="chat-session-tag">
+                  #{{ chatSessionId.slice(0, 8) }}
+                </Tag>
+                <Button text class="new-session-btn icon-btn" @click="handleNewSession" title="New Session">
+                  <Icon name="circle-plus" color="#555" />
+                </Button>
+                <div class="header-spacer" />
+                <Popover placement="bottom-end" :width="160">
+                  <template #reference>
+                    <Tag size="small" :type="activeScenarioId ? 'info' : 'danger'" style="cursor:pointer">
+                      {{ activeScenarioLabel }}
+                    </Tag>
+                  </template>
+                  <div class="popover-list">
+                    <div
+                      v-for="s in scenarioOptions"
+                      :key="s.id"
+                      class="popover-item"
+                      :class="{ active: activeScenarioId === s.id }"
+                      @click="selectScenario(s.id)"
+                    >
+                      {{ s.name }}
+                    </div>
+                  </div>
+                </Popover>
+              </div>
+              <div v-show="chatOpen" class="panel-scroll">
+                <ChatPanel ref="chatPanelRef" />
               </div>
             </div>
-          </el-popover>
-          <el-button
-            text
-            size="small"
-            @click="toggleChat"
-          >
-            <el-icon><Close v-if="chatOpen" /><ChatDotSquare v-else /></el-icon>
-          </el-button>
-        </div>
-        <div v-show="chatOpen" class="panel-scroll">
-          <ChatPanel ref="chatPanelRef" />
-        </div>
-      </div>
-    </div>
+          </template>
+        </SplitPanel>
+      </template>
+      <template #pane-2><StatusBar @open-config="handleOpenConfig" /></template>
+    </SplitPanel>
 
     <ConfigDialog ref="configDialog" />
     <ScenarioDialog ref="scenarioDialog" @changed="loadScenarioOptions" />
-    <SessionDrawer ref="sessionDrawer" @session-selected="handleSessionSelected" />
+    <SessionDrawer ref="sessionDrawer" />
     <AnalyzeDialog ref="analyzeDialog" />
     <AskUserDialog />
-    <StatusBar @open-config="handleOpenConfig" />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, defineAsyncComponent, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
+import Icon from '../icon/Icon.vue'
+import { Button, Tag, Popover } from '../ui'
+import { SplitPanel } from '../split'
 import Toolbar from '../toolbar/Toolbar.vue'
 import FileTree from '../filetree/FileTree.vue'
-import TaskPanel from '../tasks/TaskPanel.vue'
 import ChatPanel from '../chat/ChatPanel.vue'
+import SessionTree from '../tasks/SessionTree.vue'
+import SessionChat from '../tasks/SessionChat.vue'
 import ConfigDialog from '../config/ConfigDialog.vue'
 import ScenarioDialog from '../scenario/ScenarioDialog.vue'
 import SessionDrawer from '../sessions/SessionDrawer.vue'
@@ -127,29 +157,22 @@ const CodeView = defineAsyncComponent({
   },
   delay: 200,
 })
-import { ElMessage } from 'element-plus'
+import { message } from '../ui'
+import bridge from '../../utils/bridge'
+import { setActiveSessionID } from '../../api/session'
 import { openDir, getAllConfig } from '../../api/config'
-import { CirclePlus } from '@element-plus/icons-vue'
 
 const workDir = ref('')
 const vcsInfo = ref({ git: false, svn: false })
 let unsubFileChanged = null
-const sidebarWidth = ref(260)
-const chatWidth = ref(360)
 const chatOpen = ref(true)
 const filetreeOpen = ref(true)
 const taskOpen = ref(true)
-const resizingSidebar = ref(false)
-const resizingRow = ref(false)
-const resizingChat = ref(false)
-const topRowFraction = ref(0.65)
 const configDialog = ref(null)
 const scenarioDialog = ref(null)
 const sessionDrawer = ref(null)
 const analyzeDialog = ref(null)
 
-const sidebarPanel = ref(null)
-const chatPanel = ref(null)
 const chatPanelRef = ref(null)
 const chatSessionId = ref(null)
 
@@ -157,20 +180,42 @@ const activeScenarioId = ref(0)
 const scenarioOptions = ref([])
 const scenarioPopoverVisible = ref(false)
 
+const selectedSessionId = ref(null)
+const turnCount = ref(0)
+const sessionTreeRef = ref(null)
+const sessionChatRef = ref(null)
+
+const outerConfig = [
+  { id: 'toolbar', size: 44, resizable: false },
+  { id: 'content', flex: true },
+  { id: 'statusbar', size: 24, resizable: false },
+]
+
+const bodyConfig = computed(() => [
+  { id: 'content', flex: true },
+  { id: 'chat', size: 360, min: 280, max: 800, visible: chatOpen.value },
+])
+
+const topBottomConfig = computed(() => [
+  { id: 'top', flex: true },
+  { id: 'bottom', size: 250, min: 100, visible: taskOpen.value },
+])
+
+const filetreeConfig = computed(() => [
+  { id: 'filetree', size: 260, min: 180, max: 600, visible: filetreeOpen.value },
+  { id: 'preview', flex: true },
+])
+
+const taskConfig = [
+  { id: 'session-tree', size: 280, min: 200, max: 600 },
+  { id: 'session-chat', flex: true },
+]
+
 const activeScenarioLabel = computed(() => {
   if (!activeScenarioId.value) return '选择场景'
   const found = scenarioOptions.value.find(s => s.id === activeScenarioId.value)
   return found ? found.name : '选择场景'
 })
-
-function selectScenario(id) {
-  activeScenarioId.value = id
-  onScenarioChange(id)
-  scenarioPopoverVisible.value = false
-}
-
-const topRowHeight = computed(() => taskOpen.value ? `calc(${topRowFraction.value * 100}% - 2px)` : '100%')
-const bottomRowHeight = computed(() => `calc(${(1 - topRowFraction.value) * 100}% - 2px)`)
 
 const displayPath = computed(() => {
   const d = workDir.value
@@ -183,17 +228,35 @@ function toggleChat() { chatOpen.value = !chatOpen.value }
 function toggleFiletree() { filetreeOpen.value = !filetreeOpen.value }
 function toggleTasks() { taskOpen.value = !taskOpen.value }
 
+function onSubSessionChanged({ session_id }) {
+  selectedSessionId.value = session_id || null
+}
+
+function onTurnCountChange(count) {
+  turnCount.value = count
+}
+
+function chatScrollTop() {
+  sessionChatRef.value?.scrollTop?.()
+}
+
+function chatScrollBottom() {
+  sessionChatRef.value?.scrollBottom?.()
+}
+
+function loadSessions() {
+  sessionTreeRef.value?.loadSessions?.()
+}
+
 async function loadScenarioOptions() {
   try {
     const res = await window.go.main.App.GetScenarioList()
     scenarioOptions.value = res.scenarios || []
     const activeRes = await window.go.main.App.GetActiveScenario()
     if (activeRes?.prompt) {
-      // Find matching scenario
       const found = scenarioOptions.value.find(s => s.systemPrompt === activeRes.prompt)
       activeScenarioId.value = found ? found.id : (scenarioOptions.value[0]?.id || null)
     } else if (scenarioOptions.value.length > 0) {
-      // Auto-select first scenario if none active
       activeScenarioId.value = scenarioOptions.value[0].id
       await window.go.main.App.SetActiveScenario(activeScenarioId.value)
     } else {
@@ -202,6 +265,11 @@ async function loadScenarioOptions() {
   } catch (_) {
     scenarioOptions.value = []
   }
+}
+
+function selectScenario(id) {
+  activeScenarioId.value = id
+  onScenarioChange(id)
 }
 
 async function onScenarioChange(id) {
@@ -219,7 +287,11 @@ function openIDEConfig() {
 async function loadConfig() {
   try {
     const res = await getAllConfig()
-    if (res?.workDir) workDir.value = res.workDir
+    if (res?.workDir) {
+      workDir.value = res.workDir
+      // Fetch VCS info immediately after workDir is set
+      fetchVCSInfo()
+    }
   } catch (e) { console.error(e) }
 }
 
@@ -231,42 +303,43 @@ async function fetchVCSInfo() {
   }
 }
 
-watch(workDir, () => {
-  if (workDir.value) fetchVCSInfo()
-})
+let sessionUnsub = null
+let unsubSubsession = null
 
 onMounted(async () => {
   await loadConfig()
-  // Load scenario options
   loadScenarioOptions()
-  // Listen for .git creation/deletion to refresh VCS icon
   unsubFileChanged = window.runtime?.EventsOn('file:changed', (data) => {
     const path = data?.path || ''
     if (path.endsWith('\\.git') || path.endsWith('/.git')) {
       fetchVCSInfo()
     }
   })
-  // Listen for config:open-tab from CodeView DB config toolbar
   window.addEventListener('config:open-tab', handleConfigOpenTab)
-
-  // Track current chat session ID for the header tag
-  window.addEventListener('session:loaded', handleSessionLoaded)
+  const unsubSessionEvent = bridge.on('session:event', handleSessionEvent)
+  sessionUnsub = unsubSessionEvent
+  // Subscribe to frontend EventBus for sub-session selection
+  unsubSubsession = bridge.on('subsessionchanged', onSubSessionChanged)
 })
 
 onBeforeUnmount(() => {
   if (typeof unsubFileChanged === 'function') unsubFileChanged()
   window.removeEventListener('config:open-tab', handleConfigOpenTab)
-  window.removeEventListener('session:loaded', handleSessionLoaded)
+  if (typeof sessionUnsub === 'function') sessionUnsub()
+  if (typeof unsubSubsession === 'function') unsubSubsession()
 })
 
-function handleSessionLoaded(e) {
-  chatSessionId.value = e.detail?.session_id || null
+function handleSessionEvent(data) {
+  chatSessionId.value = data?.session_id || null
+  // Do NOT update selectedSessionId here — only SessionTree click controls it.
+  // Otherwise, switching main chat session would hijack Task panel's detail view.
+  if (!data || data.type === 'cleared') {
+    selectedSessionId.value = null
+  }
 }
 
 function handleNewSession() {
-  window.dispatchEvent(new CustomEvent('session:select', {
-    detail: { session_id: null }
-  }))
+  setActiveSessionID('').catch(e => console.warn('[MainLayout] setActiveSessionID error:', e))
 }
 
 function handleConfigOpenTab(e) {
@@ -282,16 +355,10 @@ function handleOpenScenario() {
   loadScenarioOptions()
 }
 
-function handleSessionSelected(session) {
-  window.dispatchEvent(new CustomEvent('session:select', {
-    detail: { session },
-  }))
-}
-
 async function handleOpenDir(dirPath) {
   try {
     const res = await openDir(dirPath || prompt('Enter directory path:'))
-    if (res?.code === 'RESTART_REQUIRED') ElMessage.info(res.message)
+    if (res?.code === 'RESTART_REQUIRED') message.info(res.message)
   } catch (e) { console.error(e) }
 }
 
@@ -300,117 +367,13 @@ function handleSearchFile(filePath) {
     window.dispatchEvent(new CustomEvent('file:open', { detail: { path: filePath } }))
   }
 }
-
-/* ────────── Resizer (closure, no global ctx) ────────── */
-
-function onStartResizeSidebar(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  resizingSidebar.value = true
-  const startX = e.clientX
-  const startW = sidebarPanel.value?.offsetWidth || 260
-
-  function onMove(ev) {
-    ev.preventDefault()
-    const d = ev.clientX - startX
-    const w = Math.max(180, Math.min(800, startW + d))
-    sidebarWidth.value = w
-  }
-
-  function onUp() {
-    resizingSidebar.value = false
-    window.removeEventListener('mousemove', onMove, true)
-    window.removeEventListener('mouseup', onUp, true)
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-  }
-
-  document.body.style.cursor = 'col-resize'
-  document.body.style.userSelect = 'none'
-  window.addEventListener('mouseup', onUp, true)
-  window.addEventListener('mousemove', onMove, { passive: false, capture: true })
-}
-
-function onStartResizeChat(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  resizingChat.value = true
-  const startX = e.clientX
-  const startW = chatPanel.value?.offsetWidth || 360
-
-  function onMove(ev) {
-    ev.preventDefault()
-    const d = ev.clientX - startX
-    const w = Math.max(280, Math.min(800, startW - d))
-    chatWidth.value = w
-  }
-
-  function onUp() {
-    resizingChat.value = false
-    window.removeEventListener('mousemove', onMove, true)
-    window.removeEventListener('mouseup', onUp, true)
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-  }
-
-  document.body.style.cursor = 'col-resize'
-  document.body.style.userSelect = 'none'
-  window.addEventListener('mouseup', onUp, true)
-  window.addEventListener('mousemove', onMove, { passive: false, capture: true })
-}
-
-function onStartResizeRow(e) {
-  e.preventDefault()
-  e.stopPropagation()
-  resizingRow.value = true
-  const startY = e.clientY
-  const top = document.querySelector('.top-row')
-  const container = document.querySelector('.content-area')
-  if (!top || !container) return
-  const startH = top.offsetHeight
-  const containerH = container.offsetHeight
-
-  function onMove(ev) {
-    ev.preventDefault()
-    const dy = ev.clientY - startY
-    topRowFraction.value = Math.max(0.4, Math.min(0.8, (startH + dy) / containerH))
-  }
-
-  function onUp() {
-    resizingRow.value = false
-    window.removeEventListener('mousemove', onMove, true)
-    window.removeEventListener('mouseup', onUp, true)
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-  }
-
-  document.body.style.cursor = 'row-resize'
-  document.body.style.userSelect = 'none'
-  window.addEventListener('mouseup', onUp, true)
-  window.addEventListener('mousemove', onMove, { passive: false, capture: true })
-}
 </script>
 
 <style scoped>
 .main-layout {
-  display: flex;
-  flex-direction: column;
   height: 100vh;
   background: var(--bg-primary);
   color: var(--text-primary);
-}
-
-.body-area {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-
-.content-area {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
 }
 
 .panel-header {
@@ -429,22 +392,30 @@ function onStartResizeRow(e) {
   flex-shrink: 0;
 }
 
-.panel-header .el-button { margin-left: auto; }
-
 .header-spacer {
   flex: 1;
   min-width: 0;
 }
+
 .chat-session-tag {
   flex-shrink: 0;
 }
+
+.icon-btn {
+  background: transparent !important;
+}
+
+.icon-btn:hover {
+  background: transparent !important;
+}
+
 .new-session-btn {
-  margin-left: 0 !important;
-  color: var(--text-muted);
+  color: #555;
 }
 .new-session-btn:hover {
-  color: var(--accent);
+  color: #555;
 }
+
 :deep(.popover-list) {
   display: flex;
   flex-direction: column;
@@ -470,7 +441,7 @@ function onStartResizeRow(e) {
   margin-left: auto;
   cursor: pointer;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 12px;
 }
 .header-settings-icon:hover {
   color: var(--accent);
@@ -502,49 +473,43 @@ function onStartResizeRow(e) {
   color: #809cc9;
 }
 
-.panel-scroll { flex: 1; overflow-y: auto; }
-
-/* ── Panels ── */
-.top-row {
-  display: flex;
-  overflow: hidden;
-  border-bottom: 2px solid var(--border);
+.panel-scroll {
+  flex: 1;
+  overflow-y: auto;
 }
-
-.bottom-row { display: flex; overflow: hidden; }
 
 .filetree-panel {
   display: flex;
   flex-direction: column;
+  height: 100%;
   background: var(--bg-secondary);
-  border-right: 1px solid var(--border);
-  min-width: 180px;
-  flex-shrink: 0;
 }
 
-.preview-panel {
-  flex: 1;
+.panel-inner {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  min-width: 0;
+  height: 100%;
 }
 
-.task-panel-full {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
+.session-id-tag {
+  font-family: var(--font-mono);
 }
 
-.chat-panel {
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-secondary);
-  border-left: 1px solid var(--border);
-  transition: width 0.2s ease;
-  overflow: hidden;
-  flex-shrink: 0;
+.turn-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Smaller icons in panel headers */
+.filetree-panel .panel-header .b-icon,
+.panel-inner .panel-header .b-icon {
+  font-size: 12px;
+}
+
+/* Smaller VCS icons */
+.filetree-panel .panel-header .vcs-icon {
+  font-size: 12px;
 }
 
 .code-view-loading {
@@ -570,38 +535,4 @@ function onStartResizeRow(e) {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
-
-/* ── Resizer (flex siblings, take real 4px space) ── */
-.resizer-col {
-  width: 4px;
-  flex-shrink: 0;
-  cursor: col-resize;
-  background: transparent;
-  transition: background 0.12s;
-}
-
-.resizer-col:hover {
-  background: var(--accent);
-}
-
-.resizer-col.active {
-  background: var(--accent);
-}
-
-.resizer-row {
-  height: 4px;
-  flex-shrink: 0;
-  cursor: row-resize;
-  background: transparent;
-  transition: background 0.12s;
-}
-
-.resizer-row:hover {
-  background: var(--accent);
-}
-
-.resizer-row.active {
-  background: var(--accent);
-}
-
 </style>

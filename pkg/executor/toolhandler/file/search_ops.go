@@ -29,6 +29,7 @@ import (
 // Package-level config — set by executor at startup from UserConfig.
 var (
 	GrepMaxResults        int = 200  // default max grep matches
+	GrepMaxMatchChars     int = 1000 // max chars per match (truncate oversized lines)
 	cancelCtx             context.Context // cancellation context, set by Handler.PropagateConfig
 )
 
@@ -335,10 +336,14 @@ func HandleGrep(workDir string, args map[string]interface{}) *types.ToolResult {
 			}
 			line := scanner.Text()
 			if re != nil && re.MatchString(line) {
+				content := strings.TrimSpace(line)
+				if len(content) > GrepMaxMatchChars {
+					content = content[:GrepMaxMatchChars] + "... (truncated)"
+				}
 				matches = append(matches, grepMatch{
 					File:    relPath,
 					Line:    lineNum,
-					Content: strings.TrimSpace(line),
+					Content: content,
 				})
 			}
 		}
@@ -500,9 +505,13 @@ func grepWithContext(f *os.File, re *regexp.Regexp, context, maxMatches int) []g
 		for i := r.start - 1; i < r.end; i++ {
 			rangeContent.WriteString(fmt.Sprintf("%d\t%s\n", i+1, lines[i]))
 		}
+		content := strings.TrimRight(rangeContent.String(), "\n")
+		if len(content) > GrepMaxMatchChars {
+			content = content[:GrepMaxMatchChars] + "\n... (truncated, line too long)"
+		}
 		matches = append(matches, grepMatch{
 			Line:    r.start,
-			Content: strings.TrimRight(rangeContent.String(), "\n"),
+			Content: content,
 		})
 	}
 	return matches

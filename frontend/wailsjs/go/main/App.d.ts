@@ -35,6 +35,8 @@ export function GeneratePrompts(arg1:Record<string, any>):Promise<void>;
 
 export function GetActiveScenario():Promise<Record<string, any>>;
 
+export function GetActiveSessionID():Promise<Record<string, any>>;
+
 export function GetAllConfig():Promise<Record<string, any>>;
 
 export function GetChromeStatus():Promise<Record<string, any>>;
@@ -81,6 +83,8 @@ export function GetTechInfo():Promise<Record<string, any>>;
 
 export function GetTurnsBySession(arg1:string,arg2:boolean):Promise<Record<string, any>>;
 
+export function GetTurnsPaginated(arg1:string,arg2:string,arg3:number,arg4:number):Promise<Record<string, any>>;
+
 export function GetUserConfig():Promise<Record<string, any>>;
 
 export function GetVCSInfo():Promise<main.VCSInfo>;
@@ -96,6 +100,8 @@ export function ListSessions():Promise<Record<string, any>>;
 export function LoadInitData():Promise<Record<string, any>>;
 
 export function LoadMissingAgentsFromResource():Promise<Record<string, any>>;
+
+export function LogWeb(arg1:string,arg2:string):Promise<void>;
 
 export function OpenDevTools():Promise<void>;
 
@@ -157,7 +163,7 @@ export function SendChatMessage(arg1:main.sendChatArgs):Promise<Record<string, s
 
 export function SetActiveScenario(arg1:number):Promise<void>;
 
-export function SetActiveSession(arg1:string):Promise<void>;
+export function SetActiveSessionID(arg1:string):Promise<void>;
 
 export function SetConfig(arg1:string,arg2:string):Promise<void>;
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/chonkpilot/chonkpilot/internal/models"
 )
@@ -61,22 +62,84 @@ func GetMessagesBySession(db *sql.DB, sessionID string) ([]*models.Message, erro
 	})
 }
 
-// LatestSessionID returns the ID of the session that has the most recent message.
-// Returns empty string if no messages exist.
+// GetMessagesByTurnIDs returns all messages for the given turn IDs, ordered by created_at ASC.
+func GetMessagesByTurnIDs(db *sql.DB, turnIDs []string) ([]*models.Message, error) {
+	if len(turnIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(turnIDs))
+	args := make([]interface{}, len(turnIDs))
+	for i, id := range turnIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT message_id, turn_id, role, COALESCE(type,'text'), COALESCE(content,''), COALESCE(brief,''), created_at
+		 FROM messages WHERE turn_id IN (%s) ORDER BY created_at ASC`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get messages by turn IDs: %w", err)
+	}
+	return scanAll(rows, func(m *models.Message) []any {
+		return []any{&m.MessageID, &m.TurnID, &m.Role, &m.Type, &m.Content, &m.Brief, &m.CreatedAt}
+	})
+}
+
+
+// GetLatestSessionID returns the top-level session ID that has the most recent message.
+// It traces up the parent chain to ensure the result is always a top-level session.
 func GetLatestSessionID(sqlDB *sql.DB) (string, error) {
-	var sessionID string
+	// Step 1: 找到最后一条消息所在的 session
+	var leafSessionID string
 	err := sqlDB.QueryRow(
 		`SELECT t.session_id FROM messages m
 		 JOIN turns t ON t.turn_id = m.turn_id
 		 ORDER BY m.created_at DESC LIMIT 1`,
-	).Scan(&sessionID)
+	).Scan(&leafSessionID)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("failed to get latest session: %w", err)
 	}
-	return sessionID, nil
+
+	// Step 2: 递归追溯 top-level parent
+	topID, err := GetTopLevelSession(sqlDB, leafSessionID)
+	if err != nil {
+		return "", err
+	}
+	return topID, nil
+}
+
+// GetTopLevelSession traces the parent chain to find the root (parent_id = '').
+// Returns the session ID itself if it's already top-level.
+func GetTopLevelSession(sqlDB *sql.DB, sessionID string) (string, error) {
+	visited := make(map[string]bool) // 防止循环引用
+	current := sessionID
+	for current != "" {
+		if visited[current] {
+			return "", fmt.Errorf("circular parent_id reference detected for session %s", sessionID)
+		}
+		visited[current] = true
+
+		var parentID string
+		err := sqlDB.QueryRow(
+			`SELECT COALESCE(parent_id,'') FROM sessions WHERE session_id = ?`, current,
+		).Scan(&parentID)
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("session %s not found in chain", current)
+		}
+		if err != nil {
+			return "", fmt.Errorf("query parent for %s: %w", current, err)
+		}
+		if parentID == "" {
+			return current, nil // 找到了 top-level
+		}
+		current = parentID
+	}
+	return "", nil
 }
 
 // GetMessage returns a single message by ID.

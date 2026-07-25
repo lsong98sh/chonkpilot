@@ -75,7 +75,14 @@ func (h *Handler) registerExecutionTools() {
 		return call_llm.HandleForeach(h.TaskMgr, h.Dispatch, h.OnProgress, args, depth)
 	})
 	h.toolHandlers["call_llm"] = types.DepthAware(func(args map[string]interface{}, depth int) *types.ToolResult {
-		return call_llm.HandleCallLLM(h.Logger, h.Session, h.TurnID, h.WorkDir, h.DBDir,
+		// Use injected parent session (from outer call_llm) if available
+		callerSession := h.Session
+		if ps, ok := args["_batch_parent_session"]; ok {
+			if s, ok2 := ps.(string); ok2 && s != "" {
+				callerSession = s
+			}
+		}
+		return call_llm.HandleCallLLM(h.Logger, callerSession, h.TurnID, h.WorkDir, h.DBDir,
 			h.TaskMgr,
 			h.LLMProtocol, h.LLMModel, h.LLMAPIKey, h.LLMAPIURL,
 			h.Thinking, h.ReasoningEffort,
@@ -131,8 +138,15 @@ func (h *Handler) registerCodebaseTools() {
 		return llmresult.HandleGetLLMResult(h.DBDir, args)
 	})
 	h.toolHandlers["batch_llm"] = types.Wrap(func(args map[string]interface{}) *types.ToolResult {
+		// Use injected parent session (from call_llm) if available, otherwise fall back to handler session
+		parentSession := h.Session
+		if ps, ok := args["_batch_parent_session"]; ok {
+			if s, ok2 := ps.(string); ok2 && s != "" {
+				parentSession = s
+			}
+		}
 		return batch_llm.HandleBatchLLM(
-			h.Logger, h.WorkDir, h.DBDir, h.Session,
+			h.Logger, h.WorkDir, h.DBDir, parentSession,
 			h.LLMProtocol, h.LLMModel, h.LLMAPIKey, h.LLMAPIURL,
 			h.Thinking, h.ReasoningEffort,
 			h.WriteEvent,

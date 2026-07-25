@@ -1,13 +1,16 @@
 <template>
   <div class="minimized-bar">
-    <el-tooltip content="Restore ChonkPilot" placement="right">
-      <el-button :icon="ChatDotSquare" circle @click="$emit('restore')" />
-    </el-tooltip>
+    <Tooltip content="Restore ChonkPilot" placement="right">
+      <Button circle @click="$emit('restore')">
+        <Icon name="chat-dot-square" />
+      </Button>
+    </Tooltip>
   </div>
 </template>
 
 <script setup>
-import { ChatDotSquare } from '@element-plus/icons-vue'
+import Icon from '../icon/Icon.vue'
+import { Button, Tooltip } from '../ui'
 defineEmits(['restore'])
 </script>
 

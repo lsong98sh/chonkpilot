@@ -7,12 +7,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"strconv"
 	"syscall"
+	"github.com/chonkpilot/chonkpilot/pkg/eventbus"
 	"time"
 	"unsafe"
 
@@ -37,6 +40,7 @@ type App struct {
 	ctx                context.Context
 	workDir            string
 	logger             *zap.Logger
+	EventBus           *eventbus.Bus   // IDE-internal event bus (Go components only)
 	cfg                *config.ConfigManager
 	userCfg            *config.UserConfigManager
 	recentMgr          *recent.Manager
@@ -64,6 +68,7 @@ func NewApp(workDir string, logger *zap.Logger, userCfg *config.UserConfigManage
 		cfg:                cfg,
 		userCfg:            userCfg,
 		recentMgr:          recentMgr,
+		EventBus:           eventbus.New(),
 		sessionSubscribers: make(map[string]bool),
 		codebasePollerStop: make(chan struct{}),
 	}
@@ -200,6 +205,22 @@ func (a *App) autoScanCodebase() {
 	}
 	extList := strings.Split(extensions, ",")
 
+	// Read skip_dirs from project config
+	var skipDirsStr string
+	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		sqlDB.QueryRow(`SELECT value FROM config WHERE key='codebase_index.skip_dirs'`).Scan(&skipDirsStr)
+		return nil
+	})
+	var skipDirs []string
+	if skipDirsStr != "" {
+		for _, line := range strings.Split(skipDirsStr, "\n") {
+			d := strings.TrimSpace(line)
+			if d != "" {
+				skipDirs = append(skipDirs, d)
+			}
+		}
+	}
+
 	codebaseDB, err := codeindex.OpenCodebaseDB(a.workDir)
 	if err != nil {
 		a.logger.Warn("autoScanCodebase: cannot open codebase.db", zap.Error(err))
@@ -222,8 +243,7 @@ func (a *App) autoScanCodebase() {
 
 	// No worker running. If queue is empty, do a full scan to enqueue files.
 	if pending == 0 {
-		scanner := codeindex.NewScanner(codebaseDB, a.workDir, extList, a.logger)
-		a.logger.Info("autoScanCodebase: starting project scan")
+		scanner := codeindex.NewScanner(codebaseDB, a.workDir, extList, skipDirs, a.logger)
 		if err := scanner.ScanProject(); err != nil {
 			a.logger.Warn("autoScanCodebase: scan failed", zap.Error(err))
 			codebaseDB.Close()
@@ -235,6 +255,19 @@ func (a *App) autoScanCodebase() {
 
 	// Start the queue worker to process pending items (may be from a previous run
 	// where the worker didn't start, e.g. before the sqlite driver fix).
+	// Read temperature from project config
+	var tempStr string
+	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		sqlDB.QueryRow(`SELECT value FROM config WHERE key='codebase_index.temperature'`).Scan(&tempStr)
+		return nil
+	})
+	codeIndexTemp := 0.1
+	if tempStr != "" {
+		if t, err := strconv.ParseFloat(tempStr, 64); err == nil && t > 0 {
+			codeIndexTemp = t
+		}
+	}
+
 	procsDB, err := codeindex.OpenCodebaseDB(a.workDir)
 	if err != nil {
 		a.logger.Warn("autoScanCodebase: cannot open processor DB", zap.Error(err))
@@ -261,7 +294,7 @@ func (a *App) autoScanCodebase() {
 			{Role: "user", Content: userPrompt},
 		}, llm.ChatOptions{
 			Model:       llmCfg.Model,
-			Temperature: 0.1,
+			Temperature: codeIndexTemp,
 			MaxTokens:   2048,
 		})
 		if err != nil {
@@ -277,7 +310,7 @@ func (a *App) autoScanCodebase() {
 		return result.String(), nil
 	}
 
-	idxer := codeindex.NewIndexer(procsDB, a.workDir, extList, caller, a.logger)
+	idxer := codeindex.NewIndexer(procsDB, a.workDir, extList, skipDirs, caller, a.logger)
 	idxer.Start()
 	a.codebaseIdxer = idxer
 	a.logger.Info("autoScanCodebase: queue processor started, processing pending items...")
@@ -513,7 +546,23 @@ func (a *App) ReindexCodebase() (int, error) {
 	}
 	extList := strings.Split(extensions, ",")
 
-	scanner := codeindex.NewScanner(codebaseDB2, a.workDir, extList, a.logger)
+	// Read skip_dirs from project config
+	var skipDirsStr string
+	db.WithDB(a.workDir, func(sqlDB *sql.DB) error {
+		sqlDB.QueryRow(`SELECT value FROM config WHERE key='codebase_index.skip_dirs'`).Scan(&skipDirsStr)
+		return nil
+	})
+	var skipDirs []string
+	if skipDirsStr != "" {
+		for _, line := range strings.Split(skipDirsStr, "\n") {
+			d := strings.TrimSpace(line)
+			if d != "" {
+				skipDirs = append(skipDirs, d)
+			}
+		}
+	}
+
+	scanner := codeindex.NewScanner(codebaseDB2, a.workDir, extList, skipDirs, a.logger)
 	if err := scanner.ScanProject(); err != nil {
 		return 0, err
 	}
@@ -717,7 +766,14 @@ func (p *wailsEventPusher) Push(event string, data interface{}) {
 
 func (a *App) push(event string, data interface{}) {
 	if a.ctx != nil {
+		// Wails EventEmit — broadcasts to frontend via bridge.on
 		runtime.EventsEmit(a.ctx, event, data)
+		// Also emit to the internal EventBus so Go components can listen
+		if a.EventBus != nil {
+			if payload, ok := data.(map[string]interface{}); ok {
+				a.EventBus.EmitSimple(event, payload)
+			}
+		}
 	}
 }
 
@@ -768,6 +824,30 @@ func (a *App) OpenDevTools() {
 // GetWorkDir returns the current work directory.
 func (a *App) GetWorkDir() string {
 	return a.workDir
+}
+
+// LogWeb receives log messages from the frontend (errors, diagnostics, etc.)
+// and writes them to .ide/log/web.log with a timestamp prefix.
+// level can be "info", "warn", "error", "debug".
+// message is the log text, typically including stack trace for errors.
+func (a *App) LogWeb(level, message string) {
+	logDir := filepath.Join(a.workDir, ".ide", "log")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		a.logger.Warn("LogWeb: failed to create log dir", zap.Error(err))
+		return
+	}
+	logPath := filepath.Join(logDir, "web.log")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		a.logger.Warn("LogWeb: failed to open log file", zap.Error(err))
+		return
+	}
+	defer f.Close()
+	ts := time.Now().Format("2006-01-02 15:04:05.000")
+	line := fmt.Sprintf("[%s] [%s] %s\n", ts, level, message)
+	if _, err := f.WriteString(line); err != nil {
+		a.logger.Warn("LogWeb: failed to write log", zap.Error(err))
+	}
 }
 
 // SubscribeSession registers interest in a sub-session's updates.
@@ -841,6 +921,9 @@ func (a *App) onExecutorEvent(eventType string, payload map[string]interface{}) 
 	case "filetree:set":
 		// Executor requests a UI file tree operation — forward to frontend
 		a.push("filetree:set", payload)
+	case "subsession:new":
+		// New sub-session created by batch_llm — notify SessionTree
+		a.push("subsession:new", payload)
 	case "complete", "error":
 		// Turn ended — notify frontend via llm:event for live updates,
 		// and session:refresh so session tree can reload DB-persisted state.
