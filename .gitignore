@@ -36,6 +36,12 @@ node_modules/
 
 # ── 5. 测试工作区产物（L2/L3 运行残留 + 明文凭据）─────────────────────────
 # java-project 等会产出 jar/class/surefire 报告/库文件，并可能落明文 token
+# systest 运行残留：`_` 前缀目录全部为产物——各用例隔离 data-dir（`_*_data/chonkpilot.db`）、
+# 配置截图（`_cfg_ui_shots/*.png`）、临时工作区（`_prev_ws/`）、探针目录（`_*probe*/`）。
+# 用例源码 `*.py` 位于 systest 根，不在此规则内。
+/src/test/chonkpilot-gui/systest/_*/
+# 共享工作区 `systest/ws` 内的运行产物（其输入夹具 sample.* / f01~f11.txt 仍入库）
+/src/test/chonkpilot-gui/systest/ws/g11-batch.json
 /src/test/**/workspace/
 /src/test/**/target/
 /src/test/**/*.class
