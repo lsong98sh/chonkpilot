@@ -17,24 +17,14 @@
           </Button>
         </template>
       </div>
-      <!-- 两页状态互见：工具级（tool_sandbox）显式开启数 + 一键跳转 -->
+      <!-- 两页状态互见：executor 级（tool_sandbox）显式开启数 + 一键跳转 -->
       <div class="cross-hint">
         <span>{{ $t('config.mcp.toolSandboxSummary', { n: toolSandboxOn }) }}</span>
         <Button text size="small" @click="gotoToolSandbox">{{ $t('config.mcp.gotoToolSandbox') }}</Button>
       </div>
-      <!-- D：server 级空信任目录语义说明（= 不施加隔离，非「全部拒绝」；与工具级全拒区分） -->
+      <!-- D：server 级空信任目录语义说明（= 不施加隔离，非「全部拒绝」；与 executor 级全拒区分） -->
       <div class="sandbox-note">{{ $t('config.mcp.sandboxEmptyHint') }}</div>
       <Table :columns="mcpColumns" :data="displayData" :empty-text="$t('config.mcp.empty')" size="small">
-        <template #sandbox="{ index }">
-          <div class="sandbox-cell" :title="sandboxTitle(mcpServers[index])">
-            <Switch
-              :model-value="mcpServers[index].sandbox === true"
-              :disabled="!sandboxEditable(mcpServers[index])"
-              @update:model-value="(v) => onSandboxToggle(index, v)"
-            />
-            <span class="sandbox-state">{{ sandboxStateText(mcpServers[index]) }}</span>
-          </div>
-        </template>
         <template #action="{ index }">
           <Button text v-mq:[EventNames.configToggleMcp].click="{ index }">
             {{ mcpServers[index] && mcpServers[index].enabled ? $t('config.mcp.disable') : $t('config.mcp.enable') }}
@@ -50,7 +40,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, h, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Table, Button, Select, Switch, message, confirm } from '../../components/ui'
+import { Table, Button, Select, message, confirm } from '../../components/ui'
 import { dialog } from '../../components/dialog'
 import Icon from '../../components/icon/Icon.vue'
 import { getUserConfig, saveUserConfig, getSystemBuiltins } from '../../api/config'
@@ -67,7 +57,7 @@ const { t } = useI18n()
 const mcpServers = ref([])
 const systemMCPs = ref([])
 const selectedBuiltin = ref('')
-// 工具级（tool_sandbox）显式开启数 —— 供「两页状态互见」摘要（读 usr 同一次加载）。
+// executor 级（tool_sandbox）显式开启数 —— 供「两页状态互见」摘要（读 usr 同一次加载）。
 const toolSandboxOn = ref(0)
 
 // 「两页状态互见」跳转：既有 preview tab 通道（kind=settings-tool-sandbox），零新增消息面。
@@ -81,7 +71,6 @@ const mcpColumns = computed(() => [
   { label: 'URL', prop: 'url', minWidth: 200 },
   { label: t('config.mcp.description'), prop: 'description', minWidth: 140 },
   { label: t('config.mcp.isolate'), prop: '_isolate', width: 90, align: 'center' },
-  { label: t('config.mcp.sandbox'), prop: 'sandbox', width: 120, align: 'center' },
   { label: t('config.mcp.enabled'), prop: '_enabled', width: 60, align: 'center' },
   { label: t('config.table.operation'), type: 'action', width: 200, align: 'center' },
 ])
@@ -107,36 +96,8 @@ function isolateLabel(s) {
   return explicit ? text : text + t('config.mcp.isolateAutoSuffix')
 }
 
-// ── 沙箱隔离（sandbox，三态；仅 stdio 可操作）──
-// 与 isolate（按项目/workdir 连接隔离）是两条独立的轴：sandbox 由 agentbox 按项目安全页的
-// 信任目录（可读/可写、递归）限制该 server 子进程的文件访问，写入 mcps[].sandbox。
-// 传输归一与 gateway TransportName() 一致：显式 transport 优先；缺省 url → http，否则 → stdio。
-function transportName(s) {
-  const tp = ((s && s.transport) || '').trim()
-  if (tp) return tp.toLowerCase()
-  return ((s && s.url) || '').trim() ? 'http' : 'stdio'
-}
-// 仅 stdio 可隔离（http/sse 上游不 spawn / 多连接，不施加）。
-function sandboxEditable(s) {
-  return !!s && transportName(s) === 'stdio'
-}
-function sandboxStateText(s) {
-  if (!sandboxEditable(s)) return t('config.mcp.sandboxUnsupported')
-  if (s.sandbox === true) return t('config.mcp.sandboxOn')
-  if (s.sandbox === false) return t('config.mcp.sandboxOff')
-  return t('config.mcp.sandboxUnset')
-}
-function sandboxTitle(s) {
-  return sandboxEditable(s) ? t('config.mcp.sandboxHint') : t('config.mcp.sandboxStdioOnly')
-}
-// 拨动即写库（true/false）；未拨动保持缺键 = 未设置（默认不隔离，兼容）。
-async function onSandboxToggle(index, v) {
-  const s = mcpServers.value[index]
-  if (!s || !sandboxEditable(s)) return
-  s.sandbox = !!v
-  await saveNow()
-}
-
+// ── 沙箱（sandbox，三态）的编辑入口在 EditMCPDialog「运行信息」页签（仅 stdio 可开）；
+//    本列表页只保留跨页摘要与空信任目录语义说明，不再提供行内拨动。
 const builtinOptions = computed(() =>
   systemMCPs.value.map((s, i) => ({ label: s.name || ('#' + (i + 1)), value: String(i) }))
 )
@@ -146,7 +107,7 @@ async function loadConfig() {
     const res = await getUserConfig()
     const uc = res.config || res
     mcpServers.value = Array.isArray(uc.mcpServers) ? uc.mcpServers : []
-    // 同一次加载顺带取工具级沙箱开启数（两页状态互见摘要）
+    // 同一次加载顺带取 executor 级沙箱开启数（两页状态互见摘要）
     toolSandboxOn.value = countToolSandboxOn(uc.tool_sandbox)
   } catch (e) {
     // ④ 加载失败须用户可见（不再仅 console；成功路径不动）
@@ -263,14 +224,5 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: 8px;
-}
-.sandbox-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.sandbox-state {
-  font-size: 11px;
-  color: var(--text-muted);
 }
 </style>

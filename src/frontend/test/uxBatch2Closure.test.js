@@ -93,12 +93,11 @@ test('A·i18n：三键占位符与调用参数一致，且渲染后无残留占�
 const SILENT_SITES = [
   { file: 'views/config/SettingsMCPPage.vue', tag: "console.warn('[SettingsMCP] load user config failed:'" },
   { file: 'views/config/SettingsLLMPage.vue', tag: "console.warn('[SettingsLLM] load user config failed:'" },
-  { file: 'views/config/SettingsLLMPage.vue', tag: "console.warn('[SettingsLLM] load system builtins failed:'" },
   { file: 'views/config/SettingsToolAsyncPage.vue', tag: "console.warn('[SettingsToolAsync] load tools failed:'" },
   { file: 'views/config/SettingsToolAsyncPage.vue', tag: "console.warn('[SettingsToolAsync] load user config failed:'" },
 ]
 
-test('B·5 处加载失败不再只 console：紧随其后必须给用户可见提示（统一文案）', () => {
+test('B·各加载失败点不再只 console：紧随其后必须给用户可见提示（统一文案）', () => {
   for (const s of SILENT_SITES) {
     const src = read(s.file)
     const idx = src.indexOf(s.tag)
@@ -121,7 +120,7 @@ test('B·可见提示文案：指明哪一项 + 原因摘要；item 标签 i18n 
   assert.match(s, /backend unreachable/, '须含失败原因摘要')
   assert.equal(loadFailedText(zh.t, 'X', undefined), zh.t('config.feedback.loadFailedUnknown', { item: 'X' }))
 
-  const items = ['page.mcp', 'page.llm', 'page.toolAsync', 'llm.builtinTag', 'toolAsync.sourceUser']
+  const items = ['page.mcp', 'page.llm', 'page.toolAsync', 'toolAsync.sourceUser']
   for (const loc of LOCALES) {
     const cfg = readLocale(loc, 'config.json')
     const dig = (k) => k.split('.').reduce((o, p) => (o == null ? undefined : o[p]), cfg)

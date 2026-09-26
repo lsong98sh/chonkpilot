@@ -442,11 +442,6 @@ func ScenarioDeleteFromWire(m map[string]any) facade.ScenarioDeleteRequest {
 	return facade.ScenarioDeleteRequest{ScenarioID: RequestID(m), Level: str(m["level"])}
 }
 
-// ScenarioRestoreFromWire 解析 `{id?}` → 门面入参。
-func ScenarioRestoreFromWire(m map[string]any) facade.ScenarioRestoreRequest {
-	return facade.ScenarioRestoreRequest{ScenarioID: RequestID(m)}
-}
-
 // ── 记忆库（memory 域）───────────────────────────────────────────
 
 // MemoryListResult 组装 `data-memory-list` 结果载荷 `{list:[{category,level,path,tokens}]}`。

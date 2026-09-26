@@ -135,7 +135,7 @@
 
 ## 7. 实施状态（2026-09-19，A 批 · 后端核心；决策 [42 §2 (109)](../40-roadmap/42-决策记录.md)）
 
-> **范围**：本批只做**后端**（策略包 + 执行层强制 + 配置键读取/生效 + gateway stdio 下发）；**配置面 UI（mcp-server 页「是否隔离」+ 新页签「扫描到的工具」）由后续批次做**（[41 I-102](../40-roadmap/41-未决项登记.md)）。
+> **范围**：本批只做**后端**（策略包 + 执行层强制 + 配置键读取/生效 + gateway stdio 下发）；**配置面 UI（mcp-server 页「是否隔离」+ 新页签「扫描到的工具」）由后续批次做**（[41 I-102](../40-roadmap/41-未决项登记.md)）。**〔订正（2026-09-26）**：配置面 UI **已实施**（MCP 对话框「运行信息」页签「沙箱」+ 页签「工具沙箱配置」），且工具沙箱已由**工具级改为 executor 级**（key = 类别 core/desktop/browser）；见下文 §7.1 #4/#6 与 §7.2 #5 同日订正。〕
 
 ### 7.1 已实现
 
@@ -144,9 +144,9 @@
 | 1 | **策略包（换算 / 判定 / 编解码）** | `src/lib/agentbox`（**新增包**） | `Rule{Dir,Writable}` / `Policy{New,Parse,Marshal,Allowed,Check}` / 进程级 `Set,Current,InitFromEnv,Check`；环境变量 **`CHONKPILOT_SANDBOX`**（JSON `[{dir,writable}]`）；错误 `*DeniedError{Path,Write,Allowed}` + `ErrDenied`（中文可诊断） |
 | 2 | **策略来源 = `security-*`** | `src/llm/server/server.go` `securityRules(instanceID)`（读 `data-prj-security-list`，value = `{"dir","writable"}`）→ `mcp-server Config.SetSecurityDirs` | **递归语义**：允许目录下所有子路径；`writable` 决定可写（可写必然可读） |
 | 3 | **执行层强制（真正拦截）** | `src/mcp-tools`：`internal/cli/cli.go`（启动时 `InitFromEnv`）+ `fileops`（`file_read`/`file_find`/`file_diff`/`filesys_run` 全动词/`ScriptFS` 句柄）+ `fetch`（`save_as`/`form_files`） | 越界 → **整体失败**（exit 1 + 明确文案），非仅告警；审计 = 拒绝时 stderr 一行 `[agentbox] …`（宿主捕获落日志） |
-| 4 | **mcp-server 下发** | `Config.SecurityDirs` + `Config.ToolSandbox`（`SetSecurityDirs`/`SetToolSandbox`/`SandboxPolicyFor`）→ `callTool` 按契约名查开关 → `executorEnv(cx, policy)` 注入 | 未配置 = 不注入（**默认兼容**） |
+| 4 | **mcp-server 下发** | `Config.SecurityDirs` + `Config.ToolSandbox`（`SetSecurityDirs`/`SetToolSandbox`/`SandboxPolicyFor`）→ `callTool` 按 **executor 类别**（`td.Category` = core/desktop/browser，2026-09-26 起）查开关 → `executorEnv(cx, policy)` 注入 | 未配置 = 不注入（**默认兼容**） |
 | 5 | **gateway 上游 spawn 下发（仅 stdio）** | `ServerEntry.Sandbox`/`SandboxDirs` + `SandboxPolicyJSON()` → `buildConn` 的 **stdio** 分支注入 | http/sse **不施加**；**上游是否遵守取决于其是否实现 agentbox 消费方**——第三方进程**仅透传，不构成强制** |
-| 6 | **配置键** | usr `tool_sandbox`（工具级开关，persist 自由键已注册）· usr `mcps[].sandbox`（server 级开关）· register `mcp_server.sandbox`/`sandbox_dirs`（可选字段） | 均登记 [64 §3/§4](../60-reference/64-配置项一览.md)；**与既有 `isolate`（连接池隔离）语义独立、互不替代** |
+| 6 | **配置键** | usr `tool_sandbox`（**executor 级**开关：key = 类别 core/desktop/browser，persist 自由键已注册；2026-09-26 由工具级改 executor 级，旧形态失效）· usr `mcps[].sandbox`（server 级开关，仅 stdio&spawn）· register `mcp_server.sandbox`/`sandbox_dirs`（可选字段） | 均登记 [64 §3/§4](../60-reference/64-配置项一览.md)；**与既有 `isolate`（连接池隔离）语义独立、互不替代** |
 | 7 | **保存即生效** | llm server 订阅**既有主题** `data-prj-security-refresh` → 重跑 `loadExecConfig` + `reconcileUserMCPs` | 零新增 MQ 主题；executor 侧**下次 spawn** 生效（每次调用重读 Config） |
 | 8 | **验证** | 6 模块 × {默认, `-tags split`} build/vet/test 全绿；L2 新增 4 组（含**经 mcp-server spawn 真实 executor 的端到端**）；L3 基线 23/0/1 + 57/0/2；真实 executor 开/关两态真机 | 详见 [42 §2 (109)](../40-roadmap/42-决策记录.md) §G |
 
@@ -158,7 +158,7 @@
 | 2 | **`browser_run` / `desktop_run` 的落盘句柄** | `SHT`/`DOM`/`DBG`/`UPF` 等落盘未接线（本批未覆盖）→ [41 I-105](../40-roadmap/41-未决项登记.md) |
 | 3 | **审计落 DataDir** | 14 §5 规划项；当前仅 stderr 一行（由宿主捕获落日志），**不写文件** |
 | 4 | **符号链接解析** | 判定按字面路径 `Abs`+`Clean`，**不追软链**（`EvalSymlinks` 未用） |
-| 5 | **配置面 UI** | mcp-server 页「是否隔离」（仅 stdio）+ 新页签「扫描到的工具」（逐个开关）→ [41 I-102](../40-roadmap/41-未决项登记.md) |
+| 5 | ~~**配置面 UI**~~ | **已实现（2026-09-19；2026-09-26 改 executor 级）**：MCP 对话框「运行信息」页签「沙箱」（仅 stdio，usr `mcps[].sandbox`）+ 页签「工具沙箱配置」（**三个 executor 行 core/desktop/browser + 只读工具清单 + 手动保存**，usr `tool_sandbox`）→ [41 I-102](../40-roadmap/41-未决项登记.md) |
 | 6 | **§3.3 其余规划**（按 instance 工具白/黑名单 / `inputSchema` 校验 / 限流 / `trust` 标记） | 原方案未定项，**本批不做、保留**（同 (104) 口径） |
 
 > **空允许集语义**：开关显式开启而 `security-*` 为空时——executor 侧 = **全拒**（严格）；gateway 上游 = **不下发**策略 + 记日志（上游非本仓进程，空策略可能被打成全拒）。

@@ -692,9 +692,10 @@ def main():
                     pass
 
     def case_memory_edit_dialog_ui():
-        """UI-7 记忆内容编辑弹框（A1/A4，2026-09-24 用户口径）：
+        """UI-7 记忆内容编辑弹框（A1/A4，2026-09-24 用户口径；2026-09-26 双编辑入口）：
 
-        - 行内【编辑】→ 弹框（bodyClass = `text-edit-dialog-body`，内容**撑满、底部不留白**）
+        - 行内两个编辑入口并存：【编辑提示词】（沉淀提示词，见 E4）与【编辑内容】（本用例）；
+        - 行内【编辑内容】→ 弹框（bodyClass = `text-edit-dialog-body`，内容**撑满、底部不留白**）
           + 弹框内自带【优化】按钮；
         - 改内容 → 【保存】→ **弹框自动关闭** + 后端内容已更新（`data-memory-read` 回读）；
         - **状态栏底部**「记忆总 token 数」可点（A4 主入口，2026-09-24 由上下文管理页迁入）
@@ -719,6 +720,12 @@ def main():
                       "const t=[...tr.querySelectorAll('button')].find(x=>x.textContent.trim()===%s);"
                       "if(t)t.click();return !!t;})()" % json.dumps(label))
 
+        def row0_btns():
+            return ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
+                      ".find(e=>e.getBoundingClientRect().width>0);if(!R)return [];"
+                      "const tr=R.querySelector('.mem-table tbody tr');if(!tr)return [];"
+                      "return [...tr.querySelectorAll('button')].map(x=>x.textContent.trim());})()") or []
+
         def dialog_btn(label):
             return ev("(function(){const d=document.querySelector('.dialog-shell');if(!d)return false;"
                       "const t=[...d.querySelectorAll('button')].find(x=>x.textContent.trim()===%s);"
@@ -741,9 +748,12 @@ def main():
             if not cat:
                 raise TestError("记忆类别表未渲染")
 
-            # ① 行内【编辑】→ 弹框（撑满 + 底部不留白 + 自带优化）
-            if not row0_btn("编辑"):
-                raise TestError("类别行缺【编辑】按钮")
+            # ① 行内两个编辑入口并存（提示词 / 内容）→ 点【编辑内容】开内容弹框
+            btns0 = row0_btns()
+            if "编辑提示词" not in btns0 or "编辑内容" not in btns0:
+                raise TestError("类别行须并存【编辑提示词】/【编辑内容】：%r" % (btns0,))
+            if not row0_btn("编辑内容"):
+                raise TestError("类别行缺【编辑内容】按钮")
             if not wait_vcount(".text-edit-body", 10):
                 raise TestError("内容编辑弹框未打开")
             geo = ev("(function(){const d=document.querySelector('.dialog-shell');if(!d)return null;"

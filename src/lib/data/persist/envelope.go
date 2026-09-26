@@ -166,7 +166,7 @@ func reqKey(req dataReq) string {
 
 // ─── scenario ────────────────────────────────────────────────────
 
-// handleScenario 处理 data-scenario-*（list/load/save/delete/restore）——**MQ 信封层**
+// handleScenario 处理 data-scenario-*（list/load/save/delete）——**MQ 信封层**
 // （解析 → 门面 → 回载荷，翻译收在 facade/wire；逻辑见 internal/scenario 的 ScenarioAPI）。
 // v6（12-数据层 · 25-MCP与场景分层模型 §6）：数据源 = 文件化**独立根 `scenarios/`**
 // （与 capability/ 平级；三级 app/user/project，场景 id 全局唯一跨级不重名），不再落 usr DB。
@@ -207,14 +207,6 @@ func (s *Service) handleScenario(op string, req dataReq) {
 		r := wire.ScenarioDeleteFromWire(m)
 		r.InstanceID = req.InstanceID
 		if _, err := s.ScenarioDelete(r); err != nil {
-			failf(err)
-			return
-		}
-		okf(wire.OKResult())
-	case "restore":
-		r := wire.ScenarioRestoreFromWire(m)
-		r.InstanceID = req.InstanceID
-		if _, err := s.ScenarioRestore(r); err != nil {
 			failf(err)
 			return
 		}

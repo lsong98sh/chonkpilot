@@ -101,11 +101,10 @@ const (
 	MsgAskUserCancel        = "ask-user-cancel"
 
 	// 场景
-	MsgScenarioSelect         = "scenario-select"
-	MsgScenarioOpen           = "scenario-open"
-	MsgScenarioReload         = "scenario-reload"
-	MsgScenarioRestoreDefault = "scenario-restore-default"
-	MsgScenarioSetDefault     = "scenario-set-default"
+	MsgScenarioSelect     = "scenario-select"
+	MsgScenarioOpen       = "scenario-open"
+	MsgScenarioReload     = "scenario-reload"
+	MsgScenarioSetDefault = "scenario-set-default"
 
 	// 配置
 	MsgConfigOpen          = "config-open"

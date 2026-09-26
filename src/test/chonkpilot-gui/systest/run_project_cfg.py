@@ -39,13 +39,15 @@ c = _G.client
 _h.suite_config_guard(c)
 _h.ensure_locale(c)  # 语言确定性：页签/状态文案按 zh-CN 断言（DB ui.locale 可能被他套件写成 en-US）
 
-# 5 个页签（zh-CN 标签，英文为旧名兼容备选）
+# 7 个页签（zh-CN 标签，英文为旧名兼容备选）
 TAB_FAMILIES = [
     ("安全 / Security", r"^(安全|Security)$"),
     ("上下文 / Context", r"^(上下文管理|上下文|Context)$"),
     ("CodeGraph 索引", r".*CodeGraph.*"),
     ("Vfts 全文索引", r".*Vfts.*"),
     ("自动提交 / History", r"^(自动提交|历史|History)$"),
+    ("日志 / Log", r"^(日志|Log)$"),
+    ("配置导入/导出 / Config IO", r".*(配置导入/导出|Config IO|Import).*"),
 ]
 
 INDEX_STATE_WORDS = ("已停用", "未初始化", "索引构建中", "就绪", "出错",
@@ -125,8 +127,8 @@ def switch_tab(*patterns):
 def case_tabs():
     open_project_cfg()
     labels = tab_labels()
-    if len(labels) != 5:
-        raise TestError(f"项目配置应恰含 5 页签: {labels}")
+    if len(labels) != len(TAB_FAMILIES):
+        raise TestError(f"项目配置应恰含 {len(TAB_FAMILIES)} 页签: {labels}")
     misses = [name for name, pat in TAB_FAMILIES if not any(re.search(pat, lb) for lb in labels)]
     if misses:
         raise TestError(f"缺页签 {misses}: {labels}")
@@ -168,7 +170,7 @@ def case_context():
     txt = panel_scope("return P ? P.textContent : ''") or ""
     if not txt.strip():
         raise TestError("上下文管理页签内容为空")
-    if "保留完整对话内容的轮次" not in txt or "简化区 Token 压缩阈值" not in txt:
+    if "保留完整对话内容的最近轮数" not in txt or "简化区 Token 压缩阈值" not in txt:
         raise TestError(f"上下文管理页缺压缩说明/字段文案: {txt[:120]!r}")
     # 保留完整轮数 + token 阈值输入（blur 即落库）
     inputs = panel_scope("return P ? P.querySelectorAll('input.b-input').length : 0")
@@ -186,16 +188,27 @@ def case_summary_prompt_load():
     """K4（原「通用能力-提示词加载」迁移）：总结提示词自动加载 + 来源标注 + 恢复默认入口。
 
     spec CFG-009：项目配置「通用能力（工具提示词）」UI 已摘除（D2），提示词页仅余摘要提示词
-    （CFG-008）。故本用例断言该存活提示词的**自动加载**（继承系统级/内置默认 → 内容非空）、
-    来源标注可见、以及「恢复默认」（取消项目覆盖）入口存在——与原用例同强度（提示词内容非空）。
+    （CFG-008）。**2026-09-26：只读展示已移除** → 内容改在**编辑弹框**（`TextEditDialog`，
+    `.text-edit-dialog-body` 内 textarea）查看。故本用例断言：面板有「编辑」按钮 → 点开弹框
+    内容非空（自动加载继承系统级/内置默认值）、来源标注可见、「恢复默认」（取消项目覆盖）入口存在。
     """
     open_project_cfg()
     if switch_tab(r"^(上下文管理|上下文|Context)$") != "ok":
         raise TestError("未找到上下文管理页签")
-    if not wait_el(".project-config-panel .prompt-editor"):
-        raise TestError("总结提示词编辑器未渲染")
-    val = panel_scope("""const ta = P.querySelector('textarea.prompt-editor');
-      return ta ? (ta.value || '') : '';""") or ""
+    # 只读展示已移除：编辑入口 = 面板内「编辑」按钮（弹框内查看内容）
+    r = panel_scope("""
+      const hs=[...P.querySelectorAll('.prompt-editor-header')];
+      const h=hs[0];
+      const b=h?[...h.querySelectorAll('.b-btn')].find(x=>/编辑|Edit/i.test(x.textContent.trim())):null;
+      if(!b)return 'no-btn';b.dispatchEvent(new MouseEvent('click',{bubbles:true}));return 'ok';""")
+    if r != "ok":
+        raise TestError("总结提示词缺「编辑」按钮：%r" % r)
+    if not wait_el(".text-edit-dialog-body"):
+        raise TestError("总结提示词编辑弹框未打开")
+    val = eval_js("""(() => {
+      const ts=[...document.querySelectorAll('.text-edit-dialog-body textarea')];
+      const t=ts[ts.length-1];
+      return t ? (t.value || '') : ''; })()""") or ""
     if not val.strip():
         raise TestError("总结提示词内容为空（应自动加载继承值）")
     hints = panel_scope("return P ? [...P.querySelectorAll('.field-hint')].map(e => e.textContent.trim()) : []") or []
@@ -205,6 +218,15 @@ def case_summary_prompt_load():
     btns = panel_scope("return P ? [...P.querySelectorAll('.b-btn')].map(b => b.textContent.trim()) : []") or []
     if not any(("恢复默认" in b) or ("Reset" in b) for b in btns):
         raise TestError(f"总结提示词缺「恢复默认」入口: {btns}")
+    # 收尾：关闭弹框，避免外溢到下一用例
+    eval_js("""(() => {
+      const R=[...document.querySelectorAll('.dialog-shell')].pop();
+      if(!R)return 'no';
+      const b=R.querySelector('.dialog-btn-close');
+      if(!b)return 'no-btn';
+      b.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+      return 'ok'; })()""")
+    time.sleep(0.4)
 
 
 def case_codegraph():
@@ -259,7 +281,7 @@ def main():
     c.console(clear=True)
     total = 0
     ok = 0
-    total += 1; ok += run_case("K1 项目配置 5 页签（安全/上下文管理/CodeGraph/Vfts/自动提交）", case_tabs)
+    total += 1; ok += run_case("K1 项目配置 7 页签（安全/上下文管理/CodeGraph/Vfts/自动提交/日志/配置导入导出）", case_tabs)
     total += 1; ok += run_case("K2 安全页签：添加信任目录", case_security)
     total += 1; ok += run_case("K3 上下文管理：输入 + 快速阈值 + 保存", case_context)
     total += 1; ok += run_case("K4 总结提示词自动加载 + 来源标注 + 恢复默认", case_summary_prompt_load)

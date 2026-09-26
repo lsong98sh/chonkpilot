@@ -70,8 +70,8 @@ func callOptimizeAgentPrompt(b *Bridge, ctx context.Context, params []json.RawMe
 
 // activeLLM 取用户配置的**提示词优化 LLM**（`llm.promptOptimise` = provider name；旧记录 int 索引
 // 兼容；见 §resolveLLMRefIndex）。键缺失 / 空串已由数据层读侧回落 `defaultLLM`（SL-1）。
-// 提示词优化只支持 usr llms 中的真实 provider：为内置项（echo / 系统默认（启动参数））或已失效
-// （改名/删除）→ 明确报错，不猜测端点、不发请求。
+// 提示词优化只支持 usr llms 中的真实 provider：取值空串或已失效（改名/删除）→ 明确报错，
+// 不猜测端点、不发请求。
 func activeLLM(b *Bridge) (optimizeLLM, error) {
 	cfg, err := readUserConfig(b)
 	if err != nil {
@@ -81,7 +81,7 @@ func activeLLM(b *Bridge) (optimizeLLM, error) {
 	if len(llms) == 0 {
 		return optimizeLLM{}, fmt.Errorf("未配置 LLM（请在 用户配置 → LLM 中添加）")
 	}
-	idx, err := resolveLLMRefIndex(cfg["llm.promptOptimise"], llms, b.builtinLLMs)
+	idx, err := resolveLLMRefIndex(cfg["llm.promptOptimise"], llms)
 	if err != nil {
 		return optimizeLLM{}, err
 	}
@@ -104,23 +104,18 @@ func activeLLM(b *Bridge) (optimizeLLM, error) {
 // （2026-09-15：llmref 改为 name 字符串，读侧兼容旧 int 索引；折算口径与 data.LLMRefName 对齐，
 // 见 src/lib/data/llmref.go）：
 //   - 数字（旧记录 int 索引；含 persist 自动计算的 0/-1）→ 越界/负数按既有语义回落首个可用 LLM（下标 0）；
-//   - 字符串 → 先按 provider name 精确匹配 usr llms（同名 usr 记录优先于内置项）；
-//     未命中：内置 provider（如 echo）/ 空串（「系统默认（启动参数）」）/ 已失效名 → 错误（含原因）。
+//   - 字符串 → 按 provider name 精确匹配 usr llms；
+//     未命中：空串（未设置） / 已失效名 → 错误（含原因）。
 //   - 其他（键缺失等）→ 回落下标 0（既有行为）。
-func resolveLLMRefIndex(v any, llms []any, builtins []BuiltinLLM) (int, error) {
+func resolveLLMRefIndex(v any, llms []any) (int, error) {
 	if name, ok := v.(string); ok {
 		if name == "" {
-			return 0, fmt.Errorf("提示词优化 LLM 为「系统默认（启动参数）」，需选择已配置的 LLM")
+			return 0, fmt.Errorf("提示词优化 LLM 未设置，需选择已配置的 LLM")
 		}
 		for i, item := range llms {
 			m, _ := item.(map[string]any)
 			if n, _ := m["name"].(string); n == name {
 				return i, nil
-			}
-		}
-		for _, bi := range builtins {
-			if bi.Name == name {
-				return 0, fmt.Errorf("提示词优化 LLM 为系统内置项「%s」，需选择已配置的 LLM", name)
 			}
 		}
 		return 0, fmt.Errorf("提示词优化 LLM「%s」不存在（请在 用户配置 → LLM 中重新设置）", name)

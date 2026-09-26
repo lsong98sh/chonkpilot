@@ -1,7 +1,7 @@
 // 提示词优化 LLM 解析白盒（SL-4：改读 `llm.promptOptimise`，llmref 形态同 defaultLLM；
 // 2026-09-15：llmref 改 name 字符串 + 旧 int 索引兼容）：
-//   - 提示词优化（activeLLM）只支持 usr llms 中的真实 provider；内置项（echo / 系统默认（启动参数））
-//     与已失效名必须明确报错，不得猜测端点（否则会向 api.openai.com 等未知地址发请求）。
+//   - 提示词优化（activeLLM）只支持 usr llms 中的真实 provider；取值空串（未设置）与已失效名
+//     必须明确报错，不得猜测端点（否则会向 api.openai.com 等未知地址发请求）。
 //   - 键缺失 / 空串 → 由数据层读侧回落 defaultLLM（SL-1），桥侧不重复回落。
 package bridge
 
@@ -12,15 +12,11 @@ import (
 )
 
 // TestResolveLLMRefIndex：name 命中 / 旧 int 索引兼容（int 内核形态与 float64 JSON 形态都认）/
-// 内置项与失效名报错。
+// 空串与失效名报错。
 func TestResolveLLMRefIndex(t *testing.T) {
 	llms := []any{
 		map[string]any{"name": "openai", "model": "gpt-4"},
 		map[string]any{"name": "deepseek", "model": "deepseek-chat"},
-	}
-	builtins := []BuiltinLLM{
-		{Kind: "builtin", Name: "echo", Protocol: "echo", Model: "echo"},
-		{Kind: "default", Model: "mock"}, // 启动参数隐含默认：无 name
 	}
 	cases := []struct {
 		name    string
@@ -36,13 +32,12 @@ func TestResolveLLMRefIndex(t *testing.T) {
 		{"旧 int -1（未配置）→ 回落首个", float64(-1), 0, ""},
 		{"旧 int -1（内核 int）→ 回落首个", -1, 0, ""},
 		{"键缺失（nil）→ 回落首个", nil, 0, ""},
-		{"内置 provider echo → 报错", "echo", 0, "系统内置项"},
-		{"空串（系统默认（启动参数））→ 报错", "", 0, "系统默认（启动参数）"},
+		{"空串（未设置）→ 报错", "", 0, "未设置"},
 		{"已失效名 → 报错", "gone", 0, "不存在"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			idx, err := resolveLLMRefIndex(c.value, llms, builtins)
+			idx, err := resolveLLMRefIndex(c.value, llms)
 			if c.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected err: %v", err)
@@ -56,17 +51,6 @@ func TestResolveLLMRefIndex(t *testing.T) {
 				t.Fatalf("err=%v want contains %q", err, c.wantErr)
 			}
 		})
-	}
-}
-
-// TestResolveLLMRefNameShadowsBuiltin：同名 usr 记录优先于内置项（与后端 loadLLMProvider
-// 命中顺序一致）——usr 里显式配了名为 echo 的记录时，llmref=echo 指向该记录（可优化）。
-func TestResolveLLMRefNameShadowsBuiltin(t *testing.T) {
-	llms := []any{map[string]any{"name": "other"}, map[string]any{"name": "echo", "model": "gpt-4"}}
-	builtins := []BuiltinLLM{{Kind: "builtin", Name: "echo", Protocol: "echo", Model: "echo"}}
-	idx, err := resolveLLMRefIndex("echo", llms, builtins)
-	if err != nil || idx != 1 {
-		t.Fatalf("idx=%d err=%v want 1/nil（同名 usr 记录优先）", idx, err)
 	}
 }
 

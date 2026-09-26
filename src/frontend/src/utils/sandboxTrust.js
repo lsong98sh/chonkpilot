@@ -1,11 +1,12 @@
 /**
- * sandboxTrust — 工具级沙箱「信任目录为空」判定（纯函数，可直接单测）。
+ * sandboxTrust — executor 级沙箱「信任目录为空」判定（纯函数，可直接单测）。
  *
- * 背景（用户视角缺陷批 2 · 设置面 ②）：开启 usr `tool_sandbox` 后，executor 会注入 agentbox
+ * 背景（用户视角缺陷批 2 · 设置面 ②）；2026-09-26 沙箱由工具级改 executor 级：开启 usr
+ * `tool_sandbox`（按 executor 类别 core/desktop/browser）后，executor 会注入 agentbox
  * 策略；策略内容 = prj `security-*`（信任目录）集合。**开而目录为空 → 空允许集 = 全拒**
  * （chonkpilot-mcp-server/server/config.go SandboxPolicyFor 返回 "[]"；
  *  chonkpilot-lib/agentbox/agentbox.go New："空允许集 = 全拒" 严格语义）。
- * → 该工具的所有文件操作会被拒绝。前端须显著内联预警并引导去配置信任目录。
+ * → 该 executor 的所有文件操作会被拒绝。前端须显著内联预警并引导去配置信任目录。
  *
  * 判定口径：
  *   - 二者同时成立才告警：至少一个工具开关已开启（"已开启沙箱"）且信任目录有效条目为 0。

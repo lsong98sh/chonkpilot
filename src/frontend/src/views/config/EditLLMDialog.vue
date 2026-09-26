@@ -11,7 +11,6 @@
     <div class="form-item form-item-12">
       <label class="form-label">{{ $t('config.llm.protocol') }}</label>
       <Select v-model="localData.protocol" :options="protocolOptions" />
-      <span class="field-hint">{{ $t('config.llm.protocolHint') }}</span>
     </div>
     <div class="form-item form-item-12">
       <label class="form-label">{{ $t('config.llm.baseUrl') }}</label>
@@ -27,21 +26,55 @@
       <span class="temp-value">{{ localData.temperature }}</span>
     </div>
     <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.maxOutputToken') }}</label>
-      <Input type="number" v-model.number="localData.maxOutputToken" min="256" max="65536" step="256" style="width:100%" />
+      <div class="label-with-presets">
+        <label class="form-label">{{ $t('config.llm.maxOutputToken') }}</label>
+        <span class="token-presets">
+          <Button
+            v-for="p in tokenPresets"
+            :key="'out-' + p.value"
+            text size="mini"
+            @click="setToken('maxOutputToken', p.value)"
+          >{{ p.label }}</Button>
+        </span>
+      </div>
+      <Input type="number" v-model.number="localData.maxOutputToken" min="256" max="1000000" step="256" style="width:100%" />
     </div>
     <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.maxContextToken') }}</label>
+      <div class="label-with-presets">
+        <label class="form-label">{{ $t('config.llm.maxContextToken') }}</label>
+        <span class="token-presets">
+          <Button
+            v-for="p in tokenPresets"
+            :key="'ctx-' + p.value"
+            text size="mini"
+            @click="setToken('maxContextToken', p.value)"
+          >{{ p.label }}</Button>
+        </span>
+      </div>
       <Input type="number" v-model.number="localData.maxContextToken" min="0" max="1000000000" step="1" style="width:100%" />
       <span class="field-hint">{{ $t('config.llm.maxContextTokenHint') }}</span>
     </div>
     <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.thinking') }}</label>
-      <Switch v-model="localData.thinking" />
-    </div>
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.reasoningEffort') }}</label>
+      <div class="label-switch-row">
+        <label class="form-label">{{ $t('config.llm.thinking') }}</label>
+        <Switch v-model="localData.thinking" />
+      </div>
       <Select v-model="localData.reasoningEffort" :options="reasoningOptions" :placeholder="$t('config.llm.reasoningPlaceholder')" :disabled="!localData.thinking" />
+    </div>
+    <!-- 模型能力（多选）：声明该 provider 支持的能力；「图形」未勾选 → 聊天窗口禁用截图 -->
+    <div class="form-item form-item-12">
+      <label class="form-label">{{ $t('config.llm.capabilities') }}</label>
+      <div class="cap-row">
+        <label class="b-checkbox">
+          <input type="checkbox" value="reasoning" v-model="localData.capabilities" />
+          <span>{{ $t('config.llm.capReasoning') }}</span>
+        </label>
+        <label class="b-checkbox">
+          <input type="checkbox" value="vision" v-model="localData.capabilities" />
+          <span>{{ $t('config.llm.capVision') }}</span>
+        </label>
+      </div>
+      <span class="field-hint">{{ $t('config.llm.capabilitiesHint') }}</span>
     </div>
     <div class="form-item form-item-12">
       <label class="form-label">{{ $t('config.llm.maxToolIterations') }}</label>
@@ -110,6 +143,17 @@ const protocolOptions = [
 const localData = reactive({ ...props.initialData })
 // 旧记录无 protocol（或为空）→ 回落 openai，保证下拉有选中项、保存后字段完整
 if (!localData.protocol) localData.protocol = DEFAULT_LLM_PROTOCOL
+// 旧记录无 capabilities → 空数组（checkbox 多选绑定要求数组）
+if (!Array.isArray(localData.capabilities)) localData.capabilities = []
+
+// Token 快捷值（十进制 K/M）：点按钮即把对应字段设为该值（供「最大输出 Token」「上下文窗口」共用）
+const tokenPresets = [
+  { label: '128K', value: 128000 },
+  { label: '256K', value: 256000 },
+  { label: '512K', value: 512000 },
+  { label: '1M', value: 1000000 },
+]
+function setToken(field, value) { localData[field] = value }
 
 function handleSave() {
   emit('save', { ...localData }, props.editIndex)
@@ -224,6 +268,31 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
+}
+/* Label 行 + Token 快捷值按钮（右对齐）；思考模式标签 + 开关同行（开关靠右） */
+.label-with-presets,
+.label-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.token-presets {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.token-presets :deep(.b-btn) { padding: 2px 6px; min-height: 20px; font-size: 11px; }
+/* 模型能力（多选 checkbox） */
+.cap-row { display: flex; align-items: center; gap: 16px; }
+.b-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
 }
 /* 测试连接：按钮靠左（footer 其余按钮靠右），结果行在按钮上方 */
 .test-conn-btn { margin-right: auto; }

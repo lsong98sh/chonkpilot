@@ -70,11 +70,11 @@ type Config struct {
 	// 语义 = 「可读 / 可写目录」且**递归**），装配层（chonkpilot-llm/server loadExecConfig）
 	// 按实例读取后注入。空表 = 无允许目录（仅在 ToolSandbox 开启时才有意义：空集 = 全拒）。
 	SecurityDirs []agentbox.Rule `json:"-"`
-	// ToolSandbox 是**工具级沙箱开关**（usr 键 `tool_sandbox`，装配层注入；见
-	// chonkpilot-llm/server/server.go loadExecConfig）：key = tools/list 暴露名
-	// （内嵌 self 节点 = self_<契约名>；独立 exe = 契约名），value = 是否对该工具的
-	// executor 施加 agentbox 限制（越界读写一律拒绝）。**未配置 / false = 不启用隔离**
-	// （缺省与现状行为一致，不影响既有用户）。
+	// ToolSandbox 是**executor 级沙箱开关**（usr 键 `tool_sandbox`，装配层注入；见
+	// chonkpilot-llm/server/server.go loadExecConfig）：key = executor 类别（契约
+	// `_meta.category`：core / desktop / browser），value = 是否对该 executor 的**全部工具**
+	// 施加 agentbox 限制（越界读写一律拒绝）。**未配置 / false = 不启用隔离**
+	// （缺省与现状行为一致，不影响既有用户）。**旧形态（按工具暴露名）不再生效**。
 	ToolSandbox map[string]bool `json:"-"`
 
 	// mu 保护运行期可被覆盖的字段（SetRuntime：装配层 instance-register 后注入 usr/prj 配置）；
@@ -302,7 +302,7 @@ func (c *Config) toolAsyncOverride(name string) (ToolAsyncOverride, bool) {
 // ─── agentbox 沙箱（决策 42 §2 (104)/(109)）────────────────
 
 // SetSecurityDirs 运行期覆盖 agentbox 允许目录集（装配层按实例读 prj `security-*` 后注入）。
-// 传入 nil/空 → 清空（= 无允许目录；仅在工具级开关开启时才生效）。
+// 传入 nil/空 → 清空（= 无允许目录；仅在 executor 级开关开启时才生效）。
 // 加写锁，避免与 tools/call 的 SandboxPolicyFor 读取构成 data race。
 func (c *Config) SetSecurityDirs(rules []agentbox.Rule) {
 	next := append([]agentbox.Rule{}, rules...)
@@ -314,15 +314,15 @@ func (c *Config) SetSecurityDirs(rules []agentbox.Rule) {
 	c.SecurityDirs = next
 }
 
-// SetToolSandbox 运行期覆盖**工具级沙箱开关**（装配层读 usr 键 `tool_sandbox` 后注入）。
-// 传入 nil/空表 = 清空（= 全部工具不隔离，默认兼容）；返回开关表是否变化。
-// 归一化：key 去空白，空键丢弃；显式 false 项保留（语义等同缺省，便于「显式关」表达）。
+// SetToolSandbox 运行期覆盖 **executor 级沙箱开关**（装配层读 usr 键 `tool_sandbox` 后注入）。
+// key = executor 类别（core / desktop / browser）；传入 nil/空表 = 清空（= 全部 executor 不隔离，
+// 默认兼容）；返回开关表是否变化。归一化：key 去空白，空键丢弃；显式 false 项保留（语义等同缺省）。
 func (c *Config) SetToolSandbox(raw map[string]bool) bool {
 	next := map[string]bool{}
 	for k, v := range raw {
 		k = strings.TrimSpace(k)
 		if k == "" {
-			log.Printf("[mcp-server] tool_sandbox: 忽略空工具名项")
+			log.Printf("[mcp-server] tool_sandbox: 忽略空类别项")
 			continue
 		}
 		next[k] = v
@@ -339,21 +339,18 @@ func (c *Config) SetToolSandbox(raw map[string]bool) bool {
 	return true
 }
 
-// SandboxPolicyFor 返回该工具 executor 应注入的 agentbox 策略 JSON（`""` = **不注入**，
-// 即不启用隔离）。name = **契约名**（ToolDoc.Name）：查找顺序与 toolAsyncOverride 一致
-// （`self_<契约名>` → 契约名）；开关未配置 / 显式 false → 不启用。
+// SandboxPolicyFor 返回该 **executor 类别** 应注入的 agentbox 策略 JSON（`""` = **不注入**，
+// 即不启用隔离）。category = 工具契约 `_meta.category`（core / desktop / browser，= 执行器类别；
+// 空串 / 未知类别 → 不命中）。开关未配置 / 显式 false → 不启用。
 // 策略内容 = SecurityDirs 的 JSON（可为空数组 = 空允许集 → 执行器侧全拒的严格语义）。
 // 读锁保护（与 SetSecurityDirs/SetToolSandbox 互斥）。
-func (c *Config) SandboxPolicyFor(name string) string {
+func (c *Config) SandboxPolicyFor(category string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if len(c.ToolSandbox) == 0 {
 		return ""
 	}
-	on, ok := c.ToolSandbox["self_"+name]
-	if !ok {
-		on, ok = c.ToolSandbox[name]
-	}
+	on, ok := c.ToolSandbox[category]
 	if !ok || !on {
 		return ""
 	}
@@ -380,7 +377,7 @@ func sameRules(a, b []agentbox.Rule) bool {
 	return true
 }
 
-// sameToolSandbox 比较两张工具开关表是否等价。
+// sameToolSandbox 比较两张 executor 开关表是否等价。
 func sameToolSandbox(a, b map[string]bool) bool {
 	if len(a) != len(b) {
 		return false
@@ -445,7 +442,7 @@ func (c *Config) defaultsMap() map[string]any {
 
 // executorEnv 组装 spawn executor 的子进程环境：继承宿主环境（剔除残留的 CHONKPILOT_*，避免泄漏
 // 第三方/上层上下文）→ 注入本次调用的 CHONKPILOT_INSTANCE/WORKDIR/DATADIR + 配置型
-// CHONKPILOT_INTERPRETERS / CHONK_CHROME，以及**按工具开关**的 agentbox 策略
+// CHONKPILOT_INTERPRETERS / CHONK_CHROME，以及**按 executor 开关**的 agentbox 策略
 // CHONKPILOT_SANDBOX（sandboxPolicy 为空串 = 不注入 = 不启用隔离）。**仅内部 executor
 // 进程可见**（第三方 MCP server 不经我们 spawn，拿不到）。
 func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {

@@ -127,9 +127,11 @@ test('① ChatPanel：无常驻引导；失败后可行动提示 + CTA 跳「设
   assert.match(src, /EventNames\.llmComplete/, '须在 llm-complete 终态上判定失败')
   // 同一次失败只提示一次（按 turn 去重）
   assert.match(src, /llmSetupHintKey/, '须对同一次失败去重（不连点连弹）')
-  // 「系统默认（启动参数）」选项旁常驻说明其默认地址可能不可用（保留的"明示"，非引导条）
-  assert.match(src, /chat\.llm_system_default_hint/, '系统默认项须明示可能不可用')
-  assert.match(src, /llm-item-hint/, '明示须在选项中渲染（非错误弹窗）')
+  // 2026-09-26：聊天输入框选择器只列 usr providers ——「系统默认（启动参数）」选项与其
+  // 常驻说明、前端哨兵一并移除（`gui.system.builtins` 不再下发 `builtinLLMs`）
+  assert.doesNotMatch(src, /llm-item-hint/, '不应再有「系统默认」常驻说明')
+  assert.doesNotMatch(src, /SYSTEM_DEFAULT_LLM/, '不应再有「系统默认」前端哨兵')
+  assert.doesNotMatch(src, /getSystemBuiltins/, '选择器不应再读 builtinLLMs')
   // 不阻断发送：原有发送前校验保留
   assert.match(src, /llmConfigReady\(\)/, '发送前校验须保留（提示不阻断）')
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect')
@@ -146,9 +148,9 @@ test('① useLLMSetup：订阅既有配置刷新并把最新 usr llms 交给回�
   assert.doesNotMatch(comp, /\bwatch(Effect)?\s*\(/, 'composable 不得用 watch/watchEffect')
 })
 
-test('① i18n：引导键已删、失败提示键齐备且保留系统默认说明（zh-CN / en-US）', () => {
+test('① i18n：引导键已删、失败提示键齐备（zh-CN / en-US）', () => {
   const removed = ['llm_setup_title', 'llm_setup_desc', 'llm_setup_cta']
-  const added = ['llm_setup_failed_hint', 'llm_setup_failed_cta', 'llm_system_default_hint']
+  const added = ['llm_setup_failed_hint', 'llm_setup_failed_cta']
   for (const loc of LOCALES) {
     const chat = readLocale(loc, 'chat.json')
     for (const k of removed) {

@@ -161,6 +161,8 @@
 
 **MCP 配置界面**（`views/config/SettingsMCPPage.vue` 列表 + `views/config/EditMCPDialog.vue` 编辑弹窗；落库 = usr `mcps` 表，见 [64 §6](../60-reference/64-配置项一览.md)）：编辑弹窗含「**按项目隔离**」Switch（`config.mcp.isolate`）——**三态表达**：未拨动 = **未设置**（保存时 `delete localData.isolate`，**不写库**）+ 提示「自动（未设置，按传输方式推断）」（`isolateAuto`，另附 `isolateHint`）；一旦拨动即视为**显式设置**并写 `true`/`false`（未显式设置时开关显示随 transport 变化的推断值，computed 推断、无 `watch`）。列表新增「按项目隔离」列（`isolateLabel`）：**显式设置 → 是/否**；**未设置 → 推断值 + 「（自动）」后缀**（`isolateAutoSuffix`；推断口径与 gateway `ServerEntry.IsolateEnabled()` 一致：stdio → 隔离、http/sse → 共享，transport 留空按连接点推断）。
 
+**编辑弹窗页签（2026-09-26）**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 启用 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）与「**运行信息**」（运行时 / 启动参数 / 环境变量 / 工作目录 / 高频工具 / **按项目隔离** / **沙箱隔离**）两页签；页签**仅显示分组**，`handleSave` 仍一次性提交两页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱隔离**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」（2026-09-26 改造）不再用逗号分隔文本框：改为**行 = 摘要（未设置 / 已选 N 个 / 全部）+【设置】按钮** → 独立弹窗 `SetMCPHotToolsDialog.vue`（按别名列出该 server 工具勾选 + 「全部工具」= 全部 hot；数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落 usr `mcps[].hot_tools`。
+
 **保存时机**：① 每次展开/折叠后；② 收到变更推送后（防抖约 500ms）；③ 选中节点变化时；④ IDE 关闭时兜底保存。
 
 ---

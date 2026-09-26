@@ -7,21 +7,11 @@
     </div>
     <Table :columns="columns" :data="rows" :empty-text="$t('scenario.empty')">
       <template #action="{ row }">
-        <!-- 系统级（app）capability 只读降级（D-06）：仅展示 + 提示，不给可编辑/删除入口 -->
-        <Tag
-          v-if="row.level === 'app'"
-          size="small"
-          type="info"
-          class="readonly-badge"
-          :title="$t('scenario.system_readonly')"
-        >{{ $t('scenario.system_readonly_badge') }}</Tag>
-        <template v-else>
-          <Button text size="small" v-mq:[EventNames.scenarioEditRow].click="{ row }">
-            {{ $t('common.edit') }}
-          </Button>
-          <Button v-if="row.key === 'default'" text size="small" v-mq:[EventNames.scenarioRestoreDefault].click="{ row }">{{ $t('scenario.restore_default') }}</Button>
-          <Button text size="small" type="danger" v-mq:[EventNames.scenarioDeleteRow].click="{ row }">{{ $t('common.delete') }}</Button>
-        </template>
+        <!-- 三级场景（app / user / project）均可编辑/删除（app 级自 2026-09-26 起可编辑，出厂内容由 embed 提供） -->
+        <Button text size="small" v-mq:[EventNames.scenarioEditRow].click="{ row }">
+          {{ $t('common.edit') }}
+        </Button>
+        <Button text size="small" type="danger" v-mq:[EventNames.scenarioDeleteRow].click="{ row }">{{ $t('common.delete') }}</Button>
       </template>
     </Table>
   </div>
@@ -31,11 +21,11 @@
 import { h, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { message, confirm } from '../../components/ui'
-import { Button, Table, Tag } from '../../components/ui'
+import { Button, Table } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import { dialog } from '../../components/dialog'
 import ScenarioEditDialog from './ScenarioEditDialog.vue'
-import { getScenarioList, deleteScenario, restoreScenario } from '../../api/scenario'
+import { getScenarioList, deleteScenario } from '../../api/scenario'
 import { onDataRefresh } from '../../utils/dataClient'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
@@ -103,19 +93,10 @@ function handleAdd() {
 }
 
 function handleEdit(row) {
-  // 系统级（app）capability 只读（D-06）：仅展示、不可编辑（入口已隐藏，此处兜底）
-  if (row && row.level === 'app') {
-    message.warning(t('scenario.system_readonly'))
-    return
-  }
   openEditDialog(row)
 }
 
 async function handleDelete(row) {
-  if (row.level === 'app') {
-    message.warning(t('scenario.system_readonly'))
-    return
-  }
   try {
     await confirm(t('scenario.delete_confirm', { name: row.name }), t('common.confirm'))
     await deleteScenario(row.id, row.level)
@@ -125,20 +106,6 @@ async function handleDelete(row) {
     mq.emit(EventNames.scenarioReload, {})
   } catch (e) {
     if (e !== 'cancel') message.error(t('scenario.delete_failed') + ': ' + (e.message || e))
-  }
-}
-
-async function handleRestoreDefault(row) {
-  try {
-    await confirm(t('scenario.restore_default_confirm', { name: row.name }), t('common.confirm'))
-    // data-scenario-restore 消息面（20-gui），替代 RestoreDefaultScenario RPC
-    await restoreScenario(row.id)
-    message.success(t('scenario.restored'))
-    await loadList()
-    emit('changed')
-    mq.emit(EventNames.scenarioReload, {})
-  } catch (e) {
-    if (e !== 'cancel') message.error(t('scenario.restore_failed') + ': ' + (e.message || e))
   }
 }
 
@@ -153,9 +120,6 @@ onMounted(() => {
   }))
   _unsubs.push(mq.on(EventNames.scenarioDeleteRow, ({ row }) => {
     if (row) handleDelete(row)
-  }))
-  _unsubs.push(mq.on(EventNames.scenarioRestoreDefault, ({ row }) => {
-    if (row) handleRestoreDefault(row)
   }))
 })
 
@@ -173,8 +137,5 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
 .toolbar-actions {
   margin-bottom: 12px;
   flex-shrink: 0;
-}
-.readonly-badge {
-  cursor: help;
 }
 </style>

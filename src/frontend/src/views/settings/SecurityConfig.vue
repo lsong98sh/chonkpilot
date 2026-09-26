@@ -3,11 +3,19 @@
     <div class="tab-toolbar">
       <span class="tab-title">{{ $t('security.title') }}</span>
       <div class="tab-actions">
-        <!-- ⑤ dirty 标记（仅显示，不改行编辑即保存的时机） -->
+        <!-- ⑤ dirty 标记（与手动保存按钮联动） -->
         <span v-if="dirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
-        <Button size="small" type="primary" v-mq:[EventNames.securityAdd].click>
+        <Button size="small" v-mq:[EventNames.securityAdd].click>
           <Icon name="plus" /> {{ $t('security.add') }}
         </Button>
+        <Button
+          size="small"
+          type="primary"
+          data-security-save
+          :disabled="!dirty"
+          :loading="saving"
+          @click="save"
+        >{{ $t('common.save') }}</Button>
       </div>
     </div>
     <p class="security-hint">{{ $t('security.not_enforced_hint') }}</p>
@@ -29,13 +37,13 @@
             <td style="width:40px">{{ rowIndex + 1 }}</td>
             <td style="min-width:300px">
               <div class="security-dir-row">
-                <Input v-model="entries[rowIndex].dir" :placeholder="$t('security.dir_placeholder')" @change="save" />
+                <Input v-model="entries[rowIndex].dir" :placeholder="$t('security.dir_placeholder')" @change="syncDirty" />
                 <Button size="small" v-mq:[EventNames.securitySelectDir].click="{ index: rowIndex }">...</Button>
               </div>
             </td>
             <td style="width:80px;text-align:center">
               <label class="b-checkbox">
-                <input type="checkbox" v-model="entries[rowIndex].writable" @change="save" />
+                <input type="checkbox" v-model="entries[rowIndex].writable" @change="syncDirty" />
               </label>
             </td>
             <td style="width:70px;text-align:center">
@@ -64,7 +72,7 @@ import { EventNames } from '../../events/event-names'
 
 const { t } = useI18n()
 
-// ⑤ dirty 可视标记（仅显示，不改行编辑即保存的时机）
+// ⑤ dirty 可视标记（与手动保存联动：编辑/增删只改本地态 → dirty；保存成功 → 清除）
 const { dirty, markDirty, markSaved } = useUnsavedMark()
 
 // 目录选择统一入口：GUI/native → gui.dir.open-dialog；browser → GET /dirs 只读选择器
@@ -75,14 +83,31 @@ const props = defineProps({
 })
 
 const entries = ref([])
+const saving = ref(false)
 const _unsubs = []
 // 已移除条目的持久化键：随下一次 save 落库（删除 = data-prj-security-delete）
 let _removedKeys = []
+// 上次落库/加载时的条目快照：用于「无改动」判定（dirty 精确、可回退）
+let _savedSnapshot = ''
+
+// 当前条目状态的可比较快照（忽略行号，含待删键标记）
+function snapshot() {
+  return JSON.stringify(entries.value.map((e) => ({ key: e._key || '', dir: e.dir || '', writable: !!e.writable })))
+}
+
+// 编辑/增删后重算 dirty：与上次快照一致（且无待删键）→ 视为无改动。
+function syncDirty() {
+  if (_removedKeys.length === 0 && snapshot() === _savedSnapshot) markSaved()
+  else markDirty()
+}
 
 async function load() {
   try {
     const res = await getProjectSecurity()
     entries.value = res.entries || []
+    _removedKeys = []
+    _savedSnapshot = snapshot()
+    markSaved()
   } catch (e) {
     entries.value = []
     // ④ 加载失败须用户可见（不再静默清空）
@@ -90,23 +115,28 @@ async function load() {
   }
 }
 
-// save：逐条 upsert（一条目录 = 一个 persist key）+ 删除已移除条目；成功后清空待删键。
+// save（手动）：逐条 upsert（一条目录 = 一个 persist key）+ 删除已移除条目；成功后清空待删键。
 // 信任目录由 agentbox 在下次 tools/call spawn 时读取 → 保存即生效（onPrjSecurityRefresh 热生效）。
 async function save() {
-  markDirty()
+  if (!dirty.value || saving.value) return
+  saving.value = true
   try {
     await saveProjectSecurity(entries.value, _removedKeys)
     _removedKeys = []
+    _savedSnapshot = snapshot()
     markSaved()
     message.success(savedText(t, APPLY_INSTANT))
   } catch (e) {
     message.error(saveFailedText(t, e))
+  } finally {
+    saving.value = false
   }
 }
 
+// 新增条目：只改本地态（点【保存】才落库）
 function addEntry() {
   entries.value.push({ _key: '', dir: '', writable: false })
-  save()
+  syncDirty()
 }
 
 // 选择信任目录：GUI/native 走系统目录选择框（失败回退手输）；browser 走 GET /dirs 选择器
@@ -116,24 +146,25 @@ async function selectDir(index) {
     const path = await pickDir()
     if (path) {
       entries.value[index].dir = path
-      save()
+      syncDirty()
     }
   } catch (_) {
     const path = prompt(t('security.dir_path_prompt'))
     if (path) {
       entries.value[index].dir = path
-      save()
+      syncDirty()
     }
   }
 }
 
+// 删除条目：只改本地态（记下待删键，点【保存】才落库）
 async function deleteEntry(index) {
   try {
     await confirm(t('security.delete_confirm'))
   } catch { return }
   const removed = entries.value.splice(index, 1)[0]
   if (removed && removed._key) _removedKeys.push(removed._key)
-  save()
+  syncDirty()
 }
 
 onMounted(() => {

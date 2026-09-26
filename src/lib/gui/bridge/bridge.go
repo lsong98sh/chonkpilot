@@ -56,10 +56,6 @@ type Bridge struct {
 	// ~/.chonkpilot/data/<prj-id>（B 方案，[24 §3.2] MW-8）；显式 data_dir → 与 prj 同根。
 	// 空 = 未注入 → 回落 <workDir>/.chonkpilot（兼容旧行为，见 uploadRoot）。
 	prjUsrRoot string
-	// builtinLLMs 是只读 LLM 条目（main 注入，SetLLMBuiltins）：启动参数 -llm-base/-llm-model
-	// 的隐含默认（kind=default）——不进 usr llms 表，仅随 gui.system.builtins 展示。
-	// **D-30（2026-09-22）后内置 provider（echo，kind=builtin）不再注入**（降为 router 内置兜底）。
-	builtinLLMs []BuiltinLLM
 	// openDevTools 由 main 注入（宿主程序化打开 DevTools；gui.devtools.open 用）。
 	// nil = 未接线（宿主不支持该能力）→ gui.devtools.open 明确失败，不静默。
 	openDevTools func()
@@ -141,22 +137,6 @@ func (b *Bridge) uploadRoot() string {
 // 注入后 **config 类 + session 域**（data-session-*）data-* 由桥走门面（dataViaFacade）；
 // 未注入（nil，如 -no-server 薄客户端）→ 保留既有总线转发路径（行为不变）。
 func (b *Bridge) SetFacade(cfg facade.API) { b.cfg = cfg }
-
-// BuiltinLLM 是只读 LLM 条目（启动参数隐含默认 / 预留的内置 provider 项）：由 main 注入——
-// 桥不依赖 chonkpilot-llm 内部包（main 读取后映射成本结构，见 64-配置项一览 §11.1）。
-// **D-30（2026-09-22）后 main 只注入 kind=default 一项**；`builtin` 取值保留在契约形状里
-// （前端仍按 kind 分派展示，见 61 §1 `gui.system.builtins`）。
-type BuiltinLLM struct {
-	Kind     string // default = 启动参数隐含默认；builtin = 代码内置 provider（D-30 后无生产者）
-	Name     string // provider name（default 项为空，前端展示「系统默认」）
-	Protocol string // 协议（openai / responses / echo）
-	Model    string
-	BaseURL  string
-}
-
-// SetLLMBuiltins 由 main 在 flag.Parse 后注入只读 LLM 条目（启动参数隐含默认）：
-// 供 gui.system.builtins 输出 `builtinLLMs` 段（前端只读展示，不入库、不可编辑/删除）。
-func (b *Bridge) SetLLMBuiltins(items []BuiltinLLM) { b.builtinLLMs = items }
 
 // SetDevToolsOpener 由 main 注入「程序化打开 DevTools」能力（gui.devtools.open）。
 // 与「用户能否用快捷键/右键菜单打开 DevTools」的宿主开关解耦（B3：用户入口屏蔽后，

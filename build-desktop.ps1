@@ -20,8 +20,9 @@
 #   ├── chonkpilot-vfts-mcp-server.exe      # vfts 引擎（出厂内置 MCP）
 #   ├── zvec_c_api.dll                      # vfts 运行库（必须与 vfts 引擎 exe 同目录）
 #   ├── capability/                         # 契约 + executor×3（来自 dist/other）
-#   └── scenarios/                          # app 级场景（仅出厂场景「开发场景」default/，随发布只读资源；
-#                                           #   与 capability/ 平级，25-MCP与场景分层模型 §6 / T6）
+#   └── (无 scenarios/)                     # 出厂场景「开发场景」由 embed 内嵌（源 src/lib/data/scenarios），
+#                                           #   运行时 app 初始化物化到 <exeDir>/scenarios/（缺失即恢复、已存在
+#                                           #   不覆盖；app 级可编辑）——**不再随产物投放**（25-MCP与场景分层模型 §6）
 # 全量组件：内嵌 lib 插件（compress/history/memory/vfts/codegraph）随 exe 编译；
 #   外置引擎 exe（codegraph/vfts）与 zvec_c_api.dll 置于发行根（与 GUI/CLI exe 同级——
 #   插件按「宿主 exe 同目录」解析引擎；zvec_c_api.dll 必须与 vfts 引擎 exe 同目录）。
@@ -121,17 +122,6 @@ if (Test-Path $capDst) {
 Copy-Item $capSrc $capDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
 
-# 复制 scenarios/ 到发行目录（app 级场景 = 随发布只读资源，与 capability/ **平级**）
-Write-Host "    -> stage scenarios/ to dist/desktop"
-$scnSrc = Join-Path $root "src\lib\data\scenarios"
-if (-not (Test-Path $scnSrc)) { throw "scenarios 资源缺失: $scnSrc" }
-$scnDst = Join-Path $dist "scenarios"
-if (Test-Path $scnDst) {
-    [System.IO.Directory]::Delete($scnDst, $true)
-}
-Copy-Item $scnSrc $scnDst -Recurse -Force
-Write-Host "    ok: scenarios/ ($((Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count) files)"
-
 # -- 5) codegraph 引擎构建并并入发行根（出厂内置 MCP；默认不接入，见 42 §2 (17)） --
 Write-Host "==> [5/6] build codegraph engine"
 & (Join-Path $root "build-codegraph.ps1")
@@ -157,7 +147,6 @@ Write-Host "    ok: $vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB) -> $dist"
 $mbGui = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
 $mbCli = [Math]::Round((Get-Item $outCliExe).Length / 1MB, 1)
 $capCount = (Get-ChildItem (Join-Path $dist "capability") -Recurse -File | Measure-Object).Count
-$scnCount = (Get-ChildItem (Join-Path $dist "scenarios") -Recurse -File | Measure-Object).Count
 Write-Host "==> done: $dist"
 Write-Host "    chonkpilot.exe                      $mbGui MB"
 Write-Host "    chonkpilot-cli.exe                  $mbCli MB"
@@ -165,6 +154,6 @@ Write-Host "    chonkpilot-codegraph-mcp-server.exe $mbCg MB"
 Write-Host "    chonkpilot-vfts-mcp-server.exe      $mbVf MB"
 Write-Host "    zvec_c_api.dll                      $mbDll MB"
 Write-Host "    capability/                         $capCount files"
-Write-Host "    scenarios/                          $scnCount files"
+Write-Host "    (scenarios/ 由 embed 内嵌，运行时 app 初始化物化到 <exeDir>/scenarios/)"
 Write-Host "    run: cd $dist ; .\chonkpilot.exe"
 Write-Host "    cli: cd $dist ; .\chonkpilot-cli.exe --prompt 'hello' --work-dir ."

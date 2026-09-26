@@ -36,6 +36,14 @@ function fnBody(src, name) {
   return m ? m[1] : null
 }
 
+/** 去掉 HTML / CSS / JS 注释后再做「禁用形态」扫描（注释里提到 watch 是允许的） */
+function stripComments(s) {
+  return s
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+}
+
 // ═══════════════════════════════════════════════════════════════
 // A1/A2/A4 记忆与提示词：弹框编辑 + 保存即关 + 刷新预估 token + 内嵌优化
 // ═══════════════════════════════════════════════════════════════
@@ -54,10 +62,10 @@ test('A1 通用编辑弹框：TextEditDialog 多行 + 保存回调 + 内嵌优�
 test('A1 记忆类别/用户偏好编辑：读内容 → 弹框 → 保存即关 + 刷新清单（预估 token）', () => {
   const src = read(PAGE)
   // P1（2026-09-24）：读/弹框/保存逻辑抽入共享 composable（状态栏「记忆总 token 数」入口同源）
-  assert.match(src, /import \{ useMemoryCategories \} from '\.\.\/\.\.\/composables\/useMemoryCategories'/, '须复用共享 composable')
-  assert.match(src, /openContentEditor,/, '行内「编辑」仍走同一弹框实现（来自 composable）')
-  assert.match(src, /@click="openContentEditor\(c\)"/, '项目类别行「编辑」须走弹框')
-  assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好「编辑」须走弹框')
+  assert.match(src, /import \{ useMemoryCategories, DEFAULT_MEMORY_PROMPT \} from '\.\.\/\.\.\/composables\/useMemoryCategories'/, '须复用共享 composable')
+  assert.match(src, /openContentEditor,/, '行内「编辑内容」仍走同一弹框实现（来自 composable）')
+  assert.match(src, /@click="openContentEditor\(c\)"/, '项目类别行「编辑内容」须走弹框')
+  assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好「编辑内容」须走弹框')
   const comp = read('composables/useMemoryCategories.js')
   assert.match(comp, /import TextEditDialog from '\.\.\/components\/common\/TextEditDialog\.vue'/, '须复用通用编辑弹框')
   const openFn = fnBody(comp, 'openContentEditor')
@@ -73,6 +81,89 @@ test('A1 记忆类别/用户偏好编辑：读内容 → 弹框 → 保存即关
   assert.match(showFn, /handle\.close\(\)[\s\S]*?await load\(\)/, '关闭后须重读清单（刷新预估 token）')
 })
 
+test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）+ 提示词弹框（来源提示/恢复默认/优化）', () => {
+  const src = read(PAGE)
+  // 两个编辑入口并存（项目类别行 + 用户偏好行）——文案清晰区分（不是同一按钮）
+  assert.match(src, /@click="openPromptEditor\(c\)"/, '项目类别行须有「编辑提示词」入口')
+  assert.match(src, /@click="openPromptEditor\(userPref\)"/, '用户偏好行须有「编辑提示词」入口')
+  assert.match(src, /@click="openContentEditor\(c\)"/, '项目类别行须有「编辑内容」入口')
+  assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好行须有「编辑内容」入口')
+  assert.match(src, /projectConfig\.memory_edit_prompt/, '「编辑提示词」须走 i18n（不硬编码中文）')
+  assert.match(src, /projectConfig\.memory_edit_content/, '「编辑内容」须走 i18n')
+  // 提示词弹框：复用 TextEditDialog + 来源提示 + 恢复默认 + 内嵌优化
+  const fn = fnBody(src, 'openPromptEditor')
+  assert.ok(fn, '未找到 openPromptEditor')
+  assert.match(fn, /dialog\.show\(h\(TextEditDialog, \{/, '提示词须弹框编辑（复用 TextEditDialog）')
+  assert.match(fn, /content: isCustom \? custom : DEFAULT_MEMORY_PROMPT/, '未自定义须回填内置默认（可查看/编辑）')
+  assert.match(fn, /hint: isCustom \? t\('projectConfig\.memory_prompt_source_custom'\) : t\('projectConfig\.memory_prompt_source_default'\)/, '未自定义须显示「当前为内置默认」来源提示')
+  assert.match(fn, /reset: isCustom \? \{/, '已自定义须提供「恢复默认」入口（未自定义 → 不显示）')
+  assert.match(fn, /label: t\('projectConfig\.memory_prompt_reset'\)/, '「恢复默认」须走 i18n')
+  assert.match(fn, /optimize: \{[\s\S]*?memory_prompt_optimize_title/, '弹框须自带优化（复用既有优化链路）')
+  assert.match(fn, /bodyClass: 'text-edit-dialog-body'/, '提示词弹框同款 bodyClass（撑满/不留白）')
+  // 保存 / 恢复语义：空白或与内置默认相同 → 清键回落；否则按级别落库
+  const saveFn = fnBody(src, 'saveMemoryPrompt')
+  assert.ok(saveFn, '未找到 saveMemoryPrompt')
+  assert.match(saveFn, /val\.trim\(\) === '' \|\| val\.trim\(\) === DEFAULT_MEMORY_PROMPT/, '空白/等于内置默认 → 清键（回落内置默认）')
+  assert.match(saveFn, /await setConfig\(key, val\)/, '项目级落 prj 键 memory.prompt.<类别>')
+  assert.match(saveFn, /writeUserPrefPrompts\(next\)/, '用户级落 usr 自由键 memory_prompts')
+  const clearFn = fnBody(src, 'clearMemoryPrompt')
+  assert.ok(clearFn, '未找到 clearMemoryPrompt')
+  assert.match(clearFn, /await deleteConfig\(key\)/, '项目级「恢复默认」= 删 prj 键')
+  assert.match(clearFn, /writeUserPrefPrompts/, '用户级「恢复默认」= 整表重写（空表 → 删 usr 键）')
+  const writeFn = fnBody(src, 'writeUserPrefPrompts')
+  assert.ok(writeFn, '未找到 writeUserPrefPrompts')
+  assert.match(writeFn, /resetUserKey\(USER_MEMORY_PROMPTS_KEY\)/, '空表须删 usr 自由键（回落缺省）')
+  // 键名/键前缀与 Go 侧同字面量（跨端零新增消息面，复用既有 prj-config / user-config 面）
+  assert.match(src, /const MEMORY_PROMPT_PREFIX = 'memory\.prompt\.'/, 'prj 键前缀须与 Go 侧 memoryPromptPrefix 一致')
+  assert.match(src, /const USER_MEMORY_PROMPTS_KEY = 'memory_prompts'/, 'usr 自由键名须与 Go 侧 userMemoryPromptsKey 一致')
+  assert.match(src, /saveUserConfig\(\{ \[USER_MEMORY_PROMPTS_KEY\]/, 'usr 提示词写入须走既有 data-user-config-save')
+  // 变更广播订阅（沿用既有面 → 不串实例）
+  assert.match(src, /onDataRefresh\('user-config', loadUserPrefPrompts\)/, 'usr 提示词变更须经既有广播重载')
+  assert.match(src, /onDataRefresh\('prj-config', loadConfig\)/, 'prj 提示词变更须经既有广播重载')
+  assert.match(src, /await loadUserPrefPrompts\(\)/, '进页须读 usr 提示词')
+  // 规范：无 watch
+  assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect')
+
+  // TextEditDialog：hint / reset 为**可选**扩展（默认不显示，不影响既有调用）
+  const te = read('components/common/TextEditDialog.vue')
+  assert.match(te, /hint: \{ type: String, default: '' \}/, 'TextEditDialog 须支持可选 hint')
+  assert.match(te, /reset: \{ type: Object, default: null \}/, 'TextEditDialog 须支持可选 reset')
+  assert.match(te, /v-if="hint" class="text-edit-hint"/, 'hint 须渲染（来源提示）')
+  assert.match(te, /v-if="reset"/, 'reset 按钮须按需渲染')
+  assert.match(te, /reset\.onClick/, 'reset 须回调父组件（落库）')
+
+  // 跨端字面量：前端镜像内置默认提示词 = Go 侧 defaultRewriteSystemPrompt（逐段比对，防漂移）
+  const comp = read('composables/useMemoryCategories.js')
+  assert.match(comp, /export const DEFAULT_MEMORY_PROMPT =/, '须导出内置默认提示词常量（供弹框回填 + 跨端核对）')
+  const go = readRepo('plugins/plugin-memory/memory.go')
+  const segs = [
+    '你是记忆库沉淀器。给定某个记忆类别的现有全文与本轮对话的新增信息，',
+    '请把两者合并后重写该类别全文（累加 + 更新：修正过时内容、去重、条理化、不臆造）。',
+    '只输出重写后的 markdown 全文，不要任何解释或代码块围栏。',
+  ]
+  for (const s of segs) {
+    assert.ok(comp.includes(s), '前端默认提示词缺段（与 Go 常量不一致）：' + s)
+    assert.ok(go.includes(s), 'Go 侧 defaultRewriteSystemPrompt 缺段（常量被改动？）：' + s)
+  }
+  assert.match(go, /defaultRewriteSystemPrompt =/, 'Go 侧须保留默认提示词常量')
+})
+
+test('A1b 提示词弹框 i18n：新增键 zh/en 齐备且可插值', () => {
+  const KEYS = ['memory_edit_prompt', 'memory_edit_content', 'memory_prompt_edit',
+    'memory_prompt_placeholder', 'memory_prompt_source_default', 'memory_prompt_source_custom',
+    'memory_prompt_reset', 'memory_prompt_reset_done',
+    'memory_prompt_optimize_title', 'memory_prompt_optimize_use_case']
+  for (const loc of LOCALES) {
+    const j = readLocale(loc, 'projectConfig.json')
+    for (const k of KEYS) {
+      assert.ok(typeof j[k] === 'string' && j[k].trim().length > 0, `${loc} 缺 projectConfig.${k}`)
+    }
+    assert.match(j.memory_prompt_optimize_title, /\{name\}/, `${loc} memory_prompt_optimize_title 须含 {name}`)
+    // 两个入口文案须可区分（不得同文）
+    assert.notEqual(j.memory_edit_prompt, j.memory_edit_content, `${loc} 两个编辑入口文案须区分`)
+  }
+})
+
 test('A2 总结提示词：编辑改弹框 + 保存即关 + 内嵌优化（可恢复优化）', () => {
   const src = read(PAGE)
   assert.match(src, /@click="openSummaryEditor"/, '总结提示词须改为「编辑」按钮开弹框')
@@ -84,6 +175,11 @@ test('A2 总结提示词：编辑改弹框 + 保存即关 + 内嵌优化（可�
   assert.match(fn, /message\.success\([\s\S]*?handle\.close\(\)/, '保存成功后须关闭弹框')
   // 旧的页内优化/恢复按钮已移除（不重复入口）
   assert.doesNotMatch(src, /contextOptimizePrompt/, '页内优化入口应已移除（改弹框内嵌）')
+  // 2026-09-26：只读展示移除（内容仅在弹框内查看）；「编辑」按钮与记忆类别行同款（text）
+  assert.doesNotMatch(src, /class="prompt-editor"/, '只读总结提示词 textarea 应已移除')
+  assert.match(src, /<Button size="small" text @click="openSummaryEditor">/, '「编辑」须为文本按钮（与类别行一致）')
+  assert.match(src, /summary_prompt_source_(override|inherit)/, '来源标注仍保留')
+  assert.match(src, /@click="resetSummaryOverride"/, '「恢复默认」入口仍保留')
 })
 
 test('A4 记忆总 token 数：主入口在状态栏底部 → 分类列表 → 选中内容弹框（可编辑、可保存）', () => {
@@ -155,7 +251,7 @@ test('P1 上下文阈值取值语义：非法值（<0）前端显式提示 + 0 �
 // ═══════════════════════════════════════════════════════════════
 test('A5 弹框布局：bodyClass 命中全局去内距 + 组件 flex:1 撑满', () => {
   const css = read('assets/styles/global.css')
-  const block = css.match(/\.dialog-body\.scenario-edit-dialog-body,\s*\n\.dialog-body\.text-edit-dialog-body\s*\{([\s\S]*?)\n\}/)
+  const block = css.match(/\.dialog-body\.scenario-edit-dialog-body,\s*\n\.dialog-body\.text-edit-dialog-body,\s*\n\.dialog-body\.mcp-hot-tools-dialog-body\s*\{([\s\S]*?)\n\}/)
   assert.ok(block, 'global.css 须有 .dialog-body.text-edit-dialog-body 规则')
   assert.match(block[1], /padding:\s*0/, '须去 body 内距（底部不留白）')
   assert.match(block[1], /flex-direction:\s*column/, '须纵向 flex 撑满')
@@ -165,6 +261,9 @@ test('A5 弹框布局：bodyClass 命中全局去内距 + 组件 flex:1 撑满',
   assert.match(editor, /\.text-edit-input \{[\s\S]*?flex: 1;[\s\S]*?\}/, '编辑区须 flex:1 撑满')
   // 页面侧确实传了 bodyClass（否则规则不生效）
   assert.match(read(PAGE), /bodyClass: 'text-edit-dialog-body'/, '记忆/提示词弹框须传 bodyClass')
+  // 高频工具设置弹窗同法：EditMCPDialog 传 bodyClass，弹窗内容体 flex:1 撑满
+  assert.match(read('views/config/EditMCPDialog.vue'), /bodyClass: 'mcp-hot-tools-dialog-body'/, '高频工具弹窗须传 bodyClass')
+  assert.match(read('views/config/SetMCPHotToolsDialog.vue'), /\.hot-tools-body \{[\s\S]*?flex: 1;[\s\S]*?\}/, '高频工具弹窗内容体须 flex:1 撑满')
 })
 
 // ═══════════════════════════════════════════════════════════════

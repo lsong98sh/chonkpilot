@@ -62,6 +62,14 @@ PJ_FILE = os.path.join(PJ_DIR, "pj_smoke.tool.md")
 
 CLEANUPS = [SMOKE_FILE, SKILL_FILE, PROMPT_FILE, RES_FILE, PJ_FILE]
 
+# 左侧资源面板模式 → 激活段文案（zh-CN / en-US 两种；2026-09-26 增第 4 模式「项目记忆」）
+MODE_LABELS = {
+    "project": ("Project", "项目"),
+    "knowledge": ("Knowledge", "知识库"),
+    "memory": ("Project Memory", "项目记忆"),
+    "sessions": ("Sessions", "会话"),
+}
+
 
 def read_until(path, needles, timeout=8):
     """轮询读取文件直到内容含全部 needles（消除"文件刚创建即读"的竞态：持久层先建后写）。
@@ -227,14 +235,13 @@ class KB:
         return False
 
     def switch_mode(self, want):
-        """按目标切到 项目/知识库（使用 filetreeModeSelect，与 seg 点击同一事件）。"""
+        """按目标切到 项目/知识库/项目记忆/会话（使用 filetreeModeSelect，与 seg 点击同一事件）。"""
         self.js("window.mq.emit('filetree-mode-select', %s)" % json.dumps({"mode": want}))
         end = time.time() + 8
         while time.time() < end:
             seg = self.js("Array.from(document.querySelectorAll('.explorer-seg-btn')).map(n=>({t:n.textContent.trim(),a:n.classList.contains('active')}))") or []
             act = [s["t"] for s in seg if s["a"]]
-            key = "Knowledge" if want == "knowledge" else "Project"
-            if act and any(x == key or x == "知识库" or x == "项目" and key == "Project" for x in act):
+            if act and any(x in MODE_LABELS.get(want, ()) for x in act):
                 return True
             time.sleep(0.4)
         return False
@@ -417,8 +424,9 @@ def main():
             labels = {s["t"] for s in seg}
             assert labels & {"Knowledge", "知识库"}, f"缺「知识库」分段：{seg}"
             assert labels & {"Sessions", "会话"}, f"缺「会话」分段（P3-C1 迁入左侧导航）：{seg}"
-            # v-show 三体（项目/知识库/会话，P3-C1 新增会话页签 → 由 2 增为 3）
-            assert kb.js("document.querySelectorAll('.explorer-body').length") == 3, "应有三个 .explorer-body（v-show 三体）"
+            assert labels & {"Project Memory", "项目记忆"}, f"缺「项目记忆」分段（2026-09-26 第 4 模式）：{seg}"
+            # v-show 四体（项目/知识库/项目记忆/会话，2026-09-26 新增项目记忆 → 由 3 增为 4）
+            assert kb.js("document.querySelectorAll('.explorer-body').length") == 4, "应有四个 .explorer-body（v-show 四体）"
             vis = kb.js("Array.from(document.querySelectorAll('.explorer-body')).filter(n=>getComputedStyle(n).display!=='none').length") or 0
             assert vis == 1, f"v-show 应恰有一个可见：{vis}"
             assert kb.js("!!document.querySelector('.knowledge-tree')"), "知识库树不存在"

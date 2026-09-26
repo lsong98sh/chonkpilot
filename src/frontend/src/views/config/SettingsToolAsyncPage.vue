@@ -1,8 +1,17 @@
 <!--
   工具异步配置页（usr 级；设置菜单 → preview tab kind = settings-tool-async）
 
-  需求（用户口径）：列出所有工具（`tools/list`）按 MCP 分组，逐工具设「仅异步 / 仅同步 /
-  自动异步+超时 / 手动异步」（前端在 manual 工具消息上出现「转异步」图标，点击转）。
+  需求（用户口径，2026-09-26 改版）：
+    - 明细用**表格**（Table 组件）呈现：工具 / 模式 / 阈值 / 超时；工具名列 min-width 200px；
+      仍按 MCP（`_meta.server`）分组（`.tool-group` + `.group-title`）。
+    - **手动保存**：模式选择 / 数值输入只改本地待保存态（显示「未保存」），点页头【保存】一次性
+      提交本页全部变更（usr 键 `tool_async`，走既有 `data-user-config-save`，**零消息面变更**）；
+      **无改动时保存按钮禁用**。
+    - **不再显示默认配置信息**：原「契约默认/用户配置」徽标与「契约现值」文本移除；契约默认信息
+      改由「恢复默认」按钮的 tooltip 承载。
+    - **去「高级」按钮**：`hard_timeout`（执行硬上限）常显为表格「超时」列；dir 节点行该列禁用 +
+      标「不适用」。
+    - 模式 / 阈值 / 超时三列表头各带 `?` + Tooltip 说明。
 
   读写面（**零新增 MQ 主题**）：
     - 工具清单 = 既有客户端能力面 `tools-list`（与 useToolAsyncMode.js / ScenarioEditDialog 同一消费点）
@@ -10,19 +19,28 @@
       getUserConfig / saveUserConfig / resetUserKey）
   存储形态：usr 键 `tool_async`（自由键通道）= JSON 对象
     {"<工具暴露名>": {"mode":"always|never|auto|manual", "threshold":30, "hard_timeout":300}}
-    - 未配置的工具：显示**契约现值**（`_meta.async` / `_meta.async-threshold` / `_meta.timeout`）并标
-      「契约默认」，**不写库**；
-    - 「恢复默认」= 删除该工具的键项（最后一项删除后整键删除，走 data-user-config-delete{id}）；
-    - 未改动不进库（仅交互/失焦时按行写入）。
+    - 未配置的工具：显示**契约现值**（`_meta.async` / `_meta.async-threshold` / `_meta.timeout`），**不写库**；
+    - 「恢复默认」= 从待保存态删该工具键项（点【保存】落库；最后一项删除后整键删除，走
+      `data-user-config-delete{id}`）；
+    - 与契约现值一致的行不写入（保持配置干净）。
 -->
 <template>
   <div class="settings-page">
     <div class="page-body">
       <div class="tool-toolbar">
         <span class="hint">{{ $t('config.toolAsync.pageHint') }}</span>
+        <span v-if="dirty" class="unsaved-mark" data-async-unsaved>{{ $t('config.feedback.unsaved') }}</span>
         <Button size="small" :loading="loading" @click="reload">
           <Icon name="refresh" :size="13" /> {{ $t('config.page.redetect') }}
         </Button>
+        <Button
+          type="primary"
+          size="small"
+          data-async-save
+          :disabled="!dirty"
+          :loading="saving"
+          @click="onSave"
+        >{{ $t('common.save') }}</Button>
       </div>
 
       <div v-if="!groups.length" class="tool-empty">{{ $t('config.toolAsync.empty') }}</div>
@@ -30,14 +48,17 @@
       <div v-for="g in groups" :key="g.key" class="tool-group">
         <div class="group-title">{{ g.key }}<span class="group-count">（{{ g.tools.length }}）</span></div>
 
-        <div v-for="row in g.tools" :key="row.name" class="tool-item" :data-tool="row.name">
-          <div class="tool-row">
-            <div class="tool-name" :title="row.name">
+        <Table :columns="columns" :data="g.tools" size="small">
+          <!-- 工具名：展示剥前缀（网关加的 self_/<节点名>_），:title / data-tool = 完整暴露名（重名可区分） -->
+          <template #name="{ row }">
+            <div class="tool-name" :title="row.name" :data-tool="row.name">
               <span class="mono">{{ stripToolPrefix(row.name, row.server) }}</span>
               <span class="tool-desc">{{ row.description }}</span>
             </div>
+          </template>
 
-            <div class="tool-mode" :title="modeHint(row)">
+          <template #mode="{ row }">
+            <div class="cell-mode">
               <Select
                 :model-value="row.mode"
                 :options="modeOptions"
@@ -45,53 +66,72 @@
                 @update:model-value="(v) => onModeChange(row, v)"
               />
             </div>
+          </template>
 
-            <!-- 阈值：仅 auto / manual 有意义（条件显示） -->
-            <div v-if="isThresholdMode(row)" class="tool-threshold">
+          <!-- 阈值：仅 auto / manual 有意义（其它档以「—」呈现） -->
+          <template #threshold="{ row }">
+            <div class="cell-threshold">
               <Input
-                v-model="row.threshold"
+                v-if="isThresholdMode(row)"
+                :model-value="row.threshold"
                 :aria-label="$t('config.toolAsync.threshold')"
                 :placeholder="row.cThreshold === '' ? $t('config.toolAsync.thresholdPlaceholder') : String(row.cThreshold)"
+                @update:model-value="(v) => onNumberInput(row, 'threshold', v)"
                 @blur="() => onNumberBlur(row, 'threshold')"
               />
+              <span v-else class="cell-dash">—</span>
             </div>
+          </template>
 
-            <div class="tool-meta">
-              <span class="badge" :class="row.userSet ? 'badge-own' : 'badge-sys'">
-                {{ row.userSet ? $t('config.toolAsync.sourceUser') : $t('config.toolAsync.sourceContract') }}
-              </span>
-              <span class="contract">{{ $t('config.toolAsync.contractNow') }}：{{ contractText(row) }}</span>
-            </div>
-
-            <div class="tool-actions">
-              <Button text :aria-label="$t('config.toolAsync.advanced') + ': ' + row.name" @click="toggleAdvanced(row)">
-                {{ advancedOpen(row) ? '▾ ' : '▸ ' }}{{ $t('config.toolAsync.advanced') }}
-              </Button>
-              <Button text type="danger" :disabled="!row.userSet" @click="restoreDefault(row)">
-                {{ $t('config.toolAsync.restoreDefault') }}
-              </Button>
-            </div>
-          </div>
-
-          <!-- 高级（默认折叠）：执行硬上限 hard_timeout -->
-          <div v-if="advancedOpen(row)" class="advanced-body">
-            <label class="adv-label">{{ $t('config.toolAsync.hardTimeout') }}</label>
-            <div class="adv-input">
+          <!-- 执行硬上限 hard_timeout：常显（原「高级」折叠已去掉） -->
+          <template #timeout="{ row }">
+            <div class="cell-timeout">
               <Input
-                v-model="row.hardTimeout"
+                :model-value="row.hardTimeout"
                 :disabled="row.dirNode === true"
                 :aria-label="$t('config.toolAsync.hardTimeout')"
                 :placeholder="row.cTimeout === '' ? $t('config.toolAsync.hardTimeoutPlaceholder') : String(row.cTimeout)"
+                @update:model-value="(v) => onNumberInput(row, 'hard_timeout', v)"
                 @blur="() => onNumberBlur(row, 'hard_timeout')"
               />
+              <!-- I-109 边界：dir 节点工具 hard_timeout 不适用（mode / 阈值仍适用） -->
+              <span
+                v-if="row.dirNode === true"
+                class="na-hint"
+                :title="$t('config.toolAsync.hardTimeoutNotApplicable')"
+              >{{ $t('config.toolAsync.naBadge') }}</span>
             </div>
-            <!-- I-109 边界：dir 节点工具 hard_timeout 不适用（mode/阈值仍适用） -->
-            <span v-if="row.dirNode === true" class="adv-na" :title="$t('config.toolAsync.hardTimeoutNotApplicable')">
-              {{ $t('config.toolAsync.naBadge') }}：{{ $t('config.toolAsync.hardTimeoutNotApplicable') }}
+          </template>
+
+          <!-- 恢复默认：契约默认信息（原行内「契约现值」）改由本按钮 tooltip 承载 -->
+          <template #action="{ row }">
+            <Tooltip :content="contractTooltip(row)" :data-contract="contractTooltip(row)">
+              <Button text type="danger" data-restore :disabled="!isUserSet(row)" @click="restoreDefault(row)">
+                {{ $t('config.toolAsync.restoreDefault') }}
+              </Button>
+            </Tooltip>
+          </template>
+
+          <!-- 表头 ? 说明（复用既有 i18n 文案） -->
+          <template #header-mode>
+            <span class="th-help">
+              {{ $t('config.toolAsync.mode') }}
+              <Tooltip :content="$t('config.toolAsync.modeHint')"><Icon name="help" :size="12" /></Tooltip>
             </span>
-            <span v-else class="adv-hint">{{ $t('config.toolAsync.advancedHint') }}</span>
-          </div>
-        </div>
+          </template>
+          <template #header-threshold>
+            <span class="th-help">
+              {{ $t('config.toolAsync.threshold') }}
+              <Tooltip :content="$t('config.toolAsync.thresholdHint')"><Icon name="help" :size="12" /></Tooltip>
+            </span>
+          </template>
+          <template #header-timeout>
+            <span class="th-help">
+              {{ $t('config.toolAsync.hardTimeout') }}
+              <Tooltip :content="$t('config.toolAsync.advancedHint')"><Icon name="help" :size="12" /></Tooltip>
+            </span>
+          </template>
+        </Table>
       </div>
     </div>
   </div>
@@ -100,11 +140,11 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Input, Button, Select, message } from '../../components/ui'
+import { Input, Button, Select, Table, Tooltip, message } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import { getUserConfig, saveUserConfig, resetUserKey } from '../../api/config'
 import { isDirNode, stripToolPrefix } from '../../utils/toolSource'
-import { loadFailedText } from '../../utils/settingsFeedback'
+import { loadFailedText, saveFailedText } from '../../utils/settingsFeedback'
 import mq from '../../utils/mq'
 
 const { t } = useI18n()
@@ -113,18 +153,28 @@ const { t } = useI18n()
 const CFG_KEY = 'tool_async'
 // 契约默认异步阈值兜底（spec 72 参考值；契约 `async-threshold` 缺省 = 契约 `timeout`）
 const FALLBACK_THRESHOLD = 30
+// 四档模式（顺序即选择器顺序）
+const MODES = ['always', 'never', 'auto', 'manual']
 
 const loading = ref(false)
+const saving = ref(false)
 const groups = ref([]) // [{ key, tools: [row] }]
-const userMap = ref({}) // 工具名 → { mode, threshold, hard_timeout }
-const openSet = ref(new Set()) // 展开高级的工具名（模板中读 ref.value）
-let saveSeq = 0
+const savedMap = ref({}) // 上次落库态（usr `tool_async`）
+const workMap = ref({}) // 本地待保存态（改模式/数值只动它；点【保存】才落库）
 
 const modeOptions = computed(() => [
   { label: t('config.toolAsync.modeAlways'), value: 'always' },
   { label: t('config.toolAsync.modeNever'), value: 'never' },
   { label: t('config.toolAsync.modeAuto'), value: 'auto' },
   { label: t('config.toolAsync.modeManual'), value: 'manual' },
+])
+
+const columns = computed(() => [
+  { label: t('config.toolAsync.tool'), prop: 'name', minWidth: 200 },
+  { label: t('config.toolAsync.mode'), prop: 'mode', width: 150 },
+  { label: t('config.toolAsync.threshold'), prop: 'threshold', width: 120 },
+  { label: t('config.toolAsync.hardTimeout'), prop: 'timeout', width: 140 },
+  { label: t('config.table.operation'), type: 'action', width: 130, align: 'center' },
 ])
 
 // 契约现值：tools-list 每项 `_meta`（25-mcp-server § 透出 hot/category/async/async-threshold/timeout）
@@ -137,32 +187,22 @@ function isThresholdMode(row) {
   return row.mode === 'auto' || row.mode === 'manual'
 }
 
-// 四档语义说明（行内 hover 提示，文案 = config.toolAsync.desc*）
-function modeHint(row) {
-  const key = { always: 'descAlways', never: 'descNever', auto: 'descAuto', manual: 'descManual' }[row.mode]
-  return key ? t('config.toolAsync.' + key) : ''
-}
-
-function advancedOpen(row) {
-  return openSet.value.has(row.name)
-}
-
-function toggleAdvanced(row) {
-  const s = new Set(openSet.value)
-  if (s.has(row.name)) s.delete(row.name)
-  else s.add(row.name)
-  openSet.value = s
-}
-
-function contractText(row) {
-  const parts = [row.cMode]
-  if (row.cThreshold !== '') parts.push(row.cThreshold + 's')
-  if (row.cTimeout !== '') parts.push('timeout ' + row.cTimeout + 's')
-  return parts.join(' · ')
-}
-
 function defaultThreshold(row) {
   return row.cThreshold !== '' ? row.cThreshold : (row.cTimeout !== '' ? row.cTimeout : FALLBACK_THRESHOLD)
+}
+
+function modeLabel(m) {
+  const key = { always: 'modeAlways', never: 'modeNever', auto: 'modeAuto', manual: 'modeManual' }[m]
+  return key ? t('config.toolAsync.' + key) : m
+}
+
+// 「恢复默认」tooltip：说明该工具的契约默认（原行内「契约现值」文本改由此承载）
+function contractTooltip(row) {
+  return t('config.toolAsync.contractTooltip', {
+    mode: modeLabel(row.cMode),
+    threshold: row.cThreshold === '' ? '—' : (row.cThreshold + 's'),
+    timeout: row.cTimeout === '' ? '—' : (row.cTimeout + 's'),
+  })
 }
 
 // 解析 usr `tool_async`：允许对象形态与 JSON 字符串形态（自由键按字符串回读）。
@@ -174,25 +214,75 @@ function parseToolAsync(v) {
   return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {}
 }
 
-// 用户配置 → 行生效值（未配置的行保持契约现值，仅标「契约默认」）
-function applyUserConfig() {
-  for (const g of groups.value) {
-    for (const row of g.tools) {
-      const u = userMap.value[row.name]
-      if (u && typeof u === 'object') {
-        row.userSet = true
-        row.mode = ['always', 'never', 'auto', 'manual'].includes(u.mode) ? u.mode : row.cMode
-        row.threshold = u.threshold !== undefined && u.threshold !== null ? String(u.threshold) : defaultThreshold(row)
-        row.hardTimeout = u.hard_timeout !== undefined && u.hard_timeout !== null ? String(u.hard_timeout) : ''
-      } else {
-        row.userSet = false
-        row.mode = row.cMode
-        row.threshold = String(defaultThreshold(row))
-        row.hardTimeout = ''
-      }
-    }
+// 生效项是否等于契约现值（等于 → 视为未改动，不进库）
+function sameAsContract(row, e) {
+  if (e.mode !== row.cMode) return false
+  const cur = row.cThreshold === '' ? '' : String(row.cThreshold)
+  const t0 = e.threshold === undefined ? '' : String(e.threshold)
+  if (t0 !== cur) return false
+  return e.hard_timeout === undefined
+}
+
+// 行 → usr 键项（阈值仅 auto/manual 计入；dir 节点不写 hard_timeout）
+function buildEntry(row) {
+  const e = { mode: row.mode }
+  if (isThresholdMode(row)) {
+    const n = Number(row.threshold)
+    e.threshold = Number.isFinite(n) && n > 0 ? n : defaultThreshold(row)
+  }
+  // I-109：dir 节点工具的 hard_timeout 不生效 → 不写库（避免「配了不生效」的误导）
+  if (!row.dirNode && row.hardTimeout !== '' && row.hardTimeout !== null) {
+    const h = Number(row.hardTimeout)
+    if (Number.isFinite(h) && h > 0) e.hard_timeout = h
+  }
+  return e
+}
+
+// 待保存态 → 行显示值（workMap 优先，其次已落库态，最后契约现值）
+function resetRowFromMaps(row) {
+  const u = workMap.value[row.name] || savedMap.value[row.name]
+  if (u && typeof u === 'object') {
+    row.mode = MODES.includes(u.mode) ? u.mode : row.cMode
+    row.threshold = u.threshold !== undefined && u.threshold !== null ? String(u.threshold) : String(defaultThreshold(row))
+    row.hardTimeout = u.hard_timeout !== undefined && u.hard_timeout !== null ? String(u.hard_timeout) : ''
+  } else {
+    row.mode = row.cMode
+    row.threshold = String(defaultThreshold(row))
+    row.hardTimeout = ''
   }
 }
+
+function applyRows() {
+  for (const g of groups.value) for (const row of g.tools) resetRowFromMaps(row)
+}
+
+// 编辑一行 → 只改本地待保存态（不落库）：与契约一致 → 从待保存态删除该行。
+function syncRow(row) {
+  const next = { ...workMap.value }
+  const e = buildEntry(row)
+  if (sameAsContract(row, e)) delete next[row.name]
+  else next[row.name] = e
+  workMap.value = next
+}
+
+function isUserSet(row) {
+  return Object.prototype.hasOwnProperty.call(workMap.value, row.name)
+}
+
+// 待保存态是否与已落库态不同（无改动 → 保存按钮禁用）
+function canon(e) {
+  if (!e || typeof e !== 'object') return ''
+  return JSON.stringify({ mode: e.mode, threshold: e.threshold, hard_timeout: e.hard_timeout })
+}
+const dirty = computed(() => {
+  const a = workMap.value
+  const b = savedMap.value
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)])
+  for (const k of keys) {
+    if (canon(a[k]) !== canon(b[k])) return true
+  }
+  return false
+})
 
 async function loadTools() {
   loading.value = true
@@ -222,11 +312,10 @@ async function loadTools() {
         mode: meta.async || 'auto',
         threshold: '',
         hardTimeout: '',
-        userSet: false,
       })
     }
     groups.value = [...byServer.entries()].map(([key, list]) => ({ key, tools: list }))
-    applyUserConfig()
+    applyRows()
   } catch (e) {
     // ④ 加载失败须用户可见（不再仅 console；成功路径不动）
     console.warn('[SettingsToolAsync] load tools failed:', e)
@@ -241,14 +330,17 @@ async function loadUserConfig() {
   try {
     const res = await getUserConfig()
     const uc = res.config || res
-    userMap.value = parseToolAsync(uc[CFG_KEY])
+    const parsed = parseToolAsync(uc[CFG_KEY])
+    savedMap.value = { ...parsed }
+    workMap.value = { ...parsed }
   } catch (e) {
     // ④ 加载失败须用户可见（不再仅 console；与 loadTools 用不同 item，避免两条同文案刷屏）
     console.warn('[SettingsToolAsync] load user config failed:', e)
     message.error(loadFailedText(t, t('config.toolAsync.sourceUser'), e))
-    userMap.value = {}
+    savedMap.value = {}
+    workMap.value = {}
   }
-  applyUserConfig()
+  applyRows()
 }
 
 async function reload() {
@@ -256,55 +348,40 @@ async function reload() {
   await loadTools()
 }
 
-// 未改动不进库：仅把「发生了变化的行」写回 usr `tool_async`。
+// 手动保存：一次性提交本页全部待保存变更（无改动 → 不写库）。
 // 注意 saveUserConfig 是**增量合并**（persist_userconfig.go saveUserConfig），只写本键不影响其它配置。
-async function persist(okTip) {
-  const seq = ++saveSeq
+async function onSave() {
+  if (!dirty.value) return
+  saving.value = true
   try {
-    await saveUserConfig({ [CFG_KEY]: userMap.value })
-    if (seq === saveSeq && okTip) message.success(okTip)
-    return true
+    if (Object.keys(workMap.value).length === 0) await resetUserKey(CFG_KEY)
+    else await saveUserConfig({ [CFG_KEY]: workMap.value })
+    savedMap.value = { ...workMap.value }
+    message.success(t('config.toolAsync.saved'))
   } catch (e) {
-    if (seq === saveSeq) message.error(t('config.save_failed') + ': ' + (e.message || ''))
-    return false
+    message.error(saveFailedText(t, e))
+  } finally {
+    saving.value = false
   }
 }
 
-function userEntry(row) {
-  const e = { mode: row.mode }
-  if (isThresholdMode(row)) {
-    const n = Number(row.threshold)
-    e.threshold = Number.isFinite(n) && n > 0 ? n : defaultThreshold(row)
-  }
-  // I-109：dir 节点工具的 hard_timeout 不生效 → 不写库（避免「配了不生效」的误导）
-  if (!row.dirNode && row.hardTimeout !== '' && row.hardTimeout !== null) {
-    const h = Number(row.hardTimeout)
-    if (Number.isFinite(h) && h > 0) e.hard_timeout = h
-  }
-  return e
-}
-
-async function onModeChange(row, v) {
+function onModeChange(row, v) {
   if (!v || v === row.mode) return
   row.mode = v
-  row.userSet = true
   if (isThresholdMode(row) && !row.threshold) row.threshold = String(defaultThreshold(row))
-  userMap.value = { ...userMap.value, [row.name]: userEntry(row) }
-  await persist(t('config.toolAsync.saved'))
+  syncRow(row)
 }
 
-// 生效项是否等于契约现值（等于 → 视为未改动，不进库）
-function sameAsContract(row, e) {
-  if (e.mode !== row.cMode) return false
-  const cur = row.cThreshold === '' ? '' : String(row.cThreshold)
-  const t0 = e.threshold === undefined ? '' : String(e.threshold)
-  if (t0 !== cur) return false
-  return e.hard_timeout === undefined
+// 数值输入：只改本地待保存态（不校验、不落库）
+function onNumberInput(row, field, v) {
+  if (field === 'threshold') row.threshold = v
+  else row.hardTimeout = v
+  syncRow(row)
 }
 
-// 数值项失焦：① 非法/空（threshold）→ 不写库、显示值回落当前有效值；
-// ② hard_timeout 清空 = 不设硬上限（继承契约）；③ 与已存项/契约现值一致 → 不进库。
-async function onNumberBlur(row, field) {
+// 数值失焦：① 非法/空（threshold）→ 显示值回落（savedMap / 契约现值）；
+// ② hard_timeout 清空 = 不设硬上限（继承契约）；③ 合法 → 同步待保存态。
+function onNumberBlur(row, field) {
   // I-109：dir 节点工具的 hard_timeout 不适用（输入已禁用，此处兜底）
   if (field === 'hard_timeout' && row.dirNode === true) return
   const raw = field === 'threshold' ? row.threshold : row.hardTimeout
@@ -312,40 +389,25 @@ async function onNumberBlur(row, field) {
   const legal = raw !== '' && raw !== null && Number.isFinite(n) && n > 0
   const emptyHard = field === 'hard_timeout' && (raw === '' || raw === null)
   if (!legal && !emptyHard) {
-    const u = userMap.value[row.name]
+    const u = savedMap.value[row.name]
     if (field === 'threshold') {
       row.threshold = u && u.threshold != null ? String(u.threshold) : String(defaultThreshold(row))
     } else {
       row.hardTimeout = u && u.hard_timeout != null ? String(u.hard_timeout) : ''
     }
-    return
   }
-  const nextEntry = userEntry(row)
-  const curEntry = userMap.value[row.name]
-  if (curEntry && JSON.stringify(curEntry) === JSON.stringify(nextEntry)) return
-  if (!curEntry && sameAsContract(row, nextEntry)) return
-  row.userSet = true
-  userMap.value = { ...userMap.value, [row.name]: nextEntry }
-  await persist(t('config.toolAsync.saved'))
+  syncRow(row)
 }
 
-// 恢复默认 = 删除该工具的键项；最后一项删除后整键删除（data-user-config-delete{id:key}），
-// 不留下空对象配置。
-async function restoreDefault(row) {
-  const next = { ...userMap.value }
+// 恢复默认 = 从待保存态删除该工具键项（点【保存】落库；最后一项 → 整键删除）。
+// 行显示明确回落契约现值（不读 savedMap，否则会显示「已落库的旧值」而非契约默认）。
+function restoreDefault(row) {
+  const next = { ...workMap.value }
   delete next[row.name]
-  userMap.value = next
-  try {
-    if (Object.keys(next).length === 0) await resetUserKey(CFG_KEY)
-    else await persist()
-    row.userSet = false
-    row.mode = row.cMode
-    row.threshold = String(defaultThreshold(row))
-    row.hardTimeout = ''
-    message.success(t('config.toolAsync.restored'))
-  } catch (e) {
-    message.error(t('config.save_failed') + ': ' + (e.message || ''))
-  }
+  workMap.value = next
+  row.mode = row.cMode
+  row.threshold = String(defaultThreshold(row))
+  row.hardTimeout = ''
 }
 
 onMounted(reload)
@@ -378,6 +440,11 @@ onMounted(reload)
   color: var(--text-muted);
   flex: 1;
 }
+.unsaved-mark {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--warning, #e6a23c);
+}
 .tool-empty {
   font-size: 13px;
   color: var(--text-muted);
@@ -400,18 +467,7 @@ onMounted(reload)
   font-weight: 400;
   color: var(--text-muted);
 }
-.tool-item + .tool-item {
-  border-top: 1px dashed var(--border);
-}
-.tool-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 0;
-}
 .tool-name {
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -429,69 +485,32 @@ onMounted(reload)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tool-mode {
-  width: 130px;
-  flex-shrink: 0;
+.cell-mode { width: 130px; }
+.cell-threshold { width: 90px; }
+.cell-timeout {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.tool-threshold {
+.cell-timeout .b-input {
   width: 90px;
   flex-shrink: 0;
 }
-.tool-meta {
-  width: 240px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.badge {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  align-self: flex-start;
-}
-.badge-own {
-  background: var(--accent, #409eff);
-  color: #fff;
-}
-.badge-sys {
-  background: var(--bg-hover, #eee);
+.cell-dash {
   color: var(--text-muted);
 }
-.contract {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.tool-actions {
-  width: 170px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  justify-content: flex-end;
-}
-.advanced-body {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 0 8px 12px;
-}
-.adv-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  width: 110px;
-  flex-shrink: 0;
-}
-.adv-input {
-  width: 90px;
-  flex-shrink: 0;
-}
-.adv-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.adv-na {
+.na-hint {
   font-size: 11px;
   color: var(--warning, #e6a23c);
+  white-space: nowrap;
+  cursor: help;
+}
+.th-help {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.th-help .b-tooltip {
+  color: var(--text-muted);
 }
 </style>

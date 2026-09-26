@@ -166,6 +166,36 @@ func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
 	}
 }
 
+// ── 记忆类别沉淀提示词自由键（memory_prompts，2026-09-26）────────────────
+
+// TestMemoryPromptsFreeKeyRoundTrip：`memory_prompts`（用户级记忆类别沉淀提示词，JSON 对象
+// 字符串）已注册为 usr 自由键 → 写库/回读一致（原样字符串，不做类型还原）；删该键 → 回落缺省。
+func TestMemoryPromptsFreeKeyRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	if !userConfigFreeKeys["memory_prompts"] {
+		t.Fatal("memory_prompts 未注册为 usr 自由键")
+	}
+	const val = `{"用户偏好":"只记跨项目偏好"}`
+
+	if err := saveUserConfig(db, map[string]any{"memory_prompts": val}); err != nil {
+		t.Fatalf("save memory_prompts: %v", err)
+	}
+	if got, ok := data.GetConfig(db, "memory_prompts"); !ok || got != val {
+		t.Fatalf("memory_prompts 未落库：got=%q ok=%v", got, ok)
+	}
+	if got := readUserConfig(db)["memory_prompts"]; got != val {
+		t.Fatalf("readUserConfig 未回读 memory_prompts：%v", got)
+	}
+
+	// 删除该键 → 读回视图不再含该键（前端据此回落内置默认）
+	if err := data.DeleteConfig(db, "memory_prompts"); err != nil {
+		t.Fatalf("删 memory_prompts: %v", err)
+	}
+	if _, ok := readUserConfig(db)["memory_prompts"]; ok {
+		t.Fatal("删除后视图仍含 memory_prompts")
+	}
+}
+
 // ── SL-1：子系统默认 LLM 5 键（llm.<子系统>，2026-09-24）──────────────
 
 // llmSubsystemKeys 是「子系统默认 LLM」5 键（40-演进计划 §SL SL-C2）——测试内独立硬编码，

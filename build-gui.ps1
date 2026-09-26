@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
+﻿﻿﻿﻿﻿﻿﻿﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-split.ps1`；
 #   形态名（分离形态 / team）→ **`gui`（GUI 客户端 + 独立 server）**，
@@ -36,8 +36,8 @@
 #     ├── chonkpilot-vfts-mcp-server.exe       # 内置 MCP 引擎（形态无关）
 #     ├── zvec_c_api.dll                       # vfts 运行库（必须与 vfts 引擎 exe 同目录）
 #     ├── capability/                          # 契约 + executor×3
-#     └── scenarios/                           # app 级场景（仅出厂场景「开发场景」default/，随发布只读资源；
-#                                              #   与 capability/ 平级，25-MCP与场景分层模型 §6 / T6）
+#     └── (无 scenarios/)                      # 出厂场景由 embed 内嵌（源 src/lib/data/scenarios），运行时
+#                                              #   app 初始化物化到 <exeDir>/scenarios/（app 级可编辑）——不再投放
 #
 # 与 build-desktop.ps1 的关系：本脚本**只重编受 tag 影响的宿主 exe**（client / cli-client / server）；
 #   capability/ 与内置引擎 exe 属**形态无关资产**，优先从 dist/desktop 复用（缺失才回退既有
@@ -148,21 +148,6 @@ if (Test-Path $capDst) {
 }
 Copy-Item $capSrc $capDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
-
-# scenarios/（app 级场景，随发布只读资源；与 capability/ 平级）随服务端 exe 同目录投放：
-# 优先复用 dist/desktop/scenarios，缺失回退仓库源 src/lib/data/scenarios。
-Write-Host "    -> stage scenarios/ to dist/server"
-$scnSrc = Join-Path $srcDist "scenarios"
-if (-not (Test-Path $scnSrc)) {
-    $scnSrc = Join-Path $root "src\lib\data\scenarios"
-}
-if (-not (Test-Path $scnSrc)) { throw "scenarios 资源缺失: $scnSrc" }
-$scnDst = Join-Path $srvDist "scenarios"
-if (Test-Path $scnDst) {
-    [System.IO.Directory]::Delete($scnDst, $true)
-}
-Copy-Item $scnSrc $scnDst -Recurse -Force
-Write-Host "    ok: scenarios/ ($((Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count) files)"
 
 # -- 6) 形态无关资产：内置 MCP 引擎（codegraph / vfts）+ zvec 运行库（优先复用，缺失回退构建） --
 Write-Host "==> [6/6] stage built-in MCP engines to dist/server"

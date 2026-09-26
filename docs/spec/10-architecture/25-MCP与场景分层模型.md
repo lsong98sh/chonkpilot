@@ -42,7 +42,7 @@ chat 面：prompt                                     ← 用户在输入框选�
 | 场景 | `scenario.description`（"我们是一个团队…"）+ **代码按场景 agents 自动拼接的成员段**（名字 + roleTag + 描述） | **组合生成**（非人写死） |
 | agent | 当前 agent 的 prompt | `*.agent.md`（主 agent = `main.agent.md`） |
 
-- **无场景时（=「通用模式」）**：**只注入全局层**，无场景层 / agent 层。
+- **无场景时（=「通用模式」）**：**只注入全局层**，无场景层 / agent 层。**UI 文案 = 「通用场景」**（chat 场景下拉**固定首项**，2026-09-26）：选中即关闭场景；可点 ★ 设为默认（`defaultScenario` 保留值 `__general__`，重开/重启后仍为通用）。
 - **现状澄清**：现有代码中的 `memoryGuide`（记忆库指引，门控 = 项目配置 `memory.enabled=true`）与 `assetGuide`（知识库资产指引，门控 = 已接入 capability 节点）是**两条功能指引**，与上述"全局层"**不是一回事**。现状**无**"身份 / 运行环境"全局层 → 属**新增**。
 - **`Scenario.SystemPrompt` 语义重定义**：由"派生 = 主 agent 的 prompt"改为 **= 场景层（`description` + 团队拼接）**；**主 agent 的 prompt 归 agent 层**。
   - **落地取舍（2026-09-25 核实：字段保留兼容、不被消费）**：数据层 `Scenario.SystemPrompt` **沿用旧派生值（= 主 agent 的 prompt）保留供兼容、不被消费** —— 场景层提示词由 `llm/server` 侧按本节三条**自行拼接**（`loadScenario` 只取 `description` + `agents`，不读该字段）。**不改为场景层语义**的理由 = 该字段的旧语义（主 agent prompt）仍被 `data-scenario-*` 契约与既有前端/测试消费，改语义会牵连下游；而"场景层 = 拼接生成"已在 `llm/server` 落地，本层无新增消费需求（见 §8.1 #5）。
@@ -60,6 +60,8 @@ chat 面：prompt                                     ← 用户在输入框选�
 > ② **meta 工具显式 `_meta.hot=true`**。
 >
 > 依据 = self 节点 `entry` **无 `HotTools`**，`isHot` 不会自动补 → `registerMetaTools` 必须**显式**置 `_meta.hot=true`（否则 LLM 连工具发现入口都拿不到）。**本规格须写明"两者都要"**，防后人只改 `HotTools`、漏掉 meta。
+>
+> **① 的下游 `HotTools` UI（2026-09-26）**：`EditMCPDialog`「运行信息」页签「高频工具」行【设置】按钮 → `SetMCPHotToolsDialog.vue` 按别名列出该 server 工具勾选；写库为**契约原名**列表（`"*"` = 全部 hot），**零新增消息面**（数据源 = 既有 `tools-list`）。
 
 ### 4.2 「通用模式」（无场景）工具面
 
@@ -104,7 +106,7 @@ agent **只"注入"不"注册"**：
   - `list` 无需去重；`load` 直接按 id 命中；
   - `ScenarioSave` 需**新增跨级重名校验**（拒绝并报错）；
   - 既有重名数据**不做迁移**（用户明确"既有的不管"）。
-- 三级语义 = **存放位置 / 归属**（app 级（系统级）= 随发布只读；user / project 可写），**不是优先级链**。
+- 三级语义 = **存放位置 / 归属**（**三级均可写**，**不是优先级链**）。**〔订正（2026-09-26）**：app 级（系统级）自 2026-09-26 起**可编辑**（原「随发布只读」作废）；出厂场景出厂内容由 **embed** 内嵌（源 `src/lib/data/scenarios/`），app 初始化（首次 list）时缺失即物化到 `<exeDir>/scenarios/`、已存在不覆盖；`data-scenario-restore` 消息**已删除**。〕
 
 ### 6.1 命名与唯一性
 
@@ -122,7 +124,7 @@ agent **只"注入"不"注册"**：
   - **agent 场景前缀** = **`<场景id>/<agent名>`**（分隔符 `/`；场景 id = 场景目录名，本模块 §6）——**注入面**（§3 团队成员段）、**`llm_run` 委派**、**`agentDelegable`**、**子轮次 system 读取**（`registeredAgentDef` / `resolveAgentDef`）**同一口径**；引用可带前缀（精确命中）或裸名（注册表内**唯一**同名才命中；跨场景重名须带前缀；裸名歧义 → 不解析）。
   - **第三方别名（来源前缀）** = **`<server名>_`**（沿用既有 `applyPrefix` 缺省形态，非新分隔符；`namespace "-"` 对第三方**不生效** → 强制回落该前缀）；名字往返一致（`mcp_find` / `mcp_load` 返回名 = 可直接 `tools/call` / `mcp_invoke` 的名）。
   - **唯一性拒绝策略** = 同类同名注册**拒绝并返回含来源的明确错误**（**不静默覆盖**）；gateway 落点见 [26 §4.3.1](../20-modules/26-mcp-gateway.md)。
-- **张力闭环**：[41 G-48](../40-roadmap/41-未决项登记.md) 的 ④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）。
+- **张力闭环**：[41 G-48](../40-roadmap/41-未决项登记.md) 的 ④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）。**〔订正（2026-09-26）**：④ 随 `data-scenario-restore` 消息删除而消失（app 级改为**可直接编辑**，出厂内容由 embed 物化）；⑥ 由「app 级可编辑 + 场景 id 全局唯一」承载。〕
 - **同场景内 agent 不许重名（2026-09-26 用户裁决，[42 §2 (175)](../40-roadmap/42-决策记录.md)）**：上表「agent **可重名**」指**跨场景**（以 `<场景id>/<agent名>` 前缀消歧）；**同一场景内** agent 名**必须唯一** → 场景**保存**时校验（判定键 = agent **落盘文件名**、大小写不敏感），重名（含**大小写等价** / **主 agent 与子 agent 撞名 `main`** / **空名**）**拒绝保存**并返回含「**场景 id + 重复 agent 名**」的错误（落点 `capfs.WriteScenarioDir` 写盘前）；既有重名数据**不迁移**。
 
 ---
@@ -149,6 +151,8 @@ agent **只"注入"不"注册"**：
 | 7 | 默认场景改名「**开发场景**」（**仅显示名**，key `default` 不动）**〔✅ 已落地（2026-09-25）〕** | `src/lib/data/scenarios/default/scenario.json`（app 级资源 `name`；原 `materializeDefaultScenario` 已随 T6 撤） | 命名 |
 | 8 | 两套内嵌（7 域 agent + 默认场景 1+8）统一为 **app 级场景**；⚠️ 连带 `registeredAgentDef` 的回落来源要改〔**订正（2026-09-26）**：内置 agent 集 `builtin-agents/` **已删除** —— 发布 `scenarios/` 仅出厂场景 `default/`（「开发场景」）；「通用」由**无场景（通用模式）**承载，不再有独立 agent 集〕 | `llm/server/{domainmd.go,domainmcp.go}` · `capfs/defaults.go` | 结构 |
 | 9 | 前端：场景编辑器加「**组合后系统提示词**」预览页签；chat 输入框加 **prompt 选择**（注入 user 消息 + `/<name>` tag） | `src/frontend/src/views/**` | 前端 |
+
+> **〔订正（2026-09-26）〕**：#1 的出厂场景**物化路径**改由 **embed 承担** —— `data/scenarios_embed.go`（`//go:embed scenarios`）+ `capfs.MaterializeFactoryScenarios`，在 app 初始化（首次 `ScenarioList` / `ScenarioGet`）时把内嵌出厂场景写入 `<exeDir>/scenarios/`（缺失即恢复、已存在不覆盖）；**app 级可编辑**（门面 `ScenarioSave`/`ScenarioDelete` 允许 `level=app`，前端列表给编辑/删除入口）、`data-scenario-restore` 消息与 `capfs.CopyScenarioDir` 已删除；build 脚本不再投放 `scenarios/`。
 
 ### 8.2 任务分解与建议顺序
 

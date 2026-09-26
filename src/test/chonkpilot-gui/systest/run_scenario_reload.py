@@ -7,8 +7,9 @@
 
 隔离（51-FP与测试映射 §5/§6-8）：
   * 自起 GUI：动态端口 + 独立 work-dir + 独立 `--data-dir` + **独立 HOME**
-    （app 级出厂场景来自发行目录只读资源；**不读机器 `~/.chonkpilot`**）。
-  * 确定性：出厂默认场景现为 **app 级只读资源**（`scenarios/default/`，25 §8.1 #8 / 42 §2 (171)）。
+    （app 级出厂场景 = 发行目录 **embed** 物化；**不读机器 `~/.chonkpilot`**）。
+  * 确定性：三级场景（app / user / project）自 2026-09-26 起**均可编辑**；出厂场景 = app 级
+    （`scenarios/default/`，出厂内容由 embed 在 app 初始化时物化，25 §6）。
     若沿用真实 HOME，机器上可能残留旧版「list 首次物化到 user 级」写下的同名
     `scenarios/default/`（§6 禁止同名场景）→ 场景集随机器状态漂移（`list` 出现同 id 两条）。
     隔离 HOME 后场景集恒为 app 级出厂集 → 用例与机器状态解耦、可确定复现。

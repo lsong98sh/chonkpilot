@@ -57,3 +57,10 @@ test('MemoryTotal：composable 只读配置门控 + 编辑器读写口径', () =
   assert.match(comp, /if \(!enabled\.value\)/, '记忆库关闭时不得发 data-memory-list')
   assert.match(comp, /const total = computed/, '应汇总 token 总量')
 })
+
+test('MemoryTotal：左侧「项目记忆」面板复用同一门控（关闭态不发 data-memory-list）', () => {
+  const pane = read('views/filetree/MemoryPane.vue')
+  assert.match(pane, /useMemoryTree/, '项目记忆面板走 useMemoryTree composable')
+  const comp = read('composables/useMemoryTree.js')
+  assert.match(comp, /useMemoryCategories\(\)/, '复用共享记忆门控（关闭态 load() 不发 data-memory-list）')
+})

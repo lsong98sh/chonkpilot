@@ -65,8 +65,9 @@
                 <td>
                   <Switch :model-value="categoryEnabled(c)" :disabled="!memoryEnabled" @update:model-value="v => onCategoryToggle(c, v)" />
                 </td>
-                <td>
-                  <Button size="small" text :disabled="!memoryEnabled" @click="openContentEditor(c)">{{ $t('common.edit') }}</Button>
+                <td class="mem-ops">
+                  <Button size="small" text :disabled="!memoryEnabled" @click="openPromptEditor(c)">{{ $t('projectConfig.memory_edit_prompt') }}</Button>
+                  <Button size="small" text :disabled="!memoryEnabled" @click="openContentEditor(c)">{{ $t('projectConfig.memory_edit_content') }}</Button>
                   <Button size="small" text :disabled="!memoryEnabled" @click="clearCategory(c)">{{ $t('memoryIO.clear') }}</Button>
                   <Button v-if="isCustomCategory(c)" size="small" text :disabled="!memoryEnabled" @click="deleteCategory(c)">{{ $t('common.delete') }}</Button>
                 </td>
@@ -92,7 +93,8 @@
           <div class="switch-row">
             <span class="mem-token" :class="{ 'is-over': isOverThreshold(userPref) }">{{ userPref.tokens }}</span>
             <span v-if="isOverThreshold(userPref)" class="over-hint">{{ $t('projectConfig.memory_over_hint') }}</span>
-            <Button size="small" text :disabled="!memoryEnabled" @click="openContentEditor(userPref)">{{ $t('common.edit') }}</Button>
+            <Button size="small" text :disabled="!memoryEnabled" @click="openPromptEditor(userPref)">{{ $t('projectConfig.memory_edit_prompt') }}</Button>
+            <Button size="small" text :disabled="!memoryEnabled" @click="openContentEditor(userPref)">{{ $t('projectConfig.memory_edit_content') }}</Button>
             <Button size="small" text :disabled="!memoryEnabled" @click="clearCategory(userPref)">{{ $t('memoryIO.clear') }}</Button>
           </div>
         </div>
@@ -146,14 +148,11 @@
         <div class="form-item form-item-full">
           <div class="prompt-editor-header">
             <label class="form-label">{{ $t('projectConfig.summary_prompt_edit') }}</label>
-            <div class="tab-actions">
-              <!-- 编辑 = 弹框（A2：弹框内编辑 + 保存即关 + 弹框自带优化） -->
-              <Button size="small" type="primary" @click="openSummaryEditor">{{ $t('common.edit') }}</Button>
-            </div>
+            <!-- 编辑 = 弹框（A2：弹框内编辑 + 保存即关 + 弹框自带优化）；按钮样式与记忆分类行一致（text） -->
+            <Button size="small" text @click="openSummaryEditor">{{ $t('common.edit') }}</Button>
           </div>
-          <!-- 只读展示有效值（编辑弹框保存后同步刷新）；来源标注 + 取消覆盖入口 -->
-          <Textarea :model-value="summarizePrompt" readonly :rows="6" class="prompt-editor" :placeholder="$t('projectConfig.summary_prompt_placeholder')" />
-          <div class="switch-row">
+          <!-- 来源标注 + 取消覆盖入口（只读展示已移除 → 内容仅在编辑弹框内查看） -->
+          <div class="switch-row summary-prompt-source">
             <span class="field-hint">{{ summaryOverride ? $t('projectConfig.summary_prompt_source_override') : $t('projectConfig.summary_prompt_source_inherit') }}</span>
             <Button size="small" text :disabled="!summaryOverride" @click="resetSummaryOverride">{{ $t('projectConfig.summary_prompt_reset') }}</Button>
           </div>
@@ -198,10 +197,10 @@
 <script setup>
 import { ref, computed, h, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Input, Textarea, Button, Switch, message, confirm, promptInput } from '../../components/ui'
+import { Input, Button, Switch, message, confirm, promptInput } from '../../components/ui'
 import { dialog } from '../../components/dialog'
 import TextEditDialog from '../../components/common/TextEditDialog.vue'
-import { getAllConfig, setConfig, getPrompt, setPrompt } from '../../api/config'
+import { getAllConfig, setConfig, getPrompt, setPrompt, getUserConfig, saveUserConfig, deleteConfig, resetUserKey } from '../../api/config'
 import { readPrimitive } from '../../api/knowledge'
 import { getActiveSessionID } from '../../api/session'
 import dataClient, { onDataRefresh, dataRequest } from '../../utils/dataClient'
@@ -209,7 +208,7 @@ import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
-import { useMemoryCategories } from '../../composables/useMemoryCategories'
+import { useMemoryCategories, DEFAULT_MEMORY_PROMPT } from '../../composables/useMemoryCategories'
 
 const { t } = useI18n()
 
@@ -272,6 +271,132 @@ const memoryCategoryMaxTokens = ref(2000)
 const userPrefEnabled = ref(true)
 // 项目配置平铺 map（类别开关 memory.category.<类别名> 缺失 → 默认启用）
 const cfgMap = ref({})
+// 类别沉淀提示词：项目级 8 类落 prj `memory.prompt.<类别名>`（在 cfgMap 内）；
+// 用户偏好（唯一用户级）落 usr 自由键 `memory_prompts`（JSON 对象字符串，见 userPrefPrompts）。
+// 键前缀 / 键名与 Go 侧同字面量（chonkpilot-plugin-memory/memory.go memoryPromptPrefix / userMemoryPromptsKey）。
+const MEMORY_PROMPT_PREFIX = 'memory.prompt.'
+const USER_MEMORY_PROMPTS_KEY = 'memory_prompts'
+// usr `memory_prompts` 解析后的 map（类别名 → 提示词全文；未配置 → 空对象）
+const userPrefPrompts = ref({})
+
+// parsePromptMap 解析 usr `memory_prompts`（JSON 对象字符串）：非法 JSON / 数组 / 非对象 → 空对象。
+function parsePromptMap(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    try {
+      const m = JSON.parse(raw)
+      if (m && typeof m === 'object' && !Array.isArray(m)) return m
+    } catch (_) { /* 非法 JSON → 视为未配置（回落内置默认） */ }
+  }
+  return {}
+}
+
+// loadUserPrefPrompts 读 usr 自由键（data-user-config-load，既有面）：用户偏好类别的自定义提示词。
+async function loadUserPrefPrompts() {
+  try {
+    const res = await getUserConfig()
+    const cfg = res.config || {}
+    userPrefPrompts.value = parsePromptMap(cfg[USER_MEMORY_PROMPTS_KEY])
+  } catch (e) {
+    message.error(loadFailedText(t, t('projectConfig.memory_edit_prompt'), e))
+  }
+}
+
+// customPromptOf 取该类别的**自定义**提示词（未自定义 → 空串 = 将回落内置默认）。
+function customPromptOf(c) {
+  if (!c || !c.category) return ''
+  const v = c.level === 'user'
+    ? userPrefPrompts.value[c.category]
+    : cfgMap.value[MEMORY_PROMPT_PREFIX + c.category]
+  return typeof v === 'string' ? v : ''
+}
+
+// writeUserPrefPrompts 整表写 usr 自由键 memory_prompts（JSON 对象字符串）；全空 → 删键（回落缺省）。
+async function writeUserPrefPrompts(map) {
+  const next = {}
+  for (const [k, v] of Object.entries(map || {})) {
+    if (String(v == null ? '' : v).trim() !== '') next[k] = v
+  }
+  if (Object.keys(next).length === 0) {
+    await resetUserKey(USER_MEMORY_PROMPTS_KEY)
+    return
+  }
+  await saveUserConfig({ [USER_MEMORY_PROMPTS_KEY]: JSON.stringify(next) })
+}
+
+// clearMemoryPrompt 清除类别自定义提示词 → 回落内置默认（项目级删 prj 键 / 用户偏好移除 map 项）。
+async function clearMemoryPrompt(c) {
+  if (c.level === 'user') {
+    const next = { ...userPrefPrompts.value }
+    delete next[c.category]
+    await writeUserPrefPrompts(next)
+    userPrefPrompts.value = next
+    return
+  }
+  const key = MEMORY_PROMPT_PREFIX + c.category
+  await deleteConfig(key)
+  const next = { ...cfgMap.value }
+  delete next[key]
+  cfgMap.value = next
+}
+
+// saveMemoryPrompt 保存类别沉淀提示词：空白 / 与内置默认相同 → 清键（回落内置默认），否则落库。
+// 与总结提示词「与继承值相同则不覆盖」同口径：避免把内置默认固化为永久覆盖。
+async function saveMemoryPrompt(c, text) {
+  const val = String(text == null ? '' : text)
+  if (val.trim() === '' || val.trim() === DEFAULT_MEMORY_PROMPT) {
+    await clearMemoryPrompt(c)
+    return
+  }
+  if (c.level === 'user') {
+    const next = { ...userPrefPrompts.value, [c.category]: val }
+    await writeUserPrefPrompts(next)
+    userPrefPrompts.value = next
+    return
+  }
+  const key = MEMORY_PROMPT_PREFIX + c.category
+  await setConfig(key, val)
+  cfgMap.value = { ...cfgMap.value, [key]: val }
+}
+
+// openPromptEditor 打开该类别「沉淀提示词」编辑弹框（复用 TextEditDialog）：
+// 未自定义 → 回填内置默认 + 来源提示「当前为内置默认」；已自定义 → 回填自定义值 + 「恢复默认」入口。
+function openPromptEditor(c) {
+  if (!c || !c.category) return
+  const custom = customPromptOf(c)
+  const isCustom = custom.trim() !== ''
+  const handle = dialog.show(h(TextEditDialog, {
+    content: isCustom ? custom : DEFAULT_MEMORY_PROMPT,
+    placeholder: t('projectConfig.memory_prompt_placeholder'),
+    hint: isCustom ? t('projectConfig.memory_prompt_source_custom') : t('projectConfig.memory_prompt_source_default'),
+    reset: isCustom ? {
+      label: t('projectConfig.memory_prompt_reset'),
+      // 恢复默认 = 清键回落内置默认 → 关闭弹框（与保存同口径：父组件负责落库与关闭）
+      onClick: async () => {
+        await clearMemoryPrompt(c)
+        message.success(t('projectConfig.memory_prompt_reset_done'))
+        handle.close()
+      },
+    } : null,
+    optimize: {
+      title: t('projectConfig.memory_prompt_optimize_title', { name: c.category }),
+      useCase: t('projectConfig.memory_prompt_optimize_use_case'),
+      recover: true,
+    },
+    onSave: async (text) => {
+      await saveMemoryPrompt(c, text)
+      message.success(t('projectConfig.saved'))
+      handle.close()
+    },
+    onCancel: () => handle.close(),
+  }), {
+    title: t('projectConfig.memory_prompt_edit') + ' - ' + c.category,
+    width: 760,
+    height: 620,
+    bodyClass: 'text-edit-dialog-body',
+    closable: true,
+  })
+}
 
 // ── 手动沉淀（memory.flush）+ 压缩内容可查（data-snapshot-get）──
 // FLUSH_TOPIC = 点分相对主题（桥/服务端「点分直通总线」分支受理；memory 插件订阅应答）；
@@ -341,6 +466,7 @@ async function loadConfig() {
     // ④ 加载失败须用户可见（不再仅 console）
     message.error(loadFailedText(t, t('projectConfig.context'), e))
   }
+  await loadUserPrefPrompts()
   await loadSummaryPrompt()
   // 记忆库关闭 → 不取类别清单（关闭态页面不展示类别区，且后端 list 会落盘预置文件）
   await reloadMemoryCategories()
@@ -689,6 +815,8 @@ onMounted(() => {
   loadCompressRecords()
   // data-prj-config-refresh：配置变更后 server 广播，自动重载（20-gui）
   unsubs.push(onDataRefresh('prj-config', loadConfig))
+  // data-user-config-refresh：用户偏好沉淀提示词（usr 自由键 memory_prompts）变更后重载（20-gui）
+  unsubs.push(onDataRefresh('user-config', loadUserPrefPrompts))
   // data-memory-refresh：记忆沉淀写回后刷新类别 token（20-gui；关闭态不发 list）
   unsubs.push(onDataRefresh('memory', reloadMemoryCategories))
   // llm-compress（= 总线 session-compress 的前端 type，20-gui §6 映射）：任一轮次压缩发生
@@ -790,6 +918,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
+/* 总结提示词：来源标注（左）+「恢复默认」（右）同行分列 */
+.summary-prompt-source {
+  justify-content: space-between;
+}
 .quick-thresholds {
   display: flex;
   gap: 6px;
@@ -803,11 +935,6 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-.prompt-editor {
-  font-family: var(--font-mono, 'Consolas', 'Courier New', monospace);
-  font-size: 13px;
-  margin-top: 4px;
 }
 .mem-table {
   width: 100%;
@@ -829,6 +956,13 @@ onUnmounted(() => {
 }
 .mem-table tr.is-over td {
   color: var(--danger, #f56c6c);
+}
+/* 操作列：两个编辑入口 + 清空/删除并排不换行（按钮间留最小间距，避免拥挤） */
+.mem-table td.mem-ops {
+  white-space: nowrap;
+}
+.mem-table td.mem-ops .b-btn + .b-btn {
+  margin-left: 6px;
 }
 .over-hint {
   margin-left: 8px;

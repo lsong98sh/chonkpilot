@@ -37,7 +37,7 @@ test('② 重名可区分：三处展示均保留完整暴露名 title', () => {
     'views/config/SettingsToolAsyncPage.vue',
     'views/config/SettingsToolSandboxPage.vue',
   ]) {
-    assert.match(read(rel), /:title="(tool|row)\.name"/, `${rel} 须保留完整暴露名 title（重名可区分）`)
+    assert.match(read(rel), /:title="(tool|row|t)\.name"/, `${rel} 须保留完整暴露名 title（重名可区分）`)
   }
 })
 
@@ -49,11 +49,12 @@ test('③ 无 _meta.server 或前缀不匹配 → 原样返回', () => {
   assert.equal(stripToolPrefix('', { alias: 'self' }), '')
 })
 
-// 展示落点：三处均剥前缀展示；配置键 / data-tool 仍用原名
+// 展示落点：三处均剥前缀展示；配置键 / data-tool 仍用完整暴露名
 test('展示落点：三处剥前缀展示，配置键与 data-tool 不变', () => {
   assert.match(read('views/scenario/AgentEditor.vue'), /stripToolPrefix\(tool\.name, tool\.server\)/)
   assert.match(read('views/config/SettingsToolAsyncPage.vue'), /stripToolPrefix\(row\.name, row\.server\)/)
-  assert.match(read('views/config/SettingsToolSandboxPage.vue'), /stripToolPrefix\(row\.name, row\.server\)/)
+  // tool sandbox 页为 executor 级：只读工具清单按类别分组逐项剥前缀展示（`t` = 工具项）
+  assert.match(read('views/config/SettingsToolSandboxPage.vue'), /stripToolPrefix\(t\.name, t\.server\)/)
   assert.match(read('views/config/SettingsToolAsyncPage.vue'), /:data-tool="row\.name"/)
-  assert.match(read('views/config/SettingsToolSandboxPage.vue'), /:data-tool="row\.name"/)
+  assert.match(read('views/config/SettingsToolSandboxPage.vue'), /:data-tool="t\.name"/)
 })

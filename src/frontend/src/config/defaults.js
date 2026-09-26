@@ -22,6 +22,9 @@ export const DEFAULT_LLM = {
   thinking: true,
   reasoningEffort: '',
   maxToolIterations: 20,
+  // 模型能力（多选，声明式）：reasoning = 推理 / vision = 图形（图片输入）。
+  // 未声明「vision」→ 聊天窗口禁用截图（前端按所选 provider 的该字段判定）。
+  capabilities: [],
 }
 
 // 新增 MCP 服务器的默认值（默认禁用，12-数据层；字段对齐 servers.list 规范）
@@ -33,7 +36,6 @@ export const DEFAULT_MCP = {
   transport: '',
   enabled: false,
   description: '',
-  category: '',
   namespace: '',
   cwd: '',
   timeout: 0,
@@ -42,5 +44,7 @@ export const DEFAULT_MCP = {
   hot_tools: [],
   // 按项目（workdir）隔离连接：null = 未设置（gateway 按 transport 推断：stdio → 隔离 / http|sse → 共享）
   isolate: null,
+  // agentbox 沙箱（仅 stdio 的 spawn 子进程生效）：null = 未设置（缺键 = 不隔离）
+  sandbox: null,
 }
 

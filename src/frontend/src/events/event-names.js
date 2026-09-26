@@ -104,7 +104,6 @@ export const EventNames = {
   scenarioSelect: 'scenario-select',
   scenarioOpen: 'scenario-open',
   scenarioReload: 'scenario-reload',
-  scenarioRestoreDefault: 'scenario-restore-default', // 默认场景（固定 key）还原为 embed 值
   scenarioSetDefault: 'scenario-set-default', // 设为"默认选中场景"（defaultScenario，payload: { id }）
   // 配置
   configOpen: 'config-open',
@@ -266,9 +265,9 @@ export const EventNames = {
   chatToggle: 'chat-toggle',
   filetreeToggle: 'filetree-toggle',
   tasksToggle: 'tasks-toggle',
-  // filetree 区「项目 / 知识库」双栈切换（toolbar 知识库按钮 ↔ ExplorerPane 头部联动）
-  filetreeModeToggle: 'filetree-mode-toggle', // 无 payload：project ↔ knowledge 切换
-  filetreeModeSelect: 'filetree-mode-select', // payload {mode:'project'|'knowledge'}
-  filetreeModeRefresh: 'filetree-mode-refresh', // 知识库树手动刷新
+  // filetree 区「项目 / 知识库 / 项目记忆 / 会话」四模式切换（toolbar 知识库按钮 ↔ ExplorerPane 头部联动）
+  filetreeModeToggle: 'filetree-mode-toggle', // 无 payload：project ↔ knowledge 切换（休眠态）
+  filetreeModeSelect: 'filetree-mode-select', // payload {mode:'project'|'knowledge'|'memory'|'sessions'}
+  filetreeModeRefresh: 'filetree-mode-refresh', // 知识库树 / 项目记忆列表手动刷新
   codebaseIndexStatusOpen: 'codebase-index-status-open',
 }

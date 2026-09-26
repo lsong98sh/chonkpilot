@@ -81,13 +81,21 @@ var userConfigFreeKeys = map[string]bool{
 	// → 暴露 _meta.async / async-threshold + executor 硬上限；**保存即生效**（既有
 	// data-user-config-refresh 订阅，零新增主题）。「恢复默认」= 删该工具键项（整表覆盖写）。
 	"tool_async": true,
-	// tool_sandbox = **工具级沙箱开关**（agentbox，**结构化 JSON 对象字符串**，形状
-	// {"<工具暴露名>": true|false}；消费方见 64-配置项一览 §3：llm server loadExecConfig →
-	// mcp-server Config.SetToolSandbox → callTool 按契约名查开关 → 开启时 spawn executor 注入
-	// CHONKPILOT_SANDBOX（允许目录 = prj `security-*`）；**保存即生效**（既有
-	// data-user-config-refresh 订阅，零新增主题）。**未配置 = 不隔离**（默认兼容）。
-	// 「恢复默认」= 删该工具键项（整表覆盖写）。
+	// tool_sandbox = **executor 级沙箱开关**（agentbox，**结构化 JSON 对象字符串**，形状
+	// {"core":true|false,"desktop":true|false,"browser":true|false}；key = executor 类别
+	// = 契约 `_meta.category`。消费方见 64-配置项一览 §3：llm server loadExecConfig →
+	// gateway SetSandboxOverrides → mcp-server Config.SetToolSandbox → callTool 按
+	// `td.Category` 查开关 → 开启时 spawn executor 注入 CHONKPILOT_SANDBOX
+	// （允许目录 = prj `security-*`）；**保存即生效**（既有 data-user-config-refresh 订阅，
+	// 零新增主题）。**未配置 = 不隔离**（默认兼容）。**旧形态（按工具暴露名）不再生效**。
+	// 「恢复未设置」= 删该 executor 键项（整表覆盖写 / 末项删整键）。
 	"tool_sandbox": true,
+	// memory_prompts = **用户级记忆类别沉淀提示词**（**结构化 JSON 对象字符串**，形状
+	// {"<类别名>":"<提示词全文>"}；当前仅承载唯一用户级类别「用户偏好」，项目级 8 类走
+	// prj `memory.prompt.<类别名>`）。消费方见 64-配置项一览 §3：memory 插件 distill →
+	// llm-simple 的 `system`（`userMemoryPrompts`；**每轮现读** → 保存即生效）；键缺失/空/
+	// 非法 JSON → 回落插件内置默认。读写走既有 data-user-config-{load,save,delete}（自由键）。
+	"memory_prompts": true,
 }
 
 // LegacyUserConfigKey 是 v6 之前的整块用户配置 key（迁移后删除）。

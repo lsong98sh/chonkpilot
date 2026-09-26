@@ -1,9 +1,9 @@
-// scenario 域门面实现白盒（25-MCP与场景分层模型 §6/§8.1 #8 · T6，2026-09-25）：
-//   - app 级场景（随发布只读资源 `scenarios/<id>/`，与 capability/ 平级）可被 list / get 命中；
+// scenario 域门面实现白盒（25-MCP与场景分层模型 §6，2026-09-26 更新）：
+//   - app 级场景（`scenarios/<id>/`，与 capability/ 平级；出厂内容由 embed 提供）可被 list / get 命中；
 //   - 场景 id **全局唯一（跨级亦然）**：向 user 级保存与 app 级同名的场景 → **拒绝且不落盘**；
 //     同级别同名 = 更新自己那份（放行）；
-//   - app 级只读（删除被拒）；
-//   - 出厂默认场景 = app 级（不再有「代码内嵌默认场景」物化到 user 级）。
+//   - **app 级可编辑**（保存写 app 根、删除允许）；
+//   - 出厂场景 = app 级（app 初始化时从 embed 缺失即物化，已存在不覆盖）。
 //
 // 夹具直接按 capfs 既有目录规则落盘（`scenario.json` + `main.agent.md` + `*.agent.md`）。
 package scenario
@@ -18,6 +18,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
+
+// defScenarioID 出厂场景目录名（app 级 `scenarios/default/`）。
+const defScenarioID = "default"
 
 // testRoots 造一对 app 级根（`<root>/capability` 与 `<root>/scenarios` **平级**，25 §6）
 // + 隔离的 user 库路径；返回 (服务, app capability 根, user usr 库路径)。
@@ -101,16 +104,17 @@ func TestScenarioAppLevelListAndGet(t *testing.T) {
 	}
 }
 
-// TestScenarioSaveRejectsCrossLevelSameID：app 级出厂（只读）场景落地后，向 user 级保存同名场景
-// **被拒且不落盘**（25 §6「不允许同名场景」）；同级别同名 = 更新自己那份（放行）；app 级只读。
+// TestScenarioSaveRejectsCrossLevelSameID：app 级出厂场景落地后，向 user 级保存同名场景
+// **被拒且不落盘**（25 §6「不允许同名场景」）；同级别同名 = 更新自己那份（放行）；
+// **app 级可编辑**（删除允许）。
 func TestScenarioSaveRejectsCrossLevelSameID(t *testing.T) {
 	s, appRoot, usrPath := testRoots(t)
 	writeScenarioDir(t, filepath.Join(filepath.Dir(appRoot), capfs.ScenariosDirName),
-		capfs.DefaultScenarioKey, "开发场景", "出厂主提示词", nil)
+		defScenarioID, "开发场景", "出厂主提示词", nil)
 
 	// ① 跨级同名（app 已有 default）→ save 到 user 被拒
 	_, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
-		ID: capfs.DefaultScenarioKey, Level: capfs.KindUser,
+		ID: defScenarioID, Level: capfs.KindUser,
 		Agents: []facade.ScenarioAgent{{Name: "主", IsMain: true, Prompt: "改过的提示词"}},
 	}})
 	if err == nil {
@@ -119,7 +123,7 @@ func TestScenarioSaveRejectsCrossLevelSameID(t *testing.T) {
 	if !strings.Contains(err.Error(), "全局唯一") {
 		t.Fatalf("错误文案未说明重名口径：%v", err)
 	}
-	if capfs.ScenarioDirExists(capfs.ScenarioUserRoot(usrPath), capfs.DefaultScenarioKey) {
+	if capfs.ScenarioDirExists(capfs.ScenarioUserRoot(usrPath), defScenarioID) {
 		t.Fatal("被拒的 save 不应落盘")
 	}
 
@@ -137,14 +141,25 @@ func TestScenarioSaveRejectsCrossLevelSameID(t *testing.T) {
 		t.Fatalf("user 级自建场景回读异常：%v %+v", err, rec.Scenario)
 	}
 
-	// ③ app 级只读
-	if _, err := s.ScenarioDelete(facade.ScenarioDeleteRequest{
-		ScenarioID: capfs.DefaultScenarioKey, Level: capfs.KindApp,
-	}); err == nil {
-		t.Fatal("app 级场景应只读（删除被拒）")
+	// ③ app 级可编辑：保存到 app 根（同级别更新）→ app 根回读命中
+	if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
+		ID: defScenarioID, Level: capfs.KindApp,
+		Agents: []facade.ScenarioAgent{{Name: "主", IsMain: true, Prompt: "app 改后提示词"}},
+	}}); err != nil {
+		t.Fatalf("app 级同名保存应放行（可编辑）：%v", err)
 	}
-	if !capfs.ScenarioDirExists(filepath.Join(filepath.Dir(appRoot), capfs.ScenariosDirName), capfs.DefaultScenarioKey) {
-		t.Fatal("app 级场景不应被删除")
+	appRec, err := s.ScenarioGet(facade.ScenarioGetRequest{ScenarioID: defScenarioID, Level: capfs.KindApp})
+	if err != nil || appRec.Scenario.SystemPrompt != "app 改后提示词" {
+		t.Fatalf("app 级保存未写 app 根：%v %+v", err, appRec.Scenario)
+	}
+	// 删除 app 级允许
+	if _, err := s.ScenarioDelete(facade.ScenarioDeleteRequest{
+		ScenarioID: defScenarioID, Level: capfs.KindApp,
+	}); err != nil {
+		t.Fatalf("app 级场景应可删除：%v", err)
+	}
+	if capfs.ScenarioDirExists(filepath.Join(filepath.Dir(appRoot), capfs.ScenariosDirName), defScenarioID) {
+		t.Fatal("app 级场景应被删除")
 	}
 }
 

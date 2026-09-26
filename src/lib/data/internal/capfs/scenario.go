@@ -1,4 +1,4 @@
-// 场景目录读写 + 出厂默认场景（12-数据层 §5.2 · 25-MCP与场景分层模型 §6）——原
+// 场景目录读写 + 出厂场景物化（12-数据层 §5.2 · 25-MCP与场景分层模型 §6）——原
 // persist/persist_capability.go 的场景段与 persist/persist_scenario.go 逐字下移。
 //
 // 场景 = **独立根 `scenarios/`**（与 capability/ **平级**）/<场景目录>/ 内含：
@@ -13,12 +13,17 @@
 // 三级根（app / user / project）与 capability 根**同构但目录不同**（见 ScenarioRoots）；
 // 场景 id **全局唯一（跨级亦然）**，三级"覆盖"语义不存在（25 §6）。
 // **同一场景内 agent 名必须唯一** —— 重名（含大小写 / 主与子撞名 `main` / 空名）保存即拒绝（25 §6.1 · 42 §2 (175)）。
+//
+// 三级根均可编辑；app 级出厂场景由 **embed** 提供，app 初始化（首次 list）时经
+// MaterializeFactoryScenarios 缺失即物化（已存在不覆盖，用户可编辑）。
 package capfs
 
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -27,9 +32,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
-
-// DefaultScenarioKey 出厂默认场景的目录名（app 级随发布资源 `scenarios/default/`；restore 缺省 id）。
-const DefaultScenarioKey = "default"
 
 // ScenariosDirName 场景独立根目录名（与 capability/ **平级**，25-MCP与场景分层模型 §6）。
 const ScenariosDirName = "scenarios"
@@ -109,7 +111,7 @@ type scenarioMeta struct {
 // ReadScenarioDir 读一个场景目录 → 场景元素（含 agents）。root = 某级**场景根**
 // （ScenarioSystemRoot / ScenarioUserRoot / ScenarioProjectRoot，25 §6）。
 // 元素字段与旧 DB 版一致（id/key/name/description/agents/createdAt/updatedAt），
-// 另加 level（app|user|project，供只读判定）。
+// 另加 level（app|user|project，级别标识）。
 func ReadScenarioDir(kind, root, dir string) (map[string]any, error) {
 	dirPath := filepath.Join(root, dir)
 	meta := scenarioMeta{Name: dir}
@@ -283,30 +285,51 @@ func NormalizeScenarioPayload(sc map[string]any) map[string]any {
 	return sc
 }
 
-// CopyScenarioDir 复制场景目录（复制下行 / 还原出厂默认用；目标已存在则先清空）。
-// srcRoot / dstRoot = 源 / 目标级**场景根**（25 §6）。
-func CopyScenarioDir(srcRoot, dstRoot, dir string) error {
-	src := filepath.Join(srcRoot, dir)
-	dst := filepath.Join(dstRoot, dir)
-	entries, err := os.ReadDir(src)
+// MaterializeFactoryScenarios 把 **embed 内嵌出厂场景** 物化到 app 级场景根：
+// src 根 = 各场景目录（如 `default/`），目标 `<appRoot>/<场景目录>/` **不存在**才写入，
+// 已存在**不覆盖**（用户可能已编辑）。app 初始化（首次 list）时调用，幂等。
+func MaterializeFactoryScenarios(appRoot string, src fs.FS) error {
+	entries, err := fs.ReadDir(src, ".")
 	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(dst); err != nil {
-		return err
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if ScenarioDirExists(appRoot, e.Name()) {
+			continue // 已存在（含用户编辑）→ 不覆盖
+		}
+		if err := copyFSDir(src, e.Name(), filepath.Join(appRoot, e.Name())); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// copyFSDir 递归复制 src 下 dir 到磁盘 dst（目录自动创建）。
+func copyFSDir(src fs.FS, dir, dst string) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
+	entries, err := fs.ReadDir(src, dir)
+	if err != nil {
+		return err
+	}
 	for _, e := range entries {
+		sp := path.Join(dir, e.Name())
+		dp := filepath.Join(dst, e.Name())
 		if e.IsDir() {
+			if err := copyFSDir(src, sp, dp); err != nil {
+				return err
+			}
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(src, e.Name()))
+		raw, err := fs.ReadFile(src, sp)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(dst, e.Name()), raw, 0o644); err != nil {
+		if err := os.WriteFile(dp, raw, 0o644); err != nil {
 			return err
 		}
 	}

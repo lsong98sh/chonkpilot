@@ -62,13 +62,12 @@ const (
 // 避免 persist 收到自己的广播形成自环（A1 时代靠 srv.notify.> 通配 + ok 过滤防环，正名后
 // 结构上消除）。
 var dataReqSubjects = []string{
-	// 配置五域（§3.1）：user-config/prj-config/prompt/prj-security 通用 list/load/save/delete；
-	// scenario 另有 restore（还原默认场景）。
+	// 配置五域（§3.1）：user-config/prj-config/prompt/prj-security/scenario 通用 list/load/save/delete。
 	"data-user-config-list", "data-user-config-load", "data-user-config-save", "data-user-config-delete",
 	"data-prj-config-list", "data-prj-config-load", "data-prj-config-save", "data-prj-config-delete",
 	"data-prompt-list", "data-prompt-load", "data-prompt-save", "data-prompt-delete",
 	"data-prj-security-list", "data-prj-security-load", "data-prj-security-save", "data-prj-security-delete",
-	"data-scenario-list", "data-scenario-load", "data-scenario-save", "data-scenario-delete", "data-scenario-restore",
+	"data-scenario-list", "data-scenario-load", "data-scenario-save", "data-scenario-delete",
 	// 会话域（§3.2）
 	"data-session-list", "data-session-get", "data-session-history", "data-session-latest",
 	"data-session-title", "data-session-delete", "data-session-active-set", "data-session-active-get",

@@ -412,9 +412,9 @@ func TestDataUserConfigDefaultLLMRef(t *testing.T) {
 }
 
 // TestDataScenarioSaveLoadListDelete（v6 文件化 · 25 §6 · 42 §2 (171)）：场景 = 独立根
-// `<scenarios>/<场景目录>/`（与 capability/ 平级）——**出厂默认场景 = app 级随发布只读资源**
-// （不再由 list 物化到 user 级）；save 按 id（= 目录名，用户指定）写目录；load 按 id（可带 level
-// 限定）；delete 删目录；restore（非 save 路径）用 app 级出厂默认覆盖 user 副本。
+// `<scenarios>/<场景目录>/`（与 capability/ 平级）——**出厂场景 = app 级**（出厂内容由 embed 提供，
+// app 初始化时缺失即物化；不再由 list 物化到 user 级）；save 按 id（= 目录名，用户指定）写目录；
+// load 按 id（可带 level 限定）；delete 删目录。
 func TestDataScenarioSaveLoadListDelete(t *testing.T) {
 	appDir := appCapabilityRoot(t)
 	bus, _, usrPath := newTestPersistOpts(t, persist.Options{AppDir: appDir})
@@ -498,28 +498,6 @@ func TestDataScenarioSaveLoadListDelete(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(usrScen, "s2")); !os.IsNotExist(err) {
 		t.Fatal("s2 dir should be removed")
-	}
-
-	// 改坏 user 级的默认场景副本 → restore（非 save 路径）用 app 级出厂默认覆盖
-	usrDef := filepath.Join(usrScen, "default")
-	if err := os.MkdirAll(usrDef, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(usrDef, "scenario.json"),
-		[]byte(`{"name":"被我改了"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	r = dataCall(t, bus, "data-scenario-restore", map[string]any{"req_id": "r6", "id": "default"})
-	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
-		t.Fatalf("restore failed: %+v", r)
-	}
-	r = dataCall(t, bus, "data-scenario-load", map[string]any{"req_id": "r7", "id": "default"})
-	rd, _ := dataResult(t, r)["data"].(map[string]any)
-	if rd["name"] != "开发场景" || rd["level"] != "user" {
-		t.Fatalf("restore should overwrite user copy with app factory: %+v", rd)
-	}
-	if ags, _ := rd["agents"].([]any); len(ags) == 0 {
-		t.Fatalf("restored default missing agents: %+v", rd)
 	}
 }
 
@@ -765,7 +743,7 @@ func TestDataConfigUnknownInstance(t *testing.T) {
 }
 
 // appScenarioResourceRoot 定位仓库内 **app 级场景资源根** `src/lib/data/scenarios`
-// （25 §8.2 T6：出厂默认场景 = app 级随发布只读资源，由构建脚本投放，非代码内嵌）。
+// （25 §8.2：出厂场景 = app 级；出厂内容由 **embed** 内嵌（源 = 本目录），app 初始化时缺失即物化）。
 // 由本测试文件位置反推仓库根（黑盒测试不复制数据层私有路径规则）。
 func appScenarioResourceRoot(t *testing.T) string {
 	t.Helper()
@@ -782,10 +760,10 @@ func appScenarioResourceRoot(t *testing.T) string {
 	return root
 }
 
-// appCapabilityRoot 造一个**临时 app 级场景根**：把仓库内出厂默认场景
+// appCapabilityRoot 造一个**临时 app 级场景根**：把仓库内出厂场景
 // `<repo>/src/lib/data/scenarios/default` 复制到 `<tmp>/scenarios/default`，返回
 // `persist.Options.AppDir`（= 系统级 capability 根；场景独立根 `scenarios/` 与其**平级**，25 §6）。
-// 只投放出厂默认场景 `scenarios/default/` → list 计数 / restore 目标确定（仓库当前无其它 app 级场景）。
+// 只投放出厂场景 `scenarios/default/` → list 计数确定（仓库当前无其它 app 级场景）。
 func appCapabilityRoot(t *testing.T) string {
 	t.Helper()
 	src := filepath.Join(appScenarioResourceRoot(t), scenarioDefaultKey)
@@ -817,10 +795,10 @@ func appCapabilityRoot(t *testing.T) string {
 	return appDir
 }
 
-// TestScenarioDefaultAgentsSeeded（25 §8.2 T6 · 42 §2 (171) 新语义）：出厂默认场景 = **app 级随发布
-// 只读资源** `scenarios/default/`（构建脚本投放；原「list 首次 seed 物化到 user 级」已撤）——
-// list 命中 app 级 default：1 条 isMain 主 agent（Loop Engineer/主，居首）+ 8 条子 agent，
-// name/description/roleTag 齐备。
+// TestScenarioDefaultAgentsSeeded（25 §8.2 · 42 §2 (171) 新语义）：出厂场景 = **app 级**
+// `scenarios/default/`（出厂内容由 **embed** 提供，app 初始化时缺失即物化；原「list 首次 seed 物化
+// 到 user 级」已撤）——list 命中 app 级 default：1 条 isMain 主 agent（Loop Engineer/主，居首）+
+// 8 条子 agent，name/description/roleTag 齐备。
 func TestScenarioDefaultAgentsSeeded(t *testing.T) {
 	bus, _, _ := newTestPersistOpts(t, persist.Options{AppDir: appCapabilityRoot(t)})
 
@@ -831,7 +809,7 @@ func TestScenarioDefaultAgentsSeeded(t *testing.T) {
 	}
 	def := list[0].(map[string]any)
 	if lv := persist.Sval(def["level"]); lv != "app" {
-		t.Fatalf("出厂默认场景应归属 app 级（随发布只读），实际 level=%q：%+v", lv, def)
+		t.Fatalf("出厂场景应归属 app 级（出厂内容由 embed 物化），实际 level=%q：%+v", lv, def)
 	}
 	ags, _ := def["agents"].([]any)
 	if len(ags) == 0 {
@@ -881,11 +859,11 @@ func TestScenarioDefaultAgentsSeeded(t *testing.T) {
 // TestScenarioCrossLevelDupRejected（25-MCP与场景分层模型 §6）：场景 id **全局唯一（跨级亦然）**——
 //
 //	① user 级自建 → 再 save 同名到 project 级 **报错**（无覆盖语义；错误文案指明已存在于哪级）；
-//	①b 与 **app 级出厂场景**同名 → save 到 user 级 **报错**（42 §2 (171)④：app 级内置场景落地后
-//	   用户须改用其它 id，不得在同名副本上改内置场景）；
+//	①b 与 **app 级出厂场景**同名 → save 到 user 级 **报错**（42 §2 (171)④：场景 id 全局唯一，
+//	   用户须改用其它 id；app 级本身可编辑，同名编辑应显式 level=app 而非另建副本）；
 //	② 同级别同名 → **正常更新**（不报错）；
 //	③ save 落**新独立根 `scenarios/`**（与 capability/ 平级）→ list/load 命中新根路径；
-//	④ list：id 全局唯一 → 无重名，且出厂默认场景归属 **app 级**。
+//	④ list：id 全局唯一 → 无重名，且出厂场景归属 **app 级**。
 func TestScenarioCrossLevelDupRejected(t *testing.T) {
 	bus, _, usrPath := newTestPersistOpts(t, persist.Options{AppDir: appCapabilityRoot(t)})
 	wd := regInstance(t, bus) // 登记实例 → project 级可见
@@ -962,7 +940,7 @@ func TestScenarioCrossLevelDupRejected(t *testing.T) {
 		t.Fatal("scenario must not be written under capability/prompts（旧位置）")
 	}
 
-	// ④ list：id 全局唯一 → 无重名；各条级别正确（出厂默认场景 = app 级随发布资源）
+	// ④ list：id 全局唯一 → 无重名；各条级别正确（出厂场景 = app 级）
 	r = dataCall(t, bus, "data-scenario-list", map[string]any{"req_id": "r8"})
 	levels := map[string]string{}
 	for _, e := range dataList(dataResult(t, r)) {
@@ -987,8 +965,8 @@ func TestScenarioCrossLevelDupRejected(t *testing.T) {
 
 // TestScenarioLegacyLocationIgnored（25 §6 · 既有数据不迁移）：旧位置
 // `capability/prompts/<场景>/` 不再被扫描 → **不崩**、旧场景 list/load 均不可见；
-// 旧目录原样保留（不迁移 / 不删除）；且 list **不再**向 user 级物化出厂默认场景
-// （出厂默认场景 = app 级随发布只读资源，42 §2 (171)）。
+// 旧目录原样保留（不迁移 / 不删除）；且 list **不向 user 级物化**出厂场景
+// （出厂场景 = app 级，出厂内容由 embed 提供，缺失时物化到 app 级，42 §2 (171)）。
 func TestScenarioLegacyLocationIgnored(t *testing.T) {
 	bus, _, usrPath := newTestPersistOpts(t, persist.Options{AppDir: appCapabilityRoot(t)})
 	home := filepath.Dir(usrPath)
