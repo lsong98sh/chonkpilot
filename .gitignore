@@ -1,64 +1,99 @@
-# Build output
-build/*.exe
-build/bin/
-build/check_pptx.py
-build/fetch_*.ps1
-/chonkpilot.exe
+# ============================================================================
+# ChonkPilot .gitignore
+# 原则：**源 / 产物分区**（[41 D-28]）—— `src/` 与 `docs/` 入库，`dist/` 与
+#       构建脚本投放出的 `frontend/dist`、运行时数据、二进制一律不入库。
+# ============================================================================
 
-# Go
+# ── 1. 构建产物（仓库根，由 build-*.ps1 产出）──────────────────────────────
+# dist/{desktop,server,gui,other,plugins}：exe / 引擎 / zvec_c_api.dll /
+# capability / scenarios / config.json —— 全部由构建脚本投放
+/dist/
+
+# ── 2. 前端构建投放物（go:embed 入口，由 build 脚本生成）────────────────────
+# 源 = 仓库级 src/frontend；embed 入口 embed.html → 改名 index.html 投放下列目录
+/src/frontend/dist/
+/src/frontend/dist-browser/
+/src/gui/frontend/dist/
+/src/desktop/frontend/dist/
+/src/server/frontend/dist/
+/src/frontend/node_modules/
+node_modules/
+.vite/
+
+# ── 3. 二进制 / 原生库（源码树内一律不入库；发行物只出现在 dist/）───────────
+*.exe
+*.dll
+*.so
+*.dylib
 *.test
-*.out
 *.test.exe
-vendor/
+*.out
+
+# ── 4. 运行时数据（各 work_dir 下的项目数据根）──────────────────────────────
+# 含 prj/prjusr 库、capability/、scenarios/、logs/、tmp/、backup/、memory/
+# 注：用户级数据根 ~/.chonkpilot/ 在仓库外，天然不入库
+.chonkpilot/
+
+# ── 5. 测试工作区产物（L2/L3 运行残留 + 明文凭据）─────────────────────────
+# java-project 等会产出 jar/class/surefire 报告/库文件，并可能落明文 token
+/src/test/**/workspace/
+/src/test/**/target/
+/src/test/**/*.class
+/src/test/**/*.jar
+/src/test/**/token.txt
+/src/test/**/login_out.json
+*.surefire/
+
+# ── 6. 日志 / 诊断 ─────────────────────────────────────────────────────────
+.ide/
+.ide/logs/
+logs/
+*.log
+
+# ── 7. 临时文件 / Python 缓存（L2 systest、llmproxy 等 .py 产物）─────────────
+tmp/
+temp/
+*.tmp
+*.bak
+__pycache__/
+*.pyc
+*.pyo
+
+# ── 8. Go 工作区（多模块由 go.mod 各自管理；本机 workspace 不入库）──────────
 go.work
 go.work.sum
+vendor/
 
-# IDE workspace files
-.ide/
-build/.ide/
+# ── 9. 历史归档 / 技术验证（不入库）────────────────────────────────────────
+# trash/     = 已废弃的旧代码 / 旧文档 / 探针脚本 / 第三方参考项目
+# TECH-POC/  = 技术可行性验证用（如 webview2-multiwin、webview2-cookie），非产品代码
+/trash/
+/TECH-POC/
 
-# Frontend build output
-frontend/dist/
-frontend/node_modules/
+# ── 10. 环境变量 / 凭据 ────────────────────────────────────────────────────
+.env
+.env.*
+*.env.local
+*.env.*.local
 
-# System files
-.DS_Store
-Thumbs.db
-desktop.ini
-ehthumbs.db
-
-# IDE metadata
+# ── 11. IDE / 编辑器 ───────────────────────────────────────────────────────
+.trae/
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# Environment / secrets
-.env
-*.env.local
-*.env.*.local
-
-# Logs
-*.log
-logs/
-
-# Temp files
-tmp/
-temp/
-
-# OS generated
+# ── 12. 操作系统 ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
 *.cab
 *.lnk
 
-# Project notes / docs (local)
+# ── 13. 本机私有笔记（不入库）─────────────────────────────────────────────
 /AGENTS.md
 /TODO.md
 /硬编码参数分析.md
-
-# Test directories
-/test_tools/
-/test_rollback/
-
-# Local tools (not for git)
 /tools/

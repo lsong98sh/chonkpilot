@@ -1,0 +1,38 @@
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background-color: rgba(27, 38, 54, 1);
+    color: white;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Roboto",
+    "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+    sans-serif;
+}
+
+#app {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.hello-world {
+    font-size: 32px;
+    font-weight: bold;
+    color: #ffffff;
+    text-align: center;
+    padding: 10px 0;
+    flex-shrink: 0;
+}
+
+.iframe-container {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.file-iframe {
+    flex: 1;
+    border: none;
+    background: white;
+}

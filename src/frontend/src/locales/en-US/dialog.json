@@ -1,0 +1,21 @@
+{
+  "confirm_title": "Confirm",
+  "cancel_title": "Cancel",
+  "alert": "Alert",
+  "error": "Error",
+  "warning": "Warning",
+  "info": "Information",
+  "confirm_delete": "Confirm Delete",
+  "confirm_delete_message": "Are you sure you want to delete? This action cannot be undone.",
+  "yes": "Yes",
+  "no": "No",
+  "ok": "OK",
+  "retry": "Retry",
+  "close_hint": "Press Esc to close",
+  "close": "Close",
+  "minimize": "Minimize",
+  "maximize": "Maximize",
+  "restore": "Restore",
+  "collapse": "Collapse",
+  "expand": "Expand"
+}

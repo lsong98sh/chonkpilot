@@ -1,0 +1,17 @@
+{
+  "message": "⚠️ {what}失败{phase}：{reason}（本轮对话未受影响；详情见日志文件）",
+  "phase": "（{phase}）",
+  "reason_unknown": "原因未知（详见日志文件）",
+  "what": {
+    "memory": "记忆沉淀",
+    "compress": "上下文压缩"
+  },
+  "kind": {
+    "llm": "模型调用",
+    "save": "保存",
+    "read": "读取",
+    "config": "配置读取",
+    "messages": "消息读取",
+    "categories": "分类读取"
+  }
+}

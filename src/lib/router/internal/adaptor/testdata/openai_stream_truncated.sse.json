@@ -1,0 +1,13 @@
+{
+  "name": "openai_stream_truncated",
+  "desc": "流中断：末条事件已累积 data 行但缺终结空行即断流 → SSEDecoder 应报 ErrTruncated",
+  "kind": "sse",
+  "chunks": [
+    "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"cut"
+  ],
+  "payloads": [
+    "{\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}"
+  ],
+  "truncated": true
+}

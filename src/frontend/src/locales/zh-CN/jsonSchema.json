@@ -1,0 +1,13 @@
+{
+  "valid": "Schema 合法",
+  "invalid": "Schema 有待修正",
+  "hint": "参数 = JSON Schema：树形维护类型/必填/枚举，关键字可补全；保存时序列化为 JSON 文本回写 [parameters]/[arguments]。",
+  "rewrite": "改为空 Schema",
+  "required": "必填",
+  "add_property": "+ 属性",
+  "add_enum": "+ 枚举值",
+  "complete_keyword": "补全关键字",
+  "remove_keyword": "移除该关键字",
+  "new_property_name": "新属性名",
+  "enum_value": "枚举值"
+}

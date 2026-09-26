@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<!-- embed 入口：GUI/WebView2 形态。构建后复制改名为 index.html 投放 chonkpilot-gui/frontend/dist
+     （Go 侧 //go:embed all:frontend/dist 与 main.go serveStatic 的 instance_id 注入均不变）。
+     browser 形态入口 = index.html（产物落 dist-browser/）。决策见 42 §2 (115) / 19 §3.2。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChonkPilot</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    #app { height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

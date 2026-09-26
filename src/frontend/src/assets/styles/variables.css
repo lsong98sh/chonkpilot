@@ -1,0 +1,121 @@
+:root {
+  /* Layout */
+  --toolbar-height: 44px;
+  --statusbar-height: 24px;
+  /* 通用尺寸：分栏 resizer 命中宽度 / 控件圆角（组件级可选覆盖钩子，默认值在此声明）
+     —— var() 内一律不写兜底硬编码（口径见 20-gui §12.8） */
+  --split-gap: 4px;
+  --border-radius: 4px;
+
+  /* Colors - Light theme (default) */
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e9ecef;
+  --bg-surface: #dee2e6;
+  --bg-hover: #e9ecef;
+  --text-primary: #212529;
+  --text-secondary: #495057;
+  /* 弱化文字（11–12px 提示/占位）：原 #6c757d 在最亮底 #f8f9fa 上仅 4.45:1（<4.5）→
+     同色相压深至 #6b7280（4.59:1），见 20-gui §12.8 */
+  --text-muted: #6b7280;
+  --accent: #4361ee;
+  --accent-hover: #3a56d4;
+  --success: #2d9f4e;
+  --warning: #e8a317;
+  --danger: #dc3545;
+  --border: #dee2e6;
+  --panel-bg: #ffffff;
+  --toolbar-bg: #ffffff;
+  --input-bg: #ffffff;
+
+  /* 浮层与强调态（light 保持既有取值，暗色主题在下方覆写） */
+  --tooltip-bg: rgba(0, 0, 0, 0.8);
+  --tooltip-color: #ffffff;
+  --accent-bg: #ecf5ff;
+  /* 告警语义衍生：淡色底 + 描边（文字直接用 --warning） */
+  --warning-bg: #fdf6ec;
+  --warning-border: #e6a23c;
+
+  /* Typography */
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+  --font-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-size-sm: 13px;
+
+  /* 页签：非激活文字色（A6，2026-09-24 用户口径）——由 --text-primary 向底色调和，
+     与激活页签（= --text-primary / --accent）始终有可见差别。light 向更亮的 --bg-secondary
+     调（更淡）；dark 的 --bg-secondary 比 --bg-primary 暗 → 同式即更暗；nord 反之，
+     故在 nord 块内改向 --bg-primary 调（逐 scheme 定义，见下方覆写）。 */
+  --tab-inactive-fg: color-mix(in srgb, var(--text-primary) 78%, var(--bg-secondary));
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+}
+
+/* Dark theme */
+[data-theme="dark"] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #181825;
+  --bg-tertiary: #11111b;
+  --bg-surface: #313244;
+  --bg-hover: #45475a;
+  --text-primary: #cdd6f4;
+  --text-secondary: #a6adc8;
+  /* 弱化文字：原 #6c7086 在 #1e1e2e 上仅 3.36:1（11–12px 提示不可读）→
+     向 #a6adc8 一带提亮（#1e1e2e 上 7.37:1，见 20-gui §12.8） */
+  --text-muted: #a6adc8;
+  --accent: #89b4fa;
+  --accent-hover: #74c7ec;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --danger: #f38ba8;
+  --border: #313244;
+  --panel-bg: #1e1e2e;
+  --toolbar-bg: #181825;
+  --input-bg: #313244;
+
+  /* 浮层：暗色下改用主题面/文字，避免纯黑 tooltip 与刺眼浅蓝 hover */
+  --tooltip-bg: var(--bg-surface);
+  --tooltip-color: var(--text-primary);
+  --accent-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+  /* 告警语义衍生：暗色下同法淡化，避免浅色底在暗色主题里刺眼 */
+  --warning-bg: color-mix(in srgb, var(--warning) 15%, transparent);
+  --warning-border: var(--warning);
+  /* 页签非激活文字：dark 的 --bg-secondary 比 --bg-primary 暗 → 调和结果比激活色更暗 */
+  --tab-inactive-fg: color-mix(in srgb, var(--text-primary) 78%, var(--bg-secondary));
+}
+
+/* Nord theme */
+[data-theme="nord"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-tertiary: #434c5e;
+  --bg-surface: #4c566a;
+  --bg-hover: #434c5e;
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  /* 弱化文字：原 #81a1c1 在 #2e3440 上仅 4.64:1（11–12px 提示余量过小）→
+     同色相提亮至 #93a8c8（5.16:1，见 20-gui §12.8） */
+  --text-muted: #93a8c8;
+  --accent: #88c0d0;
+  --accent-hover: #8fbcbb;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  /* 危险色：nord 原 #bf616a 偏暗（底色 #2e3440 上文字/实心填充对比度仅 3.05、菜单面 #4c566a 上仅 1.80）
+     → 调亮为 #f0959e（同色相 354°，面板 5.65 / 工具面 4.55 / 实心填充 4.55；见 20-gui §12.8） */
+  --danger: #f0959e;
+  --border: #4c566a;
+  --panel-bg: #2e3440;
+  --toolbar-bg: #3b4252;
+  --input-bg: #434c5e;
+
+  /* 浮层：同 dark，用主题面/文字 */
+  --tooltip-bg: var(--bg-surface);
+  --tooltip-color: var(--text-primary);
+  --accent-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+  --warning-bg: color-mix(in srgb, var(--warning) 15%, transparent);
+  --warning-border: var(--warning);
+  /* 页签非激活文字：nord 的 --bg-secondary（#3b4252）比 --bg-primary 亮 → 改向 --bg-primary 调，
+     保证非激活比激活（--text-primary）更暗（与 dark 同向，见 :root 注释） */
+  --tab-inactive-fg: color-mix(in srgb, var(--text-primary) 78%, var(--bg-primary));
+}

@@ -1,0 +1,14 @@
+{
+  "title": "信任目录",
+  "add": "添加",
+  "trust_dir": "信任目录",
+  "read_write": "读写",
+  "operation": "操作",
+  "delete": "删除",
+  "save_failed": "保存安全配置失败",
+  "delete_confirm": "删除此信任目录？",
+  "dir_path_prompt": "输入目录路径:",
+  "dir_placeholder": "C:\\path\\to\\trusted",
+  "empty": "暂无信任目录",
+  "not_enforced_hint": "该策略由 agentbox 在执行层强制执行：在 MCP 配置页或「工具沙箱配置」页开启「沙箱隔离」后，工具对允许目录之外的读写将被拒绝。"
+}

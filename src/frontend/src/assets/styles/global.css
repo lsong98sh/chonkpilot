@@ -1,0 +1,52 @@
+@import './variables.css';
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  transition: background-color var(--transition-normal), color var(--transition-normal);
+}
+
+/* 无边框窗口（Frameless）下给应用整体加灰色外边框 */
+body {
+  border: 1px solid var(--border);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-hover);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ── 编辑类弹框：内容撑满、底部不留白（A5，2026-09-24 用户口径）──────────────
+   弹框内容体（DialogShell 的 .dialog-body，经 options.bodyClass 命中）去掉内距并改为
+   撑满的纵向 flex；内容组件（ScenarioEditDialog / TextEditDialog）自身 flex:1 填满，
+   内部各自滚动 —— 底部不再出现「内容高不足而留白」。 */
+.dialog-body.scenario-edit-dialog-body,
+.dialog-body.text-edit-dialog-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}

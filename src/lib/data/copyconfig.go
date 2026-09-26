@@ -1,0 +1,77 @@
+// 配置表整表复制（12-数据层）：CLI 数据根准备（临时目录形态）用。
+//
+// 逻辑原在 `src/desktop/cli/dataprep.go`（跨 module 直开库 + 取表句柄）；2026-09-21 移入
+// data 组件——调用方只报「目标路径 + 层 + 源路径」，**不持库句柄**（库/表句柄不出 data 组件）。
+package data
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+// copyTables 是随配置一起复制的专用表（LLM / MCP 定义属用户级配置）。
+var copyTables = []string{"llms", "mcps"}
+
+// CopyConfigTables 把源库的 config 表 + 专用表（llms / mcps）整表复制进目标库
+// （目标不存在则建库）。源不存在 → 视为跳过（返回 nil，不视为致命错误）。
+func CopyConfigTables(dstPath string, layer Layer, srcPath string) error {
+	if _, err := os.Stat(srcPath); err != nil {
+		return nil
+	}
+	src, err := OpenLayer(srcPath, "")
+	if err != nil {
+		return fmt.Errorf("open %s: %w", srcPath, err)
+	}
+	defer src.Close()
+
+	dst, err := OpenLayer(dstPath, layer)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	keys, err := src.Table("config").ListKeys()
+	if err != nil {
+		return err
+	}
+	for _, k := range keys {
+		if strings.HasPrefix(k, "_") {
+			continue
+		}
+		var rec Record
+		if ok, _ := src.Table("config").Get(k, &rec); ok {
+			if err := dst.Table("config").Upsert(k, rec); err != nil {
+				return err
+			}
+		}
+	}
+	for _, t := range copyTables {
+		tkeys, err := src.Table(t).ListKeys()
+		if err != nil {
+			continue
+		}
+		for _, k := range tkeys {
+			var rec Record
+			if ok, _ := src.Table(t).Get(k, &rec); ok {
+				if err := dst.Table(t).Upsert(k, rec); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ReadProjectIDPath 读某 prj 库文件的 project-id（文件不存在 / 打不开 → ok=false）。
+func ReadProjectIDPath(prjDBPath string) (string, bool) {
+	if _, err := os.Stat(prjDBPath); err != nil {
+		return "", false
+	}
+	db, err := OpenLayer(prjDBPath, LayerPrj)
+	if err != nil {
+		return "", false
+	}
+	defer db.Close()
+	return ReadProjectID(db)
+}

@@ -1,0 +1,4 @@
+{
+  "name": "内置智能体",
+  "description": "平台随发布提供的内置通用智能体集合（按名委派：coder / planner / executor / reader / reviewer / worker / writer）。"
+}

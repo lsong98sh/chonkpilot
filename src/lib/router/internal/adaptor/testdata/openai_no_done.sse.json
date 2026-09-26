@@ -1,0 +1,15 @@
+{
+  "name": "openai_no_done",
+  "desc": "无 [DONE] 的流：末片带 finish_reason=stop + usage，随后以 EOF 收尾（兼容端点常见省略 [DONE]）",
+  "kind": "sse",
+  "chunks": [
+    "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}\n\n"
+  ],
+  "payloads": [
+    "{\"choices\":[{\"delta\":{\"content\":\"你\"}}]}",
+    "{\"choices\":[{\"delta\":{\"content\":\"好\"}}]}",
+    "{\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1,\"total_tokens\":3}}"
+  ]
+}

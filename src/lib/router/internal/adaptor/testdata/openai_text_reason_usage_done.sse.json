@@ -1,0 +1,23 @@
+{
+  "name": "openai_text_reason_usage_done",
+  "desc": "文本分片 + reasoning 分片 + usage 分片 + [DONE]；第 2 条跨 chunk 半包（含终止空行被切开）",
+  "kind": "sse",
+  "chunks": [
+    "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想",
+    "一下\"}}]}\n",
+    "\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n",
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+    "data: [DONE]\n\n"
+  ],
+  "payloads": [
+    "{\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}",
+    "{\"choices\":[{\"delta\":{\"reasoning_content\":\"想一下\"}}]}",
+    "{\"choices\":[{\"delta\":{\"content\":\"你\"}}]}",
+    "{\"choices\":[{\"delta\":{\"content\":\"好\"}}]}",
+    "{\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}",
+    "[DONE]"
+  ]
+}

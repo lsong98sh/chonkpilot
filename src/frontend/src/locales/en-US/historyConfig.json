@@ -1,0 +1,12 @@
+{
+  "enable": "Enable file history (git snapshots)",
+  "no_git_installed": "git executable not detected: file history relies on git snapshots. Install git and add it to PATH to enable this option.",
+  "no_git_repo": "The project directory is not a git repository: file history relies on git snapshots. Run git init in the project directory to enable this option.",
+  "desc_default_off": "Off by default: no git commit is made in the project repository unless you explicitly enable it here.",
+  "desc_on": "When enabled, at each turn boundary (turn start and LLM completion) the project directory is checked for uncommitted changes; if any, a git add -A followed by a snapshot commit is made (message includes session and changed file count). Snapshots are plain git commits in the project directory, viewable/restorable with git.",
+  "desc_off": "When disabled, no snapshot commit is made at turn boundaries; git commits already created are kept as-is (still viewable with git).",
+  "enable_confirm_title": "Enable file history?",
+  "enable_confirm": "Enabling will create git commits/snapshots in the project repository (git add -A + commit), which has side effects on your repository. Enable anyway?",
+  "saved": "Saved",
+  "save_failed": "Failed to save"
+}
