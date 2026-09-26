@@ -2,6 +2,7 @@ package dsl
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -754,6 +755,104 @@ END
 	defer e.mu.Unlock()
 	if len(e.calls) != 2 {
 		t.Fatalf("嵌套循环应 2 次: %v", e.calls)
+	}
+}
+
+// ─── 无参 LOOP（5.2）：无界循环、BREAK/EXIT 退出、迭代上限、单步失败终止 ───
+
+// BREAK 退出本层循环（无迭代变量：循环状态由脚本自身的变量承载，赋值回写声明作用域）。
+func TestUnboundedLoopBreak(t *testing.T) {
+	e := newEnv(nil, nil)
+	res := e.run(t, `SET "a" => state
+LOOP
+LLM "tick" "{{state}}"
+IF state == "b"
+   BREAK
+END
+SET "b" => state
+END
+LLM "after" "done"
+`)
+	if len(res.Errors) != 0 {
+		t.Fatalf("errors: %v", res.Errors)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	got := strings.Join(e.calls, ",")
+	if got != "tick|a,tick|b,after|done" {
+		t.Fatalf("BREAK 应在第 2 轮退出: %v", got)
+	}
+}
+
+// EXIT 终止整个脚本（跨层）。
+func TestUnboundedLoopExit(t *testing.T) {
+	e := newEnv(nil, nil)
+	res := e.run(t, `LOOP
+LLM "once" "x"
+EXIT
+END
+LLM "never" "y"
+`)
+	if len(res.Errors) != 0 {
+		t.Fatalf("errors: %v", res.Errors)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.calls) != 1 || !strings.Contains(e.calls[0], "once") {
+		t.Fatalf("EXIT 应终止整脚本: %v", e.calls)
+	}
+}
+
+// 到达迭代上限 → 记错并终止（不静默停止）；上限可经 Options.MaxLoopIterations 配置。
+func TestUnboundedLoopLimit(t *testing.T) {
+	e := newEnv(nil, nil)
+	res, err := Run(`LOOP
+LLM "spin" "x"
+END`, Options{Files: e.fs, DBs: e.db, Actions: e.actions, MaxLoopIterations: 3})
+	if err != nil {
+		t.Fatalf("parse/run error: %v", err)
+	}
+	if len(res.Summary) != 3 {
+		t.Fatalf("应执行 3 轮（MaxLoopIterations=3）: %v", res.Summary)
+	}
+	if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Msg, "超过迭代上限 3") {
+		t.Fatalf("应记录一次上限错误: %+v", res.Errors)
+	}
+}
+
+// 单步失败 → 终止本层循环（步骤错误 + 终止说明共 2 条），不空转到上限；
+// 循环后的顶层语句照常执行（StopOnError=false 的记错继续语义）。
+func TestUnboundedLoopStopsOnStepFailure(t *testing.T) {
+	e := newEnv(nil, nil)
+	e.actions = append(e.actions, Action{Name: "BOOM", Run: func(s *Scope, args string) (string, error) {
+		return "", errors.New("boom")
+	}})
+	res := e.run(t, `LOOP
+BOOM
+END
+LLM "after" "ok"
+`)
+	if len(res.Errors) != 2 {
+		t.Fatalf("应 2 条错误（步骤失败 + 终止说明）: %+v", res.Errors)
+	}
+	if !strings.Contains(res.Errors[0].Msg, "boom") {
+		t.Fatalf("首条应为步骤错误: %+v", res.Errors[0])
+	}
+	if !strings.Contains(res.Errors[1].Msg, "终止本层循环") {
+		t.Fatalf("次条应为终止说明: %+v", res.Errors[1])
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.calls) != 1 || !strings.Contains(e.calls[0], "after") {
+		t.Fatalf("循环后顶层语句应执行: %v", e.calls)
+	}
+}
+
+// 无参 LOOP 不得携带 concurrency（否则会被误读为「变量名 concurrency = 数据源」）。
+func TestUnboundedLoopRejectsConcurrency(t *testing.T) {
+	_, err := ParseScript("LOOP concurrency=3\nEND\n")
+	if err == nil || !strings.Contains(err.Error(), "不支持 concurrency") {
+		t.Fatalf("应拒绝 concurrency: %v", err)
 	}
 }
 

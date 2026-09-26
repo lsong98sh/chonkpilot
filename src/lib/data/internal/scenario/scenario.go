@@ -3,7 +3,7 @@
 //
 // 覆盖：场景 = **独立根 `scenarios/`**（与 capability/ 平级）/<场景目录>/ 的场景元素
 // （列举 / 定位 / 保存 / 删除 / 还原出厂）。
-// 出厂默认场景与内置 agent 集 = **app 级场景**（随发布只读资源 `scenarios/<id>/`，25 §8.1 #8 / T6）；
+// 出厂场景 = **app 级只读**（随发布只读资源 `scenarios/<id>/`，25 §8.1 #8 / T6）；
 // 本实现**不再**持有任何代码内嵌默认场景（原 `capfs.DefaultScenarioAgents` 已删、list 物化已撤）。
 // 把「场景领域对象 + 级别」翻译成三级场景根下的目录读写（`scenario.json` +
 // `main.agent.md` + `*.agent.md`）；目录/文件规则与 agent 契约文本留在 capfs（门面不交路径规则）。

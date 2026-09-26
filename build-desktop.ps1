@@ -1,4 +1,4 @@
-﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
+# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-standalone-gui.ps1`；
 #   形态名 `standalone` → **`desktop`（桌面单体）**，产物目录 `dist/standalone/` → `dist/desktop/`。
@@ -20,7 +20,7 @@
 #   ├── chonkpilot-vfts-mcp-server.exe      # vfts 引擎（出厂内置 MCP）
 #   ├── zvec_c_api.dll                      # vfts 运行库（必须与 vfts 引擎 exe 同目录）
 #   ├── capability/                         # 契约 + executor×3（来自 dist/other）
-#   └── scenarios/                          # app 级场景（出厂默认场景 + 内置智能体集，随发布只读资源；
+#   └── scenarios/                          # app 级场景（仅出厂场景「开发场景」default/，随发布只读资源；
 #                                           #   与 capability/ 平级，25-MCP与场景分层模型 §6 / T6）
 # 全量组件：内嵌 lib 插件（compress/history/memory/vfts/codegraph）随 exe 编译；
 #   外置引擎 exe（codegraph/vfts）与 zvec_c_api.dll 置于发行根（与 GUI/CLI exe 同级——

@@ -22,7 +22,7 @@ LLM 委派/编排统一 DSL 执行器（script 或 file 二选一传入 DSL 脚�
 
 `WORKDIR` 为 `CHONKPILOT_WORKDIR` 的兼容别名（同值）；`env` 为宿主注入的保留变量、**只读**（脚本里 `SET … => env` 会报错）。
 
-- LLM "<agent>" "<提示词>" ["<目的>"] [=> 目标]：一次 LLM 委派（一个独立子会话步骤，可调用工具）。**agent 必填** = 委派对象标识（当前仅非空校验，资产化检索校验为后续阶段）；**提示词必填** = 委派内容；**目的可选** = 本次子 LLM 的运行目的（即该步的 **purpose / 展示名**，呈现为 **tasktree 节点 label**）。参数间以空白或逗号分隔均可（`LLM "coder" "重构这段代码"` 与 `LLM "coder", "重构这段代码"` 等价）；三参都做 `{{}}` 插值。`=> 目标` 把该步输出写入：变量（如 `=> 风险`，后续用 `{{风险}}` 或 `{{风险:2000}}` 截断拼入提示词）、文件句柄覆盖（`=> #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.py"`）、追加（`=> #"{{env.CHONKPILOT_WORKDIR}}/log.txt".eof`）；**不带 `=>` 时输出文本回填父轮次/汇总**。子任务节点展示名 = **目的截断（≤24 字符）**；**目的省略或插值后为空 → 回退为提示词截断（≤24 字符）**。参数多于 3 个 → **顶层失败**（报错含语法示例）。
+- LLM "<agent>" "<提示词>" ["<目的>"] [=> 目标]：一次 LLM 委派（一个独立子会话步骤，可调用工具）。**agent 必填** = 委派对象名，且必须**可委派** —— 取自系统提示词「**团队成员**」段（= 当前场景内的 agent），或 **app 级场景**（随发布只读）内**唯一**同名的 agent；两者都可写 `<场景id>/<agent名>` 前缀精确引用。不可委派 → **该步失败**（错误进作业汇总、脚本继续后续步骤，见下方「失败语义」），**不建子任务节点、该步不落盘**。**无场景（通用模式）**下系统提示词不含团队成员段 → 只能靠后一条（app 级场景内同名 agent）命中。**提示词必填** = 委派内容；**目的可选** = 本次子 LLM 的运行目的（即该步的 **purpose / 展示名**，呈现为 **tasktree 节点 label**）。参数间以空白或逗号分隔均可（`LLM "架构设计师" "重构这段代码"` 与 `LLM "架构设计师", "重构这段代码"` 等价）；三参都做 `{{}}` 插值。`=> 目标` 把该步输出写入：变量（如 `=> 风险`，后续用 `{{风险}}` 或 `{{风险:2000}}` 截断拼入提示词）、文件句柄覆盖（`=> #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.py"`）、追加（`=> #"{{env.CHONKPILOT_WORKDIR}}/log.txt".eof`）；**不带 `=>` 时输出文本回填父轮次/汇总**。子任务节点展示名 = **目的截断（≤24 字符）**；**目的省略或插值后为空 → 回退为提示词截断（≤24 字符）**。参数多于 3 个 → **顶层失败**（报错含语法示例）。
 
 - SET 值 => 目标：统一赋值/输出。状态写回写法 `SET item.done => true`（兼容）或 `SET true => item.done`：把当前 LOOP 条目字段改为给定值并**即时**把整个源 json 数组写回原文件——与 IF 配合实现断点续跑：处理成功写 `SET item.done => true`，下次跑同脚本用 `IF item.done != true` 跳过已完成项。
 
@@ -38,18 +38,21 @@ LLM 委派/编排统一 DSL 执行器（script 或 file 二选一传入 DSL 脚�
 
 ```
 ### 单次委派：一行 LLM 指令（可选第三参 = 目的/展示名；无输出目标 → 结果文本回填）；项目内路径用 {{env.CHONKPILOT_WORKDIR}} 拼绝对路径
-LLM "coder" "把这段代码重构并解释" "重构并解释代码" => #"{{env.CHONKPILOT_WORKDIR}}/out/xx.review.md"
+### agent 名须取自系统提示词「团队成员」段（下方示例用的是出厂场景「开发场景」的成员名）
+LLM "后端开发" "把这段代码重构并解释" "重构并解释代码" => #"{{env.CHONKPILOT_WORKDIR}}/out/xx.review.md"
 ### 断点续跑批量
 LOOP item=#"{{env.CHONKPILOT_WORKDIR}}/bigtask.json".array concurrency=3
    IF item.done != true
-      LLM "coder" "实现 {{item.name}}（规模 {{item.count}}）" "实现 {{item.name}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.py"
+      LLM "后端开发" "实现 {{item.name}}（规模 {{item.count}}）" "实现 {{item.name}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.py"
       SET item.done => true
    END
 END
-### 并行审阅 + 顶层捕获拼接
-PARALLEL
-   LLM "reviewer" "审阅 {{item.name}} 的代码并输出问题清单" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.review.md"
-   LLM "logger" "记录处理完成" => #"{{env.CHONKPILOT_TEMPDIR}}/run.log".eof
+### 并行审阅（LOOP 逐项内嵌 PARALLEL；{{item.name}} 须在 LOOP/IF 块内使用，块外插值为空）
+LOOP item=#"{{env.CHONKPILOT_WORKDIR}}/files.json".array
+   PARALLEL
+      LLM "代码审查" "审阅 {{item.name}} 的代码并输出问题清单" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.review.md"
+      LLM "测试工程师" "为 {{item.name}} 补充回归用例清单" => #"{{env.CHONKPILOT_TEMPDIR}}/run.log".eof
+   END
 END
 ```
 

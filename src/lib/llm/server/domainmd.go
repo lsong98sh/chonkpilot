@@ -2,7 +2,7 @@
 // 「契约即文件、各工程自有 tools/skills/prompts/agents 放各自 contracts 目录」规范。
 // 域工具无外部 executor，契约 embed 进 chonkpilot-server 二进制（执行它的进程）。
 //
-// 25 §8.1 #8（T6，2026-09-25）：**域 agent 不再 embed** —— 7 个内置 agent 与出厂默认场景
+// 25 §8.1 #8（T6，2026-09-25）：**agent 不再 embed** —— 场景 agent 与出厂场景
 // 统一为 **app 级场景**（`<exeDir>/scenarios/<场景>/`，与 `<exeDir>/capability/` 平级，
 // 随发布只读资源），经数据层门面读取（见 domainmcp.go registerDomainAgents），
 // 本文件只保留域**工具**契约 embed。
@@ -19,7 +19,7 @@ import (
 //go:embed contracts/tools/*.tool.md
 var domainToolsFS embed.FS
 
-// AgentDef 是内置 agent 定义（来自 app 级场景 `<exeDir>/scenarios/*/` 内的 agent 文件：
+// AgentDef 是 app 级场景内的 agent 定义（来自 `<exeDir>/scenarios/*/` 内的 agent 文件：
 // `# 名` + [description] + [content]，content = 该 agent 的提示词）。
 type AgentDef struct {
 	Name        string `json:"name"`

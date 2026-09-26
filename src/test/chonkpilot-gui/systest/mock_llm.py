@@ -334,21 +334,23 @@ def route_tool_calls(text):
     # 暴露名 = self_<契约名>）；server 侧按契约名归一（TrimPrefix "self_"）。
     if "call delegate-plain" in t:
         # 单次委派：无第三参 → 子任务展示名回退为提示词截断（delegate-plain-prompt）
-        return [("self_llm_run", {"script": 'LLM "worker" "delegate-plain-prompt"',
+        # 委派对象名须「可委派」（agentDelegable）：本套件 scenario_id=""（通用模式，无团队成员段）
+        # → 只能靠 app 级场景注册表裸名唯一命中（出厂场景 = 开发场景，成员见 37-场景）。
+        return [("self_llm_run", {"script": 'LLM "后端开发" "delegate-plain-prompt"',
                                   "tool_call_display_name": "委派"})]
     if "call delegate-purpose" in t:
         # 单次委派：第三参 = 目的（运行目的/展示名）
-        return [("self_llm_run", {"script": 'LLM "worker" "delegate-purpose-prompt" "委派展示名-自定义"',
+        return [("self_llm_run", {"script": 'LLM "后端开发" "delegate-purpose-prompt" "委派展示名-自定义"',
                                   "tool_call_display_name": "委派"})]
     if "call batch" in t:
-        # LOOP 批量：planner 产出 JSON 数组（落盘到 workDir 的 g11-batch.json）
+        # LOOP 批量：首步产出 JSON 数组（落盘到 workDir 的 g11-batch.json）
         # → 文件句柄 .array 解析为列表（.array 是文件句柄访问器，字符串变量无此访问器）
         # → concurrency=2 迭代委派。路径用 {{env.CHONKPILOT_WORKDIR}} 显式拼绝对路径（R-11）。
         script = (
-            'LLM "planner" "BATCHLIST 只输出 JSON 数组" "生成批处理清单" '
+            'LLM "架构设计师" "BATCHLIST 只输出 JSON 数组" "生成批处理清单" '
             '=> #"{{env.CHONKPILOT_WORKDIR}}/g11-batch.json"\n'
             'LOOP item=#"{{env.CHONKPILOT_WORKDIR}}/g11-batch.json".array concurrency=2\n'
-            '   LLM "worker" "{{item.prompt}}" "{{item.name}}"\n'
+            '   LLM "后端开发" "{{item.prompt}}" "{{item.name}}"\n'
             'END'
         )
         return [("self_llm_run", {"script": script, "tool_call_display_name": "批量"})]
@@ -356,8 +358,8 @@ def route_tool_calls(text):
         # 级联取消：首步委派慢工具（script_run ping 20s 阻塞）→ 期间对根节点 task-stop；
         # 第二步为「取消后置步」哨兵（取消生效则不得启动）。
         script = (
-            'LLM "worker" "please call delegate-slow" "慢步子任务"\n'
-            'LLM "worker" "delegate-after-cancel" "取消后置步"'
+            'LLM "后端开发" "please call delegate-slow" "慢步子任务"\n'
+            'LLM "后端开发" "delegate-after-cancel" "取消后置步"'
         )
         return [("self_llm_run", {"script": script, "tool_call_display_name": "取消"})]
     if "call delegate-slow" in t:

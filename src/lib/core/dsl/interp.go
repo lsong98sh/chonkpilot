@@ -26,6 +26,9 @@ type Options struct {
 	Actions []Action
 	// StopOnError 首个步骤错误即中止（错误已记入 Result.Errors），默认 false（记错继续）。
 	StopOnError bool
+	// MaxLoopIterations = **无参 LOOP**（无数据源、无界循环）的安全迭代上限；<=0 → 默认 50。
+	// 到达上限 → 记错并终止本层循环（不静默停止，见 §5.2）。
+	MaxLoopIterations int
 	// Vars 宿主注入的**只读**保留变量（引擎启动时预置到根作用域）：
 	// 如 Vars["env"] = map[string]any{"CHONKPILOT_WORKDIR": ...} → 脚本用 {{env.CHONKPILOT_WORKDIR}} 引用。
 	// 脚本对其它键的赋值不受限（见 Scope.assignVar）。
@@ -38,12 +41,18 @@ type RunResult struct {
 	Errors  []RunError
 }
 
+// defaultMaxLoopIterations 是无参 LOOP（无数据源、无界循环）的缺省安全迭代上限
+// （Options.MaxLoopIterations <= 0 时生效；见 §5.2）。
+const defaultMaxLoopIterations = 50
+
 // Engine 执行器。
 type Engine struct {
 	files FileSystem
 	dbs   DBSystem
 	act   map[string]Action // 动词（大写）→ 动作
 	stop  bool              // StopOnError
+
+	loopLimit int // 无参 LOOP 迭代上限（MaxLoopIterations，<=0 时取 defaultMaxLoopIterations）
 
 	// 宿主注入的保留变量：initVars 启动时预置根作用域；injected 标记其名字为只读。
 	initVars map[string]any
@@ -80,7 +89,11 @@ func NewEngine(o Options) *Engine {
 	for _, a := range o.Actions {
 		act[strings.ToUpper(a.Name)] = a
 	}
-	eng := &Engine{files: o.Files, dbs: o.DBs, act: act, stop: o.StopOnError, ctx: ctx, cancel: cancel}
+	eng := &Engine{files: o.Files, dbs: o.DBs, act: act, stop: o.StopOnError, ctx: ctx, cancel: cancel,
+		loopLimit: o.MaxLoopIterations}
+	if eng.loopLimit <= 0 {
+		eng.loopLimit = defaultMaxLoopIterations
+	}
 	if len(o.Vars) > 0 {
 		eng.initVars = o.Vars
 		eng.injected = make(map[string]bool, len(o.Vars))
@@ -824,7 +837,52 @@ func unwrapList(items []any) []any {
 	return out
 }
 
+// execLoopUnbounded 执行**无参 LOOP**（无数据源 = 无界循环，见 §5.2）：
+// 无迭代变量、无 concurrency；靠 `BREAK`（本层）/ `EXIT`（整脚本）退出，
+// `CONTINUE` 进入下一次迭代。**不静默停止** —— 两种非正常终止均记错：
+//   - 单步失败 → 终止本层循环（步骤错误已由 execSeq 记入 Result.Errors，此处补一条说明）；
+//     （`StopOnError=true` 时 execSeq 已把错误上抛 → 直接返回 → 终止整个脚本。）
+//   - 到达迭代上限 loopLimit → 记「超过迭代上限」并终止本层循环。
+func (e *Engine) execLoopUnbounded(sc *Scope, st *LoopStmt) error {
+	for n := 1; n <= e.loopLimit; n++ {
+		select {
+		case <-e.ctx.Done():
+			return ErrExit
+		default:
+		}
+		errsBefore := e.errLen()
+		err := e.execSeq(newScope(e, sc), st.Block)
+		switch {
+		case errors.Is(err, ErrBreak):
+			return nil
+		case errors.Is(err, ErrContinue):
+			continue
+		case errors.Is(err, ErrExit):
+			return ErrExit
+		case err != nil:
+			return err
+		}
+		if e.errLen() > errsBefore {
+			e.addErr(st.Ln, fmt.Sprintf("无参 LOOP 第 %d 次迭代内有步骤失败，终止本层循环", n))
+			return nil
+		}
+	}
+	e.addErr(st.Ln, fmt.Sprintf("无参 LOOP 超过迭代上限 %d，已终止（循环未自然退出）", e.loopLimit))
+	return nil
+}
+
+// errLen 返回当前已记录的错误条数（并发安全）。
+func (e *Engine) errLen() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.res.Errors)
+}
+
 func (e *Engine) execLoop(sc *Scope, st *LoopStmt) error {
+	// 无参 LOOP（无数据源）= 无界循环，走独立路径（§5.2）。
+	if st.Source == nil {
+		return e.execLoopUnbounded(sc, st)
+	}
 	// 保留标识符（env）不可作为迭代绑定变量（LOOP env=... 曾可遮蔽宿主注入上下文）。
 	if isReservedVar(st.Var) {
 		return lineErr(st.Ln, "%s", errReservedVar(st.Var).Error())

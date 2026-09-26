@@ -7,7 +7,7 @@
 > 版本：v2026-09-10
 > 适用范围：llm_run（批处理编排/委派）、filesys_run（文件操作）、desktop_run（桌面交互）、browser_run（浏览器自动化）
 > 共同目标：统一的词法、类型、流控与输出语义，各 DSL 共享同一套核心规范
-> 修订记录：2026-09-10 新增 §3.3 值访问器（按类型分派，含 `string.array`/`object`）与 §5.2 无参 LOOP（一直循环）
+> 修订记录：2026-09-10 新增 §3.3 值访问器（按类型分派，含 `string.array`/`object`）与 §5.2 无参 LOOP（一直循环）；**2026-09-26 §5.2 正式落地**（此前仅有规格、代码未实现：解析器强制 `变量名=数据源`，无参形式曾直接报错）
 
 ---
 
@@ -33,7 +33,7 @@
 - 多行文本：行末 `<<<` 开始，行首 `>>>` 结束
 
 ```text
-LLM "reader" "请分析以下内容：<<<
+LLM "<成员名>" "请分析以下内容：<<<
 这是一段多行文本
 可以跨多行
 >>> 然后继续" => #"out.md"
@@ -162,7 +162,7 @@ SET raw.object => cfg       ### 解析为 JSON 对象（非对象 → 行错误�
 - 典型（LLM 输出 → 判定 → 迭代，无需落盘）：
 
 ```text
-LLM "planner" "…只输出 JSON 数组 [{agent,prompt}]；无事可做输出 []" => raw
+LLM "<成员名>" "…只输出 JSON 数组 [{agent,prompt}]；无事可做输出 []" => raw
 SET raw.array => tasks
 IF not tasks
    BREAK
@@ -238,10 +238,10 @@ SET @"state.db" => db
 SET #"out.md" => fh
 
 # 写
-LLM "writer" "写分析报告" => fh           # 覆盖写文件
-LLM "writer" "追加日志" => fh.eof        # 追加到文件
-LLM "worker" "处理数据" => db.tables.logs       # 覆盖写表
-LLM "worker" "记录一条" => db.tables.logs.eof   # 追加记录到表
+LLM "<成员名>" "写分析报告" => fh           # 覆盖写文件
+LLM "<成员名>" "追加日志" => fh.eof        # 追加到文件
+LLM "<成员名>" "处理数据" => db.tables.logs       # 覆盖写表
+LLM "<成员名>" "记录一条" => db.tables.logs.eof   # 追加记录到表
 
 # 读
 SET db.tables.logs.content => allLogs          # 智能读表
@@ -316,10 +316,23 @@ END
 | 护栏 | 规则 |
 |------|------|
 | 退出方式 | 只能靠 `BREAK`（本层）/ `EXIT`（整脚本）；`CONTINUE` 进入下一次迭代 |
-| 迭代上限 | 必须有可配安全上限（默认 50）；到达上限**以失败终态终止并报错**，不得静默停止 |
-| 失败语义 | 单步失败**上抛终止**（不停留在失败态空转） |
-| concurrency | **禁止**（无数据源，谈不上并发） |
+| 迭代上限 | 可配安全上限（**默认 50**，经 `Options.MaxLoopIterations`，`<=0` 取缺省）；到达上限 → **记错并终止本层循环**（`无参 LOOP 超过迭代上限 N，已终止（循环未自然退出）`），不得静默停止 |
+| 失败语义 | 单步失败 → **终止本层循环**（步骤错误已记入 `Result.Errors`，另补一条 `无参 LOOP 第 N 次迭代内有步骤失败，终止本层循环`），不停留在失败态空转；**是否终止整个脚本**由 `StopOnError` 决定（`llm_run` = `false` → 循环之后的顶层语句照常执行，见 §8） |
+| concurrency | **禁止**：`LOOP concurrency=N` 在**语法期**报错「无参 LOOP 不支持 concurrency」（否则会被误读为「变量名 `concurrency` = 数据源」） |
 | 空数据源（有参） | 数据源为空 = **零次迭代（跳过）**，不是退出 |
+
+```text
+SET "a" => state
+LOOP
+   LLM "<成员名>" "{{state}}" => out
+   IF state == "b"
+      BREAK
+   END
+   SET "b" => state
+END
+```
+
+> 状态：**✅ 已实施**（2026-09-26）。解析器 `parseLoop` 允许省略 `变量名=数据源`；引擎 `execLoopUnbounded` 实现无界循环 + 上限 + 失败终止；上限经 `Options.MaxLoopIterations` 配置（缺省 50）。用例见 `dsl_test.go` 的 `TestUnboundedLoop*`。
 
 **典型（driver 循环，直到没有可做之事）**：
 
@@ -327,7 +340,7 @@ END
 SET "" => output
 SET "" => done
 LOOP
-   LLM "planner" "已做：{{done}}；产出：{{output}}。选出下一步（只输出 JSON 数组 [{agent,prompt}]）；无事可做输出 []" => raw
+   LLM "<成员名>" "已做：{{done}}；产出：{{output}}。选出下一步（只输出 JSON 数组 [{agent,prompt}]）；无事可做输出 []" => raw
    SET raw.array => tasks
    IF not tasks
       BREAK
@@ -359,35 +372,35 @@ END
 ```text
 # CSV 跳过表头行（从第 1 行到末尾）
 LOOP row=#"data.csv".lines.range(1,-1)
-   LLM "reader" "解析行：{{row}}"
+   LLM "<成员名>" "解析行：{{row}}"
 
 # 只处理前 10 条
 LOOP task=#"tasks.json".array.range(0,9)
-   LLM "worker" "处理 {{task.name}}"
+   LLM "<成员名>" "处理 {{task.name}}"
 
 # 断点续跑：从第 20 项开始
 LOOP task=#"tasks.json".array.range(20,-1)
-   LLM "worker" "处理 {{task.name}}"
+   LLM "<成员名>" "处理 {{task.name}}"
 
 # 嵌套（不同变量名，不冲突）
 LOOP group=#"groups.json".array
    LOOP task=#"tasks.json".array
-      LLM "worker" "组 {{group.name}} 的任务 {{task.name}}"
+      LLM "<成员名>" "组 {{group.name}} 的任务 {{task.name}}"
    END
 END
 
 # 数据库表 → 记录
 LOOP item=db.tables.logs
-   LLM "reader" "分析 {{item.message}}"     # 记录字段
+   LLM "<成员名>" "分析 {{item.message}}"     # 记录字段
 
 # 数据库表名列表 → 逐表处理
 LOOP item=db.tables
-   LLM "worker" "处理表 {{item}}"           # item 是表名
+   LLM "<成员名>" "处理表 {{item}}"           # item 是表名
 
 # 列表变量（前面步骤捕获的列表）
 SET db.tables.users.content => users
 LOOP user=users
-   LLM "worker" "处理用户 {{user.name}}"
+   LLM "<成员名>" "处理用户 {{user.name}}"
 ```
 
 - `concurrency`：并发度，默认 1（串行）
@@ -414,7 +427,7 @@ LOOP item=#"tasks.json"
    IF item.done == true
       CONTINUE                     # 跳过已完成项，继续下一项
    END
-   LLM "worker" "处理 {{item.name}}"
+   LLM "<成员名>" "处理 {{item.name}}"
    IF item.status == "fatal"
       BREAK                        # 遇到致命错误，停止循环
    END
@@ -495,7 +508,11 @@ END
 LLM "<agent>" "<提示词>" ["<目的>"] [=> 值 | 文件句柄 | 表句柄.eof...]
 ```
 
-- 第一参 = **委派 agent 标识**，须已注册：内置 `planner` / `coder` / `reviewer` / `writer` / `reader` / `worker` / `executor`（未注册直接报错；场景无 agent 注册表时不过滤）
+- 第一参 = **委派 agent 标识**，须**可委派**（`agentDelegable`；**执行到该步时**校验，不可委派 → **该步失败**、不建子任务节点）：
+  1. **当前场景内**的 agent 名（即系统提示词「团队成员」段列出的成员；名可带 `<场景id>/` 前缀精确引用）；
+  2. 或 **app 级场景**（随发布只读 `scenarios/`）内**唯一**同名的 agent。
+  两者皆未命中 → 该步报错「不可委派（app 级场景注册表与当前场景内均无此 agent）」，错误进作业汇总（`【DSL 错误】第 N 行：…`）、**其余步骤照常执行**（`llm_run` 引擎 `StopOnError=false`，见 §8 错误处理）。**无场景（通用模式）**下系统提示词不含团队成员段 → 只能靠第 2 条命中。
+  > ⚠️ 本文全部示例以 `"<成员名>"` **占位**（表示"此处填一个可委派的 agent 名"）；**实际可用名以系统提示词「团队成员」段为准**（出厂场景 = 「开发场景」，其成员见 [37-场景](../30-function-points/37-场景.md)）。
 - 第二参 = 提示词（委派内容）；与 agent 都用双引号，都可做 `{{}}` 插值
 - 第三参（可选）= **目的（purpose）**：本次子 LLM 的**运行目的**，即该步的**展示名**，同时充当 **tasktree 节点 label**（D-15 定义收敛，2026-09-12）；三参均支持 `{{}}` 插值
 - 展示名取值：目的**提供且插值后非空** → 取该值（截断 ≤24 字符，超出加 `…`）；**省略或插值后为空** → 回退为**提示词截断（≤24 字符）**
@@ -506,8 +523,8 @@ LLM "<agent>" "<提示词>" ["<目的>"] [=> 值 | 文件句柄 | 表句柄.eof.
 示例（展示名 = 目的 / 回退提示词截断）：
 
 ```text
-LLM "coder" "实现 {{item.name}}"                  # 无第三参 → 展示名 = 提示词截断
-LLM "coder" "实现 {{item.name}}" "实现 {{item.name}}"   # 第三参 = 目的 → 展示名 = "实现 …"
+LLM "<成员名>" "实现 {{item.name}}"                  # 无第三参 → 展示名 = 提示词截断
+LLM "<成员名>" "实现 {{item.name}}" "实现 {{item.name}}"   # 第三参 = 目的 → 展示名 = "实现 …"
 ```
 
 ### 7.2 IF
@@ -593,7 +610,7 @@ EXIT
 ```text
 LOOP item=#"tasks.json".array concurrency=3
    IF item.done != true
-      LLM "coder" "实现 {{item.name}}" => #"out/{{item.name}}.py"
+      LLM "<成员名>" "实现 {{item.name}}" => #"out/{{item.name}}.py"
       SET item.done => true
    END
 END
@@ -604,7 +621,7 @@ END
 ```text
 SET @"state.db" => db
 SET db.tables.logs.content => logs
-LLM "reader" "分析日志：{{logs}}" => db.tables.logs.eof
+LLM "<成员名>" "分析日志：{{logs}}" => db.tables.logs.eof
 ```
 
 ### 9.3 文件操作
@@ -612,18 +629,18 @@ LLM "reader" "分析日志：{{logs}}" => db.tables.logs.eof
 ```text
 SET #"out.md" => fh
 SET fh.content => content
-LLM "reader" "分析文件头：{{content}}" => fh.eof
+LLM "<成员名>" "分析文件头：{{content}}" => fh.eof
 ```
 
 ### 9.4 多分支并行
 
 ```text
 PARALLEL
-   LLM "writer" "写周报" => #"weekly.md"
-   LLM "executor" "发周报邮件"
+   LLM "<成员名>" "写周报" => #"weekly.md"
+   LLM "<成员名>" "发周报邮件"
    LOOP item=#"tasks.json".array concurrency=2
       IF item.done != true
-         LLM "worker" "处理 {{item.name}}" => #"out/{{item.name}}.md"
+         LLM "<成员名>" "处理 {{item.name}}" => #"out/{{item.name}}.md"
          SET item.done => true
       END
    END
@@ -634,11 +651,11 @@ END
 
 ```text
 LOOP item=#"tasks.json".array
-   LLM "reviewer" "检查 {{item.name}} 状态"
+   LLM "<成员名>" "检查 {{item.name}} 状态"
    IF item.status == "fatal"
       EXIT
    END
-   LLM "worker" "处理 {{item.name}}"
+   LLM "<成员名>" "处理 {{item.name}}"
 END
 ```
 
@@ -680,7 +697,7 @@ PARALLEL
       END
    END
    LOOP item="b.json"
-      LLM "worker" "处理 {{item.name}}"     # 不受影响，继续
+      LLM "<成员名>" "处理 {{item.name}}"     # 不受影响，继续
    END
 END
 ```
@@ -701,7 +718,7 @@ PARALLEL
       END
    END
    LOOP item="b.json"
-      LLM "worker" "处理 {{item.name}}"     # 也会被终止
+      LLM "<成员名>" "处理 {{item.name}}"     # 也会被终止
    END
 END
 ```
@@ -717,7 +734,7 @@ END
 ```text
 PARALLEL
    BREAK                # 错误：不在 LOOP 内
-   LLM "reader" "分析"
+   LLM "<成员名>" "分析"
 END
 ```
 
@@ -743,10 +760,10 @@ SET db.tables.logs.range(0,9) => r # r = 表前10条记录
 
 ```text
 SET @"state.db" => db
-LLM "reader" "分析 {{db}}"          # {{db}} → "<db: state.db, tables: [logs, tasks, config]>"
+LLM "<成员名>" "分析 {{db}}"          # {{db}} → "<db: state.db, tables: [logs, tasks, config]>"
 
 SET #"big.log" => fh
-LLM "reader" "分析 {{fh}}"          # {{fh}} → "<file: big.log, size: 2.3GB, lines: 500000>"
+LLM "<成员名>" "分析 {{fh}}"          # {{fh}} → "<file: big.log, size: 2.3GB, lines: 500000>"
 ```
 
 **好处**：安全（不会撑爆上下文）、信息足够（LLM 知道数据源是什么，可以决定如何读取）。
@@ -787,7 +804,7 @@ SET db.tables.logs.content => data # 表内容 → 变量（赋值数据）
 **结论**：`<<<` 必须是行末（非空白后紧跟），`>>>` 必须是行首（前导空白忽略）。中间内容全部按原文保留，包括空行。
 
 ```text
-LLM "reader" "分析：<<<           # 行末 <<< 开始多行
+LLM "<成员名>" "分析：<<<           # 行末 <<< 开始多行
 第一行
 第二行
 >>> 然后继续"                   # 行首 >>> 结束多行
@@ -835,14 +852,14 @@ LLM "reader" "分析：<<<           # 行末 <<< 开始多行
 ```text
 ### 初始化（仅首次执行）
 IF not exist @"state.db"
-   LLM "worker" "创建数据库结构" => @"state.db"
+   LLM "<成员名>" "创建数据库结构" => @"state.db"
 END
 
 ### 主循环：断点续跑
 LOOP item=#"tasks.json".array concurrency=3
    IF item.done != true
       IF not exist #"out/{{item.name}}.md"
-         LLM "coder" "实现 {{item.name}}" => #"out/{{item.name}}.md"
+         LLM "<成员名>" "实现 {{item.name}}" => #"out/{{item.name}}.md"
       END
       SET item.done => true
    END
@@ -850,7 +867,7 @@ END
 
 ### 汇总（仅末次执行）
 IF exist #"out" 
-   LLM "writer" "汇总所有输出" => #"summary.md"
+   LLM "<成员名>" "汇总所有输出" => #"summary.md"
 END
 ```
 
@@ -918,7 +935,7 @@ ENTRY 对象 => 变量
 SET #"config.json".object => cfg
 ENTRY cfg => entries
 LOOP kv = entries
-   LLM "reader" "{{kv.key}} = {{kv.value}}"
+   LLM "<成员名>" "{{kv.key}} = {{kv.value}}"
 END
 ```
 
@@ -944,7 +961,7 @@ SPLIT 变量, "分隔符" => 变量
 LOOP row = #"data.csv".lines
    SPLIT row, "," => cols
    IF cols[2] == "目标值"
-      LLM "worker" "处理 {{cols[0]}}"
+      LLM "<成员名>" "处理 {{cols[0]}}"
    END
 END
 ```
