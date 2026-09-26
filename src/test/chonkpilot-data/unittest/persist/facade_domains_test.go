@@ -41,7 +41,7 @@ var domainFourSubjects = []string{
 	"data-knowledge-mkdir", "data-knowledge-rmdir", "data-knowledge-rename-dir",
 	"data-filelist-list", "data-filelist-put", "data-filelist-del",
 	"data-scenario-list", "data-scenario-load", "data-scenario-save",
-	"data-scenario-delete", "data-scenario-restore",
+	"data-scenario-delete",
 	"data-memory-list", "data-memory-read", "data-memory-save", "data-memory-delete",
 }
 
@@ -439,7 +439,7 @@ func TestFacadeFileListInlineEqualsMQPath(t *testing.T) {
 // ── scenario ─────────────────────────────────────────────────────
 
 // TestFacadeScenarioInlineEqualsMQPath：场景域两路径等价（list（命中 app 级出厂默认）/ load / save /
-// delete / restore）+ 应答逐字一致 + 写入广播 data-scenario-refresh。
+// delete）+ 应答逐字一致 + 写入广播 data-scenario-refresh。
 func TestFacadeScenarioInlineEqualsMQPath(t *testing.T) {
 	appDir := appCapabilityRoot(t)
 	bus, _, usrPath := newTestPersistOpts(t, persist.Options{AppDir: appDir})
@@ -506,45 +506,6 @@ func TestFacadeScenarioInlineEqualsMQPath(t *testing.T) {
 	if after, err := api.ScenarioList(facade.ScenarioListRequest{InstanceID: facadeInstance}); err != nil ||
 		len(after.List) != 1 {
 		t.Fatalf("MQ 删除后门面 list=%+v err=%v", after, err)
-	}
-
-	// ⑤ 还原：造出 user 级 default 副本并改坏 → 门面/MQ 各自 restore 都用 app 级出厂默认覆盖
-	// user 级场景根 = <usr 主库所在目录>/scenarios（独立根，与 capability/ 平级，25 §6）
-	scJSON := filepath.Join(filepath.Dir(usrPath), "scenarios", "default", "scenario.json")
-	if err := os.MkdirAll(filepath.Dir(scJSON), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(scJSON, []byte(`{"name":"被我改了"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := api.ScenarioRestore(facade.ScenarioRestoreRequest{InstanceID: facadeInstance}); err != nil {
-		t.Fatalf("facade ScenarioRestore: %v", err)
-	}
-	def, err := api.ScenarioGet(facade.ScenarioGetRequest{InstanceID: facadeInstance, ScenarioID: "default"})
-	if err != nil || def.Scenario.Name != "开发场景" {
-		t.Fatalf("还原后场景不符：%+v err=%v", def.Scenario, err)
-	}
-	if err := os.WriteFile(scJSON, []byte(`{"name":"又改了"}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if ok, _ := mqResult(t, bus, "data-scenario-restore", map[string]any{"id": "default"})["ok"].(bool); !ok {
-		t.Fatal("MQ restore 应答形状变化")
-	}
-	if again, err := api.ScenarioGet(facade.ScenarioGetRequest{
-		InstanceID: facadeInstance, ScenarioID: "default",
-	}); err != nil || again.Scenario.Name != "开发场景" {
-		t.Fatalf("MQ 还原后门面读到：%+v err=%v", again.Scenario, err)
-	}
-	// 不存在的出厂场景 → 两路径同报错
-	if _, err := api.ScenarioRestore(facade.ScenarioRestoreRequest{
-		InstanceID: facadeInstance, ScenarioID: "no-such-builtin",
-	}); err == nil {
-		t.Fatal("门面还原不存在的出厂场景应报错")
-	}
-	if ok, _ := dataCall(t, bus, "data-scenario-restore", map[string]any{
-		"instance_id": facadeInstance, "id": "no-such-builtin",
-	})["ok"].(bool); ok {
-		t.Fatal("MQ 还原不存在的出厂场景应失败")
 	}
 }
 
@@ -733,9 +694,6 @@ func TestFacadeDomainsFourZeroBusRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := api.ScenarioDelete(facade.ScenarioDeleteRequest{InstanceID: facadeInstance, ScenarioID: "sz"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := api.ScenarioRestore(facade.ScenarioRestoreRequest{InstanceID: facadeInstance}); err != nil {
 		t.Fatal(err)
 	}
 	// memory（总开关打开：经 MQ 面，非本域请求）

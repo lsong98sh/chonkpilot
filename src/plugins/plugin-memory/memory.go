@@ -11,7 +11,9 @@
 //	→ 低于 memory.min-turn-tokens（默认 200）→ 跳过（寒暄类不产生记忆）
 //	→ 取类别清单（data-memory-list；首次访问由 persist 预置类别文件）
 //	→ 按启用类别**并行**：读旧全文（data-memory-read）+ 本轮新信息 → 经 llm-simple 重写全文
-//	   （请求按 usr `llm.memory` 带可选 `llm` = 子系统默认 LLM，缺省回落 defaultLLM；SL-3）
+//	   （请求按 usr `llm.memory` 带可选 `llm` = 子系统默认 LLM，缺省回落 defaultLLM；SL-3；
+//	    `system` = 该类别的沉淀提示词：项目级读 prj `memory.prompt.<类别名>`、用户偏好读 usr
+//	    自由键 `memory_prompts`，未配置回落内置默认 defaultRewriteSystemPrompt）
 //	   → 保存（data-memory-save）
 //
 // 手动沉淀（2026-09-20，批 3 ⑱）：另订阅点分主题 `memory.flush`（payload `{instance_id, session}`），
@@ -69,8 +71,20 @@ const (
 	// 本插件在沉淀后按同一口径记告警日志，使该键在**服务端亦有读点**；键缺失/非正 → 不限）。
 	memoryCategoryMaxTokensKey = "memory.category-max-tokens"
 	memoryCategoryPrefix       = "memory.category."
-	defaultMinTurnTokens       = 200
-	rewriteSystemPrompt        = "你是记忆库沉淀器。给定某个记忆类别的现有全文与本轮对话的新增信息，" +
+	// memoryPromptPrefix 是**项目级类别沉淀提示词**的 prj 配置键前缀：`memory.prompt.<类别名>`
+	// （值 = 提示词全文；键缺失/空 → 回落内置默认 defaultRewriteSystemPrompt）。
+	// 前端入口 = 上下文管理页每类别行的【编辑提示词】（走既有 data-prj-config-{list,save,delete}）。
+	memoryPromptPrefix = "memory.prompt."
+	// userMemoryPromptsKey 是**用户级类别沉淀提示词**的 usr 自由键（JSON 对象字符串
+	// `{"<类别名>":"<提示词全文>"}`，见 64-配置项一览 §3）：承载唯一用户级类别「用户偏好」的
+	// 自定义提示词（**键缺失/空/非法 JSON → 回落内置默认**）。读写走既有
+	// data-user-config-{load,save,delete}（自由键通道）。
+	userMemoryPromptsKey = "memory_prompts"
+	defaultMinTurnTokens = 200
+	// defaultRewriteSystemPrompt 是记忆沉淀的**内置默认**提示词：某类别未自定义提示词时使用
+	// （自定义来源 = prj `memory.prompt.<类别名>` / usr `memory_prompts`，见 memoryPromptFor）。
+	// 前端镜像常量见 src/frontend/src/composables/useMemoryCategories.js（跨端字面量有测试守卫）。
+	defaultRewriteSystemPrompt = "你是记忆库沉淀器。给定某个记忆类别的现有全文与本轮对话的新增信息，" +
 		"请把两者合并后重写该类别全文（累加 + 更新：修正过时内容、去重、条理化、不臆造）。" +
 		"只输出重写后的 markdown 全文，不要任何解释或代码块围栏。"
 )
@@ -179,7 +193,8 @@ type memoryConfig struct {
 	// MaxTokens 是单类别 token **告警阈值**（prj `memory.category-max-tokens`）：>0 = 超过即记
 	// 告警日志（不截断、不阻断）；0 = 未设置 = 不限。
 	MaxTokens  int
-	Categories map[string]bool // 类别名 → 启用（键缺失 → 默认启用）
+	Categories map[string]bool   // 类别名 → 启用（键缺失 → 默认启用）
+	Prompts    map[string]string // 类别名 → 自定义沉淀提示词（prj `memory.prompt.<类别名>`；空 = 未配置）
 }
 
 // categoryEnabled 判断类别是否启用：读项目配置 memory.category.<类别名>；键缺失 → 默认启用。
@@ -231,9 +246,11 @@ func (p *Plugin) extract(ev turnEvent) {
 // 返回成功/失败类别（供手动 flush 回执；自动沉淀忽略返回值）。可同步调用，供测试。
 func (p *Plugin) distill(ev turnEvent, cfg memoryConfig, cats []categoryInfo, newInfo string, tokens int) ([]string, []map[string]string) {
 	logf := p.logf()
-	// 子系统默认 LLM（SL-3）：**每次沉淀现读** usr `llm.memory`——不缓存到进程级/包级
-	// → 配置改动**热生效**、生效粒度 = 按 turn（SL-C9）。本次沉淀的各类别共用同一取值。
-	llm := p.resolveSubsystemLLM(ev.InstanceID)
+	// 子系统默认 LLM（SL-3）+ 用户级类别沉淀提示词（2026-09-26）：**每次沉淀现读**同一份
+	// usr 配置（不缓存到进程级/包级 → 配置改动热生效，生效粒度 = 按 turn）。本次沉淀各类别共用。
+	userCfg := p.readUserConfig(ev.InstanceID)
+	llm := subsystemLLM(userCfg)
+	userPrompts := userMemoryPrompts(userCfg)
 	saved := make([]string, 0, len(cats))
 	failed := make([]map[string]string, 0)
 	var mu sync.Mutex
@@ -243,8 +260,9 @@ func (p *Plugin) distill(ev turnEvent, cfg memoryConfig, cats []categoryInfo, ne
 			continue
 		}
 		wg.Add(1)
-		go func(category string) {
+		go func(ci categoryInfo) {
 			defer wg.Done()
+			category := ci.Category
 			old, err := p.memoryRead(ev.InstanceID, category)
 			if err != nil {
 				logf("memory: 读记忆失败（%s）：%v（跳过）", category, err)
@@ -254,7 +272,7 @@ func (p *Plugin) distill(ev turnEvent, cfg memoryConfig, cats []categoryInfo, ne
 				mu.Unlock()
 				return
 			}
-			text, err := p.rewrite(ev.InstanceID, llm, category, old, newInfo)
+			text, err := p.rewrite(ev.InstanceID, llm, memoryPromptFor(cfg, userPrompts, ci), category, old, newInfo)
 			if err != nil {
 				logf("memory: 沉淀 LLM 失败（%s）：%v（跳过）", category, err)
 				p.notify(ev, "llm", category+"："+err.Error())
@@ -282,7 +300,7 @@ func (p *Plugin) distill(ev turnEvent, cfg memoryConfig, cats []categoryInfo, ne
 			mu.Lock()
 			saved = append(saved, category)
 			mu.Unlock()
-		}(c.Category)
+		}(c)
 	}
 	wg.Wait()
 	return saved, failed
@@ -354,7 +372,12 @@ func (p *Plugin) flush(payload []byte) map[string]any {
 
 // resolveConfig 经 data-prj-config-list 一次读回项目配置并解析 memory.*（缺失回落默认）。
 func (p *Plugin) resolveConfig(instanceID string) (memoryConfig, error) {
-	cfg := memoryConfig{Enabled: false, MinTokens: p.opts.MinTurnTokens, Categories: map[string]bool{}}
+	cfg := memoryConfig{
+		Enabled:    false,
+		MinTokens:  p.opts.MinTurnTokens,
+		Categories: map[string]bool{},
+		Prompts:    map[string]string{},
+	}
 	res, err := p.request(prjConfigListSubject, map[string]any{"instance_id": instanceID})
 	if err != nil {
 		return cfg, err
@@ -375,31 +398,72 @@ func (p *Plugin) resolveConfig(instanceID string) (memoryConfig, error) {
 	for k, v := range list {
 		if name, ok := strings.CutPrefix(k, memoryCategoryPrefix); ok && name != "" {
 			cfg.Categories[name] = strval(v) == "true"
+			continue
+		}
+		// 项目级类别沉淀提示词（`memory.prompt.<类别名>`；空值亦登记 → 与未配置同口径回落默认）。
+		if name, ok := strings.CutPrefix(k, memoryPromptPrefix); ok && name != "" {
+			cfg.Prompts[name] = strval(v)
 		}
 	}
 	return cfg, nil
 }
 
-// resolveSubsystemLLM 读 usr `llm.memory`（SL-3，40-演进计划 §SL）：**「子系统 → LLM」的
-// 解析责任在插件侧**——读配置后随 llm-simple 请求带（`llm` 字段）。
+// readUserConfig 经既有 data-user-config-load 面一次读回 usr 配置对象（失败 → nil）。
 //
-// 热生效（SL-C9）：**每次沉淀现读**（经既有 data-user-config-load 面，消息面零新增），
-// 不缓存到进程级/包级变量 → 配置改动无需重启，生效粒度 = 按 turn。
-//
-// 取值 = llmref（provider name；**键缺失/空串 → 回落 defaultLLM 已由数据层读侧完成**，
-// 此处不重做，见 SL-1）。折算（旧 int 索引 → provider name）走 data.LLMRefName 单一来源。
-// 返回 provider name；无法折算（显式系统默认 / 无可用 LLM / 读失败）→ ""（= 不传该字段，
-// server 回落 exe flags 默认，与改前行为一致）。
-func (p *Plugin) resolveSubsystemLLM(instanceID string) string {
+// 热生效（SL-C9）：**每次沉淀现读**（消息面零新增），不缓存到进程级/包级变量 →
+// 配置改动无需重启，生效粒度 = 按 turn。一次读回同时供「子系统默认 LLM」与「用户级类别
+// 沉淀提示词」两个消费点使用（避免同一轮重复发两次请求）。
+func (p *Plugin) readUserConfig(instanceID string) map[string]any {
 	res, err := p.request(userConfigLoadSubject, map[string]any{"instance_id": instanceID})
 	if err != nil {
-		return "" // 读失败 → 不指定（回落现状）；沉淀流程不中断
+		return nil // 读失败 → 两消费点各按"不指定/内置默认"处置；沉淀流程不中断
 	}
 	cfg, _ := res["data"].(map[string]any)
-	if cfg == nil {
+	return cfg
+}
+
+// subsystemLLM 取记忆子系统的默认 LLM（provider name）：读 usr `llm.memory`（SL-3）。
+// 取值 = llmref（**键缺失/空串 → 回落 defaultLLM 已由数据层读侧完成**，此处不重做，见 SL-1）；
+// 折算（旧 int 索引 → provider name）走 data.LLMRefName 单一来源。返回 ""（无法折算 /
+// 无可用 LLM / 读失败）→ llm-simple 请求**不带 `llm` 字段**（server 回落 exe flags 默认）。
+func subsystemLLM(userCfg map[string]any) string {
+	if userCfg == nil {
 		return ""
 	}
-	return data.LLMRefName(cfg[memoryLLMKey], cfg["llms"])
+	return data.LLMRefName(userCfg[memoryLLMKey], userCfg["llms"])
+}
+
+// userMemoryPrompts 解析用户级类别的自定义沉淀提示词（usr 自由键 `memory_prompts`，
+// 值 = JSON 对象字符串 `{"<类别名>":"<提示词全文>"}`）。键缺失 / 空串 / 非法 JSON → nil
+// （调用方回落内置默认），不视为失败。
+func userMemoryPrompts(userCfg map[string]any) map[string]string {
+	if userCfg == nil {
+		return nil
+	}
+	raw := strval(userCfg[userMemoryPromptsKey])
+	if raw == "" {
+		return nil
+	}
+	var m map[string]string
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// memoryPromptFor 取某类别的沉淀提示词（llm-simple 的 `system`）：
+//   - 用户级类别（用户偏好）→ usr `memory_prompts` 中该类别的值；
+//   - 项目级类别 → prj `memory.prompt.<类别名>`；
+//   - 未配置 / 空白 → **内置默认** defaultRewriteSystemPrompt（逐字节等价于改前硬编码口径）。
+func memoryPromptFor(cfg memoryConfig, userPrompts map[string]string, c categoryInfo) string {
+	custom := cfg.Prompts[c.Category]
+	if c.Level == memoryUserLevel {
+		custom = userPrompts[c.Category]
+	}
+	if strings.TrimSpace(custom) == "" {
+		return defaultRewriteSystemPrompt
+	}
+	return custom
 }
 
 // categoryInfo 是 memory 类别（持久化侧为唯一来源，插件不硬编码类别清单）。
@@ -500,16 +564,20 @@ func (p *Plugin) memorySave(instanceID, category, content string) error {
 // rewrite 经无上下文单轮 LLM（llm-simple）重写类别全文：读旧全文 + 本轮新信息 → 新全文。
 // instanceID 为触发事件（session-compress）载荷中的实例 id，随请求透传（61-消息一览 §0
 // 实例字段必带）。
-// llm = 本子系统的默认 LLM（provider name，见 resolveSubsystemLLM）；空则**不带该字段**
+// llm = 本子系统的默认 LLM（provider name，见 subsystemLLM）；空则**不带该字段**
 // （载荷与改前逐字节等价，server 回落 exe flags 默认）。
-func (p *Plugin) rewrite(instanceID, llm, category, oldText, newInfo string) (string, error) {
+// system = 该类别的沉淀提示词（见 memoryPromptFor）；空白 → 回落内置默认（与改前等价）。
+func (p *Plugin) rewrite(instanceID, llm, system, category, oldText, newInfo string) (string, error) {
 	if p.deps.Bus == nil {
 		return "", errors.New("no bus (llm-simple unavailable)")
+	}
+	if strings.TrimSpace(system) == "" {
+		system = defaultRewriteSystemPrompt
 	}
 	prompt := fmt.Sprintf("【类别】%s\n\n【现有全文】\n%s\n\n【本轮新增信息】\n%s", category, oldText, newInfo)
 	ctx, cancel := context.WithTimeout(context.Background(), llmTimeout)
 	defer cancel()
-	req := map[string]any{"prompt": prompt, "system": rewriteSystemPrompt, "instance_id": instanceID}
+	req := map[string]any{"prompt": prompt, "system": system, "instance_id": instanceID}
 	if llm != "" {
 		req["llm"] = llm // SL-2 可选字段：子系统默认 LLM
 	}

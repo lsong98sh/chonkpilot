@@ -744,16 +744,6 @@ func Main(distFS fs.FS, opts Options) {
 		os.Exit(1)
 	}
 
-	// 只读 LLM 条目注入桥（LLM 配置页顶部「系统默认（启动参数）」只读行，不进 usr llms 表；
-	// 见 64-配置项一览 §11.1）。**D-30（2026-09-22 拍板）后不再注入「系统内置」行**：内置
-	// provider（echo）降为 **router 内置兜底**（无可用 provider 时启用），不再作为可配置项列出。
-	builtinLLMs := make([]bridge.BuiltinLLM, 0, 1)
-	if llmBase != "" || llmModel != "" {
-		builtinLLMs = append(builtinLLMs, bridge.BuiltinLLM{
-			Kind: "default", Protocol: server.ProtocolOpenAI, Model: llmModel, BaseURL: llmBase,
-		})
-	}
-
 	// 进程级装配上下文：窗口工厂据此**每窗口**一份桥 + appHandler（MW-1/MW-2/MW-3）。
 	env := &hostEnv{
 		bus:            bus,
@@ -764,7 +754,6 @@ func Main(distFS fs.FS, opts Options) {
 		prjUsrRoot:     prjUsrRoot,
 		logDir:         logDir,
 		form:           opts.Form,
-		builtinLLMs:    builtinLLMs,
 		srv:            srv,
 		windows:        newWindowRegistry(),
 	}

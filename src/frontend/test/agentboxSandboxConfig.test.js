@@ -1,10 +1,11 @@
 /**
  * agentbox 沙箱「配置面」接线守卫（[42 §2 (104)/(109)]）
  *
- * 覆盖三条硬要求：
- *   ① mcp-server 配置页「是否隔离」开关 → 写 usr `mcps[].sandbox`（三态，未设 = 不隔离）；
- *   ② 新页签「扫描到的工具」→ 写 usr `tool_sandbox`（未设 = 不隔离）；
- *   ③ **仅 stdio 可操作**：http/sse（及缺省 url 推断为 http）行控件禁用 + i18n 原因。
+ * 覆盖三条硬要求（2026-09-26 起 sandbox 编辑入口收敛到 EditMCPDialog「运行信息」页签）：
+ *   ① MCP 编辑弹窗「运行信息」页签「沙箱」开关 → 保存写 usr `mcps[].sandbox`（三态，未设 = 不隔离）；
+ *   ② 页签「工具沙箱配置」→ 按 **executor 类别**（core/desktop/browser）写 usr `tool_sandbox`
+ *      （未设 = 不隔离）；拨动只改本地待保存态，点【保存】才落库，无改动时保存按钮禁用；
+ *   ③ **仅 stdio 可操作**：http/sse（及缺省 url 推断为 http）控件禁用 + i18n 原因。
  *
  * 前端暂无组件级测试运行器（`npm test` = node:test 直跑，见 package.json）→ 用**源码守卫**
  * 锁定接线契约，防回归到「改了 UI 但没写对配置键」或「http/sse 项可误勾」。
@@ -22,56 +23,69 @@ const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const readSrc = (rel) => readFileSync(join(srcDir, rel), 'utf8')
 
-test('MCP 配置页：sandbox 列 + Switch + 拨动写 mcps[].sandbox（三态）', () => {
-  const vue = readSrc('views/config/SettingsMCPPage.vue')
-  // 列：prop = 'sandbox'（供 Table 具名插槽）
-  assert.match(vue, /\{\s*label:\s*t\('config\.mcp\.sandbox'\),\s*prop:\s*'sandbox'/, '缺 sandbox 列')
-  // 行内 Switch，绑定 sandbox === true（未设置/关均为 off）
-  assert.match(vue, /<Switch[\s\S]*?:model-value="mcpServers\[index\]\.sandbox === true"/, 'Switch 未绑定 sandbox 三态')
-  // 拨动写库：只写本 server 的 sandbox 键，仍走 saveUserConfig({ mcpServers })
-  const m = vue.match(/async function onSandboxToggle\s*\([\s\S]*?\n\}/)
-  assert.ok(m, '未找到 onSandboxToggle')
-  assert.match(m[0], /s\.sandbox\s*=\s*!!v/, 'onSandboxToggle 须写 s.sandbox = true/false')
-  assert.match(m[0], /await saveNow\(\)/, 'onSandboxToggle 须落盘（saveNow → saveUserConfig({mcpServers})）')
-  assert.match(vue, /saveUserConfig\(\{\s*mcpServers:\s*mcpServers\.value\s*\}\)/, '落盘通道须仍是 usr mcps')
-  // 未设置 = 缺键（不写 null/false 占位）——三态语义
-  assert.match(vue, /sandboxUnset/, '缺「未设置」态展示')
+test('MCP 编辑弹窗：运行信息页签 sandbox Switch + 三态 + 保存写 mcps[].sandbox', () => {
+  const vue = readSrc('views/config/EditMCPDialog.vue')
+  // Switch 绑定沙箱三态开关（未显式拨动 = off 展示；拨动才写库）
+  assert.match(vue, /<Switch\s+v-model="sandboxToggle"/, '缺 sandbox 三态 Switch')
+  // 三态：显式记录 + 值；保存时未显式拨动则删键
+  assert.match(vue, /const sandboxExplicit = ref\(/, '缺 sandboxExplicit 三态标记')
+  assert.match(vue, /if \(sandboxExplicit\.value\) localData\.sandbox = !!sandboxValue\.value/,
+    'handleSave 须在显式拨动时写 localData.sandbox')
+  assert.match(vue, /else delete localData\.sandbox/, '未拨动须删键（缺键 = 未设置）')
+  // 落盘通道仍是 usr mcps（由列表页 saveNow 承担）
+  assert.match(readSrc('views/config/SettingsMCPPage.vue'),
+    /saveUserConfig\(\{\s*mcpServers:\s*mcpServers\.value\s*\}\)/, '落盘通道须仍是 usr mcps')
 })
 
-test('MCP 配置页：仅 stdio 可操作，http/sse 禁用并给 i18n 原因', () => {
-  const vue = readSrc('views/config/SettingsMCPPage.vue')
-  // 传输归一：显式 transport 优先；缺省 url → http，否则 stdio（与 gateway TransportName 一致）
-  const tn = vue.match(/function transportName\s*\([\s\S]*?\n\}/)
-  assert.ok(tn, '未找到 transportName')
-  assert.match(tn[0], /return\s+tp\.toLowerCase\(\)/, '显式 transport 须归一')
-  assert.match(tn[0], /\?\s*'http'\s*:\s*'stdio'/, '缺省须按 url 推断 http/stdio')
-  // 可操作判据 = stdio
-  const se = vue.match(/function sandboxEditable\s*\([\s\S]*?\n\}/)
-  assert.ok(se, '未找到 sandboxEditable')
-  assert.match(se[0], /transportName\(s\)\s*===\s*'stdio'/, 'sandboxEditable 须仅 stdio 为真')
-  // 控件禁用 + 原因提示
-  assert.match(vue, /:disabled="!sandboxEditable\(mcpServers\[index\]\)"/, 'http/sse 行须禁用 Switch')
-  assert.match(vue, /$t\('config\.mcp\.sandboxStdioOnly'\)|t\('config\.mcp\.sandboxStdioOnly'\)/, '须给禁用原因（i18n）')
+test('MCP 编辑弹窗：仅 stdio 可操作，http/sse 禁用并给 i18n 原因', () => {
+  const vue = readSrc('views/config/EditMCPDialog.vue')
+  // 传输归一：显式 transport 优先；缺省/auto 有 url → http，否则 stdio（与 gateway TransportName 一致）
+  const tn = vue.match(/const sandboxTransportName = computed\([\s\S]*?\n\}\)/)
+  assert.ok(tn, '未找到 sandboxTransportName')
+  assert.match(tn[0], /\(localData\.url \|\| ''\)\.trim\(\) \? 'http' : 'stdio'/, '缺省须按 url 推断 http/stdio')
+  // 可操作判据 = stdio + 控件禁用
+  assert.match(vue, /const sandboxApplicable = computed\(\(\) => sandboxTransportName\.value === 'stdio'\)/,
+    'sandboxApplicable 须仅 stdio 为真')
+  assert.match(vue, /:disabled="!sandboxApplicable"/, 'http/sse 须禁用 Switch')
+  // 禁用原因 tooltip（i18n）
+  assert.match(vue, /t\('config\.mcp\.sandboxStdioOnly'\)/, '须给禁用原因（i18n）')
 })
 
-test('新页签：useToolSandbox composable 写 usr tool_sandbox，且只列 runtime 工具', () => {
+test('MCP 列表页：沙箱列已移除（编辑入口唯一 = 对话框运行信息页签）', () => {
+  const vue = readSrc('views/config/SettingsMCPPage.vue')
+  assert.doesNotMatch(vue, /prop:\s*'sandbox'/, '列表页不应再有 sandbox 列')
+  assert.doesNotMatch(vue, /onSandboxToggle/, '列表页不应再有行内拨动')
+  // 空信任目录语义说明保留（跨页提示）
+  assert.match(vue, /config\.mcp\.sandboxEmptyHint/, '须保留 server 级语义说明')
+})
+
+test('新页签：useToolSandbox composable 按 executor 类别写 usr tool_sandbox，手动保存', () => {
   const js = readSrc('composables/useToolSandbox.js')
   assert.match(js, /export const TOOL_SANDBOX_KEY = 'tool_sandbox'/, '键名须为 tool_sandbox')
-  assert.match(js, /export const RUNTIME_CATEGORIES = \['core', 'desktop', 'browser'\]/, 'runtime 类别须为 core/desktop/browser')
-  assert.match(js, /if \(!RUNTIME_CATEGORIES\.includes\(category\)\) continue/, '须按 _meta.category 过滤')
-  assert.match(js, /saveUserConfig\(\{\s*\[TOOL_SANDBOX_KEY\]:\s*userMap\.value\s*\}\)/, '须经 usr 配置面写该键')
+  assert.match(js, /export const EXECUTOR_CATEGORIES = \['core', 'desktop', 'browser'\]/, 'executor 类别须为 core/desktop/browser')
+  assert.match(js, /if \(!EXECUTOR_CATEGORIES\.includes\(category\)\) continue/, '须按 _meta.category 过滤')
+  assert.match(js, /saveUserConfig\(\{\s*\[TOOL_SANDBOX_KEY\]:\s*next\s*\}\)/, '须经 usr 配置面写该键（executor 级表）')
   assert.match(js, /mq\.emit\('tools-list'/, '工具清单须取既有能力面 tools-list')
   // 过滤键名不得臆造：读的是 _meta.category / _meta.server
   assert.match(js, /meta\.category/, '须读 _meta.category')
-  assert.match(js, /meta\.server/, '须读 _meta.server 作为分组')
-  // 未设置 = 缺键（恢复默认删该键项，最后一项删整键）
-  assert.match(js, /resetUserKey\(TOOL_SANDBOX_KEY\)/, '最后一项须删整键')
+  assert.match(js, /meta\.server/, '须读 _meta.server（展示剥前缀用）')
+  // 三态 + 手动保存：拨动只改待保存态，无改动不写；全部未设置 → 删整键
+  assert.match(js, /const dirty = computed\(/, '须派生「未保存改动」')
+  assert.match(js, /if \(!dirty\.value\) return false/, '无改动须短路（不落库）')
+  assert.match(js, /resetUserKey\(TOOL_SANDBOX_KEY\)/, '全部未设置须删整键')
 })
 
-test('新页签：页面用 composable + Switch，且不出现 watch（项目规范）', () => {
+test('新页签：页面用 composable + Switch，手动保存按钮，且不出现 watch（项目规范）', () => {
   const vue = readSrc('views/config/SettingsToolSandboxPage.vue')
   assert.match(vue, /useToolSandbox\(\)/, '页面须用 useToolSandbox composable')
-  assert.match(vue, /<Switch[\s\S]*?@update:model-value="\(v\) => onToggle\(row, v\)"/, '工具行须有隔离 Switch')
+  assert.match(vue, /<Switch[\s\S]*?@update:model-value="\(v\) => onToggle\(row, v\)"/, 'executor 行须有隔离 Switch')
+  // 三个 executor 行 + 只读工具清单
+  assert.match(vue, /v-for="row in rows"[\s\S]*?:data-exec="row\.category"/, '须按 executor 类别渲染行')
+  assert.match(vue, /:data-tool="t\.name"/, '只读工具清单须带完整暴露名')
+  // 手动保存：按钮 + 无改动禁用 + 未保存标记
+  assert.match(vue, /data-sandbox-save/, '缺保存按钮')
+  assert.match(vue, /:disabled="!dirty"/, '无改动时保存按钮须禁用')
+  assert.match(vue, /data-sandbox-unsaved/, '缺「未保存」标记')
   assert.doesNotMatch(vue, /\bwatch\(/, '禁止 watch 监听（项目规范）')
   const js = readSrc('composables/useToolSandbox.js')
   assert.doesNotMatch(js, /\bwatch\(/, 'composable 禁止 watch')
@@ -92,11 +106,13 @@ test('i18n：zh-CN / en-US 双语文案齐备', () => {
   for (const loc of ['zh-CN', 'en-US']) {
     const j = JSON.parse(readSrc('locales/' + loc + '/config.json'))
     assert.ok(j.page && typeof j.page.toolSandbox === 'string' && j.page.toolSandbox.length > 0, `${loc} 缺 config.page.toolSandbox`)
-    for (const k of ['sandbox', 'sandboxOn', 'sandboxOff', 'sandboxUnset', 'sandboxUnsupported', 'sandboxHint', 'sandboxStdioOnly']) {
+    for (const k of ['sandbox', 'sandboxHint', 'sandboxStdioOnly']) {
       assert.ok(j.mcp && typeof j.mcp[k] === 'string' && j.mcp[k].length > 0, `${loc} 缺 config.mcp.${k}`)
     }
     assert.ok(j.toolSandbox && typeof j.toolSandbox === 'object', `${loc} 缺 toolSandbox 段`)
-    for (const k of ['pageHint', 'empty', 'switchHint', 'stateOn', 'stateOff', 'stateUnset', 'restoreDefault']) {
+    for (const k of ['pageHint', 'empty', 'execCore', 'execDesktop', 'execBrowser', 'supportedTools',
+      'noTools', 'switchHint', 'stateOn', 'stateOff', 'stateUnset', 'restoreDefault', 'saved',
+      'thirdPartyHint', 'serverSummary', 'gotoMcp', 'trustDirWarning', 'trustDirWarningRow', 'gotoTrustDirs']) {
       assert.ok(typeof j.toolSandbox[k] === 'string' && j.toolSandbox[k].length > 0, `${loc} 缺 config.toolSandbox.${k}`)
     }
   }

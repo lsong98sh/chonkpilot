@@ -4,10 +4,6 @@
   "edit": "Edit Scenario",
   "delete_confirm": "Are you sure to delete scenario「{name}」？",
   "save_success": "Scenario saved",
-  "restore_default": "Restore Default",
-  "restore_default_confirm": "Restore scenario「{name}」to the default configuration? Current data will be overwritten.",
-  "restored": "Restored to default configuration",
-  "restore_failed": "Failed to restore default",
   "fields": {
     "name": "Name",
     "description": "Description",
@@ -25,8 +21,6 @@
     "user": "User",
     "project": "Project"
   },
-  "system_readonly": "System-level scenario is read-only (display only; cannot be edited or deleted)",
-  "system_readonly_badge": "System · Read-only",
   "dir_name_required": "Directory name is required (letters/digits/underscore/hyphen only)",
   "dir_name_format": "Directory name may contain only letters, digits, underscores and hyphens",
   "placeholder": {

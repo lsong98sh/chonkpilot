@@ -1,6 +1,7 @@
 <template>
-  <!-- filetree 区双栈容器：头部「项目 / 知识库 / 会话」切换（v-show 同显三树，切换不销毁状态）。
+  <!-- filetree 区多栈容器：头部「项目 / 知识库 / 项目记忆 / 会话」切换（v-show 同显各树，切换不销毁状态）。
        本分段 = 知识库视图入口（toolbar「知识库」按钮 2026-09-16 已移除）；
+       「项目记忆」= 按配置列出已启用记忆类别（第 4 模式，2026-09-26）；
        「会话」= 原会话抽屉内容迁入（P3-C1，2026-09-24）；
        filetreeModeToggle 订阅保留为休眠态（无 UI 入口触发，供 mq 直发/回归用例驱动）。 -->
   <div class="explorer-pane">
@@ -19,13 +20,19 @@
       >{{ t('fileTree.mode_knowledge') }}</span>
       <span
         class="explorer-seg-btn"
+        :class="{ active: mode === 'memory' }"
+        :title="t('fileTree.mode_memory')"
+        v-mq:[EventNames.filetreeModeSelect].click="{ mode: 'memory' }"
+      >{{ t('fileTree.mode_memory') }}</span>
+      <span
+        class="explorer-seg-btn"
         :class="{ active: mode === 'sessions' }"
         :title="t('fileTree.mode_sessions')"
         v-mq:[EventNames.filetreeModeSelect].click="{ mode: 'sessions' }"
       >{{ t('fileTree.mode_sessions') }}</span>
       <span class="explorer-seg-spacer" />
       <Icon
-        v-if="mode === 'knowledge'"
+        v-if="mode === 'knowledge' || mode === 'memory'"
         name="refresh"
         class="explorer-seg-icon"
         :title="t('common.refresh')"
@@ -37,6 +44,9 @@
     </div>
     <div v-show="mode === 'knowledge'" class="explorer-body">
       <KnowledgeTree ref="kbTreeRef" />
+    </div>
+    <div v-show="mode === 'memory'" class="explorer-body">
+      <MemoryPane ref="memTreeRef" />
     </div>
     <div v-show="mode === 'sessions'" class="explorer-body">
       <SessionsPane />
@@ -50,6 +60,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
 import FileTree from './FileTree.vue'
 import KnowledgeTree from './KnowledgeTree.vue'
+import MemoryPane from './MemoryPane.vue'
 import SessionsPane from '../sessions/SessionsPane.vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
@@ -58,12 +69,13 @@ defineOptions({ name: 'ExplorerPane' })
 
 const { t } = useI18n()
 
-const mode = ref('project') // project | knowledge | sessions
+const mode = ref('project') // project | knowledge | memory | sessions
 const kbTreeRef = ref(null)
+const memTreeRef = ref(null)
 const _unsubs = []
 
 function setMode(m) {
-  if (m === 'knowledge' || m === 'project' || m === 'sessions') mode.value = m
+  if (m === 'knowledge' || m === 'project' || m === 'memory' || m === 'sessions') mode.value = m
 }
 
 onMounted(() => {
@@ -74,7 +86,9 @@ onMounted(() => {
     if (d && d.mode) setMode(d.mode)
   }))
   _unsubs.push(mq.on(EventNames.filetreeModeRefresh, () => {
-    kbTreeRef.value?.reload()
+    // 刷新当前模式的面板（知识库树 / 项目记忆列表）
+    if (mode.value === 'knowledge') kbTreeRef.value?.reload()
+    else if (mode.value === 'memory') memTreeRef.value?.refresh()
   }))
 })
 

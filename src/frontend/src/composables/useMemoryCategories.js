@@ -11,6 +11,14 @@ import MemoryCategoryListDialog from '../views/settings/MemoryCategoryListDialog
 import dataClient, { dataRequest } from '../utils/dataClient'
 import { loadFailedText } from '../utils/settingsFeedback'
 
+// DEFAULT_MEMORY_PROMPT = 记忆沉淀「内置默认提示词」的**前端镜像**（权威常量在 Go 侧
+// `src/plugins/plugin-memory/memory.go` 的 defaultRewriteSystemPrompt）。用途 = 类别未自定义
+// 提示词时，编辑弹框回填该默认值供用户查看/编辑；保存内容与内置默认相同（或留空）→ 清键回落默认。
+// 跨端字面量由前端守卫测试核对（frontend/test/uxBatch4Fix.test.js）。
+export const DEFAULT_MEMORY_PROMPT = '你是记忆库沉淀器。给定某个记忆类别的现有全文与本轮对话的新增信息，'
+  + '请把两者合并后重写该类别全文（累加 + 更新：修正过时内容、去重、条理化、不臆造）。'
+  + '只输出重写后的 markdown 全文，不要任何解释或代码块围栏。'
+
 export function useMemoryCategories() {
   const { t } = useI18n()
   // 记忆库总开关（memory.enabled；由调用方在读到 prj 配置后 setEnabled）

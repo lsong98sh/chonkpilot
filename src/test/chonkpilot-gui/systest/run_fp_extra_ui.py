@@ -33,9 +33,9 @@ _h.ensure_locale(c)  # 语言确定性：T4 页签文案按 zh-CN 断言（DB ui
 
 SEQ = [0]
 
-# 用例自建的 **user 级（可写）** 场景：出厂默认场景现为 **app 级只读**（`ScenarioDialogContent`
-# 的 app 分支只给只读徽标、无编辑/删除入口，25 §8.1 #8 / 42 §2 (171)）→ T6a/T6b/T6c/T7 的
-# 编辑弹窗流程必须落在**可写级别**上，故先自建一个 user 级场景（T6 组收尾删除，只删本轮自造的）。
+# 用例自建的 **user 级** 场景：三级场景（app/user/project）自 2026-09-26 起**均可编辑**
+# （`ScenarioDialogContent` 的 app 行亦给编辑/删除入口，25 §6）→ T6a/T6b/T6c/T7 仍统一落在
+# 用户自建的 user 级场景上（避免改动出厂 app 级场景内容；T6 组收尾删除，只删本轮自造的）。
 WSC_ID = "fp-misc-edit-sc"
 _wsc_ready = [False]
 
@@ -58,7 +58,7 @@ def ensure_writable_scenario():
 
 
 def cleanup_writable_scenario():
-    """收尾：删除本轮自建的 user 级场景（app 级出厂场景只读、不受影响）。"""
+    """收尾：删除本轮自建的 user 级场景（不影响 app 级出厂场景）。"""
     try:
         c.req("data-scenario-delete", {"data": {"id": WSC_ID, "level": "user"}})
     except Exception:
@@ -186,33 +186,82 @@ def switch_cfg_tab(*patterns):
     return r
 
 
+def _open_summary_editor():
+    """点上下文管理页「总结提示词」区块的【编辑】按钮 → 打开 TextEditDialog。返回 'ok'/'no-btn'。"""
+    return _loads_deep(c.eval("""(() => {
+      const hs = [...document.querySelectorAll('.project-config-panel .prompt-editor-header')];
+      const h = hs[0];
+      const b = h ? [...h.querySelectorAll('.b-btn')].find(x => /编辑|Edit/i.test(x.textContent.trim())) : null;
+      if (!b) return 'no-btn';
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return 'ok';
+    })()"""))
+
+
+def _close_text_dialogs():
+    """关闭残留的文本编辑弹框（点 X），避免外溢。"""
+    for _ in range(3):
+        r = _loads_deep(c.eval("""(() => {
+          const ds = [...document.querySelectorAll('.dialog-shell')].filter(e => e.getBoundingClientRect().width > 0);
+          const R = ds[ds.length - 1];
+          if (!R) return 'no';
+          const b = R.querySelector('.dialog-btn-close');
+          if (!b) return 'no-btn';
+          b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          return 'ok';
+        })()"""))
+        if r != "ok":
+            return
+        time.sleep(0.4)
+
+
 def case_prompt_reset():
     """L222 提示词「恢复默认」（迁移后 = 上下文管理页「总结提示词」）。
 
     依据 spec CFG-009 (D2)：项目配置「通用能力（工具提示词）」UI 已摘除，项目配置提示词仅余
-    摘要提示词（CFG-008，位于「上下文管理」页）→ 本用例断言该存活提示词：编辑器自动加载非空 →
-    「恢复默认」（取消项目覆盖）按钮存在 → 点击后编辑器仍在且内容仍非空 → 无控制台错误。
+    摘要提示词（CFG-008，位于「上下文管理」页）。**2026-09-26：只读展示已移除** → 内容改在
+    **编辑弹框**（TextEditDialog）内查看。本用例断言：「编辑」按钮 → 弹框内容非空（自动加载）
+    →「恢复默认」（取消项目覆盖）按钮存在 → 点击后再次打开弹框内容仍非空 → 无控制台错误。
     """
     open_project_cfg_panel()
     if switch_cfg_tab(r"^(上下文管理|上下文|Context)$") != "ok":
         raise TestError("未找到上下文管理（提示词所在）页签")
-    if not wait_el(".prompt-editor"):
-        raise TestError("总结提示词编辑器未渲染")
-    before = _loads_deep(c.eval("(() => { const t = document.querySelector('textarea.prompt-editor'); return t ? (t.value || '') : ''; })()")) or ""
+    if not wait_el(".prompt-editor-header"):
+        raise TestError("总结提示词区块未渲染")
+    # 「编辑」→ 弹框；内容 = 自动加载的有效值（非空）
+    if _open_summary_editor() != "ok":
+        raise TestError("未找到总结提示词「编辑」按钮")
+    if not wait_el(".text-edit-body"):
+        raise TestError("总结提示词编辑弹框未打开")
+    before = _loads_deep(c.eval("""(() => {
+      const ts = [...document.querySelectorAll('.text-edit-body textarea')];
+      const t = ts[ts.length - 1];
+      return t ? (t.value || '') : '';
+    })()""")) or ""
     if not before.strip():
         raise TestError("总结提示词未自动加载（内容为空）")
+    # 收起弹框（「恢复默认」在面板内，避免遮挡）
+    _close_text_dialogs()
     if not wait_el(".project-config-panel .b-btn"):
         raise TestError("提示词工具栏按钮未渲染")
-    r = click_btn_in(".project-config-panel", "recover|default|恢复默认|reset|还原")
+    r = click_btn_in(".project-config-panel", "恢复默认|reset|还原|recover")
     if r != "ok":
         raise TestError("未找到恢复默认按钮")
     time.sleep(1.0)
-    if not wait_el(".prompt-editor"):
-        raise TestError("恢复默认后编辑器丢失")
-    after = _loads_deep(c.eval("(() => { const t = document.querySelector('textarea.prompt-editor'); return t ? (t.value || '') : ''; })()")) or ""
+    # 恢复默认后：再次打开弹框，内容仍非空（回落到继承值）
+    if _open_summary_editor() != "ok":
+        raise TestError("恢复默认后总结提示词「编辑」按钮丢失")
+    if not wait_el(".text-edit-body"):
+        raise TestError("恢复默认后编辑弹框未打开")
+    after = _loads_deep(c.eval("""(() => {
+      const ts = [...document.querySelectorAll('.text-edit-body textarea')];
+      const t = ts[ts.length - 1];
+      return t ? (t.value || '') : '';
+    })()""")) or ""
     if not after.strip():
         raise TestError("恢复默认后提示词内容为空")
-    # 恢复默认链路无异常（编辑器仍在 + 无控制台错误）
+    _close_text_dialogs()
+    # 恢复默认链路无异常（内容仍在 + 无控制台错误）
     console = c.console(True)
     for e in console.get("entries", []):
         if e.get("level") in ("error",) and "prompt" in (e.get("text") or "").lower():

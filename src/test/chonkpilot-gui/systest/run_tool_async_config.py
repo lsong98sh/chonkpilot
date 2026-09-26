@@ -1,29 +1,30 @@
 # -*- coding: utf-8 -*-
-"""L4：工具异步配置页（usr 键 `tool_async`）—— 页面分组 / 四档读写 / 恢复默认 / 效果断言。
+"""L4：工具异步配置页（usr 键 `tool_async`）—— 表格分组 / 四档读写（手动保存）/ 恢复默认 / 效果断言。
 
-需求（用户口径）：UI 增加工具配置页，列出所有工具（`tools/list`）并按 MCP 归类，逐工具设
-「仅异步 / 仅同步 / 自动异步+超时 / 手动异步」。
+需求（用户口径，2026-09-26 改版）：明细用 **表格** 呈现（工具 / 模式 / 阈值 / 超时；工具名列 min-width
+200px，仍按 MCP 分组）；**手动保存**（改模式/数值只改本地待保存态，点【保存】一次性提交，无改动时
+保存按钮禁用）；**不再显示默认配置信息**（「契约默认/用户配置」徽标与「契约现值」文本移除 → 契约默认
+信息改由「恢复默认」按钮 tooltip 承载）；**去「高级」按钮**（`hard_timeout` 常显为「超时」列；dir 节点行
+禁用 + 标「不适用」）；模式 / 阈值 / 超时 三列表头各带 `?` 说明。
 
 驱动面（**零新增 MQ 主题**）：
-  * 工具清单 = 既有客户端能力面 `tools-list`（与 `useToolAsyncMode.js` / `ScenarioEditDialog`
-    同一消费点，分组口径 `_meta.server.alias || _meta.server.node || '全局'`）；
+  * 工具清单 = 既有客户端能力面 `tools-list`（分组口径 `_meta.server.alias || _meta.server.node || '全局'`）；
   * 配置读写 = 既有 usr 配置面 `data-user-config-{load,save,delete}`（usr 键 `tool_async`，
     JSON `{"<工具暴露名>": {"mode": "...", "threshold": n, "hard_timeout": n}}`）。
 
 覆盖：
-  A 入口与分组渲染：工具栏设置下拉含「工具异步配置」→ preview tab 打开 → 按 MCP 分组 + 每行四档选择器
-    （四档文案精确 + 原生 select 带 aria-label）；行集合与 `tools-list` 一致
-  B 契约现值：未配置的行标「契约默认」并显示契约现值（`_meta.async` / `async-threshold` / `timeout`）
-  C 四档保存 → `data-user-config-load` 回读一致（always/never/auto/manual 四档逐一）+ 条件字段
-    （阈值仅 auto/manual 显示）+ 高级 hard_timeout 落库
-  D 恢复默认：「恢复默认」删除该工具的键项（最后一项删除后整键删除，不留空对象）
-  E 效果断言（**依赖并行后端的 `tool_async` 落地**）：配置后 `tools-list` 的 `_meta.async` 随配置变化
-
-> 「转异步」图标的 **DOM 级**断言（manual 工具 in-flight → 工具行箭头出现 → 点击 → task-background
-> 收敛）在既有套件 `run_tool_async.py` 的用例 **F**（本波新增，实跑 7/7 通过）。
+  A 入口与分组渲染：菜单项 → preview tab 打开 → 按 MCP 分组 + 每行四档选择器（四档文案精确 + aria）
+    + 行集合与 `tools-list` 一致 + 表头 `?` 说明（≥3）+ 干净初始态保存按钮禁用
+  B 默认信息位置：行内不再有「契约默认/用户配置」徽标与「契约现值」文本；未配置行的「恢复默认」
+    tooltip 承载该工具的契约默认（模式 X / 阈值 Y / 超时 Z）
+  C 四档手动保存 → `data-user-config-load` 回读（= 覆盖态，或契约档不落库退化为契约值）+ 条件字段
+    （阈值仅 auto/manual 显示，其余为「—」）+ 超时列常显（无「高级」按钮/折叠区）+ hard_timeout 落库
+  D 恢复默认：「恢复默认」→ 待保存 → 点【保存】删该工具键项（最后一项删除后整键删除，不留空对象）
+  E 效果断言（**依赖并行后端的 `tool_async` 落地**）：保存后 `tools-list` 的 `_meta.async` 随配置变化
+  F 展示口径（D2）：列表名剥前缀仅展示，`data-tool` / `:title` 保留完整暴露名
 
 前置（本脚本自起，结束自动回收；见 harness.py）：
-  `dist-desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
+  `dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
 运行：`python run_tool_async_config.py`
 
 **PENDING 口径（不伪造、不放宽断言）**：用例前置不成立时打印 `[PENDING]` 并在最终行单独计入
@@ -49,6 +50,8 @@ ROOT = ".settings-page"
 MENU_LABEL = "工具异步配置"
 MODES = ["always", "never", "auto", "manual"]
 MODE_LABELS = ["仅异步", "仅同步", "自动异步", "手动异步"]
+# 契约值 → 界面本地化档名（zh-CN；「恢复默认」tooltip 用 modeLabel 渲染）
+MODE_LABELS_BY_MODE = {"always": "仅异步", "never": "仅同步", "auto": "自动异步", "manual": "手动异步"}
 PROBE_KEY = "__l4_probe__"
 
 c = _h.acquire_gui(PORT, work_dir=WS).client
@@ -143,6 +146,12 @@ def tool_meta(name):
     return {}
 
 
+def reset_key():
+    """把 usr `tool_async` 清空（套件级 guard 会在退出前还原）。"""
+    c.req("data-user-config-delete", {"id": CFG_KEY})
+    time.sleep(0.4)
+
+
 # ── 前置探测（判据 = 可观测事实，非"期望值放宽"）──────────────
 
 SEL_PAGE = [None]  # "有"/"无"：产物是否已含新页面
@@ -175,10 +184,7 @@ BACKEND = [None]
 
 
 def probe_backend():
-    """后端是否已注册 usr 键 `tool_async`：写入探针后回读是否落库（落库即支持）。
-
-    探针按「原有配置 ∪ 探针项」写入，回读后**原样还原**（原有为空 → 删键），不留脏配置。
-    """
+    """后端是否已注册 usr 键 `tool_async`：写入探针后回读是否落库（落库即支持）。"""
     if BACKEND[0] is not None:
         return BACKEND[0]
     before = user_map()
@@ -214,29 +220,36 @@ def open_page():
     c.mq_emit("preview-tab-open", {"kind": KIND})
     if not wait_vis(ROOT):
         raise TestError("工具异步配置页未打开（kind=%s root=%s）" % (KIND, ROOT))
-    time.sleep(0.8)
+    poll(lambda: rows(), max_wait=8, interval=0.3)
 
 
 def rows():
-    """当前页面所有工具行（含契约/用户来源与条件字段状态 + 展示名/完整暴露名）。"""
+    """当前页面所有工具行：工具 / 展示名 / 完整暴露名 / 模式 / 条件字段 / 恢复默认按钮态 / 契约 tooltip。"""
     return ev(panel_js("""
-return [...R.querySelectorAll('.tool-item')].map(it=>{
-  const s=it.querySelector('select.b-select__native');
-  const badge=it.querySelector('.badge');
-  const ct=it.querySelector('.contract');
-  const nm=it.querySelector('.tool-name');
-  const mono=it.querySelector('.tool-name .mono');
+return [...R.querySelectorAll('.tool-name[data-tool]')].map(nm=>{
+  const it=nm.closest('tr');
+  const s=it?it.querySelector('select.b-select__native'):null;
+  const thr=it?it.querySelector('.cell-threshold input.b-input'):null;
+  const dash=it?it.querySelector('.cell-threshold .cell-dash'):null;
+  const to=it?it.querySelector('.cell-timeout input.b-input'):null;
+  const na=it?it.querySelector('.cell-timeout .na-hint'):null;
+  const mono=nm.querySelector('.mono');
+  const rst=it?it.querySelector('button[data-restore]'):null;
+  const tip=it?it.querySelector('.b-tooltip'):null;
   return {
-    tool: it.getAttribute('data-tool'),
+    tool: nm.getAttribute('data-tool'),
     disp: mono?mono.textContent.trim():'',
-    title: nm?nm.getAttribute('title'):null,
+    title: nm.getAttribute('title'),
     mode: s?s.value:'',
     opts: s?[...s.querySelectorAll('option')].filter(o=>o.value!=='').map(o=>o.textContent.trim()):[],
     aria: s?s.getAttribute('aria-label'):null,
-    thr: !!it.querySelector('.tool-threshold input.b-input'),
-    adv: !!it.querySelector('.advanced-body'),
-    badge: badge?badge.textContent.trim():'',
-    contract: ct?ct.textContent.trim():'',
+    thr: !!thr,
+    dash: !!dash,
+    timeout: !!to,
+    timeoutDisabled: to?!!to.disabled:false,
+    na: !!na,
+    restoreDisabled: rst?!!rst.disabled:null,
+    contract: tip?tip.getAttribute('data-contract'):null,
   };
 });""")) or []
 
@@ -264,38 +277,66 @@ def row_of(tool):
     raise TestError("页面无该工具行：%s" % tool)
 
 
+def effective_mode(tool):
+    """该工具当前生效档 = usr 覆盖值，否则契约 `_meta.async`（缺省 auto）。"""
+    ov = (user_map().get(tool) or {}).get("mode")
+    return ov or (tool_meta(tool).get("async") or "auto")
+
+
 def set_mode(tool, mode):
     r = ev(panel_js("""
-const it=[...R.querySelectorAll('.tool-item')].find(x=>x.getAttribute('data-tool')===%s);
-if(!it)return 'no-row';const s=it.querySelector('select.b-select__native');if(!s)return 'no-select';
+const nm=[...R.querySelectorAll('.tool-name')].find(x=>x.getAttribute('data-tool')===%s);
+if(!nm)return 'no-row';const it=nm.closest('tr');const s=it.querySelector('select.b-select__native');
+if(!s)return 'no-select';
 Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,%s);
 s.dispatchEvent(new Event('change',{bubbles:true}));return s.value;"""
                  % (json.dumps(tool), json.dumps(mode))))
     if r != mode:
         raise TestError("设置模式失败 tool=%s mode=%s → %r" % (tool, mode, r))
+    time.sleep(0.3)
 
 
 def set_number(tool, selector, value):
     r = ev(panel_js("""
-const it=[...R.querySelectorAll('.tool-item')].find(x=>x.getAttribute('data-tool')===%s);
-if(!it)return 'no-row';const inp=it.querySelector(%s);if(!inp)return 'no-input';
+const nm=[...R.querySelectorAll('.tool-name')].find(x=>x.getAttribute('data-tool')===%s);
+if(!nm)return 'no-row';const it=nm.closest('tr');const inp=it.querySelector(%s);if(!inp)return 'no-input';
 Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(inp,%s);
 inp.dispatchEvent(new Event('input',{bubbles:true}));
 inp.dispatchEvent(new Event('blur'));return 'ok';"""
                  % (json.dumps(tool), json.dumps(selector), json.dumps(str(value)))))
     if r != "ok":
         raise TestError("写数值失败 tool=%s sel=%s → %r" % (tool, selector, r))
+    time.sleep(0.3)
 
 
-def click_in_row(tool, label):
+def click_restore(tool):
     r = ev(panel_js("""
-const it=[...R.querySelectorAll('.tool-item')].find(x=>x.getAttribute('data-tool')===%s);
-if(!it)return 'no-row';const b=[...it.querySelectorAll('button.b-btn')]
- .find(x=>x.textContent.includes(%s));if(!b)return 'no-btn';b.click();return 'ok';"""
-                 % (json.dumps(tool), json.dumps(label))))
+const nm=[...R.querySelectorAll('.tool-name')].find(x=>x.getAttribute('data-tool')===%s);
+if(!nm)return 'no-row';const it=nm.closest('tr');const b=it.querySelector('button[data-restore]');
+if(!b)return 'no-btn';if(b.disabled)return 'disabled';b.click();return 'ok';""" % json.dumps(tool)))
     if r != "ok":
-        raise TestError("点击行内按钮失败 tool=%s label=%s → %r" % (tool, label, r))
-    time.sleep(0.5)
+        raise TestError("点击「恢复默认」失败 tool=%s → %r" % (tool, r))
+    time.sleep(0.4)
+
+
+def unsaved_mark():
+    return vcount(".unsaved-mark") > 0
+
+
+def save_btn():
+    """保存按钮状态：{exists, disabled}。"""
+    return ev(panel_js("""
+const b=R.querySelector('button.b-btn--primary[data-async-save]');
+return b?{exists:true,disabled:!!b.disabled}:{exists:false,disabled:false};"""))
+
+
+def click_save():
+    r = ev(panel_js("""
+const b=R.querySelector('button.b-btn--primary[data-async-save]');
+if(!b)return 'no-btn';if(b.disabled)return 'disabled';b.click();return 'ok';"""))
+    if r != "ok":
+        raise TestError("点击【保存】失败：%r" % r)
+    time.sleep(0.6)
 
 
 # ══════════════════════════════════════════════════════════
@@ -303,7 +344,8 @@ if(!it)return 'no-row';const b=[...it.querySelectorAll('button.b-btn')]
 # ══════════════════════════════════════════════════════════
 
 def case_a_entry_and_groups():
-    """A 入口与分组渲染：菜单项 → tab → 按 MCP 分组 + 每行四档选择器（文案/aria）+ 行集合与 tools-list 一致。"""
+    """A 入口与分组渲染：菜单项 → tab → 按 MCP 分组 + 每行四档选择器（文案/aria）+ 行集合与 tools-list 一致
+    + 表头 `?` 说明（≥3）+ 干净初始态保存按钮禁用。"""
     require_page()
     open_page()
     keys = group_keys()
@@ -311,8 +353,7 @@ def case_a_entry_and_groups():
         raise TestError("页面无 MCP 分组标题（.group-title）")
     rs = rows()
     if not rs:
-        raise TestError("页面无工具行（.tool-item）")
-    # 每行四档选择器 + 文案精确 + 原生 select 带 aria-label（可访问性）
+        raise TestError("页面无工具行（.tool-name[data-tool]）")
     for r in rs:
         if r["opts"] != MODE_LABELS:
             raise TestError("工具 %s 的异步模式选项文案不符：%r，期望 %r" % (r["tool"], r["opts"], MODE_LABELS))
@@ -331,116 +372,155 @@ def case_a_entry_and_groups():
     api_names = set(tl.get("name") for tl in tools_list())
     if dom_names != api_names:
         raise TestError("页面工具行与 tools-list 不一致：差集 %r" % (dom_names ^ api_names))
+    # 表头 `?` 说明：模式 / 阈值 / 超时 三列（多个分组表 → 至少 3 个）
+    helps = int(ev(panel_js("return R.querySelectorAll('.th-help .b-icon, .th-help svg').length;")) or 0)
+    if helps < 3:
+        raise TestError("表头 `?` 说明不足（.th-help 图标 = %d，期望 ≥3：模式/阈值/超时）" % helps)
+    # 干净初始态（刚打开 → workMap == savedMap）→ 保存按钮禁用、无「未保存」标记
+    b = save_btn()
+    if not b["exists"]:
+        raise TestError("页面缺保存按钮（data-async-save）")
+    if not b["disabled"]:
+        raise TestError("无改动时保存按钮应禁用")
+    if unsaved_mark():
+        raise TestError("无改动时不应显示「未保存」标记")
 
 
-def case_b_contract_source():
-    """B 未配置行显示契约现值并标「契约默认」；契约值取自 tools-list `_meta`。"""
+def case_b_contract_moved_to_tooltip():
+    """B 默认信息位置：行内不再有「契约默认/用户配置」徽标与「契约现值」文本；
+    未配置行的「恢复默认」tooltip 承载该工具的契约默认（模式 X / 阈值 Y / 超时 Z）。"""
     require_page()
-    open_page()
-    um = user_map()
-    checked = 0
-    for r in rows():
-        if r["tool"] in um:
-            continue
-        meta = tool_meta(r["tool"])
-        if r["badge"] != "契约默认":
-            raise TestError("未配置工具 %s 的来源标记 = %r，期望「契约默认」" % (r["tool"], r["badge"]))
-        if "契约现值" not in r["contract"]:
-            raise TestError("未配置工具 %s 未显示契约现值：%r" % (r["tool"], r["contract"]))
-        want_mode = meta.get("async") or "auto"
-        if want_mode not in r["contract"]:
-            raise TestError("工具 %s 契约现值缺 mode=%s：%r" % (r["tool"], want_mode, r["contract"]))
-        checked += 1
-        if checked >= 3:
-            break
-    if checked == 0:
-        raise TestError("无「未配置」工具行（usr tool_async 已有配置？）→ 无法断言契约现值标记")
+    with _h.user_config_guard(c, [CFG_KEY]):
+        reset_key()
+        open_page()
+        if vcount(".badge") or vcount(".contract"):
+            raise TestError("行内仍显示默认配置信息（.badge / .contract 应已移除）")
+        rs = rows()
+        if not rs:
+            raise TestError("页面无工具行")
+        checked = 0
+        for r in rs:
+            meta = tool_meta(r["tool"])
+            want_mode = MODE_LABELS_BY_MODE.get(meta.get("async") or "auto")
+            if r["restoreDisabled"] is not True:
+                raise TestError("未配置工具 %s 的「恢复默认」应禁用" % r["tool"])
+            contract = r["contract"] or ""
+            if "契约默认" not in contract:
+                raise TestError("「恢复默认」tooltip 未承载契约默认说明：%r（tool=%s）" % (contract, r["tool"]))
+            if want_mode not in contract:
+                raise TestError("契约默认 tooltip 缺模式 %s：%r（tool=%s）" % (want_mode, contract, r["tool"]))
+            checked += 1
+            if checked >= 3:
+                break
+        if checked == 0:
+            raise TestError("无工具行 → 无法断言契约默认 tooltip")
 
 
-def case_c_four_modes_roundtrip():
-    """C 四档保存 → data-user-config-load 回读一致 + 条件字段（阈值仅 auto/manual）+ 高级 hard_timeout。"""
+def case_c_four_modes_manual_save():
+    """C 四档「手动保存」→ 回读一致（覆盖态或契约档不落库退化为契约值）+ 条件字段（阈值仅 auto/manual）
+    + 超时列常显（无「高级」按钮/折叠区）+ hard_timeout 落库。"""
     require_page()
     require_backend()
     with _h.user_config_guard(c, [CFG_KEY]):
+        reset_key()
         open_page()
         tool = pick_tool()
-        # 逐一覆盖四档：起点 = 当前生效档，其余三档先跑（每步都发生变化 → 必落库），当前档最后跑
-        # （此时已不同 → 同样落库）。避免"选中与现状相同 → 页面按「未改动不进库」跳过"造成假红。
+        # 「高级」按钮 / 折叠区已去掉：hard_timeout 常显为「超时」列
+        if vcount(".advanced-body"):
+            raise TestError("不应再有 .advanced-body 折叠区（hard_timeout 已常显）")
+        adv_btn = ev(panel_js("return [...R.querySelectorAll('button.b-btn')]"
+                              ".some(b=>b.textContent.includes('高级'));"))
+        if adv_btn:
+            raise TestError("不应再有「高级」按钮")
+        if not row_of(tool)["timeout"]:
+            raise TestError("超时列应常显 hard_timeout 输入（tool=%s）" % tool)
+        # 逐一覆盖四档：起点 = 当前生效档，其余三档先跑（每步都发生变化 → 必进待保存态），
+        # 当前档最后跑（此时已不同 → 同样可保存）。避免「选中与现状相同 → 无改动」造成假红。
         cur = row_of(tool)["mode"]
         seq = [m for m in MODES if m != cur] + ([cur] if cur in MODES else [])
         for mode in seq:
             set_mode(tool, mode)
-            got = poll(lambda: (user_map().get(tool) or {}).get("mode"))
+            if not unsaved_mark():
+                raise TestError("改档后应显示「未保存」（mode=%s）" % mode)
+            if save_btn()["disabled"]:
+                raise TestError("改档后保存按钮应可用（mode=%s）" % mode)
+            if (user_map().get(tool) or {}).get("mode") == mode:
+                raise TestError("改档未保存时不应落库（mode=%s）" % mode)
+            click_save()
+            got = poll(lambda: effective_mode(tool) if effective_mode(tool) == mode else None)
             if got != mode:
-                raise TestError("四档保存回读不一致：tool=%s mode=%s → usr tool_async=%r"
-                                % (tool, mode, user_map()))
+                raise TestError("四档保存后生效档不一致：tool=%s mode=%s → usr=%r meta=%r"
+                                % (tool, mode, user_map(), tool_meta(tool).get("async")))
             rs = [r for r in rows() if r["tool"] == tool]
             if not rs:
                 raise TestError("保存后工具行消失：%s" % tool)
+            r = rs[0]
             want_thr = mode in ("auto", "manual")
-            if rs[0]["thr"] != want_thr:
-                raise TestError("条件字段显示不符：mode=%s 阈值输入=%s（期望 %s）"
-                                % (mode, rs[0]["thr"], want_thr))
-        # 阈值（auto）+ 高级 hard_timeout 落库
+            if r["thr"] != want_thr:
+                raise TestError("条件字段显示不符：mode=%s 阈值输入=%s（期望 %s）" % (mode, r["thr"], want_thr))
+            if r["dash"] == want_thr:
+                raise TestError("条件字段占位不符：mode=%s 「—」显示=%s" % (mode, r["dash"]))
+            # 保存后回到干净态（无未保存标记 + 保存禁用）
+            if not poll(lambda: (not unsaved_mark()) and save_btn()["disabled"]):
+                raise TestError("保存后应清除「未保存」标记并禁用保存按钮（mode=%s）" % mode)
+        # 阈值（auto）+ hard_timeout 落库（一次保存提交本页全部变更）
         set_mode(tool, "auto")
-        poll(lambda: (user_map().get(tool) or {}).get("mode") == "auto")
-        set_number(tool, ".tool-threshold input.b-input", 45)
+        set_number(tool, ".cell-threshold input.b-input", 45)
+        set_number(tool, ".cell-timeout input.b-input", 120)
+        if not unsaved_mark():
+            raise TestError("改数值后应显示「未保存」")
+        click_save()
         got = poll(lambda: (user_map().get(tool) or {}).get("threshold"))
         if got != 45:
-            raise TestError("阈值未落库：tool=%s → usr tool_async=%r" % (tool, user_map()))
-        if row_of(tool)["adv"]:
-            raise TestError("高级区默认应为折叠（.advanced-body 不应存在）")
-        click_in_row(tool, "高级")
-        if not row_of(tool)["adv"]:
-            raise TestError("点击「高级」后未展开 hard_timeout 输入")
-        set_number(tool, ".advanced-body input.b-input", 120)
-        got = poll(lambda: (user_map().get(tool) or {}).get("hard_timeout"))
-        if got != 120:
-            raise TestError("hard_timeout 未落库：tool=%s → usr tool_async=%r" % (tool, user_map()))
-        if row_of(tool)["badge"] != "用户配置":
-            raise TestError("已配置工具来源标记 = %r，期望「用户配置」" % row_of(tool)["badge"])
+            raise TestError("阈值未落库：tool=%s → usr=%r" % (tool, user_map()))
+        got2 = poll(lambda: (user_map().get(tool) or {}).get("hard_timeout"))
+        if got2 != 120:
+            raise TestError("hard_timeout 未落库：tool=%s → usr=%r" % (tool, user_map()))
 
 
 def case_d_restore_default():
-    """D 恢复默认 = 删除该工具键项；最后一项删除后整键删除（不留空对象）。"""
+    """D 恢复默认：「恢复默认」→ 待保存态 → 点【保存】删该工具键项；最后一项删除后整键删除。"""
     require_page()
     require_backend()
     with _h.user_config_guard(c, [CFG_KEY]):
+        reset_key()
         open_page()
         tool = pick_tool()
-        others = [k for k in user_map() if k != tool]  # 用例前已有的其它工具配置（不改动它们）
-        set_mode(tool, "manual" if row_of(tool)["mode"] != "manual" else "never")
-        if not poll(lambda: (user_map().get(tool) or {}).get("mode")):
-            raise TestError("前置失败：目标档未落库（tool=%s）" % tool)
-        click_in_row(tool, "恢复默认")
-        if not poll(lambda: tool not in user_map()):
-            raise TestError("恢复默认后键项仍在：%r" % user_map())
-        # 仅此一项 → 整键应被删除（不留空对象）；若本机原有其它工具配置 → 只断言键项删除
-        if not others:
-            if not poll(lambda: CFG_KEY not in ucfg()):
-                raise TestError("最后一项删除后整键未删（usr 仍存 %s=%r）" % (CFG_KEY, ucfg().get(CFG_KEY)))
-        else:
-            print("    [note] 本机原有其它工具配置 → 仅断言键项删除（整键保留）：%r" % others)
-        for k in others:
-            if k not in user_map():
-                raise TestError("恢复默认误删了其它工具配置：%s（余 %r）" % (k, user_map()))
-        rs = [r for r in rows() if r["tool"] == tool]
-        if rs and rs[0]["badge"] != "契约默认":
-            raise TestError("恢复默认后来源标记 = %r，期望「契约默认」" % rs[0]["badge"])
-
-
-def case_e_effect_meta_follows_config():
-    """E 效果断言：配置后 `tools-list` 的 `_meta.async` 应随 usr `tool_async` 变化（后端生效面）。"""
-    require_page()
-    require_backend()
-    with _h.user_config_guard(c, [CFG_KEY]):
-        open_page()
-        tool = pick_tool()
-        before = (tool_meta(tool).get("async") or "auto")
-        # 目标档 ≠ 当前生效档（否则页面按「未改动不进库」跳过 → 假红）
         cur = row_of(tool)["mode"]
         target = "manual" if cur != "manual" else "never"
         set_mode(tool, target)
+        click_save()
+        if not poll(lambda: (user_map().get(tool) or {}).get("mode") == target):
+            raise TestError("前置失败：目标档未落库（tool=%s）" % tool)
+        # 恢复默认 = 只改待保存态（不立即落库）
+        click_restore(tool)
+        if not unsaved_mark():
+            raise TestError("恢复默认后应进入待保存态（显示「未保存」）")
+        if (user_map().get(tool) or {}).get("mode") != target:
+            raise TestError("恢复默认不应立即落库（仍应保留 %s）" % target)
+        if row_of(tool)["restoreDisabled"] is not True:
+            raise TestError("恢复默认后该行「恢复默认」应禁用")
+        click_save()
+        if not poll(lambda: tool not in user_map()):
+            raise TestError("恢复默认保存后键项仍在：%r" % user_map())
+        # 仅此一项 → 整键应被删除（不留空对象）
+        if not poll(lambda: CFG_KEY not in ucfg()):
+            raise TestError("最后一项删除后整键未删（usr 仍存 %s=%r）" % (CFG_KEY, ucfg().get(CFG_KEY)))
+
+
+def case_e_effect_meta_follows_config():
+    """E 效果断言：保存后 `tools-list` 的 `_meta.async` 应随 usr `tool_async` 变化（后端生效面）。"""
+    require_page()
+    require_backend()
+    with _h.user_config_guard(c, [CFG_KEY]):
+        reset_key()
+        open_page()
+        tool = pick_tool()
+        before = (tool_meta(tool).get("async") or "auto")
+        cur = row_of(tool)["mode"]
+        target = "manual" if cur != "manual" else "never"
+        set_mode(tool, target)
+        click_save()
         if not poll(lambda: (user_map().get(tool) or {}).get("mode") == target):
             raise TestError("前置失败：%s 未落库" % target)
         got = poll(lambda: (tool_meta(tool).get("async") or ""), max_wait=8, interval=0.6)
@@ -457,11 +537,10 @@ def case_f_prefix_display():
     open_page()
     rs = rows()
     if not rs:
-        raise TestError("页面无工具行（.tool-item）")
+        raise TestError("页面无工具行（.tool-name[data-tool]）")
     checked = 0
     for r in rs:
         name = r["tool"] or ""
-        # data-tool / :title 恒为完整暴露名（配置键语义不变）
         if r["title"] != name:
             raise TestError("工具 %s 的 :title=%r，期望完整暴露名 %r" % (name, r["title"], name))
         if name.startswith("self_"):
@@ -475,10 +554,10 @@ def case_f_prefix_display():
 
 
 CASES = [
-    ("A 入口与分组渲染（设置菜单 → tab + 按 MCP 分组 + 四档文案/aria）", case_a_entry_and_groups),
-    ("B 未配置行显示契约现值并标「契约默认」", case_b_contract_source),
-    ("C 四档保存 + data-user-config-load 回读一致 + 条件字段 + 高级 hard_timeout", case_c_four_modes_roundtrip),
-    ("D 恢复默认删键项（最后一项 → 整键删除）", case_d_restore_default),
+    ("A 入口与分组渲染（分组 + 四档文案/aria + 表头 ? 说明 + 干净态保存禁用）", case_a_entry_and_groups),
+    ("B 默认信息移至「恢复默认」tooltip（行内无 badge/contract）", case_b_contract_moved_to_tooltip),
+    ("C 四档手动保存 + 回读 + 条件字段 + 超时列常显 + hard_timeout 落库", case_c_four_modes_manual_save),
+    ("D 恢复默认 → 保存后删键项（最后一项 → 整键删除）", case_d_restore_default),
     ("E 效果：tools-list 的 _meta.async 随配置变化（后端生效面）", case_e_effect_meta_follows_config),
     ("F 展示口径（D2）：列表名剥前缀仅展示，data-tool/:title 保留完整暴露名", case_f_prefix_display),
 ]
@@ -503,7 +582,7 @@ def main():
         c.console(clear=True)
     except Exception:
         pass
-    print("依赖：--test-port=%d 的 GUI（产物 = dist-desktop）；配置面 = usr `%s`" % (PORT, CFG_KEY))
+    print("依赖：--test-port=%d 的 GUI（产物 = dist/desktop）；配置面 = usr `%s`" % (PORT, CFG_KEY))
     print("前置探测：页面=%s / 后端键=%s" % (probe_page(), probe_backend()))
     for name, fn in CASES:
         try:

@@ -1939,8 +1939,8 @@ func llmProtocolKnown(p string) bool {
 // builtinFallbackName 是**内置兜底** provider 的保留名（D-30）：协议 `echo` —— **不发任何 HTTP**，
 // 回显本轮最后一条真实用户消息（`llm.go` 的 `chatEcho`，无 baseUrl/apiKey、不注册/不下发任何工具）。
 //
-// **不再作为「可配置 provider」暴露**（2026-09-22 用户拍板 D-30）：不进 usr `llms` 表、不出现在
-// `gui.system.builtins` 的 `builtinLLMs`（LLM 设置页与聊天选择器均不列出）、不参与「设为默认」。
+// **不再作为「可配置 provider」暴露**（2026-09-22 用户拍板 D-30）：不进 usr `llms` 表、
+// 不出现在配置面（LLM 设置页与聊天选择器均不列出）、不参与「设为默认」。
 // 仅当 `llm-start.llm` 命中本保留名时给出只读配置（兼容既有 usr `defaultLLM: "echo"` 记录），
 // 即**兜底语义保留、配置面收窄**。
 //
@@ -2308,16 +2308,18 @@ func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]m
 	return out
 }
 
-// toolSandboxUserConfigKey 是**工具级沙箱开关**的 usr 键（64-配置项一览 §3，agentbox 决策
-// 42 §2 (109)）：值 = 结构化 JSON 对象字符串 `{"<工具暴露名>": true|false}`（persist 自由键
-// 通道，形态同 tool_async）。key = tools/list 暴露名（内嵌 self 节点 = self_<契约名>；
-// 第三方 = <节点名>_<原名>）；**未配置 / false = 不启用隔离（默认兼容）**。
-// 消费链：loadExecConfig → mcp-server Config.SetToolSandbox → callTool 按契约名查开关 →
-// 开启时 spawn executor 注入 CHONKPILOT_SANDBOX（允许目录 = prj `security-*`）。
+// toolSandboxUserConfigKey 是 **executor 级沙箱开关**的 usr 键（64-配置项一览 §3，agentbox 决策
+// 42 §2 (109)；2026-09-26 由工具级改为 executor 级）：值 = 结构化 JSON 对象字符串
+// `{"core": true|false, "desktop": true|false, "browser": true|false}`（persist 自由键通道，
+// 形态同 tool_async）。key = executor 类别（= 契约 `_meta.category`，`src/mcp-tools` 的三个
+// 执行器能力目录）；**未配置 / false = 不启用隔离（默认兼容）**。**旧形态（按工具暴露名）不再生效**。
+// 消费链：loadExecConfig → gateway SetSandboxOverrides → mcp-server Config.SetToolSandbox →
+// callTool 按 `td.Category` 查开关 → 开启时 spawn executor 注入 CHONKPILOT_SANDBOX
+// （允许目录 = prj `security-*`）。
 const toolSandboxUserConfigKey = "tool_sandbox"
 
 // applyToolSandbox 解析 usr `tool_sandbox` 并写入内嵌 mcp-server Config（SetToolSandbox）。
-// raw 为空/键缺失 → 清空全部开关（= 全部工具不隔离，保守默认）；非法 JSON → 忽略并记日志、
+// raw 为空/键缺失 → 清空全部开关（= 全部 executor 不隔离，保守默认）；非法 JSON → 忽略并记日志、
 // 保留现值。开关表变化无需重注册工具（开关在每次 tools/call 的 spawn 时读取，秒级生效）。
 func (s *Server) applyToolSandbox(raw string) {
 	if s.mcpCfg == nil {
@@ -2330,8 +2332,9 @@ func (s *Server) applyToolSandbox(raw string) {
 			return
 		}
 	}
-	// 沙箱开关**下沉 gateway 统一施加**（I-82）：gateway 按提供方归属把暴露名归一到 mcp-server
-	// 契约名（仅 builtin self/dir 节点可施加 agentbox；第三方无 executor，跳过），并写共享 Config。
+	// 沙箱开关**下沉 gateway 统一写入**共享执行配置（I-82）：表 key = executor 类别（全局），
+	// gateway 直接转发给 mcp-server Config.SetToolSandbox（仅本仓 spawn 的 builtin executor 消费；
+	// 第三方 MCP 无本仓 executor，不施加）。
 	// 无 gateway（独立/测试形态）→ 回落直写（保持既有行为）。
 	if s.gw != nil {
 		s.gw.SetSandboxOverrides(next)
@@ -2463,7 +2466,7 @@ func (s *Server) reloadToolAsyncOverrides() {
 	d := res.Config
 	raw, _ := d[toolAsyncUserConfigKey].(string)
 	s.applyToolAsync(raw)
-	// 工具级沙箱开关（usr `tool_sandbox`）同链路热生效：保存/删除即改下次 tools/call 的
+	// executor 级沙箱开关（usr `tool_sandbox`）同链路热生效：保存/删除即改下次 tools/call 的
 	// spawn 环境（无需重注册工具、零新增主题）。
 	sandboxRaw, _ := d[toolSandboxUserConfigKey].(string)
 	s.applyToolSandbox(sandboxRaw)

@@ -16,17 +16,17 @@
         （2026-09-15 产品改动：vfts 保存改为「仅写实际改动的键」，未改动 → 不写并提示
         「无改动（未写入配置）」；故本用例先写入哨兵值再点保存，覆盖「保存落库」路径）
   B. 用户设置页（preview tab settings-llm / settings-mcp / settings-paths）
-     B1 LLM 列表/参数：无「用户/系统」页签、表头文字、**只读内置行仅「系统默认（启动参数）」**
-        （2026-09-15 产品改动：P1-3 起新增内置只读行与「设为默认」；原「无设默认」断言已过时；
-         **D-30（2026-09-23 落地）：echo 降为 router 内置兜底，「系统内置 / echo」行不再存在**）
-        **无编辑/删除** + 「设为默认」点击落库 defaultLLM
+     B1 LLM 配置：2 页签（**一览** / **默认模型**）——
+        一览 = provider 清单（添加/编辑/删除，**无只读行、无「设为默认」**）；
+        默认模型 = **主对话** + 5 个子系统下拉（提示词优化/记忆/压缩/分析/决策）
+        （2026-09-26 用户口径：原「只读内置行 + 设为默认」已移除；`gui.system.builtins` 不再下发
+         `builtinLLMs`，聊天输入框选择器只列 usr providers）
         + 添加弹窗字段文字 + 弹窗在视口内（位置）+ 表单**一行两列**（位置）→ 填表保存 →
         data-user-config-load 回读 llms → 清理
      B2 MCP：transport 与 url / runtime+args 的**从属显示**（切换 Select）→ 保存 runtime/args → 回读 → 清理
      B3 路径/工具链：系统页 Chrome **已被探测出**（路径非空 + 版本 x.y.z.w）；用户页含 Chrome 输入；
         项目页不含 Chrome（三级归属）
   C. 已删除项确不存在：旧配置弹窗（.config-dialog-body-scroll）、独立「提示词」页签
-     （注：LLM「设默认」已于 2026-09-15 作为新能力回归，见 B1，不再属「已删除项」）
   D. 重启持久化复核：独立 work-dir（含 .git）启动 GUI → 点击「自动提交」开关保存 history.enabled
      → **重启 GUI 后重新打开页面回读**（开关状态）
 
@@ -198,23 +198,11 @@ t.dispatchEvent(new Event('change',{bubbles:true}));return 'ok';""" % (idx, json
 
 
 def llm_rows():
-    """LLM 列表行（含只读内置行）：[{text, btns}]。"""
+    """LLM 一览行（provider 清单）：[{text, btns}]。"""
     return ev(panel_js(".settings-page", """
 return [...R.querySelectorAll('tbody tr')].map(r=>({
   text:r.innerText.replace(/\\s+/g,' ').trim(),
   btns:[...r.querySelectorAll('button')].map(b=>b.textContent.trim())}));""")) or []
-
-
-def click_setdefault_in_row(root_sel, name):
-    """点击含 name 的行内「设为默认」按钮。"""
-    r = ev(panel_js(root_sel, """
-const rows=[...R.querySelectorAll('tbody tr')];
-const row=rows.find(x=>x.innerText.includes(%s));
-if(!row)return 'no-row';
-const b=[...row.querySelectorAll('button')].find(x=>x.textContent.trim()==='设为默认');
-if(!b)return 'no-btn';b.click();return 'ok';""" % json.dumps(name)))
-    time.sleep(1.0)
-    return r == "ok"
 
 
 def find_switch_by_label(root_sel, label):
@@ -330,10 +318,21 @@ def case_a2_context_memory():
                      "编辑总结提示词（压缩时使用）"):
             if want not in txt:
                 raise TestError("上下文管理缺文案：%r" % want)
-        # 总结提示词默认值非空
-        tas = panel_textareas(".project-config-panel")
-        if not tas or len((tas[-1] or "").strip()) < 8:
-            raise TestError("总结提示词默认值疑似为空：%r" % (tas[-1:],))
+        # 总结提示词：只读展示已移除 → 改「弹框内查看」（2026-09-26）：点「编辑」开弹框，内容非空
+        r = ev(panel_js(".project-config-panel", """
+const hs=[...R.querySelectorAll('.prompt-editor-header')];
+const h=hs[0];
+const b=h?[...h.querySelectorAll('.b-btn')].find(x=>/编辑|Edit/i.test(x.textContent.trim())):null;
+if(!b)return 'no-btn';b.dispatchEvent(new MouseEvent('click',{bubbles:true}));return 'ok';"""))
+        if r != "ok":
+            raise TestError("总结提示词缺「编辑」按钮：%r" % r)
+        time.sleep(0.6)
+        if not wait_vis(".text-edit-body"):
+            raise TestError("总结提示词编辑弹框未打开")
+        val = dlg_textarea_value() or ""
+        if len(val.strip()) < 8:
+            raise TestError("总结提示词弹框内容疑似为空：%r" % (val[:40],))
+        close_stray_dialogs()
         # 记忆库开关：关 → 子项全部禁用（联动）
         st = find_switch_by_label(".project-config-panel", "启用记忆库")
         if not st:
@@ -474,62 +473,54 @@ def case_a4_index_vfts():
 # ══════════════════════════════════════════════════════════
 
 def case_b1_llm_list_params():
-    """B1 LLM 列表/参数：页签/表头文字 + 内置只读行（**仅**「系统默认（启动参数）」）+「设为默认」落库
+    """B1 LLM 配置：2 页签（一览 / 默认模型）+ 一览表头文字 + 默认模型（主对话 + 5 子系统）
     + 添加弹窗字段文字/位置/一行两列 + 保存落库。
 
-    2026-09-15 产品改动：LLM 列表新增只读内置行（echo=系统内置、启动参数=系统默认（启动参数））
-    与「设为默认」入口（写 usr defaultLLM = provider name）→ 原「应无设默认」断言已过时，
-    改为正向断言（只读行无编辑/删除 + 设为默认点击后 defaultLLM 落库 + 行内「默认」标记）。
-    **D-30（2026-09-22 拍板，2026-09-23 落地）**：内置 provider（echo）降为 router 内置兜底
-    → 「系统内置 / echo」只读行**不再存在**，本用例改为正向断言「无系统内置行 + 系统默认行可设默认」。
+    2026-09-26 用户口径：LLM 页改 **2 页签** —— ① 一览（provider 清单，操作列仅编辑/删除）；
+    ② 默认模型（**主对话** + 5 个子系统下拉）。原「只读内置行（系统默认（启动参数））+
+    「设为默认」」**整体移除**（`gui.system.builtins` 不再下发 `builtinLLMs`；聊天输入框选择器
+    只列 usr providers）。
     """
     name = "ui-llm-%d" % int(time.time())
     snap = _h.snapshot_user_config(c, ["llms", "defaultLLM"])
     try:
         open_page("settings-llm", ".settings-page")
         shot("b1-llm.png")
-        # 「用户/系统」页签已随「系统 LLM 展示」一并移除（llms 以 usr 配置为准）→ 断言无页签
+        # ① 2 页签
         labels = tab_labels(".settings-page")
-        if labels:
-            raise TestError("LLM 页应已移除页签（用户/系统），实际：%r" % labels)
+        if labels != ["一览", "默认模型"]:
+            raise TestError("LLM 页签应为 ['一览','默认模型']，实际：%r" % labels)
+        # ② 一览：表头/工具栏；不得再有只读行与「设为默认」
         txt = panel_text(".settings-page")
         for want in ("添加 LLM", "名称", "模型", "最大工具迭代", "操作"):
             if want not in txt:
-                raise TestError("LLM 页缺文字 %r" % want)
-        # 内置只读行 + 「设为默认」（当前默认行会隐藏「设为默认」→ 断言对两种态都成立）
-        # D-30（2026-09-22 拍板）：内置 provider（echo）**降为 router 内置兜底、不再列出**
-        # → 只读行**仅**「系统默认（启动参数）」（kind=default）；原「系统内置 / echo」断言作废。
-        rows = llm_rows()
-        builtin_row = next((r for r in rows if "系统内置" in r["text"]), None)
-        sysdef_row = next((r for r in rows if "系统默认（启动参数）" in r["text"]), None)
-        if builtin_row is not None:
-            raise TestError("LLM 列表不应再有「系统内置」只读行（D-30：echo 降为 router 兜底）：%r"
-                            % [r["text"] for r in rows])
-        if not sysdef_row:
-            raise TestError("LLM 列表缺「系统默认（启动参数）」只读行：%r" % [r["text"] for r in rows])
-        if "编辑" in sysdef_row["btns"] or "删除" in sysdef_row["btns"]:
-            raise TestError("只读内置行不应有编辑/删除：%r" % sysdef_row)
-        # 「设为默认」：点「系统默认（启动参数）」行 → defaultLLM 落库 = ""（不指定 provider → exe flags）
-        if "设为默认" not in sysdef_row["btns"]:
-            if "默认" not in sysdef_row["text"]:
-                raise TestError("「系统默认（启动参数）」行既非默认、也无「设为默认」：%r" % sysdef_row)
-        elif not click_setdefault_in_row(".settings-page", "系统默认（启动参数）"):
-            raise TestError("点击「系统默认（启动参数）」行「设为默认」失败")
-        if ucfg().get("defaultLLM") != "":
-            raise TestError("设为「系统默认（启动参数）」未落库：defaultLLM=%r" % (ucfg().get("defaultLLM"),))
-        hit = next((r["text"] for r in llm_rows() if "系统默认（启动参数）" in r["text"]), "")
-        if "默认" not in hit:
-            raise TestError("设为默认后该行未标「默认」：%r" % hit)
+                raise TestError("LLM 一览页缺文字 %r" % want)
+        if "系统默认（启动参数）" in txt or "设为默认" in txt or "系统内置" in txt:
+            raise TestError("LLM 一览页不应再有只读行/设为默认：%r" % txt)
+        for r in llm_rows():
+            if set(r["btns"]) - {"编辑", "删除"}:
+                raise TestError("一览行操作应仅编辑/删除：%r" % r)
+        # ③ 默认模型页签：主对话 + 5 子系统
+        click_tab("默认模型", ".settings-page")
+        dtxt = panel_text(".settings-page")
+        for want in ("主对话", "提示词优化", "记忆系统", "压缩上下文", "分析系统", "决策系统"):
+            if want not in dtxt:
+                raise TestError("默认模型页缺 %r（实际 %r）" % (want, dtxt))
+        # 回到一览，继续弹窗/保存断言
+        click_tab("一览", ".settings-page")
         # 添加弹窗
         c.mq_emit("config-add-llm")
         if not wait_vis(".dialog-shell"):
             raise TestError("LLM 编辑弹窗未打开")
         time.sleep(0.5)
         labs = dialog_labels()
+        # 2026-09-26：去掉「推理强度」label（下拉保留）→ 从字段清单移除该项
         for want in ("名称", "模型", "接口地址", "API 密钥", "温度", "最大输出 Token",
-                     "上下文窗口", "思考模式", "推理强度", "最大工具迭代"):
+                     "上下文窗口", "模型能力", "思考模式", "最大工具迭代"):
             if want not in labs:
                 raise TestError("LLM 弹窗缺字段 %r（实际 %r）" % (want, labs))
+        if "推理强度" in labs:
+            raise TestError("LLM 弹窗不应再有「推理强度」label：%r" % (labs,))
         # 位置：弹窗在视口内
         assert_in_viewport(".dialog-shell", "LLM 弹窗")
         # 位置：一行两列（前两个 form-item-12 同 top、左右并列）
@@ -573,7 +564,11 @@ def _dialog_has_label(cands):
 
 
 def case_b2_mcp_transport_branching():
-    """B2 MCP：transport 与 url / runtime+args 从属显示（模拟 Select 切换）+ 保存 runtime/args 回读。"""
+    """B2 MCP：transport 与 url / runtime+args 从属显示（模拟 Select 切换）+ 保存 runtime/args 回读。
+
+    2026-09-26 起弹窗拆「基本信息 / 运行信息」两页签 → 字段断言按页签分别进行
+    （Tabs 只渲染当前页签 → 先切页签再断言/填表；保存载荷仍为两页全量）。
+    """
     name = "ui_mcp_%d" % int(time.time())
     snap = _h.snapshot_user_config(c, ["mcpServers"])
     try:
@@ -584,26 +579,39 @@ def case_b2_mcp_transport_branching():
         if not wait_vis(".dialog-shell"):
             raise TestError("MCP 编辑弹窗未打开")
         time.sleep(0.5)
+        # 两页签头就位
+        if tab_labels(".dialog-shell") != ["基本信息", "运行信息"]:
+            raise TestError("MCP 弹窗页签应为 ['基本信息','运行信息']，实际 %r" % (tab_labels(".dialog-shell"),))
         shot("b2-mcp.png")
         assert_in_viewport(".dialog-shell", "MCP 弹窗")
-        # auto（默认）：url 与 runtime/args 均显示
-        if not (_dialog_has_label(["服务地址"]) and _dialog_has_label(["运行时"]) and _dialog_has_label(["启动参数"])):
-            raise TestError("MCP 弹窗 auto 态应同时显示 url 与 runtime/args")
-        # stdio：url 隐藏，runtime/runtime+args 显示
+        # 默认（基本信息）：auto 态显示 url
+        if not _dialog_has_label(["服务地址"]):
+            raise TestError("MCP 弹窗 auto 态基本信息页应显示 url")
+        # 运行信息：auto 态显示 runtime/args
+        click_tab("运行信息", ".dialog-shell")
+        if not (_dialog_has_label(["运行时"]) and _dialog_has_label(["启动参数"])):
+            raise TestError("MCP 弹窗 auto 态运行信息页应显示 runtime/args")
+        # stdio：url 隐藏（基本信息页），runtime/args 显示（运行信息页）
+        click_tab("基本信息", ".dialog-shell")
         _set_dialog_select("stdio")
         if _dialog_has_label(["服务地址"]):
             raise TestError("transport=stdio 时 url 字段应隐藏")
+        click_tab("运行信息", ".dialog-shell")
         if not (_dialog_has_label(["运行时"]) and _dialog_has_label(["启动参数"])):
             raise TestError("transport=stdio 时应显示 runtime/args")
-        # http：url 显示，runtime/args 隐藏
+        # http：url 显示（基本信息页），runtime/args 隐藏（运行信息页）
+        click_tab("基本信息", ".dialog-shell")
         _set_dialog_select("http")
         if not _dialog_has_label(["服务地址"]):
             raise TestError("transport=http 时应显示 url")
+        click_tab("运行信息", ".dialog-shell")
         if _dialog_has_label(["运行时"]) or _dialog_has_label(["启动参数"]):
             raise TestError("transport=http 时 runtime/args 应隐藏")
-        # auto 保存 runtime+args
+        # auto 保存 runtime+args（名称/transport 在基本信息页；runtime/args 在运行信息页）
+        click_tab("基本信息", ".dialog-shell")
         _set_dialog_select("auto")
         fill_dialog(["名称", "Name"], name)
+        click_tab("运行信息", ".dialog-shell")
         fill_dialog(["运行时", "Runtime"], sys.executable or "python")
         fill_dialog(["启动参数", "Args"], "--demo\nvalue 1")
         c.mq_emit("edit-mcp-save")
@@ -678,10 +686,11 @@ def case_c_removed_items():
 
 
 # ══════════════════════════════════════════════════════════
-# E. 记忆库类别增删（本波重点：41 I-66）
+# E. 记忆库类别增删 + 提示词编辑（本波重点：41 I-66；2026-09-26 双编辑入口）
 #    E1 「新增类别」→ 出现在清单 + 内容编辑**弹框**（TextEditDialog）保存即关（回读 data-memory-read）
-#    E2 行内【编辑】→ 弹框内容正确/取消不落库 + 「删除类别」仅自定义可见 + 二次确认后消失
+#    E2 行内【编辑内容】→ 弹框内容正确/取消不落库 + 「删除类别」仅自定义可见 + 二次确认后消失
 #    E3 data-memory-delete 直调 → {ok,id} + 广播 data-memory-refresh(op=delete)（贴原始 payload）
+#    E4 行内【编辑提示词】→ 弹框（内置默认回填/来源提示/保存落 prj memory.prompt.<类别>/恢复默认回落）
 #    F  设置页无「MCPServerConfig」死项（源：I-64 已删死结构）
 # ══════════════════════════════════════════════════════════
 
@@ -702,14 +711,15 @@ def poll(fn, max_wait=8, interval=0.3):
 
 
 def mem_rows():
-    """记忆类别表行：[{cat, hasEdit, hasDel}]。"""
+    """记忆类别表行：[{cat, hasPrompt, hasEdit, hasDel}]（2026-09-26：每行两个编辑入口）。"""
     return ev(panel_js(".project-config-panel", """
 const rows=[...R.querySelectorAll('.mem-table tbody tr')];
 return rows.map(r=>{const tds=[...r.querySelectorAll('td')];
   const sp=tds[0]?tds[0].querySelector('span'):null;
   const cat=sp?sp.textContent.trim():(tds[0]?tds[0].innerText.trim():'');
   const btns=[...r.querySelectorAll('button')].map(b=>b.textContent.trim());
-  return {cat:cat, hasEdit:btns.includes('编辑'), hasDel:btns.includes('删除')};});""")) or []
+  return {cat:cat, hasPrompt:btns.includes('编辑提示词'),
+          hasEdit:btns.includes('编辑内容'), hasDel:btns.includes('删除')};});""")) or []
 
 
 def mem_ensure_ui(name):
@@ -747,6 +757,16 @@ const row=rows.find(r=>{const td=r.querySelector('td');const sp=td?td.querySelec
 if(!row)return 'no-row';
 const b=[...row.querySelectorAll('button')].find(x=>x.textContent.trim()===%s);
 if(!b)return 'no-btn';b.click();return 'ok';""" % (json.dumps(name), json.dumps(label))))
+    return r == "ok"
+
+
+def click_userpref_btn(label):
+    """点「用户偏好」行（唯一带 `.mem-token` 的 .switch-row）文字为 label 的按钮；成功 → True。"""
+    r = ev(panel_js(".project-config-panel", """
+const row=[...R.querySelectorAll('.switch-row')].find(x=>x.querySelector('.mem-token'));
+if(!row)return 'no-row';
+const b=[...row.querySelectorAll('button')].find(x=>x.textContent.trim()===%s);
+if(!b)return 'no-btn';b.click();return 'ok';""" % json.dumps(label)))
     return r == "ok"
 
 
@@ -816,10 +836,21 @@ def dlg_set_textarea(value):
 
 
 def dlg_btn(label):
-    """点可见内容编辑弹框内文字为 label 的可见按钮（保存 / 取消 / 优化）。"""
+    """点可见内容编辑弹框内文字为 label 的可见按钮（保存 / 取消 / 优化 / 恢复默认）。"""
     return ev(dlg_js("const b=[...R.querySelectorAll('button')].filter(x=>x.getBoundingClientRect().width>0)"
                      ".find(x=>x.textContent.trim()===%s);if(!b)return 'no-btn';b.click();return 'ok';"
                      % json.dumps(label)))
+
+
+def dlg_has_btn(label):
+    """可见文本编辑弹框内是否存在文字为 label 的可见按钮（**不点击**）。"""
+    return ev(dlg_js("return [...R.querySelectorAll('button')].some(x=>x.getBoundingClientRect().width>0"
+                     "&&x.textContent.trim()===%s);" % json.dumps(label))) is True
+
+
+def dlg_hint():
+    """可见文本编辑弹框内的来源/口径提示（`.text-edit-hint`；无 → None）。"""
+    return ev(dlg_js("const h=R.querySelector('.text-edit-hint');return h?h.textContent.trim():null;"))
 
 
 def close_stray_dialogs():
@@ -860,6 +891,9 @@ def case_e1_memory_add_and_edit():
         row = next((r for r in mem_rows() if r["cat"] == name), None)
         if not row:
             raise TestError("新类别未出现在清单")
+        # 2026-09-26：每类别行并存两个编辑入口（提示词 / 内容）
+        if not (row["hasPrompt"] and row["hasEdit"]):
+            raise TestError("类别行须并存【编辑提示词】与【编辑内容】：%r" % row)
         # 弹框已开（标题 = 类别名 → 证明开的是该类别的内容编辑弹框）
         if not wait_vis(TE_DLG, 10):
             raise TestError("新增后未弹出内容编辑弹框（TextEditDialog）")
@@ -906,24 +940,28 @@ def case_e2_memory_delete_ui():
         open_page("settings-project", ".project-config-panel")
         click_tab("上下文管理", ".project-config-panel")
         rows = mem_rows()
-        # 预置类别：有编辑、无删除
+        # 预置类别：两个编辑入口齐备、无删除
         for p in PRESET_MEMORY_CATEGORIES:
             row = next((r for r in rows if r["cat"] == p), None)
             if not row:
                 raise TestError("预置类别缺失：%r" % p)
+            if not (row["hasPrompt"] and row["hasEdit"]):
+                raise TestError("预置类别 %r 缺编辑入口：%r" % (p, row))
             if row["hasDel"]:
                 raise TestError("预置类别 %r 不应有删除入口" % p)
-        # 自定义类别：有删除
+        # 自定义类别：两个编辑入口 + 删除
         crow = next((r for r in rows if r["cat"] == name), None)
         if not crow:
             raise TestError("自定义类别 %r 未出现（清单 %r）" % (name, [r["cat"] for r in rows]))
+        if not (crow["hasPrompt"] and crow["hasEdit"]):
+            raise TestError("自定义类别 %r 缺编辑入口：%r" % (name, crow))
         if not crow["hasDel"]:
             raise TestError("自定义类别 %r 应有删除入口" % name)
-        # 弹框口径复核：点该行【编辑】→ 弹框（标题 = 类别名 + 内容 = 已存内容）→【取消】不落库
-        if not click_row_btn(name, "编辑"):
-            raise TestError("类别 %r 行缺【编辑】按钮" % name)
+        # 弹框口径复核：点该行【编辑内容】→ 弹框（标题 = 类别名 + 内容 = 已存内容）→【取消】不落库
+        if not click_row_btn(name, "编辑内容"):
+            raise TestError("类别 %r 行缺【编辑内容】按钮" % name)
         if not wait_vis(TE_DLG, 10):
-            raise TestError("点【编辑】未弹出内容编辑弹框（TextEditDialog）")
+            raise TestError("点【编辑内容】未弹出内容编辑弹框（TextEditDialog）")
         title = dlg_title()
         if title != name:
             raise TestError("内容编辑弹框标题=%r，期望类别名 %r" % (title, name))
@@ -977,6 +1015,131 @@ def case_e3_memory_delete_datamsg():
             raise TestError("预置类别删除报错信息异常：%s" % e)
 
 
+def case_e4_memory_prompt_edit():
+    """E4 记忆类别沉淀提示词（2026-09-26 用户口径：每类别「提示词编辑」+「内容编辑」两个弹框）：
+
+    行内【编辑提示词】→ 弹框（复用 TextEditDialog）
+      · 未自定义 → 回填**内置默认** + 来源提示「当前为内置默认」、**无**【恢复默认】；
+      → 改内容 →【保存】→ 弹框自动关闭 → 回读 prj `memory.prompt.<类别名>` == 自定义值；
+      → 再次打开 → 来源提示「当前为自定义」+【恢复默认】+ 回填自定义值；
+      →【恢复默认】→ 弹框关闭 → **prj 键被清除**（回落内置默认）→ 再开显示「当前为内置默认」。
+
+    「用户偏好」（唯一 user 级类别，用户口径明示「包括用户偏好」）同口径，落 **usr 自由键
+    `memory_prompts`**（JSON 对象字符串）；恢复默认 → usr 键被清除。
+    """
+    cat = PRESET_MEMORY_CATEGORIES[0]  # 项目概要（预置项目级类别，恒在清单）
+    key = "memory.prompt." + cat
+    sentinel = "L4-mem-prompt-%d" % int(time.time())
+    snap = _h.snapshot_prj_config(c, ["memory.enabled", key])
+    with _h.user_config_guard(c, ["memory_prompts"]):
+        try:
+            close_stray_dialogs()
+            prj_save("memory.enabled", "true")
+            open_page("settings-project", ".project-config-panel")
+            click_tab("上下文管理", ".project-config-panel")
+            # ① 行内两个编辑入口并存
+            row = next((r for r in mem_rows() if r["cat"] == cat), None)
+            if not row:
+                raise TestError("预置类别 %r 未渲染" % cat)
+            if not (row["hasPrompt"] and row["hasEdit"]):
+                raise TestError("类别行须并存【编辑提示词】/【编辑内容】：%r" % row)
+            # ② 打开提示词弹框：未自定义 → 回填内置默认 + 来源提示「内置默认」+ 无【恢复默认】
+            if not click_row_btn(cat, "编辑提示词"):
+                raise TestError("点击【编辑提示词】失败（行/按钮缺失）")
+            if not wait_vis(TE_DLG, 10):
+                raise TestError("提示词编辑弹框未打开（TextEditDialog）")
+            hint0 = dlg_hint() or ""
+            if "内置默认" not in hint0:
+                raise TestError("未自定义应显示「当前为内置默认」来源提示：%r" % hint0)
+            if not (dlg_textarea_value() or "").strip():
+                raise TestError("未自定义应回填内置默认提示词（内容为空）")
+            if dlg_has_btn("恢复默认"):
+                raise TestError("未自定义不应显示【恢复默认】（无可清除项）")
+            # ③ 改内容 → 保存 → 弹框自动关闭
+            if dlg_set_textarea(sentinel) != "ok":
+                raise TestError("写入提示词弹框失败")
+            if dlg_btn("保存") != "ok":
+                raise TestError("提示词弹框缺【保存】按钮")
+            if not wait_gone(TE_DLG, 10):
+                raise TestError("保存后提示词弹框未自动关闭")
+            # ④ 回读：prj `memory.prompt.<类别名>` == 自定义值
+            got = (c.req("data-prj-config-load", {"id": key}) or {}).get("data")
+            if got != sentinel:
+                raise TestError("自定义提示词未落库 prj 键：got=%r want=%r" % (got, sentinel))
+            print("    [E4] prj %s = %r" % (key, got))
+            # ⑤ 再次打开：来源提示「自定义」+【恢复默认】+ 内容 = 自定义值
+            if not click_row_btn(cat, "编辑提示词"):
+                raise TestError("再次点击【编辑提示词】失败")
+            if not wait_vis(TE_DLG, 10):
+                raise TestError("提示词弹框未再次打开")
+            hint1 = dlg_hint() or ""
+            if "自定义" not in hint1:
+                raise TestError("已自定义应显示「当前为自定义」来源提示：%r" % hint1)
+            if (dlg_textarea_value() or "") != sentinel:
+                raise TestError("已自定义应回填自定义值：%r" % dlg_textarea_value())
+            if not dlg_has_btn("恢复默认"):
+                raise TestError("已自定义须显示【恢复默认】按钮")
+            # ⑥ 恢复默认 → 弹框关闭 → prj 键被清除（回落内置默认）
+            if dlg_btn("恢复默认") != "ok":
+                raise TestError("点击【恢复默认】失败")
+            if not wait_gone(TE_DLG, 10):
+                raise TestError("恢复默认后提示词弹框未关闭")
+            if not poll(lambda: ((c.req("data-prj-config-load", {"id": key}) or {}).get("data") or "") == "", 8):
+                raise TestError("恢复默认后 prj 键未清除：%r"
+                                % (c.req("data-prj-config-load", {"id": key})))
+            # ⑦ 再开 → 回落内置默认（来源提示 + 内容非空 + 无【恢复默认】）
+            if not click_row_btn(cat, "编辑提示词"):
+                raise TestError("恢复默认后【编辑提示词】不可用")
+            if not wait_vis(TE_DLG, 10):
+                raise TestError("恢复默认后提示词弹框未打开")
+            hint2 = dlg_hint() or ""
+            if "内置默认" not in hint2:
+                raise TestError("恢复默认后应回落「当前为内置默认」：%r" % hint2)
+            if not (dlg_textarea_value() or "").strip():
+                raise TestError("恢复默认后应回填内置默认提示词")
+            shot("e4-memory-prompt.png")
+            # 收尾：关闭本弹框（否则 ⑧ 的用户偏好弹框会被 dlg_* 助手取到「首个」旧弹框）
+            if dlg_btn("取消") != "ok" or not wait_gone(TE_DLG, 6):
+                raise TestError("关闭项目类别提示词弹框失败")
+
+            # ⑧ 「用户偏好」（唯一 user 级）同口径 → 落 usr 自由键 `memory_prompts`
+            up_key = "memory_prompts"
+            c.req("data-user-config-delete", {"id": up_key})  # 归零：确保从「未自定义」起步
+            time.sleep(0.8)
+            if not click_userpref_btn("编辑提示词"):
+                raise TestError("用户偏好行缺【编辑提示词】入口")
+            if not wait_vis(TE_DLG, 10):
+                raise TestError("用户偏好提示词弹框未打开")
+            if "内置默认" not in (dlg_hint() or ""):
+                raise TestError("用户偏好未自定义应显示「当前为内置默认」：%r" % dlg_hint())
+            if dlg_set_textarea(sentinel) != "ok" or dlg_btn("保存") != "ok":
+                raise TestError("用户偏好提示词保存失败")
+            if not wait_gone(TE_DLG, 10):
+                raise TestError("用户偏好提示词弹框未自动关闭")
+            raw = ((c.req("data-user-config-load", {}) or {}).get("data") or {}).get(up_key)
+            if not isinstance(raw, str) or sentinel not in raw:
+                raise TestError("用户偏好提示词未落 usr 自由键：%r" % (raw,))
+            print("    [E4] usr %s = %r" % (up_key, raw))
+            # 恢复默认 → usr 键被清除（回落内置默认）
+            if not click_userpref_btn("编辑提示词"):
+                raise TestError("用户偏好【编辑提示词】再次打开失败")
+            if not wait_vis(TE_DLG, 10):
+                raise TestError("用户偏好提示词弹框未再次打开")
+            if not dlg_has_btn("恢复默认"):
+                raise TestError("用户偏好已自定义须显示【恢复默认】")
+            if dlg_btn("恢复默认") != "ok":
+                raise TestError("用户偏好【恢复默认】点击失败")
+            if not wait_gone(TE_DLG, 10):
+                raise TestError("用户偏好恢复默认后弹框未关闭")
+            if not poll(lambda: (((c.req("data-user-config-load", {}) or {}).get("data") or {}).get(up_key) or "") == "", 8):
+                raise TestError("用户偏好恢复默认后 usr 键未清除：%r"
+                                % ((c.req("data-user-config-load", {}) or {}).get("data") or {}).get(up_key))
+            shot("e4-memory-userpref-prompt.png")
+        finally:
+            close_stray_dialogs()
+            _h.restore_prj_config(c, snap)
+
+
 def case_f_no_mcp_server_config_dead():
     """F 设置页不再出现「MCPServerConfig」死项（I-64 已删死结构）。"""
     for kind, root in (("settings-mcp", ".settings-page"), ("settings-llm", ".settings-page")):
@@ -987,15 +1150,13 @@ def case_f_no_mcp_server_config_dead():
 
 
 # ══════════════════════════════════════════════════════════
-# G. 本波新改动：恢复默认（原语/场景）+ 知识库右键无「复制到项目级」
+# G. 本波新改动：恢复默认（**仅原语**；场景已摘除，2026-09-26）+ 知识库右键无「复制到项目级」
 #    G1 原语面板：app 级**无**「恢复默认」；project 级**有**且点击回填为草稿（dirty）
 #    G2 知识库文件右键菜单：仅 重命名/删除（**无**「复制到项目级」）
-#    G3 场景编辑对话框：project 级「恢复默认」可点击并回填为上一级（user）值；
-#       app 级无「编辑」入口（故无对话框 → 无「恢复默认」）
+#    G3 **已摘除（2026-09-26 用户口径：场景不需要回填/恢复默认）** —— 原「场景编辑对话框
+#       project 级『恢复默认』回填 user 级」用例连同辅助函数一并删除（场景 id 全局唯一 →
+#       「上一级同名场景」不存在，该入口已从 ScenarioEditDialog 整体移除，见 37 SCEN-008）
 # ══════════════════════════════════════════════════════════
-
-SD_ID = "default"
-SD_PROJ_NAME = "PROJ-SD-PROBE"
 
 
 def _kb():
@@ -1071,16 +1232,6 @@ def _wait_prim_rd_enabled(kb, max_wait=10):
     return None
 
 
-def _wait_sd_rd_enabled(max_wait=10):
-    end = time.time() + max_wait
-    while time.time() < end:
-        b = next((x for x in (_sd_btns() or []) if x["t"] == "恢复默认"), None)
-        if b and b["vis"] and not b["dis"]:
-            return b
-        time.sleep(0.3)
-    return None
-
-
 def _prim_click_restore_default(kb):
     return kb.js("(function(){const P=Array.from(document.querySelectorAll('.prim-panel')).find(n=>n.offsetParent!==null);"
                  "if(!P)return false;const f=P.querySelector('.prim-footer');if(!f)return false;"
@@ -1088,45 +1239,14 @@ def _prim_click_restore_default(kb):
                  "if(!b)return false;b.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true;})()")
 
 
-def _sd_btns():
-    return ev("(function(){const R=document.querySelector('.edit-dialog-body');if(!R)return null;"
-              "const T=R.querySelector('.toolbar-right');if(!T)return null;"
-              "return Array.from(T.querySelectorAll('button')).map(b=>({t:b.textContent.trim(),dis:!!b.disabled,"
-              "vis:b.getBoundingClientRect().width>0}));})()")
-
-
-def _sd_name():
-    # 场景名输入框：Input 组件根即 <input class="b-input title-input">（无内层 input）
-    return ev("(function(){const R=document.querySelector('.edit-dialog-body');if(!R)return null;"
-              "const i=R.querySelector('.title-input')||R.querySelector('input.b-input');return i?i.value:null;})()")
-
-
-def _sd_click_restore_default():
-    return ev("(function(){const R=document.querySelector('.edit-dialog-body');if(!R)return false;"
-              "const T=R.querySelector('.toolbar-right');if(!T)return false;"
-              "const b=Array.from(T.querySelectorAll('button')).find(x=>x.textContent.trim()==='恢复默认');"
-              "if(!b)return false;b.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true;})()")
-
-
-def _sd_close():
-    return ev("(function(){const s=[...document.querySelectorAll('.dialog-shell')]"
-              ".find(e=>e.querySelector('.edit-dialog-body'));if(!s)return false;"
-              "const b=s.querySelector('.dialog-btn-close');if(!b)return false;"
-              "b.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true;})()")
-
-
-def _scenario_rows():
-    r = c.req("data-scenario-list", {})
-    lst = r.get("list") if isinstance(r, dict) else None
-    return lst if isinstance(lst, list) else []
-
-
 def case_g_restore_default_and_ctxmenu():
-    """G 本波新改动：恢复默认按钮可见性/回填 + 知识库文件右键菜单项。"""
+    """G 本波新改动：**原语**「恢复默认」按钮可见性/回填 + 知识库文件右键菜单项。
+
+    注（2026-09-26，用户口径）：**场景**的「恢复默认/回填上一级」已整体摘除（场景 id
+    全局唯一 → 无上一级同名来源）→ 本用例只覆盖**原语**路径（[37 SCEN-008]）。
+    """
     kb = _kb()
     made_tool = False
-    made_sc = False
-    scn_snap = None  # 项目级 default 场景的原状快照（原本没有 → None）
     try:
         # 预置：项目级同名原语（与 app 级 file_find.tool.md 配对 → 有可回填的上一级）
         os.makedirs(PROJ_TOOL_DIR, exist_ok=True)
@@ -1190,80 +1310,8 @@ def case_g_restore_default_and_ctxmenu():
         if set(menu) != {"重命名", "删除"}:
             raise TestError("知识库文件右键菜单项不符（应仅 重命名/删除）：%r" % menu)
 
-        # ── G3：场景编辑对话框「恢复默认」 ──
-        # 3a 预置项目级同名场景（id=default，名称与 user 级不同 → 回填可观测）
-        # 快照-还原（51 §6-8）：先记住**已有**的项目级 default（若有）→ finally 原样写回；
-        # 原本没有 → finally 删除（本用例不得把探测场景留在项目级）。
-        scn_snap = next((s for s in _scenario_rows()
-                         if s.get("id") == SD_ID and s.get("level") == "project"), None)
-        c.req("data-scenario-save", {"data": {
-            "id": SD_ID, "name": SD_PROJ_NAME, "description": "", "level": "project",
-            "agents": [{"name": "主", "roleTag": "main", "isMain": True, "prompt": "p",
-                        "tools": [], "llmRef": "", "delegateCond": ""}]}})
-        made_sc = True
-        rows = _scenario_rows()
-        proj = next((s for s in rows if s.get("id") == SD_ID and s.get("level") == "project"), None)
-        usr = next((s for s in rows if s.get("id") == SD_ID and s.get("level") == "user"), None)
-        if not proj:
-            raise TestError("项目级场景未创建成功：%r" % [(s.get("id"), s.get("level")) for s in rows])
-        if not usr:
-            raise TestError("缺 user 级 default 场景（恢复默认的上一级来源）：%r"
-                            % [(s.get("id"), s.get("level")) for s in rows])
-        # 3b 打开场景页 → 项目级 default 的编辑对话框
-        c.mq_emit("preview-tab-open", {"kind": "scenario", "title": "场景"})
-        time.sleep(1.2)
-        opened = False
-        for _ in range(6):
-            c.mq_emit("scenario-edit-row", {"row": proj})
-            if wait_vis(".edit-dialog-body", 3):
-                opened = True
-                break
-            time.sleep(0.8)
-        if not opened:
-            raise TestError("场景编辑对话框未打开（project 级 default）")
-        time.sleep(0.6)
-        if not _wait_sd_rd_enabled(10):
-            raise TestError("project 级场景应显示可点击的「恢复默认」（user 级存在同名场景）：%r"
-                            % (_sd_btns() or []))
-        before = _sd_name()
-        if before != SD_PROJ_NAME:
-            raise TestError("场景标题初值=%r，期望 %r" % (before, SD_PROJ_NAME))
-        if not _sd_click_restore_default():
-            raise TestError("点击场景「恢复默认」失败")
-        if not poll(lambda: _sd_name() == usr.get("name"), 6):
-            raise TestError("场景「恢复默认」未回填为上一级值：got=%r want=%r"
-                            % (_sd_name(), usr.get("name")))
-        _sd_close()
-        time.sleep(0.5)
-        # 3c app 级：无「编辑」入口（→ 无法打开对话框 → 无「恢复默认」入口）
-        approws = ev("(function(){const R=[...document.querySelectorAll('.dialog-content,.scenario-content,.scenario-manager')]"
-                     ".find(e=>e.getBoundingClientRect().width>0);if(!R)return [];"
-                     "return [...R.querySelectorAll('tbody tr')].map(r=>({txt:r.innerText.replace(/\\s+/g,' ').trim(),"
-                     "btns:[...r.querySelectorAll('button')].map(b=>b.textContent.trim())}));})()") or []
-        app_hits = [r for r in approws if "系统" in r["txt"]]
-        if app_hits:
-            for r in app_hits:
-                if "编辑" in r["btns"]:
-                    raise TestError("app 级场景不应有「编辑」入口（否则可打开对话框）：%r" % r)
-        else:
-            print("    [note] G3c 无 app 级场景样本：app 级「无恢复默认」由 ScenarioEditDialog "
-                  "canRestoreDefault（upperLevels 为空）保证，本项未做 UI 断言")
+        # G3 已摘除（2026-09-26）：场景「恢复默认/回填上一级」入口整体移除 —— 见用例 docstring。
     finally:
-        try:
-            _sd_close()
-        except Exception:
-            pass
-        if made_sc:
-            try:
-                if scn_snap:
-                    # 原本就有项目级 default → 写回原内容（回原状）
-                    payload = dict(scn_snap)
-                    payload["level"] = "project"
-                    c.req("data-scenario-save", {"data": payload})
-                else:
-                    c.req("data-scenario-delete", {"id": SD_ID, "data": {"level": "project"}})
-            except Exception:
-                pass
         if made_tool:
             try:
                 if os.path.exists(PROJ_TOOL):
@@ -1429,8 +1477,9 @@ def main():
             ("B3 路径/工具链：Chrome 已探测 + 三级归属", case_b3_paths_toolchain),
             ("C 已删除项确不存在（旧弹窗 / 提示词页签）", case_c_removed_items),
             ("E1 记忆库「新增类别」→ 出现 + 内容编辑弹框保存即关（回读）", case_e1_memory_add_and_edit),
-            ("E2 行内【编辑】弹框（内容正确/取消不落库）+「删除类别」二次确认后消失", case_e2_memory_delete_ui),
+            ("E2 行内【编辑内容】弹框（内容正确/取消不落库）+「删除类别」二次确认后消失", case_e2_memory_delete_ui),
             ("E3 data-memory-delete → {ok,id} + data-memory-refresh(op=delete) 广播", case_e3_memory_delete_datamsg),
+            ("E4 记忆类别提示词编辑（内置默认回填/来源提示/保存落 prj/恢复默认回落）", case_e4_memory_prompt_edit),
             ("F 设置页无「MCPServerConfig」死项", case_f_no_mcp_server_config_dead),
             ("G 恢复默认（原语 app 无/project 有+回填）+ 知识库右键无「复制到项目级」", case_g_restore_default_and_ctxmenu),
             ("D「自动提交」开关点击保存 → 重启 GUI 回读", case_d_history_restart),

@@ -30,9 +30,9 @@ const STANDBY_KEYS = ['llm.analysis', 'llm.decision']
 // ═══════════════════════════════════════════════════════════════
 // ① 5 个下拉齐备 + 分组标题
 // ═══════════════════════════════════════════════════════════════
-test('① LLM 页含「子系统默认模型」分组与 5 个键（键名 + i18n 标签键）', () => {
+test('① LLM 页含「默认模型」分组与 5 个键（键名 + i18n 标签键）', () => {
   const src = read(PAGE)
-  assert.match(src, /config\.llm\.subsystemDefaults/, '须有分组标题 config.llm.subsystemDefaults')
+  assert.match(src, /config\.llm\.defaultsTitle/, '须有分组标题 config.llm.defaultsTitle')
   for (const k of KEYS) {
     assert.ok(src.includes(`'${k}'`), `须含键名 ${k}（usr 键，64 §3）`)
     assert.ok(
@@ -50,9 +50,9 @@ test('① LLM 页含「子系统默认模型」分组与 5 个键（键名 + i18
 // ═══════════════════════════════════════════════════════════════
 test('② 空选项可选并显示「跟随默认（{name}）」，写入空串即回落 defaultLLM', () => {
   const src = read(PAGE)
-  // 空选项文案含默认 provider 名（followLabel = config.llm.followDefault + 默认名/系统默认）。
+  // 空选项文案含默认 provider 名（followLabel = config.llm.followDefault + 默认名/未设置）。
   assert.match(src, /config\.llm\.followDefault/, '空选项须用「跟随默认」文案')
-  assert.match(src, /defaultLLMKey\.value \|\| t\('config\.llm\.systemDefaultName'\)/, '文案须含默认 provider 名（缺省回落「系统默认」）')
+  assert.match(src, /defaultLLMKey\.value \|\| t\('config\.llm\.unset'\)/, '文案须含默认 provider 名（缺省回落「未设置」）')
   assert.match(src, /:placeholder="followLabel"/, '空选项须绑定 followLabel')
   assert.match(src, /placeholder-selectable/, '空选项须可被选中（否则无法重置为「跟随默认」）')
   // 写：空串原样落库（键已注册 llmref；空串 = 回落 defaultLLM，SL-C3）。
@@ -128,7 +128,8 @@ test('⑥ Select 组件支持可选空选项（placeholderSelectable，缺省 fa
 // ═══════════════════════════════════════════════════════════════
 test('⑦ i18n：子系统默认模型词条双语齐备', () => {
   const need = [
-    'subsystemDefaults', 'subsystemHint', 'followDefault',
+    'tabList', 'tabDefaults', 'defaultsTitle', 'mainDefault', 'mainDefaultUnset', 'unset',
+    'subsystemHint', 'followDefault',
     'promptOptimise', 'memory', 'compress', 'analysis', 'decision',
     'standby', 'standbyHint',
   ]
@@ -140,11 +141,36 @@ test('⑦ i18n：子系统默认模型词条双语齐备', () => {
     assert.ok(llm.followDefault.includes('{name}'), `${loc} followDefault 须含 {name} 占位符`)
   }
   const zh = readLocale('zh-CN', 'config.json').llm
-  assert.equal(zh.subsystemDefaults, '子系统默认模型', 'zh 分组标题须逐字一致')
+  assert.equal(zh.tabList, '一览', 'zh 页签名须逐字一致')
+  assert.equal(zh.tabDefaults, '默认模型')
+  assert.equal(zh.defaultsTitle, '默认模型', 'zh 分组标题须逐字一致')
+  assert.equal(zh.mainDefault, '主对话')
   assert.equal(zh.promptOptimise, '提示词优化')
   assert.equal(zh.memory, '记忆系统')
   assert.equal(zh.compress, '压缩上下文')
   assert.equal(zh.analysis, '分析系统')
   assert.equal(zh.decision, '决策系统')
   assert.equal(zh.standby, '备用')
+})
+
+// ═══════════════════════════════════════════════════════════════
+// ⑧ 2 页签（一览 / 默认模型）+ 主对话下拉 + 一览不再有只读行/设为默认
+//    （2026-09-26 用户口径：原「只读内置行 + 设为默认」整体移除）
+// ═══════════════════════════════════════════════════════════════
+test('⑧ 页签：一览（provider 清单）/ 默认模型（主对话 + 子系统）；无只读行/设为默认', () => {
+  const src = read(PAGE)
+  // 2 页签（由 tabs 计算属性渲染，走 Tabs 组件）
+  assert.match(src, /<Tabs :tabs="tabs" v-model="activeTab"/, '须用 Tabs 组件承载 2 页签')
+  assert.match(src, /name: 'list'/, '须有「一览」页签')
+  assert.match(src, /name: 'defaults'/, '须有「默认模型」页签')
+  // 主对话默认下拉 = defaultLLM（provider name），与子系统下拉并列
+  assert.match(src, /config\.llm\.mainDefault/, '须有「主对话」下拉标签')
+  assert.match(src, /:model-value="mainValue"/, '主对话下拉须绑定 mainValue')
+  assert.match(src, /function onMainChange\(value\)/, '主对话下拉须有写回处理')
+  assert.match(src, /saveUserConfig\(\{ defaultLLM: value \}\)/, '主对话默认须写 usr defaultLLM')
+  // 一览：仅编辑/删除；不得再有只读行与「设为默认」
+  assert.match(src, /:data="llmRows"/, '一览表数据须为 llmRows（仅 usr providers）')
+  assert.doesNotMatch(src, /设为默认/, '不得再有「设为默认」按钮（并入默认模型页签）')
+  assert.doesNotMatch(src, /_readonly/, '不得再有只读行标记')
+  assert.doesNotMatch(src, /getSystemBuiltins/, '不再读 gui.system.builtins 的 LLM 条目')
 })

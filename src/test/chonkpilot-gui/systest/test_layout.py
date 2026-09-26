@@ -1,8 +1,9 @@
 """回归测试：窗口布局组（51-FP与测试映射「窗口布局」10 项）。
 
-FP 目标默认尺寸：filetree 400 / chat 600 / task 500 / tasktree(session-tree) 400。
-窗口 1280 时 applyLayout clamp：chat=min(600, vw*45%)=576、filetree 受 CodeView min 300 约束≈392，
-故断言用合理区间。
+默认尺寸**以实现为准**（[31-窗口与布局 §:93 订正 2026-09-26]：默认值/上下限由另一轨调整，
+文档只记"存在 min/max 约束 + 恢复时 clamp"）→ 当前 `MainLayout.vue`：`filetreeWidth=320` ·
+`chatWidth=520` · `taskHeight=500` · `sessiontreeWidth=400`。
+窗口 1280 时 applyLayout 仍会 clamp（chat = min(800, vw*45%)），故断言取小噪声区间。
 """
 import json
 import os
@@ -81,9 +82,9 @@ def main():
         def pane_w(sel):
             return J(gui, f"(document.querySelector('{sel}')?.getBoundingClientRect().width||0)")
 
-        # L2 filetree 宽度默认 400px（受窗口约束 ≈392）
+        # L2 filetree 宽度默认 320px（`MainLayout.vue`：filetreeWidth = ref(320)）
         fw = pane_w(".filetree-panel")
-        c.check("L2 filetree 宽度默认 400px", 380 <= fw <= 402, f"actual={fw}px vw={VW}")
+        c.check("L2 filetree 宽度默认 320px", 316 <= fw <= 324, f"actual={fw}px vw={VW}")
 
         # L3 filetree 宽度保存（gui.ui.save {layout}）
         try:
@@ -92,9 +93,9 @@ def main():
         except Exception as e:
             c.check("L3 filetree 宽度保存（gui.ui.save layout）", False, str(e))
 
-        # L4 chat 宽度默认 600px（窗口 45% 约束 ≈576）
+        # L4 chat 宽度默认 520px（`MainLayout.vue`：chatWidth = ref(520)；仍受 vw*45% clamp）
         cw = pane_w(".chat-panel")
-        c.check("L4 chat 宽度默认 600px", 560 <= cw <= 602, f"actual={cw}px（vw*45% clamp，vw={VW}）")
+        c.check("L4 chat 宽度默认 520px", 500 <= cw <= 524, f"actual={cw}px（vw*45% clamp，vw={VW}）")
 
         # L5 chat 宽度保存
         try:

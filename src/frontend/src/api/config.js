@@ -127,15 +127,12 @@ export async function detectToolchains() {
   return Array.isArray(res.tools) ? res.tools : []
 }
 
-// 系统级只读内置项（gui.system.builtins；OEM/发布资源 + 代码常量）→ {mcpServers, builtinLLMs}
-// builtinLLMs = 只读 LLM 条目（kind=default 启动参数隐含默认；kind=builtin 为契约预留，D-30
-// 后无生产者——内置 provider echo 降为 router 内置兜底，不再列出）：仅展示，禁止编辑/删除；
-// 不入 usr llms 表。
+// 系统级只读内置项（gui.system.builtins；OEM/发布资源）→ {mcpServers}
+// 系统级 MCP 定义（exe 同目录 config.json 的 mcpServers 段）：仅展示，禁止编辑/删除；不入 usr mcps 表。
 export async function getSystemBuiltins() {
   const res = await guiReq('system.builtins', {})
   return {
     mcpServers: Array.isArray(res.mcpServers) ? res.mcpServers : [],
-    builtinLLMs: Array.isArray(res.builtinLLMs) ? res.builtinLLMs : [],
   }
 }
 

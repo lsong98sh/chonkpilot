@@ -16,13 +16,6 @@
         />
       </div>
       <div class="toolbar-right">
-        <Button
-          v-if="canRestoreDefault"
-          size="small"
-          :disabled="!upperSource"
-          :title="upperSource ? $t('common.restore_default_hint') : $t('common.restore_default_none')"
-          @click="handleRestoreDefault"
-        >{{ $t('common.restore_default') }}</Button>
         <Button size="small" type="primary" v-mq:[EventNames.scenarioSave].click :loading="saving">{{ $t('common.save') }}</Button>
       </div>
     </div>
@@ -124,7 +117,7 @@ import Icon from '../../components/icon/Icon.vue'
 import AgentEditor from './AgentEditor.vue'
 import CombinedPromptPreview from './CombinedPromptPreview.vue'
 import { getUserConfig } from '../../api/config'
-import { saveScenario, loadScenario } from '../../api/scenario'
+import { saveScenario } from '../../api/scenario'
 import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilter'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
@@ -183,54 +176,10 @@ const normalizedSelectedAgent = computed(() => {
   return { ...agent, tools: normalizeTools(agent.tools) }
 })
 
-// 「恢复默认」：用户级/项目级场景可一键回填**上一级**（项目→用户→系统 app；用户→系统 app）
-// 的默认值。系统级（app）只读（无编辑入口）→ 不显示该按钮。回填仅改本表单（未保存草稿），
-// 落库沿用本界面既有【保存】语义（data-scenario-save）。数据源复用 data-scenario-load。
-const upperLevels = computed(() => {
-  const lv = props.scenario && props.scenario.level
-  if (lv === 'project') return ['user', 'app']
-  if (lv === 'user') return ['app']
-  return []
-})
-const canRestoreDefault = computed(() => upperLevels.value.length > 0 && !!(props.scenario && props.scenario.id))
-const upperSource = ref(null) // { level, scenario }：最近可回填的上一级场景（无则 null → 按钮禁用）
-
-async function resolveUpperSource() {
-  upperSource.value = null
-  if (!canRestoreDefault.value) return
-  const id = props.scenario.id
-  // 逐级降级：上一级不存在则取 app；都不存在则保持 null（按钮禁用 + tooltip 说明）。
-  for (const lv of upperLevels.value) {
-    try {
-      const sc = await loadScenario(id, lv)
-      if (sc) {
-        upperSource.value = { level: lv, scenario: sc }
-        return
-      }
-    } catch (_) { /* 该级无同 id 场景 → 继续下一级 */ }
-  }
-}
-
-function handleRestoreDefault() {
-  const src = upperSource.value
-  if (!src) {
-    message.info(t('common.restore_default_none'))
-    return
-  }
-  const sc = src.scenario || {}
-  form.value = { ...form.value, name: sc.name || '', description: sc.description || '' }
-  const list = Array.isArray(sc.agents) ? sc.agents : []
-  if (list.length === 0) {
-    createDefaultMainAgent()
-  } else {
-    // 载入路径 ②：同样按 tools 反推回填 filterTools（见 loadAgents）
-    agents.value = list.map(a => ({ ...a, ...filterToolsLoadPatch(a), _key: `k-${nextKey++}` }))
-    const mainIdx = agents.value.findIndex(a => a.isMain)
-    selectedAgentIdx.value = mainIdx >= 0 ? mainIdx : 0
-  }
-  message.info(t('common.restore_default_done', { level: t('scenario.level.' + src.level) }))
-}
-
+// 注（2026-09-26，用户口径）：**场景不提供「恢复默认 / 回填上一级」** ——
+// 场景 id 全局唯一（不允许跨级同名，[42 §2 (175)]），故「上一级同名场景」不存在，
+// 该入口已整体摘除（原 upperLevels/canRestoreDefault/upperSource/resolveUpperSource/
+// handleRestoreDefault + `api/scenario.loadScenario` 一并移除）。见 [37 SCEN-008]。
 async function loadAgents() {
   // D7: agents come from scenario.agents (agents_json) — no separate
   // scenario_agents table anymore. Pure frontend array, saved atomically.
@@ -269,11 +218,6 @@ function findDuplicateAgentName(list) {
 
 /** Save scenario (with agents embedded) in one atomic SaveScenario call (D7) */
 async function handleSave() {
-  // 系统级（app）capability 只读（D-06）：禁止保存（列表入口已禁用，此处兜底）
-  if (props.scenario && props.scenario.level === 'app') {
-    message.warning(t('scenario.system_readonly'))
-    return
-  }
   if (!form.value.name.trim()) {
     message.warning(t('scenario.placeholder.name'))
     return
@@ -402,8 +346,6 @@ onMounted(async () => {
       // Existing scenario but no ID — create default main agent
       createDefaultMainAgent()
     }
-    // 「恢复默认」：解析可回填的上一级场景（用户级→app；项目级→user→app）
-    await resolveUpperSource()
   } else {
     form.value = { name: '', description: '', level: 'user' }
     createDefaultMainAgent()

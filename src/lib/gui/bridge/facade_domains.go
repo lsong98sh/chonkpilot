@@ -248,14 +248,6 @@ func (b *Bridge) domainViaFacade(subject, payloadJSON string) (any, []error, boo
 				return res, errs, true
 			}
 			return wire.OKResult(), nil, true
-		case "restore":
-			r := wire.ScenarioRestoreFromWire(req)
-			r.InstanceID, r.Scope = instanceID, scope
-			if _, err := b.cfg.ScenarioRestore(r); err != nil {
-				res, errs := fail(err)
-				return res, errs, true
-			}
-			return wire.OKResult(), nil, true
 		}
 	case "memory":
 		switch op {

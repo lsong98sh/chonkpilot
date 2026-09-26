@@ -2,7 +2,7 @@
  * 沙箱两页「状态互见」计数（数据源 = usr 配置既有键）。
  *
  * 背景（用户口径）：`SettingsMCPPage`（server 级 `mcps[].sandbox`，仅 stdio）与
- * `SettingsToolSandboxPage`（工具级 `tool_sandbox`）互不显示对方状态 → 在两页各补一行摘要。
+ * `SettingsToolSandboxPage`（executor 级 `tool_sandbox`）互不显示对方状态 → 在两页各补一行摘要。
  * 全部为既有 usr 键的纯计数，**零新增 MQ 主题**。
  */
 
@@ -30,7 +30,7 @@ export function parseToolSandboxMap(v) {
   return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {}
 }
 
-// countToolSandboxOn：工具级 `tool_sandbox` 显式开启（=== true）数量。
+// countToolSandboxOn：executor 级 `tool_sandbox` 显式开启（=== true）数量（= 已开启的执行器数）。
 export function countToolSandboxOn(map) {
   const m = parseToolSandboxMap(map)
   return Object.values(m).filter((v) => v === true).length

@@ -48,7 +48,7 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 | **prj（项目级）** | 项目设置 + **project-id** | `<workDir>/.chonkpilot/chonkpilot.db` |
 | **prjusr（个人运行态）** | 会话 / 轮次 / 消息、任务树、快照、窗口与布局 | **desktop 缺省** → `~/.chonkpilot/data/<prj-id>/chonkpilot.db`<br>显式 `--data-dir` → 与 prj 同根（兼容 CLI / 脚本 / L2 用例） |
 | **prjusr 非库文件** | `logs/`（GUI 滚动日志）、`tmp/uploads/`（附件 / 截图）、`backup/` | 同 prjusr 根（`data.PrjUsrDir`，**随 data_dir 同源**） |
-| **app 级只读资产** | 出厂场景（「开发场景」`default/`）、知识库契约 | `<exeDir>/scenarios/` · `<exeDir>/capability/` |
+| **app 级资源** | 出厂场景（「开发场景」`default/`，**可编辑**：出厂内容由 embed 提供，app 初始化时缺失即恢复）、知识库契约（只读） | `<exeDir>/scenarios/` · `<exeDir>/capability/` |
 
 > ⚠️ `models.DataDir(workDir)` 是 **data-dir 访问器（= prj 数据根）**，**不是** prjusr 根；prjusr 根一律经 `data.PrjUsrDir` 解析（缺省需先读 prj 库取 `project-id`）。
 > ⚠️ **CLI 单体**：`--data-dir` 指向**临时目录**（退出即弃）→ 其会话**不落**用户数据根，GUI 不显示。
@@ -87,7 +87,7 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 **必须**通过构建脚本（**禁止**单独 `go build` / `wails build` / `npm run build`）：
 
 ```powershell
-.\build-desktop.ps1        # 主力：桌面单体 + CLI 单体 + 引擎 → dist/desktop\（含 capability/ + scenarios/）
+.\build-desktop.ps1        # 主力：桌面单体 + CLI 单体 + 引擎 → dist/desktop\（含 capability/；scenarios/ 由 embed 内嵌、运行时物化）
 .\build-gui.ps1            # gui 形态：客户端 → dist/gui\；服务端 → dist/server\
 .\build-browser.ps1        # 仅前端：browser 入口 → dist/server/www\
 .\build-mcp-server.ps1     # mcp-server 部署 → dist/other\
@@ -98,7 +98,7 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 
 `build-desktop.ps1` 内部流程：kill 旧实例 → 在 `src/frontend` 内 `npm run build:embed` → `embed.html` 改名 `index.html` 投放 `src/gui/frontend/dist` 并镜像到 `src/desktop/frontend/dist` → 构建 GUI/CLI → 调 `build-mcp-server.ps1` / `build-codegraph.ps1` / `build-vfts.ps1`。
 
-**产物清单**（`dist/desktop/`）：`chonkpilot.exe` · `chonkpilot-cli.exe` · 引擎 exe（codegraph / vfts）· `zvec_c_api.dll` · `capability/`（知识库契约 + executor）· `scenarios/`（app 级场景：出厂场景「开发场景」`default/`，只读）。
+**产物清单**（`dist/desktop/`）：`chonkpilot.exe` · `chonkpilot-cli.exe` · 引擎 exe（codegraph / vfts）· `zvec_c_api.dll` · `capability/`（知识库契约 + executor）。（出厂场景「开发场景」`default/` 由 **embed** 内嵌，运行时 app 初始化物化到 `<exeDir>/scenarios/`，app 级**可编辑**。）
 
 > 内置 MCP（codegraph / vfts）**默认不开启、不接入**——设置页开关开启后才拉起 / 注册。
 

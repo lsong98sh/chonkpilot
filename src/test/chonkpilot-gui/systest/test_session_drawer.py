@@ -4,7 +4,7 @@ P3-C1（2026-09-24，用户口径）：原会话**抽屉**内容整体迁入**�
 抽屉组件已删除 → 本套件按新落点重写（断言只增不减）：
 
 覆盖：
-- 左侧导航「项目 · 知识库 · 会话」页签切换（filetree-mode-select{model:sessions}）
+- 左侧导航「项目 · 知识库 · 项目记忆 · 会话」页签切换（filetree-mode-select{model:sessions}）
 - 空态提示 / 切走再切回（原「遮罩关闭」已无遮罩 → 改为「切回项目模式即隐藏」）
 - 会话列表展示（#id / 标题 / 轮数）+ 两行布局
 - 点击会话切换（活动会话落库）
@@ -117,15 +117,18 @@ def main():
             time.sleep(0.5)
         time.sleep(0.5)
 
-        # SD1 左侧导航「会话」页签 → 空态
+        # SD1 左侧导航「会话」页签 → 空态（页签顺序：项目 · 知识库 · 项目记忆 · 会话）
         segs = J(gui, "Array.from(document.querySelectorAll('.explorer-seg-btn')).map(e=>e.textContent.trim())")
         open_sessions(gui)
         shown = wait_upto(gui, "(()=>{const p=document.querySelector('.sessions-pane');"
                                "return !!p && p.getBoundingClientRect().width>0})()", lambda v: v is True)
         empty = wait_upto(gui, "document.body.textContent.includes('No sessions') || document.body.textContent.includes('暂无会话')",
                           lambda v: v is True)
-        c.check("SD1 左侧导航含会话页签 + 打开为空态",
-                list(segs or [])[:3] == ['项目', '知识库', '会话'] and bool(shown) and bool(empty),
+        labels = list(segs or [])[:4]
+        order_ok = (labels == ['项目', '知识库', '项目记忆', '会话']
+                    or labels == ['Project', 'Knowledge', 'Project Memory', 'Sessions'])
+        c.check("SD1 左侧导航含项目记忆页签（项目·知识库·项目记忆·会话）+ 打开会话为空态",
+                order_ok and bool(shown) and bool(empty),
                 f"segs={segs} shown={shown} empty={empty}")
 
         # SD1b 切回「项目」模式 → 会话面板隐藏（原「遮罩点击关闭」已无遮罩）
@@ -177,15 +180,21 @@ def main():
                 f"dl={dl} n={cards} titles={repr(titles)}")
 
         # SD5b fork 占位（A8）：第 3 个按钮 → 提示「敬请期待」，不改列表 / 不开弹窗
-        J(gui, "(()=>{const b=document.querySelector('.sessions-pane .session-card .session-actions button:nth-child(3)');if(b)b.click();return !!b})()")
-        forkMsg = wait_upto(gui, "document.querySelector('#b-message-container .b-message-text')?.textContent?.trim() || ''",
-                            lambda v: ('敬请期待' in (v or '')) or ('Coming soon' in (v or '')))
+        # （2026-09-26 加固：判定改读**全部** message 文案再匹配 —— 前序「会话已删除」成功提示与
+        #  fork 提示在 3s 存活期内并存且先后到期，只读**首条**会落在「删除」提示上、并在两条交替的
+        #  窄窗内漏判（本用例原断言只读首条）。只改「读哪些」，断言与观测内容不变。）
+        wait_upto(gui, "!!document.querySelector('.sessions-pane .session-card .session-actions button:nth-child(3)')",
+                  lambda v: v is True)
+        forkHit = J(gui, "(()=>{const b=document.querySelector('.sessions-pane .session-card .session-actions button:nth-child(3)');if(!b)return false;b.click();return true})()")
+        forkTexts = wait_upto(gui, "Array.from(document.querySelectorAll('#b-message-container .b-message-text')).map(n=>(n.textContent||'').trim())",
+                              lambda v: any((('敬请期待' in x) or ('Coming soon' in x)) for x in (v or [])))
         forkNoDialog = J(gui, "!document.querySelector('.dialog-shell')")
         forkCards = J(gui, "document.querySelectorAll('.sessions-pane .session-card').length")
         c.check("SD5b fork 占位 → 提示「敬请期待」（不改列表 / 不开弹窗）",
-                (('敬请期待' in str(forkMsg)) or ('Coming soon' in str(forkMsg)))
+                bool(forkHit)
+                and any((('敬请期待' in x) or ('Coming soon' in x)) for x in (forkTexts or []))
                 and bool(forkNoDialog) and int(forkCards) == 1,
-                f"msg={repr(forkMsg)} noDialog={forkNoDialog} n={forkCards}")
+                f"hit={forkHit} texts={forkTexts} noDialog={forkNoDialog} n={forkCards}")
 
         # SD5c 复制对话（P3-C1 口径）：json-array + 不含 system + 全部对话（非压缩后的原文）
         #  —— 对**列表内保留的会话**操作：SD5 删的是「非当前会话」→ 保留 = 当前会话；

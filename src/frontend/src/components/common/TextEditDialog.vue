@@ -3,6 +3,8 @@
        多行编辑 + （可选）内嵌【优化】按钮 + 【保存】即落库并由父组件关闭弹框。
        内容撑满弹框、底部不留白（bodyClass = text-edit-dialog-body，见 global.css）。 -->
   <div class="text-edit-body">
+    <!-- 来源/口径提示（可选）：如「当前为内置默认」/「当前为自定义」——由父组件按读取结果给 -->
+    <div v-if="hint" class="text-edit-hint">{{ hint }}</div>
     <Textarea
       v-model="text"
       class="text-edit-input"
@@ -23,6 +25,13 @@
         :disabled="saving || optimizing"
         @click="handleRecoverOptimize"
       >{{ $t('projectConfig.recover_before_optimize') }}</Button>
+      <!-- 「恢复默认」（可选）：清除自定义值回落内置默认，由父组件落库并关闭弹框 -->
+      <Button
+        v-if="reset"
+        size="small"
+        :disabled="saving || optimizing"
+        @click="handleReset"
+      >{{ reset.label }}</Button>
       <span class="footer-spacer" />
       <Button size="small" :disabled="saving || optimizing" @click="$emit('cancel')">{{ $t('common.cancel') }}</Button>
       <Button size="small" type="primary" :loading="saving" :disabled="optimizing" @click="handleSave">{{ $t('common.save') }}</Button>
@@ -42,6 +51,10 @@ const props = defineProps({
   placeholder: { type: String, default: '' },
   // 优化入口（null = 不显示该按钮）：{ title, useCase } 原样透传 gui.prompt-optimise
   optimize: { type: Object, default: null },
+  // 来源/口径提示（空 = 不显示）：如「当前为内置默认（保存后覆盖）/ 当前为自定义提示词」
+  hint: { type: String, default: '' },
+  // 「恢复默认」入口（null = 不显示该按钮）：{ label, onClick }；onClick 由父组件落库并关闭弹框
+  reset: { type: Object, default: null },
   // 保存回调（**父组件负责落库与关闭弹框**）；抛错 = 保持弹框打开（父已给可见失败提示）
   onSave: { type: Function, required: true },
 })
@@ -98,6 +111,19 @@ function handleRecoverOptimize() {
   text.value = optimizeSnapshot.value
   optimizeSnapshot.value = ''
 }
+
+// 恢复默认：清除自定义值（父组件落库 + 关闭弹框）；进行中不重入
+async function handleReset() {
+  if (saving.value || optimizing.value || !props.reset || !props.reset.onClick) return
+  saving.value = true
+  try {
+    await props.reset.onClick()
+  } catch (_) {
+    // 父组件已给可见失败提示（弹框保持打开，内容不丢）
+  } finally {
+    saving.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -107,6 +133,14 @@ function handleRecoverOptimize() {
   display: flex;
   flex-direction: column;
   padding: 12px 16px 0;
+}
+/* 来源/口径提示（非编辑区）：单行小字，不占满剩余高度 */
+.text-edit-hint {
+  flex-shrink: 0;
+  padding-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
 }
 .text-edit-input {
   flex: 1;

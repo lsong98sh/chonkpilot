@@ -9,7 +9,8 @@
             :style="getColStyle(col)"
             class="b-table-th"
           >
-            {{ col.type === 'index' ? '#' : col.label }}
+            <!-- 表头具名插槽（按列 prop/type）：未提供时回落纯文本 label（如 `#header-mode` 可挂 ? tooltip） -->
+            <slot :name="'header-' + (col.prop || col.type)" :col="col">{{ col.type === 'index' ? '#' : col.label }}</slot>
           </th>
         </tr>
       </thead>

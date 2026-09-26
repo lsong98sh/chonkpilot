@@ -240,6 +240,67 @@ def case_notify():
         raise TestError("通知消息缺铃铛图标")
 
 
+def _usr_cfg():
+    r = c.req("data-user-config-load", {})
+    return (r.get("data") or {}) if isinstance(r, dict) else {}
+
+
+def case_general_scenario():
+    """E6 场景下拉首项「通用场景」（2026-09-26，用户口径）：
+
+    此前下拉**只列真实场景**、且未选时会**自动选中第一个场景** → 选过场景就回不到通用态。
+    本用例验证：① 下拉**首项固定**为「通用场景」；② 选中即**关闭场景**（Tag 显示「通用场景」）；
+    ③ 该项 ★ **设为默认** → 写入 `defaultScenario = __general__`（重开/重启仍为通用）。
+    """
+    r = c.req("data-scenario-list", {})
+    scns = (r or {}).get("scenarios") or (r or {}).get("list") or []
+    if not scns:
+        raise TestError("场景列表为空（应有出厂场景 default）：%r" % (r,))
+    # 先进入"已选场景"态，才能验证"能切回通用"
+    c.mq_emit("scenario-select", {"id": scns[0]["id"]})
+    time.sleep(0.8)
+
+    # 打开场景下拉（场景 Tag = 唯一带 inline cursor:pointer 的 Tag；其父 = Popover reference）
+    opened = deep_loads(c.eval("""(() => {
+      const t = [...document.querySelectorAll('.b-tag')].find(x => x.style && x.style.cursor === 'pointer');
+      if (!t) return 'no-tag';
+      (t.closest('.b-popover__reference') || t).dispatchEvent(new MouseEvent('click', {bubbles: true}));
+      return 'ok';
+    })()"""))
+    if opened != 'ok':
+        raise TestError("未找到场景 Tag（%r）" % (opened,))
+    time.sleep(0.6)
+    items = deep_loads(c.eval("""(() => [...document.querySelectorAll(
+      '.b-popover__popper .scenario-item .scenario-item-name')].map(x => x.textContent.trim()))()"""))
+    if not items:
+        raise TestError("场景下拉未打开或无选项")
+    if items[0] != '通用场景':
+        raise TestError("下拉首项应为「通用场景」，实际：%r" % (items[:3],))
+
+    # 选中首项 → 关闭场景（Tag 显示「通用场景」）
+    c.eval("""(() => { const n = document.querySelector('.b-popover__popper .scenario-item .scenario-item-name');
+      n.dispatchEvent(new MouseEvent('click', {bubbles: true})); return 'ok'; })()""")
+    time.sleep(0.8)
+    if visible_text('.panel-header .b-tag').strip() != '通用场景':
+        raise TestError("选中通用场景后 Tag 文案不符：%r" % visible_text('.panel-header .b-tag'))
+
+    # ★ 设为默认 → 落 defaultScenario = __general__
+    with _h.user_config_guard(c, ["defaultScenario"]):
+        c.eval("""(() => { const t = [...document.querySelectorAll('.b-tag')].find(x => x.style && x.style.cursor === 'pointer');
+          (t.closest('.b-popover__reference') || t).dispatchEvent(new MouseEvent('click', {bubbles: true})); return 'ok'; })()""")
+        time.sleep(0.6)
+        c.eval("""(() => { const s = document.querySelector('.b-popover__popper .scenario-item .scenario-item-star');
+          s.dispatchEvent(new MouseEvent('click', {bubbles: true})); return 'ok'; })()""")
+        time.sleep(1.0)
+        if _usr_cfg().get("defaultScenario") != '__general__':
+            raise TestError("★ 设为默认未写入 __general__：%r" % _usr_cfg().get("defaultScenario"))
+        # 重载场景列表（模拟重开）：默认=通用 → **不得**自动选中第一个场景
+        c.mq_emit("scenario-reload", {})
+        time.sleep(0.8)
+        if visible_text('.panel-header .b-tag').strip() != '通用场景':
+            raise TestError("默认=通用后重载仍被自动选中场景：%r" % visible_text('.panel-header .b-tag'))
+
+
 def main():
     c.wait_ready()
     c.console(clear=True)
@@ -249,6 +310,7 @@ def main():
     ok &= run_case("E3 思考过程：实时展开/折叠/复制图标", case_reasoning)
     ok &= run_case("E4 工具调用记录 + 状态徽标 + 复制图标", case_tool_call)
     ok &= run_case("E5 后台任务完成通知（🔔）", case_notify)
+    ok &= run_case("E6 场景下拉「通用场景」（首项/关闭场景/设为默认）", case_general_scenario)
     print("RESULT:", ok)
     return 0 if ok else 1
 

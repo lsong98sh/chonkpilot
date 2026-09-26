@@ -23,19 +23,24 @@ const LOCALES = ['zh-CN', 'en-US']
 
 // ── 1) 左侧导航：会话页签 ─────────────────────────────────────────
 
-test('导航：左侧导航含「项目 · 知识库 · 会话」且顺序正确', () => {
+test('导航：左侧导航含「项目 · 知识库 · 项目记忆 · 会话」且顺序正确', () => {
   const pane = read('views/filetree/ExplorerPane.vue')
   const idxProject = pane.indexOf("mode === 'project'")
   const idxKnowledge = pane.indexOf("mode === 'knowledge'")
+  const idxMemory = pane.indexOf("mode === 'memory'")
   const idxSessions = pane.indexOf("mode === 'sessions'")
-  assert.ok(idxProject >= 0 && idxKnowledge > idxProject && idxSessions > idxKnowledge,
-    '页签顺序应为 项目 → 知识库 → 会话')
+  assert.ok(idxProject >= 0 && idxKnowledge > idxProject && idxMemory > idxKnowledge && idxSessions > idxMemory,
+    '页签顺序应为 项目 → 知识库 → 项目记忆 → 会话')
   assert.match(pane, /fileTree\.mode_sessions/, '会话页签文案应走 i18n')
+  assert.match(pane, /fileTree\.mode_memory/, '项目记忆页签文案应走 i18n')
+  assert.match(pane, /<MemoryPane/, '项目记忆页签内容 = MemoryPane')
   assert.match(pane, /<SessionsPane/, '会话页签内容 = SessionsPane（原抽屉内容迁入）')
   assert.match(pane, /m === 'sessions'/, 'setMode 应受理 sessions')
+  assert.match(pane, /m === 'memory'/, 'setMode 应受理 memory')
   for (const loc of LOCALES) {
     const ft = readLocale(loc, 'fileTree.json')
     assert.ok(ft.mode_sessions, loc + ' 应有 mode_sessions 文案')
+    assert.ok(ft.mode_memory, loc + ' 应有 mode_memory 文案')
   }
 })
 

@@ -1,6 +1,8 @@
 """回归测试：截图按钮 + 区域选择（51-FP与测试映射「主chat 操作行【截图】按钮」）。
 
 覆盖：
+- **能力门控（2026-09-26）**：所选 LLM 的 `capabilities` 未含 `vision` → 截图按钮禁用、点击不发
+  `gui.capture`（用户口径：「当 chat 窗口选择的 llm 没有图片时，不能截图」）
 - 截图按钮存在于操作行左侧控件
 - 点击 → chat-screenshot → /call/CaptureScreen（隐藏窗口全屏 GDI）→ 全屏预览 overlay
 - overlay 拖拽选择区域 → canvas 裁剪 → 附件上传（同一链路）
@@ -74,6 +76,42 @@ def main():
                 break
             time.sleep(0.5)
         time.sleep(0.5)
+
+        # ── 截图能力门控（2026-09-26，用户口径：「当 chat 窗口选择的 llm 没有图片时，不能截图」）──
+        # 观测点 = 所选 provider 的 `capabilities` 是否含 `vision`：
+        #   未声明 → 截图按钮 **disabled** + 点击**不发** `gui.capture`（无 overlay）；
+        #   已声明 → 按钮可用，后续 S1~S5 走完整截图链路。
+        # 写 usr 配置（llms/defaultLLM）→ `data-user-config-save` 触发后端 `config-refresh`
+        # 广播 → ChatPanel 重载 llms → `chat-select-llm` 选中该 provider（等价用户点选）。
+        def seed_llm(name, caps):
+            gui.req("data-user-config-save", {"data": {
+                "llms": [{"name": name, "protocol": "openai", "apiKey": "", "model": "m",
+                          "baseUrl": "http://127.0.0.1:1", "temperature": 0.7,
+                          "maxOutputToken": 4096, "maxContextToken": 128000,
+                          "thinking": True, "reasoningEffort": "", "maxToolIterations": 20,
+                          "capabilities": caps}],
+                "defaultLLM": name,
+            }})
+            time.sleep(1.0)
+            gui.publish("chat-select-llm", {"name": name})
+            time.sleep(0.6)
+
+        def screenshot_btn():
+            return J(gui, """(()=>{const bs=Array.from(document.querySelectorAll('.input-actions-left .icon-btn'));const b=bs.find(x=>((x.getAttribute('title')||'').toLowerCase().indexOf('screenshot')>=0)||((x.getAttribute('title')||'').indexOf('截图')>=0));return {found:!!b, disabled:b?(!!b.disabled||b.classList.contains('is-disabled')):null, title:b?b.getAttribute('title'):''}})()""")
+
+        # S0 未声明「图形」→ 按钮禁用 + 点击无 overlay（不发 gui.capture）
+        seed_llm("shot-novision", [])
+        b0 = screenshot_btn()
+        click_screenshot(gui)
+        time.sleep(1.2)
+        ov0 = J(gui, "!!document.querySelector('.screenshot-overlay')")
+        c.check("S0 未声明 vision → 截图禁用 + 点击无 overlay",
+                bool(b0['found']) and bool(b0['disabled']) and not ov0, repr(b0))
+
+        # 前置：声明「图形」的 provider（S1~S5 截图链路前提）
+        seed_llm("shot-vision", ["vision"])
+        bv = screenshot_btn()
+        c.check("S0b 声明 vision → 截图按钮可用", bool(bv['found']) and not bv['disabled'], repr(bv))
 
         # S1 截图按钮存在
         s1 = J(gui, """(()=>{const bs=Array.from(document.querySelectorAll('.input-actions-left .icon-btn'));const b=bs.find(x=>((x.getAttribute('title')||'').toLowerCase().indexOf('screenshot')>=0)||((x.getAttribute('title')||'').indexOf('截图')>=0));return {found:!!b, titles:bs.map(x=>x.getAttribute('title')).join('|')}})()""")

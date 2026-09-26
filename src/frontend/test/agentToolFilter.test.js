@@ -124,7 +124,7 @@ test('归一化：normalizeTools 容忍 legacy 字符串、非法值统一为 []
 })
 
 // 落点守卫：编辑页 on-change 走同一纯函数；保存载荷仅剥前端专用键（tools 原样透传）；
-// 载入路径（loadAgents / handleRestoreDefault）按 tools 反推回填 filterTools
+// 载入路径（loadAgents）按 tools 反推回填 filterTools
 test('落点守卫：AgentEditor 开关 on-change + ScenarioEditDialog 保存载荷 + 载入回填', () => {
   const editor = read('views/scenario/AgentEditor.vue')
   assert.match(editor, /@change="toggleFilterTools"/)
@@ -137,8 +137,10 @@ test('落点守卫：AgentEditor 开关 on-change + ScenarioEditDialog 保存载
   const dialog = read('views/scenario/ScenarioEditDialog.vue')
   assert.match(dialog, /agents\.value\.map\(\(\{ _key, id, \.\.\.rest \}\) => rest\)/)
   assert.match(dialog, /import \{ filterToolsLoadPatch, normalizeTools \} from '\.\.\/\.\.\/utils\/agentToolFilter'/)
-  // 两条载入路径（loadAgents 的 props.scenario.agents / 恢复默认的上级场景）均回填
-  assert.equal((dialog.match(/\.\.\.filterToolsLoadPatch\(a\)/g) || []).length, 2)
+  // 载入路径：现仅 loadAgents（props.scenario.agents）一条 ——
+  // 「恢复默认（回填上一级）」路径已于 2026-09-26 随场景恢复默认入口摘除而删除（37 SCEN-008）
+  assert.equal((dialog.match(/\.\.\.filterToolsLoadPatch\(a\)/g) || []).length, 1)
+  assert.doesNotMatch(dialog, /(async\s+)?function\s+handleRestoreDefault|await\s+resolveUpperSource\(/, '场景「恢复默认/回填上一级」不得残留实现')
   // 展示归一化复用同一实现
   assert.match(dialog, /tools: normalizeTools\(agent\.tools\)/)
 })

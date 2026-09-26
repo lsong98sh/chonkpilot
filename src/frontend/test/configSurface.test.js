@@ -149,6 +149,76 @@ test('⑤ 两页各补摘要 + 一键跳转（既有 previewTabOpen）', () => {
   assert.match(mcpPage, /kind: 'settings-tool-sandbox'/, 'server 级页须可跳工具级页')
 })
 
+// ── ⑤b MCP 编辑对话框重构（2026-09-26：两页签 + 字段说明 tooltip + 去「分类」）──
+test('⑤b MCP 编辑弹窗：Tabs 两页签，字段按「基本信息 / 运行信息」分组', () => {
+  const dlg = read('views/config/EditMCPDialog.vue')
+  assert.match(dlg, /<Tabs v-model="activeTab" :tabs="tabItems"/, '须用 Tabs 组件承载两页签')
+  assert.match(dlg, /name: 'basic', label: t\('config\.mcp\.tabBasic'\)/, '缺「基本信息」页签')
+  assert.match(dlg, /name: 'runtime', label: t\('config\.mcp\.tabRuntime'\)/, '缺「运行信息」页签')
+  assert.match(dlg, /<template #basic>/, '缺 basic 具名插槽')
+  assert.match(dlg, /<template #runtime>/, '缺 runtime 具名插槽')
+  // 运行信息：isolate / sandbox / runtime / args / env / cwd / hotTools 均在 runtime 插槽内
+  const rt = dlg.slice(dlg.indexOf('<template #runtime>'), dlg.indexOf('</Tabs>'))
+  for (const key of ['config.mcp.runtime', 'config.mcp.args', 'config.mcp.env', 'config.mcp.cwd',
+    'config.mcp.hotTools', 'config.mcp.hotToolsSet', 'config.mcp.isolate', 'config.mcp.sandbox']) {
+    assert.ok(rt.includes(key), `runtime 页签缺 ${key}`)
+  }
+  // 基本信息：name / enabled / transport / url / namespace / timeout / description / headers
+  const basic = dlg.slice(dlg.indexOf('<template #basic>'), dlg.indexOf('<template #runtime>'))
+  for (const key of ['config.mcp.name', 'config.mcp.enabled', 'config.mcp.transport',
+    'config.mcp.serverUrl', 'config.mcp.namespace', 'config.mcp.timeout',
+    'config.mcp.description', 'config.mcp.headers']) {
+    assert.ok(basic.includes(key), `基本信息页签缺 ${key}`)
+  }
+  // 保存载荷不因页签变化：handleSave 一次性提交两页字段
+  assert.match(dlg, /const connectorOK = transport\.value === 'stdio'/, 'handleSave 校验须保留')
+  assert.match(dlg, /emit\('save', \{ \.\.\.localData \}, props\.editIndex\)/, 'handleSave 须一次性提交全部字段')
+})
+
+test('⑤b 字段说明 tooltip：传输方式 ? tooltip + 新 help 图标；「分类」输入已移除', () => {
+  const dlg = read('views/config/EditMCPDialog.vue')
+  // 传输方式：? tooltip 承载 transportHint（不再恒显 form-hint）
+  assert.match(dlg, /<Tooltip :content="\$t\('config\.mcp\.transportHint'\)"/, '传输方式说明须改为 tooltip')
+  assert.doesNotMatch(dlg, /class="form-hint">\{\{ \$t\('config\.mcp\.transportHint'\) \}\}/, '不应再恒显 transportHint')
+  assert.match(dlg, /<Icon name="help"/, '须用 help 图标做 ? 入口')
+  // help 图标（问号圆）已加入图标表
+  assert.match(read('components/icon/icons.js'), /'help':\s*'<svg/, 'icons.js 缺 help 图标')
+  // 「分类」输入项已从弹窗与 DEFAULT_MCP 移除
+  assert.doesNotMatch(dlg, /config\.mcp\.category/, '弹窗不应再有「分类」输入')
+  const defaults = read('config/defaults.js')
+  assert.doesNotMatch(defaults, /category:/, 'DEFAULT_MCP 不应再有 category')
+  assert.match(defaults, /sandbox: null/, 'DEFAULT_MCP 须补 sandbox: null（三态）')
+})
+
+// ── ⑤c MCP 高频工具（2026-09-26：文本框 → 「摘要 + 设置」行 + 独立弹窗）────
+test('⑤c MCP 高频工具：运行信息行为「摘要 + 设置」，独立弹窗按别名勾选并写库原名', () => {
+  const dlg = read('views/config/EditMCPDialog.vue')
+  // 原「高频工具」逗号分隔文本输入框已移除
+  assert.doesNotMatch(dlg, /hotToolsText/, '不应再有 hotToolsText 文本输入')
+  assert.doesNotMatch(dlg, /config\.mcp\.hotToolsPlaceholder/, '不应再引用 hotToolsPlaceholder')
+  // 同一位置改为「高频工具」行：摘要文字 + 「设置」按钮
+  const rt = dlg.slice(dlg.indexOf('<template #runtime>'), dlg.indexOf('</Tabs>'))
+  assert.match(rt, /data-hot-tools-set/, '运行信息页签缺「设置」按钮')
+  assert.match(rt, /config\.mcp\.hotToolsSet/, '「设置」按钮须用 i18n 文案')
+  assert.match(rt, /hotToolsSummary/, '缺高频工具摘要文字')
+  // 设置按钮打开独立弹窗并回填 hot_tools（不改「保存才落库」的时机）
+  assert.match(dlg, /function openHotTools\(\)/, '缺 openHotTools')
+  assert.match(dlg, /SetMCPHotToolsDialog/, '须打开 SetMCPHotToolsDialog')
+  assert.match(dlg, /localData\.hot_tools = \[\.\.\.hotTools\.value\]/, 'handleSave 须提交 hot_tools')
+
+  // 新弹窗：数据源 = 既有 tools-list（零新增消息面）、按 _meta.server 归属、写库原名、全部/逐项
+  const sub = read('views/config/SetMCPHotToolsDialog.vue')
+  assert.match(sub, /mq\.emit\('tools-list'/, '须读既有 tools-list（零新增消息面）')
+  assert.match(sub, /srv\.alias !== name && srv\.node !== name/, '须按 _meta.server.alias/node 归属当前 server')
+  assert.match(sub, /stripToolPrefix\(/, '写库前须做暴露名 → 原名转换')
+  assert.match(sub, /data-hot-all/, '缺「全部工具」复选框')
+  assert.match(sub, /data-hot-confirm/, '缺「确定」按钮')
+  assert.match(sub, /data-hot-cancel/, '缺「取消」按钮')
+  assert.match(sub, /\['\*'\]/, '「全部」须写 "*"（gateway isHot 语义）')
+  assert.match(sub, /hotToolsEmpty/, '缺空态提示')
+  assert.doesNotMatch(sub, /\bwatch(Effect)?\s*\(/, '弹窗不得使用 watch/watchEffect')
+})
+
 // ── ⑥ I-82/I-109 不适用标注 ──────────────────────────────
 test('⑥ 来源判定：self/dir=builtin；第三方=非 self/dir；无 server → 不判定', () => {
   assert.equal(isDirNode({ server: { category: 'dir' } }), true)
@@ -166,13 +236,13 @@ test('⑥ 来源判定：self/dir=builtin；第三方=非 self/dir；无 server 
   assert.equal(isThirdPartyProvider({}), null, '无 _meta.server → 不标注（宁缺勿错）')
 })
 
-test('⑥ 沙箱页：第三方行标注并禁用；async 页：dir 行 hard_timeout 标注并禁用', () => {
+test('⑥ 沙箱页：executor 级行 + 第三方/http·sse 边界说明；async 页：dir 行 hard_timeout 标注并禁用', () => {
   const sandbox = read('views/config/SettingsToolSandboxPage.vue')
-  assert.match(sandbox, /row\.thirdParty === true/, '第三方行须按判定标注')
-  assert.match(sandbox, /thirdPartyNotApplicable/, '须给不适用原因')
-  assert.match(sandbox, /:disabled="row\.thirdParty === true"/, '第三方行开关须禁用（避免配了不生效）')
-  // 来源判定落在 composable（页面只消费 row.thirdParty）
-  assert.match(read('composables/useToolSandbox.js'), /utils\/toolSource/, '须用统一来源判定')
+  assert.match(sandbox, /:data-exec="row\.category"/, '须按 executor 类别渲染行')
+  assert.match(sandbox, /thirdPartyHint/, '须给第三方 / http·sse 边界说明（不可隔离原因）')
+  assert.match(sandbox, /:disabled="!dirty"/, '无改动时保存按钮禁用')
+  // executor 级不再逐工具判定第三方（第三方沙箱归 MCP 弹窗「运行信息」页签）
+  assert.doesNotMatch(read('composables/useToolSandbox.js'), /utils\/toolSource/, 'executor 级不再逐工具判定来源')
 
   const asyncPage = read('views/config/SettingsToolAsyncPage.vue')
   assert.match(asyncPage, /isDirNode\(meta\)/, 'async 页须判定 dir 节点')
@@ -193,9 +263,11 @@ test('i18n：新增键 zh-CN / en-US 齐备', () => {
   ]
   const configKeys = {
     top: ['chromeTip'],
-    mcp: ['toolSandboxSummary', 'gotoToolSandbox'],
+    mcp: ['toolSandboxSummary', 'gotoToolSandbox', 'hotTools', 'hotToolsSet', 'hotToolsNone',
+      'hotToolsAll', 'hotToolsCount', 'hotToolsTitle', 'hotToolsHint', 'hotToolsAllLabel',
+      'hotToolsEmpty', 'hotToolsLoading'],
     toolAsync: ['naBadge', 'hardTimeoutNotApplicable'],
-    toolSandbox: ['naBadge', 'thirdPartyNotApplicable', 'serverSummary', 'gotoMcp'],
+    toolSandbox: ['serverSummary', 'gotoMcp', 'thirdPartyHint', 'execCore'],
   }
   for (const loc of LOCALES) {
     const pc = readLocale(loc, 'projectConfig.json')

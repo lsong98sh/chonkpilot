@@ -357,7 +357,7 @@ func TestDistillWithoutSubsystemLLMByteEquivalent(t *testing.T) {
 		t.Fatalf("载荷非 JSON: %v", err)
 	}
 	want, _ := json.Marshal(map[string]any{
-		"prompt": m["prompt"], "system": rewriteSystemPrompt, "instance_id": "ins-1",
+		"prompt": m["prompt"], "system": defaultRewriteSystemPrompt, "instance_id": "ins-1",
 	})
 	if string(raw) != string(want) {
 		t.Fatalf("未指定子系统 LLM 时载荷须逐字节等价：\n got=%s\nwant=%s", raw, want)

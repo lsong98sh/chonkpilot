@@ -1,17 +1,20 @@
 /**
- * useToolSandbox — agentbox 沙箱「扫描到的工具」页签（usr 键 `tool_sandbox`）
+ * useToolSandbox — agentbox 沙箱「executor」页签（usr 键 `tool_sandbox`）
  *
- * 决策 [42 §2 (104)/(109)]：agentbox = 内存 MCP + 执行层，**仅对「扫描到的 runtime」**
- * （chonkpilot-mcp-tools 的 core / desktop / browser 执行器工具）施加限制。
+ * 决策（用户口径，2026-09-26）：沙箱**不是工具级、而是 executor 级** —— 开关按工具所属
+ * **executor 类别**（= 契约 `_meta.category`：core / desktop / browser，即 chonkpilot-mcp-tools
+ * 的三个执行器能力目录）生效；一个开关管制该 executor 下的**全部工具**。仅 **self 的 executor
+ * 工具**（本仓 spawn 子进程执行）可隔离；第三方 MCP 的沙箱在 MCP 对话框「运行信息」页签（
+ * usr `mcps[].sandbox`）设置，http/sse 无法隔离。
  *
  * 读写面（**零新增 MQ 主题**）：
- *   - 工具清单 = 既有客户端能力面 `tools-list`（与 SettingsToolAsyncPage 同一消费点）；每项
- *     `_meta.category` = 契约 [meta] category（core/desktop/browser/server/codegraph/vfts/meta…），
- *     `tools-list` 的 `name` = 工具暴露名（内嵌 self 节点为 `self_<契约名>`）。
+ *   - 工具清单 = 既有能力面 `tools-list`（每项 `_meta.category` / `_meta.server`）。
  *   - 配置读写 = 既有 usr 配置面 `data-user-config-{load,save,delete}`（api/config.js）。
- * 存储形态：usr 自由键 `tool_sandbox` = JSON 对象 `{"<工具暴露名>": true|false}`
- *   - 未配置 / `false` = **不隔离**（缺省与引入前行为一致）；
- *   - 「恢复未设置」= 删除该工具键项（最后一项删除后整键删除，走 `data-user-config-delete`）。
+ * 存储形态：usr 自由键 `tool_sandbox` = JSON 对象 `{"core":true|false,"desktop":...,"browser":...}`
+ *   - 未配置 / `false` = **不隔离**（缺省与引入前行为一致）；**旧形态（按工具暴露名）不再生效**。
+ *
+ * 手动保存（用户口径「不做 change 就保存」）：拨动 Switch / 「恢复未设置」只改**本地待保存态**
+ * （`workMap`），**不立即落库**；点【保存】才写库，**无改动时保存按钮禁用**（`dirty === false`）。
  *
  * 本 composable 只做数据与读写，不弹提示（提示由页面按 i18n 决定）。
  */
@@ -19,15 +22,12 @@ import { ref, computed } from 'vue'
 import { getUserConfig, saveUserConfig, resetUserKey, getProjectSecurity } from '../api/config'
 import { countServerSandboxOn } from '../utils/sandboxSummary'
 import { countTrustDirs, needsTrustDirsWarning } from '../utils/sandboxTrust'
-import { isThirdPartyProvider } from '../utils/toolSource'
 import mq from '../utils/mq'
 
 // usr 配置键（自由键通道）：值与 tool_async 同形态 = JSON 对象文本。
 export const TOOL_SANDBOX_KEY = 'tool_sandbox'
-// 「扫描到的 runtime 工具」判据 = 契约 meta.category ∈ {core, desktop, browser}
-// （core/desktop/browser = chonkpilot-mcp-tools 的三个执行器能力目录；其余类别不属 agentbox
-//  约束面 → 不列出，避免误配）。
-export const RUNTIME_CATEGORIES = ['core', 'desktop', 'browser']
+// executor 类别（= 契约 `_meta.category`）——三个执行器各一行，共三个 Switch。
+export const EXECUTOR_CATEGORIES = ['core', 'desktop', 'browser']
 
 // 解析 usr tool_sandbox：允许对象形态与 JSON 字符串形态（自由键按字符串回读）。
 function parseToolSandbox(v) {
@@ -38,18 +38,56 @@ function parseToolSandbox(v) {
   return obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {}
 }
 
+// 只保留三个 executor 类别键（旧形态 / 其它键忽略 → 不参与 diff、不落库）。
+function pickExecutorMap(m) {
+  const out = {}
+  for (const c of EXECUTOR_CATEGORIES) {
+    if (m && (m[c] === true || m[c] === false)) out[c] = m[c]
+  }
+  return out
+}
+
 export function useToolSandbox() {
   const loading = ref(false)
-  const groups = ref([]) // [{ key, tools: [{ name, description, category, on, userSet }] }]
-  const userMap = ref({}) // 工具名 → true|false（显式设置项）
+  const saving = ref(false)
+  // 三行固定的 executor 行：{ category, tools: [{name, description, server}], on, userSet }
+  const toolsByCategory = ref({})
+  // workMap = 本地待保存态（拨动/恢复只改它）；savedMap = 上次落库态（用于 dirty 判定）。
+  const workMap = ref({})
+  const savedMap = ref({})
   // server 级（mcps[].sandbox，仅 stdio）已开启数量 —— 供「两页状态互见」摘要（读 usr 同一次加载）。
   const serverSandboxOn = ref(0)
   // 项目信任目录有效条目数（prj `security-*`）——供 ②「空目录 = 全拒」内联预警。
   const trustDirCount = ref(0)
 
-  // 是否至少有一个工具级开关已开启（"已开启沙箱"）。
+  // 三个 executor 行（恒定三行；类别下无工具时 tools 为空数组）。
+  const rows = computed(() => EXECUTOR_CATEGORIES.map((category) => {
+    const v = workMap.value[category]
+    return {
+      category,
+      tools: toolsByCategory.value[category] || [],
+      userSet: v === true || v === false,
+      on: v === true,
+    }
+  }))
+  // 是否扫描到任何 executor 工具（tools-list 为空 / 未构建时给出空态提示）。
+  const totalTools = computed(() =>
+    EXECUTOR_CATEGORIES.reduce((n, c) => n + ((toolsByCategory.value[c] || []).length), 0)
+  )
+
+  // 是否有未保存改动（只比较三个 executor 类别键）。
+  const dirty = computed(() => {
+    const a = pickExecutorMap(workMap.value)
+    const b = pickExecutorMap(savedMap.value)
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)])
+    for (const k of keys) {
+      if (a[k] !== b[k]) return true
+    }
+    return false
+  })
+  // 是否至少有一个 executor 开关已开启（含待保存态，"已开启沙箱"）。
   const anySandboxOn = computed(() =>
-    Object.values(userMap.value).some((v) => v === true)
+    Object.values(workMap.value).some((v) => v === true)
   )
   // ② 已开启沙箱 且 信任目录为空 → 显著预警（空允许集 = 全拒）。
   // 目录变更经 loadTrustDirs（订阅 data-prj-security-refresh）即时重算 → 警告自动消失。
@@ -57,49 +95,29 @@ export function useToolSandbox() {
     needsTrustDirsWarning({ sandboxOn: anySandboxOn.value, trustDirCount: trustDirCount.value })
   )
 
-  // 用户配置 → 行生效值（未配置的行 = 未设置 / 不隔离）
-  function applyUserConfig() {
-    for (const g of groups.value) {
-      for (const row of g.tools) {
-        const v = userMap.value[row.name]
-        row.userSet = v === true || v === false
-        row.on = v === true
-      }
-    }
-  }
-
   async function loadTools() {
     loading.value = true
     try {
       const env = await mq.emit('tools-list', {})
       const res = env && env.backend && env.backend.result
       const tools = res && Array.isArray(res.tools) ? res.tools : []
-      const byServer = new Map()
+      const byCat = {}
+      for (const c of EXECUTOR_CATEGORIES) byCat[c] = []
       for (const tl of tools) {
         const meta = (tl && tl._meta) || {}
         const category = String(meta.category || '').toLowerCase()
-        if (!RUNTIME_CATEGORIES.includes(category)) continue
-        const srv = meta.server || {}
-        const key = srv.alias || srv.node || 'global'
-        if (!byServer.has(key)) byServer.set(key, [])
-        byServer.get(key).push({
+        if (!EXECUTOR_CATEGORIES.includes(category)) continue
+        byCat[category].push({
           name: tl.name,
           description: tl.description || '',
-          category,
-          // 展示用：网关为暴露名加的前缀（self_/dir_ 等）剥掉后显示（`row.name` 仍作配置键）
-          server: srv,
-          // 来源判定（I-109）：第三方（spawned/proxied）不可施加 agentbox 沙箱 → 页面标注并禁用。
-          // 无 `_meta.server` → null（无法判定，不标注；宁缺勿错）。
-          thirdParty: isThirdPartyProvider(meta),
-          on: false,
-          userSet: false,
+          // 展示用：网关为暴露名加的前缀（self_ 等）剥掉后显示（`name` 仍作完整暴露名 / title）
+          server: meta.server || {},
         })
       }
-      groups.value = [...byServer.entries()].map(([key, list]) => ({ key, tools: list }))
-      applyUserConfig()
+      toolsByCategory.value = byCat
     } catch (e) {
       console.warn('[useToolSandbox] load tools failed:', e)
-      groups.value = []
+      toolsByCategory.value = {}
     } finally {
       loading.value = false
     }
@@ -109,15 +127,17 @@ export function useToolSandbox() {
     try {
       const res = await getUserConfig()
       const uc = res.config || res
-      userMap.value = parseToolSandbox(uc[TOOL_SANDBOX_KEY])
+      const parsed = parseToolSandbox(uc[TOOL_SANDBOX_KEY])
+      savedMap.value = { ...parsed }
+      workMap.value = { ...parsed }
       // 同一次加载顺带取 server 级沙箱开启数（两页状态互见摘要）
       serverSandboxOn.value = countServerSandboxOn(uc.mcpServers)
     } catch (e) {
       console.warn('[useToolSandbox] load user config failed:', e)
-      userMap.value = {}
+      savedMap.value = {}
+      workMap.value = {}
       serverSandboxOn.value = 0
     }
-    applyUserConfig()
   }
 
   // 读项目信任目录（prj `security-*`，既有 data-prj-security-list）→ 有效条目数。
@@ -137,33 +157,37 @@ export function useToolSandbox() {
     await loadTrustDirs()
   }
 
-  // saveUserConfig 是**增量合并**（只写本键，不影响其它配置）。
-  function persist() {
-    return saveUserConfig({ [TOOL_SANDBOX_KEY]: userMap.value })
+  // 拨动 Switch = 只改本地待保存态（不落库）。
+  function setSandbox(category, on) {
+    workMap.value = { ...workMap.value, [category]: !!on }
   }
 
-  // 拨动即写库（true/false）
-  async function setSandbox(row, on) {
-    row.on = !!on
-    row.userSet = true
-    userMap.value = { ...userMap.value, [row.name]: !!on }
-    await persist()
+  // 「恢复未设置」= 从待保存态移除该类别键（不落库；末项清空后整键删除由 save() 决定）。
+  function restore(category) {
+    const next = { ...workMap.value }
+    delete next[category]
+    workMap.value = next
   }
 
-  // 恢复未设置 = 删除该工具键项；最后一项删除后整键删除（不留空对象配置）。
-  async function restore(row) {
-    const next = { ...userMap.value }
-    delete next[row.name]
-    userMap.value = next
-    if (Object.keys(next).length === 0) await resetUserKey(TOOL_SANDBOX_KEY)
-    else await persist()
-    row.on = false
-    row.userSet = false
+  // 手动保存：把待保存态写库。无改动 → 不写（返回 false）。全部类别未设置 → 删整键。
+  async function save() {
+    if (!dirty.value) return false
+    const next = pickExecutorMap(workMap.value)
+    saving.value = true
+    try {
+      if (Object.keys(next).length === 0) await resetUserKey(TOOL_SANDBOX_KEY)
+      else await saveUserConfig({ [TOOL_SANDBOX_KEY]: next })
+      savedMap.value = { ...next }
+      workMap.value = { ...next }
+      return true
+    } finally {
+      saving.value = false
+    }
   }
 
   return {
-    loading, groups, userMap, serverSandboxOn,
-    trustDirCount, anySandboxOn, trustWarning, loadTrustDirs,
-    reload, setSandbox, restore,
+    loading, saving, rows, totalTools, workMap, dirty, anySandboxOn,
+    serverSandboxOn, trustDirCount, trustWarning, loadTrustDirs,
+    reload, setSandbox, restore, save,
   }
 }

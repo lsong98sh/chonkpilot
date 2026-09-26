@@ -38,6 +38,23 @@
           </Tag>
         </template>
         <div class="popover-list">
+          <!-- 通用场景（下拉固定首项）：选中 = 关闭场景 → 走「无场景」通用模式（不注入场景层）。
+               可点 ★ 设为默认（写入 defaultScenario 保留值），重开/重启后仍为通用。 -->
+          <div
+            class="popover-item scenario-item"
+            :class="{ active: !activeScenarioId }"
+          >
+            <span
+              class="scenario-item-name"
+              v-mq:[EventNames.scenarioSelect].click="{ id: '' }"
+            >{{ $t('chat.general_scenario') }}</span>
+            <span
+              class="scenario-item-star"
+              :class="{ on: defaultScenarioId === GENERAL_SCENARIO }"
+              :title="$t('config.setDefaultScenario')"
+              v-mq:[EventNames.scenarioSetDefault].stop.click="{ id: GENERAL_SCENARIO }"
+            >★</span>
+          </div>
           <div
             v-for="s in scenarioOptions"
             :key="s.id"
@@ -109,9 +126,6 @@
               @click="onPickLLM(opt)"
             >
               <span class="llm-item-name">{{ opt.label }}</span>
-              <span v-if="opt.tag" class="llm-item-tag">{{ opt.tag }}</span>
-              <!-- 「系统默认（启动参数）」常驻说明：其指向的默认地址可能不可用（非错误弹窗） -->
-              <span v-if="opt.hint" class="llm-item-hint">{{ opt.hint }}</span>
             </div>
           </div>
         </Popover>
@@ -131,12 +145,14 @@
         >
           <Icon name="effort" :size="14" :color="effortLevel === 'max' ? '#1890ff' : '#999'" />
         </Button>
-        <!-- 截图按钮：隐藏本窗口 → GDI 全屏截图 → 附件（与粘贴/拖入图片同一链路） -->
+        <!-- 截图按钮：隐藏本窗口 → GDI 全屏截图 → 附件（与粘贴/拖入图片同一链路）。
+             仅在所选 LLM 声明「图形」（vision）能力时可用（否则禁用 + 说明 tooltip）。 -->
         <Button
           text
           class="icon-btn"
-          :title="$t('chat.screenshot')"
+          :title="canScreenshot ? $t('chat.screenshot') : $t('chat.screenshot_no_vision')"
           :loading="screenshotting"
+          :disabled="!canScreenshot"
           v-mq:[EventNames.chatScreenshot].click
         >
           <Icon name="screenshot" :size="14" :color="screenshotting ? '#1890ff' : '#999'" />
@@ -160,7 +176,7 @@ import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { getLatestSessionID, getSession, getActiveSessionID, setActiveSessionID } from '../../api/session'
-import { getUserConfig, saveUserConfig, getSystemBuiltins } from '../../api/config'
+import { getUserConfig, saveUserConfig } from '../../api/config'
 import { getScenarioList } from '../../api/scenario'
 import { newSessionId } from '../../api/chat'
 import mq from '../../utils/mq'
@@ -230,14 +246,18 @@ const activeScenarioId = ref(null)
 const scenarioOptions = ref([])
 const scenarioPopoverVisible = ref(false)
 // 用户配置的"默认选中场景"（defaultScenario = 场景目录名/key；空=未配置 → 回退列表第一个）。
+// GENERAL_SCENARIO = 保留值：默认选中「通用场景」（无场景/通用模式）——与"未配置"区分开，
+// 否则"显式选通用"会被 loadScenarioOptions 当作未配置而自动选中第一个场景。
+const GENERAL_SCENARIO = '__general__'
 // 与内置"默认场景"（目录 default）区分：这里是"启动默认选中哪个场景"。
 const defaultScenarioId = ref('')
 
+// 未选场景 = **通用模式**（仅全局层提示词 + 全量 hot 工具），是**合法态**（25 §3）；
+// UI 文案 = 「通用场景」（下拉固定首项，2026-09-26）——不显示「选择场景」。
 const activeScenarioLabel = computed(() => {
-  // 未选场景 = **通用模式**（仅全局层提示词 + 全量 hot 工具），是**合法态**（25 §3）→ 显示「通用模式」而非「选择场景」
-  if (!activeScenarioId.value) return t('chat.general_mode')
+  if (!activeScenarioId.value) return t('chat.general_scenario')
   const found = scenarioOptions.value.find(s => s.id === activeScenarioId.value)
-  return found ? scenarioLabel(found) : t('chat.general_mode')
+  return found ? scenarioLabel(found) : t('chat.general_scenario')
 })
 
 // 合并列表显示层：同名跨级并存时加 -系统/-用户/-项目 后缀（不改目录名；12-数据层）
@@ -260,10 +280,15 @@ async function loadScenarioOptions() {
     scenarioOptions.value = res.scenarios || []
     // 默认选中：当前有效则保持；否则优先"用户配置的默认场景"（defaultScenario），
     // 未配置/已删除则回退列表第一个（与后端 resolveScenario(0) 语义一致）。
+    // 例外：defaultScenario = GENERAL_SCENARIO（显式选「通用场景」）→ 保持通用，不自动选场景。
     const currentValid = activeScenarioId.value && scenarioOptions.value.some(s => s.id === activeScenarioId.value)
     if (!currentValid) {
-      const def = scenarioOptions.value.find(s => s.id === defaultScenarioId.value)
-      activeScenarioId.value = def ? def.id : (scenarioOptions.value[0]?.id || null)
+      if (defaultScenarioId.value === GENERAL_SCENARIO) {
+        activeScenarioId.value = null
+      } else {
+        const def = scenarioOptions.value.find(s => s.id === defaultScenarioId.value)
+        activeScenarioId.value = def ? def.id : (scenarioOptions.value[0]?.id || null)
+      }
     }
   } catch (e) {
     console.error('[ChatPanel] Failed to load scenarios:', e)
@@ -272,12 +297,14 @@ async function loadScenarioOptions() {
 }
 
 // 设为"默认选中场景"（defaultScenario）：保存到用户配置 → 更新星标 → 立即选中。
+// id = GENERAL_SCENARIO 时为「通用场景」（保留值）：默认选中通用 → activeScenarioId 置空。
 async function setDefaultScenario(id) {
   if (!id) return
+  const general = id === GENERAL_SCENARIO
   try {
-    await saveUserConfig({ defaultScenario: id })
-    defaultScenarioId.value = id
-    activeScenarioId.value = id
+    await saveUserConfig({ defaultScenario: general ? GENERAL_SCENARIO : id })
+    defaultScenarioId.value = general ? GENERAL_SCENARIO : id
+    activeScenarioId.value = general ? null : id
     message.success(t('config.defaultScenarioSet'))
   } catch (e) {
     console.warn('[ChatPanel] set default scenario failed:', e)
@@ -286,7 +313,8 @@ async function setDefaultScenario(id) {
 }
 
 function selectScenario(id) {
-  activeScenarioId.value = id
+  // 空 id = 下拉首项「通用场景」→ 归一为 null（无场景，走通用模式）
+  activeScenarioId.value = id || null
 }
 
 // ── Scroll helpers (exposed to parent) ──
@@ -300,13 +328,6 @@ defineExpose({ scrollTop, scrollBottom })
 
 // ── LLM controls ──
 const llmList = ref([]) // usr llms（data-user-config-load，可编辑）
-// 只读内置项（gui.system.builtins 的 builtinLLMs）：kind=default（启动参数 -llm-base/-llm-model
-// 隐含默认）。D-30（2026-09-22）后 kind=builtin（echo）不再注入——echo 降为 router 内置兜底。
-// 不入 usr llms 表，与设置页只读行**同源**。
-const builtinLLMs = ref([])
-// 「系统默认（启动参数）」内置项（kind=default，无 name）的选中值：仅前端内部标识；
-// 组装 llm-start 时映射为空串 → 后端不命中 provider → 回落 exe 启动参数（-llm-base/-llm-model）。
-const SYSTEM_DEFAULT_LLM = '__system_default__'
 const selectedLLM = ref('')
 const thinkEnabled = ref(true)
 const effortLevel = ref('high')
@@ -334,24 +355,14 @@ function closeScreenshot() {
 }
 const llmPopoverVisible = ref(false)
 
-// LLM 选项统一列表（与设置页只读行同源 = builtinLLMs，不各写一份硬编码）：
-// user（usr llms 记录）→ builtin（内置 provider；D-30 后无生产者）→ default（系统默认（启动参数））。
-// value = 发给 llm-start.llm 的 provider name；同名 usr 记录优先于同名内置项（后端命中顺序一致）。
+// LLM 选项列表 = usr llms 记录（value/label = provider name，发给 llm-start.llm）。
 const llmOptions = computed(() => [
   ...llmList.value.map(l => ({ value: l.name || '', label: l.name || '', kind: 'user', model: l.model || '' })),
-  ...builtinLLMs.value.map(b => ({
-    value: b.kind === 'builtin' ? (b.name || '') : SYSTEM_DEFAULT_LLM,
-    label: b.kind === 'builtin' ? (b.name || '') : t('config.llm.systemDefaultName'),
-    tag: b.kind === 'builtin' ? t('config.llm.builtinTag') : t('config.llm.systemDefaultTag'),
-    // 「系统默认（启动参数）」明示其默认地址可能不可用（常驻说明，非错误弹窗）
-    hint: b.kind === 'default' ? t('chat.llm_system_default_hint') : '',
-    kind: b.kind === 'builtin' ? 'builtin' : 'default',
-  })),
 ])
 
-// 选中项 → llm-start.llm 传值（provider name；「系统默认（启动参数）」= 空串，后端回落 exe flags）
+// 选中项 → llm-start.llm 传值（provider name）。
 function selectedLLMPayloadName() {
-  return selectedLLM.value === SYSTEM_DEFAULT_LLM ? '' : selectedLLM.value
+  return selectedLLM.value
 }
 
 const selectedLLMLabel = computed(() => {
@@ -359,9 +370,16 @@ const selectedLLMLabel = computed(() => {
   return opt ? opt.label : t('chat.default_llm')
 })
 
+// 模型能力（usr llms 记录的 capabilities；未声明 → 空数组）
+const selectedLLMCaps = computed(() => {
+  const rec = llmList.value.find(l => (l.name || '') === selectedLLM.value)
+  return rec && Array.isArray(rec.capabilities) ? rec.capabilities : []
+})
+// 截图前提 = 所选 LLM 声明「图形」（vision）能力；未声明 → 按钮禁用（不静默失败）
+const canScreenshot = computed(() => selectedLLMCaps.value.includes('vision'))
+
 // 选择 LLM（本组件选择器）：更新选中态 + 广播当前 LLM（MessageList 的 currentLlm / 待发送队列跟随）。
-// 广播值一律是 llm-start.llm 的 provider name（「系统默认（启动参数）」= 空串），**不带前端哨兵**——
-// 哨兵若外泄会被 MessageList 当作 llm 回填（data.llm || currentLlm）并作为请求体 model 下发。
+// 广播值 = llm-start.llm 的 provider name。
 function onPickLLM(opt) {
   selectLLM(opt.value)
   mq.emit(EventNames.chatSelectLlm, { name: selectedLLMPayloadName() })
@@ -464,9 +482,8 @@ async function handleQueue(text) {
 
 // S25 前端发送前校验 LLM 配置（35-错误处理与恢复 S25）：
 // 无可选项 / 未选中任何 LLM / 选中项缺 model → 返回 i18n key 提示去配置，不发起请求
-// （发送前校验，避免空配置发请求后 401/失败）。内置项（系统默认（启动参数））不校验
-// baseUrl/apiKey/model：启动参数由 exe flags 提供。**D-30 后 echo 不在选项内**，本校验逻辑不变
-//（兜底由 router 承担：无可用 provider 时后端仍能回话，失败则走 needsLLMConfigHint 提示）。
+// （发送前校验，避免空配置发请求后 401/失败）。兜底由 router 承担：无可用 provider 时后端
+// 仍能回话（内置 echo），失败则走 needsLLMConfigHint 提示。
 // apiKey 不在此校验（配置系统本就允许空 key，本地模型无需 key；缺 key 的 401 走 S16 分类）。
 function llmConfigReady() {
   if (!llmOptions.value || llmOptions.value.length === 0) return 'chat.no_llm_configured'
@@ -518,14 +535,11 @@ function handleCancelLLM() {
 }
 
 // 解析 defaultLLM（迁移期两种形态，见 64-配置项一览 §3）→ 选择器 value：
-//   - 字符串 = provider name（usr llms 名）；空串 = 显式「系统默认（启动参数）」
+//   - 字符串 = provider name（usr llms 名）
 //   - 数字 = 旧记录 int 索引（llms[v]；persist 未配置时补 0 / 无 llms 补 -1）
 //   - 名字已失效（改名/删除）/ int 越界 → 回落首个可用 usr LLM（既有语义）；无 usr LLM → ''（未选中）
 function resolveDefaultLLM(v, llist) {
   if (typeof v === 'string') {
-    if (v === '') {
-      return llmOptions.value.some(o => o.value === SYSTEM_DEFAULT_LLM) ? SYSTEM_DEFAULT_LLM : ''
-    }
     if (llmOptions.value.some(o => o.value === v)) return v
   } else if (typeof v === 'number' && v >= 0 && v < llist.length) {
     return llist[v].name || ''
@@ -541,19 +555,11 @@ async function initSession() {
       const uc = ures.config || ures
       // 用户配置的"默认选中场景"（defaultScenario；与内置默认场景区分）
       defaultScenarioId.value = (uc && uc.defaultScenario) || ''
-      // 只读内置项（gui.system.builtins 的 builtinLLMs）：与设置页只读行同源；失败不阻塞聊天
-      try {
-        const b = await getSystemBuiltins()
-        builtinLLMs.value = b.builtinLLMs
-      } catch (e) {
-        console.warn('[ChatPanel] load system builtins failed:', e)
-        builtinLLMs.value = []
-      }
       llmList.value = Array.isArray(uc.llms) ? uc.llms : []
       const picked = resolveDefaultLLM(uc.defaultLLM, llmList.value)
       if (picked) {
         selectedLLM.value = picked
-        // usr 记录 → think/effort 跟随其配置；内置项无这些字段（用缺省）
+        // usr 记录 → think/effort 跟随其配置
         const rec = llmList.value.find(l => l.name === picked)
         if (rec) {
           thinkEnabled.value = rec.thinking !== false
@@ -647,6 +653,12 @@ onMounted(() => {
       if (uc.llms && uc.llms.length > 0) {
         llmList.value = uc.llms
       }
+      // LLM 配置变更（增删/改名/改能力）后：当前选中项已失效或尚未选中 → 重新解析默认 LLM
+      // （否则 llmList 已更新、选择器与「模型能力」判定仍停在旧值，须重载页面才生效）。
+      if (!llmOptions.value.some(o => o.value === selectedLLM.value)) {
+        const picked = resolveDefaultLLM(uc.defaultLLM, llmList.value)
+        if (picked) selectLLM(picked)
+      }
     } catch (e) { console.warn('[ChatPanel] config:refresh error:', e) }
   })
   permanentUnsubs.push(unsubRefresh)
@@ -724,8 +736,10 @@ onMounted(() => {
   })
   permanentUnsubs.push(unsubLlmRetry)
 
-  // 截图：gui.capture（窗口隐藏 + 全屏截图）→ 全屏预览 overlay 拖拽选区域 → 裁剪上传附件
+  // 截图：gui.capture（窗口隐藏 + 全屏截图）→ 全屏预览 overlay 拖拽选区域 → 裁剪上传附件。
+  // 前置：所选 LLM 须声明「图形」能力（按钮已禁用，此处兜底防事件旁路）。
   const unsubScreenshot = mq.on(EventNames.chatScreenshot, async () => {
+    if (!canScreenshot.value) return
     screenshotting.value = true
     try {
       const env = await mq.emit('gui.capture', {})
@@ -886,26 +900,6 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-:deep(.llm-item-tag) {
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--text-muted, #999);
-}
-:deep(.llm-item.active .llm-item-tag) {
-  color: #fff;
-  opacity: 0.85;
-}
-/* 「系统默认（启动参数）」常驻说明：换行独占一行 */
-:deep(.llm-item-hint) {
-  flex-basis: 100%;
-  font-size: 10px;
-  line-height: 1.3;
-  color: var(--text-muted, #999);
-}
-:deep(.llm-item.active .llm-item-hint) {
-  color: #fff;
-  opacity: 0.85;
 }
 :deep(.popover-item:hover) {
   background: var(--bg-hover, #f0f0f0);

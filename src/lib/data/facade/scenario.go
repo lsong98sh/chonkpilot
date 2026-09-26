@@ -1,5 +1,5 @@
 // 本文件是 scenario 域（场景 = **独立根 `scenarios/`**（与 capability/ 平级）
-// `/<场景目录>/` 的场景元素：列举 / 定位 / 保存 / 删除 / 还原出厂）的【数据传输面】（DTO）。
+// `/<场景目录>/` 的场景元素：列举 / 定位 / 保存 / 删除）的【数据传输面】（DTO）。
 //
 // ── 为什么是「领域字段」而不是存储结构 ───────────────────────────────
 // 存储形状（内核事实）：场景 = 三级场景根（app / user / project）下 `<场景目录>/` 目录，内含
@@ -13,8 +13,9 @@
 //     门面保留该领域字段，写入时由实现侧归并到主 agent（不单独落盘）。**场景层提示词不再取用
 //     本字段**：系统提示词由 `llm/server` 侧按 [25-MCP与场景分层模型 §3] 三层（全局 / 场景 /
 //     agent）**自行拼接**（场景层 = `description` + 团队成员段；主 agent 的 prompt 归 agent 层）；
-//   - 级别（app / user / project）是**领域归属**（app = 随发布只读，user / project 可写），
-//     门面只承载级别语义，路径解析在实现侧（23 §7：门面不交路径规则）。
+//   - 级别（app / user / project）是**领域归属**（**三级均可写**；app 级自 2026-09-26 起可编辑，
+//     出厂内容由 embed 提供、app 初始化时缺失即物化），门面只承载级别语义，路径解析在实现侧（23 §7：
+//     门面不交路径规则）。
 //
 // agent 的扩展字段（工具白名单 / LLM 引用 / 委派条件）为**可选**（缺省 = 不设白名单 /
 // 继承默认 LLM / 无委派条件），故用领域字段承载、空值不输出。
@@ -95,7 +96,7 @@ type ScenarioGetResponse struct {
 	Scenario Scenario `json:"scenario"`
 }
 
-// ScenarioSaveRequest 是场景保存入参（按 ID 落目录；级别只允许 user / project）。
+// ScenarioSaveRequest 是场景保存入参（按 ID 落目录；级别可为 app / user / project）。
 // ⚠️ id 全局唯一（跨级亦然）：id 已存在于**其它**级别 → 实现侧拒绝（无覆盖语义）。
 type ScenarioSaveRequest struct {
 	// InstanceID 实例 id。
@@ -114,13 +115,13 @@ type ScenarioSaveResponse struct {
 	ID string `json:"id"`
 }
 
-// ScenarioDeleteRequest 是场景删除入参（前两个可写级别中的第一个；app 级只读）。
+// ScenarioDeleteRequest 是场景删除入参（app / user / project 三级均可删）。
 type ScenarioDeleteRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id,omitempty"`
 	// ScenarioID 场景 id（必填）。
 	ScenarioID string `json:"scenario_id"`
-	// Level 指定级别（空 = 具体级优先查找可写副本）。
+	// Level 指定级别（空 = 具体级优先 project → user → app 查找实际存在的副本）。
 	Level string `json:"level,omitempty"`
 	// Scope 实例数据根（可选；语义同上）。
 	Scope Scope `json:"scope,omitempty"`
@@ -128,22 +129,6 @@ type ScenarioDeleteRequest struct {
 
 // ScenarioDeleteResponse 是场景删除出参。
 type ScenarioDeleteResponse struct {
-	// OK 是否成功（失败走 error）。
-	OK bool `json:"ok"`
-}
-
-// ScenarioRestoreRequest 是场景还原入参（用出厂默认覆盖本机副本）。
-type ScenarioRestoreRequest struct {
-	// InstanceID 实例 id。
-	InstanceID string `json:"instance_id,omitempty"`
-	// ScenarioID 场景 id（空 = 出厂默认场景）。
-	ScenarioID string `json:"scenario_id,omitempty"`
-	// Scope 实例数据根（可选；语义同上）。
-	Scope Scope `json:"scope,omitempty"`
-}
-
-// ScenarioRestoreResponse 是场景还原出参。
-type ScenarioRestoreResponse struct {
 	// OK 是否成功（失败走 error）。
 	OK bool `json:"ok"`
 }

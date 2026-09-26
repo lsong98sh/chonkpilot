@@ -1,10 +1,11 @@
 // 工具级覆盖**下沉 gateway 统一施加**（I-82）白盒：
 //   - tool_async 按**暴露名**覆盖第三方（孤儿键修复）→ tools/list 的 `_meta` 变化 + doCall 生效；
-//   - tool_sandbox 按提供方归属归一到 mcp-server 契约名（builtin dir 节点；第三方不可施加）。
+//   - tool_sandbox 为 **executor 级**（key = 类别 core/desktop/browser，2026-09-26 起）→ 直接写入
+//     共享执行配置（无需按提供方归属归一）。
 //
 // RB-2（2026-09-21）：gateway lib 不再依赖 chonkpilot-mcp-server 包 —— dir 扫描经注入的
 // `ContractScanner`（本文件用 fake），沙箱开关经注入的 `SandboxConfig` 窄接口（本文件用 fake 记录
-// 写入的契约名键位）。断言语义与改前一致（映射目标键位 = 契约名）。
+// 写入的 executor 类别键位）。
 package mcpgateway
 
 import (
@@ -34,7 +35,7 @@ func (f fakeScanner) Scan(root string) (*mcp.Server, error) {
 	return ms, nil
 }
 
-// fakeSandboxCfg 是 SandboxConfig 的测试替身：记录最近一次写入的契约名开关表。
+// fakeSandboxCfg 是 SandboxConfig 的测试替身：记录最近一次写入的 executor 类别开关表。
 type fakeSandboxCfg struct {
 	mu  sync.Mutex
 	eff map[string]bool
@@ -47,11 +48,11 @@ func (f *fakeSandboxCfg) SetToolSandbox(eff map[string]bool) bool {
 	return true
 }
 
-// enabled 报告最近一次写入中该契约名是否开启隔离。
-func (f *fakeSandboxCfg) enabled(contract string) bool {
+// enabled 报告最近一次写入中该 executor 类别是否开启隔离。
+func (f *fakeSandboxCfg) enabled(category string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.eff[contract]
+	return f.eff[category]
 }
 
 // toolMetaByName 从 tools/list 结果里取指定工具名的 `_meta`（无 → nil）。
@@ -112,9 +113,9 @@ func TestToolAsyncOverrideAffectsDoCall(t *testing.T) {
 	}
 }
 
-// TestSandboxOverrideMapsDirNodeToolToContract：dir 节点工具（执行经本仓 executor）开启
-// tool_sandbox → 共享执行配置的**契约名键位**生效；未开启 → 不隔离。
-func TestSandboxOverrideMapsDirNodeToolToContract(t *testing.T) {
+// TestSandboxOverrideForwardsExecutorCategories：executor 级开关表（key = 类别
+// core/desktop/browser）直接写入共享执行配置，无需按提供方归属归一（类别是全局的）。
+func TestSandboxOverrideForwardsExecutorCategories(t *testing.T) {
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
 		t.Fatalf("bus: %v", err)
@@ -132,23 +133,26 @@ func TestSandboxOverrideMapsDirNodeToolToContract(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = g.Stop(context.Background()) })
 
-	// dir 节点：契约扫描经注入的 scanner（原语名 = sbx_tool）
+	// dir 节点注册（路由存在与否不再影响转发口径）
 	if err := g.registerDirNode("pd", "irrelevant", ""); err != nil {
 		t.Fatalf("registerDirNode: %v", err)
 	}
 
 	// 未开启 → 不隔离
-	if cfg.enabled("sbx_tool") {
+	if cfg.enabled("core") {
 		t.Fatal("未开启时不应隔离")
 	}
-	// 按 dir 节点工具的**暴露名**（pd_sbx_tool）开启 → 归一到契约名 sbx_tool 后生效
-	g.SetSandboxOverrides(map[string]bool{"pd_sbx_tool": true})
-	if !cfg.enabled("sbx_tool") {
-		t.Fatal("dir 节点工具开启 sandbox 后应在共享执行配置生效")
+	// 按 executor 类别开启 → 直接写入共享执行配置
+	g.SetSandboxOverrides(map[string]bool{"core": true, "browser": true})
+	if !cfg.enabled("core") || !cfg.enabled("browser") {
+		t.Fatal("executor 类别开启后应在共享执行配置生效")
+	}
+	if cfg.enabled("desktop") {
+		t.Fatal("未开启的类别不应隔离")
 	}
 	// 关闭 → 收回
-	g.SetSandboxOverrides(map[string]bool{"pd_sbx_tool": false})
-	if cfg.enabled("sbx_tool") {
+	g.SetSandboxOverrides(map[string]bool{"core": false})
+	if cfg.enabled("core") {
 		t.Fatal("关闭后应收回隔离")
 	}
 }

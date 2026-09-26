@@ -36,7 +36,7 @@ export const SNAPSHOT_SCALAR_KEYS = [
 ]
 
 /** 自由键（persist `userConfigFreeKeys`）：无类型无默认，值以字符串形态存取 */
-export const SNAPSHOT_FREE_KEYS = ['recent_dirs', 'tool_async', 'tool_sandbox']
+export const SNAPSHOT_FREE_KEYS = ['recent_dirs', 'tool_async', 'tool_sandbox', 'memory_prompts']
 
 /** 集合键（persist `collectionKeys` → usr 专用表 llms / mcps） */
 export const SNAPSHOT_COLLECTION_KEYS = ['llms', 'mcpServers']

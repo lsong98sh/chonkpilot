@@ -10,7 +10,8 @@
 // SetAsyncOverrides / SetSandboxOverrides 注入**已归一**的覆盖表，gateway 在
 //   - 构造 tools/list 的 `_meta`（handleToolsList）时按**暴露名**再应用一次（async / async-threshold）；
 //   - doCall 的异步判定处按暴露名应用（mode / threshold）；
-//   - 沙箱：按提供方归属归一到 mcp-server 契约名后写入共享 Config（仅 builtin：self / dir 节点）。
+//   - 沙箱：**executor 级**（key = 类别 core/desktop/browser，2026-09-26 起）→ 直接写入共享
+//     Config（category 全局，无需按提供方归属归一）。
 //
 // **零新增 MQ 主题**、**不改既有 payload 形状**（取值落在既有 tools/list `_meta` 内）。
 package mcpgateway
@@ -29,8 +30,9 @@ type ToolAsyncOverride struct {
 }
 
 // SandboxConfig 是 dir 节点 / self **共享的执行配置**窄接口（RB-2：依赖倒置，同 ExecSink 手法）：
-// gateway 只经它把工具级沙箱开关（契约名键位）写入执行侧，**不依赖具体 mcp-server 类型**。
-// 实现方 = 装配方持有的 mcp-server 执行配置（方法签名与其 `SetToolSandbox` 一致）。
+// gateway 只经它把 executor 级沙箱开关（类别键位 core/desktop/browser）写入执行侧，
+// **不依赖具体 mcp-server 类型**。实现方 = 装配方持有的 mcp-server 执行配置
+// （方法签名与其 `SetToolSandbox` 一致）。
 type SandboxConfig interface {
 	SetToolSandbox(eff map[string]bool) bool
 }
@@ -39,7 +41,7 @@ type SandboxConfig interface {
 type toolOverrideState struct {
 	mu      sync.RWMutex
 	async   map[string]ToolAsyncOverride
-	sandbox map[string]bool
+	sandbox map[string]bool // key = executor 类别（core/desktop/browser）
 }
 
 // SetAsyncOverrides 注入工具级异步覆盖表（key = 暴露名）。nil/空 = 清空（回落契约现值）。
@@ -49,8 +51,13 @@ func (g *Gateway) SetAsyncOverrides(m map[string]ToolAsyncOverride) {
 	g.tov.mu.Unlock()
 }
 
-// SetSandboxOverrides 注入工具级沙箱开关表（key = 暴露名），并**同时重算**执行侧 Config 的
-// 契约名开关表（仅 builtin 提供方：self / dir 节点；第三方无 executor 可施加，跳过）。
+// SetSandboxOverrides 注入 **executor 级**沙箱开关表（key = executor 类别 core/desktop/browser），
+// 并写入共享执行配置（`SandboxConfig.SetToolSandbox`）。
+//
+// 语义（2026-09-26 决策：沙箱由工具级改为 executor 级）：开关按**工具所属 executor 类别**生效
+// （= 契约 `_meta.category`），仅本仓 spawn 的 builtin executor 消费；第三方（spawned/proxied）
+// MCP 在第三方进程内执行、无本仓 executor → 本表不施加（其沙箱另见 usr `mcps[].sandbox`，
+// 仅 stdio 且须第三方实现 agentbox 消费方）。**旧形态（按工具暴露名）不再生效**。
 func (g *Gateway) SetSandboxOverrides(m map[string]bool) {
 	g.tov.mu.Lock()
 	g.tov.sandbox = m
@@ -67,13 +74,6 @@ func (g *Gateway) asyncOverride(exposed string) (ToolAsyncOverride, bool) {
 	}
 	ov, ok := g.tov.async[exposed]
 	return ov, ok
-}
-
-// sandboxEnabled 取某暴露名的沙箱开关（未配置 → false）。
-func (g *Gateway) sandboxEnabled(exposed string) bool {
-	g.tov.mu.RLock()
-	defer g.tov.mu.RUnlock()
-	return g.tov.sandbox[exposed]
 }
 
 // applyAsyncOverrideMeta 把异步覆盖写入 tools/list 的 `_meta` 副本（语义与
@@ -99,67 +99,16 @@ func applyAsyncOverrideMeta(meta map[string]any, ov ToolAsyncOverride) {
 	}
 }
 
-// applySandboxToConfig 把暴露名开关表归一到 mcp-server 执行配置的契约名键位：
-//
-//   - 仅 **builtin in-memory 提供方**（self 节点 / dir 目录节点——执行经本仓 spawn 的
-//     chonkpilot-mcp-tools executor）可施加 agentbox；第三方（spawned/proxied）工具在第三方
-//     进程内执行，无法注入，跳过（server 级 `mcps[].sandbox` 另论）；
-//   - self 节点 handler 的契约名查找 = `self_<契约名>`（SandboxPolicyFor 首选键），故写该键；
-//   - dir 节点 handler 与 self **共用同一份 Config**（Params.MCPConfig），契约名空间相同 →
-//     若某契约名同时存在于 self 与 dir，则无法用单个键位区分（SandboxPolicyFor 只接受契约名）
-//     → **跳过该 dir 契约**（保守：宁可不隔离，不误隔离 self；已在报告中列为共名限制）；
-//   - 其余 dir 契约写 `<契约名>`（self 无同名契约 → 不会误命中 self）。
+// applySandboxToConfig 把 executor 级开关表写入**共享执行配置**（key 已是 executor 类别，
+// 无需按提供方归属归一——类别是全局的，只有本仓 spawn 的 executor 会消费）。
+// 无共享执行配置（独立 gateway / 单测）时无执行侧可施加，直接返回。
 func (g *Gateway) applySandboxToConfig() {
 	cfg := g.params.MCPConfig
 	if cfg == nil {
-		return // 无共享执行配置（独立 gateway/单测）：无执行侧可施加
+		return
 	}
 	g.tov.mu.RLock()
 	sb := g.tov.sandbox
 	g.tov.mu.RUnlock()
-
-	selfContracts := map[string]bool{}
-	dirOn := []string{}
-	eff := map[string]bool{}
-	for _, rt := range g.reg.routesAll() {
-		ps, ok := g.reg.provider(rt.Provider)
-		if !ok || ps.prov == nil {
-			continue
-		}
-		mnp, ok := ps.prov.(*memNodeProvider)
-		if !ok || !mnp.inject {
-			continue // 非 builtin in-memory（第三方）→ 无本仓 executor，跳过
-		}
-		isDir := ps.entry != nil && ps.entry.Category == "dir"
-		if !isDir {
-			// self（或其它 builtin memNode）：先收集契约名空间，稍后按开关写 self_ 键
-			selfContracts[rt.Original] = true
-			continue
-		}
-		if sb[rt.Name] {
-			dirOn = append(dirOn, rt.Original)
-		}
-	}
-	// self：按暴露名命中 → 写 self_<契约名>（仅写 true；未开关不写键，默认不隔离）
-	for _, rt := range g.reg.routesAll() {
-		ps, ok := g.reg.provider(rt.Provider)
-		if !ok || ps.prov == nil {
-			continue
-		}
-		mnp, ok := ps.prov.(*memNodeProvider)
-		if !ok || !mnp.inject || (ps.entry != nil && ps.entry.Category == "dir") {
-			continue
-		}
-		if sb[rt.Name] {
-			eff["self_"+rt.Original] = true
-		}
-	}
-	// dir：跳过与 self 共名的契约（无法区分，保守不隔离）
-	for _, contract := range dirOn {
-		if selfContracts[contract] {
-			continue
-		}
-		eff[contract] = true
-	}
-	cfg.SetToolSandbox(eff)
+	cfg.SetToolSandbox(sb) // nil/空 → 清空（= 全部 executor 不隔离）
 }

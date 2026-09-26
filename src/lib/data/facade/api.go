@@ -102,25 +102,22 @@ type FileListAPI interface {
 	FileListDelete(req FileListDeleteRequest) (FileListDeleteResponse, error)
 }
 
-// ScenarioAPI 是 scenario 域（场景：列举 / 定位 / 保存 / 删除 / 还原出厂）门面面。
+// ScenarioAPI 是 scenario 域（场景：列举 / 定位 / 保存 / 删除）门面面。
 //
-// 写入（Save / Delete / Restore）后由实现侧广播既有 `data-scenario-refresh` —— 订阅面
+// 写入（Save / Delete）后由实现侧广播既有 `data-scenario-refresh` —— 订阅面
 // 不在本请求-响应签名内（23 §7）。
 type ScenarioAPI interface {
-	// ScenarioList 列举场景（合并三级根；首次由实现侧物化出厂默认场景）。
+	// ScenarioList 列举场景（合并三级根；首次由实现侧物化 app 级出厂场景）。
 	ScenarioList(req ScenarioListRequest) (ScenarioListResponse, error)
 
 	// ScenarioGet 按 id 定位场景（Level 空 = 具体级优先 project → user → app）。
 	ScenarioGet(req ScenarioGetRequest) (ScenarioGetResponse, error)
 
-	// ScenarioSave 保存场景（级别只允许 user / project；app 级 = 复制到本机再改）。
+	// ScenarioSave 保存场景（级别可为 user / project / app：app 级可编辑）。
 	ScenarioSave(req ScenarioSaveRequest) (ScenarioSaveResponse, error)
 
-	// ScenarioDelete 删除场景（app 级只读；Level 空 = 具体级优先找可写副本）。
+	// ScenarioDelete 删除场景（Level 空 = 具体级优先查找副本）。
 	ScenarioDelete(req ScenarioDeleteRequest) (ScenarioDeleteResponse, error)
-
-	// ScenarioRestore 用出厂默认还原场景（覆盖本机副本）。
-	ScenarioRestore(req ScenarioRestoreRequest) (ScenarioRestoreResponse, error)
 }
 
 // MemoryAPI 是 memory 域（记忆库：类别清单 / 全文读写 / 删自定义类别）门面面。

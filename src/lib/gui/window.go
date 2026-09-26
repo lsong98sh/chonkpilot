@@ -66,7 +66,6 @@ type hostEnv struct {
 	prjUsrRoot     string // prjusr 数据根（附件/截图落盘根；[24 §3.2] MW-8）
 	logDir         string
 	form           string
-	builtinLLMs    []bridge.BuiltinLLM
 	srv            *server.Server // nil = --no-server（UI 注入测试模式）
 	windows        *windowRegistry
 	// testSrv 是 --test-port 的测试通道（未传 --test-port 时为 nil）：对话窗口建窗时经
@@ -212,8 +211,6 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		// config 类 data-* 走数据门面（同进程直调）；未接线（-no-server）时回落总线转发。
 		h.br.SetFacade(inline.New(env.bus))
 	}
-	// 只读 LLM 条目注入桥（LLM 配置页顶部「系统默认（启动参数）」只读行，见 64 §11.1）。
-	h.br.SetLLMBuiltins(env.builtinLLMs)
 	// B3：DevTools 用户入口已在 WebViewOptions 屏蔽；把「程序化打开」能力注入桥
 	// （gui.devtools.open）。OpenDevToolsWindow 走 Dispatch 派发到 WebView2 UI 线程。
 	if dt, ok := w.(webview2.DevTools); ok {

@@ -9,17 +9,28 @@ run_config_ui.py B2、run_tool_async.py:169-198。）
 
 覆盖矩阵（每条 = A + B；B 必须有可观测证据，不以「保存成功」充数）
   M1 全字段哨兵落库（A）  ：一条 stdio 条目 + 一条 http 条目，每字段互不相同哨兵 →
-      data-user-config-load 逐字段回读（env 多键 / headers 多键 / cwd / timeout / hot_tools /
-      runtime / args / transport / description / category / url / enabled）
+      data-user-config-load 逐字段回读（env 多键 / headers 多键 / cwd / timeout /
+      runtime / args / transport / description / url / enabled；hot_tools 默认空）
   M2 transport=stdio（B） ：回读 transport=="stdio"（M1）+ tools-list 出现该 server 工具
       （证明按 stdio 真实拉起了 runtime+args 子进程）+ probe_info 回显 argv == 配置 args
   M3 cwd 效果（B）        ：probe_info 回显**子进程真实 cwd** == 配置 cwd
   M4 env 效果（B）        ：probe_info 回显 PROBE_* 注入成功 + 值内 ${VAR} 展开语义
   M5 isolate 三态（A+B）  ：①未拨动 → 键不存在（= 按 transport 推断）+ 跨 work_dir 子进程 pid 不同；
       ②显式 true → 回读 true + 跨 work_dir pid 不同；③显式 false → 回读 false + 跨 work_dir pid 相同
-  M6 hot_tools 效果（B）  ：配置「下游原名」→ 该工具 _meta.hot=true（未列入者无）；清空 → 标记消失；
-      并做**重启后工具面**对照（重启 = 启动期装配路径，同样带 hot_tools → _meta.hot 不变）
+  M8 sandbox 三态（A）    ：①stdio 未拨动 → 缺键；拨开 → 回读 true；拨关 → 回读 false；
+      ②http 条目开关禁用（仅 stdio 的 spawn 可隔离）
+  M6 hot_tools 效果（B）  ：经「设置」弹窗勾选单个工具 → 写库为**下游原名** → 该工具 _meta.hot=true
+      （未列入者无）；清空 → 标记消失；并做**重启后工具面**对照（重启 = 启动期装配路径，
+      同样带 hot_tools → _meta.hot 不变）
+  M9 hot_tools「全部」+ 空态（A+B）：勾「全部」→ 写库 `["*"]` → 全部工具 _meta.hot=true；
+      另验空态（无工具 server → 提示而非列表）+ 弹窗展示名 = 原名、data-tool = 暴露名
   M7 enabled=false（B）   ：列表开关点击保存 → 工具面**不含**该 server 工具（保存即生效 T-25）
+
+2026-09-26 弹窗重构：拆「基本信息 / 运行信息」两页签（Tabs 只渲染当前页签 → 跨页字段先切页签）；
+「分类」输入摘除（后端字段保留）；isolate / sandbox 归入「运行信息」页。
+2026-09-26 高频工具改造：原「高频工具」逗号分隔文本框**已摘除**，改为「高频工具」行（摘要 + 设置
+按钮）→ 独立弹窗 `SetMCPHotToolsDialog.vue` 按别名列出该 server 工具勾选（数据源 = 既有
+`tools-list`，**零新增消息面**）；写库仍为**原名**列表（`"*"` = 全部 hot），主对话框「保存」时才落库。
 
 观测渠道（**全部为 61-消息一览既有主题，零新增**）
   data-user-config-load / -save / -delete（§3）· tools-list（§4.5 客户端能力面）
@@ -65,7 +76,6 @@ TOOL_INFO = NAME + "_probe_info"      # 暴露名 = 默认前缀 <id>_ + 下游�
 TOOL_PID = NAME + "_probe_pid"
 MARKER = "M-9917"
 ARGV = [FIXTURE, "--marker", MARKER]
-CAT = "probe-cat-7731"
 DESC = "probe-desc-4477-描述哨兵"
 TIMEOUT_S = 7
 HTTP_TIMEOUT_S = 5
@@ -78,14 +88,16 @@ CWD_DIR = _h.tmp_dir("ck-mcpf-cwd-")  # 配置给子进程的工作目录（必�
 WD_A = WS                             # 隔离观测用 project A（= GUI 工作目录）
 WD_B = _h.tmp_dir("ck-mcpf-wd2-")     # 隔离观测用 project B（另一个 work_dir）
 
+LBL_TAB_BASIC = ["基本信息", "Basic"]
+LBL_TAB_RUNTIME = ["运行信息", "Runtime"]
 LBL_NAME = ["名称", "Name"]
 LBL_ENABLED = ["启用", "Enabled"]
-LBL_CAT = ["分类", "Category"]
 LBL_URL = ["服务地址", "Server URL"]
 LBL_RUNTIME = ["运行时", "Runtime"]
 LBL_ARGS = ["启动参数", "Args"]
 LBL_CWD = ["工作目录", "Cwd"]
 LBL_ISO = ["按项目隔离", "Isolate"]
+LBL_SANDBOX = ["沙箱", "Sandbox"]
 LBL_TIMEOUT = ["超时", "Timeout"]
 LBL_HOT = ["高频工具", "Hot Tools"]
 LBL_DESC = ["描述", "Description"]
@@ -377,6 +389,117 @@ def click_switch(label_cands):
     return switch_state(label_cands)
 
 
+def switch_enabled(label_cands):
+    """开关是否可交互（.b-switch 无 is-disabled）。"""
+    return ev(_dlg(_ITEM_JS % json.dumps(label_cands, ensure_ascii=False) +
+                   "if(!it)return null;const sw=it.querySelector('.b-switch');"
+                   "return sw?!sw.classList.contains('is-disabled'):null;"))
+
+
+def click_tab(label_cands):
+    """切换弹窗页签（.b-tabs-item，2026-09-26 起弹窗拆「基本信息 / 运行信息」）。
+
+    Tabs 只渲染当前页签内容 → 跨页字段必须先切页签再断言/填表。
+    """
+    r = ev(_dlg("const T=[...R.querySelectorAll('.b-tabs-item')].find(x=>%s.some(c=>x.textContent.includes(c)));"
+                "if(!T)return 'no-tab';T.click();return 'ok';" % json.dumps(label_cands, ensure_ascii=False)))
+    if r != "ok":
+        raise TestError("切换页签失败（≈%s）：%s" % (label_cands, r))
+    time.sleep(0.5)
+
+
+# ── 高频工具「设置」弹窗（SetMCPHotToolsDialog，2026-09-26）──────────────
+# 主对话框「运行信息」页签「高频工具」行的【设置】按钮打开；数据源 = 既有 tools-list。
+
+def hot_dlg(inner):
+    """在**可见的高频工具设置弹窗**内执行 inner（内嵌 R）；非该弹窗 → 返回 null。"""
+    return ("(function(){const R=[...document.querySelectorAll('.dialog-shell')]"
+            ".find(e=>e.getBoundingClientRect().width>0&&e.querySelector('.mcp-hot-tools-dialog-body'));"
+            "if(!R)return null;" + inner + "})()")
+
+
+def hot_summary():
+    """主对话框「高频工具」行的摘要文字（未设置 / 全部 / 已选 N 个）。"""
+    return ev(_dlg(_ITEM_JS % json.dumps(LBL_HOT, ensure_ascii=False) +
+                   "if(!it)return null;const s=it.querySelector('.hot-tools-summary');"
+                   "return s?s.textContent.trim():null;"))
+
+
+def open_hot_dialog():
+    """点主对话框「高频工具」行的【设置】按钮 → 等高频工具弹窗出现并加载完成。
+
+    `data-loading` 归零判据走 `str(st)=="0"`：测试通道 eval 结果会被 JSON 解析（"0" → int 0）。
+    """
+    r = ev(_dlg("const b=R.querySelector('[data-hot-tools-set]');if(!b)return 'no-btn';b.click();return 'ok';"))
+    if r != "ok":
+        raise TestError("高频工具【设置】按钮不可点：%s" % r)
+    if not wait_vis(".mcp-hot-tools-dialog-body", 10):
+        raise TestError("高频工具设置弹窗未打开（data-hot-tools-set → SetMCPHotToolsDialog）")
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        st = ev(hot_dlg("const b=R.querySelector('.hot-tools-body');"
+                        "return b?b.getAttribute('data-loading'):'-';"))
+        if str(st) == "0":
+            time.sleep(0.2)
+            return
+        time.sleep(0.3)
+    raise TestError("高频工具弹窗加载未完成（data-loading=%r）" % (st,))
+
+
+def hot_dialog_tools():
+    """当前弹窗内工具行：[{exposed(data-tool), display, checked, disabled}]。"""
+    return ev(hot_dlg("return [...R.querySelectorAll('.hot-tool-item')].map(x=>{"
+                      "const n=x.querySelector('.hot-tool-name');"
+                      "return {exposed:x.getAttribute('data-tool'),display:n?n.textContent.trim():'',"
+                      "checked:!!x.querySelector('input').checked,disabled:!!x.querySelector('input').disabled};});"))
+
+
+def hot_toggle(exposed):
+    """按暴露名（data-tool）勾选/取消该工具（禁用态 → 报错）。"""
+    r = ev(hot_dlg("const it=R.querySelector('.hot-tool-item[data-tool=%s]');"
+                   "if(!it)return 'no-item';const cb=it.querySelector('input');if(cb.disabled)return 'disabled';"
+                   "cb.click();return 'ok';" % json.dumps(exposed)))
+    if r != "ok":
+        raise TestError("高频工具勾选失败（%s）：%s" % (exposed, r))
+    time.sleep(0.3)
+
+
+def hot_toggle_all():
+    """勾/取消「全部工具」复选框。"""
+    r = ev(hot_dlg("const cb=R.querySelector('[data-hot-all]');if(!cb)return 'no-all';cb.click();return 'ok';"))
+    if r != "ok":
+        raise TestError("高频工具「全部」勾选失败：%s" % r)
+    time.sleep(0.3)
+
+
+def hot_dialog_empty():
+    """弹窗空态提示文字（无工具行；非空态 → null）。"""
+    return ev(hot_dlg("const e=R.querySelector('.hot-tools-empty');return e?e.textContent.trim():null;"))
+
+
+def hot_confirm():
+    """点弹窗内【确定】→ 等该弹窗关闭（回填主对话框，不落库）。"""
+    r = ev(hot_dlg("const b=R.querySelector('[data-hot-confirm]');if(!b)return 'no-btn';b.click();return 'ok';"))
+    if r != "ok":
+        raise TestError("高频工具弹窗【确定】不可点：%s" % r)
+    deadline = time.time() + 6
+    while time.time() < deadline and vcount(".mcp-hot-tools-dialog-body") > 0:
+        time.sleep(0.2)
+    if vcount(".mcp-hot-tools-dialog-body") > 0:
+        raise TestError("高频工具弹窗点【确定】后未关闭")
+    time.sleep(0.3)
+
+
+def hot_cancel():
+    """点弹窗内【取消】→ 等该弹窗关闭（不改主对话框值）。"""
+    r = ev(hot_dlg("const b=R.querySelector('[data-hot-cancel]');if(!b)return 'no-btn';b.click();return 'ok';"))
+    if r != "ok":
+        raise TestError("高频工具弹窗【取消】不可点：%s" % r)
+    deadline = time.time() + 6
+    while time.time() < deadline and vcount(".mcp-hot-tools-dialog-body") > 0:
+        time.sleep(0.2)
+
+
 # ══════════════════════════════════════════════════════════
 # M1 全字段哨兵落库（A）
 # ══════════════════════════════════════════════════════════
@@ -384,24 +507,33 @@ def click_switch(label_cands):
 def case_m1_fields_roundtrip():
     """M1（A）：经 EditMCPDialog 逐字段填**互不相同哨兵** → 保存 → data-user-config-load 逐字段回读。
 
-    条目 1 = stdio（runtime/args/cwd/env/timeout/hot_tools/description/category/enabled/transport）
+    条目 1 = stdio（runtime/args/cwd/env/timeout/description/enabled/transport；hot_tools 默认空）
     条目 2 = http（url/headers 多键/enabled=false）——headers 只在 http/sse 语义下有意义。
+    2026-09-26 起弹窗拆「基本信息 / 运行信息」两页签（Tabs 只渲染当前页签）→ 填表按页签切换；
+    「分类」输入已摘除（后端字段保留，供 servers.list 分组用，本用例不再断言）。
+    2026-09-26 起「高频工具」文本框摘除 → 本用例只验默认态（行摘要「未设置」+ 默认落库空列表），
+    实际勾选（原名 / "*"）由 M6 / M9 走「设置」弹窗覆盖。
     isolate 本用例**不拨动** → 断言落库无该键（三态之「未设置」）。
     """
     remove_entries([NAME, HTTP_NAME])  # 幂等清理（页面未挂载 → 索引与库一致）
     open_page()
 
-    # ── 条目 1：stdio 全字段 ──
+    # ── 条目 1：stdio 全字段（基本信息页 + 运行信息页）──
     open_new()
-    set_transport("stdio")
+    set_transport("stdio")               # 传输方式在「基本信息」页
     fill(LBL_NAME, NAME)
-    fill(LBL_CAT, CAT)
+    fill(LBL_TIMEOUT, str(TIMEOUT_S))
+    fill(LBL_DESC, DESC)
+    click_tab(LBL_TAB_RUNTIME)           # 连接/运行字段在「运行信息」页
     fill(LBL_RUNTIME, PY)
     fill(LBL_ARGS, "\n".join(ARGV))
     fill(LBL_CWD, CWD_DIR)
-    fill(LBL_TIMEOUT, str(TIMEOUT_S))
-    fill(LBL_HOT, ", ".join(HOT))
-    fill(LBL_DESC, DESC)
+    # 高频工具（2026-09-26 起无文本输入框）：本条目尚未保存/注册 → 展开弹窗亦无工具可勾；
+    # 此处只验「行 = 摘要 + 设置按钮」默认态（未设置）；实际勾选落库由 M6/M9 覆盖。
+    if hot_summary() is None:
+        raise TestError("「运行信息」页签缺高频工具行（摘要）")
+    if "未设置" not in (hot_summary() or ""):
+        raise TestError("高频工具默认应显示「未设置」，实际 %r" % hot_summary())
     fill(LBL_ENV, "\n".join(ENV_LINES))
     # isolate 三态 ①：未拨动 → 提示「自动…」+ 开关显示按 transport 推断（stdio → 开）
     hint = field_hint(LBL_ISO) or ""
@@ -409,6 +541,7 @@ def case_m1_fields_roundtrip():
         raise TestError("isolate 未拨动时提示应含「自动（未设置…）」：%r" % hint)
     if switch_state(LBL_ISO) is not True:
         raise TestError("transport=stdio 未拨动 isolate → 开关应显示推断值 true")
+    click_tab(LBL_TAB_BASIC)             # 「启用」在「基本信息」页
     if click_switch(LBL_ENABLED) is not True:
         raise TestError("点击「启用」开关未置为开（DEFAULT_MCP.enabled=false）")
     save_dialog()
@@ -417,18 +550,18 @@ def case_m1_fields_roundtrip():
 
     expect(e1, "enabled", True, "enabled")
     expect(e1, "transport", "stdio", "transport")
-    expect(e1, "category", CAT, "category")
     expect(e1, "description", DESC, "description")
     expect(e1, "runtime", PY, "runtime")
     expect(e1, "args", ARGV, "args")
     expect(e1, "cwd", CWD_DIR, "cwd")
     expect(e1, "timeout", TIMEOUT_S, "timeout")
-    expect(e1, "hot_tools", HOT, "hot_tools")
+    # hot_tools：弹窗勾选改由 M6/M9 覆盖（本条目保存前未注册 → 弹窗无工具可勾）→ 默认空列表
+    expect(e1, "hot_tools", [], "hot_tools（默认空）")
     expect(e1, "env", ENV_LINES, "env（多键）")
     if "isolate" in e1:
         raise TestError("isolate 未拨动 → 不应落库该键（应为「未设置」），实际 %r" % e1.get("isolate"))
 
-    # ── 条目 2：http + headers 多键 + enabled=false ──
+    # ── 条目 2：http + headers 多键 + enabled=false（全部在「基本信息」页）──
     open_new()
     set_transport("http")
     fill(LBL_NAME, HTTP_NAME)
@@ -523,6 +656,7 @@ def case_m5_isolate_tristate():
 
     # ② 显式 true（开关当前显示推断 true → 点两次得到显式 true）
     open_edit_by_name(NAME)
+    click_tab(LBL_TAB_RUNTIME)                 # isolate 在「运行信息」页
     if switch_state(LBL_ISO) is not True:
         raise TestError("② 前置：stdio 条目的 isolate 开关应显示推断值 true")
     click_switch(LBL_ISO)                     # → 显式 false
@@ -537,6 +671,7 @@ def case_m5_isolate_tristate():
 
     # ③ 显式 false（开关当前显示 true → 点一次得到显式 false）
     open_edit_by_name(NAME)
+    click_tab(LBL_TAB_RUNTIME)
     if switch_state(LBL_ISO) is not True:
         raise TestError("③ 前置：显式 true 应回显为开")
     if click_switch(LBL_ISO) is not False:
@@ -551,17 +686,85 @@ def case_m5_isolate_tristate():
 
 
 # ══════════════════════════════════════════════════════════
+# M8 sandbox 三态 + 仅 stdio 可开（A）
+# ══════════════════════════════════════════════════════════
+
+def case_m8_sandbox_tristate():
+    """M8（A）：sandbox 编辑入口唯一 = 对话框「运行信息」页签（2026-09-26 列表页列已摘除）。
+
+    三态（未设置 = 缺键 = 不隔离；拨动才写 true/false）+ 语义约束：仅 stdio 可开；
+    http（及 auto 只填 url）→ 开关禁用（不写键）。
+    """
+    # stdio：未设置 → 显示为关且可操作 → 拨开 → 回读 true
+    open_edit_by_name(NAME)
+    click_tab(LBL_TAB_RUNTIME)
+    if switch_enabled(LBL_SANDBOX) is not True:
+        raise TestError("stdio 条目 sandbox 开关应可操作（非禁用）")
+    if switch_state(LBL_SANDBOX) is not False:
+        raise TestError("sandbox 未设置时应显示为关")
+    if click_switch(LBL_SANDBOX) is not True:
+        raise TestError("拨开 sandbox 失败")
+    save_dialog()
+    wait_entry_field(NAME, "sandbox", True, "sandbox=true 落库")
+
+    # stdio：拨关 → 回读 false（显式）
+    open_edit_by_name(NAME)
+    click_tab(LBL_TAB_RUNTIME)
+    if switch_state(LBL_SANDBOX) is not True:
+        raise TestError("sandbox=true 应回显为开")
+    if click_switch(LBL_SANDBOX) is not False:
+        raise TestError("拨关 sandbox 失败")
+    save_dialog()
+    wait_entry_field(NAME, "sandbox", False, "sandbox=false 落库")
+
+    # http：开关禁用（不落地子进程，agentbox 无从注入）
+    open_edit_by_name(HTTP_NAME)
+    click_tab(LBL_TAB_RUNTIME)
+    if switch_enabled(LBL_SANDBOX) is not False:
+        raise TestError("http 条目 sandbox 开关应禁用")
+    print("    [M8] sandbox 三态（缺键/true/false）落库 + 仅 stdio 可开（http 禁用）")
+
+
+# ══════════════════════════════════════════════════════════
 # M6 hot_tools 效果（B）
 # ══════════════════════════════════════════════════════════
 
 def case_m6_hot_tools():
-    """M6（B）：hot_tools 命中「下游原名」→ 工具面带 _meta.hot=true；清空 → 标记消失。
+    """M6（A+B）：经「设置」弹窗逐项勾选 → 写库为**下游原名** → 工具面 _meta.hot=true；
+    清空（弹窗内取消勾选）→ 标记消失；并做**重启后工具面**对照。
 
     口径：gateway registry.isHot 以 **下游原名** 匹配（HotTools 含 "*" = 全部 hot）；
-    该标记经 tools/list 的 _meta.hot 透出，是 server `toolsForLLM`（server.go:1542-1561，
-    只取 hot==true）决定「会话内可见工具面」的依据——故 _meta.hot 即「与会话内可见性一致的口径」。
+    该标记经 tools/list 的 _meta.hot 透出，是 server `toolsForLLM`（只取 hot==true）决定
+    「会话内可见工具面」的依据——故 _meta.hot 即「与会话内可见性一致的口径」。
+    2026-09-26：入口由文本框改为「运行信息」页签「高频工具」行【设置】弹窗（SetMCPHotToolsDialog）；
+    弹窗按 `_meta.server.alias|node == 记录 name` 列出该 server 工具，展示名 = 原名（剥离前缀），
+    data-tool = 暴露名；勾选结果在**主对话框保存**时才落库（时机不变）。
     """
-    expect(entry_of(NAME), "hot_tools", HOT, "M6 前置 hot_tools 回读")
+    # ── 通过「设置」弹窗勾选单个工具（probe_info），写库值必须是**原名** ──
+    open_page()
+    open_edit_by_name(NAME)
+    click_tab(LBL_TAB_RUNTIME)                 # 高频工具行在「运行信息」页
+    open_hot_dialog()
+    rows = hot_dialog_tools()
+    got = {r["exposed"]: r for r in (rows or [])}
+    print("    [M6] 弹窗工具行：%r" % (rows,))
+    if TOOL_INFO not in got or TOOL_PID not in got:
+        raise TestError("高频工具弹窗未按别名列出该 server 全部工具：%r" % (rows,))
+    # 展示名 = 剥离前缀后的原名；data-tool = 完整暴露名（区分重名）
+    if got[TOOL_INFO]["display"] != "probe_info" or got[TOOL_PID]["display"] != "probe_pid":
+        raise TestError("展示名应为原名（probe_info / probe_pid）：%r" % (rows,))
+    if got[TOOL_INFO]["exposed"] != TOOL_INFO:
+        raise TestError("data-tool 应为完整暴露名 %s：%r" % (TOOL_INFO, rows))
+    if got[TOOL_INFO]["checked"] or got[TOOL_PID]["checked"]:
+        raise TestError("初始无 hot → 逐项应均未勾选：%r" % (rows,))
+    hot_toggle(TOOL_INFO)                      # 只勾 probe_info
+    hot_confirm()
+    if "已选 1 个" not in (hot_summary() or ""):
+        raise TestError("【确定】后主对话框摘要应显示「已选 1 个」：%r" % hot_summary())
+    save_dialog()
+    e = wait_entry_field(NAME, "hot_tools", HOT, "M6 高频工具（原名）落库")
+    print("    [M6] 落库 hot_tools=%r（原名，非暴露名 %s）" % (e.get("hot_tools"), TOOL_INFO))
+
     tm = wait_tools_present([TOOL_INFO, TOOL_PID], "M6 前置：工具在工具面")
     hot_info = (tm[TOOL_INFO].get("_meta") or {}).get("hot")
     hot_pid = (tm[TOOL_PID].get("_meta") or {}).get("hot")
@@ -582,9 +785,19 @@ def case_m6_hot_tools():
     if hot_restart is not True:
         raise TestError("重启后（启动装配路径）hot_tools 应同样标记 _meta.hot=true，实际 %r" % hot_restart)
 
-    # 清空 hot_tools → 标记消失（证明由配置驱动，非固有）
+    # 清空 hot_tools（弹窗内取消勾选）→ 标记消失（证明由配置驱动，非固有）
     open_edit_by_name(NAME)
-    fill(LBL_HOT, "")
+    click_tab(LBL_TAB_RUNTIME)                 # 高频工具行在「运行信息」页
+    if "已选 1 个" not in (hot_summary() or ""):
+        raise TestError("重开后摘要应回显「已选 1 个」：%r" % hot_summary())
+    open_hot_dialog()
+    rows = hot_dialog_tools()
+    if not [r for r in (rows or []) if r["checked"]]:
+        raise TestError("重开弹窗应回显已勾选项：%r" % (rows,))
+    hot_toggle(TOOL_INFO)                      # 取消勾选 probe_info
+    hot_confirm()
+    if "未设置" not in (hot_summary() or ""):
+        raise TestError("清空后摘要应显示「未设置」：%r" % hot_summary())
     save_dialog()
     wait_entry_field(NAME, "hot_tools", [], "清空 hot_tools 落库")
     tm = wait_tools_present([TOOL_INFO, TOOL_PID], "M6 清理后：工具仍在工具面")
@@ -592,6 +805,59 @@ def case_m6_hot_tools():
     print("    [M6] 清空 hot_tools 后 %s.hot=%r（工具仍在工具面，仅 hot 标记消失）" % (TOOL_INFO, hot_after))
     if hot_after is not None:
         raise TestError("清空 hot_tools 后 _meta.hot 应消失，实际 %r" % hot_after)
+
+
+# ══════════════════════════════════════════════════════════
+# M9 hot_tools「全部」+ 空态（A + B，2026-09-26）
+# ══════════════════════════════════════════════════════════
+
+def case_m9_hot_tools_all_and_empty():
+    """M9（A+B）：高频工具弹窗「全部工具」→ 写库 `["*"]` → 全部工具 _meta.hot=true；
+    另验空态（无工具 server → 提示而非列表）+ 【取消】不改主对话框值。
+
+    `"*"` = gateway `isHot` 的「全部 hot」哨兵（内嵌 self 节点同口径），故逐项应全部 high；
+    空态 = 该 server 未启用 / 未连接 / 无工具（此处用 enabled=false 的 http 条目）。
+    """
+    # ① NAME（stdio，已注册）→ 勾「全部」→ 落库 ["*"] → 全部工具 hot
+    open_page()
+    open_edit_by_name(NAME)
+    click_tab(LBL_TAB_RUNTIME)
+    open_hot_dialog()
+    if not hot_dialog_tools():
+        raise TestError("已注册的 stdio 条目弹窗应有工具行")
+    hot_toggle_all()
+    after = hot_dialog_tools()
+    if not all(r["checked"] and r["disabled"] for r in after):
+        raise TestError("勾「全部」后逐项应全勾且禁用（只读）：%r" % (after,))
+    hot_confirm()
+    if "全部" not in (hot_summary() or ""):
+        raise TestError("勾「全部」后摘要应显示「全部」：%r" % hot_summary())
+    save_dialog()
+    e = wait_entry_field(NAME, "hot_tools", ["*"], "M9 全部 hot 落库为 ['*']")
+    print("    [M9] 「全部」落库 hot_tools=%r" % (e.get("hot_tools"),))
+    tm = wait_tools_present([TOOL_INFO, TOOL_PID], "M9 前置：工具在工具面")
+    for n in (TOOL_INFO, TOOL_PID):
+        hot = (tm[n].get("_meta") or {}).get("hot")
+        if hot is not True:
+            raise TestError("hot_tools=['*'] 时 %s 应带 _meta.hot=true，实际 %r" % (n, hot))
+    print("    [M9] ['*'] → %s / %s 均 _meta.hot=true" % (TOOL_INFO, TOOL_PID))
+
+    # ② 空态 + 【取消】不改值：http 条目（enabled=false → 无工具）
+    open_edit_by_name(HTTP_NAME)
+    click_tab(LBL_TAB_RUNTIME)
+    if "未设置" not in (hot_summary() or ""):
+        raise TestError("http 条目初始摘要应「未设置」：%r" % hot_summary())
+    open_hot_dialog()
+    if hot_dialog_tools():
+        raise TestError("无工具 server 弹窗不应有工具行：%r" % (hot_dialog_tools(),))
+    empty = hot_dialog_empty()
+    if not empty:
+        raise TestError("无工具 server 弹窗应显示空态提示")
+    print("    [M9] 空态提示：%r" % empty)
+    hot_cancel()                               # 取消 → 不改主对话框值
+    if "未设置" not in (hot_summary() or ""):
+        raise TestError("【取消】后摘要应仍「未设置」：%r" % hot_summary())
+    close_dialog()
 
 
 # ══════════════════════════════════════════════════════════
@@ -619,7 +885,7 @@ def main():
     print("依赖：--test-port=%d 的 GUI（harness 自起/复用）+ 夹具 mock_mcp_probe.py；"
           "驱动 = EditMCPDialog + 既有消息面 tools-list / chonk.mcp-tools-call" % PORT)
     total += 1
-    ok += run_case("M1 全字段哨兵落库（A：env/headers/cwd/timeout/hot_tools/runtime/args/transport/description/enabled）",
+    ok += run_case("M1 全字段哨兵落库（A：env/headers/cwd/timeout/runtime/args/transport/description/enabled）",
                    case_m1_fields_roundtrip)
     total += 1
     ok += run_case("M2 transport=stdio 真实拉起 + args 逐个传递（B）", case_m2_stdio_spawn_and_args)
@@ -630,7 +896,12 @@ def main():
     total += 1
     ok += run_case("M5 isolate 三态（A 回读 + B 跨 work_dir 子进程同一性）", case_m5_isolate_tristate)
     total += 1
-    ok += run_case("M6 hot_tools 效果：工具面 _meta.hot（B）", case_m6_hot_tools)
+    ok += run_case("M8 sandbox 三态（A：缺键/true/false）+ 仅 stdio 可开", case_m8_sandbox_tristate)
+    total += 1
+    ok += run_case("M6 hot_tools：设置弹窗勾选 → 原名落库 → 工具面 _meta.hot（A+B）", case_m6_hot_tools)
+    total += 1
+    ok += run_case("M9 hot_tools「全部」= ['*'] → 全部 _meta.hot=true；空态 / 取消不改值（A+B）",
+                   case_m9_hot_tools_all_and_empty)
     total += 1
     ok += run_case("M7 enabled=false 保存即生效：工具面移除（B）", case_m7_enabled_false)
     errs = c.console()

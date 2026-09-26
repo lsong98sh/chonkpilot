@@ -1,72 +1,77 @@
 <template>
   <div class="settings-page">
-    <div class="page-body">
-      <div class="config-toolbar-actions">
-        <Button type="primary" v-mq:[EventNames.configAddLlm].click>
-          <Icon name="plus" :size="14" /> {{ $t('config.addLLM') }}
-        </Button>
-      </div>
-      <Table :columns="llmColumns" :data="displayRows" :empty-text="$t('config.llm.empty')" size="small">
-        <!-- 名称列：只读行（系统内置 / 系统默认）附标签；默认项附「默认」标记 -->
-        <template #name="{ row }">
-          <span>{{ row.name || $t('config.llm.systemDefaultName') }}</span>
-          <Tag
-            v-if="row._readonly"
-            size="mini"
-            type="info"
-            class="readonly-tag"
-            :title="$t('config.llm.builtinHint')"
-          >{{ row._tag }}</Tag>
-          <Tag v-if="row._isDefault" size="mini" type="success" class="default-tag">{{ $t('config.llm.isDefault') }}</Tag>
-        </template>
-        <!-- 操作列：只读行无编辑/删除（仅提示）；用户行可编辑/删除。默认项（含内置行）均可「设为默认」 -->
-        <template #action="{ row }">
-          <Button v-if="!row._isDefault" text @click="setDefaultLLM(row._value)">{{ $t('config.llm.setDefault') }}</Button>
-          <template v-if="!row._readonly">
-            <Button text v-mq:[EventNames.configEditLlm].click="{ index: row._index }">{{ $t('common.edit') }}</Button>
-            <Button text type="danger" v-mq:[EventNames.configDeleteLlm].click="{ index: row._index }">{{ $t('common.delete') }}</Button>
-          </template>
-          <span v-else class="readonly-hint" :title="$t('config.llm.builtinHint')">{{ $t('config.llm.builtinHint') }}</span>
-        </template>
-      </Table>
-
-      <!-- 子系统默认模型（SL-5，40-演进计划 §SL）：5 个子系统各自选择默认 LLM provider；
-           值类型 llmref，空 = 跟随默认（defaultLLM）。保存即热生效（无需重启），生效粒度 = 下一个轮次。 -->
-      <div class="subsys-group">
-        <div class="subsys-title">{{ $t('config.llm.subsystemDefaults') }}</div>
-        <p class="subsys-hint">{{ $t('config.llm.subsystemHint') }}</p>
-        <div v-for="s in subsystems" :key="s.key" class="subsys-row">
-          <label class="subsys-label">{{ $t(s.labelKey) }}</label>
-          <div class="subsys-select">
-            <Select
-              :model-value="subsysDisplay(s.key)"
-              :options="subsysOptions(s.key)"
-              :placeholder="followLabel"
-              placeholder-selectable
-              :aria-label="$t(s.labelKey)"
-              @update:model-value="(v) => onSubsysChange(s.key, v)"
-            />
+    <Tabs :tabs="tabs" v-model="activeTab" class="settings-tabs">
+      <!-- 一览：provider 清单（新增 / 编辑 / 删除） -->
+      <template #list>
+        <div class="page-body">
+          <div class="config-toolbar-actions">
+            <Button type="primary" v-mq:[EventNames.configAddLlm].click>
+              <Icon name="plus" :size="14" /> {{ $t('config.addLLM') }}
+            </Button>
           </div>
-          <Tag
-            v-if="s.standby"
-            size="mini"
-            type="info"
-            class="standby-tag"
-            :title="$t('config.llm.standbyHint')"
-          >{{ $t('config.llm.standby') }}</Tag>
+          <Table :columns="llmColumns" :data="llmRows" :empty-text="$t('config.llm.empty')" size="small">
+            <template #action="{ row }">
+              <Button text v-mq:[EventNames.configEditLlm].click="{ index: row._index }">{{ $t('common.edit') }}</Button>
+              <Button text type="danger" v-mq:[EventNames.configDeleteLlm].click="{ index: row._index }">{{ $t('common.delete') }}</Button>
+            </template>
+          </Table>
         </div>
-      </div>
-    </div>
+      </template>
+
+      <!-- 默认模型：主对话 + 各子系统（全部下拉）。主对话 = defaultLLM（provider name）；
+           各子系统 = llm.*（llmref，空 = 回落 defaultLLM）。保存即热生效（无需重启），生效粒度 = 下一个轮次。 -->
+      <template #defaults>
+        <div class="page-body">
+          <div class="subsys-group">
+            <div class="subsys-title">{{ $t('config.llm.defaultsTitle') }}</div>
+            <p class="subsys-hint">{{ $t('config.llm.subsystemHint') }}</p>
+            <div class="subsys-row">
+              <label class="subsys-label">{{ $t('config.llm.mainDefault') }}</label>
+              <div class="subsys-select">
+                <Select
+                  :model-value="mainValue"
+                  :options="providerOptions"
+                  :placeholder="mainPlaceholder"
+                  placeholder-selectable
+                  :aria-label="$t('config.llm.mainDefault')"
+                  @update:model-value="onMainChange"
+                />
+              </div>
+            </div>
+            <div v-for="s in subsystems" :key="s.key" class="subsys-row">
+              <label class="subsys-label">{{ $t(s.labelKey) }}</label>
+              <div class="subsys-select">
+                <Select
+                  :model-value="subsysDisplay(s.key)"
+                  :options="subsysOptions(s.key)"
+                  :placeholder="followLabel"
+                  placeholder-selectable
+                  :aria-label="$t(s.labelKey)"
+                  @update:model-value="(v) => onSubsysChange(s.key, v)"
+                />
+              </div>
+              <Tag
+                v-if="s.standby"
+                size="mini"
+                type="info"
+                class="standby-tag"
+                :title="$t('config.llm.standbyHint')"
+              >{{ $t('config.llm.standby') }}</Tag>
+            </div>
+          </div>
+        </div>
+      </template>
+    </Tabs>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, h, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Table, Button, Tag, Select, message, confirm } from '../../components/ui'
+import { Table, Button, Tag, Select, Tabs, message, confirm } from '../../components/ui'
 import { dialog } from '../../components/dialog'
 import Icon from '../../components/icon/Icon.vue'
-import { getUserConfig, saveUserConfig, getSystemBuiltins } from '../../api/config'
+import { getUserConfig, saveUserConfig } from '../../api/config'
 import { DEFAULT_LLM } from '../../config/defaults'
 import { loadFailedText, savedText, saveFailedText, APPLY_INSTANT } from '../../utils/settingsFeedback'
 import mq from '../../utils/mq'
@@ -77,14 +82,14 @@ const EditLLMDialog = defineAsyncComponent(() => import('./EditLLMDialog.vue'))
 const { t } = useI18n()
 
 const llms = ref([])
-// 只读条目（gui.system.builtins 的 builtinLLMs 段）：**D-30（2026-09-22）后仅「系统默认
-// （启动参数）」**（kind=default，取 exe flags -llm-base/-llm-model）——内置 provider（echo）
-// 降为 router 内置兜底，不再作为可配置项列出。不入 usr llms 表，禁止编辑/删除。
-// （kind=builtin 分支保留：契约形状仍允许内置项，见 61 §1 gui.system.builtins。）
-const builtins = ref([])
-// 默认 LLM（defaultLLM）：name 字符串（usr llms 记录名；'' = 系统默认（启动参数））；
-// 旧记录为 int 索引（llms[v]，读侧兼容）。
+// 默认 LLM（defaultLLM）：name 字符串（usr llms 记录名）；旧记录为 int 索引（llms[v]，读侧兼容）。
 const defaultLLM = ref(null)
+// 页签：一览（provider 清单）/ 默认模型（主对话 + 各子系统）。
+const activeTab = ref('list')
+const tabs = computed(() => [
+  { label: t('config.llm.tabList'), name: 'list' },
+  { label: t('config.llm.tabDefaults'), name: 'defaults' },
+])
 
 // 子系统默认模型（SL-5，40-演进计划 §SL · 64-配置项一览 §3）：5 个 usr 键，值类型 llmref
 // （provider name；'' = 回落 defaultLLM，数据层读侧已补）。
@@ -105,12 +110,11 @@ const llmColumns = computed(() => [
   { label: t('config.llm.model'), prop: 'model', minWidth: 120 },
   { label: t('config.llm.baseUrl'), prop: 'baseUrl', minWidth: 160 },
   { label: t('config.llm.maxToolIterations'), prop: 'maxToolIterations', width: 90 },
-  { label: t('config.table.operation'), type: 'action', width: 280, align: 'center' },
+  { label: t('config.table.operation'), type: 'action', width: 180, align: 'center' },
 ])
 
-// 当前默认 LLM 的标识（=「设为默认」写入 defaultLLM 的值）：
-// 字符串原样（provider name / '' = 系统默认（启动参数））；旧 int 索引 → llms[idx].name（兼容）；
-// 无可用 LLM（persist 补 -1）→ null（不标默认）。
+// 当前主对话默认 LLM 的 provider 名：字符串原样；旧 int 索引 → llms[idx].name（兼容）；
+// 未设置 / 无可用 LLM（persist 补 -1）→ null。
 const defaultLLMKey = computed(() => {
   const v = defaultLLM.value
   if (typeof v === 'string') return v
@@ -127,10 +131,35 @@ function resolveRef(v) {
   return ''
 }
 
-// 空选项文案（= 「跟随默认」）：含当前默认 provider 名；无可用 LLM / 显式系统默认 → 「系统默认」。
+// 空选项文案（= 「跟随默认」）：含当前主对话默认 provider 名；未设置 → 「未设置」。
 const followLabel = computed(() => t('config.llm.followDefault', {
-  name: defaultLLMKey.value || t('config.llm.systemDefaultName'),
+  name: defaultLLMKey.value || t('config.llm.unset'),
 }))
+
+// ── 主对话默认 LLM（defaultLLM）──────────────────────────────
+// 展示值 = provider name（'' = 未设置）；选项 = usr 已配置 provider（另补当前显式值防留白）。
+const mainValue = computed(() => resolveRef(defaultLLM.value))
+const mainPlaceholder = computed(() => t('config.llm.mainDefaultUnset'))
+const providerOptions = computed(() => {
+  const names = llms.value.map(it => it.name).filter(Boolean)
+  const cur = mainValue.value
+  const opts = names.map(n => ({ value: n, label: n }))
+  if (cur && !names.includes(cur)) opts.unshift({ value: cur, label: cur })
+  return opts
+})
+
+// 主对话默认：写 usr defaultLLM = provider name（保存即热生效，粒度 = 下一个轮次）。
+async function onMainChange(value) {
+  const prev = defaultLLM.value
+  defaultLLM.value = value
+  try {
+    await saveUserConfig({ defaultLLM: value })
+    message.success(savedText(t, APPLY_INSTANT))
+  } catch (e) {
+    defaultLLM.value = prev
+    message.error(saveFailedText(t, e))
+  }
+}
 
 // 下拉展示值：数据层读侧会把「未配置 / 空串」补成 defaultLLM 的 provider name（SL-1），
 // 故值等于默认 provider 时统一显示为「跟随默认」（两者当前解析到同一 provider）；
@@ -163,35 +192,8 @@ async function onSubsysChange(key, value) {
   }
 }
 
-// displayRows = 顶部只读行（系统内置 / 系统默认）+ 用户 llms：
-// 用户行带 _index（llms 数组下标，供编辑/删除）；只读行 _readonly 无 _index。
-// _value = 「设为默认」写入 defaultLLM 的值（用户行/内置 provider = name；系统默认行 = ''）；
-// _isDefault = 当前默认项（与 defaultLLMKey 同源，旧 int 索引记录也能正确标出）。
-const displayRows = computed(() => {
-  const key = defaultLLMKey.value
-  return [
-    ...builtins.value.map(b => {
-      const value = b.kind === 'builtin' ? (b.name || '') : ''
-      return {
-        name: b.name || '',
-        model: b.model || '',
-        baseUrl: b.baseUrl || '',
-        maxToolIterations: '',
-        _readonly: true,
-        _tag: b.kind === 'builtin' ? t('config.llm.builtinTag') : t('config.llm.systemDefaultTag'),
-        _value: value,
-        _isDefault: key !== null && key === value,
-      }
-    }),
-    ...llms.value.map((it, i) => ({
-      ...it,
-      _readonly: false,
-      _index: i,
-      _value: it.name || '',
-      _isDefault: key !== null && key === (it.name || ''),
-    })),
-  ]
-})
+// 一览行 = usr llms（带 _index 供编辑/删除）。
+const llmRows = computed(() => llms.value.map((it, i) => ({ ...it, _index: i })))
 
 async function loadConfig() {
   try {
@@ -209,33 +211,7 @@ async function loadConfig() {
   }
 }
 
-// 「设为默认」：defaultLLM = provider name（usr llms 记录名）；「系统默认（启动参数）」行写空串
-// （= 不指定 provider → 回落 exe 启动参数）。name 稳定，不受 llms 增删移位影响。
-async function setDefaultLLM(value) {
-  try {
-    await saveUserConfig({ defaultLLM: value })
-    defaultLLM.value = value
-    message.success(t('config.llm.defaultSet'))
-  } catch (e) {
-    message.error(t('config.save_failed') + ': ' + (e.message || ''))
-  }
-}
-
-// 只读条目（gui.system.builtins）：系统内置 / 系统默认，加载失败 → 空（不阻塞用户 llms 编辑）
-async function loadBuiltins() {
-  try {
-    const b = await getSystemBuiltins()
-    builtins.value = b.builtinLLMs
-  } catch (e) {
-    // ④ 只读条目加载失败须用户可见（非阻塞：用户 llms 仍可编辑 → 轻提示，不刷屏）
-    console.warn('[SettingsLLM] load system builtins failed:', e)
-    message.warning(loadFailedText(t, t('config.llm.builtinTag'), e))
-    builtins.value = []
-  }
-}
-
-// 列表类即落盘（CFG-015-S01）：仅保存 llms（defaultLLM 由「设为默认」单独写入 name，不经此路径；
-// 只读条目不入库）
+// 列表类即落盘（CFG-015-S01）：仅保存 llms（defaultLLM 由「默认模型」页签单独写入 name，不经此路径）
 async function saveNow(tip) {
   try {
     await saveUserConfig({ llms: llms.value })
@@ -258,7 +234,7 @@ function openEditor(data, index) {
       await saveNow(t('config.llm.saved'))
     },
     onCancel: () => handle.close(),
-  }), { title: t('config.llm.editTitle'), width: 640, height: 560, minimizable: false, closable: true })
+  }), { title: t('config.llm.editTitle'), width: 640, height: 620, minimizable: false, closable: true })
 }
 
 function addLLM() { openEditor({ ...DEFAULT_LLM }, -1) }
@@ -278,7 +254,6 @@ async function deleteLLM(index) {
 const unsubs = []
 onMounted(() => {
   loadConfig()
-  loadBuiltins()
   unsubs.push(mq.on(EventNames.configAddLlm, addLLM))
   unsubs.push(mq.on(EventNames.configEditLlm, ({ index }) => editLLM(index)))
   unsubs.push(mq.on(EventNames.configDeleteLlm, ({ index }) => deleteLLM(index)))
@@ -303,14 +278,8 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
   flex-direction: column;
 }
 .config-toolbar-actions { margin-bottom: 12px; }
-.readonly-tag { margin-left: 6px; }
-.default-tag { margin-left: 6px; }
-.readonly-hint { font-size: 12px; color: var(--text-muted, #6c757d); }
-/* 子系统默认模型分组（SL-5） */
+/* 默认模型分组（主对话 + 各子系统） */
 .subsys-group {
-  margin-top: 20px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border, #dee2e6);
   display: flex;
   flex-direction: column;
   gap: 8px;

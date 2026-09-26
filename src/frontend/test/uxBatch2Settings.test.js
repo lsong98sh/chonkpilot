@@ -122,7 +122,7 @@ test('② 后端语义核实：工具级空允许集 = 全拒（严格语义）'
   assert.match(ab, /空允许集 = 全拒/, 'agentbox 须载明空允许集=全拒')
 })
 
-test('② useToolSandbox：派生预警 + 读信任目录 + 订阅前可重算（无 watch，写库通道不变）', () => {
+test('② useToolSandbox：派生预警 + 读信任目录 + 手动保存（无 watch，写库通道带 dirty 短路）', () => {
   const js = read('composables/useToolSandbox.js')
   assert.match(js, /needsTrustDirsWarning\(/, '须复用统一判定')
   assert.match(js, /const trustWarning = computed\(/, '须以 computed 派生预警（无 watch）')
@@ -130,8 +130,11 @@ test('② useToolSandbox：派生预警 + 读信任目录 + 订阅前可重算�
   assert.match(js, /getProjectSecurity\(\)/, '信任目录取既有 prj-security 面')
   assert.match(js, /countTrustDirs\(res\.entries\)/, '按有效条目数判定')
   assert.doesNotMatch(js, /\bwatch(Effect)?\s*\(/, 'composable 禁止 watch')
-  // 写库通道不变（防回归）
-  assert.match(js, /saveUserConfig\(\{ \[TOOL_SANDBOX_KEY\]: userMap\.value \}\)/)
+  // 手动保存：拨动只改本地待保存态（不落库）；无改动短路；落库仍走 usr 配置面
+  assert.match(js, /function setSandbox\(category, on\)/, '拨动须改待保存态')
+  assert.match(js, /const dirty = computed\(/, '须派生未保存改动')
+  assert.match(js, /if \(!dirty\.value\) return false/, '无改动须短路（不落库）')
+  assert.match(js, /saveUserConfig\(\{ \[TOOL_SANDBOX_KEY\]: next \}\)/)
   assert.match(js, /resetUserKey\(TOOL_SANDBOX_KEY\)/)
 })
 
@@ -140,7 +143,7 @@ test('② SettingsToolSandboxPage：常驻内联预警 + 行内提示 + 直达�
   // 显著内联（非一闪而过的 toast）：role=alert 的常驻块
   assert.match(vue, /v-if="trustWarning"[\s\S]{0,200}role="alert"/, '页级须为常驻内联预警块')
   assert.match(vue, /config\.toolSandbox\.trustDirWarning/, '页级警告文案（说明会被拒绝）')
-  assert.match(vue, /v-if="trustWarning && row\.on"/, '对应行须内联提示')
+  assert.match(vue, /v-if="trustWarning && row\.on"/, '对应 executor 行须内联提示')
   assert.match(vue, /config\.toolSandbox\.trustDirWarningRow/, '行内提示文案')
   // 直达「可读/可写目录」：既有 previewTabOpen（settings-project 默认落「安全」页签）
   assert.match(vue, /function gotoTrustDirs/, '须有直达入口')
@@ -150,8 +153,8 @@ test('② SettingsToolSandboxPage：常驻内联预警 + 行内提示 + 直达�
   assert.match(vue, /onDataRefresh\('prj-security', loadTrustDirs\)/, '须订阅 data-prj-security-refresh')
   assert.match(vue, /onMounted\(\(\) => \{[\s\S]*?reload\(\)/, '须首次加载（否则警告无从判定）')
   assert.doesNotMatch(vue, /\bwatch\(/, '禁止 watch')
-  // 不阻断：开关不因空目录被禁用（仅第三方禁用）
-  assert.match(vue, /:disabled="row\.thirdParty === true"/, '开关禁用仅因第三方，不因空目录')
+  // 拨动不阻断：仅【保存】按钮按 dirty 禁用，开关不因空目录被禁用
+  assert.match(vue, /:disabled="!dirty"/, '保存按钮须按 dirty 禁用')
 })
 
 test('② 空目录预警文案（zh/en）明确「该工具所有文件操作被拒绝」', () => {
@@ -325,12 +328,17 @@ test('⑤ dirty 标记：显示用（无 watch、无离开拦截），保存时�
   assert.doesNotMatch(comp, /\bwatch(Effect)?\s*\(/, 'composable 禁止 watch')
 })
 
-test('⑤ 保存时机不变（未改交互模型：失焦即存 / 按钮 / 开关即时均保留）', () => {
+test('⑤ 保存时机（失焦即存页保留；安全页 2026-09-26 改手动保存）', () => {
   assert.match(read('views/config/SettingsPathsPage.vue'), /@blur="saveUser\(it\)"/, '路径页仍失焦即存')
   assert.match(read('views/config/SettingsParamsPage.vue'), /@blur="saveUser\(f\.key\)"/, '参数页用户级仍失焦即存')
   assert.match(read('views/settings/LogConfig.vue'), /@update:model-value="onLevelChange"/, '日志页仍选择即存')
   assert.match(read('views/settings/HistoryConfig.vue'), /@update:model-value="handleChange"/, 'history 仍开关即存')
-  assert.match(read('views/settings/SecurityConfig.vue'), /@change="save"/, '安全页仍行编辑即存')
+  // 安全页：编辑 / 勾选 / 增删只改本地态，点【保存】才落库；无改动时保存按钮禁用（改手动保存）
+  const sec = read('views/settings/SecurityConfig.vue')
+  assert.match(sec, /data-security-save/, '安全页须有【保存】按钮')
+  assert.match(sec, /:disabled="!dirty"/, '安全页无改动时保存按钮须禁用')
+  assert.match(sec, /@click="save"/, '安全页点【保存】才落库')
+  assert.doesNotMatch(sec, /@change="save"/, '安全页编辑不再即时落库（改手动保存）')
   assert.match(read('views/settings/VftsConfig.vue'), /:loading="saving" @click="handleIndexSave"/, 'vfts 仍按钮保存')
   assert.match(read('views/settings/CodegraphConfig.vue'), /:loading="saving" @click="handleIndexSave"/, 'codegraph 仍按钮保存')
   assert.match(read('views/settings/ContextConfig.vue'), /v-mq:\[EventNames\.contextSave\]\.click/, '上下文仍保存按钮')

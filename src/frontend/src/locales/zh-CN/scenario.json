@@ -4,10 +4,6 @@
   "edit": "编辑场景",
   "delete_confirm": "确定删除场景「{name}」？",
   "save_success": "场景已保存",
-  "restore_default": "还原默认",
-  "restore_default_confirm": "确定将场景「{name}」还原为默认配置？当前数据将被覆盖。",
-  "restored": "已还原为默认配置",
-  "restore_failed": "还原默认失败",
   "fields": {
     "name": "名称",
     "description": "说明",
@@ -25,8 +21,6 @@
     "user": "用户",
     "project": "项目"
   },
-  "system_readonly": "系统级场景只读，仅展示，不可编辑或删除",
-  "system_readonly_badge": "系统级·只读",
   "dir_name_required": "目录名不能为空（仅字母/数字/下划线/连字符）",
   "dir_name_format": "目录名只能包含字母、数字、下划线和连字符",
   "placeholder": {
