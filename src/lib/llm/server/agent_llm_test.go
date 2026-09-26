@@ -8,10 +8,10 @@
 //   - 主 agent 的 `llmRef` 作用于顶层轮次（AG-2）；
 //   - 委派对象名可为**当前场景内同名 agent**（AG-1 让场景子 agent 可被委派）。
 //
-// 项 5b（2026-09-25）追加：agent 定义**统一判据** —— 同名（场景子 agent + 内置 agent）时以
+// 项 5b（2026-09-25）追加：agent 定义**统一判据** —— 同名（场景子 agent + app 级场景内 agent）时以
 // instance 级为准，子轮次定义 / `mcp_load` 内容 / 委派判定三者同源。
 //
-// 25 §8.1 #8 / T6（2026-09-25）：内置 agent 集来源 = **app 级场景**（`<exeDir>/scenarios/*/`，
+// 25 §8.1 #8 / T6（2026-09-25）：内存注册表来源 = **app 级场景**（`<exeDir>/scenarios/*/`，
 // 随发布只读），非代码 embed（见 `appCapRootWithScenario` 夹具）。
 package server
 
@@ -29,7 +29,7 @@ import (
 // appCapRootWithScenario 造一对 **app 级根**（`scenarios/` 与 `capability/` 平级，25 §6）：
 // 返回 capability 根（传 `Options.MCPServerRoot` → 数据层 AppDir 同源），并在
 // `<root>/scenarios/<id>/` 写入场景（`scenario.json` + 每 agent 一个 `<名>.agent.md`）。
-// agents = agent 名 → 提示词（content 段）。用于「内置 agent 集来自 app 级场景」的用例。
+// agents = agent 名 → 提示词（content 段）。用于「app 级场景内 agent」的用例。
 func appCapRootWithScenario(t *testing.T, id string, agents map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -323,7 +323,7 @@ func TestMainAgentLLMRefTopTurn(t *testing.T) {
 	}
 }
 
-// TestAgentDelegableScenarioAgent（AG-1 委派面）：内置 agent 注册表非空时，场景内同名 agent 亦可
+// TestAgentDelegableScenarioAgent（AG-1 委派面）：app 级场景注册表非空时，场景内同名 agent 亦可
 // 作为 llm_run 的委派对象；两者皆无 → 不可委派。
 // （注册表 = app 级场景内的 agent，见 registerDomainAgents；此处直接写内存表模拟已登记。）
 func TestAgentDelegableScenarioAgent(t *testing.T) {
@@ -332,11 +332,11 @@ func TestAgentDelegableScenarioAgent(t *testing.T) {
 	registerTestInstance(t, s)
 
 	s.mu.Lock()
-	s.agents["coder"] = AgentDef{Name: "coder", Content: "内置 agent 提示词"}
+	s.agents["coder"] = AgentDef{Name: "coder", Content: "app 级场景 agent 提示词"}
 	s.mu.Unlock()
 
 	if !s.agentDelegable("ins-test", "ag-del", "coder") {
-		t.Fatal("内置 agent 应可委派")
+		t.Fatal("注册表内 agent 应可委派")
 	}
 	if s.agentDelegable("ins-test", "ag-del", "ghost") {
 		t.Fatal("注册表非空且场景内无同名 agent 时不应可委派")
@@ -351,30 +351,30 @@ func TestAgentDelegableScenarioAgent(t *testing.T) {
 }
 
 // TestChildAgentPromptFallsBackToRegisteredDef（AG-1）：场景内无同名 agent 时，提示词回落
-// global 级（app 级场景内的内置 agent）；注册表也无 → 仅标注（不干预）。
+// global 级（app 级场景内的 agent）；注册表也无 → 仅标注（不干预）。
 func TestChildAgentPromptFallsBackToRegisteredDef(t *testing.T) {
 	rec, srv := newProviderServer(t)
 	s := newTestServer(t, srv)
 	registerProviderInstance(t, s)
 
 	s.mu.Lock()
-	s.agents["coder"] = AgentDef{Name: "coder", Content: "内置 agent 提示词"}
+	s.agents["coder"] = AgentDef{Name: "coder", Content: "app 级场景 agent 提示词"}
 	s.mu.Unlock()
 
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-ag-reg", Turn: "t-ag-reg"}
 	agRunChild(t, s, parentReq, "s-ag-reg-coder", "do", "coder")
 	sysText := strings.Join(agSystemTexts(mustBody(t, rec, 0)), "\n")
-	if !strings.Contains(sysText, "内置 agent 提示词") {
-		t.Fatalf("未回落内置 agent 提示词：\n%s", sysText)
+	if !strings.Contains(sysText, "app 级场景 agent 提示词") {
+		t.Fatalf("未回落 app 级场景 agent 提示词：\n%s", sysText)
 	}
 }
 
-// TestRegisteredAgentDefFallsBackToAppScenario（25 §8.1 #8 / T6，2026-09-25）：内置 agent 集来源 =
+// TestRegisteredAgentDefFallsBackToAppScenario（25 §8.1 #8 / T6，2026-09-25）：app 级场景内 agent 来源 =
 // **app 级场景**（`<exeDir>/scenarios/*/`，与 capability/ 平级、随发布只读），非代码 embed ——
 // 全量链路：Start 经数据层门面读 app 级场景登记注册表 → 委派该 agent → 子轮次 system 携带其提示词。
 func TestRegisteredAgentDefFallsBackToAppScenario(t *testing.T) {
 	rec, srv := newProviderServer(t)
-	capRoot := appCapRootWithScenario(t, "builtin-agents", map[string]string{
+	capRoot := appCapRootWithScenario(t, "app-scn-a", map[string]string{
 		"app-agent": "app 级场景内提示词XYZ",
 	})
 	s := newTestServerMCPAppRoot(t, srv, capRoot)
@@ -394,15 +394,15 @@ func TestRegisteredAgentDefFallsBackToAppScenario(t *testing.T) {
 }
 
 // TestAgentDelegableSameNameInstanceFirst（项 5b，统一判据；25 §5/T2 修订 + T6 来源改口）：同名
-// （场景子 agent + 内置 agent）时以 **instance 级**为准 —— 子轮次 system（agent 层）取 instance 级
-// 定义，global 级（**app 级场景**内的内置 agent 注册表）仅在 instance 级未命中时回落。
+// （场景子 agent + app 级场景内 agent）时以 **instance 级**为准 —— 子轮次 system（agent 层）取 instance 级
+// 定义，global 级（**app 级场景**内的 agent 注册表）仅在 instance 级未命中时回落。
 func TestAgentDelegableSameNameInstanceFirst(t *testing.T) {
 	rec, srv := newProviderServer(t)
-	// global 级（内置 agent 集）来源 = app 级场景（T6）："coder" 与场景子 agent 同名（验 instance 优先）；
+	// global 级（app 级场景内 agent）来源 = app 级场景（T6）："coder" 与场景子 agent 同名（验 instance 优先）；
 	// "solo-global" 仅 global 级存在（验 global 级回落）。
-	capRoot := appCapRootWithScenario(t, "builtin-agents", map[string]string{
-		"coder":       "内置 agent coder 提示词",
-		"solo-global": "内置 agent 独立提示词",
+	capRoot := appCapRootWithScenario(t, "app-scn-a", map[string]string{
+		"coder":       "app 级场景 coder 提示词",
+		"solo-global": "app 级场景独立提示词",
 	})
 	s := newTestServerMCPAppRoot(t, srv, capRoot)
 	registerTestInstance(t, s)
@@ -432,7 +432,7 @@ func TestAgentDelegableSameNameInstanceFirst(t *testing.T) {
 		t.Fatal("同名 agent（instance 级）应可委派")
 	}
 	if !s.agentDelegable("ins-test", "ag-same", "solo-global") {
-		t.Fatal("仅 global 级（app 级场景内内置 agent）应可委派")
+		t.Fatal("仅 global 级（app 级场景内 agent）应可委派")
 	}
 	if s.agentDelegable("ins-test", "ag-same", "ghost") {
 		t.Fatal("两级皆无 → 不应可委派")
@@ -441,7 +441,7 @@ func TestAgentDelegableSameNameInstanceFirst(t *testing.T) {
 	// ③ global 级回落：委派仅 global 级存在的 "solo-global" → system 用 app 级场景内的提示词
 	agRunChild(t, s, parentReq, "s-same-solo", "do", "solo-global")
 	soloText := strings.Join(agSystemTexts(mustBody(t, rec, 1)), "\n")
-	if !strings.Contains(soloText, "内置 agent 独立提示词") {
+	if !strings.Contains(soloText, "app 级场景独立提示词") {
 		t.Fatalf("global 级回落未生效：\n%s", soloText)
 	}
 }

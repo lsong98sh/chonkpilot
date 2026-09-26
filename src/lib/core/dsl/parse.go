@@ -534,18 +534,33 @@ func (p *parser) parseAction(rs *rawStmt) (Stmt, error) {
 	return &ActionStmt{baseStmt: baseStmt{Ln: rs.line}, Verb: verb, Args: args, Target: tgt}, nil
 }
 
-// parseLoop 解析 LOOP 变量名=数据源 [concurrency=N] { ... } END
+// parseLoop 解析 `LOOP 变量名=数据源 [concurrency=N]` 或**无参** `LOOP`，直到 END。
+// 无参形式 = 无界循环（靠 BREAK/EXIT 退出，见 §5.2），无迭代变量、无 concurrency。
 func (p *parser) parseLoop(rs *rawStmt, depth int) (Stmt, error) {
 	toks := rs.toks
 	i := 1
+	// 无参形式：`LOOP` 后无 token（行内 `#` 注释已由 lexer 剥离）
+	if i >= len(toks) {
+		p.i++
+		block, err := p.parseBody(depth + 1)
+		if err != nil {
+			return nil, err
+		}
+		return &LoopStmt{baseStmt: baseStmt{Ln: rs.line}, Block: block}, nil
+	}
 	// 变量名
-	if i >= len(toks) || toks[i].kind != tokWord {
-		return nil, lineErr(rs.line, "LOOP 需要变量名")
+	if toks[i].kind != tokWord {
+		return nil, lineErr(rs.line, "LOOP 需要 '变量名=数据源'（或省略数据源 = 无参 LOOP，一直循环）")
 	}
 	varName := toks[i].text
+	// 无参 LOOP 不支持 concurrency（无数据源，谈不上并发；§5.2）。此处拒绝 `LOOP concurrency=N`，
+	// 否则会被误读为「变量名 concurrency = 数据源 N」，在运行期报出难以理解的类型错误。
+	if strings.EqualFold(varName, "concurrency") {
+		return nil, lineErr(rs.line, "无参 LOOP 不支持 concurrency")
+	}
 	i++
 	if i >= len(toks) || toks[i].kind != tokOp || toks[i].text != "=" {
-		return nil, lineErr(rs.line, "LOOP 需要 '变量名=数据源'")
+		return nil, lineErr(rs.line, "LOOP 需要 '变量名=数据源'（或省略数据源 = 无参 LOOP，一直循环）")
 	}
 	i++
 	src, ni, err := parseExpr(toks, i)

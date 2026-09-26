@@ -5,7 +5,8 @@
 //
 // llm_run 脚本使用 dsl-core 语法：核心保留字 SET/IF/LOOP/PARALLEL/BREAK/CONTINUE/EXIT/END
 // + 动作动词 LLM（本文件注入）。LLM 指令：LLM "agent" "prompt" ["目的"] [=> 目标]，
-// agent=委派对象标识（必填，当前仅非空校验，资产化检索后续阶段接入）、prompt=委派提示词
+// agent=委派对象名（必填，须**可委派** —— 当前场景内成员，或 app 级场景内唯一同名 agent；
+// 见 agentDelegable）、prompt=委派提示词
 // （必填，{{}} 插值）、目的=本次子 LLM 的运行目的（可选，即子任务节点展示名；缺省回退提示词截断）；
 // 三参均可 {{}} 插值；参数间空白或逗号分隔均兼容；参数超过 3 个 = 顶层失败。文件路径须绝对 / ~/ 开头 / !/ 开头，
 // 项目内路径用宿主注入的 {{env.CHONKPILOT_WORKDIR}} 显式拼接（相对路径拒绝）。示例：
@@ -13,7 +14,7 @@
 //	SET #"{{env.CHONKPILOT_WORKDIR}}/tasks.json" => src
 //	LOOP item=src.array concurrency=3
 //	   IF item.done != true
-//	      LLM "worker" "实现 {{item.name}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.py"
+//	      LLM "后端开发" "实现 {{item.name}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.py"
 //	      SET item.done => true
 //	   END
 //	END
@@ -333,8 +334,10 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 	_ = eng.Execute(ast)
 	close(stopWatch)
 
-	// DSL 运行时错误（SET/表达式/句柄等非 LLM 步骤失败，已入 Result.Errors）必须上报——
-	// 否则作业回填文本为空/误导（如"全部跳过"），LLM 与用户均无从感知（I-19）。
+	// DSL 运行时错误必须上报——否则作业回填文本为空/误导（如"全部跳过"），LLM 与用户均无从感知（I-19）。
+	// 来源有二：① SET/表达式/句柄等**非 LLM 步骤**失败；② **LLM 步骤的参数预检失败**
+	// （agent 空 / 不可委派 / 提示词空，见本文件 llmAction）与无参 LOOP 的上限/失败终止——
+	// 二者同走 execSeq → addErr → Result.Errors（引擎 StopOnError 缺省 false：记错并继续后续步骤）。
 	runErrs := eng.Result().Errors
 	if len(runErrs) > 0 {
 		logf("[llm_run] DSL 运行时错误（作业 %s）：共 %d 条，首条 第 %d 行：%s\n",
@@ -408,7 +411,7 @@ func (jr *jobEnv) llmAction() dsl.Action {
 				return "", fmt.Errorf("LLM agent 不能为空（语法：LLM \"agent\" \"prompt\" 或 LLM \"agent\", \"prompt\" => #\"path\"）")
 			}
 			if !jr.s.agentDelegable(jr.node.InstanceID, jr.parent.req.ScenarioID, agent) {
-				return "", fmt.Errorf("LLM agent %q 不可委派（域 agent 注册表与当前场景内均无此 agent）；可委派成员见系统提示词的团队成员段", agent)
+				return "", fmt.Errorf("LLM agent %q 不可委派（app 级场景注册表与当前场景内均无此 agent）；可委派成员见系统提示词的团队成员段", agent)
 			}
 			if strings.TrimSpace(prompt) == "" {
 				return "", fmt.Errorf("LLM 提示词不能为空（语法：LLM \"agent\" \"prompt\" 或 LLM \"agent\", \"prompt\" => #\"path\"）")

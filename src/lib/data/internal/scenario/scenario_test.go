@@ -64,7 +64,7 @@ func writeScenarioDir(t *testing.T, root, id, name, mainPrompt string, subs map[
 func TestScenarioAppLevelListAndGet(t *testing.T) {
 	s, appRoot, _ := testRoots(t)
 	writeScenarioDir(t, filepath.Join(filepath.Dir(appRoot), capfs.ScenariosDirName),
-		"builtin-agents", "内置智能体", "内置主提示词", map[string]string{"coder": "编码提示词"})
+		"app-scn-a", "演示场景", "演示主提示词", map[string]string{"coder": "编码提示词"})
 
 	list, err := s.ScenarioList(facade.ScenarioListRequest{})
 	if err != nil {
@@ -72,7 +72,7 @@ func TestScenarioAppLevelListAndGet(t *testing.T) {
 	}
 	var got *facade.Scenario
 	for i := range list.List {
-		if list.List[i].ID == "builtin-agents" {
+		if list.List[i].ID == "app-scn-a" {
 			got = &list.List[i]
 		}
 	}
@@ -82,21 +82,21 @@ func TestScenarioAppLevelListAndGet(t *testing.T) {
 	if got.Level != "app" {
 		t.Fatalf("level=%q want app", got.Level)
 	}
-	if got.Name != "内置智能体" {
-		t.Fatalf("name=%q want 内置智能体（取 scenario.json）", got.Name)
+	if got.Name != "演示场景" {
+		t.Fatalf("name=%q want 演示场景（取 scenario.json）", got.Name)
 	}
-	if got.SystemPrompt != "内置主提示词" {
-		t.Fatalf("systemPrompt=%q want 内置主提示词（保留供兼容的派生值 = 主 agent prompt，25 §3）", got.SystemPrompt)
+	if got.SystemPrompt != "演示主提示词" {
+		t.Fatalf("systemPrompt=%q want 演示主提示词（保留供兼容的派生值 = 主 agent prompt，25 §3）", got.SystemPrompt)
 	}
 	if len(got.Agents) != 2 || !got.Agents[0].IsMain {
 		t.Fatalf("agents 形状异常（主 agent 应恒列首位）：%+v", got.Agents)
 	}
 
-	get, err := s.ScenarioGet(facade.ScenarioGetRequest{ScenarioID: "builtin-agents", Level: "app"})
+	get, err := s.ScenarioGet(facade.ScenarioGetRequest{ScenarioID: "app-scn-a", Level: "app"})
 	if err != nil {
 		t.Fatalf("ScenarioGet(level=app): %v", err)
 	}
-	if get.Scenario.ID != "builtin-agents" || get.Scenario.Level != "app" {
+	if get.Scenario.ID != "app-scn-a" || get.Scenario.Level != "app" {
 		t.Fatalf("get 结果异常：%+v", get.Scenario)
 	}
 }

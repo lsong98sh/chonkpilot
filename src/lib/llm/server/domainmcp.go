@@ -3,10 +3,12 @@
 // handler_subject, owner, hot, category}）——取代旧 mcp.register/unregister 统一 kind 与
 // server-register 主题。
 //
-// 25 §5/T2（2026-09-25）：agent（内置 agent 集）**不再**经 prompts/register asset_kind=agent
+// 25 §5/T2（2026-09-25）：agent（场景内 agent）**不再**经 prompts/register asset_kind=agent
 // 注册为资产（agent 只"注入"不"注册"），仅登记到内存表（见 registerDomainAgents /
-// registeredAgentDef）。25 §8.1 #8（T6，2026-09-25）：内置 agent 集**不再是代码内嵌契约**，
-// 统一为 **app 级场景**（`<exeDir>/scenarios/*/`，随发布只读资源），经数据层门面读取（规则单源）。
+// registeredAgentDef）。25 §8.1 #8（T6，2026-09-25）：agent 定义**不再是代码内嵌契约**，
+// 统一为 **app 级场景**（`<exeDir>/scenarios/*/`，随发布只读资源），经数据层门面读取（规则单源）；
+// **2026-09-26 收窄**：发布 `scenarios/` 仅出厂场景 `default/`（「开发场景」），原「内置 agent 集」
+// `builtin-agents/` 已删除 → 本内存注册表当前只含该场景的 agent（数量随场景变化，勿硬编码）。
 //
 // 注册：Start 中 gateway 就绪后逐工具 await（同主题 promise）；执行命中时 gateway
 // regProv 向注册声明的回调主题（SubjectDomainToolCall）发 {tool, args, context}，本模块
@@ -136,7 +138,7 @@ func (s *Server) lookupAgent(ref string) bool {
 	return ok
 }
 
-// registeredAgentDef 取内置 agent 注册表中该**引用**的定义（AG-1：子轮次提示词回落的第二来源；
+// registeredAgentDef 取 **app 级场景 agent 注册表**中该**引用**的定义（AG-1：子轮次提示词回落的第二来源；
 // 注册表 = app 级场景内的 agent，见 registerDomainAgents）：
 //   - 引用含场景前缀（`<场景id>/<agent名>`）→ **精确**命中该场景内 agent；
 //   - 裸名 → 精确键 / 注册表内**唯一**同名才命中（跨场景重名须用前缀引用）。
@@ -300,7 +302,7 @@ func methodErr(msg string) error { return &toolError{msg: msg} }
 // （AG-C5 热生效：按 turn 生效，不缓存到进程级/包级变量）。定义来源两处，按序回退：
 //  1. 场景内 agent（`data-scenario-load` 的 `agents` 项，字段对齐门面 DTO
 //     facade.ScenarioAgent）—— 提示词 / 工具白名单 / LLM 引用 / 委派条件四字段齐备；
-//  2. 内置 agent 内存注册表（**app 级场景** `<exeDir>/scenarios/*/` 内的 agent，见
+//  2. app 级场景 agent 注册表（`<exeDir>/scenarios/*/` 内的 agent，见
 //     registeredAgentDef）—— 仅提示词。
 //     25 §5/T2：agent **不再**注册为 gateway 资产；25 §8.1 #8（T6）：来源 = app 级场景（非 embed）。
 //
@@ -394,7 +396,7 @@ func mainScenarioAgent(agents []scenarioAgent) *scenarioAgent {
 // resolveAgentDef 是 agent 定义的**统一判据**（供 llm_run 委派判定 agentDelegable 与各轮次定义
 // 读取 newTurnCtx 共用同一入口 —— 消除「可委派对象」与「取回的定义」不同源）：
 //  1. instance 级 = `agents`（当前场景内同名 agent，**优先级最高**）；
-//  2. global 级 = 内置 agent 内存注册表（**app 级场景**内的 agent，仅提示词，见 registeredAgentDef）。
+//  2. global 级 = app 级场景 agent 注册表（仅提示词，见 registeredAgentDef）。
 //
 // 命名与唯一性（2026-09-26）：引用格式 = `<场景id>/<agent名>`（可省场景前缀 → 裸名）——
 //
@@ -417,7 +419,7 @@ func (s *Server) resolveAgentDef(scenarioID string, agents []scenarioAgent, ref 
 
 // agentDelegable 判定 llm_run 的委派对象名是否可委派。**统一判据**（与 newTurnCtx 的定义读取
 // 同入口）：instance 级（当前场景内同名 agent）**优先**命中 → 可委派；未命中才回落 global 级
-// （内置 agent 内存注册表 = app 级场景内的 agent，含注册表为空的宽松语义，见 lookupAgent）。
+// （global 级 = app 级场景 agent 注册表，含注册表为空的宽松语义，见 lookupAgent）。
 // 同名时以 instance 级为准。引用格式见 resolveAgentDef（`<场景id>/<agent名>` 或裸名）。
 func (s *Server) agentDelegable(instanceID, scenarioID, name string) bool {
 	if name == "" {
@@ -552,5 +554,5 @@ func agentMainField(v any) bool {
 //
 // 现行为：LLM 通过**系统提示词的场景层**（25 §3：`scenario.description` + 代码按场景 agents 自动
 // 拼接的成员段，见 turn.go `scenarioLayer`）知道可委派谁；委派判定的定义来源仍是 `resolveAgentDef`
-// （instance 级场景 + global 级内置 agent 注册表〔app 级场景〕，见上），与资产目录无关。
+// （instance 级场景 + global 级 app 级场景 agent 注册表，见上），与资产目录无关。
 // 成员段/委派引用统一带**场景前缀**（`<场景id>/<agent名>`，命名与唯一性，2026-09-26）。

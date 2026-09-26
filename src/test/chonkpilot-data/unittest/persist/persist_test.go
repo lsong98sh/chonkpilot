@@ -785,7 +785,7 @@ func appScenarioResourceRoot(t *testing.T) string {
 // appCapabilityRoot 造一个**临时 app 级场景根**：把仓库内出厂默认场景
 // `<repo>/src/lib/data/scenarios/default` 复制到 `<tmp>/scenarios/default`，返回
 // `persist.Options.AppDir`（= 系统级 capability 根；场景独立根 `scenarios/` 与其**平级**，25 §6）。
-// 只投放出厂默认场景（内置 agent 集 `builtin-agents/` 不参与断言）→ list 计数 / restore 目标确定。
+// 只投放出厂默认场景 `scenarios/default/` → list 计数 / restore 目标确定（仓库当前无其它 app 级场景）。
 func appCapabilityRoot(t *testing.T) string {
 	t.Helper()
 	src := filepath.Join(appScenarioResourceRoot(t), scenarioDefaultKey)

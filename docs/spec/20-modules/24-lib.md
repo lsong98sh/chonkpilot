@@ -42,6 +42,7 @@
 - **动词可注入**：`Options.Actions` 注册；`Parse` 校验未注册动词；`Raw` 动作参数**原文透传**（`captureRawRest`）。
 - 实际使用方（4 处）：`filesys_run`（7 动词，StopOnError=false）· `desktop_run`（23）· `browser_run`（23）· `llm_run`（`LLM` 动词）。
 - **`MaxDepth = 8`**（LOOP/IF/PARALLEL 计入；语法期强制，不暴露为配置）。
+- **`Options.MaxLoopIterations`** = **无参 LOOP**（无数据源、无界循环）的迭代上限（缺省 50；`<=0` 取缺省）；到达上限记错并终止本层循环（见 63 §5.2）。
 - 错误类型：`ErrBreak/ErrContinue/ErrExit`（流控信号）· `LineError{Line,Msg}`（语法/语义）· `RunError{Line,Msg}`（运行时单步，记错不阻塞）。
 - I/O 抽象（`handle.go`）：`FileSystem`/`FileHandle`/`DBSystem`/`DBHandle`/`TableHandle`（测试用内存 Mock）。
 

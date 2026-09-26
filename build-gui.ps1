@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
+﻿﻿﻿﻿﻿﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-split.ps1`；
 #   形态名（分离形态 / team）→ **`gui`（GUI 客户端 + 独立 server）**，
@@ -36,7 +36,7 @@
 #     ├── chonkpilot-vfts-mcp-server.exe       # 内置 MCP 引擎（形态无关）
 #     ├── zvec_c_api.dll                       # vfts 运行库（必须与 vfts 引擎 exe 同目录）
 #     ├── capability/                          # 契约 + executor×3
-#     └── scenarios/                           # app 级场景（出厂默认场景 + 内置智能体集，随发布只读资源；
+#     └── scenarios/                           # app 级场景（仅出厂场景「开发场景」default/，随发布只读资源；
 #                                              #   与 capability/ 平级，25-MCP与场景分层模型 §6 / T6）
 #
 # 与 build-desktop.ps1 的关系：本脚本**只重编受 tag 影响的宿主 exe**（client / cli-client / server）；

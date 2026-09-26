@@ -48,7 +48,7 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 | **prj（项目级）** | 项目设置 + **project-id** | `<workDir>/.chonkpilot/chonkpilot.db` |
 | **prjusr（个人运行态）** | 会话 / 轮次 / 消息、任务树、快照、窗口与布局 | **desktop 缺省** → `~/.chonkpilot/data/<prj-id>/chonkpilot.db`<br>显式 `--data-dir` → 与 prj 同根（兼容 CLI / 脚本 / L2 用例） |
 | **prjusr 非库文件** | `logs/`（GUI 滚动日志）、`tmp/uploads/`（附件 / 截图）、`backup/` | 同 prjusr 根（`data.PrjUsrDir`，**随 data_dir 同源**） |
-| **app 级只读资产** | 出厂场景（「开发场景」+「内置智能体」）、知识库契约 | `<exeDir>/scenarios/` · `<exeDir>/capability/` |
+| **app 级只读资产** | 出厂场景（「开发场景」`default/`）、知识库契约 | `<exeDir>/scenarios/` · `<exeDir>/capability/` |
 
 > ⚠️ `models.DataDir(workDir)` 是 **data-dir 访问器（= prj 数据根）**，**不是** prjusr 根；prjusr 根一律经 `data.PrjUsrDir` 解析（缺省需先读 prj 库取 `project-id`）。
 > ⚠️ **CLI 单体**：`--data-dir` 指向**临时目录**（退出即弃）→ 其会话**不落**用户数据根，GUI 不显示。
@@ -98,7 +98,7 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 
 `build-desktop.ps1` 内部流程：kill 旧实例 → 在 `src/frontend` 内 `npm run build:embed` → `embed.html` 改名 `index.html` 投放 `src/gui/frontend/dist` 并镜像到 `src/desktop/frontend/dist` → 构建 GUI/CLI → 调 `build-mcp-server.ps1` / `build-codegraph.ps1` / `build-vfts.ps1`。
 
-**产物清单**（`dist/desktop/`）：`chonkpilot.exe` · `chonkpilot-cli.exe` · 引擎 exe（codegraph / vfts）· `zvec_c_api.dll` · `capability/`（知识库契约 + executor）· `scenarios/`（app 级场景：出厂默认 + 内置 agent 集，只读）。
+**产物清单**（`dist/desktop/`）：`chonkpilot.exe` · `chonkpilot-cli.exe` · 引擎 exe（codegraph / vfts）· `zvec_c_api.dll` · `capability/`（知识库契约 + executor）· `scenarios/`（app 级场景：出厂场景「开发场景」`default/`，只读）。
 
 > 内置 MCP（codegraph / vfts）**默认不开启、不接入**——设置页开关开启后才拉起 / 注册。
 
