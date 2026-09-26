@@ -1,0 +1,12 @@
+{
+  "enable": "启用文件历史（git 快照）",
+  "no_git_installed": "未检测到 git 可执行文件：文件历史依赖 git 快照，安装 git 并加入 PATH 后此选项可用。",
+  "no_git_repo": "当前项目目录不是 git 仓库：文件历史依赖 git 快照，在项目目录执行 git init 后此选项可用。",
+  "desc_default_off": "默认关闭：不会在项目仓库产生任何 git 提交，除非在此显式开启。",
+  "desc_on": "开启后，在每个轮次边界（turn 开始与 LLM 完成）检查项目目录的未提交变更，有变更则执行 git add -A 并提交一次快照（提交信息含会话与变更文件数）；快照即项目目录的 git 提交，可用 git 查看 / 回滚。",
+  "desc_off": "关闭后，不再在轮次边界自动提交快照；已产生的 git 提交记录保留不变（仍可用 git 查看）。",
+  "enable_confirm_title": "开启文件历史？",
+  "enable_confirm": "开启后将在当前项目仓库产生 git 提交/快照（git add -A + commit），属对用户仓库有副作用的操作。确认开启？",
+  "saved": "已保存",
+  "save_failed": "保存失败"
+}

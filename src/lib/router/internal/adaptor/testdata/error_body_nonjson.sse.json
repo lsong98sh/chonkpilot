@@ -1,0 +1,7 @@
+{
+  "name": "error_body_nonjson",
+  "desc": "错误体非 JSON（网关 / 代理 HTML 兜底页）→ ErrorMessage 原样返回去空白文本",
+  "kind": "error",
+  "body": "<html><head><title>502 Bad Gateway</title></head><body>502 Bad Gateway</body></html>",
+  "expect_error": "<html><head><title>502 Bad Gateway</title></head><body>502 Bad Gateway</body></html>"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "error_body_json",
+  "desc": "错误体 JSON（OpenAI 兼容 {\"error\":{\"message\":…}}）→ ErrorMessage 取 message",
+  "kind": "error",
+  "body": "{\"error\":{\"message\":\"invalid api key\",\"type\":\"invalid_request_error\"}}",
+  "expect_error": "invalid api key"
+}

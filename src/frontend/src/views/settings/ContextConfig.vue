@@ -1,0 +1,906 @@
+<template>
+  <div class="list-container">
+    <div class="tab-toolbar">
+      <span class="tab-title">{{ $t('projectConfig.context') }}</span>
+      <div class="tab-actions">
+        <!-- ⑤ dirty 标记 + 保存中禁用重复提交（保存按钮仍为唯一提交入口，时机不变） -->
+        <span v-if="dirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
+        <Button size="small" type="primary" :loading="saving" v-mq:[EventNames.contextSave].click>{{ $t('projectConfig.save') }}</Button>
+      </div>
+    </div>
+    <form class="form-layout">
+      <!-- 第一块：记忆配置（「记忆库」与「用户偏好」为同级开关，各自下辖子项；类别来自 data-memory-list） -->
+      <section class="cfg-section">
+        <h3 class="section-title">{{ $t('projectConfig.memory_section') }}</h3>
+
+        <!-- 开关一：记忆库（关闭时其下子项统一禁用） -->
+        <div class="form-item form-item-12">
+          <div class="switch-row">
+            <label class="form-label">{{ $t('projectConfig.memory_enabled') }}</label>
+            <Switch :model-value="memoryEnabled" @update:model-value="onMemoryEnabledChange" />
+          </div>
+          <div class="field-hint">{{ $t('projectConfig.memory_enabled_hint') }}</div>
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('projectConfig.memory_min_turn_tokens') }}</label>
+          <Input v-model.number="memoryMinTurnTokens" type="number" :min="0" :step="50" :disabled="!memoryEnabled" @update:model-value="markDirty" @blur="handleChange" />
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('projectConfig.memory_category_max_tokens') }}</label>
+          <Input v-model.number="memoryCategoryMaxTokens" type="number" :min="0" :step="100" :disabled="!memoryEnabled" @update:model-value="markDirty" @blur="handleChange" />
+          <div class="field-hint">{{ $t('projectConfig.memory_category_max_tokens_hint') }}</div>
+        </div>
+        <!-- 手动沉淀（memory.flush）：显式触发一次，不受最小轮次 Token 阈值限制 -->
+        <div class="form-item form-item-full">
+          <div class="switch-row">
+            <label class="form-label">{{ $t('memoryIO.flush_section') }}</label>
+            <Button size="small" :loading="flushing" :disabled="!memoryEnabled || flushing" @click="flushMemory">{{ $t('memoryIO.flush') }}</Button>
+          </div>
+          <div class="field-hint">{{ $t('memoryIO.flush_hint') }}</div>
+        </div>
+        <div class="form-item form-item-full" v-if="memoryEnabled">
+          <!-- 类别表头：新增类别入口（新增后出现在清单并可编辑内容） -->
+          <div class="mem-table-head">
+            <span class="form-label">{{ $t('projectConfig.memory_col_category') }}</span>
+            <Button size="small" :disabled="!memoryEnabled" @click="addCategory">{{ $t('projectConfig.memory_add_category') }}</Button>
+          </div>
+          <table class="mem-table">
+            <thead>
+              <tr>
+                <th>{{ $t('projectConfig.memory_col_category') }}</th>
+                <th>{{ $t('projectConfig.memory_col_level') }}</th>
+                <th>{{ $t('projectConfig.memory_col_tokens') }}</th>
+                <th>{{ $t('projectConfig.memory_col_enabled') }}</th>
+                <th>{{ $t('common.operation') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in projectCategories" :key="c.category" :class="{ 'is-over': isOverThreshold(c) }">
+                <td>
+                  <span>{{ c.category }}</span>
+                  <span v-if="isOverThreshold(c)" class="over-hint">{{ $t('projectConfig.memory_over_hint') }}</span>
+                </td>
+                <td>{{ levelText(c.level) }}</td>
+                <td>{{ c.tokens }}</td>
+                <td>
+                  <Switch :model-value="categoryEnabled(c)" :disabled="!memoryEnabled" @update:model-value="v => onCategoryToggle(c, v)" />
+                </td>
+                <td>
+                  <Button size="small" text :disabled="!memoryEnabled" @click="openContentEditor(c)">{{ $t('common.edit') }}</Button>
+                  <Button size="small" text :disabled="!memoryEnabled" @click="clearCategory(c)">{{ $t('memoryIO.clear') }}</Button>
+                  <Button v-if="isCustomCategory(c)" size="small" text :disabled="!memoryEnabled" @click="deleteCategory(c)">{{ $t('common.delete') }}</Button>
+                </td>
+              </tr>
+              <tr v-if="projectCategories.length === 0">
+                <td colspan="5" class="empty-text">{{ $t('projectConfig.memory_empty') }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 开关二：用户偏好（与记忆库同级；子项 = 预估 Token + 内容编辑）——行保留（关闭时灰显），
+             内容行随类别清单渲染（关闭态不取清单 → 不渲染） -->
+        <div class="form-item form-item-12">
+          <div class="switch-row">
+            <label class="form-label">{{ $t('projectConfig.memory_user_pref') }}</label>
+            <Switch :model-value="userPrefEnabled" :disabled="!memoryEnabled" @update:model-value="onUserPrefChange" />
+          </div>
+          <div class="field-hint">{{ $t('projectConfig.memory_user_pref_hint') }}</div>
+        </div>
+        <div class="form-item form-item-12" v-if="userPref">
+          <label class="form-label">{{ $t('projectConfig.memory_col_tokens') }}</label>
+          <div class="switch-row">
+            <span class="mem-token" :class="{ 'is-over': isOverThreshold(userPref) }">{{ userPref.tokens }}</span>
+            <span v-if="isOverThreshold(userPref)" class="over-hint">{{ $t('projectConfig.memory_over_hint') }}</span>
+            <Button size="small" text :disabled="!memoryEnabled" @click="openContentEditor(userPref)">{{ $t('common.edit') }}</Button>
+            <Button size="small" text :disabled="!memoryEnabled" @click="clearCategory(userPref)">{{ $t('memoryIO.clear') }}</Button>
+          </div>
+        </div>
+
+        <!-- 记忆区底部：记忆总 token 数（各启用类别 tokens 之和）——**只读展示**。
+             可点击的主入口（分类列表 → 内容编辑弹框）已迁至窗口状态栏底部（StatusBar），
+             此处不再重复入口。 -->
+        <div class="form-item form-item-full mem-total-row" v-if="memoryEnabled">
+          <span class="mem-total">
+            <span class="mem-total-label">{{ $t('projectConfig.memory_total_tokens') }}</span>
+            <span class="mem-total-value">{{ memoryTotalTokens }}</span>
+          </span>
+          <div class="field-hint">{{ $t('projectConfig.memory_total_hint') }}</div>
+        </div>
+      </section>
+
+      <!-- 第二块：上下文压缩配置 -->
+      <section class="cfg-section">
+        <h3 class="section-title">{{ $t('projectConfig.compress_section') }}</h3>
+        <!-- 保留完整对话 = **本轮恒保留**（下限），更早的轮「累计完整态 token > M」或「已纳入轮数 >= N」
+             的那一轮起全部进入**简化区**（口径 V/W；两条件均 0 = 不压缩；简化区 token ≥ T 才生成摘要） -->
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('projectConfig.keep_full_max_turns') }}</label>
+          <Input v-model.number="keepFullMaxTurns" type="number" :min="0" :max="50" :step="1" @update:model-value="markDirty" @blur="handleChange" />
+          <!-- 口径 W：<0 = 非法（显式提示，不静默）；0 = 该条件不启用 -->
+          <div class="field-hint" :class="{ 'hint-error': keepFullMaxTurnsInvalid }">
+            {{ keepFullMaxTurnsInvalid ? $t('projectConfig.keep_full_max_turns_invalid') : $t('projectConfig.keep_full_max_turns_hint') }}
+          </div>
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('projectConfig.keep_full_max_tokens') }}</label>
+          <Input v-model.number="keepFullMaxTokens" type="number" :min="0" :max="1000000" :step="1000" @update:model-value="markDirty" @blur="handleChange" />
+          <!-- 口径 W：<0 = 非法（显式提示，不静默）；0 = 该条件不启用 -->
+          <div class="field-hint" :class="{ 'hint-error': keepFullMaxTokensInvalid }">
+            {{ keepFullMaxTokensInvalid ? $t('projectConfig.keep_full_max_tokens_invalid') : $t('projectConfig.keep_full_max_tokens_hint') }}
+          </div>
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('projectConfig.compress_threshold') }}</label>
+          <Input v-model.number="compressTokenThreshold" type="number" :min="10000" :max="500000" :step="10000" @update:model-value="markDirty" @blur="handleChange" />
+          <div class="quick-thresholds">
+            <Button
+              v-for="b in QUICK_THRESHOLDS"
+              :key="b.label"
+              size="small"
+              class="quick-threshold-btn"
+              v-mq:[EventNames.contextQuickThreshold].click="{ value: b.value }"
+            >{{ b.label }}</Button>
+          </div>
+        </div>
+        <div class="form-item form-item-full">
+          <div class="prompt-editor-header">
+            <label class="form-label">{{ $t('projectConfig.summary_prompt_edit') }}</label>
+            <div class="tab-actions">
+              <!-- 编辑 = 弹框（A2：弹框内编辑 + 保存即关 + 弹框自带优化） -->
+              <Button size="small" type="primary" @click="openSummaryEditor">{{ $t('common.edit') }}</Button>
+            </div>
+          </div>
+          <!-- 只读展示有效值（编辑弹框保存后同步刷新）；来源标注 + 取消覆盖入口 -->
+          <Textarea :model-value="summarizePrompt" readonly :rows="6" class="prompt-editor" :placeholder="$t('projectConfig.summary_prompt_placeholder')" />
+          <div class="switch-row">
+            <span class="field-hint">{{ summaryOverride ? $t('projectConfig.summary_prompt_source_override') : $t('projectConfig.summary_prompt_source_inherit') }}</span>
+            <Button size="small" text :disabled="!summaryOverride" @click="resetSummaryOverride">{{ $t('projectConfig.summary_prompt_reset') }}</Button>
+          </div>
+        </div>
+        <!-- 压缩内容可查（数据来源 = 当前会话快照：data-snapshot-get，压缩产物唯一落点） -->
+        <div class="form-item form-item-full">
+          <div class="prompt-editor-header">
+            <label class="form-label">{{ $t('memoryIO.records_title') }}</label>
+            <div class="tab-actions">
+              <Button size="small" :loading="recordsLoading" @click="loadCompressRecords">{{ $t('memoryIO.records_refresh') }}</Button>
+            </div>
+          </div>
+          <div class="field-hint">{{ $t('memoryIO.records_note') }}</div>
+          <ul class="compress-records" v-if="compressRecords.length > 0">
+            <li v-for="(r, i) in compressRecords" :key="i" class="compress-record">
+              <div class="record-meta">
+                <span>{{ $t('memoryIO.records_range_value', { turn: r.turn }) }}</span>
+                <span class="record-kept">{{ $t('memoryIO.records_kept', { count: r.kept }) }}</span>
+                <Button size="small" text @click="toggleRecord(i)">{{ recordExpanded(i) ? $t('memoryIO.records_collapse') : $t('memoryIO.records_expand') }}</Button>
+              </div>
+              <pre class="record-text">{{ recordExpanded(i) ? r.text : brief(r.text) }}</pre>
+            </li>
+          </ul>
+          <div v-else class="field-hint records-empty">{{ recordsEmptyText }}</div>
+        </div>
+        <p class="form-description">
+          {{ $t('projectConfig.context_desc') }}<br>
+          {{ $t('projectConfig.context_calc') }}<br>
+          {{ $t('projectConfig.context_example') }}<br>
+          {{ $t('projectConfig.context_async') }}
+        </p>
+        <!-- 压缩区末尾提示（2026-09-24 用户口径，zh-CN 逐字）：纯展示，无功能变更 -->
+        <p class="form-description">
+          {{ $t('projectConfig.context_tip_cache_billing') }}<br>
+          {{ $t('projectConfig.context_tip_compress_llm') }}
+        </p>
+      </section>
+    </form>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, h, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { Input, Textarea, Button, Switch, message, confirm, promptInput } from '../../components/ui'
+import { dialog } from '../../components/dialog'
+import TextEditDialog from '../../components/common/TextEditDialog.vue'
+import { getAllConfig, setConfig, getPrompt, setPrompt } from '../../api/config'
+import { readPrimitive } from '../../api/knowledge'
+import { getActiveSessionID } from '../../api/session'
+import dataClient, { onDataRefresh, dataRequest } from '../../utils/dataClient'
+import mq from '../../utils/mq'
+import { EventNames } from '../../events/event-names'
+import { saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
+import { useUnsavedMark } from '../../composables/useUnsavedMark'
+import { useMemoryCategories } from '../../composables/useMemoryCategories'
+
+const { t } = useI18n()
+
+// ⑤ dirty 标记 + 保存中禁用重复提交（仅显示/防重，保存时机不变）
+const { dirty, markDirty, markSaved } = useUnsavedMark()
+const saving = ref(false)
+
+// 快速阈值按钮（FP L212）：64K/128K/256K/512K/1M
+const QUICK_THRESHOLDS = [
+  { label: '64K', value: 64 * 1024 },
+  { label: '128K', value: 128 * 1024 },
+  { label: '256K', value: 256 * 1024 },
+  { label: '512K', value: 512 * 1024 },
+  { label: '1M', value: 1024 * 1024 },
+]
+
+// 系统默认（与 compress 插件 DefaultOptions 一致：
+// keep_full_max_turns=10 / keep_full_max_tokens=24000 / compress_token_threshold=20000）
+const keepFullMaxTurns = ref(10)
+const keepFullMaxTokens = ref(24000)
+const compressTokenThreshold = ref(20000)
+// 口径 W（2026-09-25）：`< 0` = 非法值（前端显式提示，不静默；后端按「不启用」处理并留日志）；
+// `0` = 该条件不启用（只用另一条件）；**两者均为 0 = 不压缩**（保留全量、不生成摘要）。
+const keepFullMaxTurnsInvalid = computed(() => Number(keepFullMaxTurns.value) < 0)
+const keepFullMaxTokensInvalid = computed(() => Number(keepFullMaxTokens.value) < 0)
+const hasIllegalBounds = computed(() => keepFullMaxTurnsInvalid.value || keepFullMaxTokensInvalid.value)
+
+// warnIllegalBounds 保存/落库前提示非法值（不阻断保存：后端按不启用处理，但用户必须知情）。
+function warnIllegalBounds() {
+  if (hasIllegalBounds.value) {
+    message.warning(t('projectConfig.keep_full_max_illegal_warning'))
+  }
+}
+const summarizePrompt = ref('')
+// 总结提示词来源：true = 项目级覆盖（capability/prompts/summary.prompt.md 存在），
+// false = 继承系统级/内置默认（后端 load 回落链：项目文件 → 系统文件 → 旧 prj config → 内置默认）。
+const summaryOverride = ref(false)
+// 加载时的有效值快照：页保存按钮据「未做覆盖且内容未改」提示"未做覆盖（沿用继承值）"。
+const summaryLoadedValue = ref('')
+const unsubs = []
+
+// ── 记忆配置 ──
+// 用户偏好 = 唯一用户级类别（名 = 后端 persist.MemoryUserCategory，落 ~/.chonkpilot/用户偏好.md）
+const USER_PREF_CATEGORY = '用户偏好'
+// 预置项目级类别（与后端 persist.memoryCategorySpecs 一致；预置不可删除，仅可清空内容）
+const PRESET_CATEGORIES = ['项目概要', '共同库', '开发规范', '构建发布规则', '接口库', '测试规范', '典型参照', '用户决策']
+// 记忆类别共享状态（与状态栏「记忆总 token 数」入口同源）：开关/清单/总量 + 内容编辑弹框
+const {
+  enabled: memoryEnabled,
+  list: memoryList,
+  total: memoryTotalTokens,
+  setEnabled: setMemoryEnabled,
+  load: loadMemoryCategories,
+  openContentEditor,
+  closeEditorFor,
+} = useMemoryCategories()
+const memoryMinTurnTokens = ref(200)
+const memoryCategoryMaxTokens = ref(2000)
+// 用户偏好开关（存储键 memory.category.用户偏好，走既有 prj-config 读写；缺失 → 默认启用）
+const userPrefEnabled = ref(true)
+// 项目配置平铺 map（类别开关 memory.category.<类别名> 缺失 → 默认启用）
+const cfgMap = ref({})
+
+// ── 手动沉淀（memory.flush）+ 压缩内容可查（data-snapshot-get）──
+// FLUSH_TOPIC = 点分相对主题（桥/服务端「点分直通总线」分支受理；memory 插件订阅应答）；
+// 后端 Go 侧同字面量：chonkpilot-plugin-memory/memory.go:flushSubject。
+const FLUSH_TOPIC = 'memory.flush'
+// 手动沉淀可能跨多次 llm-simple（各类别并行）→ 给足等待（>插件侧单次 LLM 超时 60s）
+const FLUSH_TIMEOUT = 120000
+// 压缩插件回写快照的摘要前缀（chonkpilot-plugin-compress/compress.go:DoCompress）——
+// 压缩产物唯一落点 = 会话快照（system 消息），前端据此识别「压缩记录」。
+const COMPRESS_MARK = '[已压缩早前对话] '
+// COMPRESS_EVENT = 总线 session-compress 的前端 type（61-消息一览 §6 映射：session-compress
+// → llm-compress，桥/入口同表 mqTypeMap）；压缩发生（写回快照）后据此重读压缩记录。
+const COMPRESS_EVENT = 'llm-compress'
+const RECORD_BRIEF_CHARS = 200
+const flushing = ref(false)
+const compressRecords = ref([])
+const recordsLoading = ref(false)
+const expandedRecords = ref({})
+// 无活动会话（未取到 session_id）→ 空态给专门文案（不谎称「无压缩记录」）
+const hasActiveSession = ref(false)
+
+// 用户级类别（用户偏好）与项目级类别分离：前者作为与「记忆库」同级的开关，不入项目类别表
+const userPref = computed(() => memoryList.value.find(c => c.level === 'user') || null)
+const projectCategories = computed(() => memoryList.value.filter(c => c.level !== 'user'))
+
+function levelText(level) {
+  if (level === 'user') return t('projectConfig.memory_level_user')
+  return t('projectConfig.memory_level_project')
+}
+
+// 超阈值 → 该行标红提示（只提醒、不阻断）
+function isOverThreshold(c) {
+  const th = Number(memoryCategoryMaxTokens.value) || 0
+  return th > 0 && Number(c.tokens) > th
+}
+
+function categoryEnabled(c) {
+  const v = cfgMap.value['memory.category.' + c.category]
+  return v === undefined || v === '' ? true : v === 'true'
+}
+
+// readNum 读数字项：键存在且可解析（含 0 / 负数 → 该项「不启用」）→ 采用；缺失/非法 → 回落默认。
+function readNum(map, key, fallback) {
+  const raw = map[key]
+  if (raw === undefined || raw === null || raw === '') return fallback
+  const n = parseInt(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+
+async function loadConfig() {
+  try {
+    const res = await getAllConfig()
+    const c = res.config || res
+    cfgMap.value = c
+    // 保留完整对话：**本轮恒保留**（下限），更早的轮超 N 轮或累计完整态 token 超 M 的那一轮起
+    // 进入**简化区**（`keep_full_max_turns`，缺失回落旧键 `keep_full_turns` 读时兼容；
+    // `keep_full_max_tokens`）；0 = 该条件不启用、两者均 0 = 不压缩（口径 V/W）；
+    // 简化区摘要阈值 `compress_token_threshold`（作用域 = 简化区）。
+    keepFullMaxTurns.value = readNum(c, 'keep_full_max_turns', readNum(c, 'keep_full_turns', 10))
+    keepFullMaxTokens.value = readNum(c, 'keep_full_max_tokens', 24000)
+    compressTokenThreshold.value = readNum(c, 'compress_token_threshold', 20000)
+    setMemoryEnabled(c['memory.enabled'] === 'true')
+    if (c['memory.min-turn-tokens'] !== undefined) memoryMinTurnTokens.value = parseInt(c['memory.min-turn-tokens']) || 0
+    if (c['memory.category-max-tokens'] !== undefined) memoryCategoryMaxTokens.value = parseInt(c['memory.category-max-tokens']) || 2000
+    userPrefEnabled.value = userPrefEnabledFromMap()
+  } catch (e) {
+    // ④ 加载失败须用户可见（不再仅 console）
+    message.error(loadFailedText(t, t('projectConfig.context'), e))
+  }
+  await loadSummaryPrompt()
+  // 记忆库关闭 → 不取类别清单（关闭态页面不展示类别区，且后端 list 会落盘预置文件）
+  await reloadMemoryCategories()
+}
+
+// reloadMemoryCategories 取记忆类别清单（共享 composable：关闭态不发 data-memory-list，
+// 后端不再落盘预置文件）；加载失败 → 用户可见提示（与既有口径一致）。
+async function reloadMemoryCategories() {
+  try {
+    await loadMemoryCategories()
+  } catch (e) {
+    message.error(loadFailedText(t, t('projectConfig.memory_section'), e))
+  }
+}
+
+// SUMMARY_PROMPT_PATH 项目级总结提示词文件（相对 prompts 根 → 归属项目级；
+// 与 persist 侧 summaryPromptFile 同路径：<workdir>/.chonkpilot/capability/prompts/summary.prompt.md）。
+const SUMMARY_PROMPT_PATH = 'prompts/summary.prompt.md'
+
+// loadSummaryPrompt 读总结提示词（有效值 + 来源）：有效值走 data-prompt-load（后端回落链）；
+// 来源经知识库读项目级文件判定——读得到 = 项目级覆盖，读不到 = 继承系统级/内置默认。
+async function loadSummaryPrompt() {
+  try {
+    const sp = await getPrompt('summary_prompt')
+    summarizePrompt.value = sp.value || ''
+    summaryLoadedValue.value = summarizePrompt.value
+  } catch (e) {
+    message.error(loadFailedText(t, t('projectConfig.summary_prompt_edit'), e))
+  }
+  try {
+    await readPrimitive(SUMMARY_PROMPT_PATH)
+    summaryOverride.value = true
+  } catch (e) {
+    summaryOverride.value = false // 项目级文件不存在（或读取失败）→ 继承
+  }
+}
+
+// resetSummaryOverride 取消项目级覆盖：删除项目级文件（data-prompt-delete 既有面）→ 回落继承值。
+async function resetSummaryOverride() {
+  try {
+    await dataClient.remove('prompt', 'summary_prompt')
+    await loadSummaryPrompt()
+    markSaved()
+    message.success(t('projectConfig.summary_prompt_reset_done'))
+  } catch (e) {
+    message.error(t('projectConfig.prompt_save_failed') + ': ' + (e.message || ''))
+  }
+}
+
+// 用户偏好开关取值（缺 key → 默认启用，与后端 categoryEnabled 口径一致）
+function userPrefEnabledFromMap() {
+  const v = cfgMap.value['memory.category.' + USER_PREF_CATEGORY]
+  return v === undefined || v === '' ? true : v === 'true'
+}
+
+// blur 即保存数字项（与现状一致，FP L216 保存按钮另做全量提交）
+function handleChange() {
+  saveNumbers()
+}
+
+// ④ 保存失败须用户可见（不再仅 console.warn）；成功 → 清除 dirty 标记
+function saveNumbers() {
+  warnIllegalBounds()
+  return Promise.all([
+    setConfig('keep_full_max_turns', String(keepFullMaxTurns.value)),
+    setConfig('keep_full_max_tokens', String(keepFullMaxTokens.value)),
+    setConfig('compress_token_threshold', String(compressTokenThreshold.value)),
+    setConfig('memory.min-turn-tokens', String(memoryMinTurnTokens.value)),
+    setConfig('memory.category-max-tokens', String(memoryCategoryMaxTokens.value)),
+  ])
+    .then(() => { markSaved() })
+    .catch(e => { message.error(saveFailedText(t, e)) })
+}
+
+// 总开关：立即保存；由关到开 → 取类别清单（此前关闭态未取）
+function onMemoryEnabledChange(v) {
+  setMemoryEnabled(v)
+  markDirty()
+  setConfig('memory.enabled', String(v))
+    .then(() => { markSaved(); reloadMemoryCategories() })
+    .catch(e => message.error(saveFailedText(t, e)))
+}
+
+// 单类别开关：写 memory.category.<类别名>（项目级/用户偏好同键口径）
+function setCategoryEnabled(category, v) {
+  const key = 'memory.category.' + category
+  cfgMap.value = { ...cfgMap.value, [key]: String(v) }
+  markDirty()
+  setConfig(key, String(v))
+    .then(() => markSaved())
+    .catch(e => message.error(saveFailedText(t, e)))
+}
+
+function onCategoryToggle(c, v) {
+  setCategoryEnabled(c.category, v)
+}
+
+// 用户偏好开关：立即保存（键与项目类别同构）
+function onUserPrefChange(v) {
+  userPrefEnabled.value = v
+  setCategoryEnabled(USER_PREF_CATEGORY, v)
+}
+
+// ── 类别内容编辑（弹框）：读内容 / 保存 / 分类列表 / 总量汇总均为共享 composable
+//（useMemoryCategories）实现，与状态栏「记忆总 token 数」入口同源（A4 / P1 迁移）。 ──
+
+// 自定义类别 = 项目级且非预置（仅此类可删除；预置仅可清空内容）
+function isCustomCategory(c) {
+  return c.level !== 'user' && !PRESET_CATEGORIES.includes(c.category)
+}
+
+// 新增类别：输入名称 → data-memory-save（空内容）建类别 → 重载清单并打开内容编辑弹框
+async function addCategory() {
+  let name
+  try {
+    name = await promptInput(t('projectConfig.memory_new_category_placeholder'))
+  } catch { return }
+  if (name === null || name === undefined) return
+  name = String(name).trim()
+  if (!name) {
+    message.warning(t('projectConfig.memory_category_required'))
+    return
+  }
+  try {
+    await dataClient.save('memory', { category: name, content: '' })
+    message.success(t('projectConfig.saved'))
+    await reloadMemoryCategories()
+    const created = memoryList.value.find(c => c.category === name)
+    if (created) openContentEditor(created)
+  } catch (e) {
+    message.error(t('projectConfig.save_failed') + ': ' + (e.message || ''))
+  }
+}
+
+// 删除自定义类别：二次确认 → data-memory-delete 移除清单项 + 内容文件
+async function deleteCategory(c) {
+  try {
+    await confirm(t('projectConfig.memory_delete_confirm', { name: c.category }), t('common.confirm_delete_title'))
+  } catch { return }
+  try {
+    await dataRequest('memory', 'delete', { data: { category: c.category } })
+    message.success(t('projectConfig.deleted'))
+    closeEditorFor(c.category) // 内容编辑弹框若正开着该类 → 一并关闭（类别已不存在）
+    await reloadMemoryCategories()
+  } catch (e) {
+    message.error(t('projectConfig.save_failed') + ': ' + (e.message || ''))
+  }
+}
+
+// 清空类别内容（≠ 删除类别）：二次确认 → 复用既有 data-memory-save 写空串（后端已支持）
+// → **后端确认后**重新读回清单（不乐观清空）；该类的内容编辑弹框若开着 → 关闭（内容已变，避免回写陈旧草稿）。
+async function clearCategory(c) {
+  if (!c || !c.category) return
+  try {
+    await confirm(t('memoryIO.clear_confirm', { name: c.category }), t('memoryIO.clear_confirm_title'))
+  } catch { return }
+  try {
+    await dataClient.save('memory', { category: c.category, content: '' })
+    // 后端确认成功后才更新 UI：重读清单（类别保留、tokens 归零）
+    await reloadMemoryCategories()
+    closeEditorFor(c.category)
+    message.success(t('memoryIO.clear_ok', { name: c.category }))
+  } catch (e) {
+    message.error(t('memoryIO.clear_fail', { error: e.message || String(e) }))
+  }
+}
+
+// 立即沉淀（memory.flush）：显式触发一次，同步等结果（进行中 → 失败/部分失败可见提示）；
+// **成功静默**（A3：记忆沉淀成功不弹消息），成功后重读类别清单（tokens 变化 = 写入已落盘）。
+async function flushMemory() {
+  if (flushing.value) return
+  flushing.value = true
+  try {
+    let sessionID = ''
+    try {
+      const r = await getActiveSessionID()
+      sessionID = (r && r.session_id) || ''
+    } catch (e) {
+      message.error(t('memoryIO.flush_fail', { error: e.message || String(e) }))
+      return
+    }
+    if (!sessionID) {
+      message.warning(t('memoryIO.flush_no_session'))
+      return
+    }
+    const env = await mq.emit(FLUSH_TOPIC, { session: sessionID }, { timeout: FLUSH_TIMEOUT })
+    const backend = env && env.backend
+    const res = (backend && backend.result) || null
+    const reason = (backend && backend.errors && backend.errors[0]) || (res && res.reason) || ''
+    if (!backend || !res || res.ok !== true) {
+      message.error(t('memoryIO.flush_fail', { error: reason || t('config.feedback.loadFailedUnknown', { item: t('memoryIO.flush') }) }))
+      return
+    }
+    const saved = Array.isArray(res.saved) ? res.saved : []
+    const failed = Array.isArray(res.failed) ? res.failed : []
+    if (res.enabled === 0) {
+      message.warning(t('memoryIO.flush_no_category'))
+    } else if (failed.length > 0) {
+      message.warning(t('memoryIO.flush_partial', { count: saved.length, failed: failed.length }))
+    }
+    // else：全部成功 → 静默（A3，用户口径 2026-09-24：记忆成功不显示消息）
+    await reloadMemoryCategories()
+  } finally {
+    flushing.value = false
+  }
+}
+
+// 压缩记录空态文案：无活动会话（未取到 session）与「有会话但无压缩」区分开，不谎报。
+const recordsEmptyText = computed(() => (
+  hasActiveSession.value ? t('memoryIO.records_empty') : t('memoryIO.records_no_session')
+))
+
+// 摘要截断（长文折叠）：超长只展示前 N 字符 + 省略号，展开看全文（与大文本既有呈现同风格）。
+function brief(text) {
+  const s = String(text || '')
+  return s.length > RECORD_BRIEF_CHARS ? s.slice(0, RECORD_BRIEF_CHARS) + '…' : s
+}
+
+function recordExpanded(i) {
+  return expandedRecords.value[i] === true
+}
+
+function toggleRecord(i) {
+  expandedRecords.value = { ...expandedRecords.value, [i]: !recordExpanded(i) }
+}
+
+// loadCompressRecords 读「压缩了什么」：数据来源 = **当前活动会话的会话快照**
+// （data-snapshot-get 既有面；压缩产物唯一落点 = sessions 表 history/snapshot_turn）。
+// 记录 = 快照 history 中带压缩标记的 system 消息（摘要原文）+ 快照轮次（触发范围）
+// + 保留段条数；快照**不存压缩时间** → 不展示时间（不臆造）。
+async function loadCompressRecords() {
+  recordsLoading.value = true
+  try {
+    let sessionID = ''
+    try {
+      const r = await getActiveSessionID()
+      sessionID = (r && r.session_id) || ''
+    } catch (e) {
+      hasActiveSession.value = false
+      compressRecords.value = []
+      message.error(t('memoryIO.records_load_failed', { error: e.message || String(e) }))
+      return
+    }
+    hasActiveSession.value = !!sessionID
+    if (!sessionID) {
+      compressRecords.value = []
+      return
+    }
+    const res = await dataRequest('snapshot', 'get', { data: { session_id: sessionID } })
+    const snap = (res && res.snapshot) || null
+    const history = (snap && Array.isArray(snap.history)) ? snap.history : []
+    const out = []
+    for (const m of history) {
+      const content = m && typeof m.content === 'string' ? m.content : ''
+      if (m && m.role === 'system' && content.startsWith(COMPRESS_MARK)) {
+        out.push({
+          text: content.slice(COMPRESS_MARK.length),
+          turn: (snap && snap.snapshot_turn) || '',
+          // 保留段 = 快照中压缩摘要之外的消息条数（压缩后快照 = 摘要 + 保留段）
+          kept: Math.max(history.length - 1, 0),
+        })
+      }
+    }
+    compressRecords.value = out
+    expandedRecords.value = {}
+  } catch (e) {
+    compressRecords.value = []
+    message.error(t('memoryIO.records_load_failed', { error: e.message || String(e) }))
+  } finally {
+    recordsLoading.value = false
+  }
+}
+
+// 保存按钮：提交本页全部设置（记忆 + 压缩 + 总结提示词）；保存中禁用重复提交
+async function handleSave() {
+  if (saving.value) return
+  saving.value = true
+  try {
+    warnIllegalBounds()
+    await setConfig('keep_full_max_turns', String(keepFullMaxTurns.value))
+    await setConfig('keep_full_max_tokens', String(keepFullMaxTokens.value))
+    await setConfig('compress_token_threshold', String(compressTokenThreshold.value))
+    await setConfig('memory.enabled', String(memoryEnabled.value))
+    await setConfig('memory.min-turn-tokens', String(memoryMinTurnTokens.value))
+    await setConfig('memory.category-max-tokens', String(memoryCategoryMaxTokens.value))
+    if (memoryEnabled.value) {
+      // 记忆库关闭时类别开关不可见 → 不提交类别键（避免写入用户未见过的值）
+      for (const c of projectCategories.value) {
+        await setConfig('memory.category.' + c.category, String(categoryEnabled(c)))
+      }
+      await setConfig('memory.category.' + USER_PREF_CATEGORY, String(userPrefEnabled.value))
+    }
+    // 总结提示词：内容与"继承值"相同（未覆盖 + 未改动）→ 后端不写项目级文件（保持继承），
+    // 只提示"未做覆盖"，避免把有效值固化成项目级副本、永久遮蔽系统级后续更新。
+    const inheritKept = !summaryOverride.value && summarizePrompt.value === summaryLoadedValue.value
+    await setPrompt('summary_prompt', summarizePrompt.value)
+    await loadSummaryPrompt()
+    markSaved()
+    message.success(inheritKept ? t('projectConfig.summary_prompt_inherit_kept') : t('projectConfig.saved'))
+  } catch (e) {
+    message.error(saveFailedText(t, e))
+  } finally {
+    saving.value = false
+  }
+}
+
+// 总结提示词编辑弹框（A2：弹框内编辑 + 保存即关 + 弹框自带优化；优化前快照在弹框内可还原）
+function openSummaryEditor() {
+  const handle = dialog.show(h(TextEditDialog, {
+    content: summarizePrompt.value,
+    placeholder: t('projectConfig.summary_prompt_placeholder'),
+    optimize: {
+      title: t('projectConfig.summary_prompt_optimize_title'),
+      useCase: t('projectConfig.summary_prompt_optimize_use_case'),
+      recover: true, // 弹框内提供「恢复优化」（优化前内容回填，仍需点保存才落库）
+    },
+    onSave: async (text) => {
+      // 与既有语义一致：与继承值相同（未覆盖 + 未改动）→ 后端不写项目级文件（保持继承）
+      const inheritKept = !summaryOverride.value && text === summaryLoadedValue.value
+      await setPrompt('summary_prompt', text)
+      await loadSummaryPrompt() // 刷新有效值与来源标注（优化/覆盖后为项目级覆盖）
+      markSaved()
+      message.success(inheritKept ? t('projectConfig.summary_prompt_inherit_kept') : t('projectConfig.saved'))
+      handle.close()
+    },
+    // 弹框「取消」：TextEditDialog emit('cancel') → 关闭弹框（不落库）
+    onCancel: () => handle.close(),
+  }), {
+    title: t('projectConfig.summary_prompt_edit'),
+    width: 760,
+    height: 620,
+    bodyClass: 'text-edit-dialog-body',
+    closable: true,
+  })
+}
+
+function handleQuickThreshold({ value }) {
+  compressTokenThreshold.value = value
+  markDirty()
+  saveNumbers()
+}
+
+onMounted(() => {
+  loadConfig()
+  // 压缩记录：进页读一次当前会话快照（空态亦展示）
+  loadCompressRecords()
+  // data-prj-config-refresh：配置变更后 server 广播，自动重载（20-gui）
+  unsubs.push(onDataRefresh('prj-config', loadConfig))
+  // data-memory-refresh：记忆沉淀写回后刷新类别 token（20-gui；关闭态不发 list）
+  unsubs.push(onDataRefresh('memory', reloadMemoryCategories))
+  // llm-compress（= 总线 session-compress 的前端 type，20-gui §6 映射）：任一轮次压缩发生
+  // → 重读压缩记录（压缩产物写回快照后即时可见）
+  unsubs.push(mq.on(COMPRESS_EVENT, loadCompressRecords))
+  unsubs.push(mq.on(EventNames.contextSave, handleSave))
+  unsubs.push(mq.on(EventNames.contextQuickThreshold, handleQuickThreshold))
+})
+
+onUnmounted(() => {
+  unsubs.forEach(fn => fn())
+})
+</script>
+
+<style scoped>
+.list-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.tab-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.tab-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.tab-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* ⑤ dirty 标记（仅显示） */
+.unsaved-mark {
+  font-size: 12px;
+  color: var(--warning, #e6a23c);
+  white-space: nowrap;
+}
+.form-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1em;
+}
+.cfg-section {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1em;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border, #dee2e6);
+}
+.cfg-section:last-child {
+  border-bottom: none;
+}
+.section-title {
+  width: 100%;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.form-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  width: 100%;
+}
+.form-item-12 {
+  width: calc(50% - 6px);
+}
+.form-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.form-description {
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+.field-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+/* 非法值提示（口径 W：<0 = 非法，显式标红、不静默） */
+.field-hint.hint-error {
+  color: var(--danger, #f56c6c);
+}
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.quick-thresholds {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.quick-threshold-btn {
+  min-width: 48px;
+}
+.prompt-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.prompt-editor {
+  font-family: var(--font-mono, 'Consolas', 'Courier New', monospace);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.mem-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.mem-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mem-table th,
+.mem-table td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border, #dee2e6);
+  color: var(--text-primary);
+}
+.mem-table tr.is-over td {
+  color: var(--danger, #f56c6c);
+}
+.over-hint {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--danger, #f56c6c);
+}
+.mem-token {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.mem-token.is-over {
+  color: var(--danger, #f56c6c);
+}
+/* 记忆区底部：记忆总 token 数（只读展示；可点击主入口在状态栏底部） */
+.mem-total-row {
+  gap: 0.3em;
+}
+.mem-total {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.mem-total-value {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.empty-text {
+  color: var(--text-muted);
+  text-align: center;
+}
+/* 压缩记录（压缩内容可查）：列表 + 截断/展开全文 */
+.compress-records {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.compress-record {
+  border: 1px solid var(--border, #dee2e6);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+.record-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.record-kept {
+  color: var(--text-muted);
+}
+.record-text {
+  margin: 4px 0 0;
+  font-family: var(--font-mono, 'Consolas', 'Courier New', monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow: auto;
+}
+.records-empty {
+  padding: 4px 0;
+}
+</style>

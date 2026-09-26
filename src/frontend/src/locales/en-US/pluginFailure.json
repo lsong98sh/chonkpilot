@@ -1,0 +1,17 @@
+{
+  "message": "⚠️ {what} failed{phase}: {reason} (this turn was not affected; see the log file for details)",
+  "phase": " ({phase})",
+  "reason_unknown": "reason unknown (see the log file)",
+  "what": {
+    "memory": "Memory consolidation",
+    "compress": "Context compression"
+  },
+  "kind": {
+    "llm": "model call",
+    "save": "save",
+    "read": "read",
+    "config": "config read",
+    "messages": "message read",
+    "categories": "category read"
+  }
+}

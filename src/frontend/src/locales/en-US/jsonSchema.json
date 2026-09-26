@@ -1,0 +1,13 @@
+{
+  "valid": "Schema is valid",
+  "invalid": "Schema needs fixes",
+  "hint": "Parameters = JSON Schema: maintain types/required/enum in the tree, complete keywords; saved as JSON text into [parameters]/[arguments].",
+  "rewrite": "Replace with empty schema",
+  "required": "required",
+  "add_property": "+ property",
+  "add_enum": "+ enum value",
+  "complete_keyword": "Add keyword",
+  "remove_keyword": "Remove this keyword",
+  "new_property_name": "New property name",
+  "enum_value": "Enum value"
+}
