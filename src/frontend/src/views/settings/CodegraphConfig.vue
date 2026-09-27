@@ -46,14 +46,22 @@
         </div>
         <hr class="b-divider" />
         <div class="form-item form-item-full">
-          <label class="form-label">参与索引的扩展名</label>
+          <label class="form-label">{{ $t('projectConfig.index_exts_label') }}</label>
           <Textarea v-model="cgExts" :rows="3" placeholder=".go, .js, .ts, .py（逗号或换行分隔）" />
-          <div class="cg-hint">留空 = 全部受支持语言（引擎默认集）；保存后后台重建索引。</div>
+          <div class="cg-hint">{{ $t('projectConfig.index_exts_hint') }}</div>
         </div>
         <div class="form-item form-item-full">
-          <label class="form-label">排除目录</label>
-          <Textarea v-model="cgSkipDirs" :rows="3" placeholder="node_modules, dist（逗号或换行分隔）" />
-          <div class="cg-hint">在引擎默认跳过目录（已含 <code>.chonkpilot</code>）之外追加排除；保存后后台重建索引。</div>
+          <!-- label 右侧「叠加 gitignore」勾选：勾选后输入框仍可编辑（保存时把规则与开关一并下发引擎，
+               由引擎按 gitignore 语义叠加各级 .gitignore / info/exclude / 全局 ignore） -->
+          <div class="form-label-row">
+            <label class="form-label">{{ $t('projectConfig.exclude_paths') }}</label>
+            <label class="b-checkbox">
+              <input type="checkbox" v-model="cgStackGitignore" />
+              <span>{{ $t('projectConfig.stack_gitignore') }}</span>
+            </label>
+          </div>
+          <Textarea v-model="cgSkipDirs" :rows="3" placeholder="node_modules/, dist/, !dist/keep.log（逗号或换行分隔）" />
+          <div class="cg-hint">{{ $t('projectConfig.exclude_paths_hint') }}</div>
         </div>
       </form>
     </div>
@@ -81,12 +89,16 @@ const status = ref(null)
 // 运行时可观测态：codegraph 查询工具是否已注册到工具面（tools-list 是否存在 codegraph_*）。
 // 插件侧无「引擎子进程运行中」信号 → 只报真实可得的注册态（见 utils/engineStatus.js）。
 const toolsRegistered = ref(false)
-// 项目级索引配置（逗号/换行分隔文本；空 = 引擎默认集）
+// 项目级索引配置（逗号/换行分隔文本；空 = 引擎默认规则集）
 const cgExts = ref('')
 const cgSkipDirs = ref('')
+// 叠加 gitignore 勾选（'codegraph.stack-gitignore' == "true"）：勾选后仍可编辑输入框，
+// 保存时把「用户规则 + 叠加开关」一并下发引擎（gitignore 语义在引擎侧统一实现）。
+const cgStackGitignore = ref(false)
 // 上次从项目配置读到的原始值（'' = 项目级无该键）；用于「仅写入实际改动的键」与重建入口
 const origExts = ref('')
 const origSkipDirs = ref('')
+const origStackGitignore = ref('')
 const loadedOnce = ref(false)
 const saving = ref(false)
 
@@ -134,10 +146,11 @@ function displaySkipDirs(raw) { return raw || DEFAULT_SKIP_DIRS.join(', ') }
 // 输入框是否仍等于「上次加载值的展示镜像」（= 用户未编辑）
 function isPristine(current, orig, display) { return current === display(orig) }
 
-// ⑤ 未保存标记：任一索引输入与已加载值不一致（仅显示，不改保存时机）
+// ⑤ 未保存标记：任一索引输入/勾选与已加载值不一致（仅显示，不改保存时机）
 const unsaved = computed(() =>
   !isPristine(cgExts.value, origExts.value, displayExts) ||
-  !isPristine(cgSkipDirs.value, origSkipDirs.value, displaySkipDirs)
+  !isPristine(cgSkipDirs.value, origSkipDirs.value, displaySkipDirs) ||
+  cgStackGitignore.value !== (origStackGitignore.value === 'true')
 )
 
 async function loadConfig() {
@@ -147,6 +160,7 @@ async function loadConfig() {
     cgEnabled.value = c['enable-codegraph'] === 'true'
     const rawExts = c['codegraph.exts'] || ''
     const rawSkipDirs = c['codegraph.skip-dirs'] || ''
+    const rawStack = c['codegraph.stack-gitignore'] || ''
     // 仅在「首次加载」或「用户未编辑」时覆盖输入框：索引期间插件每 500ms 回写
     // codegraph.status 并广播 prj-config-refresh，避免把未保存的编辑冲掉。
     if (!loadedOnce.value || isPristine(cgExts.value, origExts.value, displayExts)) {
@@ -155,8 +169,12 @@ async function loadConfig() {
     if (!loadedOnce.value || isPristine(cgSkipDirs.value, origSkipDirs.value, displaySkipDirs)) {
       cgSkipDirs.value = displaySkipDirs(rawSkipDirs)
     }
+    if (!loadedOnce.value || cgStackGitignore.value === (origStackGitignore.value === 'true')) {
+      cgStackGitignore.value = rawStack === 'true'
+    }
     origExts.value = rawExts
     origSkipDirs.value = rawSkipDirs
+    origStackGitignore.value = rawStack
     loadedOnce.value = true
     const raw = c['codegraph.status']
     if (raw) {
@@ -191,15 +209,18 @@ async function handleChange(val) {
   }
 }
 
-// 保存索引配置（exts/skip-dirs）：写入后 data-prj-config-refresh 触发插件重新 configure +
-// 重建索引。插件侧保存幂等（值未变不重建）且对同一次保存的两键去抖（只重建一轮）。
+// 保存索引配置（exts/skip-dirs/stack-gitignore）：写入后 data-prj-config-refresh 触发插件重新
+// configure + 重建索引。插件侧保存幂等（值未变不重建）且对同一次保存的键做去抖（只重建一轮）。
+// skip-dirs = 用户排除规则（gitignore 语法）；stack-gitignore = 是否叠加各级 .gitignore / info/exclude / 全局 ignore。
 async function handleIndexSave() {
   saving.value = true
   try {
     await setConfig('codegraph.exts', cgExts.value)
     await setConfig('codegraph.skip-dirs', cgSkipDirs.value)
+    await setConfig('codegraph.stack-gitignore', String(cgStackGitignore.value))
     origExts.value = cgExts.value // 本次写入值 = 新的项目级原始值（后续加载的未编辑判定基准）
     origSkipDirs.value = cgSkipDirs.value
+    origStackGitignore.value = String(cgStackGitignore.value)
     message.success(savedText(t, APPLY_INSTANT))
   } catch (e) {
     message.error(saveFailedText(t, e))
@@ -327,9 +348,25 @@ onUnmounted(() => {
   font-weight: 500;
   color: var(--text-primary);
 }
+/* label 行：左 label + 右「叠加 gitignore」勾选 */
+.form-label-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.b-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.b-checkbox input[type="checkbox"] {
+  accent-color: var(--accent, #409eff);
+}
 .cg-hint {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   line-height: 1.6;
 }
 .cg-hint code {

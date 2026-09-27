@@ -345,7 +345,9 @@ async function onScreenshotDone(dataUrl) {
       })
     }
   } catch (e) {
+    // 上传失败必须可见（调试日志保留）
     console.warn('[ChatPanel] screenshot upload failed:', e)
+    message.error(t('chat.screenshot_failed'))
   } finally {
     screenshotImage.value = ''
   }
@@ -746,7 +748,9 @@ onMounted(() => {
       const res = env && env.backend && env.backend.result
       if (res && res.b64) screenshotImage.value = 'data:image/png;base64,' + res.b64
     } catch (e) {
+      // 截图失败必须可见（调试日志保留）
       console.warn('[ChatPanel] screenshot failed:', e)
+      message.error(t('chat.screenshot_failed'))
     } finally {
       screenshotting.value = false
     }

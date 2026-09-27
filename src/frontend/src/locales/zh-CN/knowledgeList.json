@@ -42,5 +42,8 @@
   "meta": "meta（键=值）",
   "description": "描述",
   "content": "正文",
-  "params_hint": "参数 = JSON Schema（树形维护类型/必填/枚举，关键字可补全；保存时序列化为 JSON 文本回写该分区）。"
+  "params_hint": "参数 = JSON Schema（树形维护类型/必填/枚举，关键字可补全；保存时序列化为 JSON 文本回写该分区）。",
+  "extract_from_content": "从正文提取",
+  "extract_confirm": "用从正文提取的内容覆盖当前描述？",
+  "extract_no_content": "正文为空或无可用段落，无法提取描述"
 }

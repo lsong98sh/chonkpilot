@@ -3,7 +3,8 @@
        按配置列出**已启用**记忆类别（prj 键 `memory.category.<类别名>`，缺省启用）+ 唯一 user 级
        「用户偏好」；行 = 类别名 + 级别 + 预估 tokens（样式同知识库/文件树行）。
        点击查看：项目级 → 预览区打开（file-open，`.md` markdown 渲染）；
-       「用户偏好」（工作目录之外）→ data-memory-read + 只读弹框。
+       「用户偏好」（工作目录之外）→ 预览区只读页签（preview-tab-open / memory-user-pref，
+       页签组件自带 data-memory-read 取数）。
        记忆库总开关关闭 → 不请求 data-memory-list，显示空态提示并可跳转「上下文管理」。 -->
   <div class="memory-pane">
     <div v-if="items.length > 0" class="mem-list">

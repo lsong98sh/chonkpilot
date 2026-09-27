@@ -63,5 +63,6 @@
   "type_tool": "工具",
   "type_skill": "技能",
   "type_prompt": "提示词",
-  "type_resource": "资源"
+  "type_resource": "资源",
+  "index_ignored": "已排除：不会参与索引"
 }

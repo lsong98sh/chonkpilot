@@ -51,6 +51,7 @@ func usage() {
 
 其他：
   -probe <dir>     自检：索引目录并打印符号汇总后退出（非 MCP）
+  -stack-gitignore 自检：额外应用 .gitignore / .git/info/exclude / 全局 ignore（默认关）
 `, defaultAddr)
 }
 
@@ -59,6 +60,7 @@ func main() {
 	flag.Var(httpMode, "http", "run Streamable HTTP at [addr] (default "+defaultAddr+")")
 	stdioMode := flag.Bool("stdio", false, "run as stdio transport (spawned by MCP client)")
 	probeDir := flag.String("probe", "", "self-test: index dir and print symbol summary")
+	stackGitignore := flag.Bool("stack-gitignore", false, "self-test: also apply .gitignore / .git/info/exclude / global ignore")
 	flag.Parse()
 
 	if *probeDir != "" {
@@ -67,13 +69,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("probe open: %v", err)
 		}
-		if err := w.Initialize(nil, nil); err != nil {
+		if err := w.Initialize(nil, nil, stackGitignore); err != nil {
 			log.Fatalf("probe initialize: %v", err)
 		}
 		s := w.Status()
 		sum := w.ModuleSummary("")
-		fmt.Printf("workdir: %s\nfiles: %d\nsymbols: %d\nlangs: %v\nelapsedMs: %d\nstore: %s\n",
-			w.Dir, s.IndexedFiles, s.IndexedSymbols, sum["langCounts"],
+		fmt.Printf("workdir: %s\nfiles: %d\nsymbols: %d\nlangs: %v\nstackGitignore: %v\nelapsedMs: %d\nstore: %s\n",
+			w.Dir, s.IndexedFiles, s.IndexedSymbols, sum["langCounts"], s.StackGitignore,
 			time.Since(start).Milliseconds(), w.Store)
 		for i, sym := range w.SearchSymbol("", "", "", 30) {
 			if i >= 30 {

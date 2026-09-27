@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -456,7 +457,7 @@ func TestConfigure(t *testing.T) {
 	defer dropWorkspace(w.Dir)
 
 	enabled := true
-	if err := w.Configure(&enabled, nil, []string{"node_modules", "dist"}); err != nil {
+	if err := w.Configure(&enabled, nil, []string{"node_modules", "dist"}, nil); err != nil {
 		t.Fatalf("Configure failed: %v", err)
 	}
 
@@ -948,7 +949,7 @@ func TestInitialize(t *testing.T) {
 	}
 	defer dropWorkspace(w.Dir)
 
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -1009,8 +1010,8 @@ func TestInitialize(t *testing.T) {
 func TestInitializeWithSkipDirs(t *testing.T) {
 	dir := t.TempDir()
 	writeTestProject(t, dir)
-	os.MkdirAll(filepath.Join(dir, "vendor", "pkg"), 0o755)
-	os.WriteFile(filepath.Join(dir, "vendor", "pkg", "v.go"), []byte("package vendor\nfunc V() {}\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "skipme", "pkg"), 0o755)
+	os.WriteFile(filepath.Join(dir, "skipme", "pkg", "v.go"), []byte("package skipme\nfunc V() {}\n"), 0o644)
 
 	w, err := Open(dir)
 	if err != nil {
@@ -1018,15 +1019,70 @@ func TestInitializeWithSkipDirs(t *testing.T) {
 	}
 	defer dropWorkspace(w.Dir)
 
-	// vendor is not in default skip dirs, but we pass it as skipDirs
-	if err := w.Initialize(nil, []string{"vendor"}); err != nil {
+	// skipme 不在默认排除集，作为用户排除规则（gitignore 语法，非锚定 = 任意层级）下发
+	if err := w.Initialize(nil, []string{"skipme/"}, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
 	for _, s := range w.ix.AllSymbols() {
-		if strings.Contains(s.File, "vendor") {
-			t.Errorf("vendor file should be skipped, got: %s", s.File)
+		if strings.Contains(s.File, "skipme") {
+			t.Errorf("skipme 文件应被用户排除规则跳过，got: %s", s.File)
 		}
+	}
+}
+
+// TestCollectSourceFilesStackGitignore：stack_gitignore 关 → 不读 .gitignore（仅内置强制 + 默认 + 用户规则）；
+// 开 → 按 gitignore 语义过滤（目录不下降、文件级排除、'!' 反选）。
+func TestCollectSourceFilesStackGitignore(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // 隔离全局 ignore，避免开发机配置干扰
+
+	cases := []struct {
+		name  string
+		gitig string
+		stack bool
+		files []string
+	}{
+		{"stack 关：不读 .gitignore", "generated/\nmain.go\n", false,
+			[]string{"generated/gen.go", "keep.go", "main.go", "utils/helper.go"}},
+		{"stack 开：目录不下降 + 文件级排除", "generated/\nmain.go\n", true,
+			[]string{"keep.go", "utils/helper.go"}},
+		{"stack 开：'!' 反选", "*.go\n!keep.go\n", true,
+			[]string{"keep.go"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestProject(t, dir) // main.go + utils/helper.go + go.mod
+			os.MkdirAll(filepath.Join(dir, "generated"), 0o755)
+			os.WriteFile(filepath.Join(dir, "generated", "gen.go"), []byte("package generated\nfunc G() {}\n"), 0o644)
+			os.WriteFile(filepath.Join(dir, "keep.go"), []byte("package main\nfunc Keep() {}\n"), 0o644)
+			os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(c.gitig), 0o644)
+
+			w, err := Open(dir)
+			if err != nil {
+				t.Fatalf("Open failed: %v", err)
+			}
+			defer dropWorkspace(w.Dir)
+
+			stack := c.stack
+			if err := w.Configure(nil, []string{".go"}, nil, &stack); err != nil {
+				t.Fatalf("Configure failed: %v", err)
+			}
+			entries, err := w.collectSourceFiles()
+			if err != nil {
+				t.Fatalf("collectSourceFiles failed: %v", err)
+			}
+			var got []string
+			for _, e := range entries {
+				got = append(got, e.path)
+			}
+			sort.Strings(got)
+			want := append([]string{}, c.files...)
+			sort.Strings(want)
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Fatalf("文件清单不符：got=%v want=%v", got, want)
+			}
+		})
 	}
 }
 
@@ -1043,10 +1099,10 @@ func TestClear(t *testing.T) {
 	defer dropWorkspace(w.Dir)
 
 	enabled := true
-	if err := w.Configure(&enabled, []string{".go"}, []string{"vendor"}); err != nil {
+	if err := w.Configure(&enabled, []string{".go"}, []string{"vendor"}, nil); err != nil {
 		t.Fatalf("Configure failed: %v", err)
 	}
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 	idxPath := filepath.Join(w.Store, indexName)
@@ -1077,7 +1133,7 @@ func TestClear(t *testing.T) {
 	if st, err := w.EnsureReady(); st != "not_initialized" || err == nil {
 		t.Errorf("Clear 后 EnsureReady = (%q, %v)，期望 not_initialized", st, err)
 	}
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Clear 后重新 Initialize failed: %v", err)
 	}
 	if w.State() != "ready" {
@@ -1096,7 +1152,7 @@ func TestToolConfigureClearMode(t *testing.T) {
 		t.Fatalf("Open failed: %v", err)
 	}
 	defer dropWorkspace(w.Dir)
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -1116,7 +1172,7 @@ func TestToolConfigureClearMode(t *testing.T) {
 	}
 
 	// 缺省 mode：仅存档配置，不清除
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("重新 Initialize failed: %v", err)
 	}
 	if _, err := toolConfigure(context.Background(), map[string]any{"workdir": dir, "enabled": true}); err != nil {
@@ -1137,7 +1193,7 @@ func TestReconcileNoChange(t *testing.T) {
 	}
 	defer dropWorkspace(w.Dir)
 
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -1160,7 +1216,7 @@ func TestReconcileNewFile(t *testing.T) {
 	}
 	defer dropWorkspace(w.Dir)
 
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -1198,7 +1254,7 @@ func TestReconcileModifiedFile(t *testing.T) {
 	}
 	defer dropWorkspace(w.Dir)
 
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -1249,7 +1305,7 @@ func TestReconcileDeletedFile(t *testing.T) {
 	}
 	defer dropWorkspace(w.Dir)
 
-	if err := w.Initialize(nil, nil); err != nil {
+	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
@@ -1308,7 +1364,7 @@ func TestEnsureReady(t *testing.T) {
 	})
 
 	t.Run("after initialize", func(t *testing.T) {
-		if err := w.Initialize(nil, nil); err != nil {
+		if err := w.Initialize(nil, nil, nil); err != nil {
 			t.Fatalf("Initialize failed: %v", err)
 		}
 		st, err := w.EnsureReady()
@@ -1454,7 +1510,7 @@ func TestReadyGate(t *testing.T) {
 		}
 		defer dropWorkspace(w.Dir)
 
-		if err := w.Initialize(nil, nil); err != nil {
+		if err := w.Initialize(nil, nil, nil); err != nil {
 			t.Fatalf("Initialize failed: %v", err)
 		}
 
@@ -1516,4 +1572,504 @@ func TestAllSymbolsSort(t *testing.T) {
 	if syms[0].File != "a.go" || syms[1].File != "m.go" || syms[2].File != "z.go" {
 		t.Errorf("unexpected sort order: %v", syms)
 	}
+}
+
+// ============================================================
+// 分组 7：调用图（extract.go callKinds/callsWithin + graph.go Callers/Callees + server.go 工具）
+// ============================================================
+
+// writeCallGraphProject 落盘多语言真实语料（7 语言），覆盖普通调用/方法调用/跨文件调用/
+// 构造与 new/宏/嵌套函数剪枝。
+func writeCallGraphProject(t *testing.T, dir string) {
+	t.Helper()
+	write := func(rel, src string) {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	write("go.mod", "module testproj\n\ngo 1.21\n")
+	// Go：跨文件调用（Main → Run@b.go）、选择表达式 fmt.Println、内层 func_literal 剪枝
+	write("a.go", `package main
+
+import "fmt"
+
+func Main() {
+	fmt.Println(Run())
+	top()
+}
+`)
+	write("b.go", `package main
+
+func Run() string { return "x" }
+
+func top() {
+	f := func() { deep() }
+	f()
+}
+
+func deep() {}
+
+func useGen() {
+	Gen[int](1, 2)
+	fns[0]()
+}
+
+func Gen[T any](x T, y T) T { return x }
+`)
+	// Python：方法调用（helper.run）、跨文件式调用、内层 def 剪枝、stdlib 调用
+	write("c.py", `import os
+
+
+def main():
+    helper.run()
+    compute(3)
+    nested()
+
+
+def compute(x):
+    def inner():
+        deep_py()
+    inner()
+    return x
+
+
+def nested():
+    return os.getcwd()
+`)
+	// TypeScript：箭头函数剪枝、new 表达式、类内方法互调
+	write("d.ts", `import { util } from "./util";
+
+export function main(): void {
+  util.help();
+  compute(1);
+  const f = () => {
+    deepTs();
+  };
+  f();
+}
+
+export function compute(n: number): number {
+  return n;
+}
+
+export function makeThing(): Thing {
+  return new Thing();
+}
+
+export class Svc {
+  run(): void {
+    this.step();
+  }
+  step(): void {}
+}
+`)
+	// TSX：JSX 表达式内的调用
+	write("h.tsx", `export function Panel(): any {
+  const el = <div>{label()}</div>;
+  return el;
+}
+`)
+	// JavaScript：new 表达式 + 成员调用
+	write("e.js", `function main() {
+  helper();
+  const c = new Cls();
+  obj.method();
+}
+
+function helper() {}
+`)
+	// Java：方法调用 + 对象创建 + 成员调用；泛型实参噪声
+	write("f.java", `import java.util.List;
+
+class D {
+    void run() {
+        helper();
+        Widget w = new Widget();
+        List<String> xs = new java.util.ArrayList<String>();
+        w.paint();
+    }
+
+    void helper() {
+    }
+}
+
+class Widget {
+    void paint() {
+    }
+}
+`)
+	// Rust：函数调用 + 方法调用 + 宏调用
+	write("g.rs", `fn run() {
+    helper();
+    println!("hi");
+    let n = v.len();
+}
+
+fn helper() {}
+`)
+}
+
+// TestCallGraphExtraction：AST 调用提取（7 语言）+ Calls 落盘往返。
+func TestCallGraphExtraction(t *testing.T) {
+	dir := t.TempDir()
+	writeCallGraphProject(t, dir)
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer dropWorkspace(w.Dir)
+	if err := w.Initialize(nil, nil, nil); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	type key struct{ file, name, kind string }
+	got := map[key][]string{}
+	for _, s := range w.ix.AllSymbols() {
+		got[key{s.File, s.Name, s.Kind}] = s.Calls
+	}
+
+	cases := []struct {
+		file, name, kind string
+		want             []string
+	}{
+		// Go：普通调用 + 选择表达式取最后一段（fmt.Println → Println）+ 跨文件调用（Run@b.go）
+		{"a.go", "Main", "func", []string{"Println", "Run", "top"}},
+		// 内层 func_literal 的 deep() 不计入 top
+		{"b.go", "top", "func", []string{"f"}},
+		{"b.go", "Run", "func", nil},
+		{"b.go", "deep", "func", nil},
+		// Go 泛型实例化 Gen[int](1,2) → 取 operand（Gen）；下标调用 fns[0]() 无法静态取名 → 丢弃
+		{"b.go", "useGen", "func", []string{"Gen"}},
+		{"b.go", "Gen", "func", nil},
+		// Python：方法调用 helper.run → run；内层 def deep_py 被剪枝；os.getcwd → getcwd
+		{"c.py", "main", "func", []string{"compute", "nested", "run"}},
+		{"c.py", "compute", "func", []string{"inner"}},
+		{"c.py", "nested", "func", []string{"getcwd"}},
+		// TS：箭头函数体 deepTs 被剪枝；new Thing → Thing；方法互调 this.step → step
+		{"d.ts", "main", "func", []string{"compute", "f", "help"}},
+		{"d.ts", "compute", "func", nil},
+		{"d.ts", "makeThing", "func", []string{"Thing"}},
+		{"d.ts", "run", "method", []string{"step"}},
+		{"d.ts", "step", "method", nil},
+		// TSX：JSX 表达式内调用
+		{"h.tsx", "Panel", "func", []string{"label"}},
+		// JS：new Cls → Cls；obj.method → method
+		{"e.js", "main", "func", []string{"Cls", "helper", "method"}},
+		// Java：helper()、new Widget()、w.paint()、new java.util.ArrayList<String>() → ArrayList
+		{"f.java", "run", "method", []string{"ArrayList", "Widget", "helper", "paint"}},
+		// Rust：helper()、println! 宏、v.len()
+		{"g.rs", "run", "func", []string{"helper", "len", "println"}},
+	}
+	for _, c := range cases {
+		k := key{c.file, c.name, c.kind}
+		g, ok := got[k]
+		if !ok {
+			t.Errorf("缺少符号 %v（共 %d 个符号）", k, len(got))
+			continue
+		}
+		if !reflect.DeepEqual(g, c.want) {
+			t.Errorf("%v Calls = %v, want %v", k, g, c.want)
+		}
+	}
+
+	t.Run("persist round-trip", func(t *testing.T) {
+		dropWorkspace(w.Dir)
+		w2, err := Open(dir)
+		if err != nil {
+			t.Fatalf("Open failed: %v", err)
+		}
+		defer dropWorkspace(w2.Dir)
+		ok, err := w2.LoadIndex()
+		if err != nil || !ok {
+			t.Fatalf("LoadIndex failed: %v, ok=%v", err, ok)
+		}
+		var mainCalls []string
+		for _, s := range w2.ix.AllSymbols() {
+			if s.File == "a.go" && s.Name == "Main" {
+				mainCalls = s.Calls
+			}
+		}
+		if !reflect.DeepEqual(mainCalls, []string{"Println", "Run", "top"}) {
+			t.Errorf("LoadIndex 后 Calls 未往返：%v", mainCalls)
+		}
+	})
+}
+
+// makeCallTestWorkspace 内存造调用图语料：Main/Foo/Helper 三个符号 + 重名 Foo。
+func makeCallTestWorkspace(t *testing.T, dir string) *Workspace {
+	t.Helper()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	ix := newIndex()
+	ix.AddFile(&FileInfo{
+		Path: "a.go", Lang: "go",
+		Symbols: []Symbol{{File: "a.go", Name: "Main", Kind: "func", Line: 1, Calls: []string{"Foo", "Helper"}}},
+	})
+	ix.AddFile(&FileInfo{
+		Path: "b.go", Lang: "go",
+		Symbols: []Symbol{{File: "b.go", Name: "Helper", Kind: "func", Line: 3, Calls: []string{"Foo"}}},
+	})
+	ix.AddFile(&FileInfo{
+		Path: "c.go", Lang: "go",
+		Symbols: []Symbol{
+			{File: "c.go", Name: "Foo", Kind: "func", Line: 2, Calls: []string{"Helper"}},
+			{File: "c.go", Name: "Foo", Kind: "method", Line: 20},
+		},
+	})
+	w.ix = ix
+	return w
+}
+
+func TestCallers(t *testing.T) {
+	dir := t.TempDir()
+	w := makeCallTestWorkspace(t, dir)
+	defer dropWorkspace(w.Dir)
+
+	t.Run("exact name", func(t *testing.T) {
+		syms := w.Callers("Helper", "", 0)
+		if len(syms) != 2 {
+			t.Fatalf("expected 2 callers of Helper, got %d: %v", len(syms), syms)
+		}
+		if syms[0].Name != "Main" || syms[1].Name != "Foo" {
+			t.Errorf("unexpected order: %v", syms)
+		}
+	})
+
+	t.Run("case-insensitive", func(t *testing.T) {
+		if got := w.Callers("helper", "", 0); len(got) != 2 {
+			t.Errorf("case-insensitive match failed: %v", got)
+		}
+	})
+
+	t.Run("qualified name matches tail", func(t *testing.T) {
+		tail := w.Callers("Foo", "", 0)
+		qual := w.Callers("pkg.Foo", "", 0)
+		if len(tail) != 2 || len(qual) != 2 {
+			t.Fatalf("expected 2 callers for both Foo/pkg.Foo, got %d/%d", len(tail), len(qual))
+		}
+	})
+
+	t.Run("file filter", func(t *testing.T) {
+		syms := w.Callers("Foo", "a.go", 0)
+		if len(syms) != 1 || syms[0].Name != "Main" {
+			t.Errorf("file filter failed: %v", syms)
+		}
+	})
+
+	t.Run("limit", func(t *testing.T) {
+		if got := w.Callers("Foo", "", 1); len(got) != 1 {
+			t.Errorf("limit=1 failed: %v", got)
+		}
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		if got := w.Callers("Nope", "", 0); len(got) != 0 {
+			t.Errorf("expected 0, got %v", got)
+		}
+	})
+
+	t.Run("empty target", func(t *testing.T) {
+		if got := w.Callers("  ", "", 0); len(got) != 0 {
+			t.Errorf("expected 0 for empty target, got %v", got)
+		}
+	})
+
+	t.Run("no index", func(t *testing.T) {
+		empty := &Workspace{Dir: w.Dir, Store: w.Store}
+		if got := empty.Callers("Foo", "", 0); len(got) != 0 {
+			t.Errorf("expected 0 for nil index, got %v", got)
+		}
+	})
+
+	t.Run("caller carries calls", func(t *testing.T) {
+		syms := w.Callers("Helper", "", 0)
+		if len(syms) != 2 || !reflect.DeepEqual(syms[0].Calls, []string{"Foo", "Helper"}) {
+			t.Errorf("caller symbol should carry its Calls: %v", syms)
+		}
+	})
+}
+
+func TestCallees(t *testing.T) {
+	dir := t.TempDir()
+	w := makeCallTestWorkspace(t, dir)
+	defer dropWorkspace(w.Dir)
+
+	t.Run("by id", func(t *testing.T) {
+		refs := w.Callees("a.go:1:Main:func", "", "", 0)
+		if len(refs) != 2 {
+			t.Fatalf("expected 2 callees, got %d: %v", len(refs), refs)
+		}
+		if refs[0].Name != "Foo" || refs[0].Resolved {
+			t.Errorf("Foo is ambiguous (2 symbols) → resolved must be false: %+v", refs[0])
+		}
+		h := refs[1]
+		if h.Name != "Helper" || !h.Resolved || h.Kind != "func" || h.Line != 3 ||
+			!strings.HasSuffix(h.File, "b.go") || !strings.Contains(h.ID, "b.go:3:Helper:func") {
+			t.Errorf("Helper should resolve uniquely to b.go:3: %+v", h)
+		}
+	})
+
+	t.Run("by file+name", func(t *testing.T) {
+		refs := w.Callees("", "b.go", "Helper", 0)
+		if len(refs) != 1 || refs[0].Name != "Foo" || refs[0].Resolved {
+			t.Errorf("unexpected refs: %+v", refs)
+		}
+	})
+
+	t.Run("case-insensitive file+name", func(t *testing.T) {
+		if refs := w.Callees("", "b.go", "helper", 0); len(refs) != 1 {
+			t.Errorf("expected 1 ref, got %+v", refs)
+		}
+	})
+
+	t.Run("limit", func(t *testing.T) {
+		if refs := w.Callees("a.go:1:Main:func", "", "", 1); len(refs) != 1 {
+			t.Errorf("limit=1 failed: %+v", refs)
+		}
+	})
+
+	t.Run("symbol not found", func(t *testing.T) {
+		if refs := w.Callees("", "nope.go", "X", 0); len(refs) != 0 {
+			t.Errorf("expected 0 refs, got %+v", refs)
+		}
+	})
+
+	t.Run("symbol without calls", func(t *testing.T) {
+		if refs := w.Callees("", "c.go", "Foo", 0); refs == nil {
+			t.Fatal("expected non-nil handling for call-less symbol")
+		}
+	})
+
+	t.Run("no index", func(t *testing.T) {
+		empty := &Workspace{Dir: w.Dir, Store: w.Store}
+		if refs := empty.Callees("a.go:1:Main:func", "", "", 0); len(refs) != 0 {
+			t.Errorf("expected 0 for nil index, got %+v", refs)
+		}
+	})
+}
+
+// TestCallGraphTools：两个新工具 handler 的正常/未就绪/参数缺失/未命中分支 + 自检清单。
+func TestCallGraphTools(t *testing.T) {
+	dir := t.TempDir()
+	writeCallGraphProject(t, dir)
+
+	t.Run("tool names in self-check list", func(t *testing.T) {
+		names := map[string]bool{}
+		for _, n := range TextToolNames() {
+			names[n] = true
+		}
+		if !names["codegraph_callers"] || !names["codegraph_callees"] {
+			t.Errorf("TextToolNames 缺新工具：%v", TextToolNames())
+		}
+	})
+
+	t.Run("not initialized", func(t *testing.T) {
+		for _, fn := range []func(context.Context, map[string]any) (any, error){toolCallers, toolCallees} {
+			out, err := fn(context.Background(), map[string]any{"workdir": dir, "name": "Run", "file": "a.go"})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			m, ok := out.(map[string]any)
+			if !ok || m["status"] != "not_initialized" {
+				t.Fatalf("expected not_initialized, got %v", out)
+			}
+		}
+		if w, err := Open(dir); err == nil {
+			dropWorkspace(w.Dir)
+		}
+	})
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer dropWorkspace(w.Dir)
+	if err := w.Initialize(nil, nil, nil); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	t.Run("missing params", func(t *testing.T) {
+		if _, err := toolCallers(context.Background(), map[string]any{"workdir": dir}); err == nil {
+			t.Error("toolCallers 缺 name/id 应报错")
+		}
+		if _, err := toolCallees(context.Background(), map[string]any{"workdir": dir}); err == nil {
+			t.Error("toolCallees 缺 id/file+name 应报错")
+		}
+	})
+
+	t.Run("callers by name", func(t *testing.T) {
+		out, err := toolCallers(context.Background(), map[string]any{"workdir": dir, "name": "Run"})
+		if err != nil {
+			t.Fatalf("toolCallers failed: %v", err)
+		}
+		m := out.(map[string]any)
+		if m["target"] != "Run" || m["total"].(int) != 2 {
+			t.Fatalf("unexpected 应答：%v", m)
+		}
+		// a.go Main 调 Run；c.py main 调 run（忽略大小写 + 跨语言同名）
+		got := map[string]bool{}
+		for _, s := range m["callers"].([]Symbol) {
+			got[s.Name] = true
+		}
+		if !got["Main"] || !got["main"] {
+			t.Errorf("expected callers {Main, main}, got %v", m["callers"])
+		}
+	})
+
+	t.Run("callers by id not found", func(t *testing.T) {
+		out, err := toolCallers(context.Background(), map[string]any{"workdir": dir, "id": "nope.go:1:X:func"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m := out.(map[string]any); m["status"] != "not_found" {
+			t.Errorf("expected not_found, got %v", m)
+		}
+	})
+
+	t.Run("callees by file+name", func(t *testing.T) {
+		out, err := toolCallees(context.Background(), map[string]any{"workdir": dir, "file": "a.go", "name": "Main"})
+		if err != nil {
+			t.Fatalf("toolCallees failed: %v", err)
+		}
+		m := out.(map[string]any)
+		if m["total"].(int) != 3 {
+			t.Fatalf("expected 3 callees, got %v", m)
+		}
+		refs := m["callees"].([]CalleeRef)
+		// Run 在语料内被 4 处定义（b.go/Run、d.ts/Svc.run、f.java/D.run、g.rs/run）→ 名字级启发式下无法唯一解析；
+		// top 仅 b.go 一处 → 唯一解析并回填 file/line。
+		if refs[1].Name != "Run" || refs[1].Resolved {
+			t.Errorf("Run should be ambiguous (resolved=false): %+v", refs[1])
+		}
+		if refs[2].Name != "top" || !refs[2].Resolved || !strings.HasSuffix(refs[2].File, "b.go") || refs[2].Line != 5 {
+			t.Errorf("top should resolve uniquely to b.go:5: %+v", refs[2])
+		}
+	})
+
+	t.Run("callees limit", func(t *testing.T) {
+		out, err := toolCallees(context.Background(), map[string]any{"workdir": dir, "file": "a.go", "name": "Main", "limit": float64(1)})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m := out.(map[string]any); m["total"].(int) != 1 {
+			t.Errorf("limit=1 failed: %v", m)
+		}
+	})
+
+	t.Run("callees not found", func(t *testing.T) {
+		out, err := toolCallees(context.Background(), map[string]any{"workdir": dir, "file": "nope.go", "name": "X"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if m := out.(map[string]any); m["status"] != "not_found" {
+			t.Errorf("expected not_found, got %v", m)
+		}
+	})
 }

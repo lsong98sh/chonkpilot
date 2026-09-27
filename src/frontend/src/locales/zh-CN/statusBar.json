@@ -23,10 +23,17 @@
   "clear": "清空",
   "reindex": "重新索引",
   "retryFailedItems": "重试失败项",
-  "codeIndexHint": "配置更多代码索引选项（排除目录、支持的文件扩展名等），可在 IDE Config → 代码索引 中调整。",
+  "codeIndexHint": "配置更多代码索引选项（排除的目录和文件、支持的文件扩展名等），可在 IDE Config → 代码索引 中调整。",
   "codeIndexConfig": "代码索引配置",
   "indexingActive": "正在索引",
   "pendingItems": "待处理",
   "filesIndexed": "{count} 个文件已索引",
-  "noRetry": "不重试"
+  "noRetry": "不重试",
+  "idx_disabled": "未启用",
+  "idx_uninitialized": "未初始化",
+  "idx_indexing": "索引中",
+  "idx_ready": "完成",
+  "idx_error": "失败",
+  "idx_open_codegraph": "点击设置：codegraph",
+  "idx_open_vfts": "点击设置：Vfts 全文索引"
 }

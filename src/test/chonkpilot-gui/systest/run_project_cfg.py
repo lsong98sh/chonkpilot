@@ -5,8 +5,8 @@
   K1 项目配置：5 页签（安全 / 上下文管理 / CodeGraph 索引 / Vfts 全文索引 / 自动提交）
   K2 安全页签：信任目录列表 + 添加按钮 + 添加出现行
   K3 上下文管理：说明文案 + 保留轮数/token 阈值输入 + 快速阈值/保存按钮
-  K4 上下文管理-总结提示词：自动加载（继承值非空）+ 来源标注 + 恢复默认入口
-  K5 CodeGraph 索引：状态文案 + 重建/重试/清除/保存 + 扩展名/排除目录输入
+  K4 上下文管理-总结提示词：自动加载（继承值非空）+ 来源标注 + 重置入口
+  K5 CodeGraph 索引：状态文案 + 重建/重试/清除/保存 + 扩展名/排除的目录和文件输入
   K6 Vfts 全文索引：索引状态/统计呈现（旧「索引进度对话框」已移除 → 见下）
   L205 系统目录对话框（无法自动化）；全文索引 L238-242（无独立页签 → 已并入 Vfts 页签）
 
@@ -172,7 +172,7 @@ def case_context():
         raise TestError("上下文管理页签内容为空")
     if "保留完整对话内容的最近轮数" not in txt or "简化区 Token 压缩阈值" not in txt:
         raise TestError(f"上下文管理页缺压缩说明/字段文案: {txt[:120]!r}")
-    # 保留完整轮数 + token 阈值输入（blur 即落库）
+    # 保留完整轮数 + token 阈值输入（2026-09-27：改手动保存 —— 改后点【保存】才落库）
     inputs = panel_scope("return P ? P.querySelectorAll('input.b-input').length : 0")
     if not inputs or inputs < 2:
         raise TestError(f"上下文管理应有 ≥2 个输入框，实际 {inputs}")
@@ -185,12 +185,12 @@ def case_context():
 
 
 def case_summary_prompt_load():
-    """K4（原「通用能力-提示词加载」迁移）：总结提示词自动加载 + 来源标注 + 恢复默认入口。
+    """K4（原「通用能力-提示词加载」迁移）：总结提示词自动加载 + 来源标注 + 重置入口。
 
     spec CFG-009：项目配置「通用能力（工具提示词）」UI 已摘除（D2），提示词页仅余摘要提示词
     （CFG-008）。**2026-09-26：只读展示已移除** → 内容改在**编辑弹框**（`TextEditDialog`，
     `.text-edit-dialog-body` 内 textarea）查看。故本用例断言：面板有「编辑」按钮 → 点开弹框
-    内容非空（自动加载继承系统级/内置默认值）、来源标注可见、「恢复默认」（取消项目覆盖）入口存在。
+    内容非空（自动加载继承系统级/内置默认值）、来源标注可见、「重置」（取消项目覆盖）入口存在。
     """
     open_project_cfg()
     if switch_tab(r"^(上下文管理|上下文|Context)$") != "ok":
@@ -216,8 +216,8 @@ def case_summary_prompt_load():
     if not any(k in joined for k in ("当前来源", "继承", "覆盖", "inherit", "override")):
         raise TestError(f"总结提示词缺来源标注: {joined[:160]!r}")
     btns = panel_scope("return P ? [...P.querySelectorAll('.b-btn')].map(b => b.textContent.trim()) : []") or []
-    if not any(("恢复默认" in b) or ("Reset" in b) for b in btns):
-        raise TestError(f"总结提示词缺「恢复默认」入口: {btns}")
+    if not any(("重置" in b) or ("Reset" in b) for b in btns):
+        raise TestError(f"总结提示词缺「重置」入口: {btns}")
     # 收尾：关闭弹框，避免外溢到下一用例
     eval_js("""(() => {
       const R=[...document.querySelectorAll('.dialog-shell')].pop();
@@ -246,7 +246,7 @@ def case_codegraph():
     for k in ("重建索引", "重试失败", "清除索引", "保存"):
         if k not in joined:
             raise TestError(f"CodeGraph 缺按钮 {k}: {joined}")
-    for label in ("参与索引的扩展名", "排除目录"):
+    for label in ("参与索引的扩展名", "排除的目录和文件"):
         if label not in (panel_scope("return P ? P.textContent : ''") or ""):
             raise TestError(f"CodeGraph 缺字段 {label}")
 
@@ -284,7 +284,7 @@ def main():
     total += 1; ok += run_case("K1 项目配置 7 页签（安全/上下文管理/CodeGraph/Vfts/自动提交/日志/配置导入导出）", case_tabs)
     total += 1; ok += run_case("K2 安全页签：添加信任目录", case_security)
     total += 1; ok += run_case("K3 上下文管理：输入 + 快速阈值 + 保存", case_context)
-    total += 1; ok += run_case("K4 总结提示词自动加载 + 来源标注 + 恢复默认", case_summary_prompt_load)
+    total += 1; ok += run_case("K4 总结提示词自动加载 + 来源标注 + 重置", case_summary_prompt_load)
     total += 1; ok += run_case("K5 CodeGraph 索引：状态 + 控件", case_codegraph)
     total += 1; ok += run_case("K6 Vfts 索引状态/统计呈现", case_vfts_status)
     # 与其它套件统一口径：计数汇总 + 退出码（0=全过）——见 51-FP与测试映射 §1

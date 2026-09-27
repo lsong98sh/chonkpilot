@@ -79,6 +79,8 @@ function openEditDialog(scenario) {
       mq.emit(EventNames.scenarioReload, {})
       handle.close()
     },
+    // 取消：关闭弹窗、不落库（底部「取消」按钮）
+    onCancel: () => handle.close(),
   }), {
     title: isNew ? t('scenario.add') : t('scenario.edit'),
     width: 900,
@@ -98,7 +100,7 @@ function handleEdit(row) {
 
 async function handleDelete(row) {
   try {
-    await confirm(t('scenario.delete_confirm', { name: row.name }), t('common.confirm'))
+    await confirm(t('scenario.delete_confirm', { name: row.name }), t('dialog.confirm_title'))
     await deleteScenario(row.id, row.level)
     message.success(t('scenario.deleted'))
     await loadList()

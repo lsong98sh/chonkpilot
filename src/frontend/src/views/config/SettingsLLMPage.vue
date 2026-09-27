@@ -234,7 +234,7 @@ function openEditor(data, index) {
       await saveNow(t('config.llm.saved'))
     },
     onCancel: () => handle.close(),
-  }), { title: t('config.llm.editTitle'), width: 640, height: 620, minimizable: false, closable: true })
+  }), { title: t('config.llm.editTitle'), width: 640, height: 620, bodyClass: 'form-dialog-body', minimizable: false, closable: true })
 }
 
 function addLLM() { openEditor({ ...DEFAULT_LLM }, -1) }
@@ -269,13 +269,31 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
   flex-direction: column;
   overflow: hidden;
 }
+.settings-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 统一骨架：页签头部固定 + 正文区 flex:1/min-height:0/overflow:auto（正文整体滚一次）；
+   滚动交给各页签的 .page-body 承担（两轴）→ 头部页签固定不滚、横向滚动条贴正文区底部。 */
+.settings-tabs :deep(.b-tabs-body) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
 .page-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
   padding: 8px 0;
   display: flex;
   flex-direction: column;
+}
+/* provider 清单表不再自建横向滚动容器 → 溢出交给 .page-body（2026-09-27 用户口径） */
+.page-body :deep(.b-table-wrapper) {
+  overflow-x: visible;
 }
 .config-toolbar-actions { margin-bottom: 12px; }
 /* 默认模型分组（主对话 + 各子系统） */
@@ -284,8 +302,8 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
   flex-direction: column;
   gap: 8px;
 }
-.subsys-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.subsys-hint { margin: 0; font-size: 12px; color: var(--text-muted, #6c757d); line-height: 1.6; }
+.subsys-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.subsys-hint { margin: 0; font-size: 12px; color: var(--fg-secondary); line-height: 1.6; }
 .subsys-row { display: flex; align-items: center; gap: 10px; }
 .subsys-label { width: 200px; flex-shrink: 0; font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .subsys-select { flex: 1; max-width: 420px; }

@@ -140,6 +140,57 @@ test('② tag 渲染为 /<prompt-name>', () => {
   assert.match(inputBox, /<span class="prompt-item-name">\{\{ promptTagOf\(p\.name\) \}\}<\/span>/)
 })
 
+// ②′ 控件位置：选择器在输入框**上方**一行（prompt-row），已从下方工具栏移出
+test('②′ 选择器位于输入框上方一行（非下方工具栏）', () => {
+  const inputBox = read('views/chat/InputBox.vue')
+  // 输入区上方一行容器（常驻；未选中时也显示选择器按钮，不整行隐藏）
+  assert.match(inputBox, /<div class="prompt-row">/, '须有输入区上方一行容器 prompt-row')
+  const rowIdx = inputBox.indexOf('class="prompt-row"')
+  const pickIdx = inputBox.indexOf('prompt-pick-btn')
+  const inputIdx = inputBox.indexOf('ref="editRef"')
+  assert.ok(rowIdx >= 0 && pickIdx >= 0 && inputIdx >= 0, '须能定位 prompt-row / 选择器 / 输入区')
+  assert.ok(rowIdx < pickIdx && pickIdx < inputIdx, '选择器须位于输入框（richtext-input）上方')
+  // 上方一行同时承载已选 tag（含 ✕）
+  const rowBlock = inputBox.slice(rowIdx, inputIdx)
+  assert.match(rowBlock, /class="prompt-tags"/, '上方一行须含已选 tag 行')
+  assert.match(rowBlock, /@click\.stop="removePrompt"/, '已选 tag 须可移除')
+  // 下方工具栏（input-actions-left）不再包含提示词选择器（保留 controls 插槽 + 队列指示器）
+  const leftBlock = inputBox.slice(
+    inputBox.indexOf('class="input-actions-left"'),
+    inputBox.indexOf('class="input-actions-right"'),
+  )
+  assert.ok(leftBlock, '须能定位 input-actions-left')
+  assert.doesNotMatch(leftBlock, /prompt-pick-btn/, '提示词选择器须移出下方工具栏')
+})
+
+// ②″ Popover 顶部「无（不使用提示词）」项：单选清除 + 未选中高亮
+test('②″ Popover 含「无」项（单选清除，未选中高亮）', () => {
+  const inputBox = read('views/chat/InputBox.vue')
+  assert.match(inputBox, /class="prompt-item prompt-item-none"/, '「无」项须存在')
+  assert.match(inputBox, /\$t\('chat\.prompt_none'\)/, '「无」项文案走 i18n chat.prompt_none')
+  assert.match(inputBox, /:class="\{ active: !selectedPrompt \}"/, '未选择时「无」项为 active 高亮')
+  assert.match(inputBox, /function onPickNone\(\)/, '「无」项点击处理须存在')
+  assert.match(inputBox, /onPickNone[\s\S]{0,120}removePrompt\(\)/, '「无」项等价 remove（清除已选）')
+  // 「无」项位于可选列表最上方（先于 v-for 列表项）
+  assert.ok(
+    inputBox.indexOf('prompt-item-none') < inputBox.indexOf('v-for="p in promptOptions"'),
+    '「无」项须在列表最上方',
+  )
+})
+
+// ②‴ 单选唯一性：selected 为单值；连续 pick 替换而非累积（不引入多选）
+test('②‴ 单选唯一性：selected 单值 + 连续 pick 替换', async () => {
+  const composable = read('composables/useChatPrompts.js')
+  assert.match(composable, /const selected = ref\(null\)/, 'selected 为单值 ref（非数组）')
+  const c = useChatPrompts({ api: fakeApi(DIRS, ROOTS) })
+  await c.load()
+  await c.pick(c.available.value.find(p => p.name === 'code-review'))
+  assert.equal(c.selected.value.name, 'code-review')
+  await c.pick(c.available.value.find(p => p.name === 'summary'))
+  assert.equal(c.selected.value.name, 'summary', '再选一个 → 替换原选中（单选）')
+  assert.ok(!Array.isArray(c.selected.value), 'selected 不得为数组（不引入多选）')
+})
+
 // ③ 移除 tag → 内容不再注入
 test('③ 移除 tag（未选/移除）→ 内容不再注入 user 消息', async () => {
   const c = useChatPrompts({ api: fakeApi(DIRS, ROOTS) })

@@ -44,7 +44,7 @@
     （沉淀 LLM 回显 prompt → 各类别文件内容应含**自己**的哨兵；`【类别】<类>` 同判据）→
     I-78（并行类别读取串味）的端到端归属断言；
   * `data-session-context{include_snapshot:true}`（61 §3.2a 既有面）→ 读**压缩后快照**；
-  * 前端 DOM（`.mem-table tr.is-over` / `.over-hint`，仅 UI 用例）。
+  * 前端 DOM（`.b-table tr.is-over` / `.over-hint`，仅 UI 用例）。
 
 隔离与还原
   * 自起隔离实例（独立 work-dir / data-dir / HOME，见 `run_llm_fields.py` 先例），
@@ -716,14 +716,14 @@ def main():
         def row0_btn(label):
             return ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
                       ".find(e=>e.getBoundingClientRect().width>0);if(!R)return false;"
-                      "const tr=R.querySelector('.mem-table tbody tr');if(!tr)return false;"
+                      "const tr=R.querySelector('.b-table tbody tr');if(!tr)return false;"
                       "const t=[...tr.querySelectorAll('button')].find(x=>x.textContent.trim()===%s);"
                       "if(t)t.click();return !!t;})()" % json.dumps(label))
 
         def row0_btns():
             return ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
                       ".find(e=>e.getBoundingClientRect().width>0);if(!R)return [];"
-                      "const tr=R.querySelector('.mem-table tbody tr');if(!tr)return [];"
+                      "const tr=R.querySelector('.b-table tbody tr');if(!tr)return [];"
                       "return [...tr.querySelectorAll('button')].map(x=>x.textContent.trim());})()") or []
 
         def dialog_btn(label):
@@ -740,7 +740,7 @@ def main():
             while time.time() < deadline:
                 cat = ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
                          ".find(e=>e.getBoundingClientRect().width>0);if(!R)return null;"
-                         "const tr=R.querySelector('.mem-table tbody tr');if(!tr)return null;"
+                         "const tr=R.querySelector('.b-table tbody tr');if(!tr)return null;"
                          "return (tr.querySelector('td')?.textContent||'').trim()||null;})()")
                 if cat:
                     break
@@ -849,7 +849,7 @@ def main():
             while time.time() < deadline:
                 info = ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
                           ".find(e=>e.getBoundingClientRect().width>0);if(!R)return null;"
-                          "const rows=[...R.querySelectorAll('.mem-table tbody tr')];"
+                          "const rows=[...R.querySelectorAll('.b-table tbody tr')];"
                           "return {n:rows.length,over:rows.filter(r=>r.classList.contains('is-over')).length,"
                           "hints:[...R.querySelectorAll('.over-hint')].map(x=>x.textContent.trim())};})()")
                 if info and info.get("n"):

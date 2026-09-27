@@ -10,5 +10,5 @@
   "dir_path_prompt": "Enter directory path:",
   "dir_placeholder": "C:\\path\\to\\trusted",
   "empty": "No trusted directories",
-  "not_enforced_hint": "This policy is enforced by agentbox at the execution layer: after enabling “Sandbox isolation” on the MCP page or the Tool Sandbox page, tool reads/writes outside the allowed dirs are denied."
+  "not_enforced_hint": "This policy is enforced by agentbox at the execution layer: after enabling “Sandbox” on the MCP page or the Tool Sandbox page, tool reads/writes outside the allowed dirs are denied."
 }

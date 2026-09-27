@@ -142,6 +142,8 @@ class AskUserManager {
       // 只保留折叠按钮：不做最小化（折叠态仍可拖拽，见 DialogShell）
       minimizable: false,
       resizable: true,
+      // 例外：问题数不定（1..N），保持内容自适应高度，不套用弹窗默认高度
+      height: 'auto',
       width: 480,
     })
     this.currentHandle.value = handle

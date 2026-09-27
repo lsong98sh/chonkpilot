@@ -8,16 +8,11 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	ignore "github.com/chonkpilot/chonkpilot-ignore"
 )
 
 var maxFileBytes = 8 << 20 // 8MB
-
-// defaultSkipDirs 默认跳过的目录名。
-func defaultSkipDirs() []string {
-	return []string{".git", ".svn", ".hg", "node_modules", "__pycache__",
-		".venv", "venv", ".trae", ".chonkpilot", "dist", "build",
-		".next", ".nuxt", "out", "target", "vendor"}
-}
 
 type srcEntry struct {
 	path  string
@@ -26,9 +21,10 @@ type srcEntry struct {
 	size  int64
 }
 
-// Configure 设置 enabled / exts / skip_dirs（引擎侧同步状态，可见性门控由 plugin 完成）。
-// exts / skipDirs 传 nil 表示不改；传空切片 = 清空（exts 空 → 回落全部受支持语言）。
-func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string) error {
+// Configure 设置 enabled / exts / skip_dirs / stack_gitignore（引擎侧同步状态，可见性门控由 plugin 完成）。
+// exts / skipDirs / stackGitignore 传 nil 表示不改；传空切片 = 清空
+// （exts 空 → 回落全部受支持语言；skip_dirs = 用户排除规则（gitignore 语法），空 → 无用户规则）。
+func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string, stackGitignore *bool) error {
 	w.mu.Lock()
 	if enabled != nil {
 		w.meta.Enabled = *enabled
@@ -38,6 +34,9 @@ func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string) error {
 	}
 	if skipDirs != nil {
 		w.meta.SkipDirs = append([]string{}, skipDirs...)
+	}
+	if stackGitignore != nil {
+		w.meta.StackGitignore = *stackGitignore
 	}
 	w.mu.Unlock()
 	return w.saveMeta()
@@ -101,6 +100,7 @@ type Status struct {
 	Err            string   `json:"err,omitempty"`
 	LastIndexedAt  int64    `json:"lastIndexedAt"`
 	SkipDirs       []string `json:"skipDirs,omitempty"`
+	StackGitignore bool     `json:"stackGitignore,omitempty"`
 	Exts           []string `json:"exts,omitempty"`
 	IndexedFiles   int      `json:"indexedFiles"`
 	IndexedSymbols int      `json:"indexedSymbols"`
@@ -124,39 +124,29 @@ func (w *Workspace) Status() Status {
 	return Status{Workdir: w.Dir, State: m.State, Enabled: m.Enabled,
 		ProgressDone: m.ProgressDone, ProgressTotal: m.ProgressTotal, Err: m.Err,
 		LastIndexedAt: m.LastIndexedAt, SkipDirs: append([]string{}, m.SkipDirs...),
-		Exts:         append([]string{}, exts...),
-		IndexedFiles: files, IndexedSymbols: syms, Loaded: loaded}
+		StackGitignore: m.StackGitignore,
+		Exts:           append([]string{}, exts...),
+		IndexedFiles:   files, IndexedSymbols: syms, Loaded: loaded}
 }
 
-// skipSet 目录名跳过集合（默认 ∪ 用户 skip_dirs）。
-func (w *Workspace) skipSet() map[string]bool {
-	m := map[string]bool{}
-	for _, d := range defaultSkipDirs() {
-		m[d] = true
-	}
+// excludeOptions 构造遍历排除配置：内置强制 / 默认排除恒生效，stack_gitignore 决定是否叠加
+// 各级 .gitignore / .git/info/exclude / 全局 ignore；skip_dirs = 用户规则（最高优先级）。
+func (w *Workspace) excludeOptions() ignore.Options {
 	w.mu.Lock()
-	for _, d := range w.meta.SkipDirs {
-		if d != "" {
-			m[d] = true
-		}
+	defer w.mu.Unlock()
+	return ignore.Options{
+		StackGitignore: w.meta.StackGitignore,
+		UserRules:      append([]string{}, w.meta.SkipDirs...),
 	}
-	w.mu.Unlock()
-	return m
 }
 
 // collectSourceFiles 扫描受支持源码文件清单（含 stat）。
+// 排除走 ignore.WalkDir（gitignore 语义：目录命中忽略即不下降，文件命中即跳过）。
 func (w *Workspace) collectSourceFiles() ([]srcEntry, error) {
-	skips := w.skipSet()
 	exts := w.extSet()
 	var out []srcEntry
-	err := filepath.WalkDir(w.Dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if p != w.Dir && skips[d.Name()] {
-				return filepath.SkipDir
-			}
+	err := ignore.WalkDir(w.Dir, w.excludeOptions(), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(d.Name()))
@@ -203,10 +193,10 @@ func (w *Workspace) parseEntry(e srcEntry) (*FileInfo, error) {
 }
 
 // Initialize 全量索引（同步，直到完成并落盘；进度写入 meta 供跨进程 status 读取）。
-// exts / skipDirs 传非 nil 时先更新配置（exts 空切片 = 回落全部受支持语言）。
-func (w *Workspace) Initialize(exts, skipDirs []string) error {
-	if exts != nil || skipDirs != nil {
-		w.Configure(nil, exts, skipDirs)
+// exts / skipDirs / stackGitignore 传非 nil 时先更新配置（exts 空切片 = 回落全部受支持语言）。
+func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) error {
+	if exts != nil || skipDirs != nil || stackGitignore != nil {
+		w.Configure(nil, exts, skipDirs, stackGitignore)
 	}
 	// 标记 indexing
 	w.mu.Lock()

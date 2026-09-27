@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ignore "github.com/chonkpilot/chonkpilot-ignore"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
@@ -42,10 +43,12 @@ const (
 	toolCallSubject = "vfts-tool-call"
 
 	// prj-config 键
-	enableKey   = "enable-vfts"    // "true"/"false"（UI 开关；缺省 = 关闭，对齐 42 §2 (17)）
-	extsKey     = "vfts.exts"      // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
-	skipDirsKey = "vfts.skip-dirs" // 额外排除目录名（逗号/换行分隔；空 = 引擎默认集）
-	statusKey   = "vfts.status"    // 引擎状态 JSON 文本（插件回写，UI 只读回显）
+	engineName        = "vfts"                 // 引擎标识（配置键前缀 = 引擎名；ignore.ConfigOptions 用）
+	enableKey         = "enable-vfts"          // "true"/"false"（UI 开关；缺省 = 关闭，对齐 42 §2 (17)）
+	extsKey           = "vfts.exts"            // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
+	skipDirsKey       = "vfts.skip-dirs"       // 用户排除规则（gitignore 语法，逗号/换行分隔；空 = 无用户规则）
+	stackGitignoreKey = "vfts.stack-gitignore" // "true"/"false"：是否让引擎/清单扫描叠加各级 .gitignore / info/exclude / 全局 ignore
+	statusKey         = "vfts.status"          // 引擎状态 JSON 文本（插件回写，UI 只读回显）
 
 	// data 面（persist 订阅）
 	subjectPrjConfigRefresh = "data-prj-config-refresh"
@@ -425,9 +428,10 @@ func (p *Vfts) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) erro
 			}
 		}
 		p.syncTools()
-	case extsKey, skipDirsKey:
-		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts 变更必须重建才生效）。
-		// 经去抖合并：一次保存（同一次操作写 exts + skip-dirs 两键 = 两次 refresh）只重建一轮。
+	case extsKey, skipDirsKey, stackGitignoreKey:
+		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts/skip-dirs/stack-gitignore 变更
+		// 均须重建才生效）。
+		// 经去抖合并：一次保存（同一次操作写多键 = 多次 refresh）只重建一轮。
 		var affected []string
 		p.mu.Lock()
 		for wd, r := range p.works {
@@ -488,12 +492,12 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), initTimeout)
 	defer cancel()
 
-	// 0) 读取项目级索引配置（扩展名/排除目录）；未配置 → 下发空数组 = 引擎默认集
-	exts, dirs := p.readIndexConfig(wd)
-	// 1) configure：enabled/exts/skip_dirs 存档到引擎工作区（可见性门控在插件，引擎仅记录）
+	// 0) 读取项目级索引配置（扩展名 / 用户排除规则 / 是否叠加 gitignore）；未配置 → 下发空数组 = 引擎默认集
+	exts, rules, stack := p.readIndexConfig(wd)
+	// 1) configure：enabled/exts/skip_dirs/stack_gitignore 存档到引擎工作区（可见性门控在插件，引擎仅记录）
 	p.pushStatusPhase(r, phaseConfigure, 0, 0) // 进度推送：进入 configure
 	if _, err := p.engineCall(ctx, "vfts_configure", map[string]any{
-		"workdir": wd, "enabled": true, "exts": exts, "skip_dirs": dirs,
+		"workdir": wd, "enabled": true, "exts": exts, "skip_dirs": rules, "stack_gitignore": stack,
 	}); err != nil {
 		p.saveStatusErr(r, "configure", err)
 		return
@@ -505,7 +509,7 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 	}
 	// 3) 已就绪且非强制 → 增量同步（清单驱动的按文件增量）
 	if ready && !force {
-		st, err := p.incrementalSync(r, ctx, effectiveExts(r.state, exts), dirs)
+		st, err := p.incrementalSync(r, ctx, effectiveExts(r.state, exts), rules, stack)
 		if err != nil {
 			p.logf("vfts: %s 增量同步失败：%v", wd, err)
 			p.saveStatusErr(r, "sync", err)
@@ -525,7 +529,7 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 	p.pushStatusPhase(r, phaseIndex, 0, 0) // 进度推送：进入全量索引
 	stopPoll := p.startProgressPoll(r)
 	text, err := p.engineCall(ctx, "vfts_index", map[string]any{
-		"workdir": wd, "exts": exts, "skip_dirs": dirs,
+		"workdir": wd, "exts": exts, "skip_dirs": rules, "stack_gitignore": stack,
 	})
 	stopPoll()
 	if err != nil {
@@ -545,7 +549,7 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 	if len(effExts) == 0 {
 		// 生效扩展名不可得时**不重建清单**（否则会把整张表误判为待删除而清空）
 		p.logf("vfts: %s 清单重建跳过（未取到生效扩展名）", wd)
-	} else if err := p.rebuildManifest(r, res, effExts, dirs); err != nil {
+	} else if err := p.rebuildManifest(r, res, effExts, rules, stack); err != nil {
 		p.logf("vfts: %s 清单重建失败：%v", wd, err)
 	}
 	p.mergeSyncStatus(r, &syncStats{Added: res.Added})
@@ -672,29 +676,42 @@ func (p *Vfts) instanceForWorkdir(wd string) string {
 	return inst
 }
 
-// readIndexConfig 读取项目级索引配置：vfts.exts / vfts.skip-dirs。
+// readIndexConfig 读取项目级索引配置：vfts.exts / vfts.skip-dirs / vfts.stack-gitignore。
 // 读取失败/未配置 → 返回空切片（下发空数组 = 引擎默认集，不写第二套默认）。
-func (p *Vfts) readIndexConfig(wd string) (exts, skipDirs []string) {
+// skip-dirs / stack-gitignore 的解析统一由 github.com/chonkpilot/chonkpilot-ignore 提供
+// （ignore.ConfigOptions = 规则拆分 + 叠加开关；匹配语义在引擎侧与本插件清单扫描共用同一实现）。
+func (p *Vfts) readIndexConfig(wd string) (exts, rules []string, stack bool) {
 	inst := p.instanceForWorkdir(wd)
 	if inst == "" {
-		return []string{}, []string{}
+		return []string{}, []string{}, false
 	}
 	if v, err := prjConfigReadKey(p.deps.Bus, inst, extsKey); err == nil {
 		exts = splitList(v)
 	}
-	if v, err := prjConfigReadKey(p.deps.Bus, inst, skipDirsKey); err == nil {
-		skipDirs = splitList(v)
+	// 用户排除规则（gitignore 语法，原样透传：不折名、不丢 '!'/glob）+ 是否叠加 ignore 体系：
+	// 均由 ignore.ConfigOptions 按引擎配置键统一组装。
+	if opts, _, err := ignore.ConfigOptions(engineName, p.prjConfigGetter(inst), wd); err == nil && opts != nil {
+		rules = opts.UserRules
+		stack = opts.StackGitignore
 	}
 	if exts == nil {
 		exts = []string{}
 	}
-	if skipDirs == nil {
-		skipDirs = []string{}
+	if rules == nil {
+		rules = []string{}
 	}
-	return exts, skipDirs
+	return exts, rules, stack
 }
 
-// splitList 解析项目级列表配置：按逗号/分号/换行分隔，去空去重。
+// prjConfigGetter 把 prj-config 单键读封装为 ignore.ConfigOptions 的取值器（键不存在/读取失败 → ok=false）。
+func (p *Vfts) prjConfigGetter(inst string) func(key string) (string, bool) {
+	return func(key string) (string, bool) {
+		v, err := prjConfigReadKey(p.deps.Bus, inst, key)
+		return v, err == nil
+	}
+}
+
+// splitList 解析项目级列表配置（扩展名）：按逗号/分号/换行分隔，去空去重。
 func splitList(s string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -710,6 +727,28 @@ func splitList(s string) []string {
 	}
 	return out
 }
+
+// splitRules 解析项目级排除规则（skip-dirs）：按逗号/分号/换行分隔，去空。
+// **保序且保留重复项**——gitignore 语义下顺序有意义（'!' 取反 + 后一条覆盖前一条）。
+func splitRules(s string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	}) {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+// ─── 匹配语义落点（vfts.stack-gitignore）────────────────
+//
+// .gitignore / 全局 ignore / .git/info/exclude 的读取与匹配由 github.com/chonkpilot/chonkpilot-ignore
+// 单一实现：引擎遍历（collectFiles）与本插件清单扫描（manifest.scanFiles）共用同一实现 +
+// 同一份规则来源（用户规则 + stack 开关），故索引集合与 file_list 清单不会出现两套过滤。
+// 本插件不自行解析 .gitignore，只把 vfts.skip-dirs / vfts.stack-gitignore 原样下发。
 
 // sharedClient 返回全局共享引擎子进程客户端（懒建；一对多，常驻复用，空闲由 sweepIdleClient 回收）。
 func (p *Vfts) sharedClient() *client {

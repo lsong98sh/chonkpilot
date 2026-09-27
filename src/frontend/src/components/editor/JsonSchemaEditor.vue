@@ -50,7 +50,7 @@
           </Button>
         </span>
         <span v-if="isEnumType(row.type)" class="jse-actions">
-          <Button size="small" text class="jse-act" @click="onAddEnum(row)">
+          <Button size="small" text class="jse-act" @click="onEditEnum(row)">
             {{ $t('jsonSchema.add_enum') }}
           </Button>
         </span>
@@ -69,17 +69,31 @@
           ✕
         </Button>
 
+        <!-- 关键字 chip：文案只留**关键字名**，值一律由 Tooltip 承载（悬停可见，支持换行）。 -->
         <span v-if="presentKeywords(row).length > 0" class="jse-enums">
-          <span v-for="k in presentKeywords(row)" :key="k" class="jse-enum">
-            {{ k }}
-            <button type="button" class="jse-enum-x" :title="$t('jsonSchema.remove_keyword')" @click="onRemoveKeyword(row, k)">✕</button>
-          </span>
+          <Tooltip
+            v-for="k in presentKeywords(row)"
+            :key="k"
+            :content="chipTooltip(row, k)"
+          >
+            <span
+              class="jse-enum"
+              :class="{ 'jse-enum-editable': isEditableKeyword(k) }"
+              @click="onKeywordChip(row, k)"
+            >
+              <span class="jse-enum-text">{{ k }}</span>
+              <button type="button" class="jse-enum-x" :title="$t('jsonSchema.remove_keyword')" @click.stop="onRemoveKeyword(row, k)">✕</button>
+            </span>
+          </Tooltip>
         </span>
+        <!-- 枚举（结构性关键字）→ 单个 `enum` chip：枚举值一律由 tooltip 承载（每行一个），点击开行编辑弹框。 -->
         <span v-if="row.node.enum && row.node.enum.length" class="jse-enums">
-          <span v-for="(v, i) in row.node.enum" :key="i" class="jse-enum">
-            {{ v }}
-            <button type="button" class="jse-enum-x" @click="onRemoveEnum(row, i)">✕</button>
-          </span>
+          <Tooltip :content="chipTooltip(row, 'enum')">
+            <span class="jse-enum jse-enum-editable" @click="onEditEnum(row)">
+              <span class="jse-enum-text">enum</span>
+              <button type="button" class="jse-enum-x" :title="$t('jsonSchema.remove_keyword')" @click.stop="onRemoveKeyword(row, 'enum')">✕</button>
+            </span>
+          </Tooltip>
         </span>
       </div>
     </div>
@@ -91,11 +105,11 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Input, Textarea, Button, promptInput } from '../../components/ui'
+import { Input, Textarea, Button, Tooltip, promptInput, promptList } from '../../components/ui'
 import {
   SCHEMA_TYPES, keywordSuggestions, inferType, parseSchemaText, serializeSchema, validateSchema,
   removeNode, addProperty, renameProperty, setNodeType, toggleRequired,
-  addEnumValue, removeEnumValue, addKeyword, removeKeyword, schemaRows,
+  setEnumValues, addKeyword, removeKeyword, setKeywordValue, keywordTooltipText, schemaRows,
 } from '../../utils/jsonSchema'
 
 const props = defineProps({
@@ -145,6 +159,31 @@ function presentKeywords(row) {
   return keywordSuggestions(type).filter(k => (k in node) && STRUCTURAL_KEYWORDS.indexOf(k) < 0)
 }
 
+// 可就地设值的字符串关键字（title/description 多行，format/pattern 单行）；其余 chip 仅可移除。
+const STRING_KEYWORDS = ['title', 'description', 'format', 'pattern']
+function isEditableKeyword(keyword) {
+  return STRING_KEYWORDS.indexOf(keyword) >= 0
+}
+
+// chipTooltip chip 的 tooltip 文案 = 该关键字的值（enum = 各枚举值每行一个，支持换行）；
+// 空值（未设置 / 空串 / 空枚举）→ 占位文案，避免悬停出空白 tip。
+function chipTooltip(row, keyword) {
+  return keywordTooltipText(row.node, keyword) || t('jsonSchema.empty_value')
+}
+
+// onKeywordChip 点击字符串关键字 chip → 录入/修改值（description 多行 Textarea，其余单行 Input）。
+async function onKeywordChip(row, keyword) {
+  if (!isEditableKeyword(keyword)) return
+  const raw = row.node ? row.node[keyword] : undefined
+  const cur = raw === undefined || raw === null ? '' : String(raw)
+  let value
+  try {
+    value = await promptInput(t('jsonSchema.set_keyword', { keyword }), cur, { multiline: keyword === 'description' })
+  } catch (_) { return }
+  if (value === null || value === undefined) return
+  apply(setKeywordValue(schema.value, row.path, keyword, String(value)))
+}
+
 function onRemoveKeyword(row, keyword) {
   apply(removeKeyword(schema.value, row.path, keyword))
 }
@@ -174,17 +213,19 @@ async function onAddProperty(row) {
   apply(addProperty(schema.value, row.path, key, 'string'))
 }
 
-async function onAddEnum(row) {
-  let value
+// onEditEnum 打开枚举值行编辑弹框（KeyValueEditor list 模式，复用于 promptList）；确定 → 批量写回 enum。
+async function onEditEnum(row) {
+  const current = Array.isArray(row.node && row.node.enum) ? row.node.enum : []
+  let values
   try {
-    value = await promptInput(t('jsonSchema.enum_value'), '')
+    values = await promptList(t('jsonSchema.enum_dialog_title'), current, {
+      valuePlaceholder: t('jsonSchema.enum_value'),
+      addLabel: t('jsonSchema.enum_add_row'),
+      deleteLabel: t('jsonSchema.remove_enum'),
+    })
   } catch (_) { return }
-  if (value === null || value === undefined) return
-  apply(addEnumValue(schema.value, row.path, String(value)))
-}
-
-function onRemoveEnum(row, index) {
-  apply(removeEnumValue(schema.value, row.path, index))
+  if (values === null || values === undefined) return
+  apply(setEnumValues(schema.value, row.path, values))
 }
 
 function onAddKeyword(row, keyword, event) {
@@ -309,6 +350,21 @@ function rewriteEmpty() {
   border-radius: 10px;
   font-size: 11px;
   color: var(--text-secondary);
+  max-width: 220px;
+  min-width: 0;
+}
+.jse-enum-editable {
+  cursor: pointer;
+}
+.jse-enum-editable:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.jse-enum-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .jse-enum-x {
   border: none;

@@ -11,12 +11,45 @@
       </div>
     </div>
 
-    <!-- 已选 prompt 的 tag（`/<prompt-name>`，25 §7）：发送时内容并入 user 消息；可移除 -->
-    <div v-if="selectedPrompt" class="prompt-tags">
-      <Tag size="small" type="warning" :title="selectedPrompt.path">
-        <span class="prompt-tag-name">{{ promptTagOf(selectedPrompt.name) }}</span>
-        <span class="prompt-tag-remove" :title="$t('chat.prompt_remove')" @click.stop="removePrompt">✕</span>
-      </Tag>
+    <!-- 输入区上方一行：选择提示词（单选，25 §7）+ 已选 prompt 的 tag（`/<prompt-name>`，可移除）。
+         选择器按钮**常驻**（未选中也显示）；提示词内容发送时并入 user 消息（零契约变更）。
+         下方工具栏（.input-actions-left）不再承载提示词选择。 -->
+    <div class="prompt-row">
+      <Popover placement="top-start" :width="260">
+        <template #reference>
+          <Button text size="mini" class="prompt-pick-btn" :title="$t('chat.prompt_pick')" @click="loadPrompts">
+            <Icon name="magic-stick" :size="13" />
+            <span>{{ selectedPrompt ? promptTagOf(selectedPrompt.name) : $t('chat.prompt_pick') }}</span>
+          </Button>
+        </template>
+        <div class="prompt-popover">
+          <div v-if="promptsLoading" class="prompt-empty">{{ $t('common.loading') }}</div>
+          <div v-else-if="promptOptions.length === 0" class="prompt-empty">{{ $t('chat.prompt_empty') }}</div>
+          <template v-else>
+            <!-- 「无」项：单选清除（等价 remove）；当前未选择时高亮为选中态 -->
+            <div class="prompt-item prompt-item-none" :class="{ active: !selectedPrompt }" @click="onPickNone">
+              <span class="prompt-item-name">{{ $t('chat.prompt_none') }}</span>
+            </div>
+            <div
+              v-for="p in promptOptions"
+              :key="p.path"
+              class="prompt-item"
+              :class="{ active: selectedPrompt && selectedPrompt.path === p.path }"
+              @click="onPickPrompt(p)"
+            >
+              <span class="prompt-item-name">{{ promptTagOf(p.name) }}</span>
+              <span v-if="p.description" class="prompt-item-desc" :title="p.description">{{ p.description }}</span>
+              <span class="prompt-item-level">{{ $t('scenario.level.' + (p.level || 'user')) }}</span>
+            </div>
+          </template>
+        </div>
+      </Popover>
+      <div v-if="selectedPrompt" class="prompt-tags">
+        <Tag size="small" type="warning" :title="selectedPrompt.path">
+          <span class="prompt-tag-name">{{ promptTagOf(selectedPrompt.name) }}</span>
+          <span class="prompt-tag-remove" :title="$t('chat.prompt_remove')" @click.stop="removePrompt">✕</span>
+        </Tag>
+      </div>
     </div>
 
     <!-- 富文本输入区（contenteditable 自研轻量，不引入重型编辑器库）：
@@ -38,30 +71,6 @@
     <div class="input-actions">
       <div class="input-actions-left">
         <slot name="controls" />
-        <!-- prompt 选择（知识库 `*.prompt.md`，25 §7）：选中 → 内容并入 user 消息 + `/<name>` tag 显示 -->
-        <Popover placement="top-start" :width="260">
-          <template #reference>
-            <Button text size="mini" class="prompt-pick-btn" :title="$t('chat.prompt_pick')" @click="loadPrompts">
-              <Icon name="magic-stick" :size="13" />
-              <span>{{ selectedPrompt ? promptTagOf(selectedPrompt.name) : $t('chat.prompt_pick') }}</span>
-            </Button>
-          </template>
-          <div class="prompt-popover">
-            <div v-if="promptsLoading" class="prompt-empty">{{ $t('common.loading') }}</div>
-            <div v-else-if="promptOptions.length === 0" class="prompt-empty">{{ $t('chat.prompt_empty') }}</div>
-            <div
-              v-for="p in promptOptions"
-              :key="p.path"
-              class="prompt-item"
-              :class="{ active: selectedPrompt && selectedPrompt.path === p.path }"
-              @click="onPickPrompt(p)"
-            >
-              <span class="prompt-item-name">{{ promptTagOf(p.name) }}</span>
-              <span v-if="p.description" class="prompt-item-desc" :title="p.description">{{ p.description }}</span>
-              <span class="prompt-item-level">{{ $t('scenario.level.' + (p.level || 'user')) }}</span>
-            </div>
-          </div>
-        </Popover>
         <!-- 待发队列指示器：LLM 忙碌时入队的消息计数；点击展开 popover 列表（单项可撤回/删除） -->
         <Popover v-if="queueCount > 0" placement="top-end" :width="320">
           <template #reference>
@@ -170,6 +179,11 @@ const {
 async function onPickPrompt(p) {
   const ok = await pickPrompt(p)
   if (!ok) uiMessage.error(t('chat.prompt_load_failed', { name: promptTagOf(p && p.name) }))
+}
+
+// 「无（不使用提示词）」项：单选清除 —— 等价 remove()（未选 → 不注入任何提示词）。
+function onPickNone() {
+  removePrompt()
 }
 
 // 上传中（gui.upload 未回执）：禁止发送——避免把尚未落盘的附件引用发出去（图片发给 LLM 依赖落盘路径）。
@@ -550,12 +564,18 @@ onUnmounted(() => {
   color: var(--danger, #f56c6c);
 }
 
-/* ── 已选 prompt tag（`/<prompt-name>`；25 §7）── */
+/* ── 输入区上方一行：提示词选择器 + 已选 tag（`/<prompt-name>`；25 §7）── */
+.prompt-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
 .prompt-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 6px;
 }
 .prompt-tag-name {
   font-weight: 600;
@@ -569,7 +589,7 @@ onUnmounted(() => {
   opacity: 1;
 }
 
-/* ── prompt 选择器（输入区工具栏左侧；popover 内容）── */
+/* ── prompt 选择器（输入区上方；popover 内容）── */
 .prompt-pick-btn {
   font-size: 12px;
 }
@@ -599,6 +619,12 @@ onUnmounted(() => {
 .prompt-item.active {
   background: var(--accent, #409eff);
   color: #fff;
+}
+/* 「无」项：置于列表顶部，用分隔线与可选提示词区分 */
+.prompt-item-none {
+  border-bottom: 1px solid var(--border);
+  border-radius: 4px 4px 0 0;
+  margin-bottom: 4px;
 }
 .prompt-item-name {
   flex-shrink: 0;

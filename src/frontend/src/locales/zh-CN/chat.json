@@ -5,6 +5,7 @@
   "effort": "力度",
   "screenshot": "截图（隐藏窗口全屏截取）",
   "screenshot_no_vision": "所选 LLM 未声明「图形」能力，无法截图（设置 → LLM → 模型能力 中勾选「图形」）",
+  "screenshot_failed": "截图失败，请重试",
   "uploading": "上传中…",
   "upload_failed": "附件上传失败：{name}",
   "custom_answer_placeholder": "输入自定义回答...",
@@ -68,6 +69,7 @@
   "tool_background": "转后台",
   "tool_background_ok": "已转后台，可继续其它操作",
   "tool_background_failed": "转后台失败：{error}",
+  "view_task_detail": "查看任务详情",
   "tool_async_mode": "工具异步模式：{mode}",
   "tool_async_manual": "可转异步",
   "timeout_arbitrate": "工具「{tool}」已等待 {seconds}，请选择处理方式",
@@ -126,6 +128,7 @@
   "chat_window_open_failed": "打开对话窗口失败",
   "general_scenario": "通用场景",
   "prompt_pick": "选择提示词",
+  "prompt_none": "无（不使用提示词）",
   "prompt_empty": "知识库暂无提示词",
   "prompt_remove": "移除提示词",
   "prompt_load_failed": "提示词「{name}」加载失败"

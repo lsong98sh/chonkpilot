@@ -8,7 +8,7 @@
         <Icon name="refresh" :size="11" />
       </Button>
     </div>
-    <div class="tree-scroll">
+    <div class="tree-scroll" ref="treeScrollEl">
       <EmptyState v-if="loading && treeData.length === 0" :message="$t('common.loading')" />
       <template v-else>
         <!-- 完全层级任务树（§一）：顶层 = 主会话直接派生的任务/会话节点混排，无主会话根节点 -->
@@ -19,6 +19,7 @@
           :depth="0"
           :active-id="selectedId"
           :top-session="currentTopId"
+          :highlight-id="highlightId"
         />
         <EmptyState
           v-if="treeData.length === 0"
@@ -30,7 +31,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import Icon from '../../components/icon/Icon.vue'
@@ -46,6 +47,26 @@ const { loadTree, refresh, nodeTree, nodeTimeOf } = useTaskView()
 
 // 完全层级树：顶层 = parent 为空（主会话直接派生物），递归展开在 SessionTreeNode 内
 const treeData = computed(() => (currentTopId.value ? nodeTree(currentTopId.value) : []))
+
+// ── 定位（滚动到可见 + 一次性高亮）──────────────────────────────
+// 触发源 = 既有事件的定位载荷：subsession-changed（会话身份）与 task-detail-open（任务节点 id，
+// 与节点主键同源）；消息卡「查看任务详情」两处定位均落在这两个既有事件上，不新增 MQ 主题。
+const treeScrollEl = ref(null)
+const highlightId = ref('') // 一次性高亮目标 node_id（~1.2s 后淡出，色走 --accent-bg）
+let highlightTimer = null
+
+async function focusRow(nodeId) {
+  if (!nodeId) return
+  highlightId.value = nodeId
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = setTimeout(() => {
+    highlightId.value = ''
+    highlightTimer = null
+  }, 1200)
+  await nextTick()
+  const el = treeScrollEl.value?.querySelector(`[data-node-id="${nodeId}"]`)
+  if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })
+}
 
 function findNode(nodes, id) {
   for (const n of nodes) {
@@ -180,6 +201,11 @@ onMounted(() => {
   unsubs.push(mq.on(EventNames.subsessionChanged, ({ session_id }) => {
     const n = session_id ? findNodeBySession(treeData.value, session_id) : null
     selectedId.value = n ? n.node_id : null
+    if (n) focusRow(n.node_id) // 定位：滚动到可见 + 一次性高亮
+  }))
+  // 任务节点定位（task-detail-open，载荷 task_id = 节点主键）：滚动到可见 + 一次性高亮
+  unsubs.push(mq.on(EventNames.taskDetailOpen, ({ task_id }) => {
+    if (task_id) focusRow(task_id)
   }))
   // 会话创建（session-new）：后端会话行首次落库的唯一事件，按 parent_session_id 分流——
   //   - 无父（主会话）：刷新当前任务树（会话导航列表由 SessionsPane 订阅同一事件刷新）；
@@ -201,6 +227,7 @@ onMounted(() => {
   }))
   onUnmounted(() => {
     for (const unsub of unsubs) unsub()
+    if (highlightTimer) { clearTimeout(highlightTimer); highlightTimer = null }
   })
 })
 </script>

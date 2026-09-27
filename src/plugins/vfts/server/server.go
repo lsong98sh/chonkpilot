@@ -23,13 +23,14 @@ var toolSpecs = []toolSpec{
 	// ---- 管理类（hot=false，plugin 直接调用，不发给 LLM）----
 	{
 		Name: "vfts_configure",
-		Description: "配置某 workdir 的 vfts 全文索引工作区：enabled 标识、参与索引的扩展名 exts、跳过目录名 skip_dirs" +
-			"（可见性门控由调用方/plugin 负责，引擎仅记录与存档）。",
+		Description: "配置某 workdir 的 vfts 全文索引工作区：enabled 标识、参与索引的扩展名 exts、排除规则 skip_dirs" +
+			"（gitignore 语法，最高优先级）、是否叠加 gitignore 体系 stack_gitignore（可见性门控由调用方/plugin 负责，引擎仅记录与存档）。",
 		Props: map[string]any{
-			"workdir":   map[string]any{"type": "string", "description": "项目根目录（绝对路径）"},
-			"enabled":   map[string]any{"type": "boolean", "description": "是否启用（缺省不改）"},
-			"exts":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "参与索引的扩展名（如 [\".go\",\".txt\",\".md\"]；缺省不改，替换式）"},
-			"skip_dirs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "额外跳过目录名（缺省不改）"},
+			"workdir":         map[string]any{"type": "string", "description": "项目根目录（绝对路径）"},
+			"enabled":         map[string]any{"type": "boolean", "description": "是否启用（缺省不改）"},
+			"exts":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "参与索引的扩展名（如 [\".go\",\".txt\",\".md\"]；缺省不改，替换式）"},
+			"skip_dirs":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "用户排除规则（gitignore 语法，每项一条；优先级最高；缺省不改）"},
+			"stack_gitignore": map[string]any{"type": "boolean", "description": "是否额外应用各级 .gitignore / .git/info/exclude / 全局 ignore（缺省不改）"},
 		},
 		Required: []string{"workdir"},
 		Fn:       toolConfigure,
@@ -37,15 +38,16 @@ var toolSpecs = []toolSpec{
 	{
 		Name: "vfts_index",
 		Description: "对某 workdir 建/更新 FTS 全文索引（同步，直到完成并落盘到 <workdir>/.chonkpilot/vfts/）：" +
-			"不传 files/remove 时全量重建（索引源码 + .txt + .md 等纯文本，跳过排除目录，含 .chonkpilot；" +
+			"不传 files/remove 时全量重建（索引源码 + .txt + .md 等纯文本，按 gitignore 语义排除，含 .chonkpilot；" +
 			"单文件 >8MB 或二进制跳过；重复调用为幂等重建）；传 files/remove 时按文件增量（仅处理这些文件）。" +
 			"返回 mode 与计数（added/updated/removed/removedChunks/newChunks），以及逐文件 indexed[{path,key,doc_ids,chunks}]（供调用方回写清单）。",
 		Props: map[string]any{
-			"workdir":   map[string]any{"type": "string", "description": "项目根目录"},
-			"exts":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "本次参与索引的扩展名（缺省沿用配置/默认集）"},
-			"skip_dirs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "额外跳过目录名"},
-			"files":     map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "增量：仅索引这些文件；每项 {path(绝对/相对路径), key(可选), doc_ids(该文件旧块主键数组，先删后插；新文件缺省为空)}"},
-			"remove":    map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "增量：删除这些文件的旧块；每项 {key(可选), doc_ids(该文件旧块主键数组)}"},
+			"workdir":         map[string]any{"type": "string", "description": "项目根目录"},
+			"exts":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "本次参与索引的扩展名（缺省沿用配置/默认集）"},
+			"skip_dirs":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "用户排除规则（gitignore 语法，最高优先级）"},
+			"stack_gitignore": map[string]any{"type": "boolean", "description": "是否额外应用各级 .gitignore / .git/info/exclude / 全局 ignore（缺省沿用配置）"},
+			"files":           map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "增量：仅索引这些文件；每项 {path(绝对/相对路径), key(可选), doc_ids(该文件旧块主键数组，先删后插；新文件缺省为空)}"},
+			"remove":          map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "增量：删除这些文件的旧块；每项 {key(可选), doc_ids(该文件旧块主键数组)}"},
 		},
 		Required: []string{"workdir"},
 		Fn:       toolIndex,
@@ -262,7 +264,7 @@ func toolConfigure(_ context.Context, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := w.Configure(getBoolPtr(args, "enabled"), getStrings(args, "exts"), getStrings(args, "skip_dirs")); err != nil {
+	if err := w.Configure(getBoolPtr(args, "enabled"), getStrings(args, "exts"), getStrings(args, "skip_dirs"), getBoolPtr(args, "stack_gitignore")); err != nil {
 		return nil, err
 	}
 	return map[string]any{"ok": true, "workdir": w.Dir, "meta": w.Meta()}, nil
@@ -278,7 +280,7 @@ func toolIndex(_ context.Context, args map[string]any) (any, error) {
 	start := time.Now()
 	var res *IndexResult
 	if len(files) == 0 && len(removes) == 0 {
-		res, err = w.Initialize(getStrings(args, "exts"), getStrings(args, "skip_dirs"))
+		res, err = w.Initialize(getStrings(args, "exts"), getStrings(args, "skip_dirs"), getBoolPtr(args, "stack_gitignore"))
 	} else {
 		// 增量沿用现有配置（exts/skip_dirs 传 nil 表示不改）
 		res, err = w.Incremental(files, removes)

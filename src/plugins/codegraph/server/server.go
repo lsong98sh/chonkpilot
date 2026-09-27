@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -23,13 +24,14 @@ var toolSpecs = []toolSpec{
 	// ---- 管理类（hot=false，plugin 直接调用，不发给 LLM）----
 	{
 		Name:        "codegraph_configure",
-		Description: "配置某 workdir 的 codegraph 工作区：enabled 标识、参与索引的扩展名 exts 与跳过目录名 skip_dirs（可见性门控由调用方/plugin 负责，引擎仅记录与存档）；mode=clear 时额外清除该 workdir 的索引产物（删除 index.json、状态回未初始化，配置存档保留）。",
+		Description: "配置某 workdir 的 codegraph 工作区：enabled 标识、参与索引的扩展名 exts、排除规则 skip_dirs（gitignore 语法，最高优先级）、是否叠加 gitignore 体系 stack_gitignore（可见性门控由调用方/plugin 负责，引擎仅记录与存档）；mode=clear 时额外清除该 workdir 的索引产物（删除 index.json、状态回未初始化，配置存档保留）。",
 		Props: map[string]any{
-			"workdir":   map[string]any{"type": "string", "description": "项目根目录（绝对路径）"},
-			"enabled":   map[string]any{"type": "boolean", "description": "是否启用（缺省不改）"},
-			"exts":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "参与索引的扩展名（如 [\".go\",\".ts\"]；缺省不改，替换式；空数组 = 全部受支持语言）"},
-			"skip_dirs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "额外跳过目录名（缺省不改）"},
-			"mode":      map[string]any{"type": "string", "description": "操作模式：缺省 = 仅存档配置；clear = 清除索引产物（删 index.json、状态回未初始化；enabled/exts/skip_dirs 保留）"},
+			"workdir":         map[string]any{"type": "string", "description": "项目根目录（绝对路径）"},
+			"enabled":         map[string]any{"type": "boolean", "description": "是否启用（缺省不改）"},
+			"exts":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "参与索引的扩展名（如 [\".go\",\".ts\"]；缺省不改，替换式；空数组 = 全部受支持语言）"},
+			"skip_dirs":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "用户排除规则（gitignore 语法，每项一条；优先级最高；缺省不改）"},
+			"stack_gitignore": map[string]any{"type": "boolean", "description": "是否额外应用各级 .gitignore / .git/info/exclude / 全局 ignore（缺省不改）"},
+			"mode":            map[string]any{"type": "string", "description": "操作模式：缺省 = 仅存档配置；clear = 清除索引产物（删 index.json、状态回未初始化；enabled/exts/skip_dirs 保留）"},
 		},
 		Required: []string{"workdir"},
 		Fn:       toolConfigure,
@@ -38,9 +40,10 @@ var toolSpecs = []toolSpec{
 		Name:        "codegraph_initialize",
 		Description: "对某 workdir 全量建索引（同步，直到完成并落盘到 <workdir>/.chonkpilot/codegraph/）。重复调用为重建。",
 		Props: map[string]any{
-			"workdir":   map[string]any{"type": "string", "description": "项目根目录"},
-			"exts":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "本次参与索引的扩展名（缺省沿用配置/默认集）"},
-			"skip_dirs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "额外跳过目录名"},
+			"workdir":         map[string]any{"type": "string", "description": "项目根目录"},
+			"exts":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "本次参与索引的扩展名（缺省沿用配置/默认集）"},
+			"skip_dirs":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "用户排除规则（gitignore 语法，最高优先级）"},
+			"stack_gitignore": map[string]any{"type": "boolean", "description": "是否额外应用各级 .gitignore / .git/info/exclude / 全局 ignore（缺省沿用配置）"},
 		},
 		Required: []string{"workdir"},
 		Fn:       toolInitialize,
@@ -81,6 +84,34 @@ var toolSpecs = []toolSpec{
 		Required: []string{"workdir"},
 		Hot:      true,
 		Fn:       toolGetSymbolInfo,
+	},
+	{
+		Name:        "codegraph_callers",
+		Description: "查「谁调用了它」：在已索引项目内按被调名（精确名或最后一段，忽略大小写，故 pkg.Foo 与 Foo 同目标）找调用方符号。语义为调用点文本的**名字级启发式**（无类型/重载解析，仅覆盖已索引文件中的直接调用）。",
+		Props: map[string]any{
+			"workdir": map[string]any{"type": "string", "description": "项目根目录"},
+			"name":    map[string]any{"type": "string", "description": "被调名（如 Foo 或 pkg.Foo）"},
+			"id":      map[string]any{"type": "string", "description": "目标符号 id（file:line:name:kind）；与 name 二选一，id 优先"},
+			"file":    map[string]any{"type": "string", "description": "只保留该文件内的调用方（路径子串过滤）"},
+			"limit":   map[string]any{"type": "integer", "description": "返回上限（默认 50）"},
+		},
+		Required: []string{"workdir"},
+		Hot:      true,
+		Fn:       toolCallers,
+	},
+	{
+		Name:        "codegraph_callees",
+		Description: "查「它调用了谁」：按 id 或 file+name 定位符号，返回其直接调用的目标名（含 resolved 与解析到的 file/line）。语义为调用点文本的**名字级启发式**（无类型/重载解析）。",
+		Props: map[string]any{
+			"workdir": map[string]any{"type": "string", "description": "项目根目录"},
+			"id":      map[string]any{"type": "string", "description": "符号 id（file:line:name:kind）"},
+			"file":    map[string]any{"type": "string", "description": "符号所在文件（配 name 定位）"},
+			"name":    map[string]any{"type": "string", "description": "符号名（配 file 定位）"},
+			"limit":   map[string]any{"type": "integer", "description": "返回上限（默认 50）"},
+		},
+		Required: []string{"workdir"},
+		Hot:      true,
+		Fn:       toolCallees,
 	},
 	{
 		Name:        "codegraph_get_dependency_graph",
@@ -262,7 +293,7 @@ func toolConfigure(_ context.Context, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := w.Configure(getBoolPtr(args, "enabled"), getStrings(args, "exts"), getStrings(args, "skip_dirs")); err != nil {
+	if err := w.Configure(getBoolPtr(args, "enabled"), getStrings(args, "exts"), getStrings(args, "skip_dirs"), getBoolPtr(args, "stack_gitignore")); err != nil {
 		return nil, err
 	}
 	// mode=clear：清除索引产物（索引是可重建的派生数据；配置存档保留）→ 状态回「未初始化」。
@@ -281,7 +312,7 @@ func toolInitialize(_ context.Context, args map[string]any) (any, error) {
 		return nil, err
 	}
 	start := time.Now()
-	if err := w.Initialize(getStrings(args, "exts"), getStrings(args, "skip_dirs")); err != nil {
+	if err := w.Initialize(getStrings(args, "exts"), getStrings(args, "skip_dirs"), getBoolPtr(args, "stack_gitignore")); err != nil {
 		return nil, err
 	}
 	s := w.Status()
@@ -338,6 +369,56 @@ func toolGetSymbolInfo(_ context.Context, args map[string]any) (any, error) {
 			nil
 	}
 	return map[string]any{"matches": len(hits), "symbol": hits[0]}, nil
+}
+
+// toolCallers 查「谁调用了它」：目标由 name 或 id 指定（id 优先）；file 过滤调用方文件。
+func toolCallers(_ context.Context, args map[string]any) (any, error) {
+	resp, w, ok := readyGate(args)
+	if !ok {
+		return resp, nil
+	}
+	target := strings.TrimSpace(getString(args, "name"))
+	id := getString(args, "id")
+	if target == "" && id == "" {
+		return nil, fmt.Errorf("需要 name 或 id")
+	}
+	if target == "" {
+		hits := w.FindSymbol(id, "", "")
+		if len(hits) == 0 {
+			return map[string]any{"status": "not_found", "message": "未找到目标符号，可先用 codegraph_symbol_search"}, nil
+		}
+		target = hits[0].Name
+	}
+	limit := getInt(args, "limit", 50)
+	if limit <= 0 {
+		limit = 50
+	}
+	callers := w.Callers(target, getString(args, "file"), limit)
+	return map[string]any{"workdir": w.Dir, "target": target, "total": len(callers), "callers": callers}, nil
+}
+
+// toolCallees 查「它调用了谁」：由 id 或 file+name 定位符号。
+func toolCallees(_ context.Context, args map[string]any) (any, error) {
+	resp, w, ok := readyGate(args)
+	if !ok {
+		return resp, nil
+	}
+	id := getString(args, "id")
+	file := getString(args, "file")
+	name := getString(args, "name")
+	if id == "" && (file == "" || name == "") {
+		return nil, fmt.Errorf("需要 id 或 file+name")
+	}
+	hits := w.FindSymbol(id, file, name)
+	if len(hits) == 0 {
+		return map[string]any{"status": "not_found", "message": "未找到符号，可先用 codegraph_symbol_search"}, nil
+	}
+	limit := getInt(args, "limit", 50)
+	if limit <= 0 {
+		limit = 50
+	}
+	refs := w.Callees(id, file, name, limit)
+	return map[string]any{"workdir": w.Dir, "symbol": hits[0], "total": len(refs), "callees": refs}, nil
 }
 
 func toolDependencyGraph(_ context.Context, args map[string]any) (any, error) {

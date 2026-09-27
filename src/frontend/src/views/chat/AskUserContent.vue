@@ -263,6 +263,7 @@ function submitAnswer() {
   justify-content: flex-end;
   margin-top: 16px;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .skip-btn {

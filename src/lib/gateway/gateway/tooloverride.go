@@ -22,11 +22,15 @@ import (
 
 // ToolAsyncOverride 是工具级异步覆盖（mode + threshold），与 mcp-server 契约侧同形但**归
 // gateway 所有**（RB-2：gateway lib 不依赖 chonkpilot-mcp-server 包；装配方负责从其类型转换）。
-// 零值 = 该字段不覆盖（维持契约现值）；未配置的工具 = 无覆盖。`hard_timeout` 属执行硬上限
+// 未设置 = 该字段不覆盖（维持契约现值）；未配置的工具 = 无覆盖。`hard_timeout` 属执行硬上限
 // （仅 executor 消费、不透出到 tools/list），不在 gateway 面。
+//
+// `ThresholdSet` = threshold 是否**显式设置**（区分「未设置」与「0/-1 = 无上限/无阈值」，
+// 用户口径 2026-09-27）。
 type ToolAsyncOverride struct {
-	Mode      string `json:"mode"`
-	Threshold int    `json:"threshold"`
+	Mode         string `json:"mode"`
+	Threshold    int    `json:"threshold"`
+	ThresholdSet bool   `json:"-"`
 }
 
 // SandboxConfig 是 dir 节点 / self **共享的执行配置**窄接口（RB-2：依赖倒置，同 ExecSink 手法）：

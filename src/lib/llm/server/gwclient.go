@@ -22,6 +22,11 @@ type ToolDef struct {
 	Async       string         `json:"-"` // async 模式（gateway tools/list _meta.async；缺省 auto；G-17 转后台门控用）
 	Scope       string         `json:"-"` // 归属域（""=global / instance id；list 全量含 instance，toolsForLLM 按此过滤）
 	Meta        map[string]any `json:"-"` // 工具自身 _meta 原文（tools/list 透出；I-60 随 tool-call 消息落库，不发 LLM）
+	// 域工具契约 [meta]（loadDomainTools 填充；registerDomainTools 经 tools/register 透出为 gateway `_meta`）
+	Category   string `json:"-"` // 契约 meta.category（如 server）
+	AsyncTh    int    `json:"-"` // 契约 meta.async-threshold（秒；0 = 未声明）
+	Timeout    int    `json:"-"` // 契约 meta.timeout（秒；0 = 未声明）
+	TimeoutSet bool   `json:"-"` // 契约 meta.timeout 键是否**显式声明**（0/-1 = 无上限；未声明 = 不写 _meta）
 }
 
 // gwClient 封装对 gateway 的方法调用（mcp-* 相对主题；chonk. 前缀由总线 Options.Prefix 注入）。

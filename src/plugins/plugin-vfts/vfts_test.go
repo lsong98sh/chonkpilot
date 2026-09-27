@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -564,5 +565,138 @@ func TestExplicitExitUnregisters(t *testing.T) {
 	mu.Unlock()
 	if len(got) != len(queryTools) {
 		t.Fatalf("显式退出应注销 %d 个查询工具，实际 %d：%v", len(queryTools), len(got), got)
+	}
+}
+
+// ─── 索引配置与清单扫描（vfts.skip-dirs / vfts.stack-gitignore）────────────
+
+// TestSplitRules：skip-dirs 解析——按逗号/分号/换行分隔、去空白；
+// **保序且保留重复项**（gitignore 语义下顺序有意义：'!' 取反 + 后一条覆盖前一条）。
+func TestSplitRules(t *testing.T) {
+	got := splitRules("dist/, !dist/keep.txt\nlogs;  \n!logs/a,dist/")
+	want := []string{"dist/", "!dist/keep.txt", "logs", "!logs/a", "dist/"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("splitRules = %v，期望 %v", got, want)
+	}
+	if got := splitRules("  \n , ; "); got != nil {
+		t.Fatalf("全空白应无规则，实际 %v", got)
+	}
+}
+
+// TestScanFilesGitignoreSemantics：清单扫描与引擎 collectFiles 口径一致（同一 ignore 实现 + 同一规则来源）——
+// 用例与断言 `src/plugins/vfts/server/incremental_test.go:TestCollectFilesStackGitignore` 逐项对齐
+// （相同夹具 → 相同预期清单），任一侧口径漂移都会失败。
+func TestScanFilesGitignoreSemantics(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // 隔离全局 ignore
+
+	cases := []struct {
+		name  string
+		gitig string
+		stack bool
+		files []string
+	}{
+		{"stack 关：不读 .gitignore", "generated/\na.txt\n", false,
+			[]string{"a.txt", "generated/gen.txt", "keep.txt", "sub/b.txt"}},
+		{"stack 开：目录不下降 + 文件级排除", "generated/\na.txt\n", true,
+			[]string{"keep.txt", "sub/b.txt"}},
+		{"stack 开：'!' 反选", "*.txt\n!keep.txt\n", true,
+			[]string{"keep.txt"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, f := range []string{"a.txt", "keep.txt", "generated/gen.txt", "sub/b.txt"} {
+				p := filepath.Join(dir, filepath.FromSlash(f))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(c.gitig), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			scanned, err := scanFiles(dir, []string{".txt"}, nil, c.stack)
+			if err != nil {
+				t.Fatalf("scanFiles: %v", err)
+			}
+			var got []string
+			for _, e := range scanned {
+				rel := strings.TrimPrefix(filepath.ToSlash(e.path), filepath.ToSlash(filepath.Clean(dir))+"/")
+				got = append(got, rel)
+			}
+			sort.Strings(got)
+			if strings.Join(got, ",") != strings.Join(c.files, ",") {
+				t.Fatalf("清单不符：got=%v want=%v", got, c.files)
+			}
+		})
+	}
+}
+
+// newStubPrjConfigBus 冒充 persist 的 data-prj-config-load：按 key 返回预置值。
+func newStubPrjConfigBus(t *testing.T, values map[string]string) mq.Bus {
+	t.Helper()
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatalf("mq.New: %v", err)
+	}
+	onReq := func(_ context.Context, subject string, v *mq.Value) error {
+		var m struct {
+			OK    *bool  `json:"ok"` // 已带 ok = 应答消息（跳过）
+			ReqID string `json:"req_id"`
+			Data  struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(v.Payload, &m); err != nil || m.OK != nil || subject != subjectPrjConfigLoad {
+			return nil
+		}
+		go func() {
+			_ = bus.Emit(context.Background(), subject, map[string]any{
+				"req_id": m.ReqID, "ok": true, "result": map[string]any{"data": values[m.Data.ID]},
+			})
+		}()
+		return nil
+	}
+	sub, err := bus.On(subjectPrjConfigLoad, 0, onReq)
+	if err != nil {
+		t.Fatalf("subscribe %s: %v", subjectPrjConfigLoad, err)
+	}
+	t.Cleanup(func() { _ = sub.Unsubscribe(); _ = bus.Close() })
+	return bus
+}
+
+// TestReadIndexConfig：项目级索引配置读取——skip-dirs 按 gitignore 规则**原样透传**
+// （不折名、不丢 '!'/glob），stack-gitignore 透传为布尔。
+func TestReadIndexConfig(t *testing.T) {
+	const rawRules = "dist/\n!dist/keep.txt, logs"
+	p := New(Options{Exe: "dummy-not-spawned.exe"})
+	p.logf = func(string, ...any) {}
+	p.deps.Bus = newStubPrjConfigBus(t, map[string]string{
+		extsKey:           "md, txt, md",
+		skipDirsKey:       rawRules,
+		stackGitignoreKey: "true",
+	})
+	p.insts["i1"] = &instRec{workdir: "/wd"}
+	p.works["/wd"] = &workRec{workDir: "/wd", refs: 1, enabled: true}
+
+	exts, rules, stack := p.readIndexConfig("/wd")
+	if strings.Join(exts, ",") != "md,txt" {
+		t.Fatalf("exts = %v，期望 [md txt]（去重保序）", exts)
+	}
+	want := []string{"dist/", "!dist/keep.txt", "logs"}
+	if strings.Join(rules, "|") != strings.Join(want, "|") {
+		t.Fatalf("rules = %v，期望原样透传 %v", rules, want)
+	}
+	if !stack {
+		t.Fatal("stack-gitignore=true 应透传为 true")
+	}
+
+	// 缺省（键不存在）→ 空规则 + stack=false
+	p.deps.Bus = newStubPrjConfigBus(t, map[string]string{extsKey: "md"})
+	exts2, rules2, stack2 := p.readIndexConfig("/wd")
+	if exts2 == nil || rules2 == nil || len(rules2) != 0 || stack2 {
+		t.Fatalf("缺省配置应回落空切片 + stack=false，实际 exts=%v rules=%v stack=%v", exts2, rules2, stack2)
 	}
 }

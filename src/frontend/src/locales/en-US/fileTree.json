@@ -63,5 +63,6 @@
   "type_tool": "Tool",
   "type_skill": "Skill",
   "type_prompt": "Prompt",
-  "type_resource": "Resource"
+  "type_resource": "Resource",
+  "index_ignored": "Excluded: not indexed"
 }

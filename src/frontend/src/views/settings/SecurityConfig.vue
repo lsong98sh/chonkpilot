@@ -20,47 +20,31 @@
     </div>
     <p class="security-hint">{{ $t('security.not_enforced_hint') }}</p>
     <div class="table-wrap">
-      <table class="b-table-inline">
-        <thead>
-          <tr>
-            <th style="width:40px">#</th>
-            <th style="min-width:300px">{{ $t('security.trust_dir') }}</th>
-            <th style="width:80px;text-align:center">{{ $t('security.read_write') }}</th>
-            <th style="width:70px;text-align:center">{{ $t('security.operation') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="entries.length === 0">
-            <td colspan="4" class="b-table-empty">{{ $t('security.empty') }}</td>
-          </tr>
-          <tr v-for="(row, rowIndex) in entries" :key="rowIndex">
-            <td style="width:40px">{{ rowIndex + 1 }}</td>
-            <td style="min-width:300px">
-              <div class="security-dir-row">
-                <Input v-model="entries[rowIndex].dir" :placeholder="$t('security.dir_placeholder')" @change="syncDirty" />
-                <Button size="small" v-mq:[EventNames.securitySelectDir].click="{ index: rowIndex }">...</Button>
-              </div>
-            </td>
-            <td style="width:80px;text-align:center">
-              <label class="b-checkbox">
-                <input type="checkbox" v-model="entries[rowIndex].writable" @change="syncDirty" />
-              </label>
-            </td>
-            <td style="width:70px;text-align:center">
-              <Button text size="small" type="danger" v-mq:[EventNames.securityDelete].click="{ index: rowIndex }">{{ $t('security.delete') }}</Button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <Table :columns="securityColumns" :data="entries" :empty-text="$t('security.empty')" size="small">
+        <template #dir="{ index }">
+          <div class="security-dir-row">
+            <Input v-model="entries[index].dir" :placeholder="$t('security.dir_placeholder')" @change="syncDirty" />
+            <Button size="small" v-mq:[EventNames.securitySelectDir].click="{ index }">...</Button>
+          </div>
+        </template>
+        <template #writable="{ index }">
+          <label class="b-checkbox">
+            <input type="checkbox" v-model="entries[index].writable" @change="syncDirty" />
+          </label>
+        </template>
+        <template #action="{ index }">
+          <Button text size="small" type="danger" v-mq:[EventNames.securityDelete].click="{ index }">{{ $t('security.delete') }}</Button>
+        </template>
+      </Table>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
-import { Input, Button } from '../../components/ui'
+import { Input, Button, Table } from '../../components/ui'
 import { getProjectSecurity, saveProjectSecurity } from '../../api/config'
 import { useDirPicker } from '../../composables/useDirPicker'
 import { onDataRefresh } from '../../utils/dataClient'
@@ -71,6 +55,14 @@ import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
 const { t } = useI18n()
+
+// 表格列配置（信任目录表）：与既有原生表逐列一致（# / 信任目录 / 读写 / 操作）。
+const securityColumns = computed(() => [
+  { label: '#', type: 'index', width: 40 },
+  { label: t('security.trust_dir'), prop: 'dir', minWidth: 300 },
+  { label: t('security.read_write'), prop: 'writable', width: 80, align: 'center' },
+  { label: t('security.operation'), type: 'action', width: 70, align: 'center' },
+])
 
 // ⑤ dirty 可视标记（与手动保存联动：编辑/增删只改本地态 → dirty；保存成功 → 清除）
 const { dirty, markDirty, markSaved } = useUnsavedMark()
@@ -211,62 +203,36 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   color: var(--warning, #e6a23c);
   white-space: nowrap;
 }
-/* 安全策略提示（agentbox 已在执行层强制执行，见 14-安全域-agentbox） */
+/* 安全策略提示（agentbox 已在执行层强制执行，见 14-安全域-agentbox）：说明文字 12px + --fg-secondary */
 .security-hint {
   margin: 0 0 8px;
   padding: 6px 10px;
   border-radius: 4px;
   background: var(--warning-bg);
   border: 1px solid var(--warning-border);
-  color: var(--text-secondary, #6b5b1e);
-  font-size: var(--font-size-sm);
+  color: var(--fg-secondary);
+  font-size: 12px;
   flex-shrink: 0;
 }
 .table-wrap {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  /* 两轴滚动由正文承担（2026-09-27 用户口径，与工具异步页同范式）：横向滚动条贴正文区底部 */
+  overflow: auto;
 }
-.b-table-inline {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--font-size-sm);
+/* 信任目录表不再自建横向滚动容器 → 溢出交给 .table-wrap（表头吸顶保持） */
+.table-wrap :deep(.b-table-wrapper) {
+  overflow-x: visible;
 }
-.b-table-inline thead {
+/* 自研 Table：表头吸顶（原 .b-table-inline thead sticky 等价）+ 操作列点击区域 */
+.table-wrap :deep(.b-table-th) {
   position: sticky;
   top: 0;
   z-index: 1;
 }
-.b-table-inline th {
-  padding: 8px 12px;
-  font-weight: 600;
-  text-align: left;
-  white-space: nowrap;
-  border-bottom: 1px solid var(--border, #dee2e6);
-  background: var(--bg-secondary, #fff);
-  color: var(--text-secondary, #495057);
-  user-select: none;
-}
-.b-table-inline td {
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--border, #dee2e6);
-  color: var(--text-primary, #212529);
-  line-height: 1.4;
-}
-
-/* 操作列按钮：足够大的点击区域 + 留白，避免"只能点到文字" */
-.b-table-inline td .b-btn {
+.table-wrap :deep(.b-table-td .b-btn) {
   min-width: 52px;
   margin: 2px;
-}
-.b-table-inline tbody tr:hover {
-  background: var(--bg-hover, #e9ecef);
-}
-.b-table-empty {
-  text-align: center;
-  padding: 24px 12px;
-  color: var(--text-muted, #6c757d);
-  font-size: var(--font-size-sm);
 }
 .security-dir-row {
   display: flex;

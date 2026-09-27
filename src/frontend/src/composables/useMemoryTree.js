@@ -5,15 +5,13 @@
 //   - 类别启用 = prj 键 `memory.category.<类别名>`（缺省启用，与上下文管理页 `categoryEnabled` 同口径）；
 //   - 项目级条目点击 → 既有 `file-open`（`{path, temporary:true}`，走预览区 `.md` markdown 渲染）；
 //   - 「用户偏好」（唯一 user 级，落 `~/.chonkpilot/用户偏好.md`，在工作目录之外，走 `file-open`
-//     会被 filesys 越界校验拒绝）→ 改用既有 `data-memory-read` + 只读弹框；
+//     会被 filesys 越界校验拒绝）→ 既有 `preview-tab-open`（kind `memory-user-pref`）在**预览区**
+//     只读打开（页签组件 UserPrefView 自带 `data-memory-read` 取数），与项目级体验一致（不再弹窗）；
 //   - 记忆写回广播 `data-memory-refresh` → 调用方订阅后自动刷新。
-import { computed, h, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { message } from '../components/ui'
-import { dialog } from '../components/dialog'
-import MemoryViewDialog from '../components/common/MemoryViewDialog.vue'
 import { getAllConfig } from '../api/config'
-import { dataRequest } from '../utils/dataClient'
 import mq from '../utils/mq'
 import { EventNames } from '../events/event-names'
 import { useMemoryCategories } from './useMemoryCategories'
@@ -64,33 +62,15 @@ export function useMemoryTree() {
   }
 
   // openItem：点击查看 —— 项目级 → 预览区打开（`file-open`，`.md` 走 markdown 渲染）；
-  // user 级「用户偏好」（工作目录之外）→ 只读弹框（不绕过 filesys 越界校验）。
-  async function openItem(item) {
+  // user 级「用户偏好」（工作目录之外）→ 预览区只读页签（kind `memory-user-pref`，不绕过
+  // filesys 越界校验：页签组件自带 `data-memory-read`）。
+  function openItem(item) {
     if (!item || !item.category) return
     if (item.level === 'user') {
-      await openUserPref(item)
+      mq.emit(EventNames.previewTabOpen, { kind: 'memory-user-pref', title: t('projectConfig.memory_user_pref') })
       return
     }
     mq.emit(EventNames.fileOpen, { path: item.path, temporary: true })
-  }
-
-  // openUserPref：经既有 `data-memory-read` 读全文 → 只读弹框；读失败 → 可见提示且不开弹框。
-  async function openUserPref(item) {
-    let content = ''
-    try {
-      const res = await dataRequest('memory', 'read', { data: { category: item.category } })
-      const d = res && res.data ? res.data : {}
-      content = d.content || ''
-    } catch (e) {
-      message.error(loadFailedText(t, t('fileTree.mode_memory'), e))
-      return
-    }
-    dialog.show(h(MemoryViewDialog, { content }), {
-      title: item.category,
-      width: 760,
-      height: 560,
-      closable: true,
-    })
   }
 
   return { enabled, items, loading, refresh, openItem }

@@ -52,6 +52,7 @@ func usage() {
 
 其他：
   -probe <dir>     自检：对目录建索引并打印汇总后退出（非 MCP）
+  -stack-gitignore 自检：额外应用 .gitignore / .git/info/exclude / 全局 ignore（默认关）
   -match <str>     自检时附带执行自然语言匹配检索
   -query <expr>    自检时附带执行布尔/高级表达式检索
   -topk <n>        自检检索返回上限（默认 20）
@@ -65,6 +66,7 @@ func main() {
 	flag.Var(httpMode, "http", "run Streamable HTTP at [addr] (default "+defaultAddr+")")
 	stdioMode := flag.Bool("stdio", false, "run as stdio transport (spawned by MCP client)")
 	probeDir := flag.String("probe", "", "self-test: index dir and print summary")
+	stackGitignore := flag.Bool("stack-gitignore", false, "self-test: also apply .gitignore / .git/info/exclude / global ignore")
 	match := flag.String("match", "", "self-test: run a natural-language match query")
 	query := flag.String("query", "", "self-test: run a boolean/advanced expression query")
 	topK := flag.Int("topk", 20, "self-test: query result limit")
@@ -73,7 +75,7 @@ func main() {
 	defer vf.CloseAll()
 
 	if *probeDir != "" {
-		runProbe(*probeDir, *match, *query, *topK)
+		runProbe(*probeDir, *stackGitignore, *match, *query, *topK)
 		return
 	}
 	if !httpMode.set && !*stdioMode {
@@ -106,18 +108,18 @@ func main() {
 }
 
 // runProbe 自检：建索引 + 可选检索，打印真实结果（非 MCP 形态）。
-func runProbe(dir, match, query string, topK int) {
+func runProbe(dir string, stackGitignore bool, match, query string, topK int) {
 	start := time.Now()
 	w, err := vf.Open(dir)
 	if err != nil {
 		log.Fatalf("probe open: %v", err)
 	}
-	if _, err := w.Initialize(nil, nil); err != nil {
+	if _, err := w.Initialize(nil, nil, &stackGitignore); err != nil {
 		log.Fatalf("probe initialize: %v", err)
 	}
 	s := w.Status()
-	fmt.Printf("workdir: %s\nstore: %s\nfiles: %d\nchunks: %d\nstate: %s\ntokenizer: %s\nelapsedMs: %d\n",
-		w.Dir, w.Store, s.IndexedFiles, s.ChunkCount, s.State, s.Tokenizer, time.Since(start).Milliseconds())
+	fmt.Printf("workdir: %s\nstore: %s\nfiles: %d\nchunks: %d\nstate: %s\ntokenizer: %s\nstackGitignore: %v\nelapsedMs: %d\n",
+		w.Dir, w.Store, s.IndexedFiles, s.ChunkCount, s.State, s.Tokenizer, s.StackGitignore, time.Since(start).Milliseconds())
 	if match == "" && query == "" {
 		fmt.Println("tools:", vf.ToolNames())
 		return

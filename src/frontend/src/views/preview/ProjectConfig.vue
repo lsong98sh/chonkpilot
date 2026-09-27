@@ -40,8 +40,12 @@ import ConfigIOPage from '../config/SettingsConfigIOPage.vue'
 
 const { t } = useI18n()
 
-const activeTab = ref('security')
-const configRoot = ref(null)
+// 外部页签定位（可选）：`innerTab` = 目标页签名（如 'codegraph' / 'vfts'）；
+// `innerTabNonce` 每次请求递增 → 只在「新请求」时生效（无需 watch），缺省/非法 → 落默认页签。
+const props = defineProps({
+  innerTab: { type: String, default: '' },
+  innerTabNonce: { type: Number, default: 0 },
+})
 
 const tabsConfig = computed(() => [
   { label: t('projectConfig.security'), name: 'security' },
@@ -53,6 +57,26 @@ const tabsConfig = computed(() => [
   // 批 3 · ⑯：配置导入/导出 + 恢复出厂（usr 全局配置；页签追加在末位，不影响既有索引）
   { label: t('configIO.tabTitle'), name: 'configIO' },
 ])
+
+const configRoot = ref(null)
+
+// 激活页签 = 用户点击选择（selection）与外部请求（有效 innerTab + 新 nonce）合流：
+// get 优先返回未消费的外部请求，否则返回用户选择；set（点击页签）落 selection 并消费当前 nonce。
+const TAB_NAMES = computed(() => tabsConfig.value.map(x => x.name))
+const selection = ref('')
+const appliedNonce = ref(0)
+const activeTab = computed({
+  get() {
+    if (props.innerTabNonce > appliedNonce.value && TAB_NAMES.value.includes(props.innerTab)) {
+      return props.innerTab
+    }
+    return selection.value
+  },
+  set(name) {
+    selection.value = name
+    appliedNonce.value = props.innerTabNonce
+  },
+})
 </script>
 
 <style scoped>
@@ -67,7 +91,8 @@ const tabsConfig = computed(() => [
 }
 .project-config-panel .cfg-tabs :deep(.b-tabs-body) {
   padding: 0.5em 16px 0;
-  max-height: 680px;
+  /* 头部页签固定 + 正文区 flex:1/overflow:auto/min-height:0（由 Tabs 内建 flex 撑满，
+     此处仅让正文可滚；不再写死 max-height） */
   overflow-y: auto;
 }
 .project-config-panel :deep(.b-input),
@@ -75,7 +100,6 @@ const tabsConfig = computed(() => [
 .project-config-panel :deep(.b-select__native),
 .project-config-panel :deep(.b-btn),
 .project-config-panel :deep(.b-tag),
-.project-config-panel :deep(.b-table-inline),
 .project-config-panel :deep(.b-checkbox) {
   font-size: 13px;
 }

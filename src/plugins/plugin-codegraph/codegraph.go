@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ignore "github.com/chonkpilot/chonkpilot-ignore"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
@@ -44,11 +45,13 @@ const (
 	toolCallSubject = "codegraph-tool-call"
 
 	// prj-config 键
-	enableKey   = "enable-codegraph"    // "true"/"false"（UI 开关）
-	extsKey     = "codegraph.exts"      // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
-	skipDirsKey = "codegraph.skip-dirs" // 额外排除目录名（逗号/换行分隔；空 = 引擎默认集）
-	actionKey   = "codegraph.action"    // 动作信号键：值 = rebuild|clear|retry（UI 按钮写入一次 → 插件执行）
-	statusKey   = "codegraph.status"    // 引擎状态 JSON 文本（插件回写，UI 只读回显）
+	engineName        = "codegraph"                 // 引擎标识（配置键前缀 = 引擎名；ignore.ConfigOptions 用）
+	enableKey         = "enable-codegraph"          // "true"/"false"（UI 开关）
+	extsKey           = "codegraph.exts"            // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
+	skipDirsKey       = "codegraph.skip-dirs"       // 用户排除规则（gitignore 语法，逗号/换行分隔；空 = 无用户规则）
+	stackGitignoreKey = "codegraph.stack-gitignore" // "true"/"false"：是否让引擎叠加各级 .gitignore / info/exclude / 全局 ignore
+	actionKey         = "codegraph.action"          // 动作信号键：值 = rebuild|clear|retry（UI 按钮写入一次 → 插件执行）
+	statusKey         = "codegraph.status"          // 引擎状态 JSON 文本（插件回写，UI 只读回显）
 
 	// codegraph.action 取值（前端按钮 → 一次 prj-config 变更信号；复用既有
 	// data-prj-config-refresh 面 = 零新增消息主题）
@@ -142,11 +145,13 @@ type workRec struct {
 	busy  bool   // 后台 configure/initialize 流程进行中（同 workdir 串行）
 	state string // 最近一次 codegraph_status 原始 JSON 文本（= codegraph.status 同源）
 
-	// 索引配置比较基线（由 p.mu 保护）：最近一次已知的 codegraph.exts / skip-dirs 原始值。
-	// 保存幂等依据——新旧值相同（重复保存同一份配置）不排重建；cfgSeen 标记基线是否已建立
-	// （首次读 prj-config 时播种，此后只由 refresh 处理更新，避免覆盖用户刚保存的值）。
+	// 索引配置比较基线（由 p.mu 保护）：最近一次已知的 codegraph.exts / skip-dirs /
+	// stack-gitignore 原始值。保存幂等依据——新旧值相同（重复保存同一份配置）不排重建；
+	// cfgSeen 标记基线是否已建立（首次读 prj-config 时播种，此后只由 refresh 处理更新，
+	// 避免覆盖用户刚保存的值）。
 	cfgExts     string
 	cfgSkipDirs string
+	cfgStack    string
 	cfgSeen     bool
 }
 
@@ -470,11 +475,12 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 			}
 		}
 		p.syncTools()
-	case extsKey, skipDirsKey:
-		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts 变更必须重建才生效）。
+	case extsKey, skipDirsKey, stackGitignoreKey:
+		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts/skip-dirs/stack-gitignore 变更
+		// 均须重建才生效）。
 		// 保存幂等：新旧值相同（重复保存同一份配置）→ 不排重建；显式删键 = 回落引擎
 		// 默认集 = 生效配置变化 → 重建。
-		// 经去抖合并：一次保存（同一次操作写 exts + skip-dirs 两键 = 两次 refresh）只重建一轮。
+		// 经去抖合并：一次保存（同一次操作写多键 = 多次 refresh）只重建一轮。
 		newRaw := ""
 		if ev.List != nil {
 			if raw, ok := ev.List[ev.ID]; ok {
@@ -492,15 +498,21 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 				continue
 			}
 			old := r.cfgExts
-			if ev.ID == skipDirsKey {
+			switch ev.ID {
+			case skipDirsKey:
 				old = r.cfgSkipDirs
+			case stackGitignoreKey:
+				old = r.cfgStack
 			}
 			if !deleted && old == newRaw {
 				continue // 值未变 → 幂等，不重建
 			}
-			if ev.ID == skipDirsKey {
+			switch ev.ID {
+			case skipDirsKey:
 				r.cfgSkipDirs = newRaw
-			} else {
+			case stackGitignoreKey:
+				r.cfgStack = newRaw
+			default:
 				r.cfgExts = newRaw
 			}
 			affected = append(affected, wd)
@@ -591,8 +603,8 @@ func (p *Codegraph) maybeEnsure(wd string) {
 	}
 }
 
-// ensureWorkspace 后台：configure(enabled:true, exts, skip_dirs) → status（先前已 ready 且
-// 非强制则跳过全量重建）→ 未就绪/强制则 initialize → status 回写 codegraph.status。
+// ensureWorkspace 后台：configure(enabled:true, exts, skip_dirs, stack_gitignore) → status
+// （先前已 ready 且非强制则跳过全量重建）→ 未就绪/强制则 initialize → status 回写 codegraph.status。
 // 持有该 workdir 的 cmu 串行；force=true 用于索引配置变更后的重建。
 func (p *Codegraph) ensureWorkspace(wd string, force bool) {
 	p.mu.Lock()
@@ -608,12 +620,12 @@ func (p *Codegraph) ensureWorkspace(wd string, force bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), initTimeout)
 	defer cancel()
 
-	// 0) 读取项目级索引配置（扩展名/排除目录）；未配置 → 下发空数组 = 引擎默认集
-	exts, dirs := p.readIndexConfig(wd)
-	// 1) configure：enabled/exts/skip_dirs 存档到引擎工作区（可见性门控在插件，引擎仅记录）
+	// 0) 读取项目级索引配置（扩展名 / 用户排除规则 / 是否叠加 gitignore）；未配置 → 下发空数组 = 引擎默认集
+	exts, rules, stack := p.readIndexConfig(wd)
+	// 1) configure：enabled/exts/skip_dirs/stack_gitignore 存档到引擎工作区（可见性门控在插件，引擎仅记录）
 	p.pushStatusPhase(r, phaseConfigure, 0, 0) // 进度推送：进入 configure
 	if _, err := p.callWithRetry(ctx, "codegraph_configure", map[string]any{
-		"workdir": wd, "enabled": true, "exts": exts, "skip_dirs": dirs,
+		"workdir": wd, "enabled": true, "exts": exts, "skip_dirs": rules, "stack_gitignore": stack,
 	}); err != nil {
 		p.saveStatusErr(r, "configure", err)
 		return
@@ -631,7 +643,7 @@ func (p *Codegraph) ensureWorkspace(wd string, force bool) {
 	p.pushStatusPhase(r, phaseIndex, 0, 0) // 进度推送：进入全量索引
 	stopPoll := p.startProgressPoll(r)
 	_, ierr := p.callWithRetry(ctx, "codegraph_initialize", map[string]any{
-		"workdir": wd, "exts": exts, "skip_dirs": dirs,
+		"workdir": wd, "exts": exts, "skip_dirs": rules, "stack_gitignore": stack,
 	})
 	stopPoll()
 	if ierr != nil {
@@ -725,39 +737,57 @@ func (p *Codegraph) instanceForWorkdir(wd string) string {
 	return inst
 }
 
-// readIndexConfig 读取项目级索引配置：codegraph.exts / codegraph.skip-dirs。
+// readIndexConfig 读取项目级索引配置：codegraph.exts / codegraph.skip-dirs /
+// codegraph.stack-gitignore。
 // 读取失败/未配置 → 返回空切片（下发空数组 = 引擎默认集，不写第二套默认）。
-// 首次读取时播种「比较基线」（cfgExts/cfgSkipDirs）= 本次下发/生效的原始值，
+// skip-dirs / stack-gitignore 的解析统一由 github.com/chonkpilot/chonkpilot-ignore 提供
+// （ignore.ConfigOptions = 规则拆分 + 叠加开关；匹配语义在引擎侧单点实现，本插件不读 .gitignore）。
+// 首次读取时播种「比较基线」（cfgExts/cfgSkipDirs/cfgStack）= 本次下发/生效的原始值，
 // 使「重复保存同一份配置」不触发重建；此后基线只由 onPrjConfigRefresh 更新。
-func (p *Codegraph) readIndexConfig(wd string) (exts, skipDirs []string) {
+func (p *Codegraph) readIndexConfig(wd string) (exts, rules []string, stack bool) {
 	inst := p.instanceForWorkdir(wd)
 	if inst == "" {
-		return []string{}, []string{}
+		return []string{}, []string{}, false
 	}
-	rawExts, rawDirs := "", ""
+	rawExts, rawDirs, rawStack := "", "", ""
 	if v, err := prjConfigReadKey(p.deps.Bus, inst, extsKey); err == nil {
 		rawExts = v
 		exts = splitList(v)
 	}
-	if v, err := prjConfigReadKey(p.deps.Bus, inst, skipDirsKey); err == nil {
-		rawDirs = v
-		skipDirs = splitList(v)
+	// 取值器顺带记录 skip-dirs / stack-gitignore 的原始值（供幂等比较基线播种）；
+	// 规则拆分与叠加开关语义由 ignore.ConfigOptions 单点提供。
+	get := func(key string) (string, bool) {
+		v, err := prjConfigReadKey(p.deps.Bus, inst, key)
+		if err != nil {
+			return "", false
+		}
+		switch key {
+		case skipDirsKey:
+			rawDirs = v
+		case stackGitignoreKey:
+			rawStack = v
+		}
+		return v, true
+	}
+	if opts, _, err := ignore.ConfigOptions(engineName, get, wd); err == nil && opts != nil {
+		rules = opts.UserRules
+		stack = opts.StackGitignore
 	}
 	if exts == nil {
 		exts = []string{}
 	}
-	if skipDirs == nil {
-		skipDirs = []string{}
+	if rules == nil {
+		rules = []string{}
 	}
 	p.mu.Lock()
 	if r := p.works[wd]; r != nil && !r.cfgSeen {
-		r.cfgExts, r.cfgSkipDirs, r.cfgSeen = rawExts, rawDirs, true
+		r.cfgExts, r.cfgSkipDirs, r.cfgStack, r.cfgSeen = rawExts, rawDirs, rawStack, true
 	}
 	p.mu.Unlock()
-	return exts, skipDirs
+	return exts, rules, stack
 }
 
-// splitList 解析项目级列表配置：按逗号/分号/换行分隔，去空去重。
+// splitList 解析项目级列表配置（扩展名）：按逗号/分号/换行分隔，去空去重。
 func splitList(s string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -773,6 +803,27 @@ func splitList(s string) []string {
 	}
 	return out
 }
+
+// splitRules 解析项目级排除规则（skip-dirs）：按逗号/分号/换行分隔，去空。
+// **保序且保留重复项**——gitignore 语义下顺序有意义（'!' 取反 + 后一条覆盖前一条）。
+func splitRules(s string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	}) {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+// ─── 匹配语义落点 ────────────────────────────────────────
+//
+// .gitignore / 全局 ignore / .git/info/exclude 的读取与匹配全在**引擎侧**（引擎才知道遍历
+// 上下文与逐级目录），由 github.com/chonkpilot/chonkpilot-ignore 单一实现：
+// 本插件只把 codegraph.skip-dirs（用户规则）与 codegraph.stack-gitignore（叠加开关）原样下发。
 
 // clientFor 返回该 workdir 的引擎子进程客户端（每 workdir 一独立子进程，首调懒建；
 // 常驻复用，空闲由 sweepIdleClient 按 workdir 回收）。

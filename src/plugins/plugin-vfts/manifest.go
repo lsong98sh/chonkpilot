@@ -25,6 +25,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	ignore "github.com/chonkpilot/chonkpilot-ignore"
 )
 
 // data 面（文件清单，persist 订阅；域 filelist）。
@@ -174,15 +176,10 @@ func diffManifest(scanned map[string]scanEntry, prior map[string]fileRec, hashFn
 	return d
 }
 
-// defaultSkipDirs 与引擎 server.defaultSkipDirs 对齐（插件扫描须与引擎同口径）。
-func defaultSkipDirs() []string {
-	return []string{".git", ".svn", ".hg", "node_modules", "__pycache__",
-		".venv", "venv", ".trae", ".chonkpilot", "dist", "build",
-		".next", ".nuxt", "out", "target", "vendor"}
-}
-
-// scanFiles 扫描候选文件（按 ext 集与跳过目录），key = keyOf(绝对路径)。
-func scanFiles(workDir string, exts, skipDirs []string) (map[string]scanEntry, error) {
+// scanFiles 扫描候选文件（按 ext 集与排除规则），key = keyOf(绝对路径)。
+// 排除走 ignore.WalkDir（与引擎 collectFiles 同一实现 + 同一规则来源），
+// 目录命中忽略即不下降、文件命中即跳过（gitignore 语义）。
+func scanFiles(workDir string, exts, rules []string, stackGitignore bool) (map[string]scanEntry, error) {
 	extSet := map[string]bool{}
 	for _, e := range exts {
 		e = strings.ToLower(strings.TrimSpace(e))
@@ -194,25 +191,11 @@ func scanFiles(workDir string, exts, skipDirs []string) (map[string]scanEntry, e
 		}
 		extSet[e] = true
 	}
-	skip := map[string]bool{}
-	for _, d := range defaultSkipDirs() {
-		skip[d] = true
-	}
-	for _, d := range skipDirs {
-		if d != "" {
-			skip[d] = true
-		}
-	}
 	out := map[string]scanEntry{}
 	root := filepath.Clean(filepath.FromSlash(workDir))
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if p != root && skip[d.Name()] {
-				return filepath.SkipDir
-			}
+	opts := ignore.Options{StackGitignore: stackGitignore, UserRules: rules}
+	err := ignore.WalkDir(root, opts, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		if !extSet[strings.ToLower(filepath.Ext(d.Name()))] {
@@ -279,12 +262,12 @@ func (p *Vfts) fileListDel(inst string, keys []string) error {
 
 // incrementalSync 增量同步该 workdir：扫描 → 读清单 → diff → 引擎增量 → 回写清单。
 // 须持 r.cmu。
-func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, skipDirs []string) (*syncStats, error) {
+func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []string, stackGitignore bool) (*syncStats, error) {
 	inst := p.instanceForWorkdir(r.workDir)
 	if inst == "" {
 		return nil, errors.New("无活跃实例，无法读写 file_list")
 	}
-	scanned, err := scanFiles(r.workDir, exts, skipDirs)
+	scanned, err := scanFiles(r.workDir, exts, rules, stackGitignore)
 	if err != nil {
 		return nil, err
 	}
@@ -374,12 +357,12 @@ func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, skipDirs [
 
 // rebuildManifest 全量重建后重建清单：引擎应答的 indexed 已含 doc_ids；
 // 本插件补 size/mtime/md5，并清掉本次未覆盖的旧行。须持 r.cmu。
-func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, skipDirs []string) error {
+func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []string, stackGitignore bool) error {
 	inst := p.instanceForWorkdir(r.workDir)
 	if inst == "" {
 		return errors.New("无活跃实例，无法读写 file_list")
 	}
-	scanned, err := scanFiles(r.workDir, exts, skipDirs)
+	scanned, err := scanFiles(r.workDir, exts, rules, stackGitignore)
 	if err != nil {
 		return err
 	}

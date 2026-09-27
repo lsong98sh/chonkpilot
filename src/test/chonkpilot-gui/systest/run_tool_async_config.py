@@ -22,6 +22,7 @@
   D 恢复默认：「恢复默认」→ 待保存 → 点【保存】删该工具键项（最后一项删除后整键删除，不留空对象）
   E 效果断言（**依赖并行后端的 `tool_async` 落地**）：保存后 `tools-list` 的 `_meta.async` 随配置变化
   F 展示口径（D2）：列表名剥前缀仅展示，`data-tool` / `:title` 保留完整暴露名
+  G 无上限口径（2026-09-27）：`hard_timeout` 输入 **0 / -1** = 无上限 → 合法、显示保留、落库保留
 
 前置（本脚本自起，结束自动回收；见 harness.py）：
   `dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
@@ -246,6 +247,7 @@ return [...R.querySelectorAll('.tool-name[data-tool]')].map(nm=>{
     thr: !!thr,
     dash: !!dash,
     timeout: !!to,
+    hard: to?to.value:'',
     timeoutDisabled: to?!!to.disabled:false,
     na: !!na,
     restoreDisabled: rst?!!rst.disabled:null,
@@ -553,6 +555,30 @@ def case_f_prefix_display():
     print("      展示口径实证据：%d 个 self_ 前缀工具已剥前缀显示，:title 均为完整暴露名" % checked)
 
 
+def case_g_unlimited_values():
+    """G 无上限口径（2026-09-27）：`hard_timeout` 输入 **0 / -1** = 无上限 → 合法、显示保留、落库保留
+    （不再归一为空；usr 值分别为 0 / -1）。"""
+    require_page()
+    require_backend()
+    with _h.user_config_guard(c, [CFG_KEY]):
+        reset_key()
+        open_page()
+        tool = pick_tool()
+        if row_of(tool)["timeoutDisabled"]:
+            raise Pending("选中工具为 dir 节点（hard_timeout 禁用）→ 无输入可测")
+        for v in (0, -1):
+            set_number(tool, ".cell-timeout input.b-input", v)
+            # 显示值保留（未被归一为空）
+            if str(row_of(tool)["hard"]) != str(v):
+                raise TestError("hard_timeout=%s 显示被归一（应保留）：%r" % (v, row_of(tool)["hard"]))
+            if not unsaved_mark():
+                raise TestError("改 hard_timeout=%s 后应显示「未保存」" % v)
+            click_save()
+            got = poll(lambda: (user_map().get(tool) or {}).get("hard_timeout"))
+            if got != v:
+                raise TestError("hard_timeout=%s 未按无上限落库：usr=%r" % (v, user_map()))
+
+
 CASES = [
     ("A 入口与分组渲染（分组 + 四档文案/aria + 表头 ? 说明 + 干净态保存禁用）", case_a_entry_and_groups),
     ("B 默认信息移至「恢复默认」tooltip（行内无 badge/contract）", case_b_contract_moved_to_tooltip),
@@ -560,6 +586,7 @@ CASES = [
     ("D 恢复默认 → 保存后删键项（最后一项 → 整键删除）", case_d_restore_default),
     ("E 效果：tools-list 的 _meta.async 随配置变化（后端生效面）", case_e_effect_meta_follows_config),
     ("F 展示口径（D2）：列表名剥前缀仅展示，data-tool/:title 保留完整暴露名", case_f_prefix_display),
+    ("G 无上限口径：hard_timeout 输入 0 / -1 合法、显示与落库均保留", case_g_unlimited_values),
 ]
 
 

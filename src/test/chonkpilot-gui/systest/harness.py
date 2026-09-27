@@ -248,6 +248,22 @@ def wait_idle(client, max_wait=30.0, fast=0.4, probes=2, interval=0.2):
     return False
 
 
+def ensure_task_panel_open(client, timeout=DEFAULT_PROBE_TIMEOUT):
+    """确保任务面板已展开（2026-09-27「首屏减负」后 `MainLayout.vue taskOpen` 默认 false）。
+
+    断言任务区 DOM 的套件（`.session-tree-node` / `.session-chat` / `.node-awaiting` 等）须先展开：
+    经**既有** `tasks-toggle` 事件（等价用户点顶部「任务」开关）→ 等 `.session-chat` 挂载。
+    幂等：已展开直接返回 True；超时返回 False（由调用方决定是否判红）。
+    """
+    try:
+        if bool(_plain(client.eval("!!document.querySelector('.session-chat')"))):
+            return True
+    except Exception:
+        pass
+    client.eval("window.mq.emit('tasks-toggle', {}); 'ok'")
+    return wait_probe(client, ["!!document.querySelector('.session-chat')"], timeout=timeout)
+
+
 # ── 会话历史加载「已完成」观测（`data-session-history` 应答）────────────
 #
 # 必要性（2026-09-23，[42 §2 (148)]）：`MessageList.onSessionChanged` → `loadMessages`

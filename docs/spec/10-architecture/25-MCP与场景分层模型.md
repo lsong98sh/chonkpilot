@@ -61,7 +61,7 @@ chat 面：prompt                                     ← 用户在输入框选�
 >
 > 依据 = self 节点 `entry` **无 `HotTools`**，`isHot` 不会自动补 → `registerMetaTools` 必须**显式**置 `_meta.hot=true`（否则 LLM 连工具发现入口都拿不到）。**本规格须写明"两者都要"**，防后人只改 `HotTools`、漏掉 meta。
 >
-> **① 的下游 `HotTools` UI（2026-09-26）**：`EditMCPDialog`「运行信息」页签「高频工具」行【设置】按钮 → `SetMCPHotToolsDialog.vue` 按别名列出该 server 工具勾选；写库为**契约原名**列表（`"*"` = 全部 hot），**零新增消息面**（数据源 = 既有 `tools-list`）。
+> **① 的下游 `HotTools` UI（2026-09-27 改造）**：`EditMCPDialog` 独立「**工具**」页签 —— 点【**加载工具**】按别名列出该 server 工具并逐项勾选；写库为**契约原名**列表（`"*"` = 全部 hot），**零新增消息面**（数据源 = 既有 `tools-list`）。原「运行信息」页签的「高频工具」行与独立弹窗 `SetMCPHotToolsDialog.vue` 均已摘除。
 
 ### 4.2 「通用模式」（无场景）工具面
 

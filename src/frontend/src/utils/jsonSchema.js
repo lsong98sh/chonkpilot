@@ -344,6 +344,37 @@ export function removeEnumValue(root, path, index) {
   })
 }
 
+// toEnumNumber 枚举文本 → 数字：**number** 节点接受十进制数值（含小数，不支持 1e3/0x10 等非 JSON 写法）、
+// **integer** 节点仅接受整数；不可转换 → 原样字符串（不静默改变用户输入）。
+const INT_TEXT_RE = /^-?\d+$/
+const NUM_TEXT_RE = /^-?\d+(\.\d+)?$/
+function toEnumNumber(s, type) {
+  if (type === 'integer') return INT_TEXT_RE.test(s) ? parseInt(s, 10) : s
+  return NUM_TEXT_RE.test(s) ? Number(s) : s
+}
+
+// setEnumValues 批量写回 enum（枚举弹框的行编辑）：过滤空白项、按首次出现去重（与 addEnumValue 同口径），
+// 保持输入顺序；**number / integer 节点**：可转数字的输入写回**数字**（弹框输入均为文本，此处做数字转换），
+// 不可转换者保持字符串；**type 缺失或其它类型**：一律字符串原文（2026-09-27 用户口径：做数字转换，
+// 但前端 chip 不显示值 —— 值一律走 Tooltip）。
+export function setEnumValues(root, path, values) {
+  return updateNode(root, path, (n) => {
+    const numeric = n.type === 'number' || n.type === 'integer'
+    const list = []
+    for (const raw of (Array.isArray(values) ? values : [])) {
+      const s = String(raw === undefined || raw === null ? '' : raw).trim()
+      if (s === '') continue
+      const val = numeric ? toEnumNumber(s, n.type) : s
+      if (list.indexOf(val) >= 0) continue
+      list.push(val)
+    }
+    const out = { ...n }
+    if (list.length > 0) out.enum = list
+    else delete out.enum
+    return out
+  })
+}
+
 // defaultKeywordValue 关键字补全时的默认值（点选建议即写入该值，随后可就地调整）。
 export function defaultKeywordValue(keyword, type) {
   switch (keyword) {
@@ -376,6 +407,27 @@ export function removeKeyword(root, path, keyword) {
     delete out[keyword]
     return out
   })
+}
+
+// setKeywordValue 就地设置/更新节点上的关键字值（关键字 chip 点击设值）。
+export function setKeywordValue(root, path, keyword, value) {
+  return updateNode(root, path, (n) => ({ ...n, [keyword]: value }))
+}
+
+// keywordTooltipText 关键字 chip 的 tooltip 文本（chip 上仅显示关键字名，值一律悬停可见）：
+//   enum → 各枚举值每行一个（`\n` 连接，配合 Tooltip 的 pre-wrap 保留换行）；
+//   其余关键字 → 值原文（字符串原样 / 数字·布尔 String / 对象 JSON）；
+//   未设置或空串 → ''（由调用方给「（空）」占位，避免空白 tip）。
+export function keywordTooltipText(node, keyword) {
+  const n = isPlainObject(node) ? node : {}
+  if (keyword === 'enum') {
+    const list = Array.isArray(n.enum) ? n.enum : []
+    return list.map(v => (v === undefined || v === null ? '' : String(v))).join('\n')
+  }
+  const raw = n[keyword]
+  if (raw === undefined || raw === null) return ''
+  if (typeof raw === 'object') return JSON.stringify(raw)
+  return String(raw)
 }
 
 // schemaRows 展平为树形行模型（控件渲染用）：根行 + 每个属性/数组项一行（含深度）。

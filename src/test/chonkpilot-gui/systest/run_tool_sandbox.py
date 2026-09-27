@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """L4：工具沙箱配置页（usr 键 `tool_sandbox`，**executor 级**）—— 三行渲染 / 只读工具清单 /
-手动保存（无改动禁用）/ 恢复未设置 / 第三方·http·sse 边界说明。
+手动保存（无改动禁用）/ 重置 / 第三方·http·sse 边界说明。
 
 需求（用户口径，2026-09-26）：沙箱不是工具级、而是 **self 的 executor 级** —— 三个执行器
 （core / desktop / browser，= 契约 `_meta.category`）各一个开关，管制该执行器下全部工具；
@@ -18,7 +18,7 @@
   C 无改动时保存禁用：干净初始态 → 保存按钮 disabled 且无「未保存」标记
   D 拨动 → 「未保存」标记出现 + 保存按钮可用 → 点保存 → `data-user-config-load` 回读
     `tool_sandbox` = `{"core":true}`（executor 级形态；不含任何工具名键）
-  E 「恢复未设置」→ 待保存态 → 保存 → 键项/整键被删除（回落不隔离）
+  E 「重置」→ 待保存态 → 保存 → 键项/整键被删除（回落不隔离）
   F 第三方 / http·sse 边界说明存在（.exec-note 文案含「第三方」+「http」）
 
 前置（本脚本自起，结束自动回收；见 harness.py）：
@@ -240,10 +240,10 @@ if(sw.classList.contains('is-disabled'))return 'disabled';sw.click();return 'ok'
 def click_restore(cat):
     r = ev(panel_js("""
 const it=[...R.querySelectorAll('.exec-row')].find(x=>x.getAttribute('data-exec')===%s);
-if(!it)return 'no-row';const b=[...it.querySelectorAll('button.b-btn')].find(x=>x.textContent.includes('恢复未设置'));
+if(!it)return 'no-row';const b=[...it.querySelectorAll('button.b-btn')].find(x=>x.textContent.includes('重置'));
 if(!b)return 'no-btn';if(b.disabled)return 'disabled';b.click();return 'ok';""" % json.dumps(cat)))
     if r != "ok":
-        raise TestError("点击「恢复未设置」失败 cat=%s → %r" % (cat, r))
+        raise TestError("点击「重置」失败 cat=%s → %r" % (cat, r))
     time.sleep(0.5)
 
 
@@ -340,7 +340,7 @@ def case_d_toggle_then_save():
 
 
 def case_e_restore_unset():
-    """E 恢复未设置 → 待保存态 → 保存 → 键项/整键删除（回落不隔离）。"""
+    """E 重置 → 待保存态 → 保存 → 键项/整键删除（回落不隔离）。"""
     require_page()
     with _h.user_config_guard(c, [CFG_KEY]):
         reset_key()
@@ -349,15 +349,15 @@ def case_e_restore_unset():
         click_save()
         if not poll(lambda: user_map().get("core") is True):
             raise TestError("前置失败：core 未落库：%r" % user_map())
-        # 恢复未设置 → 待保存态（不立即落库）
+        # 重置 → 待保存态（不立即落库）
         click_restore("core")
         if not unsaved_mark():
-            raise TestError("恢复未设置后应进入待保存态（显示「未保存」）")
+            raise TestError("重置后应进入待保存态（显示「未保存」）")
         if user_map().get("core") is not True:
-            raise TestError("恢复未设置不应立即落库（仍应保留 core=true）：%r" % user_map())
+            raise TestError("重置不应立即落库（仍应保留 core=true）：%r" % user_map())
         click_save()
         if not poll(lambda: CFG_KEY not in ucfg()):
-            raise TestError("恢复未设置保存后应删整键（usr 仍存 %s=%r）" % (CFG_KEY, ucfg().get(CFG_KEY)))
+            raise TestError("重置保存后应删整键（usr 仍存 %s=%r）" % (CFG_KEY, ucfg().get(CFG_KEY)))
 
 
 def case_f_boundary_hint():
@@ -370,7 +370,7 @@ const n=R.querySelector('.exec-note');return n?{text:n.innerText,hasBtn:!!n.quer
         raise TestError("缺第三方 / http·sse 边界说明（.exec-note）")
     txt = note["text"]
     if "第三方" not in txt or "http" not in txt:
-        raise TestError("边界说明须含「第三方」与 http/sse 不可隔离说明：%r" % txt)
+        raise TestError("边界说明须含「第三方」与 http/sse 不可施加沙箱说明：%r" % txt)
     if not note["hasBtn"]:
         raise TestError("边界说明须给跳转 MCP 配置的入口")
 
@@ -380,7 +380,7 @@ CASES = [
     ("B 只读工具清单（= tools-list 类别工具；剥前缀展示 + title 完整暴露名）", case_b_readonly_tool_lists),
     ("C 无改动时保存禁用（不做 change 就保存）", case_c_save_disabled_when_clean),
     ("D 拨动 → 未保存标记 + 保存 → 回读 executor 级 {\"core\":true}", case_d_toggle_then_save),
-    ("E 恢复未设置 → 待保存态 → 保存 → 删键/整键删除", case_e_restore_unset),
+    ("E 重置 → 待保存态 → 保存 → 删键/整键删除", case_e_restore_unset),
     ("F 第三方 / http·sse 边界说明 + 跳转 MCP 入口", case_f_boundary_hint),
 ]
 

@@ -11,6 +11,8 @@
       改由「恢复默认」按钮的 tooltip 承载。
     - **去「高级」按钮**：`hard_timeout`（执行硬上限）常显为表格「超时」列；dir 节点行该列禁用 +
       标「不适用」。
+    - **超时/阈值取值口径（2026-09-27）**：未设置（留空）= 回落全局/契约默认；**0 / -1 = 无上限**
+      （永远等待，用户可取消）；正数 = 该秒数为硬上限。
     - 模式 / 阈值 / 超时三列表头各带 `?` + Tooltip 说明。
 
   读写面（**零新增 MQ 主题**）：
@@ -83,7 +85,10 @@
             </div>
           </template>
 
-          <!-- 执行硬上限 hard_timeout：常显（原「高级」折叠已去掉） -->
+          <!-- 执行硬上限 hard_timeout：常显（原「高级」折叠已去掉）。
+               占位符「回落全局」= 该工具**未设置**执行硬上限（契约未声明 `_meta.timeout`），
+               执行侧回落全局默认（CallTimeout / timeout_sec）。
+               显示 `0` / `-1` = 该工具**显式无上限**（永远等待，用户可取消）。 -->
           <template #timeout="{ row }">
             <div class="cell-timeout">
               <Input
@@ -178,9 +183,18 @@ const columns = computed(() => [
 ])
 
 // 契约现值：tools-list 每项 `_meta`（25-mcp-server § 透出 hot/category/async/async-threshold/timeout）
+// 键缺失/空/非数字 → ''（未设置，回落）；数字（含 **0 / -1 = 无上限**）→ 数值。
 function metaNum(v) {
+  if (v === undefined || v === null || v === '') return ''
   const n = Number(v)
-  return Number.isFinite(n) && n > 0 ? n : ''
+  return Number.isFinite(n) ? n : ''
+}
+
+// 「阈值 / 硬上限」合法输入：正数 = 秒数；0 / -1 = **无上限**（永远等待，用户可取消）；其余 → 非法。
+function isLimitValue(v) {
+  if (v === undefined || v === null || String(v).trim() === '') return false
+  const n = Number(v)
+  return Number.isFinite(n) && (n >= 0 || n === -1)
 }
 
 function isThresholdMode(row) {
@@ -223,17 +237,17 @@ function sameAsContract(row, e) {
   return e.hard_timeout === undefined
 }
 
-// 行 → usr 键项（阈值仅 auto/manual 计入；dir 节点不写 hard_timeout）
+// 行 → usr 键项（阈值仅 auto/manual 计入；dir 节点不写 hard_timeout）。
+// 数值：正数 / 0 / -1 均为合法（0/-1 = 无上限），落库保留原值。
 function buildEntry(row) {
   const e = { mode: row.mode }
   if (isThresholdMode(row)) {
     const n = Number(row.threshold)
-    e.threshold = Number.isFinite(n) && n > 0 ? n : defaultThreshold(row)
+    e.threshold = isLimitValue(row.threshold) ? n : defaultThreshold(row)
   }
   // I-109：dir 节点工具的 hard_timeout 不生效 → 不写库（避免「配了不生效」的误导）
   if (!row.dirNode && row.hardTimeout !== '' && row.hardTimeout !== null) {
-    const h = Number(row.hardTimeout)
-    if (Number.isFinite(h) && h > 0) e.hard_timeout = h
+    if (isLimitValue(row.hardTimeout)) e.hard_timeout = Number(row.hardTimeout)
   }
   return e
 }
@@ -380,13 +394,12 @@ function onNumberInput(row, field, v) {
 }
 
 // 数值失焦：① 非法/空（threshold）→ 显示值回落（savedMap / 契约现值）；
-// ② hard_timeout 清空 = 不设硬上限（继承契约）；③ 合法 → 同步待保存态。
+// ② hard_timeout 清空 = 未设置硬上限（回落全局）；③ 合法（含 **0 / -1 = 无上限**）→ 同步待保存态。
 function onNumberBlur(row, field) {
   // I-109：dir 节点工具的 hard_timeout 不适用（输入已禁用，此处兜底）
   if (field === 'hard_timeout' && row.dirNode === true) return
   const raw = field === 'threshold' ? row.threshold : row.hardTimeout
-  const n = Number(raw)
-  const legal = raw !== '' && raw !== null && Number.isFinite(n) && n > 0
+  const legal = isLimitValue(raw)
   const emptyHard = field === 'hard_timeout' && (raw === '' || raw === null)
   if (!legal && !emptyHard) {
     const u = savedMap.value[row.name]
@@ -424,11 +437,17 @@ onMounted(reload)
 .page-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  /* 两轴滚动都由页面自身承担（2026-09-27 用户口径）：滚动条始终贴在 **preview 区**边缘 ——
+     纵向滚内容；需要横向时在**底部**即出现横向滚动条，而不是滚到表格底部才见到它。 */
+  overflow: auto;
   padding: 8px 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+/* 表格不再自建横向滚动容器（否则其滚动条贴表格底边、要滚到底才可见）→ 交给 .page-body */
+.page-body :deep(.b-table-wrapper) {
+  overflow-x: visible;
 }
 .tool-toolbar {
   display: flex;
@@ -437,7 +456,7 @@ onMounted(reload)
 }
 .hint {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   flex: 1;
 }
 .unsaved-mark {
@@ -454,9 +473,11 @@ onMounted(reload)
   border: 1px solid var(--border);
   border-radius: var(--border-radius);
   padding: 6px 10px 10px;
+  /* 卡片随表格内容变宽（否则表格会戳出卡片边框）→ 溢出部分由 .page-body 横向滚动 */
+  min-width: max-content;
 }
 .group-title {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-secondary);
   padding: 4px 0 8px;
@@ -481,6 +502,8 @@ onMounted(reload)
 .tool-desc {
   font-size: 11px;
   color: var(--text-muted);
+  /* 工具内容介绍：**按 200px 宽度截断**（不是 200 个字），2026-09-27 用户口径 */
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

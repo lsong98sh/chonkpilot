@@ -16,13 +16,15 @@ import (
 )
 
 func TestQueryToolDefinitions(t *testing.T) {
-	if len(queryTools) != 6 {
-		t.Fatalf("expected 6 query tools, got %d", len(queryTools))
+	if len(queryTools) != 8 {
+		t.Fatalf("expected 8 query tools, got %d", len(queryTools))
 	}
 
 	expectedNames := map[string]bool{
 		"codegraph_symbol_search":        true,
 		"codegraph_get_symbol_info":      true,
+		"codegraph_callers":              true,
+		"codegraph_callees":              true,
 		"codegraph_get_dependency_graph": true,
 		"codegraph_find_circular_deps":   true,
 		"codegraph_analyze_complexity":   true,
@@ -948,5 +950,90 @@ func TestMultiWorkdirIndexAndQueryIsolation(t *testing.T) {
 	}
 	if lastArgsA["workdir"] != wdA || lastArgsA["query"] != "AlphaOnly" {
 		t.Fatalf("查询参数应注入 workdir=%s 且保留 query，实际 %v", wdA, lastArgsA)
+	}
+}
+
+// ─── 索引配置（codegraph.skip-dirs / codegraph.stack-gitignore）────────────
+
+// TestSplitRules：skip-dirs 解析——按逗号/分号/换行分隔、去空白；
+// **保序且保留重复项**（gitignore 语义下顺序有意义：'!' 取反 + 后一条覆盖前一条）。
+func TestSplitRules(t *testing.T) {
+	got := splitRules("dist/, !dist/keep.txt\nlogs;  \n!logs/a,dist/")
+	want := []string{"dist/", "!dist/keep.txt", "logs", "!logs/a", "dist/"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("splitRules = %v，期望 %v", got, want)
+	}
+	if got := splitRules("  \n , ; "); got != nil {
+		t.Fatalf("全空白应无规则，实际 %v", got)
+	}
+}
+
+// newStubPersistBusValues 冒充 persist 的 data-prj-config-load：按 key 返回预置值。
+func newStubPersistBusValues(t *testing.T, values map[string]string) mq.Bus {
+	t.Helper()
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatalf("mq.New: %v", err)
+	}
+	onReq := func(_ context.Context, subject string, v *mq.Value) error {
+		var m struct {
+			OK    *bool  `json:"ok"` // 已带 ok = 应答消息（跳过）
+			ReqID string `json:"req_id"`
+			Data  struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(v.Payload, &m); err != nil || m.OK != nil || subject != subjectPrjConfigLoad {
+			return nil
+		}
+		go func() {
+			_ = bus.Emit(context.Background(), subject, map[string]any{
+				"req_id": m.ReqID, "ok": true, "result": map[string]any{"data": values[m.Data.ID]},
+			})
+		}()
+		return nil
+	}
+	sub, err := bus.On(subjectPrjConfigLoad, 0, onReq)
+	if err != nil {
+		t.Fatalf("subscribe %s: %v", subjectPrjConfigLoad, err)
+	}
+	t.Cleanup(func() { _ = sub.Unsubscribe(); _ = bus.Close() })
+	return bus
+}
+
+// TestReadIndexConfig：项目级索引配置读取——skip-dirs 按 gitignore 规则**原样透传**
+// （不折名、不丢 '!'/glob），stack-gitignore 透传为布尔，并播种幂等比较基线。
+func TestReadIndexConfig(t *testing.T) {
+	const rawRules = "dist/\n!dist/keep.txt, logs"
+	p := New(Options{Exe: "dummy-not-spawned.exe"})
+	p.logf = func(string, ...any) {}
+	p.deps.Bus = newStubPersistBusValues(t, map[string]string{
+		extsKey:           "go, js, go",
+		skipDirsKey:       rawRules,
+		stackGitignoreKey: "true",
+	})
+	p.insts["i1"] = &instRec{workdir: "/wd"}
+	p.works["/wd"] = &workRec{workDir: "/wd", refs: 1, enabled: true}
+
+	exts, rules, stack := p.readIndexConfig("/wd")
+	if strings.Join(exts, ",") != "go,js" {
+		t.Fatalf("exts = %v，期望 [go js]（去重保序）", exts)
+	}
+	want := []string{"dist/", "!dist/keep.txt", "logs"}
+	if strings.Join(rules, "|") != strings.Join(want, "|") {
+		t.Fatalf("rules = %v，期望原样透传 %v", rules, want)
+	}
+	if !stack {
+		t.Fatal("stack-gitignore=true 应透传为 true")
+	}
+	if r := p.works["/wd"]; !r.cfgSeen || r.cfgExts != "go, js, go" || r.cfgSkipDirs != rawRules || r.cfgStack != "true" {
+		t.Fatalf("比较基线播种错误：%+v", r)
+	}
+
+	// 缺省（键不存在）→ 空规则 + stack=false
+	p.deps.Bus = newStubPersistBusValues(t, map[string]string{extsKey: "go"})
+	exts2, rules2, stack2 := p.readIndexConfig("/wd")
+	if exts2 == nil || rules2 == nil || len(rules2) != 0 || stack2 {
+		t.Fatalf("缺省配置应回落空切片 + stack=false，实际 exts=%v rules=%v stack=%v", exts2, rules2, stack2)
 	}
 }

@@ -412,6 +412,10 @@ async function cancelEdit() {
 
 function onKeyDown(e) {
   if (editingPath.value) return
+  // 焦点在可输入元素内（input / textarea / contenteditable）→ 不接管按键（F2 改名同理）
+  const el = document.activeElement
+  const tag = el?.tagName?.toLowerCase()
+  if (tag === 'input' || tag === 'textarea' || (el && el.isContentEditable)) return
   if (!selectedKey.value) return
   const sel = findNode(treeData.value, selectedKey.value)
   if (!sel) return

@@ -1,6 +1,6 @@
 # 29 · codegraph（代码语义索引）
 
-> 日期：2026-09-10 ｜ 状态：✅ 与代码一致（引擎已实现；插件多 workdir 已落地，工具面差异注册留待 v2，见 §9）
+> 日期：2026-09-10（2026-09-27 更新：调用图 caller/callee） ｜ 状态：✅ 与代码一致（引擎已实现；插件多 workdir 已落地，工具面差异注册留待 v2，见 §9）
 > 关联：[28-plugins](28-plugins.md) · [12-数据层](../10-architecture/12-数据层.md)
 > 代码目录（D-28：`src/codegraph/` → `src/plugins/codegraph/`、`src/plugin-codegraph/` → `src/plugins/plugin-codegraph/`）：`src/plugins/codegraph/`（引擎 exe）· `src/plugins/plugin-codegraph/`（宿主插件）
 
@@ -9,7 +9,7 @@
 ## 1. 职责与边界
 
 - **一句话**：进程内 **tree-sitter** 索引的**独立 console mcp-server**（引擎）+ server 内嵌插件（按 workdir 管理引擎子进程并向 gateway 注册查询工具）。
-- **做**：多语言符号/依赖/复杂度抽取、索引持久化与增量自愈、6 个查询工具 + 3 个管理工具。
+- **做**：多语言符号/依赖/复杂度/**调用图（caller/callee）**抽取、索引持久化与增量自愈、8 个查询工具 + 3 个管理工具。
 - **不做**：不落 chonkpilot.db（索引独立目录）；管理工具不发 LLM（hot=false）；引擎侧不做可见性门控（门控在插件）。
 
 ---
@@ -29,15 +29,17 @@
 
 ## 3. 对外接口
 
-### 3.1 工具清单（9 = 3 管理 + 6 查询）
+### 3.1 工具清单（11 = 3 管理 + 8 查询）
 
 | 工具 | hot | 说明 |
 |------|:---:|------|
-| `codegraph_configure` | ✗ | 配置 workdir：`enabled` / `skip_dirs`（引擎仅记录，门控在插件） |
+| `codegraph_configure` | ✗ | 配置 workdir：`enabled` / `exts` / `skip_dirs`（用户排除规则，gitignore 语法）/ `stack_gitignore`（是否叠加 gitignore 体系，引擎仅记录，门控在插件）；`mode=clear` 清索引产物 |
 | `codegraph_initialize` | ✗ | 全量建索引（同步，落盘 `<workDir>/.chonkpilot/codegraph/`） |
 | `codegraph_status` | ✗ | 状态：`disabled/未初始化/indexing/ready/error` + 进度 + 规模 |
 | `codegraph_symbol_search` | ✓ | 符号搜索（name 子串/前缀，kind/file 过滤，limit） |
 | `codegraph_get_symbol_info` | ✓ | 单符号详情（id 或 file+name）：kind/行号/复杂度/签名 |
+| `codegraph_callers` | ✓ | **谁调用了它**：按被调名（`name` 或 `id` 定位目标；`file` 过滤调用方）返回调用方符号（含其 `calls`） |
+| `codegraph_callees` | ✓ | **它调用了谁**：按 `id` 或 `file+name` 定位符号，返回其直接调用目标（含 `resolved` 与回填的 file/line） |
 | `codegraph_get_dependency_graph` | ✓ | 文件级依赖（原始 import 串） |
 | `codegraph_find_circular_deps` | ✓ | 循环依赖（DFS 找环） |
 | `codegraph_analyze_complexity` | ✓ | 圈复杂度 topN（决策点启发式） |
@@ -45,6 +47,7 @@
 
 - 查询工具必填 `workdir`；`readyGate` 未就绪 → 结构化应答（`pending/indexing/error/not_initialized`，**不算协议错误**）。
 - 注册到 gateway 时（插件侧）去掉 `workdir`（由 `context.instance_id` 注入），`handler_subject=codegraph-tool-call`，hot=true，category=codegraph。
+- **调用图语义与限制（重要，工具 description 同步声明）**：`calls` 存的是**调用点文本的最后一段名**（如 `a.b.Foo()` → `Foo`、`fmt.Println` → `Println`、`new Widget()` → `Widget`、`println!` → `println`），查询匹配 = 忽略大小写的**全等** 或 **后缀 `.name`**（故 `pkg.Foo` 与 `Foo` 视为同一目标）。这是**名字级启发式**：**无类型解析、无重载/接收者区分、无跨包唯一性判定**——`Callees` 的 `resolved=true` 仅表示该名在索引内**唯一命中**一个符号，非真实绑定；`Callers` 同理（同名不同定义会一并列出）。仅覆盖**已索引文件**内的**直接**调用；动态派发（`a["x"]()`、反射、`eval`）与未索引符号不参与。
 
 ### 3.2 支持语言（7）
 
@@ -57,27 +60,62 @@
 ### 4.1 索引（`server/index.go`）
 
 ```text
-Configure(enabled, skip_dirs)   # 引擎仅记录/存档
+Configure(enabled, exts, skip_dirs, stack_gitignore)   # 引擎仅记录/存档
 Initialize：
-  标 indexing → collectSourceFiles（WalkDir + 跳目录 + LangForExt + maxFileBytes=8MB）
+  标 indexing → collectSourceFiles（ignore.WalkDir：gitignore 语义排除 + LangForExt + maxFileBytes=8MB）
   → newIndex 逐文件 parseEntry → 每 100 个落一次 meta 进度
   → 标 ready + LastIndexedAt → SaveIndex + saveMeta
 Reconcile：基线快检（数量 + mtime/size）→ 差异增删改 → 落盘（未初始化 → ErrNotInitialized）
 EnsureReady：单飞，返回 ready/indexing/not_initialized/error
 ```
 
-- `defaultSkipDirs`：`.git/.svn/.hg/node_modules/__pycache__/.venv/venv/.trae/.chonkpilot/dist/build/.next/.nuxt/out/target/vendor`。
+**排除语义（2026-09-27 升级为完整 gitignore 语义，`server/index.go:excludeOptions` + `collectSourceFiles`）**：
+遍历走共享包 `github.com/chonkpilot/chonkpilot-ignore` 的 `ignore.WalkDir`（与 vfts 引擎、vfts 插件清单扫描**同一实现**），
+规则来源与优先级（低 → 高，最后一条匹配者决定，`!` = 取消忽略）：
+
+```text
+内置强制排除（.git/ .svn/ .hg/ .chonkpilot/，不可被任何 '!' 反选）
+→ 默认排除（node_modules/ __pycache__/ .venv/ venv/ .trae/ dist/ build/ .next/ .nuxt/ out/ target/ vendor/，可被 '!' 反选）
+→ 全局 ignore（$XDG_CONFIG_HOME/git/ignore 或 ~/.config/git/ignore；不解析 core.excludesFile）
+→ <workdir>/.git/info/exclude
+→ 各级 .gitignore（目录越深优先级越高，同目录内行序在后覆盖在前）
+→ 用户输入（skip_dirs，最高优先级，等价 git 命令行 --exclude）
+```
+
+- `stack_gitignore=false` → **只应用「内置强制 + 默认排除 + 用户输入」**，不读任何 `.gitignore`/exclude/全局 ignore。
+- 目录被忽略 = **不下降**（`SkipDir`；父目录命中忽略规则时其子级 `!` 规则无法救回）；文件命中即跳过（在扩展名判定**之前**）→ 支持**文件级排除**（旧版按目录名匹配做不到）。
+- 规则语法：`#` 注释（`\#` 转义）· `!` 取反（`\!` 转义）· 尾 `/` 仅目录 · 含 `/` 或首 `/` = 相对规则所在目录锚定，否则匹配任意层级同名条目 · `*`/`?` 不跨 `/` · `**`（前导/中间/尾随）· `[...]` 字符类 · `\` 转义 · 行尾空格忽略（`\ ` 保留）。
+- 已知与 git 的差异：不查 git 索引（已跟踪文件同样受规则约束）；不解析 `core.excludesFile`；不要求 workdir 是 git 仓库（勾选即生效）。
+- 测试：规则族 `src/lib/ignore/ignore_test.go`；引擎集成 `TestCollectSourceFilesStackGitignore`。
 
 ### 4.2 解析（`server/extract.go`）
 
 tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nameKinds` · `decisionKinds`（复杂度分支节点）· `importKinds`（导入）→ 收集 symbols/imports/复杂度/签名。
 
-### 4.3 持久化（`server/graph.go`）
+**调用边提取（`callKinds` + `callsWithin`，2026-09-27）**：
+
+| 语言 | 调用节点（实测 grammar 版本） | 被调名字段 |
+|------|------------------------------|-----------|
+| go | `call_expression` | `function` |
+| javascript / typescript / tsx | `call_expression` · `new_expression` | `function` / `constructor` |
+| python | `call` | `function` |
+| rust | `call_expression` · `macro_invocation` | `function` / `macro` |
+| java | `method_invocation` · `object_creation_expression` | `name` / `type` |
+
+- **收集范围**：以函数/方法/构造器定义节点为根遍历子树（仅 `func/method/constructor` 带 `calls`；class/type/interface 等不收集）。
+- **剪枝**：子树内遇到定义节点（`defKinds`）或匿名函数作用域（`nestedScopeKinds`：go `func_literal`；js/ts/tsx `function_expression`/`arrow_function`/`generator_function`；python `lambda`；rust `closure_expression`；java `lambda_expression`）即不进入——**内层函数/闭包的调用不计入外层符号**。
+- **取名**：取被调子树「最后一段」——成员/选择/作用域表达式递归其最后一段字段（go `selector_expression.field`、js/ts `member_expression.property`、python `attribute.attribute`、rust `field_expression.field`/`scoped_identifier.name`、java `field_access.field`/`scoped_type_identifier`）；java 泛型 `new Base<Args>()` 剥离 `type_arguments` 取 `Base`；go 泛型实例化 `Foo[T](a,b)` 取 `index_expression.operand`（→ `Foo`）；括号表达式下钻；**无法静态取名**者丢弃——go `fns[0]()`（下标为字面量）、js/py `a["x"]()`（`subscript_expression`）。去重 + 字典序稳定排序。
+- **限制**：纯 AST 文本口径，**无类型/重载/接收者解析**（见 §3.1）。另：Go 泛型实例化的**单参形式**（`Foo[T](x)`）在本 grammar 下被解析为 `type_conversion_expression`（类型转换）→ 不产生调用边；`m[key]()`（下标为非字面量）会按 `operand` 记为 `m`（假阳性，罕见）。
+
+### 4.3 持久化与调用图数据结构（`server/graph.go`）
 
 - 目录：`<workDir>/.chonkpilot/codegraph/`，文件 `meta.json`（`enabled/state/progressDone/progressTotal/err/lastIndexedAt/skipDirs`）+ `index.json`。
 - `SaveIndex`：按 Path 排序 → 临时文件 + **rename 原子落盘**。
 - Store 用**相对 `/` 路径**，对外拼绝对。
 - `symbolID = file:line:name:kind`；`wsReg` 进程内复用同一 workdir 的 Workspace。
+- **`Symbol.Calls []string`（`json:"calls,omitempty"`）**：该符号内的直接被调名（最后一段，去重排序）；随 `index.json` 自动往返（磁盘只存 `Files []*FileInfo`，`Index` 的 `syms/byName/byCall` 在 `AddFile` 重建）。
+- **`Index.byCall map[string][]int`**（小写被调名 → 调用方符号下标）：`Calls` 的**反向索引**，`AddFile` 维护、`RemoveFile` 重建，供 `Callers` 免全表扫描。
+- **查询**（`server/graph.go`）：`Callers(target, file, limit) []Symbol`（按名匹配：忽略大小写全等 或 后缀 `.name`；`file` 过滤调用方文件；结果含 `calls`）；`Callees(id, file, name, limit) []CalleeRef`（`CalleeRef{name, resolved, kind, file, line, id}`；按 `id` 或 `file+name` 定位首个符号，逐个 `Calls` 经 `byName` 解析——**唯一命中**才回填 file/line/kind/id 且 `resolved=true`）。
 
 ### 4.4 依赖解析（`server/path.go`）
 
@@ -90,7 +128,8 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 **索引编排（进度 / 重试 / 空闲回收，T-11/T-18，2026-09-13 后）**：
 
 - **进度推送（T-11，复用既有 `codegraph.status` 面，零新增主题）**：插件在 `configure` / `initialize` 前经 `pushStatusPhase` 写 `codegraph.status`（JSON `{state:"indexing", phase, progressDone, progressTotal}`，`phase=configure|index|…`）；索引期间 `startProgressPoll` 每 **500ms** 轮询引擎落盘 `<workDir>/.chonkpilot/codegraph/meta.json` 的 `done/total`，变化即回写（收口写 `ready`/`error`，失败原因写 `message`/`err`）。UI 只读回显该 key（**补 `phase` / `error.message` / 进度**）。
-- **保存幂等 + 去抖（2026-09-15）**：索引配置（`codegraph.exts` / `codegraph.skip-dirs`）变更 → 经 `rebuildDebouncer`（一次保存写两键 = 两次 `data-prj-config-refresh`，短窗口合并为**一轮**强制重建；`readIndexConfig` 建基线，**新旧值相同（重复保存同一份配置）不排重建**）。前端 `CodegraphConfig.vue` 保存时两键一起写、`origExts/origSkipDirs` 为幂等基线。
+- **保存幂等 + 去抖（2026-09-15；2026-09-27 扩至 stack-gitignore）**：索引配置（`codegraph.exts` / `codegraph.skip-dirs` / `codegraph.stack-gitignore`）变更 → 经 `rebuildDebouncer`（一次保存写多键 = 多次 `data-prj-config-refresh`，短窗口合并为**一轮**强制重建；`readIndexConfig` 建基线 `cfgExts/cfgSkipDirs/cfgStack`，**新旧值相同（重复保存同一份配置）不排重建**）。前端 `CodegraphConfig.vue` 保存时三键一起写、`origExts/origSkipDirs/origStackGitignore` 为幂等基线。
+- **叠加 gitignore 体系（2026-09-27；同日由「目录名折名」升级为完整 gitignore 语义）**：插件把 `codegraph.skip-dirs`（用户规则，`splitRules` 保序且保留重复项）与 `codegraph.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源与优先级、匹配语义、与 git 的已知差异见 §4.1（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`，与 vfts 引擎/插件**同一实现**）。
 - **失败重试（T-11）**：`configure` / `initialize` 经 `callWithRetry` 失败重试，参数取 `Options.RetryAttempts`（**缺省 2，含首次**）/ `Options.RetryBackoff`（**缺省 2s**）；≤0 回落缺省。
 - **空闲回收（T-18，按 workdir 独立，2026-09-15 后）**：`childIdleTimeout=5min` 已接线 —— `loop` 每 `sweepInterval=15s` 调 `sweepIdleClient`：逐 workdir 判定，**该 workdir 无活跃实例**（`refs==0`）且距其 `lastUsed` ≥ 5min → `close()` **该 workdir 的**引擎子进程（下次调用 `clientFor(workdir)` 懒重建）；仍活跃的 workdir 在清扫中刷新其 `lastUsed`（某 workdir 被回收不影响其它 workdir 的子进程）。（原「`close()` 共享引擎子进程 / `sharedClient` 懒重建」表述随 T-12 作废。）
 - **「重建索引」入口（2026-09-15）**：设置页 `CodegraphConfig.vue` 顶部按钮（开关关闭时禁用）—— 经**既有 `data-prj-config` 面**让索引配置产生一次变更（删 `codegraph.exts` 键 + 非空则立即回写原值）→ 插件据此**强制全量重建**（零新增消息主题；插件侧对同一次操作的去抖合并只重建一轮）。
@@ -102,8 +141,8 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 | 数据 | 位置 |
 |------|------|
-| 索引（`Index{Files, syms, byName}` + `Meta`） | `<workDir>/.chonkpilot/codegraph/{index.json, meta.json}` |
-| 启用开关 `enable-codegraph` / 索引配置 `codegraph.exts`·`codegraph.skip-dirs` | **prj 库** config（团队共享；插件读写） |
+| 索引（`Index{Files, syms, byName, byCall}` + `Meta`；`Symbol.Calls` 调用图） | `<workDir>/.chonkpilot/codegraph/{index.json, meta.json}` |
+| 启用开关 `enable-codegraph` / 索引配置 `codegraph.exts`·`codegraph.skip-dirs`·`codegraph.stack-gitignore` | **prj 库** config（团队共享；插件读写） |
 | 状态 `codegraph.status` | **prjusr 库** config（个人运行态；插件回写、UI 只读回显。**2026-09-15 订正：原记「prj 库」有误**） |
 
 ---
@@ -139,6 +178,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 ## 9. 现状与待办
 
+- ✅ **调用图（caller/callee）已落地（2026-09-27）**：新增 `codegraph_callers` / `codegraph_callees` 两个 hot 查询工具（引擎 11 工具 = 3 管理 + 8 查询；插件 gateway 同步注册 8 个）；`Symbol.Calls` + `Index.byCall` 反向索引；7 语言 AST 调用提取（口径与限制见 §3.1/§4.2）。**已知限制**：名字级启发式（无类型/重载/接收者解析、不区分跨包同名）、仅直接调用、动态派发与未索引符号不参与。
 - ✅ **多 workdir（T-12 / P2-4 / D-11，2026-09-15 后已落地）**：引擎子进程与索引状态**已按 workdir 独立**（`p.clients[workdir]` 每 workdir 一个子进程，独立索引内存/独立串行；空闲按 workdir 独立回收）——`codegraph.status` 键结构与 JSON 字段**未变**（写到该 workdir 实例的 prjusr 库）；**工具面/工具名/schema 未变**（LLM 不感知 workdir，靠 `context.instance_id → workdir` 路由）。**工具面差异注册（按 workdir 区分工具名/可见性）留待 v2**（gateway `tools/register` 无 scope，且契约要求工具名 = 引擎名 → 同名只能一份注册，多 workdir 同时启用时仍全局一份、归属排序后第一个 workdir）。
 - ⚠️ 引擎侧 `Configure` 的 `enabled` 仅记录，**真正门控在插件**（文档需以此为准）。
 - ✅ **索引进度 + 失败重试已落地（T-11，2026-09-13 后）**：进度经**既有** `codegraph.status` 面回写 `phase`/`progressDone`/`progressTotal`（**无新主题**，轮询引擎 `meta.json`）；`configure`/`initialize` 失败按 `RetryAttempts`/`RetryBackoff`（缺省 2 / 2s）重试。详见 §4.5。
@@ -150,7 +190,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 ## 10. 关联测试
 
-- 引擎：`src/plugins/codegraph/server/server_test.go`（46 个测试：path / Index / Workspace 持久化 / 查询 / 语言 / 扫描-初始化-自愈 / 参数助手与 readyGate）。
+- 引擎：`src/plugins/codegraph/server/server_test.go`（52 个测试：path / Index / Workspace 持久化 / 查询 / 语言 / 扫描-初始化-自愈 / 参数助手与 readyGate / **调用图**）。
 - 插件：`src/plugins/plugin-codegraph/codegraph_test.go`（工具定义 / schema / exe 路径解析）。
 
 ### 单元测试计划（本节由原测试计划整体迁入，2026-09-11）
@@ -163,10 +203,11 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 | 2 符号索引（`graph.go` Index） | `TestNewIndex` `TestIndexAddFile` `TestIndexRemoveFile` `TestIndexAllSymbols` `TestIndexAddRemoveMultiple` | 初始化、加文件+符号（byName 搜）、删文件、返回副本、多文件交叉增删 |
 | 3 工作区持久化（`graph.go` Workspace） | `TestStoreDir` `TestOpen` `TestOpenReuse` `TestSaveLoadMeta` `TestSaveLoadIndex` `TestConfigure` | 目录构造、创建/打开、同 workdir 返回同一实例、meta/索引持久化与恢复、enabled/skipDirs 存档 |
 | 4 查询操作 | `TestSearchSymbol` `TestFindSymbol` `TestTopComplexity` `TestModuleSummary` `TestImports` `TestFindCycles` `TestFindCyclesNoCycle` | 按 name/kind/file 搜与排序/limit、按 id 或 file+name 定位、圈复杂度 topN+minCc、摘要统计、文件级依赖、环检测（含/无/多环） |
-| 5 索引生命周期（`index.go`） | `TestLangForExt` `TestSupportedLangs` `TestCollectSourceFiles` `TestInitialize` `TestReconcileNoChange` `TestReconcileNewFile` `TestReconcileModifiedFile` `TestReconcileDeletedFile` `TestEnsureReady` `TestInitializeWithSkipDirs` | 扩展名→语言（7 种）、支持列表、文件扫描（skipDirs）、全量建索引、reconcile 无变/新增/修改/删除、ready 门控、带 skipDirs 初始化 |
+| 5 索引生命周期（`index.go`） | `TestLangForExt` `TestSupportedLangs` `TestCollectSourceFiles` `TestCollectSourceFilesSkipDirs` **`TestCollectSourceFilesStackGitignore`** `TestInitialize` `TestReconcileNoChange` `TestReconcileNewFile` `TestReconcileModifiedFile` `TestReconcileDeletedFile` `TestEnsureReady` `TestInitializeWithSkipDirs` | 扩展名→语言（7 种）、支持列表、文件扫描（默认排除 / 用户规则 / **gitignore 语义：stack 关不读 .gitignore、目录不下降 + 文件级排除、`!` 反选**）、全量建索引、reconcile 无变/新增/修改/删除、ready 门控、带 skipDirs 初始化 |
 | 6 工具辅助函数（`server.go`） | `TestGetString` `TestGetInt` `TestGetBoolPtr` `TestGetStrings` `TestNeedWS` `TestReadyGate` | 参数提取（含默认值/布尔指针/字符串数组）、工作区打开、就绪门控 |
+| 7 调用图（`extract.go` `callKinds`/`callsWithin` + `graph.go` `Callers`/`Callees` + `server.go` 新工具） | `TestCallGraphExtraction`（+`persist round-trip`）· `TestCallers` · `TestCallees` · `TestCallGraphTools` | **7 语言真实语料**的调用提取（普通/方法/选择表达式最后一段/跨文件/`new`/宏/泛型剥离/内层函数剪枝）与 `Calls` 落盘往返；查询（精确名/大小写/`pkg.Foo`↔`Foo`/file 过滤/limit/未命中/无索引/调用方自带 calls）；`Callees`（id 或 file+name 定位/唯一解析回填/歧义 `resolved=false`/limit/未找到）；工具层（正常/未就绪/参数缺失/未命中 + `TextToolNames` 自检） |
 
-**插件测试**：`src/plugins/plugin-codegraph/codegraph_test.go`（不依赖 MQ）：`TestQueryToolDefinitions`（6 个查询工具名称/描述/schema 不含 workdir）· `TestSchemaJSON` · `TestToolReply` · `TestStrval`（string/bool/nil 归一）· `TestResolveExe`（模拟 dist 布局，验证 exe 搜索优先级）· **编排白盒（T-11/T-18）**：`TestRunWithRetry`（重试/退避）· `TestIdleReclaimDue`（空闲回收判定）· `TestPhaseStatusJSON`（进度快照 `{state,phase,progressDone,progressTotal}`）· `TestReadEngineProgress` / `TestPollEngineProgressSequence`（读/轮询引擎 `meta.json`）· **多 workdir（T-12/P2-4，2026-09-15 后）**：`TestMultiWorkdirIndexAndQueryIsolation`（两 workdir 各自 `files:3`/`files:7` 互不覆盖、状态各写各的 prj 库、查询不串台）· `TestClientForPerWorkdirIdentity`（同 workdir 复用、异 workdir 各自独立 client）· `TestSweepIdleClientPerWorkdir`（空闲回收按 workdir 独立判定/回收）。
+**插件测试**：`src/plugins/plugin-codegraph/codegraph_test.go`（不依赖 MQ）：`TestQueryToolDefinitions`（8 个查询工具名称/描述/schema 不含 workdir）· `TestSchemaJSON` · `TestToolReply` · `TestStrval`（string/bool/nil 归一）· `TestResolveExe`（模拟 dist 布局，验证 exe 搜索优先级）· **索引配置（2026-09-27）**：`TestSplitRules`（规则保序且保留重复项）· `TestReadIndexConfig`（`skip_dirs` 原样透传 + `stack_gitignore` 透传 + 幂等基线播种）· **编排白盒（T-11/T-18）**：`TestRunWithRetry`（重试/退避）· `TestIdleReclaimDue`（空闲回收判定）· `TestPhaseStatusJSON`（进度快照 `{state,phase,progressDone,progressTotal}`）· `TestReadEngineProgress` / `TestPollEngineProgressSequence`（读/轮询引擎 `meta.json`）· **多 workdir（T-12/P2-4，2026-09-15 后）**：`TestMultiWorkdirIndexAndQueryIsolation`（两 workdir 各自 `files:3`/`files:7` 互不覆盖、状态各写各的 prj 库、查询不串台）· `TestClientForPerWorkdirIdentity`（同 workdir 复用、异 workdir 各自独立 client）· `TestSweepIdleClientPerWorkdir`（空闲回收按 workdir 独立判定/回收）。
 
 **测试数据**：分组 5 需真实源码——`t.TempDir()` 建 `testproj/`（`main.go` 含 `func main`/`type Config`、`utils/helper.go` 含 `func Helper`/`type Result`、`go.mod`）。
 

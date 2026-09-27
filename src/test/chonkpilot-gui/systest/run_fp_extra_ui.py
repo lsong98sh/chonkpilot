@@ -4,12 +4,12 @@
 覆盖：
   T1  L315 任务不存在提示（.td-empty）
   T3  L137 取消/撤回后待发内容写回输入框（含附件 → chip 回显）
-  T4  L222 项目配置-总结提示词「恢复默认」（原「通用能力/提示词」页签已按 CFG-009 摘除 → 迁移）
+  T4  L222 项目配置-总结提示词「重置」（原「通用能力/提示词」页签已按 CFG-009 摘除 → 迁移）
   T5  L232 索引状态实时更新（CodeGraph 页签 + data-prj-config-refresh 订阅）
   T6a L257 场景智能体基本信息字段（名称/角色/LLM/描述/委托条件）
   T6b L259 场景智能体工具过滤（按来源分组勾选）
   T6c L260 复制子智能体
-  T7  L258 场景智能体提示词【优化】按钮状态（当前为桩提示，记录行为）
+  T7  L258 场景智能体提示词【优化】按钮：已接入既有优化链路（非桩，不再提示「尚未实现」）
 
 前置：chonkpilot.exe --test-port=2345 已启动（GUI 恒启 inprocess server）。
 
@@ -161,7 +161,7 @@ def case_queue_restore():
     time.sleep(0.3)
 
 
-# ── T4 总结提示词「恢复默认」（L222；原「通用能力-提示词」页签已按 spec CFG-009 摘除） ──
+# ── T4 总结提示词「重置」（L222；原「通用能力-提示词」页签已按 spec CFG-009 摘除） ──
 
 def open_project_cfg_panel():
     c.mq_emit("project-config-open")
@@ -216,12 +216,12 @@ def _close_text_dialogs():
 
 
 def case_prompt_reset():
-    """L222 提示词「恢复默认」（迁移后 = 上下文管理页「总结提示词」）。
+    """L222 提示词「重置」（迁移后 = 上下文管理页「总结提示词」）。
 
     依据 spec CFG-009 (D2)：项目配置「通用能力（工具提示词）」UI 已摘除，项目配置提示词仅余
     摘要提示词（CFG-008，位于「上下文管理」页）。**2026-09-26：只读展示已移除** → 内容改在
     **编辑弹框**（TextEditDialog）内查看。本用例断言：「编辑」按钮 → 弹框内容非空（自动加载）
-    →「恢复默认」（取消项目覆盖）按钮存在 → 点击后再次打开弹框内容仍非空 → 无控制台错误。
+    →「重置」（取消项目覆盖）按钮存在 → 点击后再次打开弹框内容仍非空 → 无控制台错误。
     """
     open_project_cfg_panel()
     if switch_cfg_tab(r"^(上下文管理|上下文|Context)$") != "ok":
@@ -240,32 +240,32 @@ def case_prompt_reset():
     })()""")) or ""
     if not before.strip():
         raise TestError("总结提示词未自动加载（内容为空）")
-    # 收起弹框（「恢复默认」在面板内，避免遮挡）
+    # 收起弹框（「重置」在面板内，避免遮挡）
     _close_text_dialogs()
     if not wait_el(".project-config-panel .b-btn"):
         raise TestError("提示词工具栏按钮未渲染")
-    r = click_btn_in(".project-config-panel", "恢复默认|reset|还原|recover")
+    r = click_btn_in(".project-config-panel", "重置|reset|还原|recover")
     if r != "ok":
-        raise TestError("未找到恢复默认按钮")
+        raise TestError("未找到重置按钮")
     time.sleep(1.0)
-    # 恢复默认后：再次打开弹框，内容仍非空（回落到继承值）
+    # 重置后：再次打开弹框，内容仍非空（回落到继承值）
     if _open_summary_editor() != "ok":
-        raise TestError("恢复默认后总结提示词「编辑」按钮丢失")
+        raise TestError("重置后总结提示词「编辑」按钮丢失")
     if not wait_el(".text-edit-body"):
-        raise TestError("恢复默认后编辑弹框未打开")
+        raise TestError("重置后编辑弹框未打开")
     after = _loads_deep(c.eval("""(() => {
       const ts = [...document.querySelectorAll('.text-edit-body textarea')];
       const t = ts[ts.length - 1];
       return t ? (t.value || '') : '';
     })()""")) or ""
     if not after.strip():
-        raise TestError("恢复默认后提示词内容为空")
+        raise TestError("重置后提示词内容为空")
     _close_text_dialogs()
-    # 恢复默认链路无异常（内容仍在 + 无控制台错误）
+    # 重置链路无异常（内容仍在 + 无控制台错误）
     console = c.console(True)
     for e in console.get("entries", []):
         if e.get("level") in ("error",) and "prompt" in (e.get("text") or "").lower():
-            raise TestError(f"恢复默认出现控制台错误: {e.get('text')}")
+            raise TestError(f"重置出现控制台错误: {e.get('text')}")
     return True
 
 
@@ -294,7 +294,7 @@ def case_codeindex_refresh():
     return True
 
 
-# ── T6 场景编辑弹窗：智能体字段/工具过滤/复制/优化桩 ──
+# ── T6 场景编辑弹窗：智能体字段/工具过滤/复制/优化接线 ──
 
 def open_scenario_edit():
     # 可写级别场景（app 级出厂场景只读、无编辑入口 → 自建 user 级场景承载编辑流程）
@@ -438,8 +438,13 @@ def case_agent_tools_filter():
     return True
 
 
-def case_agent_optimize_stub():
-    """L258 场景智能体【优化】按钮：当前为桩（提示尚未实现），记录行为。"""
+def case_agent_optimize_wired():
+    """L258 场景智能体【优化】按钮：已接入既有 `gui.prompt-optimise` 链路（流式回显写入 prompt）。
+
+    本机未配置优化 LLM 时，点击后应给出**可见错误提示**（common.optimize_failed）；已配置时进入
+    流式优化并回显到 `.prompt-textarea`。关键断言 = **不再出现桩文案「尚未实现」**（i18n 键已回收）
+    → 说明点击确实发起了优化请求（而非仅弹提示）。
+    """
     open_scenario_edit()
     # 精确匹配 agent 编辑器的「提示词」页签（锚定整串）：右侧「组合后系统提示词」预览页签
     # 含「提示词」子串且 DOM 在前 → 泛匹配会误点该页签（T5 新增预览页签后暴露）。
@@ -448,6 +453,8 @@ def case_agent_optimize_stub():
     time.sleep(0.6)
     if not wait_el(".prompt-toolbar"):
         raise TestError("提示词工具栏未渲染")
+    # 清掉此前可能残留的提示层，避免误判
+    c.eval("(() => { document.querySelectorAll('.b-message').forEach(e => e.remove()); return 'ok'; })()")
     c.eval("""(() => {
       const ds = [...document.querySelectorAll('.edit-dialog-body')];
       const d = ds[ds.length - 1] || document;
@@ -456,8 +463,12 @@ def case_agent_optimize_stub():
       if (b) { b.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 'clicked'; }
       return 'not-found';
     })()""")
-    time.sleep(0.8)
-    # 当前桩：提示"尚未实现/未实现"；若已接入桥则出现优化过程（标记行为变化）
+    time.sleep(1.2)
+    body = c.eval('document.body.innerText') or ''
+    if "尚未实现" in body or "not implemented" in body.lower():
+        raise TestError("优化按钮仍为桩（出现「尚未实现」文案）")
+    # 已配置 LLM → 流式回显写入 prompt；未配置 → 可见失败提示（优化中按钮 loading/禁用防重入）。
+    # 二者皆表示「已接线」，本用例不依赖本机 LLM 配置。
     click_btn_in(".edit-dialog-body", "cancel|取消")
     time.sleep(0.5)
     return True
@@ -471,12 +482,12 @@ def main():
     try:
         total += 1; ok += run_case("T1 任务不存在提示（L315）", case_task_not_found)
         total += 1; ok += run_case("T3 排队消息写回输入框（L137）", case_queue_restore)
-        total += 1; ok += run_case("T4 总结提示词恢复默认（L222）", case_prompt_reset)
+        total += 1; ok += run_case("T4 总结提示词重置（L222）", case_prompt_reset)
         total += 1; ok += run_case("T5 索引状态实时更新（L232）", case_codeindex_refresh)
         total += 1; ok += run_case("T6a 智能体基本信息字段（L257）", case_agent_basic_fields)
         total += 1; ok += run_case("T6b 智能体工具过滤（L259）", case_agent_tools_filter)
         total += 1; ok += run_case("T6c 复制子智能体（L260）", case_agent_copy)
-        total += 1; ok += run_case("T7 智能体优化按钮状态（L258）", case_agent_optimize_stub)
+        total += 1; ok += run_case("T7 智能体优化按钮已接线（L258）", case_agent_optimize_wired)
     finally:
         cleanup_writable_scenario()  # 只删本轮自建的 user 级场景（51 §6-8 环境干净）
     print(f"\nFP 补测 A 组：{ok}/{total} 通过")

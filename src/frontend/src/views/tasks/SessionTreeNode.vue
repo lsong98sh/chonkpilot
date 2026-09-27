@@ -3,8 +3,9 @@
     <div
       class="node-header"
       :class="{ active: node.node_id === activeId, closed: isClosed }"
-      :style="{ paddingLeft: depth * 16 + 'px' }"
+      :style="{ paddingLeft: depth * 16 + 'px', background: highlighted ? 'var(--accent-bg)' : '' }"
       :title="headerTitle"
+      :data-node-id="node.node_id"
     >
       <!-- 左1 展开箭头（有子级）或占位（叶子） -->
       <Icon
@@ -99,6 +100,7 @@
         :depth="depth + 1"
         :active-id="activeId"
         :top-session="topSession"
+        :highlight-id="highlightId"
       />
     </div>
   </div>
@@ -120,7 +122,12 @@ const props = defineProps({
   depth: { type: Number, default: 0 },
   activeId: { type: String, default: '' },
   topSession: { type: String, default: '' },
+  // 一次性高亮目标（定位后 ~1.2s 淡出）：node_id 命中则该行高亮（走 --accent-bg token）。
+  highlightId: { type: String, default: '' },
 })
+
+// 定位高亮：命中 highlightId 的行加高亮底色（`.node-header` 已有 background 过渡 → 清除即淡出）
+const highlighted = computed(() => !!props.highlightId && props.node.node_id === props.highlightId)
 
 const { nodes, nodeRuntime, clearAwaiting } = useTaskView()
 

@@ -32,9 +32,13 @@
 
       <template #description>
         <div class="prim-tab-body">
+          <div class="pf-desc-head">
+            <Button size="small" text class="pf-extract" @click="handleExtractDescription">
+              {{ t('knowledgeList.extract_from_content') }}
+            </Button>
+          </div>
           <Textarea
             v-model="form.description"
-            :rows="12"
             class="pf-area"
             :placeholder="t('knowledgeList.description_placeholder')"
           />
@@ -57,7 +61,6 @@
         <div class="prim-tab-body">
           <Textarea
             v-model="form.content"
-            :rows="16"
             class="pf-area"
             :placeholder="t('knowledgeList.content_placeholder')"
           />
@@ -85,11 +88,12 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
-import { Input, Textarea, Button, Tag, message } from '../../components/ui'
+import { Input, Textarea, Button, Tag, message, confirm } from '../../components/ui'
 import Tabs from '../../components/ui/Tabs.vue'
 import JsonSchemaEditor from '../../components/editor/JsonSchemaEditor.vue'
 import { readPrimitive, savePrimitive, getKnowledgeRoot } from '../../api/knowledge'
 import { primitiveTokenOf, primitiveTagType } from '../../utils/primitive'
+import { extractDescriptionFromContent } from '../../utils/descriptionExtract'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -243,6 +247,27 @@ function handleRestoreDefault() {
   message.info(t('common.restore_default_done', { level: t('fileTree.kb_level_' + src.level) }))
 }
 
+// 从「正文」本地确定性提取描述（纯函数，不依赖 LLM）；描述非空时先确认再覆盖，否则直接写入。
+async function handleExtractDescription() {
+  if (!(form.content || '').trim()) {
+    message.warning(t('knowledgeList.extract_no_content'))
+    return
+  }
+  const text = extractDescriptionFromContent(form.content)
+  if (!text) {
+    message.warning(t('knowledgeList.extract_no_content'))
+    return
+  }
+  if ((form.description || '').trim()) {
+    try {
+      await confirm(t('knowledgeList.extract_confirm'), t('knowledgeList.extract_from_content'))
+    } catch (_) {
+      return
+    }
+  }
+  form.description = text
+}
+
 async function handleSave() {
   if (!props.path) return
   saving.value = true
@@ -359,11 +384,21 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 8px;
 }
-.pf-area :deep(textarea) {
-  resize: vertical;
-  min-height: 200px;
+/* 描述/正文 Textarea 纵向撑满页签：容器 flex 列 + textarea 自身 flex 撑高。
+   `.pf-area` 落在 Textarea 根节点（即 textarea 本体），故直接命中；原实现把 `.pf-area` 与
+   `:deep(textarea)` 组合使用 —— 指向不存在的嵌套 textarea、选择器恒不命中（既有 bug）。
+   提高选择器特异性以稳定覆盖 Textarea 组件自身的 `resize: vertical` 等规则。 */
+.prim-tab-body .pf-area {
+  flex: 1;
+  min-height: 0;
+  resize: none;
   font-size: 13px;
   line-height: 1.5;
+}
+.pf-desc-head {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 .pf-schema {
   min-height: 0;

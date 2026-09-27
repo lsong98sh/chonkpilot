@@ -1,7 +1,8 @@
 // server 域工具经 gateway 分组注册方法面注入（61-消息一览 §5.1.1，2026-09-06）：
 // 域工具 = tools/register（相对主题 mcp-tools-register，payload {name, description, schema,
-// handler_subject, owner, hot, category}）——取代旧 mcp.register/unregister 统一 kind 与
-// server-register 主题。
+// handler_subject, owner, hot, category, async?, async_threshold?, timeout?}）——取代旧
+// mcp.register/unregister 统一 kind 与 server-register 主题。category/async/async-threshold/
+// timeout 取自域工具契约 [meta]（见 loadDomainTools），gateway 据此写入工具 `_meta`。
 //
 // 25 §5/T2（2026-09-25）：agent（场景内 agent）**不再**经 prompts/register asset_kind=agent
 // 注册为资产（agent 只"注入"不"注册"），仅登记到内存表（见 registerDomainAgents /
@@ -157,7 +158,8 @@ func (s *Server) registeredAgentDef(ref string) (AgentDef, bool) {
 
 // registerDomainTools 把全部域工具经 gateway tools/register（mcp-tools-register）注入。
 // schema 为契约 parameters 段 JSON 原文（对齐 regMsg.Schema 语义）；回调主题统一
-// SubjectDomainToolCall；hot=true（对齐原"内嵌 server 整体 hot"，TestEmbeddedGatewayDomainToolsHot）。
+// SubjectDomainToolCall；hot=true（对齐原"内嵌 server 整体 hot"，TestEmbeddedGatewayDomainToolsHot）；
+// category/async/async-threshold/timeout 取自契约 [meta]（透出为工具 `_meta`）。
 // 逐工具 await（同主题 promise）：任一失败即中断返回。
 func (s *Server) registerDomainTools(ctx context.Context) error {
 	defs, err := loadDomainTools()
@@ -171,6 +173,22 @@ func (s *Server) registerDomainTools(ctx context.Context) error {
 			"handler_subject": SubjectDomainToolCall,
 			"owner":           "server",
 			"hot":             true,
+		}
+		// 契约 [meta] 透出（category/async/async-threshold/timeout；见 loadDomainTools）——
+		// gateway registerTool 据此写入工具 `_meta`（否则域工具在前端/LLM 面回落 auto）。
+		if d.Category != "" {
+			body["category"] = d.Category
+		}
+		if d.Async != "" {
+			body["async"] = d.Async
+		}
+		if d.AsyncTh > 0 {
+			body["async_threshold"] = d.AsyncTh
+		}
+		// timeout 键**显式声明即透出**（含 0/-1 = 无上限；gateway 靠 `*float64` 区分「未设置」）；
+		// 契约未声明 → 不写（gateway 回落全局）。
+		if d.TimeoutSet {
+			body["timeout"] = d.Timeout
 		}
 		if d.Parameters != nil {
 			if sb, err := json.Marshal(d.Parameters); err == nil {

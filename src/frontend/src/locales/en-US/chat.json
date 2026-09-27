@@ -5,6 +5,7 @@
   "effort": "Effort",
   "screenshot": "Screenshot (hide window, full screen)",
   "screenshot_no_vision": "The selected LLM does not declare the \"Vision\" capability, so screenshot is unavailable (enable it in Settings → LLM → Model Capabilities)",
+  "screenshot_failed": "Screenshot failed, please try again",
   "uploading": "Uploading…",
   "upload_failed": "Upload failed: {name}",
   "custom_answer_placeholder": "Type your custom answer...",
@@ -68,6 +69,7 @@
   "tool_background": "Move to background",
   "tool_background_ok": "Moved to background, you can continue other operations",
   "tool_background_failed": "Failed to move to background: {error}",
+  "view_task_detail": "View task details",
   "tool_async_mode": "Tool async mode: {mode}",
   "tool_async_manual": "Can move to async",
   "timeout_arbitrate": "Tool \"{tool}\" has been waiting {seconds}. Choose how to proceed",
@@ -126,6 +128,7 @@
   "chat_window_open_failed": "Failed to open the chat window",
   "general_scenario": "General scenario",
   "prompt_pick": "Choose Prompt",
+  "prompt_none": "None (no prompt)",
   "prompt_empty": "No prompts in the knowledge base",
   "prompt_remove": "Remove prompt",
   "prompt_load_failed": "Failed to load prompt \"{name}\""

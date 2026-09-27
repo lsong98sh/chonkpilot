@@ -73,11 +73,16 @@ function onMouseLeave() {
   color: var(--tooltip-color, #fff);
   background: var(--tooltip-bg, rgba(0, 0, 0, 0.8));
   border-radius: 4px;
-  white-space: nowrap;
   pointer-events: none;
   margin: 0;
-  max-width: 320px;
-  word-break: break-all;
+  /* 长文案折行 + 保留换行（2026-09-27 用户口径）：短文案保持单行（width: max-content），
+     超过 max-width 即折行（CJK 正常断行；超长无空白串如路径/URL 亦强制断行）；
+     pre-wrap 保留文案内的 \n（多行原样展示，仍按 max-width 自动折行）。 */
+  white-space: pre-wrap;
+  width: max-content;
+  max-width: 360px;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 /* top */

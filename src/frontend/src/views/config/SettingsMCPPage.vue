@@ -83,7 +83,7 @@ const displayData = computed(() =>
   }))
 )
 
-// isolateLabel 列表展示「按项目隔离」状态：显式设置 → 是/否；未设置 → 推断值 + 标注（自动）。
+// isolateLabel 列表展示「按实例隔离」状态：显式设置 → 是/否；未设置 → 推断值 + 标注（自动）。
 // 推断口径与 gateway（ServerEntry.IsolateEnabled）一致：stdio → 隔离、http/sse → 共享；
 // transport 留空按连接点推断（仅 runtime → stdio）。
 function isolateLabel(s) {
@@ -148,7 +148,7 @@ function openEditor(data, index) {
       await saveNow(t('config.mcp.saved'))
     },
     onCancel: () => handle.close(),
-  }), { title: t('config.mcp.editTitle'), width: 520, height: 640, minimizable: false, closable: true })
+  }), { title: t('config.mcp.editTitle'), width: 520, height: 640, bodyClass: 'form-dialog-body', minimizable: false, closable: true })
 }
 
 function addMCP() { openEditor({ ...DEFAULT_MCP }, -1) }

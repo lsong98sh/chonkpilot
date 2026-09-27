@@ -2303,7 +2303,7 @@ func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]m
 	}
 	out := make(map[string]mcpgateway.ToolAsyncOverride, len(in))
 	for k, v := range in {
-		out[k] = mcpgateway.ToolAsyncOverride{Mode: v.Mode, Threshold: v.Threshold}
+		out[k] = mcpgateway.ToolAsyncOverride{Mode: v.Mode, Threshold: v.Threshold, ThresholdSet: v.ThresholdSet}
 	}
 	return out
 }

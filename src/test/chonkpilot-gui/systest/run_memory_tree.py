@@ -10,8 +10,9 @@
       数据来源 = `data-memory-list`（前端 `dataClient.list('memory')`）。
   MT2 项目级条目查看：点击「项目概要」行 → 既有 `file-open`（temporary）→ 预览区打开该 `.md`
       且内容非空（markdown 渲染，含预置哨兵）。
-  MT3 用户偏好查看（user 级 / 工作目录之外）：点击「用户偏好」行 → 既有 `data-memory-read`
-      + **只读弹框**（`.mem-view-text`，非空含哨兵）；不用 file-open（filesys 越界校验）。
+  MT3 用户偏好查看（user 级 / 工作目录之外）：点击「用户偏好」行 → 既有 `preview-tab-open`
+      （kind `memory-user-pref`）→ **预览区只读页签**（`.user-pref-text`，非空含哨兵；
+      页签组件 UserPrefView 自带 `data-memory-read`）；不用 file-open（filesys 越界校验）。
   MT4 逐类开关（`memory.category.<类别名>`）：关闭「开发规范」→ 该行从清单消失（按配置列出）。
   MT5 记忆库总开关关闭（`memory.enabled=false`）：面板**空态提示**「记忆库未启用」+ 跳转
       「上下文管理」入口；清单空。**（关闭态不请求 data-memory-list 由前端单测
@@ -145,10 +146,6 @@ def main():
         return js("(function(){const e=document.querySelector('.memory-pane .mem-empty-title');"
                   "return e?(e.textContent||'').trim():''})()") or ""
 
-    def close_dialog():
-        js("(function(){const b=document.querySelector('.dialog-shell .dialog-btn-close');"
-           "if(b)b.dispatchEvent(new MouseEvent('click',{bubbles:true}));return !!b})()")
-
     # ── 夹具：启用记忆库 + 预置条目内容（哨兵）────────────────
     prj_save("memory.enabled", "true")
     # 经既有 data-memory-save 写两类哨兵（项目级 / user 级），并使清单/预置文件落盘
@@ -201,26 +198,23 @@ def main():
             raise TestError("预览内容未含预置哨兵（读到的是其它文件？）：%r" % txt[:160])
         evi("MT2", preview_len=len(txt), has_sentinel=True)
 
-    # ── MT3 用户偏好（user 级）→ 只读弹框（内容非空）─────────
+    # ── MT3 用户偏好（user 级）→ 预览区只读页签（内容非空）─────────
     def mt3():
         if not switch_mode("memory"):
             raise TestError("MT3 切项目记忆失败")
         if not click_mem_row(USER_PREF):
             raise TestError("点击「用户偏好」行失败")
-        ok = poll(lambda: vis_count(".mem-view-text") > 0, 12)
+        ok = poll(lambda: vis_count(".user-pref-text") > 0, 12)
         if not ok:
-            raise TestError("「用户偏好」未打开只读弹框（无可见 .mem-view-text）")
-        txt = js("(function(){const e=[...document.querySelectorAll('.mem-view-text')]"
+            raise TestError("「用户偏好」未在预览区打开（无可见 .user-pref-text）")
+        txt = js("(function(){const e=[...document.querySelectorAll('.user-pref-text')]"
                  ".find(n=>n.getBoundingClientRect().width>0);return e?(e.textContent||''):''})()") or ""
         if len(txt.strip()) == 0 or PREF_SENT not in txt:
-            raise TestError("只读弹框内容为空或未含预置哨兵：%r" % txt[:160])
-        # 只读：无编辑/保存入口
-        btns = js("Array.from(document.querySelectorAll('.dialog-shell .text-edit-footer button')).map(n=>n.textContent.trim())") or []
-        if btns:
-            raise TestError("只读弹框不应含编辑/保存入口：%r" % btns)
-        evi("MT3", dialog_len=len(txt), has_sentinel=True)
-        close_dialog()
-        poll(lambda: vis_count(".mem-view-text") == 0, 6)
+            raise TestError("预览区内容为空或未含预置哨兵：%r" % txt[:160])
+        # 只读：无编辑/保存入口（无 textarea / 保存按钮）
+        if int(js("document.querySelectorAll('.user-pref-view textarea').length") or 0):
+            raise TestError("用户偏好页签不应含编辑入口（textarea）")
+        evi("MT3", preview_len=len(txt), has_sentinel=True)
 
     # ── MT4 逐类开关：关闭「开发规范」→ 该行消失 ──────────────
     def mt4():
@@ -261,7 +255,7 @@ def main():
     for name, fn in [
         ("MT1 页签顺序 + 按配置列出启用类别", mt1),
         ("MT2 项目级条目 → 预览区打开（内容非空）", mt2),
-        ("MT3 用户偏好(user 级) → 只读弹框（内容非空）", mt3),
+        ("MT3 用户偏好(user 级) → 预览区只读页签（内容非空）", mt3),
         ("MT4 逐类开关 → 行按配置增减", mt4),
         ("MT5 记忆库总开关关闭 → 空态提示 + 跳转入口", mt5),
     ]:

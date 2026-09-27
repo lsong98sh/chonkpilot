@@ -22,6 +22,10 @@
       B ②：被拒后 system 仍为出厂文案（哨兵未生效）；
       A ③+B ③：**app 级可编辑** —— data-scenario-save{id:default, level:app}（哨兵）→ load 回读含哨兵、
          llm-start system 含哨兵；收尾删除 app default → 下次 list 由 embed 重新物化出厂内容。
+  P4 另存为（新目录）A+UI ：编辑弹窗「另存为」= 换新 id 发**同一条** data-scenario-save（新目录语义）→
+      A：新目录 `<WS>/.chonkpilot/scenarios/<新id>/main.agent.md` 落盘 + data-scenario-list 新增一行
+         + data-scenario-load{新id} 回读含哨兵；**原场景不变**（仍在、level/prompt 未改）；
+      UI：真实编辑弹窗底部含「另存为」按钮、**新建**弹窗底部无（`v-if=!isNew`）。
 
 观测渠道（**全部为 61-消息一览既有主题，零新增**）
   §3.1 data-scenario-{list,load,save,delete} · §4.2 llm-start{scenario_id}
@@ -52,6 +56,7 @@ import harness as _h  # noqa: E402
 SENT = "SENT-P6SC-%d" % int(time.time())
 PRJ_ID = "p6sc-prj-1"
 PRJ_ID2 = "p6sc-prj-2"
+PRJ_ID_SAVEAS = "p6sc-prj-1-copy"
 PRJ_PROMPT = SENT + "-PRJ-PROMPT"
 PRJ_PROMPT2 = SENT + "-PRJ2-PROMPT"
 DEF_PROMPT = SENT + "-DEFAULT-PROMPT"
@@ -322,8 +327,114 @@ def case_p3_app_default_editable_and_duplicate_rejected():
         raise TestError("app 级编辑未生效（system 不含哨兵）: %r" % (sys3[:200],))
 
 
+def _footer_button_texts():
+    """读当前编辑弹窗 `.edit-footer` 的按钮文案（'另存为|取消|保存' 形）。"""
+    return ev("""(() => {
+      const f = document.querySelector('.edit-footer');
+      if (!f) return '';
+      return [...f.querySelectorAll('button')].map(b => (b.textContent||'').trim()).join('|');
+    })()""")
+
+
+def _open_scenario_page():
+    c.mq_emit("preview-tab-close-all")
+    time.sleep(0.5)
+    c.mq_emit("preview-tab-open", {"kind": "scenario", "title": "场景"})
+    wait_for(lambda: int(ev("document.querySelectorAll('.b-table tbody tr').length") or 0) > 0,
+             "场景管理表格未渲染", 15)
+    time.sleep(0.6)
+
+
+def _probe_save_as_button():
+    """真实 UI：编辑现有场景 → 读编辑弹窗底部按钮（应含「另存为」）；
+    再开**新建**弹窗 → 读底部按钮（应**无**「另存为」，`v-if=!isNew`）。返回 (编辑有, 新建有)。"""
+    _open_scenario_page()
+
+    # 编辑：点列表首行「编辑」入口 → 编辑弹窗底部
+    c.eval("""(() => {
+      const rows = [...document.querySelectorAll('.b-table tbody tr')];
+      if (!rows.length) return 'norow';
+      const btn = [...rows[0].querySelectorAll('button')]
+        .find(b => ['编辑', 'Edit'].includes((b.textContent||'').trim()));
+      if (!btn) return 'nobtn';
+      btn.click();
+      return 'ok';
+    })()""")
+    wait_for(lambda: ev("document.querySelector('.edit-footer') ? 1 : 0") == 1,
+             "编辑弹窗未渲染", 10)
+    time.sleep(0.4)
+    edit_texts = _footer_button_texts()
+    c.mq_emit("dialog-close")
+    time.sleep(0.6)
+
+    # 新建：点工具栏「添加场景」→ 新建弹窗底部
+    c.eval("""(() => {
+      const btn = [...document.querySelectorAll('.toolbar-actions button')]
+        .find(b => ['添加场景', 'Add Scenario'].includes((b.textContent||'').trim()));
+      if (!btn) return 'nobtn';
+      btn.click();
+      return 'ok';
+    })()""")
+    wait_for(lambda: ev("document.querySelector('.edit-footer') ? 1 : 0") == 1,
+             "新建弹窗未渲染", 10)
+    time.sleep(0.4)
+    new_texts = _footer_button_texts()
+    c.mq_emit("dialog-close")
+    time.sleep(0.4)
+
+    def has_save_as(txt):
+        return ("另存为" in txt) or ("Save As" in txt)
+
+    return has_save_as(edit_texts), has_save_as(new_texts)
+
+
+def case_p4_save_as_new_dir():
+    """P4：「另存为」= 换新 id 发同一条 data-scenario-save（新目录语义）——
+    新目录落盘 + 列表/回读可见；原场景不变；编辑弹窗有「另存为」/ 新建弹窗无（UI）。"""
+    origin_before = scenario_load(PRJ_ID, "project")
+    if not origin_before:
+        raise TestError("前置：原场景 %s 不存在（P1 未跑？）" % PRJ_ID)
+
+    # 「另存为」在消息层 = 同一条 save，换新 id（前端 promptInput 输入新目录名后置 form.id）
+    scenario_save({"id": PRJ_ID_SAVEAS, "name": "P6 项目级场景（另存为）", "level": "project",
+                   "agents": [{"name": "主", "roleTag": "主", "isMain": True,
+                               "prompt": PRJ_PROMPT}]})
+
+    # A ①：写到**新目录**（原目录不动）
+    fp = prj_prompt_file(PRJ_ID_SAVEAS)
+    wait_for(lambda: os.path.isfile(fp) and PRJ_PROMPT in open(fp, encoding="utf-8").read(),
+             "另存为的新目录 main.agent.md 未落盘", 8)
+    # A ②：列表新增一行 + 回读
+    rows = scenario_ids(PRJ_ID_SAVEAS)
+    if not rows or rows[0].get("level") != "project":
+        raise TestError("另存为的新场景未进入 data-scenario-list: %r" % (rows,))
+    copy_rec = scenario_load(PRJ_ID_SAVEAS, "project")
+    if PRJ_PROMPT not in (copy_rec.get("systemPrompt") or ""):
+        raise TestError("另存为的新场景回读异常: %r" % ((copy_rec.get("systemPrompt") or "")[:80],))
+    # A ③：原场景不变（仍在、level 与 name/prompt 未改）
+    origin_after = scenario_ids(PRJ_ID)
+    if not origin_after or origin_after[0].get("level") != "project":
+        raise TestError("另存为后原场景应保持不变: %r" % (origin_after,))
+    origin_rec = scenario_load(PRJ_ID, "project")
+    if (origin_rec.get("name") != origin_before.get("name")
+            or PRJ_PROMPT not in (origin_rec.get("systemPrompt") or "")):
+        raise TestError("原场景内容被另存为篡改: %r"
+                        % ((origin_rec.get("name"), (origin_rec.get("systemPrompt") or "")[:60]),))
+
+    # UI：编辑弹窗底部含「另存为」；新建弹窗底部**不含**
+    has_edit, has_new = _probe_save_as_button()
+    evi("P4 另存为（新目录）", new_file=fp, new_level=rows[0].get("level"),
+        new_prompt_has=PRJ_PROMPT in (copy_rec.get("systemPrompt") or ""),
+        origin_unchanged=(origin_after[0].get("level") == "project"),
+        edit_footer_has_save_as=has_edit, new_footer_has_save_as=has_new)
+    if not has_edit:
+        raise TestError("编辑弹窗底部应有「另存为」按钮")
+    if has_new:
+        raise TestError("新建弹窗底部不应有「另存为」按钮（v-if=!isNew）")
+
+
 def cleanup():
-    for sid in (PRJ_ID, PRJ_ID2):
+    for sid in (PRJ_ID, PRJ_ID2, PRJ_ID_SAVEAS):
         try:
             c.req("data-scenario-delete", {"data": {"id": sid, "level": "project"}})
         except Exception as e:
@@ -347,6 +458,8 @@ def main():
             ("P2 切换场景即生效：system 换哨兵2 且不含哨兵1（B）", case_p2_switch_takes_effect),
             ("P3 出厂场景（app 级，可编辑）+ 跨级同名 save 被拒（A+B）",
              case_p3_app_default_editable_and_duplicate_rejected),
+            ("P4 另存为（新目录）：新目录落盘 + 列表/回读可见 + 原场景不变（A）+ 编辑有/新建无按钮（UI）",
+             case_p4_save_as_new_dir),
         ]:
             total += 1
             ok += run_case(name, fn)

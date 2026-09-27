@@ -159,9 +159,9 @@
 
 **文件树展开态（`filetree-expanded-key` / `filetree-selected-path`）**：只保存展开目录的相对路径数组与选中路径，重启时经 `init-data.expandedKeys`/`selectedKey` 恢复。原 `filetree-data` 整树快照（2026-08/09 设计稿）为**只写不读**，已于 2026-09-11 摘除（见 [42-决策记录](../40-roadmap/42-决策记录.md) F）。
 
-**MCP 配置界面**（`views/config/SettingsMCPPage.vue` 列表 + `views/config/EditMCPDialog.vue` 编辑弹窗；落库 = usr `mcps` 表，见 [64 §6](../60-reference/64-配置项一览.md)）：编辑弹窗含「**按项目隔离**」Switch（`config.mcp.isolate`）——**三态表达**：未拨动 = **未设置**（保存时 `delete localData.isolate`，**不写库**）+ 提示「自动（未设置，按传输方式推断）」（`isolateAuto`，另附 `isolateHint`）；一旦拨动即视为**显式设置**并写 `true`/`false`（未显式设置时开关显示随 transport 变化的推断值，computed 推断、无 `watch`）。列表新增「按项目隔离」列（`isolateLabel`）：**显式设置 → 是/否**；**未设置 → 推断值 + 「（自动）」后缀**（`isolateAutoSuffix`；推断口径与 gateway `ServerEntry.IsolateEnabled()` 一致：stdio → 隔离、http/sse → 共享，transport 留空按连接点推断）。
+**MCP 配置界面**（`views/config/SettingsMCPPage.vue` 列表 + `views/config/EditMCPDialog.vue` 编辑弹窗；落库 = usr `mcps` 表，见 [64 §6](../60-reference/64-配置项一览.md)）：编辑弹窗含「**按实例隔离**」Switch（`config.mcp.isolate`）——**三态表达**：未拨动 = **未设置**（保存时 `delete localData.isolate`，**不写库**）+ 提示「自动（未设置，按传输方式推断）」（`isolateAuto`，另附 `isolateHint`）；一旦拨动即视为**显式设置**并写 `true`/`false`（未显式设置时开关显示随 transport 变化的推断值，computed 推断、无 `watch`）。列表新增「按实例隔离」列（`isolateLabel`）：**显式设置 → 是/否**；**未设置 → 推断值 + 「（自动）」后缀**（`isolateAutoSuffix`；推断口径与 gateway `ServerEntry.IsolateEnabled()` 一致：stdio → 隔离、http/sse → 共享，transport 留空按连接点推断）。
 
-**编辑弹窗页签（2026-09-26）**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 启用 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）与「**运行信息**」（运行时 / 启动参数 / 环境变量 / 工作目录 / 高频工具 / **按项目隔离** / **沙箱隔离**）两页签；页签**仅显示分组**，`handleSave` 仍一次性提交两页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱隔离**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」（2026-09-26 改造）不再用逗号分隔文本框：改为**行 = 摘要（未设置 / 已选 N 个 / 全部）+【设置】按钮** → 独立弹窗 `SetMCPHotToolsDialog.vue`（按别名列出该 server 工具勾选 + 「全部工具」= 全部 hot；数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落 usr `mcps[].hot_tools`。
+**编辑弹窗页签（2026-09-27）**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）·「**运行信息**」（运行时 | 工作目录 / **按实例隔离** | **沙箱** / 启动参数 / 环境变量）·「**工具**」（【加载工具】+ 逐项勾选）共**三页签**（2026-09-27 改造；「**启用**」移到底栏与【保存】同行）；页签**仅显示分组**，`handleSave` 仍一次性提交三页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」（2026-09-27 改造）**不再是字段**：改为独立「**工具**」页签 ——【**加载工具**】按钮按别名列出该 server 工具 + 「全部工具」= 全部 hot + 逐项勾选（数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落 usr `mcps[].hot_tools`；原独立弹窗 `SetMCPHotToolsDialog.vue` **已删除**（并入页签）。另：「**请求头**」「**环境变量**」改为 **KV 行编辑**（`components/ui/KeyValueEditor.vue`，可增删行），「**启动参数**」为**行列表**编辑（`args` 是 `[]string`，非 KV）。
 
 **保存时机**：① 每次展开/折叠后；② 收到变更推送后（防抖约 500ms）；③ 选中节点变化时；④ IDE 关闭时兜底保存。
 
@@ -294,7 +294,11 @@
 - **浮层/强调/页签 token（`variables.css`，dark/nord 覆写）**：
   - `--tooltip-bg` / `--tooltip-color`：tooltip 底色/文字（light = 半透明黑 + 白字；dark/nord = `var(--bg-surface)` + `var(--text-primary)`），`Tooltip.vue` 的箭头用 `border-*-color: var(--tooltip-bg)` 同步。
   - `--accent-bg`：强调背景（light = `#ecf5ff`；dark/nord = `color-mix(in srgb, var(--accent) 18%, transparent)`），用于 `Button.vue` 的 `.b-btn.is-text:hover`、`AskUserContent.vue`、`AgentEditor.vue` 等 —— 避免暗色下刺眼浅蓝。
-  - `--tab-inactive-fg`（**2026-09-24**）：页签**非激活**文字色，与激活态（`--text-primary` / `--accent`）保持可见差别 —— `:root`（light）与 dark 用 `color-mix(in srgb, var(--text-primary) 78%, var(--bg-secondary))`（light 向更亮处调=更淡；dark 的 `--bg-secondary` 更暗 → 同式即更暗）；nord 因 `--bg-secondary` 比 `--bg-primary` 亮，**改向 `--bg-primary` 调**以保证"更暗"。消费方 = `TabBar.vue`（`.tb-tab` / `.tb-more-item`）与 `Tabs.vue`（`.b-tabs-item`）。
+  - `--tab-inactive-fg`（**2026-09-24**，**2026-09-27 改绑语义色**）：页签**非激活**文字色，与激活态（`--text-primary` / `--accent`）保持可见差别。原为逐 scheme 的 `color-mix(in srgb, var(--text-primary) 78%, …)`；**2026-09-27 用户口径**改为直接绑语义次要色 `--fg-secondary`（三主题各自取值），不再用 `color-mix` 调和。消费方 = `TabBar.vue`（`.tb-tab` / `.tb-more-item`）与 `Tabs.vue`（`.b-tabs-item`）。
+  - **语义文字色 `--fg-*`（2026-09-27 立）**：统一文字角色，**新增代码优先用这组名**，不再直接写 `--text-primary` / `--danger` / `--accent`。
+    - `--fg-primary`（主要，黑）＝ `var(--text-primary)`；`--fg-important`（重要，红）＝ `var(--danger)`；`--fg-link`（可点击，蓝）＝ `var(--accent)` —— 三者是**别名**，只在 `:root` 声明一次，自动随主题。
+    - `--fg-secondary`（次要，暖灰偏黄）：**逐主题字面值** —— 消费场景 = **除 title/input 以外的说明文字**（字段 hint、页面描述、空态副文案）与**页签非激活文字**。light `#6f6a5a`（`--bg-primary #f8f9fa` 上 5.12:1；用户原拟 `#7a7566` 仅 4.04 → 压深）· dark `#b8b2a0`（`#181825` 上 7.9:1）· nord `#c9c3b2`（`#3b4252` 上 5.8:1）。
+    - `--fg-disabled`（无效，灰）：light `#adb5bd` · dark `#6c7086` · nord `#7b8699`（禁用态文字，豁免 4.5 门槛）。
 - **`--bg-elevated` 为历史误用（未定义 token，已改）**：`FileTree.vue` / `MessageList.vue` 等处曾引 `--bg-elevated`（全仓无定义 → 声明无效、回落透明/浅色）→ 已改 `--bg-secondary`。新增代码不得再引该名。
 - **色值混用 `color-mix`**：半透明 hover/淡色底统一用 `color-mix(in srgb, var(--token) N%, transparent)`（如 `TabBar.vue .tb-more-close:hover` 用 `var(--text-primary) 8%`），以便随主题 token 自适应。
 - **DialogShell 覆写范式**（`components/dialog/DialogShell.vue`）：`.dialog-overlay` 与 `.dialog-shell` 是**兄弟节点**，需各自命中；暗色覆写以 `[data-theme="dark"] .dialog-shell, [data-theme="dark"] .dialog-overlay, [data-theme="nord"] …` 成组声明，内部只重绑 `--dialog-*` 变量到主题 token。
@@ -348,3 +352,83 @@
 - `#67c23a` / `#bfbfbf`（`src/frontend/src/composables/useTaskStatus.js` 的状态→图标配色映射）：既有单测 `test/useTaskStatus.test.js` **锁定「既有 4 态逐值不变」**（批 1 之外的显式决策），改动会破坏该契约 → 保留。
 - `rgba(0, 0, 0, ·)` 一类中性叠底（弹层遮罩/阴影/hover）与 `rgba(255, 193, 7, ·)` + `#f0ad4e`（`MessageItem.vue .notify-row` 的 🔔 完成通知浅琥珀底/色条）：**装饰性叠底与色条，不承载文字对比度**（`.notify-row` 文字走 `--text-primary`）→ 保留。
 - `--tooltip-bg: rgba(0, 0, 0, 0.8)` / `--tooltip-color: #ffffff`：**token 定义本体**（dark/nord 已覆写为主题面色），非误用 → 保留。
+
+### 12.9 UI 一致性与交互口径（2026-09-27 用户口径）
+
+> 立此节以固化一轮「界面一致性」收口（见 [42 §2 (188)/(189)](../40-roadmap/42-决策记录.md)）。新增/修改 UI 一律遵循；与此前分散决定冲突时以本节为准。
+
+**① 对话框（`DialogShell`）**
+- **默认高度**：未显式传 `height` 时取 `min(80vh, 640px)`（`types/dialog.js` 的 `DefaultDialogOptions`），调用方 `options.height` 可覆盖 → 消除「打开时高度跳动」。
+  - **例外**：`MessageBox`（确认/输入）与 `AskUserContent`（问题数不定）显式 `height:'auto'`，保持内容自适应。
+- **三段式结构**：头部固定 + `.dialog-body` 内滚动 + **footer 固定在 `.dialog-body` 之外**（不随 body 滚动）；`DialogShell` 提供**可选 `footer` 具名插槽**（缺省不渲染任何多余 DOM）。
+- **有表格的弹窗** → 表格**自身内滚**，减少整体滚动。
+- **页签内容与页签分割线留 0.5em 间距**（`Tabs` 的 body `padding-top: 0.5em`；如 MCP 编辑弹窗三页签）。
+
+**② 按钮**
+- **保存 / 取消 / 确定等操作按钮统一在弹窗底部按钮区，固定、不随内容滚动**（三段式：顶栏固定 / 中部滚动 / 底栏固定；底栏须为滚动容器的**兄弟节点**且 `flex-shrink: 0`）。
+  - 覆盖编辑类（`EditLLMDialog` / `EditMCPDialog` / `TextEditDialog` / `ScenarioEditDialog`）与 **confirm / 选择类**（`MessageBox` / `DirPickerDialog`）；无滚动、内容自适应类（`MessageBox`、`AskUserContent`）底栏同样固定在内容之外。
+- **主操作文案统一「确定」**（`common.ok`）；不再引用 `common.confirm` / `dialog.ok` 等重复语义键。
+- **恢复类按钮统一「重置」**（配置/设置页与弹窗）；**PrimitivePanel 保留「恢复默认」**（资产语义，见 [42 §2 (183)](../40-roadmap/42-决策记录.md)）。
+- 编辑类弹窗底栏的**次要项固定最左**（如 MCP 的「启用」：`margin-right: auto`），主操作（保存）保持**最右**。
+
+**③ 帮助信息载体**
+- `label` 旁的**术语/取值解释** → `?` 图标 + `Tooltip` 组件（`Icon name="help"`）。
+- **非 `?` 元素**（chip / Switch / 按钮 / 状态徽标）的补充信息 → 原生 `title`。
+- `?` 图标**必须**用 `Tooltip` 组件，不得用原生 `title` 替代。
+- **Tooltip 长文案必须折行**：popper 用 `white-space: normal` + `width: max-content` + `max-width: 360px` + `overflow-wrap: anywhere` —— 短文案仍单行，长文案折行，超长无空白串（路径 / URL）强制断行（**不得**用 `white-space: nowrap`）。
+
+**④ 字号与字色**
+- **区块标题统一 14px / 600**；正文按内容（13/14px）；**说明文字统一 12px + `--fg-secondary`**。
+- 文字按语义取色：`--fg-primary`（主要）/ `--fg-important`（重要）/ `--fg-secondary`（次要 = 说明文字与页签非激活）/ `--fg-disabled`（无效）/ `--fg-link`（可点击）——定义与实测对比度见 §12.8。
+
+**⑤ 表格与滚动**
+- **统一用自研 `Table` 组件**（`components/ui/Table.vue`）；**不再新增原生 `<table>`**（历史遗留两处 `SecurityConfig` / `ContextConfig` 已于 2026-09-27 迁移）。
+- 页面骨架 = `height:100%; display:flex; flex-direction:column` → 头部固定 + 正文 `flex:1; overflow:auto; min-height:0`。
+- **长表单页**（如上下文管理）允许正文整体滚一次；其中**列表/记录区自身内滚**，避免"滚到底才看到下一区块"。
+- **有表格的页**：横向滚动由**页面正文区**承担 —— `Table` 的 wrapper 置 `overflow-x: visible`、正文区 `overflow: auto`、卡片 `min-width: max-content` 随表格变宽；**滚动条始终贴 preview 区边缘**（纵向右侧、横向底部），不会出现"要滚到表格底边才见到横向滚动条"。**该范式已在工具异步配置 / 工具沙箱 / 上下文管理 / 安全 / LLM 五页落地**（2026-09-27；`ContextConfig` 压缩内容记录列表仍自身内滚、`SecurityConfig` 表头仍 sticky）。
+- 表格内**长文本单元格**按**像素宽度**截断（如工具异步页「工具内容介绍」`max-width: 200px` + 省略号），**不按字符数**截断。
+
+**⑥ 布局与交互**
+- **任务区（下区）默认收起**（`taskOpen` 默认 `false`，首屏减负；**布局持久化/恢复照旧**）。展开入口 = 顶部工具栏「任务」开关 + **聊天内工具调用卡片的「查看任务详情」**（打开面板并定位；仅当该调用有关联 `task_id` 时显示，纯同步工具不显示）。
+- 顶部「任务 / 文件树 / 聊天」三开关 = **图标 + 文字**（`test_toolbar` 依赖 `.toolbar-right .tb-btn` 顺序，改动须同步用例）。
+
+**⑦ 反馈**
+- **保存类操作必须有可见提示**（成功与失败都要）。
+- **失败必须有提示**（如截图失败，原为 `console.warn` 静默 → 已改 `message.error`）。
+- 纯成功且非"保存"语义的操作（切场景 / 切模型 / 新建会话 / 切换面板显隐等）**不加**提示。
+- **不加**首次使用引导：本工具面向已有 IDE（IDEA / Eclipse 等）使用经验的开发者。
+
+### 12.10 状态栏（`views/statusbar/StatusBar.vue`）
+
+> 2026-09-27 立（用户口径：「statusbar 可否显示 当前索引和 codebase 的状态？未启用，完成，N/total」）。
+> 状态栏自左向右 = 记忆总 token 数（仅记忆库启用时显示）· **索引状态区**（恒显示）· DevTools 图标 · 撑开 · 语言切换（`LangSwitcher`）。
+
+- **索引状态区**（`.sb-section.sb-index`）：内含 **两枚徽标**（`.sb-idx[data-engine="codegraph"|"vfts"]`，**图标 + 状态文本**：图标在左、状态文本/数字紧贴其右，图标取代原引擎名文本），紧凑单行（`white-space: nowrap` + `flex-shrink: 0`），**不换行、不改变状态栏高度**（`--statusbar-height`）。两枚徽标**恒显示**（「未启用」本身即信息）。图标取自既有图标集（codegraph = `collection`，vfts = `search`）——**不新增图标资源**。
+- **数据源**（全部**既有** prj-config 键，**零新增消息面**）：`enable-codegraph` + `codegraph.status`；`enable-vfts` + `vfts.status`。取数 = `getAllConfig()`（`data-prj-config-list`）；刷新 = 既有广播 `onDataRefresh('prj-config', reload)`；显示值用 `computed` 派生（**禁 watch/watchEffect**）。
+- **状态映射**（纯函数 `src/frontend/src/utils/indexStatus.js`）：
+
+  | 条件 | 文案 | 字色 token |
+  |---|---|---|
+  | 开关非 `"true"` 或无键 | 未启用 | `--fg-disabled` |
+  | 开关为 `"true"` 且 `state ∈ {"" , not_initialized}` 且无进度/阶段 | 未初始化 | `--fg-disabled` |
+  | `state == "indexing"`（或状态未落定但已见 `progressTotal > 0` / `phase`） | 索引中；`progressTotal > 0` 时附 `N/total`（如 `索引中 320/1024`） | `--fg-secondary` |
+  | `state == "ready"` | 完成 | `--text-primary` |
+  | `state == "error"` | 失败 | `--fg-important` |
+
+  > 「索引中」取 `--fg-secondary`（进行中的中性次要色）：状态栏的 `--accent` 留给可交互/选中语义（如记忆总量 hover），避免「进行中」与「可点击」混淆。
+- **悬停**：徽标**原生 `title`**（**不再用 `Tooltip` 组件**）——codegraph = 「点击设置：codegraph」、vfts = 「点击设置：Vfts 全文索引」（i18n 键 `statusBar.idx_open_codegraph` / `idx_open_vfts`，zh/en 齐备）。原 Tooltip 多行明细（引擎名/阶段/进度/索引文件数/最后索引/错误…）随本轮改版**整体移除**（`indexStatus.js` 的 `tip` 字段与 `idx_tip_*` i18n 键一并删除）。
+- **点击**：每枚徽标经既有前端事件 `EventNames.projectConfigOpen`（`project-config-open`）打开项目配置页，并**带可选 payload `tab`**（codegraph 徽标 → `tab:'codegraph'`，vfts 徽标 → `tab:'vfts'`）→ `MainLayout.handleOpenProjectConfig` 透传 → preview 页签 `kind='settings-project'` → `CodeView` 落到功能页 → `ProjectConfig` 激活对应页签。**缺省/非法 `tab` → 默认页签（`security`），不报错**（向后兼容旧发送方）。**不新增 MQ 主题**（仅给既有 payload 增可选字段，见 [61 §6.1](../60-reference/61-消息一览.md)）。
+- **异常兜底**：状态 JSON 解析失败/缺键 → 视为「未启用 / 未初始化」，静默（不抛错、不 `console.error`）。
+- **关联测试**：前端守卫 `test/statusbarIndexStatus.test.js`（映射全状态 + 4 键 + 既有广播 + 徽标 = 图标+文本/无 Tooltip + 原生 title + 点击带 tab + 跳页签链 + 禁 watch + 零新增主题 + i18n 齐备）；L4 `test_statusbar.py::SB6`（真机：无键基线 / 索引中 N-total / 完成 / 失败 / 原生 title / 点击开项目配置并定位 CodeGraph、Vfts 页签 / 收尾还原）。
+
+### 12.11 文件树：被索引排除条目灰显（2026-09-27）
+
+> 用户口径：「如果设置了 gitignored，目录树显示时，判断是否是排除项目。如果是，则文本颜色变成灰色。」方案 = **后端判定**（只读面 `data-index-ignored`）、位置 = 文件树（目录树）。功能点见 [32 §FT-016](../30-function-points/32-文件树与文件操作.md)。
+
+- **判据来源** = 只读数据面 `data-index-ignored`（[61 §3.6](../60-reference/61-消息一览.md)）：入参 = 当前**已加载节点**的 **workdir 相对路径**（`/` 分隔，一次批量、去重）；应答 = `{codegraph:{enabled,ignored}, vfts:{enabled,ignored}, truncated?}`。判定口径与引擎实际索引范围一致（祖先目录剪枝 / `!` 同层反选 / 内置强制排除）。前端封装 = `src/frontend/src/utils/indexIgnored.js`（纯逻辑 `toWorkdirRelPath` / `ignoredSetFromResult` + 批量请求 `fetchIndexIgnored`；`emit` 可注入便于单测）。
+- **灰显规则**：仅统计 `enabled=true` 的引擎，两引擎 `ignored` 取**并集**（被任一已启用引擎排除即灰显）；引擎未启用 → 其 `ignored` 恒空 → **不灰**。
+- **样式 token**：命中节点在 `TreeNode.vue` 的 `.tree-row` 上加语义类 **`is-ignored`**，**仅文本颜色** = `var(--fg-disabled)`（`--fg-disabled` 定义见 §12.8）。**只改颜色**——点击 / 双击 / 右键 / 拖拽等交互与布局均不变；另加原生 `title`（i18n `fileTree.index_ignored`：zh「已排除：不会参与索引」/ en「Excluded: not indexed」）。
+- **判定时机**：树数据到手 / 每层目录加载（`loadDirChildren`）/ `filesys.changed` 合并后（新增节点补判）。**刷新** = 既有广播 `onDataRefresh('prj-config', …)`（排除规则 / 引擎开关变化）→ 清缓存**重判已加载节点**（已灰的可恢复不灰）。**禁 `watch` / `watchEffect`**。
+- **请求克制与降级**：同一批路径只请求一次（单飞 + 已判定缓存）；`truncated=true` 时未判定节点不灰显、不缓存、不报错；请求失败 / 主题不可用 / 应答异常 → **静默降级为不灰显**。**零新增 MQ 主题**（只新增 `data-index-ignored` 一个只读面，见 [61 §3.6](../60-reference/61-消息一览.md)）。
+- **关联测试**：前端守卫 `test/fileTreeIndexIgnored.test.js`（纯逻辑 + 请求/降级/topic/去重 + FileTree 判定时机/刷新/禁 watch + TreeNode `is-ignored`/`--fg-disabled`/title/交互保留 + 零新增主题 + i18n）；L4 `run_filetree_ignored.py`（真机：`.gitignore` 命中条目灰显（含子项祖先剪枝）+ 反选/无命中不灰 + 引擎未启用全不灰对照组）。
+

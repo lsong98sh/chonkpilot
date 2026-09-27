@@ -44,8 +44,16 @@ body {
    撑满的纵向 flex；内容组件（ScenarioEditDialog / TextEditDialog）自身 flex:1 填满，
    内部各自滚动 —— 底部不再出现「内容高不足而留白」。 */
 .dialog-body.scenario-edit-dialog-body,
-.dialog-body.text-edit-dialog-body,
-.dialog-body.mcp-hot-tools-dialog-body {
+.dialog-body.text-edit-dialog-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 表单类编辑弹窗（EditLLMDialog / EditMCPDialog）：内容体为「顶部工具条 + 滚动表单区 +
+   固定底部按钮区」三段式；body 去内距并交由内容组件自滚（底部「取消」固定在滚动区之外）。 */
+.dialog-body.form-dialog-body {
   padding: 0;
   display: flex;
   flex-direction: column;

@@ -61,11 +61,17 @@ func (g *Gateway) registerMetaTools() {
 		// _meta.hot=true 必填：meta 工具必须进 LLM 的 tools 参数，否则 LLM 无法发现/
 		// 加载/调用任何工具（toolsForLLM 只放 _meta.hot==true 者；self 节点 entry 无
 		// HotTools，故不会由 isHot 自动补）。category=meta 供 UI 分组。
+		// _meta.async=never：类① 三个 meta 工具**只能同步**（18-工具异步超时与取消 §3.7 B /
+		// §4「类①③④ 仅同步」）——声明后 gateway doCall 判为契约显式 never（不可被调用级覆盖），
+		// 且工具异步页按「仅同步」显示。
+		// _meta.timeout=0（= **无上限**）：三者均为 gateway 自持同步 handler（无执行硬上限）→ 显式声明
+		// 无上限（与 tool_stop/tool_result/ask_user 同口径）：**绝对优先、不被调用级/server 级/全局覆盖**，
+		// gateway 不设裁决点（永远等，用户可取消）。
 		t := &mcp.Tool{
 			Name:        mt.name,
 			Description: mt.description,
 			InputSchema: norm,
-			Meta:        mcp.Meta{"hot": true, "category": "meta"},
+			Meta:        mcp.Meta{"hot": true, "category": "meta", "async": "never", "timeout": float64(0)},
 		}
 		handler := mt.handler
 		g.params.MCPServer.AddTool(t, func(ctx context.Context, callReq *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

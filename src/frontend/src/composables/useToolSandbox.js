@@ -5,7 +5,7 @@
  * **executor 类别**（= 契约 `_meta.category`：core / desktop / browser，即 chonkpilot-mcp-tools
  * 的三个执行器能力目录）生效；一个开关管制该 executor 下的**全部工具**。仅 **self 的 executor
  * 工具**（本仓 spawn 子进程执行）可隔离；第三方 MCP 的沙箱在 MCP 对话框「运行信息」页签（
- * usr `mcps[].sandbox`）设置，http/sse 无法隔离。
+ * usr `mcps[].sandbox`）设置，http/sse 无法施加沙箱。
  *
  * 读写面（**零新增 MQ 主题**）：
  *   - 工具清单 = 既有能力面 `tools-list`（每项 `_meta.category` / `_meta.server`）。

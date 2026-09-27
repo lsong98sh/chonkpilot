@@ -172,6 +172,7 @@ export const EventNames = {
   scenarioEditRow: 'scenario-edit-row',
   scenarioDeleteRow: 'scenario-delete-row',
   scenarioSave: 'scenario-save',
+  scenarioCancel: 'scenario-cancel',
   scenarioAddSubAgent: 'scenario-add-sub-agent',
   scenarioSelectMain: 'scenario-select-main',
   scenarioSelectAgent: 'scenario-select-agent',

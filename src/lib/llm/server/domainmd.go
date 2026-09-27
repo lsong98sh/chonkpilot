@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -43,7 +44,7 @@ func loadDomainTools() ([]ToolDef, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读 %s: %w", e.Name(), err)
 		}
-		desc, params, err := parseToolMD(string(md))
+		desc, params, meta, err := parseToolMD(string(md))
 		if err != nil {
 			return nil, fmt.Errorf("解析 %s: %w", e.Name(), err)
 		}
@@ -51,25 +52,71 @@ func loadDomainTools() ([]ToolDef, error) {
 			Name:        strings.TrimSuffix(e.Name(), ".tool.md"),
 			Description: desc,
 			Parameters:  params,
+			Category:    meta["category"],
+			Async:       meta["async"],
+			AsyncTh:     atoiField(meta["async-threshold"]),
+			Timeout:     atoiFieldSigned(meta["timeout"]),
+			// timeout 键**显式声明**（非空）即标记（含 0/-1 = 无上限）；键缺失/空串 = 未设置（不写 _meta）。
+			TimeoutSet: metaKeySet(meta, "timeout"),
 		})
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs, nil
 }
 
-// parseToolMD 解析域工具契约 md：取 [description] 段（LLM 视角描述）
-// 与 [parameters] 段（JSON schema）。
-func parseToolMD(md string) (desc string, params map[string]any, err error) {
+// parseToolMD 解析域工具契约 md：取 [description] 段（LLM 视角描述）、
+// [parameters] 段（JSON schema）与 [meta] 段（key=value；async/category/timeout 等透出用）。
+func parseToolMD(md string) (desc string, params map[string]any, meta map[string]string, err error) {
 	segs := parseSectionMD(md)
 	desc = segs["description"]
+	meta = parseMetaLines(segs["meta"])
 	p := segs["parameters"]
 	if p == "" {
-		return desc, nil, nil
+		return desc, nil, meta, nil
 	}
 	if err := json.Unmarshal([]byte(p), &params); err != nil {
-		return "", nil, fmt.Errorf("parameters 段非合法 JSON: %w", err)
+		return "", nil, nil, fmt.Errorf("parameters 段非合法 JSON: %w", err)
 	}
-	return desc, params, nil
+	return desc, params, meta, nil
+}
+
+// parseMetaLines 解析 [meta] 段（每行 key=value，首个 `=` 分割）为键值映射。
+func parseMetaLines(s string) map[string]string {
+	m := map[string]string{}
+	for _, ln := range strings.Split(s, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		if i := strings.IndexByte(ln, '='); i > 0 {
+			m[strings.TrimSpace(ln[:i])] = strings.TrimSpace(ln[i+1:])
+		}
+	}
+	return m
+}
+
+// atoiField 取契约 meta 的整数字段（空/非法 → 0；对齐 25-mcp-server atoiSafe 语义）。
+func atoiField(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// atoiFieldSigned 同 atoiField 但**保留负值**（meta.timeout 的 -1 = 无上限）；空/非法 → 0。
+func atoiFieldSigned(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// metaKeySet 报告 [meta] 段是否**显式声明**了该键（值非空才算；键缺失/空串 = 未设置）。
+func metaKeySet(m map[string]string, key string) bool {
+	v, ok := m[key]
+	return ok && strings.TrimSpace(v) != ""
 }
 
 // parseSectionMD 通用 markdown 分段解析：取 [section] 标题与内容映射。

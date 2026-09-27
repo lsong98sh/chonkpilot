@@ -64,7 +64,7 @@ test('A1 记忆类别/用户偏好编辑：读内容 → 弹框 → 保存即关
   // P1（2026-09-24）：读/弹框/保存逻辑抽入共享 composable（状态栏「记忆总 token 数」入口同源）
   assert.match(src, /import \{ useMemoryCategories, DEFAULT_MEMORY_PROMPT \} from '\.\.\/\.\.\/composables\/useMemoryCategories'/, '须复用共享 composable')
   assert.match(src, /openContentEditor,/, '行内「编辑内容」仍走同一弹框实现（来自 composable）')
-  assert.match(src, /@click="openContentEditor\(c\)"/, '项目类别行「编辑内容」须走弹框')
+  assert.match(src, /@click="openContentEditor\(row\)"/, '项目类别行「编辑内容」须走弹框')
   assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好「编辑内容」须走弹框')
   const comp = read('composables/useMemoryCategories.js')
   assert.match(comp, /import TextEditDialog from '\.\.\/components\/common\/TextEditDialog\.vue'/, '须复用通用编辑弹框')
@@ -84,9 +84,10 @@ test('A1 记忆类别/用户偏好编辑：读内容 → 弹框 → 保存即关
 test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）+ 提示词弹框（来源提示/恢复默认/优化）', () => {
   const src = read(PAGE)
   // 两个编辑入口并存（项目类别行 + 用户偏好行）——文案清晰区分（不是同一按钮）
-  assert.match(src, /@click="openPromptEditor\(c\)"/, '项目类别行须有「编辑提示词」入口')
+  // 2026-09-27：类别表改用自研 Table（具名插槽），行内插槽作用域变量 = row
+  assert.match(src, /@click="openPromptEditor\(row\)"/, '项目类别行须有「编辑提示词」入口')
   assert.match(src, /@click="openPromptEditor\(userPref\)"/, '用户偏好行须有「编辑提示词」入口')
-  assert.match(src, /@click="openContentEditor\(c\)"/, '项目类别行须有「编辑内容」入口')
+  assert.match(src, /@click="openContentEditor\(row\)"/, '项目类别行须有「编辑内容」入口')
   assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好行须有「编辑内容」入口')
   assert.match(src, /projectConfig\.memory_edit_prompt/, '「编辑提示词」须走 i18n（不硬编码中文）')
   assert.match(src, /projectConfig\.memory_edit_content/, '「编辑内容」须走 i18n')
@@ -242,7 +243,8 @@ test('P1 上下文阈值取值语义：非法值（<0）前端显式提示 + 0 �
   // 判定与保存前警示接线
   assert.match(src, /const keepFullMaxTurnsInvalid = computed\(\(\) => Number\(keepFullMaxTurns\.value\) < 0\)/, 'turns 非法 = <0')
   assert.match(src, /const keepFullMaxTokensInvalid = computed\(\(\) => Number\(keepFullMaxTokens\.value\) < 0\)/, 'tokens 非法 = <0')
-  assert.match(fnBody(src, 'saveNumbers'), /warnIllegalBounds\(\)/, 'blur 保存路径须警示非法值')
+  // 2026-09-27（手动保存口径）：数值项不再 blur 落库；非法值警示仅在【保存】路径统一给出
+  assert.doesNotMatch(src, /@blur="handleChange"/, '数值项 blur 不再落库（改手动保存，无 saveNumbers）')
   assert.match(fnBody(src, 'handleSave'), /warnIllegalBounds\(\)/, '保存按钮路径须警示非法值')
 })
 
@@ -251,7 +253,7 @@ test('P1 上下文阈值取值语义：非法值（<0）前端显式提示 + 0 �
 // ═══════════════════════════════════════════════════════════════
 test('A5 弹框布局：bodyClass 命中全局去内距 + 组件 flex:1 撑满', () => {
   const css = read('assets/styles/global.css')
-  const block = css.match(/\.dialog-body\.scenario-edit-dialog-body,\s*\n\.dialog-body\.text-edit-dialog-body,\s*\n\.dialog-body\.mcp-hot-tools-dialog-body\s*\{([\s\S]*?)\n\}/)
+  const block = css.match(/\.dialog-body\.scenario-edit-dialog-body,\s*\n\.dialog-body\.text-edit-dialog-body\s*\{([\s\S]*?)\n\}/)
   assert.ok(block, 'global.css 须有 .dialog-body.text-edit-dialog-body 规则')
   assert.match(block[1], /padding:\s*0/, '须去 body 内距（底部不留白）')
   assert.match(block[1], /flex-direction:\s*column/, '须纵向 flex 撑满')
@@ -261,24 +263,97 @@ test('A5 弹框布局：bodyClass 命中全局去内距 + 组件 flex:1 撑满',
   assert.match(editor, /\.text-edit-input \{[\s\S]*?flex: 1;[\s\S]*?\}/, '编辑区须 flex:1 撑满')
   // 页面侧确实传了 bodyClass（否则规则不生效）
   assert.match(read(PAGE), /bodyClass: 'text-edit-dialog-body'/, '记忆/提示词弹框须传 bodyClass')
-  // 高频工具设置弹窗同法：EditMCPDialog 传 bodyClass，弹窗内容体 flex:1 撑满
-  assert.match(read('views/config/EditMCPDialog.vue'), /bodyClass: 'mcp-hot-tools-dialog-body'/, '高频工具弹窗须传 bodyClass')
-  assert.match(read('views/config/SetMCPHotToolsDialog.vue'), /\.hot-tools-body \{[\s\S]*?flex: 1;[\s\S]*?\}/, '高频工具弹窗内容体须 flex:1 撑满')
 })
 
 // ═══════════════════════════════════════════════════════════════
 // A6 非激活 Tab 配色：逐 scheme 定义 + 与激活态有差别
 // ═══════════════════════════════════════════════════════════════
-test('A6 非激活 Tab 文字：--tab-inactive-fg 三 scheme 齐备且与激活色不同源', () => {
+test('A6 非激活 Tab 文字：--tab-inactive-fg 转引语义次要色 --fg-secondary（三 scheme 齐备）', () => {
   const vars = read('assets/styles/variables.css')
   const hits = vars.match(/--tab-inactive-fg:/g) || []
   assert.ok(hits.length >= 3, `--tab-inactive-fg 须在 :root/dark/nord 各定义（实得 ${hits.length}）`)
-  assert.match(vars, /:root \{[\s\S]*?--tab-inactive-fg: color-mix\(in srgb, var\(--text-primary\)/, ':root（light）须调淡')
-  assert.match(vars, /\[data-theme="dark"\][\s\S]*?--tab-inactive-fg: color-mix\(in srgb, var\(--text-primary\)/, 'dark 须覆写')
-  assert.match(vars, /\[data-theme="nord"\][\s\S]*?--tab-inactive-fg: color-mix\(in srgb, var\(--text-primary\) 78%, var\(--bg-primary\)\)/, 'nord 须覆写（改向 primary 保证更暗）')
+  // 2026-09-27 用户口径：不再 color-mix 逐 scheme 调和，直接绑语义次要色（暖灰偏黄）
+  const inactive = vars.match(/--tab-inactive-fg: var\(--fg-secondary\);/g) || []
+  assert.equal(inactive.length, 3, `三主题均须绑 var(--fg-secondary)（实得 ${inactive.length}）`)
+  const fgSec = vars.match(/--fg-secondary:/g) || []
+  assert.equal(fgSec.length, 3, `--fg-secondary 须在 :root/dark/nord 各定义（实得 ${fgSec.length}）`)
   // 消费方：TabBar（主 tab + 更多菜单）+ 通用 Tabs
   assert.match(read('components/tabs/TabBar.vue'), /\.tb-tab \{[\s\S]*?color: var\(--tab-inactive-fg\)/, 'TabBar 主页签须走该 token')
   assert.match(read('components/ui/Tabs.vue'), /color: var\(--tab-inactive-fg\)/, 'Tabs 须走该 token')
+})
+
+// ═══════════════════════════════════════════════════════════════
+// C1 弹窗 / 工具页 UI 口径（2026-09-27 用户口径）
+//   Tooltip 长文案**折行且保留换行**（pre-wrap）；MCP 底栏「启用」**最左**；页签内容与分割线留 0.5em；
+//   工具异步页「工具内容介绍」按 **200px 宽度**截断；滚动由**页面**承担（横向条贴底部，非贴表格底）。
+// ═══════════════════════════════════════════════════════════════
+test('C1 Tooltip 长文案折行 + 保留换行（pre-wrap，不再 nowrap）', () => {
+  const css = read('components/ui/Tooltip.vue')
+  const block = css.match(/\.b-tooltip__popper \{[\s\S]*?\n\}/)
+  assert.ok(block, '未找到 .b-tooltip__popper 规则')
+  assert.match(block[0], /white-space: pre-wrap/, '长文案须换行且保留文案内换行（pre-wrap，不能 nowrap）')
+  assert.match(block[0], /overflow-wrap: anywhere/, '超长无空白串（路径/URL）须强制断行')
+  assert.match(block[0], /max-width: \d+px/, '须有 max-width 约束折行宽度')
+  assert.doesNotMatch(block[0], /white-space: nowrap/, '不应再按单行渲染')
+})
+
+test('C1 MCP 底栏「启用」最左 + 页签内容与分割线留 0.5em', () => {
+  const src = read('views/config/EditMCPDialog.vue')
+  assert.match(src, /\.footer-enabled \{[\s\S]*?margin-right: auto;[\s\S]*?\}/, '「启用」须固定在底栏最左侧')
+  assert.match(src, /\.mcp-tabs :deep\(\.b-tabs-body\) \{[\s\S]*?padding-top: 0\.5em;[\s\S]*?\}/, '页签内容须与分割线留 0.5em')
+  // 底栏其余按钮仍右对齐
+  assert.match(src, /\.edit-footer \{[\s\S]*?justify-content: flex-end;/, '「取消/保存」保持右对齐')
+})
+
+test('C1 工具异步页：介绍按 200px 截断 + 两轴滚动由页面承担', () => {
+  const src = read('views/config/SettingsToolAsyncPage.vue')
+  assert.match(src, /\.tool-desc \{[\s\S]*?max-width: 200px;[\s\S]*?\}/, '工具内容介绍须按 200px 宽度截断')
+  // 页面承担两轴滚动 → 横向滚动条始终贴 preview 区底部（而非表格底边）
+  assert.match(src, /\.page-body \{[\s\S]*?overflow: auto;[\s\S]*?\}/, '.page-body 须承担两轴滚动')
+  assert.match(src, /:deep\(\.b-table-wrapper\) \{[\s\S]*?overflow-x: visible;[\s\S]*?\}/, '表格不再自建横向滚动容器')
+  assert.match(src, /\.tool-group \{[\s\S]*?min-width: max-content;[\s\S]*?\}/, '卡片须随表格内容变宽')
+})
+
+test('C1 滚动范式铺开：4 个设置页正文承担两轴滚动、表格不自建横向滚动容器', () => {
+  // 正文滚动容器（该页「正文区」）：头部工具条 / 页签保持固定，滚动归正文（两轴）。
+  const bodies = [
+    ['views/config/SettingsToolSandboxPage.vue', /\.page-body \{([\s\S]*?)\n\}/],
+    ['views/settings/ContextConfig.vue', /\.form-layout \{([\s\S]*?)\n\}/],
+    ['views/settings/SecurityConfig.vue', /\.table-wrap \{([\s\S]*?)\n\}/],
+    ['views/config/SettingsLLMPage.vue', /\.page-body \{([\s\S]*?)\n\}/],
+  ]
+  for (const [f, re] of bodies) {
+    const src = read(f)
+    const m = src.match(re)
+    assert.ok(m, `${f} 未找到正文滚动容器规则`)
+    assert.match(m[1], /overflow: auto;/, `${f} 正文容器须承担两轴滚动（overflow: auto）`)
+    assert.doesNotMatch(m[1], /overflow-y:/, `${f} 正文容器不应残留 overflow-y（两轴归正文）`)
+  }
+  // 含 Table 的页：表格不再自建横向滚动容器 → 溢出交给正文
+  for (const f of ['views/settings/ContextConfig.vue', 'views/settings/SecurityConfig.vue', 'views/config/SettingsLLMPage.vue']) {
+    assert.match(read(f), /:deep\(\.b-table-wrapper\) \{[\s\S]*?overflow-x: visible;[\s\S]*?\}/, `${f} 表格不得自建横向滚动容器`)
+  }
+  // ContextConfig 既有口径保留：长表单正文整体滚一次，压缩内容记录列表仍自身内滚
+  assert.match(read('views/settings/ContextConfig.vue'),
+    /\.compress-records \{[\s\S]*?overflow-y: auto;[\s\S]*?\}/, '压缩记录列表须自身内滚（既有口径保留）')
+  // SecurityConfig 表头吸顶随正文滚动容器保留
+  assert.match(read('views/settings/SecurityConfig.vue'),
+    /\.table-wrap :deep\(\.b-table-th\) \{[\s\S]*?position: sticky;[\s\S]*?\}/, '表头吸顶须保留')
+})
+
+// ═══════════════════════════════════════════════════════════════
+// D1 输入框内按键不得被文件树 / 知识树接管（2026-09-27 用户报 bug：
+//    在 chat 输入框按 Delete 会触发文件树删除）
+// ═══════════════════════════════════════════════════════════════
+test('D1 全局 keydown 必须排除 input / textarea / contenteditable', () => {
+  for (const f of ['views/filetree/FileTree.vue', 'views/filetree/KnowledgeTree.vue']) {
+    const src = read(f)
+    const fn = src.match(/function onKeyDown\(e\) \{[\s\S]*?\n\}/)
+    assert.ok(fn, `${f} 未找到 onKeyDown`)
+    assert.match(fn[0], /isContentEditable/, `${f} 的 onKeyDown 必须排除 contenteditable（输入框内按 Del 不得删节点）`)
+    assert.match(fn[0], /'input'/, `${f} 须排除 input`)
+    assert.match(fn[0], /'textarea'/, `${f} 须排除 textarea`)
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════

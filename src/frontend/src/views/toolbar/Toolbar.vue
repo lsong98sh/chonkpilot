@@ -158,31 +158,34 @@
         <span class="tb-label">{{ $t('toolbar.sessions') }}</span>
       </Button>
 
-      <!-- Tasks toggle -->
+      <!-- Tasks toggle（图标 + 文字；元素顺序 / 类名不变 → test_toolbar 固定下标 3 仍成立） -->
       <Button
         class="tb-btn"
         :title="taskVisible ? $t('toolbar.hide_tasks') : $t('toolbar.show_tasks')"
         v-mq:[EventNames.tasksToggle].click
       >
         <Icon name="list" :color="taskVisible ? 'var(--accent)' : ''" />
+        <span class="tb-label">{{ $t('toolbar.tasks') }}</span>
       </Button>
 
-      <!-- Filetree toggle -->
+      <!-- Filetree toggle（图标 + 文字；下标 4） -->
       <Button
         class="tb-btn"
         :title="filetreeVisible ? $t('toolbar.hide_filetree') : $t('toolbar.show_filetree')"
         v-mq:[EventNames.filetreeToggle].click
       >
         <Icon name="folder" :color="filetreeVisible ? 'var(--accent)' : ''" />
+        <span class="tb-label">{{ $t('toolbar.filetree') }}</span>
       </Button>
 
-      <!-- Chat toggle -->
+      <!-- Chat toggle（图标 + 文字；下标 5） -->
       <Button
         class="tb-btn"
         :title="chatVisible ? $t('toolbar.hide_chat') : $t('toolbar.show_chat')"
         v-mq:[EventNames.chatToggle].click
       >
         <Icon name="chat-dot-square" :color="chatVisible ? 'var(--accent)' : ''" />
+        <span class="tb-label">{{ $t('toolbar.chat') }}</span>
       </Button>
 
       <!-- 登出（认证形态 desktop/browser 才有；61 §4.6 认证域；阶段 2b-2）。
@@ -505,6 +508,9 @@ function onSearchInput() {
 
 function handleSearchSelect(item) {
   if (item?.path) {
+    // 命中项路径 = workdir 相对（gui.search 已归一，与 file-open 契约一致）：
+    // 预览区打开（临时页签）+ 文件树定位（file-search 仅做树内过滤/展开）
+    mq.emit(EventNames.fileOpen, { path: item.path, temporary: true })
     mq.emit(EventNames.fileSearch, item.path)
   }
   showSearchResults.value = false
@@ -514,7 +520,9 @@ function handleSearchEnter() {
   if (!searchQuery.value.trim()) return
   searchFiles(searchQuery.value.trim()).then((results) => {
     if (results && results.length > 0 && results[0].path) {
-      mq.emit(EventNames.fileSearch, results[0].path)
+      const p = results[0].path
+      mq.emit(EventNames.fileOpen, { path: p, temporary: true })
+      mq.emit(EventNames.fileSearch, p)
     }
   }).catch(() => {})
   showSearchResults.value = false
