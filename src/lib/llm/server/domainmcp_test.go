@@ -95,6 +95,65 @@ func TestEmbeddedGatewayDomainToolsHot(t *testing.T) {
 	}
 }
 
+// TestEmbeddedGatewaySystemToolsMeta：系统工具（域工具 category=server + gateway 元工具
+// category=meta）经 tools/list 透出的 `_meta` 应含**正确的 async 模式**；契约 / 注入时**显式声明
+// timeout=0**（= 无上限）者透出 `_meta.timeout=0`，未声明者不含 timeout（回落全局）。
+// 用户口径 2026-09-27：`tool_*`/`ask_user` 契约声明 timeout=0 = 执行硬上限无（永远等，可取消）；
+// 元工具（mcp_find/mcp_load/mcp_invoke）注入时**也显式声明 timeout=0**（无上限，绝对优先、可取消）；
+// `llm_run` 契约未声明 timeout → 不含该键（回落全局）。
+func TestEmbeddedGatewaySystemToolsMeta(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServerMCP(t, llm)
+
+	defs, err := s.gc.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	byName := map[string]ToolDef{}
+	for _, d := range defs {
+		byName[strings.TrimPrefix(d.Name, "self_")] = d
+	}
+	check := func(name, wantAsync, wantCat string, wantTimeout any) {
+		t.Helper()
+		d, ok := byName[name]
+		if !ok {
+			t.Errorf("tools/list 缺少 %s（got %v）", name, keysOf(byName))
+			return
+		}
+		if got := str(d.Meta["async"]); got != wantAsync {
+			t.Errorf("%s: _meta.async = %q, 期望 %q", name, got, wantAsync)
+		}
+		if got := str(d.Meta["category"]); got != wantCat {
+			t.Errorf("%s: _meta.category = %q, 期望 %q", name, got, wantCat)
+		}
+		if wantTimeout == nil {
+			if v, has := d.Meta["timeout"]; has {
+				t.Errorf("%s: _meta 不应含 timeout（契约未声明 → 回落全局），got %v", name, v)
+			}
+		} else if v, has := d.Meta["timeout"]; !has || v != wantTimeout {
+			t.Errorf("%s: _meta.timeout = %v（has=%v），期望 %v（0 = 无上限）", name, v, has, wantTimeout)
+		}
+		t.Logf("%s: _meta = %v", name, d.Meta)
+	}
+	zero := float64(0)
+	check("tool_stop", "never", "server", zero)
+	check("tool_result", "never", "server", zero)
+	check("ask_user", "never", "server", zero)
+	check("llm_run", "always", "server", nil)
+	check("mcp_find", "never", "meta", zero)
+	check("mcp_load", "never", "meta", zero)
+	check("mcp_invoke", "never", "meta", zero)
+}
+
+func keysOf(m map[string]ToolDef) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // TestEmbeddedGatewayTaskToolTurn：完整 turn 内 task 型工具（tool_result）经 gateway 唯一入口执行
 // → 注册回调（domain-tool-call）→ execTaskTool → 结果回填 → complete。
 func TestEmbeddedGatewayTaskToolTurn(t *testing.T) {

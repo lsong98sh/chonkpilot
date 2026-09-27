@@ -5,7 +5,7 @@
       <div class="tab-actions">
         <!-- ⑤ dirty 标记 + 保存中禁用重复提交（保存按钮仍为唯一提交入口，时机不变） -->
         <span v-if="dirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
-        <Button size="small" type="primary" :loading="saving" v-mq:[EventNames.contextSave].click>{{ $t('projectConfig.save') }}</Button>
+        <Button size="small" type="primary" :disabled="!dirty" :loading="saving" v-mq:[EventNames.contextSave].click>{{ $t('projectConfig.save') }}</Button>
       </div>
     </div>
     <form class="form-layout">
@@ -23,11 +23,11 @@
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('projectConfig.memory_min_turn_tokens') }}</label>
-          <Input v-model.number="memoryMinTurnTokens" type="number" :min="0" :step="50" :disabled="!memoryEnabled" @update:model-value="markDirty" @blur="handleChange" />
+          <Input v-model.number="memoryMinTurnTokens" type="number" :min="0" :step="50" :disabled="!memoryEnabled" @update:model-value="refreshDirty" />
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('projectConfig.memory_category_max_tokens') }}</label>
-          <Input v-model.number="memoryCategoryMaxTokens" type="number" :min="0" :step="100" :disabled="!memoryEnabled" @update:model-value="markDirty" @blur="handleChange" />
+          <Input v-model.number="memoryCategoryMaxTokens" type="number" :min="0" :step="100" :disabled="!memoryEnabled" @update:model-value="refreshDirty" />
           <div class="field-hint">{{ $t('projectConfig.memory_category_max_tokens_hint') }}</div>
         </div>
         <!-- 手动沉淀（memory.flush）：显式触发一次，不受最小轮次 Token 阈值限制 -->
@@ -44,39 +44,30 @@
             <span class="form-label">{{ $t('projectConfig.memory_col_category') }}</span>
             <Button size="small" :disabled="!memoryEnabled" @click="addCategory">{{ $t('projectConfig.memory_add_category') }}</Button>
           </div>
-          <table class="mem-table">
-            <thead>
-              <tr>
-                <th>{{ $t('projectConfig.memory_col_category') }}</th>
-                <th>{{ $t('projectConfig.memory_col_level') }}</th>
-                <th>{{ $t('projectConfig.memory_col_tokens') }}</th>
-                <th>{{ $t('projectConfig.memory_col_enabled') }}</th>
-                <th>{{ $t('common.operation') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="c in projectCategories" :key="c.category" :class="{ 'is-over': isOverThreshold(c) }">
-                <td>
-                  <span>{{ c.category }}</span>
-                  <span v-if="isOverThreshold(c)" class="over-hint">{{ $t('projectConfig.memory_over_hint') }}</span>
-                </td>
-                <td>{{ levelText(c.level) }}</td>
-                <td>{{ c.tokens }}</td>
-                <td>
-                  <Switch :model-value="categoryEnabled(c)" :disabled="!memoryEnabled" @update:model-value="v => onCategoryToggle(c, v)" />
-                </td>
-                <td class="mem-ops">
-                  <Button size="small" text :disabled="!memoryEnabled" @click="openPromptEditor(c)">{{ $t('projectConfig.memory_edit_prompt') }}</Button>
-                  <Button size="small" text :disabled="!memoryEnabled" @click="openContentEditor(c)">{{ $t('projectConfig.memory_edit_content') }}</Button>
-                  <Button size="small" text :disabled="!memoryEnabled" @click="clearCategory(c)">{{ $t('memoryIO.clear') }}</Button>
-                  <Button v-if="isCustomCategory(c)" size="small" text :disabled="!memoryEnabled" @click="deleteCategory(c)">{{ $t('common.delete') }}</Button>
-                </td>
-              </tr>
-              <tr v-if="projectCategories.length === 0">
-                <td colspan="5" class="empty-text">{{ $t('projectConfig.memory_empty') }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <Table
+            :columns="memoryColumns"
+            :data="projectCategories"
+            :empty-text="$t('projectConfig.memory_empty')"
+            :row-class="memoryRowClass"
+            size="small"
+          >
+            <template #category="{ row }">
+              <span>{{ row.category }}</span>
+              <span v-if="isOverThreshold(row)" class="over-hint">{{ $t('projectConfig.memory_over_hint') }}</span>
+            </template>
+            <template #level="{ row }">{{ levelText(row.level) }}</template>
+            <template #enabled="{ row }">
+              <Switch :model-value="categoryEnabled(row)" :disabled="!memoryEnabled" @update:model-value="v => onCategoryToggle(row, v)" />
+            </template>
+            <template #action="{ row }">
+              <div class="mem-ops">
+                <Button size="small" text :disabled="!memoryEnabled" @click="openPromptEditor(row)">{{ $t('projectConfig.memory_edit_prompt') }}</Button>
+                <Button size="small" text :disabled="!memoryEnabled" @click="openContentEditor(row)">{{ $t('projectConfig.memory_edit_content') }}</Button>
+                <Button size="small" text :disabled="!memoryEnabled" @click="clearCategory(row)">{{ $t('memoryIO.clear') }}</Button>
+                <Button v-if="isCustomCategory(row)" size="small" text :disabled="!memoryEnabled" @click="deleteCategory(row)">{{ $t('common.delete') }}</Button>
+              </div>
+            </template>
+          </Table>
         </div>
 
         <!-- 开关二：用户偏好（与记忆库同级；子项 = 预估 Token + 内容编辑）——行保留（关闭时灰显），
@@ -118,7 +109,7 @@
              的那一轮起全部进入**简化区**（口径 V/W；两条件均 0 = 不压缩；简化区 token ≥ T 才生成摘要） -->
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('projectConfig.keep_full_max_turns') }}</label>
-          <Input v-model.number="keepFullMaxTurns" type="number" :min="0" :max="50" :step="1" @update:model-value="markDirty" @blur="handleChange" />
+          <Input v-model.number="keepFullMaxTurns" type="number" :min="0" :max="50" :step="1" @update:model-value="refreshDirty" />
           <!-- 口径 W：<0 = 非法（显式提示，不静默）；0 = 该条件不启用 -->
           <div class="field-hint" :class="{ 'hint-error': keepFullMaxTurnsInvalid }">
             {{ keepFullMaxTurnsInvalid ? $t('projectConfig.keep_full_max_turns_invalid') : $t('projectConfig.keep_full_max_turns_hint') }}
@@ -126,7 +117,7 @@
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('projectConfig.keep_full_max_tokens') }}</label>
-          <Input v-model.number="keepFullMaxTokens" type="number" :min="0" :max="1000000" :step="1000" @update:model-value="markDirty" @blur="handleChange" />
+          <Input v-model.number="keepFullMaxTokens" type="number" :min="0" :max="1000000" :step="1000" @update:model-value="refreshDirty" />
           <!-- 口径 W：<0 = 非法（显式提示，不静默）；0 = 该条件不启用 -->
           <div class="field-hint" :class="{ 'hint-error': keepFullMaxTokensInvalid }">
             {{ keepFullMaxTokensInvalid ? $t('projectConfig.keep_full_max_tokens_invalid') : $t('projectConfig.keep_full_max_tokens_hint') }}
@@ -134,7 +125,7 @@
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('projectConfig.compress_threshold') }}</label>
-          <Input v-model.number="compressTokenThreshold" type="number" :min="10000" :max="500000" :step="10000" @update:model-value="markDirty" @blur="handleChange" />
+          <Input v-model.number="compressTokenThreshold" type="number" :min="10000" :max="500000" :step="10000" @update:model-value="refreshDirty" />
           <div class="quick-thresholds">
             <Button
               v-for="b in QUICK_THRESHOLDS"
@@ -197,7 +188,7 @@
 <script setup>
 import { ref, computed, h, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Input, Button, Switch, message, confirm, promptInput } from '../../components/ui'
+import { Input, Button, Switch, Table, message, confirm, promptInput } from '../../components/ui'
 import { dialog } from '../../components/dialog'
 import TextEditDialog from '../../components/common/TextEditDialog.vue'
 import { getAllConfig, setConfig, getPrompt, setPrompt, getUserConfig, saveUserConfig, deleteConfig, resetUserKey } from '../../api/config'
@@ -212,7 +203,8 @@ import { useMemoryCategories, DEFAULT_MEMORY_PROMPT } from '../../composables/us
 
 const { t } = useI18n()
 
-// ⑤ dirty 标记 + 保存中禁用重复提交（仅显示/防重，保存时机不变）
+// ⑤ 手动保存：dirty 由「本地态 JSON 快照 vs 已保存态快照」比对得出（无改动 → 【保存】禁用）；
+// 数值项 / 开关只改本地态，点【保存】才落库（弹窗编辑仍即时落库，见下）。
 const { dirty, markDirty, markSaved } = useUnsavedMark()
 const saving = ref(false)
 
@@ -438,6 +430,44 @@ function categoryEnabled(c) {
   return v === undefined || v === '' ? true : v === 'true'
 }
 
+// 记忆类别表列配置（自研 Table）：类别 / 级别 / 预估 Token / 启用 / 操作。
+const memoryColumns = computed(() => [
+  { label: t('projectConfig.memory_col_category'), prop: 'category', minWidth: 160 },
+  { label: t('projectConfig.memory_col_level'), prop: 'level', width: 90 },
+  { label: t('projectConfig.memory_col_tokens'), prop: 'tokens', width: 110 },
+  { label: t('projectConfig.memory_col_enabled'), prop: 'enabled', width: 70, align: 'center' },
+  { label: t('common.operation'), type: 'action' },
+])
+
+// 超阈值行 → 标红（沿用原 .is-over 行 class 语义）
+function memoryRowClass(row) {
+  return isOverThreshold(row) ? 'is-over' : ''
+}
+
+// ── 手动保存的 dirty 判定（无 watch：由各变更点显式调用 refreshDirty 重算）──
+// 仅将「点【保存】才落库」的项纳入快照：压缩三项数值 + 记忆库开关/阈值 + 类别开关/用户偏好；
+// 弹窗编辑（内容 / 提示词 / 总结提示词）即时落库，不进快照。
+let savedState = ''
+function currentState() {
+  const cats = {}
+  for (const c of projectCategories.value) cats[c.category] = String(categoryEnabled(c))
+  cats[USER_PREF_CATEGORY] = String(userPrefEnabled.value)
+  return JSON.stringify({
+    turns: Number(keepFullMaxTurns.value) || 0,
+    tokens: Number(keepFullMaxTokens.value) || 0,
+    threshold: Number(compressTokenThreshold.value) || 0,
+    enabled: !!memoryEnabled.value,
+    minTurn: Number(memoryMinTurnTokens.value) || 0,
+    catMax: Number(memoryCategoryMaxTokens.value) || 0,
+    cats,
+  })
+}
+// refreshDirty 重算 dirty：与已保存态一致 → 清除标记；否则标记「未保存」。
+function refreshDirty() {
+  if (currentState() === savedState) markSaved()
+  else markDirty()
+}
+
 // readNum 读数字项：键存在且可解析（含 0 / 负数 → 该项「不启用」）→ 采用；缺失/非法 → 回落默认。
 function readNum(map, key, fallback) {
   const raw = map[key]
@@ -470,6 +500,9 @@ async function loadConfig() {
   await loadSummaryPrompt()
   // 记忆库关闭 → 不取类别清单（关闭态页面不展示类别区，且后端 list 会落盘预置文件）
   await reloadMemoryCategories()
+  // 载入完成 = 已保存态：重置快照并清除 dirty（无改动 → 【保存】禁用）
+  savedState = currentState()
+  markSaved()
 }
 
 // reloadMemoryCategories 取记忆类别清单（共享 composable：关闭态不发 data-memory-list，
@@ -505,11 +538,12 @@ async function loadSummaryPrompt() {
 }
 
 // resetSummaryOverride 取消项目级覆盖：删除项目级文件（data-prompt-delete 既有面）→ 回落继承值。
+// 属「即时落库」动作（不由页面【保存】提交）→ 只重算 dirty，不清除页面未保存改动。
 async function resetSummaryOverride() {
   try {
     await dataClient.remove('prompt', 'summary_prompt')
     await loadSummaryPrompt()
-    markSaved()
+    refreshDirty()
     message.success(t('projectConfig.summary_prompt_reset_done'))
   } catch (e) {
     message.error(t('projectConfig.prompt_save_failed') + ': ' + (e.message || ''))
@@ -522,52 +556,29 @@ function userPrefEnabledFromMap() {
   return v === undefined || v === '' ? true : v === 'true'
 }
 
-// blur 即保存数字项（与现状一致，FP L216 保存按钮另做全量提交）
-function handleChange() {
-  saveNumbers()
-}
+// ── 本地态变更（不落库；点【保存】才提交）：各变更点只改本地值 + 重算 dirty ──
 
-// ④ 保存失败须用户可见（不再仅 console.warn）；成功 → 清除 dirty 标记
-function saveNumbers() {
-  warnIllegalBounds()
-  return Promise.all([
-    setConfig('keep_full_max_turns', String(keepFullMaxTurns.value)),
-    setConfig('keep_full_max_tokens', String(keepFullMaxTokens.value)),
-    setConfig('compress_token_threshold', String(compressTokenThreshold.value)),
-    setConfig('memory.min-turn-tokens', String(memoryMinTurnTokens.value)),
-    setConfig('memory.category-max-tokens', String(memoryCategoryMaxTokens.value)),
-  ])
-    .then(() => { markSaved() })
-    .catch(e => { message.error(saveFailedText(t, e)) })
-}
-
-// 总开关：立即保存；由关到开 → 取类别清单（此前关闭态未取）
+// 记忆库总开关：由关到开 → 取类别清单（此前关闭态未取；只读，不影响落库时机）。
 function onMemoryEnabledChange(v) {
   setMemoryEnabled(v)
-  markDirty()
-  setConfig('memory.enabled', String(v))
-    .then(() => { markSaved(); reloadMemoryCategories() })
-    .catch(e => message.error(saveFailedText(t, e)))
+  reloadMemoryCategories().then(refreshDirty)
 }
 
-// 单类别开关：写 memory.category.<类别名>（项目级/用户偏好同键口径）
+// 单类别开关：只改本地 cfgMap（memory.category.<类别名> 键，项目级/用户偏好同口径）。
 function setCategoryEnabled(category, v) {
   const key = 'memory.category.' + category
   cfgMap.value = { ...cfgMap.value, [key]: String(v) }
-  markDirty()
-  setConfig(key, String(v))
-    .then(() => markSaved())
-    .catch(e => message.error(saveFailedText(t, e)))
+  refreshDirty()
 }
 
 function onCategoryToggle(c, v) {
   setCategoryEnabled(c.category, v)
 }
 
-// 用户偏好开关：立即保存（键与项目类别同构）
+// 用户偏好开关（键与项目类别同构）
 function onUserPrefChange(v) {
   userPrefEnabled.value = v
-  setCategoryEnabled(USER_PREF_CATEGORY, v)
+  refreshDirty()
 }
 
 // ── 类别内容编辑（弹框）：读内容 / 保存 / 分类列表 / 总量汇总均为共享 composable
@@ -764,6 +775,8 @@ async function handleSave() {
     const inheritKept = !summaryOverride.value && summarizePrompt.value === summaryLoadedValue.value
     await setPrompt('summary_prompt', summarizePrompt.value)
     await loadSummaryPrompt()
+    // 保存成功 → 以当前本地态为新「已保存态」并清除 dirty（无改动 → 【保存】禁用）
+    savedState = currentState()
     markSaved()
     message.success(inheritKept ? t('projectConfig.summary_prompt_inherit_kept') : t('projectConfig.saved'))
   } catch (e) {
@@ -784,11 +797,12 @@ function openSummaryEditor() {
       recover: true, // 弹框内提供「恢复优化」（优化前内容回填，仍需点保存才落库）
     },
     onSave: async (text) => {
-      // 与既有语义一致：与继承值相同（未覆盖 + 未改动）→ 后端不写项目级文件（保持继承）
+      // 弹窗编辑 = 即时落库（用户口径「弹出编辑的，直接保存」）→ 不走页面级 dirty；
+      // 与继承值相同（未覆盖 + 未改动）→ 后端不写项目级文件（保持继承）。
       const inheritKept = !summaryOverride.value && text === summaryLoadedValue.value
       await setPrompt('summary_prompt', text)
       await loadSummaryPrompt() // 刷新有效值与来源标注（优化/覆盖后为项目级覆盖）
-      markSaved()
+      refreshDirty() // 只重算 dirty（不清除页面其它未保存改动）
       message.success(inheritKept ? t('projectConfig.summary_prompt_inherit_kept') : t('projectConfig.saved'))
       handle.close()
     },
@@ -803,10 +817,10 @@ function openSummaryEditor() {
   })
 }
 
+// 快速阈值按钮：只改本地值（点【保存】才落库）
 function handleQuickThreshold({ value }) {
   compressTokenThreshold.value = value
-  markDirty()
-  saveNumbers()
+  refreshDirty()
 }
 
 onMounted(() => {
@@ -834,8 +848,10 @@ onUnmounted(() => {
 <style scoped>
 .list-container {
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .tab-toolbar {
   display: flex;
@@ -861,10 +877,19 @@ onUnmounted(() => {
   color: var(--warning, #e6a23c);
   white-space: nowrap;
 }
+/* 长表单正文整体滚一次（2026-09-27 用户口径）：正文区承担两轴滚动、头部工具条固定不滚；
+   其中「压缩内容」记录列表（.compress-records）自身内滚，不受此影响。 */
 .form-layout {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   display: flex;
   flex-wrap: wrap;
   gap: 1em;
+}
+/* 记忆类别表不再自建横向滚动容器（与工具异步页同范式）→ 溢出交给 .form-layout */
+.form-layout :deep(.b-table-wrapper) {
+  overflow-x: visible;
 }
 .cfg-section {
   width: 100%;
@@ -880,7 +905,7 @@ onUnmounted(() => {
 .section-title {
   width: 100%;
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -900,13 +925,13 @@ onUnmounted(() => {
 }
 .form-description {
   width: 100%;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.7;
-  color: var(--text-secondary);
+  color: var(--fg-secondary);
 }
 .field-hint {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   line-height: 1.6;
 }
 /* 非法值提示（口径 W：<0 = 非法，显式标红、不静默） */
@@ -936,33 +961,22 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 8px;
 }
-.mem-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
 .mem-table-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
-.mem-table th,
-.mem-table td {
-  text-align: left;
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--border, #dee2e6);
-  color: var(--text-primary);
-}
-.mem-table tr.is-over td {
+/* 超阈值行标红（自研 Table 行级 class） */
+:deep(.b-table tbody tr.is-over td) {
   color: var(--danger, #f56c6c);
 }
-/* 操作列：两个编辑入口 + 清空/删除并排不换行（按钮间留最小间距，避免拥挤） */
-.mem-table td.mem-ops {
-  white-space: nowrap;
-}
-.mem-table td.mem-ops .b-btn + .b-btn {
-  margin-left: 6px;
+/* 操作列：多个文字按钮并排不换行 */
+.mem-ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
 }
 .over-hint {
   margin-left: 8px;
@@ -995,11 +1009,7 @@ onUnmounted(() => {
   font-weight: 600;
   color: var(--text-primary);
 }
-.empty-text {
-  color: var(--text-muted);
-  text-align: center;
-}
-/* 压缩记录（压缩内容可查）：列表 + 截断/展开全文 */
+/* 压缩记录（压缩内容可查）：列表 + 截断/展开全文；列表自身内滚（固定高度上限） */
 .compress-records {
   list-style: none;
   margin: 4px 0 0;
@@ -1007,6 +1017,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
 }
 .compress-record {
   border: 1px solid var(--border, #dee2e6);

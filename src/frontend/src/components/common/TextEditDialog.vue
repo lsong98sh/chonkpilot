@@ -11,6 +11,7 @@
       :placeholder="placeholder"
       :disabled="saving || optimizing"
     />
+    <!-- 底部按钮区（固定在编辑区之外，不随内容滚动）：左侧「优化 / 恢复优化 / 恢复默认」，右侧「取消 / 保存」 -->
     <div class="text-edit-footer">
       <Button
         v-if="optimize"
@@ -139,7 +140,7 @@ async function handleReset() {
   flex-shrink: 0;
   padding-bottom: 8px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   line-height: 1.6;
 }
 .text-edit-input {
@@ -148,10 +149,12 @@ async function handleReset() {
   height: 100%;
   resize: none;
 }
+/* 底部按钮区：左侧「优化 / 恢复优化 / 恢复默认」+ 右侧「取消 / 保存」，固定在编辑区之外不随内容滚动 */
 .text-edit-footer {
   flex-shrink: 0;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   padding: 12px 0;
 }

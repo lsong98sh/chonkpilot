@@ -11,7 +11,7 @@
 - **一句话**：**零本仓库依赖**的公共底座——消息总线、DSL 引擎、路径解析、Windows 日志/服务、exe 目录。
 - **做**：为所有模块提供通用能力。
 - **不做**：不依赖任何其他 `chonkpilot-*` module（所有模块的依赖终点）。
-- **同层「非 core」lib module（不在本篇包清单内）**：`src/lib/router`（`chonkpilot-router`，**纯 lib**：**无 facade / 无 MQ / 无 DB / 无 exe**，与 `dsl` 同类；canonical 落 `internal/canon` + 根包以别名再导出，协议适配落 `internal/adaptor/{openai,anthropic,echo}/`；定位见 [40 §LR §1](../40-roadmap/40-演进计划.md)）· `src/lib/assembly`（入口装配器，RB-5 L5）· `src/lib/task` · `src/lib/data` · `src/lib/filesys` · `src/lib/gateway` · `src/lib/llm` · `src/lib/mcp-server` · `src/lib/mcp-tools` 等 —— 见 [10 §3 模块依赖矩阵](../10-architecture/10-分层与依赖.md) / [23 §2](../10-architecture/23-工程与部署拓扑.md)。
+- **同层「非 core」lib module（不在本篇包清单内）**：`src/lib/router`（`chonkpilot-router`，**纯 lib**：**无 facade / 无 MQ / 无 DB / 无 exe**，与 `dsl` 同类；canonical 落 `internal/canon` + 根包以别名再导出，协议适配落 `internal/adaptor/{openai,anthropic,echo}/`；定位见 [40 §LR §1](../40-roadmap/40-演进计划.md)）· `src/lib/ignore`（`chonkpilot-ignore`，**纯 lib**：仅标准库，**gitignore 语义排除匹配单一实现**——codegraph/vfts 两引擎遍历与 vfts 插件清单扫描共用，2026-09-27 新增，见 [29 §4.1](29-codegraph.md)）· `src/lib/assembly`（入口装配器，RB-5 L5）· `src/lib/task` · `src/lib/data` · `src/lib/filesys` · `src/lib/gateway` · `src/lib/llm` · `src/lib/mcp-server` · `src/lib/mcp-tools` 等 —— 见 [10 §3 模块依赖矩阵](../10-architecture/10-分层与依赖.md) / [23 §2](../10-architecture/23-工程与部署拓扑.md)。
 
 ---
 

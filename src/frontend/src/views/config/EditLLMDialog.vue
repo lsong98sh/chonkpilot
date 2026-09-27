@@ -1,101 +1,120 @@
 <template>
-  <div class="form-layout">
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.name') }}</label>
-      <Input v-model="localData.name" :placeholder="$t('config.llm.namePlaceholder')" />
-    </div>
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.model') }}</label>
-      <Input v-model="localData.model" :placeholder="$t('config.llm.modelPlaceholder')" />
-    </div>
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.protocol') }}</label>
-      <Select v-model="localData.protocol" :options="protocolOptions" />
-    </div>
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.baseUrl') }}</label>
-      <Input v-model="localData.baseUrl" :placeholder="$t('config.llm.baseUrlPlaceholder')" />
-    </div>
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.apiKey') }}</label>
-      <Input v-model="localData.apiKey" type="password" />
-    </div>
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.temperature') }}</label>
-      <input type="range" v-model.number="localData.temperature" min="0" max="2" step="0.1" style="width:100%" />
-      <span class="temp-value">{{ localData.temperature }}</span>
-    </div>
-    <div class="form-item form-item-12">
-      <div class="label-with-presets">
-        <label class="form-label">{{ $t('config.llm.maxOutputToken') }}</label>
-        <span class="token-presets">
-          <Button
-            v-for="p in tokenPresets"
-            :key="'out-' + p.value"
-            text size="mini"
-            @click="setToken('maxOutputToken', p.value)"
-          >{{ p.label }}</Button>
-        </span>
+  <div class="edit-dialog">
+    <!-- 表单区（唯一滚动容器；底栏按钮区固定在其外，不随内容滚动） -->
+    <div class="edit-scroll">
+      <div class="form-layout">
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('config.llm.name') }}</label>
+          <Input v-model="localData.name" :placeholder="$t('config.llm.namePlaceholder')" />
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('config.llm.model') }}</label>
+          <Input v-model="localData.model" :placeholder="$t('config.llm.modelPlaceholder')" />
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('config.llm.protocol') }}</label>
+          <Select v-model="localData.protocol" :options="protocolOptions" />
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('config.llm.baseUrl') }}</label>
+          <Input v-model="localData.baseUrl" :placeholder="$t('config.llm.baseUrlPlaceholder')" />
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('config.llm.apiKey') }}</label>
+          <Input v-model="localData.apiKey" type="password" />
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">{{ $t('config.llm.temperature') }}</label>
+          <input type="range" v-model.number="localData.temperature" min="0" max="2" step="0.1" style="width:100%" />
+          <span class="temp-value">{{ localData.temperature }}</span>
+        </div>
+        <div class="form-item form-item-12">
+          <div class="label-with-presets">
+            <label class="form-label">{{ $t('config.llm.maxOutputToken') }}</label>
+            <span class="token-presets">
+              <Button
+                v-for="p in tokenPresets"
+                :key="'out-' + p.value"
+                text size="mini"
+                @click="setToken('maxOutputToken', p.value)"
+              >{{ p.label }}</Button>
+            </span>
+          </div>
+          <Input type="number" v-model.number="localData.maxOutputToken" min="256" max="1000000" step="256" style="width:100%" />
+        </div>
+        <div class="form-item form-item-12">
+          <div class="label-with-presets">
+            <label class="form-label">
+              <span>{{ $t('config.llm.maxContextToken') }}</span>
+              <Tooltip :content="$t('config.llm.maxContextTokenHint')" placement="top">
+                <Icon name="help" :size="13" class="label-help" />
+              </Tooltip>
+            </label>
+            <span class="token-presets">
+              <Button
+                v-for="p in tokenPresets"
+                :key="'ctx-' + p.value"
+                text size="mini"
+                @click="setToken('maxContextToken', p.value)"
+              >{{ p.label }}</Button>
+            </span>
+          </div>
+          <Input type="number" v-model.number="localData.maxContextToken" min="0" max="1000000000" step="1" style="width:100%" />
+        </div>
+        <div class="form-item form-item-12">
+          <div class="label-switch-row">
+            <label class="form-label">{{ $t('config.llm.thinking') }}</label>
+            <Switch v-model="localData.thinking" />
+          </div>
+          <Select v-model="localData.reasoningEffort" :options="reasoningOptions" :placeholder="$t('config.llm.reasoningPlaceholder')" :disabled="!localData.thinking" />
+        </div>
+        <!-- 模型能力（多选）：声明该 provider 支持的能力；「图形」未勾选 → 聊天窗口禁用截图 -->
+        <div class="form-item form-item-12">
+          <label class="form-label">
+            <span>{{ $t('config.llm.capabilities') }}</span>
+            <Tooltip :content="$t('config.llm.capabilitiesHint')" placement="top">
+              <Icon name="help" :size="13" class="label-help" />
+            </Tooltip>
+          </label>
+          <div class="cap-row">
+            <label class="b-checkbox">
+              <input type="checkbox" value="reasoning" v-model="localData.capabilities" />
+              <span>{{ $t('config.llm.capReasoning') }}</span>
+            </label>
+            <label class="b-checkbox">
+              <input type="checkbox" value="vision" v-model="localData.capabilities" />
+              <span>{{ $t('config.llm.capVision') }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">
+            <span>{{ $t('config.llm.maxToolIterations') }}</span>
+            <Tooltip :content="$t('config.llm.maxToolIterationsHint')" placement="top">
+              <Icon name="help" :size="13" class="label-help" />
+            </Tooltip>
+          </label>
+          <Input type="number" v-model.number="localData.maxToolIterations" min="0" max="2000" step="1" style="width:100%" />
+        </div>
+        <!-- 测试连接（批 3 ⑮）：用**当前表单里的配置**真实探活一次（只读探测：不落库、不改生效配置）。
+             结果就地展示：成功 = 延迟 + 回显模型名；失败 = 人话文案（复用 errorMessage 分类映射）+
+             可展开的原始详情（后端已脱敏，不含 API Key 明文）。 -->
+        <div v-if="testing || testResult" class="form-item form-item-full test-conn">
+          <span v-if="testing" class="test-conn-pending">{{ $t('config.llm.testing') }}</span>
+          <template v-else-if="testResult && testResult.ok">
+            <span class="test-conn-ok">{{ testOkText }}</span>
+          </template>
+          <template v-else>
+            <span class="test-conn-fail">{{ testFailText }}</span>
+            <span v-if="testDetail" class="test-conn-more" @click="testDetailOpen = !testDetailOpen">{{ $t('chat.error_detail_label') }}</span>
+            <pre v-if="testDetailOpen" class="test-conn-raw">{{ testDetail }}</pre>
+          </template>
+        </div>
       </div>
-      <Input type="number" v-model.number="localData.maxOutputToken" min="256" max="1000000" step="256" style="width:100%" />
     </div>
-    <div class="form-item form-item-12">
-      <div class="label-with-presets">
-        <label class="form-label">{{ $t('config.llm.maxContextToken') }}</label>
-        <span class="token-presets">
-          <Button
-            v-for="p in tokenPresets"
-            :key="'ctx-' + p.value"
-            text size="mini"
-            @click="setToken('maxContextToken', p.value)"
-          >{{ p.label }}</Button>
-        </span>
-      </div>
-      <Input type="number" v-model.number="localData.maxContextToken" min="0" max="1000000000" step="1" style="width:100%" />
-      <span class="field-hint">{{ $t('config.llm.maxContextTokenHint') }}</span>
-    </div>
-    <div class="form-item form-item-12">
-      <div class="label-switch-row">
-        <label class="form-label">{{ $t('config.llm.thinking') }}</label>
-        <Switch v-model="localData.thinking" />
-      </div>
-      <Select v-model="localData.reasoningEffort" :options="reasoningOptions" :placeholder="$t('config.llm.reasoningPlaceholder')" :disabled="!localData.thinking" />
-    </div>
-    <!-- 模型能力（多选）：声明该 provider 支持的能力；「图形」未勾选 → 聊天窗口禁用截图 -->
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.capabilities') }}</label>
-      <div class="cap-row">
-        <label class="b-checkbox">
-          <input type="checkbox" value="reasoning" v-model="localData.capabilities" />
-          <span>{{ $t('config.llm.capReasoning') }}</span>
-        </label>
-        <label class="b-checkbox">
-          <input type="checkbox" value="vision" v-model="localData.capabilities" />
-          <span>{{ $t('config.llm.capVision') }}</span>
-        </label>
-      </div>
-      <span class="field-hint">{{ $t('config.llm.capabilitiesHint') }}</span>
-    </div>
-    <div class="form-item form-item-12">
-      <label class="form-label">{{ $t('config.llm.maxToolIterations') }}</label>
-      <Input type="number" v-model.number="localData.maxToolIterations" min="0" max="2000" step="1" style="width:100%" />
-      <span class="field-hint">{{ $t('config.llm.maxToolIterationsHint') }}</span>
-    </div>
-    <!-- 测试连接（批 3 ⑮）：用**当前表单里的配置**真实探活一次（只读探测：不落库、不改生效配置）。
-         结果就地展示：成功 = 延迟 + 回显模型名；失败 = 人话文案（复用 errorMessage 分类映射）+
-         可展开的原始详情（后端已脱敏，不含 API Key 明文）。 -->
-    <div v-if="testing || testResult" class="form-item form-item-full test-conn">
-      <span v-if="testing" class="test-conn-pending">{{ $t('config.llm.testing') }}</span>
-      <template v-else-if="testResult && testResult.ok">
-        <span class="test-conn-ok">{{ testOkText }}</span>
-      </template>
-      <template v-else>
-        <span class="test-conn-fail">{{ testFailText }}</span>
-        <span v-if="testDetail" class="test-conn-more" @click="testDetailOpen = !testDetailOpen">{{ $t('chat.error_detail_label') }}</span>
-        <pre v-if="testDetailOpen" class="test-conn-raw">{{ testDetail }}</pre>
-      </template>
-    </div>
-    <div class="dialog-footer" style="width:100%">
+
+    <!-- 底部按钮区（固定在滚动区之外，不随内容滚动）：左侧「测试连接」，右侧「取消 / 保存」 -->
+    <div class="edit-footer">
       <Button
         class="test-conn-btn"
         :loading="testing"
@@ -112,7 +131,8 @@
 <script setup>
 import { reactive, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Input, Select, Switch } from '../../components/ui'
+import { Button, Input, Select, Switch, Tooltip } from '../../components/ui'
+import Icon from '../../components/icon/Icon.vue'
 import { DEFAULT_LLM_PROTOCOL, RESPONSES_LLM_PROTOCOL } from '../../config/defaults'
 import { classifyError } from '../../utils/errorMessage'
 import mq from '../../utils/mq'
@@ -231,20 +251,41 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
 </script>
 
 <style scoped>
-.temp-value {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-left: 4px;
-}
-.field-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.dialog-footer {
+/* 弹窗内容体：顶栏 + 滚动表单区 + 底栏（bodyClass=form-dialog-body，body 去内距/不外溢） */
+.edit-dialog {
+  flex: 1;
+  min-height: 0;
   display: flex;
+  flex-direction: column;
+}
+.edit-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+.edit-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 16px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+/* 「测试连接」贴底栏左侧（与右侧「取消 / 保存」拉开） */
+.test-conn-btn {
+  margin-right: auto;
+}
+.temp-value {
+  font-size: 12px;
+  color: var(--fg-secondary);
+  margin-left: 4px;
+}
+/* label 旁的 ? 术语说明（Tooltip 入口） */
+.label-help {
+  color: var(--text-muted);
+  cursor: help;
 }
 .form-layout {
   display: flex;
@@ -265,6 +306,9 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
 .form-item-34 { width: calc(75% - 3px); }
 .form-item-full { width: 100%; }
 .form-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
@@ -294,8 +338,7 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   color: var(--text-primary);
   cursor: pointer;
 }
-/* 测试连接：按钮靠左（footer 其余按钮靠右），结果行在按钮上方 */
-.test-conn-btn { margin-right: auto; }
+/* 测试连接：结果行在表单区内（底栏按钮触发的就地结果） */
 .form-item.test-conn {
   flex-direction: row;
   align-items: center;

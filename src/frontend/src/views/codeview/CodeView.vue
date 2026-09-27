@@ -14,6 +14,7 @@
             v-if="tab.kind !== 'file'"
             :is="specialComponent(tab.kind)"
             class="special-tab"
+            v-bind="specialProps(tab)"
           />
           <!-- ── 文件 tab ── -->
           <template v-else>
@@ -241,8 +242,19 @@ const specialComponents = {
   'settings-params': defineAsyncComponent(() => import('../config/SettingsParamsPage.vue')),
   'settings-project': defineAsyncComponent(() => import('../preview/ProjectConfig.vue')),
   scenario: defineAsyncComponent(() => import('../scenario/ScenarioDialogContent.vue')),
+  // 「用户偏好」只读预览（左侧「项目记忆」点击 user 级条目 → 预览区，与项目级一致，不再弹窗）
+  'memory-user-pref': defineAsyncComponent(() => import('../memory/UserPrefView.vue')),
 }
 function specialComponent(kind) { return specialComponents[kind] || null }
+
+// 功能页组件附加 props：项目配置页支持定位到具体页签（innerTab + innerTabNonce）；
+// 其它功能页不注入额外属性（避免无谓的透传属性落到根节点）。
+function specialProps(tab) {
+  if (tab.kind === 'settings-project') {
+    return { innerTab: tab.innerTab || '', innerTabNonce: tab.innerTabNonce || 0 }
+  }
+  return {}
+}
 
 // 功能 tab 组件的跨组件事件转发（如场景内容变更 → 通知全局重载）
 function specialEvents(tab) {
@@ -259,19 +271,32 @@ function specialTitle(kind) {
     case 'settings-params': return t('config.page.params')
     case 'settings-project': return t('config.page.project')
     case 'scenario': return t('scenario.title')
+    case 'memory-user-pref': return t('projectConfig.memory_user_pref')
     default: return kind
   }
 }
 
-function openSpecialTab(kind, title) {
+function openSpecialTab(kind, title, innerTab) {
   let tab = findTab(t => t.kind === kind)
-  if (tab) { activeKey.value = tab.key; return }
+  if (tab) {
+    activeKey.value = tab.key
+    // 已开页：可选 innerTab（如项目配置页签）→ 更新请求（nonce 递增以触发页内切换）
+    if (innerTab) {
+      tab.innerTab = innerTab
+      tab.innerTabNonce = (tab.innerTabNonce || 0) + 1
+    }
+    return
+  }
   tab = reactive({
     key: nextKey(),
     kind,
     name: title || specialTitle(kind),
     fullTitle: title || specialTitle(kind),
   })
+  if (innerTab) {
+    tab.innerTab = innerTab
+    tab.innerTabNonce = 1
+  }
   tabs.value.push(tab)
   activeKey.value = tab.key
 }
@@ -439,7 +464,7 @@ async function loadFileTab(tab) {
 function handleTabOpen(event) {
   const kind = event?.kind
   if (!kind) return
-  openSpecialTab(kind, event.title, event.kbKind)
+  openSpecialTab(kind, event.title, event.tab)
 }
 
 function closeTab(key) {

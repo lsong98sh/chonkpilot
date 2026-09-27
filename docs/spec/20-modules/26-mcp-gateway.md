@@ -94,7 +94,7 @@
 
 **由此推出的一条既有结论的「原因」（与 [18 §7 B5](../10-architecture/18-工具异步超时与取消.md) 呼应）**：`mcp_find`/`mcp_load`/`mcp_invoke` 是 gateway 用 `AddTool` **注入到「装配方传入的 `ms`」里的本地 handler** →
 
-- (a) **它们没有契约 md，因此没有 `_meta.async` / `timeout` 的载体** —— 这正是 [18 §3.1](../10-architecture/18-工具异步超时与取消.md) 类① 「只能同步」必须由 **gateway 侧显式约束**（无 meta 可写、无法靠契约声明）的原因（对应 [18 §7](../10-architecture/18-工具异步超时与取消.md) 的 **B5**，落地方式待定）。
+- (a) **它们没有契约 md** —— 〔**订正（2026-09-27）**：原述「因此没有 `_meta.async` / `timeout` 的载体」**已不成立** —— `registerMetaTools` 注入时**硬编码 `Meta{hot, category:"meta", async:"never"}`**，`_meta.async` 已随之透出（`timeout` 仍不声明 = **回落全局**）；[18 §3.7 B](../10-architecture/18-工具异步超时与取消.md) 的「类① 只能同步」约束**已按方案 B 落地**（`explicitNever` 锁死，调用级不可覆盖），不再"待定"〕。
 - (b) 它们的 handler 在 **self 节点 server 侧（同进程）** 执行，gateway 调用要走 in-memory client 会话（`memNode.Call`，`gateway/memnode.go:61-63`），故「取消」到不了 handler 内部（与已记录的 `memNodeProvider.Invalidate` = **no-op**（`memnode.go:149`）一致）。
 
 ### 4.1 启动
@@ -120,8 +120,10 @@ Stop：置 stopped → 关闭各 provider（spawned 收尾）→ 关管理 REST�
     （**不叫 purpose**：避免与工具自有 purpose 冲突，如 mcp_find 的任务目标语义推荐；2026-09-11 更名）
 熔断 ps.cb.allow()（open 且未过冷却 → -32601 "circuit open"）
   → 模式解析：契约 _meta.async（缺省 auto）→ Params.AsyncMode 全局覆盖 → 调用级 async/_async 覆盖（never 不可被覆盖）
-  → 有效超时：调用级 > 条目 TimeoutSec > 工具 meta timeout > 全局；threshold 缺省 = timeout
-  → always 立即转后台；auto 超阈值转后台；never 超时即失败；manual 同步无工具侧超时
+  → 有效超时：**工具 `_meta.timeout` 显式「无上限」（`0`/`-1`）绝对优先、不可被覆盖**；否则 调用级(`>0`) > 条目 TimeoutSec(`>0`) > 工具 meta timeout(`>0`) > 全局；threshold 缺省 = timeout
+  → always 立即转后台；auto 超阈值转后台；**never / manual 到点 → 发 `mcp-tools-timeout` 交用户裁决**（never 可选 `tools/wait` 继续等，manual 无此选项）
+  → 〔**订正（2026-09-27）**：原述「never 超时即失败 / manual 同步无工具侧超时」为**旧口径**（2026-09-13 统一异步模型前）；现 both **不失败**、任务保持 running 待裁决〕
+  → **例外：工具 `_meta.timeout` 显式 `0` / `-1` = 无上限** → **不设裁决点、不发 `mcp-tools-timeout`**，直接阻塞等待至完成或**用户取消**；且**调用级 / server 级 / 全局超时均不得覆盖**（「无上限」必须是绝对的，[18 §3.8](../10-architecture/18-工具异步超时与取消.md)）
   → 后台：TaskManager goroutine（pending→running→done|error|cancelled）→ 完成回报 mcp-tasks-report
 ```
 

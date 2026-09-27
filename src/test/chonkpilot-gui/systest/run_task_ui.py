@@ -293,6 +293,9 @@ def case_closed_readonly():
 
 def main():
     c.wait_ready()
+    # 任务面板默认收起（2026-09-27 首屏减负：MainLayout taskOpen 默认 false）→
+    # 本套件断言任务树 / 详情 DOM → 先经既有 tasks-toggle 展开。
+    _h.ensure_task_panel_open(c)
     c.console(clear=True)
     ok = True
     ok &= run_case("G1 空任务树「暂无会话」", case_empty_tree)

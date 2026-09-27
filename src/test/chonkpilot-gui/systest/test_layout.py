@@ -4,6 +4,10 @@
 文档只记"存在 min/max 约束 + 恢复时 clamp"）→ 当前 `MainLayout.vue`：`filetreeWidth=320` ·
 `chatWidth=520` · `taskHeight=500` · `sessiontreeWidth=400`。
 窗口 1280 时 applyLayout 仍会 clamp（chat = min(800, vw*45%)），故断言取小噪声区间。
+
+任务区默认**收起**（2026-09-27 首屏减负：`MainLayout.vue taskOpen = ref(false)`；已有保存值仍以
+保存值为准）→ 本套件全新区无已保存布局 → 任务区初始未挂载。故 L1..L7 的「六区 + 任务区尺寸」
+断言前先经既有 `tasks-toggle` 展开（L0b 锁定「默认收起」口径）。
 """
 import json
 import os
@@ -14,7 +18,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import free_port  # noqa: E402  动态端口：避免与残留实例/他套件抢固定端口
+from harness import free_port, ensure_task_panel_open  # noqa: E402  动态端口 + 任务面板展开（默认收起）
 
 PORT = free_port()
 # 布局状态持久化在 prj/prjusr 层，为测「默认值」需隔离数据目录（每次运行前清理）。
@@ -66,6 +70,14 @@ def main():
         VH = J(gui, "window.innerHeight || 0")
         c.check("L0 窗口几何基线 = 产品默认 1280x800（vw*45% clamp 前提）",
                 VW == 1280 and 700 <= VH <= 820, f"innerWidth={VW} innerHeight={VH}")
+
+        # L0b 任务区默认收起（2026-09-27 口径）：无已保存布局 → `taskOpen` 默认 false →
+        # SessionTree / SessionChat 未挂载（`.session-chat` 不存在）。
+        collapsed = J(gui, "!document.querySelector('.session-chat')")
+        c.check("L0b 任务区默认收起（SessionTree/SessionChat 未挂载）", collapsed is True,
+                f"collapsed={collapsed}")
+        # 展开任务区（复用既有 tasks-toggle，等价用户点顶部「任务」开关）→ 后续 L1..L7 断言六区 / 任务区尺寸
+        ensure_task_panel_open(gui)
 
         # L1 布局六区：toolbar / filetree / preview / chat / task(tasktree+taskview) / statusbar
         zones = J(gui, """(()=>{const q=s=>document.querySelectorAll(s).length;return JSON.stringify({

@@ -23,10 +23,17 @@
   "clear": "Clear",
   "reindex": "Reindex",
   "retryFailedItems": "Retry Failed",
-  "codeIndexHint": "Configure more code indexing options (excluded directories, supported file extensions, etc.) in IDE Config → Code Index.",
+  "codeIndexHint": "Configure more code indexing options (excluded directories and files, supported file extensions, etc.) in IDE Config → Code Index.",
   "codeIndexConfig": "Code Index Config",
   "indexingActive": "Indexing",
   "pendingItems": "pending",
   "filesIndexed": "{count} files indexed",
-  "noRetry": "No retry"
+  "noRetry": "No retry",
+  "idx_disabled": "Disabled",
+  "idx_uninitialized": "Not initialized",
+  "idx_indexing": "Indexing",
+  "idx_ready": "Done",
+  "idx_error": "Failed",
+  "idx_open_codegraph": "Click to configure: codegraph",
+  "idx_open_vfts": "Click to configure: Vfts full-text index"
 }

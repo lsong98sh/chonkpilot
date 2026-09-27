@@ -48,13 +48,16 @@ type Base struct {
 	// DomainList 是 refresh 广播附带「域当前列表」的回调：由装配侧（persist）注入，
 	// 各域与对应 list 应答**同源**（同一批门面方法）。nil = 不附带 list 字段。
 	DomainList func(domain, instanceID string, scope facade.Scope) any
+	// Warnf 是告警出口（同 Options.Warnf）：各域实现输出非致命异常（如规则读取失败降级）用；
+	// nil = 静默（行为与不输出等价）。
+	Warnf func(format string, args ...any)
 }
 
 // NewBase 构造共享内核（不订阅；订阅由 persist 负责）。
 func NewBase(bus mq.Bus, opts Options) *Base {
 	view := NewView()
 	view.warnf = opts.Warnf
-	return &Base{Bus: bus, UsrPath: opts.UsrPath, AppDir: opts.AppDir, View: view}
+	return &Base{Bus: bus, UsrPath: opts.UsrPath, AppDir: opts.AppDir, View: view, Warnf: opts.Warnf}
 }
 
 // Info 是单个实例的数据根绑定（work_dir/data_dir，61-消息一览 §4.1 payload）。

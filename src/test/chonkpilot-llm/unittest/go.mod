@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/chonkpilot/chonkpilot-data v0.0.0
+	github.com/chonkpilot/chonkpilot-ignore v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-llm v0.0.0
 	github.com/chonkpilot/chonkpilot-router v0.0.0
@@ -31,6 +32,8 @@ require (
 )
 
 replace github.com/chonkpilot/chonkpilot-data => ../../../lib/data
+
+replace github.com/chonkpilot/chonkpilot-ignore => ../../../lib/ignore
 
 replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
 

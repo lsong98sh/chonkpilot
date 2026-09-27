@@ -1,10 +1,11 @@
 // 工具级异步配置（usr 键 `tool_async`）白盒：覆盖生效 / 优先级 / 未配置不回归 /
-// 孤儿键不炸 / 非法值忽略 / hard_timeout 真杀（64-配置项一览 §3 · 36-配置）。
+// 孤儿键不炸 / 非法 mode 忽略（数值 0/-1 = 无上限保留）/ hard_timeout 真杀（64-配置项一览 §3 · 36-配置）。
 // 覆盖只改写**契约默认**（暴露 _meta），不进入调用级 args（gateway doCall 仍最高优先级）。
 package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -13,13 +14,16 @@ import (
 )
 
 // toolDocForTest 造一个契约文档（不落盘；buildTool/resolveExecTimeout 纯读取该结构）。
+// timeout != 0 视为**显式声明**（TimeoutSet=true）；timeout == 0 视为未声明（回落全局）。
+// 需要「显式 0 = 无上限」的用例请直接构造 ToolDoc{TimeoutSet: true}。
 func toolDocForTest(name, async string, asyncTh, timeout int) *ToolDoc {
 	return &ToolDoc{
-		Name:    name,
-		Async:   async,
-		AsyncTh: asyncTh,
-		Timeout: timeout,
-		Schema:  map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}}},
+		Name:       name,
+		Async:      async,
+		AsyncTh:    asyncTh,
+		Timeout:    timeout,
+		TimeoutSet: timeout != 0,
+		Schema:     map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}}},
 	}
 }
 
@@ -42,6 +46,38 @@ func TestToolAsyncOverrideMeta(t *testing.T) {
 	}
 	if got := tool.Meta["timeout"]; got != 60 {
 		t.Fatalf("_meta.timeout = %v，期望 60（契约值，不被覆盖改动）", got)
+	}
+}
+
+// TestToolTimeoutMetaExposure：`_meta.timeout` **键显式声明即透出**（含 0/-1 = 无上限）；
+// 契约未声明 → 不写（回落全局）。
+func TestToolTimeoutMetaExposure(t *testing.T) {
+	cfg := DefaultConfig()
+	// 显式 0 → 透出 0
+	tool, err := buildTool(&ToolDoc{Name: "t0", TimeoutSet: true, Timeout: 0,
+		Schema: map[string]any{"type": "object"}}, cfg)
+	if err != nil {
+		t.Fatalf("buildTool: %v", err)
+	}
+	if v, ok := tool.Meta["timeout"]; !ok || v != 0 {
+		t.Fatalf("契约 timeout=0 应透出 _meta.timeout=0：ok=%v v=%v", ok, v)
+	}
+	// 显式 -1 → 透出 -1
+	tool, err = buildTool(&ToolDoc{Name: "tm", TimeoutSet: true, Timeout: -1,
+		Schema: map[string]any{"type": "object"}}, cfg)
+	if err != nil {
+		t.Fatalf("buildTool: %v", err)
+	}
+	if v, ok := tool.Meta["timeout"]; !ok || v != -1 {
+		t.Fatalf("契约 timeout=-1 应透出 _meta.timeout=-1：ok=%v v=%v", ok, v)
+	}
+	// 未声明 → 不写
+	tool, err = buildTool(&ToolDoc{Name: "tun", Schema: map[string]any{"type": "object"}}, cfg)
+	if err != nil {
+		t.Fatalf("buildTool: %v", err)
+	}
+	if _, ok := tool.Meta["timeout"]; ok {
+		t.Fatalf("契约未声明 timeout 不应写 _meta.timeout：%v", tool.Meta)
 	}
 }
 
@@ -116,13 +152,15 @@ func TestToolAsyncUnconfiguredKeepsContract(t *testing.T) {
 	}
 }
 
-// TestToolAsyncInvalidValuesIgnored：非法 mode / 负数 → 丢该字段（不整体拒绝、不炸）。
+// TestToolAsyncInvalidValuesIgnored：非法 mode → 丢该字段（不整体拒绝、不炸）；
+// 负数/0 数值（含 -1 = 无上限）**保留**（新口径，2026-09-27）。
 func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 	cfg := DefaultConfig()
+	// 仅非法 mode（无数值）→ 归一为无覆盖（表未变化）
 	if cfg.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_core_file_read": {Mode: "sometimes", Threshold: -1, HardTimeout: -5},
+		"self_core_file_read": {Mode: "sometimes"},
 	}) {
-		t.Fatal("全字段非法应归一为无覆盖（表未变化）")
+		t.Fatal("仅非法 mode 应归一为无覆盖（表未变化）")
 	}
 	if len(cfg.ToolAsync) != 0 {
 		t.Fatalf("非法值应被丢弃，ToolAsync = %v", cfg.ToolAsync)
@@ -149,6 +187,17 @@ func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 		t.Fatalf("非法 mode 不应写入 _meta.async（got %v）", tool.Meta["async"])
 	}
 
+	// 负数（-1 = 无上限）**保留**：mode 非法被丢、数值字段保留 → 仍为有效覆盖
+	cfg5 := DefaultConfig()
+	if !cfg5.SetToolAsync(map[string]ToolAsyncOverride{
+		"self_core_file_read": {Mode: "sometimes", Threshold: -1, HardTimeout: -1},
+	}) {
+		t.Fatal("非法 mode + 显式 -1 数值应保留数值字段（有效覆盖）")
+	}
+	if ov := cfg5.ToolAsync["self_core_file_read"]; ov.Mode != "" || !ov.ThresholdSet || ov.Threshold != -1 || !ov.HardTimeoutSet || ov.HardTimeout != -1 {
+		t.Fatalf("显式 -1 应保留（无上限）：%+v", ov)
+	}
+
 	// 空表 = 清空全部覆盖（前端「恢复默认」= 删该工具键项）
 	cfg4 := DefaultConfig()
 	cfg4.SetToolAsync(map[string]ToolAsyncOverride{"self_core_file_read": {Mode: "always"}})
@@ -160,32 +209,65 @@ func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 	}
 }
 
-// TestResolveExecTimeoutPriority：执行硬上限优先级 = hard_timeout（用户配置）> 契约 timeout
-// > cfg.execTimeout()（prj timeout_sec / 内置默认）；未配置 hard_timeout 时既有语义不变。
+// TestToolAsyncOverrideJSONSetFlags：JSON 解析区分「未设置（null/空/非数字）」与「显式 0/-1」。
+func TestToolAsyncOverrideJSONSetFlags(t *testing.T) {
+	var m map[string]ToolAsyncOverride
+	raw := `{"a":{"mode":"never","hard_timeout":0,"threshold":null},
+	         "b":{"mode":"manual","hard_timeout":-1,"threshold":""},
+	         "c":{"mode":"auto","hard_timeout":"30","threshold":"x"}}`
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ov := m["a"]; !ov.HardTimeoutSet || ov.HardTimeout != 0 || ov.ThresholdSet {
+		t.Fatalf("a：hard_timeout=0 应显式设置（无上限）、threshold=null 应未设置：%+v", ov)
+	}
+	if ov := m["b"]; !ov.HardTimeoutSet || ov.HardTimeout != -1 || ov.ThresholdSet {
+		t.Fatalf("b：hard_timeout=-1 应显式设置（无上限）、threshold=\"\" 应未设置：%+v", ov)
+	}
+	if ov := m["c"]; !ov.HardTimeoutSet || ov.HardTimeout != 30 || ov.ThresholdSet {
+		t.Fatalf("c：hard_timeout=\"30\" 数值字符串应设置、threshold=\"x\" 非数字应未设置：%+v", ov)
+	}
+}
+
+// TestResolveExecTimeoutPriority：执行硬上限优先级 = hard_timeout（用户显式）> 契约 timeout（显式）
+// > cfg.execTimeout()；**显式 0/-1 = 无上限**（noLimit）；未显式设置时既有语义不变。
 func TestResolveExecTimeoutPriority(t *testing.T) {
 	cfg := DefaultConfig() // 内置默认 300s
-	if got := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 0)); got != 300 {
-		t.Fatalf("未配置 → 内置默认，got %d want 300", got)
+	if got, nl := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 0)); got != 300 || nl {
+		t.Fatalf("未配置 → 内置默认，got (%d,%v) want (300,false)", got, nl)
 	}
-	if got := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 60)); got != 60 {
-		t.Fatalf("契约 timeout 优先于 cfg.execTimeout，got %d want 60", got)
+	if got, nl := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 60)); got != 60 || nl {
+		t.Fatalf("契约 timeout 优先于 cfg.execTimeout，got (%d,%v) want (60,false)", got, nl)
 	}
 	cfg.SetRuntime(120, 0, nil, "", nil) // prj timeout_sec=120
-	if got := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 0)); got != 120 {
+	if got, _ := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 0)); got != 120 {
 		t.Fatalf("prj timeout_sec 对未声明 timeout 的契约生效，got %d want 120", got)
 	}
-	if got := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 60)); got != 60 {
+	if got, _ := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 60)); got != 60 {
 		t.Fatalf("prj timeout_sec 不改「契约优先」语义，got %d want 60（I-79 口径保持）", got)
 	}
 	cfg.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_t":      {HardTimeout: 5}, // 用户显式硬上限 → 最高
-		"self_t_deep": {HardTimeout: 9}, // 孤儿键不影响 t
+		"self_t":      {HardTimeout: 5, HardTimeoutSet: true}, // 用户显式硬上限 → 最高
+		"self_t_deep": {HardTimeout: 9, HardTimeoutSet: true}, // 孤儿键不影响 t
 	})
-	if got := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 60)); got != 5 {
-		t.Fatalf("hard_timeout 应压过契约 timeout，got %d want 5", got)
+	if got, nl := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 60)); got != 5 || nl {
+		t.Fatalf("hard_timeout 应压过契约 timeout，got (%d,%v) want (5,false)", got, nl)
 	}
-	if got := resolveExecTimeout(cfg, toolDocForTest("t2", "auto", 0, 0)); got != 120 {
+	if got, _ := resolveExecTimeout(cfg, toolDocForTest("t2", "auto", 0, 0)); got != 120 {
 		t.Fatalf("孤儿键不得生效，got %d want 120", got)
+	}
+
+	// 显式 0 / -1 = 无上限（契约 / usr 覆盖两路）
+	if got, nl := resolveExecTimeout(cfg, &ToolDoc{Name: "z", TimeoutSet: true, Timeout: 0}); got != 0 || !nl {
+		t.Fatalf("契约 timeout=0 应无上限，got (%d,%v) want (0,true)", got, nl)
+	}
+	if got, nl := resolveExecTimeout(cfg, &ToolDoc{Name: "z", TimeoutSet: true, Timeout: -1}); got != 0 || !nl {
+		t.Fatalf("契约 timeout=-1 应无上限，got (%d,%v) want (0,true)", got, nl)
+	}
+	cfg6 := DefaultConfig()
+	cfg6.SetToolAsync(map[string]ToolAsyncOverride{"self_zz": {HardTimeoutSet: true, HardTimeout: 0}})
+	if got, nl := resolveExecTimeout(cfg6, toolDocForTest("zz", "auto", 0, 60)); got != 0 || !nl {
+		t.Fatalf("usr hard_timeout=0 应无上限（压过契约 60），got (%d,%v) want (0,true)", got, nl)
 	}
 }
 
@@ -200,7 +282,8 @@ func TestHelperSlowProcess(t *testing.T) {
 }
 
 // TestToolAsyncHardTimeoutKills：hard_timeout 真实生效——把长跑脚本在 1s 处杀掉
-// （断言错误文案的秒数 + 实际耗时远小于脚本自身时长）；未配置 hard_timeout 的对照**不被杀**。
+// （断言错误文案的秒数 + 实际耗时远小于脚本自身时长）；未配置 hard_timeout 的对照**不被杀**；
+// **显式 hard_timeout=0（无上限）**亦不被杀（2026-09-27 口径）。
 func TestToolAsyncHardTimeoutKills(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -234,6 +317,16 @@ func TestToolAsyncHardTimeoutKills(t *testing.T) {
 		t.Fatalf("硬杀未按 hard_timeout 生效（耗时 %v，脚本自身 5s）", elapsed)
 	}
 	t.Logf("hard_timeout=1s 硬杀生效：调用耗时 %v，err=%v", elapsed, err)
+
+	// ③ hard_timeout=0（显式无上限）→ 不设 WithTimeout，1.5s 脚本自然完成（不被杀）
+	t.Setenv("CK_SLEEP_MS", "1500")
+	cfgZero := DefaultConfig()
+	cfgZero.SetToolAsync(map[string]ToolAsyncOverride{
+		"self_core_file_read": {HardTimeoutSet: true, HardTimeout: 0},
+	})
+	if _, err := callTool(context.Background(), cfgZero, slow, map[string]any{}, nil, CallContext{InstanceID: "ins-1"}); err != nil {
+		t.Fatalf("hard_timeout=0（无上限）不应被杀: %v", err)
+	}
 }
 
 // TestToolAsyncSetReturnsChangedOnDifference：覆盖表比较口径（无变化 → 不触发重注册）。

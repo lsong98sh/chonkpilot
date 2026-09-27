@@ -750,9 +750,9 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	}
 
 	// 契约默认 async 族（工具 _meta；调用级覆盖 + Params.AsyncMode 全局覆盖）
-	defMode, defTimeoutS, defThrS := toolAsyncMeta(route)
-	explicitNever := defMode == "never" // 契约显式 never：调用级不可覆盖
-	mode := defMode
+	def := toolAsyncMeta(route)
+	explicitNever := def.mode == "never" // 契约显式 never：调用级不可覆盖
+	mode := def.mode
 	// 第三方（Origin != builtin）缺省 never：**软缺省**——工具契约未显式声明 async 时生效，
 	// 调用级 async / 全局 AsyncMode 仍可覆盖（区别于契约显式 never 的锁死）。
 	if softNeverDefault(route, ps.entry) {
@@ -762,13 +762,16 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	// 覆盖 dir 节点 / 第三方工具（mcp-server 侧只按契约名覆盖 self 节点，二者不重叠）。
 	// 语义（用户口径，同 mcp-server applyToolAsyncOverride）：调用级 > 本覆盖 > 契约 _meta > 软缺省；
 	// 本覆盖属用户显式意图 → 解除 softNeverDefault 与契约显式 never 的锁死。
+	// 阈值：显式设置即采用（含 **0/-1 = 无阈值**）；未设置 → 回落契约/超时点。
+	thrSet, thrS := def.thrSet, def.thr
 	if ov, ok := g.asyncOverride(req.Name); ok {
 		if ov.Mode != "" {
 			mode = ov.Mode
 			explicitNever = false
 		}
-		if ov.Threshold > 0 {
-			defThrS = float64(ov.Threshold)
+		if ov.ThresholdSet || ov.Threshold > 0 {
+			thrS = float64(ov.Threshold)
+			thrSet = true
 		}
 	}
 	if g.params.AsyncMode != "" {
@@ -791,20 +794,26 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 		mode = "auto"
 	}
 
-	// 有效超时（秒）：调用级 > 条目级 > 工具 meta timeout > 全局
+	// 有效超时（秒）：**工具 `_meta.timeout` 显式「无上限」（0 / -1）绝对优先、不可被覆盖** ——
+	// 该调用**永不设超时点**（不发 `mcp-tools-timeout`，阻塞至完成或用户取消），调用级 / server 级 /
+	// 全局均不得覆盖（用户口径 2026-09-27：「无上限」必须是绝对的；第三方工具若声明了也覆盖改不了）。
+	// 其余情形维持既有优先级链：调用级(`>0`) > server 级(`entry.TimeoutSec>0`) > 工具 `_meta.timeout`(`>0`) > 全局。
 	timeoutSec := g.params.CallTimeout.Seconds()
-	if defTimeoutS > 0 {
-		timeoutSec = defTimeoutS
+	if def.timeoutSet {
+		timeoutSec = def.timeout
 	}
-	if ps.entry != nil && ps.entry.TimeoutSec > 0 {
-		timeoutSec = float64(ps.entry.TimeoutSec)
+	if !(def.timeoutSet && def.timeout <= 0) {
+		if ps.entry != nil && ps.entry.TimeoutSec > 0 {
+			timeoutSec = float64(ps.entry.TimeoutSec)
+		}
+		if callTimeout > 0 {
+			timeoutSec = callTimeout
+		}
 	}
-	if callTimeout > 0 {
-		timeoutSec = callTimeout
-	}
-	thresholdSec := defThrS
-	if defThrS <= 0 {
-		thresholdSec = timeoutSec
+	// 阈值（秒）：显式声明（含 0/-1 = 无阈值）优先；未声明 → 回落有效超时。
+	thresholdSec := timeoutSec
+	if thrSet {
+		thresholdSec = thrS
 	}
 
 	execCtx := context.Background()
@@ -832,7 +841,8 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 		providerKey: route.Provider,
 	}
 
-	// 阈值 / 超时点（秒）：auto = 转后台阈值，其余 = 超时点（随 started 上报，供层记 exec_json）
+	// 阈值 / 超时点（秒）：auto = 转后台阈值，其余 = 超时点（随 started 上报，供层记 exec_json）。
+	// limit <= 0（显式 0/-1 = 无上限）→ **不设点**：永远等，用户可随时取消。
 	limit := timeoutSec
 	if mode == "auto" {
 		limit = thresholdSec
@@ -857,6 +867,18 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 		}
 		// 执行态上报（P3-① 上报点 ①）：启动 → started（层落 running + exec_json）
 		g.tm.emitExec(spec.instanceID, t.ID, ExecPhaseStarted, map[string]any{"mode": mode, "threshold_s": limit})
+		// 无上限（工具 `_meta.timeout` 或 usr threshold 显式 0/-1）：不设超时/阈值点，
+		// 等待完成或用户取消（never/manual 不再发裁决；auto 无阈值则阻塞）。用户可经任务面板取消。
+		if limit <= 0 {
+			select {
+			case <-t.doneCh: // 完成或已被取消 → 就地交付
+				return g.tm.manualResult(t), 0, ""
+			case <-t.detachCh: // 用户经 UI 转后台 → pending
+				g.logf("[gateway] tool %s detached to background (exec %s)", req.Name, t.ID)
+				g.tm.emitExec(spec.instanceID, t.ID, ExecPhaseDetached, map[string]any{"trigger": "manual"})
+				return pendingResult(t.ID), 0, ""
+			}
+		}
 		timer := time.NewTimer(time.Duration(limit * float64(time.Second)))
 		defer timer.Stop()
 		select {
@@ -993,23 +1015,35 @@ func softNeverDefault(route *toolRoute, entry *ServerEntry) bool {
 	return true
 }
 
-// toolAsyncMeta 取路由工具 _meta 的 async 默认族（async / async-threshold / timeout）。
-func toolAsyncMeta(route *toolRoute) (mode string, timeoutS, thresholdS float64) {
-	mode = "auto"
-	if route == nil || route.Tool.Meta == nil {
-		return
+// asyncDefaults 是路由工具 `_meta` 的 async 默认族（async / async-threshold / timeout）。
+// timeoutSet / thrSet = 对应键是否**显式声明**（区分「显式 0/-1 = 无上限」与「未设置 = 回落」）。
+type asyncDefaults struct {
+	mode       string
+	timeout    float64
+	timeoutSet bool
+	thr        float64
+	thrSet     bool
+}
+
+// toolAsyncMeta 取路由工具 _meta 的 async 默认族。
+func toolAsyncMeta(route *toolRoute) asyncDefaults {
+	d := asyncDefaults{mode: "auto"}
+	if route == nil || route.Tool == nil || route.Tool.Meta == nil {
+		return d
 	}
 	m := route.Tool.Meta
 	if v, ok := m["async"].(string); ok && v != "" {
-		mode = v
+		d.mode = v
 	}
-	if v, ok := m["async-threshold"].(float64); ok && v > 0 {
-		thresholdS = v
+	if v, ok := m["async-threshold"].(float64); ok {
+		d.thr = v
+		d.thrSet = true
 	}
-	if v, ok := m["timeout"].(float64); ok && v > 0 {
-		timeoutS = v
+	if v, ok := m["timeout"].(float64); ok {
+		d.timeout = v
+		d.timeoutSet = true
 	}
-	return
+	return d
 }
 
 func strFrom(m map[string]any, key, def string) string {
@@ -1168,6 +1202,9 @@ type regMsg struct {
 	Owner          string          `json:"owner,omitempty"`           // kind=tool
 	Hot            bool            `json:"hot,omitempty"`             // kind=tool
 	Category       string          `json:"category,omitempty"`        // kind=tool（_meta.category 元分类）
+	Async          string          `json:"async,omitempty"`           // kind=tool（_meta.async；auto 不显式透出）
+	AsyncThreshold float64         `json:"async_threshold,omitempty"` // kind=tool（_meta.async-threshold，秒）
+	Timeout        *float64        `json:"timeout,omitempty"`         // kind=tool（_meta.timeout，秒；**指针区分「未设置」与「0/-1 = 无上限」**）
 	AssetKind      string          `json:"asset_kind,omitempty"`      // prompts/register 资产类别：prompt|skill（缺省 prompt；2026-09-06；25 §5/T2：agent 已撤）
 	Scope          string          `json:"scope,omitempty"`           // 注册归属域（2026-09-06）：缺省/"global" = 全局；instance id（uuid）= instance 级
 	URI            string          `json:"uri,omitempty"`             // kind=resource
@@ -1273,13 +1310,26 @@ func (g *Gateway) registerTool(v *mq.Value, req regMsg) error {
 		return methodError(-32602, "%s", err.Error())
 	}
 	t := &mcp.Tool{Name: req.Name, Description: req.Description, InputSchema: norm}
-	if req.Hot || req.Category != "" {
+	// 工具 `_meta`（契约透出；字段命名对齐 mcp-server buildTool：async 为 auto/空时不显式透出，
+	// async-threshold 仅 >0 透出；**timeout 键显式声明即透出，含 0/-1 = 无上限**——靠 `*float64`
+	// 区分「未设置」与「显式 0/-1」）。注册载荷可含 category/async/async_threshold/timeout
+	// （域工具经 llm-server tools/register 携带契约 [meta]，见 domainmcp.go registerDomainTools）。
+	if req.Hot || req.Category != "" || req.Async != "" || req.AsyncThreshold > 0 || req.Timeout != nil {
 		if t.Meta == nil {
 			t.Meta = mcp.Meta{}
 		}
 		t.Meta["hot"] = req.Hot
 		if req.Category != "" {
 			t.Meta["category"] = req.Category
+		}
+		if req.Async != "" && req.Async != "auto" {
+			t.Meta["async"] = req.Async
+		}
+		if req.AsyncThreshold > 0 {
+			t.Meta["async-threshold"] = req.AsyncThreshold
+		}
+		if req.Timeout != nil {
+			t.Meta["timeout"] = *req.Timeout
 		}
 	}
 	owner := req.Owner

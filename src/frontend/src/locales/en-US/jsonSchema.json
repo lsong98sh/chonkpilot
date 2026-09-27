@@ -9,5 +9,10 @@
   "complete_keyword": "Add keyword",
   "remove_keyword": "Remove this keyword",
   "new_property_name": "New property name",
-  "enum_value": "Enum value"
+  "enum_value": "Enum value",
+  "enum_dialog_title": "Enum values",
+  "enum_add_row": "Add enum value",
+  "remove_enum": "Remove this enum value",
+  "empty_value": "(empty)",
+  "set_keyword": "Set {keyword}"
 }

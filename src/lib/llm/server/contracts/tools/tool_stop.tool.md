@@ -3,7 +3,7 @@
 [meta]
 category=server
 async=never
-timeout=10
+timeout=0
 hot=true
 
 [description]

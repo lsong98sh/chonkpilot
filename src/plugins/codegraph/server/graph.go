@@ -25,6 +25,9 @@ type Symbol struct {
 	EndLine    int    `json:"endLine"`
 	Complexity int    `json:"complexity"` // 圈复杂度（决策点启发式，>=1；仅 func/method/constructor）
 	Signature  string `json:"signature"`
+	// Calls 该符号内直接调用的被调名（最后一段，去重 + 排序；仅 func/method/constructor）。
+	// 语义为调用点文本的**名字级启发式**（无类型/重载解析），如 `a.b.Foo()` → "Foo"。
+	Calls []string `json:"calls,omitempty"`
 }
 
 // FileInfo 单文件索引条目。
@@ -43,10 +46,11 @@ type Index struct {
 	Files  map[string]*FileInfo
 	syms   []Symbol
 	byName map[string][]int // 小写名 → syms 下标
+	byCall map[string][]int // 小写被调名（最后一段）→ 调用方 syms 下标（Calls 反向索引）
 }
 
 func newIndex() *Index {
-	return &Index{Files: map[string]*FileInfo{}, byName: map[string][]int{}}
+	return &Index{Files: map[string]*FileInfo{}, byName: map[string][]int{}, byCall: map[string][]int{}}
 }
 
 func (ix *Index) AddFile(fi *FileInfo) {
@@ -54,8 +58,15 @@ func (ix *Index) AddFile(fi *FileInfo) {
 	for _, s := range fi.Symbols {
 		s.ID = symbolID(fi.Path, s.Line, s.Name, s.Kind)
 		ix.syms = append(ix.syms, s)
-		key := strings.ToLower(s.Name)
-		ix.byName[key] = append(ix.byName[key], len(ix.syms)-1)
+		idx := len(ix.syms) - 1
+		ix.byName[strings.ToLower(s.Name)] = append(ix.byName[strings.ToLower(s.Name)], idx)
+		for _, c := range s.Calls {
+			k := strings.ToLower(strings.TrimSpace(c))
+			if k == "" {
+				continue
+			}
+			ix.byCall[k] = append(ix.byCall[k], idx)
+		}
 	}
 }
 
@@ -64,26 +75,28 @@ func (ix *Index) RemoveFile(path string) {
 		return
 	}
 	delete(ix.Files, path)
-	// 重建 syms/byName（文件级删除低频，简单重建）
+	// 重建 syms/byName/byCall（文件级删除低频，简单重建）
 	syms := make([]Symbol, 0, len(ix.syms))
 	byName := map[string][]int{}
-	added := map[string]int{}
+	byCall := map[string][]int{}
 	for _, s := range ix.syms {
 		if s.File == path {
 			continue
 		}
 		idx := len(syms)
 		syms = append(syms, s)
-		k := strings.ToLower(s.Name)
-		if _, ok := added[k]; ok {
-			byName[k] = append(byName[k], idx)
-			continue
+		byName[strings.ToLower(s.Name)] = append(byName[strings.ToLower(s.Name)], idx)
+		for _, c := range s.Calls {
+			k := strings.ToLower(strings.TrimSpace(c))
+			if k == "" {
+				continue
+			}
+			byCall[k] = append(byCall[k], idx)
 		}
-		added[k] = idx
-		byName[k] = []int{idx}
 	}
 	ix.syms = syms
 	ix.byName = byName
+	ix.byCall = byCall
 }
 
 func (ix *Index) AllSymbols() []Symbol {
@@ -100,14 +113,15 @@ func symbolID(file string, line int, name, kind string) string {
 
 // Meta 工作区元信息（meta.json）。
 type Meta struct {
-	Enabled       bool     `json:"enabled"`
-	State         string   `json:"state"` // "" 未初始化 | indexing | ready | error
-	ProgressDone  int      `json:"progressDone"`
-	ProgressTotal int      `json:"progressTotal"`
-	Err           string   `json:"err,omitempty"`
-	LastIndexedAt int64    `json:"lastIndexedAt"`
-	SkipDirs      []string `json:"skipDirs,omitempty"`
-	Exts          []string `json:"exts,omitempty"` // 参与索引的扩展名（空 = 全部受支持语言）
+	Enabled        bool     `json:"enabled"`
+	State          string   `json:"state"` // "" 未初始化 | indexing | ready | error
+	ProgressDone   int      `json:"progressDone"`
+	ProgressTotal  int      `json:"progressTotal"`
+	Err            string   `json:"err,omitempty"`
+	LastIndexedAt  int64    `json:"lastIndexedAt"`
+	SkipDirs       []string `json:"skipDirs,omitempty"`       // 用户排除规则（gitignore 语法，最高优先级）
+	StackGitignore bool     `json:"stackGitignore,omitempty"` // 是否叠加各级 .gitignore / info/exclude / 全局 ignore
+	Exts           []string `json:"exts,omitempty"`           // 参与索引的扩展名（空 = 全部受支持语言）
 }
 
 // Workspace 引擎内部工作区：Dir=源码根；索引与元信息落在 Store。
@@ -375,6 +389,139 @@ func (w *Workspace) FindSymbol(id, file, name string) []Symbol {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Line < out[j].Line })
 	return out
+}
+
+// CalleeRef 一条被调用目标的解析结果（名字级启发式，无类型解析）。
+type CalleeRef struct {
+	Name     string `json:"name"`
+	Resolved bool   `json:"resolved"` // 是否在索引内唯一命中符号
+	Kind     string `json:"kind,omitempty"`
+	File     string `json:"file,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	ID       string `json:"id,omitempty"`
+}
+
+// Callers 返回调用了 target 的符号（按名字匹配：忽略大小写的全等 或 后缀 `.name`，
+// 故 `pkg.Foo` 与 `Foo` 视为同一目标）。file 非空时只保留该文件内的调用方；limit>0 截断。
+// 语义为调用点文本的名字级启发式（无类型/重载解析）。
+func (w *Workspace) Callers(target, file string, limit int) []Symbol {
+	ix := w.indexSnapshot()
+	target = strings.TrimSpace(target)
+	if ix == nil || target == "" {
+		return nil
+	}
+	idxSet := map[int]bool{}
+	for _, k := range callLookupKeys(target) {
+		for _, i := range ix.byCall[k] {
+			idxSet[i] = true
+		}
+	}
+	idx := make([]int, 0, len(idxSet))
+	for i := range idxSet {
+		idx = append(idx, i)
+	}
+	sort.Ints(idx)
+
+	syms := ix.AllSymbols()
+	fileRel := w.norm(file)
+	var out []Symbol
+	for _, i := range idx {
+		if i < 0 || i >= len(syms) {
+			continue
+		}
+		s := syms[i]
+		if file != "" && !w.fileHit(s.File, fileRel, file) {
+			continue
+		}
+		if !anyCallMatches(s.Calls, target) {
+			continue
+		}
+		out = append(out, w.absSym(s))
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// Callees 返回某符号（按 id 或 file+name 定位，取首个）直接调用的目标；
+// 能唯一解析到已索引符号时回填其 file/line/kind/id（resolved=true，否则 resolved=false）。
+func (w *Workspace) Callees(id, file, name string, limit int) []CalleeRef {
+	ix := w.indexSnapshot()
+	if ix == nil {
+		return nil
+	}
+	hits := w.FindSymbol(id, file, name)
+	if len(hits) == 0 {
+		return nil
+	}
+	syms := ix.AllSymbols()
+	var out []CalleeRef
+	for _, c := range hits[0].Calls {
+		ref := CalleeRef{Name: c}
+		if ids := ix.byName[strings.ToLower(c)]; len(ids) == 1 && ids[0] < len(syms) {
+			s := w.absSym(syms[ids[0]])
+			ref.Resolved = true
+			ref.Kind = s.Kind
+			ref.File = s.File
+			ref.Line = s.Line
+			ref.ID = s.ID
+		}
+		out = append(out, ref)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// fileHit 文件过滤：相对路径子串或绝对路径子串命中（与 SearchSymbol 同口径）。
+func (w *Workspace) fileHit(sFile, fileRel, fileInput string) bool {
+	if strings.Contains(strings.ToLower(sFile), strings.ToLower(fileRel)) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(w.abs(sFile)), strings.ToLower(fileInput))
+}
+
+// callLookupKeys 查询目标 → byCall 检索键（本体 + 最后一段，均小写）。
+func callLookupKeys(target string) []string {
+	t := strings.ToLower(strings.TrimSpace(target))
+	if t == "" {
+		return nil
+	}
+	keys := []string{t}
+	if tail := callTailName(t); tail != "" && tail != t {
+		keys = append(keys, tail)
+	}
+	return keys
+}
+
+// callTailName 取名字最后一段（`.`/`::` 分隔），小写。
+func callTailName(name string) string {
+	s := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "::", ".")
+	if i := strings.LastIndexByte(s, '.'); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.TrimSpace(s)
+}
+
+// anyCallMatches Calls 中是否存在与 target 匹配的被调名（全等 或 后缀 `.name`）。
+func anyCallMatches(calls []string, target string) bool {
+	t := strings.ToLower(strings.TrimSpace(target))
+	tail := callTailName(t)
+	for _, c := range calls {
+		cl := strings.ToLower(strings.TrimSpace(c))
+		if cl == "" {
+			continue
+		}
+		if cl == t || (tail != "" && cl == tail) {
+			return true
+		}
+		if strings.HasSuffix(cl, "."+t) {
+			return true
+		}
+	}
+	return false
 }
 
 // TopComplexity 最高复杂度前 topN（>=minCc）。

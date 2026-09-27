@@ -70,11 +70,11 @@ def main():
                 bool(logPage) and int(logSel) >= 1 and ('日志目录' in logTxt or 'Log directory' in logTxt),
                 f"page={logPage} sel={logSel}")
 
-        # C2 security 页签（默认首屏，索引 0）→ 信任目录表 + 空态
+        # C2 security 页签（默认首屏，索引 0）→ 信任目录表 + 空态（自研 Table：.b-table）
         J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[0]?.click(); 'ok'")
         time.sleep(0.8)
         secTab = J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[0]?.classList.contains('active')")
-        tableHead = J(gui, "document.querySelectorAll('.project-config-panel .b-table-inline th').length")
+        tableHead = J(gui, "document.querySelectorAll('.project-config-panel .b-table th').length")
         bodyTxt = J(gui, "document.body.textContent")
         emptyTxt = '暂无信任目录' in bodyTxt or 'No trust' in bodyTxt or 'empty' in bodyTxt.lower()
         c.check("C2 security 页签 + 表头 + 空态", bool(secTab) and int(tableHead) >= 3, f"sec={secTab} th={tableHead} empty={emptyTxt}")
@@ -82,16 +82,16 @@ def main():
         # C3 security 添加 → 新增一行（可编辑 dir 输入框）
         J(gui, "(()=>{const b=document.querySelector('.project-config-panel .tab-toolbar button');if(b)b.click();return !!b})()")
         time.sleep(0.8)
-        rows = J(gui, "document.querySelectorAll('.project-config-panel .b-table-inline tbody tr').length")
+        rows = J(gui, "document.querySelectorAll('.project-config-panel .b-table tbody tr').length")
         inputs = J(gui, "document.querySelectorAll('.project-config-panel .security-dir-row .b-input').length")
         c.check("C3 security 添加按钮 → 新增行 + 输入框", int(rows) >= 1 and int(inputs) >= 1, f"rows={rows} inputs={inputs}")
 
-        # C3b 输入目录 → 变更保存（无 JS 错误）
+        # C3b 输入目录 → 仅改本地态（手动保存：改后点【保存】才落库）；断言无 JS 错误
         gui.console(clear=True)
         J(gui, """(()=>{const el=document.querySelector('.project-config-panel .security-dir-row .b-input');if(!el)return false;const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;s.call(el,'D:\\\\trust');el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true})()""")
         time.sleep(0.8)
         errs = [e.get('text') for e in (gui.console() or {}).get('entries', []) if e.get('level') == 'error']
-        c.check("C3b security 目录输入即保存（无错误）", len(errs) == 0, repr(errs[:2]))
+        c.check("C3b security 目录输入（本地态，无错误）", len(errs) == 0, repr(errs[:2]))
 
         # ── 用户配置（config-open → settings-llm 页签） ──
         gui.console(clear=True)

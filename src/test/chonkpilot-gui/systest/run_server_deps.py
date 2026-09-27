@@ -518,6 +518,9 @@ def case_long_content_more():
 
 def main():
     c.wait_ready()
+    # 任务面板默认收起（2026-09-27 首屏减负：MainLayout taskOpen 默认 false）→
+    # 本套件含任务树联动 / 节点点击用例 → 先经既有 tasks-toggle 展开。
+    _h.ensure_task_panel_open(c)
     ensure_mock_llm_entry()  # B6/B8 实时回合须走本地 mock_llm（见 MOCK_LLM_NAME 注释）；退出前经套件级快照还原
     _h.wait_idle(c, max_wait=30.0)  # 配置写入触发的前端刷新收敛后再继续（消除 /console 瞬时超时）
     c.console(clear=True)

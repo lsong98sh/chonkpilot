@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	ignore "github.com/chonkpilot/chonkpilot-ignore"
 	zvec "github.com/zvec-ai/zvec-go"
 )
 
@@ -24,16 +25,10 @@ const (
 // ErrNotInitialized 未初始化（查询门控用）。
 var ErrNotInitialized = fmt.Errorf("全文索引未初始化（请先 vfts_index）")
 
-// defaultSkipDirs 默认跳过的目录名（与 codegraph 一致，必须排除 .chonkpilot 自身索引目录）。
-func defaultSkipDirs() []string {
-	return []string{".git", ".svn", ".hg", "node_modules", "__pycache__",
-		".venv", "venv", ".trae", ".chonkpilot", "dist", "build",
-		".next", ".nuxt", "out", "target", "vendor"}
-}
-
-// Configure 设置 enabled / exts / skip_dirs（引擎侧同步状态，可见性门控由 plugin 完成）。
-// exts / skipDirs 传 nil 表示不改。
-func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string) error {
+// Configure 设置 enabled / exts / skip_dirs / stack_gitignore（引擎侧同步状态，可见性门控由 plugin 完成）。
+// exts / skipDirs / stackGitignore 传 nil 表示不改
+// （skip_dirs = 用户排除规则（gitignore 语法，最高优先级），空 → 无用户规则）。
+func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string, stackGitignore *bool) error {
 	w.mu.Lock()
 	if enabled != nil {
 		w.meta.Enabled = *enabled
@@ -43,6 +38,9 @@ func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string) error {
 	}
 	if skipDirs != nil {
 		w.meta.SkipDirs = append([]string{}, skipDirs...)
+	}
+	if stackGitignore != nil {
+		w.meta.StackGitignore = *stackGitignore
 	}
 	w.mu.Unlock()
 	return w.saveMeta()
@@ -59,22 +57,6 @@ func normalizeExts(exts []string) []string {
 	return out
 }
 
-// skipSet 目录名跳过集合（默认 ∪ 用户 skip_dirs）。
-func (w *Workspace) skipSet() map[string]bool {
-	m := map[string]bool{}
-	for _, d := range defaultSkipDirs() {
-		m[d] = true
-	}
-	w.mu.Lock()
-	for _, d := range w.meta.SkipDirs {
-		if d != "" {
-			m[d] = true
-		}
-	}
-	w.mu.Unlock()
-	return m
-}
-
 // extSet 生效的扩展名集合（未配置 → 默认集）。
 func (w *Workspace) extSet() map[string]bool {
 	w.mu.Lock()
@@ -86,6 +68,17 @@ func (w *Workspace) extSet() map[string]bool {
 	return newExtSet(exts)
 }
 
+// excludeOptions 构造遍历排除配置：内置强制 / 默认排除恒生效，stack_gitignore 决定是否叠加
+// 各级 .gitignore / .git/info/exclude / 全局 ignore；skip_dirs = 用户规则（最高优先级）。
+func (w *Workspace) excludeOptions() ignore.Options {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return ignore.Options{
+		StackGitignore: w.meta.StackGitignore,
+		UserRules:      append([]string{}, w.meta.SkipDirs...),
+	}
+}
+
 // fileEntry 扫描到的待索引文件。
 type fileEntry struct {
 	path  string // 相对 workdir（'/' 分隔）
@@ -94,18 +87,13 @@ type fileEntry struct {
 }
 
 // collectFiles 扫描受支持文本文件清单（含 stat）。
+// 排除走 ignore.WalkDir（gitignore 语义：目录命中忽略即不下降，文件命中即跳过）。
 func (w *Workspace) collectFiles() ([]fileEntry, error) {
-	skips := w.skipSet()
 	exts := w.extSet()
+	root := filepath.FromSlash(w.Dir)
 	var out []fileEntry
-	err := filepath.WalkDir(filepath.FromSlash(w.Dir), func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if p != filepath.FromSlash(w.Dir) && skips[d.Name()] {
-				return filepath.SkipDir
-			}
+	err := ignore.WalkDir(root, w.excludeOptions(), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		if !exts[strings.ToLower(filepath.Ext(d.Name()))] {
@@ -118,7 +106,7 @@ func (w *Workspace) collectFiles() ([]fileEntry, error) {
 		if info.Size() > int64(maxFileBytes) {
 			return nil
 		}
-		rel := relOf(filepath.FromSlash(w.Dir), p)
+		rel := relOf(root, p)
 		out = append(out, fileEntry{path: rel, size: info.Size(), mtime: info.ModTime().UnixNano()})
 		return nil
 	})
@@ -222,10 +210,10 @@ type IncrementalRemove struct {
 
 // Initialize 全量重建 FTS 索引（同步，直到完成并落盘）。
 // 重复调用为幂等重建：先关闭并清空集合目录，再重新建索引。
-// exts / skipDirs 传非 nil 时先更新配置。返回逐文件 doc_ids（插件重建清单用）。
-func (w *Workspace) Initialize(exts, skipDirs []string) (*IndexResult, error) {
-	if exts != nil || skipDirs != nil {
-		if err := w.Configure(nil, exts, skipDirs); err != nil {
+// exts / skipDirs / stackGitignore 传非 nil 时先更新配置。返回逐文件 doc_ids（插件重建清单用）。
+func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*IndexResult, error) {
+	if exts != nil || skipDirs != nil || stackGitignore != nil {
+		if err := w.Configure(nil, exts, skipDirs, stackGitignore); err != nil {
 			return nil, err
 		}
 	}

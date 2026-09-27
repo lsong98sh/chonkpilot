@@ -7,7 +7,7 @@
   （`{"core":bool,"desktop":bool,"browser":bool}`，未设置 = 不隔离，默认兼容）。
 
   仅 **self 的 executor 工具**（本仓 spawn 子进程执行）可隔离；第三方 stdio&spawn 的 MCP 的沙箱
-  在 MCP 对话框「运行信息」页签（usr `mcps[].sandbox`）设置，http/sse（及非 spawn 的 stdio）无法隔离。
+  在 MCP 对话框「运行信息」页签（usr `mcps[].sandbox`）设置，http/sse（及非 spawn 的 stdio）无法施加沙箱。
 
   手动保存：拨动 Switch / 「恢复未设置」只改本地待保存态（显示「未保存」），点【保存】才落库；
   **无改动时保存按钮禁用**。
@@ -40,7 +40,7 @@
       </div>
 
       <!-- 边界说明：沙箱只对 self 的 executor 工具生效；第三方 MCP 沙箱在 MCP 对话框设置，
-           http/sse（及非 spawn 的 stdio）无法隔离。 -->
+           http/sse（及非 spawn 的 stdio）无法施加沙箱。 -->
       <div class="exec-note">
         <span class="exec-note-text">{{ $t('config.toolSandbox.thirdPartyHint') }}</span>
         <Button text size="small" @click="gotoMcp">{{ $t('config.toolSandbox.gotoMcp') }}</Button>
@@ -180,7 +180,9 @@ async function onSave() {
 .page-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  /* 两轴滚动都由页面正文承担（2026-09-27 用户口径，与工具异步页同范式）：
+     横向滚动条贴 preview 区底部，而不是滚到内容底边才见到。 */
+  overflow: auto;
   padding: 8px 0;
   display: flex;
   flex-direction: column;
@@ -193,7 +195,7 @@ async function onSave() {
 }
 .hint {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   flex: 1;
 }
 .unsaved-mark {
@@ -206,14 +208,14 @@ async function onSave() {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
 }
 .exec-note {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
 }
 .exec-note-text {
   flex: 1;

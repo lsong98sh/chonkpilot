@@ -90,6 +90,9 @@ var dataReqSubjects = []string{
 	"data-memory-list", "data-memory-read", "data-memory-save", "data-memory-delete",
 	// 文件清单域（vfts 增量清单；项目级 prj 库 file_list 表；不广播 -refresh）
 	"data-filelist-list", "data-filelist-put", "data-filelist-del",
+	// 索引排除判定域（2026-09-27 新增只读面）：判定一组 workdir 相对路径是否被索引排除规则排除
+	// （供前端文件树灰显被排除条目；不写库、不广播 -refresh）。
+	"data-index-ignored",
 }
 
 // Options 是 persist 服务构造参数（= internal/kernel.Options 的转发别名；字段含义见 kernel）。
@@ -267,10 +270,10 @@ func (s *Service) lookupInstance(instanceID string) (kernel.Info, bool) {
 
 // ─── 路由与分发 ──────────────────────────────────
 
-// dataDomains 是 data-<domain> 消息面支持的域（61-消息一览 §3.1-§3.4）：配置五域 +
+// dataDomains 是 data-<domain> 消息面支持的域（61-消息一览 §3.1-§3.6）：配置五域 +
 // 会话/任务树/知识库/记忆库四域（B 类随迁补齐）；snapshot = A3 运行时扩展（会话快照 get/set）；
-// file-versions 归属 history.db 外部，不在本面。
-var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "prompt", "session", "snapshot", "knowledge", "tasktree", "memory", "filelist"}
+// index = 2026-09-27 新增只读域（索引排除判定，index-ignored）；file-versions 归属 history.db 外部，不在本面。
+var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "prompt", "session", "snapshot", "knowledge", "tasktree", "memory", "filelist", "index"}
 
 // dataReq 是 data-<domain>-* 请求的通用载荷（§3.1）。ID 宽松接收 string / number。
 type dataReq struct {
@@ -321,6 +324,8 @@ func (s *Service) handle(domain, op string, payload []byte) {
 		s.handleMemory(op, req)
 	case "filelist":
 		s.handleFileList(op, req)
+	case "index":
+		s.handleIndex(op, req)
 	}
 }
 

@@ -12,10 +12,14 @@
 ────────────────────────────────────────────────────────────────────────────
 【核实结论（read bridge/gateway/llm-server + 实测，2026-09-13）】
 
-A. 超时配置来源（gateway doCall 有效值，优先级高→低）：
-   调用级 `timeout`/`_timeout`（args 内，执行前剥离） > 条目级 `mcp_server.timeout`
-   （ServerEntry.TimeoutSec） > 工具 `_meta.timeout` > 全局 `CallTimeout`（GUI 内嵌 60s）。
-   本用例用**调用级**最稳：mock LLM 回 tool_call 时带 `timeout:1` + `async:"never"`。
+A. 超时配置来源（gateway doCall 有效值）：
+   **工具 `_meta.timeout` 显式 0 / -1（无上限）绝对优先、不可被覆盖**（用户口径 2026-09-27：
+   「无上限」必须是绝对的）—— 此时调用级 / 条目级 / 全局超时均**不得覆盖**（不设裁决点，永远等、可取消）。
+   否则按优先级高→低：调用级 `timeout`/`_timeout`（args 内，执行前剥离） > 条目级 `mcp_server.timeout`
+   （ServerEntry.TimeoutSec） > 工具 `_meta.timeout`（正数） > 全局 `CallTimeout`（GUI 内嵌 60s）；
+   键缺失 = 回落全局 CallTimeout。
+   本用例用**调用级**最稳：mock LLM 回 tool_call 时带 `timeout:1` + `async:"never"`（该第三方工具 `_meta`
+   无 timeout 键 → 不触发「绝对无上限」，调用级正数照常生效）。
 
 B. 可达性（GUI test-port ≤ 桥 `PublishEvent`）：
    - `data-<domain>-*` 前缀 → 经总线 persist 服务应答（桥 dataViaPersist）→ **可达**。
@@ -947,6 +951,9 @@ def main():
     total = 0
     # 可选：命令行给用例字母（如 `python run_tool_async.py F`）→ 只跑指定用例（默认全跑）
     only = [a.upper() for a in sys.argv[1:] if a and not a.startswith("-")]
+    # 任务面板默认收起（2026-09-27 首屏减负：MainLayout taskOpen 默认 false）→
+    # B/G 等用例断言任务区 DOM（.session-tree-node / .node-awaiting）→ 先经既有 tasks-toggle 展开。
+    _h.ensure_task_panel_open(c)
     c.console(clear=True)
     print("依赖：--test-port=2345 的 GUI + mock_llm(8901) 指向 llms[0]；夹具 = mock_slow_mcp.py")
 

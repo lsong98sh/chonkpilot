@@ -26,6 +26,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/config"
+	"github.com/chonkpilot/chonkpilot-data/internal/indexignored"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
 )
 
@@ -734,4 +735,77 @@ func (s *Service) handleFileList(op string, req dataReq) {
 	default:
 		failf(errors.New("unsupported filelist action: " + op))
 	}
+}
+
+// ─── index（索引排除判定，只读；2026-09-27 新增）────────────────────
+
+// handleIndex 处理 data-index-<op>（当前仅 ignored）——**只读查询**：判定一组 workdir 相对路径
+// 是否被 codegraph / vfts 的「索引排除规则」排除（供前端文件树灰显被排除条目）。
+//
+// 逻辑在 internal/indexignored（复用 github.com/chonkpilot/chonkpilot-ignore 单一实现，
+// 判定口径与引擎实际索引范围一致）；本 handler 只做信封：解析 paths → 解析实例 workdir +
+// 单批读 prj 配置 → 判定 → 回载荷（61 §3.6）。**零副作用**：不写配置/状态、不触发索引；
+// workdir 无效 / 配置不可读 → 降级（enabled 按配置、ignored 为空），不抛错。
+func (s *Service) handleIndex(op string, req dataReq) {
+	if op != "ignored" {
+		return // 未知动作忽略不回复（与其余域一致）
+	}
+	method := "data-index-" + op
+	workdir, _, _ := s.InstBindingFor(req.InstanceID, facade.Scope{})
+	values := s.indexConfigValues(req.InstanceID)
+	get := func(key string) (string, bool) {
+		v, ok := values[key]
+		return v, ok
+	}
+	res := indexignored.Query(workdir, stringSlice(req.Data["paths"]), get, s.Warnf)
+	result := map[string]any{
+		"codegraph": engineIgnoredResult(res.Codegraph),
+		"vfts":      engineIgnoredResult(res.Vfts),
+	}
+	if res.Truncated {
+		result["truncated"] = true // 超限才带（缺省不出现；见 61 §3.6）
+	}
+	s.reply(method, req, result)
+}
+
+// indexConfigValues 单批读取本判定需要的 prj 配置键（一次 ConfigKVGet）；
+// 失败 → nil（get 全部未命中 = 各键按缺省），并写日志。
+func (s *Service) indexConfigValues(instanceID string) map[string]string {
+	resp, err := s.ConfigKVGet(facade.ConfigKVGetRequest{
+		Domain: facade.DomainPrjConfig, InstanceID: instanceID, Keys: indexignored.ConfigKeys(),
+	})
+	if err != nil {
+		if s.Warnf != nil {
+			s.Warnf("data-index-ignored: 读 prj 配置失败（instance=%q）：%v", instanceID, err)
+		}
+		return nil
+	}
+	return resp.Values
+}
+
+// engineIgnoredResult 组装单引擎结果载荷（ignored 恒为数组，不用 null）。
+func engineIgnoredResult(e indexignored.EngineResult) map[string]any {
+	ignored := make([]any, 0, len(e.Ignored))
+	for _, p := range e.Ignored {
+		ignored = append(ignored, p)
+	}
+	return map[string]any{"enabled": e.Enabled, "ignored": ignored}
+}
+
+// stringSlice 从消息面载荷取字符串数组（缺省 / 非字符串元素跳过；非法 → nil）。
+func stringSlice(v any) []string {
+	arr, ok := v.([]any)
+	if !ok {
+		if ss, ok := v.([]string); ok {
+			return ss
+		}
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }

@@ -8,9 +8,11 @@
         'drop-target': dragOverPath === node.path,
         'is-dir': node.is_dir,
         'is-db': isDBConfig(node),
+        'is-ignored': !!node._ignored,
       }"
       :style="{ paddingLeft: 8 + depth * 18 + 'px' }"
       :data-path="node.path"
+      :title="node._ignored ? $t('fileTree.index_ignored') : undefined"
       draggable="true"
       @click="$emit('row-click', node, $event)"
       @dblclick="$emit('row-dblclick', node)"
@@ -290,6 +292,11 @@ const visibleChildren = computed(() => {
   text-overflow: ellipsis;
   font-size: 13px;
   line-height: 1.4;
+}
+/* 被索引排除规则命中的条目（is-ignored）：文本灰显（--fg-disabled）。
+   仅改文字颜色——点击/双击/拖拽/右键等交互与布局均不变。 */
+.tree-row.is-ignored .node-label {
+  color: var(--fg-disabled);
 }
 
 .inline-edit-input {

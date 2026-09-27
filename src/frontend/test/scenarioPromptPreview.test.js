@@ -118,7 +118,7 @@ test('i18n 补齐：中英双语键齐备', () => {
     assert.ok(zhScenario.preview && zhScenario.preview[k], `zh-CN scenario.preview.${k} 缺失`)
     assert.ok(enScenario.preview && enScenario.preview[k], `en-US scenario.preview.${k} 缺失`)
   }
-  for (const k of ['prompt_pick', 'prompt_empty', 'prompt_remove', 'prompt_load_failed']) {
+  for (const k of ['prompt_pick', 'prompt_none', 'prompt_empty', 'prompt_remove', 'prompt_load_failed']) {
     assert.ok(zhChat[k], `zh-CN chat.${k} 缺失`)
     assert.ok(enChat[k], `en-US chat.${k} 缺失`)
   }

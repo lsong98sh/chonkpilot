@@ -3,7 +3,9 @@
 toolbar-left 按钮（2026-09-16 起 4 个，按 title 定位，不按下标）：
 open 打开 / recent-dirs 最近目录 / settings 设置 / scenarios 场景
 （原第 5 个「知识库」按钮已移除；知识库视图入口 = filetree 区「项目 / 知识库」分段）。
-toolbar-right 按钮顺序（DOM）：0=theme 1=lang 2=sessions 3=task切换 4=filetree切换 5=chat切换。
+toolbar-right 按钮顺序（DOM）：0=theme 1=lang 2=sessions 3=task切换 4=filetree切换 5=chat切换
+（元素顺序/类名不变，即使 3/4/5 已补「图标+文字」——下标定位仍成立）。
+任务区默认**收起**（2026-09-27 首屏减负：`MainLayout.vue taskOpen = ref(false)`）→ T12 先断默认收起。
 驱动：真实 DOM click（触发 v-mq）→ 断言前端状态变化。
 """
 import json
@@ -167,11 +169,15 @@ def main():
         toggle(4)
         c.check("T11b filetree 切换（恢复）", J(gui, "!!document.querySelector('.filetree-panel')"))
 
+        # T12 task 面板（下标 3）：默认**收起**（2026-09-27 首屏减负：taskOpen 默认 false）
+        # → 点一次展开 → 再点收起（顶部「任务」开关的切换语义不变）。
+        c.check("T12a task 区默认收起（SessionChat 未挂载）",
+                J(gui, "!document.querySelector('.session-chat')"), "默认收起")
         toggle(3)
-        c.check("T12 task 切换（隐藏）", J(gui, "!document.querySelector('.session-chat')"),
-                "task 区（SessionChat）隐藏")
+        c.check("T12 task 切换（展开）", J(gui, "!!document.querySelector('.session-chat')"),
+                "点顶部「任务」开关 → task 区（SessionChat）展开")
         toggle(3)
-        c.check("T12b task 切换（恢复）", J(gui, "!!document.querySelector('.session-chat')"))
+        c.check("T12b task 切换（收起）", J(gui, "!document.querySelector('.session-chat')"))
 
         # ── statusbar（并入本组）──
         c.check("S1 statusbar 存在（config/lang 区）",

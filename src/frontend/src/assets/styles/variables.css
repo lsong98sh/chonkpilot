@@ -18,6 +18,15 @@
   /* 弱化文字（11–12px 提示/占位）：原 #6c757d 在最亮底 #f8f9fa 上仅 4.45:1（<4.5）→
      同色相压深至 #6b7280（4.59:1），见 20-gui §12.8 */
   --text-muted: #6b7280;
+  /* 语义文字色（2026-09-27 用户口径）：主要 / 重要 / 次要 / 无效 / 可点击。
+     新增代码优先用这组语义名，不再直接写 --text-primary / --danger / --accent。
+     消费场景：--fg-secondary = 除 title/input 外的说明文字（字段 hint、页面描述、空态副文案）
+     与页签非激活文字（经下方 --tab-inactive-fg 转引）；实测对比度见 20-gui §12.8。 */
+  --fg-primary: var(--text-primary);
+  --fg-important: var(--danger);
+  --fg-secondary: #6f6a5a;   /* 暖灰偏黄；--bg-primary #f8f9fa 上 5.1:1（用户给 #7a7566 仅 4.04 → 压深） */
+  --fg-disabled: #adb5bd;
+  --fg-link: var(--accent);
   --accent: #4361ee;
   --accent-hover: #3a56d4;
   --success: #2d9f4e;
@@ -42,10 +51,10 @@
   --font-size-sm: 13px;
 
   /* 页签：非激活文字色（A6，2026-09-24 用户口径）——由 --text-primary 向底色调和，
-     与激活页签（= --text-primary / --accent）始终有可见差别。light 向更亮的 --bg-secondary
-     调（更淡）；dark 的 --bg-secondary 比 --bg-primary 暗 → 同式即更暗；nord 反之，
-     故在 nord 块内改向 --bg-primary 调（逐 scheme 定义，见下方覆写）。 */
-  --tab-inactive-fg: color-mix(in srgb, var(--text-primary) 78%, var(--bg-secondary));
+     与激活页签（= --text-primary / --accent）始终有可见差别。
+     〔2026-09-27 用户口径〕不再用 color-mix 逐 scheme 调和，直接绑语义次要色
+     --fg-secondary（暖灰偏黄）；三主题取值见各自覆写。 */
+  --tab-inactive-fg: var(--fg-secondary);
 
   /* Transitions */
   --transition-fast: 0.15s ease;
@@ -64,6 +73,9 @@
   /* 弱化文字：原 #6c7086 在 #1e1e2e 上仅 3.36:1（11–12px 提示不可读）→
      向 #a6adc8 一带提亮（#1e1e2e 上 7.37:1，见 20-gui §12.8） */
   --text-muted: #a6adc8;
+  /* 语义文字色覆写：仅覆写非别名项（--fg-primary/important/link 引 var(...) 自动跟随主题） */
+  --fg-secondary: #b8b2a0;   /* 暖灰偏黄（暗色提亮版）；--bg-secondary #181825 上 7.9:1 */
+  --fg-disabled: #6c7086;
   --accent: #89b4fa;
   --accent-hover: #74c7ec;
   --success: #a6e3a1;
@@ -81,8 +93,8 @@
   /* 告警语义衍生：暗色下同法淡化，避免浅色底在暗色主题里刺眼 */
   --warning-bg: color-mix(in srgb, var(--warning) 15%, transparent);
   --warning-border: var(--warning);
-  /* 页签非激活文字：dark 的 --bg-secondary 比 --bg-primary 暗 → 调和结果比激活色更暗 */
-  --tab-inactive-fg: color-mix(in srgb, var(--text-primary) 78%, var(--bg-secondary));
+  /* 页签非激活文字：绑定语义次要色 --fg-secondary（2026-09-27 起，不再 color-mix） */
+  --tab-inactive-fg: var(--fg-secondary);
 }
 
 /* Nord theme */
@@ -97,6 +109,9 @@
   /* 弱化文字：原 #81a1c1 在 #2e3440 上仅 4.64:1（11–12px 提示余量过小）→
      同色相提亮至 #93a8c8（5.16:1，见 20-gui §12.8） */
   --text-muted: #93a8c8;
+  /* 语义文字色覆写：仅覆写非别名项（--fg-primary/important/link 引 var(...) 自动跟随主题） */
+  --fg-secondary: #c9c3b2;   /* 暖灰偏黄（nord 提亮版）；--bg-secondary #3b4252 上 5.8:1 */
+  --fg-disabled: #7b8699;
   --accent: #88c0d0;
   --accent-hover: #8fbcbb;
   --success: #a3be8c;
@@ -115,7 +130,6 @@
   --accent-bg: color-mix(in srgb, var(--accent) 18%, transparent);
   --warning-bg: color-mix(in srgb, var(--warning) 15%, transparent);
   --warning-border: var(--warning);
-  /* 页签非激活文字：nord 的 --bg-secondary（#3b4252）比 --bg-primary 亮 → 改向 --bg-primary 调，
-     保证非激活比激活（--text-primary）更暗（与 dark 同向，见 :root 注释） */
-  --tab-inactive-fg: color-mix(in srgb, var(--text-primary) 78%, var(--bg-primary));
+  /* 页签非激活文字：绑定语义次要色 --fg-secondary（2026-09-27 起，不再 color-mix） */
+  --tab-inactive-fg: var(--fg-secondary);
 }

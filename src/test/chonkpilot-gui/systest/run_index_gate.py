@@ -3,12 +3,14 @@
 
 覆盖（每条 = A 数据面回读 + B 真实效果；B 恒以可观测证据收口，不用"保存成功即算过"）：
 
-  G1 `enable-codegraph`  开 → 工具面出现 6 个 `self_codegraph_*`；关 → 消失。**保存即生效**
+  G1 `enable-codegraph`  开 → 工具面出现 8 个 `self_codegraph_*`；关 → 消失。**保存即生效**
                          （同一实例内先取基线 → 开 → 关，不作重启用例；见 G1 docstring）
   G2 `enable-vfts`       开 → 工具面出现 `self_vfts_query`；关 → 消失。**保存即生效**
   G3 `codegraph.exts` / `codegraph.skip-dirs` → **索引范围终效**：
                          `codegraph.status.exts/skipDirs/indexedFiles` + 落盘 `index.json`
                          命中集合（gate_src 在 / gate_skip 不在），判据可重复。
+                         判据已从「固定 2」改为「**基线全集**」（含 gate_ign 4 个 .go → 6；
+                         跳过 gate_skip 后 5）——见 G3 docstring。
   G4 `codegraph.action`  rebuild / retry → 状态流出现**进行中阶段**（`state=indexing` 且
                          `phase∈{configure,index}`）后回到 `ready`；clear → 回「未初始化」
                          （`state=""`、`indexedFiles=0`、`index.json` 被删除）。
@@ -16,14 +18,27 @@
                          `file_find` 调用 → 命中集合**不再含被跳过目录**（同目录内未跳过文件仍命中）。
   G6 `timeout_sec` / `max_concurrency` → GUI 改后 **prj 回读一致**（含重开页面输入框回显）。
                          B 不可稳定观测的原因见 G6 docstring（附代码级依据）。
+  G7 `codegraph.stack-gitignore` = **gitignore 语义端到端**（勾选「叠加 gitignore」）：
+                         `.gitignore` 生效 + **文件级排除**（`*.gen.go`）+ `!` 反选
+                         （`!special.gen.go` + **目录剪枝**（`gate_ign/sub/` 命中即不下降，
+                         其内 `!gate_ign/sub/u.go` 无效）。判据 = 落盘 `index.json` 命中集合 +
+                         `status.indexedFiles`；收尾取消勾选（回退，避免污染后续）。
+  G8 用户规则（输入框「排除的目录和文件」）**最高优先级** + 文件级排除 + `!` 反选：
+                         `codegraph.skip-dirs` 原样透传（不折名、保留 `!`/glob/顺序）；
+                         对照「叠加 gitignore」+ 用户规则 `!gate_ign/sub/` 压过 .gitignore 目录排除。
+  G9 vfts 侧同语义：`vfts.stack-gitignore` + exts/排除规则 → **既有清单面
+                         `data-filelist-list`（61 §3.1 file_list 表）**的文件集合 + `vfts.status`
+                         （vfts 引擎遍历与 codegraph 共用 `src/lib/ignore` 匹配器 → 行为一致）。
 
 观测手段（**零新增 MQ 主题**，全部取自 61-消息一览既有面）：
   * 工具面 = 客户端能力面 `tools-list`（61 §4.5：桥 → gateway `mcp-tools-list`；桥按当前实例
     作用域过滤）→ `{tools:[{name}]}`。内置能力源暴露名带 `self_` 前缀（gateway applyPrefix，
     self 节点 entry.ID）→ codegraph/vfts 插件注册的工具同样经 self 节点聚合。
-  * 索引状态 = prj 键 `codegraph.status`（插件回写；prjusr 路由，--data-dir 下与 prj 同库）
-    → `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
+  * 索引状态 = prj 键 `codegraph.status` / `vfts.status`（插件回写；prjusr 路由，--data-dir 下与
+    prj 同库）→ `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
     （61 §3：persist 保存/删除后广播）捕获 → 不依赖轮询赛跑，不漏阶段。
+  * vfts 文件清单 = 既有 `data-filelist-list`（61 §3.1：项目级 prj 库 `file_list` 表读面，
+    每行含 `path` 绝对路径）→ 逐文件命中集合（与落盘 `index.json` 同判据口径）。
   * 端到端工具调用 = mock LLM 回 tool_call（`mock_llm.py` 专用路由 `call find-skip`，
     路径由提示词携带 `findskip=<绝对路径>`）→ 走真实 server→gateway→executor 链路。
 
@@ -49,9 +64,14 @@ from chonk_client import TestError, run_case  # noqa: E402
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51 §6 测试资源规范）  # noqa: E402
 
 # ── 工具面（网关暴露名）──────────────────────────────────
+# codegraph 查询工具全集 = 8（`plugin-codegraph/callgate.go:36-104 queryTools`；
+# 含 `*_callers` / `*_callees`，同 `codegraph_test.go:19` 断言；2026-09-27 由 6 订正为 8，
+# 对齐产品现网工具面——原 6 项列表漏 callers/callees 使 G1 假红）。
 CG_TOOLS = [
     "self_codegraph_symbol_search",
     "self_codegraph_get_symbol_info",
+    "self_codegraph_callers",
+    "self_codegraph_callees",
     "self_codegraph_get_dependency_graph",
     "self_codegraph_find_circular_deps",
     "self_codegraph_analyze_complexity",
@@ -61,6 +81,7 @@ VF_TOOL = "self_vfts_query"
 
 REFRESH = "data-prj-config-refresh"          # 既有广播（61 §3）
 STATUS_KEY = "codegraph.status"              # 插件回写的索引状态（61/64 §4.2）
+VSTATUS_KEY = "vfts.status"                  # vfts 插件回写的索引状态（同源口径）
 
 
 # ══════════════════════════════════════════════════════════
@@ -88,6 +109,23 @@ with open(os.path.join(FIND_ROOT, "ok.txt"), "w", encoding="utf-8") as f:
     f.write("GATE_SKIP_SENTINEL ok\n")
 with open(os.path.join(FIND_ROOT, "_skipme", "dep.txt"), "w", encoding="utf-8") as f:
     f.write("GATE_SKIP_SENTINEL dep\n")
+
+# gitignore 语义端到端夹具（G7/G8/G9）：文件级排除 + '!' 反选 + 目录剪枝。
+# 每个 .go 写唯一哨兵字符串（便于在落盘产物 / 清单里定位）；.gitignore 故意把「子级 '!' 反选」
+# 写在「父目录排除」之后，验证 gitignore 语义「目录命中即不下降 → 其内 '!' 无效」。
+IGN_ROOT = os.path.join(WS, "gate_ign")
+os.makedirs(os.path.join(IGN_ROOT, "sub"), exist_ok=True)
+for _name, _pkg, _sent in (
+    ("keep.go", "ign", "SG_IGN_KEEP"),          # 不被任何规则命中
+    ("gen.gen.go", "ign", "SG_IGN_GEN"),        # 被 *.gen.go 命中（文件级排除）
+    ("special.gen.go", "ign", "SG_IGN_SPECIAL"),# 被 !special.gen.go 反选（应保留）
+):
+    with open(os.path.join(IGN_ROOT, _name), "w", encoding="utf-8") as f:
+        f.write("package %s\n\n// %s\nfunc %s() int { return 1 }\n" % (_pkg, _sent, _sent))
+with open(os.path.join(IGN_ROOT, "sub", "u.go"), "w", encoding="utf-8") as f:
+    f.write("package sub\n\n// SG_IGN_SUB\nfunc SG_IGN_SUB() int { return 1 }\n")
+with open(os.path.join(WS, ".gitignore"), "w", encoding="utf-8") as f:
+    f.write("*.gen.go\n!special.gen.go\ngate_ign/sub/\n!gate_ign/sub/u.go\n")
 
 MOCK_PORT = _h.free_port()
 _h.start_mock_llm(MOCK_PORT)                 # mock LLM 自起自收（harness 登记）
@@ -211,16 +249,39 @@ def wait_stream(pred, desc, max_wait=120):
     raise TestError("%s 超时（%ss）；已捕获状态流末段=%r" % (desc, max_wait, states[-6:]))
 
 
-def wait_status(pred, desc, max_wait=120):
-    """轮询 prj 回读的 codegraph.status（收敛判据；失败时打印末次状态）。"""
+def wait_status(pred, desc, max_wait=120, key=STATUS_KEY):
+    """轮询 prj 回读的索引状态（默认 codegraph.status；收敛判据；失败时打印末次状态）。"""
     deadline = time.time() + max_wait
     last = {}
     while time.time() < deadline:
-        last = status_obj()
+        last = status_obj(key)
         if pred(last):
             return last
         time.sleep(0.3)
     raise TestError("%s 超时（%ss）；末次 status=%r" % (desc, max_wait, last))
+
+
+def filelist_paths():
+    """读 vfts 增量清单（既有 `data-filelist-list`，61 §3.1）→ 文件绝对路径列表（'/' 分隔）。"""
+    r = c.req("data-filelist-list", {}) or {}
+    return [str(e.get("path") or "") for e in (r.get("list") or [])]
+
+
+def wait_filelist(pred, desc, max_wait=120):
+    """轮询 vfts 清单直至 `pred(paths)` 成立（清单在引擎索引后由插件重建，晚于 status=ready）。"""
+    deadline = time.time() + max_wait
+    paths = []
+    while time.time() < deadline:
+        paths = filelist_paths()
+        if pred(paths):
+            return paths
+        time.sleep(0.3)
+    raise TestError("%s 超时（%ss）；末次 file_list=%r" % (desc, max_wait, paths))
+
+
+def has_path(paths, suffix):
+    """清单里是否存在以 suffix 结尾的文件（绝对路径 → 按后缀定位）。"""
+    return any(p.replace("\\", "/").endswith(suffix) for p in paths)
 
 
 def _cycle_pred(ss):
@@ -295,6 +356,30 @@ const b=[...R.querySelectorAll('button.b-btn--primary')].filter(x=>x.getBounding
 if(!b)return 'no-btn';b.click();return 'ok';""")
     if r != "ok":
         raise TestError("点击保存按钮失败：%s" % r)
+
+
+def set_stack_gitignore(checked):
+    """勾选/取消「叠加 gitignore」（「排除的目录和文件」label 右侧原生 input[type=checkbox]）。
+
+    口径 = `CodegraphConfig.vue` / `VftsConfig.vue` 的 `<label class="b-checkbox">` 内
+    `<input type=checkbox>`（`v-model` 绑 `change`）；原生 `click()` 同步翻转 checked 并触发
+    change → 组件 ref 更新。操作后校验 DOM 状态达预期。
+    """
+    r = panel_js("""
+const cb=R.querySelector('.b-checkbox input[type=checkbox]');if(!cb)return 'no-cb';
+if(cb.checked!==%s){cb.click();}
+return cb.checked?'on':'off';""" % ("true" if checked else "false"))
+    time.sleep(0.4)
+    if r not in ("on", "off"):
+        raise TestError("「叠加 gitignore」复选框操作失败：%s" % r)
+    if (r == "on") != bool(checked):
+        raise TestError("「叠加 gitignore」复选框未达预期（期望 checked=%s，实际 %s）" % (checked, r))
+
+
+def open_index_tab(tab_label):
+    """打开「设置 → 项目」配置面板并切到指定索引页签（CodeGraph 索引 / Vfts 全文索引）。"""
+    open_page("settings-project", ".project-config-panel")
+    click_tab(".project-config-panel", tab_label)
 
 
 # ── 设置 → 参数（settings-params）项目级控件 ─────────────
@@ -385,7 +470,7 @@ def run_find_turn():
 # ══════════════════════════════════════════════════════════
 
 def case_g1_enable_codegraph_surface():
-    """开 → 工具面出现 6 个 `self_codegraph_*`；关 → 消失（**保存即生效**，不作重启用例）。
+    """开 → 工具面出现 8 个 `self_codegraph_*`；关 → 消失（**保存即生效**，不作重启用例）。
 
     保存即生效依据：`CodegraphConfig.vue handleChange` → `setConfig('enable-codegraph', …)`
     → `data-prj-config-save` → persist 广播 `data-prj-config-refresh` →
@@ -412,11 +497,11 @@ def case_g1_enable_codegraph_surface():
     got = prj().get("enable-codegraph")
     if got != "true":
         raise TestError("点击后 enable-codegraph=%r，期望 'true'（A：prj 回读）" % (got,))
-    on = set(wait_tools(lambda s: set(CG_TOOLS) <= s, "开启后 6 个 codegraph 工具注入工具面"))
+    on = set(wait_tools(lambda s: set(CG_TOOLS) <= s, "开启后 8 个 codegraph 工具注入工具面"))
     extra = sorted(on - base)
     if extra != sorted(CG_TOOLS):
-        raise TestError("开启后工具面增量应为 6 个 codegraph 工具，实际增量=%r" % (extra,))
-    print("[G1] 开 → 工具面 +%r（A: enable-codegraph=%r；B: 可见 6/6，未重启）"
+        raise TestError("开启后工具面增量应为 8 个 codegraph 工具，实际增量=%r" % (extra,))
+    print("[G1] 开 → 工具面 +%r（A: enable-codegraph=%r；B: 可见 8/8，未重启）"
           % (extra, got), flush=True)
 
     if click_switch("CodeGraph 索引") != "ok":
@@ -428,7 +513,7 @@ def case_g1_enable_codegraph_surface():
                          "关闭后 codegraph 工具从工具面移除"))
     if off != base:
         raise TestError("关闭后工具面应回到基线，差异=%r" % (sorted(off ^ base),))
-    print("[G1] 关 → 工具面 -%r（A: enable-codegraph=%r；B: 6/6 消失，未重启）"
+    print("[G1] 关 → 工具面 -%r（A: enable-codegraph=%r；B: 8/8 消失，未重启）"
           % (sorted(CG_TOOLS), got2), flush=True)
 
 
@@ -489,6 +574,11 @@ def _idx_raw():
         return f.read()
 
 
+def _idx_has(rel):
+    """落盘 index.json 是否命中某相对路径（'/' 分隔）。"""
+    return rel in _idx_raw()
+
+
 def case_g3_index_scope():
     """写 exts/skip-dirs（**GUI 配置面**：文本框 + 保存按钮）→ 断言索引范围终效。
 
@@ -498,13 +588,19 @@ def case_g3_index_scope():
          `indexedFiles` 命中文件数（.md 非代码语言 → 不计）；
       ③ 落盘 `<ws>/.chonkpilot/codegraph/index.json` 的**命中文件集合**：
          exts=.go 时 gate_src 与 gate_skip 都在；追加 skip-dirs=gate_skip 后 gate_skip 消失。
+
+    期望值口径（2026-09-27 调整）：本套件夹具新增 gitignore 语义夹具 `gate_ign/`（4 个 .go，
+    见文件头），故「基线全集」由固定 2 → **6**（gate_src/alpha.go + gate_skip/delta.go +
+    gate_ign/{keep,gen.gen,special.gen,sub/u}.go；`.gitignore` 在 stack-gitignore 关时**不读**）；
+    跳过 gate_skip 后 6 → **5**。判据仍是「命中集合」，只是基数按夹具全集计算。
     """
     if prj().get("enable-codegraph") != "true":
         prj_save("enable-codegraph", "true")           # 独立 work-dir：由上用例关闭后重新启用
     base = wait_status(lambda o: o.get("state") == "ready", "启用后 codegraph 索引就绪")
-    if base.get("indexedFiles") != 2:
-        raise TestError("基线索引文件数应为 2（gate_src/alpha.go + gate_skip/delta.go；"
-                        "note.md 非代码语言），实际=%r" % (base.get("indexedFiles"),))
+    if base.get("indexedFiles") != 6:
+        raise TestError("基线索引文件数应为 6（gate_src/alpha.go + gate_skip/delta.go + "
+                        "gate_ign/{keep,gen.gen,special.gen,sub/u}.go；note.md 非代码语言；"
+                        "stack-gitignore 关 → .gitignore 不读），实际=%r" % (base.get("indexedFiles"),))
     print("[G3] 基线 status: state=ready exts=%r indexedFiles=%r"
           % (base.get("exts"), base.get("indexedFiles")), flush=True)
 
@@ -519,8 +615,8 @@ def case_g3_index_scope():
     if prj().get("codegraph.exts") != ".go" or prj().get("codegraph.skip-dirs") != "":
         raise TestError("A：prj 回读不符（exts=%r skip-dirs=%r）"
                         % (prj().get("codegraph.exts"), prj().get("codegraph.skip-dirs")))
-    if a.get("indexedFiles") != 2:
-        raise TestError("A：exts=.go 后 indexedFiles 应=2，实际=%r" % (a.get("indexedFiles"),))
+    if a.get("indexedFiles") != 6:
+        raise TestError("A：exts=.go 后 indexedFiles 应=6，实际=%r" % (a.get("indexedFiles"),))
     raw_a = _idx_raw()
     if "gate_src" not in raw_a or "gate_skip" not in raw_a:
         raise TestError("A：index.json 应同时命中 gate_src 与 gate_skip（len=%d）" % len(raw_a))
@@ -535,8 +631,8 @@ def case_g3_index_scope():
                     "skip-dirs=gate_skip 重建完成")
     if prj().get("codegraph.skip-dirs") != "gate_skip":
         raise TestError("B：prj 回读 codegraph.skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
-    if b.get("indexedFiles") != 1:
-        raise TestError("B：跳过 gate_skip 后 indexedFiles 应=1，实际=%r" % (b.get("indexedFiles"),))
+    if b.get("indexedFiles") != 5:
+        raise TestError("B：跳过 gate_skip 后 indexedFiles 应=5，实际=%r" % (b.get("indexedFiles"),))
     raw_b = _idx_raw()
     if "gate_src" not in raw_b or "gate_skip" in raw_b:
         raise TestError("B：index.json 应命中 gate_src、不含 gate_skip（len=%d）" % len(raw_b))
@@ -671,6 +767,243 @@ def case_g6_exec_params_readback():
 
 
 # ══════════════════════════════════════════════════════════
+# G7 codegraph.stack-gitignore → gitignore 语义（文件级排除 + '!' 反选 + 目录剪枝）
+# ══════════════════════════════════════════════════════════
+
+def case_g7_codegraph_stack_gitignore():
+    """勾选「叠加 gitignore」→ 引擎按 **完整 gitignore 语义** 排除（与 git 一致）。
+
+    夹具（文件头创建于 WS）：
+      WS/.gitignore = `*.gen.go` / `!special.gen.go` / `gate_ign/sub/` / `!gate_ign/sub/u.go`
+      WS/gate_ign/{keep.go, gen.gen.go, special.gen.go, sub/u.go}
+
+    链路：GUI 勾选 + `handleIndexSave`（**无条件写** exts/skip-dirs/stack-gitignore 三键，
+    `CodegraphConfig.vue:215-230`）→ `data-prj-config-refresh` → 插件 `readIndexConfig`
+    （原样透传 stack_gitignore，`codegraph.go:746-775`）→ 引擎 `excludeOptions`
+    （`server/index.go:134-141`）→ `ignore.WalkDir`（`src/lib/ignore/ignore.go`，逐级读各级 .gitignore）。
+
+    判据 A（数据面回读）：`prj['codegraph.stack-gitignore']=="true"`、
+    `status.stackGitignore==True`、`status.skipDirs` 空（用户规则空）。
+    判据 B（终效，落盘 index.json 命中集合 + `status.indexedFiles`）：
+      * 含 `gate_ign/keep.go`（无规则命中）✔
+      * 不含 `gate_ign/gen.gen.go`（`*.gen.go` **文件级排除**）✔
+      * 含 `gate_ign/special.gen.go`（`!special.gen.go` 反选成功）✔
+      * 不含 `gate_ign/sub/u.go`（`gate_ign/sub/` 目录命中 → **不下降**，其内 `!` **无效**）✔
+    全集 = gate_src/alpha.go + gate_skip/delta.go + keep.go + special.gen.go = **4**。
+    收尾：取消勾选并保存（回 `stack-gitignore=false`）→ A 回落，避免污染后续用例。
+    """
+    if prj().get("enable-codegraph") != "true":
+        prj_save("enable-codegraph", "true")
+
+    open_index_tab("CodeGraph 索引")
+    set_textarea(0, ".go")
+    set_textarea(1, "")
+    set_stack_gitignore(True)
+    click_save()
+
+    st = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
+                     and not (o.get("skipDirs") or []),
+                     "叠加 gitignore 勾选后重建完成（stackGitignore=true）")
+    if prj().get("codegraph.stack-gitignore") != "true":
+        raise TestError("A：prj codegraph.stack-gitignore=%r，期望 'true'"
+                        % (prj().get("codegraph.stack-gitignore"),))
+    if (st.get("skipDirs") or []):
+        raise TestError("A：勾选 stack-gitignore 时用户规则应为空，实际 skipDirs=%r"
+                        % (st.get("skipDirs"),))
+
+    raw = _idx_raw()
+    miss = [p for p in ("gate_ign/keep.go", "gate_ign/special.gen.go") if p not in raw]
+    hit = [p for p in ("gate_ign/gen.gen.go", "gate_ign/sub/u.go") if p in raw]
+    if miss or hit:
+        raise TestError("B：.gitignore 命中集合不符（应含而缺=%r；不应含却有=%r）" % (miss, hit))
+    if st.get("indexedFiles") != 4:
+        raise TestError("B：勾选后 indexedFiles 应=4，实际=%r" % (st.get("indexedFiles"),))
+    print("[G7] 勾选叠加 gitignore → A: stack-gitignore=%r stackGitignore=%r skipDirs=%r；"
+          "B: index.json 含 keep/special、不含 gen.gen/sub/u（文件级排除 + '!' 反选 + 目录剪枝），"
+          "indexedFiles=%r" % (prj().get("codegraph.stack-gitignore"), st.get("stackGitignore"),
+                               st.get("skipDirs"), st.get("indexedFiles")), flush=True)
+
+    # 收尾：取消勾选 → stack-gitignore=false（A 回落）
+    set_stack_gitignore(False)
+    click_save()
+    st2 = wait_status(lambda o: o.get("state") == "ready" and not o.get("stackGitignore"),
+                      "取消勾选后重建完成（stackGitignore 回落）")
+    if prj().get("codegraph.stack-gitignore") != "false":
+        raise TestError("收尾：codegraph.stack-gitignore=%r，期望 'false'"
+                        % (prj().get("codegraph.stack-gitignore"),))
+    print("[G7] 收尾 取消勾选 → A: stack-gitignore=%r stackGitignore=%r（回落）"
+          % (prj().get("codegraph.stack-gitignore"), st2.get("stackGitignore")), flush=True)
+
+
+# ══════════════════════════════════════════════════════════
+# G8 用户规则（输入框）最高优先级 + 文件级排除 + '!' 反选
+# ══════════════════════════════════════════════════════════
+
+def case_g8_user_rules_priority():
+    """用户规则（输入框「排除的目录和文件」）**最高优先级** + 文件级排除 + `!` 反选。
+
+    口径：`codegraph.skip-dirs` 由插件 `splitRules` 按逗号/分号/换行拆分（**保序、保留 `!`**，
+    `codegraph.go:794-807`）**原样透传**给引擎（不折成目录名，`codegraph.go:741-743/809-813`）；
+    引擎 `ignore.Options.UserRules` 为最高优先级（等价 `git --exclude`，`ignore.go:13/80-98`）。
+    判据 A：`status.skipDirs` 与写入值一致（含 `!` 项、顺序不变，**未折名**）。
+    判据 B：index.json 命中集合随规则变化。
+
+    步骤 1：规则 `*.gen.go`（stack 关）→ 两个 gen 文件均排除；keep.go / sub/u.go 仍命中。
+    步骤 2：规则 `*.gen.go, !special.gen.go` → special.gen.go **反选回来**；gen.gen.go 仍排除。
+    步骤 3（对照）：勾选 stack + 用户规则 `!gate_ign/sub/` → sub/u.go **重新出现**
+            （用户规则最高优先级、且是目录级反选 → 压过 .gitignore 的 `gate_ign/sub/` 目录排除）。
+    收尾：清空排除规则 + 关闭 stack（避免污染后续 / G9）。
+    """
+    if prj().get("enable-codegraph") != "true":
+        prj_save("enable-codegraph", "true")
+    if prj().get("codegraph.stack-gitignore") not in (None, "", "false"):
+        raise TestError("前置：stack-gitignore 应为关（G7 收尾回落后），实际=%r"
+                        % (prj().get("codegraph.stack-gitignore"),))
+
+    # ── 步骤 1：用户规则 "*.gen.go"（仅用户规则，stack 关）──
+    open_index_tab("CodeGraph 索引")
+    set_textarea(0, ".go")
+    set_textarea(1, "*.gen.go")
+    click_save()
+    s1 = wait_status(lambda o: o.get("state") == "ready" and o.get("skipDirs") == ["*.gen.go"],
+                     "用户规则 *.gen.go 生效")
+    if prj().get("codegraph.skip-dirs") != "*.gen.go":
+        raise TestError("步骤1 A：prj skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
+    if not _idx_has("gate_ign/keep.go") or not _idx_has("gate_ign/sub/u.go"):
+        raise TestError("步骤1 B：keep.go / sub/u.go 应命中（目录未排除），实际缺失")
+    if _idx_has("gate_ign/gen.gen.go") or _idx_has("gate_ign/special.gen.go"):
+        raise TestError("步骤1 B：两个 gen 文件应被 *.gen.go 排除")
+    print("[G8] 步骤1 skip-dirs=%r → A: status.skipDirs=%r（原样未折名）；"
+          "B: 不含两个 gen、含 keep/sub/u" % (prj().get("codegraph.skip-dirs"), s1.get("skipDirs")),
+          flush=True)
+
+    # ── 步骤 2："*.gen.go, !special.gen.go"（保序含 '!'）──
+    set_textarea(1, "*.gen.go, !special.gen.go")
+    click_save()
+    s2 = wait_status(lambda o: o.get("state") == "ready"
+                     and o.get("skipDirs") == ["*.gen.go", "!special.gen.go"],
+                     "用户规则含 '!' 反选生效")
+    if prj().get("codegraph.skip-dirs") != "*.gen.go, !special.gen.go":
+        raise TestError("步骤2 A：prj skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
+    if not _idx_has("gate_ign/special.gen.go"):
+        raise TestError("步骤2 B：special.gen.go 应被 '!' 反选回来")
+    if _idx_has("gate_ign/gen.gen.go"):
+        raise TestError("步骤2 B：gen.gen.go 仍应被排除")
+    print("[G8] 步骤2 skip-dirs=%r → A: status.skipDirs=%r（保序含 '!'）；"
+          "B: special.gen.go 反选回来、gen.gen.go 仍排除"
+          % (prj().get("codegraph.skip-dirs"), s2.get("skipDirs")), flush=True)
+
+    # ── 步骤 3：勾选 stack + 用户规则 "!gate_ign/sub/"（用户规则压过 .gitignore 目录排除）──
+    set_stack_gitignore(True)
+    set_textarea(1, "!gate_ign/sub/")
+    click_save()
+    s3 = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
+                     and o.get("skipDirs") == ["!gate_ign/sub/"],
+                     "用户规则 !gate_ign/sub/ 压过 .gitignore 目录排除")
+    if not _idx_has("gate_ign/sub/u.go"):
+        raise TestError("步骤3 B：用户规则 !gate_ign/sub/ 应使 sub/u.go 重新出现"
+                        "（用户规则最高优先级 + 目录级反选）")
+    if not _idx_has("gate_ign/special.gen.go") or _idx_has("gate_ign/gen.gen.go"):
+        raise TestError("步骤3 B：.gitignore 的 *.gen.go / !special.gen.go 仍应生效")
+    print("[G8] 步骤3 勾选 stack + 用户规则 %r → A: skipDirs=%r stackGitignore=%r；"
+          "B: sub/u.go 重新出现（用户规则 > .gitignore 目录排除）"
+          % (prj().get("codegraph.skip-dirs"), s3.get("skipDirs"), s3.get("stackGitignore")),
+          flush=True)
+
+    # 收尾：清空规则 + 关闭 stack
+    set_textarea(1, "")
+    set_stack_gitignore(False)
+    click_save()
+    wait_status(lambda o: o.get("state") == "ready" and not o.get("skipDirs")
+                and not o.get("stackGitignore"), "G8 收尾（规则清空 + stack 关）")
+    if prj().get("codegraph.skip-dirs") not in (None, "") or \
+       prj().get("codegraph.stack-gitignore") != "false":
+        raise TestError("G8 收尾：skip-dirs=%r stack-gitignore=%r"
+                        % (prj().get("codegraph.skip-dirs"), prj().get("codegraph.stack-gitignore")))
+
+
+# ══════════════════════════════════════════════════════════
+# G9 vfts 侧同语义（引擎遍历 + 清单扫描共用同一匹配器）
+# ══════════════════════════════════════════════════════════
+
+def case_g9_vfts_gitignore_semantics():
+    """vfts 侧同语义：引擎遍历 + 清单扫描共用 `src/lib/ignore` → 与 codegraph 行为一致。
+
+    证据选择（**清单面**，非计数退化）：vfts 的文件清单落 **项目级 prj 库 `file_list` 表**
+    （`src/lib/ignore` 消费方之一 = `plugin-vfts/manifest.go:182-213 scanFiles` 走 `ignore.WalkDir`），
+    经**既有** `data-filelist-list`（61 §3.1）逐文件读回 `path` —— 可逐文件断言「谁该在 / 谁不该在」，
+    比 `vfts.status.indexedFiles` 计数强。清单**不落盘为独立文件**（引擎落盘只有 `meta.json` 计数 +
+    zvec `collection/` 目录，无 `manifest.json`）→ 故读其唯一产品读面 `data-filelist-list`。
+
+    链路同 G7：GUI Vfts 页写入 exts/排除规则/勾选 → `data-prj-config-refresh` → 插件
+    `ensureWorkspace`（`vfts.go:479-555`）→ 引擎 `vfts_index`（`server/index.go:91-118 collectFiles`
+    走 `ignore.WalkDir`）+ 插件 `rebuildManifest`（`manifest.go:360-406` 走同一 `ignore.WalkDir`）。
+
+    判据 A：`prj['vfts.exts']==".go"`、`prj['vfts.stack-gitignore']=="true"`、`prj['vfts.skip-dirs']` 空；
+            `vfts.status.stackGitignore==True`。
+    判据 B：`data-filelist-list` 文件集合 含 keep.go / special.gen.go、不含 gen.gen.go / sub/u.go；
+            `vfts.status.indexedFiles==4`。
+    收尾：清空规则 + 取消勾选 + 关闭 vfts（`enable-vfts=false`）。
+    """
+    # 前置：开启 vfts（G2 已关闭）
+    if prj().get("enable-vfts") != "true":
+        open_index_tab("Vfts 全文索引")
+        st = find_switch("Vfts 全文索引")
+        if not st:
+            raise TestError("未找到「Vfts 全文索引」开关")
+        if st["checked"]:
+            raise TestError("前置：enable-vfts 应为关")
+        if click_switch("Vfts 全文索引") != "ok":
+            raise TestError("点击 Vfts 开关失败")
+        if prj().get("enable-vfts") != "true":
+            raise TestError("前置：点击后 enable-vfts=%r，期望 'true'" % (prj().get("enable-vfts"),))
+
+    # 写 exts=".go" / 排除规则清空 / 勾选叠加 gitignore
+    open_index_tab("Vfts 全文索引")
+    set_textarea(0, ".go")
+    set_textarea(1, "")
+    set_stack_gitignore(True)
+    click_save()
+
+    a = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
+                    and o.get("indexedFiles") == 4,
+                    "vfts 叠加 gitignore 重建完成（ready / indexedFiles=4）", key=VSTATUS_KEY)
+    if prj().get("vfts.exts") != ".go":
+        raise TestError("A：prj vfts.exts=%r" % (prj().get("vfts.exts"),))
+    if prj().get("vfts.stack-gitignore") != "true":
+        raise TestError("A：prj vfts.stack-gitignore=%r" % (prj().get("vfts.stack-gitignore"),))
+    if prj().get("vfts.skip-dirs") not in (None, ""):
+        raise TestError("A：vfts.skip-dirs 应为空（用户规则空），实际=%r" % (prj().get("vfts.skip-dirs"),))
+
+    # B：清单逐文件集合（清单在引擎索引后由插件重建 → 轮询等齐口径同 codegraph）
+    paths = wait_filelist(
+        lambda ps: has_path(ps, "gate_ign/keep.go") and has_path(ps, "gate_ign/special.gen.go")
+        and not has_path(ps, "gate_ign/gen.gen.go") and not has_path(ps, "gate_ign/sub/u.go"),
+        "vfts file_list 收敛（含 keep/special、不含 gen.gen/sub/u）")
+    miss = [s for s in ("gate_ign/keep.go", "gate_ign/special.gen.go") if not has_path(paths, s)]
+    hit = [s for s in ("gate_ign/gen.gen.go", "gate_ign/sub/u.go") if has_path(paths, s)]
+    if miss or hit:
+        raise TestError("B：vfts 清单集合不符（应含而缺=%r；不应含却有=%r）；全部=%r"
+                        % (miss, hit, [p.split("/")[-1] for p in paths]))
+    print("[G9] vfts 勾选叠加 gitignore → A: exts=%r stackGitignore=%r skipDirs=%r；"
+          "B: file_list(%d) 含 keep/special、不含 gen.gen/sub/u（与 codegraph 同匹配器）"
+          % (prj().get("vfts.exts"), a.get("stackGitignore"), a.get("skipDirs"), len(paths)), flush=True)
+
+    # 收尾：清空规则 + 取消勾选 + 关闭 vfts
+    set_textarea(1, "")
+    set_stack_gitignore(False)
+    click_save()
+    time.sleep(1.0)
+    open_index_tab("Vfts 全文索引")
+    if click_switch("Vfts 全文索引") != "ok":
+        raise TestError("G9 收尾：关闭 Vfts 开关失败")
+    if prj().get("enable-vfts") != "false":
+        raise TestError("G9 收尾：enable-vfts=%r，期望 'false'" % (prj().get("enable-vfts"),))
+    print("[G9] 收尾 enable-vfts=%r stack-gitignore=%r（已回落）"
+          % (prj().get("enable-vfts"), prj().get("vfts.stack-gitignore")), flush=True)
+
+
+# ══════════════════════════════════════════════════════════
 # main
 # ══════════════════════════════════════════════════════════
 
@@ -680,7 +1013,7 @@ def main():
     total = 0
     ok = 0
     cases = [
-        ("G1 enable-codegraph → 工具面出现/消失 6 个 codegraph 工具（保存即生效）",
+        ("G1 enable-codegraph → 工具面出现/消失 8 个 codegraph 工具（保存即生效）",
          case_g1_enable_codegraph_surface),
         ("G2 enable-vfts → 工具面出现/消失 vfts_query（保存即生效）",
          case_g2_enable_vfts_surface),
@@ -692,6 +1025,12 @@ def main():
          case_g5_prj_skip_dirs_end_to_end),
         ("G6 timeout_sec/max_concurrency → prj 回读一致（B 不可稳定观测）",
          case_g6_exec_params_readback),
+        ("G7 codegraph.stack-gitignore → .gitignore 生效 + 文件级排除 + '!' 反选 + 目录剪枝",
+         case_g7_codegraph_stack_gitignore),
+        ("G8 用户规则最高优先级 + 文件级排除 + '!' 反选（含压过 .gitignore 目录排除）",
+         case_g8_user_rules_priority),
+        ("G9 vfts.stack-gitignore → 同一匹配器（file_list 清单逐文件集合）",
+         case_g9_vfts_gitignore_semantics),
     ]
     for name, fn in cases:
         total += 1

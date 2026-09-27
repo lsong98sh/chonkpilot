@@ -14,6 +14,7 @@ require (
 	github.com/chonkpilot/chonkpilot-plugin-compress v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-memory v0.0.0
+	github.com/chonkpilot/chonkpilot-ignore v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-vfts v0.0.0
 	github.com/chonkpilot/chonkpilot-router v0.0.0
 	github.com/chonkpilot/chonkpilot-task v0.0.0
@@ -60,6 +61,8 @@ replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../plugins/plugin
 replace github.com/chonkpilot/chonkpilot-plugin-history => ../../plugins/plugin-history
 
 replace github.com/chonkpilot/chonkpilot-plugin-memory => ../../plugins/plugin-memory
+
+replace github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 
 replace github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vfts
 

@@ -104,9 +104,14 @@ func callTool(_ context.Context, cfg *Config, td *ToolDoc, args map[string]any, 
 		return "", err
 	}
 
-	timeout := resolveExecTimeout(cfg, td)
-	ctx2, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
+	// 执行硬上限：显式设置 → 采用（0/-1 = 无上限 → 不设 WithTimeout，仅支持取消）。
+	timeout, noLimit := resolveExecTimeout(cfg, td)
+	ctx2 := context.Background()
+	if !noLimit {
+		var cancel context.CancelFunc
+		ctx2, cancel = context.WithTimeout(ctx2, time.Duration(timeout)*time.Second)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx2, argv[0], argv[1:]...)
 	// 隐藏子进程控制台窗口（executor 等 console 子系统 exe 被 spawn 时不闪黑窗）；
 	// 不改变 stdio 管道，stdout/stderr 捕获逻辑不受影响。
@@ -121,6 +126,8 @@ func callTool(_ context.Context, cfg *Config, td *ToolDoc, args map[string]any, 
 	cmd.Env = cfg.executorEnv(cx, sandboxPolicy)
 	out, runErr := cmd.Output()
 
+	// noLimit（0/-1 = 无上限）时 ctx2 = Background，Err() 恒 nil → 两个超时/取消分支均不命中，
+	// 子进程自然运行至结束（等待由调用方取消驱动）。
 	if ctx2.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("tool %s timeout after %ds", td.Name, timeout)
 	}
@@ -138,23 +145,30 @@ func callTool(_ context.Context, cfg *Config, td *ToolDoc, args map[string]any, 
 	}
 }
 
-// resolveExecTimeout 返回 tools/call 的**执行硬上限**（秒）——即子进程被杀的时间点。
-// 优先级（用户口径，2026-09-17）：
+// resolveExecTimeout 返回 tools/call 的**执行硬上限**（秒）与「是否无上限」——即子进程被杀的时间点。
+// 优先级（用户口径，2026-09-27）：
 //  1. usr 键 `tool_async` 的 hard_timeout（**仅用户显式设置时**生效；工具页「执行硬上限」）；
-//  2. 契约 meta: timeout（td.Timeout，现状口径）；
+//  2. 契约 meta: timeout（td.Timeout，**仅显式声明时**生效，含 0/-1）；
 //  3. cfg.execTimeout()（prj timeout_sec / 内置默认 300s）。
 //
-// 注：未配置 hard_timeout 时**完全维持**「契约 timeout 优先于 timeout_sec」的既有语义
+// **未设置**（键缺失 / null / 空串）→ 回落下一优先级；显式 **0 / -1 = 无上限**（noLimit=true，
+// 不设 WithTimeout，子进程永远运行，用户主动取消才结束）。
+// 注：未配置 hard_timeout/契约 timeout 时**完全维持**「契约 timeout 优先于 timeout_sec」的既有语义
 // （见 [41 I-79]：prj timeout_sec 仅对未声明 timeout 的契约生效），本函数不改该口径。
-func resolveExecTimeout(cfg *Config, td *ToolDoc) int {
-	timeout := cfg.execTimeout()
-	if td.Timeout > 0 {
-		timeout = td.Timeout
+func resolveExecTimeout(cfg *Config, td *ToolDoc) (timeout int, noLimit bool) {
+	if ov, ok := cfg.toolAsyncOverride(td.Name); ok && ov.HardTimeoutSet {
+		if ov.HardTimeout <= 0 {
+			return 0, true // 显式 0/-1 = 无上限
+		}
+		return ov.HardTimeout, false
 	}
-	if ov, ok := cfg.toolAsyncOverride(td.Name); ok && ov.HardTimeout > 0 {
-		timeout = ov.HardTimeout
+	if td.TimeoutSet {
+		if td.Timeout <= 0 {
+			return 0, true // 显式 0/-1 = 无上限
+		}
+		return td.Timeout, false
 	}
-	return timeout
+	return cfg.execTimeout(), false
 }
 
 // buildArgv 按契约组装命令：argv[0] = runtime（解释器拼 entry / exe），后续 = args 模板替换。

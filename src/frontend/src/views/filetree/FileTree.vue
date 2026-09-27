@@ -72,6 +72,8 @@ import { createPrimitive } from '../../api/knowledge'
 import { nearestTypeToken } from '../../utils/primitive'
 import { onFileChanged, onFileChangedEvent } from '../../utils/fileTree'
 import { fileOpErrorText } from '../../utils/fileOpError'
+import { fetchIndexIgnored, toWorkdirRelPath } from '../../utils/indexIgnored'
+import { onDataRefresh } from '../../utils/dataClient'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -154,6 +156,80 @@ function getParentPath(path) {
   return path.substring(0, Math.max(idx, bidx)) || ''
 }
 
+// ── 被索引排除条目灰显（data-index-ignored，61-消息一览 §3.6；只读、零副作用）──
+// 命中「当前已启用引擎」排除规则的节点 → node._ignored=true → .tree-row.is-ignored 文本灰显
+// （--fg-disabled）；**只改颜色**，点击/双击/拖拽/右键等交互不变。
+// 请求克制：按批合并——每次只把「尚未查询过」的已加载节点相对路径**一次**发出（同一路径只请求一次）；
+// 刷新（既有 prj-config 变更广播）→ 清缓存重判（此前已灰的节点若不再命中即恢复）。
+const _ignoredRel = new Set() // 已判定为「被排除」的 workdir 相对路径（'/' 分隔）
+const _judgedRel = new Set()  // 已查询过的相对路径（避免重复请求）
+let _judgeBusy = false
+let _judgeAgain = false
+
+// 节点的 workdir 相对路径（db:// 等非文件系统节点 → ''，不参与判定）
+function workdirRelPathOf(node) {
+  if (!node || !node.path || node.path.startsWith('db://')) return ''
+  return toWorkdirRelPath(node.path, _cachedWorkDir.value)
+}
+
+// 收集当前**已加载**的全部节点相对路径（含折叠但仍保留 children 的节点）
+function collectLoadedRelPaths() {
+  const out = new Set()
+  const walk = (nodes) => {
+    for (const n of nodes) {
+      const rel = workdirRelPathOf(n)
+      if (rel) out.add(rel)
+      if (n.children && n.children.length) walk(n.children)
+    }
+  }
+  walk(treeData.value)
+  return out
+}
+
+// 把判定结果落到节点标记（仅改 _ignored，不动任何交互状态）
+function applyIgnoredFlags() {
+  const walk = (nodes) => {
+    for (const n of nodes) {
+      const rel = workdirRelPathOf(n)
+      n._ignored = !!(rel && _ignoredRel.has(rel))
+      if (n.children && n.children.length) walk(n.children)
+    }
+  }
+  walk(treeData.value)
+}
+
+// 判定「当前已加载节点」的排除状态：单飞 + 补跑（并发触发只保一批在飞，避免重复请求）。
+async function judgeLoadedNodes() {
+  if (!_cachedWorkDir.value) return
+  if (_judgeBusy) { _judgeAgain = true; return }
+  _judgeBusy = true
+  try {
+    do {
+      _judgeAgain = false
+      const pending = []
+      for (const rel of collectLoadedRelPaths()) {
+        if (!_judgedRel.has(rel)) pending.push(rel)
+      }
+      if (pending.length === 0) break
+      const { ignored, truncated } = await fetchIndexIgnored(pending)
+      // 截断（入参超上限）→ 未判定的节点不灰显，且**不缓存**，留待下次补判
+      if (!truncated) for (const rel of pending) _judgedRel.add(rel)
+      for (const rel of ignored) _ignoredRel.add(rel)
+      applyIgnoredFlags()
+    } while (_judgeAgain)
+  } finally {
+    _judgeBusy = false
+  }
+}
+
+// 排除规则 / 引擎开关变化（既有 data-prj-config-refresh 广播）→ 清缓存重判。
+function rejudgeIndexIgnored() {
+  _judgedRel.clear()
+  _ignoredRel.clear()
+  applyIgnoredFlags()
+  judgeLoadedNodes()
+}
+
 function isDBConfig(data) {
   return data.path && data.path.startsWith('db://')
 }
@@ -190,6 +266,8 @@ async function loadDirChildren(dirNode) {
     dirNode.children = []
     dirNode._loading = false
   }
+  // 新一批已加载节点 → 按批判定排除状态（灰显）
+  judgeLoadedNodes()
 }
 
 // 递归刷新已展开（expanded=true）的子孙目录（一.7 缺陷修复）：
@@ -429,8 +507,11 @@ function documentClickHandler(e) {
 
 function onKeyDown(e) {
   if (editingPath.value) return
-  const tag = document.activeElement?.tagName?.toLowerCase()
-  if (tag === 'input' || tag === 'textarea') return
+  // 焦点在可输入元素内（input / textarea / contenteditable，如 chat 富文本输入框）→ **不接管按键**：
+  // 否则在输入框里按 Delete/Backspace 会被误当作「删除树节点」（2026-09-27 用户报 bug）。
+  const el = document.activeElement
+  const tag = el?.tagName?.toLowerCase()
+  if (tag === 'input' || tag === 'textarea' || (el && el.isContentEditable)) return
   if (!selectedKey.value) return
   const selNode = findNode(treeData.value, selectedKey.value)
   if (e.key === 'F2') {
@@ -537,6 +618,8 @@ async function refreshDirInTree(dirPath) {
         .filter(n => n.name !== '.ide' && n.name !== '.chonkpilot')
         .map(n => treeNode(n))
       sortChildren(treeData.value)
+      // 根目录整树重建 → 重判排除状态（灰显）
+      judgeLoadedNodes()
     } catch (_) {
       treeData.value = []
     }
@@ -798,7 +881,7 @@ async function doMove(srcNode, newPath, target) {
       try {
         const ok = await confirm(
           t('fileTree.overwrite_confirm', { name: srcNode.label }),
-          t('common.confirm')
+          t('dialog.confirm_title')
         )
         if (!ok) return
         await moveFile(srcNode.path, newPath, true)
@@ -915,7 +998,7 @@ async function doPaste(data) {
       if (e.code === 'exists') {
         const name = src.split(/[/\\]/).pop()
         try {
-          const yes = await confirm(t('fileTree.overwrite_confirm', { name }), t('common.confirm'))
+          const yes = await confirm(t('fileTree.overwrite_confirm', { name }), t('dialog.confirm_title'))
           if (!yes) continue
           await copyFileTo(src, { dest_dir: targetDir, overwrite: true })
           okCount++
@@ -1067,6 +1150,8 @@ onMounted(() => {
     if (expandedKeys.length) {
       restoreExpandedKeys(treeData.value, expandedKeys)
     }
+    // 树数据到手 → 判定排除状态（灰显）
+    judgeLoadedNodes()
   }).catch(() => {
     treeData.value = []
     _cachedWorkDir.value = ''
@@ -1126,8 +1211,13 @@ onMounted(() => {
         sortChildren(treeData.value)
       }
     }
+    // 变更合并可能新增节点 → 补判排除状态（灰显）
+    judgeLoadedNodes()
     nextTick(() => saveFileTreeSnapshotDebounced())
   })
+
+  // 排除规则 / 引擎开关变化（既有 data-prj-config-refresh 广播）→ 重判已加载节点
+  _cleanup.push(onDataRefresh('prj-config', rejudgeIndexIgnored))
 
   // 前端近似判断窗口是否最大化（Windows 无浏览器 API 直读；精确值由后端
   // 退出时 GetWindowPlacement 校正，此处用于 resize 中间态保存）。

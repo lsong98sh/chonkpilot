@@ -3,6 +3,7 @@
 覆盖：
 - 消息面契约：data-tasktree-tasks / data-tasktree-list / data-tasktree-delete（空库语义）
 - 任务树渲染：tasks.* 事件驱动节点出现 / llm 节点耗时 / task 节点 stop
+  （任务区默认收起 → 启动后先经既有 tasks-toggle 展开，再断言 `.session-tree-node`）
 - 终止会话：busy 态 Cancel 按钮 → llm-cancel 发布
 - ask_user：ask-user 事件 → 弹窗 → 选项+提交 → ask-user-reply 发布
 
@@ -17,7 +18,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import ensure_locale, free_port, snapshot_config, restore_config  # noqa: E402  动态端口 + 语言确定性（T12 Cancel 按英文文案断言）+ 套件级配置快照-还原
+from harness import ensure_locale, free_port, snapshot_config, restore_config, ensure_task_panel_open  # noqa: E402  动态端口 + 语言确定性（T12 Cancel 按英文文案断言）+ 套件级配置快照-还原 + 任务面板展开
 from harness import install_session_history_spy, wait_session_history  # noqa: E402  切会话→发送竞态（历史回填覆盖）
 
 PORT = free_port()
@@ -117,6 +118,10 @@ def main():
                 break
             time.sleep(0.5)
         time.sleep(0.5)
+
+        # 任务面板默认收起（2026-09-27 首屏减负：MainLayout taskOpen 默认 false）→
+        # 本套件断言任务树 DOM（.session-tree-node）→ 先经既有 tasks-toggle 展开并等挂载。
+        ensure_task_panel_open(gui)
 
         # ── 消息面契约（空库） ──
         r = gui.req('data-tasktree-tasks')

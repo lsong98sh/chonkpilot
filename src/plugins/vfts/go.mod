@@ -3,6 +3,7 @@ module github.com/chonkpilot/chonkpilot-vfts-mcp-server
 go 1.26.0
 
 require (
+	github.com/chonkpilot/chonkpilot-ignore v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/zvec-ai/zvec-go v0.7.0
 )
@@ -18,3 +19,5 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
+
+replace github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore

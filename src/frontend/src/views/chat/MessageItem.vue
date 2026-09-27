@@ -84,6 +84,22 @@
           :class="{ manual: asyncMode === 'manual' }"
           :title="$t('chat.tool_async_mode', { mode: asyncMode })"
         >{{ asyncLabel }}</span>
+        <!-- 「查看任务详情」（仅确有后台任务时显示，避免死点）：message.task_id（任务节点 id）
+             或本卡「转后台」成功后返回的 task_id 二者其一为空时不渲染。
+             点击 = ① 任务面板已收起则先打开（复用既有 tasks-toggle）→ ② 定位（任务节点走
+             task-detail-open 打开右侧任务详情；子会话节点走 subsession-changed 在左树选中）。
+             复合两步（先开面板再定位）无法用单条 v-mq 表达，且本行既有按钮（等待/停止）同为
+             @click.stop + 内部 mq.emit 形态，故沿用之。 -->
+        <Button
+          v-if="hasBackgroundTask"
+          size="mini"
+          text
+          class="task-detail-btn"
+          :title="$t('chat.view_task_detail')"
+          @click.stop="locateTaskDetail"
+        >
+          <Icon name="list" :size="13" />
+        </Button>
         <!-- 转后台 / 转异步（**同一动作，单一入口**）：点击发前端内部事件 → mq.emit('task-background', {tool_call_id})。
              原「超时裁决条」的「转异步」按钮与工具行「转后台」箭头语义完全相同（都发 task-background{tool_call_id}），
              故合并为本按钮：运行中 manual 工具显示（canBackground）；裁决态（options 含 detach）亦复用本按钮，
@@ -199,15 +215,16 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { message as uiMessage } from '../../components/ui'
+import { message as uiMessage, Button } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { useToolAsyncMode } from '../../composables/useToolAsyncMode'
+import { useTaskView } from '../../composables/useTaskView'
 import { getFileUrl } from '../../api/file'
 import { classifyError } from '../../utils/errorMessage'
 
@@ -280,6 +297,34 @@ const canBackground = computed(() => {
 const canDetach = computed(() => canBackground.value || (!!props.message.arbitration && hasDetach.value))
 // 箭头提示语：裁决态 = 转异步（原裁决条按钮文案）；运行中 = 转后台。
 const detachTitle = computed(() => (props.message.arbitration ? t('chat.timeout_detach') : t('chat.tool_background')))
+
+// ── 工具卡「查看任务详情」入口 ────────────────────────────────────
+// 显示判据（避免死点）：该工具调用**确有后台任务** = 消息自带 task_id（DB 落库的任务节点 id，
+// 与 tasktree 节点主键同源）或本卡「转后台」成功后服务端返回的 task_id（转后台前二者皆空 →
+// 纯同步工具不显示）。task_id 与节点主键同源，故可经 useTaskView 反查节点类型（会话/任务）。
+const detachedTaskId = ref('')
+const { getNode } = useTaskView()
+const taskDetailId = computed(() => props.message.task_id || detachedTaskId.value)
+const hasBackgroundTask = computed(() => !!taskDetailId.value)
+
+// 打开任务面板（若已收起）+ 定位到该任务/子会话：
+//   ① 已收起 → 先发既有 tasks-toggle 打开（与顶部「任务」开关同一语义，不改 store/MainLayout 内部状态）；
+//   ② 面板挂载后再定位 —— 子会话节点（kind=llm）→ 左树选中该会话；任务节点 → 右侧任务详情。
+//   面板已打开时 SessionChat / SessionTree 已订阅，直接发定位事件即可。
+async function locateTaskDetail() {
+  const tid = taskDetailId.value
+  if (!tid) return
+  if (!document.querySelector('.session-chat')) {
+    mq.emit(EventNames.tasksToggle)
+    await nextTick()
+  }
+  const node = getNode(tid)
+  if (node && node.node_type === 'session' && node.session_id) {
+    mq.emit(EventNames.subsessionChanged, { session_id: node.session_id })
+  } else {
+    mq.emit(EventNames.taskDetailOpen, { task_id: tid })
+  }
+}
 
 // localResult/localContent were read-only computeds assigned elsewhere → Vue3
 // silently drops the writes. Back them with override refs: read props until a
@@ -497,6 +542,8 @@ async function backgroundTool() {
       uiMessage.error(t('chat.tool_background_failed', { error: errText }))
       return
     }
+    // 记下服务端返回的任务节点 id → 本卡「查看任务详情」图标随即可用（转后台前该卡无 task_id）
+    detachedTaskId.value = taskId
     uiMessage.success(t('chat.tool_background_ok'))
     if (props.message.arbitration) hideArbitration()
   } finally {
@@ -1047,6 +1094,14 @@ const formattedTime = computed(() => {
 .background-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 工具行「查看任务详情」图标按钮（Button size="mini"）：压到与同行内联按钮（.background-btn 16×16）
+   等高，避免撑高工具卡头；文字色 / 悬停底沿用 Button 的 .b-btn.is-text（--accent / --accent-bg token）。 */
+.task-detail-btn.b-btn {
+  min-height: 16px;
+  height: 16px;
+  padding: 0 2px;
 }
 /* 「停止」按钮（在飞工具取消）：复用 .background-btn 的尺寸/间距/hover/禁用态（16×16、radius 3、透明底），
    仅 hover 转危险色以示"停止"语义；与复制图标同一行（工具行 tool_pair section-header）。 */

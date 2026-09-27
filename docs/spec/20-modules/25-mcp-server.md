@@ -49,10 +49,10 @@ key=value                    # 每行一个 k=v（首个 = 分割）
 | `.prompt.md` | `PromptDoc`（description + arguments + content，`{{arg}}` 占位） | `AddPrompt`（`_meta.type=prompt`） |
 | `.resource.md` | `ResourceDoc`（meta `uri`/`mimetype` + description + content） | `AddResource`（uri 缺省 `file://<name>`） |
 
-**tool meta 键**：`runtime` · `category` · `async`(auto\|always\|never\|manual，缺省 auto) · `async-threshold` · `timeout` · `args` · `output`(stdout\|code\|file，缺省 stdout) · `hot` · `title`（一句话标题；作为 MCP Tool.Title）。
+**tool meta 键**：`runtime` · `category` · `async`(auto\|always\|never\|manual，缺省 auto) · `async-threshold` · `timeout` · `args` · `output`(stdout\|code\|file，缺省 stdout) · `hot` · `title`（一句话标题；作为 MCP Tool.Title）。**`timeout`（执行硬上限）取值语义（2026-09-27 反转）**：键**未设置**（缺失 / 空串）→ **回落**全局（executor 回落 prj `timeout_sec` / 内置 300s）；显式 **`0` / `-1` = 无上限**（`noLimit`，不设 `WithTimeout`，永远等、可取消）；正数 = 该值。**键显式声明即透出 `_meta.timeout`（含 `0`/`-1`）**，未设置则不写。**系统工具（`category=server` / `meta`）不单独设执行硬上限** → 契约写 `timeout=0`（**`0` = 无上限**，非"回落"）。权威口径见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
 **已删除死 meta（2026-09-14）**：`runtime-version` · `version` · `find` —— 解析与 `_meta` 透出均已移除，契约文件不再书写（见 [41 I-71](../40-roadmap/41-未决项登记.md)）；**`title` 保留**（H1 标题链路 = `Tool.Title`）。
 仅兼容读：`entry`（已废弃，解释器类遗留）；`hot` 吸收旧 `llm`。
-透出到工具 `_meta`：`hot` / `category` / `async` / `async-threshold` / `timeout`（+ gateway 注入 `server`；`title` 走 `Tool.Title`，**不进 `_meta`**）。
+透出到工具 `_meta`：`hot` / `category` / `async` / `async-threshold`（仅 `>0`） / `timeout`（**键显式声明即透出，含 `0`/`-1` = 无上限**）（+ gateway 注入 `server`；`title` 走 `Tool.Title`，**不进 `_meta`**）。
 
 > **目录资产注册 payload 的 `path`（RB-4 ①，2026-09-22）**：`.prompt.md` / `.resource.md` 解析出的 `PromptDoc` / `ResourceDoc` 仍是**静态内容**（`[content]`）；gateway 侧目录资产注册面 `prompts/register`（`{name, description, arguments?, content?, path?, asset_kind?}`）与 `resources/register`（`{name, uri?, description?, mimetype?, content?, path?}`）**新增可选 `path`** = 运行时内容来源路径，**有则该资产内容按需读盘、不驻留 `content`**（无 `path` 时仍用 `content` 兼容兜底，`catalogAsset.Path` + `assetContent()`）。**payload 明细以 [61 §5.1.1](../60-reference/61-消息一览.md) 为准**（本模块仅消费同一契约根扫描出的原语，5 字段均为 gateway `regMsg` 字段）。
 
@@ -135,7 +135,7 @@ defaults 与 args 合并（客户端显式覆盖默认）
 | 不持容器/注册表 | 只提供 `RegisterContracts`，`mcp.Server` 由装配方传入 | 装配方（server/gateway）决定单/多 server 与生命周期 |
 | skills 复用 prompt 通道 | `_meta.type` 区分 | skills 是扩展方法，go-sdk `HandleMessage` 无注册点 |
 | `category` 仅 meta | 不是端点路由 | 单 `/mcp` 端点 |
-| 执行 ctx 独立于请求 | `context.Background()+timeout` | 防止异步任务被 HTTP 响应取消误杀 |
+| 执行 ctx 独立于请求 | `context.Background()+timeout`；**显式 `0`/`-1`（无上限）→ `noLimit` 不设 `WithTimeout`** | 防止异步任务被 HTTP 响应取消误杀 |
 | 超长结果落文件 | 200KB 阈值 | 避免撑爆 LLM 上下文 |
 
 ---
@@ -144,7 +144,7 @@ defaults 与 args 合并（客户端显式覆盖默认）
 
 - `root` 缺失 → 空注册（不报错）。
 - output=file 但 args 无 `{RESULT-OUTPUT-FILE}` → 直接报错。
-- 超时 → `timeout after %ds`；取消 → `cancelled`。
+- 超时 → `timeout after %ds`；取消 → `cancelled`；**显式 `0`/`-1`（无上限）→ 两者均不触发，子进程运行至结束（等待由调用方取消驱动）**。
 - 服务形态：`--service run` 需 `winsvc.IsWindowsService()`；日志切 Windows 事件日志（`winlog`）；HTTP 前台 Ctrl+C 优雅关闭（5s）。
 
 ---

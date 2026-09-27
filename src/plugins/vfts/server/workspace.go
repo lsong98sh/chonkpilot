@@ -19,17 +19,18 @@ import (
 
 // Meta 工作区元信息（meta.json），跨进程可读（status 与就绪门控用）。
 type Meta struct {
-	Enabled       bool     `json:"enabled"`
-	State         string   `json:"state"` // "" 未初始化 | indexing | ready | error
-	ProgressDone  int      `json:"progressDone"`
-	ProgressTotal int      `json:"progressTotal"`
-	Err           string   `json:"err,omitempty"`
-	LastIndexedAt int64    `json:"lastIndexedAt"`
-	SkipDirs      []string `json:"skipDirs,omitempty"`
-	Exts          []string `json:"exts,omitempty"`
-	FileCount     int      `json:"fileCount"`
-	ChunkCount    int      `json:"chunkCount"`
-	Tokenizer     string   `json:"tokenizer"`
+	Enabled        bool     `json:"enabled"`
+	State          string   `json:"state"` // "" 未初始化 | indexing | ready | error
+	ProgressDone   int      `json:"progressDone"`
+	ProgressTotal  int      `json:"progressTotal"`
+	Err            string   `json:"err,omitempty"`
+	LastIndexedAt  int64    `json:"lastIndexedAt"`
+	SkipDirs       []string `json:"skipDirs,omitempty"`       // 用户排除规则（gitignore 语法，最高优先级）
+	StackGitignore bool     `json:"stackGitignore,omitempty"` // 是否叠加各级 .gitignore / info/exclude / 全局 ignore
+	Exts           []string `json:"exts,omitempty"`
+	FileCount      int      `json:"fileCount"`
+	ChunkCount     int      `json:"chunkCount"`
+	Tokenizer      string   `json:"tokenizer"`
 	// NextPK 是增量索引已分配的最大文档主键（纯数字字符串，跨调用单调递增，
 	// 避免与全量重建的 1..N 主键冲突）。全量重建会重置集合，故同步重置为 N。
 	NextPK int64 `json:"nextPK,omitempty"`
@@ -159,19 +160,20 @@ func writeFileAtomic(path string, b []byte) error {
 
 // Status 返回工作区状态视图（工具/plugin 查询用）。
 type Status struct {
-	Workdir       string   `json:"workdir"`
-	State         string   `json:"state"`
-	Enabled       bool     `json:"enabled"`
-	ProgressDone  int      `json:"progressDone"`
-	ProgressTotal int      `json:"progressTotal"`
-	Err           string   `json:"err,omitempty"`
-	LastIndexedAt int64    `json:"lastIndexedAt"`
-	SkipDirs      []string `json:"skipDirs,omitempty"`
-	Exts          []string `json:"exts,omitempty"`
-	IndexedFiles  int      `json:"indexedFiles"`
-	ChunkCount    int      `json:"chunkCount"`
-	Tokenizer     string   `json:"tokenizer"`
-	Loaded        bool     `json:"loaded"` // 当前进程内存已载入集合
+	Workdir        string   `json:"workdir"`
+	State          string   `json:"state"`
+	Enabled        bool     `json:"enabled"`
+	ProgressDone   int      `json:"progressDone"`
+	ProgressTotal  int      `json:"progressTotal"`
+	Err            string   `json:"err,omitempty"`
+	LastIndexedAt  int64    `json:"lastIndexedAt"`
+	SkipDirs       []string `json:"skipDirs,omitempty"`
+	StackGitignore bool     `json:"stackGitignore,omitempty"`
+	Exts           []string `json:"exts,omitempty"`
+	IndexedFiles   int      `json:"indexedFiles"`
+	ChunkCount     int      `json:"chunkCount"`
+	Tokenizer      string   `json:"tokenizer"`
+	Loaded         bool     `json:"loaded"` // 当前进程内存已载入集合
 }
 
 func (w *Workspace) Status() Status {
@@ -186,7 +188,8 @@ func (w *Workspace) Status() Status {
 	return Status{Workdir: w.Dir, State: m.State, Enabled: m.Enabled,
 		ProgressDone: m.ProgressDone, ProgressTotal: m.ProgressTotal, Err: m.Err,
 		LastIndexedAt: m.LastIndexedAt, SkipDirs: append([]string{}, m.SkipDirs...),
-		Exts: append([]string{}, exts...), IndexedFiles: m.FileCount,
+		StackGitignore: m.StackGitignore,
+		Exts:           append([]string{}, exts...), IndexedFiles: m.FileCount,
 		ChunkCount: m.ChunkCount, Tokenizer: tokenizer, Loaded: loaded}
 }
 

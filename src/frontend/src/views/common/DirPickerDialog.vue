@@ -42,7 +42,7 @@
         class="dir-picker-confirm"
         :disabled="loading || !!error"
         @click="confirm"
-      >{{ $t('common.confirm') }}</Button>
+      >{{ $t('common.ok') }}</Button>
     </div>
   </div>
 </template>

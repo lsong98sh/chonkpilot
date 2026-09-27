@@ -126,7 +126,8 @@ type ToolDoc struct {
 	TitleMeta   string         // meta: title（一句话标题；MCP Tool.title）
 	Async       string         // meta: async（auto|always|never|manual，缺省 auto）
 	AsyncTh     int            // meta: async-threshold（秒；async=auto 下超时自动转后台）
-	Timeout     int            // meta: timeout（秒；fail 语义，仅 async=never 下生效；0 = 用 cfg.TimeoutSec）
+	Timeout     int            // meta: timeout（秒；执行硬上限。0/-1 = 无上限；仅 TimeoutSet 时有效）
+	TimeoutSet  bool           // meta: timeout 键是否**显式声明**（区分「未设置=回落全局」与「0/-1=无上限」）
 	Args        string         // meta: args（命令行模板，{param}/{RAW-INPUT-FILE}/{RESULT-OUTPUT-FILE}）
 	Output      string         // meta: output（stdout|code|file，缺省 stdout）
 	Description string         // [description] 多行描述
@@ -173,10 +174,11 @@ func parseToolDoc(path string) (*ToolDoc, error) {
 		Args:        meta["args"],
 		Description: sec["description"],
 	}
-	if v := meta["timeout"]; v != "" {
+	if v, ok := meta["timeout"]; ok && v != "" {
 		if _, err := fmt.Sscanf(v, "%d", &doc.Timeout); err != nil {
 			return nil, fmt.Errorf("bad timeout %q", v)
 		}
+		doc.TimeoutSet = true // 键显式声明（含 0/-1）；空串/键缺失 = 未设置
 	}
 	doc.Output = meta["output"]
 	if doc.Output == "" {
@@ -244,7 +246,9 @@ func buildTool(d *ToolDoc, cfg *Config) (*mcp.Tool, error) {
 	if d.AsyncTh > 0 {
 		ext["async-threshold"] = d.AsyncTh
 	}
-	if d.Timeout > 0 {
+	// 执行硬上限：键显式声明即透出（含 **0/-1 = 无上限**）；键缺失 = 不写（回落全局）。
+	// 注意：此处 >0 之外的 0/-1 亦透出，供 UI/gateway 区分「未设置」与「无上限」。
+	if d.TimeoutSet {
 		ext["timeout"] = d.Timeout
 	}
 	// 用户级工具异步配置覆盖（usr 键 tool_async，四档）——配置该项时才改写上面按契约写入的值；
@@ -263,7 +267,7 @@ func buildTool(d *ToolDoc, cfg *Config) (*mcp.Tool, error) {
 // applyToolAsyncOverride 把用户级覆盖写入暴露 _meta（ext）：
 //   - mode → _meta.async（沿用现状口径：**auto 不显式透出**；惟契约声明了非 auto
 //     （never/always/manual）时须显式写 "auto" 才能把契约值压回自动档）；
-//   - threshold → _meta.async-threshold（仅 >0；否则保持契约的 async-threshold）；
+//   - threshold → _meta.async-threshold（仅 >0 写出；显式 0/-1 = 无阈值，不写出、保持契约现值）；
 //   - hard_timeout **不写**（gateway 侧 _meta.timeout 语义 = 超时裁决点，不可被硬上限污染；
 //     硬上限只在 executor 生效，见 resolveExecTimeout）。
 //

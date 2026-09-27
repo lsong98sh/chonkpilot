@@ -98,6 +98,12 @@
         <slot />
       </div>
 
+      <!-- Footer（可选具名插槽）：固定在 .dialog-body 之外、不随内容滚动。
+           缺省（调用方未提供 footer 插槽）不渲染任何多余 DOM（向后兼容既有弹窗）。 -->
+      <div v-if="$slots.footer" class="dialog-footer">
+        <slot name="footer" />
+      </div>
+
       <!-- Resize handle -->
       <div
         v-if="resolvedOptions.resizable && state === 'normal'"

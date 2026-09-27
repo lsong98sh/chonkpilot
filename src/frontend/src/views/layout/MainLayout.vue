@@ -65,7 +65,9 @@ const CodeView = defineAsyncComponent(() => import('../codeview/CodeView.vue'))
 
 const chatOpen = ref(true)
 const filetreeOpen = ref(true)
-const taskOpen = ref(true)
+// 任务区（SessionTree + SessionChat）默认**收起**（首屏减负）：无已保存值时收起；
+// 存在已保存值（applyLayout 读 layout.taskOpen）仍以保存值为准，用户拖拽/开关后的持久化与恢复不变。
+const taskOpen = ref(false)
 const analyzeDialog = ref(null)
 
 // ── 布局分隔条位置（持久化 + 恢复校验）──────────────────────
@@ -221,8 +223,13 @@ function handleOpenConfig() {
   mq.emit(EventNames.previewTabOpen, { kind: 'settings-llm' })
 }
 
-function handleOpenProjectConfig() {
-  mq.emit(EventNames.previewTabOpen, { kind: 'settings-project' })
+// project-config-open 可选 payload.tab（如 'codegraph' / 'vfts'）= 定位到的项目配置页签；
+// 缺省/非法 → 不携带 tab，落到项目配置默认页签（向后兼容旧发送方）。
+function handleOpenProjectConfig(event) {
+  const tab = event && typeof event === 'object' ? event.tab : undefined
+  const payload = { kind: 'settings-project' }
+  if (tab) payload.tab = tab
+  mq.emit(EventNames.previewTabOpen, payload)
 }
 
 function handleOpenScenario() {

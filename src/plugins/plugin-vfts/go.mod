@@ -3,6 +3,7 @@ module github.com/chonkpilot/chonkpilot-plugin-vfts
 go 1.26.0
 
 require (
+	github.com/chonkpilot/chonkpilot-ignore v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -18,6 +19,8 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
+
+replace github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 
 replace github.com/chonkpilot/chonkpilot-lib => ../../lib/core
 

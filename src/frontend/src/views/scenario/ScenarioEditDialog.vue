@@ -1,6 +1,6 @@
 <template>
   <div class="edit-dialog-body">
-    <!-- Top toolbar -->
+    <!-- 顶部工具条（仅名称 / 目录名输入；操作按钮统一在固定底部） -->
     <div class="edit-toolbar">
       <div class="edit-title-input">
         <Input
@@ -14,9 +14,6 @@
           :placeholder="$t('scenario.fields.dirName')"
           class="dir-input"
         />
-      </div>
-      <div class="toolbar-right">
-        <Button size="small" type="primary" v-mq:[EventNames.scenarioSave].click :loading="saving">{{ $t('common.save') }}</Button>
       </div>
     </div>
 
@@ -85,6 +82,7 @@
                 :llm-options="llmOptions"
                 :tool-groups="toolGroups"
                 :all-tool-categories="allToolCategories"
+                :optimizing="optimizing"
                 @update:agent="updateAgentField"
                 @copy="handleCopy"
                 @optimize="handleOptimize"
@@ -105,18 +103,26 @@
         </Tabs>
       </div>
     </div>
+
+    <!-- 底部按钮区（固定在滚动区之外，不随内容滚动）：右对齐「另存为 / 取消 / 保存」。
+         「另存为」仅**编辑**模式显示（新建本就有目录名输入 = 已能定目录）；本地动作 @click（不新增 MQ 主题）。 -->
+    <div class="edit-footer">
+      <Button v-if="!isNew" text size="small" @click="handleSaveAs">{{ $t('scenario.save_as') }}</Button>
+      <Button size="small" v-mq:[EventNames.scenarioCancel].click>{{ $t('common.cancel') }}</Button>
+      <Button size="small" type="primary" v-mq:[EventNames.scenarioSave].click :loading="saving">{{ $t('common.save') }}</Button>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { message, confirm } from '../../components/ui'
+import { message, confirm, promptInput } from '../../components/ui'
 import { Input, Button, Tabs } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import AgentEditor from './AgentEditor.vue'
 import CombinedPromptPreview from './CombinedPromptPreview.vue'
-import { getUserConfig } from '../../api/config'
+import { getUserConfig, optimizeAgentPrompt } from '../../api/config'
 import { saveScenario } from '../../api/scenario'
 import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilter'
 import mq from '../../utils/mq'
@@ -135,11 +141,12 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['done'])
+const emit = defineEmits(['done', 'cancel'])
 
 const _unsubs = []
 
 const saving = ref(false)
+const optimizing = ref(false)
 const form = ref({ name: '', description: '' })
 const agents = ref([])
 const selectedAgentIdx = ref(-1)
@@ -216,12 +223,18 @@ function findDuplicateAgentName(list) {
   return ''
 }
 
-/** Save scenario (with agents embedded) in one atomic SaveScenario call (D7) */
-async function handleSave() {
+/** 名称必填校验（「保存」/「另存为」共用）：为空 → i18n 提示并返回 false。 */
+function ensureName() {
   if (!form.value.name.trim()) {
     message.warning(t('scenario.placeholder.name'))
-    return
+    return false
   }
+  return true
+}
+
+/** Save scenario (with agents embedded) in one atomic SaveScenario call (D7) */
+async function handleSave() {
+  if (!ensureName()) return
   // 新建：目录名（= 场景 id/key）必填；未填则按名称 slug 推导（v6 场景 = prompts 下的目录）
   if (props.isNew) {
     let id = (form.value.id || '').trim()
@@ -236,6 +249,37 @@ async function handleSave() {
     }
     form.value.id = id
   }
+  await doSave()
+}
+
+/**
+ * 另存为（仅编辑模式）：promptInput 弹框输入**新目录名**（= 场景 id）→ 复用 doSave 写入新目录
+ * （id 不存在 → 后端新建目录，零后端 / 零消息面改动）。取消（resolve null）中止；
+ * 空 / 非法名以既有 i18n 文案提示。本地动作，**不新增 MQ 主题**。
+ */
+async function handleSaveAs() {
+  if (!ensureName()) return
+  const suggested = (form.value.id || slugify(form.value.name) || '') + '-copy'
+  const input = await promptInput(t('scenario.save_as_prompt'), suggested)
+  if (input === null) return
+  const id = String(input).trim()
+  if (!id) {
+    message.warning(t('scenario.dir_name_required'))
+    return
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    message.warning(t('scenario.dir_name_format'))
+    return
+  }
+  await doSave(id)
+}
+
+/**
+ * 「保存」/「另存为」共用保存路径：同场景 agent 重名预检 → data-scenario-save
+ * （有 id 更新 / 无 id 新建）→ 成功提示 + emit('done')（父组件重载列表）。
+ * @param {string} [idOverride] 另存为的新目录名；非空 → 置为 form.id 并按**新建**口径提示。
+ */
+async function doSave(idOverride) {
   // 同场景内 agent 重名预检（2026-09-26 用户裁决，42 §2 (175)）：与后端 capfs 校验同口径
   // （trim + 大小写不敏感）；命中即以 i18n 文案显式提示，不发请求。后端仍为权威拦截（兜底）。
   const dupName = findDuplicateAgentName(agents.value)
@@ -243,6 +287,11 @@ async function handleSave() {
     message.warning(t('scenario.agent_duplicate', { name: dupName }))
     return
   }
+  const asCreate = props.isNew || !!idOverride
+  // 失败回滚用：另存为/保存失败（含后端"全局唯一"拒绝、目录未创建）→ 不留新 id 残值
+  // （用户口径：目录没建出来就直接报错，不重试）。
+  const prevId = form.value.id
+  if (idOverride) form.value.id = idOverride
   saving.value = true
   try {
     // Strip frontend-only keys (_key / id) before persisting.
@@ -252,9 +301,10 @@ async function handleSave() {
     if (res && res.id) {
       form.value = { ...form.value, id: res.id }
     }
-    message.success(props.isNew ? t('scenario.created') : t('scenario.updated'))
+    message.success(asCreate ? t('scenario.created') : t('scenario.updated'))
     emit('done')
   } catch (e) {
+    form.value.id = prevId
     message.error(t('scenario.save_failed') + ': ' + (e.message || e))
   } finally {
     saving.value = false
@@ -284,7 +334,7 @@ async function deleteAgent(agent) {
     return
   }
   try {
-    await confirm(t('scenario.delete_agent_confirm', { name: agent.name }), t('common.confirm'))
+    await confirm(t('scenario.delete_agent_confirm', { name: agent.name }), t('dialog.confirm_title'))
     agents.value = agents.value.filter(a => a !== agent)
     if (selectedAgentIdx.value >= agents.value.length) {
       selectedAgentIdx.value = agents.value.length - 1
@@ -317,13 +367,48 @@ function handleCopy(agent) {
   message.success(t('scenario.agent_copied'))
 }
 
+// 「优化提示词」：复用既有优化链路（`gui.prompt-optimise`，流式回显 —— 与 TextEditDialog 同源）。
+// 结果写入当前 agent.prompt 的**草稿态**（落库由用户点顶部【保存】决定，不自动落库）：
+//   - 空 prompt → 提示且不发请求；进行中防重入（按钮 loading/禁用由 AgentEditor 呈现）；
+//   - 流式 token 追加到 prompt；完成以完整结果覆盖；失败显式 message.error（已收内容保留为草稿）。
 function handleOptimize() {
-  message.info(t('scenario.optimize_not_implemented'))
+  if (optimizing.value) return
+  const idx = selectedAgentIdx.value
+  if (idx < 0 || idx >= agents.value.length) return
+  const agent = agents.value[idx]
+  if (!agent.prompt || !agent.prompt.trim()) {
+    message.warning(t('common.input_required'))
+    return
+  }
+  const key = agent._key
+  optimizing.value = true
+  optimizeAgentPrompt(
+    {
+      title: t('scenario.optimize_title', { name: agent.name || t('scenario.unnamed') }),
+      useCase: t('scenario.optimize_use_case'),
+      prompt: agent.prompt,
+    },
+    (chunk) => {
+      const cur = agents.value[idx]
+      if (cur && cur._key === key) cur.prompt = (cur.prompt || '') + chunk
+    },
+    (prompt) => {
+      optimizing.value = false
+      const cur = agents.value[idx]
+      if (cur && cur._key === key && prompt) cur.prompt = prompt
+    },
+    (err) => {
+      optimizing.value = false
+      message.error(t('common.optimize_failed') + ': ' + err)
+    },
+  )
 }
 
 onMounted(async () => {
   // 交互事件化：v-mq 触发 → 本地执行
   _unsubs.push(mq.on(EventNames.scenarioSave, handleSave))
+  // 取消：关闭弹窗、不落库（父组件收到 cancel 事件后关闭对话框）
+  _unsubs.push(mq.on(EventNames.scenarioCancel, () => emit('cancel')))
   _unsubs.push(mq.on(EventNames.scenarioAddSubAgent, addSubAgent))
   _unsubs.push(mq.on(EventNames.scenarioSelectMain, () => {
     selectedAgentIdx.value = agents.value.indexOf(mainAgent.value)
@@ -475,10 +560,14 @@ function createDefaultMainAgent() {
   border-radius: 4px;
 }
 
-.toolbar-right {
+/* 底部按钮区（「取消 / 保存」）固定在滚动区之外，不随内容滚动 */
+.edit-footer {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border, #dcdfe6);
   flex-shrink: 0;
 }
 

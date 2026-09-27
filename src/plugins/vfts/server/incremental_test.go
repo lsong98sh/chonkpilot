@@ -11,6 +11,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +19,65 @@ func writeText(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+// TestCollectFilesStackGitignore：stack_gitignore 关 → 不读 .gitignore（仅内置强制 + 默认 + 用户规则）；
+// 开 → 按 gitignore 语义过滤（目录不下降、文件级排除、'!' 反选）。
+func TestCollectFilesStackGitignore(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // 隔离全局 ignore
+
+	cases := []struct {
+		name  string
+		gitig string
+		stack bool
+		files []string
+	}{
+		{"stack 关：不读 .gitignore", "generated/\na.txt\n", false,
+			[]string{"a.txt", "generated/gen.txt", "keep.txt", "sub/b.txt"}},
+		{"stack 开：目录不下降 + 文件级排除", "generated/\na.txt\n", true,
+			[]string{"keep.txt", "sub/b.txt"}},
+		{"stack 开：'!' 反选", "*.txt\n!keep.txt\n", true,
+			[]string{"keep.txt"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, f := range []string{"a.txt", "keep.txt", "generated/gen.txt", "sub/b.txt"} {
+				p := filepath.Join(dir, filepath.FromSlash(f))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(c.gitig), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			w, err := Open(dir)
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			defer func() { Drop(dir); CloseAll() }()
+
+			stack := c.stack
+			if err := w.Configure(nil, []string{".txt"}, nil, &stack); err != nil {
+				t.Fatalf("configure: %v", err)
+			}
+			entries, err := w.collectFiles()
+			if err != nil {
+				t.Fatalf("collectFiles: %v", err)
+			}
+			var got []string
+			for _, e := range entries {
+				got = append(got, e.path)
+			}
+			if strings.Join(got, ",") != strings.Join(c.files, ",") {
+				t.Fatalf("文件清单不符：got=%v want=%v", got, c.files)
+			}
+		})
 	}
 }
 
@@ -34,7 +94,7 @@ func TestIncrementalIndexSmoke(t *testing.T) {
 	defer func() { Drop(dir); CloseAll() }()
 
 	// 1) 全量首建
-	full, err := w.Initialize(nil, nil)
+	full, err := w.Initialize(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("initialize: %v", err)
 	}

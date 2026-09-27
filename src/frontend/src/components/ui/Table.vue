@@ -20,7 +20,7 @@
             {{ emptyText }}
           </td>
         </tr>
-        <tr v-for="(row, rowIndex) in data" :key="rowIndex">
+        <tr v-for="(row, rowIndex) in data" :key="rowIndex" :class="rowClassOf(row, rowIndex)">
           <td
             v-for="col in columns"
             :key="col.prop || col.type + rowIndex"
@@ -48,12 +48,20 @@
 </template>
 
 <script setup>
-defineProps({
+const props = defineProps({
   columns: { type: Array, required: true },
   data: { type: Array, default: () => [] },
   emptyText: { type: String, default: '' },
   size: { type: String, default: 'small' },
+  // 行级 class（可选）：函数 (row, index) => class 或静态 class/对象/数组。
+  // 用于按行状态标红/高亮（如记忆类别超阈值 → is-over），不影响无传入时的既有渲染。
+  rowClass: { type: [Function, String, Object, Array], default: null },
 })
+
+// rowClassOf 解析行 class（函数式按行求值；其余原样返回）。
+function rowClassOf(row, index) {
+  return typeof props.rowClass === 'function' ? props.rowClass(row, index) : props.rowClass
+}
 
 function getColStyle(col) {
   const style = {}

@@ -131,9 +131,10 @@ test('⑱A 回执：成功静默（A3）；部分失败/无启用类别分别给
 // ═══════════════════════════════════════════════════════════════
 test('⑱B 清空：入口在类别行（含用户偏好）+ 二次确认 + 与删除并存', () => {
   const src = read(PAGE)
-  assert.match(src, /@click="clearCategory\(c\)"/, '项目类别行须有「清空」入口')
+  // 2026-09-27：类别表改用自研 Table（具名插槽），行内插槽作用域变量 = row
+  assert.match(src, /@click="clearCategory\(row\)"/, '项目类别行须有「清空」入口')
   assert.match(src, /@click="clearCategory\(userPref\)"/, '用户偏好行同样须可清空')
-  assert.match(src, /@click="deleteCategory\(c\)"/, '「删除类别」须保留（两者并存）')
+  assert.match(src, /@click="deleteCategory\(row\)"/, '「删除类别」须保留（两者并存）')
   assert.match(src, /memoryIO\.clear_confirm', \{ name: c\.category \}/, '须二次确认（含类别名）')
   assert.match(src, /memoryIO\.clear_confirm_title/, '确认框须给标题（与既有删除同风格）')
   const fn = fnBody(src, 'clearCategory')

@@ -318,7 +318,7 @@ onUnmounted(() => unsubs.forEach((fn) => fn()))
 }
 .io-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -326,7 +326,7 @@ onUnmounted(() => unsubs.forEach((fn) => fn()))
   margin: 0;
   font-size: 12px;
   line-height: 1.6;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
 }
 .io-alert {
   margin: 0;

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -26,11 +27,57 @@ import (
 //   - threshold（秒）→ 暴露 `_meta.async-threshold`（auto/manual 档的超时转后台点）；
 //   - hard_timeout（秒）→ **不透出**，仅作 executor 执行硬杀上限（见 executor.go resolveExecTimeout）。
 //
-// 零值 = 该字段不覆盖（维持契约现值）；未配置的工具 = 无覆盖。
+// 取值语义（用户口径，2026-09-27）：
+//   - 字段**未设置**（键缺失 / `null` / 空串 / 非数字）→ 该字段不覆盖（维持契约现值/回落全局）；
+//   - `ThresholdSet`/`HardTimeoutSet` = 该字段是否被显式设置（区分 0/-1 与「未设置」）；
+//   - threshold / hard_timeout 显式 **0 或 -1 = 无上限**（不设点 / 不杀，永远等，用户可取消）。
 type ToolAsyncOverride struct {
-	Mode        string `json:"mode"`
-	Threshold   int    `json:"threshold"`
-	HardTimeout int    `json:"hard_timeout"`
+	Mode           string `json:"mode"`
+	Threshold      int    `json:"threshold"`
+	HardTimeout    int    `json:"hard_timeout"`
+	ThresholdSet   bool   `json:"-"` // threshold 是否显式设置（0/-1 = 无上限）
+	HardTimeoutSet bool   `json:"-"` // hard_timeout 是否显式设置（0/-1 = 无上限）
+}
+
+// UnmarshalJSON 容错解析单个覆盖项：字段缺省 / `null` / 空串 / 非数字 → 视为**未设置**
+// （不报错、不影响其它字段）；数字或数值字符串 → 采用并标记 Set。
+// 这样 `{"hard_timeout": 0}` 与 `{"hard_timeout": null}` 得以区分（前者 = 无上限）。
+func (o *ToolAsyncOverride) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["mode"]; ok {
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil {
+			o.Mode = s
+		}
+	}
+	o.Threshold, o.ThresholdSet = optIntField(raw["threshold"])
+	o.HardTimeout, o.HardTimeoutSet = optIntField(raw["hard_timeout"])
+	return nil
+}
+
+// optIntField 解析可选整数字段：缺省/null/空串/非数字 → (0, false)；数字（含数值字符串）→ (n, true)。
+func optIntField(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
+		return 0, false
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n, true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return 0, false
+		}
+		if v, err := strconv.Atoi(s); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 // toolAsyncModes 是合法 mode 取值（四档；其它值 = 非法 → 丢字段）。
@@ -217,15 +264,19 @@ func (c *Config) SetToolAsync(raw map[string]ToolAsyncOverride) bool {
 	return true
 }
 
-// NormalizeToolAsync 归一覆盖表（boundary：非法 mode / 负数 → **忽略该字段**并记日志，
+// NormalizeToolAsync 归一覆盖表（boundary：非法 mode → **忽略该字段**并记日志，
 // 不整体拒绝、不影响其它键项）：
 //   - key 去空白；空键 → 丢整项（无法定位工具）；
 //   - mode 去空白并小写；空 = 不覆盖；非法取值 → 丢 mode 字段；
-//   - threshold / hard_timeout ≤ 0 → 取值 0（= 不覆盖）；
-//   - 三项皆无有效值 → 丢整项；结果为空 → nil（= 无覆盖，便于比较）。
+//   - threshold / hard_timeout：**显式设置即保留**（含 0 / -1 = **无上限**；`Set` 标记区分
+//     它与「未设置」）；未设置（键缺失/null/空串/非数字）→ 不覆盖该字段；
+//   - 三项皆未设置 → 丢整项；结果为空 → nil（= 无覆盖，便于比较）。
 //
 // 注：配置引用的工具不存在（孤儿键）**不报错**——查表时自然不命中（调用点不校验工具面，
 // 因为第三方/目录节点工具与内嵌 mcp-server 的工具面不必一致）。
+//
+// 兼容：直接构造的 `ToolAsyncOverride`（不走 JSON）未置 `Set` 标记时，按「非零值 = 已设置」
+// 兜底（正数覆盖照旧生效）；
 //
 // 导出（2026-09-19，I-82）：装配层（chonkpilot-llm/server）解析 usr `tool_async` 后需把**同一份
 // 归一结果**下发给 gateway（工具级覆盖下沉），避免两处各归一出现口径差。
@@ -245,20 +296,16 @@ func NormalizeToolAsync(raw map[string]ToolAsyncOverride) map[string]ToolAsyncOv
 			log.Printf("[mcp-server] tool_async[%s]: 非法 mode=%q（取值 always/never/auto/manual），忽略该字段", name, ov.Mode)
 			mode = ""
 		}
-		if ov.Threshold < 0 {
-			log.Printf("[mcp-server] tool_async[%s]: 负数 threshold=%d，忽略该字段", name, ov.Threshold)
-		}
-		if ov.HardTimeout < 0 {
-			log.Printf("[mcp-server] tool_async[%s]: 负数 hard_timeout=%d，忽略该字段", name, ov.HardTimeout)
-		}
 		eff := ToolAsyncOverride{Mode: mode}
-		if ov.Threshold > 0 {
+		if ov.ThresholdSet || ov.Threshold != 0 {
 			eff.Threshold = ov.Threshold
+			eff.ThresholdSet = true
 		}
-		if ov.HardTimeout > 0 {
+		if ov.HardTimeoutSet || ov.HardTimeout != 0 {
 			eff.HardTimeout = ov.HardTimeout
+			eff.HardTimeoutSet = true
 		}
-		if eff.Mode == "" && eff.Threshold == 0 && eff.HardTimeout == 0 {
+		if eff.Mode == "" && !eff.ThresholdSet && !eff.HardTimeoutSet {
 			continue // 无有效覆盖 → 不登记（等价未配置）
 		}
 		out[name] = eff

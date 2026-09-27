@@ -61,8 +61,9 @@
 | 项 | 值 |
 |----|----|
 | 订阅 | `instance-register`/`heartbeat`/`exit` · `data-prj-config-refresh` · 工具回调 `codegraph-tool-call` |
-| 配置键 | `enable-codegraph`（可见性门控）· `codegraph.status`（状态回写） |
+| 配置键 | `enable-codegraph`（可见性门控）· `codegraph.exts` / `codegraph.skip-dirs` / `codegraph.stack-gitignore`（索引配置，变更即强制重建）· `codegraph.status`（状态回写）· `codegraph.action`（重建/清除/重试信号） |
 | 引擎 | 独立 exe `src/plugins/codegraph`（stdio 子进程），按 workdir 管理；**每 workdir 独立 client/子进程**（2026-09-15 后：T-12/P2-4 已落地 —— `p.clients[workdir]`、独立索引内存/独立串行；原「全局共享 client」作废） |
+| 叠加 gitignore 体系（2026-09-27；同日由「目录名折名」升级为完整 gitignore 语义） | 插件把 `codegraph.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `codegraph.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源/优先级/匹配语义/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`，与 vfts 引擎/插件**同一实现**） |
 | 注册工具 | **6 个查询工具**（`codegraph_symbol_search` / `_get_symbol_info` / `_get_dependency_graph` / `_find_circular_deps` / `_analyze_complexity` / `_get_module_summary`），同名同 schema（去掉 workdir），`handler_subject=codegraph-tool-call`，hot=true，category=codegraph |
 | 周期/超时 | sweep 15s · heartbeat 90s（**2026-09-16 后：仅 `-tags split` 编入时判超时 → 既有 `instanceGone`；阈值 = `instance.HeartbeatTimeout`（与 llm-server `Manager.Sweep`、persist `staleTimeout` 同口径，见 §2 实例视图）；默认构建不判超时**，见 §2 实例视图）· data 5s · call 60s · init 15min；**`childIdle 5min` 已接线**（`sweepIdleClient` 于 15s 扫描中**逐 workdir**回收无引用且空闲超阈值的引擎子进程，下次 `clientFor(workdir)` 懒重建，T-18；2026-09-15 后按 workdir 独立） |
 | 进度回写 | 索引经**既有** `codegraph.status` 面写 `{state:"indexing", phase, progressDone, progressTotal}`（`configure`→`index`，索引期 500ms 轮询引擎 `meta.json`；**零新增主题**，T-11） |
@@ -75,15 +76,16 @@
 | 项 | 值 |
 |----|----|
 | 订阅 | `instance-register`/`heartbeat`/`exit` · `data-prj-config-refresh` · 工具回调 `vfts-tool-call` |
-| 配置键 | `enable-vfts`（可见性门控）· `vfts.exts` / `vfts.skip-dirs`（索引配置，变更即强制重建）· `vfts.status`（状态回写） |
+| 配置键 | `enable-vfts`（可见性门控）· `vfts.exts` / `vfts.skip-dirs` / `vfts.stack-gitignore`（索引配置，变更即强制重建）· `vfts.status`（状态回写） |
 | 引擎 | 独立 exe `src/plugins/vfts`（stdio 子进程，CGO + zvec），**全局共享 client**（一对多，按工具参数 `workdir` 路由） |
 | 注册工具 | **1 个查询工具** `vfts_query`（同名同 schema 去 `workdir`，`handler_subject=vfts-tool-call`，hot=true，category=vfts）；管理工具 `vfts_configure/index/status` **不注册**（插件直接调引擎） |
-| 索引配置变更 | **去抖合并（2026-09-15）**：一次保存写 `vfts.exts` + `vfts.skip-dirs` 两键 = 两次 `data-prj-config-refresh` → 经 **400ms 去抖窗口**合并为**一轮**强制重建（窗口外单键变更仍触发，不会漏重建）；**仅 dirty（值确有变化）才写库** |
+| 索引配置变更 | **去抖合并（2026-09-15；2026-09-27 扩至 stack-gitignore）**：一次保存写 `vfts.exts` + `vfts.skip-dirs`(+`vfts.stack-gitignore`) 多键 = 多次 `data-prj-config-refresh` → 经 **400ms 去抖窗口**合并为**一轮**强制重建（窗口外单键变更仍触发，不会漏重建）；**仅 dirty（值确有变化）才写库** |
+| 叠加 gitignore 体系（2026-09-27；同日由「目录名折名」升级为完整 gitignore 语义） | 插件把 `vfts.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `vfts.stack-gitignore`（布尔）**原样下发**引擎（`vfts_configure` / `vfts_index` 的 `skip_dirs` + `stack_gitignore`）与**插件侧清单扫描**（`manifest.go scanFiles`）——**插件不再读/解析 `.gitignore`**。规则来源与优先级（低→高）：内置强制（`.git/`·`.svn/`·`.hg/`·`.chonkpilot/`，不可被 `!` 反选）→ 默认排除（`node_modules/`·`dist/`·`build/` 等，可被 `!` 反选）→ 全局 ignore（`$XDG_CONFIG_HOME/git/ignore` 或 `~/.config/git/ignore`）→ `.git/info/exclude` → 各级 `.gitignore`（目录越深优先级越高）→ 用户输入（最高优先级）；不勾选 = 只应用「内置强制 + 默认 + 用户输入」。**目录命中忽略 = 不下降；文件命中即跳过 → 支持文件级排除**。规则语法/匹配/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`） |
 | 进度推送 | 索引期间 **500ms 轮询**引擎落盘 `meta.json` 的 `done/total` 变化 → 回写 `vfts.status`（`{state, phase, progressDone, progressTotal}`，复用既有状态面、零新增主题，2026-09-15） |
 | 周期/超时 | sweep 15s · heartbeat 90s（**2026-09-16 后：仅 `-tags split` 编入时判超时 → 既有 `instanceGone`；阈值 = `instance.HeartbeatTimeout`（与 llm-server `Manager.Sweep`、persist `staleTimeout` 同口径，见 §2 实例视图）；默认构建不判超时**，见 §2 实例视图）· data 5s · call 60s · init 15min；**`childIdle 5min` 已接线**（2026-09-15，T-18b）：`sweepIdleClient` 于 15s 扫描中回收**无活跃实例且空闲 ≥5min** 的共享引擎子进程（下次 `sharedClient()` 懒重建），`lastActiveAt` 由 register/heartbeat 刷新 |
 | 可见性 | 工具仅在存在 `refs>0 且 enabled=true` 的 workdir 时注册；v1 多 workdir 只全局注册一份，执行按 `context.instance_id` 路由 |
 
-> **设置页回显（`VftsConfig.vue`，2026-09-15 补齐）**：`vfts.status` 由插件回写、UI 只读回显 —— 状态文本（`state=""` = **未初始化**，不再落入"启用中…"误导回显）+ `phase`（索引阶段）+ 进度（`progressDone/progressTotal`，终态不展示）+ `err`；明细补齐 `indexedFiles` / `chunkCount` / `tokenizer` / `exts`；索引配置（exts/跳过目录）**仅 dirty 才写库**，并提供**「恢复默认」**（删项目级键 → 回落引擎默认集）。
+> **设置页回显（`VftsConfig.vue`，2026-09-15 补齐）**：`vfts.status` 由插件回写、UI 只读回显 —— 状态文本（`state=""` = **未初始化**，不再落入"启用中…"误导回显）+ `phase`（索引阶段）+ 进度（`progressDone/progressTotal`，终态不展示）+ `err`；明细补齐 `indexedFiles` / `chunkCount` / `tokenizer` / `exts`；索引配置（exts/排除规则）**仅 dirty 才写库**，并提供**「恢复默认」**（删项目级键 → 回落引擎默认集）。
 
 > 与 codegraph（§3.3）同构：引擎外置 exe + 按 workdir 引用计数收敛工具注册；差异 = vfts **仍为全局共享 client**（一对多、按工具参数 `workdir` 路由），而 codegraph **已按 workdir 独立 client/子进程**（T-12/P2-4，2026-09-15 后）；另差异 = vfts 仅 1 个查询工具、索引由本插件增量/全量编排（`vfts.exts` 变更强制重建）。
 

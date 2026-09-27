@@ -42,5 +42,8 @@
   "meta": "meta (key=value)",
   "description": "Description",
   "content": "Content",
-  "params_hint": "Parameters = JSON Schema (maintain types/required/enum in the tree, keywords are completable; serialized to JSON text back into that section on save)."
+  "params_hint": "Parameters = JSON Schema (maintain types/required/enum in the tree, keywords are completable; serialized to JSON text back into that section on save).",
+  "extract_from_content": "Extract from body",
+  "extract_confirm": "Overwrite the current description with the text extracted from the body?",
+  "extract_no_content": "Body is empty or has no usable paragraph to extract a description."
 }

@@ -443,6 +443,23 @@ func callSearchProjectFiles(b *Bridge, ctx context.Context, params []json.RawMes
 	return json.Marshal(results)
 }
 
+// searchRelPath 归一检索结果路径为「workdir 相对 + 斜杠」——与 `file-open` 契约一致
+// （FileTree 打开文件亦传相对路径；2026-09-27 修正：原 file 源返回绝对路径，前端据此
+// 发 file-open 会与树内打开的同一文件产生两个页签）。workdir 内的绝对路径转相对；
+// workdir 之外 / 已是相对路径 → 仅做斜杠归一（不产生 `..` 越界写法）。
+func searchRelPath(workDir, p string) string {
+	s := strings.TrimSpace(p)
+	if s == "" {
+		return ""
+	}
+	if filepath.IsAbs(s) {
+		if rel, err := filepath.Rel(workDir, s); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			s = rel
+		}
+	}
+	return filepath.ToSlash(s)
+}
+
 // searchRank 结果优先级（越小越靠前）：文件名命中 0 > vfts 1 > codegraph 2 > 文件路径子串 3。
 func searchRank(it map[string]any) int {
 	if mt, _ := it["matchType"].(string); mt == "filename" {
@@ -479,7 +496,7 @@ func searchFileSource(workDir, lower string, limit int) []map[string]any {
 			mt = "filename"
 		}
 		results = append(results, map[string]any{
-			"path":      path,
+			"path":      searchRelPath(workDir, path),
 			"name":      fi.Name(),
 			"matchType": mt,
 			"source":    searchSourceFile,
@@ -517,7 +534,7 @@ func searchVftsSource(b *Bridge, query string, limit int) []map[string]any {
 			continue
 		}
 		out = append(out, map[string]any{
-			"path":      h.Path,
+			"path":      searchRelPath(b.workDir, h.Path),
 			"name":      filepath.Base(filepath.FromSlash(h.Path)),
 			"matchType": "content",
 			"source":    searchSourceVfts,
@@ -553,7 +570,7 @@ func searchCodegraphSource(b *Bridge, query string, limit int) []map[string]any 
 			continue
 		}
 		out = append(out, map[string]any{
-			"path":      s.File,
+			"path":      searchRelPath(b.workDir, s.File),
 			"name":      s.Name,
 			"matchType": "symbol",
 			"source":    searchSourceCodegraph,

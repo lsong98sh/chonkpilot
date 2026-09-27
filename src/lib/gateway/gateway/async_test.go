@@ -376,6 +376,106 @@ func tryPoolStatus(g *Gateway, taskID string) map[string]any {
 
 // ─── 用例 ─────────────────────────────────────────────
 
+// TestTimeoutZeroMeansNoLimit：工具 `_meta.timeout = 0`（= 无上限）→ **不设超时/裁决点**，
+// 即使远超 CallTimeout 也不发 mcp-tools-timeout（永远等，用户可取消）；放行上游后交付结果
+// （用户口径 2026-09-27：0/-1 = 无上限；未声明 = 回落全局）。
+func TestTimeoutZeroMeansNoLimit(t *testing.T) {
+	bus, g := newTestGW(t, 300*time.Millisecond) // CallTimeout 小 → 若无上限未生效会很快发裁决
+	fk := newFakeProvider("fk", OriginBuiltin)
+	addFakeProvider(t, g, fk, "slow")
+	setToolMeta(t, g, "fk_slow", map[string]any{"async": "never", "timeout": float64(0)})
+	evCh := subTimeout(t, bus)
+
+	out := gwCallAsync(bus, "tools/call", map[string]any{
+		"name": "fk_slow", "instance_id": "ins-1", "tool_call_id": "call-z",
+	})
+	select {
+	case ev := <-evCh:
+		t.Fatalf("timeout=0（无上限）不应发裁决，却收到: %v", ev)
+	case <-time.After(900 * time.Millisecond): // 远超 CallTimeout=300ms
+	}
+	close(fk.release) // 放行上游
+	select {
+	case o := <-out:
+		if o.err != nil {
+			t.Fatalf("call err: %v", o.err)
+		}
+		if got := gwText(o.res); got != "done:slow" {
+			t.Fatalf("无上限调用应交付结果, got %q（res=%v）", got, o.res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("无上限调用未返回")
+	}
+	if n := fk.callCount("slow"); n != 1 {
+		t.Fatalf("上游调用次数 = %d, want 1", n)
+	}
+}
+
+// TestTimeoutNoLimitAbsoluteNotOverridable：工具 `_meta.timeout = 0`（= 无上限）**绝对优先、不可被
+// 覆盖** —— 即便调用级 `arguments.timeout = 5`（正数）也不得覆盖 → **不设超时点、不发
+// mcp-tools-timeout**，阻塞至完成（用户口径 2026-09-27：「无上限」必须是绝对的）。
+func TestTimeoutNoLimitAbsoluteNotOverridable(t *testing.T) {
+	bus, g := newTestGW(t, 300*time.Millisecond) // CallTimeout 小 → 若无上限未生效会很快发裁决
+	fk := newFakeProvider("fk", OriginBuiltin)
+	addFakeProvider(t, g, fk, "slow")
+	setToolMeta(t, g, "fk_slow", map[string]any{"async": "never", "timeout": float64(0)})
+	evCh := subTimeout(t, bus)
+
+	out := gwCallAsync(bus, "tools/call", map[string]any{
+		"name": "fk_slow", "instance_id": "ins-1", "tool_call_id": "call-ov",
+		"arguments": map[string]any{"timeout": float64(5)}, // 调用级正数：不得覆盖无上限
+	})
+	select {
+	case ev := <-evCh:
+		t.Fatalf("工具 timeout=0（无上限）不应被调用级 timeout=5 覆盖，却收到裁决: %v", ev)
+	case <-time.After(900 * time.Millisecond): // 远超 CallTimeout=300ms
+	}
+	close(fk.release) // 放行上游
+	select {
+	case o := <-out:
+		if o.err != nil {
+			t.Fatalf("call err: %v", o.err)
+		}
+		if got := gwText(o.res); got != "done:slow" {
+			t.Fatalf("无上限调用应交付结果, got %q（res=%v）", got, o.res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("无上限调用未返回")
+	}
+	if n := fk.callCount("slow"); n != 1 {
+		t.Fatalf("上游调用次数 = %d, want 1", n)
+	}
+}
+
+// TestTimeoutPositiveCallLevelOverridesToolMeta：**正数**情形维持既有优先级链 —— 工具
+// `_meta.timeout = 60`（正数）+ 调用级 `arguments.timeout = 0.2` → 取调用级 0.2（> server 级 > 工具 > 全局）。
+func TestTimeoutPositiveCallLevelOverridesToolMeta(t *testing.T) {
+	bus, g := newTestGW(t, 5*time.Second)
+	fk := newFakeProvider("fk", OriginBuiltin)
+	addFakeProvider(t, g, fk, "slow")
+	setToolMeta(t, g, "fk_slow", map[string]any{"async": "never", "timeout": float64(60)})
+	evCh := subTimeout(t, bus)
+
+	out := gwCallAsync(bus, "tools/call", map[string]any{
+		"name": "fk_slow", "instance_id": "ins-1", "tool_call_id": "call-pos",
+		"arguments": map[string]any{"timeout": float64(0.2)},
+	})
+	ev := waitTimeoutEvent(t, evCh)
+	if fs, _ := ev["timeout_s"].(float64); fs != 0.2 {
+		t.Fatalf("timeout_s = %v, want 0.2（调用级正数应覆盖工具 _meta.timeout=60）", ev["timeout_s"])
+	}
+	// 收尾：取消（进程内 CancelExec，按 instance 归属）→ 调用返回并终态 cancelled（避免测试悬挂）
+	taskID, _ := ev["task_id"].(string)
+	if _, err := g.CancelExec("ins-1", taskID); err != nil {
+		t.Fatalf("CancelExec: %v", err)
+	}
+	select {
+	case <-out:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("cancel 后调用未返回")
+	}
+}
+
 // TestNeverTimeoutAwaitsDecision：never 到超时点 → 发 mcp-tools-timeout（options=[wait,cancel]）；
 // wait → 撤销超时继续等并交付结果；上游仅调用一次。
 func TestNeverTimeoutAwaitsDecision(t *testing.T) {

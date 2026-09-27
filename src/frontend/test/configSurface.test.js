@@ -149,30 +149,45 @@ test('⑤ 两页各补摘要 + 一键跳转（既有 previewTabOpen）', () => {
   assert.match(mcpPage, /kind: 'settings-tool-sandbox'/, 'server 级页须可跳工具级页')
 })
 
-// ── ⑤b MCP 编辑对话框重构（2026-09-26：两页签 + 字段说明 tooltip + 去「分类」）──
-test('⑤b MCP 编辑弹窗：Tabs 两页签，字段按「基本信息 / 运行信息」分组', () => {
+// ── ⑤b MCP 编辑对话框重排（2026-09-27：三页签 + 底栏「启用」+ 字段说明 tooltip）──
+test('⑤b MCP 编辑弹窗：Tabs 三页签，字段按「基本信息 / 运行信息 / 工具」分组', () => {
   const dlg = read('views/config/EditMCPDialog.vue')
-  assert.match(dlg, /<Tabs v-model="activeTab" :tabs="tabItems"/, '须用 Tabs 组件承载两页签')
+  assert.match(dlg, /<Tabs v-model="activeTab" :tabs="tabItems"/, '须用 Tabs 组件承载页签')
   assert.match(dlg, /name: 'basic', label: t\('config\.mcp\.tabBasic'\)/, '缺「基本信息」页签')
   assert.match(dlg, /name: 'runtime', label: t\('config\.mcp\.tabRuntime'\)/, '缺「运行信息」页签')
+  assert.match(dlg, /name: 'tools', label: t\('config\.mcp\.tabTools'\)/, '缺「工具」页签')
   assert.match(dlg, /<template #basic>/, '缺 basic 具名插槽')
   assert.match(dlg, /<template #runtime>/, '缺 runtime 具名插槽')
-  // 运行信息：isolate / sandbox / runtime / args / env / cwd / hotTools 均在 runtime 插槽内
-  const rt = dlg.slice(dlg.indexOf('<template #runtime>'), dlg.indexOf('</Tabs>'))
+  assert.match(dlg, /<template #tools>/, '缺 tools 具名插槽')
+  // 运行信息：runtime / cwd / args / env / isolate / sandbox（高频工具已移「工具」页签）
+  const rt = dlg.slice(dlg.indexOf('<template #runtime>'), dlg.indexOf('<template #tools>'))
   for (const key of ['config.mcp.runtime', 'config.mcp.args', 'config.mcp.env', 'config.mcp.cwd',
-    'config.mcp.hotTools', 'config.mcp.hotToolsSet', 'config.mcp.isolate', 'config.mcp.sandbox']) {
+    'config.mcp.isolate', 'config.mcp.sandbox']) {
     assert.ok(rt.includes(key), `runtime 页签缺 ${key}`)
   }
-  // 基本信息：name / enabled / transport / url / namespace / timeout / description / headers
+  // 基本信息：name / transport / url / namespace / timeout / description / headers（「启用」已移底栏）
   const basic = dlg.slice(dlg.indexOf('<template #basic>'), dlg.indexOf('<template #runtime>'))
-  for (const key of ['config.mcp.name', 'config.mcp.enabled', 'config.mcp.transport',
+  for (const key of ['config.mcp.name', 'config.mcp.transport',
     'config.mcp.serverUrl', 'config.mcp.namespace', 'config.mcp.timeout',
     'config.mcp.description', 'config.mcp.headers']) {
     assert.ok(basic.includes(key), `基本信息页签缺 ${key}`)
   }
-  // 保存载荷不因页签变化：handleSave 一次性提交两页字段
+  assert.doesNotMatch(basic, /config\.mcp\.enabled/, '「启用」应移出基本信息页签（至底栏）')
+  // 保存载荷不因页签变化：handleSave 一次性提交三页字段
   assert.match(dlg, /const connectorOK = transport\.value === 'stdio'/, 'handleSave 校验须保留')
   assert.match(dlg, /emit\('save', \{ \.\.\.localData \}, props\.editIndex\)/, 'handleSave 须一次性提交全部字段')
+})
+
+test('⑤b 底栏：右对齐「启用 / 取消 / 保存」，启用为 label + Switch 同行', () => {
+  const dlg = read('views/config/EditMCPDialog.vue')
+  // 底栏为滚动区之外的自适应高元素，不随内容滚动
+  assert.match(dlg, /\.edit-footer \{[\s\S]*?flex-shrink: 0;[\s\S]*?\}/, '底栏须 flex-shrink:0（固定不滚动）')
+  const iEnabled = dlg.indexOf('class="footer-enabled"')
+  const iCancel = dlg.indexOf('EventNames.editMcpCancel')
+  const iSave = dlg.indexOf('EventNames.editMcpSave')
+  assert.ok(iEnabled > 0 && iEnabled < iCancel && iCancel < iSave, '底栏顺序须为 启用 → 取消 → 保存')
+  assert.match(dlg, /class="footer-enabled">\s*<label class="form-label">\{\{ \$t\('config\.mcp\.enabled'\) \}\}<\/label>\s*<Switch v-model="localData\.enabled"/,
+    '底栏「启用」须为 label + Switch 同行')
 })
 
 test('⑤b 字段说明 tooltip：传输方式 ? tooltip + 新 help 图标；「分类」输入已移除', () => {
@@ -190,33 +205,31 @@ test('⑤b 字段说明 tooltip：传输方式 ? tooltip + 新 help 图标；「
   assert.match(defaults, /sandbox: null/, 'DEFAULT_MCP 须补 sandbox: null（三态）')
 })
 
-// ── ⑤c MCP 高频工具（2026-09-26：文本框 → 「摘要 + 设置」行 + 独立弹窗）────
-test('⑤c MCP 高频工具：运行信息行为「摘要 + 设置」，独立弹窗按别名勾选并写库原名', () => {
+// ── ⑤c MCP 高频工具（2026-09-27：独立弹窗 → 「工具」页签 + 加载工具按钮）────
+test('⑤c MCP 高频工具：「工具」页签【加载工具】勾选，写库原名，随主对话框保存', () => {
   const dlg = read('views/config/EditMCPDialog.vue')
-  // 原「高频工具」逗号分隔文本输入框已移除
+  // 旧「高频工具」行（摘要 + 独立【设置】按钮 / 独立弹窗）已整体摘除
   assert.doesNotMatch(dlg, /hotToolsText/, '不应再有 hotToolsText 文本输入')
-  assert.doesNotMatch(dlg, /config\.mcp\.hotToolsPlaceholder/, '不应再引用 hotToolsPlaceholder')
-  // 同一位置改为「高频工具」行：摘要文字 + 「设置」按钮
-  const rt = dlg.slice(dlg.indexOf('<template #runtime>'), dlg.indexOf('</Tabs>'))
-  assert.match(rt, /data-hot-tools-set/, '运行信息页签缺「设置」按钮')
-  assert.match(rt, /config\.mcp\.hotToolsSet/, '「设置」按钮须用 i18n 文案')
-  assert.match(rt, /hotToolsSummary/, '缺高频工具摘要文字')
-  // 设置按钮打开独立弹窗并回填 hot_tools（不改「保存才落库」的时机）
-  assert.match(dlg, /function openHotTools\(\)/, '缺 openHotTools')
-  assert.match(dlg, /SetMCPHotToolsDialog/, '须打开 SetMCPHotToolsDialog')
+  assert.doesNotMatch(dlg, /hotToolsSummary/, '不应再有行摘要')
+  assert.doesNotMatch(dlg, /data-hot-tools-set/, '不应再有独立【设置】按钮')
+  assert.doesNotMatch(dlg, /SetMCPHotToolsDialog/, '不应再打开独立弹窗')
+  // 新「工具」页签：加载按钮 + 初始提示 + 全部/逐项勾选 + 加载中/空态
+  const tools = dlg.slice(dlg.indexOf('<template #tools>'), dlg.indexOf('</Tabs>'))
+  assert.match(tools, /data-load-tools/, '工具页签缺【加载工具】按钮')
+  assert.match(tools, /config\.mcp\.loadTools/, '【加载工具】须用 i18n 文案')
+  assert.match(tools, /config\.mcp\.loadToolsHint/, '缺初始提示（点击加载）')
+  assert.match(tools, /data-hot-all/, '缺「全部工具」复选框')
+  assert.match(tools, /config\.mcp\.hotToolsAllLabel/, '「全部」须用 i18n 文案')
+  assert.match(tools, /hot-tool-item/, '缺逐项工具行')
+  assert.match(tools, /config\.mcp\.hotToolsEmpty/, '缺空态提示')
+  assert.match(tools, /config\.mcp\.hotToolsLoading/, '缺加载中提示')
+  // 数据源 = 既有 tools-list（零新增消息面）、按 _meta.server 归属、写库原名、全部/逐项
+  assert.match(dlg, /mq\.emit\('tools-list'/, '须读既有 tools-list（零新增消息面）')
+  assert.match(dlg, /srv\.alias !== name && srv\.node !== name/, '须按 _meta.server.alias/node 归属当前 server')
+  assert.match(dlg, /stripToolPrefix\(/, '写库前须做暴露名 → 原名转换')
+  assert.match(dlg, /\['\*'\]/, '「全部」须写 "*"（gateway isHot 语义）')
   assert.match(dlg, /localData\.hot_tools = \[\.\.\.hotTools\.value\]/, 'handleSave 须提交 hot_tools')
-
-  // 新弹窗：数据源 = 既有 tools-list（零新增消息面）、按 _meta.server 归属、写库原名、全部/逐项
-  const sub = read('views/config/SetMCPHotToolsDialog.vue')
-  assert.match(sub, /mq\.emit\('tools-list'/, '须读既有 tools-list（零新增消息面）')
-  assert.match(sub, /srv\.alias !== name && srv\.node !== name/, '须按 _meta.server.alias/node 归属当前 server')
-  assert.match(sub, /stripToolPrefix\(/, '写库前须做暴露名 → 原名转换')
-  assert.match(sub, /data-hot-all/, '缺「全部工具」复选框')
-  assert.match(sub, /data-hot-confirm/, '缺「确定」按钮')
-  assert.match(sub, /data-hot-cancel/, '缺「取消」按钮')
-  assert.match(sub, /\['\*'\]/, '「全部」须写 "*"（gateway isHot 语义）')
-  assert.match(sub, /hotToolsEmpty/, '缺空态提示')
-  assert.doesNotMatch(sub, /\bwatch(Effect)?\s*\(/, '弹窗不得使用 watch/watchEffect')
+  assert.doesNotMatch(dlg, /\bwatch(Effect)?\s*\(/, '弹窗不得使用 watch/watchEffect')
 })
 
 // ── ⑥ I-82/I-109 不适用标注 ──────────────────────────────
@@ -252,6 +265,60 @@ test('⑥ 沙箱页：executor 级行 + 第三方/http·sse 边界说明；async
   assert.match(asyncPage, /if \(!row\.dirNode && row\.hardTimeout/, 'dir 行不写 hard_timeout（避免误导）')
 })
 
+// ⑦ 工具异步页「超时」占位：**未设置** → 「回落全局」；**0 / -1 = 无上限**（用户口径 2026-09-27）。
+test('⑦ 超时列占位「回落全局」+ 0/-1 = 无上限口径（cTimeout 空时生效）', () => {
+  assert.equal(readLocale('zh-CN', 'config.json').toolAsync.hardTimeoutPlaceholder, '回落全局')
+  assert.equal(readLocale('en-US', 'config.json').toolAsync.hardTimeoutPlaceholder, 'Fall back to global')
+
+  const asyncPage = read('views/config/SettingsToolAsyncPage.vue')
+  assert.match(
+    asyncPage,
+    /row\.cTimeout === '' \? \$t\('config\.toolAsync\.hardTimeoutPlaceholder'\)/,
+    '超时列占位须取该词条（cTimeout 空 = 契约未声明硬上限 → 回落全局）',
+  )
+  // 0 / -1 = 无上限的合法值判定（阈值 / 硬上限同一口径）
+  assert.match(asyncPage, /function isLimitValue\(v\)/, '须有 isLimitValue 合法值判定')
+  assert.match(asyncPage, /n >= 0 \|\| n === -1/, '0 与 -1 须判为合法（无上限）')
+  assert.match(asyncPage, /isLimitValue\(raw\)/, 'onNumberBlur 须用 isLimitValue 判定合法值')
+  // 占位语义与 0/-1 口径写入表头 tooltip（i18n）
+  assert.match(asyncPage, /advancedHint/, '超时列表头须带 0/-1 口径 tooltip')
+  const hint = readLocale('zh-CN', 'config.json').toolAsync.advancedHint
+  assert.match(hint, /0 \/ -1/, 'zh tooltip 须写明 0 / -1 = 无上限')
+  assert.match(hint, /回落全局/, 'zh tooltip 须写明留空 = 回落全局')
+})
+
+// ── ⑧ 索引页「叠加 gitignore」（2026-09-27）──────────────
+test('⑧ 索引页：label「排除的目录和文件」+「叠加 gitignore」勾选（勾选不禁用输入框）', () => {
+  const zh = readLocale('zh-CN', 'projectConfig.json')
+  assert.equal(zh.exclude_paths, '排除的目录和文件', 'zh label 须为「排除的目录和文件」')
+  assert.equal(zh.stack_gitignore, '叠加 gitignore', 'zh 勾选文案须为「叠加 gitignore」')
+
+  const cases = [
+    { file: 'views/settings/CodegraphConfig.vue', key: 'codegraph.stack-gitignore', ref: 'cgStackGitignore' },
+    { file: 'views/settings/VftsConfig.vue', key: 'vfts.stack-gitignore', ref: 'vfStackGitignore' },
+  ]
+  for (const c of cases) {
+    const src = read(c.file)
+    // label 文案走 i18n，旧硬编码「排除目录」不得残留
+    assert.match(src, /projectConfig\.exclude_paths/, `${c.file} 须用 i18n「排除的目录和文件」label`)
+    assert.doesNotMatch(src, /排除目录/, `${c.file} 残留旧文案「排除目录」`)
+    assert.match(src, /projectConfig\.stack_gitignore/, `${c.file} 须用 i18n「叠加 gitignore」`)
+    assert.match(src, /projectConfig\.exclude_paths_hint/, `${c.file} 须有 i18n hint（含叠加语义）`)
+    // label 行右侧勾选（原生 checkbox + 既有 .b-checkbox 口径）
+    assert.match(src, /class="form-label-row"/, `${c.file} 须有 label 行容器`)
+    assert.match(src, /<input type="checkbox" v-model="[a-zA-Z]+" \/>/, `${c.file} 须有勾选框`)
+    // 勾选后输入框仍可编辑（禁止 disable/readonly 排除输入框）
+    assert.doesNotMatch(src, /:disabled="[^"]*[Ss]tack/, `${c.file} 勾选不得禁用输入框`)
+    assert.doesNotMatch(src, /:readonly/, `${c.file} 输入框不得 readonly`)
+    // 保存同时写该键（既有 setConfig 字符串口径）
+    assert.match(src, new RegExp(`setConfig\\('${c.key.replace('.', '\\.')}'`), `${c.file} 保存须写 ${c.key}`)
+    // dirty（unsaved）须含勾选状态；加载回填（缺省 false）
+    assert.match(src, new RegExp(`${c.ref}\\.value !== \\(origStackGitignore\\.value === 'true'\\)`), `${c.file} dirty 须含勾选状态`)
+    assert.match(src, new RegExp(`${c.ref}\\.value = rawStack === 'true'`), `${c.file} 加载须回填勾选`)
+    assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, `${c.file} 不得使用 watch/watchEffect`)
+  }
+})
+
 // ── 通用：i18n 双语齐备 ──────────────────────────────────
 test('i18n：新增键 zh-CN / en-US 齐备', () => {
   const projectKeys = [
@@ -260,11 +327,12 @@ test('i18n：新增键 zh-CN / en-US 齐备', () => {
     'log_dir_copy', 'log_dir_copied', 'log_dir_open_failed', 'log_dir_unavailable',
     'log_dir_browser_hint', 'engine_tool_state', 'engine_registered', 'engine_unregistered',
     'engine_tool_state_hint',
+    'index_exts_label', 'index_exts_hint', 'exclude_paths', 'stack_gitignore', 'exclude_paths_hint',
   ]
   const configKeys = {
     top: ['chromeTip'],
-    mcp: ['toolSandboxSummary', 'gotoToolSandbox', 'hotTools', 'hotToolsSet', 'hotToolsNone',
-      'hotToolsAll', 'hotToolsCount', 'hotToolsTitle', 'hotToolsHint', 'hotToolsAllLabel',
+    mcp: ['toolSandboxSummary', 'gotoToolSandbox', 'tabTools', 'loadTools', 'loadToolsHint',
+      'kvAdd', 'kvDelete', 'kvKey', 'kvValue', 'hotToolsAllLabel',
       'hotToolsEmpty', 'hotToolsLoading'],
     toolAsync: ['naBadge', 'hardTimeoutNotApplicable'],
     toolSandbox: ['serverSummary', 'gotoMcp', 'thirdPartyHint', 'execCore'],

@@ -1,4 +1,4 @@
-// callgate.go：gateway 工具面——6 个查询工具的定义/注册/注销，与执行回调（onToolCall）。
+// callgate.go：gateway 工具面——8 个查询工具的定义/注册/注销，与执行回调（onToolCall）。
 //
 // 工具契约（与引擎 chonkpilot-codegraph-mcp-server 同名同描述，但 schema 去掉 workdir）：
 //   - 对外工具名与引擎完全一致（codegraph_ 前缀），LLM 无需感知 workdir（插件按回调
@@ -54,6 +54,26 @@ var queryTools = []gatewayTool{
 		},
 	},
 	{
+		name:        "codegraph_callers",
+		description: "查「谁调用了它」：在已索引项目内按被调名（精确名或最后一段，忽略大小写，故 pkg.Foo 与 Foo 同目标）找调用方符号。语义为调用点文本的**名字级启发式**（无类型/重载解析，仅覆盖已索引文件中的直接调用）。",
+		props: map[string]any{
+			"name":  map[string]any{"type": "string", "description": "被调名（如 Foo 或 pkg.Foo）"},
+			"id":    map[string]any{"type": "string", "description": "目标符号 id（file:line:name:kind）；与 name 二选一，id 优先"},
+			"file":  map[string]any{"type": "string", "description": "只保留该文件内的调用方（路径子串过滤）"},
+			"limit": map[string]any{"type": "integer", "description": "返回上限（默认 50）"},
+		},
+	},
+	{
+		name:        "codegraph_callees",
+		description: "查「它调用了谁」：按 id 或 file+name 定位符号，返回其直接调用的目标名（含 resolved 与解析到的 file/line）。语义为调用点文本的**名字级启发式**（无类型/重载解析）。",
+		props: map[string]any{
+			"id":    map[string]any{"type": "string", "description": "符号 id（file:line:name:kind）"},
+			"file":  map[string]any{"type": "string", "description": "符号所在文件（配 name 定位）"},
+			"name":  map[string]any{"type": "string", "description": "符号名（配 file 定位）"},
+			"limit": map[string]any{"type": "integer", "description": "返回上限（默认 50）"},
+		},
+	},
+	{
 		name:        "codegraph_get_dependency_graph",
 		description: "某项目的文件级依赖：文件 → import/use/require 目标（原始串）。file 过滤可单查。",
 		props: map[string]any{
@@ -83,7 +103,7 @@ var queryTools = []gatewayTool{
 	},
 }
 
-// registerAll 逐个向 gateway 注册 6 个查询工具（同主题 promise：await v.Result/v.Err）。
+// registerAll 逐个向 gateway 注册 8 个查询工具（同主题 promise：await v.Result/v.Err）。
 func (p *Codegraph) registerAll() error {
 	ctx, cancel := context.WithTimeout(context.Background(), dataTimeout)
 	defer cancel()

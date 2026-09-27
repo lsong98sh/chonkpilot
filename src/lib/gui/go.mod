@@ -12,6 +12,7 @@ require (
 	github.com/chonkpilot/chonkpilot-plugin-compress v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-memory v0.0.0
+	github.com/chonkpilot/chonkpilot-ignore v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-vfts v0.0.0
 	github.com/jchv/go-webview2 v0.0.0
 	golang.org/x/sys v0.47.0
@@ -50,6 +51,7 @@ replace (
 	github.com/chonkpilot/chonkpilot-plugin-compress => ../../plugins/plugin-compress
 	github.com/chonkpilot/chonkpilot-plugin-history => ../../plugins/plugin-history
 	github.com/chonkpilot/chonkpilot-plugin-memory => ../../plugins/plugin-memory
+	github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 	github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vfts
 	github.com/chonkpilot/chonkpilot-router => ../router
 	github.com/chonkpilot/chonkpilot-task => ../task

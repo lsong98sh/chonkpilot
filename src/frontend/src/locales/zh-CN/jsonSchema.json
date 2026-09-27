@@ -9,5 +9,10 @@
   "complete_keyword": "补全关键字",
   "remove_keyword": "移除该关键字",
   "new_property_name": "新属性名",
-  "enum_value": "枚举值"
+  "enum_value": "枚举值",
+  "enum_dialog_title": "枚举值",
+  "enum_add_row": "添加枚举值",
+  "remove_enum": "移除该枚举值",
+  "empty_value": "（空）",
+  "set_keyword": "设置 {keyword}"
 }

@@ -77,7 +77,7 @@
       <template #prompt>
         <div class="tab-content tab-prompt">
           <div class="prompt-toolbar">
-            <Button size="mini" text v-mq:[EventNames.agentOptimize].click>
+            <Button size="mini" text v-mq:[EventNames.agentOptimize].click :loading="optimizing" :disabled="optimizing">
               <Icon name="magic-stick" size="14" /> {{ $t('scenario.optimize_prompt') }}</Button>
           </div>
           <Textarea
@@ -177,6 +177,11 @@ const props = defineProps({
   allToolCategories: {
     type: Array,
     default: () => [],
+  },
+  // 提示词优化进行中（由父组件透传）：优化按钮 loading + 禁用（防重入）
+  optimizing: {
+    type: Boolean,
+    default: false,
   },
 })
 

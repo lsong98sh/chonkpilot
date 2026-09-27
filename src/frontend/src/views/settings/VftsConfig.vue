@@ -43,14 +43,22 @@
         </div>
         <hr class="b-divider" />
         <div class="form-item form-item-full">
-          <label class="form-label">参与索引的扩展名</label>
+          <label class="form-label">{{ $t('projectConfig.index_exts_label') }}</label>
           <Textarea v-model="vfExts" :rows="3" placeholder=".go, .js, .ts, .md, .txt（逗号或换行分隔）" />
-          <div class="vf-hint">留空 = 使用引擎默认扩展名集合；保存后后台重建索引。</div>
+          <div class="vf-hint">{{ $t('projectConfig.index_exts_hint') }}</div>
         </div>
         <div class="form-item form-item-full">
-          <label class="form-label">排除目录</label>
-          <Textarea v-model="vfSkipDirs" :rows="3" placeholder="node_modules, dist（逗号或换行分隔）" />
-          <div class="vf-hint">在引擎默认跳过目录（已含 <code>.chonkpilot</code>）之外追加排除；保存后后台重建索引。</div>
+          <!-- label 右侧「叠加 gitignore」勾选：勾选后输入框仍可编辑（保存时把规则与开关一并下发引擎，
+               由引擎按 gitignore 语义叠加各级 .gitignore / info/exclude / 全局 ignore） -->
+          <div class="form-label-row">
+            <label class="form-label">{{ $t('projectConfig.exclude_paths') }}</label>
+            <label class="b-checkbox">
+              <input type="checkbox" v-model="vfStackGitignore" />
+              <span>{{ $t('projectConfig.stack_gitignore') }}</span>
+            </label>
+          </div>
+          <Textarea v-model="vfSkipDirs" :rows="3" placeholder="node_modules/, dist/, !dist/keep.log（逗号或换行分隔）" />
+          <div class="vf-hint">{{ $t('projectConfig.exclude_paths_hint') }}</div>
         </div>
       </form>
     </div>
@@ -78,13 +86,17 @@ const status = ref(null)
 // 运行时可观测态：vfts 查询工具是否已注册到工具面（tools-list 是否存在 vfts_query）。
 // 插件侧无「引擎子进程运行中」信号 → 只报真实可得的注册态（见 utils/engineStatus.js）。
 const toolsRegistered = ref(false)
-// 项目级索引配置（逗号/换行分隔文本；空 = 引擎默认集）
+// 项目级索引配置（逗号/换行分隔文本；空 = 引擎默认规则集）
 const vfExts = ref('')
 const vfSkipDirs = ref('')
+// 叠加 gitignore 勾选（'vfts.stack-gitignore' == "true"）：勾选后仍可编辑输入框，
+// 保存时把「用户规则 + 叠加开关」一并下发引擎（gitignore 语义在引擎侧统一实现）。
+const vfStackGitignore = ref(false)
 // 上次从项目配置读到的原始值（'' = 项目级无该键）；用于判断用户是否真的改动过，
 // 避免把「默认值镜像」直接保存成显式项目配置（固化后引擎默认变更不再自动生效）
 const origExts = ref('')
 const origSkipDirs = ref('')
+const origStackGitignore = ref('')
 const loadedOnce = ref(false)
 const saving = ref(false)
 
@@ -133,7 +145,9 @@ const statItems = computed(() => {
 })
 
 // 项目级键是否存在（存在才允许「恢复默认」删键）
-const hasProjectOverride = computed(() => origExts.value !== '' || origSkipDirs.value !== '')
+const hasProjectOverride = computed(() =>
+  origExts.value !== '' || origSkipDirs.value !== '' || origStackGitignore.value !== ''
+)
 
 // 展示镜像 = 项目级值；为空 → 回填引擎默认（展示值 = 实际生效值，I-65 ⑫）
 function displayExts(raw) { return raw || VFTS_DEFAULT_EXTS.join(', ') }
@@ -142,10 +156,11 @@ function displaySkipDirs(raw) { return raw || DEFAULT_SKIP_DIRS.join(', ') }
 // 输入框是否仍等于「上次加载值的展示镜像」（= 用户未编辑）
 function isPristine(current, orig, display) { return current === display(orig) }
 
-// ⑤ 未保存标记：任一索引输入与已加载值不一致（仅显示，不改保存时机）
+// ⑤ 未保存标记：任一索引输入/勾选与已加载值不一致（仅显示，不改保存时机）
 const unsaved = computed(() =>
   !isPristine(vfExts.value, origExts.value, displayExts) ||
-  !isPristine(vfSkipDirs.value, origSkipDirs.value, displaySkipDirs)
+  !isPristine(vfSkipDirs.value, origSkipDirs.value, displaySkipDirs) ||
+  vfStackGitignore.value !== (origStackGitignore.value === 'true')
 )
 
 async function loadConfig() {
@@ -155,6 +170,7 @@ async function loadConfig() {
     vfEnabled.value = c['enable-vfts'] === 'true'
     const rawExts = c['vfts.exts'] || ''
     const rawSkipDirs = c['vfts.skip-dirs'] || ''
+    const rawStack = c['vfts.stack-gitignore'] || ''
     // 仅在「首次加载」或「用户未编辑」时覆盖输入框：索引期间插件每 500ms 回写
     // vfts.status 并广播 prj-config-refresh，避免把未保存的编辑冲掉。
     if (!loadedOnce.value || isPristine(vfExts.value, origExts.value, displayExts)) {
@@ -163,8 +179,12 @@ async function loadConfig() {
     if (!loadedOnce.value || isPristine(vfSkipDirs.value, origSkipDirs.value, displaySkipDirs)) {
       vfSkipDirs.value = displaySkipDirs(rawSkipDirs)
     }
+    if (!loadedOnce.value || vfStackGitignore.value === (origStackGitignore.value === 'true')) {
+      vfStackGitignore.value = rawStack === 'true'
+    }
     origExts.value = rawExts
     origSkipDirs.value = rawSkipDirs
+    origStackGitignore.value = rawStack
     loadedOnce.value = true
     const raw = c['vfts.status']
     if (raw) {
@@ -211,8 +231,16 @@ async function writeIndexKey(key, textRef, origRef, display) {
   textRef.value = display(v) // 回填（清空 → 默认镜像，与首次打开一致）
 }
 
-// 保存索引配置（exts/skip-dirs）：仅写入实际改动的键；写入后 data-prj-config-refresh
-// 触发插件重新 configure + 重建索引（插件侧对同一次保存的两键做去抖，只重建一轮）。
+// 写 stack-gitignore 单键（布尔 → 既有字符串口径 "true"/"false"）
+async function writeStackKey() {
+  const v = String(vfStackGitignore.value)
+  await setConfig('vfts.stack-gitignore', v)
+  origStackGitignore.value = v
+}
+
+// 保存索引配置（exts/skip-dirs/stack-gitignore）：仅写入实际改动的键；写入后
+// data-prj-config-refresh 触发插件重新 configure + 重建索引（插件侧对同一次保存的键做去抖，
+// 只重建一轮）。stack-gitignore 保存后：插件先读 workdir 根 .gitignore 规则，再与输入叠加。
 async function handleIndexSave() {
   saving.value = true
   try {
@@ -222,6 +250,9 @@ async function handleIndexSave() {
     }
     if (!isPristine(vfSkipDirs.value, origSkipDirs.value, displaySkipDirs)) {
       tasks.push(writeIndexKey('vfts.skip-dirs', vfSkipDirs, origSkipDirs, displaySkipDirs))
+    }
+    if (vfStackGitignore.value !== (origStackGitignore.value === 'true')) {
+      tasks.push(writeStackKey())
     }
     if (tasks.length === 0) {
       message.info(t('projectConfig.index_nothing_changed'))
@@ -236,19 +267,22 @@ async function handleIndexSave() {
   }
 }
 
-// 恢复默认：清除项目级 exts/skip-dirs 键（引擎默认集生效，回填默认镜像）
+// 恢复默认：清除项目级 exts/skip-dirs/stack-gitignore 键（引擎默认集生效，回填默认镜像）
 async function handleResetDefaults() {
   saving.value = true
   try {
     const tasks = []
     if (origExts.value !== '') tasks.push(deleteConfig('vfts.exts'))
     if (origSkipDirs.value !== '') tasks.push(deleteConfig('vfts.skip-dirs'))
+    if (origStackGitignore.value !== '') tasks.push(deleteConfig('vfts.stack-gitignore'))
     if (tasks.length === 0) return
     await Promise.all(tasks)
     origExts.value = ''
     origSkipDirs.value = ''
+    origStackGitignore.value = ''
     vfExts.value = displayExts('')
     vfSkipDirs.value = displaySkipDirs('')
+    vfStackGitignore.value = false
     message.success(t('projectConfig.index_reset_done'))
   } catch (e) {
     message.error(saveFailedText(t, e))
@@ -325,9 +359,25 @@ onUnmounted(() => {
   font-weight: 500;
   color: var(--text-primary);
 }
+/* label 行：左 label + 右「叠加 gitignore」勾选 */
+.form-label-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.b-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.b-checkbox input[type="checkbox"] {
+  accent-color: var(--accent, #409eff);
+}
 .vf-hint {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--fg-secondary);
   line-height: 1.6;
 }
 .vf-hint code {

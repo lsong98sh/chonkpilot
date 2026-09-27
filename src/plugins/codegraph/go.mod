@@ -1,8 +1,9 @@
 module github.com/chonkpilot/chonkpilot-codegraph-mcp-server
 
-go 1.25.0
+go 1.26.0
 
 require (
+	github.com/chonkpilot/chonkpilot-ignore v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/tree-sitter/go-tree-sitter v0.25.0
 	github.com/tree-sitter/tree-sitter-go v0.25.0
@@ -24,3 +25,6 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
+
+replace github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
+
