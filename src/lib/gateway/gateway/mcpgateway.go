@@ -708,6 +708,55 @@ func (g *Gateway) handleToolsWait(v *mq.Value) error {
 	return nil
 }
 
+// runPreHooks 执行全部已注册的前置钩子（注册方经 tools/register 的 pre_hook_subject 声明；
+// 2026-09-27）。与「注册工具远程回调」（§5.4）同构：Emit 到该相对主题并 await 同一主题，
+// 订阅者写回 v.Result / 返回 error。载荷 {tool, context}（context 对齐 turn 上下文 + work_dir）；
+// 失败 → 返回 (错误码, 消息) → 调用方拒绝该工具调用。
+//
+// **零开销**：无任何注册方声明钩子时 HasPreHooks() 为 false，本方法立即返回（不发消息）。
+func (g *Gateway) runPreHooks(req CallReq) (int, string) {
+	if !g.regProv.HasPreHooks() {
+		return 0, ""
+	}
+	subjects := g.regProv.PreHookSubjects()
+	if len(subjects) == 0 {
+		return 0, ""
+	}
+	c := map[string]string{}
+	if req.Session != "" {
+		c["session"] = req.Session
+	}
+	if req.Turn != "" {
+		c["turn"] = req.Turn
+	}
+	if req.InstanceID != "" {
+		c["instance_id"] = req.InstanceID
+	}
+	if req.ToolCallID != "" {
+		c["tool_call_id"] = req.ToolCallID
+	}
+	if req.TopSession != "" {
+		c["top_session"] = req.TopSession
+	}
+	if req.Parent != "" {
+		c["parent"] = req.Parent
+	}
+	if req.WorkDir != "" {
+		c["work_dir"] = req.WorkDir
+	}
+	payload := map[string]any{"tool": req.Name, "context": c}
+	ctx, cancel := context.WithTimeout(context.Background(), g.params.CallTimeout)
+	defer cancel()
+	for _, subj := range subjects {
+		v := g.bus.Emit(ctx, subj, payload).Wait()
+		if err := v.Err(); err != nil {
+			g.logf("[gateway] tool %s rejected by pre-hook %s: %v", req.Name, subj, err)
+			return -32000, fmt.Sprintf("pre-hook %s rejected call: %v", subj, err)
+		}
+	}
+	return 0, ""
+}
+
 // doCall 执行工具调用：路由 → 熔断 → async 判定（auto/always/never/manual）→ 统一任务化执行。
 // 统一异步模型（2026-09-13，超时后交用户裁决）：
 //   - always：立即后台（返回 pending），终态经 mcp-tasks-report 回报
@@ -747,6 +796,14 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	}
 	if !ps.cb.allow() {
 		return nil, -32601, fmt.Sprintf("server %s unavailable (circuit open)", route.Provider)
+	}
+
+	// 前置打点钩子（2026-09-27）：注册方（如 history 插件）经 tools/register 的可选字段
+	// pre_hook_subject 声明 → 在执行**任意**工具前先向该相对主题发一次**同步**请求；
+	// 钩子失败（返回 error）→ 拒绝该工具调用（工具不执行），LLM 可见工具失败并可重试。
+	// **无钩子声明时零开销**：只做一次原子计数判定，不发任何消息。
+	if code, msg := g.runPreHooks(req); code != 0 {
+		return nil, code, msg
 	}
 
 	// 契约默认 async 族（工具 _meta；调用级覆盖 + Params.AsyncMode 全局覆盖）
@@ -1190,29 +1247,30 @@ type regMsg struct {
 	InstanceID     string          `json:"instance_id,omitempty"`
 	Kind           string          `json:"kind,omitempty"` // server(缺省)/tool/agent/prompt/skill/resource
 	Name           string          `json:"name"`
-	Dir            string          `json:"dir,omitempty"`             // kind=server：dir 类型节点（本地契约根，如 <workdir>/@mcp；gateway 自建 server 扫描）
-	URL            string          `json:"url,omitempty"`             // kind=server（顶层兼容：proxied）
-	Transport      string          `json:"transport,omitempty"`       // kind=server（顶层兼容）
-	Namespace      string          `json:"namespace,omitempty"`       // kind=server
-	MCPServer      *regServerSpec  `json:"mcp_server,omitempty"`      // kind=server：进程规格（runtime→spawned）
-	Description    string          `json:"description,omitempty"`     // kind=tool/asset
-	Node           string          `json:"node,omitempty"`            // kind=asset：来源节点名（缺省 "server"）
-	Schema         string          `json:"schema,omitempty"`          // kind=tool（JSON Schema 文本）
-	HandlerSubject string          `json:"handler_subject,omitempty"` // kind=tool 远程回调主题
-	Owner          string          `json:"owner,omitempty"`           // kind=tool
-	Hot            bool            `json:"hot,omitempty"`             // kind=tool
-	Category       string          `json:"category,omitempty"`        // kind=tool（_meta.category 元分类）
-	Async          string          `json:"async,omitempty"`           // kind=tool（_meta.async；auto 不显式透出）
-	AsyncThreshold float64         `json:"async_threshold,omitempty"` // kind=tool（_meta.async-threshold，秒）
-	Timeout        *float64        `json:"timeout,omitempty"`         // kind=tool（_meta.timeout，秒；**指针区分「未设置」与「0/-1 = 无上限」**）
-	AssetKind      string          `json:"asset_kind,omitempty"`      // prompts/register 资产类别：prompt|skill（缺省 prompt；2026-09-06；25 §5/T2：agent 已撤）
-	Scope          string          `json:"scope,omitempty"`           // 注册归属域（2026-09-06）：缺省/"global" = 全局；instance id（uuid）= instance 级
-	URI            string          `json:"uri,omitempty"`             // kind=resource
-	MIMEType       string          `json:"mimetype,omitempty"`        // kind=resource
-	Path           string          `json:"path,omitempty"`            // kind=asset：运行时内容来源路径（RB-4 ①；有则内容按需读盘，与 content 二选一）
-	Content        string          `json:"content,omitempty"`         // kind=asset（无 path 时驻留；内嵌资产兼容兜底）
-	Arguments      json.RawMessage `json:"arguments,omitempty"`       // kind=asset（原文透传）
-	Origin         string          `json:"origin,omitempty"`          // kind=server：来源 builtin|user（缺省 user）；仅 builtin 注入 _meta 内部上下文
+	Dir            string          `json:"dir,omitempty"`              // kind=server：dir 类型节点（本地契约根，如 <workdir>/@mcp；gateway 自建 server 扫描）
+	URL            string          `json:"url,omitempty"`              // kind=server（顶层兼容：proxied）
+	Transport      string          `json:"transport,omitempty"`        // kind=server（顶层兼容）
+	Namespace      string          `json:"namespace,omitempty"`        // kind=server
+	MCPServer      *regServerSpec  `json:"mcp_server,omitempty"`       // kind=server：进程规格（runtime→spawned）
+	Description    string          `json:"description,omitempty"`      // kind=tool/asset
+	Node           string          `json:"node,omitempty"`             // kind=asset：来源节点名（缺省 "server"）
+	Schema         string          `json:"schema,omitempty"`           // kind=tool（JSON Schema 文本）
+	HandlerSubject string          `json:"handler_subject,omitempty"`  // kind=tool 远程回调主题
+	PreHookSubject string          `json:"pre_hook_subject,omitempty"` // kind=tool 可选：前置钩子主题（执行任意工具前同步调用；失败即拒绝该调用）
+	Owner          string          `json:"owner,omitempty"`            // kind=tool
+	Hot            bool            `json:"hot,omitempty"`              // kind=tool
+	Category       string          `json:"category,omitempty"`         // kind=tool（_meta.category 元分类）
+	Async          string          `json:"async,omitempty"`            // kind=tool（_meta.async；auto 不显式透出）
+	AsyncThreshold float64         `json:"async_threshold,omitempty"`  // kind=tool（_meta.async-threshold，秒）
+	Timeout        *float64        `json:"timeout,omitempty"`          // kind=tool（_meta.timeout，秒；**指针区分「未设置」与「0/-1 = 无上限」**）
+	AssetKind      string          `json:"asset_kind,omitempty"`       // prompts/register 资产类别：prompt|skill（缺省 prompt；2026-09-06；25 §5/T2：agent 已撤）
+	Scope          string          `json:"scope,omitempty"`            // 注册归属域（2026-09-06）：缺省/"global" = 全局；instance id（uuid）= instance 级
+	URI            string          `json:"uri,omitempty"`              // kind=resource
+	MIMEType       string          `json:"mimetype,omitempty"`         // kind=resource
+	Path           string          `json:"path,omitempty"`             // kind=asset：运行时内容来源路径（RB-4 ①；有则内容按需读盘，与 content 二选一）
+	Content        string          `json:"content,omitempty"`          // kind=asset（无 path 时驻留；内嵌资产兼容兜底）
+	Arguments      json.RawMessage `json:"arguments,omitempty"`        // kind=asset（原文透传）
+	Origin         string          `json:"origin,omitempty"`           // kind=server：来源 builtin|user（缺省 user）；仅 builtin 注入 _meta 内部上下文
 }
 
 func (g *Gateway) registerServer(v *mq.Value, req regMsg) error {
@@ -1339,6 +1397,7 @@ func (g *Gateway) registerTool(v *mq.Value, req regMsg) error {
 	rt := &registeredTool{
 		Tool:           t,
 		HandlerSubject: req.HandlerSubject,
+		PreHookSubject: req.PreHookSubject,
 		Owner:          owner,
 		Scope:          scope,
 	}

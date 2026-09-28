@@ -2,7 +2,7 @@
 """项目配置页签 + 索引进度状态回归（FP 203-242 / 281-285 可自动化项）。
 
 覆盖：
-  K1 项目配置：5 页签（安全 / 上下文管理 / CodeGraph 索引 / Vfts 全文索引 / 自动提交）
+  K1 项目配置：5 页签（安全 / 上下文管理 / CodeGraph 索引 / Vfts 全文索引 / 文件历史）
   K2 安全页签：信任目录列表 + 添加按钮 + 添加出现行
   K3 上下文管理：说明文案 + 保留轮数/token 阈值输入 + 快速阈值/保存按钮
   K4 上下文管理-总结提示词：自动加载（继承值非空）+ 来源标注 + 重置入口
@@ -12,7 +12,7 @@
 
 迁移口径（2026-09-15）：
   - 页签名 = zh-CN i18n（ProjectConfig.vue + locales/zh-CN/projectConfig.json）：
-    安全 / 上下文管理 / CodeGraph 索引 / Vfts 全文索引 / 自动提交；
+    安全 / 上下文管理 / CodeGraph 索引 / Vfts 全文索引 / 文件历史；
     旧英文名 Security/Context/Prompt/Code Index 已不匹配。
   - 「通用能力（提示词）」页签**已按 spec CFG-009 (D2) 摘除**（项目配置提示词仅余摘要提示词，
     见 36-配置配置 CFG-008/009）→ K4 改断言存活的「总结提示词自动加载 + 来源标注」（同强度）。
@@ -45,7 +45,7 @@ TAB_FAMILIES = [
     ("上下文 / Context", r"^(上下文管理|上下文|Context)$"),
     ("CodeGraph 索引", r".*CodeGraph.*"),
     ("Vfts 全文索引", r".*Vfts.*"),
-    ("自动提交 / History", r"^(自动提交|历史|History)$"),
+    ("文件历史 / History", r"^(文件历史|历史|History)$"),
     ("日志 / Log", r"^(日志|Log)$"),
     ("配置导入/导出 / Config IO", r".*(配置导入/导出|Config IO|Import).*"),
 ]
@@ -281,7 +281,7 @@ def main():
     c.console(clear=True)
     total = 0
     ok = 0
-    total += 1; ok += run_case("K1 项目配置 7 页签（安全/上下文管理/CodeGraph/Vfts/自动提交/日志/配置导入导出）", case_tabs)
+    total += 1; ok += run_case("K1 项目配置 7 页签（安全/上下文管理/CodeGraph/Vfts/文件历史/日志/配置导入导出）", case_tabs)
     total += 1; ok += run_case("K2 安全页签：添加信任目录", case_security)
     total += 1; ok += run_case("K3 上下文管理：输入 + 快速阈值 + 保存", case_context)
     total += 1; ok += run_case("K4 总结提示词自动加载 + 来源标注 + 重置", case_summary_prompt_load)

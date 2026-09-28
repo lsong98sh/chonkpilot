@@ -827,8 +827,12 @@ onMounted(() => {
   loadConfig()
   // 压缩记录：进页读一次当前会话快照（空态亦展示）
   loadCompressRecords()
-  // data-prj-config-refresh：配置变更后 server 广播，自动重载（20-gui）
-  unsubs.push(onDataRefresh('prj-config', loadConfig))
+  // data-prj-config-refresh：配置变更后 server 广播，自动重载（20-gui）。
+  // **本页自身保存期间（saving）跳过**：handleSave 逐键顺序 setConfig，每次都会引发该广播；
+  // 早到的广播会让 loadConfig 读到「尚含旧值」的配置快照，把本地**未提交**的开关/数值冲回旧值
+  // （实测缺陷：记忆库「开 → 关 → 点保存」被冲回「开」→ 其下子项随之解禁、落库值也错成 true）。
+  // 保存结束后到达的广播读到的是本次已落库值，与本地态一致，重载无害。
+  unsubs.push(onDataRefresh('prj-config', () => { if (!saving.value) loadConfig() }))
   // data-user-config-refresh：用户偏好沉淀提示词（usr 自由键 memory_prompts）变更后重载（20-gui）
   unsubs.push(onDataRefresh('user-config', loadUserPrefPrompts))
   // data-memory-refresh：记忆沉淀写回后刷新类别 token（20-gui；关闭态不发 list）

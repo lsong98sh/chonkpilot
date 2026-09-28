@@ -8,7 +8,7 @@
 
 ## 1. 职责与边界
 
-- **一句话**：**内嵌 lib Hook**——编译期打进 server，在 `server.Start` 全部就绪后按序 `Start`，订阅 MQ 事件做扩展（压缩 / git 快照 / codegraph·vfts 工具注入）。
+- **一句话**：**内嵌 lib Hook**——编译期打进 server，在 `server.Start` 全部就绪后按序 `Start`，订阅 MQ 事件做扩展（压缩 / 文件历史检查点 / codegraph·vfts 工具注入）。
 - **做**：事件订阅、按 instance/workdir 自持数据（经 `src/data`）、向 gateway 注册/注销工具。
 - **不做**：不依赖宿主函数注入（**原 `Summarize` 已移除**，统一走 `llm-simple` 等 mq 方法面）；不独立成进程（🔵 待去中心化 MQ）。
 
@@ -46,15 +46,25 @@
 
 > **〔订正（2026-09-25，口径 Z1/Z3）：兜底归并的窗口与输出预留来源〕** 原以 provider `maxTokens`（实际 = 请求体 `max_tokens` = **最大输出 token**）当**上下文窗口代理** + 常量 `outputReserve = 4096`，**误用输出上限当窗口**（易误触发/误判）。现按用户口径拆分为两字段：**`maxContextToken` = 上下文窗口大小**（**新增**，仅用于兜底判定）、**`maxOutputToken` = 最大输出 token**（**由 `maxTokens` 改名**，即请求体 `max_tokens`）。`server.finish` 发 `llm-compress` 时经**只增**可选字段 **`max_context_token`** / **`max_output_token`** 透传（`src/lib/llm/server/server.go:1843-1848`），插件读入 `Options.MaxContextToken` / `Options.MaxOutputToken`（**`max_context_token` > 0 才启用兜底**；输出预留 = `max_output_token`，**不再用常量 4096**）；摘要目标 = `maxOutputToken`/2。旧键 `maxTokens` / `max_tokens` **读时兼容**（只读不写，不破坏老配置）；`maxContextToken` **≤ 0 / 缺省 = 兜底不启用**（仅常规三层压缩）。原「语义差异（待拍板）」已由本次字段拆分消除。**〔订正（2026-09-25，口径 Z4）：载荷命名统一 snake_case〕** 载荷字段 = `max_context_token` / `max_output_token`（**写入只发 snake_case**）；插件对旧名 camelCase `maxContextToken` / `maxOutputToken` 与更早 `window` **只读兼容**（新名优先，`compress.go pickInt`；只读不写）—— 见 [61 §4.3](../60-reference/61-消息一览.md)。
 
-### 3.2 history（git 快照）
+### 3.2 history（文件历史：独立 ref 的检查点链）
+
+> **语义（2026-09-27 批次③，取代「轮边界 `git add -A` + `git commit -m "chonk: snapshot"` 提交到用户分支」旧口径）**：打**独立 ref 的检查点链**，**绝不碰 `.git/index` 与 HEAD、不在用户分支产生任何提交**。消息面见 [61 §5.1.1/§5.4a/§8 批次③](../60-reference/61-消息一览.md)，配置键见 [64 §4](../60-reference/64-配置项一览.md)；设置页见 [20-gui §12.12](20-gui.md)。
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `session-turn-start`（主轮次）+ `session-complete`（主轮次） |
-| 启用条件 | `exec.LookPath("git")` 失败 → **记日志 + `return nil`（功能禁用，不算启动失败）**；prj `history.enabled=false` → 跳过提交（缺失/非法回落 git 可用性）；workdir 是 **git 仓库**（`.git` 存在） |
-| 流程 | `git status --porcelain` 空则跳过 → `ensureGitignore`（保证 `.chonkpilot/` 被忽略）→ `git add -A` → `git commit -m "chonk: snapshot (...)"` |
-| 主轮次判定 | `parents` 为空才触发；子轮次不触发 |
-| 存储 | **废弃 `history.db`，纯 git** |
+| 订阅 | `session-complete`（**主轮次 → 轮末补点**）· `filesys.changed`（该 workdir 文件变更 → 置「脏」位；广播由 filesys 侧 **60ms 去抖**合并）· `instance-register`（建 workState + 异步回读 `history.enabled`）· `data-prj-config-refresh`（开关 / 保留参数实时同步 + `history.clear` 清链）· **前置打点钩子** `history-pre-tool-hook`（gateway 执行工具前同步调用）· 工具回调 `history-tool-call`。**`session-turn-start` 不再消费** |
+| 启用/门控 | git 不可执行（`exec.LookPath("git")` 失败）→ `Start` 记日志 + `return nil`（**功能禁用，不算启动失败**）；workdir **非 git 仓库**（无 `.git`；worktree/submodule 的 `.git` 文件亦可）→ 功能禁用；`history.enabled` **仅显式 `"true"` 才开启（默认关闭）**，缺失 / `""` / `false` / 非法 / 未回读 → 关闭。**禁用或非 git 时 4 个工具一律摘除**（`syncTools` 收敛，判据 = 存在「hasGit 且 enabled」的 workdir） |
+| 打点触发 | ① **gateway 前置钩子**（执行**任意**工具前，同步；经 `tools/register` 可选字段 `pre_hook_subject` 声明）：启用 && 未熔断 && **脏** → 同步打点；**打点失败 → 写 error → gateway 拒绝该工具调用（工具不执行），LLM 可见失败并可重试**；② **轮末补点**（`session-complete` 主轮次）：保证「最后一步的产像」入链 —— **不依赖脏位（规避 `filesys.changed` 60ms 去抖竞态）、强制走一次打点流程**，流程内按 tree 比较**内容未变则不建点**。**前置钩子路径不脏 = 零 git 调用**（直接放行） |
+| 流程（打点） | 临时 index `add -A`（尊重 `.gitignore`；进入前 `ensureGitignore` 保证 `.chonkpilot/` 被忽略）→ `write-tree` → **新 tree == 链头 tree → 直接跳过（不建点、不 `update-ref`、不修剪）**；否则 → `commit-tree <tree> [-p <链头>] -m "chonk-ckpt: session=<slug> tool=<tool> ts=<RFC3339>"` → `update-ref refs/chonkpilot/<slug> <commit>` → **修剪** |
+| 链与 ref | `<slug>` = **根会话**（优先 `top_session`，缺省 `session`；**父子会话共享一条链**）；链 = parent 指针线性串联（`git rev-list` 可枚举、`git diff A B` 可用）；**ref 只指向链头**（对象靠可达性保活，gc 安全） |
+| 存储 | **独立 ref `refs/chonkpilot/<slug>`**（**废弃 `history.db`，纯 git**）+ **持久临时 index** `<workdir>/.chonkpilot/history/index`（经 `GIT_INDEX_FILE` 注入）；**绝不碰 `.git/index`、绝不碰 HEAD** → **不在用户分支产生任何提交** |
+| 修剪 | `history.checkpoint_keep`（默认 500）/ `history.checkpoint_ttl_days`（默认 7）**任一超限即修剪**：保留段 = 「最新 keep 个」∩「窗口内」，再并入**保底项（当前轮 / 上一轮起点）永不删**；**天数窗口锚点 = 链上最新点时间**（项目闲置不清历史，不是 `now`）；修剪 = **按保留段重建**（复用 tree/message/时间）→ **commit id 会变，稳定标识是相对编号**；被淘汰点不可达 → 交 git 自动 gc（不主动跑 gc/prune） |
+| 熔断 | 连续打点失败 ≥ `fuseThreshold`(3) → `fused`（**仍尝试打点、失败亦放行、不再拦截工具调用**）；**成功一次即复位**；失败次数与模式经 `history.status` 回写可见 |
+| 内部工具 | **4 个**（`category=self`；启用且是 git 仓库才注册，否则摘除）：`history_status {}` / `history_diff {to?=-1, path?}` / `history_show {to?=-1, path}` / `history_restore {path, to?=-1}`（**单文件、禁止批量**；一致性校验 = 文件已删除 **或** `git diff --quiet <链头> -- <path>` 为 0，否则拒绝）。`to` 三态 = 负整数相对步（-1 最近一步、-2 再上一步…）/ `"turn-start"` 当前轮起点 / 绝对 commit id（须在本链上） |
+| 状态回写（前端只读） | prj 内部键 `history.status`（`{enabled, mode: active\|fused\|off, repo, dirty, failCount, checkpointCount, bytes, lastCheckpointAt, lastDurationMs, lastError}`）/ `history.timeline`（**最新在前**、相对编号 `-1` 起、**≤200 条**）；`history.clear`（前端写任意新值 → 清空该 workdir 全部 `refs/chonkpilot/*`）。**v1 限制**：`status`/`timeline` 为 prj 全局键（多会话并发只呈「最近一次打点所属链」，工具 `history_status` 仍按调用方会话返回）；`clear` 按**仓库粒度**清空全部链。见 [41 I-135/I-136](../40-roadmap/41-未决项登记.md) |
+| 语义边界（有意为之） | 被 `.gitignore` 忽略的文件**不进检查点、也回滚不了**（含 `.env`/`node_modules`/`.chonkpilot/` —— 不把密钥写进对象库）；**未跟踪文件**回滚时**不动**；回滚以检查点 tree 为准、**不碰 `.git`**；检查点遵守 git 的 ignore，与「索引排除规则」（`lib/ignore`）是**两套独立规则、不联动** |
+
+> ⚠️ **效率注意**：文件历史在**每次工具执行前**打点（脏才打点）。**每次「脏」打点约需 8–9 次 git 进程**（写路径 + 状态/时间线回写的只读 git；逐行走查合计约 10–11 次，以实跑采数为准），**修剪还需按保留段重建**（仅在 `keep`/`ttl` 超限时发生）—— **大工程需慎重**（**默认关闭**）。已配「脏标记短路（不脏零 git 调用）+ 前置钩子同步打点 + 连续失败熔断 + 固定提交身份（不读用户 git config）」。见 [41 I-137](../40-roadmap/41-未决项登记.md)。
 
 ### 3.3 codegraph（代码语义索引，插件侧）
 
@@ -110,7 +120,7 @@ server.Start
 | 插件 | 数据 | 载体 |
 |------|------|------|
 | compress | 快照（session `history`/`snapshot_turn`） | prjusr 库（经 `data-snapshot-*`） |
-| history | git 提交 | workdir 的 `.git` |
+| history | 检查点链（`commit-tree` 产物，parent 线性串联，ref 只指向链头）；状态 `history.status` / 时间线 `history.timeline`（prj 库） | workdir 的 `.git`（独立 ref `refs/chonkpilot/<slug>` + 持久临时 index `<workdir>/.chonkpilot/history/index`） |
 | codegraph | 索引 | `<workDir>/.chonkpilot/codegraph/{meta.json,index.json}`；状态 `codegraph.status`（prj 库） |
 | vfts | 全文索引 + 文件清单 | 引擎自持索引（`zvec`，按 workdir）；插件侧回写 `vfts.status` / 清单（prj 库） |
 
@@ -134,6 +144,7 @@ server.Start
 | 内嵌 Hook（非独立进程） | 同一 Bus、编译期注入 | 单体形态简单；独立进程待去中心化 MQ |
 | 无宿主函数注入 | 统一走 mq（`llm-simple`） | 解耦、可测试（2026-09-08 定稿） |
 | history 纯 git | 废弃 history.db | 复用版本控制、零额外存储 |
+| **history = 独立 ref 的检查点链（2026-09-27 批次③）** | 打点走 `refs/chonkpilot/<slug>` + 持久临时 index（`GIT_INDEX_FILE`）；**绝不碰 `.git/index` / HEAD / 用户分支** | 不再污染用户仓库的提交历史；检查点对用户分支不可见、可随时丢弃；`commit-tree` 线性链天然支持相对步 diff/回滚 |
 | codegraph 引擎外置 exe | 插件管理子进程 | 引擎需 CGO（主模块禁令） |
 | 插件就绪 = server-starting | 全部 Start 成功才广播 | 明确就绪语义 |
 | **插件失败 = 上报 + 可见 + 可查（2026-09-20）** | 失败路径经可选 **`Deps.Notify(Notice)`** 如实上报一次 → 宿主 **`Server.pluginNotify`**（`src/llm/server/pluginnotice.go`）**去重/限频**后经**既有通知面 `tool-notify`** 投递 **`notice="plugin-failure"`**（`payload` 只增字段，[61 §4.3](../60-reference/61-消息一览.md) 已登记）；**不阻塞**（仅 publish、不等应答、不改终态、不降级、不抛出）。**去重口径** = 键 `实例×会话×轮次×插件×失败类别` → **同轮同类只提示一次**（轮次或类别变化才再提示；判重表有界 FIFO 淘汰、上限 512）；**失败原因**同经 `Deps.Logf` → 统一出口落 `<dataDir>/logs/gui.log`（含原因），提示文案亦带原因（缺因回落"原因未知（详见日志文件）"） | 不再"记忆没沉淀 / 上下文没压缩"却无从诊断（[41 I-115](../40-roadmap/41-未决项登记.md)）；**不新增 MQ 主题**（复用既有通知面）；前端零改动（`ChatPanel` 既有 `tool-notify` 订阅对非 `completion` 即以轻提示展示、`MessageList` 不落气泡） |
@@ -142,8 +153,11 @@ server.Start
 
 ## 8. 场景与边界
 
-- **无 git** → history 禁用（不失败）。
-- **非 git 仓库** → history 记 `notRepo` 短路。
+- **无 git** → history 禁用（不失败；`Start` 记日志后 `return nil`）。
+- **非 git 仓库** → history 功能禁用（`hasGit=false`）且 **4 个工具摘除**；即使 `history.enabled=true` 也不注册、不打点。
+- **history 打点失败** → 前置钩子路径**拒绝该工具调用**（工具不执行，LLM 可见并能重试）；**连续失败 ≥3 → 熔断放行**（不再拦截，成功一次即复位）。
+- **history 未启用 / 不脏 / 非 git** → 前置钩子**零 git 调用**直接放行（不打点、不拦截）。
+- **history v1 限制** → `history.status`/`history.timeline` 为 prj 全局键（多会话并发只呈「最近一次打点所属链」）；`history.clear` 按**仓库粒度**清空全部 `refs/chonkpilot/*`（非当前会话链）。见 [41 I-135/I-136](../40-roadmap/41-未决项登记.md)。
 - **摘要失败** → compress 不压缩（保持原快照）。
 - **插件失败（2026-09-20 起）** → **用户可见 + 日志可查，且不阻塞**：`memory`（记忆沉淀）/ `compress`（上下文压缩）等失败经 `Deps.Notify` 上报 → 宿主判重后经既有 `tool-notify{notice:"plugin-failure"}` 轻提示一次（**同轮同类一次**，见 §7），同时失败原因经统一出口落 `<dataDir>/logs/gui.log`；**本轮对话不受影响**（不改流程终态、不降级、不抛出）。
 - **多 workdir** → codegraph **工具面**仍全局注册一份（归属排序后第一个 workdir，按 `context.instance_id` 路由）；**引擎子进程/索引状态已按 workdir 独立**（T-12/P2-4，2026-09-15 后），仅**工具面差异注册留待 v2**。（原「v1 只全局注册一份（限制）」措辞订正。）
@@ -159,7 +173,8 @@ server.Start
 - 🗄 **已订正（P0-5，2026-09-10）** ~~：codegraph `client.go` 头注改为「全局共享单个 client（`ensureSharedClient` 懒建）」，不再写"每个 workdir 独立 client"~~。**（2026-09-15 后被推翻：T-12/P2-4 落地 —— `clientFor(workdir)` 每 workdir 独立引擎子进程；原「全局共享单个 client」表述作废，见 §3.3 与 [29-codegraph §4.5](29-codegraph.md)）**
 - 🗄 **已修（2026-09-11）**：compress 插件原用 `data.Prj`（团队层）读快照，而快照落 **prjusr** → **生产环境压缩永不触发**；已改 `prjUsrDB`（`data.PrjUsr`），`TestCompressPluginEndToEnd` 通过。
 - ✅ **已删（D-09，2026-09-11）**：compress/summarize.go 的 `LLMSummarizer`（HTTP 摘要器；运行时已走 mq `llm-simple`）。
-- ✅ **已接（T-26/T-28，2026-09-11）**：history 插件读 prj `history.enabled` 门控提交；compress 按级读 `summary.prompt.md` 作摘要 `system`。
+- ✅ **已接（T-26/T-28，2026-09-11；2026-09-27 批次③语义升级）**：history 插件读 prj `history.enabled` 门控（**旧「门控提交到用户分支」口径已被批次③取代** —— 现门控**检查点链打点**，见 §3.2/§7）；compress 按级读 `summary.prompt.md` 作摘要 `system`。
+- ✅ **history = 独立 ref 的检查点链（2026-09-27 批次③）**：废弃「轮边界提交到用户分支」，改打 `refs/chonkpilot/<slug>`（根会话；父子共享）+ 持久临时 index（`GIT_INDEX_FILE`，**绝不碰 `.git/index` / HEAD**）；触发 = gateway **前置打点钩子**（`tools/register.pre_hook_subject` → `history-pre-tool-hook`，打点失败即拒绝该工具调用）+ `session-complete` **轮末补点**；脏位来自 `filesys.changed`（不脏零 git 调用）；连续失败 ≥3 **熔断**放行、成功复位；`keep`/`ttl` 任一超限**修剪**（锚点 = 链上最新点时间，保底项不删）；`history.enabled` **仅显式 `"true"` 开（默认关闭）**；git 不可用 / 非 git 仓库 → 禁用 + 4 工具摘除。消息面见 [61 §8 批次③](../60-reference/61-消息一览.md)，配置键见 [64 §4](../60-reference/64-配置项一览.md)，设置页见 [20-gui §12.12](20-gui.md)。
 - ✅ **已接线（T-18b，2026-09-15）**：vfts `childIdleTimeout`（5min）接线 —— `sweepIdleClient` 于 15s 扫描中回收**无活跃实例且空闲 ≥5min** 的共享引擎子进程（`sharedClient()` 懒重建；`lastActiveAt` 由 register/heartbeat 刷新），对齐 codegraph T-18；并顺带修 `p.client` 数据竞争（`sharedClient()` 返回指针、`clientMu` 保护）。详见 §3.4。
 - ✅ **已接线（T-11/T-18，2026-09-13 后）**：codegraph 索引进度经**既有** `codegraph.status` 面回写（`phase`/`progressDone`/`progressTotal`，零新增主题）+ `configure`/`initialize` 失败重试（缺省 2 次 / 2s）；`childIdleTimeout`（5min）接线，**逐 workdir**回收无引用的空闲引擎子进程（`clientFor(workdir)` 懒重建；2026-09-15 后按 workdir 独立）。详见 §3.3 与 [29-codegraph §4.5](29-codegraph.md)。
 - ✅ **记忆手动沉淀 = 新增点分相对主题 `memory.flush`（2026-09-20，批 3 · ⑱；[42 §2 (133)](../40-roadmap/42-决策记录.md)）**：`memory` 插件除既有的 `session-compress`（轮末**异步**沉淀、受 `memory.min-turn-tokens` 门控）外，另订阅点分主题 **`memory.flush`** —— payload `{instance_id, session}`，取该会话**最近一轮**消息 → **复用同一沉淀回路 `distill`**（启用门控 / 类别门控 / 读改写保存**完全同源**），**不受 `memory.min-turn-tokens` 门控**（显式动作即用户意图）；**同步回执** `{ok, session, turn, saved[], failed[], enabled}`（前置不满足 → `{ok:false, reason}`，不静默）；作用域 = payload 指定的 instance + session（不跨实例 / 不跨会话）。前端 = 设置 → 上下文管理「立即沉淀」。明细见 [61 §1.1/§7.1](../60-reference/61-消息一览.md)。
@@ -169,4 +184,4 @@ server.Start
 
 ## 10. 关联测试
 
-`src/test/chonkpilot-plugin/unittest/instance/manager_test.go`（实例视图）· `src/llm/server/plugins_test.go`（`server-starting` 广播、compress 端到端）· `src/plugin-codegraph/codegraph_test.go`（queryTools 数量=6、名称集合、props 不含 workdir；多 workdir：`TestMultiWorkdirIndexAndQueryIsolation` / `TestClientForPerWorkdirIdentity` / `TestSweepIdleClientPerWorkdir`）· `src/plugin-vfts/vfts_test.go`（queryTools 数量=1、名称集合）。
+`src/test/chonkpilot-plugin/unittest/instance/manager_test.go`（实例视图）· `src/llm/server/plugins_test.go`（`server-starting` 广播、compress 端到端）· **`src/plugins/plugin-history/history_test.go`（L1：`gateFromValue` 门控真值表 / 未回读默认关 / `data-prj-config-refresh` 实时同步）** · **`src/plugins/plugin-history/chain_test.go`（L1：检查点链内核 —— 建链且**绝不碰用户分支**（HEAD / `.git/index` 逐字不变）、不脏零 git 调用、门控、工具注册门控（含 `pre_hook_subject`）、修剪（`keep`·`ttl`·锚点=最新点·保底项）、熔断、父子会话共享链、`history_restore` 一致性校验与删除恢复、`diff`·`show`、消息驱动打点）** · `src/plugins/plugin-codegraph/codegraph_test.go`（queryTools 数量=6、名称集合、props 不含 workdir；多 workdir：`TestMultiWorkdirIndexAndQueryIsolation` / `TestClientForPerWorkdirIdentity` / `TestSweepIdleClientPerWorkdir`）· `src/plugins/plugin-vfts/vfts_test.go`（queryTools 数量=1、名称集合）。

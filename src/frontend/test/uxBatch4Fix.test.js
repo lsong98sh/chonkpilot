@@ -9,7 +9,8 @@
  *   A7 「继续」= **文本按钮** + **左对齐** + 正常回复后/会话进行中不显示；
  *   A8 会话 drawer 的 fork → 点击显示「敬请期待」（占位，不实现真 fork）；
  *   B2 底部「打开（全局）配置」→ 展开**全部配置**菜单（与工具栏「设置」同源清单）；
- *   B3 屏蔽 F12/DevTools 快捷键（宿主层）+ 底部调试图标经 gui.devtools.open 打开 DevTools。
+ *   B3 屏蔽 F12/DevTools 快捷键（宿主层）+ 底部调试图标经 gui.devtools.open 打开 DevTools；
+ *   A9 上下文管理「记忆库」关闭 → 其子项**逐个**联动禁用；保存期间不被自身广播重载冲回（2026-09-28）。
  *
  * 前端无组件级运行器（`npm test` = node:test 直跑）→ `*.vue`/`.js` 源码守卫 +
  * i18n 实键校验 + **跨端字面量核对**（Go 宿主/桥/WebView2 侧）。
@@ -118,9 +119,10 @@ test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）
   assert.match(src, /const MEMORY_PROMPT_PREFIX = 'memory\.prompt\.'/, 'prj 键前缀须与 Go 侧 memoryPromptPrefix 一致')
   assert.match(src, /const USER_MEMORY_PROMPTS_KEY = 'memory_prompts'/, 'usr 自由键名须与 Go 侧 userMemoryPromptsKey 一致')
   assert.match(src, /saveUserConfig\(\{ \[USER_MEMORY_PROMPTS_KEY\]/, 'usr 提示词写入须走既有 data-user-config-save')
-  // 变更广播订阅（沿用既有面 → 不串实例）
+  // 变更广播订阅（沿用既有面 → 不串实例）；2026-09-28：本页保存期间跳过（防自身写入冲回未提交态）
   assert.match(src, /onDataRefresh\('user-config', loadUserPrefPrompts\)/, 'usr 提示词变更须经既有广播重载')
-  assert.match(src, /onDataRefresh\('prj-config', loadConfig\)/, 'prj 提示词变更须经既有广播重载')
+  assert.match(src, /onDataRefresh\('prj-config', \(\) => \{ if \(!saving\.value\) loadConfig\(\) \}\)/,
+    'prj 提示词变更须经既有广播重载（本页保存期间除外）')
   assert.match(src, /await loadUserPrefPrompts\(\)/, '进页须读 usr 提示词')
   // 规范：无 watch
   assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect')
@@ -249,8 +251,70 @@ test('P1 上下文阈值取值语义：非法值（<0）前端显式提示 + 0 �
 })
 
 // ═══════════════════════════════════════════════════════════════
-// A5 编辑类弹框：内容撑满、底部不留白
+// A9 上下文管理「记忆库」联动禁用（2026-09-28 缺陷修复）
+//   缺陷（L4 A2 实机抓到）：记忆库关闭后其子项未保持禁用。真因 = 保存路径把本地未提交的开关态
+//   冲回「开」：handleSave 逐键 setConfig，每次引发 data-prj-config-refresh → loadConfig 读到
+//   「尚含旧值」的快照 → 本地「关」被冲回「开」→ 子项随之解禁、落库值也错成 true。
+//   口径：记忆库关闭 → 子项**逐个** disabled（`:disabled="!memoryEnabled"`）；开启 → 恢复可编辑。
 // ═══════════════════════════════════════════════════════════════
+test('A9 记忆库开关：关闭 → 子项逐个禁用（输入框/开关/按钮），开启 → 恢复可编辑', () => {
+  const src = read(PAGE)
+  // 两个数值输入（关库即灰化、不可编辑）
+  assert.match(src, /v-model\.number="memoryMinTurnTokens"[\s\S]{0,200}?:disabled="!memoryEnabled"/,
+    '沉淀最小 Token 须随记忆库开关联动禁用')
+  assert.match(src, /v-model\.number="memoryCategoryMaxTokens"[\s\S]{0,200}?:disabled="!memoryEnabled"/,
+    '单类别告警阈值须随记忆库开关联动禁用')
+  // 与记忆库同级的「用户偏好」开关（关库即灰化）
+  assert.match(src, /:model-value="userPrefEnabled" :disabled="!memoryEnabled"/,
+    '用户偏好开关须随记忆库开关联动禁用')
+  // 立即沉淀（另叠加进行中态，防重复点击）
+  assert.match(src, /:disabled="!memoryEnabled \|\| flushing"/, '立即沉淀须随记忆库开关联动禁用')
+  // 子项逐个联动：min/catMax（2）+ 新增类别 + 类别行开关 + 4 个行内按钮 + 用户偏好开关 + 3 个行内按钮 = 12
+  const gated = (src.match(/:disabled="!memoryEnabled"/g) || []).length
+  assert.ok(gated >= 12, `记忆区子项须逐个联动禁用（实得 ${gated} 处 :disabled="!memoryEnabled"）`)
+})
+
+test('A9 保存期间不被自身广播重载冲回（记忆库「开 → 关 → 保存」不得回弹）', () => {
+  const src = read(PAGE)
+  // handleSave 逐键 setConfig → 每次引发 data-prj-config-refresh；保存期间必须跳过重载
+  assert.match(src, /onDataRefresh\('prj-config', \(\) => \{ if \(!saving\.value\) loadConfig\(\) \}\)/,
+    'prj-config 广播重载须在保存期间跳过（否则本地未提交的开关态被冲回旧值）')
+  assert.doesNotMatch(src, /onDataRefresh\('prj-config', loadConfig\)/,
+    '不得无条件重载（会把「关 → 保存」冲回「开」，子项随之解禁且落库值错成 true）')
+  // 保存收尾仍以本地态为新「已保存态」（迟到的广播重载不会把状态判脏）
+  const save = fnBody(src, 'handleSave')
+  assert.ok(save, '未找到 handleSave')
+  assert.ok(save.indexOf('savedState = currentState()') > 0 && save.indexOf('markSaved()') > 0,
+    '保存成功后须以本地态重置已保存态')
+  // 项目规范：不得引入 watch / watchEffect
+  assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, '禁 watch/watchEffect（用显式调用重算）')
+})
+
+// ═══════════════════════════════════════════════════════════════
+// A9b 同型竞态推广（2026-09-28）：引擎（Codegraph/Vfts）+ 历史设置页
+//   与 ContextConfig 同型：自身「保存」逐键 setConfig → persist 每次 save 恒广播
+//   data-prj-config-refresh → loadConfig 读到「尚含旧中间值」的快照，与本页正在提交的本地态打架。
+//   口径同 I-138：订阅时必须带 !saving 短路；保存结束后到达的广播读到的是本次已落库值，重载无害。
+//   （三页均有手动保存按钮 + saving 态；「开关即存」路径 saving=false，仍照常重载。）
+// ═══════════════════════════════════════════════════════════════
+test('A9b 引擎/历史页：prj-config 广播重载须在保存期间跳过（同 ContextConfig I-138 口径）', () => {
+  for (const file of [
+    'views/settings/CodegraphConfig.vue',
+    'views/settings/VftsConfig.vue',
+    'views/settings/HistoryConfig.vue',
+  ]) {
+    const src = read(file)
+    assert.match(src, /const saving = ref\(false\)/, `${file} 须有 saving 态（手动保存按钮）`)
+    assert.match(src, /onDataRefresh\('prj-config', \(\) => \{ if \(!saving\.value\) loadConfig\(\) \}\)/,
+      `${file} prj-config 广播重载须在保存期间跳过（否则自身写入的广播会把未提交态冲回旧值）`)
+    assert.doesNotMatch(src, /onDataRefresh\('prj-config', loadConfig\)/,
+      `${file} 不得退回无条件重载`)
+    // 退订仍走既有 onUnmounted/unsubs 机制；不得引入 watch/watchEffect
+    assert.match(src, /onUnmounted\(\(\) => \{[\s\S]*?unsubs\.forEach/, `${file} 须在卸载时退订`)
+    assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, `${file} 禁 watch/watchEffect`)
+  }
+})
+
 test('A5 弹框布局：bodyClass 命中全局去内距 + 组件 flex:1 撑满', () => {
   const css = read('assets/styles/global.css')
   const block = css.match(/\.dialog-body\.scenario-edit-dialog-body,\s*\n\.dialog-body\.text-edit-dialog-body\s*\{([\s\S]*?)\n\}/)

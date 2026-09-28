@@ -5,7 +5,7 @@
   R1 知识库选 `.md`（*.tool.md 原语）→ preview PrimitivePanel 解析并渲染出字段（描述/参数，不再 loading）
   R2 文件树 rename 编辑态中点击其它节点 → 退出编辑态（内联输入框消失，未误改名）
   R3 preview 底部页签溢出：`...` 弹框**不越界**且**贴合触发按钮**（位置）
-  R4 项目设置「自动提交」页签**文案**（不再叫"文件历史"）
+  R4 项目设置「文件历史」页签**文案**（2026-09-28 批次：旧「自动提交」已改名「文件历史」）
   R5 MCP / LLM 添加对话框**不越界**且表单**一行两列**（位置）
 
 复用 systest/chonk_client.py 通道与 run_explore_kb.KB / run_config_ui 辅助。
@@ -243,7 +243,7 @@ def case_r3_tabs_overflow_popover():
         shutil.rmtree(TMPDIR, ignore_errors=True)
 
 
-# ── R4 「自动提交」页签文案 ────────────────────────────────
+# ── R4 「文件历史」页签文案 ────────────────────────────────
 
 def case_r4_auto_commit_label():
     rc.open_page("settings-project", ".project-config-panel")
@@ -252,8 +252,8 @@ def case_r4_auto_commit_label():
     if not hist:
         raise TestError("项目设置未找到历史/自动提交页签：%r" % labels)
     got = hist[0]
-    if got != "自动提交":
-        raise TestError("页签文案=%r，期望「自动提交」（不再叫「文件历史」）" % got)
+    if got != "文件历史":
+        raise TestError("页签文案=%r，期望「文件历史」（原「自动提交」已按 2026-09-28 批次改名）" % got)
 
 
 # ── R5 MCP/LLM 对话框几何 ──────────────────────────────────
@@ -305,7 +305,7 @@ def main():
             ("R1 知识库选 .md（原语）→ preview 解析渲染出内容（不再 loading）", case_r1_knowledge_md_preview),
             ("R2 文件树 rename 中点击其它节点退出编辑态", case_r2_rename_exit_on_click),
             ("R3 页签溢出弹框不越界且贴合触发按钮", case_r3_tabs_overflow_popover),
-            ("R4「自动提交」页签文案（不再叫「文件历史」）", case_r4_auto_commit_label),
+            ("R4「文件历史」页签文案（原「自动提交」已改名）", case_r4_auto_commit_label),
             ("R5 MCP/LLM 对话框不越界且一行两列", case_r5_dialog_geometry),
         ]:
             total += 1

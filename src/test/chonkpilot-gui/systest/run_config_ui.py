@@ -6,7 +6,7 @@
   * 加强 UI 元素断言：文字（i18n 精确）/ 位置（getBoundingClientRect）/ 颜色（getComputedStyle）。
 
 覆盖矩阵
-  A. 项目设置页（preview tab `settings-project`；Tabs：安全/上下文管理/CodeGraph 索引/Vfts 全文索引/自动提交）
+  A. 项目设置页（preview tab `settings-project`；Tabs：安全/上下文管理/CodeGraph 索引/Vfts 全文索引/文件历史）
      A1 页签文字 + 页面在视口内（位置）
      A2 上下文管理：记忆库开关**联动禁用**其子项（位置/颜色 opacity=0.5）+ 总结提示词默认非空
         → 拨记忆库开关（只改本地态）→ 点击【保存】→ data-prj-config-list 回读 memory.enabled
@@ -25,12 +25,18 @@
          `builtinLLMs`，聊天输入框选择器只列 usr providers）
         + 添加弹窗字段文字 + 弹窗在视口内（位置）+ 表单**一行两列**（位置）→ 填表保存 →
         data-user-config-load 回读 llms → 清理
-     B2 MCP：transport 与 url / runtime+args 的**从属显示**（切换 Select）→ 保存 runtime/args → 回读 → 清理
+     B2 MCP：transport 与 url / runtime 的**从属显示**（切换 Select；args 不受 transport 门控）
+        + 保存 runtime/args → 回读 → 清理
      B3 路径/工具链：系统页 Chrome **已被探测出**（路径非空 + 版本 x.y.z.w）；用户页含 Chrome 输入；
         项目页不含 Chrome（三级归属）
   C. 已删除项确不存在：旧配置弹窗（.config-dialog-body-scroll）、独立「提示词」页签
-  D. 重启持久化复核：独立 work-dir（含 .git）启动 GUI → 点击「自动提交」开关保存 history.enabled
+  D. 重启持久化复核：独立 work-dir（含 .git）启动 GUI → 点击「文件历史」开关保存 history.enabled
      → **重启 GUI 后重新打开页面回读**（开关状态）
+  D2. 文件历史 UI 细节（同独立实例体例）：① 保留策略两个输入（保留个数/保留天数）改值 → 保存 →
+     prj 键 `history.checkpoint_keep` / `history.checkpoint_ttl_days` 落库 + **重启后回读**；
+     ② 只读时间轴区块（`[data-history-status]` 字段真值渲染 + `[data-history-timeline]` 表格 +
+     **空态分流**：未启用 vs 已启用无数据文案不同）；③【清空历史】确认框：取消不写 / 确定改写
+     `history.clear`
 
 颜色断言口径：主按钮背景 = var(--accent)；禁用开关 opacity=0.5、禁用输入 opacity=0.6；
 保存成功提示左边框 = var(--success)。
@@ -74,7 +80,7 @@ PROJ_TOOL = os.path.join(PROJ_TOOL_DIR, "file_find.tool.md")           # 与 app
 
 # 项目设置页签期望文字（zh-CN projectConfig.json + configIO.json）
 # 2026-09-20 批 3 · ⑯：末位新增「配置导入/导出」页签（usr 全局配置的导出/导入/恢复出厂）
-PROJ_TABS = ["安全", "上下文管理", "CodeGraph 索引", "Vfts 全文索引", "自动提交", "日志", "配置导入/导出"]
+PROJ_TABS = ["安全", "上下文管理", "CodeGraph 索引", "Vfts 全文索引", "文件历史", "日志", "配置导入/导出"]
 
 
 # ── 通用工具 ────────────────────────────────────────────────
@@ -630,11 +636,18 @@ def _dialog_has_label(cands):
 
 
 def case_b2_mcp_transport_branching():
-    """B2 MCP：transport 与 url / runtime+args 从属显示（模拟 Select 切换）+ 保存 runtime/args 回读。
+    """B2 MCP：transport 与 url / runtime 的从属显示（模拟 Select 切换）+ 保存 runtime/args 回读。
 
     2026-09-27 起弹窗为「基本信息 / 运行信息 / 工具」三页签 → 字段断言按页签分别进行
     （Tabs 只渲染当前页签 → 先切页签再断言/填表；保存载荷仍为三页全量）；
     启动参数为行编辑器（KeyValueEditor，list 模式）→ 逐行填。
+
+    transport 从属显示（EditMCPDialog.vue）：
+      * 服务地址（url）：`showUrl = transport !== 'stdio'`（EditMCPDialog.vue:205）→ stdio 隐藏，auto/http/sse 显示；
+      * 运行时（runtime）：`showSpawn = transport !== 'http' && transport !== 'sse'`（EditMCPDialog.vue:206）
+        → http/sse 隐藏，auto/stdio 显示；
+      * 启动参数（args）：**不受 transport 门控**（表单项 EditMCPDialog.vue:86-96 无 `v-if`）
+        → 三种 transport 下均显示（对齐 36-配置 CFG-004-S06：仅「服务地址（仅非 stdio）」标从属）。
     """
     name = "ui_mcp_%d" % int(time.time())
     snap = _h.snapshot_user_config(c, ["mcpServers"])
@@ -666,14 +679,19 @@ def case_b2_mcp_transport_branching():
         click_tab("运行信息", ".dialog-shell")
         if not (_dialog_has_label(["运行时"]) and _dialog_has_label(["启动参数"])):
             raise TestError("transport=stdio 时应显示 runtime/args")
-        # http：url 显示（基本信息页），runtime/args 隐藏（运行信息页）
+        # http：url 显示（基本信息页）；运行信息页「运行时」隐藏（showSpawn=false），
+        # 「启动参数」**不受 transport 门控**（EditMCPDialog.vue:206 showSpawn 只 gate `运行时`；
+        # args 表单项 EditMCPDialog.vue:86-96 无 v-if）→ http 下仍显示。
         click_tab("基本信息", ".dialog-shell")
         _set_dialog_select("http")
         if not _dialog_has_label(["服务地址"]):
             raise TestError("transport=http 时应显示 url")
         click_tab("运行信息", ".dialog-shell")
-        if _dialog_has_label(["运行时"]) or _dialog_has_label(["启动参数"]):
-            raise TestError("transport=http 时 runtime/args 应隐藏")
+        labs = dialog_labels()
+        if _dialog_has_label(["运行时"]):
+            raise TestError("transport=http 时「运行时」应隐藏（showSpawn=false），实际 labels=%r" % labs)
+        if not _dialog_has_label(["启动参数"]):
+            raise TestError("transport=http 时「启动参数」应显示（args 不受 transport 门控），实际 labels=%r" % labs)
         # auto 保存 runtime+args（名称/transport 在基本信息页；runtime/args 在运行信息页）
         click_tab("基本信息", ".dialog-shell")
         _set_dialog_select("auto")
@@ -1468,7 +1486,7 @@ def _hist_switch(cli):
 
 
 def case_d_history_restart():
-    """D「自动提交」开关：点击保存 history.enabled → 重启 GUI 后回读（持久化复核）。
+    """D「文件历史」开关：点击保存 history.enabled → 重启 GUI 后回读（持久化复核）。
 
     注：history 开关 `:disabled="!gitAvailable"`，gitAvailable = 系统可执行 git（gui.vcs.info.gitInstalled）
     && work-dir 下存在 `.git`。故本用例用独立 work-dir 并放置一个 `.git` 目录（仅做存在性判定，
@@ -1482,10 +1500,10 @@ def case_d_history_restart():
         time.sleep(2.0)
         r = cli.eval("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
                      ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no';"
-                     "const t=[...R.querySelectorAll('.b-tabs-item')].find(x=>x.textContent.trim()==='自动提交');"
+                     "const t=[...R.querySelectorAll('.b-tabs-item')].find(x=>x.textContent.trim()==='文件历史');"
                      "if(!t)return 'no-tab';t.click();return 'ok';})()")
         if _loads(r) != "ok":
-            raise TestError("独立实例未打开「自动提交」页签：%r" % _loads(r))
+            raise TestError("独立实例未打开「文件历史」页签：%r" % _loads(r))
         time.sleep(1.0)
         st = _loads(_hist_switch(cli))
         if not st:
@@ -1515,11 +1533,242 @@ def case_d_history_restart():
         time.sleep(2.0)
         cli.eval("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
                  ".find(e=>e.getBoundingClientRect().width>0);const t=[...R.querySelectorAll('.b-tabs-item')]"
-                 ".find(x=>x.textContent.trim()==='自动提交');if(t)t.click();})()")
+                 ".find(x=>x.textContent.trim()==='文件历史');if(t)t.click();})()")
         time.sleep(1.0)
         st2 = _loads(_hist_switch(cli))
         if st2["checked"] != (not before):
             raise TestError("重启后开关状态=%s，期望 %s（持久化未生效）" % (st2["checked"], not before))
+    finally:
+        _kill_own(proc)
+        shutil.rmtree(HIST_WS, ignore_errors=True)
+        shutil.rmtree(HIST_DATA, ignore_errors=True)
+
+
+# ══════════════════════════════════════════════════════════
+# D2. 文件历史 UI 细节（独立实例）：保留策略落库/重启回读 · 只读时间轴 · 清空历史
+# ══════════════════════════════════════════════════════════
+# DOM 契约（views/settings/HistoryConfig.vue）：
+#   * 保留策略：`input.history-num-input` ×2（labels `.history-num-label` = 保留个数 / 保留天数）
+#     + `.history-actions .b-btn--primary`（文案「保存」）→ setConfig('history.checkpoint_keep'|..._ttl_days')；
+#   * 只读时间轴：`[data-history-status]`（`.tl-status-key` / `.tl-status-val` 成对）+
+#     `[data-history-timeline]`（Table；空态 `td.b-table-empty` 文案区分未启用 / 已启用无数据）+
+#     `[data-history-clear]`（文案「清空历史」，`timeline.length===0` 时禁用）→ confirm → setConfig('history.clear')。
+
+def _hist_open_tab(cli):
+    """独立实例打开「项目设置 → 文件历史」页签（先关全部预览页签 → 重挂载 → 读最新 prj）。"""
+    cli.mq_emit("preview-tab-close-all")
+    time.sleep(0.5)
+    cli.mq_emit("preview-tab-open", {"kind": "settings-project"})
+    time.sleep(2.0)
+    r = cli.eval("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
+                 ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no';"
+                 "const t=[...R.querySelectorAll('.b-tabs-item')].find(x=>x.textContent.trim()==='文件历史');"
+                 "if(!t)return 'no-tab';t.click();return 'ok';})()")
+    if _loads(r) != "ok":
+        raise TestError("未打开「文件历史」页签：%r" % _loads(r))
+    time.sleep(0.8)
+
+
+_HIST_DOM_JS = """(function(){
+const R=[...document.querySelectorAll('.history-root')].find(e=>e.getBoundingClientRect().width>0);
+if(!R)return null;
+const tl=R.querySelector('[data-history-timeline]');
+const clear=R.querySelector('[data-history-clear]');
+const labels=[...R.querySelectorAll('.form-label')].map(x=>x.textContent.trim());
+return JSON.stringify({
+  labels:labels,
+  numLabels:[...R.querySelectorAll('.history-num-label')].map(x=>x.textContent.trim()),
+  inputs:[...R.querySelectorAll('input.history-num-input')].map(x=>x.value),
+  hasStatus:!!R.querySelector('[data-history-status]'),
+  statusKeys:[...R.querySelectorAll('[data-history-status] .tl-status-key')].map(x=>x.textContent.trim()),
+  statusVals:[...R.querySelectorAll('[data-history-status] .tl-status-val')].map(x=>x.textContent.trim()),
+  hasTimeline:!!tl,
+  rows:tl?tl.querySelectorAll('tbody tr').length:0,
+  emptyText:tl?(function(){const e=tl.querySelector('td.b-table-empty');return e?e.textContent.trim():'';})():null,
+  clearExists:!!clear,
+  clearDisabled:clear?(clear.disabled===true||clear.classList.contains('is-disabled')):null,
+  clearText:clear?clear.textContent.trim():null
+});})()"""
+
+
+def _hist_dom(cli):
+    return _loads(cli.eval(_HIST_DOM_JS))
+
+
+def _hist_wait(cli, pred, desc, max_wait=8):
+    end = time.time() + max_wait
+    last = None
+    while time.time() < end:
+        last = _hist_dom(cli)
+        if last and pred(last):
+            return last
+        time.sleep(0.4)
+    raise TestError("%s 超时；末次观测=%r" % (desc, last))
+
+
+def _hist_seed_prj(cli, status_obj, timeline_arr):
+    """直写 prj `history.status` / `history.timeline`（真机落库；供只读时间轴渲染断言）。"""
+    cli.req("data-prj-config-save",
+            {"data": {"key": "history.status", "value": json.dumps(status_obj, ensure_ascii=False)}})
+    cli.req("data-prj-config-save",
+            {"data": {"key": "history.timeline", "value": json.dumps(timeline_arr, ensure_ascii=False)}})
+
+
+def _hist_set_inputs(cli, keep, ttl):
+    return _loads(cli.eval("""(function(){
+const R=[...document.querySelectorAll('.history-root')].find(e=>e.getBoundingClientRect().width>0);
+if(!R)return 'no-root';
+const ins=[...R.querySelectorAll('input.history-num-input')];
+if(ins.length!==2)return 'inputs='+ins.length;
+const set=(el,v)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,v);
+el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));};
+set(ins[0],%s);set(ins[1],%s);return 'ok';})()""" % (json.dumps(keep), json.dumps(ttl))))
+
+
+def _hist_click_save(cli):
+    r = _loads(cli.eval("(function(){const R=[...document.querySelectorAll('.history-root')]"
+                        ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no-root';"
+                        "const b=[...R.querySelectorAll('.history-actions .b-btn')]"
+                        ".find(x=>x.textContent.trim()==='保存');if(!b)return 'no-btn';b.click();return 'ok';})()"))
+    if r != "ok":
+        raise TestError("点击保留策略【保存】失败：%r" % r)
+
+
+def _hist_click_clear(cli):
+    r = _loads(cli.eval("(function(){const R=[...document.querySelectorAll('.history-root')]"
+                        ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no-root';"
+                        "const b=R.querySelector('[data-history-clear]');if(!b)return 'no-btn';b.click();return 'ok';})()"))
+    if r != "ok":
+        raise TestError("点击【清空历史】失败：%r" % r)
+    time.sleep(0.5)
+
+
+def _hist_wait_dialog(cli, max_wait=6):
+    end = time.time() + max_wait
+    while time.time() < end:
+        if _loads(cli.eval("!!([...document.querySelectorAll('.dialog-shell')]"
+                           ".find(e=>e.getBoundingClientRect().width>0))")):
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def _hist_click_dialog(cli, label):
+    r = _loads(cli.eval("(function(){const R=[...document.querySelectorAll('.dialog-shell')]"
+                        ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no-dialog';"
+                        "const b=[...R.querySelectorAll('button.b-btn')].find(x=>x.textContent.trim()===%s);"
+                        "if(!b)return 'no-btn';b.click();return 'ok';})()" % json.dumps(label)))
+    if r != "ok":
+        raise TestError("确认框点击 %r 失败：%r" % (label, r))
+    time.sleep(0.6)
+
+
+def case_d2_history_ui_details():
+    """文件历史 UI 细节（独立实例；真机 DOM / prj 落库断言）：
+
+    ① 保留策略：改两个数字输入（保留个数/保留天数）→ 点【保存】→ prj 键
+       `history.checkpoint_keep` / `history.checkpoint_ttl_days` **精确键名**落库；**重启 GUI** 后重新
+       打开页面 → 两个输入回读 == 所存值（真机持久化，非"保存成功即过"）。
+    ② 只读时间轴：状态条 `[data-history-status]` 的「模式/检查点数/失败次数」等字段按 prj 真值渲染
+       （textContent 取值）；`[data-history-timeline]` 表格；**空态分流**：未启用 →
+       「文件历史未启用（无检查点数据）。」；已启用无数据 → 「暂无检查点。」（文案不同）。
+    ③ 【清空历史】`[data-history-clear]`：点击 → 出现确认框 → **取消**不写 `history.clear`；
+       再次点击 → **确定** → `history.clear` 键值变化（真机落库）。
+    """
+    cli = None
+    proc = None
+    KEEP_V, TTL_V = "321", "11"
+    try:
+        cli, proc = _spawn_hist()
+        _hist_open_tab(cli)
+        dom = _hist_wait(cli, lambda d: d.get("hasStatus") and d.get("hasTimeline"),
+                         "文件历史页渲染（.history-root/[data-history-status]/[data-history-timeline]）")
+        # ── ①② 静态结构 + 标签（精确文案）──
+        for want in ("保留策略", "检查点时间轴"):
+            if want not in dom["labels"]:
+                raise TestError("文件历史缺 label %r，实际=%r" % (want, dom["labels"]))
+        if dom["numLabels"] != ["保留个数", "保留天数"]:
+            raise TestError("保留策略输入标签应为 ['保留个数','保留天数']，实际=%r" % dom["numLabels"])
+        if len(dom["inputs"]) != 2:
+            raise TestError("保留策略应有 2 个数字输入，实际=%r" % dom["inputs"])
+        for key in ("模式", "检查点数", "占用体积", "最近打点", "最近耗时", "失败次数"):
+            if key not in dom["statusKeys"]:
+                raise TestError("状态条缺字段 %r，实际=%r" % (key, dom["statusKeys"]))
+        if not dom["clearExists"] or dom["clearText"] != "清空历史":
+            raise TestError("【清空历史】按钮缺失/文案不符：exists=%s text=%r"
+                            % (dom["clearExists"], dom["clearText"]))
+
+        # ── ② 空态分流 A：未启用（status off）+ 空时间轴 → 「…未启用…」 ──
+        _hist_seed_prj(cli, {"enabled": False, "mode": "off"}, [])
+        _hist_open_tab(cli)
+        a = _hist_wait(cli, lambda d: d.get("emptyText") == "文件历史未启用（无检查点数据）。",
+                       "未启用空态文案")
+        # ── ② 空态分流 B：已启用无数据（status enabled）+ 空时间轴 → 「暂无检查点。」+ 状态字段真值 ──
+        _hist_seed_prj(cli, {"enabled": True, "mode": "active", "checkpointCount": 3,
+                             "failCount": 2, "bytes": 2048}, [])
+        _hist_open_tab(cli)
+        b = _hist_wait(cli, lambda d: d.get("emptyText") == "暂无检查点。", "已启用无数据空态文案")
+        if a["emptyText"] == b["emptyText"]:
+            raise TestError("未启用与已启用空态文案应不同，实际均=%r" % a["emptyText"])
+        sv = dict(zip(b["statusKeys"], b["statusVals"]))
+        if sv.get("模式") != "正常" or sv.get("检查点数") != "3" or sv.get("失败次数") != "2":
+            raise TestError("状态条字段未按 prj 真值渲染（期望 模式=正常/检查点数=3/失败次数=2）：%r" % sv)
+        print("[D2] 空态分流：未启用=%r / 已启用无数据=%r · 状态条真值=%r"
+              % (a["emptyText"], b["emptyText"], {k: sv.get(k) for k in ("模式", "检查点数", "失败次数")}),
+              flush=True)
+
+        # ── ③ 清空历史：取消不写 / 确定改写 history.clear ──
+        _hist_seed_prj(cli, {"enabled": True, "mode": "active", "checkpointCount": 1, "failCount": 0},
+                       [{"n": -1, "id": "deadbeef", "ts": "2026-09-28T00:00:00Z",
+                         "tool": "session-complete", "session": "s1", "files": 2, "added": 3, "removed": 1}])
+        _hist_open_tab(cli)
+        c0 = _hist_wait(cli, lambda d: d.get("rows", 0) >= 1, "时间轴 seed 行渲染")
+        if c0["clearDisabled"]:
+            raise TestError("有时间轴数据时【清空历史】应可点（实际禁用）")
+        before = cli.req("data-prj-config-list", {}).get("list", {}).get("history.clear")
+        _hist_click_clear(cli)
+        if not _hist_wait_dialog(cli):
+            raise TestError("【清空历史】未弹出确认框")
+        _hist_click_dialog(cli, "取消")
+        time.sleep(0.8)
+        mid = cli.req("data-prj-config-list", {}).get("list", {}).get("history.clear")
+        if mid != before:
+            raise TestError("取消清空不应写 history.clear：%r → %r" % (before, mid))
+        _hist_click_clear(cli)
+        if not _hist_wait_dialog(cli):
+            raise TestError("【清空历史】第二次未弹出确认框")
+        _hist_click_dialog(cli, "确定")
+        deadline = time.time() + 8
+        after = cli.req("data-prj-config-list", {}).get("list", {}).get("history.clear")
+        while time.time() < deadline and after == before:
+            time.sleep(0.4)
+            after = cli.req("data-prj-config-list", {}).get("list", {}).get("history.clear")
+        if not after or after == before:
+            raise TestError("确定清空应改写 history.clear：%r → %r" % (before, after))
+        print("[D2] 清空历史：取消不改写（=%r）· 确定改写 history.clear %r → %r"
+              % (mid, before, after), flush=True)
+
+        # ── ① 保留策略：改值 → 保存 → prj 键落库 → 重启 → 回读 ──
+        r = _hist_set_inputs(cli, KEEP_V, TTL_V)
+        if r != "ok":
+            raise TestError("写保留策略输入失败：%r" % r)
+        _hist_click_save(cli)
+        time.sleep(1.2)
+        lst = cli.req("data-prj-config-list", {}).get("list", {})
+        if lst.get("history.checkpoint_keep") != KEEP_V:
+            raise TestError("history.checkpoint_keep 落库=%r，期望 %r"
+                            % (lst.get("history.checkpoint_keep"), KEEP_V))
+        if lst.get("history.checkpoint_ttl_days") != TTL_V:
+            raise TestError("history.checkpoint_ttl_days 落库=%r，期望 %r"
+                            % (lst.get("history.checkpoint_ttl_days"), TTL_V))
+        _kill_own(proc)
+        cli, proc = _spawn_hist()
+        _hist_open_tab(cli)
+        d = _hist_wait(cli, lambda x: len(x.get("inputs") or []) == 2, "重启后保留策略输入")
+        if d["inputs"] != [KEEP_V, TTL_V]:
+            raise TestError("重启后保留策略回读=%r，期望 %r" % (d["inputs"], [KEEP_V, TTL_V]))
+        print("[D2] 保留策略落库（键 history.checkpoint_keep=%s / history.checkpoint_ttl_days=%s）·"
+              " 重启后回读=%r" % (KEEP_V, TTL_V, d["inputs"]), flush=True)
     finally:
         _kill_own(proc)
         shutil.rmtree(HIST_WS, ignore_errors=True)
@@ -1550,7 +1799,9 @@ def main():
             ("E4 记忆类别提示词编辑（内置默认回填/来源提示/保存落 prj/重置回落）", case_e4_memory_prompt_edit),
             ("F 设置页无「MCPServerConfig」死项", case_f_no_mcp_server_config_dead),
             ("G 恢复默认（原语 app 无/project 有+回填）+ 知识库右键无「复制到项目级」", case_g_restore_default_and_ctxmenu),
-            ("D「自动提交」开关点击保存 → 重启 GUI 回读", case_d_history_restart),
+            ("D「文件历史」开关点击保存 → 重启 GUI 回读", case_d_history_restart),
+            ("D2 文件历史 UI 细节：保留策略落库+重启回读 · 只读时间轴/空态分流 · 清空历史(取消/确定)",
+             case_d2_history_ui_details),
         ]:
             total += 1
             ok += run_case(name, fn)

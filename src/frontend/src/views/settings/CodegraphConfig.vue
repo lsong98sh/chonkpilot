@@ -283,8 +283,13 @@ async function handleClear() {
 onMounted(() => {
   loadConfig()
   loadEngineTools()
-  // data-prj-config-refresh：配置/状态变更后自动重载
-  unsubs.push(onDataRefresh('prj-config', loadConfig))
+  // data-prj-config-refresh：配置/状态变更后自动重载。
+  // **本页自身保存期间（saving）跳过**：handleIndexSave / rebuild / retry / clear 均写 prj 键，
+  // persist 每次 save 恒广播 data-prj-config-refresh；早到的广播会让 loadConfig 读到「尚含旧中间值」
+  // 的快照（orig* / status / 开关按 DB 无条件回填），与本页正在提交的本地态相互打架。
+  // 统一口径与 ContextConfig I-138 一致：保存期间不重载；保存结束后到达的广播读到的是本次已落库值，重载无害。
+  // （文本输入另有 isPristine 守卫：防索引期间插件每 500ms 回写 status 的广播冲掉未保存编辑。）
+  unsubs.push(onDataRefresh('prj-config', () => { if (!saving.value) loadConfig() }))
 })
 
 onUnmounted(() => {
