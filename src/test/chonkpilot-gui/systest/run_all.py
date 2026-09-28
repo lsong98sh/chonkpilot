@@ -1,4 +1,19 @@
-"""全量回归运行器：依次执行 systest/gui 下所有 test_*.py，汇总结果。"""
+"""全量回归运行器：依次执行 systest/gui 下所有 test_*.py + run_*.py，汇总结果。
+
+运行方式 / 隔离（2026-09-28 纳入 `run_*` 套件）：
+  * **逐个子进程串行**（`cwd=HERE`）：任一时刻只有一个套件在跑，故各套件**不复用彼此**的
+    实例/端口/临时目录 —— 天然无并发争用（这是本运行器唯一的隔离手段：串行 + 各套件自管资源）。
+  * `test_*.py`：动态端口（`harness.free_port()`）+ 套件级配置快照-还原。
+  * `run_*.py`：
+      - 共享底座型（`run_config_ui` / `run_project_cfg` / `run_ui_regressions` / `run_fp_extra_ui`）
+        统一 `_h.acquire_gui(2345, ...)`：**复用优先**，无实例才自起并在退出时回收；串行执行
+        → 固定端口 2345 在不同套件间「起-停」交替，不并存（`run_config_ui` 另起独立实例 2347/临时目录，
+        并在清理时显式保护 2345，绝不波及底座）。
+      - 自起型（`run_hist_git` / `run_index_gate` / `run_filetree_ignored`）：动态端口 +
+        独立 `--data-dir`/临时 work-dir/独立 HOME（`run_hist_git` 另起自管 mock LLM）→ 与共享底座
+        完全隔离，退出即回收。
+"""
+
 import os
 import subprocess
 import sys
@@ -6,6 +21,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# 第一批：`test_*.py`（动态端口 + 套件级快照-还原；`drive.GUIClient`）。
 SCRIPTS = [
     "test_window.py",
     "test_layout.py",
@@ -31,10 +47,21 @@ SCRIPTS = [
     "test_tool_retry.py",
 ]
 
+# 第二批：`run_*.py`（端到端/UI 断言套件；隔离与端口分配见模块 docstring）。
+RUN_SCRIPTS = [
+    "run_config_ui.py",           # 共享底座 2345（复用优先）+ 独立实例 2347
+    "run_project_cfg.py",         # 共享底座 2345
+    "run_ui_regressions.py",      # 共享底座 2345
+    "run_fp_extra_ui.py",         # 共享底座 2345
+    "run_index_gate.py",          # 自起（动态端口 + 临时 work-dir/data-dir/HOME）
+    "run_filetree_ignored.py",    # 自起（动态端口 + 临时 work-dir/data-dir/HOME）
+    "run_hist_git.py",            # 自起（动态端口 + 临时目录 + 自管 mock LLM；无 git 则 SKIP）
+]
+
 
 def main():
     results = []
-    for name in SCRIPTS:
+    for name in SCRIPTS + RUN_SCRIPTS:
         path = os.path.join(HERE, name)
         if not os.path.exists(path):
             print(f"[SKIP] {name} 不存在")
@@ -58,3 +85,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

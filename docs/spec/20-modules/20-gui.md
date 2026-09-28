@@ -432,3 +432,19 @@
 - **请求克制与降级**：同一批路径只请求一次（单飞 + 已判定缓存）；`truncated=true` 时未判定节点不灰显、不缓存、不报错；请求失败 / 主题不可用 / 应答异常 → **静默降级为不灰显**。**零新增 MQ 主题**（只新增 `data-index-ignored` 一个只读面，见 [61 §3.6](../60-reference/61-消息一览.md)）。
 - **关联测试**：前端守卫 `test/fileTreeIndexIgnored.test.js`（纯逻辑 + 请求/降级/topic/去重 + FileTree 判定时机/刷新/禁 watch + TreeNode `is-ignored`/`--fg-disabled`/title/交互保留 + 零新增主题 + i18n）；L4 `run_filetree_ignored.py`（真机：`.gitignore` 命中条目灰显（含子项祖先剪枝）+ 反选/无命中不灰 + 引擎未启用全不灰对照组）。
 
+### 12.12 项目配置「文件历史」页签（`views/settings/HistoryConfig.vue`；2026-09-27 批次③）
+
+> 页签 = 项目配置页签 **`history`**（[61 §6.1 前端本地事件](../60-reference/61-消息一览.md) `project-config-open{tab?}` 取值之一）。**页签名由「自动提交」改名「文件历史」**（i18n `projectConfig.history`：zh「文件历史」/ en「File History」；旧「自动提交」语义已废弃）。后端语义见 [28-plugins §3.2](28-plugins.md)，配置键见 [64 §4](../60-reference/64-配置项一览.md)。
+
+分三区块（自上而下）：
+
+- **① 启用开关**（`history.enabled`）：单 `Switch`；**缺省关闭**（仅显式 `"true"` 视为开）；**开启前 `confirm` 二次确认**（说明每次工具调用前会打 checkpoint、大工程可能影响效率）；无 git 时 **disable + 原因提示**（`historyConfig.no_git_installed` / `no_git_repo`，判据 = `gui.vcs.info` 的 `gitInstalled` / `git`）。保存即生效（订阅既有 `data-prj-config-refresh`）。
+- **② 保留策略**：两个数字输入 —— **保留个数**（`history.checkpoint_keep`，默认 500）/ **保留天数**（`history.checkpoint_ttl_days`，默认 7，锚点 = 链上最新检查点时间）；共用一个【保存】按钮（**正整数校验**，非法不写库并显式报错）；任一超限即修剪（后端口径）。
+- **③ 检查点时间轴（只读）**：
+  - **状态条**（`data-history-status`，读 `history.status`）：**模式**（`active` 正常 / `fused` 已熔断放行 / `off` 未启用）· 检查点数 · 占用体积（人类可读）· 最近打点时间 · 最近耗时 · 失败次数 · 有未打点变更时附「有未打点变更」标记 · 最近错误非空时红字一行。
+  - **列表**（`data-history-timeline`，读 `history.timeline`）：列 = **序号**（相对编号，最新 `-1`，由数组索引派生、顺序不反转）/ 时间 / 工具 / 来源会话 / 文件数 / 增删（`+n`/`−m`）；**最新在前、≤200 条**；空态可区分「未启用」（`empty_disabled`）与「暂无检查点」（`empty_none`）。
+  - **【清空历史】**按钮（`data-history-clear`，列表非空才可用）：**二次确认**后写 `history.clear`（ISO 时间串，任意新值即触发）→ 后端清空该 workdir 全部 `refs/chonkpilot/*`；成功给可见反馈。
+- **只读边界（有意为之）**：检查点时间轴**不提供手动恢复、不做 diff 展开**（恢复/查看差异属 LLM 侧 4 个 `history_*` 工具的职责）。
+- **数据来源与刷新**：全部为**既有 prj-config 键**（`data-prj-config-list` 读取；`history.enabled`/`keep`/`ttl`/`clear` 经 `data-prj-config-save` 写入）；刷新走既有广播 `onDataRefresh('prj-config', …)`；派生用 `computed`（**禁 `watch`/`watchEffect`**）；解析失败静默降级（不刷 `console.error`）。**零新增 MQ 主题**（`event-names.js` 无 history 通道）。
+- **关联测试**：前端守卫 `test/historyCheckpoint.test.js`（纯逻辑 `utils/historyTimeline.js`：JSON 解析兜底 / 相对编号 `-1` / `active|fused|off` 归一 / 体积·时间格式化 / 默认 500·7 · 源码守卫：两设置项键名与写库、**正整数校验先于写库**、只读时间轴字段与订阅、禁 watch、`history.clear` 二次确认、零新增主题、i18n zh/en 键集一致且「保留口径 / 不向分支提交 / 效率 / 工具调用前打点」文案齐备、页签名「文件历史」）；L4 `run_hist_git.py`（真机产物断言见 [51 §2](../50-testing/51-FP与测试映射.md)）。
+

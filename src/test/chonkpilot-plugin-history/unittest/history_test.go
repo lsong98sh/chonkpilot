@@ -1,16 +1,13 @@
-// history 插件行为测试（黑盒外部版）：git 仓库下主会话 turn-start/llm-complete 提交快照；
-// 非 git 仓库 → 记录 notRepo 不提交；子轮次（parents 非空）不提交；无变更不提交。
+// history 插件 L2 黑盒行为测试（外部包历史_test）：全部经「发送 mq 消息」驱动、「监听 mq 消息」
+// 与 git 仓库可观察副作用断言（见 docs/spec/50-testing/50-测试体系.md §1）。
 //
-// 门控口径（2026-09-19，42 §2 (125)）：`history.enabled` **默认不开启** —— 只有显式 "true"
-// 才提交（缺失/非法 = 关闭）。本文件以桩应答 `data-prj-config-load` 构造两种启动态：
-//
-//	· 缺省（读回 ""）→ 断言**不产生任何 git 提交**；
-//	· 显式 "true" → 断言轮次边界正常提交；
-//	· 显式 "false" → 断言不提交。
-//
-// 外迁说明：mq 为进程内同步派发（Emit 派发即全部订阅 handler 已执行），原测试经
-// h.im / h.notRepo 私有字段的异步轮询同步不再需要——统一改为断言总线事件后的可观察
-// 副作用（git 提交数 / .gitignore），覆盖语义与原用例一致，故无需导出任何源码标识符。
+// 覆盖（2026-09-27 批次③改造后语义）：
+//   - 启用且 workdir 有 .git → 注册 4 个工具（载荷带 pre_hook_subject）；前置钩子在脏时打点建链；
+//   - 门控：history.enabled 非 "true" → 不打点、不注册工具；
+//   - 非 git 仓库 → 不打点、不注册（工具摘除）；
+//   - session-complete（主轮次）轮末补点；
+//   - **绝不在用户分支产生提交**（HEAD 不变）；
+//   - git 不可用 → Start 返回 nil（功能禁用，非启动失败）。
 package history_test
 
 import (
@@ -21,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,29 +32,83 @@ func pubJSON(bus mq.Bus, subject string, v any) {
 	bus.Emit(context.Background(), subject, b)
 }
 
-// stubPrjConfig 在总线上桩应答 `data-prj-config-load`（返回 value），模拟 persist 读 prj 键。
-// 只在请求（无 ok 字段）时回应；应答经总线回发（`dataEmit` 按 req_id 关联收敛）。
-func stubPrjConfig(t *testing.T, bus mq.Bus, value string) {
+// regCapture 记录 gateway tools/register|unregister 消息（并应答，使插件注册成功）。
+type regCapture struct {
+	mu   sync.Mutex
+	regs []map[string]any
+	uns  int
+}
+
+func (r *regCapture) regsList() []map[string]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]map[string]any, len(r.regs))
+	copy(out, r.regs)
+	return out
+}
+
+func (r *regCapture) unregCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.uns
+}
+
+// stubPrjConfig 桩应答 `data-prj-config-load`（按 key 返回值）与 `-save`（吞下应答），
+// 并冒充 gateway 方法面 mcp-tools-register/unregister。
+func stubPrjConfig(t *testing.T, bus mq.Bus, vals map[string]string) *regCapture {
 	t.Helper()
-	_, err := bus.On("data-prj-config-load", 0, func(_ context.Context, _ string, v *mq.Value) error {
+	cap := &regCapture{}
+	if _, err := bus.On("data-prj-config-load", 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var m map[string]any
-		if json.Unmarshal(v.Payload, &m) != nil {
+		if json.Unmarshal(v.Payload, &m) != nil || m["ok"] != nil {
 			return nil
 		}
-		if _, isReply := m["ok"]; isReply {
-			return nil // 应答不回应答
+		id := ""
+		if d, ok := m["data"].(map[string]any); ok {
+			id, _ = d["id"].(string)
 		}
 		reqID, _ := m["req_id"].(string)
 		b, _ := json.Marshal(map[string]any{
-			"req_id": reqID, "ok": true,
-			"result": map[string]any{"data": value},
+			"req_id": reqID, "ok": true, "result": map[string]any{"data": vals[id]},
 		})
-		bus.Emit(context.Background(), "data-prj-config-load", b)
+		go bus.Emit(context.Background(), "data-prj-config-load", b)
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("桩应答订阅失败: %v", err)
 	}
+	if _, err := bus.On("data-prj-config-save", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) != nil || m["ok"] != nil {
+			return nil
+		}
+		reqID, _ := m["req_id"].(string)
+		b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": true, "result": map[string]any{}})
+		go bus.Emit(context.Background(), "data-prj-config-save", b)
+		return nil
+	}); err != nil {
+		t.Fatalf("桩应答订阅失败: %v", err)
+	}
+	if _, err := bus.On("mcp-tools-register", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var p map[string]any
+		_ = json.Unmarshal(v.Payload, &p)
+		cap.mu.Lock()
+		cap.regs = append(cap.regs, p)
+		cap.mu.Unlock()
+		v.Result = map[string]any{"registered": true, "name": p["name"]}
+		return nil
+	}); err != nil {
+		t.Fatalf("桩注册订阅失败: %v", err)
+	}
+	if _, err := bus.On("mcp-tools-unregister", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		cap.mu.Lock()
+		cap.uns++
+		cap.mu.Unlock()
+		v.Result = map[string]any{"unregistered": true}
+		return nil
+	}); err != nil {
+		t.Fatalf("桩注销订阅失败: %v", err)
+	}
+	return cap
 }
 
 func gitCmd(wd string, args ...string) (string, error) {
@@ -65,31 +117,6 @@ func gitCmd(wd string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// commitCount 当前仓库提交数（无提交/非 git 仓库 → 0）。
-func commitCount(wd string) int {
-	out, err := gitCmd(wd, "rev-list", "--count", "HEAD")
-	if err != nil {
-		return 0
-	}
-	out = strings.TrimSpace(out)
-	var n int
-	_, _ = fmt.Sscan(out, &n)
-	return n
-}
-
-// poll 轮询直到 cond 为 true 或超时。
-func poll(cond func() bool, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return true
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	return cond()
-}
-
-// initRepo 建临时 git 仓库并配 user（提交前置）。
 func initRepo(t *testing.T) string {
 	t.Helper()
 	wd := t.TempDir()
@@ -101,191 +128,192 @@ func initRepo(t *testing.T) string {
 	return wd
 }
 
-// startHistory 建总线（带命名空间前缀，与生产一致）+ history 插件（wd 为 work_dir），
-// 并确定门控为 enabled 语义：① 桩读 `data-prj-config-load` 返回 enabled；② 注册实例后再广播
-// 一次 `data-prj-config-refresh`（同一值）→ **门控同步落定**（与异步回读结果一致，消除时序竞态）。
-func startHistory(t *testing.T, wd string, enabled string) (mq.Bus, *history.History) {
+// refExists 该 workdir 是否存在检查点 ref（slug = 根会话标识）。
+func refExists(wd, slug string) bool {
+	_, err := gitCmd(wd, "rev-parse", "--verify", "--quiet", "refs/chonkpilot/"+slug)
+	return err == nil
+}
+
+func chainLen(wd, slug string) int {
+	out, err := gitCmd(wd, "rev-list", "--count", "refs/chonkpilot/"+slug)
+	if err != nil {
+		return 0
+	}
+	var n int
+	_, _ = fmt.Sscan(strings.TrimSpace(out), &n)
+	return n
+}
+
+func headCommit(wd string) string {
+	out, _ := gitCmd(wd, "rev-parse", "HEAD")
+	return strings.TrimSpace(out)
+}
+
+// waitFor 轮询直到 cond 为 true 或超时。
+func waitFor(cond func() bool, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return cond()
+}
+
+// startHistory 建总线 + 插件 + 桩；返回（bus, 注册捕获）。
+func startHistory(t *testing.T, wd, enabled string) (mq.Bus, *regCapture) {
 	t.Helper()
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
 	}
 	t.Cleanup(func() { _ = bus.Close() })
-	stubPrjConfig(t, bus, enabled)
-	h := history.New()
-	if err := h.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+	cap := stubPrjConfig(t, bus, map[string]string{"history.enabled": enabled})
+	if err := history.New().Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("history Start: %v", err)
 	}
 	pubJSON(bus, "instance-register", map[string]any{
-		"instance_id": "ins-h", "client_type": "unittest", "work_dir": wd,
+		"instance_id": "ins-l2", "client_type": "unittest", "work_dir": wd,
 	})
-	pubJSON(bus, "data-prj-config-refresh", map[string]any{
-		"id": "history.enabled", "op": "save",
-		"list": map[string]any{"history.enabled": enabled},
-	})
-	return bus, h
+	return bus, cap
 }
 
-// turnStart 主会话 turn-start（有变更即提交的触发点之一）。
-func turnStart(bus mq.Bus, session, turn string) {
-	pubJSON(bus, "session-turn-start", map[string]any{
-		"instance_id": "ins-h", "session": session, "turn": turn, "parents": []string{},
-	})
-}
-
-// waitCommits 反复触发主会话 turn-start，直至提交数 >= want（返回 true）或超时（false）。
-// **缺陷检测**：门控回读由 goroutine 落定，落定前的首次触发可能被跳过——按有界轮询反复触发
-// （与 [42 §2 (120)] 的「只改何时读」同口径，判定不放宽）。
-func waitCommits(bus mq.Bus, wd string, want int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for {
-		turnStart(bus, "s1", "t1")
-		if commitCount(wd) >= want {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(20 * time.Millisecond)
+// preHook 发一次前置打点钩子（执行工具前）。
+func preHook(bus mq.Bus, session, top, tool string) {
+	ctx := map[string]any{"instance_id": "ins-l2", "session": session, "turn": "turn-l2"}
+	if top != "" {
+		ctx["top_session"] = top
 	}
+	pubJSON(bus, "history-pre-tool-hook", map[string]any{"tool": tool, "context": ctx})
 }
 
-// assertNoCommit 在 timeout 内反复触发主会话 turn-start，断言提交数**恒为 0**
-// （一旦出现提交即失败 = 门控未生效）。
-func assertNoCommit(t *testing.T, bus mq.Bus, wd string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		turnStart(bus, "s1", "t1")
-		if n := commitCount(wd); n != 0 {
-			t.Fatalf("不应提交却提交了: count=%d", n)
-		}
-		if time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+// dirty 发一次文件变更广播（置脏）。
+func dirty(bus mq.Bus, wd, name string) {
+	pubJSON(bus, "filesys.changed", map[string]any{"work_dir": wd, "path": name, "operation": "write"})
 }
 
-// TestHistoryDefaultOffNoCommit：**缺省（history.enabled 缺失，读回 ""）→ 不产生任何 git 提交**
-// —— turn-start 与 llm-complete 在 git 仓库且有未提交变更时均零提交（默认不开启，42 §2 (125)）。
-func TestHistoryDefaultOffNoCommit(t *testing.T) {
+// TestHistoryDisabledNoCheckpointNoTools：history.enabled 缺失/非 "true" → 不打点、不注册工具。
+func TestHistoryDisabledNoCheckpointNoTools(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git 不可用")
 	}
 	wd := initRepo(t)
-	bus, _ := startHistory(t, wd, "") // 键缺失 → 读回 ""
+	bus, cap := startHistory(t, wd, "") // 键缺失 → 关闭
 	if err := os.WriteFile(filepath.Join(wd, "a.txt"), []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pubJSON(bus, "session-complete", map[string]any{
-		"instance_id": "ins-h", "session": "s1", "turn": "t2", "status": "complete",
-	})
-	// 反向断言：等待窗口内反复触发，提交数恒为 0（默认关闭）
-	assertNoCommit(t, bus, wd, 800*time.Millisecond)
+	dirty(bus, wd, "a.txt")
+	preHook(bus, "s1", "", "file_write")
+	// 有界观察窗口内：不得建链、不得注册工具
+	if waitFor(func() bool { return refExists(wd, "s1") }, 300*time.Millisecond) {
+		t.Fatal("未启用不应打点")
+	}
+	if len(cap.regsList()) != 0 {
+		t.Fatalf("未启用不应注册工具，got %d", len(cap.regsList()))
+	}
 }
 
-// TestHistoryExplicitFalseNoCommit：显式 "false" → 零提交。
-func TestHistoryExplicitFalseNoCommit(t *testing.T) {
+// TestHistoryPreHookCheckpointsAndNoUserCommit：启用 + git 仓库 → 前置钩子打点建链；
+// 工具注册载荷带 pre_hook_subject；**不在用户分支产生提交**。
+func TestHistoryPreHookCheckpointsAndNoUserCommit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git 不可用")
 	}
 	wd := initRepo(t)
-	bus, _ := startHistory(t, wd, "false")
+	if err := os.WriteFile(filepath.Join(wd, "README.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = gitCmd(wd, "add", ".")
+	_, _ = gitCmd(wd, "commit", "-q", "-m", "init")
+	head0 := headCommit(wd)
+
+	bus, cap := startHistory(t, wd, "true")
+	// 等异步回读落定 → 工具注册（4 个，声明 pre_hook_subject）
+	if !waitFor(func() bool { return len(cap.regsList()) == 4 }, 3*time.Second) {
+		t.Fatalf("应注册 4 个工具，got %d", len(cap.regsList()))
+	}
+	for _, p := range cap.regsList() {
+		if p["pre_hook_subject"] != "history-pre-tool-hook" {
+			t.Fatalf("注册载荷缺 pre_hook_subject: %+v", p)
+		}
+		if p["handler_subject"] != "history-tool-call" {
+			t.Fatalf("注册载荷 handler_subject 不符: %+v", p)
+		}
+	}
+	// 脏 → 前置钩子打点
 	if err := os.WriteFile(filepath.Join(wd, "a.txt"), []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	assertNoCommit(t, bus, wd, 800*time.Millisecond)
+	dirty(bus, wd, "a.txt")
+	preHook(bus, "s1", "", "file_write")
+	if !waitFor(func() bool { return chainLen(wd, "s1") == 1 }, 3*time.Second) {
+		t.Fatalf("前置钩子应打点 1 次，got %d", chainLen(wd, "s1"))
+	}
+	// 检查点 message 含 tool/ts
+	out, _ := gitCmd(wd, "log", "--format=%s", "-n", "1", "refs/chonkpilot/s1")
+	if !strings.Contains(out, "chonk-ckpt:") || !strings.Contains(out, "tool=file_write") {
+		t.Fatalf("检查点 message 不符: %s", out)
+	}
+	// 无变更（不脏）→ 前置钩子不打点
+	preHook(bus, "s1", "", "file_write")
+	time.Sleep(200 * time.Millisecond)
+	if chainLen(wd, "s1") != 1 {
+		t.Fatalf("不脏不应再打点，got %d", chainLen(wd, "s1"))
+	}
+	// 用户分支 HEAD 未被改动（打点不产生分支提交）
+	if got := headCommit(wd); got != head0 {
+		t.Fatalf("用户分支 HEAD 被改动: %s → %s", head0, got)
+	}
 }
 
-// TestHistoryCommitsOnTurnBoundary：显式开启（"true"）+ git 仓库 → 主会话 turn-start/llm-complete
-// 提交；子轮次与无变更不提交；.gitignore 保证 .chonkpilot/ 不入库。
-func TestHistoryCommitsOnTurnBoundary(t *testing.T) {
+// TestHistorySessionCompleteBackfill：主轮次 session-complete → 轮末补点（脏时）。
+func TestHistorySessionCompleteBackfill(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git 不可用")
 	}
 	wd := initRepo(t)
-
-	bus, _ := startHistory(t, wd, "true")
-	f := filepath.Join(wd, "a.txt")
-	if err := os.WriteFile(f, []byte("v1"), 0o644); err != nil {
+	bus, cap := startHistory(t, wd, "true")
+	if !waitFor(func() bool { return len(cap.regsList()) == 4 }, 3*time.Second) {
+		t.Fatal("工具应注册")
+	}
+	// 前置钩子建首个点（登记会话归属）
+	if err := os.WriteFile(filepath.Join(wd, "a.txt"), []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 主会话 turn-start → 有变更 → 提交
-	if !waitCommits(bus, wd, 1, 3*time.Second) {
-		t.Fatalf("turn-start 未提交: count=%d", commitCount(wd))
+	dirty(bus, wd, "a.txt")
+	preHook(bus, "s-main", "", "file_write")
+	if !waitFor(func() bool { return chainLen(wd, "s-main") == 1 }, 3*time.Second) {
+		t.Fatal("前置钩子应打点")
 	}
-	if commitCount(wd) != 1 {
-		t.Fatalf("期望 1 次提交: count=%d", commitCount(wd))
-	}
-	if out, _ := gitCmd(wd, "log", "--oneline", "-1"); !strings.Contains(out, "chonk: snapshot") {
-		t.Fatalf("提交信息不符: %s", out)
-	}
-	// .gitignore 已创建且忽略 .chonkpilot/
-	gi := filepath.Join(wd, ".gitignore")
-	if raw, err := os.ReadFile(gi); err != nil || !strings.Contains(string(raw), ".chonkpilot") {
-		t.Fatalf(".gitignore 未忽略 .chonkpilot: %v %q", err, raw)
-	}
-	// 子轮次 turn-start（parents 非空）→ 不提交
-	if err := os.WriteFile(f, []byte("v2"), 0o644); err != nil {
+	// 再次变更 + 主轮次终态 → 轮末补点
+	if err := os.WriteFile(filepath.Join(wd, "a.txt"), []byte("v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	pubJSON(bus, "session-turn-start", map[string]any{
-		"instance_id": "ins-h", "session": "sub-s", "turn": "t2", "parents": []string{"s1"},
-	})
-	time.Sleep(300 * time.Millisecond)
-	if commitCount(wd) != 1 {
-		t.Fatalf("子轮次不应提交: count=%d", commitCount(wd))
-	}
-	// 主会话 llm-complete（有变更）→ 提交
-	pubJSON(bus, "session-complete", map[string]any{
-		"instance_id": "ins-h", "session": "s1", "turn": "t3", "status": "complete",
-	})
-	if !poll(func() bool { return commitCount(wd) == 2 }, 3*time.Second) {
-		t.Fatalf("llm-complete 未提交: count=%d", commitCount(wd))
-	}
-	// 无变更 → 不提交
-	pubJSON(bus, "session-complete", map[string]any{
-		"instance_id": "ins-h", "session": "s1", "turn": "t4", "status": "complete",
-	})
-	time.Sleep(300 * time.Millisecond)
-	if commitCount(wd) != 2 {
-		t.Fatalf("无变更不应提交: count=%d", commitCount(wd))
+	dirty(bus, wd, "a.txt")
+	pubJSON(bus, "session-complete", map[string]any{"session": "s-main", "turn": "turn-l2", "status": "complete"})
+	if !waitFor(func() bool { return chainLen(wd, "s-main") == 2 }, 3*time.Second) {
+		t.Fatalf("轮末补点后链长应为 2，got %d", chainLen(wd, "s-main"))
 	}
 }
 
-// TestHistorySkipsNonGitRepo：非 git 仓库 → 记录 notRepo：首事件不提交（可观察无提交），
-// 且同一 wd 事后 git init 成仓库后事件仍被跳过（证明 notRepo 已缓存，不会改判）。
+// TestHistorySkipsNonGitRepo：非 git 仓库 → 不打点、不注册工具（工具摘除）。
 func TestHistorySkipsNonGitRepo(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git 不可用")
 	}
-	wd := t.TempDir()
-	bus, _ := startHistory(t, wd, "true") // 显式开启（nil 保护：非 git 仓库仍不提交）
+	wd := t.TempDir() // 非 git 仓库
+	bus, cap := startHistory(t, wd, "true")
 	if err := os.WriteFile(filepath.Join(wd, "a.txt"), []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 事件 1：非 git 仓库 + 有变更 → 不提交（同步派发，Publish 返回即处理完）
-	pubJSON(bus, "session-turn-start", map[string]any{
-		"instance_id": "ins-h", "session": "s1", "turn": "t1",
-	})
-	if commitCount(wd) != 0 {
-		t.Fatalf("非 git 仓库不应提交: count=%d", commitCount(wd))
+	dirty(bus, wd, "a.txt")
+	preHook(bus, "s1", "", "file_write")
+	if waitFor(func() bool { return len(cap.regsList()) > 0 }, 300*time.Millisecond) {
+		t.Fatal("非 git 仓库不应注册工具")
 	}
-	// 事件 2：同一 wd 已 git init（有变更）→ notRepo 已记录 → 仍跳过不提交
-	if out, err := gitCmd(wd, "init", "-q"); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-	_, _ = gitCmd(wd, "config", "user.email", "test@chonkpilot.local")
-	_, _ = gitCmd(wd, "config", "user.name", "chonkpilot-test")
-	if err := os.WriteFile(filepath.Join(wd, "a.txt"), []byte("v2"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	pubJSON(bus, "session-complete", map[string]any{
-		"instance_id": "ins-h", "session": "s1", "turn": "t2", "status": "complete",
-	})
-	if !poll(func() bool { return commitCount(wd) == 0 }, time.Second) {
-		t.Fatalf("notRepo 已记录，git init 后仍不应提交: count=%d", commitCount(wd))
+	if refExists(wd, "s1") {
+		t.Fatal("非 git 仓库不应打点")
 	}
 }
 

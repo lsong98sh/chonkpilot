@@ -9,7 +9,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,6 +26,10 @@ type registeredTool struct {
 	Handler func(ctx context.Context, args map[string]any) (*mcp.CallToolResult, error)
 	// HandlerSubject 非空 = 远程回调主题（注册时声明的相对主题，见 61-消息一览 §5.4）。
 	HandlerSubject string
+	// PreHookSubject 非空 = **前置钩子主题**（注册时可选声明，2026-09-27 新增）：
+	// gateway 在执行**任意**工具（tools/call）之前，先向该相对主题发一次**同步**请求，
+	// 钩子失败 → 拒绝该工具调用（工具不执行）。仅在**有工具声明了钩子**时才发（零开销）。
+	PreHookSubject string
 	// Owner 所属提供方标识（服务器名/ID）。
 	Owner string
 	// Scope 归属域："" = global；否则 = instance id（uuid；该工具仅归属 instance 可见）
@@ -37,6 +43,9 @@ type registeredProvider struct {
 	tools       map[string]*registeredTool
 	bus         mq.Bus // 回调总线（进程内内存实现）
 	callTimeout time.Duration
+	// preHooks = 前置钩子主题引用计数（同主题多工具注册 → 计数）；preHookN = 快速判定（原子，无钩子时零开销）。
+	preHooks map[string]int
+	preHookN atomic.Int64
 }
 
 // newRegisteredProvider 创建注册工具表。
@@ -45,6 +54,7 @@ func newRegisteredProvider(bus mq.Bus, callTimeout time.Duration) *registeredPro
 		tools:       map[string]*registeredTool{},
 		bus:         bus,
 		callTimeout: callTimeout,
+		preHooks:    map[string]int{},
 	}
 }
 
@@ -223,18 +233,50 @@ func (p *registeredProvider) toolFor(instance, tool string) (*registeredTool, bo
 func (p *registeredProvider) RegisterTool(rt *registeredTool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if _, dup := p.tools[routeKey(rt.Scope, rt.Tool.Name)]; dup {
+	key := routeKey(rt.Scope, rt.Tool.Name)
+	if _, dup := p.tools[key]; dup {
 		return fmt.Errorf("tool %q (scope=%q) already registered", rt.Tool.Name, rt.Scope)
 	}
-	p.tools[routeKey(rt.Scope, rt.Tool.Name)] = rt
+	p.tools[key] = rt
+	if rt.PreHookSubject != "" {
+		p.preHooks[rt.PreHookSubject]++
+		p.preHookN.Add(1)
+	}
 	return nil
 }
 
-// UnregisterTool 注销 (scope, name) 工具。
+// UnregisterTool 注销 (scope, name) 工具（同时回收其前置钩子声明）。
 func (p *registeredProvider) UnregisterTool(scope, name string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.tools, routeKey(scope, name))
+	key := routeKey(scope, name)
+	if rt, ok := p.tools[key]; ok && rt.PreHookSubject != "" {
+		if n := p.preHooks[rt.PreHookSubject]; n <= 1 {
+			delete(p.preHooks, rt.PreHookSubject)
+		} else {
+			p.preHooks[rt.PreHookSubject] = n - 1
+		}
+		p.preHookN.Add(-1)
+	}
+	delete(p.tools, key)
+}
+
+// HasPreHooks 是否存在已注册的前置钩子（**零开销**快速判定：原子计数，无钩子时 doCall 不发任何消息）。
+func (p *registeredProvider) HasPreHooks() bool { return p.preHookN.Load() > 0 }
+
+// PreHookSubjects 返回去重后的前置钩子主题（稳定序；无钩子 → nil）。
+func (p *registeredProvider) PreHookSubjects() []string {
+	if p.preHookN.Load() <= 0 {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]string, 0, len(p.preHooks))
+	for subj := range p.preHooks {
+		out = append(out, subj)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // GetToolFor 按 (instance, name) 查询注册工具（scoped 优先回退 global）。

@@ -26,6 +26,14 @@
         "call batch"           → llm_run LOOP 批量（planner 产 JSON 数组 → concurrency=2）
         "call delegate-cancel" → llm_run 首步委派慢工具（供 task-stop 级联取消）
         "call delegate-slow"   → 子会话内慢命令（self_script_run ping 20s）
+      文件历史检查点链（run_hist_git.py，2026-09-27 批次③语义；参数由提示词携带）：
+        "call hist-write"         + histabs=<绝对路径> histfrom=<旧> histval=<新>
+                                  → self_filesys_run（RPL 真实改文件 → 置脏 → 打点）
+        "call hist-restore"       + histrel=<workdir 相对路径> [histto=<负整数|commit id>]
+                                  → self_history_restore（单文件回滚）
+        "call hist-restore-nopath"→ self_history_restore{}（空 path，应被拒绝）
+        "call hist-restore-dir"    + histrel=<相对目录>
+                                  → self_history_restore（目录，应被拒绝）
       **工具名一律用网关暴露名**（self 节点 entry.ID 前缀 `self_`）：server 按暴露名
       调 gateway tools/call，未带前缀的裸名无法路由（I-20）——file_read/script_run/
       user_ask/tool_result/llm_run 均为 self_* 形态。
@@ -38,7 +46,6 @@ import os
 import re
 import socket
 import sys
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SCRIPTS_WS = r"E:\BizWorks\chonkpilot\src\test\chonkpilot-gui\systest\ws"  # systest 工作目录（用例输入/输出）
@@ -278,6 +285,15 @@ def reply_override(text):
     return None
 
 
+def _prompt_arg(text, name, default=""):
+    """取提示词里的 `name=值` 参数（供 run_hist_git.py 传文件/内容/目标点）。
+
+    值到空白或引号为止（路径/内容不含空格）；未命中 → default。
+    """
+    m = re.search(r"(?:^|\s)%s=([^\s\"']+)" % re.escape(name), text)
+    return m.group(1) if m else default
+
+
 def route_tool_calls(text):
     """根据最后 user 文本返回 tool_calls 列表（None = 无工具，返回普通回复）。"""
     t = text.lower()
@@ -403,6 +419,28 @@ def route_tool_calls(text):
             script = "console.log('INTERP='+process.execPath)"
         return [("self_script_run", {"runtime": rt, "script": script,
                                      "tool_call_display_name": "解释器探针"})]
+    # ── 文件历史检查点链（run_hist_git.py；2026-09-27 批次③语义）──
+    # ① 真实改文件（filesys_run RPL `histfrom=旧` → `histval=新`，`histabs=<绝对路径，正斜杠>`）
+    #    → 触发 filesys.changed → 插件置脏 → 前置钩子 / 轮末补点打点（检查点链）。
+    # ② history_restore 单文件回滚：`histrel=<workdir 相对路径>` + 可选 `histto=<负整数|commit id>`。
+    # ③ 空 path → 拒绝；④ 目录 path（`histrel=<相对目录>`）→ 拒绝（单文件、禁止批量）。
+    if "call hist-write" in t:
+        p = _prompt_arg(text, "histabs")
+        frm = _prompt_arg(text, "histfrom")
+        to = _prompt_arg(text, "histval")
+        return [("self_filesys_run", {"script": 'RPL #"%s" "%s" "%s"' % (p, frm, to),
+                                      "tool_call_display_name": "历史打点"})]
+    if "call hist-restore-nopath" in t:
+        return [("self_history_restore", {"tool_call_display_name": "历史回滚"})]
+    if "call hist-restore-dir" in t:
+        return [("self_history_restore", {"path": _prompt_arg(text, "histrel"),
+                                          "tool_call_display_name": "历史回滚"})]
+    if "call hist-restore" in t:
+        args = {"path": _prompt_arg(text, "histrel"), "tool_call_display_name": "历史回滚"}
+        to = _prompt_arg(text, "histto")
+        if to:
+            args["to"] = int(to) if re.fullmatch(r"-?\d+", to) else to
+        return [("self_history_restore", args)]
     # 普通工具场景
     # R-11：文件操作参数须为绝对路径或以 ~/ 开头（相对路径会被执行器拒绝），
     # 故用 ws 绝对路径（与 run_llm.py 期望的 "hello from a.txt" 对应）。

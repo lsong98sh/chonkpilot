@@ -14,7 +14,7 @@
 前置：chonkpilot.exe --test-port=2345 已启动（GUI 恒启 inprocess server）。
 
 迁移口径（2026-09-15）：项目配置页签名 = zh-CN（安全/上下文管理/CodeGraph 索引/Vfts 全文索引/
-自动提交）；T4/T5 原指向的「通用能力（提示词）」「代码索引」页签已分别按 spec CFG-009 (D2) 摘除
+文件历史）；T4/T5 原指向的「通用能力（提示词）」「代码索引」页签已分别按 spec CFG-009 (D2) 摘除
 与拆分为 CodeGraph/Vfts 页签，故改指存活的等价对象（见各用例 docstring）。
 """
 import json
@@ -130,6 +130,12 @@ def click_visible_tab(tab_pattern, panel_scope):
 # ── T1 任务不存在提示（L315） ─────────────────────────
 
 def case_task_not_found():
+    # 2026-09-27「首屏减负」后任务面板默认收起（MainLayout taskOpen 默认 false）→ 承载
+    # `.task-detail`（TaskDetailView）的 SessionChat 未挂载 → 直接注入 task-detail-open 无处渲染。
+    # 与其它任务套件同口径：先展开任务面板（等价点顶部「任务」开关；经既有 tasks-toggle 事件），
+    # 再注入 task-detail-open。
+    if not _h.ensure_task_panel_open(c):
+        raise TestError("任务面板未展开（.session-chat 未挂载），无法断言任务详情")
     # 打开一个不存在的任务详情 → .td-empty「任务不存在」
     c.eval('window.mq.emit("task-detail-open", {task_id: "no-such-task-xyz"})')
     time.sleep(0.8)
