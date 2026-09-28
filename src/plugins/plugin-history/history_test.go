@@ -189,3 +189,27 @@ func TestGateRefreshRealtime(t *testing.T) {
 		t.Fatalf("非 history.enabled 的刷新不应改动门控")
 	}
 }
+
+// TestRetentionRefreshBatch：**批量写**（单条广播带 `ids` 全组键）→ keep 与 ttl **一并应用**
+// （61 §3.1：一次批量写只发 1 条 refresh；消费方按 `ids` 逐键展开，不得只认首键 `id`）。
+func TestRetentionRefreshBatch(t *testing.T) {
+	empty := ""
+	bus, h := newHistory(t, &empty)
+	waitGate(t, h, "ins-gate") // 先等初始异步回读落定（避免其覆盖后续 refresh 结果）
+	b, _ := json.Marshal(map[string]any{
+		"id":  "history.checkpoint_keep",
+		"ids": []string{"history.checkpoint_keep", "history.checkpoint_ttl_days"},
+		"op":  "save",
+		"list": map[string]any{
+			"history.checkpoint_keep":     "123",
+			"history.checkpoint_ttl_days": "9",
+		},
+	})
+	bus.Emit(context.Background(), "data-prj-config-refresh", b)
+	if got := h.keepVal(); got != 123 {
+		t.Fatalf("批量广播应应用 keep：got %d，期望 123", got)
+	}
+	if got := h.ttlVal(); got != 9 {
+		t.Fatalf("批量广播应应用 ttl（勿因 id 为首键而漏）：got %d，期望 9", got)
+	}
+}

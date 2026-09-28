@@ -96,21 +96,73 @@ test('P1-6 默认 min/max 退化值：不再退化到 100 / 2000', () => {
   assert.equal(paneMax({ max: 800 }), 800, '显式 max 优先')
 })
 
-test('P1-6 SplitPanel：常态透明（无内联描边色）+ 统一走纯逻辑 + flex 最小尺寸保护', () => {
+test('P1-6 SplitPanel：统一走纯逻辑 + flex 最小尺寸保护（视觉见 P1-6b）', () => {
   const sp = SRC('components/split/SplitPanel.vue')
-  assert.doesNotMatch(sp, /gapColor|gap-color/, 'resizer 不得再走 gapColor（常态须 transparent）')
+  assert.doesNotMatch(sp, /gapColor|gap-color/, 'resizer 不得再走 gapColor')
   assert.doesNotMatch(sp, /:style="\{\s*background/, 'resizer 常态不得内联描边色')
   assert.match(sp, /shouldShowResizer\(visiblePanes, i\)/, '渲染条件须走 splitLayout.shouldShowResizer')
   assert.match(sp, /resolveDragTarget\(visiblePanes\.value, visibleIndex\)/, '拖拽目标须走 splitLayout.resolveDragTarget')
   assert.match(sp, /paneMin\(pane\)|paneMin\(targetPane\)/, '定尺 min 须走 paneMin')
   assert.match(sp, /minWidth: `\$\{flexMin\}px`/, 'flex pane 须按 pane.min 给主轴最小尺寸保护')
 
-  const resizerCss = sp.match(/\.split-resizer \{[\s\S]*?\n\}/)[0]
-  assert.doesNotMatch(resizerCss, /background:/, '常态不写 background（默认 transparent）')
-  assert.match(sp, /\.split-resizer:hover\s*\{[\s\S]*?background:\s*var\(--accent\)/, 'hover 才 accent')
-
   const ml = SRC('views/layout/MainLayout.vue')
   assert.doesNotMatch(ml, /gap-color/, 'MainLayout 不得再传已移除的 gap-color')
+})
+
+// ── P1-6b resizer 视觉/命中（方案 A：1px 边框色发丝线 + 5px 透明命中区 + hover/激活 accent）
+//    2026-09-28：原「常态无 background / hover 直接改本体」的断言随方案 A 报废，改写为下述口径。
+
+test('P1-6b resizer：本体 1px 发丝线取边框色（水平/垂直同款），光标不回退', () => {
+  const sp = SRC('components/split/SplitPanel.vue')
+  const base = sp.match(/\.split-resizer \{[\s\S]*?\n\}/)[0]
+  assert.match(base, /background:\s*var\(--border\)/, '本体常态背景 = --border（发丝线取边框色，不再露底色）')
+
+  const h = sp.match(/\.split-resizer\.resizer-horizontal \{[\s\S]*?\n\}/)[0]
+  assert.match(h, /width:\s*var\(--split-hairline\)/, '水平本体宽 = --split-hairline（1px）')
+  assert.match(h, /cursor:\s*col-resize/, '水平光标保持 col-resize')
+
+  const v = sp.match(/\.split-resizer\.resizer-vertical \{[\s\S]*?\n\}/)[0]
+  assert.match(v, /height:\s*var\(--split-hairline\)/, '垂直本体高 = --split-hairline（1px）')
+  assert.match(v, /cursor:\s*row-resize/, '垂直光标保持 row-resize')
+})
+
+test('P1-6b resizer：命中区 = 5px 透明伪元素（双向各外溢 (hit-hairline)/2）', () => {
+  const sp = SRC('components/split/SplitPanel.vue')
+  const after = sp.match(/\.split-resizer::after \{[\s\S]*?\n\}/)[0]
+  assert.match(after, /content:\s*''/, '命中区须为伪元素')
+  assert.match(after, /position:\s*absolute/, '命中区绝对定位（不占布局、不引起重排）')
+  assert.match(after, /background:\s*transparent/, '命中区常态透明（不得让视觉变粗）')
+
+  const overhang = /calc\(\(var\(--split-hairline\)\s*-\s*var\(--split-hit\)\)\s*\/\s*2\)/
+  const h = sp.match(/\.split-resizer\.resizer-horizontal::after \{[\s\S]*?\n\}/)[0]
+  assert.match(h, /top:\s*0/, '水平命中区纵向撑满')
+  assert.match(h, /bottom:\s*0/, '水平命中区纵向撑满')
+  assert.equal(h.match(new RegExp(overhang.source, 'g'))?.length, 2, '水平命中区 left/right 各外溢 (hit-hairline)/2')
+
+  const v = sp.match(/\.split-resizer\.resizer-vertical::after \{[\s\S]*?\n\}/)[0]
+  assert.match(v, /left:\s*0/, '垂直命中区横向撑满')
+  assert.match(v, /right:\s*0/, '垂直命中区横向撑满')
+  assert.equal(v.match(new RegExp(overhang.source, 'g'))?.length, 2, '垂直命中区 top/bottom 各外溢 (hit-hairline)/2')
+})
+
+test('P1-6b resizer：hover / 拖拽激活只给命中区上 accent；本体不加宽（无重排/抖动）', () => {
+  const sp = SRC('components/split/SplitPanel.vue')
+  assert.match(
+    sp,
+    /\.split-resizer:hover::after\s*,\s*\.split-resizer\.is-active::after\s*\{[\s\S]*?background:\s*var\(--accent\)/,
+    'hover 与 .is-active 命中区填 --accent（5px 蓝块）'
+  )
+  assert.doesNotMatch(sp, /\.split-resizer:hover\s*\{/, 'hover 不得直接改本体背景（本体恒 1px）')
+  // .is-dragging 的「再加宽 2px」必须移除（否则拖动瞬间线变粗、pane 尺寸跳动）
+  assert.doesNotMatch(sp, /is-dragging/, '移除 is-dragging 加宽（激活态已由 .is-active 命中区覆盖）')
+  assert.doesNotMatch(sp, /calc\(var\(--split-gap\)\s*\+\s*2px\)/, '不得再出现 gap+2px 本体加宽')
+})
+
+test('P1-6b variables.css：resizer 两 token 定值（hairline 1px / hit 5px），--split-gap 移除', () => {
+  const vars = SRC('assets/styles/variables.css')
+  assert.match(vars, /--split-hairline:\s*1px/, '--split-hairline: 1px')
+  assert.match(vars, /--split-hit:\s*5px/, '--split-hit: 5px')
+  assert.doesNotMatch(vars, /--split-gap\s*:/, '--split-gap 定义应移除')
 })
 
 // ── P1-8 高度 token（③ contentH 计算）────────────────────────────────────

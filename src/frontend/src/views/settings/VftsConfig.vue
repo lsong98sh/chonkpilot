@@ -69,8 +69,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Switch, Textarea, Button, message } from '../../components/ui'
-import { getAllConfig, setConfig, deleteConfig } from '../../api/config'
-import { onDataRefresh } from '../../utils/dataClient'
+import { getAllConfig, setConfig, setConfigs, deleteConfig } from '../../api/config'
+import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
 import { hasEngineTools } from '../../utils/engineStatus'
 import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import mq from '../../utils/mq'
@@ -219,46 +219,49 @@ async function handleChange(val) {
   }
 }
 
-// 写单键：清空 = 删项目级键（恢复引擎默认，避免把默认集固化成显式配置）
-async function writeIndexKey(key, textRef, origRef, display) {
-  const v = textRef.value.trim()
-  if (v === '') {
-    await deleteConfig(key)
-  } else {
-    await setConfig(key, textRef.value)
+// collectIndexChanges 收集本次「实际改动」的键：文本项（exts/skip-dirs）空串 = 清空（回落引擎
+// 默认，走删键，避免把默认集固化成显式配置）→ clears；非空 → entries。勾选 stack-gitignore
+// 改动 → entries（"true"/"false"）。同时回填 orig / 展示镜像（清空 → 默认镜像，与首次打开一致）。
+function collectIndexChanges() {
+  const entries = {}
+  const clears = []
+  for (const it of [
+    { key: 'vfts.exts', textRef: vfExts, origRef: origExts, display: displayExts },
+    { key: 'vfts.skip-dirs', textRef: vfSkipDirs, origRef: origSkipDirs, display: displaySkipDirs },
+  ]) {
+    if (isPristine(it.textRef.value, it.origRef.value, it.display)) continue
+    const v = it.textRef.value.trim()
+    if (v === '') {
+      clears.push(it.key)
+      it.origRef.value = ''
+      it.textRef.value = it.display('')
+    } else {
+      entries[it.key] = it.textRef.value
+      it.origRef.value = v
+    }
   }
-  origRef.value = v
-  textRef.value = display(v) // 回填（清空 → 默认镜像，与首次打开一致）
+  if (vfStackGitignore.value !== (origStackGitignore.value === 'true')) {
+    const v = String(vfStackGitignore.value)
+    entries['vfts.stack-gitignore'] = v
+    origStackGitignore.value = v
+  }
+  return { entries, clears }
 }
 
-// 写 stack-gitignore 单键（布尔 → 既有字符串口径 "true"/"false"）
-async function writeStackKey() {
-  const v = String(vfStackGitignore.value)
-  await setConfig('vfts.stack-gitignore', v)
-  origStackGitignore.value = v
-}
-
-// 保存索引配置（exts/skip-dirs/stack-gitignore）：仅写入实际改动的键；写入后
-// data-prj-config-refresh 触发插件重新 configure + 重建索引（插件侧对同一次保存的键做去抖，
-// 只重建一轮）。stack-gitignore 保存后：插件先读 workdir 根 .gitignore 规则，再与输入叠加。
+// 保存索引配置（exts/skip-dirs/stack-gitignore）：只提交实际改动的键。
+// 非空改动值 → **一次批量写**（1 条 data-prj-config-save → 后端整批广播 1 条 data-prj-config-refresh，
+// 含 ids 全组键）触发插件重新 configure + 重建索引（插件按整批键集处理 + 去抖一轮）。
+// 清空 = 删项目级键（恢复引擎默认）→ 仍走既有 delete 面（语义不变）。
 async function handleIndexSave() {
   saving.value = true
   try {
-    const tasks = []
-    if (!isPristine(vfExts.value, origExts.value, displayExts)) {
-      tasks.push(writeIndexKey('vfts.exts', vfExts, origExts, displayExts))
-    }
-    if (!isPristine(vfSkipDirs.value, origSkipDirs.value, displaySkipDirs)) {
-      tasks.push(writeIndexKey('vfts.skip-dirs', vfSkipDirs, origSkipDirs, displaySkipDirs))
-    }
-    if (vfStackGitignore.value !== (origStackGitignore.value === 'true')) {
-      tasks.push(writeStackKey())
-    }
-    if (tasks.length === 0) {
+    const { entries, clears } = collectIndexChanges()
+    if (Object.keys(entries).length === 0 && clears.length === 0) {
       message.info(t('projectConfig.index_nothing_changed'))
       return
     }
-    await Promise.all(tasks)
+    if (Object.keys(entries).length > 0) await setConfigs(entries)
+    if (clears.length > 0) await Promise.all(clears.map((k) => deleteConfig(k)))
     message.success(savedText(t, APPLY_INSTANT))
   } catch (e) {
     message.error(saveFailedText(t, e))
@@ -294,13 +297,17 @@ async function handleResetDefaults() {
 onMounted(() => {
   loadConfig()
   loadEngineTools()
-  // data-prj-config-refresh：配置/状态变更后自动重载。
-  // **本页自身保存期间（saving）跳过**：handleIndexSave / handleResetDefaults 写 prj 键，
-  // persist 每次 save 恒广播 data-prj-config-refresh；早到的广播会让 loadConfig 读到「尚含旧中间值」
-  // 的快照（orig* / status / 开关按 DB 无条件回填），与本页正在提交的本地态相互打架。
-  // 统一口径与 ContextConfig I-138 一致：保存期间不重载；保存结束后到达的广播读到的是本次已落库值，重载无害。
+  // data-prj-config-refresh：配置/状态变更后自动重载（统一机制 usePrjConfigRefresh，I-138）。
+  // handleIndexSave 一次批量写改动的项 → 后端整批广播 1 条（含 ids）；清空项走 delete（单键广播）；
+  // handleResetDefaults 逐键 delete；统一机制**按键过滤**（仅本页关注键）+ **合并突发广播为 1 次
+  // 重载**（读最终快照）+ **保存期间（saving）跳过**，避免读到「尚含旧中间值」的快照与本页正在
+  // 提交的本地态打架。
   // （文本输入另有 isPristine 守卫：防索引期间插件每 500ms 回写 status 的广播冲掉未保存编辑。）
-  unsubs.push(onDataRefresh('prj-config', () => { if (!saving.value) loadConfig() }))
+  unsubs.push(usePrjConfigRefresh({
+    keys: ['enable-vfts', 'vfts.exts', 'vfts.skip-dirs', 'vfts.stack-gitignore', 'vfts.status'],
+    reload: loadConfig,
+    isSaving: () => saving.value,
+  }))
 })
 
 onUnmounted(() => {

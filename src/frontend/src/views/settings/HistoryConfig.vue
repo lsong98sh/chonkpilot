@@ -136,8 +136,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Switch, Input, Button, Table } from '../../components/ui'
 import { message, confirm } from '../../components/ui'
-import { getAllConfig, setConfig, getVCSInfo } from '../../api/config'
-import { onDataRefresh } from '../../utils/dataClient'
+import { getAllConfig, setConfig, setConfigs, getVCSInfo } from '../../api/config'
+import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
 import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import { validatePositiveInt, positiveIntErrorText } from '../../utils/settingsValidation'
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
@@ -260,7 +260,8 @@ async function handleChange(val) {
   }
 }
 
-// 保存保留策略：正整数前置校验（非法不写库），合法则写两个 prj 键。
+// 保存保留策略：正整数前置校验（非法不写库），合法则**一次批量写**两个 prj 键
+// （1 条 save → 后端整批广播 1 条 refresh，含 ids；插件按整批键集应用 keep/ttl）。
 async function handleRetentionSave() {
   const kr = validatePositiveInt(checkpointKeep.value)
   keepError.value = kr.ok ? '' : positiveIntErrorText(t, kr.reason)
@@ -270,8 +271,10 @@ async function handleRetentionSave() {
   markDirty()
   saving.value = true
   try {
-    await setConfig('history.checkpoint_keep', String(kr.value))
-    await setConfig('history.checkpoint_ttl_days', String(tr.value))
+    await setConfigs({
+      'history.checkpoint_keep': String(kr.value),
+      'history.checkpoint_ttl_days': String(tr.value),
+    })
     checkpointKeep.value = String(kr.value)
     checkpointTtlDays.value = String(tr.value)
     markSaved()
@@ -304,12 +307,17 @@ async function handleClear() {
 onMounted(() => {
   loadConfig()
   loadVCS()
-  // data-prj-config-refresh：配置变更后 server 广播，自动重载（20-gui）。
-  // **本页自身保存期间（saving）跳过**：handleRetentionSave 写两个 prj 键，persist 每次 save 恒广播；
-  // 早到的广播会读到「尚含旧值」的快照（history.enabled / status 按 DB 无条件回填），与本次提交的本地态打架。
-  // 统一口径与 ContextConfig I-138 一致：保存期间不重载；保存结束后到达的广播读到的是本次已落库值，重载无害。
+  // data-prj-config-refresh：配置变更后自动重载（统一机制 usePrjConfigRefresh，I-138）。
+  // handleRetentionSave 一次批量写两个 prj 键 → 后端整批广播 1 条（含 ids）；统一机制**按键过滤** +
+  // **合并突发广播为 1 次重载** + **保存期间（saving）跳过**，避免读到「尚含旧值」的快照
+  // （history.enabled / status 按 DB 无条件回填）与本次提交的本地态打架。
   // （保留策略另有 !dirty 守卫，防刷新冲掉未保存输入；开关即存路径 saving=false，仍照常重载。）
-  unsubs.push(onDataRefresh('prj-config', () => { if (!saving.value) loadConfig() }))
+  unsubs.push(usePrjConfigRefresh({
+    keys: ['history.enabled', 'history.checkpoint_keep', 'history.checkpoint_ttl_days',
+      'history.clear', 'history.status', 'history.timeline'],
+    reload: loadConfig,
+    isSaving: () => saving.value,
+  }))
 })
 
 onUnmounted(() => {

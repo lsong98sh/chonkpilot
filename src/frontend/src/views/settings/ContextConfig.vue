@@ -191,7 +191,7 @@ import { useI18n } from 'vue-i18n'
 import { Input, Button, Switch, Table, message, confirm, promptInput } from '../../components/ui'
 import { dialog } from '../../components/dialog'
 import TextEditDialog from '../../components/common/TextEditDialog.vue'
-import { getAllConfig, setConfig, getPrompt, setPrompt, getUserConfig, saveUserConfig, deleteConfig, resetUserKey } from '../../api/config'
+import { getAllConfig, setConfig, setConfigs, getPrompt, setPrompt, getUserConfig, saveUserConfig, deleteConfig, resetUserKey } from '../../api/config'
 import { readPrimitive } from '../../api/knowledge'
 import { getActiveSessionID } from '../../api/session'
 import dataClient, { onDataRefresh, dataRequest } from '../../utils/dataClient'
@@ -200,6 +200,7 @@ import { EventNames } from '../../events/event-names'
 import { saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
 import { useMemoryCategories, DEFAULT_MEMORY_PROMPT } from '../../composables/useMemoryCategories'
+import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
 
 const { t } = useI18n()
 
@@ -757,21 +758,27 @@ async function handleSave() {
   saving.value = true
   try {
     warnIllegalBounds()
-    await setConfig('keep_full_max_turns', String(keepFullMaxTurns.value))
-    await setConfig('keep_full_max_tokens', String(keepFullMaxTokens.value))
-    await setConfig('compress_token_threshold', String(compressTokenThreshold.value))
-    await setConfig('memory.enabled', String(memoryEnabled.value))
-    await setConfig('memory.min-turn-tokens', String(memoryMinTurnTokens.value))
-    await setConfig('memory.category-max-tokens', String(memoryCategoryMaxTokens.value))
+    // 本页全部 prj 键（压缩三项 + 记忆库开关/阈值 + 类别开关）**一次批量写** → 后端整批一次
+    // 广播 data-prj-config-refresh（61 §3.1），不再逐键 N 条。
+    const entries = {
+      keep_full_max_turns: String(keepFullMaxTurns.value),
+      keep_full_max_tokens: String(keepFullMaxTokens.value),
+      compress_token_threshold: String(compressTokenThreshold.value),
+      'memory.enabled': String(memoryEnabled.value),
+      'memory.min-turn-tokens': String(memoryMinTurnTokens.value),
+      'memory.category-max-tokens': String(memoryCategoryMaxTokens.value),
+    }
     if (memoryEnabled.value) {
       // 记忆库关闭时类别开关不可见 → 不提交类别键（避免写入用户未见过的值）
       for (const c of projectCategories.value) {
-        await setConfig('memory.category.' + c.category, String(categoryEnabled(c)))
+        entries['memory.category.' + c.category] = String(categoryEnabled(c))
       }
-      await setConfig('memory.category.' + USER_PREF_CATEGORY, String(userPrefEnabled.value))
+      entries['memory.category.' + USER_PREF_CATEGORY] = String(userPrefEnabled.value)
     }
+    await setConfigs(entries)
     // 总结提示词：内容与"继承值"相同（未覆盖 + 未改动）→ 后端不写项目级文件（保持继承），
     // 只提示"未做覆盖"，避免把有效值固化成项目级副本、永久遮蔽系统级后续更新。
+    // 属 **prompt 域**（非 prj-config）→ 单独一次调用（不同域，各自广播）。
     const inheritKept = !summaryOverride.value && summarizePrompt.value === summaryLoadedValue.value
     await setPrompt('summary_prompt', summarizePrompt.value)
     await loadSummaryPrompt()
@@ -827,12 +834,18 @@ onMounted(() => {
   loadConfig()
   // 压缩记录：进页读一次当前会话快照（空态亦展示）
   loadCompressRecords()
-  // data-prj-config-refresh：配置变更后 server 广播，自动重载（20-gui）。
-  // **本页自身保存期间（saving）跳过**：handleSave 逐键顺序 setConfig，每次都会引发该广播；
-  // 早到的广播会让 loadConfig 读到「尚含旧值」的配置快照，把本地**未提交**的开关/数值冲回旧值
+  // data-prj-config-refresh：配置变更后 server 广播，自动重载（20-gui；统一机制 usePrjConfigRefresh，I-138）。
+  // handleSave 一次批量写（setConfigs）→ 后端整批广播 1 条（含 ids 全组键）；统一机制**按键过滤**
+  // （仅本页关注键）+ **合并突发广播为 1 次重载**（读最终快照）+ **保存期间（saving）跳过**，避免
+  // 早到的广播让 loadConfig 读到「尚含旧值」的中间快照，把本地**未提交**的开关/数值冲回旧值
   // （实测缺陷：记忆库「开 → 关 → 点保存」被冲回「开」→ 其下子项随之解禁、落库值也错成 true）。
-  // 保存结束后到达的广播读到的是本次已落库值，与本地态一致，重载无害。
-  unsubs.push(onDataRefresh('prj-config', () => { if (!saving.value) loadConfig() }))
+  unsubs.push(usePrjConfigRefresh({
+    keys: ['keep_full_max_turns', 'keep_full_turns', 'keep_full_max_tokens',
+      'compress_token_threshold', 'memory.enabled', 'memory.min-turn-tokens', 'memory.category-max-tokens'],
+    prefixes: ['memory.category.', 'memory.prompt.'],
+    reload: loadConfig,
+    isSaving: () => saving.value,
+  }))
   // data-user-config-refresh：用户偏好沉淀提示词（usr 自由键 memory_prompts）变更后重载（20-gui）
   unsubs.push(onDataRefresh('user-config', loadUserPrefPrompts))
   // data-memory-refresh：记忆沉淀写回后刷新类别 token（20-gui；关闭态不发 list）

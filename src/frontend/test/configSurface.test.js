@@ -310,8 +310,9 @@ test('⑧ 索引页：label「排除的目录和文件」+「叠加 gitignore」
     // 勾选后输入框仍可编辑（禁止 disable/readonly 排除输入框）
     assert.doesNotMatch(src, /:disabled="[^"]*[Ss]tack/, `${c.file} 勾选不得禁用输入框`)
     assert.doesNotMatch(src, /:readonly/, `${c.file} 输入框不得 readonly`)
-    // 保存同时写该键（既有 setConfig 字符串口径）
-    assert.match(src, new RegExp(`setConfig\\('${c.key.replace('.', '\\.')}'`), `${c.file} 保存须写 ${c.key}`)
+    // 保存写该键（2026-09-28 批量 entries 形：对象字面量 'k': … 或 entries['k'] = …）
+    const kEsc = c.key.replace(/\./g, '\\.')
+    assert.match(src, new RegExp(`'${kEsc}'\\s*:|\\['${kEsc}'\\]`), `${c.file} 保存须写 ${c.key}`)
     // dirty（unsaved）须含勾选状态；加载回填（缺省 false）
     assert.match(src, new RegExp(`${c.ref}\\.value !== \\(origStackGitignore\\.value === 'true'\\)`), `${c.file} dirty 须含勾选状态`)
     assert.match(src, new RegExp(`${c.ref}\\.value = rawStack === 'true'`), `${c.file} 加载须回填勾选`)

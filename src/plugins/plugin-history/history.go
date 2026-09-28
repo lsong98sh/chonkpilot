@@ -354,53 +354,62 @@ func (h *History) ttlVal() int {
 
 // onPrjConfigRefresh 处理 data-prj-config-refresh：history.enabled（门控）/
 // 保留参数 / history.clear（清链动作）。
-// 广播载荷 {instance_id?, id, op, list}——本实现忽略 instance_id（v1 限制：单宿主典型形态
+// 广播载荷 {instance_id?, id, ids?, op, list}——本实现忽略 instance_id（v1 限制：单宿主典型形态
 // 单实例/单 workdir，把开关应用到全部已知实例；多 workdir 差异化留待 v2）。
+// **批量写**（61 §3.1）载荷带 `ids`（全组键）→ 逐个键按下述语义处理（= 与改前「逐键广播」等价）；
+// 缺省回落单键 `id`（向后兼容旧广播/旧发送方）。
 func (h *History) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) error {
 	var ev struct {
 		ID   string         `json:"id"`
+		IDs  []string       `json:"ids"`
 		Op   string         `json:"op"`
 		List map[string]any `json:"list"`
 	}
 	if json.Unmarshal(v.Payload, &ev) != nil {
 		return nil
 	}
-	switch ev.ID {
-	case historyEnabledKey:
-		// 只有显式 "true" 才开启；缺失/""/非法/op=delete → 关闭（默认不开启）。
-		enabled := false
-		if ev.List != nil {
-			if raw, ok := ev.List[historyEnabledKey]; ok {
-				enabled = gateFromValue(strval(raw))
+	keys := ev.IDs
+	if len(keys) == 0 {
+		keys = []string{ev.ID}
+	}
+	for _, key := range keys {
+		switch key {
+		case historyEnabledKey:
+			// 只有显式 "true" 才开启；缺失/""/非法/op=delete → 关闭（默认不开启）。
+			enabled := false
+			if ev.List != nil {
+				if raw, ok := ev.List[historyEnabledKey]; ok {
+					enabled = gateFromValue(strval(raw))
+				}
 			}
+			h.gateMu.Lock()
+			for _, inst := range h.im.List() {
+				h.gate[inst.ID] = enabled
+				h.setEnabled(inst.WorkDir, enabled)
+			}
+			h.gateMu.Unlock()
+			h.logf()("history: prj-config %s → %v（op=%s）", historyEnabledKey, enabled, ev.Op)
+			h.syncTools()
+		case keepKey:
+			if ev.Op != "delete" && ev.List != nil {
+				h.setKeep(parseKeep(strval(ev.List[keepKey])))
+			} else {
+				h.setKeep(defaultKeep)
+			}
+		case ttlKey:
+			if ev.Op != "delete" && ev.List != nil {
+				h.setTTL(parseTTL(strval(ev.List[ttlKey])))
+			} else {
+				h.setTTL(defaultTTLDays)
+			}
+		case clearKey:
+			// 动作信号（前端写入任意新值，如 ISO 时间串）：清空各 workdir 的检查点链 + 回写状态。
+			// 删键不作动作（与 codegraph.action 同口径）。
+			if ev.Op == "delete" {
+				continue
+			}
+			h.clearChains()
 		}
-		h.gateMu.Lock()
-		for _, inst := range h.im.List() {
-			h.gate[inst.ID] = enabled
-			h.setEnabled(inst.WorkDir, enabled)
-		}
-		h.gateMu.Unlock()
-		h.logf()("history: prj-config %s → %v（op=%s）", historyEnabledKey, enabled, ev.Op)
-		h.syncTools()
-	case keepKey:
-		if ev.Op != "delete" && ev.List != nil {
-			h.setKeep(parseKeep(strval(ev.List[keepKey])))
-		} else {
-			h.setKeep(defaultKeep)
-		}
-	case ttlKey:
-		if ev.Op != "delete" && ev.List != nil {
-			h.setTTL(parseTTL(strval(ev.List[ttlKey])))
-		} else {
-			h.setTTL(defaultTTLDays)
-		}
-	case clearKey:
-		// 动作信号（前端写入任意新值，如 ISO 时间串）：清空各 workdir 的检查点链 + 回写状态。
-		// 删键不作动作（与 codegraph.action 同口径）。
-		if ev.Op == "delete" {
-			return nil
-		}
-		h.clearChains()
 	}
 	return nil
 }

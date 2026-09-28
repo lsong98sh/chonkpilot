@@ -384,28 +384,42 @@ func (p *Vfts) readEnableAndEnsure(instanceID, wd string) {
 // ─── prj-config 变更 ──────────────────────────────────────
 
 // onPrjConfigRefresh 处理 data-prj-config-refresh：关心 enable-vfts 与索引配置
-// （vfts.exts / vfts.skip-dirs）。
-// 广播载荷 {id, op, list}，无 instance_id（persist refresh 不携带）——v1 限制：
-// 单宿主典型形态为单实例/单 workdir，直接把开关应用到全部活跃 workdir；
-// 多 workdir 并存时按同一开关刷新（差异化的按 instance 隔离留待 v2）。
+// （vfts.exts / vfts.skip-dirs / vfts.stack-gitignore）。
+// 广播载荷 {id, ids?, op, list}：**批量写**（61 §3.1）带 `ids`（全组键）→ 逐键展开处理
+// （= 与改前「逐键广播」等价）；缺省回落单键 `id`（向后兼容旧广播/旧发送方）。
+// 无 instance_id（persist refresh v1 不携实例过滤）——v1 限制：单宿主典型形态为单实例/单 workdir，
+// 直接把开关应用到全部活跃 workdir；多 workdir 并存时按同一开关刷新（按 instance 隔离留待 v2）。
 func (p *Vfts) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) error {
 	var ev struct {
 		ID   string         `json:"id"`
+		IDs  []string       `json:"ids"`
 		Op   string         `json:"op"`
 		List map[string]any `json:"list"`
 	}
 	if json.Unmarshal(v.Payload, &ev) != nil {
 		return nil
 	}
-	switch ev.ID {
+	keys := ev.IDs
+	if len(keys) == 0 {
+		keys = []string{ev.ID}
+	}
+	for _, key := range keys {
+		p.applyPrjConfig(key, ev.Op, ev.List)
+	}
+	return nil
+}
+
+// applyPrjConfig 按单个键应用一次 prj-config 变更（批量广播逐键展开后调用）。
+func (p *Vfts) applyPrjConfig(key, op string, list map[string]any) {
+	switch key {
 	case enableKey:
 		enabled := false
-		if ev.List != nil {
-			if raw, ok := ev.List[enableKey]; ok {
+		if list != nil {
+			if raw, ok := list[enableKey]; ok {
 				enabled = strval(raw) == "true"
 			}
 		}
-		if ev.Op == "delete" {
+		if op == "delete" {
 			enabled = false // 键被删 = 关闭
 		}
 		var affected []string
@@ -418,10 +432,10 @@ func (p *Vfts) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) erro
 		}
 		p.mu.Unlock()
 		if len(affected) == 0 {
-			return nil
+			return
 		}
 		sort.Strings(affected)
-		p.logf("vfts: prj-config %s=%v（op=%s）→ workdir %v", enableKey, enabled, ev.Op, affected)
+		p.logf("vfts: prj-config %s=%v（op=%s）→ workdir %v", enableKey, enabled, op, affected)
 		for _, wd := range affected {
 			if enabled {
 				p.maybeEnsure(wd)
@@ -431,7 +445,7 @@ func (p *Vfts) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) erro
 	case extsKey, skipDirsKey, stackGitignoreKey:
 		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts/skip-dirs/stack-gitignore 变更
 		// 均须重建才生效）。
-		// 经去抖合并：一次保存（同一次操作写多键 = 多次 refresh）只重建一轮。
+		// 经去抖合并：一次批量保存（广播含多键 → 逐键展开）只重建一轮。
 		var affected []string
 		p.mu.Lock()
 		for wd, r := range p.works {
@@ -441,16 +455,14 @@ func (p *Vfts) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) erro
 		}
 		p.mu.Unlock()
 		sort.Strings(affected)
-		id, op := ev.ID, ev.Op
 		for _, wd := range affected {
 			wd := wd
 			p.rebuild.schedule(wd, func() {
-				p.logf("vfts: prj-config %s 变更（op=%s，去抖收敛）→ workdir %s 强制重建索引", id, op, wd)
+				p.logf("vfts: prj-config %s 变更（op=%s，去抖收敛）→ workdir %s 强制重建索引", key, op, wd)
 				p.ensureWorkspace(wd, true)
 			})
 		}
 	}
-	return nil
 }
 
 // ─── 启用编排（configure → 视就绪 index → 状态回写）─────────

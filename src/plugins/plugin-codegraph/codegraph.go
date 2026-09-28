@@ -431,28 +431,42 @@ func (p *Codegraph) readEnableAndEnsure(instanceID, wd string) {
 // ─── prj-config 变更 ──────────────────────────────────────
 
 // onPrjConfigRefresh 处理 data-prj-config-refresh：关心 enable-codegraph 与索引配置
-// （codegraph.exts / codegraph.skip-dirs）。
-// 广播载荷 {id, op, list}，无 instance_id（persist refresh 不携带）——v1 限制：
-// 单宿主典型形态为单实例/单 workdir，直接把开关应用到全部活跃 workdir；
-// 多 workdir 并存时按同一开关刷新（差异化的按 instance 隔离留待 v2）。
+// （codegraph.exts / codegraph.skip-dirs / codegraph.stack-gitignore）+ 动作信号（codegraph.action）。
+// 广播载荷 {id, ids?, op, list}：**批量写**（61 §3.1）带 `ids`（全组键）→ 逐键展开处理
+// （= 与改前「逐键广播」等价）；缺省回落单键 `id`（向后兼容旧广播/旧发送方）。
+// 无 instance_id（persist refresh v1 不携实例过滤）——v1 限制：单宿主典型形态为单实例/单 workdir，
+// 直接把开关应用到全部活跃 workdir；多 workdir 并存时按同一开关刷新（按 instance 隔离留待 v2）。
 func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) error {
 	var ev struct {
 		ID   string         `json:"id"`
+		IDs  []string       `json:"ids"`
 		Op   string         `json:"op"`
 		List map[string]any `json:"list"`
 	}
 	if json.Unmarshal(v.Payload, &ev) != nil {
 		return nil
 	}
-	switch ev.ID {
+	keys := ev.IDs
+	if len(keys) == 0 {
+		keys = []string{ev.ID}
+	}
+	for _, key := range keys {
+		p.applyPrjConfig(key, ev.Op, ev.List)
+	}
+	return nil
+}
+
+// applyPrjConfig 按单个键应用一次 prj-config 变更（批量广播逐键展开后调用）。
+func (p *Codegraph) applyPrjConfig(key, op string, list map[string]any) {
+	switch key {
 	case enableKey:
 		enabled := false
-		if ev.List != nil {
-			if raw, ok := ev.List[enableKey]; ok {
+		if list != nil {
+			if raw, ok := list[enableKey]; ok {
 				enabled = strval(raw) == "true"
 			}
 		}
-		if ev.Op == "delete" {
+		if op == "delete" {
 			enabled = false // 键被删 = 关闭
 		}
 		var affected []string
@@ -465,10 +479,10 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 		}
 		p.mu.Unlock()
 		if len(affected) == 0 {
-			return nil
+			return
 		}
 		sort.Strings(affected)
-		p.logf("codegraph: prj-config %s=%v（op=%s）→ workdir %v", enableKey, enabled, ev.Op, affected)
+		p.logf("codegraph: prj-config %s=%v（op=%s）→ workdir %v", enableKey, enabled, op, affected)
 		for _, wd := range affected {
 			if enabled {
 				p.maybeEnsure(wd)
@@ -480,14 +494,14 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 		// 均须重建才生效）。
 		// 保存幂等：新旧值相同（重复保存同一份配置）→ 不排重建；显式删键 = 回落引擎
 		// 默认集 = 生效配置变化 → 重建。
-		// 经去抖合并：一次保存（同一次操作写多键 = 多次 refresh）只重建一轮。
+		// 经去抖合并：一次批量保存（广播含多键 → 逐键展开）只重建一轮。
 		newRaw := ""
-		if ev.List != nil {
-			if raw, ok := ev.List[ev.ID]; ok {
+		if list != nil {
+			if raw, ok := list[key]; ok {
 				newRaw = strval(raw)
 			}
 		}
-		deleted := ev.Op == "delete"
+		deleted := op == "delete"
 		if deleted {
 			newRaw = "" // 键被删 = 回落引擎默认集
 		}
@@ -498,7 +512,7 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 				continue
 			}
 			old := r.cfgExts
-			switch ev.ID {
+			switch key {
 			case skipDirsKey:
 				old = r.cfgSkipDirs
 			case stackGitignoreKey:
@@ -507,7 +521,7 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 			if !deleted && old == newRaw {
 				continue // 值未变 → 幂等，不重建
 			}
-			switch ev.ID {
+			switch key {
 			case skipDirsKey:
 				r.cfgSkipDirs = newRaw
 			case stackGitignoreKey:
@@ -519,29 +533,28 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 		}
 		p.mu.Unlock()
 		if len(affected) == 0 {
-			return nil
+			return
 		}
 		sort.Strings(affected)
-		id, op := ev.ID, ev.Op
 		for _, wd := range affected {
 			wd := wd
 			p.rebuild.schedule(wd, func() {
-				p.logf("codegraph: prj-config %s 变更（op=%s，去抖收敛）→ workdir %s 强制重建索引", id, op, wd)
+				p.logf("codegraph: prj-config %s 变更（op=%s，去抖收敛）→ workdir %s 强制重建索引", key, op, wd)
 				p.ensureWorkspace(wd, true)
 			})
 		}
 	case actionKey:
 		// 动作信号（清除/重建/重试）：值 = 动作名。前端每次点击都写一次该键，persist save 恒广播
 		// refresh（同值重复写也生效）→ 重复点击有效。仅对「启用中」的 workdir 生效；删键不作动作。
-		if ev.Op == "delete" {
-			return nil
+		if op == "delete" {
+			return
 		}
 		act := ""
-		if ev.List != nil {
-			act = normalizeAction(strval(ev.List[actionKey]))
+		if list != nil {
+			act = normalizeAction(strval(list[actionKey]))
 		}
 		if act == "" {
-			return nil // 未知/空值忽略（向前兼容）
+			return // 未知/空值忽略（向前兼容）
 		}
 		var affected []string
 		p.mu.Lock()
@@ -552,7 +565,7 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 		}
 		p.mu.Unlock()
 		if len(affected) == 0 {
-			return nil
+			return
 		}
 		sort.Strings(affected)
 		for _, wd := range affected {
@@ -571,7 +584,6 @@ func (p *Codegraph) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value)
 			}
 		}
 	}
-	return nil
 }
 
 // normalizeAction 归一 codegraph.action 取值（大小写/空白容错）；未知/空 → ""（忽略）。

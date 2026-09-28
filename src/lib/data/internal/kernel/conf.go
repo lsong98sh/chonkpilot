@@ -72,10 +72,21 @@ func (b *Base) UserConfigChanged(changed map[string]any) {
 
 // RefreshScoped 同 Refresh，但把调用方数据根（Scope）带给 list 解析（门面 inline 绑定路径）。
 func (b *Base) RefreshScoped(domain, instanceID, id, op string, scope facade.Scope) {
-	if b.Bus == nil {
-		return // 无总线（测试/无订阅场景）：变更广播无接收方，静默跳过
+	b.RefreshScopedKeys(domain, instanceID, []string{id}, op, scope)
+}
+
+// RefreshScopedKeys 同 RefreshScoped，但**一次广播覆盖一组键**（批量写：N 键只发 1 条，
+// 61 §3.1）——载荷在既有 `{instance_id, id, op, list?}` 上**新增可选 `ids`（全组键，稳定序）**，
+// `id` = 首键（向后兼容既有单键订阅方）。单键（len(ids)==1）**不写 `ids`** → 载荷与改前
+// 逐字节等价（零影响既有订阅方）。
+func (b *Base) RefreshScopedKeys(domain, instanceID string, ids []string, op string, scope facade.Scope) {
+	if b.Bus == nil || len(ids) == 0 {
+		return // 无总线（测试/无订阅场景）或空键集：变更广播无接收方/无内容，静默跳过
 	}
-	payload := map[string]any{"id": id, "op": op}
+	payload := map[string]any{"id": ids[0], "op": op}
+	if len(ids) > 1 {
+		payload["ids"] = append([]string(nil), ids...) // 批量才带（单键与改前完全一致）
+	}
 	if instanceID != "" {
 		payload["instance_id"] = instanceID
 	}
@@ -89,7 +100,7 @@ func (b *Base) RefreshScoped(domain, instanceID, id, op string, scope facade.Sco
 	if domain == "user-config" {
 		cf := map[string]any{
 			"instance_id": instanceID, // 无归属 → 空串（字段必带，61 §0）
-			"id":          id,
+			"id":          ids[0],     // 兼容广播恒单键（user-config 恒单 id，不受批量影响）
 			"op":          op,
 		}
 		if list, ok := payload["list"]; ok {

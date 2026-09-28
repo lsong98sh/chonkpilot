@@ -147,7 +147,8 @@ func (s *Service) ConfigKVGet(req facade.ConfigKVGetRequest) (facade.ConfigKVGet
 
 // ConfigKVSet 批量写：prj-config 的个人运行态键落 prjusr（不污染团队共享库），其余落 prj；
 // prompt 域的文件化键（summary_prompt）写项目级文件（内容 = 继承值 → 删项目级文件保持继承）。
-// 逐键成功后广播 data-<domain>-refresh（与 MQ 路径同粒度：一次写一条）。
+// 写入成功后**整批只广播 1 条** data-<domain>-refresh（载荷带 `ids` 全组键 + `id` = 首键，
+// 61 §3.1）——N 键不再 N 条；单键写仍为 1 条且载荷与改前一致（不写 `ids`）。
 func (s *Service) ConfigKVSet(req facade.ConfigKVSetRequest) (facade.ConfigKVSetResponse, error) {
 	prefix, err := kvPrefixOf(req.Domain)
 	if err != nil {
@@ -192,9 +193,8 @@ func (s *Service) ConfigKVSet(req facade.ConfigKVSetRequest) (facade.ConfigKVSet
 			}
 		}
 	}
-	for _, key := range keys {
-		s.RefreshScoped(req.Domain, req.InstanceID, key, "save", req.Scope)
-	}
+	// 整批一次广播（keys 已排序 → 广播顺序/`id`（首键）稳定可断言）：N 键 = 1 条刷新。
+	s.RefreshScopedKeys(req.Domain, req.InstanceID, keys, "save", req.Scope)
 	return facade.ConfigKVSetResponse{OK: true}, nil
 }
 

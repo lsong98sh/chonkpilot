@@ -59,25 +59,20 @@ func (s *Service) handleConfigKV(domain, op string, req dataReq) {
 		}
 		s.reply(method, req, map[string]any{"data": resp.Values[id]})
 	case "save":
-		var kv struct {
-			Key   string `json:"key"`
-			Value string `json:"value"`
-		}
-		if req.Data != nil {
-			raw, _ := json.Marshal(req.Data)
-			_ = json.Unmarshal(raw, &kv)
-		}
-		if kv.Key == "" {
+		// 报文 `data` 兼容两形（61 §3.1）：批量 `{entries:{…}}` 优先，回落既有单键
+		// `{key,value}`（entries 为非空 map 时忽略 key/value）。翻译见 wire.ConfigSaveEntries。
+		entries, id, ok := wire.ConfigSaveEntries(req.Data)
+		if !ok {
 			s.fail(method, req, errors.New("key required"))
 			return
 		}
 		if _, err := s.ConfigKVSet(facade.ConfigKVSetRequest{
-			Domain: domain, InstanceID: req.InstanceID, Entries: map[string]string{kv.Key: kv.Value},
+			Domain: domain, InstanceID: req.InstanceID, Entries: entries,
 		}); err != nil {
 			s.fail(method, req, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"ok": true, "id": kv.Key})
+		s.reply(method, req, map[string]any{"ok": true, "id": id})
 	case "delete":
 		id := reqKey(req)
 		if _, err := s.ConfigKVDelete(facade.ConfigKVDeleteRequest{

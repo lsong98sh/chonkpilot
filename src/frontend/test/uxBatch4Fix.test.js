@@ -121,8 +121,8 @@ test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）
   assert.match(src, /saveUserConfig\(\{ \[USER_MEMORY_PROMPTS_KEY\]/, 'usr 提示词写入须走既有 data-user-config-save')
   // 变更广播订阅（沿用既有面 → 不串实例）；2026-09-28：本页保存期间跳过（防自身写入冲回未提交态）
   assert.match(src, /onDataRefresh\('user-config', loadUserPrefPrompts\)/, 'usr 提示词变更须经既有广播重载')
-  assert.match(src, /onDataRefresh\('prj-config', \(\) => \{ if \(!saving\.value\) loadConfig\(\) \}\)/,
-    'prj 提示词变更须经既有广播重载（本页保存期间除外）')
+  assert.match(src, /usePrjConfigRefresh\(\{[\s\S]*?reload: loadConfig,[\s\S]*?isSaving: \(\) => saving\.value/,
+    'prj 提示词变更须经既有广播重载（统一机制 usePrjConfigRefresh，本页保存期间除外）')
   assert.match(src, /await loadUserPrefPrompts\(\)/, '进页须读 usr 提示词')
   // 规范：无 watch
   assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect')
@@ -253,8 +253,9 @@ test('P1 上下文阈值取值语义：非法值（<0）前端显式提示 + 0 �
 // ═══════════════════════════════════════════════════════════════
 // A9 上下文管理「记忆库」联动禁用（2026-09-28 缺陷修复）
 //   缺陷（L4 A2 实机抓到）：记忆库关闭后其子项未保持禁用。真因 = 保存路径把本地未提交的开关态
-//   冲回「开」：handleSave 逐键 setConfig，每次引发 data-prj-config-refresh → loadConfig 读到
-//   「尚含旧值」的快照 → 本地「关」被冲回「开」→ 子项随之解禁、落库值也错成 true。
+//   冲回「开」：handleSave 写 prj 键（改前逐键 setConfig、改后一次批量写 setConfigs）引发
+//   data-prj-config-refresh → loadConfig 读到「尚含旧值」的快照 → 本地「关」被冲回「开」→
+//   子项随之解禁、落库值也错成 true。
 //   口径：记忆库关闭 → 子项**逐个** disabled（`:disabled="!memoryEnabled"`）；开启 → 恢复可编辑。
 // ═══════════════════════════════════════════════════════════════
 test('A9 记忆库开关：关闭 → 子项逐个禁用（输入框/开关/按钮），开启 → 恢复可编辑', () => {
@@ -276,11 +277,12 @@ test('A9 记忆库开关：关闭 → 子项逐个禁用（输入框/开关/按�
 
 test('A9 保存期间不被自身广播重载冲回（记忆库「开 → 关 → 保存」不得回弹）', () => {
   const src = read(PAGE)
-  // handleSave 逐键 setConfig → 每次引发 data-prj-config-refresh；保存期间必须跳过重载
-  assert.match(src, /onDataRefresh\('prj-config', \(\) => \{ if \(!saving\.value\) loadConfig\(\) \}\)/,
-    'prj-config 广播重载须在保存期间跳过（否则本地未提交的开关态被冲回旧值）')
-  assert.doesNotMatch(src, /onDataRefresh\('prj-config', loadConfig\)/,
-    '不得无条件重载（会把「关 → 保存」冲回「开」，子项随之解禁且落库值错成 true）')
+  // handleSave 一次批量写（setConfigs）→ 后端整批广播 1 条 data-prj-config-refresh；统一机制须：保存期间跳过 +
+  // 合并突发广播为 1 次重载（读最终快照，消除中间快照窗口）
+  assert.match(src, /usePrjConfigRefresh\(\{[\s\S]*?reload: loadConfig,[\s\S]*?isSaving: \(\) => saving\.value/,
+    'prj-config 广播重载须走统一机制（保存期间跳过，否则本地未提交的开关态被冲回旧值）')
+  assert.doesNotMatch(src, /onDataRefresh\('prj-config'/,
+    '不得直接订阅 prj-config 广播（须走统一机制，防「关 → 保存」被冲回「开」，子项随之解禁且落库值错成 true）')
   // 保存收尾仍以本地态为新「已保存态」（迟到的广播重载不会把状态判脏）
   const save = fnBody(src, 'handleSave')
   assert.ok(save, '未找到 handleSave')
@@ -291,24 +293,27 @@ test('A9 保存期间不被自身广播重载冲回（记忆库「开 → 关 �
 })
 
 // ═══════════════════════════════════════════════════════════════
-// A9b 同型竞态推广（2026-09-28）：引擎（Codegraph/Vfts）+ 历史设置页
-//   与 ContextConfig 同型：自身「保存」逐键 setConfig → persist 每次 save 恒广播
-//   data-prj-config-refresh → loadConfig 读到「尚含旧中间值」的快照，与本页正在提交的本地态打架。
-//   口径同 I-138：订阅时必须带 !saving 短路；保存结束后到达的广播读到的是本次已落库值，重载无害。
-//   （三页均有手动保存按钮 + saving 态；「开关即存」路径 saving=false，仍照常重载。）
+// A9b 同型竞态推广（2026-09-28）：4 个设置页统一走 usePrjConfigRefresh（I-138 收敛）
+//   同型根因：自身「保存」逐键 setConfig → 后端逐键广播 data-prj-config-refresh →
+//   loadConfig 读到「尚含旧中间值」的快照，与本页正在提交的本地态打架。
+//   统一机制（零消息契约变更）：按键过滤 + 突发合并为 1 次重载（读最终快照）+ 保存期间（saving）跳过。
+//   （手动保存页均有 saving 态；「开关即存」路径 saving=false，仍照常重载。）
 // ═══════════════════════════════════════════════════════════════
-test('A9b 引擎/历史页：prj-config 广播重载须在保存期间跳过（同 ContextConfig I-138 口径）', () => {
+test('A9b 引擎/历史页：prj-config 广播重载须走统一机制（同 ContextConfig I-138 口径）', () => {
   for (const file of [
+    'views/settings/ContextConfig.vue',
     'views/settings/CodegraphConfig.vue',
     'views/settings/VftsConfig.vue',
     'views/settings/HistoryConfig.vue',
   ]) {
     const src = read(file)
-    assert.match(src, /const saving = ref\(false\)/, `${file} 须有 saving 态（手动保存按钮）`)
-    assert.match(src, /onDataRefresh\('prj-config', \(\) => \{ if \(!saving\.value\) loadConfig\(\) \}\)/,
-      `${file} prj-config 广播重载须在保存期间跳过（否则自身写入的广播会把未提交态冲回旧值）`)
-    assert.doesNotMatch(src, /onDataRefresh\('prj-config', loadConfig\)/,
-      `${file} 不得退回无条件重载`)
+    assert.match(src, /import \{ usePrjConfigRefresh \} from '\.\.\/\.\.\/composables\/usePrjConfigRefresh'/,
+      `${file} 须复用统一机制 composable`)
+    // 统一机制：键过滤 + 突发合并 + 保存期间跳过（isSaving 守卫）
+    assert.match(src, /usePrjConfigRefresh\(\{[\s\S]*?reload: loadConfig,[\s\S]*?isSaving: \(\) => saving\.value/,
+      `${file} prj-config 广播重载须走统一机制并在保存期间跳过`)
+    assert.doesNotMatch(src, /onDataRefresh\('prj-config'/,
+      `${file} 不得直接订阅 prj-config 广播（须走统一机制）`)
     // 退订仍走既有 onUnmounted/unsubs 机制；不得引入 watch/watchEffect
     assert.match(src, /onUnmounted\(\(\) => \{[\s\S]*?unsubs\.forEach/, `${file} 须在卸载时退订`)
     assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, `${file} 禁 watch/watchEffect`)

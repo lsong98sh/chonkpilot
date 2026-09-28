@@ -241,13 +241,30 @@
 
 ### 12.4 Resizer 设计规范
 
-1. handle 用真实 `<div>`（非 `::after`），占布局空间（`width/height: 4px`）。
-2. `background: transparent`，hover 变 `var(--accent)`。
-3. `@mousedown` 用闭包捕获 `startX/startW`，不用全局 ctx。
-4. `window mousemove` 设 `{ capture: true }`，clamp 到阈值。
-5. `window mouseup` 移除 listener，恢复 cursor / userSelect。
-6. 每次 `e.preventDefault() + e.stopPropagation()`。
-7. 被 resize 的容器加 `flex-shrink: 0`。
+> **2026-09-28 方案 A（视觉 / 命中解耦，`components/split/SplitPanel.vue`）**：本体恒 **1px 发丝线**、命中区为 **5px 透明伪元素**，hover/拖拽只染伪元素 → **拖动瞬间不重排、不抖动**。旧口径（handle 4px + 常态 `transparent` + hover 直接改本体）**作废**，原文保留于文末。
+
+1. **本体 = 真实 `<div>`**（`.split-resizer`），占布局空间 = **`var(--split-hairline)`（1px）**：水平 `width: var(--split-hairline)` + `cursor: col-resize`；垂直 `height: var(--split-hairline)` + `cursor: row-resize`。
+2. **本体常态 `background: var(--border)`**（发丝线取**边框色**，不再「露容器底色」，亦非 `transparent`）。
+3. **命中区 = `::after` 绝对定位伪元素**：`content: ''` + `position: absolute` + 常态 `background: transparent`（**不占布局、不改 1px 视觉**）。水平 `top/bottom: 0` + `left/right: calc((var(--split-hairline) - var(--split-hit)) / 2)`；垂直 `left/right: 0` + `top/bottom: calc((var(--split-hairline) - var(--split-hit)) / 2)` —— 即向两侧各外溢 `(hit − hairline)/2 ≈ 2px`，命中跨度 = `--split-hit`（5px）。
+4. **hover / 拖拽激活（`.is-active`）只给 `::after` 填 `var(--accent)`** → 5px 蓝块；**本体恒 1px、绝不加宽**（原 `.is-dragging` 本体 `gap+2px` 加宽已移除）。
+5. `@mousedown` 用 `.stop.prevent`（阻冒泡 + 默认行为）+ 闭包捕获起点（`clientX/Y` 与目标 pane 的 `getBoundingClientRect()`），不用全局 ctx。
+6. `window mousemove` 设 `{ capture: true }`，按 `paneMin/paneMax` **clamp** 后**直改 DOM**（`targetEl.style[width|height]`）；`window mouseup` 移除 listener，恢复 cursor / userSelect。
+7. 拖拽数学走 **pane 的 `getBoundingClientRect()`**（与 resizer 宽度无关）；被 resize 的 pane 加 `flex-shrink: 0`。
+
+- **token（`variables.css` :root）**：`--split-hairline: 1px` · `--split-hit: 5px`；**`--split-gap` 已移除**（原 4px「视觉=命中」口径作废）。
+- **`gap` prop**：`SplitPanel` **保留声明但不再参与视觉 / 命中宽度**（兼容既有调用方）；`MainLayout.vue` 外层 `:gap="0"`（不渲染 resizer）+ 4 处内层 `:gap="4"`。
+- **`LAYOUT_GAPS`**：`MainLayout.vue` 由 **8 → 2**（= content\|chat + filetree\|preview 两条 1px 发丝线，与真实分隔条宽度一致；用于 filetree 宽度的 clamp 余量）。
+- **已知取舍**：命中区对称外溢 2px → 会**压住相邻 pane 边缘 2px**（点该 2px 带优先命中 resizer）。
+- **关联测试**：前端守卫 `src/frontend/test/uxLayoutSplit.test.js`（P1-6b：本体 1px / `--border` / 命中伪元素 5px / 激活 `--accent` / `--split-gap` 移除）；L4 `test_layout.py` **L1c**（真机分隔条几何与颜色）+ **L8b**（拖拽中本体恒 1px）。
+
+> **原文保留（旧口径，2026-09-26 及更早）**：
+> 1. handle 用真实 `<div>`（非 `::after`），占布局空间（`width/height: 4px`）。
+> 2. `background: transparent`，hover 变 `var(--accent)`。
+> 3. `@mousedown` 用闭包捕获 `startX/startW`，不用全局 ctx。
+> 4. `window mousemove` 设 `{ capture: true }`，clamp 到阈值。
+> 5. `window mouseup` 移除 listener，恢复 cursor / userSelect。
+> 6. 每次 `e.preventDefault() + e.stopPropagation()`。
+> 7. 被 resize 的容器加 `flex-shrink: 0`。
 
 ### 12.5 DialogShell 对话框高度
 
@@ -316,11 +333,11 @@
   | `--bg-warning-soft` / `--border-warning` | `#fff8e6` / `#f0d98c` | 同上 `--warning-bg` / `--warning-border` |
   | `--font-size-sm` | `13px`（`SecurityConfig` 处 `12px`） | **新增** `:root --font-size-sm: 13px` |
   | `--border-radius` | `4px` | **新增** `:root --border-radius: 4px` |
-  | `--split-gap` | `4px` | **新增** `:root --split-gap: 4px` |
+  | `--split-gap` | `4px` | **新增** `:root --split-gap: 4px`〔**订正（2026-09-28）：`--split-gap` 已移除** —— 改由 `--split-hairline`(1px) / `--split-hit`(5px) 承载（视觉/命中解耦），见 §12.4〕 |
   | `--dialog-bg/-border/-header-bg/-overlay-bg/-btn-hover-bg/-radius/-shadow/-header-padding/-body-padding/-text-color/-font-size/-font-family` | 亮色缺省字面值 | `DialogShell.vue` 在 `.dialog-shell` / `.dialog-overlay` 基规则内**声明 light 默认值**（dark/nord 覆写，范式同上条） |
 
   新增 token 一律落在 `variables.css`：语义随主题变的（`--warning-bg` / `--warning-border`）在 dark/nord 同段覆写，不随主题变的（尺寸/字号/圆角）只在 `:root` 声明一次。
-- **组件级可选覆盖钩子**（如 `--split-gap`、`--dialog-*`）：允许组件暴露为覆盖点，但**默认值必须写在其声明处**（`:root` 或组件基规则），`var()` 内不得再写兜底 —— 即"未定义 token + 兜底"零容忍。
+- **组件级可选覆盖钩子**（如 `--split-hairline` / `--split-hit`、`--dialog-*`）：允许组件暴露为覆盖点，但**默认值必须写在其声明处**（`:root` 或组件基规则），`var()` 内不得再写兜底 —— 即"未定义 token + 兜底"零容忍。
 - **实心填充的文字色**：`--danger` / `--accent` 作**背景**时，文字统一用主题最底层色 `--bg-secondary`（light 恰为纯白 = 历史 `#fff`，light 零变化；dark/nord = 主题最深底色）。深色主题下 `--danger` 本身很亮，白字对比度仅约 2.3:1。既有 `TabBar.vue .tb-close:hover`、`CodeView.vue .preview-selection-bar` 用等价的 `--bg-primary`，本轮不动。
 - **nord `--danger` 调亮（2026-09-16）**：`#bf616a` → `#f0959e`（同色相 354°，仍属 nord 红）。实测（test-port 实跑 computed style + WCAG 计算）：面板 `--panel-bg` #2e3440 **3.05 → 5.65**；工具面 `--toolbar-bg` #3b4252 **2.46 → 4.55**；实心填充（`--danger` 底 + `--bg-secondary` 字）**3.05 → 4.55**；菜单面 `--bg-surface` #4c566a **1.80 → 3.34**（**客观达不到 4.5**：该面亮度 L=0.094，需 L≥0.60 的近白粉才达标，会丢失"危险"语义；最优解是菜单/右键浮层底改用 `--bg-secondary`（→4.55），但属另一处变更，本轮未动）。`dark #f38ba8`（面板 7.17 / 工具面 5.43）与 `light #dc3545`（白底 4.53）不改。
 

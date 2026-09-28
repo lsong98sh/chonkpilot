@@ -106,6 +106,18 @@ func TestConfigAndDomainsPublishGoesThroughFacade(t *testing.T) {
 		t.Fatalf("门面写入未被同进程数据面读到：%+v err=%v", kv.Values, err)
 	}
 
+	// ①b 批量写（2026-09-28，61 §3.1）：报文 {data:{entries}} → 应答 {ok:true,id:首键}；两键都落库
+	if m := res(publish(t, base, "data-prj-config-save",
+		`{"data":{"entries":{"br.b":"2","br.a":"1"}}}`)); m["ok"] != true || m["id"] != "br.a" {
+		t.Fatalf("prj-config 批量 save 应答形状不符（应 {ok:true,id:br.a}）：%+v", m)
+	}
+	kv2, err := svc.ConfigKVGet(facade.ConfigKVGetRequest{
+		Domain: facade.DomainPrjConfig, InstanceID: inst, Keys: []string{"br.a", "br.b"},
+	})
+	if err != nil || kv2.Values["br.a"] != "1" || kv2.Values["br.b"] != "2" {
+		t.Fatalf("prj-config 批量写未落库：%+v err=%v", kv2.Values, err)
+	}
+
 	// ② user-config：save → {ok,id:user_config}；load → {data:{…}}
 	if m := res(publish(t, base, "data-user-config-save", `{"data":{"theme":"nord"}}`)); m["ok"] != true || m["id"] != "user_config" {
 		t.Fatalf("user-config save 应答形状变化：%+v", m)
