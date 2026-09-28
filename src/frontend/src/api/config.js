@@ -38,6 +38,13 @@ export function setConfig(key, value) {
   return dataClient.save('prj-config', { key, value })
 }
 
+// 批量写多个 prj-config 键：一次请求 = 1 条 `data-prj-config-save`（报文 `data.entries` =
+// `{key: value}`）→ 后端一次写入并**只广播 1 条** `data-prj-config-refresh`（载荷带 `ids`
+// 全组键；61-消息一览 §3.1）。单键 `setConfig` 保留（既有调用方不受影响）。
+export function setConfigs(entries) {
+  return dataClient.save('prj-config', { entries })
+}
+
 // 读取单个 prj-config key（load 按 key 返回 {data:{value}}；缺失返回空串）
 export async function getConfigValue(key) {
   try {

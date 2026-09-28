@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
 
@@ -184,28 +185,20 @@ func (b *Bridge) kvViaFacade(domain, op string, req map[string]any, instanceID s
 		}
 		return map[string]any{"data": resp.Values[reqID(req)]}, nil, true
 	case "save":
-		// 报文语义同 persist：data:{key,value}（value 恒为字符串，非字符串 → 空串，与既有
-		// 结构体反序列化口径一致 —— 不改前端、不改消息面）。
-		var kv struct {
-			Key   string `json:"key"`
-			Value string `json:"value"`
-		}
-		if req["data"] != nil {
-			raw, _ := json.Marshal(req["data"])
-			_ = json.Unmarshal(raw, &kv)
-		}
-		if kv.Key == "" {
+		// 报文语义同 persist（61 §3.1）：兼容批量 `data:{entries:{…}}` 与既有单键
+		// `data:{key,value}`（entries 优先；翻译见 wire.ConfigSaveEntries —— 前端不变时行为不变）。
+		entries, id, ok := wire.ConfigSaveEntries(asAnyMap(req["data"]))
+		if !ok {
 			res, errs := fail(errors.New("key required"))
 			return res, errs, true
 		}
 		if _, err := b.cfg.ConfigKVSet(facade.ConfigKVSetRequest{
-			Domain: domain, InstanceID: instanceID,
-			Entries: map[string]string{kv.Key: kv.Value}, Scope: scope,
+			Domain: domain, InstanceID: instanceID, Entries: entries, Scope: scope,
 		}); err != nil {
 			res, errs := fail(err)
 			return res, errs, true
 		}
-		return map[string]any{"ok": true, "id": kv.Key}, nil, true
+		return map[string]any{"ok": true, "id": id}, nil, true
 	case "delete":
 		if _, err := b.cfg.ConfigKVDelete(facade.ConfigKVDeleteRequest{
 			Domain: domain, InstanceID: instanceID, Keys: []string{reqID(req)}, Scope: scope,

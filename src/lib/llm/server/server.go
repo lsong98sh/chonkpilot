@@ -2477,8 +2477,9 @@ func (s *Server) reloadToolAsyncOverrides() {
 // 命中 timeout_sec / max_concurrency / skip_dirs 时重跑 loadExecConfig 注入内嵌 mcp-server Config
 // （execTimeout / limiter 上限 / defaults.skip_dirs 都是 tools/call 运行期读取点，无需重开项目或重启）；
 // delete（重置）→ loadExecConfig 回落 mcpms 内置默认，同样即时收敛。
-// 载荷 {instance_id?, id, op, list}（persist refresh 广播）：instance_id 缺失（无归属写入）→
-// 对全部在线实例各重跑一次（单实例/单 workdir 典型形态等价）。
+// 载荷 {instance_id?, id, ids?, op, list}（persist refresh 广播）：**批量写**（61 §3.1）带 `ids`
+// （全组键）→ 命中任一执行配置键即处理；缺省回落单键 `id`（向后兼容）。instance_id 缺失（无归属
+// 写入）→ 对全部在线实例各重跑一次（单实例/单 workdir 典型形态等价）。
 // 异步执行：广播在 persist save 的同步派发链路内，而重跑含同步派发的总线 data-* 请求——
 // 同步处理会阻塞保存应答（处置同 onUserConfigRefresh）。
 func (s *Server) onPrjConfigRefresh(_ string, payload []byte) {
@@ -2488,9 +2489,24 @@ func (s *Server) onPrjConfigRefresh(_ string, payload []byte) {
 	var ev struct {
 		InstanceID string         `json:"instance_id"`
 		ID         string         `json:"id"`
+		IDs        []string       `json:"ids"`
 		List       map[string]any `json:"list"`
 	}
-	if json.Unmarshal(payload, &ev) != nil || !prjExecConfigKeys[ev.ID] {
+	if json.Unmarshal(payload, &ev) != nil {
+		return
+	}
+	keys := ev.IDs
+	if len(keys) == 0 {
+		keys = []string{ev.ID}
+	}
+	hit := ""
+	for _, k := range keys {
+		if prjExecConfigKeys[k] {
+			hit = k
+			break
+		}
+	}
+	if hit == "" {
 		return // 非执行配置键（logLevel / 压缩阈值等）→ 本链路空转
 	}
 	ids := []string{}
@@ -2508,7 +2524,7 @@ func (s *Server) onPrjConfigRefresh(_ string, payload []byte) {
 		for _, id := range ids {
 			s.loadExecConfig(id)
 		}
-		logf("[chonkpilot-server] prj 执行配置变更热生效: %s=%v（instance=%v）\n", ev.ID, ev.List[ev.ID], ids)
+		logf("[chonkpilot-server] prj 执行配置变更热生效: %s=%v（instance=%v）\n", hit, ev.List[hit], ids)
 	}()
 }
 

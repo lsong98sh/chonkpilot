@@ -91,6 +91,58 @@ def main():
         n = J(gui, "document.querySelectorAll('.split-resizer').length")
         c.check("L1b 分隔条（resizer）存在", n >= 4, f"resizers={n}")
 
+        # L1c 分隔条视觉/命中（方案 A，2026-09-28）：断言**真实渲染值**（非 CSS 文本）。
+        #   · 本体 = 1px 发丝线（getBoundingClientRect().width == 1），常态填充 --border 的**实解析 rgb**；
+        #   · 命中区 = 伪元素（不可直接 getBoundingClientRect）→ 用 elementFromPoint 命中矩形推算：
+        #     距中线 ±1.5px 命中（⇒ 命中区跨度 ≥3px）、±4px 落到相邻 pane（⇒ 跨度 <8px），
+        #     与 5px 命中区一致；伪元素计算宽 `::after width` 作为证据一并回报（不写死颜色/宽）。
+        #   · 激活态：harness 不支持真 hover（CSS :hover 无法由合成事件触发，见 run_task_ui.case_hover_stop）
+        #     → 用等价规则态 `.is-active`（与 :hover 同一条 CSS 规则），断言伪元素色 == --accent 实解析 rgb
+        #     且本体仍 1px（不加宽 ⇒ 无重排）。
+        vis_js = """(()=>{
+  const r=document.querySelector('.split-resizer.resizer-horizontal');
+  if(!r||r.getBoundingClientRect().width<=0) return JSON.stringify({err:'no-resizer'});
+  const rgb=v=>{const p=document.createElement('div');p.style.background=v;
+    document.body.appendChild(p);const c=getComputedStyle(p).backgroundColor;p.remove();return c;};
+  const rect=r.getBoundingClientRect();
+  const cx=rect.left+rect.width/2, cy=rect.top+rect.height/2;
+  const hit=d=>{const e=document.elementFromPoint(cx+d,cy);
+    return !!(e&&(e===r||(e.closest&&e.closest('.split-resizer')===r)));};
+  const color=getComputedStyle(r).backgroundColor;
+  const hitNear=hit(1.5)&&hit(-1.5), hitFar=hit(4)||hit(-4);
+  // 断言去抖：命中区 ::after 带 `transition: background 0.12s` → 紧跟 add 后读 computed 只会拿到
+  // 过渡**起点**（transparent，非激活最终值）。先临时禁过渡（不改产品样式、不改规则），使 computed
+  // 立即反映激活态最终色；读毕移除。断言强度不变（仍要求 ::after 色 == --accent 实解析 rgb）。
+  const st=document.createElement('style');
+  st.textContent='.split-resizer::after{transition:none !important}';
+  document.head.appendChild(st);
+  r.classList.add('is-active');
+  const aAfter=getComputedStyle(r,'::after').backgroundColor;
+  const aW=parseFloat(getComputedStyle(r,'::after').width)||0;
+  const aBodyW=r.getBoundingClientRect().width;
+  const aHit=hit(1.5)&&hit(-1.5);
+  r.classList.remove('is-active');
+  st.remove();
+  return JSON.stringify({w:rect.width,color:color,refBorder:rgb('var(--border)'),
+    accent:aAfter,refAccent:rgb('var(--accent)'),afterW:aW,activeBodyW:aBodyW,
+    hitNear:hitNear,hitFar:hitFar,activeHit:aHit});})()"""
+        rv = JD(gui, vis_js) or {}
+        c.check("L1c 分隔条本体 1px 发丝线（真实渲染宽 == 1）",
+                isinstance(rv.get("w"), (int, float)) and abs(rv.get("w") - 1) < 0.6,
+                f"width={rv.get('w')} err={rv.get('err')}")
+        c.check("L1c 分隔条常态色 == --border 实解析 rgb",
+                rv.get("color") is not None and rv.get("color") == rv.get("refBorder"),
+                f"color={rv.get('color')} --border={rv.get('refBorder')}")
+        c.check("L1c 命中区宽于本体（±1.5px 命中 / ±4px 落到相邻 pane）",
+                rv.get("hitNear") is True and rv.get("hitFar") is False,
+                f"hit(±1.5px)={rv.get('hitNear')} hit(±4px)={rv.get('hitFar')} ::afterWidth={rv.get('afterW')}")
+        c.check("L1c 激活态（.is-active）：命中区填 --accent 实解析 rgb + 本体不加宽（恒 1px）",
+                rv.get("accent") == rv.get("refAccent")
+                and isinstance(rv.get("activeBodyW"), (int, float))
+                and abs(rv.get("activeBodyW") - 1) < 0.6 and rv.get("activeHit") is True,
+                f"::after色={rv.get('accent')} --accent={rv.get('refAccent')} "
+                f"本体宽={rv.get('activeBodyW')} activeHit(±1.5px)={rv.get('activeHit')}")
+
         def pane_w(sel):
             return J(gui, f"(document.querySelector('{sel}')?.getBoundingClientRect().width||0)")
 
@@ -124,12 +176,16 @@ def main():
         sw = pane_w(".panel-inner")
         c.check("L7 tasktree 宽度默认 400px", 390 <= sw <= 410, f"actual={sw}px vw={VW}")
 
-        # L8 拖拽 resizer 实际改变 chat 宽度（前端交互）
-        js_drag = """(()=>{let best=null;for(const r of document.querySelectorAll('.split-resizer.resizer-horizontal')){const next=r.nextElementSibling;if(next&&next.querySelector('.chat-panel')){const rect=r.getBoundingClientRect();best={el:r,x:rect.left+rect.width/2,y:rect.top+rect.height/2};break}}if(!best)return 0;const w0=document.querySelector('.chat-panel').getBoundingClientRect().width;best.el.dispatchEvent(new MouseEvent('mousedown',{clientX:best.x,clientY:best.y,bubbles:true,cancelable:true}));window.dispatchEvent(new MouseEvent('mousemove',{clientX:best.x-60,clientY:best.y,bubbles:true,cancelable:true}));window.dispatchEvent(new MouseEvent('mouseup',{clientX:best.x-60,clientY:best.y,bubbles:true,cancelable:true}));return w0;})()"""
-        w0 = J(gui, js_drag)
+        # L8 拖拽 resizer 实际改变 chat 宽度（前端交互）；并强化：拖拽中本体恒 1px（方案 A 无重排/抖动）
+        js_drag = """(()=>{let best=null;for(const r of document.querySelectorAll('.split-resizer.resizer-horizontal')){const next=r.nextElementSibling;if(next&&next.querySelector('.chat-panel')){const rect=r.getBoundingClientRect();best={el:r,x:rect.left+rect.width/2,y:rect.top+rect.height/2};break}}if(!best)return JSON.stringify({w0:0,rw:0});const w0=document.querySelector('.chat-panel').getBoundingClientRect().width;best.el.dispatchEvent(new MouseEvent('mousedown',{clientX:best.x,clientY:best.y,bubbles:true,cancelable:true}));window.dispatchEvent(new MouseEvent('mousemove',{clientX:best.x-60,clientY:best.y,bubbles:true,cancelable:true}));const rw=best.el.getBoundingClientRect().width;window.dispatchEvent(new MouseEvent('mouseup',{clientX:best.x-60,clientY:best.y,bubbles:true,cancelable:true}));return JSON.stringify({w0:w0,rw:rw});})()"""
+        d = JD(gui, js_drag) or {}
+        w0 = d.get("w0", 0)
         time.sleep(0.8)
         w1 = pane_w(".chat-panel")
         c.check("L8 拖拽分隔条改变 chat 宽度", w1 != w0 and w1 > 0, f"{w0}->{w1}")
+        c.check("L8b 拖拽中分隔条本体不加宽（恒 1px，无重排/抖动）",
+                isinstance(d.get("rw"), (int, float)) and abs(d.get("rw") - 1) < 0.6,
+                f"拖拽中 resizer 宽={d.get('rw')}")
 
         # L9a 保存布局（chatWidth=500）→ 停 main → 重启验证恢复
         try:

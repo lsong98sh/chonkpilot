@@ -426,6 +426,9 @@ return {dis_inp:[...R.querySelectorAll('input.b-input.is-disabled')].filter(e=>e
         if bg != css_color("var(--accent)"):
             raise TestError("主按钮背景=%s，期望 var(--accent)=%s" % (bg, css_color("var(--accent)")))
         # 点击保存 → 成功提示（颜色 = var(--success)）+ memory.enabled 落库
+        # 本轮变更实测（批量写）：一次【保存】= 一次 `setConfigs` 批量写 → 后端整批只广播 **1 条**
+        # `data-prj-config-refresh`（载荷带 `ids` 全组键，61 §3.1）；保存前挂监听、保存后计数。
+        c.mq_on_capture(["data-prj-config-refresh"])
         if click_primary(".project-config-panel", "保存") != "ok":
             raise TestError("点击上下文保存按钮失败")
         if not wait_toast("b-message--success"):
@@ -435,6 +438,19 @@ return {dis_inp:[...R.querySelectorAll('input.b-input.is-disabled')].filter(e=>e
                             % (toast_border("b-message--success"), css_color("var(--success)")))
         if prj().get("memory.enabled") != "true":
             raise TestError("保存后 memory.enabled=%r，期望 'true'" % prj().get("memory.enabled"))
+        # 批量写广播计数：1 次保存 → 恰好 1 条 prj-config-refresh，且载荷 `ids` 覆盖本页批量键
+        c.wait_events("data-prj-config-refresh", n=1, max_wait=10, clear=False)
+        time.sleep(1.0)
+        refs = c.events_of("data-prj-config-refresh", clear=True)
+        if len(refs) != 1:
+            raise TestError("一次批量保存应只发 1 条 data-prj-config-refresh，实测 %d 条：%r"
+                            % (len(refs), refs))
+        _ids = (refs[0].get("payload") or {}).get("ids")
+        if not (isinstance(_ids, list) and "keep_full_max_turns" in _ids
+                and "memory.enabled" in _ids and "compress_token_threshold" in _ids):
+            raise TestError("批量 refresh 载荷 ids 应含全组键（keep_full_max_turns/memory.enabled/"
+                            "compress_token_threshold…），实测 %r" % (_ids,))
+        print("[A2] 一次保存 → data-prj-config-refresh 条数=%d ids=%r" % (len(refs), _ids), flush=True)
         # 2026-09-24（D1）：三项阈值随主保存落库（读回正整数字符串）
         p = prj()
         for k in ("keep_full_max_turns", "keep_full_max_tokens", "compress_token_threshold"):

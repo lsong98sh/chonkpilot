@@ -2,9 +2,10 @@
   /* Layout */
   --toolbar-height: 44px;
   --statusbar-height: 24px;
-  /* 通用尺寸：分栏 resizer 命中宽度 / 控件圆角（组件级可选覆盖钩子，默认值在此声明）
+  /* 通用尺寸：分栏 resizer（发丝线 / 命中区）/ 控件圆角（组件级可选覆盖钩子，默认值在此声明）
      —— var() 内一律不写兜底硬编码（口径见 20-gui §12.8） */
-  --split-gap: 4px;
+  --split-hairline: 1px;   /* resizer 本体发丝线宽（常态取 --border，hover/拖拽取 --accent） */
+  --split-hit: 5px;        /* resizer 命中区宽（伪元素撑开，常态透明） */
   --border-radius: 4px;
 
   /* Colors - Light theme (default) */

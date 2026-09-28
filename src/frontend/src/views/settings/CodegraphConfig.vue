@@ -72,8 +72,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Switch, Textarea, Button, message, confirm } from '../../components/ui'
-import { getAllConfig, setConfig } from '../../api/config'
-import { onDataRefresh } from '../../utils/dataClient'
+import { getAllConfig, setConfig, setConfigs } from '../../api/config'
+import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
 import { hasEngineTools } from '../../utils/engineStatus'
 import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import mq from '../../utils/mq'
@@ -209,15 +209,18 @@ async function handleChange(val) {
   }
 }
 
-// 保存索引配置（exts/skip-dirs/stack-gitignore）：写入后 data-prj-config-refresh 触发插件重新
-// configure + 重建索引。插件侧保存幂等（值未变不重建）且对同一次保存的键做去抖（只重建一轮）。
+// 保存索引配置（exts/skip-dirs/stack-gitignore）：三项**一次批量写**（1 条 data-prj-config-save
+// → 后端整批广播 1 条 data-prj-config-refresh，含 ids 全组键）触发插件重新 configure + 重建索引。
+// 插件侧按整批键集处理（值未变不重建）且对同一次保存做去抖（只重建一轮）。
 // skip-dirs = 用户排除规则（gitignore 语法）；stack-gitignore = 是否叠加各级 .gitignore / info/exclude / 全局 ignore。
 async function handleIndexSave() {
   saving.value = true
   try {
-    await setConfig('codegraph.exts', cgExts.value)
-    await setConfig('codegraph.skip-dirs', cgSkipDirs.value)
-    await setConfig('codegraph.stack-gitignore', String(cgStackGitignore.value))
+    await setConfigs({
+      'codegraph.exts': cgExts.value,
+      'codegraph.skip-dirs': cgSkipDirs.value,
+      'codegraph.stack-gitignore': String(cgStackGitignore.value),
+    })
     origExts.value = cgExts.value // 本次写入值 = 新的项目级原始值（后续加载的未编辑判定基准）
     origSkipDirs.value = cgSkipDirs.value
     origStackGitignore.value = String(cgStackGitignore.value)
@@ -283,13 +286,18 @@ async function handleClear() {
 onMounted(() => {
   loadConfig()
   loadEngineTools()
-  // data-prj-config-refresh：配置/状态变更后自动重载。
-  // **本页自身保存期间（saving）跳过**：handleIndexSave / rebuild / retry / clear 均写 prj 键，
-  // persist 每次 save 恒广播 data-prj-config-refresh；早到的广播会让 loadConfig 读到「尚含旧中间值」
-  // 的快照（orig* / status / 开关按 DB 无条件回填），与本页正在提交的本地态相互打架。
-  // 统一口径与 ContextConfig I-138 一致：保存期间不重载；保存结束后到达的广播读到的是本次已落库值，重载无害。
+  // data-prj-config-refresh：配置/状态变更后自动重载（统一机制 usePrjConfigRefresh，I-138）。
+  // handleIndexSave 一次批量写三项 → 后端整批广播 1 条（含 ids）；rebuild / retry / clear 单键写
+  // codegraph.action → persist 单键广播；统一机制**按键过滤**（仅本页关注键）+ **合并突发广播为
+  // 1 次重载**（读最终快照）+ **保存期间（saving）跳过**，避免读到「尚含旧中间值」的快照与本页
+  // 正在提交的本地态打架。
   // （文本输入另有 isPristine 守卫：防索引期间插件每 500ms 回写 status 的广播冲掉未保存编辑。）
-  unsubs.push(onDataRefresh('prj-config', () => { if (!saving.value) loadConfig() }))
+  unsubs.push(usePrjConfigRefresh({
+    keys: ['enable-codegraph', 'codegraph.action', 'codegraph.exts',
+      'codegraph.skip-dirs', 'codegraph.stack-gitignore', 'codegraph.status'],
+    reload: loadConfig,
+    isSaving: () => saving.value,
+  }))
 })
 
 onUnmounted(() => {

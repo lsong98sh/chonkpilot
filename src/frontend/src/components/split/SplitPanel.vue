@@ -1,8 +1,7 @@
 <template>
   <div
     class="split-panel"
-    :class="[`split-${direction}`, { 'is-dragging': activeResizer >= 0 }]"
-    :style="{ '--split-gap': `${gap}px` }"
+    :class="`split-${direction}`"
     ref="containerRef"
   >
     <template v-for="(pane, i) in visiblePanes" :key="pane.id">
@@ -46,6 +45,9 @@ import { shouldShowResizer, resolveDragTarget, paneMin, paneMax } from './splitL
 
 const props = defineProps({
   direction: { type: String, default: 'horizontal' },
+  // gap：保留以兼容既有调用方（MainLayout 传 4 / 0）。自 2026-09-28 起**不再参与**
+  // resizer 的视觉/命中宽度 —— 视觉 = `--split-hairline`（1px 发丝线），命中 = `--split-hit`
+  // （5px 伪元素），两者与 pane 尺寸无关（拖拽测量走 pane 的 getBoundingClientRect）。
   gap: { type: Number, default: 4 },
   panes: { type: Array, required: true },
 })
@@ -293,38 +295,54 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-/* ── Resizer ── */
+/* ── Resizer ──
+   视觉与命中解耦（方案 A）：
+   - 本体 = 1px 发丝线（--split-hairline），常态取边框色 --border（不再是「露容器底色」）；
+   - 命中区 = 伪元素 ::after（--split-hit），向两侧各外溢 (hit-hairline)/2，常态透明；
+   - hover / 拖拽激活（.is-active）只给伪元素上 --accent → 变粗为 5px 蓝块；本体恒 1px，
+     故拖拽瞬间不重排、不抖动（拖拽数学走 pane 的 getBoundingClientRect，与本宽度无关）。 */
 .split-resizer {
   flex-shrink: 0;
-  transition: background 0.12s;
   z-index: 1;
   position: relative;
+  background: var(--border);
+  transition: background 0.12s;
 }
 
 .split-resizer.resizer-horizontal {
-  width: var(--split-gap);
+  width: var(--split-hairline);
   cursor: col-resize;
 }
 
 .split-resizer.resizer-vertical {
-  height: var(--split-gap);
+  height: var(--split-hairline);
   cursor: row-resize;
 }
 
-.split-resizer:hover {
-  background: var(--accent) !important;
+/* 命中区：绝对定位伪元素，不占布局、不改变 1px 视觉 */
+.split-resizer::after {
+  content: '';
+  position: absolute;
+  background: transparent;
+  transition: background 0.12s;
 }
 
-.split-resizer.is-active {
-  background: var(--accent) !important;
+.split-resizer.resizer-horizontal::after {
+  top: 0;
+  bottom: 0;
+  left: calc((var(--split-hairline) - var(--split-hit)) / 2);
+  right: calc((var(--split-hairline) - var(--split-hit)) / 2);
 }
 
-/* Slightly larger hit area during drag */
-.split-panel.is-dragging .split-resizer.resizer-horizontal {
-  width: calc(var(--split-gap) + 2px);
+.split-resizer.resizer-vertical::after {
+  left: 0;
+  right: 0;
+  top: calc((var(--split-hairline) - var(--split-hit)) / 2);
+  bottom: calc((var(--split-hairline) - var(--split-hit)) / 2);
 }
 
-.split-panel.is-dragging .split-resizer.resizer-vertical {
-  height: calc(var(--split-gap) + 2px);
+.split-resizer:hover::after,
+.split-resizer.is-active::after {
+  background: var(--accent);
 }
 </style>

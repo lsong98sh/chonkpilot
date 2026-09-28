@@ -107,6 +107,22 @@ func TestConfigDataGoesThroughFacade(t *testing.T) {
 		t.Fatalf("门面写入未被 MQ 面读到：%+v err=%v", got.Values, err)
 	}
 
+	// ①b 批量写（2026-09-28，61 §3.1）：报文 {data:{entries}} → {ok:true,id:首键}；两键都经门面落库
+	res, errs = br.PublishEvent("data-prj-config-save", `{"data":{"entries":{"e.b":"2","e.a":"1"}}}`)
+	if len(errs) != 0 {
+		t.Fatalf("batch save errs=%v", errs)
+	}
+	m, _ = res.(map[string]any)
+	if m["ok"] != true || m["id"] != "e.a" {
+		t.Fatalf("batch save 应答形状变化（应 {ok:true,id:e.a}）：%+v", res)
+	}
+	got2, err := svc.ConfigKVGet(facade.ConfigKVGetRequest{
+		Domain: facade.DomainPrjConfig, InstanceID: instanceID, Keys: []string{"e.a", "e.b"},
+	})
+	if err != nil || got2.Values["e.a"] != "1" || got2.Values["e.b"] != "2" {
+		t.Fatalf("batch save 未落库：%+v err=%v", got2.Values, err)
+	}
+
 	// ② load：应答 = {data:<字符串>}
 	res, _ = br.PublishEvent("data-prj-config-load", `{"id":"layout.sidebar"}`)
 	m, _ = res.(map[string]any)

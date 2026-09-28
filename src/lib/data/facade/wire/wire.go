@@ -17,6 +17,7 @@ package wire
 
 import (
 	"encoding/json"
+	"sort"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -375,6 +376,34 @@ func RequestID(m map[string]any) string {
 		return id
 	}
 	return str(data["key"])
+}
+
+// ConfigSaveEntries 解析 kv 域 save 载荷为**批量键值对**（61 §3.1）：向后兼容既有单键
+// `{key, value}` 与新式 `{entries:{<key>:<value>, …}}`。
+//
+// 取舍：`entries` 非空 → **entries 优先**（忽略同现的 key/value，不再报错——两种形状同现属
+// 非法调用，取信息量更大的 entries）。否则回落单键 `{key, value}`（key 为空 → ok=false，
+// 调用方按既有口径报 "key required"）。
+//
+// 值归一为字符串（非字符串按 str：数字/bool 转字面量、对象 JSON 序列化）——与既有「value 恒为
+// 字符串」口径一致。返回 entries、稳定序首键（单键 = 该键；批量 = 字典序最小键，供应答 id 用）、
+// 是否合法。
+func ConfigSaveEntries(data map[string]any) (entries map[string]string, id string, ok bool) {
+	if raw, isMap := data["entries"].(map[string]any); isMap && len(raw) > 0 {
+		entries = make(map[string]string, len(raw))
+		keys := make([]string, 0, len(raw))
+		for k, v := range raw {
+			entries[k] = str(v)
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return entries, keys[0], true
+	}
+	key := str(data["key"])
+	if key == "" {
+		return nil, "", false
+	}
+	return map[string]string{key: str(data["value"])}, key, true
 }
 
 // ── 小工具 ───────────────────────────────────────────────────────

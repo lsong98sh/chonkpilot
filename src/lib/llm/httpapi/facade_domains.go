@@ -138,28 +138,22 @@ func (s *Server) configViaFacade(subject, payloadJSON string) (any, []error, boo
 		}
 		return map[string]any{"data": resp.Values[id]}, nil, true
 	case "save":
-		// 报文语义同 persist：data:{key,value}（value 恒为字符串，非字符串 → 空串，与既有
-		// 结构体反序列化口径一致 —— 不改前端、不改消息面）。
-		var kv struct {
-			Key   string `json:"key"`
-			Value string `json:"value"`
-		}
-		if req["data"] != nil {
-			raw, _ := json.Marshal(req["data"])
-			_ = json.Unmarshal(raw, &kv)
-		}
-		if kv.Key == "" {
+		// 报文语义同 persist（61 §3.1）：兼容批量 `data:{entries:{…}}` 与既有单键
+		// `data:{key,value}`（entries 优先；翻译见 wire.ConfigSaveEntries）。
+		data, _ := req["data"].(map[string]any)
+		entries, id, ok := wire.ConfigSaveEntries(data)
+		if !ok {
 			res, errs := fail(errKeyRequired)
 			return res, errs, true
 		}
 		if _, err := s.facade.ConfigKVSet(facade.ConfigKVSetRequest{
 			Domain: domain, InstanceID: instanceID,
-			Entries: map[string]string{kv.Key: kv.Value}, Scope: scope,
+			Entries: entries, Scope: scope,
 		}); err != nil {
 			res, errs := fail(err)
 			return res, errs, true
 		}
-		return map[string]any{"ok": true, "id": kv.Key}, nil, true
+		return map[string]any{"ok": true, "id": id}, nil, true
 	case "delete":
 		if _, err := s.facade.ConfigKVDelete(facade.ConfigKVDeleteRequest{
 			Domain: domain, InstanceID: instanceID, Keys: []string{wire.RequestID(req)}, Scope: scope,

@@ -119,16 +119,20 @@ test('③ HistoryConfig：保留个数/天数读 prj 键 + 默认 500/7', () => 
     '保留天数读 history.checkpoint_ttl_days（缺失回落默认）')
 })
 
-test('③ HistoryConfig：保存写 history.checkpoint_keep / history.checkpoint_ttl_days（非法不写库）', () => {
+test('③ HistoryConfig：保存一次批量写 history.checkpoint_keep / history.checkpoint_ttl_days（非法不写库）', () => {
   const src = read(HISTORY_VUE)
   const fn = src.match(/async function handleRetentionSave\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)
   assert.ok(fn, '未找到 handleRetentionSave')
-  assert.match(fn[0], /setConfig\('history\.checkpoint_keep', String\(kr\.value\)\)/, '须写 history.checkpoint_keep')
-  assert.match(fn[0], /setConfig\('history\.checkpoint_ttl_days', String\(tr\.value\)\)/, '须写 history.checkpoint_ttl_days')
+  assert.match(fn[0], /setConfigs\(\{[\s\S]*?'history\.checkpoint_keep': String\(kr\.value\)/, '须一次批量写 history.checkpoint_keep')
+  assert.match(fn[0], /'history\.checkpoint_ttl_days': String\(tr\.value\)/, '须一次批量写 history.checkpoint_ttl_days')
   assert.match(fn[0], /validatePositiveInt\(/, '须前置正整数校验')
+  // 批量写 = 1 次保存请求（→ 后端 1 条 refresh）；不得再逐键 setConfig
+  assert.doesNotMatch(fn[0], /await setConfig\(/, '保留策略须一次批量写（不得逐键 setConfig）')
+  const writes = (fn[0].match(/setConfigs\(/g) || []).length
+  assert.equal(writes, 1, '保留策略须恰好 1 次批量写请求')
   // 非法值在校验处 return（不写库）
   const invalidIdx = fn[0].indexOf('if (!kr.ok || !tr.ok) return')
-  const writeIdx = fn[0].indexOf("setConfig('history.checkpoint_keep'")
+  const writeIdx = fn[0].indexOf('setConfigs({')
   assert.ok(invalidIdx >= 0 && invalidIdx < writeIdx, '非法值须在校验处短路（不写库）')
 })
 
@@ -139,10 +143,10 @@ test('④ HistoryConfig：读 history.status / history.timeline；订阅 prj-con
   const src = read(HISTORY_VUE)
   assert.match(src, /parseStatus\(c\['history\.status'\]\)/, '状态读 history.status（安全解析）')
   assert.match(src, /parseTimeline\(c\['history\.timeline'\]\)/, '列表读 history.timeline（安全解析）')
-  // 2026-09-28：本页保存期间跳过重载（同 ContextConfig I-138），防自身写入的广播把未提交态冲回
-  assert.match(src, /onDataRefresh\('prj-config', \(\) => \{ if \(!saving\.value\) loadConfig\(\) \}\)/,
-    '须订阅既有 data-prj-config-refresh（本页保存期间除外）')
-  assert.doesNotMatch(src, /onDataRefresh\('prj-config', loadConfig\)/, '不得退回无条件重载')
+  // 2026-09-28：统一机制 usePrjConfigRefresh（I-138 收敛）——键过滤 + 突发合并 + 保存期间跳过
+  assert.match(src, /usePrjConfigRefresh\(\{[\s\S]*?reload: loadConfig,[\s\S]*?isSaving: \(\) => saving\.value/,
+    '须订阅既有 data-prj-config-refresh（统一机制，保存期间跳过）')
+  assert.doesNotMatch(src, /onDataRefresh\('prj-config'/, '不得再直接订阅 prj-config 广播（须走统一机制）')
   assert.match(src, /onUnmounted\(\(\) => \{[\s\S]*?unsubs\.forEach/, '须在卸载时退订')
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '禁止 watch/watchEffect（用 computed 派生）')
   assert.doesNotMatch(src, /console\.error/, '解析失败不得刷 console.error')

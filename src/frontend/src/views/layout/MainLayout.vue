@@ -85,7 +85,7 @@ const TOOLBAR_H = readRootPx('--toolbar-height', FALLBACK_TOOLBAR_HEIGHT)
 const STATUSBAR_H = readRootPx('--statusbar-height', FALLBACK_STATUSBAR_HEIGHT)
 const PREVIEW_MIN = 280 // preview（CodeView）最小可视宽
 const SESSION_CHAT_MIN = 240 // session-chat 最小可视宽
-const LAYOUT_GAPS = 8 // content|chat + filetree|preview 两条 resizer（各 4px）
+const LAYOUT_GAPS = 2 // content|chat + filetree|preview 两条 resizer（各 1px 发丝线，--split-hairline）
 const NARROW_MAX = 900 // 窄屏断点：以下三列无法同时容纳 → 自动收起文件树
 
 // 用户布局偏好（持久化原值，不因窗口缩放被改写）
