@@ -5,6 +5,7 @@ package mcpgateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -112,6 +113,99 @@ func TestPreHookFailureRejectsCall(t *testing.T) {
 	}
 	if n := p.callCount("ext_slow"); n != 0 {
 		t.Fatalf("被拒的工具不得执行，calls=%d", n)
+	}
+}
+
+// TestPreHookPayloadCarriesTouchFiles：前置钩子载荷带 `touch_files`（默认真值 = 保守按涉及），
+// 供 `plugin-history` 判定是否打检查点（2026-09-28）。
+func TestPreHookPayloadCarriesTouchFiles(t *testing.T) {
+	bus, g := newTestGW(t, 2*time.Second)
+	p := newFakeProvider("ext", OriginUser)
+	addFakeProvider(t, g, p, "slow")
+	declarePreHook(t, g, "hook-tool-t", "test-hook-touch")
+
+	var got atomic.Value
+	sub, err := bus.On("test-hook-touch", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) == nil {
+			got.Store(m)
+		}
+		v.Result = map[string]any{"ok": true}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	out := gwCallAsync(bus, "tools/call", map[string]any{"name": "ext_slow", "arguments": map[string]any{}})
+	select {
+	case <-p.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("工具未启动")
+	}
+	close(p.release)
+	if o := <-out; o.err != nil {
+		t.Fatalf("tools/call: %v", o.err)
+	}
+	m, _ := got.Load().(map[string]any)
+	if m == nil {
+		t.Fatal("前置钩子未收到载荷")
+	}
+	if m["tool"] != "ext_slow" {
+		t.Fatalf("载荷 tool 不符：%v", m["tool"])
+	}
+	// 第三方（Origin=user）→ 缺省保守按「涉及」（true）
+	if v, ok := m["touch_files"].(bool); !ok || !v {
+		t.Fatalf("载荷应带 touch_files=true（第三方保守按涉及），实际=%v", m["touch_files"])
+	}
+}
+
+// TestResolveTouchFiles：「涉及文件变动」缺省映射 + 显式覆盖优先级（用户口径 2026-09-28）。
+func TestResolveTouchFiles(t *testing.T) {
+	_, g := newTestGW(t, 2*time.Second)
+	self := &ServerEntry{ID: "self", Name: "内置能力源", Category: "core", Origin: OriginBuiltin}
+	dirNode := &ServerEntry{ID: "mydir", Category: "dir", Origin: OriginBuiltin}
+	third := &ServerEntry{ID: "ext", Origin: OriginUser}
+
+	// self 内置：白名单内（filesys_run / script_run）→ 涉及；其余内置 → 不涉及
+	if !g.resolveTouchFiles("self_filesys_run", "filesys_run", self) {
+		t.Fatal("self_filesys_run 应涉及文件变动")
+	}
+	if !g.resolveTouchFiles("self_script_run", "script_run", self) {
+		t.Fatal("self_script_run 应涉及文件变动")
+	}
+	for _, n := range []string{"file_read", "file_find", "file_diff", "web_fetch", "browser_run", "desktop_run"} {
+		if g.resolveTouchFiles("self_"+n, n, self) {
+			t.Fatalf("self 内置工具 %s 缺省应不涉及文件变动", n)
+		}
+	}
+	// dir 节点 / 第三方 / 无法判定 → 保守按涉及
+	if !g.resolveTouchFiles("mydir_x", "x", dirNode) {
+		t.Fatal("dir 节点工具缺省应保守按涉及")
+	}
+	if !g.resolveTouchFiles("ext_y", "y", third) {
+		t.Fatal("第三方工具缺省应保守按涉及")
+	}
+	if !g.resolveTouchFiles("z", "z", nil) {
+		t.Fatal("无法判定来源时应保守按涉及")
+	}
+
+	// 显式覆盖优先（两侧都能翻转）
+	g.SetAsyncOverrides(map[string]ToolAsyncOverride{
+		"self_file_read": {TouchFilesSet: true, TouchFiles: true},
+		"ext_y":          {TouchFilesSet: true, TouchFiles: false},
+	})
+	if !g.resolveTouchFiles("self_file_read", "file_read", self) {
+		t.Fatal("显式 touch_files=true 应生效（覆盖「不涉及」缺省）")
+	}
+	if g.resolveTouchFiles("ext_y", "y", third) {
+		t.Fatal("显式 touch_files=false 应生效（覆盖「涉及」缺省）")
+	}
+	// 覆盖表存在但该项未显式设置 touch_files → 仍按缺省
+	g.SetAsyncOverrides(map[string]ToolAsyncOverride{"self_filesys_run": {Mode: "never"}})
+	if !g.resolveTouchFiles("self_filesys_run", "filesys_run", self) {
+		t.Fatal("未显式设置 touch_files 时应回落缺省（self_filesys_run 涉及）")
 	}
 }
 

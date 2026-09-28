@@ -7,13 +7,13 @@
                          （同一实例内先取基线 → 开 → 关，不作重启用例；见 G1 docstring）
   G2 `enable-vfts`       开 → 工具面出现 `self_vfts_query`；关 → 消失。**保存即生效**
   G3 `codegraph.exts` / `codegraph.skip-dirs` → **索引范围终效**：
-                         `codegraph.status.exts/skipDirs/indexedFiles` + 落盘 `index.json`
-                         命中集合（gate_src 在 / gate_skip 不在），判据可重复。
+                         `codegraph.status.exts/skipDirs/indexedFiles` + 落盘 bbolt 索引库
+                         （`index.db`）命中集合（gate_src 在 / gate_skip 不在），判据可重复。
                          判据已从「固定 2」改为「**基线全集**」（含 gate_ign 4 个 .go → 6；
                          跳过 gate_skip 后 5）——见 G3 docstring。
   G4 `codegraph.action`  rebuild / retry → 状态流出现**进行中阶段**（`state=indexing` 且
                          `phase∈{configure,index}`）后回到 `ready`；clear → 回「未初始化」
-                         （`state=""`、`indexedFiles=0`、`index.json` 被删除）。
+                         （`state=""`、`indexedFiles=0`、`index.db` 被删除且落盘无命中）。
   G5 prj `skip_dirs`     （**GUI 配置面**写入：设置 → 参数 → 项目标签页）+ mock LLM 真实
                          `file_find` 调用 → 命中集合**不再含被跳过目录**（同目录内未跳过文件仍命中）。
   G6 `timeout_sec` / `max_concurrency` → GUI 改后 **prj 回读一致**（含重开页面输入框回显）。
@@ -21,7 +21,7 @@
   G7 `codegraph.stack-gitignore` = **gitignore 语义端到端**（勾选「叠加 gitignore」）：
                          `.gitignore` 生效 + **文件级排除**（`*.gen.go`）+ `!` 反选
                          （`!special.gen.go` + **目录剪枝**（`gate_ign/sub/` 命中即不下降，
-                         其内 `!gate_ign/sub/u.go` 无效）。判据 = 落盘 `index.json` 命中集合 +
+                         其内 `!gate_ign/sub/u.go` 无效）。判据 = 落盘 bbolt 索引命中集合 +
                          `status.indexedFiles`；收尾取消勾选（回退，避免污染后续）。
   G8 用户规则（输入框「排除的目录和文件」）**最高优先级** + 文件级排除 + `!` 反选：
                          `codegraph.skip-dirs` 原样透传（不折名、保留 `!`/glob/顺序）；
@@ -38,7 +38,10 @@
     prj 同库）→ `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
     （61 §3：persist 保存/删除后广播）捕获 → 不依赖轮询赛跑，不漏阶段。
   * vfts 文件清单 = 既有 `data-filelist-list`（61 §3.1：项目级 prj 库 `file_list` 表读面，
-    每行含 `path` 绝对路径）→ 逐文件命中集合（与落盘 `index.json` 同判据口径）。
+    每行含 `path` 绝对路径）→ 逐文件命中集合（与落盘 codegraph 索引同判据口径）。
+  * codegraph 落盘索引 = **bbolt 单文件库** `<ws>/.chonkpilot/codegraph/index.db`（引擎侧
+    store.go；不再有 index.json）→ 经引擎只读自检 `-dump <ws>` 打印 JSON `{count,files}` 读回
+    命中文件集合（不重建、不写盘）。
   * 端到端工具调用 = mock LLM 回 tool_call（`mock_llm.py` 专用路由 `call find-skip`，
     路径由提示词携带 `findskip=<绝对路径>`）→ 走真实 server→gateway→executor 链路。
 
@@ -55,6 +58,7 @@
 
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -564,19 +568,40 @@ def case_g2_enable_vfts_surface():
 # G3 codegraph.exts / codegraph.skip-dirs → 索引范围终效
 # ══════════════════════════════════════════════════════════
 
-IDX_JSON = os.path.join(WS, ".chonkpilot", "codegraph", "index.json")
+IDX_DB = os.path.join(WS, ".chonkpilot", "codegraph", "index.db")
 
 
-def _idx_raw():
-    if not os.path.isfile(IDX_JSON):
-        return ""
-    with open(IDX_JSON, "r", encoding="utf-8", errors="replace") as f:
-        return f.read()
+def _engine_exe():
+    """codegraph 引擎 exe 路径（发行根，与宿主 exe 同级——插件按「宿主 exe 同目录」解析）。"""
+    return os.path.join(os.path.dirname(_h.resolve_gui_exe()),
+                        "chonkpilot-codegraph-mcp-server.exe")
+
+
+def _idx_files():
+    """落盘索引命中文件集合（相对路径，'/' 分隔）。
+
+    索引落盘 = **bbolt 单文件库** `<ws>/.chonkpilot/codegraph/index.db`（引擎侧 store.go），
+    Python 无法直读 → 经引擎**只读自检** `-dump <ws>` 打印 JSON `{count,files}` 读回；
+    `-dump` 只 LoadIndex、不重建、不写盘（库缺失时也不会创建 index.db）。
+    """
+    exe = _engine_exe()
+    if not os.path.isfile(exe):
+        raise TestError("codegraph 引擎 exe 未找到（L4 需发行产物）：%s" % exe)
+    p = subprocess.run([exe, "-dump", WS], capture_output=True, text=True, timeout=180,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if p.returncode != 0:
+        raise TestError("引擎 -dump 失败（rc=%d）：%s"
+                        % (p.returncode, (p.stderr or "").strip()[:400]))
+    try:
+        o = json.loads(p.stdout or "")
+    except Exception as e:
+        raise TestError("引擎 -dump 输出非 JSON：%r（%s）" % ((p.stdout or "")[:400], e))
+    return set(str(x) for x in (o.get("files") or []))
 
 
 def _idx_has(rel):
-    """落盘 index.json 是否命中某相对路径（'/' 分隔）。"""
-    return rel in _idx_raw()
+    """落盘索引库（bbolt）是否命中某相对路径（'/' 分隔）。"""
+    return rel in _idx_files()
 
 
 def case_g3_index_scope():
@@ -586,8 +611,9 @@ def case_g3_index_scope():
       ① prj 回读：`codegraph.exts` / `codegraph.skip-dirs` 等于写入值；
       ② `codegraph.status`（引擎状态回写）：`exts` = 生效扩展名集合、`skipDirs` = 用户追加集、
          `indexedFiles` 命中文件数（.md 非代码语言 → 不计）；
-      ③ 落盘 `<ws>/.chonkpilot/codegraph/index.json` 的**命中文件集合**：
-         exts=.go 时 gate_src 与 gate_skip 都在；追加 skip-dirs=gate_skip 后 gate_skip 消失。
+      ③ 落盘 bbolt 索引库 `<ws>/.chonkpilot/codegraph/index.db` 的**命中文件集合**
+         （经引擎只读自检 `-dump` 读回）：exts=.go 时 gate_src 与 gate_skip 都在；
+         追加 skip-dirs=gate_skip 后 gate_skip 消失。
 
     期望值口径（2026-09-27 调整）：本套件夹具新增 gitignore 语义夹具 `gate_ign/`（4 个 .go，
     见文件头），故「基线全集」由固定 2 → **6**（gate_src/alpha.go + gate_skip/delta.go +
@@ -617,10 +643,11 @@ def case_g3_index_scope():
                         % (prj().get("codegraph.exts"), prj().get("codegraph.skip-dirs")))
     if a.get("indexedFiles") != 6:
         raise TestError("A：exts=.go 后 indexedFiles 应=6，实际=%r" % (a.get("indexedFiles"),))
-    raw_a = _idx_raw()
-    if "gate_src" not in raw_a or "gate_skip" not in raw_a:
-        raise TestError("A：index.json 应同时命中 gate_src 与 gate_skip（len=%d）" % len(raw_a))
-    print("[G3] A exts=.go → status.exts=%r indexedFiles=%r；index.json 命中 gate_src+gate_skip"
+    raw_a = _idx_files()
+    if "gate_src/alpha.go" not in raw_a or "gate_skip/delta.go" not in raw_a:
+        raise TestError("A：落盘索引应同时命中 gate_src/alpha.go 与 gate_skip/delta.go（共 %d 个）"
+                        % len(raw_a))
+    print("[G3] A exts=.go → status.exts=%r indexedFiles=%r；落盘索引命中 gate_src+gate_skip"
           % (a.get("exts"), a.get("indexedFiles")), flush=True)
 
     # ── 步骤 B：追加 skip-dirs="gate_skip" ──
@@ -633,11 +660,12 @@ def case_g3_index_scope():
         raise TestError("B：prj 回读 codegraph.skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
     if b.get("indexedFiles") != 5:
         raise TestError("B：跳过 gate_skip 后 indexedFiles 应=5，实际=%r" % (b.get("indexedFiles"),))
-    raw_b = _idx_raw()
-    if "gate_src" not in raw_b or "gate_skip" in raw_b:
-        raise TestError("B：index.json 应命中 gate_src、不含 gate_skip（len=%d）" % len(raw_b))
+    raw_b = _idx_files()
+    if "gate_src/alpha.go" not in raw_b or "gate_skip/delta.go" in raw_b:
+        raise TestError("B：落盘索引应命中 gate_src/alpha.go、不含 gate_skip/delta.go（共 %d 个）"
+                        % len(raw_b))
     print("[G3] B skip-dirs=gate_skip → status.skipDirs=%r indexedFiles=%r；"
-          "index.json 仅 gate_src（gate_skip 已剔除）" % (b.get("skipDirs"), b.get("indexedFiles")),
+          "落盘索引仅 gate_src（gate_skip 已剔除）" % (b.get("skipDirs"), b.get("indexedFiles")),
           flush=True)
 
 
@@ -656,7 +684,7 @@ def _emit_action(action):
 
 def case_g4_action_rebuild_retry_clear():
     """rebuild/retry → 状态流出现进行中阶段（`state=indexing` + `phase∈{configure,index}`）并回到
-    `ready`；clear → 回「未初始化」（`state=""`、`indexedFiles=0`、`index.json` 被删）。
+    `ready`；clear → 回「未初始化」（`state=""`、`indexedFiles=0`、`index.db` 被删且落盘无命中）。
 
     观测：`codegraph.status` 的写入经既有广播 `data-prj-config-refresh` 逐次到达前端 →
     捕获**完整状态流**（不靠轮询赛跑，瞬态也不漏）。插件侧阶段写入点 =
@@ -688,9 +716,12 @@ def case_g4_action_rebuild_retry_clear():
         raise TestError("clear 后 codegraph.status.state=%r，期望未初始化" % (st.get("state"),))
     if st.get("indexedFiles") != 0:
         raise TestError("clear 后 indexedFiles 应=0，实际=%r" % (st.get("indexedFiles"),))
-    if os.path.isfile(IDX_JSON):
-        raise TestError("clear 后 index.json 应被删除：%s" % IDX_JSON)
-    print("[G4] clear → A: codegraph.action=%r；B: state=%r indexedFiles=%r index.json 已删除"
+    if os.path.isfile(IDX_DB):
+        raise TestError("clear 后索引库 index.db 应被删除：%s" % IDX_DB)
+    left = _idx_files()
+    if left:
+        raise TestError("clear 后落盘索引应无命中文件，实际=%r" % sorted(left))
+    print("[G4] clear → A: codegraph.action=%r；B: state=%r indexedFiles=%r index.db 已删除且落盘无命中"
           % (prj().get("codegraph.action"), st.get("state"), st.get("indexedFiles")), flush=True)
 
 
@@ -784,7 +815,7 @@ def case_g7_codegraph_stack_gitignore():
 
     判据 A（数据面回读）：`prj['codegraph.stack-gitignore']=="true"`、
     `status.stackGitignore==True`、`status.skipDirs` 空（用户规则空）。
-    判据 B（终效，落盘 index.json 命中集合 + `status.indexedFiles`）：
+    判据 B（终效，落盘 bbolt 索引库命中集合 + `status.indexedFiles`）：
       * 含 `gate_ign/keep.go`（无规则命中）✔
       * 不含 `gate_ign/gen.gen.go`（`*.gen.go` **文件级排除**）✔
       * 含 `gate_ign/special.gen.go`（`!special.gen.go` 反选成功）✔
@@ -811,7 +842,7 @@ def case_g7_codegraph_stack_gitignore():
         raise TestError("A：勾选 stack-gitignore 时用户规则应为空，实际 skipDirs=%r"
                         % (st.get("skipDirs"),))
 
-    raw = _idx_raw()
+    raw = _idx_files()
     miss = [p for p in ("gate_ign/keep.go", "gate_ign/special.gen.go") if p not in raw]
     hit = [p for p in ("gate_ign/gen.gen.go", "gate_ign/sub/u.go") if p in raw]
     if miss or hit:
@@ -819,7 +850,7 @@ def case_g7_codegraph_stack_gitignore():
     if st.get("indexedFiles") != 4:
         raise TestError("B：勾选后 indexedFiles 应=4，实际=%r" % (st.get("indexedFiles"),))
     print("[G7] 勾选叠加 gitignore → A: stack-gitignore=%r stackGitignore=%r skipDirs=%r；"
-          "B: index.json 含 keep/special、不含 gen.gen/sub/u（文件级排除 + '!' 反选 + 目录剪枝），"
+          "B: 落盘索引含 keep/special、不含 gen.gen/sub/u（文件级排除 + '!' 反选 + 目录剪枝），"
           "indexedFiles=%r" % (prj().get("codegraph.stack-gitignore"), st.get("stackGitignore"),
                                st.get("skipDirs"), st.get("indexedFiles")), flush=True)
 
@@ -846,7 +877,7 @@ def case_g8_user_rules_priority():
     `codegraph.go:794-807`）**原样透传**给引擎（不折成目录名，`codegraph.go:741-743/809-813`）；
     引擎 `ignore.Options.UserRules` 为最高优先级（等价 `git --exclude`，`ignore.go:13/80-98`）。
     判据 A：`status.skipDirs` 与写入值一致（含 `!` 项、顺序不变，**未折名**）。
-    判据 B：index.json 命中集合随规则变化。
+    判据 B：落盘 bbolt 索引库命中集合随规则变化。
 
     步骤 1：规则 `*.gen.go`（stack 关）→ 两个 gen 文件均排除；keep.go / sub/u.go 仍命中。
     步骤 2：规则 `*.gen.go, !special.gen.go` → special.gen.go **反选回来**；gen.gen.go 仍排除。
@@ -1017,7 +1048,7 @@ def main():
          case_g1_enable_codegraph_surface),
         ("G2 enable-vfts → 工具面出现/消失 vfts_query（保存即生效）",
          case_g2_enable_vfts_surface),
-        ("G3 codegraph.exts/skip-dirs → 索引范围终效（status + index.json）",
+        ("G3 codegraph.exts/skip-dirs → 索引范围终效（status + bbolt 索引命中集合）",
          case_g3_index_scope),
         ("G4 codegraph.action rebuild/retry 进行中阶段→ready；clear→未初始化",
          case_g4_action_rebuild_retry_clear),

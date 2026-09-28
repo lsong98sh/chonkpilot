@@ -229,6 +229,47 @@ func TestToolAsyncOverrideJSONSetFlags(t *testing.T) {
 	}
 }
 
+// TestToolAsyncOverrideTouchFiles：`touch_files` 字段解析（显式 true/false 与「未设置」区分）
+// + 归一保留（仅 touch_files 的项不被当作「无有效覆盖」丢弃）。
+func TestToolAsyncOverrideTouchFiles(t *testing.T) {
+	var m map[string]ToolAsyncOverride
+	raw := `{"a":{"touch_files":false},"b":{"touch_files":true},"c":{"touch_files":"false"},
+	         "d":{"touch_files":null},"e":{"mode":"never"}}`
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if ov := m["a"]; !ov.TouchFilesSet || ov.TouchFiles {
+		t.Fatalf("a：touch_files=false 应显式设置且值为 false：%+v", ov)
+	}
+	if ov := m["b"]; !ov.TouchFilesSet || !ov.TouchFiles {
+		t.Fatalf("b：touch_files=true 应显式设置且值为 true：%+v", ov)
+	}
+	if ov := m["c"]; !ov.TouchFilesSet || ov.TouchFiles {
+		t.Fatalf("c：touch_files=\"false\" 字符串应设置且为 false：%+v", ov)
+	}
+	if ov := m["d"]; ov.TouchFilesSet {
+		t.Fatalf("d：touch_files=null 应未设置：%+v", ov)
+	}
+	if ov := m["e"]; ov.TouchFilesSet {
+		t.Fatalf("e：未出现 touch_files 应未设置：%+v", ov)
+	}
+
+	norm := NormalizeToolAsync(map[string]ToolAsyncOverride{
+		"self_file_read":   {TouchFilesSet: true, TouchFiles: false},
+		"self_filesys_run": {TouchFilesSet: true, TouchFiles: true},
+		"":                 {TouchFilesSet: true},
+	})
+	if len(norm) != 2 {
+		t.Fatalf("归一后应保留 2 项（空键丢弃）：%v", norm)
+	}
+	if ov, ok := norm["self_file_read"]; !ok || !ov.TouchFilesSet || ov.TouchFiles {
+		t.Fatalf("self_file_read 应保留 touch_files=false：%+v", norm)
+	}
+	if ov, ok := norm["self_filesys_run"]; !ok || !ov.TouchFilesSet || !ov.TouchFiles {
+		t.Fatalf("self_filesys_run 应保留 touch_files=true：%+v", norm)
+	}
+}
+
 // TestResolveExecTimeoutPriority：执行硬上限优先级 = hard_timeout（用户显式）> 契约 timeout（显式）
 // > cfg.execTimeout()；**显式 0/-1 = 无上限**（noLimit）；未显式设置时既有语义不变。
 func TestResolveExecTimeoutPriority(t *testing.T) {

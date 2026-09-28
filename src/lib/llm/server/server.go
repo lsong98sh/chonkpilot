@@ -2295,15 +2295,18 @@ func (s *Server) applyToolAsync(raw string) {
 }
 
 // toGatewayAsyncOverrides 把 mcp-server 归一后的工具级异步覆盖转为 gateway 自有类型（RB-2：
-// gateway lib 不依赖 chonkpilot-mcp-server 包）。仅取 gateway 面消费的 mode / threshold
-// （hard_timeout 属执行硬上限，仅 executor 消费、不透出 → 不携带）。
+// gateway lib 不依赖 chonkpilot-mcp-server 包）。携带 gateway 面消费的 mode / threshold /
+// touch_files（hard_timeout 属执行硬上限，仅 executor 消费、不透出 → 不携带）。
 func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]mcpgateway.ToolAsyncOverride {
 	if len(in) == 0 {
 		return nil
 	}
 	out := make(map[string]mcpgateway.ToolAsyncOverride, len(in))
 	for k, v := range in {
-		out[k] = mcpgateway.ToolAsyncOverride{Mode: v.Mode, Threshold: v.Threshold, ThresholdSet: v.ThresholdSet}
+		out[k] = mcpgateway.ToolAsyncOverride{
+			Mode: v.Mode, Threshold: v.Threshold, ThresholdSet: v.ThresholdSet,
+			TouchFiles: v.TouchFiles, TouchFilesSet: v.TouchFilesSet,
+		}
 	}
 	return out
 }

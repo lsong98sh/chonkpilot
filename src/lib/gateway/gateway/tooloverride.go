@@ -20,17 +20,24 @@ import (
 	"sync"
 )
 
-// ToolAsyncOverride 是工具级异步覆盖（mode + threshold），与 mcp-server 契约侧同形但**归
-// gateway 所有**（RB-2：gateway lib 不依赖 chonkpilot-mcp-server 包；装配方负责从其类型转换）。
+// ToolAsyncOverride 是工具级异步覆盖（mode + threshold + touch_files），与 mcp-server 契约侧同形但
+// **归 gateway 所有**（RB-2：gateway lib 不依赖 chonkpilot-mcp-server 包；装配方负责从其类型转换）。
 // 未设置 = 该字段不覆盖（维持契约现值）；未配置的工具 = 无覆盖。`hard_timeout` 属执行硬上限
 // （仅 executor 消费、不透出到 tools/list），不在 gateway 面。
 //
 // `ThresholdSet` = threshold 是否**显式设置**（区分「未设置」与「0/-1 = 无上限/无阈值」，
 // 用户口径 2026-09-27）。
+//
+// `TouchFiles` / `TouchFilesSet` = 该工具是否**涉及文件变动**（用户口径 2026-09-28）：显式设置优先，
+// 未设置 → 由 `resolveTouchFiles` 按工具来源取缺省（self 内置仅 filesys_run/script_run 涉及；
+// dir 节点 / 第三方 / 无法判定 → 保守按涉及）。取值经前置打点钩子 payload `touch_files` 下发
+// （见 mcpgateway.runPreHooks），**不进 tools/list `_meta`**。
 type ToolAsyncOverride struct {
-	Mode         string `json:"mode"`
-	Threshold    int    `json:"threshold"`
-	ThresholdSet bool   `json:"-"`
+	Mode          string `json:"mode"`
+	Threshold     int    `json:"threshold"`
+	ThresholdSet  bool   `json:"-"`
+	TouchFiles    bool   `json:"touch_files"`
+	TouchFilesSet bool   `json:"-"`
 }
 
 // SandboxConfig 是 dir 节点 / self **共享的执行配置**窄接口（RB-2：依赖倒置，同 ExecSink 手法）：
@@ -78,6 +85,33 @@ func (g *Gateway) asyncOverride(exposed string) (ToolAsyncOverride, bool) {
 	}
 	ov, ok := g.tov.async[exposed]
 	return ov, ok
+}
+
+// selfTouchFiles 是 **self 节点内置工具**中「涉及文件变动」的契约白名单（用户口径 2026-09-28）：
+// 只有 `filesys_run` / `script_run` 会实际写盘；其余内置工具（file_find/file_read/file_diff/
+// web_fetch/browser_run/desktop_run 等）按「不涉及」处理（省掉每次调用前的 8–9 次 git 打点进程）。
+var selfTouchFiles = map[string]bool{
+	"filesys_run": true,
+	"script_run":  true,
+}
+
+// resolveTouchFiles 解析某工具是否「涉及文件变动」（前置打点钩子的判定值；用户口径 2026-09-28）：
+//
+//  1. usr `tool_async` 显式 `touch_files`（`TouchFilesSet`）→ 直接采用；
+//  2. 缺省按工具来源：
+//     - **self 节点内置工具**（`entry.ID == "self"` 且 `Origin == builtin`）→ 白名单
+//     `selfTouchFiles`（filesys_run / script_run 涉及，其余不涉及）；
+//     - **dir 节点 / 第三方 / 无法判定**（entry 为空等）→ **保守按涉及**（不丢安全）。
+//
+// 标错只会让检查点粒度变粗（轮末补点仍在、`git diff` 一致性校验仍生效），不丢安全。
+func (g *Gateway) resolveTouchFiles(exposed string, original string, entry *ServerEntry) bool {
+	if ov, ok := g.asyncOverride(exposed); ok && ov.TouchFilesSet {
+		return ov.TouchFiles
+	}
+	if entry != nil && entry.ID == "self" && normalizeOrigin(entry.Origin) == OriginBuiltin {
+		return selfTouchFiles[original]
+	}
+	return true
 }
 
 // applyAsyncOverrideMeta 把异步覆盖写入 tools/list 的 `_meta` 副本（语义与

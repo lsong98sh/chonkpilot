@@ -33,8 +33,8 @@
   "col_delta": "增删",
   "empty_disabled": "文件历史未启用（无检查点数据）。",
   "empty_none": "暂无检查点。",
-  "clear": "清空历史",
-  "clear_confirm_title": "清空文件历史？",
-  "clear_confirm": "清空该项目的全部检查点历史？此操作不可恢复。",
-  "cleared": "已清空历史（后台处理）"
+  "clear": "清空本会话历史",
+  "clear_confirm_title": "清空本会话文件历史？",
+  "clear_confirm": "清空当前会话的全部检查点历史？其它会话的链不受影响。此操作不可恢复。",
+  "cleared": "已清空本会话历史（后台处理）"
 }

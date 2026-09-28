@@ -179,6 +179,7 @@ func (h *History) checkpointSync(ws *workState, root, tool, turn string, force b
 		ws.lastAt = time.Now()
 		ws.lastDurMs = dur.Milliseconds()
 	}
+	ws.lastSlug = slug    // 最近一次打点所属链（按会话回写状态的归属判定）
 	ws.dirty.Store(false) // 打点流程完成（建点 / 确认无变化）→ 清脏位
 	// 修剪重建后检查点 id 会变 → 按旧→新映射重定位轮次锚点。
 	if idmap != nil {
@@ -379,21 +380,6 @@ func (h *History) chainRecs(ws *workState, ref string, n int) ([]chainRec, error
 		})
 	}
 	return recs, nil
-}
-
-// listChainRefs 枚举本仓库全部 chonkpilot 检查点 ref（history.clear 用）。
-func (h *History) listChainRefs(ws *workState) ([]string, error) {
-	out, err := h.git(ws, "for-each-ref", "--format=%(refname)", "refs/chonkpilot/")
-	if err != nil {
-		return nil, err
-	}
-	var refs []string
-	for _, line := range strings.Split(out, "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			refs = append(refs, s)
-		}
-	}
-	return refs, nil
 }
 
 // ─── 解析（相对步 / turn-start / 绝对 commit）──────────────
@@ -623,7 +609,11 @@ type timelineEntry struct {
 }
 
 // baseStatus 读 workState 的非 git 派生状态（须无外部锁）。
-func (ws *workState) baseStatus() chainStatus {
+//
+// `slug` = 目标会话链（根会话）：`lastAt`/`lastDurMs` 是 **workdir 级**的最近一次打点，
+// 仅当它属于该 slug（`ws.lastSlug == slug`）时才透出 —— 否则该会话自身尚无检查点，
+// 显示「—」而非别会话的最近打点（I-135 按会话呈现）。
+func (ws *workState) baseStatus(slug string) chainStatus {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	mode := "active"
@@ -634,23 +624,23 @@ func (ws *workState) baseStatus() chainStatus {
 		mode = "fused"
 	}
 	st := chainStatus{
-		Enabled:        ws.enabled.Load(),
-		Mode:           mode,
-		Repo:           ws.hasGit,
-		Dirty:          ws.dirty.Load(),
-		FailCount:      ws.failCount,
-		LastDurationMs: ws.lastDurMs,
-		LastError:      ws.lastErr,
+		Enabled:   ws.enabled.Load(),
+		Mode:      mode,
+		Repo:      ws.hasGit,
+		Dirty:     ws.dirty.Load(),
+		FailCount: ws.failCount,
+		LastError: ws.lastErr,
 	}
-	if !ws.lastAt.IsZero() {
+	if !ws.lastAt.IsZero() && ws.lastSlug == slug {
 		st.LastCheckpointAt = ws.lastAt.Format(time.RFC3339)
+		st.LastDurationMs = ws.lastDurMs
 	}
 	return st
 }
 
 // buildStatus 组装该 workdir 指定链的状态 + 时间线（slug 空 → 空链）。
 func (h *History) buildStatus(ws *workState, slug string) (chainStatus, []timelineEntry) {
-	st := ws.baseStatus()
+	st := ws.baseStatus(slug)
 	entries := []timelineEntry{}
 	if slug == "" || !ws.hasGit {
 		return st, entries
@@ -766,21 +756,28 @@ func (h *History) treeBytes(ws *workState, commit string) int64 {
 	return sum
 }
 
-// writeback 回写 history.status / history.timeline（须在**不持有** ws.mu 时调用）。
+// writeback 回写**该会话**的 history.status.<slug> / history.timeline.<slug>
+// （须在**不持有** ws.mu 时调用；slug 空 → 不动作）。
+//
+// 键名带会话后缀（slug = 根会话）→ 多会话并发时各自独立、互不覆盖（I-135）；
+// 落 **prjusr**（persist `localRuntimeKeys` 前缀匹配）——属本机可重建派生物。
 func (h *History) writeback(ws *workState, slug string) {
+	if slug == "" {
+		return
+	}
 	inst := h.instanceForWorkdir(ws.workDir)
 	if inst == "" {
 		return
 	}
 	st, entries := h.buildStatus(ws, slug)
 	if b, err := json.Marshal(st); err == nil {
-		if err := prjConfigSaveKey(h.deps.Bus, inst, statusKey, string(b)); err != nil {
-			h.logf()("history: 回写 %s 失败（instance=%s）：%v", statusKey, inst, err)
+		if err := prjConfigSaveKey(h.deps.Bus, inst, statusKeyPrefix+slug, string(b)); err != nil {
+			h.logf()("history: 回写 %s 失败（instance=%s）：%v", statusKeyPrefix+slug, inst, err)
 		}
 	}
 	if b, err := json.Marshal(entries); err == nil {
-		if err := prjConfigSaveKey(h.deps.Bus, inst, timelineKey, string(b)); err != nil {
-			h.logf()("history: 回写 %s 失败（instance=%s）：%v", timelineKey, inst, err)
+		if err := prjConfigSaveKey(h.deps.Bus, inst, timelineKeyPrefix+slug, string(b)); err != nil {
+			h.logf()("history: 回写 %s 失败（instance=%s）：%v", timelineKeyPrefix+slug, inst, err)
 		}
 	}
 }

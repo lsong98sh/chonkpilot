@@ -253,8 +253,8 @@ func (w *Workspace) markError(msg string) {
 	_ = w.saveMeta()
 }
 
-// Clear 清除该 workdir 的索引产物：删除落盘 index.json + 内存索引置空，状态回「未初始化」。
-// 配置存档（enabled/exts/skip_dirs）不是索引产物，予以保留；索引可经 Initialize 重建。
+// Clear 清除该 workdir 的索引产物：删除落盘索引库 index.db（及遗留 index.json）+ 内存索引置空，
+// 状态回「未初始化」。配置存档（enabled/exts/skip_dirs）不是索引产物，予以保留；索引可经 Initialize 重建。
 // 与 EnsureReady/Reconcile 共用 recMu 单飞（避免与并发查询的差分/自愈互踩）。
 func (w *Workspace) Clear() error {
 	w.recMu.Lock()
@@ -267,8 +267,8 @@ func (w *Workspace) Clear() error {
 	w.meta.Err = ""
 	w.meta.LastIndexedAt = 0
 	w.mu.Unlock()
-	if err := os.Remove(filepath.Join(w.Store, indexName)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("清除索引产物失败: %w", err)
+	if err := w.removeIndexArtifacts(); err != nil {
+		return err
 	}
 	return w.saveMeta()
 }
@@ -332,6 +332,8 @@ func (w *Workspace) Reconcile() (changed bool, err error) {
 
 	next := cloneIndex(old)
 	updated := 0
+	var upserts []*FileInfo // 新增/修改（bolt 单文件 put，覆盖旧条目）
+	var removed []string    // 已删除（bolt 单文件 delete）
 	for p, e := range snap {
 		fi, ok := old.Files[p]
 		if ok && fi.Mtime == e.mtime && fi.Size == e.size {
@@ -345,11 +347,13 @@ func (w *Workspace) Reconcile() (changed bool, err error) {
 			next.RemoveFile(p)
 		}
 		next.AddFile(nf)
+		upserts = append(upserts, nf)
 		updated++
 	}
 	for p := range old.Files {
 		if _, ok := snap[p]; !ok {
 			next.RemoveFile(p)
+			removed = append(removed, p)
 			updated++
 		}
 	}
@@ -360,7 +364,7 @@ func (w *Workspace) Reconcile() (changed bool, err error) {
 		w.meta.Err = ""
 		w.meta.LastIndexedAt = time.Now().UnixNano()
 		w.mu.Unlock()
-		if err := w.SaveIndex(); err != nil {
+		if err := w.saveIndexDelta(upserts, removed); err != nil {
 			w.markError(fmt.Sprintf("save index: %v", err))
 			return true, err
 		}

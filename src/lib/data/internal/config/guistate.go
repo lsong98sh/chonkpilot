@@ -21,10 +21,27 @@ var localRuntimeKeys = map[string]bool{
 	"vfts.status":            true, // vfts 全文索引运行状态（本机可重建的派生物）
 }
 
-// isLocalRuntimeKey 判断是否个人运行态 key（含 window.* / layout.* 细 key 形态）。
+// localRuntimeKeyPrefixes 是落 prjusr 的个人运行态 key 前缀（键名带后缀，见下）。
+// `history.status.<根会话>` / `history.timeline.<根会话>`：文件历史**按会话**的状态与时间线
+// （插件回写、前端只读；I-135 —— 多会话并发各自独立、互不覆盖），属本机可重建派生物。
+var localRuntimeKeyPrefixes = []string{
+	"history.status.",
+	"history.timeline.",
+}
+
+// isLocalRuntimeKey 判断是否个人运行态 key（含 window.* / layout.* 细 key 形态 +
+// history.status.* / history.timeline.* 会话级键）。
 func isLocalRuntimeKey(key string) bool {
 	if localRuntimeKeys[key] {
 		return true
 	}
-	return strings.HasPrefix(key, "window.") || strings.HasPrefix(key, "layout.")
+	if strings.HasPrefix(key, "window.") || strings.HasPrefix(key, "layout.") {
+		return true
+	}
+	for _, p := range localRuntimeKeyPrefixes {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
 }

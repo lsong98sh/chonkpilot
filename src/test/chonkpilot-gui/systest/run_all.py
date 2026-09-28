@@ -5,7 +5,8 @@
     实例/端口/临时目录 —— 天然无并发争用（这是本运行器唯一的隔离手段：串行 + 各套件自管资源）。
   * `test_*.py`：动态端口（`harness.free_port()`）+ 套件级配置快照-还原。
   * `run_*.py`：
-      - 共享底座型（`run_config_ui` / `run_project_cfg` / `run_ui_regressions` / `run_fp_extra_ui`）
+      - 共享底座型（`run_config_ui` / `run_project_cfg` / `run_ui_regressions` / `run_fp_extra_ui` /
+        `run_tool_async_config`）
         统一 `_h.acquire_gui(2345, ...)`：**复用优先**，无实例才自起并在退出时回收；串行执行
         → 固定端口 2345 在不同套件间「起-停」交替，不并存（`run_config_ui` 另起独立实例 2347/临时目录，
         并在清理时显式保护 2345，绝不波及底座）。
@@ -53,6 +54,7 @@ RUN_SCRIPTS = [
     "run_project_cfg.py",         # 共享底座 2345
     "run_ui_regressions.py",      # 共享底座 2345
     "run_fp_extra_ui.py",         # 共享底座 2345
+    "run_tool_async_config.py",   # 共享底座 2345（工具配置页：usr `tool_async` 读/写/效果）
     "run_index_gate.py",          # 自起（动态端口 + 临时 work-dir/data-dir/HOME）
     "run_filetree_ignored.py",    # 自起（动态端口 + 临时 work-dir/data-dir/HOME）
     "run_hist_git.py",            # 自起（动态端口 + 临时目录 + 自管 mock LLM；无 git 则 SKIP）

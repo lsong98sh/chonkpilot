@@ -137,6 +137,7 @@ import { useI18n } from 'vue-i18n'
 import { Switch, Input, Button, Table } from '../../components/ui'
 import { message, confirm } from '../../components/ui'
 import { getAllConfig, setConfig, setConfigs, getVCSInfo } from '../../api/config'
+import { getActiveSessionID } from '../../api/session'
 import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
 import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import { validatePositiveInt, positiveIntErrorText } from '../../utils/settingsValidation'
@@ -145,6 +146,8 @@ import {
   DEFAULT_CHECKPOINT_KEEP, DEFAULT_CHECKPOINT_TTL_DAYS,
   parseStatus, parseTimeline, relativeNumber, formatBytes, formatTime,
   statusMode, statusEnabled, retentionValue,
+  chainSlug, historyStatusKey, historyTimelineKey,
+  HISTORY_STATUS_PREFIX, HISTORY_TIMELINE_PREFIX,
 } from '../../utils/historyTimeline'
 
 const { t } = useI18n()
@@ -169,10 +172,13 @@ const keepError = ref('')
 const ttlError = ref('')
 const saving = ref(false)
 
-// 只读时间轴：history.status / history.timeline（JSON 文本；解析失败 → 未启用/无数据，不报错）
+// 只读时间轴：**当前会话**的 history.status.<slug> / history.timeline.<slug>（JSON 文本；
+// 解析失败 → 未启用/无数据，不报错）。slug = 活动会话（= 链根会话；I-135 按会话）
 const status = ref(null)
 const timeline = ref([])
 const clearing = ref(false)
+// 当前会话 slug（= 链根会话；`chainSlug` 与后端 chainSlug 同口径）
+const sessionSlug = ref('')
 
 // 模式（active 正常 / fused 已熔断放行 / off 未启用）
 const modeClass = computed(() => 'is-' + statusMode(status.value))
@@ -216,8 +222,21 @@ async function loadVCS() {
   }
 }
 
+// 当前会话 slug：活动会话（= 链根会话）→ chainSlug（与后端同口径）。
+// 活动会话由 `data-session-active-get` 提供（prjusr 会话域既有面；失败/无会话 → 回落 chainSlug('')）
+async function activeSessionSlug() {
+  try {
+    const r = await getActiveSessionID()
+    return chainSlug(r && r.session_id)
+  } catch (_) {
+    return chainSlug('')
+  }
+}
+
 async function loadConfig() {
   try {
+    // 当前会话（按会话读链，I-135）；活动会话变化 → 读到的键随之变化
+    sessionSlug.value = await activeSessionSlug()
     const res = await getAllConfig()
     const c = res.config || res
     // 默认不开启：只有显式 "true" 才视为开启（缺失/其他值 = 关闭；与后端口径一致）
@@ -227,9 +246,9 @@ async function loadConfig() {
       checkpointKeep.value = retentionValue(c['history.checkpoint_keep'], DEFAULT_CHECKPOINT_KEEP)
       checkpointTtlDays.value = retentionValue(c['history.checkpoint_ttl_days'], DEFAULT_CHECKPOINT_TTL_DAYS)
     }
-    // 只读时间轴（解析失败/键缺失 → 未启用/无数据，不报错）
-    status.value = parseStatus(c['history.status'])
-    timeline.value = parseTimeline(c['history.timeline'])
+    // 只读时间轴（**当前会话**的会话级键；解析失败/键缺失 → 未启用/无数据，不报错）
+    status.value = parseStatus(c[historyStatusKey(sessionSlug.value)])
+    timeline.value = parseTimeline(c[historyTimelineKey(sessionSlug.value)])
   } catch (e) {
     // ④ 加载失败须用户可见（不再仅 console）
     message.error(loadFailedText(t, t('historyConfig.enable'), e))
@@ -286,7 +305,8 @@ async function handleRetentionSave() {
   }
 }
 
-// 清空历史：写 history.clear（任意新值即触发后端清空该链；零新增 MQ 主题），破坏性 → 二次确认。
+// 清空**本会话**历史：写 history.clear（JSON `{"ts","session"}`；任意新值即触发后端清该会话链；
+// 零新增 MQ 主题），破坏性 → 二次确认。其它会话的链不受影响（I-136）。
 async function handleClear() {
   try {
     await confirm(t('historyConfig.clear_confirm'), t('historyConfig.clear_confirm_title'))
@@ -295,7 +315,7 @@ async function handleClear() {
   }
   clearing.value = true
   try {
-    await setConfig('history.clear', new Date().toISOString())
+    await setConfig('history.clear', JSON.stringify({ ts: new Date().toISOString(), session: sessionSlug.value }))
     message.success(t('historyConfig.cleared'))
   } catch (e) {
     message.error(saveFailedText(t, e))
@@ -312,9 +332,11 @@ onMounted(() => {
   // **合并突发广播为 1 次重载** + **保存期间（saving）跳过**，避免读到「尚含旧值」的快照
   // （history.enabled / status 按 DB 无条件回填）与本次提交的本地态打架。
   // （保留策略另有 !dirty 守卫，防刷新冲掉未保存输入；开关即存路径 saving=false，仍照常重载。）
+  // 2026-09-28（I-138 收敛机制沿用）：关注键 = 4 个精确键（本页可写）+ 2 个会话级前缀
+  // （history.status.<slug> / history.timeline.<slug>：插件按会话回写，I-135）。
   unsubs.push(usePrjConfigRefresh({
-    keys: ['history.enabled', 'history.checkpoint_keep', 'history.checkpoint_ttl_days',
-      'history.clear', 'history.status', 'history.timeline'],
+    keys: ['history.enabled', 'history.checkpoint_keep', 'history.checkpoint_ttl_days', 'history.clear'],
+    prefixes: [HISTORY_STATUS_PREFIX, HISTORY_TIMELINE_PREFIX],
     reload: loadConfig,
     isSaving: () => saving.value,
   }))

@@ -1,13 +1,13 @@
 /**
  * historyTimeline — 文件历史（检查点）只读时间轴的纯逻辑（可直接单测）。
  *
- * 数据来源 = prj 配置内部键（后端契约，只读展示 + 一个写入口）：
- *   - history.status   = JSON 文本 {"enabled","mode":"active|fused|off","repo","dirty",
+ * 数据来源 = prj-config 内部键（后端契约，只读展示 + 一个写入口）：
+ *   - `history.status.<slug>`   = JSON 文本 {"enabled","mode":"active|fused|off","repo","dirty",
  *                        "failCount","checkpointCount","bytes","lastCheckpointAt",
- *                        "lastDurationMs","lastError"}
- *   - history.timeline = JSON 文本，**最新在前**的数组
+ *                        "lastDurationMs","lastError"}（slug = 根会话；**按会话**，I-135）
+ *   - `history.timeline.<slug>` = JSON 文本，**最新在前**的数组
  *                        [{"n":-1,"id","ts","tool","session","files","added","removed"} …]（后端最多回 200 条）
- *   - history.clear    = 写入口（写任意新值即触发后端清空该链；见 HistoryConfig.vue）
+ *   - `history.clear`    = 写入口（写 JSON `{"ts","session":"<根会话>"}` → 后端清**该会话**链；I-136）
  *
  * 兜底口径：解析失败 / 键缺失 / 类型不符 → 一律当作「未启用 / 无数据」，
  * **不抛错、不刷 console.error**（只读展示，异常静默降级）。
@@ -16,6 +16,32 @@
 // 保留策略默认值（与后端一致：history.checkpoint_keep 默认 500 / checkpoint_ttl_days 默认 7）。
 export const DEFAULT_CHECKPOINT_KEEP = 500
 export const DEFAULT_CHECKPOINT_TTL_DAYS = 7
+
+// 会话级键前缀（与后端 `statusKeyPrefix` / `timelineKeyPrefix` 对齐；落 prjusr）。
+export const HISTORY_STATUS_PREFIX = 'history.status.'
+export const HISTORY_TIMELINE_PREFIX = 'history.timeline.'
+
+/**
+ * 根会话 → 链 slug（**与后端 `chainSlug` 同口径**：trim 后把非 `[A-Za-z0-9._-]` 字符折为 `_`；
+ * 空白 / 折名后为空 / `.` / `..` → `'default'`）。会话 id 为 ASCII（uuid）→ 恒等映射。
+ */
+export function chainSlug(root) {
+  const s = String(root ?? '').trim()
+  if (s === '') return 'default'
+  const folded = s.replace(/[^A-Za-z0-9._-]/g, '_')
+  if (folded === '' || folded === '.' || folded === '..') return 'default'
+  return folded
+}
+
+/** 该会话的状态键（history.status.<slug>）。 */
+export function historyStatusKey(slug) {
+  return HISTORY_STATUS_PREFIX + slug
+}
+
+/** 该会话的时间线键（history.timeline.<slug>）。 */
+export function historyTimelineKey(slug) {
+  return HISTORY_TIMELINE_PREFIX + slug
+}
 
 /** JSON 文本 → 对象；非法 / 缺失 / 非对象（数组也算非对象）→ null。 */
 export function parseStatus(raw) {

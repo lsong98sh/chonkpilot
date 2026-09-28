@@ -69,8 +69,9 @@ test('信号语义键仍单独写（codegraph.action / history.clear 不被并�
   // 动作信号键保持单键写 → 同值重复写仍各发 1 条 refresh（插件据此执行动作）
   assert.match(read('views/settings/CodegraphConfig.vue'), /return setConfig\('codegraph\.action', action\)/,
     'codegraph.action 仍单独写（信号键）')
-  assert.match(read('views/settings/HistoryConfig.vue'), /setConfig\('history\.clear', new Date\(\)\.toISOString\(\)\)/,
-    'history.clear 仍单独写（信号键）')
+  assert.match(read('views/settings/HistoryConfig.vue'),
+    /setConfig\('history\.clear', JSON\.stringify\(\{ ts: new Date\(\)\.toISOString\(\), session: sessionSlug\.value \}\)\)/,
+    'history.clear 仍单独写（信号键；值 = JSON {ts,session}，只清本会话链）')
 })
 
 test('VftsConfig：清空项仍走 delete（回落引擎默认语义不变）', () => {

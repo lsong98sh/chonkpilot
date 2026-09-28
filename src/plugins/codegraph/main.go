@@ -4,10 +4,12 @@
 //   - --http[=<addr>]：前台 Streamable HTTP（端点 /mcp）；addr 缺省 127.0.0.1:5701
 //   - --stdio：MCP 客户端（Trae 等）spawn 本 exe，经 stdin/stdout 全双工 JSON-RPC（常驻）
 //   - -probe <dir>：自检——索引目录并打印符号汇总后退出（开发/冒烟用，非 MCP 形态）
+//   - -dump <dir>：只读自检——从落盘 bbolt 索引库打印命中文件集合（JSON）后退出（非 MCP 形态）
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -51,6 +53,7 @@ func usage() {
 
 其他：
   -probe <dir>     自检：索引目录并打印符号汇总后退出（非 MCP）
+  -dump <dir>      只读自检：从落盘 bbolt 索引库打印命中文件集合（JSON）后退出（非 MCP；不重建）
   -stack-gitignore 自检：额外应用 .gitignore / .git/info/exclude / 全局 ignore（默认关）
 `, defaultAddr)
 }
@@ -60,9 +63,30 @@ func main() {
 	flag.Var(httpMode, "http", "run Streamable HTTP at [addr] (default "+defaultAddr+")")
 	stdioMode := flag.Bool("stdio", false, "run as stdio transport (spawned by MCP client)")
 	probeDir := flag.String("probe", "", "self-test: index dir and print symbol summary")
+	dumpDir := flag.String("dump", "", "self-test: print indexed file list (JSON) from the bbolt store")
 	stackGitignore := flag.Bool("stack-gitignore", false, "self-test: also apply .gitignore / .git/info/exclude / global ignore")
 	flag.Parse()
 
+	if *dumpDir != "" {
+		w, err := cg.Open(*dumpDir)
+		if err != nil {
+			log.Fatalf("dump open: %v", err)
+		}
+		loaded, err := w.LoadIndex()
+		if err != nil {
+			log.Fatalf("dump load: %v", err)
+		}
+		files := w.IndexedFiles()
+		b, err := json.MarshalIndent(map[string]any{
+			"workdir": w.Dir, "state": w.State(), "loaded": loaded,
+			"count": len(files), "files": files,
+		}, "", "  ")
+		if err != nil {
+			log.Fatalf("dump encode: %v", err)
+		}
+		fmt.Println(string(b))
+		return
+	}
 	if *probeDir != "" {
 		start := time.Now()
 		w, err := cg.Open(*probeDir)

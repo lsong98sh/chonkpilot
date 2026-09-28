@@ -45,6 +45,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from chonk_client import ChonkClient  # noqa: E402
+from chonk_client import TRANSIENT_ERRORS as TRANSIENT_PROBE_ERRORS  # noqa: E402
 
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", "..", ".."))
 
@@ -192,7 +193,8 @@ def tmp_dir(prefix):
 # → 套件**启动就绪探测**直接崩溃（实测 `test_statusbar.py:48`；表现 = 批内偶发红、单独复跑全绿、
 # 每次失败套件不同）。就绪探测属**基础设施**等待、非断言 → 对其**容忍并重试**；
 # 断言脚本一律不重试（避免副作用脚本重复执行）。
-TRANSIENT_PROBE_ERRORS = ("timed out", "10061", "10054", "refused")
+# 瞬态分类与**驱动层**（`chonk_client.TRANSIENT_ERRORS`，驱动指令的有界重试同源）**共用一份**，
+# 避免两处口径漂移。
 
 # 与各套件原 `for _ in range(30): ... time.sleep(0.5)` 循环等价的默认窗口（15s）。
 DEFAULT_PROBE_TIMEOUT = 15.0
