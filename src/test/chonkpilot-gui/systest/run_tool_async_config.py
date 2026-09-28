@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
-"""L4：工具异步配置页（usr 键 `tool_async`）—— 表格分组 / 四档读写（手动保存）/ 恢复默认 / 效果断言。
+"""L4：工具配置页（原名「工具异步配置」；usr 键 `tool_async`）—— 表格分组 / 四档读写（手动保存）/
+恢复默认 / 效果断言 / **涉及文件变动**（2026-09-28 新增）。
 
-需求（用户口径，2026-09-26 改版）：明细用 **表格** 呈现（工具 / 模式 / 阈值 / 超时；工具名列 min-width
-200px，仍按 MCP 分组）；**手动保存**（改模式/数值只改本地待保存态，点【保存】一次性提交，无改动时
-保存按钮禁用）；**不再显示默认配置信息**（「契约默认/用户配置」徽标与「契约现值」文本移除 → 契约默认
-信息改由「恢复默认」按钮 tooltip 承载）；**去「高级」按钮**（`hard_timeout` 常显为「超时」列；dir 节点行
-禁用 + 标「不适用」）；模式 / 阈值 / 超时 三列表头各带 `?` 说明。
+需求（用户口径，2026-09-26 改版；2026-09-28 页签改名 + 新增「涉及文件变动」）：
+  明细用 **表格** 呈现（工具 / 模式 / 阈值 / 超时 / **涉及文件变动**；工具名列 min-width 200px，
+  仍按 MCP 分组）；**手动保存**（改模式/数值/开关只改本地待保存态，点【保存】一次性提交，无改动时
+  保存按钮禁用）；**不再显示默认配置信息**（「契约默认/用户配置」徽标与「契约现值」文本移除 →
+  契约默认信息改由「恢复默认」按钮 tooltip 承载）；**去「高级」按钮**（`hard_timeout` 常显为
+  「超时」列；dir 节点行禁用 + 标「不适用」）；模式 / 阈值 / 超时 / 涉及文件变动 四列表头各带 `?` 说明。
+  **「涉及文件变动」**（`touch_files`，布尔）：缺省由工具来源给出（self 内置仅 filesys_run /
+  script_run 涉及；其余内置不涉及；dir 节点 / 第三方 / 无法判定 → 保守按涉及）；列表内**派生**
+  「打点 / 不打点」标记（涉及 = 打点）。
 
 驱动面（**零新增 MQ 主题**）：
   * 工具清单 = 既有客户端能力面 `tools-list`（分组口径 `_meta.server.alias || _meta.server.node || '全局'`）；
   * 配置读写 = 既有 usr 配置面 `data-user-config-{load,save,delete}`（usr 键 `tool_async`，
-    JSON `{"<工具暴露名>": {"mode": "...", "threshold": n, "hard_timeout": n}}`）。
+    JSON `{"<工具暴露名>": {"mode": "...", "threshold": n, "hard_timeout": n, "touch_files": bool}}`）。
 
 覆盖：
   A 入口与分组渲染：菜单项 → preview tab 打开 → 按 MCP 分组 + 每行四档选择器（四档文案精确 + aria）
@@ -23,6 +28,7 @@
   E 效果断言（**依赖并行后端的 `tool_async` 落地**）：保存后 `tools-list` 的 `_meta.async` 随配置变化
   F 展示口径（D2）：列表名剥前缀仅展示，`data-tool` / `:title` 保留完整暴露名
   G 无上限口径（2026-09-27）：`hard_timeout` 输入 **0 / -1** = 无上限 → 合法、显示保留、落库保留
+  H 涉及文件变动（2026-09-28）：缺省映射 + 派生「打点 / 不打点」标记 + 开关保存/回读 + 恢复默认回落
 
 前置（本脚本自起，结束自动回收；见 harness.py）：
   `dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
@@ -30,7 +36,7 @@
 
 **PENDING 口径（不伪造、不放宽断言）**：用例前置不成立时打印 `[PENDING]` 并在最终行单独计入
 「待验证」，**不计入通过**：
-  ① 产物未重建（工具栏设置菜单无「工具异步配置」→ 前端 dist 未进 exe）→ 页面用例 PENDING；
+  ① 产物未重建（工具栏设置菜单无「工具配置」→ 前端 dist 未进 exe）→ 页面用例 PENDING；
   ② 后端未合并（`data-user-config-save{tool_async}` 写入后回读不到 → usr 未注册该键）→ 落库/效果用例 PENDING。
   两种前置**都成立**时全部断言按原样严格执行（任何不符即 FAIL）。
 """
@@ -48,12 +54,15 @@ WS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws")
 CFG_KEY = "tool_async"
 KIND = "settings-tool-async"
 ROOT = ".settings-page"
-MENU_LABEL = "工具异步配置"
+MENU_LABEL = "工具配置"
 MODES = ["always", "never", "auto", "manual"]
 MODE_LABELS = ["仅异步", "仅同步", "自动异步", "手动异步"]
 # 契约值 → 界面本地化档名（zh-CN；「恢复默认」tooltip 用 modeLabel 渲染）
 MODE_LABELS_BY_MODE = {"always": "仅异步", "never": "仅同步", "auto": "自动异步", "manual": "手动异步"}
 PROBE_KEY = "__l4_probe__"
+# 涉及文件变动：self 内置白名单（涉及 = 打点）与派生标记文案
+TOUCH_WHITELIST = ("filesys_run", "script_run")
+TOUCH_ON_BADGE, TOUCH_OFF_BADGE = "打点", "不打点"
 
 c = _h.acquire_gui(PORT, work_dir=WS).client
 _h.suite_config_guard(c)
@@ -159,7 +168,7 @@ SEL_PAGE = [None]  # "有"/"无"：产物是否已含新页面
 
 
 def probe_page():
-    """产物是否已重建出新页面：工具栏设置下拉是否出现「工具异步配置」项。"""
+    """产物是否已重建出新页面：工具栏设置下拉是否出现「工具配置」项。"""
     if SEL_PAGE[0] is not None:
         return SEL_PAGE[0]
     try:
@@ -177,7 +186,7 @@ def probe_page():
 
 def require_page():
     if probe_page() != "有":
-        raise Pending("产物未含新页面（工具栏设置菜单无「工具异步配置」）"
+        raise Pending("产物未含新页面（工具栏设置菜单无「工具配置」）"
                       "→ 等待主线统一重建 build-desktop.ps1 后全量验证")
 
 
@@ -220,12 +229,13 @@ def open_page():
     time.sleep(0.5)
     c.mq_emit("preview-tab-open", {"kind": KIND})
     if not wait_vis(ROOT):
-        raise TestError("工具异步配置页未打开（kind=%s root=%s）" % (KIND, ROOT))
+        raise TestError("工具配置页未打开（kind=%s root=%s）" % (KIND, ROOT))
     poll(lambda: rows(), max_wait=8, interval=0.3)
 
 
 def rows():
-    """当前页面所有工具行：工具 / 展示名 / 完整暴露名 / 模式 / 条件字段 / 恢复默认按钮态 / 契约 tooltip。"""
+    """当前页面所有工具行：工具 / 展示名 / 完整暴露名 / 模式 / 条件字段 / 恢复默认按钮态 /
+    契约 tooltip / **涉及文件变动**（开关态 + 派生标记）。"""
     return ev(panel_js("""
 return [...R.querySelectorAll('.tool-name[data-tool]')].map(nm=>{
   const it=nm.closest('tr');
@@ -237,6 +247,8 @@ return [...R.querySelectorAll('.tool-name[data-tool]')].map(nm=>{
   const mono=nm.querySelector('.mono');
   const rst=it?it.querySelector('button[data-restore]'):null;
   const tip=it?it.querySelector('.b-tooltip'):null;
+  const sw=it?it.querySelector('.cell-touch .b-switch'):null;
+  const badge=it?it.querySelector('.cell-touch .touch-badge'):null;
   return {
     tool: nm.getAttribute('data-tool'),
     disp: mono?mono.textContent.trim():'',
@@ -252,6 +264,9 @@ return [...R.querySelectorAll('.tool-name[data-tool]')].map(nm=>{
     na: !!na,
     restoreDisabled: rst?!!rst.disabled:null,
     contract: tip?tip.getAttribute('data-contract'):null,
+    touchSwitch: !!sw,
+    touchOn: sw?sw.classList.contains('is-checked'):null,
+    touchBadge: badge?badge.textContent.trim():null,
   };
 });""")) or []
 
@@ -321,6 +336,25 @@ if(!b)return 'no-btn';if(b.disabled)return 'disabled';b.click();return 'ok';""" 
     time.sleep(0.4)
 
 
+def click_touch(tool):
+    """点击该行「涉及文件变动」开关（只改本地待保存态）。"""
+    r = ev(panel_js("""
+const nm=[...R.querySelectorAll('.tool-name')].find(x=>x.getAttribute('data-tool')===%s);
+if(!nm)return 'no-row';const it=nm.closest('tr');const sw=it.querySelector('.cell-touch .b-switch');
+if(!sw)return 'no-switch';sw.click();return 'ok';""" % json.dumps(tool)))
+    if r != "ok":
+        raise TestError("点击「涉及文件变动」开关失败 tool=%s → %r" % (tool, r))
+    time.sleep(0.3)
+
+
+def pick_tool_by_suffix(suffix):
+    """工具面里按后缀取一个 self 工具暴露名（无 → None）。"""
+    for r in rows():
+        if (r["tool"] or "").endswith(suffix):
+            return r["tool"]
+    return None
+
+
 def unsaved_mark():
     return vcount(".unsaved-mark") > 0
 
@@ -374,10 +408,10 @@ def case_a_entry_and_groups():
     api_names = set(tl.get("name") for tl in tools_list())
     if dom_names != api_names:
         raise TestError("页面工具行与 tools-list 不一致：差集 %r" % (dom_names ^ api_names))
-    # 表头 `?` 说明：模式 / 阈值 / 超时 三列（多个分组表 → 至少 3 个）
+    # 表头 `?` 说明：模式 / 阈值 / 超时 / 涉及文件变动 四列（多个分组表 → 至少 4 个；H2 用例另校验）
     helps = int(ev(panel_js("return R.querySelectorAll('.th-help .b-icon, .th-help svg').length;")) or 0)
     if helps < 3:
-        raise TestError("表头 `?` 说明不足（.th-help 图标 = %d，期望 ≥3：模式/阈值/超时）" % helps)
+        raise TestError("表头 `?` 说明不足（.th-help 图标 = %d，期望 ≥3：模式/阈值/超时/涉及文件变动）" % helps)
     # 干净初始态（刚打开 → workMap == savedMap）→ 保存按钮禁用、无「未保存」标记
     b = save_btn()
     if not b["exists"]:
@@ -579,6 +613,80 @@ def case_g_unlimited_values():
                 raise TestError("hard_timeout=%s 未按无上限落库：usr=%r" % (v, user_map()))
 
 
+def case_h_touch_files_option():
+    """H 涉及文件变动（2026-09-28）：缺省映射（self 白名单 = 打点；其余 self 内置 = 不打点）
+    + 开关保存 → usr `tool_async.<工具>.touch_files` 落库回读 + 恢复默认回落缺省。"""
+    require_page()
+    require_backend()
+    open_page()
+    rs = rows()
+    if not rs:
+        raise TestError("页面无工具行（.tool-name[data-tool]）")
+    # 每行都应有开关 + 派生标记（新列齐备）
+    for r in rs:
+        if not r["touchSwitch"]:
+            raise TestError("工具 %s 缺「涉及文件变动」开关（.cell-touch .b-switch）" % r["tool"])
+        if r["touchBadge"] not in (TOUCH_ON_BADGE, TOUCH_OFF_BADGE):
+            raise TestError("工具 %s 的派生标记不符（期望 %r/%r）：%r"
+                            % (r["tool"], TOUCH_ON_BADGE, TOUCH_OFF_BADGE, r["touchBadge"]))
+        want_on = bool(r["touchOn"])
+        if (r["touchBadge"] == TOUCH_ON_BADGE) != want_on:
+            raise TestError("工具 %s 的标记与开关态不一致：on=%s badge=%r"
+                            % (r["tool"], r["touchOn"], r["touchBadge"]))
+
+    # 缺省映射：self 白名单（filesys_run / script_run）= 打点，其余 self 内置 = 不打点
+    whit = next((r for r in rs if (r["tool"] or "").endswith(TOUCH_WHITELIST)), None)
+    other = None
+    for suf in ("file_read", "file_find", "file_diff", "web_fetch"):
+        other = next((r for r in rs if (r["tool"] or "").endswith(suf)), None)
+        if other:
+            break
+    if whit is None or other is None:
+        raise Pending("工具面缺 filesys_run/script_run 或 self 非白名单工具 → 无法验证缺省映射")
+    if not whit["touchOn"] or whit["touchBadge"] != TOUCH_ON_BADGE:
+        raise TestError("self 白名单工具 %s 缺省应「打点」：%r" % (whit["tool"], whit))
+    if other["touchOn"] or other["touchBadge"] != TOUCH_OFF_BADGE:
+        raise TestError("self 非白名单工具 %s 缺省应「不打点」：%r" % (other["tool"], other))
+
+    # 开关 → 待保存 → 保存 → usr 落库回读（偏离缺省才写库）
+    with _h.user_config_guard(c, [CFG_KEY]):
+        reset_key()
+        open_page()
+        tool = pick_tool_by_suffix(other["tool"].split("_")[-1]) or other["tool"]
+        if row_of(tool)["touchOn"]:
+            raise TestError("前置：%s 缺省应为「不打点」（关）" % tool)
+        click_touch(tool)
+        if not row_of(tool)["touchOn"] or row_of(tool)["touchBadge"] != TOUCH_ON_BADGE:
+            raise TestError("拨开开关后应转为「打点」：%r" % row_of(tool))
+        if not unsaved_mark():
+            raise TestError("拨开关后应显示「未保存」")
+        click_save()
+        got = poll(lambda: (user_map().get(tool) or {}).get("touch_files"))
+        if got is not True:
+            raise TestError("touch_files=true 未落库：tool=%s → usr=%r" % (tool, user_map()))
+        # 恢复默认 → 回落缺省（不打点）→ 保存后键项删除
+        click_restore(tool)
+        if row_of(tool)["touchOn"] or row_of(tool)["touchBadge"] != TOUCH_OFF_BADGE:
+            raise TestError("恢复默认后应回落缺省「不打点」：%r" % row_of(tool))
+        click_save()
+        if not poll(lambda: tool not in user_map()):
+            raise TestError("恢复默认保存后键项仍在：%r" % user_map())
+        print("[H] 涉及文件变动：%s 缺省=不打点 · %s 缺省=打点 · 开关保存→touch_files=true 落库 · "
+              "恢复默认→回落缺省" % (other["tool"], whit["tool"]), flush=True)
+
+
+def case_h3_touch_hint_and_header():
+    """A+（新列头部）：表头 `?` 说明数 ≥4（模式/阈值/超时/涉及文件变动）+ hint 文案含「粒度/安全」口径。"""
+    require_page()
+    open_page()
+    helps = int(ev(panel_js("return R.querySelectorAll('.th-help .b-icon, .th-help svg').length;")) or 0)
+    if helps < 4:
+        raise TestError("表头 `?` 说明不足（.th-help 图标 = %d，期望 ≥4：模式/阈值/超时/涉及文件变动）" % helps)
+    hint = ev(panel_js("const t=R.querySelector('.tool-toolbar .hint');return t?t.textContent.trim():'';")) or ""
+    if "工具" not in str(hint):
+        raise TestError("页头 hint 文案异常：%r" % hint)
+
+
 CASES = [
     ("A 入口与分组渲染（分组 + 四档文案/aria + 表头 ? 说明 + 干净态保存禁用）", case_a_entry_and_groups),
     ("B 默认信息移至「恢复默认」tooltip（行内无 badge/contract）", case_b_contract_moved_to_tooltip),
@@ -587,6 +695,8 @@ CASES = [
     ("E 效果：tools-list 的 _meta.async 随配置变化（后端生效面）", case_e_effect_meta_follows_config),
     ("F 展示口径（D2）：列表名剥前缀仅展示，data-tool/:title 保留完整暴露名", case_f_prefix_display),
     ("G 无上限口径：hard_timeout 输入 0 / -1 合法、显示与落库均保留", case_g_unlimited_values),
+    ("H 涉及文件变动：缺省映射 + 打点/不打点标记 + 保存/回读 + 恢复默认", case_h_touch_files_option),
+    ("H2 新列表头 ? 说明 ≥4（含「涉及文件变动」）", case_h3_touch_hint_and_header),
 ]
 
 
@@ -626,7 +736,7 @@ def main():
             print("  [ERROR] %s: %s: %s" % (name, type(e).__name__, e))
             FAILED.append(name)
     total = len(CASES)
-    print("\n工具异步配置页 L4：%d/%d 通过, %d 失败, %d 待验证(PENDING)"
+    print("\n工具配置页 L4：%d/%d 通过, %d 失败, %d 待验证(PENDING)"
           % (len(PASSED), total, len(FAILED), len(PENDING)))
     for n in PENDING:
         print("  [PENDING] %s" % n)

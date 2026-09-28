@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -1086,7 +1088,7 @@ func TestCollectSourceFilesStackGitignore(t *testing.T) {
 	}
 }
 
-// TestClear：清除索引产物——index.json 删除、内存索引置空、状态回「未初始化」；配置存档保留；
+// TestClear：清除索引产物——index.db 删除、内存索引置空、状态回「未初始化」；配置存档保留；
 // 清除后可重新全量重建。
 func TestClear(t *testing.T) {
 	dir := t.TempDir()
@@ -1105,16 +1107,16 @@ func TestClear(t *testing.T) {
 	if err := w.Initialize(nil, nil, nil); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
-	idxPath := filepath.Join(w.Store, indexName)
+	idxPath := filepath.Join(w.Store, dbName)
 	if _, err := os.Stat(idxPath); err != nil {
-		t.Fatalf("初始化后 index.json 应存在：%v", err)
+		t.Fatalf("初始化后 index.db 应存在：%v", err)
 	}
 
 	if err := w.Clear(); err != nil {
 		t.Fatalf("Clear failed: %v", err)
 	}
 	if _, err := os.Stat(idxPath); !os.IsNotExist(err) {
-		t.Errorf("Clear 后 index.json 应被删除（stat err=%v）", err)
+		t.Errorf("Clear 后 index.db 应被删除（stat err=%v）", err)
 	}
 	if w.ix != nil {
 		t.Error("Clear 后内存索引应置空")
@@ -1164,8 +1166,8 @@ func TestToolConfigureClearMode(t *testing.T) {
 	if !ok || res["mode"] != "clear" || res["ok"] != true {
 		t.Fatalf("unexpected toolConfigure 应答：%v", out)
 	}
-	if _, err := os.Stat(filepath.Join(w.Store, indexName)); !os.IsNotExist(err) {
-		t.Errorf("mode=clear 后 index.json 应被删除（stat err=%v）", err)
+	if _, err := os.Stat(filepath.Join(w.Store, dbName)); !os.IsNotExist(err) {
+		t.Errorf("mode=clear 后 index.db 应被删除（stat err=%v）", err)
 	}
 	if w.State() != "" {
 		t.Errorf("mode=clear 后 State 应为空（未初始化），got %q", w.State())
@@ -2072,4 +2074,290 @@ func TestCallGraphTools(t *testing.T) {
 			t.Errorf("expected not_found, got %v", m)
 		}
 	})
+}
+
+// ============================================================
+// 分组 8：索引落盘（bbolt，store.go）
+// ============================================================
+
+// TestIndexStoreUsesBoltDB：初始化落盘 index.db（bbolt 单文件），不再产出 index.json。
+func TestIndexStoreUsesBoltDB(t *testing.T) {
+	dir := t.TempDir()
+	writeTestProject(t, dir)
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer dropWorkspace(w.Dir)
+	if err := w.Initialize(nil, nil, nil); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(w.Store, dbName)); err != nil {
+		t.Fatalf("初始化后应存在 %s：%v", dbName, err)
+	}
+	if _, err := os.Stat(filepath.Join(w.Store, indexLegacyName)); !os.IsNotExist(err) {
+		t.Errorf("不应再产出 %s（stat err=%v）", indexLegacyName, err)
+	}
+}
+
+// TestIndexReloadAfterClose：全量落盘 → 释放工作区（连接即开即关，无 .db 锁残留）→
+// 新实例重开可完整读回（符号/调用/导入/基线字段）。
+func TestIndexReloadAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	writeTestProject(t, dir)
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if err := w.Initialize(nil, nil, nil); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	want := []string{"main.go", "utils/helper.go"}
+	if got := w.IndexedFiles(); !reflect.DeepEqual(got, want) {
+		t.Errorf("IndexedFiles = %v, want %v", got, want)
+	}
+	dropWorkspace(w.Dir)
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer dropWorkspace(w2.Dir)
+	ok, err := w2.LoadIndex()
+	if err != nil || !ok {
+		t.Fatalf("LoadIndex after reopen = (%v, %v)，期望 (true, nil)", ok, err)
+	}
+	if got := w2.IndexedFiles(); !reflect.DeepEqual(got, want) {
+		t.Errorf("重开后 IndexedFiles = %v, want %v", got, want)
+	}
+	syms := w2.ix.AllSymbols()
+	if len(syms) != 4 {
+		t.Errorf("重开后应有 4 个符号，got %d", len(syms))
+	}
+	for _, s := range syms {
+		if s.ID == "" {
+			t.Errorf("重开后符号 ID 应重建：%+v", s)
+		}
+	}
+	if fi := w2.ix.Files["main.go"]; fi == nil || fi.Imports == nil || fi.Mtime == 0 || fi.Size == 0 {
+		t.Errorf("重开后文件条目基线字段应完整：%+v", fi)
+	}
+}
+
+// TestReconcileIncrementalPersists：增量（新增/修改/删除）后仅变更文件落盘，重开读回一致。
+func TestReconcileIncrementalPersists(t *testing.T) {
+	dir := t.TempDir()
+	writeTestProject(t, dir)
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer dropWorkspace(w.Dir)
+	if err := w.Initialize(nil, nil, nil); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	// 新增 new.go + 修改 main.go + 删除 utils/helper.go
+	if err := os.WriteFile(filepath.Join(dir, "new.go"), []byte("package main\nfunc NewFunc() {}\n"), 0o644); err != nil {
+		t.Fatalf("write new.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n\nfunc Extra() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "utils", "helper.go")); err != nil {
+		t.Fatalf("remove helper.go: %v", err)
+	}
+	changed, err := w.Reconcile()
+	if err != nil || !changed {
+		t.Fatalf("Reconcile = (%v, %v)，期望 (true, nil)", changed, err)
+	}
+	dropWorkspace(w.Dir)
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer dropWorkspace(w2.Dir)
+	ok, err := w2.LoadIndex()
+	if err != nil || !ok {
+		t.Fatalf("LoadIndex after delta = (%v, %v)", ok, err)
+	}
+	if got, want := w2.IndexedFiles(), []string{"main.go", "new.go"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("增量后落盘文件集 = %v, want %v", got, want)
+	}
+	names := map[string]bool{}
+	for _, s := range w2.ix.AllSymbols() {
+		names[s.Name] = true
+	}
+	if !names["Extra"] || !names["NewFunc"] {
+		t.Errorf("增量后应含 Extra/NewFunc，got %v", names)
+	}
+	if names["Helper"] {
+		t.Errorf("已删除文件的符号不应残留：%v", names)
+	}
+}
+
+// TestLoadIndexCorruptDB：损坏/截断/空索引库 → 兜底（不 panic；视为未初始化并回状态），
+// 且 Clear/Initialize 可恢复。
+func TestLoadIndexCorruptDB(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(p string) error
+	}{
+		{"garbage", func(p string) error { return os.WriteFile(p, []byte("this is not a bolt database"), 0o644) }},
+		{"truncated", func(p string) error {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(p, b[:100], 0o644)
+		}},
+		{"empty", func(p string) error { return os.WriteFile(p, nil, 0o644) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestProject(t, dir)
+
+			w, err := Open(dir)
+			if err != nil {
+				t.Fatalf("Open failed: %v", err)
+			}
+			if err := w.Initialize(nil, nil, nil); err != nil {
+				t.Fatalf("Initialize failed: %v", err)
+			}
+			dropWorkspace(w.Dir)
+
+			w2, err := Open(dir)
+			if err != nil {
+				t.Fatalf("reopen failed: %v", err)
+			}
+			defer dropWorkspace(w2.Dir)
+			if err := c.mutate(w2.dbPath()); err != nil {
+				t.Fatalf("mutate %s: %v", dbName, err)
+			}
+
+			ok, err := w2.LoadIndex()
+			if err != nil {
+				t.Fatalf("损坏索引应兜底（不抛错），got err=%v", err)
+			}
+			if ok {
+				t.Error("损坏索引不应被视为已载入")
+			}
+			if w2.State() != "" {
+				t.Errorf("损坏索引应回「未初始化」，got state=%q", w2.State())
+			}
+
+			// 恢复路径：重建后可用
+			if err := w2.Initialize(nil, nil, nil); err != nil {
+				t.Fatalf("重建失败：%v", err)
+			}
+			if got := w2.IndexedFiles(); len(got) != 2 {
+				t.Errorf("重建后应有 2 个文件，got %v", got)
+			}
+		})
+	}
+}
+
+// TestLegacyJSONNotMigrated：检测到旧 index.json（无 index.db）→ 不加载、删除旧文件、
+// 状态回「未初始化」（配置存档保留）；随后全量重建产出 index.db。
+func TestLegacyJSONNotMigrated(t *testing.T) {
+	dir := t.TempDir()
+	writeTestProject(t, dir)
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer dropWorkspace(w.Dir)
+
+	legacy := `{"files":[{"path":"legacy.go","lang":"go","imports":[],"symbols":[{"file":"legacy.go","name":"Legacy","kind":"func","line":1}]}]}`
+	if err := os.WriteFile(filepath.Join(w.Store, indexLegacyName), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy json: %v", err)
+	}
+	w.setMeta(Meta{State: "ready", LastIndexedAt: 123, Exts: []string{".go"}})
+	if err := w.saveMeta(); err != nil {
+		t.Fatalf("saveMeta failed: %v", err)
+	}
+
+	ok, err := w.LoadIndex()
+	if err != nil {
+		t.Fatalf("旧 JSON 不应报错（不自动迁移）：%v", err)
+	}
+	if ok {
+		t.Error("旧 JSON 不应被加载")
+	}
+	if _, err := os.Stat(filepath.Join(w.Store, indexLegacyName)); !os.IsNotExist(err) {
+		t.Errorf("旧 index.json 应被删除（stat err=%v）", err)
+	}
+	if w.State() != "" {
+		t.Errorf("状态应回「未初始化」，got %q", w.State())
+	}
+	if w.Meta().Exts[0] != ".go" {
+		t.Errorf("配置存档应保留，got %+v", w.Meta())
+	}
+
+	if err := w.Initialize(nil, nil, nil); err != nil {
+		t.Fatalf("重建失败：%v", err)
+	}
+	if !w.dbExists() {
+		t.Error("重建后应存在 index.db")
+	}
+	if got, want := w.IndexedFiles(), []string{"main.go", "utils/helper.go"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("重建后文件集 = %v, want %v（不含旧 JSON 的 legacy.go）", got, want)
+	}
+}
+
+// TestConcurrentReadIndex：并发读安全（多 goroutine 同时 LoadIndex/查询，无错误/竞争）。
+func TestConcurrentReadIndex(t *testing.T) {
+	dir := t.TempDir()
+	writeTestProject(t, dir)
+
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if err := w.Initialize(nil, nil, nil); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	dropWorkspace(w.Dir)
+
+	w2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer dropWorkspace(w2.Dir)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 16)
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := w2.LoadIndex()
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !ok {
+				errs <- fmt.Errorf("LoadIndex=false")
+				return
+			}
+			if got := len(w2.IndexedFiles()); got != 2 {
+				errs <- fmt.Errorf("IndexedFiles=%d, want 2", got)
+				return
+			}
+			if got := len(w2.SearchSymbol("Helper", "", "", 0)); got != 1 {
+				errs <- fmt.Errorf("SearchSymbol(Helper)=%d, want 1", got)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Errorf("并发读失败：%v", e)
+	}
 }

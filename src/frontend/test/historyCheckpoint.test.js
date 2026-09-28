@@ -3,8 +3,9 @@
  *
  * 后端契约（已冻结，前端只照抄）：
  *   - prj 键 history.enabled（"true"/"false"，默认关）/ history.checkpoint_keep（默认 500）
- *     / history.checkpoint_ttl_days（默认 7）；内部键 history.status / history.timeline（只读 JSON）
- *     + history.clear（写入口）。
+ *     / history.checkpoint_ttl_days（默认 7）；
+ *   - **会话级内部键** history.status.<slug> / history.timeline.<slug>（slug = 根会话；只读 JSON；
+ *     I-135 —— 按会话、多会话并发互不覆盖）+ history.clear（写入口，值 = JSON {ts, session}；I-136）。
  *   - 刷新订阅既有广播 data-prj-config-refresh（= onDataRefresh('prj-config', …)），零新增 MQ 主题。
  *
  * 前端无组件级测试运行器（`npm test` = node:test 直跑，见 package.json）→
@@ -19,6 +20,8 @@ import {
   DEFAULT_CHECKPOINT_KEEP, DEFAULT_CHECKPOINT_TTL_DAYS,
   parseStatus, parseTimeline, relativeNumber, statusMode, statusEnabled,
   formatBytes, formatTime, retentionValue,
+  chainSlug, historyStatusKey, historyTimelineKey,
+  HISTORY_STATUS_PREFIX, HISTORY_TIMELINE_PREFIX,
 } from '../src/utils/historyTimeline.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -106,6 +109,25 @@ test('② retentionValue / 默认值：缺失或空 → 默认 500 / 7', () => {
   assert.equal(retentionValue('100', DEFAULT_CHECKPOINT_KEEP), '100')
 })
 
+test('② chainSlug / 会话级键：与后端 chainSlug 同口径（I-135）', () => {
+  // 会话 id 为 ASCII（uuid）→ 恒等
+  assert.equal(chainSlug('3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071'), '3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6071')
+  assert.equal(chainSlug('hist-12345'), 'hist-12345')
+  // 非安全字符折为 '_'；空白/空/'.'/'..' → default
+  assert.equal(chainSlug('a b/c'), 'a_b_c')
+  assert.equal(chainSlug('  padded  '), 'padded')
+  assert.equal(chainSlug(''), 'default')
+  assert.equal(chainSlug('   '), 'default')
+  assert.equal(chainSlug(null), 'default')
+  assert.equal(chainSlug('.'), 'default')
+  assert.equal(chainSlug('..'), 'default')
+  // 键名 = 前缀 + slug（与后端 statusKeyPrefix / timelineKeyPrefix 对齐）
+  assert.equal(HISTORY_STATUS_PREFIX, 'history.status.')
+  assert.equal(HISTORY_TIMELINE_PREFIX, 'history.timeline.')
+  assert.equal(historyStatusKey('s1'), 'history.status.s1')
+  assert.equal(historyTimelineKey('s1'), 'history.timeline.s1')
+})
+
 // ═══════════════════════════════════════════════════════════════
 // ③ 设置页：2 个设置项（键名/默认值/保存路径）
 // ═══════════════════════════════════════════════════════════════
@@ -139,13 +161,19 @@ test('③ HistoryConfig：保存一次批量写 history.checkpoint_keep / histor
 // ═══════════════════════════════════════════════════════════════
 // ④ 只读时间轴：数据来源 / 订阅 / 状态条字段 / 空态
 // ═══════════════════════════════════════════════════════════════
-test('④ HistoryConfig：读 history.status / history.timeline；订阅 prj-config；无 watch', () => {
+test('④ HistoryConfig：按**当前会话**读 status/timeline；订阅 prj-config；无 watch', () => {
   const src = read(HISTORY_VUE)
-  assert.match(src, /parseStatus\(c\['history\.status'\]\)/, '状态读 history.status（安全解析）')
-  assert.match(src, /parseTimeline\(c\['history\.timeline'\]\)/, '列表读 history.timeline（安全解析）')
-  // 2026-09-28：统一机制 usePrjConfigRefresh（I-138 收敛）——键过滤 + 突发合并 + 保存期间跳过
-  assert.match(src, /usePrjConfigRefresh\(\{[\s\S]*?reload: loadConfig,[\s\S]*?isSaving: \(\) => saving\.value/,
-    '须订阅既有 data-prj-config-refresh（统一机制，保存期间跳过）')
+  assert.match(src, /sessionSlug\.value = await activeSessionSlug\(\)/,
+    '须先取当前会话 slug（活动会话；I-135 按会话）')
+  assert.match(src, /getActiveSessionID\(\)/, '当前会话取 data-session-active-get（既有会话域只读面）')
+  assert.match(src, /parseStatus\(c\[historyStatusKey\(sessionSlug\.value\)\]\)/,
+    '状态读会话级键 history.status.<slug>（安全解析）')
+  assert.match(src, /parseTimeline\(c\[historyTimelineKey\(sessionSlug\.value\)\]\)/,
+    '列表读会话级键 history.timeline.<slug>（安全解析）')
+  // 2026-09-28：统一机制 usePrjConfigRefresh（I-138 收敛）——键过滤 + 突发合并 + 保存期间跳过；
+  // 会话级键走**前缀**匹配（slug 是运行期变量，不能列成精确键）
+  assert.match(src, /usePrjConfigRefresh\(\{[\s\S]*?prefixes: \[HISTORY_STATUS_PREFIX, HISTORY_TIMELINE_PREFIX\][\s\S]*?reload: loadConfig,[\s\S]*?isSaving: \(\) => saving\.value/,
+    '须订阅既有 data-prj-config-refresh（统一机制，会话级键按前缀过滤，保存期间跳过）')
   assert.doesNotMatch(src, /onDataRefresh\('prj-config'/, '不得再直接订阅 prj-config 广播（须走统一机制）')
   assert.match(src, /onUnmounted\(\(\) => \{[\s\S]*?unsubs\.forEach/, '须在卸载时退订')
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '禁止 watch/watchEffect（用 computed 派生）')
@@ -204,15 +232,24 @@ test('④ 空态可区分（未启用 vs 无检查点）', () => {
 // ═══════════════════════════════════════════════════════════════
 // ⑤ 清空历史：写 history.clear + 二次确认；零新增 MQ 主题
 // ═══════════════════════════════════════════════════════════════
-test('⑤ 清空历史：确认后写 history.clear（ISO 时间）并可见反馈', () => {
+test('⑤ 清空历史：确认后写 history.clear（JSON {ts,session}）并可见反馈', () => {
   const src = read(HISTORY_VUE)
   const fn = src.match(/async function handleClear\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)
   assert.ok(fn, '未找到 handleClear')
   assert.match(fn[0], /confirm\(t\('historyConfig\.clear_confirm'\)/, '须二次确认')
   assert.match(fn[0], /catch \(_\) \{\s*\n\s*return/, '取消须直接返回（不清空）')
-  assert.match(fn[0], /setConfig\('history\.clear', new Date\(\)\.toISOString\(\)\)/, '写入口 = history.clear + ISO 时间')
+  // I-136：只清**本会话** → 值 = JSON {ts, session}（session = 当前会话 slug）
+  assert.match(fn[0], /setConfig\('history\.clear', JSON\.stringify\(\{ ts: new Date\(\)\.toISOString\(\), session: sessionSlug\.value \}\)\)/,
+    '写入口 = history.clear + JSON {ts, session}（只清本会话链）')
   assert.match(fn[0], /message\.success\(/, '清空后须可见反馈')
   assert.match(src, /data-history-clear/, '须有清空按钮')
+  // UI 文案须为「清空本会话历史」（不再是仓库粒度）
+  const zh = readLocale('zh-CN', 'historyConfig.json')
+  const en = readLocale('en-US', 'historyConfig.json')
+  assert.match(zh.clear, /本会话/, 'zh 按钮文案须写明「本会话」')
+  assert.match(zh.clear_confirm, /当前会话/, 'zh 确认文案须写明「当前会话」')
+  assert.match(en.clear, /this session/i, 'en 按钮文案须写明 this session')
+  assert.match(en.clear_confirm, /current session/i, 'en 确认文案须写明 current session')
 })
 
 test('⑤ 零新增 MQ 主题：event-names.js 不得新增 history 通道', () => {

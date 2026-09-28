@@ -49,7 +49,7 @@
   "page": {
     "llm": "LLM Configuration",
     "mcp": "MCP Configuration",
-    "toolAsync": "Tool Async Configuration",
+    "toolAsync": "Tool Configuration",
     "toolSandbox": "Tool Sandbox Configuration",
     "paths": "Path Configuration",
     "params": "Parameter Configuration",
@@ -211,7 +211,7 @@
     "advancedHint": "The subprocess is killed at this limit; backgrounded tasks are bound by it too. Empty = fall back to global (unset); 0 / -1 = no limit (wait forever, user can cancel).",
     "restoreDefault": "Reset",
     "sourceUser": "User config",
-    "saved": "Tool async config saved",
+    "saved": "Tool config saved",
     "modeAlways": "Async only",
     "modeNever": "Sync only",
     "modeAuto": "Auto async",
@@ -221,7 +221,11 @@
     "descAuto": "Auto async: moves to background at the threshold (no re-run)",
     "descManual": "Manual async: arbitration at the threshold + a “to async” icon on the tool message",
     "naBadge": "N/A",
-    "hardTimeoutNotApplicable": "hard_timeout is not wired for dir-node tools and has no effect (mode / threshold still apply)"
+    "hardTimeoutNotApplicable": "hard_timeout is not wired for dir-node tools and has no effect (mode / threshold still apply)",
+    "touchFiles": "Touches files",
+    "touchFilesHint": "On = this tool touches files, so a checkpoint is taken before it runs; Off = it does not touch files → the call is passed through without a checkpoint (saves ~8–9 git processes). Defaults by origin: built-in tools only filesys_run / script_run touch files, other built-ins do not; dir-node / third-party tools default to touching (conservative). The end-of-turn checkpoint is always kept (a final image always exists); a wrong flag only coarsens checkpoint granularity (surrounding checkpoints remain, git diff consistency checks still apply) — safety is not lost.",
+    "checkpointOn": "Checkpoint",
+    "checkpointOff": "No checkpoint"
   },
   "toolSandbox": {
     "pageHint": "User-level config (usr db): one switch per executor category (core / desktop / browser — the three self executors) controlling all tools under that executor; when enabled, agentbox restricts their file access to the trust dirs (readable/writable, recursive) of the project security page. Changes are written only when you click Save (Save is disabled when there are no changes). Unset = no isolation.",

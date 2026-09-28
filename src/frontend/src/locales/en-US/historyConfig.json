@@ -33,8 +33,8 @@
   "col_delta": "+/−",
   "empty_disabled": "File history is not enabled (no checkpoint data).",
   "empty_none": "No checkpoints yet.",
-  "clear": "Clear history",
-  "clear_confirm_title": "Clear file history?",
-  "clear_confirm": "Clear all checkpoint history for this project? This cannot be undone.",
-  "cleared": "History cleared (processing in background)"
+  "clear": "Clear this session's history",
+  "clear_confirm_title": "Clear this session's file history?",
+  "clear_confirm": "Clear all checkpoint history for the current session? Other sessions' chains are unaffected. This cannot be undone.",
+  "cleared": "This session's history cleared (processing in background)"
 }

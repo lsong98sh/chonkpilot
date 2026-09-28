@@ -416,9 +416,9 @@ func TestCheckpointChainNoUserBranchCommit(t *testing.T) {
 	if !bytes.Equal(idx0, idx1) {
 		t.Fatal(".git/index 被打点改动（应只写临时 index）")
 	}
-	// 状态回写：history.status 含 checkpointCount=3
+	// 状态回写：history.status.<slug> 含 checkpointCount=3（I-135 按会话键）
 	var st chainStatus
-	if err := json.Unmarshal([]byte(x.reg.savedVal(statusKey)), &st); err != nil {
+	if err := json.Unmarshal([]byte(x.reg.savedVal(statusKeyPrefix+slug)), &st); err != nil {
 		t.Fatalf("history.status 回写内容非法: %v", err)
 	}
 	if st.CheckpointCount != 3 || st.Mode != "active" {
@@ -426,7 +426,7 @@ func TestCheckpointChainNoUserBranchCommit(t *testing.T) {
 	}
 	// 时间线回写：最新在前，n=-1..-3
 	var tl []timelineEntry
-	if err := json.Unmarshal([]byte(x.reg.savedVal(timelineKey)), &tl); err != nil {
+	if err := json.Unmarshal([]byte(x.reg.savedVal(timelineKeyPrefix+slug)), &tl); err != nil {
 		t.Fatalf("history.timeline 回写内容非法: %v", err)
 	}
 	if len(tl) != 3 || tl[0].N != -1 || tl[0].Tool != "tool3" {
@@ -879,5 +879,118 @@ func TestMessageDrivenCheckpointing(t *testing.T) {
 	emitJSON(t, x.bus, completeSubject, map[string]any{"session": "sessSub", "turn": "turnM", "status": "complete"})
 	if after := chainLen(t, wd, chainSlug("sessM")); after != before {
 		t.Fatalf("子会话不应触发轮末补点: %d → %d", before, after)
+	}
+}
+
+// TestTouchFilesSkipCheckpoint：「涉及文件变动」= false → 前置钩子放行、不打点；true / 缺省 → 打点；
+// 轮末补点仍发生（保证总有产像）。用户口径 2026-09-28。
+func TestTouchFilesSkipCheckpoint(t *testing.T) {
+	wd := newRepo(t)
+	x := newHarnessWithWd(t, wd, true, "", "")
+	ws := x.ws(t)
+	slug := chainSlug("sessTF")
+
+	// ① 不涉及（touch_files=false）：脏位已置 → 若未跳过必然打点
+	writeFileT(t, wd, "t.txt", "v1")
+	ws.dirty.Store(true)
+	emitJSON(t, x.bus, preHookSubject, map[string]any{
+		"tool": "self_file_read", "touch_files": false,
+		"context": map[string]any{"instance_id": testInstance, "session": "sessTF", "turn": "t1"},
+	})
+	if refExists(t, wd, slug) {
+		t.Fatal("touch_files=false 不应打点（省 git 进程）")
+	}
+
+	// ② 已登记会话归属 → 轮末补点（force）照常保底
+	emitJSON(t, x.bus, completeSubject, map[string]any{"session": "sessTF", "turn": "t1", "status": "complete"})
+	if n := chainLen(t, wd, slug); n != 1 {
+		t.Fatalf("轮末补点应保底产生 1 个检查点，got %d", n)
+	}
+
+	// ③ 涉及（touch_files=true）→ 打点
+	writeFileT(t, wd, "t.txt", "v2")
+	ws.dirty.Store(true)
+	emitJSON(t, x.bus, preHookSubject, map[string]any{
+		"tool": "self_filesys_run", "touch_files": true,
+		"context": map[string]any{"instance_id": testInstance, "session": "sessTF", "turn": "t2"},
+	})
+	if n := chainLen(t, wd, slug); n != 2 {
+		t.Fatalf("touch_files=true 应打点：链长 = %d，期望 2", n)
+	}
+
+	// ④ 缺省（载荷无 touch_files 字段）→ 与改前一致（打点）
+	writeFileT(t, wd, "t.txt", "v3")
+	ws.dirty.Store(true)
+	emitJSON(t, x.bus, preHookSubject, map[string]any{
+		"tool":    "self_unknown_tool",
+		"context": map[string]any{"instance_id": testInstance, "session": "sessTF", "turn": "t3"},
+	})
+	if n := chainLen(t, wd, slug); n != 3 {
+		t.Fatalf("缺省（无 touch_files）应按涉及打点：链长 = %d，期望 3", n)
+	}
+}
+
+// TestStatusTimelinePerSessionAndClearTarget：会话 A/B 各自独立回写 status/timeline（互不覆盖）；
+// history.clear（JSON `{ts,session}`）只清**目标会话**的链，其它链保留（I-135 / I-136 闭环）。
+func TestStatusTimelinePerSessionAndClearTarget(t *testing.T) {
+	wd := newRepo(t)
+	x := newHarnessWithWd(t, wd, true, "", "")
+	writeFileT(t, wd, "a.txt", "a1")
+	x.cp(t, "rootA", "toolA", "t1")
+	writeFileT(t, wd, "b.txt", "b1")
+	x.cp(t, "rootB", "toolB", "t1")
+	slugA, slugB := chainSlug("rootA"), chainSlug("rootB")
+
+	var stA, stB chainStatus
+	if err := json.Unmarshal([]byte(x.reg.savedVal(statusKeyPrefix+slugA)), &stA); err != nil {
+		t.Fatalf("A 状态应回写到 status.<slugA>：%v", err)
+	}
+	if err := json.Unmarshal([]byte(x.reg.savedVal(statusKeyPrefix+slugB)), &stB); err != nil {
+		t.Fatalf("B 状态应回写到 status.<slugB>：%v", err)
+	}
+	if stA.CheckpointCount != 1 || stB.CheckpointCount != 1 {
+		t.Fatalf("A/B 各自 status 应独立（互不覆盖）：A=%+v B=%+v", stA, stB)
+	}
+	var tlA, tlB []timelineEntry
+	_ = json.Unmarshal([]byte(x.reg.savedVal(timelineKeyPrefix+slugA)), &tlA)
+	_ = json.Unmarshal([]byte(x.reg.savedVal(timelineKeyPrefix+slugB)), &tlB)
+	if len(tlA) != 1 || tlA[0].Tool != "toolA" || tlA[0].Session != slugA {
+		t.Fatalf("A 时间线不符：%+v", tlA)
+	}
+	if len(tlB) != 1 || tlB[0].Tool != "toolB" || tlB[0].Session != slugB {
+		t.Fatalf("B 时间线不符：%+v", tlB)
+	}
+
+	// history.clear = {ts, session:rootA} → 只清 A
+	emitJSON(t, x.bus, prjConfigRefreshSubject, map[string]any{
+		"id": clearKey, "op": "save",
+		"list": map[string]any{clearKey: `{"ts":"2026-09-28T00:00:00Z","session":"rootA"}`},
+	})
+	if refExists(t, wd, slugA) {
+		t.Fatal("history.clear 应清空目标会话的链（rootA）")
+	}
+	if !refExists(t, wd, slugB) {
+		t.Fatal("其它会话的链应保留（rootB）")
+	}
+	// 清空后回写该会话空状态/空时间线（且不携带其它会话的最近打点时间）；B 不受影响
+	var stA2 chainStatus
+	if err := json.Unmarshal([]byte(x.reg.savedVal(statusKeyPrefix+slugA)), &stA2); err != nil {
+		t.Fatalf("清空后应回写 status.<slugA>：%v", err)
+	}
+	if stA2.CheckpointCount != 0 {
+		t.Fatalf("清空后 A 的 checkpointCount 应为 0，got %d", stA2.CheckpointCount)
+	}
+	if stA2.LastCheckpointAt != "" {
+		t.Fatalf("清空后 A 不应显示其它会话的最近打点时间，got %q", stA2.LastCheckpointAt)
+	}
+	var tlA2 []timelineEntry
+	if err := json.Unmarshal([]byte(x.reg.savedVal(timelineKeyPrefix+slugA)), &tlA2); err != nil {
+		t.Fatalf("清空后应回写 timeline.<slugA>：%v", err)
+	}
+	if len(tlA2) != 0 {
+		t.Fatalf("清空后 A 的时间线应为空，got %+v", tlA2)
+	}
+	if x.reg.savedVal(timelineKeyPrefix+slugB) == "" {
+		t.Fatal("B 的时间线不应被清空动作覆盖")
 	}
 }

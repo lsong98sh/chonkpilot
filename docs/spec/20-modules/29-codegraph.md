@@ -1,6 +1,6 @@
 # 29 · codegraph（代码语义索引）
 
-> 日期：2026-09-10（2026-09-27 更新：调用图 caller/callee） ｜ 状态：✅ 与代码一致（引擎已实现；插件多 workdir 已落地，工具面差异注册留待 v2，见 §9）
+> 日期：2026-09-10（2026-09-27 更新：调用图 caller/callee；2026-09-28 更新：索引落盘 JSON → bbolt） ｜ 状态：✅ 与代码一致（引擎已实现；插件多 workdir 已落地，工具面差异注册留待 v2，见 §9）
 > 关联：[28-plugins](28-plugins.md) · [12-数据层](../10-architecture/12-数据层.md)
 > 代码目录（D-28：`src/codegraph/` → `src/plugins/codegraph/`、`src/plugin-codegraph/` → `src/plugins/plugin-codegraph/`）：`src/plugins/codegraph/`（引擎 exe）· `src/plugins/plugin-codegraph/`（宿主插件）
 
@@ -19,7 +19,7 @@
 | 项 | 引擎（codegraph-mcp-server） | 插件（plugin-codegraph） |
 |----|------------------------------|--------------------------|
 | 形态 | 独立 exe（console，**CGO 允许**） | 内嵌 lib Hook（server 进程内） |
-| 运行 | `--http[=addr]`（默认 `127.0.0.1:5701`，端点 `/mcp`）· `--stdio` · `-probe <dir>` | stdio 子进程管理（懒建 client） |
+| 运行 | `--http[=addr]`（默认 `127.0.0.1:5701`，端点 `/mcp`）· `--stdio` · `-probe <dir>` · `-dump <dir>`（只读自检：打印落盘命中文件集合 JSON） | stdio 子进程管理（懒建 client） |
 | 构建 | `build-codegraph.ps1`（`CGO_ENABLED=1`，PATH 前置 `msys64/ucrt64/bin`） | 随 server 内嵌（`build-desktop.ps1`） |
 | 产物 | `dist/codegraph/chonkpilot-codegraph-mcp-server.exe` | — |
 
@@ -107,13 +107,26 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 - **取名**：取被调子树「最后一段」——成员/选择/作用域表达式递归其最后一段字段（go `selector_expression.field`、js/ts `member_expression.property`、python `attribute.attribute`、rust `field_expression.field`/`scoped_identifier.name`、java `field_access.field`/`scoped_type_identifier`）；java 泛型 `new Base<Args>()` 剥离 `type_arguments` 取 `Base`；go 泛型实例化 `Foo[T](a,b)` 取 `index_expression.operand`（→ `Foo`）；括号表达式下钻；**无法静态取名**者丢弃——go `fns[0]()`（下标为字面量）、js/py `a["x"]()`（`subscript_expression`）。去重 + 字典序稳定排序。
 - **限制**：纯 AST 文本口径，**无类型/重载/接收者解析**（见 §3.1）。另：Go 泛型实例化的**单参形式**（`Foo[T](x)`）在本 grammar 下被解析为 `type_conversion_expression`（类型转换）→ 不产生调用边；`m[key]()`（下标为非字面量）会按 `operand` 记为 `m`（假阳性，罕见）。
 
-### 4.3 持久化与调用图数据结构（`server/graph.go`）
+### 4.3 持久化与调用图数据结构（`server/graph.go` / `server/store.go`）
 
-- 目录：`<workDir>/.chonkpilot/codegraph/`，文件 `meta.json`（`enabled/state/progressDone/progressTotal/err/lastIndexedAt/skipDirs`）+ `index.json`。
-- `SaveIndex`：按 Path 排序 → 临时文件 + **rename 原子落盘**。
+- 目录：`<workDir>/.chonkpilot/codegraph/`；**索引本体 = bbolt 单文件库 `index.db`**（纯 Go、无 CGO，依赖 `go.etcd.io/bbolt` v1.4.2）；工作区元信息 `meta.json`（`enabled/state/progressDone/progressTotal/err/lastIndexedAt/skipDirs/stackGitignore/exts`）仍为独立 JSON —— **不并入库**：插件需**跨进程**轮询索引进度（`startProgressPoll` 读 `meta.json`），而 bolt 写事务持独占锁 → 跨进程只读取 meta 不可行（见 §4.5）。
+- **bucket 设计**（键一律为 store 相对 `/` 路径）：
+
+  | bucket | 键 | 值 |
+  |------|---|---|
+  | `meta` | `schema` | 格式版本 `codegraph-index/1`（bucket 结构/值编码变更时递增） |
+  | `files` | 相对路径 | 文件条目元数据 JSON（`lang/mtime/size/imports/hasErr`） |
+  | `symbols` | 相对路径 | 该文件符号数组 JSON（`[]Symbol`，保序，含 `calls`） |
+
+  不另设 `refs`/`deps` bucket：全部查询经内存 `Index`（`syms/byName/byCall`）派生，跨 bucket 拼装 `FileInfo` 徒增风险且无功能收益；**单文件条目即最小同步单元**。
+- **写路径（原子性）**：`SaveIndex`（全量；Initialize 结束）= 单事务重建 bucket 后写入全部条目；`Reconcile` = `saveIndexDelta`（单事务**只写变更文件** + 删除已移除文件）—— 替代旧「整体重写 `index.json`」。库连接**即开即关**（读 = 只读共享锁、写 = 独占锁），无 `.db` 锁残留（可立即重开 / 被其他进程只读）。
+- **载入**：`LoadIndex` 按 `files` 键**升序**拼装 `FileInfo`（= 旧 JSON 按 Path 排序的数组序，保证 `Callers` 截断顺序不变）→ `Index.AddFile` 重建 `syms/byName/byCall`；`-dump <dir>` 只读自检输出该命中文件集合（JSON `{count,files}`），不重建、不写盘。
+- **迁移口径（不自动迁移）**：检测到遗留 `index.json`（且无 `index.db`）→ 记日志 + **删除旧文件**（索引为派生数据，重建无损）+ 状态回「未初始化」→ 由插件编排执行一次**全量重建**。
+- **损坏兜底**：`index.db` 损坏/截断（`bolt.ErrInvalid` 或读页 panic）→ 记日志 + 删除损坏库 + 状态回「未初始化」（可重建）；写者持锁的 `bolt.ErrTimeout` 视为**瞬时错误上抛**（不删除、不改状态）；空文件视为未初始化。
+- **陈旧状态纠正**：`LoadIndex` 发现索引不可用（库缺失/损坏/旧 JSON）而元信息 `state=ready` → 一并回「未初始化」，使**插件侧就绪缓存失效**并触发全量重建（避免"元信息 ready + 无索引"的卡死态）。
 - Store 用**相对 `/` 路径**，对外拼绝对。
 - `symbolID = file:line:name:kind`；`wsReg` 进程内复用同一 workdir 的 Workspace。
-- **`Symbol.Calls []string`（`json:"calls,omitempty"`）**：该符号内的直接被调名（最后一段，去重排序）；随 `index.json` 自动往返（磁盘只存 `Files []*FileInfo`，`Index` 的 `syms/byName/byCall` 在 `AddFile` 重建）。
+- **`Symbol.Calls []string`（`json:"calls,omitempty"`）**：该符号内的直接被调名（最后一段，去重排序）；随 `index.db` 的 `symbols` bucket 自动往返（`Index` 的 `syms/byName/byCall` 在 `AddFile` 重建）。
 - **`Index.byCall map[string][]int`**（小写被调名 → 调用方符号下标）：`Calls` 的**反向索引**，`AddFile` 维护、`RemoveFile` 重建，供 `Callers` 免全表扫描。
 - **查询**（`server/graph.go`）：`Callers(target, file, limit) []Symbol`（按名匹配：忽略大小写全等 或 后缀 `.name`；`file` 过滤调用方文件；结果含 `calls`）；`Callees(id, file, name, limit) []CalleeRef`（`CalleeRef{name, resolved, kind, file, line, id}`；按 `id` 或 `file+name` 定位首个符号，逐个 `Calls` 经 `byName` 解析——**唯一命中**才回填 file/line/kind/id 且 `resolved=true`）。
 
@@ -141,7 +154,8 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 | 数据 | 位置 |
 |------|------|
-| 索引（`Index{Files, syms, byName, byCall}` + `Meta`；`Symbol.Calls` 调用图） | `<workDir>/.chonkpilot/codegraph/{index.json, meta.json}` |
+| 索引（`Index{Files, syms, byName, byCall}`；`Symbol.Calls` 调用图；bbolt bucket `meta/files/symbols`） | `<workDir>/.chonkpilot/codegraph/index.db`（bbolt 单文件库） |
+| 工作区元信息（`Meta`：enabled/state/进度/err/lastIndexedAt/skipDirs/stackGitignore/exts） | `<workDir>/.chonkpilot/codegraph/meta.json`（跨进程进度读取，见 §4.3） |
 | 启用开关 `enable-codegraph` / 索引配置 `codegraph.exts`·`codegraph.skip-dirs`·`codegraph.stack-gitignore` | **prj 库** config（团队共享；插件读写） |
 | 状态 `codegraph.status` | **prjusr 库** config（个人运行态；插件回写、UI 只读回显。**2026-09-15 订正：原记「prj 库」有误**） |
 
@@ -149,7 +163,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 ## 6. 依赖
 
-- 引擎：官方 `go-sdk` + `github.com/tree-sitter/go-tree-sitter` + 6 个 grammar（社区版）。**CGO**。
+- 引擎：官方 `go-sdk` + `github.com/tree-sitter/go-tree-sitter` + 6 个 grammar（社区版）+ **`go.etcd.io/bbolt` v1.4.2（索引落盘，纯 Go、无 CGO）**。**CGO 仅来自 tree-sitter**（见 §2 注）。
 - 插件：`src/lib` · `src/plugin`；由 server 内嵌。
 - **不依赖** mcp-tools / gateway / data（索引独立）。
 
@@ -160,7 +174,9 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 | 决策 | 结论 | 理由 |
 |------|------|------|
 | 独立 console exe | 与主模块分离，允许 CGO | 主模块 CGO 禁令；tree-sitter 官方绑定需 CGO |
-| 索引不入 chonkpilot.db | 独立目录 + 原子落盘 | 派生数据、体量大、可重建 |
+| 索引不入 chonkpilot.db | 独立目录 + 独立落盘 | 派生数据、体量大、可重建 |
+| 索引落盘 = **bbolt 单文件库**（`index.db`） | bucket `meta/files/symbols`；事务原子 + 增量只写变更文件 | 旧 JSON「整体重写」非原子且 O(N)；bolt 提供原子事务/增量写/多读单写，纯 Go 不引入 CGO（**2026-09-28** 由 JSON 改为 bbolt） |
+| 工作区元信息保留 `meta.json` | 与索引库分离 | 插件需**跨进程**读索引进度；bolt 写期独占锁 → 只读取 meta 不可行 |
 | 管理工具 hot=false | 不发 LLM | 管理动作由插件调用 |
 | workdir 在插件侧剥离 | gateway 工具去 `workdir` | 由 `context.instance_id` 路由 |
 | 就绪门控在插件 | 引擎不判可见性 | 职责单一 |
@@ -178,6 +194,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 ## 9. 现状与待办
 
+- ✅ **索引落盘由 JSON 改为 bbolt（2026-09-28）**：索引本体 = `<workDir>/.chonkpilot/codegraph/index.db`（bucket `meta/files/symbols`；事务原子 + 增量只写变更）；`meta.json` 保留为工作区元信息（跨进程进度）；旧 `index.json` **不自动迁移**（检测到即删除 + 全量重建），损坏/截断库自动删除重建。引擎新增只读自检 `-dump <dir>`（L4 命中集合断言用）。详见 §4.3。
 - ✅ **调用图（caller/callee）已落地（2026-09-27）**：新增 `codegraph_callers` / `codegraph_callees` 两个 hot 查询工具（引擎 11 工具 = 3 管理 + 8 查询；插件 gateway 同步注册 8 个）；`Symbol.Calls` + `Index.byCall` 反向索引；7 语言 AST 调用提取（口径与限制见 §3.1/§4.2）。**已知限制**：名字级启发式（无类型/重载/接收者解析、不区分跨包同名）、仅直接调用、动态派发与未索引符号不参与。
 - ✅ **多 workdir（T-12 / P2-4 / D-11，2026-09-15 后已落地）**：引擎子进程与索引状态**已按 workdir 独立**（`p.clients[workdir]` 每 workdir 一个子进程，独立索引内存/独立串行；空闲按 workdir 独立回收）——`codegraph.status` 键结构与 JSON 字段**未变**（写到该 workdir 实例的 prjusr 库）；**工具面/工具名/schema 未变**（LLM 不感知 workdir，靠 `context.instance_id → workdir` 路由）。**工具面差异注册（按 workdir 区分工具名/可见性）留待 v2**（gateway `tools/register` 无 scope，且契约要求工具名 = 引擎名 → 同名只能一份注册，多 workdir 同时启用时仍全局一份、归属排序后第一个 workdir）。
 - ⚠️ 引擎侧 `Configure` 的 `enabled` 仅记录，**真正门控在插件**（文档需以此为准）。
@@ -190,7 +207,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 ## 10. 关联测试
 
-- 引擎：`src/plugins/codegraph/server/server_test.go`（52 个测试：path / Index / Workspace 持久化 / 查询 / 语言 / 扫描-初始化-自愈 / 参数助手与 readyGate / **调用图**）。
+- 引擎：`src/plugins/codegraph/server/server_test.go`（59 个测试：path / Index / Workspace 持久化 / 查询 / 语言 / 扫描-初始化-自愈 / 参数助手与 readyGate / **调用图** / **bbolt 索引落盘**）。
 - 插件：`src/plugins/plugin-codegraph/codegraph_test.go`（工具定义 / schema / exe 路径解析）。
 
 ### 单元测试计划（本节由原测试计划整体迁入，2026-09-11）
@@ -206,6 +223,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 | 5 索引生命周期（`index.go`） | `TestLangForExt` `TestSupportedLangs` `TestCollectSourceFiles` `TestCollectSourceFilesSkipDirs` **`TestCollectSourceFilesStackGitignore`** `TestInitialize` `TestReconcileNoChange` `TestReconcileNewFile` `TestReconcileModifiedFile` `TestReconcileDeletedFile` `TestEnsureReady` `TestInitializeWithSkipDirs` | 扩展名→语言（7 种）、支持列表、文件扫描（默认排除 / 用户规则 / **gitignore 语义：stack 关不读 .gitignore、目录不下降 + 文件级排除、`!` 反选**）、全量建索引、reconcile 无变/新增/修改/删除、ready 门控、带 skipDirs 初始化 |
 | 6 工具辅助函数（`server.go`） | `TestGetString` `TestGetInt` `TestGetBoolPtr` `TestGetStrings` `TestNeedWS` `TestReadyGate` | 参数提取（含默认值/布尔指针/字符串数组）、工作区打开、就绪门控 |
 | 7 调用图（`extract.go` `callKinds`/`callsWithin` + `graph.go` `Callers`/`Callees` + `server.go` 新工具） | `TestCallGraphExtraction`（+`persist round-trip`）· `TestCallers` · `TestCallees` · `TestCallGraphTools` | **7 语言真实语料**的调用提取（普通/方法/选择表达式最后一段/跨文件/`new`/宏/泛型剥离/内层函数剪枝）与 `Calls` 落盘往返；查询（精确名/大小写/`pkg.Foo`↔`Foo`/file 过滤/limit/未命中/无索引/调用方自带 calls）；`Callees`（id 或 file+name 定位/唯一解析回填/歧义 `resolved=false`/limit/未找到）；工具层（正常/未就绪/参数缺失/未命中 + `TextToolNames` 自检） |
+| 8 索引落盘（bbolt，`store.go`） | `TestIndexStoreUsesBoltDB` · `TestIndexReloadAfterClose` · `TestReconcileIncrementalPersists` · `TestLoadIndexCorruptDB`（garbage/truncated/empty）· `TestLegacyJSONNotMigrated` · `TestConcurrentReadIndex` | 落盘为 `index.db`（不再产出 `index.json`）；即开即关后新实例重开完整读回（符号 ID 重建/导入/基线字段）；增量（新增+修改+删除）只写变更并重开一致；损坏/截断/空库**兜底**（不 panic、视为未初始化可重建）；旧 JSON **不自动迁移**（删除 + 状态回未初始化 + 重建）；并发读安全（16 goroutine） |
 
 **插件测试**：`src/plugins/plugin-codegraph/codegraph_test.go`（不依赖 MQ）：`TestQueryToolDefinitions`（8 个查询工具名称/描述/schema 不含 workdir）· `TestSchemaJSON` · `TestToolReply` · `TestStrval`（string/bool/nil 归一）· `TestResolveExe`（模拟 dist 布局，验证 exe 搜索优先级）· **索引配置（2026-09-27）**：`TestSplitRules`（规则保序且保留重复项）· `TestReadIndexConfig`（`skip_dirs` 原样透传 + `stack_gitignore` 透传 + 幂等基线播种）· **编排白盒（T-11/T-18）**：`TestRunWithRetry`（重试/退避）· `TestIdleReclaimDue`（空闲回收判定）· `TestPhaseStatusJSON`（进度快照 `{state,phase,progressDone,progressTotal}`）· `TestReadEngineProgress` / `TestPollEngineProgressSequence`（读/轮询引擎 `meta.json`）· **多 workdir（T-12/P2-4，2026-09-15 后）**：`TestMultiWorkdirIndexAndQueryIsolation`（两 workdir 各自 `files:3`/`files:7` 互不覆盖、状态各写各的 prj 库、查询不串台）· `TestClientForPerWorkdirIdentity`（同 workdir 复用、异 workdir 各自独立 client）· `TestSweepIdleClientPerWorkdir`（空闲回收按 workdir 独立判定/回收）。
 

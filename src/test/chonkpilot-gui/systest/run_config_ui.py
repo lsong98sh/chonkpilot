@@ -1622,12 +1622,20 @@ def _hist_wait(cli, pred, desc, max_wait=8):
     raise TestError("%s 超时；末次观测=%r" % (desc, last))
 
 
+_HIST_SID = "l4-hist-sess"  # 固定会话（= 链 slug）：页面按**当前会话**读会话级键（I-135）
+
+
 def _hist_seed_prj(cli, status_obj, timeline_arr):
-    """直写 prj `history.status` / `history.timeline`（真机落库；供只读时间轴渲染断言）。"""
+    """直写**会话级**键 `history.status.<slug>` / `history.timeline.<slug>`（真机落库；
+    供只读时间轴渲染断言）。先确保该会话存在并设为**活动会话** → 页面按当前会话读取（I-135）。"""
+    cli.req("data-session-ensure-session", {"session_id": _HIST_SID})
+    cli.req("data-session-active-set", {"session_id": _HIST_SID})
     cli.req("data-prj-config-save",
-            {"data": {"key": "history.status", "value": json.dumps(status_obj, ensure_ascii=False)}})
+            {"data": {"key": "history.status." + _HIST_SID,
+                      "value": json.dumps(status_obj, ensure_ascii=False)}})
     cli.req("data-prj-config-save",
-            {"data": {"key": "history.timeline", "value": json.dumps(timeline_arr, ensure_ascii=False)}})
+            {"data": {"key": "history.timeline." + _HIST_SID,
+                      "value": json.dumps(timeline_arr, ensure_ascii=False)}})
 
 
 def _hist_set_inputs(cli, keep, ttl):
@@ -1710,8 +1718,8 @@ def case_d2_history_ui_details():
         for key in ("模式", "检查点数", "占用体积", "最近打点", "最近耗时", "失败次数"):
             if key not in dom["statusKeys"]:
                 raise TestError("状态条缺字段 %r，实际=%r" % (key, dom["statusKeys"]))
-        if not dom["clearExists"] or dom["clearText"] != "清空历史":
-            raise TestError("【清空历史】按钮缺失/文案不符：exists=%s text=%r"
+        if not dom["clearExists"] or dom["clearText"] != "清空本会话历史":
+            raise TestError("【清空本会话历史】按钮缺失/文案不符：exists=%s text=%r"
                             % (dom["clearExists"], dom["clearText"]))
 
         # ── ② 空态分流 A：未启用（status off）+ 空时间轴 → 「…未启用…」 ──

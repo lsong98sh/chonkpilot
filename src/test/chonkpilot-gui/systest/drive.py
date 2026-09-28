@@ -25,6 +25,7 @@ import os
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import harness  # noqa: E402  （统一的起停/回收：按需加载 + 结束即关）
+from chonk_client import retryable  # noqa: E402  （驱动指令的瞬态有界重试；口径见其模块头）
 
 # GUI 产物候选（顺序 = 优先级）：dist/desktop（主力发行目录）→ src/gui/dist（旧路径，仅兼容回落）。
 EXE_CANDIDATES = harness.GUI_EXE_CANDIDATES
@@ -101,24 +102,34 @@ class GUIClient:
     # `test_statusbar.py:48`）。预算提到 30s（test 通道自身钳制上限，见
     # `src/lib/gui/testserver.go:141`），HTTP 客户端超时同步提到 60s。
     # 就绪探测另有 `harness.wait_probe` 对瞬时超时**重试**（[42 §2 (148)]）。
+    # 断言期的驱动指令（eval/click/input/text/html/exists/console）统一由 `@retryable`
+    # 对「瞬态/超时类」错误做**有界重试**（口径见 `chonk_client` 模块头）；`req`/`publish`
+    # 走消息面请求-响应、可能有副作用，**不重试**。
+    @retryable("eval")
     def eval(self, js, timeout=30000):
         return self._result(self._post("/eval", {"js": js, "timeout": timeout}))
 
+    @retryable("click")
     def click(self, selector, timeout=30000):
         return self._result(self._post("/click", {"selector": selector, "timeout": timeout}))
 
+    @retryable("input")
     def input(self, selector, value, timeout=30000):
         return self._result(self._post("/input", {"selector": selector, "value": value, "timeout": timeout}))
 
+    @retryable("text")
     def text(self, selector, timeout=30000):
         return self._result(self._post("/text", {"selector": selector, "timeout": timeout}))
 
+    @retryable("html")
     def html(self, selector, timeout=30000):
         return self._result(self._post("/html", {"selector": selector, "timeout": timeout}))
 
+    @retryable("exists")
     def exists(self, selector, timeout=30000):
         return self._result(self._post("/exists", {"selector": selector, "timeout": timeout}))
 
+    @retryable("console")
     def console(self, clear=False, timeout=30000):
         return self._result(self._post("/console", {"clear": clear, "timeout": timeout}))
 

@@ -24,14 +24,14 @@ var toolSpecs = []toolSpec{
 	// ---- 管理类（hot=false，plugin 直接调用，不发给 LLM）----
 	{
 		Name:        "codegraph_configure",
-		Description: "配置某 workdir 的 codegraph 工作区：enabled 标识、参与索引的扩展名 exts、排除规则 skip_dirs（gitignore 语法，最高优先级）、是否叠加 gitignore 体系 stack_gitignore（可见性门控由调用方/plugin 负责，引擎仅记录与存档）；mode=clear 时额外清除该 workdir 的索引产物（删除 index.json、状态回未初始化，配置存档保留）。",
+		Description: "配置某 workdir 的 codegraph 工作区：enabled 标识、参与索引的扩展名 exts、排除规则 skip_dirs（gitignore 语法，最高优先级）、是否叠加 gitignore 体系 stack_gitignore（可见性门控由调用方/plugin 负责，引擎仅记录与存档）；mode=clear 时额外清除该 workdir 的索引产物（删除 index.db、状态回未初始化，配置存档保留）。",
 		Props: map[string]any{
 			"workdir":         map[string]any{"type": "string", "description": "项目根目录（绝对路径）"},
 			"enabled":         map[string]any{"type": "boolean", "description": "是否启用（缺省不改）"},
 			"exts":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "参与索引的扩展名（如 [\".go\",\".ts\"]；缺省不改，替换式；空数组 = 全部受支持语言）"},
 			"skip_dirs":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "用户排除规则（gitignore 语法，每项一条；优先级最高；缺省不改）"},
 			"stack_gitignore": map[string]any{"type": "boolean", "description": "是否额外应用各级 .gitignore / .git/info/exclude / 全局 ignore（缺省不改）"},
-			"mode":            map[string]any{"type": "string", "description": "操作模式：缺省 = 仅存档配置；clear = 清除索引产物（删 index.json、状态回未初始化；enabled/exts/skip_dirs 保留）"},
+			"mode":            map[string]any{"type": "string", "description": "操作模式：缺省 = 仅存档配置；clear = 清除索引产物（删 index.db、状态回未初始化；enabled/exts/skip_dirs 保留）"},
 		},
 		Required: []string{"workdir"},
 		Fn:       toolConfigure,

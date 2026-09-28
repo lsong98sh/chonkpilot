@@ -13,6 +13,7 @@
   GET  /screenshot → PNG
 """
 
+import functools
 import json
 import time
 import urllib.request
@@ -21,6 +22,65 @@ import urllib.error
 
 class TestError(AssertionError):
     """断言失败。"""
+
+
+# ── 瞬态错误有界重试（**仅**驱动/取数层；不包裹任何断言）────────────────────
+#
+# 背景（已知抖动，用户核准加重试）：满负载批量跑时 WebView2 UI 线程偶发 starvation →
+# 驱动指令（`/eval` 及其之上的 `/click` `/input` `/text` `/html` `/exists` `/console`；服务端
+# 统一走 `doEval`→`EvalWithResult`，见 `src/lib/gui/testserver.go:226`）派发的 ExecuteScript
+# 在预算内拿不到调度 → 抛 `ExecuteScript timed out`（`src/lib/go-webview2/webview.go:645`：
+# 派发到 UI 线程 + 等回调，超时即报错）→ 断言脚崩溃（批内偶发红、单跑全绿）。
+# 就绪探测早有 `harness.wait_probe` 容忍瞬时错误（[42 §2 (148)]），**断言期**的驱动调用此前没有。
+#
+# 口径（守住「不掩盖产品缺陷」的底线）：
+#   * **只**重试「瞬态/超时类」错误（见 TRANSIENT_ERRORS）：ExecuteScript/网络超时、连接类瞬态；
+#     业务失败——元素不存在（`not found: …`）、脚本自身抛错、`/publish` 信封 `ok=false` 等——
+#     **立即上抛，绝不重试**；
+#   * **有界**：每次调用额外重试 ≤ `RETRY_MAX` 次（总尝试 = RETRY_MAX+1），退避 `RETRY_BACKOFF`；
+#   * **可观测**：每次重试打印一行 `[retry] <调用>: <错误>, attempt n/m, backoff Xs`
+#     （便于区分「真绿」与「重试后绿」）；
+#   * **作用域**：仅驱动/取数指令（`.eval/.click/.input/.text/.html/.exists/.console`）；
+#     `/publish`（`req`/`publish`，消息面请求-响应，可能触发落库/LLM/工具等**副作用**）**不重试**，
+#     断言（`Checker`/`run_case`/`assert_*`）**不重试**。
+#
+# 关于「重试是否可能重复施加副作用」（如 `eval` 里 `el.click()`）：`EvalWithResult` 的超时
+# 覆盖「派发 + 执行 + 回调」全程；UI 线程饥饿时派发闭包**尚未执行**即超时（回调若已触发，
+# 结果会先入 `ch` 缓冲区）——故超时通常意味着该 JS 未运行，重试等价于「再派发一次」。
+RETRY_MAX = 2
+RETRY_BACKOFF = (0.5, 1.0)
+TRANSIENT_ERRORS = ("ExecuteScript timed out", "timed out", "10061", "10054", "refused",
+                    "reset", "RemoteDisconnected", "connection aborted")
+
+
+def is_transient_error(exc):
+    """错误是否属「瞬态/超时类」（可由重试消除，非产品缺陷）。"""
+    msg = str(exc)
+    return any(t in msg for t in TRANSIENT_ERRORS)
+
+
+def retryable(name):
+    """装饰驱动/取数指令方法：**仅**对其抛出的瞬态错误做有界重试，其余立即上抛。
+
+    只包裹「取数 / 派发」这一层；不得用于断言（断言失败必须原样暴露）。
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            failures = 0
+            while True:
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as e:
+                    if failures >= RETRY_MAX or not is_transient_error(e):
+                        raise
+                    backoff = RETRY_BACKOFF[min(failures, len(RETRY_BACKOFF) - 1)]
+                    failures += 1
+                    print("[retry] %s: %s, attempt %d/%d, backoff %.1fs"
+                          % (name, e, failures + 1, RETRY_MAX + 1, backoff), flush=True)
+                    time.sleep(backoff)
+        return wrapper
+    return deco
 
 
 class ChonkClient:
@@ -66,43 +126,50 @@ class ChonkClient:
             time.sleep(1)
         raise TestError(f"IDE 测试通道 {max_wait}s 内未就绪")
 
+    @retryable("eval")
     def eval(self, js, timeout=5000):
-        """执行 JS，返回 EvalWithResult 解包后的原始结果。"""
+        """执行 JS，返回 EvalWithResult 解包后的原始结果（瞬态超时由装饰器有界重试）。"""
         r = self._post("/eval", {"js": js, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/eval 失败: {r.get('error')}")
         return r.get("result")
 
+    @retryable("click")
     def click(self, selector, timeout=5000):
         r = self._post("/click", {"selector": selector, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/click 失败: {r.get('error')}")
         return r.get("result")
 
+    @retryable("input")
     def input(self, selector, value, timeout=5000):
         r = self._post("/input", {"selector": selector, "value": value, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/input 失败: {r.get('error')}")
         return r.get("result")
 
+    @retryable("text")
     def text(self, selector, timeout=5000):
         r = self._post("/text", {"selector": selector, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/text 失败: {r.get('error')}")
         return r.get("result")
 
+    @retryable("html")
     def html(self, selector, timeout=5000):
         r = self._post("/html", {"selector": selector, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/html 失败: {r.get('error')}")
         return r.get("result")
 
+    @retryable("exists")
     def exists(self, selector, timeout=5000):
         r = self._post("/exists", {"selector": selector, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/exists 失败: {r.get('error')}")
         return r.get("result")
 
+    @retryable("console")
     def console(self, clear=False, timeout=5000):
         r = self._post("/console", {"clear": clear, "timeout": timeout})
         if not r.get("ok"):
@@ -123,6 +190,7 @@ class ChonkClient:
 
         业务消息面 payload 传对象（本方法负责 JSON 编码，与前端 mq.js publishToBackend 同形）；
         跨窗口时由 `window_id` 指定目标窗口（见 `__init__`）。
+        **不重试**：消息面请求-响应可能触发落库/LLM/工具等副作用（见模块头「瞬态重试」口径）。
         """
         body = {"type": typ,
                 "payload": json.dumps(payload, ensure_ascii=False) if payload is not None else "",
@@ -136,6 +204,7 @@ class ChonkClient:
 
         桥 PublishEvent → persist/gateway 写回 result；返回 result 载荷；
         信封 ok=false / errors 非空 / result.ok=false → 抛 TestError。
+        **不重试**（同 publish：请求-响应可能有副作用）。
         """
         body = {"type": typ,
                 "payload": json.dumps(payload, ensure_ascii=False) if payload is not None else "",

@@ -671,7 +671,7 @@ func (p *Codegraph) ensureWorkspace(wd string, force bool) {
 }
 
 // clearWorkspace 清除该 workdir 的索引产物：调引擎 codegraph_configure {mode:"clear"}
-// （引擎删除落盘 index.json + 内存索引置空 + 状态回「未初始化」；配置存档保留）→ 再查引擎
+// （引擎删除落盘索引库 index.db + 内存索引置空 + 状态回「未初始化」；配置存档保留）→ 再查引擎
 // 状态回写 codegraph.status（复用既有状态面，UI 据此回显「未初始化」）。
 // 与 ensureWorkspace 同持该 workdir 的 cmu（互斥索引编排，避免与在途重建互踩）。
 func (p *Codegraph) clearWorkspace(wd string) {

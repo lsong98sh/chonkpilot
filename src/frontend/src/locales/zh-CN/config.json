@@ -49,7 +49,7 @@
   "page": {
     "llm": "LLM 配置",
     "mcp": "MCP 配置",
-    "toolAsync": "工具异步配置",
+    "toolAsync": "工具配置",
     "toolSandbox": "工具沙箱配置",
     "paths": "路径配置",
     "params": "参数配置",
@@ -211,7 +211,7 @@
     "advancedHint": "到点后子进程会被强制结束；转后台的任务同样受此上限约束。留空 = 回落全局（未设置）；0 / -1 = 无上限（永远等待，用户可取消）。",
     "restoreDefault": "重置",
     "sourceUser": "用户配置",
-    "saved": "工具异步配置已保存",
+    "saved": "工具配置已保存",
     "modeAlways": "仅异步",
     "modeNever": "仅同步",
     "modeAuto": "自动异步",
@@ -221,7 +221,11 @@
     "descAuto": "自动异步：到阈值转后台（不重跑）",
     "descManual": "手动异步：到阈值弹裁决 + 工具消息上可点「转异步」",
     "naBadge": "不适用",
-    "hardTimeoutNotApplicable": "dir 节点工具的 hard_timeout 未接线、不生效（mode / 阈值仍适用）"
+    "hardTimeoutNotApplicable": "dir 节点工具的 hard_timeout 未接线、不生效（mode / 阈值仍适用）",
+    "touchFiles": "涉及文件变动",
+    "touchFilesHint": "开 = 该工具涉及文件变动，执行前打检查点（打点）；关 = 不涉及 → 直接放行、不打点（省约 8–9 次 git 进程）。缺省按工具来源：内置仅 filesys_run / script_run 涉及，其余内置不涉及；dir 节点 / 第三方保守按涉及。轮末补点始终保留（保证总有产像）；标错只会让检查点粒度变粗（前后点仍在、git diff 一致性校验仍生效），不丢安全。",
+    "checkpointOn": "打点",
+    "checkpointOff": "不打点"
   },
   "toolSandbox": {
     "pageHint": "用户级配置（usr 库）：按 executor 类别（core / desktop / browser，即 self 的三个执行器）各一个开关，管制该执行器下全部工具；开启后由 agentbox 按项目安全页的信任目录（可读/可写、递归）限制其文件访问。拨动后点【保存】才落库，无改动时保存按钮禁用。未设置 = 不隔离。",

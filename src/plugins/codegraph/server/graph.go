@@ -1,17 +1,21 @@
 // Package server 实现 chonkpilot-codegraph 引擎 lib：
 // 多语言(tree-sitter 官方 grammar)符号索引，按 workdir 组织工作区并持久化到
-// <workdir>/.chonkpilot/codegraph/（meta.json + index.json），支持增量自愈刷新。
-// 查询工具显式带 workdir 参数；进程可退化为"每次调用拉起"或由宿主长驻复用。
+// <workdir>/.chonkpilot/codegraph/（索引本体 = bbolt 单文件 index.db，工作区元信息 = meta.json），
+// 支持增量自愈刷新。查询工具显式带 workdir 参数；进程可退化为"每次调用拉起"或由宿主长驻复用。
 package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 // Symbol 一个被索引的定义符号。
@@ -42,6 +46,7 @@ type FileInfo struct {
 }
 
 // Index 一个 workdir 的符号索引（在内存中不可变追加；reconcile 时整体替换）。
+// 落盘 = bbolt 单文件 index.db（bucket: meta/files/symbols），见 store.go。
 type Index struct {
 	Files  map[string]*FileInfo
 	syms   []Symbol
@@ -136,7 +141,6 @@ type Workspace struct {
 }
 
 const metaName = "meta.json"
-const indexName = "index.json"
 
 var wsMu sync.Mutex
 var wsReg = map[string]*Workspace{} // Dir → Workspace（常驻复用）
@@ -226,55 +230,52 @@ func (w *Workspace) setMeta(m Meta) {
 	w.mu.Unlock()
 }
 
-// LoadIndex 从盘恢复索引；不存在则返回 false（未就绪）。
+// LoadIndex 从盘（bbolt index.db）恢复索引；不存在/不可用则返回 false（未就绪）。
+// 迁移口径：**不自动迁移**旧 JSON 索引——检测到遗留 index.json（且无 index.db）→ 记日志 +
+// 删除旧文件 + 状态回「未初始化」，由调用方（插件编排）执行一次全量重建。
+// 库损坏/截断 → 同法兜底（视为未初始化、可重建），不向上抛错（写者持锁的瞬时超时除外）。
 func (w *Workspace) LoadIndex() (bool, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.ix != nil {
+	loaded := w.ix != nil
+	w.mu.Unlock()
+	if loaded {
 		return true, nil
 	}
-	b, err := os.ReadFile(filepath.Join(w.Store, indexName))
+
+	if w.legacyJSONExists() && !w.dbExists() {
+		log.Printf("[codegraph] %s 检测到旧 JSON 索引（%s）——已弃用（改用 bbolt %s）：删除旧文件并要求全量重建",
+			w.Dir, indexLegacyName, dbName)
+		_ = os.Remove(filepath.Join(w.Store, indexLegacyName))
+		w.resetIndexStateIfReady("索引存储已升级为 bbolt——状态回未初始化，需全量重建")
+		return false, nil
+	}
+
+	ix, present, err := w.loadIndexFromDB()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
+		if errors.Is(err, bolt.ErrTimeout) {
+			return false, err // 另一写者持锁：瞬时错误，不改状态、不降级
 		}
-		return false, err
+		if !errors.Is(err, bolt.ErrInvalid) && !errors.Is(err, errCorruptDB) {
+			return false, err // 非损坏（权限/IO 等）→ 上抛，不静默降级
+		}
+		log.Printf("[codegraph] %s 索引库损坏（%v）——删除损坏库并视为未初始化，需全量重建", w.Dir, err)
+		_ = os.Remove(w.dbPath())
+		w.resetIndexStateIfReady("索引库损坏——状态回未初始化，需全量重建")
+		return false, nil
 	}
-	var dump struct {
-		Files []*FileInfo `json:"files"`
+	if !present {
+		w.resetIndexStateIfReady("索引库缺失——状态回未初始化，需全量重建")
+		return false, nil
 	}
-	if err := json.Unmarshal(b, &dump); err != nil {
-		return false, fmt.Errorf("index.json 解析失败: %w", err)
-	}
-	ix := newIndex()
-	for _, fi := range dump.Files {
-		ix.AddFile(fi)
-	}
+	w.mu.Lock()
 	w.ix = ix
+	w.mu.Unlock()
 	return true, nil
 }
 
-// SaveIndex 原子落盘索引快照（reconcile/init 结束时调用）。
-func (w *Workspace) SaveIndex() error {
-	w.mu.Lock()
-	ix := w.ix
-	var dump struct {
-		Files []*FileInfo `json:"files"`
-	}
-	if ix != nil {
-		dump.Files = make([]*FileInfo, 0, len(ix.Files))
-		for _, fi := range ix.Files {
-			dump.Files = append(dump.Files, fi)
-		}
-		sort.Slice(dump.Files, func(i, j int) bool { return dump.Files[i].Path < dump.Files[j].Path })
-	}
-	w.mu.Unlock()
-	b, err := json.MarshalIndent(dump, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeFile(filepath.Join(w.Store, indexName), b)
-}
+// SaveIndex 全量落盘索引快照（bolt 单事务，原子；Initialize 结束时调用）。
+// 增量更新走 saveIndexDelta（Reconcile）。
+func (w *Workspace) SaveIndex() error { return w.saveIndexFull() }
 
 func writeFile(path string, b []byte) error {
 	tmp := path + ".tmp"

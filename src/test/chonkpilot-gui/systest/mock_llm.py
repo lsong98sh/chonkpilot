@@ -424,6 +424,23 @@ def route_tool_calls(text):
     #    → 触发 filesys.changed → 插件置脏 → 前置钩子 / 轮末补点打点（检查点链）。
     # ② history_restore 单文件回滚：`histrel=<workdir 相对路径>` + 可选 `histto=<负整数|commit id>`。
     # ③ 空 path → 拒绝；④ 目录 path（`histrel=<相对目录>`）→ 拒绝（单文件、禁止批量）。
+    # ⑤ 「涉及文件变动」端到端（run_hist_git H6）：**同一轮内两次工具调用**——
+    #    ① history_restore（执行时**同步置脏**，确定性，不依赖 fsnotify 去抖）
+    #    → ② filesys_run RPL 改文件（其**前置钩子**读到脏位 → 该工具的 touch_files 决定是否打点）。
+    if "call hist-dirty-write" in t:
+        rel = _prompt_arg(text, "histrel")
+        to = _prompt_arg(text, "histto")
+        p = _prompt_arg(text, "histabs")
+        frm = _prompt_arg(text, "histfrom")
+        val = _prompt_arg(text, "histval")
+        rargs = {"path": rel, "tool_call_display_name": "历史回滚"}
+        if to:
+            rargs["to"] = int(to) if re.fullmatch(r"-?\d+", to) else to
+        return [
+            ("self_history_restore", rargs),
+            ("self_filesys_run", {"script": 'RPL #"%s" "%s" "%s"' % (p, frm, val),
+                                  "tool_call_display_name": "历史打点"}),
+        ]
     if "call hist-write" in t:
         p = _prompt_arg(text, "histabs")
         frm = _prompt_arg(text, "histfrom")

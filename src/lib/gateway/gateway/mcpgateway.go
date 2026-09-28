@@ -710,11 +710,12 @@ func (g *Gateway) handleToolsWait(v *mq.Value) error {
 
 // runPreHooks 执行全部已注册的前置钩子（注册方经 tools/register 的 pre_hook_subject 声明；
 // 2026-09-27）。与「注册工具远程回调」（§5.4）同构：Emit 到该相对主题并 await 同一主题，
-// 订阅者写回 v.Result / 返回 error。载荷 {tool, context}（context 对齐 turn 上下文 + work_dir）；
+// 订阅者写回 v.Result / 返回 error。载荷 {tool, context, touch_files}（context 对齐 turn 上下文 +
+// work_dir；touch_files = 该工具是否「涉及文件变动」，用户口径 2026-09-28，见 resolveTouchFiles）；
 // 失败 → 返回 (错误码, 消息) → 调用方拒绝该工具调用。
 //
 // **零开销**：无任何注册方声明钩子时 HasPreHooks() 为 false，本方法立即返回（不发消息）。
-func (g *Gateway) runPreHooks(req CallReq) (int, string) {
+func (g *Gateway) runPreHooks(req CallReq, route *toolRoute, entry *ServerEntry) (int, string) {
 	if !g.regProv.HasPreHooks() {
 		return 0, ""
 	}
@@ -744,7 +745,15 @@ func (g *Gateway) runPreHooks(req CallReq) (int, string) {
 	if req.WorkDir != "" {
 		c["work_dir"] = req.WorkDir
 	}
-	payload := map[string]any{"tool": req.Name, "context": c}
+	original := ""
+	if route != nil {
+		original = route.Original
+	}
+	payload := map[string]any{
+		"tool":        req.Name,
+		"context":     c,
+		"touch_files": g.resolveTouchFiles(req.Name, original, entry),
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), g.params.CallTimeout)
 	defer cancel()
 	for _, subj := range subjects {
@@ -802,7 +811,7 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	// pre_hook_subject 声明 → 在执行**任意**工具前先向该相对主题发一次**同步**请求；
 	// 钩子失败（返回 error）→ 拒绝该工具调用（工具不执行），LLM 可见工具失败并可重试。
 	// **无钩子声明时零开销**：只做一次原子计数判定，不发任何消息。
-	if code, msg := g.runPreHooks(req); code != 0 {
+	if code, msg := g.runPreHooks(req, route, ps.entry); code != 0 {
 		return nil, code, msg
 	}
 

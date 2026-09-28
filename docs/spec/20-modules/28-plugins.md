@@ -54,17 +54,18 @@
 |----|----|
 | 订阅 | `session-complete`（**主轮次 → 轮末补点**）· `filesys.changed`（该 workdir 文件变更 → 置「脏」位；广播由 filesys 侧 **60ms 去抖**合并）· `instance-register`（建 workState + 异步回读 `history.enabled`）· `data-prj-config-refresh`（开关 / 保留参数实时同步 + `history.clear` 清链）· **前置打点钩子** `history-pre-tool-hook`（gateway 执行工具前同步调用）· 工具回调 `history-tool-call`。**`session-turn-start` 不再消费** |
 | 启用/门控 | git 不可执行（`exec.LookPath("git")` 失败）→ `Start` 记日志 + `return nil`（**功能禁用，不算启动失败**）；workdir **非 git 仓库**（无 `.git`；worktree/submodule 的 `.git` 文件亦可）→ 功能禁用；`history.enabled` **仅显式 `"true"` 才开启（默认关闭）**，缺失 / `""` / `false` / 非法 / 未回读 → 关闭。**禁用或非 git 时 4 个工具一律摘除**（`syncTools` 收敛，判据 = 存在「hasGit 且 enabled」的 workdir） |
-| 打点触发 | ① **gateway 前置钩子**（执行**任意**工具前，同步；经 `tools/register` 可选字段 `pre_hook_subject` 声明）：启用 && 未熔断 && **脏** → 同步打点；**打点失败 → 写 error → gateway 拒绝该工具调用（工具不执行），LLM 可见失败并可重试**；② **轮末补点**（`session-complete` 主轮次）：保证「最后一步的产像」入链 —— **不依赖脏位（规避 `filesys.changed` 60ms 去抖竞态）、强制走一次打点流程**，流程内按 tree 比较**内容未变则不建点**。**前置钩子路径不脏 = 零 git 调用**（直接放行） |
+| 打点触发 | ① **gateway 前置钩子**（执行**任意**工具前，同步；经 `tools/register` 可选字段 `pre_hook_subject` 声明）：启用 && 未熔断 && **脏** → 同步打点；**打点失败 → 写 error → gateway 拒绝该工具调用（工具不执行），LLM 可见失败并可重试**；**payload 带 `touch_files`（2026-09-28）= 该工具是否「涉及文件变动」**：显式 `false` → 直接放行、**不打点**（省 8–9 次 git 进程），仍登记会话归属（轮末补点保底）；缺省 / `true` → 与改前一致；② **轮末补点**（`session-complete` 主轮次）：保证「最后一步的产像」入链 —— **不依赖脏位（规避 `filesys.changed` 60ms 去抖竞态）、强制走一次打点流程**，流程内按 tree 比较**内容未变则不建点**。**前置钩子路径不脏 / 标「不涉及」= 零 git 调用**（直接放行） |
+| 「涉及文件变动」（打点粒度） | usr `tool_async.<工具暴露名>.touch_files`（布尔；前端「工具配置」页开关；**与异步档位同载体、同页**）。**缺省按工具来源**：**self 节点内置**仅 `filesys_run` / `script_run` 涉及（true），其余内置（file_read/file_find/file_diff/web_fetch/browser_run/desktop_run…）不涉及（false）；**dir 节点 / 第三方 MCP / 无法判定 → 保守按涉及（true）**。生效面 = gateway 前置钩子 payload（`resolveTouchFiles`：显式覆盖 > 来源缺省）。**标错只让检查点粒度变粗**（前后点仍在、`git diff` 一致性校验仍生效），**不丢安全**（见 [64 §3](../60-reference/64-配置项一览.md) `tool_async` / [61 §5.4a](../60-reference/61-消息一览.md)） |
 | 流程（打点） | 临时 index `add -A`（尊重 `.gitignore`；进入前 `ensureGitignore` 保证 `.chonkpilot/` 被忽略）→ `write-tree` → **新 tree == 链头 tree → 直接跳过（不建点、不 `update-ref`、不修剪）**；否则 → `commit-tree <tree> [-p <链头>] -m "chonk-ckpt: session=<slug> tool=<tool> ts=<RFC3339>"` → `update-ref refs/chonkpilot/<slug> <commit>` → **修剪** |
 | 链与 ref | `<slug>` = **根会话**（优先 `top_session`，缺省 `session`；**父子会话共享一条链**）；链 = parent 指针线性串联（`git rev-list` 可枚举、`git diff A B` 可用）；**ref 只指向链头**（对象靠可达性保活，gc 安全） |
 | 存储 | **独立 ref `refs/chonkpilot/<slug>`**（**废弃 `history.db`，纯 git**）+ **持久临时 index** `<workdir>/.chonkpilot/history/index`（经 `GIT_INDEX_FILE` 注入）；**绝不碰 `.git/index`、绝不碰 HEAD** → **不在用户分支产生任何提交** |
 | 修剪 | `history.checkpoint_keep`（默认 500）/ `history.checkpoint_ttl_days`（默认 7）**任一超限即修剪**：保留段 = 「最新 keep 个」∩「窗口内」，再并入**保底项（当前轮 / 上一轮起点）永不删**；**天数窗口锚点 = 链上最新点时间**（项目闲置不清历史，不是 `now`）；修剪 = **按保留段重建**（复用 tree/message/时间）→ **commit id 会变，稳定标识是相对编号**；被淘汰点不可达 → 交 git 自动 gc（不主动跑 gc/prune） |
-| 熔断 | 连续打点失败 ≥ `fuseThreshold`(3) → `fused`（**仍尝试打点、失败亦放行、不再拦截工具调用**）；**成功一次即复位**；失败次数与模式经 `history.status` 回写可见 |
+| 熔断 | 连续打点失败 ≥ `fuseThreshold`(3) → `fused`（**仍尝试打点、失败亦放行、不再拦截工具调用**）；**成功一次即复位**；失败次数与模式经 `history.status.<slug>` 回写可见 |
 | 内部工具 | **4 个**（`category=self`；启用且是 git 仓库才注册，否则摘除）：`history_status {}` / `history_diff {to?=-1, path?}` / `history_show {to?=-1, path}` / `history_restore {path, to?=-1}`（**单文件、禁止批量**；一致性校验 = 文件已删除 **或** `git diff --quiet <链头> -- <path>` 为 0，否则拒绝）。`to` 三态 = 负整数相对步（-1 最近一步、-2 再上一步…）/ `"turn-start"` 当前轮起点 / 绝对 commit id（须在本链上） |
-| 状态回写（前端只读） | prj 内部键 `history.status`（`{enabled, mode: active\|fused\|off, repo, dirty, failCount, checkpointCount, bytes, lastCheckpointAt, lastDurationMs, lastError}`）/ `history.timeline`（**最新在前**、相对编号 `-1` 起、**≤200 条**）；`history.clear`（前端写任意新值 → 清空该 workdir 全部 `refs/chonkpilot/*`）。**v1 限制**：`status`/`timeline` 为 prj 全局键（多会话并发只呈「最近一次打点所属链」，工具 `history_status` 仍按调用方会话返回）；`clear` 按**仓库粒度**清空全部链。见 [41 I-135/I-136](../40-roadmap/41-未决项登记.md) |
+| 状态回写（前端只读） | **会话级**内部键（2026-09-28，I-135）：`history.status.<slug>`（`{enabled, mode: active\|fused\|off, repo, dirty, failCount, checkpointCount, bytes, lastCheckpointAt, lastDurationMs, lastError}`）/ `history.timeline.<slug>`（**最新在前**、相对编号 `-1` 起、**≤200 条**）——`<slug>` = 链根会话，**多会话并发各自独立、互不覆盖**；落 **prjusr**（本机可重建派生物）。`history.clear`（前端写 JSON `{ts, session}`）→ **只清目标会话的链**（`update-ref -d refs/chonkpilot/<slug>`）并回写该会话空状态，其它会话链保留（I-136） |
 | 语义边界（有意为之） | 被 `.gitignore` 忽略的文件**不进检查点、也回滚不了**（含 `.env`/`node_modules`/`.chonkpilot/` —— 不把密钥写进对象库）；**未跟踪文件**回滚时**不动**；回滚以检查点 tree 为准、**不碰 `.git`**；检查点遵守 git 的 ignore，与「索引排除规则」（`lib/ignore`）是**两套独立规则、不联动** |
 
-> ⚠️ **效率注意**：文件历史在**每次工具执行前**打点（脏才打点）。**每次「脏」打点约需 8–9 次 git 进程**（写路径 + 状态/时间线回写的只读 git；逐行走查合计约 10–11 次，以实跑采数为准），**修剪还需按保留段重建**（仅在 `keep`/`ttl` 超限时发生）—— **大工程需慎重**（**默认关闭**）。已配「脏标记短路（不脏零 git 调用）+ 前置钩子同步打点 + 连续失败熔断 + 固定提交身份（不读用户 git config）」。见 [41 I-137](../40-roadmap/41-未决项登记.md)。
+> ⚠️ **效率注意**：文件历史在**每次工具执行前**打点（脏才打点）。**每次「脏」打点约需 8–9 次 git 进程**（写路径 + 状态/时间线回写的只读 git；逐行走查合计约 10–11 次，以实跑采数为准），**修剪还需按保留段重建**（仅在 `keep`/`ttl` 超限时发生）—— **大工程需慎重**（**默认关闭**）。已配「脏标记短路（不脏零 git 调用）+ **「不涉及文件变动」工具直接跳过**（2026-09-28，省下每次调用的 8–9 次 git 进程）+ 前置钩子同步打点 + 连续失败熔断 + 固定提交身份（不读用户 git config）」。见 [41 I-137](../40-roadmap/41-未决项登记.md)。
 
 ### 3.3 codegraph（代码语义索引，插件侧）
 
@@ -120,8 +121,8 @@ server.Start
 | 插件 | 数据 | 载体 |
 |------|------|------|
 | compress | 快照（session `history`/`snapshot_turn`） | prjusr 库（经 `data-snapshot-*`） |
-| history | 检查点链（`commit-tree` 产物，parent 线性串联，ref 只指向链头）；状态 `history.status` / 时间线 `history.timeline`（prj 库） | workdir 的 `.git`（独立 ref `refs/chonkpilot/<slug>` + 持久临时 index `<workdir>/.chonkpilot/history/index`） |
-| codegraph | 索引 | `<workDir>/.chonkpilot/codegraph/{meta.json,index.json}`；状态 `codegraph.status`（prj 库） |
+| history | 检查点链（`commit-tree` 产物，parent 线性串联，ref 只指向链头）；状态 `history.status.<slug>` / 时间线 `history.timeline.<slug>`（**会话级内部键**，prjusr 库；I-135） | workdir 的 `.git`（独立 ref `refs/chonkpilot/<slug>` + 持久临时 index `<workdir>/.chonkpilot/history/index`） |
+| codegraph | 索引 | `<workDir>/.chonkpilot/codegraph/index.db`（bbolt 单文件库；元信息 `meta.json`）；状态 `codegraph.status`（prj 库） |
 | vfts | 全文索引 + 文件清单 | 引擎自持索引（`zvec`，按 workdir）；插件侧回写 `vfts.status` / 清单（prj 库） |
 
 ---
@@ -156,8 +157,8 @@ server.Start
 - **无 git** → history 禁用（不失败；`Start` 记日志后 `return nil`）。
 - **非 git 仓库** → history 功能禁用（`hasGit=false`）且 **4 个工具摘除**；即使 `history.enabled=true` 也不注册、不打点。
 - **history 打点失败** → 前置钩子路径**拒绝该工具调用**（工具不执行，LLM 可见并能重试）；**连续失败 ≥3 → 熔断放行**（不再拦截，成功一次即复位）。
-- **history 未启用 / 不脏 / 非 git** → 前置钩子**零 git 调用**直接放行（不打点、不拦截）。
-- **history v1 限制** → `history.status`/`history.timeline` 为 prj 全局键（多会话并发只呈「最近一次打点所属链」）；`history.clear` 按**仓库粒度**清空全部 `refs/chonkpilot/*`（非当前会话链）。见 [41 I-135/I-136](../40-roadmap/41-未决项登记.md)。
+- **history 未启用 / 不脏 / 非 git / 标「不涉及文件变动」** → 前置钩子**零 git 调用**直接放行（不打点、不拦截）。
+- **history 按会话（2026-09-28 闭环，[41 I-135/I-136](../40-roadmap/41-未决项登记.md)）** → `history.status.<slug>` / `history.timeline.<slug>` 为**会话级**内部键（**多会话并发各自独立、互不覆盖**）；`history.clear` 写 JSON `{ts, session}` → **只清目标会话的链**（其它会话链保留）。
 - **摘要失败** → compress 不压缩（保持原快照）。
 - **插件失败（2026-09-20 起）** → **用户可见 + 日志可查，且不阻塞**：`memory`（记忆沉淀）/ `compress`（上下文压缩）等失败经 `Deps.Notify` 上报 → 宿主判重后经既有 `tool-notify{notice:"plugin-failure"}` 轻提示一次（**同轮同类一次**，见 §7），同时失败原因经统一出口落 `<dataDir>/logs/gui.log`；**本轮对话不受影响**（不改流程终态、不降级、不抛出）。
 - **多 workdir** → codegraph **工具面**仍全局注册一份（归属排序后第一个 workdir，按 `context.instance_id` 路由）；**引擎子进程/索引状态已按 workdir 独立**（T-12/P2-4，2026-09-15 后），仅**工具面差异注册留待 v2**。（原「v1 只全局注册一份（限制）」措辞订正。）

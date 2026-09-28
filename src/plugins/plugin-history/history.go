@@ -77,9 +77,12 @@ const (
 	historyEnabledKey = "history.enabled"             // "true"/"false"（**仅显式 "true" 才开启**）
 	keepKey           = "history.checkpoint_keep"     // 检查点保留个数（默认 500）
 	ttlKey            = "history.checkpoint_ttl_days" // 保留窗口天数（默认 7；锚点 = 链上最新点时间）
-	statusKey         = "history.status"              // 状态 JSON（插件回写，内部键）
-	timelineKey       = "history.timeline"            // 检查点时间线 JSON 数组（最新在前，≤200，内部键）
-	clearKey          = "history.clear"               // 动作信号键：前端写入任意新值 → 清空该链
+	// statusKeyPrefix / timelineKeyPrefix：**按会话**的内部键（键名带会话后缀 = 链 slug；
+	// 落 prjusr，见 persist localRuntimeKeys），插件回写、前端只读回显当前会话的链
+	// （I-135 闭环：多会话并发不再互相覆盖）。见 [64 §4.2]。
+	statusKeyPrefix   = "history.status."   // 状态 JSON（插件回写，内部键）
+	timelineKeyPrefix = "history.timeline." // 检查点时间线 JSON 数组（最新在前，≤200，内部键）
+	clearKey          = "history.clear"     // 动作信号键：前端写入 JSON {"ts","session"} → 清**该会话**链
 
 	// 链 ref 前缀。
 	chainRefPrefix = "refs/chonkpilot/"
@@ -150,6 +153,7 @@ type workState struct {
 	lastDurMs int64     // 最近一次打点耗时
 
 	lastTurn    string // 最近一次打点所属轮次
+	lastSlug    string // 最近一次打点所属链 slug（根会话；按会话回写状态时用于归属判定）
 	turnStartID string // 当前轮起点检查点（`to="turn-start"`）
 	prevTurnID  string // 上一轮起点检查点（保底永不删）
 }
@@ -403,19 +407,37 @@ func (h *History) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) e
 				h.setTTL(defaultTTLDays)
 			}
 		case clearKey:
-			// 动作信号（前端写入任意新值，如 ISO 时间串）：清空各 workdir 的检查点链 + 回写状态。
-			// 删键不作动作（与 codegraph.action 同口径）。
+			// 动作信号（前端写入 JSON `{"ts":"…","session":"<根会话>"}`）：只清**目标会话**的检查点链
+			// + 回写该会话状态（I-136 闭环：不再按仓库粒度清空全部链）。
+			// 删键不作动作（与 codegraph.action 同口径）；值非法/无 session → 不动作（避免误清全仓）。
 			if ev.Op == "delete" {
 				continue
 			}
-			h.clearChains()
+			if slug := clearTargetSession(strval(ev.List[clearKey])); slug != "" {
+				h.clearChain(slug)
+			} else {
+				h.logf()("history: history.clear 值非法或未带 session（忽略，不动作）：%q", strval(ev.List[clearKey]))
+			}
 		}
 	}
 	return nil
 }
 
-// clearChains 清空全部 workdir 的检查点链（`update-ref -d` 各 refs/chonkpilot/*）+ 回写状态。
-func (h *History) clearChains() {
+// clearTargetSession 解析 history.clear 的值（JSON `{"ts","session"}`）→ 目标链 slug（根会话）。
+// 解析失败 / `session` 为空 → ""（不动作）。兼容旧发送方（任意非 JSON 串）→ 同样 ""（不误清全仓）。
+func clearTargetSession(raw string) string {
+	var v struct {
+		Session string `json:"session"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(raw)), &v) != nil {
+		return ""
+	}
+	return chainSlug(v.Session)
+}
+
+// clearChain 只清**目标会话**的检查点链（`update-ref -d refs/chonkpilot/<slug>`）+ 回写该会话状态。
+// 其它会话的链（不同 slug）**保留**；该 slug 不在某 workdir 时跳过（零副作用）。
+func (h *History) clearChain(slug string) {
 	h.mu.Lock()
 	list := make([]*workState, 0, len(h.works))
 	for _, ws := range h.works {
@@ -427,23 +449,26 @@ func (h *History) clearChains() {
 			continue
 		}
 		ws.mu.Lock()
-		refs, err := h.listChainRefs(ws)
-		if err == nil {
-			for _, ref := range refs {
-				_, _ = h.git(ws, "update-ref", "-d", ref)
-			}
+		if _, err := h.git(ws, "rev-parse", "--verify", "--quiet", chainRefPrefix+slug); err != nil {
+			ws.mu.Unlock()
+			continue // 该 workdir 无此会话链 → 跳过（零副作用）
 		}
-		ws.fused = false
-		ws.failCount = 0
-		ws.lastErr = ""
-		ws.lastAt = time.Time{}
-		ws.lastDurMs = 0
-		ws.turnStartID = ""
-		ws.prevTurnID = ""
-		ws.lastTurn = ""
+		_, _ = h.git(ws, "update-ref", "-d", chainRefPrefix+slug)
+		// 仅当该 workdir 的轮次锚点/熔断态归属本会话时才一并复位（不波及其它会话的保底项）。
+		if ws.lastSlug == slug {
+			ws.fused = false
+			ws.failCount = 0
+			ws.lastErr = ""
+			ws.lastAt = time.Time{}
+			ws.lastDurMs = 0
+			ws.turnStartID = ""
+			ws.prevTurnID = ""
+			ws.lastTurn = ""
+			ws.lastSlug = ""
+		}
 		ws.mu.Unlock()
-		h.logf()("history: history.clear → 已清空检查点链（workdir=%s，refs=%d）", ws.workDir, len(refs))
-		h.writeback(ws, "")
+		h.logf()("history: history.clear → 已清空目标会话检查点链（workdir=%s，slug=%s）", ws.workDir, slug)
+		h.writeback(ws, slug)
 	}
 }
 
@@ -514,10 +539,16 @@ func (h *History) rememberSession(session, root, workdir, instanceID string) {
 // onPreToolHook 处理 gateway 前置打点钩子（执行工具前，同步）。
 // 启用 && 未熔断 && 脏 → 同步打点；打点失败 → 返回 error（gateway 拒绝该工具调用）。
 // 未启用 / 未熔断但脏=false / 无 workdir → 直接放行（不做任何 git 调用）。
+//
+// 「涉及文件变动」（payload `touch_files`，用户口径 2026-09-28）：显式 `false` → **直接放行、不打点**
+// （省 8–9 次 git 进程）；仍已登记会话归属 → **轮末补点（force）照常保底**。payload 缺该字段 /
+// `true` → 与改前一致（打点）。标错只会让检查点粒度变粗（前后点仍在、`git diff` 一致性校验仍生效），
+// **不丢安全**。
 func (h *History) onPreToolHook(_ context.Context, _ string, v *mq.Value) error {
 	var msg struct {
-		Tool    string `json:"tool"`
-		Context *struct {
+		Tool       string `json:"tool"`
+		TouchFiles *bool  `json:"touch_files"`
+		Context    *struct {
 			Session    string `json:"session"`
 			Turn       string `json:"turn"`
 			InstanceID string `json:"instance_id"`
@@ -544,6 +575,9 @@ func (h *History) onPreToolHook(_ context.Context, _ string, v *mq.Value) error 
 		root = c.Session
 	}
 	h.rememberSession(c.Session, root, rec.WorkDir, c.InstanceID)
+	if msg.TouchFiles != nil && !*msg.TouchFiles {
+		return nil // 不涉及文件变动 → 不打点（轮末补点保底仍在）
+	}
 	tool := msg.Tool
 	if tool == "" {
 		tool = "unknown"
