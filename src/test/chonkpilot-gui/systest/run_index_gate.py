@@ -8,9 +8,9 @@
   G2 `enable-vfts`       开 → 工具面出现 `self_vfts_query`；关 → 消失。**保存即生效**
   G3 `codegraph.exts` / `codegraph.skip-dirs` → **索引范围终效**：
                          `codegraph.status.exts/skipDirs/indexedFiles` + 落盘 bbolt 索引库
-                         （`index.db`）命中集合（gate_src 在 / gate_skip 不在），判据可重复。
-                         判据已从「固定 2」改为「**基线全集**」（含 gate_ign 4 个 .go → 6；
-                         跳过 gate_skip 后 5）——见 G3 docstring。
+                         （`index.db`）命中集合 → **夹具推导的显式期望集合字面全等**
+                         （一个不多一个不少；差集打印在失败信息里）。判据已从「成员检查 + 计数」
+                         升级为「集合字面全等」（基线/A 6 个 .go、跳过 gate_skip 后 5）——见 G3 docstring。
   G4 `codegraph.action`  rebuild / retry → 状态流出现**进行中阶段**（`state=indexing` 且
                          `phase∈{configure,index}`）后回到 `ready`；clear → 回「未初始化」
                          （`state=""`、`indexedFiles=0`、`index.db` 被删除且落盘无命中）。
@@ -130,6 +130,71 @@ with open(os.path.join(IGN_ROOT, "sub", "u.go"), "w", encoding="utf-8") as f:
     f.write("package sub\n\n// SG_IGN_SUB\nfunc SG_IGN_SUB() int { return 1 }\n")
 with open(os.path.join(WS, ".gitignore"), "w", encoding="utf-8") as f:
     f.write("*.gen.go\n!special.gen.go\ngate_ign/sub/\n!gate_ign/sub/u.go\n")
+
+# ── 落盘索引「命中集合」期望值（逐用例由上方夹具 + exts / skip-dirs / .gitignore / '!' / 目录剪枝
+#    规则人工推导；**禁循环论证**——绝不用引擎 `-dump` 输出反推期望）。
+# 受支持扩展名（引擎 lang.go extLang）= {.go,.js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyw,.rs,.java}；
+# 故夹具里的 `gate_src/note.md` / `gate_find/*.txt` / `.gitignore` 一律**不被索引**；
+# `gate_find/` 仅 G5（file_find）用，与索引无关。未写 `codegraph.exts` → 引擎回落全部受支持语言。
+# 内置强制排除（.git/ 等）+ 默认排除（node_modules/、dist/ 等）不命中本夹具任何路径。
+_ALL_GO = {                          # 夹具 .go 全集（6）
+    "gate_src/alpha.go",             # gate_src/ 唯一 .go
+    "gate_skip/delta.go",            # gate_skip/ 唯一 .go（G3 B 跳过它）
+    "gate_ign/keep.go",              # 无规则命中
+    "gate_ign/gen.gen.go",           # 被 *.gen.go 命中
+    "gate_ign/special.gen.go",       # 被 *.gen.go 命中后被 !special.gen.go 反选
+    "gate_ign/sub/u.go",             # 父目录 gate_ign/sub/ 命中 → 目录剪枝
+}
+# G3 基线 / 步骤 A：exts=默认全语言（基线）/ ".go"（A）、skip-dirs 空、stack-gitignore 关
+#                     → 6 个 .go 全收（.md/.txt 非受支持语言）。
+_G3_AB = _ALL_GO
+# G3 步骤 B：再追加 skip-dirs="gate_skip"（用户规则，目录命中最优先级）→ gate_skip/ 目录剪枝
+#            → gate_skip/delta.go 出（6 → 5）。
+_G3_B = {
+    "gate_src/alpha.go",
+    "gate_ign/keep.go",
+    "gate_ign/gen.gen.go",
+    "gate_ign/special.gen.go",
+    "gate_ign/sub/u.go",
+}
+# G4 clear：落盘索引库删除 + 内存索引置空 → 无命中。
+_CLEAR = set()
+# G7：exts=".go" + stack-gitignore=true（.gitignore=*.gen.go / !special.gen.go / gate_ign/sub/ /
+#      !gate_ign/sub/u.go）
+_G7 = {
+    "gate_src/alpha.go",             # 在：.gitignore 无匹配
+    "gate_skip/delta.go",            # 在：.gitignore 无匹配
+    "gate_ign/keep.go",              # 在：*.gen.go 不匹配（keep.go 不以 ".gen.go" 结尾）
+    "gate_ign/special.gen.go",       # 在：*.gen.go 命中后被 !special.gen.go 反选回来
+    # 不在：gate_ign/gen.gen.go（*.gen.go 命中，且无 '!' 救回）
+    # 不在：gate_ign/sub/u.go（父目录 gate_ign/sub/ 命中 → 不下降，其内 !gate_ign/sub/u.go 无效）
+}
+# G8 步骤 1：用户规则 "*.gen.go"（stack 关 → .gitignore 不读）
+_G8_S1 = {
+    "gate_src/alpha.go",             # 在：无规则命中
+    "gate_skip/delta.go",            # 在：无规则命中
+    "gate_ign/keep.go",              # 在：*.gen.go 不匹配
+    "gate_ign/sub/u.go",             # 在：目录未排除（*.gen.go 不匹配目录）
+    # 不在：gate_ign/gen.gen.go、gate_ign/special.gen.go（均被 *.gen.go 命中）
+}
+# G8 步骤 2：用户规则 "*.gen.go, !special.gen.go"（stack 关）
+_G8_S2 = {
+    "gate_src/alpha.go",
+    "gate_skip/delta.go",
+    "gate_ign/keep.go",
+    "gate_ign/sub/u.go",
+    "gate_ign/special.gen.go",       # 在：!special.gen.go 反选回来
+    # 不在：gate_ign/gen.gen.go（*.gen.go 命中）
+}
+# G8 步骤 3：stack=true + 用户规则 "!gate_ign/sub/"（用户规则最高优先级）
+_G8_S3 = {
+    "gate_src/alpha.go",
+    "gate_skip/delta.go",
+    "gate_ign/keep.go",
+    "gate_ign/special.gen.go",       # 在：.gitignore 的 *.gen.go / !special.gen.go 仍生效
+    "gate_ign/sub/u.go",             # 在：用户规则 !gate_ign/sub/ 目录级反选 → 压过 .gitignore 目录排除
+    # 不在：gate_ign/gen.gen.go（.gitignore 的 *.gen.go 仍生效）
+}
 
 MOCK_PORT = _h.free_port()
 _h.start_mock_llm(MOCK_PORT)                 # mock LLM 自起自收（harness 登记）
@@ -599,9 +664,20 @@ def _idx_files():
     return set(str(x) for x in (o.get("files") or []))
 
 
-def _idx_has(rel):
-    """落盘索引库（bbolt）是否命中某相对路径（'/' 分隔）。"""
-    return rel in _idx_files()
+def _want_idx(expected, desc):
+    """断言落盘索引命中集合与期望**字面全等**（一个不多一个不少）；差集打印在失败信息里。
+
+    期望集合由夹具 + exts / skip-dirs / .gitignore / '!' / 目录剪枝规则人工推导（见上方常量），
+    **不得**用引擎 `-dump` 输出反推（禁循环论证）。返回实际集合。
+    """
+    got = _idx_files()
+    want = set(expected)
+    if got != want:
+        raise TestError("%s：落盘索引命中集合不符（实际 %d / 期望 %d）\n"
+                        "  多出（不应含却有）=%r\n  缺少（应含而缺）=%r\n  实际=%r"
+                        % (desc, len(got), len(want),
+                           sorted(got - want), sorted(want - got), sorted(got)))
+    return got
 
 
 def case_g3_index_scope():
@@ -610,25 +686,26 @@ def case_g3_index_scope():
     可重复判据（三重，均来自产品面/落盘产物）：
       ① prj 回读：`codegraph.exts` / `codegraph.skip-dirs` 等于写入值；
       ② `codegraph.status`（引擎状态回写）：`exts` = 生效扩展名集合、`skipDirs` = 用户追加集、
-         `indexedFiles` 命中文件数（.md 非代码语言 → 不计）；
+         `indexedFiles` 命中文件数（与③期望集合规模一致）；
       ③ 落盘 bbolt 索引库 `<ws>/.chonkpilot/codegraph/index.db` 的**命中文件集合**
-         （经引擎只读自检 `-dump` 读回）：exts=.go 时 gate_src 与 gate_skip 都在；
-         追加 skip-dirs=gate_skip 后 gate_skip 消失。
+         （经引擎只读自检 `-dump` 读回）→ 与**夹具推导的显式期望集合字面全等**
+         （一个不多一个不少，差集在失败信息里打印）。
 
-    期望值口径（2026-09-27 调整）：本套件夹具新增 gitignore 语义夹具 `gate_ign/`（4 个 .go，
-    见文件头），故「基线全集」由固定 2 → **6**（gate_src/alpha.go + gate_skip/delta.go +
-    gate_ign/{keep,gen.gen,special.gen,sub/u}.go；`.gitignore` 在 stack-gitignore 关时**不读**）；
-    跳过 gate_skip 后 6 → **5**。判据仍是「命中集合」，只是基数按夹具全集计算。
+    期望集合口径（夹具推导，见上方 `_G3_AB` / `_G3_B` 常量）：
+      基线/A：6 个 .go 全收（gate_src/alpha.go + gate_skip/delta.go +
+      gate_ign/{keep,gen.gen,special.gen,sub/u}.go；note.md/.txt 非受支持语言；stack 关 → .gitignore 不读）；
+      步骤 B：追加 skip-dirs=gate_skip → gate_skip/ 目录剪枝 → gate_skip/delta.go 出（6 → 5）。
     """
     if prj().get("enable-codegraph") != "true":
         prj_save("enable-codegraph", "true")           # 独立 work-dir：由上用例关闭后重新启用
     base = wait_status(lambda o: o.get("state") == "ready", "启用后 codegraph 索引就绪")
-    if base.get("indexedFiles") != 6:
-        raise TestError("基线索引文件数应为 6（gate_src/alpha.go + gate_skip/delta.go + "
-                        "gate_ign/{keep,gen.gen,special.gen,sub/u}.go；note.md 非代码语言；"
-                        "stack-gitignore 关 → .gitignore 不读），实际=%r" % (base.get("indexedFiles"),))
-    print("[G3] 基线 status: state=ready exts=%r indexedFiles=%r"
-          % (base.get("exts"), base.get("indexedFiles")), flush=True)
+    if base.get("indexedFiles") != len(_G3_AB):
+        raise TestError("基线索引文件数应为 %d（夹具 .go 全集；note.md/.txt 非受支持语言；"
+                        "stack-gitignore 关 → .gitignore 不读），实际=%r"
+                        % (len(_G3_AB), base.get("indexedFiles")))
+    _want_idx(_G3_AB, "G3 基线（exts=默认全语言，skip-dirs 空，stack 关）")
+    print("[G3] 基线 status: state=ready exts=%r indexedFiles=%r；落盘索引命中集合字面全等 %d 个"
+          % (base.get("exts"), base.get("indexedFiles"), len(_G3_AB)), flush=True)
 
     # ── 步骤 A：exts=".go"（+清空 skip-dirs）──
     open_page("settings-project", ".project-config-panel")
@@ -641,14 +718,13 @@ def case_g3_index_scope():
     if prj().get("codegraph.exts") != ".go" or prj().get("codegraph.skip-dirs") != "":
         raise TestError("A：prj 回读不符（exts=%r skip-dirs=%r）"
                         % (prj().get("codegraph.exts"), prj().get("codegraph.skip-dirs")))
-    if a.get("indexedFiles") != 6:
-        raise TestError("A：exts=.go 后 indexedFiles 应=6，实际=%r" % (a.get("indexedFiles"),))
-    raw_a = _idx_files()
-    if "gate_src/alpha.go" not in raw_a or "gate_skip/delta.go" not in raw_a:
-        raise TestError("A：落盘索引应同时命中 gate_src/alpha.go 与 gate_skip/delta.go（共 %d 个）"
-                        % len(raw_a))
-    print("[G3] A exts=.go → status.exts=%r indexedFiles=%r；落盘索引命中 gate_src+gate_skip"
-          % (a.get("exts"), a.get("indexedFiles")), flush=True)
+    if a.get("indexedFiles") != len(_G3_AB):
+        raise TestError("A：exts=.go 后 indexedFiles 应=%d，实际=%r"
+                        % (len(_G3_AB), a.get("indexedFiles")))
+    _want_idx(_G3_AB, "G3 A（exts=.go，skip-dirs 空，stack 关）")
+    print("[G3] A exts=.go → status.exts=%r indexedFiles=%r；"
+          "落盘索引命中集合字面全等 %d 个（含 gate_src+gate_skip）"
+          % (a.get("exts"), a.get("indexedFiles"), len(_G3_AB)), flush=True)
 
     # ── 步骤 B：追加 skip-dirs="gate_skip" ──
     set_textarea(0, ".go")
@@ -658,15 +734,13 @@ def case_g3_index_scope():
                     "skip-dirs=gate_skip 重建完成")
     if prj().get("codegraph.skip-dirs") != "gate_skip":
         raise TestError("B：prj 回读 codegraph.skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
-    if b.get("indexedFiles") != 5:
-        raise TestError("B：跳过 gate_skip 后 indexedFiles 应=5，实际=%r" % (b.get("indexedFiles"),))
-    raw_b = _idx_files()
-    if "gate_src/alpha.go" not in raw_b or "gate_skip/delta.go" in raw_b:
-        raise TestError("B：落盘索引应命中 gate_src/alpha.go、不含 gate_skip/delta.go（共 %d 个）"
-                        % len(raw_b))
+    if b.get("indexedFiles") != len(_G3_B):
+        raise TestError("B：跳过 gate_skip 后 indexedFiles 应=%d，实际=%r"
+                        % (len(_G3_B), b.get("indexedFiles")))
+    _want_idx(_G3_B, "G3 B（skip-dirs=gate_skip）")
     print("[G3] B skip-dirs=gate_skip → status.skipDirs=%r indexedFiles=%r；"
-          "落盘索引仅 gate_src（gate_skip 已剔除）" % (b.get("skipDirs"), b.get("indexedFiles")),
-          flush=True)
+          "落盘索引命中集合字面全等（gate_skip/delta.go 已剔除）"
+          % (b.get("skipDirs"), b.get("indexedFiles")), flush=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -718,10 +792,8 @@ def case_g4_action_rebuild_retry_clear():
         raise TestError("clear 后 indexedFiles 应=0，实际=%r" % (st.get("indexedFiles"),))
     if os.path.isfile(IDX_DB):
         raise TestError("clear 后索引库 index.db 应被删除：%s" % IDX_DB)
-    left = _idx_files()
-    if left:
-        raise TestError("clear 后落盘索引应无命中文件，实际=%r" % sorted(left))
-    print("[G4] clear → A: codegraph.action=%r；B: state=%r indexedFiles=%r index.db 已删除且落盘无命中"
+    _want_idx(_CLEAR, "G4 clear 后落盘索引（应为空集）")
+    print("[G4] clear → A: codegraph.action=%r；B: state=%r indexedFiles=%r index.db 已删除且落盘命中集合为空"
           % (prj().get("codegraph.action"), st.get("state"), st.get("indexedFiles")), flush=True)
 
 
@@ -816,6 +888,7 @@ def case_g7_codegraph_stack_gitignore():
     判据 A（数据面回读）：`prj['codegraph.stack-gitignore']=="true"`、
     `status.stackGitignore==True`、`status.skipDirs` 空（用户规则空）。
     判据 B（终效，落盘 bbolt 索引库命中集合 + `status.indexedFiles`）：
+      与夹具推导的**显式期望集合字面全等**（`_G7` 常量，一个不多一个不少）：
       * 含 `gate_ign/keep.go`（无规则命中）✔
       * 不含 `gate_ign/gen.gen.go`（`*.gen.go` **文件级排除**）✔
       * 含 `gate_ign/special.gen.go`（`!special.gen.go` 反选成功）✔
@@ -842,17 +915,14 @@ def case_g7_codegraph_stack_gitignore():
         raise TestError("A：勾选 stack-gitignore 时用户规则应为空，实际 skipDirs=%r"
                         % (st.get("skipDirs"),))
 
-    raw = _idx_files()
-    miss = [p for p in ("gate_ign/keep.go", "gate_ign/special.gen.go") if p not in raw]
-    hit = [p for p in ("gate_ign/gen.gen.go", "gate_ign/sub/u.go") if p in raw]
-    if miss or hit:
-        raise TestError("B：.gitignore 命中集合不符（应含而缺=%r；不应含却有=%r）" % (miss, hit))
-    if st.get("indexedFiles") != 4:
-        raise TestError("B：勾选后 indexedFiles 应=4，实际=%r" % (st.get("indexedFiles"),))
+    if st.get("indexedFiles") != len(_G7):
+        raise TestError("B：勾选后 indexedFiles 应=%d，实际=%r"
+                        % (len(_G7), st.get("indexedFiles")))
+    _want_idx(_G7, "G7 勾选叠加 gitignore（.gitignore 文件级排除 + '!' 反选 + 目录剪枝）")
     print("[G7] 勾选叠加 gitignore → A: stack-gitignore=%r stackGitignore=%r skipDirs=%r；"
-          "B: 落盘索引含 keep/special、不含 gen.gen/sub/u（文件级排除 + '!' 反选 + 目录剪枝），"
-          "indexedFiles=%r" % (prj().get("codegraph.stack-gitignore"), st.get("stackGitignore"),
-                               st.get("skipDirs"), st.get("indexedFiles")), flush=True)
+          "B: 落盘索引命中集合字面全等（含 keep/special、不含 gen.gen/sub/u），indexedFiles=%r"
+          % (prj().get("codegraph.stack-gitignore"), st.get("stackGitignore"),
+             st.get("skipDirs"), st.get("indexedFiles")), flush=True)
 
     # 收尾：取消勾选 → stack-gitignore=false（A 回落）
     set_stack_gitignore(False)
@@ -877,12 +947,15 @@ def case_g8_user_rules_priority():
     `codegraph.go:794-807`）**原样透传**给引擎（不折成目录名，`codegraph.go:741-743/809-813`）；
     引擎 `ignore.Options.UserRules` 为最高优先级（等价 `git --exclude`，`ignore.go:13/80-98`）。
     判据 A：`status.skipDirs` 与写入值一致（含 `!` 项、顺序不变，**未折名**）。
-    判据 B：落盘 bbolt 索引库命中集合随规则变化。
+    判据 B：落盘 bbolt 索引库命中集合与**夹具推导的显式期望集合字面全等**（`_G8_S1/S2/S3` 常量）。
 
-    步骤 1：规则 `*.gen.go`（stack 关）→ 两个 gen 文件均排除；keep.go / sub/u.go 仍命中。
-    步骤 2：规则 `*.gen.go, !special.gen.go` → special.gen.go **反选回来**；gen.gen.go 仍排除。
-    步骤 3（对照）：勾选 stack + 用户规则 `!gate_ign/sub/` → sub/u.go **重新出现**
-            （用户规则最高优先级、且是目录级反选 → 压过 .gitignore 的 `gate_ign/sub/` 目录排除）。
+    步骤 1：规则 `*.gen.go`（stack 关）→ 期望 = {alpha.go, delta.go, keep.go, sub/u.go}
+            （两个 gen 文件被 *.gen.go 排除；keep.go / sub/u.go 仍命中）。
+    步骤 2：规则 `*.gen.go, !special.gen.go` → 期望 = {alpha.go, delta.go, keep.go, special.gen.go, sub/u.go}
+            （special.gen.go **反选回来**；gen.gen.go 仍排除）。
+    步骤 3（对照）：勾选 stack + 用户规则 `!gate_ign/sub/` → 期望同步骤 2（5 个）——
+            sub/u.go **重新出现**（用户规则最高优先级、且是目录级反选 → 压过 .gitignore 的 `gate_ign/sub/` 目录排除），
+            同时 .gitignore 的 `*.gen.go` / `!special.gen.go` 仍生效（gen.gen.go 排除、special.gen.go 保留）。
     收尾：清空排除规则 + 关闭 stack（避免污染后续 / G9）。
     """
     if prj().get("enable-codegraph") != "true":
@@ -900,13 +973,10 @@ def case_g8_user_rules_priority():
                      "用户规则 *.gen.go 生效")
     if prj().get("codegraph.skip-dirs") != "*.gen.go":
         raise TestError("步骤1 A：prj skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
-    if not _idx_has("gate_ign/keep.go") or not _idx_has("gate_ign/sub/u.go"):
-        raise TestError("步骤1 B：keep.go / sub/u.go 应命中（目录未排除），实际缺失")
-    if _idx_has("gate_ign/gen.gen.go") or _idx_has("gate_ign/special.gen.go"):
-        raise TestError("步骤1 B：两个 gen 文件应被 *.gen.go 排除")
+    _want_idx(_G8_S1, "G8 步骤1（用户规则 *.gen.go，stack 关）")
     print("[G8] 步骤1 skip-dirs=%r → A: status.skipDirs=%r（原样未折名）；"
-          "B: 不含两个 gen、含 keep/sub/u" % (prj().get("codegraph.skip-dirs"), s1.get("skipDirs")),
-          flush=True)
+          "B: 命中集合字面全等（不含两个 gen、含 keep/sub/u）"
+          % (prj().get("codegraph.skip-dirs"), s1.get("skipDirs")), flush=True)
 
     # ── 步骤 2："*.gen.go, !special.gen.go"（保序含 '!'）──
     set_textarea(1, "*.gen.go, !special.gen.go")
@@ -916,12 +986,9 @@ def case_g8_user_rules_priority():
                      "用户规则含 '!' 反选生效")
     if prj().get("codegraph.skip-dirs") != "*.gen.go, !special.gen.go":
         raise TestError("步骤2 A：prj skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
-    if not _idx_has("gate_ign/special.gen.go"):
-        raise TestError("步骤2 B：special.gen.go 应被 '!' 反选回来")
-    if _idx_has("gate_ign/gen.gen.go"):
-        raise TestError("步骤2 B：gen.gen.go 仍应被排除")
+    _want_idx(_G8_S2, "G8 步骤2（用户规则 *.gen.go, !special.gen.go，stack 关）")
     print("[G8] 步骤2 skip-dirs=%r → A: status.skipDirs=%r（保序含 '!'）；"
-          "B: special.gen.go 反选回来、gen.gen.go 仍排除"
+          "B: 命中集合字面全等（special.gen.go 反选回来、gen.gen.go 仍排除）"
           % (prj().get("codegraph.skip-dirs"), s2.get("skipDirs")), flush=True)
 
     # ── 步骤 3：勾选 stack + 用户规则 "!gate_ign/sub/"（用户规则压过 .gitignore 目录排除）──
@@ -931,13 +998,9 @@ def case_g8_user_rules_priority():
     s3 = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
                      and o.get("skipDirs") == ["!gate_ign/sub/"],
                      "用户规则 !gate_ign/sub/ 压过 .gitignore 目录排除")
-    if not _idx_has("gate_ign/sub/u.go"):
-        raise TestError("步骤3 B：用户规则 !gate_ign/sub/ 应使 sub/u.go 重新出现"
-                        "（用户规则最高优先级 + 目录级反选）")
-    if not _idx_has("gate_ign/special.gen.go") or _idx_has("gate_ign/gen.gen.go"):
-        raise TestError("步骤3 B：.gitignore 的 *.gen.go / !special.gen.go 仍应生效")
+    _want_idx(_G8_S3, "G8 步骤3（stack + 用户规则 !gate_ign/sub/）")
     print("[G8] 步骤3 勾选 stack + 用户规则 %r → A: skipDirs=%r stackGitignore=%r；"
-          "B: sub/u.go 重新出现（用户规则 > .gitignore 目录排除）"
+          "B: 命中集合字面全等（sub/u.go 重新出现；gen.gen.go 仍排除）"
           % (prj().get("codegraph.skip-dirs"), s3.get("skipDirs"), s3.get("stackGitignore")),
           flush=True)
 
