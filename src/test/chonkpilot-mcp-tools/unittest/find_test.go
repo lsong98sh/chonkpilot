@@ -6,7 +6,7 @@
 // **进程级黑盒**：exec chonkpilot-core-executor.exe，断言 stdout/退出码（对齐
 // chonkpilot-test/chonkpilot-mcp-tools/systest/run_executor_tests.py 的调用形态）。
 //
-// 被测 exe：`dist/other/capability/tools/core/chonkpilot-core-executor.exe`（须经
+// 被测 exe：`dist/other/capability/executors/chonkpilot-core-executor.exe`（须经
 // build-mcp-server.ps1 构建；D-28 产物分区后不在场时测试 Skip）。
 package chonkpilotmcptools
 
@@ -24,7 +24,7 @@ import (
 )
 
 // coreExe 定位 chonkpilot-core-executor.exe（相对本测试源文件路径，不依赖 cwd）。
-// 落点：dist/other/capability/tools/core/（build-mcp-server.ps1 现行产物布局，D-28 产物分区）。
+// 落点：dist/other/capability/executors/（build-mcp-server.ps1 现行产物布局，D-28 产物分区）。
 func coreExe(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -32,7 +32,7 @@ func coreExe(t *testing.T) string {
 		t.Fatal("runtime.Caller failed")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
-	p := filepath.Join(root, "dist", "other", "capability", "tools", "core", "chonkpilot-core-executor.exe")
+	p := filepath.Join(root, "dist", "other", "capability", "executors", "chonkpilot-core-executor.exe")
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}

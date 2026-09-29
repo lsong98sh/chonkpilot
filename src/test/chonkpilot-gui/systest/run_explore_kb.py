@@ -3,7 +3,7 @@
 
 用例：
  C1 项目/知识库 双段切换（filetree 区 seg / mq filetree-mode-toggle）v-show 生效
- C2 capability 根展开 → 四类目录(is-dir)
+ C2 capability 根展开 → 分层目录（tools / knowledge）+ knowledge 下三类原语目录
  C3 tools→core 展开 → *.tool.md 行出现
  C4 单击 *.tool.md → preview PrimitivePanel（四页签 Tabs、顶部标题非空、保存/恢复按钮）
 C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变；meta 键值表单；「参数」JSON Schema 树
@@ -26,6 +26,10 @@ C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变�
     （实测 filetree 仅列非点目录），且 `data-knowledge-read/list` 只认三级 capability 根内的路径
     （persist `kbRootOf`）→ 项目级原语改用**知识库树的「项目」级**驱动（C9/C13），
     夹具随之为 `<ws_kb>/.chonkpilot/capability/tools/core/demo.tool.md`。
+
+分层口径（2026-09-29）：capability 根下 = `tools/`（工具契约）+ `knowledge/{skills,prompts,resources}`
+  （技能/提示词/资源）+ 系统级 `executors/`（内置执行器 exe）。故系统级夹具路径相应改为
+  `<CAP_DIR>/knowledge/{skills,prompts,resources}/...`；工具仍在 `<CAP_DIR>/tools/`。
 """
 import json
 import os
@@ -52,9 +56,10 @@ DIR_SMOKE2 = os.path.join(TOOLS_DIR, "smoke_dir2")
 DIR_DEFAULT_NAME = "新建目录"
 DIR_DEFAULT = os.path.join(TOOLS_DIR, DIR_DEFAULT_NAME)
 CORE_FIND = os.path.join(CAP_DIR, "tools", "core", "file_find.tool.md")
-SKILL_FILE = os.path.join(CAP_DIR, "skills", "sk_s1.skill.md")
-PROMPT_FILE = os.path.join(CAP_DIR, "prompts", "pr_s1.prompt.md")
-RES_FILE = os.path.join(CAP_DIR, "resources", "re_s1.resource.md")
+# 非 tools 原语现位于 capability/knowledge/ 下（skills/prompts/resources）
+SKILL_FILE = os.path.join(CAP_DIR, "knowledge", "skills", "sk_s1.skill.md")
+PROMPT_FILE = os.path.join(CAP_DIR, "knowledge", "prompts", "pr_s1.prompt.md")
+RES_FILE = os.path.join(CAP_DIR, "knowledge", "resources", "re_s1.resource.md")
 # 项目级知识库根（spec 60-名词约定 §115 / persist CapProjectRoot）
 PRJ_CAP = os.path.join(WORK_DIR, ".chonkpilot", "capability")
 PJ_DIR = os.path.join(PRJ_CAP, "tools")
@@ -441,7 +446,7 @@ def main():
             ok = kb.poll(lambda: kb.mode_active() and (kb.mode_active()[0] == "Knowledge" or kb.mode_active()[0] == "知识库"))
             assert ok, f"toggle 切知识库失败 active={kb.mode_active()}"
 
-        # ── C2 知识库根（系统级）→ 四类目录 ──
+        # ── C2 知识库根（系统级）→ 分层目录（tools/knowledge）+ knowledge 下三类原语目录 ──
         def c2():
             # 根行口径（2026-09-15 迁移）：知识库树根 = "<知识库> -<级别>"
             # （KnowledgeTree.loadRoot：t('fileTree.mode_knowledge') + ' -' + 级别标签），
@@ -453,10 +458,11 @@ def main():
             assert kb.click_kb_root(), f"点击知识库根失败：{root_label}"
             ok = kb.wait_kb_row("tools", True)
             assert ok, "知识库根未展开出 tools"
-            rows = kb.kb_rows()
-            names = {kb.row_label(r): r["d"] for r in rows}
-            for d in ("prompts", "resources", "skills", "tools"):
-                assert names.get(d) is True, f"类型目录 {d} 应为目录行：{names}"
+            assert kb.wait_kb_row("knowledge", True), "知识库根未展开出 knowledge"
+            # knowledge 展开 → 三类原语目录 skills/prompts/resources（工具在 capability/tools 下）
+            assert kb.click_kb_dir("knowledge"), "点击 knowledge 失败"
+            for d in ("prompts", "resources", "skills"):
+                assert kb.wait_kb_row(d, True), f"knowledge 下类型目录 {d} 应为目录行"
 
         # ── C3 tools→core → *.tool.md ──
         def c3():
@@ -582,7 +588,7 @@ def main():
             """项目级原语预览 + 右键菜单（迁移后 = 知识库树「项目」级）。
 
             迁移说明（2026-09-15）：项目侧旧路径 `@mcp/tools/...` 已按 spec 60-名词约定（P1-3）
-            迁移为 `<workDir>/.chonkpilot/capability/{tools,skills,prompts,resources}`；
+            迁移为 `<workDir>/.chonkpilot/capability/{tools,knowledge/{skills,prompts,resources}}`（2026-09-29：非 tools 原语入 `knowledge/` 子目录）；
             项目**文件树**不暴露 `.chonkpilot`，且 data-knowledge-{list,read} 只认三级 capability
             根内路径（persist `kbRootOf`）→ 改由知识库树「项目」级驱动。
             """
@@ -731,6 +737,10 @@ def main():
         def c12():
             # 夹具幂等：清除上一次失败运行残留的目标文件（否则存在性轮询会命中陈旧内容）
             cleanup_fixtures()
+            # 类型目录现位于 capability/knowledge/ 下：确保 knowledge 展开（根可能因刷新收起）
+            if not any(kb.row_label(r) == "skills" and r["d"] for r in kb.kb_rows()):
+                assert kb.click_kb_dir("knowledge"), "点击 knowledge 失败"
+                assert kb.wait_kb_row("skills", True), "knowledge 未展开出 skills"
             cases = [
                 ("skills", "New Skill", "新建技能", "sk_s1", SKILL_FILE, ".skill.md"),
                 ("prompts", "New Prompt", "新建提示词", "pr_s1", PROMPT_FILE, ".prompt.md"),

@@ -101,6 +101,11 @@
 
 > 与 codegraph（§3.3）同构：引擎外置 exe + 按 workdir 引用计数收敛工具注册；差异 = vfts **仍为全局共享 client**（一对多、按工具参数 `workdir` 路由），而 codegraph **已按 workdir 独立 client/子进程**（T-12/P2-4，2026-09-15 后）；另差异 = vfts 仅 1 个查询工具、索引由本插件增量/全量编排（`vfts.exts` 变更强制重建）。
 
+> **〔订正（2026-09-29）：引擎 exe 路径解析（发行布局）〕** 两插件的 `resolveExe` 定位引擎 exe 的**发行位置**改为
+> `codegraph` → **`<exeDir>/mcps/codebase/chonkpilot-codegraph-mcp-server.exe`**、`vfts` → **`<exeDir>/mcps/vfts/chonkpilot-vfts-mcp-server.exe`**
+> （`vfts` 的 `zvec_c_api.dll` 须与引擎 exe 同目录）。**不再多路径猜测**（原「同目录 / ../<engine>/ / 上级目录 / ../../dist/<engine>/」候选链作废）；
+> 仍保留配置覆盖：`Options.Exe` > 环境变量 `CODEGRAPH_EXE` / `VFTS_EXE` > 上述发行位置。
+
 ---
 
 ## 4. 内部控制流

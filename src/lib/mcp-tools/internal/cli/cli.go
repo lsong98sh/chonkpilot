@@ -1,9 +1,12 @@
 // Package cli 实现 executor exe 的统一调用契约：
 //
 //	<exe> <tool> --input=<参数 JSON 路径>   # 执行工具
-//	<exe> --help                            # 列示本 exe 包含的工具
-//	<exe> --help <tool>                     # 显示指定工具的说明（嵌入 md 原文）
+//	<exe> --help                            # 列示本 exe 包含的工具（读磁盘契约）
+//	<exe> --help <tool>                     # 显示指定工具的说明（磁盘契约 md 原文）
 //	<exe>                                   # 无入参 = --help
+//
+// 契约根默认 = `<exeDir>/capability`（executor 位于 `<exeDir>/capability/executors/<cat>.exe`），
+// 可用 `--root <dir>` 覆盖。
 //
 // 输入以 JSON 临时文件传入（大参数不走 argv）。handler 产物（Output/Error）**原样透出到 stdout**，
 // 不做 JSON 探测/封装——是否 JSON、如何包装由上层（mcp-server）统一判定：JSON 字符串透传，
@@ -16,6 +19,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -49,22 +53,29 @@ func Err(tool, msg string) *Result {
 // Dispatch 是工具执行函数：workDir 为空表示工具不依赖项目目录（如 desktop）。
 type Dispatch func(workDir, tool string, args map[string]interface{}) *Result
 
-// Help 是 --help 的数据源（嵌入契约 md，见 internal/contracts）。
+// Help 是 --help 的数据源：**磁盘契约目录**（executor 不再内嵌契约）。
+// 契约根默认 = `<exeDir>/capability`（executor 自身位于 `<exeDir>/capability/executors/<cat>.exe`）；
+// 可用 `--root <dir>` 覆盖（用户自建 / 非标准布局）。Dir = 根内分类子目录（如 tools/core）。
 type Help struct {
-	FS  fs.FS  // 嵌入契约文件系统
-	Dir string // 分类目录（tools/core 或 tools/desktop）
+	Root string // 契约根（空 = 由 exe 位置推导）
+	Dir  string // 根内分类子目录（如 tools/core）
 }
 
 // Run 解析契约参数并执行，最终 JSON 输出到 stdout。返回进程退出码（0 = 成功）。
 // help 模式（无入参 / --help / -h / --help <tool>）输出工具清单或工具说明，不走执行路径。
 func Run(dispatch Dispatch, help Help) int {
 	args := os.Args[1:]
+	root := help.Root
+	if root == "" {
+		root = defaultContractRoot()
+	}
+	args = extractRoot(args, &root)
 	// help 模式（--help <tool> 优先于 --help，避免被单独 --help 分支抢先）
 	if len(args) >= 2 && (args[0] == "--help" || args[0] == "-h") {
-		return helpShow(help, args[1])
+		return helpShow(root, help.Dir, args[1])
 	}
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		return helpList(help)
+		return helpList(root, help.Dir)
 	}
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: <exe> <tool> --input=<params.json>")
@@ -132,9 +143,48 @@ func Run(dispatch Dispatch, help Help) int {
 	return emit(tool, res)
 }
 
-// helpList 列示嵌入 md 中的工具（文件名 = 工具名，附 H1 可读标题）。
-func helpList(h Help) int {
-	names, err := fs.Glob(h.FS, path.Join(h.Dir, "*.tool.md"))
+// defaultContractRoot 由 exe 位置推导契约根：executor 位于
+// `<root>/capability/executors/<cat>.exe` → 契约根 = `<root>/capability`（exeDir 的父目录）。
+func defaultContractRoot() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(filepath.Dir(exe))
+}
+
+// extractRoot 从命令行参数中摘取 `--root=<dir>` / `--root <dir>`（返回去掉该选项后的参数）。
+func extractRoot(args []string, root *string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case strings.HasPrefix(a, "--root="):
+			if v := strings.TrimPrefix(a, "--root="); v != "" {
+				*root = v
+			}
+		case a == "--root":
+			if i+1 < len(args) {
+				i++
+				if v := args[i]; v != "" {
+					*root = v
+				}
+			}
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// helpList 列出契约根分类目录下的工具（文件名 = 工具名，附 H1 可读标题）。
+func helpList(root, dir string) int {
+	if root == "" {
+		fmt.Fprintln(os.Stderr, "help: 无法解析契约根（请用 --root <dir> 指定）")
+		return 2
+	}
+	fsys := os.DirFS(root)
+	names, err := fs.Glob(fsys, path.Join(dir, "*.tool.md"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "help: "+err.Error())
 		return 2
@@ -147,7 +197,7 @@ func helpList(h Help) int {
 	for _, n := range names {
 		name := strings.TrimSuffix(path.Base(n), ".tool.md")
 		title := ""
-		if data, rerr := fs.ReadFile(h.FS, n); rerr == nil {
+		if data, rerr := fs.ReadFile(fsys, n); rerr == nil {
 			title = firstTitle(data)
 		}
 		if title != "" {
@@ -159,16 +209,20 @@ func helpList(h Help) int {
 	return 0
 }
 
-// helpShow 显示指定工具的嵌入说明（md 原文）。
-func helpShow(h Help, name string) int {
+// helpShow 显示指定工具的契约说明（md 原文；从磁盘读取）。
+func helpShow(root, dir, name string) int {
 	if strings.ContainsAny(name, `/\`) {
 		fmt.Fprintln(os.Stderr, "unknown tool: "+name)
+		return 2
+	}
+	if root == "" {
+		fmt.Fprintln(os.Stderr, "help: 无法解析契约根（请用 --root <dir> 指定）")
 		return 2
 	}
 	if !strings.HasSuffix(name, ".tool.md") {
 		name += ".tool.md"
 	}
-	data, err := fs.ReadFile(h.FS, path.Join(h.Dir, name))
+	data, err := fs.ReadFile(os.DirFS(root), path.Join(dir, name))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "unknown tool: "+name)
 		return 2

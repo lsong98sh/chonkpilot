@@ -1099,8 +1099,8 @@ func (p *Codegraph) syncTools() {
 // ─── exe 路径解析 ────────────────────────────────────────
 
 // resolveExe 定位引擎可执行文件：Options.Exe > 环境变量 CODEGRAPH_EXE > 运行 exe 同目录
-// > 运行 exe 上级目录/codegraph > 运行 exe 上级目录 > 运行 exe 上上级目录/dist/codegraph。
-// 找不到返回 error（Start 失败）。
+// 下的 `mcps/codebase/`（发行布局：`<exeDir>/mcps/codebase/chonkpilot-codegraph-mcp-server.exe`）。
+// 找不到返回 error（Start 失败）—— 不做多路径猜测。
 func resolveExe(explicit string) (string, error) {
 	abs := func(p string) (string, error) {
 		a, err := filepath.Abs(p)
@@ -1121,18 +1121,11 @@ func resolveExe(explicit string) (string, error) {
 	}
 	dir := filepath.Dir(self)
 	const exeName = "chonkpilot-codegraph-mcp-server.exe"
-	cands := []string{
-		filepath.Join(dir, exeName),                                  // 运行 exe 同目录
-		filepath.Join(dir, "..", "codegraph", exeName),               // 运行 exe 上级目录/codegraph（dist/<形态> 的兄弟目录）
-		filepath.Join(dir, "..", exeName),                            // 运行 exe 上级目录
-		filepath.Join(dir, "..", "..", "dist", "codegraph", exeName), // 运行 exe 上上级目录/dist/codegraph
+	c := filepath.Join(dir, "mcps", "codebase", exeName) // <exeDir>/mcps/codebase/
+	if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+		return abs(c)
 	}
-	for _, c := range cands {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
-			return abs(c)
-		}
-	}
-	return "", fmt.Errorf("codegraph: 引擎未找到——请设置 Options.Exe / 环境变量 CODEGRAPH_EXE，或将 %s 置于可执行文件同目录 / ../codegraph/", exeName)
+	return "", fmt.Errorf("codegraph: 引擎未找到——请设置 Options.Exe / 环境变量 CODEGRAPH_EXE，或将 %s 置于 <exeDir>/mcps/codebase/", exeName)
 }
 
 // strval 任意值 → 字符串（配置 list 值归一）。

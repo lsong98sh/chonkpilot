@@ -7,13 +7,13 @@
 
 默认输入（四项均可经同名参数覆盖；**传入的相对路径按当前工作目录**解析）:
     --server-exe  <repo>\\dist\\other\\chonkpilot-mcp-server.exe              被测产物
-    --root        <repo>\\src\\lib\\mcp-server\\contracts                     skills/prompts/resources 契约源
-    --tools-dir   <repo>\\src\\lib\\mcp-tools\\internal\\contracts\\tools     `<cat>/*.tool.md` 工具契约源
-    --exec-dir    <repo>\\dist\\other\\capability\\tools                     executor 产物 `<cat>/*.exe`
+    --root        <repo>\\src\\initdata\\capability\\knowledge              skills/prompts/resources 契约源
+    --tools-dir   <repo>\\src\\initdata\\capability\\tools                  `<cat>/*.tool.md` 工具契约源
+    --exec-dir    <repo>\\dist\\other\\capability\\executors                executor 产物（扁平 `chonkpilot-<cat>-executor.exe`）
 
 换产物目录（如部署在别处）:
     python run_mcp_server_tests.py --server-exe=D:\\deploy\\chonkpilot-mcp-server.exe \\
-                                   --exec-dir=D:\\deploy\\capability\\tools
+                                   --exec-dir=D:\\deploy\\capability\\executors
 
 输入缺失 → **启动 server 前即报错退出**（不静默跳过、不用旧路径兜底），并提示先构建：
     .\\build-mcp-server.ps1（或 .\\build-desktop.ps1）→ dist\\other\\
@@ -22,15 +22,15 @@
     `--http[=<addr>]`（裸 `--http` → 默认 `127.0.0.1:5700`；端点 `/mcp`）· `--stdio` ·
     `--service install|remove|run`（服务内部 = HTTP）。其它 flag：`-root` / `-timeout` / `-config`。
     **无 `--addr`（旧 flag）与 `--exec-dir`（`server/server.go:78` 已移除；executor 按契约文件
-    所在目录相对解析 `server/executor.go:200-211 resolveRuntime`）**。
+    所在目录相对解析 `server/executor.go resolveRuntime`）**。
     （脚本自身的 `--exec-dir` 仅用于**定位构建产物 exe**，不传给 server。）
 
 自管理两个 server 实例：
     5702 默认配置；5703 自定义 --config（skip_dirs=["vendor"]）验证默认参数注入。
---root 提供 skills/prompts/resources（server 源）；--tools-dir 提供 tools 契约（mcp-tools 嵌入源）；
---exec-dir 提供**构建产物的 executor exe**（`capability/tools/<cat>/`）。
-脚本启动 server 前把三者合并到临时契约根（mcp-server 单根递归扫描四原语；`*.tool.md` 与 executor
-**同目录**，runtime 才可解析）。
+--root 提供 skills/prompts/resources（knowledge 根）；--tools-dir 提供 tools 契约（src/initdata 唯一源）；
+--exec-dir 提供**构建产物的 executor exe**（`capability/executors/`，扁平命名）。
+脚本启动 server 前把三者合并到临时契约根（mcp-server 单根递归扫描四原语；tools/<cat>/*.tool.md 的
+runtime 写 `../../executors/<exe>`，故 exe 合并到 `executors/` 才可解析）。
 调用上下文：DSL 类工具（filesys_run / desktop_run / browser_run）需 `_meta.chonkpilot`
 （`instance_id`/`work_dir`/`data_dir`，`server/server.go:63-69 CallContextMeta`），否则报
 「缺少 instance」；本脚本 `tool_call(context=...)` 统一注入（等价 gateway 的注入路径）。
@@ -58,9 +58,9 @@ DEFAULT_PORT = 5700  # `main.go:29 defaultAddr` = 127.0.0.1:5700（裸 --http / 
 
 # 默认输入：全部以**脚本位置**为基准解析成绝对路径（与 CWD 无关），故无参数直接运行即可跑通。
 DEFAULT_SERVER_EXE = DIST_OTHER / "chonkpilot-mcp-server.exe"
-DEFAULT_ROOT = REPO / "src" / "lib" / "mcp-server" / "contracts"
-DEFAULT_TOOLS_DIR = REPO / "src" / "lib" / "mcp-tools" / "internal" / "contracts" / "tools"
-DEFAULT_EXEC_DIR = DIST_OTHER / "capability" / "tools"
+DEFAULT_ROOT = REPO / "src" / "initdata" / "capability" / "knowledge"
+DEFAULT_TOOLS_DIR = REPO / "src" / "initdata" / "capability" / "tools"
+DEFAULT_EXEC_DIR = DIST_OTHER / "capability" / "executors"
 BUILD_HINT = "先执行 .\\build-mcp-server.ps1（或 .\\build-desktop.ps1）产出 dist/other\\，或用参数指向既有产物目录"
 
 passed = failed = skipped = 0
@@ -290,8 +290,16 @@ def suite_core(core, work):
 
     def t_skills_list():
         # skills 复用 prompt 通道，经 _meta.type 区分（spec 25 §3.1/§4.1/§7）：无 skills/list 方法
+        # 集合 = 核心 3（skills/core/）+ 14 个 UX/前端设计技能（skills/ux/，来源 claude-ux/skills/）。
         skills = {p["name"] for p in core.prompts_list() if (p.get("_meta") or {}).get("type") == "skill"}
-        assert skills == {"debug", "explore", "sandbox-escape"}, skills
+        expect = {
+            "debug", "explore", "sandbox-escape",
+            "wireframe", "polish-pass", "make-tweakable", "make-a-prototype", "make-a-deck",
+            "interaction-states-pass", "hierarchy-rhythm-review", "generate-variations",
+            "frontend-aesthetic-direction", "discovery-questions", "design-system-extract",
+            "component-extract", "ai-slop-check", "accessibility-audit",
+        }
+        assert skills == expect, skills
 
     def t_skills_get():
         # 取 skill 正文 = prompts/get（skills 无独立方法）；未知名 → JSON-RPC error
@@ -411,7 +419,7 @@ def suite_desktop(desk, work):
     """desktop 分类：现行**单工具** `desktop_run`（DSL 编排；spec 25 §3.1 meta `category=desktop`）。
 
     旧的 18 个细粒度工具（key_down/mouse_click/windows_list…）已收敛为 DSL 指令
-    （`chonkpilot-mcp-tools/internal/contracts/tools/desktop/desktop_run.tool.md`：WIN/MOV/CLK/…）。
+    （`src/initdata/capability/tools/desktop/desktop_run.tool.md`：WIN/MOV/CLK/…）。
     """
     tools = {t["name"]: t for t in desk.tools_list()}
     assert "desktop_run" in tools, sorted(tools)
@@ -535,11 +543,11 @@ def main():
     ap.add_argument("--server-exe", default=str(DEFAULT_SERVER_EXE),
                     help=f"被测 server exe（默认 {DEFAULT_SERVER_EXE}）")
     ap.add_argument("--root", default=str(DEFAULT_ROOT),
-                    help=f"契约根（server/contracts：skills/prompts/resources）（默认 {DEFAULT_ROOT}）")
+                    help=f"契约根（knowledge：skills/prompts/resources）（默认 {DEFAULT_ROOT}）")
     ap.add_argument("--tools-dir", default=str(DEFAULT_TOOLS_DIR),
-                    help=f"tools 契约目录（mcp-tools/internal/contracts/tools）（默认 {DEFAULT_TOOLS_DIR}）")
+                    help=f"tools 契约目录（src/initdata/capability/tools）（默认 {DEFAULT_TOOLS_DIR}）")
     ap.add_argument("--exec-dir", default=str(DEFAULT_EXEC_DIR),
-                    help=f"执行器产物目录（capability/tools/<cat>/*.exe）（默认 {DEFAULT_EXEC_DIR}）")
+                    help=f"执行器产物目录（capability/executors/chonkpilot-<cat>-executor.exe）（默认 {DEFAULT_EXEC_DIR}）")
     args = ap.parse_args()
 
     # 输入预检（起 server 前 fail-fast）：缺产物一律明确报错，不静默跳过、不用旧路径兜底。
@@ -554,17 +562,17 @@ def main():
     for prim in ("skills", "prompts", "resources"):
         if not os.path.isdir(os.path.join(args.root, prim)):
             _die(f"契约根缺少 {prim}/ 目录：{os.path.join(args.root, prim)}（--root）")
-    exec_cats = [c for c in sorted(os.listdir(args.exec_dir))
-                 if os.path.isdir(os.path.join(args.exec_dir, c))]
-    exes = [fn for c in exec_cats for fn in os.listdir(os.path.join(args.exec_dir, c))
-            if fn.lower().endswith(".exe")]
-    if not exes:
-        _die(f"未在 --exec-dir={args.exec_dir} 的 <cat>/ 下找到 executor exe（工具调用需与契约同目录）"
-             f"\n       {BUILD_HINT}")
-    for cat in exec_cats:
-        if not os.path.isdir(os.path.join(args.tools_dir, cat)):
-            _die(f"executor 分类 {cat}/ 在 --tools-dir 下无同名目录：{os.path.join(args.tools_dir, cat)}"
-                 f"\n       --exec-dir 与 --tools-dir 未对齐（{BUILD_HINT}）")
+    cat_dirs = [c for c in sorted(os.listdir(args.tools_dir))
+                if os.path.isdir(os.path.join(args.tools_dir, c))]
+    if not cat_dirs:
+        _die(f"--tools-dir={args.tools_dir} 下无分类目录 <cat>/（{BUILD_HINT}）")
+    exe_names = [fn for fn in os.listdir(args.exec_dir) if fn.lower().endswith(".exe")]
+    if not exe_names:
+        _die(f"未在 --exec-dir={args.exec_dir} 找到 executor exe\n       {BUILD_HINT}")
+    for cat in cat_dirs:
+        want = f"chonkpilot-{cat}-executor.exe"
+        if want not in exe_names:
+            _die(f"--exec-dir 缺 {want}（与 --tools-dir 分类 {cat} 对应）\n       {BUILD_HINT}")
     print(f"被测 server: {args.server_exe}")
     print(f"契约源: --root={args.root} + --tools-dir={args.tools_dir}；executor 产物: {args.exec_dir}")
 
@@ -573,19 +581,17 @@ def main():
     echo_port = echo.server_address[1]
     threading.Thread(target=echo.serve_forever, daemon=True).start()
 
-    # tools 契约在 mcp-tools（internal/contracts/tools）；与 server 源契约合并为单根，
-    # 并把 executor exe 放进对应 tools/<cat>/（runtime 相对契约文件解析，executor.go:200-211）
+    # tools 契约在 src/initdata/capability/tools；与 knowledge 源契约合并为单根，
+    # 并把 executor exe 放进 tmp_root/executors/（tool.md runtime 相对契约文件写 ../../executors/<exe>）
     tmp_root = tempfile.mkdtemp(prefix="ck-contracts-")
     for prim in ("skills", "prompts", "resources"):
-        shutil.copytree(os.path.join(args.root, prim), os.path.join(tmp_root, prim))
+        shutil.copytree(os.path.join(args.root, prim), os.path.join(tmp_root, "knowledge", prim))
     shutil.copytree(args.tools_dir, os.path.join(tmp_root, "tools"))
+    os.makedirs(os.path.join(tmp_root, "executors"), exist_ok=True)
     n_exe = 0
-    for cat in exec_cats:
-        dst_cat = os.path.join(tmp_root, "tools", cat)
-        for fn in os.listdir(os.path.join(args.exec_dir, cat)):
-            if fn.lower().endswith(".exe"):
-                shutil.copy2(os.path.join(args.exec_dir, cat, fn), os.path.join(dst_cat, fn))
-                n_exe += 1
+    for fn in exe_names:
+        shutil.copy2(os.path.join(args.exec_dir, fn), os.path.join(tmp_root, "executors", fn))
+        n_exe += 1
     merged_root = tmp_root
     cfg_path = None
 

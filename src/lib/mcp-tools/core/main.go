@@ -6,14 +6,13 @@ import (
 	"os"
 
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
-	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/contracts"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fetch"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/scriptrun"
 )
 
 func main() {
-	os.Exit(cli.Run(dispatch, cli.Help{FS: contracts.FS, Dir: "tools/core"}))
+	os.Exit(cli.Run(dispatch, cli.Help{Dir: "tools/core"}))
 }
 
 func dispatch(workDir, tool string, args map[string]interface{}) *cli.Result {

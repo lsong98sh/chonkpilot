@@ -6,12 +6,11 @@ import (
 	"os"
 
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
-	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/contracts"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/desktop"
 )
 
 func main() {
-	os.Exit(cli.Run(dispatch, cli.Help{FS: contracts.FS, Dir: "tools/desktop"}))
+	os.Exit(cli.Run(dispatch, cli.Help{Dir: "tools/desktop"}))
 }
 
 func dispatch(workDir, tool string, args map[string]interface{}) *cli.Result {

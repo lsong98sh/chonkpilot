@@ -1062,8 +1062,8 @@ func (p *Vfts) syncTools() {
 // ─── exe 路径解析 ────────────────────────────────────────
 
 // resolveExe 定位引擎可执行文件：Options.Exe > 环境变量 VFTS_EXE > 运行 exe 同目录
-// > 运行 exe 上级目录/vfts > 运行 exe 上级目录 > 运行 exe 上上级目录/dist/vfts。
-// 找不到返回 error（Start 失败）。
+// 下的 `mcps/vfts/`（发行布局：`<exeDir>/mcps/vfts/chonkpilot-vfts-mcp-server.exe`；zvec_c_api.dll 同目录）。
+// 找不到返回 error（Start 失败）—— 不做多路径猜测。
 func resolveExe(explicit string) (string, error) {
 	abs := func(p string) (string, error) {
 		a, err := filepath.Abs(p)
@@ -1084,18 +1084,11 @@ func resolveExe(explicit string) (string, error) {
 	}
 	dir := filepath.Dir(self)
 	const exeName = "chonkpilot-vfts-mcp-server.exe"
-	cands := []string{
-		filepath.Join(dir, exeName),                             // 运行 exe 同目录
-		filepath.Join(dir, "..", "vfts", exeName),               // 运行 exe 上级目录/vfts（dist/<形态> 的兄弟目录）
-		filepath.Join(dir, "..", exeName),                       // 运行 exe 上级目录
-		filepath.Join(dir, "..", "..", "dist", "vfts", exeName), // 运行 exe 上上级目录/dist/vfts
+	c := filepath.Join(dir, "mcps", "vfts", exeName) // <exeDir>/mcps/vfts/
+	if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+		return abs(c)
 	}
-	for _, c := range cands {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
-			return abs(c)
-		}
-	}
-	return "", fmt.Errorf("vfts: 引擎未找到——请设置 Options.Exe / 环境变量 VFTS_EXE，或将 %s 置于可执行文件同目录 / ../vfts/", exeName)
+	return "", fmt.Errorf("vfts: 引擎未找到——请设置 Options.Exe / 环境变量 VFTS_EXE，或将 %s 置于 <exeDir>/mcps/vfts/", exeName)
 }
 
 // strval 任意值 → 字符串（配置 list 值归一）。

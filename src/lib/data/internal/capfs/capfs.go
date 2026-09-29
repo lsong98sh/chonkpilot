@@ -8,7 +8,8 @@
 //	用户 ~/.chonkpilot/capability     （~ 由 usr 主库所在目录推导，测试可隔离）
 //	项目 <workdir>/.chonkpilot/capability
 //
-// 每级下四类分类目录：tools / skills / prompts / resources。
+// 每级下分层目录：`tools/`（工具契约）+ `knowledge/{skills,prompts,resources}`（技能/提示词/资源）；
+// 系统级另有 `executors/`（内置执行器 exe，见构建脚本）。
 //
 // ⚠️ **场景不在此树内**：场景用**独立根 `scenarios/`**（与各级 capability 根**平级**，三级同构），
 // 见 ScenarioRoots / ScenarioSystemRoot / ScenarioUserRoot / ScenarioProjectRoot（25 §6）。
@@ -29,6 +30,9 @@ const (
 	KindUser    = "user"
 	KindProject = "project"
 )
+
+// KnowledgeDirName 是知识库原语文档（skills/prompts/resources）在 capability 根下的容器目录名。
+const KnowledgeDirName = "knowledge"
 
 // Level 是一级 capability 根。
 type Level struct {
@@ -62,9 +66,9 @@ func ProjectRoot(workDir string) string {
 	return filepath.Join(workDir, ".chonkpilot", "capability")
 }
 
-// PromptsRoot 某级 capability 的 prompts 分类根（= <capRoot>/prompts）。
+// PromptsRoot 某级 capability 的 prompts 分类根（= <capRoot>/knowledge/prompts）。
 // 属**知识库 prompt 分类**（如 summary.prompt.md），与场景**无关**——场景已迁独立根
-// `scenarios/`（capfs.ScenarioRoots，25-MCP与场景分层模型 §6）；本函数保留 capability/prompts 语义。
+// `scenarios/`（capfs.ScenarioRoots，25-MCP与场景分层模型 §6）。
 func PromptsRoot(capRoot string) string {
-	return filepath.Join(capRoot, "prompts")
+	return filepath.Join(capRoot, KnowledgeDirName, "prompts")
 }

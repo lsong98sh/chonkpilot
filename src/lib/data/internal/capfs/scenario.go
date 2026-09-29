@@ -14,16 +14,15 @@
 // 场景 id **全局唯一（跨级亦然）**，三级"覆盖"语义不存在（25 §6）。
 // **同一场景内 agent 名必须唯一** —— 重名（含大小写 / 主与子撞名 `main` / 空名）保存即拒绝（25 §6.1 · 42 §2 (175)）。
 //
-// 三级根均可编辑；app 级出厂场景由 **embed** 提供，app 初始化（首次 list）时经
-// MaterializeFactoryScenarios 缺失即物化（已存在不覆盖，用户可编辑）。
+// 三级根均可编辑；app 级出厂场景 = **磁盘目录** `<exeDir>/scenarios/`（源 `src/initdata/scenarios/`，
+// 由构建脚本投放）——**不再 embed、不再自动物化**：根缺失即为缺装状态，由上层给出明确提示
+// （见 internal/scenario.checkFactoryScenarios）。
 package capfs
 
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -283,57 +282,6 @@ func NormalizeScenarioPayload(sc map[string]any) map[string]any {
 	}
 	delete(sc, "systemPrompt")
 	return sc
-}
-
-// MaterializeFactoryScenarios 把 **embed 内嵌出厂场景** 物化到 app 级场景根：
-// src 根 = 各场景目录（如 `default/`），目标 `<appRoot>/<场景目录>/` **不存在**才写入，
-// 已存在**不覆盖**（用户可能已编辑）。app 初始化（首次 list）时调用，幂等。
-func MaterializeFactoryScenarios(appRoot string, src fs.FS) error {
-	entries, err := fs.ReadDir(src, ".")
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		if ScenarioDirExists(appRoot, e.Name()) {
-			continue // 已存在（含用户编辑）→ 不覆盖
-		}
-		if err := copyFSDir(src, e.Name(), filepath.Join(appRoot, e.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// copyFSDir 递归复制 src 下 dir 到磁盘 dst（目录自动创建）。
-func copyFSDir(src fs.FS, dir, dst string) error {
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return err
-	}
-	entries, err := fs.ReadDir(src, dir)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		sp := path.Join(dir, e.Name())
-		dp := filepath.Join(dst, e.Name())
-		if e.IsDir() {
-			if err := copyFSDir(src, sp, dp); err != nil {
-				return err
-			}
-			continue
-		}
-		raw, err := fs.ReadFile(src, sp)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(dp, raw, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // ScenarioDirExists 判断某级**场景根**下场景目录是否存在（25 §6）。

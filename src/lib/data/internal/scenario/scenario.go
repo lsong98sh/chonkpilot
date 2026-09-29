@@ -3,8 +3,9 @@
 //
 // 覆盖：场景 = **独立根 `scenarios/`**（与 capability/ 平级）/<场景目录>/ 的场景元素
 // （列举 / 定位 / 保存 / 删除）。
-// 三级根 app / user / project **均可编辑**；app 级（`<exeDir>/scenarios/`）出厂内容由 **embed**
-// 提供——app 初始化（首次 list）时缺失即恢复、已存在不覆盖（用户可编辑）。
+// 三级根 app / user / project **均可编辑**；app 级（`<exeDir>/scenarios/`）出厂内容 = **磁盘目录**
+// （源 `src/initdata/scenarios/`，由构建脚本投放）——**不再 embed、不再自动物化**：根缺失即为缺装
+// 状态，读取前给出明确提示（checkFactoryScenarios）。
 // 把「场景领域对象 + 级别」翻译成三级场景根下的目录读写（`scenario.json` +
 // `main.agent.md` + `*.agent.md`）；目录/文件规则与 agent 契约文本留在 capfs（门面不交路径规则）。
 //
@@ -29,7 +30,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
@@ -47,16 +47,20 @@ func New(base *kernel.Base) *Service { return &Service{Base: base} }
 // 编译期断言：实现完整 scenario 域门面（缺方法即编译不过）。
 var _ facade.ScenarioAPI = (*Service)(nil)
 
-// ensureFactoryScenarios 把 **embed 内嵌出厂场景** 物化到 **app 级场景根**
-// （`<exeDir>/scenarios/`）：目标 `<场景目录>/` **不存在**才写入，已存在**不覆盖**
-// （用户可能已编辑）。app 初始化即调用（首次 list / get）——保证 `registerDomainAgents`
-// 等 app 级消费者在任何读取前已能命中出厂场景。幂等、失败静默（读取侧照旧工作）。
-func (s *Service) ensureFactoryScenarios() {
+// checkFactoryScenarios 校验 **app 级场景根**（`<exeDir>/scenarios/`）是否就位：
+// 出厂场景现为**磁盘目录**（源 `src/initdata/scenarios/`，由构建脚本投放）——**不再 embed、
+// 不再自动物化**。根缺失（缺装）→ 输出明确提示（重新安装或用 `initial.zip` 恢复），
+// 读取侧照旧工作（仅能读到 user/project 级）。幂等、不产生任何写入。
+func (s *Service) checkFactoryScenarios() {
 	appRoot, err := capfs.ScenarioSystemRoot(s.AppDir)
 	if err != nil {
 		return
 	}
-	_ = capfs.MaterializeFactoryScenarios(appRoot, data.FactoryScenarios())
+	if _, err := os.Stat(appRoot); err != nil {
+		if s.Warnf != nil {
+			s.Warnf("scenario: 缺少出厂场景目录 %s，请重新安装或用 initial.zip 恢复", appRoot)
+		}
+	}
 }
 
 // scenarioRootForWrite 解析写入目标级（app / user / project 三级均可写）。
@@ -77,7 +81,7 @@ func (s *Service) scenarioRootForWrite(level, workDir string) (string, string) {
 
 // scenarioListAll 合并三级场景根（app → user → project）。场景 id 全局唯一（跨级亦然，
 // 25 §6）→ 三级并集**不会重名**，无需去重（原"同名可在不同级并存"语义已废除）。
-// app 级 = 出厂场景来源（出厂内容由 embed 提供，首次 list 时缺失即物化，见 ensureFactoryScenarios）。
+// app 级 = 出厂场景来源（出厂内容 = 磁盘 `<exeDir>/scenarios/`，缺装时 checkFactoryScenarios 提示）。
 func (s *Service) scenarioListAll(levels []capfs.Level) []map[string]any {
 	out := []map[string]any{}
 	for _, lv := range levels {
@@ -143,9 +147,9 @@ func scenarioLevelLabel(kind string) string {
 	return kind
 }
 
-// ScenarioList 列举场景（app → user → project；app 级 = 出厂场景来源，缺失即从 embed 物化）。
+// ScenarioList 列举场景（app → user → project；app 级 = 出厂场景来源，缺装时提示）。
 func (s *Service) ScenarioList(req facade.ScenarioListRequest) (facade.ScenarioListResponse, error) {
-	s.ensureFactoryScenarios()
+	s.checkFactoryScenarios()
 	raw := s.scenarioListAll(s.scenarioLevelsFor(req.InstanceID, req.Scope))
 	list := make([]facade.Scenario, 0, len(raw))
 	for _, m := range raw {
@@ -156,7 +160,7 @@ func (s *Service) ScenarioList(req facade.ScenarioListRequest) (facade.ScenarioL
 
 // ScenarioGet 按 id 定位场景（Level 空 = 具体级优先 project → user → app）。
 func (s *Service) ScenarioGet(req facade.ScenarioGetRequest) (facade.ScenarioGetResponse, error) {
-	s.ensureFactoryScenarios()
+	s.checkFactoryScenarios()
 	m, err := s.scenarioLoadOne(s.scenarioLevelsFor(req.InstanceID, req.Scope), req.ScenarioID, req.Level)
 	if err != nil {
 		return facade.ScenarioGetResponse{}, err

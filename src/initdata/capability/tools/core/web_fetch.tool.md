@@ -1,7 +1,7 @@
 # HTTP 请求
 
 [meta]
-runtime=chonkpilot-core-executor.exe
+runtime=../../executors/chonkpilot-core-executor.exe
 hot=true
 category=core
 async=auto

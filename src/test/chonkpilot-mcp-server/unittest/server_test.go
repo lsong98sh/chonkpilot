@@ -59,8 +59,8 @@ func copyDir(t *testing.T, src, dst string) {
 	}
 }
 
-// mergedContracts 合并 mcp-server 契约（skills/prompts/resources）与 mcp-tools 工具契约
-// 到临时根（root/tools + root/{skills,prompts,resources}，mcp-server 单根递归扫描）。
+// mergedContracts 合并出厂契约（唯一源 `src/initdata/capability`）到临时根
+// （root/tools + root/knowledge/{skills,prompts,resources}，mcp-server 单根递归扫描）。
 func mergedContracts(t *testing.T, root *string) func() {
 	t.Helper()
 	repo := repoRoot(t)
@@ -68,11 +68,12 @@ func mergedContracts(t *testing.T, root *string) func() {
 	if err != nil {
 		t.Fatalf("MkdirTemp failed: %v", err)
 	}
+	initCap := filepath.Join(repo, "src", "initdata", "capability")
 	for _, prim := range []string{"skills", "prompts", "resources"} {
-		copyDir(t, filepath.Join(repo, "src", "lib", "mcp-server", "contracts", prim),
-			filepath.Join(tmp, prim))
+		copyDir(t, filepath.Join(initCap, "knowledge", prim),
+			filepath.Join(tmp, "knowledge", prim))
 	}
-	copyDir(t, filepath.Join(repo, "src", "lib", "mcp-tools", "internal", "contracts", "tools"),
+	copyDir(t, filepath.Join(initCap, "tools"),
 		filepath.Join(tmp, "tools"))
 	*root = tmp
 	return func() { _ = os.RemoveAll(tmp) }
@@ -166,11 +167,27 @@ func TestPromptSkillMeta(t *testing.T) {
 			}
 		}
 	}
-	// 契约根：prompts/core/code_review.prompt.md（type=prompt）；skills/core/{debug,explore,sandbox-escape}.skill.md（type=skill）
+	// 契约根：prompts/core/code_review.prompt.md（type=prompt）；skills/core/{debug,explore,sandbox-escape}.skill.md
+	// 与 skills/ux/*.skill.md（来源 claude-ux/skills/）均 type=skill。
 	for name, want := range map[string]string{
 		"code_review": "prompt",
 		"explore":     "skill",
 		"debug":       "skill",
+		// skills/ux/（14 个 UX/前端设计技能）
+		"wireframe":                    "skill",
+		"polish-pass":                  "skill",
+		"make-tweakable":               "skill",
+		"make-a-prototype":             "skill",
+		"make-a-deck":                  "skill",
+		"interaction-states-pass":      "skill",
+		"hierarchy-rhythm-review":      "skill",
+		"generate-variations":          "skill",
+		"frontend-aesthetic-direction": "skill",
+		"discovery-questions":          "skill",
+		"design-system-extract":        "skill",
+		"component-extract":            "skill",
+		"ai-slop-check":                "skill",
+		"accessibility-audit":          "skill",
 	} {
 		if got := metaType[name]; got != want {
 			t.Errorf("%s _meta.type = %q，want %q（got: %v）", name, got, want, metaType)

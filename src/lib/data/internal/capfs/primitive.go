@@ -1,8 +1,8 @@
 // mcp 四原语契约解析/组装 + 文件名规范化（原 persist/persist_knowledge.go 的契约段逐字下移）。
 //
 // 文件格式 = mcp 四原语统一契约（# 标题 + [meta] k=v + [description] + [parameters]|[arguments]
-// + [content]，与 chonkpilot-mcp-server/server/contract.go 一致）；根下四类分类目录
-// tools/skills/prompts/resources（知识库 = 整个 capability 树，见 12-数据层）。
+// + [content]，与 chonkpilot-mcp-server/server/contract.go 一致）；capability 根下分层目录：
+// `tools/`（工具）+ `knowledge/{skills,prompts,resources}`（技能/提示词/资源），见 capfs 包注释。
 package capfs
 
 import (
@@ -14,17 +14,19 @@ import (
 
 // Type 四类原语（目录名复数 ↔ 文件后缀单数 ↔ 显示名）。
 type Type struct {
-	Dir   string // 目录名（tools/skills/prompts/resources）
+	Dir   string // 类型目录名（tools/skills/prompts/resources）
+	Rel   string // 相对 capability 根的物理路径（tools；knowledge/skills…）
 	Token string // 文件后缀 token（tool/skill/prompt/resource）
 	Label string // 显示名（工具/技能/提示词/资源）
 }
 
 // Types 是四类原语的规范清单（顺序即知识库根下的展示顺序）。
+// Rel = 相对 capability 根的物理路径（工具在 `tools/`，其余在 `knowledge/` 下）。
 var Types = []Type{
-	{Dir: "tools", Token: "tool", Label: "工具"},
-	{Dir: "skills", Token: "skill", Label: "技能"},
-	{Dir: "prompts", Token: "prompt", Label: "提示词"},
-	{Dir: "resources", Token: "resource", Label: "资源"},
+	{Dir: "tools", Rel: "tools", Token: "tool", Label: "工具"},
+	{Dir: "skills", Rel: "knowledge/skills", Token: "skill", Label: "技能"},
+	{Dir: "prompts", Rel: "knowledge/prompts", Token: "prompt", Label: "提示词"},
+	{Dir: "resources", Rel: "knowledge/resources", Token: "resource", Label: "资源"},
 }
 
 func typeByDir(dir string) *Type {

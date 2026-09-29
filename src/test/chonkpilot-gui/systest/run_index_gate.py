@@ -669,9 +669,9 @@ IDX_DB = os.path.join(WS, ".chonkpilot", "codegraph", "index.db")
 
 
 def _engine_exe():
-    """codegraph 引擎 exe 路径（发行根，与宿主 exe 同级——插件按「宿主 exe 同目录」解析）。"""
+    """codegraph 引擎 exe 路径（发行根 `<exeDir>/mcps/codebase/`——插件按「宿主 exe 同目录/mcps/codebase」解析）。"""
     return os.path.join(os.path.dirname(_h.resolve_gui_exe()),
-                        "chonkpilot-codegraph-mcp-server.exe")
+                        "mcps", "codebase", "chonkpilot-codegraph-mcp-server.exe")
 
 
 def _idx_files():

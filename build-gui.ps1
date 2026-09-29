@@ -32,12 +32,11 @@
 #   dist/server/                 – 服务端（browser 与 gui **共用**；browser 静态页 = 内嵌面，
 #                                  来源 src/server/frontend/dist，由 build-browser.ps1 投放）
 #     ├── chonkpilot-server.exe             # 服务端：llm + gateway + filesys + data 合一 exe
-#     ├── chonkpilot-codegraph-mcp-server.exe  # 内置 MCP 引擎（形态无关）
-#     ├── chonkpilot-vfts-mcp-server.exe       # 内置 MCP 引擎（形态无关）
-#     ├── zvec_c_api.dll                       # vfts 运行库（必须与 vfts 引擎 exe 同目录）
-#     ├── capability/                          # 契约 + executor×3
-#     └── (无 scenarios/)                      # 出厂场景由 embed 内嵌（源 src/lib/data/scenarios），运行时
-#                                              #   app 初始化物化到 <exeDir>/scenarios/（app 级可编辑）——不再投放
+#     ├── capability/                       # 契约 + executor×3（tools/ + knowledge/ + executors/）
+#     ├── scenarios/                        # 出厂场景（源 src/initdata/scenarios）
+#     └── mcps/                             # 内置 MCP 引擎
+#         ├── codebase/chonkpilot-codegraph-mcp-server.exe
+#         └── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll
 #
 # 与 build-desktop.ps1 的关系：本脚本**只重编受 tag 影响的宿主 exe**（client / cli-client / server）；
 #   capability/ 与内置引擎 exe 属**形态无关资产**，优先从 dist/desktop 复用（缺失才回退既有
@@ -133,8 +132,8 @@ try {
     Write-Host "    ok: $outSrvExe ($mb MB)"
 } finally { Pop-Location }
 
-# -- 5) 形态无关资产：capability/ 契约 + executor×3（优先复用 dist/desktop，缺失回退构建） --
-Write-Host "==> [5/6] stage capability/ to dist/server"
+# -- 5) 形态无关资产：capability/（契约 + executor×3）+ scenarios/（出厂场景） --
+Write-Host "==> [5/6] stage capability/ + scenarios/ to dist/server"
 $capSrc = Join-Path $srcDist "capability"
 if (-not (Test-Path $capSrc)) {
     Write-Host "    dist/desktop 无 capability/ → 回退 build-mcp-server.ps1"
@@ -148,37 +147,48 @@ if (Test-Path $capDst) {
 }
 Copy-Item $capSrc $capDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
+# 出厂场景：优先复用 dist/desktop/scenarios，缺失则取唯一源 src/initdata/scenarios
+$scnSrc = Join-Path $srcDist "scenarios"
+if (-not (Test-Path $scnSrc)) { $scnSrc = Join-Path $root "src\initdata\scenarios" }
+$scnDst = Join-Path $srvDist "scenarios"
+if (Test-Path $scnDst) { [System.IO.Directory]::Delete($scnDst, $true) }
+Copy-Item $scnSrc $scnDst -Recurse -Force
+Write-Host "    ok: scenarios/ ($((Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count) files)"
 
-# -- 6) 形态无关资产：内置 MCP 引擎（codegraph / vfts）+ zvec 运行库（优先复用，缺失回退构建） --
-Write-Host "==> [6/6] stage built-in MCP engines to dist/server"
+# -- 6) 形态无关资产：内置 MCP 引擎（codegraph / vfts）+ zvec 运行库 → mcps/{codebase,vfts}（优先复用，缺失回退构建） --
+Write-Host "==> [6/6] stage built-in MCP engines to dist/server/mcps"
 $cgExe = "chonkpilot-codegraph-mcp-server.exe"
-$cgSrc = Join-Path $srcDist $cgExe
+$cgSrc = Join-Path $srcDist "mcps\codebase\$cgExe"
 if (-not (Test-Path $cgSrc)) {
-    Write-Host "    dist/desktop 无 $cgExe → 回退 build-codegraph.ps1"
+    Write-Host "    dist/desktop 无 mcps/codebase/$cgExe → 回退 build-codegraph.ps1"
     & (Join-Path $root "build-codegraph.ps1")
     if ($LASTEXITCODE -ne 0) { throw "build-codegraph.ps1 failed" }
     $cgSrc = Join-Path $root "dist\plugins\codegraph\$cgExe"
 }
-Copy-Item $cgSrc (Join-Path $srvDist $cgExe) -Force
-$mbCg = [Math]::Round((Get-Item (Join-Path $srvDist $cgExe)).Length / 1MB, 1)
-Write-Host "    ok: $cgExe ($mbCg MB)"
+$cgDst = Join-Path $srvDist "mcps\codebase"
+New-Item -ItemType Directory -Force -Path $cgDst | Out-Null
+Copy-Item $cgSrc $cgDst -Force
+$mbCg = [Math]::Round((Get-Item (Join-Path $cgDst $cgExe)).Length / 1MB, 1)
+Write-Host "    ok: mcps/codebase/$cgExe ($mbCg MB)"
 
 $vfExe = "chonkpilot-vfts-mcp-server.exe"
-$vfSrc = Join-Path $srcDist $vfExe
-$dllSrc = Join-Path $srcDist "zvec_c_api.dll"
+$vfSrc = Join-Path $srcDist "mcps\vfts\$vfExe"
+$dllSrc = Join-Path $srcDist "mcps\vfts\zvec_c_api.dll"
 if (-not (Test-Path $vfSrc) -or -not (Test-Path $dllSrc)) {
-    Write-Host "    dist/desktop 无 $vfExe / zvec_c_api.dll → 回退 build-vfts.ps1"
+    Write-Host "    dist/desktop 无 mcps/vfts/$vfExe / zvec_c_api.dll → 回退 build-vfts.ps1"
     & (Join-Path $root "build-vfts.ps1")
     if ($LASTEXITCODE -ne 0) { throw "build-vfts.ps1 failed" }
     $vfDist = Join-Path $root "dist\plugins\vfts"
     $vfSrc = Join-Path $vfDist $vfExe
     $dllSrc = Join-Path $vfDist "zvec_c_api.dll"
 }
-Copy-Item $vfSrc (Join-Path $srvDist $vfExe) -Force
-Copy-Item $dllSrc (Join-Path $srvDist "zvec_c_api.dll") -Force
-$mbVf = [Math]::Round((Get-Item (Join-Path $srvDist $vfExe)).Length / 1MB, 1)
-$mbDll = [Math]::Round((Get-Item (Join-Path $srvDist "zvec_c_api.dll")).Length / 1MB, 1)
-Write-Host "    ok: $vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
+$vfDst = Join-Path $srvDist "mcps\vfts"
+New-Item -ItemType Directory -Force -Path $vfDst | Out-Null
+Copy-Item $vfSrc $vfDst -Force
+Copy-Item $dllSrc $vfDst -Force
+$mbVf = [Math]::Round((Get-Item (Join-Path $vfDst $vfExe)).Length / 1MB, 1)
+$mbDll = [Math]::Round((Get-Item (Join-Path $vfDst "zvec_c_api.dll")).Length / 1MB, 1)
+Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
 
 # -- 清单 --
 $mbGui = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
@@ -191,10 +201,11 @@ Write-Host "      chonkpilot-gui-client.exe         $mbGui MB   # 客户端"
 Write-Host "      chonkpilot-cli-client.exe         $mbCli MB"
 Write-Host "    $srvDist"
 Write-Host "      chonkpilot-server.exe             $mbSrv MB   # 服务端（llm+gateway+filesys+data）"
-Write-Host "      chonkpilot-codegraph-mcp-server.exe $mbCg MB"
-Write-Host "      chonkpilot-vfts-mcp-server.exe    $mbVf MB"
-Write-Host "      zvec_c_api.dll                    $mbDll MB"
-Write-Host "      capability/                       $capCount files"
+Write-Host "      capability/                       $capCount files (tools/knowledge/executors)"
+Write-Host "      scenarios/                        出厂场景"
+Write-Host "      mcps/codebase/chonkpilot-codegraph-mcp-server.exe $mbCg MB"
+Write-Host "      mcps/vfts/chonkpilot-vfts-mcp-server.exe          $mbVf MB"
+Write-Host "      mcps/vfts/zvec_c_api.dll                          $mbDll MB"
 Write-Host "      (browser 静态页已 go:embed 进 chonkpilot-server.exe；源 = src/server/frontend/dist，由 build-browser.ps1 投放)"
 Write-Host "    run: cd $srvDist ; .\chonkpilot-server.exe    (服务端，另开) ; cd $dist ; .\chonkpilot-gui-client.exe    (客户端)"
 Write-Host "    cli: cd $dist ; .\chonkpilot-cli-client.exe --prompt 'hello' --work-dir ."

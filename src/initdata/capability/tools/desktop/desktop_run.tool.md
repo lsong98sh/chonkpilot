@@ -1,7 +1,7 @@
 # 桌面编排
 
 [meta]
-runtime=chonkpilot-desktop-executor.exe
+runtime=../../executors/chonkpilot-desktop-executor.exe
 hot=true
 category=desktop
 async=auto
