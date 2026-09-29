@@ -99,7 +99,8 @@ func (s *Service) KnowledgeRoot(req facade.KnowledgeRootRequest) (facade.Knowled
 	return facade.KnowledgeRootResponse{Root: filepath.ToSlash(root), Kind: kind}, nil
 }
 
-// KnowledgeList 列举目录下内容（根目录首次打开自动预置四类分类目录）。
+// KnowledgeList 列举目录下内容（根目录首次打开自动预置分层目录：
+// `tools/` + `knowledge/{skills,prompts,resources}`）。
 func (s *Service) KnowledgeList(req facade.KnowledgeListRequest) (facade.KnowledgeListResponse, error) {
 	workDir, err := s.WorkDirFor(req.InstanceID, req.Scope)
 	if err != nil {
@@ -115,7 +116,7 @@ func (s *Service) KnowledgeList(req facade.KnowledgeListRequest) (facade.Knowled
 	}
 	if r := capfs.RelOf(root, dir); r == "" || r == "." {
 		for _, t := range capfs.Types {
-			_ = os.MkdirAll(filepath.Join(dir, t.Dir), 0755)
+			_ = os.MkdirAll(filepath.Join(dir, filepath.FromSlash(t.Rel)), 0755)
 		}
 	}
 	entries, err := os.ReadDir(dir)

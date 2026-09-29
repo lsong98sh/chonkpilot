@@ -412,8 +412,8 @@ func TestDataUserConfigDefaultLLMRef(t *testing.T) {
 }
 
 // TestDataScenarioSaveLoadListDelete（v6 文件化 · 25 §6 · 42 §2 (171)）：场景 = 独立根
-// `<scenarios>/<场景目录>/`（与 capability/ 平级）——**出厂场景 = app 级**（出厂内容由 embed 提供，
-// app 初始化时缺失即物化；不再由 list 物化到 user 级）；save 按 id（= 目录名，用户指定）写目录；
+// `<scenarios>/<场景目录>/`（与 capability/ 平级）——**出厂场景 = app 级**（出厂内容 = 磁盘目录，
+// 不再由 list 物化到 user 级）；save 按 id（= 目录名，用户指定）写目录；
 // load 按 id（可带 level 限定）；delete 删目录。
 func TestDataScenarioSaveLoadListDelete(t *testing.T) {
 	appDir := appCapabilityRoot(t)
@@ -742,8 +742,8 @@ func TestDataConfigUnknownInstance(t *testing.T) {
 	}
 }
 
-// appScenarioResourceRoot 定位仓库内 **app 级场景资源根** `src/lib/data/scenarios`
-// （25 §8.2：出厂场景 = app 级；出厂内容由 **embed** 内嵌（源 = 本目录），app 初始化时缺失即物化）。
+// appScenarioResourceRoot 定位仓库内 **app 级场景资源根** `src/initdata/scenarios`
+// （25 §8.2：出厂场景 = app 级；出厂内容 = 磁盘目录（源 = 本目录，由构建脚本投放，不再 embed））。
 // 由本测试文件位置反推仓库根（黑盒测试不复制数据层私有路径规则）。
 func appScenarioResourceRoot(t *testing.T) string {
 	t.Helper()
@@ -751,9 +751,9 @@ func appScenarioResourceRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	// <repo>/src/test/chonkpilot-data/unittest/persist/persist_test.go → <repo>/src/lib/data/scenarios
+	// <repo>/src/test/chonkpilot-data/unittest/persist/persist_test.go → <repo>/src/initdata/scenarios
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "..",
-		"src", "lib", "data", "scenarios")
+		"src", "initdata", "scenarios")
 	if _, err := os.Stat(filepath.Join(root, scenarioDefaultKey, "scenario.json")); err != nil {
 		t.Fatalf("app 级出厂场景资源缺失（%s）：%v", root, err)
 	}
@@ -761,7 +761,7 @@ func appScenarioResourceRoot(t *testing.T) string {
 }
 
 // appCapabilityRoot 造一个**临时 app 级场景根**：把仓库内出厂场景
-// `<repo>/src/lib/data/scenarios/default` 复制到 `<tmp>/scenarios/default`，返回
+// `<repo>/src/initdata/scenarios/default` 复制到 `<tmp>/scenarios/default`，返回
 // `persist.Options.AppDir`（= 系统级 capability 根；场景独立根 `scenarios/` 与其**平级**，25 §6）。
 // 只投放出厂场景 `scenarios/default/` → list 计数确定（仓库当前无其它 app 级场景）。
 func appCapabilityRoot(t *testing.T) string {
@@ -796,9 +796,9 @@ func appCapabilityRoot(t *testing.T) string {
 }
 
 // TestScenarioDefaultAgentsSeeded（25 §8.2 · 42 §2 (171) 新语义）：出厂场景 = **app 级**
-// `scenarios/default/`（出厂内容由 **embed** 提供，app 初始化时缺失即物化；原「list 首次 seed 物化
-// 到 user 级」已撤）——list 命中 app 级 default：1 条 isMain 主 agent（Loop Engineer/主，居首）+
-// 8 条子 agent，name/description/roleTag 齐备。
+// `scenarios/default/`（出厂内容 = 磁盘目录，源 `src/initdata/scenarios`，由构建脚本投放；
+// 原「list 首次 seed 物化到 user 级」已撤）——list 命中 app 级 default：1 条 isMain 主 agent
+// （Loop Engineer/主，居首）+ 8 条子 agent，name/description/roleTag 齐备。
 func TestScenarioDefaultAgentsSeeded(t *testing.T) {
 	bus, _, _ := newTestPersistOpts(t, persist.Options{AppDir: appCapabilityRoot(t)})
 

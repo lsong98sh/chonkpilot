@@ -1,9 +1,9 @@
 // scenario 域门面实现白盒（25-MCP与场景分层模型 §6，2026-09-26 更新）：
-//   - app 级场景（`scenarios/<id>/`，与 capability/ 平级；出厂内容由 embed 提供）可被 list / get 命中；
+//   - app 级场景（`scenarios/<id>/`，与 capability/ 平级；出厂内容 = 磁盘目录 src/initdata/scenarios）可被 list / get 命中；
 //   - 场景 id **全局唯一（跨级亦然）**：向 user 级保存与 app 级同名的场景 → **拒绝且不落盘**；
 //     同级别同名 = 更新自己那份（放行）；
 //   - **app 级可编辑**（保存写 app 根、删除允许）；
-//   - 出厂场景 = app 级（app 初始化时从 embed 缺失即物化，已存在不覆盖）。
+//   - 出厂场景 = app 级（磁盘目录；不再 embed、不再自动物化）。
 //
 // 夹具直接按 capfs 既有目录规则落盘（`scenario.json` + `main.agent.md` + `*.agent.md`）。
 package scenario

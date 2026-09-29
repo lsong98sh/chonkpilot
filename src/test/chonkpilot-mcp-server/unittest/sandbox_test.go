@@ -120,7 +120,7 @@ func TestSandboxPolicyTracksSecurityDirs(t *testing.T) {
 	}
 }
 
-// sandboxCapabilityRoot 取已构建的 mcp-server capability 根（含 tools/<cat>/ executor exe）。
+// sandboxCapabilityRoot 取已构建的 mcp-server capability 根（含 executors/<cat>-executor.exe）。
 // 候选顺序（[41 D-28] 源/产物分区）：`dist/other`（build-mcp-server.ps1 现行产物）→
 // `dist/desktop`（桌面单体发行目录）→ `dist/mcp-server`（历史布局，回落）。均不存在 → ""。
 func sandboxCapabilityRoot(t *testing.T) string {
@@ -132,7 +132,7 @@ func sandboxCapabilityRoot(t *testing.T) string {
 		filepath.Join("dist", "mcp-server", "capability"),
 	} {
 		root := filepath.Join(repo, rel)
-		if _, err := os.Stat(filepath.Join(root, "tools", "core", "chonkpilot-core-executor.exe")); err == nil {
+		if _, err := os.Stat(filepath.Join(root, "executors", "chonkpilot-core-executor.exe")); err == nil {
 			return root
 		}
 	}

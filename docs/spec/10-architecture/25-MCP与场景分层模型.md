@@ -106,7 +106,7 @@ agent **只"注入"不"注册"**：
   - `list` 无需去重；`load` 直接按 id 命中；
   - `ScenarioSave` 需**新增跨级重名校验**（拒绝并报错）；
   - 既有重名数据**不做迁移**（用户明确"既有的不管"）。
-- 三级语义 = **存放位置 / 归属**（**三级均可写**，**不是优先级链**）。**〔订正（2026-09-26）**：app 级（系统级）自 2026-09-26 起**可编辑**（原「随发布只读」作废）；出厂场景出厂内容由 **embed** 内嵌（源 `src/lib/data/scenarios/`），app 初始化（首次 list）时缺失即物化到 `<exeDir>/scenarios/`、已存在不覆盖；`data-scenario-restore` 消息**已删除**。〕
+- 三级语义 = **存放位置 / 归属**（**三级均可写**，**不是优先级链**）。**〔订正（2026-09-26）**：app 级（系统级）自 2026-09-26 起**可编辑**（原「随发布只读」作废）；`data-scenario-restore` 消息**已删除**。〕**〔订正（2026-09-29）**：出厂场景 = **磁盘目录** `<exeDir>/scenarios/`（**唯一源** `src/initdata/scenarios/`，由构建脚本投放）；**不再 embed、不再自动物化** —— 原「内容由 embed 内嵌、app 初始化缺失即物化」作废；根缺失即缺装（提示重新安装或用 `initial.zip` 恢复）。〕
 
 ### 6.1 命名与唯一性
 
@@ -124,7 +124,7 @@ agent **只"注入"不"注册"**：
   - **agent 场景前缀** = **`<场景id>/<agent名>`**（分隔符 `/`；场景 id = 场景目录名，本模块 §6）——**注入面**（§3 团队成员段）、**`llm_run` 委派**、**`agentDelegable`**、**子轮次 system 读取**（`registeredAgentDef` / `resolveAgentDef`）**同一口径**；引用可带前缀（精确命中）或裸名（注册表内**唯一**同名才命中；跨场景重名须带前缀；裸名歧义 → 不解析）。
   - **第三方别名（来源前缀）** = **`<server名>_`**（沿用既有 `applyPrefix` 缺省形态，非新分隔符；`namespace "-"` 对第三方**不生效** → 强制回落该前缀）；名字往返一致（`mcp_find` / `mcp_load` 返回名 = 可直接 `tools/call` / `mcp_invoke` 的名）。
   - **唯一性拒绝策略** = 同类同名注册**拒绝并返回含来源的明确错误**（**不静默覆盖**）；gateway 落点见 [26 §4.3.1](../20-modules/26-mcp-gateway.md)。
-- **张力闭环**：[41 G-48](../40-roadmap/41-未决项登记.md) 的 ④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）。**〔订正（2026-09-26）**：④ 随 `data-scenario-restore` 消息删除而消失（app 级改为**可直接编辑**，出厂内容由 embed 物化）；⑥ 由「app 级可编辑 + 场景 id 全局唯一」承载。〕
+- **张力闭环**：[41 G-48](../40-roadmap/41-未决项登记.md) 的 ④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）。**〔订正（2026-09-26）**：④ 随 `data-scenario-restore` 消息删除而消失（app 级改为**可直接编辑**）；⑥ 由「app 级可编辑 + 场景 id 全局唯一」承载。〕
 - **同场景内 agent 不许重名（2026-09-26 用户裁决，[42 §2 (175)](../40-roadmap/42-决策记录.md)）**：上表「agent **可重名**」指**跨场景**（以 `<场景id>/<agent名>` 前缀消歧）；**同一场景内** agent 名**必须唯一** → 场景**保存**时校验（判定键 = agent **落盘文件名**、大小写不敏感），重名（含**大小写等价** / **主 agent 与子 agent 撞名 `main`** / **空名**）**拒绝保存**并返回含「**场景 id + 重复 agent 名**」的错误（落点 `capfs.WriteScenarioDir` 写盘前）；既有重名数据**不迁移**。
 
 ---
@@ -148,11 +148,12 @@ agent **只"注入"不"注册"**：
 | 4 | **`llmTools()` 白名单语义修正**（非空取白名单全量，不论 hot） | `llm/server/{turn.go,server.go}` | **缺陷修正** |
 | 5 | `SystemPrompt` 语义重定义 | `data/facade/scenario.go` · `capfs/scenario.go` · 消费方 | 结构 |
 | 6 | `mcp_find`/`mcp_load` 契约（type/kind + schema 文案）· `assetGuide` 文本 | `gateway/meta_tools.go` · `llm/server/memory_guide.go` | **契约变更** |
-| 7 | 默认场景改名「**开发场景**」（**仅显示名**，key `default` 不动）**〔✅ 已落地（2026-09-25）〕** | `src/lib/data/scenarios/default/scenario.json`（app 级资源 `name`；原 `materializeDefaultScenario` 已随 T6 撤） | 命名 |
+| 7 | 默认场景改名「**开发场景**」（**仅显示名**，key `default` 不动）**〔✅ 已落地（2026-09-25）〕** | `src/initdata/scenarios/default/scenario.json`（app 级资源 `name`；原 `materializeDefaultScenario` 已随 T6 撤） | 命名 |
 | 8 | 两套内嵌（7 域 agent + 默认场景 1+8）统一为 **app 级场景**；⚠️ 连带 `registeredAgentDef` 的回落来源要改〔**订正（2026-09-26）**：内置 agent 集 `builtin-agents/` **已删除** —— 发布 `scenarios/` 仅出厂场景 `default/`（「开发场景」）；「通用」由**无场景（通用模式）**承载，不再有独立 agent 集〕 | `llm/server/{domainmd.go,domainmcp.go}` · `capfs/defaults.go` | 结构 |
 | 9 | 前端：场景编辑器加「**组合后系统提示词**」预览页签；chat 输入框加 **prompt 选择**（注入 user 消息 + `/<name>` tag） | `src/frontend/src/views/**` | 前端 |
 
-> **〔订正（2026-09-26）〕**：#1 的出厂场景**物化路径**改由 **embed 承担** —— `data/scenarios_embed.go`（`//go:embed scenarios`）+ `capfs.MaterializeFactoryScenarios`，在 app 初始化（首次 `ScenarioList` / `ScenarioGet`）时把内嵌出厂场景写入 `<exeDir>/scenarios/`（缺失即恢复、已存在不覆盖）；**app 级可编辑**（门面 `ScenarioSave`/`ScenarioDelete` 允许 `level=app`，前端列表给编辑/删除入口）、`data-scenario-restore` 消息与 `capfs.CopyScenarioDir` 已删除；build 脚本不再投放 `scenarios/`。
+> **〔订正（2026-09-29）〕**：#1 的出厂场景**来源 = 磁盘目录**（唯一源 `src/initdata/scenarios/`，由构建脚本覆盖式同步到 `<exeDir>/scenarios/`）——**不再 embed、不再物化**：已删 `data/scenarios_embed.go`（`//go:embed scenarios` + `FactoryScenarios()`）与 `capfs.MaterializeFactoryScenarios`；app 初始化不再写盘，根缺失即缺装（`checkFactoryScenarios` 提示重新安装或用 `initial.zip` 恢复）。**app 级可编辑**（门面 `ScenarioSave`/`ScenarioDelete` 允许 `level=app`，前端列表给编辑/删除入口）、`data-scenario-restore` 消息与 `capfs.CopyScenarioDir` 已删除。
+> **〔订正（2026-09-26，历史）〕**：原「出场内容由 `//go:embed scenarios` + `MaterializeFactoryScenarios` 在 app 初始化物化」的机制**已于 2026-09-29 整体作废**（见上条）；原文保留仅作沿革。
 
 ### 8.2 任务分解与建议顺序
 
@@ -163,7 +164,7 @@ agent **只"注入"不"注册"**：
 | **T3** | #3 + #5 | 系统提示词三层拼接 + `SystemPrompt` 语义重定义 |
 | **T4** | #1 + 重名校验（§6） | `scenarios/` 独立根 + `ScenarioSave` 跨级重名校验（无覆盖语义） |
 | **T5** | #9 | 前端（组合后提示词预览页签 · chat 选 prompt） |
-| **T6** | #8 | 两套内嵌统一为 app 级场景（含 `registeredAgentDef` 回落来源改口）**〔✅ 已落地（2026-09-25）〕**：落地 `src/lib/data/scenarios/`（`default/` = 出厂默认 1 主 + 8 子；`builtin-agents/` = 7 内置 agent），撤 `//go:embed contracts/agents/*.agent.md` 与 `capfs.DefaultScenarioAgents`（`defaults.go` 删），list 物化（`materializeDefaultScenario`）撤；`registerDomainAgents` 改经数据层门面 `facade.ScenarioAPI.ScenarioList` 读 app 级场景（路径规则单源）；`registeredAgentDef` 回落 = app 级场景内同名 agent；build 脚本（`build-desktop.ps1` / `build-gui.ps1`）投放 `scenarios/`。**〔订正（2026-09-26）：`builtin-agents/` 已删除 —— 发布 `scenarios/` 仅 `default/`（「开发场景」）；「通用」= 无场景的通用模式（无目录）。机制不变：`registerDomainAgents` 仍扫描**全部** app 级场景（当前仅 1 个），`registeredAgentDef` 回落来源仍为「app 级场景内同名 agent」〕** |
+| **T6** | #8 | 两套内嵌统一为 app 级场景（含 `registeredAgentDef` 回落来源改口）**〔✅ 已落地（2026-09-25）〕**：落地 `src/initdata/scenarios/`（`default/` = 出厂默认 1 主 + 8 子；`builtin-agents/` 后续删除），撤 `//go:embed contracts/agents/*.agent.md` 与 `capfs.DefaultScenarioAgents`（`defaults.go` 删），list 物化（`materializeDefaultScenario`）撤；`registerDomainAgents` 改经数据层门面 `facade.ScenarioAPI.ScenarioList` 读 app 级场景（路径规则单源）；`registeredAgentDef` 回落 = app 级场景内同名 agent；build 脚本（`build-desktop.ps1` / `build-gui.ps1`）投放 `scenarios/`。**〔订正（2026-09-26）：`builtin-agents/` 已删除 —— 发布 `scenarios/` 仅 `default/`（「开发场景」）；「通用」= 无场景的通用模式（无目录）。机制不变：`registerDomainAgents` 仍扫描**全部** app 级场景（当前仅 1 个），`registeredAgentDef` 回落来源仍为「app 级场景内同名 agent」〕**〔订正（2026-09-29）：投放改为「源唯一 = `src/initdata/scenarios/`，build 脚本覆盖式同步到 `<exeDir>/scenarios/`」，不再 embed/物化〕** |
 
 > 顺序：**T1 → T2 → T3 → T4 → T5 → T6**（T1 独立最小、先修缺陷；T2 定义资产面边界；T3 承接提示词；T4 落存储；T5 前端跟随后端契约；T6 最后做内嵌统一）。
 

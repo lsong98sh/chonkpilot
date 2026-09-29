@@ -7,7 +7,7 @@
     <exe> <tool> --input=<参数 JSON 文件>   # 结果输出到 stdout（JSON 或文本）
     退出码：0 = 成功；1 = 失败（失败详情在 stdout）；2 = 用法错误（成功路径不出现）
 
-现行工具面（契约源 chonkpilot-mcp-tools/internal/contracts/tools/**/*.tool.md）共 8 个：
+现行工具面（契约源 src/initdata/capability/tools/**/*.tool.md）共 8 个：
     core    : file_read / file_find / file_diff / filesys_run / script_run / web_fetch
     browser : browser_run
     desktop : desktop_run
@@ -42,12 +42,13 @@ RUN_TIMEOUT = 180
 # 脚本位于 src/test/chonkpilot-mcp-tools/systest/，仓库根在 parents[4]。
 REPO = pathlib.Path(__file__).resolve().parents[4]
 # 部署布局候选（[41 D-28] 源/产物分区后）：`dist/other`（`build-mcp-server.ps1` 现行产物，与 mcp-gateway
-# 同目录共用 capability）→ `dist/desktop`（桌面单体发行目录，亦含 `capability/tools/<cat>/`）→
+# 同目录共用 capability）→ `dist/desktop`（桌面单体发行目录，亦含 `capability/executors/`）→
 # `dist/mcp-server`（历史布局，保留回落）。
+# 内置 executor 现统一落 `<capability>/executors/`（扁平命名 chonkpilot-<cat>-executor.exe）。
 CAP_CANDS = [
-    REPO / "dist" / "other" / "capability" / "tools",
-    REPO / "dist" / "desktop" / "capability" / "tools",
-    REPO / "dist" / "mcp-server" / "capability" / "tools",
+    REPO / "dist" / "other" / "capability" / "executors",
+    REPO / "dist" / "desktop" / "capability" / "executors",
+    REPO / "dist" / "mcp-server" / "capability" / "executors",
 ]
 CAP = next((c for c in CAP_CANDS if c.exists()), CAP_CANDS[-1])
 
@@ -59,9 +60,9 @@ def _first_existing(cands):
     return None
 
 
-# 被测 exe：按候选布局逐个探测（每个类别内先试现行布局、再试历史布局），回落源码侧历史位置。
+# 被测 exe：按候选布局逐个探测（executors 扁平目录），回落源码侧历史位置。
 def _cap_exe(cat, name):
-    return _first_existing([c / cat / name for c in CAP_CANDS])
+    return _first_existing([c / name for c in CAP_CANDS])
 
 
 CORE_EXE = _first_existing([_cap_exe("core", "chonkpilot-core-executor.exe"),
@@ -724,7 +725,7 @@ def main():
     args = parser.parse_args()
 
     if CORE_EXE is None:
-        print(f"缺少可执行文件：{CAP / 'core' / 'chonkpilot-core-executor.exe'}"
+        print(f"缺少可执行文件：{CAP / 'chonkpilot-core-executor.exe'}"
               f"（先执行 build-mcp-server.ps1）")
         return 2
     print(f"被测 core executor: {CORE_EXE}")

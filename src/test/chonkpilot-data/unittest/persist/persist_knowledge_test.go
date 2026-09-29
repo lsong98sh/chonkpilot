@@ -37,13 +37,13 @@ func TestDataKnowledgeRootListCreateReadSaveDelete(t *testing.T) {
 		t.Fatalf("root=%+v", res)
 	}
 
-	// list app 根（绝对路径）→ 预置 tools/skills/prompts/resources 四类目录
+	// list app 根（绝对路径）→ 预置分层目录 `tools/` + `knowledge/`（后者内含 skills/prompts/resources）
 	r = dataCall(t, bus, "data-knowledge-list", map[string]any{
 		"req_id": "r2", "instance_id": "ins-test", "data": map[string]any{"dir": appRoot},
 	})
 	res = dataResult(t, r)
 	dirs, _ := res["dirs"].([]any)
-	if len(dirs) != 4 {
+	if len(dirs) != 2 {
 		t.Fatalf("dirs=%+v", dirs)
 	}
 
@@ -124,12 +124,12 @@ func TestDataKnowledgeProjectRootMkdirCreate(t *testing.T) {
 	// v6 项目级根：原 work_dir/@mcp 迁移为 work_dir/.chonkpilot/capability（12-数据层）
 	prjRoot := filepath.Join(regInstance(t, bus), ".chonkpilot", "capability")
 
-	// list 相对 dir（默认归属 project 根）→ 预置四类目录
+	// list 相对 dir（默认归属 project 根）→ 预置分层目录 tools/ + knowledge/
 	r := dataCall(t, bus, "data-knowledge-list", map[string]any{
 		"req_id": "r1", "instance_id": "ins-test", "data": map[string]any{"dir": ""},
 	})
 	res := dataResult(t, r)
-	if dirs, _ := res["dirs"].([]any); len(dirs) != 4 {
+	if dirs, _ := res["dirs"].([]any); len(dirs) != 2 {
 		t.Fatalf("project dirs=%+v", dirs)
 	}
 	_ = prjRoot // root 路径由 persist 实例绑定解析（work_dir/.chonkpilot/capability 自动创建）
@@ -245,7 +245,7 @@ func dataFail(t *testing.T, m map[string]any) string {
 func TestDataKnowledgeMoveAcrossDirs(t *testing.T) {
 	bus, appRoot := newKnowledgeEnv(t)
 	toolsDir := filepath.ToSlash(filepath.Join(appRoot, "tools"))
-	skillsDir := filepath.ToSlash(filepath.Join(appRoot, "skills"))
+	skillsDir := filepath.ToSlash(filepath.Join(appRoot, "knowledge", "skills"))
 
 	// list 根 → 预置四类分类目录（真实流程同口径）；再建 tools/sub（文件移动目标）
 	r := dataCall(t, bus, "data-knowledge-list", map[string]any{
@@ -291,10 +291,10 @@ func TestDataKnowledgeMoveAcrossDirs(t *testing.T) {
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("目录跨目录移动失败: %+v", r)
 	}
-	if fi, err := os.Stat(filepath.Join(appRoot, "skills", "sub")); err != nil || !fi.IsDir() {
+	if fi, err := os.Stat(filepath.Join(appRoot, "knowledge", "skills", "sub")); err != nil || !fi.IsDir() {
 		t.Fatalf("目录未落到目标父目录: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(appRoot, "skills", "sub", "my_tool.tool.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(appRoot, "knowledge", "skills", "sub", "my_tool.tool.md")); err != nil {
 		t.Fatalf("目录子树未随迁: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(appRoot, "tools", "sub")); !os.IsNotExist(err) {
@@ -310,7 +310,7 @@ func TestDataKnowledgeMoveAcrossDirs(t *testing.T) {
 	r = dataCall(t, bus, "data-knowledge-rename", map[string]any{
 		"req_id": "r7", "instance_id": "ins-test",
 		"data": map[string]any{
-			"path":     filepath.ToSlash(filepath.Join(appRoot, "skills", "sub", "my_tool.tool.md")),
+			"path":     filepath.ToSlash(filepath.Join(appRoot, "knowledge", "skills", "sub", "my_tool.tool.md")),
 			"new_name": "tools/my_tool.tool.md",
 		},
 	})
@@ -318,7 +318,7 @@ func TestDataKnowledgeMoveAcrossDirs(t *testing.T) {
 		t.Fatalf("冲突错误应说明已存在: %q", msg)
 	}
 	for _, p := range []string{
-		filepath.Join(appRoot, "skills", "sub", "my_tool.tool.md"),
+		filepath.Join(appRoot, "knowledge", "skills", "sub", "my_tool.tool.md"),
 		filepath.Join(appRoot, "tools", "my_tool.tool.md"),
 	} { // 两端都未被动过（拒绝覆盖 = 不丢数据）
 		if _, err := os.Stat(p); err != nil {
@@ -342,7 +342,7 @@ func TestDataKnowledgeMoveAcrossDirs(t *testing.T) {
 	dataFail(t, r)
 	for _, p := range []string{
 		filepath.Join(appRoot, "tools", "dup"),
-		filepath.Join(appRoot, "skills", "dup"),
+		filepath.Join(appRoot, "knowledge", "skills", "dup"),
 	} {
 		if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
 			t.Fatalf("拒绝覆盖后目录 %s 丢失: %v", p, err)

@@ -6,7 +6,7 @@
 #   │                               #   config.json 同 mcp-server 自动探测加载）
 #   ├── chonkpilot-mcp-server.exe   # 独立 mcp-server exe（由 build-mcp-server.ps1 产出，同目录）
 #   ├── config.json                 # 运行配置（build-mcp-server.ps1 生成）
-#   └── capability/                 # 能力目录（executor×3 + tools/skills/prompts/resources 契约）
+#   └── capability/                 # 能力目录（tools/ + knowledge/{skills,prompts,resources}/ + executors/）
 #
 # 来源 = dist/other（共享资产由 build-mcp-server.ps1 铺好）：gateway exe 内嵌
 #   chonkpilot-mcp-server lib（进程内扫描 capability 契约根 + spawn 其中 executor），

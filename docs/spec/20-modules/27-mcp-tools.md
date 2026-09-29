@@ -2,7 +2,7 @@
 
 > 日期：2026-09-10 ｜ 状态：✅ 与代码一致
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [25-mcp-server](25-mcp-server.md) · [14-安全域](../10-architecture/14-安全域-agentbox.md)
-> 代码目录（D-28：`src/mcp-tools/` → `src/lib/mcp-tools/`）：`src/lib/mcp-tools/`（`core/` `desktop/` `browser/` + `internal/*` + `internal/contracts/tools/`）
+> 代码目录（D-28：`src/mcp-tools/` → `src/lib/mcp-tools/`）：`src/lib/mcp-tools/`（`core/` `desktop/` `browser/` + `internal/*`）；**契约唯一源已迁出** → `src/initdata/capability/tools/`（executor 不再内嵌，`--help` 从磁盘读）。
 
 ---
 
@@ -21,7 +21,7 @@
 |----|----|
 | 形态 | 3 个独立 exe：`chonkpilot-core-executor.exe` / `-desktop-` / `-browser-` |
 | 调用约定 | `<exe> <tool> --input=<参数 JSON 路径>`；`<exe> --help`；`<exe> --help <tool>` |
-| 部署 | `build-mcp-server.ps1` 编到 `capability/tools/<cat>/`（**契约与 exe 同目录**） |
+| 部署 | `build-mcp-server.ps1` 编到 `capability/executors/`（扁平 `chonkpilot-<cat>-executor.exe`）；契约 `tools/<cat>/*.tool.md` 的 runtime 相对 md 写 `../../executors/<cat>.exe`（用户自建 executor 写全路径） |
 | work-dir | **概念已移除**（`workDir := ""`；不消费 `_work_dir`/`CHONK_WORK_DIR`）。文件操作参数须**绝对路径 / `~/` 开头 / `!/` 开头**（R-11），不再按 workDir 兜底解析相对路径 |
 | 宿主注入 env | executor **从自身进程环境**读宿主注入的 `CHONKPILOT_*`（`CHONKPILOT_INSTANCE/WORKDIR/DATADIR/INTERPRETERS`；`mcp-server` spawn 时注入子进程环境，**不再经 `tools/call` 保留参数 `_instance`/`_workdir`/`_datadir`**），经 `fileops.HostEnv`/`BuildToolEnv` 构造**只读** DSL `env`：`CHONKPILOT_WORKDIR/DATADIR/TEMPDIR/EXEDIR/PROJECT`，并 `paths.SetTempRoot(CHONKPILOT_INSTANCE)` 定 `!/` 落地根；`script_run` 另注入子进程环境（用户 `env` 同名优先）并读 `CHONKPILOT_INTERPRETERS` 解析解释器。缺 `CHONKPILOT_INSTANCE` 且需要 `!/` 或 DSL env → 顶层失败（`ErrNoInstance`）；纯绝对路径非 DSL 调用不受影响 |
 
@@ -29,7 +29,7 @@
 
 ## 3. 对外接口
 
-### 3.1 工具清单（8 个，`internal/contracts/tools/`）
+### 3.1 工具清单（8 个，`src/initdata/capability/tools/`）
 
 | 分类 | 工具 | meta 要点 |
 |------|------|-----------|
@@ -43,7 +43,7 @@
 | browser | `browser_run` | hot，threshold=60，timeout=300 |
 
 公共 meta：`args=<tool> --input={RAW-INPUT-FILE}`、`output=stdout`、`async=auto`、`async-threshold=30`（core）。
-契约**单一数据源** = `internal/contracts/tools`（`capability/` 只是 `build-mcp-server.ps1` 铺出的**部署副本**）；同步规则与**副本漂移恢复**见 [03-构建与部署](../00-overview/03-构建与部署.md) §7（`.\sync-contracts.ps1`，勿手改部署目录）。
+契约**单一数据源** = `src/initdata/capability/tools`（`capability/` 只是 `build-mcp-server.ps1` 铺出的**部署副本**）；同步规则与**副本漂移恢复**见 [03-构建与部署](../00-overview/03-构建与部署.md) §7（`.\sync-contracts.ps1`，勿手改部署目录）。
 
 ### 3.2 各工具能力
 
@@ -80,7 +80,7 @@
 ## 5. 数据结构与存储
 
 - **零持久状态**；临时文件仅 `ck_script_*`（脚本）、`ck-out-*.log`（超长输出）、锁文件 `.chonk.lock`。
-- 契约 embed：`internal/contracts/contracts.go`（`//go:embed tools`）。
+- 契约**无内嵌副本**：executor 不再 `go:embed`（原 `internal/contracts/contracts.go` 已删，`internal/contracts/` 目录已随迁移移除）；`--help` 从磁盘读 `<exeDir>/capability/tools/<cat>/`（`--root` 可覆盖）。
 
 ---
 

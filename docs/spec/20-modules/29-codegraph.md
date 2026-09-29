@@ -21,7 +21,10 @@
 | 形态 | 独立 exe（console，**CGO 允许**） | 内嵌 lib Hook（server 进程内） |
 | 运行 | `--http[=addr]`（默认 `127.0.0.1:5701`，端点 `/mcp`）· `--stdio` · `-probe <dir>` · `-dump <dir>`（只读自检：打印落盘命中文件集合 JSON） | stdio 子进程管理（懒建 client） |
 | 构建 | `build-codegraph.ps1`（`CGO_ENABLED=1`，PATH 前置 `msys64/ucrt64/bin`） | 随 server 内嵌（`build-desktop.ps1`） |
-| 产物 | `dist/codegraph/chonkpilot-codegraph-mcp-server.exe` | — |
+| 产物 | `dist/plugins/codegraph/chonkpilot-codegraph-mcp-server.exe`；**发行落点 = `<exeDir>/mcps/codebase/`**（插件 `resolveExe` 定位，见下注） | — |
+
+> **〔订正（2026-09-29）：引擎 exe 发行路径〕** 插件 `resolveExe` 定位引擎：`Options.Exe` > 环境变量 `CODEGRAPH_EXE`
+> > **`<exeDir>/mcps/codebase/chonkpilot-codegraph-mcp-server.exe`**（**不再多路径猜测**——原「同目录 / `../codegraph/` / 上级目录 / `../../dist/codegraph/`」候选链作废）。
 
 > 与主模块 CGO 禁令不冲突：**禁令仅针对 `src/gui`（`-H windowsgui` 单 exe）**，本组件是独立 console 组件，自由用 CGO（官方 `go-tree-sitter`）。
 

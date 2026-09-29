@@ -1,7 +1,7 @@
 # 文件差异
 
 [meta]
-runtime=chonkpilot-core-executor.exe
+runtime=../../executors/chonkpilot-core-executor.exe
 hot=true
 category=core
 async=auto

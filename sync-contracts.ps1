@@ -1,13 +1,13 @@
 ﻿# sync-contracts.ps1：契约「单一数据源 → capability」覆盖式同步（不重建、不动 exe）
 #
-# 背景：契约 md 有两份存在形态，同源但可静默分叉：
-#   ① 权威源（mcp-server 运行时扫描的 capability/ 由它拷贝而来）：
-#        tools/                     <- src/lib/mcp-tools/internal/contracts/tools
-#        skills|prompts|resources   <- src/lib/mcp-server/contracts/<prim>
-#   ② 执行器内嵌（go:embed 同一 tools 目录，只给 `--help` 读；见 internal/contracts/contracts.go）
-# 直接手改部署目录 capability/ 会让 ① 与源分叉（曾现于 file_diff.tool.md：改完静默分叉、无人察觉）。
+# 背景：契约 md 有「权威源 → capability 部署副本」两处存在形态，同源但可静默分叉：
+#   权威源（出厂数据唯一源 = src/initdata/capability）：
+#        tools/                     <- src/initdata/capability/tools
+#        knowledge/{skills|prompts|resources} <- src/initdata/capability/knowledge/<prim>
+#   部署副本（mcp-server 运行时扫描的 capability/）由 build-mcp-server.ps1 覆盖式拷贝而来。
+#   executor **不再内嵌契约**（`--help` 亦从磁盘 capability/tools/<cat>/ 读）→ 无 embed 副本可漂移。
+# 直接手改部署目录 capability/ 会让副本与源分叉（曾现于 file_diff.tool.md：改完静默分叉、无人察觉）。
 # 本脚本把源**覆盖式**同步回 capability/，先打印将被改动的文件清单（含漂移项），再逐文件核对哈希。
-# ② 的差异**只能靠重建**消除：改了 mcp-tools 源 → 必须跑 .\build-mcp-server.ps1 重建 executor。
 #
 # 部署副本（D-28 产物分区，见 [41 D-28]）：
 #   other   = dist/other/capability    （mcp-server / mcp-gateway 共用，权威副本）
@@ -44,18 +44,19 @@ foreach ($d in $Dist) {
 
 $contractFilter = @("*.tool.md", "*.skill.md", "*.prompt.md", "*.resource.md")
 
-# -- 1) 权威源清单（相对路径 -> 源文件全路径） --
+# -- 1) 权威源清单（相对 capability 根的路径 -> 源文件全路径） --
 $map = [ordered]@{}
-$toolsSrc = Join-Path $root "src\lib\mcp-tools\internal\contracts\tools"
+$initCap = Join-Path $root "src\initdata\capability"
+$toolsSrc = Join-Path $initCap "tools"
 if (-not (Test-Path $toolsSrc)) { throw "tools contracts not found: $toolsSrc" }
 Get-ChildItem $toolsSrc -Recurse -File -Include "*.tool.md" | ForEach-Object {
     $map["tools\$($_.FullName.Substring($toolsSrc.Length + 1))"] = $_.FullName
 }
 foreach ($prim in @("skills", "prompts", "resources")) {
-    $src = Join-Path $root "src\lib\mcp-server\contracts\$prim"
+    $src = Join-Path $initCap "knowledge\$prim"
     if (-not (Test-Path $src)) { throw "$prim contracts not found: $src" }
     Get-ChildItem $src -Recurse -File -Include "*.skill.md", "*.prompt.md", "*.resource.md" | ForEach-Object {
-        $map["$prim\$($_.FullName.Substring($src.Length + 1))"] = $_.FullName
+        $map["knowledge\$prim\$($_.FullName.Substring($src.Length + 1))"] = $_.FullName
     }
 }
 $srcHash = @{}
@@ -132,24 +133,10 @@ foreach ($n in $targetNames) {
     }
 }
 
-# -- 3) 内嵌（embed）侧：本脚本覆盖不到，只能靠重建 --
-$toolsNewest = @($toolKeys | ForEach-Object { Get-Item $map[$_] } | Sort-Object LastWriteTime -Descending)[0]
+# -- 3) executor 侧：**不再内嵌契约**（`--help` 亦从磁盘 capability/tools/<cat>/ 读）→ 无 embed 副本 --
 Write-Host ""
-Write-Host "==> embed 侧（executor 内嵌 go:embed tools，只给 --help 读）"
-Write-Host "    本脚本不覆盖 exe 内嵌副本；改了 mcp-tools 源 -> 跑 .\build-mcp-server.ps1 重建 executor。"
-Write-Host "    tools 源最新: $($toolsNewest.Name) @ $($toolsNewest.LastWriteTime.ToString('yyyy-MM-dd HH:mm'))"
-foreach ($n in $targetNames) {
-    $capTools = Join-Path $allTargets[$n] "tools"
-    if (-not (Test-Path $capTools)) { continue }
-    $exes = @(Get-ChildItem $capTools -Recurse -File -Filter "*.exe" -ErrorAction SilentlyContinue)
-    if ($exes.Count -eq 0) { Write-Host "    [$n] 无 executor exe（仅契约）"; continue }
-    $stale = @($exes | Where-Object { $_.LastWriteTime -lt $toolsNewest.LastWriteTime } | ForEach-Object { $_.Name })
-    if ($stale.Count -gt 0) {
-        Write-Host "    [$n] WARN embed 可能过期（源比 exe 新）: $($stale -join ', ') -> 跑 .\build-mcp-server.ps1"
-    } else {
-        Write-Host "    [$n] executor exe 均不早于源（embed 大概率一致；最终以 <exe> --help <tool> 为准）"
-    }
-}
+Write-Host "==> executor 侧（不再 embed：`--help` 从磁盘 capability/tools/<cat>/ 读同一份契约）"
+Write-Host "    无内嵌副本可漂移；改了 src/initdata 契约 → 跑 .\build-mcp-server.ps1 重铺 capability 即可。"
 
 Write-Host ""
 if ($Check -and $checkDrift -gt 0) {

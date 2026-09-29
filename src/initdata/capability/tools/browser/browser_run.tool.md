@@ -1,7 +1,7 @@
 # 浏览器编排
 
 [meta]
-runtime=chonkpilot-browser-executor.exe
+runtime=../../executors/chonkpilot-browser-executor.exe
 hot=true
 category=browser
 async=auto

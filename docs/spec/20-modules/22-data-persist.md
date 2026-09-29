@@ -32,9 +32,9 @@
 |----|--------|------|
 | user-config | `data-user-config-{list,load,save,delete}` | usr config（**标量逐 key** + 专用表 `llms`/`mcps`） |
 | prj-config | `data-prj-config-{list,load,save,delete}` | prj config（无前缀；个人运行态 key 自动路由 prjusr） |
-| prompt | `data-prompt-{list,load,save,delete}` | prj config（`prompt-` 前缀；`summary_prompt` 已文件化到 `capability/prompts/summary.prompt.md`）。**2026-09-15：`summary_prompt` 区分「继承 / 覆盖」**——load 回读项目文件 → 系统文件 → 旧 prj 键（末层内置默认）；save 时**内容为空 或 与继承值相同 → 删项目级文件（保持继承、不写覆盖）**，不同才写项目级；delete = 删项目级文件回落继承（前端另有「恢复默认」入口，`persist_prompt.go:108-129`） |
+| prompt | `data-prompt-{list,load,save,delete}` | prj config（`prompt-` 前缀；`summary_prompt` 已文件化到 `capability/knowledge/prompts/summary.prompt.md`）。**2026-09-15：`summary_prompt` 区分「继承 / 覆盖」**——load 回读项目文件 → 系统文件 → 旧 prj 键（末层内置默认）；save 时**内容为空 或 与继承值相同 → 删项目级文件（保持继承、不写覆盖）**，不同才写项目级；delete = 删项目级文件回落继承（前端另有「恢复默认」入口，`src/lib/data/internal/config/prompt.go`） |
 | prj-security | `data-prj-security-{list,load,save,delete}` | prj config（`security-` 前缀） |
-| scenario | `data-scenario-{list,load,save,delete}` | **场景独立根文件树**：`scenarios/<场景目录>/`（三级 app/user/project；id/key = 目录名；**三级均可编辑**）〔**订正（2026-09-25，[25 §6](../10-architecture/25-MCP与场景分层模型.md)）**：原 `capability/prompts/<场景目录>/` 作废 → 场景改**独立根 `scenarios/`**（与 `capability/` **平级**），三级 **无覆盖**、不允许同名场景。〔**订正（2026-09-26）**：app 级**可编辑**（出厂内容由 **embed** 内嵌、app 初始化缺失即物化）；`restore` 动作**已删除**〕 |
+| scenario | `data-scenario-{list,load,save,delete}` | **场景独立根文件树**：`scenarios/<场景目录>/`（三级 app/user/project；id/key = 目录名；**三级均可编辑**）〔**订正（2026-09-25，[25 §6](../10-architecture/25-MCP与场景分层模型.md)）**：原 `capability/prompts/<场景目录>/` 作废 → 场景改**独立根 `scenarios/`**（与 `capability/` **平级**），三级 **无覆盖**、不允许同名场景。〔**订正（2026-09-26 / 2026-09-29）**：app 级**可编辑**（出厂内容 = **磁盘目录**，唯一源 `src/initdata/scenarios/`；**不再 embed、不再物化**）；`restore` 动作**已删除**〕 |
 | session | `data-session-{list,get,history,latest,title,delete,active-set,active-get,content,ensure-session,ensure-turn,append-message,set-summary,complete-turn,cleanup-stale,load-messages,context}` | prj/prjusr |
 | snapshot | `data-snapshot-{get,set}` | sessions 表 `history`/`snapshot_turn` |
 | tasktree | `data-tasktree-{list,tasks,delete,upsert}` | prjusr tasktree 表 |

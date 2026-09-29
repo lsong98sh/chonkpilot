@@ -230,9 +230,10 @@ func resolveEntry(td *ToolDoc) (string, error) {
 	return "", fmt.Errorf("tool %s: entry not found: %s (searched %s)", td.Name, e, p)
 }
 
-// resolveRuntime 解析 exe 型 runtime（绝对路径/~ → 相对契约文件目录）。
-// 契约与执行器同目录部署（capability/tools/<cat>/ 下 *.tool.md 与 executor 并存）；
-// 解释器类 runtime 走 interpreterArgv（PATH），不进入本函数。
+// resolveRuntime 解析 exe 型 runtime（绝对路径 / ~ → 相对契约文件目录）。
+// 内置 executor 写**相对路径**（契约 `<capability>/tools/<cat>/x.tool.md` 内写
+// `../../executors/chonkpilot-<cat>-executor.exe` → 落到 `<capability>/executors/`）；
+// 用户自建 executor 在 md 里写**全路径**。解释器类 runtime 走 interpreterArgv（PATH），不进入本函数。
 func resolveRuntime(td *ToolDoc) (string, error) {
 	r := td.Runtime
 	if p := resolveAbsOrHome(r); p != "" {

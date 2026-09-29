@@ -210,7 +210,7 @@ chatOnce：
 | `llm-simple`（含压缩摘要 `summary.prompt.md`） | `onLLMSimple`（`server.go:358`；`replaceToolchain` 调用 `server.go:370`）替换 `system` 与 `prompt` |
 | capability `*.prompt.md` / `*.skill.md` | `loadExecConfig` → `mcpCfg.SetToolchain`（`server.go:1677`）→ mcp-server `makePromptHandler` 的 GetPrompt 渲染（见 [25-mcp-server §3.1](25-mcp-server.md)） |
 
-**说明承载（2026-09-15 订正）**：占位符的**用法示例与替换规则说明由场景 system prompt 承载**（默认场景主 agent，`capability/prompts/default/main.agent.md`）〔**订正（2026-09-25，[25 §6/§8.1 #8](../10-architecture/25-MCP与场景分层模型.md) · [42 §2 (171)](../40-roadmap/42-决策记录.md) / T6）**：`persist_scenario.go defaultScenarioAgents` 与「出厂默认物化」**已撤**；出厂默认场景现为 **app 级文件** `src/lib/data/scenarios/default/` → 投放 `<exeDir>/scenarios/default/`（与 `capability/` **平级**），**主 agent = `scenarios/default/main.agent.md`**〕，**不单独设指南契约文件**——原拟的 `src/mcp-server/contracts/prompts/core/工具使用指南.prompt.md` **已撤销**（用户口径：「工具使用指南理论上应放在系统的 prompt 里」）。
+**说明承载（2026-09-15 订正）**：占位符的**用法示例与替换规则说明由场景 system prompt 承载**（默认场景主 agent，`capability/prompts/default/main.agent.md`）〔**订正（2026-09-25，[25 §6/§8.1 #8](../10-architecture/25-MCP与场景分层模型.md) · [42 §2 (171)](../40-roadmap/42-决策记录.md) / T6）**：`persist_scenario.go defaultScenarioAgents` 与「出厂默认物化」**已撤**；出厂默认场景现为 **app 级文件** `src/initdata/scenarios/default/` → 投放 `<exeDir>/scenarios/default/`（与 `capability/` **平级**；2026-09-29：源唯一 = `src/initdata/scenarios/`，不再 embed/物化），**主 agent = `scenarios/default/main.agent.md`**〕，**不单独设指南契约文件**——原拟的 `src/mcp-server/contracts/prompts/core/工具使用指南.prompt.md` **已撤销**（用户口径：「工具使用指南理论上应放在系统的 prompt 里」）。
 
 > **机制边界**：只做文本替换，**不改消息面结构/主题**（[61-消息一览](../60-reference/61-消息一览.md) 未改）；与 DSL 的 `{{env.X}}`（[63-DSL语法](../60-reference/63-DSL语法.md)）互不影响。
 
