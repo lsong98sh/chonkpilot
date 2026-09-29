@@ -1,5 +1,5 @@
 <template>
-  <div ref="rootRef" class="knowledge-tree">
+  <div ref="rootRef" class="knowledge-tree" :class="'kb-scope-' + scope">
     <div class="kb-tree-header">
       <span class="kb-tree-title" :title="root">{{ kbHeaderTitle }}</span>
       <span class="kb-level-switch">
@@ -38,7 +38,7 @@
         @drop="onTreeDrop"
       />
       <div v-if="treeData.length === 0" class="kb-tree-empty">
-        {{ loading ? t('common.loading') : t('fileTree.kb_empty') }}
+        {{ loading ? t('common.loading') : t(emptyKey) }}
       </div>
     </div>
 
@@ -57,7 +57,7 @@
             v-else
             class="kb-ctx-item"
             :class="{ danger: item.danger }"
-            v-mq:[EventNames.kbCtxAction].click="{ key: item.key }"
+            v-mq:[EventNames.kbCtxAction].click="{ key: item.key, scope }"
           >{{ item.label }}</div>
         </template>
       </div>
@@ -75,18 +75,64 @@ import {
   createPrimitiveDir, renamePrimitiveDir, deletePrimitiveDir,
   createPrimitive, renamePrimitive, deletePrimitive, movePrimitive,
 } from '../../api/knowledge'
-import { nearestTypeToken } from '../../utils/primitive'
+import { nearestTypeToken, TYPE_DIR_REL } from '../../utils/primitive'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
 defineOptions({ name: 'KnowledgeTree' })
+
+// 类型范围复用：「知识库」页签（skill/prompt/resource）与「工具」页签（tool）共用本组件，
+// 由 kinds 过滤目录/文件；scope 唯一标识本实例（右键动作事件按 scope 分流，避免多实例串扰）；
+// titleKey / emptyKey 供标题与空态文案（知识库 vs 工具）。
+const props = defineProps({
+  kinds: { type: Array, default: () => [] },
+  scope: { type: String, default: 'knowledge' },
+  titleKey: { type: String, default: 'fileTree.mode_knowledge' },
+  emptyKey: { type: String, default: 'fileTree.kb_empty' },
+})
+
 const { t } = useI18n()
 
 const i18nNewDir = computed(() => t('fileTree.new_folder'))
 
+const rootRef = ref(null) // 根节点（多实例：用于判定本实例是否可见）
 const root = ref('')
 const rootName = ref('capability')
-const kbHeaderTitle = computed(() => rootName.value || t('fileTree.mode_knowledge'))
+const kbHeaderTitle = computed(() => rootName.value || t(props.titleKey))
+
+// 类型范围过滤：kinds 非空 → 仅保留该范围内的目录/文件（知识库 = 非 tool；工具 = 仅 tool）
+const kindFilter = computed(() => new Set(props.kinds || []))
+const filtering = computed(() => kindFilter.value.size > 0)
+
+// 路径相对知识库根（正斜杠；根自身 → 空串，越界 → 原样）
+function relToRoot(p) {
+  const r = String(root.value || '').replace(/\\/g, '/').replace(/\/+$/, '')
+  const x = String(p || '').replace(/\\/g, '/')
+  if (!r) return x
+  if (x === r) return ''
+  return x.startsWith(r + '/') ? x.slice(r.length + 1) : x
+}
+
+// 目录是否落在类型范围内：类型目录 / 类型目录下子目录按 token 判定；
+// 通用容器目录（无类型 token，如 capability 根、`knowledge/`）仅在其为某允许类型目录的祖先时显示。
+function dirInScope(path) {
+  if (!filtering.value) return true
+  const tok = nearestTypeToken(path)
+  if (tok) return kindFilter.value.has(tok)
+  const rel = relToRoot(path)
+  if (rel === '') return true
+  for (const k of props.kinds) {
+    const kr = TYPE_DIR_REL[k]
+    if (kr && (kr === rel || kr.startsWith(rel + '/'))) return true
+  }
+  return false
+}
+
+// 文件是否落在类型范围内：按后端给出的原语类型 token 判定
+function fileInScope(raw) {
+  if (!filtering.value) return true
+  return kindFilter.value.has(raw.type || '')
+}
 
 // 知识库三级（系统/用户/项目；12-数据层）：头部切换，一次展示一级
 const KB_LEVELS = [
@@ -127,9 +173,12 @@ async function loadChildren(node) {
   node._loading = true
   try {
     const res = await listPrimitives(node.path)
-    const dirs = (res.dirs || []).map(raw => treeNode({ ...raw, is_dir: true })) // 后端 dirs 条目不含 is_dir，目录本身即目录
+    const dirs = (res.dirs || [])
+      .map(raw => treeNode({ ...raw, is_dir: true })) // 后端 dirs 条目不含 is_dir，目录本身即目录
+      .filter(n => dirInScope(n.path)) // 类型范围过滤（工具页签 / 知识库页签互不显示对方目录）
     const files = (res.files || [])
       .filter(f => f.type && f.type !== 'file') // 仅 *.type.md / 类型目录下的原语
+      .filter(fileInScope) // 类型范围过滤
       .map(raw => treeNode({ ...raw, is_dir: false }))
     node.children = [...dirs, ...files]
     node.expanded = true
@@ -148,7 +197,7 @@ async function loadRoot() {
     const res = await getKnowledgeRoot(kbLevel.value)
     root.value = (res && res.root) || ''
     const lv = KB_LEVELS.find(l => l.kind === kbLevel.value)
-    rootName.value = t('fileTree.mode_knowledge') + (lv ? ' -' + t(lv.label) : '')
+    rootName.value = t(props.titleKey) + (lv ? ' -' + t(lv.label) : '')
     const rnode = { label: rootName.value, path: root.value, is_dir: true, expanded: false, children: [], _loading: false, type: '' }
     treeData.value = [rnode]
   } catch (e) {
@@ -412,6 +461,8 @@ async function cancelEdit() {
 
 function onKeyDown(e) {
   if (editingPath.value) return
+  // 多实例（知识库 / 工具两页签共用同一 document keydown）→ 非可见实例不接管按键（避免隐藏树被改名）
+  if (rootRef.value && rootRef.value.offsetParent === null) return
   // 焦点在可输入元素内（input / textarea / contenteditable）→ 不接管按键（F2 改名同理）
   const el = document.activeElement
   const tag = el?.tagName?.toLowerCase()
@@ -576,7 +627,9 @@ function onFileChanged(data) {
 
 onMounted(() => {
   loadRoot()
-  _unsubs.push(mq.on(EventNames.kbCtxAction, ({ key }) => {
+  _unsubs.push(mq.on(EventNames.kbCtxAction, ({ key, scope: s }) => {
+    // 多实例（知识库 / 工具）共用同一事件：仅受理本实例（scope 匹配或缺省广播）
+    if (s && s !== props.scope) return
     if (key) runCtx({ key })
   }))
   _unsubs.push(mq.on(EventNames.kbLevelSelect, switchLevel))

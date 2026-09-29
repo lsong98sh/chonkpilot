@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """ExplorerPane 双栈 + KnowledgeTree + PrimitivePanel 端到端验收。
 
-用例：
- C1 项目/知识库 双段切换（filetree 区 seg / mq filetree-mode-toggle）v-show 生效
- C2 capability 根展开 → 分层目录（tools / knowledge）+ knowledge 下三类原语目录
- C3 tools→core 展开 → *.tool.md 行出现
+用例（2026-09-29：工具从知识库分离为独立「工具」页签——「会话」右侧；知识库仅 skill/prompt/resource）：
+ C1 五段切换（项目/知识库/项目记忆/会话/工具）v-show 生效 + 工具段在会话右侧
+ C2 知识库根展开 → 仅 knowledge 分支（tools 不再显示）+ knowledge 下三类原语目录
+ C3 工具页签 tools→core 展开 → *.tool.md 行出现
  C4 单击 *.tool.md → preview PrimitivePanel（四页签 Tabs、顶部标题非空、保存/恢复按钮）
 C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变；meta 键值表单；「参数」JSON Schema 树
  C6 右键 tools 类型目录 → 菜单含 新建目录 与 新建工具
@@ -67,12 +67,14 @@ PJ_FILE = os.path.join(PJ_DIR, "pj_smoke.tool.md")
 
 CLEANUPS = [SMOKE_FILE, SKILL_FILE, PROMPT_FILE, RES_FILE, PJ_FILE]
 
-# 左侧资源面板模式 → 激活段文案（zh-CN / en-US 两种；2026-09-26 增第 4 模式「项目记忆」）
+# 左侧资源面板模式 → 激活段文案（zh-CN / en-US 两种；2026-09-26 增第 4 模式「项目记忆」；
+# 2026-09-29 增第 5 模式「工具」——工具契约从知识库分离，位于「会话」右侧）
 MODE_LABELS = {
     "project": ("Project", "项目"),
     "knowledge": ("Knowledge", "知识库"),
     "memory": ("Project Memory", "项目记忆"),
     "sessions": ("Sessions", "会话"),
+    "tools": ("Tools", "工具"),
 }
 
 
@@ -148,8 +150,10 @@ class KB:
         return unwrap(self.c.eval(expr))
 
     # ── 树行 ──
+    # 2026-09-29：知识库/工具两页签各挂一个 KnowledgeTree（v-show 同显）→ 一律只取**可见树**
+    # （offsetParent!==null；隐藏页签的树行不计入），即"当前模式下的树"。
     def kb_rows(self):
-        return self.js("Array.from(document.querySelectorAll('.knowledge-tree .tree-row')).map(n => ({ t: n.textContent.trim().slice(0, 80), d: n.classList.contains('is-dir') }))") or []
+        return self.js("Array.from(document.querySelectorAll('.knowledge-tree .tree-row')).filter(n=>n.offsetParent!==null).map(n => ({ t: n.textContent.trim().slice(0, 80), d: n.classList.contains('is-dir') }))") or []
 
     def ft_rows(self):
         return self.js("Array.from(document.querySelectorAll('.filetree-panel .tree-row')).map(n => ({ t: n.textContent.trim().slice(0, 80), d: n.classList.contains('is-dir') }))") or []
@@ -158,14 +162,14 @@ class KB:
         return r["t"].split("\u22ef")[0].strip()
 
     def click_kb_dir(self, name):
-        return self.js("(function(){const els=Array.from(document.querySelectorAll('.knowledge-tree .tree-row.is-dir'));const el=els.find(n=>n.textContent.trim().split(/[\\s\u22ef]+/)[0]===%s);if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()" % json.dumps(name))
+        return self.js("(function(){const els=Array.from(document.querySelectorAll('.knowledge-tree .tree-row.is-dir')).filter(n=>n.offsetParent!==null);const el=els.find(n=>n.textContent.trim().split(/[\\s\u22ef]+/)[0]===%s);if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()" % json.dumps(name))
 
     def click_kb_root(self):
-        """点击知识库树根行（根行名含空格 "知识库 -级别"，不能按首段匹配）。"""
-        return self.js("(function(){const el=document.querySelector('.knowledge-tree .tree-row.is-dir');if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()")
+        """点击可见树根行（根行名含空格 "知识库 -级别"/"工具 -级别"，不能按首段匹配）。"""
+        return self.js("(function(){const els=Array.from(document.querySelectorAll('.knowledge-tree .tree-row.is-dir')).filter(n=>n.offsetParent!==null);const el=els[0];if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()")
 
     def click_kb_file(self, name):
-        return self.js("(function(){const els=Array.from(document.querySelectorAll('.knowledge-tree .tree-row:not(.is-dir)'));const el=els.find(n=>n.textContent.trim().split(/[\\s\u22ef]+/)[0]===%s);if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()" % json.dumps(name))
+        return self.js("(function(){const els=Array.from(document.querySelectorAll('.knowledge-tree .tree-row:not(.is-dir)')).filter(n=>n.offsetParent!==null);const el=els.find(n=>n.textContent.trim().split(/[\\s\u22ef]+/)[0]===%s);if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()" % json.dumps(name))
 
     def click_ft_dir(self, name):
         return self.js("(function(){const els=Array.from(document.querySelectorAll('.filetree-panel .tree-row.is-dir'));const el=els.find(n=>n.textContent.trim().split(/[\\s\u22ef]+/)[0]===%s);if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()" % json.dumps(name))
@@ -189,8 +193,9 @@ class KB:
 
     # ── 右键菜单 ──
     def _rclick_js(self, scope, name, is_dir):
+        # 仅命中**可见**行（知识库/工具两树同挂 .knowledge-tree；隐藏页签不参与定位）
         cond = "true" if is_dir is None else f"n.classList.contains('is-dir')===({'true' if is_dir else 'false'})"
-        return "(function(){const els=Array.from(document.querySelectorAll('%s .tree-row'));const el=els.find(n=>{const t=n.textContent.trim().split(/[\\s\u22ef]+/)[0];return t===%s&&(%s)});if(!el)return false;const r=el.getBoundingClientRect();el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:r.left+10,clientY:r.top+8}));return true})()" % (scope, json.dumps(name), cond)
+        return "(function(){const els=Array.from(document.querySelectorAll('%s .tree-row'));const el=els.find(n=>{if(n.offsetParent===null)return false;const t=n.textContent.trim().split(/[\\s\u22ef]+/)[0];return t===%s&&(%s)});if(!el)return false;const r=el.getBoundingClientRect();el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:r.left+10,clientY:r.top+8}));return true})()" % (scope, json.dumps(name), cond)
 
     def rclick_kb_row(self, name, is_dir=None):
         return self.js(self._rclick_js(".knowledge-tree", name, is_dir))
@@ -240,7 +245,7 @@ class KB:
         return False
 
     def switch_mode(self, want):
-        """按目标切到 项目/知识库/项目记忆/会话（使用 filetreeModeSelect，与 seg 点击同一事件）。"""
+        """按目标切到 项目/知识库/项目记忆/会话/工具（使用 filetreeModeSelect，与 seg 点击同一事件）。"""
         self.js("window.mq.emit('filetree-mode-select', %s)" % json.dumps({"mode": want}))
         end = time.time() + 8
         while time.time() < end:
@@ -268,10 +273,14 @@ class KB:
         return False
 
     def ensure_kb_expanded(self, dirs, timeout=10):
-        """依次确保知识库树展开到 dirs 指定层级（先展开根，再逐级点击未展开的目录）。"""
+        """依次确保**可见**树展开到 dirs 指定层级（先展开根，再逐级点击未展开的目录）。
+
+        2026-09-29：知识库/工具各一树（v-show 同显）→ 只操作可见树（offsetParent!==null）；
+        工具用例先 switch_mode("tools") 再调本函数即等价于展开工具树。
+        """
         end = time.time() + timeout
         while time.time() < end:
-            if not self.js("(function(){const r=document.querySelector('.knowledge-tree .tree-row.is-dir');if(!r)return false;if(r.querySelector('.arrow-icon.expanded'))return true;r.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()"):
+            if not self.js("(function(){const r=Array.from(document.querySelectorAll('.knowledge-tree .tree-row.is-dir')).filter(n=>n.offsetParent!==null)[0];if(!r)return false;if(r.querySelector('.arrow-icon.expanded'))return true;r.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()"):
                 time.sleep(0.4)
                 continue
             ok = True
@@ -279,13 +288,22 @@ class KB:
                 if not any(self.row_label(r) == d and r["d"] for r in self.kb_rows()):
                     ok = False
                     break
-                if not self.js("(function(){const els=[...document.querySelectorAll('.knowledge-tree .tree-row.is-dir')];const el=els.find(n=>n.textContent.trim().split(/[\\s\u22ef]+/)[0]===%s);if(!el)return false;if(el.querySelector('.arrow-icon.expanded'))return true;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()" % json.dumps(d)):
+                if not self.js("(function(){const els=[...document.querySelectorAll('.knowledge-tree .tree-row.is-dir')].filter(n=>n.offsetParent!==null);const el=els.find(n=>n.textContent.trim().split(/[\\s\u22ef]+/)[0]===%s);if(!el)return false;if(el.querySelector('.arrow-icon.expanded'))return true;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()" % json.dumps(d)):
                     ok = False
                     break
             if ok:
                 return True
             time.sleep(0.5)
         return False
+
+    def enter_tools(self, dirs=("tools",), timeout=10):
+        """切到「工具」页签（位于「会话」右侧）并展开指定目录链（先展开根）。
+
+        工具树复用 KnowledgeTree（kinds=['tool']），根下即 `tools/`，故 dirs 默认 ("tools",)。
+        """
+        if not self.switch_mode("tools"):
+            return False
+        return self.ensure_kb_expanded(list(dirs), timeout)
 
     def _vis_panel(self):
         return self.js("(function(){const ps=Array.from(document.querySelectorAll('.prim-panel'));return ps.find(n=>n.offsetParent!==null)||(ps.length?ps[ps.length-1]:null)})()")
@@ -430,11 +448,18 @@ def main():
             assert labels & {"Knowledge", "知识库"}, f"缺「知识库」分段：{seg}"
             assert labels & {"Sessions", "会话"}, f"缺「会话」分段（P3-C1 迁入左侧导航）：{seg}"
             assert labels & {"Project Memory", "项目记忆"}, f"缺「项目记忆」分段（2026-09-26 第 4 模式）：{seg}"
-            # v-show 四体（项目/知识库/项目记忆/会话，2026-09-26 新增项目记忆 → 由 3 增为 4）
-            assert kb.js("document.querySelectorAll('.explorer-body').length") == 4, "应有四个 .explorer-body（v-show 四体）"
+            assert labels & {"Tools", "工具"}, f"缺「工具」分段（2026-09-29 第 5 模式，从知识库分离）：{seg}"
+            # 段顺序：工具位于会话右侧（末位）
+            seg_txts = [s["t"] for s in seg]
+            i_sess = next((i for i, x in enumerate(seg_txts) if x in ("Sessions", "会话")), -1)
+            i_tools = next((i for i, x in enumerate(seg_txts) if x in ("Tools", "工具")), -1)
+            assert i_tools > i_sess >= 0, f"「工具」分段应在「会话」右侧：{seg_txts}"
+            # v-show 五体（项目/知识库/项目记忆/会话/工具，2026-09-29 由 4 增为 5）
+            assert kb.js("document.querySelectorAll('.explorer-body').length") == 5, "应有五个 .explorer-body（v-show 五体）"
             vis = kb.js("Array.from(document.querySelectorAll('.explorer-body')).filter(n=>getComputedStyle(n).display!=='none').length") or 0
             assert vis == 1, f"v-show 应恰有一个可见：{vis}"
-            assert kb.js("!!document.querySelector('.knowledge-tree')"), "知识库树不存在"
+            # 知识库 + 工具各一棵 KnowledgeTree（v-show 同显；工具页签在会话右侧）
+            assert kb.js("document.querySelectorAll('.knowledge-tree').length") == 2, "应有知识库 + 工具两棵树"
             assert kb.js("!!document.querySelector('.filetree-panel')"), "项目树不存在"
             # seg 点击「项目」→ 切换（filetreeModeSelect 链路）
             kb.js("(function(){const els=Array.from(document.querySelectorAll('.explorer-seg-btn'));const el=els.find(n=>n.textContent.trim()==='Project'||n.textContent.trim()==='项目');if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()")
@@ -446,27 +471,29 @@ def main():
             ok = kb.poll(lambda: kb.mode_active() and (kb.mode_active()[0] == "Knowledge" or kb.mode_active()[0] == "知识库"))
             assert ok, f"toggle 切知识库失败 active={kb.mode_active()}"
 
-        # ── C2 知识库根（系统级）→ 分层目录（tools/knowledge）+ knowledge 下三类原语目录 ──
+        # ── C2 知识库根（系统级）→ 仅 knowledge 分支（tools 已分离）+ 三类原语目录 ──
         def c2():
             # 根行口径（2026-09-15 迁移）：知识库树根 = "<知识库> -<级别>"
-            # （KnowledgeTree.loadRoot：t('fileTree.mode_knowledge') + ' -' + 级别标签），
+            # （KnowledgeTree.loadRoot：t('fileTree.titleKey') + ' -' + 级别标签），
             # 默认级别 = 系统级 → "知识库 -系统"。旧行名 "capability" 已随根命名改造移除。
+            # 2026-09-29：工具已从知识库分离（独立「工具」页签）→ 知识库树**只剩** knowledge 分支。
+            assert kb.switch_mode("knowledge"), f"切知识库失败 active={kb.mode_active()}"
             rows = kb.kb_rows()
             assert rows, "知识库树无行（根未加载）"
             root_label = kb.row_label(rows[0])
             assert root_label.startswith("知识库"), f"知识库根行名异常：{root_label!r}"
             assert kb.click_kb_root(), f"点击知识库根失败：{root_label}"
-            ok = kb.wait_kb_row("tools", True)
-            assert ok, "知识库根未展开出 tools"
             assert kb.wait_kb_row("knowledge", True), "知识库根未展开出 knowledge"
-            # knowledge 展开 → 三类原语目录 skills/prompts/resources（工具在 capability/tools 下）
+            assert not any(kb.row_label(r) == "tools" for r in kb.kb_rows()), \
+                "知识库不应再显示 tools（工具已分离到「工具」页签）"
+            # knowledge 展开 → 三类原语目录 skills/prompts/resources
             assert kb.click_kb_dir("knowledge"), "点击 knowledge 失败"
             for d in ("prompts", "resources", "skills"):
                 assert kb.wait_kb_row(d, True), f"knowledge 下类型目录 {d} 应为目录行"
 
-        # ── C3 tools→core → *.tool.md ──
+        # ── C3 工具页签：tools→core → *.tool.md（2026-09-29 由知识库迁到独立「工具」页签）──
         def c3():
-            assert kb.click_kb_dir("tools"), "点击 tools 失败"
+            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
             ok = kb.wait_kb_row("core", True)
             assert ok, "tools 未展开出 core"
             assert kb.click_kb_dir("core"), "点击 core 失败"
@@ -477,6 +504,7 @@ def main():
 
         # ── C4 打开原语 → PrimitivePanel（顶部标题 / 四页签 Tabs / 底部保存·恢复） ──
         def c4():
+            assert kb.enter_tools(("tools", "core")), "切「工具」页签 / 展开 tools/core 失败"
             assert kb.click_kb_file("file_diff.tool.md"), "点击 file_diff.tool.md 失败"
             ok = kb.poll(lambda: kb.prim_panel_exists())
             assert ok, "PrimitivePanel 未打开"
@@ -513,8 +541,9 @@ def main():
             ok = kb.poll(lambda: kb.prim_schema_rows() >= 1)
             assert ok, "参数页签未渲染 JSON Schema 树"
 
-        # ── C6 右键 tools → 新建目录/新建工具 ──
+        # ── C6 右键 tools → 新建目录/新建工具（工具页签） ──
         def c6():
+            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
             assert kb.rclick_kb_row("tools", True), "右键 tools 失败"
             ok = kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             assert ok, "右键菜单未弹出"
@@ -525,8 +554,9 @@ def main():
             kb.close_menus()
             time.sleep(0.3)
 
-        # ── C7 新建工具 smoke_it ──
+        # ── C7 新建工具 smoke_it（工具页签） ──
         def c7():
+            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
             assert kb.rclick_kb_row("tools", True), "右键 tools(2) 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             texts = kb.kb_menu_texts()
@@ -550,8 +580,9 @@ def main():
                 assert kb.click_kb_file("smoke_it.tool.md"), "点击 smoke 行失败"
                 kb.poll(lambda: kb.prim_panel_exists())
 
-        # ── C8 编辑保存 + 删除清理 ──
+        # ── C8 编辑保存 + 删除清理（工具页签） ──
         def c8():
+            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
             # 先经底部页签栏激活 smoke 文件页签（新建后不保证自动聚焦）
             assert kb.activate_bottom_tab("smoke_it.tool.md"), "preview 底部无 smoke 页签"
             ok = kb.poll(lambda: kb.prim_active_path().replace("\\", "/").endswith("smoke_it.tool.md"))
@@ -592,7 +623,7 @@ def main():
             项目**文件树**不暴露 `.chonkpilot`，且 data-knowledge-{list,read} 只认三级 capability
             根内路径（persist `kbRootOf`）→ 改由知识库树「项目」级驱动。
             """
-            assert kb.switch_mode("knowledge"), "C9 切知识库失败"
+            assert kb.switch_mode("tools"), "C9 切「工具」页签失败"
             assert kb.switch_kb_level("project", "项目"), f"切项目级失败：{[kb.row_label(r) for r in kb.kb_rows()]}"
             assert kb.ensure_kb_expanded(["tools", "core"]), "项目级 tools/core 未展开"
             ok = kb.poll(lambda: any(kb.row_label(r) == "demo.tool.md" and not r["d"] for r in kb.kb_rows()))
@@ -625,6 +656,7 @@ def main():
               覆盖不降：磁盘写入 / 树行可见 / 改名生效 / 删除 四段齐备（新增 F2 与右键两条目录改名路径）。
             """
             # ① 右键「新建目录」→ 落盘 + 树行出现 + 自动内联改名
+            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
             assert kb.rclick_kb_row("tools", True), "右键 tools 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             texts = kb.kb_menu_texts()
@@ -699,9 +731,11 @@ def main():
             ok = kb.poll(lambda: not any(kb.row_label(r) == "smoke_dir1" for r in kb.kb_rows()))
             assert ok, "smoke_dir1 树行未移除"
 
-        # ── C11 知识库：F2 重命名文件（保留 .tool.md 后缀，改回原名）──
+        # ── C11 工具页签：F2 重命名文件（保留 .tool.md 后缀，改回原名） ──
         def c11():
             # 确保 core 展开（C10 刷新 tools 后 core 可能被重建收起；仅当目标行不可见才点击）
+            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
+
             def has_kb(name, is_dir):
                 return any(kb.row_label(r) == name and (is_dir is None or r["d"] == is_dir) for r in kb.kb_rows())
 
@@ -737,7 +771,9 @@ def main():
         def c12():
             # 夹具幂等：清除上一次失败运行残留的目标文件（否则存在性轮询会命中陈旧内容）
             cleanup_fixtures()
-            # 类型目录现位于 capability/knowledge/ 下：确保 knowledge 展开（根可能因刷新收起）
+            # 2026-09-29：技能/提示词/资源留在「知识库」页签（工具已分离）→ 切回知识库并展开 knowledge
+            assert kb.switch_mode("knowledge"), "C12 切知识库失败"
+            assert kb.ensure_kb_expanded(["knowledge"]), "知识库根未展开出 knowledge"
             if not any(kb.row_label(r) == "skills" and r["d"] for r in kb.kb_rows()):
                 assert kb.click_kb_dir("knowledge"), "点击 knowledge 失败"
                 assert kb.wait_kb_row("skills", True), "knowledge 未展开出 skills"
@@ -788,7 +824,7 @@ def main():
         # ── C13 项目级知识库：新建工具 → 保存 → 删除（项目级写链路）──
         def c13():
             """项目级原语完整写链路（迁移后 = 知识库树「项目」级，见 C9 迁移说明）。"""
-            assert kb.switch_mode("knowledge"), "C13 切知识库失败"
+            assert kb.switch_mode("tools"), "C13 切「工具」页签失败"
             assert kb.switch_kb_level("project", "项目"), "C13 切项目级失败"
             assert kb.ensure_kb_expanded(["tools"]), "C13 项目级 tools 未展开"
             # 右键 tools → 新建工具

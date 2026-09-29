@@ -139,7 +139,7 @@ export const EventNames = {
   kbSave: 'kb-save',
   kbCancel: 'kb-cancel',
   kbRebuild: 'kb-rebuild',
-  kbLevelSelect: 'kb-level-select', // 知识库层级切换（payload {kind:'app'|'user'|'project'}）
+  kbLevelSelect: 'kb-level-select', // 知识库层级切换（payload {kind:'app'|'user'|'project'}）；知识库/工具两实例均订阅 → 同步切换级别
   // 原语文件面板（*.type.md preview：源码/编辑）
   primSave: 'prim-save',
   primRestore: 'prim-restore',
@@ -242,8 +242,8 @@ export const EventNames = {
   // ── Chat 操作 ──
   chatCopySessionId: 'chat-copy-session-id',
 
-  // ── 知识库树 ──
-  kbCtxAction: 'kb-ctx-action',
+  // ── 知识库树 / 工具树（同一 KnowledgeTree 组件，两页签复用）──
+  kbCtxAction: 'kb-ctx-action', // 右键菜单动作（payload {key, scope?}）；scope = 发起实例（'knowledge'|'tools'），缺省 = 广播受理
 
   // 工具栏 / 布局
   workdirOpen: 'workdir-open',
@@ -266,9 +266,9 @@ export const EventNames = {
   chatToggle: 'chat-toggle',
   filetreeToggle: 'filetree-toggle',
   tasksToggle: 'tasks-toggle',
-  // filetree 区「项目 / 知识库 / 项目记忆 / 会话」四模式切换（toolbar 知识库按钮 ↔ ExplorerPane 头部联动）
+  // filetree 区「项目 / 知识库 / 项目记忆 / 会话 / 工具」五模式切换（toolbar 知识库按钮 ↔ ExplorerPane 头部联动）
   filetreeModeToggle: 'filetree-mode-toggle', // 无 payload：project ↔ knowledge 切换（休眠态）
-  filetreeModeSelect: 'filetree-mode-select', // payload {mode:'project'|'knowledge'|'memory'|'sessions'}
-  filetreeModeRefresh: 'filetree-mode-refresh', // 知识库树 / 项目记忆列表手动刷新
+  filetreeModeSelect: 'filetree-mode-select', // payload {mode:'project'|'knowledge'|'memory'|'sessions'|'tools'}
+  filetreeModeRefresh: 'filetree-mode-refresh', // 知识库树 / 工具树 / 项目记忆列表手动刷新
   codebaseIndexStatusOpen: 'codebase-index-status-open',
 }
