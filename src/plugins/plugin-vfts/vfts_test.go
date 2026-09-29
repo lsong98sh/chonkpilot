@@ -617,7 +617,7 @@ func TestScanFilesGitignoreSemantics(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(c.gitig), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			scanned, err := scanFiles(dir, []string{".txt"}, nil, c.stack)
+			scanned, err := scanFiles(dir, []string{".txt"}, nil, c.stack, docScanCtx{})
 			if err != nil {
 				t.Fatalf("scanFiles: %v", err)
 			}

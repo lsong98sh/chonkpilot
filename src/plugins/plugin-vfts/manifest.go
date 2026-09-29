@@ -39,6 +39,43 @@ const (
 // maxFileBytes 单文件上限（与引擎 maxFileBytes / codegraph 同口径）。
 const maxFileBytes = 8 << 20 // 8MB
 
+// docExts 文档类扩展名（Office/PDF）——与引擎 docExts 同口径（独立一组，仅 docs 开启时参与）。
+func docExts() []string { return []string{".docx", ".xlsx", ".pptx", ".pdf"} }
+
+// isDocPath 是否文档类路径（按扩展名，大小写不敏感）。
+func isDocPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".docx", ".xlsx", ".pptx", ".pdf":
+		return true
+	}
+	return false
+}
+
+// docScanCtx 文档类清单扫描上下文（开关 / 单文件上限 / 解析器版本）。
+// enabled=false → 清单不收集文档类（与引擎 collectFiles 同口径，保证清单与索引集合一致）。
+type docScanCtx struct {
+	enabled       bool
+	maxBytes      int64
+	parserVersion string
+}
+
+// tagMD5 文档类行的 md5 字段携带解析器版本，形如 `<md5hex>@<parserVersion>`
+// （**复用 md5 口径**：不改 file_list 表结构；非文档类行不加后缀、语义不变）。
+func tagMD5(md5hex, parserVersion string) string {
+	if parserVersion == "" {
+		return md5hex
+	}
+	return md5hex + "@" + parserVersion
+}
+
+// splitMD5Tag 拆分 `md5hex@parserVersion`（无后缀 → parserVersion 为空）。
+func splitMD5Tag(field string) (md5hex, parserVersion string) {
+	if i := strings.LastIndex(field, "@"); i >= 0 {
+		return field[:i], field[i+1:]
+	}
+	return field, ""
+}
+
 // fileRec 是 file_list 表一行（字段与 persist 域一致，snake_case）。
 type fileRec struct {
 	Key       string   `json:"key"`
@@ -141,7 +178,8 @@ func absOf(workDir, rel string) string {
 }
 
 // diffManifest 计算增量差异（纯函数；hashFn 仅在情形③调用，省 IO）。
-func diffManifest(scanned map[string]scanEntry, prior map[string]fileRec, hashFn func(string) (string, error)) manifestDiff {
+// doc.parserVersion 仅作用于**文档类**行：清单行 md5 后缀（解析器版本）变化 → 该行失效重建。
+func diffManifest(scanned map[string]scanEntry, prior map[string]fileRec, hashFn func(string) (string, error), doc docScanCtx) manifestDiff {
 	var d manifestDiff
 	for key, e := range scanned {
 		old, ok := prior[key]
@@ -149,17 +187,24 @@ func diffManifest(scanned map[string]scanEntry, prior map[string]fileRec, hashFn
 			d.toIndex = append(d.toIndex, indexTask{key: key, path: e.path, size: e.size, mtime: e.mtime})
 			continue
 		}
-		if e.size == old.Size && mtimeStr(e.mtime) == old.MTime { // ② 未变 → 跳过
+		isDoc := isDocPath(e.path)
+		_, oldPV := splitMD5Tag(old.MD5)
+		pvStale := isDoc && oldPV != doc.parserVersion
+		if e.size == old.Size && mtimeStr(e.mtime) == old.MTime && !pvStale { // ② 未变 → 跳过
 			d.skipped++
 			continue
 		}
+		oldMD5, _ := splitMD5Tag(old.MD5)
 		h, err := hashFn(e.path) // ③ 变化 → 算 md5
-		if err == nil && old.MD5 != "" && h == old.MD5 {
+		if err == nil && oldMD5 != "" && h == oldMD5 && !pvStale {
 			touch := old
 			touch.Size = e.size
 			touch.MTime = mtimeStr(e.mtime)
 			d.toTouch = append(d.toTouch, touch)
 			continue
+		}
+		if isDoc {
+			h = tagMD5(h, doc.parserVersion)
 		}
 		d.toIndex = append(d.toIndex, indexTask{
 			key: key, path: e.path, size: e.size, mtime: e.mtime, md5: h, old: old.DocIDs,
@@ -179,7 +224,9 @@ func diffManifest(scanned map[string]scanEntry, prior map[string]fileRec, hashFn
 // scanFiles 扫描候选文件（按 ext 集与排除规则），key = keyOf(绝对路径)。
 // 排除走 ignore.WalkDir（与引擎 collectFiles 同一实现 + 同一规则来源），
 // 目录命中忽略即不下降、文件命中即跳过（gitignore 语义）。
-func scanFiles(workDir string, exts, rules []string, stackGitignore bool) (map[string]scanEntry, error) {
+// 文档类（docExts）**独立成组**：仅当 doc.enabled 时收集，单文件上限 = doc.maxBytes
+// （与引擎 collectFiles 同口径 → 清单集合与索引集合严格一致）。
+func scanFiles(workDir string, exts, rules []string, stackGitignore bool, doc docScanCtx) (map[string]scanEntry, error) {
 	extSet := map[string]bool{}
 	for _, e := range exts {
 		e = strings.ToLower(strings.TrimSpace(e))
@@ -191,6 +238,21 @@ func scanFiles(workDir string, exts, rules []string, stackGitignore bool) (map[s
 		}
 		extSet[e] = true
 	}
+	// 文档类不经普通文本通道（即使被写进 vfts.exts），支持只由 doc.enabled 决定
+	for _, e := range docExts() {
+		delete(extSet, e)
+	}
+	var docSet map[string]bool
+	if doc.enabled {
+		docSet = map[string]bool{}
+		for _, e := range docExts() {
+			docSet[e] = true
+		}
+	}
+	docLimit := doc.maxBytes
+	if docLimit <= 0 {
+		docLimit = maxFileBytes
+	}
 	out := map[string]scanEntry{}
 	root := filepath.Clean(filepath.FromSlash(workDir))
 	opts := ignore.Options{StackGitignore: stackGitignore, UserRules: rules}
@@ -198,11 +260,16 @@ func scanFiles(workDir string, exts, rules []string, stackGitignore bool) (map[s
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if !extSet[strings.ToLower(filepath.Ext(d.Name()))] {
+		ext := strings.ToLower(filepath.Ext(d.Name()))
+		isDoc := docSet[ext]
+		limit := int64(maxFileBytes)
+		if isDoc {
+			limit = docLimit
+		} else if !extSet[ext] {
 			return nil
 		}
 		info, err := d.Info()
-		if err != nil || info.Size() > maxFileBytes {
+		if err != nil || info.Size() > limit {
 			return nil
 		}
 		abs := filepath.ToSlash(filepath.Clean(p))
@@ -261,13 +328,13 @@ func (p *Vfts) fileListDel(inst string, keys []string) error {
 // ─── 编排 ────────────────────────────────────────────────
 
 // incrementalSync 增量同步该 workdir：扫描 → 读清单 → diff → 引擎增量 → 回写清单。
-// 须持 r.cmu。
-func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []string, stackGitignore bool) (*syncStats, error) {
+// doc = 文档类扫描上下文（开关/上限/解析器版本）；须持 r.cmu。
+func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []string, stackGitignore bool, doc docScanCtx) (*syncStats, error) {
 	inst := p.instanceForWorkdir(r.workDir)
 	if inst == "" {
 		return nil, errors.New("无活跃实例，无法读写 file_list")
 	}
-	scanned, err := scanFiles(r.workDir, exts, rules, stackGitignore)
+	scanned, err := scanFiles(r.workDir, exts, rules, stackGitignore, doc)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +342,7 @@ func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []st
 	if err != nil {
 		return nil, err
 	}
-	diff := diffManifest(scanned, prior, md5File)
+	diff := diffManifest(scanned, prior, md5File, doc)
 
 	st := &syncStats{Skipped: diff.skipped + len(diff.toTouch), Removed: len(diff.toRemove)}
 	for _, t := range diff.toIndex {
@@ -330,7 +397,11 @@ func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []st
 	for _, t := range diff.toIndex {
 		m := t.md5
 		if m == "" {
-			m, _ = md5File(t.path)
+			raw, _ := md5File(t.path)
+			if isDocPath(t.path) {
+				raw = tagMD5(raw, doc.parserVersion)
+			}
+			m = raw
 		}
 		f := byKey[t.key]
 		if err := p.fileListPut(inst, fileRec{
@@ -357,12 +428,12 @@ func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []st
 
 // rebuildManifest 全量重建后重建清单：引擎应答的 indexed 已含 doc_ids；
 // 本插件补 size/mtime/md5，并清掉本次未覆盖的旧行。须持 r.cmu。
-func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []string, stackGitignore bool) error {
+func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []string, stackGitignore bool, doc docScanCtx) error {
 	inst := p.instanceForWorkdir(r.workDir)
 	if inst == "" {
 		return errors.New("无活跃实例，无法读写 file_list")
 	}
-	scanned, err := scanFiles(r.workDir, exts, rules, stackGitignore)
+	scanned, err := scanFiles(r.workDir, exts, rules, stackGitignore, doc)
 	if err != nil {
 		return err
 	}
@@ -388,6 +459,9 @@ func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []
 			e = scanEntry{path: abs, size: info.Size(), mtime: info.ModTime()}
 		}
 		m, _ := md5File(e.path)
+		if isDocPath(e.path) {
+			m = tagMD5(m, doc.parserVersion)
+		}
 		if err := p.fileListPut(inst, fileRec{
 			Key: key, Path: e.path, Size: e.size, MTime: mtimeStr(e.mtime),
 			MD5: m, DocIDs: f.DocIDs, Chunks: f.Chunks, IndexedAt: now,
@@ -406,7 +480,8 @@ func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []
 }
 
 // mergeSyncStatus 把增量计数并入引擎状态 JSON 并回写 vfts.status（保留 state 等原字段）。
-func (p *Vfts) mergeSyncStatus(r *workRec, st *syncStats) {
+// docSvc 非 nil 时补 docsPort（引擎状态本身已含 docsService/docsSkipped/docsFailed）。
+func (p *Vfts) mergeSyncStatus(r *workRec, st *syncStats, docSvc *docService) {
 	m := map[string]any{}
 	if json.Unmarshal([]byte(r.state), &m) != nil || m == nil {
 		m = map[string]any{}
@@ -417,6 +492,9 @@ func (p *Vfts) mergeSyncStatus(r *workRec, st *syncStats) {
 	m["removed"] = st.Removed
 	m["skipped"] = st.Skipped
 	m["chunks"] = m["chunkCount"]
+	if docSvc != nil {
+		m["docsPort"] = docSvc.Port
+	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return

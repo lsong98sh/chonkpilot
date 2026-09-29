@@ -31,6 +31,9 @@ type Meta struct {
 	FileCount      int      `json:"fileCount"`
 	ChunkCount     int      `json:"chunkCount"`
 	Tokenizer      string   `json:"tokenizer"`
+	// Docs 文档转换接入（Office/PDF → 文本）的配置与最近一次索引的运行态。
+	// 注意：**不含 token**（token 仅内存持有，见 Workspace.docsToken，避免密文落盘）。
+	Docs DocsMeta `json:"docs,omitempty"`
 	// NextPK 是增量索引已分配的最大文档主键（纯数字字符串，跨调用单调递增，
 	// 避免与全量重建的 1..N 主键冲突）。全量重建会重置集合，故同步重置为 N。
 	NextPK int64 `json:"nextPK,omitempty"`
@@ -46,6 +49,8 @@ type Workspace struct {
 	zmu   sync.Mutex // zvec 集合操作串行（底层句柄非并发安全）
 	coll  *zvec.Collection
 	meta  Meta
+	// docsToken 转换服务鉴权 token（仅内存，绝不落盘/落日志；每次 vfts_configure 下发）。
+	docsToken string
 }
 
 const (
@@ -174,6 +179,12 @@ type Status struct {
 	ChunkCount     int      `json:"chunkCount"`
 	Tokenizer      string   `json:"tokenizer"`
 	Loaded         bool     `json:"loaded"` // 当前进程内存已载入集合
+	// 文档转换接入（Office/PDF）运行态：供 plugin 透出到 vfts.status / UI。
+	DocsEnabled       bool   `json:"docsEnabled"`
+	DocsService       string `json:"docsService,omitempty"`       // running | absent
+	DocsSkipped       int    `json:"docsSkipped,omitempty"`       // 最近一次索引因服务不可用整批跳过的文档数
+	DocsFailed        int    `json:"docsFailed,omitempty"`        // 最近一次索引转换失败降级为「仅文件名」的文档数
+	DocsParserVersion string `json:"docsParserVersion,omitempty"` // 最近一次成功转换上报的解析器版本
 }
 
 func (w *Workspace) Status() Status {
@@ -190,7 +201,10 @@ func (w *Workspace) Status() Status {
 		LastIndexedAt: m.LastIndexedAt, SkipDirs: append([]string{}, m.SkipDirs...),
 		StackGitignore: m.StackGitignore,
 		Exts:           append([]string{}, exts...), IndexedFiles: m.FileCount,
-		ChunkCount: m.ChunkCount, Tokenizer: tokenizer, Loaded: loaded}
+		ChunkCount: m.ChunkCount, Tokenizer: tokenizer, Loaded: loaded,
+		DocsEnabled: m.Docs.Enabled, DocsService: docsServiceOf(m.Docs),
+		DocsSkipped: m.Docs.Skipped, DocsFailed: m.Docs.Failed,
+		DocsParserVersion: m.Docs.ParserVersion}
 }
 
 // abs 相对 → workdir 绝对（'/' 分隔）。

@@ -6,6 +6,10 @@ import (
 
 // defaultExts 默认参与索引的扩展名（含点、小写）：源码 + 纯文本（.txt / .md）。
 // 可用 vfts_configure / vfts_index 的 exts 参数整体替换。
+//
+// 注意：**文档类扩展名（docExts）不在本集合内** —— 它们由独立的 `docs` 开关驱动，
+// 走「文档转换服务」抽取文本通道（见 docs.go）；若并入本集合，用户自定义 vfts.exts
+// 就会丢掉文档支持。故两者严格分组。
 func defaultExts() []string {
 	return []string{
 		// Go
@@ -22,6 +26,21 @@ func defaultExts() []string {
 		// 纯文本
 		".txt", ".md",
 	}
+}
+
+// docExts 文档类扩展名（Office / PDF）——**独立一组**，仅在配置开启 `docs` 时参与收集，
+// 且必须先经「文档转换服务」（mcps/markitdown）抽取为文本（不读原文当文本）。
+func docExts() []string {
+	return []string{".docx", ".xlsx", ".pptx", ".pdf"}
+}
+
+// isDocExt 是否文档类扩展名（大小写不敏感）。
+func isDocExt(ext string) bool {
+	switch strings.ToLower(ext) {
+	case ".docx", ".xlsx", ".pptx", ".pdf":
+		return true
+	}
+	return false
 }
 
 // newExtSet 扩展名集合（小写归一）。

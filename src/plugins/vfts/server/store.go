@@ -13,6 +13,7 @@ const (
 	fieldPath    = "path"    // 相对 workdir 的文件路径（'/' 分隔）
 	fieldLine    = "line"    // 片段起始行号（1 基）
 	fieldContent = "content" // 纯文本内容（FTS 索引字段）
+	fieldLoc     = "loc"     // 文档定位（可选：页码 / sheet 名 / slide 序号；非文档类留空）
 )
 
 var zvecOnce sync.Once
@@ -49,6 +50,10 @@ func buildSchema() (*zvec.CollectionSchema, func()) {
 	}
 	_ = schema.AddField(contentField)
 
+	// loc：文档定位（可选字符串，nullable=true 允许缺省；非文档类留空；不进 FTS 索引）。
+	locField := zvec.NewFieldSchema(fieldLoc, zvec.DataTypeString, true, 0)
+	_ = schema.AddField(locField)
+
 	cleanup := func() {
 		if contentParams != nil {
 			contentParams.Destroy()
@@ -56,6 +61,7 @@ func buildSchema() (*zvec.CollectionSchema, func()) {
 		pathField.Destroy()
 		lineField.Destroy()
 		contentField.Destroy()
+		locField.Destroy()
 		schema.Destroy()
 	}
 	return schema, cleanup
@@ -85,6 +91,7 @@ type chunk struct {
 	path string // 相对路径
 	line int    // 起始行号（1 基）
 	text string // 文本内容
+	loc  string // 文档定位（可选：页码 / sheet 名 / slide 序号；非文档类空）
 }
 
 // insertChunks 分批写入文档块。
@@ -102,6 +109,9 @@ func insertChunks(coll *zvec.Collection, chunks []chunk) error {
 			_ = doc.AddStringField(fieldPath, c.path)
 			_ = doc.AddInt32Field(fieldLine, int32(c.line))
 			_ = doc.AddStringField(fieldContent, c.text)
+			if c.loc != "" {
+				_ = doc.AddStringField(fieldLoc, c.loc)
+			}
 			docs = append(docs, doc)
 		}
 		_, err := coll.Insert(docs)
@@ -138,6 +148,7 @@ type ftsHit struct {
 	Line    int     `json:"line"`
 	Snippet string  `json:"snippet"`
 	Score   float32 `json:"score"`
+	Loc     string  `json:"loc,omitempty"` // 文档定位（页码 / sheet 名 / slide 序号；非文档类空）
 }
 
 // searchChunks 执行一次 FTS 查询，返回原始文档块命中（按相关度）。
@@ -150,7 +161,10 @@ func searchChunks(coll *zvec.Collection, match, expr string, topK int) ([]ftsHit
 	if err := q.SetTopK(topK); err != nil {
 		return nil, err
 	}
-	_ = q.SetOutputFields([]string{fieldPath, fieldLine, fieldContent})
+	// 旧集合可能尚无 loc 字段（schema 变更前的落盘）→ 回退到不含 loc 的输出字段。
+	if err := q.SetOutputFields([]string{fieldPath, fieldLine, fieldContent, fieldLoc}); err != nil {
+		_ = q.SetOutputFields([]string{fieldPath, fieldLine, fieldContent})
+	}
 
 	terms := queryTerms(match, expr)
 	fts := zvec.NewFTS()
@@ -180,8 +194,9 @@ func searchChunks(coll *zvec.Collection, match, expr string, topK int) ([]ftsHit
 		p, _ := d.GetStringField(fieldPath)
 		ln, _ := d.GetInt32Field(fieldLine)
 		txt, _ := d.GetStringField(fieldContent)
+		loc, _ := d.GetStringField(fieldLoc)
 		snippet, off := snippetOf(txt, terms, 240)
-		out = append(out, ftsHit{Path: p, Line: int(ln) + off, Snippet: snippet, Score: d.GetScore()})
+		out = append(out, ftsHit{Path: p, Line: int(ln) + off, Snippet: snippet, Score: d.GetScore(), Loc: loc})
 	}
 	return out, nil
 }
