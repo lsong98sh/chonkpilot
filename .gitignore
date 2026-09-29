@@ -114,3 +114,5 @@ ehthumbs.db
 /TODO.md
 /硬编码参数分析.md
 /tools/
+# 外部参考材料（claude-ux 技能原文 / 各类提示词参考）：仅供本机取用，不入库
+/prompts-ref/

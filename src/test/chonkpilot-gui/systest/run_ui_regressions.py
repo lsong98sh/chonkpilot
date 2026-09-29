@@ -2,7 +2,7 @@
 """L4 UI 缺陷回归（用户报障项）+ 对话框/页签几何断言。
 
 覆盖（用户 2026-09-13 报障）：
-  R1 知识库选 `.md`（*.tool.md 原语）→ preview PrimitivePanel 解析并渲染出字段（描述/参数，不再 loading）
+  R1 「工具」页签选 `.md`（*.tool.md 原语）→ preview PrimitivePanel 解析并渲染出字段（描述/参数，不再 loading）
   R2 文件树 rename 编辑态中点击其它节点 → 退出编辑态（内联输入框消失，未误改名）
   R3 preview 底部页签溢出：`...` 弹框**不越界**且**贴合触发按钮**（位置）
   R4 项目设置「文件历史」页签**文案**（2026-09-28 批次：旧「自动提交」已改名「文件历史」）
@@ -66,11 +66,12 @@ def _kb_ensure(child, click_name):
 
 
 def case_r1_knowledge_md_preview():
+    # 2026-09-29：*.tool.md 已从知识库分离到独立「工具」页签（「会话」右侧）→ 从工具页签打开。
     assert kb.ensure_explorer_visible(), "filetree 区未能挂载"
-    assert kb.switch_mode("knowledge"), "切换知识库失败 active=%s" % kb.mode_active()
+    assert kb.switch_mode("tools"), "切换「工具」页签失败 active=%s" % kb.mode_active()
     time.sleep(0.8)
-    # 系统（app）级 capability 根（幂等展开，避免把已展开状态收起）
-    _kb_ensure("tools", "知识库")
+    # 系统（app）级 capability 根（幂等展开，避免把已展开状态收起）；根标签 = 「工具 -级别」
+    _kb_ensure("tools", "工具")
     _kb_ensure("core", "tools")
     # core 目录需展开才加载其子文件
     if not any(kb.row_label(r).endswith(".tool.md") for r in kb.kb_rows()):

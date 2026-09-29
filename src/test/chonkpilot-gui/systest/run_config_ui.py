@@ -1262,15 +1262,17 @@ def case_f_no_mcp_server_config_dead():
 
 
 def _kb():
+    # 2026-09-29：G 用例只涉及**工具**原语（tools/core/*.tool.md）→ 切到独立「工具」页签
+    # （工具已从知识库分离，位于「会话」右侧；知识库页签不再显示 tools）。
     kb = kbmod.KB(c)
     if not kb.ensure_explorer_visible():
         raise TestError("filetree 区未能挂载")
-    if not kb.switch_mode("knowledge"):
-        raise TestError("切知识库失败 active=%s" % kb.mode_active())
+    if not kb.switch_mode("tools"):
+        raise TestError("切「工具」页签失败 active=%s" % kb.mode_active())
     return kb
 
 
-# 知识库级别词：根行标签 = 「知识库 -<级别>」（前端 loadRoot：mode_knowledge + ' -' + 级别名）
+# 树级别词：根行标签 = 「<知识库|工具> -<级别>」（前端 loadRoot：titleKey + ' -' + 级别名）
 _KB_LV_WORD = {"app": "系统", "user": "用户", "project": "项目"}
 
 
@@ -1284,7 +1286,7 @@ def _kb_level(kb, kind):
 
 
 def _kb_root_parent(kb):
-    """根行的可点击名（首 token）：新标签「知识库 -<级别>」→ '知识库'；旧标签 'capability'。"""
+    """根行的可点击名（首 token）：标签「知识库 -<级别>」→ '知识库'、「工具 -<级别>」→ '工具'。"""
     rows = kb.kb_rows()
     if not rows:
         raise TestError("知识库树无根行")
@@ -1400,17 +1402,17 @@ def case_g_restore_default_and_ctxmenu():
         if not kb.poll(lambda: kb.prim_dirty(), 6):
             raise TestError("点击「恢复默认」后未回填为未保存草稿（dirty 未出现）")
 
-        # ── G2：知识库文件右键菜单项 = 重命名/删除（无「复制到项目级」） ──
+        # ── G2：工具文件右键菜单项 = 重命名/删除（无「复制到项目级」） ──
         if not kb.rclick_kb_row("file_find.tool.md", False):
-            raise TestError("右键知识库文件失败")
+            raise TestError("右键工具文件失败")
         if not kb.poll(lambda: len(kb.kb_menu_texts()) > 0, 6):
-            raise TestError("知识库右键菜单未弹出")
+            raise TestError("工具文件右键菜单未弹出")
         menu = kb.kb_menu_texts()
         kb.close_menus()
         if any("复制" in x for x in menu):
-            raise TestError("知识库文件右键菜单仍含「复制到项目级」/复制项：%r" % menu)
+            raise TestError("工具文件右键菜单仍含「复制到项目级」/复制项：%r" % menu)
         if set(menu) != {"重命名", "删除"}:
-            raise TestError("知识库文件右键菜单项不符（应仅 重命名/删除）：%r" % menu)
+            raise TestError("工具文件右键菜单项不符（应仅 重命名/删除）：%r" % menu)
 
         # G3 已摘除（2026-09-26）：场景「恢复默认/回填上一级」入口整体移除 —— 见用例 docstring。
     finally:

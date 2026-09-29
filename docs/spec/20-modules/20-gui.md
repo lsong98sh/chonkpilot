@@ -466,3 +466,17 @@
 - **数据来源与刷新**：`history.enabled`/`keep`/`ttl`/`clear` 为 **prj 键**、`history.status.<slug>` / `history.timeline.<slug>` 为**会话级内部键（落 prjusr）**，统一经既有 `data-prj-config-list`（合并 prjusr）读取、`data-prj-config-save` 写入；刷新走统一机制 `usePrjConfigRefresh`（4 精确键 + **2 会话级前缀** `history.status.` / `history.timeline.`；按键过滤 + 突发合并 + 保存期跳过）；派生用 `computed`（**禁 `watch`/`watchEffect`**）；解析失败静默降级（不刷 `console.error`）。**零新增 MQ 主题**（`event-names.js` 无 history 通道）。
 - **关联测试**：前端守卫 `test/historyCheckpoint.test.js`（纯逻辑 `utils/historyTimeline.js`：JSON 解析兜底 / 相对编号 `-1` / `active|fused|off` 归一 / 体积·时间格式化 / 默认 500·7 / **`chainSlug` 与会话级键名** · 源码守卫：两设置项键名与写库、**正整数校验先于写库**、**按当前会话读 status/timeline（活动会话 + 前缀订阅）**、禁 watch、`history.clear` 写 **JSON `{ts,session}`** + 二次确认、零新增主题、i18n zh/en 键集一致且「保留口径 / 不向分支提交 / 效率 / 工具调用前打点 / **本会话清空**」文案齐备、页签名「文件历史」）；L4 `run_hist_git.py`（真机产物断言见 [51 §2](../50-testing/51-FP与测试映射.md)：H1/H4/H6）。
 
+### 12.13 左侧资源面板分段栏与「工具」页签（`views/filetree/ExplorerPane.vue`；2026-09-29）
+
+> 用户口径：「把『工具』从知识库分离出来，做成独立『工具』页签，位置在 ExplorerPane 分段栏『会话』页签的右侧；工具编辑层级与知识库一致（系统/用户/项目三级）」。
+
+- **分段栏（5 段）**：`项目 | 知识库 | 项目记忆 | 会话 | 工具`（`mode` = `project|knowledge|memory|sessions|tools`；**「工具」置于「会话」右侧 = 末位**）。`v-show` 同显 5 体（切换不销毁状态）；「刷新」图标在 `knowledge`/`memory`/**`tools`** 模式均显示并按当前模式刷新对应面板（`reload()` / `refresh()`）。
+- **分段切换**：`v-mq` → `filetree-mode-select{mode}`（[61 §6.1](../60-reference/61-消息一览.md) 未登记该内部事件；事实源 = `event-names.js`）；`setMode` 白名单增 `tools`。**保留既有语义**：`filetree-mode-toggle` 仍为休眠态（仅 `project ↔ knowledge`，不变）。
+- **两个树实例**：**知识库**与**工具**页签**共用** `views/filetree/KnowledgeTree.vue`（不复制实现），各自 `v-show` 常驻：
+  - 知识库实例：`scope="knowledge"`、`kinds=['skill','prompt','resource']`（**不再显示工具**）；
+  - 工具实例：`scope="tools"`、`kinds=['tool']`（**仅列工具**），`title-key=fileTree.mode_tools`、`empty-key=fileTree.tools_empty`。
+  - `KnowledgeTree` 新增 props：`kinds`（类型范围过滤，空 = 不过滤）、`scope`（实例标识，右键动作事件分流）、`titleKey`/`emptyKey`（标题/空态文案）。过滤口径 = 文件按后端 `type` token ∈ `kinds`；目录按最近类型目录 token ∈ `kinds`，通用容器目录（如 `knowledge/`）仅在其为某允许类型目录的祖先时显示（映射 `utils/primitive.js` 的 `TYPE_DIR_REL`，对齐后端 `capfs.Types.Rel`）。根节点类名带 `kb-scope-<scope>` 便于定位。
+- **编辑层级与知识库一致（三级）**：`app`（系统，只读）/`user`（用户）/`project`（项目）均经 `kb-level-select` 切换（**两实例同订阅 → 同步切级**）；列表/新建/重命名/删除/拖拽移动与 `PrimitivePanel`（四页签 meta·描述·参数·正文、保存·恢复、恢复默认）**与知识库同一套操作与语义**（同 `data-knowledge-*` 消息面，[61 §3.3](../60-reference/61-消息一览.md)）。
+- **消息面**：**零新增/零修改**——工具读写沿用既有 `data-knowledge-*`（后端 `capability/{tools,knowledge/{skills,prompts,resource}}` 已被同一套原语机制覆盖，`kbRootOf` 三级根解析）；右键动作仍为 `kb-ctx-action`（payload 增可选 `scope`，**非新主题**，用于多实例分流）。
+- **关联测试**：前端守卫 `src/frontend/test/toolsPane.test.js`（段位置/`setMode`/两实例 kinds/右键菜单判定/三级可写性/零新增主题/i18n）；L4 `run_explore_kb.py`（C1 五段 + C2 知识库不含 tools + C3~C8/C10/C11/C13 工具页签写链路 + C12 知识库技能/提示词/资源）、`run_config_ui.py`（G 用例切「工具」页签）、`run_ui_regressions.py`（R1 从「工具」页签打开 `*.tool.md`）。
+
