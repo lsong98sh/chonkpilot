@@ -27,7 +27,8 @@
                          `codegraph.skip-dirs` 原样透传（不折名、保留 `!`/glob/顺序）；
                          对照「叠加 gitignore」+ 用户规则 `!gate_ign/sub/` 压过 .gitignore 目录排除。
   G9 vfts 侧同语义：`vfts.stack-gitignore` + exts/排除规则 → **既有清单面
-                         `data-filelist-list`（61 §3.1 file_list 表）**的文件集合 + `vfts.status`
+                         `data-filelist-list`（61 §3.1 file_list 表）**的文件集合（**夹具 + 配置推导的
+                         显式期望集合字面全等**，同 G3/G4/G7/G8 体例）+ `vfts.status`
                          （vfts 引擎遍历与 codegraph 共用 `src/lib/ignore` 匹配器 → 行为一致）。
 
 观测手段（**零新增 MQ 主题**，全部取自 61-消息一览既有面）：
@@ -195,6 +196,22 @@ _G8_S3 = {
     "gate_ign/sub/u.go",             # 在：用户规则 !gate_ign/sub/ 目录级反选 → 压过 .gitignore 目录排除
     # 不在：gate_ign/gen.gen.go（.gitignore 的 *.gen.go 仍生效）
 }
+# G9：vfts 侧同语义（exts=".go" + stack-gitignore=true + 用户规则空）→ 与 G7 **同口径**：
+#   * 扩展名：本用例经 GUI 显式写 `vfts.exts=".go"`，**不使用引擎默认集**（默认含 .md/.txt/.json/.vue
+#     等，见 `src/plugins/vfts/server/ext.go:9-25 defaultExts`；与 codegraph 默认集不同）→ 生效集 = {".go"}
+#     → 夹具里 `gate_src/note.md` / `gate_find/*.txt` / `.gitignore` 一律不收录。
+#   * 排除：`vfts.skip-dirs` 空（无用户规则）；`vfts.stack-gitignore="true"` → 读 `WS/.gitignore`
+#     （`*.gen.go` / `!special.gen.go` / `gate_ign/sub/` / `!gate_ign/sub/u.go`）+ 内置强制（`.git/`、
+#     `.chonkpilot/`）+ 默认排除（node_modules/ 等，均不命中夹具路径）。语义由 `src/lib/ignore`
+#     单一实现（`ignore.WalkDir`）承载，与 codegraph 引擎/清单扫描共用 → 集合一致。
+_G9 = {
+    "gate_src/alpha.go",             # 在：.go + .gitignore 无匹配
+    "gate_skip/delta.go",            # 在：.go + .gitignore 无匹配（本用例未设 skip-dirs）
+    "gate_ign/keep.go",              # 在：*.gen.go 不匹配（keep.go 不以 ".gen.go" 结尾）
+    "gate_ign/special.gen.go",       # 在：*.gen.go 命中后被 !special.gen.go 反选回来
+    # 不在：gate_ign/gen.gen.go（*.gen.go 文件级排除，无 '!' 救回）
+    # 不在：gate_ign/sub/u.go（父目录 gate_ign/sub/ 命中 → 目录剪枝，其后代 '!' 无效）
+}
 
 MOCK_PORT = _h.free_port()
 _h.start_mock_llm(MOCK_PORT)                 # mock LLM 自起自收（harness 登记）
@@ -336,21 +353,36 @@ def filelist_paths():
     return [str(e.get("path") or "") for e in (r.get("list") or [])]
 
 
-def wait_filelist(pred, desc, max_wait=120):
-    """轮询 vfts 清单直至 `pred(paths)` 成立（清单在引擎索引后由插件重建，晚于 status=ready）。"""
+def _ws_rel(p):
+    """清单绝对路径（'/' 或 '\\'）→ 相对 WS 的 '/' 路径（不在 WS 内/跨盘 → 仅归一分隔符）。"""
+    try:
+        return os.path.relpath(os.path.normpath(p), os.path.normpath(WS)).replace("\\", "/")
+    except ValueError:
+        return p.replace("\\", "/")
+
+
+def _want_filelist(expected, desc, max_wait=120):
+    """断言 vfts 清单（既有 `data-filelist-list`，61 §3.1）文件集合与期望**字面全等**
+    （一个不多一个不少）；差集打印在失败信息里（与 `_want_idx` 同体例）。
+
+    清单由插件在引擎索引后**异步重建**（`plugin-vfts/manifest.go rebuildManifest`，晚于
+    `vfts.status=ready`）→ 轮询至收敛。期望集合由夹具 + vfts.exts / vfts.skip-dirs /
+    vfts.stack-gitignore 人工推导（见上方 `_G9` 常量），**不得**用清单输出反推（禁循环论证）。
+    清单 `path` 为绝对路径 → 按 WS 转相对后比较。返回（实际相对路径集合, 原始路径列表）。
+    """
+    want = set(expected)
     deadline = time.time() + max_wait
-    paths = []
+    paths, got = [], set()
     while time.time() < deadline:
         paths = filelist_paths()
-        if pred(paths):
-            return paths
+        got = set(_ws_rel(p) for p in paths if p)
+        if got == want:
+            return got, paths
         time.sleep(0.3)
-    raise TestError("%s 超时（%ss）；末次 file_list=%r" % (desc, max_wait, paths))
-
-
-def has_path(paths, suffix):
-    """清单里是否存在以 suffix 结尾的文件（绝对路径 → 按后缀定位）。"""
-    return any(p.replace("\\", "/").endswith(suffix) for p in paths)
+    raise TestError("%s：vfts 清单集合不符（%ss 内未收敛；实际 %d / 期望 %d）\n"
+                    "  多出（不应含却有）=%r\n  缺少（应含而缺）=%r\n  实际=%r"
+                    % (desc, max_wait, len(got), len(want),
+                       sorted(got - want), sorted(want - got), sorted(got)))
 
 
 def _cycle_pred(ss):
@@ -1035,8 +1067,12 @@ def case_g9_vfts_gitignore_semantics():
 
     判据 A：`prj['vfts.exts']==".go"`、`prj['vfts.stack-gitignore']=="true"`、`prj['vfts.skip-dirs']` 空；
             `vfts.status.stackGitignore==True`。
-    判据 B：`data-filelist-list` 文件集合 含 keep.go / special.gen.go、不含 gen.gen.go / sub/u.go；
-            `vfts.status.indexedFiles==4`。
+    判据 B：`data-filelist-list` 文件集合与**夹具 + 配置推导的显式期望集合**（上方 `_G9` 常量）
+            **字面全等**（一个不多一个不少；多出/缺少/实际三行差集打印在失败信息里）：
+            4 个 .go = gate_src/alpha.go + gate_skip/delta.go + gate_ign/keep.go +
+            gate_ign/special.gen.go；不含 gate_ign/gen.gen.go（`*.gen.go` 文件级排除）与
+            gate_ign/sub/u.go（`gate_ign/sub/` 目录剪枝，其后代 `!` 无效）。
+            `vfts.status.indexedFiles==len(_G9)` 与集合规模一致。
     收尾：清空规则 + 取消勾选 + 关闭 vfts（`enable-vfts=false`）。
     """
     # 前置：开启 vfts（G2 已关闭）
@@ -1060,8 +1096,9 @@ def case_g9_vfts_gitignore_semantics():
     click_save()
 
     a = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
-                    and o.get("indexedFiles") == 4,
-                    "vfts 叠加 gitignore 重建完成（ready / indexedFiles=4）", key=VSTATUS_KEY)
+                    and o.get("indexedFiles") == len(_G9),
+                    "vfts 叠加 gitignore 重建完成（ready / indexedFiles=%d）" % len(_G9),
+                    key=VSTATUS_KEY)
     if prj().get("vfts.exts") != ".go":
         raise TestError("A：prj vfts.exts=%r" % (prj().get("vfts.exts"),))
     if prj().get("vfts.stack-gitignore") != "true":
@@ -1069,19 +1106,13 @@ def case_g9_vfts_gitignore_semantics():
     if prj().get("vfts.skip-dirs") not in (None, ""):
         raise TestError("A：vfts.skip-dirs 应为空（用户规则空），实际=%r" % (prj().get("vfts.skip-dirs"),))
 
-    # B：清单逐文件集合（清单在引擎索引后由插件重建 → 轮询等齐口径同 codegraph）
-    paths = wait_filelist(
-        lambda ps: has_path(ps, "gate_ign/keep.go") and has_path(ps, "gate_ign/special.gen.go")
-        and not has_path(ps, "gate_ign/gen.gen.go") and not has_path(ps, "gate_ign/sub/u.go"),
-        "vfts file_list 收敛（含 keep/special、不含 gen.gen/sub/u）")
-    miss = [s for s in ("gate_ign/keep.go", "gate_ign/special.gen.go") if not has_path(paths, s)]
-    hit = [s for s in ("gate_ign/gen.gen.go", "gate_ign/sub/u.go") if has_path(paths, s)]
-    if miss or hit:
-        raise TestError("B：vfts 清单集合不符（应含而缺=%r；不应含却有=%r）；全部=%r"
-                        % (miss, hit, [p.split("/")[-1] for p in paths]))
+    # B：清单逐文件集合字面全等（清单在引擎索引后由插件**异步重建** → 轮询至收敛，
+    #    差集（多出/缺少/实际）打印在失败信息里；期望集合由夹具 + vfts 配置推导，见 `_G9`）
+    got, _paths = _want_filelist(_G9, "G9 vfts（exts=.go + stack-gitignore=true + 用户规则空）")
     print("[G9] vfts 勾选叠加 gitignore → A: exts=%r stackGitignore=%r skipDirs=%r；"
-          "B: file_list(%d) 含 keep/special、不含 gen.gen/sub/u（与 codegraph 同匹配器）"
-          % (prj().get("vfts.exts"), a.get("stackGitignore"), a.get("skipDirs"), len(paths)), flush=True)
+          "B: file_list 命中集合字面全等 %d 个（含 keep/special、不含 gen.gen/sub/u，"
+          "与 codegraph 同匹配器）"
+          % (prj().get("vfts.exts"), a.get("stackGitignore"), a.get("skipDirs"), len(got)), flush=True)
 
     # 收尾：清空规则 + 取消勾选 + 关闭 vfts
     set_textarea(1, "")
