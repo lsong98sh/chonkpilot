@@ -25,10 +25,14 @@ const (
 // ErrNotInitialized 未初始化（查询门控用）。
 var ErrNotInitialized = fmt.Errorf("全文索引未初始化（请先 vfts_index）")
 
-// Configure 设置 enabled / exts / skip_dirs / stack_gitignore（引擎侧同步状态，可见性门控由 plugin 完成）。
-// exts / skipDirs / stackGitignore 传 nil 表示不改
-// （skip_dirs = 用户排除规则（gitignore 语法，最高优先级），空 → 无用户规则）。
-func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string, stackGitignore *bool) error {
+// Configure 设置 enabled / exts / skip_dirs / stack_gitignore / docs（引擎侧同步状态，可见性门控由 plugin 完成）。
+// exts / skipDirs / stackGitignore / docs 传 nil 表示不改
+// （skip_dirs = 用户排除规则（gitignore 语法，最高优先级），空 → 无用户规则；
+//
+//	docs 各字段 = 指针语义「键存在即覆盖（含空串/零值）」：Endpoint 下发空串即清空旧值
+//	（服务不可用 → docsAvailable() 为 false），Token 下发空串即清空内存 token；
+//	token 仅内存持有、不落 meta.json）。
+func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string, stackGitignore *bool, docs *DocsConfig) error {
 	w.mu.Lock()
 	if enabled != nil {
 		w.meta.Enabled = *enabled
@@ -41,6 +45,27 @@ func (w *Workspace) Configure(enabled *bool, exts, skipDirs []string, stackGitig
 	}
 	if stackGitignore != nil {
 		w.meta.StackGitignore = *stackGitignore
+	}
+	if docs != nil {
+		if docs.Enabled != nil {
+			w.meta.Docs.Enabled = *docs.Enabled
+		}
+		if docs.Endpoint != nil {
+			w.meta.Docs.Endpoint = strings.TrimRight(*docs.Endpoint, "/")
+		}
+		if docs.MaxBytes != nil {
+			w.meta.Docs.MaxBytes = *docs.MaxBytes
+		}
+		if docs.TextMaxBytes != nil {
+			w.meta.Docs.TextMaxBytes = *docs.TextMaxBytes
+		}
+		if docs.CacheDir != nil {
+			w.meta.Docs.CacheDir = *docs.CacheDir
+		}
+		if docs.Token != nil {
+			w.docsToken = *docs.Token
+		}
+		w.meta.Docs.Service = docsServiceOf(w.meta.Docs)
 	}
 	w.mu.Unlock()
 	return w.saveMeta()
@@ -86,24 +111,50 @@ type fileEntry struct {
 	mtime int64
 }
 
-// collectFiles 扫描受支持文本文件清单（含 stat）。
+// collectFiles 扫描受支持文件清单（含 stat）。
 // 排除走 ignore.WalkDir（gitignore 语义：目录命中忽略即不下降，文件命中即跳过）。
-func (w *Workspace) collectFiles() ([]fileEntry, error) {
+//
+// 扩展名分两组：
+//   - 非文档类 = 生效 exts（配置集或默认集），单文件上限 maxFileBytes（8MB）；
+//   - 文档类（docExts）= **独立一组**，仅当 docs 开启时参与，单文件上限 docMaxBytes（默认 50MB）。
+//     文档类**始终**从非文档类集合中剔除（即便被写进 vfts.exts），避免"用户自定义 exts 丢文档支持"
+//     的歧义口径 —— 文档支持只由 docs 开关决定。
+//
+// 返回值 skippedDocs = 因「docs 开启但转换服务不可用」**整批跳过**的文档文件数（不写文件名 chunk）。
+func (w *Workspace) collectFiles() (entries []fileEntry, skippedDocs int, err error) {
 	exts := w.extSet()
+	docs := w.docsMeta()
+	for _, e := range docExts() { // 文档类不经普通文本通道
+		delete(exts, e)
+	}
+	var docSet map[string]bool
+	if docs.Enabled {
+		docSet = newExtSet(docExts())
+	}
+	docLimit := docMaxBytes(docs)
 	root := filepath.FromSlash(w.Dir)
 	var out []fileEntry
-	err := ignore.WalkDir(root, w.excludeOptions(), func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	err = ignore.WalkDir(root, w.excludeOptions(), func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil || d.IsDir() {
 			return nil
 		}
-		if !exts[strings.ToLower(filepath.Ext(d.Name()))] {
+		ext := strings.ToLower(filepath.Ext(d.Name()))
+		isDoc := docSet[ext]
+		limit := int64(maxFileBytes)
+		if isDoc {
+			limit = docLimit
+		} else if !exts[ext] {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
+		info, ierr := d.Info()
+		if ierr != nil {
 			return nil
 		}
-		if info.Size() > int64(maxFileBytes) {
+		if info.Size() > limit {
+			return nil
+		}
+		if isDoc && !w.docsAvailable() {
+			skippedDocs++ // 服务不可用：整批跳过（不收集 → 不写文件名 chunk）
 			return nil
 		}
 		rel := relOf(root, p)
@@ -111,13 +162,14 @@ func (w *Workspace) collectFiles() ([]fileEntry, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
-	return out, nil
+	return out, skippedDocs, nil
 }
 
-// chunksOf 读取单文件并切分为文档块（二进制/超限/读失败返回错误或空）。
+// chunksOf 读取单文件并切分为文本块（二进制/超限/读失败返回错误或空）。
+// 文档类文件不走本函数（见 preConvertDocs / chunksOfDoc）。
 func (w *Workspace) chunksOf(e fileEntry) ([]chunk, error) {
 	abs := filepath.FromSlash(joinPath(w.Dir, e.path))
 	data, err := os.ReadFile(abs)
@@ -127,36 +179,26 @@ func (w *Workspace) chunksOf(e fileEntry) ([]chunk, error) {
 	if isBinary(data) {
 		return nil, fmt.Errorf("binary file skipped")
 	}
-	text := normalizeText(string(data))
-	lines := strings.Split(text, "\n")
-	var out []chunk
-	i := 0
-	for i < len(lines) {
-		start := i
-		var buf strings.Builder
-		for i < len(lines) {
-			line := lines[i]
-			if buf.Len() > 0 && (buf.Len()+len(line) > maxChunkChars || i-start >= maxChunkLines) {
-				break
-			}
-			buf.WriteString(line)
-			buf.WriteString("\n")
-			i++
-			if buf.Len() >= maxChunkChars {
-				break
-			}
-		}
-		txt := buf.String()
-		if strings.TrimSpace(txt) == "" {
-			continue
-		}
-		out = append(out, chunk{
-			path: e.path,
-			line: start + 1,
-			text: txt,
-		})
+	return splitChunks(e.path, string(data), nil), nil
+}
+
+// preConvertDocs 对文档类文件做**并发转换**（worker 池）阶段：返回按 entries 下标索引的分块结果。
+// 非文档 / docs 未开启 / 无文档文件 → 返回 nil（调用方回落 chunksOf 普通文本通道）。
+// **仅转换阶段并发**；zvec 写入仍由调用方串行执行（不破坏现有写入模型）。
+func (w *Workspace) preConvertDocs(entries []fileEntry) map[int]docChunkOut {
+	if !w.docsMeta().Enabled {
+		return nil
 	}
-	return out, nil
+	var idx []int
+	for i, e := range entries {
+		if isDocExt(filepath.Ext(e.path)) {
+			idx = append(idx, i)
+		}
+	}
+	if len(idx) == 0 {
+		return nil
+	}
+	return w.convertDocs(entries, idx, defaultDocWorkers)
 }
 
 // setState 更新 meta 状态并落盘。
@@ -213,7 +255,7 @@ type IncrementalRemove struct {
 // exts / skipDirs / stackGitignore 传非 nil 时先更新配置。返回逐文件 doc_ids（插件重建清单用）。
 func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*IndexResult, error) {
 	if exts != nil || skipDirs != nil || stackGitignore != nil {
-		if err := w.Configure(nil, exts, skipDirs, stackGitignore); err != nil {
+		if err := w.Configure(nil, exts, skipDirs, stackGitignore, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -226,11 +268,14 @@ func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*
 		return nil, err
 	}
 
-	entries, err := w.collectFiles()
+	entries, skippedDocs, err := w.collectFiles()
 	if err != nil {
 		w.markError(fmt.Sprintf("scan: %v", err))
 		return nil, err
 	}
+	// 文档类并发转换（worker 池；zvec 写入仍串行）
+	docsOut := w.preConvertDocs(entries)
+	failedDocs := 0
 	total := len(entries)
 	w.mu.Lock()
 	w.meta.ProgressTotal = total
@@ -262,9 +307,12 @@ func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*
 	seq := 0
 	indexed := make([]IndexedFile, 0, len(entries))
 	for i, e := range entries {
-		cs, cerr := w.chunksOf(e)
+		cs, degraded := chunkOfEntry(w, docsOut, i, e)
+		if degraded {
+			failedDocs++
+		}
 		var ids []string
-		if cerr == nil && len(cs) > 0 {
+		if len(cs) > 0 {
 			ids = make([]string, 0, len(cs))
 			for j := range cs {
 				seq++
@@ -304,11 +352,27 @@ func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*
 	w.meta.Tokenizer = tokenizer
 	w.meta.LastIndexedAt = time.Now().UnixNano()
 	w.meta.NextPK = int64(seq) // 全量重建后主键序列重置为 N
+	w.meta.Docs.Service = docsServiceOf(w.meta.Docs)
+	w.meta.Docs.Skipped = skippedDocs
+	w.meta.Docs.Failed = failedDocs
 	w.mu.Unlock()
 	if err := w.saveMeta(); err != nil {
 		return nil, err
 	}
 	return &IndexResult{Mode: "full", Added: files, Chunks: chunks, Indexed: indexed}, nil
+}
+
+// chunkOfEntry 取单个文件的分块：文档类用并发转换结果（docsOut），其余走普通文本通道。
+// degraded=true 表示该文档转换失败、已降级为「仅文件名」。
+func chunkOfEntry(w *Workspace, docsOut map[int]docChunkOut, i int, e fileEntry) (cs []chunk, degraded bool) {
+	if o, ok := docsOut[i]; ok {
+		return o.chunks, o.degraded
+	}
+	cs, err := w.chunksOf(e)
+	if err != nil {
+		return nil, false
+	}
+	return cs, false
 }
 
 // Incremental 按文件增量：先按 files.doc_ids ∪ removes.doc_ids 删除旧块，再对 files
@@ -360,7 +424,14 @@ func (w *Workspace) Incremental(files []IncrementalFile, removes []IncrementalRe
 		}
 	}
 
-	// 2) 逐文件重建块
+	// 2) 逐文件重建块（文档类先并发转换，随后串行写 zvec）
+	incEntries := make([]fileEntry, 0, len(files))
+	for _, f := range files {
+		rel := w.norm(f.Path)
+		incEntries = append(incEntries, fileEntry{path: rel})
+	}
+	docsOut := w.preConvertDocs(incEntries)
+	failedDocs := 0
 	res := &IndexResult{Mode: "incremental", RemovedChunks: removedChunks, Indexed: make([]IndexedFile, 0, len(files))}
 	base := time.Now().UnixNano()
 	if w.Meta().NextPK > base {
@@ -368,14 +439,17 @@ func (w *Workspace) Incremental(files []IncrementalFile, removes []IncrementalRe
 	}
 	seq := base
 	fileDelta := 0
-	for _, f := range files {
-		rel := w.norm(f.Path)
+	for fi, f := range files {
+		rel := incEntries[fi].path
 		if rel == "" {
 			continue
 		}
-		cs, cerr := w.chunksOf(fileEntry{path: rel})
+		cs, degraded := chunkOfEntry(w, docsOut, fi, incEntries[fi])
+		if degraded {
+			failedDocs++
+		}
 		var ids []string
-		if cerr == nil && len(cs) > 0 {
+		if len(cs) > 0 {
 			ids = make([]string, 0, len(cs))
 			for j := range cs {
 				seq++
@@ -425,6 +499,8 @@ func (w *Workspace) Incremental(files []IncrementalFile, removes []IncrementalRe
 	}
 	w.meta.Tokenizer = tokenizer
 	w.meta.LastIndexedAt = time.Now().UnixNano()
+	w.meta.Docs.Service = docsServiceOf(w.meta.Docs)
+	w.meta.Docs.Failed = failedDocs
 	if seq > w.meta.NextPK {
 		w.meta.NextPK = seq
 	}

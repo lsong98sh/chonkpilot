@@ -3,7 +3,10 @@
 package vfts
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,7 +42,7 @@ func TestDiffManifestCases(t *testing.T) {
 		return "", nil
 	}
 
-	d := diffManifest(scanned, prior, hashFn)
+	d := diffManifest(scanned, prior, hashFn, docScanCtx{})
 
 	// ① 新文件 + ③ 内容变化 → 待索引
 	if len(d.toIndex) != 2 {
@@ -77,7 +80,95 @@ func TestDiffManifestCases(t *testing.T) {
 	}
 }
 
-// TestKeyOfStable：key = sha1(绝对路径) 前 16 hex，与内容无关、可重复。
+// TestDiffManifestDocParserVersion：文档类行 md5 携带解析器版本（复用 md5 口径）——
+// 版本变化 → 该行失效重建（即便 size+mtime 未变）；版本未变 → 跳过；非文档类不受影响。
+func TestDiffManifestDocParserVersion(t *testing.T) {
+	now := time.Now()
+	scanned := map[string]scanEntry{
+		"k-doc":  {path: "C:/ws/a.docx", size: 100, mtime: now},
+		"k-text": {path: "C:/ws/a.txt", size: 10, mtime: now},
+	}
+	prior := map[string]fileRec{
+		"k-doc":  {Key: "k-doc", Path: "C:/ws/a.docx", Size: 100, MTime: mtimeStr(now), MD5: tagMD5("abc", "v1"), DocIDs: []string{"1"}, Chunks: 1},
+		"k-text": {Key: "k-text", Path: "C:/ws/a.txt", Size: 10, MTime: mtimeStr(now), MD5: "def", DocIDs: []string{"2"}, Chunks: 1},
+	}
+	hashFn := func(p string) (string, error) { return "abc", nil }
+
+	// v1 == 表内版本 → 全跳过（含文档类）
+	d := diffManifest(scanned, prior, hashFn, docScanCtx{enabled: true, parserVersion: "v1"})
+	if len(d.toIndex) != 0 || d.skipped != 2 {
+		t.Fatalf("版本未变应全跳过：toIndex=%+v skipped=%d", d.toIndex, d.skipped)
+	}
+
+	// v2 != 表内版本 → 文档类行失效重建（非文档类仍跳过）
+	d = diffManifest(scanned, prior, hashFn, docScanCtx{enabled: true, parserVersion: "v2"})
+	if len(d.toIndex) != 1 || d.toIndex[0].key != "k-doc" {
+		t.Fatalf("版本变化应仅文档类失效：toIndex=%+v", d.toIndex)
+	}
+	if md5hex, pv := splitMD5Tag(d.toIndex[0].md5); md5hex != "abc" || pv != "v2" {
+		t.Fatalf("待重建行 md5 应携带新版本：%q", d.toIndex[0].md5)
+	}
+}
+
+// TestMD5TagRoundTrip：md5 标签拼接/拆分（非文档类不加后缀，语义不变）。
+func TestMD5TagRoundTrip(t *testing.T) {
+	if tagMD5("abc", "") != "abc" {
+		t.Fatal("空版本不应加后缀")
+	}
+	if got := tagMD5("abc", "v1"); got != "abc@v1" {
+		t.Fatalf("tagMD5=%q", got)
+	}
+	if h, v := splitMD5Tag("abc@v1"); h != "abc" || v != "v1" {
+		t.Fatalf("splitMD5Tag=%q,%q", h, v)
+	}
+	if h, v := splitMD5Tag("abc"); h != "abc" || v != "" {
+		t.Fatalf("无后缀拆分=%q,%q", h, v)
+	}
+}
+
+// TestScanFilesDocGroup：清单扫描的文档类分组与阈值——docs 关不收集；docs 开按独立上限收集。
+func TestScanFilesDocGroup(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "a.txt", "text")
+	writeTestFile(t, dir, "a.docx", "doc-small")
+	writeTestFile(t, dir, "big.pdf", strings.Repeat("x", 300))
+
+	// docs 关：仅 .txt
+	got, err := scanFiles(dir, []string{".txt"}, nil, false, docScanCtx{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("docs 关应收 1 个（a.txt），实际 %d", len(got))
+	}
+
+	// docs 开 + 上限 100 字节：.txt + a.docx（small），排除 big.pdf（300 > 100）
+	got, err = scanFiles(dir, []string{".txt"}, nil, false, docScanCtx{enabled: true, maxBytes: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range got {
+		names = append(names, filepath.Base(e.path))
+	}
+	sort.Strings(names)
+	if len(names) != 2 || names[0] != "a.docx" || names[1] != "a.txt" {
+		t.Fatalf("docs 开应按独立上限收集：%v", names)
+	}
+}
+
+// writeTestFile 测试辅助：写一个文件（自动建父目录）。
+func writeTestFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestKeyOfStable(t *testing.T) {
 	k1 := keyOf("C:/ws/a.txt")
 	k2 := keyOf("C:/ws/a.txt")

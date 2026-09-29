@@ -24,13 +24,24 @@ var toolSpecs = []toolSpec{
 	{
 		Name: "vfts_configure",
 		Description: "配置某 workdir 的 vfts 全文索引工作区：enabled 标识、参与索引的扩展名 exts、排除规则 skip_dirs" +
-			"（gitignore 语法，最高优先级）、是否叠加 gitignore 体系 stack_gitignore（可见性门控由调用方/plugin 负责，引擎仅记录与存档）。",
+			"（gitignore 语法，最高优先级）、是否叠加 gitignore 体系 stack_gitignore（可见性门控由调用方/plugin 负责，引擎仅记录与存档）；" +
+			"docs 段（可选）接入「文档转换服务」（Office/PDF → 文本）：docs 开关、doc_endpoint（如 http://127.0.0.1:7317）、" +
+			"doc_token（X-Chonk-Token，仅内存、不落盘）、doc_max_bytes（文档单文件上限，默认 50MiB）、" +
+			"doc_text_max_bytes（转换文本上限，默认 2MiB）、doc_cache_dir（转换缓存目录，默认 <workdir>/.chonkpilot/vfts/doc_text）。" +
+			"docs 各字段为「键存在即覆盖（含空值）」：doc_endpoint/doc_token 下发空串 = 服务不可用（清掉旧值）。" +
+			"文档类扩展名（docx/xlsx/pptx/pdf）独立成组，仅在 docs 开启时参与索引。",
 		Props: map[string]any{
-			"workdir":         map[string]any{"type": "string", "description": "项目根目录（绝对路径）"},
-			"enabled":         map[string]any{"type": "boolean", "description": "是否启用（缺省不改）"},
-			"exts":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "参与索引的扩展名（如 [\".go\",\".txt\",\".md\"]；缺省不改，替换式）"},
-			"skip_dirs":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "用户排除规则（gitignore 语法，每项一条；优先级最高；缺省不改）"},
-			"stack_gitignore": map[string]any{"type": "boolean", "description": "是否额外应用各级 .gitignore / .git/info/exclude / 全局 ignore（缺省不改）"},
+			"workdir":            map[string]any{"type": "string", "description": "项目根目录（绝对路径）"},
+			"enabled":            map[string]any{"type": "boolean", "description": "是否启用（缺省不改）"},
+			"exts":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "参与索引的扩展名（如 [\".go\",\".txt\",\".md\"]；缺省不改，替换式；不含文档类）"},
+			"skip_dirs":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "用户排除规则（gitignore 语法，每项一条；优先级最高；缺省不改）"},
+			"stack_gitignore":    map[string]any{"type": "boolean", "description": "是否额外应用各级 .gitignore / .git/info/exclude / 全局 ignore（缺省不改）"},
+			"docs":               map[string]any{"type": "boolean", "description": "是否开启文档索引（Office/PDF，需转换服务；缺省不改）"},
+			"doc_endpoint":       map[string]any{"type": "string", "description": "文档转换服务地址（如 http://127.0.0.1:7317；空 = 未配置服务）"},
+			"doc_token":          map[string]any{"type": "string", "description": "转换服务鉴权 token（X-Chonk-Token；仅内存，不落 meta.json）"},
+			"doc_max_bytes":      map[string]any{"type": "integer", "description": "文档类单文件上限字节（默认 50MiB）"},
+			"doc_text_max_bytes": map[string]any{"type": "integer", "description": "单文件转换文本上限字节（默认 2MiB）"},
+			"doc_cache_dir":      map[string]any{"type": "string", "description": "转换缓存目录（默认 <workdir>/.chonkpilot/vfts/doc_text）"},
 		},
 		Required: []string{"workdir"},
 		Fn:       toolConfigure,
@@ -39,7 +50,8 @@ var toolSpecs = []toolSpec{
 		Name: "vfts_index",
 		Description: "对某 workdir 建/更新 FTS 全文索引（同步，直到完成并落盘到 <workdir>/.chonkpilot/vfts/）：" +
 			"不传 files/remove 时全量重建（索引源码 + .txt + .md 等纯文本，按 gitignore 语义排除，含 .chonkpilot；" +
-			"单文件 >8MB 或二进制跳过；重复调用为幂等重建）；传 files/remove 时按文件增量（仅处理这些文件）。" +
+			"非文档类单文件 >8MB 或二进制跳过、文档类 >doc_max_bytes 跳过（需 docs 已开启且转换服务可用）；重复调用为幂等重建）；" +
+			"传 files/remove 时按文件增量（仅处理这些文件）。" +
 			"返回 mode 与计数（added/updated/removed/removedChunks/newChunks），以及逐文件 indexed[{path,key,doc_ids,chunks}]（供调用方回写清单）。",
 		Props: map[string]any{
 			"workdir":         map[string]any{"type": "string", "description": "项目根目录"},
@@ -54,7 +66,7 @@ var toolSpecs = []toolSpec{
 	},
 	{
 		Name:        "vfts_status",
-		Description: "查询某 workdir 的 vfts 工作区状态：state(未初始化/indexing/ready/error)、进度、索引文件数/文档块数、参与扩展名与跳过目录。",
+		Description: "查询某 workdir 的 vfts 工作区状态：state(未初始化/indexing/ready/error)、进度、索引文件数/文档块数、参与扩展名与跳过目录；文档索引态：docsEnabled / docsService(running|absent) / docsSkipped / docsFailed / docsParserVersion。",
 		Props: map[string]any{
 			"workdir": map[string]any{"type": "string", "description": "项目根目录"},
 		},
@@ -137,6 +149,23 @@ func getString(args map[string]any, k string) string {
 		return v
 	}
 	return ""
+}
+
+// getStringPtr 取字符串参数并区分「键未下发」（nil）与「下发空串」（&""）。
+func getStringPtr(args map[string]any, k string) *string {
+	if v, ok := args[k].(string); ok {
+		return &v
+	}
+	return nil
+}
+
+// getInt64Ptr 取整数参数并区分「键未下发」（nil）与「下发 0」（&0）。
+func getInt64Ptr(args map[string]any, k string) *int64 {
+	if f, ok := args[k].(float64); ok {
+		n := int64(f)
+		return &n
+	}
+	return nil
 }
 
 func getInt(args map[string]any, k string, def int) int {
@@ -264,10 +293,30 @@ func toolConfigure(_ context.Context, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := w.Configure(getBoolPtr(args, "enabled"), getStrings(args, "exts"), getStrings(args, "skip_dirs"), getBoolPtr(args, "stack_gitignore")); err != nil {
+	if err := w.Configure(getBoolPtr(args, "enabled"), getStrings(args, "exts"), getStrings(args, "skip_dirs"),
+		getBoolPtr(args, "stack_gitignore"), docsConfigFromArgs(args)); err != nil {
 		return nil, err
 	}
 	return map[string]any{"ok": true, "workdir": w.Dir, "meta": w.Meta()}, nil
+}
+
+// docsConfigFromArgs 从工具参数构建文档接入配置；无任何 docs 字段 → nil（不改）。
+// 各字段用指针承载「键是否下发」：下发空串/0 即覆盖（清旧值），与 [Configure] 的
+// 「键存在即覆盖（含空值）」语义一致。
+func docsConfigFromArgs(args map[string]any) *DocsConfig {
+	cfg := &DocsConfig{
+		Enabled:      getBoolPtr(args, "docs"),
+		Endpoint:     getStringPtr(args, "doc_endpoint"),
+		Token:        getStringPtr(args, "doc_token"),
+		MaxBytes:     getInt64Ptr(args, "doc_max_bytes"),
+		TextMaxBytes: getInt64Ptr(args, "doc_text_max_bytes"),
+		CacheDir:     getStringPtr(args, "doc_cache_dir"),
+	}
+	if cfg.Enabled == nil && cfg.Endpoint == nil && cfg.Token == nil && cfg.MaxBytes == nil &&
+		cfg.TextMaxBytes == nil && cfg.CacheDir == nil {
+		return nil
+	}
+	return cfg
 }
 
 func toolIndex(_ context.Context, args map[string]any) (any, error) {
@@ -294,10 +343,13 @@ func toolIndex(_ context.Context, args map[string]any) (any, error) {
 		"files": s.IndexedFiles, "chunks": s.ChunkCount,
 		"added": res.Added, "updated": res.Updated, "removed": res.Removed,
 		"removedChunks": res.RemovedChunks, "newChunks": res.Chunks,
-		"indexed":   res.Indexed,
-		"tokenizer": s.Tokenizer,
-		"elapsedMs": time.Since(start).Milliseconds(),
-		"store":     w.Store,
+		"indexed":     res.Indexed,
+		"tokenizer":   s.Tokenizer,
+		"docsService": s.DocsService,
+		"docsSkipped": s.DocsSkipped,
+		"docsFailed":  s.DocsFailed,
+		"elapsedMs":   time.Since(start).Milliseconds(),
+		"store":       w.Store,
 	}, nil
 }
 

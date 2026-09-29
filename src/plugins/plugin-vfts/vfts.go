@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,8 @@ const (
 	extsKey           = "vfts.exts"            // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
 	skipDirsKey       = "vfts.skip-dirs"       // 用户排除规则（gitignore 语法，逗号/换行分隔；空 = 无用户规则）
 	stackGitignoreKey = "vfts.stack-gitignore" // "true"/"false"：是否让引擎/清单扫描叠加各级 .gitignore / info/exclude / 全局 ignore
+	docsKey           = "vfts.docs"            // "true"/"false"：是否索引文档类（Office/PDF，需文档转换服务）
+	docMaxMBKey       = "vfts.doc-max-mb"      // 文档类单文件上限（整数 MB；缺失 = 50）
 	statusKey         = "vfts.status"          // 引擎状态 JSON 文本（插件回写，UI 只读回显）
 
 	// data 面（persist 订阅）
@@ -66,6 +69,9 @@ const (
 	// 两次 data-prj-config-refresh；短窗口内合并为一次强制重建（同一份配置不重建两轮）。
 	// 窗口外的单次键变更仍会（延迟 window 后）触发一次重建——不会出现"改了不重建"。
 	defaultRebuildDebounce = 400 * time.Millisecond
+
+	// defaultDocMaxMB 文档类单文件上限默认值（MB；与引擎 defaultDocMaxBytes=50MiB 同口径）。
+	defaultDocMaxMB = 50
 
 	// 索引进度：轮询引擎落盘 meta.json（Initialize 期间按批写入，见引擎 index.go）的间隔；
 	// 读到的 done/total 变化即回写 vfts.status（复用既有状态面，不新增消息主题）。
@@ -103,6 +109,12 @@ type Vfts struct {
 	client       *client             // 全局共享引擎子进程客户端（一对多；无活跃实例超 childIdleTimeout 后回收）
 	rebuild      *rebuildDebouncer   // 索引配置变更去抖（一次保存两键 → 只重建一次）
 
+	// 文档转换服务探测状态（TTL 缓存；token 仅内存、不落日志）
+	probeMu    sync.Mutex
+	probeAt    time.Time
+	probeCache *docService
+	probeWasUp bool // 上次探测是否可用（absent→running 跳变时自动接上，见 maybeDocServiceAppeared）
+
 	subs []mq.Sub // 订阅句柄（Start 失败回滚用；宿主不提供 Stop）
 }
 
@@ -122,6 +134,7 @@ type workRec struct {
 	workDir string
 	dataDir string // 首个实例自带 data_dir（预留）
 	enabled bool   // enable-vfts == "true"
+	docs    bool   // vfts.docs == "true"（文档索引开关；服务可用性另行探测）
 	refs    int    // 活跃实例引用数（同 workdir 多实例去重）
 
 	cmu   sync.Mutex
@@ -222,6 +235,38 @@ func (p *Vfts) loop() {
 func (p *Vfts) tick() {
 	p.sweepInstances(time.Now())
 	p.sweepIdleClient()
+	p.maybeDocServiceAppeared()
+}
+
+// maybeDocServiceAppeared 转换服务「后启动」容错（tolerance）：当存在「启用中且 docs 开启」的
+// workdir、且探测到服务由不可用 → 可用（跳变）时，调度一次**去抖重建**，使其自动接上
+// （不需要重启，也不高频轮询——探测走 docsProbeTTL 缓存，仅跳变时动作一次）。
+func (p *Vfts) maybeDocServiceAppeared() {
+	p.mu.Lock()
+	var wds []string
+	for wd, r := range p.works {
+		if r.refs > 0 && r.enabled && r.docs {
+			wds = append(wds, wd)
+		}
+	}
+	p.mu.Unlock()
+	if len(wds) == 0 {
+		return
+	}
+	svc := p.probeDocsService(false) // TTL 内复用缓存；到期复探（最长 30s 间隔）
+	p.probeMu.Lock()
+	transition := svc != nil && !p.probeWasUp
+	p.probeWasUp = svc != nil
+	p.probeMu.Unlock()
+	if !transition {
+		return
+	}
+	sort.Strings(wds)
+	p.logf("vfts: 探测到文档转换服务已启动（port=%d）→ 调度重建以接入文档类", svc.Port)
+	for _, wd := range wds {
+		wd := wd
+		p.rebuild.schedule(wd, func() { p.ensureWorkspace(wd, true) })
+	}
 }
 
 // sweepIdleClient 回收空闲引擎子进程：无任何活跃实例（refs>0），且距最近一次活跃
@@ -442,10 +487,30 @@ func (p *Vfts) applyPrjConfig(key, op string, list map[string]any) {
 			}
 		}
 		p.syncTools()
-	case extsKey, skipDirsKey, stackGitignoreKey:
-		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts/skip-dirs/stack-gitignore 变更
+	case extsKey, skipDirsKey, stackGitignoreKey, docsKey, docMaxMBKey:
+		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts/skip-dirs/stack-gitignore/docs 变更
 		// 均须重建才生效）。
 		// 经去抖合并：一次批量保存（广播含多键 → 逐键展开）只重建一轮。
+		// docs/doc-max-mb 变更 → 先强制复探转换服务（开关打开时服务可能刚启动）。
+		if key == docsKey || key == docMaxMBKey {
+			p.probeDocsService(true)
+		}
+		if key == docsKey {
+			on := false
+			if list != nil {
+				if raw, ok := list[docsKey]; ok {
+					on = strval(raw) == "true"
+				}
+			}
+			if op == "delete" {
+				on = false
+			}
+			p.mu.Lock()
+			for _, r := range p.works {
+				r.docs = on
+			}
+			p.mu.Unlock()
+		}
 		var affected []string
 		p.mu.Lock()
 		for wd, r := range p.works {
@@ -506,11 +571,35 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 
 	// 0) 读取项目级索引配置（扩展名 / 用户排除规则 / 是否叠加 gitignore）；未配置 → 下发空数组 = 引擎默认集
 	exts, rules, stack := p.readIndexConfig(wd)
-	// 1) configure：enabled/exts/skip_dirs/stack_gitignore 存档到引擎工作区（可见性门控在插件，引擎仅记录）
+	// 0b) 文档索引配置 + 转换服务探测（索引前**强制复探**：服务后启动 → 自动接上，无需重启）
+	docsOn, docMB := p.readDocsConfig(wd)
+	p.mu.Lock()
+	r.docs = docsOn // 记录文档开关（maybeDocServiceAppeared 自动接上判定用）
+	p.mu.Unlock()
+	docSvc := p.probeDocsService(true)
+	docCtx := p.docScanCtxFor(docsOn, docMB, docSvc)
+	if docsOn && docSvc == nil {
+		p.logf("vfts: %s 文档索引已开启但转换服务未运行 → 本次整批跳过文档类", wd)
+	}
+	// 1) configure：enabled/exts/skip_dirs/stack_gitignore/docs 存档到引擎工作区（可见性门控在插件，引擎仅记录）
 	p.pushStatusPhase(r, phaseConfigure, 0, 0) // 进度推送：进入 configure
-	if _, err := p.engineCall(ctx, "vfts_configure", map[string]any{
+	// 文档接入字段**恒下发**（含不可用态）：引擎按「键存在即覆盖（含空值）」应用——
+	// 服务不可用 = 下发空 endpoint/token，明确清掉上次残留的旧值，否则引擎会按旧 endpoint
+	// 误判服务可用 → 文档类降级为「仅文件名」并留在清单（本批修复的缺陷）。
+	configure := map[string]any{
 		"workdir": wd, "enabled": true, "exts": exts, "skip_dirs": rules, "stack_gitignore": stack,
-	}); err != nil {
+		"docs":               docsOn,
+		"doc_endpoint":       "",
+		"doc_token":          "",
+		"doc_max_bytes":      int64(docMB) << 20,
+		"doc_text_max_bytes": docTextMaxBytes,
+		"doc_cache_dir":      docCacheDirOf(wd),
+	}
+	if docSvc != nil {
+		configure["doc_endpoint"] = docSvc.baseURL()
+		configure["doc_token"] = docSvc.Token
+	}
+	if _, err := p.engineCall(ctx, "vfts_configure", configure); err != nil {
 		p.saveStatusErr(r, "configure", err)
 		return
 	}
@@ -519,9 +608,17 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 	if err := p.refreshStatus(r, ctx); err == nil && r.ready() {
 		ready = true
 	}
+	// 2b) 解析器版本变化 → 失效重建：清缓存目录（引擎缓存键含解析器版本，但引擎侧版本要等首次转换才更新，
+	//     故由插件按**探测到的转换器版本**清缓存）+ 强制本轮全量重建。
+	if ready && !force && docSvc != nil && p.docParserVersionChanged(wd, docSvc.Version) {
+		p.logf("vfts: %s 转换器版本变化（%s）→ 清空文档转换缓存并强制重建", wd, docSvc.Version)
+		p.purgeDocCache(wd)
+		force = true
+		ready = false
+	}
 	// 3) 已就绪且非强制 → 增量同步（清单驱动的按文件增量）
 	if ready && !force {
-		st, err := p.incrementalSync(r, ctx, effectiveExts(r.state, exts), rules, stack)
+		st, err := p.incrementalSync(r, ctx, effectiveExts(r.state, exts), rules, stack, docCtx)
 		if err != nil {
 			p.logf("vfts: %s 增量同步失败：%v", wd, err)
 			p.saveStatusErr(r, "sync", err)
@@ -533,7 +630,7 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 		if err := p.refreshStatus(r, ctx); err != nil {
 			p.logf("vfts: %s 增量后状态回读失败：%v", wd, err)
 		}
-		p.mergeSyncStatus(r, st)
+		p.mergeSyncStatus(r, st, docSvc)
 		return
 	}
 	// 4) 未就绪（未初始化/索引中断）或强制重建 → 同步全量建索引（慢；调用方已放后台）。
@@ -561,11 +658,75 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 	if len(effExts) == 0 {
 		// 生效扩展名不可得时**不重建清单**（否则会把整张表误判为待删除而清空）
 		p.logf("vfts: %s 清单重建跳过（未取到生效扩展名）", wd)
-	} else if err := p.rebuildManifest(r, res, effExts, rules, stack); err != nil {
+	} else if err := p.rebuildManifest(r, res, effExts, rules, stack, docCtx); err != nil {
 		p.logf("vfts: %s 清单重建失败：%v", wd, err)
 	}
-	p.mergeSyncStatus(r, &syncStats{Added: res.Added})
+	p.mergeSyncStatus(r, &syncStats{Added: res.Added}, docSvc)
 	p.logf("vfts: %s 全量重建完成（%d 文件 / %d 块）", wd, res.Files, res.Chunks)
+}
+
+// readDocsConfig 读文档索引配置：vfts.docs（开关，缺省关）+ vfts.doc-max-mb（上限 MB，缺省 50）。
+func (p *Vfts) readDocsConfig(wd string) (enabled bool, maxMB int) {
+	maxMB = defaultDocMaxMB
+	inst := p.instanceForWorkdir(wd)
+	if inst == "" {
+		return false, maxMB
+	}
+	if v, err := prjConfigReadKey(p.deps.Bus, inst, docsKey); err == nil {
+		enabled = v == "true"
+	}
+	if v, err := prjConfigReadKey(p.deps.Bus, inst, docMaxMBKey); err == nil {
+		if n, perr := strconv.Atoi(strings.TrimSpace(v)); perr == nil && n > 0 {
+			maxMB = n
+		}
+	}
+	return enabled, maxMB
+}
+
+// docScanCtxFor 组装文档类扫描上下文：服务可用时 enabled=true、上限 = MB→字节、解析器版本 = 服务版本。
+// 服务不可用 → enabled=false（清单不收集文档类，与引擎 collectFiles 同口径）。
+func (p *Vfts) docScanCtxFor(docsOn bool, maxMB int, svc *docService) docScanCtx {
+	if !docsOn || svc == nil {
+		return docScanCtx{enabled: false}
+	}
+	return docScanCtx{enabled: true, maxBytes: int64(maxMB) << 20, parserVersion: svc.Version}
+}
+
+// docCacheDirOf 文档转换缓存目录（与引擎默认一致；.chonkpilot 强制排除，不入索引/git）。
+func docCacheDirOf(wd string) string {
+	return filepath.ToSlash(filepath.Join(wd, ".chonkpilot", "vfts", "doc_text"))
+}
+
+// purgeDocCache 清空文档转换缓存目录（解析器版本变化时调用 → 强制重转）。
+func (p *Vfts) purgeDocCache(wd string) {
+	if err := os.RemoveAll(filepath.FromSlash(docCacheDirOf(wd))); err != nil {
+		p.logf("vfts: %s 清空文档转换缓存失败：%v", wd, err)
+	}
+}
+
+// docParserVersionChanged 判定探测到的转换器版本与清单中已记录的文档行版本是否不同
+// （任一文档行版本不同即认为变化；无文档行 → 不变，无需清缓存）。
+func (p *Vfts) docParserVersionChanged(wd, version string) bool {
+	if version == "" {
+		return false
+	}
+	inst := p.instanceForWorkdir(wd)
+	if inst == "" {
+		return false
+	}
+	prior, err := p.fileListAll(inst)
+	if err != nil {
+		return false
+	}
+	for _, rec := range prior {
+		if !isDocPath(rec.Path) {
+			continue
+		}
+		if _, pv := splitMD5Tag(rec.MD5); pv != version {
+			return true
+		}
+	}
+	return false
 }
 
 // ─── 索引进度推送（复用 vfts.status 状态面，不新增消息主题）──────────

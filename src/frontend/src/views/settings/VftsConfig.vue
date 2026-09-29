@@ -60,6 +60,37 @@
           <Textarea v-model="vfSkipDirs" :rows="3" placeholder="node_modules/, dist/, !dist/keep.log（逗号或换行分隔）" />
           <div class="vf-hint">{{ $t('projectConfig.exclude_paths_hint') }}</div>
         </div>
+        <hr class="b-divider" />
+        <!-- 文档索引（Office/PDF）：需外部「文档转换服务」；插件只探测、不拉起 -->
+        <div class="form-item form-item-full">
+          <div class="vf-toggle">
+            <label class="form-label">{{ $t('projectConfig.docs_section') }}</label>
+            <Switch v-model="vfDocs" />
+          </div>
+          <div class="vf-hint">{{ $t('projectConfig.docs_hint') }}</div>
+        </div>
+        <div v-if="vfDocs" class="form-item form-item-full">
+          <label class="form-label">{{ $t('projectConfig.docs_max_mb_label') }}</label>
+          <input class="vf-number" type="number" min="1" v-model="vfDocMaxMB" />
+          <div class="vf-hint">{{ $t('projectConfig.docs_max_mb_hint') }}</div>
+        </div>
+        <div v-if="vfDocs" class="form-item form-item-full">
+          <label class="form-label">{{ $t('projectConfig.docs_service_label') }}</label>
+          <div class="vf-state">
+            <span class="vf-state-text" :class="{ 'vf-ok': docsServiceReady, 'vf-off': !docsServiceReady }">{{ docsServiceText }}</span>
+          </div>
+          <div v-if="docsStatItems.length" class="vf-stats">
+            <span v-for="it in docsStatItems" :key="it.label" class="vf-stat">{{ it.label }}：{{ it.value }}</span>
+          </div>
+        </div>
+        <div class="form-item form-item-full">
+          <label class="form-label">{{ $t('projectConfig.docs_register_title') }}</label>
+          <pre class="vf-code">{{ docsRegisterText }}</pre>
+          <div class="vf-code-actions">
+            <Button size="small" @click="copyDocsRegister">{{ $t('projectConfig.docs_copy') }}</Button>
+          </div>
+          <div class="vf-hint">{{ $t('projectConfig.docs_register_hint') }}</div>
+        </div>
       </form>
     </div>
   </div>
@@ -92,11 +123,16 @@ const vfSkipDirs = ref('')
 // 叠加 gitignore 勾选（'vfts.stack-gitignore' == "true"）：勾选后仍可编辑输入框，
 // 保存时把「用户规则 + 叠加开关」一并下发引擎（gitignore 语义在引擎侧统一实现）。
 const vfStackGitignore = ref(false)
+// 文档索引（Office/PDF）：vfts.docs 开关（默认关）+ 文档类单文件上限（vfts.doc-max-mb，MB）
+const vfDocs = ref(false)
+const vfDocMaxMB = ref('50')
 // 上次从项目配置读到的原始值（'' = 项目级无该键）；用于判断用户是否真的改动过，
 // 避免把「默认值镜像」直接保存成显式项目配置（固化后引擎默认变更不再自动生效）
 const origExts = ref('')
 const origSkipDirs = ref('')
 const origStackGitignore = ref('')
+const origDocs = ref('')
+const origDocMaxMB = ref('')
 const loadedOnce = ref(false)
 const saving = ref(false)
 
@@ -146,12 +182,42 @@ const statItems = computed(() => {
 
 // 项目级键是否存在（存在才允许「恢复默认」删键）
 const hasProjectOverride = computed(() =>
-  origExts.value !== '' || origSkipDirs.value !== '' || origStackGitignore.value !== ''
+  origExts.value !== '' || origSkipDirs.value !== '' || origStackGitignore.value !== '' ||
+  origDocs.value !== '' || origDocMaxMB.value !== ''
 )
+
+// 文档转换服务运行态（来源 = vfts.status 的 docsService/docsPort，由 plugin 探测后透出）
+const docsServiceReady = computed(() => status.value?.docsService === 'running')
+const docsServiceText = computed(() => {
+  if (!vfDocs.value) return ''
+  if (docsServiceReady.value) {
+    const port = status.value?.docsPort
+    return port
+      ? `${t('projectConfig.docs_service_running')}（${t('projectConfig.docs_service_port')} ${port}）`
+      : t('projectConfig.docs_service_running')
+  }
+  return t('projectConfig.docs_service_absent')
+})
+// 文档索引计数（有则显示）：整批跳过 / 降级为仅文件名
+const docsStatItems = computed(() => {
+  const s = status.value
+  if (!s) return []
+  const out = []
+  if (typeof s.docsSkipped === 'number' && s.docsSkipped > 0) {
+    out.push({ label: t('projectConfig.docs_stat_skipped'), value: String(s.docsSkipped) })
+  }
+  if (typeof s.docsFailed === 'number' && s.docsFailed > 0) {
+    out.push({ label: t('projectConfig.docs_stat_failed'), value: String(s.docsFailed) })
+  }
+  return out
+})
+// MCP 注册指引文案（与 src/mcps/markitdown/README.md §3.1 保持一致）
+const docsRegisterText = computed(() => t('projectConfig.docs_register_text'))
 
 // 展示镜像 = 项目级值；为空 → 回填引擎默认（展示值 = 实际生效值，I-65 ⑫）
 function displayExts(raw) { return raw || VFTS_DEFAULT_EXTS.join(', ') }
 function displaySkipDirs(raw) { return raw || DEFAULT_SKIP_DIRS.join(', ') }
+function displayDocMaxMB(raw) { return raw || '50' }
 
 // 输入框是否仍等于「上次加载值的展示镜像」（= 用户未编辑）
 function isPristine(current, orig, display) { return current === display(orig) }
@@ -160,7 +226,9 @@ function isPristine(current, orig, display) { return current === display(orig) }
 const unsaved = computed(() =>
   !isPristine(vfExts.value, origExts.value, displayExts) ||
   !isPristine(vfSkipDirs.value, origSkipDirs.value, displaySkipDirs) ||
-  vfStackGitignore.value !== (origStackGitignore.value === 'true')
+  vfStackGitignore.value !== (origStackGitignore.value === 'true') ||
+  vfDocs.value !== (origDocs.value === 'true') ||
+  !isPristine(vfDocMaxMB.value, origDocMaxMB.value, displayDocMaxMB)
 )
 
 async function loadConfig() {
@@ -171,6 +239,8 @@ async function loadConfig() {
     const rawExts = c['vfts.exts'] || ''
     const rawSkipDirs = c['vfts.skip-dirs'] || ''
     const rawStack = c['vfts.stack-gitignore'] || ''
+    const rawDocs = c['vfts.docs'] || ''
+    const rawDocMaxMB = c['vfts.doc-max-mb'] || ''
     // 仅在「首次加载」或「用户未编辑」时覆盖输入框：索引期间插件每 500ms 回写
     // vfts.status 并广播 prj-config-refresh，避免把未保存的编辑冲掉。
     if (!loadedOnce.value || isPristine(vfExts.value, origExts.value, displayExts)) {
@@ -182,9 +252,17 @@ async function loadConfig() {
     if (!loadedOnce.value || vfStackGitignore.value === (origStackGitignore.value === 'true')) {
       vfStackGitignore.value = rawStack === 'true'
     }
+    if (!loadedOnce.value || vfDocs.value === (origDocs.value === 'true')) {
+      vfDocs.value = rawDocs === 'true'
+    }
+    if (!loadedOnce.value || isPristine(vfDocMaxMB.value, origDocMaxMB.value, displayDocMaxMB)) {
+      vfDocMaxMB.value = displayDocMaxMB(rawDocMaxMB)
+    }
     origExts.value = rawExts
     origSkipDirs.value = rawSkipDirs
     origStackGitignore.value = rawStack
+    origDocs.value = rawDocs
+    origDocMaxMB.value = rawDocMaxMB
     loadedOnce.value = true
     const raw = c['vfts.status']
     if (raw) {
@@ -245,7 +323,33 @@ function collectIndexChanges() {
     entries['vfts.stack-gitignore'] = v
     origStackGitignore.value = v
   }
+  if (vfDocs.value !== (origDocs.value === 'true')) {
+    const v = String(vfDocs.value)
+    entries['vfts.docs'] = v
+    origDocs.value = v
+  }
+  if (!isPristine(vfDocMaxMB.value, origDocMaxMB.value, displayDocMaxMB)) {
+    const v = vfDocMaxMB.value.trim()
+    if (v === '') {
+      clears.push('vfts.doc-max-mb')
+      origDocMaxMB.value = ''
+      vfDocMaxMB.value = displayDocMaxMB('')
+    } else {
+      entries['vfts.doc-max-mb'] = v
+      origDocMaxMB.value = v
+    }
+  }
   return { entries, clears }
+}
+
+// 复制 MCP 注册指引（与 README §3.1 文案一致；失败给可见反馈）
+async function copyDocsRegister() {
+  try {
+    await navigator.clipboard.writeText(docsRegisterText.value)
+    message.success(t('projectConfig.docs_copied'))
+  } catch (_) {
+    message.error(t('projectConfig.docs_copy_failed'))
+  }
 }
 
 // 保存索引配置（exts/skip-dirs/stack-gitignore）：只提交实际改动的键。
@@ -270,7 +374,7 @@ async function handleIndexSave() {
   }
 }
 
-// 恢复默认：清除项目级 exts/skip-dirs/stack-gitignore 键（引擎默认集生效，回填默认镜像）
+// 恢复默认：清除项目级 exts/skip-dirs/stack-gitignore/docs/doc-max-mb 键（引擎默认集生效，回填默认镜像）
 async function handleResetDefaults() {
   saving.value = true
   try {
@@ -278,14 +382,20 @@ async function handleResetDefaults() {
     if (origExts.value !== '') tasks.push(deleteConfig('vfts.exts'))
     if (origSkipDirs.value !== '') tasks.push(deleteConfig('vfts.skip-dirs'))
     if (origStackGitignore.value !== '') tasks.push(deleteConfig('vfts.stack-gitignore'))
+    if (origDocs.value !== '') tasks.push(deleteConfig('vfts.docs'))
+    if (origDocMaxMB.value !== '') tasks.push(deleteConfig('vfts.doc-max-mb'))
     if (tasks.length === 0) return
     await Promise.all(tasks)
     origExts.value = ''
     origSkipDirs.value = ''
     origStackGitignore.value = ''
+    origDocs.value = ''
+    origDocMaxMB.value = ''
     vfExts.value = displayExts('')
     vfSkipDirs.value = displaySkipDirs('')
     vfStackGitignore.value = false
+    vfDocs.value = false
+    vfDocMaxMB.value = displayDocMaxMB('')
     message.success(t('projectConfig.index_reset_done'))
   } catch (e) {
     message.error(saveFailedText(t, e))
@@ -304,7 +414,7 @@ onMounted(() => {
   // 提交的本地态打架。
   // （文本输入另有 isPristine 守卫：防索引期间插件每 500ms 回写 status 的广播冲掉未保存编辑。）
   unsubs.push(usePrjConfigRefresh({
-    keys: ['enable-vfts', 'vfts.exts', 'vfts.skip-dirs', 'vfts.stack-gitignore', 'vfts.status'],
+    keys: ['enable-vfts', 'vfts.exts', 'vfts.skip-dirs', 'vfts.stack-gitignore', 'vfts.docs', 'vfts.doc-max-mb', 'vfts.status'],
     reload: loadConfig,
     isSaving: () => saving.value,
   }))
@@ -441,6 +551,36 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.6;
+}
+/* 文档索引：未就绪/就绪态着色 + 注册指引代码块 */
+.vf-ok {
+  color: var(--success, #67c23a);
+}
+.vf-off {
+  color: var(--text-muted);
+}
+.vf-number {
+  width: 120px;
+  padding: 4px 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-primary, transparent);
+  border: 1px solid var(--border, #dee2e6);
+  border-radius: 4px;
+}
+.vf-code {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-secondary, rgba(0, 0, 0, 0.05));
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.vf-code-actions {
+  margin-top: 4px;
 }
 .b-divider {
   border: none;

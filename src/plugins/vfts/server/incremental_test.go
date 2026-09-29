@@ -63,10 +63,10 @@ func TestCollectFilesStackGitignore(t *testing.T) {
 			defer func() { Drop(dir); CloseAll() }()
 
 			stack := c.stack
-			if err := w.Configure(nil, []string{".txt"}, nil, &stack); err != nil {
+			if err := w.Configure(nil, []string{".txt"}, nil, &stack, nil); err != nil {
 				t.Fatalf("configure: %v", err)
 			}
-			entries, err := w.collectFiles()
+			entries, _, err := w.collectFiles()
 			if err != nil {
 				t.Fatalf("collectFiles: %v", err)
 			}

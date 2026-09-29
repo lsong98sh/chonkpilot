@@ -167,5 +167,21 @@
   "engine_tool_state": "Engine tool surface",
   "engine_registered": "Registered",
   "engine_unregistered": "Not registered",
-  "engine_tool_state_hint": "Registered = the engine query tools are injected into the tool surface (engine enabled with an active instance); plugins expose no \"subprocess running\" signal, so only the registration state is shown."
+  "engine_tool_state_hint": "Registered = the engine query tools are injected into the tool surface (engine enabled with an active instance); plugins expose no \"subprocess running\" signal, so only the registration state is shown.",
+  "docs_section": "Document index (Office/PDF)",
+  "docs_hint": "When enabled, document files (.docx/.xlsx/.pptx/.pdf) are first extracted to text by the Document Conversion Service, then indexed (off by default). The plugin only probes it and never starts it — register and launch it yourself on the MCP config page.",
+  "docs_max_mb_label": "Document size limit (MB)",
+  "docs_max_mb_hint": "Per-file limit for documents (independent of the 8MB source limit); larger files are skipped. Empty = default 50MB.",
+  "docs_service_label": "Conversion service",
+  "docs_service_running": "Ready",
+  "docs_service_absent": "Not running",
+  "docs_service_port": "port",
+  "docs_stat_skipped": "Skipped (service down)",
+  "docs_stat_failed": "Failed (name-only indexed)",
+  "docs_register_title": "How to register as an MCP server",
+  "docs_copy": "Copy",
+  "docs_copied": "Registration guide copied",
+  "docs_copy_failed": "Copy failed",
+  "docs_register_hint": "The service ships with the product but is neither preconfigured nor auto-started; if port 7317 is taken, the actual port is shown in state.json (the status line above shows the detected port).",
+  "docs_register_text": "[Add MCP server]\nName:      markitdown (or \"Document Converter\")\nType:      Streamable HTTP (HTTP)\nURL:       http://127.0.0.1:7317/mcp\nLaunch:    external process (not managed by this product)\nCommand:   <install dir>\\mcps\\markitdown\\markitdown-mcp.exe\nNote:      Converts PDF / Word / Excel / PPT into Markdown (with page / sheet / slide locators) for full-text search and reading."
 }

@@ -20,6 +20,7 @@
 #   ├── chonkpilot-vfts-mcp-server.exe      # vfts 引擎（出厂内置 MCP）
 #   ├── zvec_c_api.dll                      # vfts 运行库（必须与 vfts 引擎 exe 同目录）
 #   ├── capability/                         # 契约 + executor×3（来自 dist/other）
+#   ├── mcps/                               # 可选：文档转换器（dist/other/mcps 兜底镜像；两处皆缺则告警、不中断）
 #   └── (无 scenarios/)                     # 出厂场景「开发场景」由 embed 内嵌（源 src/lib/data/scenarios），
 #                                           #   运行时 app 初始化物化到 <exeDir>/scenarios/（缺失即恢复、已存在
 #                                           #   不覆盖；app 级可编辑）——**不再随产物投放**（25-MCP与场景分层模型 §6）
@@ -57,7 +58,7 @@ foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "ch
 }
 
 # -- 1) 前端构建（工程 src/frontend；embed 入口 → 镜像到两个宿主壳的 embed 落点） --
-Write-Host "==> [1/6] build frontend (embed entry)"
+Write-Host "==> [1/7] build frontend (embed entry)"
 Push-Location $frontend
 try {
     if (-not (Test-Path "node_modules")) {
@@ -87,7 +88,7 @@ Copy-Item $embedOut $embedDst -Recurse -Force
 Write-Host "    ok: $embedDst ($((Get-ChildItem $embedDst -Recurse -File | Measure-Object).Count) files)"
 
 # -- 2) GUI 单体编译（src/desktop；-H windowsgui：GUI 模式无控制台） --
-Write-Host "==> [2/6] build chonkpilot.exe"
+Write-Host "==> [2/7] build chonkpilot.exe"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Push-Location $desktop
 try {
@@ -98,7 +99,7 @@ try {
 } finally { Pop-Location }
 
 # -- 3) CLI 单体编译（src/desktop/cli；console 模式，无 -H windowsgui） --
-Write-Host "==> [3/6] build chonkpilot-cli.exe"
+Write-Host "==> [3/7] build chonkpilot-cli.exe"
 Push-Location $cli
 try {
     go build -o $outCliExe .
@@ -108,7 +109,7 @@ try {
 } finally { Pop-Location }
 
 # -- 4) 构建 MCP server 契约与 executor（调用 build-mcp-server.ps1 → dist/other） --
-Write-Host "==> [4/6] build mcp-server (contracts + executors)"
+Write-Host "==> [4/7] build mcp-server (contracts + executors)"
 & (Join-Path $root "build-mcp-server.ps1")
 if ($LASTEXITCODE -ne 0) { throw "build-mcp-server.ps1 failed" }
 
@@ -123,7 +124,7 @@ Copy-Item $capSrc $capDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
 
 # -- 5) codegraph 引擎构建并并入发行根（出厂内置 MCP；默认不接入，见 42 §2 (17)） --
-Write-Host "==> [5/6] build codegraph engine"
+Write-Host "==> [5/7] build codegraph engine"
 & (Join-Path $root "build-codegraph.ps1")
 if ($LASTEXITCODE -ne 0) { throw "build-codegraph.ps1 failed" }
 $cgExe = "chonkpilot-codegraph-mcp-server.exe"
@@ -132,7 +133,7 @@ $mbCg = [Math]::Round((Get-Item (Join-Path $dist $cgExe)).Length / 1MB, 1)
 Write-Host "    ok: $cgExe ($mbCg MB) -> $dist"
 
 # -- 6) vfts 引擎 + zvec 运行库并入发行根（zvec_c_api.dll 必须与引擎 exe 同目录） --
-Write-Host "==> [6/6] build vfts engine"
+Write-Host "==> [6/7] build vfts engine"
 & (Join-Path $root "build-vfts.ps1")
 if ($LASTEXITCODE -ne 0) { throw "build-vfts.ps1 failed" }
 $vfExe = "chonkpilot-vfts-mcp-server.exe"
@@ -142,6 +143,27 @@ Copy-Item (Join-Path $vftsDist "zvec_c_api.dll") (Join-Path $dist "zvec_c_api.dl
 $mbVf = [Math]::Round((Get-Item (Join-Path $dist $vfExe)).Length / 1MB, 1)
 $mbDll = [Math]::Round((Get-Item (Join-Path $dist "zvec_c_api.dll")).Length / 1MB, 1)
 Write-Host "    ok: $vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB) -> $dist"
+
+# -- 7) mcps 转换器兜底并入发行根（dist\other\mcps → dist\desktop\mcps；可选，**幂等**）--
+#    兜底语义：源存在 → 覆盖镜像；源不存在但目标已存在 → 保留并提示；两处都无 → 醒目告警
+#    （**不中断构建**）。转换器（文档索引 vfts.docs）为可选组件，产物由
+#    .\src\mcps\markitdown\build-mcps.ps1 独立冻结（不打入本脚本必经路径，见该脚本头注）。
+Write-Host "==> [7/7] stage mcps/ (doc converter, optional)"
+$mcpsSrc = Join-Path $root "dist\other\mcps"
+$mcpsDst = Join-Path $dist "mcps"
+$mcpsCount = 0
+if (Test-Path $mcpsSrc) {
+    if (Test-Path $mcpsDst) { [System.IO.Directory]::Delete($mcpsDst, $true) }
+    Copy-Item $mcpsSrc $mcpsDst -Recurse -Force
+    $mcpsCount = (Get-ChildItem $mcpsDst -Recurse -File | Measure-Object).Count
+    Write-Host "    ok: mcps/ ($mcpsCount files) <- $mcpsSrc"
+} elseif (Test-Path $mcpsDst) {
+    $mcpsCount = (Get-ChildItem $mcpsDst -Recurse -File | Measure-Object).Count
+    Write-Host "    [提示] $mcpsSrc 不存在；保留既有 $mcpsDst（$mcpsCount files）"
+} else {
+    Write-Host "    [警告] mcps 转换器产物缺失（$mcpsSrc 与 $mcpsDst 均不存在）！文档索引（vfts.docs）将不可用"
+    Write-Host "           如需：.\src\mcps\markitdown\build-mcps.ps1（产物 = dist\desktop\mcps\markitdown\markitdown-mcp.exe）"
+}
 
 # -- 清单 --
 $mbGui = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
@@ -154,6 +176,7 @@ Write-Host "    chonkpilot-codegraph-mcp-server.exe $mbCg MB"
 Write-Host "    chonkpilot-vfts-mcp-server.exe      $mbVf MB"
 Write-Host "    zvec_c_api.dll                      $mbDll MB"
 Write-Host "    capability/                         $capCount files"
+Write-Host "    mcps/                               $mcpsCount files (可选：文档转换)"
 Write-Host "    (scenarios/ 由 embed 内嵌，运行时 app 初始化物化到 <exeDir>/scenarios/)"
 Write-Host "    run: cd $dist ; .\chonkpilot.exe"
 Write-Host "    cli: cd $dist ; .\chonkpilot-cli.exe --prompt 'hello' --work-dir ."

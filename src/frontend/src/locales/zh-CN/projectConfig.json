@@ -167,5 +167,21 @@
   "engine_tool_state": "引擎工具面",
   "engine_registered": "已注册",
   "engine_unregistered": "未注册",
-  "engine_tool_state_hint": "已注册 = 引擎查询工具已注入工具面（该引擎已启用且有活跃实例）；插件未下发「子进程运行中」信号，故仅报注册态。"
+  "engine_tool_state_hint": "已注册 = 引擎查询工具已注入工具面（该引擎已启用且有活跃实例）；插件未下发「子进程运行中」信号，故仅报注册态。",
+  "docs_section": "文档索引（Office/PDF）",
+  "docs_hint": "开启后，文档类文件（.docx/.xlsx/.pptx/.pdf）先经「文档转换服务」抽取为文本再入全文索引（默认关闭）。插件只探测、不启动该服务——请在 MCP 配置页手动注册并启动它。",
+  "docs_max_mb_label": "文档类体积上限（MB）",
+  "docs_max_mb_hint": "文档类单文件上限（独立于源码的 8MB）；超出即跳过。留空 = 默认 50MB。",
+  "docs_service_label": "转换服务",
+  "docs_service_running": "已就绪",
+  "docs_service_absent": "未运行",
+  "docs_service_port": "端口",
+  "docs_stat_skipped": "因服务未运行跳过",
+  "docs_stat_failed": "转换失败（仅索引文件名）",
+  "docs_register_title": "MCP 注册指引（文档转换服务）",
+  "docs_copy": "复制",
+  "docs_copied": "已复制注册指引",
+  "docs_copy_failed": "复制失败",
+  "docs_register_hint": "该服务随产品投放但不预置、不自动启动；若 7317 被占用，实际端口见 state.json（上方状态行会显示探测到的端口）。",
+  "docs_register_text": "【添加 MCP 服务器】\n名称：      markitdown（或“文档转换”）\n类型：      Streamable HTTP（HTTP）\n地址：      http://127.0.0.1:7317/mcp\n启动方式：  外部进程（本产品不托管）\n启动命令：  <产品安装目录>\\mcps\\markitdown\\markitdown-mcp.exe\n说明：      把 PDF / Word / Excel / PPT 转成 Markdown（含页码 / sheet / slide 定位），供全文检索与阅读使用。"
 }

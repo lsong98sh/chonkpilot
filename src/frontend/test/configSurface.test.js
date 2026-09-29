@@ -320,6 +320,36 @@ test('⑧ 索引页：label「排除的目录和文件」+「叠加 gitignore」
   }
 })
 
+// ── ⑨ 索引页「文档索引（Office/PDF）」（2026-09-29）─────────
+test('⑨ 索引页：文档索引开关 + 体积上限 + 转换服务状态行 + MCP 注册指引', () => {
+  const zh = readLocale('zh-CN', 'projectConfig.json')
+  const en = readLocale('en-US', 'projectConfig.json')
+  for (const k of ['docs_section', 'docs_hint', 'docs_max_mb_label', 'docs_service_label',
+    'docs_service_running', 'docs_service_absent', 'docs_register_title', 'docs_copy',
+    'docs_copied', 'docs_register_text', 'docs_stat_skipped', 'docs_stat_failed']) {
+    assert.ok(zh[k], `zh-CN projectConfig 缺 ${k}`)
+    assert.ok(en[k], `en-US projectConfig 缺 ${k}`)
+  }
+
+  const src = read('views/settings/VftsConfig.vue')
+  // 开关（默认关）+ 体积上限（默认 50MB 镜像）+ 两键保存
+  assert.match(src, /projectConfig\.docs_section/, '缺「文档索引」区块')
+  assert.match(src, /const vfDocs = ref\(false\)/, 'vfts.docs 开关须默认关')
+  assert.match(src, /'vfts\.docs'/, '保存须写 vfts.docs')
+  assert.match(src, /'vfts\.doc-max-mb'/, '保存须写 vfts.doc-max-mb')
+  assert.match(src, /displayDocMaxMB\(raw\) \{ return raw \|\| '50' \}/, '体积上限默认镜像须为 50')
+  // 状态行：转换服务 running/absent + 端口
+  assert.match(src, /status\.value\?\.docsService === 'running'/, '状态行须读 docsService')
+  assert.match(src, /status\.value\?\.docsPort/, '状态行须显示探测端口')
+  // MCP 注册指引 + 复制
+  assert.match(src, /projectConfig\.docs_register_text/, '缺注册指引文案')
+  assert.match(src, /navigator\.clipboard\.writeText\(docsRegisterText\.value\)/, '缺复制按钮实现')
+  // dirty 含文档开关
+  assert.match(src, /vfDocs\.value !== \(origDocs\.value === 'true'\)/, 'dirty 须含文档开关')
+  // 规矩：无 watch/watchEffect
+  assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, 'VftsConfig 不得使用 watch/watchEffect')
+})
+
 // ── 通用：i18n 双语齐备 ──────────────────────────────────
 test('i18n：新增键 zh-CN / en-US 齐备', () => {
   const projectKeys = [

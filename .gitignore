@@ -65,6 +65,17 @@ __pycache__/
 *.pyc
 *.pyo
 
+# mcps 文档转换服务（Python 源工程，src/mcps/markitdown）的本地 venv 与冻结中间物
+/src/mcps/markitdown/.venv/
+/src/mcps/markitdown/build/
+/src/mcps/markitdown/dist/
+/src/mcps/markitdown/*.spec
+# 运行时状态文件（含 X-Chonk-Token，绝不能进库）
+/src/mcps/markitdown/state.json
+/src/mcps/markitdown/state.json.tmp
+# 自测生成的样本（selftest.py 会自动重建，不入库）
+/src/mcps/markitdown/samples/generated/
+
 # ── 8. Go 工作区（多模块由 go.mod 各自管理；本机 workspace 不入库）──────────
 go.work
 go.work.sum
