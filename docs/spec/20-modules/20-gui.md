@@ -492,7 +492,7 @@
 - **扩展页（`ExtensionsPane.vue`）**：`SUBTABS` = 知识(`resource`) / 技能(`skill`) / 工具(`tool`) / 命令(`prompt`) / 智能体(`agent`)（顺序固定）；内部 `v-show`/`key` 渲染 **复用** `views/filetree/KnowledgeTree.vue`（`scope=子 tab key`、`kinds=[单类型]`）。
 - **级别（四级）**：右侧【级别】按钮 → `Popover` 下拉（系统/用户/项目/项目私有，`fileTree.kb_level_*`）；**级别状态由扩展页统一持有并经 `props.level` 下发**（`KnowledgeTree` 只读 `level`，内联级别按钮组与自持 `kbLevel` **已移除**）。切换级别/子 tab 经 `:key="subTab + '-' + level"` 重挂载树（**不用 watch**）。
 - **四级均可写**：撤 `isKbReadonly`/`kb_readonly`（原「系统级只读」作废）；拖拽移动仍限当前级别根内同级。
-- **智能体子 tab**：`*.agent.md` 编辑走 `PrimitivePanel`（token=agent → **复用** `views/scenario/AgentEditor.vue`，`showCopy=false`；保存 `data-knowledge-save`）。
+- **智能体子 tab**：`*.agent.md` 编辑走 `PrimitivePanel`（token=agent → **复用** `views/scenario/AgentEditor.vue`，`showCopy=false`；保存 `data-knowledge-save`）。**「启用工具过滤」开关**：开关态为**前端本地、不持久化**（后端判据 = `tools` 非空即白名单）—— 载入按 `tools` 反推回填（单源 `utils/agentToolFilter.filterToolsLoadPatch`，与场景编辑同口径）、`update:agent` 回写；**无 tools 的智能体勾选后须保持开并展开候选**〔修复 `PrimitivePanel` 曾由 `tools.length>0` 派生导致回弹，见 [42 §2 (214)](../40-roadmap/42-决策记录.md)〕。
 - **消息面**：**主题零新增** —— 子 tab 复用 `filetree-mode-select`（payload 增**可选** `ext`）；级别复用 `kb-level-select{kind}`（语义改「扩展页统一持有」）。二者均为**前端内部**事件（未登记 [61 §6.1](../60-reference/61-消息一览.md)）。
 - **关联测试**：前端守卫 `src/frontend/test/extensionsPane.test.js`（4 段位置/5 子 tab 顺序与 kinds/级别 popup/四级可写/复用/零裸主题/agent token/i18n）+ `test/scenarioAgentsRef.test.js`（智能体编辑器复用）+ `test/sessionNavCopy.test.js`（导航顺序）。L4 `run_explore_kb.py` / `run_config_ui.py` / `run_ui_regressions.py` 按新 UI（「扩展」页）同步（**需新构建后实跑**）。
 
