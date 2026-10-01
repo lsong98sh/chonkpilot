@@ -62,6 +62,7 @@ RUN_SCRIPTS = [
     "run_index_gate.py",          # 自起（动态端口 + 临时 work-dir/data-dir/HOME）
     "run_docs_gate.py",           # 自起（动态端口 + 临时 work-dir/data-dir/HOME；真转换器自拉/自停；产物缺失则 SKIP）
     "run_filetree_ignored.py",    # 自起（动态端口 + 临时 work-dir/data-dir/HOME）
+    "run_explore_kb.py",          # 自起（临时 work-dir/data-dir；扩展页四级 5 子 tab + C14 项目私有级端到端）
     "run_hist_git.py",            # 自起（动态端口 + 临时目录 + 自管 mock LLM；无 git 则 SKIP）
 ]
 

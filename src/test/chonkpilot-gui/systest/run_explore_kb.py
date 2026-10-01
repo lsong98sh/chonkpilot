@@ -215,6 +215,62 @@ class KB:
     def wait_ft_row(self, name, is_dir=None):
         return self.poll(lambda: any(self.row_label(r) == name and (is_dir is None or r["d"] == is_dir) for r in self.ft_rows()))
 
+    # ── 加固（2026-10-01）：满载下 UI 时序有界重试 ──
+    # 背景：run_all 全量（32 套）串行满载时，「新建/改名/切换子 tab 后树重挂载」→ 目标行
+    # 尚未渲染完成，立刻右键会定位不到行（rclick 返回 False）→ C12 偶发红；单跑 14/14 全绿。
+    # 口径：**只**重试「UI 未就绪」类等待，最终断言仍必须真成功——**不放宽断言**。
+    def wait_kb_row_stable(self, name, is_dir=None, timeout=8, stable=2, interval=0.15):
+        """轮询直到目标行**可见**（offsetParent!=null，即当前模式下渲染树内）且**连续 stable 次**
+        命中（消除树重挂载/重渲染竞态：一次命中可能落在正被替换的旧节点上）。"""
+        end = time.time() + timeout
+        hit = 0
+        while time.time() < end:
+            if any(self.row_label(r) == name and (is_dir is None or r["d"] == is_dir) for r in self.kb_rows()):
+                hit += 1
+                if hit >= stable:
+                    return True
+            else:
+                hit = 0
+            time.sleep(interval)
+        return False
+
+    def retry_action(self, label, fn, attempts=5, base=0.4, cap=2.0):
+        """有界重试 fn()（真值即成功）；退避递增，打印与 harness（chonk_client.retryable）一致的
+        `[retry] <label>: ..., attempt n/m, backoff Xs` 行，便于区分「真绿」与「重试后绿」。
+
+        仅用于「等待 UI 就绪 / 重试交互」；调用方最终断言不得据此放宽。
+        """
+        delay = base
+        for i in range(1, attempts + 1):
+            if fn():
+                return True
+            if i < attempts:
+                print("[retry] %s: 目标未就绪/菜单未出现, attempt %d/%d, backoff %.1fs"
+                      % (label, i, attempts, delay), flush=True)
+                time.sleep(delay)
+                delay = min(delay * 1.6, cap)
+        return False
+
+    def rclick_kb_row_retry(self, name, is_dir=None, attempts=5, row_timeout=8):
+        """先等目标行**稳定**出现在渲染树，再右键；菜单未弹出则**在同一行**上有界重试。
+
+        返回 True ⇔ 菜单确已弹出（断言强度不降：仍须真正右键成功）。
+        """
+        if not self.wait_kb_row_stable(name, is_dir, timeout=row_timeout):
+            return False
+        return self.retry_action(
+            "rclick_kb_row(%s)" % name,
+            lambda: bool(self.rclick_kb_row(name, is_dir))
+            and self.poll(lambda: len(self.kb_menu_texts()) > 0, timeout=2.0, interval=0.2),
+            attempts=attempts)
+
+    def click_kb_row_retry(self, name, is_dir, attempts=4, row_timeout=8):
+        """先等目标行稳定可见再单击（用于「新建/改名后立刻单击」的交互步骤）。"""
+        if not self.wait_kb_row_stable(name, is_dir, timeout=row_timeout):
+            return False
+        fn = (lambda: bool(self.click_kb_dir(name))) if is_dir else (lambda: bool(self.click_kb_file(name)))
+        return self.retry_action("click_kb_row(%s)" % name, fn, attempts=attempts)
+
     # ── 右键菜单 ──
     def _rclick_js(self, scope, name, is_dir):
         # 仅命中**可见**行（知识库/工具两树同挂 .knowledge-tree；隐藏页签不参与定位）
@@ -591,7 +647,7 @@ def main():
         # ── C6 右键 tools → 新建目录/新建工具（工具页签） ──
         def c6():
             assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
-            assert kb.rclick_kb_row("tools", True), "右键 tools 失败"
+            assert kb.rclick_kb_row_retry("tools", True), "右键 tools 失败"
             ok = kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             assert ok, "右键菜单未弹出"
             texts = kb.kb_menu_texts()
@@ -604,7 +660,7 @@ def main():
         # ── C7 新建工具 smoke_it（工具页签） ──
         def c7():
             assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
-            assert kb.rclick_kb_row("tools", True), "右键 tools(2) 失败"
+            assert kb.rclick_kb_row_retry("tools", True), "右键 tools(2) 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             texts = kb.kb_menu_texts()
             hit = next((x for x in texts if is_new_of_type(x)), None)
@@ -624,7 +680,7 @@ def main():
             ok = kb.poll(lambda: kb.prim_panel_exists() and kb.prim_active_path().replace("\\", "/").endswith("smoke_it.tool.md"))
             if not ok:
                 print("  [note] 新建后 preview 未自动聚焦（尝试手工打开）")
-                assert kb.click_kb_file("smoke_it.tool.md"), "点击 smoke 行失败"
+                assert kb.click_kb_row_retry("smoke_it.tool.md", False), "点击 smoke 行失败"
                 kb.poll(lambda: kb.prim_panel_exists())
 
         # ── C8 编辑保存 + 删除清理（工具页签） ──
@@ -647,7 +703,7 @@ def main():
             data = open(active_path.replace("/", os.sep), encoding="utf-8").read()
             assert new_desc in data, "磁盘文件未写入新描述"
             # 删除
-            assert kb.rclick_kb_row("smoke_it.tool.md", False), "右键 smoke 文件失败"
+            assert kb.rclick_kb_row_retry("smoke_it.tool.md", False), "右键 smoke 文件失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             texts = kb.kb_menu_texts()
             hit = next((x for x in texts if x in ("删除", "Delete")), None)
@@ -676,7 +732,7 @@ def main():
             ok = kb.poll(lambda: any(kb.row_label(r) == "demo.tool.md" and not r["d"] for r in kb.kb_rows()))
             assert ok, "项目级 core 下无 demo.tool.md"
             # 右键 typed 目录验证菜单
-            assert kb.rclick_kb_row("tools", True), "右键项目 tools 失败"
+            assert kb.rclick_kb_row_retry("tools", True), "右键项目 tools 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             txts = kb.kb_menu_texts()
             assert any(("新建目录" in x or x == "New Folder") for x in txts), f"项目菜单缺 新建目录：{txts}"
@@ -704,7 +760,7 @@ def main():
             """
             # ① 右键「新建目录」→ 落盘 + 树行出现 + 自动内联改名
             assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
-            assert kb.rclick_kb_row("tools", True), "右键 tools 失败"
+            assert kb.rclick_kb_row_retry("tools", True), "右键 tools 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             texts = kb.kb_menu_texts()
             hit = next((x for x in texts if x in ("新建目录", "New Folder")), None)
@@ -734,7 +790,7 @@ def main():
             ok = kb.wait_kb_row("smoke_dir1", True)
             assert ok, f"smoke_dir1 未出现在树行：{[kb.row_label(r) for r in kb.kb_rows()]}"
             # ③ F2 改目录名（缺陷② 路径一）：目录语义，不得追加 .md
-            assert kb.click_kb_dir("smoke_dir1"), "单击 smoke_dir1 失败"
+            assert kb.click_kb_row_retry("smoke_dir1", True), "单击 smoke_dir1 失败"
             assert kb.press_f2(), "F2 发送失败"
             ok = kb.poll(lambda: kb.inline_input() == "smoke_dir1")
             assert ok, f"F2 未进入目录改名或初始值不对：{kb.inline_input()!r}"
@@ -747,7 +803,7 @@ def main():
             assert ok, f"smoke_dir2 未出现在树行：{[kb.row_label(r) for r in kb.kb_rows()]}"
             assert kb.js("document.querySelectorAll('.b-message--error').length") == 0, "F2 目录改名弹出了错误提示"
             # ④ 右键「重命名」目录行（缺陷② 路径二）→ 改回 smoke_dir1
-            assert kb.rclick_kb_row("smoke_dir2", True), "右键 smoke_dir2 失败"
+            assert kb.rclick_kb_row_retry("smoke_dir2", True), "右键 smoke_dir2 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             rtexts = kb.kb_menu_texts()
             rhit = next((x for x in rtexts if x in ("重命名", "Rename")), None)
@@ -764,7 +820,7 @@ def main():
             # ⑤ 删除目录清理（UI 右键菜单 + 确认）
             ok = kb.wait_kb_row("smoke_dir1", True)
             assert ok, f"smoke_dir1 未回到树行：{[kb.row_label(r) for r in kb.kb_rows()]}"
-            assert kb.rclick_kb_row("smoke_dir1", True), "右键 smoke_dir1 失败"
+            assert kb.rclick_kb_row_retry("smoke_dir1", True), "右键 smoke_dir1 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             dtexts = kb.kb_menu_texts()
             dhit = next((x for x in dtexts if x in ("删除", "Delete")), None)
@@ -804,7 +860,7 @@ def main():
             ok = kb.wait_kb_row("zz_find.tool.md", False)
             assert ok, "树行未出现 zz_find.tool.md"
             # 改回原名（清理）
-            assert kb.click_kb_file("zz_find.tool.md"), "单击 zz_find 失败"
+            assert kb.click_kb_row_retry("zz_find.tool.md", False), "单击 zz_find 失败"
             assert kb.press_f2()
             kb.poll(lambda: kb.inline_input() == "zz_find.tool.md")
             assert kb.set_inline_input("file_find.tool.md")
@@ -829,7 +885,7 @@ def main():
                 # 幂等展开根（切换子 tab 会重挂载树 → 需重新展开）
                 assert kb.ensure_kb_expanded([]), f"扩展页（{ext}）根展开失败"
                 assert kb.wait_kb_row(dirname, True), f"{dirname} 目录不可见"
-                assert kb.rclick_kb_row(dirname, True), f"右键 {dirname} 失败"
+                assert kb.rclick_kb_row_retry(dirname, True), f"右键 {dirname} 失败"
                 kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
                 texts = kb.kb_menu_texts()
                 hit = next((x for x in texts if is_new_of_type(x) and (en_label in x or ("技能" in x and "新建" in x) or ("提示词" in x and "新建" in x) or ("资源" in x and "新建" in x))), None)
@@ -853,7 +909,7 @@ def main():
                 label = fname + suffix
                 assert kb.switch_mode("extensions", ext=ext), f"{label} 切扩展页子 tab 失败"
                 assert kb.ensure_kb_expanded([dirname]), f"{label} 扩展页展开 {dirname} 失败"
-                assert kb.rclick_kb_row(label, False), f"右键 {label} 失败"
+                assert kb.rclick_kb_row_retry(label, False), f"右键 {label} 失败"
                 kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
                 dtexts = kb.kb_menu_texts()
                 dhit = next((x for x in dtexts if x in ("删除", "Delete")), None)
@@ -872,7 +928,7 @@ def main():
             assert kb.switch_kb_level("project", "项目"), "C13 切项目级失败"
             assert kb.ensure_kb_expanded(["tools"]), "C13 项目级 tools 未展开"
             # 右键 tools → 新建工具
-            assert kb.rclick_kb_row("tools", True), "右键项目 tools 失败"
+            assert kb.rclick_kb_row_retry("tools", True), "右键项目 tools 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             txts = kb.kb_menu_texts()
             hit = next((x for x in txts if is_new_of_type(x) and ("Tool" in x or "工具" in x)), None)
@@ -891,7 +947,7 @@ def main():
             # 打开新建文件（与 C7 同口径：新建后 preview 是否**自动聚焦**不作硬断言，
             # 未自动打开则显式单击树行——本用例的覆盖目标是"项目级写链路"，非"自动聚焦"）
             if not kb.activate_bottom_tab("pj_smoke.tool.md"):
-                assert kb.click_kb_file("pj_smoke.tool.md"), "单击 pj_smoke 行失败"
+                assert kb.click_kb_row_retry("pj_smoke.tool.md", False), "单击 pj_smoke 行失败"
                 ok = kb.poll(lambda: kb.activate_bottom_tab("pj_smoke.tool.md"))
                 assert ok, "项目级 smoke 未打开 preview 页签"
             ok = kb.poll(lambda: kb.prim_active_path().replace("\\", "/").endswith("pj_smoke.tool.md"))
@@ -906,7 +962,7 @@ def main():
             assert ok, "C13 保存后 dirty 未清除"
             assert pj_desc in open(PJ_FILE, encoding="utf-8").read(), "项目文件未写入新描述"
             # 删除清理
-            assert kb.rclick_kb_row("pj_smoke.tool.md", False), "右键 pj_smoke 失败"
+            assert kb.rclick_kb_row_retry("pj_smoke.tool.md", False), "右键 pj_smoke 失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             dtexts = kb.kb_menu_texts()
             dhit = next((x for x in dtexts if x in ("删除", "Delete")), None)
