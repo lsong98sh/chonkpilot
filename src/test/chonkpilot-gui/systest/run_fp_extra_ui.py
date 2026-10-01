@@ -546,36 +546,33 @@ def case_agent_tool_matrix_filter():
       1) 预置一个**仅存在于项目级**的工具（`data-knowledge-create{dir=<project 根>/tools}`，
          产品路径写入）→ 轮询客户端能力面 `tools-list` 确认其**已进入工具面**且级别判定 = project
          （否则"不出现"无从证明 —— 保证反证非"工具根本没进面"）；
-      2) 走 UI 打开**系统级(app)智能体**编辑器：预置 1 个 app 级 `*.agent.md`（app 根/agents/，
-         携非空 `tools` meta）→ `file-open` 打开 → 原语面板复用 AgentEditor（扩展页「智能体」
-         子 tab 同一编辑器）。**为何预置非空 tools**：原语编辑器 `agentModel.filterTools` 由
-         `tools.length>0` 派生（PrimitivePanel.vue:200），开关置开而 tools 为空会被立即回弹
-         （`.no-filter-hint`），候选树无法展开 —— 见报告「产品现象」；
-      3) 切「工具」页签 → 展开全部分类（候选列表真实渲染）；
-      4) 断言候选列表文本：**不含**项目级工具名（越权剔除），且**含** app 级工具名（允许级放行）。
+      2) 走 UI 打开**出厂系统级(app)智能体** `代码审查.agent.md`（app 根/agents/，**无 tools**）
+         → `file-open` 打开 → 原语面板复用 AgentEditor（扩展页「智能体」子 tab 同一编辑器）。
+         **为何用"无 tools"的出厂智能体**：这正是缺陷的**真实场景** —— 打开无工具智能体 → 工具页签
+         → 勾选「启用工具过滤」。修复前 `agentModel.filterTools` 由 `tools.length>0` 派生
+         （PrimitivePanel.vue 旧 :200）→ 开关置开而 tools 为空被立即回弹（`.no-filter-hint` 常驻、
+         候选树无法展开，无法勾选首个工具）；修复后开关保持开启、候选树展开（42 §2 (214)）；
+      3) 切「工具」页签 → 点击启用过滤开关（无工具时也必须保持开）→ 展开全部分类（候选真实渲染）；
+      4) 断言候选列表文本：**不含**项目级工具名（越权剔除），且**含** app 级工具名（允许级放行）；
+         并断言开关**保持开**（未回弹）+ `.no-filter-hint` **消失**（缺陷回归守卫）。
 
-    夹具清理：项目级工具（data-knowledge-delete）+ app 级智能体夹具文件（os.remove），无残留。
+    夹具清理：项目级工具（data-knowledge-delete）+ 其文件（os.remove），无残留；
+    出厂智能体为**只读内置**（app 级），不创建 / 不删除。
     """
-    # 1) 根解析 + 预置项目级工具
+    # 1) 根解析 + 预置项目级工具（越权项）
     app_root = ((c.req("data-knowledge-root", {"kind": "app"}) or {}).get("root") or "").replace("\\", "/")
     proj_root = ((c.req("data-knowledge-root", {"kind": "project"}) or {}).get("root") or "").replace("\\", "/")
     if not app_root or not proj_root:
         raise TestError(f"根解析失败：app={app_root!r} project={proj_root!r}")
 
-    # 1) 夹具：① 项目级工具（越权项）；② 系统级(app)智能体（预置 `tools` 非空，
-    #    使原语编辑器的「工具过滤」为开 → 候选树可展开——见下方「产品现象」注）。
+    # 夹具：① 项目级工具（越权项）；② **出厂系统级(app)智能体** `代码审查.agent.md`（app 根/agents/，
+    #    无 tools）—— 只读内置，不创建/不删除（缺陷真实场景：无工具智能体的「启用工具过滤」须能打开并保持）。
     tool = "fpmuxtool" + str(int(time.time()))[-5:]
     proj_tools = proj_root + "/tools"
     c.req("data-knowledge-create", {"dir": proj_tools, "type": "tool", "name": tool})
     proj_tool_file = proj_tools.replace("/", os.sep) + os.sep + tool + ".tool.md"
-    agent_name = "t8matrix" + str(int(time.time()))[-5:]
+    agent_name = "代码审查"
     agent_rel = "/agents/" + agent_name + ".agent.md"
-    agent_file = (app_root + agent_rel).replace("/", os.sep)
-    os.makedirs(os.path.dirname(agent_file), exist_ok=True)
-    with open(agent_file, "w", encoding="utf-8") as f:
-        f.write("# %s\n\n[meta]\nname=%s\ntools=[\"self_file_read\"]\n\n"
-                "[description]\nT8 级别矩阵 L4 夹具（app 级智能体）\n\n[content]\n矩阵过滤夹具。\n"
-                % (agent_name, agent_name))
     try:
         # 1b) 工具面热生效 + 级别判定（保证反证前提）
         hit = None
@@ -618,6 +615,7 @@ def case_agent_tool_matrix_filter():
                             "if(a&&!a.classList.contains('expanded'))h.dispatchEvent(new MouseEvent('click',{bubbles:true}));});"
                             "return true;})()" % _P)
         HAS_ITEM = ("(()=>{%s return ed.querySelectorAll('.tool-item .tool-name').length>0;})()" % _P)
+        NO_FILTER_HINT = ("(()=>{%s return !!ed.querySelector('.no-filter-hint');})()" % _P)
         READ_NAMES = ("(()=>{%s const ed2=P.querySelector('.agent-editor');"
                       "const cb=ed2?ed2.querySelector('.filter-tools-checkbox input[type=checkbox]'):null;"
                       "return JSON.stringify({checked:cb?cb.checked:null,cats:P.querySelectorAll('.tool-category').length,"
@@ -625,7 +623,8 @@ def case_agent_tool_matrix_filter():
 
         if not _poll_js(HAS_PANEL, timeout=12):
             raise TestError("系统级智能体原语面板未打开（无匹配 .prim-panel）")
-        # 3) 切「工具」页签（面板内）→ 确保过滤开启（夹具已有 tools → 开）→ 展开全部候选分类
+        # 3) 切「工具」页签（面板内）→ 勾选启用过滤（无工具智能体：开关须能打开并**保持**）
+        #    → 展开全部候选分类
         if not _poll_js(CLICK_TOOLS, timeout=8):
             raise TestError("未找到智能体编辑器的「工具」页签（面板内）")
         if not _poll_js(HAS_CB, timeout=8):
@@ -638,10 +637,16 @@ def case_agent_tool_matrix_filter():
                 diag = _loads_deep(c.eval(READ_NAMES))
                 raise TestError(f"候选工具未渲染出（.tool-item 缺失）diag={diag!r}")
 
+        # 3b) 缺陷回归守卫（42 §2 (214)）：无工具智能体勾选后开关**保持开**、`.no-filter-hint` **消失**
+        if _loads_deep(c.eval(NO_FILTER_HINT)):
+            raise TestError("无工具智能体：勾选「启用工具过滤」后仍渲染 .no-filter-hint（开关回弹）")
+
         # 4) 断言真实渲染的候选列表文本
         info = _loads_deep(c.eval(READ_NAMES)) or {}
         if isinstance(info, str):
             info = json.loads(info)
+        if info.get("checked") is not True:
+            raise TestError(f"无工具智能体：启用过滤开关未保持开启（回弹）diag={info!r}")
         names = [str(x) for x in (info.get("names") or [])]
         if tool in names:
             raise TestError(f"越权工具 {tool!r} 不应出现在系统级智能体候选列表（矩阵过滤失效）：{names[:20]}")
@@ -650,17 +655,16 @@ def case_agent_tool_matrix_filter():
         if not (set(names) & app_tools):
             raise TestError(f"允许级（app）工具未出现在候选列表：candidates={names[:20]} app_tools={sorted(app_tools)[:10]}")
     finally:
-        # 清理：删除预置的项目级工具（产品路径）+ 系统级智能体夹具文件（app 根，测试后按字节不残留）
+        # 清理：删除预置的项目级工具（产品路径）+ 其文件；出厂智能体为只读内置，不需清理
         try:
             c.req("data-knowledge-delete", {"path": proj_tools + "/" + tool + ".tool.md"})
         except Exception:
             pass
-        for p in (proj_tool_file, agent_file):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+        if os.path.exists(proj_tool_file):
+            try:
+                os.remove(proj_tool_file)
+            except OSError:
+                pass
     return True
 
 

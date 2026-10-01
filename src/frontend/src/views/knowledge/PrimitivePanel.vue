@@ -110,7 +110,7 @@ import { readPrimitive, savePrimitive, getKnowledgeRoot } from '../../api/knowle
 import { optimizeAgentPrompt } from '../../api/config'
 import { primitiveTokenOf, primitiveTagType } from '../../utils/primitive'
 import { extractDescriptionFromContent } from '../../utils/descriptionExtract'
-import { normalizeTools } from '../../utils/agentToolFilter'
+import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilter'
 import { loadLlmOptions, loadToolGroups } from '../../utils/agentAssets'
 import AgentEditor from '../scenario/AgentEditor.vue'
 import mq from '../../utils/mq'
@@ -186,6 +186,12 @@ function setMeta(k, v) {
   else form.metaRows.push({ k, v: String(v) })
 }
 
+// agentFilterTools：「启用工具过滤」开关态（前端本地、不持久化）。**不可由 tools 持续派生**
+// —— 否则「无工具时打开开关」（tools 仍为空）会被立刻反推成关闭而**回弹**（无法展开候选去勾选首个工具）。
+// 载入时按 tools 反推回填（口径与场景编辑同一规则，单源 utils/agentToolFilter.filterToolsLoadPatch）；
+// 之后随 AgentEditor 的 update:agent 回写更新。
+const agentFilterTools = ref(false)
+
 // agentModel：契约文档形态 → AgentEditor 的 agent 模型（meta 键 roletag/ismain/tools/llm/delegate）。
 const agentModel = computed(() => {
   const meta = metaMap()
@@ -197,7 +203,7 @@ const agentModel = computed(() => {
     isMain: String(meta.ismain || '').toLowerCase() === 'true',
     prompt: form.content,
     tools,
-    filterTools: tools.length > 0,
+    filterTools: agentFilterTools.value,
     llmRef: meta.llm || '',
     delegateCond: meta.delegate || '',
   }
@@ -215,6 +221,9 @@ function onAgentUpdate(a) {
   setMeta('tools', tools.length > 0 ? JSON.stringify(tools) : '')
   setMeta('llm', a.llmRef)
   setMeta('delegate', a.delegateCond)
+  // 开关态回写本地（AgentEditor 开关 emit update:agent）：filterTools 不持久化 → 不落 meta，
+  // 但必须留存在本地面（否则无工具时打开会被 agentModel 反推回弹）。
+  agentFilterTools.value = !!a.filterTools
 }
 
 // 「优化提示词」：复用既有优化链路（gui.prompt-optimise，流式回显）；结果写入草稿，落库由【保存】决定。
@@ -284,6 +293,8 @@ function fillForm(doc) {
   form.content = doc.content || ''
   paramsSection.value = doc.params_section || (token.value === 'prompt' ? '[arguments]' : '[parameters]')
   paramsVersion.value += 1 // 参数文本已换 → Schema 编辑器按新文本重建
+  // filterTools 不持久化 → 载入时按 tools 反推回填（与场景编辑同一规则）
+  agentFilterTools.value = filterToolsLoadPatch({ tools: (doc.meta || {}).tools }).filterTools
 }
 
 function applyDoc(doc) {
@@ -408,6 +419,8 @@ function handleRestore() {
     form.content = snap.content || ''
     paramsSection.value = snap.params_section || ''
     paramsVersion.value += 1 // 参数文本已回滚 → Schema 编辑器重建
+    // 开关态随快照的 tools 一并回滚（filterTools 不持久化 → 按 tools 反推）
+    agentFilterTools.value = filterToolsLoadPatch({ tools: (snap.meta || {}).tools }).filterTools
     saveError.value = ''
     message.info(t('common.restored'))
   } catch (e) { /* noop */ }
