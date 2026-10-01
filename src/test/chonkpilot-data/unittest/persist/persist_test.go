@@ -765,6 +765,8 @@ func appScenarioResourceRoot(t *testing.T) string {
 // `<repo>/src/initdata/capability/scenarios/default` 复制到 `<tmp>/capability/scenarios/default`，返回
 // `persist.Options.AppDir`（= 系统级 capability 根；场景根 = `<AppDir>/scenarios`，25 §6）。
 // 只投放出厂场景 `scenarios/default/` → list 计数确定（仓库当前无其它 app 级场景）。
+// 另需投放 `<repo>/src/initdata/capability/agents/**`：子 agent 自 (209) 起为**能力面资产**，
+// 场景内只存引用（`${exeDir}/capability/agents/*.agent.md`），悬空引用会被静默删除 → 夹具不投放则场景只剩主 agent。
 func appCapabilityRoot(t *testing.T) string {
 	t.Helper()
 	src := filepath.Join(appScenarioResourceRoot(t), scenarioDefaultKey)
@@ -790,6 +792,28 @@ func appCapabilityRoot(t *testing.T) string {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(dst, e.Name()), raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 出厂 agents 资产（与场景引用的 `${exeDir}/capability/agents/` 对应）
+	srcAgents := filepath.Join(filepath.Dir(appScenarioResourceRoot(t)), "agents")
+	agentEntries, err := os.ReadDir(srcAgents)
+	if err != nil {
+		t.Fatalf("出厂 agents 资产缺失（%s）：%v", srcAgents, err)
+	}
+	dstAgents := filepath.Join(appDir, "agents")
+	if err := os.MkdirAll(dstAgents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range agentEntries {
+		if e.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(srcAgents, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dstAgents, e.Name()), raw, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
