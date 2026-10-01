@@ -11,7 +11,7 @@
 // 项 5b（2026-09-25）追加：agent 定义**统一判据** —— 同名（场景子 agent + app 级场景内 agent）时以
 // instance 级为准，子轮次定义 / `mcp_load` 内容 / 委派判定三者同源。
 //
-// 25 §8.1 #8 / T6（2026-09-25）：内存注册表来源 = **app 级场景**（`<exeDir>/scenarios/*/`，
+// 25 §8.1 #8 / T6（2026-09-25）：内存注册表来源 = **app 级场景**（`<exeDir>/capability/scenarios/*/`，
 // 随发布只读），非代码 embed（见 `appCapRootWithScenario` 夹具）。
 package server
 
@@ -26,15 +26,15 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
-// appCapRootWithScenario 造一对 **app 级根**（`scenarios/` 与 `capability/` 平级，25 §6）：
+// appCapRootWithScenario 造 app 级 **capability 根**（场景根 = `<capRoot>/scenarios`，25 §6）：
 // 返回 capability 根（传 `Options.MCPServerRoot` → 数据层 AppDir 同源），并在
-// `<root>/scenarios/<id>/` 写入场景（`scenario.json` + 每 agent 一个 `<名>.agent.md`）。
+// `<capRoot>/scenarios/<id>/` 写入场景（`scenario.json` + 每 agent 一个 `<名>.agent.md`）。
 // agents = agent 名 → 提示词（content 段）。用于「app 级场景内 agent」的用例。
 func appCapRootWithScenario(t *testing.T, id string, agents map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	capRoot := filepath.Join(root, "capability")
-	dir := filepath.Join(root, "scenarios", id)
+	dir := filepath.Join(capRoot, "scenarios", id)
 	if err := os.MkdirAll(capRoot, 0o755); err != nil {
 		t.Fatalf("mkdir capability: %v", err)
 	}

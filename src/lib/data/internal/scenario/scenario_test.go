@@ -1,5 +1,5 @@
 // scenario 域门面实现白盒（25-MCP与场景分层模型 §6，2026-09-26 更新）：
-//   - app 级场景（`scenarios/<id>/`，与 capability/ 平级；出厂内容 = 磁盘目录 src/initdata/scenarios）可被 list / get 命中；
+//   - app 级场景（`<capability>/scenarios/<id>/`；出厂内容 = 磁盘目录 src/initdata/capability/scenarios）可被 list / get 命中；
 //   - 场景 id **全局唯一（跨级亦然）**：向 user 级保存与 app 级同名的场景 → **拒绝且不落盘**；
 //     同级别同名 = 更新自己那份（放行）；
 //   - **app 级可编辑**（保存写 app 根、删除允许）；
@@ -22,14 +22,14 @@ import (
 // defScenarioID 出厂场景目录名（app 级 `scenarios/default/`）。
 const defScenarioID = "default"
 
-// testRoots 造一对 app 级根（`<root>/capability` 与 `<root>/scenarios` **平级**，25 §6）
+// testRoots 造 app 级 **capability 根**（含场景子目录 `<appRoot>/scenarios`，25 §6）
 // + 隔离的 user 库路径；返回 (服务, app capability 根, user usr 库路径)。
 func testRoots(t *testing.T) (*Service, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	appRoot := filepath.Join(root, "capability")
-	if err := os.MkdirAll(appRoot, 0o755); err != nil {
-		t.Fatalf("mkdir capability: %v", err)
+	if err := os.MkdirAll(filepath.Join(appRoot, capfs.ScenariosDirName), 0o755); err != nil {
+		t.Fatalf("mkdir capability/scenarios: %v", err)
 	}
 	usrPath := filepath.Join(root, "usr", "usr.db")
 	return New(kernel.NewBase(nil, kernel.Options{UsrPath: usrPath, AppDir: appRoot})), appRoot, usrPath
@@ -63,10 +63,10 @@ func writeScenarioDir(t *testing.T, root, id, name, mainPrompt string, subs map[
 
 // TestScenarioAppLevelListAndGet：app 级场景可被 list / get 命中（level=app、含 agents 与
 // **保留供兼容的派生 systemPrompt**〔= 主 agent prompt；25 §3 起场景层提示词不取用该字段〕），
-// 且 list 无需去重（三级 id 全局唯一）。
+// 且 list 无需去重（四级 id 全局唯一）。
 func TestScenarioAppLevelListAndGet(t *testing.T) {
 	s, appRoot, _ := testRoots(t)
-	writeScenarioDir(t, filepath.Join(filepath.Dir(appRoot), capfs.ScenariosDirName),
+	writeScenarioDir(t, capfs.ScenariosRoot(appRoot),
 		"app-scn-a", "演示场景", "演示主提示词", map[string]string{"coder": "编码提示词"})
 
 	list, err := s.ScenarioList(facade.ScenarioListRequest{})
@@ -109,7 +109,7 @@ func TestScenarioAppLevelListAndGet(t *testing.T) {
 // **app 级可编辑**（删除允许）。
 func TestScenarioSaveRejectsCrossLevelSameID(t *testing.T) {
 	s, appRoot, usrPath := testRoots(t)
-	writeScenarioDir(t, filepath.Join(filepath.Dir(appRoot), capfs.ScenariosDirName),
+	writeScenarioDir(t, capfs.ScenariosRoot(appRoot),
 		defScenarioID, "开发场景", "出厂主提示词", nil)
 
 	// ① 跨级同名（app 已有 default）→ save 到 user 被拒
@@ -158,7 +158,7 @@ func TestScenarioSaveRejectsCrossLevelSameID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("app 级场景应可删除：%v", err)
 	}
-	if capfs.ScenarioDirExists(filepath.Join(filepath.Dir(appRoot), capfs.ScenariosDirName), defScenarioID) {
+	if capfs.ScenarioDirExists(capfs.ScenariosRoot(appRoot), defScenarioID) {
 		t.Fatal("app 级场景应被删除")
 	}
 }

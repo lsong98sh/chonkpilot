@@ -1,7 +1,8 @@
-// 场景目录读写 + 出厂场景物化（12-数据层 §5.2 · 25-MCP与场景分层模型 §6）——原
+// 场景目录读写 + 出厂场景校验（12-数据层 §5.2 · 25-MCP与场景分层模型 §6）——原
 // persist/persist_capability.go 的场景段与 persist/persist_scenario.go 逐字下移。
 //
-// 场景 = **独立根 `scenarios/`**（与 capability/ **平级**）/<场景目录>/ 内含：
+// 场景 = **capability 根下的 `scenarios/` 子目录**（`<级别根>/capability/scenarios/`；四级同构
+// app / user / project / prjusr）/<场景目录>/ 内含：
 //
 //	scenario.json   {name, description, createdAt, updatedAt}
 //	main.agent.md   主 agent（固定文件名）
@@ -10,11 +11,11 @@
 // agent 文件沿用 mcp 四原语分区契约（# 标题 + [meta] + [description] + [content]），
 // 复用同包的契约解析/组装。
 //
-// 三级根（app / user / project）与 capability 根**同构但目录不同**（见 ScenarioRoots）；
-// 场景 id **全局唯一（跨级亦然）**，三级"覆盖"语义不存在（25 §6）。
+// 四级根（app / user / project / prjusr）与 capability 根**同构**（见 ScenariosRoot / ScenarioRoots）；
+// 场景 id **全局唯一（跨级亦然）**，四级"覆盖"语义不存在（25 §6）。
 // **同一场景内 agent 名必须唯一** —— 重名（含大小写 / 主与子撞名 `main` / 空名）保存即拒绝（25 §6.1 · 42 §2 (175)）。
 //
-// 三级根均可编辑；app 级出厂场景 = **磁盘目录** `<exeDir>/scenarios/`（源 `src/initdata/scenarios/`，
+// 四级根均可编辑；app 级出厂场景 = **磁盘目录** `<exeDir>/capability/scenarios/`（源 `src/initdata/capability/scenarios/`，
 // 由构建脚本投放）——**不再 embed、不再自动物化**：根缺失即为缺装状态，由上层给出明确提示
 // （见 internal/scenario.checkFactoryScenarios）。
 package capfs
@@ -28,12 +29,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
 
-// ScenariosDirName 场景独立根目录名（与 capability/ **平级**，25-MCP与场景分层模型 §6）。
-const ScenariosDirName = "scenarios"
+// ScenariosDirName 场景子目录名（**capability 根下**：<级别根>/capability/scenarios）。
+const ScenariosDirName = DirScenarios
 
 const (
 	scenarioMetaFile = "scenario.json"
@@ -41,36 +41,40 @@ const (
 	agentFileSuffix  = ".agent.md"
 )
 
-// ScenarioSystemRoot 系统级场景根 = <appDir 的父目录>/scenarios（appDir = 系统级 capability 根，
-// 故 scenarios 与 capability **平级**；appDir 空 → <exeDir>/scenarios）。
+// ScenariosRoot 某级 capability 根下的场景根 = <capRoot>/scenarios。
+func ScenariosRoot(capRoot string) string {
+	return filepath.Join(capRoot, ScenariosDirName)
+}
+
+// ScenarioSystemRoot 系统级场景根 = <appDir>/scenarios（appDir = 系统级 capability 根；
+// appDir 空 → <exeDir>/capability/scenarios）。
 func ScenarioSystemRoot(appDir string) (string, error) {
-	if appDir != "" {
-		return filepath.Join(appDir, "..", ScenariosDirName), nil
-	}
-	exe, err := os.Executable()
+	cap, err := SystemRoot(appDir)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Dir(exe), ScenariosDirName), nil
+	return ScenariosRoot(cap), nil
 }
 
-// ScenarioUserRoot 用户级场景根 = ~/.chonkpilot/scenarios（usrPath 注入时随其所在目录）。
-// 与 UserRoot（capability）同目录规则，仅末级目录名不同。
+// ScenarioUserRoot 用户级场景根 = ~/.chonkpilot/capability/scenarios（usrPath 注入时随其所在目录）。
 func ScenarioUserRoot(usrPath string) string {
-	if usrPath != "" {
-		return filepath.Join(filepath.Dir(usrPath), ScenariosDirName)
-	}
-	return filepath.Join(filepath.Dir(data.UserPath()), ScenariosDirName)
+	return ScenariosRoot(UserRoot(usrPath))
 }
 
-// ScenarioProjectRoot 项目级场景根 = <workdir>/.chonkpilot/scenarios。
+// ScenarioProjectRoot 项目级场景根 = <workdir>/.chonkpilot/capability/scenarios。
 func ScenarioProjectRoot(workDir string) string {
-	return filepath.Join(workDir, ".chonkpilot", ScenariosDirName)
+	return ScenariosRoot(ProjectRoot(workDir))
 }
 
-// ScenarioRoots 返回三级场景根（系统 → 用户 → 项目；workDir 空则不含项目级）。
-// 与三级 capability 根（SystemRoot / UserRoot / ProjectRoot）**同构**，仅末级目录名由 capability 换为 scenarios（25 §6）。
-func ScenarioRoots(appDir, usrPath, workDir string) []Level {
+// ScenarioPrjUsrRoot 项目私有级场景根 = <prjusr 数据根>/capability/scenarios。
+func ScenarioPrjUsrRoot(projectID string) string {
+	return ScenariosRoot(PrjUsrRoot(projectID))
+}
+
+// ScenarioRoots 返回四级场景根（系统 → 用户 → 项目 → 项目私有）。
+// prjUsrCapRoot 为**项目私有 capability 根**（空串则不含该级，例如实例未登记）；
+// workDir 空则不含项目级。与四级 capability 根**同构**（25 §6）。
+func ScenarioRoots(appDir, usrPath, workDir, prjUsrCapRoot string) []Level {
 	out := []Level{}
 	if sys, err := ScenarioSystemRoot(appDir); err == nil {
 		out = append(out, Level{Kind: KindApp, Root: sys})
@@ -78,6 +82,9 @@ func ScenarioRoots(appDir, usrPath, workDir string) []Level {
 	out = append(out, Level{Kind: KindUser, Root: ScenarioUserRoot(usrPath)})
 	if workDir != "" {
 		out = append(out, Level{Kind: KindProject, Root: ScenarioProjectRoot(workDir)})
+	}
+	if prjUsrCapRoot != "" {
+		out = append(out, Level{Kind: KindPrjUsr, Root: ScenariosRoot(prjUsrCapRoot)})
 	}
 	return out
 }
@@ -108,9 +115,9 @@ type scenarioMeta struct {
 }
 
 // ReadScenarioDir 读一个场景目录 → 场景元素（含 agents）。root = 某级**场景根**
-// （ScenarioSystemRoot / ScenarioUserRoot / ScenarioProjectRoot，25 §6）。
+// （ScenarioSystemRoot / ScenarioUserRoot / ScenarioProjectRoot / ScenarioPrjUsrRoot，25 §6）。
 // 元素字段与旧 DB 版一致（id/key/name/description/agents/createdAt/updatedAt），
-// 另加 level（app|user|project，级别标识）。
+// 另加 level（app|user|project|prjusr，级别标识）。
 func ReadScenarioDir(kind, root, dir string) (map[string]any, error) {
 	dirPath := filepath.Join(root, dir)
 	meta := scenarioMeta{Name: dir}

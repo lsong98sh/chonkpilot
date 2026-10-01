@@ -1,4 +1,4 @@
-// summary_prompt 文件化（capability/knowledge/prompts/summary.prompt.md）存取测试：
+// summary_prompt 文件化（capability/prompts/summary.prompt.md）存取测试：
 // 项目级文件优先 → 系统级文件 → 旧 prj config key；save 写项目级；delete 回落系统级。
 package persist_test
 
@@ -40,7 +40,7 @@ func TestDataPromptSummaryFileStorage(t *testing.T) {
 	}
 
 	// 系统级文件（出厂资源）→ 读命中
-	sysFile := filepath.Join(appDir, "knowledge", "prompts", "summary.prompt.md")
+	sysFile := filepath.Join(appDir, "prompts", "summary.prompt.md")
 	if err := os.MkdirAll(filepath.Dir(sysFile), 0o755); err != nil {
 		t.Fatalf("mkdir sys prompts: %v", err)
 	}
@@ -51,9 +51,9 @@ func TestDataPromptSummaryFileStorage(t *testing.T) {
 		t.Fatalf("system-level summary prompt = %q", got)
 	}
 
-	// 项目级保存 → 文件落项目 capability/knowledge/prompts/，读取覆盖系统级
+	// 项目级保存 → 文件落项目 capability/prompts/，读取覆盖系统级
 	save("项目级摘要提示词")
-	prjFile := filepath.Join(wd, ".chonkpilot", "capability", "knowledge", "prompts", "summary.prompt.md")
+	prjFile := filepath.Join(wd, ".chonkpilot", "capability", "prompts", "summary.prompt.md")
 	if _, err := os.Stat(prjFile); err != nil {
 		t.Fatalf("project prompt file missing: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestDataPromptSummaryNoWriteWhenSameAsInherited(t *testing.T) {
 	appDir := t.TempDir() // 系统级 capability 根（Options.AppDir 注入）
 	bus, _, _ := newTestPersistOpts(t, persist.Options{AppDir: appDir})
 	wd := regInstance(t, bus)
-	prjFile := filepath.Join(wd, ".chonkpilot", "capability", "knowledge", "prompts", "summary.prompt.md")
+	prjFile := filepath.Join(wd, ".chonkpilot", "capability", "prompts", "summary.prompt.md")
 
 	load := func() string {
 		r := dataCall(t, bus, "data-prompt-load", map[string]any{
@@ -117,7 +117,7 @@ func TestDataPromptSummaryNoWriteWhenSameAsInherited(t *testing.T) {
 	}
 
 	// 系统级文件存在 → 继承值 = 系统级内容；保存与之相同 → 仍不写项目级文件
-	sysFile := filepath.Join(appDir, "knowledge", "prompts", "summary.prompt.md")
+	sysFile := filepath.Join(appDir, "prompts", "summary.prompt.md")
 	if err := os.MkdirAll(filepath.Dir(sysFile), 0o755); err != nil {
 		t.Fatalf("mkdir sys prompts: %v", err)
 	}

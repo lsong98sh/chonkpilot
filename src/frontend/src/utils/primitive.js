@@ -6,12 +6,13 @@ export const PRIMITIVE_TOKENS = ['tool', 'skill', 'prompt', 'resource']
 export const TYPE_DIR_MAP = { tools: 'tool', skills: 'skill', prompts: 'prompt', resources: 'resource' }
 
 // 类型目录相对 capability 根（知识库）的物理路径 → token（对齐后端 capfs.Types.Rel）：
-// 工具在 `tools/`，技能/提示词/资源在 `knowledge/` 下。用于「工具页签」按类型范围过滤目录子树。
+// capability 根下 **6 个扁平子目录**（prompts/tools/resources/skills/agents/scenarios），
+// 旧 `knowledge/**` 归并层已删除。用于「工具页签」按类型范围过滤目录子树。
 export const TYPE_DIR_REL = {
   tool: 'tools',
-  skill: 'knowledge/skills',
-  prompt: 'knowledge/prompts',
-  resource: 'knowledge/resources',
+  skill: 'skills',
+  prompt: 'prompts',
+  resource: 'resources',
 }
 
 export function primitiveTokenOf(path) {

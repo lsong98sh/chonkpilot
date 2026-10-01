@@ -164,8 +164,9 @@ func reqKey(req dataReq) string {
 
 // handleScenario 处理 data-scenario-*（list/load/save/delete）——**MQ 信封层**
 // （解析 → 门面 → 回载荷，翻译收在 facade/wire；逻辑见 internal/scenario 的 ScenarioAPI）。
-// v6（12-数据层 · 25-MCP与场景分层模型 §6）：数据源 = 文件化**独立根 `scenarios/`**
-// （与 capability/ 平级；三级 app/user/project，场景 id 全局唯一跨级不重名），不再落 usr DB。
+// v6（12-数据层 · 25-MCP与场景分层模型 §6）：数据源 = 文件化 **capability 根下的 `scenarios/` 子目录**
+// （`<级别根>/capability/scenarios/`；四级 app/user/project/prjusr，场景 id 全局唯一跨级不重名），
+// 不再落 usr DB。
 // 应答外形与旧版一致（list/data/id/ok），另加 level 字段标识来源级别。
 func (s *Service) handleScenario(op string, req dataReq) {
 	method := "data-scenario-" + op

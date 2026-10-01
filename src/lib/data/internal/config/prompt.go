@@ -1,5 +1,5 @@
 // summary_prompt 文件化（12-数据层）：上下文压缩摘要提示词不再存 prj config，
-// 改为文件 `<级别>/capability/knowledge/prompts/summary.prompt.md`（系统 + 项目两级，用户级不使用）。
+// 改为文件 `<级别>/capability/prompts/summary.prompt.md`（系统 + 项目两级，用户级不使用）。
 //
 // 读写经既有 `data-prompt-{load,save,delete}` 消息面（key = summary_prompt）——**契约不变**，
 // 仅存储侧由 config 表 key 改为文件；文件形态 = *.prompt.md 原语文档（与知识库原语同构，
@@ -21,7 +21,7 @@ import (
 // summaryPromptKey 是 prompt 域中走文件存储的 key（其余 key 仍走 prj config 表）。
 const summaryPromptKey = "summary_prompt"
 
-// summaryPromptFileName 独立提示词文件名（knowledge/prompts 根下，12-数据层）。
+// summaryPromptFileName 独立提示词文件名（capability 的 prompts 子目录下，12-数据层）。
 const summaryPromptFileName = "summary.prompt.md"
 
 // summaryPromptTitle 文件内原语文档标题。

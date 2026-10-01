@@ -102,17 +102,17 @@ test('零新增 MQ 主题：工具页签复用既有主题，无裸主题字面�
 test('工具树空态/类型范围纯逻辑（TYPE_DIR_REL / nearestTypeToken）', () => {
   assert.deepEqual(TYPE_DIR_REL, {
     tool: 'tools',
-    skill: 'knowledge/skills',
-    prompt: 'knowledge/prompts',
-    resource: 'knowledge/resources',
+    skill: 'skills',
+    prompt: 'prompts',
+    resource: 'resources',
   })
   // token 集合齐备（四类）
   assert.deepEqual(PRIMITIVE_TOKENS, ['tool', 'skill', 'prompt', 'resource'])
   const base = '/x/.chonkpilot/capability'
   assert.equal(nearestTypeToken(base + '/tools'), 'tool')
   assert.equal(nearestTypeToken(base + '/tools/core'), 'tool')
-  assert.equal(nearestTypeToken(base + '/knowledge'), '') // 通用容器：无类型 token
-  assert.equal(nearestTypeToken(base + '/knowledge/skills'), 'skill')
+  assert.equal(nearestTypeToken(base + '/agents'), '') // 非工具树类型目录：无类型 token
+  assert.equal(nearestTypeToken(base + '/skills'), 'skill')
   assert.equal(nearestTypeToken(base), '') // 能力根：无类型 token
 })
 

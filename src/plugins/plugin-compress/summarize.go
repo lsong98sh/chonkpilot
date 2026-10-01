@@ -1,8 +1,8 @@
 // 摘要 system 提示词来源（对齐 docs/spec/60-reference/64-配置项一览 §7）：
-// compress 请求摘要经 llm-simple 时带 system，来源 = capability/knowledge/prompts/summary.prompt.md，
-// 按级 fallback：项目级 <workDir>/.chonkpilot/capability/knowledge/prompts/ → 用户级
-// ~/.chonkpilot/capability/knowledge/prompts/ → 系统级 <exeDir>/capability/knowledge/prompts/；
-// 三级皆缺 → 回落内置默认（chonkpilot-data.DefaultSummaryPrompt）。
+// compress 请求摘要经 llm-simple 时带 system，来源 = capability/prompts/summary.prompt.md，
+// 按级 fallback：项目级 <workDir>/.chonkpilot/capability/prompts/ → 用户级
+// ~/.chonkpilot/capability/prompts/ → 系统级 <exeDir>/capability/prompts/；
+// 四级皆缺 → 回落内置默认（chonkpilot-data.DefaultSummaryPrompt）。
 //
 // 2026-09-11 接线：原硬编码 summarySystemPrompt 转为默认常量；默认值已提为 chonkpilot-data
 // 的单一来源（设置页与压缩共用，I-65 ⑧）；死代码 Summarizer / LLMSummarizer /
@@ -23,14 +23,16 @@ const summaryPromptFileName = "summary.prompt.md"
 
 // summaryPromptPaths 按级 fallback 的摘要提示词文件路径：项目级 → 用户级 → 系统级。
 // workDir 空 → 不含项目级；exeDir 不可用 → 不含系统级。
+// 注：项目私有级（prjusr）亦在数据层 capability 树内，但压缩插件按既有三级 fallback 取值
+// （与设置页 summary_prompt 读点同口径：项目级文件 → 系统级文件 → 内置默认）。
 func summaryPromptPaths(workDir string) []string {
 	var out []string
 	if workDir != "" {
-		out = append(out, filepath.Join(workDir, ".chonkpilot", "capability", "knowledge", "prompts", summaryPromptFileName))
+		out = append(out, filepath.Join(workDir, ".chonkpilot", "capability", "prompts", summaryPromptFileName))
 	}
-	out = append(out, filepath.Join(filepath.Dir(data.UserPath()), "capability", "knowledge", "prompts", summaryPromptFileName))
+	out = append(out, filepath.Join(filepath.Dir(data.UserPath()), "capability", "prompts", summaryPromptFileName))
 	if dir, err := exedir.Dir(); err == nil {
-		out = append(out, filepath.Join(dir, "capability", "knowledge", "prompts", summaryPromptFileName))
+		out = append(out, filepath.Join(dir, "capability", "prompts", summaryPromptFileName))
 	}
 	return out
 }

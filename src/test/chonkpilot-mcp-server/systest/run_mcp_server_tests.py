@@ -7,7 +7,7 @@
 
 默认输入（四项均可经同名参数覆盖；**传入的相对路径按当前工作目录**解析）:
     --server-exe  <repo>\\dist\\other\\chonkpilot-mcp-server.exe              被测产物
-    --root        <repo>\\src\\initdata\\capability\\knowledge              skills/prompts/resources 契约源
+    --root        <repo>\\src\\initdata\\capability                        skills/prompts/resources 契约源（扁平）
     --tools-dir   <repo>\\src\\initdata\\capability\\tools                  `<cat>/*.tool.md` 工具契约源
     --exec-dir    <repo>\\dist\\other\\capability\\executors                executor 产物（扁平 `chonkpilot-<cat>-executor.exe`）
 
@@ -27,7 +27,7 @@
 
 自管理两个 server 实例：
     5702 默认配置；5703 自定义 --config（skip_dirs=["vendor"]）验证默认参数注入。
---root 提供 skills/prompts/resources（knowledge 根）；--tools-dir 提供 tools 契约（src/initdata 唯一源）；
+--root 提供 skills/prompts/resources（capability 根，扁平）；--tools-dir 提供 tools 契约（src/initdata 唯一源）；
 --exec-dir 提供**构建产物的 executor exe**（`capability/executors/`，扁平命名）。
 脚本启动 server 前把三者合并到临时契约根（mcp-server 单根递归扫描四原语；tools/<cat>/*.tool.md 的
 runtime 写 `../../executors/<exe>`，故 exe 合并到 `executors/` 才可解析）。
@@ -58,7 +58,7 @@ DEFAULT_PORT = 5700  # `main.go:29 defaultAddr` = 127.0.0.1:5700（裸 --http / 
 
 # 默认输入：全部以**脚本位置**为基准解析成绝对路径（与 CWD 无关），故无参数直接运行即可跑通。
 DEFAULT_SERVER_EXE = DIST_OTHER / "chonkpilot-mcp-server.exe"
-DEFAULT_ROOT = REPO / "src" / "initdata" / "capability" / "knowledge"
+DEFAULT_ROOT = REPO / "src" / "initdata" / "capability"
 DEFAULT_TOOLS_DIR = REPO / "src" / "initdata" / "capability" / "tools"
 DEFAULT_EXEC_DIR = DIST_OTHER / "capability" / "executors"
 BUILD_HINT = "先执行 .\\build-mcp-server.ps1（或 .\\build-desktop.ps1）产出 dist/other\\，或用参数指向既有产物目录"
@@ -581,11 +581,11 @@ def main():
     echo_port = echo.server_address[1]
     threading.Thread(target=echo.serve_forever, daemon=True).start()
 
-    # tools 契约在 src/initdata/capability/tools；与 knowledge 源契约合并为单根，
+    # tools 契约在 src/initdata/capability/tools；与 skills/prompts/resources 源契约合并为单根（扁平），
     # 并把 executor exe 放进 tmp_root/executors/（tool.md runtime 相对契约文件写 ../../executors/<exe>）
     tmp_root = tempfile.mkdtemp(prefix="ck-contracts-")
     for prim in ("skills", "prompts", "resources"):
-        shutil.copytree(os.path.join(args.root, prim), os.path.join(tmp_root, "knowledge", prim))
+        shutil.copytree(os.path.join(args.root, prim), os.path.join(tmp_root, prim))
     shutil.copytree(args.tools_dir, os.path.join(tmp_root, "tools"))
     os.makedirs(os.path.join(tmp_root, "executors"), exist_ok=True)
     n_exe = 0

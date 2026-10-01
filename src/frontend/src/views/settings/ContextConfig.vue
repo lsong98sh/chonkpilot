@@ -517,8 +517,8 @@ async function reloadMemoryCategories() {
 }
 
 // SUMMARY_PROMPT_PATH 项目级总结提示词文件（相对知识库根 → 归属项目级；
-// 与 persist 侧 summaryPromptFile 同路径：<workdir>/.chonkpilot/capability/knowledge/prompts/summary.prompt.md）。
-const SUMMARY_PROMPT_PATH = 'knowledge/prompts/summary.prompt.md'
+// 与 persist 侧 summaryPromptFile 同路径：<workdir>/.chonkpilot/capability/prompts/summary.prompt.md）。
+const SUMMARY_PROMPT_PATH = 'prompts/summary.prompt.md'
 
 // loadSummaryPrompt 读总结提示词（有效值 + 来源）：有效值走 data-prompt-load（后端回落链）；
 // 来源经知识库读项目级文件判定——读得到 = 项目级覆盖，读不到 = 继承系统级/内置默认。

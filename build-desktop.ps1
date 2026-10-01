@@ -16,11 +16,13 @@
 # 产物（仓库根 dist\desktop\，决策 [42 §2 (16)]）：
 #   ├── chonkpilot.exe                      # webview2 宿主
 #   ├── chonkpilot-cli.exe                  # console 宿主
-#   ├── capability/                         # 契约 + executor×3（来自 dist/other）
+#   ├── capability/                         # 契约 + executor×3 + 出厂场景（来自 dist/other + 场景源）
+#   │   ├── prompts/<...>/*.prompt.md
 #   │   ├── tools/<cat>/*.tool.md
-#   │   ├── knowledge/{skills,prompts,resources}/
+#   │   ├── resources/<...>/*.resource.md
+#   │   ├── skills/<...>/*.skill.md
+#   │   ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
 #   │   └── executors/chonkpilot-{core,desktop,browser}-executor.exe
-#   ├── scenarios/                          # 出厂场景（源 src/initdata/scenarios，覆盖式同步）
 #   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
 #   │   ├── codebase/chonkpilot-codegraph-mcp-server.exe
 #   │   ├── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll（必须与 vfts 引擎同目录）
@@ -28,11 +30,11 @@
 #   └── (无其它)                            # 根仅 chonkpilot.exe / chonkpilot-cli.exe 两个 exe
 #
 # 另产**出厂数据包**到 dist\initdata\（不进 dist\desktop）：
-#   capability-tools-<ver>.zip · capability-knowledge-<ver>.zip · capability-executors-<ver>.zip ·
-#   scenarios-<ver>.zip · initial.zip（完整出厂包，内含 exe，供用户自行恢复）。
+#   capability-<ver>.zip（= dist/desktop/capability/ **全量**，含 executors exe）·
+#   initial.zip（完整出厂包，内含 exe，供用户自行恢复）。
 #   <ver> = 日期时间戳（无独立版本源）；不做哈希/清单校验。
 #
-# **出厂数据唯一源** = src/initdata/（capability/{tools,knowledge} + scenarios），不再 embed。
+# **出厂数据唯一源** = src/initdata/（capability/{prompts,tools,resources,skills,scenarios}），不再 embed。
 # 全量组件：内嵌 lib 插件（compress/history/memory/vfts/codegraph）随 exe 编译；
 #   外置引擎 exe（codegraph/vfts）+ zvec_c_api.dll 置于 dist/desktop/mcps/{codebase,vfts}\——
 #   插件按「宿主 exe 同目录/mcps/<engine>/」解析引擎。
@@ -58,7 +60,7 @@ $dist = Join-Path $root "dist\desktop"
 $outGuiExe = Join-Path $dist "chonkpilot.exe"
 $outCliExe = Join-Path $dist "chonkpilot-cli.exe"
 # 出厂数据唯一源 + 出厂数据包落点
-$initScenarios = Join-Path $root "src\initdata\scenarios"
+$initScenarios = Join-Path $root "src\initdata\capability\scenarios"
 $initdataDist = Join-Path $root "dist\initdata"
 # 版本 = 日期时间戳（无独立版本源，见头注）
 $ver = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -137,16 +139,16 @@ if (Test-Path $capDst) {
 Copy-Item $capSrc $capDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
 
-# -- 5) 出厂场景：src/initdata/scenarios → dist/desktop/scenarios（覆盖式同步，不删目录本身） --
-Write-Host "==> [5/9] stage scenarios/ (src/initdata/scenarios)"
+# -- 5) 出厂场景：src/initdata/capability/scenarios → dist/desktop/capability/scenarios（覆盖式同步，不删目录本身） --
+Write-Host "==> [5/9] stage scenarios/ (src/initdata/capability/scenarios)"
 if (-not (Test-Path $initScenarios)) { throw "scenarios not found: $initScenarios" }
-$scnDst = Join-Path $dist "scenarios"
+$scnDst = Join-Path $dist "capability\scenarios"
 New-Item -ItemType Directory -Force -Path $scnDst | Out-Null
 # 覆盖式：镜像源内容（先清空源内已删除项的残留 → 逐场景目录覆盖），但**保留 scenarios 目录本身**
 Get-ChildItem -Path $scnDst -Force | Where-Object { $_.Name -notin (Get-ChildItem -Path $initScenarios -Force | ForEach-Object { $_.Name }) } | Remove-Item -Recurse -Force
 Copy-Item (Join-Path $initScenarios "*") $scnDst -Recurse -Force
 $scnCount = (Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count
-Write-Host "    ok: scenarios/ ($scnCount files)"
+Write-Host "    ok: capability/scenarios/ ($scnCount files)"
 
 # -- 6) codegraph 引擎构建并置于 dist/desktop/mcps/codebase/（出厂内置 MCP；默认不接入，见 42 §2 (17)） --
 Write-Host "==> [6/9] build codegraph engine -> mcps/codebase"
@@ -205,13 +207,19 @@ Get-ChildItem -Path $dist -File -Force -ErrorAction SilentlyContinue |
         Write-Host "    [清理] 根下陈旧产物: $($_.Name)"
         [System.IO.File]::Delete($_.FullName)
     }
+# 旧「与 capability 平级的独立 scenarios 根」已随 P2 移入 capability/scenarios → 清根下遗留 scenarios/ 目录
+$legacyScenarios = Join-Path $dist "scenarios"
+if (Test-Path $legacyScenarios) {
+    Write-Host "    [清理] 根下陈旧目录: scenarios/（已移入 capability/scenarios/）"
+    [System.IO.Directory]::Delete($legacyScenarios, $true)
+}
 
-# -- 9) 出厂数据包 → dist/initdata/（4 个分包 + initial.zip 完整出厂包，**不进 dist/desktop**）--
-#    来源 = dist/desktop 已铺好的 capability/{tools,knowledge,executors} + scenarios + 全部产物（initial.zip 内含 exe）。
-#    不做任何哈希/版本清单校验（<ver> = 时间戳）。
+# -- 9) 出厂数据包 → dist/initdata/（单包 capability-<ver>.zip + initial.zip 完整出厂包，**不进 dist/desktop**）--
+#    来源 = dist/desktop 已铺好的 capability/ 全量（prompts/tools/resources/skills/scenarios/executors）
+#    + 全部产物（initial.zip 内含 exe）。不做任何哈希/版本清单校验（<ver> = 时间戳）。
 Write-Host "==> [9/9] pack factory data -> dist/initdata/"
 New-Item -ItemType Directory -Force -Path $initdataDist | Out-Null
-# 先清旧包：<ver> 是时间戳，不清会累积历史 zip（只保留本次构建的 4 分包 + initial.zip）
+# 先清旧包：<ver> 是时间戳，不清会累积历史 zip（只保留本次构建的 capability-<ver>.zip + initial.zip）
 Get-ChildItem -Path $initdataDist -Filter "*.zip" -File -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "    [清理] 旧出厂包: $($_.Name)"
     [System.IO.File]::Delete($_.FullName)
@@ -221,10 +229,8 @@ function New-ZipFromDir {
     if (Test-Path $Zip) { [System.IO.File]::Delete($Zip) }
     Compress-Archive -Path $Src -DestinationPath $Zip -CompressionLevel Optimal
 }
-New-ZipFromDir (Join-Path $dist "capability\tools") (Join-Path $initdataDist "capability-tools-$ver.zip")
-New-ZipFromDir (Join-Path $dist "capability\knowledge") (Join-Path $initdataDist "capability-knowledge-$ver.zip")
-New-ZipFromDir (Join-Path $dist "capability\executors") (Join-Path $initdataDist "capability-executors-$ver.zip")
-New-ZipFromDir (Join-Path $dist "scenarios") (Join-Path $initdataDist "scenarios-$ver.zip")
+# 单包 = dist/desktop/capability/ 全量（含 executors exe；旧 4 分包 capability-tools/-knowledge/-executors/-scenarios 已撤）
+New-ZipFromDir (Join-Path $dist "capability") (Join-Path $initdataDist "capability-$ver.zip")
 # initial.zip：完整出厂包（**内含 exe**），= dist/desktop 全部内容（根平铺），供用户自行恢复安装
 $initialZip = Join-Path $initdataDist "initial.zip"
 if (Test-Path $initialZip) { [System.IO.File]::Delete($initialZip) }
@@ -241,8 +247,8 @@ $capCount = (Get-ChildItem (Join-Path $dist "capability") -Recurse -File | Measu
 Write-Host "==> done: $dist"
 Write-Host "    chonkpilot.exe                      $mbGui MB"
 Write-Host "    chonkpilot-cli.exe                  $mbCli MB"
-Write-Host "    capability/                         $capCount files (tools/knowledge/executors)"
-Write-Host "    scenarios/                          $scnCount files"
+Write-Host "    capability/                         $capCount files (prompts/tools/resources/skills/scenarios/executors)"
+Write-Host "    capability/scenarios/               $scnCount files"
 Write-Host "    mcps/codebase/                      $cgExe ($mbCg MB)"
 Write-Host "    mcps/vfts/                          $vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
 Write-Host "    mcps/                               $mcpsCount files (可选：文档转换)"

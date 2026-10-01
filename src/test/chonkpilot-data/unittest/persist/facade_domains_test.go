@@ -214,8 +214,8 @@ func TestFacadeKnowledgeInlineEqualsMQPath(t *testing.T) {
 	api := inline.NewWithOptions(bus, persist.Options{AppDir: appRoot})
 	projectRoot := filepath.ToSlash(filepath.Join(wd, ".chonkpilot", "capability"))
 
-	// ① root（app / user / project）两路径逐字一致
-	for _, kind := range []string{"app", "user", "project"} {
+	// ① root（app / user / project / prjusr）两路径逐字一致
+	for _, kind := range []string{"app", "user", "project", "prjusr"} {
 		fr, err := api.KnowledgeRoot(facade.KnowledgeRootRequest{InstanceID: facadeInstance, Kind: kind})
 		if err != nil {
 			t.Fatalf("facade KnowledgeRoot(%s): %v", kind, err)
@@ -606,8 +606,8 @@ func TestFacadeMemoryInlineEqualsMQPath(t *testing.T) {
 // TestFacadeDomainsFourZeroBusRequests：**五域在总线上零请求**——门面（inline 绑定）全量动作
 // 直调实现，不在 `data-<domain>-*` 上发任何请求（订阅面广播是 fire-and-forget 事件，不计数）。
 func TestFacadeDomainsFourZeroBusRequests(t *testing.T) {
-	// app 级根须含出厂默认场景（`<AppDir 的父>/scenarios/default`）—— 场景域 restore 依赖它
-	// （app 级随发布只读资源，25 §8.2 T6；无「代码内嵌默认场景」可回落）。
+	// app 级根须含出厂默认场景（`<AppDir>/scenarios/default`，即 `<exeDir>/capability/scenarios/default`）
+	// —— 场景域 restore 依赖它（app 级随发布只读资源，25 §8.2 T6；无「代码内嵌默认场景」可回落）。
 	appRoot := appCapabilityRoot(t)
 	bus, _, usrPath := newTestPersistOpts(t, persist.Options{AppDir: appRoot})
 	regInstance(t, bus)

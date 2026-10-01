@@ -32,8 +32,8 @@
 #   dist/server/                 – 服务端（browser 与 gui **共用**；browser 静态页 = 内嵌面，
 #                                  来源 src/server/frontend/dist，由 build-browser.ps1 投放）
 #     ├── chonkpilot-server.exe             # 服务端：llm + gateway + filesys + data 合一 exe
-#     ├── capability/                       # 契约 + executor×3（tools/ + knowledge/ + executors/）
-#     ├── scenarios/                        # 出厂场景（源 src/initdata/scenarios）
+#     ├── capability/                       # 契约 + executor×3（prompts/tools/resources/skills/executors）
+#     │   └── scenarios/                    # 出厂场景（源 src/initdata/capability/scenarios）
 #     └── mcps/                             # 内置 MCP 引擎
 #         ├── codebase/chonkpilot-codegraph-mcp-server.exe
 #         └── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll
@@ -147,13 +147,13 @@ if (Test-Path $capDst) {
 }
 Copy-Item $capSrc $capDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
-# 出厂场景：优先复用 dist/desktop/scenarios，缺失则取唯一源 src/initdata/scenarios
-$scnSrc = Join-Path $srcDist "scenarios"
-if (-not (Test-Path $scnSrc)) { $scnSrc = Join-Path $root "src\initdata\scenarios" }
-$scnDst = Join-Path $srvDist "scenarios"
+# 出厂场景：优先复用 dist/desktop/capability/scenarios，缺失则取唯一源 src/initdata/capability/scenarios
+$scnSrc = Join-Path $srcDist "capability\scenarios"
+if (-not (Test-Path $scnSrc)) { $scnSrc = Join-Path $root "src\initdata\capability\scenarios" }
+$scnDst = Join-Path $srvDist "capability\scenarios"
 if (Test-Path $scnDst) { [System.IO.Directory]::Delete($scnDst, $true) }
 Copy-Item $scnSrc $scnDst -Recurse -Force
-Write-Host "    ok: scenarios/ ($((Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count) files)"
+Write-Host "    ok: capability/scenarios/ ($((Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count) files)"
 
 # -- 6) 形态无关资产：内置 MCP 引擎（codegraph / vfts）+ zvec 运行库 → mcps/{codebase,vfts}（优先复用，缺失回退构建） --
 Write-Host "==> [6/6] stage built-in MCP engines to dist/server/mcps"
@@ -201,8 +201,8 @@ Write-Host "      chonkpilot-gui-client.exe         $mbGui MB   # 客户端"
 Write-Host "      chonkpilot-cli-client.exe         $mbCli MB"
 Write-Host "    $srvDist"
 Write-Host "      chonkpilot-server.exe             $mbSrv MB   # 服务端（llm+gateway+filesys+data）"
-Write-Host "      capability/                       $capCount files (tools/knowledge/executors)"
-Write-Host "      scenarios/                        出厂场景"
+Write-Host "      capability/                       $capCount files (prompts/tools/resources/skills/scenarios/executors)"
+Write-Host "      capability/scenarios/             出厂场景"
 Write-Host "      mcps/codebase/chonkpilot-codegraph-mcp-server.exe $mbCg MB"
 Write-Host "      mcps/vfts/chonkpilot-vfts-mcp-server.exe          $mbVf MB"
 Write-Host "      mcps/vfts/zvec_c_api.dll                          $mbDll MB"

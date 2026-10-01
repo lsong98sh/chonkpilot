@@ -89,8 +89,8 @@
 
 ## 9. 现状与待办（含目标态差距）
 
-- ✅ **已实现**：[02-配置层级 §6.3](../00-overview/02-配置层级.md) 与 [00-架构总纲](../00-overview/00-架构总纲.md) §2 描述 CLI "始终用**临时目录**作 data-dir、启动时复制三级**配置**（不含会话数据）、会话数据隔离、退出即弃"——`main.go` 调 `prepareTempDataDir`（`dataprep.go`：复制 usr/prj/prjusr 三级配置 + `llms`/`mcps` 表，不含会话数据），会话数据写临时目录、退出即弃。
-- ⚠️ `src/cli/` 无任何 `_test.go`，`src/test/` 下亦无 CLI 测试工程。
+- ✅ **已实现（2026-10-01 P1：数据根三态语义，取代旧「恒用临时目录」）**：CLI `--data-dir` 三态 —— **不传** = 真实根（prj=`<workDir>/.chonkpilot`、prjusr=`~/.chonkpilot/data/<id>`，**会话数据写入**；workdir 无 `.chonkpilot` → tmp 空根不污染 cwd）；**显式留空** `--data-dir=` = 强制临时隔离（`main.go` 调 `prepareTempDataDir`：复制 usr/prj/prjusr 三级配置 + `llms`/`mcps` 表，不含会话数据；会话数据写临时目录、退出即弃）；**`--data-dir=<路径>`** = 该路径作数据根（prjusr 数据根 `data.DataRoot`）、prjusr 仍按 project-id 派生（不新增 `--prjusr-dir`）。「传空」与「未传」经 **`flag.Visit`** 判定。落点 `src/desktop/cli/{main.go,dataprep.go}`（`prepareDataDir`）。见 [02-配置层级 §6.3](../00-overview/02-配置层级.md) · [42 §2 (207)](../40-roadmap/42-决策记录.md)。
+- ⚠️ `src/desktop/cli/` 无任何 `_test.go`，`src/test/` 下亦无 CLI 测试工程。
 - ⚠️ 早期 CLI 设计稿（描述 `chonkpilot.exe` 的 executor 模式）与**本模块参数无关**，已整体归档。
 
 ---

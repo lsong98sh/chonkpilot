@@ -2,18 +2,19 @@
 """P6 批次 L4 套件：场景（**项目级** + **出厂 app 级可编辑 + 同名 save 被拒**）的
 **A 落库回读 + B 送 LLM system 含哨兵**。
 
-背景（2026-09-29 口径更新，[25-MCP与场景分层模型 §6] · [42 §2 (171)]）：
-  * 场景 = **独立根 `scenarios/`**（与 capability/ 平级），三级 app / user / project；
-    **场景 id 全局唯一（跨级亦然）** → 三级"覆盖"语义不存在，`save` 跨级同名**拒绝**。
-  * **三级均可编辑**：app 级（出厂场景 `<exeDir>/scenarios/default/`）出厂内容 = **磁盘目录**
-    （唯一源 `src/initdata/scenarios/`，由构建脚本投放）—— **不再 embed、不再物化**，
+背景（2026-10-01 P1 口径更新，[25-MCP与场景分层模型 §6] · [42 §2]）：
+  * 场景 = **capability 根下的 `scenarios/` 子目录**（`<级别根>/capability/scenarios/`），四级
+    app / user / project / prjusr；**场景 id 全局唯一（跨级亦然）** → 四级"覆盖"语义不存在，
+    `save` 跨级同名**拒绝**。
+  * **四级均可编辑**：app 级（出厂场景 `<exeDir>/capability/scenarios/default/`）出厂内容 = **磁盘目录**
+    （唯一源 `src/initdata/capability/scenarios/`，由构建脚本投放）—— **不再 embed、不再物化**，
     app 初始化不写盘：可保存 / 删除（删除即缺装，须由用户重装或 `initial.zip` 恢复）。
-  * `data-scenario-restore` **已删除**（2026-09-26）；出厂恢复语义 = 从唯一源 `src/initdata/scenarios/` 还原。
+  * `data-scenario-restore` **已删除**（2026-09-26）；出厂恢复语义 = 从唯一源 `src/initdata/capability/scenarios/` 还原。
 
 覆盖（每条 = A 数据面回读 + B 真链路可观测；B 恒以 system 原文/内容比对收口）
   P1 项目级场景 A+B   ：data-scenario-save{level:project}（含哨兵 main.agent.md）→
       A：data-scenario-load{id, level:project} 的 systemPrompt 含哨兵 + 磁盘
-         `<WS>/.chonkpilot/scenarios/<id>/main.agent.md` 含哨兵；
+         `<WS>/.chonkpilot/capability/scenarios/<id>/main.agent.md` 含哨兵；
       B：llm-start{scenario_id} → mock `/last.system` 含哨兵（**送 LLM 的系统提示词原文**）。
   P2 切换场景即生效 B ：改发第二个项目级场景 → system 含哨兵2 **且不含哨兵1**（逐轮解析，非缓存）。
   P3 出厂场景（app 级，可编辑）+ 同名 save 被拒 A+B ：
@@ -22,9 +23,9 @@
       A ②：data-scenario-save{id:default, level:user} → **被拒**（跨级同名）且不落盘、不产生 user 级副本；
       B ②：被拒后 system 仍为出厂文案（哨兵未生效）；
       A ③+B ③：**app 级可编辑** —— data-scenario-save{id:default, level:app}（哨兵）→ load 回读含哨兵、
-         llm-start system 含哨兵；收尾删除 app default 后由 cleanup 从唯一源 `src/initdata/scenarios/default` 还原。
+         llm-start system 含哨兵；收尾删除 app default 后由 cleanup 从唯一源 `src/initdata/capability/scenarios/default` 还原。
   P4 另存为（新目录）A+UI ：编辑弹窗「另存为」= 换新 id 发**同一条** data-scenario-save（新目录语义）→
-      A：新目录 `<WS>/.chonkpilot/scenarios/<新id>/main.agent.md` 落盘 + data-scenario-list 新增一行
+      A：新目录 `<WS>/.chonkpilot/capability/scenarios/<新id>/main.agent.md` 落盘 + data-scenario-list 新增一行
          + data-scenario-load{新id} 回读含哨兵；**原场景不变**（仍在、level/prompt 未改）；
       UI：真实编辑弹窗底部含「另存为」按钮、**新建**弹窗底部无（`v-if=!isNew`）。
 
@@ -35,10 +36,10 @@
 
 隔离（51-FP与测试映射 §5/§6-8）：
   * 自起 GUI：动态端口 + 独立 work-dir + 独立 `--data-dir` + 独立 `HOME`
-    （app 级场景 = 发行目录磁盘目录 `dist/desktop/scenarios/`；user 级自建落在临时 HOME 内并即时清理，绝不碰机器 ~/.chonkpilot）。
+    （app 级场景 = 发行目录磁盘目录 `dist/desktop/capability/scenarios/`；user 级自建落在临时 HOME 内并即时清理，绝不碰机器 ~/.chonkpilot）。
   * 套件级快照-还原 `_h.suite_config_guard(c)`（usr+prj；含异常/中断路径）。
   * 项目级场景落在临时 work-dir 内 → 结束随 `harness.tmp_dir` 删除 → **零残留**；
-    app 级 default 用例收尾删除后由 cleanup 从唯一源 `src/initdata/scenarios/default` 还原（不再 embed/物化）。
+    app 级 default 用例收尾删除后由 cleanup 从唯一源 `src/initdata/capability/scenarios/default` 还原（不再 embed/物化）。
 
 运行：python run_scenario_prj.py
 """
@@ -69,13 +70,13 @@ APP_DEF_MARK = "你是自动化工作流的编排者与决策者"
 WS = _h.tmp_dir("ck-scprj-ws-")
 DD = _h.tmp_dir("ck-scprj-dd-")
 HOME = _h.tmp_home()
-PRJ_PROMPTS = os.path.join(WS, ".chonkpilot", "scenarios")
+PRJ_PROMPTS = os.path.join(WS, ".chonkpilot", "capability", "scenarios")
 os.makedirs(PRJ_PROMPTS, exist_ok=True)
 
-# 出厂场景唯一源 与 发行落点（app 级场景根 = <exeDir>/scenarios = dist/desktop/scenarios）
+# 出厂场景唯一源 与 发行落点（app 级场景根 = <exeDir>/capability/scenarios = dist/desktop/capability/scenarios）
 REPO = r"e:\BizWorks\chonkpilot"
-SRC_SCN_DIR = os.path.join(REPO, "src", "initdata", "scenarios")
-APP_SCN_DIR = os.path.join(REPO, "dist", "desktop", "scenarios")
+SRC_SCN_DIR = os.path.join(REPO, "src", "initdata", "capability", "scenarios")
+APP_SCN_DIR = os.path.join(REPO, "dist", "desktop", "capability", "scenarios")
 
 MOCK = _h.start_mock_llm(_h.free_port())
 _g = _h.start_gui(port=_h.free_port(), work_dir=WS, data_dir=DD, home=HOME,
@@ -446,7 +447,7 @@ def cleanup():
             c.req("data-scenario-delete", {"data": {"id": sid, "level": "project"}})
         except Exception as e:
             print("[cleanup] 项目级场景删除失败(%s): %s" % (sid, e), flush=True)
-    # app 级 default 若被 P3-4 编辑 → 删除后从**出厂唯一源** `src/initdata/scenarios/default` 还原
+    # app 级 default 若被 P3-4 编辑 → 删除后从**出厂唯一源** `src/initdata/capability/scenarios/default` 还原
     # （2026-09-29：不再 embed、不再自动物化 —— 缺装须显式恢复）
     try:
         c.req("data-scenario-delete", {"data": {"id": "default", "level": "app"}})
