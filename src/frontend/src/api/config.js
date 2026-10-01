@@ -157,7 +157,8 @@ export async function detectToolchains() {
 }
 
 // 系统级只读内置项（gui.system.builtins；OEM/发布资源）→ {mcpServers}
-// 系统级 MCP 定义（exe 同目录 config.json 的 mcpServers 段）：仅展示，禁止编辑/删除；不入 usr mcps 表。
+// 系统级 MCP 定义（exe 同目录 config.json 的 mcpServers 段）：仅展示，禁止编辑/删除；
+// 与四级文件化 MCP 配置无关（那是 data-mcp-* 面）。
 export async function getSystemBuiltins() {
   const res = await guiReq('system.builtins', {})
   return {

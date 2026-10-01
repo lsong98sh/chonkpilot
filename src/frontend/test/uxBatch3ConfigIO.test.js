@@ -3,7 +3,7 @@
  *
  * 覆盖：
  *   A 导出序列化（快照信封 + 时间戳文件名 + 密钥默认包含）
- *   B 排除密钥（llms[].apiKey / mcps[].env、headers 剔除 + 计数 + 不改入参）
+ *   B 排除密钥（llms[].apiKey 剔除 + 计数 + 不改入参）
  *   C 导入结构校验（JSON 可解析 + 键白名单；未知键忽略并计数）+ 往返可回读
  *   D 键白名单与后端权威源（persist_userconfig.go）逐键一致 —— 防前后端漂移
  *   E 页面守卫（三区 + 二次确认 + 自动备份 + 禁 watch + 不打印内容）
@@ -48,14 +48,6 @@ function sampleConfig() {
       { name: 'gpt-local', model: 'gpt-4o', baseUrl: 'http://127.0.0.1:8080/v1', apiKey: 'sk-secret-1' },
       { name: 'echo', apiKey: '' },
     ],
-    mcpServers: [
-      {
-        name: 'demo',
-        url: 'http://127.0.0.1:9/mcp',
-        env: ['API_KEY=env-secret', 'PATH=/usr/bin', 'DEMO_TOKEN=tok'],
-        headers: { Authorization: 'Bearer hdr-secret', 'X-Trace': '1' },
-      },
-    ],
     tool_async: '{"demo":{"mode":"auto"}}',
     recent_dirs: '["D:\\\\proj"]',
   }
@@ -94,7 +86,7 @@ test('A · 备份文件名与导出一致口径（时间戳 + 同格式）', () 
 // ═══════════════════════════════════════════════════════════════
 // B 排除密钥
 // ═══════════════════════════════════════════════════════════════
-test('B · redactSecrets：llms.apiKey / mcp env、headers 剔除 + 计数，且不改入参', () => {
+test('B · redactSecrets：llms.apiKey 剔除 + 计数，且不改入参', () => {
   const cfg = sampleConfig()
   const snapshot = JSON.stringify(cfg)
   const { data, removed } = redactSecrets(cfg)
@@ -103,21 +95,17 @@ test('B · redactSecrets：llms.apiKey / mcp env、headers 剔除 + 计数，且
   assert.equal(data.llms[0].apiKey, undefined, 'LLM apiKey 须剔除')
   assert.equal(data.llms[1].apiKey, undefined)
   assert.equal(data.llms[0].model, 'gpt-4o', '非密钥字段保留')
-  assert.deepEqual(data.mcpServers[0].env, ['PATH=/usr/bin'], 'env 中密钥行剔除、普通行保留')
-  assert.deepEqual(Object.keys(data.mcpServers[0].headers), ['X-Trace'], 'headers 密钥键剔除')
-  assert.equal(data.mcpServers[0].url, 'http://127.0.0.1:9/mcp', '非密钥字段保留')
-  // 2 个 apiKey + 2 条密钥 env + 1 个密钥 header = 5
-  assert.equal(removed, 5, `剔除计数应为 5，实际 ${removed}`)
+  assert.equal(data.theme, 'dark', '其它配置项不受影响')
+  // 2 个 apiKey = 2
+  assert.equal(removed, 2, `剔除计数应为 2，实际 ${removed}`)
 })
 
 test('B · 排除密钥导出：secretsExcluded=true 且全文不含密钥字面量', () => {
   const snap = serializeSnapshot(sampleConfig(), { excludeSecrets: true })
   const env = JSON.parse(snap.json)
   assert.equal(env.secretsExcluded, true)
-  assert.equal(snap.removedSecrets, 5)
-  for (const leaked of ['sk-secret-1', 'env-secret', 'hdr-secret', 'DEMO_TOKEN', 'Authorization']) {
-    assert.ok(!snap.json.includes(leaked), `排除密钥后不应出现 ${leaked}`)
-  }
+  assert.equal(snap.removedSecrets, 2)
+  assert.ok(!snap.json.includes('sk-secret-1'), '排除密钥后不应出现 sk-secret-1')
   assert.match(snap.json, /gpt-local/, '非密钥内容仍须完整导出')
 })
 
@@ -176,9 +164,10 @@ test('C · filterImport：白名单内 applied / 白名单外 ignored（含 id �
 })
 
 test('C · filterImport：集合键非数组 → 空数组（口径同 persist writeCollection）', () => {
-  const { data } = filterImport({ llms: 'oops', mcpServers: { a: 1 } })
+  const { data, ignored } = filterImport({ llms: 'oops', mcpServers: { a: 1 } })
   assert.deepEqual(data.llms, [])
-  assert.deepEqual(data.mcpServers, [])
+  assert.equal(data.mcpServers, undefined, 'mcpServers 已非白名单键（旧 usr KV 废弃）→ 忽略')
+  assert.ok(ignored.includes('mcpServers'))
 })
 
 test('C · 导出 → 导入往返：键集合一致，值原样回读', () => {
@@ -199,7 +188,7 @@ test('C · 需重启键判定 = usr 工具链路径子集（批 2 APPLY_RESTART 
     ['chromePath', 'goPath'])
   assert.deepEqual(restartKeysOf(undefined), [])
   assert.equal(RESTART_KEYS.length, 7, '七个工具链路径键（含 chromePath）')
-  for (const k of ['theme', 'locale', 'llms', 'mcpServers', 'defaultLLM', 'tool_async']) {
+  for (const k of ['theme', 'locale', 'llms', 'defaultLLM', 'tool_async']) {
     assert.ok(!RESTART_KEYS.includes(k), `${k} 不应列为需重启键`)
   }
 })

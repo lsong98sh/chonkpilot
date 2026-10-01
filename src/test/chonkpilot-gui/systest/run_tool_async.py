@@ -23,8 +23,8 @@ A. 超时配置来源（gateway doCall 有效值）：
 
 B. 可达性（GUI test-port ≤ 桥 `PublishEvent`）：
    - `data-<domain>-*` 前缀 → 经总线 persist 服务应答（桥 dataViaPersist）→ **可达**。
-     MCP 配置面即走此路：`data-user-config-save {data:{mcpServers:[...]}}`（含 `runtime`/`args`）
-     落 usr `mcps` 表。
+     MCP 配置面即走此路：`data-mcp-save {data:{name,runtime,args,...}}` → 落四级文件化配置
+     （`<级别>/capability/mcps/<名>.json`）。
    - 桥 `frontMethodSubjects` 白名单含 `mcp-tools-wait`（超时裁决「等待完成」）与 `task-stop`
      （**统一停止入口**：2026-09-18 起取代已移除的 `mcp-tasks-cancel`）。**已修**：`mcp-tools-wait`
      映射到 gateway 方法面**同名**相对主题 `mcp-tools-wait`（bridge.go:312；wiring_test.go 锁定）
@@ -32,11 +32,11 @@ B. 可达性（GUI test-port ≤ 桥 `PublishEvent`）：
    - **2026-09-18 方法面移除**：`mcp-tasks-status|result|list|cancel`、`mcp-tools-background`、
      HTTP `/mcp/tasks` 已删；状态查询改读**层权威行**（`data-tasktree-tasks` 行 `state`，属 data 面
      可达）；取消改走 `task-stop`（工具行只发 `tool_call_id`，服务端反归一）。
-   - `servers/register` 非前端通道；第三方 spawned server 的**正确接入路径** = 用户配置 `mcps`
-     （装配层在 **llm server 启动期** 读 usr `mcps` → `ServerEntry.Runtime` → gateway spawned 拉起；
+   - `servers/register` 非前端通道；第三方 spawned server 的**正确接入路径** = 四级文件化 MCP
+     （装配层在 **llm server 启动期** 读四级视图 → `ServerEntry.Runtime` → gateway spawned 拉起；
      D-18：保存后**需重启生效**，v1 不热重载）。
 
-C. 夹具 `mock_slow_mcp.py`：stdio MCP server（纯标准库，逐行 JSON-RPC）。经 usr `mcps` 注册
+C. 夹具 `mock_slow_mcp.py`：stdio MCP server（纯标准库，逐行 JSON-RPC）。经四级文件 MCP 注册
    （`runtime` = 可执行/解释器单 token、`args` = 参数数组，**逐个作为 exec 参数**传递——路径含空格
    不再被切碎）后由 gateway 拉起；暴露名带节点前缀 = `slow3p_slow_sleep` / `slow3p_fast_echo`。
    取消 = kill 该 provider 子进程 + 按 restart 策略 respawn（第三方案例 D 用 pid 变化确权）。
@@ -68,7 +68,7 @@ if not os.path.exists(EXE):
 WS = os.path.join(HERE, "ws")
 PORT = 2345
 
-SLOW_NAME = "slow3p"           # usr mcps 记录名（节点前缀 = slow3p_）
+SLOW_NAME = "slow3p"           # 四级文件 MCP 条目名（节点前缀 = slow3p_）
 SLOW_ECHO = "slow3p_fast_echo"  # 快工具（回显 pid，供 respawn 比对）
 SLOW_SLEEP = "slow3p_slow_sleep"  # 慢工具（第三方软缺省 never）
 CALL_TIMEOUT_S = 1              # 调用级 timeout（秒）
@@ -144,11 +144,32 @@ def _fixture_selftest():
             proc.kill()
 
 
-# ── A 经用户配置 mcps 注册第三方 spawned server（MCP 配置面打通）────────
+# ── A 经四级文件化 MCP 注册第三方 spawned server（MCP 配置面打通）────────
 
 def _load_mcps():
-    res = c.req("data-user-config-load", {})
-    return list(((res or {}).get("data") or {}).get("mcpServers") or [])
+    res = c.req("data-mcp-list", {})
+    return list((res or {}).get("list") or [])
+
+
+def _snapshot_mcp(name):
+    """快照同名 user 级 MCP 条目（data-mcp-load；不存在 → None），供套件退出还原。"""
+    try:
+        res = c.req("data-mcp-load", {"name": name})
+    except Exception:
+        return None
+    d = (res or {}).get("data")
+    return d if isinstance(d, dict) and d.get("name") else None
+
+
+def _restore_mcp(name, snap):
+    """按快照还原：原本存在 → 写回；原本不存在 → 按名删（回原状）。失败仅告警。"""
+    try:
+        if snap is None:
+            c.req("data-mcp-delete", {"name": name}, timeout=15000)
+        else:
+            c.req("data-mcp-save", {"data": snap}, timeout=15000)
+    except Exception as e:
+        print("[run_tool_async] MCP 文件还原失败（%s）: %s" % (name, e), flush=True)
 
 
 def _restart_gui(max_wait=90):
@@ -168,33 +189,26 @@ def _restart_gui(max_wait=90):
 
 
 def case_register_thirdparty():
-    """A：经用户配置 `mcps` 注册 stdio server → 重启 GUI → 装配期 spawned 拉起 → tools/list 暴露。
+    """A：经四级文件化 MCP（`<级别>/capability/mcps/<名>.json`）注册 stdio server → 重启 GUI →
+    装配期 spawned 拉起 → tools/list 暴露。
 
-    旧稿断言 `servers/register` 前端不可达即阻塞——已过期：正确接入路径 = `data-user-config-save`
-    写 usr `mcps`（含 `runtime`/`args`），装配层在 **llm server 启动期** 读 `mcps` → `ServerEntry.Runtime`
-    → gateway spawned 拉起（D-18：保存后需重启生效，v1 不热重载）。
+    接入路径 = `data-mcp-save`（含 `runtime`/`args`）落 user 级文件，装配层在 **llm server 启动期**
+    读四级文件视图 → `ServerEntry.Runtime` → gateway spawned 拉起（D-18：保存后需重启生效，
+    v1 不热重载）。
 
-    快照-还原（51 §6-8）：**不得在本用例内还原** —— usr 主库 `~/.chonkpilot` 的 `mcpServers`
-    还原会走 `data-user-config-save/delete` → `data-user-config-refresh` → llm server
-    `reconcileUserMCPs`（`chonkpilot-llm/server/gateway_servers.go:300-307`，T-25「保存即生效」）
-    → **注销** `slow3p` 并 `refreshTools()` → 后续 D/E 拿到的只有 `unknown tool "slow3p_fast_echo"`
-    （2026-09-16 实测：本机 usr 库清掉历史残留 `slow3p` 后 D/E 必红——原实现其实**依赖机器 usr 里
-    预存的 `slow3p` 残留**才能通过）。套件级还原已由 `run_llm.py:27` 的
-    `_h.suite_config_guard(c)` 兜底（import 即 arm，退出前自动回滚 usr+prj，含删除本用例新增的
-    `slow3p`），故此处只写不还原。
+    快照-还原（51 §6-8）：同名 user 级文件由 `main()` 的套件级 finally 还原（原本存在 → 写回；
+    原本不存在 → 删除），故此处只写不还原（文件须留存至 D/E 用例使用）。
     """
-    entry = {"name": SLOW_NAME,
+    entry = {"name": SLOW_NAME, "level": "user",
              "runtime": PY,
              "args": [FIXTURE, "--sleep", "3"],
              "enabled": True, "transport": "stdio", "timeout": 5}
-    cur = _load_mcps()
-    nxt = [m for m in cur if m.get("name") != SLOW_NAME] + [entry]
-    save = c.req("data-user-config-save", {"data": {"mcpServers": nxt}}, timeout=15000)
+    save = c.req("data-mcp-save", {"data": entry}, timeout=15000)
     if not (isinstance(save, dict) and save.get("ok")):
-        raise TestError("data-user-config-save 写入 mcps 失败：%r" % (save,))
+        raise TestError("data-mcp-save 写入 MCP 文件失败：%r" % (save,))
     back = [m for m in _load_mcps() if m.get("name") == SLOW_NAME]
     if not back or not back[0].get("runtime") or not back[0].get("args"):
-        raise TestError("usr mcps 未回读 slow3p/runtime+args：%r" % (_load_mcps(),))
+        raise TestError("data-mcp-list 未回读 slow3p/runtime+args：%r" % (_load_mcps(),))
 
     # D-18：保存后需重启生效。
     _restart_gui()
@@ -965,19 +979,25 @@ def main():
         if run_case(name, fn):
             ok += 1
 
-    rec("SELF", "夹具 mock_slow_mcp.py 自检（stdio JSON-RPC 协议）", _fixture_selftest)
-    rec("A", "A 经用户配置 mcps 注册第三方 stdio server（重启 spawned 拉起）", case_register_thirdparty)
-    rec("B", "B never 超时待裁决（mcp-tools-timeout options=[wait,cancel]）", case_never_timeout)
-    rec("C", "C 等待完成（mcp-tools-wait → {waiting:true} + 结果交付）", case_wait_path)
-    rec("D", "D 停止（task-stop 只发 tool_call_id → 层行 cancelled + respawn 生效）", case_cancel_path)
-    rec("E", "E 转后台后再取消（manual detach → 层行 detached → task-stop → cancelled）",
-        case_cancel_during_async)
-    rec("F", "F manual 工具「转异步」图标（DOM 点击 → tool-background → task-background 收敛）",
-        case_manual_icon_dom)
-    rec("G", "G 待裁决恢复（I-99 层行带 awaiting 对象 + I-103 任务区裁决条刷新后可见可操作）",
-        case_awaiting_restore_dom)
-    rec("H", "H 真实会话工具调用 → Task 层权威行（running→done + exec_json 含 gw_task_id；I-88）",
-        case_layer_authority_row)
+    # 套件级 MCP 文件快照-还原（51 §6-8）：同名 user 级文件退出前回原状（原本存在 → 写回；
+    # 原本不存在 → 删除）。窗口重装/复用实例下 client 仍可用，失败仅告警。
+    mcp_snap = _snapshot_mcp(SLOW_NAME)
+    try:
+        rec("SELF", "夹具 mock_slow_mcp.py 自检（stdio JSON-RPC 协议）", _fixture_selftest)
+        rec("A", "A 经四级文件化 MCP 注册第三方 stdio server（重启 spawned 拉起）", case_register_thirdparty)
+        rec("B", "B never 超时待裁决（mcp-tools-timeout options=[wait,cancel]）", case_never_timeout)
+        rec("C", "C 等待完成（mcp-tools-wait → {waiting:true} + 结果交付）", case_wait_path)
+        rec("D", "D 停止（task-stop 只发 tool_call_id → 层行 cancelled + respawn 生效）", case_cancel_path)
+        rec("E", "E 转后台后再取消（manual detach → 层行 detached → task-stop → cancelled）",
+            case_cancel_during_async)
+        rec("F", "F manual 工具「转异步」图标（DOM 点击 → tool-background → task-background 收敛）",
+            case_manual_icon_dom)
+        rec("G", "G 待裁决恢复（I-99 层行带 awaiting 对象 + I-103 任务区裁决条刷新后可见可操作）",
+            case_awaiting_restore_dom)
+        rec("H", "H 真实会话工具调用 → Task 层权威行（running→done + exec_json 含 gw_task_id；I-88）",
+            case_layer_authority_row)
+    finally:
+        _restore_mcp(SLOW_NAME, mcp_snap)
     errs = c.console()
     for e in errs.get("entries", []):
         if e.get("level") in ("error",):

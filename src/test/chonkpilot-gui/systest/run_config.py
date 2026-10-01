@@ -65,11 +65,13 @@ def _remove_llm(name):
 
 
 def _mcps():
-    return list(_user_cfg().get("mcpServers") or [])
+    res = c.req("data-mcp-list", {})
+    return list((res or {}).get("list") or [])
 
 
 def _remove_mcp(name):
-    c.req("data-user-config-save", {"data": {"mcpServers": [m for m in _mcps() if m.get("name") != name]}})
+    # 2026-10-01 起 MCP 四级文件化（<级别>/capability/mcps/<名>.json）→ 按名删文件。
+    c.req("data-mcp-delete", {"name": name})
 
 
 def _open(kind, wait_sel=".settings-page", max_wait=12):
@@ -230,7 +232,7 @@ def case_general_params():
     还原口径（2026-09-16）：走 harness 统一「快照-还原」（51 §6-8）——原值 == 系统默认
     （120，`persist_userconfig.go:191`）→ 删键回落兜底；原值非默认 → 写回原值。
     原实现用 `data-user-config-delete {"key": ...}` 属**错误载荷**：persist `reqKey` 只认
-    `id`/`data.key`，缺 key → 触发「清空整份 usr 配置」（theme/locale/llms/mcps 一并被清）。
+    `id`/`data.key`，缺 key → 触发「清空整份 usr 配置」（theme/locale/llms 一并被清）。
     """
     snap = _h.snapshot_user_config(c, ["responseTimeout"])
     try:

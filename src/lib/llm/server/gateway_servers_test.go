@@ -1,11 +1,10 @@
 // 用户维护 MCP 启动装配单测（gateway_servers.go / T-25 / D-18）：
-// 覆盖 mcps → ServerEntry 映射、enabled 过滤、URL 空跳过、usr 覆盖系统级同名；
-// 以及「保存即生效」（T-25：data-user-config-refresh → servers/register|unregister 增量对账）。
+// 覆盖四级文件化 MCP → ServerEntry 映射、enabled 过滤、URL 空跳过、文件定义覆盖基底同名；
+// 以及「保存即生效」（T-25：data-mcp-refresh → servers/register|unregister 增量对账）。
 package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,13 +20,13 @@ import (
 
 // TestMergeGatewayServers 覆盖合并/映射/过滤规则（纯函数）。
 func TestMergeGatewayServers(t *testing.T) {
-	system := []usrMCPEntry{
+	system := []mcpEntry{
 		{Name: "sys1", URL: "http://sys1", Enabled: true, Description: "s", Transport: "sse"},
 		{Name: "shared", URL: "http://sys-shared", Enabled: true},
 		{Name: "sysdisabled", URL: "http://sd", Enabled: false},
 		{Name: "sysnourl", URL: "", Enabled: true},
 	}
-	usr := []usrMCPEntry{
+	usr := []mcpEntry{
 		{Name: "usr1", URL: "http://usr1", Enabled: true, Description: "u", Transport: "direct"},
 		{Name: "shared", URL: "http://usr-shared", Enabled: true, Description: "override"},
 		{Name: "usrdisabled", URL: "http://ud", Enabled: false},
@@ -84,7 +83,7 @@ func TestMergeGatewayServersEmpty(t *testing.T) {
 // 仅 runtime → spawned（Runtime 有值、URL 空）；仅 url → proxied（传统行为不变）；
 // 两者皆空 → 跳过。
 func TestMergeGatewayServersSpawned(t *testing.T) {
-	usr := []usrMCPEntry{
+	usr := []mcpEntry{
 		{Name: "spawned1", Runtime: "npx", Args: []string{"-y", "foo-mcp"}, Enabled: true}, // 仅 runtime
 		{Name: "proxied1", URL: "http://p", Enabled: true},                                 // 仅 url
 		{Name: "both", Runtime: "run-mcp", URL: "http://b", Enabled: true},                 // 两者皆有
@@ -110,13 +109,13 @@ func TestMergeGatewayServersSpawned(t *testing.T) {
 	}
 }
 
-// boolPtr 返回布尔字面量指针（usrMCPEntry.Isolate 三态：nil = 未设置 → 由 gateway 按 transport 推断）。
+// boolPtr 返回布尔字面量指针（mcpEntry.Isolate 三态：nil = 未设置 → 由 gateway 按 transport 推断）。
 func boolPtr(b bool) *bool { return &b }
 
 // TestMergeGatewayServersFieldPassthrough 规范字段全透传（含 runtime/args + env/headers/cwd/
 // timeout/category/namespace/hot_tools/description）。
 func TestMergeGatewayServersFieldPassthrough(t *testing.T) {
-	usr := []usrMCPEntry{{
+	usr := []mcpEntry{{
 		Name:        "full",
 		Runtime:     "node",
 		Args:        []string{"server.js", "--port", "1"},
@@ -142,7 +141,7 @@ func TestMergeGatewayServersFieldPassthrough(t *testing.T) {
 		t.Fatalf("isolate=false 未透传：%+v", e)
 	}
 	// 未设置（nil）→ 按 transport 推断（stdio → 隔离）
-	none := mergeGatewayServers(nil, []usrMCPEntry{{Name: "n", Runtime: "node", Enabled: true}})
+	none := mergeGatewayServers(nil, []mcpEntry{{Name: "n", Runtime: "node", Enabled: true}})
 	if len(none) != 1 || none[0].Isolate != nil || !none[0].IsolateEnabled() {
 		t.Fatalf("缺 isolate 应保持未设置并按 transport 推断：%+v", none)
 	}
@@ -165,89 +164,81 @@ func TestMergeGatewayServersFieldPassthrough(t *testing.T) {
 	}
 }
 
-// TestLoadUserMCPEntries 覆盖 usr mcps 专用表读取 + 字段映射（含 enabled=false 保留，
-// 由 merge 阶段过滤）。种子/读取**均经 data 门面**（不再从 data 根包取库句柄）。
-func TestLoadUserMCPEntries(t *testing.T) {
+// TestLoadMcpFileEntries 覆盖四级文件化 MCP 读取 + 字段映射（含 enabled=false 保留，
+// 由 merge 阶段过滤）。种子/读取**均经 data 门面**（不持库句柄）。
+func TestLoadMcpFileEntries(t *testing.T) {
 	data.Reset()
 	t.Cleanup(data.Reset)
 
 	path := t.TempDir() + "/usr.db"
-	api := inline.NewWithOptions(nil, persist.Options{UsrPath: path})
-	if _, err := api.UserConfigSet(facade.UserConfigSetRequest{Entries: map[string]any{
-		"mcpServers": []any{
-			map[string]any{"name": "a", "url": "http://a", "enabled": true, "description": "desc-a", "transport": "direct"},
-			map[string]any{"name": "b", "url": "http://b", "enabled": false},
-			map[string]any{"name": "c", "url": "", "enabled": true},
-			map[string]any{"name": "d", "runtime": "node", "args": []string{"d.js"}, "url": "", "enabled": true,
-				"env": []string{"K=V"}, "category": "cat", "timeout": 9},
-		},
-	}}); err != nil {
-		t.Fatalf("seed usr mcps via facade: %v", err)
+	api := inline.NewWithOptions(nil, persist.Options{UsrPath: path, AppDir: t.TempDir()})
+	for _, srv := range []facade.McpServer{
+		{Name: "a", URL: "http://a", Enabled: true, Description: "desc-a", Transport: "direct", Level: "user"},
+		{Name: "b", URL: "http://b", Enabled: false, Level: "user"},
+		{Name: "c", Enabled: true, Level: "user"},
+		{Name: "d", Runtime: "node", Args: []string{"d.js"}, Enabled: true, Env: []string{"K=V"},
+			Category: "cat", Timeout: 9, Level: "user"},
+	} {
+		if _, err := api.McpSave(facade.McpSaveRequest{Server: srv}); err != nil {
+			t.Fatalf("McpSave(%s): %v", srv.Name, err)
+		}
 	}
 
 	s := &Server{cfg: api, opts: Options{UsrPath: path}}
-	entries := s.loadUserMCPEntries()
+	entries := s.loadMcpFileEntries()
 	if len(entries) != 4 {
 		t.Fatalf("want 4 raw entries, got %d: %+v", len(entries), entries)
 	}
-	if entries[0].Name != "a" || entries[0].URL != "http://a" || !entries[0].Enabled ||
-		entries[0].Description != "desc-a" || entries[0].Transport != "direct" {
-		t.Fatalf("entry a mismatch: %+v", entries[0])
+	byName := map[string]mcpEntry{}
+	for _, e := range entries {
+		byName[e.Name] = e
 	}
-	if entries[1].Name != "b" || entries[1].Enabled {
-		t.Fatalf("entry b mismatch: %+v", entries[1])
+	if e := byName["a"]; e.URL != "http://a" || !e.Enabled || e.Description != "desc-a" || e.Transport != "direct" {
+		t.Fatalf("entry a mismatch: %+v", e)
 	}
-	if entries[2].Name != "c" || entries[2].URL != "" {
-		t.Fatalf("entry c mismatch: %+v", entries[2])
+	if e := byName["b"]; e.Enabled {
+		t.Fatalf("entry b mismatch: %+v", e)
 	}
-	// record → struct 透传 runtime/args/【env[]】/category/timeout（落库读出后仍带全字段）。
-	if entries[3].Name != "d" || entries[3].Runtime != "node" || entries[3].URL != "" ||
-		len(entries[3].Args) != 1 || entries[3].Args[0] != "d.js" ||
-		len(entries[3].Env) != 1 || entries[3].Env[0] != "K=V" ||
-		entries[3].Category != "cat" || entries[3].TimeoutSec != 9 {
-		t.Fatalf("entry d (runtime) mismatch: %+v", entries[3])
+	if e := byName["c"]; e.URL != "" {
+		t.Fatalf("entry c mismatch: %+v", e)
+	}
+	// 文件 → struct 透传 runtime/args/env/category/timeout（读出后仍带全字段）。
+	if e := byName["d"]; e.Runtime != "node" || e.URL != "" ||
+		len(e.Args) != 1 || e.Args[0] != "d.js" ||
+		len(e.Env) != 1 || e.Env[0] != "K=V" ||
+		e.Category != "cat" || e.TimeoutSec != 9 {
+		t.Fatalf("entry d (runtime) mismatch: %+v", e)
 	}
 
-	// 端到端：读表 → 合并过滤（b 未启用、c runtime/url 皆空 → 只余 a 与 d）；usr 来源恒为 user。
+	// 端到端：读文件 → 合并过滤（b 未启用、c runtime/url 皆空 → 只余 a 与 d）；来源恒为 user。
 	got := mergeGatewayServers(nil, entries)
-	if len(got) != 2 || got[0].ID != "a" || got[0].Transport != "" {
-		t.Fatalf("merged result mismatch: %+v", got)
+	if len(got) != 2 {
+		t.Fatalf("merged result count mismatch: %+v", got)
 	}
-	if got[1].ID != "d" || got[1].Runtime != "node" || got[1].URL != "" || got[1].TimeoutSec != 9 {
-		t.Fatalf("merged runtime entry mismatch: %+v", got[1])
+	byID := map[string]mcpgateway.ServerEntry{}
+	for _, e := range got {
+		byID[e.ID] = e
 	}
-	if got[0].Origin != mcpgateway.OriginUser || got[0].IsBuiltin() {
-		t.Fatalf("usr mcps entry origin should be user: %+v", got[0])
+	if e := byID["a"]; e.Transport != "" || e.Origin != mcpgateway.OriginUser || e.IsBuiltin() {
+		t.Fatalf("merged a mismatch: %+v", e)
 	}
-}
-
-// TestLoadUserMCPEntriesMissingDB 缺失库路径也能安全返回（不 panic；门面开库会建库）。
-func TestLoadUserMCPEntriesMissingDB(t *testing.T) {
-	data.Reset()
-	t.Cleanup(data.Reset)
-	path := t.TempDir() + "/nope.db"
-	s := &Server{cfg: inline.NewWithOptions(nil, persist.Options{UsrPath: path}), opts: Options{UsrPath: path}}
-	if got := s.loadUserMCPEntries(); len(got) != 0 {
-		t.Fatalf("want empty, got %+v", got)
+	if e := byID["d"]; e.Runtime != "node" || e.URL != "" || e.TimeoutSec != 9 {
+		t.Fatalf("merged runtime entry mismatch: %+v", e)
 	}
 }
 
 // ─── 保存即生效（T-25：enabled 开关 / 增删改 无需重启）────────────────
 
-// saveUserMCPs 经真实保存面写 usr mcps：data-user-config-save（persist 落库 + 广播
-// data-user-config-refresh，既有消息面，零新增主题）；返回时保存应答已回（对账后台异步进行）。
-func saveUserMCPs(t *testing.T, s *Server, items []map[string]any) {
+// saveFileMCP 经 mcp 域保存（落 `<级别>/capability/mcps/<名>.json` + 广播 data-mcp-refresh，
+// 既有消息面，零新增主题）；返回时保存应答已回（对账后台异步进行）。
+func saveFileMCP(t *testing.T, s *Server, srv facade.McpServer) {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{"data": map[string]any{"mcpServers": items}})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := s.bus.Emit(context.Background(), "data-user-config-save", payload).Wait().Err(); err != nil {
-		t.Fatalf("data-user-config-save: %v", err)
+	if _, err := s.cfg.McpSave(facade.McpSaveRequest{Server: srv}); err != nil {
+		t.Fatalf("McpSave(%s): %v", srv.Name, err)
 	}
 }
 
-// TestUserMCPHotReload：usr mcps 新增 → 关闭 → 再启用，工具面**秒级**收敛（无需重启）。
+// TestUserMCPHotReload：四级文件化 MCP 条目新增 → 关闭 → 再启用，工具面**秒级**收敛（无需重启）。
 // 下游 = httptest 承载的 streamable HTTP MCP server（工具 echo_hot，暴露名 <name>_echo_hot）。
 func TestUserMCPHotReload(t *testing.T) {
 	llm := mockLLMServer()
@@ -263,23 +254,23 @@ func TestUserMCPHotReload(t *testing.T) {
 	ts := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return ms }, nil))
 	defer ts.Close()
 
-	const exposed = "usr-hot_echo_hot"
-	entry := func(enabled bool) []map[string]any {
-		return []map[string]any{{"name": "usr-hot", "url": ts.URL, "enabled": enabled, "transport": "http"}}
+	const exposed = "usrhot_echo_hot"
+	entry := func(enabled bool) facade.McpServer {
+		return facade.McpServer{Name: "usrhot", URL: ts.URL, Enabled: enabled, Transport: "http"}
 	}
 
 	// ① 新增（enabled=true）→ 工具面出现（保存后无需重启）。
 	start := time.Now()
-	saveUserMCPs(t, s, entry(true))
+	saveFileMCP(t, s, entry(true))
 	elapsed, ok := waitTool(t, s, exposed, true, 10*time.Second)
 	if !ok {
-		t.Fatalf("① 新增 usr mcps 后工具未热生效（无重启应即生效）")
+		t.Fatalf("① 新增 MCP 后工具未热生效（无重启应即生效）")
 	}
 	t.Logf("① 新增 → 工具面生效耗时 %v（起始 %v）", elapsed, time.Since(start))
 
 	// ② 关闭（enabled=false）→ 工具退出工具面。
 	start = time.Now()
-	saveUserMCPs(t, s, entry(false))
+	saveFileMCP(t, s, entry(false))
 	elapsed, ok = waitTool(t, s, exposed, false, 10*time.Second)
 	if !ok {
 		t.Fatalf("② 关闭 enabled 后工具未热移除")
@@ -288,16 +279,18 @@ func TestUserMCPHotReload(t *testing.T) {
 
 	// ③ 再启用 → 工具回来（同一入口幂等，无残留路由冲突）。
 	start = time.Now()
-	saveUserMCPs(t, s, entry(true))
+	saveFileMCP(t, s, entry(true))
 	elapsed, ok = waitTool(t, s, exposed, true, 10*time.Second)
 	if !ok {
 		t.Fatalf("③ 再启用后工具未热生效（可能残留旧路由冲突）")
 	}
 	t.Logf("③ 再启用 → 工具面生效耗时 %v（起始 %v）", elapsed, time.Since(start))
 
-	// ④ 删除条目（整体替换为空）→ 工具退出。
+	// ④ 删除条目（删文件）→ 工具退出。
 	start = time.Now()
-	saveUserMCPs(t, s, []map[string]any{})
+	if _, err := s.cfg.McpDelete(facade.McpDeleteRequest{Name: "usrhot"}); err != nil {
+		t.Fatalf("McpDelete: %v", err)
+	}
 	elapsed, ok = waitTool(t, s, exposed, false, 10*time.Second)
 	if !ok {
 		t.Fatalf("④ 删除条目后工具未热移除")

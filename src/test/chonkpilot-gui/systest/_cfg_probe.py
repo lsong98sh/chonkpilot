@@ -70,7 +70,7 @@ def main():
     usr, prj = snap["usr"], snap["prj"]
     print("PRJ keys(%d): %s" % (len(prj), ", ".join(sorted(prj))), flush=True)
     print("USR keys(%d): %s" % (len(usr), ", ".join(sorted(usr))), flush=True)
-    for k in ("locale", "theme", "responseTimeout", "llms", "mcpServers", "defaultLLM"):
+    for k in ("locale", "theme", "responseTimeout", "llms", "defaultLLM"):
         if k in usr:
             v = usr[k]
             print("USR[%s] = %s" % (k, json.dumps(v, ensure_ascii=False) if not isinstance(v, list)

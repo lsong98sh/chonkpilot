@@ -281,19 +281,6 @@ func (s *Service) UserConfigView(_ facade.UserConfigViewRequest) (facade.UserCon
 	return facade.UserConfigViewResponse{List: s.userConfigList(db)}, nil
 }
 
-// UserConfigMCPs 读 usr `mcps` 专用表条目原文（按主键序号序）。
-//
-// **只读**：不触发 legacy 整块/改名迁移（与既有装配期直读 `mcps` 表的口径一致——迁移仍只在
-// 其他 user-config 动作首次访问时发生）；供需要 mcps 领域原文的调用方（llm server 启动装配）。
-func (s *Service) UserConfigMCPs(_ facade.UserConfigMCPsRequest) (facade.UserConfigMCPsResponse, error) {
-	db, release, err := s.UsrDB()
-	if err != nil {
-		return facade.UserConfigMCPsResponse{}, err
-	}
-	defer release()
-	return facade.UserConfigMCPsResponse{List: readCollection(db, tableMCPs)}, nil
-}
-
 // UserConfigGet 读合并后有效值（usr 基线 + 项目层可继承键 defaultLLM/defaultScenario 覆盖；
 // 缺失键补系统默认）。实例不可解析（无 instance_id / 未登记）→ 仅 usr 基线。
 func (s *Service) UserConfigGet(req facade.UserConfigGetRequest) (facade.UserConfigGetResponse, error) {
@@ -329,7 +316,7 @@ func (s *Service) UserConfigSet(req facade.UserConfigSetRequest) (facade.UserCon
 
 // UserConfigDelete 删用户配置：Keys 空（或显式 legacy 整块键）→ 清空整份（回落默认/继承）；
 // 逐键 → 删该键（未知键**明确报错**，禁止兜底清空整份 —— P0：未知键曾把 theme/locale/llms
-// /mcps/超时一并清掉）。
+// /超时一并清掉）。
 func (s *Service) UserConfigDelete(req facade.UserConfigDeleteRequest) (facade.UserConfigDeleteResponse, error) {
 	db, release, err := s.UsrDB()
 	if err != nil {

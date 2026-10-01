@@ -2,11 +2,11 @@
 //
 // ── 为什么是「领域字段」而不是存储结构 ───────────────────────────────
 // 存储形状（内核事实）：config 表一条记录 = `{"v": "<字符串>"}`（一个决策一个 key，键上带
-// 域前缀 `prompt-` / `security-`）；用户配置 = 逐 key 标量 + llms/mcps 两张专用表
+// 域前缀 `prompt-` / `security-`）；用户配置 = 逐 key 标量 + llms 专用表
 // （主键 = 数组序号）+ 迁移期的 legacy 整块 `user_config`。这些**都不出门面**：
 //   - 值形态 = 领域字符串（配置项取值），不是 `{"v": …}` 记录；
 //   - 域前缀是存储隔离手段，调用方只报**域名**（prj-config / prompt / prj-security）；
-//   - 用户配置 = 领域键对象（theme / locale / llms / mcpServers / defaultLLM / …），
+//   - 用户配置 = 领域键对象（theme / locale / llms / defaultLLM / …），
 //     不是「专用表 + 序号主键 + 自由键」。
 //
 // 于是换存储（分表 / 换前缀 / 换库）不会把改动漏到每个调用方。
@@ -105,15 +105,6 @@ type UserConfigViewRequest struct{}
 // UserConfigViewResponse 是 usr 主库视图读出参（有任一配置 → 单条整体对象；否则空列表）。
 type UserConfigViewResponse struct {
 	// List 视图列表（0 或 1 条；元素 = 领域键对象 + id）。
-	List []map[string]any `json:"list"`
-}
-
-// UserConfigMCPsRequest 是 usr `mcps` 专用表原文读入参。
-type UserConfigMCPsRequest struct{}
-
-// UserConfigMCPsResponse 是 usr `mcps` 条目读出参（**只读、不触发迁移**；条目顺序 = 主键序号序）。
-type UserConfigMCPsResponse struct {
-	// List 条目数组（mcps 记录原文；未配置 → 空数组）。
 	List []map[string]any `json:"list"`
 }
 

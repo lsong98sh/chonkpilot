@@ -3,7 +3,7 @@
 """慢速第三方 MCP server 夹具（stdio，纯标准库，无第三方依赖）。
 
 用途：验证「统一异步模型：超时交用户裁决」中的**第三方 spawned server** 路径——
-gateway 以 usr `mcps` 条目 `{runtime:<python>, args:[mock_slow_mcp.py, --sleep, N]}` 拉起本进程
+gateway 以四级文件化 MCP 条目 `{runtime:<python>, args:[mock_slow_mcp.py, --sleep, N]}` 拉起本进程
 （runtime = 可执行/解释器单 token，args = 逐个 exec 参数，不做 shell/引号解析），
 `tools/call slow_sleep` 睡眠超过条目超时 → 到点发 `mcp-tools-timeout`（第三方软缺省 never
 → options=[wait,cancel]）；取消 = kill 本子进程 + 按 restart 策略 respawn。

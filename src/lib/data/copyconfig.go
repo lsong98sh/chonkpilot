@@ -10,10 +10,10 @@ import (
 	"strings"
 )
 
-// copyTables 是随配置一起复制的专用表（LLM / MCP 定义属用户级配置）。
-var copyTables = []string{"llms", "mcps"}
+// copyTables 是随配置一起复制的专用表（LLM 定义属用户级配置）。
+var copyTables = []string{"llms"}
 
-// CopyConfigTables 把源库的 config 表 + 专用表（llms / mcps）整表复制进目标库
+// CopyConfigTables 把源库的 config 表 + 专用表（llms）整表复制进目标库
 // （目标不存在则建库）。源不存在 → 视为跳过（返回 nil，不视为致命错误）。
 func CopyConfigTables(dstPath string, layer Layer, srcPath string) error {
 	if _, err := os.Stat(srcPath); err != nil {

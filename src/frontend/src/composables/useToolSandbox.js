@@ -5,7 +5,7 @@
  * **executor 类别**（= 契约 `_meta.category`：core / desktop / browser，即 chonkpilot-mcp-tools
  * 的三个执行器能力目录）生效；一个开关管制该 executor 下的**全部工具**。仅 **self 的 executor
  * 工具**（本仓 spawn 子进程执行）可隔离；第三方 MCP 的沙箱在 MCP 对话框「运行信息」页签（
- * usr `mcps[].sandbox`）设置，http/sse 无法施加沙箱。
+ * 四级文件化 MCP 条目的 `sandbox`）设置，http/sse 无法施加沙箱。
  *
  * 读写面（**零新增 MQ 主题**）：
  *   - 工具清单 = 既有能力面 `tools-list`（每项 `_meta.category` / `_meta.server`）。
@@ -19,7 +19,7 @@
  * 本 composable 只做数据与读写，不弹提示（提示由页面按 i18n 决定）。
  */
 import { ref, computed } from 'vue'
-import { getUserConfig, saveUserConfig, resetUserKey, getProjectSecurity } from '../api/config'
+import { getUserConfig, saveUserConfig, resetUserKey, getProjectSecurity, listMcpServers } from '../api/config'
 import { countServerSandboxOn } from '../utils/sandboxSummary'
 import { countTrustDirs, needsTrustDirsWarning } from '../utils/sandboxTrust'
 import mq from '../utils/mq'
@@ -130,12 +130,19 @@ export function useToolSandbox() {
       const parsed = parseToolSandbox(uc[TOOL_SANDBOX_KEY])
       savedMap.value = { ...parsed }
       workMap.value = { ...parsed }
-      // 同一次加载顺带取 server 级沙箱开启数（两页状态互见摘要）
-      serverSandboxOn.value = countServerSandboxOn(uc.mcpServers)
     } catch (e) {
       console.warn('[useToolSandbox] load user config failed:', e)
       savedMap.value = {}
       workMap.value = {}
+    }
+  }
+
+  // 读 MCP 四级文件化列表（data-mcp-list）→ server 级沙箱开启数（两页状态互见摘要）。
+  async function loadServerSandboxCount() {
+    try {
+      serverSandboxOn.value = countServerSandboxOn(await listMcpServers())
+    } catch (e) {
+      console.warn('[useToolSandbox] load mcp list failed:', e)
       serverSandboxOn.value = 0
     }
   }
@@ -153,6 +160,7 @@ export function useToolSandbox() {
 
   async function reload() {
     await loadUserConfig()
+    await loadServerSandboxCount()
     await loadTools()
     await loadTrustDirs()
   }

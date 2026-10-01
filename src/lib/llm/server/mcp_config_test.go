@@ -1,8 +1,8 @@
 // MCP 配置四级文件化（2026-10-01）白盒：
 //   - 冷缓存退化放行：filterWhitelistByLevel 在可见工具缓存为空（未预热）时**原样返回**白名单
 //     （不误剔合法工具）；缓存非空时按场景级别矩阵静默剔除（对照）；
-//   - gateway 配置来源：四级文件化视图（McpList）∪ 旧 usr KV `mcpServers` 回落
-//     （四级里没有该名才回落 KV）；**同名跨级只生效一份**（对账输入恒一名一条）。
+//   - gateway 配置来源：四级文件化视图（McpList）**唯一**来源（旧 usr KV `mcpServers` 已彻底废弃、
+//     代码零兼容）；**同名跨级只生效一份**（数据层按名整条覆盖 → 对账输入恒一名一条）。
 package server
 
 import (
@@ -53,25 +53,17 @@ func TestFilterWhitelistColdCachePassThrough(t *testing.T) {
 	}
 }
 
-// TestLoadEffectiveMcpEntriesKvFallback 四级文件化视图 + 旧 KV 回落；同名只一份（文件优先）。
-func TestLoadEffectiveMcpEntriesKvFallback(t *testing.T) {
+// TestLoadGatewayServersFileView 四级文件化视图 = 唯一来源；同名跨级只一份（最具体级整条覆盖）。
+func TestLoadGatewayServersFileView(t *testing.T) {
 	data.Reset()
 	t.Cleanup(data.Reset)
 	path := t.TempDir() + "/usr.db"
 	api := inline.NewWithOptions(nil, persist.Options{UsrPath: path, AppDir: t.TempDir()})
 
-	// 旧 usr KV `mcpServers`：legacy1（仅 KV）+ shared（KV 版，将被文件版覆盖）
-	if _, err := api.UserConfigSet(facade.UserConfigSetRequest{Entries: map[string]any{
-		"mcpServers": []any{
-			map[string]any{"name": "legacy1", "url": "http://legacy1", "enabled": true},
-			map[string]any{"name": "shared", "url": "http://kv-shared", "enabled": true},
-		},
-	}}); err != nil {
-		t.Fatalf("seed usr mcps KV: %v", err)
-	}
-	// 四级文件化：shared（user 级，覆盖 KV 同名）+ file1
+	// app 级 shared + file1；user 级 shared 同名（应整条覆盖 app 级）。
 	for _, srv := range []facade.McpServer{
-		{Name: "shared", URL: "http://file-shared", Enabled: true, Level: "user"},
+		{Name: "shared", URL: "http://app-shared", Enabled: true, Level: "app"},
+		{Name: "shared", URL: "http://user-shared", Enabled: true, Level: "user"},
 		{Name: "file1", URL: "http://file1", Enabled: true, Level: "user"},
 	} {
 		if _, err := api.McpSave(facade.McpSaveRequest{Server: srv}); err != nil {
@@ -80,23 +72,20 @@ func TestLoadEffectiveMcpEntriesKvFallback(t *testing.T) {
 	}
 
 	s := &Server{cfg: api, opts: Options{UsrPath: path}}
-	entries := s.loadEffectiveMCPEntries()
+	entries := s.loadMcpFileEntries()
 
-	byName := map[string]usrMCPEntry{}
+	byName := map[string]mcpEntry{}
 	for _, e := range entries {
 		if _, dup := byName[e.Name]; dup {
-			t.Fatalf("同名跨级/跨源应只生效一份：%q 重复", e.Name)
+			t.Fatalf("同名跨级应只生效一份：%q 重复", e.Name)
 		}
 		byName[e.Name] = e
 	}
-	if len(entries) != 3 {
-		t.Fatalf("生效条目应 = shared + file1 + legacy1 = 3，got %d：%+v", len(entries), entries)
+	if len(entries) != 2 {
+		t.Fatalf("生效条目应 = shared + file1 = 2，got %d：%+v", len(entries), entries)
 	}
-	if byName["shared"].URL != "http://file-shared" {
-		t.Fatalf("同名应以文件为准（覆盖 KV）：%+v", byName["shared"])
-	}
-	if byName["legacy1"].URL != "http://legacy1" {
-		t.Fatalf("四级里没有的 legacy1 应回落旧 KV：%+v", byName["legacy1"])
+	if byName["shared"].URL != "http://user-shared" {
+		t.Fatalf("同名应以最具体级（user）为准：%+v", byName["shared"])
 	}
 	if byName["file1"].URL != "http://file1" {
 		t.Fatalf("文件条目缺失：%+v", byName["file1"])
@@ -108,7 +97,7 @@ func TestLoadEffectiveMcpEntriesKvFallback(t *testing.T) {
 	for _, e := range gatewayEntries {
 		seen[e.ID]++
 	}
-	if len(gatewayEntries) != 3 || seen["shared"] != 1 || seen["legacy1"] != 1 || seen["file1"] != 1 {
+	if len(gatewayEntries) != 2 || seen["shared"] != 1 || seen["file1"] != 1 {
 		t.Fatalf("gateway 生效集应一名一条：%+v", gatewayEntries)
 	}
 }
