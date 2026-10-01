@@ -82,13 +82,11 @@ test('场景编辑：agent 列表改为从 agents/ 选择（只读显示已选�
   assert.doesNotMatch(dlg, /watch\(|watchEffect\(/, '不得用 watch/watchEffect')
 })
 
-test('场景编辑：agent 选择受级别矩阵约束（与工具矩阵同一集合）', () => {
+test('场景编辑：agent 选择受级别矩阵约束（与工具矩阵同一集合，单源 agentAssets）', () => {
   const dlg = read('views/scenario/ScenarioEditDialog.vue')
-  assert.match(dlg, /prjusr: \['prjusr', 'user', 'project', 'app'\]/, '项目私有级 → 四级全可用')
-  assert.match(dlg, /project: \['project', 'app'\]/, '项目级 → 项目+系统')
-  assert.match(dlg, /user: \['user', 'app'\]/, '用户级 → 用户+系统')
-  assert.match(dlg, /app: \['app'\]/, '系统级 → 系统')
-  assert.match(dlg, /allowedAgentLevels\(form\.value\.level/, '按场景级别取可用集合')
+  assert.match(dlg, /from '\.\.\/\.\.\/utils\/agentAssets'/, '级别矩阵单源复用 agentAssets')
+  assert.doesNotMatch(dlg, /const AGENT_LEVEL_MATRIX/, '矩阵不得在场景编辑内重复定义（单源）')
+  assert.match(dlg, /allowedLevels\(form\.value\.level/, '按场景级别取可用集合')
 })
 
 test('i18n：level.prjusr / pick_agent / ref_label / ref_edit_hint 在 zh + en 齐备', () => {

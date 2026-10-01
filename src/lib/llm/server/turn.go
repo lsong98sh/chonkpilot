@@ -134,6 +134,8 @@ type turnCtx struct {
 	maxToolIterations int
 	// allowedTools 本轮工具白名单（来自本轮 agent 的 `tools`，AG-1/AG-C4）：nil = 不限制
 	// （原样下发全部 hot 工具）；非空 → 仅白名单内工具进 LLM 工具面。每轮开始解析一次（热生效）。
+	// P4 2026-10-01：解析后按**场景级别的可用工具级别矩阵**过滤（越权/不存在 → 静默剔除，
+	// 见 filterWhitelistByLevel）——故此处非空集合恒为"场景级别可用 ∩ 本实例可见"的子集。
 	allowedTools map[string]struct{}
 	// keepFullTurns / keepFullTokens / briefBudget 三段边界（项目级 `keep_full_max_turns` /
 	// `keep_full_max_tokens` / `compress_token_threshold`，启动时加载一次）：完整区 = 最近 N 轮 / M token；
@@ -167,7 +169,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	hist, turnTokens := newSessionStore(s.bus, req.InstanceID).BuildContextTokens(req.Session, req.Turn, !req.Continue)
 	// 场景读取一次（AG-1 / AG-2 · 25 §3）：系统提示词三层拼接 + agent 定义（agent 提示词 /
 	// 工具白名单 / LLM 引用 / 委派条件）。每轮开始读一次 = 配置热生效（AG-C5，不缓存到进程级/包级）。
-	desc, agents := s.loadScenario(req.InstanceID, req.ScenarioID)
+	desc, scenarioLevel, agents := s.loadScenario(req.InstanceID, req.ScenarioID)
 	// 本轮生效的 agent 定义：子轮次（req.Agent 非空）= 被委派 agent —— 按**统一判据**
 	// （resolveAgentDef：instance 级场景内同名 agent 优先，未命中回落 global 级 = app 级场景内的内置 agent）
 	// 解析，与 llm_run 的委派判定 agentDelegable 同一来源；顶层轮次 = 主 agent（AG-2，
@@ -212,6 +214,11 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	if agentDef != nil {
 		agentLLMRef = agentDef.LLMRef
 		allowedTools = parseToolWhitelist(agentDef.Tools)
+		if allowedTools != nil {
+			// 级别矩阵过滤（P4 2026-10-01）：越权（工具级别不在场景级别的"可用集合"内）/ 不存在
+			// （不在本实例可见工具面）的名字**静默剔除**（不报错、不中断）；详见 filterWhitelistByLevel。
+			allowedTools = s.filterWhitelistByLevel(req.InstanceID, scenarioLevel, allowedTools)
+		}
 	}
 	llmName := s.resolveAgentLLMName(req.InstanceID, agentLLMRef, "", req.LLMModel)
 	// LLM provider 配置（llm-start.llm = provider name）：命中 → baseUrl/apiKey/model/temperature/
@@ -579,6 +586,42 @@ func (tc *turnCtx) toolAllowed(name string) bool {
 	}
 	_, ok := tc.allowedTools[name]
 	return ok
+}
+
+// filterWhitelistByLevel 按**场景级别的可用工具级别矩阵**过滤白名单（P4 2026-10-01，25 §4）：
+// 保留**在场景级别可用集合内**（同级或更高级）**且在本实例可见工具面内**的名字；
+// 越权（级别不在矩阵里）/ 不存在（不在可见工具面）的名字**静默剔除**（不报错、不中断）。
+//
+// 语义边界（不得影响既有行为）：
+//   - 入参 raw 非 nil（调用方已判空白名单 = nil）→ 只做**收窄**，不回退"不限制"；
+//   - 场景级别无法判定（scenarioLevel 空）→ **原样返回**（保守放行，不误剔除）；
+//   - 工具级别无法判定（第三方 / 无 _meta.server，LevelOfNode 空）→ **放行**（不误剔除）。
+//
+// 矩阵单源 = persist.AgentToolLevels / LevelAllowed（= capfs；与前端 AGENT_LEVEL_MATRIX 逐字一致）。
+func (s *Server) filterWhitelistByLevel(instance, scenarioLevel string, raw map[string]struct{}) map[string]struct{} {
+	if scenarioLevel == "" {
+		return raw
+	}
+	out := make(map[string]struct{}, len(raw))
+	for _, t := range s.visibleTools(instance) {
+		if _, ok := raw[t.Name]; !ok {
+			continue
+		}
+		lvl := toolNodeLevel(t)
+		if lvl != "" && !persist.LevelAllowed(scenarioLevel, lvl) {
+			continue // 越权 → 静默剔除
+		}
+		out[t.Name] = struct{}{}
+	}
+	return out
+}
+
+// toolNodeLevel 取工具的 capability 级别（`_meta.server.node` → capfs.LevelOfNode）；
+// 无 `_meta.server` / 无法判定 → ""（调用方放行）。
+func toolNodeLevel(t ToolDef) string {
+	srv, _ := t.Meta["server"].(map[string]any)
+	node, _ := srv["node"].(string)
+	return persist.LevelOfNode(node)
 }
 
 // chatOnce 执行一轮 LLM 调用并处理输出（reason/text/tool-call → gateway → 回喂）。

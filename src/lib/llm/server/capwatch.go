@@ -82,8 +82,8 @@ func (cw *capWatcher) watchApp(root string) {
 	cw.syncLocked()
 }
 
-// watchInstance 登记并监听某实例可见的用户级 + 项目级 capability 根（幂等）。
-func (cw *capWatcher) watchInstance(workDir string) {
+// watchInstance 登记并监听某实例可见的用户级 + 项目级 + 项目私有级 capability 根（幂等）。
+func (cw *capWatcher) watchInstance(instanceID, workDir string) {
 	if cw == nil {
 		return
 	}
@@ -92,6 +92,9 @@ func (cw *capWatcher) watchInstance(workDir string) {
 	cw.want[normPath(persist.CapUserRoot(cw.s.opts.UsrPath))] = true
 	if workDir != "" {
 		cw.want[normPath(persist.CapProjectRoot(workDir))] = true
+	}
+	if root := cw.s.prjUsrCapRoot(instanceID); root != "" {
+		cw.want[normPath(root)] = true // P4：项目私有级根（prjusr）纳入热生效
 	}
 	cw.syncLocked()
 }

@@ -60,7 +60,7 @@ func TestToolchainPlaceholderScenarioPrompt(t *testing.T) {
 		t.Fatalf("save scenario failed: %+v", res)
 	}
 
-	desc, agents := s.loadScenario("ins-test", "tc-scenario")
+	desc, _, agents := s.loadScenario("ins-test", "tc-scenario")
 	got := s.replaceToolchain("ins-test", scenarioLayer("tc-scenario", desc, agents))
 	if !strings.Contains(got, "java="+toolchainTestJavaPath) {
 		t.Fatalf("场景层未替换 java 路径: %q", got)

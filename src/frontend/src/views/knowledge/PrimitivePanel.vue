@@ -148,7 +148,7 @@ const paramsVersion = ref(0)
 // 「恢复默认」：用户级/项目级原语可一键回填**上一级**（项目→用户→系统 app；用户→系统 app）
 // 的同名原语。系统级（app）只读（无编辑入口）→ 不显示该按钮。回填仅改本表单（未保存草稿），
 // 落库沿用既有【保存】语义（data-knowledge-save）。数据源复用 data-knowledge-read。
-const levelRoots = ref({}) // { app, user, project } → 各级 capability 根（绝对路径）
+const levelRoots = ref({}) // { app, user, project, prjusr } → 各级 capability 根（绝对路径）
 const upperSource = ref(null) // { level, doc }：最近可回填的上一级原语（无则 null → 按钮禁用）
 
 const form = reactive({ title: '', metaRows: [], description: '', parameters: '', content: '' })
@@ -247,17 +247,18 @@ function normPath(p) {
   return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '')
 }
 
-// 当前原语所属级别：按 capability 根前缀归属（具体级优先）。app 级 = 系统只读，不提供恢复默认。
+// 当前原语所属级别：按 capability 根前缀归属（具体级优先 prjusr > project > user > app）。
+// app 级 = 系统只读，不提供恢复默认；prjusr 本轮仅用于**工具候选级别矩阵过滤**，恢复默认链未扩展。
 const curLevel = computed(() => {
   const p = normPath(props.path)
   if (!p) return ''
-  for (const lv of ['project', 'user', 'app']) {
+  for (const lv of ['prjusr', 'project', 'user', 'app']) {
     const r = normPath(levelRoots.value[lv])
     if (r && (p === r || p.startsWith(r + '/'))) return lv
   }
   return ''
 })
-// 上一级链（项目→用户→系统 app；用户→系统 app；系统级无）
+// 上一级链（项目→用户→系统 app；用户→系统 app；项目私有 / 系统级无）
 const upperLevels = computed(() => {
   if (curLevel.value === 'project') return ['user', 'app']
   if (curLevel.value === 'user') return ['app']
@@ -303,10 +304,10 @@ async function load() {
   }
 }
 
-// 取三级 capability 根（用于判定当前原语的级别，从而定出上一级）。
+// 取四级 capability 根（用于判定当前原语的级别，从而定出上一级 + 工具候选级别矩阵过滤）。
 async function loadLevelRoots() {
   const out = {}
-  for (const k of ['app', 'user', 'project']) {
+  for (const k of ['prjusr', 'project', 'user', 'app']) {
     try {
       const r = await getKnowledgeRoot(k)
       out[k] = (r && r.root) || ''
@@ -431,9 +432,9 @@ onMounted(async () => {
   // 「恢复默认」依赖三级根判定当前级别 → 解析后探测上一级同名原语
   await loadLevelRoots()
   await resolveUpperSource()
-  // 智能体原语：装载 LLM 选项 + 运行时工具分组（供 AgentEditor 工具树）
+  // 智能体原语：装载 LLM 选项 + 运行时工具分组（供 AgentEditor 工具树；按原语级别矩阵过滤）
   if (isAgent.value) {
-    const [lo, tg] = await Promise.all([loadLlmOptions(t), loadToolGroups()])
+    const [lo, tg] = await Promise.all([loadLlmOptions(t), loadToolGroups(curLevel.value, t)])
     llmOptions.value = lo
     toolGroups.value = tg
     allToolCategories.value = tg
