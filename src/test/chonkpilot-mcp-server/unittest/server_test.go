@@ -60,7 +60,7 @@ func copyDir(t *testing.T, src, dst string) {
 }
 
 // mergedContracts 合并出厂契约（唯一源 `src/initdata/capability`）到临时根
-// （root/tools + root/knowledge/{skills,prompts,resources}，mcp-server 单根递归扫描）。
+// （root/{skills,prompts,resources} + root/tools，**扁平**；mcp-server 单根递归扫描）。
 func mergedContracts(t *testing.T, root *string) func() {
 	t.Helper()
 	repo := repoRoot(t)
@@ -70,8 +70,8 @@ func mergedContracts(t *testing.T, root *string) func() {
 	}
 	initCap := filepath.Join(repo, "src", "initdata", "capability")
 	for _, prim := range []string{"skills", "prompts", "resources"} {
-		copyDir(t, filepath.Join(initCap, "knowledge", prim),
-			filepath.Join(tmp, "knowledge", prim))
+		copyDir(t, filepath.Join(initCap, prim),
+			filepath.Join(tmp, prim))
 	}
 	copyDir(t, filepath.Join(initCap, "tools"),
 		filepath.Join(tmp, "tools"))

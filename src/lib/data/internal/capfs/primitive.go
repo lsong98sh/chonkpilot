@@ -1,8 +1,9 @@
 // mcp 四原语契约解析/组装 + 文件名规范化（原 persist/persist_knowledge.go 的契约段逐字下移）。
 //
 // 文件格式 = mcp 四原语统一契约（# 标题 + [meta] k=v + [description] + [parameters]|[arguments]
-// + [content]，与 chonkpilot-mcp-server/server/contract.go 一致）；capability 根下分层目录：
-// `tools/`（工具）+ `knowledge/{skills,prompts,resources}`（技能/提示词/资源），见 capfs 包注释。
+// + [content]，与 chonkpilot-mcp-server/server/contract.go 一致）；capability 根下 **6 个扁平
+// 子目录**：`prompts/` `tools/` `resources/` `skills/` `agents/` `scenarios/`（**删除**旧
+// `knowledge/**` 归并层），见 capfs 包注释。
 package capfs
 
 import (
@@ -12,21 +13,25 @@ import (
 	"strings"
 )
 
-// Type 四类原语（目录名复数 ↔ 文件后缀单数 ↔ 显示名）。
+// Type 一类能力面条目（目录名复数 ↔ 文件后缀单数 ↔ 显示名）。
 type Type struct {
-	Dir   string // 类型目录名（tools/skills/prompts/resources）
-	Rel   string // 相对 capability 根的物理路径（tools；knowledge/skills…）
-	Token string // 文件后缀 token（tool/skill/prompt/resource）
-	Label string // 显示名（工具/技能/提示词/资源）
+	Dir   string // 类型目录名（prompts/tools/resources/skills/agents/scenarios）
+	Rel   string // 相对 capability 根的物理路径（= Dir；扁平子目录）
+	Token string // 文件后缀 token（prompt/tool/resource/skill/agent/scenario）
+	Label string // 显示名（提示词/工具/资源/技能/智能体/场景）
 }
 
-// Types 是四类原语的规范清单（顺序即知识库根下的展示顺序）。
-// Rel = 相对 capability 根的物理路径（工具在 `tools/`，其余在 `knowledge/` 下）。
+// Types 是 6 类能力面条目的规范清单（顺序即知识库根下的展示顺序）。
+// Rel = 相对 capability 根的物理路径（**扁平**：Rel == Dir；旧 `knowledge/**` 归并层已删除）。
+// 场景（scenario）为**目录**形态（`scenarios/<场景目录>/`，非 `*.scenario.md` 文件）——
+// 目录/文件规则沿用现状（见 scenario.go）；此处仅提供类型名映射。
 var Types = []Type{
-	{Dir: "tools", Rel: "tools", Token: "tool", Label: "工具"},
-	{Dir: "skills", Rel: "knowledge/skills", Token: "skill", Label: "技能"},
-	{Dir: "prompts", Rel: "knowledge/prompts", Token: "prompt", Label: "提示词"},
-	{Dir: "resources", Rel: "knowledge/resources", Token: "resource", Label: "资源"},
+	{Dir: DirPrompts, Rel: DirPrompts, Token: "prompt", Label: "提示词"},
+	{Dir: DirTools, Rel: DirTools, Token: "tool", Label: "工具"},
+	{Dir: DirResources, Rel: DirResources, Token: "resource", Label: "资源"},
+	{Dir: DirSkills, Rel: DirSkills, Token: "skill", Label: "技能"},
+	{Dir: DirAgents, Rel: DirAgents, Token: "agent", Label: "智能体"},
+	{Dir: DirScenarios, Rel: DirScenarios, Token: "scenario", Label: "场景"},
 }
 
 func typeByDir(dir string) *Type {
@@ -185,7 +190,7 @@ func Template(token, name string) Doc {
 	case "resource":
 		doc.Meta["uri"] = ""
 		doc.Meta["mimetype"] = ""
-	default: // skill
+	default: // skill / agent / scenario（最小 doc：仅标题 + 描述）
 	}
 	return doc
 }

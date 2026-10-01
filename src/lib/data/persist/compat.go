@@ -6,7 +6,7 @@
 //   - **优先改走门面**：域行为一律经 `facade.API`（各域门面面），本文件**不承载任何逻辑**；
 //   - **转发仅限「非域行为的契约/helper」**：工具消息 content 契约（role=tool 的
 //     {call,result,async} 形状，被 llm server 读写消息时直接解析）、capability 根路径规则
-//     （装配层按同一规则解析三级根，避免路径规则分叉）、记忆库类别名清单（system prompt 指引
+//     （装配层按同一规则解析四级根，避免路径规则分叉）、记忆库类别名清单（system prompt 指引
 //     列举的数据源）、记录值转字符串 helper（测试断言用）。
 //
 // 转发清单（下沉前 → 现实现）：
@@ -14,7 +14,7 @@
 //	Sval / SvalOf                 → internal/kernel.Sval
 //	ToolContent 家族 / ParseToolContent → internal/kernel（role=tool content 契约）
 //	ToolStatus*（生命周期常量）    → internal/kernel
-//	CapUserRoot / CapProjectRoot  → internal/capfs（三级 capability 根规则）
+//	CapUserRoot / CapProjectRoot  → internal/capfs（四级 capability 根规则；系统级/项目私有级由数据层内部解析）
 //	MemoryUserCategory / MemoryCategoryNames → internal/memory
 package persist
 
@@ -57,10 +57,10 @@ const (
 // ParseToolContent 解析 role=tool 消息 content（新结构优先，旧 ToolPairPayload 自动归一）。
 func ParseToolContent(content string) (ToolContent, bool) { return kernel.ParseToolContent(content) }
 
-// ── 三级 capability 根规则（internal/capfs）──────────────────────
+// ── 四级 capability 根规则（internal/capfs）──────────────────────
 
 // CapUserRoot 用户级 capability 根（~/.chonkpilot/capability；usrPath 注入时随其所在目录）。
-// 装配层按同一规则解析三级根，避免路径规则分叉。
+// 装配层按同一规则解析四级根，避免路径规则分叉。
 func CapUserRoot(usrPath string) string { return capfs.UserRoot(usrPath) }
 
 // CapProjectRoot 项目级 capability 根（<workdir>/.chonkpilot/capability）。

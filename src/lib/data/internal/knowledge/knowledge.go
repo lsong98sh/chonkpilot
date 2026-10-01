@@ -2,9 +2,10 @@
 // （阶段 4「internal 下沉」：由 `chonkpilot-data/persist` 下沉至此）。
 //
 // 覆盖：知识库 = capability 原语文件树（根解析 / 目录列举 / 契约文档读写 / 增删改名 / 建删目录）。
-// 把「领域字段 + 条目名」翻译成三级 capability 根下的**文件路径**（路径解析 / 归属判定留在
-// 本侧；门面不交路径规则）；契约分区文本与门面文档领域形态的翻译收在 capfs（契约解析/组装）+
-// `facade/wire`（载荷形状）。
+// 把「领域字段 + 条目名」翻译成**四级** capability 根（系统/用户/项目/项目私有）下的**文件路径**
+// （路径解析 / 归属判定留在本侧；门面不交路径规则）；契约分区文本与门面文档领域形态的翻译收在
+// capfs（契约解析/组装）+ `facade/wire`（载荷形状）。每级下 6 个扁平子目录（prompts/tools/
+// resources/skills/agents/scenarios，旧 `knowledge/**` 归并层已删除）。
 //
 // ⚠️ 作用域校验（G-26，**不得绕过**）：`KnowledgeRename` / `KnowledgeRenameDir` 的目标解析一律
 // 走 `kbResolveMoveTarget`（逐段净化 + 严格落在源根内 + `kbRootOf` 归属复检同根 + 拒"移入自身"）
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
@@ -72,7 +74,7 @@ func kbDocFromFacade(d facade.KnowledgeDoc) capfs.Doc {
 	}
 }
 
-// KnowledgeRoot 解析知识库根（kind = app / user / project；空 = app）。
+// KnowledgeRoot 解析知识库根（kind = app / user / project / prjusr；空 = app）。
 func (s *Service) KnowledgeRoot(req facade.KnowledgeRootRequest) (facade.KnowledgeRootResponse, error) {
 	kind := req.Kind
 	if kind == "" {
@@ -80,6 +82,11 @@ func (s *Service) KnowledgeRoot(req facade.KnowledgeRootRequest) (facade.Knowled
 	}
 	var root string
 	switch kind {
+	case capfs.KindPrjUsr:
+		root = s.kbPrjUsrCapRoot(req.InstanceID, req.Scope)
+		if root == "" {
+			return facade.KnowledgeRootResponse{}, fmt.Errorf("kb root: 项目私有级（prjusr）capability 根解析失败")
+		}
 	case capfs.KindProject:
 		workDir, err := s.WorkDirFor(req.InstanceID, req.Scope)
 		if err != nil {
@@ -99,14 +106,14 @@ func (s *Service) KnowledgeRoot(req facade.KnowledgeRootRequest) (facade.Knowled
 	return facade.KnowledgeRootResponse{Root: filepath.ToSlash(root), Kind: kind}, nil
 }
 
-// KnowledgeList 列举目录下内容（根目录首次打开自动预置分层目录：
-// `tools/` + `knowledge/{skills,prompts,resources}`）。
+// KnowledgeList 列举目录下内容（根目录首次打开自动预置 **6 个扁平子目录**：
+// `prompts/` `tools/` `resources/` `skills/` `agents/` `scenarios/`）。
 func (s *Service) KnowledgeList(req facade.KnowledgeListRequest) (facade.KnowledgeListResponse, error) {
 	workDir, err := s.WorkDirFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.KnowledgeListResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Dir)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Dir)
 	if err != nil {
 		return facade.KnowledgeListResponse{}, err
 	}
@@ -158,7 +165,7 @@ func (s *Service) KnowledgeRead(req facade.KnowledgeReadRequest) (facade.Knowled
 	if err != nil {
 		return facade.KnowledgeReadResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Path)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Path)
 	if err != nil {
 		return facade.KnowledgeReadResponse{}, err
 	}
@@ -179,7 +186,7 @@ func (s *Service) KnowledgeSave(req facade.KnowledgeSaveRequest) (facade.Knowled
 	if err != nil {
 		return facade.KnowledgeSaveResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Path)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Path)
 	if err != nil {
 		return facade.KnowledgeSaveResponse{}, err
 	}
@@ -208,7 +215,7 @@ func (s *Service) KnowledgeCreate(req facade.KnowledgeCreateRequest) (facade.Kno
 	if err != nil {
 		return facade.KnowledgeCreateResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Dir)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Dir)
 	if err != nil {
 		return facade.KnowledgeCreateResponse{}, err
 	}
@@ -232,7 +239,7 @@ func (s *Service) KnowledgeDelete(req facade.KnowledgeDeleteRequest) (facade.Kno
 	if err != nil {
 		return facade.KnowledgeDeleteResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Path)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Path)
 	if err != nil {
 		return facade.KnowledgeDeleteResponse{}, err
 	}
@@ -252,12 +259,12 @@ func (s *Service) KnowledgeRename(req facade.KnowledgeRenameRequest) (facade.Kno
 	if err != nil {
 		return facade.KnowledgeRenameResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Path)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Path)
 	if err != nil {
 		return facade.KnowledgeRenameResponse{}, err
 	}
 	oldP := capfs.SafeJoin(root, req.Path)
-	newP, err := s.kbResolveMoveTarget(workDir, root, oldP, req.NewName, false)
+	newP, err := s.kbResolveMoveTarget(req.InstanceID, req.Scope, workDir, root, oldP, req.NewName, false)
 	if err != nil {
 		return facade.KnowledgeRenameResponse{}, err
 	}
@@ -280,7 +287,7 @@ func (s *Service) KnowledgeMkdir(req facade.KnowledgeMkdirRequest) (facade.Knowl
 	if err != nil {
 		return facade.KnowledgeMkdirResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Parent)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Parent)
 	if err != nil {
 		return facade.KnowledgeMkdirResponse{}, err
 	}
@@ -296,7 +303,7 @@ func (s *Service) KnowledgeRmdir(req facade.KnowledgeRmdirRequest) (facade.Knowl
 	if err != nil {
 		return facade.KnowledgeRmdirResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Path)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Path)
 	if err != nil {
 		return facade.KnowledgeRmdirResponse{}, err
 	}
@@ -315,12 +322,12 @@ func (s *Service) KnowledgeRenameDir(req facade.KnowledgeRenameDirRequest) (faca
 	if err != nil {
 		return facade.KnowledgeRenameDirResponse{}, err
 	}
-	root, err := s.kbRootOf(workDir, req.Path)
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Path)
 	if err != nil {
 		return facade.KnowledgeRenameDirResponse{}, err
 	}
 	oldP := capfs.SafeJoin(root, req.Path)
-	newP, err := s.kbResolveMoveTarget(workDir, root, oldP, req.NewName, true)
+	newP, err := s.kbResolveMoveTarget(req.InstanceID, req.Scope, workDir, root, oldP, req.NewName, true)
 	if err != nil {
 		return facade.KnowledgeRenameDirResponse{}, err
 	}
@@ -350,10 +357,33 @@ func kbProjectRoot(workDir string) string {
 	return capfs.ProjectRoot(workDir)
 }
 
-// kbRootOf 由路径推导知识库根：绝对路径按前缀归属 app/user/project（具体级优先），
-// 相对路径默认 project 根（与旧行为一致：前端多回传 list 给出的绝对路径）。
-func (s *Service) kbRootOf(workDir, rel string) (string, error) {
+// kbPrjUsrRoot 项目私有级知识库根（<prjusr 数据根>/capability = ~/.chonkpilot/data/<project-id>/capability）：
+// 先打开 prj 库 → EnsureProjectID → 解析根（4 级恒可用，不把"未初始化"当前提）。
+// 解析不出（实例未登记 / 打开 prj 失败 / project-id 缺失）→ 返回 ""（不阻断 app/user/project 三级）。
+func (s *Service) kbPrjUsrCapRoot(instanceID string, scope facade.Scope) string {
+	workDir, dataDir, err := s.CfgInstBind(instanceID, scope)
+	if err != nil {
+		return ""
+	}
+	prj, release, err := kernel.OpenPrjLayer(workDir, dataDir)
+	if err != nil {
+		return ""
+	}
+	defer release()
+	id, err := data.EnsureProjectID(prj)
+	if err != nil || id == "" {
+		return ""
+	}
+	return capfs.PrjUsrRoot(id)
+}
+
+// kbRootOf 由路径推导知识库根：绝对路径按前缀归属 **项目私有 > 项目 > 用户 > 系统**（具体级优先），
+// 相对路径默认项目级根（与旧行为一致：前端多回传 list 给出的绝对路径）。
+func (s *Service) kbRootOf(instanceID string, scope facade.Scope, workDir, rel string) (string, error) {
 	roots := []string{}
+	if prjUsr := s.kbPrjUsrCapRoot(instanceID, scope); prjUsr != "" {
+		roots = append(roots, prjUsr)
+	}
 	if workDir != "" {
 		roots = append(roots, kbProjectRoot(workDir))
 	}
@@ -362,23 +392,22 @@ func (s *Service) kbRootOf(workDir, rel string) (string, error) {
 		roots = append(roots, app)
 	}
 	rel = strings.ReplaceAll(rel, "\\", "/")
-	abs := filepath.IsAbs(rel)
-	cleanAbs := ""
-	if abs {
-		cleanAbs = filepath.ToSlash(filepath.Clean(rel))
+	if !filepath.IsAbs(rel) {
+		// 相对路径默认归属项目级根（旧行为）；无项目级 → 首级。
+		if workDir != "" {
+			return kbProjectRoot(workDir), nil
+		}
+		if len(roots) > 0 {
+			return roots[0], nil
+		}
+		return "", fmt.Errorf("kb root: no capability root available")
 	}
+	cleanAbs := filepath.ToSlash(filepath.Clean(rel))
 	for _, root := range roots {
 		rootSlash := strings.TrimSuffix(filepath.ToSlash(root), "/")
-		if abs {
-			if cleanAbs == rootSlash || strings.HasPrefix(cleanAbs, rootSlash+"/") {
-				return root, nil
-			}
-			continue
+		if cleanAbs == rootSlash || strings.HasPrefix(cleanAbs, rootSlash+"/") {
+			return root, nil
 		}
-		return root, nil // 相对路径默认归属 project 根
-	}
-	if len(roots) == 0 {
-		return "", fmt.Errorf("kb root: no capability root available")
 	}
 	return "", fmt.Errorf("kb root: path %q outside knowledge roots", rel)
 }
@@ -392,9 +421,9 @@ func (s *Service) kbRootOf(workDir, rel string) (string, error) {
 // 作用域（安全底线，四条）：
 //  1. 逐段校验：拒绝空段 / `.` / `..`，其余段经 capfs.SanitizeName 净化（分隔符与非法字符）；
 //  2. 目标必须**严格**落在源根内（capfs.StrictlyWithin；Join 各段已无 `..`，此处再兜底）；
-//  3. 目标再经 kbRootOf **归属复检** = 与源同一根 —— 跨级移动（project↔user↔app）一律拒绝；
+//  3. 目标再经 kbRootOf **归属复检** = 与源同一根 —— 跨级移动（prjusr↔project↔user↔app）一律拒绝；
 //  4. 目标不得是源自身或其子路径（目录不能移入自己）。
-func (s *Service) kbResolveMoveTarget(workDir, root, oldP, newName string, isDir bool) (string, error) {
+func (s *Service) kbResolveMoveTarget(instanceID string, scope facade.Scope, workDir, root, oldP, newName string, isDir bool) (string, error) {
 	name := strings.TrimSpace(newName)
 	if name == "" {
 		return "", fmt.Errorf("new_name required")
@@ -444,7 +473,7 @@ func (s *Service) kbResolveMoveTarget(workDir, root, oldP, newName string, isDir
 	if !capfs.StrictlyWithin(root, target) {
 		return "", fmt.Errorf("new_name: target %q outside knowledge root", newName)
 	}
-	tRoot, err := s.kbRootOf(workDir, filepath.ToSlash(target))
+	tRoot, err := s.kbRootOf(instanceID, scope, workDir, filepath.ToSlash(target))
 	if err != nil {
 		return "", fmt.Errorf("new_name: target %q: %v", newName, err)
 	}

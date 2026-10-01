@@ -72,7 +72,7 @@ HIST_DATA = os.path.join(HERE, "_cfg_hist_data")
 # 底座实例端口（由外部启动，case D 的清理**绝不能**波及它）
 BASE_PORT = 2345
 
-# G 用例（本波新改动：恢复默认 / 知识库右键菜单）使用的三级 capability 根
+# G 用例（本波新改动：恢复默认 / 知识库右键菜单）使用的四级 capability 根
 APP_CAP = os.path.join(ROOT, "dist", "desktop", "capability")          # 系统级（只读）
 PROJ_CAP = os.path.join(WS, ".chonkpilot", "capability")               # 项目级
 PROJ_TOOL_DIR = os.path.join(PROJ_CAP, "tools", "core")

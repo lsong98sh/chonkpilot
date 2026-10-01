@@ -53,12 +53,20 @@ func main() {
 	flag.StringVar(&promptFile, "prompt-file", "", "提示词文件路径（与 --prompt 二选一）")
 	flag.StringVar(&scenario, "scenario", "", "场景目录名（空=默认场景）")
 	flag.StringVar(&workDir, "work-dir", "", "工作目录（默认 cwd）")
-	flag.StringVar(&dataDir, "data-dir", "", "源项目数据目录（可选；仅用于读取 prj 配置副本，会话数据一律写临时目录）")
+	flag.StringVar(&dataDir, "data-dir", "", "数据根（不传=真实根；留空=强制临时隔离；给路径=该路径作数据根）")
 	flag.StringVar(&output, "output", "sse", "输出模式：sse（流式）/ final（仅最终结果）/ verbose（全报文 dump）")
 	flag.StringVar(&llmModel, "llm", "", "LLM 模型名（默认 server 配置）")
 	flag.StringVar(&think, "think", "", "思考模式（high / medium / low）")
 	flag.StringVar(&effort, "effort", "", "思考力度（high / medium / low）")
 	flag.Parse()
+
+	// dataDirSet 区分「--data-dir 未传」与「--data-dir=（显式留空）」（三态数据根语义，见 dataprep.go）
+	dataDirSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "data-dir" {
+			dataDirSet = true
+		}
+	})
 
 	if prompt == "" && promptFile == "" {
 		// 尝试从 stdin 读取
@@ -99,14 +107,14 @@ func main() {
 	}
 	workDir = resolveDir(workDir)
 
-	// -- 数据根 = 临时目录（v6：复制三级配置、会话隔离、退出即弃） --
-	tmpDataDir, cleanupData, err := prepareTempDataDir(workDir, dataDir)
+	// -- 数据根（三态语义：未传=真实根 / 留空=临时隔离 / 路径=该路径作数据根） --
+	instDataDir, cleanupData, err := prepareDataDir(workDir, dataDir, dataDirSet)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[cli] prepare data dir:", err)
 		os.Exit(1)
 	}
 	defer cleanupData()
-	dataDir = tmpDataDir
+	dataDir = instDataDir
 
 	instanceID := newUUID()
 

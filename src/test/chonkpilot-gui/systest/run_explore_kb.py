@@ -3,7 +3,7 @@
 
 用例（2026-09-29：工具从知识库分离为独立「工具」页签——「会话」右侧；知识库仅 skill/prompt/resource）：
  C1 五段切换（项目/知识库/项目记忆/会话/工具）v-show 生效 + 工具段在会话右侧
- C2 知识库根展开 → 仅 knowledge 分支（tools 不再显示）+ knowledge 下三类原语目录
+ C2 知识库根展开 → 扁平类型目录（tools 不再显示）+ prompts/resources/skills 三类原语目录
  C3 工具页签 tools→core 展开 → *.tool.md 行出现
  C4 单击 *.tool.md → preview PrimitivePanel（四页签 Tabs、顶部标题非空、保存/恢复按钮）
 C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变；meta 键值表单；「参数」JSON Schema 树
@@ -23,13 +23,14 @@ C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变�
   - 知识库根行 = "<知识库> -<级别>"（默认系统级 → "知识库 -系统"）；旧根行名 "capability" 已移除。
   - 项目侧原语路径：`@mcp/` 旧名已按 spec 60-名词约定（P1-3）迁移为
     `<workDir>/.chonkpilot/capability`（= 项目级知识库根）。项目**文件树**不暴露 `.chonkpilot`
-    （实测 filetree 仅列非点目录），且 `data-knowledge-read/list` 只认三级 capability 根内的路径
+    （实测 filetree 仅列非点目录），且 `data-knowledge-read/list` 只认四级 capability 根内的路径
     （persist `kbRootOf`）→ 项目级原语改用**知识库树的「项目」级**驱动（C9/C13），
     夹具随之为 `<ws_kb>/.chonkpilot/capability/tools/core/demo.tool.md`。
 
-分层口径（2026-09-29）：capability 根下 = `tools/`（工具契约）+ `knowledge/{skills,prompts,resources}`
-  （技能/提示词/资源）+ 系统级 `executors/`（内置执行器 exe）。故系统级夹具路径相应改为
-  `<CAP_DIR>/knowledge/{skills,prompts,resources}/...`；工具仍在 `<CAP_DIR>/tools/`。
+分层口径（2026-10-01，P1 目录扁平化）：capability 根下 = **6 个扁平子目录**
+  `prompts/`（命令）`tools/`（工具）`resources/`（知识）`skills/`（技能）`agents/`（智能体）
+  `scenarios/`（场景）+ 系统级 `executors/`（内置执行器 exe）；旧 `knowledge/{skills,prompts,resources}`
+  归并层**已删除**。故系统级夹具路径 = `<CAP_DIR>/{skills,prompts,resources}/...`；工具仍在 `<CAP_DIR>/tools/`。
 """
 import json
 import os
@@ -56,10 +57,10 @@ DIR_SMOKE2 = os.path.join(TOOLS_DIR, "smoke_dir2")
 DIR_DEFAULT_NAME = "新建目录"
 DIR_DEFAULT = os.path.join(TOOLS_DIR, DIR_DEFAULT_NAME)
 CORE_FIND = os.path.join(CAP_DIR, "tools", "core", "file_find.tool.md")
-# 非 tools 原语现位于 capability/knowledge/ 下（skills/prompts/resources）
-SKILL_FILE = os.path.join(CAP_DIR, "knowledge", "skills", "sk_s1.skill.md")
-PROMPT_FILE = os.path.join(CAP_DIR, "knowledge", "prompts", "pr_s1.prompt.md")
-RES_FILE = os.path.join(CAP_DIR, "knowledge", "resources", "re_s1.resource.md")
+# 非 tools 原语现位于 capability 根下**扁平**子目录（skills/prompts/resources；旧 knowledge/ 归并层已删）
+SKILL_FILE = os.path.join(CAP_DIR, "skills", "sk_s1.skill.md")
+PROMPT_FILE = os.path.join(CAP_DIR, "prompts", "pr_s1.prompt.md")
+RES_FILE = os.path.join(CAP_DIR, "resources", "re_s1.resource.md")
 # 项目级知识库根（spec 60-名词约定 §115 / persist CapProjectRoot）
 PRJ_CAP = os.path.join(WORK_DIR, ".chonkpilot", "capability")
 PJ_DIR = os.path.join(PRJ_CAP, "tools")
@@ -380,7 +381,7 @@ def prepare_ws():
     if os.path.isdir(WORK_DIR):
         shutil.rmtree(WORK_DIR)
     # 项目级原语夹具：spec 60-名词约定（P1-3）项目级能力根 = <workDir>/.chonkpilot/capability
-    # （旧名 @mcp 已迁移；data-knowledge-* 只认三级 capability 根内路径）
+    # （旧名 @mcp 已迁移；data-knowledge-* 只认四级 capability 根内路径）
     os.makedirs(os.path.join(PJ_DIR, "core"))
     demo = os.path.join(PJ_DIR, "core", "demo.tool.md")
     with open(demo, "w", encoding="utf-8") as f:
@@ -471,25 +472,24 @@ def main():
             ok = kb.poll(lambda: kb.mode_active() and (kb.mode_active()[0] == "Knowledge" or kb.mode_active()[0] == "知识库"))
             assert ok, f"toggle 切知识库失败 active={kb.mode_active()}"
 
-        # ── C2 知识库根（系统级）→ 仅 knowledge 分支（tools 已分离）+ 三类原语目录 ──
+        # ── C2 知识库根（系统级）→ 扁平子目录（tools 已分离）+ 三类原语目录 ──
         def c2():
             # 根行口径（2026-09-15 迁移）：知识库树根 = "<知识库> -<级别>"
             # （KnowledgeTree.loadRoot：t('fileTree.titleKey') + ' -' + 级别标签），
             # 默认级别 = 系统级 → "知识库 -系统"。旧行名 "capability" 已随根命名改造移除。
-            # 2026-09-29：工具已从知识库分离（独立「工具」页签）→ 知识库树**只剩** knowledge 分支。
+            # 2026-10-01（P1 扁平化）：根下直接是 6 个扁平子目录（旧 `knowledge/` 容器已删）；
+            # 工具已分离（独立「工具」页签）→ 知识库树展示 prompts/resources/skills。
             assert kb.switch_mode("knowledge"), f"切知识库失败 active={kb.mode_active()}"
             rows = kb.kb_rows()
             assert rows, "知识库树无行（根未加载）"
             root_label = kb.row_label(rows[0])
             assert root_label.startswith("知识库"), f"知识库根行名异常：{root_label!r}"
             assert kb.click_kb_root(), f"点击知识库根失败：{root_label}"
-            assert kb.wait_kb_row("knowledge", True), "知识库根未展开出 knowledge"
             assert not any(kb.row_label(r) == "tools" for r in kb.kb_rows()), \
                 "知识库不应再显示 tools（工具已分离到「工具」页签）"
-            # knowledge 展开 → 三类原语目录 skills/prompts/resources
-            assert kb.click_kb_dir("knowledge"), "点击 knowledge 失败"
+            # 扁平类型目录直接可见（prompts/resources/skills）
             for d in ("prompts", "resources", "skills"):
-                assert kb.wait_kb_row(d, True), f"knowledge 下类型目录 {d} 应为目录行"
+                assert kb.wait_kb_row(d, True), f"根下类型目录 {d} 应为目录行"
 
         # ── C3 工具页签：tools→core → *.tool.md（2026-09-29 由知识库迁到独立「工具」页签）──
         def c3():
@@ -619,8 +619,8 @@ def main():
             """项目级原语预览 + 右键菜单（迁移后 = 知识库树「项目」级）。
 
             迁移说明（2026-09-15）：项目侧旧路径 `@mcp/tools/...` 已按 spec 60-名词约定（P1-3）
-            迁移为 `<workDir>/.chonkpilot/capability/{tools,knowledge/{skills,prompts,resources}}`（2026-09-29：非 tools 原语入 `knowledge/` 子目录）；
-            项目**文件树**不暴露 `.chonkpilot`，且 data-knowledge-{list,read} 只认三级 capability
+            迁移为 `<workDir>/.chonkpilot/capability/{tools,skills,prompts,resources,agents,scenarios}`（2026-10-01：P1 扁平化，旧 `knowledge/` 归并层已删）；
+            项目**文件树**不暴露 `.chonkpilot`，且 data-knowledge-{list,read} 只认四级 capability
             根内路径（persist `kbRootOf`）→ 改由知识库树「项目」级驱动。
             """
             assert kb.switch_mode("tools"), "C9 切「工具」页签失败"
@@ -771,21 +771,17 @@ def main():
         def c12():
             # 夹具幂等：清除上一次失败运行残留的目标文件（否则存在性轮询会命中陈旧内容）
             cleanup_fixtures()
-            # 2026-09-29：技能/提示词/资源留在「知识库」页签（工具已分离）→ 切回知识库并展开 knowledge
+            # 2026-10-01（P1 扁平化）：技能/提示词/资源直接位于知识库根下（旧 `knowledge/` 容器已删）
             assert kb.switch_mode("knowledge"), "C12 切知识库失败"
-            assert kb.ensure_kb_expanded(["knowledge"]), "知识库根未展开出 knowledge"
-            if not any(kb.row_label(r) == "skills" and r["d"] for r in kb.kb_rows()):
-                assert kb.click_kb_dir("knowledge"), "点击 knowledge 失败"
-                assert kb.wait_kb_row("skills", True), "knowledge 未展开出 skills"
+            # 幂等展开根（C2 已展开过 → 非幂等 click_kb_root 会**收起**；用 ensure_kb_expanded 只补展开）
+            assert kb.ensure_kb_expanded([]), "知识库根展开失败"
             cases = [
                 ("skills", "New Skill", "新建技能", "sk_s1", SKILL_FILE, ".skill.md"),
                 ("prompts", "New Prompt", "新建提示词", "pr_s1", PROMPT_FILE, ".prompt.md"),
                 ("resources", "New Resource", "新建资源", "re_s1", RES_FILE, ".resource.md"),
             ]
             for dirname, en_label, _zh_label, fname, path, suffix in cases:
-                # 展开类型目录
-                if not any(kb.row_label(r) == dirname and r["d"] for r in kb.kb_rows()):
-                    assert kb.click_kb_dir(dirname), f"点击 {dirname} 失败"
+                # 展开类型目录（扁平：直接位于知识库根下）
                 assert kb.wait_kb_row(dirname, True), f"{dirname} 目录不可见"
                 assert kb.rclick_kb_row(dirname, True), f"右键 {dirname} 失败"
                 kb.poll(lambda: len(kb.kb_menu_texts()) > 0)

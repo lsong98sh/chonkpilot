@@ -3,7 +3,7 @@
 # 背景：契约 md 有「权威源 → capability 部署副本」两处存在形态，同源但可静默分叉：
 #   权威源（出厂数据唯一源 = src/initdata/capability）：
 #        tools/                     <- src/initdata/capability/tools
-#        knowledge/{skills|prompts|resources} <- src/initdata/capability/knowledge/<prim>
+#        {skills|prompts|resources} <- src/initdata/capability/<prim>（2026-10-01 P2 扁平化：旧 knowledge/<prim> 已删）
 #   部署副本（mcp-server 运行时扫描的 capability/）由 build-mcp-server.ps1 覆盖式拷贝而来。
 #   executor **不再内嵌契约**（`--help` 亦从磁盘 capability/tools/<cat>/ 读）→ 无 embed 副本可漂移。
 # 直接手改部署目录 capability/ 会让副本与源分叉（曾现于 file_diff.tool.md：改完静默分叉、无人察觉）。
@@ -53,10 +53,10 @@ Get-ChildItem $toolsSrc -Recurse -File -Include "*.tool.md" | ForEach-Object {
     $map["tools\$($_.FullName.Substring($toolsSrc.Length + 1))"] = $_.FullName
 }
 foreach ($prim in @("skills", "prompts", "resources")) {
-    $src = Join-Path $initCap "knowledge\$prim"
+    $src = Join-Path $initCap $prim
     if (-not (Test-Path $src)) { throw "$prim contracts not found: $src" }
     Get-ChildItem $src -Recurse -File -Include "*.skill.md", "*.prompt.md", "*.resource.md" | ForEach-Object {
-        $map["knowledge\$prim\$($_.FullName.Substring($src.Length + 1))"] = $_.FullName
+        $map["$prim\$($_.FullName.Substring($src.Length + 1))"] = $_.FullName
     }
 }
 $srcHash = @{}

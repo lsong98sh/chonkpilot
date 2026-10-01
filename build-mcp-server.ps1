@@ -9,13 +9,13 @@
 #       │   ├── core/          #   file_find/file_read/... .tool.md
 #       │   ├── desktop/       #   desktop_run.tool.md
 #       │   └── browser/       #   browser_run.tool.md
-#       ├── knowledge/   # 知识库原语
-#       │   ├── skills/      # 技能契约（*.skill.md）
-#       │   ├── prompts/     # 提示词契约（*.prompt.md）
-#       │   └── resources/   # 资源契约（*.resource.md）
+#       ├── skills/      # 技能契约（*.skill.md；扁平）
+#       ├── prompts/     # 提示词契约（*.prompt.md；扁平）
+#       ├── resources/   # 资源契约（*.resource.md；扁平）
 #       └── executors/   # 内置执行器（chonkpilot-{core,desktop,browser}-executor.exe）
 #
-# 源（出厂数据唯一源 = src/initdata）：契约 = src/initdata/capability/{tools,knowledge}；
+# 源（出厂数据唯一源 = src/initdata）：契约 = src/initdata/capability/{prompts,tools,resources,skills}
+#   （2026-10-01 P2 扁平化：删除旧 knowledge/ 归并层）；
 #   exe 外壳 = src/others/mcp-server（lib = src/lib/mcp-server）+ executor = src/lib/mcp-tools。
 #
 # 用法：.\build-mcp-server.ps1
@@ -34,15 +34,13 @@ $dist = Join-Path $root "dist\other"
 $cap = Join-Path $dist "capability"
 
 New-Item -ItemType Directory -Force -Path $cap | Out-Null
-# 历史残留清理：旧布局 executor 曾放 capability 根，且 skills/prompts/resources 曾在 capability 根
+# 历史残留清理：旧布局 executor 曾放 capability 根；skills/prompts/resources 曾在 knowledge/ 归并层下
 foreach ($legacy in @("chonkpilot-core-executor.exe", "chonkpilot-desktop-executor.exe", "chonkpilot-browser-executor.exe")) {
     $legacyPath = Join-Path $cap $legacy
     if (Test-Path $legacyPath) { [System.IO.File]::Delete($legacyPath) }
 }
-foreach ($legacyDir in @("skills", "prompts", "resources")) {
-    $legacyPath = Join-Path $cap $legacyDir
-    if (Test-Path $legacyPath) { [System.IO.Directory]::Delete($legacyPath, $true) }
-}
+$legacyKnowledge = Join-Path $cap "knowledge"
+if (Test-Path $legacyKnowledge) { [System.IO.Directory]::Delete($legacyKnowledge, $true) }
 
 Write-Host "==> [1/3] build mcp-server (standalone exe)"
 Push-Location $cmd
@@ -53,10 +51,10 @@ try {
 } finally { Pop-Location }
 
 Write-Host "==> [2/3] deploy contracts -> capability (src/initdata -> dist/other)"
-# 契约目录覆盖式同步（tools + knowledge 两棵子树，清理历史残留）。
-# 出厂数据唯一源 = src/initdata/capability（[42 决策]）。
+# 契约目录覆盖式同步（4 棵平坦子树：prompts/tools/resources/skills，清理历史 knowledge/ 残留）。
+# 出厂数据唯一源 = src/initdata/capability（[42 决策]；2026-10-01 P2 扁平化）。
 # 注：chonkpilot-mcp-gateway.exe 与 mcp-server exe **同目录共用** capability（build-mcp-gateway.ps1 不再另建副本）。
-foreach ($sub in @("tools", "knowledge")) {
+foreach ($sub in @("prompts", "tools", "resources", "skills")) {
     $srcSub = Join-Path $initCap $sub
     if (-not (Test-Path $srcSub)) { throw "contracts not found: $srcSub" }
     $capSub = Join-Path $cap $sub

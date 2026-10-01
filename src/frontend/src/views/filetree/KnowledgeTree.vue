@@ -114,7 +114,7 @@ function relToRoot(p) {
 }
 
 // 目录是否落在类型范围内：类型目录 / 类型目录下子目录按 token 判定；
-// 通用容器目录（无类型 token，如 capability 根、`knowledge/`）仅在其为某允许类型目录的祖先时显示。
+// 通用容器目录（无类型 token，如 capability 根）仅在其为某允许类型目录的祖先时显示。
 function dirInScope(path) {
   if (!filtering.value) return true
   const tok = nearestTypeToken(path)

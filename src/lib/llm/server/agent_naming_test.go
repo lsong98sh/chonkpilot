@@ -18,16 +18,17 @@ import (
 	"testing"
 )
 
-// appMultiScenarioRoot 造 app 级根（`scenarios/` 与 `capability/` 平级），含**多个**场景：
+// appMultiScenarioRoot 造 app 级 **capability 根**（场景根 = `<capRoot>/scenarios`），含**多个**场景：
 // scenarios = 场景 id → (agent 名 → 提示词)。用于「跨场景同名 agent」用例。
 func appMultiScenarioRoot(t *testing.T, scenarios map[string]map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "capability"), 0o755); err != nil {
+	capRoot := filepath.Join(root, "capability")
+	if err := os.MkdirAll(capRoot, 0o755); err != nil {
 		t.Fatalf("mkdir capability: %v", err)
 	}
 	for id, agents := range scenarios {
-		dir := filepath.Join(root, "scenarios", id)
+		dir := filepath.Join(capRoot, "scenarios", id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir scenario %s: %v", id, err)
 		}
@@ -42,7 +43,7 @@ func appMultiScenarioRoot(t *testing.T, scenarios map[string]map[string]string) 
 			}
 		}
 	}
-	return filepath.Join(root, "capability")
+	return capRoot
 }
 
 // sseRecorder 记录 mock LLM 收到的请求体（并带 mutex 供并发子轮次读取）。
