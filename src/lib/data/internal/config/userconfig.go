@@ -1,7 +1,7 @@
 // 用户配置域（data-user-config-*）v6 存储实现（12-数据层）：
 //
 //   - 标量项 → usr config 表**一个决策一个 key**（值 {"v": <字符串>}）
-//   - 多记录集合 llms / mcps → usr 专用表（脱离整块 JSON）
+//   - 多记录集合 llms → usr 专用表（脱离整块 JSON）
 //
 // 对外**消息契约不变**：load 返回合并对象 {data: {...}}、save 收增量对象（双方仍是同一
 // 形态，61-消息一览 无需变更）；变化只在存储侧（原 user_config 单 key 整块 JSON）。
@@ -57,20 +57,16 @@ var userConfigKeyKinds = map[string]string{
 }
 
 // 多记录集合：usr 专用表。
-const (
-	tableLLMs = "llms"
-	tableMCPs = "mcps"
-)
+const tableLLMs = "llms"
 
 // collectionKeys 是走专用表的集合字段（save 载荷里的名字）。
 var collectionKeys = map[string]string{
-	"llms":       tableLLMs,
-	"mcpServers": tableMCPs,
+	"llms": tableLLMs,
 }
 
 // userConfigFreeKeys 是 usr config 表**自由键**通道的已注册键（G-05 / P2-7）：无类型、
 // 无系统默认，值以字符串形态（JSON 原样）存取——承载既非 typed 用户配置（theme/超时/
-// toolchain 路径等）也非集合（llms/mcps）的用户级薄数据。读写复用既有
+// toolchain 路径等）也非集合（llms）的用户级薄数据。读写复用既有
 // data-user-config-{load,save,delete}（消息契约不变）。
 var userConfigFreeKeys = map[string]bool{
 	// recent_dirs = 最近打开的项目目录（JSON 数组字符串；gui.recent.list 数据源）。
@@ -104,7 +100,7 @@ const LegacyUserConfigKey = "user_config"
 
 // inheritableConfigKeys 是 user-config 域中**可被项目层覆盖**的键及其值类型（02-配置层级
 // §3/§5）：读序 prjusr → prj → usr（本函数以 usr 视图为基线，故只需叠加项目层两级）。
-// 仅 defaultLLM / defaultScenario —— 即"**选哪个**"才可继承；llms/mcps 集合（专用表）、
+// 仅 defaultLLM / defaultScenario —— 即"**选哪个**"才可继承；llms 集合（专用表）、
 // 凭据、theme/locale、chromePath 与超时重试四项按 §5 保持 usr 主库语义，不入列。
 var inheritableConfigKeys = map[string]string{
 	"defaultLLM":      "llmref", // 同 userConfigKeyKinds：能解析为 int 的按 int 还原（旧记录语义）
@@ -171,8 +167,7 @@ var userConfigSystemDefaults = map[string]any{
 func readUserConfig(db *data.DB) map[string]any {
 	llms := readCollection(db, tableLLMs)
 	out := map[string]any{
-		"llms":       llms,
-		"mcpServers": readCollection(db, tableMCPs),
+		"llms": llms,
 	}
 	for key, kind := range userConfigKeyKinds {
 		if v, ok := data.GetConfig(db, key); ok {
@@ -238,11 +233,8 @@ func readUserConfig(db *data.DB) map[string]any {
 func (s *Service) userConfigList(db *data.DB) []map[string]any {
 	view := readUserConfig(db)
 	hasData := false
-	for _, k := range []string{"llms", "mcpServers"} {
-		if arr, ok := view[k].([]map[string]any); ok && len(arr) > 0 {
-			hasData = true
-			break
-		}
+	if arr, ok := view["llms"].([]map[string]any); ok && len(arr) > 0 {
+		hasData = true
 	}
 	if !hasData {
 		for key := range userConfigKeyKinds {
@@ -310,10 +302,8 @@ func deleteUserConfig(db *data.DB) error {
 			return err
 		}
 	}
-	for _, table := range []string{tableLLMs, tableMCPs} {
-		if err := clearCollection(db, table); err != nil {
-			return err
-		}
+	if err := clearCollection(db, tableLLMs); err != nil {
+		return err
 	}
 	return nil
 }
@@ -351,7 +341,7 @@ func scalarString(v any, kind string) string {
 	return string(b)
 }
 
-// ── 专用表（llms / mcps）读写 ─────────────────────────────
+// ── 专用表（llms）读写 ─────────────────────────────
 
 // readCollection 读集合表 → 有序数组（按桶主键数值序，保持前端数组顺序）。
 func readCollection(db *data.DB, table string) []map[string]any {

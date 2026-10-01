@@ -27,7 +27,7 @@
       <Table :columns="mcpColumns" :data="displayData" :empty-text="$t('config.mcp.empty')" size="small">
         <template #action="{ index }">
           <Button text v-mq:[EventNames.configToggleMcp].click="{ index }">
-            {{ mcpServers[index] && mcpServers[index].enabled ? $t('config.mcp.disable') : $t('config.mcp.enable') }}
+            {{ mcpList[index] && mcpList[index].enabled ? $t('config.mcp.disable') : $t('config.mcp.enable') }}
           </Button>
           <Button text v-mq:[EventNames.configEditMcp].click="{ index }">{{ $t('common.edit') }}</Button>
           <Button text type="danger" v-mq:[EventNames.configDeleteMcp].click="{ index }">{{ $t('common.delete') }}</Button>
@@ -55,7 +55,7 @@ const EditMCPDialog = defineAsyncComponent(() => import('./EditMCPDialog.vue'))
 
 const { t } = useI18n()
 
-const mcpServers = ref([])
+const mcpList = ref([])
 const systemMCPs = ref([])
 const selectedBuiltin = ref('')
 // executor 级（tool_sandbox）显式开启数 —— 供「两页状态互见」摘要（读 usr 同一次加载）。
@@ -78,7 +78,7 @@ const mcpColumns = computed(() => [
 ])
 
 const displayData = computed(() =>
-  mcpServers.value.map(s => ({
+  mcpList.value.map(s => ({
     ...s,
     _level: levelLabel(s.level),
     _isolate: isolateLabel(s),
@@ -114,7 +114,7 @@ const builtinOptions = computed(() =>
 async function loadConfig() {
   try {
     // MCP server 列表 = 新数据层 mcp 域（四级文件化合并视图；同名最具体级优先）
-    mcpServers.value = await listMcpServers()
+    mcpList.value = await listMcpServers()
     // executor 级沙箱开启数仍取 usr 配置（两页状态互见摘要）
     const uc = (await getUserConfig()).config || {}
     toolSandboxOn.value = countToolSandboxOn(uc.tool_sandbox)
@@ -148,7 +148,7 @@ async function saveOne(server, oldName, oldLevel, tip) {
 }
 
 function openEditor(data, index) {
-  const orig = index >= 0 ? mcpServers.value[index] : null
+  const orig = index >= 0 ? mcpList.value[index] : null
   const handle = dialog.show(h(EditMCPDialog, {
     initialData: { ...data },
     editIndex: index,
@@ -171,11 +171,11 @@ function addBuiltin() {
   saveOne({ ...DEFAULT_MCP, ...src, enabled: false }, '', '', t('config.mcp.saved'))
 }
 
-function editMCP(index) { openEditor({ ...mcpServers.value[index] }, index) }
+function editMCP(index) { openEditor({ ...mcpList.value[index] }, index) }
 
 async function deleteMCP(index) {
   try { await confirm(t('config.mcp.confirmDelete')) } catch { return }
-  const s = mcpServers.value[index]
+  const s = mcpList.value[index]
   if (!s) return
   try {
     // 按名删（level 空 = 删最具体级副本，与列表所示一致）
@@ -188,7 +188,7 @@ async function deleteMCP(index) {
 }
 
 async function toggleMCP(index) {
-  const s = mcpServers.value[index]
+  const s = mcpList.value[index]
   if (!s) return
   await saveOne({ ...s, enabled: !s.enabled }, '', '')
 }

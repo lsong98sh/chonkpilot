@@ -1064,7 +1064,6 @@ func TestUserConfigLegacyMigration(t *testing.T) {
 		"locale":          "en-US",
 		"responseTimeout": 120,
 		"llms":            []any{map[string]any{"name": "openai", "apiKey": "sk-x"}},
-		"mcpServers":      []any{map[string]any{"name": "local", "enabled": true}},
 	}
 	if err := db.Table("config").Upsert("user_config", data.Record{"v": string(jb(legacy))}); err != nil {
 		t.Fatal(err)
@@ -1083,9 +1082,6 @@ func TestUserConfigLegacyMigration(t *testing.T) {
 	if ll, _ := d["llms"].([]any); len(ll) != 1 {
 		t.Fatalf("llms=%+v", d["llms"])
 	}
-	if ms, _ := d["mcpServers"].([]any); len(ms) != 1 {
-		t.Fatalf("mcpServers=%+v", d["mcpServers"])
-	}
 
 	// 整块已删除；逐 key 与专用表已就位
 	db2, release2, err := data.OpenSharedLayer(usrPath, data.LayerUsr)
@@ -1101,9 +1097,6 @@ func TestUserConfigLegacyMigration(t *testing.T) {
 	}
 	if keys, _ := db2.Table("llms").ListKeys(); len(keys) != 1 {
 		t.Fatalf("llms table keys=%v", keys)
-	}
-	if keys, _ := db2.Table("mcps").ListKeys(); len(keys) != 1 {
-		t.Fatalf("mcps table keys=%v", keys)
 	}
 }
 
@@ -1240,11 +1233,11 @@ func TestDataUserConfigCCompilerPathRoundTrip(t *testing.T) {
 }
 
 // TestDataUserConfigUnknownKeyDeleteErrors（P0-2）：未知键 delete → ok:false + 明确错误，且**不得**
-// 回落「清空整份用户配置」——theme/locale/llms/mcpServers/超时重试四项/自由键等既有配置全部完好。
+// 回落「清空整份用户配置」——theme/locale/llms/超时重试四项/自由键等既有配置全部完好。
 func TestDataUserConfigUnknownKeyDeleteErrors(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 
-	// 预置多类型既有配置：标量（字符串 + int）、集合 llms/mcpServers、自由键 recent_dirs
+	// 预置多类型既有配置：标量（字符串 + int）、集合 llms、自由键 recent_dirs
 	r := dataCall(t, bus, "data-user-config-save", map[string]any{"req_id": "r1", "data": map[string]any{
 		"theme": "dark", "locale": "en-US", "defaultScenario": "s1",
 		"responseTimeout": 300, "streamTimeout": 30, "retryCount": 5, "retryDelay": 9,
@@ -1252,7 +1245,6 @@ func TestDataUserConfigUnknownKeyDeleteErrors(t *testing.T) {
 			"name": "openai", "protocol": "openai", "apiKey": "sk-x", "model": "gpt-4",
 			"baseUrl": "http://127.0.0.1:8901/v1",
 		}},
-		"mcpServers":  []any{map[string]any{"name": "fs", "command": "node"}},
 		"recent_dirs": `["C:/ws/a"]`,
 	}})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
@@ -1285,9 +1277,6 @@ func TestDataUserConfigUnknownKeyDeleteErrors(t *testing.T) {
 	}
 	if ll, _ := d["llms"].([]any); len(ll) != 1 {
 		t.Fatalf("llms 被清空：%+v", d["llms"])
-	}
-	if ms, _ := d["mcpServers"].([]any); len(ms) != 1 {
-		t.Fatalf("mcpServers 被清空：%+v", d["mcpServers"])
 	}
 	if v, _ := d["recent_dirs"].(string); v != `["C:/ws/a"]` {
 		t.Fatalf("自由键 recent_dirs 被清：%v", d["recent_dirs"])

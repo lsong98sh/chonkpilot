@@ -240,7 +240,7 @@ type Server struct {
 	// = 零 ticker，见 sweep_split.go / sweep_inprocess.go）。
 	sweepStop func()
 
-	// usr mcps 保存即生效（T-25）：已下发给 gateway 的集合（对账基线）+ 串行化增量对账。
+	// MCP 四级文件配置保存即生效（T-25）：已下发给 gateway 的集合（对账基线）+ 串行化增量对账。
 	mcpMu      sync.Mutex
 	mcpApplied map[string]mcpgateway.ServerEntry
 
@@ -321,14 +321,14 @@ func New(bus mq.Bus, opts Options) *Server {
 	if !opts.DisableMCP {
 		// 静态装配（RB-5 L5）：能力源（capability 契约）+ 执行配置 + 内嵌 gateway 由**入口
 		// 装配器** `src/lib/assembly` 统一完成（gui / server 两个入口共用一份，避免装配漂移）；
-		// 本函数只接成品 + 注入本层的运行期装配（usr mcps 下游、执行池 sink、dir 扫描器）。
-		usrServers := s.loadGatewayServers()
-		s.applyGatewaySandboxDirs(usrServers) // agentbox：为开启 sandbox 的条目补允许目录快照（启动期实例未注册 → 通常为空，实例注册后经 reconcile 补齐）
+		// 本函数只接成品 + 注入本层的运行期装配（四级文件 MCP 下游、执行池 sink、dir 扫描器）。
+		fileServers := s.loadGatewayServers()
+		s.applyGatewaySandboxDirs(fileServers) // agentbox：为开启 sandbox 的条目补允许目录快照（启动期实例未注册 → 通常为空，实例注册后经 reconcile 补齐）
 		servers := append([]mcpgateway.ServerEntry{}, opts.GatewayServers...)
-		servers = append(servers, usrServers...)
-		// 对账基线 = 本次随 Params.Servers 下发的 usr mcps 集合（T-25：后续保存按增量对账）。
-		s.mcpApplied = make(map[string]mcpgateway.ServerEntry, len(usrServers))
-		for _, e := range usrServers {
+		servers = append(servers, fileServers...)
+		// 对账基线 = 本次随 Params.Servers 下发的四级文件 MCP 集合（T-25：后续保存按增量对账）。
+		s.mcpApplied = make(map[string]mcpgateway.ServerEntry, len(fileServers))
+		for _, e := range fileServers {
 			s.mcpApplied[e.ID] = e
 		}
 		// 执行池控制面适配器（交付 2：层 → 执行侧，进程内直调，不经 MQ）：先建（gateway 需要
@@ -456,7 +456,7 @@ func (s *Server) Start(ctx context.Context) error {
 		{mcpgateway.SubjectMCPChanged, s.onMCPChanged},        // 目录/接入变化（mcp-gateway-changed）→ 刷新工具缓存
 		{"task-deleted", s.onTaskTreeDeleted},                 // persist data-tasktree-delete 级联删除 → 内存同步（不复活）
 		{"data-memory-refresh", s.onMemoryRefresh},            // 记忆域 save/delete 后广播（既有主题）→ 失效类别清单缓存（I-68 ②）
-		{"data-user-config-refresh", s.onUserConfigRefresh},   // usr 配置 save/delete 后广播（既有主题）→ usr mcps 增量对账（T-25 热生效）
+		{"data-user-config-refresh", s.onUserConfigRefresh},   // usr 配置 save/delete 后广播（既有主题）→ tool_async / llms 热生效
 		{"data-mcp-refresh", s.onMCPConfigRefresh},            // MCP 四级文件配置 save/delete 后广播 → 下游 server 增量对账（保存即生效）
 		{"data-prj-config-refresh", s.onPrjConfigRefresh},     // prj 配置 save/delete 后广播（既有主题）→ 执行配置热生效（P0-B：timeout_sec/max_concurrency/skip_dirs）
 		{"data-prj-security-refresh", s.onPrjSecurityRefresh}, // prj-security save/delete 后广播（既有主题）→ agentbox 允许目录热生效（security-* → mcp-server Config / gateway 上游下发）
@@ -738,7 +738,7 @@ func (s *Server) onInstanceRegister(_ string, payload []byte) {
 		return // DisableMCP（宿主自建 gateway）
 	}
 	// agentbox（决策 42 §2 (109)）：实例的 prj `security-*` 此刻才可读 → 为开启 sandbox 的
-	// usr mcps 条目补齐「允许目录快照」，经既有 servers/register 重下发（**零新增主题**）。
+	// MCP 条目补齐「允许目录快照」，经既有 servers/register 重下发（**零新增主题**）。
 	// 仅 sandbox=true 的条目会因快照变化触发一次重注册（respawn 该上游进程）；其余条目
 	// 快照保持 nil → 与已下发集合逐字段相同 → 零 diff、零动作。
 	s.reconcileUserMCPs()

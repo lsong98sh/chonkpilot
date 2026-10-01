@@ -335,7 +335,7 @@ def route_tool_calls(text):
         return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.1",
                                      "async": "manual", "timeout": 1,
                                      "tool_call_display_name": "转后台"})]
-    # ── 第三方 spawned 夹具（slow3p，经 usr mcps 注册后网关拉起；run_tool_async.py D）──
+    # ── 第三方 spawned 夹具（slow3p，经四级文件化 MCP 注册后网关拉起；run_tool_async.py D）──
     # 快工具（回显 pid，供取消前后比对 respawn）；慢工具 call-level async=never + timeout=1
     #（夹具软缺省 never，等价；显式给出保证 1s 到超时点）。
     if "call slow3p-echo" in t:

@@ -3,7 +3,7 @@
 """可「回显自身运行态」的 stdio MCP server 夹具（纯标准库，无第三方依赖）。
 
 用途：`run_mcp_fields.py` 验证 MCP 配置项 **cwd / env / args / isolate** 的**真实效果**——
-经 usr `mcps` 条目（{runtime, args, cwd, env, hot_tools, isolate}）注册后由 gateway 拉起本进程，
+经四级文件化 MCP 条目（{runtime, args, cwd, env, hot_tools, isolate}）注册后由 gateway 拉起本进程，
 `tools/call probe_info` 把**子进程真实可见的** cwd / pid / argv / 指定环境变量以 JSON 文本返回，
 使配置值可被直接断言（不读任何产品内部状态，也不改产品代码）。
 

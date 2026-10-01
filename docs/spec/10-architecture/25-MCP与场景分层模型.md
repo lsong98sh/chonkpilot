@@ -132,13 +132,13 @@ capability `tools/`）是**两条独立来源**：前者经 gateway `servers/reg
 
 - 同名 MCP server 在四级可并存，但**合并后只生效一份**（命中的最具体级那一条）→ **只 spawn 一份**
   （spawn / 生命周期由**生效定义**决定）；
-- **兼容旧配置**：旧 usr KV `mcpServers`（专用表 `mcps`）**继续兼容读取** —— 四级目录里**都没有**该名时
-  回落旧 KV（保证既有环境不失效）；**新写入一律走文件**（含 UI）；
-- **数据面**：新增 `mcp` 域消息面 `data-mcp-{list,load,save,delete}` + 订阅面 `data-mcp-refresh`
+- **旧 usr KV `mcpServers`（专用表 `mcps`）已彻底废弃**（2026-10-01，[42 §2 (212)](../40-roadmap/42-决策记录.md)）：
+  不再回落读取、**代码零兼容**，历史数据不迁移；
+- **数据面**：`mcp` 域消息面 `data-mcp-{list,load,save,delete}` + 订阅面 `data-mcp-refresh`
   （见 [61 §3.1](../60-reference/61-消息一览.md)）；`list` 返回**生效视图**（每项带 `level`）；
-- **gateway 装配**：`src/lib/llm/server/gateway_servers.go loadGatewayServers` = 四级合并视图（数据层 `McpList`）
-  ∪ 旧 KV 回落（`loadEffectiveMCPEntries`）→ `mergeGatewayServers`；对账/生效链路（增量 register/unregister、
-  保存即生效）语义不变；`hot_tools` 语义不变。
+- **gateway 装配**：`src/lib/llm/server/gateway_servers.go loadGatewayServers` = **四级合并视图唯一来源**
+  （`mergeGatewayServers(nil, loadMcpFileEntries)`；数据层 `McpList` 已按名整条合并）→ 对账/生效链路
+  （增量 register/unregister、保存即生效；触发主题 = `data-mcp-refresh`）语义不变；`hot_tools` 语义不变。
 
 **运行期冷缓存退化放行**（配套，[42 §2 (211)](../40-roadmap/42-决策记录.md)）：§4.5 的级别矩阵静默剔除
 （`filterWhitelistByLevel`）以「本实例可见工具面」为收窄基准；该工具面来自 gateway `tools/list` 缓存——

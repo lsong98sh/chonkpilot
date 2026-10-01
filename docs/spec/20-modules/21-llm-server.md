@@ -28,42 +28,42 @@
 
 ### 2.1 用户维护 MCP 的启动注册（2026-09-11 已实现，T-25 / D-18）
 
-> **目标**：用户在「MCP 配置页」维护的 server 定义（usr 库 `mcps` 专用表）在 **LLM 启动时**注入内嵌 gateway —— 此前该定义**只落库、无消费方**（见 [40-演进计划](../40-roadmap/40-演进计划.md) T-25）。
+> **目标**：用户在「MCP 配置页」维护的 server 定义（**四级文件化** `<级别>/capability/mcps/<名>.json`）在 **LLM 启动时**注入内嵌 gateway —— 此前该定义**只落库、无消费方**（见 [40-演进计划](../40-roadmap/40-演进计划.md) T-25）。
 >
-> **单体（src/gui / src/cli 内嵌本 llm server）的 MCP 配置一律取自 usr `mcps`，不读 exe 同目录 `config.json`**（2026-09-14 去依赖）；exe 同目录 `config.json` 的 `mcpServers` 段属 mcp-server / mcp-gateway **独立 exe** 自身行为（见 [25-mcp-server](25-mcp-server.md) / [26-mcp-gateway](26-mcp-gateway.md)）。
+> **单体（src/gui / src/cli 内嵌本 llm server）的 MCP 配置一律取自四级文件化视图，不读 exe 同目录 `config.json`**（2026-09-14 去依赖）；exe 同目录 `config.json` 的 `mcpServers` 段属 mcp-server / mcp-gateway **独立 exe** 自身行为（见 [25-mcp-server](25-mcp-server.md) / [26-mcp-gateway](26-mcp-gateway.md)）。
 >
-> **〔订正（2026-10-01，[42 §2 (211)](../40-roadmap/42-决策记录.md)）：配置来源改「四级文件化视图 + 旧 KV 回落」〕** MCP server 定义**新载体** = **`<级别>/capability/mcps/<名>.json`**（四级 app/user/project/prjusr）。装配读点 `gateway_servers.go`：
+> **〔订正（2026-10-01，[42 §2 (211)(212)](../40-roadmap/42-决策记录.md)）：配置来源 = 四级文件化视图（唯一来源）〕** MCP server 定义**载体** = **`<级别>/capability/mcps/<名>.json`**（四级 app/user/project/prjusr）。装配读点 `gateway_servers.go`：
 > ① `loadMcpFileEntries` 经 data 门面 **`McpAPI.McpList`**（`s.cfg`）读**四级合并生效视图**（同名**最具体级优先、整条覆盖** `prjusr > project > user > app`）；
-> ② `loadEffectiveMCPEntries` = 四级视图 ∪ **旧 usr KV `mcpServers`（`UserConfigMCPs`）回落**（四级目录里**都没有**该名时才回落，保证既有环境不失效）；
-> ③ 合并后交 `mergeGatewayServers` → `Params.Servers`。**同名跨级只生效一份 → 只 spawn 一份**（以生效定义为准）。
-> **保存即生效** 现为**两条订阅**：既有 `data-user-config-refresh`（旧 KV 变更）+ **新增 `data-mcp-refresh`**（四级文件配置 save/delete）→ 同入 `reconcileUserMCPs` 增量对账（`servers/register|unregister`）。
+> ② 合并后交 `mergeGatewayServers(nil, …)` → `Params.Servers`（system 基底生产恒传 nil）。**同名跨级只生效一份 → 只 spawn 一份**（以生效定义为准）。
+> **旧 usr KV `mcpServers`（专用表 `mcps`）已彻底废弃**（2026-10-01）：**代码零兼容、不再回落**，历史数据不迁移。
+> **保存即生效** = 订阅 **`data-mcp-refresh`**（四级文件配置 save/delete）→ `reconcileUserMCPs` 增量对账（`servers/register|unregister`）。
 > 下文表格为订正前（仅 usr `mcps`）口径，**字段映射 / 分流 / 约束仍适用**，来源描述以本条为准。
 
-**读点与装配**（实现文件 `src/llm/server/gateway_servers.go`，接线 `server.go:226-229`）：
+**读点与装配**（实现文件 `src/lib/llm/server/gateway_servers.go`，接线 `server.go` 的 `New`（gateway 构造前））：
 
 | 步 | 动作 |
 |:--:|------|
-| 1 | **经 data 门面** `ConfigAPI.UserConfigMCPs`（`s.cfg`，inline 绑定 = 同进程直调；**不持库句柄**）读 usr `mcps` 条目（按主键序号序）→ 定义数组（`loadUserMCPEntries`）（2026-09-21 订正：原「直开 usr 库 `data.OpenSharedLayer` + `db.Table("mcps")`」已删） |
+| 1 | **经 data 门面** `McpAPI.McpList`（`s.cfg`，inline 绑定 = 同进程直调；**不持库句柄**）读**四级文件化合并生效视图** → 定义数组（`loadMcpFileEntries`）（2026-09-21 订正：原「直开 usr 库 `data.OpenSharedLayer` + `db.Table("mcps")`」已删；2026-10-01：来源由 usr `mcps` 改为四级文件） |
 | 2 | 过滤与分流：`enabled=false` 跳过（记日志）；**有 `runtime` → spawned（网关拉起，`ServerEntry.Runtime` + `Args`）；有 `url` → proxied（连接已运行 server）；两者皆空 → 跳过**（记日志）。其余规范字段（`transport`/`description`/`category`/`namespace`/`env`/`headers`/`cwd`/`hot_tools`/`timeout`）**原样透传**，不做子集裁剪（字段与校验以 gateway `servers.list`/`servers.register` 为唯一来源；2026-09-13 修正旧"仅 URL 型 proxied"限制，并将原 `command` 整条命令行字符串改为 `runtime`+`args`） |
 | 3 | 映射 `[]mcpgateway.ServerEntry`：`ID←name`、`Name←name`、`URL←url`、`Description←description`、`Transport←transport`（`"direct"` 归一为空 → gateway 按 URL 推断 http/proxied）、`Enabled=true`、`Scope=""`（global）、**`Origin`**（`user`，见下） |
 | 4 | 作为 `Params.Servers`（`= opts.GatewayServers ++ 本处装配`）传入内嵌 gateway，**优先于** `ServersFile` |
 | 5 | gateway `Start` 逐条 `connectServer`：**单条失败记日志继续**（与 `servers.list` 同语义），不影响引擎启动 |
 
-**时序方案（选型）**：在 `server.New` 构造 gateway 前**读**（非经总线 `data-user-config-load`）——persist 服务订阅在 `Start` 后才就绪，经总线读须把 gateway 构造整体推迟到 `Start`（牵动 `s.gw`/`s.mcpServer`/`s.mcpCfg` 生命周期）。**2026-09-21 订正**：读法由「直开 usr 库（`data.OpenSharedLayer`）」改为 **data 门面 `ConfigAPI.UserConfigMCPs`**（`s.cfg` = inline 绑定，同进程直调，构造序在 gateway 之前，`server.go:305`→`:336`）——读点无时序问题且**库句柄不出 data 组件**（21 §1 行 1）。
+**时序方案（选型）**：在 `server.New` 构造 gateway 前**读**（非经总线 `data-user-config-load`）——persist 服务订阅在 `Start` 后才就绪，经总线读须把 gateway 构造整体推迟到 `Start`（牵动 `s.gw`/`s.mcpServer`/`s.mcpCfg` 生命周期）。**2026-09-21 订正**：读法由「直开 usr 库（`data.OpenSharedLayer`）」改为 **data 门面 `McpAPI.McpList`**（`s.cfg` = inline 绑定，同进程直调，构造序在 gateway 之前）——读点无时序问题且**库句柄不出 data 组件**（21 §1）。
 
 **D-18 结论（2026-09-11 定）**：
 
 - ① 注册 **`scope` = `global`**（`ServerEntry.Scope` 留空）。
-- ② 启用标识 = usr `mcps` 记录的 `enabled` 字段（**仅 usr 层，不做多级 fallback**）。
-- ③ **保存即生效（2026-09-15 订正；原「保存后重启生效/v1 不热重载」作废）**：订阅既有 `data-user-config-refresh` → `reconcileUserMCPs` 做**增量对账**（变更/停用/删除 → `servers/unregister`；新增/变更 → `servers/register`；未变更条目不动），**零新增主题**（`gateway_servers.go:249-303`）。
-- ④ **来源（Origin，2026-09-12 新增；2026-09-14 收敛）**：usr `mcps` 定义 → `Origin=user`（**第三方**：不注入 `_meta`/`CHONKPILOT_*`）。原「系统级 `<exeDir>/config.json` 的 `mcpServers` → `Origin=builtin`」已随**单体去 exe 目录 `config.json` 依赖**移除（`loadSystemMCPEntries` 已删；builtin 来源仍由 gateway self / dir 节点承载）。见 [26-mcp-gateway](26-mcp-gateway.md) 来源标注段。
+- ② 启用标识 = 四级文件化 MCP 条目的 `enabled` 字段（数据层已按名整条合并 → 同名只生效最具体级一份）。
+- ③ **保存即生效（2026-09-15 订正；2026-10-01 触发主题订正）**：订阅 **`data-mcp-refresh`** → `reconcileUserMCPs` 做**增量对账**（变更/停用/删除 → `servers/unregister`；新增/变更 → `servers/register`；未变更条目不动），**零新增主题**（`gateway_servers.go`）。
+- ④ **来源（Origin，2026-09-12 新增；2026-09-14 收敛；2026-10-01 来源改文件）**：四级文件化 MCP 定义 → `Origin=user`（**外部/用户定义**：不注入 `_meta`/`CHONKPILOT_*`）。原「系统级 `<exeDir>/config.json` 的 `mcpServers` → `Origin=builtin`」已随**单体去 exe 目录 `config.json` 依赖**移除（`loadSystemMCPEntries` 已删；builtin 来源仍由 gateway self / dir 节点承载）。见 [26-mcp-gateway](26-mcp-gateway.md) 来源标注段。
 
 **边界（设计约束）**：
 
 - **不触消息面**：注册走进程内 `Params.Servers`，**不经 MQ**——[61-消息一览](../60-reference/61-消息一览.md) **不新增消息**；gateway 的 `servers/register` 方法面继续保留给**运行时**动态接入（第三方 / 测试 / 按 instance）。
 - `-servers-file`（`servers.list`）保留为**部署形态**的补充来源（与用户配置并存，`Servers` 优先）。
 - 与 capability 的关系：`MCPServer`（self）= exe 同级 `capability` 扫描出的**内置**能力；用户维护 MCP 属**下游 server**，两者在 gateway 内聚合（`scope` 语义见 [26-mcp-gateway §5.1.1](26-mcp-gateway.md)）。
-- exe 同目录 `config.json`：gui（`bridge/builtins.go`）仅读其 `mcpServers` 段作**只读内置项展示**（原 `llms` 段展示已移除）；llm（运行时装配）**不再读取**（单体 MCP 配置 = usr `mcps`）。原"gui 与 llm 两侧各自独立读取"表述随 llm 侧读点移除作废。
+- exe 同目录 `config.json`：gui（`bridge/builtins.go`）仅读其 `mcpServers` 段作**只读内置项展示**（原 `llms` 段展示已移除）；llm（运行时装配）**不再读取**（单体 MCP 配置 = 四级文件化 `<级别>/capability/mcps/`）。原"gui 与 llm 两侧各自独立读取"表述随 llm 侧读点移除作废。
 
 ---
 

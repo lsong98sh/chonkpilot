@@ -38,8 +38,8 @@ export const SNAPSHOT_SCALAR_KEYS = [
 /** 自由键（persist `userConfigFreeKeys`）：无类型无默认，值以字符串形态存取 */
 export const SNAPSHOT_FREE_KEYS = ['recent_dirs', 'tool_async', 'tool_sandbox', 'memory_prompts']
 
-/** 集合键（persist `collectionKeys` → usr 专用表 llms / mcps） */
-export const SNAPSHOT_COLLECTION_KEYS = ['llms', 'mcpServers']
+/** 集合键（persist `collectionKeys` → usr 专用表 llms） */
+export const SNAPSHOT_COLLECTION_KEYS = ['llms']
 
 /** 导入键白名单（= 上三者并集；白名单外一律忽略并计数） */
 export const SNAPSHOT_KEYS = [
@@ -86,10 +86,8 @@ export function backupFileName(d = new Date()) {
 
 /**
  * 剔除密钥（**返回新对象，不改入参**）：
- *   - llms[*]：删掉密钥名字段（apiKey 等）；
- *   - mcpServers[*].env：删掉 `K=…` 中 K 为密钥名的行；
- *   - mcpServers[*].headers：删掉密钥名的键。
- * @returns {{data: object, removed: number}} removed = 被剔除的字段/行数（UI 据此提示）
+ *   - llms[*]：删掉密钥名字段（apiKey 等）。
+ * @returns {{data: object, removed: number}} removed = 被剔除的字段数（UI 据此提示）
  */
 export function redactSecrets(config) {
   const src = config && typeof config === 'object' ? config : {}
@@ -105,31 +103,6 @@ export function redactSecrets(config) {
         delete rec[k]
         removed += 1
       }
-    }
-    return rec
-  })
-
-  const mcps = Array.isArray(out.mcpServers) ? out.mcpServers : []
-  out.mcpServers = mcps.map((it) => {
-    if (!it || typeof it !== 'object') return it
-    const rec = { ...it }
-    if (Array.isArray(rec.env)) {
-      rec.env = rec.env.filter((line) => {
-        const hit = isSecretName(String(line == null ? '' : line).split('=')[0])
-        if (hit) removed += 1
-        return !hit
-      })
-    }
-    if (rec.headers && typeof rec.headers === 'object' && !Array.isArray(rec.headers)) {
-      const kept = {}
-      for (const [k, v] of Object.entries(rec.headers)) {
-        if (isSecretName(k)) {
-          removed += 1
-          continue
-        }
-        kept[k] = v
-      }
-      rec.headers = kept
     }
     return rec
   })

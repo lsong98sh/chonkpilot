@@ -99,7 +99,7 @@ func TestMigrateConfigKeyRenamesKeepsNewValue(t *testing.T) {
 }
 
 // TestDeleteUserConfigClearsWholeUsrScope「恢复出厂」清空范围（批 3 · ⑯）：
-// handleUserConfig delete **不带 key** → deleteUserConfig → 标量键 + 自由键 + 集合表（llms/mcps）
+// handleUserConfig delete **不带 key** → deleteUserConfig → 标量键 + 自由键 + 集合表（llms）
 // + legacy 整块全部清空（读回回落系统默认）；同库**非用户配置键**不受影响
 // （前端入口 = SettingsConfigIOPage「恢复出厂设置」，经 data-user-config-delete 无 key）。
 func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
@@ -112,7 +112,6 @@ func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
 		"recent_dirs": `["D:\\proj"]`,
 		"tool_async":  `{"demo":{"mode":"auto"}}`,
 		"llms":        []any{map[string]any{"name": "gpt-local", "apiKey": "sk-x"}},
-		"mcpServers":  []any{map[string]any{"name": "demo"}},
 	}); err != nil {
 		t.Fatalf("铺数据失败：%v", err)
 	}
@@ -137,14 +136,12 @@ func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
 			t.Fatalf("自由键未清空：%s", key)
 		}
 	}
-	for _, table := range []string{tableLLMs, tableMCPs} {
-		keys, err := db.Table(table).ListKeys()
-		if err != nil {
-			t.Fatalf("列 %s 失败：%v", table, err)
-		}
-		if len(keys) != 0 {
-			t.Fatalf("集合表未清空：%s → %v", table, keys)
-		}
+	keys, err := db.Table(tableLLMs).ListKeys()
+	if err != nil {
+		t.Fatalf("列 %s 失败：%v", tableLLMs, err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("集合表未清空：%s → %v", tableLLMs, keys)
 	}
 	if _, ok := data.GetConfig(db, LegacyUserConfigKey); ok {
 		t.Fatal("legacy 整块未清空")

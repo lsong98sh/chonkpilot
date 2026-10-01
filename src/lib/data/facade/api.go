@@ -176,10 +176,6 @@ type ConfigAPI interface {
 	// UserConfigGet 读合并后有效值（usr 基线 + 项目层可继承键覆盖 + 系统默认补齐）。
 	UserConfigGet(req UserConfigGetRequest) (UserConfigGetResponse, error)
 
-	// UserConfigMCPs 读 usr `mcps` 专用表条目原文（只读：不触发 legacy/改名迁移；供装配期
-	// 需要 mcps 领域原文的调用方，如 llm server 启动装配读用户维护 MCP）。
-	UserConfigMCPs(req UserConfigMCPsRequest) (UserConfigMCPsResponse, error)
-
 	// UserConfigSet 增量写用户配置（载荷里出现的键才写）。
 	UserConfigSet(req UserConfigSetRequest) (UserConfigSetResponse, error)
 

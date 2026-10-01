@@ -389,7 +389,7 @@ USER_CONFIG_DEFAULTS = {
     "goPath": "", "rustPath": "", "cCompilerPath": "",
     "responseTimeout": 120, "streamTimeout": 60, "retryCount": 2, "retryDelay": 5,
     "defaultScenario": "",
-    "llms": [], "mcpServers": [],
+    "llms": [],
 }
 
 # 读取侧现算的缺省（键缺失才算，load 会给这两个值）→ 快照命中即视为「缺省」：
@@ -442,7 +442,7 @@ def restore_user_config(client, snap):
     """按快照还原 usr 配置：缺省/空 → 删除该键；有值 → 写回原值；全量快照下「期间新增的键」→ 删除。
     （失败仅告警，不掩盖用例结果。）
 
-    **已等于快照值的键不写回**：`data-user-config-save` 会给 `llms`/`mcpServers` 每条目重打
+    **已等于快照值的键不写回**：`data-user-config-save` 会给 `llms` 每条目重打
     `updated_at` 戳（persist 落库时生成），无谓写回会让「跑前/跑后配置一致」的校验出现纯时间戳
     差异（值语义未变）——故先读当前值，只写真正变化的键。
     """
@@ -468,7 +468,7 @@ def restore_user_config(client, snap):
         try:
             # 删除必须用 **`id`** 字段（persist reqKey 只认 req.ID/req.Data["id"]/req.Data["key"]）：
             # 传顶层 `{"key":k}` 会被判为「无 key」→ 触发「清空整份 usr 配置」（把 theme/locale/
-            # llms/mcps 一并清掉）；集合名（llms/mcpServers）→ 只清空该集合表。
+            # llms 一并清掉）；集合名（llms）→ 只清空该集合表。
             client.req("data-user-config-delete", {"id": k})
         except Exception as e:
             print("[harness] usr 配置还原（删除 %r）失败: %s" % (k, e), flush=True)
