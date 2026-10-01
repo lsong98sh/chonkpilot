@@ -91,7 +91,7 @@ test('A·i18n：三键占位符与调用参数一致，且渲染后无残留占�
 // B 残留静默加载 → 可见
 // ═══════════════════════════════════════════════════════════════
 const SILENT_SITES = [
-  { file: 'views/config/SettingsMCPPage.vue', tag: "console.warn('[SettingsMCP] load user config failed:'" },
+  { file: 'views/config/SettingsMCPPage.vue', tag: "console.warn('[SettingsMCP] load mcp servers failed:'" },
   { file: 'views/config/SettingsLLMPage.vue', tag: "console.warn('[SettingsLLM] load user config failed:'" },
   { file: 'views/config/SettingsToolAsyncPage.vue', tag: "console.warn('[SettingsToolAsync] load tools failed:'" },
   { file: 'views/config/SettingsToolAsyncPage.vue', tag: "console.warn('[SettingsToolAsync] load user config failed:'" },

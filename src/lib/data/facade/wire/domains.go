@@ -444,6 +444,112 @@ func ScenarioDeleteFromWire(m map[string]any) facade.ScenarioDeleteRequest {
 	return facade.ScenarioDeleteRequest{ScenarioID: RequestID(m), Level: str(m["level"])}
 }
 
+// ── MCP 配置（mcp 域）────────────────────────────────────────────
+
+// McpServerToWire 把门面 MCP 定义转回消息面对象（字段名 = servers.list / 前端表单 / gateway
+// ServerEntry；`level` 随列出/保存承载级别归属）。
+func McpServerToWire(s facade.McpServer) map[string]any {
+	out := map[string]any{
+		"name":      s.Name,
+		"enabled":   s.Enabled,
+		"level":     s.Level,
+		"runtime":   s.Runtime,
+		"args":      strSliceAny(s.Args),
+		"url":       s.URL,
+		"transport": s.Transport,
+		"timeout":   s.Timeout,
+		"namespace": s.Namespace,
+		"cwd":       s.Cwd,
+		"env":       strSliceAny(s.Env),
+		"hot_tools": strSliceAny(s.HotTools),
+	}
+	put(out, "description", s.Description)
+	put(out, "category", s.Category)
+	if len(s.Headers) > 0 {
+		h := make(map[string]any, len(s.Headers))
+		for k, v := range s.Headers {
+			h[k] = v
+		}
+		out["headers"] = h
+	}
+	if s.Isolate != nil {
+		out["isolate"] = *s.Isolate
+	}
+	if s.Sandbox != nil {
+		out["sandbox"] = *s.Sandbox
+	}
+	return out
+}
+
+// McpServerFromWire 把消息面 MCP 对象 / 保存载荷转成门面 DTO（未知键忽略；三态指针按存在性还原）。
+func McpServerFromWire(m map[string]any) facade.McpServer {
+	var s facade.McpServer
+	b, err := json.Marshal(m)
+	if err != nil {
+		return s
+	}
+	_ = json.Unmarshal(b, &s)
+	return s
+}
+
+// McpListResult 组装 `data-mcp-list` 结果载荷 `{list:[…]}`。
+func McpListResult(list []facade.McpServer) map[string]any {
+	out := make([]any, 0, len(list))
+	for _, s := range list {
+		out = append(out, McpServerToWire(s))
+	}
+	return map[string]any{"list": out}
+}
+
+// McpGetResult 组装 `data-mcp-load` 结果载荷 `{data: 定义}`。
+func McpGetResult(s facade.McpServer) map[string]any {
+	return map[string]any{"data": McpServerToWire(s)}
+}
+
+// McpGetFromWire 解析 `{name | id, level?}` → 门面入参。
+func McpGetFromWire(m map[string]any) facade.McpGetRequest {
+	name := str(m["name"])
+	if name == "" {
+		name = RequestID(m)
+	}
+	return facade.McpGetRequest{Name: name, Level: str(m["level"])}
+}
+
+// McpSaveFromWire 解析保存载荷 → 门面入参（`data` 平铺；name/level/old_name/old_level + 字段）。
+func McpSaveFromWire(m map[string]any) facade.McpSaveRequest {
+	return facade.McpSaveRequest{
+		Server:   McpServerFromWire(m),
+		OldName:  str(m["old_name"]),
+		OldLevel: str(m["old_level"]),
+	}
+}
+
+// McpDeleteFromWire 解析 `{name | id, level?}` → 门面入参。
+func McpDeleteFromWire(m map[string]any) facade.McpDeleteRequest {
+	name := str(m["name"])
+	if name == "" {
+		name = RequestID(m)
+	}
+	return facade.McpDeleteRequest{Name: name, Level: str(m["level"])}
+}
+
+// McpNameResult 组装 `{ok:true, name:<server 名>}`（save 应答）。
+func McpNameResult(name string) map[string]any {
+	return map[string]any{"ok": true, "name": name}
+}
+
+// strSliceAny 把 []string 转 []any（缺省 nil → 空数组，保证 JSON 恒为数组）。
+func strSliceAny(ss []string) []any {
+	if ss == nil {
+		return []any{}
+	}
+	out := make([]any, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, s)
+	}
+	return out
+}
+
 // ── 记忆库（memory 域）───────────────────────────────────────────
 
 // MemoryListResult 组装 `data-memory-list` 结果载荷 `{list:[{category,level,path,tokens}]}`。

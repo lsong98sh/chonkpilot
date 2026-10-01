@@ -43,7 +43,8 @@ import { useI18n } from 'vue-i18n'
 import { Table, Button, Select, message, confirm } from '../../components/ui'
 import { dialog } from '../../components/dialog'
 import Icon from '../../components/icon/Icon.vue'
-import { getUserConfig, saveUserConfig, getSystemBuiltins } from '../../api/config'
+import { getUserConfig, getSystemBuiltins, listMcpServers, saveMcpServer, deleteMcpServer } from '../../api/config'
+import { onDataRefresh } from '../../utils/dataClient'
 import { DEFAULT_MCP } from '../../config/defaults'
 import { countToolSandboxOn } from '../../utils/sandboxSummary'
 import { loadFailedText } from '../../utils/settingsFeedback'
@@ -68,6 +69,7 @@ function gotoToolSandbox() {
 const mcpColumns = computed(() => [
   { label: '#', type: 'index', width: 40 },
   { label: t('config.mcp.name'), prop: 'name', minWidth: 120 },
+  { label: t('config.mcp.level'), prop: '_level', width: 90, align: 'center' },
   { label: 'URL', prop: 'url', minWidth: 200 },
   { label: t('config.mcp.description'), prop: 'description', minWidth: 140 },
   { label: t('config.mcp.isolate'), prop: '_isolate', width: 90, align: 'center' },
@@ -78,10 +80,17 @@ const mcpColumns = computed(() => [
 const displayData = computed(() =>
   mcpServers.value.map(s => ({
     ...s,
+    _level: levelLabel(s.level),
     _isolate: isolateLabel(s),
     _enabled: s.enabled ? t('dialog.yes') : t('dialog.no'),
   }))
 )
+
+// levelLabel 级别展示名（app/user/project/prjusr → scenario.level.* 文案；缺省按 user）。
+function levelLabel(level) {
+  const k = level || 'user'
+  return t('scenario.level.' + k)
+}
 
 // isolateLabel 列表展示「按实例隔离」状态：显式设置 → 是/否；未设置 → 推断值 + 标注（自动）。
 // 推断口径与 gateway（ServerEntry.IsolateEnabled）一致：stdio → 隔离、http/sse → 共享；
@@ -104,14 +113,14 @@ const builtinOptions = computed(() =>
 
 async function loadConfig() {
   try {
-    const res = await getUserConfig()
-    const uc = res.config || res
-    mcpServers.value = Array.isArray(uc.mcpServers) ? uc.mcpServers : []
-    // 同一次加载顺带取 executor 级沙箱开启数（两页状态互见摘要）
+    // MCP server 列表 = 新数据层 mcp 域（四级文件化合并视图；同名最具体级优先）
+    mcpServers.value = await listMcpServers()
+    // executor 级沙箱开启数仍取 usr 配置（两页状态互见摘要）
+    const uc = (await getUserConfig()).config || {}
     toolSandboxOn.value = countToolSandboxOn(uc.tool_sandbox)
   } catch (e) {
     // ④ 加载失败须用户可见（不再仅 console；成功路径不动）
-    console.warn('[SettingsMCP] load user config failed:', e)
+    console.warn('[SettingsMCP] load mcp servers failed:', e)
     message.error(loadFailedText(t, t('config.page.mcp'), e))
   }
 }
@@ -125,11 +134,12 @@ async function loadSystem() {
   }
 }
 
-// 列表类即落盘（CFG-015-S01）
-async function saveNow(tip) {
+// 保存单条（新数据层 mcp 域：按 server.level 落文件；改名/移级 → 传 oldName/oldLevel 先删旧文件）
+async function saveOne(server, oldName, oldLevel, tip) {
   try {
-    await saveUserConfig({ mcpServers: mcpServers.value })
+    await saveMcpServer(server, oldName, oldLevel)
     if (tip) message.success(tip)
+    await loadConfig()
     return true
   } catch (e) {
     message.error(t('config.save_failed') + ': ' + (e.message || ''))
@@ -138,14 +148,13 @@ async function saveNow(tip) {
 }
 
 function openEditor(data, index) {
+  const orig = index >= 0 ? mcpServers.value[index] : null
   const handle = dialog.show(h(EditMCPDialog, {
     initialData: { ...data },
     editIndex: index,
-    onSave: async (d, idx) => {
-      if (idx === -1) mcpServers.value.push(d)
-      else mcpServers.value[idx] = d
+    onSave: async (d) => {
       handle.close()
-      await saveNow(t('config.mcp.saved'))
+      await saveOne(d, orig && orig.name, orig && orig.level, t('config.mcp.saved'))
     },
     onCancel: () => handle.close(),
   }), { title: t('config.mcp.editTitle'), width: 520, height: 640, bodyClass: 'form-dialog-body', minimizable: false, closable: true })
@@ -158,30 +167,37 @@ function addBuiltin() {
   const idx = parseInt(selectedBuiltin.value)
   const src = systemMCPs.value[idx]
   if (!src) return
-  mcpServers.value.push({ ...DEFAULT_MCP, ...src, enabled: false })
   selectedBuiltin.value = ''
-  saveNow(t('config.mcp.saved'))
+  saveOne({ ...DEFAULT_MCP, ...src, enabled: false }, '', '', t('config.mcp.saved'))
 }
 
 function editMCP(index) { openEditor({ ...mcpServers.value[index] }, index) }
 
 async function deleteMCP(index) {
   try { await confirm(t('config.mcp.confirmDelete')) } catch { return }
-  mcpServers.value.splice(index, 1)
-  await saveNow(t('config.mcp.saved'))
+  const s = mcpServers.value[index]
+  if (!s) return
+  try {
+    // 按名删（level 空 = 删最具体级副本，与列表所示一致）
+    await deleteMcpServer(s.name)
+    message.success(t('config.mcp.saved'))
+    await loadConfig()
+  } catch (e) {
+    message.error(t('config.save_failed') + ': ' + (e.message || ''))
+  }
 }
 
 async function toggleMCP(index) {
   const s = mcpServers.value[index]
   if (!s) return
-  s.enabled = !s.enabled
-  await saveNow()
+  await saveOne({ ...s, enabled: !s.enabled }, '', '')
 }
 
 const unsubs = []
 onMounted(() => {
   loadConfig()
   loadSystem()
+  unsubs.push(onDataRefresh('mcp', loadConfig)) // 四级文件配置 save/delete 后即时刷新
   unsubs.push(mq.on(EventNames.configAddMcp, addMCP))
   unsubs.push(mq.on(EventNames.configAddMcpBuiltin, addBuiltin))
   unsubs.push(mq.on(EventNames.configEditMcp, ({ index }) => editMCP(index)))

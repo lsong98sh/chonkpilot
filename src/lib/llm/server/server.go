@@ -186,12 +186,13 @@ type Server struct {
 
 	// 内嵌数据服务（persist data 面，61-消息一览 §3）：会话/tasktree/快照/配置落库应答方。
 	data *persist.Service
-	// cfg 是 config 域（配置 kv 面 + 用户配置）的 **data 门面**（阶段 4 第二批，41 G-34；
-	// 阶段 4 internal 下沉后实现 = chonkpilot-data/internal/config）：
+	// cfg 是 **data 门面**（阶段 4 第二批，41 G-34；阶段 4 internal 下沉后实现 = 内嵌 persist）：
+	// 覆盖 config 域（配置 kv 面 + 用户配置）+ mcp 域（四级文件化 MCP 配置）等各域面。
 	// 绑定 = inline（同进程直调，实现 = 内嵌 persist —— 与 data-<domain>-* MQ handler 同一份
 	// 实现）。本包的配置读取一律经它，
 	// 不再"发一条 MQ 请求给自己"（dataRequest）；**MQ 面继续存在**（前端/GUI 桥仍走总线）。
-	cfg facade.ConfigAPI
+	// 类型用完整 facade.API（而非仅 ConfigAPI）：本包既读 config 域，也读 MCP 四级配置域。
+	cfg facade.API
 	// 内嵌 MCP 栈（2026-09-07 收敛）：官方 go-sdk server（capability 契约 RegisterContracts）
 	// 作 Params.MCPServer 传入 gateway（self 节点聚合）；用户/项目级 capability 根由 server
 	// 经 servers/register（dir 类型）驱动 gateway 动态接入/注销（gateway 自建 server 扫描，
@@ -456,6 +457,7 @@ func (s *Server) Start(ctx context.Context) error {
 		{"task-deleted", s.onTaskTreeDeleted},                 // persist data-tasktree-delete 级联删除 → 内存同步（不复活）
 		{"data-memory-refresh", s.onMemoryRefresh},            // 记忆域 save/delete 后广播（既有主题）→ 失效类别清单缓存（I-68 ②）
 		{"data-user-config-refresh", s.onUserConfigRefresh},   // usr 配置 save/delete 后广播（既有主题）→ usr mcps 增量对账（T-25 热生效）
+		{"data-mcp-refresh", s.onMCPConfigRefresh},            // MCP 四级文件配置 save/delete 后广播 → 下游 server 增量对账（保存即生效）
 		{"data-prj-config-refresh", s.onPrjConfigRefresh},     // prj 配置 save/delete 后广播（既有主题）→ 执行配置热生效（P0-B：timeout_sec/max_concurrency/skip_dirs）
 		{"data-prj-security-refresh", s.onPrjSecurityRefresh}, // prj-security save/delete 后广播（既有主题）→ agentbox 允许目录热生效（security-* → mcp-server Config / gateway 上游下发）
 	} {

@@ -26,7 +26,7 @@
         + 添加弹窗字段文字 + 弹窗在视口内（位置）+ 表单**一行两列**（位置）→ 填表保存 →
         data-user-config-load 回读 llms → 清理
      B2 MCP：transport 与 url / runtime 的**从属显示**（切换 Select；args 不受 transport 门控）
-        + 保存 runtime/args → 回读 → 清理
+        + 保存 runtime/args → 经 data-mcp-list 回读（2026-10-01 四级文件化）→ 清理
      B3 路径/工具链：系统页 Chrome **已被探测出**（路径非空 + 版本 x.y.z.w）；用户页含 Chrome 输入；
         项目页不含 Chrome（三级归属）
   C. 已删除项确不存在：旧配置弹窗（.config-dialog-body-scroll）、独立「提示词」页签
@@ -638,8 +638,13 @@ def case_b1_llm_list_params():
 
 
 def _set_dialog_select(value):
-    r = ev("(function(){const s=[...document.querySelectorAll('.dialog-shell select.b-select__native')]"
-           ".find(e=>e.getBoundingClientRect().width>0);if(!s)return 'no-select';"
+    # 定位「传输方式」下拉：2026-10-01 起基本信息页新增「级别」Select（四级，排在「传输方式」之前），
+    # 故按 label（含「传输方式」）定位，不再取「第一个可见 Select」。
+    r = ev("(function(){const R=[...document.querySelectorAll('.dialog-shell')].find(e=>e.getBoundingClientRect().width>0);"
+           "if(!R)return 'no-dialog';"
+           "const it=[...R.querySelectorAll('.form-item')].find(x=>{const l=x.querySelector('.form-label');"
+           "return l&&l.textContent.includes('传输方式');});"
+           "const s=it?it.querySelector('select.b-select__native'):null;if(!s)return 'no-select';"
            "Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,%s);"
            "s.dispatchEvent(new Event('change',{bubbles:true}));return s.value;})()" % json.dumps(value))
     time.sleep(0.6)
@@ -666,7 +671,6 @@ def case_b2_mcp_transport_branching():
         → 三种 transport 下均显示（对齐 36-配置 CFG-004-S06：仅「服务地址（仅非 stdio）」标从属）。
     """
     name = "ui_mcp_%d" % int(time.time())
-    snap = _h.snapshot_user_config(c, ["mcpServers"])
     try:
         open_page("settings-mcp", ".settings-page")
         if "添加 MCP Server" not in panel_text(".settings-page"):
@@ -717,18 +721,26 @@ def case_b2_mcp_transport_branching():
         fill_list_editor(["启动参数", "Args"], ["--demo", "value 1"])  # list 行编辑：逐行一个参数
         c.mq_emit("edit-mcp-save")
         time.sleep(1.0)
-        hit = [m for m in (ucfg().get("mcpServers") or []) if m.get("name") == name]
+        # 2026-10-01 起 MCP 配置四级文件化（`<级别>/capability/mcps/<名>.json`）→ 经 data-mcp-list 回读；
+        # 缺省级别 = user（DEFAULT_MCP.level）；**不再写 usr KV mcpServers**（故不做 usr 配置快照/还原）。
+        ml = c.req("data-mcp-list", {})
+        hit = [m for m in ((ml or {}).get("list") or []) if m.get("name") == name]
         if not hit:
-            raise TestError("MCP 保存未落库：%r" % ((ucfg().get("mcpServers") or []),))
+            raise TestError("MCP 保存未落盘（data-mcp-list 无该条）：%r" % ((ml or {}).get("list"),))
         if not hit[0].get("runtime") or hit[0].get("args") != ["--demo", "value 1"]:
-            raise TestError("MCP runtime/args 未按规则落库（逐个参数不切分）：%r" % hit[0])
+            raise TestError("MCP runtime/args 未按规则落盘（逐个参数不切分）：%r" % hit[0])
+        if hit[0].get("level") != "user":
+            raise TestError("MCP 缺省级别应为 user（四级文件化），实际 %r" % hit[0].get("level"))
     finally:
         try:
             c.mq_emit("edit-mcp-cancel")
             time.sleep(0.3)
         except Exception:
             pass
-        _h.restore_user_config(c, snap)  # 还原 usr mcpServers（缺省 → 清集合）
+        try:
+            c.req("data-mcp-delete", {"name": name})  # 清理：按名删该级 MCP 文件（四级文件化）
+        except Exception as e:
+            print("[run_config_ui] MCP 文件清理失败: %s" % e, flush=True)
 
 
 def case_b3_paths_toolchain():

@@ -128,6 +128,28 @@ export function saveConfigFile(name, content, mode) {
   return guiReq('file.save', body)
 }
 
+// mcp（MCP server 四级文件化配置，2026-10-01）：`<级别>/capability/mcps/<名>.json`
+//   - list：四级合并**生效**视图（同名最具体级优先、整条覆盖；每项带 level）。
+//   - save：按 server.level 落对应级文件（改名/移级 → 传 old_name/old_level 先删旧文件）。
+//   - delete：按名删（level 空 = 删最具体级副本，与列表所示一致）。
+// 变更广播 data-mcp-refresh 由后端在 save/delete 后发出（前端 onDataRefresh('mcp', …) 刷新）。
+export async function listMcpServers() {
+  const reply = await dataClient.list('mcp')
+  const list = reply.list !== undefined ? reply.list : reply
+  return Array.isArray(list) ? list : []
+}
+
+export function saveMcpServer(server, oldName, oldLevel) {
+  const data = { ...server }
+  if (oldName) data.old_name = oldName
+  if (oldLevel) data.old_level = oldLevel
+  return dataClient.save('mcp', data)
+}
+
+export function deleteMcpServer(name) {
+  return dataClient.remove('mcp', name)
+}
+
 // 探测工具链（gui.toolchain.detect）→ {tools:[{id,name,path,version}]}（系统级候选，不落库）
 export async function detectToolchains() {
   const res = await guiReq('toolchain.detect', {})

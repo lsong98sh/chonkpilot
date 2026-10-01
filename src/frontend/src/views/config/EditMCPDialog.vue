@@ -10,6 +10,16 @@
               <label class="form-label">{{ $t('config.mcp.name') }}</label>
               <Input v-model="localData.name" :placeholder="$t('config.mcp.namePlaceholder')" />
             </div>
+            <!-- 级别（四级文件化配置：app/user/project/prjusr；保存落对应级 `capability/mcps/<名>.json`） -->
+            <div class="form-item form-item-12">
+              <label class="form-label">
+                <span>{{ $t('config.mcp.level') }}</span>
+                <Tooltip :content="$t('config.mcp.levelHint')" placement="top">
+                  <Icon name="help" :size="13" class="label-help" />
+                </Tooltip>
+              </label>
+              <Select v-model="level" :options="levelOptions" />
+            </div>
             <div class="form-item form-item-12">
               <label class="form-label">
                 <span>{{ $t('config.mcp.transport') }}</span>
@@ -190,6 +200,19 @@ const envText = ref(listToText(props.initialData.env, '\n'))
 const headersText = ref(headersToText(props.initialData.headers))
 const hotTools = ref(normalizeHotTools(props.initialData.hot_tools))
 const transport = ref(transportToForm(props.initialData.transport))
+// 级别（四级文件化）：app / user / project / prjusr；缺省 user（既有 usr mcps 语义）。
+const level = ref(normalizeLevel(props.initialData.level))
+
+// 级别选项（文案复用 fileTree.kb_level_*）。
+const levelOptions = computed(() =>
+  ['app', 'user', 'project', 'prjusr'].map(k => ({ label: t('fileTree.kb_level_' + k), value: k }))
+)
+
+// normalizeLevel 归一 level 取值（未知/空 → user）。
+function normalizeLevel(v) {
+  const s = (v || '').trim().toLowerCase()
+  return ['app', 'user', 'project', 'prjusr'].includes(s) ? s : 'user'
+}
 // args：每行一个参数（**逐个**作为 exec 参数，不做 shell/引号解析；行内空格保留）。
 const argsText = ref(normalizeArgs(props.initialData.args).join('\n'))
 
@@ -394,6 +417,8 @@ function handleSave() {
   // sandbox：同口径三态（未拨动 = 缺键 = 不隔离）。
   if (sandboxExplicit.value) localData.sandbox = !!sandboxValue.value
   else delete localData.sandbox
+  // 级别：保存落对应级 `capability/mcps/<名>.json`（app/user/project/prjusr）
+  localData.level = level.value
   emit('save', { ...localData }, props.editIndex)
 }
 

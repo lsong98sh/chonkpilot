@@ -9,7 +9,7 @@ run_config_ui.py B2、run_tool_async.py:169-198。）
 
 覆盖矩阵（每条 = A + B；B 必须有可观测证据，不以「保存成功」充数）
   M1 全字段哨兵落库（A）  ：一条 stdio 条目 + 一条 http 条目，每字段互不相同哨兵 →
-      data-user-config-load 逐字段回读（env 多键 / headers 多键 / cwd / timeout /
+      data-mcp-list 逐字段回读（env 多键 / headers 多键 / cwd / timeout /
       runtime / args / transport / description / url / enabled；hot_tools 默认空）
   M2 transport=stdio（B） ：回读 transport=="stdio"（M1）+ tools-list 出现该 server 工具
       （证明按 stdio 真实拉起了 runtime+args 子进程）+ probe_info 回显 argv == 配置 args
@@ -34,10 +34,11 @@ M9 hot_tools「全部」+ 空态（A+B）：勾「全部」→ 写库 `["*"]` �
 写库仍为**原名**列表（`"*"` = 全部 hot），主对话框「保存」时才落库（零新增消息面）。
 
 观测渠道（**全部为 61-消息一览既有主题，零新增**）
-  data-user-config-load / -save / -delete（§3）· tools-list（§4.5 客户端能力面）
+  data-mcp-{list,save,delete}（§3.1，2026-10-01 起 MCP 四级文件化）· tools-list（§4.5 客户端能力面）
   · chonk.mcp-tools-call（§5.1 方法面，点分相对主题直通、与 run_tool_async 同法）
 驱动：真实前端弹窗 EditMCPDialog（config-add-mcp / config-edit-mcp / config-toggle-mcp / edit-mcp-save）
-配置写入一律走 harness 的套件级快照-还原（`suite_config_guard`，51 §6-8）→ 退出前回滚 usr+prj。
+配置写入 = 四级文件化 MCP（`<级别>/capability/mcps/<名>.json`）；清理走 `data-mcp-delete`（按名）——
+  usr/prj 业务配置写入仍走 harness 的套件级快照-还原（`suite_config_guard`，51 §6-8）→ 退出前回滚。
 
 前置：dist-desktop\\chonkpilot.exe（本套件自起**隔离实例**：动态端口 + 私有 work-dir +
       独立 USERPROFILE/home，见下）；
@@ -152,9 +153,9 @@ def wait_vis(sel, max_wait=12):
 # ── 配置读写（既有消息面）────────────────────────────────────
 
 def mcp_entries():
-    res = c.req("data-user-config-load", {})
-    data = (res.get("data") or {}) if isinstance(res, dict) else {}
-    return list(data.get("mcpServers") or [])
+    """读四级文件化 MCP **生效视图**（data-mcp-list；2026-10-01 起，替代读取 usr `mcps`）。"""
+    res = c.req("data-mcp-list", {})
+    return list((res or {}).get("list") or [])
 
 
 def entry_of(name):
@@ -172,11 +173,11 @@ def index_of(name):
 
 
 def remove_entries(names):
-    """幂等清理同名残留（直写 usr mcpServers；页面未挂载时调用 → 前端随后从库读取，索引一致）。"""
-    cur = mcp_entries()
-    nxt = [m for m in cur if m.get("name") not in names]
-    if len(nxt) != len(cur):
-        c.req("data-user-config-save", {"data": {"mcpServers": nxt}}, timeout=15000)
+    """幂等清理同名残留（2026-10-01 起按名删四级文件化 MCP 文件；页面未挂载时调用亦一致）。"""
+    existing = {m.get("name") for m in mcp_entries() if isinstance(m, dict)}
+    for n in names:
+        if n in existing:
+            c.req("data-mcp-delete", {"name": n}, timeout=15000)
 
 
 def expect(entry, key, want, label):
@@ -417,9 +418,14 @@ def fill_row_editor(label_cands, values, kv=False):
 
 
 def set_transport(value):
-    """切换「传输方式」Select（Vue 从属显示：stdio → runtime/args；http/sse → 服务地址）。"""
-    r = ev(_dlg("const s=[...R.querySelectorAll('select.b-select__native')]"
-                ".find(e=>e.getBoundingClientRect().width>0);if(!s)return 'no-select';"
+    """切换「传输方式」Select（Vue 从属显示：stdio → runtime/args；http/sse → 服务地址）。
+
+    2026-10-01 起基本信息页新增「级别」Select（排在「传输方式」之前）→ 按 label 定位传输方式下拉，
+    不再取「第一个可见 Select」。
+    """
+    r = ev(_dlg("const it=[...R.querySelectorAll('.form-item')].find(x=>{const l=x.querySelector('.form-label');"
+                "return l&&l.textContent.includes('传输方式');});"
+                "const s=it?it.querySelector('select.b-select__native'):null;if(!s)return 'no-select';"
                 "Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(s,%s);"
                 "s.dispatchEvent(new Event('change',{bubbles:true}));"
                 "s.dispatchEvent(new Event('input',{bubbles:true}));return s.value;" % json.dumps(value)))

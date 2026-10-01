@@ -18,7 +18,8 @@ package facade
 //
 // 覆盖域（阶段 4）：snapshot（试点，41 G-32）· config（第二批）· session / turn / message
 // （第三批：会话 CRUD/活动态 + 轮次 + 消息）· tasktree / knowledge / filelist / scenario /
-// memory（第四批，本批：任务树 + 知识库文件树 + 全文索引清单 + 场景 + 记忆库）。
+// memory（第四批，本批：任务树 + 知识库文件树 + 全文索引清单 + 场景 + 记忆库）· mcp（第五批：
+// MCP server 三级/四级文件化配置）。
 // **至此 data 面各域均有域面**（`data-<domain>-*` 全量动作）。
 type API interface {
 	SnapshotAPI
@@ -31,6 +32,7 @@ type API interface {
 	FileListAPI
 	ScenarioAPI
 	MemoryAPI
+	McpAPI
 }
 
 // TasktreeAPI 是 tasktree 域（任务树：节点列表 / 任务快照 / 幂等落库 / 关闭）门面面。

@@ -213,6 +213,57 @@ func (s *Service) handleScenario(op string, req dataReq) {
 	}
 }
 
+// ─── mcp ─────────────────────────────────────────────────────────
+
+// handleMCP 处理 data-mcp-*（list/load/save/delete）——**MQ 信封层**（解析 → 门面 → 回载荷，
+// 翻译收在 facade/wire；逻辑见 internal/mcp 的 McpAPI）。
+// 存储 = 四级 `<级别>/capability/mcps/<名>.json`（app/user/project/prjusr；同名最具体级优先）。
+// 应答外形：list `{list}` / load `{data}` / save `{ok,name}` / delete `{ok}`。
+func (s *Service) handleMCP(op string, req dataReq) {
+	method := "data-mcp-" + op
+	okf := func(result map[string]any) { s.reply(method, req, result) }
+	failf := func(err error) { s.fail(method, req, err) }
+	m := flatReqMap(req)
+
+	switch op {
+	case "list":
+		resp, err := s.McpList(facade.McpListRequest{InstanceID: req.InstanceID})
+		if err != nil {
+			failf(err)
+			return
+		}
+		okf(wire.McpListResult(resp.List))
+	case "load":
+		r := wire.McpGetFromWire(m)
+		r.InstanceID = req.InstanceID
+		resp, err := s.McpGet(r)
+		if err != nil {
+			failf(err)
+			return
+		}
+		okf(wire.McpGetResult(resp.Server))
+	case "save":
+		r := wire.McpSaveFromWire(m)
+		r.InstanceID = req.InstanceID
+		resp, err := s.McpSave(r)
+		if err != nil {
+			failf(err)
+			return
+		}
+		okf(wire.McpNameResult(resp.Name))
+	case "delete":
+		r := wire.McpDeleteFromWire(m)
+		r.InstanceID = req.InstanceID
+		if _, err := s.McpDelete(r); err != nil {
+			failf(err)
+			return
+		}
+		okf(wire.OKResult())
+	default:
+		failf(errors.New("unsupported mcp action: " + op))
+	}
+}
+
 // flatReqMap 把 MQ 请求载荷归一为「平铺领域字段」视图（data 内字段 + 顶层 id/filter），
 // 供门面入参解析复用（与入口侧 `wire.FlatPayload` 同口径的一份翻译；`parseDataReq` 已把
 // 顶层业务字段并入 Data，此处只补它不承接的 id / filter）。

@@ -30,6 +30,8 @@ export const DEFAULT_LLM = {
 // 新增 MCP 服务器的默认值（默认禁用，12-数据层；字段对齐 servers.list 规范）
 export const DEFAULT_MCP = {
   name: '',
+  // 级别（四级文件化配置：app/user/project/prjusr；缺省 user）
+  level: 'user',
   runtime: '',
   args: [],
   url: '',
