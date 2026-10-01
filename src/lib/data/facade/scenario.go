@@ -39,6 +39,9 @@ type ScenarioAgent struct {
 	LLMRef string `json:"llmRef,omitempty"`
 	// DelegateCond 委派条件（可选）。
 	DelegateCond string `json:"delegateCond,omitempty"`
+	// Ref 引用路径（可选；**非主 agent** 的 agent 以引用形式落盘于 scenario.json.agents，
+	// 形如 `${exeDir}/capability/agents/<名>.agent.md`；主 agent 内联 → Ref 空。P4，2026-10-01）。
+	Ref string `json:"ref,omitempty"`
 }
 
 // Scenario 是场景元素（领域字段）。

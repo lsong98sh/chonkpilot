@@ -4,16 +4,31 @@
        页签 = meta · 描述 · 参数 · 正文；「参数」= JSON Schema 编辑器（共通控件 JsonSchemaEditor）。
        保存走 SavePrimitive（后端按 mcp 契约 [meta]/[description]/[parameters|arguments]/[content] 序列化）。 -->
   <div class="prim-panel">
-    <!-- 顶部标题：类型标签 + 标题（可编辑）+ 路径 + 未保存标记 -->
+    <!-- 顶部标题：类型标签 + 标题（可编辑，智能体模式由 AgentEditor 承载名称）+ 路径 + 未保存标记 -->
     <div class="prim-head">
       <Tag v-if="token" size="small" :type="tagType">{{ typeLabel }}</Tag>
-      <Input v-model="form.title" class="prim-title" :placeholder="t('knowledgeList.title_ph')" />
+      <Input v-if="!isAgent" v-model="form.title" class="prim-title" :placeholder="t('knowledgeList.title_ph')" />
       <span class="prim-path" :title="path">{{ path }}</span>
       <span v-if="dirty" class="prim-dirty">{{ t('common.unsaved') }}</span>
     </div>
 
+    <!-- 智能体原语（*.agent.md）渲染**智能体编辑器**（复用场景编辑的 AgentEditor），
+         保存仍走原语保存通道（data-knowledge-save，见 handleSave）；其余类型走通用分区 Tabs。 -->
+    <div v-if="isAgent" class="prim-agent-body">
+      <AgentEditor
+        :agent="agentModel"
+        :llm-options="llmOptions"
+        :tool-groups="toolGroups"
+        :all-tool-categories="allToolCategories"
+        :optimizing="optimizing"
+        :show-copy="false"
+        @update:agent="onAgentUpdate"
+        @optimize="onAgentOptimize"
+      />
+    </div>
+
     <!-- 中间：Tabs（撑满） -->
-    <Tabs v-model="curTab" :tabs="tabs" class="prim-tabs">
+    <Tabs v-else v-model="curTab" :tabs="tabs" class="prim-tabs">
       <template #meta>
         <div class="prim-tab-body">
           <div class="pf-meta-grid">
@@ -92,8 +107,12 @@ import { Input, Textarea, Button, Tag, message, confirm } from '../../components
 import Tabs from '../../components/ui/Tabs.vue'
 import JsonSchemaEditor from '../../components/editor/JsonSchemaEditor.vue'
 import { readPrimitive, savePrimitive, getKnowledgeRoot } from '../../api/knowledge'
+import { optimizeAgentPrompt } from '../../api/config'
 import { primitiveTokenOf, primitiveTagType } from '../../utils/primitive'
 import { extractDescriptionFromContent } from '../../utils/descriptionExtract'
+import { normalizeTools } from '../../utils/agentToolFilter'
+import { loadLlmOptions, loadToolGroups } from '../../utils/agentAssets'
+import AgentEditor from '../scenario/AgentEditor.vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -106,6 +125,8 @@ const { t } = useI18n()
 const token = computed(() => primitiveTokenOf(props.path))
 const typeLabel = computed(() => t('fileTree.type_' + token.value))
 const tagType = computed(() => primitiveTagType(token.value))
+// 智能体原语（*.agent.md）→ 渲染智能体编辑器（复用 AgentEditor）。
+const isAgent = computed(() => token.value === 'agent')
 
 const curTab = ref('meta')
 const tabs = computed(() => [
@@ -139,6 +160,88 @@ const dirty = computed(() => {
 const paramsLabel = computed(() => {
   return paramsSection.value || (token.value === 'prompt' ? '[arguments]' : '[parameters]')
 })
+
+// ── 智能体模式（*.agent.md）──────────────────────────────────────
+// 契约文档 ↔ AgentEditor 的 agent 模型映射；工具/LLM 选项装载与场景编辑共用 utils/agentAssets。
+const llmOptions = ref([])
+const toolGroups = ref([])
+const allToolCategories = ref([])
+const optimizing = ref(false)
+
+function metaMap() {
+  const m = {}
+  for (const r of form.metaRows) if (r.k.trim()) m[r.k.trim()] = r.v
+  return m
+}
+
+// setMeta 写/删一条 meta（值空 → 删键）。
+function setMeta(k, v) {
+  const idx = form.metaRows.findIndex(r => r.k.trim() === k)
+  const empty = v === '' || v === null || v === undefined
+  if (empty) {
+    if (idx >= 0) form.metaRows.splice(idx, 1)
+    return
+  }
+  if (idx >= 0) form.metaRows[idx].v = String(v)
+  else form.metaRows.push({ k, v: String(v) })
+}
+
+// agentModel：契约文档形态 → AgentEditor 的 agent 模型（meta 键 roletag/ismain/tools/llm/delegate）。
+const agentModel = computed(() => {
+  const meta = metaMap()
+  const tools = normalizeTools(meta.tools)
+  return {
+    name: form.title,
+    description: form.description,
+    roleTag: meta.roletag || '',
+    isMain: String(meta.ismain || '').toLowerCase() === 'true',
+    prompt: form.content,
+    tools,
+    filterTools: tools.length > 0,
+    llmRef: meta.llm || '',
+    delegateCond: meta.delegate || '',
+  }
+})
+
+// onAgentUpdate：AgentEditor 编辑回写 → 契约文档 form（保存仍走 handleSave / data-knowledge-save）。
+function onAgentUpdate(a) {
+  if (!a) return
+  form.title = a.name || ''
+  form.description = a.description || ''
+  form.content = a.prompt || ''
+  setMeta('roletag', a.roleTag)
+  setMeta('ismain', a.isMain ? 'true' : '')
+  const tools = normalizeTools(a.tools)
+  setMeta('tools', tools.length > 0 ? JSON.stringify(tools) : '')
+  setMeta('llm', a.llmRef)
+  setMeta('delegate', a.delegateCond)
+}
+
+// 「优化提示词」：复用既有优化链路（gui.prompt-optimise，流式回显）；结果写入草稿，落库由【保存】决定。
+function onAgentOptimize() {
+  if (optimizing.value) return
+  if (!(form.content || '').trim()) {
+    message.warning(t('common.input_required'))
+    return
+  }
+  optimizing.value = true
+  optimizeAgentPrompt(
+    {
+      title: t('scenario.optimize_title', { name: form.title || t('scenario.unnamed') }),
+      useCase: t('scenario.optimize_use_case'),
+      prompt: form.content,
+    },
+    (chunk) => { form.content = (form.content || '') + chunk },
+    (prompt) => {
+      optimizing.value = false
+      if (prompt) form.content = prompt
+    },
+    (err) => {
+      optimizing.value = false
+      message.error(t('common.optimize_failed') + ': ' + err)
+    },
+  )
+}
 
 function normPath(p) {
   return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '')
@@ -321,13 +424,20 @@ function onFileChanged(data) {
 
 const _unsubs = []
 onMounted(async () => {
-  load()
+  await load()
   _unsubs.push(mq.on(EventNames.primSave, handleSave))
   _unsubs.push(mq.on(EventNames.primRestore, handleRestore))
   _unsubs.push(mq.on(EventNames.fileChanged, onFileChanged))
   // 「恢复默认」依赖三级根判定当前级别 → 解析后探测上一级同名原语
   await loadLevelRoots()
   await resolveUpperSource()
+  // 智能体原语：装载 LLM 选项 + 运行时工具分组（供 AgentEditor 工具树）
+  if (isAgent.value) {
+    const [lo, tg] = await Promise.all([loadLlmOptions(t), loadToolGroups()])
+    llmOptions.value = lo
+    toolGroups.value = tg
+    allToolCategories.value = tg
+  }
 })
 onUnmounted(() => {
   for (const fn of _unsubs) fn()
@@ -374,6 +484,14 @@ onUnmounted(() => {
 .prim-tabs {
   flex: 1;
   min-height: 0;
+}
+/* 智能体模式：AgentEditor 撑满可用高度 */
+.prim-agent-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .prim-tab-body {
   flex: 1;

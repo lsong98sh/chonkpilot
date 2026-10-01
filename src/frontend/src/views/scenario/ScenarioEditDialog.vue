@@ -1,6 +1,6 @@
 <template>
   <div class="edit-dialog-body">
-    <!-- 顶部工具条（仅名称 / 目录名输入；操作按钮统一在固定底部） -->
+    <!-- 顶部工具条（名称 / 目录名输入 + 场景级别选择；操作按钮统一在固定底部） -->
     <div class="edit-toolbar">
       <div class="edit-title-input">
         <Input
@@ -15,22 +15,33 @@
           class="dir-input"
         />
       </div>
+      <!-- 场景级别选择器（四级：系统/用户/项目/项目私有；替代原硬编码 level:'user'，P4） -->
+      <Select
+        class="level-select"
+        :modelValue="form.level || 'user'"
+        :options="levelOptions"
+        @update:modelValue="onLevelChange"
+      />
     </div>
 
     <!-- Left-right split -->
     <div class="edit-split">
       <!-- Left: Agent list -->
       <div class="agent-list-panel">
-        <!-- Agent list header -->
+        <!-- Agent list header：从 agents/ 选择（只读显示已选；P4 2026-10-01） -->
         <div class="agent-list-header">
           <span>{{ $t('scenario.agents') }} ({{ agents.length }})</span>
-          <Button size="mini" v-mq:[EventNames.scenarioAddSubAgent].click>
-            <Icon name="plus" :size="12" /> {{ $t('scenario.add_agent') }}
-          </Button>
+          <Select
+            class="agent-picker"
+            :modelValue="pickerValue"
+            :options="agentOptions"
+            :placeholder="$t('scenario.pick_agent')"
+            @update:modelValue="onPickAgent"
+          />
         </div>
 
         <div class="agent-list-body">
-          <!-- Main agent group -->
+          <!-- Main agent group（内联，可编辑、不可选） -->
           <div v-if="mainAgent" class="agent-group">
             <div class="agent-group-title">{{ $t('scenario.main_agent') }}</div>
             <div
@@ -44,17 +55,17 @@
             </div>
           </div>
 
-          <!-- Sub agents group -->
+          <!-- Sub agents group（引用 agents/，**只读显示已选**） -->
           <div v-if="subAgents.length > 0" class="agent-group">
             <div class="agent-group-title">{{ $t('scenario.sub_agents') }}</div>
             <div
               v-for="agent in subAgents"
-              :key="agent.id || agent._key"
+              :key="agent.ref || agent.name"
               class="agent-list-item"
               :class="{ active: agents.indexOf(agent) === selectedAgentIdx }"
               v-mq:[EventNames.scenarioSelectAgent].click="{ agent }"
             >
-              <span class="al-name">{{ agent.name || $t('scenario.unnamed') }}</span>
+              <span class="al-name" :title="agent.ref">{{ agent.name || $t('scenario.unnamed') }}</span>
               <span v-if="agent.roleTag" class="al-badge sub">{{ agent.roleTag }}</span>
               <span class="al-remove" v-mq:[EventNames.scenarioDeleteAgent].click.stop="{ agent }">×</span>
             </div>
@@ -75,7 +86,8 @@
       <div class="agent-editor-panel">
         <Tabs class="scenario-right-tabs" :tabs="rightTabs" v-model="rightTab">
           <template #agent>
-            <div v-if="selectedAgent" class="agent-editor-wrapper">
+            <!-- 主 agent（内联）：可编辑 -->
+            <div v-if="selectedAgent && selectedAgent.isMain" class="agent-editor-wrapper">
               <AgentEditor
                 :key="selectedAgentIdx"
                 :agent="normalizedSelectedAgent"
@@ -84,9 +96,29 @@
                 :all-tool-categories="allToolCategories"
                 :optimizing="optimizing"
                 @update:agent="updateAgentField"
-                @copy="handleCopy"
                 @optimize="handleOptimize"
               />
+            </div>
+            <!-- 子 agent（引用 agents/）：只读展示（内容编辑在「扩展 · 智能体」页） -->
+            <div v-else-if="selectedAgent" class="ref-agent-view">
+              <div class="ref-field">
+                <span class="ref-label">{{ $t('scenario.fields.name') }}</span>
+                <span>{{ selectedAgent.name }}</span>
+              </div>
+              <div v-if="selectedAgent.roleTag" class="ref-field">
+                <span class="ref-label">{{ $t('scenario.fields.roleTag') }}</span>
+                <span>{{ selectedAgent.roleTag }}</span>
+              </div>
+              <div class="ref-field">
+                <span class="ref-label">{{ $t('scenario.ref_label') }}</span>
+                <span class="ref-path" :title="selectedAgent.ref">{{ selectedAgent.ref }}</span>
+              </div>
+              <div v-if="selectedAgent.description" class="ref-field">
+                <span class="ref-label">{{ $t('scenario.fields.description') }}</span>
+                <span>{{ selectedAgent.description }}</span>
+              </div>
+              <pre class="ref-prompt">{{ selectedAgent.prompt }}</pre>
+              <div class="ref-hint">{{ $t('scenario.ref_edit_hint') }}</div>
             </div>
             <div v-else class="empty-state">
               <div class="empty-icon">⎔</div>
@@ -118,13 +150,14 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { message, confirm, promptInput } from '../../components/ui'
-import { Input, Button, Tabs } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
+import { Input, Button, Select, Tabs } from '../../components/ui'
 import AgentEditor from './AgentEditor.vue'
 import CombinedPromptPreview from './CombinedPromptPreview.vue'
-import { getUserConfig, optimizeAgentPrompt } from '../../api/config'
+import { optimizeAgentPrompt } from '../../api/config'
 import { saveScenario } from '../../api/scenario'
+import { getKnowledgeRoot, listPrimitives } from '../../api/knowledge'
 import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilter'
+import { loadLlmOptions, loadToolGroups as loadToolGroupsShared } from '../../utils/agentAssets'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -311,19 +344,80 @@ async function doSave(idOverride) {
   }
 }
 
-function addSubAgent() {
-  const newAgent = {
-    name: t('scenario.new_agent'),
+// ── 场景级别（四级：系统/用户/项目/项目私有；P4 2026-10-01）────────
+const LEVELS = ['app', 'user', 'project', 'prjusr']
+const levelOptions = computed(() => LEVELS.map(k => ({ label: t('scenario.level.' + k), value: k })))
+
+function onLevelChange(kind) {
+  if (!LEVELS.includes(kind)) return
+  form.value.level = kind
+  loadAgentOptions() // 级别变 → 可用智能体集合变（矩阵）
+}
+
+// ── 智能体选择（从 agents/ 引用；P4 2026-10-01）─────────────────
+// 允许级别的**可用集合**（"同级别或更高级"矩阵，与工具选择同一矩阵）：
+//   prjusr → {prjusr,user,project,app} · project → {project,app} · user → {user,app} · app → {app}
+const AGENT_LEVEL_MATRIX = {
+  prjusr: ['prjusr', 'user', 'project', 'app'],
+  project: ['project', 'app'],
+  user: ['user', 'app'],
+  app: ['app'],
+}
+function allowedAgentLevels(kind) {
+  return AGENT_LEVEL_MATRIX[kind] || AGENT_LEVEL_MATRIX.user
+}
+
+const agentOptions = ref([])
+const pickerValue = ref('')
+
+function stripAgentExt(name) {
+  return String(name || '').replace(/\.agent\.md$/i, '')
+}
+
+// 列出**允许级别** agents/ 下的智能体原语 → 选择项（value = 绝对路径；保存时后端归一为引用路径）。
+async function loadAgentOptions() {
+  const out = []
+  const seen = new Set()
+  for (const kind of allowedAgentLevels(form.value.level || 'user')) {
+    let root = ''
+    try { root = (await getKnowledgeRoot(kind))?.root || '' } catch (_) { continue }
+    if (!root) continue
+    let files = []
+    try {
+      const r = await listPrimitives(String(root).replace(/\\/g, '/').replace(/\/+$/, '') + '/agents')
+      files = r.files || []
+    } catch (_) { continue }
+    for (const f of files) {
+      if (f.type !== 'agent') continue
+      const abs = String(f.path).replace(/\\/g, '/')
+      if (seen.has(abs)) continue
+      seen.add(abs)
+      out.push({ label: `${t('scenario.level.' + kind)} · ${stripAgentExt(f.name)}`, value: abs })
+    }
+  }
+  agentOptions.value = out
+}
+
+// 选中一项 → 追加为**引用 agent**（只读显示已选）；重复引用忽略。
+function onPickAgent(abs) {
+  pickerValue.value = ''
+  if (!abs) return
+  if (agents.value.some(a => a.ref === abs)) {
+    message.info(t('scenario.agent_already_added'))
+    return
+  }
+  const opt = agentOptions.value.find(o => o.value === abs)
+  const name = opt ? opt.label.split(' · ').slice(1).join(' · ') : stripAgentExt(abs)
+  agents.value.push({
+    name,
     description: '',
     roleTag: '',
+    isMain: false,
     prompt: '',
     tools: [],
-    llmRef: '',
-    delegateCond: '',
-    isMain: false,
-    _key: `new-${nextKey++}`,
-  }
-  agents.value.push(newAgent)
+    ref: abs,
+    _key: `ref-${nextKey++}`,
+  })
   selectedAgentIdx.value = agents.value.length - 1
   message.success(t('scenario.agent_added'))
 }
@@ -353,18 +447,6 @@ function updateAgentField(updatedAgent) {
       _key: agent._key,
     }
   }
-}
-
-function handleCopy(agent) {
-  const copy = {
-    ...agent,
-    name: agent.name + ' ' + t('scenario.copy_suffix'),
-    isMain: false,
-    _key: `new-${nextKey++}`,
-  }
-  agents.value.push(copy)
-  selectedAgentIdx.value = agents.value.length - 1
-  message.success(t('scenario.agent_copied'))
 }
 
 // 「优化提示词」：复用既有优化链路（`gui.prompt-optimise`，流式回显 —— 与 TextEditDialog 同源）。
@@ -409,7 +491,6 @@ onMounted(async () => {
   _unsubs.push(mq.on(EventNames.scenarioSave, handleSave))
   // 取消：关闭弹窗、不落库（父组件收到 cancel 事件后关闭对话框）
   _unsubs.push(mq.on(EventNames.scenarioCancel, () => emit('cancel')))
-  _unsubs.push(mq.on(EventNames.scenarioAddSubAgent, addSubAgent))
   _unsubs.push(mq.on(EventNames.scenarioSelectMain, () => {
     selectedAgentIdx.value = agents.value.indexOf(mainAgent.value)
   }))
@@ -435,55 +516,20 @@ onMounted(async () => {
     form.value = { name: '', description: '', level: 'user' }
     createDefaultMainAgent()
   }
+  // 智能体选择项：按当前场景级别（矩阵）列出可用 agents/ 原语
+  await loadAgentOptions()
 })
 
 onUnmounted(() => _unsubs.forEach(fn => fn()))
 
 async function loadLLMOptions() {
-  try {
-    const uc = await getUserConfig()
-    const llms = uc?.config?.llms || []
-    llmOptions.value = [
-      { label: t('scenario.default_label'), value: '' },
-      ...llms.map(llm => ({ label: `${llm.name} (${llm.model})`, value: llm.name })),
-    ]
-  } catch (e) {
-    llmOptions.value = [{ label: t('scenario.default_label'), value: '' }]
-  }
+  llmOptions.value = await loadLlmOptions(t)
 }
 
+// 工具分组：读**运行时能力面**（T-31）——装载逻辑与「智能体原语编辑」共用
+// utils/agentAssets.loadToolGroups（零重复实现）。
 async function loadToolGroups() {
-  const groups = []
-
-  // 工具分组：读**运行时能力面**（T-31）——前端经桥客户端主题 tools-list →
-  // 相对主题 mcp-tools-list（bridge.go frontMethodSubjects；桥自动注入 instance_id）。
-  // 结果 {resultType, tools, ttlMs}，每项 {name, scope, description, inputSchema,
-  // _meta:{hot, category, server}, node}；按 _meta.server.alias 分组展示。
-  // scope 过滤已在桥侧完成（仅全局 + 当前实例，见 bridge.go filterCapabilityScope），
-  // 前端直接渲染返回的全部工具。
-  try {
-    const env = await mq.emit('tools-list', {})
-    const res = env && env.backend && env.backend.result
-    const tools = res && Array.isArray(res.tools) ? res.tools : []
-
-    const byServer = new Map()
-    for (const tl of tools) {
-      const meta = tl._meta || {}
-      const srv = meta.server || {}
-      const groupKey = srv.alias || srv.node || '全局'
-      if (!byServer.has(groupKey)) byServer.set(groupKey, [])
-      byServer.get(groupKey).push({
-        name: tl.name,
-        desc: (meta.hot ? '[hot] ' : '') + (tl.description || ''),
-        // 展示用：网关为暴露名加的前缀（self_/dir_ 等）剥掉后显示（`name` 仍作配置键 / 勾选键）
-        server: srv,
-      })
-    }
-    for (const [key, list] of byServer) {
-      groups.push({ name: key, label: key, tools: list })
-    }
-  } catch (_) {}
-
+  const groups = await loadToolGroupsShared()
   toolGroups.value = groups
   allToolCategories.value = groups
 }
@@ -756,5 +802,62 @@ function createDefaultMainAgent() {
 
 .empty-state p {
   margin: 0;
+}
+
+/* ── 场景级别选择器（顶部工具条）── */
+.level-select {
+  flex: 0 0 120px;
+}
+
+/* ── 智能体选择器（左栏标题行内）── */
+.agent-picker {
+  width: 120px;
+  flex-shrink: 0;
+}
+
+/* ── 子 agent 引用只读视图（右栏「Agent」页签）── */
+.ref-agent-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ref-field {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+.ref-label {
+  flex: 0 0 64px;
+  color: var(--text-muted, #999);
+  font-size: 12px;
+}
+.ref-path {
+  font-family: var(--font-mono, Consolas, monospace);
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+.ref-prompt {
+  flex: 0 1 auto;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border, #eee);
+  border-radius: 4px;
+  background: var(--bg-secondary, #fafafa);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+.ref-hint {
+  font-size: 11px;
+  color: var(--text-muted, #999);
 }
 </style>

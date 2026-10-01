@@ -1,4 +1,14 @@
 {
   "name": "开发场景",
-  "description": ""
+  "description": "",
+  "agents": [
+    "${exeDir}/capability/agents/UX 设计师.agent.md",
+    "${exeDir}/capability/agents/UI 测试工程师.agent.md",
+    "${exeDir}/capability/agents/前端开发.agent.md",
+    "${exeDir}/capability/agents/后端开发.agent.md",
+    "${exeDir}/capability/agents/架构设计师.agent.md",
+    "${exeDir}/capability/agents/测试工程师.agent.md",
+    "${exeDir}/capability/agents/需求分析师.agent.md",
+    "${exeDir}/capability/agents/代码审查.agent.md"
+  ]
 }

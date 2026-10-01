@@ -1,18 +1,19 @@
 // 原语文件（*.type.md）工具：类型后缀识别（对齐后端 mcp 契约与 ListPrimitives.type）。
-// token: tool / skill / prompt / resource。
-export const PRIMITIVE_TOKENS = ['tool', 'skill', 'prompt', 'resource']
+// token: tool / skill / prompt / resource / agent（agent = 智能体原语，*.agent.md）。
+export const PRIMITIVE_TOKENS = ['tool', 'skill', 'prompt', 'resource', 'agent']
 
 // 类型目录名（复数，后端自动预置）→ token
-export const TYPE_DIR_MAP = { tools: 'tool', skills: 'skill', prompts: 'prompt', resources: 'resource' }
+export const TYPE_DIR_MAP = { tools: 'tool', skills: 'skill', prompts: 'prompt', resources: 'resource', agents: 'agent' }
 
 // 类型目录相对 capability 根（知识库）的物理路径 → token（对齐后端 capfs.Types.Rel）：
 // capability 根下 **6 个扁平子目录**（prompts/tools/resources/skills/agents/scenarios），
-// 旧 `knowledge/**` 归并层已删除。用于「工具页签」按类型范围过滤目录子树。
+// 旧 `knowledge/**` 归并层已删除。用于「扩展页」按类型范围过滤目录子树。
 export const TYPE_DIR_REL = {
   tool: 'tools',
   skill: 'skills',
   prompt: 'prompts',
   resource: 'resources',
+  agent: 'agents',
 }
 
 export function primitiveTokenOf(path) {
@@ -41,10 +42,10 @@ export function nearestTypeToken(path) {
 
 // 类型 token → i18n label key（knowledgePrimitive.*）
 export function primitiveLabelKey(tok) {
-  return { tool: 'tool', skill: 'skill', prompt: 'prompt', resource: 'resource' }[tok] || tok
+  return { tool: 'tool', skill: 'skill', prompt: 'prompt', resource: 'resource', agent: 'agent' }[tok] || tok
 }
 
 // 文件类型 token（含裸 md 按父类型目录回退时由后端返回；此处只做展示归类）
 export function primitiveTagType(tok) {
-  return { tool: 'primary', skill: 'success', prompt: 'warning', resource: 'info' }[tok] || 'info'
+  return { tool: 'primary', skill: 'success', prompt: 'warning', resource: 'info', agent: 'warning' }[tok] || 'info'
 }

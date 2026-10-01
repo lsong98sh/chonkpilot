@@ -118,12 +118,16 @@ def case_add_refreshes_chat_list():
             time.sleep(1)
         time.sleep(0.5)
 
-        # 6. 断言：popover 场景项出现新场景名
+        # 6. 断言：popover 场景项出现新场景名（P5 2026-10-01：名称后**统一标注级别** → "<名称> -<级别>"）
         deadline = time.time() + 6
         items = []
         while time.time() < deadline:
             items = _loads_deep(c.eval("JSON.stringify([...document.querySelectorAll('.popover-list .scenario-item-name')].map(e => e.textContent.trim()))"))
-            if isinstance(items, list) and NAME in items:
+            hit = next((x for x in (items or []) if x == NAME or x.startswith(NAME + " -")), None)
+            if hit:
+                # 强度不降：不仅出现，且**带级别后缀**（用户级 → " -用户"/" -User"）
+                if not any(x.startswith(NAME + " -") for x in (items or [])):
+                    raise TestError(f"场景项未标注级别（应 \"{NAME} -<级别>\"）：{items!r}")
                 return
             time.sleep(0.5)
         raise TestError(f"保存后 ChatPanel 场景列表未出现新场景 {NAME!r}（items={items!r}）")

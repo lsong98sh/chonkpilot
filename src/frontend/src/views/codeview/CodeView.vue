@@ -371,7 +371,7 @@ function isBackupFile(path) {
 function computeRenderType(path) {
   if (path && path.startsWith('db://')) return 'none'
   if (isBackupFile(path)) return 'unsupported'
-  if (isPrimitiveFile(path)) return 'primitive' // *.tool.md / *.skill.md / *.prompt.md / *.resource.md
+  if (isPrimitiveFile(path)) return 'primitive' // *.tool.md / *.skill.md / *.prompt.md / *.resource.md / *.agent.md（智能体编辑器）
   const ext = getExtension(path)
   if (ext === 'md') return 'markdown'
   if (ext === 'pdf') return 'pdf'

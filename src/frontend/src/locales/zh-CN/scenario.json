@@ -19,7 +19,8 @@
   "level": {
     "app": "系统",
     "user": "用户",
-    "project": "项目"
+    "project": "项目",
+    "prjusr": "项目私有"
   },
   "dir_name_required": "目录名不能为空（仅字母/数字/下划线/连字符）",
   "dir_name_format": "目录名只能包含字母、数字、下划线和连字符",
@@ -83,6 +84,10 @@
   "agents": "Agents",
   "new_agent": "新 Agent",
   "agent_added": "Agent 已添加",
+  "pick_agent": "选择智能体",
+  "agent_already_added": "该智能体已在场景中",
+  "ref_label": "引用",
+  "ref_edit_hint": "智能体内容为引用，请到「扩展 · 智能体」页编辑",
   "add_agent_failed": "添加 Agent 失败",
   "delete_agent_confirm": "确定删除 Agent「{name}」？",
   "agent_deleted": "Agent 已删除",

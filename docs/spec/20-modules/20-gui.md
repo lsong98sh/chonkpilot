@@ -466,7 +466,9 @@
 - **数据来源与刷新**：`history.enabled`/`keep`/`ttl`/`clear` 为 **prj 键**、`history.status.<slug>` / `history.timeline.<slug>` 为**会话级内部键（落 prjusr）**，统一经既有 `data-prj-config-list`（合并 prjusr）读取、`data-prj-config-save` 写入；刷新走统一机制 `usePrjConfigRefresh`（4 精确键 + **2 会话级前缀** `history.status.` / `history.timeline.`；按键过滤 + 突发合并 + 保存期跳过）；派生用 `computed`（**禁 `watch`/`watchEffect`**）；解析失败静默降级（不刷 `console.error`）。**零新增 MQ 主题**（`event-names.js` 无 history 通道）。
 - **关联测试**：前端守卫 `test/historyCheckpoint.test.js`（纯逻辑 `utils/historyTimeline.js`：JSON 解析兜底 / 相对编号 `-1` / `active|fused|off` 归一 / 体积·时间格式化 / 默认 500·7 / **`chainSlug` 与会话级键名** · 源码守卫：两设置项键名与写库、**正整数校验先于写库**、**按当前会话读 status/timeline（活动会话 + 前缀订阅）**、禁 watch、`history.clear` 写 **JSON `{ts,session}`** + 二次确认、零新增主题、i18n zh/en 键集一致且「保留口径 / 不向分支提交 / 效率 / 工具调用前打点 / **本会话清空**」文案齐备、页签名「文件历史」）；L4 `run_hist_git.py`（真机产物断言见 [51 §2](../50-testing/51-FP与测试映射.md)：H1/H4/H6）。
 
-### 12.13 左侧资源面板分段栏与「工具」页签（`views/filetree/ExplorerPane.vue`；2026-09-29）
+### 12.13 左侧资源面板分段栏与「工具」页签（`views/filetree/ExplorerPane.vue`；2026-09-29）〔**已被 §12.14 取代（2026-10-01）**〕
+
+> ⚠️ **2026-10-01（P3，[42 §2 (209)](../40-roadmap/42-决策记录.md)）**：本节「五段（含知识库/工具两页签）/三级（系统只读）」口径**已作废** —— 现为 **4 段（项目/会话/记忆/扩展）+ 扩展页 5 子 tab + 四级均可写**，见 §12.14。本节保留供历史对照。
 
 > 用户口径：「把『工具』从知识库分离出来，做成独立『工具』页签，位置在 ExplorerPane 分段栏『会话』页签的右侧；工具编辑层级与知识库一致（系统/用户/项目三级）」。
 
@@ -479,4 +481,16 @@
 - **编辑层级与知识库一致（三级）**：`app`（系统，只读）/`user`（用户）/`project`（项目）均经 `kb-level-select` 切换（**两实例同订阅 → 同步切级**）；列表/新建/重命名/删除/拖拽移动与 `PrimitivePanel`（四页签 meta·描述·参数·正文、保存·恢复、恢复默认）**与知识库同一套操作与语义**（同 `data-knowledge-*` 消息面，[61 §3.3](../60-reference/61-消息一览.md)）。〔**订正（2026-10-01，P1）**：数据层 capability 已**四级**（新增 prjusr）且**四级均可读写**（系统级只读作废）；**前端四级页签 UI 属 [P3] 批次**（本轮前端已同步扁平 `TYPE_DIR_REL`，页签仍三级）。〕
 - **消息面**：**零新增/零修改**——工具读写沿用既有 `data-knowledge-*`（后端 `<级别根>/capability/{prompts,tools,resources,skills,agents,scenarios}`（6 扁平子目录）已被同一套原语机制覆盖，`kbRootOf` 四级根解析）；右键动作仍为 `kb-ctx-action`（payload 增可选 `scope`，**非新主题**，用于多实例分流）。
 - **关联测试**：前端守卫 `src/frontend/test/toolsPane.test.js`（段位置/`setMode`/两实例 kinds/右键菜单判定/三级可写性/零新增主题/i18n）；L4 `run_explore_kb.py`（C1 五段 + C2 知识库不含 tools + C3~C8/C10/C11/C13 工具页签写链路 + C12 知识库技能/提示词/资源）、`run_config_ui.py`（G 用例切「工具」页签）、`run_ui_regressions.py`（R1 从「工具」页签打开 `*.tool.md`）。
+
+### 12.14 左侧资源面板「扩展」页与四级（`views/filetree/ExplorerPane.vue` + `views/extensions/ExtensionsPane.vue`；2026-10-01，P3）
+
+> 用户口径：分段改 **`项目 / 会话 / 记忆 / 扩展`**（删「知识库」「工具」两个一级分段；「项目记忆」文案改「记忆」）；新增「扩展」页 = 顶部 **5 子 tab**（知识/技能/工具/命令/智能体）+ 右侧**【级别】**popup；**四级都可写**（撤系统级只读）。
+
+- **分段栏（4 段）**：`项目 | 会话 | 记忆 | 扩展`（`mode` = `project|sessions|memory|extensions`）；`v-show` 同显 4 体；「刷新」图标在 `memory`/`extensions` 模式显示（扩展页 → `ExtensionsPane.reload()`）。`filetree-mode-toggle` 休眠态改 `project ↔ extensions`。
+- **扩展页（`ExtensionsPane.vue`）**：`SUBTABS` = 知识(`resource`) / 技能(`skill`) / 工具(`tool`) / 命令(`prompt`) / 智能体(`agent`)（顺序固定）；内部 `v-show`/`key` 渲染 **复用** `views/filetree/KnowledgeTree.vue`（`scope=子 tab key`、`kinds=[单类型]`）。
+- **级别（四级）**：右侧【级别】按钮 → `Popover` 下拉（系统/用户/项目/项目私有，`fileTree.kb_level_*`）；**级别状态由扩展页统一持有并经 `props.level` 下发**（`KnowledgeTree` 只读 `level`，内联级别按钮组与自持 `kbLevel` **已移除**）。切换级别/子 tab 经 `:key="subTab + '-' + level"` 重挂载树（**不用 watch**）。
+- **四级均可写**：撤 `isKbReadonly`/`kb_readonly`（原「系统级只读」作废）；拖拽移动仍限当前级别根内同级。
+- **智能体子 tab**：`*.agent.md` 编辑走 `PrimitivePanel`（token=agent → **复用** `views/scenario/AgentEditor.vue`，`showCopy=false`；保存 `data-knowledge-save`）。
+- **消息面**：**主题零新增** —— 子 tab 复用 `filetree-mode-select`（payload 增**可选** `ext`）；级别复用 `kb-level-select{kind}`（语义改「扩展页统一持有」）。二者均为**前端内部**事件（未登记 [61 §6.1](../60-reference/61-消息一览.md)）。
+- **关联测试**：前端守卫 `src/frontend/test/extensionsPane.test.js`（4 段位置/5 子 tab 顺序与 kinds/级别 popup/四级可写/复用/零裸主题/agent token/i18n）+ `test/scenarioAgentsRef.test.js`（智能体编辑器复用）+ `test/sessionNavCopy.test.js`（导航顺序）。L4 `run_explore_kb.py` / `run_config_ui.py` / `run_ui_regressions.py` 按新 UI（「扩展」页）同步（**需新构建后实跑**）。
 

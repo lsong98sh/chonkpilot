@@ -117,7 +117,7 @@ def main():
             time.sleep(0.5)
         time.sleep(0.5)
 
-        # SD1 左侧导航「会话」页签 → 空态（页签顺序：项目 · 知识库 · 项目记忆 · 会话）
+        # SD1 左侧导航「会话」页签 → 空态（页签顺序：项目 · 会话 · 记忆 · 扩展，2026-10-01 P3）
         segs = J(gui, "Array.from(document.querySelectorAll('.explorer-seg-btn')).map(e=>e.textContent.trim())")
         open_sessions(gui)
         shown = wait_upto(gui, "(()=>{const p=document.querySelector('.sessions-pane');"
@@ -125,9 +125,9 @@ def main():
         empty = wait_upto(gui, "document.body.textContent.includes('No sessions') || document.body.textContent.includes('暂无会话')",
                           lambda v: v is True)
         labels = list(segs or [])[:4]
-        order_ok = (labels == ['项目', '知识库', '项目记忆', '会话']
-                    or labels == ['Project', 'Knowledge', 'Project Memory', 'Sessions'])
-        c.check("SD1 左侧导航含项目记忆页签（项目·知识库·项目记忆·会话）+ 打开会话为空态",
+        order_ok = (labels == ['项目', '会话', '记忆', '扩展']
+                    or labels == ['Project', 'Sessions', 'Memory', 'Extensions'])
+        c.check("SD1 左侧导航含记忆页签（项目·会话·记忆·扩展）+ 打开会话为空态",
                 order_ok and bool(shown) and bool(empty),
                 f"segs={segs} shown={shown} empty={empty}")
 

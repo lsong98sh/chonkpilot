@@ -2,16 +2,6 @@
   <div ref="rootRef" class="knowledge-tree" :class="'kb-scope-' + scope">
     <div class="kb-tree-header">
       <span class="kb-tree-title" :title="root">{{ kbHeaderTitle }}</span>
-      <span class="kb-level-switch">
-        <Button
-          v-for="lv in KB_LEVELS"
-          :key="lv.kind"
-          text
-          size="mini"
-          :class="{ active: kbLevel === lv.kind }"
-          v-mq:[EventNames.kbLevelSelect].click="{ kind: lv.kind }"
-        >{{ $t(lv.label) }}</Button>
-      </span>
     </div>
     <div class="kb-tree-body" @contextmenu.prevent="onBlankContext">
       <TreeNode
@@ -69,7 +59,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import TreeNode from './TreeNode.vue'
-import { confirm, message, promptInput, Button } from '../../components/ui'
+import { confirm, message, promptInput } from '../../components/ui'
 import {
   getKnowledgeRoot, listPrimitives,
   createPrimitiveDir, renamePrimitiveDir, deletePrimitiveDir,
@@ -81,14 +71,17 @@ import { EventNames } from '../../events/event-names'
 
 defineOptions({ name: 'KnowledgeTree' })
 
-// 类型范围复用：「知识库」页签（skill/prompt/resource）与「工具」页签（tool）共用本组件，
+// 类型范围复用：「扩展」页（知识/技能/工具/命令/智能体 5 子 tab）共用本组件，
 // 由 kinds 过滤目录/文件；scope 唯一标识本实例（右键动作事件按 scope 分流，避免多实例串扰）；
-// titleKey / emptyKey 供标题与空态文案（知识库 vs 工具）。
+// titleKey / emptyKey 供标题与空态文案。
+// **级别（level）由父组件（扩展页）统一持有并下发**：本组件不再内联级别切换按钮（已移到扩展页右侧工具条）。
 const props = defineProps({
   kinds: { type: Array, default: () => [] },
   scope: { type: String, default: 'knowledge' },
   titleKey: { type: String, default: 'fileTree.mode_knowledge' },
   emptyKey: { type: String, default: 'fileTree.kb_empty' },
+  // 级别（app=系统 / user=用户 / project=项目 / prjusr=项目私有），由父组件下发。
+  level: { type: String, default: 'app' },
 })
 
 const { t } = useI18n()
@@ -134,13 +127,14 @@ function fileInScope(raw) {
   return kindFilter.value.has(raw.type || '')
 }
 
-// 知识库三级（系统/用户/项目；12-数据层）：头部切换，一次展示一级
+// 级别（四级：系统/用户/项目/项目私有；12-数据层）：选择器在扩展页右侧工具条，级别经 props.level 下发。
+// 本表仅用于头部标题的级别后缀显示。
 const KB_LEVELS = [
   { kind: 'app', label: 'fileTree.kb_level_app' },
   { kind: 'user', label: 'fileTree.kb_level_user' },
   { kind: 'project', label: 'fileTree.kb_level_project' },
+  { kind: 'prjusr', label: 'fileTree.kb_level_prjusr' },
 ]
-const kbLevel = ref('app')
 const treeData = ref([])
 const selectedKey = ref('')
 const loading = ref(false)
@@ -194,9 +188,9 @@ async function loadChildren(node) {
 async function loadRoot() {
   loading.value = true
   try {
-    const res = await getKnowledgeRoot(kbLevel.value)
+    const res = await getKnowledgeRoot(props.level)
     root.value = (res && res.root) || ''
-    const lv = KB_LEVELS.find(l => l.kind === kbLevel.value)
+    const lv = KB_LEVELS.find(l => l.kind === props.level)
     rootName.value = t(props.titleKey) + (lv ? ' -' + t(lv.label) : '')
     const rnode = { label: rootName.value, path: root.value, is_dir: true, expanded: false, children: [], _loading: false, type: '' }
     treeData.value = [rnode]
@@ -205,15 +199,6 @@ async function loadRoot() {
   } finally {
     loading.value = false
   }
-}
-
-// 切换知识库级别（系统/用户/项目）：重置并重新加载根
-async function switchLevel({ kind }) {
-  if (!kind || kind === kbLevel.value) return
-  kbLevel.value = kind
-  selectedKey.value = ''
-  treeData.value = []
-  await loadRoot()
 }
 
 async function reload() {
@@ -309,19 +294,14 @@ function parentOfPath(path) {
 // 移动走**知识库域** data-knowledge-rename / rename-dir（按文件/目录二选一，见 api/knowledge.js
 // movePrimitive）—— G-26：filesys 自 G-21 起只按 instance 登记表解析 work_dir、不采信载荷，
 // 知识库 app/user 级 capability 路径在工作目录之外，借 filesys.rename 自报 work_dir 会被拒。
-// 范围限制：系统级（app）只读 → 禁止拖拽移动（与场景 app 级只读口径一致）；只在当前知识库
+// 范围限制：**四级均可写**（系统/用户/项目/项目私有，已撤掉 app 级只读）；只在当前知识库
 // 根内同级移动（源与目标都必须落在 root 下）。
 const dragOverPath = ref('')
 
-function isKbReadonly() {
-  return kbLevel.value === 'app'
-}
-
 function onTreeDragStart(node, e) {
-  // app 级（系统级）只读；知识库根节点不可拖
-  if (isKbReadonly() || node.path === root.value) {
+  // 知识库根节点不可拖（四级均可写，不再有 app 级只读拦截）
+  if (node.path === root.value) {
     if (e && e.preventDefault) e.preventDefault() // 取消拖拽
-    if (isKbReadonly()) message.warning(t('fileTree.kb_readonly'))
     return
   }
   dragOverPath.value = ''
@@ -353,10 +333,6 @@ async function onTreeDrop(target) {
   window.__chonkDragPath = ''
   dragOverPath.value = ''
   if (!srcPath || srcPath === target.path) return
-  if (isKbReadonly()) {
-    message.warning(t('fileTree.kb_readonly'))
-    return
-  }
   const srcNode = findNode(treeData.value, srcPath)
   if (!srcNode) return
   const srcParent = parentOfPath(srcPath)
@@ -478,7 +454,7 @@ function onKeyDown(e) {
 
 // 类型显示名
 function typeLabel(tok) {
-  return { tool: t('fileTree.type_tool'), skill: t('fileTree.type_skill'), prompt: t('fileTree.type_prompt'), resource: t('fileTree.type_resource') }[tok] || tok
+  return { tool: t('fileTree.type_tool'), skill: t('fileTree.type_skill'), prompt: t('fileTree.type_prompt'), resource: t('fileTree.type_resource'), agent: t('fileTree.type_agent') }[tok] || tok
 }
 
 // ── 右键菜单 ──
@@ -628,11 +604,10 @@ function onFileChanged(data) {
 onMounted(() => {
   loadRoot()
   _unsubs.push(mq.on(EventNames.kbCtxAction, ({ key, scope: s }) => {
-    // 多实例（知识库 / 工具）共用同一事件：仅受理本实例（scope 匹配或缺省广播）
+    // 多实例（知识/技能/工具/命令/智能体 5 子 tab 共用同一组件）共用同一事件：仅受理本实例（scope 匹配或缺省广播）
     if (s && s !== props.scope) return
     if (key) runCtx({ key })
   }))
-  _unsubs.push(mq.on(EventNames.kbLevelSelect, switchLevel))
   _unsubs.push(mq.on(EventNames.fileChanged, onFileChanged))
   _unsubs.push(mq.on(EventNames.fileOpen, ({ path }) => {
     // 打开文件时若知识库树根未展开 → 自动展开到目标父目录（导航联动）
@@ -684,22 +659,6 @@ defineExpose({ reload, loadRoot })
   text-transform: none;
   letter-spacing: 0;
   font-weight: 500;
-}
-.kb-level-switch {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  flex-shrink: 0;
-  text-transform: none;
-}
-.kb-level-switch :deep(.b-btn) {
-  font-size: 11px;
-  padding: 0 4px;
-  min-height: 20px;
-  color: var(--text-muted);
-}
-.kb-level-switch :deep(.b-btn.active) {
-  color: var(--accent);
 }
 .kb-tree-body {
   flex: 1;

@@ -260,17 +260,11 @@ const activeScenarioLabel = computed(() => {
   return found ? scenarioLabel(found) : t('chat.general_scenario')
 })
 
-// 合并列表显示层：同名跨级并存时加 -系统/-用户/-项目 后缀（不改目录名；12-数据层）
-const scenarioCounts = computed(() => {
-  const c = {}
-  for (const s of scenarioOptions.value) c[s.id] = (c[s.id] || 0) + 1
-  return c
-})
-
+// 场景显示名：**统一标注级别**（P5，2026-10-01；原仅同名跨级并存时加后缀）
 function scenarioLabel(s) {
   if (!s) return ''
   const n = s.name || s.id
-  return scenarioCounts.value[s.id] > 1 ? `${n} -${t('scenario.level.' + (s.level || 'user'))}` : n
+  return `${n} -${t('scenario.level.' + (s.level || 'user'))}`
 }
 
 async function loadScenarioOptions() {
