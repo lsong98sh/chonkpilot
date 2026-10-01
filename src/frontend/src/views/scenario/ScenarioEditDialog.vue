@@ -158,6 +158,7 @@ import { saveScenario } from '../../api/scenario'
 import { getKnowledgeRoot, listPrimitives } from '../../api/knowledge'
 import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilter'
 import { loadLlmOptions, loadToolGroups as loadToolGroupsShared } from '../../utils/agentAssets'
+import { allowedLevels } from '../../utils/agentLevelMatrix'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -351,22 +352,13 @@ const levelOptions = computed(() => LEVELS.map(k => ({ label: t('scenario.level.
 function onLevelChange(kind) {
   if (!LEVELS.includes(kind)) return
   form.value.level = kind
-  loadAgentOptions() // 级别变 → 可用智能体集合变（矩阵）
+  loadAgentOptions()        // 级别变 → 可用智能体集合变（矩阵）
+  loadToolGroups()          // 级别变 → 工具候选集合变（同一矩阵）
 }
 
 // ── 智能体选择（从 agents/ 引用；P4 2026-10-01）─────────────────
-// 允许级别的**可用集合**（"同级别或更高级"矩阵，与工具选择同一矩阵）：
-//   prjusr → {prjusr,user,project,app} · project → {project,app} · user → {user,app} · app → {app}
-const AGENT_LEVEL_MATRIX = {
-  prjusr: ['prjusr', 'user', 'project', 'app'],
-  project: ['project', 'app'],
-  user: ['user', 'app'],
-  app: ['app'],
-}
-function allowedAgentLevels(kind) {
-  return AGENT_LEVEL_MATRIX[kind] || AGENT_LEVEL_MATRIX.user
-}
-
+// 允许级别的**可用集合**（"同级别或更高级"矩阵，与工具选择同一矩阵）——单源 =
+// utils/agentLevelMatrix.AGENT_LEVEL_MATRIX（与后端 capfs.AgentToolLevels 逐字一致）。
 const agentOptions = ref([])
 const pickerValue = ref('')
 
@@ -378,7 +370,7 @@ function stripAgentExt(name) {
 async function loadAgentOptions() {
   const out = []
   const seen = new Set()
-  for (const kind of allowedAgentLevels(form.value.level || 'user')) {
+  for (const kind of allowedLevels(form.value.level || 'user')) {
     let root = ''
     try { root = (await getKnowledgeRoot(kind))?.root || '' } catch (_) { continue }
     if (!root) continue
@@ -501,9 +493,6 @@ onMounted(async () => {
     if (agent) deleteAgent(agent)
   }))
 
-  // Load LLM options and available tools
-  await Promise.all([loadLLMOptions(), loadToolGroups()])
-
   if (props.scenario) {
     form.value = { ...props.scenario }
     if (props.scenario.id) {
@@ -516,6 +505,8 @@ onMounted(async () => {
     form.value = { name: '', description: '', level: 'user' }
     createDefaultMainAgent()
   }
+  // LLM 选项 + 工具候选：**在 form.level 就位后**装载（工具候选按场景级别矩阵过滤 → 越权项不出现）
+  await Promise.all([loadLLMOptions(), loadToolGroups()])
   // 智能体选择项：按当前场景级别（矩阵）列出可用 agents/ 原语
   await loadAgentOptions()
 })
@@ -527,9 +518,9 @@ async function loadLLMOptions() {
 }
 
 // 工具分组：读**运行时能力面**（T-31）——装载逻辑与「智能体原语编辑」共用
-// utils/agentAssets.loadToolGroups（零重复实现）。
+// utils/agentAssets.loadToolGroups（零重复实现）；按当前场景级别（矩阵）过滤 → 越权项不出现。
 async function loadToolGroups() {
-  const groups = await loadToolGroupsShared()
+  const groups = await loadToolGroupsShared(form.value.level || 'user', t)
   toolGroups.value = groups
   allToolCategories.value = groups
 }

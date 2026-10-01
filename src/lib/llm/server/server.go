@@ -745,22 +745,26 @@ func (s *Server) onInstanceRegister(_ string, payload []byte) {
 	s.mu.Unlock()
 	s.registerCapabilityNodes(msg.InstanceID, msg.WorkDir)
 	if s.capWatch != nil {
-		s.capWatch.watchInstance(msg.WorkDir) // T-21：监听该实例可见的用户/项目级 capability 根
+		s.capWatch.watchInstance(msg.InstanceID, msg.WorkDir) // T-21：监听该实例可见的 user/project/prjusr 级 capability 根
 	}
 }
 
 // capNodeSpec 是要接入的一级 capability 根（节点名后缀 + 契约根目录）。
 type capNodeSpec struct {
-	suffix string // 节点名后缀：user / project（节点名 = instanceID + "-" + suffix）
+	suffix string // 节点名后缀：user / project / prjusr（节点名 = instanceID + "-" + suffix）
 	root   string // 契约根（含 tools/skills/prompts/resources 四类子目录）
 }
 
-// capNodeSpecs 解析实例可见的用户级/项目级 capability 根（仅返回存在的目录）。
+// capNodeSpecs 解析实例可见的用户级/项目级/项目私有级 capability 根（仅返回存在的目录）。
 // 系统级 = <exeDir>/capability（内嵌 self 节点，New 时装配），此处不重复。
 // 用户级根跨项目共享（同一 usr 根），但仍按 instance 各注册一份节点：
 // 生命周期与实例对称、幂等无需引用计数（scope=instance 下异实例同名可并存），
 // 且每个实例都接入同一用户根 → 跨项目可见的实际效果不丢。
-func (s *Server) capNodeSpecs(workDir string) []capNodeSpec {
+//
+// prjusr（项目私有级，P4 2026-10-01）：根 = <prjusr 数据根>/capability，由数据层门面
+// KnowledgeRoot(kind=prjusr) 解析（与知识库/场景写读同源）；解析不出（实例未登记 / prj 打不开）
+// → 跳过，不影响既有三级。
+func (s *Server) capNodeSpecs(instanceID, workDir string) []capNodeSpec {
 	specs := []capNodeSpec{}
 	if root := persist.CapUserRoot(s.opts.UsrPath); dirExists(root) {
 		specs = append(specs, capNodeSpec{suffix: "user", root: root})
@@ -770,12 +774,32 @@ func (s *Server) capNodeSpecs(workDir string) []capNodeSpec {
 			specs = append(specs, capNodeSpec{suffix: "project", root: root})
 		}
 	}
+	if root := s.prjUsrCapRoot(instanceID); dirExists(root) {
+		specs = append(specs, capNodeSpec{suffix: "prjusr", root: root})
+	}
 	return specs
 }
 
+// prjUsrCapRoot 解析实例的**项目私有级 capability 根**（<prjusr 数据根>/capability）。
+// 经数据层门面 KnowledgeRoot(kind=prjusr) 解析——与知识库 / 场景的 prjusr 写读**同一根**
+// （避免路径规则分叉）。解析不出（实例未登记 / prj 打不开 / project-id 缺失）→ 空串（不含该级）。
+func (s *Server) prjUsrCapRoot(instanceID string) string {
+	if s.data == nil || instanceID == "" {
+		return ""
+	}
+	res, err := s.data.KnowledgeRoot(facade.KnowledgeRootRequest{
+		Kind: persist.KindPrjUsr, InstanceID: instanceID,
+	})
+	if err != nil || res.Root == "" {
+		return ""
+	}
+	return res.Root
+}
+
 // registerCapabilityNodes 逐根经 gateway 方法面登记 dir 节点（幂等：同名节点已登记则跳过）。
-// 同名冲突不可能发生：三级根各由独立节点承载且暴露名带节点前缀
-// （self_ / <instanceID>-user_ / <instanceID>-project_），gateway 仅在同 (scope, 暴露名) 时报错；
+// 同名冲突不可能发生：四级根各由独立节点承载且暴露名带节点前缀
+// （self_ / <instanceID>-user_ / <instanceID>-project_ / <instanceID>-prjusr_），
+// gateway 仅在同 (scope, 暴露名) 时报错；
 // 注册失败记日志、跳过，不影响其他节点与启动。注册后主动刷新工具缓存（见 refreshTools）。
 func (s *Server) registerCapabilityNodes(instanceID, workDir string) {
 	s.capMu.Lock()
@@ -786,7 +810,7 @@ func (s *Server) registerCapabilityNodes(instanceID, workDir string) {
 // registerCapNodesLocked 是 registerCapabilityNodes 的无锁实现（调用方须持 capMu；
 // T-21 重扫 reconcileCapabilityNodes 复用，避免自锁）。
 func (s *Server) registerCapNodesLocked(instanceID, workDir string) {
-	specs := s.capNodeSpecs(workDir)
+	specs := s.capNodeSpecs(instanceID, workDir)
 	if len(specs) == 0 {
 		return
 	}

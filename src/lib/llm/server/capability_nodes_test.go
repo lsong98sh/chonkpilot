@@ -1,7 +1,7 @@
-// T-29 三级 capability 根运行时接入测试（21-llm-server）：
-// 用户级 (~/.chonkpilot/capability) + 项目级 (<workDir>/.chonkpilot/capability) 经 gateway
-// dir 节点（servers/register，scope=instance）进入运行时能力面；hot=true 契约进 LLM 工具面。
-// 覆盖：三级根解析 / 目录不存在跳过 / 幂等注册 / 退出对称清理。
+// T-29 capability 根运行时接入测试（21-llm-server）：
+// 用户级 (~/.chonkpilot/capability) + 项目级 (<workDir>/.chonkpilot/capability) + 项目私有级
+// (<prjusr 数据根>/capability) 经 gateway dir 节点（servers/register，scope=instance）进入运行时
+// 能力面；hot=true 契约进 LLM 工具面。覆盖：四级根解析 / 目录不存在跳过 / 幂等注册 / 退出对称清理。
 package server
 
 import (
@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
@@ -55,7 +56,7 @@ func TestCapabilityNodeSpecs(t *testing.T) {
 	s := newTestServerMCP(t, llm)
 
 	// 目录均不存在 → 空（不影响启动）。
-	if specs := s.capNodeSpecs(testWorkDir); len(specs) != 0 {
+	if specs := s.capNodeSpecs("", testWorkDir); len(specs) != 0 {
 		t.Fatalf("目录不存在应跳过，got %+v", specs)
 	}
 
@@ -64,7 +65,7 @@ func TestCapabilityNodeSpecs(t *testing.T) {
 	writeHotToolContract(t, userRoot, "user_demo")
 	writeHotToolContract(t, prjRoot, "prj_demo")
 
-	specs := s.capNodeSpecs(testWorkDir)
+	specs := s.capNodeSpecs("", testWorkDir)
 	if len(specs) != 2 {
 		t.Fatalf("应有 user/project 两项，got %+v", specs)
 	}
@@ -139,5 +140,69 @@ func TestCapabilityNodesRuntime(t *testing.T) {
 	defs3, _ := s.gc.ListTools(context.Background())
 	if countTool(defs3, userTool) != 0 || countTool(defs3, prjTool) != 0 {
 		t.Fatalf("退出后工具应注销: %v", toolNames(defs3))
+	}
+}
+
+// TestCapabilityNodesPrjUsr（P4 2026-10-01）：项目私有级（prjusr）capability 根经 dir 节点
+// 接入运行时能力面——节点名 <instanceID>-prjusr、工具带该前缀进入 tools/list 与 LLM 工具面，
+// `_meta.server.node` = <instanceID>-prjusr（级别判定依据）。
+// prjusr 根由数据层门面 KnowledgeRoot(kind=prjusr) 解析（实例需先经总线注册 → 落 prj 库 project-id）。
+func TestCapabilityNodesPrjUsr(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServerMCP(t, llm)
+	registerTestInstance(t, s) // 经总线注册：persist 实例视图 + prj 库可解析 project-id
+
+	// prjusr 根解析（重试容忍总线异步派发）。
+	var root string
+	for i := 0; i < 25 && root == ""; i++ {
+		root = s.prjUsrCapRoot("ins-test")
+		if root == "" {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if root == "" {
+		t.Fatal("prjusr capability 根解析失败（期望 ~/.chonkpilot/data/<id>/capability）")
+	}
+
+	// 实例注册时该目录尚不存在 → 建目录后显式重扫接入。
+	writeHotToolContract(t, root, "prjusr_demo")
+	s.registerCapabilityNodes("ins-test", testWorkDir)
+
+	prjUsrTool := "ins-test-prjusr_prjusr_demo"
+	defs, err := s.gc.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	got := map[string]ToolDef{}
+	for _, d := range defs {
+		got[d.Name] = d
+	}
+	if _, ok := got[prjUsrTool]; !ok {
+		t.Fatalf("prjusr 工具未接入 tools/list: %v", toolNames(defs))
+	}
+	if !got[prjUsrTool].Hot {
+		t.Fatalf("prjusr hot=true 契约应标记 hot")
+	}
+	llmNames := map[string]bool{}
+	for _, d := range s.toolsForLLM("ins-test") {
+		llmNames[d.Name] = true
+	}
+	if !llmNames[prjUsrTool] {
+		t.Fatalf("LLM 工具面缺 prjusr 工具: %v", llmNames)
+	}
+	// 节点元信息：级别判定依据（LevelOfNode("<inst>-prjusr") = prjusr）。
+	srv, _ := got[prjUsrTool].Meta["server"].(map[string]any)
+	if node, _ := srv["node"].(string); node != "ins-test-prjusr" {
+		t.Fatalf("_meta.server.node = %q, want ins-test-prjusr", node)
+	}
+	if lvl := persist.LevelOfNode("ins-test-prjusr"); lvl != "prjusr" {
+		t.Fatalf("LevelOfNode(ins-test-prjusr) = %q, want prjusr", lvl)
+	}
+
+	// 退出 → 对称注销（含 prjusr）。
+	s.onExit("instance-exit", jb(map[string]any{"instance_id": "ins-test"}))
+	if _, ok := s.dirNodes["ins-test"]; ok {
+		t.Fatalf("退出后 dirNodes 应清空")
 	}
 }

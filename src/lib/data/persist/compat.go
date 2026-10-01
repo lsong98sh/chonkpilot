@@ -66,6 +66,24 @@ func CapUserRoot(usrPath string) string { return capfs.UserRoot(usrPath) }
 // CapProjectRoot 项目级 capability 根（<workdir>/.chonkpilot/capability）。
 func CapProjectRoot(workDir string) string { return capfs.ProjectRoot(workDir) }
 
+// ── 智能体「工具级别矩阵」（internal/capfs；25 §4）────────────────
+//
+// AgentToolLevels / LevelAllowed / LevelOfNode：编辑期与运行期共用的级别矩阵单源
+// （llm-server 白名单静默剔除用；纯契约 helper，不承载域行为）。
+
+// KindPrjUsr 项目私有级 capability 级别标识（app=系统 / user / project / prjusr 四级的第 4 级；
+// 供 KnowledgeRoot(kind=...) 等门面调用方引用，避免散落字面量）。
+const KindPrjUsr = capfs.KindPrjUsr
+
+// AgentToolLevels 返回某级别智能体的可用工具级别集合（"同级或更高级"矩阵）。
+func AgentToolLevels(kind string) []string { return capfs.AgentToolLevels(kind) }
+
+// LevelAllowed 判定级别 kind 的智能体是否可用 level 级工具（level 空 → 放行）。
+func LevelAllowed(kind, level string) bool { return capfs.LevelAllowed(kind, level) }
+
+// LevelOfNode 把 capability dir 节点名映射为级别 kind（无法判定 → ""）。
+func LevelOfNode(node string) string { return capfs.LevelOfNode(node) }
+
 // ── 记忆库类别清单（internal/memory）─────────────────────────────
 
 // MemoryUserCategory 是唯一用户级记忆类别（不可配置；跨项目偏好）。

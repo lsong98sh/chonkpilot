@@ -81,6 +81,44 @@ chat 面：prompt                                     ← 用户在输入框选�
 | **下发面**（发给 LLM 的清单） | 受 §4.1–§4.3 约束（hot ∪ meta；白名单非空 = 白名单全量、空 = hot） |
 | **执行面** | **空白名单 = 不限制**（不拦）；**白名单非空 = 仅白名单内**（其中 **`mcp_invoke` 的目标工具也须在白名单内**，见 [42 §2 (168)](../40-roadmap/42-决策记录.md)） |
 
+### 4.5 工具级别矩阵与静默剔除（P4 2026-10-01，[42 §2 (210)](../40-roadmap/42-决策记录.md)）
+
+智能体可选工具 = **同级或更高级**（"级"按**共享度**：app 系统级最共享 = 最高）。矩阵：
+
+| 智能体级别（编辑期=场景/原语级别；运行期=场景级别） | 可用工具级别集合 |
+|------|------|
+| **prjusr**（项目私有级） | `{prjusr, user, project, app}` |
+| **project**（项目级） | `{project, app}` |
+| **user**（用户级） | `{user, app}` |
+| **app**（系统级） | `{app}` |
+
+**级别判定单源** = 工具 `_meta.server.node` → 级别（`capfs.LevelOfNode`）：`self` → app；
+`<instanceID>-user` / `<instanceID>-project` / `<instanceID>-prjusr` → 对应级；**无法判定 → 放行**（第三方工具等，不误剔除）。
+矩阵单源 = `capfs.AgentToolLevels / LevelAllowed`（[12-数据层](../10-architecture/12-数据层.md)）；
+前端单源 = `utils/agentLevelMatrix.js` 的 `AGENT_LEVEL_MATRIX`（与后端**逐字一致**，见 [51-FP与测试映射](../50-testing/51-FP与测试映射.md) 守卫）。
+
+**两个执行点（都要）**：
+
+1. **编辑期**（智能体编辑器 `AgentEditor.vue`，被场景编辑与智能体原语编辑复用）：工具候选**只列
+   上述允许级别的 `tools/`**（越权项**不出现**）。装载 = `utils/agentAssets.loadToolGroups(kind, t)`
+   （读既有 `tools-list`，按 `_meta.server.node` 判级过滤；分组标签用 `scenario.level.*` 文案）。
+   场景编辑按**场景级别**过滤；智能体原语编辑按**原语级别**过滤。
+2. **运行期**（`llm-server` 白名单解析：`parseToolWhitelist` → `filterWhitelistByLevel` → `allowedTools`
+   → `llmTools` / `toolAllowed`）：按**场景级别**的可用集合**静默剔除**越权（级别不在矩阵里）与
+   不存在（不在本实例可见工具面）的工具名 —— **不报错、不中断**。
+
+**静默剔除不得影响既有行为**（语义边界）：
+
+- 不越权的工具**照常可用**；空白名单（`agent.tools` 空 / `[]` / 解析不到名 → `nil`）= **不限制**（全 hot 集），语义不变；
+- 场景级别**不可判定**（空）→ 原样返回（保守放行）；工具级别**无法判定**（第三方 / 无 `_meta.server`）→ 放行；
+- 引用更高层 agent（其工具集 ⊆ 场景级别可用集合，见 §4 矩阵自包含）→ 运行期过滤**不会误剔**其合法工具；
+- 不含 agent / 场景（通用模式）→ 报错/放行行为不变。
+
+**运行期接入（prjusr）**：项目私有级 capability 根（`<prjusr 数据根>/capability`）经 dir 节点
+`<instanceID>-prjusr` 接入运行时能力面（与 user/project 同级、同一 `servers/register` 消息面，
+零新增主题）；根由数据层门面 `KnowledgeRoot(kind=prjusr)` 解析（与知识库 / 场景写读**同源**），
+解析不出则跳过、不影响既有三级。
+
 ---
 
 ## 5. 资产面变更：agent 退出资产面
@@ -188,6 +226,10 @@ agent **只"注入"不"注册"**：
 | 8 | chat 选 prompt → **user 消息携带**且 HTML 显示 `/<name>` tag | 输入框选 prompt → 发 `llm-send` → 断言 `user` 消息内容 + DOM `/<name>` tag |
 | 9 | 白名单非空 → **执行面**硬拒白名单外工具（含 `mcp_invoke` 目标） | 发 turn 触发白名单外调用 → 断言拒绝执行、不落 gateway、不建节点 |
 | 10 | 默认场景显示名 = 「**开发场景**」，key 仍 `default` | 打开场景列表 / 读 `data-scenario-list` → 断言显示名与 key |
+| 11 | **工具级别矩阵（编辑期）**：4 个级别各一例，工具候选只列允许级别 `tools/`，**越权项不出现** | 前端 `agentLevelMatrix` 纯逻辑断言（`nodeLevel` / `toolAllowedForLevel`）+ `loadToolGroups(kind)` 源码守卫（`test/scenarioToolMatrix.test.js`） |
+| 12 | **工具级别矩阵（运行期）**：白名单含越权 / 不存在工具 → **静默剔除**；同级/更高级 → 保留；场景级别不可判定 / 空白名单 → 行为不变 | Go `server.TestToolWhitelistLevelMatrix`（四级各注册一工具 → `filterWhitelistByLevel` 逐级断言） |
+| 13 | **prjusr 运行期接节点**：项目私有级工具经 `<instanceID>-prjusr` dir 节点进入 tools/list 与 LLM 工具面 | Go `server.TestCapabilityNodesPrjUsr`（`KnowledgeRoot(kind=prjusr)` 解析根 → 契约 → 断言工具入面 + `_meta.server.node`） |
+| 14 | 矩阵**单源**：前端 `AGENT_LEVEL_MATRIX` 与后端 `capfs.AgentToolLevels` **逐字一致** | 前端守卫 `test/scenarioToolMatrix.test.js` 直读 `capfs.go` 字面量比对 |
 
 ---
 

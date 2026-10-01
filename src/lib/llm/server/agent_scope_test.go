@@ -17,8 +17,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
@@ -330,5 +333,101 @@ func TestToolWhitelistIncludesNonHotTool(t *testing.T) {
 	}
 	if !containsStr(got2, gatewayToolName(t, s, "mcp_find")) {
 		t.Fatalf("空白名单应含 meta 工具（hot）：tools=%v", got2)
+	}
+}
+
+// TestToolWhitelistLevelMatrix（P4 2026-10-01，25 §4）：白名单按**场景级别的可用工具级别矩阵**
+// 过滤（filterWhitelistByLevel）——同级/更高级保留、越权剔除、不存在剔除、场景级别不可判定则
+// 原样返回（行为不变）、空白名单（nil）语义不变。
+//
+// 工具面就绪：app（tools/register → self_<name>）+ user / project / prjusr（hot 契约 + dir 节点）
+// 四级各注册一个；断言直接读 filterWhitelistByLevel 返回值（与 llmTools / toolAllowed 同一输入集）。
+func TestToolWhitelistLevelMatrix(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServerMCP(t, llm)
+	registerTestInstance(t, s)
+
+	// app 级：注册 self（系统）域工具 → 暴露名 self_<name>
+	if _, err := s.emitGateway(context.Background(), "tools/register", map[string]any{
+		"name": "lv_app", "description": "app 级探针", "handler_subject": SubjectDomainToolCall, "owner": "server",
+	}); err != nil {
+		t.Fatalf("tools/register(lv_app): %v", err)
+	}
+	s.refreshTools()
+	appTool := gatewayToolName(t, s, "lv_app")
+
+	// user / project 级：hot 契约 + 重扫接入（实例已注册）
+	writeHotToolContract(t, persist.CapUserRoot(s.opts.UsrPath), "lv_user")
+	writeHotToolContract(t, persist.CapProjectRoot(testWorkDir), "lv_prj")
+
+	// prjusr 级：根由门面解析（重试容忍总线异步派发）
+	var prjUsrRoot string
+	for i := 0; i < 25 && prjUsrRoot == ""; i++ {
+		prjUsrRoot = s.prjUsrCapRoot("ins-test")
+		if prjUsrRoot == "" {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if prjUsrRoot == "" {
+		t.Fatal("prjusr 根解析失败")
+	}
+	writeHotToolContract(t, prjUsrRoot, "lv_prjusr")
+	s.registerCapabilityNodes("ins-test", testWorkDir) // 一次性重扫接入 user/project/prjusr
+
+	userTool := "ins-test-user_lv_user"
+	prjTool := "ins-test-project_lv_prj"
+	prjUsrTool := "ins-test-prjusr_lv_prjusr"
+
+	visible := map[string]bool{}
+	for _, d := range s.visibleTools("ins-test") {
+		visible[d.Name] = true
+	}
+	for _, n := range []string{appTool, userTool, prjTool, prjUsrTool} {
+		if !visible[n] {
+			t.Fatalf("工具面未就绪，缺 %s（got %v）", n, visible)
+		}
+	}
+
+	raw := func(names ...string) map[string]struct{} {
+		out := map[string]struct{}{}
+		for _, n := range names {
+			out[n] = struct{}{}
+		}
+		return out
+	}
+	sortedNames := func(set map[string]struct{}) []string {
+		out := make([]string, 0, len(set))
+		for k := range set {
+			out = append(out, k)
+		}
+		sort.Strings(out)
+		return out
+	}
+	// all 含一个**不存在**的工具名（self_no_such_tool）—— 应被静默剔除。
+	all := []string{appTool, userTool, prjTool, prjUsrTool, "self_no_such_tool"}
+
+	check := func(scenarioLevel string, want ...string) {
+		t.Helper()
+		got := sortedNames(s.filterWhitelistByLevel("ins-test", scenarioLevel, raw(all...)))
+		sort.Strings(want)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("场景级别 %q 过滤错：got %v, want %v", scenarioLevel, got, want)
+		}
+	}
+
+	check("prjusr", appTool, userTool, prjTool, prjUsrTool) // 四级全可用（不存在者剔除）
+	check("project", appTool, prjTool)                      // 越权 user/prjusr 剔除
+	check("user", appTool, userTool)                        // 越权 project/prjusr 剔除
+	check("app", appTool)                                   // 越权 user/project/prjusr 剔除
+
+	// 场景级别不可判定（空）→ 原样返回（含不存在者，不误剔除 = 行为不变）
+	rawAll := raw(all...)
+	if got := s.filterWhitelistByLevel("ins-test", "", rawAll); len(got) != len(rawAll) {
+		t.Fatalf("场景级别空应原样返回：got %v", sortedNames(got))
+	}
+	// 空白名单（`""` / `[]`）→ parseToolWhitelist 返回 nil（= 不限制，调用方不进入过滤）
+	if parseToolWhitelist("") != nil || parseToolWhitelist("[]") != nil {
+		t.Fatal("空白名单应解析为 nil（不限制）")
 	}
 }

@@ -340,29 +340,33 @@ type scenarioAgent struct {
 	DelegateCond string // 委派条件（空 = 无）
 }
 
-// loadScenario 读场景记录（data-scenario-load）：返回**场景描述**（场景层正文，25 §3）与
-// agent 列表。scenario_id 空 / 读取失败 → ("", nil)。
+// loadScenario 读场景记录（data-scenario-load）：返回**场景描述**（场景层正文，25 §3）、
+// **场景级别**（app|user|project|prjusr）与 agent 列表。scenario_id 空 / 读取失败 → ("", "", nil)。
+//
+// 场景级别用于**工具白名单的级别矩阵过滤**（P4 2026-10-01：智能体可用工具 = 同级或更高级；
+// 见 newTurnCtx 的 filterWhitelistByLevel）。
 //
 // 25 §3/T3 取舍：数据层的 `systemPrompt` 字段（派生 = 主 agent 的 prompt）**不再取用** ——
 // 系统提示词改由 llm server 侧按三层自拼（全局层 + 场景层 + agent 层），主 agent 的 prompt
 // 从 `agents` 里的主 agent（main.agent.md）取，故此处只需 description + agents，数据层字段
 // 保持兼容不变（不牵动其他消费方）。
-func (s *Server) loadScenario(instanceID, scenarioID string) (string, []scenarioAgent) {
+func (s *Server) loadScenario(instanceID, scenarioID string) (string, string, []scenarioAgent) {
 	if scenarioID == "" {
-		return "", nil
+		return "", "", nil
 	}
 	res, err := dataRequest(s.bus, "data-scenario-load", map[string]any{
 		"instance_id": instanceID, "data": map[string]any{"id": scenarioID},
 	})
 	if err != nil {
 		logf("[chonkpilot-server] loadScenario: data-scenario-load failed (scenario_id=%s): %v\n", scenarioID, err)
-		return "", nil
+		return "", "", nil
 	}
 	rec, _ := res["data"].(map[string]any)
 	if rec == nil {
-		return "", nil
+		return "", "", nil
 	}
 	desc, _ := rec["description"].(string)
+	level, _ := rec["level"].(string)
 	raw, _ := rec["agents"].([]any)
 	agents := make([]scenarioAgent, 0, len(raw))
 	for _, e := range raw {
@@ -381,7 +385,7 @@ func (s *Server) loadScenario(instanceID, scenarioID string) (string, []scenario
 			DelegateCond: strings.TrimSpace(agentFieldStr(m["delegateCond"])),
 		})
 	}
-	return desc, agents
+	return desc, level, agents
 }
 
 // scenarioAgentOf 取场景内指定名字的 agent（未找到 → nil）。
@@ -443,7 +447,7 @@ func (s *Server) agentDelegable(instanceID, scenarioID, name string) bool {
 	if name == "" {
 		return false
 	}
-	_, agents := s.loadScenario(instanceID, scenarioID)
+	_, _, agents := s.loadScenario(instanceID, scenarioID)
 	if a, _ := s.resolveAgentDef(scenarioID, agents, name); a != nil {
 		return true
 	}
