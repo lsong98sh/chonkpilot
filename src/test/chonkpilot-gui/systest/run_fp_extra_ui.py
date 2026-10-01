@@ -10,6 +10,8 @@
   T6b L259 场景智能体工具过滤（按来源分组勾选）
   T6c L260 子智能体 = agents/ 引用（「选择智能体」选择器 + 无添加/复制按钮）
   T7  L258 场景智能体提示词【优化】按钮：已接入既有优化链路（非桩，不再提示「尚未实现」）
+  T8  智能体编辑器候选工具按「级别矩阵」过滤（25 §4）：系统级智能体 → 项目级工具不出现、
+      app 级工具出现（断言真实渲染的候选列表文本）
 
 前置：chonkpilot.exe --test-port=2345 已启动（GUI 恒启 inprocess server）。
 
@@ -125,6 +127,51 @@ def click_visible_tab(tab_pattern, panel_scope):
       el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       return 'ok';
     })()""" % (json.dumps(bool(panel_scope)), json.dumps(panel_scope or ''), json.dumps(tab_pattern, ensure_ascii=False))))
+
+
+# ── 工具级别矩阵助手（T8：智能体编辑器候选工具按级过滤，25 §4）────────────
+# 与前端 utils/agentLevelMatrix.js（nodeLevel/toolAllowedForLevel）逐字同源的纯逻辑镜像：
+# 用于从 `tools-list` 判出每项工具的级别 + 展示名（= stripToolPrefix 剥前缀后的原名）。
+def _node_level(node):
+    n = str(node or '')
+    if n == 'self':
+        return 'app'
+    if n.endswith('-user'):
+        return 'user'
+    if n.endswith('-project'):
+        return 'project'
+    if n.endswith('-prjusr'):
+        return 'prjusr'
+    return ''
+
+
+def _strip_tool_prefix(name, alias, node):
+    n = str(name or '')
+    for p in (str(alias or '').strip(), str(node or '').strip()):
+        if p and n.startswith(p + '_'):
+            return n[len(p) + 1:]
+    return n
+
+
+def _tools_list():
+    return (c.req("tools-list", {}) or {}).get("tools") or []
+
+
+def _displayed_level(tl):
+    """工具项 → (展示名, 级别)；级别 = nodeLevel(_meta.server.node)。"""
+    srv = (tl.get('_meta') or {}).get('server') or {}
+    return _strip_tool_prefix(tl.get('name'), srv.get('alias'), srv.get('node')), _node_level(srv.get('node'))
+
+
+def _poll_js(expr, timeout=10, interval=0.3):
+    """轮询 eval 直到返回真值（dict/非空 list/非空 str 之外的真值）；超时返回 None。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        v = _loads_deep(c.eval(expr))
+        if v:
+            return v
+        time.sleep(interval)
+    return None
 
 
 # ── T1 任务不存在提示（L315） ─────────────────────────
@@ -487,6 +534,136 @@ def case_agent_optimize_wired():
     return True
 
 
+# ── T8 智能体编辑器：候选工具按「级别矩阵」过滤（25 §4）────────────────
+
+def case_agent_tool_matrix_filter():
+    """T8 智能体编辑器候选工具按级别矩阵过滤（编辑期）。
+
+    矩阵语义（25 §4，前端 agentLevelMatrix.js / 后端 capfs.AgentToolLevels 逐字一致）：
+    智能体可用工具 = **同级或更高级**（app 最共享 = 最高）→ 系统级(app)智能体只允许 {app} 级工具。
+
+    实测步骤：
+      1) 预置一个**仅存在于项目级**的工具（`data-knowledge-create{dir=<project 根>/tools}`，
+         产品路径写入）→ 轮询客户端能力面 `tools-list` 确认其**已进入工具面**且级别判定 = project
+         （否则"不出现"无从证明 —— 保证反证非"工具根本没进面"）；
+      2) 走 UI 打开**系统级(app)智能体**编辑器：预置 1 个 app 级 `*.agent.md`（app 根/agents/，
+         携非空 `tools` meta）→ `file-open` 打开 → 原语面板复用 AgentEditor（扩展页「智能体」
+         子 tab 同一编辑器）。**为何预置非空 tools**：原语编辑器 `agentModel.filterTools` 由
+         `tools.length>0` 派生（PrimitivePanel.vue:200），开关置开而 tools 为空会被立即回弹
+         （`.no-filter-hint`），候选树无法展开 —— 见报告「产品现象」；
+      3) 切「工具」页签 → 展开全部分类（候选列表真实渲染）；
+      4) 断言候选列表文本：**不含**项目级工具名（越权剔除），且**含** app 级工具名（允许级放行）。
+
+    夹具清理：项目级工具（data-knowledge-delete）+ app 级智能体夹具文件（os.remove），无残留。
+    """
+    # 1) 根解析 + 预置项目级工具
+    app_root = ((c.req("data-knowledge-root", {"kind": "app"}) or {}).get("root") or "").replace("\\", "/")
+    proj_root = ((c.req("data-knowledge-root", {"kind": "project"}) or {}).get("root") or "").replace("\\", "/")
+    if not app_root or not proj_root:
+        raise TestError(f"根解析失败：app={app_root!r} project={proj_root!r}")
+
+    # 1) 夹具：① 项目级工具（越权项）；② 系统级(app)智能体（预置 `tools` 非空，
+    #    使原语编辑器的「工具过滤」为开 → 候选树可展开——见下方「产品现象」注）。
+    tool = "fpmuxtool" + str(int(time.time()))[-5:]
+    proj_tools = proj_root + "/tools"
+    c.req("data-knowledge-create", {"dir": proj_tools, "type": "tool", "name": tool})
+    proj_tool_file = proj_tools.replace("/", os.sep) + os.sep + tool + ".tool.md"
+    agent_name = "t8matrix" + str(int(time.time()))[-5:]
+    agent_rel = "/agents/" + agent_name + ".agent.md"
+    agent_file = (app_root + agent_rel).replace("/", os.sep)
+    os.makedirs(os.path.dirname(agent_file), exist_ok=True)
+    with open(agent_file, "w", encoding="utf-8") as f:
+        f.write("# %s\n\n[meta]\nname=%s\ntools=[\"self_file_read\"]\n\n"
+                "[description]\nT8 级别矩阵 L4 夹具（app 级智能体）\n\n[content]\n矩阵过滤夹具。\n"
+                % (agent_name, agent_name))
+    try:
+        # 1b) 工具面热生效 + 级别判定（保证反证前提）
+        hit = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            for tl in _tools_list():
+                disp, lvl = _displayed_level(tl)
+                if disp == tool:
+                    hit = lvl
+                    break
+            if hit is not None:
+                break
+            time.sleep(0.4)
+        if hit is None:
+            raise TestError(f"项目级工具 {tool!r} 未进入工具面（热生效失败）→ 无法验证矩阵过滤")
+        if hit != "project":
+            raise TestError(f"项目级工具 {tool!r} 级别判定 = {hit!r}，want 'project'（矩阵前提不成立）")
+        app_tools = {disp for disp, lvl in (_displayed_level(t) for t in _tools_list()) if lvl == "app"}
+        if not app_tools:
+            raise TestError("工具面无 app 级（self 节点）工具 → 正向对照不可用")
+
+        # 2) UI：打开系统级智能体原语编辑器（file-open → PrimitivePanel 复用 AgentEditor）
+        #    全部操作**限定在打开该 agent 的原语面板**内（`.prim-panel` 内 `.prim-path` 以该文件名结尾），
+        #    避免误命中场景编辑弹窗（同一 AgentEditor 组件）里的另一个 `.agent-editor` 实例。
+        c.mq_emit("file-open", {"path": app_root + agent_rel})
+        _P = ("const ps=[...document.querySelectorAll('.prim-panel')];"
+              "const P=ps.find(x=>{const e=x.querySelector('.prim-path');"
+              "return e&&e.textContent.trim().endsWith('%s');});"
+              "if(!P)return false;const ed=P.querySelector('.agent-editor');if(!ed)return false;"
+              % (agent_name + ".agent.md"))
+        HAS_PANEL = "(()=>{%s return true;})()" % _P
+        CLICK_TOOLS = ("(()=>{%s const tabs=[...ed.querySelectorAll('.b-tabs-item')];"
+                       "const tb=tabs.find(x=>/^(工具|tools)$/.test(x.textContent.trim()));"
+                       "if(!tb)return false;tb.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true;})()" % _P)
+        HAS_CB = ("(()=>{%s return !!ed.querySelector('.filter-tools-checkbox');})()" % _P)
+        ENABLE_FILTER = ("(()=>{%s const cb=ed.querySelector('.filter-tools-checkbox input[type=checkbox]');"
+                         "if(cb&&!cb.checked)cb.click();return true;})()" % _P)
+        EXPAND_COLLAPSED = ("(()=>{%s const hs=[...ed.querySelectorAll('.tool-category-header')];"
+                            "hs.forEach(h=>{const a=h.querySelector('.category-arrow');"
+                            "if(a&&!a.classList.contains('expanded'))h.dispatchEvent(new MouseEvent('click',{bubbles:true}));});"
+                            "return true;})()" % _P)
+        HAS_ITEM = ("(()=>{%s return ed.querySelectorAll('.tool-item .tool-name').length>0;})()" % _P)
+        READ_NAMES = ("(()=>{%s const ed2=P.querySelector('.agent-editor');"
+                      "const cb=ed2?ed2.querySelector('.filter-tools-checkbox input[type=checkbox]'):null;"
+                      "return JSON.stringify({checked:cb?cb.checked:null,cats:P.querySelectorAll('.tool-category').length,"
+                      "names:[...P.querySelectorAll('.tool-item .tool-name')].map(n=>n.textContent.trim())});})()" % _P)
+
+        if not _poll_js(HAS_PANEL, timeout=12):
+            raise TestError("系统级智能体原语面板未打开（无匹配 .prim-panel）")
+        # 3) 切「工具」页签（面板内）→ 确保过滤开启（夹具已有 tools → 开）→ 展开全部候选分类
+        if not _poll_js(CLICK_TOOLS, timeout=8):
+            raise TestError("未找到智能体编辑器的「工具」页签（面板内）")
+        if not _poll_js(HAS_CB, timeout=8):
+            raise TestError("工具过滤开关未渲染")
+        _loads_deep(c.eval(ENABLE_FILTER))
+        if not _poll_js(HAS_ITEM, timeout=2):
+            # 分类初始为收起态 → 按当前 DOM 展开收起的分类
+            _loads_deep(c.eval(EXPAND_COLLAPSED))
+            if not _poll_js(HAS_ITEM, timeout=8):
+                diag = _loads_deep(c.eval(READ_NAMES))
+                raise TestError(f"候选工具未渲染出（.tool-item 缺失）diag={diag!r}")
+
+        # 4) 断言真实渲染的候选列表文本
+        info = _loads_deep(c.eval(READ_NAMES)) or {}
+        if isinstance(info, str):
+            info = json.loads(info)
+        names = [str(x) for x in (info.get("names") or [])]
+        if tool in names:
+            raise TestError(f"越权工具 {tool!r} 不应出现在系统级智能体候选列表（矩阵过滤失效）：{names[:20]}")
+        if not names:
+            raise TestError(f"候选列表为空（无法证明过滤生效）diag={info!r}")
+        if not (set(names) & app_tools):
+            raise TestError(f"允许级（app）工具未出现在候选列表：candidates={names[:20]} app_tools={sorted(app_tools)[:10]}")
+    finally:
+        # 清理：删除预置的项目级工具（产品路径）+ 系统级智能体夹具文件（app 根，测试后按字节不残留）
+        try:
+            c.req("data-knowledge-delete", {"path": proj_tools + "/" + tool + ".tool.md"})
+        except Exception:
+            pass
+        for p in (proj_tool_file, agent_file):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+    return True
+
+
 def main():
     c.wait_ready()
     c.console(clear=True)
@@ -501,6 +678,7 @@ def main():
         total += 1; ok += run_case("T6b 智能体工具过滤（L259）", case_agent_tools_filter)
         total += 1; ok += run_case("T6c 子智能体 = agents/ 引用（选择器 + 无添加/复制按钮，L260）", case_agent_copy)
         total += 1; ok += run_case("T7 智能体优化按钮已接线（L258）", case_agent_optimize_wired)
+        total += 1; ok += run_case("T8 智能体编辑器候选工具按级别矩阵过滤（L4，25 §4）", case_agent_tool_matrix_filter)
     finally:
         cleanup_writable_scenario()  # 只删本轮自建的 user 级场景（51 §6-8 环境干净）
     print(f"\nFP 补测 A 组：{ok}/{total} 通过")
