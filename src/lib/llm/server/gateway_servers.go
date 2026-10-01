@@ -54,10 +54,66 @@ type usrMCPEntry struct {
 	Sandbox *bool `json:"sandbox,omitempty"`
 }
 
-// loadGatewayServers 装配启动期下游 server 列表：usr mcps
-// → 过滤（enabled=false / runtime、url 皆空跳过并记日志）→ ServerEntry。
+// loadGatewayServers 装配启动期下游 server 列表：**四级文件化 MCP 配置**（`<级别>/capability/
+// mcps/<名>.json`；同名最具体级优先、整条覆盖，由数据层 McpList 给出）**+ 旧 usr KV `mcpServers`
+// 兼容回落**（四级目录里都没有该名时才回落旧 KV）→ 过滤（enabled=false / runtime、url 皆空
+// 跳过并记日志）→ ServerEntry。
+//
+// **同名跨级只生效一份**：数据层 McpList 已按名合并（整条覆盖），此处再以旧 KV 补名不冲突者，
+// 故同一名在最终列表中恒只出现一条（gateway 侧只 spawn/注册一份，见 reconcileUserMCPs）。
 func (s *Server) loadGatewayServers() []mcpgateway.ServerEntry {
-	return mergeGatewayServers(nil, s.loadUserMCPEntries())
+	return mergeGatewayServers(nil, s.loadEffectiveMCPEntries())
+}
+
+// loadEffectiveMCPEntries 组装**生效** MCP 定义：四级文件化视图（McpList）∪ 旧 usr KV 回落。
+// 回落口径 = 四级文件里**没有**该名时，才补旧 KV 条目（保证既有环境不失效）；同名以文件为准。
+func (s *Server) loadEffectiveMCPEntries() []usrMCPEntry {
+	fileEntries := s.loadMcpFileEntries()
+	have := make(map[string]bool, len(fileEntries))
+	out := make([]usrMCPEntry, 0, len(fileEntries))
+	for _, e := range fileEntries {
+		if e.Name == "" {
+			continue
+		}
+		have[e.Name] = true
+		out = append(out, e)
+	}
+	for _, e := range s.loadUserMCPEntries() { // 旧 usr KV `mcpServers`（兼容回落）
+		if e.Name == "" || have[e.Name] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// loadMcpFileEntries 读四级文件化 MCP 配置（经 data 门面 McpList；同名最具体级优先、整条覆盖）
+// → 定义数组。门面不可用 / 读取失败 → 空（不阻断；旧 KV 回落仍可兜底）。
+func (s *Server) loadMcpFileEntries() []usrMCPEntry {
+	if s.cfg == nil {
+		return nil
+	}
+	resp, err := s.cfg.McpList(facade.McpListRequest{})
+	if err != nil {
+		logf("[chonkpilot-server] mcp 四级配置读取失败：%v\n", err)
+		return nil
+	}
+	out := make([]usrMCPEntry, 0, len(resp.List))
+	for _, srv := range resp.List {
+		b, err := json.Marshal(srv)
+		if err != nil {
+			continue
+		}
+		var e usrMCPEntry
+		if json.Unmarshal(b, &e) != nil {
+			continue
+		}
+		if e.Name == "" {
+			e.Name = srv.Name
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // loadUserMCPEntries 读 usr `mcps` 专用表 → 定义数组（按条目顺序，保持前端数组顺序）。
@@ -298,4 +354,14 @@ func (s *Server) onUserConfigRefresh(_ string, _ []byte) {
 		s.reloadToolAsyncOverrides() // 工具异步配置：变化才重注册（秒级生效，零新增主题）
 		s.reconcileLLMProviders()    // usr `llms` → router 动态增减（LR-11；纯内存，零额外主题）
 	}()
+}
+
+// onMCPConfigRefresh MCP 四级文件配置域保存/删除广播（data-mcp-refresh，61-消息一览 §3）→
+// 下游 server 增量对账（保存即生效）。与 usr 配置刷新的 mcps 对账**同一入口**（reconcileUserMCPs
+// 已把配置来源改为四级文件视图 + 旧 KV 回落）——故「同名跨级只生效一份」的对账幂等在两处一致。
+//
+// 异步执行：refresh 广播在 persist save 的同步派发链路内，对账含 spawn/connect/tools-list
+// （可达数十秒）——必须放后台，否则阻塞保存应答。
+func (s *Server) onMCPConfigRefresh(_ string, _ []byte) {
+	go s.reconcileUserMCPs()
 }

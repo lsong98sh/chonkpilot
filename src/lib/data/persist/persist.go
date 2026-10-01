@@ -42,6 +42,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/filelist"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/knowledge"
+	"github.com/chonkpilot/chonkpilot-data/internal/mcp"
 	"github.com/chonkpilot/chonkpilot-data/internal/memory"
 	"github.com/chonkpilot/chonkpilot-data/internal/scenario"
 	"github.com/chonkpilot/chonkpilot-data/internal/session"
@@ -68,6 +69,8 @@ var dataReqSubjects = []string{
 	"data-prompt-list", "data-prompt-load", "data-prompt-save", "data-prompt-delete",
 	"data-prj-security-list", "data-prj-security-load", "data-prj-security-save", "data-prj-security-delete",
 	"data-scenario-list", "data-scenario-load", "data-scenario-save", "data-scenario-delete",
+	// MCP 配置域（§3.1 家族扩展）：四级 `<级别>/capability/mcps/<名>.json` 文件化配置
+	"data-mcp-list", "data-mcp-load", "data-mcp-save", "data-mcp-delete",
 	// 会话域（§3.2）
 	"data-session-list", "data-session-get", "data-session-history", "data-session-latest",
 	"data-session-title", "data-session-delete", "data-session-active-set", "data-session-active-get",
@@ -120,6 +123,7 @@ type Service struct {
 	facade.FileListAPI
 	facade.ScenarioAPI
 	facade.MemoryAPI
+	facade.McpAPI
 
 	mu      sync.Mutex
 	subs    []mq.Sub // 全部订阅句柄（Start 累计 / Stop 退订）
@@ -155,6 +159,7 @@ func New(bus mq.Bus, opts Options) *Service {
 		FileListAPI:  filelist.New(base),
 		ScenarioAPI:  scenario.New(base),
 		MemoryAPI:    memory.New(base),
+		McpAPI:       mcp.New(base),
 	}
 	// refresh 广播附带的域列表（订阅面）由信封层提供 → 与各域 list 应答同源。
 	base.DomainList = s.domainList
@@ -273,7 +278,7 @@ func (s *Service) lookupInstance(instanceID string) (kernel.Info, bool) {
 // dataDomains 是 data-<domain> 消息面支持的域（61-消息一览 §3.1-§3.6）：配置五域 +
 // 会话/任务树/知识库/记忆库四域（B 类随迁补齐）；snapshot = A3 运行时扩展（会话快照 get/set）；
 // index = 2026-09-27 新增只读域（索引排除判定，index-ignored）；file-versions 归属 history.db 外部，不在本面。
-var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "prompt", "session", "snapshot", "knowledge", "tasktree", "memory", "filelist", "index"}
+var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "mcp", "prompt", "session", "snapshot", "knowledge", "tasktree", "memory", "filelist", "index"}
 
 // dataReq 是 data-<domain>-* 请求的通用载荷（§3.1）。ID 宽松接收 string / number。
 type dataReq struct {
@@ -312,6 +317,8 @@ func (s *Service) handle(domain, op string, payload []byte) {
 		s.handleConfigKV(domain, op, req)
 	case "scenario":
 		s.handleScenario(op, req)
+	case "mcp":
+		s.handleMCP(op, req)
 	case "session":
 		s.handleSession(op, req, payload)
 	case "snapshot":
@@ -391,6 +398,12 @@ func (s *Service) domainList(domain, instanceID string, scope facade.Scope) any 
 			return nil
 		}
 		return wire.ScenarioListResult(resp.List)["list"]
+	case "mcp":
+		resp, err := s.McpList(facade.McpListRequest{InstanceID: instanceID, Scope: scope})
+		if err != nil {
+			return nil
+		}
+		return wire.McpListResult(resp.List)["list"]
 	case "prj-config", "prompt", "prj-security":
 		resp, err := s.ConfigKVList(facade.ConfigKVListRequest{
 			Domain: domain, InstanceID: instanceID, Scope: scope,

@@ -37,6 +37,7 @@ type binding struct {
 	facade.FileListAPI
 	facade.ScenarioAPI
 	facade.MemoryAPI
+	facade.McpAPI
 }
 
 // 编译期断言：合成结果 = 完整门面。
@@ -66,5 +67,6 @@ func NewWithOptions(bus mq.Bus, opts persist.Options) facade.API {
 		FileListAPI:  svc,
 		ScenarioAPI:  svc,
 		MemoryAPI:    svc,
+		McpAPI:       svc,
 	}
 }

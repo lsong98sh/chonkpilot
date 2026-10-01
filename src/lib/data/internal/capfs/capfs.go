@@ -50,6 +50,14 @@ const (
 	DirScenarios = "scenarios" // 场景（场景根 = <级别根>/capability/scenarios）
 )
 
+// DirMcps 是每级 capability 根下的 **MCP 配置子目录**名（<级别根>/capability/mcps/）：
+// 一个 MCP server 一个文件（文件名 = server 名 + `.json`），四级同构
+// （app / user / project / prjusr）。
+//
+// ⚠️ MCP **不是** mcp 四原语类型 → **不加入 `Types`**（Types 仅承载提示词/工具/资源/技能/
+// 智能体/场景六类知识库原语）；本目录由 MCP 配置域（internal/mcp）单独读写。
+const DirMcps = "mcps"
+
 // Level 是一级 capability 根。
 type Level struct {
 	Kind string // app|user|project|prjusr

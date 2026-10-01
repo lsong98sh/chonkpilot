@@ -32,9 +32,9 @@ test('MCP 编辑弹窗：运行信息页签 sandbox Switch + 三态 + 保存写 
   assert.match(vue, /if \(sandboxExplicit\.value\) localData\.sandbox = !!sandboxValue\.value/,
     'handleSave 须在显式拨动时写 localData.sandbox')
   assert.match(vue, /else delete localData\.sandbox/, '未拨动须删键（缺键 = 未设置）')
-  // 落盘通道仍是 usr mcps（由列表页 saveNow 承担）
+  // 落盘通道（2026-10-01 起）= **mcp 域四级文件化**（由列表页 saveOne 承担，不再整表替换 usr mcps）
   assert.match(readSrc('views/config/SettingsMCPPage.vue'),
-    /saveUserConfig\(\{\s*mcpServers:\s*mcpServers\.value\s*\}\)/, '落盘通道须仍是 usr mcps')
+    /saveMcpServer\(/, '落盘通道须为 mcp 域（四级文件化配置）')
 })
 
 test('MCP 编辑弹窗：仅 stdio 可操作，http/sse 禁用并给 i18n 原因', () => {

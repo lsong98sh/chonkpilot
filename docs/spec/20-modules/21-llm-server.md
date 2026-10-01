@@ -31,6 +31,13 @@
 > **目标**：用户在「MCP 配置页」维护的 server 定义（usr 库 `mcps` 专用表）在 **LLM 启动时**注入内嵌 gateway —— 此前该定义**只落库、无消费方**（见 [40-演进计划](../40-roadmap/40-演进计划.md) T-25）。
 >
 > **单体（src/gui / src/cli 内嵌本 llm server）的 MCP 配置一律取自 usr `mcps`，不读 exe 同目录 `config.json`**（2026-09-14 去依赖）；exe 同目录 `config.json` 的 `mcpServers` 段属 mcp-server / mcp-gateway **独立 exe** 自身行为（见 [25-mcp-server](25-mcp-server.md) / [26-mcp-gateway](26-mcp-gateway.md)）。
+>
+> **〔订正（2026-10-01，[42 §2 (211)](../40-roadmap/42-决策记录.md)）：配置来源改「四级文件化视图 + 旧 KV 回落」〕** MCP server 定义**新载体** = **`<级别>/capability/mcps/<名>.json`**（四级 app/user/project/prjusr）。装配读点 `gateway_servers.go`：
+> ① `loadMcpFileEntries` 经 data 门面 **`McpAPI.McpList`**（`s.cfg`）读**四级合并生效视图**（同名**最具体级优先、整条覆盖** `prjusr > project > user > app`）；
+> ② `loadEffectiveMCPEntries` = 四级视图 ∪ **旧 usr KV `mcpServers`（`UserConfigMCPs`）回落**（四级目录里**都没有**该名时才回落，保证既有环境不失效）；
+> ③ 合并后交 `mergeGatewayServers` → `Params.Servers`。**同名跨级只生效一份 → 只 spawn 一份**（以生效定义为准）。
+> **保存即生效** 现为**两条订阅**：既有 `data-user-config-refresh`（旧 KV 变更）+ **新增 `data-mcp-refresh`**（四级文件配置 save/delete）→ 同入 `reconcileUserMCPs` 增量对账（`servers/register|unregister`）。
+> 下文表格为订正前（仅 usr `mcps`）口径，**字段映射 / 分流 / 约束仍适用**，来源描述以本条为准。
 
 **读点与装配**（实现文件 `src/llm/server/gateway_servers.go`，接线 `server.go:226-229`）：
 

@@ -119,6 +119,32 @@ chat 面：prompt                                     ← 用户在输入框选�
 零新增主题）；根由数据层门面 `KnowledgeRoot(kind=prjusr)` 解析（与知识库 / 场景写读**同源**），
 解析不出则跳过、不影响既有三级。
 
+### 4.6 MCP 配置四级与合并规则（2026-10-01，[42 §2 (211)](../40-roadmap/42-决策记录.md)）
+
+**「MCP 工具面」的来源 = 用户/项目维护的 MCP server 定义（第三方能力），与「能力面/原语工具」（§4.1–§4.5 的
+capability `tools/`）是**两条独立来源**：前者经 gateway `servers/register`（外部 MCP server 的 spawned/proxied
+连接）注入工具，后者经 dir 节点扫描 `capability/` 契约。本小节规约**前者**的分级与合并。
+
+**落地形态 = 四级文件化**（[02 §7.3](../00-overview/02-配置层级.md)）：`<级别>/capability/mcps/<名>.json`
+（四级同构 app / user / project / prjusr；一个 server 一个文件，文件名 = server 名 + `.json`）。
+
+**同名合并 = 最具体级优先、整条覆盖**（`prjusr > project > user > app`；**非字段级合并**）：
+
+- 同名 MCP server 在四级可并存，但**合并后只生效一份**（命中的最具体级那一条）→ **只 spawn 一份**
+  （spawn / 生命周期由**生效定义**决定）；
+- **兼容旧配置**：旧 usr KV `mcpServers`（专用表 `mcps`）**继续兼容读取** —— 四级目录里**都没有**该名时
+  回落旧 KV（保证既有环境不失效）；**新写入一律走文件**（含 UI）；
+- **数据面**：新增 `mcp` 域消息面 `data-mcp-{list,load,save,delete}` + 订阅面 `data-mcp-refresh`
+  （见 [61 §3.1](../60-reference/61-消息一览.md)）；`list` 返回**生效视图**（每项带 `level`）；
+- **gateway 装配**：`src/lib/llm/server/gateway_servers.go loadGatewayServers` = 四级合并视图（数据层 `McpList`）
+  ∪ 旧 KV 回落（`loadEffectiveMCPEntries`）→ `mergeGatewayServers`；对账/生效链路（增量 register/unregister、
+  保存即生效）语义不变；`hot_tools` 语义不变。
+
+**运行期冷缓存退化放行**（配套，[42 §2 (211)](../40-roadmap/42-决策记录.md)）：§4.5 的级别矩阵静默剔除
+（`filterWhitelistByLevel`）以「本实例可见工具面」为收窄基准；该工具面来自 gateway `tools/list` 缓存——
+**缓存未预热（空）时**若照旧按"只保留可见集内名字"处理，会把白名单里的合法工具**全部误剔**。故
+**可见集为空 → 原样返回**（保守放行，不误剔），与"场景级别不可判定 / 工具级别无法判定 → 放行"同一取向。
+
 ---
 
 ## 5. 资产面变更：agent 退出资产面

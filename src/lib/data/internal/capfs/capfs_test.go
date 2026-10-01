@@ -4,6 +4,7 @@
 package capfs
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -58,6 +59,46 @@ func TestLevelAllowed(t *testing.T) {
 	for _, k := range []string{KindApp, KindUser, KindProject, KindPrjUsr} {
 		if !LevelAllowed(k, "") {
 			t.Errorf("LevelAllowed(%q,\"\") 未知级别应放行", k)
+		}
+	}
+}
+
+// TestMcpRoots 四级 MCP 配置根（app/user/project/prjusr；与场景根同构 = <级根>/capability/mcps）：
+// 四级齐备时全含；workDir/prjUsrCap 缺失时对应级被剔除。
+func TestMcpRoots(t *testing.T) {
+	appRoot := filepath.Join("a", "capability") // = 系统级 capability 根（AppDir）
+	usrPath := filepath.Join("u", "usr.db")
+	workDir := filepath.Join("w", "proj")
+	prjUsrCap := filepath.Join("d", "cap")
+	levels := McpRoots(appRoot, usrPath, workDir, prjUsrCap)
+	want := []Level{
+		{Kind: KindApp, Root: filepath.Join(appRoot, DirMcps)},
+		{Kind: KindUser, Root: filepath.Join("u", "capability", DirMcps)},
+		{Kind: KindProject, Root: filepath.Join(workDir, ".chonkpilot", "capability", DirMcps)},
+		{Kind: KindPrjUsr, Root: filepath.Join(prjUsrCap, DirMcps)},
+	}
+	if !reflect.DeepEqual(levels, want) {
+		t.Fatalf("McpRoots 四级根不符：\n got=%+v\nwant=%+v", levels, want)
+	}
+	// workDir / prjUsrCap 缺失 → 只余 app + user
+	got := McpRoots(appRoot, usrPath, "", "")
+	if len(got) != 2 || got[0].Kind != KindApp || got[1].Kind != KindUser {
+		t.Fatalf("缺 workDir/prjUsrCap 时应只余 app+user：%+v", got)
+	}
+}
+
+// TestValidMcpName server 名合法性（字母开头，仅字母/数字/下划线）。
+func TestValidMcpName(t *testing.T) {
+	ok := []string{"a", "abc", "a_b", "My_Server1"}
+	for _, n := range ok {
+		if !ValidMcpName(n) {
+			t.Errorf("ValidMcpName(%q) 应为真", n)
+		}
+	}
+	bad := []string{"", "1abc", "a-b", "a b", "a/b", "名字", "a.b"}
+	for _, n := range bad {
+		if ValidMcpName(n) {
+			t.Errorf("ValidMcpName(%q) 应为假", n)
 		}
 	}
 }

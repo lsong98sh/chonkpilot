@@ -595,15 +595,26 @@ func (tc *turnCtx) toolAllowed(name string) bool {
 // 语义边界（不得影响既有行为）：
 //   - 入参 raw 非 nil（调用方已判空白名单 = nil）→ 只做**收窄**，不回退"不限制"；
 //   - 场景级别无法判定（scenarioLevel 空）→ **原样返回**（保守放行，不误剔除）；
+//   - **可见工具缓存为空（冷缓存 / 未预热）→ 原样返回**（放行，见下）；
 //   - 工具级别无法判定（第三方 / 无 _meta.server，LevelOfNode 空）→ **放行**（不误剔除）。
+//
+// 冷缓存退化放行（2026-10-01）：本函数以「本实例可见工具面」为收窄基准，但该工具面来自
+// gateway `tools/list` 缓存（visibleTools → gc.ToolsFor）——**缓存未预热（空）时**若照旧按
+// "只保留可见集内名字"处理，会把白名单里的**合法工具全部误剔**（冷启动 / 实例刚注册尚未刷新
+// 时，本轮下发面反而比场景级别矩阵更窄）。故可见集为空 → 视为"无法判定可见面"→ 原样返回
+// （退化为保守放行的纯级别判定，行为与"缓存不可用"一致，不误剔）。
 //
 // 矩阵单源 = persist.AgentToolLevels / LevelAllowed（= capfs；与前端 AGENT_LEVEL_MATRIX 逐字一致）。
 func (s *Server) filterWhitelistByLevel(instance, scenarioLevel string, raw map[string]struct{}) map[string]struct{} {
 	if scenarioLevel == "" {
 		return raw
 	}
+	visible := s.visibleTools(instance)
+	if len(visible) == 0 {
+		return raw // 冷缓存（可见工具面空）→ 放行，不误剔
+	}
 	out := make(map[string]struct{}, len(raw))
-	for _, t := range s.visibleTools(instance) {
+	for _, t := range visible {
 		if _, ok := raw[t.Name]; !ok {
 			continue
 		}

@@ -134,6 +134,8 @@
   },
   "mcp": {
     "name": "Name",
+    "level": "Level",
+    "levelHint": "Level at which this definition is stored (app/user/project/prjusr, each = `<level root>/capability/mcps/<name>.json`). Same name across levels = most specific wins, whole-entry override (prjusr > project > user > app); only one takes effect.",
     "serverUrl": "Server URL",
     "runtime": "Runtime",
     "args": "Args",

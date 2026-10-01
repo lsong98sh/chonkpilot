@@ -134,6 +134,8 @@
   },
   "mcp": {
     "name": "名称",
+    "level": "级别",
+    "levelHint": "配置落地级别（app/user/project/prjusr 四级，各为 `<级别根>/capability/mcps/<名称>.json`）。同名跨级 = 最具体级优先、整条覆盖（prjusr > project > user > app），只生效一份。",
     "serverUrl": "服务地址",
     "runtime": "运行时",
     "args": "启动参数",
