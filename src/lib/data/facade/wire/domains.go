@@ -361,6 +361,7 @@ func ScenarioToWire(sc facade.Scenario) map[string]any {
 		put(row, "tools", a.Tools)
 		put(row, "llmRef", a.LLMRef)
 		put(row, "delegateCond", a.DelegateCond)
+		put(row, "ref", a.Ref)
 		agents = append(agents, row)
 	}
 	out := map[string]any{
@@ -402,6 +403,7 @@ func ScenarioFromWire(m map[string]any) facade.Scenario {
 				Tools:        str(am["tools"]),
 				LLMRef:       str(am["llmRef"]),
 				DelegateCond: str(am["delegateCond"]),
+				Ref:          str(am["ref"]),
 			})
 		}
 	}

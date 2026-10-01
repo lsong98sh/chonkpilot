@@ -6,9 +6,9 @@
   T3  L137 取消/撤回后待发内容写回输入框（含附件 → chip 回显）
   T4  L222 项目配置-总结提示词「重置」（原「通用能力/提示词」页签已按 CFG-009 摘除 → 迁移）
   T5  L232 索引状态实时更新（CodeGraph 页签 + data-prj-config-refresh 订阅）
-  T6a L257 场景智能体基本信息字段（名称/角色/LLM/描述/委托条件）
+  T6a L257 场景智能体基本信息字段（名称/角色/LLM/描述；委托条件随子智能体引用化移入「扩展·智能体」）
   T6b L259 场景智能体工具过滤（按来源分组勾选）
-  T6c L260 复制子智能体
+  T6c L260 子智能体 = agents/ 引用（「选择智能体」选择器 + 无添加/复制按钮）
   T7  L258 场景智能体提示词【优化】按钮：已接入既有优化链路（非桩，不再提示「尚未实现」）
 
 前置：chonkpilot.exe --test-port=2345 已启动（GUI 恒启 inprocess server）。
@@ -350,21 +350,28 @@ def _last_edit_dialog_js():
     return "(() => { const ds = [...document.querySelectorAll('.edit-dialog-body')]; return ds[ds.length - 1] || document; })()"
 
 
-def ensure_sub_agent():
-    """在编辑弹窗内添加一个子智能体并自动选中（委托条件/复制按钮仅子智能体渲染）。"""
-    r = click_btn_in(".edit-dialog-body", "add|添加")
-    if r != "ok":
-        raise TestError("未找到添加子智能体按钮")
-    time.sleep(0.6)
-    # 新子智能体应被自动选中（delegateCond 出现）
-    if not wait_el(".form-label", 3):
-        raise TestError("添加子智能体后基本信息表单未渲染")
+def ensure_agent_picker():
+    """场景编辑弹窗内「选择智能体」选择器存在（P4 2026-10-01：agent 列表改为从 agents/ 选择）。
+
+    旧口径 = 「添加子 Agent」按钮 + 复制子 Agent；新口径 = 子 agent 为 **agents/ 引用**
+    （只读显示已选；内容编辑在「扩展 · 智能体」页）→ 弹窗内提供 `Select.agent-picker`。
+    """
+    r = _loads_deep(c.eval("""(() => { const ds = [...document.querySelectorAll('.edit-dialog-body')];
+      const d = ds[ds.length - 1] || document;
+      return JSON.stringify(!!d.querySelector('.agent-picker'))})()"""))
+    if not r:
+        raise TestError("未找到「选择智能体」选择器（.agent-picker）")
+    time.sleep(0.4)
 
 
 def case_agent_basic_fields():
-    """L257 智能体基本信息：名称/角色标签/LLM/描述/委托条件（子智能体）。"""
+    """L257 智能体基本信息：名称/角色标签/LLM/描述（主 agent 内联可编辑）。
+
+    委托条件（delegateCond）随子智能体「引用化」移入「扩展 · 智能体」原语编辑器（主 agent 不渲染
+    该字段）→ 本用例不再断言 delegate（覆盖点见 KB-002 智能体原语编辑器）。
+    """
     open_scenario_edit()
-    ensure_sub_agent()
+    ensure_agent_picker()
     labels = _loads_deep(c.eval("""(() => {
       const ds = [...document.querySelectorAll('.edit-dialog-body')];
       const d = ds[ds.length - 1] || document;
@@ -380,7 +387,6 @@ def case_agent_basic_fields():
         "role": ("role", "角色"),
         "llm": ("llm", "模型"),
         "description": ("description", "说明", "描述"),
-        "delegate": ("delegate", "delegation", "委托"),
     }
     missing = [k for k, alts in zh_en.items() if not any(a in joined.lower() for a in alts)]
     if missing:
@@ -392,26 +398,27 @@ def case_agent_basic_fields():
 
 
 def case_agent_copy():
-    """L260 复制子智能体：点击复制 → 智能体数量 +1。"""
+    """L260（新口径，2026-10-01 P4）：子智能体 = agents/ 引用 —— 无「添加/复制子 agent」按钮；
+    编辑弹窗提供「选择智能体」选择器（只读显示已选），且主 agent 之外**无内联编辑入口**。"""
     open_scenario_edit()
-    ensure_sub_agent()
-    before = _loads_deep(c.eval("""(() => {
+    ensure_agent_picker()
+    info = _loads_deep(c.eval("""(() => {
       const ds = [...document.querySelectorAll('.edit-dialog-body')];
       const d = ds[ds.length - 1] || document;
-      return d.querySelectorAll('.agent-list-item').length;
+      return JSON.stringify({
+        picker: !!d.querySelector('.agent-picker'),
+        addBtn: [...d.querySelectorAll('.b-btn')].some(x => /添加子|add sub/i.test(x.textContent)),
+        copyBtn: [...d.querySelectorAll('.b-btn')].some(x => /复制|copy/i.test(x.textContent)),
+      });
     })()"""))
-    # 找到复制按钮（copy-document 图标按钮，子智能体上）
-    r = click_btn_in(".edit-dialog-body", "copy|复制")
-    if r != "ok":
-        raise TestError("未找到复制子智能体按钮")
-    time.sleep(0.8)
-    after = _loads_deep(c.eval("""(() => {
-      const ds = [...document.querySelectorAll('.edit-dialog-body')];
-      const d = ds[ds.length - 1] || document;
-      return d.querySelectorAll('.agent-list-item').length;
-    })()"""))
-    if after <= before:
-        raise TestError(f"复制后智能体数未增加: before={before} after={after}")
+    if isinstance(info, str):
+        info = json.loads(info)
+    if not info.get("picker"):
+        raise TestError("缺「选择智能体」选择器")
+    if info.get("addBtn"):
+        raise TestError("不应再有「添加子 Agent」按钮（子 agent 改为 agents/ 引用选择）")
+    if info.get("copyBtn"):
+        raise TestError("不应再有「复制子 Agent」按钮（子 agent 只读引用）")
     click_btn_in(".edit-dialog-body", "cancel|取消")
     time.sleep(0.5)
     return True
@@ -492,7 +499,7 @@ def main():
         total += 1; ok += run_case("T5 索引状态实时更新（L232）", case_codeindex_refresh)
         total += 1; ok += run_case("T6a 智能体基本信息字段（L257）", case_agent_basic_fields)
         total += 1; ok += run_case("T6b 智能体工具过滤（L259）", case_agent_tools_filter)
-        total += 1; ok += run_case("T6c 复制子智能体（L260）", case_agent_copy)
+        total += 1; ok += run_case("T6c 子智能体 = agents/ 引用（选择器 + 无添加/复制按钮，L260）", case_agent_copy)
         total += 1; ok += run_case("T7 智能体优化按钮已接线（L258）", case_agent_optimize_wired)
     finally:
         cleanup_writable_scenario()  # 只删本轮自建的 user 级场景（51 §6-8 环境干净）

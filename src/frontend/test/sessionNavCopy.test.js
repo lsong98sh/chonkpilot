@@ -23,24 +23,31 @@ const LOCALES = ['zh-CN', 'en-US']
 
 // ── 1) 左侧导航：会话页签 ─────────────────────────────────────────
 
-test('导航：左侧导航含「项目 · 知识库 · 项目记忆 · 会话」且顺序正确', () => {
+test('导航：左侧导航含「项目 · 会话 · 记忆 · 扩展」且顺序正确', () => {
   const pane = read('views/filetree/ExplorerPane.vue')
   const idxProject = pane.indexOf("mode === 'project'")
-  const idxKnowledge = pane.indexOf("mode === 'knowledge'")
-  const idxMemory = pane.indexOf("mode === 'memory'")
   const idxSessions = pane.indexOf("mode === 'sessions'")
-  assert.ok(idxProject >= 0 && idxKnowledge > idxProject && idxMemory > idxKnowledge && idxSessions > idxMemory,
-    '页签顺序应为 项目 → 知识库 → 项目记忆 → 会话')
+  const idxMemory = pane.indexOf("mode === 'memory'")
+  const idxExtensions = pane.indexOf("mode === 'extensions'")
+  assert.ok(idxProject >= 0 && idxSessions > idxProject && idxMemory > idxSessions && idxExtensions > idxMemory,
+    '页签顺序应为 项目 → 会话 → 记忆 → 扩展')
   assert.match(pane, /fileTree\.mode_sessions/, '会话页签文案应走 i18n')
-  assert.match(pane, /fileTree\.mode_memory/, '项目记忆页签文案应走 i18n')
-  assert.match(pane, /<MemoryPane/, '项目记忆页签内容 = MemoryPane')
+  assert.match(pane, /fileTree\.mode_memory/, '记忆页签文案应走 i18n')
+  assert.match(pane, /fileTree\.mode_extensions/, '扩展页签文案应走 i18n')
+  assert.match(pane, /<MemoryPane/, '记忆页签内容 = MemoryPane')
   assert.match(pane, /<SessionsPane/, '会话页签内容 = SessionsPane（原抽屉内容迁入）')
+  assert.match(pane, /<ExtensionsPane/, '扩展页签内容 = ExtensionsPane')
   assert.match(pane, /m === 'sessions'/, 'setMode 应受理 sessions')
   assert.match(pane, /m === 'memory'/, 'setMode 应受理 memory')
+  assert.match(pane, /m === 'extensions'/, 'setMode 应受理 extensions')
+  // 原「知识库」「工具」两个一级分段已删除（合并进扩展页）
+  assert.doesNotMatch(pane, /mode === 'knowledge'/, '「知识库」一级分段已删除')
+  assert.doesNotMatch(pane, /mode === 'tools'/, '「工具」一级分段已删除')
   for (const loc of LOCALES) {
     const ft = readLocale(loc, 'fileTree.json')
     assert.ok(ft.mode_sessions, loc + ' 应有 mode_sessions 文案')
     assert.ok(ft.mode_memory, loc + ' 应有 mode_memory 文案')
+    assert.ok(ft.mode_extensions, loc + ' 应有 mode_extensions 文案')
   }
 })
 

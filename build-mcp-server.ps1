@@ -51,10 +51,11 @@ try {
 } finally { Pop-Location }
 
 Write-Host "==> [2/3] deploy contracts -> capability (src/initdata -> dist/other)"
-# 契约目录覆盖式同步（4 棵平坦子树：prompts/tools/resources/skills，清理历史 knowledge/ 残留）。
+# 契约目录覆盖式同步（5 棵平坦子树：prompts/tools/resources/skills/agents，清理历史 knowledge/ 残留）。
+# agents/ = 智能体原语（*.agent.md；场景经 `${exeDir}/capability/agents/...` 引用，P4 2026-10-01）。
 # 出厂数据唯一源 = src/initdata/capability（[42 决策]；2026-10-01 P2 扁平化）。
 # 注：chonkpilot-mcp-gateway.exe 与 mcp-server exe **同目录共用** capability（build-mcp-gateway.ps1 不再另建副本）。
-foreach ($sub in @("prompts", "tools", "resources", "skills")) {
+foreach ($sub in @("prompts", "tools", "resources", "skills", "agents")) {
     $srcSub = Join-Path $initCap $sub
     if (-not (Test-Path $srcSub)) { throw "contracts not found: $srcSub" }
     $capSub = Join-Path $cap $sub

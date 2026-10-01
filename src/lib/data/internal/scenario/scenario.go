@@ -103,14 +103,35 @@ func (s *Service) scenarioRootForWrite(level, workDir, prjUsrCapRoot string) (st
 	return capfs.KindUser, capfs.ScenarioUserRoot(s.UsrPath)
 }
 
+// refRootsOf 由四级**场景根**推导四级 **capability 根**（= filepath.Dir(场景根)）→ 供场景
+// agent 引用的展开/生成（capfs.RefRoots；P4）。缺失级别 → 空串（该级引用视为悬空）。
+func refRootsOf(levels []capfs.Level) capfs.RefRoots {
+	var r capfs.RefRoots
+	for _, lv := range levels {
+		capRoot := filepath.Dir(lv.Root)
+		switch lv.Kind {
+		case capfs.KindApp:
+			r.App = capRoot
+		case capfs.KindUser:
+			r.User = capRoot
+		case capfs.KindProject:
+			r.Project = capRoot
+		case capfs.KindPrjUsr:
+			r.PrjUsr = capRoot
+		}
+	}
+	return r
+}
+
 // scenarioListAll 合并四级场景根（app → user → project → prjusr）。场景 id 全局唯一（跨级亦然，
 // 25 §6）→ 四级并集**不会重名**，无需去重（原"同名可在不同级并存"语义已废除）。
 // app 级 = 出厂场景来源（出厂内容 = 磁盘 `<exeDir>/capability/scenarios/`，缺装时 checkFactoryScenarios 提示）。
 func (s *Service) scenarioListAll(levels []capfs.Level) []map[string]any {
 	out := []map[string]any{}
+	roots := refRootsOf(levels)
 	for _, lv := range levels {
 		for _, dir := range capfs.ListScenarioDirs(lv.Root) {
-			sc, err := capfs.ReadScenarioDir(lv.Kind, lv.Root, dir)
+			sc, err := capfs.ReadScenarioDir(lv.Kind, lv.Root, dir, roots)
 			if err != nil {
 				continue
 			}
@@ -127,12 +148,13 @@ func (s *Service) scenarioLoadOne(levels []capfs.Level, id, level string) (map[s
 	if level != "" {
 		order = []string{level}
 	}
+	roots := refRootsOf(levels)
 	for _, want := range order {
 		for _, lv := range levels {
 			if lv.Kind != want || !capfs.ScenarioDirExists(lv.Root, id) {
 				continue
 			}
-			return capfs.ReadScenarioDir(lv.Kind, lv.Root, id)
+			return capfs.ReadScenarioDir(lv.Kind, lv.Root, id, roots)
 		}
 	}
 	return nil, errors.New("scenario not found: " + id)
@@ -208,10 +230,11 @@ func (s *Service) ScenarioSave(req facade.ScenarioSaveRequest) (facade.ScenarioS
 	workDir := s.WorkDirLoose(req.InstanceID, req.Scope)
 	prjUsrCap := s.prjUsrCapRoot(req.InstanceID, req.Scope)
 	kind, root := s.scenarioRootForWrite(sc.Level, workDir, prjUsrCap)
-	if err := s.ensureScenarioIDUnique(capfs.ScenarioRoots(s.AppDir, s.UsrPath, workDir, prjUsrCap), sc.ID, kind); err != nil {
+	levels := capfs.ScenarioRoots(s.AppDir, s.UsrPath, workDir, prjUsrCap)
+	if err := s.ensureScenarioIDUnique(levels, sc.ID, kind); err != nil {
 		return facade.ScenarioSaveResponse{}, err
 	}
-	if err := capfs.WriteScenarioDir(kind, root, sc.ID, capfs.NormalizeScenarioPayload(wire.ScenarioToWire(sc))); err != nil {
+	if err := capfs.WriteScenarioDir(kind, root, sc.ID, capfs.NormalizeScenarioPayload(wire.ScenarioToWire(sc)), refRootsOf(levels)); err != nil {
 		return facade.ScenarioSaveResponse{}, err
 	}
 	s.RefreshScoped("scenario", req.InstanceID, sc.ID, "save", req.Scope)

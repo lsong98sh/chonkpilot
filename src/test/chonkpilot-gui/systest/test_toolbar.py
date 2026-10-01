@@ -61,13 +61,14 @@ def main():
                 repr(it))
 
         # T1b toolbar 已无「知识库」按钮（2026-09-16 移除）：左区恰 4 个按钮，且无一标题命中
-        # 知识库/Knowledge；同时知识库视图入口仍在（filetree 区「项目/知识库」分段）。
+        # 知识库/Knowledge；同时能力面视图入口仍在（filetree 区「扩展」分段，2026-10-01 P3 由
+        # 原「知识库/工具」两段合并为「扩展」页）。
         kbo = json.loads(J(gui, """(()=>{const bs=[...document.querySelectorAll('.toolbar-left .tb-btn')];
   const ts=bs.map(b=>b.getAttribute('title')||'');
   const seg=[...document.querySelectorAll('.explorer-seg-btn')]
-    .some(s=>/知识库|Knowledge/.test(s.getAttribute('title')||''));
+    .some(s=>/扩展|Extensions/.test(s.getAttribute('title')||''));
   return JSON.stringify({n:bs.length, ts, kb:ts.some(t=>/知识库|Knowledge/.test(t)), seg})})()"""))
-        c.check("T1b toolbar 无知识库按钮（title 定位；入口在 filetree 分段）",
+        c.check("T1b toolbar 无知识库按钮（title 定位；入口在 filetree「扩展」分段）",
                 (not kbo["kb"]) and kbo["n"] == 4 and kbo["seg"], repr(kbo))
 
         # T2 打开菜单：open-btn 存在；点击会弹系统目录对话框（模态），测试不触发

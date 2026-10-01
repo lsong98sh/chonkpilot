@@ -105,8 +105,10 @@ def main():
     def switch_mode(want):
         # 前端内部事件（不经总线回显）→ 必须在页面内 emit（同 test_session_drawer / run_explore_kb）
         js("window.mq.emit('filetree-mode-select', %s); 'ok'" % json.dumps({"mode": want}))
-        want_labels = {"project": ("项目", "Project"), "knowledge": ("知识库", "Knowledge"),
-                       "memory": ("项目记忆", "Project Memory"), "sessions": ("会话", "Sessions")}[want]
+        want_labels = {"project": ("项目", "Project"),
+                       "sessions": ("会话", "Sessions"),
+                       "memory": ("记忆", "Memory"),
+                       "extensions": ("扩展", "Extensions")}[want]
         end = time.time() + 8
         while time.time() < end:
             act = [s["t"] for s in segs() if s["a"]]
@@ -158,9 +160,9 @@ def main():
         if not ensure_explorer():
             raise TestError("filetree 区未能挂载（toolbar 文件树按钮点击无效）")
         labels = [s["t"] for s in segs()]
-        want = ["项目", "知识库", "项目记忆", "会话"]
-        if labels[:4] != want and labels[:4] != ["Project", "Knowledge", "Project Memory", "Sessions"]:
-            raise TestError("左侧页签顺序异常（应 项目·知识库·项目记忆·会话）：%r" % labels)
+        want = ["项目", "会话", "记忆", "扩展"]
+        if labels[:4] != want and labels[:4] != ["Project", "Sessions", "Memory", "Extensions"]:
+            raise TestError("左侧页签顺序异常（应 项目·会话·记忆·扩展）：%r" % labels)
         if not switch_mode("memory"):
             raise TestError("切「项目记忆」失败 active=%r" % mode_active())
         if not poll(lambda: vis_count(".memory-pane") > 0, 8):

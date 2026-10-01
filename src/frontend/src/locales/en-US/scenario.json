@@ -19,7 +19,8 @@
   "level": {
     "app": "System",
     "user": "User",
-    "project": "Project"
+    "project": "Project",
+    "prjusr": "Project Private"
   },
   "dir_name_required": "Directory name is required (letters/digits/underscore/hyphen only)",
   "dir_name_format": "Directory name may contain only letters, digits, underscores and hyphens",
@@ -83,6 +84,10 @@
   "agents": "Agents",
   "new_agent": "New Agent",
   "agent_added": "Agent added",
+  "pick_agent": "Select agent",
+  "agent_already_added": "This agent is already in the scenario",
+  "ref_label": "Reference",
+  "ref_edit_hint": "Agent content is referenced; edit it in the Extensions - Agents page",
   "add_agent_failed": "Failed to add agent",
   "delete_agent_confirm": "Are you sure to delete Agent「{name}」?",
   "agent_deleted": "Agent deleted",

@@ -12,7 +12,7 @@
         </Tag>
       </div>
       <div class="agent-editor-header-actions">
-        <Button v-if="!agent.isMain" size="mini" text v-mq:[EventNames.agentCopy].click>
+        <Button v-if="!agent.isMain && showCopy" size="mini" text v-mq:[EventNames.agentCopy].click>
           <Icon name="copy-document" size="14" /> {{ $t('scenario.copy_agent') }}</Button>
       </div>
     </div>
@@ -182,6 +182,11 @@ const props = defineProps({
   optimizing: {
     type: Boolean,
     default: false,
+  },
+  // 是否显示「复制」按钮（场景子 agent = 复制为新 agent；独立「智能体原语」编辑 = 不适用 → false）
+  showCopy: {
+    type: Boolean,
+    default: true,
   },
 })
 

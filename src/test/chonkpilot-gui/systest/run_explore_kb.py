@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """ExplorerPane 双栈 + KnowledgeTree + PrimitivePanel 端到端验收。
 
-用例（2026-09-29：工具从知识库分离为独立「工具」页签——「会话」右侧；知识库仅 skill/prompt/resource）：
- C1 五段切换（项目/知识库/项目记忆/会话/工具）v-show 生效 + 工具段在会话右侧
- C2 知识库根展开 → 扁平类型目录（tools 不再显示）+ prompts/resources/skills 三类原语目录
- C3 工具页签 tools→core 展开 → *.tool.md 行出现
+用例（2026-10-01，P3：原「知识库/工具」两页签合并为「扩展」页 = 5 子 tab 知识/技能/工具/命令/智能体
++ 右侧【级别】popup 四级；四级均可写）：
+ C1 四段切换（项目/会话/记忆/扩展）v-show 生效 + 扩展页 5 子 tab + 级别选择器
+ C2 扩展页各子 tab 单类型过滤（知识=resources/技能=skills）+ 根行命名「<子tab> -级别」
+ C3 扩展页「工具」子 tab：tools→core 展开 → *.tool.md 行出现
  C4 单击 *.tool.md → preview PrimitivePanel（四页签 Tabs、顶部标题非空、保存/恢复按钮）
 C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变；meta 键值表单；「参数」JSON Schema 树
  C6 右键 tools 类型目录 → 菜单含 新建目录 与 新建工具
@@ -14,13 +15,13 @@ C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变�
       改名 smoke_dir1 → F2 改目录名 smoke_dir2（目录语义，不追加 .md）→ 右键「重命名」
       改回 smoke_dir1 → 删除目录
   C11 KB F2 重命名文件（保留 .tool.md 后缀，zz_find ↔ file_find 往返）
-  C12 KB 类型目录新建 技能/提示词/资源（.skill/.prompt/.resource 契约模板）+ 删除清理
+  C12 扩展页 技能/命令/知识 三子 tab 分别新建（.skill/.prompt/.resource 契约模板）+ 删除清理
   C9 项目级知识库（`<workDir>/.chonkpilot/capability`）tools/core/demo.tool.md → PrimitivePanel；
      右键 typed 目录菜单含新建目录/新建工具
   C13 项目级知识库 新建工具 → 编辑保存 → 删除（项目级完整写链路）
 
 迁移口径（2026-09-15）：
-  - 知识库根行 = "<知识库> -<级别>"（默认系统级 → "知识库 -系统"）；旧根行名 "capability" 已移除。
+  - 扩展页根行 = "<子tab文案> -<级别>"（如系统级「知识 -系统」/「工具 -系统」）；旧根行名 "capability" 已移除。
   - 项目侧原语路径：`@mcp/` 旧名已按 spec 60-名词约定（P1-3）迁移为
     `<workDir>/.chonkpilot/capability`（= 项目级知识库根）。项目**文件树**不暴露 `.chonkpilot`
     （实测 filetree 仅列非点目录），且 `data-knowledge-read/list` 只认四级 capability 根内的路径
@@ -68,15 +69,30 @@ PJ_FILE = os.path.join(PJ_DIR, "pj_smoke.tool.md")
 
 CLEANUPS = [SMOKE_FILE, SKILL_FILE, PROMPT_FILE, RES_FILE, PJ_FILE]
 
-# 左侧资源面板模式 → 激活段文案（zh-CN / en-US 两种；2026-09-26 增第 4 模式「项目记忆」；
-# 2026-09-29 增第 5 模式「工具」——工具契约从知识库分离，位于「会话」右侧）
+# 左侧资源面板模式 → 激活段文案（zh-CN / en-US 两种）。
+# 2026-10-01（P3）：分段改 4 段「项目 / 会话 / 记忆 / 扩展」（原「知识库」「工具」合并进「扩展」页；
+# 「项目记忆」文案改「记忆」）。legacy 名 `knowledge`/`tools` 仍可作 switch_mode 入参 → 映射到扩展页子 tab。
 MODE_LABELS = {
     "project": ("Project", "项目"),
-    "knowledge": ("Knowledge", "知识库"),
-    "memory": ("Project Memory", "项目记忆"),
     "sessions": ("Sessions", "会话"),
-    "tools": ("Tools", "工具"),
+    "memory": ("Memory", "记忆"),
+    "extensions": ("Extensions", "扩展"),
+    # legacy（扩展页子 tab 入口）
+    "knowledge": ("Extensions", "扩展"),
+    "tools": ("Extensions", "扩展"),
 }
+
+# 扩展页子 tab（mode=extensions 的 ext）→ 子 tab 文案（zh-CN / en-US）
+EXT_LABELS = {
+    "resource": ("Resources", "知识"),
+    "skill": ("Skill", "技能"),
+    "tool": ("Tools", "工具"),
+    "prompt": ("Command", "命令"),
+    "agent": ("Agent", "智能体"),
+}
+
+# legacy 名 → 扩展页子 tab
+LEGACY_EXT = {"knowledge": "resource", "tools": "tool"}
 
 
 def read_until(path, needles, timeout=8):
@@ -245,9 +261,21 @@ class KB:
             time.sleep(1.0)
         return False
 
-    def switch_mode(self, want):
-        """按目标切到 项目/知识库/项目记忆/会话/工具（使用 filetreeModeSelect，与 seg 点击同一事件）。"""
-        self.js("window.mq.emit('filetree-mode-select', %s)" % json.dumps({"mode": want}))
+    def switch_mode(self, want, ext=None):
+        """切到 项目/会话/记忆/扩展（filetreeModeSelect，与 seg 点击同一事件）。
+
+        2026-10-01（P3）：legacy 名 `knowledge`/`tools` 映射到**扩展页子 tab**
+        （`{mode:'extensions', ext:'resource'|'tool'}`）；显式 `ext` 亦走扩展页。
+        """
+        if want in LEGACY_EXT:
+            payload = {"mode": "extensions", "ext": LEGACY_EXT[want]}
+        elif want == "extensions":
+            payload = {"mode": "extensions"}
+            if ext:
+                payload["ext"] = ext
+        else:
+            payload = {"mode": want}
+        self.js("window.mq.emit('filetree-mode-select', %s)" % json.dumps(payload))
         end = time.time() + 8
         while time.time() < end:
             seg = self.js("Array.from(document.querySelectorAll('.explorer-seg-btn')).map(n=>({t:n.textContent.trim(),a:n.classList.contains('active')}))") or []
@@ -256,6 +284,10 @@ class KB:
                 return True
             time.sleep(0.4)
         return False
+
+    def ext_active(self):
+        """扩展页当前激活子 tab 文案（无扩展页激活 → []）。"""
+        return self.js("Array.from(document.querySelectorAll('.ext-subtab.active')).map(n=>n.textContent.trim())") or []
 
     def mode_active(self):
         seg = self.js("Array.from(document.querySelectorAll('.explorer-seg-btn')).map(n=>({t:n.textContent.trim(),a:n.classList.contains('active')}))") or []
@@ -436,60 +468,68 @@ def main():
         c.console(clear=True)
         kb = KB(c)
 
-        # ── C1 双段切换 ──
+        # ── C1 四段切换（项目/会话/记忆/扩展，2026-10-01 P3） ──
         def c1():
             assert kb.ensure_explorer_visible(), "filetree 区未能挂载（toolbar 文件树按钮点击无效）"
-            assert kb.switch_mode("knowledge"), f"切知识库失败 active={kb.mode_active()}"
+            assert kb.switch_mode("extensions"), f"切扩展失败 active={kb.mode_active()}"
             seg = kb.js("Array.from(document.querySelectorAll('.explorer-seg-btn')).map(n=>({t:n.textContent.trim(),a:n.classList.contains('active')}))") or []
             if not seg:
                 raise AssertionError("explorer seg 不存在")
             active = [s for s in seg if s["a"]]
             assert len(active) == 1, f"应恰有一个 active：{seg}"
             labels = {s["t"] for s in seg}
-            assert labels & {"Knowledge", "知识库"}, f"缺「知识库」分段：{seg}"
+            assert labels & {"Project", "项目"}, f"缺「项目」分段：{seg}"
             assert labels & {"Sessions", "会话"}, f"缺「会话」分段（P3-C1 迁入左侧导航）：{seg}"
-            assert labels & {"Project Memory", "项目记忆"}, f"缺「项目记忆」分段（2026-09-26 第 4 模式）：{seg}"
-            assert labels & {"Tools", "工具"}, f"缺「工具」分段（2026-09-29 第 5 模式，从知识库分离）：{seg}"
-            # 段顺序：工具位于会话右侧（末位）
+            assert labels & {"Memory", "记忆"}, f"缺「记忆」分段（原「项目记忆」，P3 改名）：{seg}"
+            assert labels & {"Extensions", "扩展"}, f"缺「扩展」分段（P3：知识库+工具合并）：{seg}"
+            # 段顺序：项目 → 会话 → 记忆 → 扩展（原「知识库」「工具」一级分段已删）
             seg_txts = [s["t"] for s in seg]
-            i_sess = next((i for i, x in enumerate(seg_txts) if x in ("Sessions", "会话")), -1)
-            i_tools = next((i for i, x in enumerate(seg_txts) if x in ("Tools", "工具")), -1)
-            assert i_tools > i_sess >= 0, f"「工具」分段应在「会话」右侧：{seg_txts}"
-            # v-show 五体（项目/知识库/项目记忆/会话/工具，2026-09-29 由 4 增为 5）
-            assert kb.js("document.querySelectorAll('.explorer-body').length") == 5, "应有五个 .explorer-body（v-show 五体）"
+            idx = lambda names: next((i for i, x in enumerate(seg_txts) if x in names), -1)
+            i_proj, i_sess = idx(("Project", "项目")), idx(("Sessions", "会话"))
+            i_mem, i_ext = idx(("Memory", "记忆")), idx(("Extensions", "扩展"))
+            assert i_proj >= 0 and i_sess > i_proj and i_mem > i_sess and i_ext > i_mem, \
+                f"分段顺序应为 项目→会话→记忆→扩展：{seg_txts}"
+            assert not (labels & {"Knowledge", "知识库", "Tools", "工具"}), f"不应再有「知识库/工具」一级分段：{seg}"
+            # v-show 四体（项目/会话/记忆/扩展）
+            assert kb.js("document.querySelectorAll('.explorer-body').length") == 4, "应有四个 .explorer-body（v-show 四体）"
             vis = kb.js("Array.from(document.querySelectorAll('.explorer-body')).filter(n=>getComputedStyle(n).display!=='none').length") or 0
             assert vis == 1, f"v-show 应恰有一个可见：{vis}"
-            # 知识库 + 工具各一棵 KnowledgeTree（v-show 同显；工具页签在会话右侧）
-            assert kb.js("document.querySelectorAll('.knowledge-tree').length") == 2, "应有知识库 + 工具两棵树"
+            # 扩展页 = 5 子 tab（知识/技能/工具/命令/智能体）+ 右侧【级别】
+            subs = kb.js("Array.from(document.querySelectorAll('.ext-subtab')).map(n=>n.textContent.trim())") or []
+            assert subs == ["知识", "技能", "工具", "命令", "智能体"], f"扩展页应 5 子 tab（知识/技能/工具/命令/智能体）：{subs}"
+            assert kb.js("!!document.querySelector('.ext-level-btn')"), "扩展页缺【级别】选择器"
+            # 仅 1 棵 KnowledgeTree（扩展页复用；按子 tab 单类型）
+            assert kb.js("document.querySelectorAll('.knowledge-tree').length") == 1, "应恰有 1 棵 KnowledgeTree（扩展页复用）"
             assert kb.js("!!document.querySelector('.filetree-panel')"), "项目树不存在"
             # seg 点击「项目」→ 切换（filetreeModeSelect 链路）
             kb.js("(function(){const els=Array.from(document.querySelectorAll('.explorer-seg-btn'));const el=els.find(n=>n.textContent.trim()==='Project'||n.textContent.trim()==='项目');if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()")
             ok = kb.poll(lambda: kb.mode_active() and (kb.mode_active()[0] == "Project" or kb.mode_active()[0] == "项目"))
             assert ok, f"seg 切项目失败 active={kb.mode_active()}"
-            # 再经 filetreeModeToggle（原 toolbar「知识库」按钮行为，2026-09-16 按钮已移除；
-            # 该 mq 订阅保留为休眠态，此处直发事件验其仍生效）→ 知识库
+            # 再经 filetreeModeToggle（休眠态，此处直发事件验其仍生效）→ 扩展
             kb.js("window.mq.emit('filetree-mode-toggle')")
-            ok = kb.poll(lambda: kb.mode_active() and (kb.mode_active()[0] == "Knowledge" or kb.mode_active()[0] == "知识库"))
-            assert ok, f"toggle 切知识库失败 active={kb.mode_active()}"
+            ok = kb.poll(lambda: kb.mode_active() and (kb.mode_active()[0] == "Extensions" or kb.mode_active()[0] == "扩展"))
+            assert ok, f"toggle 切扩展失败 active={kb.mode_active()}"
 
-        # ── C2 知识库根（系统级）→ 扁平子目录（tools 已分离）+ 三类原语目录 ──
+        # ── C2 扩展页各子 tab 单类型过滤 + 根行命名 ──
         def c2():
-            # 根行口径（2026-09-15 迁移）：知识库树根 = "<知识库> -<级别>"
-            # （KnowledgeTree.loadRoot：t('fileTree.titleKey') + ' -' + 级别标签），
-            # 默认级别 = 系统级 → "知识库 -系统"。旧行名 "capability" 已随根命名改造移除。
-            # 2026-10-01（P1 扁平化）：根下直接是 6 个扁平子目录（旧 `knowledge/` 容器已删）；
-            # 工具已分离（独立「工具」页签）→ 知识库树展示 prompts/resources/skills。
-            assert kb.switch_mode("knowledge"), f"切知识库失败 active={kb.mode_active()}"
-            rows = kb.kb_rows()
-            assert rows, "知识库树无行（根未加载）"
-            root_label = kb.row_label(rows[0])
-            assert root_label.startswith("知识库"), f"知识库根行名异常：{root_label!r}"
-            assert kb.click_kb_root(), f"点击知识库根失败：{root_label}"
-            assert not any(kb.row_label(r) == "tools" for r in kb.kb_rows()), \
-                "知识库不应再显示 tools（工具已分离到「工具」页签）"
-            # 扁平类型目录直接可见（prompts/resources/skills）
-            for d in ("prompts", "resources", "skills"):
-                assert kb.wait_kb_row(d, True), f"根下类型目录 {d} 应为目录行"
+            # 扩展页子 tab 单类型：知识=resources / 技能=skills / 工具=tools / 命令=prompts / 智能体=agents。
+            # 根行名 = "<子tab文案> -<级别>"（如「知识 -系统」）。
+            for ext, dirname in (("resource", "resources"), ("skill", "skills")):
+                assert kb.switch_mode("extensions", ext=ext), f"切扩展页子 tab {ext} 失败"
+                rows = kb.kb_rows()
+                assert rows, f"扩展页（{ext}）树无行（根未加载）"
+                root_label = kb.row_label(rows[0])
+                assert root_label.startswith(EXT_LABELS[ext][0]) or root_label.startswith(EXT_LABELS[ext][1]), \
+                    f"根行名异常（{ext}）：{root_label!r}"
+                assert kb.click_kb_root(), f"点击根失败：{root_label}"
+                # 展开到类型目录（切换子 tab 会重挂载树；ensure 幂等展开根 + 类型目录）
+                assert kb.ensure_kb_expanded([dirname]), f"扩展页（{ext}）展开 {dirname} 失败"
+                # 仅当前子 tab 的类型目录可见（其余类型目录不显示）
+                dirlabels = {kb.row_label(r) for r in kb.kb_rows() if r["d"]}
+                assert dirname in dirlabels, f"{ext} 子 tab 应显示 {dirname} 目录：{dirlabels}"
+                for other in ("tools", "prompts", "resources", "skills", "agents"):
+                    if other != dirname:
+                        assert other not in dirlabels, f"{ext} 子 tab 不应显示 {other}：{dirlabels}"
 
         # ── C3 工具页签：tools→core → *.tool.md（2026-09-29 由知识库迁到独立「工具」页签）──
         def c3():
@@ -767,21 +807,20 @@ def main():
             ok = kb.wait_kb_row("file_find.tool.md", False)
             assert ok, "树行未恢复 file_find.tool.md"
 
-        # ── C12 类型目录新建 技能/提示词/资源 模板 ──
+        # ── C12 类型目录新建 技能/提示词/资源 模板（扩展页 5 子 tab，2026-10-01 P3） ──
         def c12():
             # 夹具幂等：清除上一次失败运行残留的目标文件（否则存在性轮询会命中陈旧内容）
             cleanup_fixtures()
-            # 2026-10-01（P1 扁平化）：技能/提示词/资源直接位于知识库根下（旧 `knowledge/` 容器已删）
-            assert kb.switch_mode("knowledge"), "C12 切知识库失败"
-            # 幂等展开根（C2 已展开过 → 非幂等 click_kb_root 会**收起**；用 ensure_kb_expanded 只补展开）
-            assert kb.ensure_kb_expanded([]), "知识库根展开失败"
+            # 扩展页各子 tab 单类型：技能→skills / 命令→prompts / 知识→resources
             cases = [
-                ("skills", "New Skill", "新建技能", "sk_s1", SKILL_FILE, ".skill.md"),
-                ("prompts", "New Prompt", "新建提示词", "pr_s1", PROMPT_FILE, ".prompt.md"),
-                ("resources", "New Resource", "新建资源", "re_s1", RES_FILE, ".resource.md"),
+                ("skills", "skill", "New Skill", "新建技能", "sk_s1", SKILL_FILE, ".skill.md"),
+                ("prompts", "prompt", "New Prompt", "新建提示词", "pr_s1", PROMPT_FILE, ".prompt.md"),
+                ("resources", "resource", "New Resource", "新建资源", "re_s1", RES_FILE, ".resource.md"),
             ]
-            for dirname, en_label, _zh_label, fname, path, suffix in cases:
-                # 展开类型目录（扁平：直接位于知识库根下）
+            for dirname, ext, en_label, _zh_label, fname, path, suffix in cases:
+                assert kb.switch_mode("extensions", ext=ext), f"{dirname} 切扩展页子 tab 失败"
+                # 幂等展开根（切换子 tab 会重挂载树 → 需重新展开）
+                assert kb.ensure_kb_expanded([]), f"扩展页（{ext}）根展开失败"
                 assert kb.wait_kb_row(dirname, True), f"{dirname} 目录不可见"
                 assert kb.rclick_kb_row(dirname, True), f"右键 {dirname} 失败"
                 kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
@@ -802,9 +841,11 @@ def main():
                     assert "[arguments]" in data, "prompt 模板缺 [arguments]"
                 ok = kb.poll(lambda: any(kb.row_label(r) == fname + suffix for r in kb.kb_rows()))
                 assert ok, f"{fname}{suffix} 未出现在树行"
-            # 清理三个文件（右键删除）
-            for fname, suffix in [("sk_s1", ".skill.md"), ("pr_s1", ".prompt.md"), ("re_s1", ".resource.md")]:
+            # 清理三个文件（右键删除；逐子 tab 切换 + 展开类型目录）
+            for fname, suffix, ext, dirname in [("sk_s1", ".skill.md", "skill", "skills"), ("pr_s1", ".prompt.md", "prompt", "prompts"), ("re_s1", ".resource.md", "resource", "resources")]:
                 label = fname + suffix
+                assert kb.switch_mode("extensions", ext=ext), f"{label} 切扩展页子 tab 失败"
+                assert kb.ensure_kb_expanded([dirname]), f"{label} 扩展页展开 {dirname} 失败"
                 assert kb.rclick_kb_row(label, False), f"右键 {label} 失败"
                 kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
                 dtexts = kb.kb_menu_texts()
@@ -872,8 +913,8 @@ def main():
             assert ok, "pj_smoke.tool.md 项目级树行未移除"
 
         for name, fn in [
-            ("C1 项目/知识库双段切换", c1),
-            ("C2 知识库根（系统级）→四类型目录", c2),
+            ("C1 四段切换（项目/会话/记忆/扩展）+ 扩展页 5 子 tab", c1),
+            ("C2 扩展页子 tab 单类型过滤 + 根行命名", c2),
             ("C3 tools→core→*.tool.md", c3),
             ("C4 打开原语→四页签 Tabs", c4),
             ("C5 页签 dirty/恢复 + meta/参数（JSON Schema）", c5),
@@ -882,8 +923,8 @@ def main():
             ("C8 保存+删除清理", c8),
             ("C10 目录全UI链路（新建+内联改名+F2/右键目录改名+删除）", c10),
             ("C11 F2 重命名文件(保留后缀)", c11),
-            ("C12 技能/提示词/资源模板", c12),
-            ("C9 项目级原语预览（知识库树-项目）", c9),
+            ("C12 技能/命令/知识 三子 tab 新建模板 + 删除", c12),
+            ("C9 项目级原语预览（扩展页-项目级）", c9),
             ("C13 项目级新建+保存+删除", c13),
         ]:
             if run_case(name, fn):

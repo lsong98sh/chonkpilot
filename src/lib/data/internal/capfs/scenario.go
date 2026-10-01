@@ -4,9 +4,14 @@
 // 场景 = **capability 根下的 `scenarios/` 子目录**（`<级别根>/capability/scenarios/`；四级同构
 // app / user / project / prjusr）/<场景目录>/ 内含：
 //
-//	scenario.json   {name, description, createdAt, updatedAt}
-//	main.agent.md   主 agent（固定文件名）
-//	*.agent.md      其余子 agent（一文件一 agent）
+//	scenario.json   {name, description, createdAt, updatedAt, agents:[<引用路径>…]}
+//	main.agent.md   主 agent（固定文件名；**内联**，可编辑、不可选）
+//
+// **子 agent 改为引用**（P4，2026-10-01）：`scenario.json` 的 `agents` 存 agent 引用路径
+// （变量前缀 `${exeDir}`(系统级) / `${usrDir}`(用户级) / `${workDir}`(项目级) / `${dataDir}`(项目私有级)
+// 之后为相对路径，如 `${exeDir}/capability/agents/UX 设计师.agent.md`），不再在场景目录内放
+// `*.agent.md` 子文件。**兼容读取旧形态**（同目录 `*.agent.md`）；**悬空引用静默删除**
+// （文件缺失 / 变量不可解析 → 跳过，不报错）。
 //
 // agent 文件沿用 mcp 四原语分区契约（# 标题 + [meta] + [description] + [content]），
 // 复用同包的契约解析/组装。
@@ -40,6 +45,90 @@ const (
 	scenarioMainFile = "main.agent.md"
 	agentFileSuffix  = ".agent.md"
 )
+
+// RefRoots 四级 **capability 根**（供场景 agent 引用的展开/生成；P4）。
+type RefRoots struct {
+	App     string // 系统级 capability 根
+	User    string // 用户级 capability 根
+	Project string // 项目级 capability 根（<workDir>/.chonkpilot/capability）
+	PrjUsr  string // 项目私有级 capability 根
+}
+
+// refVarPrefix 是「引用变量前缀 → 级别 kind」的映射（顺序即匹配优先）。
+// 引用形如 `<prefix>/agents/<名>.agent.md`：prefix 即该级 capability 根的变量写法。
+var refVarPrefix = []struct {
+	prefix string
+	kind   string
+}{
+	{"${exeDir}/capability", KindApp},
+	{"${usrDir}/capability", KindUser},
+	{"${workDir}/.chonkpilot/capability", KindProject},
+	{"${dataDir}/capability", KindPrjUsr},
+}
+
+// CapRootOf 返回某级 capability 根（缺失 → 空串）。
+func (r RefRoots) CapRootOf(kind string) string {
+	switch kind {
+	case KindApp:
+		return r.App
+	case KindUser:
+		return r.User
+	case KindProject:
+		return r.Project
+	case KindPrjUsr:
+		return r.PrjUsr
+	}
+	return ""
+}
+
+// ExpandAgentRef 展开场景 agent 引用路径 → 绝对路径：按变量前缀映射到对应级 capability 根，
+// 其后为相对路径拼在根下。**悬空/越权**（变量不可解析 / 不在任一前缀下 / 目标文件缺失）→ ("", false)。
+func ExpandAgentRef(ref string, roots RefRoots) (string, bool) {
+	ref = strings.TrimSpace(strings.ReplaceAll(ref, "\\", "/"))
+	if ref == "" {
+		return "", false
+	}
+	for _, v := range refVarPrefix {
+		if ref == v.prefix || strings.HasPrefix(ref, v.prefix+"/") {
+			capRoot := roots.CapRootOf(v.kind)
+			if capRoot == "" {
+				return "", false // 该级根不可解析 → 悬空
+			}
+			rel := strings.TrimPrefix(ref, v.prefix)
+			rel = strings.TrimPrefix(rel, "/")
+			abs := filepath.Join(capRoot, filepath.FromSlash(rel))
+			if st, err := os.Stat(abs); err != nil || st.IsDir() {
+				return "", false // 悬空引用 → 静默删除
+			}
+			return abs, true
+		}
+	}
+	return "", false
+}
+
+// AgentRefOf 由绝对路径生成场景 agent 引用（须落在某级 capability 根下）；不属任一级 → ("", false)。
+// 反函数：ExpandAgentRef(AgentRefOf(p)) == p（同级根内）。
+func AgentRefOf(absPath string, roots RefRoots) (string, bool) {
+	p := filepath.ToSlash(filepath.Clean(absPath))
+	// 具体级优先（prjusr → project → user → app），与 LevelPriority 一致
+	for _, kind := range []string{KindPrjUsr, KindProject, KindUser, KindApp} {
+		capRoot := roots.CapRootOf(kind)
+		if capRoot == "" {
+			continue
+		}
+		root := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(capRoot)), "/")
+		if p == root || !strings.HasPrefix(p, root+"/") {
+			continue
+		}
+		rel := strings.TrimPrefix(p, root+"/")
+		for _, v := range refVarPrefix {
+			if v.kind == kind {
+				return v.prefix + "/" + rel, true
+			}
+		}
+	}
+	return "", false
+}
 
 // ScenariosRoot 某级 capability 根下的场景根 = <capRoot>/scenarios。
 func ScenariosRoot(capRoot string) string {
@@ -112,24 +201,36 @@ type scenarioMeta struct {
 	Description string `json:"description"`
 	CreatedAt   string `json:"createdAt,omitempty"`
 	UpdatedAt   string `json:"updatedAt,omitempty"`
+	// Agents 子 agent 引用路径（变量前缀 + 相对路径；主 agent 不在其中 —— 由 main.agent.md 内联承载）。
+	Agents []string `json:"agents,omitempty"`
 }
 
 // ReadScenarioDir 读一个场景目录 → 场景元素（含 agents）。root = 某级**场景根**
 // （ScenarioSystemRoot / ScenarioUserRoot / ScenarioProjectRoot / ScenarioPrjUsrRoot，25 §6）。
 // 元素字段与旧 DB 版一致（id/key/name/description/agents/createdAt/updatedAt），
 // 另加 level（app|user|project|prjusr，级别标识）。
-func ReadScenarioDir(kind, root, dir string) (map[string]any, error) {
+//
+// agents 来源（P4）：主 agent 内联（main.agent.md）；子 agent = `scenario.json.agents` 的
+// **引用路径**（`roots` 展开；**悬空/越权 → 静默删除**）。**兼容旧形态**：scenario.json 无
+// `agents` 键时，回退读同目录 `*.agent.md`。被引用的 agent 条目附带 `ref` 字段（原引用串）。
+func ReadScenarioDir(kind, root, dir string, roots RefRoots) (map[string]any, error) {
 	dirPath := filepath.Join(root, dir)
 	meta := scenarioMeta{Name: dir}
+	metaHasAgentsKey := false
 	if raw, err := os.ReadFile(filepath.Join(dirPath, scenarioMetaFile)); err == nil {
 		_ = json.Unmarshal(raw, &meta)
+		var probe map[string]json.RawMessage
+		if json.Unmarshal(raw, &probe) == nil {
+			_, metaHasAgentsKey = probe["agents"]
+		}
 	}
-	agents := []any{}
-	mainAgent := map[string]any(nil)
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return nil, err
 	}
+	agents := []any{}
+	mainAgent := map[string]any(nil)
+	inlineSubs := []any{} // 旧形态：同目录 *.agent.md（非 main）
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(strings.ToLower(name), agentFileSuffix) {
@@ -144,7 +245,26 @@ func ReadScenarioDir(kind, root, dir string) (map[string]any, error) {
 			mainAgent = a // 主 agent 恒排首位（与旧 DB 版顺序一致，UI 依赖 agents[0]）
 			continue
 		}
-		agents = append(agents, a)
+		inlineSubs = append(inlineSubs, a)
+	}
+	if metaHasAgentsKey || len(meta.Agents) > 0 {
+		// 新形态：子 agent = 引用（逐条展开；悬空/越权 → 静默删除）
+		for _, ref := range meta.Agents {
+			abs, ok := ExpandAgentRef(ref, roots)
+			if !ok {
+				continue
+			}
+			raw, err := os.ReadFile(abs)
+			if err != nil {
+				continue
+			}
+			a := agentFromDoc(ParseDoc(string(raw)), filepath.Base(abs))
+			a["isMain"] = false // 引用 = 子 agent（不因被引文件 ismain 而升为主）
+			a["ref"] = ref
+			agents = append(agents, a)
+		}
+	} else {
+		agents = inlineSubs // 旧形态兼容
 	}
 	if mainAgent != nil {
 		agents = append([]any{mainAgent}, agents...)
@@ -209,10 +329,14 @@ func ValidateScenarioAgents(scenarioID string, sc map[string]any) error {
 	return nil
 }
 
-// WriteScenarioDir 写一个场景目录（scenario.json + main.agent.md + *.agent.md）。
+// WriteScenarioDir 写一个场景目录（scenario.json + main.agent.md[+ 旧形态内联子 agent]）。
 // root = 某级**场景根**（25 §6）。已存在的旧 agent 文件先清理，避免改名后残留。
 // 写盘前先做**同场景 agent 重名校验**（ValidateScenarioAgents）→ 重名即拒绝、不落盘（42 §2 (175)）。
-func WriteScenarioDir(kind, root, dir string, sc map[string]any) error {
+//
+// 子 agent 落盘（P4）：带 `ref` 的 agent → 写入 `scenario.json.agents`（引用路径，不落单独文件）；
+// 主 agent → 内联写 `main.agent.md`；**无 ref 的非主 agent** → 兼容旧形态内联落盘 `*.agent.md`
+// （供被引用文件尚未迁移时兜底）。
+func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots) error {
 	if err := ValidateScenarioAgents(dir, sc); err != nil {
 		return err
 	}
@@ -220,7 +344,7 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any) error {
 	if err := os.MkdirAll(dirPath, 0o755); err != nil {
 		return err
 	}
-	// 清理既有 *.agent.md（按新 agents 全新落盘）
+	// 清理既有 *.agent.md（按新 agents 全新落盘；旧形态子 agent 文件随之清除）
 	if entries, err := os.ReadDir(dirPath); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), agentFileSuffix) {
@@ -233,11 +357,38 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any) error {
 	if createdAt == "" {
 		createdAt = now
 	}
+	agents, _ := sc["agents"].([]any)
+	refs := []string{}
+	for _, a := range agents {
+		am, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		if isMainAgent(am) {
+			continue // 主 agent 内联写 main.agent.md（下方统一落盘）
+		}
+		if ref := strings.TrimSpace(kernel.SvalOf(am["ref"])); ref != "" {
+			// 绝对路径（前端可能直接给绝对路径）→ 归一为变量前缀形态
+			if filepath.IsAbs(filepath.FromSlash(ref)) {
+				if v, ok := AgentRefOf(ref, roots); ok {
+					ref = v
+				}
+			}
+			refs = append(refs, ref) // 引用形态：只记引用路径
+			continue
+		}
+		// 无 ref 的非主 agent：兼容旧形态内联落盘
+		fileName := agentFileName(am)
+		if err := os.WriteFile(filepath.Join(dirPath, fileName), []byte(BuildDoc(agentToDoc(am))), 0o644); err != nil {
+			return err
+		}
+	}
 	meta := scenarioMeta{
 		Name:        kernel.SvalOf(sc["name"]),
 		Description: kernel.SvalOf(sc["description"]),
 		CreatedAt:   createdAt,
 		UpdatedAt:   now,
+		Agents:      refs,
 	}
 	if meta.Name == "" {
 		meta.Name = dir
@@ -249,14 +400,13 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any) error {
 	if err := os.WriteFile(filepath.Join(dirPath, scenarioMetaFile), append(raw, '\n'), 0o644); err != nil {
 		return err
 	}
-	agents, _ := sc["agents"].([]any)
+	// 主 agent 内联落盘
 	for _, a := range agents {
 		am, ok := a.(map[string]any)
-		if !ok {
+		if !ok || !isMainAgent(am) {
 			continue
 		}
-		fileName := agentFileName(am)
-		if err := os.WriteFile(filepath.Join(dirPath, fileName), []byte(BuildDoc(agentToDoc(am))), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dirPath, scenarioMainFile), []byte(BuildDoc(agentToDoc(am))), 0o644); err != nil {
 			return err
 		}
 	}
