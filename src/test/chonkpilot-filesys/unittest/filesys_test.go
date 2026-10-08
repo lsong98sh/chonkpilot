@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -474,5 +475,137 @@ func TestWatchChangedAndUnwatch(t *testing.T) {
 			}
 		case <-time.After(30 * time.Millisecond):
 		}
+	}
+}
+
+// TestRemoveRefusesWorkDir：remove 空 path / 等价于 work_dir 的 path 一律拒绝（forbidden）——
+// absPath 对空 path 回落 work_dir，若不拦将 `os.RemoveAll(work_dir)` 删掉整个工作目录。
+func TestRemoveRefusesWorkDir(t *testing.T) {
+	bus, _, wd := newTestFilesys(t)
+	keep := filepath.Join(wd, "keep.txt")
+	if err := os.WriteFile(keep, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 空 path → 拒绝
+	wantErrCode(t, call(bus, "filesys.remove", map[string]any{"work_dir": wd, "path": ""}), "forbidden")
+	// "."（等价 work_dir）→ 拒绝
+	wantErrCode(t, call(bus, "filesys.remove", map[string]any{"work_dir": wd, "path": "."}), "forbidden")
+	// 绝对 work_dir 本身 → 拒绝
+	wantErrCode(t, call(bus, "filesys.remove", map[string]any{"work_dir": wd, "path": wd}), "forbidden")
+
+	if fi, err := os.Stat(wd); err != nil || !fi.IsDir() {
+		t.Fatalf("work_dir 不应被删除: %v", err)
+	}
+	if b, err := os.ReadFile(keep); err != nil || string(b) != "x" {
+		t.Fatalf("work_dir 内文件不应被删除: %v %q", err, b)
+	}
+}
+
+// TestCopyNewNameTraversalRejected：copy 的 new_name 只接受裸文件名——"." / ".." / 含分隔符者一律
+// 拒绝（copy_failed），防 `Join(dest_dir,"..")` 越权写出 work_dir 外。
+func TestCopyNewNameTraversalRejected(t *testing.T) {
+	bus, _, wd := newTestFilesys(t)
+	sub := filepath.Join(wd, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := "escape-marker-9f3a.txt"
+	if err := os.WriteFile(filepath.Join(sub, marker), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Dir(wd) // work_dir 的父目录（越权目标）
+
+	// 裸 ".."：旧实现仅拦分隔符 → `Join(wd,"..")` 落到 work_dir 外的父目录并覆盖式合并写出
+	wantErrCode(t, call(bus, "filesys.copy", map[string]any{
+		"work_dir": wd, "path": "sub", "new_name": "..", "overwrite": 1,
+	}), "copy_failed")
+	// "." 同样拒绝
+	wantErrCode(t, call(bus, "filesys.copy", map[string]any{
+		"work_dir": wd, "path": "sub", "new_name": ".",
+	}), "copy_failed")
+	// 含分隔符的相对多段 → 拒绝（裸文件名约束）
+	wantErrCode(t, call(bus, "filesys.copy", map[string]any{
+		"work_dir": wd, "path": "sub", "new_name": "../evil",
+	}), "copy_failed")
+
+	if _, err := os.Stat(filepath.Join(parent, marker)); err == nil {
+		t.Fatalf("copy new_name=\"..\" 越权写出 work_dir 外文件 %s", filepath.Join(parent, marker))
+	}
+}
+
+// TestRenameRelativeMultiSegment：rename 相对多段 new_name（含分隔符，相对 work_dir 解析）应成功
+// （旧实现 Clean 后仍相对 → withinWorkDir 恒 false，合法相对多段名被一律拒绝）；越界仍拒绝。
+func TestRenameRelativeMultiSegment(t *testing.T) {
+	bus, _, wd := newTestFilesys(t)
+	if err := os.Mkdir(filepath.Join(wd, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(wd, "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, "a", "f.txt"), []byte("v"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := mustOK(t, "filesys.rename", call(bus, "filesys.rename", map[string]any{
+		"work_dir": wd, "path": "a/f.txt", "new_name": "b/f2.txt",
+	}))
+	if r["path"] != filepath.Join(wd, "b", "f2.txt") {
+		t.Fatalf("rename(相对多段) path=%v want %v", r["path"], filepath.Join(wd, "b", "f2.txt"))
+	}
+	if b, err := os.ReadFile(filepath.Join(wd, "b", "f2.txt")); err != nil || string(b) != "v" {
+		t.Fatalf("rename 未生效: %v %q", err, b)
+	}
+	if _, err := os.Stat(filepath.Join(wd, "a", "f.txt")); !os.IsNotExist(err) {
+		t.Fatalf("rename 后旧路径仍在: %v", err)
+	}
+
+	// 相对多段越权（../escaped.txt）→ forbidden，目标不得写出 work_dir 外
+	wantErrCode(t, call(bus, "filesys.rename", map[string]any{
+		"work_dir": wd, "path": "b/f2.txt", "new_name": "../escaped.txt",
+	}), "forbidden")
+	if _, err := os.Stat(filepath.Join(filepath.Dir(wd), "escaped.txt")); err == nil {
+		t.Fatal("rename 越权写出了 work_dir 外文件")
+	}
+}
+
+// makeDirLink 在 link 处创建指向 target 的目录链接：优先符号链接；无权限（Windows 未开开发者模式）
+// 回退目录联接（mklink /J，无需特权）；均失败则 skip（并说明测试条件缺失）。
+func makeDirLink(t *testing.T, link, target string) {
+	t.Helper()
+	symErr := os.Symlink(target, link)
+	if symErr == nil {
+		return
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skipf("环境无法创建符号链接 / 目录联接（os.Symlink: %v；mklink: %v %s）——跳过符号链接越权用例",
+			symErr, err, out)
+	}
+}
+
+// TestSymlinkEscapeForbidden（#3）：work_dir 内的符号链接 / 目录联接指向 work_dir 外时，
+// 经其访问的 read/list/copy 一律 forbidden（解析符号链接后的真实路径在 work_dir 外）。
+func TestSymlinkEscapeForbidden(t *testing.T) {
+	bus, _, wd := newTestFilesys(t)
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(wd, "link")
+	makeDirLink(t, link, outside)
+
+	// 经符号链接读外部文件 → forbidden（不得泄露内容）
+	wantErrCode(t, call(bus, "filesys.content", map[string]any{"work_dir": wd, "path": "link/secret.txt"}), "forbidden")
+	// list 外部目录 → forbidden
+	wantErrCode(t, call(bus, "filesys.list", map[string]any{"work_dir": wd, "path": "link"}), "forbidden")
+	// copy 外部文件到 work_dir → forbidden
+	wantErrCode(t, call(bus, "filesys.copy", map[string]any{
+		"work_dir": wd, "path": "link/secret.txt", "dest_dir": ".",
+	}), "forbidden")
+	// 外部文件原样保留
+	if b, err := os.ReadFile(secret); err != nil || string(b) != "SECRET" {
+		t.Fatalf("外部文件被改动: %v %q", err, b)
 	}
 }

@@ -154,6 +154,30 @@ func TestReservedEnvLoopBinding(t *testing.T) {
 	}
 }
 
+// TestInjectedVarFieldWriteRejected 宿主注入变量经**访问器链字段写**同样只读
+// （与裸名 / 下标写口径一致，避免就地改写宿主注入的共享对象）。
+func TestInjectedVarFieldWriteRejected(t *testing.T) {
+	actions := []Action{{Name: "NOP", Run: func(*Scope, string) (string, error) { return "", nil }}}
+	eng := NewEngine(Options{
+		Vars: map[string]any{
+			"env": map[string]any{"CHONKPILOT_WORKDIR": `C:\work`},
+			"ctx": map[string]any{"y": 0},
+		},
+		Actions: actions,
+	})
+	ast, err := Parse("SET 1 => ctx.y\n", actions)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if err := eng.Execute(ast); err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+	errs := eng.Result().Errors
+	if len(errs) != 1 || !strings.Contains(errs[0].Msg, "ctx 是宿主注入的保留变量，只读") {
+		t.Fatalf("访问器链写注入变量应被拒绝，got %v", errs)
+	}
+}
+
 // TestReservedEnvReadOK {{env.X}} 读取仍合法（唯一受支持用法）。
 func TestReservedEnvReadOK(t *testing.T) {
 	actions := []Action{capAction()}

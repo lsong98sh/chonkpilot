@@ -28,6 +28,7 @@ import (
 
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/chonkpilot/chonkpilot-plugin/dataclient"
 )
 
 // data 面（文件清单，persist 订阅；域 filelist）。
@@ -284,7 +285,7 @@ func scanFiles(workDir string, exts, rules []string, stackGitignore bool, doc do
 
 // fileListAll 读该实例的 file_list 全量（按 key 索引）。
 func (p *Vfts) fileListAll(inst string) (map[string]fileRec, error) {
-	res, err := dataEmit(p.deps.Bus, subjectFileListList, map[string]any{"instance_id": inst})
+	res, err := dataclient.Emit(p.deps.Bus, subjectFileListList, map[string]any{"instance_id": inst})
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +308,7 @@ func (p *Vfts) fileListPut(inst string, rec fileRec) error {
 	if err := json.Unmarshal(b, &data); err != nil {
 		return err
 	}
-	_, err := dataEmit(p.deps.Bus, subjectFileListPut, map[string]any{"instance_id": inst, "data": data})
+	_, err := dataclient.Emit(p.deps.Bus, subjectFileListPut, map[string]any{"instance_id": inst, "data": data})
 	return err
 }
 
@@ -320,7 +321,7 @@ func (p *Vfts) fileListDel(inst string, keys []string) error {
 	for _, k := range keys {
 		arr = append(arr, k)
 	}
-	_, err := dataEmit(p.deps.Bus, subjectFileListDel, map[string]any{
+	_, err := dataclient.Emit(p.deps.Bus, subjectFileListDel, map[string]any{
 		"instance_id": inst, "data": map[string]any{"keys": arr},
 	})
 	return err

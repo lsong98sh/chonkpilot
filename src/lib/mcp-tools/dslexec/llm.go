@@ -31,8 +31,9 @@ type llmHub struct {
 	lw  *lineWriter
 	seq atomic.Int64 // 调用序号（session = <job>-<seq>，并发安全）
 
-	mu    sync.Mutex
-	chans map[string]chan llmResult
+	mu     sync.Mutex
+	chans  map[string]chan llmResult
+	closed bool // stdin 读协程已退出（EOF/错误）→ 后续 invoke 直接失败，不再登记等待者
 }
 
 func newLLMHub(job string, lw *lineWriter) *llmHub {
@@ -40,7 +41,7 @@ func newLLMHub(job string, lw *lineWriter) *llmHub {
 }
 
 // readLoop 持续读 stdin 剩余行，把 llm_result 派发到对应等待者（run 首行已由 runProtocol 消费）。
-// 读到 EOF 或出错即返回。
+// 读到 EOF 或出错 → 唤醒所有在飞 LLM 等待者（投递失败结果）再返回，避免作业挂起至超时。
 func (h *llmHub) readLoop(sc *bufio.Scanner) {
 	for sc.Scan() {
 		var m inMessage
@@ -53,6 +54,28 @@ func (h *llmHub) readLoop(sc *bufio.Scanner) {
 			h.dispatch(m.Call, m.Text, m.Error)
 		default:
 			h.lw.logf("warn", "忽略未知下行消息类型 %q", m.T)
+		}
+	}
+	// EOF / 读错误：stdin 已不可用，不能再收到任何 llm_result → 唤醒全部等待者。
+	msg := "stdin closed"
+	if err := sc.Err(); err != nil {
+		msg += ": " + err.Error()
+	}
+	h.notifyAllClosed(msg)
+}
+
+// notifyAllClosed 标记 stdin 已关闭并向所有在飞等待者投递失败结果后清理
+// （在飞 LLM 动作据此立即返回错误，而非阻塞到作业级超时）。
+func (h *llmHub) notifyAllClosed(errMsg string) {
+	h.mu.Lock()
+	h.closed = true
+	pending := h.chans
+	h.chans = map[string]chan llmResult{}
+	h.mu.Unlock()
+	for _, ch := range pending {
+		select {
+		case ch <- llmResult{err: errMsg}:
+		default:
 		}
 	}
 }
@@ -79,6 +102,11 @@ func (h *llmHub) invoke(ctx context.Context, agent, prompt, purpose string, onSt
 	id := fmt.Sprintf("%s-%d", h.job, n)
 	ch := make(chan llmResult, 1)
 	h.mu.Lock()
+	if h.closed {
+		// stdin 已关闭（读协程已退出）：不会再有 llm_result，直接失败（避免登记后永不唤醒）。
+		h.mu.Unlock()
+		return "", errors.New("stdin closed")
+	}
 	h.chans[id] = ch
 	h.mu.Unlock()
 	defer func() {
@@ -147,4 +175,3 @@ func llmAction(ctx context.Context, hub *llmHub, tree *jobTree) dsl.Action {
 		},
 	}
 }
-

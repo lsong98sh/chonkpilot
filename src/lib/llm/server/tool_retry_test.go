@@ -169,7 +169,7 @@ func makeInterruptedNode(t *testing.T, s *Server, session, turn, toolCallID, too
 func persistInterruptedTurn(t *testing.T, s *Server, turn, userText, toolCallID, tool, argsJSON string) {
 	t.Helper()
 	st := newSessionStore(s.bus, "ins-test")
-	if err := st.AppendFull(turn, ChatMsg{Role: "user", Kind: "text", Content: userText}); err != nil {
+	if _, err := st.AppendFullKeyed(turn, ChatMsg{Role: "user", Kind: "text", Content: userText}, ""); err != nil {
 		t.Fatal(err)
 	}
 	var assistant ChatMsg
@@ -182,7 +182,7 @@ func persistInterruptedTurn(t *testing.T, s *Server, turn, userText, toolCallID,
 	}), &assistant); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AppendFull(turn, assistant); err != nil {
+	if _, err := st.AppendFullKeyed(turn, assistant, ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -417,7 +417,7 @@ func simulateRestartField(t *testing.T, s *Server, session, turn, userText, tool
 	node := makeInterruptedNode(t, s, session, turn, toolCallID, tool, args)
 	// 重启清扫把该轮遗留 running turn 标 interrupted（对齐 data-session-cleanup-stale）
 	st := newSessionStore(s.bus, "ins-test")
-	if err := st.CompleteTurn(turn, "interrupted", "interrupted"); err != nil {
+	if err := st.CompleteTurnTokens(turn, "interrupted", "interrupted", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	dropNode(t, s, node.TaskID)
@@ -560,7 +560,7 @@ func TestToolRetryRestartErrors(t *testing.T) {
 	node2 := makeInterruptedNode(t, s, session, turn, "call-e2", "core_file_read", map[string]any{"path": "done.txt"})
 	s.tasks.done(node2.TaskID, TaskStateDone, "已有结果", "")
 	st := newSessionStore(s.bus, "ins-test")
-	_ = st.CompleteTurn(turn, "interrupted", "interrupted")
+	_ = st.CompleteTurnTokens(turn, "interrupted", "interrupted", nil, nil)
 	dropNode(t, s, node2.TaskID)
 	dropTurn(t, s, session, turn)
 	res = retryReply(t, s, map[string]any{"session": session, "turn": turn})

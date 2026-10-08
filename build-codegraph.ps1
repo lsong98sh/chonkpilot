@@ -1,4 +1,4 @@
-﻿# build-codegraph.ps1：构建并组装 chonkpilot-codegraph-mcp-server 独立部署目录
+# build-codegraph.ps1：构建并组装 chonkpilot-codegraph-mcp-server 独立部署目录
 #
 # 产物布局（dist/plugins/codegraph/，见 [41 D-28]）：
 #   └── chonkpilot-codegraph-mcp-server.exe   # 进程内 tree-sitter 索引 MCP server（console，CGO）
@@ -11,9 +11,14 @@
 # 用法：.\build-codegraph.ps1
 $ErrorActionPreference = "Stop"
 
+# ── 工具链（项目固定）──
+# **强制**使用本仓要求的 Go 工具链与 MinGW 路径（不采信外部 GOROOT：本机 shell 常预置
+# `e:\GoDev\go`（旧版），沿用会导致 go.mod 版本校验失败）。
 $env:GOROOT = "e:\GoDev\go1.26"
-$env:Path = "e:\GoDev\go1.26\bin;e:\GoDev\msys64\ucrt64\bin;" + $env:Path
+$env:CHONK_MSYS64_BIN = "e:\GoDev\msys64\ucrt64\bin"
+$env:Path = (Join-Path $env:GOROOT "bin") + ";" + $env:CHONK_MSYS64_BIN + ";" + $env:Path
 $env:GOPROXY = "https://goproxy.cn,direct"
+$env:GOTOOLCHAIN = "local"
 # codegraph 组件 = 独立 console mcp-server（非主模块），允许 CGO（官方 go-tree-sitter）
 $env:CGO_ENABLED = "1"
 

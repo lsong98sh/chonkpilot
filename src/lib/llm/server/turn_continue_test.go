@@ -215,6 +215,66 @@ func TestTurnContinueResolvesLatestTurn(t *testing.T) {
 	}
 }
 
+// TestAutoContinueAccumulatesAnswer（WP2-3）：自动续写（finish==length → 内部续写）后，终态
+// `llm-complete.text` 取**跨段累积全文**（首段 + 续写段），不再只含最后一段；落库两段均在
+// （未因同 asstKey 覆盖丢失）。
+func TestAutoContinueAccumulatesAnswer(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []ChatMsg `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		n := calls
+		calls++
+		mu.Unlock()
+		if n == 0 {
+			// 首段：内容 + finish_reason=length → 触发自动续写
+			llmSSE(w, []string{
+				sseChunk(map[string]any{"content": "第一段"}, ""),
+				sseChunk(map[string]any{}, "length"),
+			})
+			return
+		}
+		// 续写段：正常结束
+		llmSSE(w, []string{
+			sseChunk(map[string]any{"content": "第二段"}, ""),
+			sseChunk(map[string]any{}, "stop"),
+		})
+	}))
+	defer srv.Close()
+
+	s := newTestServer(t, srv)
+	const session, turn = "s-acc", "t-acc"
+	startTurn(t, s, session, turn)
+	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		"instance_id": "ins-test", "session": session, "turn": turn,
+		"type": "text-user", "content": "q",
+	}))
+	evs := collectTurn(t, s.bus, turn, 10*time.Second)
+	c := lastComplete(evs)
+	if c == nil || c["status"] != "complete" {
+		t.Fatalf("no complete: %+v", evs)
+	}
+	if got, _ := c["text"].(string); got != "第一段第二段" {
+		t.Fatalf("llm-complete.text=%q want 累积全文 %q（跨段续写丢前段？）", got, "第一段第二段")
+	}
+	// 落库：两段 assistant 均在（未因同 asstKey 覆盖丢失）
+	msgs := newSessionStore(s.bus, "ins-test").LoadMessages(turn)
+	var texts []string
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			texts = append(texts, m.Content)
+		}
+	}
+	joined := strings.Join(texts, "|")
+	if !strings.Contains(joined, "第一段") || !strings.Contains(joined, "第二段") {
+		t.Fatalf("落库 assistant 正文 = %v，want 含两段", texts)
+	}
+}
+
 // TestContinueKindNotTurnBoundary：Kind=continue 的 user 消息不构成新轮边界 → 同一轮（全量）。
 func TestContinueKindNotTurnBoundary(t *testing.T) {
 	seq := []ChatMsg{

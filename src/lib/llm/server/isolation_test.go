@@ -140,3 +140,115 @@ func TestTurnRuntimeIsolationAcrossInstances(t *testing.T) {
 		t.Fatalf("ins-b 的轮次应被取消：%+v", res2)
 	}
 }
+
+// ── ask 等待登记的清理与惰性过期回收（E2-1）──
+
+// TestAskCleanupHelpers：ask 等待登记的惰性过期回收 + 按 turn / instance 清理（含隔离边界）。
+func TestAskCleanupHelpers(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	hour, past := time.Now().Add(time.Hour), time.Now().Add(-time.Minute)
+	s.mu.Lock()
+	s.asks[instKey("ins-a", "ask-1")] = &askWaiter{askID: "ask-1", instanceID: "ins-a", turnID: "t-1", expiresAt: hour}
+	s.asks[instKey("ins-a", "ask-2")] = &askWaiter{askID: "ask-2", instanceID: "ins-a", turnID: "t-2", expiresAt: past}
+	s.asks[instKey("ins-b", "ask-3")] = &askWaiter{askID: "ask-3", instanceID: "ins-b", turnID: "t-1", expiresAt: hour}
+	// 惰性过期回收：过期项摘除、未过期保留
+	s.purgeExpiredAsksLocked(time.Now())
+	if _, ok := s.asks[instKey("ins-a", "ask-2")]; ok {
+		t.Fatal("过期 ask 应被回收")
+	}
+	if _, ok := s.asks[instKey("ins-a", "ask-1")]; !ok {
+		t.Fatal("未过期 ask 不应被回收")
+	}
+	// 轮次收尾：只清本实例本 turn（不误伤他实例同名 turn）
+	s.clearAsksByTurnLocked("ins-a", "t-1")
+	if _, ok := s.asks[instKey("ins-a", "ask-1")]; ok {
+		t.Fatal("t-1 的 ask 应被清")
+	}
+	if _, ok := s.asks[instKey("ins-b", "ask-3")]; !ok {
+		t.Fatal("他实例同名 turn 的 ask 不应被清")
+	}
+	// 实例退出：清该实例剩余
+	s.clearAsksByInstanceLocked("ins-b")
+	s.mu.Unlock()
+
+	if len(s.asks) != 0 {
+		t.Fatalf("等待登记应全部清空：%v", s.asks)
+	}
+}
+
+// TestAskExpiryLazyInAsk：ask() 登记时**惰性**回收已过期项（无答复的 ask 不常驻）。
+func TestAskExpiryLazyInAsk(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	s.mu.Lock()
+	s.asks[instKey("ins-a", "ask-old")] = &askWaiter{
+		askID: "ask-old", instanceID: "ins-a", turnID: "t-old", expiresAt: time.Now().Add(-time.Hour),
+	}
+	s.mu.Unlock()
+
+	_ = s.ask("", "tc", map[string]any{}, "")
+	if _, ok := s.asks[instKey("ins-a", "ask-old")]; ok {
+		t.Fatal("ask() 登记时应惰性回收过期项")
+	}
+}
+
+// TestAskClearedOnTurnClose：轮次关闭（loop 收尾）摘除本 turn 的 ask 等待登记。
+func TestAskClearedOnTurnClose(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	tc := s.recoverTurnCtx("ins-a", "s-1", "t-1")
+	askID := s.ask("t-1", "tc-1", map[string]any{"question": "q"}, "")
+	if askID == "" {
+		t.Fatal("ask 应返回 askID")
+	}
+	s.mu.Lock()
+	_, ok := s.asks[instKey("ins-a", askID)]
+	s.mu.Unlock()
+	if !ok {
+		t.Fatal("ask 等待登记应已登记")
+	}
+
+	tc.Close() // 关闭轮次 → loop defer 收尾
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		n := len(s.asks)
+		s.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("轮次关闭后 ask 未被清理：%d", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestAskClearedOnInstanceExit：实例退出摘除该实例的**全部** ask 等待登记。
+func TestAskClearedOnInstanceExit(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	tc := s.recoverTurnCtx("ins-x", "s-x", "t-x")
+	t.Cleanup(tc.Close)
+	if askID := s.ask("t-x", "tc-x", map[string]any{"question": "q"}, ""); askID == "" {
+		t.Fatal("ask 应返回 askID")
+	}
+
+	s.exitInstance("ins-x")
+
+	s.mu.Lock()
+	n := len(s.asks)
+	s.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("实例退出应清空该实例的 ask：%d", n)
+	}
+}

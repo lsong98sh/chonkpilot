@@ -123,27 +123,6 @@ func TestToolReply(t *testing.T) {
 	})
 }
 
-func TestStrval(t *testing.T) {
-	tests := []struct {
-		in   any
-		want string
-	}{
-		{"hello", "hello"},
-		{"", ""},
-		{true, "true"},
-		{false, "false"},
-		{nil, ""},
-		{42, "42"},
-		{3.14, "3.14"},
-	}
-	for _, tt := range tests {
-		got := strval(tt.in)
-		if got != tt.want {
-			t.Errorf("strval(%v) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestResolveExe(t *testing.T) {
 	// Save and restore env
 	oldEnv := os.Getenv("CODEGRAPH_EXE")
@@ -733,7 +712,7 @@ func toolNamesOf(t *testing.T, calls []string, wd string) []string {
 // newStubPersistBus 冒充 persist 数据面：应答 data-prj-config-load（恒回空串 = 引擎默认集）
 // 与 data-prj-config-save（按 "instance_id|key" 记录到 saved）。应答形态对齐
 // chonkpilot-data/persist：把 {req_id, ok, result} 作为**消息**回发到请求同一主题
-// （插件 dataEmit 按 req_id 关联收敛；带 ok 的载荷即应答，订阅侧跳过以防回环）。
+// （插件 dataclient.Emit 按 req_id 关联收敛；带 ok 的载荷即应答，订阅侧跳过以防回环）。
 func newStubPersistBus(t *testing.T, mu *sync.Mutex, saved map[string]string) mq.Bus {
 	t.Helper()
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
@@ -954,6 +933,22 @@ func TestMultiWorkdirIndexAndQueryIsolation(t *testing.T) {
 }
 
 // ─── 索引配置（codegraph.skip-dirs / codegraph.stack-gitignore）────────────
+
+// splitRules 是**测试专用**助手：生产侧 skip-dirs 解析已统一由
+// github.com/chonkpilot/chonkpilot-ignore 的 ignore.ConfigOptions 完成（本插件不再自解析），
+// 此处保留一份同名实现以锁定"保序且保留重复项"的解析语义。
+func splitRules(s string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	}) {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
 
 // TestSplitRules：skip-dirs 解析——按逗号/分号/换行分隔、去空白；
 // **保序且保留重复项**（gitignore 语义下顺序有意义：'!' 取反 + 后一条覆盖前一条）。

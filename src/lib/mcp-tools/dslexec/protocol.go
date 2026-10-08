@@ -5,8 +5,8 @@
 //
 // 下行（gateway → 本进程 stdin）：
 //
-//	{"t":"run","job":"<jobid>","script":"<DSL>","instance":"<instanceID>",
-//	 "work_dir":"...","data_dir":"...","return_file":"<绝对路径>"}
+//	{"t":"run","job":"<jobid>","script":"<DSL>","file":"<脚本文件绝对路径，script 为空时>",
+//	 "instance":"<instanceID>","work_dir":"...","data_dir":"...","return_file":"<绝对路径>"}
 //	{"t":"llm_result","call":"<callid>","text":"<结果文本>","error":"<错误或空>"}
 //
 // 上行（本进程 stdout → gateway）：
@@ -35,6 +35,7 @@ type inMessage struct {
 	T          string `json:"t"`
 	Job        string `json:"job"`
 	Script     string `json:"script"`
+	File       string `json:"file"` // 脚本文件绝对路径（script 为空时；执行器受沙箱读盘）
 	Instance   string `json:"instance"`
 	WorkDir    string `json:"work_dir"`
 	DataDir    string `json:"data_dir"`

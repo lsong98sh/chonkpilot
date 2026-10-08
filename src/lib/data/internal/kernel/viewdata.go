@@ -192,17 +192,19 @@ func SortSessionsByActivity(sessions []map[string]any) {
 }
 
 // LatestTopSession 返回最近活动的顶层会话记录（无则 nil）。
+// 下推顶层维度：Where{parent_id:""} 命中 sessions_by_top 索引前缀 "\x00"（顶层会话恒写 parent_id=""）；
+// OrderDesc → 内存降序取首个即最近创建（与改前全量降序后取首个顶层行等价）。
 func LatestTopSession(prj *data.DB) (data.Record, error) {
-	recs, _, err := prj.Table("sessions").Query(data.Query{OrderBy: "created_at", OrderDesc: true})
+	recs, _, err := prj.Table("sessions").Query(data.Query{
+		Where: data.Record{"parent_id": ""}, OrderBy: "created_at", OrderDesc: true,
+	})
 	if err != nil {
 		return nil, err
 	}
-	for _, r := range recs {
-		if Sval(r["parent_id"]) == "" {
-			return r, nil
-		}
+	if len(recs) == 0 {
+		return nil, nil
 	}
-	return nil, nil
+	return recs[0], nil
 }
 
 // ── 历史分页 helper（data-session-history）──

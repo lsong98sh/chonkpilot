@@ -654,6 +654,50 @@ func strconvQuote(s string) string {
 	return string(b)
 }
 
+// TestPublishDataBindsInstanceID：data-* 上行**强制绑定**本实例的 instance_id——
+// 浏览器端自报的他实例 id 被覆盖（不能借 payload 越权读写其它实例的数据面）。
+func TestPublishDataBindsInstanceID(t *testing.T) {
+	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "index.html"), []byte("<html><head></head></html>"), 0o644)
+	s, bus, base := newTestServer(t, root)
+
+	// 捕获到达总线的 data-* 请求（同时按协议应答，避免 persist 路径等待超时）。
+	got := make(chan map[string]any, 1)
+	_, err := bus.On("data-session-list", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var req struct {
+			ReqID      string `json:"req_id"`
+			OK         *bool  `json:"ok"`
+			InstanceID string `json:"instance_id"`
+		}
+		if json.Unmarshal(v.Payload, &req) != nil || req.ReqID == "" || req.OK != nil {
+			return nil // 只处理请求，不处理应答（防回环）
+		}
+		select {
+		case got <- map[string]any{"instance_id": req.InstanceID}:
+		default:
+		}
+		reply, _ := json.Marshal(map[string]any{"req_id": req.ReqID, "ok": true, "result": map[string]any{}})
+		_ = bus.Emit(context.Background(), "data-session-list", reply)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := publish(t, base, "data-session-list", `{"instance_id":"evil-instance"}`)
+	if env["ok"] != true {
+		t.Fatalf("data-session-list ok=false: %v", env)
+	}
+	select {
+	case m := <-got:
+		if m["instance_id"] != s.InstanceID() {
+			t.Fatalf("data-* 的 instance_id 应被绑定为本实例：got=%v want=%v", m["instance_id"], s.InstanceID())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未捕获到达总线的 data-session-list 请求")
+	}
+}
+
 // 上行白名单：白名单外点分主题拒绝；纯前端单字事件静默放行（不注入总线）。
 func TestPublishWhitelist(t *testing.T) {
 	_, bus, base := newTestServer(t, t.TempDir())

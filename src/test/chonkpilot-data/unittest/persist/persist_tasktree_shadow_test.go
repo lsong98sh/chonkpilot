@@ -45,14 +45,15 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 		t.Fatal("影子写不得落到 tasktree")
 	}
 
-	// 索引桶（按 top_session / parent_id / instance_id）
-	for _, tc := range []struct{ bucket, key string }{
-		{"task_shadow_by_top", "top1\x00n3"},
-		{"task_shadow_by_parent", "n1\x00n3"},
-		{"task_shadow_by_instance", "ins-test\x00n3"},
+	// 索引桶（由 Table 写入口维护；by_top / by_session 键含 created_at 段，by_parent 无排序段）
+	for _, tc := range []struct{ bucket, prefix string }{
+		{"task_shadow_by_top", "top1\x00"},
+		{"task_shadow_by_session", "s1\x00"},
+		{"task_shadow_by_parent", "n1\x00"},
 	} {
-		if ok, _ := prj.Table(tc.bucket).Get(tc.key, &data.Record{}); !ok {
-			t.Fatalf("影子索引缺失: %s / %s", tc.bucket, tc.key)
+		keys, err := prj.Table(tc.bucket).ListPrefix(tc.prefix)
+		if err != nil || len(keys) != 1 {
+			t.Fatalf("影子索引缺失: %s prefix=%q keys=%v err=%v", tc.bucket, tc.prefix, keys, err)
 		}
 	}
 
@@ -113,8 +114,8 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 	if ok, _ := prj.Table("task_shadow").Get("n3", &data.Record{}); ok {
 		t.Fatal("影子行未删除")
 	}
-	if ok, _ := prj.Table("task_shadow_by_top").Get("top1\x00n3", &data.Record{}); ok {
-		t.Fatal("影子索引未清理")
+	if keys, _ := prj.Table("task_shadow_by_top").ListPrefix("top1\x00"); len(keys) != 0 {
+		t.Fatalf("影子索引未清理（物理删除应同事务清索引）: %v", keys)
 	}
 	select {
 	case m := <-deletedCh:

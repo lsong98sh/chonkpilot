@@ -1,3 +1,5 @@
+//go:build windows
+
 // Package winsvc 提供跨应用复用的 Windows 服务封装：
 // 注册/删除/运行（sc + svc.Run），服务启停桥接到应用的 Start/Stop 回调。
 package winsvc

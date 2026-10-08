@@ -222,7 +222,7 @@ func (f *Filesys) onCreate(_ context.Context, _ string, v *mq.Value) error {
 		return nil
 	}
 	np := filepath.Join(dir, req.Name)
-	if !withinWorkDir(wd, np) {
+	if !withinWorkDirReal(wd, np) {
 		v.Errors = append(v.Errors, errForbidden("target outside work dir"))
 		return nil
 	}
@@ -264,7 +264,7 @@ func (f *Filesys) onMkdir(_ context.Context, _ string, v *mq.Value) error {
 		return nil
 	}
 	np := filepath.Join(dir, req.Name)
-	if !withinWorkDir(wd, np) {
+	if !withinWorkDirReal(wd, np) {
 		v.Errors = append(v.Errors, errForbidden("target outside work dir"))
 		return nil
 	}
@@ -298,6 +298,11 @@ func (f *Filesys) onRemove(_ context.Context, _ string, v *mq.Value) error {
 	p, ok := absPath(wd, req.Path)
 	if !ok {
 		v.Errors = append(v.Errors, errForbidden("path outside work dir"))
+		return nil
+	}
+	// 空 path（absPath 回落为 work_dir）或等价于 work_dir 的 path 一律拒绝：绝不允许删整个工作目录。
+	if req.Path == "" || samePath(p, wd) {
+		v.Errors = append(v.Errors, errForbidden("refuse to remove work dir"))
 		return nil
 	}
 	if err := os.RemoveAll(p); err != nil {
@@ -335,14 +340,19 @@ func (f *Filesys) onRename(_ context.Context, _ string, v *mq.Value) error {
 		return nil
 	}
 	var np string
-	if filepath.IsAbs(req.NewName) || strings.ContainsAny(req.NewName, `/\`) {
+	switch {
+	case filepath.IsAbs(req.NewName):
 		np = filepath.Clean(req.NewName)
-		if !withinWorkDir(wd, np) {
-			v.Errors = append(v.Errors, errForbidden("target outside work dir"))
-			return nil
-		}
-	} else {
+	case strings.ContainsAny(req.NewName, `/\`):
+		// 相对**多段** new_name：以 work_dir 为基准解析。旧实现对含分隔符者只做 Clean，
+		// 结果仍是相对路径 → withinWorkDir(wd, np) 恒 false，导致合法相对多段名被一律拒绝。
+		np = filepath.Join(wd, req.NewName)
+	default:
 		np = filepath.Join(filepath.Dir(p), req.NewName)
+	}
+	if !withinWorkDirReal(wd, np) {
+		v.Errors = append(v.Errors, errForbidden("target outside work dir"))
+		return nil
 	}
 	if np == p {
 		v.Result = map[string]any{"ok": true, "path": np}
@@ -391,17 +401,22 @@ func (f *Filesys) onCopy(_ context.Context, _ string, v *mq.Value) error {
 	} else if !filepath.IsAbs(dd) {
 		dd = filepath.Join(wd, dd)
 	}
-	if !withinWorkDir(wd, dd) {
+	if !withinWorkDirReal(wd, dd) {
 		v.Errors = append(v.Errors, errForbidden("dest outside work dir"))
 		return nil
 	}
 	np := filepath.Join(dd, filepath.Base(p))
 	if req.NewName != "" {
-		if strings.ContainsAny(req.NewName, `/\`) {
+		// new_name 必须是**裸文件名**：拒绝 "."/".." 与含分隔符者（防 `Join(dd,"..")` 越权写出）。
+		if req.NewName == "." || req.NewName == ".." || strings.ContainsAny(req.NewName, `/\`) {
 			v.Errors = append(v.Errors, errCopy("new_name must be a bare file name"))
 			return nil
 		}
 		np = filepath.Join(dd, req.NewName)
+	}
+	if !withinWorkDirReal(wd, np) {
+		v.Errors = append(v.Errors, errForbidden("target outside work dir"))
+		return nil
 	}
 	if np == p {
 		v.Result = map[string]any{"ok": true, "path": np}
@@ -467,7 +482,9 @@ func (f *Filesys) onUnwatch(_ context.Context, _ string, v *mq.Value) error {
 
 // ─── 工具函数 ────────────────────────────────────────────
 
-// absPath 把 path 转换为绝对路径（相对 workDir 则 join），并校验在 workDir 内。
+// absPath 把 path 转换为绝对路径（相对 workDir 则 join），并校验在 workDir 内
+// （词法前缀 + 解析符号链接 / Windows 目录联接后的真实前缀，见 withinWorkDirReal）。
+// 返回的仍是词法绝对路径（不替换为真实路径，保持对外 path 形状不变）。
 func absPath(wd, p string) (string, bool) {
 	if p == "" {
 		return wd, true
@@ -475,19 +492,82 @@ func absPath(wd, p string) (string, bool) {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(wd, p)
 	}
-	if !withinWorkDir(wd, p) {
+	if !withinWorkDirReal(wd, p) {
 		return "", false
 	}
 	return p, true
 }
 
-// withinWorkDir 校验 path 在 base 内（安全边界）。
+// withinWorkDir 校验 path 在 base 内（**词法**边界；base/path 均为绝对路径）。
 func withinWorkDir(base, path string) bool {
 	rel, err := filepath.Rel(base, path)
 	if err != nil {
 		return false
 	}
 	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
+}
+
+// withinWorkDirReal 在词法校验（withinWorkDir）之外，**解析符号链接 / Windows 目录联接**后再校验一次：
+// 取 base 与 path 各自的真实路径（见 resolveRealPath），对真实路径再做前缀校验。
+// 拦住「work_dir 内的符号链接 / 目录联接指向 work_dir 外」的越权——纯词法校验看不出来。
+func withinWorkDirReal(base, path string) bool {
+	if !withinWorkDir(base, path) {
+		return false
+	}
+	return withinWorkDir(resolveRealPath(base), resolveRealPath(path))
+}
+
+// resolveRealPath 返回 p 解析符号链接 / Windows 目录联接后的真实路径。
+// 采用逐段 os.Readlink 解析：**filepath.EvalSymlinks 不解析 Windows 目录联接（mount point）**，
+// 而 os.Readlink 对符号链接与目录联接均返回目标，故自行逐段解析；无法解析的段原样拼回。
+// 链接自环 / 过深（>64 次替换）→ 返回空串（fail-closed：withinWorkDir 判为不在 base 内）。
+func resolveRealPath(p string) string {
+	if p == "" || !filepath.IsAbs(p) {
+		return p
+	}
+	cur := p
+	for i := 0; i < 64; i++ {
+		next, changed := resolveLinksOnce(cur)
+		if !changed {
+			return next
+		}
+		cur = next
+	}
+	return ""
+}
+
+// resolveLinksOnce 对 p 逐段前进，遇到可 Readlink 的组件（符号链接 / 目录联接）即用其目标替换
+// （相对目标按链接所在目录解析），返回解析后路径与是否发生过替换。
+func resolveLinksOnce(p string) (string, bool) {
+	vol := filepath.VolumeName(p)
+	cur := vol + string(filepath.Separator)
+	parts := strings.Split(strings.TrimPrefix(p, vol), string(filepath.Separator))
+	changed := false
+	for _, seg := range parts {
+		if seg == "" {
+			continue
+		}
+		next := filepath.Join(cur, seg)
+		if tgt, err := os.Readlink(next); err == nil {
+			if !filepath.IsAbs(tgt) {
+				tgt = filepath.Join(cur, tgt)
+			}
+			cur = filepath.Clean(tgt)
+			changed = true
+			continue
+		}
+		cur = next
+	}
+	return cur, changed
+}
+
+// samePath 判定两个路径是否指向同一目录 / 文件：词法 Clean 后（大小写不敏感，兼容 Windows）相同，
+// 或解析符号链接 / 目录联接后的真实路径相同。
+func samePath(a, b string) bool {
+	if strings.EqualFold(filepath.Clean(a), filepath.Clean(b)) {
+		return true
+	}
+	return strings.EqualFold(resolveRealPath(a), resolveRealPath(b))
 }
 
 // readTextFile 读文本文件（超限截断）。

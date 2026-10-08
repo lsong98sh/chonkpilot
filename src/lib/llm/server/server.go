@@ -279,7 +279,13 @@ type askWaiter struct {
 	turnID     string
 	toolID     string
 	taskID     string // ask_user 任务节点 id（reply 到达 → tasks.done）
+	// expiresAt 是等待登记过期时刻（与 payload expires_at 同源，E2-1）：到期未应答 → 惰性回收
+	// （见 purgeExpiredAsksLocked），避免无答复的 ask 常驻内存。
+	expiresAt time.Time
 }
+
+// askTTL 是 ask-user 等待登记的存活时长（与 payload `expires_at` 同源）：30 分钟未应答即过期。
+const askTTL = 30 * time.Minute
 
 // New 构建会话服务（v2：双参，不再接收数据层 cfg——会话持久化经总线 persist，
 // prompt user_config 经 opts.UsrPath 直开 usr 库；对齐 61-消息一览 §3/§4）。
@@ -743,6 +749,9 @@ func (s *Server) exitInstance(instanceID string) {
 		delete(s.busy, instKey(instanceID, tc.req.Session))
 		delete(s.continuePending, key)
 	}
+	// 实例退出 → 摘除该实例的**全部** ask 等待登记（E2-1：其轮次可能已被移出 s.turns，
+	// 按 instance 归属整体清，不依赖 turn 存活）。
+	s.clearAsksByInstanceLocked(instanceID)
 	s.mu.Unlock()
 	s.unregisterCapabilityNodes(instanceID)
 }
@@ -1240,7 +1249,10 @@ func (s *Server) onAskUserReply(_ context.Context, _ string, v *mq.Value) error 
 // （对齐 msg-ref §4.3：ask_id/question/options/custom/session/turn/expires_at + multi/recommended）。
 func (s *Server) ask(turnID, toolID string, args map[string]any, taskID string) string {
 	askID := "ask-" + newID()
+	expiresAt := time.Now().Add(askTTL)
 	s.mu.Lock()
+	// 惰性回收过期等待登记（E2-1）：无答复的 ask 到期即摘除，避免常驻内存。
+	s.purgeExpiredAsksLocked(time.Now())
 	// 实例归属从 turn 取（业务 payload 一律必带 instance_id，见 61-消息一览 §0.1）；
 	// 登记键 = instKey(instance, ask)（缺口 5：按 instance 分桶，不与其他 instance 串味）。
 	instanceID := ""
@@ -1249,13 +1261,14 @@ func (s *Server) ask(turnID, toolID string, args map[string]any, taskID string) 
 	}
 	s.asks[instKey(instanceID, askID)] = &askWaiter{
 		askID: askID, instanceID: instanceID, turnID: turnID, toolID: toolID, taskID: taskID,
+		expiresAt: expiresAt,
 	}
 	s.mu.Unlock()
 	payload := map[string]any{
 		"instance_id": instanceID,
 		"ask_id":      askID, "question": askQuestion(args),
 		"session": s.turnSession(turnID), "turn": turnID,
-		"expires_at": time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339),
+		"expires_at": expiresAt.UTC().Format(time.RFC3339),
 	}
 	if opts, ok := args["options"]; ok {
 		payload["options"] = opts
@@ -1656,13 +1669,29 @@ func nodeFromDBRec(m map[string]any, instanceID string) *TaskNode {
 	return n
 }
 
-// recoverTurnCtx 重建运行中轮次（进程重启/死 turn 恢复专用）：hist 留空——
-// msgs() 从库加载当前轮（= 被重试的 turn）全部消息，后续 FeedToolResult 的 tool 结果与该轮
-// assistant.tool_calls 成对进入下一条 LLM 消息；终态 llm-complete 沿用原 {session, turn}。
-// 该轮标记 forceFull=true：即使被重试 turn 落在"非维持轮"范围也必须全量拼接。
+// recoverTurnCtx 重建运行中轮次（进程重启/死 turn 恢复专用）：hist 仅含**系统提示词层**
+// （与新建轮同一构造，见 resolveTurnScenario）——msgs() 再从库加载当前轮（= 被重试的 turn）
+// 全部消息，后续 FeedToolResult 的 tool 结果与该轮 assistant.tool_calls 成对进入下一条 LLM
+// 消息；终态 llm-complete 沿用原 {session, turn}。该轮标记 forceFull=true：即使被重试 turn
+// 落在"非维持轮"范围也必须全量拼接。
 func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 	// ctx 绑定 instance_id（同 newTurnCtx）：恢复后的 gateway 方法调用同样携带实例归属。
 	ctx, cancel := context.WithCancel(withInstance(context.Background(), instanceID))
+	// WorkDir/DataDir 随 instance-id 绑定（同 onLLMStart）：恢复轮的 gateway 上下文与
+	// **记忆 / 资产指引**（msgs() 的 memoryGuide/assetGuide 依赖 tc.req.WorkDir）依赖它
+	// ——此前为空 → 指引缺失。
+	req := StartReq{InstanceID: instanceID, Session: session, Turn: turn}
+	if rec, ok := s.im.Lookup(instanceID); ok {
+		req.WorkDir = rec.WorkDir
+		req.DataDir = rec.DataDir
+	}
+	// 系统提示词三层（**与新建轮同一构造**，见 resolveTurnScenario）：恢复轮无 scenario/agent
+	// （未持久化）→ desc/agents 为空 → 仅注入全局层 + 目录层（同「通用模式」）。
+	sc := s.resolveTurnScenario(instanceID, "", "")
+	var hist []ChatMsg
+	if sc.sysPrompt != "" {
+		hist = []ChatMsg{{Role: "system", Content: sc.sysPrompt}}
+	}
 	// LLM 配置：恢复轮无 provider name（llm-start.llm 未落库）→ temperature/maxOutputToken 无来源
 	// （不发送）；base/apiKey/model 走 turnCtx 默认（回落 exe flags / 客户端默认模型）。
 	// 工具循环上限回落缺省 20，否则 0 会让首轮 chatOnce 立即命中 TOOL_LOOP_LIMIT。
@@ -1671,11 +1700,12 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 	respTO, streamTO, retryCnt := s.loadLLMRuntimeConfig(instanceID)
 	tc := &turnCtx{
 		server:    s,
-		req:       StartReq{InstanceID: instanceID, Session: session, Turn: turn},
+		req:       req,
 		ctx:       ctx,
 		cancel:    cancel,
 		in:        make(chan ChatMsg, 64),
 		done:      make(chan struct{}),
+		hist:      hist,
 		pending:   make(map[string]pendingTool),
 		asyncDone: make(chan asyncDoneMsg, 8),
 
@@ -1885,6 +1915,14 @@ func (s *Server) toolsForLLM(instance string) []ToolDef {
 // → 发 llm-complete → 发 llm-compress。
 // retryable 为**可选**字段（S21）：非 nil → 随 llm-complete 携带真实可重试分类；nil → 不带该字段。
 func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text string, retryable *bool) {
+	// 原子终态（E2-2）：正常完成路径与 onLLMCancel（取消）可能并发到达同一轮次——finishOnce
+	// 保证终态（落库 CompleteTurnTokens + 快照 + llm-complete/llm-compress 广播）**仅发生一次**；
+	// 其后到达者（如取消命中已终态轮次）静默跳过，不二次写库、不二次广播（覆盖已 complete 的 turn 行）。
+	emitted := false
+	tc.finishOnce.Do(func() { emitted = true })
+	if !emitted {
+		return
+	}
 	// 终态结果记录（递归子轮次父侧在 <-tc.done 后读取；先于 Close 写入可见）
 	tc.result = text
 	if status == "error" {

@@ -133,39 +133,6 @@ type Expr struct {
 // Cond 条件节点。
 type Cond interface{ line() int }
 
-type condCmp struct {
-	Ln    int
-	Left  *Expr
-	Op    string
-	Right *Expr
-}
-
-type condExist struct {
-	Ln      int
-	Operand *Expr
-}
-
-type condNot struct {
-	Ln  int
-	Sub Cond
-}
-
-type condAnd struct {
-	Ln    int
-	Items []Cond
-}
-
-type condOr struct {
-	Ln    int
-	Items []Cond
-}
-
-func (c *condCmp) line() int   { return c.Ln }
-func (c *condExist) line() int { return c.Ln }
-func (c *condNot) line() int   { return c.Ln }
-func (c *condAnd) line() int   { return c.Ln }
-func (c *condOr) line() int    { return c.Ln }
-
 // ─── 语句/条件解析 ───
 
 type parser struct {

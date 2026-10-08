@@ -2,6 +2,7 @@
 package data
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"time"
@@ -33,8 +34,11 @@ type Table struct {
 // Name 返回表名。
 func (t *Table) Name() string { return t.name }
 
-// Insert 插入（已存在 → ErrExists）。
+// Insert 插入（已存在 → ErrExists）；同事务维护索引。
 func (t *Table) Insert(key string, rec Record) error {
+	if rec == nil {
+		rec = Record{}
+	}
 	return t.db.b.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(t.name))
 		if err != nil {
@@ -43,12 +47,18 @@ func (t *Table) Insert(key string, rec Record) error {
 		if b.Get([]byte(key)) != nil {
 			return ErrExists
 		}
+		if err := indexPut(tx, t.name, key, rec); err != nil {
+			return err
+		}
 		return putRecord(b, key, rec)
 	})
 }
 
-// Update 覆盖更新（不存在 → ErrNotFound）。
+// Update 覆盖更新（不存在 → ErrNotFound）；同事务迁移索引（删旧键、插新键）。
 func (t *Table) Update(key string, rec Record) error {
+	if rec == nil {
+		rec = Record{}
+	}
 	return t.db.b.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(t.name))
 		if err != nil {
@@ -57,11 +67,19 @@ func (t *Table) Update(key string, rec Record) error {
 		if b.Get([]byte(key)) == nil {
 			return ErrNotFound
 		}
+		if old, ok := decodeRecord(b.Get([]byte(key)), key); ok {
+			if err := indexDelete(tx, t.name, key, old); err != nil {
+				return err
+			}
+		}
+		if err := indexPut(tx, t.name, key, rec); err != nil {
+			return err
+		}
 		return putRecord(b, key, rec)
 	})
 }
 
-// Upsert 写入（不存在插入；已存在覆盖；写 updated_at）。
+// Upsert 写入（不存在插入；已存在覆盖；写 updated_at）；同事务迁移索引（created_at 变更亦正确）。
 func (t *Table) Upsert(key string, rec Record) error {
 	if rec == nil {
 		rec = Record{}
@@ -70,6 +88,15 @@ func (t *Table) Upsert(key string, rec Record) error {
 	return t.db.b.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(t.name))
 		if err != nil {
+			return err
+		}
+		// 先删旧索引键（键可能因列值变更而迁移），再写主行与新索引键。
+		if old, ok := decodeRecord(b.Get([]byte(key)), key); ok {
+			if err := indexDelete(tx, t.name, key, old); err != nil {
+				return err
+			}
+		}
+		if err := indexPut(tx, t.name, key, rec); err != nil {
 			return err
 		}
 		return putRecord(b, key, rec)
@@ -103,12 +130,21 @@ func (t *Table) Get(key string, out *Record) (bool, error) {
 	return found, err
 }
 
-// Delete 删除（不存在 → ErrNotFound）。
+// Delete 删除（不存在 → ErrNotFound）；同事务清理索引键。
 func (t *Table) Delete(key string) error {
 	return t.db.b.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(t.name))
-		if b == nil || b.Get([]byte(key)) == nil {
+		raw := []byte(nil)
+		if b != nil {
+			raw = b.Get([]byte(key))
+		}
+		if raw == nil {
 			return ErrNotFound
+		}
+		if old, ok := decodeRecord(raw, key); ok {
+			if err := indexDelete(tx, t.name, key, old); err != nil {
+				return err
+			}
 		}
 		return b.Delete([]byte(key))
 	})
@@ -126,6 +162,26 @@ func (t *Table) ListKeys() ([]string, error) {
 			keys = append(keys, string(k))
 			return nil
 		})
+	})
+	return keys, err
+}
+
+// ListPrefix 按主键前缀顺序返回主键列表（Seek 起扫，遇非前缀即止）。
+// 供「主键本身即复合键」的表（memory_extract / config）做前缀读；仅返回键，值由调用方按需 Get。
+// prefix 为空 → 等价 ListKeys（全部主键）。
+func (t *Table) ListPrefix(prefix string) ([]string, error) {
+	var keys []string
+	p := []byte(prefix)
+	err := t.db.b.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(t.name))
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, _ := c.Seek(p); k != nil && bytes.HasPrefix(k, p); k, _ = c.Next() {
+			keys = append(keys, string(k))
+		}
+		return nil
 	})
 	return keys, err
 }

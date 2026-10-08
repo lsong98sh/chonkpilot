@@ -2,6 +2,7 @@ package data_test
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -41,6 +42,51 @@ func TestOpenSharedReuse(t *testing.T) {
 	r3()
 	if db3 == db1 {
 		t.Fatal("after release-to-zero, re-open should be a fresh connection")
+	}
+}
+
+// TestOpenSharedConcurrentSingleFlight：同路径并发 OpenSharedLayer 只打开一次、复用同一连接
+// （per-path 单飞；bbolt 打开在 storeMu 之外），引用归零后缓存移除、再开为全新连接。
+// 用 `-race` 运行验证无数据竞争。
+func TestOpenSharedConcurrentSingleFlight(t *testing.T) {
+	dir := t.TempDir()
+	setupShared(t)
+	p := filepath.Join(dir, "chonkpilot.db")
+
+	const n = 16
+	dbs := make([]*data.DB, n)
+	rels := make([]func(), n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			db, rel, err := data.OpenShared(p)
+			if err != nil {
+				t.Errorf("OpenShared#%d: %v", i, err)
+				return
+			}
+			dbs[i], rels[i] = db, rel
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 1; i < n; i++ {
+		if dbs[i] != dbs[0] {
+			t.Fatalf("并发打开同一路径应复用同一连接：dbs[%d] != dbs[0]", i)
+		}
+	}
+	for _, rel := range rels {
+		rel()
+	}
+	// 引用归零 → 缓存移除；再开是新的连接。
+	db2, rel2, err := data.OpenShared(p)
+	if err != nil {
+		t.Fatalf("OpenShared#reopen: %v", err)
+	}
+	rel2()
+	if db2 == dbs[0] {
+		t.Fatal("引用归零后再开应为全新连接")
 	}
 }
 

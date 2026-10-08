@@ -473,15 +473,14 @@ func (s *Service) MemoryExtractLoad(req facade.MemoryExtractLoadRequest) (facade
 		}
 		return facade.MemoryExtractLoadResponse{List: out}, nil
 	}
-	keys, err := db.Table(memoryExtractBucket).ListKeys()
+	// 主键 = <session_id>\x00<category>：按前缀 Seek（等价旧「全桶 + HasPrefix」过滤，但只扫本会话）。
+	// 输出顺序由末尾按类别名排序决定，与前缀 Seek 的主键字典序无关（保持等价）。
+	prefix := req.SessionID + "\x00"
+	keys, err := db.Table(memoryExtractBucket).ListPrefix(prefix)
 	if err != nil {
 		return facade.MemoryExtractLoadResponse{}, err
 	}
-	prefix := req.SessionID + "\x00"
 	for _, k := range keys {
-		if !strings.HasPrefix(k, prefix) {
-			continue
-		}
 		if rec, ok := memoryExtractGet(db, req.SessionID, strings.TrimPrefix(k, prefix)); ok {
 			out = append(out, rec)
 		}
@@ -525,15 +524,12 @@ func (s *Service) MemoryExtractDelete(req facade.MemoryExtractDeleteRequest) (fa
 		}
 		return facade.MemoryExtractDeleteResponse{OK: true}, nil
 	}
-	keys, err := t.ListKeys()
+	// 整会话删除：按 <session_id>\x00 前缀 Seek（等价旧「全桶 + HasPrefix」过滤）。
+	keys, err := t.ListPrefix(req.SessionID + "\x00")
 	if err != nil {
 		return facade.MemoryExtractDeleteResponse{}, err
 	}
-	prefix := req.SessionID + "\x00"
 	for _, k := range keys {
-		if !strings.HasPrefix(k, prefix) {
-			continue
-		}
 		if err := t.Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
 			return facade.MemoryExtractDeleteResponse{}, err
 		}

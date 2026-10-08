@@ -82,17 +82,18 @@ func (s *Service) SessionList(req facade.SessionListRequest) (facade.SessionList
 	if err != nil {
 		return facade.SessionListResponse{}, err
 	}
-	recs, _, err := prj.Table("sessions").Query(data.Query{OrderBy: "created_at", OrderDesc: true})
+	// 下推顶层维度：Where{parent_id:""} 命中 sessions_by_top 索引前缀 "\x00"（顶层会话恒写
+	// parent_id=""，见 SessionEnsure）。索引只负责过滤与初序；其后 sortSessionsByActivity 仍按
+	// 最近活动重排（行为不变）。
+	recs, _, err := prj.Table("sessions").Query(data.Query{
+		Where: data.Record{"parent_id": ""}, OrderBy: "created_at", OrderDesc: true,
+	})
 	if err != nil {
 		return facade.SessionListResponse{}, fmt.Errorf("list sessions: %v", err)
 	}
 	list := make([]facade.Session, 0, len(recs))
 	for _, r := range recs {
-		row := kernel.RecordView(r, "session_id")
-		if kernel.Sval(row["parent_id"]) != "" {
-			continue // 仅顶层会话
-		}
-		list = append(list, wire.SessionFromWire(row))
+		list = append(list, wire.SessionFromWire(kernel.RecordView(r, "session_id")))
 	}
 	sortSessionsByActivity(list)
 	return facade.SessionListResponse{List: list}, nil
@@ -247,11 +248,11 @@ func (s *Service) SessionEnsure(req facade.SessionEnsureRequest) (facade.Session
 		return facade.SessionEnsureResponse{OK: true}, nil
 	}
 	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
+	// parent_id 恒写：顶层 = ""（供 sessions_by_top 索引顶层前缀 "\x00" 等值过滤），子会话 = 父 id。
+	// 空串与会话行缺该键在读取侧等价（Sval/str 均得 ""），故返回形状/MQ payload 不变。
 	row := data.Record{
 		"session_id": req.SessionID, "title": req.SessionID, "created_at": now, "updated_at": now,
-	}
-	if req.ParentSessionID != "" {
-		row["parent_id"] = req.ParentSessionID
+		"parent_id": req.ParentSessionID,
 	}
 	if err := prj.Table("sessions").Upsert(req.SessionID, row); err != nil {
 		return facade.SessionEnsureResponse{}, err
@@ -287,7 +288,12 @@ func (s *Service) TurnHistory(req facade.TurnHistoryRequest) (facade.TurnHistory
 	if err != nil {
 		return facade.TurnHistoryResponse{}, fmt.Errorf("query turns: %v", err)
 	}
-	allMsgs, _, err := prj.Table("messages").Query(data.Query{OrderBy: "created_at"})
+	// 下推会话维度：Where{session_id} 命中 messages_by_session（Fields [session_id]、Order created_at）
+	// —— OrderBy 与索引 Order 一致 → 跳过内存排序。选中轮次（turnRecs，已按本会话过滤）均属本会话，
+	// 故只取本会话消息按 turn 分组的输出与改前（全库分组后仅取本会话轮次）等价。
+	allMsgs, _, err := prj.Table("messages").Query(data.Query{
+		Where: data.Record{"session_id": req.SessionID}, OrderBy: "created_at",
+	})
 	if err != nil {
 		return facade.TurnHistoryResponse{}, fmt.Errorf("query messages: %v", err)
 	}
@@ -620,7 +626,11 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 	if err != nil {
 		return facade.MessageContextResponse{}, fmt.Errorf("query turns: %v", err)
 	}
-	allMsgs, _, err := prj.Table("messages").Query(data.Query{OrderBy: "created_at"})
+	// 下推会话维度（同 TurnHistory）：只取本会话消息即可——后续按 turn 分组仅消费本会话轮次
+	// （turnRecs 已按 session_id 过滤），索引 messages_by_session（Order created_at）与 OrderBy 一致。
+	allMsgs, _, err := prj.Table("messages").Query(data.Query{
+		Where: data.Record{"session_id": req.SessionID}, OrderBy: "created_at",
+	})
 	if err != nil {
 		return facade.MessageContextResponse{}, fmt.Errorf("query messages: %v", err)
 	}

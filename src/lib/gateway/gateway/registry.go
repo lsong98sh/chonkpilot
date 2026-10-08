@@ -133,6 +133,9 @@ type catalogAsset struct {
 // assetContent 取资产内容（RB-4 ①，2026-09-22）：`path` 非空 → **实时读盘**（内容不驻留）；
 // 无 `path` → 返回注册载荷携带的 `content`（内嵌域 agent 等无运行时落点的资产，兼容兜底）。
 // 读盘失败 → 空串（有 path 即视为唯一来源，不回退陈旧副本）。
+//
+// 沙箱豁免（RB-4 ①）：`path` 来自**装配层注册的资产元信息**（非用户 DSL/工具入参），
+// 属受控来源 → 不施加 agentbox 校验；DSL 脚本侧读盘由执行器 dslfs 句柄统一沙箱化。
 func assetContent(a *catalogAsset) string {
 	if a == nil {
 		return ""
@@ -326,13 +329,23 @@ func (r *registry) findFor(name, instance string) (*toolRoute, bool) {
 
 // findDirLocked 是 dir 暴露名解析（RB-3 ②）：**前缀 → instance+node+tool → 查 refs 校验 →
 // 命中共享 node**。持锁调用；scoped 引用遮蔽 global 引用（与 routes 表同规则）。
+//
+// 确定性：`shared` 为 map（迭代随机序），若不同节点产生相同暴露名（下划线歧义，如
+// name=a+tool=b_c 与 name=a_b+tool=c）则命中随迭代变化 → 此处**按 node key 排序**后遍历，
+// 结果稳定可复现（歧义冲突另由 addDirRef 唯一性判重显式拦截）。
 func (r *registry) findDirLocked(name, instance string) (*toolRoute, bool) {
 	scopes := []string{scopeGlobal}
 	if instance != scopeGlobal {
 		scopes = []string{instance, scopeGlobal}
 	}
+	keys := make([]string, 0, len(r.shared))
+	for k := range r.shared {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	for _, scope := range scopes {
-		for _, sn := range r.shared {
+		for _, k := range keys {
+			sn := r.shared[k]
 			for _, ref := range sn.refs {
 				if ref.scope != scope {
 					continue
@@ -502,11 +515,33 @@ func (r *registry) swapSharedNode(sn *sharedNode) *sharedNode {
 
 // addDirRef 给共享节点加一条归属引用，并登记该引用的提供方（视图/状态留在 providers；
 // 工具**不进 routes 表**）。同名「(scope, 暴露名)」冲突按既有语义报错（含与既有非 dir 路由判重）。
+//
+// 唯一性判重（dir）：dir 路由不物化，findDirLocked 按暴露名反解原名——若同 scope 下两条
+// 引用的**暴露名集合相交**（下划线歧义，如 name=a+tool=b_c 与 name=a_b+tool=c）则解析与
+// tools/list 不确定 → 此处显式报错拦截（避免静默不确定）。
 func (r *registry) addDirRef(sn *sharedNode, ref *dirRef, ps *providerState) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, dup := r.refs[ref.pk]; dup {
 		return fmt.Errorf("dir node %s already registered", ref.pk)
+	}
+	// 与同 scope 既有 dir 引用的暴露名集合判重（互不相同才算无歧义）。
+	for _, ex := range r.refs {
+		if ex.scope != ref.scope {
+			continue
+		}
+		esn := r.shared[ex.nodeKey]
+		if esn == nil {
+			continue
+		}
+		for _, t := range sn.tools {
+			exposed := dirExposedName(ref, t.Name)
+			for _, et := range esn.tools {
+				if exposed == dirExposedName(ex, et.Name) {
+					return fmt.Errorf("tool 名冲突 %q（%s 与 %s，scope=%q）：dir 节点暴露名歧义", exposed, ex.pk, ref.pk, ref.scope)
+				}
+			}
+		}
 	}
 	for _, t := range sn.tools {
 		exposed := dirExposedName(ref, t.Name)

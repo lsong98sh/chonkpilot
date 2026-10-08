@@ -11,6 +11,7 @@ package mcpgateway
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -161,6 +162,35 @@ func (ep *execPool) taskOf(instance, id string) (*ExecTask, bool) {
 	return t, ok
 }
 
+// terminalRetainPerInstance 是每 instance 桶保留的**终态**执行上限（有界回收）：终态执行供
+// 终态查询/结果交付保留，但不得随执行次数无界增长 → 终态/取消后淘汰更旧的终态，仅留最近 N 个。
+const terminalRetainPerInstance = 16
+
+// pruneTerminal 在锁内淘汰 instance 桶中超出保留上限的终态执行（按 DoneAt 保留最近 N 个），
+// 桶因此清空则删除 instance 键（避免空桶与键无界驻留）。须在 ep.mu 内调用。
+func (ep *execPool) pruneTerminal(instance string) {
+	b := ep.execs[instance]
+	if b == nil {
+		return
+	}
+	var term []*ExecTask
+	for _, t := range b {
+		switch t.State {
+		case "done", "error", "cancelled":
+			term = append(term, t)
+		}
+	}
+	if len(term) > terminalRetainPerInstance {
+		sort.Slice(term, func(i, j int) bool { return term[i].DoneAt.Before(term[j].DoneAt) })
+		for _, t := range term[:len(term)-terminalRetainPerInstance] {
+			delete(b, t.ID)
+		}
+	}
+	if len(b) == 0 {
+		delete(ep.execs, instance)
+	}
+}
+
 // execStateOf 构造执行态上报载荷（须在 ep.mu 内调用：快照执行字段，避免与执行 goroutine 写竞争）。
 // error 路径附**简短摘要**（`message` = 执行错误，不含堆栈）。
 func execStateOf(t *ExecTask, phase string, detail map[string]any) ExecState {
@@ -294,7 +324,9 @@ func (ep *execPool) spawn(ctx context.Context, spec taskSpec, run func(ctx conte
 			t.Result = res
 		}
 		t.DoneAt = time.Now()
-		clearAwaiting(t) // 终态：清除待裁决标记
+		clearAwaiting(t)
+		// 终态回收：淘汰更旧的终态，桶满则删 instance 键（保留终态查询能力的同时有界）。
+		ep.pruneTerminal(t.OwnerInstance)
 		// 执行态上报（P3-① 上报点 ⑤-异常）：仅**失败**路径走层内上报（带简短 message → 层记
 		// exec.error）；done / cancelled 终态**不经本通道**（仍走既有 mcp-tasks-report → 层
 		// applyReport），避免造出第二条终态通道。
@@ -473,7 +505,8 @@ func (ep *execPool) cancel(instance, id string) error {
 		t.Error = "cancelled" // 终态摘要（未 detach 回报的 result_summary 取此值）
 	}
 	t.DoneAt = time.Now()
-	clearAwaiting(t) // 用户已裁决（cancel）：清除待裁决标记
+	clearAwaiting(t)           // 用户已裁决（cancel）：清除待裁决标记
+	ep.pruneTerminal(instance) // 取消终态回收：有界保留终态，桶满则删 instance 键
 	// 终态 cancelled **不经执行态上报通道**（取消路径的终态回报见上：detached 由执行 goroutine 经
 	// onDone 回报，非 detached 由此处补发 mcp-tasks-report）→ 层由既有回报推进为 cancelled。
 	report := !t.asyncReport
@@ -508,9 +541,15 @@ func (ep *execPool) cancelRef(instance, idOrCall string) error {
 
 func (ep *execPool) setState(t *ExecTask, s string) {
 	ep.mu.Lock()
+	defer ep.mu.Unlock()
+	// 终态守卫：cancel 可在执行 goroutine 起手前把任务置为 cancelled（终态）；
+	// 此时执行 goroutine 的 setState("running") 不得把状态翻回 running。
+	switch t.State {
+	case "done", "error", "cancelled":
+		return
+	}
 	t.State = s
 	if s == "running" && t.StartedAt.IsZero() {
 		t.StartedAt = time.Now()
 	}
-	ep.mu.Unlock()
 }

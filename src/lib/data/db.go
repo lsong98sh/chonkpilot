@@ -7,6 +7,7 @@ package data
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/paths"
@@ -91,23 +92,26 @@ func ensureBucket(tx *bolt.Tx, name string) error {
 
 // ─── 三级路径（12-数据层）────────────────────────
 
-// 测试隔离用覆盖值（空 = 走 os.UserHomeDir）。
+// 测试隔离用覆盖值（nil / 空串 = 走 os.UserHomeDir）。用 atomic.Pointer 保护：
+// SetDataHome 可能在**运行期**被调用（persist.New 注入 UsrPath、CLI 数据根准备 prepareTemp/Custom），
+// 而 UserPath/DataRoot 被任意 goroutine 并发读取 —— 无同步的包级 string 读写会构成数据竞争。
 var (
-	userPathOverride string
-	dataRootOverride string
+	userPathOverride atomic.Pointer[string]
+	dataRootOverride atomic.Pointer[string]
 )
 
 // SetDataHome 重定位数据主目录的 usr 主库路径与 prjusr 数据根（**默认 = ~/.chonkpilot**；
 // 传空恢复默认）。用途：测试隔离（避免污染用户配置）、便携/dev 部署的自定义数据主目录。
+// 并发安全：覆盖值经 atomic 写；读侧（UserPath/DataRoot）无锁原子读，可在运行期安全调用。
 func SetDataHome(usrPath, dataRoot string) {
-	userPathOverride = usrPath
-	dataRootOverride = dataRoot
+	userPathOverride.Store(&usrPath)
+	dataRootOverride.Store(&dataRoot)
 }
 
 // UserPath 返回 usr 层 db 路径：~/.chonkpilot/chonkpilot.db。
 func UserPath() string {
-	if userPathOverride != "" {
-		return userPathOverride
+	if p := userPathOverride.Load(); p != nil && *p != "" {
+		return *p
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -118,8 +122,8 @@ func UserPath() string {
 
 // DataRoot 返回项目用户级数据根：~/.chonkpilot/data。
 func DataRoot() string {
-	if dataRootOverride != "" {
-		return dataRootOverride
+	if p := dataRootOverride.Load(); p != nil && *p != "" {
+		return *p
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

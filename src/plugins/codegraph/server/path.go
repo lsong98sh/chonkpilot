@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // 索引内一律使用 '/' 分隔、相对 workdir 的路径（store 可移植）；对外返回时拼回绝对路径。
@@ -56,13 +57,18 @@ func joinPath(a, b string) string {
 	return a + "/" + b
 }
 
-var moduleCache struct {
-	dir string
-	mod string
-}
+var (
+	moduleCacheMu sync.Mutex // 包级缓存（多 workspace/并发解析共享）→ 读写加锁，避免 data race
+	moduleCache   struct {
+		dir string
+		mod string
+	}
+)
 
-// moduleOf 读 root/go.mod 的 module 行（缓存）。
+// moduleOf 读 root/go.mod 的 module 行（缓存；并发安全）。
 func moduleOf(rootDir string) string {
+	moduleCacheMu.Lock()
+	defer moduleCacheMu.Unlock()
 	if moduleCache.dir == rootDir {
 		return moduleCache.mod
 	}

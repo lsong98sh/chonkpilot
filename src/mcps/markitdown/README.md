@@ -63,6 +63,9 @@ cd src\mcps\markitdown
 - 工具：`convert_to_markdown(uri_or_path)` → 返回 Markdown 文本。
   `uri_or_path` 支持**本地路径** / `file://` URI / `http(s)://` URL。
   失败时返回以 `[convert_to_markdown failed] error_code=…; message=…` 开头的说明文本。
+- **`http(s)` 远端抓取有 SSRF 防护**：抓取前解析目标 host（含 DNS），拒绝本机 / 私网 /
+  链路本地 / 保留地址（含云元数据 `169.254.169.254`）；内网联调可设
+  `MARKITDOWN_ALLOW_PRIVATE_HOSTS=1` 显式放行。
 - **按 MCP 规范，本地使用不加额外鉴权**（安全边界 = 只绑回环 + 校验 Host 头）。
 
 ### 3.1 如何在本产品里手动注册为 MCP server（配置页指引文案）
@@ -111,8 +114,13 @@ Invoke-RestMethod http://127.0.0.1:7317/vfts/health
 
 ### `POST /vfts/convert` —— 转换（**需 `X-Chonk-Token`**）
 
-请求体：`{ "path": "<本地绝对路径>", "max_bytes": 52428800 }`（`max_bytes` 可省，
-= **输入文件**字节上限，默认 50 MiB）。
+请求体：`{ "path": "<本地绝对路径>", "max_bytes": 52428800, "root": "<允许根>" }`
+（`max_bytes` 可省 = **输入文件**字节上限，默认 50 MiB）。
+
+- **路径根约束（防任意文件读）**：`path` 经 `realpath` 解析后**必须**落在允许根内；允许根 =
+  请求体 `root`（调用方指定，vfts 引擎传其 workspace workdir）+ 环境变量
+  `MARKITDOWN_ALLOWED_ROOTS`（`os.pathsep` 分隔的绝对路径白名单）。二者皆空、或 `path`
+  越界 → `400` 且 `error_code=parse_error`（不读取文件）。
 
 成功：
 
@@ -140,7 +148,7 @@ Invoke-RestMethod http://127.0.0.1:7317/vfts/health
 | `encrypted` | 加密文档（加密 PDF；加密 OOXML 实为 OLE/CFB 容器） |
 | `too_large` | 输入文件超过 `max_bytes`（默认 50 MiB） |
 | `scan_only` | PDF 无文本层（扫描件/图片 PDF）——**本服务不做 OCR** |
-| `parse_error` | 其余解析失败（含文件头与扩展名不符） |
+| `parse_error` | 其余解析失败（含文件头与扩展名不符）；远端 host 被 SSRF 拒绝；`path` 越出允许根 |
 | `not_found` | 路径不存在、非普通文件，或不是受支持的 URI |
 | `timeout` | 单文件转换超过 60 s |
 
@@ -161,7 +169,7 @@ import json, urllib.request
 state = json.load(open(r"src\mcps\markitdown\state.json", encoding="utf-8"))
 req = urllib.request.Request(
     f"http://127.0.0.1:{state['port']}/vfts/convert",
-    data=json.dumps({"path": r"E:\docs\report.pdf"}).encode(),
+    data=json.dumps({"path": r"E:\docs\report.pdf", "root": r"E:\docs"}).encode(),
     headers={"Content-Type": "application/json", "X-Chonk-Token": state["token"]},
 )
 print(json.load(urllib.request.urlopen(req)))

@@ -45,7 +45,7 @@ LLM "<成员名>" "请分析以下内容：<<<
 
 **句柄表达式的值永远是句柄，不是内容。**
 
-> **路径约束（按消费工具区分）**：`#"path"` 的**文件/目录引用**在 `filesys_run` / `browser_run` / `desktop_run` 中必须为**绝对路径或以 `~/` 开头的用户目录路径**（R-11，相对路径整体失败，见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8）——**包括数据源读取**（如 `LOOP row=#"f.csv".lines`、`#"f".content/.array/.object/.range`、`IF exist #"…"`）与**落盘/目录操作**（`SHT`/`DOM`/`DBG`/`UPF`、`WIN … SHT`、行尾 `=> #"file"` 目标）；`web_fetch` 的 `save_as`/`form_files[].path` 同理。字面路径在这三个工具**执行前**预校验（`dsl.CollectHandleRefs`），`{{}}` 插值路径执行时兜底校验。**`llm_run`（及 `@"…"` 数据库句柄）不适用**此约束——引擎层不为 llm_run 注入校验器、也不做预校验，其现有行为不变。本文件示例中的短路径（如 `#"out.md"`）仅为语法示意。
+> **路径约束（按消费工具区分）**：`#"path"` 的**文件/目录引用**在 `filesys_run` / `browser_run` / `desktop_run` 中必须为**绝对路径或以 `~/` 开头的用户目录路径**（R-11，相对路径整体失败，见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8）——**包括数据源读取**（如 `LOOP row=#"f.csv".lines`、`#"f".content/.array/.object/.range`、`IF exist #"…"`）与**落盘/目录操作**（`SHT`/`DOM`/`DBG`/`UPF`、`WIN … SHT`、行尾 `=> #"file"` 目标）；`web_fetch` 的 `save_as`/`form_files[].path` 同理。字面路径在这三个工具**执行前**预校验（`dsl.CollectHandleRefs`），`{{}}` 插值路径执行时兜底校验。**`llm_run` 亦适用此约束**（〔订正（2026-10-08）〕：原记「`llm_run`（及 `@"…"` 数据库句柄）不适用——引擎层不为 llm_run 注入校验器、也不做预校验，其现有行为不变」**已不成立**，`llm_run` 的**引擎句柄层现已统一校验**：其 `#"path"` 文件/目录引用（数据源读取与落盘/追加）**同样须为绝对 / `~/` / `!/` 开头**，**字面路径在执行前预校验**（`src/lib/llm/server/jobdsl.go` 的 `dsl.CollectHandleRefs` 循环）、`{{}}` 插值路径**执行时由 `jobFile.abs` 严格解析兜底**，且**句柄层统一走 `agentbox.Check`**（读/写沙箱校验，修复原裸写缺口，决策 [42 §2 (250)](../40-roadmap/42-决策记录.md)）；**仅 `@"…"` 数据库句柄仍不适用**此约束〔`llm_run` 引擎未提供 store 面〕）。本文件示例中的短路径（如 `#"out.md"`）仅为语法示意。
 
 ---
 
@@ -68,6 +68,8 @@ LLM "<成员名>" "请分析以下内容：<<<
 ### 1.6 统一编排的动作执行位置
 
 `dsl_run` 的文件/浏览器/桌面动作**全部在受保护子进程**（`chonkpilot-dsl-executor.exe`）内执行 —— 进程级 agentbox 沙箱（`CHONKPILOT_SANDBOX`）天然生效；LLM 步骤由该进程经 stdio 协议回报 gateway，再由 gateway 经 MQ 执行子轮次（见 [42 §2 (247)](../40-roadmap/42-决策记录.md)）。
+
+执行器与 gateway 之间为**自建 stdio 行协议**（非 MCP；`run`/`llm_result` 下行、`llm_call`/`result`/`tree`/`step`（+`log`）上行，见 [42 §2 (254)](../40-roadmap/42-决策记录.md)）；其中下行 `run` 消息在 `script`（脚本正文）之外含**可选字段 `file`**（脚本文件绝对路径）——**`script` 为空时由受沙箱执行器读该文件**（gateway 不再代为读盘），协议**向后兼容**（无 `file` 即走 `script`，行为等价）。字段明细见 `src/lib/gateway/gateway/dslrun.go` 头注。
 
 ## 2. 数据类型
 
@@ -399,7 +401,7 @@ END
 
 **下标范围**：在数据源后追加 `.range(N,M)` 控制迭代范围，与句柄的 `range` 访问器一致（N 含，M 含，负数 = 倒数）。越界报错。
 
-> **路径（R-11）**：在 `filesys_run` / `browser_run` / `desktop_run` 中，文件数据源（`#"文件"`）须为**绝对路径或 `~/` 开头**（相对路径整体失败，见 [16 §8](../10-architecture/16-路径解析规范.md)）；`llm_run` 不受约束。详见 §1.4。
+> **路径（R-11）**：在 `filesys_run` / `browser_run` / `desktop_run` 中，文件数据源（`#"文件"`）须为**绝对路径或 `~/` 开头**（相对路径整体失败，见 [16 §8](../10-architecture/16-路径解析规范.md)）；`llm_run` **同此约束**（〔订正（2026-10-08）〕：原记「`llm_run` 不受约束」已不成立，见 §1.4）。
 
 ```text
 # CSV 跳过表头行（从第 1 行到末尾）

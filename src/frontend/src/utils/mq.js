@@ -88,11 +88,14 @@ function publishToBackend(topic, payload, opts = {}) {
   if (payload !== undefined && payload !== null) {
     str = typeof payload === 'string' ? payload : JSON.stringify(payload)
   }
-  const ctl = typeof AbortController !== 'undefined' && opts.timeout ? (() => {
-    const c = new AbortController()
-    setTimeout(() => c.abort(), opts.timeout)
-    return c
-  })() : undefined
+  // 超时 AbortController：保存定时器句柄，请求收尾（finally）clearTimeout——
+  // 否则计时器在请求完成后仍存活（默认 15s/30s），高频请求累积、可能对已完成请求再 abort（E5-⑤）。
+  let ctl
+  let timer
+  if (typeof AbortController !== 'undefined' && opts.timeout) {
+    ctl = new AbortController()
+    timer = setTimeout(() => ctl.abort(), opts.timeout)
+  }
   return fetch('/publish', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -107,6 +110,8 @@ function publishToBackend(topic, payload, opts = {}) {
   }).catch((e) => {
     console.warn('[mq] publish to backend error:', e)
     return null
+  }).finally(() => {
+    if (timer) clearTimeout(timer)
   })
 }
 

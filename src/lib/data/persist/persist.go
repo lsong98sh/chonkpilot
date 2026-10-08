@@ -327,12 +327,8 @@ var instanceFreeDomains = map[string]bool{
 }
 
 func (s *Service) handle(subject, domain, op string, payload []byte) {
-	// 跳过已带 ok 字段的响应消息（避免 reply publish 到同一 subject 的回环；
-	// 请求主题与应答同主题，persist 会收到自己的 reply/fail）
-	var check struct {
-		OK *bool `json:"ok"`
-	}
-	if json.Unmarshal(payload, &check) == nil && check.OK != nil {
+	// 跳过回环应答：reply/fail 与请求**同主题**发布，persist 会收到自己发出的应答（见 isLoopbackReply）。
+	if isLoopbackReply(payload) {
 		return
 	}
 	req := parseDataReq(payload)
@@ -377,6 +373,27 @@ func (s *Service) reply(method string, req dataReq, result map[string]any) {
 func (s *Service) fail(method string, req dataReq, err error) {
 	b, _ := json.Marshal(map[string]any{"req_id": req.ReqID, "ok": false, "error": err.Error()})
 	_ = s.Bus.Emit(context.Background(), method, b)
+}
+
+// isLoopbackReply 判定入站载荷是否为 persist 自身应答（reply/fail）的回环。
+//
+// reply/fail 与请求**同主题**发布（相对主题 data-<domain>-<op> 无 .reply 后缀），故 persist 会收到
+// 自己发出的应答，必须在 handle 入口跳过，否则会把应答当作请求再次处理。
+//
+// 应答恒为 {req_id, ok, result|error}（见 reply/fail 二者必居其一）；请求则为业务载荷
+// （list/load/save/delete 的入参）。**单凭顶层 `ok` 键**会把「业务载荷恰好含顶层 ok 的请求」
+// 误判为应答而丢弃（且不 reply → 调用方 Promise 永不 resolve），故用「顶层 ok + 应答专属
+// 信封键 result/error」组合判定：仅 reply（带 result）/ fail（带 error）命中。
+func isLoopbackReply(payload []byte) bool {
+	var env struct {
+		OK     *bool           `json:"ok"`
+		Result json.RawMessage `json:"result"`
+		Err    json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(payload, &env) != nil || env.OK == nil {
+		return false
+	}
+	return env.Result != nil || env.Err != nil
 }
 
 // ─── 数据根解析（信封层用；解析规则单源 = internal/kernel/root.go）──

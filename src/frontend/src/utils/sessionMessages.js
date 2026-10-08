@@ -82,6 +82,7 @@ export function createSessionMessages() {
   let currentSection = null
   let loadedTurnIds = new Set()    // set of turn IDs already loaded
   let currentSessionId = null       // track which session is loaded
+  let loadGen = 0                   // 加载代次：切换会话/teardown 递增；await 后校验以丢弃过期批次
 
   // ── 「加载中」占位（发送后立即显示 LLM 处理进度）──
   // 独立状态，**不在 messages 数组内**：loadMessages 整体替换 messages（历史回填）
@@ -247,6 +248,10 @@ export function createSessionMessages() {
     sessionId = sessionId.trim()
     if (!sessionId) return
 
+    // 代次守卫：切换会话/teardown 推进 loadGen → 本批 await 返回时 gen 已不符即丢弃，
+    // 避免慢速返回把上一个会话的消息写进当前视图、或把新一代的 loading 标志置回。
+    const gen = ++loadGen
+
     messages.value = []
     turnActive.value = false
     currentSection = null
@@ -261,6 +266,7 @@ export function createSessionMessages() {
       // 目标消息数/字节数放大：普通对话 turn 单 turn 可达数十条消息，
       // 50 条/200KB 的旧参数会让每批只返回 2~10 个 turn，滚顶加载体验极差。
       const res = await getTurnsPaginated(sessionId, '', 300, 4 * 1024 * 1024)
+      if (gen !== loadGen) return // 代次已变：丢弃本批，不写任何状态
       if (res && res.messages) {
         messages.value = res.messages.map(dbMsgToView)
       }
@@ -280,10 +286,11 @@ export function createSessionMessages() {
       }
       return res
     } catch (e) {
+      if (gen !== loadGen) return // 过期批次的失败不提示（属已切换的会话）
       console.warn('[sessionMessages] Failed to load messages:', e)
       message.error(i18n.global.t('chat.load_messages_failed') + ': ' + (e.message || e))
     } finally {
-      loadingMessages.value = false
+      if (gen === loadGen) loadingMessages.value = false // 仅当前代次收尾，避免覆盖新一代
     }
   }
 
@@ -296,6 +303,8 @@ export function createSessionMessages() {
     // loadedTurnIds 为空（beforeTurnId=''），此时并发 loadMore 会重复抓取最新批次并前置，
     // 造成消息重复显示（子会话首次打开/会话切换时可见）。
     if (loadingMessages.value || !hasMore.value || loadingMore.value || !currentSessionId) return
+    // 代次快照：await 期间若切换会话/teardown，本批结果作废（不前置到错会话）。
+    const gen = loadGen
     loadingMore.value = true
 
     try {
@@ -308,6 +317,7 @@ export function createSessionMessages() {
       const { getTurnsPaginated } = await import('../api/session')
       const res = await getTurnsPaginated(currentSessionId, beforeTurnId, 300, 4 * 1024 * 1024)
 
+      if (gen !== loadGen) return // 代次已变：丢弃本批，不写任何状态
       if (res && res.messages && res.messages.length > 0) {
         const oldMsgs = res.messages.map(dbMsgToView)
         messages.value = [...oldMsgs, ...messages.value]
@@ -320,16 +330,18 @@ export function createSessionMessages() {
         }
       }
     } catch (e) {
+      if (gen !== loadGen) return // 过期批次的失败不提示（属已切换的会话）
       // 上滑加载更多失败原先只 console（用户看不到任何反馈，界面静默停在顶部）→
       // 与首屏失败同口径给出可见提示（轻提示，可再上滑重试；消息不丢，下次触发即重试）。
       console.warn('[sessionMessages] Failed to load more messages:', e)
       message.warning(i18n.global.t('chat.load_more_failed'))
     } finally {
-      loadingMore.value = false
+      if (gen === loadGen) loadingMore.value = false // 仅当前代次收尾，避免覆盖新一代
     }
   }
 
   function teardown() {
+    loadGen++ // 使在途加载全部失效（其 finally 不再回写状态）
     messages.value = []
     turnActive.value = false
     currentSection = null

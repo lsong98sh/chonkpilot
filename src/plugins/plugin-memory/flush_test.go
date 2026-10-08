@@ -271,3 +271,41 @@ func TestManualFlushDisabledMemoryNoWrites(t *testing.T) {
 		t.Fatalf("未启用不应调 LLM，实际 %d 次", n)
 	}
 }
+
+// TestManualFlushLocksOnInstanceWorkDir：手动沉淀（memory.flush）载荷**不含 work_dir**，
+// 但锁键须经实例视图解析回 work_dir，与自动沉淀（session-compress 带 work_dir）落在**同一把**
+// per-(workdir, 类别) 锁上（OP-08）——否则同一 (项目, 类别) 的读-改-写并发会丢更新。
+func TestManualFlushLocksOnInstanceWorkDir(t *testing.T) {
+	bus := newTestBus(t)
+	p := New(DefaultOptions())
+	if err := p.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	manual := turnEvent{InstanceID: "ins-1", Session: "s1"}                  // 手动载荷：无 work_dir
+	auto := turnEvent{InstanceID: "ins-1", WorkDir: `C:\ws`, Session: "s1"} // 自动载荷：带 work_dir
+
+	// 未登记实例：手动载荷无 work_dir → 解析为空（与自动路径不同锁 = 缺陷场景）。
+	if got := p.resolveWorkDir(manual); got != "" {
+		t.Fatalf("未登记实例时手动 work_dir 应为空，实际 %q", got)
+	}
+
+	// 宿主登记实例（instance-register）→ 两路径收敛到同一 work_dir（同一把锁）。
+	if err := bus.Emit(context.Background(), "instance-register", map[string]any{
+		"instance_id": "ins-1", "work_dir": `C:\ws`,
+	}).Wait().Err(); err != nil {
+		t.Fatalf("emit instance-register: %v", err)
+	}
+	wa, wm := p.resolveWorkDir(auto), p.resolveWorkDir(manual)
+	if wa != `C:\ws` || wm != wa {
+		t.Fatalf("登记后两路径应收敛到同一 work_dir：auto=%q manual=%q", wa, wm)
+	}
+
+	// 锁表验证：同 (workdir, 类别) 只落一把互斥体。
+	unlock := p.lockCategory(wm, "项目概要")
+	n := 0
+	p.locks.Range(func(_, _ any) bool { n++; return true })
+	unlock()
+	if n != 1 {
+		t.Fatalf("同 (workdir, 类别) 应只有 1 把锁，实际 %d", n)
+	}
+}

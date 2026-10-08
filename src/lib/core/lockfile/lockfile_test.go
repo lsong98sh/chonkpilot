@@ -7,6 +7,8 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // TestAcquireMutualExclusion：同路径互斥；Release 后可再取。
@@ -57,5 +59,18 @@ func TestAcquireWorkDirAndFree(t *testing.T) {
 	l.Release()
 	if !WorkDirFree(dir) {
 		t.Fatal("释放后应判为空闲")
+	}
+}
+
+// TestIsBusyErr：仅锁 / 共享冲突映射「已被占用」；权限不足等设施故障不误报 ErrBusy。
+func TestIsBusyErr(t *testing.T) {
+	if !isBusyErr(windows.ERROR_LOCK_VIOLATION) {
+		t.Fatal("ERROR_LOCK_VIOLATION 应判为占用")
+	}
+	if !isBusyErr(windows.ERROR_SHARING_VIOLATION) {
+		t.Fatal("ERROR_SHARING_VIOLATION 应判为占用")
+	}
+	if isBusyErr(windows.ERROR_ACCESS_DENIED) {
+		t.Fatal("ERROR_ACCESS_DENIED 不应判为占用")
 	}
 }

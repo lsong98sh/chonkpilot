@@ -111,7 +111,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, onUpdated, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
 import { EventNames } from '../../events/event-names'
@@ -317,7 +317,10 @@ async function onAwaitCancel() {
   }
 }
 
-// llm 运行耗时：按 created_at 计算（1s 节拍刷新）
+// llm 运行耗时：按 created_at 计算（1s 节拍刷新）。
+// 禁止 watch props 派生量（项目硬规则）→ 计时器改由 onMounted / onUpdated 依 isLLMRunning
+// 挂/卸：isLLMRunning 用于模板 v-if，其变化必触发重渲染 → onUpdated 同步计时器（与 watch
+// 等价，但无隐式 props 依赖）。
 const now = ref(Date.now())
 let timer = null
 const elapsedSec = computed(() => {
@@ -329,14 +332,15 @@ const elapsedSec = computed(() => {
   return Math.max(0, Math.floor((now.value - start) / 1000))
 })
 
-watch(isLLMRunning, (v) => {
-  if (v && !timer) {
+// 依 isLLMRunning 挂/卸 1s 节拍计时器（幂等：无变化不动作）。
+function syncElapsedTimer() {
+  if (isLLMRunning.value && !timer) {
     timer = setInterval(() => { now.value = Date.now() }, 1000)
-  } else if (!v && timer) {
+  } else if (!isLLMRunning.value && timer) {
     clearInterval(timer)
     timer = null
   }
-})
+}
 
 function fmtElapsed(sec) {
   const n = Number(sec)
@@ -350,10 +354,14 @@ function fmtElapsed(sec) {
 let unsubToggle = null
 
 onMounted(() => {
+  syncElapsedTimer()
   unsubToggle = mq.on(EventNames.sessionTreeNodeToggle, ({ node_id }) => {
     if (node_id === props.node.node_id) props.node.expanded = !props.node.expanded
   })
 })
+
+// isLLMRunning 变化 → 组件重渲染 → onUpdated 同步计时器（替代 watch props 派生量）。
+onUpdated(syncElapsedTimer)
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)

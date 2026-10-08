@@ -27,6 +27,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	_ "embed"
@@ -240,7 +241,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
-// Handler 返回路由（静态面 / 上行 / 下行 / shim）。
+// Handler 返回路由（静态面 / 上行 / 下行 / shim），最外层套**服务端鉴权中间件**（见 withAuth）。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(publishPath, s.handlePublish)
@@ -248,7 +249,69 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(shimPath, s.handleShim)
 	mux.HandleFunc(dirsPath, s.handleDirs)
 	mux.HandleFunc("/", s.handleStatic)
-	return mux
+	return s.withAuth(mux)
+}
+
+// withAuth 是 HTTP 面的**服务端鉴权中间件**（browser 形态 requireAuth；61 §4.6）：未认证时对
+// **受保护面**（写操作 `/publish`、下行 `/events`、`/dirs`）返回 401 —— 令牌只从**连接层**读取
+// （cookie `chonkpilot-token` → AuthCheck，与首屏 `authed` 判定同源），**不接受前端自报**（22 §1）。
+//
+// 豁免（**必须未认证可达，否则把自己锁死**）：
+//   - 静态面 + shim：首屏 HTML 与静态资源须能加载以渲染**登录视图**（`injectBootstrap` 注入
+//     `window.__ck.authed=false` 供前端分派登录 / 主视图），若 401 则登录页无从加载 = 锁死；
+//   - `/publish` 的 `login-*` 上行：登录 / 注册 / 登出本身即鉴权入口。
+//
+// 未接线（`AuthCheck=nil`：desktop 形态不经本入口 / 未配置认证域）→ **不启用**：不因"无法校验"
+// 而拒绝全部请求（与首屏 `authed` 恒 false 解耦，行为同改前）；desktop 形态不受影响。
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authCheck == nil || !s.protectedRequest(r) || s.authed(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{
+			msgkeys.FieldOk:     false,
+			msgkeys.FieldErrors: []string{"instance-unauthorized: 未认证（browser 形态要求登录）"},
+		})
+	})
+}
+
+// protectedRequest 判定请求是否落在**受鉴权保护**的 HTTP 面（未认证 → 401）：
+// `/events`（SSE 下行）、`/dirs`（目录清单）、`/publish`（**除 login-* 上行**）。
+// 静态面 / shim 面为豁免（见 withAuth 注释）。
+func (s *Server) protectedRequest(r *http.Request) bool {
+	switch r.URL.Path {
+	case eventsPath, dirsPath:
+		return true
+	case publishPath:
+		return !isLoginPublish(r)
+	}
+	return false
+}
+
+// isLoginPublish 判定 `/publish` body 的 `type` 是否认证域（`login-*`，未认证可达）。
+// 只读取**前缀**探测（`type` 恒在 JSON 对象开头；login 载荷为小对象），再把「已读前缀 + 剩余流」
+// **拼回 body**（下游 handlePublish 仍需完整解析，不得丢字节）。
+func isLoginPublish(r *http.Request) bool {
+	if r.Body == nil {
+		return false
+	}
+	orig := r.Body
+	prefix, err := io.ReadAll(io.LimitReader(orig, 64<<10))
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(prefix), orig), orig}
+	if err != nil || len(prefix) == 0 {
+		return false
+	}
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(prefix, &probe) != nil {
+		return false
+	}
+	return isLoginTopic(probe.Type)
 }
 
 // handleDirs 是 native 目录选择器的**服务端等价面**（非 MQ HTTP 面）：

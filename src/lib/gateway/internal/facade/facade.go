@@ -35,6 +35,7 @@ type Adapter struct {
 	prompts   map[string]promptInfo
 	resources map[string]resourceInfo
 	stop      chan struct{}
+	stopOnce  sync.Once
 	wg        sync.WaitGroup
 }
 
@@ -66,23 +67,29 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if err := a.reconcileResources(ctx); err != nil {
 		return fmt.Errorf("initial resources sync: %w", err)
 	}
+	// 订阅 gateway 目录/接入变化通知（相对主题 mcp-gateway-changed，2026-09-06 与 lib 同步）。
+	// 句柄由 goroutine 捕获，Stop 触发后**退订**（避免 Stop 后回调仍注册）。
+	sub, err := a.bus.On(msgkeys.TopicMcpGatewayChanged, 0, func(_ context.Context, _ string, _ *mq.Value) error {
+		_ = a.reconcileTools(context.Background())
+		_ = a.reconcilePrompts(context.Background())
+		_ = a.reconcileResources(context.Background())
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("subscribe %s: %w", msgkeys.TopicMcpGatewayChanged, err)
+	}
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
-		// gateway 目录/接入变化通知（相对主题 mcp-gateway-changed，2026-09-06 与 lib 同步）
-		_, _ = a.bus.On(msgkeys.TopicMcpGatewayChanged, 0, func(_ context.Context, _ string, _ *mq.Value) error {
-			_ = a.reconcileTools(context.Background())
-			_ = a.reconcilePrompts(context.Background())
-			_ = a.reconcileResources(context.Background())
-			return nil
-		})
 		<-a.stop
+		_ = sub.Unsubscribe()
 	}()
 	return nil
 }
 
-// Stop 停止差异同步订阅。
+// Stop 停止差异同步订阅。**幂等**（重复调用无副作用）：close 由 sync.Once 包裹；
+// wg.Wait 保证退订已完成，Stop 返回后不再有回调注册。
 func (a *Adapter) Stop() {
-	close(a.stop)
+	a.stopOnce.Do(func() { close(a.stop) })
 	a.wg.Wait()
 }

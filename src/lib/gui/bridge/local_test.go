@@ -3,6 +3,7 @@
 package bridge
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -101,5 +102,48 @@ func TestReadDirNodesExpandedNested(t *testing.T) {
 	}
 	if _, ok := b["children"].([]map[string]any); !ok {
 		t.Fatalf("展开目录 a/b 应预载 children，实际 %v", b["children"])
+	}
+}
+
+// TestConsoleDir 打开控制台的目标目录解析（E5-①）：文件 → 所在目录；目录 → 自身；
+// 不存在 / 空 → 回落 workDir；恶意目录名（含 `&`）原样保留（不经命令行，无注入面）。
+func TestConsoleDir(t *testing.T) {
+	root := t.TempDir()
+	evil := filepath.Join(root, "a&calc")
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(evil, "x.txt")
+	mkFile(t, f)
+
+	if got := consoleDir(f, root); got != evil {
+		t.Fatalf("文件应解析为其所在目录（含 & 亦原样）：got=%q want=%q", got, evil)
+	}
+	if got := consoleDir(evil, root); got != evil {
+		t.Fatalf("目录应解析为自身：got=%q want=%q", got, evil)
+	}
+	if got := consoleDir("", root); got != root {
+		t.Fatalf("空路径应回落 workDir：got=%q", got)
+	}
+	if got := consoleDir(filepath.Join(root, "nope"), root); got != root {
+		t.Fatalf("不存在的路径应回落 workDir：got=%q", got)
+	}
+}
+
+// TestConsoleCmdNoInjection dir **不得出现在命令行参数**（E5-① 命令注入修复）：
+// 目录作为子进程工作目录传入，cmd 不二次解析命令行 → 含 `&`/`^` 的目录名无从注入。
+func TestConsoleCmdNoInjection(t *testing.T) {
+	evil := `a&calc`
+	cmd := consoleCmd(evil)
+	if cmd.Dir != evil {
+		t.Fatalf("目录须作为子进程工作目录：got Dir=%q", cmd.Dir)
+	}
+	if len(cmd.Args) != 1 || cmd.Args[0] != "cmd" {
+		t.Fatalf("命令行不得携带目录（应仅 cmd）：%v", cmd.Args)
+	}
+	for _, a := range cmd.Args {
+		if strings.ContainsAny(a, "&^|<>%\"") {
+			t.Fatalf("命令行参数不得含 cmd 元字符：%q", a)
+		}
 	}
 }

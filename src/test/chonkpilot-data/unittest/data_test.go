@@ -4,6 +4,7 @@ package data_test
 import (
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -218,4 +219,24 @@ func TestConfigOpen(t *testing.T) {
 	if id2, _ := data.ReadProjectID(cfg2.Prj()); id2 != id {
 		t.Fatalf("project-id should be stable: %s vs %s", id2, id)
 	}
+}
+
+// TestSetDataHomeConcurrent：SetDataHome（运行期可被 persist.New / CLI 数据根准备调用）与
+// UserPath/DataRoot/PrjUsrPath（任意 goroutine 并发读）并发执行无数据竞争 —— 用 `-race` 运行验证。
+func TestSetDataHomeConcurrent(t *testing.T) {
+	t.Cleanup(func() { data.SetDataHome("", "") })
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			data.SetDataHome(filepath.Join("x", "usr.db"), filepath.Join("x", "data"))
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		_ = data.UserPath()
+		_ = data.DataRoot()
+		_ = data.PrjUsrPath("pid")
+	}
+	wg.Wait()
 }

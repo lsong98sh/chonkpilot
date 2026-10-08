@@ -9,7 +9,8 @@
    （注册指引见同目录 README.md）。本地使用，不加额外鉴权；跨机访问由回环绑定阻断。
 2. **vfts 内部快通道**（供 vfts 引擎直连，省掉 MCP 往返）：
    - `GET  /vfts/health`  —— 探活，**无需 token**，返回 `{ok, version, pid, port, uptime_s, state_path}`
-   - `POST /vfts/convert` —— **需 `X-Chonk-Token` 头**，body `{path, max_bytes?}`
+   - `POST /vfts/convert` —— **需 `X-Chonk-Token` 头**，body `{path, max_bytes?, root?}`；
+     `path` **必须**落在允许根内（请求 `root` 或环境变量 `MARKITDOWN_ALLOWED_ROOTS`）
 
 启动时把运行态写入状态文件 `state.json`（与 exe 同目录，即 `<installRoot>/mcps/markitdown/`；
 目录不可写时回落到 `<data-dir>/mcps/markitdown/`，Windows 的 data-dir = `%LOCALAPPDATA%\\chonkpilot`），
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -70,6 +72,20 @@ DEFAULT_MAX_INPUT_BYTES = 50 * 1024 * 1024  # 输入文件上限 50 MiB
 DEFAULT_MAX_OUTPUT_BYTES = 2 * 1024 * 1024  # 输出 markdown 上限 2 MiB（超出截断）
 DEFAULT_TIMEOUT_SEC = 60.0  # 单文件转换超时
 REMOTE_FETCH_TIMEOUT_SEC = 30.0  # MCP 工具远端抓取超时
+
+# ── 安全约束（2026-10-08）────────────────────────────────────────────────
+# 远端抓取（convert_to_markdown 的 http(s) 源）SSRF 防护：默认拒绝解析到本机 / 私网 /
+# 链路本地 / 保留地址（含云元数据 169.254.169.254）。内网联调可设
+# MARKITDOWN_ALLOW_PRIVATE_HOSTS=1 显式放行（关闭校验）。
+ALLOW_PRIVATE_HOSTS = os.environ.get("MARKITDOWN_ALLOW_PRIVATE_HOSTS", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+# `/vfts/convert` 允许访问的根目录白名单（os.pathsep 分隔的绝对路径）；缺省空 =
+# 仅接受请求体显式携带的 `root`。见 allowed_convert_roots / path_within_roots。
+ALLOWED_ROOTS_ENV = "MARKITDOWN_ALLOWED_ROOTS"
 
 LOG_FILENAME = "markitdown-mcp.log"
 LOG_MAX_BYTES = 1024 * 1024
@@ -301,6 +317,22 @@ def get_executor() -> ThreadPoolExecutor:
     return _executor
 
 
+async def run_in_convert_pool(func, *args, timeout: float = DEFAULT_TIMEOUT_SEC):
+    """在转换线程池里执行 func(*args) 并施加超时；超时 → 尽力取消 future 后抛 TimeoutError。
+
+    取消语义（Python 限制）：线程不可被强制中断——若 func **已开始执行**，future.cancel()
+    只能回收**尚未出队**的任务（释放线程池槽位）；运行中的转换仍会占用一个工作线程直至其
+    自然返回。超时判定本身不阻塞：wait_for 取消的是 asyncio 包装 future，应答即刻返回。
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(get_executor(), func, *args)
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError:
+        future.cancel()  # 尽力取消：未出队 → 释放槽位；运行中 → 幂等无副作用
+        raise
+
+
 def truncate_utf8(text: str, max_bytes: int) -> tuple[str, bool]:
     """按 UTF-8 字节数截断（不切开多字节字符）。"""
     encoded = text.encode("utf-8")
@@ -492,10 +524,98 @@ def _file_uri_to_path(uri: str) -> str:
     return path
 
 
+def _is_disallowed_ip(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
+    """判断解析出的 IP 是否属**禁止抓取**的目标（本机 / 私网 / 链路本地 / 保留 / 组播 / 未指定）。
+
+    169.254.169.254 等云元数据地址落在链路本地段（169.254.0.0/16），由 is_link_local 覆盖。
+    """
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+    if ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        return True
+    mapped = getattr(ip, "ipv4_mapped", None)  # IPv4-mapped IPv6（::ffff:127.0.0.1）→ 还原再判
+    if mapped is not None:
+        return _is_disallowed_ip(mapped)
+    return False
+
+
+def check_remote_host(host: str) -> str:
+    """解析 host（含 DNS）并校验目标地址；返回拒绝原因（空串 = 通过）。
+
+    在 urlopen **之前**调用，阻断 SSRF（本机 / 私网 / 链路本地 / 云元数据地址）。
+    MARKITDOWN_ALLOW_PRIVATE_HOSTS 显式放行（内网联调）时不做校验。
+    注：DNS 重绑定（校验与连接之间地址变化）不在本策略覆盖范围内。
+    """
+    if ALLOW_PRIVATE_HOSTS:
+        return ""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        return f"cannot resolve host {host!r}: {exc}"
+    if not infos:
+        return f"cannot resolve host {host!r}"
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr.split("%", 1)[0])  # 去 IPv6 zone id
+        except ValueError:
+            continue
+        if _is_disallowed_ip(ip):
+            return f"host {host!r} resolves to disallowed address {addr}"
+    return ""
+
+
+def allowed_convert_roots(extra: Optional[str] = None) -> list[str]:
+    """生效的 `/vfts/convert` 允许根：请求体显式 `root`（若有）+ 环境变量白名单。"""
+    roots: list[str] = []
+    if extra and extra.strip():
+        roots.append(extra.strip())
+    raw = os.environ.get(ALLOWED_ROOTS_ENV, "") or ""
+    for candidate in raw.split(os.pathsep):
+        candidate = candidate.strip()
+        if candidate:
+            roots.append(candidate)
+    return roots
+
+
+def path_within_roots(path: str, roots: list[str]) -> bool:
+    """`path` 的 realpath 是否落在任一 root 的 realpath 之内（含符号链接解析，防越界读）。"""
+    if not roots:
+        return False
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            real_root = os.path.realpath(root)
+            # commonpath 逐段比较，避免 "/a/bc" 被误判落在 "/a/b" 之内
+            if os.path.commonpath([real, real_root]) == real_root:
+                return True
+        except (OSError, ValueError):  # 不同盘符 / 路径不可比较 → 该根不匹配
+            continue
+    return False
+
+
 def _convert_remote(url: str, max_input_bytes: int) -> Outcome:
-    """下载远端文件到临时文件后复用 convert_path（含大小上限与超时）。"""
+    """下载远端文件到临时文件后复用 convert_path（含大小上限与超时）。
+
+    抓取前校验 scheme 与目标 host/IP（SSRF 防护，见 check_remote_host）。
+    """
     t0 = time.perf_counter()
-    extension = os.path.splitext(urlparse(url).path)[1].lower()
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https"):
+        return _fail(
+            ERROR_NOT_FOUND,
+            f"unsupported URL scheme: '{parsed.scheme or '(none)'}' (only http/https)",
+            t0,
+        )
+    host = parsed.hostname or ""
+    if not host:
+        return _fail(ERROR_NOT_FOUND, f"URL has no host: {url}", t0)
+    if reason := check_remote_host(host):
+        return _fail(ERROR_PARSE_ERROR, f"refusing to fetch remote URL: {reason}", t0)
+    extension = os.path.splitext(parsed.path)[1].lower()
     if extension not in SUPPORTED_EXTENSIONS:
         return _fail(
             ERROR_UNSUPPORTED_FORMAT,
@@ -658,6 +778,34 @@ async def vfts_convert(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    # 路径根约束（防任意文件读）：`path` 的 realpath 必须落在允许根内。
+    # 允许根 = 请求体 `root`（调用方指定，vfts 引擎传其 workdir）+ 环境白名单 MARKITDOWN_ALLOWED_ROOTS。
+    root = body.get("root")
+    if root is not None and not isinstance(root, str):
+        return JSONResponse(
+            {"ok": False, "error_code": ERROR_PARSE_ERROR, "message": "'root' must be a string"},
+            status_code=400,
+        )
+    roots = allowed_convert_roots(root if isinstance(root, str) else None)
+    if not roots:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_code": ERROR_PARSE_ERROR,
+                "message": f"no allowed root: pass 'root' or set {ALLOWED_ROOTS_ENV}",
+            },
+            status_code=400,
+        )
+    if not path_within_roots(path, roots):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_code": ERROR_PARSE_ERROR,
+                "message": f"path escapes allowed root(s): {path}",
+            },
+            status_code=400,
+        )
+
     max_bytes = body.get("max_bytes", DEFAULT_MAX_INPUT_BYTES)
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         return JSONResponse(
@@ -669,10 +817,8 @@ async def vfts_convert(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    loop = asyncio.get_running_loop()
-    future = loop.run_in_executor(get_executor(), convert_path, path, max_bytes)
     try:
-        outcome = await asyncio.wait_for(future, timeout=DEFAULT_TIMEOUT_SEC)
+        outcome = await run_in_convert_pool(convert_path, path, max_bytes)
     except asyncio.TimeoutError:
         return JSONResponse(
             {

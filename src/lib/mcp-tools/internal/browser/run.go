@@ -17,6 +17,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/dsl"
+	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/dslfs"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
 )
 
@@ -279,169 +280,11 @@ func blockJS(raw string) (string, bool) {
 	return strings.Join(parts, "\n"), true
 }
 
-// scriptFS 核心语句（#"文件".lines 等）使用的真实文件系统（相对当前目录）。
-// 引擎句柄层读写一律过 agentbox 沙箱校验（决策 42 §2 (250)：修复既有裸写缺口）。
+// scriptFS 核心语句（#"文件".lines 等）使用的校验型文件系统：句柄实现见共享包 dslfs
+// （browser 档），路径强校验（R-11）与 agentbox 沙箱读写校验统一在句柄层完成。
 type scriptFS struct{}
 
-func (scriptFS) Open(path string) dsl.FileHandle { return &fsFile{path: path} }
-
-type fsFile struct {
-	path string
-}
-
-func (f *fsFile) Path() string { return f.path }
-
-// absRead 解析读路径（R-11）并做沙箱读校验（越界 → 错误）。
-func (f *fsFile) absRead() (string, error) {
-	abs, err := resolveLocalPath(f.path)
-	if err != nil {
-		return "", err
-	}
-	if err := agentbox.Check(abs, false); err != nil {
-		return "", err
-	}
-	return abs, nil
-}
-
-// absWrite 解析写路径（R-11）并做沙箱写校验（越界 → 错误）。
-func (f *fsFile) absWrite() (string, error) {
-	abs, err := resolveLocalPath(f.path)
-	if err != nil {
-		return "", err
-	}
-	if err := agentbox.Check(abs, true); err != nil {
-		return "", err
-	}
-	return abs, nil
-}
-
-// Exists 路径不合规（R-11）或被沙箱拒绝时按「不存在」处理：字面违规已由预校验拦截，此处兜底 {{}} 插值。
-func (f *fsFile) Exists() bool {
-	abs, err := f.absRead()
-	if err != nil {
-		return false
-	}
-	_, serr := os.Stat(abs)
-	return serr == nil
-}
-
-func (f *fsFile) Stat() (dsl.FileInfo, error) {
-	// 读路径强校验（R-11）：数据源句柄 `#"path"` 亦须绝对 / ~/ / !/
-	abs, err := f.absRead()
-	if err != nil {
-		return dsl.FileInfo{}, err
-	}
-	fi, err := os.Stat(abs)
-	if err != nil {
-		return dsl.FileInfo{}, err
-	}
-	content, _ := f.ReadText()
-	lines := strings.Count(content, "\n")
-	if !strings.HasSuffix(content, "\n") && content != "" {
-		lines++
-	}
-	return dsl.FileInfo{Path: f.path, Size: fi.Size(), Lines: int64(lines), Blocks: 0}, nil
-}
-func (f *fsFile) ReadText() (string, error) {
-	abs, err := f.absRead()
-	if err != nil {
-		return "", err
-	}
-	b, err := os.ReadFile(abs)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-func (f *fsFile) ReadLines() ([]string, error) {
-	c, err := f.ReadText()
-	if err != nil {
-		return nil, err
-	}
-	ls := strings.Split(c, "\n")
-	if len(ls) > 0 && ls[len(ls)-1] == "" {
-		ls = ls[:len(ls)-1]
-	}
-	return ls, nil
-}
-func (f *fsFile) ReadRange(n, m int) ([]string, error) {
-	ls, err := f.ReadLines()
-	if err != nil {
-		return nil, err
-	}
-	L := len(ls)
-	if L == 0 {
-		return []string{}, nil
-	}
-	n, m = brNorm(n, m, L)
-	if n < 0 || n >= L || m < n || m >= L {
-		return nil, fmt.Errorf("range 越界")
-	}
-	return ls[n : m+1], nil
-}
-func (f *fsFile) WriteAll(text string) error {
-	// 写入路径强校验（R-11，运行时兜底：覆盖 {{}} 插值的重定向目标）+ 沙箱写校验
-	abs, err := f.absWrite()
-	if err != nil {
-		return err
-	}
-	if dir := filepath.Dir(abs); dir != "." {
-		_ = os.MkdirAll(dir, 0o755)
-	}
-	return os.WriteFile(abs, []byte(text), 0o644)
-}
-func (f *fsFile) Append(text string) error {
-	if text == "" {
-		return nil
-	}
-	abs, err := f.absWrite()
-	if err != nil {
-		return err
-	}
-	fd, err := os.OpenFile(abs, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer fd.Close()
-	_, err = fd.WriteString(text)
-	return err
-}
-func (f *fsFile) ReplaceLines(n, m int, lines []string) error {
-	abs, err := f.absWrite()
-	if err != nil {
-		return err
-	}
-	c, err := f.ReadText()
-	if err != nil {
-		return err
-	}
-	ls := strings.Split(c, "\n")
-	if len(ls) > 0 && ls[len(ls)-1] == "" {
-		ls = ls[:len(ls)-1]
-	}
-	L := len(ls)
-	n, m = brNorm(n, m, L)
-	if n >= L || n < 0 {
-		return nil
-	}
-	if m >= L {
-		m = L - 1
-	}
-	out := append([]string{}, ls[:n]...)
-	out = append(out, lines...)
-	out = append(out, ls[m+1:]...)
-	return os.WriteFile(abs, []byte(strings.Join(out, "\n")), 0o644)
-}
-
-func brNorm(n, m, L int) (int, int) {
-	if n < 0 {
-		n += L
-	}
-	if m < 0 {
-		m += L
-	}
-	return n, m
-}
+func (scriptFS) Open(path string) dsl.FileHandle { return dslfs.New(path, dslfs.Browser) }
 
 func (r *Runner) closeBrowser() {
 	if !r.closed {
@@ -814,13 +657,19 @@ func (r *Runner) shotElement(st *Step, sel, name string) error {
 	return savePNG(name, shot)
 }
 
+// writeFileChecked 是 browser 域落盘（SHT/DOM/DBG/console）的统一收口：写前过 agentbox
+// 沙箱写校验（未启用隔离 = 一律放行），杜绝裸 os.WriteFile 绕过沙箱。
+func writeFileChecked(name string, data []byte) error {
+	if err := agentbox.Check(name, true); err != nil {
+		return err
+	}
+	return os.WriteFile(name, data, 0o644)
+}
+
 // savePNG 写 PNG（buf 来自 CaptureScreenshot 类接口）。
 func savePNG(name string, buf []byte) error {
 	// chromedp.FullScreenshot 已返回编码 PNG 字节
-	if err := os.WriteFile(name, buf, 0o644); err != nil {
-		return err
-	}
-	return nil
+	return writeFileChecked(name, buf)
 }
 
 // stepDOM DOM [<loc>] "file.html"：把元素 outerHTML（无 loc = 整页 documentElement）写入文件。
@@ -856,7 +705,7 @@ func (r *Runner) stepDOM(st *Step) error {
 	if err != nil {
 		return stepErr(st.Line, st.Raw, "path", err.Error())
 	}
-	if err := os.WriteFile(name, []byte(html), 0o644); err != nil {
+	if err := writeFileChecked(name, []byte(html)); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "写入文件失败: "+err.Error())
 	}
 	r.out = append(r.out, fmt.Sprintf("DOM: %d 字符已写入 %s", len(html), name))
@@ -874,7 +723,7 @@ func (r *Runner) stepDBG(st *Step) error {
 		return stepErr(st.Line, st.Raw, "path", err.Error())
 	}
 	content := strings.Join(r.console, "\n")
-	if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+	if err := writeFileChecked(name, []byte(content)); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "写入文件失败: "+err.Error())
 	}
 	r.out = append(r.out, fmt.Sprintf("DBG: %d 条 console 日志已写入 %s", len(r.console), name))
@@ -886,7 +735,7 @@ func (r *Runner) domToFile(name string) error {
 	if err := r.evalJS(r.ctx, "document.documentElement.outerHTML", &html); err != nil {
 		return err
 	}
-	return os.WriteFile(name, []byte(html), 0o644)
+	return writeFileChecked(name, []byte(html))
 }
 
 func (r *Runner) flushConsole() error {
@@ -894,7 +743,7 @@ func (r *Runner) flushConsole() error {
 		return nil
 	}
 	content := strings.Join(r.console, "\n")
-	return os.WriteFile(r.opt.ConsoleFile, []byte(content), 0o644)
+	return writeFileChecked(r.opt.ConsoleFile, []byte(content))
 }
 
 // findBrowserPath 探测 Chrome/Edge。

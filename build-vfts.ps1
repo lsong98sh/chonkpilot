@@ -1,4 +1,4 @@
-﻿# build-vfts.ps1：构建并组装 chonkpilot-vfts-mcp-server 独立部署目录
+# build-vfts.ps1：构建并组装 chonkpilot-vfts-mcp-server 独立部署目录
 #
 # 产物布局（dist/plugins/vfts/，见 [41 D-28]）：
 #   ├── chonkpilot-vfts-mcp-server.exe   # 进程内 zvec FTS 全文索引 MCP server（console，CGO）
@@ -16,9 +16,13 @@
 $ErrorActionPreference = "Stop"
 
 # ── 工具链（对齐 build-codegraph.ps1；vfts 需 CGO 链接 zvec C-API）──
+# 路径：**强制**使用本仓要求的 Go 工具链与 MinGW 路径（不采信外部 GOROOT：本机 shell 常
+# 预置 `e:\GoDev\go`（旧版），沿用会导致 go.mod 版本校验失败）。
 $env:GOROOT = "e:\GoDev\go1.26"
-$env:Path = "e:\GoDev\go1.26\bin;e:\GoDev\msys64\ucrt64\bin;" + $env:Path
+$env:CHONK_MSYS64_BIN = "e:\GoDev\msys64\ucrt64\bin"
+$env:Path = (Join-Path $env:GOROOT "bin") + ";" + $env:CHONK_MSYS64_BIN + ";" + $env:Path
 $env:GOPROXY = "https://goproxy.cn,direct"
+$env:GOTOOLCHAIN = "local"
 $env:CGO_ENABLED = "1"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path

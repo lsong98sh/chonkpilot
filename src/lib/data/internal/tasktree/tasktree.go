@@ -3,8 +3,8 @@
 //
 // 覆盖：任务树节点列表 / 任务快照 / 节点幂等落库 / 关闭（逻辑删除）+ 影子域回滚开关。
 // 存储形状（`node_id`/`node_type` 列、影子桶 `task_shadow*`、索引桶
-// `tasktree_by_parent/_by_top`、逻辑删除两列 `closed`/`deleted_at`）与门面 DTO 的翻译
-// 收在 `facade/wire`（一份翻译，三处路径逐字一致）。
+// `tasktree_by_top/_by_session/_by_parent`（由 Table 写入口维护，见 indexes.go）、逻辑删除两列
+// `closed`/`deleted_at`）与门面 DTO 的翻译收在 `facade/wire`（一份翻译，三处路径逐字一致）。
 //
 // 单一实现两处绑定（同一份代码，不并列两套写法）：
 //   - inline 绑定：`facade/inline.New` 直接构造本服务（同进程直调，不经 MQ）；
@@ -215,9 +215,6 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 	if err := prj.Table(tasktreeTableFor(req.Shadow)).Upsert(n.ID, rec); err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
-	if req.Shadow {
-		shadowIndexPut(prj, rec)
-	}
 	return facade.TasktreeUpsertResponse{OK: true}, nil
 }
 
@@ -234,29 +231,30 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 		return facade.TasktreeDeleteResponse{}, err
 	}
 	t := prj.Table(tasktreeTableFor(req.Shadow))
-	recs, _, err := t.Query(data.Query{})
-	if err != nil {
-		return facade.TasktreeDeleteResponse{}, err
-	}
-	childrenOf := map[string][]string{}
-	for _, r := range recs {
-		id := kernel.Sval(r["node_id"])
-		if id == "" {
-			id = kernel.Sval(r[data.KeyField])
-		}
-		if pid := kernel.Sval(r["parent_node_id"]); pid != "" {
-			childrenOf[pid] = append(childrenOf[pid], id)
-		}
-	}
+	// 级联子树改走二级索引 <table>_by_parent（键 = 父 id + "\x00" + 子主键，无排序段）：
+	// 对每个待删节点按 ListPrefix("<id>\x00") 取直接子节点，BFS 下钻 → O(子树) 而非 O(全库)。
+	// 子节点集合口径与旧全表扫逐点一致：不排除逻辑删除行、不区分 top_session（索引对空值/删除行
+	// 均入/保留键）；seen 去重 + 环/自环防护（口径同 task/layer.go descendantsLocked）。
+	parentIdx := prj.Table(t.Name() + "_by_parent")
+	seen := map[string]bool{req.NodeID: true}
 	toDelete := []string{req.NodeID}
 	for i := 0; i < len(toDelete); i++ {
-		toDelete = append(toDelete, childrenOf[toDelete[i]]...)
+		kids, err := childIDs(parentIdx, t, toDelete[i])
+		if err != nil {
+			return facade.TasktreeDeleteResponse{}, err
+		}
+		for _, id := range kids {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			toDelete = append(toDelete, id)
+		}
 	}
 	if req.Shadow {
 		for _, id := range toDelete {
-			_ = t.Delete(id)
+			_ = t.Delete(id) // 物理删（含索引键，由 Table 写入口同事务清理）
 		}
-		shadowIndexDelete(prj, toDelete)
 		return facade.TasktreeDeleteResponse{OK: true}, nil
 	}
 	// 逻辑删除：节点 + 级联子树同样标记（行保留；幂等）
@@ -269,12 +267,38 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 		rec["closed"] = true
 		rec["deleted_at"] = now
 		rec["updated_at"] = now
-		_ = t.Upsert(id, rec)
+		_ = t.Upsert(id, rec) // 行仍在 → 索引键随主行保留（由 Table 写入口维护）
 	}
-	// 既有索引桶清理（保留原行为；索引无读方 → 不改变任何可观察行为）
-	indexDelete(prj, toDelete)
 	s.emitTaskDeleted(req.InstanceID, req.NodeID)
 	return facade.TasktreeDeleteResponse{OK: true}, nil
+}
+
+// childIDs 返回 parentID 的**直接子节点 id 列表**（cascade 删除用）：对索引桶
+// <table>_by_parent（键 = 父 id + "\x00" + 子主键，无排序段）做前缀 Seek，只扫本父节点区段
+// → O(直接子节点数) 而非 O(全库)。子节点 id 口径与旧全表扫逐点一致：`node_id` 优先、缺失
+// 回落主键；脏索引（索引键在而主行缺失）跳过（旧扫主表本就不会产出该行）。
+// 索引对空值/逻辑删除行均入 / 保留键，故「含已 closed 行、跨 top_session」与旧实现一致。
+// parentIdx = 索引桶（前缀读子主键）、t = 主表（按主键回表取 node_id）。
+func childIDs(parentIdx, t *data.Table, parentID string) ([]string, error) {
+	prefix := parentID + "\x00" // 与 data.indexes.go 的索引段分隔符一致（节点 id 不含 \x00）
+	keys, err := parentIdx.ListPrefix(prefix)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(keys))
+	for _, k := range keys {
+		pk := strings.TrimPrefix(k, prefix)
+		var rec data.Record
+		if ok, _ := t.Get(pk, &rec); !ok {
+			continue // 脏索引（主行缺失）→ 跳过，与全表扫描口径一致
+		}
+		id := kernel.Sval(rec["node_id"])
+		if id == "" {
+			id = pk
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 // emitTaskDeleted 广播 task-deleted（相对主题），载荷 = `{instance_id, node_id}`（61 §3.4；
@@ -288,13 +312,11 @@ func (s *Service) emitTaskDeleted(instanceID, nodeID string) {
 }
 
 // 影子域路由（21 §9.1 P1 遗留，**P2 仅作回滚开关**）：载荷 data.shadow = true → 读写**影子桶**
-// task_shadow（+ task_shadow_by_top / _by_parent / _by_instance 索引桶，见 migrate.go v5）。
-// **不新增 MQ 主题**（复用既有 data-tasktree-* 四个方法）；**默认不传 shadow → 权威表 tasktree**
-// （P2 单写者路径）。影子路径保留 P1 语义（含物理删除），供回滚时不改代码直接切换。
+// task_shadow（+ task_shadow_by_top / _by_session / _by_parent 索引桶，由 Table 写入口维护，见
+// indexes.go / migrate.go）。**不新增 MQ 主题**（复用既有 data-tasktree-* 四个方法）；
+// **默认不传 shadow → 权威表 tasktree**（P2 单写者路径）。影子路径保留 P1 语义（含物理删除），
+// 供回滚时不改代码直接切换。
 const shadowTable = "task_shadow"
-
-// shadowIndexTables 影子索引桶（照 tasktree_by_parent / tasktree_by_top 既有写法）。
-var shadowIndexTables = []string{"task_shadow_by_top", "task_shadow_by_parent", "task_shadow_by_instance"}
 
 // closedRow 判定行是否已逻辑删除（closed=true 或 deleted_at 非空）。
 func closedRow(r data.Record) bool {
@@ -332,69 +354,6 @@ func boolVal(v any) bool {
 		return b == "true"
 	}
 	return false
-}
-
-// shadowIndexPut 维护影子索引桶（key = "<域值>\x00<task_id>"，与 tasktreeDelete 的 suffix
-// 匹配清理写法同源）；索引写失败不影响行写入（尽力而为）。
-func shadowIndexPut(prj *data.DB, rec data.Record) {
-	id := kernel.Sval(rec["task_id"])
-	if id == "" {
-		id = kernel.Sval(rec["node_id"])
-	}
-	if id == "" {
-		return
-	}
-	for _, e := range []struct {
-		table, field, val string
-	}{
-		{"task_shadow_by_top", "top_session", kernel.Sval(rec["top_session"])},
-		{"task_shadow_by_parent", "parent_node_id", kernel.Sval(rec["parent_node_id"])},
-		{"task_shadow_by_instance", "instance_id", kernel.Sval(rec["instance_id"])},
-	} {
-		if e.val == "" {
-			continue
-		}
-		_ = prj.Table(e.table).Upsert(e.val+"\x00"+id, data.Record{
-			e.field: e.val, "task_id": id, "node_id": id,
-		})
-	}
-}
-
-// shadowIndexDelete 清理影子索引桶（suffix 匹配被删 task_id；对齐 tasktreeDelete 既有清理）。
-func shadowIndexDelete(prj *data.DB, ids []string) {
-	for _, bucket := range shadowIndexTables {
-		keys, err := prj.Table(bucket).ListKeys()
-		if err != nil {
-			continue
-		}
-		for _, k := range keys {
-			for _, id := range ids {
-				if strings.HasSuffix(k, "\x00"+id) {
-					_ = prj.Table(bucket).Delete(k)
-					break
-				}
-			}
-		}
-	}
-}
-
-// indexDelete 清理 tasktree 既有索引桶（by_parent / by_top；suffix 匹配）。索引无读方
-// （查询全走表扫描），清理保留为既有行为，不改变任何可观察结果。
-func indexDelete(prj *data.DB, ids []string) {
-	for _, bucket := range []string{"tasktree_by_parent", "tasktree_by_top"} {
-		keys, err := prj.Table(bucket).ListKeys()
-		if err != nil {
-			continue
-		}
-		for _, k := range keys {
-			for _, id := range ids {
-				if strings.HasSuffix(k, "\x00"+id) {
-					_ = prj.Table(bucket).Delete(k)
-					break
-				}
-			}
-		}
-	}
 }
 
 // awaitingView 从执行态明细解析待裁决明细（I-99）：返回 nil = 未携带 options（不输出 awaiting

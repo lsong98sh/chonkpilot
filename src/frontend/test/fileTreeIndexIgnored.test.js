@@ -232,3 +232,25 @@ test('i18n：index_ignored 键 zh/en 齐备，既有键不丢失', () => {
     }
   }
 })
+
+// ── ⑥ utils/fileTree.js 订阅退订 + 死导出清理（E5-④）────────────
+
+test('utils/fileTree：订阅 API 返回退订函数；死导出 loading 已删', () => {
+  const util = read('utils/fileTree.js')
+  // 死导出：loading 无消费者 → 删除（含 vue ref 依赖一并移除）
+  assert.doesNotMatch(util, /\bloading\b/, '死导出 loading 须删除')
+  assert.doesNotMatch(util, /from 'vue'/, '删除 loading 后不应再依赖 vue')
+  assert.doesNotMatch(util, /\bexport \{[^}]*\bloading\b/, '不得再导出 loading')
+  // 退订：两个订阅 API 均返回 unsub（按身份守卫的单槽退订）
+  assert.match(util, /function onFileChanged\(cb\)\s*\{[\s\S]*?return \(\) => \{ if \(callback === cb\) callback = null \}/,
+    'onFileChanged 须返回退订函数（身份守卫）')
+  assert.match(util, /function onFileChangedEvent\(cb\)\s*\{[\s\S]*?return \(\) => \{ if \(eventCallback === cb\) eventCallback = null \}/,
+    'onFileChangedEvent 须返回退订函数（身份守卫）')
+})
+
+test('FileTree：卸载时退订 utils/fileTree 的回调（防遗留已卸载组件闭包）', () => {
+  const ft = read('views/filetree/FileTree.vue')
+  assert.match(ft, /_cleanup\.push\(onFileChanged\(/, 'onFileChanged 退订须纳入 _cleanup')
+  assert.match(ft, /_cleanup\.push\(onFileChangedEvent\(/, 'onFileChangedEvent 退订须纳入 _cleanup')
+  assert.match(ft, /for \(const fn of _cleanup\) fn\(\)/, 'onUnmounted 须遍历执行 _cleanup')
+})

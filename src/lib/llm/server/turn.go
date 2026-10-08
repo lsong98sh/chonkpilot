@@ -110,6 +110,14 @@ type turnCtx struct {
 	sessionLock *sessionLock           // session 排他锁（onLLMStart 获取；Close 释放）
 	result      string                 // 终态输出文本（子轮次递归时父侧读取；finish 写入）
 	turnErr     error                  // 终态错误（子轮次递归时父侧读取；finish error 写入）
+	// finishOnce 是**原子终态标志**（E2-2）：正常完成路径与 onLLMCancel（取消）可能并发到达同一轮次
+	// （cancel 命中时正常路径的 complete 仍在飞）→ server.finish 经它保证终态仅落库/广播一次
+	// （不二次写 CompleteTurnTokens、不二次广播 llm-complete）。与 Close 的 once 相互独立。
+	finishOnce sync.Once
+	// answer 跨段累积答案：自动续写（finish==length）与断链续写（resumePartial）会把同一轮正文
+	// 分多段产出；每段被判定"保留"（续写前落库 / 终态）时 append，终态 `llm-complete.text` 与
+	// `tc.result` 取**累积全文**（单段场景与旧行为逐字节一致）。仅 loop goroutine 读写，无需加锁。
+	answer strings.Builder
 
 	llmTemperature     *float64 // 来自 provider 配置的 LLM temperature（存在即生效，含 0；启动时加载一次）
 	llmMaxOutputToken  *int     // 来自 provider 配置的 LLM maxOutputToken（最大输出 token；存在即生效，含 0；口径 Z1）
@@ -216,65 +224,27 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	}
 	ctx, cancel := context.WithCancel(withInstance(parent, req.InstanceID))
 	// 组装历史：经总线 persist 一次取上下文（优先快照：快照 + snapshot_turn 之后 turns；
-	// 无快照自动回退全量历史 summary 注入），见 sessionStore.BuildContext。
+	// 无快照自动回退全量历史 summary 注入），见 sessionStore.BuildContextTokens。
 	// 同轮次继续（req.Continue）：本 turn 已被快照覆盖（finish 写 snapshot_turn=本 turn），
 	// 若仍走快照分支会与下方 msgs() 的 LoadMessages(本 turn) 重复——改用全量历史分支并
 	// 排除本 turn，本 turn 既有消息由 msgs() 从库带回，保证该 turn 恒为末段（全量拼接）。
 	hist, turnTokens := newSessionStore(s.bus, req.InstanceID).BuildContextTokens(req.Session, req.Turn, !req.Continue)
-	// 场景读取一次（AG-1 / AG-2 · 25 §3）：系统提示词三层拼接 + agent 定义（agent 提示词 /
-	// 工具白名单 / LLM 引用 / 委派条件）。每轮开始读一次 = 配置热生效（AG-C5，不缓存到进程级/包级）。
-	desc, scenarioLevel, agents := s.loadScenario(req.InstanceID, req.ScenarioID)
-	// 本轮生效的 agent 定义：子轮次（req.Agent 非空）= 被委派 agent —— 按**统一判据**
-	// （resolveAgentDef：instance 级场景内同名 agent 优先，未命中回落 global 级 = app 级场景内的内置 agent）
-	// 解析，与 llm_run 的委派判定 agentDelegable 同一来源；顶层轮次 = 主 agent（AG-2，
-	// 只取 llmRef / tools）。**agent 层提示词**：顶层 = 主 agent 的 prompt（主 agent = `main.agent.md`，
-	// 25 §3「agent 层」）；子轮次 = 被委派 agent 的 persona（childAgentSystem：标注 + 提示词 + 委派条件）。
-	agentDef := mainScenarioAgent(agents)
-	agentDomain := AgentDef{}
-	if req.Agent != "" {
-		agentDef, agentDomain = s.resolveAgentDef(req.ScenarioID, agents, req.Agent)
-	}
-	agentLayer := ""
-	if req.Agent != "" {
-		agentPrompt, delegateCond := "", ""
-		if agentDef != nil {
-			agentPrompt, delegateCond = agentDef.Prompt, agentDef.DelegateCond
-		} else {
-			agentPrompt = agentDomain.Content
-		}
-		agentLayer = childAgentSystem(req.Agent, agentPrompt, delegateCond)
-	} else if agentDef != nil {
-		agentLayer = agentDef.Prompt
-	}
-	// 全局层身份名（25 §3 / 用户口径 2026-09-26）：当前 agent 的**人可读裸名**（顶层 = 场景主
-	// agent；子轮次 = 被委派 agent）；通用模式（无场景 / 解析不到名）→ defaultAgentName（肥猫）。
-	agentName := defaultAgentName
-	if n := currentAgentName(agentDef, agentDomain); n != "" {
-		agentName = n
-	}
-	// 系统提示词**按序拼接**（25 §3）：全局层（身份 / 运行环境，代码写死）→ 目录层（四级数据根 +
-	// capability 子目录 + DSL env 用法，出厂文件 `capability/system/system-directory.md`）→ 场景层
-	// （scenario.description + 代码按场景 agents 自动拼接的成员段）→ agent 层。空层跳过；
-	// **无场景（= 通用模式）→ 只注入全局层与目录层**（无场景层 / agent 层）——目录层**不受场景门控**。
-	// {{toolchain.*}} / {{path.*}} 占位符对**合成后的整段**替换（覆盖任一层）。
-	if sysPrompt := systemPromptLayers(s.globalLayerPrompt(agentName), systemDirectoryLayer(), scenarioLayer(req.ScenarioID, desc, agents), agentLayer); sysPrompt != "" {
-		sysPrompt = s.replaceToolchain(req.InstanceID, sysPrompt)
-		sysPrompt = s.replacePaths(req.InstanceID, sysPrompt)
-		if sysPrompt != "" {
-			hist = append([]ChatMsg{{Role: "system", Content: sysPrompt}}, hist...)
-		}
+	// 场景 + agent 解析 + 系统提示词三层（**新建轮与恢复轮共用同一构造**，见 resolveTurnScenario）。
+	sc := s.resolveTurnScenario(req.InstanceID, req.ScenarioID, req.Agent)
+	if sc.sysPrompt != "" {
+		hist = append([]ChatMsg{{Role: "system", Content: sc.sysPrompt}}, hist...)
 	}
 	// agent 级 LLM 引用（AG-C1 逐级回落）：agent.llmRef →（空）子系统键 →（空）现有通道
 	// （req.LLMModel）→（空）defaultLLM →（空）系统默认。每轮开始解析 = 热生效（AG-C5）。
 	agentLLMRef := ""
 	var allowedTools map[string]struct{}
-	if agentDef != nil {
-		agentLLMRef = agentDef.LLMRef
-		allowedTools = parseToolWhitelist(agentDef.Tools)
+	if sc.agentDef != nil {
+		agentLLMRef = sc.agentDef.LLMRef
+		allowedTools = parseToolWhitelist(sc.agentDef.Tools)
 		if allowedTools != nil {
 			// 级别矩阵过滤（P4 2026-10-01）：越权（工具级别不在场景级别的"可用集合"内）/ 不存在
 			// （不在本实例可见工具面）的名字**静默剔除**（不报错、不中断）；详见 filterWhitelistByLevel。
-			allowedTools = s.filterWhitelistByLevel(req.InstanceID, scenarioLevel, allowedTools)
+			allowedTools = s.filterWhitelistByLevel(req.InstanceID, sc.level, allowedTools)
 		}
 	}
 	llmName := s.resolveAgentLLMName(req.InstanceID, agentLLMRef, "", req.LLMModel)
@@ -325,6 +295,62 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	}
 	go tc.loop()
 	return tc
+}
+
+// turnScenario 是「本轮场景 + agent」解析 + 系统提示词构造的产物（新建轮与恢复轮**共用同一构造**，
+// 见 resolveTurnScenario）。
+type turnScenario struct {
+	// sysPrompt 是拼好并替换占位符后的系统提示词（空 = 不注入）。
+	sysPrompt string
+	// level 是场景级别（app|user|project|prjusr；工具白名单级别矩阵过滤用）。
+	level string
+	// agentDef 是本轮生效 agent 定义（nil = 无场景 / 无 agent）。
+	agentDef *scenarioAgent
+}
+
+// resolveTurnScenario 读场景（AG-1 / AG-2 · 25 §3，每轮读一次 = 配置热生效，AG-C5，不缓存）→
+// 解析本轮生效 agent 定义 → 拼系统提示词（全局 + 目录 + 场景 + agent 四层，按序拼接、空层跳过、
+// 占位符整段替换）。**新建轮（newTurnCtx）与恢复轮（recoverTurnCtx）同口径**：恢复轮无
+// scenarioID / agent（未持久化）→ desc/agents 为空 → 仅注入全局层 + 目录层（同「通用模式」）。
+func (s *Server) resolveTurnScenario(instanceID, scenarioID, agent string) turnScenario {
+	desc, level, agents := s.loadScenario(instanceID, scenarioID)
+	// 本轮生效的 agent 定义：子轮次（agent 非空）= 被委派 agent —— 按**统一判据**
+	// （resolveAgentDef：instance 级场景内同名 agent 优先，未命中回落 global 级 = app 级场景内的
+	// 内置 agent）解析，与 llm_run 的委派判定 agentDelegable 同一来源；顶层轮次 = 主 agent
+	// （AG-2，只取 llmRef / tools）。**agent 层提示词**：顶层 = 主 agent 的 prompt（主 agent =
+	// `main.agent.md`，25 §3「agent 层」）；子轮次 = 被委派 agent 的 persona（childAgentSystem）。
+	agentDef := mainScenarioAgent(agents)
+	agentDomain := AgentDef{}
+	if agent != "" {
+		agentDef, agentDomain = s.resolveAgentDef(scenarioID, agents, agent)
+	}
+	agentLayer := ""
+	if agent != "" {
+		agentPrompt, delegateCond := "", ""
+		if agentDef != nil {
+			agentPrompt, delegateCond = agentDef.Prompt, agentDef.DelegateCond
+		} else {
+			agentPrompt = agentDomain.Content
+		}
+		agentLayer = childAgentSystem(agent, agentPrompt, delegateCond)
+	} else if agentDef != nil {
+		agentLayer = agentDef.Prompt
+	}
+	// 全局层身份名（25 §3 / 用户口径 2026-09-26）：当前 agent 的**人可读裸名**（顶层 = 场景主
+	// agent；子轮次 = 被委派 agent）；通用模式（无场景 / 解析不到名）→ defaultAgentName（肥猫）。
+	agentName := defaultAgentName
+	if n := currentAgentName(agentDef, agentDomain); n != "" {
+		agentName = n
+	}
+	// 系统提示词**按序拼接**（25 §3）：全局层（身份 / 运行环境，代码写死）→ 目录层（四级数据根 +
+	// capability 子目录 + DSL env 用法）→ 场景层（scenario.description + 成员段）→ agent 层。
+	// 空层跳过；`{{toolchain.*}}` / `{{path.*}}` 占位符对**合成后的整段**替换（覆盖任一层）。
+	sysPrompt := systemPromptLayers(s.globalLayerPrompt(agentName), systemDirectoryLayer(), scenarioLayer(scenarioID, desc, agents), agentLayer)
+	if sysPrompt != "" {
+		sysPrompt = s.replaceToolchain(instanceID, sysPrompt)
+		sysPrompt = s.replacePaths(instanceID, sysPrompt)
+	}
+	return turnScenario{sysPrompt: sysPrompt, level: level, agentDef: agentDef}
 }
 
 // ── 系统提示词分层（25 §3）──────────────────────────────────────────────
@@ -575,6 +601,8 @@ func (tc *turnCtx) loop() {
 				delete(tc.server.busy, instKey(tc.req.InstanceID, tc.req.Session))
 			}
 			delete(tc.server.continuePending, key)
+			// 轮次关闭 → 摘除本轮的 ask 等待登记（E2-1：否则无答复的 ask 常驻内存）。
+			tc.server.clearAsksByTurnLocked(tc.req.InstanceID, tc.req.Turn)
 		}
 		tc.server.mu.Unlock()
 		tc.Close()
@@ -848,6 +876,7 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 	if len(calls) == 0 {
 		// 自动续写（S6）：length 截断 → 落库 + 内部续写（Kind=continue，有上限）；耗尽 → incomplete
 		if finish == "length" && out.Len() > 0 && tc.continues < maxAutoContinue {
+			tc.answer.WriteString(out.String()) // 跨段累积本段正文（续写终态取全文）
 			tc.continues++
 			tc.feed(ChatMsg{Role: "user", Kind: assembleContinueKind, Content: assembleContinueText})
 			return
@@ -856,7 +885,9 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 		if finish == "length" {
 			status = "incomplete"
 		}
-		tc.server.complete(tc, status, finish, out.String()) // finish 内落库 + 写快照 + llm-compress
+		tc.answer.WriteString(out.String()) // 累积本段（单段场景 = 旧行为；多段续写 = 全文）
+		// finish 内落库 + 写快照 + llm-compress；text 取**累积全文**（跨段续写不丢前段正文）。
+		tc.server.complete(tc, status, finish, tc.answer.String())
 		tc.Close()
 		return
 	}
@@ -1045,23 +1076,23 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 // （streamErr != nil）时的恢复动作。
 //   - 断开前**已收到部分内容**（content 非空）且未达自动续写上限（`maxAutoContinue`）→
 //     落库半截 assistant（含 tool_calls / reasoning）+ 注入「继续」（Kind=continue，非新 turn 边界）
-//     续写同一 turn —— 续写由 loop 的下一轮 chatOnce 承接，本函数返回 true；
+//     续写同一 turn —— 续写由 loop 的下一轮 chatOnce 承接；
 //   - 否则（无内容失败 / 续写已耗尽）→ 报 `LLM_STREAM_ERROR`（携带真实分类 retryable，超时/网络/
-//     429/5xx → true 由后端自动续写；协议/鉴权 → false 由前端手动「重试」）并终结本 turn，返回 false。
+//     429/5xx → true 由后端自动续写；协议/鉴权 → false 由前端手动「重试」）并终结本 turn。
 //
 // 说明：**不重发**（已收内容重发会重复输出）；本函数与既有内联逻辑逐字等价，仅抽取命名。
 // asstKey 非空 = 流式过程中已按段落过该行 → 就地回填同一行（I-176）。
-func (tc *turnCtx) resumePartial(asstKey, content, reasoning string, calls []ToolCall, streamErr error) bool {
+func (tc *turnCtx) resumePartial(asstKey, content, reasoning string, calls []ToolCall, streamErr error) {
 	if content != "" && tc.continues < maxAutoContinue {
+		tc.answer.WriteString(content) // 跨段累积本段正文（断链续写终态取全文）
 		tc.continues++
 		_, _ = tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: content, ToolCalls: calls, Reasoning: reasoning}, asstKey)
 		tc.feed(ChatMsg{Role: "user", Kind: assembleContinueKind, Content: assembleContinueText})
-		return true
+		return
 	}
 	retryable := retryableErr(streamErr)
 	tc.server.llmErrorRetryable(tc, "LLM_STREAM_ERROR", tc.server.subsessionHint(tc, streamErr.Error(), retryable), retryable)
 	tc.Close()
-	return false
 }
 
 // msgs 返回当前轮次 LLM 上下文：会话历史（hist，含摘要）+ 当前 turn 已落消息（created_at 升序）。
@@ -1112,7 +1143,7 @@ func splitTurnTokens(tokens []facade.TurnToken) (full, brief []int) {
 	return full, brief
 }
 
-// persistMessage 落库 user/assistant 消息；走 AppendFull：完整保留 Kind / tool_calls /
+// persistMessage 落库 user/assistant 消息；走 AppendFullKeyed：完整保留 Kind / tool_calls /
 // reasoning，供快照组装、压缩定位与协议回传。（role=tool 结果经 persistToolResult 落库。）
 func (tc *turnCtx) persistMessage(msg ChatMsg) error {
 	_, err := tc.persistMessageKeyed(msg, "")

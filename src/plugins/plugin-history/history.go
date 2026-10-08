@@ -35,8 +35,6 @@ package history
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +46,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-plugin"
+	"github.com/chonkpilot/chonkpilot-plugin/dataclient"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
 
@@ -188,12 +187,22 @@ func (h *History) Start(d plugin.Deps) error {
 	if err := h.im.Start(); err != nil {
 		return err
 	}
+	// 订阅失败回滚：任一步失败 → 退订已注册的全部订阅 + 停实例视图，回到"未启动"态，
+	// 避免半订阅残留（对齐 codegraph/vfts 的 unsubscribeAll）。
+	ok := false
+	defer func() {
+		if !ok {
+			h.unsubscribeAll()
+			h.im.Stop()
+		}
+	}()
 	// 事件类订阅（fire-and-forget 形态；handler 不写 v.Result）。
 	for _, s := range []struct {
 		subject string
 		h       mq.Handler
 	}{
 		{instanceRegisterSubject, h.onInstanceRegister},
+		{instance.SubjectExit, h.onInstanceExit}, // 实例退出 → 回收 gate/sess 映射（防无界增长）
 		{filesysChangedSubject, h.onFilesysChanged},
 		{completeSubject, h.onComplete},
 	} {
@@ -224,9 +233,18 @@ func (h *History) Start(d plugin.Deps) error {
 		return err
 	}
 	h.subs = append(h.subs, callSub)
+	ok = true
 	logf("history: 检查点链就绪（前置钩子=%s / 回调=%s；**默认关闭**，仅 prj-config %s=\"true\" 时打点）",
 		preHookSubject, toolCallSubject, historyEnabledKey)
 	return nil
+}
+
+// unsubscribeAll 退订全部订阅（Start 失败回滚用；与 codegraph/vfts 的 unsubscribeAll 一致）。
+func (h *History) unsubscribeAll() {
+	for _, s := range h.subs {
+		_ = s.Unsubscribe()
+	}
+	h.subs = nil
 }
 
 // logf 取日志函数（未装配时静默）。
@@ -275,10 +293,33 @@ func (h *History) onInstanceRegister(_ string, payload []byte) {
 	h.syncTools()                // 已回读的实例：立即收敛工具面
 }
 
+// onInstanceExit 实例退出 → 回收 gate/sess 映射：删该实例的门控项 + 清其名下会话归属。
+// 不清理会让已退出实例的条目永驻（无界增长）。载荷仅 {instance_id}（61-消息一览 §4.1 ③）。
+// 幂等：重复到达无副作用。
+func (h *History) onInstanceExit(_ string, payload []byte) {
+	var ev struct {
+		InstanceID string `json:"instance_id"`
+	}
+	if json.Unmarshal(payload, &ev) != nil || ev.InstanceID == "" {
+		return
+	}
+	h.gateMu.Lock()
+	delete(h.gate, ev.InstanceID)
+	delete(h.gateBusy, ev.InstanceID)
+	h.gateMu.Unlock()
+	h.sessMu.Lock()
+	for sess, rec := range h.sess {
+		if rec.instanceID == ev.InstanceID {
+			delete(h.sess, sess)
+		}
+	}
+	h.sessMu.Unlock()
+}
+
 // readGate 经 data-prj-config-load 回读 history.enabled：只有显式 "true" 落 gate=true；
 // 缺失/非法/读失败 → 关闭（默认不开启）。
 func (h *History) readGate(instanceID string) {
-	val, err := prjConfigReadKey(h.deps.Bus, instanceID, historyEnabledKey)
+	val, err := dataclient.ReadKey(h.deps.Bus, instanceID, historyEnabledKey)
 	enabled := err == nil && gateFromValue(val)
 	h.gateMu.Lock()
 	delete(h.gateBusy, instanceID)
@@ -300,10 +341,10 @@ func (h *History) readGate(instanceID string) {
 // readOpts 回读保留参数（history.checkpoint_keep / history.checkpoint_ttl_days）。
 // v1 限制：单宿主典型形态为单实例/单 workdir，保留参数**全局生效**（多 workdir 差异化留待 v2）。
 func (h *History) readOpts(instanceID string) {
-	if v, err := prjConfigReadKey(h.deps.Bus, instanceID, keepKey); err == nil {
+	if v, err := dataclient.ReadKey(h.deps.Bus, instanceID, keepKey); err == nil {
 		h.setKeep(parseKeep(v))
 	}
-	if v, err := prjConfigReadKey(h.deps.Bus, instanceID, ttlKey); err == nil {
+	if v, err := dataclient.ReadKey(h.deps.Bus, instanceID, ttlKey); err == nil {
 		h.setTTL(parseTTL(v))
 	}
 }
@@ -383,7 +424,7 @@ func (h *History) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) e
 			enabled := false
 			if ev.List != nil {
 				if raw, ok := ev.List[historyEnabledKey]; ok {
-					enabled = gateFromValue(strval(raw))
+					enabled = gateFromValue(dataclient.Strval(raw))
 				}
 			}
 			h.gateMu.Lock()
@@ -396,13 +437,13 @@ func (h *History) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) e
 			h.syncTools()
 		case keepKey:
 			if ev.Op != "delete" && ev.List != nil {
-				h.setKeep(parseKeep(strval(ev.List[keepKey])))
+				h.setKeep(parseKeep(dataclient.Strval(ev.List[keepKey])))
 			} else {
 				h.setKeep(defaultKeep)
 			}
 		case ttlKey:
 			if ev.Op != "delete" && ev.List != nil {
-				h.setTTL(parseTTL(strval(ev.List[ttlKey])))
+				h.setTTL(parseTTL(dataclient.Strval(ev.List[ttlKey])))
 			} else {
 				h.setTTL(defaultTTLDays)
 			}
@@ -413,10 +454,10 @@ func (h *History) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) e
 			if ev.Op == "delete" {
 				continue
 			}
-			if slug := clearTargetSession(strval(ev.List[clearKey])); slug != "" {
+			if slug := clearTargetSession(dataclient.Strval(ev.List[clearKey])); slug != "" {
 				h.clearChain(slug)
 			} else {
-				h.logf()("history: history.clear 值非法或未带 session（忽略，不动作）：%q", strval(ev.List[clearKey]))
+				h.logf()("history: history.clear 值非法或未带 session（忽略，不动作）：%q", dataclient.Strval(ev.List[clearKey]))
 			}
 		}
 	}
@@ -665,96 +706,8 @@ func (h *History) anyActive() bool {
 }
 
 // ─── prj-config 请求-响应 / 回写（镜像 codegraph 模式）────────
-
-var reqSeq atomic.Uint64
-
-func newReqID() string {
-	return fmt.Sprintf("history-%d-%d", time.Now().UnixNano(), reqSeq.Add(1))
-}
-
-// strval 任意值 → 字符串（配置 list 值归一）。
-func strval(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case bool:
-		if x {
-			return "true"
-		}
-		return "false"
-	case nil:
-		return ""
-	default:
-		return fmt.Sprint(x)
-	}
-}
-
-// dataEmit 向 data-<域>-<动作> 请求面发一次请求并等应答（persist 把应答发布到请求同主题，
-// 须按 req_id 关联收敛）。
-func dataEmit(bus mq.Bus, subject string, req map[string]any) (map[string]any, error) {
-	req["req_id"] = newReqID()
-	type reply struct {
-		result map[string]any
-		err    error
-	}
-	done := make(chan reply, 1)
-	sub, err := bus.On(subject, 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m struct {
-			ReqID  string         `json:"req_id"`
-			OK     *bool          `json:"ok"`
-			Result map[string]any `json:"result"`
-			Error  string         `json:"error"`
-		}
-		if json.Unmarshal(v.Payload, &m) != nil || m.ReqID != req["req_id"] || m.OK == nil {
-			return nil // 他人请求/应答忽略
-		}
-		if !*m.OK {
-			msg := m.Error
-			if msg == "" {
-				msg = "persist error"
-			}
-			done <- reply{err: errors.New(msg)}
-			return nil
-		}
-		done <- reply{result: m.Result}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer sub.Unsubscribe()
-	if f := bus.Emit(context.Background(), subject, req); f.Wait().Err() != nil {
-		return nil, f.Wait().Err()
-	}
-	select {
-	case r := <-done:
-		return r.result, r.err
-	case <-time.After(dataTimeout):
-		return nil, fmt.Errorf("%s via persist 应答超时", subject)
-	}
-}
-
-// prjConfigReadKey 读 prj-config 单键：load 应答 result.data = 值字符串（键不存在 → ""）。
-func prjConfigReadKey(bus mq.Bus, instanceID, key string) (string, error) {
-	res, err := dataEmit(bus, prjConfigLoadSubject, map[string]any{
-		"instance_id": instanceID,
-		"data":        map[string]any{"id": key},
-	})
-	if err != nil {
-		return "", err
-	}
-	val, _ := res["data"].(string)
-	return val, nil
-}
-
-// prjConfigSaveKey 写 prj-config 单键（值 = 字符串；save 载荷 {data:{key,value}}）。
-func prjConfigSaveKey(bus mq.Bus, instanceID, key, value string) error {
-	_, err := dataEmit(bus, prjConfigSaveSubject, map[string]any{
-		"instance_id": instanceID,
-		"data":        map[string]any{"key": key, "value": value},
-	})
-	return err
-}
+// dataEmit / newReqID / strval / prjConfigReadKey / prjConfigSaveKey 已收口到 plugin/dataclient
+// （三插件逐字重复 → 单点实现），本包改为调用 dataclient.*。
 
 // instanceForWorkdir 返回该 workdir 任一活跃实例 id（回写 prj-config 用；无则空串）。
 func (h *History) instanceForWorkdir(wd string) string {

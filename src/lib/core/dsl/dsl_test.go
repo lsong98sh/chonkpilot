@@ -1224,6 +1224,15 @@ LLM "chk" "{{first}}|{{first2}}"
 	}
 }
 
+// 下标须在同一行内闭合：跨行下标显式报错
+// （旧实现跨行推进游标却沿用首行偏移：`[` 后首行偏移=9，次行更长 → 静默取 ln2[9:10]="9" 产出错误 token 流）。
+func TestSubscriptCrossLineRejected(t *testing.T) {
+	_, err := Parse("SET list[\n0123456789] => x\n", nil)
+	if err == nil {
+		t.Fatal("跨行下标应报错")
+	}
+}
+
 // 大组合：SPLIT CSV → 下标改列 → JOIN 回行 → 收集
 func TestSplitSubscriptJoinPushFull(t *testing.T) {
 	e := newEnv(map[string]string{"data.csv": "a,1,x\nb,2,y\nc,3,z"}, nil)

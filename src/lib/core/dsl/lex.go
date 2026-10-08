@@ -234,15 +234,6 @@ func scanStatement(lc *lineCursor, rawVerbs map[string]bool) ([]tok, int, *strin
 				return toks, startLine, nil, nil
 			}
 		}
-		// Raw 动作动词：动词 token 后整行原文透传
-		if len(toks) == 1 && toks[0].kind == tokWord && rawVerbs[strings.ToUpper(toks[0].text)] {
-			raw, err := captureRawRest(lc)
-			if err != nil {
-				return nil, 0, nil, err
-			}
-			trimmed := strings.TrimSpace(raw)
-			return toks, startLine, &trimmed, nil
-		}
 		// 句柄前缀 #/@（# 后随引号）
 		if c == '#' || c == '@' {
 			lc.off++
@@ -438,59 +429,57 @@ func isStatementVerb(word string) bool {
 
 // scanSubscript 扫描下标 [N] 内容为 token 流（不做 JSON unmarshal）。
 // 调用前 lc.off 指向 `[`，调用后 lc.off 指向 `]` 之后。
+// 下标须在**同一行内**闭合（索引为单行数字/变量表达式，见 63-DSL语法 §13.2）；
+// 跨行未闭合 → 显式报错，不再跨行推进游标（原跨行实现用末行内容配首行偏移 → 错误 token 流）。
 func scanSubscript(lc *lineCursor, line int) ([]tok, error) {
 	// 跳过 `[`
 	lc.off++
-	// 收集 [ 和 ] 之间的子 token 流
-	depth := 1
+	startLine := lc.li
+	ln := lc.lines[lc.li]
 	startOff := lc.off
-	for lc.li < len(lc.lines) {
-		ln := lc.lines[lc.li]
-		for lc.off < len(ln) {
-			c := ln[lc.off]
-			if c == '[' {
-				depth++
-				lc.off++
-				continue
-			}
-			if c == ']' {
-				depth--
-				if depth == 0 {
-					// 子 token 流
-					if lc.off > startOff {
-						sub := ln[startOff:lc.off]
-						// 用临时 lineCursor 对子文本做 token 化
-						lc2 := &lineCursor{lines: []string{sub}, li: 0, off: 0}
-						toks, _, _, err := scanStatement(lc2, nil)
-						if err != nil {
-							return nil, err
-						}
-						lc.off++ // 跳过 ]
-						return toks, nil
+	depth := 1
+	for lc.off < len(ln) {
+		c := ln[lc.off]
+		if c == '[' {
+			depth++
+			lc.off++
+			continue
+		}
+		if c == ']' {
+			depth--
+			if depth == 0 {
+				// 子 token 流
+				if lc.off > startOff {
+					sub := ln[startOff:lc.off]
+					// 用临时 lineCursor 对子文本做 token 化
+					lc2 := &lineCursor{lines: []string{sub}, li: 0, off: 0}
+					toks, _, _, err := scanStatement(lc2, nil)
+					if err != nil {
+						return nil, err
 					}
 					lc.off++ // 跳过 ]
-					return nil, nil
+					return toks, nil
 				}
-				lc.off++
-				continue
-			}
-			if c == '"' {
-				lc.off++
-				_, err := readQuoted(lc, line)
-				if err != nil {
-					return nil, err
-				}
-				continue
+				lc.off++ // 跳过 ]
+				return nil, nil
 			}
 			lc.off++
+			continue
 		}
-		if depth == 0 {
-			break
+		if c == '"' {
+			lc.off++
+			if _, err := readQuoted(lc, line); err != nil {
+				return nil, err
+			}
+			// 多行字符串（<<<...>>>）会跨行 → 下标须单行，跨行即报错
+			if lc.li != startLine {
+				return nil, lineErr(line, "下标未闭合（下标须在同一行内闭合）")
+			}
+			continue
 		}
-		lc.li++
-		lc.off = 0
+		lc.off++
 	}
-	return nil, lineErr(line, "下标未闭合")
+	return nil, lineErr(line, "下标未闭合（下标须在同一行内闭合）")
 }
 
 // scanBalanced 扫描 JSON 字面量到匹配结束。

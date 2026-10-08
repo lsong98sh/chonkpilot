@@ -78,20 +78,10 @@ func (st *sessionStore) LatestTurnID(sessionID string) string {
 	return str(last["turn_id"])
 }
 
-// AppendMessage 落一条消息（user/assistant；tool 结果不落库走内存回喂）。
-func (st *sessionStore) AppendMessage(turnID, role, content, toolCallID string) error {
-	return st.AppendFull(turnID, ChatMsg{Role: role, Content: content, ToolCallID: toolCallID})
-}
-
-// AppendFull 落一条完整消息（含 tool_calls / kind，LLM 协议重放需要；persist 生成 m-<id>，
-// created_at 固定 9 位纳秒 RFC3339 保证同轮顺序稳定，对齐 persist 实现）。
-func (st *sessionStore) AppendFull(turnID string, m ChatMsg) error {
-	_, err := st.AppendFullKeyed(turnID, m, "")
-	return err
-}
-
-// AppendFullKeyed 同 AppendFull，另指定回填主键（key 非空 = 就地更新该行；空 = 新键）；
-// 返回落库主键（回填时回传为 key）。用于 assistant 增量落库（同段落库到同一行）。
+// AppendFullKeyed 落一条完整消息（含 tool_calls / kind，LLM 协议重放需要；persist 生成 m-<id>，
+// created_at 固定 9 位纳秒 RFC3339 保证同轮顺序稳定，对齐 persist 实现），另指定回填主键
+// （key 非空 = 就地更新该行；空 = 新键）；返回落库主键（回填时回传为 key）。
+// 用于 assistant 增量落库（同段落库到同一行）。
 func (st *sessionStore) AppendFullKeyed(turnID string, m ChatMsg, key string) (string, error) {
 	var msg map[string]any
 	if b, err := json.Marshal(m); err == nil {
@@ -153,30 +143,12 @@ func (st *sessionStore) LoadToolContent(sessionID, toolCallID string) (string, b
 	return s, ok && s != ""
 }
 
-// SetTurnSummary 写/更新某 turn 摘要（有值 = 该 turn 已被压缩，turns.summary）。
-func (st *sessionStore) SetTurnSummary(turnID, summary string) error {
-	_, err := st.req("set-summary", map[string]any{"turn_id": turnID, "summary": summary})
-	return err
-}
-
-// BuildHistory 组装会话历史（persist data-session-context 全量历史语义：summary 注入 +
-// 未压缩 turn 消息按序；排除 excludeTurn）。
-func (st *sessionStore) BuildHistory(sessionID, excludeTurn string) []ChatMsg {
-	return st.BuildContext(sessionID, excludeTurn, false)
-}
-
-// BuildContext 组装会话历史上下文（data-session-context，61-消息一览 §3.2a）：
+// BuildContextTokens 组装会话历史上下文（data-session-context，61-消息一览 §3.2a）：
 // includeSnapshot=true 且库快照 History 非空 → 快照前缀 + snapshot_turn 之后 turns 消息
-// （跳过 interrupted/exclude_turn）；否则全量历史（无快照自动回退）。
-func (st *sessionStore) BuildContext(sessionID, excludeTurn string, includeSnapshot bool) []ChatMsg {
-	msgs, _ := st.BuildContextTokens(sessionID, excludeTurn, includeSnapshot)
-	return msgs
-}
-
-// BuildContextTokens 同 BuildContext，另回传 `data-session-context` 结果载荷里**只增**的
-// `turn_tokens` 伴随数组（P3，2026-09-25）：每项 {turn_id, full, brief}（升序、排除 exclude_turn）。
-// 消费方（组装侧三段定位）据此**直接取预存 token**（免重复实时估算）；缺值/缺该键 → 返回 nil，
-// 调用方回退实时估算（见 data.ResolveStoredTokens）。
+// （跳过 interrupted/exclude_turn）；否则全量历史（无快照自动回退）。另回传 `data-session-context`
+// 结果载荷里**只增**的 `turn_tokens` 伴随数组（P3，2026-09-25）：每项 {turn_id, full, brief}
+// （升序、排除 exclude_turn）。消费方（组装侧三段定位）据此**直接取预存 token**（免重复实时估算）；
+// 缺值/缺该键 → 返回 nil，调用方回退实时估算（见 data.ResolveStoredTokens）。
 func (st *sessionStore) BuildContextTokens(sessionID, excludeTurn string, includeSnapshot bool) ([]ChatMsg, []facade.TurnToken) {
 	data := map[string]any{"session_id": sessionID, "exclude_turn": excludeTurn}
 	if includeSnapshot {
@@ -201,14 +173,10 @@ func (st *sessionStore) BuildContextTokens(sessionID, excludeTurn string, includ
 	return msgs, tokens
 }
 
-// CompleteTurn 结束轮次（写 status/finish_reason；保留原字段）。
-func (st *sessionStore) CompleteTurn(turnID, status, finishReason string) error {
-	return st.CompleteTurnTokens(turnID, status, finishReason, nil, nil)
-}
-
-// CompleteTurnTokens 结束轮次并**预存该轮 token 数**（P3；full/brief 为 nil = 不写该键）。
-// 预存值经 data-session-complete-turn 落 turns 行，供后续判定/拼接**直接累加、免重复估算**；
-// 缺值（历史轮无该字段）由消费方回退实时估算（绝不把缺值当 0）。
+// CompleteTurnTokens 结束轮次（写 status/finish_reason；保留原字段）并**预存该轮 token 数**
+// （P3；full/brief 为 nil = 不写该键）。预存值经 data-session-complete-turn 落 turns 行，
+// 供后续判定/拼接**直接累加、免重复估算**；缺值（历史轮无该字段）由消费方回退实时估算
+// （绝不把缺值当 0）。
 func (st *sessionStore) CompleteTurnTokens(turnID, status, finishReason string, fullTokens, briefTokens *int) error {
 	data := map[string]any{
 		"turn_id": turnID, "status": status, "finish_reason": finishReason,

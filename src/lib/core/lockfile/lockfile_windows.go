@@ -3,6 +3,7 @@
 package lockfile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,7 +34,12 @@ func Acquire(path string) (*Lock, error) {
 	}
 	if err := winLock(f); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("%w: %s", ErrBusy, path)
+		// 仅「已被占用」映射 ErrBusy；权限不足等设施故障原样返回，
+		// 避免调用方把加锁失败误报为「已被打开」。
+		if isBusyErr(err) {
+			return nil, fmt.Errorf("%w: %s", ErrBusy, path)
+		}
+		return nil, fmt.Errorf("lockfile: 加锁失败 %s: %w", path, err)
 	}
 	return &Lock{f: f}, nil
 }
@@ -56,6 +62,12 @@ func winLock(f *os.File) error {
 		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
 		0, 1, 0, ol,
 	)
+}
+
+// isBusyErr 判定 LockFileEx 错误是否确为「已被占用」：仅锁冲突 / 共享冲突 → true；
+// 权限不足等其它错误 → false（不应误报 ErrBusy）。
+func isBusyErr(err error) bool {
+	return errors.Is(err, windows.ERROR_LOCK_VIOLATION) || errors.Is(err, windows.ERROR_SHARING_VIOLATION)
 }
 
 // winUnlock 释放文件首字节锁。

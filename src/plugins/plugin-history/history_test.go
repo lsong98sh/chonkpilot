@@ -213,3 +213,51 @@ func TestRetentionRefreshBatch(t *testing.T) {
 		t.Fatalf("批量广播应应用 ttl（勿因 id 为首键而漏）：got %d，期望 9", got)
 	}
 }
+
+// TestInstanceExitClearsMappings：`instance-exit` → 回收该实例的 gate/gateBusy 与 sess 归属
+// （否则已退出实例的条目永驻 → 无界增长）；且**不误删**其它实例的会话归属。
+func TestInstanceExitClearsMappings(t *testing.T) {
+	val := "true"
+	bus, h := newHistory(t, &val)
+	if !waitGate(t, h, "ins-gate") {
+		t.Fatalf("前置：ins-gate 回读应为 true")
+	}
+	// 登记会话归属：一条属于 ins-gate，一条属于别的实例（不应被误删）。
+	h.rememberSession("sess-1", "root-1", "/wd", "ins-gate")
+	h.rememberSession("sess-other", "root-2", "/wd", "ins-other")
+
+	b, _ := json.Marshal(map[string]any{"instance_id": "ins-gate"})
+	bus.Emit(context.Background(), "instance-exit", b).Wait()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.gateMu.Lock()
+		_, gateLeft := h.gate["ins-gate"]
+		h.gateMu.Unlock()
+		h.sessMu.Lock()
+		_, sessLeft := h.sess["sess-1"]
+		h.sessMu.Unlock()
+		if !gateLeft && !sessLeft {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	h.gateMu.Lock()
+	_, gateLeft := h.gate["ins-gate"]
+	_, busyLeft := h.gateBusy["ins-gate"]
+	h.gateMu.Unlock()
+	if gateLeft || busyLeft {
+		t.Fatalf("instance-exit 后 gate/gateBusy 应被回收：gate=%v busy=%v", gateLeft, busyLeft)
+	}
+	h.sessMu.Lock()
+	_, sessLeft := h.sess["sess-1"]
+	_, otherLeft := h.sess["sess-other"]
+	h.sessMu.Unlock()
+	if sessLeft {
+		t.Fatalf("instance-exit 后该实例的会话归属应被回收")
+	}
+	if !otherLeft {
+		t.Fatalf("其它实例的会话归属不应被误删")
+	}
+}

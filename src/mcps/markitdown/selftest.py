@@ -18,14 +18,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import shutil
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from server import (  # noqa: E402
+    ALLOWED_ROOTS_ENV,
+    ALLOW_PRIVATE_HOSTS,
     ERROR_NOT_FOUND,
     ERROR_TOO_LARGE,
     ERROR_UNSUPPORTED_FORMAT,
@@ -34,8 +39,12 @@ from server import (  # noqa: E402
     LOC_KIND_SHEET,
     LOC_KIND_SLIDE,
     SUPPORTED_EXTENSIONS,
+    allowed_convert_roots,
+    check_remote_host,
     convert_path,
+    path_within_roots,
     remove_state,
+    run_in_convert_pool,
     write_state,
 )
 
@@ -268,6 +277,75 @@ def lifecycle_cases() -> None:
         check(os.path.exists(path), "remove_state（他人 pid）→ 不删除")
 
 
+def security_cases() -> None:
+    """安全约束单测（SSRF host 校验 + /vfts/convert 路径根约束）——纯函数，不访问网络。"""
+    print("\n===== 安全约束（SSRF / 路径根） =====")
+
+    # SSRF：远端抓取前拒绝解析到本机 / 私网 / 链路本地 / 云元数据（169.254.169.254）地址。
+    if ALLOW_PRIVATE_HOSTS:
+        print("  （MARKITDOWN_ALLOW_PRIVATE_HOSTS 已开启 → 跳过 SSRF 拒绝断言）")
+    else:
+        for host in ("127.0.0.1", "localhost", "10.0.0.1", "192.168.1.1",
+                     "172.16.0.1", "169.254.169.254", "::1"):
+            check(bool(check_remote_host(host)), f"SSRF: 拒绝 {host}")
+
+    # 路径根约束：realpath 后再比较（含符号链接），拒绝越界读。
+    root = tempfile.mkdtemp(prefix="markitdown-root-")
+    try:
+        inside = os.path.join(root, "a.docx")
+        outside = os.path.join(os.path.dirname(root), "outside.docx")
+        check(path_within_roots(inside, [root]), "root: 根内文件放行")
+        check(not path_within_roots(outside, [root]), "root: 根外文件拒绝")
+        check(not path_within_roots(inside, []), "root: 无允许根 → 拒绝")
+        # 前缀相似目录不得误判（<root>X 不是 <root> 的子目录）
+        check(not path_within_roots(os.path.join(root + "X", "a.docx"), [root]),
+              "root: 前缀相似目录不误判")
+        check(allowed_convert_roots(root) == [root], "root: 请求体 root 计入允许根")
+
+        # 环境白名单按 os.pathsep 解析
+        saved = os.environ.get(ALLOWED_ROOTS_ENV)
+        os.environ[ALLOWED_ROOTS_ENV] = root + os.pathsep + os.path.dirname(root)
+        try:
+            check(allowed_convert_roots() == [root, os.path.dirname(root)],
+                  f"{ALLOWED_ROOTS_ENV}: 按 pathsep 解析多根")
+        finally:
+            if saved is None:
+                os.environ.pop(ALLOWED_ROOTS_ENV, None)
+            else:
+                os.environ[ALLOWED_ROOTS_ENV] = saved
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def timeout_case() -> None:
+    """/vfts/convert 超时控制：run_in_convert_pool 到点抛 TimeoutError，且**不等待线程结束**
+    （超时分支已尽力 future.cancel()；线程不可强杀，仅回收未出队任务）。"""
+    print("\n===== 转换超时（超时取消） =====")
+
+    def slow() -> str:
+        time.sleep(0.6)  # 远超下面的 timeout
+        return "late"
+
+    async def run() -> float | None:
+        t0 = time.perf_counter()
+        try:
+            await run_in_convert_pool(slow, timeout=0.05)
+        except asyncio.TimeoutError:
+            return time.perf_counter() - t0
+        return None
+
+    elapsed = asyncio.run(run())
+    check(elapsed is not None, "超时应抛 asyncio.TimeoutError")
+    if elapsed is not None:
+        check(elapsed < 0.5, f"超时应即时返回（不等线程结束）：elapsed={elapsed:.3f}s")
+
+    # 未超时：正常返回结果。
+    async def fast_run() -> str:
+        return await run_in_convert_pool(lambda: "ok", timeout=5.0)
+
+    check(asyncio.run(fast_run()) == "ok", "未超时应原样返回线程结果")
+
+
 def real_documents() -> None:
     """samples/ 下的真实文档（跳过 generated/）逐个转换并打印，作为质量基线。"""
     if not os.path.isdir(SAMPLES_DIR):
@@ -328,6 +406,8 @@ def main() -> int:
 
     negative_cases()
     lifecycle_cases()
+    security_cases()
+    timeout_case()
     real_documents()
 
     print("\n===== 汇总 =====")

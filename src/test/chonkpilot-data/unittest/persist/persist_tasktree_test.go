@@ -32,8 +32,7 @@ func seedTasktree(t *testing.T, bus mq.Bus) *data.DB {
 		"title": "子工具", "created_at": now,
 		"tool_call_id": "tc-n2", // I-97：tasks 视图须带 tool_call_id（供按 tool_call_id 定位/取消）
 	})
-	// 索引桶（server 侧同款结构：<父键>\x00<子 node_id>）
-	_ = prj.Table("tasktree_by_parent").Upsert("n1\x00n2", data.Record{"parent_node_id": "n1", "node_id": "n2"})
+	// 索引桶由 Table 写入口同事务维护（indexes.go），无需手工播种。
 	return prj
 }
 
@@ -202,9 +201,9 @@ func TestDataTasktreeDelete(t *testing.T) {
 			t.Fatalf("node %s deleted_at 缺失: %+v", id, rec)
 		}
 	}
-	// 索引桶 suffix 匹配清理（n1\x00n2 → 删 n1 级联含 n2；既有行为保留）
-	if ok, _ := prj.Table("tasktree_by_parent").Get("n1\x00n2", &data.Record{}); ok {
-		t.Fatal("index entry not cleaned")
+	// 索引随主行维护：逻辑删除保留行 → 索引键仍在（by_parent 键 = "<父>\x00<子>"）
+	if keys, _ := prj.Table("tasktree_by_parent").ListPrefix("n1\x00"); len(keys) != 1 {
+		t.Fatalf("逻辑删除保留行 → 索引键应保留: %v", keys)
 	}
 	// 视图过滤 closed：默认 list/tasks 不再返回；include_closed=true → 可见（历史可查）
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
@@ -226,5 +225,116 @@ func TestDataTasktreeDelete(t *testing.T) {
 	nodes, _ := dataResult(t, r)["nodes"].([]any)
 	if len(nodes) != 2 {
 		t.Fatalf("include_closed 应返回历史行（2 条）: %+v", nodes)
+	}
+}
+
+// TestDataTasktreeDeleteMultiLevelCascade：级联删除改走 tasktree_by_parent 索引递归后，
+// **多层子树 + 跨 top_session 后代**仍被完整级联关闭（结果与旧全表扫一致，O(子树)）；
+// 无关子树不受影响。旧实现按 parent_node_id 级联（不看 top_session），故跨会话后代同样应关。
+func TestDataTasktreeDeleteMultiLevelCascade(t *testing.T) {
+	bus, _, _ := newTestPersist(t)
+	regInstance(t, bus)
+	prj, err := data.PrjUsr("ins-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	put := func(id, parent, top string) {
+		_ = prj.Table("tasktree").Upsert(id, data.Record{
+			"node_id": id, "session_id": "s-" + top, "top_session": top,
+			"parent_node_id": parent, "kind": "tool", "status": "done", "created_at": now,
+		})
+	}
+	// 待删子树：r1 → r2 → r3 →（r4/r5 跨 top_session，父仍是 r3）
+	put("r1", "", "top1")
+	put("r2", "r1", "top1")
+	put("r3", "r2", "top1")
+	put("r4", "r3", "top2") // 跨 top_session：旧实现按 parent_node_id 级联 → 仍应被关闭
+	put("r5", "r3", "top2")
+	// 无关子树：o1 → o2（不得受影响）
+	put("o1", "", "top1")
+	put("o2", "o1", "top1")
+
+	r := dataCall(t, bus, "data-tasktree-delete", map[string]any{
+		"req_id": "r1", "instance_id": "ins-test", "node_id": "r1",
+	})
+	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
+		t.Fatalf("delete failed: %+v", r)
+	}
+	closedOf := func(id string) bool {
+		var rec data.Record
+		ok, _ := prj.Table("tasktree").Get(id, &rec)
+		if !ok {
+			t.Fatalf("节点 %s 被物理删除（应逻辑删除保留行）", id)
+		}
+		c, _ := rec["closed"].(bool)
+		return c
+	}
+	for _, id := range []string{"r1", "r2", "r3", "r4", "r5"} {
+		if !closedOf(id) {
+			t.Fatalf("级联子树节点 %s 未被关闭", id)
+		}
+	}
+	for _, id := range []string{"o1", "o2"} {
+		if closedOf(id) {
+			t.Fatalf("无关子树节点 %s 被误关闭", id)
+		}
+	}
+	// 跨 top_session 后代已关闭 → list(top2) 默认过滤后为空
+	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
+		"req_id": "r2", "instance_id": "ins-test", "data": map[string]any{"top_session": "top2"},
+	})
+	if nodes, _ := dataResult(t, r)["nodes"].([]any); len(nodes) != 0 {
+		t.Fatalf("跨 top_session 后代应已关闭并被过滤: %+v", nodes)
+	}
+}
+
+// TestDataTasktreeDeleteCycleGuard：数据异常出现环（c1↔c2）或自环（s1→s1）时，
+// 索引递归级联删除须**终止**且各节点仅处理一次（seen 去重，口径同 task/layer.go）。
+// 旧全表扫 BFS 无 seen，遇环会死循环；本用例即回归护栏。
+func TestDataTasktreeDeleteCycleGuard(t *testing.T) {
+	bus, _, _ := newTestPersist(t)
+	regInstance(t, bus)
+	prj, err := data.PrjUsr("ins-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	put := func(id, parent string) {
+		_ = prj.Table("tasktree").Upsert(id, data.Record{
+			"node_id": id, "session_id": "s1", "top_session": "top1",
+			"parent_node_id": parent, "kind": "tool", "status": "done", "created_at": now,
+		})
+	}
+	put("c1", "c2") // 环：c1→c2→c1
+	put("c2", "c1")
+	put("s1", "s1") // 自环
+
+	// 环删除：若不终止，dataCall 会 3s 超时失败
+	r := dataCall(t, bus, "data-tasktree-delete", map[string]any{
+		"req_id": "r1", "instance_id": "ins-test", "node_id": "c1",
+	})
+	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
+		t.Fatalf("环删除 failed: %+v", r)
+	}
+	for _, id := range []string{"c1", "c2"} {
+		var rec data.Record
+		if ok, _ := prj.Table("tasktree").Get(id, &rec); !ok {
+			t.Fatalf("环节点 %s 被物理删除", id)
+		}
+		if c, _ := rec["closed"].(bool); !c {
+			t.Fatalf("环节点 %s 未被关闭", id)
+		}
+	}
+	// 自环删除：同样须终止
+	r = dataCall(t, bus, "data-tasktree-delete", map[string]any{
+		"req_id": "r2", "instance_id": "ins-test", "node_id": "s1",
+	})
+	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
+		t.Fatalf("自环删除 failed: %+v", r)
+	}
+	var rec data.Record
+	if ok, _ := prj.Table("tasktree").Get("s1", &rec); !ok || rec["closed"] != true {
+		t.Fatalf("自环节点 s1 未被关闭: %+v", rec)
 	}
 }

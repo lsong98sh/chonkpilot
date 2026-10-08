@@ -147,12 +147,24 @@ func trimTempPrefix(raw string) (string, bool) {
 	return "", false
 }
 
+// joinTempRoot 把 !/ 之后的相对部分接到临时根下；`..` 越出根（Clean 后不再以根为前缀）
+// → ok=false（拒绝 `!/../../x` 之类的穿越）。
+func joinTempRoot(root, rest string) (string, bool) {
+	root = filepath.Clean(root)
+	joined := filepath.Clean(filepath.Join(root, rest))
+	if joined != root && !strings.HasPrefix(joined, root+string(filepath.Separator)) {
+		return "", false
+	}
+	return joined, true
+}
+
 // ─── 唯一解析入口（R-11 严格语义）───
 
 // ResolvePath 是工具/DSL 参数路径解析的唯一入口（R-11 二次升级）。规则顺序：
 //
 //  1. raw == ""               → ("", "")（空值交给调用方做必填校验）
-//  2. !/ 或 !\ 前缀           → <tempRoot>/...（tempRoot = SetTempRoot/TempRoot，按 instance 分目录）
+//  2. !/ 或 !\ 前缀           → <tempRoot>/...（tempRoot = SetTempRoot/TempRoot，按 instance 分目录）；
+//     `..` 越出 tempRoot → 统一错误消息（拒绝穿越）
 //  3. ~ / ~/x / ~\x           → 展开用户 home（ExpandHome；~foo 不展开）
 //  4. filepath.IsAbs          → filepath.Clean 原样
 //  5. 其余：base != "" → filepath.Clean(Join(base, raw))（**仅供 CLI 参数解析**）；
@@ -168,7 +180,11 @@ func ResolvePath(raw, base string) (string, string) {
 		if err != nil {
 			return "", err.Error() // 缺 instance → 统一错误消息（不 panic）
 		}
-		return filepath.Join(root, rest), ""
+		p, ok := joinTempRoot(root, rest)
+		if !ok {
+			return "", InvalidPathMessage(raw) // `!/` 内 `..` 越出临时根 → 拒绝
+		}
+		return p, ""
 	}
 	s := ExpandHome(raw)
 	if filepath.IsAbs(s) {
@@ -200,7 +216,11 @@ func ResolvePathFor(instanceID, raw, base string) (string, string) {
 		if err != nil {
 			return "", err.Error() // 缺 instance → 统一错误消息（不 panic）
 		}
-		return filepath.Join(root, rest), ""
+		p, ok := joinTempRoot(root, rest)
+		if !ok {
+			return "", InvalidPathMessage(raw) // `!/` 内 `..` 越出临时根 → 拒绝
+		}
+		return p, ""
 	}
 	return ResolvePath(raw, base)
 }

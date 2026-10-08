@@ -351,3 +351,62 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+// TestValidateLLMTarget：SSRF 目标校验 —— 仅 http/https；requireAuth 形态（browser/gui）拒绝
+// 内网 / 元数据目标（IP 字面量与域名解析两路）；desktop 形态只校验协议（本机 provider 零摩擦）。
+func TestValidateLLMTarget(t *testing.T) {
+	browser := New(nil, Options{Form: FormBrowser})
+	desktop := New(nil, Options{Form: FormDesktop})
+
+	// 协议：非 http/https（含缺 host）一律拒（两形态同）
+	for _, bad := range []string{"ftp://example.com/x", "file:///etc/passwd", "http:///nohost", "not-a-url"} {
+		if err := browser.validateLLMTarget(bad); err == nil {
+			t.Fatalf("browser: %q 应拒绝（协议 / host）", bad)
+		}
+		if err := desktop.validateLLMTarget(bad); err == nil {
+			t.Fatalf("desktop: %q 应拒绝（协议 / host）", bad)
+		}
+	}
+	// requireAuth 形态：内网 / 元数据（IP 字面量）→ 拒
+	for _, bad := range []string{
+		"http://127.0.0.1:11434/v1", "http://10.0.0.5/v1", "http://192.168.1.1/v1",
+		"http://172.16.0.1/v1", "http://169.254.169.254/latest/meta-data/",
+		"https://[::1]:8443/v1", "http://0.0.0.0/v1",
+	} {
+		if err := browser.validateLLMTarget(bad); err == nil {
+			t.Fatalf("browser: %q（内网/元数据）应拒绝", bad)
+		}
+	}
+	// requireAuth 形态：公网 IP 字面量 → 放行（不实际出网，仅校验）
+	if err := browser.validateLLMTarget("https://8.8.8.8/v1"); err != nil {
+		t.Fatalf("browser: 公网目标应放行，got %v", err)
+	}
+	// desktop 形态：本机 provider 放行（零摩擦）
+	for _, ok := range []string{"http://127.0.0.1:11434/v1", "https://localhost:8901/v1", "http://192.168.1.9/v1"} {
+		if err := desktop.validateLLMTarget(ok); err != nil {
+			t.Fatalf("desktop: %q 应放行，got %v", ok, err)
+		}
+	}
+}
+
+// TestLLMTestConnectionSSRFBlocked：requireAuth 形态（browser）下，内网 / 元数据目标在**出网前**
+// 被拒（kind=invalid，且不发任何请求）；desktop 形态同目标仍放行（本机 provider 零摩擦）。
+func TestLLMTestConnectionSSRFBlocked(t *testing.T) {
+	rec, srv := probeChatServer(t) // 目标 = 127.0.0.1（内网）
+	s := newTestServer(t, mockLLMServer())
+	s.opts.Form = FormBrowser // 强制 requireAuth 形态 → 触发 SSRF 目标校验
+	res := testConn(t, s, map[string]any{"baseUrl": srv.URL, "model": "m1"})
+	if kind, _ := connError(t, res); kind != string(llmTestKindInvalid) {
+		t.Fatalf("kind=%q want invalid（SSRF 目标被拒）", kind)
+	}
+	if n := rec.count(); n != 0 {
+		t.Fatalf("被拒目标不得发请求，实得 %d 次", n)
+	}
+
+	// desktop 形态（newTestServer 默认）→ 同目标放行（可达 stub）
+	s2 := newTestServer(t, mockLLMServer())
+	res2 := testConn(t, s2, map[string]any{"baseUrl": srv.URL, "model": "m1"})
+	if ok, _ := res2["ok"].(bool); !ok {
+		t.Fatalf("desktop 形态本机 provider 应放行，实得 %+v", res2)
+	}
+}

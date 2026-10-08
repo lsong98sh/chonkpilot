@@ -18,17 +18,6 @@ func asMap(v any) (map[string]any, bool) {
 	return nil, false
 }
 
-func asList(v any) ([]any, bool) {
-	switch t := v.(type) {
-	case []any:
-		return t, true
-	case *Rec:
-		l, ok := t.V.([]any)
-		return l, ok
-	}
-	return nil, false
-}
-
 // parseNumber 数字识别（含负号、小数）。
 func parseNumber(s string) (float64, bool) {
 	if s == "" {
@@ -112,22 +101,6 @@ func interpText(v any) (string, error) {
 	default:
 		return toJSON(v)
 	}
-}
-
-// deepGet 按字段路径取值（仅 map 字段；缺失返回 ok=false）。
-func deepGet(v any, path []string) (any, bool) {
-	cur := v
-	for _, p := range path {
-		m, ok := asMap(cur)
-		if !ok {
-			return nil, false
-		}
-		cur, ok = m[p]
-		if !ok {
-			return nil, false
-		}
-	}
-	return cur, true
 }
 
 // parseJSONValue 尝试把文本解析为 JSON 值（用于动作输出 → 表记录等）。

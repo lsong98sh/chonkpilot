@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
 )
@@ -20,6 +21,10 @@ func HandleBrowserRun(args map[string]interface{}) *cli.Result {
 		resolved, msg := fileops.ValidateFilePath(file)
 		if msg != "" {
 			return cli.Err("browser_run", "file："+msg)
+		}
+		// 读脚本文件前过 agentbox 沙箱读校验（未启用隔离 = 放行；口径同 fileops/scriptrun）。
+		if err := agentbox.Check(resolved, false); err != nil {
+			return cli.Err("browser_run", "file："+err.Error())
 		}
 		b, err := os.ReadFile(resolved)
 		if err != nil {

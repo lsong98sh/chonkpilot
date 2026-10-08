@@ -7,6 +7,8 @@
 // 进程（desktop）行为不变。
 package server
 
+import "time"
+
 // instKey 组合运行态键：`<instance_id>\x00<id>`（instance 为空 → 原键，兼容旧语义）。
 // instance_id 与 id（turn/session/ask）都不会含 NUL → 用作分隔符无歧义。
 func instKey(instanceID, id string) string {
@@ -77,4 +79,45 @@ func (s *Server) takeAskLocked(instanceID, askID string) (*askWaiter, bool) {
 		}
 	}
 	return nil, false
+}
+
+// purgeExpiredAsksLocked 惰性回收**已过期**的 ask 等待登记（**须持 s.mu**）：expiresAt 到期未应答
+// → 摘除，避免无答复的 ask 常驻内存（expiresAt 与 payload `expires_at` 同源，见 ask/askTTL）。
+// 无答题的轮次若正常收尾，其等待登记由 clearAsksByTurnLocked 摘除；本回收兜住"轮次未收尾"的场景。
+func (s *Server) purgeExpiredAsksLocked(now time.Time) {
+	for k, w := range s.asks {
+		if !w.expiresAt.IsZero() && now.After(w.expiresAt) {
+			delete(s.asks, k)
+		}
+	}
+}
+
+// clearAsksByTurnLocked 摘除某轮次的全部 ask 等待登记（轮次收尾；**须持 s.mu**）。
+// instanceID 非空 → 只清该实例；空 → 全桶（turn id 全局唯一，旧语义等价）。
+func (s *Server) clearAsksByTurnLocked(instanceID, turnID string) {
+	if turnID == "" {
+		return
+	}
+	for k, w := range s.asks {
+		if w.turnID != turnID {
+			continue
+		}
+		if instanceID != "" && w.instanceID != instanceID {
+			continue
+		}
+		delete(s.asks, k)
+	}
+}
+
+// clearAsksByInstanceLocked 摘除某实例的**全部** ask 等待登记（实例退出；**须持 s.mu**）。
+// 退出清理时该实例的轮次可能已被移出 s.turns，故按 instance 归属整体清（不依赖 turn 存活）。
+func (s *Server) clearAsksByInstanceLocked(instanceID string) {
+	if instanceID == "" {
+		return
+	}
+	for k, w := range s.asks {
+		if w.instanceID == instanceID {
+			delete(s.asks, k)
+		}
+	}
 }

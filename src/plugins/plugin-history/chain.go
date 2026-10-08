@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chonkpilot/chonkpilot-lib/winproc"
+	"github.com/chonkpilot/chonkpilot-plugin/dataclient"
 )
 
 // chainRec 链上一个检查点的原始信息（重建保留段时复用 tree/message/时间）。
@@ -771,12 +772,12 @@ func (h *History) writeback(ws *workState, slug string) {
 	}
 	st, entries := h.buildStatus(ws, slug)
 	if b, err := json.Marshal(st); err == nil {
-		if err := prjConfigSaveKey(h.deps.Bus, inst, statusKeyPrefix+slug, string(b)); err != nil {
+		if err := dataclient.SaveKey(h.deps.Bus, inst, statusKeyPrefix+slug, string(b)); err != nil {
 			h.logf()("history: 回写 %s 失败（instance=%s）：%v", statusKeyPrefix+slug, inst, err)
 		}
 	}
 	if b, err := json.Marshal(entries); err == nil {
-		if err := prjConfigSaveKey(h.deps.Bus, inst, timelineKeyPrefix+slug, string(b)); err != nil {
+		if err := dataclient.SaveKey(h.deps.Bus, inst, timelineKeyPrefix+slug, string(b)); err != nil {
 			h.logf()("history: 回写 %s 失败（instance=%s）：%v", timelineKeyPrefix+slug, inst, err)
 		}
 	}

@@ -220,6 +220,48 @@ func TestTempRoot(t *testing.T) {
 	}
 }
 
+// TestResolvePathTempEscape `!/` 之后的 `..` 不得越出临时根（安全：拒绝路径穿越，如 `!/../../x`）。
+func TestResolvePathTempEscape(t *testing.T) {
+	root, err := paths.SetTempRoot("unittest-escape")
+	if err != nil {
+		t.Fatalf("SetTempRoot: %v", err)
+	}
+	for _, raw := range []string{"!/..", "!/../x", "!/../../x", "!/a/../../x", `!\..\x`} {
+		got, msg := paths.ResolvePath(raw, "")
+		if got != "" || msg == "" {
+			t.Fatalf("ResolvePath(%q) 应拒绝（越出临时根），got (%q,%q)", raw, got, msg)
+		}
+	}
+	// 根内写法不受影响。
+	cases := map[string]string{
+		"!/":        root,
+		"!/a/b.txt": filepath.Join(root, "a", "b.txt"),
+		"!/a/../b":  filepath.Join(root, "b"),
+		"!/./x":     filepath.Join(root, "x"),
+	}
+	for raw, want := range cases {
+		got, msg := paths.ResolvePath(raw, "")
+		if msg != "" || got != want {
+			t.Fatalf("ResolvePath(%q) = (%q,%q), want %q", raw, got, msg, want)
+		}
+	}
+}
+
+// TestResolvePathForTempEscape instance 显式入口同样拒绝 `!/` 内的越界 `..`。
+func TestResolvePathForTempEscape(t *testing.T) {
+	root, err := paths.TempRootFor("unittest-escape-for")
+	if err != nil {
+		t.Fatalf("TempRootFor: %v", err)
+	}
+	if got, msg := paths.ResolvePathFor("unittest-escape-for", "!/../../x", ""); got != "" || msg == "" {
+		t.Fatalf("ResolvePathFor 应拒绝越界 `!` 路径，got (%q,%q)", got, msg)
+	}
+	got, msg := paths.ResolvePathFor("unittest-escape-for", "!/a/b.txt", "")
+	if want := filepath.Join(root, "a", "b.txt"); msg != "" || got != want {
+		t.Fatalf("ResolvePathFor = (%q,%q), want %q", got, msg, want)
+	}
+}
+
 // TestLogicalPath（G-24）DB 逻辑路径双向转换：落库前 ToLogical（workdir 相对 + 斜杠归一），
 // 读取/展示前 FromLogical（还原绝对）。workdir 之外与带 scheme 的引用保持原样。
 func TestLogicalPath(t *testing.T) {

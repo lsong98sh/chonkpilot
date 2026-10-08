@@ -141,7 +141,7 @@
 |---|------|------|------|
 | 1 | **策略包（换算 / 判定 / 编解码）** | `src/lib/agentbox`（**新增包**） | `Rule{Dir,Writable}` / `Policy{New,Parse,Marshal,Allowed,Check}` / 进程级 `Set,Current,InitFromEnv,Check`；环境变量 **`CHONKPILOT_SANDBOX`**（JSON `[{dir,writable}]`）；错误 `*DeniedError{Path,Write,Allowed}` + `ErrDenied`（中文可诊断） |
 | 2 | **策略来源 = `security-*`** | `src/lib/llm/server/server.go` `securityRules(instanceID)`（读 `data-prj-security-list`，value = `{"dir","writable"}`）→ `mcp-server Config.SetSecurityDirs` | **递归语义**：允许目录下所有子路径；`writable` 决定可写（可写必然可读） |
-| 3 | **执行层强制（真正拦截）** | `src/lib/mcp-tools`：`internal/cli/cli.go`（启动时 `InitFromEnv`）+ `fileops`（`file_read`/`file_find`/`file_diff`/`filesys_run` 全动词/`ScriptFS` 句柄）+ `fetch`（`save_as`/`form_files`） | 越界 → **整体失败**（exit 1 + 明确文案），非仅告警；审计 = 拒绝时 stderr 一行 `[agentbox] …`（宿主捕获落日志） |
+| 3 | **执行层强制（真正拦截）** | `src/lib/mcp-tools`：`internal/cli/cli.go`（启动时 `InitFromEnv`）+ `fileops`（`file_read`/`file_find`/`file_diff`/`filesys_run` 全动词/`ScriptFS` 句柄）+ `fetch`（`save_as`/`form_files`）+ **`browser`**（落盘 `SHT`/`DOM`/`DBG`/console + 脚本 `file` 读）+ **`desktop`**（截图落盘 + 脚本 `file` 读）+ **`dslfs`**（四域共享 DSL 句柄，读写双校验）+ **`dslexec`**（`dsl_run` 脚本读盘）〔2026-10-08 补〕 | 越界 → **整体失败**（exit 1 + 明确文案），非仅告警；审计 = 拒绝时 stderr 一行 `[agentbox] …`（宿主捕获落日志） |
 | 4 | **mcp-server 下发** | `Config.SecurityDirs` + `Config.ToolSandbox`（`SetSecurityDirs`/`SetToolSandbox`/`SandboxPolicyFor`）→ `callTool` 按 **executor 类别**（`td.Category` = core/desktop/browser）查开关 → `executorEnv(cx, policy)` 注入 | 未配置 = 不注入（**默认兼容**） |
 | 5 | **gateway 上游 spawn 下发（仅 stdio）** | `ServerEntry.Sandbox`/`SandboxDirs` + `SandboxPolicyJSON()` → `buildConn` 的 **stdio** 分支注入 | http/sse **不施加**；**上游是否遵守取决于其是否实现 agentbox 消费方**——第三方进程**仅透传，不构成强制** |
 | 6 | **配置键** | usr `tool_sandbox`（**executor 级**开关：key = 类别 core/desktop/browser，persist 自由键已注册；旧工具级形态失效）· usr `mcps[].sandbox`（server 级开关，仅 stdio&spawn）· register `mcp_server.sandbox`/`sandbox_dirs`（可选字段） | 均登记 [64 §3/§4](../60-reference/64-配置项一览.md)；**与既有 `isolate`（连接池隔离）语义独立、互不替代** |
@@ -153,9 +153,9 @@
 | # | 事项 | 说明 |
 |---|------|------|
 | 1 | **`script_run` 脚本体内的文件读写** | 脚本在**任意子进程**内执行，执行器**无法拦截**其文件操作（仅约束 `file` 参数为可读）。**隔离开启时 `script_run` 仍是绕过通道**（登记为未决项） |
-| 2 | **`browser_run` / `desktop_run` 的落盘句柄** | `SHT`/`DOM`/`DBG`/`UPF` 等落盘未接线（未覆盖，登记为未决项） |
+| 2 | ~~**`browser_run` / `desktop_run` 的落盘句柄**~~ | **〔订正（2026-10-08）：已修复〕** 原「`SHT`/`DOM`/`DBG`/`UPF` 等落盘未接线」已不再成立——浏览器域落盘统一收口到 `internal/browser/run.go` 的 `writeFileChecked`（`savePNG`/`stepDOM`/`stepDBG`/`domToFile`/`flushConsole` 全走它），桌面域 `internal/desktop/run.go` 的 `encodePNG`（`saveWindowShot`/`saveScreenShot`）起手 `agentbox.Check(file,true)`；三域引擎句柄实现统一为 **`src/lib/mcp-tools/internal/dslfs`**（读 `Check(...,false)` / 写 `Check(...,true)` 双校验）；`dsl_run` 的脚本读盘已**下移执行器**（`dslexec`，受沙箱）。依据 [42 §2 (255)](../40-roadmap/42-决策记录.md)。 |
 | 3 | **审计落 DataDir** | 14 §5 规划项；当前仅 stderr 一行（由宿主捕获落日志），**不写文件** |
-| 4 | **符号链接解析** | 判定按字面路径 `Abs`+`Clean`，**不追软链**（`EvalSymlinks` 未用） |
+| 4 | **符号链接解析** | **agentbox 判定**仍按字面路径 `Abs`+`Clean`，**不追软链**（`EvalSymlinks` 未用）。〔2026-10-08 补〕**filesys 侧已自行逐段解析**（`withinWorkDirReal`/`resolveLinksOnce`，含 Windows 目录联接；`EvalSymlinks` 在 Windows 不解析 junction 故未采用）——见 [23-filesys](../20-modules/23-filesys.md) |
 | 5 | ~~**配置面 UI**~~ | **已实现**（改 executor 级）：MCP 对话框「运行信息」页签「沙箱」（仅 stdio，usr `mcps[].sandbox`）+ 页签「工具沙箱配置」（**三个 executor 行 core/desktop/browser + 只读工具清单 + 手动保存**，usr `tool_sandbox`） |
 | 6 | **§3.3 其余规划**（按 instance 工具白/黑名单 / `inputSchema` 校验 / 限流 / `trust` 标记） | 原方案未定项，**不做、保留** |
 

@@ -108,10 +108,8 @@ async function fetchVCSInfo() {
     vcsInfo.value = { git: false, svn: false }
   }
 }
-// fileTree is module-level singleton, no teardown needed
+// 统一卸载句柄：onMounted 内注册的监听 / 订阅退订函数统一入 _cleanup，onUnmounted 依次调用。
 const _cleanup = []
-
-// onFileChanged imported from utils/fileTree
 
 const _navFlatNodes = computed(() => {
   const result = []
@@ -1162,15 +1160,15 @@ onMounted(() => {
   })
 
   // file.changed（filemon 单文件变更，operation: create|write|remove|rename）：
-  // 经 utils/fileTree.js 模块级订阅统一回调，这里只处理 VCS 状态刷新
-  onFileChangedEvent((data) => {
+  // 经 utils/fileTree.js 模块级订阅统一回调，这里只处理 VCS 状态刷新；退订入 _cleanup。
+  _cleanup.push(onFileChangedEvent((data) => {
     const path = data?.path || ''
     if (path.endsWith('\\.git') || path.endsWith('/.git')) {
       fetchVCSInfo()
     }
-  })
+  }))
   // Debounced snapshot save on file-change events
-  onFileChanged((changes) => {
+  _cleanup.push(onFileChanged((changes) => {
     for (const { dir, children } of changes) {
       const normalized = dir.replace(/\\/g, '/')
       const node = findNode(treeData.value, normalized)
@@ -1218,7 +1216,7 @@ onMounted(() => {
     // 变更合并可能新增节点 → 补判排除状态（灰显）
     judgeLoadedNodes()
     nextTick(() => saveFileTreeSnapshotDebounced())
-  })
+  }))
 
   // 排除规则 / 引擎开关变化（既有 data-prj-config-refresh 广播）→ 重判已加载节点
   _cleanup.push(onDataRefresh('prj-config', rejudgeIndexIgnored))
@@ -1279,7 +1277,6 @@ onUnmounted(() => {
   document.removeEventListener('dragover', onDocDragOver)
   document.removeEventListener('drop', onDocDrop)
   for (const fn of _cleanup) fn()
-  // fileTree is module-level singleton, no teardown needed
 })
 </script>
 

@@ -1,4 +1,4 @@
-﻿﻿﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
+﻿﻿﻿﻿﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-standalone-gui.ps1`；
 #   形态名 `standalone` → **`desktop`（桌面单体）**，产物目录 `dist/standalone/` → `dist/desktop/`。
@@ -43,8 +43,11 @@
 # 用法：.\build-desktop.ps1
 $ErrorActionPreference = "Stop"
 
+# 工具链（项目固定）：**强制**使用本仓要求的 Go 工具链。
+# 注意：不采信外部 GOROOT —— 本机 shell 常预置 `e:\GoDev\go`（旧版），若沿用会导致
+# 「go.mod requires go >= 1.26.0」校验失败，故此处直接固定。
 $env:GOROOT = "e:\GoDev\go1.26"
-$env:Path = "e:\GoDev\go1.26\bin;" + $env:Path
+$env:Path = (Join-Path $env:GOROOT "bin") + ";" + $env:Path
 $env:GOPROXY = "https://goproxy.cn,direct"
 $env:GOTOOLCHAIN = "local"
 

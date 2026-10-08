@@ -157,9 +157,12 @@ Stream(ctx, spec, req, out)
 |------|------|--------------|
 | Tools | `req.Tools` 非空 | **硬**：`*Error{invalid}`（报错，不降级） |
 | Images | 消息含 image 块 | **硬**：`*Error{invalid}` |
-| Reasoning / ReasoningEffort | `Options.Reasoning` 非空 | 软：清零（省略 → 上游默认） |
+| Reasoning | `Options.Reasoning` 非空 | 软：`Reasoning` 清零（省略思考，回落上游默认） |
+| ReasoningEffort | `Options.Reasoning` 非空 | 软：**仅档位（Effort）清零、保留 `Reasoning`**（仅 Anthropic 支持档位） |
 | TopP | `Options.TopP` 非空 | 软：清零 |
 | MaxTokensRequired | `Options.MaxTokens` 空 | caps=true → 适配器补缺省 |
+
+> 〔订正（2026-10-08）：原「Reasoning / ReasoningEffort」合一行「软：清零」**不准确、已拆分** —— `!caps.ReasoningEffort` 时**只清档位、保留 `Reasoning`**（原先误清整个思考请求），`!caps.Reasoning` 才整体清零；与 `src/lib/router/internal/adaptor/degrade.go` 注释表一致。〕
 
 ### 5.4 内置兜底 `echo`
 

@@ -147,7 +147,12 @@ func (s *Server) publishEvent(typ, payloadJSON, token string) (any, []error) {
 		// tasktree / knowledge / filelist / scenario / memory）**优先走 data 门面**（服务端进程内
 		// 直调，不经 MQ；与 GUI 桥 dataViaFacade 同构，见 facade_session.go / facade_domains.go）；
 		// 未命中/未注入门面 → 回落总线 persist 路径（两条路径应答载荷逐字一致）。
-		return s.dataCall(typ, payloadJSON)
+		//
+		// 安全（E2-5）：入口把 data-* 请求的 instance_id **强制绑定**为本连接所在实例
+		// （bindData）——下游门面路径（facade_session/facade_domains 采信 payload 的 instance_id）
+		// 与总线 persist 路径（仅在缺失时补）都只作用于本实例，浏览器端无法借 payload 越权
+		// 读写其它实例的 session/memory/knowledge/tasktree。
+		return s.dataCall(typ, s.bindData(payloadJSON))
 	case strings.Contains(typ, "."):
 		if !dottedAllowed(typ) {
 			return nil, []error{fmt.Errorf("topic not allowed: %s（browser 形态上行白名单外）", typ)}
@@ -306,6 +311,23 @@ func (s *Server) dataCall(subject, payloadJSON string) (any, []error) {
 		return res, errs
 	}
 	return s.dataViaPersist(subject, []byte(payloadJSON))
+}
+
+// bindData 把 data-* 请求的 instance_id **强制绑定为本连接所在实例**（浏览器端自报值一律覆盖）：
+// 入口侧绑定，与 filesys 的 bindFilesys 同做法。下游门面路径（facade_session/facade_domains
+// 以 payload 的 instance_id 为优先）与总线 persist 路径（仅在缺失时补 s.instanceID）因此都
+// 只作用于本实例。载荷为空 / 非法 JSON → 归一为空对象再补，行为与未带 instance_id 时一致。
+func (s *Server) bindData(payloadJSON string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &m); err != nil || m == nil {
+		m = map[string]any{}
+	}
+	m[msgkeys.FieldInstanceId] = s.instanceID
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return payloadJSON
+	}
+	return string(raw)
 }
 
 // dataReqTimeout data-* 请求超时（persist 同进程应答为微秒级；给分离形态留裕量）。

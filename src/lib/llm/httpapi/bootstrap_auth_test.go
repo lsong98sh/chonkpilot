@@ -122,3 +122,97 @@ func TestPublishInjectsConnectionToken(t *testing.T) {
 		_ = sub.Unsubscribe()
 	}
 }
+
+// TestAuthMiddlewareProtectedFaces：browser 入口（AuthCheck 已接线）**服务端鉴权中间件** ——
+// 未认证时对受保护面（写操作 `/publish`、下行 `/events`、`/dirs`）返回 401 且**不进总线**；
+// 静态面与 `login-*` 上行**豁免**（登录视图须可加载 / 登录本身即入口）；有效令牌放行。
+func TestAuthMiddlewareProtectedFaces(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<html><head></head></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, bus, base := newTestServerOpts(t, Options{
+		WorkDir: t.TempDir(), DataDir: t.TempDir(), WebRoot: root,
+		AuthCheck: func(token string) bool { return token == "good-token" },
+	})
+
+	get := func(path, cookie string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, base+path, nil)
+		if err != nil {
+			t.Fatalf("new request %s: %v", path, err)
+		}
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: authCookieName, Value: cookie})
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// ① 受保护 GET 面：未认证 → 401；有效令牌 → 放行
+	if code := get(eventsPath, ""); code != http.StatusUnauthorized {
+		t.Fatalf("/events 未认证应 401，got %d", code)
+	}
+	if code := get(dirsPath, ""); code != http.StatusUnauthorized {
+		t.Fatalf("/dirs 未认证应 401，got %d", code)
+	}
+	if code := get(dirsPath, "good-token"); code != http.StatusOK {
+		t.Fatalf("/dirs 有效令牌应 200，got %d", code)
+	}
+	// ② 静态面 + shim 豁免（登录视图须可加载，否则把自己锁死）
+	if code := get("/", ""); code != http.StatusOK {
+		t.Fatalf("静态面未认证应仍可取（登录视图），got %d", code)
+	}
+	if code := get(shimPath, ""); code != http.StatusOK {
+		t.Fatalf("shim 未认证应仍可取，got %d", code)
+	}
+
+	// ③ 写操作：未认证 → 401 且**不进总线**；有效令牌 → 放行
+	reached := make(chan struct{}, 1)
+	if _, err := bus.On("session-start", 0, func(_ context.Context, _ string, _ *mq.Value) error {
+		select {
+		case reached <- struct{}{}:
+		default:
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := postPublish(t, base, "llm-start", `{"session":"s1","q":"hi"}`, ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("未认证写操作应 401，got %d", resp.StatusCode)
+	}
+	select {
+	case <-reached:
+		t.Fatal("未认证写操作不得进总线")
+	default:
+	}
+
+	// ④ login-* 上行豁免（未认证可达；无订阅方 → 恒 200 信封）
+	if resp, _ := postPublish(t, base, "login-in", `{"username":"u","password":"p"}`, ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("login-in 未认证应可达（200），got %d", resp.StatusCode)
+	}
+	// ⑤ 有效令牌写操作放行
+	if resp, _ := postPublish(t, base, "llm-start", `{"session":"s2","q":"hi"}`, "good-token"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("有效令牌写操作应 200，got %d", resp.StatusCode)
+	}
+}
+
+// TestAuthMiddlewareDisabledWhenUnwired：未接线（AuthCheck=nil：desktop 形态不经本入口 /
+// 未配置认证域）→ 中间件**不启用**（行为同改前，不因"无法校验"而锁死）。
+func TestAuthMiddlewareDisabledWhenUnwired(t *testing.T) {
+	_, _, base := newTestServer(t, t.TempDir())
+	for _, path := range []string{eventsPath, dirsPath} {
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusUnauthorized {
+			t.Fatalf("未接线 %s 不应 401（desktop/未配置不受影响）", path)
+		}
+	}
+}

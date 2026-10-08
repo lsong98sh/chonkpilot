@@ -28,6 +28,9 @@ var (
 	storeMu   sync.Mutex
 	instances = make(map[string]instBind)
 	shared    = make(map[string]*sharedDB)
+	// openLocks 是按路径的单飞锁（每路径一把）：bbolt.Open 可能阻塞至超时，故打开动作
+	// **不持 storeMu**，只持该路径自己的锁（同路径并发只打开一次，不同路径互不阻塞）。
+	openLocks = make(map[string]*sync.Mutex)
 )
 
 // Register 登记 instance 绑定（幂等；重复登记刷新 work_dir/data_dir）。
@@ -172,19 +175,47 @@ func OpenShared(path string) (*DB, func(), error) {
 }
 
 // OpenSharedLayer 同 OpenShared，但以指定层打开（层标识写入 DB 元信息，供诊断）。
+//
+// 锁范围（性能）：storeMu 只覆盖 map 查/占位；`bbolt.Open`（含 3s 锁等待）在**锁外**执行，
+// 并以 per-path 单飞锁保证同路径并发只打开一次 —— 某层被外部进程占锁时，
+// 不会阻塞其他路径的打开/解析（原实现全程持 storeMu，会把整个进程内所有 instance 的
+// DB 打开串行化并阻塞至超时）。
 func OpenSharedLayer(path string, layer Layer) (*DB, func(), error) {
+	// 快路径：已缓存 → 仅计数（lock-内极短）。
 	storeMu.Lock()
-	defer storeMu.Unlock()
 	if s, ok := shared[path]; ok {
 		s.refs++
+		storeMu.Unlock()
 		return s.db, releaseOnce(path, s), nil
 	}
+	// 取该路径的单飞锁（不存在则建；锁本身长期保留，避免并发下同路径出现两把不同锁）。
+	pl := openLocks[path]
+	if pl == nil {
+		pl = &sync.Mutex{}
+		openLocks[path] = pl
+	}
+	storeMu.Unlock()
+
+	// 锁外打开（同路径串行，不阻塞其他路径）。
+	pl.Lock()
+	defer pl.Unlock()
+	// 复查：等待期间他协程可能已建好缓存。
+	storeMu.Lock()
+	if s, ok := shared[path]; ok {
+		s.refs++
+		storeMu.Unlock()
+		return s.db, releaseOnce(path, s), nil
+	}
+	storeMu.Unlock()
+
 	db, err := OpenLayer(path, layer)
 	if err != nil {
 		return nil, nil, err
 	}
 	s := &sharedDB{db: db, refs: 1}
+	storeMu.Lock()
 	shared[path] = s
+	storeMu.Unlock()
 	return db, releaseOnce(path, s), nil
 }
 

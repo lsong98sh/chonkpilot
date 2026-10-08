@@ -314,6 +314,11 @@ func (l *Layer) buildReportedNodeLocked(rep *Record) error {
 	if terminalState(rec.State) {
 		rec.DoneAt = now
 	}
+	if rec.ParentID == rec.TaskID && rec.ParentID != "" {
+		// 自环 parent == task_id：拒绝该 parent（按顶层节点处理），防后续子树遍历异常。
+		l.warn("task: 完成回报建节点：拒绝自环 parent==task_id（按顶层节点处理）: task_id=%s", rec.TaskID)
+		rec.ParentID = ""
+	}
 	if rec.ParentID != "" {
 		l.logf("task: 完成回报建节点：按回报 parent 挂父 task_id=%s parent=%s", rec.TaskID, rec.ParentID)
 	} else if pid := l.matchParentByToolCallLocked(rec.ToolCallID); pid != "" {
@@ -408,6 +413,7 @@ func (l *Layer) markClosedLocked(rootID string) {
 }
 
 // descendantsLocked 返回节点自身 + 层视图内的全部后代（沿 ParentID；持锁调用）。
+// BFS 带 visited 集合：ParentID 存在环（数据异常）时不会重复入队 / 死循环。
 func (l *Layer) descendantsLocked(rootID string) []string {
 	childrenOf := map[string][]string{}
 	for _, r := range l.recs {
@@ -416,8 +422,15 @@ func (l *Layer) descendantsLocked(rootID string) []string {
 		}
 	}
 	out := []string{rootID}
+	seen := map[string]bool{rootID: true}
 	for i := 0; i < len(out); i++ {
-		out = append(out, childrenOf[out[i]]...)
+		for _, child := range childrenOf[out[i]] {
+			if seen[child] {
+				continue
+			}
+			seen[child] = true
+			out = append(out, child)
+		}
 	}
 	return out
 }
@@ -609,8 +622,15 @@ func (l *Layer) CancelSubtree(instanceID, rootID, topSession string) []string {
 		}
 	}
 	subtree := []string{rootID}
+	seen := map[string]bool{rootID: true}
 	for i := 0; i < len(subtree); i++ {
-		subtree = append(subtree, childrenOf[subtree[i]]...)
+		for _, child := range childrenOf[subtree[i]] {
+			if seen[child] {
+				continue
+			}
+			seen[child] = true
+			subtree = append(subtree, child)
+		}
 	}
 	ids := make([]string, 0, len(subtree))
 	type pending struct {

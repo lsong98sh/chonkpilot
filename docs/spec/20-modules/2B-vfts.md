@@ -114,7 +114,7 @@ Initialize：
 
 ### 4.4 引擎：文档转换接入（`server/docs.go`）
 
-- **约束（用户定稿）**：引擎**不启动**转换服务（`src/mcps/markitdown`，由用户在 MCP 配置页手动注册/启动）；引擎只按插件下发的 endpoint/token 直连其内部快通道 `POST {endpoint}/vfts/convert`（头 `X-Chonk-Token`）。
+- **约束（用户定稿）**：引擎**不启动**转换服务（`src/mcps/markitdown`，由用户在 MCP 配置页手动注册/启动）；引擎只按插件下发的 endpoint/token 直连其内部快通道 `POST {endpoint}/vfts/convert`（头 `X-Chonk-Token`；请求体 `{path, max_bytes?, root}`，`root` = 本 workspace 根，供服务端校验 `path` 不越界）。
 - **缓存**：`<workdir>/.chonkpilot/vfts/doc_text/`；缓存键 = `sha1(相对路径 | mtime | parser_version)`（mtime 或解析器版本变化即换键 → 天然失效）；命中不调 HTTP。
 - **降级**：服务不可用 → **整批跳过**文档类（不写文件名 chunk，`Docs.Skipped`++）；单文件失败 → 降级为「仅索引文件名」（1 条 content = 相对路径的 chunk，`Docs.Failed`++）。任何失败都不中断整库索引。
 - **并发**：转换阶段走 worker 池（`defaultDocWorkers=6`）；zvec 写入仍串行。

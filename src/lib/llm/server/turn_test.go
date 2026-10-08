@@ -1266,3 +1266,57 @@ func TestSystemDefaultParamsMirror(t *testing.T) {
 		t.Fatalf("keep_full_max_turns 默认=%d want 10", defaultKeepFullTurns)
 	}
 }
+
+// TestFinishTerminalOnce（E2-2）：正常完成与取消并发到达同一轮次 → 终态（llm-complete 广播 +
+// turn 行终态落库）**恰好一次**；已终态后取消命中不再重复广播。
+func TestFinishTerminalOnce(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	tc := s.recoverTurnCtx("ins-t", "s-t", "t-t")
+	t.Cleanup(tc.Close)
+
+	var mu sync.Mutex
+	completes := 0
+	statuses := map[string]int{}
+	_, _ = s.bus.On("session-complete", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) != nil || m["turn"] != "t-t" {
+			return nil
+		}
+		st, _ := m["status"].(string)
+		mu.Lock()
+		completes++
+		statuses[st]++
+		mu.Unlock()
+		return nil
+	})
+
+	// 并发两个终态：正常完成 + 取消（模拟 race window）。
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); s.complete(tc, "interrupted", "interrupted", "") }()
+	go func() { defer wg.Done(); s.complete(tc, "complete", "stop", "hello") }()
+	wg.Wait()
+
+	mu.Lock()
+	n := completes
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("终态广播应恰好一次：got=%d statuses=%v", n, statuses)
+	}
+
+	// 取消命中已终态轮次（仍在 s.turns）→ 跳过，不重复落库/广播。
+	if err := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+		"instance_id": "ins-t", "session": "s-t", "turn": "t-t",
+	})).Wait().Err(); err != nil {
+		t.Fatalf("session-cancel: %v", err)
+	}
+	mu.Lock()
+	n = completes
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("取消命中已终态轮次不应重复广播：got=%d", n)
+	}
+}

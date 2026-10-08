@@ -1,5 +1,7 @@
 // runner.go — 作业执行：读首行 run → 建引擎执行 → 写 result。
 //
+// 脚本文本：run.script 优先；run.script 为空时读 run.file（**执行器进程内读盘**，受 agentbox 读校验）。
+//
 // 统一方言：文件域 FILE_*、浏览器域 WEB_*、桌面域 PC_*（域前缀消歧三域重名动词），LLM 保持。
 // 统一校验型 Files：引擎 Files 取 fileops 会话的 Files()（已接入 agentbox 沙箱）。
 // $RETURN 接线（DSL-2 宿主侧）：return_file 注入 dsl.Options.ReturnFile；作业结束取
@@ -13,8 +15,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
+	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/dsl"
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
@@ -78,6 +82,31 @@ type domainSession interface {
 func executeJob(ctx context.Context, run inMessage, hub *llmHub, lw *lineWriter) resultMsg {
 	res := resultMsg{Job: run.Job, Error: ""}
 
+	// 脚本文本：script 优先；script 为空时读 run.file（**在本执行器进程内读盘**，受 agentbox
+	// 读校验；gateway 仅下发已校验的绝对路径，避免在 gateway 进程绕过沙箱）。
+	script := run.Script
+	if strings.TrimSpace(script) == "" {
+		if strings.TrimSpace(run.File) == "" {
+			res.Error = "run 缺少 script/file"
+			return res
+		}
+		p, msg := paths.ResolvePathFor(run.Instance, run.File, "")
+		if msg != "" {
+			res.Error = "file：" + msg
+			return res
+		}
+		if err := agentbox.Check(p, false); err != nil {
+			res.Error = "file：" + err.Error()
+			return res
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			res.Error = "读取脚本文件失败：" + err.Error()
+			return res
+		}
+		script = string(b)
+	}
+
 	fSess, err := fileops.NewSession(run.WorkDir, nil)
 	if err != nil {
 		res.Error = "初始化文件会话失败：" + err.Error()
@@ -105,7 +134,7 @@ func executeJob(ctx context.Context, run inMessage, hub *llmHub, lw *lineWriter)
 	tree := newJobTree(run.Job, lw) // DSL 展示：静态容器树 + 步骤进度（预走 AST 前先建）
 	actions = append(actions, llmAction(ctx, hub, tree))
 
-	ast, err := dsl.Parse(run.Script, actions)
+	ast, err := dsl.Parse(script, actions)
 	if err != nil {
 		res.Error = "解析脚本失败：" + err.Error()
 		return res

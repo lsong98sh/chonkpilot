@@ -52,18 +52,20 @@ func TestDegradeHardUnsupportedImages(t *testing.T) {
 }
 
 // TestDegradeSoftDrops：caps.Reasoning / ReasoningEffort / TopP 不支持 → **就地剔除**（不报错、
-// 不静默保留），并把剔除后的请求交给编码器。
+// 不静默保留），并把剔除后的请求交给编码器。区分两档：Reasoning 不支持 → 整体清零；仅
+// ReasoningEffort 不支持 → **保留 Reasoning、只清档位**（与「仅档位软降级」语义一致）。
 func TestDegradeSoftDrops(t *testing.T) {
 	topP := 0.5
 	cases := []struct {
 		name       string
 		mutate     func(*canon.Caps)
-		wantReason bool // 剔除后是否仍保留 Reasoning
+		wantReason bool   // 剔除后是否仍保留 Reasoning
+		wantEffort string // 保留时 Effort 期望值（不保留则不校验）
 		wantTopP   bool
 	}{
-		{"Reasoning 不支持", func(c *canon.Caps) { c.Reasoning = false }, false, true},
-		{"ReasoningEffort 不支持", func(c *canon.Caps) { c.ReasoningEffort = false }, false, true},
-		{"TopP 不支持", func(c *canon.Caps) { c.TopP = false }, true, false},
+		{"Reasoning 不支持", func(c *canon.Caps) { c.Reasoning = false }, false, "", true},
+		{"ReasoningEffort 不支持", func(c *canon.Caps) { c.ReasoningEffort = false }, true, "", true},
+		{"TopP 不支持", func(c *canon.Caps) { c.TopP = false }, true, "high", false},
 	}
 	for _, c := range cases {
 		caps := fullCaps()
@@ -74,6 +76,9 @@ func TestDegradeSoftDrops(t *testing.T) {
 		}
 		if (req.Options.Reasoning != nil) != c.wantReason {
 			t.Fatalf("%s: Reasoning 保留=%v want %v", c.name, req.Options.Reasoning != nil, c.wantReason)
+		}
+		if c.wantReason && req.Options.Reasoning.Effort != c.wantEffort {
+			t.Fatalf("%s: Effort=%q want %q", c.name, req.Options.Reasoning.Effort, c.wantEffort)
 		}
 		if (req.Options.TopP != nil) != c.wantTopP {
 			t.Fatalf("%s: TopP 保留=%v want %v", c.name, req.Options.TopP != nil, c.wantTopP)

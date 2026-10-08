@@ -11,7 +11,7 @@
 // 行协议（冻结，与执行器逐字一致）：
 //
 //	下行（gateway → exe stdin）
-//	  {"t":"run","job":"<jobid>","script":"<DSL>","instance":"...","work_dir":"...","data_dir":"...","return_file":"<绝对路径>"}
+//	  {"t":"run","job":"<jobid>","script":"<DSL>","file":"<脚本文件绝对路径，script 为空时>","instance":"...","work_dir":"...","data_dir":"...","return_file":"<绝对路径>"}
 //	  {"t":"llm_result","call":"<callid>","text":"...","error":""}
 //	上行（exe stdout → gateway；日志走 stderr）
 //	  {"t":"llm_call","call":"<callid>","agent":"...","prompt":"...","purpose":"...","session":"<jobid>-N"}
@@ -82,6 +82,7 @@ type dslRunMsg struct {
 	T          string `json:"t"` // "run"
 	Job        string `json:"job"`
 	Script     string `json:"script"`
+	File       string `json:"file,omitempty"` // 脚本文件绝对路径（script 为空时下发；由执行器受沙箱读盘）
 	Instance   string `json:"instance"`
 	WorkDir    string `json:"work_dir"`
 	DataDir    string `json:"data_dir"`
@@ -246,6 +247,7 @@ func (g *Gateway) runDSLJob(ctx context.Context, args map[string]any) (string, e
 
 	script, _ := args["script"].(string)
 	file, _ := args["file"].(string)
+	scriptFile := ""
 	if strings.TrimSpace(script) == "" {
 		if strings.TrimSpace(file) == "" {
 			return "", fmt.Errorf("%s: script/file 至少提供其一", dslRunToolName)
@@ -254,11 +256,10 @@ func (g *Gateway) runDSLJob(ctx context.Context, args map[string]any) (string, e
 		if msg != "" {
 			return "", fmt.Errorf("%s: file：%s", dslRunToolName, msg)
 		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return "", fmt.Errorf("%s: 读脚本 %s: %w", dslRunToolName, file, err)
-		}
-		script = string(b)
+		// 脚本读取**下移执行器**（dslexec）：此处仅下发已校验的绝对路径，由携带
+		// CHONKPILOT_SANDBOX 策略的执行器进程内读盘（受 agentbox 读校验），
+		// 避免 gateway 进程直接读文件绕过沙箱（决策 42 §2 (250) 口径）。
+		scriptFile = p
 	}
 
 	// 作业超时（可选）：>0 才设；<=0/缺省 = 不设作业级超时。
@@ -299,7 +300,7 @@ func (g *Gateway) runDSLJob(ctx context.Context, args map[string]any) (string, e
 	// 下行 run
 	enc := json.NewEncoder(stdin)
 	if err := enc.Encode(dslRunMsg{
-		T: "run", Job: jobID, Script: script, Instance: instance,
+		T: "run", Job: jobID, Script: script, File: scriptFile, Instance: instance,
 		WorkDir: workDir, DataDir: dataDir, ReturnFile: returnFile,
 	}); err != nil {
 		_ = cmd.Process.Kill()

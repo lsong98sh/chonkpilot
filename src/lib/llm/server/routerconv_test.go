@@ -24,6 +24,16 @@ func snapToolCall(id, name, args string) data.ToolCall {
 	return c
 }
 
+// toRouterMessages 快照消息序列 → canonical（顺序保持；测试用，逐条 ToRouterMessage）。
+// 生产侧无批转换入口——组装/请求构造都逐条经 ToRouterMessage。
+func toRouterMessages(msgs []data.ChatMsg) []router.Message {
+	out := make([]router.Message, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, ToRouterMessage(m))
+	}
+	return out
+}
+
 // TestRouterConvChatMsgRoundTripEquivalence：快照 → canonical → 快照，逐字段等价。
 func TestRouterConvChatMsgRoundTripEquivalence(t *testing.T) {
 	msgs := []data.ChatMsg{
@@ -38,7 +48,7 @@ func TestRouterConvChatMsgRoundTripEquivalence(t *testing.T) {
 		{Role: "user", Kind: "notify", Content: "[工具通知] 完成"},
 		{Role: "assistant", Content: ""}, // 空内容（如仅工具调用后落库）→ 无内容块
 	}
-	canon := ToRouterMessages(msgs)
+	canon := toRouterMessages(msgs)
 	if len(canon) != len(msgs) {
 		t.Fatalf("转换条数=%d want %d", len(canon), len(msgs))
 	}
@@ -83,7 +93,7 @@ func TestRouterConvMessageRoundTripStable(t *testing.T) {
 	for _, m := range in {
 		snap = append(snap, FromRouterMessage(m))
 	}
-	got := ToRouterMessages(snap)
+	got := toRouterMessages(snap)
 	if !reflect.DeepEqual(got, in) {
 		t.Fatalf("canonical 往返不稳定：\n got=%+v\nwant=%+v", got, in)
 	}
@@ -126,9 +136,6 @@ func TestRouterConvToolCallsEmptyToNil(t *testing.T) {
 	}
 	if got := FromRouterToolCalls(nil); got != nil {
 		t.Fatalf("FromRouterToolCalls(nil)=%+v want nil", got)
-	}
-	if got := ToRouterMessages(nil); got != nil {
-		t.Fatalf("ToRouterMessages(nil)=%+v want nil", got)
 	}
 	back := FromRouterToolCalls([]router.ToolCall{{ID: "tc-1", Name: "f", Arguments: "{}"}})
 	if len(back) != 1 || back[0].Type != "function" {

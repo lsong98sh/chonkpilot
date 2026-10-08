@@ -418,6 +418,34 @@ func TestRecoverTurnCtxMarksForceFull(t *testing.T) {
 	tc.Close()
 }
 
+// TestRecoverTurnCtxCarriesSystemPromptAndDirs（WP2-4）：恢复轮与新建轮**同口径** —— 系统提示词层
+// 注入 hist、WorkDir/DataDir 随 instance 绑定回填（gateway 上下文与记忆/资产指引据此生效）。
+func TestRecoverTurnCtxCarriesSystemPromptAndDirs(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc((&llmRecorder{}).handler))
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	t.Cleanup(data.Reset)
+	dataDir := t.TempDir()
+	// 注册 instance（绑定 work_dir / data_dir，与 onLLMStart 同一事实源）
+	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+		"instance_id": "ins-test", "client_type": "unittest",
+		"work_dir": testWorkDir, "data_dir": dataDir,
+	})).Wait()
+	time.Sleep(50 * time.Millisecond)
+
+	tc := s.recoverTurnCtx("ins-test", "s-rec", "t-rec")
+	defer tc.Close()
+	if tc.req.WorkDir != testWorkDir {
+		t.Fatalf("恢复轮 WorkDir=%q want %q（随 instance 绑定）", tc.req.WorkDir, testWorkDir)
+	}
+	if tc.req.DataDir != dataDir {
+		t.Fatalf("恢复轮 DataDir=%q want %q（随 instance 绑定）", tc.req.DataDir, dataDir)
+	}
+	if len(tc.hist) == 0 || tc.hist[0].Role != "system" || strings.TrimSpace(tc.hist[0].Content) == "" {
+		t.Fatalf("恢复轮 hist 应含非空系统提示词层，got %+v", tc.hist)
+	}
+}
+
 // TestLoadKeepFullBoundsValueSemantics（P1 口径 W，组装侧读点）：键**存在且为数字** → 原样采用
 // （`0` = 该条件不启用、负数 = 非法按不启用）；**缺失/非数字** → 回落默认（10 / 24000）。
 // **与压缩侧 `resolveOpts` 同口径**（差异即"两侧判定不一致"，故单列断言）。

@@ -18,9 +18,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
 	"runtime"
-	"strings"
 	"unsafe"
 
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
@@ -47,6 +47,17 @@ const coInitApartmentThreaded = 2
 
 // swpNoSizeNoActivate = SWP_NOSIZE(0x1) | SWP_NOACTIVATE(0x10)：只挪位置、不改尺寸、不激活。
 const swpNoSizeNoActivate = 0x0011
+
+// isAppOrigin 判定请求 URI 是否属于虚拟宿主源（**精确** scheme + host 相等，非前缀匹配）。
+// 前缀匹配下 `https://app.localhost.evil.com/...` 亦以 appOrigin 开头 → 会误走本地 handler
+// 应答（E5-②）；此处解析 URI 后精确比较：host 后缀、端口均不匹配。
+func isAppOrigin(rawURI string) bool {
+	u, err := url.Parse(rawURI)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "https" && u.Host == appOriginHost
+}
 
 var (
 	ole32                   = windows.NewLazySystemDLL("ole32.dll")
@@ -262,7 +273,7 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	interceptor.AddWebResourceRequestedFilter("*", edge.COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL)
 	interceptor.SetWebResourceRequestedCallback(func(request *edge.ICoreWebView2WebResourceRequest, args *edge.ICoreWebView2WebResourceRequestedEventArgs) {
 		uri, err := request.GetUri()
-		if err != nil || !strings.HasPrefix(uri, appOrigin) {
+		if err != nil || !isAppOrigin(uri) {
 			return
 		}
 		resp, err := serveWebResource(h.handler, h.chromium, request, uri)

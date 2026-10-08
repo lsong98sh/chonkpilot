@@ -124,3 +124,73 @@ func TestMemoryExtractTableCRUD(t *testing.T) {
 		t.Fatal("delete 后进度应从桶移除")
 	}
 }
+
+// TestMemoryExtractListPrefixIsolationAndOrder：整会话 load/delete 走主键前缀 Seek 后，
+// 仍满足（1）前缀碰撞会话隔离（"s-1" 不吞 "s-10"）；（2）类别名升序；（3）空会话空列表。
+func TestMemoryExtractListPrefixIsolationAndOrder(t *testing.T) {
+	wd := t.TempDir()
+	s := newSweepTestService(t)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(s.Stop)
+	const inst = "ins-memprefix"
+	s.onInstanceRegister(instanceRegister, instancePayload(inst, wd, ""))
+
+	save := func(sid, cat string) {
+		t.Helper()
+		r := memExtractCall(t, s, "data-memory-extract-save", map[string]any{
+			"instance_id": inst,
+			"data":        map[string]any{"session_id": sid, "category": cat, "last_turn_id": "t"},
+		})
+		if ok, _ := r["ok"].(bool); !ok {
+			t.Fatalf("extract-save(%s,%s) 失败: %+v", sid, cat, r)
+		}
+	}
+	loadCats := func(sid string) []string {
+		t.Helper()
+		r := memExtractCall(t, s, "data-memory-extract-load", map[string]any{
+			"instance_id": inst, "session_id": sid,
+		})
+		if ok, _ := r["ok"].(bool); !ok {
+			t.Fatalf("extract-load(%s) 失败: %+v", sid, r)
+		}
+		list, _ := r["result"].(map[string]any)["list"].([]any)
+		cats := make([]string, 0, len(list))
+		for _, it := range list {
+			row, _ := it.(map[string]any)
+			cats = append(cats, row["category"].(string))
+		}
+		return cats
+	}
+
+	// "s-1" 与 "s-10" 前缀碰撞：\x00 分隔保证互不吞并；"s-1" 三类乱序写入。
+	save("s-1", "b类")
+	save("s-1", "a类")
+	save("s-1", "c类")
+	save("s-10", "z类")
+
+	if got := loadCats("s-1"); len(got) != 3 || got[0] != "a类" || got[1] != "b类" || got[2] != "c类" {
+		t.Fatalf("s-1 应为 [a类 b类 c类]（类别升序、隔离 s-10）：got=%v", got)
+	}
+	if got := loadCats("s-10"); len(got) != 1 || got[0] != "z类" {
+		t.Fatalf("s-10 应仅 [z类]：got=%v", got)
+	}
+	if got := loadCats("s-2"); len(got) != 0 { // 无记录会话 → 空列表
+		t.Fatalf("s-2 应为空列表：got=%v", got)
+	}
+
+	// 整会话删除仅清 "s-1"，"s-10" 保留。
+	r := memExtractCall(t, s, "data-memory-extract-delete", map[string]any{
+		"instance_id": inst, "data": map[string]any{"session_id": "s-1"},
+	})
+	if ok, _ := r["ok"].(bool); !ok {
+		t.Fatalf("extract-delete(s-1) 失败: %+v", r)
+	}
+	if got := loadCats("s-1"); len(got) != 0 {
+		t.Fatalf("delete 后 s-1 应为空：got=%v", got)
+	}
+	if got := loadCats("s-10"); len(got) != 1 || got[0] != "z类" {
+		t.Fatalf("delete s-1 不应影响 s-10：got=%v", got)
+	}
+}

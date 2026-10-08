@@ -54,6 +54,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-plugin"
+	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
 
 // 订阅/请求主题（相对主题；chonk. 前缀在 mq 初始化注入一次）。
@@ -132,6 +133,10 @@ type Plugin struct {
 	// 值 = *sync.Mutex。读旧全文 → LLM 重写 → 写回整段临界区持锁（同类别重写不并发）。
 	locks sync.Map
 
+	// im 是实例视图（订阅 instance-*）：把 instance id 解析回 work_dir，供锁键统一口径
+	// （手动沉淀 memory.flush 载荷不含 work_dir，须与自动路径落在同一把 per-(workdir,类别) 锁上）。
+	im *instance.Manager
+
 	// 队列（2026-10-06）：每 instance 一个串行 worker + 按 (instance, session) **覆盖合并**的
 	// 待处理表。订阅回调只 enqueue（置标记 + 必要时拉起该 instance 的 worker）后立即返回。
 	mu      sync.Mutex
@@ -161,6 +166,13 @@ func (p *Plugin) Name() string { return "memory" }
 // Start 订阅每轮终态事件 + 手动沉淀入口（server 全部插件加载完成后由宿主调用）。
 func (p *Plugin) Start(d plugin.Deps) error {
 	p.deps = d
+	// 实例视图（订阅 instance-register/heartbeat/exit）：仅用于把 instance id 解析回 work_dir，
+	// 使手动沉淀（载荷无 work_dir）与自动沉淀共用同一把 per-(workdir,类别) 锁（见 resolveWorkDir）。
+	im := instance.New(d.Bus)
+	if err := im.Start(); err != nil {
+		return err
+	}
+	p.im = im
 	sub, err := d.Bus.On(turnEndSubject, 0, func(_ context.Context, subj string, v *mq.Value) error {
 		p.onTurnEnd(subj, v.Payload)
 		return nil
@@ -248,8 +260,10 @@ func (p *Plugin) enqueue(ev turnEvent, force bool) {
 		p.running = make(map[string]bool)
 	}
 	if t, ok := p.pending[key]; ok {
+		// 合并：手动沉淀载荷无 work_dir → 沿用前一事件。锁键口径以 process 内的
+		// resolveWorkDir（实例视图优先）为准，此处仅为事件载荷补全，不承担锁语义。
 		if ev.WorkDir == "" {
-			ev.WorkDir = t.ev.WorkDir // 合并：手动沉淀载荷无 work_dir → 沿用前一事件
+			ev.WorkDir = t.ev.WorkDir
 		}
 		if ev.DataDir == "" {
 			ev.DataDir = t.ev.DataDir
@@ -296,13 +310,16 @@ func (p *Plugin) worker(instanceID string) {
 		}
 		delete(p.pending, key)
 		p.mu.Unlock()
+		// 本轮依赖**解析一次**（项目配置 + 会话父级），供子会话门控与 process 复用——消除
+		// 改前 skipSubsession + process 各自重复读配置/父级的 2+2 次多余消息往返。
+		deps := p.resolveTurnDeps(task.ev.InstanceID, task.ev.Session)
 		// 子会话门控（DSL-4，42 §2 (253)）：在**广播进度前**判定 —— 子会话且「提取子会话记忆」未开
 		// → 跳过（不广播 `memory-*` 进度，子会话不入沉淀队列状态展示，见 I-128）。
-		if p.skipSubsession(task.ev) {
+		if deps.skipSubsession() {
 			continue
 		}
 		p.emitMemoryNotice(task.ev.InstanceID, task.ev.Session, task.ev.LastTurn, noticeMemoryStart, "正在沉淀记忆…")
-		p.safeProcess(task)
+		p.safeProcessResolved(task, deps)
 		p.emitMemoryNotice(task.ev.InstanceID, task.ev.Session, task.ev.LastTurn, noticeMemoryDone, "记忆沉淀完成")
 	}
 }
@@ -325,15 +342,15 @@ func (p *Plugin) emitMemoryNotice(instanceID, session, lastTurn, notice, message
 	})
 }
 
-// safeProcess 包裹 process 并兜住 panic —— worker 是裸 goroutine（已脱离 mq.dispatch 的
-// recover），不兜会使 panic 直接终止进程（行为对齐 compress「回调 panic 不致命」）。
-func (p *Plugin) safeProcess(t *extractTask) {
+// safeProcessResolved 包裹 processResolved 并兜住 panic —— worker 是裸 goroutine（已脱离
+// mq.dispatch 的 recover），不兜会使 panic 直接终止进程（行为对齐 compress「回调 panic 不致命」）。
+func (p *Plugin) safeProcessResolved(t *extractTask, d turnDeps) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.logf()("memory: recovered panic in worker: %v", r)
 		}
 	}()
-	p.process(t.ev, t.force)
+	p.processResolved(t.ev, t.force, d)
 }
 
 // memoryConfig 是本轮消费的项目配置（memory.*；缺失回落默认）。
@@ -361,48 +378,87 @@ func (c memoryConfig) categoryEnabled(name string) bool {
 // extract 执行一次沉淀（自动路径；同步，供测试直接调用——worker 走 process）。
 func (p *Plugin) extract(ev turnEvent) { p.process(ev, false) }
 
-// skipSubsession 子会话沉淀门控（DSL-4，42 §2 (253)「提取子会话记忆」，默认关闭）：
-// 子会话（会话行 `parent_id != ""`）+ 开关未开 → 跳过自动沉淀（worker 在**广播进度前**调用，
-// 子会话不入队列状态展示）。与 process 内联门控同口径（读同一 prj 键与同一会话 parent）。
-// 读配置 / 父级失败 → 不跳过（保守，不误伤主路径）。
-func (p *Plugin) skipSubsession(ev turnEvent) bool {
-	cfg, err := p.resolveConfig(ev.InstanceID)
-	if err != nil || !cfg.Enabled || cfg.Subsession {
-		return false
-	}
-	parent, err := p.sessionParent(ev.InstanceID, ev.Session)
-	if err != nil {
-		return false
-	}
-	return parent != ""
+// turnDeps 是本轮沉淀的**一次性**依赖解析结果（项目配置 + 会话父级）。worker 解析一次后
+// 传给子会话门控与 processResolved 复用，避免同一轮重复读项目配置 / 会话父级（各多一次
+// 消息往返）。解析失败时对应 err 非空、值为零值。
+type turnDeps struct {
+	cfg    memoryConfig
+	parent string
+	cfgErr error
+	parErr error
 }
 
-// process 执行一次会话沉淀（可同步调用；worker 与手动沉淀共用）：配置门控 → 主/子会话判定 →
+// resolveTurnDeps 解析本轮依赖：先读项目配置；**仅当已启用**才读会话父级（与改前
+// process / skipSubsession 口径一致——未启用时二者都不读父级）。
+func (p *Plugin) resolveTurnDeps(instanceID, session string) turnDeps {
+	var d turnDeps
+	cfg, err := p.resolveConfig(instanceID)
+	if err != nil {
+		d.cfgErr = err
+		return d
+	}
+	d.cfg = cfg
+	if !cfg.Enabled {
+		return d
+	}
+	parent, err := p.sessionParent(instanceID, session)
+	if err != nil {
+		d.parErr = err
+		return d
+	}
+	d.parent = parent
+	return d
+}
+
+// skipSubsession 子会话沉淀门控（DSL-4，42 §2 (253)「提取子会话记忆」，默认关闭）：
+// 子会话（会话行 `parent_id != ""`）+ 开关未开 → 跳过自动沉淀（worker 在**广播进度前**调用，
+// 子会话不入队列状态展示）。与 processResolved 内联门控同口径（读同一 prj 键与同一会话 parent）。
+// 读配置 / 父级失败 → 不跳过（保守，不误伤主路径）。
+func (d turnDeps) skipSubsession() bool {
+	if d.cfgErr != nil || !d.cfg.Enabled || d.cfg.Subsession {
+		return false
+	}
+	if d.parErr != nil {
+		return false
+	}
+	return d.parent != ""
+}
+
+// process 执行一次会话沉淀（可同步调用；手动沉淀与 extract 共用）：解析本轮依赖后转
+// processResolved（worker 复用已解析的 turnDeps，不重复解析）。
+func (p *Plugin) process(ev turnEvent, force bool) map[string]any {
+	return p.processResolved(ev, force, p.resolveTurnDeps(ev.InstanceID, ev.Session))
+}
+
+// processResolved 执行一次会话沉淀（可同步调用；worker 与手动沉淀共用）：配置门控 → 主/子会话判定 →
 // 读该会话全部轮 + 各类别进度（专用表）→ **累计门控**（OP-05；force=true 跳过）→ 按启用类别
 // 并行**跨轮**重写（各进度 → 最新轮；无新轮即跳过）。
 //
 // 返回值 = flush 风格回执（`{ok, session, turn, saved, failed, enabled}` /
 // 前置不满足 `{ok:false, reason}`）；自动路径的调用方丢弃该值。
 // 任一环节失败：记日志 + **上报一次用户可见提示**（宿主去重/限频）→ 跳过，**不阻塞对话**。
-func (p *Plugin) process(ev turnEvent, force bool) map[string]any {
+func (p *Plugin) processResolved(ev turnEvent, force bool, d turnDeps) map[string]any {
 	logf := p.logf()
+	// 锁键口径统一：优先经实例视图解析 work_dir（手动沉淀载荷无 work_dir），回落到事件载荷。
+	// 否则手动与自动沉淀会对同一 (项目, 类别) 取到不同锁 → 读-改-写丢更新（OP-08）。
+	ev.WorkDir = p.resolveWorkDir(ev)
 	fail := func(reason string) map[string]any { return map[string]any{"ok": false, "reason": reason} }
-	cfg, err := p.resolveConfig(ev.InstanceID)
-	if err != nil {
-		logf("memory: 读项目配置失败（instance=%s）：%v（跳过）", ev.InstanceID, err)
-		p.notify(ev, "config", err.Error())
-		return fail(err.Error())
+	if d.cfgErr != nil {
+		logf("memory: 读项目配置失败（instance=%s）：%v（跳过）", ev.InstanceID, d.cfgErr)
+		p.notify(ev, "config", d.cfgErr.Error())
+		return fail(d.cfgErr.Error())
 	}
+	cfg := d.cfg
 	if !cfg.Enabled {
 		return fail(memoryEnabledKey + " not enabled")
 	}
 	// OP-07：主/子会话判定 —— 用户偏好仅主会话（顶层）提取；项目级含子 session。
-	parent, err := p.sessionParent(ev.InstanceID, ev.Session)
-	if err != nil {
-		logf("memory: 读会话父级失败（session=%s）：%v（跳过）", ev.Session, err)
-		p.notify(ev, "session", err.Error())
-		return fail(err.Error())
+	if d.parErr != nil {
+		logf("memory: 读会话父级失败（session=%s）：%v（跳过）", ev.Session, d.parErr)
+		p.notify(ev, "session", d.parErr.Error())
+		return fail(d.parErr.Error())
 	}
+	parent := d.parent
 	// DSL-4（42 §2 (253)「提取子会话记忆」，默认关闭）：子会话 turn 跳过**自动沉淀**
 	// （判定 = session.parent_id != ""，与 OP-07 同一 parent 读取）。主会话恒不跳过；
 	// 只关沉淀（写路径），不影响记忆清单带出指引（读路径，随 memory.enabled 门控）。
@@ -685,6 +741,21 @@ func (p *Plugin) rangeTokens(rng []turnRef, cache *turnMsgCache) (int, error) {
 		total += data.EstimateTokensOfMessages(msgs)
 	}
 	return total, nil
+}
+
+// resolveWorkDir 解析锁键用的 work_dir：优先实例视图（instance id → work_dir；宿主登记），
+// 无登记/未注入实例视图时回落到事件载荷 ev.WorkDir。
+//
+// 目的：手动沉淀（memory.flush 载荷只带 instance_id/session）与自动沉淀（session-compress
+// 载荷带 work_dir）须落在**同一把** per-(workdir, 类别) 锁上，否则同一 (项目, 类别) 的
+// 读-改-写并发执行会丢更新（OP-08）。
+func (p *Plugin) resolveWorkDir(ev turnEvent) string {
+	if p.im != nil {
+		if rec, ok := p.im.Lookup(ev.InstanceID); ok && rec.WorkDir != "" {
+			return rec.WorkDir
+		}
+	}
+	return ev.WorkDir
 }
 
 // lockCategory 取 per-(workdir/项目, 类别) 进程内互斥锁（OP-08）并加锁，返回解锁函数：
@@ -1035,7 +1106,7 @@ func newReqID() string {
 	return "memory-" + rand.Text()
 }
 
-// request 发一次 data-* 请求并等应答（镜像 chonkpilot-plugin-history dataEmit 形态）。
+// request 发一次 data-* 请求并等应答（镜像 plugin/dataclient.Emit 形态）。
 func (p *Plugin) request(subject string, req map[string]any) (map[string]any, error) {
 	if p.deps.Bus == nil {
 		return nil, errors.New("no bus")

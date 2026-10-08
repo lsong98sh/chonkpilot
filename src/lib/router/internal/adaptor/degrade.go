@@ -6,8 +6,8 @@
 //	能力            触发条件                        caps 为 false 时
 //	Tools           req.Tools 非空                  硬：Error{invalid}（报错，不降级）
 //	Images          消息含 image 块                 硬：Error{invalid}（报错，不降级）
-//	Reasoning       Options.Reasoning 非空          软：清零（省略字段 → 上游默认）
-//	ReasoningEffort Options.Reasoning 非空          软：清零（同上；仅 Anthropic 支持档位）
+//	Reasoning       Options.Reasoning 非空          软：Reasoning 清零（省略思考，回落上游默认）
+//	ReasoningEffort Options.Reasoning 非空          软：仅 Effort 清零（**保留 Reasoning**；仅 Anthropic 支持档位）
 //	TopP            Options.TopP 非空               软：清零
 //	MaxTokensRequired Options.MaxTokens 为空        caps 为 true → 各适配器补缺省（见 defaultMaxTokens）
 //	UsageInStream   —                               caps 为 false → 编码器不下发 stream_options
@@ -29,8 +29,15 @@ func Degrade(caps canon.Caps, req *canon.Request) *canon.Error {
 	if !caps.Images && hasImage(req.Messages) {
 		return canon.NewError(canon.ErrorInvalid, "该 provider 协议不支持图片（多模态输入）")
 	}
-	if req.Options.Reasoning != nil && (!caps.Reasoning || !caps.ReasoningEffort) {
-		req.Options.Reasoning = nil // 软降级：省略思考参数（不回传错误、不静默改造消息）
+	if req.Options.Reasoning != nil {
+		switch {
+		case !caps.Reasoning:
+			// 软降级：协议不支持思考 → 整体省略（不回传错误、不静默改造消息）。
+			req.Options.Reasoning = nil
+		case !caps.ReasoningEffort:
+			// 软降级：仅不支持档位 → 保留思考、清空档位（新建实例，避免改写调用方持有的指针）。
+			req.Options.Reasoning = &canon.Reasoning{}
+		}
 	}
 	if req.Options.TopP != nil && !caps.TopP {
 		req.Options.TopP = nil // 软降级：省略 top_p

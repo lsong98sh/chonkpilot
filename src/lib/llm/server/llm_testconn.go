@@ -26,6 +26,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -94,6 +96,10 @@ func parseLLMTestConnReq(payload []byte) (*llmTestConnReq, error) {
 //   - 失败 → {ok:false, error:{kind, message}}，kind = 既有错误分类
 //     （network / timeout / rate_limit / server / auth / protocol）+ invalid（入参）。
 func (s *Server) probeLLMConnection(ctx context.Context, req *llmTestConnReq) map[string]any {
+	// SSRF 防护（硬要求）：探活目标 baseUrl 全由请求方提供，须先校验再出网（见 validateLLMTarget）。
+	if err := s.validateLLMTarget(req.BaseURL); err != nil {
+		return llmTestConnFail(llmTestKindInvalid, err.Error(), req.APIKey)
+	}
 	ctx, cancel := context.WithTimeout(ctx, llmTestTimeout)
 	defer cancel()
 
@@ -146,6 +152,60 @@ func (s *Server) probeLLMConnection(ctx context.Context, req *llmTestConnReq) ma
 			return out
 		}
 	}
+}
+
+// validateLLMTarget 校验探活目标 baseUrl（**SSRF 防护**）：仅允许 `http`/`https`；在**要求认证的
+// 形态**（browser/gui，`RequireAuth()=true`）下进一步拒绝 loopback / 私网 / link-local /
+// 组播 / 未指定 及云元数据（`169.254.169.254`）等**内网目标**（含域名解析后的地址）——避免远端
+// 客户端把服务端当作内网 SSRF 跳板（结合入口鉴权 §4.6：未认证不可达本方法面）。
+//
+// desktop 形态（本机单用户、无网络暴露面，`RequireAuth()=false`）**只校验协议**：用户常把
+// provider 指向本机（如 Ollama `http://127.0.0.1:11434`），拒绝内网会破坏 desktop 零摩擦。
+func (s *Server) validateLLMTarget(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return errors.New("baseUrl 无法解析")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("baseUrl 仅支持 http/https")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("baseUrl 缺少主机名")
+	}
+	if !s.RequireAuth() {
+		return nil // desktop：本机单用户，不限制内网目标
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedTargetIP(ip) {
+			return errors.New("baseUrl 指向本机/内网/元数据地址，已拒绝（SSRF 防护）")
+		}
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return errors.New("baseUrl 主机无法解析")
+	}
+	for _, ip := range ips {
+		if isBlockedTargetIP(ip) {
+			return errors.New("baseUrl 解析到本机/内网/元数据地址，已拒绝（SSRF 防护）")
+		}
+	}
+	return nil
+}
+
+// isBlockedTargetIP 判定 IP 是否为**内网/保留**目标（SSRF 拒绝集）：loopback / 私网 /
+// link-local（含 IPv6）/ 组播 / 未指定 / 云元数据 `169.254.169.254`。
+func isBlockedTargetIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	// 云元数据端点（属 link-local，上面已覆盖；显式列出以明意图）。
+	return ip.Equal(net.ParseIP("169.254.169.254"))
 }
 
 // llmTestConnResultFromErr 把探活中的错误转结果信封：*LLMError 用其分类，其余按协议错误。

@@ -3,6 +3,7 @@
 package data
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -26,32 +27,126 @@ type Query struct {
 
 // Query 执行通用查询：过滤/排序/分页/游标 → (recs, next_cursor, err)。
 // 返回的记录带 _key 主键字段。
+//
+// 索引路由（Phase 1）：若 Where 覆盖某索引 Fields 的某个前缀（全部等值字符串），
+// 取**最长可用前缀** Seek 索引桶顺序遍历，每个索引值（= 主键）回表 Get 主行，再应用剩余
+// Where；否则回退全桶扫描。顺序一致（OrderBy 命中索引 Order 的升序，或在无 OrderBy 时按
+// 遍历序）时跳过内存排序，并允许攒够 Offset+Limit 后提前退出；不满足则收集完再排序分页。
+// 返回语义（_key、next_cursor 编码、Offset/Limit/Cursor、坏行跳过）与全桶扫描逐字节一致。
+//
+// 索引就绪防线（Phase 3a）：二级索引桶只在**建桶之后由写入口写入**，故命中索引前先探测
+// 索引桶是否整桶为空；为空则视为「索引未就绪」，回落全表扫描（见函数内注释）。
 func (t *Table) Query(q Query) ([]Record, string, error) {
-	var all []Record
+	idx, prefixVals := indexFor(t.name, q.Where)
+	// 游标续查按 (排序值,主键) 定位；无 OrderBy 时索引遍历序（排序字段,主键）≠ 桶序，
+	// 与 filterAfter 口径不符 → 该组合回退全桶扫描（保持既有语义）。
+	if q.Cursor != "" && q.OrderBy == "" {
+		idx = nil
+	}
+
+	var (
+		all         []Record
+		more        bool // 提前退出时是否仍有后续匹配行（决定 next_cursor）
+		skipSort    bool // 遍历顺序即结果顺序 → 跳过内存排序
+		earlyTarget int  // >0 时攒够 Offset+Limit 行即可提前退出
+	)
 	err := t.db.b.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(t.name))
 		if b == nil {
 			return nil
 		}
-		return b.ForEach(func(k, v []byte) error {
-			rec := Record{}
-			if err := json.Unmarshal(v, &rec); err != nil {
-				return nil // 跳过坏行
+		// ── 索引就绪探测（Phase 3a 防线）──────────────────────────────
+		// 二级索引桶只在**建桶之后由写入口在同一事务内写入**；若某库主表已有数据而索引桶
+		// 整桶为空（典型：升级前建立、升级后尚无新写入的开发库），走索引会命中空前缀、
+		// **静默返回空**——表象是「数据凭空消失」而非「查询变慢」，属误判风险。故命中索引后
+		// 先做一次 O(1) 探测（Cursor().First()）：**整桶无任何键（或桶缺失）→ 视为索引未就绪，
+		// 回落为原有全表扫描路径**，结果与引入索引前逐字节一致；索引非空 → 正常走索引。
+		// 代价：仅命中索引的查询每查询多一次 O(1) 探测；仅在索引整桶为空时才触发回落。
+		var ib *bolt.Bucket
+		if idx != nil {
+			ib = tx.Bucket([]byte(idx.Bucket))
+			var first []byte
+			if ib != nil {
+				first, _ = ib.Cursor().First()
 			}
-			rec[KeyField] = string(k)
+			if ib == nil || first == nil {
+				idx, ib, prefixVals = nil, nil, nil // 索引未就绪 → 回落全表扫描
+			}
+		}
+
+		// 顺序一致 → 遍历顺序即结果顺序，跳过内存排序。
+		// 注意：须在探测**之后**判定——一旦回落全表扫描，遍历序 = 桶序（≠ 排序字段序），
+		// 不能沿用「命中索引」时的顺序假设。
+		skipSort = q.OrderBy == "" || (idx != nil && q.OrderBy == idx.Order && !q.OrderDesc)
+		// 提前退出：仅当按所需顺序流式产出且有界（Limit>0 且无游标）。
+		if skipSort && q.Cursor == "" && q.Limit > 0 {
+			earlyTarget = q.Offset + q.Limit
+			if earlyTarget < 0 {
+				earlyTarget = 0
+			}
+		}
+
+		var (
+			c     *bolt.Cursor
+			start []byte
+			main  = b
+		)
+		if idx != nil {
+			c = ib.Cursor()
+			start = []byte(indexPrefix(prefixVals))
+		} else {
+			c = b.Cursor()
+		}
+		var k, v []byte
+		if idx != nil {
+			k, v = c.Seek(start)
+		} else {
+			k, v = c.First()
+		}
+		for ; k != nil; k, v = c.Next() {
+			if idx != nil && !bytes.HasPrefix(k, start) {
+				break // 离开前缀区段 → 结束
+			}
+			var (
+				rec Record
+				pk  string
+			)
+			if idx != nil {
+				pk = string(v) // 索引值 = 主键
+				raw := main.Get([]byte(pk))
+				if raw == nil {
+					continue // 脏索引（主行缺失）→ 跳过
+				}
+				if err := json.Unmarshal(raw, &rec); err != nil {
+					continue // 跳过坏行
+				}
+			} else {
+				pk = string(k)
+				if err := json.Unmarshal(v, &rec); err != nil {
+					continue // 跳过坏行
+				}
+			}
+			if rec == nil {
+				rec = Record{} // 记录值为 JSON null 时防御 rec[KeyField]=pk panic
+			}
+			rec[KeyField] = pk
 			if len(q.Where) > 0 && !matchWhere(rec, q.Where) {
-				return nil
+				continue
+			}
+			if earlyTarget > 0 && len(all) >= earlyTarget {
+				more = true // 已攒够本页，仍有后续匹配行
+				break
 			}
 			all = append(all, rec)
-			return nil
-		})
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, "", err
 	}
 
-	// 排序（升序；OrderDesc 反向）
-	if q.OrderBy != "" {
+	// 排序（升序；OrderDesc 反向）——顺序一致（skipSort）时跳过。
+	if !skipSort && q.OrderBy != "" {
 		sort.SliceStable(all, func(i, j int) bool {
 			return compare(all[i], all[j], q.OrderBy, q.OrderDesc)
 		})
@@ -79,9 +174,9 @@ func (t *Table) Query(q Query) ([]Record, string, error) {
 	}
 	page := all[start:end]
 
-	// next_cursor：还有后续 → 编码最后一行的 (orderByValue, 主键)
+	// next_cursor：还有后续（含提前退出时窥见的 more）→ 编码最后一行的 (orderByValue, 主键)
 	var next string
-	if end < len(all) && len(page) > 0 {
+	if (end < len(all) || more) && len(page) > 0 {
 		last := page[len(page)-1]
 		next = encodeCursor(fieldString(last, q.OrderBy), keyString(last))
 	}

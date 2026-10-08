@@ -77,10 +77,28 @@ type Scope struct {
 	eng    *Engine
 	parent *Scope
 	vars   map[string]any
+	// isolated 标记**并发边界作用域**（PARALLEL 分支 / 并发 LOOP 迭代）：其赋值只写本
+	// 作用域、不回写祖先，避免多 goroutine 并发改写共享 map（§6.1「分支捕获互不可见」）。
+	isolated bool
 }
 
 func newScope(eng *Engine, parent *Scope) *Scope {
 	return &Scope{eng: eng, parent: parent, vars: map[string]any{}}
+}
+
+// newBranchScope 创建并发分支/迭代的边界作用域（父为共享作用域，赋值不回写祖先）。
+func newBranchScope(eng *Engine, parent *Scope) *Scope {
+	return &Scope{eng: eng, parent: parent, vars: map[string]any{}, isolated: true}
+}
+
+// concurrent 报告本作用域是否位于并发分支内（作用域链上存在并发边界）。
+func (s *Scope) concurrent() bool {
+	for sc := s; sc != nil; sc = sc.parent {
+		if sc.isolated {
+			return true
+		}
+	}
+	return false
 }
 
 // NewEngine 构造执行器（Files/DBs 缺省注入错误实现，避免 nil 解引用）。
@@ -181,8 +199,14 @@ func (s *Scope) Lookup(name string) (any, bool) {
 }
 
 // setVar 赋值：就近（找到已定义变量原位更新，否则写当前作用域）。
+// 并发边界作用域（isolated）为回写边界：不回写共享祖先，只在本作用域内定义/更新
+// （§6.1「分支捕获互不可见」），避免多 goroutine 并发写同一作用域 map。
 func (s *Scope) setVar(name string, v any) {
 	for sc := s; sc != nil; sc = sc.parent {
+		if sc.isolated {
+			sc.vars[name] = v
+			return
+		}
 		if _, ok := sc.vars[name]; ok {
 			sc.vars[name] = v
 			return
@@ -436,6 +460,10 @@ func (e *Engine) writeTarget(sc *Scope, tgt *Expr, val any, ln int) error {
 	}
 	// 带访问器链
 	if tgt.Kind == eVar {
+		// 宿主注入的保留变量只读：字段链写同样拒绝（与裸名/下标写口径一致）。
+		if sc.eng != nil && sc.eng.injected[tgt.Name] {
+			return lineErr(ln, "%s 是宿主注入的保留变量，只读", tgt.Name)
+		}
 		base, ok := sc.Lookup(tgt.Name)
 		if !ok {
 			return lineErr(ln, "SET 目标变量 %s 未定义", tgt.Name)
@@ -454,6 +482,14 @@ func (e *Engine) writeTarget(sc *Scope, tgt *Expr, val any, ln int) error {
 			if r, ok := base.(*Rec); ok && r.Src != nil {
 				// 循环记录字段写：字段更新 + 整源写回在同一把锁内（并发安全）
 				return r.Src.setRecord(m, fields, val)
+			}
+			if sc.concurrent() {
+				// 并发分支：共享 map 就地改写有竞态 → 先克隆为分支内副本再写
+				cp := cloneValue(m).(map[string]any)
+				if err := deepSetFields(cp, fields, val); err != nil {
+					return err
+				}
+				return sc.assignVar(tgt.Name, cp)
 			}
 			return deepSetFields(m, fields, val)
 		}
@@ -597,6 +633,11 @@ func (e *Engine) evalSubscriptWrite(sc *Scope, tgt *Expr, val any, ln int) error
 	if !ok {
 		return lineErr(ln, "SET 目标 %s 不是列表", tgt.Name)
 	}
+	// 并发分支：共享 slice 就地写有竞态 → 先克隆为分支内副本，写完回写本作用域
+	concurrent := sc.concurrent()
+	if concurrent {
+		list = cloneValue(list).([]any)
+	}
 	idxVal, err := evalExprValue(sc, tgt.Idx)
 	if err != nil {
 		return err
@@ -612,6 +653,9 @@ func (e *Engine) evalSubscriptWrite(sc *Scope, tgt *Expr, val any, ln int) error
 		return lineErr(ln, "下标 %d 越界（列表长度 %d）", idx, len(list))
 	}
 	list[idx] = val
+	if concurrent {
+		return sc.assignVar(tgt.Name, list)
+	}
 	return nil
 }
 
@@ -752,6 +796,10 @@ func (e *Engine) execPush(sc *Scope, st *PushStmt) error {
 	if !ok {
 		return lineErr(st.Ln, "PUSH 目标 %s 不是列表", st.Target.Name)
 	}
+	if sc.concurrent() {
+		// 并发分支：append 可能就地写共享底层数组 → 先复制为分支内副本
+		list = append([]any{}, list...)
+	}
 	return sc.assignVar(st.Target.Name, append(list, v))
 }
 
@@ -818,6 +866,26 @@ func deepSetFields(m map[string]any, fields []string, val any) error {
 	}
 	cur[fields[len(fields)-1]] = val
 	return nil
+}
+
+// cloneValue 深拷贝对象/数组（其它值按引用原样保留），供**并发分支**的字段/下标写走
+// 「分支内副本」，避免就地改写共享 map/slice（§6.1「分支捕获互不可见」）。
+func cloneValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = cloneValue(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = cloneValue(val)
+		}
+		return out
+	}
+	return v
 }
 
 // Rec 循环记录包装：携带来源，SET 字段写可即时整源写回（幂等断点续跑基础）。
@@ -974,6 +1042,7 @@ func (e *Engine) execLoopConcurrent(st *LoopStmt, loopScope *Scope, iter *iterSo
 		stopMu.Unlock()
 	}
 	sem := make(chan struct{}, st.Concurrency)
+loop:
 	for idx := range iter.items {
 		if e.ctx.Err() != nil || !canRun() {
 			break
@@ -982,7 +1051,7 @@ func (e *Engine) execLoopConcurrent(st *LoopStmt, loopScope *Scope, iter *iterSo
 		case sem <- struct{}{}:
 		case <-e.ctx.Done():
 			markStop()
-			break
+			break loop // 跳出调度循环，不再 wg.Add/派生无意义 goroutine
 		}
 		wg.Add(1)
 		go func(i int) {
@@ -991,12 +1060,14 @@ func (e *Engine) execLoopConcurrent(st *LoopStmt, loopScope *Scope, iter *iterSo
 			if e.ctx.Err() != nil {
 				return
 			}
-			itScope := newScope(e, loopScope)
+			itScope := newBranchScope(e, loopScope)
 			itScope.vars[st.Var] = iter.item(i)
 			err := e.execSeq(itScope, st.Block)
 			switch {
 			case errors.Is(err, ErrBreak):
 				markStop()
+			case errors.Is(err, ErrContinue):
+				// 并发迭代的 CONTINUE 只跳过本次（goroutine 自然结束），不影响其他迭代
 			case errors.Is(err, ErrExit):
 				markStop()
 			case err != nil:
@@ -1141,7 +1212,7 @@ func (e *Engine) execParallel(sc *Scope, st *ParallelStmt) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			branchScope := newScope(e, sc) // 分支捕获互不可见
+			branchScope := newBranchScope(e, sc) // 分支捕获互不可见
 			err := e.execStmt(branchScope, branch)
 			switch {
 			case errors.Is(err, ErrExit):

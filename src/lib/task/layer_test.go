@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestApplyEventMapping：llm 三类事件（tasks.started / tasks.updated / tasks.done →
@@ -693,5 +694,89 @@ func TestApplyUnknownSubject(t *testing.T) {
 	}
 	if err := l.Apply(subjTaskReport, []byte(`not-json`)); err == nil {
 		t.Fatal("非法载荷应返回错误")
+	}
+}
+
+// TestParentCycleBFSNoHang：ParentID 成环（数据异常）时，后代遍历（descendantsLocked，逻辑删除级联）
+// 与子树遍历（CancelSubtree）必须带 visited、不得死循环；环内节点各判一次、不重复。
+func TestParentCycleBFSNoHang(t *testing.T) {
+	l, _ := newLayer(t)
+	// 直接构造三节点环：tk-a → tk-c → tk-b → tk-a（ParentID 互为祖先）。
+	seedCycle := func() {
+		l.mu.Lock()
+		for _, id := range []string{"tk-a", "tk-b", "tk-c"} {
+			l.recs[id] = &Record{TaskID: id, TopSession: "top-1", InstanceID: "ins-test", State: StateRunning}
+		}
+		l.recs["tk-a"].ParentID = "tk-c"
+		l.recs["tk-b"].ParentID = "tk-a"
+		l.recs["tk-c"].ParentID = "tk-b"
+		l.mu.Unlock()
+	}
+
+	// ① 逻辑删除（markClosedLocked → descendantsLocked）在环上不得挂起
+	seedCycle()
+	done := make(chan struct{})
+	go func() {
+		_ = l.Apply(subjTaskDeleted, []byte(`{"node_id":"tk-a"}`))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ParentID 环导致 descendantsLocked 死循环（Apply(task-deleted) 未返回）")
+	}
+	for _, id := range []string{"tk-a", "tk-b", "tk-c"} {
+		if rec := l.Record(id); rec == nil || !rec.Closed {
+			t.Fatalf("环内节点 %s 未随级联标记 closed: %+v", id, rec)
+		}
+	}
+
+	// ② 取消判定（CancelSubtree）在环上不得挂起；环内节点各判一次（无重复）
+	seedCycle()
+	got := make(chan []string, 1)
+	go func() { got <- l.CancelSubtree("ins-test", "tk-a", "top-1") }()
+	select {
+	case ids := <-got:
+		if len(ids) != 3 {
+			t.Fatalf("环内可取消集合=%v want 3 项（visited 去重）", ids)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ParentID 环导致 CancelSubtree 死循环")
+	}
+}
+
+// TestBuildReportedNodeRejectsSelfParent：完成回报建节点时 parent == task_id 自环被拒绝
+// （按顶层节点处理，不建自引用行）。
+func TestBuildReportedNodeRejectsSelfParent(t *testing.T) {
+	var mu sync.Mutex
+	var logs []string
+	l, fake := newLayerWith(t, Options{Logf: func(format string, args ...any) {
+		mu.Lock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}})
+
+	if err := l.Apply(subjTaskReport, reportPayload(map[string]any{
+		"task_id": "tk-self", "top_session": "top-1", "parent": "tk-self", "tool_call_id": "tc-self",
+	})); err != nil {
+		t.Fatalf("Apply(report/self-parent): %v", err)
+	}
+	if rec := l.Record("tk-self"); rec == nil || rec.ParentID != "" {
+		t.Fatalf("自环 parent==task_id 应被拒绝（ParentID 置空）: %+v", rec)
+	}
+	row := fake.row("tk-self")
+	if row == nil || sval(row["parent_node_id"]) != "" {
+		t.Fatalf("自环 parent 不应重建自引用权威行: %+v", row)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var hit bool
+	for _, s := range logs {
+		if strings.Contains(s, "拒绝自环") {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("未记自环拒绝日志: %v", logs)
 	}
 }

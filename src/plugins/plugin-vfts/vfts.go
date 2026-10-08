@@ -24,13 +24,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-plugin"
+	"github.com/chonkpilot/chonkpilot-plugin/dataclient"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
 
@@ -426,7 +426,7 @@ func (p *Vfts) instanceGone(id string) {
 
 // readEnableAndEnsure 注册后异步回读 enable-vfts 并据此收敛可见性。
 func (p *Vfts) readEnableAndEnsure(instanceID, wd string) {
-	val, err := prjConfigReadKey(p.deps.Bus, instanceID, enableKey)
+	val, err := dataclient.ReadKey(p.deps.Bus, instanceID, enableKey)
 	if err != nil {
 		p.logf("vfts: 读 prj-config %s 失败（instance=%s）：%v（视为未启用）", enableKey, instanceID, err)
 	}
@@ -483,7 +483,7 @@ func (p *Vfts) applyPrjConfig(key, op string, list map[string]any) {
 		enabled := false
 		if list != nil {
 			if raw, ok := list[enableKey]; ok {
-				enabled = strval(raw) == "true"
+				enabled = dataclient.Strval(raw) == "true"
 			}
 		}
 		if op == "delete" {
@@ -521,7 +521,7 @@ func (p *Vfts) applyPrjConfig(key, op string, list map[string]any) {
 			on := false
 			if list != nil {
 				if raw, ok := list[docsKey]; ok {
-					on = strval(raw) == "true"
+					on = dataclient.Strval(raw) == "true"
 				}
 			}
 			if op == "delete" {
@@ -694,10 +694,10 @@ func (p *Vfts) readDocsConfig(wd string) (enabled bool, maxMB int) {
 	if inst == "" {
 		return false, maxMB
 	}
-	if v, err := prjConfigReadKey(p.deps.Bus, inst, docsKey); err == nil {
+	if v, err := dataclient.ReadKey(p.deps.Bus, inst, docsKey); err == nil {
 		enabled = v == "true"
 	}
-	if v, err := prjConfigReadKey(p.deps.Bus, inst, docMaxMBKey); err == nil {
+	if v, err := dataclient.ReadKey(p.deps.Bus, inst, docMaxMBKey); err == nil {
 		if n, perr := strconv.Atoi(strings.TrimSpace(v)); perr == nil && n > 0 {
 			maxMB = n
 		}
@@ -880,7 +880,7 @@ func (p *Vfts) readIndexConfig(wd string) (exts, rules []string, stack bool) {
 	if inst == "" {
 		return []string{}, []string{}, false
 	}
-	if v, err := prjConfigReadKey(p.deps.Bus, inst, extsKey); err == nil {
+	if v, err := dataclient.ReadKey(p.deps.Bus, inst, extsKey); err == nil {
 		exts = splitList(v)
 	}
 	// 用户排除规则（gitignore 语法，原样透传：不折名、不丢 '!'/glob）+ 是否叠加 ignore 体系：
@@ -901,7 +901,7 @@ func (p *Vfts) readIndexConfig(wd string) (exts, rules []string, stack bool) {
 // prjConfigGetter 把 prj-config 单键读封装为 ignore.ConfigOptions 的取值器（键不存在/读取失败 → ok=false）。
 func (p *Vfts) prjConfigGetter(inst string) func(key string) (string, bool) {
 	return func(key string) (string, bool) {
-		v, err := prjConfigReadKey(p.deps.Bus, inst, key)
+		v, err := dataclient.ReadKey(p.deps.Bus, inst, key)
 		return v, err == nil
 	}
 }
@@ -918,21 +918,6 @@ func splitList(s string) []string {
 			continue
 		}
 		seen[part] = true
-		out = append(out, part)
-	}
-	return out
-}
-
-// splitRules 解析项目级排除规则（skip-dirs）：按逗号/分号/换行分隔，去空。
-// **保序且保留重复项**——gitignore 语义下顺序有意义（'!' 取反 + 后一条覆盖前一条）。
-func splitRules(s string) []string {
-	var out []string
-	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r'
-	}) {
-		if part = strings.TrimSpace(part); part == "" {
-			continue
-		}
 		out = append(out, part)
 	}
 	return out
@@ -1000,7 +985,7 @@ func (p *Vfts) saveStatusRaw(r *workRec, raw string) {
 	if inst == "" {
 		return
 	}
-	if err := prjConfigSaveKey(p.deps.Bus, inst, statusKey, raw); err != nil {
+	if err := dataclient.SaveKey(p.deps.Bus, inst, statusKey, raw); err != nil {
 		p.logf("vfts: 回写 %s 失败（instance=%s）：%v", statusKey, inst, err)
 	}
 }
@@ -1113,94 +1098,5 @@ func resolveExe(explicit string) (string, error) {
 	return "", fmt.Errorf("vfts: 引擎未找到——请设置 Options.Exe / 环境变量 VFTS_EXE，或将 %s 置于 <exeDir>/mcps/vfts/", exeName)
 }
 
-// strval 任意值 → 字符串（配置 list 值归一）。
-func strval(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case bool:
-		if x {
-			return "true"
-		}
-		return "false"
-	case nil:
-		return ""
-	default:
-		return fmt.Sprint(x)
-	}
-}
-
-// ─── data-* 请求-响应（persist 同主题 promise + req_id 关联）──
-
-var reqSeq atomic.Uint64
-
-func newReqID() string {
-	return fmt.Sprintf("vfts-%d-%d", time.Now().UnixNano(), reqSeq.Add(1))
-}
-
-// dataEmit 向 data-<域>-<动作> 请求面发一次请求并等应答（镜像 codegraph dataclient 模式：
-// persist 把应答 fire-and-forget 发布到请求同一主题，须按 req_id 关联收敛）。
-func dataEmit(bus mq.Bus, subject string, req map[string]any) (map[string]any, error) {
-	req["req_id"] = newReqID()
-	type reply struct {
-		result map[string]any
-		err    error
-	}
-	done := make(chan reply, 1)
-	sub, err := bus.On(subject, 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m struct {
-			ReqID  string         `json:"req_id"`
-			OK     *bool          `json:"ok"`
-			Result map[string]any `json:"result"`
-			Error  string         `json:"error"`
-		}
-		if json.Unmarshal(v.Payload, &m) != nil || m.ReqID != req["req_id"] || m.OK == nil {
-			return nil // 他人请求/应答忽略
-		}
-		if !*m.OK {
-			msg := m.Error
-			if msg == "" {
-				msg = "persist error"
-			}
-			done <- reply{err: errors.New(msg)}
-			return nil
-		}
-		done <- reply{result: m.Result}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	defer sub.Unsubscribe()
-	if f := bus.Emit(context.Background(), subject, req); f.Wait().Err() != nil {
-		return nil, f.Wait().Err()
-	}
-	select {
-	case r := <-done:
-		return r.result, r.err
-	case <-time.After(dataTimeout):
-		return nil, fmt.Errorf("%s via persist 应答超时", subject)
-	}
-}
-
-// prjConfigReadKey 读 prj-config 单键：load 应答 result.data = 值字符串（键不存在 → ""）。
-func prjConfigReadKey(bus mq.Bus, instanceID, key string) (string, error) {
-	res, err := dataEmit(bus, subjectPrjConfigLoad, map[string]any{
-		"instance_id": instanceID,
-		"data":        map[string]any{"id": key},
-	})
-	if err != nil {
-		return "", err
-	}
-	val, _ := res["data"].(string)
-	return val, nil
-}
-
-// prjConfigSaveKey 写 prj-config 单键（值 = 字符串；save 载荷 {data:{key,value}}）。
-func prjConfigSaveKey(bus mq.Bus, instanceID, key, value string) error {
-	_, err := dataEmit(bus, subjectPrjConfigSave, map[string]any{
-		"instance_id": instanceID,
-		"data":        map[string]any{"key": key, "value": value},
-	})
-	return err
-}
+// data-* 请求-响应 / prj-config 单键读写（strval / newReqID / dataEmit / prjConfigReadKey /
+// prjConfigSaveKey）已收口到 plugin/dataclient（三插件逐字重复 → 单点实现），本包改为调用 dataclient.*。

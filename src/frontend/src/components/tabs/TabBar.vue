@@ -87,7 +87,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onUpdated, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { EventNames } from '../../events/event-names'
 
@@ -151,9 +151,15 @@ const displayTabs = computed(() => {
   for (const x of list) if (rest.has(x.key)) out.push(x)  // 新增的 key 按 props 原顺序追加
   return out
 })
-// props.tabs 变化 → 同步内部顺序（清理已删 key）+ 重新判定溢出
+// props.tabs 变化 → 同步内部顺序（清理已删 key）+ 重新判定溢出。
+// 幂等：无变化不写 orderKeys（避免在 onUpdated 中触发自更新循环）；displayTabs 已能过滤
+// 已删 key，本函数只回收 orderKeys 自身。
 function syncOrder() {
-  if (orderKeys.value) orderKeys.value = displayTabs.value.map(x => x.key)
+  if (!orderKeys.value) return
+  const next = displayTabs.value.map(x => x.key)
+  const cur = orderKeys.value
+  if (next.length === cur.length && next.every((k, i) => k === cur[i])) return
+  orderKeys.value = next
 }
 
 // 溢出判定：口径 = **最后一个页签的位置**（其右边界 > 外层可用宽右边界 → 需要按钮）。
@@ -237,7 +243,6 @@ function closeMenu() { menu.value.visible = false }
 function onDocMouseDown() { closeMenu() }
 
 let ro = null
-let w = null
 onMounted(() => {
   try {
     ro = new ResizeObserver(recompute)
@@ -246,17 +251,16 @@ onMounted(() => {
     if (barRef.value) ro.observe(barRef.value)
     if (innerRef.value) ro.observe(innerRef.value)
   } catch (e) { console.warn('[TabBar] ResizeObserver unavailable', e) }
-  // props.tabs 变化 → 同步内部显示顺序（清理已删 key）+ 重新判定溢出
-  // 注：必须用 getter 形式（`() => props.tabs`）；直接传数组会被 Vue 当作「多个 source」逐项展开，
-  // 页签增删时不会触发 → 按钮/顺序都会停在旧状态（实跑发现的缺陷）。
-  w = watch(() => props.tabs, () => nextTick(() => { syncOrder(); recompute() }), { deep: true })
   document.addEventListener('mousedown', onDocMouseDown)
   window.addEventListener('resize', onWindowResize)
   nextTick(recompute)
 })
+// props.tabs 变化（经 displayTabs 计算属性）→ 组件重渲染后同步内部顺序 + 重判溢出。
+// 用 onUpdated 生命周期而非 watch：项目硬规则禁止 watch 监听 props，且 displayTabs 已是
+// props.tabs 的反应式派生，重渲染即等价于「props 变化」信号（无隐式依赖）。
+onUpdated(() => { syncOrder(); recompute() })
 onUnmounted(() => {
   if (ro) { ro.disconnect(); ro = null }
-  if (w) { w(); w = null }
   document.removeEventListener('mousedown', onDocMouseDown)
   window.removeEventListener('resize', onWindowResize)
 })

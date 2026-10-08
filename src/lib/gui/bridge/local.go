@@ -32,24 +32,47 @@ import (
 )
 
 // callOpenInConsole 在系统控制台（cmd 新窗口）打开到指定路径所在目录。
+//
+// 安全（E5-①）：**不把目录拼进 cmd 命令行**。旧写法 `cmd /k start cmd /k cd /d <dir>` 会把
+// dir 交给 cmd 二次解析，目录名含 `&` / `^` 时可注入（如 `a&calc`）。现改为以
+// CREATE_NEW_CONSOLE 直接起一个 cmd，**子进程工作目录 = dir**（dir 不经命令行解析，无注入面）。
 func callOpenInConsole(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	path := ""
 	if len(params) > 0 {
 		_ = json.Unmarshal(params[0], &path)
 	}
-	dir := path
-	if st, err := os.Stat(path); err == nil && !st.IsDir() {
-		dir = filepath.Dir(path)
-	}
-	if dir == "" {
-		dir = b.workDir
-	}
-	cmd := exec.Command("cmd", "/k", "start", "cmd", "/k", "cd", "/d", dir)
+	dir := consoleDir(path, b.workDir)
+	cmd := consoleCmd(dir)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("open console: %w", err)
 	}
 	_ = cmd.Process.Release()
 	return json.Marshal(map[string]string{"code": "OK", "path": dir})
+}
+
+// consoleDir 解析「打开控制台」的目标目录：文件 → 其所在目录；目录 → 自身；
+// 不存在 / 空 → 回落 workDir（保证新控制台始终有可用工作目录）。
+func consoleDir(path, workDir string) string {
+	dir := path
+	if st, err := os.Stat(path); err == nil && !st.IsDir() {
+		dir = filepath.Dir(path)
+	}
+	if dir == "" {
+		return workDir
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return workDir
+	}
+	return dir
+}
+
+// consoleCmd 构造「在 dir 打开新控制台窗口」的命令：dir 作为**子进程工作目录**（而非命令行
+// 参数），避免 cmd 二次解析导致的命令注入。Windows 侧以 CREATE_NEW_CONSOLE 分配新控制台窗口。
+func consoleCmd(dir string) *exec.Cmd {
+	cmd := exec.Command("cmd")
+	cmd.Dir = dir
+	cmd.SysProcAttr = newConsoleProcAttr()
+	return cmd
 }
 
 // mapParam 取第 idx 个参数并解码为 map（缺参/坏参 → nil）。

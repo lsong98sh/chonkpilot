@@ -281,6 +281,11 @@ func buildConn(entry *ServerEntry) (providerConn, *exec.Cmd, chan error, error) 
 		// agentbox 沙箱（决策 42 §2 (104)/(109)）：**仅 stdio** 的 spawn 下发策略
 		// （http/sse 不施加，见 14-安全域-agentbox）；未开开关 / 无允许目录 → 不下发（默认兼容）。
 		if policy := entry.SandboxPolicyJSON(); policy != "" {
+			// processEnv 无 env 时返回 nil（子进程继承父环境）；此时若直接 append，Env 变非 nil
+			// 且只剩沙箱一条 → 子进程丢 PATH 等（exec 见非 nil Env 即不再继承）。故先补基线。
+			if proc.Env == nil {
+				proc.Env = os.Environ()
+			}
 			proc.Env = append(proc.Env, agentbox.EnvSandbox+"="+policy)
 			log.Printf("[gateway] agentbox 隔离下发: server=%s dirs=%s", entry.ID, truncateStr(policy, 500))
 		} else if entry.Sandbox != nil && *entry.Sandbox {
@@ -644,15 +649,23 @@ func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
 	p.closing.Store(true) // 作废/重建期间退出观测静默
 	p.closePooled()
 	_ = p.shared.Load().Close()
+	// 失败路径统一复位：关掉可能半初始化的新槽 → shared 清为空槽（conn=nil，后续调用明确
+	// 报 no transport connection，而非复用已关闭/半初始化的连接）→ closing 归位（避免长期静默）。
+	fail := func(err error) (bool, error) {
+		_ = p.shared.Load().Close()
+		p.shared.Store(&connSlot{})
+		p.closing.Store(false)
+		return false, err
+	}
 	conn, cmd, done, err := buildConn(p.entry)
 	if err != nil {
-		return false, fmt.Errorf("respawn %q: %w", p.name, err)
+		return fail(fmt.Errorf("respawn %q: %w", p.name, err))
 	}
 	slot := &connSlot{conn: conn, cmd: cmd, done: done}
 	slot.touch()
 	p.shared.Store(slot)
 	if err := p.connect(ctx); err != nil {
-		return false, fmt.Errorf("reconnect %q: %w", p.name, err)
+		return fail(fmt.Errorf("reconnect %q: %w", p.name, err))
 	}
 	p.closing.Store(false)
 	return true, nil

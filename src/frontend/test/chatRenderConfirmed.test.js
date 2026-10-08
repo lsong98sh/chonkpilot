@@ -87,3 +87,18 @@ test('③ api/chat：llm-start 发布返回 { turn, ack }（ack = /publish 应�
   assert.match(src, /return \{ turn, ack \}/, 'publishLLMStart 须返回 { turn, ack }')
   assert.match(src, /return \{ turn: turnId \|\| '', ack \}/, 'publishLLMContinue 须返回 { turn, ack }')
 })
+
+test('④ sessionMessages：加载带代次守卫（切换会话丢弃过期批次，不污染当前会话）', () => {
+  const src = readSrc('utils/sessionMessages.js')
+  assert.match(src, /let loadGen = 0/, '须有加载代次计数 loadGen')
+  // 首屏加载：发请求前推进代次；await 后校验，过期即丢弃（不写任何状态）
+  const load = fnBody(src, 'async function loadMessages(sessionId)')
+  assert.match(load, /const gen = \+\+loadGen/, 'loadMessages 须在发起请求前推进代次')
+  assert.match(load, /if \(gen !== loadGen\) return/, 'loadMessages 须在 await 后校验代次并丢弃过期批次')
+  // 加载更多：快照当前代次；await 后校验，过期即丢弃
+  const more = fnBody(src, 'async function loadMoreMessages()')
+  assert.match(more, /const gen = loadGen/, 'loadMoreMessages 须快照当前代次')
+  assert.match(more, /if \(gen !== loadGen\) return/, 'loadMoreMessages 须在 await 后校验代次并丢弃过期批次')
+  // teardown：推进代次使在途加载全部失效
+  assert.match(fnBody(src, 'function teardown()'), /loadGen\+\+/, 'teardown 须推进代次使在途加载失效')
+})

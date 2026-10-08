@@ -63,8 +63,13 @@ type Options struct {
 	Form string
 }
 
-// appOrigin 是虚拟宿主源，请求经 WebResourceRequested 拦截（无 HTTP server）。
-const appOrigin = "https://app.localhost"
+// appOrigin / appOriginHost 是虚拟宿主源（精确 scheme+host；请求经 WebResourceRequested
+// 拦截，无 HTTP server）。判定一律用**精确 host 相等**（见 window.go isAppOrigin），
+// 不用字符串前缀匹配——否则 `https://app.localhost.evil.com/...` 会误命中。
+const (
+	appOrigin     = "https://app.localhost"
+	appOriginHost = "app.localhost"
+)
 
 // syscalls
 var (
@@ -471,6 +476,8 @@ func (h *appHandler) serveStatic(w http.ResponseWriter, r *http.Request, path st
 		return
 	}
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	// 与 fileserver 同口径：阻止 MIME 嗅探（经 serveWebResource 一并转发给 WebView2）。
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// 首屏注入（61 §4.6，阶段 2a）：
 	//   - `window.__chonkpilotInstanceId`（既有）：前端 mq.emit 据此给业务 payload 统一补
 	//     instance_id（61-消息一览 §0 第 21/45 行）；
@@ -565,15 +572,31 @@ func serveWebResource(h http.Handler, c *edge.Chromium, request *edge.ICoreWebVi
 	req.Header.Set("Content-Type", "application/json")
 	rr := &recorder{header: make(http.Header), status: 200}
 	h.ServeHTTP(rr, req)
-	contentType := rr.header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "text/plain; charset=utf-8"
+	if rr.header.Get("Content-Type") == "" {
+		rr.header.Set("Content-Type", "text/plain; charset=utf-8")
 	}
-	resp, err := c.CreateWebResourceResponse(rr.body, rr.status, "OK", "Content-Type: "+contentType)
+	resp, err := c.CreateWebResourceResponse(rr.body, rr.status, "OK", forwardedHeaders(rr.header))
 	if err != nil {
 		return nil, err
 	}
 	return resp, nil
+}
+
+// forwardedHeaders 把 recorder 收集到的响应头拼成 WebView2 需要的多行格式（`K: V\r\n`）。
+// 必须转发 Cache-Control（serveStatic/fileserver 均设 `no-cache, no-store, must-revalidate`），
+// 否则 WebView2 会持久缓存旧页面（项目规则明令禁止）；X-Content-Type-Options 阻止 MIME 嗅探
+// （/show/ 下的用户文件）。Content-Length 由 WebView2 依 body 自算，不转发以免冲突。
+func forwardedHeaders(h http.Header) string {
+	var b strings.Builder
+	for _, name := range []string{"Content-Type", "Cache-Control", "X-Content-Type-Options"} {
+		if v := h.Get(name); v != "" {
+			b.WriteString(name)
+			b.WriteString(": ")
+			b.WriteString(v)
+			b.WriteString("\r\n")
+		}
+	}
+	return b.String()
 }
 
 type recorder struct {

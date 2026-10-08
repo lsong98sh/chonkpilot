@@ -106,7 +106,7 @@
 ### 4.1 轮次状态机（`turn.go`）
 
 ```text
-llm-start → newTurnCtx：BuildContext(include_snapshot) → 系统提示词分层前插（全局层 + 目录层 + 场景层 + agent 层，25 §3）→ 子轮 persona → 载 LLM 参数 → go loop()
+llm-start → newTurnCtx：BuildContextTokens(include_snapshot) → 系统提示词分层前插（全局层 + 目录层 + 场景层 + agent 层，25 §3）→ 子轮 persona → 载 LLM 参数 → go loop()
 loop：select { done | asyncDone → onAsyncDone | in → chatOnce }
 chatOnce：
   迭代上限 maxToolIterations=20
@@ -186,7 +186,7 @@ chatOnce：
 
 **参数来源与加载时机**：`server.go loadLLMProvider(instanceID, selectedModel)` → `userLLMProvider`（命中 usr `llms`）→ 未命中查**内置兜底保留名**（`builtinFallbackProvider`，仅 `echo`）→ 仍不命中回落 exe flags；读取 `protocol`/`baseUrl`/`apiKey`/`model`/`temperature`/`maxTokens`/`thinking`/`reasoningEffort`/`maxToolIterations`，在 `turn.go newTurnCtx` 时**一次加载**，子轮次复用主轮次 provider 与参数。`server.go loadLLMRuntimeConfig(instanceID)` 经 `data-user-config-load` 读 usr 标量 `responseTimeout`/`streamTimeout`/`retryCount`（`newTurnCtx`/`recoverTurnCtx` 各加载一次，**下个新 turn 生效**；`retryCount` 显式 0 = 不重试，两项超时非正值回落常量）。**退避间隔不自持**：经 `router.RetryWait`（`Retry-After` 优先 + 指数退避），`retryDelay` 配置项已移除。
 
-**systemPrompt 注入链**：**主 agent** 场景 systemPrompt 由 `domainmcp.go mainScenarioAgent` 解析；**子轮 system** 由 `childAgentSystem`（含被委派 agent 的 `prompt` / `delegateCond`）承载，见 §4.4。`turn.go` 在 `BuildContext` 之后将其**前插**为系统提示，随后注入子轮次 persona（`llm_run` 每条 LLM 指令的 agent 参数）。
+**systemPrompt 注入链**：**主 agent** 场景 systemPrompt 由 `domainmcp.go mainScenarioAgent` 解析；**子轮 system** 由 `childAgentSystem`（含被委派 agent 的 `prompt` / `delegateCond`）承载，见 §4.4。`turn.go` 在 `BuildContextTokens` 之后将其**前插**为系统提示，随后注入子轮次 persona（`llm_run` 每条 LLM 指令的 agent 参数）。
 
 > **systemPrompt 分层拼接**：按序拼接 = **全局层**（身份/运行环境，**代码写死**，不落文件/不 embed/不可配置）→ **目录层**（四级数据根 + `capability/` 子目录 + DSL env 说明；出厂文件 `capability/system/system-directory.md`，**每轮读取、不入快照、不受场景门控**，OP-10 增）→ **场景层**（`scenario.description` + **代码按场景 agents 自动拼接的成员段**〔名字 + roleTag + 描述〕）→ **agent 层**（`*.agent.md`，主 agent = `main.agent.md`）。**无场景（通用模式）→ 只注入全局层 + 目录层**。数据层 `Scenario.SystemPrompt` 字段**已删除**（facade DTO / wire / `ReadScenarioDir` 均不再有）；场景层提示词恒由本侧各层自拼。现 `memoryGuide`（门控 `memory.enabled=true`）/`assetGuide`（门控已接入 capability 节点）是**两条功能指引**，与"全局层"**不是一回事**。
 

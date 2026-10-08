@@ -2361,3 +2361,35 @@ func TestConcurrentReadIndex(t *testing.T) {
 		t.Errorf("并发读失败：%v", e)
 	}
 }
+
+// TestModuleOfConcurrent：并发调用 moduleOf（包级缓存共享）不得 data race（go test -race）。
+// 旧实现无锁读写包级 moduleCache → -race 下必报竞争；本测试亦断言各调用取到正确 module。
+func TestModuleOfConcurrent(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dirA, "go.mod"), []byte("module modA\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "go.mod"), []byte("module modB\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		dir, want := dirA, "modA"
+		if i%2 == 1 {
+			dir, want = dirB, "modB"
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				if got := moduleOf(dir); got != want {
+					t.Errorf("moduleOf(%q) = %q, want %q", dir, got, want)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}

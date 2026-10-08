@@ -173,9 +173,11 @@ func writeDocCache(path string, d docCacheData) {
 // ───────────────────────────── 转换服务调用 ─────────────────────────────
 
 // convertRequest / vfts/convert 请求体。
+// Root = 允许根（本 workspace 根）：转换服务据此校验 Path 的 realpath 不越界（防任意文件读）。
 type convertRequest struct {
 	Path     string `json:"path"`
 	MaxBytes int64  `json:"max_bytes,omitempty"`
+	Root     string `json:"root,omitempty"`
 }
 
 // convertResponse / vfts/convert 响应体（成功与失败共形，见 src/mcps/markitdown/server.py）。
@@ -318,7 +320,9 @@ func (w *Workspace) chunksOfDoc(e fileEntry) (chunks []chunk, degraded bool, err
 	// 3) HTTP 转换 → 写缓存（键用**返回的** parser_version，保证下次命中）
 	ctx, cancel := context.WithTimeout(context.Background(), docConvertTimeout)
 	defer cancel()
-	resp, cerr := callConvert(ctx, d.Endpoint, token, convertRequest{Path: abs, MaxBytes: docMaxBytes(d)})
+	resp, cerr := callConvert(ctx, d.Endpoint, token, convertRequest{
+		Path: abs, MaxBytes: docMaxBytes(d), Root: filepath.FromSlash(w.Dir),
+	})
 	if cerr != nil {
 		return filenameChunk(e.path), true, nil
 	}

@@ -150,6 +150,10 @@ export function revealInExplorer(path) {
   return guiReq('reveal', { path })
 }
 
+// 右键「打开」与「打开方式」：规格 32-FT-010-S01/S02 明确二者**同走 `gui.open-with`**
+// （61 消息一览 §1：`gui.open-with | 右键「打开/打开方式」`）—— 默认程序与 Windows「打开方式」
+// 均交由 OS 决定，前端不区分。故保留两个入口函数以对应 FileTree 的两项菜单（doOpen / doOpenWith），
+// 二者实现相同属规格如此，非缺陷。
 export function openWithDefault(path) {
   return guiReq('open-with', { path })
 }

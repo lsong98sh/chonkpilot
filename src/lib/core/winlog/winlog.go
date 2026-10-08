@@ -1,3 +1,5 @@
+//go:build windows
+
 // Package winlog 提供统一日志落点：console（stderr）或 Windows 事件日志。
 // 实现 io.Writer，可直接 log.SetOutput 全局切换，供服务模式（事件日志）与前台模式（stderr）复用。
 package winlog
@@ -7,17 +9,15 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 
 	"golang.org/x/sys/windows/svc/eventlog"
 )
 
 // Writer 实现 io.Writer：console 模式写 out；事件模式写 Windows 事件日志（需已注册事件源，失败回退 console）。
 type Writer struct {
-	mu     sync.Mutex
-	out    io.Writer
-	elog   *eventlog.Log
-	prefix string
+	mu   sync.Mutex
+	out  io.Writer
+	elog *eventlog.Log
 }
 
 // NewWriter 创建日志 writer。
@@ -28,7 +28,7 @@ func NewWriter(serviceName string, useEventLog bool, out io.Writer) *Writer {
 	if out == nil {
 		out = os.Stderr
 	}
-	w := &Writer{out: out, prefix: fmt.Sprintf("%s ", time.Now().Format("2006/01/02 15:04:05"))}
+	w := &Writer{out: out}
 	if useEventLog {
 		if el, err := eventlog.Open(serviceName); err == nil {
 			w.elog = el
@@ -67,7 +67,7 @@ func (w *Writer) Error(v ...any) {
 		_ = w.elog.Error(1, msg)
 		return
 	}
-	fmt.Fprintf(w.out, "%s ERROR %s\n", w.prefix, msg)
+	fmt.Fprintf(w.out, "%s ERROR %s\n", nowPrefix(), msg)
 }
 
 // Warn 写警告级日志。
@@ -82,7 +82,7 @@ func (w *Writer) Warn(v ...any) {
 		_ = w.elog.Warning(1, msg)
 		return
 	}
-	fmt.Fprintf(w.out, "%s WARN %s\n", w.prefix, msg)
+	fmt.Fprintf(w.out, "%s WARN %s\n", nowPrefix(), msg)
 }
 
 // Info 写信息级日志。
@@ -97,7 +97,7 @@ func (w *Writer) Info(v ...any) {
 		_ = w.elog.Info(1, msg)
 		return
 	}
-	fmt.Fprintf(w.out, "%s INFO %s\n", w.prefix, msg)
+	fmt.Fprintf(w.out, "%s INFO %s\n", nowPrefix(), msg)
 }
 
 // Close 释放事件日志句柄。

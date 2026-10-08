@@ -38,43 +38,59 @@ func newBusHarness(t *testing.T) mq.Bus {
 	return bus
 }
 
-// TestBuildHistoryNoSummary：无摘要 → 全部 turn 消息按序。
-func TestBuildHistoryNoSummary(t *testing.T) {
+// appendMsg 落一条 user/assistant 消息（测试便捷形态；生产落库统一经 AppendFullKeyed）。
+func appendMsg(t *testing.T, st *sessionStore, turn, role, content string) {
+	t.Helper()
+	appendFull(t, st, turn, ChatMsg{Role: role, Content: content})
+}
+
+// appendFull 落一条完整消息（含 Kind / tool_calls；生产落库统一经 AppendFullKeyed）。
+func appendFull(t *testing.T, st *sessionStore, turn string, m ChatMsg) {
+	t.Helper()
+	if _, err := st.AppendFullKeyed(turn, m, ""); err != nil {
+		t.Fatalf("AppendFullKeyed(%s): %v", turn, err)
+	}
+}
+
+// TestBuildContextNoSummary：无摘要 → 全部 turn 消息按序。
+func TestBuildContextNoSummary(t *testing.T) {
 	bus := newBusHarness(t)
 	st := newSessionStore(bus, "ins-test")
 	_ = st.EnsureSession("s1")
 	_ = st.EnsureTurn("t1", "s1")
 	_ = st.EnsureTurn("t2", "s1")
-	_ = st.AppendMessage("t1", "user", "hello", "")
-	_ = st.AppendMessage("t1", "assistant", "hi", "")
-	_ = st.AppendMessage("t2", "user", "next", "")
+	appendMsg(t, st, "t1", "user", "hello")
+	appendMsg(t, st, "t1", "assistant", "hi")
+	appendMsg(t, st, "t2", "user", "next")
 
-	msgs := st.BuildHistory("s1", "")
+	msgs, _ := st.BuildContextTokens("s1", "", false)
 	if len(msgs) != 3 {
-		t.Fatalf("BuildHistory len=%d, want 3: %+v", len(msgs), msgs)
+		t.Fatalf("BuildContextTokens len=%d, want 3: %+v", len(msgs), msgs)
 	}
 	if msgs[0].Content != "hello" || msgs[2].Content != "next" {
 		t.Fatalf("order wrong: %+v", msgs)
 	}
 }
 
-// TestBuildHistorySummary：最早 turn 有摘要 → 摘要代替被压缩 turn，其后未压缩 turn 全量。
-func TestBuildHistorySummary(t *testing.T) {
+// TestBuildContextSummary：最早 turn 有摘要 → 摘要代替被压缩 turn，其后未压缩 turn 全量。
+func TestBuildContextSummary(t *testing.T) {
 	bus := newBusHarness(t)
 	st := newSessionStore(bus, "ins-test")
 	_ = st.EnsureSession("s1")
 	_ = st.EnsureTurn("t1", "s1")
 	_ = st.EnsureTurn("t2", "s1")
-	_ = st.AppendMessage("t1", "user", "old q", "")
-	_ = st.AppendMessage("t1", "assistant", "old a", "")
-	_ = st.AppendMessage("t2", "user", "new q", "")
-	_ = st.AppendMessage("t2", "assistant", "new a", "")
-	_ = st.SetTurnSummary("t1", "用户问了旧问题，助手答了旧答案")
+	appendMsg(t, st, "t1", "user", "old q")
+	appendMsg(t, st, "t1", "assistant", "old a")
+	appendMsg(t, st, "t2", "user", "new q")
+	appendMsg(t, st, "t2", "assistant", "new a")
+	if _, err := st.req("set-summary", map[string]any{"turn_id": "t1", "summary": "用户问了旧问题，助手答了旧答案"}); err != nil {
+		t.Fatalf("set-summary: %v", err)
+	}
 
-	msgs := st.BuildHistory("s1", "")
+	msgs, _ := st.BuildContextTokens("s1", "", false)
 	// t1 被压缩 → 摘要（system）+ t2 两条
 	if len(msgs) != 3 {
-		t.Fatalf("BuildHistory len=%d, want 3: %+v", len(msgs), msgs)
+		t.Fatalf("BuildContextTokens len=%d, want 3: %+v", len(msgs), msgs)
 	}
 	if msgs[0].Role != "system" || msgs[0].Content == "" {
 		t.Fatalf("first msg should be summary, got %+v", msgs[0])
@@ -84,17 +100,17 @@ func TestBuildHistorySummary(t *testing.T) {
 	}
 }
 
-// TestBuildHistoryExcludeCurrent：排除当前 turn（llm-start 组装时）。
-func TestBuildHistoryExcludeCurrent(t *testing.T) {
+// TestBuildContextExcludeCurrent：排除当前 turn（llm-start 组装时）。
+func TestBuildContextExcludeCurrent(t *testing.T) {
 	bus := newBusHarness(t)
 	st := newSessionStore(bus, "ins-test")
 	_ = st.EnsureSession("s1")
 	_ = st.EnsureTurn("t1", "s1")
 	_ = st.EnsureTurn("t2", "s1")
-	_ = st.AppendMessage("t1", "user", "hist", "")
-	_ = st.AppendMessage("t2", "user", "current", "")
+	appendMsg(t, st, "t1", "user", "hist")
+	appendMsg(t, st, "t2", "user", "current")
 
-	msgs := st.BuildHistory("s1", "t2")
+	msgs, _ := st.BuildContextTokens("s1", "t2", false)
 	if len(msgs) != 1 || msgs[0].Content != "hist" {
 		t.Fatalf("exclude current failed: %+v", msgs)
 	}
@@ -109,8 +125,8 @@ func TestBuildContextTokensReadsPrestored(t *testing.T) {
 	_ = st.EnsureSession("s1")
 	_ = st.EnsureTurn("t1", "s1")
 	_ = st.EnsureTurn("t2", "s1")
-	_ = st.AppendMessage("t1", "user", "hist", "")
-	_ = st.AppendMessage("t2", "user", "current", "")
+	appendMsg(t, st, "t1", "user", "hist")
+	appendMsg(t, st, "t2", "user", "current")
 	fullTok, briefTok := 1234, 56
 	if err := st.CompleteTurnTokens("t1", "done", "stop", &fullTok, &briefTok); err != nil {
 		t.Fatalf("CompleteTurnTokens: %v", err)
@@ -145,8 +161,8 @@ func TestSessionContextSnapshot(t *testing.T) {
 	_ = st.EnsureSession("s1")
 	_ = st.EnsureTurn("t1", "s1")
 	_ = st.EnsureTurn("t2", "s1")
-	_ = st.AppendFull("t1", ChatMsg{Role: "user", Kind: "text", Content: "已压缩的问题"})
-	_ = st.AppendFull("t2", ChatMsg{Role: "user", Kind: "text", Content: "新问题"})
+	appendFull(t, st, "t1", ChatMsg{Role: "user", Kind: "text", Content: "已压缩的问题"})
+	appendFull(t, st, "t2", ChatMsg{Role: "user", Kind: "text", Content: "新问题"})
 	// 写快照（含 tool_calls / kind 往返）
 	toolCall := ToolCall{
 		ID:   "c1",
@@ -162,7 +178,7 @@ func TestSessionContextSnapshot(t *testing.T) {
 	}, "t1"); err != nil {
 		t.Fatalf("SetSnapshot: %v", err)
 	}
-	msgs := st.BuildContext("s1", "", true) // include_snapshot：快照前缀 + t2
+	msgs, _ := st.BuildContextTokens("s1", "", true) // include_snapshot：快照前缀 + t2
 	if len(msgs) != 3 {
 		t.Fatalf("context len=%d, want 3: %+v", len(msgs), msgs)
 	}
@@ -172,11 +188,11 @@ func TestSessionContextSnapshot(t *testing.T) {
 	if msgs[1].ToolCalls == nil || msgs[1].ToolCalls[0].ID != "c1" {
 		t.Fatalf("tool_calls lost in snapshot context: %+v", msgs[1])
 	}
-	// 无快照会话 → include_snapshot 自动回退全量历史（BuildHistory 语义）
+	// 无快照会话 → include_snapshot 自动回退全量历史
 	_ = st.EnsureSession("s2")
 	_ = st.EnsureTurn("t9", "s2")
-	_ = st.AppendMessage("t9", "user", "plain", "")
-	back := st.BuildContext("s2", "", true)
+	appendMsg(t, st, "t9", "user", "plain")
+	back, _ := st.BuildContextTokens("s2", "", true)
 	if len(back) != 1 || back[0].Content != "plain" {
 		t.Fatalf("fallback history failed: %+v", back)
 	}
@@ -189,7 +205,9 @@ func TestCleanupStaleTurns(t *testing.T) {
 	_ = st.EnsureSession("s1")
 	_ = st.EnsureTurn("t-running", "s1")
 	_ = st.EnsureTurn("t-done", "s1")
-	_ = st.CompleteTurn("t-done", "complete", "stop")
+	if err := st.CompleteTurnTokens("t-done", "complete", "stop", nil, nil); err != nil {
+		t.Fatalf("CompleteTurnTokens: %v", err)
+	}
 	if err := st.CleanupStaleTurns(); err != nil {
 		t.Fatalf("CleanupStaleTurns: %v", err)
 	}
@@ -205,7 +223,7 @@ func TestCleanupStaleTurns(t *testing.T) {
 	}
 }
 
-// TestKindRoundTrip：kind（text/notify）经 AppendFull → LoadMessages 往返不丢失。
+// TestKindRoundTrip：kind（text/notify）经 AppendFullKeyed → LoadMessages 往返不丢失。
 // 压缩模块（chonkpilot-plugin-compress）靠 kind 区分用户提问与工具完成通知。
 func TestKindRoundTrip(t *testing.T) {
 	bus := newBusHarness(t)
@@ -213,12 +231,8 @@ func TestKindRoundTrip(t *testing.T) {
 	_ = st.EnsureSession("s1")
 	_ = st.EnsureTurn("t1", "s1")
 
-	if err := st.AppendFull("t1", ChatMsg{Role: "user", Kind: "text", Content: "问题"}); err != nil {
-		t.Fatalf("AppendFull text: %v", err)
-	}
-	if err := st.AppendFull("t1", ChatMsg{Role: "user", Kind: "notify", Content: "[工具通知] 完成"}); err != nil {
-		t.Fatalf("AppendFull notify: %v", err)
-	}
+	appendFull(t, st, "t1", ChatMsg{Role: "user", Kind: "text", Content: "问题"})
+	appendFull(t, st, "t1", ChatMsg{Role: "user", Kind: "notify", Content: "[工具通知] 完成"})
 	msgs := st.LoadMessages("t1")
 	if len(msgs) != 2 {
 		t.Fatalf("LoadMessages len=%d", len(msgs))

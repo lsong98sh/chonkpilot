@@ -116,27 +116,6 @@ func TestToolReply(t *testing.T) {
 	})
 }
 
-func TestStrval(t *testing.T) {
-	tests := []struct {
-		in   any
-		want string
-	}{
-		{"hello", "hello"},
-		{"", ""},
-		{true, "true"},
-		{false, "false"},
-		{nil, ""},
-		{42, "42"},
-		{3.14, "3.14"},
-	}
-	for _, tt := range tests {
-		got := strval(tt.in)
-		if got != tt.want {
-			t.Errorf("strval(%v) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestResolveExe(t *testing.T) {
 	// Save and restore env
 	oldEnv := os.Getenv("VFTS_EXE")
@@ -569,6 +548,22 @@ func TestExplicitExitUnregisters(t *testing.T) {
 }
 
 // ─── 索引配置与清单扫描（vfts.skip-dirs / vfts.stack-gitignore）────────────
+
+// splitRules 是**测试专用**助手：生产侧 skip-dirs 解析已统一由
+// github.com/chonkpilot/chonkpilot-ignore 的 ignore.ConfigOptions 完成（本插件不再自解析），
+// 此处保留一份同名实现以锁定"保序且保留重复项"的解析语义。
+func splitRules(s string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	}) {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
 
 // TestSplitRules：skip-dirs 解析——按逗号/分号/换行分隔、去空白；
 // **保序且保留重复项**（gitignore 语义下顺序有意义：'!' 取反 + 后一条覆盖前一条）。

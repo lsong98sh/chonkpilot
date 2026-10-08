@@ -26,19 +26,6 @@ import (
 // toolCallTypeFunction 是快照 ToolCall.type 的固定取值（OpenAI 兼容形态，data 侧既有口径）。
 const toolCallTypeFunction = "function"
 
-// ToRouterMessages 把快照消息序列转换为 canonical 消息（顺序保持；空入参 → nil）。
-// Meta 与图片块不在 canonical 内，见文件头字段映射。
-func ToRouterMessages(msgs []data.ChatMsg) []router.Message {
-	if len(msgs) == 0 {
-		return nil
-	}
-	out := make([]router.Message, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, ToRouterMessage(m))
-	}
-	return out
-}
-
 // ToRouterMessage 转换单条快照消息：纯文本 → 单个 text 块（Content 为空 → 无内容块）。
 func ToRouterMessage(m data.ChatMsg) router.Message {
 	msg := router.Message{
