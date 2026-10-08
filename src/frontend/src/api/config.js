@@ -18,9 +18,10 @@ import {
 // 目录/最近项目等桌面能力走 gui.* 本地面（61-消息一览 §1）。
 
 // gui.* 消息辅助：publish + await 收集回复（与 data-* 同模式）。
+// E-25：统一 30s 超时（对齐 fileRequest/guiReq 口径），后端卡死时不永久挂起。
 function guiReq(action, body = {}) {
   const topic = 'gui.' + action
-  return mq.emit(topic, body).then((env) => {
+  return mq.emit(topic, body, { timeout: 30000 }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(topic + ': backend unreachable')
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}

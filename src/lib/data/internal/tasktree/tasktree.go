@@ -213,22 +213,21 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 		return facade.TasktreeUpsertResponse{}, err
 	}
 	tb := prj.Table(tasktreeTableFor(req.Shadow))
-	// 状态列合并（A-03）：Upsert 是**全量覆盖写**，未携带的状态列会随旧值一起丢失，导致同 id
-	// 重放（如 llm 再上报 running）把「已逻辑删除」的节点复活（closed/deleted_at 被清）。故写前
-	// 读旧行，对「请求未携带即保留旧值」的状态列做合并（请求携带则以其为准）。
-	var old data.Record
-	if ok, err := tb.Get(n.ID, &old); err != nil {
-		return facade.TasktreeUpsertResponse{}, err
-	} else if ok {
+	// 状态列合并（A-03）+ 单事务 RMW（A-18）：Upsert 是**全量覆盖写**，未携带的状态列会随旧值
+	// 一起丢失，导致同 id 重放（如 llm 再上报 running）把「已逻辑删除」的节点复活（closed/
+	// deleted_at 被清）。Get→改→Upsert 跨两事务在并发下仍会互覆，故收进 UpdateIn：合并逻辑
+	// 在 fn 内基于同事务读到的旧行执行（请求携带则以其为准；行不存在 → 空记录无旧值可合并，
+	// 直接新建，口径不变）。
+	if err := tb.UpdateIn(n.ID, func(cur data.Record) data.Record {
 		for _, k := range []string{"closed", "deleted_at", "finished_at"} {
 			if _, has := rec[k]; !has {
-				if v, hasOld := old[k]; hasOld {
+				if v, hasOld := cur[k]; hasOld {
 					rec[k] = v
 				}
 			}
 		}
-	}
-	if err := tb.Upsert(n.ID, rec); err != nil {
+		return rec
+	}); err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
 	return facade.TasktreeUpsertResponse{OK: true}, nil
@@ -283,22 +282,20 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	}
 	// 逻辑删除：节点 + 级联子树同样标记（行保留；幂等）。错误聚合上报（A-02）：逐行为独立
 	// 事务，单行失败不回滚 → 必须上报，否则静默残留未关闭节点且恒返回 OK。
+	// 标记收进 UpdateIn 单事务 RMW（A-18）：Get→改→Upsert 跨两事务会把并发窗口内新上报的
+	// 状态用旧 rec 覆盖；行已消失 → fn 返回 nil 跳过（保持「不存在即跳过」幂等口径，不建空行）。
 	now := time.Now().UTC().Format(time.RFC3339)
 	var errs []error
 	for _, id := range toDelete {
-		var rec data.Record
-		ok, err := t.Get(id, &rec)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("load %s: %w", id, err))
-			continue
-		}
-		if !ok {
-			continue
-		}
-		rec["closed"] = true
-		rec["deleted_at"] = now
-		rec["updated_at"] = now
-		if err := t.Upsert(id, rec); err != nil { // 行仍在 → 索引键随主行保留（由 Table 写入口维护）
+		if err := t.UpdateIn(id, func(rec data.Record) data.Record {
+			if len(rec) == 0 {
+				return nil
+			}
+			rec["closed"] = true
+			rec["deleted_at"] = now
+			rec["updated_at"] = now
+			return rec
+		}); err != nil {
 			errs = append(errs, fmt.Errorf("close %s: %w", id, err))
 		}
 	}

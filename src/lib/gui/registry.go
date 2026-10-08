@@ -96,6 +96,9 @@ func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, boo
 		onWired: func(h *windowHost) error {
 			if s := env.testServer(); s != nil {
 				s.RegisterChat(h)
+				// 测试模式注入 console 捕获（导航前；与主窗口 onWired 同款，D-24）——
+				// 缺失时 /console?window_id=<chat> 恒为空。
+				s.InjectConsoleCapture(h.chromium)
 			}
 			return nil
 		},

@@ -60,12 +60,15 @@ func (r *Runner) activate(id string) error {
 // 原配置项 browserLogCap 已删除，改由代码内兜底，防止长会话无限累积）。
 const maxConsoleLines = 2000
 
-// appendConsole 追加一条 console 日志（超上限时原地丢弃最旧一条）。
+// appendConsole 追加一条 console 日志（超上限时原地丢弃最旧一条；
+// 由 chromedp 事件回调 goroutine 调用，与 DSL 主 goroutine 并发，须持 mu）。
 func (r *Runner) appendConsole(line string) {
+	r.mu.Lock()
 	if len(r.console) >= maxConsoleLines {
 		r.console = append(r.console[:0], r.console[1:]...)
 	}
 	r.console = append(r.console, line)
+	r.mu.Unlock()
 }
 
 func (r *Runner) onTargetEvent(ev interface{}) {
@@ -108,7 +111,7 @@ func (r *Runner) stepTab(st *Step) error {
 			}
 			lines = append(lines, fmt.Sprintf("%s[%d] %s | %s", mark, i, t.Title, t.URL))
 		}
-		r.out = append(r.out, "TAB LIST:\n"+strings.Join(lines, "\n"))
+		r.appendOut("TAB LIST:\n" + strings.Join(lines, "\n"))
 		return nil
 
 	case "wait":
@@ -199,7 +202,7 @@ func (r *Runner) waitNewTab(st *Step) error {
 					if err := r.activate(t.ID); err != nil {
 						return stepErr(st.Line, st.Raw, "js", "激活新 tab 失败: "+err.Error())
 					}
-					r.out = append(r.out, fmt.Sprintf("TAB NEW: %s | %s", t.Title, t.URL))
+					r.appendOut(fmt.Sprintf("TAB NEW: %s | %s", t.Title, t.URL))
 					return nil
 				}
 			}

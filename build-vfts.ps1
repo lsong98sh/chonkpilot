@@ -1,4 +1,4 @@
-# build-vfts.ps1：构建并组装 chonkpilot-vfts-mcp-server 独立部署目录
+﻿# build-vfts.ps1：构建并组装 chonkpilot-vfts-mcp-server 独立部署目录
 #
 # 产物布局（dist/plugins/vfts/，见 [41 D-28]）：
 #   ├── chonkpilot-vfts-mcp-server.exe   # 进程内 zvec FTS 全文索引 MCP server（console，CGO）

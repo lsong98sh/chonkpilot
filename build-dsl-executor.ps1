@@ -1,4 +1,4 @@
-# build-dsl-executor.ps1：构建 dsl_run 统一编排执行器（chonkpilot-dsl-executor）
+﻿# build-dsl-executor.ps1：构建 dsl_run 统一编排执行器（chonkpilot-dsl-executor）
 #
 # 产物布局（与内置 executor 同目录约定）：dist/other/capability/executors/chonkpilot-dsl-executor.exe
 #   —— build-mcp-server.ps1 的 capability 同步会把它带进发行目录（dist/desktop、dist/gui、dist/server）。

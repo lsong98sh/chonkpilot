@@ -98,15 +98,25 @@ func HandleKeyPress(args map[string]interface{}) *ToolResult {
 	time.Sleep(time.Millisecond * 30)
 
 	if !SendKey(vk, true) {
+		// 主键释放失败也须先释放已按下的修饰键再报错，避免修饰键卡住（C-31）
+		for i := len(modVks) - 1; i >= 0; i-- {
+			SendKey(modVks[i], true)
+		}
 		return &ToolResult{Success: false, Error: "SendInput failed to inject key up event", Output: "❌ 按键失败：发送按键释放事件失败", Tool: "key_press"}
 	}
 	time.Sleep(time.Millisecond * 30)
 
+	modUpFailed := false
 	for i := len(modVks) - 1; i >= 0; i-- {
 		if !SendKey(modVks[i], true) {
-			return &ToolResult{Success: false, Error: "SendInput failed to inject modifier key up event", Output: "❌ 按键失败：发送修饰键释放事件失败", Tool: "key_press"}
+			// 单个修饰键释放失败不中断循环，继续释放其余修饰键（避免卡键），循环后统一报错
+			modUpFailed = true
+			continue
 		}
 		time.Sleep(time.Millisecond * 30)
+	}
+	if modUpFailed {
+		return &ToolResult{Success: false, Error: "SendInput failed to inject modifier key up event", Output: "❌ 按键失败：发送修饰键释放事件失败", Tool: "key_press"}
 	}
 
 	modRaw, _ = args["modifiers"].([]interface{})
@@ -146,7 +156,9 @@ func HandleKeyDown(args map[string]interface{}) *ToolResult {
 		time.Sleep(time.Millisecond * 200)
 	}
 
-	SendKey(vk, false)
+	if !SendKey(vk, false) {
+		return &ToolResult{Success: false, Error: "SendInput failed to inject key down event", Output: "❌ 按键按住失败：发送按键事件失败", Tool: "key_down"}
+	}
 	return &ToolResult{Success: true, Output: fmt.Sprintf("⌨️ 按键已按住：%s", key), Tool: "key_down", RawResult: map[string]interface{}{"action": "keydown", "key": key}}
 }
 
@@ -176,6 +188,8 @@ func HandleKeyUp(args map[string]interface{}) *ToolResult {
 		time.Sleep(time.Millisecond * 200)
 	}
 
-	SendKey(vk, true)
+	if !SendKey(vk, true) {
+		return &ToolResult{Success: false, Error: "SendInput failed to inject key up event", Output: "❌ 按键释放失败：发送按键事件失败", Tool: "key_up"}
+	}
 	return &ToolResult{Success: true, Output: fmt.Sprintf("⌨️ 按键已释放：%s", key), Tool: "key_up", RawResult: map[string]interface{}{"action": "keyup", "key": key}}
 }

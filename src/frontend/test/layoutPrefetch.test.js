@@ -93,7 +93,8 @@ test('B2 接线守卫：MainLayout 在 onMounted 消费预取结果并 applyLayo
 
 test('B2 接线守卫：api/file.js 的 prefetch/consume 委托同一状态机（单飞+一次性）', () => {
   const f = SRC('api/file.js')
-  assert.match(f, /import\s*\{\s*createInitDataPrefetch\s*\}\s*from\s*'\.\.\/utils\/initDataPrefetch'/,
+  // E-21（2026-10-08）：import 路径补 .js 扩展名（Node ESM 直载行为单测需要；Vite 兼容）
+  assert.match(f, /import\s*\{\s*createInitDataPrefetch\s*\}\s*from\s*'\.\.\/utils\/initDataPrefetch\.js'/,
     'api/file.js 必须复用 initDataPrefetch 状态机')
   assert.match(f, /createInitDataPrefetch\(\(\)\s*=>\s*guiReq\('init-data'/, '状态机的 load = gui.init-data 往返')
   const prefetch = f.match(/export function prefetchInitData\(\)\s*\{[\s\S]*?\n\}/)

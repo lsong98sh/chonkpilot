@@ -47,18 +47,23 @@ func (h *FileShowHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reject paths that resolve outside the allowed roots (work dir + data dirs).
-	allowed := false
-	if withinDir(filePath, h.WorkDir) {
-		allowed = true
-	} else {
-		for _, root := range h.DataDirs {
-			if withinDir(filePath, root) {
-				allowed = true
-				break
-			}
-		}
+	if !h.pathAllowed(filePath) {
+		http.Error(w, "path outside work directory", http.StatusForbidden)
+		return
 	}
-	if !allowed {
+
+	// 符号链接逃逸复检（D-27）：withinDir 是纯词法校验，放行根内指向根外的 symlink 会被
+	// os.Open 跟随读出根外任意文件。打开**前**解析真实路径并复检：
+	// ① EvalSymlinks 失败（断链等）→ 403；
+	// ② 解析结果须真实存在（go1.26 下 junction 自身的 EvalSymlinks 不报错且不解析，
+	//    断链 junction 由存在性检查拦截）→ 403；
+	// ③ 真实路径再跑一次放行根判定，越界 → 403（越界目标根本不打开）。
+	// 目录同样经此路径（先于下方 IsDir 判定，指向根外目录的链接同样 403）。
+	realPath, err := filepath.EvalSymlinks(filePath)
+	if err == nil {
+		_, err = os.Stat(realPath)
+	}
+	if err != nil || !h.realPathAllowed(realPath) {
 		http.Error(w, "path outside work directory", http.StatusForbidden)
 		return
 	}
@@ -71,7 +76,7 @@ func (h *FileShowHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
-	// Get file info for Content-Length and Content-Type
+	// Get file info for Content-Length and Content-Type（跟随链接语义，确认目标存在）
 	stat, err := f.Stat()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("cannot stat file: %v", err), http.StatusInternalServerError)
@@ -97,6 +102,37 @@ func (h *FileShowHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Client likely disconnected; nothing we can do.
 		return
 	}
+}
+
+// pathAllowed 判定路径（词法）是否落在任一放行根内（WorkDir + DataDirs）。
+func (h *FileShowHandler) pathAllowed(p string) bool {
+	if withinDir(p, h.WorkDir) {
+		return true
+	}
+	for _, root := range h.DataDirs {
+		if withinDir(p, root) {
+			return true
+		}
+	}
+	return false
+}
+
+// realPathAllowed 判定「已解析符号链接的真实路径」是否仍落在任一放行根内（D-27 复检）。
+// 每个放行根同样先解析符号链接再比较（根自身经过 junction/链接时，若与目标真实路径
+// 失配会把合法请求误判越界）；根解析失败（不存在等）回落词法根比较。
+func (h *FileShowHandler) realPathAllowed(realPath string) bool {
+	roots := make([]string, 0, len(h.DataDirs)+1)
+	roots = append(roots, h.WorkDir)
+	roots = append(roots, h.DataDirs...)
+	for _, root := range roots {
+		if r, err := filepath.EvalSymlinks(root); err == nil {
+			root = r
+		}
+		if withinDir(realPath, root) {
+			return true
+		}
+	}
+	return false
 }
 
 // withinDir reports whether target resolves to a path inside root,

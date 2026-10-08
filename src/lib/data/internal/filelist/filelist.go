@@ -27,7 +27,7 @@ package filelist
 
 import (
 	"errors"
-	"sort"
+	"fmt"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -61,24 +61,20 @@ func (s *Service) FileListList(req facade.FileListListRequest) (facade.FileListL
 	}
 	defer release()
 	t := db.Table(fileListTable)
-	keys, err := t.ListKeys()
-	if err != nil {
-		return facade.FileListListResponse{}, err
-	}
-	sort.Strings(keys)
-	all := make([]facade.FileListEntry, 0, len(keys))
-	for _, k := range keys {
-		var rec data.Record
-		if ok, err := t.Get(k, &rec); err != nil || !ok {
-			continue
-		}
+	// 单事务全表扫描（A-20）：ForEach 按主键字节序产出（= 原 sort.Strings 后逐键 Get 的顺序），
+	// 万级行不再展开为每键一个 View 事务，且为单一一致性快照。坏行跳过（与逐键 Get 容错口径一致）。
+	all := make([]facade.FileListEntry, 0)
+	if err := t.ForEach(func(k string, rec data.Record) error {
 		if req.Prefix != "" && !strings.HasPrefix(kernel.Sval(rec["path"]), req.Prefix) {
-			continue
+			return nil
 		}
 		if kernel.Sval(rec["key"]) == "" {
 			rec["key"] = k
 		}
 		all = append(all, wire.FileListEntryFromWire(kernel.RecordView(rec, "")))
+		return nil
+	}); err != nil {
+		return facade.FileListListResponse{}, err
 	}
 	total := len(all)
 	if req.Offset > 0 {
@@ -145,10 +141,18 @@ func (s *Service) FileListDelete(req facade.FileListDeleteRequest) (facade.FileL
 	defer release()
 	t := db.Table(fileListTable)
 	deleted := 0
+	// 错误聚合上报（A-21）：原逐键 Delete 吞错 → 非预期失败静默残留且恒返回 OK；
+	// ErrNotFound 视为已删（幂等，不计入 Deleted）。
+	var errs []error
 	for _, k := range keys {
 		if err := t.Delete(k); err == nil {
 			deleted++
+		} else if !errors.Is(err, data.ErrNotFound) {
+			errs = append(errs, fmt.Errorf("filelist delete %s: %w", k, err))
 		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return facade.FileListDeleteResponse{}, err
 	}
 	return facade.FileListDeleteResponse{OK: true, Deleted: deleted}, nil
 }

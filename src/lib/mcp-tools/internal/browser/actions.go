@@ -283,13 +283,21 @@ func (r *Runner) comboKey(st *Step, mods []struct {
 	name string
 	vk   int64
 }, main, action string) error {
-	down := func() error {
+	down := func() (int, error) {
+		pressed := 0
 		for _, m := range mods {
 			if err := r.dispatchKey(input.KeyRawDown, m.name, m.vk); err != nil {
-				return err
+				return pressed, err
 			}
+			pressed++
 		}
-		return nil
+		return pressed, nil
+	}
+	// rollbackMods 逆序释放已按下的修饰键前缀（尽力而为；回滚失败不掩盖原始错误）。
+	rollbackMods := func(pressed int) {
+		for i := pressed - 1; i >= 0; i-- {
+			_ = r.dispatchKey(input.KeyUp, mods[i].name, mods[i].vk)
+		}
 	}
 	up := func() error {
 		for i := len(mods) - 1; i >= 0; i-- {
@@ -301,14 +309,24 @@ func (r *Runner) comboKey(st *Step, mods []struct {
 	}
 	switch action {
 	case "KDN":
-		return down()
+		pressed, err := down()
+		if err != nil {
+			// 部分修饰键已按下：逆序回滚，避免浏览器端按键状态泄漏（C-31）
+			rollbackMods(pressed)
+			return stepErr(st.Line, st.Raw, "js", err.Error())
+		}
+		return nil
 	case "KUP":
 		return up()
-	default:
-		if err := down(); err != nil {
+	default: // KPR
+		pressed, err := down()
+		if err != nil {
+			rollbackMods(pressed)
 			return stepErr(st.Line, st.Raw, "js", err.Error())
 		}
 		if err := r.dispatchKey(input.KeyRawDown, main, keyVK(main)); err != nil {
+			// 主键按下失败：先释放已按下的修饰键再报错（C-31 卡键回滚）
+			_ = up()
 			return stepErr(st.Line, st.Raw, "js", err.Error())
 		}
 		_ = up()

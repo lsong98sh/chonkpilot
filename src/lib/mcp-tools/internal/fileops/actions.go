@@ -16,7 +16,8 @@
 //	CPY #"from" #"to"                 复制（文件或目录）
 //
 // 一致性规则：
-//   - 修改/删除已有文件前加跨进程锁（30s 内重试，超时真失败），成功后解锁
+//   - 修改/删除已有文件、新建文件、移动/复制（源+目标两侧）前加跨进程锁
+//     （多路径按字典序加锁防 ABBA 死锁；30s 内重试，超时真失败），成功后解锁
 //   - md5 期望（顶层 md5 参数，锁内首触时校验一次）不一致 → 记 fails，后续跳过该文件
 //   - 单操作失败不整体失败：失败进 fails（{file, op, error}），其余继续执行
 //   - 返回聚合：modified / created（各含 path,type,size,mtime,md5；modified 另含 before→after diff）/ deleted / fails
@@ -541,6 +542,7 @@ func (ec *editCtx) ptc(toks []argTok) error {
 // ─── INS / DEL ─────────────────────────────────────────
 
 // INS #"path" "content" — 创建文件。
+// 锁目标路径收口 TOCTOU（C-27）：否则并发 INS 双双「stat 不存在」后竞写同一目标。
 func (ec *editCtx) ins(toks []argTok) error {
 	if len(toks) != 2 || !toks[0].file {
 		return fmt.Errorf("用法：INS #\"路径\" \"文件内容\"")
@@ -553,6 +555,12 @@ func (ec *editCtx) ins(toks []argTok) error {
 	if err := ec.guard(disp, resolved, true); err != nil {
 		return err
 	}
+	release, lerr := acquireLock(resolved, lockRetryCount)
+	if lerr != nil {
+		ec.addFail(disp, "INS", "加锁失败（30s 内重试未果）："+lerr.Error())
+		return nil
+	}
+	defer release()
 	if _, serr := os.Stat(resolved); serr == nil {
 		ec.addFail(disp, "INS", "目标已存在（如需修改请用 RPL/PTC/APD）")
 		return nil
@@ -640,6 +648,41 @@ func (ec *editCtx) delEntry(disp, resolved string) error {
 
 // ─── MOV / CPY ─────────────────────────────────────────
 
+// acquireLocks 按确定顺序获取多个路径的跨进程锁（C-27）：
+//   - 路径先 Clean 去重（锁不可重入：同一路径重复 acquire 会自锁重试 30s 后失败）；
+//   - 加锁序 = 路径字典序（全局全序）：MOV/CPY 同时锁源与目标时，所有并发方按同一顺序
+//     加锁，杜绝 ABBA 死锁；
+//   - 任一加锁失败 → 释放已获取的锁后返回错误。
+func acquireLocks(paths ...string) (func(), error) {
+	uniq := make([]string, 0, len(paths))
+	seen := map[string]bool{}
+	for _, p := range paths {
+		p = filepath.Clean(p)
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		uniq = append(uniq, p)
+	}
+	sort.Strings(uniq)
+	var releases []func()
+	for _, p := range uniq {
+		release, err := acquireLock(p, lockRetryCount)
+		if err != nil {
+			for _, r := range releases {
+				r()
+			}
+			return nil, err
+		}
+		releases = append(releases, release)
+	}
+	return func() {
+		for _, r := range releases {
+			r()
+		}
+	}, nil
+}
+
 // MOV #"from" #"to" — 文件重命名；目录 = 复制 + 逐文件删除源（copy 成功才动源）。
 func (ec *editCtx) mov(toks []argTok) error {
 	if len(toks) != 2 || !toks[0].file || !toks[1].file {
@@ -666,24 +709,27 @@ func (ec *editCtx) mov(toks []argTok) error {
 		ec.addFail(fromD, "MOV", "源不存在："+serr.Error())
 		return nil
 	}
+	// 先建目标父目录：锁文件（O_EXCL 创建于目标路径旁）要求父目录已存在，
+	// MkdirAll 幂等且仅建目录，不削弱锁保护的写语义（C-27）。
 	if err := os.MkdirAll(filepath.Dir(to), 0755); err != nil {
 		ec.addFail(fromD, "MOV", "创建目标目录失败："+err.Error())
 		return nil
 	}
+	// 源+目标两侧同锁（C-27）：目标侧此前无锁，与并发写/删除竞态；字典序加锁防 ABBA。
+	release, lerr := acquireLocks(from, to)
+	if lerr != nil {
+		ec.addFail(fromD, "MOV", "加锁失败（30s 内重试未果）："+lerr.Error())
+		return nil
+	}
+	defer release()
 	if fi.IsDir() {
 		return ec.movDir(fromD, toD, from, to)
 	}
 	return ec.movFile(fromD, toD, from, to)
 }
 
-// movFile 单文件：lock → rename；失败（跨卷/占用）回退 copy + delete。
+// movFile 单文件：rename（锁由 mov 统一持有：源+目标）；失败（跨卷/占用）回退 copy + delete。
 func (ec *editCtx) movFile(fromD, toD, from, to string) error {
-	release, lerr := acquireLock(from, lockRetryCount)
-	if lerr != nil {
-		ec.addFail(fromD, "MOV", "加锁失败（30s 内重试未果）："+lerr.Error())
-		return nil
-	}
-	defer release()
 	if rerr := os.Rename(from, to); rerr != nil {
 		// 跨卷/占用 → 复制回退（源锁持有期间复制保持一致性）
 		if _, cerr := copyFile(from, to, ""); cerr != "" {
@@ -700,7 +746,8 @@ func (ec *editCtx) movFile(fromD, toD, from, to string) error {
 	return nil
 }
 
-// movDir 目录：先整树复制到目标，成功后逐文件删除源；
+// movDir 目录：先整树复制到目标，成功后逐文件删除源（锁由 mov 统一持有：源根+目标根，
+// 目录 MOV/CPY 不逐项加锁、以两根路径为界，C-27）；
 // 源删除的部分失败列具体文件进 fails（不影响其余删除，数据已在目标不丢失）。
 func (ec *editCtx) movDir(fromD, toD, from, to string) error {
 	if err := copyDirRecursive(from, to); err != nil {
@@ -741,10 +788,20 @@ func (ec *editCtx) cpy(toks []argTok) error {
 		ec.addFail(fromD, "CPY", "源不存在："+serr.Error())
 		return nil
 	}
+	// 先建目标父目录：锁文件（O_EXCL 创建于目标路径旁）要求父目录已存在，
+	// MkdirAll 幂等且仅建目录，不削弱锁保护的写语义（C-27）。
 	if err := os.MkdirAll(filepath.Dir(to), 0755); err != nil {
 		ec.addFail(fromD, "CPY", "创建目标目录失败："+err.Error())
 		return nil
 	}
+	// 源+目标两侧同锁（C-27）：目标侧此前无锁，与并发写/删除竞态；字典序加锁防 ABBA。
+	// 目录与文件一致（目录以源根+目标根两把锁为界，不逐项加锁）。
+	release, lerr := acquireLocks(from, to)
+	if lerr != nil {
+		ec.addFail(fromD, "CPY", "加锁失败（30s 内重试未果）："+lerr.Error())
+		return nil
+	}
+	defer release()
 	if fi.IsDir() {
 		if err := copyDirRecursive(from, to); err != nil {
 			ec.addFail(fromD, "CPY", "复制目录失败："+err.Error())
@@ -753,12 +810,6 @@ func (ec *editCtx) cpy(toks []argTok) error {
 		ec.addCreated(toD, to)
 		return nil
 	}
-	release, lerr := acquireLock(from, lockRetryCount)
-	if lerr != nil {
-		ec.addFail(fromD, "CPY", "加锁失败（30s 内重试未果）："+lerr.Error())
-		return nil
-	}
-	defer release()
 	if _, cerr := copyFile(from, to, ""); cerr != "" {
 		ec.addFail(fromD, "CPY", "复制失败："+cerr)
 		return nil

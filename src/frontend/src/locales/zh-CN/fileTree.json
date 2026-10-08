@@ -30,6 +30,7 @@
   "move_failed": "移动失败",
   "move_failed_detail": "移动失败: {name}（原因：{error}）",
   "unknown_error": "未知错误",
+  "watcher_error": "文件监视器异常：{msg}",
   "open_in_console": "在控制台显示",
   "console_opened": "已在控制台打开",
   "open_console_failed": "打开控制台失败",

@@ -270,7 +270,10 @@ func (g *Gateway) reconcileSelf() error {
 	return g.reg.registerProvider(ps, tools, "")
 }
 
-// Stop 优雅退出：停收新请求 → 关闭下游（spawned 收尾）→ 取消 in-flight task。
+// Stop 优雅退出：停收新请求 → 关闭下游（spawned/proxied 收尾）。
+// in-flight task 不在此取消：任务层取消（execPool.cancel）会经 onCancel 钩子触发
+// provider kill + respawn，与关停流程竞态——未完成调用随 prov.Close()（子进程终止）自然失败，
+// 上游取消语义由调用方 ctx 级联兜底。故原注释「取消 in-flight task」与实现不符，予以订正（C-35）。
 // 上游 Bus 归调用方所有，不在本方法关闭（chonkpilot-lib/mq 由宿主统一生命周期管理）。
 func (g *Gateway) Stop(ctx context.Context) error {
 	g.mu.Lock()
@@ -823,7 +826,8 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	if !ok {
 		return nil, -32602, "provider not found"
 	}
-	if !ps.cb.allow() {
+	allowed, isProbe := ps.cb.allow()
+	if !allowed {
 		return nil, -32601, fmt.Sprintf("server %s unavailable (circuit open)", route.Provider)
 	}
 
@@ -911,7 +915,9 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	run := func(ctx2 context.Context) (*mcp.CallToolResult, error) {
 		res, err := ps.prov.Call(ctx2, route.Original, args)
 		if ctx2.Err() == context.Canceled {
-			ps.cb.cancel() // 用户取消：不计熔断失败，并复位 half-open 单飞标志（C-18）
+			// 用户取消：不计熔断失败；仅试探调用复位 half-open 单飞标志（C-18），
+			// 普通调用被取消不得复位 probing（否则打破单飞，C-32）。
+			ps.cb.cancel(isProbe)
 			return nil, ctx2.Err()
 		}
 		if err != nil {
@@ -1791,8 +1797,23 @@ func (g *Gateway) connectServer(ctx context.Context, e ServerEntry) error {
 // 意外退出一律重建进程 + 重连 + 重注册工具 + 发 connected（统一异步模型：取消/重建恒
 // kill + respawn，2026-09-13；不再按 restart 策略分支）。
 //
+// crash-loop 退避（C-34）：进程存活 < 5s 视为快速重启并计数，按次数指数退避（1s、2s、…上限 60s）
+// 后再重建，避免崩溃循环造成通知风暴；存活 > 5min 稳定运行清零计数；连续快速重启达 5 次 →
+// 判定 failed、停止自动重建（与下方重建失败分支同一 failed 口径）。
+// WaitExit 为缓冲通道（cap 1），退避 sleep 期间的新退出事件不丢、不阻塞 closer。
+//
 // 网关主动 Close（Stop/unregister）或 Invalidate 重建期间已置 closing → 静默返回。
 func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
+	const (
+		quickLiveAge    = 5 * time.Second  // 存活低于该时长视为快速重启
+		stableResetAge  = 5 * time.Minute  // 稳定运行超该时长清零快速重启计数
+		rebuildBackoff  = 1 * time.Second  // 退避基数（1s << (n-1)）
+		maxBackoff      = 60 * time.Second // 退避上限
+		maxQuickRestart = 5                // 连续快速重启上限，达到即 failed 并停止自动重建
+	)
+	// lastStart 记当前子进程起点：本 goroutine 在 connect 成功后立即启动，取此刻近似进程起点。
+	lastStart := time.Now()
+	quickRestarts := 0
 	for {
 		err := <-prov.WaitExit()
 		g.mu.Lock()
@@ -1806,6 +1827,39 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 			return // 已被停/移除（非退出观测触发）
 		}
 		scope := ps.scope
+		// crash-loop 退避判定（按本次存活时长）
+		lived := time.Since(lastStart)
+		if lived >= stableResetAge {
+			quickRestarts = 0
+		}
+		if lived < quickLiveAge {
+			quickRestarts++
+			if quickRestarts >= maxQuickRestart {
+				// 连续快速重启达上限：判 failed，停止自动重建（同重建失败分支口径）
+				_ = prov.Close()
+				g.reg.removeProvider(key)
+				g.notifyMCPChanged(scope, map[string]any{"kind": KindServer, "name": name, "status": "failed", "reason": "crash-loop: consecutive quick restarts"})
+				g.logf("[gateway] spawned server %s crash-loop (%d quick restarts), removed, auto-rebuild stopped", name, quickRestarts)
+				return
+			}
+			backoff := rebuildBackoff << (quickRestarts - 1)
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			g.logf("[gateway] spawned server %s exited quickly (lived %v), backoff %v before rebuild", name, lived.Truncate(time.Millisecond), backoff)
+			time.Sleep(backoff)
+			// 退避后复查：期间可能已 Stop/unregister/移除 → 静默退出
+			g.mu.Lock()
+			stopped = g.stopped
+			g.mu.Unlock()
+			if stopped || prov.closing.Load() {
+				return
+			}
+			if _, ok := g.reg.provider(key); !ok {
+				return
+			}
+		}
+		lastStart = time.Now() // 重建后的新进程起点
 		// 意外退出：恒重建 + 重注册（继续观测新进程）
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_, ierr := prov.Invalidate(ctx)

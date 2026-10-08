@@ -502,6 +502,15 @@ const (
 	searchToolTimeout     = 3 * time.Second // 单个引擎源调用超时（超时即跳过）
 )
 
+// file 源全树遍历预算（D-25）：Walk 无命中时走完整棵树，而本处理器在 WebView2 UI 线程上
+// 被同步调用（见 callSearchProjectFiles 注释），巨型 workdir 会冻结 UI 数十秒。访问节点数 /
+// 时间预算任一超限即止，返回已命中部分（与工具源超时跳过语义一致；部分结果合法、不报错）。
+// 为包级 var 便于单测收紧预算覆盖截止路径（运行态不改写）。
+var (
+	searchFileMaxNodes = 20000           // 访问节点数上限（含目录）
+	searchFileDeadline = 2 * time.Second // 遍历时间预算（自入口起算）
+)
+
 func callSearchProjectFiles(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	query := ""
 	if len(params) > 0 {
@@ -579,11 +588,20 @@ func searchRank(it map[string]any) int {
 }
 
 // searchFileSource 文件名/路径匹配（source=file，matchType=filename/path）。
+// 预算（D-25）：访问节点数超 searchFileMaxNodes 或超 searchFileDeadline 即止（SkipAll），
+// 返回已命中部分、不报错；skipDirs 剪枝保留。
 func searchFileSource(workDir, lower string, limit int) []map[string]any {
 	var results []map[string]any
+	deadline := time.Now().Add(searchFileDeadline)
+	nodes := 0
 	_ = filepath.Walk(workDir, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return nil
+		}
+		// 预算检查（D-25）：超限即止，保留已命中部分（部分结果合法）。
+		nodes++
+		if nodes > searchFileMaxNodes || time.Now().After(deadline) {
+			return filepath.SkipAll
 		}
 		if fi.IsDir() {
 			if skipDirs[fi.Name()] {

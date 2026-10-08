@@ -153,3 +153,38 @@ END
 		t.Fatalf("取消后应停止调度（执行 %d / %d）", got, n)
 	}
 }
+
+// TestConcurrentLoopStopOnErrorNoExtraDispatch B-27：并发 LOOP 中某迭代失败（StopOnError）→
+// markStop 之后不再派发新迭代。concurrency=1 时主循环阻塞在 sem 上，先写迭代报错 markStop 后
+// 归还信号量——若无 sem 获取后的二次检查，会带着已停止状态多派发 1 个迭代。
+func TestConcurrentLoopStopOnErrorNoExtraDispatch(t *testing.T) {
+	items := make([]string, 6)
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"name":"i%d"}`, i)
+	}
+	fs := &memFS{files: map[string]string{"items.json": "[" + strings.Join(items, ",") + "]"}}
+
+	var calls int32
+	act := Action{Name: "WORK", Run: func(_ *Scope, _ string) (string, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(30 * time.Millisecond) // 留出主循环阻塞在 sem 上的竞态窗口
+		return "", fmt.Errorf("boom")
+	}}
+	eng := NewEngine(Options{Files: fs, Actions: []Action{act}, StopOnError: true})
+	script, err := Parse(`LOOP item=#"items.json".array concurrency=1
+   WORK "{{item.name}}"
+END
+`, []Action{act})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := eng.Execute(script); err != nil {
+		t.Fatalf("StopOnError 应正常返回: %v", err)
+	}
+	if res := eng.Result(); len(res.Errors) == 0 {
+		t.Fatalf("迭代错误应记入 Result.Errors")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("markStop 后不应再派发新迭代（执行 %d / 期望 1）", got)
+	}
+}

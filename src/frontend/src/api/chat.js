@@ -30,6 +30,7 @@ export function newSessionId() {
 //   - turn：前端自分配的 turn id（MessageList 用它过滤流事件，必须**同步**取用）；
 //   - ack：/publish 应答 promise（桥同步受理：server 落库 session/turn 后才返回）
 //     —— T5 方案 B 的「落库回执」，user 气泡据此渲染（不再乐观插入）。
+// E-25：ack 同为请求-响应面，补 30s 超时（后端卡死 → resolve(null) → 发送端按未受理兜底）。
 export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, scenarioId) {
   const turn = newTurnId()
   const ack = mq.emit(EventNames.llmStart, {
@@ -40,7 +41,7 @@ export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, 
     effort: effort || '',
     scenario_id: scenarioId || '',
     q: text,
-  })
+  }, { timeout: 30000 })
   return { turn, ack }
 }
 
@@ -58,6 +59,6 @@ export function publishLLMContinue(sessionId, text, turnId, llmName, thinkEnable
     scenario_id: scenarioId || '',
     continue: true,
     q: text,
-  })
+  }, { timeout: 30000 })
   return { turn: turnId || '', ack }
 }

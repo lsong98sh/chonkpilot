@@ -391,10 +391,10 @@ func readCollection(db *data.DB, table string) []map[string]any {
 }
 
 // writeCollection 整体替换集合表（载荷数组 → 逐条记录，主键 = 序号，保持数组顺序）。
+// 单事务「清 + 写」（ReplaceAll，A-22）：原 clearCollection（逐行删）+ 逐条独立事务 Upsert
+// 中途失败集合残缺不可恢复，且清写间隙并发读会读到空表。
 func writeCollection(db *data.DB, table string, items []any) error {
-	if err := clearCollection(db, table); err != nil {
-		return err
-	}
+	recs := make(map[string]data.Record, len(items))
 	for i, raw := range items {
 		item, ok := raw.(map[string]any)
 		if !ok {
@@ -408,11 +408,9 @@ func writeCollection(db *data.DB, table string, items []any) error {
 			rec[k] = v
 		}
 		rec["ord"] = i
-		if err := db.Table(table).Upsert(strconv.Itoa(i), rec); err != nil {
-			return err
-		}
+		recs[strconv.Itoa(i)] = rec
 	}
-	return nil
+	return db.Table(table).ReplaceAll(recs)
 }
 
 // ordOfKey 解析集合主键序号（非数字键排最后）。

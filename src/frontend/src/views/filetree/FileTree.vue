@@ -67,7 +67,7 @@ import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
 import { confirm, message, promptInput } from '../../components/ui'
-import { getFileTree, getFileTreeChildren, createFileInDir, createDirInDir, renameFile, moveFile, copyFileTo, deleteFilePath, revealInExplorer, openWithDefault, openWithDialog, loadInitData, saveFileTreeState, saveWindowState, setWorkDir, newFileReqId } from '../../api/file'
+import { getFileTree, getFileTreeChildren, createFileInDir, createDirInDir, renameFile, moveFile, copyFileTo, deleteFilePath, revealInExplorer, openWithDefault, openWithDialog, loadInitData, saveFileTreeState, saveWindowState, setWorkDir, newFileReqId, invalidateInitDataCache } from '../../api/file'
 import { createPrimitive } from '../../api/knowledge'
 import { nearestTypeToken } from '../../utils/primitive'
 import { onFileChanged, onFileChangedEvent } from '../../utils/fileTree'
@@ -1129,7 +1129,8 @@ onMounted(() => {
   // 文件监视错误（file.watch.error，filemon watcher 故障广播）：提示用户文件变更检测失效
   _cleanup.push(mq.on(EventNames.fileWatcherError, ({ error }) => {
     console.warn('[FileTree] watcher error:', error)
-    message.warning(`File watcher error: ${error || 'unknown'}`)
+    // E-24：走 i18n（原硬编码英文）；error 缺省回落既有「未知错误」词条
+    message.warning(t('fileTree.watcher_error', { msg: error || t('fileTree.unknown_error') }))
   }))
   // 右键菜单项事件化：v-mq 触发 → 本地执行
   _cleanup.push(mq.on(EventNames.fileCtxAction, ({ key }) => {
@@ -1279,6 +1280,9 @@ onUnmounted(() => {
   // 卸载时清掉在飞去抖定时器（快照保存 / 窗口几何保存），避免组件销毁后回调仍触发（E-16）。
   if (snapshotDebounceTimer) { clearTimeout(snapshotDebounceTimer); snapshotDebounceTimer = null }
   if (resizeTimer) { clearTimeout(resizeTimer); resizeTimer = null }
+  // E-21：pane 关闭即失效 init-data 缓存 → 重挂重新拉取，不回退启动旧快照
+  //（缓存本身已一次性化，此处兜底清「仍在飞」的槽位）。
+  invalidateInitDataCache()
   for (const fn of _cleanup) fn()
 })
 </script>

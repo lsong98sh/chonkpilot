@@ -399,7 +399,8 @@ onUnmounted(() => {
   window.removeEventListener('resize', centerByMeasuredSize)
   document.removeEventListener('mousemove', onDragMove)
   document.removeEventListener('mouseup', onDragEnd)
-  document.removeEventListener('mousemove', onResizeMove)
+  // E-23：添加时 capture: true → 移除必须同样带 true（缺省 = 冒泡阶段，匹配失败致监听泄漏）
+  document.removeEventListener('mousemove', onResizeMove, true)
   document.removeEventListener('mouseup', onResizeEnd)
   for (const fn of unsubs) fn()
   unsubs.length = 0

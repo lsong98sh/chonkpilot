@@ -92,15 +92,16 @@ func HandleDesktopRun(args map[string]interface{}) *ToolResult {
 			RawResult: map[string]interface{}{"line": e0.Line, "error": e0.Msg, "executed": ctx.done},
 		}
 	}
+	hwnd, _, _, vars := ctx.winSnapshot()
 	return &ToolResult{
 		Success: true,
 		Output:  fmt.Sprintf("✅ desktop_run：执行 %d 条指令", ctx.done),
 		Tool:    "desktop_run",
 		RawResult: map[string]interface{}{
 			"executed": ctx.done,
-			"window":   ctx.curHWND,
-			"x":        int(ctx.vars["X"]), "y": int(ctx.vars["Y"]),
-			"w": int(ctx.vars["W"]), "h": int(ctx.vars["H"]),
+			"window":   hwnd,
+			"x":        int(vars["X"]), "y": int(vars["Y"]),
+			"w": int(vars["W"]), "h": int(vars["H"]),
 		},
 	}
 }
@@ -193,7 +194,7 @@ func desktopActions(ctx *runCtx) []dsl.Action {
 				toks = interpTokens(sc, toks)
 				err := ctx.dispatch(verb, toks)
 				ctx.syncVars(sc)
-				return ctx.out, err
+				return ctx.getOut(), err
 			},
 		})
 	}
@@ -230,7 +231,7 @@ func (c *runCtx) syncVars(sc *dsl.Scope) {
 	if sc == nil {
 		return
 	}
-	for k, v := range c.vars {
+	for k, v := range c.varsCopy() {
 		sc.Set("$"+k, v)
 	}
 }
@@ -265,18 +266,63 @@ func dsScript(args map[string]interface{}) (string, string) {
 	return "", ""
 }
 
-// runCtx 是脚本执行状态。
+// runCtx 是脚本执行状态。共享可变字段（curHWND/curRect/clientRect/vars/done/out）
+// 统一由 mu 保护（PARALLEL 分支会并发执行动作）；speed/jitter/delay 构造后只读，不入锁。
 type runCtx struct {
 	curHWND    syscall.Handle
 	curRect    Rect // 窗口 rect（屏幕坐标）
 	clientRect Rect // 客户区 rect（屏幕坐标）
 	vars       map[string]float64
-	speed      int // 1-10 移动速度（默认 5）
-	jitter     int // 0-20 轨迹随机扰动像素（默认 3）
-	delay      int // 指令间固定等待 ms（默认 0，脚本内 SLP 控制）
+	speed      int // 1-10 移动速度（默认 5；构造后只读）
+	jitter     int // 0-20 轨迹随机扰动像素（默认 3；构造后只读）
+	delay      int // 指令间固定等待 ms（默认 0，脚本内 SLP 控制；构造后只读）
 	mu         sync.Mutex
 	done       int    // 已执行动作数
 	out        string // 每条动作的文本输出（WIN list 等；无输出为空串，供动作 => 目标重定向/汇总）
+}
+
+// getOut 读取本条动作文本输出快照。
+func (c *runCtx) getOut() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.out
+}
+
+// setOut 写入本条动作文本输出（listWindows 在 dispatch 内调用）。
+func (c *runCtx) setOut(s string) {
+	c.mu.Lock()
+	c.out = s
+	c.mu.Unlock()
+}
+
+// executed 返回已执行动作数快照。
+func (c *runCtx) executed() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.done
+}
+
+// varsCopy 返回预置变量副本（调用方在锁外用副本求值，不直读 c.vars）。
+func (c *runCtx) varsCopy() map[string]float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := make(map[string]float64, len(c.vars))
+	for k, v := range c.vars {
+		m[k] = v
+	}
+	return m
+}
+
+// winSnapshot 一次取走窗口绑定状态快照（curHWND/curRect/clientRect/vars 同锁成对读取，
+// 保证 PARALLEL 分支下 WIN 绑定与坐标求值的一致性）。
+func (c *runCtx) winSnapshot() (syscall.Handle, Rect, Rect, map[string]float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	vars := make(map[string]float64, len(c.vars))
+	for k, v := range c.vars {
+		vars[k] = v
+	}
+	return c.curHWND, c.curRect, c.clientRect, vars
 }
 
 // dispatch 执行单条指令（cmd 大写；rest 已按 tokenize 拆分并做插值）。
@@ -370,8 +416,9 @@ func (c *runCtx) cmdWin(rest []string) error {
 			if err != nil {
 				return err
 			}
+			_, rect, _, _ := c.winSnapshot()
 			SetWindowPos.Call(uintptr(hwnd), 0, uintptr(int32(x)), uintptr(int32(y)),
-				uintptr(int32(c.curRect.Right-c.curRect.Left)), uintptr(int32(c.curRect.Bottom-c.curRect.Top)), SwpNoZOrder)
+				uintptr(int32(rect.Right-rect.Left)), uintptr(int32(rect.Bottom-rect.Top)), SwpNoZOrder)
 			c.bindWindow(hwnd)
 		case "size":
 			if i+1 >= len(rest) {
@@ -382,7 +429,8 @@ func (c *runCtx) cmdWin(rest []string) error {
 			if err != nil {
 				return err
 			}
-			SetWindowPos.Call(uintptr(hwnd), 0, uintptr(int32(c.curRect.Left)), uintptr(int32(c.curRect.Top)),
+			_, rect, _, _ := c.winSnapshot()
+			SetWindowPos.Call(uintptr(hwnd), 0, uintptr(int32(rect.Left)), uintptr(int32(rect.Top)),
 				uintptr(int32(w)), uintptr(int32(h)), SwpNoZOrder)
 			c.bindWindow(hwnd)
 		case "rect":
@@ -434,8 +482,9 @@ func (c *runCtx) listWindows() error {
 	if len(titles) == 0 {
 		return fmt.Errorf("无可见窗口")
 	}
-	c.out = strings.Join(titles, "\n")
-	fmt.Fprintf(os.Stderr, "[desktop_run] windows:\n%s\n", c.out)
+	joined := strings.Join(titles, "\n")
+	c.setOut(joined)
+	fmt.Fprintf(os.Stderr, "[desktop_run] windows:\n%s\n", joined)
 	return nil
 }
 
@@ -460,20 +509,24 @@ func (c *runCtx) resolveTarget(s string) (syscall.Handle, error) {
 	}
 }
 
-// bindWindow 绑定当前窗口并更新预置变量。
+// bindWindow 绑定当前窗口并更新预置变量（syscall 取数在锁外，状态赋值在锁内）。
 func (c *runCtx) bindWindow(hwnd syscall.Handle) {
-	c.curHWND = hwnd
 	info := GetWindowInfo(hwnd)
-	c.curRect = Rect{info.Left, info.Top, info.Right, info.Bottom}
-	c.clientRect = ClientScreenRect(hwnd)
-	w := float64(c.curRect.Right - c.curRect.Left)
-	h := float64(c.curRect.Bottom - c.curRect.Top)
-	cw := float64(c.clientRect.Right - c.clientRect.Left)
-	ch := float64(c.clientRect.Bottom - c.clientRect.Top)
-	c.vars["X"], c.vars["Y"], c.vars["W"], c.vars["H"] = float64(c.curRect.Left), float64(c.curRect.Top), w, h
-	c.vars["CX"], c.vars["CY"] = float64(c.clientRect.Left), float64(c.clientRect.Top)
+	rect := Rect{info.Left, info.Top, info.Right, info.Bottom}
+	client := ClientScreenRect(hwnd)
+	w := float64(rect.Right - rect.Left)
+	h := float64(rect.Bottom - rect.Top)
+	cw := float64(client.Right - client.Left)
+	ch := float64(client.Bottom - client.Top)
+	c.mu.Lock()
+	c.curHWND = hwnd
+	c.curRect = rect
+	c.clientRect = client
+	c.vars["X"], c.vars["Y"], c.vars["W"], c.vars["H"] = float64(rect.Left), float64(rect.Top), w, h
+	c.vars["CX"], c.vars["CY"] = float64(client.Left), float64(client.Top)
 	c.vars["CW"], c.vars["CH"] = cw, ch
 	c.vars["WIN"] = float64(hwnd)
+	c.mu.Unlock()
 }
 
 // ─── 鼠标 ───
@@ -753,34 +806,36 @@ func encodePNG(img *image.RGBA, file string) error {
 
 // ─── 坐标解析 ───
 
-// parseCoord 解析坐标表达式为屏幕绝对坐标。
+// parseCoord 解析坐标表达式为屏幕绝对坐标（窗口状态与变量经快照读取，适配 PARALLEL 并发）。
 func (c *runCtx) parseCoord(expr string) (int, int, error) {
 	e := strings.TrimSpace(expr)
 	if strings.HasPrefix(e, "@") {
 		return c.anchorCoord(e[1:])
 	}
 	if len(e) >= 2 && (e[0] == 'D' || e[0] == 'C') && isDigit(e[1]) {
-		base := c.curRect
+		hwnd, rect, client, vars := c.winSnapshot()
+		base := rect
 		if e[0] == 'C' {
-			base = c.clientRect
+			base = client
 		}
-		if c.curHWND == 0 {
+		if hwnd == 0 {
 			return 0, 0, fmt.Errorf("坐标前缀 D/C 需要先 WIN 定位窗口")
 		}
-		x, y, err := splitXYEval(e[1:], c.vars)
+		x, y, err := splitXYEval(e[1:], vars)
 		if err != nil {
 			return 0, 0, err
 		}
 		return int(base.Left) + x, int(base.Top) + y, nil
 	}
-	return splitXYEval(e, c.vars)
+	return splitXYEval(e, c.varsCopy())
 }
 
 func (c *runCtx) anchorCoord(anchor string) (int, int, error) {
-	if c.curHWND == 0 {
+	hwnd, rect, _, _ := c.winSnapshot()
+	if hwnd == 0 {
 		return 0, 0, fmt.Errorf("@ 锚点需要先 WIN 定位窗口")
 	}
-	r := c.curRect
+	r := rect
 	w := r.Right - r.Left
 	h := r.Bottom - r.Top
 	switch strings.ToLower(anchor) {

@@ -5,9 +5,10 @@ import {
   DataSessionLoadMessagesKeys, DataSessionContentKeys,
 } from '../events/msgkeys.js'
 
-// data-session-* 消息辅助：发送并等待回复。
+// data-session-* 消息辅助：发送并等待回复（E-25：统一 30s 超时，对齐 fileRequest/guiReq 口径，
+// 后端卡死时 fetch abort → resolve(null) → 按 backend unreachable 报错，不永久挂起）。
 function sessionReq(action, body = {}) {
-  return mq.emit(`data-session-${action}`, body).then((env) => {
+  return mq.emit(`data-session-${action}`, body, { timeout: 30000 }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-session-${action}: backend unreachable`)
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}

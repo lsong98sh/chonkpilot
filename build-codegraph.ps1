@@ -1,4 +1,4 @@
-# build-codegraph.ps1：构建并组装 chonkpilot-codegraph-mcp-server 独立部署目录
+﻿# build-codegraph.ps1：构建并组装 chonkpilot-codegraph-mcp-server 独立部署目录
 #
 # 产物布局（dist/plugins/codegraph/，见 [41 D-28]）：
 #   └── chonkpilot-codegraph-mcp-server.exe   # 进程内 tree-sitter 索引 MCP server（console，CGO）

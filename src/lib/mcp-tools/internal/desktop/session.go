@@ -36,9 +36,9 @@ func (s *Session) Files() dsl.FileSystem { return scriptFS{} }
 
 // Summary 返回本域结果摘要（执行指令数 + 最近一次文本输出，如 WIN list）。
 func (s *Session) Summary() []string {
-	out := []string{fmt.Sprintf("executed: %d", s.ctx.done)}
-	if s.ctx.out != "" {
-		out = append(out, s.ctx.out)
+	out := []string{fmt.Sprintf("executed: %d", s.ctx.executed())}
+	if o := s.ctx.getOut(); o != "" {
+		out = append(out, o)
 	}
 	return out
 }

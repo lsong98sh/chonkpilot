@@ -141,6 +141,43 @@ func TestExplicitUserConfigKeys(t *testing.T) {
 	}
 }
 
+// TestWriteCollectionReplace（A-22）：整体替换语义——旧行全清、新行按序号落库（单事务）；
+// 非对象项跳过（不占序号键）。
+func TestWriteCollectionReplace(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := writeCollection(db, tableLLMs, []any{
+		map[string]any{"name": "a", "apiKey": "k1"},
+		map[string]any{"name": "b"},
+	}); err != nil {
+		t.Fatalf("write llms: %v", err)
+	}
+	got := readCollection(db, tableLLMs)
+	if len(got) != 2 || got[0]["name"] != "a" || got[1]["name"] != "b" {
+		t.Fatalf("首写集合不符：%v", got)
+	}
+
+	// 替换为 1 条 → 旧行（含 key "1"）不得残留
+	if err := writeCollection(db, tableLLMs, []any{map[string]any{"name": "c"}}); err != nil {
+		t.Fatalf("rewrite llms: %v", err)
+	}
+	keys, err := db.Table(tableLLMs).ListKeys()
+	if err != nil || len(keys) != 1 || keys[0] != "0" {
+		t.Fatalf("整体替换后应仅剩 key 0：keys=%v err=%v", keys, err)
+	}
+	if got := readCollection(db, tableLLMs); len(got) != 1 || got[0]["name"] != "c" {
+		t.Fatalf("替换后集合不符：%v", got)
+	}
+
+	// 非对象项跳过（key "0" 缺位，key "1" 落库）
+	if err := writeCollection(db, tableLLMs, []any{"junk", map[string]any{"name": "d"}}); err != nil {
+		t.Fatalf("write with junk: %v", err)
+	}
+	if keys, err := db.Table(tableLLMs).ListKeys(); err != nil || len(keys) != 1 || keys[0] != "1" {
+		t.Fatalf("非对象项应跳过：keys=%v err=%v", keys, err)
+	}
+}
+
 // ── 记忆类别沉淀提示词：usr 自由键载体已删（OP-04，2026-10-06）──────────────
 
 // TestMemoryPromptsFreeKeyRemoved：`memory_prompts`（原用户级记忆类别沉淀提示词自由键）已随

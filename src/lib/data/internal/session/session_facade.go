@@ -487,16 +487,24 @@ func cleanupStaleToolPairs(prj *data.DB) {
 			if key == "" {
 				continue
 			}
-			delete(rec, data.KeyField)
-			rec["tool_call_status"] = kernel.ToolStatusInterrupted
-			// content.result.status 与状态列同源：存在 result 段才需改（无 result 段时视图回退读状态列）。
-			if tc, ok := kernel.ParseToolContent(kernel.Sval(rec["content"])); ok && tc.Result != nil {
-				tc.Result.Status = kernel.ToolStatusInterrupted
-				if b, err := json.Marshal(tc); err == nil {
-					rec["content"] = string(b)
+			// 单事务 RMW（A-17）：Query→改→Upsert 跨两事务在并发下会把已回填 completed 的
+			// 消息整行覆盖回 interrupted；收进 UpdateIn 后状态与行内其余字段同事务读改。
+			// 行已消失（并发删除）→ fn 返回 nil 跳过，不重建残行。尽力而为：单项失败静默
+			// 跳过（启动清理不阻断启动，语义与注释一致、不上报）。
+			_ = prj.Table("messages").UpdateIn(key, func(cur data.Record) data.Record {
+				if len(cur) == 0 {
+					return nil
 				}
-			}
-			_ = prj.Table("messages").Upsert(key, rec)
+				cur["tool_call_status"] = kernel.ToolStatusInterrupted
+				// content.result.status 与状态列同源：存在 result 段才需改（无 result 段时视图回退读状态列）。
+				if tc, ok := kernel.ParseToolContent(kernel.Sval(cur["content"])); ok && tc.Result != nil {
+					tc.Result.Status = kernel.ToolStatusInterrupted
+					if b, err := json.Marshal(tc); err == nil {
+						cur["content"] = string(b)
+					}
+				}
+				return cur
+			})
 		}
 	}
 }

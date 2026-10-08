@@ -30,6 +30,7 @@
   "move_failed": "Move failed",
   "move_failed_detail": "Move failed: {name} (reason: {error})",
   "unknown_error": "Unknown error",
+  "watcher_error": "File watcher error: {msg}",
   "open_in_console": "Show in Console",
   "console_opened": "Opened in console",
   "open_console_failed": "Failed to open console",

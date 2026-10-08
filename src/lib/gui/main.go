@@ -548,6 +548,13 @@ func bootstrapJSON(form, instanceID string, requireAuth, authed bool) string {
 	return string(b)
 }
 
+// readRequestBody 读取请求体并施加 limit 上限（D-26）：用 io.LimitReader(limit+1) 读取，
+// 超出 limit 返回 tooLarge=true（调用方回 413）；limit 复用 maxRecordedBody 常量，不复制魔数。
+func readRequestBody(stream io.Reader, limit int64) (body []byte, tooLarge bool) {
+	body, _ = io.ReadAll(io.LimitReader(stream, limit+1))
+	return body, int64(len(body)) > limit
+}
+
 // serveWebResource 适配 WebView2 请求到 http.Handler。
 func serveWebResource(h http.Handler, c *edge.Chromium, request *edge.ICoreWebView2WebResourceRequest, rawURI string) (*edge.ICoreWebView2WebResourceResponse, error) {
 	method, err := request.GetMethod()
@@ -557,7 +564,18 @@ func serveWebResource(h http.Handler, c *edge.Chromium, request *edge.ICoreWebVi
 	var body []byte
 	if method == "POST" || method == "PUT" {
 		if stream, err := request.GetContent(); err == nil && stream != nil {
-			body, _ = io.ReadAll(stream)
+			// 请求体上限（D-26）：无界 ReadAll 会把超大 POST/PUT 体整块缓冲进宿主内存；
+			// 读取上限复用响应方向的 maxRecordedBody（D-07），超出即回 413（响应体超限同款式）。
+			tooLarge := false
+			body, tooLarge = readRequestBody(stream, maxRecordedBody)
+			if tooLarge {
+				return c.CreateWebResourceResponse(
+					[]byte("request body too large"),
+					http.StatusRequestEntityTooLarge,
+					"Payload Too Large",
+					"Content-Type: text/plain; charset=utf-8\r\n",
+				)
+			}
 		}
 	}
 	url, err := request.GetUri()

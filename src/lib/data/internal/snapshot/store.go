@@ -37,30 +37,29 @@ func Get(prj *data.DB, sessionID string) (data.Snapshot, bool, error) {
 
 // Set 写会话快照（history + snapshot_turn；保留记录其他字段）。
 // 会话不存在 → 补建**完整会话行**（created_at / parent_id / title 齐备，A-15，口径同 SessionEnsure）：
-// 消除原先只落快照字段、导致「查得到却列不出」的幽灵会话；会话已存在时逐字保留原语义。
+// 消除原先只落快照字段、导致「查得到却列不出」的幽灵会话。
+// 单事务 update-or-insert（A-19）：Get→改→Upsert 跨两事务会与 SessionTitle 等并发写互丢字段
+// （整行覆盖），收进 UpdateIn 后快照字段与 title 等既有字段同事务读改；快照写刷新 updated_at
+// 的原语义保留（纳秒口径，A-11）。
 func Set(prj *data.DB, sessionID string, snap data.Snapshot) error {
-	tb := prj.Table("sessions")
-	var rec data.Record
-	ok, err := tb.Get(sessionID, &rec)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-		rec = data.Record{
-			"session_id": sessionID, "title": sessionID,
-			"created_at": now, "updated_at": now, "parent_id": "",
-		}
-	} else {
-		delete(rec, data.KeyField)
-	}
 	b, err := json.Marshal(snap.History)
 	if err != nil {
 		return err
 	}
-	rec["history"] = string(b)
-	rec["snapshot_turn"] = snap.SnapshotTurn
-	return tb.Upsert(sessionID, rec)
+	return prj.Table("sessions").UpdateIn(sessionID, func(rec data.Record) data.Record {
+		now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
+		if len(rec) == 0 { // 会话不存在 → 补建完整会话行
+			rec = data.Record{
+				"session_id": sessionID, "title": sessionID,
+				"created_at": now, "updated_at": now, "parent_id": "",
+			}
+		} else {
+			rec["updated_at"] = now
+		}
+		rec["history"] = string(b)
+		rec["snapshot_turn"] = snap.SnapshotTurn
+		return rec
+	})
 }
 
 // sval 把 Record 值转字符串（Record 由 json.Unmarshal 产生：string/float64/bool/nil）。

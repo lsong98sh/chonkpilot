@@ -91,6 +91,12 @@ type Bridge struct {
 	// MQ 路径逐字一致）；nil = 未接线（如 -no-server 薄客户端/分离形态）→ 回落总线转发
 	// （dataViaPersist），行为同改前。
 	cfg facade.API
+
+	// unsub 是 Start() 注册的总线 ">" 订阅句柄（D-23：CloseInstance 退订用；nil = 未订阅）。
+	// 句柄为本桥私有，退订只移除本桥转发订阅，不影响共享总线与其它窗口的桥；
+	// unsubOnce 保证退订幂等（Close/CloseInstance 重复调用不 panic、不重复退订）。
+	unsubOnce sync.Once
+	unsub     mq.Sub
 }
 
 // New 创建桥（inprocess 内存总线；由 main 传入共享 mq.Bus）。
@@ -214,12 +220,16 @@ func (b *Bridge) Start() error {
 	})
 	// 订阅总线生态事件 → 前端（相对主题全通配 ">"：总线补 chonk. 前缀后命中全部
 	// 业务事件；handler 收到去前缀后的相对主题，见 mq Options.Prefix 语义）。
-	if _, err := b.bus.On(">", 0, func(_ context.Context, subj string, v *mq.Value) error {
+	sub, err := b.bus.On(">", 0, func(_ context.Context, subj string, v *mq.Value) error {
 		b.forwardEvent(subj, v.Payload)
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
+	// D-23：保存订阅句柄供 CloseInstance 退订（原实现丢弃句柄 → 窗口关闭后僵尸桥
+	// 永久残留 ">" 订阅，高频事件仍对其做完整 JSON 解析）。
+	b.unsub = sub
 	return nil
 }
 
@@ -624,12 +634,25 @@ func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs
 	return v.Result, v.Errors
 }
 
+// stopForward 退订本桥的总线 ">" 订阅（D-23，幂等）：窗口关闭后该桥不再收到任何事件，
+// 避免僵尸桥对高频事件（llm-receive 逐 token）仍执行 eventInstanceID/compatEmit 的完整
+// JSON 解析与转发。句柄为本桥私有，不影响主桥/共享订阅；未 Start（unsub == nil）时为空操作。
+func (b *Bridge) stopForward() {
+	b.unsubOnce.Do(func() {
+		if b.unsub != nil {
+			_ = b.unsub.Unsubscribe()
+		}
+	})
+}
+
 // CloseInstance 注销本实例（发 instance-exit；persist 移除实例绑定 + server 取消名下
 // running turn / 释放锁；61-消息一览 §4.1），**不关闭总线**。
 //
 // 多窗口（24 §4.1）下每窗口一个桥、共享同一条**进程级**总线：任一路径关闭总线都会打断
 // 其它窗口，故窗口关闭只注销本实例；总线由宿主进程收尾时统一 Close。
 func (b *Bridge) CloseInstance() {
+	// D-23：先退订本桥 ">" 订阅再注销实例（窗口关闭后不再有事件派发进本桥）。
+	b.stopForward()
 	b.publish(msgkeys.TopicInstanceExit, map[string]interface{}{msgkeys.FieldInstanceId: b.instanceID})
 }
 

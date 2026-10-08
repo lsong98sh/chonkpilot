@@ -335,11 +335,12 @@ func newTestVftsWithLog(window time.Duration) (*Vfts, func() []string) {
 // TestOnPrjConfigRefreshIndexKeysCoalesce：一次保存写 exts + skip-dirs 两键（= 两次
 // data-prj-config-refresh）→ 插件侧只重建一次；单键变更仍重建一次。
 func TestOnPrjConfigRefreshIndexKeysCoalesce(t *testing.T) {
-	refresh := func(p *Vfts, id string) {
+	refresh := func(p *Vfts, key, val string) {
 		t.Helper()
-		payload, _ := json.Marshal(map[string]any{"id": id, "op": "save"})
+		// 真实广播载荷（61 §3.1）：批量/单键保存均带 list（键 → 新值）
+		payload, _ := json.Marshal(map[string]any{"id": key, "op": "save", "list": map[string]any{key: val}})
 		if err := p.onPrjConfigRefresh(context.Background(), "", &mq.Value{Payload: payload}); err != nil {
-			t.Fatalf("onPrjConfigRefresh(%s): %v", id, err)
+			t.Fatalf("onPrjConfigRefresh(%s): %v", key, err)
 		}
 	}
 	rebuilds := func(lines []string) int {
@@ -355,8 +356,8 @@ func TestOnPrjConfigRefreshIndexKeysCoalesce(t *testing.T) {
 	// 一次保存两键：两次 refresh → 去抖合并为一次重建
 	p, dump := newTestVftsWithLog(30 * time.Millisecond)
 	p.works["/wd-coalesce"] = &workRec{workDir: "/wd-coalesce", refs: 1, enabled: true}
-	refresh(p, extsKey)
-	refresh(p, skipDirsKey)
+	refresh(p, extsKey, "go,rs")
+	refresh(p, skipDirsKey, "dist/")
 	time.Sleep(200 * time.Millisecond)
 	if n := rebuilds(dump()); n != 1 {
 		t.Fatalf("一次保存两键应只重建一次，实际 %d 次：%v", n, dump())
@@ -365,7 +366,7 @@ func TestOnPrjConfigRefreshIndexKeysCoalesce(t *testing.T) {
 	// 单键变更：仍必须重建一次（不得"改了不重建"）
 	p2, dump2 := newTestVftsWithLog(30 * time.Millisecond)
 	p2.works["/wd-single"] = &workRec{workDir: "/wd-single", refs: 1, enabled: true}
-	refresh(p2, extsKey)
+	refresh(p2, extsKey, "go,rs")
 	time.Sleep(200 * time.Millisecond)
 	if n := rebuilds(dump2()); n != 1 {
 		t.Fatalf("单键变更应重建一次，实际 %d 次：%v", n, dump2())
@@ -374,10 +375,62 @@ func TestOnPrjConfigRefreshIndexKeysCoalesce(t *testing.T) {
 	// 未启用的 workdir：不触发重建
 	p3, dump3 := newTestVftsWithLog(30 * time.Millisecond)
 	p3.works["/wd-off"] = &workRec{workDir: "/wd-off", refs: 1, enabled: false}
-	refresh(p3, extsKey)
+	refresh(p3, extsKey, "go,rs")
 	time.Sleep(200 * time.Millisecond)
 	if n := rebuilds(dump3()); n != 0 {
 		t.Fatalf("未启用的 workdir 不应重建，实际 %d 次：%v", n, dump3())
+	}
+}
+
+// TestOnPrjConfigRefreshIdempotentSave：保存幂等（F-14）——同值重复保存不排重建；
+// 值变化重建；显式删键（回落缺省）恒重建。
+func TestOnPrjConfigRefreshIdempotentSave(t *testing.T) {
+	refresh := func(p *Vfts, key, val, op string) {
+		t.Helper()
+		payload, _ := json.Marshal(map[string]any{"id": key, "op": op, "list": map[string]any{key: val}})
+		if err := p.onPrjConfigRefresh(context.Background(), "", &mq.Value{Payload: payload}); err != nil {
+			t.Fatalf("onPrjConfigRefresh(%s): %v", key, err)
+		}
+	}
+	rebuilds := func(lines []string) int {
+		n := 0
+		for _, l := range lines {
+			if strings.Contains(l, "强制重建索引") {
+				n++
+			}
+		}
+		return n
+	}
+
+	p, dump := newTestVftsWithLog(30 * time.Millisecond)
+	p.works["/wd-idem"] = &workRec{workDir: "/wd-idem", refs: 1, enabled: true}
+
+	// 首次保存新值：重建一次
+	refresh(p, extsKey, "go,rs", "save")
+	time.Sleep(120 * time.Millisecond)
+	if n := rebuilds(dump()); n != 1 {
+		t.Fatalf("首次保存新值应重建一次，实际 %d 次：%v", n, dump())
+	}
+
+	// 同值重复保存：幂等不重建
+	refresh(p, extsKey, "go,rs", "save")
+	time.Sleep(120 * time.Millisecond)
+	if n := rebuilds(dump()); n != 1 {
+		t.Fatalf("同值重复保存不应重建，实际 %d 次：%v", n, dump())
+	}
+
+	// 值变化：重建（累计 2）
+	refresh(p, extsKey, "go,rs,md", "save")
+	time.Sleep(120 * time.Millisecond)
+	if n := rebuilds(dump()); n != 2 {
+		t.Fatalf("值变化应重建一次（累计 2），实际 %d 次：%v", n, dump())
+	}
+
+	// 显式删键：恒重建（回落缺省 = 生效配置变化，累计 3）
+	refresh(p, extsKey, "go,rs,md", "delete")
+	time.Sleep(120 * time.Millisecond)
+	if n := rebuilds(dump()); n != 3 {
+		t.Fatalf("删键应重建一次（累计 3），实际 %d 次：%v", n, dump())
 	}
 }
 

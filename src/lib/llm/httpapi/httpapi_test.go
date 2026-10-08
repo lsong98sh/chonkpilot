@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -820,4 +821,33 @@ func readAll(resp *http.Response) ([]byte, error) {
 	var buf bytes.Buffer
 	_, err := buf.ReadFrom(resp.Body)
 	return buf.Bytes(), err
+}
+
+// TestMarkPublishedConcurrentSameSubject B-26：并发两次 markPublished 同 subject 后，
+// 两份指纹均能在 1s 窗口内命中（单槽 pubStamp 会被后写覆盖 → 先写事件经 bus 回环时
+// isSelfPublished 匹配失败 → SSE 重复投递一次）；未发布过的同名主题载荷不吞、命中一次性消耗。
+func TestMarkPublishedConcurrentSameSubject(t *testing.T) {
+	s := New(nil, Options{})
+	const subject = "test/evt"
+	payloads := [][]byte{[]byte(`{"n":1}`), []byte(`{"n":2}`)}
+	var wg sync.WaitGroup
+	wg.Add(len(payloads))
+	for _, p := range payloads {
+		go func(p []byte) {
+			defer wg.Done()
+			s.markPublished(subject, p)
+		}(p)
+	}
+	wg.Wait()
+	if s.isSelfPublished(subject, []byte(`{"n":3}`)) {
+		t.Fatal("未发布过的载荷不应判为自发布")
+	}
+	for i, p := range payloads {
+		if !s.isSelfPublished(subject, p) {
+			t.Fatalf("第 %d 份指纹应在 1s 窗口内命中", i+1)
+		}
+	}
+	if s.isSelfPublished(subject, payloads[0]) {
+		t.Fatal("命中应一次性消耗，不应二次命中")
+	}
 }

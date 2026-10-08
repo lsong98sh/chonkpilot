@@ -144,6 +144,18 @@ type workRec struct {
 	cmu   sync.Mutex
 	busy  bool   // 后台 configure/index 流程进行中（同 workdir 串行）
 	state string // 最近一次 vfts_status 原始 JSON 文本（= vfts.status 同源）
+
+	// 索引配置比较基线（由 p.mu 保护）：最近一次已知的 vfts.exts / skip-dirs / stack-gitignore
+	// 与 docs / doc-max-mb 原始值。保存幂等依据——新旧值相同（重复保存同一份配置）不排重建
+	// （F-14，与 codegraph 同构）；cfgSeen / cfgDocsSeen 标记基线是否已建立（首次读取时播种，
+	// 此后只由 refresh 处理更新，避免覆盖用户刚保存的值）。
+	cfgExts     string
+	cfgSkipDirs string
+	cfgStack    string
+	cfgSeen     bool
+	cfgDocs     string
+	cfgDocMaxMB string
+	cfgDocsSeen bool
 }
 
 // New 构建 vfts 插件。
@@ -529,6 +541,9 @@ func (p *Vfts) applyPrjConfig(key, op string, list map[string]any) {
 	case extsKey, skipDirsKey, stackGitignoreKey, docsKey, docMaxMBKey:
 		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts/skip-dirs/stack-gitignore/docs 变更
 		// 均须重建才生效）。
+		// 保存幂等（F-14，与 codegraph 同构）：与 workRec 基线比较原始值——新旧相同（重复保存
+		// 同一份配置）→ 不排重建；显式删键 = 回落缺省（exts/skip-dirs=引擎默认集、docs=关、
+		// doc-max-mb=50）= 生效配置变化 → 恒重建。基线由 readIndexConfig / readDocsConfig 首读播种。
 		// 经去抖合并：一次批量保存（广播含多键 → 逐键展开）只重建一轮。
 		// docs/doc-max-mb 变更不在总线 handler 内同步探测转换服务（慢请求不进总线派发路径）：
 		// 探测移交去抖回调内的 ensureWorkspace —— 其索引前**强制复探**（服务后启动 → 自动接上）。
@@ -548,14 +563,54 @@ func (p *Vfts) applyPrjConfig(key, op string, list map[string]any) {
 			}
 			p.mu.Unlock()
 		}
+		newRaw := ""
+		if list != nil {
+			if raw, ok := list[key]; ok {
+				newRaw = dataclient.Strval(raw)
+			}
+		}
+		deleted := op == "delete"
+		if deleted {
+			newRaw = "" // 键被删 = 回落缺省
+		}
 		var affected []string
 		p.mu.Lock()
 		for wd, r := range p.works {
-			if r.refs > 0 && r.enabled {
-				affected = append(affected, wd)
+			if r.refs <= 0 || !r.enabled {
+				continue
 			}
+			old := r.cfgExts
+			switch key {
+			case skipDirsKey:
+				old = r.cfgSkipDirs
+			case stackGitignoreKey:
+				old = r.cfgStack
+			case docsKey:
+				old = r.cfgDocs
+			case docMaxMBKey:
+				old = r.cfgDocMaxMB
+			}
+			if !deleted && old == newRaw {
+				continue // 值未变（重复保存同一份配置）→ 幂等，不重建
+			}
+			switch key {
+			case skipDirsKey:
+				r.cfgSkipDirs = newRaw
+			case stackGitignoreKey:
+				r.cfgStack = newRaw
+			case docsKey:
+				r.cfgDocs = newRaw
+			case docMaxMBKey:
+				r.cfgDocMaxMB = newRaw
+			default:
+				r.cfgExts = newRaw
+			}
+			affected = append(affected, wd)
 		}
 		p.mu.Unlock()
+		if len(affected) == 0 {
+			return
+		}
 		sort.Strings(affected)
 		for _, wd := range affected {
 			wd := wd
@@ -703,20 +758,30 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 }
 
 // readDocsConfig 读文档索引配置：vfts.docs（开关，缺省关）+ vfts.doc-max-mb（上限 MB，缺省 50）。
+// 首次读取时播种「比较基线」（cfgDocs/cfgDocMaxMB）= 本次读到的原始值，使「重复保存同一份
+// 配置」不触发重建（F-14）；此后基线只由 onPrjConfigRefresh 更新。
 func (p *Vfts) readDocsConfig(wd string) (enabled bool, maxMB int) {
 	maxMB = defaultDocMaxMB
 	inst := p.instanceForWorkdir(wd)
 	if inst == "" {
 		return false, maxMB
 	}
+	rawDocs, rawMaxMB := "", ""
 	if v, err := dataclient.ReadKey(p.deps.Bus, inst, docsKey); err == nil {
+		rawDocs = v
 		enabled = v == "true"
 	}
 	if v, err := dataclient.ReadKey(p.deps.Bus, inst, docMaxMBKey); err == nil {
+		rawMaxMB = v
 		if n, perr := strconv.Atoi(strings.TrimSpace(v)); perr == nil && n > 0 {
 			maxMB = n
 		}
 	}
+	p.mu.Lock()
+	if r := p.works[wd]; r != nil && !r.cfgDocsSeen {
+		r.cfgDocs, r.cfgDocMaxMB, r.cfgDocsSeen = rawDocs, rawMaxMB, true
+	}
+	p.mu.Unlock()
 	return enabled, maxMB
 }
 
@@ -890,17 +955,35 @@ func (p *Vfts) instanceForWorkdir(wd string) string {
 // 读取失败/未配置 → 返回空切片（下发空数组 = 引擎默认集，不写第二套默认）。
 // skip-dirs / stack-gitignore 的解析统一由 github.com/chonkpilot/chonkpilot-ignore 提供
 // （ignore.ConfigOptions = 规则拆分 + 叠加开关；匹配语义在引擎侧与本插件清单扫描共用同一实现）。
+// 首次读取时播种「比较基线」（cfgExts/cfgSkipDirs/cfgStack）= 本次下发的原始值，使
+// 「重复保存同一份配置」不触发重建（F-14）；此后基线只由 onPrjConfigRefresh 更新。
 func (p *Vfts) readIndexConfig(wd string) (exts, rules []string, stack bool) {
 	inst := p.instanceForWorkdir(wd)
 	if inst == "" {
 		return []string{}, []string{}, false
 	}
+	rawExts, rawDirs, rawStack := "", "", ""
 	if v, err := dataclient.ReadKey(p.deps.Bus, inst, extsKey); err == nil {
+		rawExts = v
 		exts = splitList(v)
 	}
 	// 用户排除规则（gitignore 语法，原样透传：不折名、不丢 '!'/glob）+ 是否叠加 ignore 体系：
-	// 均由 ignore.ConfigOptions 按引擎配置键统一组装。
-	if opts, _, err := ignore.ConfigOptions(engineName, p.prjConfigGetter(inst), wd); err == nil && opts != nil {
+	// 均由 ignore.ConfigOptions 按引擎配置键统一组装。取值器顺带记录 skip-dirs /
+	// stack-gitignore 的原始值（供幂等比较基线播种）。
+	get := func(key string) (string, bool) {
+		v, err := dataclient.ReadKey(p.deps.Bus, inst, key)
+		if err != nil {
+			return "", false
+		}
+		switch key {
+		case skipDirsKey:
+			rawDirs = v
+		case stackGitignoreKey:
+			rawStack = v
+		}
+		return v, true
+	}
+	if opts, _, err := ignore.ConfigOptions(engineName, get, wd); err == nil && opts != nil {
 		rules = opts.UserRules
 		stack = opts.StackGitignore
 	}
@@ -910,15 +993,12 @@ func (p *Vfts) readIndexConfig(wd string) (exts, rules []string, stack bool) {
 	if rules == nil {
 		rules = []string{}
 	}
-	return exts, rules, stack
-}
-
-// prjConfigGetter 把 prj-config 单键读封装为 ignore.ConfigOptions 的取值器（键不存在/读取失败 → ok=false）。
-func (p *Vfts) prjConfigGetter(inst string) func(key string) (string, bool) {
-	return func(key string) (string, bool) {
-		v, err := dataclient.ReadKey(p.deps.Bus, inst, key)
-		return v, err == nil
+	p.mu.Lock()
+	if r := p.works[wd]; r != nil && !r.cfgSeen {
+		r.cfgExts, r.cfgSkipDirs, r.cfgStack, r.cfgSeen = rawExts, rawDirs, rawStack, true
 	}
+	p.mu.Unlock()
+	return exts, rules, stack
 }
 
 // splitList 解析项目级列表配置（扩展名）：按逗号/分号/换行分隔，去空去重。

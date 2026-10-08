@@ -1,5 +1,6 @@
 // local_test.go — 文件树初始化预载单测（I-52）：
 // readDirNodesExpanded 只对展开键命中的目录递归预载 children，未展开目录不带 children。
+// 另含 gui.search file 源（searchFileSource）命中与预算（D-25）单测。
 package bridge
 
 import (
@@ -7,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSearchRelPath 检索结果路径归一（2026-09-27 修 bug）：三源结果必须为
@@ -102,6 +104,43 @@ func TestReadDirNodesExpandedNested(t *testing.T) {
 	}
 	if _, ok := b["children"].([]map[string]any); !ok {
 		t.Fatalf("展开目录 a/b 应预载 children，实际 %v", b["children"])
+	}
+}
+
+// TestSearchFileSourceBudget file 源遍历预算（D-25）：节点数超限 / 时间超限即止——
+// 返回已命中部分（或空）、不报错不冻结；预算恢复后不残留影响。
+func TestSearchFileSourceBudget(t *testing.T) {
+	root := t.TempDir()
+	mkFile(t, filepath.Join(root, "aa", "target.txt"))
+	mkFile(t, filepath.Join(root, "bb", "target.txt"))
+	mkFile(t, filepath.Join(root, "cc", "target.txt"))
+
+	restore := func() func() {
+		origNodes, origDeadline := searchFileMaxNodes, searchFileDeadline
+		return func() { searchFileMaxNodes, searchFileDeadline = origNodes, origDeadline }
+	}
+
+	// ① 节点预算收紧到 4（根 + aa + aa/target + bb 即耗尽）→ 只命中部分，且安全返回
+	done := restore()
+	searchFileMaxNodes, searchFileDeadline = 4, time.Hour
+	hits := searchFileSource(root, "target", searchMaxResults)
+	done()
+	if len(hits) == 0 || len(hits) > 3 {
+		t.Fatalf("节点预算内应返回部分命中（1~3 个）：%v", hits)
+	}
+
+	// ② 时间预算立即超时 → 空结果且立即返回（不报错）
+	done = restore()
+	searchFileMaxNodes, searchFileDeadline = 20000, -time.Second
+	hits2 := searchFileSource(root, "target", searchMaxResults)
+	done()
+	if len(hits2) != 0 {
+		t.Fatalf("时间预算耗尽应返回空结果：%v", hits2)
+	}
+
+	// ③ 预算恢复 → 全部命中（预算不残留）
+	if hits3 := searchFileSource(root, "target", searchMaxResults); len(hits3) != 3 {
+		t.Fatalf("预算恢复后应命中全部 3 个：%v", hits3)
 	}
 }
 

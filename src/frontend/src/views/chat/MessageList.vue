@@ -441,6 +441,18 @@ function sendContinue() {
   sendSameTurnContinue()
 }
 
+// llm-start 受理校验（E-20）：mq.emit 恒 resolve（网络失败/超时回 null），后端未受理
+// （backend 缺失 / ok=false / errors 非空）时不会有 llm-complete 终态 → isLoading/pending
+// 永不收起（死锁）。await ack 后调用：失败返回错误串（交 handleError 出错误气泡），
+// 成功返回空串。纯前端检查，不改发送 payload。
+function ackRejectedReason(ack) {
+  const backend = ack && ack.backend
+  if (!backend) return 'llm-start: backend unreachable'
+  if (backend.ok === false) return (backend.errors && backend.errors[0]) || 'llm-start rejected'
+  if (Array.isArray(backend.errors) && backend.errors.length > 0) return backend.errors[0]
+  return ''
+}
+
 // 同轮次继续出口（手动按钮 + 空回复提示 + 断链自动续写共用）：
 // 复用最近一轮 turn id 发 llm-start{continue:true}，注入的 user 消息由 server 标
 // Kind=continue（非新轮边界，同一轮次）；发送文本按 retryText()：已收到部分输出 → "继续"
@@ -473,6 +485,13 @@ async function sendSameTurnContinue() {
   // 落库回执到达后再渲染 user 气泡（不再乐观插入）；等待期间已切会话 → 不渲染
   await ack
   if (activeSessionId.value && activeSessionId.value !== sid) return
+  // E-20：后端未受理（无 llm-complete 终态）→ 错误气泡 + 复位加载态，防死锁
+  const rejected = ackRejectedReason(ack)
+  if (rejected) {
+    handleError({ message: rejected })
+    cleanupAndFinish()
+    return
+  }
   pushUserBubble(text, at)
 }
 
@@ -683,6 +702,15 @@ async function doSend(batch) {
   // 落库回执到达后再渲染 user 气泡；等待期间已切会话 → 不渲染
   await ack
   if (activeSessionId.value && activeSessionId.value !== sid) return
+  // E-20：后端未受理（无 llm-complete 终态）→ 错误气泡 + 复位加载态，防死锁；
+  // 本轮记录的 turn id 一并作废（后端未知该 turn，不可作为后续「同轮次继续」目标）。
+  const rejected = ackRejectedReason(ack)
+  if (rejected) {
+    if (lastTurnId.value === turnId) lastTurnId.value = null
+    handleError({ message: rejected })
+    cleanupAndFinish()
+    return
+  }
   if (batch.type === 'message') pushUserBubble(batch.text, at)
 }
 

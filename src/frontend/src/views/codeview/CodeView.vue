@@ -55,6 +55,7 @@
                 class="markdown-preview"
               />
               <pre v-else-if="tab.renderType === 'markdown' && tab.showSource" class="source-code"><code>{{ tab.content }}</code></pre>
+              <!-- PDF 预览 sandbox 豁免（用户 2026-10-08）：Chromium 原生 PDF 查看器与 sandbox 属性不兼容（加 sandbox 即空白）；PDFium 内嵌 JS 默认禁用，无可利用攻击链。 -->
               <iframe
                 v-else-if="tab.renderType === 'pdf'"
                 :src="tab.rawUrl"

@@ -41,10 +41,7 @@ func (s *Session) Files() dsl.FileSystem { return scriptFS{} }
 
 // Summary 返回本域过程输出（DOM/DBG 落盘、TAB list 等；无输出则 nil）。
 func (s *Session) Summary() []string {
-	if len(s.r.out) == 0 {
-		return nil
-	}
-	return append([]string{}, s.r.out...)
+	return s.r.outSnapshot()
 }
 
 // Close 收尾并释放浏览器资源（console/DOM 落盘、失败截图、关闭 Chrome）。

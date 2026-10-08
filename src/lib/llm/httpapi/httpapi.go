@@ -117,9 +117,10 @@ type Server struct {
 
 	// published 记录本实例近期发布的**事件指纹**（防环：本包订阅了 ">"，自身 emit 的事件不应
 	// 再经 SSE 回投前端造成二次 dispatch；与桥 markPublished 同语义）。B-21：标记值 = subject +
-	// 载荷哈希（仅真正自环被吞，**不误吞他实例同名主题事件**）。
+	// 载荷哈希（仅真正自环被吞，**不误吞他实例同名主题事件**）。B-26：值改为短列表——
+	// 并发两次发布同 subject 时先写的指纹不被覆盖，两份回环事件都能被识别为自发布。
 	publishedMu sync.Mutex
-	published   map[string]pubStamp
+	published   map[string][]pubStamp // B-26：每 subject 最近 2 个（并发双发布不互相覆盖）
 
 	// clients 是已连接的 SSE 客户端（广播入口；本 instance 的全部客户端都收到同一事件）。
 	mu      sync.Mutex
@@ -156,7 +157,7 @@ func New(bus mq.Bus, opts Options) *Server {
 		addr:       addr,
 		authCheck:  opts.AuthCheck,
 		facade:     opts.Facade,
-		published:  make(map[string]pubStamp),
+		published:  make(map[string][]pubStamp),
 		clients:    make(map[chan []byte]struct{}),
 	}
 }
@@ -632,31 +633,48 @@ func eventFingerprint(subject string, payload []byte) string {
 	return strconv.FormatUint(h.Sum64(), 16)
 }
 
-// markPublished 记录一次本实例发布（发布前调用）。
+// markPublished 记录一次本实例发布（发布前调用）。B-26：追加进该 subject 的短列表并裁剪到
+// 最近 2 个——并发两次发布同 subject 时两份指纹都保留，各自的回环事件都能命中。
 func (s *Server) markPublished(subject string, payload []byte) {
 	s.publishedMu.Lock()
 	defer s.publishedMu.Unlock()
-	s.published[subject] = pubStamp{fp: eventFingerprint(subject, payload), at: time.Now()}
+	list := append(s.published[subject], pubStamp{fp: eventFingerprint(subject, payload), at: time.Now()})
+	if len(list) > 2 {
+		list = list[len(list)-2:]
+	}
+	s.published[subject] = list
 }
 
 // isSelfPublished 判定该事件是否本实例刚发布（B-21：subject + 载荷指纹一致且 1s 窗口内，一次性
-// 消耗）→ 跳过转发。载荷不同（他实例同名主题）或已过期 → 不吞（过期项顺手清理）。
+// 消耗）→ 跳过转发。B-26：与短列表内**任一**指纹匹配即命中；载荷不同（他实例同名主题）或已过期
+// → 不吞（过期项惰性清理，列表全过期则删键）。
 func (s *Server) isSelfPublished(subject string, payload []byte) bool {
 	s.publishedMu.Lock()
 	defer s.publishedMu.Unlock()
-	st, ok := s.published[subject]
+	list, ok := s.published[subject]
 	if !ok {
 		return false
 	}
-	if time.Since(st.at) >= time.Second {
-		delete(s.published, subject) // 过期：清理，不再视为自环
-		return false
+	fp := eventFingerprint(subject, payload)
+	now := time.Now()
+	out := list[:0]
+	hit := false
+	for _, st := range list {
+		if now.Sub(st.at) >= time.Second {
+			continue // 过期：丢弃，不再视为自环
+		}
+		if !hit && st.fp == fp {
+			hit = true // 命中：一次性消耗，该指纹不再保留
+			continue
+		}
+		out = append(out, st) // 未匹配的保留（同位等待其自环事件匹配）
 	}
-	if st.fp != eventFingerprint(subject, payload) {
-		return false // 同名主题但载荷不同 → 他实例事件，不吞（保留自身标记待自环事件匹配）
+	if len(out) == 0 {
+		delete(s.published, subject)
+	} else {
+		s.published[subject] = out
 	}
-	delete(s.published, subject)
-	return true
+	return hit
 }
 
 // publish 发一条事件（不等结果；用于 instance-register / instance-exit）。

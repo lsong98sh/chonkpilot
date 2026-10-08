@@ -1,5 +1,5 @@
-import mq, { currentInstanceId } from '../utils/mq'
-import { createInitDataPrefetch } from '../utils/initDataPrefetch'
+import mq, { currentInstanceId } from '../utils/mq.js'
+import { createInitDataPrefetch } from '../utils/initDataPrefetch.js'
 import { FieldKeys, GuiUiSaveKeys, FilesysListKeys, FilesysContentKeys } from '../events/msgkeys.js'
 
 // 文件域直连 filesys（20-gui / 61-消息一览 §2）：
@@ -135,11 +135,19 @@ export function createDirInDir(dirPath, dirName) {
 // 与 data-session-* / filesys.* 同模式（请求结果取 backend.result，校验 ok/errors）。
 // 统一 30s 超时（对齐 fileRequest；E-06）。
 //
-// init-data「可多次读」缓存（E-13）：主视图（预取消费）、文件树、预览区（CodeView）、工具栏、
-// 日志配置等多个消费点各自在挂载时读同一份启动快照；同一窗口内 workdir 不可变（切换目录 =
-// 另开进程/窗口）→ 单飞缓存安全，一次往返服务全部消费点，消除启动期重复全量拉取。
-// 失败清空在飞，后续可重读（与 utils/initDataPrefetch 同口径）。
+// init-data「在飞共享」缓存（E-13）：主视图（预取消费）、文件树、预览区（CodeView）、工具栏、
+// 日志配置等多个消费点各自在挂载时读启动快照；**在飞期间**并发消费共享同一次请求
+// （启动预取 + 首挂去重不变，E-13）。E-21 修订：缓存**一次性**——resolve/reject 后即清槽
+// （finally），已完成的快照不再缓存 → 组件随 SplitPanel pane 关闭重挂时重新拉取，
+// 不再回退启动旧快照。同窗口内 workdir 不可变（切换目录 = 另开进程/窗口）→ 数据仍一致。
+// 失败同样清槽可重读（与 utils/initDataPrefetch 同口径）；显式失效入口 = invalidateInitDataCache。
 let _initDataPromise = null
+
+// 显式失效 init-data 单飞缓存（E-21）：清掉在飞/已完成槽位，下次 loadInitData 重新拉取。
+// （在飞请求本身无法取消，仅令后续消费不再共享它。）
+export function invalidateInitDataCache() {
+  _initDataPromise = null
+}
 
 function guiReq(action, body = {}) {
   const topic = 'gui.' + action
@@ -156,7 +164,10 @@ function guiReq(action, body = {}) {
     return p
   })
   if (action === 'init-data') {
-    if (!_initDataPromise) _initDataPromise = run().catch((e) => { _initDataPromise = null; throw e })
+    if (!_initDataPromise) {
+      // finally = resolve/reject 都清槽：在飞共享、完成后一次性（E-21）。
+      _initDataPromise = run().finally(() => { _initDataPromise = null })
+    }
     return _initDataPromise
   }
   return run()

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,11 +46,42 @@ type Runner struct {
 	ctx         context.Context // 当前激活 tab
 	browserCtx  context.Context // browser 会话（target 管理）
 	curID       string          // 当前激活 tab target id
-	out         []string        // 过程输出（TAB list 等）
 	cancelCtx   context.CancelFunc
 	cancelAlloc context.CancelFunc
-	console     []string
 	closed      bool
+
+	// out / console 由 mu 保护：DSL 执行 goroutine 与 chromedp 事件回调 goroutine
+	// （onTargetEvent → appendConsole）并发读写，禁止锁外直读直写（须经下方快照/追加方法）。
+	mu      sync.Mutex
+	out     []string // 过程输出（TAB list 等）
+	console []string
+}
+
+// appendOut 追加一条过程输出（out 写入统一入口）。
+func (r *Runner) appendOut(line string) {
+	r.mu.Lock()
+	r.out = append(r.out, line)
+	r.mu.Unlock()
+}
+
+// outSnapshot 返回过程输出副本（调用方在锁外只用快照）。
+func (r *Runner) outSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.out) == 0 {
+		return nil
+	}
+	return append([]string{}, r.out...)
+}
+
+// consoleSnapshot 返回当前 console 日志副本（console 由事件回调 goroutine 并发追加，读侧必须经锁）。
+func (r *Runner) consoleSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.console) == 0 {
+		return nil
+	}
+	return append([]string{}, r.console...)
 }
 
 // stepCtx 构造带超时的上下文（WAT 用）。
@@ -80,9 +112,9 @@ func Execute(parent context.Context, opt Options) (string, error) {
 	r.teardown(len(res.Errors) > 0)
 	if len(res.Errors) > 0 {
 		e0 := res.Errors[0]
-		return strings.Join(r.out, "\n"), stepErr(e0.Line, "", "step", e0.Msg)
+		return strings.Join(r.outSnapshot(), "\n"), stepErr(e0.Line, "", "step", e0.Msg)
 	}
-	return strings.Join(r.out, "\n"), nil
+	return strings.Join(r.outSnapshot(), "\n"), nil
 }
 
 // startBrowser 启动 Chrome/CDP 生命周期。
@@ -714,7 +746,7 @@ func (r *Runner) stepDOM(st *Step) error {
 	if err := writeFileChecked(name, []byte(html)); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "写入文件失败: "+err.Error())
 	}
-	r.out = append(r.out, fmt.Sprintf("DOM: %d 字符已写入 %s", len(html), name))
+	r.appendOut(fmt.Sprintf("DOM: %d 字符已写入 %s", len(html), name))
 	return nil
 }
 
@@ -728,11 +760,12 @@ func (r *Runner) stepDBG(st *Step) error {
 	if err != nil {
 		return stepErr(st.Line, st.Raw, "path", err.Error())
 	}
-	content := strings.Join(r.console, "\n")
+	snap := r.consoleSnapshot()
+	content := strings.Join(snap, "\n")
 	if err := writeFileChecked(name, []byte(content)); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "写入文件失败: "+err.Error())
 	}
-	r.out = append(r.out, fmt.Sprintf("DBG: %d 条 console 日志已写入 %s", len(r.console), name))
+	r.appendOut(fmt.Sprintf("DBG: %d 条 console 日志已写入 %s", len(snap), name))
 	return nil
 }
 
@@ -745,11 +778,14 @@ func (r *Runner) domToFile(name string) error {
 }
 
 func (r *Runner) flushConsole() error {
-	if r.opt.ConsoleFile == "" || len(r.console) == 0 {
+	if r.opt.ConsoleFile == "" {
 		return nil
 	}
-	content := strings.Join(r.console, "\n")
-	return writeFileChecked(r.opt.ConsoleFile, []byte(content))
+	snap := r.consoleSnapshot()
+	if len(snap) == 0 {
+		return nil
+	}
+	return writeFileChecked(r.opt.ConsoleFile, []byte(strings.Join(snap, "\n")))
 }
 
 // findBrowserPath 探测 Chrome/Edge。

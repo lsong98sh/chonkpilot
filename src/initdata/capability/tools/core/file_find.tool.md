@@ -15,7 +15,7 @@ output=stdout
 项目探索用：在指定目录下**定位文件**——找某文件在哪/看目录结构/按内容命中哪些文件时用它（先定位范围，再 file_read 精读，避免盲目遍历）。path 必填（第一个参数，搜索起始路径），其余过滤可选，组合收窄更高效：
 - path（搜索起始路径，必填；**必须为绝对路径、以 `~/` 开头的用户目录路径或以 `!/` 开头的临时目录路径**，如 `C:\work\proj\src`、`~/proj/src`；相对路径 → 工具**整体失败**，消息含原值与示例）
 - depth（0=递归不限；1=当前目录；2=当前+下一级，tree 模式同样受限）
-- glob（文件名 glob 过滤，支持 **）
+- glob（文件名 glob 过滤，**仅匹配文件名本身、不含路径**；`**` 等价 `*`，不做路径级匹配；如需按路径/目录过滤请用 skip_dirs 或 file_grep）
 - grep（文件内容正则，命中行输出，无命中不列出）
 - output（tree|file|summary：
   - tree=目录结构
@@ -40,7 +40,7 @@ properties:
         description: 递归深度（0=不限；1=当前目录；2=当前+下一级）
         type: integer
     glob:
-        description: 文件名 glob 过滤（filepath.Match，逗号/竖线多模式，支持 **）
+        description: 文件名 glob 过滤（filepath.Match，逗号/竖线多模式；仅匹配文件名本身、不含路径，`**` 等价 `*`；路径级过滤请用 skip_dirs 或 file_grep）
         type: string
     grep:
         description: 文件内容正则（命中行输出；无命中不列出）

@@ -4,11 +4,12 @@ import {
   DataKnowledgeReadKeys, DataKnowledgeCreateKeys,
 } from '../events/msgkeys.js'
 
-// data-knowledge-* 消息辅助：发送并等待回复。
+// data-knowledge-* 消息辅助：发送并等待回复（E-25：统一 30s 超时，对齐 fileRequest/guiReq 口径，
+// 后端卡死时 fetch abort → resolve(null) → 按 backend unreachable 报错，不永久挂起）。
 // 知识库维护（FP「preview 知识库维护」）：维护分类目录下的 *.原语.md 文件
 // （tools / skills / prompts / resources 四类）。kind=app 通用 | project 项目。
 function knowledgeReq(action, body = {}) {
-  return mq.emit(`data-knowledge-${action}`, body).then((env) => {
+  return mq.emit(`data-knowledge-${action}`, body, { timeout: 30000 }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-knowledge-${action}: backend unreachable`)
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}

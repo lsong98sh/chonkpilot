@@ -1053,6 +1053,12 @@ loop:
 			markStop()
 			break loop // 跳出调度循环，不再 wg.Add/派生无意义 goroutine
 		}
+		// 二次检查（B-27）：canRun() 通过到拿到信号量之间，已派发迭代可能已 markStop
+		// （StopOnError 语义）——不复查会多派发 1-2 个迭代；不通过则归还信号量并停止调度。
+		if e.ctx.Err() != nil || !canRun() {
+			<-sem
+			break loop
+		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

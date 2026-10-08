@@ -408,7 +408,8 @@ func TruncateLines(s string, maxLines int) (string, bool) {
 
 // RFC3339FixedNano 固定 9 位纳秒 RFC3339：保证同轮消息 created_at 字符串排序 = 时间序
 // （RFC3339Nano 裁剪尾零导致同秒不同位数排序不稳；对齐 server AppendFull）。
-const RFC3339FixedNano = "2006-01-02T15:04:05.000000000Z07:00"
+// 单一定义在根包 data（table.go 的 Upsert 隐式时间戳同用），此处别名转发供 internal 各域引用。
+const RFC3339FixedNano = data.RFC3339FixedNano
 
 // NewMessageKey 生成 messages 表主键：M + UTC 时间戳(yyyyMMddHHmmss, 14 位) + 微秒(6 位)
 // + 4 位随机数 = 25 字符（如 M202609121015307123450842）。key 自带时间序（可区间扫描）；

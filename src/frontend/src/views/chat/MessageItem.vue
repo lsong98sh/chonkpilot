@@ -600,9 +600,43 @@ async function arbitrationCancel() {
   }
 }
 
+// ── 流式渲染节流（E-26）：renderedContent 原先每 token 全量重跑 marked +
+// withLocalImageUrls + DOMPurify，长回复主线程压力大 → 时间闸 + 尾随刷新：
+//   - 内容未变 → 返回上次渲染缓存（零重算）；
+//   - 距上次实际渲染 < RENDER_THROTTLE_MS（闸门关闭）→ 返回缓存，并安排一次尾随
+//     timer 递增 renderTick（触发 computed 重算），保证最后一块内容一定被渲染；
+//   - DOMPurify 保持最外层（净化收口不变）。
+const RENDER_THROTTLE_MS = 100
+const renderTick = ref(0) // 尾随刷新闸门：timer 到点递增 → 触发 computed 重算
+let lastRenderedSource = null // 上次实际渲染的源内容
+let lastRenderedHtml = '' // 上次渲染结果缓存
+let lastRenderAt = 0 // 上次实际渲染时间戳
+let renderTrailingTimer = null // 尾随刷新定时器（仅一个，卸载时清理）
+
 const renderedContent = computed(() => {
+  void renderTick.value // 建立依赖：尾随递增触发重算
   const content = localContent.value || props.message.content || ''
-  return DOMPurify.sanitize(withLocalImageUrls(marked(content || '')))
+  if (content === lastRenderedSource) return lastRenderedHtml
+  const now = Date.now()
+  if (now - lastRenderAt >= RENDER_THROTTLE_MS) {
+    lastRenderedHtml = DOMPurify.sanitize(withLocalImageUrls(marked(content || '')))
+    lastRenderedSource = content
+    lastRenderAt = now
+    return lastRenderedHtml
+  }
+  // 闸门关闭：安排尾随刷新（只排一个，到点后以最新内容重算）
+  if (!renderTrailingTimer) {
+    renderTrailingTimer = setTimeout(() => {
+      renderTrailingTimer = null
+      renderTick.value++
+    }, RENDER_THROTTLE_MS)
+  }
+  return lastRenderedHtml
+})
+
+onUnmounted(() => {
+  // E-26：组件卸载清尾随刷新 timer，避免销毁后回调仍触发
+  if (renderTrailingTimer) { clearTimeout(renderTrailingTimer); renderTrailingTimer = null }
 })
 
 // 用户消息里的附件标记 `![名](本地绝对路径)` → /show/ 同源 URL，使气泡内直接显示缩略图

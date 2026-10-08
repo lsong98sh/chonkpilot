@@ -594,7 +594,9 @@ func (g *Gateway) handleMCPInvoke(ctx context.Context, args map[string]any) (*mc
 	if !ok {
 		return toolErrorText("provider not found"), nil
 	}
-	if !ps.cb.allow() {
+	// 熔断放行：mcp_invoke 链路无独立 cancel 归还点，试探标志沿既有口径由 success/failure 收尾
+	// （此处只做门禁判定，不改变该链路既有取消语义）。
+	if allowed, _ := ps.cb.allow(); !allowed {
 		return toolErrorText(fmt.Sprintf("server %s unavailable (circuit open)", route.Provider)), nil
 	}
 

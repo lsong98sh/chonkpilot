@@ -79,3 +79,27 @@ func TestForwardEventNoInstanceIDPassesAll(t *testing.T) {
 		t.Fatalf("无 instanceID 时不应过滤：%s", joined)
 	}
 }
+
+// TestCloseInstanceUnsubscribesForward（D-23）：CloseInstance 后本桥的 ">" 订阅被退订——
+// 后续总线事件不再转发到本桥前端（僵尸桥不再消耗逐 token 事件的 JSON 解析/转发）；
+// 重复 Close 幂等不 panic，且不影响同总线其它桥（各自句柄独立）。
+func TestCloseInstanceUnsubscribesForward(t *testing.T) {
+	bus, b, scripts := newFilterTestBridge(t, "ins-a")
+
+	emit := func() {
+		bus.Emit(context.Background(), "task-started",
+			map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"}).Wait()
+	}
+	emit()
+	before := len(scripts()) // 一条事件会兼发兼容事件（compatEmit）→ 只断言「有转发」，不锁条数
+	if before == 0 {
+		t.Fatal("关闭前事件应转发到本桥前端")
+	}
+
+	b.CloseInstance()
+	b.CloseInstance() // 幂等：重复 Close 不 panic、不重复退订
+	emit()
+	if n := len(scripts()); n != before {
+		t.Fatalf("CloseInstance 后事件不得再转发到本桥前端：before=%d after=%d", before, n)
+	}
+}
