@@ -32,6 +32,3 @@ type ToolConfig struct {
 	CreatedAt   string      `json:"createdAt,omitempty"`
 	UpdatedAt   string      `json:"updatedAt,omitempty"`
 }
-
-// AgentConfig removed (D1): project_agents table is deprecated. Scenario
-// sub-agents now use models.ScenarioAgent (see scenario.go).

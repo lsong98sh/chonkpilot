@@ -23,6 +23,7 @@
  */
 import { ref } from 'vue'
 import mq from '../utils/mq.js'
+import { MsgTopics } from '../events/msgkeys.js'
 import { isSplitForm, setClaimedInstance } from '../utils/instanceState.js'
 
 /** 心跳周期 30s（61 §4.1 ②；服务端 90s 未收即回收 —— 取值单一来源 = chonkpilot-lib/heartbeat）。 */
@@ -59,7 +60,7 @@ export function startHeartbeat() {
   stopHeartbeat()
   if (!isSplitForm()) return // desktop（桌面单体默认构建）：不发布心跳（-tags split 门控同口径）
   heartbeatTimer = setInterval(() => {
-    mq.emit('instance-heartbeat', {})
+    mq.emit(MsgTopics.instanceHeartbeat, {})
   }, HEARTBEAT_INTERVAL_MS)
 }
 
@@ -101,7 +102,7 @@ export function claim(payload = {}) {
     state.value = CLAIM_INFLIGHT
     errorCode.value = ''
     try {
-      const res = await mq.emit('instance-claim', payload)
+      const res = await mq.emit(MsgTopics.instanceClaim, payload)
       const backend = res && res.backend
       const result = backend && backend.result
       // 失败（61 §4.6：复用 {ok,error} 信封）：错误码优先取 result.error，其次取 errors[0]

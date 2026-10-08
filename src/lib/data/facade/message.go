@@ -90,6 +90,9 @@ type MessageAppendRequest struct {
 	Brief string `json:"brief,omitempty"`
 	// ToolCallStatus 工具调用状态（可选；role=tool 时随结果载荷落库）。
 	ToolCallStatus string `json:"tool_call_status,omitempty"`
+	// Key 显式指定/复用消息主键（可选）：非空 = 按该主键**就地更新**（回填）；
+	// 空 = 由实现侧生成新键（role=tool 且带 tool_call_id 时按 (turn_id, tool_call_id) 复用既有行）。
+	Key string `json:"key,omitempty"`
 	// Scope 实例数据根（可选；语义同 SnapshotGetRequest.Scope）。
 	Scope Scope `json:"scope,omitempty"`
 }
@@ -98,6 +101,8 @@ type MessageAppendRequest struct {
 type MessageAppendResponse struct {
 	// OK 是否成功（失败走 error）。
 	OK bool `json:"ok"`
+	// ID 落库后的消息主键（回填时回传为 Key；只增字段）。
+	ID string `json:"id,omitempty"`
 }
 
 // MessageLoadRequest 是读某轮次全部消息入参（LLM 会话重建）。

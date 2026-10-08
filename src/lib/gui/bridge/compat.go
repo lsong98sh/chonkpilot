@@ -16,6 +16,8 @@ package bridge
 
 import (
 	"encoding/json"
+
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // compatEmit 根据 server 事件（typ = 前端 type，如 llm-receive）兼发旧协议事件。
@@ -31,7 +33,7 @@ func (b *Bridge) compatEmit(typ string, raw []byte) {
 	sid := sval(m["session"])
 	tid := sval(m["turn"])
 	switch typ {
-	case "server-starting":
+	case msgkeys.TopicServerStarting:
 		// 服务就绪 ack（取代旧 llm-start.reply 死分支，见文件头）：插件全部加载完成 →
 		// 旧协议 llm-started。payload 与既有兼容契约一致 {session_id, turn_id, sub, notify}
 		// （就绪无轮次归属，session/turn 留空）+ 兼容层统一 injectInstance 注入 instance_id；
@@ -54,7 +56,7 @@ func (b *Bridge) compatEmit(typ string, raw []byte) {
 				"session_id": sid, "turn_id": tid,
 				"tool":         sval(p["tool"]),
 				"arguments":    p["arguments"],
-				"tool_call_id": sval(p["tool-call-id"]),
+				"tool_call_id": sval(p["tool_call_id"]),
 			}))
 		}
 	case "llm-complete":
@@ -82,7 +84,8 @@ func (b *Bridge) compatEmit(typ string, raw []byte) {
 		}
 	case "tasks.started":
 		// 任务树事件（server 编排）→ 旧 task-started + tool-pair 开始
-		emit("task-started", string(raw))
+		// 注：旧兼容事件名 task-started 与契约主题 task-started 同名（值同）→ 以 msgkeys 常量引用。
+		emit(msgkeys.TopicTaskStarted, string(raw))
 		emit("tool-pair", toolPairMsg(m, "running"))
 	case "tasks.updated":
 		// 转后台（pending）→ tool-pair async（旧协议转异步标记）

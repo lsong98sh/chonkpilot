@@ -204,7 +204,7 @@ def case_tool_call():
     sid = new_sid()
     activate(sid)
     send_turn(sid, "工具测试")
-    llm(sid, "tool-call", {"tool-call-id": "tc-e2e-1", "tool": "file_read",
+    llm(sid, "tool-call", {"tool_call_id": "tc-e2e-1", "tool": "file_read",
                            "arguments": "{\"files\":[{\"path\":\"C:/work/proj/a.txt\"}]}", "simplified": "file_read"})
     # handleToken 把 tool-call 渲染为 tool_pair 消息
     if not wait_el(".toolpair-section"):

@@ -159,6 +159,8 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	// 每窗口一份 WebView2 用户数据目录：fork 默认 DataPath = %AppData%\<exe名>，多窗口共享
 	// 同一 profile 会共享浏览器进程，任一方销毁/崩溃波及另一方（历史实测：销毁一个实例会
 	// 冻结其他窗口）。前端 ui.locale 有 DB 兜底（MainLayout），不依赖 WebView2 缓存留存。
+	// 〔2026-10-07 实测〕固定 profile（复用）与每次新建 profile 的建窗耗时无显著差异（稳态 0.7~1.4s）
+	// → 保留"每窗口一份"的隔离设计；建窗耗时的分段观测见 main.go 的启动打点。
 	wvData := webviewDataDir(newUUID())
 	if err := os.MkdirAll(wvData, 0o755); err != nil {
 		slog.Warn("webview2 data dir create failed", "dir", wvData, "err", err)
@@ -281,6 +283,7 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 			if spec.role == roleMain {
 				// 主窗口：恢复上次位置/尺寸/最大化（含超屏正常化）；
 				// 对话窗口**不持久化几何**（24 §3.3 C5），按缺省位置打开。
+				logStartupStageOnce("main-first-paint", "主窗口首屏渲染完成") // OP-15（一次）
 				restoreWindowFromConfig(h.br, h.hwnd)
 			}
 			lifecycle.Show()

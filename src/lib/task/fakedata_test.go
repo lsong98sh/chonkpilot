@@ -205,7 +205,7 @@ func buildRow(data map[string]any) map[string]any {
 		row["tool_call_id"] = tc
 	}
 	for _, k := range []string{
-		"instance_id", "workdir", "state", "args_digest", "result_digest",
+		"instance_id", "work_dir", "state", "args_digest", "result_digest",
 		"exec_json", "started_at", "done_at", "closed", "deleted_at",
 	} {
 		if v, ok := data[k]; ok {
@@ -267,7 +267,7 @@ func nodePayload(over map[string]any) []byte {
 		"task_id": "tk-1", "tool": "core_file_read", "tool_call_id": "tc-1",
 		"parent_id": "tk-root", "top_session": "top-1", "kind": "tool",
 		"session_id": "s-1", "turn_id": "t-1", "instance_id": "ins-test",
-		"workdir": "E:/ws", "name": "读取文件", "simplified": "读取文件", "state": "running",
+		"work_dir": "E:/ws", "name": "读取文件", "simplified": "读取文件", "state": "running",
 		"started_at": "2026-09-18T00:00:00Z", "finished_at": "",
 	}
 	for k, v := range over {

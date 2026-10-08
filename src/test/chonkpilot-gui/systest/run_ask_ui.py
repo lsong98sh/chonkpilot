@@ -115,7 +115,7 @@ def visible_question():
 def case_recommended():
     aid = ask_id()
     c.mq_on_capture(["ask-user-reply"])
-    emit_ask({"ask-id": aid, "question": "选择操作：", "options": ["构建", "测试", "部署"], "recommended": ["测试"]})
+    emit_ask({"ask_id": aid, "question": "选择操作：", "options": ["构建", "测试", "部署"], "recommended": ["测试"]})
     if not wait_el(".ask-user-content"):
         raise TestError("ask 弹窗未出现")
     time.sleep(0.5)
@@ -128,7 +128,7 @@ def case_recommended():
     time.sleep(0.2)
     click_submit()
     ev = c.wait_events("ask-user-reply", n=1, max_wait=8)
-    if ev[0]["payload"].get("ask-id") != aid or ev[0]["payload"].get("answer") != "构建":
+    if ev[0]["payload"].get("ask_id") != aid or ev[0]["payload"].get("answer") != "构建":
         raise TestError(f"单选回答回链异常: {ev}")
     if ask_content_count() != 0:
         raise TestError("回答后弹窗未关闭")
@@ -136,7 +136,7 @@ def case_recommended():
 
 def case_custom():
     aid = ask_id()
-    emit_ask({"ask-id": aid, "question": "补充说明：", "options": [], "custom": True})
+    emit_ask({"ask_id": aid, "question": "补充说明：", "options": [], "custom": True})
     if not wait_el(".ask-user-content"):
         raise TestError("custom 弹窗未出现")
     time.sleep(0.5)
@@ -153,7 +153,7 @@ def case_custom():
 
 def case_multi():
     aid = ask_id()
-    emit_ask({"ask-id": aid, "question": "多选：", "options": ["A", "B", "C"], "multi": True, "recommended": ["A"]})
+    emit_ask({"ask_id": aid, "question": "多选：", "options": ["A", "B", "C"], "multi": True, "recommended": ["A"]})
     if not wait_el(".ask-user-content"):
         raise TestError("多选弹窗未出现")
     time.sleep(0.5)
@@ -177,9 +177,9 @@ def case_queue2():
     """排队：两个带选项的提问，回答第一个后弹出第二个。"""
     aid1, aid2 = ask_id(), ask_id()
     c.mq_on_capture(["ask-user-reply"])
-    emit_ask({"ask-id": aid1, "question": "Q1 排队的第一个", "options": ["P1", "P2"]})
+    emit_ask({"ask_id": aid1, "question": "Q1 排队的第一个", "options": ["P1", "P2"]})
     time.sleep(0.6)
-    emit_ask({"ask-id": aid2, "question": "Q2 排队的第二个", "options": ["P3", "P4"]})
+    emit_ask({"ask_id": aid2, "question": "Q2 排队的第二个", "options": ["P3", "P4"]})
     time.sleep(0.8)
     if ask_content_count() != 1:
         raise TestError(f"同时只应显示一个提问弹窗，实际 {ask_content_count()}")
@@ -200,7 +200,7 @@ def case_queue2():
 
 
 def case_subsession_title():
-    emit_ask({"ask-id": ask_id(), "question": "子会话提问", "options": ["Y", "N"], "sub_session_id": "ss12345678"})
+    emit_ask({"ask_id": ask_id(), "question": "子会话提问", "options": ["Y", "N"], "sub_session_id": "ss12345678"})
     if not wait_el(".ask-user-content"):
         raise TestError("子会话弹窗未出现")
     time.sleep(0.5)
@@ -216,14 +216,14 @@ def case_subsession_title():
 def case_busy_timeout():
     """expires_at 超时 → busy 模式（banner + 不阻塞下一条）。"""
     now_ms = int(time.time() * 1000)
-    emit_ask({"ask-id": ask_id(), "question": "超时问题", "options": ["X1", "X2"], "expires_at": now_ms + 1500})
+    emit_ask({"ask_id": ask_id(), "question": "超时问题", "options": ["X1", "X2"], "expires_at": now_ms + 1500})
     if not wait_el(".ask-user-content"):
         raise TestError("超时测试弹窗未出现")
     time.sleep(2.5)
     if c.exists(".busy-banner").get("count", 0) == 0:
         raise TestError("超时后应显示 busy 提示")
     # busy 不阻塞：注入第二条 → 新弹窗出现
-    emit_ask({"ask-id": ask_id(), "question": "busy 后的下一个", "options": ["Y1", "Y2"]})
+    emit_ask({"ask_id": ask_id(), "question": "busy 后的下一个", "options": ["Y1", "Y2"]})
     time.sleep(1.0)
     if visible_question() != "busy 后的下一个":
         raise TestError(f"busy 不应阻塞后续提问: {visible_question()!r}")
@@ -242,7 +242,7 @@ def case_multi_questions():
     """连续多问题依次弹出（多问题参数语义 = 逐条 ask-user 事件）。"""
     ids = [ask_id() for _ in range(3)]
     for i, (aid, q) in enumerate(zip(ids, ["多问题1", "多问题2", "多问题3"])):
-        emit_ask({"ask-id": aid, "question": q, "options": [f"O{i}a", f"O{i}b"]})
+        emit_ask({"ask_id": aid, "question": q, "options": [f"O{i}a", f"O{i}b"]})
         time.sleep(0.5)
     # 依次回答
     for i in range(3):
@@ -299,11 +299,11 @@ def case_skip():
     """跳过：不回答（不返回），放到队列尾部稍后重问（FP L359）。"""
     aid1, aid2 = ask_id(), ask_id()
     c.mq_on_capture(["ask-user-reply"])
-    emit_ask({"ask-id": aid1, "question": "S1 被跳过的", "options": ["S1a", "S1b"]})
+    emit_ask({"ask_id": aid1, "question": "S1 被跳过的", "options": ["S1a", "S1b"]})
     if not wait_el(".ask-user-content"):
         raise TestError("跳过测试：第一个弹窗未出现")
     time.sleep(0.5)
-    emit_ask({"ask-id": aid2, "question": "S2 第二个", "options": ["S2a", "S2b"]})
+    emit_ask({"ask_id": aid2, "question": "S2 第二个", "options": ["S2a", "S2b"]})
     time.sleep(0.8)
     if visible_question() != "S1 被跳过的":
         raise TestError(f"跳过测试：应先显示第一个: {visible_question()!r}")
@@ -335,15 +335,15 @@ def case_cancel():
     """取消：以「终止任务待讨论」文案作为回答提交（FP L363）。"""
     aid = ask_id()
     c.mq_on_capture(["ask-user-reply"])
-    emit_ask({"ask-id": aid, "question": "取消测试问题", "options": ["C1a", "C1b"]})
+    emit_ask({"ask_id": aid, "question": "取消测试问题", "options": ["C1a", "C1b"]})
     if not wait_el(".ask-user-content"):
         raise TestError("取消测试：弹窗未出现")
     time.sleep(0.5)
     click_cancel()
     ev = c.wait_events("ask-user-reply", n=1, max_wait=8)
     p = ev[0]["payload"]
-    if p.get("ask-id") != aid:
-        raise TestError(f"取消测试：ask-id 不匹配: {p}")
+    if p.get("ask_id") != aid:
+        raise TestError(f"取消测试：ask_id 不匹配: {p}")
     # 取消文案（zh/en 双语言：locale 可能被之前会话切换）
     cancel_answers = ("此问题较复杂，先终止任务，待讨论清楚后决定",
                       "This question is complex, terminating the task first to discuss it later")
@@ -360,7 +360,7 @@ def case_seq_title():
     前端 300ms 合并窗口内全部入队 → 第一个弹出时标题即显示 1/3。
     """
     ids = [ask_id() for _ in range(3)]
-    payloads = [{"ask-id": aid, "question": q, "options": [f"T{i}x", f"T{i}y"]}
+    payloads = [{"ask_id": aid, "question": q, "options": [f"T{i}x", f"T{i}y"]}
                 for i, (aid, q) in enumerate(zip(ids, ["标题1", "标题2", "标题3"]))]
     js = "(() => {" + "".join(
         f"window.mq.emit('ask-user', {json.dumps(p, ensure_ascii=False)});"
@@ -397,7 +397,7 @@ def case_seq_title():
 def case_no_deadline_no_immediate_busy():
     """server 未给 expires_at 时前端默认 5 分钟超时：短时间内不应转 busy（FP L362）。"""
     aid = ask_id()
-    emit_ask({"ask-id": aid, "question": "默认超时问题", "options": ["D1", "D2"]})
+    emit_ask({"ask_id": aid, "question": "默认超时问题", "options": ["D1", "D2"]})
     if not wait_el(".ask-user-content"):
         raise TestError("默认超时测试：弹窗未出现")
     time.sleep(2.0)

@@ -24,7 +24,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 			"task_id": "n3", "top_session": "top1", "session_id": "s1",
 			"kind": "tool", "parent_node_id": "n1", "title": "影子工具",
 			"status": "running", "state": "running", "created_at": "2026-09-18T00:00:00Z",
-			"tool_call_id": "tc-3", "instance_id": "ins-test", "workdir": "E:/ws",
+			"tool_call_id": "tc-3", "instance_id": "ins-test", "work_dir": "E:/ws",
 			"shadow": true,
 		},
 	})
@@ -37,7 +37,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 	if ok, _ := prj.Table("task_shadow").Get("n3", &rec); !ok {
 		t.Fatal("影子行未写入 task_shadow")
 	}
-	if rec["status"] != "running" || rec["node_type"] != "tool" || rec["workdir"] != "E:/ws" ||
+	if rec["status"] != "running" || rec["node_type"] != "tool" || rec["work_dir"] != "E:/ws" ||
 		rec["parent_node_id"] != "n1" {
 		t.Fatalf("影子行字段错: %+v", rec)
 	}

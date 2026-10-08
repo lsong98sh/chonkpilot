@@ -54,10 +54,13 @@ const (
 )
 
 // LLMError 是带分类的 LLM 错误。
+// RetryAfter = 源 router 错误的 `Retry-After`（429/503 显式退避指令；非 router 来源 / 无该头 → 0）；
+// 可视重试的等待时长经 `router.RetryWait` 计算（见 turn.go retryWait）。
 type LLMError struct {
-	Kind      ErrKind
-	Message   string
-	Retryable bool
+	Kind       ErrKind
+	Message    string
+	Retryable  bool
+	RetryAfter time.Duration
 }
 
 func (e *LLMError) Error() string { return fmt.Sprintf("[%s] %s", e.Kind, e.Message) }

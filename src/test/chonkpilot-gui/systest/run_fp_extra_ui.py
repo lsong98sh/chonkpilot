@@ -51,7 +51,9 @@ def ensure_writable_scenario():
             "id": WSC_ID, "name": "FP 可编辑场景", "level": "user",
             "agents": [
                 {"name": "主", "roleTag": "主", "isMain": True, "prompt": "fp-misc 主提示词"},
-                {"name": "子", "roleTag": "子", "prompt": "fp-misc 子提示词"},
+                # 子 agent 唯一形态 = 引用（内联子 agent 已废除）：引用出厂 app 级资产。
+                {"name": "代码审查", "roleTag": "审查",
+                 "ref": "${exeDir}/capability/agents/代码审查.agent.md"},
             ],
         }})
     except Exception as e:

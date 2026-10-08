@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-plugin"
 )
 
@@ -83,7 +84,7 @@ func (s *Server) pluginNotify(n plugin.Notice) {
 	if reason == "" {
 		reason = "原因未知（详见日志文件）"
 	}
-	s.publish("tool-notify", map[string]any{
+	s.publish(msgkeys.TopicToolNotify, map[string]any{
 		"instance_id": n.InstanceID,
 		"session_id":  n.Session,
 		"turn_id":     n.Turn,

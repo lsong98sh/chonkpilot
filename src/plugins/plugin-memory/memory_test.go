@@ -65,7 +65,78 @@ func newTestBus(t *testing.T) mq.Bus {
 	return bus
 }
 
-// TestThresholdGateSkipsLLM：本轮新增 token 低于阈值（寒暄类）→ 不调 LLM、也不列举/读写记忆。
+// stubSessionGet 桩 data-session-get：parentID 空 = 主会话；非空 = 子会话（OP-07）。
+func stubSessionGet(t *testing.T, bus mq.Bus, parentID string) {
+	t.Helper()
+	reply(t, bus, sessionGetSubject, func(map[string]any) map[string]any {
+		row := map[string]any{"session_id": "s"}
+		if parentID != "" {
+			row["parent_id"] = parentID
+		}
+		return map[string]any{"data": row}
+	})
+}
+
+// stubSessionHistory 桩 data-session-history：返回给定轮列表（升序；每项形如
+// {"turn_id":"t1"} 或带 "full_tokens"），供跨轮范围/累计门控使用。
+func stubSessionHistory(t *testing.T, bus mq.Bus, turns []any) {
+	t.Helper()
+	reply(t, bus, sessionHistorySubject, func(map[string]any) map[string]any {
+		return map[string]any{"messages": map[string]any{"turns": turns, "messages": []any{}, "has_more": false}}
+	})
+}
+
+// epKey 测试用进度键：<会话>\x00<类别>（对齐专用表 memory_extract 主键）。
+func epKey(session, category string) string { return session + "\x00" + category }
+
+// stubProgress 桩 data-memory-extract-load（提取进度专用表）：按 (session, category) 返回
+// vals[epKey(session,category)]（缺省空串 = 无进度）。Category 空 → 返回该会话全部类别。
+func stubProgress(t *testing.T, bus mq.Bus, vals map[string]string) {
+	t.Helper()
+	reply(t, bus, memoryExtractLoadSubject, func(data map[string]any) map[string]any {
+		sid := strval(data["session_id"])
+		cat := strval(data["category"])
+		list := []any{}
+		add := func(s, c, v string) {
+			if v != "" {
+				list = append(list, map[string]any{"session_id": s, "category": c, "last_turn_id": v})
+			}
+		}
+		if cat != "" {
+			add(sid, cat, vals[epKey(sid, cat)])
+		} else {
+			for k, v := range vals {
+				if i := strings.IndexByte(k, '\x00'); i > 0 && k[:i] == sid {
+					add(sid, k[i+1:], v)
+				}
+			}
+		}
+		return map[string]any{"list": list}
+	})
+}
+
+// stubProgressSave 桩 data-memory-extract-save（进度写）：可选 sink 记录 (key,value)，
+// key = epKey(session, category)。
+func stubProgressSave(t *testing.T, bus mq.Bus, sink func(key, value string)) {
+	t.Helper()
+	reply(t, bus, memoryExtractSaveSubject, func(data map[string]any) map[string]any {
+		if sink != nil {
+			sink(epKey(strval(data["session_id"]), strval(data["category"])), strval(data["last_turn_id"]))
+		}
+		return map[string]any{"ok": true}
+	})
+}
+
+// stubExtractFaces 桩齐 extract 新增依赖面（OP-05/07）：主会话 + 给定轮列表 + 空进度。
+func stubExtractFaces(t *testing.T, bus mq.Bus, turns []any) {
+	t.Helper()
+	stubSessionGet(t, bus, "")
+	stubSessionHistory(t, bus, turns)
+	stubProgress(t, bus, map[string]string{})
+	stubProgressSave(t, bus, nil)
+}
+
+// TestThresholdGateSkipsLLM：累计新增 token 低于阈值（寒暄类）→ 不调 LLM、也不读写记忆。
 func TestThresholdGateSkipsLLM(t *testing.T) {
 	bus := newTestBus(t)
 	reply(t, bus, prjConfigListSubject, func(map[string]any) map[string]any {
@@ -77,14 +148,19 @@ func TestThresholdGateSkipsLLM(t *testing.T) {
 			map[string]any{"role": "assistant", "content": "你能做什么"},
 		}}
 	})
-	var llmCalls, listCalls int32
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
+	var llmCalls, readCalls, saveCalls int32
 	_, _ = bus.On(llmSimpleSubject, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		atomic.AddInt32(&llmCalls, 1)
 		v.Result = map[string]any{"text": "x"}
 		return nil
 	})
-	_, _ = bus.On(memoryListSubject, 0, func(_ context.Context, _ string, v *mq.Value) error {
-		atomic.AddInt32(&listCalls, 1)
+	_, _ = bus.On(memoryReadSubject, 0, func(_ context.Context, _ string, v *mq.Value) error {
+		atomic.AddInt32(&readCalls, 1)
+		return nil
+	})
+	_, _ = bus.On(memorySaveSubject, 0, func(_ context.Context, _ string, v *mq.Value) error {
+		atomic.AddInt32(&saveCalls, 1)
 		return nil
 	})
 
@@ -95,8 +171,11 @@ func TestThresholdGateSkipsLLM(t *testing.T) {
 	if n := atomic.LoadInt32(&llmCalls); n != 0 {
 		t.Fatalf("低于阈值不应调 LLM，实际调用 %d 次", n)
 	}
-	if n := atomic.LoadInt32(&listCalls); n != 0 {
-		t.Fatalf("低于阈值不应列举记忆类别，实际调用 %d 次", n)
+	if n := atomic.LoadInt32(&readCalls); n != 0 {
+		t.Fatalf("低于阈值不应读记忆全文，实际调用 %d 次", n)
+	}
+	if n := atomic.LoadInt32(&saveCalls); n != 0 {
+		t.Fatalf("低于阈值不应保存记忆，实际调用 %d 次", n)
 	}
 }
 
@@ -116,11 +195,12 @@ func TestExtractRewritesEnabledCategories(t *testing.T) {
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 200)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
 		return map[string]any{"list": []any{
-			map[string]any{"category": "项目概要", "level": "project"},
-			map[string]any{"category": "开发规范", "level": "project"},
-			map[string]any{"category": "用户偏好", "level": "user"},
+			map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"},
+			map[string]any{"category": "开发规范", "level": "project", "prompt": "提示词-开发规范"},
+			map[string]any{"category": "用户偏好", "level": "user", "prompt": "提示词-用户偏好"},
 		}}
 	})
 	reply(t, bus, memoryReadSubject, func(map[string]any) map[string]any {
@@ -132,6 +212,7 @@ func TestExtractRewritesEnabledCategories(t *testing.T) {
 		return map[string]any{"ok": true}
 	})
 	var llmCalls int32
+	var calledMu sync.Mutex
 	called := map[string]bool{}
 	_, _ = bus.On(llmSimpleSubject, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		atomic.AddInt32(&llmCalls, 1)
@@ -144,6 +225,7 @@ func TestExtractRewritesEnabledCategories(t *testing.T) {
 		if req.InstanceID != "ins-1" {
 			t.Errorf("llm-simple 请求缺 instance_id：%q", req.InstanceID)
 		}
+		calledMu.Lock()
 		if strings.Contains(req.Prompt, "【类别】项目概要") {
 			called["项目概要"] = true
 		}
@@ -153,6 +235,7 @@ func TestExtractRewritesEnabledCategories(t *testing.T) {
 		if strings.Contains(req.Prompt, "【类别】用户偏好") {
 			called["用户偏好"] = true
 		}
+		calledMu.Unlock()
 		if !strings.Contains(req.Prompt, "旧全文") {
 			t.Errorf("prompt 应含旧全文：%s", req.Prompt)
 		}
@@ -176,10 +259,13 @@ func TestExtractRewritesEnabledCategories(t *testing.T) {
 	if n := atomic.LoadInt32(&llmCalls); n != 2 {
 		t.Fatalf("应仅对 2 个启用类别调 LLM，实际 %d（called=%v）", n, called)
 	}
-	if !called["项目概要"] || !called["用户偏好"] {
+	calledMu.Lock()
+	has项目概要, has开发规范, has用户偏好 := called["项目概要"], called["开发规范"], called["用户偏好"]
+	calledMu.Unlock()
+	if !has项目概要 || !has用户偏好 {
 		t.Fatalf("启用类别未全部重写：%v", called)
 	}
-	if called["开发规范"] {
+	if has开发规范 {
 		t.Fatalf("已关闭类别不应重写：%v", called)
 	}
 	if n := atomic.LoadInt32(&saved); n != 2 {
@@ -202,10 +288,11 @@ func TestUserPrefCategoryToggle(t *testing.T) {
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 200)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
 		return map[string]any{"list": []any{
-			map[string]any{"category": "项目概要", "level": "project"},
-			map[string]any{"category": "用户偏好", "level": "user"},
+			map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"},
+			map[string]any{"category": "用户偏好", "level": "user", "prompt": "提示词-用户偏好"},
 		}}
 	})
 	reply(t, bus, memoryReadSubject, func(map[string]any) map[string]any {
@@ -284,8 +371,9 @@ func TestDistillCarriesSubsystemLLM(t *testing.T) {
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 200)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
-		return map[string]any{"list": []any{map[string]any{"category": "项目概要", "level": "project"}}}
+		return map[string]any{"list": []any{map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"}}}
 	})
 	reply(t, bus, memoryReadSubject, func(map[string]any) map[string]any {
 		return map[string]any{"data": map[string]any{"content": "旧全文"}}
@@ -330,8 +418,9 @@ func TestDistillWithoutSubsystemLLMByteEquivalent(t *testing.T) {
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 200)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
-		return map[string]any{"list": []any{map[string]any{"category": "项目概要", "level": "project"}}}
+		return map[string]any{"list": []any{map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"}}}
 	})
 	reply(t, bus, memoryReadSubject, func(map[string]any) map[string]any {
 		return map[string]any{"data": map[string]any{"content": "旧全文"}}
@@ -357,7 +446,7 @@ func TestDistillWithoutSubsystemLLMByteEquivalent(t *testing.T) {
 		t.Fatalf("载荷非 JSON: %v", err)
 	}
 	want, _ := json.Marshal(map[string]any{
-		"prompt": m["prompt"], "system": defaultRewriteSystemPrompt, "instance_id": "ins-1",
+		"prompt": m["prompt"], "system": "提示词-项目概要", "instance_id": "ins-1",
 	})
 	if string(raw) != string(want) {
 		t.Fatalf("未指定子系统 LLM 时载荷须逐字节等价：\n got=%s\nwant=%s", raw, want)

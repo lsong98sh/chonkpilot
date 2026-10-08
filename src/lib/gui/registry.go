@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // chatCloseWait 是进程收尾时等待单个对话窗口自行关闭的上限（超时即放弃等待，进程随即退出）。
@@ -124,9 +126,9 @@ func (r *windowRegistry) remove(h *windowHost) {
 		delete(r.bySession, h.sessionID)
 	}
 	r.mu.Unlock()
-	r.broadcast(h.windowID, "gui.window.closed", map[string]any{
-		"window_id":  h.windowID,
-		"session_id": h.sessionID,
+	r.broadcast(h.windowID, msgkeys.TopicGuiWindowClosed, map[string]any{
+		msgkeys.GuiWindowClosedEventWindowId:  h.windowID,
+		msgkeys.GuiWindowClosedEventSessionId: h.sessionID,
 	})
 }
 
@@ -194,7 +196,7 @@ func chatWindowTitle(workDir string) string {
 // 同族，见 61 §1 / 24 §4.2），不进入桥。
 func isWindowMessage(typ string) bool {
 	switch typ {
-	case "gui.window.open-chat", "gui.window.list", "gui.window.set-title":
+	case msgkeys.TopicGuiWindowOpenChat, msgkeys.TopicGuiWindowList, msgkeys.TopicGuiWindowSetTitle:
 		return true
 	}
 	return false
@@ -204,26 +206,30 @@ func isWindowMessage(typ string) bool {
 // **执行对象 = 调用来源窗口**（本 appHandler 所属窗口，与 gui.window.status 同口径）。
 func (h *appHandler) handleWindowMessage(typ, payloadJSON string) (any, []error) {
 	switch typ {
-	case "gui.window.open-chat":
+	case msgkeys.TopicGuiWindowOpenChat:
 		var p struct {
 			SessionID string `json:"session_id"`
 		}
 		_ = json.Unmarshal([]byte(payloadJSON), &p)
 		windowID, activated, ok := h.env.windows.open(h.env, p.SessionID)
-		return map[string]any{"ok": ok, "window_id": windowID, "activated": activated}, nil
-	case "gui.window.list":
-		return map[string]any{"windows": h.env.windows.list()}, nil
-	case "gui.window.set-title":
+		return map[string]any{
+			msgkeys.GuiWindowOpenChatResultOk:        ok,
+			msgkeys.GuiWindowOpenChatResultWindowId:  windowID,
+			msgkeys.GuiWindowOpenChatResultActivated: activated,
+		}, nil
+	case msgkeys.TopicGuiWindowList:
+		return map[string]any{msgkeys.GuiWindowListResultWindows: h.env.windows.list()}, nil
+	case msgkeys.TopicGuiWindowSetTitle:
 		// 仅独立对话窗口可改标题（主窗口 handler 未接线 setTitle → ok=false，标题不变，61 §1）。
 		if h.setTitle == nil {
-			return map[string]any{"ok": false}, nil
+			return map[string]any{msgkeys.GuiWindowSetTitleResultOk: false}, nil
 		}
 		var p struct {
 			Title string `json:"title"`
 		}
 		_ = json.Unmarshal([]byte(payloadJSON), &p)
 		h.setTitle(p.Title)
-		return map[string]any{"ok": true}, nil
+		return map[string]any{msgkeys.GuiWindowSetTitleResultOk: true}, nil
 	}
 	return nil, nil
 }

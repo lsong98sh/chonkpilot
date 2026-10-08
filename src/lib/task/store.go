@@ -18,13 +18,14 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // 数据面主题（相对主题；总线注入 chonk. 前缀）。全部为**既有**主题，不新增。
 const (
-	subjectTasktreeUpsert = "data-tasktree-upsert"
-	subjectTasktreeList   = "data-tasktree-list"
-	subjectTasktreeTasks  = "data-tasktree-tasks"
+	subjectTasktreeUpsert = msgkeys.TopicDataTasktreeUpsert
+	subjectTasktreeList   = msgkeys.TopicDataTasktreeList
+	subjectTasktreeTasks  = msgkeys.TopicDataTasktreeTasks
 )
 
 // includeClosedField 是数据面读选项（既有载荷的增补字段，非新主题）：true = 连**逻辑删除**
@@ -183,7 +184,7 @@ func row(rec *Record) map[string]any {
 		"status":         frontVisibleStatus(rec.State),
 		"created_at":     rec.CreatedAt,
 		"instance_id":    rec.InstanceID,
-		"workdir":        rec.WorkDir,
+		"work_dir":       rec.WorkDir,
 		"state":          rec.State,
 		"args_digest":    rec.ArgsDigest,
 		"result_digest":  rec.ResultDigest,
@@ -200,6 +201,35 @@ func row(rec *Record) map[string]any {
 	}
 	if rec.ToolCallID != "" {
 		data["tool_call_id"] = rec.ToolCallID
+	}
+	// DSL 展示字段（DSL-3 / DSL-2）：非零/非空才带（缺省与既有载荷逐字节等价）；
+	// steps 以 **JSON 数组**落库（前端 stepsFromNodes 首选 job.steps）。
+	if rec.LoopCurrent != 0 {
+		data["loop_current"] = rec.LoopCurrent
+	}
+	if rec.LoopTotal != 0 {
+		data["loop_total"] = rec.LoopTotal
+	}
+	if rec.ReturnSize != 0 {
+		data["return_size"] = rec.ReturnSize
+	}
+	if rec.Shadow {
+		data["shadow"] = true
+	}
+	if rec.ReturnKind != "" {
+		data["return_kind"] = rec.ReturnKind
+	}
+	if rec.ReturnInline != "" {
+		data["return_inline"] = rec.ReturnInline
+	}
+	if rec.ReturnFile != "" {
+		data["return_file"] = rec.ReturnFile
+	}
+	if rec.StepsJSON != "" {
+		var steps []any
+		if json.Unmarshal([]byte(rec.StepsJSON), &steps) == nil && len(steps) > 0 {
+			data["steps"] = steps
+		}
 	}
 	return data
 }
@@ -222,7 +252,7 @@ func rowToRecord(row map[string]any) *Record {
 		kind = NodeTypeTool
 	}
 	rec := &Record{
-		WorkDir:      sval(row["workdir"]),
+		WorkDir:      sval(row["work_dir"]),
 		TaskID:       taskID,
 		InstanceID:   sval(row["instance_id"]),
 		ParentID:     sval(row["parent_node_id"]),
@@ -240,6 +270,19 @@ func rowToRecord(row map[string]any) *Record {
 		UpdatedAt:    sval(row["updated_at"]),
 		DoneAt:       sval(row["finished_at"]),
 		DeletedAt:    sval(row["deleted_at"]),
+
+		LoopCurrent:   ival(row["loop_current"]),
+		LoopTotal:     ival(row["loop_total"]),
+		Shadow:        bval(row["shadow"]),
+		ReturnKind:    sval(row["return_kind"]),
+		ReturnInline:  sval(row["return_inline"]),
+		ReturnFile:    sval(row["return_file"]),
+		ReturnSize:    ival(row["return_size"]),
+	}
+	if b, err := json.Marshal(row["steps"]); err == nil {
+		if s := string(b); s != "null" && s != "" {
+			rec.StepsJSON = s
+		}
 	}
 	if v, ok := row["closed"].(bool); ok {
 		rec.Closed = v
@@ -274,6 +317,36 @@ func sval(v any) string {
 func strconvFormat(f float64) string {
 	b, _ := json.Marshal(f)
 	return string(b)
+}
+
+// ival 把数据面 JSON 数值（float64/int/json.Number）转为 int（非法 → 0）。
+func ival(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(i)
+	}
+	return 0
+}
+
+// bval 把数据面值转 bool（bool 原值；字符串 "true" → true）。
+func bval(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return b == "true"
+	}
+	return false
 }
 
 // newID 生成短随机 hex（数据面请求 id）。

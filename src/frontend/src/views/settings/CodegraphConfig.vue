@@ -77,6 +77,7 @@ import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
 import { hasEngineTools } from '../../utils/engineStatus'
 import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import mq from '../../utils/mq'
+import { MsgClientTopics } from '../../events/msgkeys.js'
 import { DEFAULT_SKIP_DIRS, CODEGRAPH_DEFAULT_EXTS } from './indexDefaults'
 
 const { t } = useI18n()
@@ -191,7 +192,8 @@ async function loadConfig() {
 // 读工具面判定「查询工具已注册」（真实可得信号；插件无进程运行态下发）。
 async function loadEngineTools() {
   try {
-    const env = await mq.emit('tools-list', {})
+    // tools-list：客户端能力面 type（schema clientTopic，桥映射 mcp-tools-list），常量见 MsgClientTopics。
+    const env = await mq.emit(MsgClientTopics.toolsList, {})
     const res = env && env.backend && env.backend.result
     const tools = res && Array.isArray(res.tools) ? res.tools : []
     toolsRegistered.value = hasEngineTools(tools, 'codegraph')

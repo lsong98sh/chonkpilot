@@ -50,6 +50,8 @@ export function useDirPicker() {
   function pickDir() {
     return dispatchDirPick({
       isBrowser: isBrowserForm(),
+      // native 分支 = 纯目录选择（gui.dir.open-dialog 无副作用）；「以新窗口打开」由调用方
+      // 另走 gui.dir.open（见 Toolbar.handleOpenClick）。
       nativePick: () => openDirDialog().then((res) => (res && res.path) || ''),
       browserPick,
     })

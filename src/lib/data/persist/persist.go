@@ -30,6 +30,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -44,18 +45,20 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/knowledge"
 	"github.com/chonkpilot/chonkpilot-data/internal/mcp"
 	"github.com/chonkpilot/chonkpilot-data/internal/memory"
+	"github.com/chonkpilot/chonkpilot-data/internal/project"
 	"github.com/chonkpilot/chonkpilot-data/internal/scenario"
 	"github.com/chonkpilot/chonkpilot-data/internal/session"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
 	"github.com/chonkpilot/chonkpilot-data/internal/tasktree"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // 订阅主题（相对；总线命名空间前缀 chonk. 在 mq 初始化注入一次）。
 const (
-	instanceRegister  = "instance-register"  // 自持实例表登记主题（61-消息一览 §4.1）
-	instanceHeartbeat = "instance-heartbeat" // 实例心跳（保活；分离形态据超时清理，见 sweep_split.go）
-	instanceExit      = "instance-exit"      // 实例退出（移除绑定 + data.Unregister）
+	instanceRegister  = msgkeys.TopicInstanceRegister  // 自持实例表登记主题（61-消息一览 §4.1）
+	instanceHeartbeat = msgkeys.TopicInstanceHeartbeat // 实例心跳（保活；分离形态据超时清理，见 sweep_split.go）
+	instanceExit      = msgkeys.TopicInstanceExit      // 实例退出（移除绑定 + data.Unregister）
 )
 
 // dataReqSubjects 是 persist 订阅的请求动作主题（相对主题 data-<domain>-<op>，61-消息一览
@@ -64,38 +67,41 @@ const (
 // 结构上消除）。
 var dataReqSubjects = []string{
 	// 配置五域（§3.1）：user-config/prj-config/prompt/prj-security/scenario 通用 list/load/save/delete。
-	"data-user-config-list", "data-user-config-load", "data-user-config-save", "data-user-config-delete",
-	"data-prj-config-list", "data-prj-config-load", "data-prj-config-save", "data-prj-config-delete",
-	"data-prompt-list", "data-prompt-load", "data-prompt-save", "data-prompt-delete",
-	"data-prj-security-list", "data-prj-security-load", "data-prj-security-save", "data-prj-security-delete",
-	"data-scenario-list", "data-scenario-load", "data-scenario-save", "data-scenario-delete",
+	msgkeys.TopicDataUserConfigList, msgkeys.TopicDataUserConfigLoad, msgkeys.TopicDataUserConfigSave, msgkeys.TopicDataUserConfigDelete,
+	msgkeys.TopicDataPrjConfigList, msgkeys.TopicDataPrjConfigLoad, msgkeys.TopicDataPrjConfigSave, msgkeys.TopicDataPrjConfigDelete,
+	msgkeys.TopicDataPromptList, msgkeys.TopicDataPromptLoad, msgkeys.TopicDataPromptSave, msgkeys.TopicDataPromptDelete,
+	msgkeys.TopicDataPrjSecurityList, msgkeys.TopicDataPrjSecurityLoad, msgkeys.TopicDataPrjSecuritySave, msgkeys.TopicDataPrjSecurityDelete,
+	msgkeys.TopicDataScenarioList, msgkeys.TopicDataScenarioLoad, msgkeys.TopicDataScenarioSave, msgkeys.TopicDataScenarioDelete,
 	// MCP 配置域（§3.1 家族扩展）：四级 `<级别>/capability/mcps/<名>.json` 文件化配置
-	"data-mcp-list", "data-mcp-load", "data-mcp-save", "data-mcp-delete",
+	msgkeys.TopicDataMcpList, msgkeys.TopicDataMcpLoad, msgkeys.TopicDataMcpSave, msgkeys.TopicDataMcpDelete,
 	// 会话域（§3.2）
-	"data-session-list", "data-session-get", "data-session-history", "data-session-latest",
-	"data-session-title", "data-session-delete", "data-session-active-set", "data-session-active-get",
-	"data-session-content",
+	msgkeys.TopicDataSessionList, msgkeys.TopicDataSessionGet, msgkeys.TopicDataSessionHistory, msgkeys.TopicDataSessionLatest,
+	msgkeys.TopicDataSessionTitle, msgkeys.TopicDataSessionDelete, msgkeys.TopicDataSessionActiveSet, msgkeys.TopicDataSessionActiveGet,
+	msgkeys.TopicDataSessionContent,
 	// 会话域 A3 运行时扩展（server sessionStore 总线化原语，语义对齐 chonkpilot-server/session.go）
-	"data-session-ensure-session", "data-session-ensure-turn", "data-session-append-message",
-	"data-session-set-summary", "data-session-complete-turn", "data-session-cleanup-stale",
-	"data-session-load-messages", "data-session-context",
+	msgkeys.TopicDataSessionEnsureSession, msgkeys.TopicDataSessionEnsureTurn, msgkeys.TopicDataSessionAppendMessage,
+	msgkeys.TopicDataSessionSetSummary, msgkeys.TopicDataSessionCompleteTurn, msgkeys.TopicDataSessionCleanupStale,
+	msgkeys.TopicDataSessionLoadMessages, msgkeys.TopicDataSessionContext,
 	// 会话快照域（A3 扩展；sessions 表 history/snapshot_turn 两字段读写）
-	"data-snapshot-get", "data-snapshot-set",
+	msgkeys.TopicDataSnapshotGet, msgkeys.TopicDataSnapshotSet,
 	// 任务树域（§3.4）
-	"data-tasktree-list", "data-tasktree-tasks", "data-tasktree-delete",
+	msgkeys.TopicDataTasktreeList, msgkeys.TopicDataTasktreeTasks, msgkeys.TopicDataTasktreeDelete,
 	// 任务树域 A3 运行时扩展（server taskManager.persist 节点落库）
-	"data-tasktree-upsert",
+	msgkeys.TopicDataTasktreeUpsert,
 	// 知识库域（§3.3）
-	"data-knowledge-root", "data-knowledge-list", "data-knowledge-read", "data-knowledge-save",
-	"data-knowledge-create", "data-knowledge-delete", "data-knowledge-rename", "data-knowledge-mkdir",
-	"data-knowledge-rmdir", "data-knowledge-rename-dir",
+	msgkeys.TopicDataKnowledgeRoot, msgkeys.TopicDataKnowledgeList, msgkeys.TopicDataKnowledgeRead, msgkeys.TopicDataKnowledgeSave,
+	msgkeys.TopicDataKnowledgeCreate, msgkeys.TopicDataKnowledgeDelete, msgkeys.TopicDataKnowledgeRename, msgkeys.TopicDataKnowledgeMkdir,
+	msgkeys.TopicDataKnowledgeRmdir, msgkeys.TopicDataKnowledgeRenameDir,
 	// 记忆库域（42 §2 (27)）：类别清单 + 全文读写（save/delete 后广播 data-memory-refresh）
-	"data-memory-list", "data-memory-read", "data-memory-save", "data-memory-delete",
+	msgkeys.TopicDataMemoryList, msgkeys.TopicDataMemoryRead, msgkeys.TopicDataMemorySave, msgkeys.TopicDataMemoryDelete,
+	// 记忆提取进度专用表（OP-05/06，2026-10-06）：(会话, 类别) → 最后已成功提取的 turn（prjusr 表 memory_extract）：
+	// 不广播 -refresh（进度只由 memory 插件读写）。
+	msgkeys.TopicDataMemoryExtractLoad, msgkeys.TopicDataMemoryExtractSave, msgkeys.TopicDataMemoryExtractDelete,
 	// 文件清单域（vfts 增量清单；项目级 prj 库 file_list 表；不广播 -refresh）
-	"data-filelist-list", "data-filelist-put", "data-filelist-del",
+	msgkeys.TopicDataFilelistList, msgkeys.TopicDataFilelistPut, msgkeys.TopicDataFilelistDel,
 	// 索引排除判定域（2026-09-27 新增只读面）：判定一组 workdir 相对路径是否被索引排除规则排除
 	// （供前端文件树灰显被排除条目；不写库、不广播 -refresh）。
-	"data-index-ignored",
+	msgkeys.TopicDataIndexIgnored,
 }
 
 // Options 是 persist 服务构造参数（= internal/kernel.Options 的转发别名；字段含义见 kernel）。
@@ -124,6 +130,7 @@ type Service struct {
 	facade.ScenarioAPI
 	facade.MemoryAPI
 	facade.McpAPI
+	facade.ProjectAPI
 
 	mu      sync.Mutex
 	subs    []mq.Sub // 全部订阅句柄（Start 累计 / Stop 退订）
@@ -160,6 +167,7 @@ func New(bus mq.Bus, opts Options) *Service {
 		ScenarioAPI:  scenario.New(base),
 		MemoryAPI:    memory.New(base),
 		McpAPI:       mcp.New(base),
+		ProjectAPI:   project.New(base),
 	}
 	// refresh 广播附带的域列表（订阅面）由信封层提供 → 与各域 list 应答同源。
 	base.DomainList = s.domainList
@@ -294,13 +302,31 @@ func (s *Service) route(subject string, payload []byte) {
 	rest := strings.TrimPrefix(subject, "data-")
 	for _, d := range dataDomains {
 		if strings.HasPrefix(rest, d+"-") {
-			s.handle(d, strings.TrimPrefix(rest, d+"-"), payload)
+			s.handle(subject, d, strings.TrimPrefix(rest, d+"-"), payload)
 			return
 		}
 	}
 }
 
-func (s *Service) handle(domain, op string, payload []byte) {
+// errInstanceIDRequired 是 data 面入站「缺 instance_id」的明确错误（G-41-c）：
+// 该主题按契约必带 instance_id（§0 硬规则）却未携带 → 拒绝处理（不静默走"唯一实例回退"）。
+var errInstanceIDRequired = errors.New("persist: data 请求缺 instance_id（该主题按契约必带；全局级域 user-config/scenario/mcp/knowledge 除外）")
+
+// instanceFreeDomains 是 data 面**按设计无需 instance_id** 的请求主题白名单（G-41-c 审计，
+// 见 [20-实例隔离与后端分离]）。白名单外：请求缺 instance_id → 明确失败 —— 避免多实例下
+// 「唯一实例回退」被误用导致跨实例串库（与 task 层 errInstanceRequired 同口径）。
+//
+// 豁免集合 = **存在全局级（app/user）而无需实例即可工作**的域（61 §3.1）：`user-config`
+// （usr 全局）+ `scenario` / `mcp` / `knowledge`（app/user/project/prjusr 四级；缺实例 = 仅
+// app+user 级，既有宽松语义）。其余域为**项目/实例严格作用域**，必带 instance_id。
+var instanceFreeDomains = map[string]bool{
+	"user-config": true,
+	"scenario":    true,
+	"mcp":         true,
+	"knowledge":   true,
+}
+
+func (s *Service) handle(subject, domain, op string, payload []byte) {
 	// 跳过已带 ok 字段的响应消息（避免 reply publish 到同一 subject 的回环；
 	// 请求主题与应答同主题，persist 会收到自己的 reply/fail）
 	var check struct {
@@ -310,6 +336,11 @@ func (s *Service) handle(domain, op string, payload []byte) {
 		return
 	}
 	req := parseDataReq(payload)
+	// 入站契约校验（G-41-c）：白名单外的 data 请求必须显式携带 instance_id。
+	if req.InstanceID == "" && !instanceFreeDomains[domain] {
+		s.fail(subject, req, errInstanceIDRequired)
+		return
+	}
 	switch domain {
 	case "user-config":
 		s.handleUserConfig(op, req)
@@ -350,16 +381,6 @@ func (s *Service) fail(method string, req dataReq, err error) {
 
 // ─── 数据根解析（信封层用；解析规则单源 = internal/kernel/root.go）──
 
-// prjDB 按 instance 解析 prj 主库（未登记 → error）。
-// = **团队共享项目配置层**（prj-config / prompt / prj-security；12-数据层）。
-func (s *Service) prjDB(instanceID string) (*data.DB, error) {
-	info, ok := s.View.Lookup(instanceID)
-	if !ok {
-		return nil, kernel.ErrInstanceNotRegistered
-	}
-	return s.PrjByInst(instanceID, info)
-}
-
 // prjUsrDB 按 instance 解析 prjusr 主库（会话/任务树/快照/个人运行态；12-数据层）。
 func (s *Service) prjUsrDB(instanceID string) (*data.DB, error) {
 	info, ok := s.View.Lookup(instanceID)
@@ -371,7 +392,9 @@ func (s *Service) prjUsrDB(instanceID string) (*data.DB, error) {
 
 // sessionDB 按实例定位**会话数据层 = prjusr 库**（12-数据层：会话/任务树/快照属"项目用户级"）；
 // 供同层域（snapshot / tasktree）沿用既有 MQ 路径定位（门面侧用 PrjUsrFor，见 internal/kernel）。
-// request 可缺省 instance_id（唯一实例回退）。注：信封 handler 中的局部变量 `prj` 即本返回值。
+// 注：`handle` 入站已按白名单校验（G-41-c）——非全局级域缺 instance_id 在**更早处**即失败，
+// 故此处 `Resolve` 的"唯一实例回退"对 MQ 请求不再被触发（仅门面/inline 路径沿用）。
+// 信封 handler 中的局部变量 `prj` 即本返回值。
 func (s *Service) sessionDB(req dataReq) (*data.DB, error) {
 	instID, info, err := s.View.Resolve(req.InstanceID)
 	if err != nil {

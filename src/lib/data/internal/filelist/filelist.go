@@ -55,10 +55,11 @@ var fileListFields = []string{"key", "path", "size", "mtime", "md5", "doc_ids", 
 
 // FileListList 列出清单（可选 Prefix 按 path 前缀过滤 + Offset/Limit 分页）。
 func (s *Service) FileListList(req facade.FileListListRequest) (facade.FileListListResponse, error) {
-	db, err := s.PrjFor(req.InstanceID, req.Scope)
+	db, release, err := s.PrjFor(req.InstanceID, req.Scope) // 短开（D-45）：用完即释
 	if err != nil {
 		return facade.FileListListResponse{}, err
 	}
+	defer release()
 	t := db.Table(fileListTable)
 	keys, err := t.ListKeys()
 	if err != nil {
@@ -120,10 +121,11 @@ func (s *Service) FileListPut(req facade.FileListPutRequest) (facade.FileListPut
 			rec[f] = e.IndexedAt
 		}
 	}
-	db, err := s.PrjFor(req.InstanceID, req.Scope)
+	db, release, err := s.PrjFor(req.InstanceID, req.Scope) // 短开（D-45）：用完即释
 	if err != nil {
 		return facade.FileListPutResponse{}, err
 	}
+	defer release()
 	if err := db.Table(fileListTable).Upsert(e.Key, rec); err != nil {
 		return facade.FileListPutResponse{}, err
 	}
@@ -136,10 +138,11 @@ func (s *Service) FileListDelete(req facade.FileListDeleteRequest) (facade.FileL
 	if len(keys) == 0 {
 		return facade.FileListDeleteResponse{}, errors.New("filelist del: keys required")
 	}
-	db, err := s.PrjFor(req.InstanceID, req.Scope)
+	db, release, err := s.PrjFor(req.InstanceID, req.Scope) // 短开（D-45）：用完即释
 	if err != nil {
 		return facade.FileListDeleteResponse{}, err
 	}
+	defer release()
 	t := db.Table(fileListTable)
 	deleted := 0
 	for _, k := range keys {

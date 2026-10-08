@@ -74,6 +74,15 @@ type Params struct {
 	// 层 + 进程内 sink 提供，见 21 §9.3）。由装配方（chonkpilot-llm/server）注入层适配器；
 	// **未注入 = nil → 全部 no-op**（库内调用 / 单测 / gateway 单体 exe 行为与引入前等价）。
 	ExecSink ExecSink
+	// DSLExecutor 是 `dsl_run` 执行器 exe 的显式路径覆盖（空 = 自动解析：exeDir 同级，
+	// 或 exeDir/capability/executors/；见 dslrun.go dslExecutorPath）。契约
+	// `capability/tools/core/dsl_run.tool.md` 对应的运行体由 gateway spawn（决策 42 §2 (247)）。
+	DSLExecutor string
+	// ServerTools 是 **category=server 契约工具**的定义单源（key = 原语名，如 dsl_run）。
+	// 由装配层经 `mcp-server/server.ServerTools(root, cfg)` 注入（gateway lib 不依赖 mcp-server 包，
+	// RB-2）；gateway 自持节点（dsl 等）**优先取之**为工具定义，缺失 → 回落内置定义。
+	// 该类契约不再注册为 executor 工具（不出现于 self 节点），故这是其唯一定义来源。
+	ServerTools map[string]*mcp.Tool
 	// Logf 日志输出（默认 log.Printf）。
 	Logf func(format string, args ...any)
 }
@@ -175,6 +184,13 @@ func (g *Gateway) Start(ctx context.Context) error {
 		}
 		// gateway 自持 meta 工具注入 self（聚合 tools 来自其 list）
 		g.registerMetaTools()
+	}
+
+	// dsl_run 工具：gateway 自持 in-memory 节点（暴露名 = dsl_run；spawn 独立受保护执行器，
+	// 决策 42 §2 (247)）。契约（capability/tools/core/dsl_run.tool.md）为单源定义；
+	// 失败不阻塞启动（仅告警，工具面缺 dsl_run）。
+	if err := g.registerDSLNode(ctx); err != nil {
+		g.logf("[gateway] dsl node 注册失败（dsl_run 不可用）: %v", err)
 	}
 
 	// 加载接入列表：**只接成品**（RB-2）——调用方（exe main / 装配方）读 usr db 或 servers.list
@@ -775,6 +791,9 @@ func (g *Gateway) runPreHooks(req CallReq, route *toolRoute, entry *ServerEntry)
 //     detach = 转后台（任务层 → 进程内 `DetachExec`），cancel = 取消（任务层 → `CancelExec`）
 //   - never（第三方缺省）：任务化运行，到 timeout 发 mcp-tools-timeout{options:[wait,cancel]} 待裁决；
 //     wait = 撤销超时继续等并交付，cancel = 取消；**不自动失败、不自动转后台**
+//   - 配置⑤ 超时自动取消（usr `tool_async.<暴露名>.cancel_on_timeout` > 0）：manual/never 到超时点
+//     时**直接取消**（不发 mcp-tools-timeout、不等用户裁决）→ 走既有取消链按执行线终止（onTaskCancel）；
+//     **默认 0 = 不取消**（不配置时行为逐字节不变）；auto 语义不变（阈值命中仍转后台，不自动取消）。
 //
 // 裁决前任务保持 running，默认无操作保持安全（不重跑/不重复调用）；超时不计熔断失败（慢 ≠ 坏）。
 // 保留键 _async/_timeout 已并入同名 async/timeout（兼容别名：仍接受 _async/_timeout 透传覆盖）。
@@ -830,6 +849,7 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	// 本覆盖属用户显式意图 → 解除 softNeverDefault 与契约显式 never 的锁死。
 	// 阈值：显式设置即采用（含 **0/-1 = 无阈值**）；未设置 → 回落契约/超时点。
 	thrSet, thrS := def.thrSet, def.thr
+	cancelOnTimeout := 0 // ⑤ 超时自动取消秒数（>0 生效；0 = 不取消，用户口径 2026-10-07）
 	if ov, ok := g.asyncOverride(req.Name); ok {
 		if ov.Mode != "" {
 			mode = ov.Mode
@@ -838,6 +858,9 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 		if ov.ThresholdSet || ov.Threshold > 0 {
 			thrS = float64(ov.Threshold)
 			thrSet = true
+		}
+		if ov.CancelOnTimeoutSet || ov.CancelOnTimeout > 0 {
+			cancelOnTimeout = ov.CancelOnTimeout
 		}
 	}
 	if g.params.AsyncMode != "" {
@@ -971,6 +994,18 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 					return pendingResult(t.ID), 0, ""
 				}
 			}
+			// manual / never：配置⑤「超时自动取消」（cancel_on_timeout > 0）→ **不等用户裁决**，
+			// 直接取消该任务（定义即「无人工介入」）——走既有取消链（tm.cancelRef → t.cancel 送 ctx
+			// → onTaskCancel 按执行线终止）。auto 语义不变（阈值命中仍转后台，不自动取消）。
+			if cancelOnTimeout > 0 {
+				if cerr := g.tm.cancelRef(spec.instanceID, t.ID); cerr != nil {
+					g.logf("[gateway] tool %s cancel_on_timeout: cancel %s failed: %v", req.Name, t.ID, cerr)
+				} else {
+					g.logf("[gateway] tool %s reached timeout %v → auto-cancelled (exec %s)", req.Name, limit, t.ID)
+				}
+				<-t.doneCh // 取消已置终态（cancel 内 markDone）→ 就地交付 cancelled 结果
+				return g.tm.manualResult(t), 0, ""
+			}
 			// manual / never：进入「待用户裁决」——置 awaiting 态 + 发 mcp-tools-timeout，
 			// 按 options 阻塞等待（I-57：awaiting 供前端切会话/刷新后恢复裁决条）。
 			options := []string{"wait", "cancel"}
@@ -1013,15 +1048,19 @@ func (g *Gateway) emitToolsTimeout(t *ExecTask, timeoutSec float64, options []st
 	}))
 }
 
-// onTaskCancel 取消任务后置钩子：作废并用新进程重建（kill + respawn）归属 provider，
-// 使取消真实打断在飞调用（含已 detached 的后台任务）。内存 provider 为 no-op。
+// onTaskCancel 取消任务后置钩子：按 provider 的**执行线**下达终止动作（决策 42 §2 (241)），
+// 使取消真实打断在飞调用（含已 detached 的后台任务）：
+//   - spawned（stdio ⑥ / http·自持 ⑦ / sse·自持 ⑨）→ `Terminate` = kill + respawn（强语义）；
+//   - 纯远程（http·remote ⑧ / sse·remote ⑩）→ 仅断请求（「尽力」，不能杀对端进程）；
+//   - in-memory（① / ②③④ / ⑤）→ 协作式 no-op（取消已由执行池 `t.cancel()` 经 ctx 送达执行体）。
+//
 // 重建失败 → 发 mcp-gateway-changed{kind:server, name, status:"failed", reason}（I-58：
 // 让取消触发的 respawn 失败可见；instance_id 按触发实例，无归属空串）；成功不发（状态本就
 // connected，避免噪音）。
 //
 // 2026-09-19（实例隔离第一批，缺口 1）：取消仅作用于该任务的 **(instance, workdir)** 连接槽
-// （provider 实现可选窄接口 `InvalidateScoped`）→ 同 workdir 其他 instance 的连接与在飞调用
-// 不再被连带打断；provider 未实现该接口（内存/注册型）/ 无隔离维度 → 回落全量 Invalidate
+// （`Terminate` 内部走 `InvalidateScoped`）→ 同 workdir 其他 instance 的连接与在飞调用
+// 不再被连带打断；provider 未实现隔离维度（内存/注册型）/ 无隔离槽 → 回落全量
 // （与引入前行为等价）。
 func (g *Gateway) onTaskCancel(t *ExecTask) {
 	if t.ProviderKey == "" {
@@ -1033,7 +1072,7 @@ func (g *Gateway) onTaskCancel(t *ExecTask) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	rebuilt, err := invalidateFor(ps.prov, ctx, t.OwnerInstance, t.WorkDir)
+	rebuilt, err := ps.prov.Terminate(ctx, t.OwnerInstance, t.WorkDir)
 	if err != nil {
 		name := t.ProviderKey
 		if ps.entry != nil && ps.entry.ID != "" {
@@ -1049,21 +1088,6 @@ func (g *Gateway) onTaskCancel(t *ExecTask) {
 		return
 	}
 	_ = rebuilt
-}
-
-// scopedInvalidator 是「按 (instance, workdir) 作废连接」的可选窄接口（proxyProvider 实现；
-// 其他 provider 不实现 → 调用方回落 Provider.Invalidate）。不加入 Provider 接口，
-// 避免破坏既有实现方（内存/注册型 provider 无需 per-instance 连接）。
-type scopedInvalidator interface {
-	InvalidateScoped(ctx context.Context, instanceID, workdir string) (bool, error)
-}
-
-// invalidateFor 优先走作用域作废（有 instance/workdir 归属且 provider 支持），否则全量 Invalidate。
-func invalidateFor(prov Provider, ctx context.Context, instanceID, workdir string) (bool, error) {
-	if sc, ok := prov.(scopedInvalidator); ok && (instanceID != "" || workdir != "") {
-		return sc.InvalidateScoped(ctx, instanceID, workdir)
-	}
-	return prov.Invalidate(ctx)
 }
 
 // softNeverDefault 判定第三方缺省 never：来源非 builtin（Origin != builtin）且工具契约

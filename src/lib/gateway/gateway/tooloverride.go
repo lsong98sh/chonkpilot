@@ -32,12 +32,18 @@ import (
 // 未设置 → 由 `resolveTouchFiles` 按工具来源取缺省（self 内置仅 filesys_run/script_run 涉及；
 // dir 节点 / 第三方 / 无法判定 → 保守按涉及）。取值经前置打点钩子 payload `touch_files` 下发
 // （见 mcpgateway.runPreHooks），**不进 tools/list `_meta`**。
+//
+// `CancelOnTimeout` / `CancelOnTimeoutSet` = **超时自动取消**（配置⑤，用户口径 2026-10-07）：
+// 工具到超时点时**直接取消**（不等用户裁决），秒数 > 0 生效、默认 0 = 不取消（不配置时行为逐字节
+// 不变）；见 mcpgateway.doCall 的 `timer.C` 分支。**不进 tools/list `_meta`**（仅 gateway 消费）。
 type ToolAsyncOverride struct {
-	Mode          string `json:"mode"`
-	Threshold     int    `json:"threshold"`
-	ThresholdSet  bool   `json:"-"`
-	TouchFiles    bool   `json:"touch_files"`
-	TouchFilesSet bool   `json:"-"`
+	Mode               string `json:"mode"`
+	Threshold          int    `json:"threshold"`
+	ThresholdSet       bool   `json:"-"`
+	TouchFiles         bool   `json:"touch_files"`
+	TouchFilesSet      bool   `json:"-"`
+	CancelOnTimeout    int    `json:"cancel_on_timeout"`
+	CancelOnTimeoutSet bool   `json:"-"`
 }
 
 // SandboxConfig 是 dir 节点 / self **共享的执行配置**窄接口（RB-2：依赖倒置，同 ExecSink 手法）：

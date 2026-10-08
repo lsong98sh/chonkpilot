@@ -1,4 +1,4 @@
-// userconfig_test.go — 配置键改名迁移白盒（D-04：cPath → cCompilerPath）。
+// userconfig_test.go — usr 配置读写白盒（白名单键落库/回读；清空整份范围）。
 //
 // 阶段 4「internal 下沉」：随 config 域实现由 `chonkpilot-data/persist` 下移至本包
 // （断言逐条未改；`&Service{}` 零值仍可用——被调方法不使用接收者字段）。
@@ -6,6 +6,7 @@ package config
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -23,7 +24,6 @@ func openTestDB(t *testing.T) *data.DB {
 }
 
 // TestSaveUserConfigCCompilerPathRoundTrip ① usr 写规范键 cCompilerPath → 落库 + 回读一致。
-// P0 背景：前端 SettingsPathsPage C/C++ 行曾用旧键 cPath，被 usr 白名单静默丢弃（刷新即空）。
 func TestSaveUserConfigCCompilerPathRoundTrip(t *testing.T) {
 	db := openTestDB(t)
 	const val = `C:\msys64\ucrt64\bin\gcc.exe`
@@ -37,75 +37,16 @@ func TestSaveUserConfigCCompilerPathRoundTrip(t *testing.T) {
 	if v, ok := readUserConfig(db)["cCompilerPath"]; !ok || v != val {
 		t.Fatalf("readUserConfig 未回读 cCompilerPath：%v", v)
 	}
-
-	// 白名单外的旧键 cPath 由 saveUserConfig 直接丢弃（不得再写回旧键）
-	if err := saveUserConfig(db, map[string]any{"cPath": "legacy-value"}); err != nil {
-		t.Fatalf("save legacy key: %v", err)
-	}
-	if _, ok := data.GetConfig(db, "cPath"); ok {
-		t.Fatal("白名单外的旧键 cPath 不应落库")
-	}
-}
-
-// TestMigrateConfigKeyRenames 旧键 cPath → 新键 cCompilerPath：读回一致 + 旧键清除 + 幂等。
-func TestMigrateConfigKeyRenames(t *testing.T) {
-	db := openTestDB(t)
-	const oldVal = `C:\msys64\ucrt64\bin\gcc.exe`
-	if err := data.SetConfig(db, "cPath", oldVal); err != nil {
-		t.Fatalf("set cPath: %v", err)
-	}
-
-	svc := &Service{}
-	svc.MigrateConfigKeyRenames(db)
-
-	got, ok := data.GetConfig(db, "cCompilerPath")
-	if !ok || got != oldVal {
-		t.Fatalf("新键未迁移：got=%q ok=%v", got, ok)
-	}
-	if _, ok := data.GetConfig(db, "cPath"); ok {
-		t.Fatal("旧键 cPath 未清除")
-	}
-
-	// 读配置对象应含新键且值一致
-	view := readUserConfig(db)
-	if v, ok := view["cCompilerPath"]; !ok || v != oldVal {
-		t.Fatalf("readUserConfig 未回读新键：%v", view["cCompilerPath"])
-	}
-
-	// 幂等：重复迁移值不变、旧键仍不存在
-	svc.MigrateConfigKeyRenames(db)
-	if got2, _ := data.GetConfig(db, "cCompilerPath"); got2 != oldVal {
-		t.Fatalf("重复迁移改变了值：%q", got2)
-	}
-	if _, ok := data.GetConfig(db, "cPath"); ok {
-		t.Fatal("重复迁移后旧键再现")
-	}
-}
-
-// TestMigrateConfigKeyRenamesKeepsNewValue 新键已存在时不被旧键覆盖，仅清除旧键。
-func TestMigrateConfigKeyRenamesKeepsNewValue(t *testing.T) {
-	db := openTestDB(t)
-	_ = data.SetConfig(db, "cPath", "old-value")
-	_ = data.SetConfig(db, "cCompilerPath", "new-value")
-
-	(&Service{}).MigrateConfigKeyRenames(db)
-
-	if v, _ := data.GetConfig(db, "cCompilerPath"); v != "new-value" {
-		t.Fatalf("新键被旧值覆盖：%q", v)
-	}
-	if _, ok := data.GetConfig(db, "cPath"); ok {
-		t.Fatal("旧键未清除")
-	}
 }
 
 // TestDeleteUserConfigClearsWholeUsrScope「恢复出厂」清空范围（批 3 · ⑯）：
 // handleUserConfig delete **不带 key** → deleteUserConfig → 标量键 + 自由键 + 集合表（llms）
-// + legacy 整块全部清空（读回回落系统默认）；同库**非用户配置键**不受影响
+// 全部清空（读回回落系统默认）；同库**非用户配置键**不受影响
 // （前端入口 = SettingsConfigIOPage「恢复出厂设置」，经 data-user-config-delete 无 key）。
 func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
 	db := openTestDB(t)
 
-	// 铺满三个通道 + legacy 整块 + 一个同库无关键
+	// 铺满三个通道 + 一个同库无关键
 	if err := saveUserConfig(db, map[string]any{
 		"theme":       "dark",
 		"retryCount":  5,
@@ -114,9 +55,6 @@ func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
 		"llms":        []any{map[string]any{"name": "gpt-local", "apiKey": "sk-x"}},
 	}); err != nil {
 		t.Fatalf("铺数据失败：%v", err)
-	}
-	if err := data.SetConfig(db, LegacyUserConfigKey, `{"theme":"nord"}`); err != nil {
-		t.Fatalf("写 legacy 整块失败：%v", err)
 	}
 	if err := data.SetConfig(db, "unrelated_key", "1"); err != nil {
 		t.Fatalf("写无关键失败：%v", err)
@@ -143,9 +81,6 @@ func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
 	if len(keys) != 0 {
 		t.Fatalf("集合表未清空：%s → %v", tableLLMs, keys)
 	}
-	if _, ok := data.GetConfig(db, LegacyUserConfigKey); ok {
-		t.Fatal("legacy 整块未清空")
-	}
 	if v, ok := data.GetConfig(db, "unrelated_key"); !ok || v != "1" {
 		t.Fatalf("同库无关键不应被清空：got=%q ok=%v", v, ok)
 	}
@@ -163,33 +98,63 @@ func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
 	}
 }
 
-// ── 记忆类别沉淀提示词自由键（memory_prompts，2026-09-26）────────────────
-
-// TestMemoryPromptsFreeKeyRoundTrip：`memory_prompts`（用户级记忆类别沉淀提示词，JSON 对象
-// 字符串）已注册为 usr 自由键 → 写库/回读一致（原样字符串，不做类型还原）；删该键 → 回落缺省。
-func TestMemoryPromptsFreeKeyRoundTrip(t *testing.T) {
+// TestExplicitUserConfigKeys list 视图 `explicit` 列（I-127 导出「保真」依据）：只列**用户显式写入**
+// usr 主库的键——标量/自由键存在即显式（值等于系统默认也算显式），集合键非空才显式；
+// 视图内被补系统默认的键（键不存在）不入列。字典序稳定。
+func TestExplicitUserConfigKeys(t *testing.T) {
 	db := openTestDB(t)
-	if !userConfigFreeKeys["memory_prompts"] {
-		t.Fatal("memory_prompts 未注册为 usr 自由键")
-	}
-	const val = `{"用户偏好":"只记跨项目偏好"}`
 
-	if err := saveUserConfig(db, map[string]any{"memory_prompts": val}); err != nil {
+	// 空库：无显式键
+	if got := explicitUserConfigKeys(db); len(got) != 0 {
+		t.Fatalf("空库 explicit 应为空：%v", got)
+	}
+
+	// 显式写标量 + 自由键（defaultLLM/retryCount 等未写 → 不入列）
+	if err := saveUserConfig(db, map[string]any{
+		"theme":       "dark",
+		"recent_dirs": `["D:\\proj"]`,
+	}); err != nil {
+		t.Fatalf("save 标量/自由键失败：%v", err)
+	}
+	if got := explicitUserConfigKeys(db); strings.Join(got, ",") != "recent_dirs,theme" {
+		t.Fatalf("标量/自由键 explicit 不符：%v", got)
+	}
+
+	// 写集合 → llms 入列（defaultLLM 未显式写 → 仍不入列，尽管视图里被补了默认下标）
+	if err := saveUserConfig(db, map[string]any{"llms": []any{map[string]any{"name": "a"}}}); err != nil {
+		t.Fatalf("save llms 失败：%v", err)
+	}
+	if got := explicitUserConfigKeys(db); strings.Join(got, ",") != "llms,recent_dirs,theme" {
+		t.Fatalf("集合 explicit 不符：%v", got)
+	}
+	view := readUserConfig(db)
+	if _, has := view["defaultLLM"]; !has {
+		t.Fatalf("视图应补 defaultLLM 默认值：%+v", view)
+	}
+
+	// 显式写 defaultLLM（值等于「默认选择的 name」也算显式）→ 入列
+	if err := data.SetConfig(db, "defaultLLM", "a"); err != nil {
+		t.Fatalf("写 defaultLLM 失败：%v", err)
+	}
+	if got := explicitUserConfigKeys(db); strings.Join(got, ",") != "defaultLLM,llms,recent_dirs,theme" {
+		t.Fatalf("含 defaultLLM 的 explicit 不符：%v", got)
+	}
+}
+
+// ── 记忆类别沉淀提示词：usr 自由键载体已删（OP-04，2026-10-06）──────────────
+
+// TestMemoryPromptsFreeKeyRemoved：`memory_prompts`（原用户级记忆类别沉淀提示词自由键）已随
+// OP-04 提示词**文件化**移除 → 不再是 usr 自由键（对应写入被静默丢弃，不入库）。
+func TestMemoryPromptsFreeKeyRemoved(t *testing.T) {
+	db := openTestDB(t)
+	if userConfigFreeKeys["memory_prompts"] {
+		t.Fatal("memory_prompts 应为已移除键（OP-04 记忆提示词文件化）")
+	}
+	if err := saveUserConfig(db, map[string]any{"memory_prompts": `{"用户偏好":"x"}`}); err != nil {
 		t.Fatalf("save memory_prompts: %v", err)
 	}
-	if got, ok := data.GetConfig(db, "memory_prompts"); !ok || got != val {
-		t.Fatalf("memory_prompts 未落库：got=%q ok=%v", got, ok)
-	}
-	if got := readUserConfig(db)["memory_prompts"]; got != val {
-		t.Fatalf("readUserConfig 未回读 memory_prompts：%v", got)
-	}
-
-	// 删除该键 → 读回视图不再含该键（前端据此回落内置默认）
-	if err := data.DeleteConfig(db, "memory_prompts"); err != nil {
-		t.Fatalf("删 memory_prompts: %v", err)
-	}
-	if _, ok := readUserConfig(db)["memory_prompts"]; ok {
-		t.Fatal("删除后视图仍含 memory_prompts")
+	if _, ok := data.GetConfig(db, "memory_prompts"); ok {
+		t.Fatal("memory_prompts 不应再落库（键载体已删）")
 	}
 }
 

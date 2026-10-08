@@ -14,10 +14,15 @@ import (
 var copyTables = []string{"llms"}
 
 // CopyConfigTables 把源库的 config 表 + 专用表（llms）整表复制进目标库
-// （目标不存在则建库）。源不存在 → 视为跳过（返回 nil，不视为致命错误）。
+// （目标不存在则建库）。源**不存在** → 视为跳过（返回 nil，不视为致命错误）；
+// 源存在但读取失败（打开/ListKeys 失败，如被另一进程锁住）→ **明确报错**（D-45：
+// 静默跳过会让 CLI 拿着缺配置的临时库跑，用户无从察觉）。
 func CopyConfigTables(dstPath string, layer Layer, srcPath string) error {
 	if _, err := os.Stat(srcPath); err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", srcPath, err)
 	}
 	src, err := OpenLayer(srcPath, "")
 	if err != nil {
@@ -49,7 +54,7 @@ func CopyConfigTables(dstPath string, layer Layer, srcPath string) error {
 	for _, t := range copyTables {
 		tkeys, err := src.Table(t).ListKeys()
 		if err != nil {
-			continue
+			return fmt.Errorf("list %s.%s: %w", srcPath, t, err) // D-45：读失败改报错（原静默 continue）
 		}
 		for _, k := range tkeys {
 			var rec Record

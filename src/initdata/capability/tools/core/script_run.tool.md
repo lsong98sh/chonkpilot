@@ -6,6 +6,7 @@ hot=true
 category=core
 async=manual
 timeout=300
+idempotent=false
 args=script_run --input={RAW-INPUT-FILE}
 output=stdout
 

@@ -219,3 +219,44 @@ test('⑥ 消息面零变更：前端未新增/发送任何 gui.dir MQ 主题', 
   // 既有 native 主题仍在 api/config.js 的 guiReq 中（行为不变）
   assert.match(read('api/config.js'), /guiReq\('dir\.open-dialog'/, 'native 主题须保持不变')
 })
+
+// ── I-74：同 work-dir 单实例占用 → 「选择即报错」（明确提示，不再静默）──────
+test('⑦ I-74：占用拒绝串归类为人话键 + i18n 双语齐备', async () => {
+  const { classifyError } = await import('../src/utils/errorMessage.js')
+  const cls = classifyError('dir.open: workdir busy: E:/proj')
+  assert.equal(cls.key, 'chat.error_workdir_busy', '占用拒绝串须命中专用人话键')
+  assert.equal(cls.detail, 'dir.open: workdir busy: E:/proj', '原始串须原样保留')
+
+  for (const loc of ['zh-CN', 'en-US']) {
+    const chat = readLocale(loc, 'chat.json')
+    assert.ok(typeof chat.error_workdir_busy === 'string' && chat.error_workdir_busy.trim(),
+      `${loc} 缺 chat.error_workdir_busy`)
+  }
+})
+
+test('⑦ I-74：两个「打开目录」入口（工具栏按钮 / 最近目录）占用拒绝时明确提示', () => {
+  const toolbar = read('views/toolbar/Toolbar.vue')
+  // 工具栏 Open：先纯选择取路径，再经 gui.dir.open 打开（打开动作带占用校验）
+  assert.match(toolbar, /path = await pickDir\(\)/, 'Open 须先走纯选择取路径')
+  assert.match(toolbar, /await openDir\(path\)/, 'Open 须再走 gui.dir.open 起新窗口')
+  // 最近目录：await gui.dir.open 并在拒绝时提示（不再 fire-and-forget）
+  assert.match(toolbar, /await openDir\(dir\)/, '最近目录入口须 await gui.dir.open')
+  assert.match(toolbar, /classifyError\(/, '打开入口须归类占用拒绝')
+  assert.ok((toolbar.match(/message\.error\(/g) || []).length >= 2, '两个打开入口均须明确提示（不静默）')
+})
+
+test('⑦ 语义分离：选目录 = 纯选择（不开窗口）；开窗口只经 gui.dir.open', () => {
+  // 后端：dir.open-dialog 无 openNewWindow / 不记最近目录；dir.open 仍以新进程打开
+  const local = readFileSync(join(here, '..', '..', 'lib', 'gui', 'bridge', 'local.go'), 'utf8')
+  const dlg = local.slice(local.indexOf('// callOpenDirDialog'), local.indexOf('// callPickExecutable'))
+  assert.ok(dlg.length > 0, '未找到 callOpenDirDialog')
+  assert.doesNotMatch(dlg, /openNewWindow|recordRecentDir/, '纯选择入口不得开窗口 / 记最近目录')
+  const openFn = local.slice(local.indexOf('func callOpenDir('), local.indexOf('// callOpenDirDialog'))
+  assert.match(openFn, /openNewWindow\(dir\)/, 'gui.dir.open 须以新进程打开')
+
+  // 消费方：信任目录 / 登录选工作目录只取路径，不得自行触发 gui.dir.open
+  for (const [name, rel] of [['SecurityConfig', 'views/settings/SecurityConfig.vue'], ['AuthView', 'views/auth/AuthView.vue']]) {
+    assert.doesNotMatch(read(rel), /openDir\(/, `${name} 只应取路径，不得触发 gui.dir.open`)
+  }
+})
+

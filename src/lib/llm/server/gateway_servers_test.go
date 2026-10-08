@@ -185,7 +185,7 @@ func TestLoadMcpFileEntries(t *testing.T) {
 	}
 
 	s := &Server{cfg: api, opts: Options{UsrPath: path}}
-	entries := s.loadMcpFileEntries()
+	entries := s.loadMcpFileEntries("")
 	if len(entries) != 4 {
 		t.Fatalf("want 4 raw entries, got %d: %+v", len(entries), entries)
 	}
@@ -296,4 +296,38 @@ func TestUserMCPHotReload(t *testing.T) {
 		t.Fatalf("④ 删除条目后工具未热移除")
 	}
 	t.Logf("④ 删除 → 工具面退出耗时 %v（起始 %v）", elapsed, time.Since(start))
+}
+
+// ─── A 缺陷修复：instance_id 一路透传到数据层 McpList ──────────────────
+
+// recordingMcpAPI 只覆写 McpList 记录收到的 instance_id（其余方法经内嵌 nil 接口，未被调用）。
+type recordingMcpAPI struct {
+	facade.API
+	called     bool
+	instanceID string
+}
+
+func (r *recordingMcpAPI) McpList(req facade.McpListRequest) (facade.McpListResponse, error) {
+	r.called = true
+	r.instanceID = req.InstanceID
+	return facade.McpListResponse{}, nil
+}
+
+// TestLoadMcpFileEntriesPassesInstanceID 覆盖 A：loadMcpFileEntries / loadGatewayServers 必须把
+// instance_id 透传到数据层 McpList（否则多实例下落到"唯一实例回退"串库/失败）；启动期传空。
+func TestLoadMcpFileEntriesPassesInstanceID(t *testing.T) {
+	rec := &recordingMcpAPI{}
+	if got := (&Server{cfg: rec}).loadMcpFileEntries("ins-42"); len(got) != 0 {
+		t.Fatalf("桩返回空列表，条目应为 0：%+v", got)
+	}
+	if !rec.called || rec.instanceID != "ins-42" {
+		t.Fatalf("loadMcpFileEntries 应把 instance_id 透传 McpList：called=%v got=%q", rec.called, rec.instanceID)
+	}
+
+	// 启动期（Server.New 尚无实例）→ 空 instance_id。
+	rec2 := &recordingMcpAPI{}
+	(&Server{cfg: rec2}).loadGatewayServers("")
+	if !rec2.called || rec2.instanceID != "" {
+		t.Fatalf("启动期应传空 instance_id：called=%v got=%q", rec2.called, rec2.instanceID)
+	}
 }

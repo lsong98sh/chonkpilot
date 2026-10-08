@@ -73,6 +73,8 @@ func main() {
 	//   + servers.list 外部下游（proxied/spawned）──
 	var servers []mcpgateway.ServerEntry
 	var capServer *mcp.Server // 能力源官方 server（capability 契约 RegisterContracts；nil = 未提供）
+	var capContractRoot string // 能力源契约根（ServerTools 单源读取用）
+	var capCfg *ckmcpserver.Config
 
 	if root := resolveCapabilityRoot(*capRoot); root != "" {
 		ms := mcp.NewServer(&mcp.Implementation{Name: "chonkpilot-gateway", Version: "1.0.0"}, nil)
@@ -85,6 +87,8 @@ func main() {
 			log.Fatalf("gateway: capability register: %v", err)
 		}
 		capServer = ms
+		capContractRoot = root
+		capCfg = cfg
 		log.Printf("[gateway] capability scanned: root=%s", root)
 	}
 	if *serversFile != "" {
@@ -105,6 +109,17 @@ func main() {
 	}
 
 	// ── gateway lib（聚合 + 生命周期，上游 = 本进程 Bus；能力源 = capServer 参数）──
+	// category=server 契约工具（如 dsl_run）定义单源：不注册为 executor 工具（见 ServerTools），
+	// 由本 exe 桥接注入 gateway（gateway lib 不依赖 mcp-server 包，RB-2）。
+	var serverTools map[string]*mcp.Tool
+	if capContractRoot != "" {
+		st, serr := ckmcpserver.ServerTools(capContractRoot, capCfg)
+		if serr != nil {
+			log.Printf("[gateway] server 类别工具契约加载失败（回落内置定义）: %v", serr)
+		} else {
+			serverTools = st
+		}
+	}
 	gw, err := mcpgateway.New(mcpgateway.Params{
 		Bus:       bus,
 		MCPServer: capServer,
@@ -112,6 +127,7 @@ func main() {
 		// RB-2：dir 节点扫描依赖倒置 —— 扫契约根/建官方 server 由本 exe（dirScanner）完成，
 		// gateway lib 不读「源」、不依赖 mcp-server 包。
 		ContractScanner: dirScanner{},
+		ServerTools:     serverTools,
 		CallTimeout:     time.Duration(*callTimeout) * time.Second,
 		MaxTasks:        *maxTasks,
 	})

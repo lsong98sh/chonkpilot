@@ -11,8 +11,8 @@ export const PROMPT_SUFFIX = '.prompt.md'
 
 /**
  * prompt 名 = 文件名去掉 `.prompt.md`（无后缀则原样；仅取末段文件名，不含目录）。
- * @param {string} fileName 文件名或路径（如 `prompts/summary.prompt.md`）
- * @returns {string} prompt 名（如 `summary`；空输入 → ''）
+ * @param {string} fileName 文件名或路径（如 `prompts/code_review.prompt.md`）
+ * @returns {string} prompt 名（如 `code_review`；空输入 → ''）
  */
 export function promptNameOf(fileName) {
   const base = String(fileName || '').split(/[/\\]/).pop() || ''
@@ -23,7 +23,7 @@ export function promptNameOf(fileName) {
 /**
  * prompt 名 → HTML 展示 tag 文本（`/<name>`）。
  * @param {string} name prompt 名
- * @returns {string} 如 `/summary`（空名 → ''）
+ * @returns {string} 如 `/code_review`（空名 → ''）
  */
 export function promptTagOf(name) {
   const n = String(name || '').trim()

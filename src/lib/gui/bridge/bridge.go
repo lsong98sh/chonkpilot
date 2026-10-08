@@ -34,6 +34,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // Eval 是后端 → 前端脚本执行器（WebView2 w.Eval）。
@@ -178,11 +179,11 @@ func (b *Bridge) Start() error {
 	// 随后续上行请求注入（自证型 → 服务端重启后仍可解析）。
 	b.loadRememberToken()
 	// instance 注册：无 req_id、无 reply（客户端自生成 uuid；相对主题 instance-register）。
-	b.publish("instance-register", map[string]interface{}{
-		"instance_id": b.instanceID,
-		"work_dir":    b.workDir,
-		"data_dir":    b.dataDir,
-		"client_type": "gui",
+	b.publish(msgkeys.TopicInstanceRegister, map[string]interface{}{
+		msgkeys.FieldInstanceId: b.instanceID,
+		msgkeys.FieldWorkDir:    b.workDir,
+		msgkeys.FieldDataDir:    b.dataDir,
+		msgkeys.FieldClientType: "gui",
 	})
 	// 订阅总线生态事件 → 前端（相对主题全通配 ">"：总线补 chonk. 前缀后命中全部
 	// 业务事件；handler 收到去前缀后的相对主题，见 mq Options.Prefix 语义）。
@@ -272,29 +273,30 @@ func (b *Bridge) notifyEventWaiters(typ string, payload []byte) {
 }
 
 // mqTypeMap 相对主题 → 前端 type（保持域化前的 UI 事件字符串；键不含 chonk. 前缀；
-// 未命中的相对主题原名直通）。
+// 未命中的相对主题原名直通）。键 = 契约主题（msgkeys）；值 = 稳定前端 type
+// （`llm-receive` / `tasks.started` 等**非契约主题**，保留字面量并注释）。
 var mqTypeMap = map[string]string{
-	// session 域
-	"session-receive":    "llm-receive",
-	"session-complete":   "llm-complete",
-	"session-compress":   "llm-compress",
-	"session-ask":        "ask-user",
-	"session-turn-start": "turn-start",
-	// task 域
-	"task-started": "tasks.started",
-	"task-updated": "tasks.updated",
-	"task-done":    "tasks.done",
-	// server 域
-	"server-starting":       "server-starting",
-	"server-status-changed": "servers.status_changed",
-	// tool 域
+	// session 域（值 = 稳定前端 type，非契约主题）
+	msgkeys.TopicSessionReceive:   "llm-receive",
+	msgkeys.TopicSessionComplete:  "llm-complete",
+	msgkeys.TopicSessionCompress:  "llm-compress",
+	msgkeys.TopicSessionAsk:       "ask-user",
+	msgkeys.TopicSessionTurnStart: "turn-start",
+	// task 域（值 = 稳定前端 type，非契约主题）
+	msgkeys.TopicTaskStarted: "tasks.started",
+	msgkeys.TopicTaskUpdated: "tasks.updated",
+	msgkeys.TopicTaskDone:    "tasks.done",
+	// server 域（server-status-changed 非契约主题，保留字面量）
+	msgkeys.TopicServerStarting: msgkeys.TopicServerStarting,
+	"server-status-changed":     "servers.status_changed",
+	// tool 域（tool-changed / tools.list_changed 非契约主题，保留字面量）
 	"tool-changed": "tools.list_changed",
 	// prompt 域（事件）
-	"prompt-optimised": "prompt-optimised",
+	msgkeys.TopicPromptOptimised: msgkeys.TopicPromptOptimised,
 	// instance 域（GUI 客户端实例消息，转发保持原字符串）
-	"instance-register":  "instance-register",
-	"instance-heartbeat": "instance-heartbeat",
-	"instance-exit":      "instance-exit",
+	msgkeys.TopicInstanceRegister:  msgkeys.TopicInstanceRegister,
+	msgkeys.TopicInstanceHeartbeat: msgkeys.TopicInstanceHeartbeat,
+	msgkeys.TopicInstanceExit:      msgkeys.TopicInstanceExit,
 }
 
 // eventType 从相对主题提取前端事件 type（显式映射优先；兜底**原名直通**：
@@ -333,7 +335,7 @@ func (b *Bridge) EmitFrontend(typ, payloadJSON string) {
 //     server 方法处理写回 Result/Errors）
 //   - 本地事件（window-* 等）由调用方先行过滤，不进入本方法。
 func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error) {
-	if typ == "llm-start" {
+	if typ == msgkeys.TopicLlmStart {
 		b.splitLLMStart(payloadJSON)
 		return nil, nil
 	}
@@ -379,37 +381,44 @@ func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error
 // 注：认证域 `login-register` / `login-in` / `login-out` **不在此表** —— 需桥承载令牌
 // （持有 + 落文件 + 注入）→ 走 `loginEvent` 专用分支（login.go，61 §4.6）。
 var frontMethodSubjects = map[string]string{
-	"llm-send":        "session-send",
-	"llm-cancel":      "session-cancel",
-	"ask-user-reply":  "session-ask-reply",
-	"task-stop":       "task-stop",
-	"task-background": "task-background",
-	"tool-retry":      "tool-retry",
-	"prompt-optimise": "prompt-optimise",
+	msgkeys.TopicLlmSend:        "session-send",
+	msgkeys.TopicLlmCancel:      "session-cancel",
+	msgkeys.TopicAskUserReply:   "session-ask-reply",
+	msgkeys.TopicTaskStop:       msgkeys.TopicTaskStop,
+	msgkeys.TopicTaskBackground: msgkeys.TopicTaskBackground,
+	msgkeys.TopicToolRetry:      msgkeys.TopicToolRetry,
+	msgkeys.TopicPromptOptimise: msgkeys.TopicPromptOptimise,
 	// 实例消息（61 §4.1，阶段 2a）：instance-claim = 前端启动认领（请求-响应，桥按
 	// publishV 把 server 写回的 v.Result 作为 /publish 响应回发起者 → 多客户端不串号）；
 	// instance-heartbeat = **发布方改为前端 SPA**（客户端续期 30s；-tags split 门控语义不变：
 	// 单体形态前端不发布、不判超时，见 61 §4.1 ②订正）。
-	"instance-claim":     "instance-claim",
-	"instance-heartbeat": "instance-heartbeat",
-	"tools-list":         "mcp-tools-list",
-	"prompts-list":       "mcp-prompts-list",
-	"resources-list":     "mcp-resources-list",
+	msgkeys.TopicInstanceClaim:     msgkeys.TopicInstanceClaim,
+	msgkeys.TopicInstanceHeartbeat: msgkeys.TopicInstanceHeartbeat,
+	// 客户端能力面 type（tools-list / prompts-list / resources-list；schema `clientTopic`，
+	// 由 genmsg 生成 msgkeys.MsgClientTopics* 常量引用，见 50 §8.8）。
+	msgkeys.MsgClientTopicsToolsList:     msgkeys.TopicMcpToolsList,
+	msgkeys.MsgClientTopicsPromptsList:   msgkeys.TopicMcpPromptsList,
+	msgkeys.MsgClientTopicsResourcesList: msgkeys.TopicMcpResourcesList,
 	// 2026-09-13 统一异步模型：超时「等待完成」裁决（前端 type 与下行事件 mcp-tools-timeout 对称）。
 	// 注意：gateway 方法面相对主题 = methodSubject("tools/wait") = **mcp-tools-wait**
 	// （subjects.go:63-65 `mcp-` + `/`→`-`），**不是** `tools/wait` —— 写成错主题会静默丢弃。
-	"mcp-tools-wait": "mcp-tools-wait",
+	msgkeys.TopicMcpToolsWait: msgkeys.TopicMcpToolsWait,
 	// 2026-09-18：超时裁决条「取消」不再直发 gateway 方法面——`mcp-tasks-cancel`（及
 	// `mcp-tasks-status|result|list`、`mcp-tools-background`）方法面已移除；「停止」统一走
 	// **task-stop**（见上表；服务端按 tool_call_id / task_id 归一后经层 → sink → gateway
 	// 真打断）。本白名单不再保留已删主题（否则只会在总线上无订阅方、静默丢弃）。
+	// 场景向导方法面（2026-10-04）：探测 / 合成 / 生成 / 稍后（server 侧处理，写回 v.Result）。
+	msgkeys.TopicAgentWizardProbe:    msgkeys.TopicAgentWizardProbe,
+	msgkeys.TopicAgentWizardCompose:  msgkeys.TopicAgentWizardCompose,
+	msgkeys.TopicAgentWizardGenerate: msgkeys.TopicAgentWizardGenerate,
+	msgkeys.TopicAgentWizardSkip:     msgkeys.TopicAgentWizardSkip,
 }
 
 // capabilityListKeys 客户端能力面 topic → 结果数组键（T-31 桥侧作用域过滤用）。
 var capabilityListKeys = map[string]string{
-	"tools-list":     "tools",
-	"prompts-list":   "prompts",
-	"resources-list": "resources",
+	msgkeys.MsgClientTopicsToolsList:     msgkeys.FieldTools,
+	msgkeys.MsgClientTopicsPromptsList:   msgkeys.FieldPrompts,
+	msgkeys.MsgClientTopicsResourcesList: msgkeys.FieldResources,
 }
 
 // filterCapabilityScope 对客户端能力面（tools-list/prompts-list/resources-list）的返回结果
@@ -488,24 +497,26 @@ func (b *Bridge) splitLLMStart(payloadJSON string) {
 	if content == "" {
 		content = p.Content
 	}
+	// 主题 session-start / session-send 为 server 域相对主题（**非 61 topic**，保留字面量）；
+	// 载荷键走 msgkeys（req_id 为内部路由键，非契约字段，保留字面量）。
 	b.publish("session-start", map[string]interface{}{
-		"req_id":      newUUID(),
-		"instance_id": b.instanceID,
-		"session":     session,
-		"turn":        turn,
-		"llm":         p.LLM,
-		"think":       p.Think,
-		"effort":      p.Effort,
-		"scenario_id": p.ScenarioID,
-		"continue":    p.Continue,
+		"req_id":                newUUID(),
+		msgkeys.FieldInstanceId: b.instanceID,
+		msgkeys.FieldSession:    session,
+		msgkeys.FieldTurn:       turn,
+		msgkeys.FieldLlm:        p.LLM,
+		msgkeys.FieldThink:      p.Think,
+		msgkeys.FieldEffort:     p.Effort,
+		msgkeys.FieldScenarioId: p.ScenarioID,
+		msgkeys.FieldContinue:   p.Continue,
 	})
 	b.markPublished("session-start")
 	b.publish("session-send", map[string]interface{}{
-		"instance_id": b.instanceID,
-		"session":     session,
-		"turn":        turn,
-		"type":        "text-user",
-		"content":     content,
+		msgkeys.FieldInstanceId: b.instanceID,
+		msgkeys.FieldSession:    session,
+		msgkeys.FieldTurn:       turn,
+		msgkeys.FieldType:       "text-user",
+		msgkeys.FieldContent:    content,
 	})
 	b.markPublished("session-send")
 }
@@ -519,8 +530,8 @@ func (b *Bridge) injectInstance(payloadJSON string) string {
 	if err := json.Unmarshal([]byte(payloadJSON), &m); err != nil {
 		return payloadJSON
 	}
-	if _, ok := m["instance_id"]; !ok {
-		m["instance_id"] = b.instanceID
+	if _, ok := m[msgkeys.FieldInstanceId]; !ok {
+		m[msgkeys.FieldInstanceId] = b.instanceID
 	}
 	raw, err := json.Marshal(m)
 	if err != nil {
@@ -573,7 +584,7 @@ func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs
 // 多窗口（24 §4.1）下每窗口一个桥、共享同一条**进程级**总线：任一路径关闭总线都会打断
 // 其它窗口，故窗口关闭只注销本实例；总线由宿主进程收尾时统一 Close。
 func (b *Bridge) CloseInstance() {
-	b.publish("instance-exit", map[string]interface{}{"instance_id": b.instanceID})
+	b.publish(msgkeys.TopicInstanceExit, map[string]interface{}{msgkeys.FieldInstanceId: b.instanceID})
 }
 
 // Close 注销实例并关闭总线（**进程收尾**用；单窗口历史语义不变）。合并单进程仍发

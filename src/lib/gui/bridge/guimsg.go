@@ -15,7 +15,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+
+	"github.com/chonkpilot/chonkpilot-gui/internal/messages"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // guiCallFunc 是 gui.* 消息面内部复用的 callX 处理器签名（原 dataCall 随 /call 链删除）。
@@ -30,7 +35,7 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 	// fail 构造失败回复。
 	fail := func(format string, args ...any) (any, []error) {
 		msg := fmt.Sprintf(format, args...)
-		return map[string]any{"ok": false, "error": msg}, []error{fmt.Errorf("%s", msg)}
+		return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: msg}, []error{fmt.Errorf("%s", msg)}
 	}
 	// strArg 取 payload 字段的字符串值并编成 /call 字符串参数（缺省 ""）。
 	strArg := func(key string) json.RawMessage {
@@ -58,12 +63,29 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 	}
 
 	switch action {
-	// init-data：启动初始化数据（一疑问多答的桥本地单点回答；内容含 work_dir/layout/
-	// ui/opened_file/opened_files/treeData 等，前端合并多答 → 直接返回该对象）。
+	// init-data：启动初始化数据（桥本地单点回答；应答键 = 实际下发形态（camelCase）：
+	// treeData / expandedKeys / selectedKey / workDir / filetreeWidth / layout / ui /
+	// openedFile / openedFiles，另可选 logDir / wizard_required；前端直接读取该对象）。
 	case "init-data":
 		m, err := callMap(callLoadInitData)
 		if err != nil {
 			return fail("init-data: %v", err)
+		}
+		// 场景向导启动检测（2026-10-04；设计 01 §1 / 05 §3 方案 A 兜底 + 触发）：
+		// workdir 下工程规格文件缺失 → 需初始化：下发 agent-wizard 事件（前端据此打开向导），
+		// 并在应答中补 add-only 字段 wizard_required（无事件通道时也可兜底）。
+		specPath := filepath.ToSlash(filepath.Join(b.workDir, ".chonkpilot", "project_spec.md"))
+		wizardRequired := true
+		if _, statErr := os.Stat(filepath.Join(b.workDir, ".chonkpilot", "project_spec.md")); statErr == nil {
+			wizardRequired = false
+		}
+		m[msgkeys.GuiInitDataResultWizardRequired] = wizardRequired
+		if wizardRequired {
+			b.EmitFrontend(messages.MsgAgentWizard, jsonEnvelope(map[string]any{
+				msgkeys.AgentWizardEventReason:   "missing_spec",
+				msgkeys.AgentWizardEventWorkDir:  b.workDir,
+				msgkeys.AgentWizardEventSpecPath: specPath,
+			}))
 		}
 		return m, nil
 
@@ -79,25 +101,25 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 				errList = append(errList, err)
 			}
 		}
-		if v, ok := p["layout"]; ok {
+		if v, ok := p[msgkeys.GuiUiSavePayloadLayout]; ok {
 			save(callSaveLayoutState, v)
 		}
-		if v, ok := p["window"]; ok {
+		if v, ok := p[msgkeys.GuiUiSavePayloadWindow]; ok {
 			save(callSaveWindowState, v)
 		}
-		if v, ok := p["filetree"]; ok {
+		if v, ok := p[msgkeys.GuiUiSavePayloadFiletree]; ok {
 			save(callSaveFileTreeState, v)
 		}
-		if v, ok := p["opened_files"]; ok {
+		if v, ok := p[msgkeys.GuiUiSavePayloadOpenedFiles]; ok {
 			save(callSaveOpenedFiles, v)
 		}
-		if v, ok := p["ui"]; ok {
+		if v, ok := p[msgkeys.GuiUiSavePayloadUi]; ok {
 			save(callSaveUIState, v)
 		}
 		if len(errList) > 0 {
-			return map[string]any{"ok": false, "error": errList[0].Error()}, errList
+			return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: errList[0].Error()}, errList
 		}
-		return map[string]any{"ok": true}, nil
+		return map[string]any{msgkeys.FieldOk: true}, nil
 
 	// recent.list：最近项目目录（usr config recent_dirs）→ 原结果 {dirs}。
 	case "recent.list":
@@ -107,7 +129,16 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 		}
 		return m, nil
 
-	// dir.open-dialog：系统目录选择框 → 原结果（选择 {path}；取消 CANCELLED 形态原样透传）。
+	// recent.remove：从「最近项目」记录中移除一条（payload {path}）→ {ok}。
+	// **仅删记录** —— 不删除对应项目目录 / 数据资产，不关闭当前窗口；不存在 → 幂等成功。
+	case "recent.remove":
+		if _, err := callMap(callRemoveRecentDir, strArg(msgkeys.FieldPath)); err != nil {
+			return fail("recent.remove: %v", err)
+		}
+		return map[string]any{msgkeys.FieldOk: true}, nil
+
+	// dir.open-dialog：系统目录选择框（**纯选择、无副作用**）→ {path}（取消 {path:null}）。
+	// 「以新窗口打开」是另一条动作 dir.open；两处语义分离（信任目录 / 登录选工作目录等只取路径）。
 	case "dir.open-dialog":
 		m, err := callMap(callOpenDirDialog)
 		if err != nil {
@@ -145,6 +176,15 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 		}
 		return m, nil
 
+	// prompt-vars：提示词「变量插入」分组目录（只读，单源 = 后端常量）
+	// → {groups:[{id,label,items:[{key,desc,dslOnly}]}]}（OP-12；见 promptvars.go）。
+	case "prompt-vars":
+		m, err := callMap(callPromptVars)
+		if err != nil {
+			return fail("prompt-vars: %v", err)
+		}
+		return m, nil
+
 	// system.builtins：系统级只读 MCP 内置项（exe 同目录 config.json；OEM 资源）
 	// → {mcpServers:[...]}。
 	case "system.builtins":
@@ -156,17 +196,17 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 
 	// dir.open：以新进程打开目录。
 	case "dir.open":
-		if _, err := callMap(callOpenDir, strArg("path")); err != nil {
+		if _, err := callMap(callOpenDir, strArg(msgkeys.FieldPath)); err != nil {
 			return fail("dir.open: %v", err)
 		}
-		return map[string]any{"ok": true}, nil
+		return map[string]any{msgkeys.FieldOk: true}, nil
 
 	// console.open：系统控制台打开到路径所在目录。
 	case "console.open":
-		if _, err := callMap(callOpenInConsole, strArg("path")); err != nil {
+		if _, err := callMap(callOpenInConsole, strArg(msgkeys.FieldPath)); err != nil {
 			return fail("console.open: %v", err)
 		}
-		return map[string]any{"ok": true}, nil
+		return map[string]any{msgkeys.FieldOk: true}, nil
 
 	// vcs.info：探测工作目录 VCS 类型（callGetVCSInfo 以桥 workDir 为准，无参调用）
 	// → {git, svn, gitInstalled}（gitInstalled = 系统可执行 git，供文件历史可用性区分文案）。
@@ -179,7 +219,7 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 
 	// reveal：Windows 资源管理器定位文件/目录（fire-and-forget；OS 能力，桥无旧实现）。
 	case "reveal":
-		path := svalStr(p, "path")
+		path := svalStr(p, msgkeys.FieldPath)
 		if path == "" {
 			return fail("reveal: path required")
 		}
@@ -188,11 +228,11 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 			return fail("reveal: %v", err)
 		}
 		_ = cmd.Process.Release()
-		return map[string]any{"ok": true}, nil
+		return map[string]any{msgkeys.FieldOk: true}, nil
 
 	// open-with：Windows「打开方式」对话框（OS 能力，桥无旧实现）。
 	case "open-with":
-		path := svalStr(p, "path")
+		path := svalStr(p, msgkeys.FieldPath)
 		if path == "" {
 			return fail("open-with: path required")
 		}
@@ -201,11 +241,11 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 			return fail("open-with: %v", err)
 		}
 		_ = cmd.Process.Release()
-		return map[string]any{"ok": true}, nil
+		return map[string]any{msgkeys.FieldOk: true}, nil
 
 	// search：项目内检索（复用 SearchProjectFiles 路径匹配占位实现）→ {results}。
 	case "search":
-		raw, err := callSearchProjectFiles(b, context.Background(), []json.RawMessage{strArg("query")})
+		raw, err := callSearchProjectFiles(b, context.Background(), []json.RawMessage{strArg(msgkeys.FieldQuery)})
 		if err != nil {
 			return fail("search: %v", err)
 		}
@@ -214,7 +254,7 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 		if results == nil {
 			results = []any{}
 		}
-		return map[string]any{"results": results}, nil
+		return map[string]any{msgkeys.FieldResults: results}, nil
 
 	// capture：窗口隐藏 + 全屏截图 → 原结果 {file_id, name, path, url, size, b64}。
 	case "capture":
@@ -238,7 +278,9 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 	// prompt-optimise：AI 优化提示词（payload {title, useCase, prompt} → callOptimizeAgentPrompt
 	// 单对象参，对齐原 call('OptimizeAgentPrompt', data)）→ 立即返回 {ok, started}；
 	// 流式结果（optimize-token/optimize-done/optimize-error）由实现 EmitFrontend 推送，不在此返回。
-	case "prompt-optimise":
+	// 注：gui action 后缀 "prompt-optimise" 与 server 契约主题同名（值同）→ 按 50 §8.8
+	// 以 msgkeys 常量引用（避免契约主题字面量；语义 = gui 动作后缀，非 server 主题）。
+	case msgkeys.TopicPromptOptimise:
 		if len(payload) == 0 || string(payload) == "null" {
 			return fail("prompt-optimise: body required")
 		}
@@ -263,7 +305,7 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 		return nil, nil
 
 	default:
-		return map[string]any{"ok": false, "error": "unsupported gui action: " + action}, nil
+		return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: "unsupported gui action: " + action}, nil
 	}
 }
 

@@ -21,6 +21,9 @@ package facade
 //
 // 时间与状态字段直接来自任务层写入（门面不改写语义）；`Closed` / `DeletedAt` 表示节点已按
 // 逻辑删除关闭（list / tasks 默认不出视图，显式 include_closed 时一并返回）。
+//
+// DSL-3 展示字段（61 §3.4 增补；缺省为空 → 与既有载荷逐字节等价）：容器节点用
+// `LoopCurrent`/`LoopTotal`（进度徽标），作业根节点用 `Steps`（步骤执行记录）/`ReturnKind` 两态。
 type TaskNode struct {
 	// ID 节点 id（任务层 id；= 存储 `node_id` / `task_id`）。
 	ID string `json:"id"`
@@ -51,7 +54,7 @@ type TaskNode struct {
 	// InstanceID 实例归属（任务层扩展字段；可选）。
 	InstanceID string `json:"instance_id,omitempty"`
 	// WorkDir 工作目录（任务层扩展字段；可选）。
-	WorkDir string `json:"workdir,omitempty"`
+	WorkDir string `json:"work_dir,omitempty"`
 	// ArgsDigest 入参摘要（任务层扩展字段；可选）。
 	ArgsDigest string `json:"args_digest,omitempty"`
 	// ResultDigest 结果摘要（任务层扩展字段；可选）。
@@ -68,6 +71,42 @@ type TaskNode struct {
 	Closed *bool `json:"closed,omitempty"`
 	// DeletedAt 关闭时间（逻辑删除标记；可选）。
 	DeletedAt string `json:"deleted_at,omitempty"`
+
+	// ── DSL-3 展示字段（61 §3.4 增补；缺省为空 → 与既有载荷逐字节等价）──
+	// LoopCurrent 容器当前轮次（1 起；kind=dsl_loop/dsl_parallel）。
+	LoopCurrent int `json:"loop_current,omitempty"`
+	// LoopTotal 容器总轮数（未知 = 0 缺省）。
+	LoopTotal int `json:"loop_total,omitempty"`
+	// Steps 步骤执行记录（仅 kind=dsl_job 作业根；扁平、不随迭代进树）。
+	Steps []DslStep `json:"steps,omitempty"`
+	// Shadow 执行记录节点标记（true = 不进树；本实现记录入 Steps，不产出 shadow 节点）。
+	Shadow bool `json:"shadow,omitempty"`
+	// ReturnKind `$RETURN` 两态（inline / file）。
+	ReturnKind string `json:"return_kind,omitempty"`
+	// ReturnInline inline 全文（≤64K）。
+	ReturnInline string `json:"return_inline,omitempty"`
+	// ReturnFile file 文件名（>64K）。
+	ReturnFile string `json:"return_file,omitempty"`
+	// ReturnSize file 字节数。
+	ReturnSize int `json:"return_size,omitempty"`
+}
+
+// DslStep 是 DSL 作业的一次 LLM 步骤执行记录（DSL-3：`dsl_job.steps[]` 元素；前端步骤表格行源）。
+type DslStep struct {
+	// No 跨迭代累计序号（1 起）。
+	No int `json:"no"`
+	// Status 执行状态（running / done / error / cancelled）。
+	Status string `json:"status,omitempty"`
+	// Purpose 该步运行目的（展示名）。
+	Purpose string `json:"purpose,omitempty"`
+	// ElapsedMs 耗时（毫秒）。
+	ElapsedMs int64 `json:"elapsed_ms,omitempty"`
+	// CreatedAt 开始时刻（RFC3339）。
+	CreatedAt string `json:"created_at,omitempty"`
+	// SessionID 该次执行的子会话 id（jobSession-N；供前端查看/新窗口）。
+	SessionID string `json:"session_id,omitempty"`
+	// StatementID 所属静态语句节点 id（可选；当前实现未产出）。
+	StatementID string `json:"statement_id,omitempty"`
 }
 
 // Task 是任务快照（tasks 视图：会话区展示任务列表用，字段为**展示口径**的领域形态）。
@@ -94,6 +133,16 @@ type Task struct {
 	StartedAt string `json:"started_at,omitempty"`
 	// Awaiting 待裁决明细（仅状态为 awaiting 且执行态携带选项时非 nil）。
 	Awaiting map[string]any `json:"awaiting,omitempty"`
+
+	// ── DSL-3 展示字段（口径同 TaskNode；缺省为空 → 与既有载荷逐字节等价）──
+	LoopCurrent  int       `json:"loop_current,omitempty"`
+	LoopTotal    int       `json:"loop_total,omitempty"`
+	Steps        []DslStep `json:"steps,omitempty"`
+	Shadow       bool      `json:"shadow,omitempty"`
+	ReturnKind   string    `json:"return_kind,omitempty"`
+	ReturnInline string    `json:"return_inline,omitempty"`
+	ReturnFile   string    `json:"return_file,omitempty"`
+	ReturnSize   int       `json:"return_size,omitempty"`
 }
 
 // ── 请求 / 响应 ────────────────────────────────────────────────────

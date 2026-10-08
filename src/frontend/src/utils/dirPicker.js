@@ -99,8 +99,8 @@ export function buildDirLevels(dirs, workDir, current) {
 /**
  * 目录选择分派（纯函数，便于单测）：
  *   - browser 形态 → `browserPick()`（服务端等价面 `GET /dirs` 选择器）；
- *   - 其余（GUI / native）→ `nativePick()`（既有 `gui.dir.open-dialog`，行为不变）。
- * 返回选中路径（取消 = ''）。
+ *   - 其余（GUI / native）→ `nativePick()`（`gui.dir.open-dialog`，**纯选择无副作用**）。
+ * 返回选中路径（取消 = ''）。「以新窗口打开该目录」不在此 —— 由调用方另走 `gui.dir.open`。
  */
 export function dispatchDirPick({ isBrowser, nativePick, browserPick }) {
   return isBrowser ? browserPick() : nativePick()

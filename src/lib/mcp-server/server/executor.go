@@ -52,9 +52,10 @@ func wrapFail(msg string) string {
 // defaults 为注入的默认参数（skip_dirs/fileext/ignore_files），客户端显式参数优先。
 // cx 为调用上下文（协议 _meta 透传的 instance/workdir/datadir）：仅用于 spawn executor 时注入
 // 子进程环境变量 CHONKPILOT_*（不进 args）。
-// 注意：使用独立 context.Background() + 超时，不继承请求 ctx——
-// 异步任务模式下 HTTP 响应返回后请求 ctx 会被取消，继承会导致 executor 被杀。
-func callTool(_ context.Context, cfg *Config, td *ToolDoc, args map[string]any, defaults map[string]any, cx CallContext) (string, error) {
+// ctx **继承自请求**（B3，2026-10-07）：子进程用 exec.CommandContext 绑定该 ctx —— 取消经
+// in-memory 传输的 `notifications/cancelled` 送达本 handler 的请求 ctx（见 18 §3.7 探针），
+// 从而真正 kill 子进程（「收到取消 → 真停」写在执行体侧，决策 42 §2 (241)）。
+func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any, defaults map[string]any, cx CallContext) (string, error) {
 	if td.Runtime == "" {
 		return "", fmt.Errorf("tool %s: runtime required", td.Name)
 	}
@@ -104,12 +105,14 @@ func callTool(_ context.Context, cfg *Config, td *ToolDoc, args map[string]any, 
 		return "", err
 	}
 
-	// 执行硬上限：显式设置 → 采用（0/-1 = 无上限 → 不设 WithTimeout，仅支持取消）。
+	// 执行硬上限：显式设置 → 采用（0/-1 = 无上限 → 不设 WithTimeout，仍随请求 ctx 可取消）。
+	// ctx2 均**派生自请求 ctx**（B3）：无上限时 = 请求 ctx 本身（不设超时点、取消仍可达），
+	// 有上限时 = WithTimeout(请求 ctx)（到点杀子进程，取消亦可达）。
 	timeout, noLimit := resolveExecTimeout(cfg, td)
-	ctx2 := context.Background()
+	ctx2 := ctx
 	if !noLimit {
 		var cancel context.CancelFunc
-		ctx2, cancel = context.WithTimeout(ctx2, time.Duration(timeout)*time.Second)
+		ctx2, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx2, argv[0], argv[1:]...)
@@ -126,8 +129,8 @@ func callTool(_ context.Context, cfg *Config, td *ToolDoc, args map[string]any, 
 	cmd.Env = cfg.executorEnv(cx, sandboxPolicy)
 	out, runErr := cmd.Output()
 
-	// noLimit（0/-1 = 无上限）时 ctx2 = Background，Err() 恒 nil → 两个超时/取消分支均不命中，
-	// 子进程自然运行至结束（等待由调用方取消驱动）。
+	// noLimit（0/-1 = 无上限）时 ctx2 = 请求 ctx（不设超时点）→ DeadlineExceeded 分支永不命中，
+	// 子进程自然运行至结束；Canceled 分支命中取消（请求 ctx 被取消 → 子进程被 kill）。
 	if ctx2.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("tool %s timeout after %ds", td.Name, timeout)
 	}

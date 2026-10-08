@@ -195,7 +195,7 @@ export function createSessionMessages() {
       const p = (data.payload && typeof data.payload === 'object') ? data.payload : data
       handleToken({
         type: 'tool_call',
-        tool_call_id: p['tool-call-id'] || p.tool_call_id,
+        tool_call_id: p.tool_call_id,
         tool: p.tool,
         arguments: p.arguments || '',
         simplified: p.simplified,

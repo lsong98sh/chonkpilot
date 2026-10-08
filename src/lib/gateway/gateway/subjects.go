@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 const (
@@ -30,7 +32,7 @@ const (
 	// 任务树/级联/状态事件由 server 编排后广播（task-done/task-started/task-updated）。
 	// payload：{task_id, tool, state, result_summary, instance_id, session?, turn?, tool_call_id?,
 	//          top_session?, parent?}（后两项 = I-90 增补的任务树归属，缺省为空）
-	SubjectTaskReport = "mcp-tasks-report"
+	SubjectTaskReport = msgkeys.TopicMcpTasksReport
 
 	// SubjectMCPChanged 是目录/接入变化通知（2026-09-05 合并 tool-changed ∪ server-status-changed；
 	// 2026-09-06 归 mcp 域更名）：
@@ -38,7 +40,7 @@ const (
 	// payload：{kind: tool|resource|skill|prompt|agent|server, name?, status?, reason?, instance_id}
 	// kind=server 的 status ∈ connected|failed|starting|stopped|unregistered|reloaded
 	//（starting=spawned 拉起中；stopped=unregister 停 spawned；failed 可带 reason=退出原因）。
-	SubjectMCPChanged = "mcp-gateway-changed"
+	SubjectMCPChanged = msgkeys.TopicMcpGatewayChanged
 
 	// SubjectToolsTimeout 是「到达超时、待用户裁决」下行事件（统一异步模型 2026-09-13）：
 	// manual/never 的任务化调用到达超时点时发往前端（fire-and-forget），由用户从 options 中裁决；
@@ -46,7 +48,7 @@ const (
 	// options 由模式决定：manual = [detach, cancel]，never = [wait, cancel]。
 	// payload：{instance_id, tool_call_id, task_id, tool, reason:"timeout", timeout_s,
 	//          options:[detach,cancel]|[wait,cancel]}
-	SubjectToolsTimeout = "mcp-tools-timeout"
+	SubjectToolsTimeout = msgkeys.TopicMcpToolsTimeout
 )
 
 // 资产/注册 kind（61-消息一览 §5.1.1 2026-09-05 定稿，2026-09-06 分组化后仍作内部目录

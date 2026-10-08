@@ -26,6 +26,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // memoryCategoryTTL 类别清单缓存存活时长（I-68 ②）：清单请求含目录扫描与 token 估算，
@@ -217,7 +218,7 @@ func (s *Server) memoryCategoryNames(instanceID string) []string {
 	if names, ok := s.memCache.get(instanceID); ok {
 		return names
 	}
-	res, err := dataRequest(s.bus, "data-memory-list", map[string]any{"instance_id": instanceID})
+	res, err := dataRequest(s.bus, msgkeys.TopicDataMemoryList, map[string]any{"instance_id": instanceID})
 	if err != nil {
 		return persist.MemoryCategoryNames()
 	}

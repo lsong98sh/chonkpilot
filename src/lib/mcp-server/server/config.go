@@ -26,23 +26,28 @@ import (
 //     manual=手动异步）；
 //   - threshold（秒）→ 暴露 `_meta.async-threshold`（auto/manual 档的超时转后台点）；
 //   - hard_timeout（秒）→ **不透出**，仅作 executor 执行硬杀上限（见 executor.go resolveExecTimeout）；
+//   - cancel_on_timeout（秒）→ **不透出**，⑤ 超时自动取消（gateway `doCall` 消费：到超时点直接取消，
+//     不等用户裁决；>0 生效、默认 0 = 不取消；用户口径 2026-10-07，见 18 §7 B1/B4）；
 //   - touch_files（bool）→ **不透出**，供 gateway 前置打点钩子（§5.4a）判定该工具是否「涉及文件变动」
 //     （`false` = 不涉及 → `plugin-history` 直接放行、不打检查点，省 8–9 次 git 进程）。
 //
-// 取值语义（用户口径，2026-09-27 / 2026-09-28）：
+// 取值语义（用户口径，2026-09-27 / 2026-09-28 / 2026-10-07）：
 //   - 字段**未设置**（键缺失 / `null` / 空串 / 非数字）→ 该字段不覆盖（维持契约现值/回落全局）；
 //   - `*Set` = 该字段是否被显式设置（区分 0/-1 与「未设置」；touch_files 区分 true/false 与「未设置」）；
 //   - threshold / hard_timeout 显式 **0 或 -1 = 无上限**（不设点 / 不杀，永远等，用户可取消）；
+//   - cancel_on_timeout 显式 **> 0 才生效**（0 / 负数 = 不取消）；
 //   - touch_files 未设置 → 由 gateway 按工具来源取缺省（self 内置仅 filesys_run/script_run 涉及，
 //     其余内置不涉及；dir 节点 / 第三方保守按涉及）。
 type ToolAsyncOverride struct {
-	Mode           string `json:"mode"`
-	Threshold      int    `json:"threshold"`
-	HardTimeout    int    `json:"hard_timeout"`
-	TouchFiles     bool   `json:"touch_files"`
-	ThresholdSet   bool   `json:"-"` // threshold 是否显式设置（0/-1 = 无上限）
-	HardTimeoutSet bool   `json:"-"` // hard_timeout 是否显式设置（0/-1 = 无上限）
-	TouchFilesSet  bool   `json:"-"` // touch_files 是否显式设置（区分 false 与「未设置」）
+	Mode               string `json:"mode"`
+	Threshold          int    `json:"threshold"`
+	HardTimeout        int    `json:"hard_timeout"`
+	TouchFiles         bool   `json:"touch_files"`
+	CancelOnTimeout    int    `json:"cancel_on_timeout"`
+	ThresholdSet       bool   `json:"-"` // threshold 是否显式设置（0/-1 = 无上限）
+	HardTimeoutSet     bool   `json:"-"` // hard_timeout 是否显式设置（0/-1 = 无上限）
+	TouchFilesSet      bool   `json:"-"` // touch_files 是否显式设置（区分 false 与「未设置」）
+	CancelOnTimeoutSet bool   `json:"-"` // cancel_on_timeout 是否显式设置
 }
 
 // UnmarshalJSON 容错解析单个覆盖项：字段缺省 / `null` / 空串 / 非数字 → 视为**未设置**
@@ -61,6 +66,7 @@ func (o *ToolAsyncOverride) UnmarshalJSON(data []byte) error {
 	}
 	o.Threshold, o.ThresholdSet = optIntField(raw["threshold"])
 	o.HardTimeout, o.HardTimeoutSet = optIntField(raw["hard_timeout"])
+	o.CancelOnTimeout, o.CancelOnTimeoutSet = optIntField(raw["cancel_on_timeout"])
 	o.TouchFiles, o.TouchFilesSet = optBoolField(raw["touch_files"])
 	return nil
 }
@@ -300,7 +306,8 @@ func (c *Config) SetToolAsync(raw map[string]ToolAsyncOverride) bool {
 //   - threshold / hard_timeout：**显式设置即保留**（含 0 / -1 = **无上限**；`Set` 标记区分
 //     它与「未设置」）；未设置（键缺失/null/空串/非数字）→ 不覆盖该字段；
 //   - touch_files：**显式设置即保留**（true = 涉及 / false = 不涉及；`TouchFilesSet` 区分它与「未设置」）；
-//   - 四项皆未设置 → 丢整项；结果为空 → nil（= 无覆盖，便于比较）。
+//   - cancel_on_timeout：**显式设置即保留**（含 0；`CancelOnTimeoutSet` 区分它与「未设置」；仅 > 0 生效）；
+//   - 五项皆未设置 → 丢整项；结果为空 → nil（= 无覆盖，便于比较）。
 //
 // 注：配置引用的工具不存在（孤儿键）**不报错**——查表时自然不命中（调用点不校验工具面，
 // 因为第三方/目录节点工具与内嵌 mcp-server 的工具面不必一致）。
@@ -339,7 +346,11 @@ func NormalizeToolAsync(raw map[string]ToolAsyncOverride) map[string]ToolAsyncOv
 			eff.TouchFiles = ov.TouchFiles
 			eff.TouchFilesSet = true
 		}
-		if eff.Mode == "" && !eff.ThresholdSet && !eff.HardTimeoutSet && !eff.TouchFilesSet {
+		if ov.CancelOnTimeoutSet || ov.CancelOnTimeout != 0 {
+			eff.CancelOnTimeout = ov.CancelOnTimeout
+			eff.CancelOnTimeoutSet = true
+		}
+		if eff.Mode == "" && !eff.ThresholdSet && !eff.HardTimeoutSet && !eff.TouchFilesSet && !eff.CancelOnTimeoutSet {
 			continue // 无有效覆盖 → 不登记（等价未配置）
 		}
 		out[name] = eff

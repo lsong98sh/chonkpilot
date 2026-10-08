@@ -250,17 +250,19 @@ test('⑫ 跨端：主题名 / 错误码与 Go 侧一致（零新增主题）', 
   for (const code of ['login-failed', 'login-username-taken']) {
     assert.ok(goLogin.includes(code), `login.go 应含错误码 ${code}`)
   }
-  // 主题名（前端 type = 相对主题同名；无新增主题）
-  assert.ok(goClaim.includes('SubjectInstanceClaim = "instance-claim"'))
-  assert.ok(goLogin.includes('SubjectLoginIn       = "login-in"'))
-  assert.ok(goLogin.includes('SubjectLoginRegister = "login-register"'))
-  assert.ok(goLogin.includes('SubjectLoginOut      = "login-out"'))
+  // 主题名（前端 type = 相对主题同名；无新增主题）——Go 侧已改引生成键常量（msgkeys），
+  // 值由 genmsg 从契约（61 schema）生成，故此处断言**常量引用 + 生成值**双一致。
+  assert.ok(goClaim.includes('SubjectInstanceClaim = msgkeys.TopicInstanceClaim'))
+  assert.ok(read('events/msgkeys.js').includes("instanceClaim: 'instance-claim'"))
+  assert.ok(goLogin.includes('SubjectLoginIn       = msgkeys.TopicLoginIn'))
+  assert.ok(goLogin.includes('SubjectLoginRegister = msgkeys.TopicLoginRegister'))
+  assert.ok(goLogin.includes('SubjectLoginOut      = msgkeys.TopicLoginOut'))
   // 前端视图/组件**不直发** MQ 主题（统一经 composable，composable 走 mq.emit）
   const view = read('views/auth/AuthView.vue')
   assert.doesNotMatch(view, /mq\.emit\(/, '视图不得直发 MQ（状态逻辑一律走 composable）')
   const composable = read('composables/useAuth.js')
-  for (const t of ["'login-in'", "'login-register'", "'login-out'"]) {
-    assert.ok(composable.includes(t), `useAuth 应发 ${t}`)
+  for (const t of ['MsgTopics.loginIn', 'MsgTopics.loginRegister', 'MsgTopics.loginOut']) {
+    assert.ok(composable.includes(t), `useAuth 应发 ${t}（拟消息常量引用，禁字符串字面量）`)
   }
-  assert.ok(read('composables/useInstanceClaim.js').includes("mq.emit('instance-claim'"))
+  assert.ok(read('composables/useInstanceClaim.js').includes('mq.emit(MsgTopics.instanceClaim'))
 })

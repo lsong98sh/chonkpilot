@@ -40,6 +40,12 @@ C. 夹具 `mock_slow_mcp.py`：stdio MCP server（纯标准库，逐行 JSON-RPC
    （`runtime` = 可执行/解释器单 token、`args` = 参数数组，**逐个作为 exec 参数**传递——路径含空格
    不再被切碎）后由 gateway 拉起；暴露名带节点前缀 = `slow3p_slow_sleep` / `slow3p_fast_echo`。
    取消 = kill 该 provider 子进程 + 按 restart 策略 respawn（第三方案例 D 用 pid 变化确权）。
+
+D. 配置⑤ 超时自动取消（2026-10-07，spec 18-工具异步超时与取消 §7 B1–B4）：
+   usr `tool_async.<工具暴露名>.cancel_on_timeout`（秒，> 0 生效、默认 0 = 不取消）→ gateway `doCall`
+   到超时点**直接取消**（不发 mcp-tools-timeout、不等用户裁决）→ `onTaskCancel` 按执行线终止
+   （spawned = kill + respawn；内嵌执行器 = 协作式，真停在执行体侧）。用例 I（第三方 stdio：层行
+   cancelled + 快工具 pid 变化）、J（内置 `script_run`：层行 cancelled + 无孤儿 ping 进程）。
 ────────────────────────────────────────────────────────────────────────────
 """
 
@@ -170,6 +176,40 @@ def _restore_mcp(name, snap):
             c.req("data-mcp-save", {"data": snap}, timeout=15000)
     except Exception as e:
         print("[run_tool_async] MCP 文件还原失败（%s）: %s" % (name, e), flush=True)
+
+
+# ── usr `tool_async` 快照-还原（配置⑤ 用例写 cancel_on_timeout，须收敛回原状）────────
+
+TOOL_ASYNC_KEY = "tool_async"
+
+
+def _snapshot_tool_async():
+    """快照 usr `tool_async`（data-user-config-load；不存在 → None），供套件退出还原。"""
+    try:
+        res = c.req("data-user-config-load", {})
+    except Exception:
+        return None
+    return ((res or {}).get("data") or {}).get(TOOL_ASYNC_KEY)
+
+
+def _save_tool_async(value):
+    c.req("data-user-config-save", {"data": {TOOL_ASYNC_KEY: value}}, timeout=15000)
+
+
+def _restore_tool_async(snap):
+    """按快照还原 usr `tool_async`：原本存在 → 写回；原本不存在 → 删键。失败仅告警。"""
+    try:
+        if snap is None:
+            c.req("data-user-config-delete", {"id": TOOL_ASYNC_KEY}, timeout=15000)
+        else:
+            c.req("data-user-config-save", {"data": {TOOL_ASYNC_KEY: snap}}, timeout=15000)
+    except Exception as e:
+        print("[run_tool_async] usr tool_async 还原失败: %s" % e, flush=True)
+
+
+def _wait_layer_state(sid, tcid, states, max_wait=25):
+    """等该 tool_call_id 的层权威行落至 state ∈ states（data-tasktree-tasks）。"""
+    return _wait_layer_row(sid, tcid, tuple(states), max_wait=max_wait)
 
 
 def _restart_gui(max_wait=90):
@@ -960,6 +1000,118 @@ def case_layer_authority_row():
     _drain_turn()
 
 
+def _started_tcid(sid, tool, max_wait=30):
+    """取本会话内某工具本轮任务的 tool_call_id（tasks.started；tool 名剥离 self_ 前缀后比对）。"""
+    node = run_llm.poll_find(
+        "tasks.started",
+        lambda p: _canon(p.get("tool")) == tool and p.get("top_session") == sid,
+        max_wait=max_wait)
+    if not node:
+        raise TestError("未收到 %s 的 tasks.started（无法定位 tool_call_id）" % tool)
+    tcid = node.get("tool_call_id")
+    if not tcid:
+        raise TestError("tasks.started 缺 tool_call_id：%s" % json.dumps(node, ensure_ascii=False))
+    return tcid
+
+
+def _procs_with_cmdline(sentinel):
+    """返回命令行含 sentinel 的**系统进程** [{ProcessId,Name,CommandLine}]（孤儿进程探针）。
+
+    仅测试侧观测：经 PowerShell CIM 查询 Win32_Process（**不新增 MQ 主题、不改产品代码**）。
+    sentinel 为唯一串（如 ping 目标地址 127.0.0.99）→ 精确圈定被测子进程。
+    """
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*%s*' } | "
+          "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress" % sentinel)
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                             capture_output=True, text=True, encoding="utf-8", timeout=25)
+    except Exception as e:  # noqa: BLE001
+        print("[run_tool_async] 进程探针执行失败: %s" % e, flush=True)
+        return []
+    txt = (out.stdout or "").strip()
+    if not txt:
+        return []
+    try:
+        data = json.loads(txt)
+    except Exception:
+        return []
+    return data if isinstance(data, list) else [data]
+
+
+def case_cancel_on_timeout_thirdparty():
+    """I（配置⑤）：第三方 stdio 工具配 `cancel_on_timeout` → 到超时点**自动取消**（不等裁决）
+    → gateway `Terminate` = kill + respawn（下次快工具 pid 变化 = 「真被杀」）。
+
+    驱动链：usr `tool_async.slow3p_slow_sleep.cancel_on_timeout=1` → gateway `doCall` 到超时点
+    直接 `tm.cancelRef`（**不发 mcp-tools-timeout**）→ `onTaskCancel` → provider `Terminate`
+    （spawned 线 = kill 子进程 + respawn）。断言：层权威行 state=cancelled + 快工具 pid 变化。
+    """
+    snap = _snapshot_tool_async()
+    try:
+        _save_tool_async({"slow3p_slow_sleep": {"cancel_on_timeout": 1}})
+        time.sleep(0.5)
+        # 1) 首调快工具记 pid
+        sid = _start_call("please call slow3p-echo")
+        pid1, _ = _echo_pid()
+        print("    [cancel_on_timeout] 夹具首调 slow3p_fast_echo pid=%s" % pid1)
+        _drain_turn()
+        # 2) 慢工具（async=never + call-level timeout=1s）+ usr cancel_on_timeout → 自动取消
+        sid = _start_call("please call cancel-on-timeout-3p")
+        tcid = _started_tcid(sid, SLOW_SLEEP)
+        row = _wait_layer_state(sid, tcid, ("cancelled",), max_wait=25)
+        print("    [cancel_on_timeout] 层权威行（data-tasktree-tasks）: %s"
+              % json.dumps(row, ensure_ascii=False))
+        if not row or row.get("state") != "cancelled":
+            raise TestError("配置⑤ 未自动取消：层权威 state=%r（期望 cancelled）" % (row or {}).get("state"))
+        _drain_turn()
+        # 3) respawn 生效：快工具再调成功且换进程（pid 变化 = 子进程真被杀后重建）
+        sid = _start_call("please call slow3p-echo")
+        pid2, _ = _echo_pid()
+        print("    [cancel_on_timeout] 自动取消后慢工具重调 pid=%s" % pid2)
+        if pid2 == pid1:
+            raise TestError("配置⑤ 未 kill+respawn 夹具进程（pid 仍为 %s）" % pid1)
+        _drain_turn()
+    finally:
+        _restore_tool_async(snap)
+
+
+def case_cancel_on_timeout_no_orphan():
+    """J（配置⑤）：内置执行器（self_script_run）超时自动取消 → **无孤儿进程**。
+
+    驱动链：usr `tool_async.self_script_run.cancel_on_timeout=1` → 到超时点自动取消 →
+    gateway 取消 ctx 经 in-memory 传输送达 mcp-server handler 的请求 ctx（18 §3.7 探针）→
+    `callTool` 的 `exec.CommandContext` 杀掉执行体子进程（`cmd /c ping`）→ 无残留 `ping`。
+    探针：系统进程命令行含唯一哨兵 `127.0.0.99` 者应为 0（取消后给 3s 收敛窗口）。
+    """
+    snap = _snapshot_tool_async()
+    try:
+        _save_tool_async({"self_script_run": {"cancel_on_timeout": 1}})
+        time.sleep(0.5)
+        sid = _start_call("please call cancel-on-timeout-self")
+        tcid = _started_tcid(sid, "script_run")
+        # 取消前：应有在跑的 ping（哨兵命中）——证据（可能因时序已不可见，仅打印不强断言）
+        before = _procs_with_cmdline("127.0.0.99")
+        print("    [cancel_on_timeout] 取消前哨兵进程: %s"
+              % json.dumps(before, ensure_ascii=False)[:300])
+        row = _wait_layer_state(sid, tcid, ("cancelled",), max_wait=25)
+        print("    [cancel_on_timeout] 层权威行（data-tasktree-tasks）: %s"
+              % json.dumps(row, ensure_ascii=False))
+        if not row or row.get("state") != "cancelled":
+            raise TestError("配置⑤ 未自动取消：层权威 state=%r（期望 cancelled）" % (row or {}).get("state"))
+        # 取消后：给 3s 收敛窗口，哨兵进程应清零（无孤儿）。
+        deadline = time.time() + 3
+        leaked = _procs_with_cmdline("127.0.0.99")
+        while leaked and time.time() < deadline:
+            time.sleep(0.4)
+            leaked = _procs_with_cmdline("127.0.0.99")
+        if leaked:
+            raise TestError("配置⑤ 自动取消后仍有孤儿进程（哨兵 127.0.0.99）: %s"
+                            % json.dumps(leaked, ensure_ascii=False))
+        _drain_turn()
+    finally:
+        _restore_tool_async(snap)
+
+
 def main():
     ok = 0
     total = 0
@@ -982,6 +1134,8 @@ def main():
     # 套件级 MCP 文件快照-还原（51 §6-8）：同名 user 级文件退出前回原状（原本存在 → 写回；
     # 原本不存在 → 删除）。窗口重装/复用实例下 client 仍可用，失败仅告警。
     mcp_snap = _snapshot_mcp(SLOW_NAME)
+    # usr `tool_async` 快照-还原：I/J（配置⑤）会写 cancel_on_timeout → 退出前收敛回原状。
+    ta_snap = _snapshot_tool_async()
     try:
         rec("SELF", "夹具 mock_slow_mcp.py 自检（stdio JSON-RPC 协议）", _fixture_selftest)
         rec("A", "A 经四级文件化 MCP 注册第三方 stdio server（重启 spawned 拉起）", case_register_thirdparty)
@@ -996,8 +1150,13 @@ def main():
             case_awaiting_restore_dom)
         rec("H", "H 真实会话工具调用 → Task 层权威行（running→done + exec_json 含 gw_task_id；I-88）",
             case_layer_authority_row)
+        rec("I", "I 配置⑤ 第三方 stdio cancel_on_timeout → 自动取消（层行 cancelled + respawn/pid 变化）",
+            case_cancel_on_timeout_thirdparty)
+        rec("J", "J 配置⑤ 内置执行器 cancel_on_timeout → 自动取消无孤儿进程（ping 哨兵探针）",
+            case_cancel_on_timeout_no_orphan)
     finally:
         _restore_mcp(SLOW_NAME, mcp_snap)
+        _restore_tool_async(ta_snap)
     errs = c.console()
     for e in errs.get("entries", []):
         if e.get("level") in ("error",):

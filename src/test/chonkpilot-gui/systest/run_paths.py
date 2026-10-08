@@ -11,7 +11,7 @@ A（落库确认）：
   * **重启后**再回读 → 7/7 仍一致（usr 主库持久，非内存态）。
 
 B（效果确认；一律真实链路可观测证据，无「保存成功即算过」）：
-  * `goPath` / `rustPath` / `cCompilerPath` → `{{toolchain.go|rust|c}}` 占位符（场景 systemPrompt）
+  * `goPath` / `rustPath` / `cCompilerPath` → `{{toolchain.go|rust|c}}` 占位符（场景主 agent 提示词）
     → mock LLM `/last` 的 **system 原文**（`chonkpilot-llm/server/toolchain.go:35 toolchainVars`
     → `mcpms.ReplaceToolchain`）；
   * `pythonPath` / `nodePath` / `javaPath` → `CHONKPILOT_INTERPRETERS`（executor 子进程 env，
@@ -32,7 +32,7 @@ B（效果确认；一律真实链路可观测证据，无「保存成功即算�
   刷新 `data-user-config-refresh` **不**重跑执行配置（`server.go:343 onUserConfigRefresh` 只做 usr mcps
   对账）→ 故本套件：实例 #1 写配置并采集「重启前」基线（断言 env **未**注入）→ `restart` → 实例 #2
   （同 HOME / work-dir / data-dir）采集 B 证据。
-  反例（**无需重启**，同套件采集为证据）：场景 systemPrompt 的 `{{toolchain.*}}` 为**每次调用**读 usr
+  反例（**无需重启**，同套件采集为证据）：场景主 agent 提示词里的 `{{toolchain.*}}` 为**每次调用**读 usr
   配置（`toolchain.go:51 replaceToolchain` → `toolchainVars` 逐次 `data-user-config-load`）→ 重启前即已生效。
 
 隔离与还原（51-FP与测试映射 §6-8）：
@@ -76,7 +76,7 @@ SC_NAME = "路径占位符探针-" + TAG
 # 路径族全集（persist_userconfig.go userConfigKeyKinds；load 恒补齐这 7 键）
 PATH_KEYS = ["chromePath", "javaPath", "pythonPath", "nodePath", "goPath", "rustPath", "cCompilerPath"]
 
-# 场景 systemPrompt：7 个已知 key 占位符 + 未知 key + {{arg}}（后两者应原样保留）
+# 场景主 agent 提示词：7 个已知 key 占位符 + 未知 key + {{arg}}（后两者应原样保留）
 PROBE_PROMPT = "\n".join([
     "PATHS-PROBE-" + TAG,
     "GO={{toolchain.go}}",
@@ -311,20 +311,30 @@ def java_real_probe():
 
 # ── 场景（占位符载体）────────────────────────────────────
 
-def scenario_save():
-    """建 user 级场景（独立根 `scenarios/<id>/`，与 capability/ 平级；落在临时 HOME 内）→ 返回落盘 systemPrompt。
+def main_prompt(rec):
+    """场景主 agent 提示词（新口径：落 `main.agent.md`；load 回读在 `agents[isMain].prompt`，
+    场景层**无**派生 `systemPrompt` 字段）。"""
+    ags = rec.get("agents") or []
+    main = next((a for a in ags if a.get("isMain")), ags[0] if ags else {})
+    return (main.get("prompt") or "")
 
-    断言落盘文本仍含**未替换**的 `{{toolchain.go}}`（证明 B 观测的是运行时替换，而非夹具预替换）。
+
+def scenario_save():
+    """建 user 级场景（`<usrDir>/capability/scenarios/<id>/`，落在临时 HOME 内）→ 返回主 agent 提示词。
+
+    主 agent 提示词（`main.agent.md`）经 `data-scenario-load` 回读（`agents[isMain].prompt`；场景层
+    无派生 `systemPrompt` 字段）。断言落盘文本仍含**未替换**的 `{{toolchain.go}}`
+    （证明 B 观测的是运行时替换，而非夹具预替换）。
     """
     CUR[0].req("data-scenario-save", {"data": {
         "id": SC_ID, "name": SC_NAME, "level": "user",
         "agents": [{"name": "主", "roleTag": "主", "isMain": True, "prompt": PROBE_PROMPT}],
     }})
     rec = (deep(CUR[0].req("data-scenario-load", {"data": {"id": SC_ID, "level": "user"}})) or {}).get("data") or {}
-    sp = rec.get("systemPrompt") or ""
+    sp = main_prompt(rec)
     if "{{toolchain.go}}" not in sp or ("PATHS-PROBE-" + TAG) not in sp:
-        raise TestError("场景未按预期落盘（systemPrompt 缺未替换占位符）: %r" % sp[:200])
-    print("[setup] 场景 %s 落盘（user 级，临时 HOME）systemPrompt 含未替换占位符 %r"
+        raise TestError("场景未按预期落盘（主 agent 提示词缺未替换占位符）: %r" % sp[:200])
+    print("[setup] 场景 %s 落盘（user 级，临时 HOME）主 agent 提示词含未替换占位符 %r"
           % (SC_ID, "{{toolchain.go}}"), flush=True)
     return sp
 
@@ -436,10 +446,10 @@ def case_b_interpreters_launch():
 
 
 def case_b_toolchain_placeholders():
-    """B：`{{toolchain.*}}`（场景 systemPrompt）→ 送 LLM 的 system 原文 == 配置值。"""
+    """B：`{{toolchain.*}}`（场景主 agent 提示词）→ 送 LLM 的 system 原文 == 配置值。"""
     sys_txt = scenario_system()
     if ("PATHS-PROBE-" + TAG) not in sys_txt:
-        raise TestError("场景 systemPrompt 未进入送 LLM 的 system: %r" % sys_txt[:200])
+        raise TestError("场景主 agent 提示词未进入送 LLM 的 system: %r" % sys_txt[:200])
     lines = {}
     for tag, key in PROMPT_LINES:
         line = _line_with(sys_txt, tag + "=")

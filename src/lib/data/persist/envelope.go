@@ -28,6 +28,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/config"
 	"github.com/chonkpilot/chonkpilot-data/internal/indexignored"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // ─── config 四域（prj-config / prompt / prj-security）───────────────
@@ -47,7 +48,7 @@ func (s *Service) handleConfigKV(domain, op string, req dataReq) {
 			s.fail(method, req, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"list": resp.List})
+		s.reply(method, req, map[string]any{msgkeys.FieldList: resp.List})
 	case "load":
 		id := reqKey(req)
 		resp, err := s.ConfigKVGet(facade.ConfigKVGetRequest{
@@ -57,7 +58,7 @@ func (s *Service) handleConfigKV(domain, op string, req dataReq) {
 			s.fail(method, req, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"data": resp.Values[id]})
+		s.reply(method, req, map[string]any{msgkeys.FieldData: resp.Values[id]})
 	case "save":
 		// 报文 `data` 兼容两形（61 §3.1）：批量 `{entries:{…}}` 优先，回落既有单键
 		// `{key,value}`（entries 为非空 map 时忽略 key/value）。翻译见 wire.ConfigSaveEntries。
@@ -72,7 +73,7 @@ func (s *Service) handleConfigKV(domain, op string, req dataReq) {
 			s.fail(method, req, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"ok": true, "id": id})
+		s.reply(method, req, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: id})
 	case "delete":
 		id := reqKey(req)
 		if _, err := s.ConfigKVDelete(facade.ConfigKVDeleteRequest{
@@ -81,7 +82,7 @@ func (s *Service) handleConfigKV(domain, op string, req dataReq) {
 			s.fail(method, req, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"ok": true})
+		s.reply(method, req, map[string]any{msgkeys.FieldOk: true})
 	}
 }
 
@@ -99,7 +100,7 @@ func (s *Service) handleUserConfig(op string, req dataReq) {
 			s.fail(method, req, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"list": resp.List})
+		s.reply(method, req, map[string]any{msgkeys.FieldList: resp.List})
 	case "load":
 		// load 返回**合并后**的有效值：usr 基线 + 项目层（prjusr → prj）覆盖可继承键
 		// （defaultLLM/defaultScenario）。list 仍为 usr 主库视图（"usr 是否已有配置"语义）。
@@ -108,7 +109,7 @@ func (s *Service) handleUserConfig(op string, req dataReq) {
 			s.fail(method, req, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"data": resp.Config})
+		s.reply(method, req, map[string]any{msgkeys.FieldData: resp.Config})
 	case "save":
 		if _, err := s.UserConfigSet(facade.UserConfigSetRequest{
 			Entries: req.Data, InstanceID: req.InstanceID,
@@ -116,11 +117,10 @@ func (s *Service) handleUserConfig(op string, req dataReq) {
 			s.fail(method, req, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"ok": true, "id": config.LegacyUserConfigKey})
+		s.reply(method, req, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: config.UserConfigID})
 	case "delete":
-		// 带 key/id = 删除该项（继承控件「重置继承」→ 回落上级）；无 key（或显式 legacy
-		// user_config 整块 key）= 清空整份用户配置；未知键由实现侧**明确报错**（P0：未知键
-		// 曾把 theme/locale/llms/mcps/超时一并清掉），不再兜底清空。
+		// 带 key/id = 删除该项（继承控件「重置继承」→ 回落上级）；无 key = 清空整份用户配置；
+		// 未知键由实现侧**明确报错**（P0：未知键曾把 theme/locale/llms/超时一并清掉），不兜底清空。
 		key := reqKey(req)
 		keys := []string{}
 		if key != "" {
@@ -132,14 +132,11 @@ func (s *Service) handleUserConfig(op string, req dataReq) {
 			s.fail(method, req, err)
 			return
 		}
-		if key != "" && key != config.LegacyUserConfigKey {
-			if renamed, ok := config.RenamedKey(key); ok {
-				key = renamed // 改名旧键（如 cPath）→ 应答按新键（与改前同口径）
-			}
-			s.reply(method, req, map[string]any{"ok": true, "id": key})
+		if key != "" {
+			s.reply(method, req, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: key})
 			return
 		}
-		s.reply(method, req, map[string]any{"ok": true})
+		s.reply(method, req, map[string]any{msgkeys.FieldOk: true})
 	}
 }
 
@@ -151,10 +148,10 @@ func reqKey(req dataReq) string {
 	if req.Data == nil {
 		return ""
 	}
-	if id := idKey(req.Data["id"]); id != "" {
+	if id := idKey(req.Data[msgkeys.FieldId]); id != "" {
 		return id
 	}
-	if k, _ := req.Data["key"].(string); k != "" {
+	if k, _ := req.Data[msgkeys.FieldKey].(string); k != "" {
 		return k
 	}
 	return ""
@@ -272,11 +269,11 @@ func flatReqMap(req dataReq) map[string]any {
 	for k, v := range req.Data {
 		m[k] = v
 	}
-	if _, ok := m["id"]; !ok && req.ID != nil {
-		m["id"] = req.ID
+	if _, ok := m[msgkeys.FieldId]; !ok && req.ID != nil {
+		m[msgkeys.FieldId] = req.ID
 	}
-	if _, ok := m["filter"]; !ok && req.Filter != nil {
-		m["filter"] = req.Filter
+	if _, ok := m[msgkeys.FieldFilter]; !ok && req.Filter != nil {
+		m[msgkeys.FieldFilter] = req.Filter
 	}
 	return m
 }
@@ -331,10 +328,10 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(wire.SessionIDResult(resp.SessionID))
 	case "title":
 		id := idKey(req.ID)
-		if v, _ := req.Data["id"].(string); id == "" {
+		if v, _ := req.Data[msgkeys.FieldId].(string); id == "" {
 			id = v
 		}
-		title, _ := req.Data["title"].(string)
+		title, _ := req.Data[msgkeys.FieldTitle].(string)
 		if _, err := s.SessionTitle(facade.SessionTitleRequest{
 			InstanceID: req.InstanceID, SessionID: id, Title: title,
 		}); err != nil {
@@ -344,7 +341,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(wire.OKResult())
 	case "delete":
 		id := idKey(req.ID)
-		if v, _ := req.Data["id"].(string); id == "" {
+		if v, _ := req.Data[msgkeys.FieldId].(string); id == "" {
 			id = v
 		}
 		if _, err := s.SessionDelete(facade.SessionDeleteRequest{
@@ -386,7 +383,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		if _, err := s.SessionEnsure(facade.SessionEnsureRequest{
 			InstanceID:      req.InstanceID,
 			SessionID:       sessionIDOf(req),
-			ParentSessionID: Sval(req.Data["parent_session_id"]),
+			ParentSessionID: Sval(req.Data[msgkeys.FieldParentSessionId]),
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -395,7 +392,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 	case "ensure-turn":
 		if _, err := s.TurnEnsure(facade.TurnEnsureRequest{
 			InstanceID: req.InstanceID,
-			TurnID:     Sval(req.Data["turn_id"]),
+			TurnID:     Sval(req.Data[msgkeys.FieldTurnId]),
 			SessionID:  sessionIDOf(req),
 		}); err != nil {
 			failf("%v", err)
@@ -405,16 +402,17 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 	case "append-message":
 		r := wire.MessageAppendFromWire(wireReq)
 		r.InstanceID = req.InstanceID
-		if _, err := s.MessageAppend(r); err != nil {
+		resp, err := s.MessageAppend(r)
+		if err != nil {
 			failf("%v", err)
 			return
 		}
-		okf(wire.OKResult())
+		okf(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: resp.ID})
 	case "set-summary":
 		if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{
 			InstanceID: req.InstanceID,
-			TurnID:     Sval(req.Data["turn_id"]),
-			Summary:    Sval(req.Data["summary"]),
+			TurnID:     Sval(req.Data[msgkeys.FieldTurnId]),
+			Summary:    Sval(req.Data[msgkeys.FieldSummary]),
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -434,9 +432,9 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		}
 		if _, err := s.TurnComplete(facade.TurnCompleteRequest{
 			InstanceID:   req.InstanceID,
-			TurnID:       Sval(req.Data["turn_id"]),
-			Status:       Sval(req.Data["status"]),
-			FinishReason: Sval(req.Data["finish_reason"]),
+			TurnID:       Sval(req.Data[msgkeys.FieldTurnId]),
+			Status:       Sval(req.Data[msgkeys.FieldStatus]),
+			FinishReason: Sval(req.Data[msgkeys.FieldFinishReason]),
 			FullTokens:   tok.FullTokens,
 			BriefTokens:  tok.BriefTokens,
 		}); err != nil {
@@ -479,7 +477,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 
 // sessionIDOf 会话 id：优先 data.session_id，回落 envelope id。
 func sessionIDOf(req dataReq) string {
-	if v, _ := req.Data["session_id"].(string); v != "" {
+	if v, _ := req.Data[msgkeys.FieldSessionId].(string); v != "" {
 		return v
 	}
 	return idKey(req.ID)
@@ -514,13 +512,13 @@ func (s *Service) handleSnapshot(action string, req dataReq) {
 			return
 		}
 		if !ok {
-			okf(map[string]any{"snapshot": nil}) // 无快照/无记录 → snapshot=null（调用方回退 BuildHistory）
+			okf(map[string]any{msgkeys.FieldSnapshot: nil}) // 无快照/无记录 → snapshot=null（调用方回退 BuildHistory）
 			return
 		}
-		okf(map[string]any{"snapshot": snap})
+		okf(map[string]any{msgkeys.FieldSnapshot: snap})
 	case "set":
 		var snap data.Snapshot
-		if raw, ok := req.Data["snapshot"].(map[string]any); ok && len(raw) > 0 {
+		if raw, ok := req.Data[msgkeys.FieldSnapshot].(map[string]any); ok && len(raw) > 0 {
 			b, _ := json.Marshal(raw)
 			if err := json.Unmarshal(b, &snap); err != nil {
 				failf("snapshot: %v", err)
@@ -531,7 +529,7 @@ func (s *Service) handleSnapshot(action string, req dataReq) {
 			failf("%v", err)
 			return
 		}
-		okf(map[string]any{"ok": true})
+		okf(map[string]any{msgkeys.FieldOk: true})
 	}
 }
 
@@ -639,7 +637,7 @@ func (s *Service) handleKnowledge(action string, req dataReq, _ []byte) {
 			failf(err)
 			return
 		}
-		okf(map[string]any{"ok": true, "path": resp.Path})
+		okf(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldPath: resp.Path})
 	case "delete":
 		r := wire.KnowledgeDeleteFromWire(m)
 		r.InstanceID = req.InstanceID
@@ -664,7 +662,7 @@ func (s *Service) handleKnowledge(action string, req dataReq, _ []byte) {
 			failf(err)
 			return
 		}
-		okf(map[string]any{"ok": true, "path": resp.Path})
+		okf(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldPath: resp.Path})
 	case "rmdir":
 		r := wire.KnowledgeRmdirFromWire(m)
 		r.InstanceID = req.InstanceID
@@ -738,6 +736,34 @@ func (s *Service) handleMemory(op string, req dataReq) {
 			return
 		}
 		okf(wire.MemoryIDResult(resp.ID))
+	// 记忆提取进度专用表（data-memory-extract-*；OP-05/06，2026-10-06）：
+	// 记录 (会话, 类别) → 最后已成功提取的 turn，落 prjusr（不再用 config 键）。
+	case "extract-load":
+		r := wire.MemoryExtractLoadFromWire(m)
+		r.InstanceID = req.InstanceID
+		resp, err := s.MemoryExtractLoad(r)
+		if err != nil {
+			failf(err)
+			return
+		}
+		okf(wire.MemoryExtractListResult(resp.List))
+	case "extract-save":
+		r := wire.MemoryExtractSaveFromWire(m)
+		r.InstanceID = req.InstanceID
+		resp, err := s.MemoryExtractSave(r)
+		if err != nil {
+			failf(err)
+			return
+		}
+		okf(map[string]any{msgkeys.FieldOk: resp.OK, msgkeys.FieldId: resp.ID})
+	case "extract-delete":
+		r := wire.MemoryExtractDeleteFromWire(m)
+		r.InstanceID = req.InstanceID
+		if _, err := s.MemoryExtractDelete(r); err != nil {
+			failf(err)
+			return
+		}
+		okf(wire.OKResult())
 	}
 }
 
@@ -804,13 +830,13 @@ func (s *Service) handleIndex(op string, req dataReq) {
 		v, ok := values[key]
 		return v, ok
 	}
-	res := indexignored.Query(workdir, stringSlice(req.Data["paths"]), get, s.Warnf)
+	res := indexignored.Query(workdir, stringSlice(req.Data[msgkeys.FieldPaths]), get, s.Warnf)
 	result := map[string]any{
-		"codegraph": engineIgnoredResult(res.Codegraph),
-		"vfts":      engineIgnoredResult(res.Vfts),
+		msgkeys.FieldCodegraph: engineIgnoredResult(res.Codegraph),
+		msgkeys.FieldVfts:      engineIgnoredResult(res.Vfts),
 	}
 	if res.Truncated {
-		result["truncated"] = true // 超限才带（缺省不出现；见 61 §3.6）
+		result[msgkeys.FieldTruncated] = true // 超限才带（缺省不出现；见 61 §3.6）
 	}
 	s.reply(method, req, result)
 }
@@ -836,6 +862,7 @@ func engineIgnoredResult(e indexignored.EngineResult) map[string]any {
 	for _, p := range e.Ignored {
 		ignored = append(ignored, p)
 	}
+	// "enabled"/"ignored" 为嵌套数组键（非契约顶层字段，保留字面量）。
 	return map[string]any{"enabled": e.Enabled, "ignored": ignored}
 }
 

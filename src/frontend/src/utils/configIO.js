@@ -3,19 +3,22 @@
  *
  * 背景：设置面原先只有**逐项 Reset**（`data-user-config-delete` 带单键），
  * 没有导出/导入，也没有「恢复出厂」入口；后端其实早已具备「清空整份 usr 配置」的能力
- * （`chonkpilot-data/persist/persist_userconfig.go` handleUserConfig delete 无 key 分支），
+ * （`src/lib/data/persist/envelope.go` handleUserConfig delete 无 key 分支 →
+ * `src/lib/data/internal/config/config_facade.go` 的 `deleteUserConfig`），
  * 只是未在 UI 暴露。
  *
  * 分工（本模块只做纯函数，不碰 UI / 不碰 mq）：
  *   - 快照外形（导出文件与自动备份文件**同一格式**）：{app, schema, scope, exportedAt,
  *     secretsExcluded, data:{…usr 主库视图…}}；
+ *   - **保真过滤（I-127）**：只写 `explicit`（用户显式写入的键）→ 不把视图内补的系统默认
+ *     （如 `defaultLLM` 数值下标）固化成用户配置；导入即精确还原；
  *   - 键白名单过滤（未知键忽略并计数，避免脏数据入库）；
  *   - 密钥剔除（导出可选「排除密钥」）；
  *   - 文件名（含时间戳）；需重启键判定（与 SettingsPathsPage 的 usr 路径键口径一致）。
  *
- * **键白名单唯一权威 = `chonkpilot-data/persist/persist_userconfig.go`**
- * （userConfigKeyKinds ∪ userConfigFreeKeys ∪ collectionKeys）；单测逐键与该 Go 源码核对，
- * 防两边漂移。
+ * **键白名单唯一权威 = `src/lib/data/internal/config/userconfig.go`**
+ * （userConfigKeyKinds ∪ userConfigFreeKeys ∪ collectionKeys；原 `persist/persist_userconfig.go`
+ * 已随阶段 4「internal 下沉」下移）；单测逐键与该 Go 源码核对，防两边漂移。
  */
 
 /** 快照外形标识（导入侧用它识别「本应用导出文件」并可展示导出时间） */
@@ -31,12 +34,12 @@ export const EXPORT_SCOPE = 'usr'
 export const SNAPSHOT_SCALAR_KEYS = [
   'theme', 'locale',
   'chromePath', 'javaPath', 'pythonPath', 'nodePath', 'goPath', 'rustPath', 'cCompilerPath',
-  'responseTimeout', 'streamTimeout', 'retryCount', 'retryDelay',
+  'responseTimeout', 'streamTimeout', 'retryCount',
   'defaultLLM', 'defaultScenario',
 ]
 
 /** 自由键（persist `userConfigFreeKeys`）：无类型无默认，值以字符串形态存取 */
-export const SNAPSHOT_FREE_KEYS = ['recent_dirs', 'tool_async', 'tool_sandbox', 'memory_prompts']
+export const SNAPSHOT_FREE_KEYS = ['recent_dirs', 'tool_async', 'tool_sandbox']
 
 /** 集合键（persist `collectionKeys` → usr 专用表 llms） */
 export const SNAPSHOT_COLLECTION_KEYS = ['llms']
@@ -111,6 +114,27 @@ export function redactSecrets(config) {
 }
 
 /**
+ * 取 usr 主库视图中的**显式配置本体**（保真导出，I-127）：
+ *   - 只保留 `explicit`（后端 `data-user-config-list` 视图增列）列出的键 = 用户**显式写入**的键；
+ *     视图内被补系统默认的键（如未显式配置的 `defaultLLM`）**不入**；
+ *   - 剔除 `id`（域标识）与 `explicit`（自身非配置键）。
+ * `explicit` 缺失 / 非数组 → 视为无显式键（导出空本体）——不以视图全量兜底，
+ * 否则等于把默认填充固化成用户配置（即本项要修的缺陷）。
+ * @param {object} config - `data-user-config-list` 的 list[0]（含 `explicit` 列）
+ * @returns {object} 仅含显式键的新对象（不改入参）
+ */
+export function explicitConfigKeys(config) {
+  const src = config && typeof config === 'object' ? config : {}
+  const keys = Array.isArray(src.explicit) ? src.explicit : []
+  const out = {}
+  for (const k of keys) {
+    if (k === 'id' || k === 'explicit') continue
+    if (Object.prototype.hasOwnProperty.call(src, k)) out[k] = src[k]
+  }
+  return out
+}
+
+/**
  * 组装快照信封（导出文件与自动备份共用）。
  * @param {object} config - usr 主库视图（`data-user-config-list` 的 list[0]）
  * @param {{excludeSecrets?: boolean, scope?: string, now?: Date}} [opts]
@@ -119,8 +143,8 @@ export function redactSecrets(config) {
 export function buildSnapshot(config, opts = {}) {
   const { excludeSecrets = false, scope = EXPORT_SCOPE } = opts
   const now = opts.now instanceof Date ? opts.now : new Date()
-  const src = config && typeof config === 'object' ? { ...config } : {}
-  delete src.id // list 视图带 id 字段（域标识），非配置本体
+  // 保真：本体 = 显式键（剔除 id / explicit 与系统默认填充的键）
+  const src = explicitConfigKeys(config)
 
   let data = src
   let removedSecrets = 0

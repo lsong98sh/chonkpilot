@@ -23,7 +23,7 @@ import {
   SNAPSHOT_SCALAR_KEYS, SNAPSHOT_FREE_KEYS, SNAPSHOT_COLLECTION_KEYS, SNAPSHOT_KEYS,
   RESTART_KEYS, SECRET_NAME_RE,
   timestamp, exportFileName, backupFileName,
-  redactSecrets, buildSnapshot, serializeSnapshot,
+  redactSecrets, explicitConfigKeys, buildSnapshot, serializeSnapshot,
   parseImportText, filterImport, restartKeysOf,
 } from '../src/utils/configIO.js'
 
@@ -35,10 +35,16 @@ const readRepo = (rel) => readFileSync(join(repoRoot, rel), 'utf8')
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 
-/** 样例 usr 主库视图（形状对齐 data-user-config-list 的 list[0]） */
+/** 样例 usr 主库视图（形状对齐 data-user-config-list 的 list[0]；
+ *  `explicit` = 后端增列（用户显式写入的键）——`retryCount`/`defaultScenario` 为被补的系统默认，
+ *  不在 `explicit` 内，用于验证导出「保真」过滤（I-127）。 */
 function sampleConfig() {
   return {
     id: 'user-config',
+    // —— 视图内被补系统默认、但用户未显式配置的键（导出时不应写入快照）——
+    retryCount: 2,
+    defaultScenario: '',
+    // —— 显式写入的键 ——
     theme: 'dark',
     locale: 'zh-CN',
     chromePath: 'C:\\chrome.exe',
@@ -50,6 +56,10 @@ function sampleConfig() {
     ],
     tool_async: '{"demo":{"mode":"auto"}}',
     recent_dirs: '["D:\\\\proj"]',
+    explicit: [
+      'theme', 'locale', 'chromePath', 'responseTimeout', 'defaultLLM',
+      'llms', 'tool_async', 'recent_dirs',
+    ],
   }
 }
 
@@ -71,10 +81,31 @@ test('A · 导出快照：信封外形 + 时间戳文件名 + 默认包含密钥
   assert.equal(env.exportedAt, now.toISOString())
   assert.equal(env.secretsExcluded, false, '默认包含密钥（便于完整迁移）')
   assert.equal(env.data.id, undefined, '域 id 不应写入快照')
+  assert.equal(env.data.explicit, undefined, 'explicit 是视图增列（非配置本体），不应写入快照')
   assert.equal(env.data.theme, 'dark')
   assert.equal(env.data.llms[0].apiKey, 'sk-secret-1', '默认导出含密钥')
+  assert.equal(env.data.retryCount, undefined, '未显式配置的默认填充键不应写入快照（保真）')
+  assert.equal(env.data.defaultScenario, undefined, '未显式配置的默认填充键不应写入快照（保真）')
   assert.equal(snap.removedSecrets, 0)
   assert.equal(snap.keyCount, Object.keys(env.data).length, '项数统计 = 快照 data 键数')
+})
+
+test('A · 导出保真：只写 explicit 内的显式键（I-127）', () => {
+  const cfg = sampleConfig()
+  const pick = explicitConfigKeys(cfg)
+  assert.deepEqual(Object.keys(pick).sort(), [...cfg.explicit].sort(), '显式本体 = explicit 键集')
+  assert.equal(pick.retryCount, undefined, '视图内补系统默认的键不入显式本体')
+  assert.equal(pick.defaultScenario, undefined)
+  assert.equal(pick.id, undefined)
+  assert.equal(pick.theme, 'dark')
+
+  // 缺失 explicit（旧视图/裸对象）→ 空本体，不以视图全量兜底（否则固化成用户配置）
+  assert.deepEqual(explicitConfigKeys({ theme: 'dark', defaultLLM: 0 }), {})
+  assert.deepEqual(explicitConfigKeys(null), {})
+  assert.deepEqual(explicitConfigKeys({ explicit: ['absent'] }), {}, 'explicit 列了但视图无该键 → 跳过')
+
+  const env = JSON.parse(serializeSnapshot(cfg).json)
+  assert.deepEqual(Object.keys(env.data).sort(), [...cfg.explicit].sort())
 })
 
 test('A · 备份文件名与导出一致口径（时间戳 + 同格式）', () => {
@@ -171,16 +202,19 @@ test('C · filterImport：集合键非数组 → 空数组（口径同 persist w
 })
 
 test('C · 导出 → 导入往返：键集合一致，值原样回读', () => {
-  const snap = serializeSnapshot(sampleConfig(), { excludeSecrets: true })
+  const cfg = sampleConfig()
+  const snap = serializeSnapshot(cfg, { excludeSecrets: true })
   const parsed = parseImportText(snap.json)
   const { data, applied, ignored } = filterImport(parsed.data)
 
   assert.deepEqual(ignored, [], '导出文件不含白名单外键')
+  assert.deepEqual(applied.sort(), [...cfg.explicit].sort(), '往返键集 = 显式键（保真）')
   assert.deepEqual(applied.sort(), Object.keys(data).sort())
   assert.equal(data.theme, 'dark')
   assert.equal(data.defaultLLM, 'gpt-local')
   assert.equal(data.tool_async, '{"demo":{"mode":"auto"}}', '自由键按字符串原样回读')
   assert.equal(data.llms[0].apiKey, undefined)
+  assert.equal(data.retryCount, undefined, '未显式配置的默认填充键不往返（不被固化）')
 })
 
 test('C · 需重启键判定 = usr 工具链路径子集（批 2 APPLY_RESTART 口径）', () => {
@@ -219,6 +253,7 @@ test('D · 键白名单与 config 域实现 userconfig.go 逐键一致', () => {
   assert.deepEqual([...SNAPSHOT_COLLECTION_KEYS].sort(),
     keysAfter('var collectionKeys = map[string]string').sort(), '集合键须与 collectionKeys 一致')
   assert.equal(SNAPSHOT_KEYS.length, SNAPSHOT_SCALAR_KEYS.length + SNAPSHOT_FREE_KEYS.length + SNAPSHOT_COLLECTION_KEYS.length)
+  assert.ok(!SNAPSHOT_KEYS.includes('explicit'), 'explicit 是视图增列（非配置键），不入导入白名单')
 })
 
 // ═══════════════════════════════════════════════════════════════

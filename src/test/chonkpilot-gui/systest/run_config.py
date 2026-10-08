@@ -305,9 +305,9 @@ def case_c8_missing_fields_defaults():
     （`chonkpilot-data/db.go:104 UserPath`；无 CLI 开关，`--data-dir` 只重定位 prj/prjusr 层），
     故以 **USERPROFILE=临时目录** 起子实例（见 `_spawn_ide`）→ 其 usr 库全新（`seedMap` 三层
     均不预写，`chonkpilot-data/seed.go:39`）→ 断言针对**系统默认**而非机器偏好：
-      `chonkpilot-data/persist/persist_userconfig.go:191` userConfigSystemDefaults
+      `chonkpilot-data/internal/config/userconfig.go` userConfigSystemDefaults
       = theme`light`（2026-09-16 由 `system` 订正，原值无实现）/ responseTimeout`120` /
-      streamTimeout`60` / retryCount`2` / retryDelay`5`。
+      streamTimeout`60` / retryCount`2`（退避间隔不自持 —— 经 router.RetryWait，无 retryDelay 键）。
     机器 `~/.chonkpilot`（本机 theme=dark）全用例零读写：用例结束后现场比对底座实例配置快照。
     """
     # 临时目录走 harness 唯一入口（`tmp_dir` 登记 → 退出时带重试回收，见 51 §6）：
@@ -330,8 +330,8 @@ def case_c8_missing_fields_defaults():
             raise TestError(f"responseTimeout={cfg.get('responseTimeout')}，期望系统默认 120")
         if cfg.get("streamTimeout") != 60:
             raise TestError(f"streamTimeout={cfg.get('streamTimeout')}，期望系统默认 60")
-        if cfg.get("retryCount") is None or cfg.get("retryDelay") is None:
-            raise TestError(f"retryCount/retryDelay 缺兜底默认: {cfg}")
+        if cfg.get("retryCount") is None:
+            raise TestError(f"retryCount 缺兜底默认: {cfg}")
         if cfg.get("theme") != "light":
             raise TestError(f"theme={cfg.get('theme')!r}，期望系统默认 'light'")
     finally:
@@ -339,7 +339,7 @@ def case_c8_missing_fields_defaults():
             _kill_proc(proc)
     # ③ 机器 usr 偏好零改动（本用例不得写 ~/.chonkpilot）
     after = dict(_user_cfg())
-    for k in ("theme", "responseTimeout", "streamTimeout", "retryCount", "retryDelay"):
+    for k in ("theme", "responseTimeout", "streamTimeout", "retryCount"):
         if after.get(k) != before.get(k):
             raise TestError(f"机器 usr 配置被本用例改动：{k} {before.get(k)!r} → {after.get(k)!r}")
 

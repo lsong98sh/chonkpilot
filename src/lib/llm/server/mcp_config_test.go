@@ -72,7 +72,7 @@ func TestLoadGatewayServersFileView(t *testing.T) {
 	}
 
 	s := &Server{cfg: api, opts: Options{UsrPath: path}}
-	entries := s.loadMcpFileEntries()
+	entries := s.loadMcpFileEntries("")
 
 	byName := map[string]mcpEntry{}
 	for _, e := range entries {

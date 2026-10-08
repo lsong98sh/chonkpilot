@@ -11,19 +11,16 @@ import MemoryCategoryListDialog from '../views/settings/MemoryCategoryListDialog
 import dataClient, { dataRequest } from '../utils/dataClient'
 import { loadFailedText } from '../utils/settingsFeedback'
 
-// DEFAULT_MEMORY_PROMPT = 记忆沉淀「内置默认提示词」的**前端镜像**（权威常量在 Go 侧
-// `src/plugins/plugin-memory/memory.go` 的 defaultRewriteSystemPrompt）。用途 = 类别未自定义
-// 提示词时，编辑弹框回填该默认值供用户查看/编辑；保存内容与内置默认相同（或留空）→ 清键回落默认。
-// 跨端字面量由前端守卫测试核对（frontend/test/uxBatch4Fix.test.js）。
-export const DEFAULT_MEMORY_PROMPT = '你是记忆库沉淀器。给定某个记忆类别的现有全文与本轮对话的新增信息，'
-  + '请把两者合并后重写该类别全文（累加 + 更新：修正过时内容、去重、条理化、不臆造）。'
-  + '只输出重写后的 markdown 全文，不要任何解释或代码块围栏。'
+// 注（OP-04，2026-10-06）：原前端镜像常量 `DEFAULT_MEMORY_PROMPT` 已删除 —— 类别沉淀提示词
+// **由后端下发**（`data-memory-list` 每项的 `prompt` 字段；文件化，读序见
+// `docs/spec/60-reference/64-配置项一览.md`），前端不再持任何提示词字面量副本。
 
 export function useMemoryCategories() {
   const { t } = useI18n()
   // 记忆库总开关（memory.enabled；由调用方在读到 prj 配置后 setEnabled）
   const enabled = ref(false)
-  // 类别清单（data-memory-list 形态：{ category, level, tokens }）
+  // 类别清单（data-memory-list 形态：{ category, level, tokens, prompt, prompt_override }；
+  // prompt = 后端按文件读序解析的沉淀提示词有效值，prompt_override = 是否有用户可编辑覆盖文件）
   const list = ref([])
   // 记忆总 token 数（各启用类别 tokens 之和）
   const total = computed(() => list.value.reduce((sum, c) => sum + (Number(c.tokens) || 0), 0))

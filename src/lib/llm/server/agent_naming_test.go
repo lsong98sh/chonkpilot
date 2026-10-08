@@ -20,27 +20,39 @@ import (
 
 // appMultiScenarioRoot 造 app 级 **capability 根**（场景根 = `<capRoot>/scenarios`），含**多个**场景：
 // scenarios = 场景 id → (agent 名 → 提示词)。用于「跨场景同名 agent」用例。
+// **子 agent 唯一形态 = 引用**：非 main 成员落 `<capRoot>/agents/<场景id>-<名>.agent.md`
+// （跨场景同名不互相覆盖）并写入 `scenario.json.agents`；名为 `main` 的成员写为 `main.agent.md`（内联）。
 func appMultiScenarioRoot(t *testing.T, scenarios map[string]map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	capRoot := filepath.Join(root, "capability")
-	if err := os.MkdirAll(capRoot, 0o755); err != nil {
-		t.Fatalf("mkdir capability: %v", err)
+	agentsDir := filepath.Join(capRoot, "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
 	}
 	for id, agents := range scenarios {
 		dir := filepath.Join(capRoot, "scenarios", id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir scenario %s: %v", id, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "scenario.json"),
-			[]byte("{\"name\":\""+id+"\"}\n"), 0o644); err != nil {
-			t.Fatalf("write scenario.json: %v", err)
-		}
+		refs := []string{}
 		for name, prompt := range agents {
 			doc := "# " + name + "\n\n[description]\n" + name + " 描述\n\n[content]\n" + prompt + "\n"
-			if err := os.WriteFile(filepath.Join(dir, name+".agent.md"), []byte(doc), 0o644); err != nil {
-				t.Fatalf("write %s.agent.md: %v", name, err)
+			if name == "main" {
+				if err := os.WriteFile(filepath.Join(dir, "main.agent.md"), []byte(doc), 0o644); err != nil {
+					t.Fatalf("write main.agent.md: %v", err)
+				}
+				continue
 			}
+			fileName := id + "-" + name + ".agent.md"
+			if err := os.WriteFile(filepath.Join(agentsDir, fileName), []byte(doc), 0o644); err != nil {
+				t.Fatalf("write %s: %v", fileName, err)
+			}
+			refs = append(refs, "${exeDir}/capability/agents/"+fileName)
+		}
+		meta, _ := json.Marshal(map[string]any{"name": id, "agents": refs})
+		if err := os.WriteFile(filepath.Join(dir, "scenario.json"), append(meta, '\n'), 0o644); err != nil {
+			t.Fatalf("write scenario.json: %v", err)
 		}
 	}
 	return capRoot
@@ -94,7 +106,7 @@ func delegateRecorder(t *testing.T, trigger, agent string) (*sseRecorder, *httpt
 		_ = json.Unmarshal(raw, &typed)
 		text := lastText(typed.Messages)
 		if strings.Contains(text, trigger) {
-			args := jb(map[string]any{"script": `LLM "` + agent + `" "x"` + "\n"})
+			args := jb(map[string]any{"script": `LLM "` + agent + `" "x" "命名回归展示名"` + "\n"})
 			llmSSE(w, []string{
 				sseChunk(map[string]any{"content": ""}, ""),
 				sseChunk(map[string]any{"tool_calls": []any{map[string]any{

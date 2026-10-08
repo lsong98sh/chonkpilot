@@ -200,7 +200,9 @@ func (b *Bridge) sessionViaFacade(action, payloadJSON string) (any, []error, boo
 			res, errs := fail(err)
 			return res, errs, true
 		}
-		return wire.MessageLoadResult(resp.Messages), nil, true
+		// 与 MQ 信封路径（persist `envelope.go` context）逐字一致（I-145）：携带可选伴随数组
+		// turn_tokens（为空时 wire.ContextResult 不写该键 → 与旧 {messages} 逐字节等价）。
+		return wire.ContextResult(resp.Messages, resp.TurnTokens), nil, true
 	}
 	return nil, nil, false // 未知动作 → 交回总线（不静默丢弃）
 }

@@ -3,6 +3,9 @@
 // 单进程内嵌：filesys + data/persist + LLM server + gateway + mcp-server + plugins，
 // 与 GUI 单体共享同一 lib 集，通过内存 MQ 通讯。
 //
+// 本文件只留 **flag 解析 + 装配**（I-158）：数据根三态准备 / work-dir 占用校验 /
+// prjusr 试开 / 配置复制编排都在 `chonkpilot-cli` 库（src/lib/cli，L2 可测）。
+//
 // 用法：
 //
 //	chonkpilot-cli.exe --prompt "帮我查一下" --work-dir .
@@ -24,49 +27,74 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/chonkpilot/chonkpilot-data/facade/inline"
+	"github.com/chonkpilot/chonkpilot-cli"
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin-codegraph"
-	"github.com/chonkpilot/chonkpilot-plugin-compress"
 	"github.com/chonkpilot/chonkpilot-plugin-history"
-	"github.com/chonkpilot/chonkpilot-plugin-memory"
 	"github.com/chonkpilot/chonkpilot-plugin-vfts"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
 
-func main() {
-	var (
-		prompt     string
-		promptFile string
-		scenario   string
-		workDir    string
-		dataDir    string
-		output     string
-		llmModel   string
-		think      string
-		effort     string
-	)
-	flag.StringVar(&prompt, "prompt", "", "提示词（与 --prompt-file 二选一）")
-	flag.StringVar(&promptFile, "prompt-file", "", "提示词文件路径（与 --prompt 二选一）")
-	flag.StringVar(&scenario, "scenario", "", "场景目录名（空=默认场景）")
-	flag.StringVar(&workDir, "work-dir", "", "工作目录（默认 cwd）")
-	flag.StringVar(&dataDir, "data-dir", "", "数据根（不传=真实根；留空=强制临时隔离；给路径=该路径作数据根）")
-	flag.StringVar(&output, "output", "sse", "输出模式：sse（流式）/ final（仅最终结果）/ verbose（全报文 dump）")
-	flag.StringVar(&llmModel, "llm", "", "LLM 模型名（默认 server 配置）")
-	flag.StringVar(&think, "think", "", "思考模式（high / medium / low）")
-	flag.StringVar(&effort, "effort", "", "思考力度（high / medium / low）")
-	flag.Parse()
+// cliOpts 是 CLI 解析后的参数集合（`parseFlags` 产物）。
+type cliOpts struct {
+	prompt     string
+	promptFile string
+	scenario   string
+	workDir    string
+	dataDir    string
+	output     string
+	llmModel   string
+	think      string
+	effort     string
+	// dataDirSet 区分「--data-dir 未传」与「--data-dir=（显式留空）」
+	// （三态数据根语义，见 chonkpilot-cli 包 PrepareDataDir）。
+	dataDirSet bool
+}
 
-	// dataDirSet 区分「--data-dir 未传」与「--data-dir=（显式留空）」（三态数据根语义，见 dataprep.go）
-	dataDirSet := false
-	flag.Visit(func(f *flag.Flag) {
+// parseFlags 注册 CLI 参数并解析 args（不含程序名），返回解析结果。
+// 仅「输出模式非法」在此返回错误；flag 语法错误由 fs 的 ErrorHandling 决定
+// （生产用 flag.ExitOnError → 进程退出；测试用 flag.ContinueOnError → 返回错误）。
+func parseFlags(fs *flag.FlagSet, args []string) (*cliOpts, error) {
+	o := &cliOpts{}
+	fs.StringVar(&o.prompt, "prompt", "", "提示词（与 --prompt-file 二选一）")
+	fs.StringVar(&o.promptFile, "prompt-file", "", "提示词文件路径（与 --prompt 二选一）")
+	fs.StringVar(&o.scenario, "scenario", "", "场景目录名（空=默认场景）")
+	fs.StringVar(&o.workDir, "work-dir", "", "工作目录（默认 cwd）")
+	fs.StringVar(&o.dataDir, "data-dir", "", "数据根（不传=临时隔离；留空=真实根；给路径=该路径作数据根）")
+	fs.StringVar(&o.output, "output", "sse", "输出模式：sse（流式）/ final（仅最终结果）/ verbose（全报文 dump）")
+	fs.StringVar(&o.llmModel, "llm", "", "LLM 模型名（默认 server 配置）")
+	fs.StringVar(&o.think, "think", "", "思考模式（high / medium / low）")
+	fs.StringVar(&o.effort, "effort", "", "思考力度（high / medium / low）")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "data-dir" {
-			dataDirSet = true
+			o.dataDirSet = true
 		}
 	})
+	switch o.output {
+	case "sse", "final", "verbose":
+	default:
+		return nil, fmt.Errorf("无效输出模式 %q，可选：sse / final / verbose", o.output)
+	}
+	return o, nil
+}
+
+func main() {
+	opts, err := parseFlags(flag.CommandLine, os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	prompt, promptFile, scenario := opts.prompt, opts.promptFile, opts.scenario
+	workDir, dataDir, output := opts.workDir, opts.dataDir, opts.output
+	llmModel, think, effort := opts.llmModel, opts.think, opts.effort
+	dataDirSet := opts.dataDirSet
 
 	if prompt == "" && promptFile == "" {
 		// 尝试从 stdin 读取
@@ -90,13 +118,6 @@ func main() {
 		prompt = string(b)
 	}
 
-	switch output {
-	case "sse", "final", "verbose":
-	default:
-		fmt.Fprintf(os.Stderr, "无效输出模式 %q，可选：sse / final / verbose\n", output)
-		os.Exit(1)
-	}
-
 	if workDir == "" {
 		var err error
 		workDir, err = os.Getwd()
@@ -107,14 +128,14 @@ func main() {
 	}
 	workDir = resolveDir(workDir)
 
-	// -- 数据根（三态语义：未传=真实根 / 留空=临时隔离 / 路径=该路径作数据根） --
-	instDataDir, cleanupData, err := prepareDataDir(workDir, dataDir, dataDirSet)
+	// -- 数据根（三态语义：未传=临时隔离 / 留空=真实根 / 路径=该路径作数据根，D-45） --
+	prepared, err := cli.PrepareDataDir(workDir, dataDir, dataDirSet)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[cli] prepare data dir:", err)
 		os.Exit(1)
 	}
-	defer cleanupData()
-	dataDir = instDataDir
+	defer prepared.Cleanup()
+	dataDir = prepared.DataDir
 
 	instanceID := newUUID()
 
@@ -141,10 +162,11 @@ func main() {
 		WorkDir: workDir,
 		DataDir: dataDir,
 		Plugins: []plugin.Hook{
-			// 插件依赖的门面绑定在**装配处**选择（23 §7）：本形态 = inline（同进程直调；bus 传宿主
-			// 实际总线 → config 域写入的变更广播照旧送达订阅方，见 facade/inline）
-			compress.New(compress.DefaultOptions(), inline.New(bus)),
-			memory.New(memory.DefaultOptions()),
+			// DSL-4（42 §2 (253) ④）：CLI 宿主**硬编码禁用记忆与压缩**——只禁用**自动沉淀 / 自动压缩**
+			// （写路径），故此处**不挂载** compress / memory 插件（配置即便开启也不生效；CLI 无设置页与
+			// 「立即沉淀记忆」入口，手动路径本就不存在）。**指引块（读路径）不受影响**：记忆清单/资产/
+			// 用户偏好指引由 llm server 侧 memory_guide 注入，只随 prj `memory.enabled` 门控，与宿主形态无关。
+			// 其余插件照常（history 快照 / codegraph / vfts 索引工具面，默认关闭）。
 			history.New(),
 			codegraph.New(codegraph.Options{}),
 			vfts.New(vfts.Options{}),
@@ -165,7 +187,7 @@ func main() {
 		"client_type": "cli",
 	}
 	instanceJSON, _ := json.Marshal(instancePayload)
-	bus.Emit(context.Background(), "instance-register", instanceJSON)
+	bus.Emit(context.Background(), msgkeys.TopicInstanceRegister, instanceJSON)
 
 	// 形态开关（编译期，42 §2 (69)(72)）：分离形态（`-tags split`）注册后起 30s 周期心跳发布
 	// （instance-heartbeat{instance_id}）；合并单进程形态（默认构建）为空实现（不发布、不判超时）。
@@ -181,7 +203,7 @@ func main() {
 	var finalText string
 
 	// session-receive：LLM 流式内容
-	bus.On("session-receive", 0, func(_ context.Context, _ string, v *mq.Value) error {
+	bus.On(msgkeys.TopicSessionReceive, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		payload := v.Payload
 		var ev struct {
 			Session string          `json:"session"`
@@ -203,7 +225,7 @@ func main() {
 				fmt.Print(text)
 			case "tool-call":
 				var tc struct {
-					ToolCallID string `json:"tool-call-id"`
+					ToolCallID string `json:"tool_call_id"`
 					Tool       string `json:"tool"`
 				}
 				_ = json.Unmarshal(ev.Payload, &tc)
@@ -217,7 +239,7 @@ func main() {
 	})
 
 	// session-complete：轮次终态
-	bus.On("session-complete", 0, func(_ context.Context, _ string, v *mq.Value) error {
+	bus.On(msgkeys.TopicSessionComplete, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		payload := v.Payload
 		var ev struct {
 			Session      string `json:"session"`
@@ -238,7 +260,7 @@ func main() {
 	})
 
 	// task-done：工具完成通知
-	bus.On("task-done", 0, func(_ context.Context, _ string, v *mq.Value) error {
+	bus.On(msgkeys.TopicTaskDone, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		payload := v.Payload
 		if output == "verbose" {
 			fmt.Printf("[TASK] %s\n", string(payload))

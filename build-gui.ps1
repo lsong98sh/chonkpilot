@@ -1,4 +1,4 @@
-﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
+﻿﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-split.ps1`；
 #   形态名（分离形态 / team）→ **`gui`（GUI 客户端 + 独立 server）**，
@@ -32,7 +32,7 @@
 #   dist/server/                 – 服务端（browser 与 gui **共用**；browser 静态页 = 内嵌面，
 #                                  来源 src/server/frontend/dist，由 build-browser.ps1 投放）
 #     ├── chonkpilot-server.exe             # 服务端：llm + gateway + filesys + data 合一 exe
-#     ├── capability/                       # 契约 + executor×3（prompts/tools/resources/skills/executors）
+#     ├── capability/                       # 契约 + executor×4（prompts/tools/resources/skills/agents/system/executors）
 #     │   └── scenarios/                    # 出厂场景（源 src/initdata/capability/scenarios）
 #     └── mcps/                             # 内置 MCP 引擎
 #         ├── codebase/chonkpilot-codegraph-mcp-server.exe
@@ -73,6 +73,18 @@ foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "ch
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
     }
 }
+
+# -- 0.5) 出厂 system 文档 → data 模块 embed 落点（OP-02，2026-10-06）--
+#     唯一源 = src/initdata/capability/system/**；覆盖式同步到 data 模块内 embed 落点，
+#     供 `//go:embed all:embedded/system` 编入 client/server exe（摘要提示词等系统文档的磁盘缺失兜底）。
+Write-Host "==> [0.5/6] sync factory system docs -> data embed dir"
+$sysSrc = Join-Path $root "src\initdata\capability\system"
+$sysEmbed = Join-Path $root "src\lib\data\internal\systemfs\embedded\system"
+if (-not (Test-Path $sysSrc)) { throw "factory system docs not found: $sysSrc" }
+if (Test-Path $sysEmbed) { [System.IO.Directory]::Delete($sysEmbed, $true) }
+New-Item -ItemType Directory -Force -Path $sysEmbed | Out-Null
+Copy-Item (Join-Path $sysSrc "*") $sysEmbed -Recurse -Force
+Write-Host "    ok: embed system docs -> $sysEmbed ($((Get-ChildItem $sysEmbed -Recurse -File | Measure-Object).Count) files)"
 
 # -- 1) 前端构建（工程 src/frontend；embed 入口 → src/gui/frontend/dist 供 go:embed） --
 Write-Host "==> [1/6] build frontend (embed entry)"
@@ -201,7 +213,7 @@ Write-Host "      chonkpilot-gui-client.exe         $mbGui MB   # 客户端"
 Write-Host "      chonkpilot-cli-client.exe         $mbCli MB"
 Write-Host "    $srvDist"
 Write-Host "      chonkpilot-server.exe             $mbSrv MB   # 服务端（llm+gateway+filesys+data）"
-Write-Host "      capability/                       $capCount files (prompts/tools/resources/skills/scenarios/executors)"
+Write-Host "      capability/                       $capCount files (prompts/tools/resources/skills/agents/system/scenarios/executors)"
 Write-Host "      capability/scenarios/             出厂场景"
 Write-Host "      mcps/codebase/chonkpilot-codegraph-mcp-server.exe $mbCg MB"
 Write-Host "      mcps/vfts/chonkpilot-vfts-mcp-server.exe          $mbVf MB"

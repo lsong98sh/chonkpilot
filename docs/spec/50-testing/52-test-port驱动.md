@@ -1,8 +1,8 @@
 # 52 · test-port驱动（测试模式设计，`--test-port`）
 
-> 日期：2026-09（2026-09-11 移入 spec）｜ 状态：✅ **已实施**（端点见 §下方清单；现行实现 `src/lib/gui/testserver.go`）
+> 状态：✅ **已实施**（端点见 §下方清单；现行实现 `src/lib/gui/testserver.go`）
 > 关联：[50-测试体系](50-测试体系.md)（准则/分层/驱动范式）· [51-FP与测试映射](51-FP与测试映射.md)（脚本资产）· [62-命令行与参数](../60-reference/62-命令行与参数.md)（`--test-port`）
-> 说明：原文整体迁入（来源见 [42-决策记录](../40-roadmap/42-决策记录.md) §3）。**现行端点**：`/ping` `/eval` `/click` `/input` `/text` `/html` `/exists` `/console` `/screenshot` `/publish` `/wait-event`（仅监听 127.0.0.1）；`/call` 已废除。
+> **现行端点**：`/ping` `/eval` `/click` `/input` `/text` `/html` `/exists` `/console` `/screenshot` `/publish` `/wait-event`（仅监听 127.0.0.1）；`/call` 已废除。
 >
 > 目的：让外部脚本（python 等）驱动 GUI 做 E2E 验证 —— 发消息、模拟人的输入/点击、读取 DOM 显示内容。
 
@@ -183,7 +183,7 @@ assert "目录结构" in html
 | 通知 🔔（§9.3） | 后台任务完成 | `/text` 消息区出现 🔔 样式消息 |
 | 前端报错捕获 | 触发一个错误场景 | `/console` 断言 entries 含 `level:"error"` 且 text 含关键字；`clear` 后为空 |
 
-## 8. 实施状态（已完成，2026-09-11）
+## 8. 实施状态
 
 - [x] `testserver.go`：TestServer 结构 + 路由 + doEval + 便捷指令
 - [x] `main.go`：`--test-port` 解析 + 启动/Shutdown + 就绪门控接线

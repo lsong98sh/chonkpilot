@@ -12,13 +12,14 @@
         </div>
       </template>
 
-      <!-- 用户：超时重试（usr 库） -->
+      <!-- 用户：超时重试（usr 库）——编辑只改本地待保存态（显示「未保存」），点【保存】才落库 -->
       <template #user>
         <div class="page-body">
-          <p class="hint">
-            {{ $t('config.page.paramsUserHint') }}
-            <span v-if="dirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
-          </p>
+          <div class="tab-toolbar">
+            <p class="hint">{{ $t('config.page.paramsUserHint') }}</p>
+            <span v-if="userDirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
+            <Button size="small" type="primary" :disabled="!userDirty" :loading="savingUser" data-params-save-user @click="saveUserTab">{{ $t('common.save') }}</Button>
+          </div>
           <div v-for="f in timeoutFields" :key="f.key" class="param-row">
             <label class="param-label">{{ f.label }}</label>
             <div class="param-input">
@@ -28,8 +29,7 @@
                 v-model.number="userValues[f.key]"
                 :min="f.min" :max="f.max" :step="f.step"
                 :error="!!userErrors[f.key]"
-                @update:model-value="markDirty"
-                @blur="saveUser(f.key)"
+                @update:model-value="refreshUserDirty"
               />
               <span class="unit">{{ f.unit }}</span>
               <span v-if="userErrors[f.key]" class="param-error">{{ userErrors[f.key] }}</span>
@@ -39,13 +39,15 @@
         </div>
       </template>
 
-      <!-- 项目：服务参数（prj 库）——上下文压缩两项已收敛至「上下文管理」页（去重） -->
+      <!-- 项目：服务参数（prj 库）——上下文压缩两项已收敛至「上下文管理」页（去重）；
+           编辑只改本地待保存态（显示「未保存」），点【保存】才落库 -->
       <template #project>
         <div class="page-body">
-          <p class="hint">
-            {{ $t('config.page.paramsProjectHint') }}
-            <span v-if="dirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
-          </p>
+          <div class="tab-toolbar">
+            <p class="hint">{{ $t('config.page.paramsProjectHint') }}</p>
+            <span v-if="prjDirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
+            <Button size="small" type="primary" :disabled="!prjDirty" :loading="savingPrj" data-params-save-project @click="saveProjectTab">{{ $t('common.save') }}</Button>
+          </div>
           <div v-for="f in serviceFields" :key="f.key" class="param-row">
             <label class="param-label">{{ f.label }}</label>
             <div class="param-input">
@@ -55,8 +57,7 @@
                 v-model="prjValues[f.key]"
                 :placeholder="f.hint"
                 :error="!!prjErrors[f.key]"
-                @update:model-value="markDirty"
-                @blur="saveProject(f.key)"
+                @update:model-value="refreshPrjDirty"
               />
               <span v-if="prjErrors[f.key]" class="param-error">{{ prjErrors[f.key] }}</span>
             </div>
@@ -84,8 +85,12 @@ import { useUnsavedMark } from '../../composables/useUnsavedMark'
 
 const { t } = useI18n()
 
-// ⑤ dirty 可视标记（仅显示，不改失焦即存的时机）
-const { dirty, markDirty, markSaved } = useUnsavedMark()
+// ⑤ 显式保存（2026-10-06 统一口径）：编辑只改本地待保存态（按页签显示「未保存」），
+// 点该页签右上角【保存】才落库；无改动时保存按钮禁用。dirty 由本地态 vs 已保存快照比对得出。
+const { dirty: userDirty, markDirty: markUserDirty, markSaved: markUserSaved } = useUnsavedMark()
+const { dirty: prjDirty, markDirty: markPrjDirty, markSaved: markPrjSaved } = useUnsavedMark()
+const savingUser = ref(false)
+const savingPrj = ref(false)
 
 const activeTab = ref('user')
 const tabs = computed(() => [
@@ -95,18 +100,18 @@ const tabs = computed(() => [
 ])
 
 // 超时重试（系统/用户两级）；allowZero = 该项显式 0 合法（仅 retryCount，见后端 loadLLMRuntimeConfig
-// 的 n>=0 口径；其余三项后端口径为 n>0，0 会被静默回落默认）
+// 的 n>=0 口径；其余两项后端口径为 n>0，0 会被静默回落默认）
+// 注：重试退避间隔不自持（经 router.RetryWait：Retry-After 优先 + 指数退避），故无 retryDelay 项。
 const timeoutFields = computed(() => [
   { key: 'responseTimeout', label: t('config.responseTimeout'), min: 0, max: 600, step: 30, unit: 's' },
   { key: 'streamTimeout', label: t('config.streamTimeout'), min: 0, max: 600, step: 30, unit: 's' },
   { key: 'retryCount', label: t('config.retryCount'), min: 0, max: 10, step: 1, unit: '', allowZero: true },
-  { key: 'retryDelay', label: t('config.retryDelay'), min: 1, max: 120, step: 1, unit: 's' },
 ])
 
 // 系统默认值表（代码常量，不落库；「系统」页签展示 + 各输入框 placeholder 与「重置」判定共用一份）。
 // 【前端镜像，须与后端常量同步】后端权威源（变更任一项必须同步本表 + 对应断言测试）：
-//   - responseTimeout/streamTimeout/retryCount/retryDelay →
-//     chonkpilot-data/persist/persist_userconfig.go userConfigSystemDefaults（120/60/2/5）
+//   - responseTimeout/streamTimeout/retryCount →
+//     chonkpilot-data/internal/config/userconfig.go userConfigSystemDefaults（120/60/2）
 //   - timeout_sec/max_concurrency/skip_dirs →
 //     chonkpilot-mcp-server/server/config.go DefaultConfig()（300/16/12 项跳过目录；与
 //     chonkpilot-mcp-tools/internal/fileops/fileops.go SkipDirs 同集）
@@ -117,7 +122,6 @@ const SYSTEM_DEFAULTS = Object.freeze({
   responseTimeout: '120',
   streamTimeout: '60',
   retryCount: '2',
-  retryDelay: '5',
   timeout_sec: '300',
   max_concurrency: '16',
   skip_dirs: '.git, .svn, node_modules, .trae, .chonkpilot, __pycache__, .venv, venv, build, dist, .next, .nuxt',
@@ -142,7 +146,7 @@ const prjValues = ref({})
 const prjErrors = ref({})
 // C 用户级数值项的校验错误（key → 文案）；非空 = 该输入非法，且**未写库**
 const userErrors = ref({})
-// 各层「上次落库/加载值」快照：仅用于判断本次失焦是否真有改动（无改动不弹成功提示，避免噪声）
+// 各层「上次落库/加载值」快照：用于「未保存」判定（本地态 ≠ 快照 → 有改动 → 保存按钮可用）
 const lastUserVals = ref({})
 const lastServiceVals = ref({})
 // prjStored：后端 prj 库是否已有该键（「重置」可用性判定，与 UI 显示值解耦）。
@@ -160,6 +164,19 @@ function hasPrj(key) {
 function userOverridden(key) {
   const v = Number(userValues.value[key])
   return Number.isFinite(v) && v !== Number(SYSTEM_DEFAULTS[key])
+}
+
+// refreshUserDirty / refreshPrjDirty：由「本地态 vs 已保存快照」重算 dirty（无 watch）；
+// 编辑 / 重置 / 保存后显式调用。
+function refreshUserDirty() {
+  const changed = timeoutFields.value.some(f =>
+    String(userValues.value[f.key] ?? '') !== String(lastUserVals.value[f.key] ?? ''))
+  changed ? markUserDirty() : markUserSaved()
+}
+function refreshPrjDirty() {
+  const changed = serviceFields.value.some(f =>
+    String(prjValues.value[f.key] ?? '') !== String(lastServiceVals.value[f.key] ?? ''))
+  changed ? markPrjDirty() : markPrjSaved()
 }
 
 async function loadUser() {
@@ -215,12 +232,33 @@ function toSkipDirs(v) {
   return JSON.stringify(arr)
 }
 
-// 用户级超时/重试：后端每轮读取（loadLLMRuntimeConfig）→ 保存即生效（无需重启）。
+// 用户级超时/重试：**显式保存**（页签右上角【保存】）逐项落库；后端每轮读取
+// （loadLLMRuntimeConfig）→ 保存即生效（无需重启）。
 // C 前置校验：整数；retryCount >= 0，其余 > 0（对齐后端 n>=0 / n>0 口径）；非法值**不写库** +
 // 内联报错 + 明确提示；清空 = 删键回落系统默认（与「重置」同口径，**不视为错误**）。
-async function saveUser(key) {
-  const f = timeoutFields.value.find(x => x.key === key)
-  if (!f) return
+async function saveUserTab() {
+  if (!userDirty.value || savingUser.value) return
+  savingUser.value = true
+  let saved = 0
+  let failed = false
+  try {
+    for (const f of timeoutFields.value) {
+      const r = await commitUser(f)
+      if (r === 'saved') saved++
+      else if (r === 'failed') failed = true
+    }
+    // 单项非法 / 失败已各自给出可见提示 → 仅在有实际写入且无失败时给一次成功反馈
+    if (saved > 0 && !failed) message.success(savedText(t, APPLY_INSTANT))
+  } finally {
+    savingUser.value = false
+    refreshUserDirty()
+  }
+}
+
+// commitUser：落库单个 usr 项。返回 'saved'（已写库）/ 'unchanged'（无改动）/ 'invalid'（非法）/
+// 'failed'（写库失败）。不含成功 toast（由 saveUserTab 统一给一次）。
+async function commitUser(f) {
+  const key = f.key
   const rawStr = String(userValues.value[key] ?? '').trim()
   const def = Number(SYSTEM_DEFAULTS[key])
   if (rawStr === '') {
@@ -228,122 +266,123 @@ async function saveUser(key) {
     if (Number(lastUserVals.value[key]) === def) {
       userValues.value = { ...userValues.value, [key]: def }
       userErrors.value = { ...userErrors.value, [key]: '' }
-      markSaved()
-      return
+      return 'unchanged'
     }
     try {
       await resetUserKey(key)
-      userValues.value = { ...userValues.value, [key]: def }
-      lastUserVals.value = { ...lastUserVals.value, [key]: def }
-      userErrors.value = { ...userErrors.value, [key]: '' }
-      markSaved()
-      message.success(savedText(t, APPLY_INSTANT))
     } catch (e) {
       message.error(saveFailedText(t, e))
+      return 'failed'
     }
-    return
+    userValues.value = { ...userValues.value, [key]: def }
+    lastUserVals.value = { ...lastUserVals.value, [key]: def }
+    userErrors.value = { ...userErrors.value, [key]: '' }
+    return 'saved'
   }
   const r = f.allowZero ? validateNonNegativeInt(rawStr) : validatePositiveInt(rawStr)
   if (!r.ok) {
     const text = f.allowZero ? nonNegativeIntErrorText(t, r.reason) : positiveIntErrorText(t, r.reason)
     userErrors.value = { ...userErrors.value, [key]: text }
     message.error(text)
-    return
+    return 'invalid'
   }
   if (String(r.value) === String(lastUserVals.value[key])) {
     userValues.value = { ...userValues.value, [key]: r.value }
     userErrors.value = { ...userErrors.value, [key]: '' }
-    markSaved()
-    return
+    return 'unchanged'
   }
   try {
     await saveUserConfig({ [key]: r.value })
-    userValues.value = { ...userValues.value, [key]: r.value }
-    lastUserVals.value = { ...lastUserVals.value, [key]: r.value }
-    userErrors.value = { ...userErrors.value, [key]: '' }
-    markSaved()
-    message.success(savedText(t, APPLY_INSTANT))
   } catch (e) {
     message.error(saveFailedText(t, e))
+    return 'failed'
+  }
+  userValues.value = { ...userValues.value, [key]: r.value }
+  lastUserVals.value = { ...lastUserVals.value, [key]: r.value }
+  userErrors.value = { ...userErrors.value, [key]: '' }
+  return 'saved'
+}
+
+// 项目级服务参数：**显式保存**（页签右上角【保存】）逐项落库。
+async function saveProjectTab() {
+  if (!prjDirty.value || savingPrj.value) return
+  savingPrj.value = true
+  let saved = 0
+  let failed = false
+  try {
+    for (const f of serviceFields.value) {
+      const r = await commitProject(f)
+      if (r === 'saved') saved++
+      else if (r === 'failed') failed = true
+    }
+    if (saved > 0 && !failed) message.success(savedText(t, APPLY_INSTANT)) // 执行配置热重载（prjExecConfigKeys）
+  } finally {
+    savingPrj.value = false
+    refreshPrjDirty()
   }
 }
 
-async function saveProject(key) {
-  const f = serviceFields.value.find(x => x.key === key)
+// commitProject：落库单个 prj 项。返回 'saved' / 'unchanged' / 'invalid' / 'failed'。
+async function commitProject(f) {
+  const key = f.key
   // ③ 数值项前置校验：非法（非整数 / ≤0）→ 内联报错 + **不写库**（后端会静默回落默认）
-  if (f && f.int) {
+  if (f.int) {
     const rawStr = String(prjValues.value[key] ?? '').trim()
     if (rawStr === '') {
       // 清空 = 回落系统默认（删项目级键），与「重置」同口径；非错误
-      if (String(lastServiceVals.value[key] || '') === '') {
-        markSaved()
-        return
-      }
+      if (String(lastServiceVals.value[key] || '') === '') return 'unchanged'
       try {
         await deleteConfig(key)
-        prjStored.value = { ...prjStored.value, [key]: false }
-        lastServiceVals.value = { ...lastServiceVals.value, [key]: '' }
-        prjErrors.value = { ...prjErrors.value, [key]: '' }
-        markSaved()
-        message.success(savedText(t, APPLY_INSTANT))
       } catch (e) {
         message.error(saveFailedText(t, e))
+        return 'failed'
       }
-      return
+      prjValues.value = { ...prjValues.value, [key]: undefined }
+      prjStored.value = { ...prjStored.value, [key]: false }
+      lastServiceVals.value = { ...lastServiceVals.value, [key]: '' }
+      prjErrors.value = { ...prjErrors.value, [key]: '' }
+      return 'saved'
     }
     const r = validatePositiveInt(rawStr)
     if (!r.ok) {
       const text = positiveIntErrorText(t, r.reason)
       prjErrors.value = { ...prjErrors.value, [key]: text }
       message.error(text)
-      return
+      return 'invalid'
     }
     if (String(r.value) === String(lastServiceVals.value[key])) {
       prjValues.value = { ...prjValues.value, [key]: String(r.value) }
       prjErrors.value = { ...prjErrors.value, [key]: '' }
-      markSaved()
-      return
+      return 'unchanged'
     }
     try {
       await setConfig(key, String(r.value))
-      prjValues.value = { ...prjValues.value, [key]: String(r.value) }
-      prjStored.value = { ...prjStored.value, [key]: true }
-      lastServiceVals.value = { ...lastServiceVals.value, [key]: String(r.value) }
-      prjErrors.value = { ...prjErrors.value, [key]: '' }
-      markSaved()
-      message.success(savedText(t, APPLY_INSTANT)) // 执行配置热重载（prjExecConfigKeys）
     } catch (e) {
       message.error(saveFailedText(t, e))
+      return 'failed'
     }
-    return
+    prjValues.value = { ...prjValues.value, [key]: String(r.value) }
+    prjStored.value = { ...prjStored.value, [key]: true }
+    lastServiceVals.value = { ...lastServiceVals.value, [key]: String(r.value) }
+    prjErrors.value = { ...prjErrors.value, [key]: '' }
+    return 'saved'
   }
   // 文本项（skip_dirs）
   const raw = prjValues.value[key]
-  if (String(raw) === String(lastServiceVals.value[key])) {
-    markSaved()
-    return
-  }
+  if (String(raw ?? '') === String(lastServiceVals.value[key] ?? '')) return 'unchanged'
   try {
-    let v = raw
-    if (key === 'skip_dirs') v = toSkipDirs(v)
-    else if (v === undefined || v === null) return
-    else v = String(v)
+    const v = key === 'skip_dirs' ? toSkipDirs(raw) : String(raw ?? '')
     await setConfig(key, v)
-    prjStored.value = { ...prjStored.value, [key]: true } // 已落库 → 「重置」可用
-    lastServiceVals.value = { ...lastServiceVals.value, [key]: String(raw) }
-    markSaved()
-    message.success(savedText(t, APPLY_INSTANT))
   } catch (e) {
     message.error(saveFailedText(t, e))
+    return 'failed'
   }
+  prjStored.value = { ...prjStored.value, [key]: true } // 已落库 → 「重置」可用
+  lastServiceVals.value = { ...lastServiceVals.value, [key]: String(raw ?? '') }
+  return 'saved'
 }
 
-// 本页管辖的 key（其余由其它配置页处理，避免跨页误响应）
-const OWN_KEYS = computed(() => new Set([
-  ...timeoutFields.value.map(f => f.key),
-  'timeout_sec', 'max_concurrency', 'skip_dirs',
-]))
-
+// 「重置」= 删本层键回落系统默认（显式动作，即时落库）；完成后重算 dirty（其它未保存编辑不受影响）。
 async function resetKey({ level, key }) {
   if (!OWN_KEYS.value.has(key)) return
   try {
@@ -354,7 +393,7 @@ async function resetKey({ level, key }) {
       userValues.value = { ...userValues.value, [key]: def }
       lastUserVals.value = { ...lastUserVals.value, [key]: def }
       userErrors.value = { ...userErrors.value, [key]: '' }
-      markSaved()
+      refreshUserDirty()
       message.success(savedText(t, APPLY_INSTANT))
     } else if (level === 'project') {
       await deleteConfig(key)
@@ -362,7 +401,7 @@ async function resetKey({ level, key }) {
       lastServiceVals.value = { ...lastServiceVals.value, [key]: '' }
       prjErrors.value = { ...prjErrors.value, [key]: '' }
       prjStored.value = { ...prjStored.value, [key]: false }
-      markSaved()
+      refreshPrjDirty()
       message.success(savedText(t, APPLY_INSTANT))
     }
   } catch (e) {
@@ -384,9 +423,11 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
 .settings-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .settings-tabs :deep(.b-tabs-body) { flex: 1; overflow-y: auto; min-height: 0; padding: 8px 0; }
 .page-body { display: flex; flex-direction: column; gap: 10px; }
-.hint { font-size: 12px; color: var(--text-muted); margin: 0; }
+/* 页签内工具条：说明（左）+「未保存」标记 +【保存】（右上角） */
+.tab-toolbar { display: flex; align-items: center; gap: 8px; }
+.hint { flex: 1; font-size: 12px; color: var(--text-muted); margin: 0; }
 /* ⑤ dirty 标记 / ③ 校验错误（仅显示） */
-.unsaved-mark { margin-left: 8px; color: var(--warning, #e6a23c); }
+.unsaved-mark { color: var(--warning, #e6a23c); }
 .param-error { font-size: 12px; color: var(--danger, #dc3545); }
 .param-row { display: flex; align-items: center; gap: 10px; }
 .param-label { width: 200px; flex-shrink: 0; font-size: 13px; font-weight: 500; color: var(--text-primary); }

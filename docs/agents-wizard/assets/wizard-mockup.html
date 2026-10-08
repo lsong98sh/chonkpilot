@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>场景向导 · 交互样张（Step1 项目信息 / Step3 技术栈）</title>
+<style>
+  /* 取值对齐 src/frontend/src/assets/styles/variables.css（light 主题） */
+  :root{
+    --bg-primary:#f8f9fa; --bg-secondary:#ffffff; --bg-hover:#e9ecef; --bg-surface:#dee2e6;
+    --text-primary:#212529; --text-secondary:#495057; --text-muted:#6b7280; --fg-secondary:#6f6a5a;
+    --accent:#4361ee; --accent-hover:#3a56d4; --accent-bg:#ecf5ff;
+    --border:#dee2e6; --success:#2d9f4e; --danger:#d93025;
+    --font-sans:'Segoe UI',system-ui,-apple-system,sans-serif; --font-mono:'Cascadia Mono',Consolas,monospace;
+    --radius:4px;
+    --space-xs:4px; --space-sm:8px; --space-md:16px; --space-lg:24px;
+    --transition:0.2s ease;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg-primary);color:var(--text-primary);font:13px/1.6 var(--font-sans)}
+  .stage{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:var(--space-lg)}
+  .dlg{width:min(1120px,100%);max-height:calc(100vh - 48px);background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 40px rgba(16,24,40,.12)}
+
+  header{display:flex;align-items:center;gap:var(--space-md);padding:12px var(--space-md);border-bottom:1px solid var(--border)}
+  header h1{margin:0;font-size:14px;font-weight:600}
+  header .path{color:var(--fg-secondary)} header .step{margin-left:auto;color:var(--text-muted)}
+
+  .body{flex:1;display:grid;grid-template-columns:188px minmax(0,1fr) 288px;min-height:0}
+  .body.focus{grid-template-columns:188px minmax(0,1fr)}
+  .col{padding:var(--space-md);overflow:auto}
+  .col+.col{border-left:1px solid var(--border)}
+  .main{display:flex;flex-direction:column;gap:var(--space-lg)}
+
+  .rail{list-style:none;margin:0;padding:0}
+  .rail li{display:flex;align-items:center;gap:var(--space-sm);padding:7px 10px;border-radius:var(--radius);color:var(--text-muted);margin-bottom:2px;cursor:pointer}
+  .rail li:hover{background:var(--bg-hover)}
+  .rail li.on{background:var(--accent-bg);color:var(--text-primary);border-left:3px solid var(--accent)}
+  .rail li:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .rail .n{width:18px;height:18px;line-height:18px;text-align:center;border-radius:50%;background:var(--bg-surface);color:var(--text-secondary);font-size:11px;flex:0 0 auto}
+  .rail li.done .n{background:var(--success);color:#fff}
+  .rail li.on .n{background:var(--accent);color:#fff}
+
+  fieldset{border:0;margin:0;padding:0}
+  legend{font-weight:600;font-size:13px;margin-bottom:var(--space-sm);padding:0}
+  .legend-note{color:var(--fg-secondary);font-weight:400;margin-left:var(--space-sm)}
+  .group{margin-top:var(--space-sm)}
+
+  /* 提示条（LLM 推荐 / 扫描预填） */
+  .banner{display:flex;gap:var(--space-sm);align-items:flex-start;padding:8px 10px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--radius);background:var(--accent-bg);color:var(--text-secondary)}
+  .banner b{color:var(--text-primary)}
+
+  /* 表单 */
+  .field{margin-top:var(--space-md)}
+  .field>label{display:block;color:var(--fg-secondary);margin-bottom:var(--space-xs)}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-md);margin-top:var(--space-md)}
+  .quick{display:flex;align-items:center;gap:var(--space-sm);margin-top:var(--space-md)}
+  .select{display:flex;flex-direction:column;gap:var(--space-xs)}
+  .req{color:var(--danger)}
+  input.txt,textarea{width:100%;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius);padding:7px 9px;font:inherit}
+  textarea{min-height:52px;resize:vertical}
+  input.txt:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-color:var(--accent)}
+  .hint{color:var(--text-muted);font-size:12px;margin-top:var(--space-xs)}
+  /* Label 旁 tooltip 图标（悬停显示 title） */
+  .tip{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;margin-left:4px;border:1px solid var(--border);border-radius:50%;color:var(--fg-secondary);font-size:10px;line-height:1;cursor:help;vertical-align:middle}
+  .tip:hover{border-color:var(--accent);color:var(--accent)}
+  code{font-family:var(--font-mono,monospace);background:var(--bg-primary);border:1px solid var(--border);border-radius:3px;padding:0 4px}
+
+  /* 单选卡（带说明） */
+  .cards{display:grid;gap:var(--space-sm)}
+  .cards.two{grid-template-columns:1fr 1fr}
+  .card{position:relative;display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-secondary);cursor:pointer;transition:border-color var(--transition),background var(--transition),box-shadow var(--transition)}
+  .card:hover{border-color:#c7ccd4;background:var(--bg-primary)}
+  .card:has(input:checked){border-color:var(--accent);background:var(--accent-bg);box-shadow:inset 0 0 0 1px var(--accent)}
+  .card:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+  .card input{position:absolute;left:12px;top:12px;width:16px;height:16px;margin:3px 0 0;accent-color:var(--accent)}
+  .card .txt{margin-left:22px}
+  .card-title{display:block;font-weight:600}
+  .card-desc{display:block;color:var(--fg-secondary);font-size:12px;margin-top:2px}
+  .card-team{display:block;color:var(--text-muted);font-size:12px;margin-top:var(--space-xs)}
+
+  /* 单选 / 多选 chips（同一构造，含【其他】） */
+  .chips{display:flex;flex-wrap:wrap;gap:var(--space-sm)}
+  .chip{position:relative;display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--border);border-radius:999px;background:var(--bg-secondary);cursor:pointer;font-size:12px;transition:border-color var(--transition),background var(--transition),color var(--transition)}
+  .chip:hover{border-color:#c7ccd4;background:var(--bg-primary)}
+  .chip:has(input:checked){background:var(--accent);border-color:var(--accent);color:#fff}
+  .chip:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+  .chip input{position:absolute;opacity:0;width:0;height:0}
+  .chip::before{content:"";width:12px;height:12px;border:1px solid currentColor;border-radius:3px;opacity:.55}
+  .chip.is-radio::before{border-radius:50%}
+  .chip:has(input:checked)::before{content:"✓";font-size:11px;line-height:12px;text-align:center;opacity:1;border-color:transparent}
+  .chip.is-radio:has(input:checked)::before{content:"●";font-size:9px}
+  .chip-other{font-style:italic}
+  .custom{margin-top:var(--space-sm)}
+  .custom[hidden]{display:none}
+
+  /* 预览 */
+  .team{display:flex;flex-direction:column;gap:var(--space-sm)}
+  .agent{border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;background:var(--bg-secondary)}
+  .agent .head{display:flex;align-items:center;gap:6px}
+  .agent b{font-size:12px}
+  .tag{font-size:11px;border-radius:3px;padding:1px 6px;background:var(--accent-bg);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+  .layer{font-size:11px;color:var(--text-muted);margin-left:auto}
+  .agent p{margin:3px 0 0;color:var(--fg-secondary);font-size:12px}
+  .note{color:var(--text-muted);font-size:12px;margin-top:var(--space-sm)}
+  .placeholder{padding:var(--space-lg);border:1px dashed var(--border);border-radius:var(--radius);color:var(--text-muted);text-align:center}
+
+  /* 预览页（= 场景编辑同构 + 记忆 tab） */
+  .pv-toolbar{display:flex;align-items:center;gap:var(--space-sm)}
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--border)}
+  .tab{background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:7px 10px;color:var(--fg-secondary);cursor:pointer;white-space:nowrap}
+  .tab:hover{background:var(--bg-hover);color:var(--text-primary)}
+  .tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+  .tab:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .tabpane{display:flex;flex-direction:column;gap:var(--space-md)}
+  .tabpane[hidden]{display:none}
+  .pv-split{display:grid;grid-template-columns:200px minmax(0,1fr);gap:var(--space-md)}
+  .agent-list{display:flex;flex-direction:column;gap:var(--space-xs)}
+  .group-h{color:var(--fg-secondary);font-size:12px;margin-top:var(--space-sm)}
+  .agent-list .agent{cursor:pointer;padding:6px 8px}
+  .agent-list .agent:hover{border-color:#c7ccd4}
+  .agent-list .agent.on{border-color:var(--accent);background:var(--accent-bg)}
+  .ref-view{display:flex;flex-direction:column;gap:var(--space-md)}
+  .agent-list .agent{display:flex;align-items:center;gap:6px}
+  .x{border:0;background:none;color:var(--text-muted);cursor:pointer;padding:0 2px;font-size:11px}
+  .x:hover{color:var(--danger);background:none}
+  .src{font-size:11px;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px;white-space:nowrap}
+  .src.hi{color:var(--success);border-color:var(--success)}
+  .src.lo{color:var(--text-muted);border-style:dashed}
+  .members{display:flex;flex-wrap:wrap;gap:var(--space-xs);margin-bottom:var(--space-xs)}
+  .member{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:999px;padding:3px 6px 3px 10px;font-size:12px;background:var(--bg-primary)}
+  .mem-bar{display:flex;align-items:center;justify-content:space-between}
+  .mem-item{display:flex;flex-direction:column;gap:4px}
+  .mem-head{display:flex;align-items:center;justify-content:space-between}
+  .mem-head label{color:var(--fg-secondary)}
+  .link{background:none;border:0;color:var(--accent);padding:0;font-size:12px;cursor:pointer}
+  .link:hover{background:none;text-decoration:underline}
+  .gen{border:1px solid var(--border);border-radius:var(--radius);padding:var(--space-md);background:var(--bg-secondary)}
+  .gen-row{display:flex;justify-content:space-between;padding:3px 0;font-size:12px}
+  .gen-row .ok{color:var(--accent)}
+  .bar{height:6px;background:#e6e8ec;border-radius:99px;overflow:hidden;margin-top:var(--space-sm)}
+  .bar-fill{height:100%;background:var(--accent)}
+
+  footer{display:flex;align-items:center;gap:var(--space-sm);padding:12px var(--space-md);border-top:1px solid var(--border)}
+  footer .grow{flex:1}
+  button{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius);padding:7px 14px;font:inherit;cursor:pointer;transition:background var(--transition),border-color var(--transition),transform var(--transition)}
+  button:hover{background:var(--bg-hover)}
+  button:active{transform:scale(.98)}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+
+  [data-panel]{display:none}
+  [data-panel].active{display:flex;flex-direction:column;gap:var(--space-lg)}
+  .s3{display:flex;flex-direction:column;gap:var(--space-lg)}
+  .s3[hidden]{display:none}
+
+  @media (prefers-reduced-motion: reduce){*{transition-duration:.01ms !important}}
+  @media (max-width:900px){.body{grid-template-columns:1fr}.preview{display:none}}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="dlg">
+    <header>
+      <h1>场景向导</h1>
+      <span class="path">工作目录：E:\proj\demo</span>
+      <span class="step" id="stepLabel">步骤 1/5 · 项目信息</span>
+    </header>
+
+    <div class="body">
+      <nav class="col" aria-label="向导步骤">
+        <ul class="rail" id="rail">
+          <li class="on" data-step="1" tabindex="0"><span class="n">1</span>项目信息</li>
+          <li data-step="2" tabindex="0"><span class="n">2</span>模式选择</li>
+          <li data-step="3" tabindex="0"><span class="n">3</span>技术栈与架构</li>
+          <li data-step="4" tabindex="0"><span class="n">4</span>摘要确认</li>
+          <li data-step="5" tabindex="0"><span class="n">5</span>预览与生成</li>
+        </ul>
+      </nav>
+
+      <div class="col main">
+        <!-- Step1 项目信息 -->
+        <div data-panel="1" class="active">
+          <div class="banner"><span>提示：<b>新建</b>请填写下列信息；<b>已有项目</b>将由扫描自动预填，可修改。填写后，后续选项会由 <b>LLM 依据这些信息自动推荐</b>。</span></div>
+
+          <fieldset>
+            <legend>项目信息<span class="legend-note">先描述意图，不必逐项选技术</span></legend>
+            <div class="field"><label for="f-goal">项目目的 <span class="req">*</span><span class="tip" title="为谁解决什么问题，一句话。">?</span></label>
+              <textarea id="f-goal"></textarea></div>
+            <div class="field"><label for="f-summary">项目概要<span class="tip" title="主要功能、目标用户、期望形态（Web/移动/…）。">?</span></label>
+              <textarea id="f-summary"></textarea></div>
+            <div class="field"><label for="f-budget">预算<span class="tip" title="例如：无预算 / 10 万以内 / 已有云资源。">?</span></label>
+              <input id="f-budget" class="txt" type="text" /></div>
+            <div class="field"><label for="f-deploy">部署<span class="tip" title="例如：云部署 / 私有部署 / 混合。">?</span></label>
+              <input id="f-deploy" class="txt" type="text" /></div>
+            <div class="field"><label for="f-period">周期<span class="tip" title="例如：未知 / 2 周 / 1 个月。">?</span></label>
+              <input id="f-period" class="txt" type="text" /></div>
+            <div class="field"><label for="f-bg">背景<span class="tip" title="团队现状、已有系统、时间要求、协作方式。">?</span></label>
+              <textarea id="f-bg"></textarea></div>
+            <div class="field"><label for="f-req">要求<span class="tip" title="硬性约束：必须用的语言/框架、合规、性能、部署。">?</span></label>
+              <textarea id="f-req"></textarea></div>
+            <p class="hint">提示语以 <b>Label 旁的 ? 图标（悬停显示）</b> 呈现，输入框保持空白、不预填实际文本。</p>
+          </fieldset>
+        </div>
+
+        <!-- Step2 模式 -->
+        <div data-panel="2">
+          <div class="banner"><span>以下模式由 LLM 依据「项目信息」<b>预选</b>，可直接调整。</span></div>
+          <fieldset>
+            <legend>顶层模式</legend>
+            <div class="group" data-group style="margin-top:0">
+              <div class="cards">
+                <label class="card"><input type="radio" name="mode" value="A" checked />
+                  <span class="txt"><span class="card-title">新构建（Greenfield）</span>
+                  <span class="card-desc">无既有代码，从需求到可运行产品。</span></span></label>
+                <label class="card"><input type="radio" name="mode" value="B" />
+                  <span class="txt"><span class="card-title">迭代（Iterate）</span>
+                  <span class="card-desc">在现有架构与风格上增加功能或改行为。</span></span></label>
+                <label class="card"><input type="radio" name="mode" value="C" />
+                  <span class="txt"><span class="card-title">重构（Refactor）</span>
+                  <span class="card-desc">不改外部行为，改善结构 / 迁移栈 / 偿债。</span></span></label>
+                <label class="card"><input type="radio" name="mode" value="__other__" data-other />
+                  <span class="txt"><span class="card-title">其他</span>
+                  <span class="card-desc">自定义模式，可补充说明。</span></span></label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请描述模式，如 迁移数据 / 只做设计" hidden />
+            </div>
+          </fieldset>
+          <div class="quick">
+            <button type="button" title="采用全部默认（LLM 推荐 + 各步默认）直接生成并关闭向导">默认</button>
+            <span class="hint">一键：用<b>全部默认</b>直接生成（场景 + 记忆 + project_spec.md）并关闭向导（跳过 Step3–5）。</span>
+          </div>
+        </div>
+
+        <!-- Step3 技术栈与架构 -->
+        <div data-panel="3">
+          <div class="banner"><span id="s3Banner">Step3 随模式变化。当前模式「新构建」：选择脚手架（技术栈与架构），已由 LLM 预填推荐。</span></div>
+
+          <section class="s3" data-s3="A">
+          <fieldset>
+            <legend>项目类型<span class="legend-note">决定团队侧重</span></legend>
+            <div class="group" data-group style="margin-top:0">
+              <div class="cards">
+                <label class="card"><input type="radio" name="ptype" value="biz" checked /><span class="txt"><span class="card-title">业务型</span><span class="card-desc">以增删改查为主的业务系统。</span><span class="card-team">侧重：前端 / 后端 / 数据</span></span></label>
+                <label class="card"><input type="radio" name="ptype" value="component" /><span class="txt"><span class="card-title">组件型</span><span class="card-desc">流程引擎、决策引擎等可复用组件。</span><span class="card-team">侧重：架构 / 后端 / 文档 / 测试</span></span></label>
+                <label class="card"><input type="radio" name="ptype" value="infra" /><span class="txt"><span class="card-title">基建型</span><span class="card-desc">Redis、容器等基础设施。</span><span class="card-team">侧重：DevOps / 后端 / 安全 / 性能</span></span></label>
+                <label class="card"><input type="radio" name="ptype" value="game" /><span class="txt"><span class="card-title">游戏</span><span class="card-desc">游戏 / 互动内容。</span><span class="card-team">侧重：前端 / UX / 图形（需扩展预置）</span></span></label>
+                <label class="card"><input type="radio" name="ptype" value="__other__" data-other /><span class="txt"><span class="card-title">其他</span><span class="card-desc">自定义类型，可补充。</span></span></label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请描述项目类型" hidden />
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>目标平台<span class="legend-note">可组合；选 Web / 移动端 / 小程序会自动勾选「前端」</span></legend>
+            <div class="group" data-group style="margin-top:0">
+              <div class="chips">
+                <label class="chip"><input type="checkbox" name="platform" value="frontend" checked />前端</label>
+                <label class="chip"><input type="checkbox" name="platform" value="backend" />后端</label>
+                <label class="chip"><input type="checkbox" name="platform" value="web" data-implies-front />Web</label>
+                <label class="chip"><input type="checkbox" name="platform" value="mobile" data-implies-front />移动端</label>
+                <label class="chip"><input type="checkbox" name="platform" value="miniapp" data-implies-front />小程序</label>
+                <label class="chip chip-other"><input type="checkbox" name="platform" value="__other__" data-other />其他</label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请描述，如 桌面端 / CLI" hidden />
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>前端语言<span class="legend-note">可多选</span></legend>
+            <div class="group" data-group>
+              <div class="chips">
+                <label class="chip"><input type="checkbox" name="fe-lang" value="ts" checked />TypeScript</label>
+                <label class="chip"><input type="checkbox" name="fe-lang" value="js" />JavaScript</label>
+                <label class="chip chip-other"><input type="checkbox" name="fe-lang" value="__other__" data-other />其他</label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请填写，如 MoonBit" hidden />
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>前端框架</legend>
+            <div class="group" data-group>
+              <div class="chips">
+                <label class="chip is-radio"><input type="radio" name="fe-fw" value="vue" checked />Vue 3</label>
+                <label class="chip is-radio"><input type="radio" name="fe-fw" value="react" />React</label>
+                <label class="chip is-radio"><input type="radio" name="fe-fw" value="svelte" />Svelte</label>
+                <label class="chip is-radio"><input type="radio" name="fe-fw" value="next" />Next.js</label>
+                <label class="chip is-radio"><input type="radio" name="fe-fw" value="nuxt" />Nuxt</label>
+                <label class="chip is-radio"><input type="radio" name="fe-fw" value="vanilla" />原生 HTML + JS</label>
+                <label class="chip chip-other is-radio"><input type="radio" name="fe-fw" value="__other__" data-other />其他</label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请填写框架名" hidden />
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>UI 体系</legend>
+            <div class="group" data-group style="margin-top:0">
+              <div class="chips">
+                <label class="chip is-radio"><input type="radio" name="fe-ui" value="tailwind" />Tailwind</label>
+                <label class="chip is-radio"><input type="radio" name="fe-ui" value="shadcn" />shadcn</label>
+                <label class="chip is-radio"><input type="radio" name="fe-ui" value="antd" />Ant Design</label>
+                <label class="chip is-radio"><input type="radio" name="fe-ui" value="element" />Element Plus</label>
+                <label class="chip is-radio"><input type="radio" name="fe-ui" value="none" checked />无</label>
+                <label class="chip chip-other is-radio"><input type="radio" name="fe-ui" value="__other__" data-other />其他</label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请填写 UI 体系" hidden />
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>后端语言<span class="legend-note">可多选</span></legend>
+            <div class="group" data-group>
+              <div class="chips">
+                <label class="chip"><input type="checkbox" name="be-lang" value="go" checked />Go</label>
+                <label class="chip"><input type="checkbox" name="be-lang" value="node" />Node.js</label>
+                <label class="chip"><input type="checkbox" name="be-lang" value="python" />Python</label>
+                <label class="chip"><input type="checkbox" name="be-lang" value="java" />Java</label>
+                <label class="chip"><input type="checkbox" name="be-lang" value="rust" />Rust</label>
+                <label class="chip chip-other"><input type="checkbox" name="be-lang" value="__other__" data-other />其他</label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请填写，如 Zig" hidden />
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>后端框架</legend>
+            <div class="group" data-group style="margin-top:0">
+              <div class="chips">
+                <label class="chip is-radio"><input type="radio" name="be-fw" value="gin" checked />Gin</label>
+                <label class="chip is-radio"><input type="radio" name="be-fw" value="fiber" />Fiber</label>
+                <label class="chip is-radio"><input type="radio" name="be-fw" value="nestjs" />NestJS</label>
+                <label class="chip is-radio"><input type="radio" name="be-fw" value="fastapi" />FastAPI</label>
+                <label class="chip is-radio"><input type="radio" name="be-fw" value="spring" />Spring Boot</label>
+                <label class="chip is-radio"><input type="radio" name="be-fw" value="axum" />Axum</label>
+                <label class="chip chip-other is-radio"><input type="radio" name="be-fw" value="__other__" data-other />其他</label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请填写后端框架" hidden />
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>数据层</legend>
+            <div class="group" data-group style="margin-top:0">
+              <div class="chips">
+                <label class="chip is-radio"><input type="radio" name="db" value="postgres" checked />PostgreSQL</label>
+                <label class="chip is-radio"><input type="radio" name="db" value="mysql" />MySQL</label>
+                <label class="chip is-radio"><input type="radio" name="db" value="mongo" />MongoDB</label>
+                <label class="chip is-radio"><input type="radio" name="db" value="sqlite" />SQLite</label>
+                <label class="chip is-radio"><input type="radio" name="db" value="none" />无</label>
+                <label class="chip chip-other is-radio"><input type="radio" name="db" value="__other__" data-other />其他</label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请填写数据库" hidden />
+            </div>
+            <div class="group" data-group>
+              <p class="legend-note" style="margin:0 0 4px">ORM / ODM</p>
+              <div class="chips">
+                <label class="chip is-radio"><input type="radio" name="orm" value="prisma" />Prisma</label>
+                <label class="chip is-radio"><input type="radio" name="orm" value="drizzle" />Drizzle</label>
+                <label class="chip is-radio"><input type="radio" name="orm" value="typeorm" />TypeORM</label>
+                <label class="chip is-radio"><input type="radio" name="orm" value="gorm" checked />GORM</label>
+                <label class="chip is-radio"><input type="radio" name="orm" value="native" />原生驱动</label>
+                <label class="chip chip-other is-radio"><input type="radio" name="orm" value="__other__" data-other />其他</label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请填写，如 JPA / Dapper" hidden />
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>架构形态<span class="legend-note">决定团队的层与拆分粒度</span></legend>
+            <div class="group" data-group style="margin-top:0">
+              <div class="cards">
+                <label class="card"><input type="radio" name="arch" value="two" /><span class="txt"><span class="card-title">两层结构</span><span class="card-desc">表现层 ←→ 服务端，结构简单。</span><span class="card-team">典型团队：前端开发、后端开发</span></span></label>
+                <label class="card"><input type="radio" name="arch" value="three" checked /><span class="txt"><span class="card-title">三层结构</span><span class="card-desc">表现层 / 业务逻辑层 / 数据访问层。</span><span class="card-team">典型团队：前端开发、后端开发、数据工程师</span></span></label>
+                <label class="card"><input type="radio" name="arch" value="micro" /><span class="txt"><span class="card-title">微服务</span><span class="card-desc">多服务 + API Gateway，按边界拆分。</span><span class="card-team">典型团队：前端开发、后端开发、集成协调者、数据工程师</span></span></label>
+                <label class="card"><input type="radio" name="arch" value="serverless" /><span class="txt"><span class="card-title">Serverless</span><span class="card-desc">函数即服务 + BaaS，免运维。</span><span class="card-team">典型团队：前端开发、后端开发（函数）、DevOps 工程师</span></span></label>
+                <label class="card"><input type="radio" name="arch" value="__other__" data-other /><span class="txt"><span class="card-title">其他</span><span class="card-desc">自定义架构，可补充说明。</span></span></label>
+              </div>
+              <input class="custom txt" type="text" placeholder="请描述架构，如 事件驱动 / 六边形架构" hidden />
+            </div>
+          </fieldset>
+          </section>
+
+          <!-- Step3 变体 B：迭代 —— 上下文采集 -->
+          <section class="s3" data-s3="B" hidden>
+            <fieldset>
+              <legend>代码库接入</legend>
+              <div class="group" data-group style="margin-top:0">
+                <div class="cards">
+                  <label class="card"><input type="radio" name="b-access" value="local" checked /><span class="txt"><span class="card-title">本地目录</span><span class="card-desc">直接指向当前工作区。</span></span></label>
+                  <label class="card"><input type="radio" name="b-access" value="git" /><span class="txt"><span class="card-title">Git 仓库 URL</span><span class="card-desc">克隆后分析。</span></span></label>
+                  <label class="card"><input type="radio" name="b-access" value="ide" /><span class="txt"><span class="card-title">已有 IDE 工作区</span><span class="card-desc">复用已打开的工作区。</span></span></label>
+                  <label class="card"><input type="radio" name="b-access" value="__other__" data-other /><span class="txt"><span class="card-title">其他</span><span class="card-desc">自定义接入方式。</span></span></label>
+                </div>
+                <input class="custom txt" type="text" placeholder="请描述接入方式" hidden />
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>侦察预览<span class="legend-note">来自扫描，可修正</span></legend>
+              <div class="agent"><p>语言 TypeScript · 框架 Vue 3 / Gin · 包管理 pnpm · 构建 Vite · 测试 Vitest · lint ESLint</p></div>
+            </fieldset>
+
+            <fieldset>
+              <legend>影响范围与风险</legend>
+              <div class="chips">
+                <span class="legend-note" style="width:100%;margin:0 0 4px">允许修改范围</span>
+                <label class="chip is-radio"><input type="radio" name="b-scope" value="module" checked />仅当前模块</label>
+                <label class="chip is-radio"><input type="radio" name="b-scope" value="cross" />跨模块</label>
+                <label class="chip is-radio"><input type="radio" name="b-scope" value="repo" />全仓库</label>
+              </div>
+              <div class="chips" style="margin-top:8px">
+                <span class="legend-note" style="width:100%;margin:0 0 4px">依赖修改</span>
+                <label class="chip is-radio"><input type="radio" name="b-dep" value="no" checked />否</label>
+                <label class="chip is-radio"><input type="radio" name="b-dep" value="yes" />是</label>
+                <label class="chip is-radio"><input type="radio" name="b-dep" value="sec" />仅安全补丁</label>
+              </div>
+              <div class="chips" style="margin-top:8px">
+                <span class="legend-note" style="width:100%;margin:0 0 4px">测试 / 分支</span>
+                <label class="chip is-radio"><input type="radio" name="b-test" value="auto" checked />改后自动测试</label>
+                <label class="chip is-radio"><input type="radio" name="b-test" value="manual" />手动触发</label>
+                <label class="chip is-radio"><input type="radio" name="b-branch" value="yes" />自动建分支/PR</label>
+                <label class="chip is-radio"><input type="radio" name="b-branch" value="no" checked />不建分支</label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>迭代节奏</legend>
+              <div class="chips">
+                <label class="chip is-radio"><input type="radio" name="b-rhythm" value="vibe" />氛围模式（Vibe）</label>
+                <label class="chip is-radio"><input type="radio" name="b-rhythm" value="spec" checked />规范模式（Spec-Driven）</label>
+              </div>
+            </fieldset>
+          </section>
+
+          <!-- Step3 变体 C：重构 —— 约束定义 -->
+          <section class="s3" data-s3="C" hidden>
+            <fieldset>
+              <legend>重构目标类型</legend>
+              <div class="group" data-group style="margin-top:0">
+                <div class="cards">
+                  <label class="card"><input type="radio" name="c-target" value="structure" checked /><span class="txt"><span class="card-title">代码结构</span><span class="card-desc">提取函数/类、消除重复、改善命名。</span></span></label>
+                  <label class="card"><input type="radio" name="c-target" value="arch" /><span class="txt"><span class="card-title">架构重构</span><span class="card-desc">单体拆微服务、分层重组、模块解耦。</span></span></label>
+                  <label class="card"><input type="radio" name="c-target" value="stack" /><span class="txt"><span class="card-title">技术栈迁移</span><span class="card-desc">框架升级、语言/数据库迁移。</span></span></label>
+                  <label class="card"><input type="radio" name="c-target" value="debt" /><span class="txt"><span class="card-title">技术债偿还</span><span class="card-desc">移除死代码、修复已知缺陷。</span></span></label>
+                  <label class="card"><input type="radio" name="c-target" value="security" /><span class="txt"><span class="card-title">安全加固</span><span class="card-desc">修复漏洞、加强输入验证。</span></span></label>
+                  <label class="card"><input type="radio" name="c-target" value="__other__" data-other /><span class="txt"><span class="card-title">其他</span><span class="card-desc">自定义目标。</span></span></label>
+                </div>
+                <input class="custom txt" type="text" placeholder="请描述重构目标" hidden />
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>技术栈<span class="legend-note">当前来自扫描；迁移时再填目标</span></legend>
+              <div class="chips"><span class="chip is-radio">当前：Go / Gin · PostgreSQL / GORM</span></div>
+              <p class="legend-note" style="margin:8px 0 4px">目标技术栈（仅「技术栈迁移」时填写）</p>
+              <div class="group" data-group style="margin-top:0">
+                <div class="chips">
+                  <label class="chip is-radio"><input type="radio" name="c-tlang" value="go" checked />Go</label>
+                  <label class="chip is-radio"><input type="radio" name="c-tlang" value="java" />Java</label>
+                  <label class="chip is-radio"><input type="radio" name="c-tlang" value="rust" />Rust</label>
+                  <label class="chip chip-other is-radio"><input type="radio" name="c-tlang" value="__other__" data-other />其他</label>
+                </div>
+                <input class="custom txt" type="text" placeholder="请填写目标语言" hidden />
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>行为保持策略<span class="legend-note">核心约束</span></legend>
+              <div class="cards">
+                <label class="card"><input type="radio" name="c-keep" value="strict" checked /><span class="txt"><span class="card-title">严格行为保持</span><span class="card-desc">所有现有测试须通过，公共 API 签名不变。</span></span></label>
+                <label class="card"><input type="radio" name="c-keep" value="compat" /><span class="txt"><span class="card-title">兼容性优先</span><span class="card-desc">内部可微调，外部接口保持兼容。</span></span></label>
+                <label class="card"><input type="radio" name="c-keep" value="breaking" /><span class="txt"><span class="card-title">允许破坏性变更</span><span class="card-desc">需明确迁移路径与版本策略。</span></span></label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>范围与验证方式</legend>
+              <div class="chips">
+                <span class="legend-note" style="width:100%;margin:0 0 4px">范围</span>
+                <label class="chip is-radio"><input type="radio" name="c-range" value="file" />文件级</label>
+                <label class="chip is-radio"><input type="radio" name="c-range" value="module" checked />模块级</label>
+                <label class="chip is-radio"><input type="radio" name="c-range" value="system" />系统级</label>
+              </div>
+              <div class="chips" style="margin-top:8px">
+                <span class="legend-note" style="width:100%;margin:0 0 4px">验证方式（可多选）</span>
+                <label class="chip"><input type="checkbox" name="c-verify" value="existing" checked />现有测试套件</label>
+                <label class="chip"><input type="checkbox" name="c-verify" value="character" checked />新增特征测试</label>
+                <label class="chip"><input type="checkbox" name="c-verify" value="manual" />人工验收清单</label>
+                <label class="chip"><input type="checkbox" name="c-verify" value="self" />智能体自验证</label>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>特殊角色<span class="legend-note">可多选</span></legend>
+              <div class="chips">
+                <label class="chip"><input type="checkbox" name="c-roles" value="legacy" checked />遗留分析员</label>
+                <label class="chip"><input type="checkbox" name="c-roles" value="guardian" checked />兼容守护</label>
+                <label class="chip"><input type="checkbox" name="c-roles" value="migration" />迁移规划师</label>
+              </div>
+            </fieldset>
+          </section>
+
+          <!-- Step3 变体：其他（自定义模式 → 直接进场景编辑） -->
+          <section class="s3" data-s3="other" hidden>
+            <div class="placeholder">自定义模式：跳过模板，<b>直接进入场景编辑</b>（复用既有编辑器）手动配置场景与 agent；保存后补写 project_spec.md（mode=custom）。</div>
+            <div><button type="button" class="primary">进入场景编辑</button></div>
+          </section>
+        </div>
+
+        <!-- Step4 摘要确认（含辅助选项） -->
+        <div data-panel="4">
+          <div class="banner"><span>汇总<b>扫描 / 选择</b>结果（可编辑）；末尾是<b>辅助选项（项目配置预设）</b>，生成后可在设置页改。</span></div>
+          <fieldset>
+            <legend>摘要<span class="legend-note">可编辑</span></legend>
+            <div class="field"><label for="s-sum">项目概要</label><textarea id="s-sum">全栈任务看板应用，服务研发团队……</textarea></div>
+            <div class="row2">
+              <label class="select"><span>架构形态</span><input class="txt" value="三层结构" /></label>
+              <label class="select"><span>开发语言</span><input class="txt" value="TypeScript + Go" /></label>
+            </div>
+            <div class="field"><label>团队成员<span class="legend-note">可增删</span></label>
+              <div class="members">
+                <span class="member">主协调者<span class="tag">main</span></span>
+                <span class="member">架构设计师<button type="button" class="x" aria-label="移除">✕</button></span>
+                <span class="member">前端开发<button type="button" class="x" aria-label="移除">✕</button></span>
+                <span class="member">后端开发<button type="button" class="x" aria-label="移除">✕</button></span>
+                <span class="member">代码审查<button type="button" class="x" aria-label="移除">✕</button></span>
+                <span class="member">测试工程师<button type="button" class="x" aria-label="移除">✕</button></span>
+              </div>
+              <button type="button" class="link">＋ 添加成员</button>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>辅助选项<span class="legend-note">项目配置预设 · 后续可改</span></legend>
+            <div class="chips">
+              <label class="chip"><input type="checkbox" checked />记忆库</label>
+              <label class="chip"><input type="checkbox" checked />用户偏好</label>
+              <label class="chip"><input type="checkbox" />代码索引 codegraph</label>
+              <label class="chip"><input type="checkbox" />全文索引 vfts</label>
+              <label class="chip"><input type="checkbox" />文件历史检查点</label>
+            </div>
+            <p class="hint">探测到<b>无 git</b> 时，额外提供「初始化 git 仓库」（现有项目已有 git → 不显示）。</p>
+          </fieldset>
+        </div>
+
+        <!-- Step5 预览与生成（= 场景编辑同构 + 项目记忆 tab） -->
+        <div data-panel="5">
+          <div class="pv-toolbar">
+            <input class="txt" style="max-width:200px" value="demo-team" aria-label="场景名" />
+            <span class="legend-note">项目级</span>
+            <span style="flex:1"></span>
+            <span class="note">将写入：场景目录 · 项目记忆 · project_spec.md</span>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab on" data-pv="scene" role="tab">场景</button>
+            <button type="button" class="tab" data-pv="prompt" role="tab">组合提示词</button>
+            <button type="button" class="tab" data-pv="memory" role="tab">项目记忆 (8)</button>
+          </div>
+
+          <!-- 场景 tab：左 agent 列表 + 右 agent 详情（同场景编辑） -->
+          <div class="tabpane" data-pv="scene">
+            <div class="pv-split">
+              <div class="agent-list">
+                <div class="group-h">主 agent</div>
+                <div class="agent on"><b>主协调者</b> <span class="tag">main</span></div>
+                <div class="group-h">子 agent (5)<span class="legend-note">可增删</span></div>
+                <div class="agent"><b>架构设计师</b> <span class="tag">架构</span><button type="button" class="x" aria-label="移除">✕</button></div>
+                <div class="agent"><b>前端开发</b> <span class="tag">前端</span><button type="button" class="x" aria-label="移除">✕</button></div>
+                <div class="agent"><b>后端开发</b> <span class="tag">后端</span><button type="button" class="x" aria-label="移除">✕</button></div>
+                <div class="agent"><b>代码审查</b> <span class="tag">审查</span><button type="button" class="x" aria-label="移除">✕</button></div>
+                <div class="agent"><b>测试工程师</b> <span class="tag">测试</span><button type="button" class="x" aria-label="移除">✕</button></div>
+                <button type="button" class="link">＋ 添加成员</button>
+                <p class="hint">子 agent 为<b>引用</b>，内容编辑在「扩展 · 智能体」页；此处可增删引用。</p>
+              </div>
+              <div class="ref-view">
+                <label class="select"><span>名称</span><input class="txt" value="主协调者" /></label>
+                <label class="select"><span>角色标签</span><input class="txt" value="主" /></label>
+                <div class="mem-item">
+                  <div class="mem-head"><label for="pv-agent-prompt">提示词</label><button type="button" class="link">AI 优化</button></div>
+                  <textarea id="pv-agent-prompt">你是 demo-team 的编排者与决策者：规划 → 委派 → 检查结果 → 决策 → 循环……</textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 组合提示词 tab：三层只读 -->
+          <div class="tabpane" data-pv="prompt" hidden>
+            <div class="agent"><b>全局层（代码写死）</b><p>你是 {agent名}，一个全能智能体。你运行在 {环境} 中。</p></div>
+            <div class="agent"><b>场景层（本向导生成）</b><p>我们是一个全栈三层研发团队，技术栈 Vue 3 / Go……（description + 团队成员段）</p></div>
+            <div class="agent"><b>agent 层（当前 agent）</b><p>主协调者 [content] + 项目适配槽（构建 / 测试 / 风格）</p></div>
+          </div>
+
+          <!-- 项目记忆 tab：与 agent 一致的「左类别列表 + 右 tab（内容 / 沉淀提示词）」 -->
+          <div class="tabpane" data-pv="memory" hidden>
+            <div class="pv-split">
+              <div class="agent-list">
+                <div class="group-h">预置 8 类<span class="legend-note">可启停 · 不可删 · 标来源</span></div>
+                <div class="agent on"><b>项目概要</b><span class="src">LLM 归纳</span></div>
+                <div class="agent"><b>开发规范</b><span class="src hi">扫描</span></div>
+                <div class="agent"><b>构建发布规则</b><span class="src hi">扫描</span></div>
+                <div class="agent"><b>接口库</b><span class="src hi">扫描</span></div>
+                <div class="agent"><b>测试规范</b><span class="src hi">扫描</span></div>
+                <div class="agent"><b>共同库</b><span class="src">LLM 归纳</span></div>
+                <div class="agent"><b>典型参照</b><span class="src lo">待补充</span></div>
+                <div class="agent"><b>用户决策</b><span class="src lo">待补充</span></div>
+                <div class="group-h">自定义<span class="legend-note">可增删</span></div>
+                <div class="agent"><b>业务规则</b><button type="button" class="x" aria-label="移除">✕</button></div>
+                <button type="button" class="link">＋ 新增类别</button>
+              </div>
+              <div class="ref-view">
+                <div class="tabs" role="tablist">
+                  <button type="button" class="tab on" data-mv="content" role="tab">记忆内容</button>
+                  <button type="button" class="tab" data-mv="prompt" role="tab">沉淀提示词</button>
+                </div>
+                <div class="tabpane" data-mv="content">
+                  <div class="mem-head"><label for="pv-mc">项目概要 · 内容</label></div>
+                  <textarea id="pv-mc">全栈任务看板应用，服务研发团队……</textarea>
+                  <p class="hint">这是<b>初始种子内容</b>（向导预填）——生成时写入 <code>memory/项目概要.md</code> 作起点；此后由记忆库自动累积。</p>
+                </div>
+                <div class="tabpane" data-mv="prompt" hidden>
+                  <div class="mem-head"><label for="pv-mp">项目概要 · 沉淀提示词</label><button type="button" class="link">AI 优化</button></div>
+                  <textarea id="pv-mp">你是记忆库沉淀器。给定该项目概要类别的现有全文与本轮新增信息，输出合并后的全文……（留空 = 回落内置默认）</textarea>
+                  <p class="hint">该类<b>重写指令</b>（system prompt），与左侧「内容」不同；留空回落 <code>defaultRewriteSystemPrompt</code>。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 生成中态：非阻塞 + 索引进度（点「生成」后显示） -->
+          <div class="gen">
+            <div class="mem-head"><b>生成中</b><span class="note">点「生成」后显示 · 不自动关闭</span></div>
+            <div class="gen-row"><span>① 合成提示词</span><span class="ok">完成</span></div>
+            <div class="gen-row"><span>② 写场景目录</span><span class="ok">完成</span></div>
+            <div class="gen-row"><span>③ 写项目记忆</span><span class="ok">完成</span></div>
+            <div class="gen-row"><span>④ 写 project_spec.md</span><span class="ok">完成</span></div>
+            <div class="gen-row"><span>⑤ 建立索引（codegraph / vfts）</span><span class="note">索引中… 62%</span></div>
+            <div class="bar"><div class="bar-fill" style="width:62%"></div></div>
+            <p class="hint">生成在<b>后台</b>进行，可<b>手动关闭</b>本窗口；完成后自动打开场景（失败分步标红、可重试）。</p>
+          </div>
+        </div>
+      </div>
+
+      <aside class="col preview" aria-label="即将生成的智能体群">
+        <fieldset>
+          <legend>即将生成的智能体群<span class="legend-note">(6)</span></legend>
+          <div class="team">
+            <div class="agent"><div class="head"><b>主协调者</b><span class="tag">主</span><span class="layer">编排</span></div><p>规划、委派、决策</p></div>
+            <div class="agent"><div class="head"><b>前端开发</b><span class="tag">前端</span><span class="layer">表现层</span></div><p>Vue 3 组件与页面</p></div>
+            <div class="agent"><div class="head"><b>后端开发</b><span class="tag">后端</span><span class="layer">业务逻辑层</span></div><p>Go / Gin API 与服务端</p></div>
+            <div class="agent"><div class="head"><b>数据工程师</b><span class="tag">数据</span><span class="layer">数据访问层</span></div><p>数据模型、迁移与查询</p></div>
+            <div class="agent"><div class="head"><b>代码审查</b><span class="tag">审查</span><span class="layer">质量</span></div><p>质量与安全审查</p></div>
+            <div class="agent"><div class="head"><b>测试工程师</b><span class="tag">测试</span><span class="layer">质量</span></div><p>测试设计与验证</p></div>
+          </div>
+          <p class="note">当前为「三层结构」，故在前后端之外自动加入数据访问层角色。自定义技术（其他）会并入对应角色的「项目适配」槽。</p>
+        </fieldset>
+      </aside>
+    </div>
+
+    <footer>
+      <button type="button">上一步</button>
+      <button type="button" class="primary" id="primaryBtn">下一步</button>
+      <span class="grow"></span>
+      <button type="button" title="保存当前选择为项目预设（不初始化、不关闭）">存为预设</button>
+      <button type="button" title="关闭向导，不写任何文件；无 project_spec.md 时下次启动仍会弹">关闭</button>
+    </footer>
+  </div>
+</div>
+
+<script>
+  // 步骤切换（样张演示）
+  var rail = document.getElementById('rail');
+  var labels = {1:'项目信息',2:'模式选择',3:'技术栈与架构',4:'摘要确认',5:'预览与生成'};
+  function go(step){
+    document.querySelectorAll('#rail li').forEach(function(li){
+      li.classList.toggle('on', li.dataset.step === String(step));
+    });
+    document.querySelectorAll('[data-panel]').forEach(function(p){
+      p.classList.toggle('active', p.dataset.panel === String(step));
+    });
+    document.getElementById('stepLabel').textContent = '步骤 ' + step + '/5 · ' + labels[step];
+    var pb = document.getElementById('primaryBtn');
+    if(pb) pb.textContent = (String(step) === '5') ? '生成' : '下一步';
+    // Step5（预览与生成）收起右侧「即将生成的智能体群」，把空间让给编辑区
+    var isPv = String(step) === '5';
+    var preview = document.querySelector('.preview');
+    var body = document.querySelector('.body');
+    if(preview) preview.style.display = isPv ? 'none' : '';
+    if(body) body.classList.toggle('focus', isPv);
+  }
+
+  // 预览页 tab：场景 / 组合提示词 / 项目记忆
+  document.querySelectorAll('.tabs .tab[data-pv]').forEach(function(t){
+    t.addEventListener('click', function(){
+      var pane = t.dataset.pv;
+      t.parentElement.querySelectorAll('.tab').forEach(function(x){ x.classList.toggle('on', x === t); });
+      document.querySelectorAll('.tabpane[data-pv]').forEach(function(p){ p.hidden = p.dataset.pv !== pane; });
+    });
+  });
+  // 记忆详情 tab：记忆内容 / 沉淀提示词
+  document.querySelectorAll('.tabs .tab[data-mv]').forEach(function(t){
+    t.addEventListener('click', function(){
+      var pane = t.dataset.mv;
+      t.parentElement.querySelectorAll('.tab').forEach(function(x){ x.classList.toggle('on', x === t); });
+      document.querySelectorAll('.tabpane[data-mv]').forEach(function(p){ p.hidden = p.dataset.mv !== pane; });
+    });
+  });
+  document.querySelectorAll('#rail li').forEach(function(li){
+    li.addEventListener('click', function(){ go(li.dataset.step); });
+    li.addEventListener('keydown', function(e){ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); go(li.dataset.step); } });
+  });
+
+  // 「其他」→ 显示自定义输入
+  document.querySelectorAll('.group[data-group]').forEach(function(g){
+    var other = g.querySelector('[data-other]');
+    var custom = g.querySelector('.custom');
+    if(!other || !custom) return;
+    g.addEventListener('change', function(){ custom.hidden = !other.checked; });
+  });
+
+  // 选 Web / 移动端 / 小程序 → 自动勾选「前端」
+  document.querySelectorAll('[data-implies-front]').forEach(function(cb){
+    cb.addEventListener('change', function(){
+      if(!cb.checked) return;
+      var fe = document.querySelector('input[name="platform"][value="frontend"]');
+      if(fe) fe.checked = true;
+    });
+  });
+
+  // Step3 随模式切换：A 新建（脚手架）/ B 迭代（上下文）/ C 重构（约束）/ 其他
+  var s3Banners = {
+    A:'Step3 随模式变化。当前模式「新构建」：选择脚手架（技术栈与架构），已由 LLM 预填推荐。',
+    B:'Step3 随模式变化。当前模式「迭代」：采集既有代码库上下文（技术栈来自扫描，无需重选）。',
+    C:'Step3 随模式变化。当前模式「重构」：定义约束（行为保持策略 / 验证方式 / 特殊角色）。',
+    other:'Step3 随模式变化。当前模式「其他」：跳过模板，直接进入场景编辑（复用既有编辑器）。'
+  };
+  function setMode(m){
+    var key = (m==='A'||m==='B'||m==='C') ? m : 'other';
+    document.querySelectorAll('.s3').forEach(function(s){ s.hidden = s.dataset.s3 !== key; });
+    var b = document.getElementById('s3Banner');
+    if(b) b.textContent = s3Banners[key];
+  }
+  document.querySelectorAll('input[name="mode"]').forEach(function(r){
+    r.addEventListener('change', function(){ if(r.checked) setMode(r.value); });
+  });
+  setMode('A');
+</script>
+</body>
+</html>

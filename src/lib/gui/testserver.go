@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	webview2 "github.com/jchv/go-webview2"
 )
 
@@ -415,7 +416,7 @@ func (s *testServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	var result any
 	var errs []error
 	// gui.window.status：统一窗口控制/查询（command 语义见 applyWindowCommand）。
-	if req.Type == "gui.window.status" {
+	if req.Type == msgkeys.TopicGuiWindowStatus {
 		result, errs = applyWindowCommand(hwnd, destroy, br, req.Payload)
 	} else if isWindowMessage(req.Type) && handler != nil {
 		// 窗口面消息（open-chat/list/set-title）：宿主侧处理（同 appHandler.handlePublish）。

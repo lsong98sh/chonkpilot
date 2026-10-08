@@ -7,11 +7,11 @@
 //	scenario.json   {name, description, createdAt, updatedAt, agents:[<引用路径>…]}
 //	main.agent.md   主 agent（固定文件名；**内联**，可编辑、不可选）
 //
-// **子 agent 改为引用**（P4，2026-10-01）：`scenario.json` 的 `agents` 存 agent 引用路径
-// （变量前缀 `${exeDir}`(系统级) / `${usrDir}`(用户级) / `${workDir}`(项目级) / `${dataDir}`(项目私有级)
-// 之后为相对路径，如 `${exeDir}/capability/agents/UX 设计师.agent.md`），不再在场景目录内放
-// `*.agent.md` 子文件。**兼容读取旧形态**（同目录 `*.agent.md`）；**悬空引用静默删除**
-// （文件缺失 / 变量不可解析 → 跳过，不报错）。
+// **子 agent 唯一形态 = 引用（ref）**（P4，2026-10-01；批 1 2026-10-04 去内联双形态）：`scenario.json`
+// 的 `agents` 存 agent 引用路径（变量前缀 `${exeDir}`(系统级) / `${usrDir}`(用户级) / `${workDir}`(项目级)
+// / `${dataDir}`(项目私有级) 之后为相对路径，如 `${exeDir}/capability/agents/UX 设计师.agent.md`）。
+// 子 agent **只能**经引用承载，场景目录内**不放** `*.agent.md` 子文件；**悬空引用静默删除**
+// （文件缺失 / 变量不可解析 → 跳过，不报错）。**无 ref 的非主 agent 保存即拒绝**。
 //
 // agent 文件沿用 mcp 四原语分区契约（# 标题 + [meta] + [description] + [content]），
 // 复用同包的契约解析/组装。
@@ -210,64 +210,37 @@ type scenarioMeta struct {
 // 元素字段与旧 DB 版一致（id/key/name/description/agents/createdAt/updatedAt），
 // 另加 level（app|user|project|prjusr，级别标识）。
 //
-// agents 来源（P4）：主 agent 内联（main.agent.md）；子 agent = `scenario.json.agents` 的
-// **引用路径**（`roots` 展开；**悬空/越权 → 静默删除**）。**兼容旧形态**：scenario.json 无
-// `agents` 键时，回退读同目录 `*.agent.md`。被引用的 agent 条目附带 `ref` 字段（原引用串）。
+// agents 来源（**唯一形态 = 引用**）：主 agent 内联（main.agent.md，恒排首位）；子 agent =
+// `scenario.json.agents` 的**引用路径**（`roots` 展开；**悬空/越权 → 静默删除**）。被引用的
+// agent 条目附带 `ref` 字段（原引用串）。
 func ReadScenarioDir(kind, root, dir string, roots RefRoots) (map[string]any, error) {
 	dirPath := filepath.Join(root, dir)
+	if st, err := os.Stat(dirPath); err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("scenario dir not found: %s", dirPath)
+	}
 	meta := scenarioMeta{Name: dir}
-	metaHasAgentsKey := false
 	if raw, err := os.ReadFile(filepath.Join(dirPath, scenarioMetaFile)); err == nil {
 		_ = json.Unmarshal(raw, &meta)
-		var probe map[string]json.RawMessage
-		if json.Unmarshal(raw, &probe) == nil {
-			_, metaHasAgentsKey = probe["agents"]
-		}
-	}
-	entries, err := os.ReadDir(dirPath)
-	if err != nil {
-		return nil, err
 	}
 	agents := []any{}
-	mainAgent := map[string]any(nil)
-	inlineSubs := []any{} // 旧形态：同目录 *.agent.md（非 main）
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(strings.ToLower(name), agentFileSuffix) {
+	// 主 agent：固定 main.agent.md 内联（恒排首位，UI 依赖 agents[0]）
+	if raw, err := os.ReadFile(filepath.Join(dirPath, scenarioMainFile)); err == nil {
+		agents = append(agents, agentFromDoc(ParseDoc(string(raw)), scenarioMainFile))
+	}
+	// 子 agent：只从 meta.Agents 的引用展开（逐条；悬空/越权 → 静默删除）
+	for _, ref := range meta.Agents {
+		abs, ok := ExpandAgentRef(ref, roots)
+		if !ok {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(dirPath, name))
+		raw, err := os.ReadFile(abs)
 		if err != nil {
 			continue
 		}
-		a := agentFromDoc(ParseDoc(string(raw)), name)
-		if isMainAgent(a) && mainAgent == nil {
-			mainAgent = a // 主 agent 恒排首位（与旧 DB 版顺序一致，UI 依赖 agents[0]）
-			continue
-		}
-		inlineSubs = append(inlineSubs, a)
-	}
-	if metaHasAgentsKey || len(meta.Agents) > 0 {
-		// 新形态：子 agent = 引用（逐条展开；悬空/越权 → 静默删除）
-		for _, ref := range meta.Agents {
-			abs, ok := ExpandAgentRef(ref, roots)
-			if !ok {
-				continue
-			}
-			raw, err := os.ReadFile(abs)
-			if err != nil {
-				continue
-			}
-			a := agentFromDoc(ParseDoc(string(raw)), filepath.Base(abs))
-			a["isMain"] = false // 引用 = 子 agent（不因被引文件 ismain 而升为主）
-			a["ref"] = ref
-			agents = append(agents, a)
-		}
-	} else {
-		agents = inlineSubs // 旧形态兼容
-	}
-	if mainAgent != nil {
-		agents = append([]any{mainAgent}, agents...)
+		a := agentFromDoc(ParseDoc(string(raw)), filepath.Base(abs))
+		a["isMain"] = false // 引用 = 子 agent（不因被引文件 ismain 而升为主）
+		a["ref"] = ref
+		agents = append(agents, a)
 	}
 	if meta.Name == "" {
 		meta.Name = dir
@@ -279,11 +252,6 @@ func ReadScenarioDir(kind, root, dir string, roots RefRoots) (map[string]any, er
 		"description": meta.Description,
 		"level":       kind,
 		"agents":      agents,
-		// systemPrompt 为**保留供兼容的派生字段**：= 主 agent 的 prompt（v6 起该内容由
-		// main.agent.md 承载）。25 §3 起**场景层提示词不再取用本字段** —— 由 `llm/server` 侧
-		// 按三层（全局 / 场景 / agent）自行拼接（`loadScenario` 只取 `description` + `agents`），
-		// 故此处保留字段仅为兼容既有 `data-scenario-*` 消费方，不改变其取值语义。
-		"systemPrompt": mainAgentPrompt(agents),
 	}
 	if meta.CreatedAt != "" {
 		sc["createdAt"] = meta.CreatedAt
@@ -329,22 +297,46 @@ func ValidateScenarioAgents(scenarioID string, sc map[string]any) error {
 	return nil
 }
 
-// WriteScenarioDir 写一个场景目录（scenario.json + main.agent.md[+ 旧形态内联子 agent]）。
+// WriteScenarioDir 写一个场景目录（scenario.json + main.agent.md）。
 // root = 某级**场景根**（25 §6）。已存在的旧 agent 文件先清理，避免改名后残留。
 // 写盘前先做**同场景 agent 重名校验**（ValidateScenarioAgents）→ 重名即拒绝、不落盘（42 §2 (175)）。
 //
-// 子 agent 落盘（P4）：带 `ref` 的 agent → 写入 `scenario.json.agents`（引用路径，不落单独文件）；
-// 主 agent → 内联写 `main.agent.md`；**无 ref 的非主 agent** → 兼容旧形态内联落盘 `*.agent.md`
-// （供被引用文件尚未迁移时兜底）。
+// 子 agent 落盘（**唯一形态 = 引用**）：带 `ref` 的 agent → 写入 `scenario.json.agents`（引用路径，
+// 不落单独文件）；主 agent → 内联写 `main.agent.md`；**无 ref 的非主 agent → 拒绝**（子 agent 必须以
+// 引用形式保存，内联子 agent 形态已废除）。
 func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots) error {
 	if err := ValidateScenarioAgents(dir, sc); err != nil {
 		return err
+	}
+	// 先校验 / 收集子 agent 引用（**无 ref 的非主 agent → 拒绝，且不建目录/不落盘**）
+	agents, _ := sc["agents"].([]any)
+	refs := []string{}
+	for _, a := range agents {
+		am, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		if isMainAgent(am) {
+			continue // 主 agent 内联写 main.agent.md（下方统一落盘）
+		}
+		ref := strings.TrimSpace(kernel.SvalOf(am["ref"]))
+		if ref == "" {
+			return fmt.Errorf("场景 %q 的 agent %q 缺少引用（ref）：子 agent 必须以引用形式保存",
+				dir, kernel.SvalOf(am["name"]))
+		}
+		// 绝对路径（前端可能直接给绝对路径）→ 归一为变量前缀形态
+		if filepath.IsAbs(filepath.FromSlash(ref)) {
+			if v, ok := AgentRefOf(ref, roots); ok {
+				ref = v
+			}
+		}
+		refs = append(refs, ref) // 引用形态：只记引用路径
 	}
 	dirPath := filepath.Join(root, dir)
 	if err := os.MkdirAll(dirPath, 0o755); err != nil {
 		return err
 	}
-	// 清理既有 *.agent.md（按新 agents 全新落盘；旧形态子 agent 文件随之清除）
+	// 清理既有 *.agent.md（按新 agents 全新落盘；场景目录不再承载子 agent 文件）
 	if entries, err := os.ReadDir(dirPath); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), agentFileSuffix) {
@@ -356,32 +348,6 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots)
 	createdAt := kernel.SvalOf(sc["createdAt"])
 	if createdAt == "" {
 		createdAt = now
-	}
-	agents, _ := sc["agents"].([]any)
-	refs := []string{}
-	for _, a := range agents {
-		am, ok := a.(map[string]any)
-		if !ok {
-			continue
-		}
-		if isMainAgent(am) {
-			continue // 主 agent 内联写 main.agent.md（下方统一落盘）
-		}
-		if ref := strings.TrimSpace(kernel.SvalOf(am["ref"])); ref != "" {
-			// 绝对路径（前端可能直接给绝对路径）→ 归一为变量前缀形态
-			if filepath.IsAbs(filepath.FromSlash(ref)) {
-				if v, ok := AgentRefOf(ref, roots); ok {
-					ref = v
-				}
-			}
-			refs = append(refs, ref) // 引用形态：只记引用路径
-			continue
-		}
-		// 无 ref 的非主 agent：兼容旧形态内联落盘
-		fileName := agentFileName(am)
-		if err := os.WriteFile(filepath.Join(dirPath, fileName), []byte(BuildDoc(agentToDoc(am))), 0o644); err != nil {
-			return err
-		}
 	}
 	meta := scenarioMeta{
 		Name:        kernel.SvalOf(sc["name"]),
@@ -413,48 +379,10 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots)
 	return nil
 }
 
-// NormalizeScenarioPayload 归一化保存载荷：只给 systemPrompt 而未给主 agent prompt（旧前端形态）
-// → 落到主 agent 的 prompt；无 main agent 且给了 systemPrompt → 补一条主 agent。
-// 同时剔除派生字段 systemPrompt（它由 main.agent.md 承载，写盘时不再单独保存）。
-func NormalizeScenarioPayload(sc map[string]any) map[string]any {
-	agents, _ := sc["agents"].([]any)
-	sys := kernel.SvalOf(sc["systemPrompt"])
-	if sys != "" && mainAgentPrompt(agents) == "" {
-		merged := false
-		for _, a := range agents {
-			m, ok := a.(map[string]any)
-			if !ok || !isMainAgent(m) {
-				continue
-			}
-			m["prompt"] = sys
-			merged = true
-			break
-		}
-		if !merged {
-			agents = append([]any{map[string]any{
-				"name": "Loop Engineer", "roleTag": "主", "isMain": true, "prompt": sys,
-			}}, agents...)
-		}
-		sc["agents"] = agents
-	}
-	delete(sc, "systemPrompt")
-	return sc
-}
-
 // ScenarioDirExists 判断某级**场景根**下场景目录是否存在（25 §6）。
 func ScenarioDirExists(root, dir string) bool {
 	st, err := os.Stat(filepath.Join(root, dir))
 	return err == nil && st.IsDir()
-}
-
-// mainAgentPrompt 取主 agent 的 prompt（无主 agent → 空）。
-func mainAgentPrompt(agents []any) string {
-	for _, a := range agents {
-		if m, ok := a.(map[string]any); ok && isMainAgent(m) {
-			return kernel.SvalOf(m["prompt"])
-		}
-	}
-	return ""
 }
 
 // agentFileName agent 文件名：主 agent 固定 main.agent.md，其余 <名称>.agent.md。

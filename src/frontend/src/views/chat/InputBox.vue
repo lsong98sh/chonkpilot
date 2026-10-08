@@ -142,6 +142,7 @@ import { useI18n } from 'vue-i18n'
 import { Button, Popover, Tag, message as uiMessage } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import mq from '../../utils/mq'
+import { MsgTopics } from '../../events/msgkeys'
 import { getFileUrl } from '../../api/file'
 import { EventNames } from '../../events/event-names'
 import { formatItemText } from '../../composables/useSendQueue'
@@ -317,7 +318,7 @@ function upload(file) {
     const a = find()
     if (a && kind === 'image') a.url = dataUrl // 本地预览（落盘前的缩略图）
     nextTick(() => autoResize())
-    return mq.emit('gui.upload', { name: file.name, data: dataUrl, kind })
+    return mq.emit(MsgTopics.guiUpload, { name: file.name, data: dataUrl, kind })
   }).then((env) => {
     const res = env && env.backend && env.backend.result
     const a = find()

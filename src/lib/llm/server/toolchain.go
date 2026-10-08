@@ -1,9 +1,11 @@
-// prompt 占位符 {{toolchain.<key>}} 在 chonkpilot-server 侧的取值装配 —— 取值来源 =
-// usr 配置（经既有 data-user-config-load 通道，对齐 loadExecConfig 的读法）。
+// prompt 占位符替换（chonkpilot-server 侧）——两类：
+//
+//	{{toolchain.<key>}}  取值来源 = usr/prj 配置（经既有 data-user-config 通道，对齐 loadExecConfig 的读法）
+//	{{path.<key>}}       取值来源 = 四级根路径（exe/user/data/work；见 replacePaths）
 //
 // 覆盖的 prompt 落点（均为"拼装后送给 LLM 的文本"，不改消息面结构）：
-//   - 系统提示词**三层拼接后**的整段（globalLayerPrompt + scenarioLayer + agentLayer →
-//     newTurnCtx 注入 LLM 上下文最前，25 §3；数据层 `systemPrompt` 字段**不再取用**）；
+//   - 系统提示词**分层拼接后**的整段（globalLayerPrompt + systemDirectoryLayer + scenarioLayer
+//   - agentLayer → newTurnCtx 注入 LLM 上下文最前，25 §3；数据层 `systemPrompt` 字段**已废除**）；
 //   - 记忆库带出指引（memoryGuide，随每轮请求拼在最前）；
 //   - 发往 LLM 的工具契约描述（toolsForLLM，gateway tools/list 的 description）；
 //   - 无上下文单轮 LLM（onLLMSimple → llm-simple，如 compress 摘要 system 提示词）；
@@ -15,9 +17,12 @@
 package server
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/persist"
+	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 )
 
@@ -112,4 +117,52 @@ func (s *Server) replaceToolchain(instanceID, text string) string {
 		return text
 	}
 	return mcpms.ReplaceToolchain(text, s.toolchainVars(instanceID))
+}
+
+// ── prompt 占位符 {{path.<key>}}（四种根路径，2026-10-04）────────────────────
+//
+// 用途：agent `[content]`（技能 / 规范）在系统提示词组装时**按绝对路径渲染**，指示 LLM
+// 用文件工具按路径自读（LLM 经 mcp_find/mcp_load 读不到能力面 `capability/skills/*`）。
+// 四种根与四级 capability 根同构：
+//
+//	{{path.exeDir}}  → <exeDir>（app 根 = {{path.exeDir}}/capability）
+//	{{path.userDir}} → ~/.chonkpilot（user 根 = {{path.userDir}}/capability）
+//	{{path.dataDir}} → ~/.chonkpilot/data/<project-id>（prjusr 根 = {{path.dataDir}}/capability）
+//	{{path.workDir}} → <workDir>（project 根 = {{path.workDir}}/.chonkpilot/capability）
+//
+// 替换语义同 ReplaceToolchain：未知 key 原样保留；已知但解析不出 → 空串。
+
+// pathVars 组装 {{path.<key>}} 占位符取值表（exe / user / data / work 四种根）。
+// dataDir 需实例的 prjusr 根（经门面 KnowledgeRoot(kind=prjusr) 解析）；解析不出 → 空串。
+func (s *Server) pathVars(instanceID string) map[string]string {
+	scope := s.cfgScope(instanceID)
+	vars := map[string]string{
+		"exeDir":  "",
+		"userDir": filepath.Dir(persist.CapUserRoot(s.opts.UsrPath)),
+		"dataDir": "",
+		"workDir": strings.TrimSpace(scope.WorkDir),
+	}
+	if d, err := exedir.Dir(); err == nil {
+		vars["exeDir"] = d
+	}
+	if s.cfg != nil {
+		if resp, err := s.cfg.KnowledgeRoot(facade.KnowledgeRootRequest{
+			InstanceID: instanceID, Kind: persist.KindPrjUsr, Scope: scope,
+		}); err == nil && strings.TrimSpace(resp.Root) != "" {
+			vars["dataDir"] = filepath.Dir(resp.Root)
+		}
+	}
+	return vars
+}
+
+// replacePaths 替换 prompt 文本中的 {{path.<key>}}（四种根路径）：
+// 文本不含占位符时零成本直返（不解析路径 / 不发门面请求）。
+func (s *Server) replacePaths(instanceID, text string) string {
+	if text == "" || !strings.Contains(text, "{{path.") {
+		return text
+	}
+	for k, v := range s.pathVars(instanceID) {
+		text = strings.ReplaceAll(text, "{{path."+k+"}}", v)
+	}
+	return text
 }

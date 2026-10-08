@@ -4,22 +4,37 @@
 // 与 capability 原语库（LLM 经 mcp_find 获取的"普通知识"）无关。
 //
 // 触发：订阅 server 每轮终态事件 `session-compress`（与压缩插件同源，**消息面零新增**；
-// 事件由 server.finish 在落库 + 写快照后发出）。流程：
+// 事件由 server.finish 在落库 + 写快照后发出）。**队列 + 合并（2026-10-06，用户拍板）**：
+// 订阅回调只**置待处理标记**（key = (instance, session)，同一 key **覆盖合并**）并立即返回；
+// **每 instance 一个串行 worker** 取标记 → 串行处理（同会话/同实例不并发、不重入；
+// 进程退出时未完成任务允许丢弃，Hook 无 Stop）。处理流程：
 //
 //	读项目配置 memory.enabled（默认 false）→ 关则不动
-//	→ 读本轮消息（data-session-load-messages）估算 token
-//	→ 低于 memory.min-turn-tokens（默认 200）→ 跳过（寒暄类不产生记忆）
+//	→ 判主/子会话（data-session-get.parent_id；OP-07）
 //	→ 取类别清单（data-memory-list；首次访问由 persist 预置类别文件）
-//	→ 按启用类别**并行**：读旧全文（data-memory-read）+ 本轮新信息 → 经 llm-simple 重写全文
-//	   （请求按 usr `llm.memory` 带可选 `llm` = 子系统默认 LLM，缺省回落 defaultLLM；SL-3；
-//	    `system` = 该类别的沉淀提示词：项目级读 prj `memory.prompt.<类别名>`、用户偏好读 usr
-//	    自由键 `memory_prompts`，未配置回落内置默认 defaultRewriteSystemPrompt）
-//	   → 保存（data-memory-save）
+//	→ 读会话全部轮（data-session-history）+ 各类别「上次提取 turn」进度（**专用表 memory_extract**，
+//	   经 data-memory-extract-load；落 prjusr）
+//	→ **累计门控**（OP-05）：自锚点（各启用类别中最旧的已提取轮）以来累计 token ≥
+//	   memory.min-turn-tokens（默认 200）才提取；否则跳过（含此前已跳过的轮）
+//	→ 按启用类别**并行**：按该类进度取「上次提取轮 → 最新轮」的全部轮消息
+//	   （**含此前被阈值跳过的轮**）→ 读旧全文（data-memory-read）+ 新信息 → 经 llm-simple
+//	   重写全文（请求按 usr `llm.memory` 带可选 `llm`；`system` = 该类别的沉淀提示词 —— 取自
+//	   `data-memory-list` 的 `prompt` 字段；**空 = 该类别无提示词文件 → 不提取**）
+//	   → 保存（data-memory-save）→ **成功后推进该类进度**到最后处理的轮（OP-05/06）
+//	→ 无新轮（各类进度均已在最新轮）→ 跳过（**不算失败**；天然幂等：已提取的轮因进度推进不重提）
 //
-// 手动沉淀（2026-09-20，批 3 ⑱）：另订阅点分主题 `memory.flush`（payload `{instance_id, session}`），
-// 取该会话**最近一轮**（data-session-history）→ 复用同一沉淀回路（distill），**不受
-// memory.min-turn-tokens 门控**（显式动作即用户意图），同步把 `{ok, saved, failed, enabled}`
-// 写回 Value.Result 供设置页反馈；结果为空/未启用等前置不满足 → `{ok:false, reason}`（不静默）。
+// 遍历范围按级别不同（OP-07）：**项目级类别含子 session**（子会话自身的轮终态事件照常提取
+// 项目级记忆；子步骤也要提）；**用户偏好仅主 session**（顶层，子会话不含个人表达）。
+//
+// 写冲突（OP-08）：**per-(workdir/项目, 类别) 进程内互斥 + 读-改-写临界区** —— 同进程多会话
+// 并发写同一类别 md 不并发（跨进程由单持有者保证，见 OP-14/D-45，另项）。
+//
+// 手动沉淀（2026-09-20，批 3 ⑱；2026-10-06 并入队列；2026-10-07 改投递即回，I-128）：另订阅
+// 点分主题 `memory.flush`（payload `{instance_id, session}`）—— 置**待处理标记**（force=true）
+// 并**立即回执** `{ok, queued, session}`（不再同步等各类别 LLM 跑完）；进度经既有通知面
+// tool-notify（`memory-queued`/`memory-start`/`memory-done`）推送，供 statusbar 显示队列状态。
+// **不受 memory.min-turn-tokens 门控**（显式动作即用户意图），范围同自动路径（各进度 → 最新轮）。
+// 前置不满足 → `{ok:false, reason}`（不静默）。
 //
 // 不阻塞对话：任一环节失败只记日志 + 上报一次用户可见提示（Deps.Notify），跳过该类，
 // 不降级、不抛出（宿主负责提示的去重/限频，见 chonkpilot-llm/server/pluginnotice.go）。
@@ -37,6 +52,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-plugin"
 )
 
@@ -52,17 +68,22 @@ const (
 	// 数据面（persist 订阅）。
 	prjConfigListSubject  = "data-prj-config-list"
 	userConfigLoadSubject = "data-user-config-load"
+	sessionGetSubject     = "data-session-get" // 判主/子会话（parent_id；OP-07）
 	sessionLoadSubject    = "data-session-load-messages"
 	sessionHistorySubject = "data-session-history"
 	memoryListSubject     = "data-memory-list"
 	memoryReadSubject     = "data-memory-read"
 	memorySaveSubject     = "data-memory-save"
-	llmSimpleSubject      = "llm-simple"
-	dataTimeout           = 5 * time.Second
-	llmTimeout            = 60 * time.Second
-	memoryUserLevel       = "user" // 记忆类别的"用户级"标识（persist 侧 memory-categories 的 level 值）
-	memoryEnabledKey      = "memory.enabled"
-	memoryMinTokensKey    = "memory.min-turn-tokens"
+	// 提取进度专用表（OP-05/06，2026-10-06）：(会话, 类别) → 最后已成功提取的 turn，
+	// 落 prjusr 表 memory_extract（此前用 config 键 `memory-extract.<会话>.<类别>`，已废弃：
+	// 进度是记录不是配置，不得写入 config）。
+	memoryExtractLoadSubject = "data-memory-extract-load"
+	memoryExtractSaveSubject = "data-memory-extract-save"
+	llmSimpleSubject         = "llm-simple"
+	dataTimeout              = 5 * time.Second
+	llmTimeout               = 60 * time.Second
+	memoryEnabledKey         = "memory.enabled"
+	memoryMinTokensKey       = "memory.min-turn-tokens"
 	// memoryLLMKey 是记忆子系统的默认 LLM 配置键（usr；SL-3 / SL-C2，40-演进计划 §SL）。
 	// 值 = llmref（provider name；键缺失/空串的回落 defaultLLM 由数据层读侧完成，见 SL-1）。
 	memoryLLMKey = "llm.memory"
@@ -71,22 +92,23 @@ const (
 	// 本插件在沉淀后按同一口径记告警日志，使该键在**服务端亦有读点**；键缺失/非正 → 不限）。
 	memoryCategoryMaxTokensKey = "memory.category-max-tokens"
 	memoryCategoryPrefix       = "memory.category."
-	// memoryPromptPrefix 是**项目级类别沉淀提示词**的 prj 配置键前缀：`memory.prompt.<类别名>`
-	// （值 = 提示词全文；键缺失/空 → 回落内置默认 defaultRewriteSystemPrompt）。
-	// 前端入口 = 上下文管理页每类别行的【编辑提示词】（走既有 data-prj-config-{list,save,delete}）。
-	memoryPromptPrefix = "memory.prompt."
-	// userMemoryPromptsKey 是**用户级类别沉淀提示词**的 usr 自由键（JSON 对象字符串
-	// `{"<类别名>":"<提示词全文>"}`，见 64-配置项一览 §3）：承载唯一用户级类别「用户偏好」的
-	// 自定义提示词（**键缺失/空/非法 JSON → 回落内置默认**）。读写走既有
-	// data-user-config-{load,save,delete}（自由键通道）。
-	userMemoryPromptsKey = "memory_prompts"
+	// memorySubsessionKey 是「提取子会话记忆」项目级开关键（DSL-4，42 §2 (253)）：默认**关闭**
+	// （键缺失 / 非 "true"）。关 = 子会话（session.parent_id != ""）turn 跳过自动沉淀；主会话恒不跳过。
+	// 注：该键只关**沉淀（写路径）**；记忆清单带出指引（读路径）只随 memory.enabled 门控，与子会话无关。
+	memorySubsessionKey  = "memory.subsession"
 	defaultMinTurnTokens = 200
-	// defaultRewriteSystemPrompt 是记忆沉淀的**内置默认**提示词：某类别未自定义提示词时使用
-	// （自定义来源 = prj `memory.prompt.<类别名>` / usr `memory_prompts`，见 memoryPromptFor）。
-	// 前端镜像常量见 src/frontend/src/composables/useMemoryCategories.js（跨端字面量有测试守卫）。
-	defaultRewriteSystemPrompt = "你是记忆库沉淀器。给定某个记忆类别的现有全文与本轮对话的新增信息，" +
-		"请把两者合并后重写该类别全文（累加 + 更新：修正过时内容、去重、条理化、不臆造）。" +
-		"只输出重写后的 markdown 全文，不要任何解释或代码块围栏。"
+	// allTurnsTarget 是 data-session-history 的 target_messages/target_bytes 取值（足够大 →
+	// 返回会话**全部轮**，供跨轮提取范围与累计门控）。
+	allTurnsTarget = 1 << 30
+	// 进度通知取值（I-128）——在**既有通知面** tool-notify 上新增（不新增主题，61-消息一览 §4.3）：
+	// 入队（排队）/ 处理前（进行中）/ 处理后（完成）各发一次，供 statusbar 显示沉淀队列状态。
+	noticeMemoryQueued = "memory-queued"
+	noticeMemoryStart  = "memory-start"
+	noticeMemoryDone   = "memory-done"
+	// 注（OP-04，2026-10-06）：类别沉淀提示词**已文件化** —— 出厂默认提示词 = 纯文本文件
+	// `<级别>/capability/system/memory/<类别名>.md`（读序 项目级 → 用户级 → 系统级磁盘 →
+	// embed 内置），由**数据层**（`data-memory-list` 的 `prompt` 字段）解析后下发；本插件不再
+	// 持提示词常量，也不再读 prj `memory.prompt.<类别名>` / usr `memory_prompts` 键载体。
 )
 
 // Options 是记忆库插件配置（构造基线；项目配置可覆盖阈值）。
@@ -106,6 +128,23 @@ type Plugin struct {
 	deps     plugin.Deps
 	sub      mq.Sub
 	flushSub mq.Sub
+	// locks 是 per-(workdir/项目, 类别) 进程内互斥表（OP-08）：键 = workDir + "\x00" + 类别，
+	// 值 = *sync.Mutex。读旧全文 → LLM 重写 → 写回整段临界区持锁（同类别重写不并发）。
+	locks sync.Map
+
+	// 队列（2026-10-06）：每 instance 一个串行 worker + 按 (instance, session) **覆盖合并**的
+	// 待处理表。订阅回调只 enqueue（置标记 + 必要时拉起该 instance 的 worker）后立即返回。
+	mu      sync.Mutex
+	pending map[string]*extractTask // key = instance + "\x00" + session
+	running map[string]bool         // key = instance → 该实例 worker 是否在运行
+}
+
+// extractTask 是一次待处理的沉淀（enqueue 时构造，worker 消费）。
+//   - ev = 最近一次事件载荷（同 key 合并：只留最新；WorkDir/DataDir 空则沿用旧值）；
+//   - force = 手动沉淀（memory.flush）→ 跳过 memory.min-turn-tokens 门控。
+type extractTask struct {
+	ev    turnEvent
+	force bool
 }
 
 // New 构建记忆库插件（阈值给零值 → 回落默认）。
@@ -130,8 +169,9 @@ func (p *Plugin) Start(d plugin.Deps) error {
 		return err
 	}
 	p.sub = sub
-	// memory.flush：手动触发一次沉淀——**同步**执行（含各类别重写）并把结果写回 v.Result
-	// （saved/failed），使 UI 能给出「进行中 → 成功/失败」的明确反馈（不新增回执主题）。
+	// memory.flush：手动触发一次沉淀——置待处理标记（force=true）并**投递即回**（I-128：
+	// 不再同步等各类别 LLM 跑完，≈60s → 立即返回）；进度经既有通知面 tool-notify 推送；
+	// 与自动路径共用同一每 instance 串行 worker（顺序化不并发）。
 	fsub, err := d.Bus.On(flushSubject, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		v.Result = p.flush(v.Payload)
 		return nil
@@ -174,7 +214,7 @@ type turnEvent struct {
 	LastTurn   string `json:"last_turn"`
 }
 
-// onTurnEnd 每轮终态 → 异步沉淀（不阻塞对话）。
+// onTurnEnd 每轮终态 → 置待处理标记（不阻塞对话；由每 instance 串行 worker 异步处理）。
 func (p *Plugin) onTurnEnd(_ string, payload []byte) {
 	var ev turnEvent
 	if err := json.Unmarshal(payload, &ev); err != nil {
@@ -183,18 +223,130 @@ func (p *Plugin) onTurnEnd(_ string, payload []byte) {
 	if ev.InstanceID == "" || ev.WorkDir == "" || ev.Session == "" || ev.LastTurn == "" {
 		return
 	}
-	go p.extract(ev)
+	p.enqueue(ev, false)
+}
+
+// sessionTaskKey 队列键：实例 + 会话（不同实例的同名会话互不干扰；同 key 覆盖合并）。
+func sessionTaskKey(instanceID, session string) string { return instanceID + "\x00" + session }
+
+// enqueue 置待处理标记并（必要时）拉起该 instance 的串行 worker，**立即返回**。
+//
+// 合并语义：同一 (instance, session) **只保留最近一次**事件载荷（同会话在沉淀进行中再来的
+// 事件被合并，只跑最后一次；沉淀自「进度 → 最新轮」幂等重算，无新轮即跳过）。
+// force 取「或」（任一为手动沉淀即跳过阈值门控）。
+// 该实例 worker 已在运行 → 本次进队列（排队）→ 广播 `memory-queued`（I-128，statusbar 可见）。
+func (p *Plugin) enqueue(ev turnEvent, force bool) {
+	if ev.InstanceID == "" || ev.Session == "" {
+		return
+	}
+	key := sessionTaskKey(ev.InstanceID, ev.Session)
+	p.mu.Lock()
+	if p.pending == nil {
+		p.pending = make(map[string]*extractTask)
+	}
+	if p.running == nil {
+		p.running = make(map[string]bool)
+	}
+	if t, ok := p.pending[key]; ok {
+		if ev.WorkDir == "" {
+			ev.WorkDir = t.ev.WorkDir // 合并：手动沉淀载荷无 work_dir → 沿用前一事件
+		}
+		if ev.DataDir == "" {
+			ev.DataDir = t.ev.DataDir
+		}
+		t.ev = ev
+		t.force = t.force || force
+	} else {
+		p.pending[key] = &extractTask{ev: ev, force: force}
+	}
+	start := !p.running[ev.InstanceID]
+	if start {
+		p.running[ev.InstanceID] = true
+	}
+	p.mu.Unlock()
+	if start {
+		go p.worker(ev.InstanceID)
+		return
+	}
+	// 该实例 worker 已在跑 → 本次事件排在其后（覆盖合并）→ 广播「排队」
+	p.emitMemoryNotice(ev.InstanceID, ev.Session, ev.LastTurn, noticeMemoryQueued, "记忆沉淀排队中…")
+}
+
+// worker 按 instance 串行消费待处理表：取出任一同实例标记 → 处理 → 循环；无待处理 → 置回
+// running 并退出（下次 enqueue 再拉起）。同实例不并发、不重入。
+// 处理前/后各广播一次进度（`memory-start` / `memory-done`，I-128）。
+// 进程退出时未完成任务允许直接丢弃（不 Join、不阻塞退出）。
+func (p *Plugin) worker(instanceID string) {
+	prefix := instanceID + "\x00"
+	for {
+		p.mu.Lock()
+		var key string
+		var task *extractTask
+		for k, t := range p.pending {
+			if strings.HasPrefix(k, prefix) {
+				key, task = k, t
+				break
+			}
+		}
+		if task == nil {
+			// 无待处理 → 退出；与 enqueue 在同一把锁下判定 running 归属，避免竞态丢事件。
+			delete(p.running, instanceID)
+			p.mu.Unlock()
+			return
+		}
+		delete(p.pending, key)
+		p.mu.Unlock()
+		// 子会话门控（DSL-4，42 §2 (253)）：在**广播进度前**判定 —— 子会话且「提取子会话记忆」未开
+		// → 跳过（不广播 `memory-*` 进度，子会话不入沉淀队列状态展示，见 I-128）。
+		if p.skipSubsession(task.ev) {
+			continue
+		}
+		p.emitMemoryNotice(task.ev.InstanceID, task.ev.Session, task.ev.LastTurn, noticeMemoryStart, "正在沉淀记忆…")
+		p.safeProcess(task)
+		p.emitMemoryNotice(task.ev.InstanceID, task.ev.Session, task.ev.LastTurn, noticeMemoryDone, "记忆沉淀完成")
+	}
+}
+
+// emitMemoryNotice 经**既有通知面** tool-notify（61-消息一览 §4.3；不新增主题）投递沉淀队列
+// 进度（`memory-queued` / `memory-start` / `memory-done`），供 statusbar 显示队列状态。
+// 只发布不等应答（不阻塞、不抛出）；实例字段必带（61 §0），缺失 → 不广播。
+func (p *Plugin) emitMemoryNotice(instanceID, session, lastTurn, notice, message string) {
+	if p.deps.Bus == nil || instanceID == "" {
+		return
+	}
+	p.deps.Bus.Emit(context.Background(), msgkeys.TopicToolNotify, map[string]any{
+		"instance_id": instanceID,
+		"session_id":  session,
+		"turn_id":     lastTurn,
+		"notice":      notice,
+		"message":     message,
+		"message_id":  "msg-memory-" + notice + "-" + session + "-" + lastTurn,
+		"plugin":      "memory",
+	})
+}
+
+// safeProcess 包裹 process 并兜住 panic —— worker 是裸 goroutine（已脱离 mq.dispatch 的
+// recover），不兜会使 panic 直接终止进程（行为对齐 compress「回调 panic 不致命」）。
+func (p *Plugin) safeProcess(t *extractTask) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logf()("memory: recovered panic in worker: %v", r)
+		}
+	}()
+	p.process(t.ev, t.force)
 }
 
 // memoryConfig 是本轮消费的项目配置（memory.*；缺失回落默认）。
 type memoryConfig struct {
 	Enabled   bool
 	MinTokens int
+	// Subsession 是「提取子会话记忆」开关（prj `memory.subsession`，DSL-4 42 §2 (253)；默认**关闭**）：
+	// 关 = 子会话 turn 跳过自动沉淀（见 process）；主会话恒不跳过。只影响沉淀（写路径）。
+	Subsession bool
 	// MaxTokens 是单类别 token **告警阈值**（prj `memory.category-max-tokens`）：>0 = 超过即记
 	// 告警日志（不截断、不阻断）；0 = 未设置 = 不限。
 	MaxTokens  int
-	Categories map[string]bool   // 类别名 → 启用（键缺失 → 默认启用）
-	Prompts    map[string]string // 类别名 → 自定义沉淀提示词（prj `memory.prompt.<类别名>`；空 = 未配置）
+	Categories map[string]bool // 类别名 → 启用（键缺失 → 默认启用）
 }
 
 // categoryEnabled 判断类别是否启用：读项目配置 memory.category.<类别名>；键缺失 → 默认启用。
@@ -206,63 +358,394 @@ func (c memoryConfig) categoryEnabled(name string) bool {
 	return true
 }
 
-// extract 执行一次沉淀（可同步调用，供测试）：配置门控 → 阈值门控 → 按启用类别并行重写。
-// 任一环节失败：记日志 + **上报一次用户可见提示**（宿主去重/限频）→ 跳过该类，**不阻塞对话**
-// （不降级、不抛出）。
-func (p *Plugin) extract(ev turnEvent) {
+// extract 执行一次沉淀（自动路径；同步，供测试直接调用——worker 走 process）。
+func (p *Plugin) extract(ev turnEvent) { p.process(ev, false) }
+
+// skipSubsession 子会话沉淀门控（DSL-4，42 §2 (253)「提取子会话记忆」，默认关闭）：
+// 子会话（会话行 `parent_id != ""`）+ 开关未开 → 跳过自动沉淀（worker 在**广播进度前**调用，
+// 子会话不入队列状态展示）。与 process 内联门控同口径（读同一 prj 键与同一会话 parent）。
+// 读配置 / 父级失败 → 不跳过（保守，不误伤主路径）。
+func (p *Plugin) skipSubsession(ev turnEvent) bool {
+	cfg, err := p.resolveConfig(ev.InstanceID)
+	if err != nil || !cfg.Enabled || cfg.Subsession {
+		return false
+	}
+	parent, err := p.sessionParent(ev.InstanceID, ev.Session)
+	if err != nil {
+		return false
+	}
+	return parent != ""
+}
+
+// process 执行一次会话沉淀（可同步调用；worker 与手动沉淀共用）：配置门控 → 主/子会话判定 →
+// 读该会话全部轮 + 各类别进度（专用表）→ **累计门控**（OP-05；force=true 跳过）→ 按启用类别
+// 并行**跨轮**重写（各进度 → 最新轮；无新轮即跳过）。
+//
+// 返回值 = flush 风格回执（`{ok, session, turn, saved, failed, enabled}` /
+// 前置不满足 `{ok:false, reason}`）；自动路径的调用方丢弃该值。
+// 任一环节失败：记日志 + **上报一次用户可见提示**（宿主去重/限频）→ 跳过，**不阻塞对话**。
+func (p *Plugin) process(ev turnEvent, force bool) map[string]any {
 	logf := p.logf()
+	fail := func(reason string) map[string]any { return map[string]any{"ok": false, "reason": reason} }
 	cfg, err := p.resolveConfig(ev.InstanceID)
 	if err != nil {
 		logf("memory: 读项目配置失败（instance=%s）：%v（跳过）", ev.InstanceID, err)
 		p.notify(ev, "config", err.Error())
-		return
+		return fail(err.Error())
 	}
 	if !cfg.Enabled {
-		return
+		return fail(memoryEnabledKey + " not enabled")
 	}
-	msgs, err := p.loadTurnMessages(ev.InstanceID, ev.LastTurn)
+	// OP-07：主/子会话判定 —— 用户偏好仅主会话（顶层）提取；项目级含子 session。
+	parent, err := p.sessionParent(ev.InstanceID, ev.Session)
 	if err != nil {
-		logf("memory: 读本轮消息失败（turn=%s）：%v（跳过）", ev.LastTurn, err)
-		p.notify(ev, "messages", err.Error())
-		return
+		logf("memory: 读会话父级失败（session=%s）：%v（跳过）", ev.Session, err)
+		p.notify(ev, "session", err.Error())
+		return fail(err.Error())
 	}
-	tokens := data.EstimateTokensOfMessages(msgs)
-	if tokens < cfg.MinTokens {
-		logf("memory: 本轮新增 %d token < 阈值 %d → 跳过（turn=%s）", tokens, cfg.MinTokens, ev.LastTurn)
-		return
+	// DSL-4（42 §2 (253)「提取子会话记忆」，默认关闭）：子会话 turn 跳过**自动沉淀**
+	// （判定 = session.parent_id != ""，与 OP-07 同一 parent 读取）。主会话恒不跳过；
+	// 只关沉淀（写路径），不影响记忆清单带出指引（读路径，随 memory.enabled 门控）。
+	if parent != "" && !cfg.Subsession {
+		logf("memory: 子会话跳过自动沉淀（session=%s；「提取子会话记忆」未开启）", ev.Session)
+		return map[string]any{"ok": true, "session": ev.Session, "subsession_skipped": true}
 	}
 	cats, err := p.memoryCategories(ev.InstanceID)
 	if err != nil {
 		logf("memory: 读记忆类别失败（instance=%s）：%v（跳过）", ev.InstanceID, err)
 		p.notify(ev, "categories", err.Error())
-		return
+		return fail(err.Error())
 	}
-	p.distill(ev, cfg, cats, renderTurnInfo(msgs), tokens)
+	enabled := 0
+	for _, c := range cats {
+		if cfg.categoryEnabled(c.Category) {
+			enabled++
+		}
+	}
+	cats = selectExtractCategories(cats, cfg, parent == "")
+	if len(cats) == 0 {
+		return map[string]any{"ok": true, "session": ev.Session, "turn": "", "saved": []string{}, "failed": []map[string]string{}, "enabled": enabled}
+	}
+	// 跨轮范围/累计门控的基础：该会话全部轮（created_at 升序，含预存 full_tokens）。
+	turns, err := p.sessionTurns(ev.InstanceID, ev.Session)
+	if err != nil {
+		logf("memory: 读会话轮次失败（session=%s）：%v（跳过）", ev.Session, err)
+		p.notify(ev, "turns", err.Error())
+		return fail(err.Error())
+	}
+	if len(turns) == 0 {
+		return fail("no turn in session " + ev.Session)
+	}
+	latest := turns[len(turns)-1].ID
+	// OP-05/06：读该会话各类别「上次提取 turn」进度（专用表 memory_extract，落 prjusr）。
+	prog := make(map[string]string, len(cats))
+	processable := make(map[string]string, len(cats))
+	all, perr := p.loadProgress(ev.InstanceID, ev.Session)
+	if perr != nil {
+		logf("memory: 读提取进度失败（session=%s）：%v（按未提取处理）", ev.Session, perr)
+	}
+	for _, c := range cats {
+		last := all[c.Category]
+		prog[c.Category] = last
+		// 门控锚点只计**有提示词**的类别（无提示词文件的类别不提取、也不开闸，避免每轮空转）。
+		if strings.TrimSpace(c.Prompt) != "" {
+			processable[c.Category] = last
+		}
+	}
+	done := func() map[string]any {
+		return map[string]any{"ok": true, "session": ev.Session, "turn": latest, "saved": []string{}, "failed": []map[string]string{}, "enabled": enabled}
+	}
+	if len(processable) == 0 {
+		return done()
+	}
+	cache := newTurnMsgCache(p, ev.InstanceID)
+	// 累计门控（OP-05）：手动沉淀（force=true）跳过（显式动作即用户意图）。
+	if !force {
+		tokens, terr := p.rangeTokens(turnsAfter(turns, earliestAnchor(turns, processable)), cache)
+		if terr != nil {
+			logf("memory: 估算跨轮 token 失败（session=%s）：%v（跳过）", ev.Session, terr)
+			p.notify(ev, "turns", terr.Error())
+			return fail(terr.Error())
+		}
+		if tokens < cfg.MinTokens {
+			logf("memory: 自上次提取累计 %d token < 阈值 %d → 跳过（session=%s）", tokens, cfg.MinTokens, ev.Session)
+			return done()
+		}
+	}
+	saved, failed := p.distillRanged(ev, cfg, cats, turns, prog, cache)
+	return map[string]any{
+		"ok": true, "session": ev.Session, "turn": latest,
+		"saved": saved, "failed": failed, "enabled": enabled,
+	}
 }
 
-// distill 是按启用类别并行重写全文的**唯一沉淀回路**（自动沉淀 extract 与手动 flush 共用）：
-// 逐类别 读旧全文（data-memory-read）→ 旧全文 + 新信息经 llm-simple 重写 → 保存（data-memory-save）。
-// 单类别失败：记日志 + 上报一次用户可见提示 → 跳过该类（不降级、不抛出）。
-// 返回成功/失败类别（供手动 flush 回执；自动沉淀忽略返回值）。可同步调用，供测试。
-func (p *Plugin) distill(ev turnEvent, cfg memoryConfig, cats []categoryInfo, newInfo string, tokens int) ([]string, []map[string]string) {
+// selectExtractCategories 过滤参与提取的类别（OP-07）：类别启用 + 主/子会话级别约束
+// （用户级类别仅主会话；项目级类别主/子会话均提取）。
+func selectExtractCategories(cats []categoryInfo, cfg memoryConfig, isMain bool) []categoryInfo {
+	out := make([]categoryInfo, 0, len(cats))
+	for _, c := range cats {
+		if !cfg.categoryEnabled(c.Category) {
+			continue
+		}
+		if !isMain && c.Level == "user" {
+			continue // 用户偏好仅主 session
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// turnRef 是会话内一轮的引用：turn_id + 预存全量 token 估算（turns.full_tokens；0 = 缺值）。
+type turnRef struct {
+	ID     string
+	Tokens int
+}
+
+// sessionParent 经 data-session-get 读会话父 id（空 = 主会话/顶层；会话不存在 → 空，按主会话处置）。
+func (p *Plugin) sessionParent(instanceID, session string) (string, error) {
+	res, err := p.request(sessionGetSubject, map[string]any{
+		"instance_id": instanceID,
+		"data":        map[string]any{"session_id": session},
+	})
+	if err != nil {
+		return "", err
+	}
+	d, _ := res["data"].(map[string]any)
+	if d == nil {
+		return "", nil
+	}
+	return strval(d["parent_id"]), nil
+}
+
+// sessionTurns 经 data-session-history 读该会话**全部轮**（created_at 升序；含预存 full_tokens）。
+// target_messages/target_bytes 取足够大 → 全量返回（跨轮提取范围与累计门控的基础）。
+func (p *Plugin) sessionTurns(instanceID, session string) ([]turnRef, error) {
+	res, err := p.request(sessionHistorySubject, map[string]any{
+		"instance_id": instanceID,
+		"data": map[string]any{
+			"session_id": session, "target_messages": allTurnsTarget, "target_bytes": allTurnsTarget,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	msgs, _ := res["messages"].(map[string]any)
+	raw, _ := msgs["turns"].([]any)
+	out := make([]turnRef, 0, len(raw))
+	for _, item := range raw {
+		m, _ := item.(map[string]any)
+		if m == nil {
+			continue
+		}
+		id := strval(m["turn_id"])
+		if id == "" {
+			continue
+		}
+		out = append(out, turnRef{ID: id, Tokens: atoiOK(strval(m["full_tokens"]))})
+	}
+	return out, nil
+}
+
+// loadProgress 经 data-memory-extract-load 一次读回该会话**全部类别**的最后已提取 turn
+// （专用表 memory_extract，落 prjusr）；返回 类别名 → turn_id（无记录 → 空串，不算失败）。
+func (p *Plugin) loadProgress(instanceID, session string) (map[string]string, error) {
+	res, err := p.request(memoryExtractLoadSubject, map[string]any{
+		"instance_id": instanceID,
+		"data":        map[string]any{"session_id": session},
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	raw, _ := res["list"].([]any)
+	for _, item := range raw {
+		m, _ := item.(map[string]any)
+		if m == nil {
+			continue
+		}
+		cat := strval(m["category"])
+		if cat == "" {
+			continue
+		}
+		out[cat] = strval(m["last_turn_id"])
+	}
+	return out, nil
+}
+
+// saveProgress 经 data-memory-extract-save 写某 (会话, 类别) 的最后已提取 turn
+// （仅在该类别**成功**写回后推进）。
+func (p *Plugin) saveProgress(instanceID, session, category, turnID string) error {
+	_, err := p.request(memoryExtractSaveSubject, map[string]any{
+		"instance_id": instanceID,
+		"data": map[string]any{
+			"session_id": session, "category": category, "last_turn_id": turnID,
+		},
+	})
+	return err
+}
+
+// earliestAnchor 取各启用类别进度中最旧的已提取轮 id（= 累计门控与跨轮范围的起点）。
+// 任一类无进度（或进度轮不在当前轮列表中，如已被清理）→ 返回 ""（= 从头全量提取）。
+func earliestAnchor(turns []turnRef, prog map[string]string) string {
+	idx := make(map[string]int, len(turns))
+	for i, t := range turns {
+		idx[t.ID] = i
+	}
+	best := -1
+	for _, last := range prog {
+		if last == "" {
+			return ""
+		}
+		i, ok := idx[last]
+		if !ok {
+			return ""
+		}
+		if best < 0 || i < best {
+			best = i
+		}
+	}
+	if best < 0 {
+		return ""
+	}
+	return turns[best].ID
+}
+
+// turnsAfter 返回 anchor 之后的轮（anchor == "" → 全部轮；找不到 anchor → 全部轮）。
+func turnsAfter(turns []turnRef, anchor string) []turnRef {
+	if anchor == "" {
+		return turns
+	}
+	for i, t := range turns {
+		if t.ID == anchor {
+			if i+1 >= len(turns) {
+				return nil
+			}
+			return turns[i+1:]
+		}
+	}
+	return turns
+}
+
+// turnMsgCache 在一次提取内缓存各轮消息（多类别范围重叠时避免重复拉取 data-session-load-messages）。
+type turnMsgCache struct {
+	p          *Plugin
+	instanceID string
+	mu         sync.Mutex
+	m          map[string][]data.ChatMsg
+}
+
+// newTurnMsgCache 建本次提取的轮消息缓存。
+func newTurnMsgCache(p *Plugin, instanceID string) *turnMsgCache {
+	return &turnMsgCache{p: p, instanceID: instanceID, m: map[string][]data.ChatMsg{}}
+}
+
+// load 取某轮全部消息（命中缓存直接返回）。
+func (c *turnMsgCache) load(turnID string) ([]data.ChatMsg, error) {
+	c.mu.Lock()
+	if v, ok := c.m[turnID]; ok {
+		c.mu.Unlock()
+		return v, nil
+	}
+	c.mu.Unlock()
+	msgs, err := c.p.loadTurnMessages(c.instanceID, turnID)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.m[turnID] = msgs
+	c.mu.Unlock()
+	return msgs, nil
+}
+
+// collectRange 拼接一段轮次的消息（按轮序）。
+func collectRange(cache *turnMsgCache, rng []turnRef) ([]data.ChatMsg, error) {
+	var out []data.ChatMsg
+	for _, t := range rng {
+		msgs, err := cache.load(t.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, msgs...)
+	}
+	return out, nil
+}
+
+// rangeTokens 估算一段轮次的累计 token（优先用 turns 预存 full_tokens；缺值轮回退拉消息估算）。
+func (p *Plugin) rangeTokens(rng []turnRef, cache *turnMsgCache) (int, error) {
+	total := 0
+	for _, t := range rng {
+		if t.Tokens > 0 {
+			total += t.Tokens
+			continue
+		}
+		msgs, err := cache.load(t.ID)
+		if err != nil {
+			return 0, err
+		}
+		total += data.EstimateTokensOfMessages(msgs)
+	}
+	return total, nil
+}
+
+// lockCategory 取 per-(workdir/项目, 类别) 进程内互斥锁（OP-08）并加锁，返回解锁函数：
+// 「读旧全文 → LLM 重写 → 写回」整段临界区持锁（同进程多会话并发写同一类别 md 不并发）。
+// 跨进程正确性依赖单持有者（OP-14/D-45，另项）。
+func (p *Plugin) lockCategory(workDir, category string) func() {
+	key := workDir + "\x00" + category
+	v, _ := p.locks.LoadOrStore(key, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// distillRanged 是**跨轮**沉淀回路（自动沉淀与手动沉淀共用）：逐类别按各自进度取
+// 「上次提取轮 → 最新轮」的全部轮消息（**含此前被阈值跳过的轮**，OP-05）→ 读旧全文 +
+// 新信息经 llm-simple 重写 → 保存；成功后**推进该类别的提取进度**（OP-05/06）。
+// per-(workdir, 类别) 互斥覆盖整段读-改-写临界区（OP-08）。单类别失败：记日志 +
+// 上报一次用户可见提示 → 跳过该类（不降级、不抛出）。可同步调用，供测试。
+func (p *Plugin) distillRanged(ev turnEvent, cfg memoryConfig, cats []categoryInfo, turns []turnRef, prog map[string]string, cache *turnMsgCache) ([]string, []map[string]string) {
 	logf := p.logf()
-	// 子系统默认 LLM（SL-3）+ 用户级类别沉淀提示词（2026-09-26）：**每次沉淀现读**同一份
-	// usr 配置（不缓存到进程级/包级 → 配置改动热生效，生效粒度 = 按 turn）。本次沉淀各类别共用。
-	userCfg := p.readUserConfig(ev.InstanceID)
-	llm := subsystemLLM(userCfg)
-	userPrompts := userMemoryPrompts(userCfg)
+	llm := subsystemLLM(p.readUserConfig(ev.InstanceID))
 	saved := make([]string, 0, len(cats))
 	failed := make([]map[string]string, 0)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, c := range cats {
-		if !cfg.categoryEnabled(c.Category) {
-			continue
-		}
 		wg.Add(1)
 		go func(ci categoryInfo) {
 			defer wg.Done()
 			category := ci.Category
+			// 类别沉淀提示词（OP-04）：取自 data-memory-list 的 `prompt`（数据层文件读序解析）。
+			// 空 = 该类别**无任何提示词文件** → **不提取**：记日志 + 上报一次用户可见提示 + 计入失败。
+			prompt := strings.TrimSpace(ci.Prompt)
+			if prompt == "" {
+				logf("memory: 类别 %s 无沉淀提示词文件（capability/system/memory/%s.md）→ 不提取", category, category)
+				p.notify(ev, "prompt", category+"：无沉淀提示词文件")
+				mu.Lock()
+				failed = append(failed, map[string]string{"category": category, "kind": "prompt", "reason": "missing prompt file"})
+				mu.Unlock()
+				return
+			}
+			rng := turnsAfter(turns, prog[category])
+			if len(rng) == 0 {
+				return // 无新轮 → 无事可做（不算失败）
+			}
+			msgs, err := collectRange(cache, rng)
+			if err != nil {
+				logf("memory: 读轮次消息失败（%s）：%v（跳过）", category, err)
+				p.notify(ev, "messages", category+"："+err.Error())
+				mu.Lock()
+				failed = append(failed, map[string]string{"category": category, "kind": "messages", "reason": err.Error()})
+				mu.Unlock()
+				return
+			}
+			newInfo := renderTurnInfo(msgs)
+			if strings.TrimSpace(newInfo) == "" {
+				return // 空内容 → 无事可做
+			}
+			// OP-08：读旧全文 → LLM 重写 → 写回，整段临界区（per-(workdir, 类别) 进程内互斥）。
+			unlock := p.lockCategory(ev.WorkDir, category)
+			defer unlock()
 			old, err := p.memoryRead(ev.InstanceID, category)
 			if err != nil {
 				logf("memory: 读记忆失败（%s）：%v（跳过）", category, err)
@@ -272,7 +755,7 @@ func (p *Plugin) distill(ev turnEvent, cfg memoryConfig, cats []categoryInfo, ne
 				mu.Unlock()
 				return
 			}
-			text, err := p.rewrite(ev.InstanceID, llm, memoryPromptFor(cfg, userPrompts, ci), category, old, newInfo)
+			text, err := p.rewrite(ev.InstanceID, llm, prompt, category, old, newInfo)
 			if err != nil {
 				logf("memory: 沉淀 LLM 失败（%s）：%v（跳过）", category, err)
 				p.notify(ev, "llm", category+"："+err.Error())
@@ -296,7 +779,12 @@ func (p *Plugin) distill(ev turnEvent, cfg memoryConfig, cats []categoryInfo, ne
 				mu.Unlock()
 				return
 			}
-			logf("memory: 沉淀 %s（turn=%s, 本轮 %d token）", category, ev.LastTurn, tokens)
+			// OP-05/06：仅在该类别**成功**写回后推进进度到最后处理的轮（失败不推进 → 下次重提该段）。
+			last := rng[len(rng)-1].ID
+			if err := p.saveProgress(ev.InstanceID, ev.Session, category, last); err != nil {
+				logf("memory: 推进提取进度失败（session=%s/%s → %s）：%v（下次将重提该段）", ev.Session, category, last, err)
+			}
+			logf("memory: 沉淀 %s（session=%s, 轮 %s→%s, 累计 %d token）", category, ev.Session, rng[0].ID, last, rangeTokensOrZero(cache, rng))
 			mu.Lock()
 			saved = append(saved, category)
 			mu.Unlock()
@@ -306,16 +794,30 @@ func (p *Plugin) distill(ev turnEvent, cfg memoryConfig, cats []categoryInfo, ne
 	return saved, failed
 }
 
-// flush 手动触发一次沉淀（memory.flush 订阅者）：取该会话**最近一轮**消息 → 复用 distill。
-//
-// 与自动沉淀（extract）的差异仅三处，其余（启用门控 / 类别门控 / 单类别 token 告警 /
-// 读改写保存回路）完全同源：
+// rangeTokensOrZero 仅供日志：估算一段轮次 token（失败 → 0，不影响主流程）。
+func rangeTokensOrZero(cache *turnMsgCache, rng []turnRef) int {
+	n := 0
+	for _, t := range rng {
+		if t.Tokens > 0 {
+			n += t.Tokens
+			continue
+		}
+		if msgs, err := cache.load(t.ID); err == nil {
+			n += data.EstimateTokensOfMessages(msgs)
+		}
+	}
+	return n
+}
+
+// flush 手动触发一次沉淀（memory.flush 订阅者）：解析 payload → 置待处理标记（force=true）→
+// **立即回执**。与自动沉淀的差异：
 //   - 触发源 = 用户显式动作（不经 session-compress 轮末事件）；
-//   - **不受 `memory.min-turn-tokens` 门控**（显式动作即用户意图，短轮次也照沉淀）；
-//   - 同步返回结果（saved/failed），供设置页给「成功/失败」反馈。
+//   - **不受 `memory.min-turn-tokens` 门控**（force=true；显式动作即用户意图，短轮次也照沉淀）；
+//   - **投递即回**（I-128）：回执 `{ok, queued, session}`（不再同步等各类别 LLM 跑完），进度由
+//     既有通知面 tool-notify（`memory-queued`/`memory-start`/`memory-done`）推送。
 //
-// 作用域 = payload 指定的 instance + session（不跨实例、不跨会话）；任何前置条件不满足
-// 均以 `{ok:false, reason}` 明确作答（不抛错、不静默）。
+// 作用域 = payload 指定的 instance + session（不跨实例、不跨会话）；前置不满足 →
+// `{ok:false, reason}`（不抛错、不静默）；提取范围同自动路径（各进度 → 最新轮；无新轮即跳过）。
 func (p *Plugin) flush(payload []byte) map[string]any {
 	var req struct {
 		InstanceID string `json:"instance_id"`
@@ -324,50 +826,8 @@ func (p *Plugin) flush(payload []byte) map[string]any {
 	if err := json.Unmarshal(payload, &req); err != nil || req.InstanceID == "" || req.Session == "" {
 		return map[string]any{"ok": false, "reason": "instance_id/session required"}
 	}
-	logf := p.logf()
-	cfg, err := p.resolveConfig(req.InstanceID)
-	if err != nil {
-		logf("memory: 手动沉淀读项目配置失败（instance=%s）：%v", req.InstanceID, err)
-		return map[string]any{"ok": false, "reason": err.Error()}
-	}
-	if !cfg.Enabled {
-		return map[string]any{"ok": false, "reason": memoryEnabledKey + " not enabled"}
-	}
-	turn, err := p.latestTurn(req.InstanceID, req.Session)
-	if err != nil {
-		logf("memory: 手动沉淀读会话轮次失败（session=%s）：%v", req.Session, err)
-		return map[string]any{"ok": false, "reason": err.Error()}
-	}
-	if turn == "" {
-		return map[string]any{"ok": false, "reason": "no turn in session " + req.Session}
-	}
-	msgs, err := p.loadTurnMessages(req.InstanceID, turn)
-	if err != nil {
-		logf("memory: 手动沉淀读本轮消息失败（turn=%s）：%v", turn, err)
-		return map[string]any{"ok": false, "reason": err.Error()}
-	}
-	if len(msgs) == 0 {
-		return map[string]any{"ok": false, "reason": "empty turn " + turn}
-	}
-	cats, err := p.memoryCategories(req.InstanceID)
-	if err != nil {
-		logf("memory: 手动沉淀读记忆类别失败（instance=%s）：%v", req.InstanceID, err)
-		return map[string]any{"ok": false, "reason": err.Error()}
-	}
-	enabled := 0
-	for _, c := range cats {
-		if cfg.categoryEnabled(c.Category) {
-			enabled++
-		}
-	}
-	ev := turnEvent{InstanceID: req.InstanceID, Session: req.Session, LastTurn: turn}
-	saved, failed := p.distill(ev, cfg, cats, renderTurnInfo(msgs), data.EstimateTokensOfMessages(msgs))
-	logf("memory: 手动沉淀完成（session=%s turn=%s 成功 %d/失败 %d/启用 %d）",
-		req.Session, turn, len(saved), len(failed), enabled)
-	return map[string]any{
-		"ok": true, "session": req.Session, "turn": turn,
-		"saved": saved, "failed": failed, "enabled": enabled,
-	}
+	p.enqueue(turnEvent{InstanceID: req.InstanceID, Session: req.Session}, true)
+	return map[string]any{"ok": true, "queued": true, "session": req.Session}
 }
 
 // resolveConfig 经 data-prj-config-list 一次读回项目配置并解析 memory.*（缺失回落默认）。
@@ -376,7 +836,6 @@ func (p *Plugin) resolveConfig(instanceID string) (memoryConfig, error) {
 		Enabled:    false,
 		MinTokens:  p.opts.MinTurnTokens,
 		Categories: map[string]bool{},
-		Prompts:    map[string]string{},
 	}
 	res, err := p.request(prjConfigListSubject, map[string]any{"instance_id": instanceID})
 	if err != nil {
@@ -395,14 +854,13 @@ func (p *Plugin) resolveConfig(instanceID string) (memoryConfig, error) {
 	if raw, ok := list[memoryCategoryMaxTokensKey]; ok {
 		cfg.MaxTokens = atoiOK(strval(raw))
 	}
+	// 「提取子会话记忆」开关（prj 键；缺失/非 "true" → 关闭）。
+	if raw, ok := list[memorySubsessionKey]; ok {
+		cfg.Subsession = strval(raw) == "true"
+	}
 	for k, v := range list {
 		if name, ok := strings.CutPrefix(k, memoryCategoryPrefix); ok && name != "" {
 			cfg.Categories[name] = strval(v) == "true"
-			continue
-		}
-		// 项目级类别沉淀提示词（`memory.prompt.<类别名>`；空值亦登记 → 与未配置同口径回落默认）。
-		if name, ok := strings.CutPrefix(k, memoryPromptPrefix); ok && name != "" {
-			cfg.Prompts[name] = strval(v)
 		}
 	}
 	return cfg, nil
@@ -411,12 +869,11 @@ func (p *Plugin) resolveConfig(instanceID string) (memoryConfig, error) {
 // readUserConfig 经既有 data-user-config-load 面一次读回 usr 配置对象（失败 → nil）。
 //
 // 热生效（SL-C9）：**每次沉淀现读**（消息面零新增），不缓存到进程级/包级变量 →
-// 配置改动无需重启，生效粒度 = 按 turn。一次读回同时供「子系统默认 LLM」与「用户级类别
-// 沉淀提示词」两个消费点使用（避免同一轮重复发两次请求）。
+// 配置改动无需重启，生效粒度 = 按 turn。消费点 = 「子系统默认 LLM」（`llm.memory`；SL-3）。
 func (p *Plugin) readUserConfig(instanceID string) map[string]any {
 	res, err := p.request(userConfigLoadSubject, map[string]any{"instance_id": instanceID})
 	if err != nil {
-		return nil // 读失败 → 两消费点各按"不指定/内置默认"处置；沉淀流程不中断
+		return nil // 读失败 → 按"不指定"处置；沉淀流程不中断
 	}
 	cfg, _ := res["data"].(map[string]any)
 	return cfg
@@ -433,43 +890,13 @@ func subsystemLLM(userCfg map[string]any) string {
 	return data.LLMRefName(userCfg[memoryLLMKey], userCfg["llms"])
 }
 
-// userMemoryPrompts 解析用户级类别的自定义沉淀提示词（usr 自由键 `memory_prompts`，
-// 值 = JSON 对象字符串 `{"<类别名>":"<提示词全文>"}`）。键缺失 / 空串 / 非法 JSON → nil
-// （调用方回落内置默认），不视为失败。
-func userMemoryPrompts(userCfg map[string]any) map[string]string {
-	if userCfg == nil {
-		return nil
-	}
-	raw := strval(userCfg[userMemoryPromptsKey])
-	if raw == "" {
-		return nil
-	}
-	var m map[string]string
-	if json.Unmarshal([]byte(raw), &m) != nil {
-		return nil
-	}
-	return m
-}
-
-// memoryPromptFor 取某类别的沉淀提示词（llm-simple 的 `system`）：
-//   - 用户级类别（用户偏好）→ usr `memory_prompts` 中该类别的值；
-//   - 项目级类别 → prj `memory.prompt.<类别名>`；
-//   - 未配置 / 空白 → **内置默认** defaultRewriteSystemPrompt（逐字节等价于改前硬编码口径）。
-func memoryPromptFor(cfg memoryConfig, userPrompts map[string]string, c categoryInfo) string {
-	custom := cfg.Prompts[c.Category]
-	if c.Level == memoryUserLevel {
-		custom = userPrompts[c.Category]
-	}
-	if strings.TrimSpace(custom) == "" {
-		return defaultRewriteSystemPrompt
-	}
-	return custom
-}
-
 // categoryInfo 是 memory 类别（持久化侧为唯一来源，插件不硬编码类别清单）。
+// Prompt = 该类别的沉淀提示词（数据层按文件读序解析后随 data-memory-list 下发，OP-04）；
+// 空串 = 无任何提示词文件（如新增自定义类别未建提示词文件）→ 该类**不提取**。
 type categoryInfo struct {
 	Category string
 	Level    string
+	Prompt   string
 }
 
 // memoryCategories 经 data-memory-list 取类别清单。
@@ -489,7 +916,11 @@ func (p *Plugin) memoryCategories(instanceID string) ([]categoryInfo, error) {
 		if cat == "" {
 			continue
 		}
-		out = append(out, categoryInfo{Category: cat, Level: strval(m["level"])})
+		out = append(out, categoryInfo{
+			Category: cat,
+			Level:    strval(m["level"]),
+			Prompt:   strval(m["prompt"]), // 数据层解析的沉淀提示词（OP-04）
+		})
 	}
 	return out, nil
 }
@@ -513,30 +944,6 @@ func (p *Plugin) loadTurnMessages(instanceID, turnID string) ([]data.ChatMsg, er
 		return nil, err
 	}
 	return msgs, nil
-}
-
-// latestTurn 经 data-session-history（既有面，target_messages=1 → 至少含最近一轮）取该会话
-// 最近一轮的 turn_id；会话无轮次 → 空串（调用方给明确文案，不当失败）。
-func (p *Plugin) latestTurn(instanceID, session string) (string, error) {
-	res, err := p.request(sessionHistorySubject, map[string]any{
-		"instance_id": instanceID,
-		"data":        map[string]any{"session_id": session, "target_messages": 1},
-	})
-	if err != nil {
-		return "", err
-	}
-	msgs, _ := res["messages"].(map[string]any)
-	turns, _ := msgs["turns"].([]any)
-	for i := len(turns) - 1; i >= 0; i-- {
-		m, _ := turns[i].(map[string]any)
-		if m == nil {
-			continue
-		}
-		if id := strval(m["turn_id"]); id != "" {
-			return id, nil
-		}
-	}
-	return "", nil
 }
 
 // memoryRead 读某类全文（不存在 → 空串，不算失败）。
@@ -566,13 +973,14 @@ func (p *Plugin) memorySave(instanceID, category, content string) error {
 // 实例字段必带）。
 // llm = 本子系统的默认 LLM（provider name，见 subsystemLLM）；空则**不带该字段**
 // （载荷与改前逐字节等价，server 回落 exe flags 默认）。
-// system = 该类别的沉淀提示词（见 memoryPromptFor）；空白 → 回落内置默认（与改前等价）。
+// system = 该类别的沉淀提示词（取自 data-memory-list 的 `prompt`，OP-04）；调用方已保证非空
+// （无提示词文件的类别在 distill 处即跳过），此处仍兜底拒绝空白（不臆造默认 —— 代码内不留副本）。
 func (p *Plugin) rewrite(instanceID, llm, system, category, oldText, newInfo string) (string, error) {
 	if p.deps.Bus == nil {
 		return "", errors.New("no bus (llm-simple unavailable)")
 	}
 	if strings.TrimSpace(system) == "" {
-		system = defaultRewriteSystemPrompt
+		return "", errors.New("empty memory prompt (no prompt file for category " + category + ")")
 	}
 	prompt := fmt.Sprintf("【类别】%s\n\n【现有全文】\n%s\n\n【本轮新增信息】\n%s", category, oldText, newInfo)
 	ctx, cancel := context.WithTimeout(context.Background(), llmTimeout)

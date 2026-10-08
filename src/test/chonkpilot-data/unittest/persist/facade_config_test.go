@@ -162,10 +162,11 @@ func TestFacadeConfigKVPrjUsrLayering(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("facade ConfigKVSet: %v", err)
 	}
-	prj, err := data.Prj(facadeInstance)
+	prj, releasePrj, err := data.Prj(facadeInstance)
 	if err != nil {
 		t.Fatalf("data.Prj: %v", err)
 	}
+	defer releasePrj() // 短开（D-45）：用完即释
 	pudb, err := data.PrjUsr(facadeInstance)
 	if err != nil {
 		t.Fatalf("data.PrjUsr: %v", err)
@@ -395,12 +396,12 @@ func TestFacadePromptSummaryPromptFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("facade ConfigKVGet(prompt): %v", err)
 	}
-	want := data.DefaultSummaryPrompt
+	want := data.SystemDoc("summary")
 	if resp.Values["summary_prompt"] != want {
-		t.Fatalf("未配置应回落内置默认：%q", resp.Values["summary_prompt"])
+		t.Fatalf("未配置应回落 embed 内置：%q", resp.Values["summary_prompt"])
 	}
 	if got := mqLoadKV(t, bus, facade.DomainPrompt, "summary_prompt"); got != want {
-		t.Fatalf("MQ 未配置应回落内置默认：%q", got)
+		t.Fatalf("MQ 未配置应回落 embed 内置：%q", got)
 	}
 
 	// ② 门面写（非继承值 → 落项目级文件）→ MQ 读到同一份

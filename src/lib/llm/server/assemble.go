@@ -52,28 +52,24 @@ const (
 // assembleContinueText 自动续写注入的用户消息文本（配合 Kind=assembleContinueKind）。
 const assembleContinueText = "继续"
 
-// 三段边界项目级键（2026-09-24，D1 改名 + A 加 token 上限；2026-09-25 加简化区预算 T）：
-// `keep_full_max_turns`（新）/ `keep_full_turns`（旧）/ `keep_full_max_tokens` / `compress_token_threshold`。
+// 三段边界项目级键（2026-09-24，D1 加 token 上限；2026-09-25 加简化区预算 T）：
+// `keep_full_max_turns` / `keep_full_max_tokens` / `compress_token_threshold`。
 const (
-	keepFullMaxTurnsKey       = "keep_full_max_turns"
-	keepFullMaxTurnsLegacyKey = "keep_full_turns"
-	keepFullMaxTokensKey      = "keep_full_max_tokens"
-	briefBudgetKey            = "compress_token_threshold"
+	keepFullMaxTurnsKey  = "keep_full_max_turns"
+	keepFullMaxTokensKey = "keep_full_max_tokens"
+	briefBudgetKey       = "compress_token_threshold"
 )
 
 // loadKeepFullTurns 读项目级维持轮数 `keep_full_max_turns`（缺失/非数字 → 10；启动时加载一次）。
 //
-// 读时兼容（D1）：新键缺失/非数字 → 回落旧键 `keep_full_turns`（2026-09-24 改名前的历史项目配置），
-// 只读不写、不静默丢配置。两键同域同读序（prjusr → prj → usr，见 prjConfigValues）。
+// 与压缩侧 resolveOpts 同键、同域、同读序（prjusr → prj → usr，见 prjConfigValues）。
 //
 // 取值语义（2026-09-25 口径 W，**与压缩侧 resolveOpts 同口径**）：键**存在且为数字** → 原样采用
 // （含 `0` = 该条件不启用、负数 = 非法按不启用处理）；**缺失/空/非数字** → 回落默认 10。
 func (s *Server) loadKeepFullTurns(instanceID string) int {
-	vals := s.prjConfigValues(instanceID, keepFullMaxTurnsKey, keepFullMaxTurnsLegacyKey)
-	for _, k := range [...]string{keepFullMaxTurnsKey, keepFullMaxTurnsLegacyKey} {
-		if n, err := strconv.Atoi(strings.TrimSpace(vals[k])); err == nil {
-			return n
-		}
+	vals := s.prjConfigValues(instanceID, keepFullMaxTurnsKey)
+	if n, err := strconv.Atoi(strings.TrimSpace(vals[keepFullMaxTurnsKey])); err == nil {
+		return n
 	}
 	return defaultKeepFullTurns
 }

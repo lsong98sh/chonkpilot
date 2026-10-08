@@ -46,12 +46,13 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/auth"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
 
 // SubjectInstanceClaim 是实例认领主题（相对主题；chonk. 前缀由总线注入，61 §4.1）。
 // 归属客户端方法面（前端 type `instance-claim` 经桥/httpapi 上行，见 frontMethodSubjects）。
-const SubjectInstanceClaim = "instance-claim"
+const SubjectInstanceClaim = msgkeys.TopicInstanceClaim
 
 // 错误码（61 §4.6；复用既有 {ok,error} 信封，不新增字段）。
 const (

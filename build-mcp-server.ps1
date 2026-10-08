@@ -12,9 +12,11 @@
 #       ├── skills/      # 技能契约（*.skill.md；扁平）
 #       ├── prompts/     # 提示词契约（*.prompt.md；扁平）
 #       ├── resources/   # 资源契约（*.resource.md；扁平）
-#       └── executors/   # 内置执行器（chonkpilot-{core,desktop,browser}-executor.exe）
+#       ├── agents/      # 智能体契约（*.agent.md；扁平）
+#       ├── system/      # 非原语系统文档（如 summary.md；OP-01/OP-02，2026-10-06）
+#       └── executors/   # 执行器（chonkpilot-{core,desktop,browser,dsl}-executor.exe；dsl 由 build-dsl-executor.ps1 产出）
 #
-# 源（出厂数据唯一源 = src/initdata）：契约 = src/initdata/capability/{prompts,tools,resources,skills}
+# 源（出厂数据唯一源 = src/initdata）：契约 = src/initdata/capability/{prompts,tools,resources,skills,agents,system}
 #   （2026-10-01 P2 扁平化：删除旧 knowledge/ 归并层）；
 #   exe 外壳 = src/others/mcp-server（lib = src/lib/mcp-server）+ executor = src/lib/mcp-tools。
 #
@@ -51,11 +53,12 @@ try {
 } finally { Pop-Location }
 
 Write-Host "==> [2/3] deploy contracts -> capability (src/initdata -> dist/other)"
-# 契约目录覆盖式同步（5 棵平坦子树：prompts/tools/resources/skills/agents，清理历史 knowledge/ 残留）。
+# 契约目录覆盖式同步（6 棵平坦子树：prompts/tools/resources/skills/agents/system，清理历史 knowledge/ 残留）。
 # agents/ = 智能体原语（*.agent.md；场景经 `${exeDir}/capability/agents/...` 引用，P4 2026-10-01）。
+# system/ = **非原语**系统文档目录（如 summary.md；OP-01/OP-02，2026-10-06；不属知识库原语树）。
 # 出厂数据唯一源 = src/initdata/capability（[42 决策]；2026-10-01 P2 扁平化）。
 # 注：chonkpilot-mcp-gateway.exe 与 mcp-server exe **同目录共用** capability（build-mcp-gateway.ps1 不再另建副本）。
-foreach ($sub in @("prompts", "tools", "resources", "skills", "agents")) {
+foreach ($sub in @("prompts", "tools", "resources", "skills", "agents", "system")) {
     $srcSub = Join-Path $initCap $sub
     if (-not (Test-Path $srcSub)) { throw "contracts not found: $srcSub" }
     $capSub = Join-Path $cap $sub
@@ -85,6 +88,11 @@ if ($LASTEXITCODE -ne 0) { throw "core executor --help failed" }
 if ($LASTEXITCODE -ne 0) { throw "desktop executor --help failed" }
 & (Join-Path $execDir "chonkpilot-browser-executor.exe") --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "browser executor --help failed" }
+
+# dsl_run 统一编排执行器（决策 42 §2 (247)）：与内置 executor 同目录；源缺失时脚本内部跳过。
+Write-Host "==> build dsl executor -> capability/executors/"
+& (Join-Path $root "build-dsl-executor.ps1")
+if ($LASTEXITCODE -ne 0) { throw "build-dsl-executor.ps1 failed" }
 
 # 首次生成 config.json（已有则不覆盖，保留用户配置）
 $cfgPath = Join-Path $dist "config.json"

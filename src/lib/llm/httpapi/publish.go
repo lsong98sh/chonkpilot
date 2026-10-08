@@ -26,13 +26,17 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/chonkpilot/chonkpilot-lib/paths"
 )
 
 // allowedDottedPrefixes 点分相对主题白名单（上行可注入总线的 filesys 面；其余点分主题拒绝）。
 // 2026-09-20：新增 `llm.test-connection`（批 3 · ⑮「LLM 测试连接」，只读探活）与
 // `memory.flush`（批 3 · ⑱「立即沉淀」，手动触发一次记忆沉淀）；GUI 桥本就有「点分直通总线」
 // 分支无需改，browser 入口需在此显式放行，否则返回 topic not allowed。
-var allowedDottedPrefixes = []string{"filesys.", "llm.test-connection", "memory.flush"}
+// 2026-10-06（P2-10）：新增前缀 `vfts.`（vfts 管理面：vfts.dict.get / vfts.dict.set /
+// vfts.reindex —— 插件订阅、同主题 promise 写回 v.Result）。
+var allowedDottedPrefixes = []string{"filesys.", "vfts.", msgkeys.TopicLlmTestConnection, msgkeys.TopicMemoryFlush}
 
 // frontMethodSubjects 前端单字方法 type → 相对域主题（与桥 frontMethodSubjects 同表；
 // 未列出的单字 type 视为纯前端事件，不注入总线）。
@@ -40,57 +44,66 @@ var allowedDottedPrefixes = []string{"filesys.", "llm.test-connection", "memory.
 // 注：认证域 `login-register` / `login-in` / `login-out` **不在此表** —— 需入口承载令牌
 // （`Set-Cookie` / 清 cookie）→ 走 `handleLogin` 专用分支（login.go，61 §4.6）。
 var frontMethodSubjects = map[string]string{
-	"llm-send":        "session-send",
-	"llm-cancel":      "session-cancel",
-	"ask-user-reply":  "session-ask-reply",
-	"task-stop":       "task-stop",
-	"task-background": "task-background",
-	"tool-retry":      "tool-retry",
-	"prompt-optimise": "prompt-optimise",
+	msgkeys.TopicLlmSend:        "session-send",
+	msgkeys.TopicLlmCancel:      "session-cancel",
+	msgkeys.TopicAskUserReply:   "session-ask-reply",
+	msgkeys.TopicTaskStop:       msgkeys.TopicTaskStop,
+	msgkeys.TopicTaskBackground: msgkeys.TopicTaskBackground,
+	msgkeys.TopicToolRetry:      msgkeys.TopicToolRetry,
+	msgkeys.TopicPromptOptimise: msgkeys.TopicPromptOptimise,
 	// 实例消息（61 §4.1，阶段 2a）：instance-claim = 前端启动认领（请求-响应 → v.Result 作为
 	// /publish 响应回发起者）；instance-heartbeat = **发布方改为前端 SPA**（客户端续期 30s，
 	// `-tags split` 门控语义不变：单体形态前端不发布、不判超时）。
-	"instance-claim":     "instance-claim",
-	"instance-heartbeat": "instance-heartbeat",
-	"tools-list":         "mcp-tools-list",
-	"prompts-list":       "mcp-prompts-list",
-	"resources-list":     "mcp-resources-list",
-	"mcp-tools-wait":     "mcp-tools-wait",
+	msgkeys.TopicInstanceClaim:     msgkeys.TopicInstanceClaim,
+	msgkeys.TopicInstanceHeartbeat: msgkeys.TopicInstanceHeartbeat,
+	// 客户端能力面 type（schema `clientTopic`，由 genmsg 生成 msgkeys.MsgClientTopics* 常量引用）。
+	msgkeys.MsgClientTopicsToolsList:     msgkeys.TopicMcpToolsList,
+	msgkeys.MsgClientTopicsPromptsList:   msgkeys.TopicMcpPromptsList,
+	msgkeys.MsgClientTopicsResourcesList: msgkeys.TopicMcpResourcesList,
+	msgkeys.TopicMcpToolsWait:            msgkeys.TopicMcpToolsWait,
+	// 场景向导方法面（2026-10-04）：探测 / 合成 / 生成 / 稍后（server 侧处理，写回 v.Result）。
+	msgkeys.TopicAgentWizardProbe:    msgkeys.TopicAgentWizardProbe,
+	msgkeys.TopicAgentWizardCompose:  msgkeys.TopicAgentWizardCompose,
+	msgkeys.TopicAgentWizardGenerate: msgkeys.TopicAgentWizardGenerate,
+	msgkeys.TopicAgentWizardSkip:     msgkeys.TopicAgentWizardSkip,
 }
 
 // capabilityListKeys 客户端能力面 topic → 结果数组键（按本实例作用域过滤用）。
 var capabilityListKeys = map[string]string{
-	"tools-list":     "tools",
-	"prompts-list":   "prompts",
-	"resources-list": "resources",
+	msgkeys.MsgClientTopicsToolsList:     msgkeys.FieldTools,
+	msgkeys.MsgClientTopicsPromptsList:   msgkeys.FieldPrompts,
+	msgkeys.MsgClientTopicsResourcesList: msgkeys.FieldResources,
 }
 
 // browserUnsupported 是 browser 形态**明确禁用**的 native 能力（19 §3.3/§6：必须替换或禁用；
 // 不得静默失败、不得假成功）。返回错误信封 `{ok:false,error}` + errors。
+// 键 = gui.<action> 的 **action 后缀**（guiDo 入参，见 publishEvent `strings.TrimPrefix(typ, "gui.")`）；
+// 故 `gui.file.save` 的键须为 **`file.save`**（历史误置全名 `gui.file.save` → 恒不命中，已订正）；
+// `prompt-optimise` 的 action 后缀恰与契约主题同名 → 以 msgkeys 常量引用（值不变）。
 // 说明：`dir.open-dialog` 的**消息面**保持"明确不支持"（61 §1 已定 result = `{path?}`，browser
 // 无人机选择器可取 path；改 result = 改 payload，需用户确认）——**等价面**由入口新增的
 // 非 MQ HTTP 路由 `GET /dirs` 提供（本 instance 作用域只读面，见 19 §8.9）。
 var browserUnsupported = map[string]string{
-	"dir.open-dialog":  "本地目录选择器（native）；等价面 = 入口 GET /dirs（列本 instance 允许目录）",
-	"pick-executable":  "本地文件选择器（native）",
-	"dir.open":         "以新进程打开目录（native）",
-	"console.open":     "系统控制台打开目录（native）",
-	"reveal":           "资源管理器定位（native）",
-	"gui.file.save":    "系统「另存为」对话框（native）；browser 形态请用页面下载/剪贴板（见批 3 · ⑯）",
-	"open-with":        "系统「打开方式」（native）",
-	"capture":          "窗口截图（native）",
-	"toolchain.detect": "本机工具链探测（native）",
-	"system.builtins":  "exe 同级只读内置项（native）",
-	"window.status":    "原生窗口控制（browser 无原生窗口）",
-	"upload":           "附件上传（browser 形态未提供 /show 字节面）",
-	"prompt-optimise":  "提示词优化（browser 形态未接线 LLM 优化面）",
+	"dir.open-dialog":           "本地目录选择器（native）；等价面 = 入口 GET /dirs（列本 instance 允许目录）",
+	"pick-executable":           "本地文件选择器（native）",
+	"dir.open":                  "以新进程打开目录（native）",
+	"console.open":              "系统控制台打开目录（native）",
+	"reveal":                    "资源管理器定位（native）",
+	"file.save":                 "系统「另存为」对话框（native）；browser 形态请用页面下载/剪贴板（见批 3 · ⑯）",
+	"open-with":                 "系统「打开方式」（native）",
+	"capture":                   "窗口截图（native）",
+	"toolchain.detect":          "本机工具链探测（native）",
+	"system.builtins":           "exe 同级只读内置项（native）",
+	"window.status":             "原生窗口控制（browser 无原生窗口）",
+	"upload":                    "附件上传（browser 形态未提供 /show 字节面）",
+	msgkeys.TopicPromptOptimise: "提示词优化（browser 形态未接线 LLM 优化面）",
 }
 
 // handlePublish 上行入口：解析 {type,payload} → 分派 → 应答 `{ok,result,errors}`
 // （HTTP 恒 200，与 GUI /publish 信封一致；错误收进 errors 由发送端自查）。
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "errors": []string{"POST required"}})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"POST required"}})
 		return
 	}
 	var body struct {
@@ -98,11 +111,11 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		Payload string `json:"payload"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "errors": []string{"bad body: " + err.Error()}})
+		writeJSON(w, http.StatusBadRequest, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"bad body: " + err.Error()}})
 		return
 	}
 	if strings.TrimSpace(body.Type) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "errors": []string{"type required"}})
+		writeJSON(w, http.StatusBadRequest, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"type required"}})
 		return
 	}
 	// 认证域（61 §4.6；阶段 2b-1）：入口承载令牌（Set-Cookie / 清 cookie），应答里的内部
@@ -116,7 +129,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	for _, e := range errs {
 		emsg = append(emsg, e.Error())
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": len(emsg) == 0, "result": result, "errors": emsg})
+	writeJSON(w, http.StatusOK, map[string]any{msgkeys.FieldOk: len(emsg) == 0, "result": result, msgkeys.FieldErrors: emsg})
 }
 
 // publishEvent 按白名单分派一次上行请求（返回结果与错误）。
@@ -124,7 +137,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 // 服务端**不采信**前端 payload 里的身份字段（61 §4.6）。
 func (s *Server) publishEvent(typ, payloadJSON, token string) (any, []error) {
 	switch {
-	case typ == "llm-start":
+	case typ == msgkeys.TopicLlmStart:
 		s.splitLLMStart(payloadJSON)
 		return nil, nil
 	case strings.HasPrefix(typ, "gui."):
@@ -183,9 +196,9 @@ func (s *Server) bindFilesys(payloadJSON string) (string, error) {
 	if err := json.Unmarshal([]byte(payloadJSON), &m); err != nil || m == nil {
 		m = map[string]any{}
 	}
-	m["work_dir"] = s.workDir
-	if _, ok := m["instance_id"]; !ok {
-		m["instance_id"] = s.instanceID
+	m[msgkeys.FieldWorkDir] = s.workDir
+	if _, ok := m[msgkeys.FieldInstanceId]; !ok {
+		m[msgkeys.FieldInstanceId] = s.instanceID
 	}
 	raw, err := json.Marshal(m)
 	if err != nil {
@@ -232,23 +245,25 @@ func (s *Server) splitLLMStart(payloadJSON string) {
 	if content == "" {
 		content = p.Content
 	}
+	// 主题 session-start / session-send 为 server 域相对主题（**非 61 topic**，保留字面量）；
+	// 载荷键走 msgkeys（req_id 为内部路由键，非契约字段，保留字面量）。
 	s.publish("session-start", map[string]any{
-		"req_id":      newUUID(),
-		"instance_id": s.instanceID,
-		"session":     session,
-		"turn":        turn,
-		"llm":         p.LLM,
-		"think":       p.Think,
-		"effort":      p.Effort,
-		"scenario_id": p.ScenarioID,
-		"continue":    p.Continue,
+		"req_id":                newUUID(),
+		msgkeys.FieldInstanceId: s.instanceID,
+		msgkeys.FieldSession:    session,
+		msgkeys.FieldTurn:       turn,
+		msgkeys.FieldLlm:        p.LLM,
+		msgkeys.FieldThink:      p.Think,
+		msgkeys.FieldEffort:     p.Effort,
+		msgkeys.FieldScenarioId: p.ScenarioID,
+		msgkeys.FieldContinue:   p.Continue,
 	})
 	s.publish("session-send", map[string]any{
-		"instance_id": s.instanceID,
-		"session":     session,
-		"turn":        turn,
-		"type":        "text-user",
-		"content":     content,
+		msgkeys.FieldInstanceId: s.instanceID,
+		msgkeys.FieldSession:    session,
+		msgkeys.FieldTurn:       turn,
+		msgkeys.FieldType:       "text-user",
+		msgkeys.FieldContent:    content,
 	})
 }
 
@@ -273,7 +288,7 @@ func (s *Server) filterCapabilityScope(typ string, result any) {
 			filtered = append(filtered, it)
 			continue
 		}
-		scope, _ := entry["scope"].(string)
+		scope, _ := entry[msgkeys.FieldScope].(string)
 		if scope == "" || scope == s.instanceID {
 			filtered = append(filtered, it)
 		}
@@ -305,8 +320,8 @@ func (s *Server) dataViaPersist(subject string, payload []byte) (result any, err
 	}
 	reqID := newUUID()
 	req["req_id"] = reqID
-	if _, ok := req["instance_id"]; !ok {
-		req["instance_id"] = s.instanceID
+	if _, ok := req[msgkeys.FieldInstanceId]; !ok {
+		req[msgkeys.FieldInstanceId] = s.instanceID
 	}
 	raw, _ := json.Marshal(req)
 
@@ -344,7 +359,7 @@ func (s *Server) dataViaPersist(subject string, payload []byte) (result any, err
 	})
 	if err != nil {
 		e := fmt.Errorf("%s: subscribe: %w", subject, err)
-		return map[string]any{"ok": false, "error": e.Error()}, []error{e}
+		return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error()}, []error{e}
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
@@ -354,12 +369,12 @@ func (s *Server) dataViaPersist(subject string, payload []byte) (result any, err
 	select {
 	case r := <-done:
 		if r.err != nil {
-			return map[string]any{"ok": false, "error": r.err.Error()}, []error{r.err}
+			return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: r.err.Error()}, []error{r.err}
 		}
 		return r.result, nil
 	case <-time.After(dataReqTimeout):
 		e := fmt.Errorf("%s via persist timeout", subject)
-		return map[string]any{"ok": false, "error": e.Error()}, []error{e}
+		return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error()}, []error{e}
 	}
 }
 
@@ -382,6 +397,8 @@ func (s *Server) guiDo(action string, payload []byte) (any, []error) {
 		return s.guiSaveUI(payload)
 	case "recent.list":
 		return map[string]any{"dirs": s.recentDirsList()}, nil
+	case "recent.remove":
+		return s.guiRemoveRecentDir(payload)
 	case "vcs.info":
 		return s.vcsInfo(), nil
 	case "search":
@@ -394,13 +411,13 @@ func (s *Server) guiDo(action string, payload []byte) (any, []error) {
 // unsupportedReply 生成"明确不支持"回复（不得静默失败 / 不得假成功）。
 func unsupportedReply(action, reason string) (any, []error) {
 	e := fmt.Errorf("browser 形态不支持 gui.%s：%s（native 能力已禁用，见 19 §3.3/§6）", action, reason)
-	return map[string]any{"ok": false, "error": e.Error()}, []error{e}
+	return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error()}, []error{e}
 }
 
 // failReply 生成失败回复（附 error 进 errors）。
 func failReply(format string, args ...any) (any, []error) {
 	e := fmt.Errorf(format, args...)
-	return map[string]any{"ok": false, "error": e.Error()}, []error{e}
+	return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error()}, []error{e}
 }
 
 // initData 返回启动初始化数据（对齐 GUI gui.init-data 的字段形态）：
@@ -422,9 +439,13 @@ func (s *Server) initData() (map[string]any, error) {
 		}
 	}
 
+	// 打开文件恢复：落库为 workdir 相对逻辑路径（G-24）→ 展开为绝对（兼容旧绝对路径）。
 	openedFiles := []string{}
 	if raw := sval(cfg["opened-files"]); raw != "" {
 		_ = json.Unmarshal([]byte(raw), &openedFiles)
+	}
+	for i, p := range openedFiles {
+		openedFiles[i] = paths.FromLogical(s.workDir, p)
 	}
 	kept := openedFiles[:0]
 	for _, p := range openedFiles {
@@ -462,15 +483,15 @@ func (s *Server) initData() (map[string]any, error) {
 	}
 
 	return map[string]any{
-		"treeData":      readDirNodesExpanded(s.workDir, expandedSet),
-		"expandedKeys":  absExpanded,
-		"selectedKey":   selected,
-		"workDir":       s.workDir,
-		"filetreeWidth": 260,
-		"layout":        layout,
-		"ui":            ui,
-		"openedFile":    openedFile,
-		"openedFiles":   openedFiles,
+		msgkeys.GuiInitDataResultTreeData:      readDirNodesExpanded(s.workDir, expandedSet),
+		msgkeys.GuiInitDataResultExpandedKeys:  absExpanded,
+		msgkeys.GuiInitDataResultSelectedKey:   selected,
+		msgkeys.GuiInitDataResultWorkDir:       s.workDir,
+		msgkeys.GuiInitDataResultFiletreeWidth: 260,
+		msgkeys.GuiInitDataResultLayout:        layout,
+		msgkeys.GuiInitDataResultUi:            ui,
+		msgkeys.GuiInitDataResultOpenedFile:    openedFile,
+		msgkeys.GuiInitDataResultOpenedFiles:   openedFiles,
 	}, nil
 }
 
@@ -494,13 +515,13 @@ func (s *Server) guiSaveUI(payload []byte) (any, []error) {
 			}
 		}
 	}
-	if raw, ok := p["layout"]; ok && len(raw) > 0 && string(raw) != "null" {
+	if raw, ok := p[msgkeys.GuiUiSavePayloadLayout]; ok && len(raw) > 0 && string(raw) != "null" {
 		saveMap("layout.", raw)
 	}
-	if raw, ok := p["window"]; ok && len(raw) > 0 && string(raw) != "null" {
+	if raw, ok := p[msgkeys.GuiUiSavePayloadWindow]; ok && len(raw) > 0 && string(raw) != "null" {
 		saveMap("window.", raw)
 	}
-	if raw, ok := p["filetree"]; ok && len(raw) > 0 {
+	if raw, ok := p[msgkeys.GuiUiSavePayloadFiletree]; ok && len(raw) > 0 {
 		var m struct {
 			ExpandedDirs []string `json:"expanded_dirs"`
 			SelectedPath string   `json:"selected_path"`
@@ -531,20 +552,25 @@ func (s *Server) guiSaveUI(payload []byte) (any, []error) {
 			}
 		}
 	}
-	if raw, ok := p["opened_files"]; ok && len(raw) > 0 {
-		var paths []string
-		if json.Unmarshal(raw, &paths) == nil {
-			if paths == nil {
-				paths = []string{}
+	if raw, ok := p[msgkeys.GuiUiSavePayloadOpenedFiles]; ok && len(raw) > 0 {
+		var files []string
+		if json.Unmarshal(raw, &files) == nil {
+			if files == nil {
+				files = []string{}
 			}
-			if b, err := json.Marshal(paths); err == nil {
+			// 落库为 workdir 相对逻辑路径（G-24）：换挂载布局 / 迁移后仍可还原。
+			logical := make([]string, 0, len(files))
+			for _, f := range files {
+				logical = append(logical, paths.ToLogical(s.workDir, f))
+			}
+			if b, err := json.Marshal(logical); err == nil {
 				if err := s.prjConfigSave("opened-files", string(b)); err != nil {
 					errList = append(errList, err)
 				}
 			}
 		}
 	}
-	if raw, ok := p["ui"]; ok && len(raw) > 0 {
+	if raw, ok := p[msgkeys.GuiUiSavePayloadUi]; ok && len(raw) > 0 {
 		var m map[string]any
 		if json.Unmarshal(raw, &m) == nil {
 			data := map[string]any{}
@@ -554,8 +580,8 @@ func (s *Server) guiSaveUI(payload []byte) (any, []error) {
 				}
 			}
 			if len(data) > 0 {
-				if b, err := json.Marshal(map[string]any{"data": data}); err == nil {
-					if _, errs := s.dataCall("data-user-config-save", string(b)); len(errs) > 0 {
+				if b, err := json.Marshal(map[string]any{msgkeys.FieldData: data}); err == nil {
+					if _, errs := s.dataCall(msgkeys.TopicDataUserConfigSave, string(b)); len(errs) > 0 {
 						errList = append(errList, errs...)
 					}
 				}
@@ -563,9 +589,9 @@ func (s *Server) guiSaveUI(payload []byte) (any, []error) {
 		}
 	}
 	if len(errList) > 0 {
-		return map[string]any{"ok": false, "error": errList[0].Error()}, errList
+		return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: errList[0].Error()}, errList
 	}
-	return map[string]any{"ok": true}, nil
+	return map[string]any{msgkeys.FieldOk: true}, nil
 }
 
 // recentDirsList 读 usr config 自由键 recent_dirs（JSON 数组字符串）→ 最近目录快照；
@@ -584,6 +610,40 @@ func (s *Server) recentDirsList() []string {
 		return []string{}
 	}
 	return dirs
+}
+
+// guiRemoveRecentDir 处理 gui.recent.remove（browser 形态）：从 usr config 自由键 recent_dirs
+// 中移除一条记录（payload {path}）→ {ok}。**仅删记录** —— 不删除对应项目目录 / 数据资产；
+// 记录不存在 → 幂等成功（不写库）。
+func (s *Server) guiRemoveRecentDir(payload []byte) (any, []error) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return failReply("recent.remove: %v", err)
+	}
+	if p.Path == "" {
+		return failReply("recent.remove: path required")
+	}
+	dirs := s.recentDirsList()
+	kept := make([]string, 0, len(dirs))
+	removed := false
+	for _, d := range dirs {
+		if d == p.Path {
+			removed = true
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if !removed {
+		return map[string]any{msgkeys.FieldOk: true}, nil // 无该记录 → 幂等成功
+	}
+	raw, _ := json.Marshal(kept)
+	body, _ := json.Marshal(map[string]any{msgkeys.FieldData: map[string]any{"recent_dirs": string(raw)}})
+	if _, errs := s.dataCall(msgkeys.TopicDataUserConfigSave, string(body)); len(errs) > 0 {
+		return failReply("recent.remove: %v", errs[0])
+	}
+	return map[string]any{msgkeys.FieldOk: true}, nil
 }
 
 // maxDirChoices / maxDirDepth 目录选择等价面的规模上限（防大目录拖垮响应/页面）。
@@ -642,7 +702,11 @@ func (s *Server) vcsInfo() map[string]any {
 	if _, err := exec.LookPath("git"); err == nil {
 		gitInstalled = true
 	}
-	return map[string]any{"git": git, "svn": svn, "gitInstalled": gitInstalled}
+	return map[string]any{
+		msgkeys.GuiVcsInfoResultGit:          git,
+		msgkeys.GuiVcsInfoResultSvn:          svn,
+		msgkeys.GuiVcsInfoResultGitInstalled: gitInstalled,
+	}
 }
 
 // ── 检索（browser 形态：仅文件名/路径源 file；vfts/codegraph 索引源未接线）──
@@ -718,8 +782,8 @@ func searchRank(it map[string]any) int {
 
 // prjConfigSave 保存 prj config 键（save 载荷 {data:{key,value}}）。
 func (s *Server) prjConfigSave(key, value string) error {
-	raw, _ := json.Marshal(map[string]any{"data": map[string]any{"key": key, "value": value}})
-	_, errs := s.dataCall("data-prj-config-save", string(raw))
+	raw, _ := json.Marshal(map[string]any{msgkeys.FieldData: map[string]any{msgkeys.FieldKey: key, "value": value}})
+	_, errs := s.dataCall(msgkeys.TopicDataPrjConfigSave, string(raw))
 	if len(errs) > 0 {
 		return errs[0]
 	}
@@ -728,7 +792,7 @@ func (s *Server) prjConfigSave(key, value string) error {
 
 // prjConfigList 一把取 prj config 表平铺 map（失败 → 空 map）。
 func (s *Server) prjConfigList() map[string]any {
-	res, errs := s.dataCall("data-prj-config-list", `{}`)
+	res, errs := s.dataCall(msgkeys.TopicDataPrjConfigList, `{}`)
 	if len(errs) > 0 {
 		return map[string]any{}
 	}
@@ -736,7 +800,7 @@ func (s *Server) prjConfigList() map[string]any {
 	if !ok {
 		return map[string]any{}
 	}
-	if list, ok := m["list"].(map[string]any); ok {
+	if list, ok := m[msgkeys.FieldList].(map[string]any); ok {
 		return list
 	}
 	return map[string]any{}
@@ -744,7 +808,7 @@ func (s *Server) prjConfigList() map[string]any {
 
 // readUserConfig 读用户配置（data-user-config-load；无记录回落默认）。
 func (s *Server) readUserConfig() (map[string]any, error) {
-	res, errs := s.dataCall("data-user-config-load", `{}`)
+	res, errs := s.dataCall(msgkeys.TopicDataUserConfigLoad, `{}`)
 	if len(errs) > 0 {
 		return map[string]any{}, errs[0]
 	}
@@ -752,7 +816,7 @@ func (s *Server) readUserConfig() (map[string]any, error) {
 	if !ok {
 		return map[string]any{}, nil
 	}
-	if cfg, ok := m["data"].(map[string]any); ok {
+	if cfg, ok := m[msgkeys.FieldData].(map[string]any); ok {
 		return cfg, nil
 	}
 	return map[string]any{}, nil

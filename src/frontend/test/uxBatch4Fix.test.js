@@ -63,7 +63,7 @@ test('A1 通用编辑弹框：TextEditDialog 多行 + 保存回调 + 内嵌优�
 test('A1 记忆类别/用户偏好编辑：读内容 → 弹框 → 保存即关 + 刷新清单（预估 token）', () => {
   const src = read(PAGE)
   // P1（2026-09-24）：读/弹框/保存逻辑抽入共享 composable（状态栏「记忆总 token 数」入口同源）
-  assert.match(src, /import \{ useMemoryCategories, DEFAULT_MEMORY_PROMPT \} from '\.\.\/\.\.\/composables\/useMemoryCategories'/, '须复用共享 composable')
+  assert.match(src, /import \{ useMemoryCategories \} from '\.\.\/\.\.\/composables\/useMemoryCategories'/, '须复用共享 composable（OP-04 起不再导入镜像常量）')
   assert.match(src, /openContentEditor,/, '行内「编辑内容」仍走同一弹框实现（来自 composable）')
   assert.match(src, /@click="openContentEditor\(row\)"/, '项目类别行「编辑内容」须走弹框')
   assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好「编辑内容」须走弹框')
@@ -92,40 +92,31 @@ test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）
   assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好行须有「编辑内容」入口')
   assert.match(src, /projectConfig\.memory_edit_prompt/, '「编辑提示词」须走 i18n（不硬编码中文）')
   assert.match(src, /projectConfig\.memory_edit_content/, '「编辑内容」须走 i18n')
-  // 提示词弹框：复用 TextEditDialog + 来源提示 + 恢复默认 + 内嵌优化
+  // 提示词弹框（OP-04 文件化）：回填后端下发值 + 来源提示 + 恢复默认 + 内嵌优化；
+  // 保存/恢复走 prompt 域**文件面**（data-prompt-save/delete），前端不再持镜像常量。
   const fn = fnBody(src, 'openPromptEditor')
   assert.ok(fn, '未找到 openPromptEditor')
   assert.match(fn, /dialog\.show\(h\(TextEditDialog, \{/, '提示词须弹框编辑（复用 TextEditDialog）')
-  assert.match(fn, /content: isCustom \? custom : DEFAULT_MEMORY_PROMPT/, '未自定义须回填内置默认（可查看/编辑）')
-  assert.match(fn, /hint: isCustom \? t\('projectConfig\.memory_prompt_source_custom'\) : t\('projectConfig\.memory_prompt_source_default'\)/, '未自定义须显示「当前为内置默认」来源提示')
-  assert.match(fn, /reset: isCustom \? \{/, '已自定义须提供「恢复默认」入口（未自定义 → 不显示）')
+  assert.match(fn, /content: c\.prompt \|\| ''/, '须回填后端下发的提示词有效值（不再持前端镜像常量）')
+  assert.match(fn, /hint: c\.prompt_override \? t\('projectConfig\.memory_prompt_source_custom'\) : t\('projectConfig\.memory_prompt_source_default'\)/, '来源提示须据后端下发的 prompt_override')
+  assert.match(fn, /reset: c\.prompt_override \? \{/, '已自定义须提供「恢复默认」入口（未自定义 → 不显示）')
   assert.match(fn, /label: t\('projectConfig\.memory_prompt_reset'\)/, '「恢复默认」须走 i18n')
   assert.match(fn, /optimize: \{[\s\S]*?memory_prompt_optimize_title/, '弹框须自带优化（复用既有优化链路）')
   assert.match(fn, /bodyClass: 'text-edit-dialog-body'/, '提示词弹框同款 bodyClass（撑满/不留白）')
-  // 保存 / 恢复语义：空白或与内置默认相同 → 清键回落；否则按级别落库
-  const saveFn = fnBody(src, 'saveMemoryPrompt')
-  assert.ok(saveFn, '未找到 saveMemoryPrompt')
-  assert.match(saveFn, /val\.trim\(\) === '' \|\| val\.trim\(\) === DEFAULT_MEMORY_PROMPT/, '空白/等于内置默认 → 清键（回落内置默认）')
-  assert.match(saveFn, /await setConfig\(key, val\)/, '项目级落 prj 键 memory.prompt.<类别>')
-  assert.match(saveFn, /writeUserPrefPrompts\(next\)/, '用户级落 usr 自由键 memory_prompts')
-  const clearFn = fnBody(src, 'clearMemoryPrompt')
-  assert.ok(clearFn, '未找到 clearMemoryPrompt')
-  assert.match(clearFn, /await deleteConfig\(key\)/, '项目级「恢复默认」= 删 prj 键')
-  assert.match(clearFn, /writeUserPrefPrompts/, '用户级「恢复默认」= 整表重写（空表 → 删 usr 键）')
-  const writeFn = fnBody(src, 'writeUserPrefPrompts')
-  assert.ok(writeFn, '未找到 writeUserPrefPrompts')
-  assert.match(writeFn, /resetUserKey\(USER_MEMORY_PROMPTS_KEY\)/, '空表须删 usr 自由键（回落缺省）')
-  // 键名/键前缀与 Go 侧同字面量（跨端零新增消息面，复用既有 prj-config / user-config 面）
-  assert.match(src, /const MEMORY_PROMPT_PREFIX = 'memory\.prompt\.'/, 'prj 键前缀须与 Go 侧 memoryPromptPrefix 一致')
-  assert.match(src, /const USER_MEMORY_PROMPTS_KEY = 'memory_prompts'/, 'usr 自由键名须与 Go 侧 userMemoryPromptsKey 一致')
-  assert.match(src, /saveUserConfig\(\{ \[USER_MEMORY_PROMPTS_KEY\]/, 'usr 提示词写入须走既有 data-user-config-save')
-  // 变更广播订阅（沿用既有面 → 不串实例）；2026-09-28：本页保存期间跳过（防自身写入冲回未提交态）
-  assert.match(src, /onDataRefresh\('user-config', loadUserPrefPrompts\)/, 'usr 提示词变更须经既有广播重载')
-  assert.match(src, /usePrjConfigRefresh\(\{[\s\S]*?reload: loadConfig,[\s\S]*?isSaving: \(\) => saving\.value/,
-    'prj 提示词变更须经既有广播重载（统一机制 usePrjConfigRefresh，本页保存期间除外）')
-  assert.match(src, /await loadUserPrefPrompts\(\)/, '进页须读 usr 提示词')
+  // 保存（setPrompt）/ 恢复默认（dataClient.remove）→ 均走 prompt 域文件面 + 重读清单刷新下发值
+  assert.match(fn, /await setPrompt\(key, text\)/, '保存须走 prompt 域文件面（data-prompt-save）')
+  assert.match(fn, /dataClient\.remove\('prompt', key\)/, '恢复默认须删 prompt 域键（删覆盖文件回落继承）')
+  assert.match(fn, /await reloadMemoryCategories\(\)/, '保存/恢复后须重读类别清单（刷新后端下发的有效值）')
+  assert.match(src, /const MEMORY_PROMPT_PREFIX = 'memory_prompt\.'/, '提示词文件化键前缀须与 Go 侧 memoryPromptPrefix 一致')
+  assert.match(src, /function memoryPromptKey\(category\)/, '须集中构造提示词键（memory_prompt.<类别名>）')
+  // 变更广播订阅：prompt 域变更 → 重读类别清单（沿用既有 data-prompt-refresh 面）
+  assert.match(src, /onDataRefresh\('prompt', reloadMemoryCategories\)/, '提示词变更须经既有 data-prompt-refresh 广播重载')
   // 规范：无 watch
   assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect')
+  // 键载体已删（OP-04）：前端不再持镜像常量 / 不再直读旧键
+  assert.doesNotMatch(src, /DEFAULT_MEMORY_PROMPT|memory_prompts|'memory\.prompt\.'/, '旧键载体/镜像常量须已删除')
+  const comp = read('composables/useMemoryCategories.js')
+  assert.doesNotMatch(stripComments(comp), /DEFAULT_MEMORY_PROMPT/, '前端镜像常量 DEFAULT_MEMORY_PROMPT 须已删除')
 
   // TextEditDialog：hint / reset 为**可选**扩展（默认不显示，不影响既有调用）
   const te = read('components/common/TextEditDialog.vue')
@@ -135,20 +126,24 @@ test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）
   assert.match(te, /v-if="reset"/, 'reset 按钮须按需渲染')
   assert.match(te, /reset\.onClick/, 'reset 须回调父组件（落库）')
 
-  // 跨端字面量：前端镜像内置默认提示词 = Go 侧 defaultRewriteSystemPrompt（逐段比对，防漂移）
-  const comp = read('composables/useMemoryCategories.js')
-  assert.match(comp, /export const DEFAULT_MEMORY_PROMPT =/, '须导出内置默认提示词常量（供弹框回填 + 跨端核对）')
-  const go = readRepo('plugins/plugin-memory/memory.go')
+  // OP-04 出厂提示词文件：每预置类别一份 capability/system/memory/<类别名>.md（内容 = 原内置默认原文，
+  // 行为等价）；Go 侧**不再留** defaultRewriteSystemPrompt 常量副本。
   const segs = [
     '你是记忆库沉淀器。给定某个记忆类别的现有全文与本轮对话的新增信息，',
     '请把两者合并后重写该类别全文（累加 + 更新：修正过时内容、去重、条理化、不臆造）。',
     '只输出重写后的 markdown 全文，不要任何解释或代码块围栏。',
   ]
-  for (const s of segs) {
-    assert.ok(comp.includes(s), '前端默认提示词缺段（与 Go 常量不一致）：' + s)
-    assert.ok(go.includes(s), 'Go 侧 defaultRewriteSystemPrompt 缺段（常量被改动？）：' + s)
+  for (const cat of ['项目概要', '共同库', '开发规范', '构建发布规则', '接口库', '测试规范', '典型参照', '用户决策', '用户偏好']) {
+    const doc = readRepo('initdata/capability/system/memory/' + cat + '.md')
+    for (const s of segs) {
+      assert.ok(doc.includes(s), `出厂提示词文件 ${cat}.md 缺段（与内置默认不一致）：` + s)
+    }
   }
-  assert.match(go, /defaultRewriteSystemPrompt =/, 'Go 侧须保留默认提示词常量')
+  const go = readRepo('plugins/plugin-memory/memory.go')
+  // 仅扫**代码**（`//` 注释内允许留「旧键已删除」的说明文字）
+  const goCode = go.replace(/^\s*\/\/.*$/gm, '')
+  assert.doesNotMatch(goCode, /defaultRewriteSystemPrompt/, 'Go 侧须已删除内置默认提示词常量（不留代码内副本）')
+  assert.doesNotMatch(goCode, /memory\.prompt\.|memory_prompts/, 'Go 侧旧键载体须已删除')
 })
 
 test('A1b 提示词弹框 i18n：新增键 zh/en 齐备且可插值', () => {

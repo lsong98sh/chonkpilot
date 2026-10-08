@@ -577,6 +577,8 @@ function setupPersistentStreamSubs() {
   }
 
   // llm-receive 流增量（text/reason/tool-call 拆分在 sessionMessages.handleReceive）。
+  // 注：llm-receive 是桥映射后的**客户端 type**（桥 mqTypeMap：session-receive → llm-receive），
+  // 非 61 契约主题，唯一事实源 = EventNames.llmReceive（与 Go 侧 messages.MsgLLMReceive 同值）。
   const onReceive = (d) => {
     if (!isForThisTurn(d)) return
     // 真实内容到达 → 标记本 turn 有输出（空回复判定 S21 用）
@@ -585,7 +587,7 @@ function setupPersistentStreamSubs() {
     }
     handleReceive(d)
   }
-  persistentUnsubs.push(mq.on('llm-receive', onReceive))
+  persistentUnsubs.push(mq.on(EventNames.llmReceive, onReceive))
 
   // llm-complete：唯一终态（正常/错误/取消都收敛到这里）。
   const onComplete = (d) => {
@@ -599,7 +601,7 @@ function setupPersistentStreamSubs() {
     if (!isForThisTurn(d)) return
     if (d.type === 'text' && d.content) handleToken({ type: 'text', content: d.content })
   }
-  persistentUnsubs.push(mq.on('llm-token', onLegacyToken))
+  persistentUnsubs.push(mq.on(EventNames.llmToken, onLegacyToken))
 }
 
 // ── Handle user message sending (from ChatPanel via mq) ──

@@ -23,6 +23,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-router"
 )
 
@@ -95,7 +96,7 @@ func (s *Server) publishPromptOptimised(instanceID, typ, content string, err err
 	if err != nil {
 		payload["error"] = err.Error()
 	}
-	s.publish("prompt-optimised", payload)
+	s.publish(msgkeys.TopicPromptOptimised, payload)
 }
 
 // optimiseInstruction 构造 LLM 生成/优化指令（语义对齐主仓库 OptimizeAgentPrompt：

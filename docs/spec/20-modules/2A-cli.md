@@ -1,8 +1,8 @@
 # 2A · src/desktop/cli（CLI 单体）
 
-> 日期：2026-09-10 ｜ 状态：✅ 与代码一致（含 1 处与目标态的差距，见 §9）
+> 状态：✅ 与代码一致
 > 关联：[21-llm-server](21-llm-server.md) · [10-分层与依赖](../10-architecture/10-分层与依赖.md) · [02-配置层级](../00-overview/02-配置层级.md) §6.3
-> 代码目录（D-28：`src/cli/` → `src/desktop/cli/`）：`src/desktop/cli/`（`main.go` + `dataprep.go`）；gui 形态下以 `-tags split` 产出 `chonkpilot-cli-client.exe`
+> 代码目录：`src/desktop/cli/`（`main.go`，只留 flag 解析 + 装配）；启动前置编排（数据根三态 / 占用校验 / 配置复制）在 `src/lib/cli/`（I-158 · D-45）；gui 形态下以 `-tags split` 产出 `chonkpilot-cli-client.exe`
 
 ---
 
@@ -20,7 +20,7 @@
 |----|----|
 | 编译形态 | console exe |
 | 构建 | 由 `build-desktop.ps1`（原名 `build-standalone-gui.ps1`）第 3 步产出 → `dist/desktop/chonkpilot-cli.exe`（**无独立 cli 构建脚本**） |
-| 内嵌 | `filesys.New` + `server.New`（含 persist/gateway/mcp-server + compress/history/codegraph） |
+| 内嵌 | `filesys.New` + `server.New`（含 persist/gateway/mcp-server + compress/memory/history/codegraph/vfts） |
 
 **参数**：`--prompt` · `--prompt-file` · `--scenario <string>`（场景目录名，空 = 默认场景） · `--work-dir` · `--data-dir` · `--output sse|final|verbose`（默认 `sse`）· `--llm` · `--think` · `--effort`。
 提示词来源：二者皆空 → 读 stdin（字符设备则报错退出）。
@@ -41,9 +41,10 @@
 
 ```text
 参数/提示词解析 → output 校验 → workDir(Abs)
+  → cli.PrepareDataDir（三态数据根 + 占用校验 + prjusr 试开，D-45；失败报错退出 1）
   → instanceID → mq.New(Prefix:"chonk.")
   → filesys.New(bus).Start()
-  → server.New(bus, Options{LLMBase:127.0.0.1:8901/v1, LLMModel, AsyncMode:"never", Plugins:compress/history/codegraph})
+  → server.New(bus, Options{LLMBase:127.0.0.1:8901/v1, LLMModel, AsyncMode:"never", Plugins:compress/memory/history/codegraph/vfts})
   → signal.NotifyContext → srv.Start(ctx)
   → 发布 instance-register
   → session/turn = 随机 id → 订阅 receive/complete/task-done
@@ -51,7 +52,7 @@
   → 等 doneCh 或 ctx → final 模式打印 finalText → 退出（defer：srv.Stop → filesys.Stop → bus.Close）
 ```
 
-`AsyncMode: "never"` 链路：`src/cli/main.go` → `server.Options.AsyncMode` → gateway `Params.AsyncMode` → `doCall` 全局覆盖（强制同步，不转后台）。
+`AsyncMode: "never"` 链路：`src/desktop/cli/main.go` → `server.Options.AsyncMode` → gateway `Params.AsyncMode` → `doCall` 全局覆盖（强制同步，不转后台）。
 
 ---
 
@@ -64,8 +65,8 @@
 
 ## 6. 依赖
 
-- **直接**：`src/lib` · `src/data` · `src/filesys` · `src/llm` · `src/plugin` + `-codegraph`/`-compress`/`-history`。
-- **indirect**：`src/gateway` · `src/mcp-server`。
+- **直接**：`src/lib` · `src/lib/cli`（数据根编排，I-158）· `src/lib/data` · `src/lib/filesys` · `src/lib/llm` · `src/plugins/plugin` + `-compress`/`-memory`/`-history`/`-codegraph`/`-vfts`。
+- **indirect**：`src/lib/gateway` · `src/lib/mcp-server`。
 
 ---
 
@@ -89,14 +90,18 @@
 
 ## 9. 现状与待办（含目标态差距）
 
-- ✅ **已实现（2026-10-01 P1：数据根三态语义，取代旧「恒用临时目录」）**：CLI `--data-dir` 三态 —— **不传** = 真实根（prj=`<workDir>/.chonkpilot`、prjusr=`~/.chonkpilot/data/<id>`，**会话数据写入**；workdir 无 `.chonkpilot` → tmp 空根不污染 cwd）；**显式留空** `--data-dir=` = 强制临时隔离（`main.go` 调 `prepareTempDataDir`：复制 usr/prj/prjusr 三级配置 + `llms`/`mcps` 表，不含会话数据；会话数据写临时目录、退出即弃）；**`--data-dir=<路径>`** = 该路径作数据根（prjusr 数据根 `data.DataRoot`）、prjusr 仍按 project-id 派生（不新增 `--prjusr-dir`）。「传空」与「未传」经 **`flag.Visit`** 判定。落点 `src/desktop/cli/{main.go,dataprep.go}`（`prepareDataDir`）。见 [02-配置层级 §6.3](../00-overview/02-配置层级.md) · [42 §2 (207)](../40-roadmap/42-决策记录.md)。
-- ⚠️ `src/desktop/cli/` 无任何 `_test.go`，`src/test/` 下亦无 CLI 测试工程。
-- ⚠️ 早期 CLI 设计稿（描述 `chonkpilot.exe` 的 executor 模式）与**本模块参数无关**，已整体归档。
+- ✅ **数据根三态语义（方案 B，D-45 · 2026-10-01 反转）**：CLI `--data-dir` 三态 —— **不传** = 临时隔离（**默认**：tmp 空根 + 复制三级配置 `usr`/`prj`/`prjusr` 覆盖 `prj` 与 `llms` 表，不含会话数据；会话数据写临时目录、退出即弃——批处理不污染真实配置、不与 GUI 冲突）；**显式留空** `--data-dir=` = 真实根（与 GUI 一致：prj=`<workDir>/.chonkpilot`、prjusr=`~/.chonkpilot/data/<id>`；**参与 work-dir 占用校验** + prjusr 试开冲突报错，I-74）；**`--data-dir=<路径>`** = 该路径作 prjusr 数据根（`data.SetDataHome` 重定位）、prj 仍按 `<workDir>/.chonkpilot`（无则 tmp 空根，不污染 cwd）。「传空」与「未传」经 **`flag.Visit`** 判定。落点 `src/lib/cli`（`PrepareDataDir`/`ResolveDataMode`），`main.go` 只留 flag + 装配。见 [02-配置层级 §6.3](../00-overview/02-配置层级.md)。
+- ✅ **L1 单测**：`src/desktop/cli/main_test.go`（`parseFlags` 参数解析：`--data-dir` 三态 `dataDirSet` / 输出模式校验 / 各参数绑定 / 未知参数报错；`resolveDir` / `newUUID`）。
+- ✅ **L2 单测**：`src/test/chonkpilot-cli/unittest`（I-158 落地：`ResolveDataMode` 三态 / `PrepareDataDir` 临时隔离复制与清理 / 真实根锁生命周期 / busy 报错 / prjusr 占用报错 / 自定数据根两分支 / `CopyConfigTables` 源缺失跳过 + 源损坏报错）。
 
 ---
 
 ## 10. 关联测试
 
-**无专属测试**。最接近的现成覆盖：
-- `src/test/chonkpilot-llm/unittest/llm_test.go`（同一 server 包，经总线黑盒驱动）。
-- `src/test/chonkpilot-gui/systest/`（走 GUI 前端事件链，**非** CLI stdout 路径）。
+- **L1**：`src/desktop/cli/main_test.go`（参数解析 / `--data-dir` 三态位 / 输出模式 / `resolveDir` / `newUUID`）。
+  运行：`cd src/desktop ; go test ./cli/... -count=1`。
+- **L2**：`src/test/chonkpilot-cli/unittest`（数据根编排黑盒：`ResolveDataMode` 三态 / `PrepareDataDir` 临时隔离与清理 / 真实根锁与 busy / prjusr 冲突 / 自定数据根 / `CopyConfigTables` 边界）。
+  运行：`cd src/test/chonkpilot-cli/unittest ; go test ./... -count=1`。
+- 最接近的现成覆盖：`src/test/chonkpilot-llm/unittest/llm_test.go`（同一 server 包，经总线黑盒驱动）；`src/test/chonkpilot-gui/systest/`（走 GUI 前端事件链，**非** CLI stdout 路径）。
+
+> 合规说明：L1 测试均为**纯函数 + 临时文件系统**（参数解析 / 数据根准备 / 配置复制），**不发送/确认任何 MQ 消息**，天然满足 [61-消息一览](../60-reference/61-消息一览.md) 的测试准则。

@@ -86,8 +86,14 @@
       <div class="agent-editor-panel">
         <Tabs class="scenario-right-tabs" :tabs="rightTabs" v-model="rightTab">
           <template #agent>
-            <!-- 主 agent（内联）：可编辑 -->
-            <div v-if="selectedAgent && selectedAgent.isMain" class="agent-editor-wrapper">
+            <!-- 主 agent（内联）/ 子 agent（引用）**均可编辑**：子 agent 直接读写被引 agent 文件
+                 （走知识库读写面），场景里的 ref 不变。 -->
+            <div v-if="selectedAgent" class="agent-editor-wrapper">
+              <div v-if="!selectedAgent.isMain" class="ref-agent-banner">
+                <span class="ref-label">{{ $t('scenario.ref_label') }}</span>
+                <span class="ref-path" :title="selectedAgent.ref">{{ selectedAgent.ref }}</span>
+                <span class="ref-hint">{{ $t('scenario.ref_edit_hint') }}</span>
+              </div>
               <AgentEditor
                 :key="selectedAgentIdx"
                 :agent="normalizedSelectedAgent"
@@ -95,30 +101,10 @@
                 :tool-groups="toolGroups"
                 :all-tool-categories="allToolCategories"
                 :optimizing="optimizing"
+                :show-copy="false"
                 @update:agent="updateAgentField"
                 @optimize="handleOptimize"
               />
-            </div>
-            <!-- 子 agent（引用 agents/）：只读展示（内容编辑在「扩展 · 智能体」页） -->
-            <div v-else-if="selectedAgent" class="ref-agent-view">
-              <div class="ref-field">
-                <span class="ref-label">{{ $t('scenario.fields.name') }}</span>
-                <span>{{ selectedAgent.name }}</span>
-              </div>
-              <div v-if="selectedAgent.roleTag" class="ref-field">
-                <span class="ref-label">{{ $t('scenario.fields.roleTag') }}</span>
-                <span>{{ selectedAgent.roleTag }}</span>
-              </div>
-              <div class="ref-field">
-                <span class="ref-label">{{ $t('scenario.ref_label') }}</span>
-                <span class="ref-path" :title="selectedAgent.ref">{{ selectedAgent.ref }}</span>
-              </div>
-              <div v-if="selectedAgent.description" class="ref-field">
-                <span class="ref-label">{{ $t('scenario.fields.description') }}</span>
-                <span>{{ selectedAgent.description }}</span>
-              </div>
-              <pre class="ref-prompt">{{ selectedAgent.prompt }}</pre>
-              <div class="ref-hint">{{ $t('scenario.ref_edit_hint') }}</div>
             </div>
             <div v-else class="empty-state">
               <div class="empty-icon">⎔</div>
@@ -136,9 +122,11 @@
       </div>
     </div>
 
-    <!-- 底部按钮区（固定在滚动区之外，不随内容滚动）：右对齐「另存为 / 取消 / 保存」。
+    <!-- 底部按钮区（固定在滚动区之外，不随内容滚动）：左侧「向导」，右侧「另存为 / 取消 / 保存」。
          「另存为」仅**编辑**模式显示（新建本就有目录名输入 = 已能定目录）；本地动作 @click（不新增 MQ 主题）。 -->
     <div class="edit-footer">
+      <Button text size="small" @click="handleWizard">{{ $t('wizard.openButton') }}</Button>
+      <span class="edit-footer-spacer" />
       <Button v-if="!isNew" text size="small" @click="handleSaveAs">{{ $t('scenario.save_as') }}</Button>
       <Button size="small" v-mq:[EventNames.scenarioCancel].click>{{ $t('common.cancel') }}</Button>
       <Button size="small" type="primary" v-mq:[EventNames.scenarioSave].click :loading="saving">{{ $t('common.save') }}</Button>
@@ -153,10 +141,12 @@ import { message, confirm, promptInput } from '../../components/ui'
 import { Input, Button, Select, Tabs } from '../../components/ui'
 import AgentEditor from './AgentEditor.vue'
 import CombinedPromptPreview from './CombinedPromptPreview.vue'
+import { openScenarioWizard } from './scenarioWizard'
 import { optimizeAgentPrompt } from '../../api/config'
 import { saveScenario } from '../../api/scenario'
-import { getKnowledgeRoot, listPrimitives } from '../../api/knowledge'
+import { getKnowledgeRoot, listPrimitives, readPrimitive, savePrimitive } from '../../api/knowledge'
 import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilter'
+import { resolveAgentRefAbs, agentModelFromDoc, agentDocOf } from '../../utils/agentRef'
 import { loadLlmOptions, loadToolGroups as loadToolGroupsShared } from '../../utils/agentAssets'
 import { allowedLevels } from '../../utils/agentLevelMatrix'
 import mq from '../../utils/mq'
@@ -221,6 +211,69 @@ const normalizedSelectedAgent = computed(() => {
 // 场景 id 全局唯一（不允许跨级同名，[42 §2 (175)]），故「上一级同名场景」不存在，
 // 该入口已整体摘除（原 upperLevels/canRestoreDefault/upperSource/resolveUpperSource/
 // handleRestoreDefault + `api/scenario.loadScenario` 一并移除）。见 [37 SCEN-008]。
+
+// ── 引用 agent（子 agent）内容读写 —— 可编辑引用 ──────────────────────
+// 子 agent 唯一形态 = 引用（ref，[37 SCEN-002]）。编辑 = **直接读写被引 agent 文件**
+// （走知识库读写面 data-knowledge-read/save；零新增消息主题）；**场景里的 ref 不变**。
+// 四级 capability 根均可读写（[39 KB-001-S04] 2026-10-01 P1 取消「系统级只读」）→ 不做
+// 「系统级只读 → 复制到项目级」的降级。
+const levelRoots = ref({}) // { app, user, project, prjusr } → 各级 capability 根（绝对路径）
+
+// 取四级 capability 根（ref 前缀解析用）。任一级不可解析（如未登记实例的项目私有级）→ 空串。
+async function loadLevelRoots() {
+  const out = {}
+  for (const k of ['app', 'user', 'project', 'prjusr']) {
+    try { out[k] = (await getKnowledgeRoot(k))?.root || '' } catch (_) { out[k] = '' }
+  }
+  levelRoots.value = out
+}
+
+// 选中 agent：切换索引；引用 agent **首次选中**时载入被引文件正文（事件驱动，不用 watch）。
+async function selectAgent(idx) {
+  selectedAgentIdx.value = idx
+  const a = agents.value[idx]
+  if (a && !a.isMain && a.ref && a._refOrig === undefined) {
+    await loadRefAgent(a)
+  }
+}
+
+// 读被引 agent 文件 → 填入可编辑表单（保留未知 meta，写回时保真）。
+// `_refOrig` 记载入基准，保存时据此判定内容是否变更（未变 → 不写文件）。
+async function loadRefAgent(agent) {
+  const abs = resolveAgentRefAbs(agent.ref, levelRoots.value)
+  if (!abs) {
+    message.warning(t('scenario.ref_unresolved') + ': ' + agent.ref)
+    return
+  }
+  try {
+    const res = await readPrimitive(abs)
+    const idx = agents.value.indexOf(agent)
+    if (idx < 0) return
+    const cur = agents.value[idx]
+    const loaded = { ...cur, ...agentModelFromDoc((res && res.doc) || {}, cur) }
+    loaded._refOrig = JSON.stringify(agentDocOf(loaded))
+    agents.value[idx] = loaded
+  } catch (e) {
+    message.error(t('scenario.ref_load_failed') + ': ' + (e.message || e))
+  }
+}
+
+// 保存前写回被编辑的引用 agent 文件（内容未变 → 跳过）；失败即抛出（不落场景）。
+async function writeBackRefAgents() {
+  const tasks = []
+  for (const a of agents.value) {
+    if (a.isMain || !a.ref || a._refOrig === undefined) continue
+    const doc = agentDocOf(a)
+    if (JSON.stringify(doc) === a._refOrig) continue
+    const abs = resolveAgentRefAbs(a.ref, levelRoots.value)
+    if (!abs) {
+      throw new Error(t('scenario.ref_unresolved') + ': ' + a.ref)
+    }
+    tasks.push(savePrimitive(abs, doc))
+  }
+  if (tasks.length > 0) await Promise.all(tasks)
+}
+
 async function loadAgents() {
   // D7: agents come from scenario.agents (agents_json) — no separate
   // scenario_agents table anymore. Pure frontend array, saved atomically.
@@ -234,7 +287,8 @@ async function loadAgents() {
   }))
   if (agents.value.length > 0) {
     const mainIdx = agents.value.findIndex(a => a.isMain)
-    selectedAgentIdx.value = mainIdx >= 0 ? mainIdx : 0
+    // 首选主 agent（内联）；无主 agent（异常/缺 main.agent.md）→ 首项可能是引用 agent → 载入其文件内容
+    await selectAgent(mainIdx >= 0 ? mainIdx : 0)
   } else {
     // No agents found — create a default main agent
     createDefaultMainAgent()
@@ -309,6 +363,14 @@ async function handleSaveAs() {
 }
 
 /**
+ * 底部【向导】：重新拉起场景向导（复用 scenarioWizard.js 唯一打开入口 → 同 MainLayout 的
+ * agent-wizard 路径）。本地动作 @click，不新增 MQ 主题；防重入由打开助手的模块级 flag 承担。
+ */
+function handleWizard() {
+  openScenarioWizard({})
+}
+
+/**
  * 「保存」/「另存为」共用保存路径：同场景 agent 重名预检 → data-scenario-save
  * （有 id 更新 / 无 id 新建）→ 成功提示 + emit('done')（父组件重载列表）。
  * @param {string} [idOverride] 另存为的新目录名；非空 → 置为 form.id 并按**新建**口径提示。
@@ -328,8 +390,10 @@ async function doSave(idOverride) {
   if (idOverride) form.value.id = idOverride
   saving.value = true
   try {
-    // Strip frontend-only keys (_key / id) before persisting.
-    const payloadAgents = agents.value.map(({ _key, id, ...rest }) => rest)
+    // 引用 agent 编辑内容先写回被引文件（走知识库写盘；内容未变则跳过）——失败即中止，不落场景。
+    await writeBackRefAgents()
+    // Strip frontend-only keys (_key / id / 引用读写快照) before persisting.
+    const payloadAgents = agents.value.map(({ _key, id, _refMeta, _refOrig, ...rest }) => rest)
     // data-scenario-save：有 id 更新 / 无 id 新建（20-gui），reply {ok, id}。
     const res = await saveScenario({ ...form.value, agents: payloadAgents })
     if (res && res.id) {
@@ -371,8 +435,8 @@ async function loadAgentOptions() {
   const out = []
   const seen = new Set()
   for (const kind of allowedLevels(form.value.level || 'user')) {
-    let root = ''
-    try { root = (await getKnowledgeRoot(kind))?.root || '' } catch (_) { continue }
+    // 复用已解析的四级 capability 根（loadLevelRoots；避免重复 MQ 往返）
+    const root = levelRoots.value[kind] || ''
     if (!root) continue
     let files = []
     try {
@@ -390,8 +454,8 @@ async function loadAgentOptions() {
   agentOptions.value = out
 }
 
-// 选中一项 → 追加为**引用 agent**（只读显示已选）；重复引用忽略。
-function onPickAgent(abs) {
+// 选中一项 → 追加为**引用 agent**（可编辑引用）；重复引用忽略。追加后立即使其选中并载入文件正文。
+async function onPickAgent(abs) {
   pickerValue.value = ''
   if (!abs) return
   if (agents.value.some(a => a.ref === abs)) {
@@ -410,7 +474,7 @@ function onPickAgent(abs) {
     ref: abs,
     _key: `ref-${nextKey++}`,
   })
-  selectedAgentIdx.value = agents.value.length - 1
+  await selectAgent(agents.value.length - 1)
   message.success(t('scenario.agent_added'))
 }
 
@@ -484,14 +548,19 @@ onMounted(async () => {
   // 取消：关闭弹窗、不落库（父组件收到 cancel 事件后关闭对话框）
   _unsubs.push(mq.on(EventNames.scenarioCancel, () => emit('cancel')))
   _unsubs.push(mq.on(EventNames.scenarioSelectMain, () => {
+    // 主 agent（内联）：无外部文件，仅切换选中
     selectedAgentIdx.value = agents.value.indexOf(mainAgent.value)
   }))
   _unsubs.push(mq.on(EventNames.scenarioSelectAgent, ({ agent }) => {
-    if (agent) selectedAgentIdx.value = agents.value.indexOf(agent)
+    // 引用 agent：切换选中 + 首次选中载入被引文件正文（可编辑引用）
+    if (agent) selectAgent(agents.value.indexOf(agent))
   }))
   _unsubs.push(mq.on(EventNames.scenarioDeleteAgent, ({ agent }) => {
     if (agent) deleteAgent(agent)
   }))
+
+  // 四级 capability 根：**先解析**（引用 agent 文件读写的路径基座 + 智能体候选列目录）
+  await loadLevelRoots()
 
   if (props.scenario) {
     form.value = { ...props.scenario }
@@ -597,7 +666,8 @@ function createDefaultMainAgent() {
   border-radius: 4px;
 }
 
-/* 底部按钮区（「取消 / 保存」）固定在滚动区之外，不随内容滚动 */
+/* 底部按钮区（「向导 / 另存为 / 取消 / 保存」）固定在滚动区之外，不随内容滚动。
+   「向导」在左、【另存为】起右对齐（spacer 撑开）。 */
 .edit-footer {
   display: flex;
   align-items: center;
@@ -606,6 +676,10 @@ function createDefaultMainAgent() {
   padding: 10px 16px;
   border-top: 1px solid var(--border, #dcdfe6);
   flex-shrink: 0;
+}
+
+.edit-footer-spacer {
+  flex: 1;
 }
 
 /* ── Left-right split ── */
@@ -806,24 +880,17 @@ function createDefaultMainAgent() {
   flex-shrink: 0;
 }
 
-/* ── 子 agent 引用只读视图（右栏「Agent」页签）── */
-.ref-agent-view {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.ref-field {
+/* ── 子 agent 引用横幅（右栏「Agent」页签顶部；可编辑引用：保存写回被引文件）── */
+.ref-agent-banner {
+  flex-shrink: 0;
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 13px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border, #eee);
 }
 .ref-label {
-  flex: 0 0 64px;
+  flex: 0 0 auto;
   color: var(--text-muted, #999);
   font-size: 12px;
 }
@@ -833,21 +900,8 @@ function createDefaultMainAgent() {
   color: var(--text-secondary);
   word-break: break-all;
 }
-.ref-prompt {
-  flex: 0 1 auto;
-  margin: 0;
-  padding: 8px;
-  border: 1px solid var(--border, #eee);
-  border-radius: 4px;
-  background: var(--bg-secondary, #fafafa);
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 320px;
-  overflow: auto;
-}
 .ref-hint {
+  flex: 1;
   font-size: 11px;
   color: var(--text-muted, #999);
 }

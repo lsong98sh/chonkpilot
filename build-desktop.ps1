@@ -1,4 +1,4 @@
-﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
+﻿﻿﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-standalone-gui.ps1`；
 #   形态名 `standalone` → **`desktop`（桌面单体）**，产物目录 `dist/standalone/` → `dist/desktop/`。
@@ -21,8 +21,9 @@
 #   │   ├── tools/<cat>/*.tool.md
 #   │   ├── resources/<...>/*.resource.md
 #   │   ├── skills/<...>/*.skill.md
+#   │   ├── system/summary.md               # 非原语系统文档（源 src/initdata/capability/system，OP-02）
 #   │   ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
-#   │   └── executors/chonkpilot-{core,desktop,browser}-executor.exe
+#   │   └── executors/chonkpilot-{core,desktop,browser,dsl}-executor.exe
 #   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
 #   │   ├── codebase/chonkpilot-codegraph-mcp-server.exe
 #   │   ├── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll（必须与 vfts 引擎同目录）
@@ -34,7 +35,8 @@
 #   initial.zip（完整出厂包，内含 exe，供用户自行恢复）。
 #   <ver> = 日期时间戳（无独立版本源）；不做哈希/清单校验。
 #
-# **出厂数据唯一源** = src/initdata/（capability/{prompts,tools,resources,skills,scenarios}），不再 embed。
+# **出厂数据唯一源** = src/initdata/（capability/{prompts,tools,resources,skills,agents,scenarios,system}），不再 embed
+# （例外：system/ 另经 embed 落点编入 data 模块，供磁盘缺失兜底，见 [0.5/9]）。
 # 全量组件：内嵌 lib 插件（compress/history/memory/vfts/codegraph）随 exe 编译；
 #   外置引擎 exe（codegraph/vfts）+ zvec_c_api.dll 置于 dist/desktop/mcps/{codebase,vfts}\——
 #   插件按「宿主 exe 同目录/mcps/<engine>/」解析引擎。
@@ -65,6 +67,16 @@ $initdataDist = Join-Path $root "dist\initdata"
 # 版本 = 日期时间戳（无独立版本源，见头注）
 $ver = Get-Date -Format "yyyyMMdd-HHmmss"
 
+# -- 0) 生成消息面键常量（契约唯一源 = docs/spec/60-reference/61-messages.schema.json） --
+# genmsg → src/lib/core/msgkeys/msgkeys_gen.go + src/frontend/src/events/msgkeys.js（**勿手改**）。
+# 先跑生成再编译，保证键常量与契约一致；漂移另有 src/tools/genmsg/gen_test.go 兜底。
+Write-Host "==> [0/9] genmsg (message key constants)"
+Push-Location (Join-Path $root "src\tools\genmsg")
+try {
+    go run .
+    if ($LASTEXITCODE -ne 0) { throw "genmsg failed" }
+} finally { Pop-Location }
+
 # -- 0) 结束运行中的旧实例（释放 exe 占用；两形态产物同列表） --
 foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "chonkpilot-cli-client", "chonkpilot-server")) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
@@ -72,6 +84,18 @@ foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "ch
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
     }
 }
+
+# -- 0.5) 出厂 system 文档 → data 模块 embed 落点（OP-02，2026-10-06）--
+#     唯一源 = src/initdata/capability/system/**；覆盖式同步到 data 模块内 embed 落点，
+#     供 `//go:embed all:embedded/system` 编入 exe（摘要提示词等系统文档的磁盘缺失兜底）。
+Write-Host "==> [0.5/9] sync factory system docs -> data embed dir"
+$sysSrc = Join-Path $root "src\initdata\capability\system"
+$sysEmbed = Join-Path $root "src\lib\data\internal\systemfs\embedded\system"
+if (-not (Test-Path $sysSrc)) { throw "factory system docs not found: $sysSrc" }
+if (Test-Path $sysEmbed) { [System.IO.Directory]::Delete($sysEmbed, $true) }
+New-Item -ItemType Directory -Force -Path $sysEmbed | Out-Null
+Copy-Item (Join-Path $sysSrc "*") $sysEmbed -Recurse -Force
+Write-Host "    ok: embed system docs -> $sysEmbed ($((Get-ChildItem $sysEmbed -Recurse -File | Measure-Object).Count) files)"
 
 # -- 1) 前端构建（工程 src/frontend；embed 入口 → 镜像到两个宿主壳的 embed 落点） --
 Write-Host "==> [1/9] build frontend (embed entry)"
@@ -138,6 +162,16 @@ if (Test-Path $capDst) {
 }
 Copy-Item $capSrc $capDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
+
+# dsl_run 统一编排执行器（决策 42 §2 (247)）随 capability/ 一并就位：capability/executors/
+# 下的 chonkpilot-dsl-executor.exe（由 build-mcp-server.ps1 → build-dsl-executor.ps1 产出）；
+# 源缺失时上一步已告警跳过，此处仅守卫式提示，不中断构建。
+$dslExe = Join-Path $capDst "executors\chonkpilot-dsl-executor.exe"
+if (Test-Path $dslExe) {
+    Write-Host "    ok: capability/executors/chonkpilot-dsl-executor.exe"
+} else {
+    Write-Host "    [提示] capability/executors/chonkpilot-dsl-executor.exe 缺失（dslexec 源未落地）；dsl_run 运行期不可用"
+}
 
 # -- 5) 出厂场景：src/initdata/capability/scenarios → dist/desktop/capability/scenarios（覆盖式同步，不删目录本身） --
 Write-Host "==> [5/9] stage scenarios/ (src/initdata/capability/scenarios)"
@@ -247,7 +281,7 @@ $capCount = (Get-ChildItem (Join-Path $dist "capability") -Recurse -File | Measu
 Write-Host "==> done: $dist"
 Write-Host "    chonkpilot.exe                      $mbGui MB"
 Write-Host "    chonkpilot-cli.exe                  $mbCli MB"
-Write-Host "    capability/                         $capCount files (prompts/tools/resources/skills/scenarios/executors)"
+Write-Host "    capability/                         $capCount files (prompts/tools/resources/skills/agents/system/scenarios/executors)"
 Write-Host "    capability/scenarios/               $scnCount files"
 Write-Host "    mcps/codebase/                      $cgExe ($mbCg MB)"
 Write-Host "    mcps/vfts/                          $vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"

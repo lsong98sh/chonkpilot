@@ -390,7 +390,7 @@ func TestNativeCapabilitiesRejected(t *testing.T) {
 	for _, typ := range []string{
 		"gui.dir.open-dialog", "gui.pick-executable", "gui.dir.open", "gui.console.open",
 		"gui.reveal", "gui.open-with", "gui.capture", "gui.toolchain.detect",
-		"gui.system.builtins", "gui.window.status",
+		"gui.system.builtins", "gui.window.status", "gui.file.save",
 	} {
 		env := publish(t, base, typ, "{}")
 		if env["ok"] != false {
@@ -400,6 +400,50 @@ func TestNativeCapabilitiesRejected(t *testing.T) {
 		if len(errs) == 0 || !strings.Contains(errs[0].(string), "不支持") {
 			t.Fatalf("%s 错误不明确：%v", typ, env)
 		}
+	}
+}
+
+// browser 形态「最近项目」删除（gui.recent.remove）：仅改 usr config 自由键 recent_dirs
+// （保序、只删该条），**不触碰项目目录 / 数据资产**。
+func TestBrowserRecentRemove(t *testing.T) {
+	_, bus, base := newTestServer(t, t.TempDir())
+	fakePersist(t, bus, "data-user-config-load", map[string]any{
+		"data": map[string]any{"recent_dirs": `["D:/a","D:/b"]`},
+	})
+	saved := make(chan map[string]any, 1)
+	if _, err := bus.On("data-user-config-save", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var req struct {
+			ReqID string         `json:"req_id"`
+			OK    *bool          `json:"ok"`
+			Data  map[string]any `json:"data"`
+		}
+		if json.Unmarshal(v.Payload, &req) != nil || req.ReqID == "" || req.OK != nil {
+			return nil
+		}
+		select {
+		case saved <- req.Data:
+		default:
+		}
+		reply, _ := json.Marshal(map[string]any{
+			"req_id": req.ReqID, "ok": true, "result": map[string]any{"ok": true},
+		})
+		_ = bus.Emit(context.Background(), "data-user-config-save", reply)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	env := publish(t, base, "gui.recent.remove", `{"path":"D:/a"}`)
+	if env["ok"] != true {
+		t.Fatalf("gui.recent.remove 应 ok，got %+v", env)
+	}
+	select {
+	case data := <-saved:
+		if got, _ := data["recent_dirs"].(string); got != `["D:/b"]` {
+			t.Fatalf("仅应删 D:/a 并保序，got %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未捕获 data-user-config-save 写入")
 	}
 }
 

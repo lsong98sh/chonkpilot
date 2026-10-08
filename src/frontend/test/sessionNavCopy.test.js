@@ -106,7 +106,7 @@ test('导航：复制取数 = 逐轮原始消息（非压缩后快照）', () =>
   const api = read('api/session.js')
   assert.match(api, /'load-messages'/, '走既有 data-session-load-messages 面（零新增消息面）')
   // 取数外形守卫（防漂移）：data-session-history 应答 = {messages:{turns,has_more}}；轮次主键 = turn_id
-  assert.match(api, /r\.messages[\s\S]{0,40}turns/, 'history 应答外形 = {messages:{turns}}（wire.TurnHistoryResult）')
+  assert.match(api, /r\[DataSessionHistoryKeys\.messages\][\s\S]{0,40}turns/, 'history 应答外形 = {messages:{turns}}（wire.TurnHistoryResult；常量下标）')
   assert.doesNotMatch(api, /r\.turns/, '不得直接读 r.turns（轮次在 messages.turns 之下）')
   assert.match(api, /turns\[0\]\.turn_id/, '翻页游标 = turn_id（wire.TurnToWire）')
   assert.match(pane, /turn\.turn_id/, '按 turn.turn_id 逐轮取消息')

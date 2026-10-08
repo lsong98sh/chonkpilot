@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -358,7 +359,7 @@ func (g *Gateway) llmToolPick(ctx context.Context, inst, purpose, typ string, li
 		"输出 JSON {\"tools\":[{\"name\":\"\",\"reason\":\"\"}]}（无匹配输出 {\"tools\":[]}），仅输出 JSON。", purpose, limit)
 	ctx2, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	v := g.bus.Emit(ctx2, "llm-simple", map[string]any{"prompt": prompt, "system": sb.String(), "instance_id": inst}).Wait()
+	v := g.bus.Emit(ctx2, msgkeys.TopicLlmSimple, map[string]any{"prompt": prompt, "system": sb.String(), "instance_id": inst}).Wait()
 	if err := v.Err(); err != nil {
 		return "", false
 	}

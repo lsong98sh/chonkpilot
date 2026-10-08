@@ -7,6 +7,7 @@ category=core
 async=auto
 async-threshold=30
 timeout=60
+idempotent=false
 args=filesys_run --input={RAW-INPUT-FILE}
 output=stdout
 

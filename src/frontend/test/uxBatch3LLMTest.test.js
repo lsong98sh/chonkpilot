@@ -75,7 +75,9 @@ test('⑮ 主题：点分相对主题 llm.test-connection，前端字面量 = Go
   assert.match(src, /mq\.emit\(TEST_CONN_TOPIC, \{/, '须经统一 mq.emit 发送（禁直调 window.go.*）')
 
   const go = readFileSync(join(repoDir, 'lib', 'llm', 'server', 'llm_testconn.go'), 'utf8')
-  assert.match(go, /SubjectLLMTestConnection = "llm\.test-connection"/, 'Go 服务端主题字面量须与前端一致')
+  // Go 侧已改引生成键常量（msgkeys）；值由 genmsg 从契约（61 schema）生成 → 常量引用 + 生成值双一致。
+  assert.match(go, /SubjectLLMTestConnection = msgkeys\.TopicLlmTestConnection/, 'Go 服务端主题须用生成键常量')
+  assert.ok(read('events/msgkeys.js').includes("llmTestConnection: 'llm.test-connection'"), '契约主题名由 genmsg 生成')
   const goServer = readFileSync(join(repoDir, 'lib', 'llm', 'server', 'server.go'), 'utf8')
   assert.match(goServer, /\{SubjectLLMTestConnection, s\.onLLMTestConnection\}/, '服务端须在 Start 订阅该主题')
   // 只读探测：一次性 provider（LR-11 起 = 唯一名登记 → 探测后注销；不入 usr 配置、不触碰运行中 provider）

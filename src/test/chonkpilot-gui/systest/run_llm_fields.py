@@ -65,6 +65,14 @@ def _evi(tag, **kw):
     print("[EVIDENCE] " + json.dumps({"case": tag, **kw}, ensure_ascii=False), flush=True)
 
 
+def main_prompt(rec):
+    """场景主 agent 提示词（新口径：落 `main.agent.md`；load 回读在 `agents[isMain].prompt`，
+    场景层**无**派生 `systemPrompt` 字段）。"""
+    ags = rec.get("agents") or []
+    main = next((a for a in ags if a.get("isMain")), ags[0] if ags else {})
+    return (main.get("prompt") or "")
+
+
 def main():
     # 两个 mock 端点：M1 = 主端点（多数用例的 provider baseUrl）；M2 = baseUrl 对照端点
     # （未配置时不得收到任何请求 → 证明"请求打到配置端点"）。均自起（owned）→ 结束回收。
@@ -400,8 +408,9 @@ def main():
                 }})
                 rec = (c.req("data-scenario-load",
                              {"data": {"id": SC_ID, "level": "user"}}) or {}).get("data") or {}
-                if SC_PROMPT not in (rec.get("systemPrompt") or ""):
-                    raise TestError("场景落盘失败（systemPrompt 未派生哨兵）: %r" % rec)
+                mp = main_prompt(rec)
+                if SC_PROMPT not in mp:
+                    raise TestError("场景落盘失败（主 agent 提示词未含哨兵）: %r" % rec)
                 # A：经前端"设为默认选中场景"（scenario-set-default，既有前端事件）落库 → 回读
                 c.mq_emit("scenario-reload", {})
                 time.sleep(0.6)
@@ -415,10 +424,12 @@ def main():
                     c.click(".panel-header .b-tag", 5000)
                     time.sleep(1.0)
                 cls = _plain(c.eval("""(() => {
-                  const it = [...document.querySelectorAll('.scenario-item')].find(x =>
-                    ((x.querySelector('.scenario-item-name')||{}).textContent||'').trim() === %s);
+                  const it = [...document.querySelectorAll('.scenario-item')].find(x => {
+                    const n = ((x.querySelector('.scenario-item-name')||{}).textContent||'').trim();
+                    return n === %s || n.startsWith(%s + ' -');
+                  });
                   return it ? ((it.querySelector('.scenario-item-star')||{}).className || '') : 'NOT_FOUND';
-                })()""" % json.dumps(SC_NAME)))
+                })()""" % (json.dumps(SC_NAME), json.dumps(SC_NAME))))
                 _evi("defaultScenario DOM", star_class=cls, default_scenario=got)
                 if "on" not in str(cls):
                     raise TestError("defaultScenario 未被前端消费（星标 class=%r）" % cls)
@@ -432,7 +443,7 @@ def main():
                      system_has_sentinel=SC_PROMPT in (l2.get("system") or ""),
                      system_head=(l2.get("system") or "")[:60])
                 if p2.get("status") != "complete" or SC_PROMPT not in (l2.get("system") or ""):
-                    raise TestError("场景 systemPrompt 未注入 LLM: %r" % l2.get("system"))
+                    raise TestError("场景主 agent 提示词未注入 LLM: %r" % l2.get("system"))
                 # B3：前端驱动的真实发送（无显式 scenario_id）→ 默认场景生效 → system 含哨兵
                 c.mq_emit("chat-select-llm", {"name": "p-sc"})
                 c.mq_emit("scenario-set-default", {"id": SC_ID})

@@ -66,10 +66,9 @@ async function refreshTitle() {
   }
 }
 
-// 摘要变化来源：会话列表刷新 / 统计刷新 / 本会话首次落库 / 本轮结束（标题可能就绪）→ 重读比对。
+// 摘要变化来源：会话列表刷新 / 本会话首次落库 / 本轮结束（标题可能就绪）→ 重读比对。
 const TITLE_REFRESH_EVENTS = [
   EventNames.sessionRefresh,
-  EventNames.sessionStatisticRefresh,
   EventNames.sessionNew,
   EventNames.llmComplete,
 ]

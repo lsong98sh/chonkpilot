@@ -77,8 +77,13 @@ func (b *Base) CfgInstBind(instanceID string, scope facade.Scope) (workDir, data
 }
 
 // InstBindingFor 返回实例的 {work_dir, data_dir} 绑定（层序见文件头）；解析不出 → ok=false。
+//
+// **容错探测**语义：解析失败由调用方兜底（work_dir 留空 → 只含 app + user 级），属预期内，
+// 故经 **ResolveQuiet** 解析（不打"未带 instance_id / 唯一实例回退"告警）——避免启动期
+// mcp / scenario 域等"设计允许缺实例"的正常探测刷告警噪音。严格路径（要暴露遗漏）见
+// WorkDirFor 的最终 Resolve、PrjUsrFor。
 func (b *Base) InstBindingFor(instanceID string, scope facade.Scope) (string, string, bool) {
-	if _, info, err := b.View.Resolve(instanceID); err == nil {
+	if _, info, err := b.View.ResolveQuiet(instanceID); err == nil {
 		return info.WorkDir, info.DataDir, true
 	}
 	if !scope.Empty() {
@@ -114,7 +119,10 @@ func (b *Base) WorkDirLoose(instanceID string, scope facade.Scope) string {
 //
 // 与 MQ 路径同口径：显式 instance_id 未登记即报错（**不引入**"唯一实例回退"——filelist 的
 // 既有读方 vfts 插件恒带 instance_id）；门面路径另接受调用方带入 Scope / data 绑定表（自登记）。
-func (b *Base) PrjFor(instanceID string, scope facade.Scope) (*data.DB, error) {
+//
+// **短开语义（D-45）**：prj 层连接返回 release，调用方用完即释（bbolt 单文件排他锁——
+// 短开使 GUI 与 CLI 可并发打开同一项目 prj 库）；高频读由 config 门面值缓存吸收（12-数据层 §5.4）。
+func (b *Base) PrjFor(instanceID string, scope facade.Scope) (*data.DB, func(), error) {
 	if instanceID != "" {
 		if info, ok := b.View.Lookup(instanceID); ok {
 			return b.PrjByInst(instanceID, info)
@@ -128,7 +136,7 @@ func (b *Base) PrjFor(instanceID string, scope facade.Scope) (*data.DB, error) {
 		data.Register(instanceID, wd, dd)
 		return data.Prj(instanceID)
 	}
-	return nil, ErrInstanceNotRegistered
+	return nil, nil, ErrInstanceNotRegistered
 }
 
 // PrjUsrFor 定位实例的 **prjusr 主库**（会话/轮次/消息/任务树/快照所在层，12-数据层）：
@@ -150,8 +158,9 @@ func (b *Base) PrjUsrFor(instanceID string, scope facade.Scope) (*data.DB, error
 	return nil, rerr
 }
 
-// PrjByInst 按实例绑定解析 prj 主库（绑定登记进 data 缓存）。
-func (b *Base) PrjByInst(instanceID string, info Info) (*data.DB, error) {
+// PrjByInst 按实例绑定解析 prj 主库（绑定登记进 data 缓存）。**短开语义（D-45）**：返回
+// release，调用方配对释放（同 PrjFor）。
+func (b *Base) PrjByInst(instanceID string, info Info) (*data.DB, func(), error) {
 	data.Register(instanceID, info.WorkDir, info.DataDir)
 	return data.Prj(instanceID)
 }

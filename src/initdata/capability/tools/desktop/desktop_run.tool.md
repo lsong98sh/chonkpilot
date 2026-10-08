@@ -7,6 +7,7 @@ category=desktop
 async=auto
 async-threshold=60
 timeout=300
+idempotent=false
 args=desktop_run --input={RAW-INPUT-FILE}
 output=stdout
 

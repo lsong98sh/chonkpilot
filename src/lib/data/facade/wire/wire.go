@@ -21,6 +21,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // ── 会话（session 域）──────────────────────────────────────────────
@@ -76,20 +77,20 @@ func SessionListResult(list []facade.Session) map[string]any {
 	for _, s := range list {
 		out = append(out, SessionToWire(s))
 	}
-	return map[string]any{"list": out}
+	return map[string]any{msgkeys.DataSessionListResultList: out}
 }
 
 // SessionGetResult 组装 `data-session-get` 结果载荷 `{data: 会话行|null}`（不存在 = null）。
 func SessionGetResult(found bool, s facade.Session) map[string]any {
 	if !found {
-		return map[string]any{"data": nil}
+		return map[string]any{msgkeys.DataSessionGetResultData: nil}
 	}
-	return map[string]any{"data": SessionToWire(s)}
+	return map[string]any{msgkeys.DataSessionGetResultData: SessionToWire(s)}
 }
 
 // SessionIDResult 组装 `{session_id: …}`（latest / active-get 共用）。
 func SessionIDResult(sessionID string) map[string]any {
-	return map[string]any{"session_id": sessionID}
+	return map[string]any{msgkeys.DataSessionLatestResultSessionId: sessionID}
 }
 
 // ── 轮次（turn 域）────────────────────────────────────────────────
@@ -156,7 +157,7 @@ func TurnHistoryResult(resp facade.TurnHistoryResponse) map[string]any {
 	for _, m := range resp.Messages {
 		msgs = append(msgs, MessageViewToWire(m))
 	}
-	return map[string]any{"messages": map[string]any{
+	return map[string]any{msgkeys.DataSessionHistoryResultMessages: map[string]any{
 		"turns": turns, "messages": msgs, "has_more": resp.HasMore,
 	}}
 }
@@ -239,7 +240,7 @@ func MessageLoadResult(msgs []facade.Message) map[string]any {
 	for _, m := range msgs {
 		out = append(out, data.MessageFromFacade(m))
 	}
-	return map[string]any{"messages": out}
+	return map[string]any{msgkeys.DataSessionLoadMessagesResultMessages: out}
 }
 
 // TurnTokenToWire 把轮次 token 伴随项转回消息面行（键 turn_id/full/brief；缺值省略键，
@@ -266,7 +267,7 @@ func ContextResult(msgs []facade.Message, tokens []facade.TurnToken) map[string]
 	for _, t := range tokens {
 		arr = append(arr, TurnTokenToWire(t))
 	}
-	res["turn_tokens"] = arr
+	res[msgkeys.DataSessionContextResultTurnTokens] = arr
 	return res
 }
 
@@ -276,7 +277,7 @@ func MessageContentResult(contents map[string]string) map[string]any {
 	for k, v := range contents {
 		out[k] = v
 	}
-	return map[string]any{"contents": out}
+	return map[string]any{msgkeys.DataSessionContentResultContents: out}
 }
 
 // MessageAppendFromWire 解析 `data-session-append-message` 载荷 → 门面入参。
@@ -284,7 +285,7 @@ func MessageContentResult(contents map[string]string) map[string]any {
 // 兼容既有两种形态（61 §3.2a）：`{turn_id, msg:{…}}`（嵌套）与扁平形态（字段直接在载荷上）。
 // msg 的工具调用形状 = 消息面嵌套 `function{name,arguments}`（经内核 ChatMsg 归一为门面平铺）。
 func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
-	req := facade.MessageAppendRequest{TurnID: str(m["turn_id"])}
+	req := facade.MessageAppendRequest{TurnID: str(m["turn_id"]), Key: str(m["key"])}
 	nested, _ := m["msg"].(map[string]any)
 	if len(nested) == 0 {
 		nested = m
@@ -346,7 +347,7 @@ func OKResult() map[string]any { return map[string]any{"ok": true} }
 
 // CleanupResult 组装 `{ok:true, count:n}`（cleanup-stale）。
 func CleanupResult(count int) map[string]any {
-	return map[string]any{"ok": true, "count": count}
+	return map[string]any{"ok": true, msgkeys.DataSessionCleanupStaleResultCount: count}
 }
 
 // ── 请求载荷归一（入口/信封共用）────────────────────────────────────

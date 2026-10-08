@@ -2,7 +2,8 @@
 // 与 chonkpilot-test/chonkpilot-gui/systest/run_memory_ctx.py 同法（mock LLM + 真落盘），
 // 但不起 GUI/前端 —— 覆盖「立即沉淀确实产生写入」的可核证据：
 //
-//	① 消息回执：memory.flush 的 Value.Result = {ok, saved, enabled, turn}（promise 语义）；
+//	① 消息回执：memory.flush 的 Value.Result = {ok, queued, session}（**投递即回**，I-128）；
+//	   处理完成由通知面 tool-notify（`memory-start` → `memory-done`）判定；
 //	② 落盘：<workdir>/.chonkpilot/memory/<类别>.md 内容变化（沉淀 LLM 产物）——记忆库唯一落点；
 //	③ 广播：每次写入后 persist 发 data-memory-refresh（前端据此刻刷新，与既有面同源）；
 //	④ 作用域：只写该会话最近一轮所在 instance 的记忆目录（不越界）。
@@ -186,7 +187,22 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 		t.Fatalf("plugin Start: %v", err)
 	}
 
-	// 触发手动沉淀（payload 与前端 mq.emit 一致：{instance_id, session}）
+	// tool-notify 通知面收集（I-128：进度经既有通知面推送）
+	noticeCh := make(chan string, 32)
+	if _, err := bus.On("tool-notify", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) == nil {
+			select {
+			case noticeCh <- strval(m["notice"]):
+			default:
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("sub tool-notify: %v", err)
+	}
+
+	// 触发手动沉淀（payload 与前端 mq.emit 一致：{instance_id, session}）——**投递即回**（I-128）
 	v := bus.Emit(context.Background(), "memory.flush", map[string]any{
 		"instance_id": "ins-int", "session": "s-int",
 	}).Wait()
@@ -197,51 +213,58 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 	if res == nil || res["ok"] != true {
 		t.Fatalf("memory.flush 回执异常：%#v", v.Result)
 	}
-	if res["turn"] != "t-2" {
-		t.Fatalf("应沉淀最近一轮：%+v", res)
+	if queued, _ := res["queued"].(bool); !queued {
+		t.Fatalf("memory.flush 应投递即回（queued=true，不再同步等）：%#v", res)
 	}
-	saved, _ := res["saved"].([]string)
-	if len(saved) < 1 {
-		t.Fatalf("应至少沉淀一个类别：%+v", res)
-	}
-	// ① 消息回执（promise 语义）
+	// ① 消息回执（promise 语义；异步处理 → 不含 saved/turn）
 	t.Logf("raw evidence: flush ack=%v", res)
 
-	// ② 落盘证据：saved 的项目级类别文件内容变化且含 mock LLM 产物（逐类别归属）
+	// 等异步处理完成（tool-notify: memory-start → memory-done）
+	seen := map[string]bool{}
+	deadline := time.After(15 * time.Second)
+	for !seen["memory-done"] {
+		select {
+		case n := <-noticeCh:
+			seen[n] = true
+		case <-deadline:
+			t.Fatalf("等 memory-done 超时（已见通知=%v）", seen)
+		}
+	}
+	if !seen["memory-start"] {
+		t.Fatalf("应广播 memory-start：%v", seen)
+	}
+
+	// ② 落盘证据：项目级类别文件内容变化且含 mock LLM 产物（逐类别归属）
 	after := readDir()
-	changed := 0
-	for _, cat := range saved {
-		key := cat + ".md"
-		if cat == "用户偏好" {
-			b, err := os.ReadFile(filepath.Join(usrDir, "用户偏好.md"))
-			if err != nil || !strings.Contains(string(b), "DISTILLED-用户偏好") {
-				t.Fatalf("用户偏好（用户级）未落盘/未写入：err=%v body=%q", err, string(b))
-			}
-			changed++
+	var changed []string
+	for name, body := range after {
+		if filepath.Ext(name) != ".md" {
 			continue
 		}
-		b, ok := after[key]
-		if !ok {
-			t.Fatalf("类别 %s 文件缺失", cat)
+		cat := strings.TrimSuffix(name, ".md")
+		if body == before[name] {
+			continue
 		}
-		if b == before[key] {
-			t.Fatalf("类别 %s 文件未变化（沉淀未落盘）：%q", cat, b)
+		if !strings.Contains(body, "DISTILLED-"+cat) {
+			t.Fatalf("类别 %s 内容非本类沉淀产物（串味/未写入）：%q", cat, body)
 		}
-		if !strings.Contains(b, "DISTILLED-"+cat) {
-			t.Fatalf("类别 %s 内容非本类沉淀产物（串味/未写入）：%q", cat, b)
-		}
-		changed++
+		changed = append(changed, cat)
 	}
-	if changed != len(saved) {
-		t.Fatalf("落盘类别数 %d ≠ 回执 %d", changed, len(saved))
+	if len(changed) < 8 {
+		t.Fatalf("项目级类别落盘数不足 8：changed=%v", changed)
 	}
-	t.Logf("raw evidence: 记忆目录 %s 落盘 %d 个类别（去重前 %d 文件）", memDir, changed, len(after))
+	// 用户偏好（用户级）亦落盘
+	b, err := os.ReadFile(filepath.Join(usrDir, "用户偏好.md"))
+	if err != nil || !strings.Contains(string(b), "DISTILLED-用户偏好") {
+		t.Fatalf("用户偏好（用户级）未落盘/未写入：err=%v body=%q", err, string(b))
+	}
+	t.Logf("raw evidence: 记忆目录 %s 落盘 %d 个项目级类别 + 用户偏好", memDir, len(changed))
 
 	// ③ 广播证据：save 后 data-memory-refresh（op=save、id=类别）
 	mu.Lock()
 	defer mu.Unlock()
-	if len(refreshes) < len(saved) {
-		t.Fatalf("refresh 广播数 %d < 写入类别数 %d：%+v", len(refreshes), len(saved), refreshes)
+	if len(refreshes) < len(changed) {
+		t.Fatalf("refresh 广播数 %d < 写入类别数 %d：%+v", len(refreshes), len(changed), refreshes)
 	}
 	ops := map[string]bool{}
 	ids := map[string]bool{}
@@ -252,7 +275,7 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 	if !ops["save"] {
 		t.Fatalf("应有 op=save 的刷新广播：%+v", refreshes)
 	}
-	for _, cat := range saved {
+	for _, cat := range changed {
 		if !ids[cat] {
 			t.Fatalf("类别 %s 缺 data-memory-refresh(id=%s)", cat, cat)
 		}

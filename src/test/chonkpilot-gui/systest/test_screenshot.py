@@ -17,7 +17,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import free_port, snapshot_config, restore_config  # noqa: E402  动态端口；套件级配置快照-还原
+from harness import free_port, snapshot_config, restore_config, wait_probe, wait_idle  # noqa: E402  动态端口；套件级配置快照-还原；满载时序栅栏（wait_probe 容忍瞬时 /eval 超时 / wait_idle 等 UI 线程空闲）
 
 PORT = free_port()
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,17 +37,10 @@ def uploads_dir():
     return [f for f in os.listdir(d) if not f.startswith('.')] if os.path.isdir(d) else []
 
 
-def wait_upto(gui, js, ok, max_wait=8.0, interval=0.25):
-    """有界轮询：轮询 js 求值直到 ok(v) 为真或超时；返回末次值。
-
-    I-92 低风险加固（2026-09-19）：把「裁剪上传/overlay 出现」前的**固定 sleep**改为**有界轮询**
-    —— 只改**何时**读，不改**读什么**（断言条件仍在调用处，强度不变）。"""
-    deadline = time.time() + max_wait
-    v = J(gui, js)
-    while not ok(v) and time.time() < deadline:
-        time.sleep(interval)
-        v = J(gui, js)
-    return v
+# LLM 选择器 Tag 文案（= 所选 provider 名；`llmList` 未含该记录时回落默认文案）。
+# 它 == 目标 name ⟺ 配置刷新已把 `llmList` 重载为新记录、且 `selectedLLM` 已指向该 provider
+# —— 作为「能力门控前置状态已就绪」的独立观测点（与断言目标无关，不减弱断言）。
+LLM_TAG_JS = "document.querySelector('.input-actions-left .b-tag')?.textContent?.trim() || ''"
 
 
 def click_screenshot(gui):
@@ -70,12 +63,12 @@ def main():
     snap = None
     try:
         gui.start()
+        # 启动时序栅栏（满载加固）：等主视图挂载 + 输入区就绪（`wait_probe` 容忍瞬时 /eval 超时），
+        # 再等 UI 线程进入「可及时响应」态 —— 避免紧随其后的配置快照/首个断言 eval 撞上首屏繁忙窗口。
+        wait_probe(gui, ["!!document.querySelector('.panel-inner')",
+                         "!!document.querySelector('[contenteditable=\"true\"]')"], timeout=30.0)
+        wait_idle(gui, max_wait=30.0)
         snap = snapshot_config(gui)
-        for _ in range(30):
-            if J(gui, "document.querySelector('.panel-inner')") and J(gui, "document.querySelector('[contenteditable=\"true\"]')"):
-                break
-            time.sleep(0.5)
-        time.sleep(0.5)
 
         # ── 截图能力门控（2026-09-26，用户口径：「当 chat 窗口选择的 llm 没有图片时，不能截图」）──
         # 观测点 = 所选 provider 的 `capabilities` 是否含 `vision`：
@@ -92,9 +85,10 @@ def main():
                           "capabilities": caps}],
                 "defaultLLM": name,
             }})
-            time.sleep(1.0)
             gui.publish("chat-select-llm", {"name": name})
-            time.sleep(0.6)
+            # 时序栅栏（等待 UI 就绪）：等能力门控前置状态就绪 —— LLM Tag 文案 == 目标 provider
+            # （⟺ `llmList` 已重载为新记录且 `selectedLLM` 已指向它）；只改「何时读」，断言条件与强度不变。
+            wait_probe(gui, ["(%s) === %s" % (LLM_TAG_JS, json.dumps(name))], timeout=15.0)
 
         def screenshot_btn():
             return J(gui, """(()=>{const bs=Array.from(document.querySelectorAll('.input-actions-left .icon-btn'));const b=bs.find(x=>((x.getAttribute('title')||'').toLowerCase().indexOf('screenshot')>=0)||((x.getAttribute('title')||'').indexOf('截图')>=0));return {found:!!b, disabled:b?(!!b.disabled||b.classList.contains('is-disabled')):null, title:b?b.getAttribute('title'):''}})()""")
@@ -117,21 +111,20 @@ def main():
         s1 = J(gui, """(()=>{const bs=Array.from(document.querySelectorAll('.input-actions-left .icon-btn'));const b=bs.find(x=>((x.getAttribute('title')||'').toLowerCase().indexOf('screenshot')>=0)||((x.getAttribute('title')||'').indexOf('截图')>=0));return {found:!!b, titles:bs.map(x=>x.getAttribute('title')).join('|')}})()""")
         c.check("S1 截图按钮存在", bool(s1['found']), repr(s1['titles']))
 
-        # S2 点击 → 截图预览 overlay（隐藏窗口全屏截取后显示）；分时轮询（截图约 0.5s）
+        # S2 点击 → 截图预览 overlay（隐藏窗口全屏截取后显示）；有界轮询等 overlay 出现
+        # （满载下 GDI 截取 + UI 线程争用可能远超 6s；wait_probe 同时容忍瞬时 /eval 超时）
         click_screenshot(gui)
-        ovSeen = None
-        for _ in range(12):
-            time.sleep(0.5)
-            ovSeen = J(gui, "!!document.querySelector('.screenshot-overlay')")
-            if ovSeen:
-                break
+        ovSeen = wait_probe(gui, ["!!document.querySelector('.screenshot-overlay')"], timeout=20.0)
         warns = [e.get('text', '')[:150] for e in (gui.console() or {}).get('entries', []) if e.get('level') == 'warning']
         c.check("S2 截图预览 overlay 出现", bool(ovSeen), f"seen={ovSeen} warns={warns[-2:]}")
 
-        # S3 拖拽选择区域 → 裁剪上传 → 附件缩略图 + 落盘（有界轮询替代固定 sleep）
+        # S3 拖拽选择区域 → 裁剪上传 → 附件缩略图 + 落盘（有界轮询）
+        # 前置栅栏：等 overlay 内截图 img 解码完成且已完成布局（否则 0×0 命中 → 裁剪失败 → 无附件）
+        wait_probe(gui, ["(()=>{const i=document.querySelector('.screenshot-img');"
+                         "return !!i && i.complete && i.naturalWidth>0 && i.getBoundingClientRect().width>0})()"],
+                   timeout=15.0)
         drag_select(gui)
-        wait_upto(gui, "document.querySelectorAll('.attach-chip.attach-image').length",
-                  lambda v: isinstance(v, (int, float)) and v >= 1, max_wait=10.0)
+        wait_probe(gui, ["document.querySelectorAll('.attach-chip.attach-image').length >= 1"], timeout=20.0)
         chips = J(gui, "document.querySelectorAll('.attach-chip.attach-image').length")
         chipName = J(gui, "document.querySelector('.attach-chip.attach-image .attach-name')?.textContent?.trim() || ''")
         overlayGone = J(gui, "!document.querySelector('.screenshot-overlay')")
@@ -142,20 +135,18 @@ def main():
         # S4 附件可删除
         # L4 加固（2026-09-23，[42 §2 (148)]）：上传回执前 chip 无删除入口（InputBox.vue:9-10
         # `v-if="a.pending"` 显状态、`v-else` 才是 `.attach-remove`）→ 先等删除按钮出现再点。
-        wait_upto(gui, "document.querySelectorAll('.attach-chip.attach-image .attach-remove').length",
-                  lambda v: isinstance(v, (int, float)) and v >= 1, max_wait=10.0)
+        wait_probe(gui, ["document.querySelectorAll('.attach-chip.attach-image .attach-remove').length >= 1"],
+                   timeout=15.0)
         J(gui, "document.querySelector('.attach-chip.attach-image .attach-remove')?.click(); 'ok'")
-        gone = wait_upto(gui, "document.querySelectorAll('.attach-chip').length",
-                         lambda v: isinstance(v, (int, float)) and int(v) == 0, max_wait=10.0)
+        wait_probe(gui, ["document.querySelectorAll('.attach-chip').length === 0"], timeout=15.0)
+        gone = J(gui, "document.querySelectorAll('.attach-chip').length")
         c.check("S4 截图附件可删除", int(gone) == 0, f"chips={gone}")
 
-        # S5 双击 overlay 取消（不进附件）——有界轮询等 overlay 出现（替代固定 sleep 2.5s）
+        # S5 双击 overlay 取消（不进附件）——有界轮询等 overlay 出现
         click_screenshot(gui)
-        wait_upto(gui, "!!document.querySelector('.screenshot-overlay')",
-                  lambda v: v is True, max_wait=8.0)
+        wait_probe(gui, ["!!document.querySelector('.screenshot-overlay')"], timeout=20.0)
         J(gui, "document.querySelector('.screenshot-overlay')?.dispatchEvent(new MouseEvent('dblclick',{bubbles:true})); 'ok'")
-        wait_upto(gui, "!document.querySelector('.screenshot-overlay')",
-                  lambda v: v is True, max_wait=5.0)
+        wait_probe(gui, ["!document.querySelector('.screenshot-overlay')"], timeout=15.0)
         ovGone = J(gui, "!document.querySelector('.screenshot-overlay')")
         chips = J(gui, "document.querySelectorAll('.attach-chip').length")
         c.check("S5 双击取消（无附件）", bool(ovGone) and int(chips) == 0, f"gone={ovGone} chips={chips}")

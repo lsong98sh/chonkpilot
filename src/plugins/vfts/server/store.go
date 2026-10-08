@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"sync"
@@ -16,12 +17,24 @@ const (
 	fieldLoc     = "loc"     // 文档定位（可选：页码 / sheet 名 / slide 序号；非文档类留空）
 )
 
+// ftsFilters FTS 词过滤器：lowercase（英文大小写归一；jieba 分词器本身不对 ASCII 做归一）。
+var ftsFilters = []string{"lowercase"}
+
 var zvecOnce sync.Once
 var zvecInitErr error
 
-// ensureZvec 进程内只初始化 zvec 一次。
+// ensureZvec 进程内只初始化 zvec 一次：先物化系统级 jieba 词典并设为进程默认，
+// 再 zvec.Initialize（保证任何集合创建/查询前词典目录已就位）。
 func ensureZvec() error {
-	zvecOnce.Do(func() { zvecInitErr = zvec.Initialize(nil) })
+	zvecOnce.Do(func() {
+		dir, err := ensureSystemDict()
+		if err != nil {
+			zvecInitErr = err
+			return
+		}
+		zvec.SetDefaultJiebaDictDir(dir)
+		zvecInitErr = zvec.Initialize(nil)
+	})
 	return zvecInitErr
 }
 
@@ -44,7 +57,8 @@ func buildSchema() (*zvec.CollectionSchema, func()) {
 	_ = schema.AddField(lineField)
 
 	contentField := zvec.NewFieldSchema(fieldContent, zvec.DataTypeString, false, 0)
-	contentParams, err := zvec.NewFTSIndexParams(tokenizer, nil, "")
+	// jieba 参数经 extra_params 显式下发（与进程默认同源；系统级词典 + 自定义词）。
+	contentParams, err := zvec.NewFTSIndexParams(tokenizer, ftsFilters, jiebaExtraParams())
 	if err == nil {
 		_ = contentField.SetIndexParams(contentParams)
 	}
@@ -65,6 +79,20 @@ func buildSchema() (*zvec.CollectionSchema, func()) {
 		schema.Destroy()
 	}
 	return schema, cleanup
+}
+
+// jiebaExtraParams 组装 jieba 分词器 extra_params（cut_mode=search 为默认，显式写出以锁口径）：
+// 系统级词典目录 + 系统级自定义词文件。JSON 组装失败（理论不可达）→ 空串（回落进程默认词典）。
+func jiebaExtraParams() string {
+	b, err := json.Marshal(map[string]string{
+		"jieba_dict_dir": SystemDictDir(),
+		"user_dict_path": UserDictPath(),
+		"cut_mode":       "search",
+	})
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // createCollection 新建集合并打开（覆盖前须由调用方清空目录）。

@@ -387,7 +387,7 @@ USER_CONFIG_DEFAULTS = {
     "locale": "zh-CN",
     "chromePath": "", "javaPath": "", "pythonPath": "", "nodePath": "",
     "goPath": "", "rustPath": "", "cCompilerPath": "",
-    "responseTimeout": 120, "streamTimeout": 60, "retryCount": 2, "retryDelay": 5,
+    "responseTimeout": 120, "streamTimeout": 60, "retryCount": 2,
     "defaultScenario": "",
     "llms": [],
 }
@@ -714,6 +714,20 @@ class GUIHandle(ProcResource):
         wait_idle(self.client, max_wait=30.0)
 
 
+def ensure_project_spec(work_dir):
+    """夹具：确保 `<workDir>/.chonkpilot/project_spec.md` 存在。
+
+    用途：GUI 启动时桥检测该文件缺失 → 下发 `agent-wizard` + `wizard_required` → 前端**自动弹出**
+    场景向导对话框（`docs/agents-wizard/01 §1`）。非向导套件应模拟「已初始化项目」→ 预置该文件，
+    避免向导弹窗遮挡 UI（`elementFromPoint` 命中 / 未限定 `.dialog-shell` 的对话框选择均会误命中）。
+    向导**自动弹出**行为本身另由专用套件覆盖。
+    """
+    spec = os.path.join(work_dir, ".chonkpilot", "project_spec.md")
+    os.makedirs(os.path.dirname(spec), exist_ok=True)
+    if not os.path.exists(spec):
+        open(spec, "w", encoding="utf-8").close()
+
+
 def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
               ready_timeout=90, extra_args=(), no_window=True):
     """自起 GUI（未给 port 则取空闲端口）；登记为结束时回收。
@@ -726,6 +740,9 @@ def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
         print("[harness] 警告：端口 %d 仍被占用（15s）→ 仍尝试自起（可能因端口冲突失败）" % port, flush=True)
     work_dir = work_dir or DEFAULT_WS
     os.makedirs(work_dir, exist_ok=True)
+    # 夹具：预置工程规格文件 → 抑制「场景向导」启动自动弹出（该特性仅在缺 project_spec.md 时触发；
+    # 非向导套件应模拟「已初始化项目」）。向导自动弹出另由专用套件覆盖。
+    ensure_project_spec(work_dir)
     cmd = [exe or resolve_gui_exe(), "--test-port=%d" % port, "--work-dir=%s" % work_dir]
     if data_dir:
         os.makedirs(data_dir, exist_ok=True)

@@ -16,8 +16,9 @@
 //   - 非 2xx 错误体信息串按 JSON 取值（旧 llm 取体前 512 字节原文）。
 //
 // 保留点（40 §LR §5.1「必须保留」）：重试循环 / `probeBeforeRetry` / `sleepCtx` 仍在 `turn.go`；
-// 120s/60s 超时、`finish_reason=length` 与 `EMPTY_REPLY` 语义、`retryCount`/`retryDelay` 四级配置
-// 语义均不变。
+// 120s/60s 超时、`finish_reason=length` 与 `EMPTY_REPLY` 语义、`retryCount` 配置语义均不变；
+// **退避值不自持**（2026-10-05 定案）：等待时长经 `router.RetryWait`（`Retry-After` 优先 + 指数退避）
+// 计算，取 `*LLMError.RetryAfter`（本文件 `mapRouterError` 透传）。
 package server
 
 import (
@@ -253,7 +254,8 @@ func routerCallOptions(opts ChatOptions) router.CallOptions {
 	return co
 }
 
-// mapRouterError 把 router 分类错误折算为 llm 侧 `*LLMError`（`Retryable` 原样透传）。
+// mapRouterError 把 router 分类错误折算为 llm 侧 `*LLMError`（`Retryable` / `RetryAfter` 原样透传——
+// 后者供 `router.RetryWait` 计算可视重试退避，见 turn.go retryWait）。
 // `invalid` 在 llm 侧无对应分类（该分类专指 router 前置校验的调用方用法错误）→ 归 `protocol`。
 func mapRouterError(err error) error {
 	if err == nil {
@@ -261,7 +263,7 @@ func mapRouterError(err error) error {
 	}
 	var re *router.Error
 	if errors.As(err, &re) {
-		return &LLMError{Kind: routerKindToLLM(re.Kind), Message: re.Message, Retryable: re.Retryable}
+		return &LLMError{Kind: routerKindToLLM(re.Kind), Message: re.Message, Retryable: re.Retryable, RetryAfter: re.RetryAfter}
 	}
 	return llmErr(ErrProtocol, err.Error())
 }

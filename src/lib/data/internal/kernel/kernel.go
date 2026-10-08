@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
@@ -90,6 +91,9 @@ func (v *View) Register(instanceID, workDir, dataDir string) {
 	v.mu.Lock()
 	v.insts[instanceID] = Info{WorkDir: workDir, DataDir: dataDir, LastBeat: time.Now()}
 	v.mu.Unlock()
+	// 同源登记 data 组件绑定表（两视图恒一致）：使 data.Register 成为**在册实例的完整登记**，
+	// 供 data.InstancesByWorkDir 按 work_dir 枚举同项目全部实例（G-41-b）。空键已被上方守卫拦下。
+	_ = data.Register(instanceID, workDir, dataDir)
 }
 
 // Touch 心跳保活：刷新 LastBeat（仅已登记实例；未登记不新建——与既有心跳口径一致）。
@@ -146,7 +150,21 @@ func (v *View) warn(format string, args ...any) {
 //
 // MW-11：唯一实例回退**保持可用**（单实例场景行为逐条不变），但两条路径都输出告警 ——
 // 让「未显式携带 instance_id」的遗漏显式暴露（多实例上线前逐步清零）。
+//
+// 严格路径（需暴露遗漏）用本方法；**容错探测**路径（解析失败由调用方兜底，属预期内）用
+// ResolveQuiet —— 否则会在实例未登记 / 多实例的正常探测路径刷"拒绝回退"告警。
 func (v *View) Resolve(instanceID string) (string, Info, error) {
+	return v.resolve(instanceID, true)
+}
+
+// ResolveQuiet 语义与 Resolve **逐条一致**，但不输出告警：供容错探测调用方（如
+// InstBindingFor）使用，避免正常探测路径刷告警噪音（见 Resolve 注）。
+func (v *View) ResolveQuiet(instanceID string) (string, Info, error) {
+	return v.resolve(instanceID, false)
+}
+
+// resolve 是 Resolve / ResolveQuiet 的共用实现（warn = 是否输出告警）。
+func (v *View) resolve(instanceID string, warn bool) (string, Info, error) {
 	if instanceID != "" {
 		info, ok := v.Lookup(instanceID)
 		if !ok {
@@ -158,11 +176,15 @@ func (v *View) Resolve(instanceID string) (string, Info, error) {
 	defer v.mu.Unlock()
 	if len(v.insts) == 1 {
 		for id, info := range v.insts {
-			v.warn("persist: 未带 instance_id，回退唯一实例 %s（调用方应显式携带 instance_id）", id)
+			if warn {
+				v.warn("persist: 未带 instance_id，回退唯一实例 %s（调用方应显式携带 instance_id）", id)
+			}
 			return id, info, nil
 		}
 	}
-	v.warn("persist: 未带 instance_id 且实例视图非唯一（已登记 %d 个），拒绝回退", len(v.insts))
+	if warn {
+		v.warn("persist: 未带 instance_id 且实例视图非唯一（已登记 %d 个），拒绝回退", len(v.insts))
+	}
 	return "", Info{}, ErrInstanceIDRequired
 }
 

@@ -223,6 +223,7 @@ import { message as uiMessage, Button } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+import { MsgTopics, FieldKeys } from '../../events/msgkeys'
 import { useToolAsyncMode } from '../../composables/useToolAsyncMode'
 import { useTaskView } from '../../composables/useTaskView'
 import { getFileUrl } from '../../api/file'
@@ -534,7 +535,7 @@ async function backgroundTool() {
   if (!toolCallId || backgrounding.value) return
   backgrounding.value = true
   try {
-    const res = await mq.emit('task-background', { tool_call_id: toolCallId })
+    const res = await mq.emit(MsgTopics.taskBackground, { [FieldKeys.tool_call_id]: toolCallId })
     const backend = res && res.backend
     const taskId = backend && backend.result && backend.result.task_id
     if (!backend || !backend.ok || !taskId) {

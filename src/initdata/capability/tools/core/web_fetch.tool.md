@@ -7,6 +7,7 @@ category=core
 async=auto
 async-threshold=30
 timeout=120
+idempotent=false
 args=web_fetch --input={RAW-INPUT-FILE}
 output=stdout
 

@@ -25,7 +25,10 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-gui/internal/folder"
+	"github.com/chonkpilot/chonkpilot-lib/lockfile"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/chonkpilot/chonkpilot-lib/paths"
 )
 
 // callOpenInConsole 在系统控制台（cmd 新窗口）打开到指定路径所在目录。
@@ -85,11 +88,17 @@ func callLoadInitData(b *Bridge, ctx context.Context, params []json.RawMessage) 
 		}
 	}
 
-	// 打开文件恢复（文件已删除不恢复）
+	// 打开文件恢复（文件已删除不恢复）。落库为 workdir 相对逻辑路径（G-24）→ 展开为绝对
+	// （兼容旧数据里的绝对路径；`paths.FromLogical` 对绝对路径原样返回）。
 	openedFiles := []string{}
 	if s := sval(cfg["opened-files"]); s != "" {
 		_ = json.Unmarshal([]byte(s), &openedFiles)
 	}
+	expandedOpened := make([]string, 0, len(openedFiles))
+	for _, p := range openedFiles {
+		expandedOpened = append(expandedOpened, paths.FromLogical(b.workDir, p))
+	}
+	openedFiles = expandedOpened
 	kept := openedFiles[:0]
 	for _, p := range openedFiles {
 		if strings.HasPrefix(p, "db://") {
@@ -129,20 +138,20 @@ func callLoadInitData(b *Bridge, ctx context.Context, params []json.RawMessage) 
 	}
 
 	out := map[string]any{
-		"treeData":      readDirNodesExpanded(b.workDir, expandedSet),
-		"expandedKeys":  absExpanded,
-		"selectedKey":   selected,
-		"workDir":       b.workDir,
-		"filetreeWidth": 260,
-		"layout":        layout,
-		"ui":            ui,
-		"openedFile":    openedFile,
-		"openedFiles":   openedFiles,
+		msgkeys.GuiInitDataResultTreeData:      readDirNodesExpanded(b.workDir, expandedSet),
+		msgkeys.GuiInitDataResultExpandedKeys:  absExpanded,
+		msgkeys.GuiInitDataResultSelectedKey:   selected,
+		msgkeys.GuiInitDataResultWorkDir:       b.workDir,
+		msgkeys.GuiInitDataResultFiletreeWidth: 260,
+		msgkeys.GuiInitDataResultLayout:        layout,
+		msgkeys.GuiInitDataResultUi:            ui,
+		msgkeys.GuiInitDataResultOpenedFile:    openedFile,
+		msgkeys.GuiInitDataResultOpenedFiles:   openedFiles,
 	}
 	// 可选增补（只增不改，2026-09-19）：GUI 文件日志目录（供前端/用户定位排查日志）。
 	// 未挂文件 sink（logDir 空）→ 不带该字段，等价旧行为。
 	if b.logDir != "" {
-		out["logDir"] = b.logDir
+		out[msgkeys.GuiInitDataResultLogDir] = b.logDir
 	}
 	return json.Marshal(out)
 }
@@ -222,7 +231,7 @@ func callSaveUIState(b *Bridge, ctx context.Context, params []json.RawMessage) (
 		return nil, nil
 	}
 	raw, _ := json.Marshal(map[string]any{"data": data})
-	_, _ = b.dataCall("data-user-config-save", raw)
+	_, _ = b.dataCall(msgkeys.TopicDataUserConfigSave, raw)
 	return nil, nil
 }
 
@@ -248,15 +257,21 @@ func callSaveFileTreeState(b *Bridge, ctx context.Context, params []json.RawMess
 	return nil, nil
 }
 
+// callSaveOpenedFiles 保存已打开文件列表。落库为 **workdir 相对逻辑路径**（G-24，斜杠归一）：
+// 换挂载布局 / 迁移后仍可还原；workdir 之外的路径保持原样。
 func callSaveOpenedFiles(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
-	var paths []string
+	var files []string
 	if len(params) > 0 {
-		_ = json.Unmarshal(params[0], &paths)
+		_ = json.Unmarshal(params[0], &files)
 	}
-	if paths == nil {
-		paths = []string{}
+	if files == nil {
+		files = []string{}
 	}
-	raw, _ := json.Marshal(paths)
+	logical := make([]string, 0, len(files))
+	for _, p := range files {
+		logical = append(logical, paths.ToLogical(b.workDir, p))
+	}
+	raw, _ := json.Marshal(logical)
 	_ = b.prjConfigSave("opened-files", string(raw))
 	return nil, nil
 }
@@ -291,7 +306,7 @@ func (b *Bridge) recordRecentDir(dir string) {
 	}
 	raw, _ := json.Marshal(kept)
 	body, _ := json.Marshal(map[string]any{"data": map[string]any{recentDirsKey: string(raw)}})
-	_, _ = b.dataCall("data-user-config-save", body)
+	_, _ = b.dataCall(msgkeys.TopicDataUserConfigSave, body)
 }
 
 // recentDirsList 读 usr config 自由键 recent_dirs（JSON 数组字符串）→ 最近目录快照；
@@ -316,6 +331,49 @@ func callGetRecentDirs(b *Bridge, ctx context.Context, params []json.RawMessage)
 	return json.Marshal(map[string]any{"dirs": b.recentDirsList()})
 }
 
+// removeRecentDir 从最近目录记录中移除一条：读-改-写 usr config 自由键 recent_dirs。
+// **仅删记录** —— 不删除 / 不移动对应项目目录及其 `.chonkpilot` 数据资产，也不影响当前已
+// 打开窗口；记录不存在 → 幂等（不写库）。写库失败返回 error（调用方明确上报）。
+func (b *Bridge) removeRecentDir(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("path required")
+	}
+	dirs := b.recentDirsList()
+	kept := make([]string, 0, len(dirs))
+	removed := false
+	for _, d := range dirs {
+		if d == dir {
+			removed = true
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if !removed {
+		return nil // 无该记录 → 幂等成功
+	}
+	raw, _ := json.Marshal(kept)
+	body, _ := json.Marshal(map[string]any{"data": map[string]any{recentDirsKey: string(raw)}})
+	if _, errs := b.dataCall(msgkeys.TopicDataUserConfigSave, body); len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
+}
+
+// callRemoveRecentDir 复用原 /call 单参风格（参数 = 目录路径字符串）→ {ok:true}。
+func callRemoveRecentDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
+	dir := ""
+	if len(params) > 0 {
+		_ = json.Unmarshal(params[0], &dir)
+	}
+	if dir == "" {
+		return nil, fmt.Errorf("path required")
+	}
+	if err := b.removeRecentDir(dir); err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"ok": true})
+}
+
 // openNewWindow 以新进程打开目录（fire-and-forget）。
 func openNewWindow(dir string) error {
 	exePath, err := os.Executable()
@@ -338,6 +396,11 @@ func callOpenDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]by
 	if dir == "" {
 		return nil, fmt.Errorf("path required")
 	}
+	// 同 work-dir 单实例占用校验（I-74）：目标目录已被其它实例打开 → 明确报错（不 spawn、
+	// 不记最近目录），前端据 "workdir busy" 提示「该目录已被打开，请选择其它目录」。
+	if !lockfile.WorkDirFree(dir) {
+		return nil, fmt.Errorf("workdir busy: %s", dir)
+	}
 	if err := openNewWindow(dir); err != nil {
 		return nil, err
 	}
@@ -345,19 +408,20 @@ func callOpenDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]by
 	return json.Marshal(map[string]string{"code": "OK", "message": "New window opened", "path": dir})
 }
 
+// callOpenDirDialog 纯目录选择：弹系统目录选择框并把所选路径原样返回（**无副作用** ——
+// 不 spawn 新窗口、不记最近目录）。「以新窗口打开该目录」是另一条动作 `gui.dir.open`
+// （`callOpenDir`）——两处语义不同：本入口供「选取一个路径」用（信任目录 / 登录选工作目录 /
+// 工具栏选项目），调用方自行决定是否再打开。
+// 返回对齐 61-消息一览 §1 的 `{path?}`：选择 → `{path:<绝对路径>}`；取消 → `{path:null}`。
 func callOpenDirDialog(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	selected, err := folder.PickFolder("Select Project Directory")
 	if err != nil {
 		return nil, fmt.Errorf("pick folder: %w", err)
 	}
 	if selected == "" {
-		return json.Marshal(map[string]string{"code": "CANCELLED", "message": "User cancelled"})
+		return json.Marshal(map[string]any{"path": nil})
 	}
-	if err := openNewWindow(selected); err != nil {
-		return nil, err
-	}
-	b.recordRecentDir(selected)
-	return json.Marshal(map[string]string{"code": "OK", "message": "New window opened", "path": selected})
+	return json.Marshal(map[string]string{"path": selected})
 }
 
 // callPickExecutable 打开系统文件选择框挑选可执行文件（纯 picker，无 openNewWindow/记目录等副作用）。
@@ -588,7 +652,7 @@ func searchToolCall(b *Bridge, tool string, args map[string]any, timeout time.Du
 		return "", false
 	}
 	// 防环：本实例发出的 mcp-tools-call 不回投前端（与 publishV 同语义）。
-	b.markPublished("mcp-tools-call")
+	b.markPublished(msgkeys.TopicMcpToolsCall)
 	payload := map[string]any{
 		"instance_id": b.instanceID,
 		"work_dir":    b.workDir,
@@ -597,7 +661,7 @@ func searchToolCall(b *Bridge, tool string, args map[string]any, timeout time.Du
 	}
 	done := make(chan *mq.Value, 1)
 	go func() {
-		done <- b.bus.Emit(context.Background(), "mcp-tools-call", payload).Wait()
+		done <- b.bus.Emit(context.Background(), msgkeys.TopicMcpToolsCall, payload).Wait()
 	}()
 	select {
 	case v := <-done:

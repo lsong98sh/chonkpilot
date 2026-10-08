@@ -73,6 +73,24 @@ var toolSpecs = []toolSpec{
 		Required: []string{"workdir"},
 		Fn:       toolStatus,
 	},
+	{
+		Name: "vfts_dict_get",
+		Description: "查看**系统级** jieba 词典（全工作区共用一份，无项目级/用户级覆盖）：返回 dict_dir（系统词典目录）、" +
+			"user_dict_path（自定义词文件）、user_dict（自定义词全文）、word_count（词条数）、base_dicts（内嵌基础词典文件名清单）。",
+		Props:    map[string]any{},
+		Required: []string{},
+		Fn:       toolDictGet,
+	},
+	{
+		Name: "vfts_dict_set",
+		Description: "编辑**系统级** jieba 自定义词（覆写 user_dict.txt，每行一词、`#` 注释行忽略）。" +
+			"词典变更后**必须重新索引**（vfts_index 全量重建）才生效。返回 {ok, word_count}。",
+		Props: map[string]any{
+			"user_dict": map[string]any{"type": "string", "description": "自定义词全文（每行一词；`#` 开头为注释）"},
+		},
+		Required: []string{"user_dict"},
+		Fn:       toolDictSet,
+	},
 	// ---- 查询类（hot=true）----
 	{
 		Name: "vfts_query",

@@ -170,6 +170,7 @@ import PrimitivePanel from '../knowledge/PrimitivePanel.vue'
 import { isPrimitiveFile } from '../../utils/primitive'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+import { GuiInitDataKeys } from '../../events/msgkeys'
 
 const baseViewerOptions = { preset: [litePreset, officePreset], theme: 'light' }
 // 代码预览：隐藏全局工具栏（缩放/搜索/下载/打印/导出/主题）与 renderer 内部
@@ -816,9 +817,11 @@ onMounted(() => {
   loadFileTree()
   // 启动恢复上次打开的文件（多 tab 列表；兼容旧版单个 openedFile）
   loadInitData().then(r => {
-    if (r && r.workDir) setWorkDir(String(r.workDir).replace(/\\/g, '/'))
-    const files = (r && r.openedFiles && r.openedFiles.length) ? r.openedFiles
-      : (r && r.openedFile ? [r.openedFile] : [])
+    const workDir = r && r[GuiInitDataKeys.workDir]
+    if (workDir) setWorkDir(String(workDir).replace(/\\/g, '/'))
+    const opened = r && r[GuiInitDataKeys.openedFiles]
+    const single = r && r[GuiInitDataKeys.openedFile]
+    const files = (opened && opened.length) ? opened : (single ? [single] : [])
     files.forEach(p => mq.emit(EventNames.fileOpen, { path: p }))
   }).catch(() => {})
 })

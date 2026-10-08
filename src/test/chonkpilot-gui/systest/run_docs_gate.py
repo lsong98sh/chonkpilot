@@ -13,6 +13,10 @@
 真转换器由本脚本**自行拉起/停止**（插件**只探测、不 spawn**）——产物取 `dist/desktop/mcps/markitdown/`。
 转换器状态文件写在其 exe 同目录 → 正是插件探测的 `<exeDir>/mcps/markitdown/state.json`。
 
+确定性启动（消除偶发 FAIL）：转换器**先写状态文件、后起监听**（`server.py:794-817`）→ 本脚本
+`start_converter` 在读到 port 后再**轮询 `/vfts/health` 至可用**（`_wait_port_ready`）才启动 GUI，
+避免插件探测落入「文件已写、端口未听」的窗口而把服务误判为 absent。
+
 运行：python run_docs_gate.py
 前置：`dist/desktop/mcps/markitdown/markitdown-mcp.exe` **且** vfts 引擎为**含 docs 支持的新构建**
       （否则 preflight 明确报「未构建」并 SKIP，不算失败）。
@@ -89,21 +93,30 @@ CREATE_NO_WINDOW = 0x08000000  # 子进程不弹控制台窗口
 
 
 def start_converter():
-    """拉起真转换器并等状态文件就绪（onedir 冷启动数秒 → 等 40s 留足余量）。"""
+    """拉起真转换器并等**端口真正可用**（状态文件就绪 + `/vfts/health` 通过）。
+
+    onedir 冷启动数秒 → 状态文件窗口 40s、端口就绪窗口另 30s，均留足余量。
+    """
     global _conv
     _conv = subprocess.Popen([CONV_EXE], cwd=CONV_DIR, creationflags=CREATE_NO_WINDOW,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + 40
+    st = None
     while time.time() < deadline:
         try:
             with open(CONV_STATE, encoding="utf-8") as f:
                 st = json.load(f)
             if int(st.get("port") or 0) > 0:
-                return st
+                break
         except Exception:
-            pass
+            st = None
         time.sleep(0.5)
-    raise TestError("转换器未在 40s 内写出状态文件：%s" % CONV_STATE)
+    if not st:
+        raise TestError("转换器未在 40s 内写出状态文件：%s" % CONV_STATE)
+    # 关键：状态文件先于监听写出（见 _wait_port_ready 注释）→ 必须等端口真正可用，
+    # 否则紧随其后的插件探测会落空（→ docsService=absent，D1 偶发 FAIL）。
+    _wait_port_ready(int(st.get("port") or 0), int(st.get("pid") or 0))
+    return st
 
 
 def _read_state():
@@ -156,13 +169,41 @@ def _pids_on_port(port):
     return out
 
 
-def _health_ok(port, timeout=1.0):
-    """GET /vfts/health 是否可达且 ok=true。"""
+def _health(port, timeout=1.0):
+    """GET /vfts/health → 应答 dict（不可达/非 JSON → None）。"""
     try:
         with urllib.request.urlopen("http://127.0.0.1:%d/vfts/health" % port, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8")).get("ok") is True
+            return json.loads(r.read().decode("utf-8"))
     except Exception:
-        return False
+        return None
+
+
+def _health_ok(port, timeout=1.0):
+    """GET /vfts/health 是否可达且 ok=true。"""
+    h = _health(port, timeout)
+    return bool(h) and h.get("ok") is True
+
+
+def _wait_port_ready(port, pid=0, max_wait=30):
+    """确定性等待：轮询 `/vfts/health` 直到 ok=true 且 pid 与状态文件一致（服务真正可接入）。
+
+    必要性（消除 D1 偶发 FAIL）：转换器**先写状态文件、后起 uvicorn**
+    （`src/mcps/markitdown/server.py:794-817`），故「状态文件已含 port」≠「HTTP 端口可用」。
+    若此刻即启动 GUI，插件探测（`docsprobe.go:probeConverterPaths` 校验 health.pid==state.pid）
+    恰好落在 uvicorn 起来之前的窗口 → 视作「未运行」→ 该轮索引跳过文档类（docsService=absent），
+    且探测结果按 TTL 缓存 → D1 等待 `running & ready` 不收敛而偶发 FAIL。此处以「端口真正可用」
+    为返回前提，把等待前移到**启动 GUI 之前**，不改任何断言。
+    """
+    deadline = time.time() + max_wait
+    last = None
+    while time.time() < deadline:
+        h = _health(port)
+        if h is not None and h.get("ok") is True and (pid <= 0 or int(h.get("pid") or 0) == pid):
+            return h
+        last = h
+        time.sleep(0.3)
+    raise TestError("转换器端口 %d 在 %ss 内未就绪（/vfts/health 未通过）；末次=%r"
+                    % (port, max_wait, last))
 
 
 def stop_converter():

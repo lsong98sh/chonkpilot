@@ -23,6 +23,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // 编译期断言：实现完整 session / turn / message 三域门面面（缺方法即编译不过）。
@@ -56,7 +57,7 @@ func (s *Service) emitSessionNew(sessionID, parentSessionID, instanceID string) 
 		payload["parent_session_id"] = parentSessionID
 	}
 	b, _ := json.Marshal(payload)
-	_ = s.Bus.Emit(context.Background(), "session-new", b)
+	_ = s.Bus.Emit(context.Background(), msgkeys.TopicSessionNew, b)
 }
 
 // emitSessionTitleChanged 广播会话标题变更事件 data-session-title-changed（61 §3.2）：由
@@ -70,7 +71,7 @@ func (s *Service) emitSessionTitleChanged(sessionID, title string) {
 		return // 无总线（测试/无订阅场景）或空会话 id：无接收方/无内容，静默跳过
 	}
 	b, _ := json.Marshal(map[string]any{"session_id": sessionID, "title": title})
-	_ = s.Bus.Emit(context.Background(), "data-session-title-changed", b)
+	_ = s.Bus.Emit(context.Background(), msgkeys.TopicDataSessionTitleChanged, b)
 }
 
 // ── session 域 ────────────────────────────────────────────────────
@@ -417,8 +418,11 @@ func (s *Service) TurnComplete(req facade.TurnCompleteRequest) (facade.TurnCompl
 	return facade.TurnCompleteResponse{OK: true}, nil
 }
 
-// TurnCleanupStale 启动/首次使用清理：遗留 running 的轮次标 interrupted（上限 500 条），
-// 返回处理条数。
+// TurnCleanupStale 启动/首次使用清理（`data-session-cleanup-stale` 触发点 = 启动/首次 llm-start）：
+//   - 遗留 running 的轮次标 interrupted（上限 500 条，返回处理条数）；
+//   - 一并执行 pair 级清理 cleanupStaleToolPairs（残留非终态 tool_pair → interrupted）。
+//
+// 两者共用同一启动触发点与同一消息（不新增消息主题/payload，返回仍为 {ok, count}，count = 轮次数）。
 func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.TurnCleanupStaleResponse, error) {
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
@@ -446,7 +450,45 @@ func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.T
 			n++
 		}
 	}
+	cleanupStaleToolPairs(prj)
 	return facade.TurnCleanupStaleResponse{OK: true, Count: n}, nil
+}
+
+// cleanupStaleToolPairs pair 级启动清理（35 §附录 S2/S3）：把消息表中遗留的**非终态** tool_pair
+// （role=tool 且 `tool_call_status` ∈ {pending, running, provisional}）标 `interrupted` —— 进程异常/
+// 应用关闭（abort）后该工具结果无法回填，统一收敛为可手动重试的「已中断」（同步工具 S2 可重试、
+// 转后台 S3 不可重试由前端按 Notify 判定）。
+//
+//   - 与轮次清理同触发点（TurnCleanupStale 内调用，`data-session-cleanup-stale`），**不新增消息主题/payload**；
+//   - 只改 DB 状态，**不改历史文本**（result.Content 原样）——LLM 历史拼接口径不变；
+//   - 状态同源：同时更新 `tool_call_status` 列与 content.result.status（存在 result 段时）；
+//   - 上限 500 条/状态；单项失败跳过（启动清理尽力而为，不阻断启动）。
+//   - 状态常量取自 kernel（与 tool_pair 生命周期常量定义处单一来源一致）。
+func cleanupStaleToolPairs(prj *data.DB) {
+	for _, st := range []string{kernel.ToolStatusPending, kernel.ToolStatusRunning, kernel.ToolStatusProvisional} {
+		recs, _, err := prj.Table("messages").Query(data.Query{
+			Where: data.Record{"tool_call_status": st}, Limit: 500,
+		})
+		if err != nil {
+			continue
+		}
+		for _, rec := range recs {
+			key := kernel.Sval(rec[data.KeyField])
+			if key == "" {
+				continue
+			}
+			delete(rec, data.KeyField)
+			rec["tool_call_status"] = kernel.ToolStatusInterrupted
+			// content.result.status 与状态列同源：存在 result 段才需改（无 result 段时视图回退读状态列）。
+			if tc, ok := kernel.ParseToolContent(kernel.Sval(rec["content"])); ok && tc.Result != nil {
+				tc.Result.Status = kernel.ToolStatusInterrupted
+				if b, err := json.Marshal(tc); err == nil {
+					rec["content"] = string(b)
+				}
+			}
+			_ = prj.Table("messages").Upsert(key, rec)
+		}
+	}
 }
 
 // ── message 域 ───────────────────────────────────────────────────
@@ -473,15 +515,31 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 		}
 	}
 
-	// role=tool：正文规整为工具载荷结构（兼容旧 ToolPairPayload / 纯文本）。
+	// role=tool 的 content 由调用方按 {call,result,async} 结构给出，原样落库。
 	content := m.Content
-	if m.Role == "tool" {
-		content = kernel.NormalizeToolContent(m.Content, m.ToolCallID, req.ToolCallStatus)
+
+	// 主键（I-176）：显式 key 优先（running → 终态就地回填）；未给 key 且为带 tool_call_id 的
+	// role=tool 行 → 复用同轮同 call 的既有行（重启后重试路径无内存主键，避免重复 tool_pair）；
+	// 否则生成新键。就地更新时保留原 created_at（消息在轮内的时间序位置不变）。
+	key := req.Key
+	if key == "" && m.Role == "tool" && m.ToolCallID != "" {
+		key = kernel.FindToolMessageKey(prj, req.TurnID, m.ToolCallID)
+	}
+	createdAt := time.Now().UTC().Format(kernel.RFC3339FixedNano)
+	if key == "" {
+		key = kernel.NewMessageKey()
+	} else {
+		var old data.Record
+		if ok, _ := prj.Table("messages").Get(key, &old); ok {
+			if v := kernel.Sval(old["created_at"]); v != "" {
+				createdAt = v
+			}
+		}
 	}
 
 	rec := data.Record{
 		"session_id": sessionID, "turn_id": req.TurnID, "role": m.Role, "content": content,
-		"created_at": time.Now().UTC().Format(kernel.RFC3339FixedNano),
+		"created_at": createdAt,
 	}
 	if m.ToolCallID != "" {
 		rec["tool_call_id"] = m.ToolCallID
@@ -515,10 +573,10 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	if brief != "" {
 		rec["brief"] = brief
 	}
-	if err := prj.Table("messages").Upsert(kernel.NewMessageKey(), rec); err != nil {
+	if err := prj.Table("messages").Upsert(key, rec); err != nil {
 		return facade.MessageAppendResponse{}, err
 	}
-	return facade.MessageAppendResponse{OK: true}, nil
+	return facade.MessageAppendResponse{OK: true, ID: key}, nil
 }
 
 // MessageLoad 读该轮次全部消息（created_at 升序，limit 500；供 LLM 会话重建）。
@@ -694,7 +752,7 @@ func messagesToFacade(msgs []data.ChatMsg) []facade.Message {
 }
 
 // messageViewToFacade 把 messages 表记录转成门面消息视图 DTO（与既有 MessageView 同口径）：
-//   - tool 消息 / 旧 tool_pair 消息 → 工具卡片字段组（参数打平、结果摘要、状态）；
+//   - role=tool 消息 → 工具卡片字段组（参数打平、结果摘要、状态）；
 //   - 思维链类消息 → 正文截断 3 行 + HasMore；
 //   - 其余 → 消息字段直出。
 func messageViewToFacade(m data.Record, brief bool) facade.MessageView {
@@ -704,7 +762,7 @@ func messageViewToFacade(m data.Record, brief bool) facade.MessageView {
 	if msgID == "" {
 		msgID = kernel.Sval(m[data.KeyField])
 	}
-	if role == "tool" || (role == "assistant" && typ == "tool_pair") {
+	if role == "tool" {
 		toolCallID, taskID, name, argsJSON, result, status := kernel.ToolViewFields(m)
 		if status == "" {
 			status = kernel.ToolStatusCompleted

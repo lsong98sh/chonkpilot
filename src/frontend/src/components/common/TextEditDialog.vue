@@ -6,13 +6,19 @@
     <!-- 来源/口径提示（可选）：如「当前为内置默认」/「当前为自定义」——由父组件按读取结果给 -->
     <div v-if="hint" class="text-edit-hint">{{ hint }}</div>
     <Textarea
+      ref="inputRef"
       v-model="text"
       class="text-edit-input"
       :placeholder="placeholder"
       :disabled="saving || optimizing"
     />
-    <!-- 底部按钮区（固定在编辑区之外，不随内容滚动）：左侧「优化 / 恢复优化 / 恢复默认」，右侧「取消 / 保存」 -->
+    <!-- 底部按钮区（固定在编辑区之外，不随内容滚动）：左侧「变量 / 优化 / 恢复优化 / 恢复默认」，右侧「取消 / 保存」 -->
     <div class="text-edit-footer">
+      <PromptVariablesButton
+        v-if="variables"
+        :disabled="saving || optimizing"
+        @insert="insert"
+      />
       <Button
         v-if="optimize"
         size="small"
@@ -45,6 +51,8 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button, Textarea, message } from '../ui'
 import { optimizeAgentPrompt } from '../../api/config'
+import PromptVariablesButton from './PromptVariablesButton.vue'
+import { useVariableInsert } from '../../composables/usePromptVariables'
 
 const props = defineProps({
   // 初始内容（打开时的值；编辑期间为组件内部状态）
@@ -58,6 +66,8 @@ const props = defineProps({
   reset: { type: Object, default: null },
   // 保存回调（**父组件负责落库与关闭弹框**）；抛错 = 保持弹框打开（父已给可见失败提示）
   onSave: { type: Function, required: true },
+  // 「变量插入」入口（OP-12）：true → 底部显示变量按钮（插入 {{...}} 到光标处）；缺省不显示。
+  variables: { type: Boolean, default: false },
 })
 
 defineEmits(['cancel'])
@@ -69,6 +79,13 @@ const saving = ref(false)
 const optimizing = ref(false)
 // 优化前内容快照（仅 optimize.recover = true 时使用；弹框内「恢复优化」回填，**不落库**）
 const optimizeSnapshot = ref('')
+// 变量插入（OP-12）：把 {{...}} 插入到编辑框光标处（Textarea 根节点即 textarea → ref.$el）。
+const inputRef = ref(null)
+const { insert } = useVariableInsert({
+  getEl: () => inputRef.value?.$el || null,
+  getValue: () => text.value,
+  setValue: (v) => { text.value = v },
+})
 
 async function handleSave() {
   if (saving.value || optimizing.value) return

@@ -31,10 +31,11 @@ func TestDataFileListPutListDel(t *testing.T) {
 	// 落库断言（prj 主库 file_list 表）
 	directGet := func(key string) (data.Record, bool) {
 		t.Helper()
-		db, err := data.Prj("ins-test")
+		db, release, err := data.Prj("ins-test") // 短开（D-45）：闭包内用完即释
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer release()
 		var rec data.Record
 		ok, err := db.Table("file_list").Get(key, &rec)
 		if err != nil {

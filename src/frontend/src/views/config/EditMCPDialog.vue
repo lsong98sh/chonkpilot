@@ -171,6 +171,7 @@ import Icon from '../../components/icon/Icon.vue'
 import { stripToolPrefix } from '../../utils/toolSource'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+import { MsgClientTopics } from '../../events/msgkeys.js'
 
 const { t } = useI18n()
 
@@ -300,7 +301,8 @@ const selectedSet = computed(() => new Set(hotTools.value.filter((n) => n && n !
 async function loadTools() {
   toolsLoading.value = true
   try {
-    const env = await mq.emit('tools-list', {})
+    // tools-list：客户端能力面 type（schema clientTopic，桥映射 mcp-tools-list），常量见 MsgClientTopics。
+    const env = await mq.emit(MsgClientTopics.toolsList, {})
     const res = env && env.backend && env.backend.result
     const list = res && Array.isArray(res.tools) ? res.tools : []
     const name = (localData.name || '').trim()

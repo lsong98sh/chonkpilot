@@ -44,6 +44,7 @@ import { dialog } from '../../components/dialog'
 import { useI18n } from 'vue-i18n'
 import { SplitPanel } from '../../components/split'
 import { loadInitDataPrefetched, saveLayoutState } from '../../api/file'
+import { GuiInitDataKeys } from '../../events/msgkeys'
 import { computeContentHeight, readRootPx, FALLBACK_TOOLBAR_HEIGHT, FALLBACK_STATUSBAR_HEIGHT } from '../../utils/cssToken'
 import Toolbar from '../toolbar/Toolbar.vue'
 import ExplorerPane from '../filetree/ExplorerPane.vue'
@@ -53,6 +54,7 @@ import SessionChat from '../tasks/SessionChat.vue'
 import AskUserDialog from '../chat/AskUserDialog.vue'
 import StatusBar from '../statusbar/StatusBar.vue'
 import { setLocale } from '../../plugins/i18n'
+import { maybeAutoOpenWizard } from '../scenario/scenarioWizard'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -152,6 +154,14 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v))
 }
 
+// 显隐开关读回值恒为字符串 "true"/"false"（存经 cfgScalar、读经 prefixedConfig→sval，
+// I-173）→ 兼容布尔与字符串两种形态；非法/缺失 → null（保持默认，不覆盖）。
+function parseBool(v) {
+  if (v === true || v === 'true') return true
+  if (v === false || v === 'false') return false
+  return null
+}
+
 // 应用保存的布局（启动恢复）。所有尺寸先按窗口实际大小 clamp：
 // 保存值来自上一次会话，窗口可能已变小/换显示器，直接套用会溢出。
 function applyLayout(l) {
@@ -172,10 +182,14 @@ function applyLayout(l) {
   const fh = clamp(Number(l.filetreeHeight) || (contentH - 4 - 500), 200, contentH - 4 - 100)
   filetreeHeight.value = fh
   taskHeight.value = Math.max(100, contentH - 4 - fh)
-  // toolbar 开关状态（filetree / 子 session(task) / chat 是否显示）
-  if (typeof l.filetreeOpen === 'boolean') filetreeOpen.value = l.filetreeOpen
-  if (typeof l.taskOpen === 'boolean') taskOpen.value = l.taskOpen
-  if (typeof l.chatOpen === 'boolean') chatOpen.value = l.chatOpen
+  // toolbar 开关状态（filetree / 子 session(task) / chat 是否显示）。读回值为字符串
+  // "true"/"false"（见 parseBool 注，I-173）→ 兼容布尔与字符串，缺失/非法保持默认。
+  const fo = parseBool(l.filetreeOpen)
+  if (fo !== null) filetreeOpen.value = fo
+  const to = parseBool(l.taskOpen)
+  if (to !== null) taskOpen.value = to
+  const co = parseBool(l.chatOpen)
+  if (co !== null) chatOpen.value = co
 }
 
 // 测量各面板实际渲染尺寸 + toolbar 开关状态（拖拽/缩放/切换后的真实值）
@@ -236,6 +250,12 @@ function handleOpenScenario() {
   mq.emit(EventNames.previewTabOpen, { kind: 'scenario' })
 }
 
+// agent-wizard：桥检测到 <workDir>/.chonkpilot/project_spec.md 缺失 → 打开场景向导。
+// 去重由 maybeAutoOpenWizard 的模块级 flag 承担（见 views/scenario/scenarioWizard.js）。
+function handleAgentWizard(payload) {
+  maybeAutoOpenWizard(payload && typeof payload === 'object' ? payload : {})
+}
+
 const _mqUnsubs = []
 
 function onWindowResize() {
@@ -248,6 +268,8 @@ onMounted(() => {
   _mqUnsubs.push(mq.on(EventNames.configOpen, handleOpenConfig))
   _mqUnsubs.push(mq.on(EventNames.projectConfigOpen, handleOpenProjectConfig))
   _mqUnsubs.push(mq.on(EventNames.scenarioOpen, handleOpenScenario))
+  // 向导自动弹出（project_spec.md 缺失）：由瘦插件发布 agent-wizard → 打开向导
+  _mqUnsubs.push(mq.on(EventNames.agentWizard, handleAgentWizard))
   // 会话入口（工具栏 Sessions 按钮）→ 切到左侧导航「会话」页签（原会话抽屉已迁入该页签，P3-C1）
   _mqUnsubs.push(mq.on(EventNames.sessionsOpen, () => mq.emit(EventNames.filetreeModeSelect, { mode: 'sessions' })))
   _mqUnsubs.push(mq.on(EventNames.chatToggle, () => { chatOpen.value = !chatOpen.value; nextTick(saveLayoutDebounced) }))
@@ -260,10 +282,16 @@ onMounted(() => {
   // 取 App 引导期**预取**的 init-data（desktop：与 instance-claim 并行发起）→ 挂载时已就绪，
   // 恢复随首帧生效；无预取（gui/browser 或已被消费）→ 回落实时读取（行为同改前）。
   loadInitDataPrefetched().then(r => {
-    applyLayout(r.layout || null)
-    const ui = r.ui || null
+    applyLayout(r[GuiInitDataKeys.layout] || null)
+    const ui = r[GuiInitDataKeys.ui] || null
     if (ui && ui.locale && !localStorage.getItem('chonkpilot-locale')) {
       setLocale(ui.locale)
+    }
+    // 启动检测兜底：init-data 在 App 引导期预取，早于本组件订阅 agent-wizard →
+    // 桥同期下发的事件可能漏收；改用应答字段 wizard_required 兜底自动打开（本会话仅一次）。
+    if (r && r[GuiInitDataKeys.wizard_required] === true) {
+      // init-data 应答的 workdir 键名为 camelCase `workDir`（见 bridge/local.go callLoadInitData）。
+      maybeAutoOpenWizard({ reason: 'missing_spec', work_dir: r[GuiInitDataKeys.workDir] || '' })
     }
   }).catch(() => {})
   window.addEventListener('resize', onWindowResize)

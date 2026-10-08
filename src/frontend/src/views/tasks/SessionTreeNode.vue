@@ -26,6 +26,10 @@
         v-mq:[selectEvent].click.stop="selectPayload"
       >{{ displayTitle }}</span>
 
+      <!-- 折叠容器进度徽标（DSL-3）：LOOP/PARALLEL 显示「第 N 轮 / 共 M 轮」，
+           节点本身不随迭代增长（树恒为静态语句）——徽标只刷新进度 -->
+      <span v-if="progressLabel" class="node-progress" :title="progressLabel">{{ progressLabel }}</span>
+
       <!-- 已关闭标记（42 §2 (126)）：closed = 逻辑删除标记，节点只读展示（灰 + 「已关闭」标签），
            同列表内展示、级联子节点一并可见；不提供恢复/重开入口 -->
       <span v-if="isClosed" class="node-closed-tag">{{ $t('taskView.closed_label') }}</span>
@@ -111,11 +115,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
 import { EventNames } from '../../events/event-names'
+import { MsgTopics, FieldKeys, TaskBackgroundKeys } from '../../events/msgkeys'
 import mq from '../../utils/mq'
 import { message as uiMessage } from '../../components/ui'
 import { useTaskView } from '../../composables/useTaskView'
 import { useTaskStatus } from '../../composables/useTaskStatus'
 import { resolveAwaiting, awaitingActionsFor } from '../../composables/useAwaitingArbitration'
+import { isDslContainer, containerProgress, DSL_PARALLEL_KIND, DSL_JOB_KIND } from '../../utils/dslView'
 
 const props = defineProps({
   node: { type: Object, required: true },
@@ -171,7 +177,12 @@ const kindIcon = computed(() => {
   switch (props.node.kind) {
     case 'llm':
       return 'icon-llm'
+    case DSL_JOB_KIND:
+      return 'list'
+    case DSL_PARALLEL_KIND:
+      return 'collection'
     default:
+      if (isDslContainer(props.node)) return 'refresh' // LOOP
       return 'icon-other-tool'
   }
 })
@@ -180,9 +191,23 @@ const kindColor = computed(() => {
   switch (props.node.kind) {
     case 'llm':
       return '#1890ff'
+    case DSL_JOB_KIND:
+    case DSL_PARALLEL_KIND:
+      return '#722ed1'
     default:
+      if (isDslContainer(props.node)) return '#722ed1'
       return '#8c8c8c'
   }
+})
+
+// 折叠容器进度徽标文案（LOOP/PARALLEL）：「第 N 轮 / 共 M 轮」；total 未知 → 「第 N 轮」。
+// 非容器 / 后端字段缺失 → 空串（不渲染）。
+const progressLabel = computed(() => {
+  const p = containerProgress(props.node)
+  if (!p) return ''
+  const current = p.current == null ? 0 : p.current
+  if (p.total == null) return t('taskView.dsl_progress_open', { current })
+  return t('taskView.dsl_progress', { current, total: p.total })
 })
 
 const displayTitle = computed(() => props.node.title || '#' + (props.node.node_id || '?').slice(0, 8))
@@ -246,7 +271,7 @@ function onAwaitWait() {
   if (arbitrating.value) return
   const callId = toolCallId.value
   if (!callId) return
-  mq.emit(EventNames.toolsWait, { tool_call_id: callId })
+  mq.emit(EventNames.toolsWait, { [FieldKeys.tool_call_id]: callId })
   clearAwaiting(nodeTaskId.value)
 }
 
@@ -257,9 +282,9 @@ async function onAwaitDetach() {
   if (!callId) return
   arbitrating.value = true
   try {
-    const res = await mq.emit('task-background', { tool_call_id: callId })
+    const res = await mq.emit(MsgTopics.taskBackground, { [FieldKeys.tool_call_id]: callId })
     const backend = res && res.backend
-    const bgTaskId = backend && backend.result && backend.result.task_id
+    const bgTaskId = backend && backend.result && backend.result[TaskBackgroundKeys.task_id]
     if (!backend || !backend.ok || !bgTaskId) {
       const errText = (backend && backend.errors && backend.errors[0]) || 'no task_id'
       uiMessage.error(t('chat.tool_background_failed', { error: errText }))
@@ -433,6 +458,18 @@ onUnmounted(() => {
   color: var(--text-muted);
   background: var(--bg-hover);
   border: 1px solid var(--border);
+}
+/* 折叠容器进度徽标（DSL-3 LOOP/PARALLEL）：只刷进度、不新增节点 */
+.node-progress {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
 }
 /* 待裁决裁决条（I-103）：任务区直接按 awaiting 渲染，无消息卡也能裁决 */
 .node-awaiting {

@@ -77,10 +77,12 @@
       <template #prompt>
         <div class="tab-content tab-prompt">
           <div class="prompt-toolbar">
+            <PromptVariablesButton :disabled="optimizing" @insert="insertVariable" />
             <Button size="mini" text v-mq:[EventNames.agentOptimize].click :loading="optimizing" :disabled="optimizing">
               <Icon name="magic-stick" size="14" /> {{ $t('scenario.optimize_prompt') }}</Button>
           </div>
           <Textarea
+            ref="promptRef"
             class="prompt-textarea"
             :modelValue="agent.prompt"
             @update:modelValue="updateField('prompt', $event)"
@@ -154,10 +156,12 @@ import { useI18n } from 'vue-i18n'
 import { message } from '../../components/ui'
 import { Input, Textarea, Button, Select, Tag, Tabs } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
+import PromptVariablesButton from '../../components/common/PromptVariablesButton.vue'
 import mq from '../../utils/mq'
 import { stripToolPrefix } from '../../utils/toolSource'
 import { filterToolsTogglePatch, normalizeTools } from '../../utils/agentToolFilter'
 import { EventNames } from '../../events/event-names'
+import { useVariableInsert } from '../../composables/usePromptVariables'
 
 const { t } = useI18n()
 
@@ -194,6 +198,13 @@ const emit = defineEmits(['update:agent', 'copy', 'optimize'])
 
 const currentTab = ref('basic')
 const expandedCategories = ref(new Set())
+// 提示词变量插入（OP-12）：把 {{...}} 插入到提示词编辑框光标处（Textarea.$el 即 textarea）。
+const promptRef = ref(null)
+const { insert: insertVariable } = useVariableInsert({
+  getEl: () => promptRef.value?.$el || null,
+  getValue: () => props.agent.prompt || '',
+  setValue: (v) => updateField('prompt', v),
+})
 
 const TABS = [
   { name: 'basic', label: t('scenario.tab_basic') },

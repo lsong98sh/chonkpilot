@@ -23,15 +23,15 @@
         </div>
       </template>
 
-      <!-- 用户：可编辑，写 usr 库 -->
+      <!-- 用户：可编辑，写 usr 库——编辑只改本地待保存态（显示「未保存」），点【保存】才落库 -->
       <template #user>
         <div class="page-body">
           <div class="path-toolbar">
             <span class="hint">{{ $t('config.page.pathsUserHint') }}</span>
             <!-- ① 用户级路径改后需重启才生效（后端只对 prj 执行配置热重载，usr 路径键不重跑） -->
             <span class="save-hint">{{ $t('config.page.pathsUserRestartHint') }}</span>
-            <span class="save-hint">{{ $t('config.page.blurToSave') }}</span>
-            <span v-if="dirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
+            <span v-if="userDirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
+            <Button size="small" type="primary" :disabled="!userDirty" :loading="savingUser" data-paths-save-user @click="saveUserTab">{{ $t('common.save') }}</Button>
           </div>
           <div v-for="it in userRows" :key="it.id" class="path-row">
             <label class="path-label">
@@ -44,8 +44,7 @@
               <Input
                 v-model="userValues[it.key]"
                 :placeholder="it.detected || $t('config.autoDetectPlaceholder')"
-                @update:model-value="markDirty"
-                @blur="saveUser(it)"
+                @update:model-value="refreshUserDirty"
               />
               <Button size="small" v-mq:[EventNames.configPickExecutable].click="{ id: it.id }">{{ $t('common.select') }}</Button>
               <Button size="small" :disabled="!userValues[it.key]" v-mq:[EventNames.configResetKey].click="{ level: 'user', key: it.key }">{{ $t('config.page.reset') }}</Button>
@@ -54,14 +53,15 @@
         </div>
       </template>
 
-      <!-- 项目：可编辑，写 prj 库（团队共享）；chromePath 不出现（两级） -->
+      <!-- 项目：可编辑，写 prj 库（团队共享）；chromePath 不出现（两级）——显式【保存】才落库 -->
       <template #project>
         <div class="page-body">
           <div class="path-toolbar">
             <span class="hint">{{ $t('config.page.pathsProjectHint') }}</span>
             <!-- 项目级路径为运行期热生效（prjExecConfigKeys → loadExecConfig 重跑） -->
             <span class="save-hint">{{ $t('config.page.pathsProjectInstantHint') }}</span>
-            <span v-if="dirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
+            <span v-if="prjDirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
+            <Button size="small" type="primary" :disabled="!prjDirty" :loading="savingPrj" data-paths-save-project @click="saveProjectTab">{{ $t('common.save') }}</Button>
           </div>
           <div v-for="it in projectRows" :key="it.id" class="path-row">
             <label class="path-label">
@@ -73,8 +73,7 @@
               <Input
                 v-model="prjValues[it.key]"
                 :placeholder="it.userValue || it.detected || $t('config.autoDetectPlaceholder')"
-                @update:model-value="markDirty"
-                @blur="saveProject(it)"
+                @update:model-value="refreshPrjDirty"
               />
               <Button size="small" v-mq:[EventNames.configPickExecutable].click="{ id: it.id }">{{ $t('common.select') }}</Button>
               <Button size="small" :disabled="!prjValues[it.key]" v-mq:[EventNames.configResetKey].click="{ level: 'project', key: it.key }">{{ $t('config.page.reset') }}</Button>
@@ -103,8 +102,12 @@ import { useUnsavedMark } from '../../composables/useUnsavedMark'
 
 const { t } = useI18n()
 
-// ⑤ dirty 可视标记（仅显示，不改失焦即存的时机）
-const { dirty, markDirty, markSaved } = useUnsavedMark()
+// ⑤ 显式保存（2026-10-06 统一口径）：编辑只改本地待保存态（按页签显示「未保存」），
+// 点该页签右上角【保存】才落库；无改动时保存按钮禁用。dirty 由本地态 vs 已保存快照比对得出。
+const { dirty: userDirty, markDirty: markUserDirty, markSaved: markUserSaved } = useUnsavedMark()
+const { dirty: prjDirty, markDirty: markPrjDirty, markSaved: markPrjSaved } = useUnsavedMark()
+const savingUser = ref(false)
+const savingPrj = ref(false)
 
 // 路径项定义：三维 = 名称 / 探测 id / 配置 key；级别决定出现在哪些页签
 const PATH_ITEMS = [
@@ -128,9 +131,22 @@ const detecting = ref(false)
 const detected = ref({}) // id → {path, version}
 const userValues = ref({}) // key → value（usr）
 const prjValues = ref({}) // key → value（prj）
-// 各层「上次落库值」快照：仅用于判断本次失焦是否真有改动（无改动不弹成功提示，避免噪声）
+// 各层「上次落库值」快照：用于「未保存」判定（本地态 ≠ 快照 → 有改动 → 保存按钮可用）
 const lastUser = ref({})
 const lastPrj = ref({})
+
+// refreshUserDirty / refreshPrjDirty：由「本地态 vs 已保存快照」重算 dirty（无 watch）；
+// 编辑 / 选择 / 重置 / 保存后显式调用。
+function refreshUserDirty() {
+  const changed = PATH_ITEMS.some(it =>
+    (userValues.value[it.key] || '') !== (lastUser.value[it.key] || ''))
+  changed ? markUserDirty() : markUserSaved()
+}
+function refreshPrjDirty() {
+  const changed = PATH_ITEMS.some(it =>
+    (prjValues.value[it.key] || '') !== (lastPrj.value[it.key] || ''))
+  changed ? markPrjDirty() : markPrjSaved()
+}
 
 // 系统页签：探测结果只读
 const systemRows = computed(() =>
@@ -205,41 +221,56 @@ async function detect() {
   }
 }
 
-// ① 用户级路径改后需**重启**才生效（后端不重跑 usr 路径键）；无改动不弹提示（避免噪声）。
-async function saveUser(it) {
-  const v = userValues.value[it.key] || ''
-  if (v === (lastUser.value[it.key] || '')) {
-    markSaved()
-    return
-  }
+// ① 用户级路径：**显式保存**（页签右上角【保存】）逐项落库；改后需**重启**才生效
+// （后端不重跑 usr 路径键）→ 成功反馈按 APPLY_RESTART 标注。
+async function saveUserTab() {
+  if (!userDirty.value || savingUser.value) return
+  savingUser.value = true
+  let saved = 0
   try {
-    await saveUserConfig({ [it.key]: v })
-    lastUser.value = { ...lastUser.value, [it.key]: v }
-    markSaved()
-    message.success(savedText(t, APPLY_RESTART))
+    for (const it of PATH_ITEMS) {
+      if (!it.levels.includes('user')) continue
+      const v = userValues.value[it.key] || ''
+      if (v === (lastUser.value[it.key] || '')) continue
+      await saveUserConfig({ [it.key]: v })
+      lastUser.value = { ...lastUser.value, [it.key]: v }
+      saved++
+    }
+    if (saved > 0) message.success(savedText(t, APPLY_RESTART))
   } catch (e) {
     message.error(saveFailedText(t, e))
+  } finally {
+    savingUser.value = false
+    refreshUserDirty()
   }
 }
 
-// 项目级路径为运行期热生效（prjExecConfigKeys → loadExecConfig 重跑）→ 即时生效标注。
-async function saveProject(it) {
-  const v = prjValues.value[it.key] || ''
-  if (v === (lastPrj.value[it.key] || '')) {
-    markSaved()
-    return
-  }
+// 项目级路径：项目级为运行期热生效（prjExecConfigKeys → loadExecConfig 重跑）
+// → 成功反馈按 APPLY_INSTANT 标注。
+async function saveProjectTab() {
+  if (!prjDirty.value || savingPrj.value) return
+  savingPrj.value = true
+  let saved = 0
   try {
-    await setConfig(it.key, v)
-    lastPrj.value = { ...lastPrj.value, [it.key]: v }
-    markSaved()
-    message.success(savedText(t, APPLY_INSTANT))
+    for (const it of PATH_ITEMS) {
+      if (!it.levels.includes('project')) continue
+      const v = prjValues.value[it.key] || ''
+      if (v === (lastPrj.value[it.key] || '')) continue
+      await setConfig(it.key, v)
+      lastPrj.value = { ...lastPrj.value, [it.key]: v }
+      saved++
+    }
+    if (saved > 0) message.success(savedText(t, APPLY_INSTANT))
   } catch (e) {
     message.error(saveFailedText(t, e))
+  } finally {
+    savingPrj.value = false
+    refreshPrjDirty()
   }
 }
 
-// 继承控件「重置继承」：删本层 key → 回落上级/系统（仅处理本页路径 key）
+// 继承控件「重置继承」：删本层 key → 回落上级/系统（仅处理本页路径 key）。
+// 为显式动作（即时落库，不进待保存态）；完成后重算 dirty（其它未保存编辑不受影响）。
 async function resetKey({ level, key }) {
   const it = PATH_ITEMS.find(x => x.key === key)
   if (!it) return
@@ -248,13 +279,13 @@ async function resetKey({ level, key }) {
       await resetUserKey(key)
       userValues.value = { ...userValues.value, [key]: '' }
       lastUser.value = { ...lastUser.value, [key]: '' }
-      markSaved()
+      refreshUserDirty()
       message.success(savedText(t, APPLY_RESTART))
     } else if (level === 'project') {
       await deleteConfig(key)
       prjValues.value = { ...prjValues.value, [key]: '' }
       lastPrj.value = { ...lastPrj.value, [key]: '' }
-      markSaved()
+      refreshPrjDirty()
       message.success(savedText(t, APPLY_INSTANT))
     }
   } catch (e) {
@@ -262,7 +293,7 @@ async function resetKey({ level, key }) {
   }
 }
 
-// 选择可执行文件（gui.pick-executable）：写入对应编辑框所在层
+// 选择可执行文件（gui.pick-executable）：写入对应编辑框所在层（只改本地待保存态，点【保存】才落库）
 async function pick({ id }) {
   const it = PATH_ITEMS.find(x => x.id === id)
   if (!it) return
@@ -271,10 +302,10 @@ async function pick({ id }) {
     if (!path) return
     if (activeTab.value === 'project' && it.levels.includes('project')) {
       prjValues.value = { ...prjValues.value, [it.key]: path }
-      await saveProject(it)
+      refreshPrjDirty()
     } else {
       userValues.value = { ...userValues.value, [it.key]: path }
-      await saveUser(it)
+      refreshUserDirty()
     }
   } catch (e) {
     message.error(saveFailedText(t, e))

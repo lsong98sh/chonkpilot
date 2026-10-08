@@ -13,7 +13,8 @@
 
 覆盖（每条 = A 数据面回读 + B 真链路可观测；B 恒以 system 原文/内容比对收口）
   P1 项目级场景 A+B   ：data-scenario-save{level:project}（含哨兵 main.agent.md）→
-      A：data-scenario-load{id, level:project} 的 systemPrompt 含哨兵 + 磁盘
+      A：data-scenario-load{id, level:project} 的主 agent 提示词（`agents[isMain].prompt` =
+         `main.agent.md` 内容；场景层无派生 `systemPrompt` 字段）含哨兵 + 磁盘
          `<WS>/.chonkpilot/capability/scenarios/<id>/main.agent.md` 含哨兵；
       B：llm-start{scenario_id} → mock `/last.system` 含哨兵（**送 LLM 的系统提示词原文**）。
   P2 切换场景即生效 B ：改发第二个项目级场景 → system 含哨兵2 **且不含哨兵1**（逐轮解析，非缓存）。
@@ -154,6 +155,14 @@ def prj_prompt_file(sid):
     return os.path.join(PRJ_PROMPTS, sid, "main.agent.md")
 
 
+def main_prompt(rec):
+    """场景主 agent 提示词（新口径：落 `main.agent.md`；load 回读在 `agents[isMain].prompt`，
+    场景层**无**派生 `systemPrompt` 字段）。"""
+    ags = rec.get("agents") or []
+    main = next((a for a in ags if a.get("isMain")), ags[0] if ags else {})
+    return (main.get("prompt") or "")
+
+
 def system_of_turn(q, scenario_id):
     """mq 驱动一轮 llm-start（走真实 server → mock LLM），返回 (llm-complete payload, system 原文)。"""
     sid = "p6sc-sess-%d" % int(time.time() * 1000)
@@ -194,9 +203,9 @@ def case_p1_prj_scenario():
                                "prompt": PRJ_PROMPT}]})
     # A ①：消息面回读（level=project 精确级）
     rec = scenario_load(PRJ_ID, "project")
-    if rec.get("level") != "project" or PRJ_PROMPT not in (rec.get("systemPrompt") or ""):
+    if rec.get("level") != "project" or PRJ_PROMPT not in main_prompt(rec):
         raise TestError("A 回读失败（项目级）: level=%r payload=%r"
-                        % (rec.get("level"), (rec.get("systemPrompt") or "")[:80]))
+                        % (rec.get("level"), main_prompt(rec)[:80]))
     # A ②：磁盘落点（main.agent.md 文件名 = 主 agent 契约承载）
     fp = prj_prompt_file(PRJ_ID)
     wait_for(lambda: os.path.isfile(fp) and PRJ_PROMPT in open(fp, encoding="utf-8").read(),
@@ -215,7 +224,7 @@ def case_p1_prj_scenario():
     if p.get("status") != "complete":
         raise TestError("本轮未正常收尾: %r" % (p,))
     if PRJ_PROMPT not in system:
-        raise TestError("B 项目级场景 systemPrompt 未注入 LLM: %r" % (system[:200],))
+        raise TestError("B 项目级场景主 agent 提示词未注入 LLM: %r" % (system[:200],))
 
 
 def case_p2_switch_takes_effect():
@@ -224,8 +233,8 @@ def case_p2_switch_takes_effect():
                    "agents": [{"name": "主", "roleTag": "主", "isMain": True,
                                "prompt": PRJ_PROMPT2}]})
     rec = scenario_load(PRJ_ID2, "project")
-    if PRJ_PROMPT2 not in (rec.get("systemPrompt") or ""):
-        raise TestError("A 回读失败（第二个项目级场景）: %r" % (rec.get("systemPrompt") or "")[:80])
+    if PRJ_PROMPT2 not in main_prompt(rec):
+        raise TestError("A 回读失败（第二个项目级场景）: %r" % main_prompt(rec)[:80])
     arm_events()
     p, system = system_of_turn("hello switch scenario", PRJ_ID2)
     evi("P2 切换场景即生效", status=p.get("status"), system_has_sentinel2=PRJ_PROMPT2 in system,
@@ -323,8 +332,8 @@ def case_p3_app_default_editable_and_duplicate_rejected():
                    "agents": [{"name": "Loop Engineer", "roleTag": "主", "isMain": True,
                                "prompt": DEF_EDIT}]})
     edited = scenario_load("default", "app")
-    if edited.get("level") != "app" or DEF_EDIT not in (edited.get("systemPrompt") or ""):
-        raise TestError("app 级编辑回读失败: %r" % ((edited.get("systemPrompt") or "")[:120],))
+    if edited.get("level") != "app" or DEF_EDIT not in main_prompt(edited):
+        raise TestError("app 级编辑回读失败: %r" % (main_prompt(edited)[:120],))
     arm_events()
     p3, sys3 = system_of_turn("hello app edited", "default")
     evi("P3-4 app 级可编辑", status=p3.get("status"), level=edited.get("level"),
@@ -417,22 +426,22 @@ def case_p4_save_as_new_dir():
     if not rows or rows[0].get("level") != "project":
         raise TestError("另存为的新场景未进入 data-scenario-list: %r" % (rows,))
     copy_rec = scenario_load(PRJ_ID_SAVEAS, "project")
-    if PRJ_PROMPT not in (copy_rec.get("systemPrompt") or ""):
-        raise TestError("另存为的新场景回读异常: %r" % ((copy_rec.get("systemPrompt") or "")[:80],))
+    if PRJ_PROMPT not in main_prompt(copy_rec):
+        raise TestError("另存为的新场景回读异常: %r" % (main_prompt(copy_rec)[:80],))
     # A ③：原场景不变（仍在、level 与 name/prompt 未改）
     origin_after = scenario_ids(PRJ_ID)
     if not origin_after or origin_after[0].get("level") != "project":
         raise TestError("另存为后原场景应保持不变: %r" % (origin_after,))
     origin_rec = scenario_load(PRJ_ID, "project")
     if (origin_rec.get("name") != origin_before.get("name")
-            or PRJ_PROMPT not in (origin_rec.get("systemPrompt") or "")):
+            or PRJ_PROMPT not in main_prompt(origin_rec)):
         raise TestError("原场景内容被另存为篡改: %r"
-                        % ((origin_rec.get("name"), (origin_rec.get("systemPrompt") or "")[:60]),))
+                        % ((origin_rec.get("name"), main_prompt(origin_rec)[:60]),))
 
     # UI：编辑弹窗底部含「另存为」；新建弹窗底部**不含**
     has_edit, has_new = _probe_save_as_button()
     evi("P4 另存为（新目录）", new_file=fp, new_level=rows[0].get("level"),
-        new_prompt_has=PRJ_PROMPT in (copy_rec.get("systemPrompt") or ""),
+        new_prompt_has=PRJ_PROMPT in main_prompt(copy_rec),
         origin_unchanged=(origin_after[0].get("level") == "project"),
         edit_footer_has_save_as=has_edit, new_footer_has_save_as=has_new)
     if not has_edit:

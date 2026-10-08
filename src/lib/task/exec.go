@@ -99,7 +99,7 @@ type ExecState struct {
 	TopSession  string         `json:"top_session,omitempty"`
 	Tool        string         `json:"tool,omitempty"`
 	ToolCallID  string         `json:"tool_call_id,omitempty"`
-	WorkDir     string         `json:"workdir,omitempty"`
+	WorkDir     string         `json:"work_dir,omitempty"`
 	ProviderKey string         `json:"provider_key,omitempty"`
 	Phase       string         `json:"phase"`
 	State       string         `json:"state,omitempty"`

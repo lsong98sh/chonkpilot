@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -222,7 +223,7 @@ func (dw *dirWatcher) publishWatchError(err error) {
 	if err == nil {
 		return
 	}
-	dw.emit("filesys.watch-error", map[string]any{
+	dw.emit(msgkeys.TopicFilesysWatchError, map[string]any{
 		"work_dir": dw.workDir,
 		"error":    err.Error(),
 	})
@@ -316,7 +317,7 @@ func operation(op fsnotify.Op) string {
 }
 
 func (dw *dirWatcher) pubChanged(abs, op string) {
-	dw.emit("filesys.changed", map[string]any{
+	dw.emit(msgkeys.TopicFilesysChanged, map[string]any{
 		"work_dir":  dw.workDir,
 		"path":      filepath.ToSlash(abs),
 		"operation": op,
@@ -325,7 +326,7 @@ func (dw *dirWatcher) pubChanged(abs, op string) {
 
 func (dw *dirWatcher) pubDirChanged(dir string) {
 	children := listDirNodes(dir)
-	dw.emit("filesys.changed", map[string]any{
+	dw.emit(msgkeys.TopicFilesysChanged, map[string]any{
 		"work_dir": dw.workDir,
 		"path":     filepath.ToSlash(dir),
 		"children": children,

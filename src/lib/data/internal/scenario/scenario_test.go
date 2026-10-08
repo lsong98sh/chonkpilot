@@ -5,10 +5,12 @@
 //   - **app 级可编辑**（保存写 app 根、删除允许）；
 //   - 出厂场景 = app 级（磁盘目录；不再 embed、不再自动物化）。
 //
-// 夹具直接按 capfs 既有目录规则落盘（`scenario.json` + `main.agent.md` + `*.agent.md`）。
+// 夹具直接按 capfs 既有目录规则落盘（`scenario.json`（子 agent 引用）+ `main.agent.md` +
+// `capability/agents/*.agent.md` 被引用文件）。
 package scenario
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,15 +38,35 @@ func testRoots(t *testing.T) (*Service, string, string) {
 }
 
 // writeScenarioDir 按 capfs 规则在 root（某级**场景根**）下写一个场景目录：
-// scenario.json + 可选 main.agent.md + 每子 agent 一个 `<名>.agent.md`。
+// scenario.json（含子 agent **引用**）+ 可选 main.agent.md + 每子 agent 一个被引用文件
+// `<capRoot>/agents/<名>.agent.md`（capRoot = filepath.Dir(root) = app 级 capability 根）。
 func writeScenarioDir(t *testing.T, root, id, name, mainPrompt string, subs map[string]string) {
 	t.Helper()
+	capRoot := filepath.Dir(root)
 	dir := filepath.Join(root, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "scenario.json"),
-		[]byte("{\"name\":\""+name+"\"}\n"), 0o644); err != nil {
+	refs := make([]string, 0, len(subs))
+	if len(subs) > 0 {
+		agentsDir := filepath.Join(capRoot, "agents")
+		if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+			t.Fatalf("mkdir agents: %v", err)
+		}
+		for agent, prompt := range subs {
+			doc := "# " + agent + "\n\n[description]\n" + agent + "\n\n[content]\n" + prompt + "\n"
+			if err := os.WriteFile(filepath.Join(agentsDir, agent+".agent.md"), []byte(doc), 0o644); err != nil {
+				t.Fatalf("write %s.agent.md: %v", agent, err)
+			}
+			refs = append(refs, "${exeDir}/capability/agents/"+agent+".agent.md")
+		}
+	}
+	meta := map[string]any{"name": name}
+	if len(refs) > 0 {
+		meta["agents"] = refs
+	}
+	raw, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(dir, "scenario.json"), append(raw, '\n'), 0o644); err != nil {
 		t.Fatalf("write scenario.json: %v", err)
 	}
 	if mainPrompt != "" {
@@ -53,17 +75,10 @@ func writeScenarioDir(t *testing.T, root, id, name, mainPrompt string, subs map[
 			t.Fatalf("write main.agent.md: %v", err)
 		}
 	}
-	for agent, prompt := range subs {
-		doc := "# " + agent + "\n\n[description]\n" + agent + "\n\n[content]\n" + prompt + "\n"
-		if err := os.WriteFile(filepath.Join(dir, agent+".agent.md"), []byte(doc), 0o644); err != nil {
-			t.Fatalf("write %s.agent.md: %v", agent, err)
-		}
-	}
 }
 
-// TestScenarioAppLevelListAndGet：app 级场景可被 list / get 命中（level=app、含 agents 与
-// **保留供兼容的派生 systemPrompt**〔= 主 agent prompt；25 §3 起场景层提示词不取用该字段〕），
-// 且 list 无需去重（四级 id 全局唯一）。
+// TestScenarioAppLevelListAndGet：app 级场景可被 list / get 命中（level=app、含主 agent +
+// 子 agent 引用展开），且 list 无需去重（四级 id 全局唯一）。
 func TestScenarioAppLevelListAndGet(t *testing.T) {
 	s, appRoot, _ := testRoots(t)
 	writeScenarioDir(t, capfs.ScenariosRoot(appRoot),
@@ -88,11 +103,11 @@ func TestScenarioAppLevelListAndGet(t *testing.T) {
 	if got.Name != "演示场景" {
 		t.Fatalf("name=%q want 演示场景（取 scenario.json）", got.Name)
 	}
-	if got.SystemPrompt != "演示主提示词" {
-		t.Fatalf("systemPrompt=%q want 演示主提示词（保留供兼容的派生值 = 主 agent prompt，25 §3）", got.SystemPrompt)
-	}
 	if len(got.Agents) != 2 || !got.Agents[0].IsMain {
 		t.Fatalf("agents 形状异常（主 agent 应恒列首位）：%+v", got.Agents)
+	}
+	if got.Agents[1].Ref == "" || got.Agents[1].Prompt != "编码提示词" {
+		t.Fatalf("子 agent 应按引用展开（ref + 被引文件正文）：%+v", got.Agents[1])
 	}
 
 	get, err := s.ScenarioGet(facade.ScenarioGetRequest{ScenarioID: "app-scn-a", Level: "app"})
@@ -149,7 +164,7 @@ func TestScenarioSaveRejectsCrossLevelSameID(t *testing.T) {
 		t.Fatalf("app 级同名保存应放行（可编辑）：%v", err)
 	}
 	appRec, err := s.ScenarioGet(facade.ScenarioGetRequest{ScenarioID: defScenarioID, Level: capfs.KindApp})
-	if err != nil || appRec.Scenario.SystemPrompt != "app 改后提示词" {
+	if err != nil || len(appRec.Scenario.Agents) == 0 || appRec.Scenario.Agents[0].Prompt != "app 改后提示词" {
 		t.Fatalf("app 级保存未写 app 根：%v %+v", err, appRec.Scenario)
 	}
 	// 删除 app 级允许
@@ -188,15 +203,26 @@ func TestScenarioSaveRejectsDuplicateAgentNames(t *testing.T) {
 	}
 }
 
-// TestScenarioSaveAllowsSameAgentNameAcrossScenarios：**不同场景**同名 agent → 允许（不报错）。
+// TestScenarioSaveAllowsSameAgentNameAcrossScenarios：**不同场景**同名 agent（引用同一 user 级
+// agent 文件）→ 允许（不报错）。
 func TestScenarioSaveAllowsSameAgentNameAcrossScenarios(t *testing.T) {
-	s, _, _ := testRoots(t)
+	s, _, usrPath := testRoots(t)
+	// 预置被引用的共享子 agent 文件（user 级 capability/agents）
+	agentsDir := filepath.Join(filepath.Dir(usrPath), "capability", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "shared.agent.md"),
+		[]byte("# shared\n\n[content]\n共享子 agent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := "${usrDir}/capability/agents/shared.agent.md"
 	for _, id := range []string{"shared-a", "shared-b"} {
 		if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
 			ID: id, Level: capfs.KindUser,
 			Agents: []facade.ScenarioAgent{
 				{Name: "主", IsMain: true, Prompt: "主提示词"},
-				{Name: "shared", Prompt: "共享子 agent"},
+				{Name: "shared", Prompt: "共享子 agent", Ref: ref},
 			},
 		}}); err != nil {
 			t.Fatalf("不同场景同名 agent 应允许（%s）：%v", id, err)

@@ -27,6 +27,12 @@
  */
 const RULES = [
   {
+    // 同 work-dir 单实例占用（I-74）：后端 gui.dir.open 以 "workdir busy: <dir>" 拒绝
+    // （src/lib/gui/bridge/local.go）→ 「该目录已被打开」人话提示。
+    key: 'chat.error_workdir_busy',
+    re: /workdir busy/i,
+  },
+  {
     key: 'chat.error_timeout',
     re: /context deadline exceeded|i\/o timeout|timeout exceeded|request timed out|\btimed out\b|\btimeout\b|\[timeout\]|超时/i,
   },

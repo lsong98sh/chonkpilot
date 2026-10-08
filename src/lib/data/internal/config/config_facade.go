@@ -13,7 +13,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -34,7 +33,6 @@ var configKVFields = map[string]string{
 }
 
 // openKVDomain 打开某 kv 域所需两层：prj-config 需要 prjusr（个人运行态键），其余域仅 prj。
-// prj-config 另做配置键改名一次性迁移（D-04）：prj（团队预设）与 prjusr（本机运行态）两侧都迁。
 // prjusr 不可用（临时形态/解析失败）→ 退化为**纯 prj 行为**（与既有 handleConfigKV 口径一致）。
 func (s *Service) openKVDomain(domain, instanceID string, scope facade.Scope) (prj, pudb *data.DB, release func(), err error) {
 	workDir, dataDir, err := s.CfgInstBind(instanceID, scope)
@@ -48,12 +46,10 @@ func (s *Service) openKVDomain(domain, instanceID string, scope facade.Scope) (p
 	if domain != facade.DomainPrjConfig {
 		return prj, nil, relPrj, nil // 其余 kv 域不使用 prjusr
 	}
-	s.MigrateConfigKeyRenames(prj)
 	pudb, relPu, err := kernel.OpenPrjUsrLayer(dataDir, prj)
 	if err != nil {
 		return prj, nil, relPrj, nil // prjusr 不可用 → 纯 prj 行为
 	}
-	s.MigrateConfigKeyRenames(pudb)
 	return prj, pudb, func() { relPu(); relPrj() }, nil
 }
 
@@ -97,14 +93,15 @@ func (s *Service) ConfigKVGet(req facade.ConfigKVGetRequest) (facade.ConfigKVGet
 		return facade.ConfigKVGetResponse{}, err
 	}
 	out := make(map[string]string, len(req.Keys))
-	// prompt 域的文件化键（summary_prompt）：走三级文件 + 旧键 + 内置默认回落链，且**先于**
-	// 数据根解析（实例未登记也要能读 → workDir ""，退化为系统级/内置默认，原口径不变）。
+	// prompt 域的文件化键（summary_prompt / memory_prompt.<类别名>）：走文件读序
+	// （项目 → 用户 → 系统）+ embed 内置回落链，且**先于**数据根解析（实例未登记也要能读 →
+	// workDir ""，退化为继承级/embed 内置，原口径不变）。
 	rest := req.Keys
 	if req.Domain == facade.DomainPrompt {
 		rest = make([]string, 0, len(req.Keys))
 		for _, key := range req.Keys {
-			if key == summaryPromptKey {
-				out[key] = s.readSummaryPrompt(s.workDirOf(req.InstanceID, req.Scope), req.InstanceID)
+			if kind, ok := systemDocKind(key); ok {
+				out[key] = s.readPromptDoc(s.workDirOf(req.InstanceID, req.Scope), kind)
 				continue
 			}
 			rest = append(rest, key)
@@ -126,19 +123,30 @@ func (s *Service) ConfigKVGet(req facade.ConfigKVGetRequest) (facade.ConfigKVGet
 			urel()
 		}
 	}()
+	// config 表读经进程内值缓存（valuecache.go，D-45）：同一调用内多键共享一次全表读，
+	// 跨调用 mtime+size 失效（跨进程写 → 本进程读前 stat 发现变化 → 重读）。
+	prjVals := cachedConfigValues(prj)
+	var puVals map[string]string
+	if pudb != nil {
+		puVals = cachedConfigValues(pudb)
+	}
+	var uVals map[string]string
 	for _, key := range rest {
 		v := ""
-		if pudb != nil && isLocalRuntimeKey(key) {
-			v = kernel.ConfigGet(pudb, prefix+key) // prjusr（个人运行态）优先
+		if puVals != nil && isLocalRuntimeKey(key) {
+			v = puVals[prefix+key] // prjusr（个人运行态）优先
 		}
 		if v == "" {
-			v = kernel.ConfigGet(prj, prefix+key) // prj（团队预设）
+			v = prjVals[prefix+key] // prj（团队预设）
 		}
 		if v == "" && prefix == "" && !isLocalRuntimeKey(key) && udb == nil {
 			udb, urel, _ = s.UsrDB()
+			if udb != nil {
+				uVals = cachedConfigValues(udb)
+			}
 		}
-		if v == "" && udb != nil {
-			v = kernel.ConfigGet(udb, key) // usr（用户全局兜底）
+		if v == "" && uVals != nil {
+			v = uVals[key] // usr（用户全局兜底）
 		}
 		out[key] = v
 	}
@@ -146,7 +154,8 @@ func (s *Service) ConfigKVGet(req facade.ConfigKVGetRequest) (facade.ConfigKVGet
 }
 
 // ConfigKVSet 批量写：prj-config 的个人运行态键落 prjusr（不污染团队共享库），其余落 prj；
-// prompt 域的文件化键（summary_prompt）写项目级文件（内容 = 继承值 → 删项目级文件保持继承）。
+// prompt 域的文件化键（summary_prompt / memory_prompt.<类别名>）写覆盖文件 —— 记忆类别
+// 「用户偏好」写用户级、其余写项目级（内容为空 / = 继承值 → 删覆盖文件保持继承）。
 // 写入成功后**整批只广播 1 条** data-<domain>-refresh（载荷带 `ids` 全组键 + `id` = 首键，
 // 61 §3.1）——N 键不再 N 条；单键写仍为 1 条且载荷与改前一致（不写 `ids`）。
 func (s *Service) ConfigKVSet(req facade.ConfigKVSetRequest) (facade.ConfigKVSetResponse, error) {
@@ -167,9 +176,9 @@ func (s *Service) ConfigKVSet(req facade.ConfigKVSetRequest) (facade.ConfigKVSet
 	if req.Domain == facade.DomainPrompt {
 		rest = make([]string, 0, len(keys))
 		for _, key := range keys {
-			if key == summaryPromptKey {
+			if _, ok := systemDocKind(key); ok {
 				workDir := s.workDirOf(req.InstanceID, req.Scope)
-				if err := s.writeSummaryPrompt(workDir, req.InstanceID, req.Entries[key]); err != nil {
+				if err := s.writePrompt(workDir, key, req.Entries[key]); err != nil {
 					return facade.ConfigKVSetResponse{}, err
 				}
 				continue
@@ -183,6 +192,12 @@ func (s *Service) ConfigKVSet(req facade.ConfigKVSetRequest) (facade.ConfigKVSet
 			return facade.ConfigKVSetResponse{}, err
 		}
 		defer release()
+		defer func() { // 写后失效 config 值缓存（错误路径的部分写入也覆盖；valuecache.go D-45）
+			invalidateConfigValues(prj.Path())
+			if pudb != nil {
+				invalidateConfigValues(pudb.Path())
+			}
+		}()
 		for _, key := range rest {
 			target := prj
 			if pudb != nil && isLocalRuntimeKey(key) {
@@ -198,7 +213,8 @@ func (s *Service) ConfigKVSet(req facade.ConfigKVSetRequest) (facade.ConfigKVSet
 	return facade.ConfigKVSetResponse{OK: true}, nil
 }
 
-// ConfigKVDelete 批量删（prj 与 prjusr 两层同删 = 重置即恢复继承；文件化键删项目级文件）。
+// ConfigKVDelete 批量删（prj 与 prjusr 两层同删 = 重置即恢复继承；文件化键删覆盖文件：
+// summary = 项目级文件，记忆类别 = 项目级 + 用户级）。
 // 逐键后广播 data-<domain>-refresh（与 MQ 路径同粒度：一次删一条）。
 func (s *Service) ConfigKVDelete(req facade.ConfigKVDeleteRequest) (facade.ConfigKVDeleteResponse, error) {
 	prefix, err := kvPrefixOf(req.Domain)
@@ -211,11 +227,9 @@ func (s *Service) ConfigKVDelete(req facade.ConfigKVDeleteRequest) (facade.Confi
 	if req.Domain == facade.DomainPrompt {
 		rest = make([]string, 0, len(keys))
 		for _, key := range keys {
-			if key == summaryPromptKey {
-				if p := summaryPromptFile(s.workDirOf(req.InstanceID, req.Scope)); p != "" {
-					if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-						return facade.ConfigKVDeleteResponse{}, err
-					}
+			if _, ok := systemDocKind(key); ok {
+				if err := s.removePromptOverrides(s.workDirOf(req.InstanceID, req.Scope), key); err != nil {
+					return facade.ConfigKVDeleteResponse{}, err
 				}
 				continue
 			}
@@ -228,6 +242,12 @@ func (s *Service) ConfigKVDelete(req facade.ConfigKVDeleteRequest) (facade.Confi
 			return facade.ConfigKVDeleteResponse{}, err
 		}
 		defer release()
+		defer func() { // 删后失效 config 值缓存（valuecache.go D-45）
+			invalidateConfigValues(prj.Path())
+			if pudb != nil {
+				invalidateConfigValues(pudb.Path())
+			}
+		}()
 		for _, key := range rest {
 			kernel.ConfigDelete(prj, prefix+key)
 			if pudb != nil {
@@ -241,22 +261,7 @@ func (s *Service) ConfigKVDelete(req facade.ConfigKVDeleteRequest) (facade.Confi
 	return facade.ConfigKVDeleteResponse{OK: true}, nil
 }
 
-// legacyConfigValue 读实例 prj 层某 config 键的原始值（**兼容旧数据**用：如 summary_prompt
-// 的旧 prj config key）；实例不可解析 / 库打不开 → ""。句柄用完即释（不占长驻连接缓存）。
-func (s *Service) legacyConfigValue(instanceID, key string) string {
-	workDir, dataDir, err := s.CfgInstBind(instanceID, facade.Scope{})
-	if err != nil {
-		return ""
-	}
-	prj, rel, err := kernel.OpenPrjLayer(workDir, dataDir)
-	if err != nil {
-		return ""
-	}
-	defer rel()
-	return kernel.ConfigGet(prj, key)
-}
-
-// workDirOf 取实例工作目录（解析失败 → 空串：prompt 文件化键退化为系统级/默认）。
+// workDirOf 取实例工作目录（解析失败 → 空串：prompt 文件化键退化为继承级/embed 内置）。
 func (s *Service) workDirOf(instanceID string, scope facade.Scope) string {
 	workDir, _, err := s.CfgInstBind(instanceID, scope)
 	if err != nil {
@@ -276,8 +281,6 @@ func (s *Service) UserConfigView(_ facade.UserConfigViewRequest) (facade.UserCon
 		return facade.UserConfigViewResponse{}, err
 	}
 	defer release()
-	s.MigrateLegacyUserConfig(db)
-	s.MigrateConfigKeyRenames(db)
 	return facade.UserConfigViewResponse{List: s.userConfigList(db)}, nil
 }
 
@@ -289,8 +292,6 @@ func (s *Service) UserConfigGet(req facade.UserConfigGetRequest) (facade.UserCon
 		return facade.UserConfigGetResponse{}, err
 	}
 	defer release()
-	s.MigrateLegacyUserConfig(db)
-	s.MigrateConfigKeyRenames(db)
 	view := readUserConfig(db)
 	return facade.UserConfigGetResponse{Config: s.applyProjectOverrides(view, req.InstanceID, req.Scope)}, nil
 }
@@ -302,37 +303,28 @@ func (s *Service) UserConfigSet(req facade.UserConfigSetRequest) (facade.UserCon
 		return facade.UserConfigSetResponse{}, err
 	}
 	defer release()
-	s.MigrateLegacyUserConfig(db)
-	s.MigrateConfigKeyRenames(db)
+	defer invalidateConfigValues(db.Path()) // 写后失效 config 值缓存（valuecache.go D-45）
 	if err := saveUserConfig(db, req.Entries); err != nil {
 		return facade.UserConfigSetResponse{}, err
 	}
-	s.Refresh("user-config", req.InstanceID, LegacyUserConfigKey, "save")
+	s.Refresh("user-config", req.InstanceID, UserConfigID, "save")
 	// 跨窗口即时同步（61 §3.1 · 24 §6.5 · WIN-021）：写入成功后广播**不带 instance_id** 的
 	// data-user-config-changed（所有窗口收到）→ theme/locale 即时跟随。
 	s.UserConfigChanged(changedUserConfig(readUserConfig(db), savedUserConfigKeys(req.Entries)))
-	return facade.UserConfigSetResponse{OK: true, ID: LegacyUserConfigKey}, nil
+	return facade.UserConfigSetResponse{OK: true, ID: UserConfigID}, nil
 }
 
-// UserConfigDelete 删用户配置：Keys 空（或显式 legacy 整块键）→ 清空整份（回落默认/继承）；
-// 逐键 → 删该键（未知键**明确报错**，禁止兜底清空整份 —— P0：未知键曾把 theme/locale/llms
-// /超时一并清掉）。
+// UserConfigDelete 删用户配置：Keys 空 → 清空整份（回落默认/继承）；逐键 → 删该键
+// （未知键**明确报错**，禁止兜底清空整份 —— P0：未知键曾把 theme/locale/llms/超时一并清掉）。
 func (s *Service) UserConfigDelete(req facade.UserConfigDeleteRequest) (facade.UserConfigDeleteResponse, error) {
 	db, release, err := s.UsrDB()
 	if err != nil {
 		return facade.UserConfigDeleteResponse{}, err
 	}
 	defer release()
-	s.MigrateLegacyUserConfig(db)
-	s.MigrateConfigKeyRenames(db)
+	defer invalidateConfigValues(db.Path()) // 删后失效 config 值缓存（valuecache.go D-45）
 	changed := make([]string, 0, len(req.Keys))
 	for _, key := range req.Keys {
-		if newKey, renamed := configKeyRenames[key]; renamed {
-			key = newKey
-		}
-		if key == LegacyUserConfigKey {
-			continue // 显式 legacy 整块键 → 按"清空整份"处置（原行为，见下）
-		}
 		if _, known := userConfigKeyKinds[key]; known {
 			if err := data.DeleteConfig(db, key); err != nil {
 				return facade.UserConfigDeleteResponse{}, err
@@ -360,28 +352,17 @@ func (s *Service) UserConfigDelete(req facade.UserConfigDeleteRequest) (facade.U
 		// 未知键：只报错，绝不回落「清空整份用户配置」。
 		return facade.UserConfigDeleteResponse{}, fmt.Errorf("unknown config key: %s", key)
 	}
-	clearAll := len(req.Keys) == 0 || onlyLegacyKeys(req.Keys)
-	if clearAll {
+	if len(req.Keys) == 0 {
 		if err := deleteUserConfig(db); err != nil {
 			return facade.UserConfigDeleteResponse{}, err
 		}
-		s.Refresh("user-config", req.InstanceID, LegacyUserConfigKey, "delete")
+		s.Refresh("user-config", req.InstanceID, UserConfigID, "delete")
 		changed = allUserConfigKeys() // 清空整份 = 全部 usr 配置键都变
 	}
 	// 跨窗口即时同步（61 §3.1）：删除成功后同样广播（清空/重置也须让其它窗口即时跟随，
 	// 幂等）；载荷取**删除后**的有效值（已回落系统默认）。
 	s.UserConfigChanged(changedUserConfig(readUserConfig(db), changed))
 	return facade.UserConfigDeleteResponse{OK: true}, nil
-}
-
-// onlyLegacyKeys 判定删除请求是否只含 legacy 整块键（等价于"无 key"= 清空整份）。
-func onlyLegacyKeys(keys []string) bool {
-	for _, k := range keys {
-		if k != LegacyUserConfigKey {
-			return false
-		}
-	}
-	return len(keys) > 0
 }
 
 // ── usr 配置下行广播载荷（data-user-config-changed；61 §3.1）──────
@@ -444,17 +425,15 @@ func changedUserConfig(view map[string]any, keys []string) map[string]any {
 // ── config 表通用读写（记录形态 {"v": ...}）──────────
 
 // configKVList 返回域配置平铺 map（prefix 非空仅含该前缀条目且 key 剥前缀；value = v 字符串）。
+// 读经进程内值缓存（valuecache.go，D-45）。
 func configKVList(db *data.DB, prefix string) map[string]string {
+	vals := cachedConfigValues(db)
 	out := map[string]string{}
-	keys, _ := db.Table("config").ListKeys()
-	for _, k := range keys {
+	for k, v := range vals {
 		if prefix != "" && !strings.HasPrefix(k, prefix) {
 			continue
 		}
-		var rec data.Record
-		if ok, _ := db.Table("config").Get(k, &rec); ok {
-			out[strings.TrimPrefix(k, prefix)] = kernel.Sval(rec["v"])
-		}
+		out[strings.TrimPrefix(k, prefix)] = v
 	}
 	return out
 }

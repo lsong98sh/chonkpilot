@@ -1,7 +1,7 @@
 # 25 · MCP / Agent / 场景 分层模型
 
-> 日期：2026-09-25 ｜ 状态：🔵 设计定稿（待实施；#4 为**既有缺陷修正**）
-> 关联：[21-llm-server](../20-modules/21-llm-server.md) · [26-mcp-gateway](../20-modules/26-mcp-gateway.md) · [12-数据层](12-数据层.md) · [37-场景](../30-function-points/37-场景.md) · [39-知识库与原语](../30-function-points/39-知识库与原语.md) · [61-消息一览](../60-reference/61-消息一览.md) · [42-决策记录 §2 (170)](../40-roadmap/42-决策记录.md) · [41 G-47](../40-roadmap/41-未决项登记.md)
+> 状态：✅ 已落地（T1–T6 + #7 均已实现；§10 #12 主题已定为 `data-session-title-changed` 并落地）
+> 关联：[21-llm-server](../20-modules/21-llm-server.md) · [26-mcp-gateway](../20-modules/26-mcp-gateway.md) · [12-数据层](12-数据层.md) · [37-场景](../30-function-points/37-场景.md) · [39-知识库与原语](../30-function-points/39-知识库与原语.md) · [61-消息一览](../60-reference/61-消息一览.md)
 > 代码目录（D-28）：`src/lib/llm/server/`（提示词 / 工具面 / 资产注册）· `src/lib/gateway/`（meta 工具 + 目录资产）· `src/lib/data/internal/`（capfs 场景根）· `src/frontend/src/views/`（场景编辑器 / chat 输入框）
 > 本篇为**自包含**规格：能力面 / 场景面 / chat 面的职责切分、系统提示词拼接、工具面语义、资产面变更、存储命名与落地分解。**以本篇为准**；与之冲突的既有表述按 §8 逐处订正。
 
@@ -32,20 +32,22 @@ chat 面：prompt                                     ← 用户在输入框选�
 
 ---
 
-## 3. 系统提示词三层拼接
+## 3. 系统提示词分层拼接
 
 系统提示词按**下列顺序拼接**：
 
 | 层 | 内容 | 载体 |
 |---|------|------|
 | 全局 | 身份 / 运行环境 —— 模板 **`你是 {agent名}，一个全能智能体。你运行在 {环境} 中。`**（`agent名` = 当前 agent 的人可读裸名；**通用模式（无场景）= `肥猫`**；`环境` = 代码可确定的客观信息：运行形态 + 平台） | **代码写死**（不落文件、不 embed、不可配置） |
+| 目录 | 四级数据根（app/user/project/prjusr）与 `{{path.*}}` 占位符含义 + 每级 `capability/` 子目录用途 + DSL 只读 env（`CHONKPILOT_WORKDIR/DATADIR/TEMPDIR/EXEDIR/PROJECT`）用法 | 出厂文件 `capability/system/system-directory.md`（**纯文本、无分区**；embed 内置回落，同 OP-02） |
 | 场景 | `scenario.description`（"我们是一个团队…"）+ **代码按场景 agents 自动拼接的成员段**（名字 + roleTag + 描述） | **组合生成**（非人写死） |
 | agent | 当前 agent 的 prompt | `*.agent.md`（主 agent = `main.agent.md`） |
 
-- **无场景时（=「通用模式」）**：**只注入全局层**，无场景层 / agent 层。**UI 文案 = 「通用场景」**（chat 场景下拉**固定首项**，2026-09-26）：选中即关闭场景；可点 ★ 设为默认（`defaultScenario` 保留值 `__general__`，重开/重启后仍为通用）。
-- **现状澄清**：现有代码中的 `memoryGuide`（记忆库指引，门控 = 项目配置 `memory.enabled=true`）与 `assetGuide`（知识库资产指引，门控 = 已接入 capability 节点）是**两条功能指引**，与上述"全局层"**不是一回事**。现状**无**"身份 / 运行环境"全局层 → 属**新增**。
+- **目录层不受场景门控**（OP-10）：**有场景 / 通用模式两条路径都注入**；内容每轮组装时读取（不入快照），文中 `{{path.*}}` 与其余 prompt 文本同口径，由 `replacePaths` 在**整段拼接后**替换为当前实例的真实绝对路径（见 [21 §4.7](../20-modules/21-llm-server.md)）。
+- **无场景时（=「通用模式」）**：**只注入全局层 + 目录层**，无场景层 / agent 层。**UI 文案 = 「通用场景」**（chat 场景下拉**固定首项**）：选中即关闭场景；可点 ★ 设为默认（`defaultScenario` 保留值 `__general__`，重开/重启后仍为通用）。
+- **现状澄清**：现有代码中的 `memoryGuide`（记忆库指引，门控 = 项目配置 `memory.enabled=true`）与 `assetGuide`（知识库资产指引，门控 = 已接入 capability 节点）是**两条功能指引**，与上述"全局层"**不是一回事**（二者仍在 `msgs()` 独立注入，不并入任一层）。
 - **`Scenario.SystemPrompt` 语义重定义**：由"派生 = 主 agent 的 prompt"改为 **= 场景层（`description` + 团队拼接）**；**主 agent 的 prompt 归 agent 层**。
-  - **落地取舍（2026-09-25 核实：字段保留兼容、不被消费）**：数据层 `Scenario.SystemPrompt` **沿用旧派生值（= 主 agent 的 prompt）保留供兼容、不被消费** —— 场景层提示词由 `llm/server` 侧按本节三条**自行拼接**（`loadScenario` 只取 `description` + `agents`，不读该字段）。**不改为场景层语义**的理由 = 该字段的旧语义（主 agent prompt）仍被 `data-scenario-*` 契约与既有前端/测试消费，改语义会牵连下游；而"场景层 = 拼接生成"已在 `llm/server` 落地，本层无新增消费需求（见 §8.1 #5）。
+  - **落地取舍（字段保留兼容、不被消费）**：数据层 `Scenario.SystemPrompt` **沿用旧派生值（= 主 agent 的 prompt）保留供兼容、不被消费** —— 场景层提示词由 `llm/server` 侧按本节三条**自行拼接**（`loadScenario` 只取 `description` + `agents`，不读该字段）。**不改为场景层语义**的理由 = 该字段的旧语义（主 agent prompt）仍被 `data-scenario-*` 契约与既有前端/测试消费，改语义会牵连下游；而"场景层 = 拼接生成"已在 `llm/server` 落地，本层无新增消费需求（见 §8.1 #5）。
 
 ---
 
@@ -61,7 +63,7 @@ chat 面：prompt                                     ← 用户在输入框选�
 >
 > 依据 = self 节点 `entry` **无 `HotTools`**，`isHot` 不会自动补 → `registerMetaTools` 必须**显式**置 `_meta.hot=true`（否则 LLM 连工具发现入口都拿不到）。**本规格须写明"两者都要"**，防后人只改 `HotTools`、漏掉 meta。
 >
-> **① 的下游 `HotTools` UI（2026-09-27 改造）**：`EditMCPDialog` 独立「**工具**」页签 —— 点【**加载工具**】按别名列出该 server 工具并逐项勾选；写库为**契约原名**列表（`"*"` = 全部 hot），**零新增消息面**（数据源 = 既有 `tools-list`）。原「运行信息」页签的「高频工具」行与独立弹窗 `SetMCPHotToolsDialog.vue` 均已摘除。
+> **① 的下游 `HotTools` UI**：`EditMCPDialog` 独立「**工具**」页签 —— 点【**加载工具**】按别名列出该 server 工具并逐项勾选；写库为**契约原名**列表（`"*"` = 全部 hot），**零新增消息面**（数据源 = 既有 `tools-list`）。原「运行信息」页签的「高频工具」行与独立弹窗 `SetMCPHotToolsDialog.vue` 均已摘除。
 
 ### 4.2 「通用模式」（无场景）工具面
 
@@ -79,9 +81,9 @@ chat 面：prompt                                     ← 用户在输入框选�
 | 面 | 语义 |
 |----|------|
 | **下发面**（发给 LLM 的清单） | 受 §4.1–§4.3 约束（hot ∪ meta；白名单非空 = 白名单全量、空 = hot） |
-| **执行面** | **空白名单 = 不限制**（不拦）；**白名单非空 = 仅白名单内**（其中 **`mcp_invoke` 的目标工具也须在白名单内**，见 [42 §2 (168)](../40-roadmap/42-决策记录.md)） |
+| **执行面** | **空白名单 = 不限制**（不拦）；**白名单非空 = 仅白名单内**（其中 **`mcp_invoke` 的目标工具也须在白名单内**） |
 
-### 4.5 工具级别矩阵与静默剔除（P4 2026-10-01，[42 §2 (210)](../40-roadmap/42-决策记录.md)）
+### 4.5 工具级别矩阵与静默剔除（P4）
 
 智能体可选工具 = **同级或更高级**（"级"按**共享度**：app 系统级最共享 = 最高）。矩阵：
 
@@ -119,7 +121,7 @@ chat 面：prompt                                     ← 用户在输入框选�
 零新增主题）；根由数据层门面 `KnowledgeRoot(kind=prjusr)` 解析（与知识库 / 场景写读**同源**），
 解析不出则跳过、不影响既有三级。
 
-### 4.6 MCP 配置四级与合并规则（2026-10-01，[42 §2 (211)](../40-roadmap/42-决策记录.md)）
+### 4.6 MCP 配置四级与合并规则
 
 **「MCP 工具面」的来源 = 用户/项目维护的 MCP server 定义（第三方能力），与「能力面/原语工具」（§4.1–§4.5 的
 capability `tools/`）是**两条独立来源**：前者经 gateway `servers/register`（外部 MCP server 的 spawned/proxied
@@ -132,7 +134,7 @@ capability `tools/`）是**两条独立来源**：前者经 gateway `servers/reg
 
 - 同名 MCP server 在四级可并存，但**合并后只生效一份**（命中的最具体级那一条）→ **只 spawn 一份**
   （spawn / 生命周期由**生效定义**决定）；
-- **旧 usr KV `mcpServers`（专用表 `mcps`）已彻底废弃**（2026-10-01，[42 §2 (212)](../40-roadmap/42-决策记录.md)）：
+- **旧 usr KV `mcpServers`（专用表 `mcps`）已彻底废弃**：
   不再回落读取、**代码零兼容**，历史数据不迁移；
 - **数据面**：`mcp` 域消息面 `data-mcp-{list,load,save,delete}` + 订阅面 `data-mcp-refresh`
   （见 [61 §3.1](../60-reference/61-消息一览.md)）；`list` 返回**生效视图**（每项带 `level`）；
@@ -140,7 +142,7 @@ capability `tools/`）是**两条独立来源**：前者经 gateway `servers/reg
   （`mergeGatewayServers(nil, loadMcpFileEntries)`；数据层 `McpList` 已按名整条合并）→ 对账/生效链路
   （增量 register/unregister、保存即生效；触发主题 = `data-mcp-refresh`）语义不变；`hot_tools` 语义不变。
 
-**运行期冷缓存退化放行**（配套，[42 §2 (211)](../40-roadmap/42-决策记录.md)）：§4.5 的级别矩阵静默剔除
+**运行期冷缓存退化放行**（配套）：§4.5 的级别矩阵静默剔除
 （`filterWhitelistByLevel`）以「本实例可见工具面」为收窄基准；该工具面来自 gateway `tools/list` 缓存——
 **缓存未预热（空）时**若照旧按"只保留可见集内名字"处理，会把白名单里的合法工具**全部误剔**。故
 **可见集为空 → 原样返回**（保守放行，不误剔），与"场景级别不可判定 / 工具级别无法判定 → 放行"同一取向。
@@ -159,24 +161,23 @@ agent **只"注入"不"注册"**：
 6. **prompt 移出 LLM 检索面**：`prompt` 不在 `mcp_find` / `mcp_load` 的 type/kind 内（**含第三方 MCP 的 prompt 亦不可被 LLM 检索**）；prompt 改由**知识库维护 + chat 输入框供用户选择注入**（见 §7）；
 7. `assetGuide` 指引正文的 type 清单须同步为 `tool|skill|resource|all`。
 
-**附带结论**：原 [41 G-46] ⑤d 的「`mcp_find` 同名去重非确定」问题**随之作废**（无 agent 类目后不再成立）。
+**附带结论**：「`mcp_find` 同名去重非确定」问题**随之作废**（无 agent 类目后不再成立）。
 
 ---
 
 ## 6. 存储与命名
 
-> **〔订正（2026-10-01，P1：[42 §2 (207)](../40-roadmap/42-决策记录.md)）〕** 场景根**移入 capability** —— 原「独立根 `scenarios/`（与 `capability/` **平级**）」**作废**；现场景根 = **`<级别根>/capability/scenarios/`**。级别由**三级**扩为**四级**：**app（系统级）/ user / project / project-private（prjusr = `~/.chonkpilot/data/<prj-id>/capability/scenarios/`）**。capability 每级下 6 个**扁平**子目录（`prompts/tools/resources/skills/agents/scenarios`，旧 `knowledge/**` 归并层删除）；**四级均可读写**；同名定位/覆盖优先序 = **prjusr > project > user > app**（`capfs.LevelPriority`）。下文（104–109）为订正前原文，保留为历史。
+> **场景根移入 capability** —— 原「独立根 `scenarios/`（与 `capability/` **平级**）」**作废**；现场景根 = **`<级别根>/capability/scenarios/`**。级别由**三级**扩为**四级**：**app（系统级）/ user / project / project-private（prjusr = `~/.chonkpilot/data/<prj-id>/capability/scenarios/`）**。capability 每级下 6 个**扁平**子目录（`prompts/tools/resources/skills/agents/scenarios`，旧 `knowledge/**` 归并层删除）；**四级均可读写**；同名定位/覆盖优先序 = **prjusr > project > user > app**（`capfs.LevelPriority`）。
 
-- （历史口径，已由上方订正取代）场景使用**独立根 `scenarios/`**（与 `capability/` **平级**），三级仍是 **app 级（系统级）/ user / project**。
-- 不允许同名场景（场景 id **全局唯一**，跨级亦然）→ ~~三级~~ **四级**"覆盖"语义**整体不存在**：
+- 不允许同名场景（场景 id **全局唯一**，跨级亦然）→ **四级**"覆盖"语义**整体不存在**：
   - `list` 无需去重；`load` 直接按 id 命中；
   - `ScenarioSave` 需**新增跨级重名校验**（拒绝并报错）；
   - 既有重名数据**不做迁移**（用户明确"既有的不管"）。
-- ~~三级~~ **四级**语义 = **存放位置 / 归属**（**四级均可写**，**不是优先级链**）。**〔订正（2026-09-26）**：app 级（系统级）自 2026-09-26 起**可编辑**（原「随发布只读」作废）；`data-scenario-restore` 消息**已删除**。〕**〔订正（2026-09-29）**：出厂场景 = **磁盘目录** `<exeDir>/capability/scenarios/`（**唯一源** `src/initdata/capability/scenarios/`，由构建脚本投放）；**不再 embed、不再自动物化** —— 原「内容由 embed 内嵌、app 初始化缺失即物化」作废；根缺失即缺装（提示重新安装或用 `initial.zip` 恢复）。〕**〔订正（2026-10-01，P1）**：场景根随 capability 移入（见上方）。〕
+- **四级**语义 = **存放位置 / 归属**（**四级均可写**，**不是优先级链**）。**app 级（系统级）可编辑**（`data-scenario-restore` 消息**已删除**）；**出厂场景 = 磁盘目录** `<exeDir>/capability/scenarios/`（**唯一源** `src/initdata/capability/scenarios/`，由构建脚本投放），**不再 embed、不再自动物化**，根缺失即缺装（提示重新安装或用 `initial.zip` 恢复）；**场景根随 capability 移入**（见上）。
 
 ### 6.1 命名与唯一性
 
-> **〔2026-09-26 用户拍板 · 根本规则〕** **in-memory 注册名必须唯一** —— 一切资产 / agent 装入内存注册表（self 节点 / 域注册表 / capability 目录扫描）时，**注册名不得冲突**；各命名空间的消歧规则见下表。
+> **根本规则**：**in-memory 注册名必须唯一** —— 一切资产 / agent 装入内存注册表（self 节点 / 域注册表 / capability 目录扫描）时，**注册名不得冲突**；各命名空间的消歧规则见下表。
 
 | 类目 | 唯一性规则 | 消歧方式 |
 |------|-----------|---------|
@@ -186,12 +187,12 @@ agent **只"注入"不"注册"**：
 | **skill / resource / tool** | **不许重名** | 同名即拒绝（不得跨来源并存）；键 = `(scope, kind, name)`（资产）/ `(scope, 暴露名)`（tool） |
 | **第三方** | **一律加别名** | 第三方（下游 server，`Origin=user`）条目一律带**来源别名前缀** `<server名>_`（`entrySourcePrefix`），与内置 `self_*`、知识库条目区分 |
 
-- **格式约定（已定，2026-09-26）**：
+- **格式约定**：
   - **agent 场景前缀** = **`<场景id>/<agent名>`**（分隔符 `/`；场景 id = 场景目录名，本模块 §6）——**注入面**（§3 团队成员段）、**`llm_run` 委派**、**`agentDelegable`**、**子轮次 system 读取**（`registeredAgentDef` / `resolveAgentDef`）**同一口径**；引用可带前缀（精确命中）或裸名（注册表内**唯一**同名才命中；跨场景重名须带前缀；裸名歧义 → 不解析）。
   - **第三方别名（来源前缀）** = **`<server名>_`**（沿用既有 `applyPrefix` 缺省形态，非新分隔符；`namespace "-"` 对第三方**不生效** → 强制回落该前缀）；名字往返一致（`mcp_find` / `mcp_load` 返回名 = 可直接 `tools/call` / `mcp_invoke` 的名）。
   - **唯一性拒绝策略** = 同类同名注册**拒绝并返回含来源的明确错误**（**不静默覆盖**）；gateway 落点见 [26 §4.3.1](../20-modules/26-mcp-gateway.md)。
-- **张力闭环**：[41 G-48](../40-roadmap/41-未决项登记.md) 的 ④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）。**〔订正（2026-09-26）**：④ 随 `data-scenario-restore` 消息删除而消失（app 级改为**可直接编辑**）；⑥ 由「app 级可编辑 + 场景 id 全局唯一」承载。〕
-- **同场景内 agent 不许重名（2026-09-26 用户裁决，[42 §2 (175)](../40-roadmap/42-决策记录.md)）**：上表「agent **可重名**」指**跨场景**（以 `<场景id>/<agent名>` 前缀消歧）；**同一场景内** agent 名**必须唯一** → 场景**保存**时校验（判定键 = agent **落盘文件名**、大小写不敏感），重名（含**大小写等价** / **主 agent 与子 agent 撞名 `main`** / **空名**）**拒绝保存**并返回含「**场景 id + 重复 agent 名**」的错误（落点 `capfs.WriteScenarioDir` 写盘前）；既有重名数据**不迁移**。
+- **张力闭环**：④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）：④ 随 `data-scenario-restore` 消息删除而消失（app 级改为**可直接编辑**）；⑥ 由「app 级可编辑 + 场景 id 全局唯一」承载。
+- **同场景内 agent 不许重名（用户裁决）**：上表「agent **可重名**」指**跨场景**（以 `<场景id>/<agent名>` 前缀消歧）；**同一场景内** agent 名**必须唯一** → 场景**保存**时校验（判定键 = agent **落盘文件名**、大小写不敏感），重名（含**大小写等价** / **主 agent 与子 agent 撞名 `main`** / **空名**）**拒绝保存**并返回含「**场景 id + 重复 agent 名**」的错误（落点 `capfs.WriteScenarioDir` 写盘前）；既有重名数据**不迁移**。
 
 ---
 
@@ -210,16 +211,15 @@ agent **只"注入"不"注册"**：
 |---|------|------|------|
 | 1 | `scenarios/` 独立根（含默认场景物化路径） | `data/internal/capfs`（`ScenarioRoot`）· 装配 | 结构 |
 | 2 | agent 只注入不注册（撤两处注册；`mcp_find`/`prompts/list` 摘 agent） | `llm/server/domainmcp.go` · `gateway/meta_tools.go` · `gateway/mcpgateway.go` | 替换 |
-| 3 | 系统提示词三层拼接 + 无场景降级 + 全局层**新增内容**（代码写死） | `llm/server/turn.go`（注入处）· 提示词常量 | 结构 |
+| 3 | 系统提示词三层拼接 + 无场景降级 + 全局层**新增内容**（代码写死）（OP-10 增**目录层** `systemDirectoryLayer`（四级目录 + DSL env 说明），见 §3） | `llm/server/turn.go`（注入处）· 提示词常量 · 出厂文件 `capability/system/system-directory.md` | 结构 |
 | 4 | **`llmTools()` 白名单语义修正**（非空取白名单全量，不论 hot） | `llm/server/{turn.go,server.go}` | **缺陷修正** |
 | 5 | `SystemPrompt` 语义重定义 | `data/facade/scenario.go` · `capfs/scenario.go` · 消费方 | 结构 |
 | 6 | `mcp_find`/`mcp_load` 契约（type/kind + schema 文案）· `assetGuide` 文本 | `gateway/meta_tools.go` · `llm/server/memory_guide.go` | **契约变更** |
-| 7 | 默认场景改名「**开发场景**」（**仅显示名**，key `default` 不动）**〔✅ 已落地（2026-09-25）〕** | `src/initdata/capability/scenarios/default/scenario.json`（app 级资源 `name`；原 `materializeDefaultScenario` 已随 T6 撤） | 命名 |
-| 8 | 两套内嵌（7 域 agent + 默认场景 1+8）统一为 **app 级场景**；⚠️ 连带 `registeredAgentDef` 的回落来源要改〔**订正（2026-09-26）**：内置 agent 集 `builtin-agents/` **已删除** —— 发布 `scenarios/` 仅出厂场景 `default/`（「开发场景」）；「通用」由**无场景（通用模式）**承载，不再有独立 agent 集〕 | `llm/server/{domainmd.go,domainmcp.go}` · `capfs/defaults.go` | 结构 |
+| 7 | 默认场景改名「**开发场景**」（**仅显示名**，key `default` 不动）**（✅ 已落地）** | `src/initdata/capability/scenarios/default/scenario.json`（app 级资源 `name`；原 `materializeDefaultScenario` 已随 T6 撤） | 命名 |
+| 8 | 两套内嵌（7 域 agent + 默认场景 1+8）统一为 **app 级场景**；⚠️ 连带 `registeredAgentDef` 的回落来源要改（内置 agent 集 `builtin-agents/` **已删除** —— 发布 `scenarios/` 仅出厂场景 `default/`（「开发场景」）；「通用」由**无场景（通用模式）**承载，不再有独立 agent 集） | `llm/server/{domainmd.go,domainmcp.go}` · `capfs/defaults.go` | 结构 |
 | 9 | 前端：场景编辑器加「**组合后系统提示词**」预览页签；chat 输入框加 **prompt 选择**（注入 user 消息 + `/<name>` tag） | `src/frontend/src/views/**` | 前端 |
 
-> **〔订正（2026-09-29）〕**：#1 的出厂场景**来源 = 磁盘目录**（唯一源 `src/initdata/capability/scenarios/`，由构建脚本覆盖式同步到 `<exeDir>/scenarios/`）——**不再 embed、不再物化**：已删 `data/scenarios_embed.go`（`//go:embed scenarios` + `FactoryScenarios()`）与 `capfs.MaterializeFactoryScenarios`；app 初始化不再写盘，根缺失即缺装（`checkFactoryScenarios` 提示重新安装或用 `initial.zip` 恢复）。**app 级可编辑**（门面 `ScenarioSave`/`ScenarioDelete` 允许 `level=app`，前端列表给编辑/删除入口）、`data-scenario-restore` 消息与 `capfs.CopyScenarioDir` 已删除。
-> **〔订正（2026-09-26，历史）〕**：原「出场内容由 `//go:embed scenarios` + `MaterializeFactoryScenarios` 在 app 初始化物化」的机制**已于 2026-09-29 整体作废**（见上条）；原文保留仅作沿革。
+> **#1 的出厂场景来源 = 磁盘目录**（唯一源 `src/initdata/capability/scenarios/`，由构建脚本覆盖式同步到 `<exeDir>/scenarios/`）——**不再 embed、不再物化**：已删 `data/scenarios_embed.go`（`//go:embed scenarios` + `FactoryScenarios()`）与 `capfs.MaterializeFactoryScenarios`；app 初始化不再写盘，根缺失即缺装（`checkFactoryScenarios` 提示重新安装或用 `initial.zip` 恢复）。**app 级可编辑**（门面 `ScenarioSave`/`ScenarioDelete` 允许 `level=app`，前端列表给编辑/删除入口）、`data-scenario-restore` 消息与 `capfs.CopyScenarioDir` 已删除。
 
 ### 8.2 任务分解与建议顺序
 
@@ -230,7 +230,7 @@ agent **只"注入"不"注册"**：
 | **T3** | #3 + #5 | 系统提示词三层拼接 + `SystemPrompt` 语义重定义 |
 | **T4** | #1 + 重名校验（§6） | `scenarios/` 独立根 + `ScenarioSave` 跨级重名校验（无覆盖语义） |
 | **T5** | #9 | 前端（组合后提示词预览页签 · chat 选 prompt） |
-| **T6** | #8 | 两套内嵌统一为 app 级场景（含 `registeredAgentDef` 回落来源改口）**〔✅ 已落地（2026-09-25）〕**：落地 `src/initdata/capability/scenarios/`（`default/` = 出厂默认 1 主 + 8 子；`builtin-agents/` 后续删除），撤 `//go:embed contracts/agents/*.agent.md` 与 `capfs.DefaultScenarioAgents`（`defaults.go` 删），list 物化（`materializeDefaultScenario`）撤；`registerDomainAgents` 改经数据层门面 `facade.ScenarioAPI.ScenarioList` 读 app 级场景（路径规则单源）；`registeredAgentDef` 回落 = app 级场景内同名 agent；build 脚本（`build-desktop.ps1` / `build-gui.ps1`）投放 `scenarios/`。**〔订正（2026-09-26）：`builtin-agents/` 已删除 —— 发布 `scenarios/` 仅 `default/`（「开发场景」）；「通用」= 无场景的通用模式（无目录）。机制不变：`registerDomainAgents` 仍扫描**全部** app 级场景（当前仅 1 个），`registeredAgentDef` 回落来源仍为「app 级场景内同名 agent」〕**〔订正（2026-09-29）：投放改为「源唯一 = `src/initdata/capability/scenarios/`，build 脚本覆盖式同步到 `<exeDir>/scenarios/`」，不再 embed/物化〕** |
+| **T6** | #8 | 两套内嵌统一为 app 级场景（含 `registeredAgentDef` 回落来源改口）**（✅ 已落地）**：落地 `src/initdata/capability/scenarios/`（`default/` = 出厂默认 1 主 + 8 子），`builtin-agents/` 已删除；撤 `//go:embed contracts/agents/*.agent.md` 与 `capfs.DefaultScenarioAgents`（`defaults.go` 删），list 物化（`materializeDefaultScenario`）撤；`registerDomainAgents` 改经数据层门面 `facade.ScenarioAPI.ScenarioList` 读 app 级场景（路径规则单源，仍扫描**全部** app 级场景，当前仅 1 个）；`registeredAgentDef` 回落 = app 级场景内同名 agent；投放「源唯一 = `src/initdata/capability/scenarios/`，build 脚本（`build-desktop.ps1` / `build-gui.ps1`）覆盖式同步到 `<exeDir>/scenarios/`」，不再 embed/物化。 |
 
 > 顺序：**T1 → T2 → T3 → T4 → T5 → T6**（T1 独立最小、先修缺陷；T2 定义资产面边界；T3 承接提示词；T4 落存储；T5 前端跟随后端契约；T6 最后做内嵌统一）。
 
@@ -243,8 +243,8 @@ agent **只"注入"不"注册"**：
 | # | 断言 | 驱动 / 观测 |
 |:--:|------|------------|
 | 1 | 白名单含**非 hot** 工具 → 该工具**出现在** LLM `tools` 参数 | 配 agent 白名单含非 hot 工具 → 发 turn → 断言下发清单含该项（缺陷修正回归） |
-| 2 | 无场景（通用模式）→ 提示词**只含全局层** | 发 `llm-start{scenario_id:"-"}` → 断言 system 含全局层、**不含**场景层 / agent 层 |
-| 3 | 有场景 → 提示词 = 全局层 + 场景层（description + 成员段）+ agent 层，**按序拼接** | 发 turn → 断言三段顺序与内容 |
+| 2 | 无场景（通用模式）→ 提示词**含全局层 + 目录层** | 发 `llm-start{scenario_id:"-"}` → 断言 system 含全局层与目录层、**不含**场景层 / agent 层 |
+| 3 | 有场景 → 提示词 = 全局层 + 目录层 + 场景层（description + 成员段）+ agent 层，**按序拼接** | 发 turn → 断言四段顺序与内容 |
 | 4 | `mcp_find(type=agent)` **报错或空** | 发 `mcp_find{type:"agent"}` → 断言 `error` 或空结果 |
 | 5 | `type=prompt` **不含知识库 prompt** | 发 `mcp_find{type:"prompt"}` → 断言报错或空（知识库 prompt 不可被 LLM 检索） |
 | 6 | `prompts/list` **不再列 agent** | 发 `prompts/list` → 断言结果无 agent 类目 |
@@ -261,9 +261,9 @@ agent **只"注入"不"注册"**：
 
 ## 10. 待定 / 未决
 
-- **#12「主窗重命名 → 对话窗标题跟随」**：需**新增广播主题**（按 R-2 须用户确认主题名），**主题名未定** → **待确认**。
-- 对话窗**打开瞬间不自读主题**（既有行为，见 [42 §2 (169)](../40-roadmap/42-决策记录.md)）。
-- 术语 `step`（一次来回）**已在其余篇章推广落地（2026-09-26，用户「相关都改掉」）**：**语义 = 一次来回**的中文「一次」已统一为「一次来回（`step`）」（见 [60-名词约定 §4](../60-reference/60-名词约定.md) 用词约定 · [42 §2 (173)](../40-roadmap/42-决策记录.md)）；**非该语义不改**。
+- **#12「主窗重命名 → 对话窗标题跟随」**：✅ **已落地（主题名 = `data-session-title-changed`）** —— 服务端 `data-session-title` 写库成功后广播 `{session_id, title}`（**不带 `instance_id`** → 全局），对话窗订阅并经既有 `gui.window.set-title` 更新标题（L2 `MW-T29`，`run_mw.py` 28/28）。
+- 对话窗**打开瞬间不自读主题**（既有行为）。
+- 术语 `step`（一次来回）**已在其余篇章推广落地**：**语义 = 一次来回**的中文「一次」已统一为「一次来回（`step`）」（见 [60-名词约定 §4](../60-reference/60-名词约定.md) 用词约定）；**非该语义不改**。
 
 ---
 
@@ -273,4 +273,4 @@ agent **只"注入"不"注册"**：
 - [26-mcp-gateway](../20-modules/26-mcp-gateway.md)（meta 工具 `mcp_find`/`mcp_load`/`mcp_invoke`）
 - [12-数据层](12-数据层.md)（**四级** capability 根 · 场景根 = `<级别根>/capability/scenarios/`，[02 §7.2](../00-overview/02-配置层级.md)）
 - [37-场景](../30-function-points/37-场景.md) · [39-知识库与原语](../30-function-points/39-知识库与原语.md)
-- [61-消息一览](../60-reference/61-消息一览.md)（唯一准则）· [42 §2 (170)](../40-roadmap/42-决策记录.md) · [42 §2 (207)](../40-roadmap/42-决策记录.md)（P1 四级/扁平化/场景根移入）· [41 G-47](../40-roadmap/41-未决项登记.md)
+- [61-消息一览](../60-reference/61-消息一览.md)（唯一准则）

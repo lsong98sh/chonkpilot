@@ -144,9 +144,9 @@ func persistAsyncToolRow(t *testing.T, s *Server, turnID, toolCallID, result, st
 		"async":  map[string]any{"pending": false, "task_id": "tk-async", "moved_at": "2026-09-18T00:00:00Z"},
 	}
 	b, _ := json.Marshal(content)
-	if err := newSessionStore(s.bus, "ins-test").AppendMsgMap(turnID, map[string]any{
+	if _, err := newSessionStore(s.bus, "ins-test").AppendMsgMap(turnID, map[string]any{
 		"role": "tool", "content": string(b), "tool_call_id": toolCallID, "tool_call_status": status,
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("persist async tool row: %v", err)
 	}
 }
@@ -171,5 +171,96 @@ func TestTaskToolResultUnknown(t *testing.T) {
 	text, _ := c["text"].(string)
 	if !strings.Contains(text, "未找到任务") {
 		t.Fatalf("unknown id should report not found: %q", text)
+	}
+}
+
+// TestTaskExecCancelViaGatewayReport（I-83 收尾，18 §3.4）：task 型域工具（tool_result 轮询）
+// 执行中，gateway 取消链补发 mcp-tasks-report{state:cancelled, tool_call_id} →
+// onGatewayTaskDone 查「工具执行取消表」cancel → 执行体**及时**退出（不空耗到 timeout）；
+// tool_result 自身节点终态由回报链推进为 cancelled；被查询任务本身不受影响（仍 running）。
+// 背景：域工具回调经 mq 内存总线 Emit **同步派发**（执行体跑在 gateway 执行 goroutine 里，
+// t.cancel 无法中断 handler）→ 取消经回报通道反向通知。
+func TestTaskExecCancelViaGatewayReport(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	// 预建一个 running 的被查询任务（tool_result 的轮询对象；ToolCallID 与本次调用无关）
+	node, err := s.tasks.start(&TaskNode{
+		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-cxl", TurnID: "t-cxl",
+		InstanceID: "ins-test", TopSession: "s-cxl", Name: "inflight",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	tc := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-cxl", Turn: "t-cxl"},
+		ctx: context.Background()}
+	// 模拟 gateway 取消链的回报（tm.cancel 补发；tool_call_id = tool_result 本次调用）
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		s.onGatewayTaskDone("", []byte(`{"task_id":"tk-gw","tool_call_id":"tc-cxl-exec","state":"cancelled","result_summary":"user cancelled"}`))
+	}()
+
+	start := time.Now()
+	text, isErr := s.domainExecute(tc, "tc-cxl-exec", "tool_result",
+		map[string]any{"id": node.TaskID, "timeout": 30.0})
+	elapsed := time.Since(start)
+	if isErr {
+		t.Fatalf("cancelled exec should not be tool-level error: %q", text)
+	}
+	if !strings.Contains(text, "已取消") {
+		t.Fatalf("exec should report cancelled, got: %q", text)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("cancel should stop polling promptly, took %v", elapsed)
+	}
+	// tool_result 自身节点（domainNode 按 callID 建）→ 回报链推进 cancelled
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if n := s.tasks.findByToolCall("ins-test", "tc-cxl-exec"); n != nil && n.State == TaskStateCancelled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("tool_result own node not advanced to cancelled by report chain")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// 被查询任务本身未受影响（仍 running；取消只作用于查询执行体）
+	if n := s.tasks.get(node.TaskID); n == nil || n.State != TaskStateRunning {
+		t.Fatalf("queried task should stay running, got %+v", n)
+	}
+}
+
+// TestTaskExecCancelRegistrySemantics：工具执行取消表语义——空 callID / 未命中 no-op；
+// 命中即注销（重复回报 no-op）；执行结束注销后回报晚到 no-op。
+func TestTaskExecCancelRegistrySemantics(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	// 空 callID 与未命中均 no-op（不 panic）
+	s.registerTaskExecCancel("", func() { t.Error("empty callID must not be registered") })
+	s.cancelTaskExec("")
+	s.cancelTaskExec("tc-absent")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.registerTaskExecCancel("tc-1", cancel)
+	s.cancelTaskExec("tc-1") // 命中 → cancel + 注销
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("registered exec should be cancelled")
+	}
+	s.cancelTaskExec("tc-1") // 命中即注销 → 重复回报 no-op（cancel 幂等）
+
+	// 执行结束注销 → 回报晚到 no-op
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	cancel2() // 执行体自然结束的等价形态（ctx 已 done）
+	s.registerTaskExecCancel("tc-2", cancel2)
+	s.unregisterTaskExecCancel("tc-2")
+	s.cancelTaskExec("tc-2")
+	if err := ctx2.Err(); err == nil {
+		t.Fatal("ctx2 should be cancelled beforehand")
 	}
 }

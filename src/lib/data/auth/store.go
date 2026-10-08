@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	data "github.com/chonkpilot/chonkpilot-data"
+
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -92,7 +94,7 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	db, err := bolt.Open(path, 0o600, nil)
+	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: data.BoltOpenTimeout})
 	if err != nil {
 		return nil, err
 	}

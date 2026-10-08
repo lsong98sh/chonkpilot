@@ -69,8 +69,9 @@ func TestNotifyOnSaveFailure(t *testing.T) {
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 200)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
-		return map[string]any{"list": []any{map[string]any{"category": "开发规范", "level": "project"}}}
+		return map[string]any{"list": []any{map[string]any{"category": "开发规范", "level": "project", "prompt": "提示词-开发规范"}}}
 	})
 	reply(t, bus, memoryReadSubject, func(map[string]any) map[string]any {
 		return map[string]any{"data": map[string]any{"content": "旧全文"}}
@@ -134,10 +135,11 @@ func TestNotifyPerFailedCategory(t *testing.T) {
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 200)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
 		return map[string]any{"list": []any{
-			map[string]any{"category": "项目概要", "level": "project"},
-			map[string]any{"category": "开发规范", "level": "project"},
+			map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"},
+			map[string]any{"category": "开发规范", "level": "project", "prompt": "提示词-开发规范"},
 		}}
 	})
 	failReply(t, bus, memoryReadSubject) // 读记忆失败（两类都失败）
@@ -170,6 +172,10 @@ func TestNoNotifyOnNonFailure(t *testing.T) {
 	reply(t, bus, sessionLoadSubject, func(map[string]any) map[string]any {
 		return map[string]any{"messages": []any{map[string]any{"role": "user", "content": "你好"}}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
+	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
+		return map[string]any{"list": []any{map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"}}}
+	})
 	spy := &noticeSpy{}
 	p := New(DefaultOptions())
 	p.deps = plugin.Deps{Bus: bus, Notify: spy.fn}
@@ -190,8 +196,9 @@ func TestNotifyNilSafe(t *testing.T) {
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 200)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
-		return map[string]any{"list": []any{map[string]any{"category": "项目概要", "level": "project"}}}
+		return map[string]any{"list": []any{map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"}}}
 	})
 	failReply(t, bus, memoryReadSubject) // 失败路径 ⇒ 会调 notify（未注入 → 必须静默）
 

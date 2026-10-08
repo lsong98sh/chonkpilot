@@ -24,15 +24,16 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // 订阅的事件主题（相对主题；总线注入前缀）。
 const (
-	subjTaskStarted = "task-started" // llm tasks.started
-	subjTaskUpdated = "task-updated" // llm tasks.updated
-	subjTaskDone    = "task-done"    // llm tasks.done
-	subjTaskReport  = "mcp-tasks-report"
-	subjTaskDeleted = "task-deleted"
+	subjTaskStarted = msgkeys.TopicTaskStarted // llm tasks.started
+	subjTaskUpdated = msgkeys.TopicTaskUpdated // llm tasks.updated
+	subjTaskDone    = msgkeys.TopicTaskDone    // llm tasks.done
+	subjTaskReport  = msgkeys.TopicMcpTasksReport
+	subjTaskDeleted = msgkeys.TopicTaskDeleted
 )
 
 // eventSubjects 是层订阅的既有事件全集（不新增主题）。

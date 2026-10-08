@@ -10,6 +10,7 @@
   "theme_nord": "Nord",
   "recent_dirs": "最近目录",
   "no_recent_dirs": "暂无最近目录",
+  "remove_recent_dir": "从最近列表移除（不删除项目）",
   "hide_tasks": "隐藏任务",
   "show_tasks": "显示任务",
   "hide_filetree": "隐藏文件树",

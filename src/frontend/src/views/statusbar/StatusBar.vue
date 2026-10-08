@@ -40,6 +40,21 @@
       </span>
     </div>
 
+    <!-- 记忆沉淀 / 上下文压缩**队列状态**（I-128）：数据源 = 既有通知面 tool-notify
+         （notice ∈ {memory,compress}-{queued,start,done}）；空闲（null）不渲染，完成态保持数秒后自动隐藏。 -->
+    <div v-if="memoryQueue || compressQueue" class="sb-section sb-queue">
+      <span
+        v-if="memoryQueue"
+        class="sb-q"
+        :class="'is-' + memoryQueue.state"
+      >{{ queueText('memory', memoryQueue.state) }}</span>
+      <span
+        v-if="compressQueue"
+        class="sb-q"
+        :class="'is-' + compressQueue.state"
+      >{{ queueText('compress', compressQueue.state) }}</span>
+    </div>
+
     <!-- 调试入口（B3）：DevTools 快捷键（F12 / Ctrl+Shift+I 等）与右键菜单 Inspect 已在宿主层屏蔽，
          用户只能经此处让宿主程序化打开 DevTools（gui.devtools.open → WebView2 OpenDevToolsWindow）。 -->
     <div class="sb-section" :title="$t('statusBar.openDevTools')" v-mq:[EventNames.guiDevToolsOpen].click>
@@ -65,8 +80,18 @@ import { getAllConfig } from '../../api/config'
 import { onDataRefresh } from '../../utils/dataClient'
 import { indexBadge } from '../../utils/indexStatus'
 import { useMemoryCategories } from '../../composables/useMemoryCategories'
+import { useQueueStatus } from '../../composables/useQueueStatus'
+import mq from '../../utils/mq'
 
 const { t } = useI18n()
+
+// 记忆沉淀 / 上下文压缩队列状态（I-128）：订阅既有通知面 tool-notify（StatusBar 侧消费）
+const { memoryQueue, compressQueue, handleNotice: handleQueueNotice } = useQueueStatus()
+
+// queueText 队列状态文案（kind × state → statusBar.queue_* 键；i18n，不硬编码）
+function queueText(kind, state) {
+  return t(`statusBar.queue_${kind}_${state}`)
+}
 
 // 记忆类别共享状态（与上下文管理页同源）：总量 + 分类列表 → 内容编辑弹框
 const {
@@ -116,6 +141,8 @@ onMounted(() => {
   _unsubs.push(onDataRefresh('prj-config', reloadPrjConfig))
   // data-memory-refresh：记忆沉淀写回后刷新类别 token（总量随之更新）
   _unsubs.push(onDataRefresh('memory', () => { loadMemoryList().catch(() => {}) }))
+  // tool-notify：记忆/压缩队列状态（I-128；仅 memory-*/compress-* 取值，其余忽略）
+  _unsubs.push(mq.on(EventNames.toolNotify, handleQueueNotice))
 })
 
 onUnmounted(() => {
@@ -198,5 +225,26 @@ onUnmounted(() => {
 }
 .sb-idx.is-error {
   color: var(--fg-important);
+}
+/* 记忆沉淀 / 压缩队列状态（I-128）：排队 / 进行中 / 完成三态，字色走语义 token（不裸写色值） */
+.sb-queue {
+  gap: 8px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sb-q {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+.sb-q.is-queued {
+  color: var(--fg-disabled);
+}
+.sb-q.is-running {
+  color: var(--fg-secondary);
+}
+.sb-q.is-done {
+  color: var(--text-primary);
 }
 </style>

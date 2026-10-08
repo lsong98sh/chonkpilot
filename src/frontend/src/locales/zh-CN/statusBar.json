@@ -35,5 +35,11 @@
   "idx_ready": "完成",
   "idx_error": "失败",
   "idx_open_codegraph": "点击设置：codegraph",
-  "idx_open_vfts": "点击设置：Vfts 全文索引"
+  "idx_open_vfts": "点击设置：Vfts 全文索引",
+  "queue_memory_queued": "记忆沉淀排队中",
+  "queue_memory_running": "记忆沉淀中…",
+  "queue_memory_done": "记忆沉淀完成",
+  "queue_compress_queued": "压缩排队中",
+  "queue_compress_running": "压缩中…",
+  "queue_compress_done": "压缩完成"
 }

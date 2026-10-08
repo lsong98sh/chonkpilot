@@ -30,6 +30,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // Service 是 tasktree 域门面实现（inline 绑定与 MQ 信封层共用）。
@@ -123,6 +124,15 @@ func (s *Service) TasktreeTasks(req facade.TasktreeTasksRequest) (facade.Tasktre
 			State:      kernel.Sval(r["state"]),
 			ExecJSON:   kernel.Sval(r["exec_json"]),
 			StartedAt:  kernel.Sval(r["created_at"]),
+
+			LoopCurrent:  ival(r["loop_current"]),
+			LoopTotal:    ival(r["loop_total"]),
+			Steps:        wire.DslStepsFromWire(r["steps"]),
+			Shadow:       boolVal(r["shadow"]),
+			ReturnKind:   kernel.Sval(r["return_kind"]),
+			ReturnInline: kernel.Sval(r["return_inline"]),
+			ReturnFile:   kernel.Sval(r["return_file"]),
+			ReturnSize:   ival(r["return_size"]),
 		}
 		// 待裁决明细（I-99）：仅当层权威 state == awaiting 且执行态携带 options 时给出
 		// （存在即带、缺省不加——缺省与既有载荷逐字节等价）。
@@ -163,7 +173,7 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 		"finished_at":   n.FinishedAt,
 		"tool_call_id":  n.ToolCallID,
 		"instance_id":   n.InstanceID,
-		"workdir":       n.WorkDir,
+		"work_dir":      n.WorkDir,
 		"state":         n.State,
 		"args_digest":   n.ArgsDigest,
 		"result_digest": n.ResultDigest,
@@ -171,10 +181,29 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 		"started_at":    n.StartedAt,
 		"done_at":       n.DoneAt,
 		"deleted_at":    n.DeletedAt,
+		"return_kind":   n.ReturnKind,
+		"return_inline": n.ReturnInline,
+		"return_file":   n.ReturnFile,
 	} {
 		if v != "" {
 			rec[k] = v
 		}
+	}
+	// DSL-3 展示字段（非零才落；缺省与既有载荷逐字节等价）。
+	if n.LoopCurrent != 0 {
+		rec["loop_current"] = n.LoopCurrent
+	}
+	if n.LoopTotal != 0 {
+		rec["loop_total"] = n.LoopTotal
+	}
+	if n.ReturnSize != 0 {
+		rec["return_size"] = n.ReturnSize
+	}
+	if n.Shadow {
+		rec["shadow"] = true
+	}
+	if len(n.Steps) > 0 {
+		rec["steps"] = wire.DslStepsToWire(n.Steps)
 	}
 	if n.Closed != nil {
 		rec["closed"] = *n.Closed
@@ -255,7 +284,7 @@ func (s *Service) emitTaskDeleted(instanceID, nodeID string) {
 		return
 	}
 	b, _ := json.Marshal(map[string]any{"instance_id": instanceID, "node_id": nodeID})
-	_ = s.Bus.Emit(context.Background(), "task-deleted", b)
+	_ = s.Bus.Emit(context.Background(), msgkeys.TopicTaskDeleted, b)
 }
 
 // 影子域路由（21 §9.1 P1 遗留，**P2 仅作回滚开关**）：载荷 data.shadow = true → 读写**影子桶**
@@ -273,6 +302,36 @@ func closedRow(r data.Record) bool {
 		return true
 	}
 	return kernel.Sval(r["deleted_at"]) != ""
+}
+
+// ival 把数据面 JSON 数值（float64/int/json.Number）转为 int（非法 → 0）。
+func ival(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(i)
+	}
+	return 0
+}
+
+// boolVal 把数据面值转 bool（bool 原值；字符串 "true" → true）。
+func boolVal(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return b == "true"
+	}
+	return false
 }
 
 // shadowIndexPut 维护影子索引桶（key = "<域值>\x00<task_id>"，与 tasktreeDelete 的 suffix

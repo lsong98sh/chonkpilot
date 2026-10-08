@@ -27,13 +27,14 @@ import (
 	"time"
 
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // data 面（文件清单，persist 订阅；域 filelist）。
 const (
-	subjectFileListList = "data-filelist-list"
-	subjectFileListPut  = "data-filelist-put"
-	subjectFileListDel  = "data-filelist-del"
+	subjectFileListList = msgkeys.TopicDataFilelistList
+	subjectFileListPut  = msgkeys.TopicDataFilelistPut
+	subjectFileListDel  = msgkeys.TopicDataFilelistDel
 )
 
 // maxFileBytes 单文件上限（与引擎 maxFileBytes / codegraph 同口径）。

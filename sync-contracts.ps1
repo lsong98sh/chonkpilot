@@ -1,4 +1,4 @@
-﻿# sync-contracts.ps1：契约「单一数据源 → capability」覆盖式同步（不重建、不动 exe）
+﻿﻿# sync-contracts.ps1：契约「单一数据源 → capability」覆盖式同步（不重建、不动 exe）
 #
 # 背景：契约 md 有「权威源 → capability 部署副本」两处存在形态，同源但可静默分叉：
 #   权威源（出厂数据唯一源 = src/initdata/capability）：

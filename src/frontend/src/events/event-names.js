@@ -24,7 +24,6 @@ export const EventNames = {
   toolTimeout: 'mcp-tools-timeout', // 后端 → 前端：调用超时待裁决（{instance_id, tool_call_id, task_id, tool, reason:'timeout', timeout_s, options:[detach,cancel]|[wait,cancel]}）
   toolsWait: 'mcp-tools-wait', // 前端 → 后端：等待完成 / 撤销超时（{instance_id, tool_call_id|task_id}）
   sessionNew: 'session-new', // 会话创建（主/子统一主题；子会话 payload 带 parent_session_id）
-  sessionStatisticRefresh: 'session-statistic-refresh', // 会话统计刷新
   // 任务编排事件（server 编排广播，21-llm-server；task 结构字段：task_id/tool/kind/state/…）
   taskStarted: 'tasks.started', // server 任务节点建立（编排广播）
   taskUpdated: 'tasks.updated', // server 任务状态/输出更新（编排广播，节流 ≤250ms）
@@ -36,10 +35,11 @@ export const EventNames = {
   // ── LLM 域事件（域化改造，阶段二/三；与 Go 侧 internal/messages 保持一致）──
   llmStart: 'llm-start', // 前端 → 后端：启动一轮 LLM（每 start 生成新 turn-id；前端 send/队列出队时发，替代 SendChatMessage RPC）
   llmStarted: 'llm-started', // 后端 → 前端：受理 ack（含 turn_id；notify=true = 后端通知轮次）——前端据此维护 currentTurnId + busy
+  llmReceive: 'llm-receive', // 后端 → 前端：LLM 流增量（桥 mqTypeMap：session-receive → llm-receive；payload.type 二次分子主题 text/reason/tool-call）
   llmComplete: 'llm-complete', // 后端 → 前端：一轮终结（队列出队的唯一 ack；payload 含 turn_id/status）
   llmCancel: 'llm-cancel', // 前端 → 后端：取消当前轮（{req_id, session, turn}，21-llm-server；替代 CancelChat RPC）
-  askUser: 'ask-user', // 后端 → 前端：LLM ask_user 提问（{ask-id, question, options?, custom?, session, turn, expires_at}；替代 tool-pair{user_ask}）
-  askReply: 'ask-user-reply', // 用户回答 ask_user（前端 → 后端；{ask-id, answer, custom}；替代 ask-reply，附录 A）
+  askUser: 'ask-user', // 后端 → 前端：LLM ask_user 提问（{ask_id, question, options?, custom?, session, turn, expires_at}；替代 tool-pair{user_ask}）
+  askReply: 'ask-user-reply', // 用户回答 ask_user（前端 → 后端；{ask_id, answer, custom}；替代 ask-reply，附录 A）
 
   // ── 应用事件（IDE → 前端）──
   sessionRefresh: 'session-refresh',
@@ -58,7 +58,6 @@ export const EventNames = {
   optimizeToken: 'optimize-token',
   optimizeDone: 'optimize-done',
   optimizeError: 'optimize-error',
-  codebaseStatus: 'codebase-status',
   // 文件域（filesys 直连，61-消息一览 §2）：变更统一 filesys.changed
   // （有 children = 目录批次免二次 list；无 children = 单文件 operation）。
   // 请求发 filesys.list/content/create/remove…；watch/unwatch 声明即展开/收起。
@@ -105,6 +104,12 @@ export const EventNames = {
   scenarioOpen: 'scenario-open',
   scenarioReload: 'scenario-reload',
   scenarioSetDefault: 'scenario-set-default', // 设为"默认选中场景"（defaultScenario，payload: { id }）
+  // 场景向导（agents-wizard；后端契约见 docs/agents-wizard/05-插件与消息设计.md）
+  agentWizard: 'agent-wizard', // 后端 → 前端：project_spec.md 缺失 → 打开向导（payload {reason, work_dir, spec_path}）
+  agentWizardProbe: 'agent-wizard-probe', // 前端 → 后端：只读探测工作目录（payload {}，reply result.probe）
+  agentWizardCompose: 'agent-wizard-compose', // 前端 → 后端：按项目合成各 agent 提示词（payload {mode, description, probe, choices, team}，reply result.{ok, agents, error}）
+  agentWizardGenerate: 'agent-wizard-generate', // 前端 → 后端：写场景 + 记忆 + project_spec.md（reply {ok, scenario_id, spec_path, memory_saved, errors}）
+  agentWizardSkip: 'agent-wizard-skip', // 前端 → 后端：「关闭/稍后」本会话不再自动弹（payload {}）
   // 配置
   configOpen: 'config-open',
   configMenuToggle: 'config-menu-toggle', // 工具栏「设置」下拉菜单开合
@@ -217,9 +222,6 @@ export const EventNames = {
   contextRestorePrompt: 'context-restore-prompt',
   // 状态栏 / 工具栏
   dbViewerOpen: 'db-viewer-open',
-  codebaseClear: 'codebase-clear',
-  codebaseReindex: 'codebase-reindex',
-  codebaseRetryFailed: 'codebase-retry-failed',
   // 纯 DOM 行为：弹层/菜单容器点击仅停止冒泡（无业务动作，仅使交互可观测）
   containerClick: 'container-click',
   // ── Dialog 对话框操作（DialogShell 组件内部）──
@@ -249,6 +251,7 @@ export const EventNames = {
   workdirOpen: 'workdir-open',
   recentDirsToggle: 'recent-dirs-toggle',
   recentDirSelect: 'recent-dir-select',
+  recentDirRemove: 'recent-dir-remove', // 「最近项目」下拉项 × → 仅删除该条记录（不删对应项目资产）
   themeToggle: 'theme-toggle',
   themeSelect: 'theme-select',
   langToggle: 'lang-toggle',

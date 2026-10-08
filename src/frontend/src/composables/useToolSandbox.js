@@ -23,6 +23,7 @@ import { getUserConfig, saveUserConfig, resetUserKey, getProjectSecurity, listMc
 import { countServerSandboxOn } from '../utils/sandboxSummary'
 import { countTrustDirs, needsTrustDirsWarning } from '../utils/sandboxTrust'
 import mq from '../utils/mq'
+import { MsgClientTopics } from '../events/msgkeys.js'
 
 // usr 配置键（自由键通道）：值与 tool_async 同形态 = JSON 对象文本。
 export const TOOL_SANDBOX_KEY = 'tool_sandbox'
@@ -98,7 +99,8 @@ export function useToolSandbox() {
   async function loadTools() {
     loading.value = true
     try {
-      const env = await mq.emit('tools-list', {})
+      // tools-list：客户端能力面 type（schema clientTopic，桥映射 mcp-tools-list），常量见 MsgClientTopics。
+      const env = await mq.emit(MsgClientTopics.toolsList, {})
       const res = env && env.backend && env.backend.result
       const tools = res && Array.isArray(res.tools) ? res.tools : []
       const byCat = {}

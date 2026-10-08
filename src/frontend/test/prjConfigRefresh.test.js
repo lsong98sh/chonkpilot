@@ -37,7 +37,7 @@ test('makePrjKeysMatcher：精确 ∪ 前缀命中；缺 id 保守命中', () =>
   const match = makePrjKeysMatcher(['memory.enabled'], ['memory.category.'])
   assert.equal(match({ id: 'memory.enabled' }), true, '精确键须命中')
   assert.equal(match({ id: 'memory.category.项目概要' }), true, '前缀键须命中')
-  assert.equal(match({ id: 'memory.prompt.项目概要' }), false, '未列入前缀 → 不命中')
+  assert.equal(match({ id: 'keep_full_max_turns' }), false, '未列入键/前缀 → 不命中')
   assert.equal(match({ id: 'codegraph.status' }), false, '无关键 → 不命中')
   assert.equal(match({}), true, '广播无键名 → 保守命中（宁可多刷不漏刷）')
   assert.equal(makePrjKeysMatcher()({ id: 'anything' }), false, '无关注键（空）→ 全部不命中')

@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
 )
 
@@ -108,7 +109,7 @@ func (g *gwClient) Call(ctx context.Context, name string, args map[string]any, c
 	if args != nil {
 		body["arguments"] = args
 	}
-	res, err := g.call(ctx, "mcp-tools-call", c, body)
+	res, err := g.call(ctx, msgkeys.TopicMcpToolsCall, c, body)
 	if err != nil {
 		return nil, "", err
 	}
@@ -159,7 +160,7 @@ func resultStatus(res map[string]any) string {
 
 // ListTools 拉取 tools/list → 缓存 []ToolDef（并**按归属域分桶**，RB-5 L2）。
 func (g *gwClient) ListTools(ctx context.Context) ([]ToolDef, error) {
-	res, err := g.emitWait(ctx, "mcp-tools-list", map[string]any{})
+	res, err := g.emitWait(ctx, msgkeys.TopicMcpToolsList, map[string]any{})
 	if err != nil {
 		return nil, err
 	}

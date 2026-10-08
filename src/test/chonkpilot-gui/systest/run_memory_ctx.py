@@ -26,10 +26,11 @@
         B: 阈值极大 → 快照**无** `[已压缩早前对话]` 且 mock 请求数 == 轮数（未发生摘要调用）；
            阈值极小 → 快照**出现** `[已压缩早前对话]`（压缩已回写快照）+ mock 收到**摘要请求**
            （n_requests = 轮数+1，`/last` 的 system == 摘要提示词）。
-  A/B-5 `summary.prompt.md`（data-prompt-{save,load,delete}，key=summary_prompt）
+  A/B-5 `capability/system/summary.md`（data-prompt-{save,load,delete}，key=summary_prompt）
         A: 写哨兵 → `data-prompt-load` 回读 == 哨兵 + 项目级文件落盘含哨兵；
         B: 触发压缩 → 摘要请求 system **含哨兵**；
-        回落: 删除该键 → A 回读 == 内置默认（`data.DefaultSummaryPrompt`）；
+        回落: 删除该键 → A 回读 == 内置默认（embed 内置 `data.SystemDoc("summary")`，
+              = 出厂文件 `src/initdata/capability/system/summary.md`）；
               B 再触发一次压缩 → 摘要请求 system == 内置默认（回落生效）。
   UI-6 `memory.category-max-tokens`
         **仅 UI 效果断言**（超阈值行标红 + 「建议细分记忆」提示文案）：该键后端**不消费**
@@ -37,6 +38,9 @@
         ——故**不写任何后端效果断言**。
 
 观测面（全部既有，零新增 MQ 主题）
+  * 注（2026-10-06，OP-05/06）：记忆提取进度已由 prjusr config 键 `memory-extract.<会话>.<类别>`
+    迁至 **prjusr 专用表 `memory_extract`**（经 `data-memory-extract-{load,save,delete}`）——
+    本套件不观测进度键，A/B 功能断言（落盘 / refresh / 阈值门控）不受影响。
   * mock LLM `GET /last`（**已有** `system` 原文 / `n_requests` 累计计数，P2 批次既有能力）；
   * `data-memory-refresh` 广播（61 §3.1 既有主题，save 后广播，op=save）；
   * 落盘文件：`<work-dir>/.chonkpilot/memory/<类别>.md`（隔离 work-dir 内，跑完随 tmp 清理）；
@@ -67,7 +71,7 @@ from chonk_client import TestError, run_case  # noqa: E402
 import harness as _h  # noqa: E402
 
 SENT = "MEMCTX-SUMMARY-SENTINEL-%d" % int(time.time())
-# 内置默认摘要提示词前缀（chonkpilot-data/prompt_default.go:DefaultSummaryPrompt）——回落判据
+# 内置默认摘要提示词前缀（出厂文件 src/initdata/capability/system/summary.md → data.SystemDoc("summary")）
 DEFAULT_SUMMARY = "你是对话历史摘要器"
 # 压缩插件回写快照的摘要前缀（chonkpilot-plugin-compress/compress.go:DoCompress）
 COMPRESS_MARK = "[已压缩早前对话]"
@@ -125,7 +129,7 @@ def main():
 
     MEM_DIR = os.path.join(g.work_dir, ".chonkpilot", "memory")
     PREF_FILE = os.path.join(home, ".chonkpilot", "用户偏好.md")
-    SUMMARY_FILE = os.path.join(g.work_dir, ".chonkpilot", "capability", "prompts", "summary.prompt.md")
+    SUMMARY_FILE = os.path.join(g.work_dir, ".chonkpilot", "capability", "system", "summary.md")
 
     # ── mock / 数据面 / 会话 助手 ──────────────────────────────
 
@@ -637,7 +641,7 @@ def main():
                  summary_request_system=sys[:120])
 
     def case_summary_prompt():
-        """A/B-5 summary.prompt.md：A 保存/回读；B 压缩摘要请求 system 含哨兵；删除 → 回落默认。"""
+        """A/B-5 capability/system/summary.md：A 保存/回读；B 压缩摘要请求 system 含哨兵；删除 → 回落默认。"""
         with _h.prj_config_guard(c, ["memory.enabled", "keep_full_max_turns", "keep_full_max_tokens", "compress_token_threshold"]):
             prj_save("memory.enabled", "false")
             prj_save("keep_full_max_turns", "1")
@@ -650,7 +654,7 @@ def main():
                     raise TestError("A 落库确认失败：data-prompt-load 回读 %r，期望 %r" % (got, SENT))
                 disk = read_file(SUMMARY_FILE)
                 if SENT not in disk:
-                    raise TestError("项目级 summary.prompt.md 未落盘哨兵：%r" % disk[:200])
+                    raise TestError("项目级 capability/system/summary.md 未落盘哨兵：%r" % disk[:200])
                 _evi("summary-prompt-A", load=got, file=SUMMARY_FILE, file_len=len(disk))
                 # B：触发一次压缩 → 摘要请求 system == 哨兵
                 reset_mock()
@@ -670,7 +674,7 @@ def main():
                 if SENT in got2 or DEFAULT_SUMMARY not in got2:
                     raise TestError("删除后 A 回读未回落内置默认：%r" % got2[:200])
                 if os.path.exists(SUMMARY_FILE):
-                    raise TestError("删除后项目级 summary.prompt.md 仍存在")
+                    raise TestError("删除后项目级 capability/system/summary.md 仍存在")
                 _evi("summary-prompt-A-fallback", load=got2[:120], file_exists=False)
                 reset_mock()
                 arm(("turn-start", "llm-complete", "llm-error"))
@@ -880,7 +884,7 @@ def main():
             ("A/B-3 memory.category.<类别>（A 回读 + B 指引含/不含 + 该类写入/不改写）",
              case_category_gate),
             ("A/B-4 keep_full_max_turns+keep_full_max_tokens+compress_token_threshold（A 回读 + B 压缩真发生）", case_compress_threshold),
-            ("A/B-5 summary.prompt.md（A 回读 + B 摘要请求 system 哨兵/回落）", case_summary_prompt),
+            ("A/B-5 capability/system/summary.md（A 回读 + B 摘要请求 system 哨兵/回落）", case_summary_prompt),
             ("UI-6 memory.category-max-tokens（仅 UI 标红/提示，后端不消费）", case_category_max_tokens_ui),
             ("UI-7 记忆内容编辑弹框（撑满/内嵌优化/保存即关+落库/状态栏总量→分类列表）", case_memory_edit_dialog_ui),
         ]:

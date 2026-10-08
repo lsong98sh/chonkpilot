@@ -4,6 +4,7 @@
 //
 // 级别矩阵（纯逻辑单源）= utils/agentLevelMatrix.js（与本文件分离以便 node 测试直跑）。
 import mq from './mq'
+import { MsgClientTopics } from '../events/msgkeys.js'
 import { getUserConfig } from '../api/config'
 import { nodeLevel, toolAllowedForLevel } from './agentLevelMatrix'
 
@@ -34,7 +35,8 @@ export async function loadLlmOptions(t) {
 export async function loadToolGroups(kind, t) {
   const groups = []
   try {
-    const env = await mq.emit('tools-list', {})
+    // tools-list：客户端能力面 type（schema clientTopic，桥映射 mcp-tools-list），常量见 MsgClientTopics。
+    const env = await mq.emit(MsgClientTopics.toolsList, {})
     const res = env && env.backend && env.backend.result
     const tools = res && Array.isArray(res.tools) ? res.tools : []
 

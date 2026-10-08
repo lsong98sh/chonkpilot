@@ -77,17 +77,30 @@ func Build(opts Options) (*Stack, error) {
 	// 由 llm/server 的 turn_test.go TestSystemDefaultParamsMirror 守护），仅注入契约根。
 	cfg := mcpms.DefaultConfig()
 	cfg.Root = root
+	// OP-15：capability 契约扫描/注册耗时（含 AppToolNames 全树 WalkDir；仅插桩）
+	tScan := time.Now()
 	if err := mcpms.RegisterContracts(ms, root, cfg); err != nil {
 		logf("[chonkpilot-server] capability 契约注册失败（空能力面继续）: %v\n", err)
 	}
 	st := &Stack{Server: ms, Config: cfg, AppTools: AppToolNames(root)}
+	logf("[startup] capability 契约扫描/注册 耗时 %dms\n", time.Since(tScan).Milliseconds())
 
+	// category=server 契约工具（如 dsl_run）**定义单源**：不注册为 executor 工具（见 ServerTools），
+	// 由装配层经 mcpms.ServerTools 桥接注入 gateway（gateway lib 不依赖 mcp-server 包，RB-2）。
+	serverTools, stErr := mcpms.ServerTools(root, cfg)
+	if stErr != nil {
+		logf("[chonkpilot-server] server 类别工具契约加载失败（回落内置定义）: %v\n", stErr)
+	}
+
+	// OP-15：gateway 构建耗时（仅插桩）
+	tGW := time.Now()
 	gw, err := mcpgateway.New(mcpgateway.Params{
 		Bus:             opts.Bus,
 		MCPServer:       ms,
 		MCPConfig:       cfg, // dir 节点与 self 共用执行配置（工具级覆盖/沙箱/工具链统一施加点，I-82）
 		ContractScanner: st,  // RB-2：dir 节点扫描依赖倒置 —— 扫目录/建官方 server 由装配方完成
 		Servers:         opts.Servers,
+		ServerTools:     serverTools, // category=server 契约工具定义单源（dsl_run 等）
 		AsyncMode:       opts.AsyncMode,
 		ManageAddr:      opts.ManageAddr,
 		CallTimeout:     60 * time.Second,
@@ -97,6 +110,7 @@ func Build(opts Options) (*Stack, error) {
 	if err != nil {
 		return st, err
 	}
+	logf("[startup] gateway 构建 耗时 %dms\n", time.Since(tGW).Milliseconds())
 	st.Gateway = gw
 	return st, nil
 }

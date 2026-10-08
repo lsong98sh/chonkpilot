@@ -249,7 +249,8 @@ def case_payload_llm_config():
     **已无源**（实测 0 条，见 61 §6）。故轮次确权改用主会话 turn-start（mq-only）。
     以下字段按「存在才断言、缺失跳过」处理（llm-started 恒缺失即恒跳过）：
       - llm_config：protocol/model/apiKey/baseUrl/temperature/maxTokens/thinking/reasoningEffort
-      - scenario：scenario_id/name/systemPrompt/agents
+      - scenario：scenario_id/name/agents（场景层派生 `systemPrompt` 字段已删除；主 agent 提示词
+        归 `agents[isMain].prompt`）
       - system_prompt：最终合成提示词全文（含工具使用说明）
     """
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
@@ -273,11 +274,9 @@ def case_payload_llm_config():
             raise TestError(f"llm_config.model={cfg.get('model')}，期望 mock-model")
     sc = p.get("scenario") or {}
     if sc:
-        for k in ("scenario_id", "name", "systemPrompt", "agents"):
+        for k in ("scenario_id", "name", "agents"):
             if k not in sc:
                 raise TestError(f"scenario 缺字段 {k}，实际: {sc}")
-        if not sc.get("systemPrompt"):
-            raise TestError("scenario.systemPrompt 为空")
     sp = p.get("system_prompt") or ""
     if sp and "工具" not in sp and "tool" not in sp.lower():
         raise TestError("system_prompt 应含工具使用说明")
@@ -582,8 +581,8 @@ def _delegate_single(q, expect_label):
 
 
 def case_delegate_single_plain():
-    """五.4 单次委派（无第三参）：子任务展示名回退为提示词截断（≤24 字符）。"""
-    _delegate_single("please call delegate-plain", "delegate-plain-prompt")
+    """五.4 单次委派（三参）：子任务展示名（tasktree 节点 label）= 第三参「目的」。"""
+    _delegate_single("please call delegate-plain", "单次委派回显")
 
 
 def case_delegate_single_purpose():

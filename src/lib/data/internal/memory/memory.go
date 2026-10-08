@@ -37,6 +37,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
 
@@ -52,8 +53,9 @@ func New(base *kernel.Base) *Service { return &Service{Base: base} }
 var _ facade.MemoryAPI = (*Service)(nil)
 
 // MemoryUserCategory 是唯一用户级类别（不可配置；跨项目偏好）。
-// 导出供 system prompt 带出指引列举（避免类别清单两处维护）。
-const MemoryUserCategory = "用户偏好"
+// 单源 = facade.MemoryUserCategory（记忆域 + config 域共用）；此处保留同名字面量导出供
+// system prompt 带出指引列举 / persist compat 别名（避免类别清单两处维护）。
+const MemoryUserCategory = facade.MemoryUserCategory
 
 // memoryCategorySpec 描述一个记忆类别：中文文件名（去扩展名）+ 级别 + 预置用途说明。
 type memoryCategorySpec struct {
@@ -259,6 +261,40 @@ func readFileString(path string) string {
 	return ""
 }
 
+// ── 类别沉淀提示词（OP-04：文件化，读序 项目级 → 用户级 → 系统级磁盘 → embed 内置）──
+
+// memoryPromptKind 类别沉淀提示词在 system 文档树下的 kind（= "memory/<类别名>"，去 .md）。
+func memoryPromptKind(category string) string { return "memory/" + category }
+
+// memoryPromptPaths 类别提示词文件的候选路径（读序：项目级 → 用户级 → 系统级磁盘）。
+// workDir 空 → 不含项目级；系统级根不可用（AppDir 缺 + os.Executable 失败）→ 不含系统级。
+func (s *Service) memoryPromptPaths(workDir, category string) []string {
+	kind := memoryPromptKind(category)
+	var out []string
+	if workDir != "" {
+		out = append(out, capfs.SystemDocFile(capfs.ProjectRoot(workDir), kind))
+	}
+	out = append(out, capfs.SystemDocFile(capfs.UserRoot(s.UsrPath), kind))
+	if app, err := capfs.SystemRoot(s.AppDir); err == nil {
+		out = append(out, capfs.SystemDocFile(app, kind))
+	}
+	return out
+}
+
+// memoryPromptForCategory 解析某类别的沉淀提示词有效值：
+// 项目级文件 → 用户级文件 → 系统级磁盘文件 → embed 内置（data.SystemDoc）。
+// override 标记**用户可编辑的覆盖文件**（项目级 / 用户级之一命中且非空）是否存在 ——
+// 供前端「已自定义 / 恢复默认」判定（系统级磁盘文件属出厂资源，不可编辑、不计入）。
+// 任一提示词文件皆缺（如新增自定义类别未建提示词文件）→ 空串 + false（该类**不提取**）。
+func (s *Service) memoryPromptForCategory(workDir, category string) (prompt string, override bool) {
+	for i, p := range s.memoryPromptPaths(workDir, category) {
+		if v := strings.TrimSpace(readFileString(p)); v != "" {
+			return v, i <= 1 // 0 = 项目级文件、1 = 用户级文件（均可编辑 = 覆盖）
+		}
+	}
+	return data.SystemDoc(memoryPromptKind(category)), false
+}
+
 // memoryCustomCategories 扫描项目级记忆目录，返回自定义类别名（= 非预置的 <类别>.md，
 // 名称合法性再次校验；按名称排序保证列表稳定）。目录不存在 → 空。
 func memoryCustomCategories(workDir string) []string {
@@ -287,11 +323,16 @@ func (s *Service) memoryList(workDir string) []facade.MemoryCategory {
 	out := make([]facade.MemoryCategory, 0, len(memoryCategorySpecs))
 	appendItem := func(category, path, level string) {
 		content := readFileString(path)
+		// 类别沉淀提示词：后端按文件读序解析后随清单**下发**（OP-04）——前端不再持镜像常量；
+		// 插件亦据此取 llm-simple 的 system（无提示词文件 → 该类不提取）。
+		prompt, override := s.memoryPromptForCategory(workDir, category)
 		out = append(out, facade.MemoryCategory{
-			Category: category,
-			Level:    level,
-			Path:     filepath.ToSlash(path),
-			Tokens:   data.EstimateTokens(content),
+			Category:       category,
+			Level:          level,
+			Path:           filepath.ToSlash(path),
+			Tokens:         data.EstimateTokens(content),
+			Prompt:         prompt,
+			PromptOverride: override,
 		})
 	}
 	for _, spec := range memoryCategorySpecs {
@@ -384,4 +425,118 @@ func (s *Service) MemoryDelete(req facade.MemoryDeleteRequest) (facade.MemoryDel
 	}
 	s.RefreshScoped("memory", req.InstanceID, req.Category, "delete", req.Scope)
 	return facade.MemoryDeleteResponse{OK: true, ID: req.Category}, nil
+}
+
+// ── 记忆提取进度（专用表 memory_extract，prjusr；OP-05/06，2026-10-06）──
+//
+// 进度 = 某 (会话, 类别) 最后**成功**提取的 turn —— 记忆插件据此取「上次提取轮 → 最新轮」
+// 的跨轮范围、并做累计门控（OP-05）。此前以 prjusr config 键 `memory-extract.<会话>.<类别>`
+// 承载（已废弃：进度是记录不是配置，不得写入 config）→ 改本专用表。
+
+// memoryExtractBucket 是记忆提取进度专用表（prjusr bbolt bucket）。
+const memoryExtractBucket = "memory_extract"
+
+// memoryExtractKey 构造进度记录主键：<session_id>\x00<category>（会话 id 无 \x00）。
+func memoryExtractKey(sessionID, category string) string { return sessionID + "\x00" + category }
+
+// memoryExtractGet 读单条进度（不存在 / 读库失败 → ok=false）。
+func memoryExtractGet(db *data.DB, sessionID, category string) (facade.MemoryExtractRecord, bool) {
+	var rec data.Record
+	ok, err := db.Table(memoryExtractBucket).Get(memoryExtractKey(sessionID, category), &rec)
+	if err != nil || !ok {
+		return facade.MemoryExtractRecord{}, false
+	}
+	sid := kernel.Sval(rec["session_id"])
+	if sid == "" {
+		sid = sessionID
+	}
+	cat := kernel.Sval(rec["category"])
+	if cat == "" {
+		cat = category
+	}
+	return facade.MemoryExtractRecord{SessionID: sid, Category: cat, LastTurnID: kernel.Sval(rec["last_turn_id"])}, true
+}
+
+// MemoryExtractLoad 读某会话的记忆提取进度（Category 空 = 全部类别，按类别名升序）。
+func (s *Service) MemoryExtractLoad(req facade.MemoryExtractLoadRequest) (facade.MemoryExtractLoadResponse, error) {
+	if req.SessionID == "" {
+		return facade.MemoryExtractLoadResponse{}, errors.New("session_id required")
+	}
+	db, err := s.PrjUsrFor(req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.MemoryExtractLoadResponse{}, err
+	}
+	out := make([]facade.MemoryExtractRecord, 0)
+	if req.Category != "" {
+		if rec, ok := memoryExtractGet(db, req.SessionID, req.Category); ok {
+			out = append(out, rec)
+		}
+		return facade.MemoryExtractLoadResponse{List: out}, nil
+	}
+	keys, err := db.Table(memoryExtractBucket).ListKeys()
+	if err != nil {
+		return facade.MemoryExtractLoadResponse{}, err
+	}
+	prefix := req.SessionID + "\x00"
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if rec, ok := memoryExtractGet(db, req.SessionID, strings.TrimPrefix(k, prefix)); ok {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Category < out[j].Category })
+	return facade.MemoryExtractLoadResponse{List: out}, nil
+}
+
+// MemoryExtractSave 写某 (会话, 类别) 的提取进度（仅在该类别**成功**写回后调用）。
+// updated_at 由 Table.Upsert 自动写入。
+func (s *Service) MemoryExtractSave(req facade.MemoryExtractSaveRequest) (facade.MemoryExtractSaveResponse, error) {
+	if req.SessionID == "" || req.Category == "" {
+		return facade.MemoryExtractSaveResponse{}, errors.New("session_id/category required")
+	}
+	db, err := s.PrjUsrFor(req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.MemoryExtractSaveResponse{}, err
+	}
+	rec := data.Record{
+		"session_id": req.SessionID, "category": req.Category, "last_turn_id": req.LastTurnID,
+	}
+	if err := db.Table(memoryExtractBucket).Upsert(memoryExtractKey(req.SessionID, req.Category), rec); err != nil {
+		return facade.MemoryExtractSaveResponse{}, err
+	}
+	return facade.MemoryExtractSaveResponse{OK: true, ID: req.Category}, nil
+}
+
+// MemoryExtractDelete 删某会话（可选某类别）的提取进度（幂等：不存在视为成功）。
+func (s *Service) MemoryExtractDelete(req facade.MemoryExtractDeleteRequest) (facade.MemoryExtractDeleteResponse, error) {
+	if req.SessionID == "" {
+		return facade.MemoryExtractDeleteResponse{}, errors.New("session_id required")
+	}
+	db, err := s.PrjUsrFor(req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.MemoryExtractDeleteResponse{}, err
+	}
+	t := db.Table(memoryExtractBucket)
+	if req.Category != "" {
+		if err := t.Delete(memoryExtractKey(req.SessionID, req.Category)); err != nil && !errors.Is(err, data.ErrNotFound) {
+			return facade.MemoryExtractDeleteResponse{}, err
+		}
+		return facade.MemoryExtractDeleteResponse{OK: true}, nil
+	}
+	keys, err := t.ListKeys()
+	if err != nil {
+		return facade.MemoryExtractDeleteResponse{}, err
+	}
+	prefix := req.SessionID + "\x00"
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if err := t.Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
+			return facade.MemoryExtractDeleteResponse{}, err
+		}
+	}
+	return facade.MemoryExtractDeleteResponse{OK: true}, nil
 }

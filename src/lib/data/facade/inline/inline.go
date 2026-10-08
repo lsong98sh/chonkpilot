@@ -38,6 +38,7 @@ type binding struct {
 	facade.ScenarioAPI
 	facade.MemoryAPI
 	facade.McpAPI
+	facade.ProjectAPI
 }
 
 // 编译期断言：合成结果 = 完整门面。
@@ -68,5 +69,6 @@ func NewWithOptions(bus mq.Bus, opts persist.Options) facade.API {
 		ScenarioAPI:  svc,
 		MemoryAPI:    svc,
 		McpAPI:       svc,
+		ProjectAPI:   svc,
 	}
 }

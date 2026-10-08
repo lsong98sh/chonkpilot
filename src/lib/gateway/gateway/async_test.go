@@ -71,15 +71,20 @@ type fakeProvider struct {
 	id     string
 	origin string // builtin / user
 	tools  []*mcp.Tool
+	// line = 模拟执行线（配置⑤ 用例按线断言终止动作）："mem"（in-memory 协作式）/
+	// "spawned"（⑥⑦⑨ kill+respawn）/ "remote"（⑧⑩ 仅断请求）；空 = 与既有用例一致（仅计数）。
+	line string
 
-	mu          sync.Mutex
-	calls       map[string]int
-	invalidates int
-	rebuilt     bool  // Invalidate 返回值（默认 true）
-	invErr      error // Invalidate 错误（默认 nil；模拟 respawn 失败）
-	callErr     error // Call 错误（默认 nil；模拟上游调用失败）
-	started     chan string
-	release     chan struct{}
+	mu           sync.Mutex
+	calls        map[string]int
+	invalidates  int
+	killed       bool  // Terminate 中执行了 kill（spawned 线）
+	disconnected bool  // Terminate 中仅断请求（remote 线）
+	rebuilt      bool  // Invalidate/Terminate 返回值（默认 true）
+	invErr       error // Invalidate/Terminate 错误（默认 nil；模拟 respawn 失败）
+	callErr      error // Call 错误（默认 nil；模拟上游调用失败）
+	started      chan string
+	release      chan struct{}
 }
 
 func newFakeProvider(id, origin string) *fakeProvider {
@@ -120,9 +125,17 @@ func (p *fakeProvider) setCallErr(err error) {
 	p.mu.Unlock()
 }
 
-func (p *fakeProvider) Invalidate(context.Context) (bool, error) {
+// Terminate 是取消的执行线入口（onTaskCancel 调用）：按 line 模拟终止动作并计数
+// （mem = 协作式 no-op；spawned = kill + respawn；remote = 仅断请求）。
+func (p *fakeProvider) Terminate(context.Context, string, string) (bool, error) {
 	p.mu.Lock()
 	p.invalidates++
+	switch p.line {
+	case "spawned":
+		p.killed = true
+	case "remote":
+		p.disconnected = true
+	}
 	err := p.invErr
 	rebuilt := p.rebuilt
 	p.mu.Unlock()
@@ -130,6 +143,11 @@ func (p *fakeProvider) Invalidate(context.Context) (bool, error) {
 		return false, err
 	}
 	return rebuilt, nil
+}
+
+// Invalidate 保留（监控/重建路径仍用）；委托 Terminate 共用计数（既有 invalidateCount() 语义不变）。
+func (p *fakeProvider) Invalidate(ctx context.Context) (bool, error) {
+	return p.Terminate(ctx, "", "")
 }
 
 func (p *fakeProvider) Close() error { return nil }
@@ -144,6 +162,13 @@ func (p *fakeProvider) invalidateCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.invalidates
+}
+
+// terminationAction 返回取消时实际执行的终止动作（供配置⑤ 用例按执行线断言）。
+func (p *fakeProvider) terminationAction() (killed, disconnected bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killed, p.disconnected
 }
 
 // ─── 装配 ─────────────────────────────────────────────
@@ -913,6 +938,138 @@ func TestContractNeverNotOverridable(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("call 未返回")
 	}
+}
+
+// ─── 配置⑤ 超时自动取消（usr `tool_async.<工具>.cancel_on_timeout`）───
+
+// TestCancelOnTimeoutPerLine：`cancel_on_timeout > 0` → 到超时点**自动取消**（不等用户裁决、
+// 不发 mcp-tools-timeout），并按**执行线**下达终止动作（决策 42 §2 (241)/(242)）：
+//   - 类⑤ 内嵌 mcp-server 执行器（in-memory）→ **协作式** no-op（真停在执行体侧，见 B3）；
+//   - 类⑥ stdio / 类⑦ http spawned / 类⑨ sse spawned → **强语义** kill + respawn；
+//   - 类⑧ http / 类⑩ sse **纯远程** → **仅断请求**（「尽力」，不能杀对端进程）。
+//
+// 6 条覆盖 10 类中的 ⑤⑥⑦⑧⑨⑩；默认 0 = 不取消（既有用例已锁定不配置时行为不变）。
+func TestCancelOnTimeoutPerLine(t *testing.T) {
+	cases := []struct {
+		name        string
+		line        string // mem / spawned / remote
+		wantKilled  bool
+		wantDisconn bool
+	}{
+		{"类⑤ 内嵌 mcp-server 执行器（in-memory 协作式）", "mem", false, false},
+		{"类⑥ stdio spawned（强：kill+respawn）", "spawned", true, false},
+		{"类⑦ http spawned（强）", "spawned", true, false},
+		{"类⑨ sse spawned（强）", "spawned", true, false},
+		{"类⑧ http 纯远程（尽力：仅断请求）", "remote", false, true},
+		{"类⑩ sse 纯远程（尽力）", "remote", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bus, g := newTestGW(t, 5*time.Second)
+			fk := newFakeProvider("fk", OriginBuiltin)
+			fk.line = tc.line
+			addFakeProvider(t, g, fk, "slow")
+			setToolMeta(t, g, "fk_slow", map[string]any{"async": "never", "timeout": 0.1})
+			// 配置⑤：到超时点自动取消（>0 生效；exposed name = fk_slow）
+			g.SetAsyncOverrides(map[string]ToolAsyncOverride{
+				"fk_slow": {CancelOnTimeout: 5, CancelOnTimeoutSet: true},
+			})
+			evCh := subTimeout(t, bus)
+
+			// **无任何用户动作**：到 0.1s 自动取消 → 同步调用返回 isError + status=cancelled。
+			out := gwCallAsync(bus, "tools/call", map[string]any{
+				"name": "fk_slow", "instance_id": "ins-5", "tool_call_id": "call-cot",
+			})
+			select {
+			case o := <-out:
+				if o.err != nil {
+					t.Fatalf("call err: %v", o.err)
+				}
+				if o.res["isError"] != true {
+					t.Fatalf("自动取消后同步返回应 isError: %v", o.res)
+				}
+				sc, _ := o.res["structuredContent"].(map[string]any)
+				if sc == nil || sc["status"] != "cancelled" {
+					t.Fatalf("自动取消后同步返回缺 structuredContent.status=cancelled: %v", o.res)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("配置⑤ 未在超时点自动取消（调用未返回）")
+			}
+			// 配置⑤ = 不等用户裁决 → **不发** mcp-tools-timeout。
+			select {
+			case ev := <-evCh:
+				t.Fatalf("配置⑤ 不应发 mcp-tools-timeout，却收到: %v", ev)
+			case <-time.After(300 * time.Millisecond):
+			}
+
+			// 任务**自动终态 cancelled**（无需 CancelExec）。
+			if st := awaitTerminal(t, g, soleTaskID(t, g)); st["state"] != "cancelled" {
+				t.Fatalf("配置⑤ 任务 state = %v, want cancelled", st["state"])
+			}
+			// 终止动作按执行线恰一次。
+			if n := fk.invalidateCount(); n != 1 {
+				t.Fatalf("[%s] 终止动作次数 = %d, want 1", tc.line, n)
+			}
+			killed, disconn := fk.terminationAction()
+			if killed != tc.wantKilled || disconn != tc.wantDisconn {
+				t.Fatalf("[%s] 终止动作 killed=%v disconnected=%v, want killed=%v disconnected=%v",
+					tc.line, killed, disconn, tc.wantKilled, tc.wantDisconn)
+			}
+			if n := fk.callCount("slow"); n != 1 {
+				t.Fatalf("上游调用次数 = %d, want 1（自动取消不重跑）", n)
+			}
+		})
+	}
+}
+
+// TestCancelOnTimeoutDefaultOff：未配置 `cancel_on_timeout`（默认 0）→ 到超时点**仍**走裁决
+// （发 mcp-tools-timeout），行为逐字节不变（配置⑤ 的「默认 0 = 不取消」回归锁）。
+func TestCancelOnTimeoutDefaultOff(t *testing.T) {
+	bus, g := newTestGW(t, 5*time.Second)
+	fk := newFakeProvider("fk", OriginBuiltin)
+	addFakeProvider(t, g, fk, "slow")
+	setToolMeta(t, g, "fk_slow", map[string]any{"async": "never", "timeout": 0.1})
+	// 覆盖表存在但 cancel_on_timeout 未设置（0）→ 不取消
+	g.SetAsyncOverrides(map[string]ToolAsyncOverride{
+		"fk_slow": {Threshold: 3, ThresholdSet: true},
+	})
+	evCh := subTimeout(t, bus)
+
+	out := gwCallAsync(bus, "tools/call", map[string]any{
+		"name": "fk_slow", "tool_call_id": "call-off",
+	})
+	ev := waitTimeoutEvent(t, evCh)
+	if ev["reason"] != "timeout" {
+		t.Fatalf("默认 0 = 不取消 → 应仍发裁决，got reason=%v", ev["reason"])
+	}
+	taskID, _ := ev["task_id"].(string)
+	_ = gwCall(t, bus, "tools/wait", map[string]any{"task_id": taskID})
+	close(fk.release)
+	select {
+	case o := <-out:
+		if got := gwText(o.res); got != "done:slow" {
+			t.Fatalf("默认 0 应不取消并交付结果, got %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("call 未返回")
+	}
+	if n := fk.invalidateCount(); n != 0 {
+		t.Fatalf("默认 0 不应触发终止动作，got %d", n)
+	}
+}
+
+// soleTaskID 取执行池内**唯一**任务 id（每子测试独立 GW，仅一个在飞任务）。
+func soleTaskID(t *testing.T, g *Gateway) string {
+	t.Helper()
+	g.tm.mu.Lock()
+	defer g.tm.mu.Unlock()
+	for _, b := range g.tm.execs {
+		for id := range b {
+			return id
+		}
+	}
+	t.Fatalf("执行池为空（无任务）")
+	return ""
 }
 
 // ─── proxyProvider.Invalidate：真实 stdio 子进程 kill + respawn ───

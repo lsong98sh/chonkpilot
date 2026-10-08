@@ -3,8 +3,9 @@
 
 前置：IDE --test-port=2345；mock_llm.py 监听 127.0.0.1:8901；
       用户配置（usr 库，经 data-user-config-load/save 消息面）的 llms 含 mock 条目；
-      本脚本临时改写 llms/defaultLLM/retryCount/retryDelay：按跑前**快照**在 finally 还原
+      本脚本临时改写 llms/defaultLLM/retryCount：按跑前**快照**在 finally 还原
       （51 §6-8 配置快照-还原；原本缺省 → 删键回落系统默认）。
+      （退避间隔不自持 —— 经 router.RetryWait（Retry-After 优先 + 指数退避），无 retryDelay 配置项。）
       （原读写 %USERPROFILE%/.chonkpilot/config.json 为死文件——全仓无加载点，改动不生效。）
 
 迁移（2026-09-15）：
@@ -178,7 +179,7 @@ def case_network_precheck():
     """§一/S14：LLM 端点不可达 + retryCount=3 → 预检命中，runner 不重试
     （全程无 llm-retry 事件）、首次错误快速终结；自动续写链结束即恢复配置。"""
     backup = read_cfg()
-    snap = _h.snapshot_user_config(c, ["llms", "defaultLLM", "retryCount", "retryDelay"])
+    snap = _h.snapshot_user_config(c, ["llms", "defaultLLM", "retryCount"])
     try:
         cfg = copy.deepcopy(backup)
         cfg["llms"] = [l for l in cfg.get("llms", []) if l.get("name") == "mock"]
@@ -189,7 +190,6 @@ def case_network_precheck():
         })
         cfg["defaultLLM"] = len(cfg["llms"]) - 1
         cfg["retryCount"] = 3
-        cfg["retryDelay"] = 5
         write_cfg(cfg)
         c.mq_emit("config-refresh")
         c.mq_emit("chat-select-llm", {"name": "dead-llm"})

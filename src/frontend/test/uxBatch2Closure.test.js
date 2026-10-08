@@ -2,7 +2,7 @@
  * 用户视角缺陷「批 2」收尾（2026-09-20）·A–D 四小项前端单测：
  *   A `ChatPanel.vue` 三处硬编码英文 → 既有 i18n 键（task_running / task_failed_suffix / llm_retry）
  *   B 残留静默加载（SettingsMCP/LLM/ToolAsync 共 5 处）→ 用户可见失败提示（与批 2 ④ 同口径）
- *   C usr 四项（responseTimeout/streamTimeout/retryCount/retryDelay）前置校验
+ *   C usr 三项（responseTimeout/streamTimeout/retryCount）前置校验
  *     —— 对齐后端 `loadLLMRuntimeConfig`：retryCount 用 `n >= 0`（显式 0 合法），其余 `n > 0`
  *   D server 级 `mcps[].sandbox` 空信任目录 = **不施加隔离**（非「全拒」）→ 补说明文案，不加警告
  *
@@ -140,7 +140,6 @@ test('C·后端语义核实：retryCount 用 n>=0（0 合法），其余三项�
   assert.match(fn[0], /configInt\(d, "responseTimeout"\); ok && n > 0/, 'responseTimeout 生效条件 = n>0')
   assert.match(fn[0], /configInt\(d, "streamTimeout"\); ok && n > 0/, 'streamTimeout 生效条件 = n>0')
   assert.match(fn[0], /configInt\(d, "retryCount"\); ok && n >= 0/, 'retryCount 生效条件 = n>=0（显式 0 = 不重试）')
-  assert.match(fn[0], /configInt\(d, "retryDelay"\); ok && n > 0/, 'retryDelay 生效条件 = n>0')
   // persist 侧（config 域实现）系统默认（回落终点）
   // 阶段 4 internal 下沉：config 域实现已由 persist 下沉 internal/config。
   const p = readRepo('lib/data/internal/config/userconfig.go')
@@ -178,12 +177,12 @@ test('C·SettingsParamsPage：usr 数值项前置校验（非法不写库 / 清�
   const src = read('views/config/SettingsParamsPage.vue')
   // 数值项集合：allowZero 仅 retryCount
   assert.match(src, /key: 'retryCount'[\s\S]{0,120}allowZero: true/, 'retryCount 须标 0 合法')
-  for (const k of ['responseTimeout', 'streamTimeout', 'retryDelay']) {
+  for (const k of ['responseTimeout', 'streamTimeout']) {
     assert.doesNotMatch(src, new RegExp(`key: '${k}'[^\\n]*allowZero`), `${k} 不得允许 0（后端口径 n>0）`)
   }
 
-  const su = src.match(/async function saveUser\(key\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(su, '未找到 saveUser')
+  const su = src.match(/async function commitUser\(f\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(su, '未找到 commitUser')
   const body = su[0]
   assert.match(body, /f\.allowZero \? validateNonNegativeInt\(rawStr\) : validatePositiveInt\(rawStr\)/,
     '须按 allowZero 分派两种校验')
@@ -194,11 +193,12 @@ test('C·SettingsParamsPage：usr 数值项前置校验（非法不写库 / 清�
   assert.ok(retIdx > invIdx && retIdx < writeIdx, '非法值须在校验处 return（不写库）')
   assert.match(body, /message\.error\(text\)/, '非法值须给明确错误')
   assert.match(body, /await resetUserKey\(key\)/, '清空 = 删键回落默认（非错误）')
-  assert.match(body, /message\.success\(savedText\(t, APPLY_INSTANT\)\)/, '合法值保存成功反馈')
-  // 内联报错 + 无 watch
+  assert.match(src, /message\.success\(savedText\(t, APPLY_INSTANT\)\)/, '合法值保存成功反馈')
+  // 内联报错 + 显式保存（2026-10-06 统一口径）+ 无 watch
   assert.match(src, /:error="!!userErrors\[f\.key\]"/, 'usr 非法值须内联报错')
   assert.match(src, /v-if="userErrors\[f\.key\]"/, '内联错误文案须可见')
-  assert.match(src, /@blur="saveUser\(f\.key\)"/, '保存时机仍为失焦即存（未改交互模型）')
+  assert.doesNotMatch(src, /@blur="saveUser/, '不再失焦即存')
+  assert.match(src, /data-params-save-user/, 'usr 页签须有【保存】按钮')
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect')
   // 上限：后端无约束 → 校验函数不设上限（超大值仍通过）
   assert.equal(validatePositiveInt('999999999').ok, true, '后端无上限 → 前端不设上限')

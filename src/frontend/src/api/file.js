@@ -1,5 +1,6 @@
 import mq, { currentInstanceId } from '../utils/mq'
 import { createInitDataPrefetch } from '../utils/initDataPrefetch'
+import { FieldKeys, GuiUiSaveKeys, FilesysListKeys, FilesysContentKeys } from '../events/msgkeys.js'
 
 // 文件域直连 filesys（20-gui / 61-消息一览 §2）：
 //   - 目录子项：filesys.list{work_dir, path} → HTTP result {path, is_dir, children}
@@ -33,7 +34,7 @@ export function newFileReqId() {
 function fileRequest(action, body = {}, opts = {}) {
   const timeout = opts.timeout || 30000
   const topic = 'filesys.' + action
-  return mq.emit(topic, { work_dir: _workDir, ...body }, { timeout }).then((env) => {
+  return mq.emit(topic, { [FieldKeys.work_dir]: _workDir, ...body }, { timeout }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(topic + ': backend unreachable')
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
@@ -54,7 +55,7 @@ function fileRequest(action, body = {}, opts = {}) {
 export function getFileTree(path) {
   return fileRequest('list', { path: path || _workDir || '' })
     .then((p) => ({
-      tree: { path: p.path || '', is_dir: true, children: p.children || [] },
+      tree: { path: p[FilesysListKeys.path] || '', is_dir: true, children: p[FilesysListKeys.children] || [] },
     }))
 }
 
@@ -64,19 +65,18 @@ export function getFileTree(path) {
  */
 export function getFileTreeChildren(dir) {
   return fileRequest('list', { path: dir })
-    .then((p) => ({ children: p.children || [] }))
+    .then((p) => ({ children: p[FilesysListKeys.children] || [] }))
 }
 
 /**
  * 文本内容（filesys.content；二进制/大文件走 /show 预览，不读内容）。
- * 返回 {content, truncated, output_file}（对齐旧 ReadFileContent 契约）。
+ * 返回 {content, truncated}（对齐 61 §2.1 契约：result = {path, kind, content, truncated}）。
  */
 export function readFile(path) {
   return fileRequest('content', { path })
     .then((p) => ({
-      content: p.content || '',
-      truncated: !!p.truncated,
-      output_file: p.output_file || '',
+      content: p[FilesysContentKeys.content] || '',
+      truncated: !!p[FilesysContentKeys.truncated],
     }))
 }
 
@@ -186,21 +186,21 @@ export function loadInitDataPrefetched() {
 }
 
 export function saveFileTreeState(state) {
-  return guiReq('ui.save', { filetree: state })
+  return guiReq('ui.save', { [GuiUiSaveKeys.filetree]: state })
 }
 
 export function saveWindowState(state) {
-  return guiReq('ui.save', { window: state })
+  return guiReq('ui.save', { [GuiUiSaveKeys.window]: state })
 }
 
 export function saveLayoutState(state) {
-  return guiReq('ui.save', { layout: state })
+  return guiReq('ui.save', { [GuiUiSaveKeys.layout]: state })
 }
 
 export function saveUIState(state) {
-  return guiReq('ui.save', { ui: state })
+  return guiReq('ui.save', { [GuiUiSaveKeys.ui]: state })
 }
 
 export function saveOpenedFiles(paths) {
-  return guiReq('ui.save', { opened_files: paths || [] })
+  return guiReq('ui.save', { [GuiUiSaveKeys.opened_files]: paths || [] })
 }

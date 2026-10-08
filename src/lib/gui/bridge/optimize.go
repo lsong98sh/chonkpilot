@@ -31,6 +31,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // optimizeLLM 命中的提示词优化 LLM（`llm.promptOptimise` 指向的 usr llms 记录）的快照
@@ -56,16 +58,16 @@ func callOptimizeAgentPrompt(b *Bridge, ctx context.Context, params []json.RawMe
 	}
 	unmarshalParams(params, &req)
 	if strings.TrimSpace(req.Prompt) == "" {
-		b.EmitFrontend("optimize-error", jsonEnvelope(map[string]any{"message": "prompt required", "instance_id": b.instanceID}))
-		return json.Marshal(map[string]any{"ok": true, "started": false})
+		b.EmitFrontend(msgkeys.TopicOptimizeError, jsonEnvelope(map[string]any{msgkeys.FieldMessage: "prompt required", msgkeys.FieldInstanceId: b.instanceID}))
+		return json.Marshal(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldStarted: false})
 	}
 	llm, err := activeLLM(b)
 	if err != nil {
-		b.EmitFrontend("optimize-error", jsonEnvelope(map[string]any{"message": err.Error(), "instance_id": b.instanceID}))
-		return json.Marshal(map[string]any{"ok": true, "started": false})
+		b.EmitFrontend(msgkeys.TopicOptimizeError, jsonEnvelope(map[string]any{msgkeys.FieldMessage: err.Error(), msgkeys.FieldInstanceId: b.instanceID}))
+		return json.Marshal(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldStarted: false})
 	}
 	go b.optimizeStream(req.Title, req.UseCase, req.Prompt, llm)
-	return json.Marshal(map[string]any{"ok": true, "started": true})
+	return json.Marshal(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldStarted: true})
 }
 
 // activeLLM 取用户配置的**提示词优化 LLM**（`llm.promptOptimise` = provider name；旧记录 int 索引
@@ -182,7 +184,7 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 	})
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base, bytes.NewReader(body))
 	if err != nil {
-		emit("optimize-error", map[string]any{"message": err.Error()})
+		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: err.Error()})
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -192,13 +194,13 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		emit("optimize-error", map[string]any{"message": "LLM 请求失败: " + err.Error()})
+		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: "LLM 请求失败: " + err.Error()})
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		emit("optimize-error", map[string]any{"message": fmt.Sprintf("LLM 返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))})
+		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: fmt.Sprintf("LLM 返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))})
 		return
 	}
 
@@ -230,17 +232,17 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 				continue
 			}
 			sb.WriteString(ch.Delta.Content)
-			emit("optimize-token", map[string]any{"content": ch.Delta.Content})
+			emit(msgkeys.TopicOptimizeToken, map[string]any{msgkeys.FieldContent: ch.Delta.Content})
 			if ch.FinishReason == "stop" {
-				emit("optimize-done", map[string]any{"prompt": sb.String()})
+				emit(msgkeys.TopicOptimizeDone, map[string]any{msgkeys.FieldPrompt: sb.String()})
 				return
 			}
 		}
 	}
 	if sb.Len() > 0 {
-		emit("optimize-done", map[string]any{"prompt": sb.String()})
+		emit(msgkeys.TopicOptimizeDone, map[string]any{msgkeys.FieldPrompt: sb.String()})
 	} else {
-		emit("optimize-error", map[string]any{"message": "LLM 未返回内容"})
+		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: "LLM 未返回内容"})
 	}
 }
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
+	"github.com/chonkpilot/chonkpilot-router"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 )
 
@@ -157,7 +159,7 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 			tc := s.lookupTurn(req.Turn)
 			if tc != nil {
 				node, _ := s.domainNode(tc, req.ToolCallID, req.Name, req.Arguments)
-				text := s.execTaskTool(tc, req.ToolCallID, node, req.Name, req.Arguments)
+				text := s.execTaskTool(tc, req.ToolCallID, node, req.Name, req.Arguments, context.WithoutCancel(tc.ctx))
 				if strings.HasPrefix(text, "错误") {
 					s.tasks.done(node.TaskID, TaskStateError, "", text)
 				} else {
@@ -1010,7 +1012,7 @@ func TestLLMRuntimeConfigWiring(t *testing.T) {
 	res := dataCall(t, s, "data-user-config-save", map[string]any{
 		"instance_id": "ins-test",
 		"data": map[string]any{
-			"responseTimeout": 7, "streamTimeout": 9, "retryCount": 4, "retryDelay": 11,
+			"responseTimeout": 7, "streamTimeout": 9, "retryCount": 4,
 		},
 	})
 	if ok, _ := dataResult(t, res)["ok"].(bool); !ok {
@@ -1027,12 +1029,12 @@ func TestLLMRuntimeConfigWiring(t *testing.T) {
 	if tc.responseTimeout != 7*time.Second || tc.streamTimeout != 9*time.Second {
 		t.Fatalf("超时未取自配置: resp=%v stream=%v，want 7s/9s", tc.responseTimeout, tc.streamTimeout)
 	}
-	if tc.retryCount != 4 || tc.retryDelay != 11*time.Second {
-		t.Fatalf("重试未取自配置: count=%d delay=%v，want 4/11s", tc.retryCount, tc.retryDelay)
+	if tc.retryCount != 4 {
+		t.Fatalf("重试次数未取自配置: count=%d，want 4", tc.retryCount)
 	}
 }
 
-// TestLLMRuntimeConfigFallback：超时三项配置为非正值（0）→ 回落旧硬编码常量；retryCount 例外
+// TestLLMRuntimeConfigFallback：超时两项配置为非正值（0）→ 回落旧硬编码常量；retryCount 例外
 // （P0-A 存在性判定）：显式 0 = **不重试**，不再回落默认 2。
 func TestLLMRuntimeConfigFallback(t *testing.T) {
 	llm := mockLLMServer()
@@ -1043,14 +1045,14 @@ func TestLLMRuntimeConfigFallback(t *testing.T) {
 	dataCall(t, s, "data-user-config-save", map[string]any{
 		"instance_id": "ins-test",
 		"data": map[string]any{
-			"responseTimeout": 0, "streamTimeout": 0, "retryCount": 0, "retryDelay": 0,
+			"responseTimeout": 0, "streamTimeout": 0, "retryCount": 0,
 		},
 	})
 
-	respTO, streamTO, rc, rd := s.loadLLMRuntimeConfig("ins-test")
-	if respTO != ResponseTimeout || streamTO != StreamTimeout || rd != retryDelay {
-		t.Fatalf("0 值应回落常量: resp=%v stream=%v rd=%v，want %v/%v/%v",
-			respTO, streamTO, rd, ResponseTimeout, StreamTimeout, retryDelay)
+	respTO, streamTO, rc := s.loadLLMRuntimeConfig("ins-test")
+	if respTO != ResponseTimeout || streamTO != StreamTimeout {
+		t.Fatalf("0 值应回落常量: resp=%v stream=%v，want %v/%v",
+			respTO, streamTO, ResponseTimeout, StreamTimeout)
 	}
 	if rc != 0 {
 		t.Fatalf("retryCount=0 应=不重试（显式 0 生效），got %d want 0", rc)
@@ -1087,16 +1089,16 @@ func failingLLMServer(c *llmCallCounter) *httptest.Server {
 
 // TestTurnRetryCountSemantics：retryCount 存在性判定（P0-A）端到端——以**实际 HTTP 请求数**为
 // 原始证据（每次尝试 = 1 次请求）：显式 0 → 1 次（不重试）；显式 1 → 2 次；缺省 → 3 次（默认 2 次重试）。
-// retryDelay 显式设 1s（缩短用例耗时；该项仍按非正值回落）。
+// 退避经 router.RetryWait（1s/2s…）；不再有 retryDelay 配置。
 func TestTurnRetryCountSemantics(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		data     map[string]any
 		wantCall int
 	}{
-		{"显式0=不重试", map[string]any{"retryCount": 0, "retryDelay": 1}, 1},
-		{"显式1=重试1次", map[string]any{"retryCount": 1, "retryDelay": 1}, 2},
-		{"缺省=默认2次", map[string]any{"retryDelay": 1}, 3},
+		{"显式0=不重试", map[string]any{"retryCount": 0}, 1},
+		{"显式1=重试1次", map[string]any{"retryCount": 1}, 2},
+		{"缺省=默认2次", map[string]any{}, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := &llmCallCounter{}
@@ -1123,6 +1125,45 @@ func TestTurnRetryCountSemantics(t *testing.T) {
 				t.Fatalf("LLM 请求数=%d want %d（retryCount 语义）", n, tc.wantCall)
 			}
 		})
+	}
+}
+
+// TestRetryWaitUsesRouter：llm 可视重试的退避值经 `router.RetryWait` 计算（2026-10-05 定案，
+// 不再自持 retryDelay）——断言指数退避（1s/2s/4s）+ `Retry-After` 优先，且源 router 错误的
+// `Retry-After` 经 `mapRouterError` 透传（生产路径）。
+func TestRetryWaitUsesRouter(t *testing.T) {
+	// 无 Retry-After → 指数退避 1s·2s·4s（口径与 router.RetryWait 白盒一致）。
+	rate := &LLMError{Kind: ErrRateLimit, Retryable: true}
+	if got := retryWait(rate, 1); got != time.Second {
+		t.Fatalf("attempt=1 → %v want 1s", got)
+	}
+	if got := retryWait(rate, 2); got != 2*time.Second {
+		t.Fatalf("attempt=2 → %v want 2s", got)
+	}
+	if got := retryWait(rate, 3); got != 4*time.Second {
+		t.Fatalf("attempt=3 → %v want 4s", got)
+	}
+	// Retry-After 优先于指数退避。
+	after := &LLMError{Kind: ErrRateLimit, Retryable: true, RetryAfter: 3 * time.Second}
+	if got := retryWait(after, 5); got != 3*time.Second {
+		t.Fatalf("Retry-After 优先 → %v want 3s", got)
+	}
+	// 不可重试 / 非 *LLMError → 0（调用方已先行过滤）。
+	if got := retryWait(&LLMError{Kind: ErrAuth}, 1); got != 0 {
+		t.Fatalf("不可重试 → %v want 0", got)
+	}
+	if got := retryWait(context.Canceled, 1); got != 0 {
+		t.Fatalf("非 *LLMError → %v want 0", got)
+	}
+	// 源 router 错误的 Retry-After 经 mapRouterError 透传（生产路径）。
+	re := &router.Error{Kind: router.ErrorRateLimit, Retryable: true, RetryAfter: 4 * time.Second}
+	mapped := mapRouterError(re)
+	var le *LLMError
+	if !errors.As(mapped, &le) || !le.Retryable || le.RetryAfter != 4*time.Second {
+		t.Fatalf("mapRouterError 未透传 Retry-After: %+v", mapped)
+	}
+	if got := retryWait(mapped, 9); got != 4*time.Second {
+		t.Fatalf("透传后 Retry-After 优先 → %v want 4s", got)
 	}
 }
 
@@ -1168,16 +1209,16 @@ func TestCurrentAgentName(t *testing.T) {
 }
 
 // TestLLMRuntimeConfigSystemDefaults：完全未配置（用户未写任何超时/重试项）→ 有效值
-// = 系统默认 120s/60s/2/5（与 persist userConfigSystemDefaults 及旧硬编码一致，防默认放宽回归）。
+// = 系统默认 120s/60s/2（与 persist userConfigSystemDefaults 及旧硬编码一致，防默认放宽回归）。
 func TestLLMRuntimeConfigSystemDefaults(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
 
-	respTO, streamTO, rc, rd := s.loadLLMRuntimeConfig("ins-test")
-	if respTO != 120*time.Second || streamTO != 60*time.Second || rc != 2 || rd != 5*time.Second {
-		t.Fatalf("未配置默认 = %v/%v/%d/%v，want 120s/60s/2/5s", respTO, streamTO, rc, rd)
+	respTO, streamTO, rc := s.loadLLMRuntimeConfig("ins-test")
+	if respTO != 120*time.Second || streamTO != 60*time.Second || rc != 2 {
+		t.Fatalf("未配置默认 = %v/%v/%d，want 120s/60s/2", respTO, streamTO, rc)
 	}
 }
 
@@ -1185,7 +1226,7 @@ func TestLLMRuntimeConfigSystemDefaults(t *testing.T) {
 // 本用例断言其后端权威源的真实取值（后端常量被静默改动 → 本用例先红，提醒同步前端
 // SettingsParamsPage.vue 的 SYSTEM_DEFAULTS）：
 //
-//	① 用户级四项 = persist userConfigSystemDefaults（经既有 data-user-config-load 回读）
+//	① 用户级三项 = persist userConfigSystemDefaults（经既有 data-user-config-load 回读）
 //	② 项目级三项 = mcpms.DefaultConfig()（300 / 16 / 12 项跳过目录）
 //	③ keep_full_max_turns = defaultKeepFullTurns（10）；compress_token_threshold = 压缩插件
 //	   DefaultOptions().TokenMax（20000）。**③ 已不在「参数配置页」镜像**（该项唯一编辑入口
@@ -1196,14 +1237,14 @@ func TestSystemDefaultParamsMirror(t *testing.T) {
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
 
-	// ① 用户级四项
+	// ① 用户级三项
 	res := dataCall(t, s, "data-user-config-load", map[string]any{"instance_id": "ins-test"})
 	d, _ := dataResult(t, res)["data"].(map[string]any)
 	if d == nil {
 		t.Fatalf("user-config-load 无 data: %+v", res)
 	}
 	for key, want := range map[string]int{
-		"responseTimeout": 120, "streamTimeout": 60, "retryCount": 2, "retryDelay": 5,
+		"responseTimeout": 120, "streamTimeout": 60, "retryCount": 2,
 	} {
 		if got, ok := configInt(d, key); !ok || got != want {
 			t.Fatalf("系统默认 %s=%v want %d（前端 SYSTEM_DEFAULTS 镜像须同步）", key, d[key], want)

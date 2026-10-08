@@ -428,10 +428,11 @@ func TestLoadKeepFullBoundsValueSemantics(t *testing.T) {
 	// 登记实例（data.Prj / 门面配置读同一份事实）→ 之后才能写 prj 配置。
 	data.Register("ins-test", testWorkDir, "")
 	t.Cleanup(data.Reset)
-	prj, err := data.Prj("ins-test")
+	prj, releasePrj, err := data.Prj("ins-test")
 	if err != nil {
 		t.Fatalf("data.Prj: %v", err)
 	}
+	defer releasePrj() // 短开（D-45）：用完即释
 	// 缺失 → 默认。
 	if got := s.loadKeepFullTurns("ins-test"); got != defaultKeepFullTurns {
 		t.Fatalf("缺失 keep_full_max_turns → 默认 %d：got %d", defaultKeepFullTurns, got)

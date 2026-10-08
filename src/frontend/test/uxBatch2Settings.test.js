@@ -67,19 +67,24 @@ test('① savedText：需重启 / 即时生效 的口径（与既有 logLevel「
   assert.match(read('views/settings/LogConfig.vue'), /message\.success\(t\('projectConfig\.log_saved'\)\)/)
 })
 
-test('① SettingsPathsPage：usr 保存反馈标注「需重启」+ 页内提示；保存时机（失焦）不变', () => {
+test('① SettingsPathsPage：usr 保存反馈标注「需重启」+ 页内提示；显式保存（页头右上角【保存】）', () => {
   const src = read('views/config/SettingsPathsPage.vue')
-  const su = src.match(/async function saveUser\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(su, '未找到 saveUser')
+  const su = src.match(/async function saveUserTab\(\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(su, '未找到 saveUserTab')
   assert.match(su[0], /savedText\(t, APPLY_RESTART\)/, 'usr 路径保存成功须标注「需重启」')
   assert.doesNotMatch(su[0], /savedText\(t, APPLY_INSTANT\)/, 'usr 路径不得误标即时生效')
 
-  const sp = src.match(/async function saveProject\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(sp, '未找到 saveProject')
+  const sp = src.match(/async function saveProjectTab\(\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(sp, '未找到 saveProjectTab')
   assert.match(sp[0], /savedText\(t, APPLY_INSTANT\)/, 'prj 路径为运行期热生效（即时）')
 
   assert.match(src, /config\.page\.pathsUserRestartHint/, '须有页内「需重启」提示（常驻）')
-  assert.match(src, /@blur="saveUser\(it\)"/, '保存时机仍为失焦即存（未改交互模型）')
+  // 2026-10-06 统一口径：表单型页面改显式保存（编辑只改本地待保存态，点【保存】才落库）
+  assert.doesNotMatch(src, /@blur="saveUser/, '不再失焦即存')
+  assert.match(src, /data-paths-save-user/, 'usr 页签须有【保存】按钮')
+  assert.match(src, /data-paths-save-project/, 'prj 页签须有【保存】按钮')
+  assert.match(src, /:disabled="!userDirty"/, 'usr 页签无改动时保存按钮禁用')
+  assert.match(src, /:disabled="!prjDirty"/, 'prj 页签无改动时保存按钮禁用')
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '不得用 watch')
 
   // 后端核实：usr 路径键不重跑 loadExecConfig（仅 prj 执行配置热生效）
@@ -202,16 +207,18 @@ test('③ 非法值不写库 + 明确错误；合法值保存成功（保存时�
   assert.equal((src.match(/:type="f\.int \? 'number' : 'text'"/g) || []).length, 1, '数值项须为数字输入')
   assert.match(src, /:error="!!prjErrors\[f\.key\]"/, '非法值须内联报错')
 
-  const sp = src.match(/async function saveProject\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(sp, '未找到 saveProject')
+  const sp = src.match(/async function commitProject\(f\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(sp, '未找到 commitProject')
   const invalidIdx = sp[0].indexOf('if (!r.ok)')
   const retIdx = sp[0].indexOf('return', invalidIdx)
   const writeIdx = sp[0].indexOf('await setConfig(key, String(r.value))')
   assert.ok(invalidIdx >= 0, '须有非法值分支')
   assert.ok(retIdx > invalidIdx && retIdx < writeIdx, '非法值须在校验处 return（不写库）')
   assert.match(sp[0], /message\.error\(text\)/, '非法值须给明确错误')
-  assert.match(sp[0], /message\.success\(savedText\(t, APPLY_INSTANT\)\)/, '合法值保存后成功反馈')
-  assert.match(src, /@blur="saveProject\(f\.key\)"/, '保存时机仍为失焦即存')
+  assert.match(src, /message\.success\(savedText\(t, APPLY_INSTANT\)\)/, '合法值保存后成功反馈')
+  // 2026-10-06 统一口径：表单型页面改显式保存（点【保存】才落库）
+  assert.doesNotMatch(src, /@blur="saveProject/, '不再失焦即存')
+  assert.match(src, /data-params-save-project/, 'prj 页签须有【保存】按钮')
 
   // 数值项集合 = timeout_sec / max_concurrency（skip_dirs 保持文本）
   assert.match(src, /key: 'timeout_sec'[\s\S]{0,120}int: true/)
@@ -310,7 +317,8 @@ test('⑤ dirty 标记：显示用（无 watch、无离开拦截），保存时�
   for (const f of withMark) {
     const src = read(f)
     assert.match(src, /useUnsavedMark\(\)/, `${f} 须用 useUnsavedMark composable`)
-    assert.match(src, /v-if="dirty"/, `${f} 须渲染 dirty 标记`)
+    // 参数 / 路径页为「按页签各自 dirty」（userDirty / prjDirty），其余为单一 dirty
+    assert.match(src, /v-if="(user|prj)?[Dd]irty"/, `${f} 须渲染 dirty 标记`)
     assert.match(src, /config\.feedback\.unsaved/, `${f} 须用统一「未保存」文案`)
     assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, `${f} 不得用 watch`)
     assert.doesNotMatch(src, /beforeunload|onBeforeRouteLeave/, `${f} 不做离开拦截`)
@@ -328,9 +336,14 @@ test('⑤ dirty 标记：显示用（无 watch、无离开拦截），保存时�
   assert.doesNotMatch(comp, /\bwatch(Effect)?\s*\(/, 'composable 禁止 watch')
 })
 
-test('⑤ 保存时机（失焦即存页保留；安全页 2026-09-26 改手动保存）', () => {
-  assert.match(read('views/config/SettingsPathsPage.vue'), /@blur="saveUser\(it\)"/, '路径页仍失焦即存')
-  assert.match(read('views/config/SettingsParamsPage.vue'), /@blur="saveUser\(f\.key\)"/, '参数页用户级仍失焦即存')
+test('⑤ 保存时机（列表/对话框页即改即存；参数 / 路径页 2026-10-06 改显式保存）', () => {
+  // 2026-10-06 统一口径：表单型页面（参数 / 路径）改「编辑只改本地态 + 页头右上角【保存】」
+  for (const f of ['views/config/SettingsPathsPage.vue', 'views/config/SettingsParamsPage.vue']) {
+    const src = read(f)
+    assert.doesNotMatch(src, /@blur="saveUser/, `${f} 不再失焦即存`)
+    assert.match(src, /:disabled="!(user|prj)Dirty"/, `${f} 保存按钮须按 dirty 禁用`)
+    assert.match(src, /:loading="saving(User|Prj)"/, `${f} 保存按钮须 loading 防重复提交`)
+  }
   assert.match(read('views/settings/LogConfig.vue'), /@update:model-value="onLevelChange"/, '日志页仍选择即存')
   assert.match(read('views/settings/HistoryConfig.vue'), /@update:model-value="handleChange"/, 'history 仍开关即存')
   // 安全页：编辑 / 勾选 / 增删只改本地态，点【保存】才落库；无改动时保存按钮禁用（改手动保存）

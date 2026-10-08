@@ -49,6 +49,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // DefaultAddr 是入口的推荐监听地址（仅本机；19 §4「端口默认 5668」）。
@@ -195,7 +196,7 @@ func (s *Server) Start() error {
 
 	// instance 注册：载荷字段与 GUI 桥一致（work_dir/data_dir 由服务端启动参数下发；
 	// 19 §5「instance-register 已带 work_dir/data_dir，消息面零变更」），client_type 标形态。
-	s.publish("instance-register", map[string]any{
+	s.publish(msgkeys.TopicInstanceRegister, map[string]any{
 		"instance_id": s.instanceID,
 		"work_dir":    s.workDir,
 		"data_dir":    s.dataDir,
@@ -232,7 +233,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.fsys.Stop()
 		s.fsys = nil
 	}
-	s.publish("instance-exit", map[string]any{"instance_id": s.instanceID})
+	s.publish(msgkeys.TopicInstanceExit, map[string]any{"instance_id": s.instanceID})
 	if s.srv == nil {
 		return nil
 	}
@@ -476,21 +477,21 @@ func eventInstanceID(payload []byte) string {
 // mqTypeMap 相对主题 → 前端 type（与 chonkpilot-gui/bridge/bridge.go 的 mqTypeMap 同表；
 // 未命中的相对主题原名直通 —— data-*/filesys.* 等点分主题本就是稳定前端 type）。
 var mqTypeMap = map[string]string{
-	"session-receive":       "llm-receive",
-	"session-complete":      "llm-complete",
-	"session-compress":      "llm-compress",
-	"session-ask":           "ask-user",
-	"session-turn-start":    "turn-start",
-	"task-started":          "tasks.started",
-	"task-updated":          "tasks.updated",
-	"task-done":             "tasks.done",
-	"server-starting":       "server-starting",
-	"server-status-changed": "servers.status_changed",
-	"tool-changed":          "tools.list_changed",
-	"prompt-optimised":      "prompt-optimised",
-	"instance-register":     "instance-register",
-	"instance-heartbeat":    "instance-heartbeat",
-	"instance-exit":         "instance-exit",
+	msgkeys.TopicSessionReceive:   "llm-receive",
+	msgkeys.TopicSessionComplete:  "llm-complete",
+	msgkeys.TopicSessionCompress:  "llm-compress",
+	msgkeys.TopicSessionAsk:       "ask-user",
+	msgkeys.TopicSessionTurnStart: "turn-start",
+	msgkeys.TopicTaskStarted:      "tasks.started",
+	msgkeys.TopicTaskUpdated:      "tasks.updated",
+	msgkeys.TopicTaskDone:         "tasks.done",
+	msgkeys.TopicServerStarting:   msgkeys.TopicServerStarting,
+	"server-status-changed":       "servers.status_changed",
+	"tool-changed":                "tools.list_changed",
+	msgkeys.TopicPromptOptimised:  msgkeys.TopicPromptOptimised,
+	msgkeys.TopicInstanceRegister: msgkeys.TopicInstanceRegister,
+	msgkeys.TopicInstanceHeartbeat: msgkeys.TopicInstanceHeartbeat,
+	msgkeys.TopicInstanceExit:     msgkeys.TopicInstanceExit,
 }
 
 // eventType 取前端 type（显式映射优先；兜底原名直通）。

@@ -1,10 +1,12 @@
-// 手动沉淀（memory.flush，2026-09-20 批 3 ⑱）白盒：用户显式触发一次沉淀。
+// 手动沉淀（memory.flush）白盒：用户显式触发一次沉淀，**投递即回**（I-128）。
 //
 // 覆盖：
-//   - 触发一次 → 按启用类别**各沉淀一次**（可观测：data-memory-save 次数 + 回执 saved 清单）；
-//   - **不受 memory.min-turn-tokens 门控**（同一配置下自动沉淀仍被阈值挡住 → 证明差异只属手动）；
+//   - 回执：立即返回 `{ok, queued, session}`（不再同步等各类别 LLM 跑完）；
+//   - 异步处理：按启用类别**各沉淀一次**（可观测：data-memory-save / llm-simple 次数）；
+//   - 进度：处理经通知面 tool-notify 广播 `memory-start` / `memory-done`；
+//   - 不受 memory.min-turn-tokens 门控（同一配置下自动沉淀仍被阈值挡住 → 差异只属手动）；
 //   - 作用域 = payload 指定的 instance/session（取该会话**最近一轮** data-session-history）；
-//   - 前置不满足（缺 session / 记忆库未启用 / 会话无轮次）→ `{ok:false, reason}` 明确作答。
+//   - 前置不满足（缺 session）→ `{ok:false, reason}` 明确作答。
 package memory
 
 import (
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-plugin"
@@ -40,6 +43,9 @@ func (s *flushStub) wire(t *testing.T, bus mq.Bus, cfg map[string]any, turns []a
 		s.mu.Unlock()
 		return map[string]any{"messages": map[string]any{"turns": turns, "messages": []any{}, "has_more": false}}
 	})
+	stubSessionGet(t, bus, "") // 主会话（自动沉淀反证路径需要）
+	stubProgress(t, bus, map[string]string{})
+	stubProgressSave(t, bus, nil)
 	reply(t, bus, sessionLoadSubject, func(map[string]any) map[string]any {
 		return map[string]any{"messages": []any{
 			map[string]any{"role": "user", "content": "甲甲甲"},
@@ -48,9 +54,9 @@ func (s *flushStub) wire(t *testing.T, bus mq.Bus, cfg map[string]any, turns []a
 	})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
 		return map[string]any{"list": []any{
-			map[string]any{"category": "项目概要", "level": "project"},
-			map[string]any{"category": "开发规范", "level": "project"},
-			map[string]any{"category": "用户偏好", "level": "user"},
+			map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"},
+			map[string]any{"category": "开发规范", "level": "project", "prompt": "提示词-开发规范"},
+			map[string]any{"category": "用户偏好", "level": "user", "prompt": "提示词-用户偏好"},
 		}}
 	})
 	reply(t, bus, memoryReadSubject, func(data map[string]any) map[string]any {
@@ -78,9 +84,58 @@ func (s *flushStub) wire(t *testing.T, bus mq.Bus, cfg map[string]any, turns []a
 	})
 }
 
-// TestManualFlushTriggersDistillOnce：一次 memory.flush → 每个启用类别**恰好沉淀一次**；
-// 回执含 saved/enabled/turn；阈值极大也照沉淀（不受 memory.min-turn-tokens 门控）。
-func TestManualFlushTriggersDistillOnce(t *testing.T) {
+// noticeLog 收集 tool-notify 的 notice 取值（进度断言用）。
+type noticeLog struct {
+	mu   sync.Mutex
+	list []string
+	ch   chan string
+}
+
+func watchNotices(t *testing.T, bus mq.Bus) *noticeLog {
+	t.Helper()
+	n := &noticeLog{ch: make(chan string, 64)}
+	if _, err := bus.On("tool-notify", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) != nil {
+			return nil
+		}
+		s := strval(m["notice"])
+		n.mu.Lock()
+		n.list = append(n.list, s)
+		n.mu.Unlock()
+		select {
+		case n.ch <- s:
+		default:
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("sub tool-notify: %v", err)
+	}
+	return n
+}
+
+// waitNotice 等到指定 notice（或超时）。
+func (n *noticeLog) waitNotice(t *testing.T, want string) bool {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case s := <-n.ch:
+			if s == want {
+				return true
+			}
+		case <-deadline:
+			n.mu.Lock()
+			defer n.mu.Unlock()
+			t.Fatalf("等 notice=%s 超时（已见 %v）", want, n.list)
+			return false
+		}
+	}
+}
+
+// TestManualFlushQueuedThenDistills：memory.flush **投递即回** → 异步按启用类别各沉淀一次；
+// 进度经 tool-notify 广播（memory-start / memory-done）；阈值极大也照沉淀。
+func TestManualFlushQueuedThenDistills(t *testing.T) {
 	bus := newTestBus(t)
 	st := &flushStub{prompts: map[string]string{}}
 	// 阈值极大：自动沉淀必被挡住（下面用 extract 反证差异只属手动触发）。
@@ -97,6 +152,7 @@ func TestManualFlushTriggersDistillOnce(t *testing.T) {
 	if err := p.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	notices := watchNotices(t, bus)
 
 	v := bus.Emit(context.Background(), "memory.flush", map[string]any{
 		"instance_id": "ins-1", "session": "s1",
@@ -109,32 +165,35 @@ func TestManualFlushTriggersDistillOnce(t *testing.T) {
 		t.Fatalf("memory.flush 应写回结果，实际 %#v", v.Result)
 	}
 	if ok, _ := res["ok"].(bool); !ok {
-		t.Fatalf("手动沉淀应成功：%+v", res)
+		t.Fatalf("手动沉淀应受理：%+v", res)
 	}
-	if res["turn"] != "t-2" {
-		t.Fatalf("应取会话**最近一轮**：%+v", res)
+	// **投递即回**：回执只有 {ok, queued, session}（不含 saved/turn/enabled——异步处理）
+	if queued, _ := res["queued"].(bool); !queued {
+		t.Fatalf("回执应 queued=true：%+v", res)
 	}
-	if n, _ := res["enabled"].(int); n != 2 {
-		t.Fatalf("启用类别数应为 2（开发规范已关闭）：%+v", res)
+	if _, has := res["saved"]; has {
+		t.Fatalf("投递即回不应带 saved（异步处理）：%+v", res)
 	}
-	saved, _ := res["saved"].([]string)
-	if len(saved) != 2 {
-		t.Fatalf("成功类别应为 2：%+v", saved)
+	if res["session"] != "s1" {
+		t.Fatalf("回执应带回 session：%+v", res)
 	}
-	for _, c := range saved {
-		if c == "开发规范" {
-			t.Fatalf("已关闭类别不应被写入：%+v", saved)
-		}
-	}
+
+	// 进度：等异步处理完成（memory-start → memory-done）
+	notices.waitNotice(t, "memory-start")
+	notices.waitNotice(t, "memory-done")
+
 	// 可观测效果：一次触发 = 每启用类别恰好一次 save / 一次 llm-simple（不重复触发）
 	if n := atomic.LoadInt32(&st.saves); n != 2 {
-		t.Fatalf("data-memory-save 次数应为 2（一次触发一次），实际 %d", n)
+		t.Fatalf("data-memory-save 次数应为 2（开发规范已关闭），实际 %d", n)
 	}
 	if n := atomic.LoadInt32(&st.llmCalls); n != 2 {
 		t.Fatalf("llm-simple 次数应为 2，实际 %d", n)
 	}
 	if pr, ok := st.prompts["项目概要"]; !ok || !strings.Contains(pr, "旧全文-项目概要") || !strings.Contains(pr, "甲甲甲") {
 		t.Fatalf("沉淀 prompt 应含旧全文与本轮新信息：%q", pr)
+	}
+	if _, ok := st.prompts["开发规范"]; ok {
+		t.Fatalf("已关闭类别不应被写入")
 	}
 	// 作用域：仅按 payload 的 session 取轮次（一次）
 	if len(st.history) != 1 || st.history[0]["session_id"] != "s1" {
@@ -149,42 +208,66 @@ func TestManualFlushTriggersDistillOnce(t *testing.T) {
 	}
 }
 
+// TestManualFlushQueuedNotice：实例 worker 忙时再次入队 → 广播 `memory-queued`（排队态）。
+func TestManualFlushQueuedNotice(t *testing.T) {
+	bus := newTestBus(t)
+	notices := watchNotices(t, bus)
+	p := New(DefaultOptions())
+	if err := p.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// 模拟该实例 worker 已在运行（占住 running）→ 后续 enqueue 只能排队
+	p.mu.Lock()
+	p.running = map[string]bool{"ins-1": true}
+	p.mu.Unlock()
+
+	p.enqueue(turnEvent{InstanceID: "ins-1", Session: "s1", LastTurn: "t-1"}, false)
+
+	if !notices.waitNotice(t, "memory-queued") {
+		t.Fatal("worker 忙时应广播 memory-queued")
+	}
+}
+
 // TestManualFlushGuards：前置不满足 → `{ok:false, reason}` 明确作答（不静默、不误报成功）。
 func TestManualFlushGuards(t *testing.T) {
-	cases := []struct {
-		name    string
-		payload map[string]any
-		cfg     map[string]any
-		turns   []any
-		want    string
-	}{
-		{"缺 session", map[string]any{"instance_id": "ins-1"}, map[string]any{memoryEnabledKey: "true"},
-			[]any{map[string]any{"turn_id": "t-1"}}, "instance_id/session required"},
-		{"记忆库未启用", map[string]any{"instance_id": "ins-1", "session": "s1"}, map[string]any{},
-			[]any{map[string]any{"turn_id": "t-1"}}, memoryEnabledKey + " not enabled"},
-		{"会话无轮次", map[string]any{"instance_id": "ins-1", "session": "s1"},
-			map[string]any{memoryEnabledKey: "true"}, []any{}, "no turn in session s1"},
+	bus := newTestBus(t)
+	p := New(DefaultOptions())
+	if err := p.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			bus := newTestBus(t)
-			st := &flushStub{prompts: map[string]string{}}
-			st.wire(t, bus, c.cfg, c.turns)
-			p := New(DefaultOptions())
-			if err := p.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
-				t.Fatalf("Start: %v", err)
-			}
-			v := bus.Emit(context.Background(), "memory.flush", c.payload).Wait()
-			res, _ := v.Result.(map[string]any)
-			if res == nil || res["ok"] != false {
-				t.Fatalf("%s 应回 ok:false，实际 %#v", c.name, v.Result)
-			}
-			if !strings.Contains(strval(res["reason"]), c.want) {
-				t.Fatalf("%s 原因应含 %q，实际 %q", c.name, c.want, res["reason"])
-			}
-			if n := atomic.LoadInt32(&st.saves); n != 0 {
-				t.Fatalf("%s 不应写入任何类别，实际 save %d 次", c.name, n)
-			}
-		})
+	v := bus.Emit(context.Background(), "memory.flush", map[string]any{"instance_id": "ins-1"}).Wait()
+	res, _ := v.Result.(map[string]any)
+	if res == nil || res["ok"] != false {
+		t.Fatalf("缺 session 应回 ok:false，实际 %#v", v.Result)
+	}
+	if !strings.Contains(strval(res["reason"]), "instance_id/session required") {
+		t.Fatalf("原因应含 instance_id/session required，实际 %q", res["reason"])
+	}
+}
+
+// TestManualFlushDisabledMemoryNoWrites：记忆库未启用 → 仍投递即回（queued），但**不产生任何写入**。
+func TestManualFlushDisabledMemoryNoWrites(t *testing.T) {
+	bus := newTestBus(t)
+	st := &flushStub{prompts: map[string]string{}}
+	st.wire(t, bus, map[string]any{}, []any{map[string]any{"turn_id": "t-1"}}) // 未启用
+	p := New(DefaultOptions())
+	if err := p.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	notices := watchNotices(t, bus)
+
+	v := bus.Emit(context.Background(), "memory.flush", map[string]any{
+		"instance_id": "ins-1", "session": "s1",
+	}).Wait()
+	res, _ := v.Result.(map[string]any)
+	if res == nil || res["ok"] != true {
+		t.Fatalf("投递即回应为 ok:true：%#v", v.Result)
+	}
+	notices.waitNotice(t, "memory-done")
+	if n := atomic.LoadInt32(&st.saves); n != 0 {
+		t.Fatalf("未启用不应写入任何类别，实际 save %d 次", n)
+	}
+	if n := atomic.LoadInt32(&st.llmCalls); n != 0 {
+		t.Fatalf("未启用不应调 LLM，实际 %d 次", n)
 	}
 }

@@ -8,6 +8,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +57,7 @@ func TestTaskLayerSingleWriter(t *testing.T) {
 		str(toolNode["title"]) != "sync" {
 		t.Fatalf("权威节点字段错: %+v", toolNode)
 	}
-	if got := str(toolNode["workdir"]); got == "" || got != testWorkDir {
+	if got := str(toolNode["work_dir"]); got == "" || got != testWorkDir {
 		t.Fatalf("权威行 workdir 应 = instance 绑定 work_dir %q，实得 %q", testWorkDir, got)
 	}
 
@@ -859,5 +861,66 @@ func TestRunToolStopExplicitTexts(t *testing.T) {
 	// 已终态 → 明确文案（不重复取消）
 	if got := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "已结束") {
 		t.Fatalf("已终态文案错: %q", got)
+	}
+}
+
+// TestTaskLayerDslFieldsRoundTrip（DSL-3 / DSL-2）：llm_run DSL 作业的容器/步骤/返回字段经
+// 「server 事件 → 任务层 → data-tasktree-list」全链路落库，并可读回（前端 DSL 展示的数据源）。
+func TestTaskLayerDslFieldsRoundTrip(t *testing.T) {
+	script := "LOOP item=#\"{{env.CHONKPILOT_WORKDIR}}/items.json\".array\n" +
+		"   LLM \"回显\" \"do {{item.name}}\" \"处理 {{item.name}}\" => $RETURN\n" +
+		"END\n"
+	_, te, s := runJobScriptTasksPrep(t, "s-dsl-rt", "t-dsl-rt", "dsl rt please", script, func(dir string) {
+		if err := os.WriteFile(filepath.Join(dir, "items.json"),
+			[]byte(`[{"name":"A"},{"name":"B"}]`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	te.wait(t, "作业 done", func() bool { return jobRootDone(te) != nil })
+
+	readTree := func() map[string]map[string]any {
+		res, err := dataRequest(s.bus, "data-tasktree-list", map[string]any{
+			"instance_id": "ins-test", "data": map[string]any{"top_session": "s-dsl-rt"},
+		})
+		if err != nil {
+			t.Fatalf("读权威表: %v", err)
+		}
+		nodes, _ := res["nodes"].([]any)
+		out := map[string]map[string]any{}
+		for _, it := range nodes {
+			m, _ := it.(map[string]any)
+			if m == nil {
+				continue
+			}
+			out[str(m["kind"])] = m
+		}
+		return out
+	}
+
+	var tree map[string]map[string]any
+	te.wait(t, "DSL 字段落库", func() bool {
+		tree = readTree()
+		return tree[TaskKindDslJob] != nil && tree[TaskKindDslLoop] != nil
+	})
+	job, loop := tree[TaskKindDslJob], tree[TaskKindDslLoop]
+	if job == nil || loop == nil {
+		t.Fatalf("权威表缺 dsl_job/dsl_loop 节点: %+v", tree)
+	}
+	// 容器：单节点（不随迭代增长）+ loop_current 累计
+	if got := int(loop["loop_current"].(float64)); got != 2 {
+		t.Fatalf("容器 loop_current = %v want 2（%+v）", loop["loop_current"], loop)
+	}
+	// 作业根：steps[] 跨迭代累计 2 条（每条携带 session_id）
+	steps, _ := job["steps"].([]any)
+	if len(steps) != 2 {
+		t.Fatalf("steps 长度 = %d want 2（%+v）", len(steps), job["steps"])
+	}
+	first, _ := steps[0].(map[string]any)
+	if first == nil || int(first["no"].(float64)) != 1 || str(first["session_id"]) == "" {
+		t.Fatalf("steps[0] 字段错: %+v", first)
+	}
+	// $RETURN 两态透传（inline）
+	if job["return_kind"] != "inline" || str(job["return_inline"]) == "" {
+		t.Fatalf("$RETURN inline 未透传: %+v", job)
 	}
 }

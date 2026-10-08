@@ -4,22 +4,14 @@
       <Icon name="chat-dot-square" />
       <span>{{ $t('common.session_detail') }}</span>
       <template v-if="sessionId">
-        <Tooltip placement="top">
-          <Tag size="small" type="info" class="session-id-tag">#{{ sessionId.slice(0, 8) }}</Tag>
-          <template #content>
-            <div class="stats-tip">
-              <div class="stats-tip__row"><span class="stats-tip__label">{{ $t('chat.stats_current_turn') }}</span><span class="stats-tip__value">{{ statDisplay(sessionId, 'current_turn') }}</span></div>
-              <div class="stats-tip__row"><span class="stats-tip__label">{{ $t('chat.stats_turn_total') }}</span><span class="stats-tip__value">{{ statDisplay(sessionId, 'turn_total') }}</span></div>
-              <div class="stats-tip__row"><span class="stats-tip__label">{{ $t('chat.stats_compressed') }}</span><span class="stats-tip__value">{{ statDisplay(sessionId, 'compressed') }}</span></div>
-              <div class="stats-tip__row"><span class="stats-tip__label">{{ $t('chat.stats_session_total') }}</span><span class="stats-tip__value">{{ statDisplay(sessionId, 'session_total') }}</span></div>
-            </div>
-          </template>
-        </Tooltip>
+        <Tag size="small" type="info" class="session-id-tag">#{{ sessionId.slice(0, 8) }}</Tag>
       </template>
       <div class="header-spacer" />
     </div>
     <div class="session-chat">
-      <TaskDetailView v-if="taskId" :task-id="taskId" />
+      <!-- DSL 作业（DSL-3）：右侧面板 = 步骤表格 + preview，不是「任务详情/标题」 -->
+      <DslStepsPanel v-if="dslJobId" :key="dslJobId" :job-id="dslJobId" />
+      <TaskDetailView v-else-if="taskId" :task-id="taskId" />
       <div v-else-if="!sessionId" class="empty-prompt">
         <p>{{ $t('chat.select_subsession') }}</p>
       </div>
@@ -32,19 +24,24 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import Icon from '../../components/icon/Icon.vue'
-import { Tag, Tooltip } from '../../components/ui'
-import { statDisplay } from '../../stores/sessionStats'
+import { Tag } from '../../components/ui'
 import MessageList from '../chat/MessageList.vue'
 import TaskDetailView from '../../components/task/TaskDetailView.vue'
+import DslStepsPanel from '../dsl/DslStepsPanel.vue'
 import { useTaskView } from '../../composables/useTaskView'
+import { useDslView } from '../../composables/useDslView'
 
 const sessionId = ref(null)
 // 任务详情模式：点击会话树任务行后右侧显示任务详情（非会话消息）
 const taskId = ref(null)
+
+// DSL 作业：任务是 DSL 作业根 → 右侧改渲染步骤表格（DslStepsPanel）
+const { isJobNode } = useDslView()
+const dslJobId = computed(() => (taskId.value && isJobNode(taskId.value) ? taskId.value : ''))
 
 // ── TaskView：会话树增量刷新（子会话切换时补全初始状态）──
 const { refresh: refreshTasks } = useTaskView()
@@ -114,24 +111,5 @@ onUnmounted(() => {
   font-weight: 500;
   text-transform: none;
   letter-spacing: 0;
-}
-.stats-tip {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  white-space: nowrap;
-}
-.stats-tip__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.stats-tip__label {
-  color: rgba(255, 255, 255, 0.7);
-}
-.stats-tip__value {
-  font-family: var(--font-mono);
-  font-weight: 600;
 }
 </style>

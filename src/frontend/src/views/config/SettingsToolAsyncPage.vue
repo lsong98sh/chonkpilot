@@ -1,9 +1,9 @@
 <!--
   工具配置页（原名「工具异步配置」；usr 级；设置菜单 → preview tab kind = settings-tool-async）
 
-  需求（用户口径，2026-09-26 改版；2026-09-28 增「涉及文件变动」）：
-    - 明细用**表格**（Table 组件）呈现：工具 / 模式 / 阈值 / 超时 / **涉及文件变动**；工具名列
-      min-width 200px；仍按 MCP（`_meta.server`）分组（`.tool-group` + `.group-title`）。
+  需求（用户口径，2026-09-26 改版；2026-09-28 增「涉及文件变动」；2026-10-07 增「超时自动取消」）：
+    - 明细用**表格**（Table 组件）呈现：工具 / 模式 / 阈值 / 超时 / **超时自动取消** / **涉及文件变动**；
+      工具名列 min-width 200px；仍按 MCP（`_meta.server`）分组（`.tool-group` + `.group-title`）。
     - **手动保存**：模式选择 / 数值输入 / 开关只改本地待保存态（显示「未保存」），点页头【保存】一次性
       提交本页全部变更（usr 键 `tool_async`，走既有 `data-user-config-save`，**零消息面变更**）；
       **无改动时保存按钮禁用**。
@@ -13,13 +13,15 @@
       标「不适用」。
     - **超时/阈值取值口径（2026-09-27）**：未设置（留空）= 回落全局/契约默认；**0 / -1 = 无上限**
       （永远等待，用户可取消）；正数 = 该秒数为硬上限。
+    - **「超时自动取消」列（2026-10-07，配置⑤）**：数值秒，`> 0` = 到超时点**直接取消**（不等用户裁决）；
+      留空 / `0` = 关闭（默认，不取消）。不透出契约 `_meta`（无契约默认 → 占位「关闭」）。
     - **「涉及文件变动」列（2026-09-28）**：每行一个开关 + 派生「打点 / 不打点」标记。缺省由工具来源
       给出（self 内置仅 `filesys_run` / `script_run` 涉及 = 打点；其余内置不涉及 = 不打点；dir 节点 /
       第三方 / 无法判定 = 涉及 = 打点，保守）；与缺省一致的项**不写库**（保持配置干净）。
       生效点 = `plugin-history` 的前置打点钩子（`history-pre-tool-hook`）：标「不打点」的工具直接放行、
       不打检查点（省 8–9 次 git 进程）；轮末补点仍在（保证总有产像），标错只会让检查点粒度变粗，
       不丢安全。
-    - 模式 / 阈值 / 超时 / 涉及文件变动 四列表头各带 `?` + Tooltip 说明。
+    - 模式 / 阈值 / 超时 / 超时自动取消 / 涉及文件变动 五列表头各带 `?` + Tooltip 说明。
 
   读写面（**零新增 MQ 主题**）：
     - 工具清单 = 既有客户端能力面 `tools-list`（与 useToolAsyncMode.js / ScenarioEditDialog 同一消费点）
@@ -27,8 +29,9 @@
       getUserConfig / saveUserConfig / resetUserKey）
   存储形态：usr 键 `tool_async`（自由键通道）= JSON 对象
     {"<工具暴露名>": {"mode":"always|never|auto|manual", "threshold":30, "hard_timeout":300,
-                      "touch_files":true|false}}
+                      "cancel_on_timeout":30, "touch_files":true|false}}
     - 未配置的工具：显示**契约现值**（`_meta.async` / `_meta.async-threshold` / `_meta.timeout`），**不写库**；
+    - `cancel_on_timeout`：仅 `> 0` 才写库（0 / 留空 = 关闭 → 不写该字段）；
     - `touch_files`：与缺省（`utils/toolTouchFiles.js` `defaultTouchFiles`）一致 → 不写该字段；
     - 「恢复默认」= 从待保存态删该工具键项（点【保存】落库；最后一项删除后整键删除，走
       `data-user-config-delete{id}`）；
@@ -116,6 +119,20 @@
             </div>
           </template>
 
+          <!-- 超时自动取消（配置⑤，2026-10-07）：数值秒，> 0 = 到超时点直接取消（不等用户裁决）；
+               留空 / 0 = 关闭（默认，不取消）。仅 gateway 消费、不透出契约 _meta → 占位「关闭」。 -->
+          <template #cancelTimeout="{ row }">
+            <div class="cell-cancel-timeout">
+              <Input
+                :model-value="row.cancelOnTimeout"
+                :aria-label="$t('config.toolAsync.cancelOnTimeout')"
+                :placeholder="$t('config.toolAsync.cancelOnTimeoutPlaceholder')"
+                @update:model-value="(v) => onNumberInput(row, 'cancel_on_timeout', v)"
+                @blur="() => onNumberBlur(row, 'cancel_on_timeout')"
+              />
+            </div>
+          </template>
+
           <!-- 涉及文件变动（2026-09-28）：开关 + 派生「打点 / 不打点」标记。
                与缺省一致 → 不写库；关闭 = 不涉及 → plugin-history 前置钩子直接放行、不打点。 -->
           <template #touch="{ row }">
@@ -167,6 +184,12 @@
               <Tooltip :content="$t('config.toolAsync.touchFilesHint')"><Icon name="help" :size="12" /></Tooltip>
             </span>
           </template>
+          <template #header-cancelTimeout>
+            <span class="th-help">
+              {{ $t('config.toolAsync.cancelOnTimeout') }}
+              <Tooltip :content="$t('config.toolAsync.cancelOnTimeoutHint')"><Icon name="help" :size="12" /></Tooltip>
+            </span>
+          </template>
         </Table>
       </div>
     </div>
@@ -183,6 +206,7 @@ import { isDirNode, stripToolPrefix } from '../../utils/toolSource'
 import { defaultTouchFiles, effectiveTouchFiles, touchFilesOverride } from '../../utils/toolTouchFiles'
 import { loadFailedText, saveFailedText } from '../../utils/settingsFeedback'
 import mq from '../../utils/mq'
+import { MsgClientTopics } from '../../events/msgkeys.js'
 
 const { t } = useI18n()
 
@@ -211,6 +235,7 @@ const columns = computed(() => [
   { label: t('config.toolAsync.mode'), prop: 'mode', width: 150 },
   { label: t('config.toolAsync.threshold'), prop: 'threshold', width: 120 },
   { label: t('config.toolAsync.hardTimeout'), prop: 'timeout', width: 140 },
+  { label: t('config.toolAsync.cancelOnTimeout'), prop: 'cancelTimeout', width: 160 },
   { label: t('config.toolAsync.touchFiles'), prop: 'touch', width: 150 },
   { label: t('config.table.operation'), type: 'action', width: 130, align: 'center' },
 ])
@@ -228,6 +253,13 @@ function isLimitValue(v) {
   if (v === undefined || v === null || String(v).trim() === '') return false
   const n = Number(v)
   return Number.isFinite(n) && (n >= 0 || n === -1)
+}
+
+// 「超时自动取消」合法输入：空 = 关闭（合法）；数字 > 0 = 生效秒数；0 = 关闭；其余（负数/非数字）非法。
+function isCancelOnTimeout(v) {
+  if (v === undefined || v === null || String(v).trim() === '') return true
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0
 }
 
 function isThresholdMode(row) {
@@ -268,12 +300,15 @@ function sameAsContract(row, e) {
   const t0 = e.threshold === undefined ? '' : String(e.threshold)
   if (t0 !== cur) return false
   if (e.hard_timeout !== undefined) return false
+  // cancel_on_timeout：仅显式 > 0 才写库 → 出现即视为已配置（不算「等于契约现值」）
+  if (e.cancel_on_timeout !== undefined) return false
   // touch_files 仅在**显式偏离缺省**时才写入 → 出现即视为已配置（不算「等于契约现值」）
   if (e.touch_files !== undefined) return false
   return true
 }
 
-// 行 → usr 键项（阈值仅 auto/manual 计入；dir 节点不写 hard_timeout；touch_files 仅偏离缺省时写入）。
+// 行 → usr 键项（阈值仅 auto/manual 计入；dir 节点不写 hard_timeout；
+// cancel_on_timeout 仅 > 0 计入；touch_files 仅偏离缺省时写入）。
 // 数值：正数 / 0 / -1 均为合法（0/-1 = 无上限），落库保留原值。
 function buildEntry(row) {
   const e = { mode: row.mode }
@@ -285,6 +320,9 @@ function buildEntry(row) {
   if (!row.dirNode && row.hardTimeout !== '' && row.hardTimeout !== null) {
     if (isLimitValue(row.hardTimeout)) e.hard_timeout = Number(row.hardTimeout)
   }
+  // 超时自动取消（配置⑤）：仅 > 0 才写库（留空 / 0 = 关闭 → 不写该字段）
+  const cot = Number(row.cancelOnTimeout)
+  if (Number.isFinite(cot) && cot > 0) e.cancel_on_timeout = cot
   // 涉及文件变动：与缺省一致 → 不写（保持配置干净）
   const tf = touchFilesOverride(row.touch, row.name, row.server)
   if (tf !== undefined) e.touch_files = tf
@@ -298,11 +336,15 @@ function resetRowFromMaps(row) {
     row.mode = MODES.includes(u.mode) ? u.mode : row.cMode
     row.threshold = u.threshold !== undefined && u.threshold !== null ? String(u.threshold) : String(defaultThreshold(row))
     row.hardTimeout = u.hard_timeout !== undefined && u.hard_timeout !== null ? String(u.hard_timeout) : ''
+    // 超时自动取消：仅 > 0 落库（0 / 留空 = 关闭）→ 显示空即「关闭」
+    row.cancelOnTimeout = u.cancel_on_timeout !== undefined && u.cancel_on_timeout !== null && Number(u.cancel_on_timeout) > 0
+      ? String(u.cancel_on_timeout) : ''
     row.touch = effectiveTouchFiles(u, row.name, row.server)
   } else {
     row.mode = row.cMode
     row.threshold = String(defaultThreshold(row))
     row.hardTimeout = ''
+    row.cancelOnTimeout = ''
     row.touch = defaultTouchFiles(row.name, row.server)
   }
 }
@@ -327,7 +369,8 @@ function isUserSet(row) {
 // 待保存态是否与已落库态不同（无改动 → 保存按钮禁用）
 function canon(e) {
   if (!e || typeof e !== 'object') return ''
-  return JSON.stringify({ mode: e.mode, threshold: e.threshold, hard_timeout: e.hard_timeout, touch_files: e.touch_files })
+  return JSON.stringify({ mode: e.mode, threshold: e.threshold, hard_timeout: e.hard_timeout,
+    cancel_on_timeout: e.cancel_on_timeout, touch_files: e.touch_files })
 }
 const dirty = computed(() => {
   const a = workMap.value
@@ -344,7 +387,8 @@ async function loadTools() {
   try {
     // 分组口径与既有 tools-list 消费点一致（ScenarioEditDialog.loadToolGroups）：
     // `_meta.server.alias || _meta.server.node || '全局'`。
-    const env = await mq.emit('tools-list', {})
+    // tools-list：客户端能力面 type（schema clientTopic，桥映射 mcp-tools-list），常量见 MsgClientTopics。
+    const env = await mq.emit(MsgClientTopics.toolsList, {})
     const res = env && env.backend && env.backend.result
     const tools = res && Array.isArray(res.tools) ? res.tools : []
     const byServer = new Map()
@@ -367,6 +411,9 @@ async function loadTools() {
         mode: meta.async || 'auto',
         threshold: '',
         hardTimeout: '',
+        // 超时自动取消（配置⑤）：无契约 _meta 载体 → 初值恒「关闭」（''）；
+        // 已落库/待保存值由 applyRows → resetRowFromMaps 覆盖。
+        cancelOnTimeout: '',
         // 涉及文件变动：缺省由工具来源派生（self 内置仅 filesys_run/script_run 涉及）；
         // 已落库/待保存值由 applyRows → resetRowFromMaps 覆盖。
         touch: defaultTouchFiles(tl.name, srv),
@@ -440,15 +487,30 @@ function onTouchChange(row, v) {
 // 数值输入：只改本地待保存态（不校验、不落库）
 function onNumberInput(row, field, v) {
   if (field === 'threshold') row.threshold = v
+  else if (field === 'cancel_on_timeout') row.cancelOnTimeout = v
   else row.hardTimeout = v
   syncRow(row)
 }
 
 // 数值失焦：① 非法/空（threshold）→ 显示值回落（savedMap / 契约现值）；
-// ② hard_timeout 清空 = 未设置硬上限（回落全局）；③ 合法（含 **0 / -1 = 无上限**）→ 同步待保存态。
+// ② hard_timeout 清空 = 未设置硬上限（回落全局）；③ 合法（含 **0 / -1 = 无上限**）→ 同步待保存态；
+// ④ cancel_on_timeout：空 / 0 = 关闭（清显示、不写库）；> 0 = 生效秒数；负数 / 非数字 → 回落已落库值。
 function onNumberBlur(row, field) {
   // I-109：dir 节点工具的 hard_timeout 不适用（输入已禁用，此处兜底）
   if (field === 'hard_timeout' && row.dirNode === true) return
+  if (field === 'cancel_on_timeout') {
+    const u0 = savedMap.value[row.name]
+    const raw = row.cancelOnTimeout
+    const n = Number(raw)
+    if (raw === '' || raw === null || raw === undefined || n === 0) {
+      row.cancelOnTimeout = '' // 关闭（不写库）
+    } else if (!isCancelOnTimeout(raw)) {
+      row.cancelOnTimeout = u0 && u0.cancel_on_timeout != null && Number(u0.cancel_on_timeout) > 0
+        ? String(u0.cancel_on_timeout) : ''
+    }
+    syncRow(row)
+    return
+  }
   const raw = field === 'threshold' ? row.threshold : row.hardTimeout
   const legal = isLimitValue(raw)
   const emptyHard = field === 'hard_timeout' && (raw === '' || raw === null)
@@ -472,6 +534,7 @@ function restoreDefault(row) {
   row.mode = row.cMode
   row.threshold = String(defaultThreshold(row))
   row.hardTimeout = ''
+  row.cancelOnTimeout = ''
   row.touch = defaultTouchFiles(row.name, row.server)
 }
 
@@ -570,6 +633,10 @@ onMounted(reload)
 .cell-timeout .b-input {
   width: 90px;
   flex-shrink: 0;
+}
+/* 超时自动取消：数值输入（秒；空 = 关闭） */
+.cell-cancel-timeout .b-input {
+  width: 90px;
 }
 .cell-dash {
   color: var(--text-muted);

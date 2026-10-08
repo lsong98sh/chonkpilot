@@ -30,7 +30,7 @@ func seedSessions(t *testing.T, bus mq.Bus) *data.DB {
 	_ = prj.Table("sessions").Upsert("s2", data.Record{
 		"title": "会话B", "parent_id": "", "created_at": rfc(base.Add(2 * time.Minute)), "updated_at": rfc(base.Add(3 * time.Minute)),
 	})
-	// s1 历史：turn t1/t2（升序），消息 m1(text)/m2(reasoning)/m3(tool_pair)
+	// s1 历史：turn t1/t2（升序），消息 m1(text)/m2(reasoning)/m3(role=tool)
 	_ = prj.Table("turns").Upsert("t1", data.Record{
 		"session_id": "s1", "turn_id": "t1", "created_at": rfc(base.Add(10 * time.Minute)),
 	})
@@ -47,9 +47,10 @@ func seedSessions(t *testing.T, bus mq.Bus) *data.DB {
 		"created_at": rfc(base.Add(21 * time.Minute)),
 	})
 	_ = prj.Table("messages").Upsert("m3", data.Record{
-		"session_id": "s1", "turn_id": "t2", "role": "assistant", "type": "tool_pair",
-		"tool_call_id": "tc1", "brief": "调用 llm_call",
-		"content":    `{"tool_call_id":"tc1","task_id":"task1","name":"llm_call","args":{"x":1},"result":"ok","status":"completed"}`,
+		"session_id": "s1", "turn_id": "t2", "role": "tool",
+		"tool_call_id": "tc1", "tool_call_status": "completed", "brief": "调用 llm_call",
+		"content": `{"call":{"tool_call_id":"tc1","name":"llm_call","arguments":{"x":1}},` +
+			`"result":{"content":"ok","status":"completed"}}`,
 		"created_at": rfc(base.Add(22 * time.Minute)),
 	})
 	return prj
@@ -182,7 +183,7 @@ func TestDataSessionContentToolResult(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	seedSessions(t, bus)
 
-	// 写路径：append-message（role=tool，content 由 persist 规整为 {call,result,async}）
+	// 写路径：append-message（role=tool，content = {call,result,async} 原文，由调用方给出）
 	w := dataCall(t, bus, "data-session-append-message", map[string]any{
 		"req_id": "rw", "instance_id": "ins-test",
 		"data": map[string]any{"turn_id": "t2", "msg": map[string]any{

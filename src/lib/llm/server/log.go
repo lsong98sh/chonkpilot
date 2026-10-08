@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 )
 
 var (
@@ -47,4 +48,36 @@ func logf(format string, args ...any) {
 		_, _ = io.WriteString(w, line) // sink 写失败不影响 stdout（诊断优先）
 	}
 	_, _ = io.WriteString(os.Stdout, line)
+}
+
+// ── 启动分段计时（OP-15：定位启动慢，仅插桩，不改启动行为/顺序）──────────────
+//
+// 统一前缀 `[startup] <阶段> 耗时 <段>ms（累计 <总>ms）`（与 GUI 宿主同一口径）：
+// 段 = 距上次打点，总 = 距 markStartupBegin（Server.Start 最早期）。经统一出口 logf
+// 输出（stdout + 宿主注入的滚动文件 sink，见 log.go 头注）。
+var (
+	startupMu   sync.Mutex
+	startupT0   time.Time
+	startupLast time.Time
+)
+
+// markStartupBegin 重置启动计时基准（Server.Start 最早期调用一次）。
+func markStartupBegin() {
+	startupMu.Lock()
+	startupT0 = time.Now()
+	startupLast = startupT0
+	startupMu.Unlock()
+}
+
+// logStartupStage 输出一段启动耗时（OP-15）：段 = 距上次打点，总 = 距 markStartupBegin。
+func logStartupStage(stage string) {
+	startupMu.Lock()
+	now := time.Now()
+	if startupT0.IsZero() {
+		startupT0, startupLast = now, now
+	}
+	seg, total := now.Sub(startupLast), now.Sub(startupT0)
+	startupLast = now
+	startupMu.Unlock()
+	logf("[startup] %s 耗时 %dms（累计 %dms）\n", stage, seg.Milliseconds(), total.Milliseconds())
 }

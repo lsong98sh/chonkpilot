@@ -65,9 +65,10 @@ func TestCategoryMaxTokensWarnsNotTruncates(t *testing.T) {
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 300)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
 		return map[string]any{"list": []any{
-			map[string]any{"category": "项目概要", "level": "project"},
+			map[string]any{"category": "项目概要", "level": "project", "prompt": "提示词-项目概要"},
 		}}
 	})
 	reply(t, bus, memoryReadSubject, func(map[string]any) map[string]any {

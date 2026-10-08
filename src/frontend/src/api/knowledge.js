@@ -1,4 +1,8 @@
 import mq from '../utils/mq.js'
+import {
+  DataKnowledgeRootKeys, DataKnowledgeListKeys,
+  DataKnowledgeReadKeys, DataKnowledgeCreateKeys,
+} from '../events/msgkeys.js'
 
 // data-knowledge-* 消息辅助：发送并等待回复。
 // 知识库维护（FP「preview 知识库维护」）：维护分类目录下的 *.原语.md 文件
@@ -19,15 +23,15 @@ function knowledgeReq(action, body = {}) {
 }
 
 export function getKnowledgeRoot(kind = 'app') {
-  return knowledgeReq('root', { kind }).then((r) => ({ root: r.root, kind: r.kind }))
+  return knowledgeReq('root', { kind }).then((r) => ({ root: r[DataKnowledgeRootKeys.root], kind: r[DataKnowledgeRootKeys.kind] }))
 }
 
 export function listPrimitives(dir) {
-  return knowledgeReq('list', { dir }).then((r) => ({ dirs: r.dirs, files: r.files }))
+  return knowledgeReq('list', { dir }).then((r) => ({ dirs: r[DataKnowledgeListKeys.dirs], files: r[DataKnowledgeListKeys.files] }))
 }
 
 export function readPrimitive(path) {
-  return knowledgeReq('read', { path }).then((r) => ({ source: r.source, doc: r.doc }))
+  return knowledgeReq('read', { path }).then((r) => ({ source: r[DataKnowledgeReadKeys.source], doc: r[DataKnowledgeReadKeys.doc] }))
 }
 
 export function savePrimitive(path, doc) {
@@ -35,7 +39,7 @@ export function savePrimitive(path, doc) {
 }
 
 export function createPrimitive(dir, type, name) {
-  return knowledgeReq('create', { dir, type, name }).then((r) => r.path)
+  return knowledgeReq('create', { dir, type, name }).then((r) => r[DataKnowledgeCreateKeys.path])
 }
 
 export function deletePrimitive(path) {
@@ -47,7 +51,7 @@ export function renamePrimitive(path, new_name) {
 }
 
 export function createPrimitiveDir(parent, name) {
-  return knowledgeReq('mkdir', { parent, name }).then((r) => r.path)
+  return knowledgeReq('mkdir', { parent, name }).then((r) => r[DataKnowledgeCreateKeys.path])
 }
 
 export function deletePrimitiveDir(path) {

@@ -55,8 +55,8 @@ func TestServerLogsReachGuiLogFile(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = bus.Close() })
 
-	// 实测触发点：`usr.db` 指向**已存在的目录** → bbolt 打不开 → 装配期读 usr `mcps` 失败 →
-	// server 记 `mcp 配置读取失败（usr=…）`（改前该行只进 stdout、gui.log 中查不到）。
+	// 实测触发点：`usr.db` 指向**已存在的目录** → bbolt 打不开 → 装配期读 usr 配置失败 →
+	// server 记 `reconcileLLMProviders: UserConfigGet failed`（改前该行只进 stdout、gui.log 中查不到）。
 	out := captureFileStdout(t, func() {
 		_ = server.New(bus, server.Options{
 			UsrPath:   dir,                  // 目录（非文件）→ OpenLayer 失败，触发失败日志
@@ -68,7 +68,7 @@ func TestServerLogsReachGuiLogFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read gui.log: %v", err)
 	}
-	const want = "mcp 配置读取失败"
+	const want = "UserConfigGet failed"
 	if !strings.Contains(string(b), want) {
 		t.Fatalf("gui.log 未收到 server 诊断行（want %q），实际文件内容：\n%s", want, string(b))
 	}

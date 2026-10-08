@@ -5,7 +5,6 @@
 //
 // 对外**消息契约不变**：load 返回合并对象 {data: {...}}、save 收增量对象（双方仍是同一
 // 形态，61-消息一览 无需变更）；变化只在存储侧（原 user_config 单 key 整块 JSON）。
-// 旧数据一次性迁移：首次访问若存在 legacy `user_config` 整块 → 拆写到逐 key + 专用表，删整块。
 //
 // 阶段 4「internal 下沉」：本文件由 `chonkpilot-data/persist` 整体下移（逻辑逐字未改；
 // MQ 信封 handleUserConfig 留在 persist）。
@@ -36,7 +35,6 @@ var userConfigKeyKinds = map[string]string{
 	"responseTimeout": "int",
 	"streamTimeout":   "int",
 	"retryCount":      "int",
-	"retryDelay":      "int",
 	// defaultLLM（llmref，2026-09-15 改）：值 = LLM 选择引用 —— **name 字符串**（usr llms 记录名，
 	// 或内置 provider 名如 echo；空串 = 显式「系统默认（启动参数）」= 不指定 provider → 回落 exe
 	// 启动参数）。读侧兼容旧记录：值能解析为整数时按**旧 int 索引**（llms[v]）原样回读，消费点
@@ -86,17 +84,14 @@ var userConfigFreeKeys = map[string]bool{
 	// 零新增主题）。**未配置 = 不隔离**（默认兼容）。**旧形态（按工具暴露名）不再生效**。
 	// 「恢复未设置」= 删该 executor 键项（整表覆盖写 / 末项删整键）。
 	"tool_sandbox": true,
-	// memory_prompts = **用户级记忆类别沉淀提示词**（**结构化 JSON 对象字符串**，形状
-	// {"<类别名>":"<提示词全文>"}；当前仅承载唯一用户级类别「用户偏好」，项目级 8 类走
-	// prj `memory.prompt.<类别名>`）。消费方见 64-配置项一览 §3：memory 插件 distill →
-	// llm-simple 的 `system`（`userMemoryPrompts`；**每轮现读** → 保存即生效）；键缺失/空/
-	// 非法 JSON → 回落插件内置默认。读写走既有 data-user-config-{load,save,delete}（自由键）。
-	"memory_prompts": true,
+	// 注（OP-04，2026-10-06）：原 `memory_prompts`（用户级记忆类别沉淀提示词）自由键**已移除**
+	// —— 记忆类别提示词改**文件化**（`capability/system/memory/<类别名>.md`，走 prompt 域
+	// `memory_prompt.<类别名>` 键；读序 项目→用户→系统→embed），键载体不再存在。
 }
 
-// LegacyUserConfigKey 是 v6 之前的整块用户配置 key（迁移后删除）。
-// 导出供信封层（persist 的 data-user-config-* 应答键名/判定）复用同一常量。
-const LegacyUserConfigKey = "user_config"
+// UserConfigID 是 user-config 域的整体记录 id（`data-user-config-save` 应答键 `id` 与
+// `data-user-config-refresh` 广播的 `id`；仅作不透明标识，前端不解析其值）。
+const UserConfigID = "user_config"
 
 // inheritableConfigKeys 是 user-config 域中**可被项目层覆盖**的键及其值类型（02-配置层级
 // §3/§5）：读序 prjusr → prj → usr（本函数以 usr 视图为基线，故只需叠加项目层两级）。
@@ -117,11 +112,13 @@ func (s *Service) applyProjectOverrides(view map[string]any, instanceID string, 
 		return view
 	}
 	defer release()
+	puVals := cachedConfigValues(pudb)  // 进程内值缓存（valuecache.go，D-45）
+	prjVals := cachedConfigValues(prj)
 	for key, kind := range inheritableConfigKeys {
 		raw := ""
-		if v, ok := data.GetConfig(pudb, key); ok && v != "" {
+		if v, ok := puVals[key]; ok && v != "" {
 			raw = v // prjusr（本机本项目）优先
-		} else if v, ok := data.GetConfig(prj, key); ok && v != "" {
+		} else if v, ok := prjVals[key]; ok && v != "" {
 			raw = v // prj（团队预设）
 		} else {
 			continue // 两级均未设 → 保持 usr 基线（继承）
@@ -140,9 +137,9 @@ func (s *Service) applyProjectOverrides(view map[string]any, instanceID string, 
 // userConfigSystemDefaults 是系统级默认（fallback 终点 = 资源/常量，不落库；
 // 12-数据层）。usr 无该 key 时由这里补默认值，保证前端消费字段完整。
 // 注：defaultLLM 的默认值依赖 llms 集合（第一个可用 / 无则 -1），在 readUserConfig 内计算。
-// 超时/重试四项与旧硬编码 / llm server 回落常量一致（responseTimeout=120s、streamTimeout=60s、
-// retryCount=2、retryDelay=5s）；四项均按**存在性**判定——retryCount 显式 0 = 不重试（P0-A，
-// 缺键才回落本默认 2）；其余三项 0/缺省 = 用默认（非正值不下发）。
+// 超时/重试三项与旧硬编码 / llm server 回落常量一致（responseTimeout=120s、streamTimeout=60s、
+// retryCount=2）；retryCount 按**存在性**判定——显式 0 = 不重试（P0-A，缺键才回落本默认 2）；
+// 另两项 0/缺省 = 用默认（非正值不下发）。**退避间隔不在此**（经 router.RetryWait 计算，2026-10-05）。
 var userConfigSystemDefaults = map[string]any{
 	// theme 缺省 = light：与前端唯一默认主题一致（`Toolbar.vue` currentTheme 初值 + `:root` token）。
 	// 原值 "system"（2026-09-16 订正）无实现 —— 无 `[data-theme="system"]` 规则、前端可选集仅
@@ -159,18 +156,19 @@ var userConfigSystemDefaults = map[string]any{
 	"responseTimeout": 120,
 	"streamTimeout":   60,
 	"retryCount":      2,
-	"retryDelay":      5,
 	"defaultScenario": "",
 }
 
 // readUserConfig 组装用户配置对象：逐 key 标量（缺失补系统默认）+ 专用表集合。
+// 标量/自由键读经进程内值缓存（valuecache.go，D-45）；llms 集合表不缓存（低频、整体替换写）。
 func readUserConfig(db *data.DB) map[string]any {
+	vals := cachedConfigValues(db)
 	llms := readCollection(db, tableLLMs)
 	out := map[string]any{
 		"llms": llms,
 	}
 	for key, kind := range userConfigKeyKinds {
-		if v, ok := data.GetConfig(db, key); ok {
+		if v, ok := vals[key]; ok {
 			switch kind {
 			case "int":
 				if n, err := strconv.Atoi(v); err == nil {
@@ -197,7 +195,7 @@ func readUserConfig(db *data.DB) map[string]any {
 	}
 	// 自由键：无类型/无默认，存在即以字符串原样回读（G-05 / P2-7）。
 	for key := range userConfigFreeKeys {
-		if v, ok := data.GetConfig(db, key); ok {
+		if v, ok := vals[key]; ok {
 			out[key] = v
 		}
 	}
@@ -237,16 +235,18 @@ func (s *Service) userConfigList(db *data.DB) []map[string]any {
 		hasData = true
 	}
 	if !hasData {
+		vals := cachedConfigValues(db) // 进程内值缓存（valuecache.go，D-45）
 		for key := range userConfigKeyKinds {
-			if _, ok := data.GetConfig(db, key); ok {
+			if _, ok := vals[key]; ok {
 				hasData = true
 				break
 			}
 		}
 	}
 	if !hasData {
+		vals := cachedConfigValues(db)
 		for key := range userConfigFreeKeys {
-			if _, ok := data.GetConfig(db, key); ok {
+			if _, ok := vals[key]; ok {
 				hasData = true
 				break
 			}
@@ -256,7 +256,37 @@ func (s *Service) userConfigList(db *data.DB) []map[string]any {
 		return []map[string]any{}
 	}
 	view["id"] = "user-config"
+	// explicit = 用户**显式写入** usr 主库的配置键（I-127 导出「保真」依据：导出只写显式键，
+	// 避免把系统默认填充（如 defaultLLM 的数值下标）固化为用户配置）。
+	view["explicit"] = explicitUserConfigKeys(db)
 	return []map[string]any{view}
+}
+
+// explicitUserConfigKeys 返回用户**显式写入** usr 主库的配置键（字典序稳定）：
+//   - 标量键 / 自由键：配置表存在该键即显式（键存在 = 用户写过，即使值等于系统默认）；
+//   - 集合键：专用表非空即显式（空表 = 无可导出的本体）。
+//
+// 仅供 data-user-config-list 的 `explicit` 字段使用；list 视图内被补系统默认的键不在此列。
+func explicitUserConfigKeys(db *data.DB) []string {
+	vals := cachedConfigValues(db) // 进程内值缓存（valuecache.go，D-45）
+	out := make([]string, 0, len(userConfigKeyKinds)+len(userConfigFreeKeys)+len(collectionKeys))
+	for key := range userConfigKeyKinds {
+		if _, ok := vals[key]; ok {
+			out = append(out, key)
+		}
+	}
+	for key := range userConfigFreeKeys {
+		if _, ok := vals[key]; ok {
+			out = append(out, key)
+		}
+	}
+	for key, table := range collectionKeys {
+		if keys, err := db.Table(table).ListKeys(); err == nil && len(keys) > 0 {
+			out = append(out, key)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // saveUserConfig 增量保存：标量写各自 key；集合整体替换专用表（载荷里出现的集合才写）。
@@ -287,11 +317,8 @@ func saveUserConfig(db *data.DB, payload map[string]any) error {
 	return nil
 }
 
-// deleteUserConfig 清空用户配置（标量 key + 自由键 + 集合表 + legacy 整块）→ 全部回落默认/继承。
+// deleteUserConfig 清空用户配置（标量 key + 自由键 + 集合表）→ 全部回落默认/继承。
 func deleteUserConfig(db *data.DB) error {
-	if err := data.DeleteConfig(db, LegacyUserConfigKey); err != nil {
-		return err
-	}
 	for key := range userConfigKeyKinds {
 		if err := data.DeleteConfig(db, key); err != nil {
 			return err
@@ -395,56 +422,4 @@ func ordOfKey(k string) int {
 		return 1 << 30
 	}
 	return n
-}
-
-// ── 旧数据一次性迁移（v5 整块 user_config → v6 逐 key + 专用表）──────────
-
-// MigrateLegacyUserConfig 若存在 legacy 整块 user_config → 拆 writes 后删除（幂等）。
-func (s *Service) MigrateLegacyUserConfig(db *data.DB) {
-	raw, ok := data.GetConfig(db, LegacyUserConfigKey)
-	if !ok || raw == "" {
-		return
-	}
-	var blob map[string]any
-	if err := json.Unmarshal([]byte(raw), &blob); err != nil {
-		return // 解析不了则保留原样，不破坏数据
-	}
-	_ = saveUserConfig(db, blob)
-	_ = data.DeleteConfig(db, LegacyUserConfigKey)
-}
-
-// ── 配置键改名迁移（D-04）─────────────────────────────────
-
-// configKeyRenames 是配置键改名表（旧键 → 新键）：读配置时一次性迁移，避免用户已存值丢失。
-// 目前仅 cPath → cCompilerPath（toolchain 路径键不绑具体实现，02-配置层级 §5 / D-04）。
-var configKeyRenames = map[string]string{
-	"cPath": "cCompilerPath",
-}
-
-// RenamedKey 查配置键改名表（旧键 → 新键，ok=false = 未改名）。
-// 导出供信封层（persist 的 data-user-config-delete 应答按新键回，与改前同口径）复用同一张表。
-func RenamedKey(key string) (string, bool) {
-	newKey, ok := configKeyRenames[key]
-	return newKey, ok
-}
-
-// MigrateConfigKeyRenames 幂等迁移配置键改名：存在旧键且新键缺失 → 写新键 + 删旧键；
-// 新键已存在（用户已按新键配置）→ 仅删旧键，避免旧值覆盖新值；旧值空串 → 仅删旧键。
-// 迁移对 usr / prj / prjusr 各库通用（由调用方传入对应 db）。
-func (s *Service) MigrateConfigKeyRenames(db *data.DB) {
-	if db == nil {
-		return
-	}
-	for oldKey, newKey := range configKeyRenames {
-		oldVal, ok := data.GetConfig(db, oldKey)
-		if !ok {
-			continue
-		}
-		if oldVal != "" {
-			if _, exists := data.GetConfig(db, newKey); !exists {
-				_ = data.SetConfig(db, newKey, oldVal)
-			}
-		}
-		_ = data.DeleteConfig(db, oldKey)
-	}
 }

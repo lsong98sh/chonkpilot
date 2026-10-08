@@ -61,7 +61,7 @@ func TestApplyEventMapping(t *testing.T) {
 				"session_id": tc.wantSession, "kind": "tool", "node_type": "tool",
 				"parent_node_id": "tk-root", "created_at": "2026-09-18T00:00:00Z",
 				"status": tc.wantState, "state": tc.wantState, "tool_call_id": "tc-1",
-				"instance_id": "ins-test", "workdir": "E:/ws",
+				"instance_id": "ins-test", "work_dir": "E:/ws",
 			}
 			for k, wantV := range want {
 				if got := sval(row[k]); got != wantV {
@@ -642,7 +642,7 @@ func TestRecoverMarksInterrupted(t *testing.T) {
 	rows := []map[string]any{
 		{"task_id": "tk-run", "node_id": "tk-run", "top_session": "top-1", "session_id": "s-1",
 			"kind": "tool", "node_type": "tool", "title": "遗留运行", "status": "running",
-			"state": "running", "created_at": "2026-09-18T00:00:00Z", "instance_id": "ins-test", "workdir": "E:/ws"},
+			"state": "running", "created_at": "2026-09-18T00:00:00Z", "instance_id": "ins-test", "work_dir": "E:/ws"},
 		{"task_id": "tk-pend", "node_id": "tk-pend", "top_session": "top-1", "session_id": "s-1",
 			"kind": "tool", "node_type": "tool", "title": "遗留待执行", "status": "pending",
 			"state": "pending", "created_at": "2026-09-18T00:00:00Z", "instance_id": "ins-test"},

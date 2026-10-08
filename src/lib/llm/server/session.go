@@ -8,6 +8,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // sessionStore 封装会话数据读写（总线 persist 面）。
@@ -85,20 +86,38 @@ func (st *sessionStore) AppendMessage(turnID, role, content, toolCallID string) 
 // AppendFull 落一条完整消息（含 tool_calls / kind，LLM 协议重放需要；persist 生成 m-<id>，
 // created_at 固定 9 位纳秒 RFC3339 保证同轮顺序稳定，对齐 persist 实现）。
 func (st *sessionStore) AppendFull(turnID string, m ChatMsg) error {
+	_, err := st.AppendFullKeyed(turnID, m, "")
+	return err
+}
+
+// AppendFullKeyed 同 AppendFull，另指定回填主键（key 非空 = 就地更新该行；空 = 新键）；
+// 返回落库主键（回填时回传为 key）。用于 assistant 增量落库（同段落库到同一行）。
+func (st *sessionStore) AppendFullKeyed(turnID string, m ChatMsg, key string) (string, error) {
 	var msg map[string]any
 	if b, err := json.Marshal(m); err == nil {
 		_ = json.Unmarshal(b, &msg)
 	}
-	_, err := st.req("append-message", map[string]any{"turn_id": turnID, "msg": msg})
-	return err
+	return st.appendMsg(turnID, msg, key)
 }
 
 // AppendMsgMap 落一条消息（msg 为完整 map，可含 persist 扩展字段 brief/tool_call_status/
 // session_id；用于 role=tool 结果——其 content 为 {call,result,async} JSON，无法经 ChatMsg
-// 序列化携带 tool_call_status）。
-func (st *sessionStore) AppendMsgMap(turnID string, msg map[string]any) error {
-	_, err := st.req("append-message", map[string]any{"turn_id": turnID, "msg": msg})
-	return err
+// 序列化携带 tool_call_status）。key 非空 = 就地更新该行（running → 终态回填）；返回落库主键。
+func (st *sessionStore) AppendMsgMap(turnID string, msg map[string]any, key string) (string, error) {
+	return st.appendMsg(turnID, msg, key)
+}
+
+// appendMsg 发 data-session-append-message（key 非空才带 key 字段，保持旧调用载荷逐字节等价）。
+func (st *sessionStore) appendMsg(turnID string, msg map[string]any, key string) (string, error) {
+	payload := map[string]any{"turn_id": turnID, "msg": msg}
+	if key != "" {
+		payload["key"] = key
+	}
+	res, err := st.req("append-message", payload)
+	if err != nil {
+		return "", err
+	}
+	return str(res["id"]), nil
 }
 
 // LoadMessages 读该 turn 全部消息（created_at 升序；LLM 会话重建）。
@@ -214,7 +233,7 @@ func (st *sessionStore) CleanupStaleTurns() error {
 // SetSnapshot 写会话历史快照（data-snapshot-set，§3.2b；唯一终态 llm-complete 写，
 // snapshot_turn = 覆盖到最后一条 turn）。
 func (st *sessionStore) SetSnapshot(sessionID string, history []ChatMsg, snapshotTurn string) error {
-	_, err := dataRequest(st.bus, "data-snapshot-set", map[string]any{
+	_, err := dataRequest(st.bus, msgkeys.TopicDataSnapshotSet, map[string]any{
 		"instance_id": st.instanceID,
 		"data": map[string]any{
 			"session_id": sessionID,

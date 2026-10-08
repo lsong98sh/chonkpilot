@@ -102,6 +102,7 @@
       </Button>
     </div>
     <div v-if="taskProgress" class="task-progress-bar">{{ taskProgress }}</div>
+    <div v-if="compressing" class="compress-progress-bar">{{ $t('chat.compressing') }}</div>
     <InputBox
       @send="handleSend"
       @cancel="handleCancel"
@@ -181,6 +182,7 @@ import { getScenarioList } from '../../api/scenario'
 import { newSessionId } from '../../api/chat'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+import { MsgTopics, GuiUploadKeys, GuiCaptureKeys } from '../../events/msgkeys'
 import MessageList from './MessageList.vue'
 import InputBox from './InputBox.vue'
 import ScreenshotOverlay from './ScreenshotOverlay.vue'
@@ -190,6 +192,7 @@ import { useTaskView } from '../../composables/useTaskView'
 import { sendQueue } from '../../composables/useSendQueue'
 import { useChatWindows } from '../../composables/useChatWindows'
 import { useLLMSetup } from '../../composables/useLLMSetup'
+import { useCompressStatus } from '../../composables/useCompressStatus'
 import { needsLLMConfigHint } from '../../utils/llmSetup'
 import { pluginFailureText } from '../../utils/pluginNotice'
 
@@ -331,11 +334,15 @@ const screenshotImage = ref('')
 async function onScreenshotDone(dataUrl) {
   try {
     // gui.upload（61-消息一览 §1）：附件落盘数据根 tmp/uploads → result {url, path, file_id, name}
-    const env = await mq.emit('gui.upload', { name: 'screenshot.png', data: dataUrl, kind: 'image' })
+    const env = await mq.emit(MsgTopics.guiUpload, { name: 'screenshot.png', data: dataUrl, kind: 'image' })
     const res = env && env.backend && env.backend.result
-    if (res && res.path) {
+    if (res && res[GuiUploadKeys.path]) {
       mq.emit(EventNames.chatInsertAttachment, {
-        kind: 'image', name: res.name || 'screenshot.png', path: res.path, url: res.url, fileId: res.file_id,
+        kind: 'image',
+        name: res[GuiUploadKeys.name] || 'screenshot.png',
+        path: res[GuiUploadKeys.path],
+        url: res[GuiUploadKeys.url],
+        fileId: res[GuiUploadKeys.file_id],
       })
     }
   } catch (e) {
@@ -415,6 +422,10 @@ const isLoading = computed(() => messageListRef.value?.isLoading ?? false)
 
 // ── Task progress (kept in ChatPanel for display; non-message events) ──
 const taskProgress = ref('')
+
+// ── 上下文压缩指示（OP-03）：compress-start/compress-done 驱动（会话级）──
+const { isCompressing, handleNotice: handleCompressNotice } = useCompressStatus()
+const compressing = computed(() => isCompressing(currentSessionId.value))
 
 // ── Tool task notifications (executor tool-notify events) ──
 const pendingNotifications = ref([])
@@ -682,6 +693,12 @@ onMounted(() => {
 
   const unsubNotify = mq.on(EventNames.toolNotify, (data) => {
     if (!sessionGuard(data)) return
+    // 压缩进度（OP-03，notice=compress-start/compress-done）：驱动会话级「正在压缩上下文」指示，
+    // **不弹 toast**（与 tool-notify 其它取值的提示路径分流）。
+    if (data.notice === 'compress-start' || data.notice === 'compress-done') {
+      handleCompressNotice(data)
+      return
+    }
     // 完成通知（notice=completion）：chat 窗口已有 user-notify 消息，不再弹 toast（去重）。
     if (data.notice === 'completion') return
     // 插件失败（notice=plugin-failure）：按 plugin/kind 映射 i18n 文案（I-117；zh-CN/en-US 双语），
@@ -738,9 +755,9 @@ onMounted(() => {
     if (!canScreenshot.value) return
     screenshotting.value = true
     try {
-      const env = await mq.emit('gui.capture', {})
+      const env = await mq.emit(MsgTopics.guiCapture, {})
       const res = env && env.backend && env.backend.result
-      if (res && res.b64) screenshotImage.value = 'data:image/png;base64,' + res.b64
+      if (res && res[GuiCaptureKeys.b64]) screenshotImage.value = 'data:image/png;base64,' + res[GuiCaptureKeys.b64]
     } catch (e) {
       // 截图失败必须可见（调试日志保留）
       console.warn('[ChatPanel] screenshot failed:', e)
@@ -803,6 +820,16 @@ onUnmounted(() => {
   padding: 3px 12px;
   font-size: 11px;
   color: var(--accent);
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+/* 上下文压缩指示（OP-03）：会话级「正在压缩上下文」，compress-done（或切换会话）后消失 */
+.compress-progress-bar {
+  flex-shrink: 0;
+  padding: 3px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
   background: var(--bg-surface);
   border-top: 1px solid var(--border);
   text-align: center;

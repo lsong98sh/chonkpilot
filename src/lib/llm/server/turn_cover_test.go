@@ -239,12 +239,12 @@ func jsonDecode(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
-// saveRetryConfig 写 usr 配置 retryCount/retryDelay（秒）——缩短重试用例耗时，与
+// saveRetryConfig 写 usr 配置 retryCount（次数）——退避经 router.RetryWait（1s/2s…），与
 // TestTurnRetryCountSemantics 同一路径（P0-A 存在性判定：显式值生效）。
-func saveRetryConfig(t *testing.T, s *Server, count, delaySec int) {
+func saveRetryConfig(t *testing.T, s *Server, count int) {
 	t.Helper()
 	if res := dataCall(t, s, "data-user-config-save", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"retryCount": count, "retryDelay": delaySec},
+		"instance_id": "ins-test", "data": map[string]any{"retryCount": count},
 	}); res["ok"] != true {
 		t.Fatalf("save user-config failed: %+v", res)
 	}
@@ -268,7 +268,7 @@ func TestTurnCompleteRetryableField(t *testing.T) {
 		defer llm.Close()
 		s := newTestServer(t, llm)
 		registerTestInstance(t, s)
-		saveRetryConfig(t, s, 1, 1) // 重试 1 次 → 2 次请求（真实"耗尽"）
+		saveRetryConfig(t, s, 1) // 重试 1 次 → 2 次请求（真实"耗尽"）
 		startTurn(t, s, "s-rt1", "t-rt1")
 		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-rt1", "turn": "t-rt1",
@@ -302,7 +302,7 @@ func TestTurnCompleteRetryableField(t *testing.T) {
 		defer llm.Close()
 		s := newTestServer(t, llm)
 		registerTestInstance(t, s)
-		saveRetryConfig(t, s, 2, 1)
+		saveRetryConfig(t, s, 2)
 		startTurn(t, s, "s-rt2", "t-rt2")
 		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-rt2", "turn": "t-rt2",

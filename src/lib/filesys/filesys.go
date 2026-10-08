@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 const maxTextBytes = 512 * 1024
@@ -47,21 +48,21 @@ func (f *Filesys) Start() error {
 		subject string
 		h       func(context.Context, string, *mq.Value) error
 	}{
-		{"filesys.list", f.onList},
-		{"filesys.content", f.onContent},
-		{"filesys.create", f.onCreate},
-		{"filesys.mkdir", f.onMkdir},
-		{"filesys.remove", f.onRemove},
-		{"filesys.rename", f.onRename},
-		{"filesys.copy", f.onCopy},
-		{"filesys.watch", f.onWatch},
-		{"filesys.unwatch", f.onUnwatch},
+		{msgkeys.TopicFilesysList, f.onList},
+		{msgkeys.TopicFilesysContent, f.onContent},
+		{msgkeys.TopicFilesysCreate, f.onCreate},
+		{msgkeys.TopicFilesysMkdir, f.onMkdir},
+		{msgkeys.TopicFilesysRemove, f.onRemove},
+		{msgkeys.TopicFilesysRename, f.onRename},
+		{msgkeys.TopicFilesysCopy, f.onCopy},
+		{msgkeys.TopicFilesysWatch, f.onWatch},
+		{msgkeys.TopicFilesysUnwatch, f.onUnwatch},
 		// instance 生命周期（与 persist 同构）：自持「instance → work_dir」绑定，见 insts。
 		// 只订阅 register/exit —— filesys 与发布方（GUI 桥 / httpapi / CLI）恒同进程同总线，
 		// 绑定生命周期 = 进程生命周期，无分离形态心跳超时回收的需求（persist 的 sweep 是为了
 		// 释放失效的库连接；filesys 无此资源）→ 心跳（instance-heartbeat）无消费方，不订阅。
-		{"instance-register", f.onInstanceRegister},
-		{"instance-exit", f.onInstanceExit},
+		{msgkeys.TopicInstanceRegister, f.onInstanceRegister},
+		{msgkeys.TopicInstanceExit, f.onInstanceExit},
 	} {
 		sub, err := f.bus.On(s.subject, 0, s.h)
 		if err != nil {

@@ -33,6 +33,7 @@ type API interface {
 	ScenarioAPI
 	MemoryAPI
 	McpAPI
+	ProjectAPI
 }
 
 // TasktreeAPI 是 tasktree 域（任务树：节点列表 / 任务快照 / 幂等落库 / 关闭）门面面。
@@ -138,6 +139,38 @@ type MemoryAPI interface {
 
 	// MemoryDelete 删自定义类别（预置类别不可删，报错）。
 	MemoryDelete(req MemoryDeleteRequest) (MemoryDeleteResponse, error)
+
+	// MemoryExtractLoad 读某会话的记忆提取进度（Category 空 = 全部类别，按类别名升序）。
+	// 进度 = 专用表 `memory_extract`（prjusr）：某 (会话, 类别) 最后已成功提取的 turn。
+	MemoryExtractLoad(req MemoryExtractLoadRequest) (MemoryExtractLoadResponse, error)
+
+	// MemoryExtractSave 写某 (会话, 类别) 的提取进度（仅在该类别成功写回后调用）。
+	MemoryExtractSave(req MemoryExtractSaveRequest) (MemoryExtractSaveResponse, error)
+
+	// MemoryExtractDelete 删某会话（可选某类别）的提取进度（幂等）。
+	MemoryExtractDelete(req MemoryExtractDeleteRequest) (MemoryExtractDeleteResponse, error)
+}
+
+// ProjectAPI 是 project 域（项目初始化：工程规格文件 + 目录探测）门面面。
+//
+// 用于「场景向导」：判定 `<workDir>/.chonkpilot/project_spec.md`（存在 = 已初始化标记）、
+// 读写该规格文件、以及只读探测工作目录。探测**不写盘**；本域无变更广播（无订阅面）。
+type ProjectAPI interface {
+	// ProjectSpecExists 判定工程规格文件是否存在。
+	ProjectSpecExists(req ProjectSpecExistsRequest) (ProjectSpecExistsResponse, error)
+
+	// ProjectSpecRead 读工程规格文件（不存在 → Exists=false，**不是错误**）。
+	ProjectSpecRead(req ProjectSpecReadRequest) (ProjectSpecReadResponse, error)
+
+	// ProjectSpecWrite 写工程规格文件（整份覆盖；父目录不存在则创建）。
+	ProjectSpecWrite(req ProjectSpecWriteRequest) (ProjectSpecWriteResponse, error)
+
+	// ProjectProbe 只读探测工作目录（空目录判定 + 语言/框架/包管理/构建/测试/lint/结构）。
+	ProjectProbe(req ProjectProbeRequest) (ProjectProbeResponse, error)
+
+	// ProjectAgentWrite 写项目级 capability agent 文件（`<workDir>/.chonkpilot/capability/agents/<名>.agent.md`），
+	// 返回场景可直接引用的引用串（**供场景向导把合成提示词落文件后引用**）。
+	ProjectAgentWrite(req ProjectAgentWriteRequest) (ProjectAgentWriteResponse, error)
 }
 
 // SnapshotAPI 是 snapshot 域（会话快照）门面面。
@@ -234,6 +267,8 @@ type TurnAPI interface {
 // MessageAPI 是 message 域（消息：落库/重建/上下文/取正文）门面面。
 type MessageAPI interface {
 	// MessageAppend 落一条消息（role=tool 的正文由实现侧规整为工具载荷；brief 缺省时尽力生成）。
+	// Key 非空 = 按主键就地更新（running → 终态回填）；空 = 新键（role=tool 带 tool_call_id 时
+	// 按 (turn_id, tool_call_id) 复用既有行）。返回落库主键 ID。
 	MessageAppend(req MessageAppendRequest) (MessageAppendResponse, error)
 
 	// MessageLoad 读某轮次全部消息（时间升序，供 LLM 会话重建）。

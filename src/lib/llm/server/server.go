@@ -36,6 +36,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	"github.com/chonkpilot/chonkpilot-plugin"
@@ -57,7 +58,7 @@ const (
 	// SubjectLLMSimple 无上下文单轮 LLM 方法面（相对主题 llm-simple；chonk. 前缀注入）。
 	// 请求 {prompt[, system]} → 应答 {text}；无 session/turn 上下文（compress 摘要 / 网关
 	// mcp_find 语义检索等"简单 prompt→结果"场景，61-消息一览 2026-09-08 需求更新）。
-	SubjectLLMSimple = "llm-simple"
+	SubjectLLMSimple = msgkeys.TopicLlmSimple
 )
 
 // domainTopics 内部消息名（方法/事件，连字符/点分隔）→ 相对域主题
@@ -66,26 +67,31 @@ const (
 // servers-*/server-starting → server-*）。data-* 数据面已由 persist 服务直接应答（本包不再路由）。
 var domainTopics = map[string]string{
 	// 方法面（客户端 → server；结果写 v.Result，无 .reply）
-	"llm-start":       "session-start",
-	"llm-send":        "session-send",
-	"llm-cancel":      "session-cancel",
-	"ask-user-reply":  "session-ask-reply",
-	"task-stop":       "task-stop",
-	"task-background": "task-background",
-	"task-verify":     "task-verify", // 一致性校验方法面（I-87）：主题名与内部名同名，非 data-* 域
-	"tool-retry":      "tool-retry",
-	"prompt-optimise": "prompt-optimise",
-	// 事件（server → 订阅者）
-	"llm-receive":      "session-receive",
-	"llm-complete":     "session-complete",
-	"llm-compress":     "session-compress",
-	"ask-user":         "session-ask",
-	"turn-start":       "session-turn-start",
-	"tasks.started":    "task-started",
-	"tasks.updated":    "task-updated",
-	"tasks.done":       "task-done",
-	"server-starting":  "server-starting",
-	"prompt-optimised": "prompt-optimised",
+	msgkeys.TopicLlmStart:       "session-start",
+	msgkeys.TopicLlmSend:        "session-send",
+	msgkeys.TopicLlmCancel:      "session-cancel",
+	msgkeys.TopicAskUserReply:   "session-ask-reply",
+	msgkeys.TopicTaskStop:       msgkeys.TopicTaskStop,
+	msgkeys.TopicTaskBackground: msgkeys.TopicTaskBackground,
+	msgkeys.TopicTaskVerify:     msgkeys.TopicTaskVerify, // 一致性校验方法面（I-87）：主题名与内部名同名，非 data-* 域
+	msgkeys.TopicToolRetry:      msgkeys.TopicToolRetry,
+	msgkeys.TopicPromptOptimise: msgkeys.TopicPromptOptimise,
+	// 场景向导方法面（2026-10-04；agent-wizard* 同名主题，事件面由 GUI 桥在 init-data 检测后直接下发）
+	msgkeys.TopicAgentWizardProbe:    msgkeys.TopicAgentWizardProbe,
+	msgkeys.TopicAgentWizardCompose:  msgkeys.TopicAgentWizardCompose,
+	msgkeys.TopicAgentWizardGenerate: msgkeys.TopicAgentWizardGenerate,
+	msgkeys.TopicAgentWizardSkip:     msgkeys.TopicAgentWizardSkip,
+	// 事件（server → 订阅者；键为前端/internal 名，非契约主题者保留字面量）
+	"llm-receive":                msgkeys.TopicSessionReceive,
+	"llm-complete":               msgkeys.TopicSessionComplete,
+	"llm-compress":               msgkeys.TopicSessionCompress,
+	"ask-user":                   msgkeys.TopicSessionAsk,
+	"turn-start":                 msgkeys.TopicSessionTurnStart,
+	"tasks.started":              msgkeys.TopicTaskStarted,
+	"tasks.updated":              msgkeys.TopicTaskUpdated,
+	"tasks.done":                 msgkeys.TopicTaskDone,
+	msgkeys.TopicServerStarting:  msgkeys.TopicServerStarting,
+	msgkeys.TopicPromptOptimised: msgkeys.TopicPromptOptimised,
 }
 
 // domainSubject 内部消息名 → 相对主题（publish/reply/订阅统一入口）。
@@ -108,7 +114,7 @@ const (
 const (
 	NotifyTypeReason   = "reason"    // 思考链增量
 	NotifyTypeText     = "text"      // 正式回复增量
-	NotifyTypeToolCall = "tool-call" // 工具请求 {tool-call-id, tool, arguments}
+	NotifyTypeToolCall = "tool-call" // 工具请求 {tool_call_id, tool, arguments}
 )
 
 // Options 是会话服务构造参数。
@@ -213,8 +219,14 @@ type Server struct {
 	turns           map[string]*turnCtx   // instKey(instance, turn) → 会话状态机
 	busy            map[string]string     // instKey(instance, session) → running turn（同 instance 同 session 互斥）
 	continuePending map[string]bool       // instKey(instance, turn) → 下一个 text-user 以 Kind=continue 注入
-	asks            map[string]*askWaiter // instKey(instance, ask-id) → 等待的 turn + tool-call-id + 任务节点
+	asks            map[string]*askWaiter // instKey(instance, ask_id) → 等待的 turn + tool-call-id + 任务节点
 	tasks           *taskManager          // 任务编排（任务树/级联/批量/状态事件，§6.6）
+	// taskExecCancels：task 型域工具「执行中取消」登记表（I-83 收尾，18 §3.4）：tool_call_id →
+	// 执行 ctx cancelFunc。domainExecute task 分支登记、结束注销；gateway 取消（tm.cancel 补发
+	// mcp-tasks-report{state:cancelled}）→ onGatewayTaskDone 查表 cancel 真停执行体
+	// （tool_result 轮询等）。独立小锁：回报到达时域工具可能正执行中，避免卷入 s.mu 嵌套。
+	taskExecCancelMu sync.Mutex
+	taskExecCancels  map[string]context.CancelFunc
 	cleaned         map[string]bool       // instanceID → 已做过遗留 running 清理
 	dirNodes        map[string][]string   // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
 	capNodeMeta     map[string]capNodeRef // capability dir 节点名 → 归属实例 + 契约根（T-21 重扫定位）
@@ -290,6 +302,7 @@ func New(bus mq.Bus, opts Options) *Server {
 		turns:           make(map[string]*turnCtx),
 		busy:            make(map[string]string),
 		asks:            make(map[string]*askWaiter),
+		taskExecCancels: make(map[string]context.CancelFunc),
 		cleaned:         make(map[string]bool),
 		dirNodes:        make(map[string][]string),
 		capNodeMeta:     make(map[string]capNodeRef),
@@ -322,8 +335,8 @@ func New(bus mq.Bus, opts Options) *Server {
 		// 静态装配（RB-5 L5）：能力源（capability 契约）+ 执行配置 + 内嵌 gateway 由**入口
 		// 装配器** `src/lib/assembly` 统一完成（gui / server 两个入口共用一份，避免装配漂移）；
 		// 本函数只接成品 + 注入本层的运行期装配（四级文件 MCP 下游、执行池 sink、dir 扫描器）。
-		fileServers := s.loadGatewayServers()
-		s.applyGatewaySandboxDirs(fileServers) // agentbox：为开启 sandbox 的条目补允许目录快照（启动期实例未注册 → 通常为空，实例注册后经 reconcile 补齐）
+		fileServers := s.loadGatewayServers("") // 启动期尚无实例 → 空 instance_id（仅 app + user 级）
+		s.applyGatewaySandboxDirs(fileServers)  // agentbox：为开启 sandbox 的条目补允许目录快照（启动期实例未注册 → 通常为空，实例注册后经 reconcile 补齐）
 		servers := append([]mcpgateway.ServerEntry{}, opts.GatewayServers...)
 		servers = append(servers, fileServers...)
 		// 对账基线 = 本次随 Params.Servers 下发的四级文件 MCP 集合（T-25：后续保存按增量对账）。
@@ -377,12 +390,14 @@ func (s *Server) Scan(root string) (*mcp.Server, error) {
 
 // Start 启动内嵌数据服务 + gateway + 订阅客户端方法面/通知 + 注册域工具与 agent + 插件。
 func (s *Server) Start(ctx context.Context) error {
+	markStartupBegin() // OP-15：启动分段计时基准（仅插桩）
 	// 内嵌 persist 数据服务（应答 data-* 面；先于 gateway/路由，保证数据请求可用）
 	if s.data != nil {
 		if err := s.data.Start(); err != nil {
 			return err
 		}
 	}
+	logStartupStage("数据服务(persist)启动")
 	// 任务层（21 §9.2 P2）：订阅既有事件（task-started/updated/done、mcp-tasks-report、
 	// task-deleted）→ 同步写权威表 tasktree。**失败只告警**——不进入本服务的失败路径。
 	if s.taskLayer != nil {
@@ -390,12 +405,14 @@ func (s *Server) Start(ctx context.Context) error {
 			logf("[chonkpilot-task] 任务层启动失败（仅告警，主路径不受影响）: %v\n", err)
 		}
 	}
+	logStartupStage("任务层启动")
 	// 内嵌 gateway 启动（订阅 mcp-* 方法面 + 连接下游 inprocess/proxied）
 	if s.gw != nil {
 		if err := s.gw.Start(ctx); err != nil {
 			return err
 		}
 	}
+	logStartupStage("gateway 启动/下游连接")
 	// capability 根 fsnotify 监听（T-21）：用户/项目级原语保存 → 重扫 dir 节点即时生效；
 	// 系统级 app 根（<exeDir>/capability，内嵌 self 节点）→ 契约重注册 + gateway/reload 即时生效。
 	// 监听失败不致命（退化为"需重注册/重启生效"的既有行为）。
@@ -409,6 +426,7 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}
 	}
+	logStartupStage("capability fsnotify 监听")
 	// 共通实例视图（订阅 instance-register / heartbeat / exit；对齐 61-消息一览 §4.1。
 	// 合并单进程形态：GUI 启动注册、进程随会话存续，无需心跳超时清理——startInstanceSweep
 	// 为空实现、不调 Sweep；分离形态：起周期扫描 goroutine，心跳超时实例走 exitInstance。）
@@ -416,6 +434,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	s.sweepStop = s.startInstanceSweep()
+	logStartupStage("实例视图/心跳扫描启动")
 	// 认证域（61 §4.6；阶段 2b-1）：auth 库按需惰性打开（见 login.go `ensureAuth`）——
 	// 未使用的宿主不产生 auth 文件；打开失败只使 login-* 返回 login-failed，不阻断启动。
 	// 域工具执行回调（gateway tools/register handler_subject → 本模块订阅执行，写回 v.Result）
@@ -430,15 +449,20 @@ func (s *Server) Start(ctx context.Context) error {
 		{SubjectLoginIn, s.onLoginIn},                     // 认证域：登录
 		{SubjectLoginOut, s.onLoginOut},                   // 认证域：登出
 		{SubjectLLMTestConnection, s.onLLMTestConnection}, // 设置→LLM「测试连接」只读探活（点分主题直通总线）
-		{domainSubject("llm-start"), s.onLLMStart},
-		{domainSubject("llm-send"), s.onLLMSend},
-		{domainSubject("llm-cancel"), s.onLLMCancel},
-		{domainSubject("ask-user-reply"), s.onAskUserReply},
-		{domainSubject("task-stop"), s.onTaskStop},
-		{domainSubject("task-background"), s.onTaskBackground},
-		{domainSubject("task-verify"), s.onTaskVerify}, // 一致性校验方法面（I-87；只读，层为后端）
-		{domainSubject("tool-retry"), s.onToolRetry},
-		{domainSubject("prompt-optimise"), s.onPromptOptimise},
+		{domainSubject(msgkeys.TopicLlmStart), s.onLLMStart},
+		{domainSubject(msgkeys.TopicLlmSend), s.onLLMSend},
+		{domainSubject(msgkeys.TopicLlmCancel), s.onLLMCancel},
+		{domainSubject(msgkeys.TopicAskUserReply), s.onAskUserReply},
+		{domainSubject(msgkeys.TopicTaskStop), s.onTaskStop},
+		{domainSubject(msgkeys.TopicTaskBackground), s.onTaskBackground},
+		{domainSubject(msgkeys.TopicTaskVerify), s.onTaskVerify}, // 一致性校验方法面（I-87；只读，层为后端）
+		{domainSubject(msgkeys.TopicToolRetry), s.onToolRetry},
+		{domainSubject(msgkeys.TopicPromptOptimise), s.onPromptOptimise},
+		// 场景向导方法面（2026-10-04）
+		{domainSubject(msgkeys.TopicAgentWizardProbe), s.onAgentWizardProbe},
+		{domainSubject(msgkeys.TopicAgentWizardCompose), s.onAgentWizardCompose},
+		{domainSubject(msgkeys.TopicAgentWizardGenerate), s.onAgentWizardGenerate},
+		{domainSubject(msgkeys.TopicAgentWizardSkip), s.onAgentWizardSkip},
 	} {
 		sh, err := s.bus.On(sub.subject, 0, sub.h)
 		if err != nil {
@@ -450,16 +474,16 @@ func (s *Server) Start(ctx context.Context) error {
 		subject string
 		h       mq.Handler
 	}{
-		{instance.SubjectRegister, s.onInstanceRegister},      // 用户/项目级 capability 根动态注册（21-llm-server；T-29）
-		{SubjectExit, s.onExit},                               // 退出 → 取消名下 running turn + 释放锁
-		{mcpgateway.SubjectTaskReport, s.onGatewayTaskDone},   // gateway 异步任务完成回报（mcp-tasks-report）→ 续轮/广播
-		{mcpgateway.SubjectMCPChanged, s.onMCPChanged},        // 目录/接入变化（mcp-gateway-changed）→ 刷新工具缓存
-		{"task-deleted", s.onTaskTreeDeleted},                 // persist data-tasktree-delete 级联删除 → 内存同步（不复活）
-		{"data-memory-refresh", s.onMemoryRefresh},            // 记忆域 save/delete 后广播（既有主题）→ 失效类别清单缓存（I-68 ②）
-		{"data-user-config-refresh", s.onUserConfigRefresh},   // usr 配置 save/delete 后广播（既有主题）→ tool_async / llms 热生效
-		{"data-mcp-refresh", s.onMCPConfigRefresh},            // MCP 四级文件配置 save/delete 后广播 → 下游 server 增量对账（保存即生效）
-		{"data-prj-config-refresh", s.onPrjConfigRefresh},     // prj 配置 save/delete 后广播（既有主题）→ 执行配置热生效（P0-B：timeout_sec/max_concurrency/skip_dirs）
-		{"data-prj-security-refresh", s.onPrjSecurityRefresh}, // prj-security save/delete 后广播（既有主题）→ agentbox 允许目录热生效（security-* → mcp-server Config / gateway 上游下发）
+		{instance.SubjectRegister, s.onInstanceRegister},              // 用户/项目级 capability 根动态注册（21-llm-server；T-29）
+		{SubjectExit, s.onExit},                                       // 退出 → 取消名下 running turn + 释放锁
+		{mcpgateway.SubjectTaskReport, s.onGatewayTaskDone},           // gateway 异步任务完成回报（mcp-tasks-report）→ 续轮/广播
+		{mcpgateway.SubjectMCPChanged, s.onMCPChanged},                // 目录/接入变化（mcp-gateway-changed）→ 刷新工具缓存
+		{msgkeys.TopicTaskDeleted, s.onTaskTreeDeleted},               // persist data-tasktree-delete 级联删除 → 内存同步（不复活）
+		{msgkeys.TopicDataMemoryRefresh, s.onMemoryRefresh},           // 记忆域 save/delete 后广播（既有主题）→ 失效类别清单缓存（I-68 ②）
+		{msgkeys.TopicDataUserConfigRefresh, s.onUserConfigRefresh},   // usr 配置 save/delete 后广播（既有主题）→ tool_async / llms 热生效
+		{msgkeys.TopicDataMcpRefresh, s.onMCPConfigRefresh},           // MCP 四级文件配置 save/delete 后广播 → 下游 server 增量对账（保存即生效）
+		{msgkeys.TopicDataPrjConfigRefresh, s.onPrjConfigRefresh},     // prj 配置 save/delete 后广播（既有主题）→ 执行配置热生效（P0-B：timeout_sec/max_concurrency/skip_dirs）
+		{msgkeys.TopicDataPrjSecurityRefresh, s.onPrjSecurityRefresh}, // prj-security save/delete 后广播（既有主题）→ agentbox 允许目录热生效（security-* → mcp-server Config / gateway 上游下发）
 	} {
 		sh, err := s.bus.On(sub.subject, 0, func(_ context.Context, subj string, v *mq.Value) error {
 			sub.h(subj, v.Payload)
@@ -470,6 +494,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.subs = append(s.subs, sh)
 	}
+	logStartupStage("方法面/事件订阅")
 	// 域工具注册（gateway 分组注册面：tools/register → mcp-tools-register，61-消息一览 §5.1.1）；
 	// 内置 agent 集（**app 级场景** `<exeDir>/scenarios/*/`）**只登记到内存表**（25 §5 / T2：agent
 	// 不注册资产；25 §8.1 #8 / T6：来源 = app 级场景，非代码 embed）。
@@ -478,14 +503,19 @@ func (s *Server) Start(ctx context.Context) error {
 		if err := s.registerDomainTools(ctx); err != nil {
 			return fmt.Errorf("registerDomainTools: %w", err)
 		}
+	}
+	logStartupStage("域工具注册")
+	if s.gw != nil {
 		if err := s.registerDomainAgents(ctx); err != nil {
 			return fmt.Errorf("registerDomainAgents: %w", err)
 		}
 	}
+	logStartupStage("域 agent 注册")
 	// 预热工具定义缓存（gateway tools/list → ToolDef；失败降级空工具）
 	preCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_, _ = s.gc.ListTools(preCtx)
+	logStartupStage("工具定义缓存预热(gc.ListTools)")
 
 	// 内嵌插件加载（gateway/路由/实例视图就绪后按序 Start；全部成功才广播就绪）
 	deps := plugin.Deps{Bus: s.bus, Logf: s.pluginLogf, Notify: s.pluginNotify}
@@ -494,8 +524,10 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("plugin %s start: %w", p.Name(), err)
 		}
 	}
+	logStartupStage("内嵌插件启动")
 	// 就绪广播（用户要求：全部插件加载完成后发送——插件已订阅，前端/分离消费者可自检）
-	s.publish("server-starting", map[string]any{"started_at": time.Now().Unix()})
+	s.publish(msgkeys.TopicServerStarting, map[string]any{"started_at": time.Now().Unix()})
+	logStartupStage("server 启动完成")
 	return nil
 }
 
@@ -540,7 +572,7 @@ func (s *Server) onTaskLayerCancelExec(taskID string, exec tasklayer.Exec) {
 // 调用方 = 同进程任何总线参与方（compress 插件摘要 / memory 沉淀 / gateway mcp_find 语义检索等），
 // 不依赖插件函数注入。
 // prompt/system 文本里的 {{toolchain.<key>}} 占位符按实例 usr 配置替换（如摘要 system 提示词
-// summary.prompt.md 引用工具链路径）；instance_id 缺失 → 已知 key 按未配置（空串）替换。
+// capability/system/summary.md 引用工具链路径）；instance_id 缺失 → 已知 key 按未配置（空串）替换。
 func (s *Server) onLLMSimple(_ context.Context, _ string, v *mq.Value) error {
 	var req struct {
 		Prompt     string `json:"prompt"`
@@ -741,7 +773,9 @@ func (s *Server) onInstanceRegister(_ string, payload []byte) {
 	// MCP 条目补齐「允许目录快照」，经既有 servers/register 重下发（**零新增主题**）。
 	// 仅 sandbox=true 的条目会因快照变化触发一次重注册（respawn 该上游进程）；其余条目
 	// 快照保持 nil → 与已下发集合逐字段相同 → 零 diff、零动作。
-	s.reconcileUserMCPs()
+	// 实例此刻**已登记**（persist 先订阅 instance-register 并登记绑定），故对账须带
+	// instance_id —— 使该实例的 project/prjusr 级 MCP 正确解析（否则多实例下"唯一实例回退"串库/失败）。
+	s.reconcileUserMCPs(msg.InstanceID)
 	s.mu.Lock()
 	s.capWorkDirs[msg.InstanceID] = msg.WorkDir
 	s.mu.Unlock()
@@ -1177,13 +1211,10 @@ func (s *Server) onLLMCancel(_ context.Context, _ string, v *mq.Value) error {
 
 // onAskUserReply ask 应答 → 作为 tool-result 喂回 LLM 循环；ask 任务节点 → tasks.done。
 func (s *Server) onAskUserReply(_ context.Context, _ string, v *mq.Value) error {
-	// 兼容前端 ask-id（连字符）与协议 ask_id 两种字段名（前端提交走 ask-id）。
+	// 载荷字段 = ask_id（61 §4.2；I-152 已闭环，旧连字符名不再回落）。
 	var raw map[string]any
 	_ = json.Unmarshal(v.Payload, &raw)
 	askID := str(raw["ask_id"])
-	if askID == "" {
-		askID = str(raw["ask-id"])
-	}
 	answer := str(raw["answer"])
 	// 按 instance 归属取走等待登记（缺口 5）：带 instance_id → 只在本 instance 桶内命中；
 	// 未带（旧载荷/旧调用方）→ 全桶回退（ask id 全局唯一，旧语义等价）。
@@ -1206,7 +1237,7 @@ func (s *Server) onAskUserReply(_ context.Context, _ string, v *mq.Value) error 
 }
 
 // ask 登记等待（tool-call 命中 ask_user 时调用）：广播 ask-user
-// （对齐 msg-ref §4.3：ask-id/question/options/custom/session/turn/expires_at + multi/recommended）。
+// （对齐 msg-ref §4.3：ask_id/question/options/custom/session/turn/expires_at + multi/recommended）。
 func (s *Server) ask(turnID, toolID string, args map[string]any, taskID string) string {
 	askID := "ask-" + newID()
 	s.mu.Lock()
@@ -1497,8 +1528,9 @@ func (s *Server) retryRunningTurn(node *TaskNode) *turnCtx {
 
 // retryRecover 重启/死 turn 恢复（msg-ref §4.2 retryStaleTarget/retryRecover）：
 //   - node 为空 → 从库 tasktree 找 interrupted 节点（该 session；tool_call_id 匹配优先）；
-//   - 轮次消息（user + 末条 assistant.tool_calls，无 tool 结果）为续轮上下文；
-//     缺失 → 明确错误（tool not found：消息记录不完整）；
+//   - 轮次消息（user + 末条 assistant.tool_calls）为续轮上下文；该轮遗留的 tool_pair 已由启动
+//     清理标 interrupted，重试结果**就地回填同一行**（I-176）；
+//     缺失 assistant pair → 明确错误（tool not found：消息记录不完整）；
 //   - 目标节点已 done / 库无 interrupted 节点 → tool not found（不重跑已完成 pair）。
 //
 // 返回 (恢复节点, 恢复的 turnCtx, error)；error 非 nil 时不建任何内存态。
@@ -1554,7 +1586,7 @@ func (s *Server) retryRecover(req retryReq, known *TaskNode) (*TaskNode, *turnCt
 // dbRetryNode 从库 tasktree 定位 interrupted 目标节点（data-tasktree-list 按 top_session
 // 枚举；会话内取 tool_call_id 匹配优先，其次最近一条 interrupted；无 interrupted → 不重跑）。
 func (s *Server) dbRetryNode(instanceID string, req retryReq) (*TaskNode, error) {
-	res, err := dataRequest(s.bus, "data-tasktree-list", map[string]any{
+	res, err := dataRequest(s.bus, msgkeys.TopicDataTasktreeList, map[string]any{
 		"instance_id": instanceID, "data": map[string]any{"top_session": req.Session},
 	})
 	if err != nil {
@@ -1635,8 +1667,8 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 	// （不发送）；base/apiKey/model 走 turnCtx 默认（回落 exe flags / 客户端默认模型）。
 	// 工具循环上限回落缺省 20，否则 0 会让首轮 chatOnce 立即命中 TOOL_LOOP_LIMIT。
 	llmMaxIter := defaultMaxToolIterations
-	// 超时/重试同源加载（T-27 接线；缺省/非正值已回落旧硬编码常量）。
-	respTO, streamTO, retryCnt, retryWait := s.loadLLMRuntimeConfig(instanceID)
+	// 超时/重试同源加载（T-27 接线；缺省已回落旧硬编码常量）。
+	respTO, streamTO, retryCnt := s.loadLLMRuntimeConfig(instanceID)
 	tc := &turnCtx{
 		server:    s,
 		req:       StartReq{InstanceID: instanceID, Session: session, Turn: turn},
@@ -1651,7 +1683,6 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 		responseTimeout:   respTO,
 		streamTimeout:     streamTO,
 		retryCount:        retryCnt,
-		retryDelay:        retryWait,
 		maxToolIterations: llmMaxIter,
 		keepFullTurns:     s.loadKeepFullTurns(instanceID),
 		keepFullTokens:    s.loadKeepFullTokens(instanceID),
@@ -1702,6 +1733,12 @@ func (s *Server) onGatewayTaskDone(_ string, payload []byte) {
 		InstanceID    string `json:"instance_id"`
 	}
 	_ = json.Unmarshal(payload, &ev)
+	// ⓪ I-83 收尾（18 §3.4）：取消回报 → 按工具执行取消表**真停执行体**（task 型域工具
+	// tool_result 轮询等；gateway 侧 Emit 同步派发不中断 handler，故经回报通道反向通知）。
+	// 未命中 = 执行体已结束 / 未登记（无 tool_call_id 或非 task 型）→ 无操作（幂等）。
+	if ev.State == "cancelled" {
+		s.cancelTaskExec(ev.ToolCallID)
+	}
 	node := s.tasks.findByGwTask(ev.InstanceID, ev.TaskID)
 	if node == nil && ev.ToolCallID != "" {
 		// 非 detached 任务未登记 gwTaskID → 按 tool_call_id 兜底定位（I-62：超时裁决取消回报）
@@ -1784,7 +1821,7 @@ func (s *Server) notifyTaskCompletion(node *TaskNode, session, turn, instanceID,
 	if state != "done" {
 		msg = "🔔 异步任务执行失败：" + tool + "（task_id=" + taskID + "）。"
 	}
-	s.publish("tool-notify", map[string]any{
+	s.publish(msgkeys.TopicToolNotify, map[string]any{
 		"instance_id": instanceID,
 		"session_id":  session,
 		"turn_id":     turn,
@@ -2108,17 +2145,19 @@ func configFloat(d map[string]any, key string) (float64, bool) {
 	return 0, false
 }
 
-// loadLLMRuntimeConfig 读 usr 配置的超时/重试四项（T-27 接线，2026-09-11 审计 B）：
-// data-user-config-load 标量项（responseTimeout/streamTimeout/retryDelay 单位秒，retryCount 次数）。
+// loadLLMRuntimeConfig 读 usr 配置的超时/重试三项（T-27 接线，2026-09-11 审计 B）：
+// data-user-config-load 标量项（responseTimeout/streamTimeout 单位秒，retryCount 次数）。
 // 缺省语义：
 //   - retryCount 按**存在性**判定（P0-A，与 temperature/maxOutputToken 同范式）：显式 0 = **不重试**
 //     （与前端 min:0 / i18n「0 = 不重试」一致）；键缺失 → 回落 llmRetryCount=2。
 //     persist readUserConfig 对缺失键补系统默认（=2）后回读，故读到 0 只可能是用户显式存过 0。
-//   - 其余三项（responseTimeout/streamTimeout/retryDelay）保持既有口径：读取失败 / 键缺失 /
-//     非正值 → 回落常量（ResponseTimeout=120s / StreamTimeout=60s / retryDelay=5s），避免行为回归。
-func (s *Server) loadLLMRuntimeConfig(instanceID string) (responseTimeout, streamTimeout time.Duration, retryCount int, retryWait time.Duration) {
+//   - 其余两项（responseTimeout/streamTimeout）保持既有口径：读取失败 / 键缺失 / 非正值 →
+//     回落常量（ResponseTimeout=120s / StreamTimeout=60s），避免行为回归。
+//
+// 退避（重发间隔）**不在此配置**：经 `router.RetryWait` 计算（2026-10-05 定案，`retryDelay` 已移除）。
+func (s *Server) loadLLMRuntimeConfig(instanceID string) (responseTimeout, streamTimeout time.Duration, retryCount int) {
 	responseTimeout, streamTimeout = ResponseTimeout, StreamTimeout
-	retryCount, retryWait = llmRetryCount, retryDelay
+	retryCount = llmRetryCount
 	res, err := s.cfg.UserConfigGet(facade.UserConfigGetRequest{
 		InstanceID: instanceID, Scope: s.cfgScope(instanceID),
 	})
@@ -2139,9 +2178,6 @@ func (s *Server) loadLLMRuntimeConfig(instanceID string) (responseTimeout, strea
 	// P0-A：存在性判定——显式 0 = 不重试（n >= 0 同时挡掉负数脏值）。
 	if n, ok := configInt(d, "retryCount"); ok && n >= 0 {
 		retryCount = n
-	}
-	if n, ok := configInt(d, "retryDelay"); ok && n > 0 {
-		retryWait = time.Duration(n) * time.Second
 	}
 	return
 }
@@ -2286,10 +2322,12 @@ var prjExecConfigKeys = map[string]bool{
 
 // toolAsyncUserConfigKey 是**工具级异步配置**的 usr 键（64-配置项一览 §3）：值 = 结构化 JSON
 // 对象字符串（persist 自由键通道，与 recent_dirs 同形态），形状 =
-// `{"<工具暴露名>": {"mode": "always|never|auto|manual", "threshold": 30, "hard_timeout": 300}}`。
+// `{"<工具暴露名>": {"mode": "always|never|auto|manual", "threshold": 30, "hard_timeout": 300,
+// "cancel_on_timeout": 30, "touch_files": true}}`。
 // key = tools/list 暴露名（内嵌 self 节点 = self_<契约名>；第三方 = <节点名>_<原名>，天然消歧）；
 // threshold（秒，可选，auto/manual 档的超时转后台点）、hard_timeout（秒，可选，executor 执行
-// 硬杀上限）。未配置的工具 = 维持契约现值；「恢复默认」= 删该工具键项。
+// 硬杀上限）、cancel_on_timeout（秒，可选，>0 = 到超时点自动取消；gateway 消费）、
+// touch_files（bool，可选，是否涉及文件变动）。未配置的工具 = 维持契约现值；「恢复默认」= 删该工具键项。
 const toolAsyncUserConfigKey = "tool_async"
 
 // applyToolAsync 解析 usr `tool_async` 值并写入内嵌 mcp-server 覆盖表（Config.SetToolAsync）。
@@ -2322,7 +2360,7 @@ func (s *Server) applyToolAsync(raw string) {
 
 // toGatewayAsyncOverrides 把 mcp-server 归一后的工具级异步覆盖转为 gateway 自有类型（RB-2：
 // gateway lib 不依赖 chonkpilot-mcp-server 包）。携带 gateway 面消费的 mode / threshold /
-// touch_files（hard_timeout 属执行硬上限，仅 executor 消费、不透出 → 不携带）。
+// touch_files / cancel_on_timeout（hard_timeout 属执行硬上限，仅 executor 消费、不透出 → 不携带）。
 func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]mcpgateway.ToolAsyncOverride {
 	if len(in) == 0 {
 		return nil
@@ -2332,6 +2370,7 @@ func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]m
 		out[k] = mcpgateway.ToolAsyncOverride{
 			Mode: v.Mode, Threshold: v.Threshold, ThresholdSet: v.ThresholdSet,
 			TouchFiles: v.TouchFiles, TouchFilesSet: v.TouchFilesSet,
+			CancelOnTimeout: v.CancelOnTimeout, CancelOnTimeoutSet: v.CancelOnTimeoutSet,
 		}
 	}
 	return out
@@ -2474,7 +2513,7 @@ func (s *Server) onPrjSecurityRefresh(_ string, payload []byte) {
 	}
 	go func() {
 		s.loadExecConfig(ev.InstanceID)
-		s.reconcileUserMCPs()
+		s.reconcileUserMCPs(ev.InstanceID)
 		logf("[chonkpilot-server] prj-security 变更热生效（agentbox 允许目录）: instance=%s\n", ev.InstanceID)
 	}()
 }

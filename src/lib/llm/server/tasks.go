@@ -30,6 +30,31 @@ const (
 	TaskKindAskUser = "ask_user" // ask_user 工具 → server ask 通道（广播 ask-user → 等 reply → 回填）
 )
 
+// DSL 展示节点 kind（DSL-3，[42 §2 (251)/(252)]；61 §3.4 增补取值）：
+//   - `dsl_job`      = llm_run 作业根节点（原 kind=llm 的根，DSL 展示入口）；
+//   - `dsl_loop`     = LOOP 折叠容器节点（静态语句，**不随迭代增长**）；
+//   - `dsl_parallel` = PARALLEL 折叠容器节点（同上）；
+//   - `dsl_step`     = 单次执行记录 kind（**保留取值**：本实现选择「记录入 `dsl_job.steps[]`」
+//     方案，不建树节点，故当前不产出；见 jobdsl.go buildStaticTree 注释）。
+const (
+	TaskKindDslJob      = "dsl_job"
+	TaskKindDslLoop     = "dsl_loop"
+	TaskKindDslParallel = "dsl_parallel"
+	TaskKindDslStep     = "dsl_step"
+)
+
+// DslStepRecord 是 DSL 作业的一次 LLM 步骤执行记录（DSL-3：`dsl_job.steps[]` 元素，扁平、
+// 不随迭代进树；`No` 跨迭代累计、1 起）。前端据 `session_id` 做「查看/新窗口」。
+type DslStepRecord struct {
+	No          int    `json:"no"`                     // 跨迭代累计序号（1 起）
+	Status      string `json:"status"`                 // running / done / error / cancelled
+	Purpose     string `json:"purpose"`                // 该步运行目的（展示名）
+	ElapsedMs   int64  `json:"elapsed_ms"`             // 耗时（毫秒）
+	CreatedAt   string `json:"created_at"`             // 开始时刻（ISO/RFC3339）
+	SessionID   string `json:"session_id"`             // 该次执行的子会话 id（jobSession-N）
+	StatementID string `json:"statement_id,omitempty"` // 所属静态语句节点 id（当前实现未产出，保留）
+}
+
 // TaskState 任务节点状态（终态 done/error/cancelled/interrupted，对齐 21-llm-server）。
 const (
 	TaskStatePending     = "pending"     // 转后台（gateway 返回 pending{task_id}）
@@ -52,7 +77,7 @@ type TaskNode struct {
 	SessionID     string  `json:"session_id"`
 	TurnID        string  `json:"turn_id"`
 	InstanceID    string  `json:"instance_id"`
-	WorkDir       string  `json:"workdir,omitempty"`    // 隔离键（21 §1.2 D6：任务层管理单位 = workdir；**载荷增补字段**，任务层落库用）
+	WorkDir       string  `json:"work_dir,omitempty"`   // 隔离键（21 §1.2 D6：任务层管理单位 = work_dir；**载荷增补字段**，任务层落库用）
 	Name          string  `json:"name"`                 // 展示名（LLM 填的 tool_call_display_name 优先，缺省工具名；llm 用 title）
 	Purpose       string  `json:"purpose,omitempty"`    // 同展示名（LLM 必填的调用理由；转后台工具展示用）
 	Simplified    string  `json:"simplified,omitempty"` // 简短摘要（气泡直取）
@@ -70,6 +95,21 @@ type TaskNode struct {
 	// （追问内容/选项等；I-50）。其余节点的调用参数保留在内部 args（tool-retry 用）不广播，
 	// 避免每次任务事件的载荷膨胀。
 	Args map[string]any `json:"args,omitempty"`
+
+	// ── DSL 展示字段（DSL-3，[42 §2 (251)/(252)]；61 §3.4 增补，缺省为空 → 与既有载荷逐字节等价）──
+	//
+	// LoopCurrent / LoopTotal 仅容器节点（kind=dsl_loop/dsl_parallel）：当前轮次（1 起）/ 总轮数
+	// （未知可缺省 0）。Steps 仅作业根节点（kind=dsl_job）：扁平步骤执行记录（不随迭代进树）。
+	// Shadow = true 表示「执行记录隐藏节点」（本实现选择记录入 steps[]，不产出 shadow 节点）。
+	// ReturnKind/Inline/File/Size = `$RETURN` 两态（inline 全文 / file 文件名 + 字节数）。
+	LoopCurrent  int             `json:"loop_current,omitempty"`
+	LoopTotal    int             `json:"loop_total,omitempty"`
+	Steps        []DslStepRecord `json:"steps,omitempty"`
+	Shadow       bool            `json:"shadow,omitempty"`
+	ReturnKind   string          `json:"return_kind,omitempty"`
+	ReturnInline string          `json:"return_inline,omitempty"`
+	ReturnFile   string          `json:"return_file,omitempty"`
+	ReturnSize   int             `json:"return_size,omitempty"`
 
 	// 内部字段（不广播）
 	started  time.Time      // 开始时刻（elapsed 计算）
@@ -102,6 +142,11 @@ type taskManager struct {
 	order    []string             // 插入序（终态节点 FIFO 淘汰，maxTaskNodes 保护）
 	lastEmit map[string]time.Time // task_id → 上次 tasks.updated 时间（节流 ≤250ms）
 
+	// subParents 是 DSL-3 步骤子会话 → 静态父节点 id 映射（session_id → 容器/作业根 task_id）：
+	// 执行记录不建树节点（DSL-3），子会话内产生的工具节点据此挂到该步所属**静态语句节点**
+	// （容器 dsl_loop/dsl_parallel，或作业根 dsl_job）。仅内存（与作业同生命周期）。
+	subParents map[string]string
+
 	stopCh chan struct{} // 停止信号（后台 cleanupLoop goroutine）
 }
 
@@ -120,10 +165,11 @@ func matchInstance(instanceID, nodeInstance string) bool {
 
 func newTaskManager(s *Server) *taskManager {
 	tm := &taskManager{
-		srv:      s,
-		nodes:    make(map[string]*TaskNode),
-		lastEmit: make(map[string]time.Time),
-		stopCh:   make(chan struct{}),
+		srv:        s,
+		nodes:      make(map[string]*TaskNode),
+		lastEmit:   make(map[string]time.Time),
+		subParents: make(map[string]string),
+		stopCh:     make(chan struct{}),
 	}
 	// 后台定期清理终态节点（每 5 分钟）
 	go tm.cleanupLoop()
@@ -393,9 +439,12 @@ func (tm *taskManager) find(taskID string) *TaskNode {
 	return n.clone()
 }
 
-// latestLLMSessionNode 按（top_session, session）定位子会话对应的 kind=llm 节点：
-// llm_run 的每个 LLM 步骤由 jobdsl.llmAction 建一个 kind=llm 节点（SessionID=子会话、
-// TopSession=主会话），子会话内产生的工具/任务节点据此挂到该 llm 节点之下（任务树拓扑）。
+// latestLLMSessionNode 按（top_session, session）定位子会话对应的父任务节点：
+//   - **DSL-3 优先**：`subParents[session]`（由 jobdsl.llmAction 登记）→ 该步所属**静态语句节点**
+//     （容器 dsl_loop/dsl_parallel 或作业根 dsl_job）。DSL-3 起执行记录不建树节点，子会话内产生的
+//     工具/任务节点据此挂到静态语句节点之下（任务树拓扑：语句节点 → 该步工具）。
+//   - 回落（既有语义）：kind=llm 且 SessionID=子会话 的节点（jobdsl 历史 / 单测手工构造）。
+//
 // 取最近创建（order 插入序逆序首个）；未命中 → nil（退化为顶层，异常窗口见 turn.taskNodeBase 注释）。
 // instanceID 非空 → 只命中该 instance 归属的节点（缺口 3：不跨 instance 挂错父节点）。
 func (tm *taskManager) latestLLMSessionNode(instanceID, topSession, session string) *TaskNode {
@@ -404,9 +453,15 @@ func (tm *taskManager) latestLLMSessionNode(instanceID, topSession, session stri
 	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+	if pid := tm.subParents[session]; pid != "" {
+		if n, ok := tm.nodes[pid]; ok && matchInstance(instanceID, n.InstanceID) &&
+			(topSession == "" || n.TopSession == topSession) {
+			return n.clone()
+		}
+	}
 	for i := len(tm.order) - 1; i >= 0; i-- {
 		n, ok := tm.nodes[tm.order[i]]
-		if !ok || n.Kind != TaskKindLLM || n.SessionID != session {
+		if !ok || (n.Kind != TaskKindLLM && n.Kind != TaskKindDslStep) || n.SessionID != session {
 			continue
 		}
 		if !matchInstance(instanceID, n.InstanceID) {
@@ -418,6 +473,29 @@ func (tm *taskManager) latestLLMSessionNode(instanceID, topSession, session stri
 		return n.clone()
 	}
 	return nil
+}
+
+// bindSubSession 登记 DSL-3 步骤子会话 → 静态父节点 id（jobdsl.llmAction 在建子会话前调用）：
+// 子会话内产生的工具节点据此挂到该步所属静态语句节点（容器或作业根）。
+func (tm *taskManager) bindSubSession(session, parentID string) {
+	if session == "" || parentID == "" {
+		return
+	}
+	tm.mu.Lock()
+	tm.subParents[session] = parentID
+	tm.mu.Unlock()
+}
+
+// unbindSubSessions 清理某作业的全部子会话映射（作业结束时调用；防 map 无界增长）。
+func (tm *taskManager) unbindSubSessions(sessions []string) {
+	if len(sessions) == 0 {
+		return
+	}
+	tm.mu.Lock()
+	for _, s := range sessions {
+		delete(tm.subParents, s)
+	}
+	tm.mu.Unlock()
 }
 
 // findRetryTarget 定位 tool-retry 目标节点（msg-ref §4.2：消息区「重试」最后一条 interrupted
@@ -647,13 +725,14 @@ func (tm *taskManager) cancelByTurn(instanceID, turnID string) int {
 	return total
 }
 
-// taskKindOf 工具 → 任务节点 kind（ask_user / llm 型 / 普通工具）。
+// taskKindOf 工具 → 任务节点 kind（ask_user / DSL 作业 / 普通工具）。
+// llm 型（llm_run）根节点 kind = **dsl_job**（DSL-3 展示：作业根，前端 isDslJob 判定入口）。
 func taskKindOf(tool string) string {
 	switch {
 	case isAskTool(tool):
 		return TaskKindAskUser
 	case isLLMTool(tool):
-		return TaskKindLLM
+		return TaskKindDslJob
 	default:
 		return TaskKindTool
 	}

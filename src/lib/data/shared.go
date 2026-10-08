@@ -7,6 +7,7 @@ package data
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -31,10 +32,39 @@ var (
 
 // Register 登记 instance 绑定（幂等；重复登记刷新 work_dir/data_dir）。
 // 登记源：server 收 instance-register 时调用（统一）；独立服务（compress 等）可凭事件载荷自登记。
-func Register(instanceID, workDir, dataDir string) {
+//
+// **空键守卫（G-41-a）**：instanceID 为空 → **拒绝登记**（返回明确错误、不入 map）。
+// 空 instanceID 属调用方缺陷（最早处暴露）：登记空键会使后续 `bindOf("")`/`BindOf("")`
+// 命中该条 → 空 instance 请求被静默解析到某实例数据根（多实例下跨实例串库）。
+func Register(instanceID, workDir, dataDir string) error {
+	if instanceID == "" {
+		return fmt.Errorf("data: 拒绝登记空 instanceID（work_dir=%q）", workDir)
+	}
 	storeMu.Lock()
 	defer storeMu.Unlock()
 	instances[instanceID] = instBind{WorkDir: workDir, DataDir: dataDir}
+	return nil
+}
+
+// InstancesByWorkDir 返回 work_dir 等于 workDir 的全部**在册** instance id（字典序，稳定）。
+//
+// 用途：项目级变更（如 `data-prj-config-refresh`）需通知**同项目（同 work_dir）的全部在册
+// 实例** —— 多数 MQ 按 instance 过滤，故按 work_dir 匹配后逐个投递（G-41-b）。
+// workDir 为空 → 返回 nil（不匹配空工作目录，避免误命中批量未登记项）。
+func InstancesByWorkDir(workDir string) []string {
+	if workDir == "" {
+		return nil
+	}
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	var ids []string
+	for id, b := range instances {
+		if b.WorkDir == workDir {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // Unregister 移除 instance 绑定（instance-exit / 超时清理时调用）。
@@ -82,13 +112,16 @@ func BindOf(instanceID string) (workDir, dataDir string, ok bool) {
 
 // Prj 返回该 instance 的 prj 主库连接（团队共享配置；含 project-id）。
 // 路径：dataDir 非空（CLI 临时形态）→ <dataDir>/chonkpilot.db；否则 <workDir>/.chonkpilot/chonkpilot.db。
-func Prj(instanceID string) (*DB, error) {
+//
+// **短开语义（D-45）**：prj 层按调用短开（连接缓存引用计数，release 后归零即 Close）——
+// 使 GUI 与 CLI 可并发打开同一项目 prj 库（bbolt 单文件排他锁：长持连接会把对方锁在外面）。
+// 调用方必须配对调用 release；高频读路径由 config 门面的值缓存吸收开销（12-数据层 §5.4）。
+func Prj(instanceID string) (*DB, func(), error) {
 	bind, err := bindOf(instanceID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	db, _, err := OpenSharedLayer(ProjectPath(bind.WorkDir, bind.DataDir), LayerPrj)
-	return db, err
+	return OpenSharedLayer(ProjectPath(bind.WorkDir, bind.DataDir), LayerPrj)
 }
 
 // PrjUsr 返回该 instance 的 prjusr 主库连接（会话/任务树/快照/个人运行态）。
@@ -96,6 +129,9 @@ func Prj(instanceID string) (*DB, error) {
 //	dataDir 非空（CLI 临时形态）→ <dataDir>/chonkpilot.db（与 prj 同文件；会话写在临时目录，退出即弃）
 //	否则 → ~/.chonkpilot/data/<project-id>/chonkpilot.db
 //	       （project-id 取自 prj 库 config，首次自动生成，见 12-数据层）
+//
+// **常开语义（D-45 拍板）**：prjusr 层是会话/任务树运行态（高频写、独占本机数据根），
+// 保持进程内常开（连接缓存引用不释放）；仅 prj/usr 改短开。prj 短开取 project-id 后立即 release。
 func PrjUsr(instanceID string) (*DB, error) {
 	bind, err := bindOf(instanceID)
 	if err != nil {
@@ -105,10 +141,11 @@ func PrjUsr(instanceID string) (*DB, error) {
 		db, _, err := OpenSharedLayer(ProjectPath(bind.WorkDir, bind.DataDir), LayerPrjUsr)
 		return db, err
 	}
-	prj, err := Prj(instanceID)
+	prj, release, err := Prj(instanceID)
 	if err != nil {
 		return nil, err
 	}
+	defer release() // 短开：取 project-id 后立即释放（D-45）
 	id, err := EnsureProjectID(prj)
 	if err != nil {
 		return nil, err
@@ -118,9 +155,9 @@ func PrjUsr(instanceID string) (*DB, error) {
 }
 
 // Usr 返回 usr 层连接（全局单例：~/.chonkpilot/chonkpilot.db，跨项目）。
-func Usr() (*DB, error) {
-	db, _, err := OpenSharedLayer(UserPath(), LayerUsr)
-	return db, err
+// **短开语义（D-45）**：同 Prj——release 归零即 Close，避免长持锁死 GUI 侧同名库。
+func Usr() (*DB, func(), error) {
+	return OpenSharedLayer(UserPath(), LayerUsr)
 }
 
 // OpenShared 按 db 文件路径缓存打开连接 + 引用计数。
@@ -128,7 +165,8 @@ func Usr() (*DB, error) {
 // 缓存键 = **db 文件最终路径**（非 data_dir）：不同 data_dir/不同项目可能解析到同一文件，
 // 按路径缓存保证同文件单连接、不重复 Open（bbolt 单文件独占锁）。
 //
-// 返回 Release：计数归零才真正 Close（配对使用；用 Prj/PrjUsr/Usr 的调用方无需管生命周期）。
+// 返回 Release：计数归零才真正 Close（配对使用；Prj/Usr 为短开必须配对 release，
+// PrjUsr 为常开、调用方无需管生命周期）。
 func OpenShared(path string) (*DB, func(), error) {
 	return OpenSharedLayer(path, "")
 }

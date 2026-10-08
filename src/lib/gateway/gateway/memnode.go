@@ -148,6 +148,11 @@ func (p *memNodeProvider) Close() error {
 // Invalidate 内存节点无独立子进程/连接可作废 → no-op（始终可用）。
 func (p *memNodeProvider) Invalidate(context.Context) (bool, error) { return true, nil }
 
+// Terminate 内嵌执行器（in-memory 线）为**协作式**终止：取消已由执行池 ctx 经 in-memory 传输
+// 送达 handler（探针证「能传递」，见 18 §3.7），真停在执行体侧（mcp-server callTool 继承 ctx +
+// CommandContext）→ 此处 no-op（无 OS 级 kill 可做）。
+func (p *memNodeProvider) Terminate(context.Context, string, string) (bool, error) { return true, nil }
+
 // callContextMeta 从执行 ctx 提取调用上下文 → 协议 _meta（命名空间 chonkpilot，对齐 25-mcp-server
 // CallContextMeta；无任何上下文字段 → nil，不携带）。instance 存在但为空 → 上游（mcp-server）报异常。
 func callContextMeta(ctx context.Context) mcp.Meta {
@@ -169,6 +174,14 @@ func callContextMeta(ctx context.Context) mcp.Meta {
 	}
 	if v := ToolCallIDFromContext(ctx); v != "" {
 		ns["tool_call_id"] = v
+	}
+	// 任务树归属（I-90 增补，随 _meta 透传）：供域工具（如 dsl_run）把作业节点挂到正确的主会话 /
+	// 父节点下（任务层落库定位）。mcp-server 侧解析未知键即忽略（向后兼容）。
+	if v := TopSessionFromContext(ctx); v != "" {
+		ns["top_session"] = v
+	}
+	if v := ParentFromContext(ctx); v != "" {
+		ns["parent"] = v
 	}
 	if len(ns) == 0 {
 		return nil
@@ -204,6 +217,12 @@ func execCtxFromMeta(ctx context.Context, meta mcp.Meta) context.Context {
 	}
 	if s, ok := ns["data_dir"].(string); ok {
 		c.DataDir = s
+	}
+	if s, ok := ns["top_session"].(string); ok {
+		c.TopSession = s
+	}
+	if s, ok := ns["parent"].(string); ok {
+		c.Parent = s
 	}
 	return withTurnContext(ctx, c)
 }

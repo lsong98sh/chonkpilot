@@ -35,5 +35,11 @@
   "idx_ready": "Done",
   "idx_error": "Failed",
   "idx_open_codegraph": "Click to configure: codegraph",
-  "idx_open_vfts": "Click to configure: Vfts full-text index"
+  "idx_open_vfts": "Click to configure: Vfts full-text index",
+  "queue_memory_queued": "Memory distillation queued",
+  "queue_memory_running": "Distilling memory…",
+  "queue_memory_done": "Memory distillation done",
+  "queue_compress_queued": "Compression queued",
+  "queue_compress_running": "Compressing…",
+  "queue_compress_done": "Compression done"
 }

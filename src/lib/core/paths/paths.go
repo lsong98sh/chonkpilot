@@ -225,3 +225,62 @@ func ResolveDir(raw, base string) string {
 	}
 	return filepath.Clean(filepath.Join(base, s))
 }
+
+// ─── DB 逻辑路径（G-24；16 §7/§8）───
+//
+// 口径：**落库只存逻辑路径（相对 workdir，斜杠归一）**，边界双向转换 ——
+// 落库前 ToLogical（反展开），调用/展示前 FromLogical（展开）。
+// 动机：三区部署下同一 workdir 在不同区路径不同（存储区 /projects vs 应用区
+// /home/chonkpilot/projects），绝对路径原样落库 → 换挂载布局 / 迁移后历史引用全部失效。
+//
+// 适用面 = 与某具体 workdir 绑定的个人运行态（当前：`opened-files`）。
+// **不适用**：`recent_dirs`（内容就是各 workdir 根，无法相对自身）；
+// `filetree-*`（已按 workdir 相对落库）。workdir 之外的路径保持原样。
+
+// isFilePath 判定是否为可展开的文件路径（排除 `db://`、`http://` 等带 scheme 的引用；
+// 文件路径（含 Windows 盘符）不会出现 `://`）。
+func isFilePath(p string) bool {
+	return !strings.Contains(p, "://")
+}
+
+// ToLogical 把绝对路径归一为落库用逻辑路径（反展开）：
+//   - 空串 / 带 scheme（`db://` 等）/ workdir 为空 → 原样；
+//   - 非绝对（已是逻辑相对路径）→ 斜杠归一后原样；
+//   - workdir 内（含 workdir 本身）→ 相对 workdir 的斜杠路径（workdir 本身 → ""）；
+//   - workdir 之外（`..` 越界）→ 原样绝对路径（不产出 `../` 逻辑路径）。
+func ToLogical(workdir, p string) string {
+	if p == "" || workdir == "" || !isFilePath(p) {
+		return p
+	}
+	if !filepath.IsAbs(p) {
+		return filepath.ToSlash(p)
+	}
+	rel, err := filepath.Rel(filepath.Clean(workdir), filepath.Clean(p))
+	if err != nil {
+		return p
+	}
+	if rel == "." {
+		return ""
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return p // 越出 workdir → 保持绝对
+	}
+	return filepath.ToSlash(rel)
+}
+
+// FromLogical 把落库逻辑路径还原为绝对路径（展开）：
+//   - 空串 / 带 scheme（`db://` 等）→ 原样；
+//   - 绝对路径（旧数据 / workdir 外）→ 原样；
+//   - 相对路径 → Join(workdir, rel)（workdir 为空 → 原样）。
+func FromLogical(workdir, p string) string {
+	if p == "" || !isFilePath(p) {
+		return p
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	if workdir == "" {
+		return p
+	}
+	return filepath.Join(workdir, filepath.FromSlash(p))
+}

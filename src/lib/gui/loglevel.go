@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // logLevelKey 是 prj config 表中的日志级别键（64-配置项一览 §4.1）。
@@ -74,7 +75,7 @@ func applyLogLevelFromConfig(lv *slog.LevelVar, cfg map[string]any) bool {
 // `list` 平铺 map）：prj 配置一变更即应用 logLevel（即时生效、无需重启）。解析失败/无 list →
 // 静默跳过（读通道异常不阻塞宿主）。
 func watchLogLevel(bus mq.Bus) {
-	_, _ = bus.On("data-prj-config-refresh", 0, func(_ context.Context, _ string, v *mq.Value) error {
+	_, _ = bus.On(msgkeys.TopicDataPrjConfigRefresh, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var ev struct {
 			List map[string]any `json:"list"`
 		}

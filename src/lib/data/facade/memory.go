@@ -16,6 +16,11 @@
 // `data-memory-refresh`（{instance_id, id, op, list}）——不塞进请求-响应签名。
 package facade
 
+// MemoryUserCategory 是唯一用户级记忆类别名（「用户偏好」；跨项目、无类别维度）。
+// 领域级常量（记忆域与 config 域共用 —— 后者据它决定提示词覆盖文件的写入级别），
+// 单源定义于此处，避免同名字面量多处维护。
+const MemoryUserCategory = "用户偏好"
+
 // MemoryCategory 是记忆类别条目（领域字段；列表视图用）。
 type MemoryCategory struct {
 	// Category 类别名（中文，去扩展名）。
@@ -26,6 +31,13 @@ type MemoryCategory struct {
 	Path string `json:"path"`
 	// Tokens 全文预估 token（文件缺失 → 0）。
 	Tokens int `json:"tokens"`
+	// Prompt 该类别的沉淀提示词**有效值**（OP-04：后端按文件读序
+	// 项目级 → 用户级 → 系统级磁盘 → embed 内置解析后下发；前缀空 = 无任何提示词文件，
+	// 该类不提取）。前端「编辑提示词」据此回填，不再持镜像常量。
+	Prompt string `json:"prompt"`
+	// PromptOverride 是否存在**用户可编辑的覆盖文件**（项目级 / 用户级；OP-04）。
+	// true = 「已自定义」（可「恢复默认」清除覆盖回落系统级/内置）；false = 来源为系统级/内置。
+	PromptOverride bool `json:"prompt_override"`
 }
 
 // MemoryDoc 是单个记忆条目的全文（领域字段）。
@@ -110,4 +122,79 @@ type MemoryDeleteResponse struct {
 	OK bool `json:"ok"`
 	// ID 类别名（= 领域条目 id）。
 	ID string `json:"id"`
+}
+
+// ── 记忆提取进度（专用表 memory_extract；OP-05/06，2026-10-06）──────────
+//
+// 存储形状（内核事实）：prjusr bbolt bucket `memory_extract`，一行 = 某 (会话, 类别) 的
+// 「最后已**成功**提取的 turn」；主键 = `<session_id>\x00<category>`。这些**不出门面**——
+// 「进度」= 领域条目（会话 / 类别 / 最后已提取 turn），换存储（表/键）不把改动漏到调用方。
+// 本域**无订阅面**（进度只由 memory 插件读写，不广播 -refresh）。
+
+// MemoryExtractRecord 是某 (会话, 类别) 的记忆提取进度（领域字段）。
+type MemoryExtractRecord struct {
+	// SessionID 会话 id。
+	SessionID string `json:"session_id"`
+	// Category 类别名。
+	Category string `json:"category"`
+	// LastTurnID 最后已成功提取的 turn id（空 = 尚无进度）。
+	LastTurnID string `json:"last_turn_id"`
+}
+
+// MemoryExtractLoadRequest 是提取进度读入参（Category 空 = 该会话全部类别）。
+type MemoryExtractLoadRequest struct {
+	// InstanceID 实例 id。
+	InstanceID string `json:"instance_id"`
+	// SessionID 会话 id（必填）。
+	SessionID string `json:"session_id"`
+	// Category 类别名（可选；空 = 读该会话全部类别）。
+	Category string `json:"category,omitempty"`
+	// Scope 实例数据根（可选；语义同 SnapshotGetRequest.Scope）。
+	Scope Scope `json:"scope,omitempty"`
+}
+
+// MemoryExtractLoadResponse 是提取进度读出参。
+type MemoryExtractLoadResponse struct {
+	// List 进度条目（按类别名升序；无进度 → 空）。
+	List []MemoryExtractRecord `json:"list"`
+}
+
+// MemoryExtractSaveRequest 是提取进度写入参（仅在该类别**成功**写回后调用）。
+type MemoryExtractSaveRequest struct {
+	// InstanceID 实例 id。
+	InstanceID string `json:"instance_id"`
+	// SessionID 会话 id（必填）。
+	SessionID string `json:"session_id"`
+	// Category 类别名（必填）。
+	Category string `json:"category"`
+	// LastTurnID 最后已成功提取的 turn id（必填）。
+	LastTurnID string `json:"last_turn_id"`
+	// Scope 实例数据根（可选）。
+	Scope Scope `json:"scope,omitempty"`
+}
+
+// MemoryExtractSaveResponse 是提取进度写出参。
+type MemoryExtractSaveResponse struct {
+	// OK 是否成功（失败走 error）。
+	OK bool `json:"ok"`
+	// ID 类别名（= 领域条目 id）。
+	ID string `json:"id"`
+}
+
+// MemoryExtractDeleteRequest 是提取进度删除入参（Category 空 = 删该会话全部类别；幂等）。
+type MemoryExtractDeleteRequest struct {
+	// InstanceID 实例 id。
+	InstanceID string `json:"instance_id"`
+	// SessionID 会话 id（必填）。
+	SessionID string `json:"session_id"`
+	// Category 类别名（可选；空 = 删该会话全部类别）。
+	Category string `json:"category,omitempty"`
+	// Scope 实例数据根（可选）。
+	Scope Scope `json:"scope,omitempty"`
+}
+
+// MemoryExtractDeleteResponse 是提取进度删除出参。
+type MemoryExtractDeleteResponse struct {
+	// OK 是否成功（失败走 error）。
+	OK bool `json:"ok"`
 }

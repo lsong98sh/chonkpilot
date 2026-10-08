@@ -45,7 +45,7 @@ func TestOnExecStateResolvesExistingNode(t *testing.T) {
 	}
 	m := execJSONOf(t, rec)
 	if m["phase"] != ExecPhaseStarted || m["state"] != "running" ||
-		m["workdir"] != "E:/ws" || m["provider_key"] != "self" {
+		m["work_dir"] != "E:/ws" || m["provider_key"] != "self" {
 		t.Fatalf("started exec_json 错: %v", m)
 	}
 	if exec, ok := l.ExecOf("tk-1"); !ok || exec.ProviderKey != "self" {
@@ -239,7 +239,7 @@ func TestOnExecStateBuildsNodeAndSkips(t *testing.T) {
 	if m := execJSONOf(t, rec); m["phase"] != ExecPhaseDetached {
 		t.Fatalf("建行 exec_json 错: %v", m)
 	}
-	if row := fake.row("tk-1002"); sval(row["workdir"]) != "E:/ws" || sval(row["state"]) != StateDetached {
+	if row := fake.row("tk-1002"); sval(row["work_dir"]) != "E:/ws" || sval(row["state"]) != StateDetached {
 		t.Fatalf("建行未落 workdir/state: %+v", row)
 	}
 	if !logged("作为 top_session 下的顶层节点") {
@@ -549,7 +549,7 @@ func TestExecJSONDeepMergeAcrossExecEvents(t *testing.T) {
 	}
 	m = execJSONOf(t, rec)
 	detail = execDetailOf(t, rec)
-	if m["phase"] != ExecPhaseAwaiting || m["provider_key"] != "self" || m["workdir"] != "E:/ws" {
+	if m["phase"] != ExecPhaseAwaiting || m["provider_key"] != "self" || m["work_dir"] != "E:/ws" {
 		t.Fatalf("awaiting 更新丢字段: %v", m)
 	}
 	if detail == nil || detail["trigger"] != "auto" || detail["threshold_s"] != float64(5) ||

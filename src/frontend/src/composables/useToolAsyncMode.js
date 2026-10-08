@@ -10,6 +10,7 @@
  */
 import { ref } from 'vue'
 import mq from '../utils/mq'
+import { MsgClientTopics } from '../events/msgkeys.js'
 
 // manualTools：async=manual 的工具名集合（加载前为空 → 按钮不显示；server 侧另有硬门控兜底）
 const manualTools = ref(new Set())
@@ -17,7 +18,8 @@ let loading = null // 进行中的加载 promise（并发调用去重）
 
 async function loadManualTools() {
   try {
-    const env = await mq.emit('tools-list', {})
+    // tools-list：客户端能力面 type（schema clientTopic，桥映射 mcp-tools-list），常量见 MsgClientTopics。
+    const env = await mq.emit(MsgClientTopics.toolsList, {})
     const res = env && env.backend && env.backend.result
     const tools = res && Array.isArray(res.tools) ? res.tools : []
     const names = new Set()

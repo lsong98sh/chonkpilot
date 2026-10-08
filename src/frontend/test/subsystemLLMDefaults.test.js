@@ -55,8 +55,10 @@ test('② 空选项可选并显示「跟随默认（{name}）」，写入空串�
   assert.match(src, /defaultLLMKey\.value \|\| t\('config\.llm\.unset'\)/, '文案须含默认 provider 名（缺省回落「未设置」）')
   assert.match(src, /:placeholder="followLabel"/, '空选项须绑定 followLabel')
   assert.match(src, /placeholder-selectable/, '空选项须可被选中（否则无法重置为「跟随默认」）')
-  // 写：空串原样落库（键已注册 llmref；空串 = 回落 defaultLLM，SL-C3）。
-  assert.match(src, /saveUserConfig\(\{\s*\[key\]: value\s*\}\)/, '写回须走既有 saveUserConfig，空串原样')
+  // 写：合并为一次 saveUserConfig（显式保存，2026-10-06 统一口径），空串原样（键已注册 llmref；
+  // 空串 = 回落 defaultLLM，SL-C3）。
+  assert.match(src, /await saveUserConfig\(patch\)/, '写回须走既有 saveUserConfig（一次合并写）')
+  assert.match(src, /patch\[s\.key\] = subsystemLLM\.value\[s\.key\] \|\| ''/, '子系统键空串原样落库（= 回落 defaultLLM）')
   // 读：值形态兼容（字符串 name / 旧 int 索引），走既有 config API（非新增消息主题）。
   assert.match(src, /function resolveRef\(v\)/, '须有 llmref 归一（兼容旧 int 索引）')
   assert.match(src, /typeof v === 'number' && v >= 0 && v < llms\.value\.length/, '旧 int 索引 → llms[v].name')
@@ -73,7 +75,9 @@ test('② 选项来源 = usr 已配置的 provider 列表（并补当前显式�
 test('② 读侧展示：等于默认 provider 时显示「跟随默认」（数据层读侧已补默认值）', () => {
   const src = read(PAGE)
   const disp = src.slice(src.indexOf('function subsysDisplay'), src.indexOf('function subsysOptions'))
-  assert.match(disp, /name === defaultLLMKey\.value \? '' : name/, '等于默认 provider → 显示空选项（跟随默认）')
+  assert.match(disp, /normSel\(subsystemLLM\.value\[key\]\)/, '子系统展示须走统一归一（= 跟随默认口径）')
+  const norm = src.slice(src.indexOf('function normSel'), src.indexOf('const followLabel'))
+  assert.match(norm, /name === defaultLLMKey\.value \? '' : name/, '等于默认 provider → 归一为空串（跟随默认）')
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -88,8 +92,10 @@ test('③ 分析 / 决策标「备用」且保持可配置（不新增禁用逻�
   }
   assert.match(src, /config\.llm\.standby\b/, '备用标签须用 config.llm.standby 文案')
   assert.match(src, /config\.llm\.standbyHint/, '备用须有说明（尚未实现/预留位）')
-  // 预留位仍可配置：本页不给子系统下拉加 disabled。
-  assert.doesNotMatch(src, /:disabled/, '子系统下拉不得加禁用（可配、暂无消费方）')
+  // 预留位仍可配置：子系统下拉本身不加 disabled（保存按钮的 :disabled 不在此列）。
+  const subSelect = src.match(/<Select[\s\S]*?subsysDisplay[\s\S]*?\/>/)
+  assert.ok(subSelect, '未找到子系统 Select')
+  assert.doesNotMatch(subSelect[0], /:disabled/, '子系统下拉不得加禁用（可配、暂无消费方）')
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -167,10 +173,41 @@ test('⑧ 页签：一览（provider 清单）/ 默认模型（主对话 + 子�
   assert.match(src, /config\.llm\.mainDefault/, '须有「主对话」下拉标签')
   assert.match(src, /:model-value="mainValue"/, '主对话下拉须绑定 mainValue')
   assert.match(src, /function onMainChange\(value\)/, '主对话下拉须有写回处理')
-  assert.match(src, /saveUserConfig\(\{ defaultLLM: value \}\)/, '主对话默认须写 usr defaultLLM')
+  assert.match(src, /patch\.defaultLLM = mainValue\.value/, '主对话默认须写 usr defaultLLM')
   // 一览：仅编辑/删除；不得再有只读行与「设为默认」
   assert.match(src, /:data="llmRows"/, '一览表数据须为 llmRows（仅 usr providers）')
   assert.doesNotMatch(src, /设为默认/, '不得再有「设为默认」按钮（并入默认模型页签）')
   assert.doesNotMatch(src, /_readonly/, '不得再有只读行标记')
   assert.doesNotMatch(src, /getSystemBuiltins/, '不再读 gui.system.builtins 的 LLM 条目')
+})
+
+// ═══════════════════════════════════════════════════════════════
+// ⑨ 显式保存（2026-10-06 用户口径）：编辑只改本地待保存态；页签右上角【保存】才落库
+//    「一览」= 一栏列表 → 不加【保存】；「默认模型」= 表单 → 加【保存】（同 SettingsParamsPage）
+// ═══════════════════════════════════════════════════════════════
+test('⑨ 默认模型页签 = 表单型：本地待保存态 + dirty 禁用 + loading 防重 + 保存才落库', () => {
+  const src = read(PAGE)
+  assert.match(src, /useUnsavedMark\(\)/, '须用 useUnsavedMark 派生 dirty')
+  assert.match(src, /const savingDefaults = ref\(false\)/, '须有保存中标记')
+  assert.match(src, /data-llm-save-defaults/, '须有【保存】按钮')
+  assert.match(src, /:disabled="!defaultsDirty"/, '无改动时保存按钮禁用')
+  assert.match(src, /:loading="savingDefaults"/, '保存按钮须 loading 防重复提交')
+  assert.match(src, /v-if="defaultsDirty"[\s\S]{0,80}config\.feedback\.unsaved/, '须显示「未保存」标记')
+  // 编辑处理只改本地待保存态，不落库
+  const om = src.match(/function onMainChange\(value\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(om, '未找到 onMainChange')
+  assert.doesNotMatch(om[0], /saveUserConfig/, '编辑不得即时落库')
+  const os = src.match(/function onSubsysChange\(key, value\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(os, '未找到 onSubsysChange')
+  assert.doesNotMatch(os[0], /saveUserConfig/, '编辑不得即时落库')
+  // 保存函数：dirty / 保存中短路 + 一次成功反馈
+  const save = src.match(/async function saveDefaultsTab\(\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(save, '未找到 saveDefaultsTab')
+  assert.match(save[0], /if \(!defaultsDirty\.value \|\| savingDefaults\.value\) return/, '须短路（无改动 / 保存中）')
+  assert.match(save[0], /message\.success\(savedText\(t, APPLY_INSTANT\)\)/, '成功后一次即时生效反馈')
+  assert.match(src, /function refreshDefaultsDirty\(\)/, '须有 dirty 重算（无 watch）')
+  assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect')
+  // 「一览」= 一栏列表 → 不加【保存】（增改走对话框）；保存按钮仅出现在「默认模型」页签
+  const listBlock = src.slice(src.indexOf('#list'), src.indexOf('#defaults'))
+  assert.doesNotMatch(listBlock, /common\.save/, '一览页签不得加【保存】')
 })

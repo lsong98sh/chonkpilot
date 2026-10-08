@@ -54,7 +54,7 @@ const (
 	ToolStatusInterrupted = kernel.ToolStatusInterrupted
 )
 
-// ParseToolContent 解析 role=tool 消息 content（新结构优先，旧 ToolPairPayload 自动归一）。
+// ParseToolContent 解析 role=tool 消息 content（{call,result,async}）。
 func ParseToolContent(content string) (ToolContent, bool) { return kernel.ParseToolContent(content) }
 
 // ── 四级 capability 根规则（internal/capfs）──────────────────────

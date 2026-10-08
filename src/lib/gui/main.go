@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -25,7 +26,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-gui/internal/fileserver"
 	"github.com/chonkpilot/chonkpilot-gui/models"
+	"github.com/chonkpilot/chonkpilot-lib/lockfile"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin-codegraph"
@@ -153,7 +156,7 @@ type windowState struct {
 // restoreWindowFromConfig 启动时从配置恢复窗口位置/尺寸/最大化，并做超屏正常化
 // （FP：启动恢复关闭前布局尺寸位置状态；最小化改正常；超出当前主显示器收进可见区域）。
 // v6（12-数据层）：窗口几何属"项目用户级"——落 prjusr 的 window.<字段> 细 key；
-// 一次 PrjConfigList 取回（含 prj 层回落值），细 key 缺失时兼容读取 legacy 整块 "window"。
+// 一次 PrjConfigList 取回（含 prj 层回落值）。
 func restoreWindowFromConfig(br *bridge.Bridge, hwnd uintptr) {
 	st, ok := windowStateFromConfig(br.PrjConfigList())
 	if !ok {
@@ -169,8 +172,8 @@ func restoreWindowFromConfig(br *bridge.Bridge, hwnd uintptr) {
 	applyWindowPlacement(hwnd, st)
 }
 
-// windowStateFromConfig 从扁平配置 map 还原窗口状态：优先 window.<字段> 细 key，
-// 回落 legacy 整块 "window"（v6 迁移期兼容）。无任何窗口记录 → ok=false。
+// windowStateFromConfig 从扁平配置 map 还原窗口状态（读 window.<字段> 细 key）。
+// 无任何窗口记录 → ok=false。
 func windowStateFromConfig(cfg map[string]any) (windowState, bool) {
 	if len(cfg) == 0 {
 		return windowState{}, false
@@ -195,7 +198,7 @@ func windowStateFromConfig(cfg map[string]any) (windowState, bool) {
 		}
 		return f, true
 	}
-	// boolean：布尔字面量（前端 cfgScalar 存 "true"/"false"）与 legacy 数值（1/0）都认。
+	// boolean：布尔字面量（前端 cfgScalar 存 "true"/"false"）与数值字面量（1/0）都认。
 	boolean := func(key string) (bool, bool) {
 		s := str(cfg["window."+key])
 		if s == "" {
@@ -227,13 +230,6 @@ func windowStateFromConfig(cfg map[string]any) (windowState, bool) {
 	}
 	if _, hasW := num("width"); hasW {
 		return st, true
-	}
-	// legacy 整块回落
-	var legacy windowState
-	if s := str(cfg["window"]); s != "" {
-		if err := json.Unmarshal([]byte(s), &legacy); err == nil {
-			return legacy, true
-		}
 	}
 	return windowState{}, false
 }
@@ -370,7 +366,7 @@ func (h *appHandler) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// gui.window.status：统一窗口控制/查询（command 语义见 handleWindowStatus）。
-	if body.Type == "gui.window.status" {
+	if body.Type == msgkeys.TopicGuiWindowStatus {
 		writePublishResult(w, func() (any, []error) { return h.handleWindowStatus(body.Payload) })
 		return
 	}
@@ -412,7 +408,7 @@ func applyWindowCommand(hwnd uintptr, destroy func(), br *bridge.Bridge, payload
 			showWindow(hwnd, SW_MAXIMIZE)
 		}
 		env, _ := json.Marshal(map[string]interface{}{"maximized": isMaximisedWindow(hwnd), "instance_id": br.InstanceID()})
-		br.EmitFrontend("window-maximized-changed", string(env))
+		br.EmitFrontend(msgkeys.TopicWindowMaximizedChanged, string(env))
 		return winState(hwnd), nil
 	case "close":
 		if destroy != nil {
@@ -590,6 +586,61 @@ func (r *recorder) Header() http.Header         { return r.header }
 func (r *recorder) Write(b []byte) (int, error) { r.body = append(r.body, b...); return len(b), nil }
 func (r *recorder) WriteHeader(s int)           { r.status = s }
 
+// ── 启动分段计时（OP-15：定位启动慢，仅插桩，不改启动行为/顺序）──────────────
+//
+// 统一前缀 `[startup] <阶段> 耗时 <段>ms（累计 <总>ms）`：段 = 距上次打点，
+// 总 = 距 markStartupBegin（Main 最早期）。据此逐段定位耗时段（capability 扫描 /
+// gateway 启动 / 工具缓存预热 / 插件 Start / WebView2 建窗 / 首屏渲染）。
+// 日志走本包统一出口 slog（见 loglevel.go；桌面主力形态非旧 wails 的 zap）。
+var (
+	startupMu   sync.Mutex
+	startupT0   time.Time
+	startupLast time.Time
+)
+
+// markStartupBegin 重置启动计时基准（Main 最早期调用一次）。
+func markStartupBegin() {
+	startupMu.Lock()
+	startupT0 = time.Now()
+	startupLast = startupT0
+	startupMu.Unlock()
+}
+
+// logStartupStage 输出一段启动耗时（OP-15）：段 = 距上次打点，总 = 距 markStartupBegin。
+func logStartupStage(stage string) {
+	startupMu.Lock()
+	now := time.Now()
+	if startupT0.IsZero() {
+		startupT0, startupLast = now, now
+	}
+	seg, total := now.Sub(startupLast), now.Sub(startupT0)
+	startupLast = now
+	startupMu.Unlock()
+	slog.Info(fmt.Sprintf("[startup] %s 耗时 %dms（累计 %dms）", stage, seg.Milliseconds(), total.Milliseconds()))
+}
+
+// startupOnce 保证「首屏」类阶段只记一次（导航完成回调可能因刷新多次触发）。
+var startupOnce sync.Map
+
+// logStartupStageOnce 同 logStartupStage，但同一 key 只记一次。
+func logStartupStageOnce(key, stage string) {
+	if _, loaded := startupOnce.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	logStartupStage(stage)
+}
+
+// exitWorkDirBusy 报告「该 work-dir 已被另一个实例打开」并退出（I-74）。
+// 启动期文件日志尚未挂载 → 原生消息框 + stderr 双通道（windowsgui 构建下 stderr 不可见，
+// 消息框是唯一可见提示）。
+func exitWorkDirBusy(workDir string) {
+	msg := "该工作目录已被另一个 ChonkPilot 实例打开：\n" + workDir +
+		"\n\n请先关闭对应窗口，或改用其它目录（--work-dir <目录>）。"
+	fmt.Fprintln(os.Stderr, msg)
+	nativeAlert("ChonkPilot", msg)
+	os.Exit(1)
+}
+
 // Main 是宿主入口（webview2 宿主 + 内嵌 server/persist/filesys + 插件装配 + 桥接线）。
 //
 // **调用方 = 壳**（`src/desktop` = 桌面单体 / `src/gui` = GUI 客户端）：壳只做两件事 ——
@@ -604,6 +655,7 @@ func Main(distFS fs.FS, opts Options) {
 	// 日志级别：先以缺省级别装好 logger（早于配置可用无妨），待桥/数据面就绪后经既有配置
 	// 通道读 prj logLevel 覆盖并订阅变更即时生效（见 loglevel.go）。
 	initLogging()
+	markStartupBegin()
 
 	var workDir, dataDir, bridgeURL string
 	var legacyNatsURL string
@@ -637,6 +689,18 @@ func Main(distFS fs.FS, opts Options) {
 	if dataDir != "" {
 		models.SetDataDir(models.ResolveDir(dataDir, workDir))
 	}
+	// 同 work-dir 单实例占用校验（I-74）：**先于任何库打开** —— 否则第二实例会被 prj 库的
+	// bbolt 独占 flock 卡住（启动长时间无响应）。此处非阻塞取锁，占用即明确报错退出；
+	// 锁随进程存活（defer 释放；进程崩溃由 OS 回收）。锁设施自身故障（非占用）不阻断启动。
+	wdLock, wdErr := lockfile.AcquireWorkDir(workDir)
+	switch {
+	case wdErr == nil:
+		defer wdLock.Release()
+	case errors.Is(wdErr, lockfile.ErrBusy):
+		exitWorkDirBusy(workDir)
+	default:
+		slog.Warn("workdir lock unavailable", "err", wdErr) // 仅告警：不因锁设施故障阻断启动
+	}
 	// 项目数据根（prj 层所在：缺省 <workDir>/.chonkpilot；显式 --data-dir → 该目录）。
 	projectDataDir := models.DataDir(workDir)
 	// 传给 server / 桥的 data_dir（**数据层分支判据**；12-数据层 §3 · §5.3）：
@@ -650,6 +714,7 @@ func Main(distFS fs.FS, opts Options) {
 	if dataDir == "" && opts.Form == FormDesktop {
 		dataDirArg = ""
 	}
+	logStartupStage("参数与目录解析")
 	// prjusr 数据根（个人运行态非库文件的落盘根：日志 logs/、附件/截图 tmp/uploads/、
 	// fileserver 白名单；[24 §3.2] MW-8）。**必须先读 prj 库拿 project-id 才能算出**
 	// （不可拿 models.DataDir(workDir) 当 prjusr 根，见 12-数据层 §3 实施注意）。
@@ -658,6 +723,7 @@ func Main(distFS fs.FS, opts Options) {
 		fmt.Fprintln(os.Stderr, "prjusr data root:", err)
 		os.Exit(1)
 	}
+	logStartupStage("prjusr 数据根解析（含 prj 库打开）")
 	// GUI 文件日志（可诊断性，2026-09-19）：windowsgui 下无控制台、stderr 不可见 → 在 prjusr
 	// 数据根 `logs/` 挂滚动文件 sink（<prjUsrRoot>/logs/gui.log，按大小滚动，见 logfile.go）。
 	// 失败降级为「仅 stderr」，不阻断启动。日志级别仍由 prj `logLevel` 运行时控制（同一 LevelVar）。
@@ -668,6 +734,7 @@ func Main(distFS fs.FS, opts Options) {
 		defer detachFileLog() // 退出时关闭文件 sink（幂等）
 		slog.Info("file log enabled", "dir", logDir)
 	}
+	logStartupStage("文件日志挂载")
 
 	// 消息总线：命名空间前缀 chonk. 在此注入一次（server/gateway/persist/filesys/bridge
 	// 共享同一总线），业务 publish/subscribe 一律写相对主题，见 61-消息一览 §0.1。
@@ -677,6 +744,7 @@ func Main(distFS fs.FS, opts Options) {
 		slog.Error("mq new failed", "err", err)
 		os.Exit(1)
 	}
+	logStartupStage("MQ 总线初始化")
 
 	// chonkpilot-filesys 文件服务：订阅 filesys.* 请求（list/content/create/…/watch/
 	// unwatch）→ 写回 Result/Errors；watch 变更经 fsnotify 广播 filesys.changed →
@@ -688,6 +756,7 @@ func Main(distFS fs.FS, opts Options) {
 		os.Exit(1)
 	}
 	defer fsys.Stop()
+	logStartupStage("filesys 文件服务启动")
 
 	// ── inprocess 会话服务（GUI 内嵌 chonkpilot-server lib，同进程内存 MQ）──
 	// server v2 内嵌 persist（data-* 数据面应答）+ gateway + mcp-server，数据根由
@@ -723,11 +792,13 @@ func Main(distFS fs.FS, opts Options) {
 				vfts.New(vfts.Options{}),
 			},
 		})
+		logStartupStage("server 装配（capability 契约扫描 + gateway 构建）")
 		if err := srv.Start(context.Background()); err != nil {
 			slog.Error("server start failed", "err", err)
 			os.Exit(1)
 		}
 		defer srv.Stop()
+		logStartupStage("server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）")
 	}
 
 	// WebView2 用户数据目录必须**一实例一份**：fork 默认 DataPath = %AppData%\<exe名>，
@@ -736,7 +807,7 @@ func Main(distFS fs.FS, opts Options) {
 	// 多窗口起（24 §4.1）：**每窗口**一份（~/.chonkpilot/webview2/<instance_id>，由窗口工厂
 	// 创建并清理）；前端 ui.locale 有 DB 兜底（MainLayout），不依赖 WebView2 缓存留存。
 	wvRoot := webviewProfilesRoot()
-	pruneWebviewProfiles(wvRoot) // 清掉超期残留 profile（强杀/崩溃未走退出清理的目录）
+	pruneWebviewProfiles(wvRoot) // 清掉超期残留 profile（>24h 未变动的 gui-* 目录；强杀/崩溃未走退出清理的）
 
 	subFS, err := fs.Sub(distFS, "frontend/dist")
 	if err != nil {
@@ -798,6 +869,7 @@ func Main(distFS fs.FS, opts Options) {
 		os.Exit(1)
 	}
 	env.windows.setMain(mainHost)
+	logStartupStage("主窗口创建（bridge/WebView2 环境就绪）")
 	// 进程级收尾（defer LIFO = 倒序执行）：总线是**进程唯一一份**，各窗口关闭只注销本实例
 	// （Bridge.CloseInstance），总线由宿主在进程收尾时统一关闭。
 	defer bus.Close()
@@ -826,6 +898,7 @@ func Main(distFS fs.FS, opts Options) {
 	// 日志级别：各窗口建窗时读 prj logLevel 初值（主窗口见上方 onWired）；此处订阅既有
 	// data-prj-config-refresh（**进程级一次**）→ prj 配置一变更即应用、无需重启。
 	watchLogLevel(bus)
+	logStartupStage("启动流程就绪（进入窗口事件循环，首屏于导航完成后另记）")
 
 	// 主窗口关闭 = 退出本进程（24 §4.4）：其余对话窗口一并关闭（各自发 instance-exit +
 	// gui.window.closed），随后返回（总线由 defer 关闭）。
@@ -861,20 +934,58 @@ func webviewDataDir(instanceID string) string {
 	return filepath.Join(webviewProfilesRoot(), instanceID)
 }
 
-// pruneWebviewProfiles 清理超期残留 profile（被强杀/崩溃、未走退出清理的目录）：
-// 只删 >24h 未变动的目录，不会误伤仍在运行的实例。
-func pruneWebviewProfiles(root string) {
+// webviewProfilePrefix 是本进程创建的 WebView2 profile 目录名前缀：实例 id 由 newUUID 生成
+// （`CreateTemp("", "gui-*.uuid")` → `gui-<数字>`），profile 目录名 = 实例 id（见 webviewDataDir）。
+// 清理只认该前缀，避免误删根下其它内容。
+const webviewProfilePrefix = "gui-"
+
+// pruneWebviewProfiles 尽力而为清理孤儿 profile（被强杀/崩溃、未走退出清理的目录）：
+//   - 只清 `<root>/gui-*` 目录（本进程命名，见 webviewProfilePrefix）——不动根下其它内容；
+//   - 只清 LastWriteTime 早于 24h 的目录：活跃 profile 会被 WebView2 运行时持续落盘写入，
+//     24h 未变动即判为残留。当前进程自身的 profile 目录在建窗时（本函数之后）才创建、且活跃
+//     写入 → 天然晚于 cutoff，无需显式排除即不受影响；
+//   - 删除失败（被占用等）逐条跳过并忽略，**不阻断启动**。
+//
+// 返回（清理数量, 释放字节数）供日志与测试断言。
+func pruneWebviewProfiles(root string) (removed int, freed int64) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return
+		return 0, 0
 	}
+	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil || !e.IsDir() {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), webviewProfilePrefix) {
 			continue
 		}
-		if time.Since(info.ModTime()) > 24*time.Hour {
-			_ = os.RemoveAll(filepath.Join(root, e.Name()))
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
 		}
+		dir := filepath.Join(root, e.Name())
+		size := dirSize(dir)
+		if err := os.RemoveAll(dir); err != nil {
+			continue // 被占用/失败：跳过并忽略（不阻断启动）
+		}
+		removed++
+		freed += size
 	}
+	if removed > 0 {
+		slog.Info("webview 残留 profile 已清理", "count", removed, "freed_mb", freed/(1024*1024))
+	}
+	return removed, freed
+}
+
+// dirSize 递归累加目录内文件字节数（尽力而为；读取失败忽略 → 仅影响日志/返回值估算）。
+func dirSize(dir string) int64 {
+	var total int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if fi, e := d.Info(); e == nil {
+			total += fi.Size()
+		}
+		return nil
+	})
+	return total
 }

@@ -10,6 +10,7 @@
   "theme_nord": "Nord",
   "recent_dirs": "Recent Directories",
   "no_recent_dirs": "No recent directories",
+  "remove_recent_dir": "Remove from recent list (does not delete the project)",
   "hide_tasks": "Hide Tasks",
   "show_tasks": "Show Tasks",
   "hide_filetree": "Hide File Tree",

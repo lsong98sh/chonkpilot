@@ -58,7 +58,7 @@ func TestScenarioSubAgentNotRegistered(t *testing.T) {
 	s := newTestServerMCP(t, srv)
 	registerTestInstance(t, s) // instance-register：数据层绑定 + capability 根（场景落盘/读取）
 
-	agSaveScenario(t, s, "disc-a", "我们是一个团队", []any{
+	agSaveScenario(t, s, "disc-a", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		agSubAgent("scout-a", "侦察提示词甲", map[string]any{"description": "甲探测", "roleTag": "侦察"}),
 	})
@@ -140,7 +140,7 @@ func TestToolWhitelistHardReject(t *testing.T) {
 	preNodeID = pre.TaskID
 	s.tasks.done(pre.TaskID, TaskStateDone, "白名单放行结果", "")
 
-	agSaveScenario(t, s, "ag-wl", "", []any{
+	agSaveScenario(t, s, "ag-wl", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		agSubAgent("sub-deny", "子", map[string]any{"tools": []string{"self_tool_stop"}}),
 		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{"self_tool_result"}}),
@@ -173,7 +173,7 @@ func TestToolWhitelistHardReject(t *testing.T) {
 	}
 
 	// ④ 主 agent（未配 tools）不受影响：顶层轮次同样放行
-	agSaveScenario(t, s, "ag-wl-main", "", []any{
+	agSaveScenario(t, s, "ag-wl-main", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 	})
 	agStartTurn(t, s, "s-wl-main", "t-wl-main", "", "ag-wl-main")
@@ -240,7 +240,7 @@ func TestMCPInvokeWhitelistBypassBlocked(t *testing.T) {
 	preNodeID = pre.TaskID
 	s.tasks.done(pre.TaskID, TaskStateDone, "旁路放行结果", "")
 
-	agSaveScenario(t, s, "ag-inv", "", []any{
+	agSaveScenario(t, s, "ag-inv", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		// 白名单只含 mcp_invoke → 目标工具在白名单外（旁路场景）
 		agSubAgent("sub-bypass", "子", map[string]any{"tools": []string{invokeName}}),
@@ -278,7 +278,7 @@ func TestMCPInvokeWhitelistBypassBlocked(t *testing.T) {
 	}
 
 	// ④ 主 agent（未配 tools）不受影响
-	agSaveScenario(t, s, "ag-inv-main", "", []any{
+	agSaveScenario(t, s, "ag-inv-main", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 	})
 	agStartTurn(t, s, "s-inv-main", "t-inv-main", "", "ag-inv-main")
@@ -311,7 +311,7 @@ func TestToolWhitelistIncludesNonHotTool(t *testing.T) {
 	s.refreshTools()
 	nonHot := gatewayToolName(t, s, "probe_nonhot") // 未进入工具缓存即在此失败
 
-	agSaveScenario(t, s, "ag-wl2", "", []any{
+	agSaveScenario(t, s, "ag-wl2", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		agSubAgent("sub-wl", "子", map[string]any{"tools": []string{nonHot}}),
 		agSubAgent("sub-free", "子", map[string]any{"tools": []string{}}), // `[]` = 不限制

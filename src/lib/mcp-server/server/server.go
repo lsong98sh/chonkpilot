@@ -74,6 +74,9 @@ func CallContextMeta(instanceID, workDir, dataDir string) mcp.Meta {
 //   - *.skill.md   → prompt（_meta.type=skill，与 prompt 同构注册以便 prompts/list 区分）
 //   - *.resource.md→ resource（URI 缺省补 file://<name>）
 //
+// 例外：category=server 的 *.tool.md（由 gateway/域自持节点提供的工具，如 dsl_run）**不注册**
+// （否则产出无 runtime 的占位工具 + 热重扫幽灵工具）；其定义经 ServerTools 单源提供。
+//
 // root 缺失或为空目录 → 空注册（no-op，返回 nil），调用方决定空能力面语义。
 // cfg 为执行配置（nil → DefaultConfig()）；ExecDir 已移除——exe 型 runtime 按契约文件
 // 所在目录相对解析（见 resolveRuntime），解释器走 PATH。
@@ -97,15 +100,23 @@ func RegisterContracts(srv *mcp.Server, root string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("load tools: %w", err)
 	}
+	nTools := 0
 	for _, td := range toolDocs {
+		// server 类别（category=server）= 由 gateway/域自持节点提供的工具（如 dsl_run）：
+		// 本包按其契约注册会产出**无 runtime 的不可用占位工具**，且 app 根热重扫时会在 self 节点
+		// 复现为幽灵工具 —— 故**不注册**；其定义经 ServerTools 单源提供给装配层/gateway。
+		if isServerTool(td) {
+			continue
+		}
 		t, err := buildTool(td, cfg)
 		if err != nil {
 			return fmt.Errorf("build tool %s: %w", td.Name, err)
 		}
 		srv.AddTool(t, makeToolHandler(td, cfg, lim))
+		nTools++
 	}
-	if len(toolDocs) > 0 {
-		log.Printf("[mcp-server] %s: %d tools", root, len(toolDocs))
+	if nTools > 0 {
+		log.Printf("[mcp-server] %s: %d tools", root, nTools)
 	}
 
 	// prompts（*.prompt.md 注册为 prompt，_meta.type=prompt）

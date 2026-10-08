@@ -7,10 +7,17 @@ package data
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/paths"
 	bolt "go.etcd.io/bbolt"
 )
+
+// BoltOpenTimeout 是打开 chonkpilot.db（含 auth 库）的锁等待上限（bbolt 单文件排他锁）。
+// Timeout=0（默认 nil）= 无限等待 → 库被另一进程长持时 CLI/GUI 会静默挂起；显式超时
+// 使冲突**快速失败、报错可见**（D-45：GUI × CLI 并发访问同一项目库的第一道兜底，
+// 形态级占用校验见 2A-cli §6 work-dir 锁）。
+const BoltOpenTimeout = 3 * time.Second
 
 // Layer 是数据层标识（v6：三级同构；系统级无库）。
 type Layer string
@@ -38,7 +45,7 @@ func OpenLayer(path string, layer Layer) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	b, err := bolt.Open(path, 0o600, nil)
+	b, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: BoltOpenTimeout})
 	if err != nil {
 		return nil, err
 	}

@@ -8,6 +8,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -33,12 +34,14 @@ func isTaskTool(name string) bool {
 
 // execTaskTool 执行 task 型工具并返回结果文本（不含 tasks.done / FeedToolResult——
 // 由调用方收尾：域工具 handler 经 gateway 返回文本，turn 内同步喂回本轮次）。
-func (s *Server) execTaskTool(parent *turnCtx, toolCallID string, node *TaskNode, tool string, args map[string]any) string {
+// execCtx = 工具执行 ctx（I-83 收尾，18 §3.4：父轮 ctx 派生 + 登记取消柄；gateway 取消回报
+// → onGatewayTaskDone → cancelTaskExec 真停长跑执行体）。
+func (s *Server) execTaskTool(parent *turnCtx, toolCallID string, node *TaskNode, tool string, args map[string]any, execCtx context.Context) string {
 	switch tool {
 	case "tool_stop":
-		return s.runToolStop(parent, node, args)
+		return s.runToolStop(parent, node, args) // 级联取消为毫秒级快速操作，无 ctx 感知点
 	case "tool_result":
-		return s.runToolResult(parent, node, args)
+		return s.runToolResult(parent, node, args, execCtx)
 	default:
 		return "错误: 未知 server 工具 " + tool
 	}
@@ -96,7 +99,9 @@ func (s *Server) runToolStop(parent *turnCtx, node *TaskNode, args map[string]an
 // runToolResult 获取转后台任务结果（对齐 tool_result.md）：id 支持 server
 // 任务节点 / gateway 异步任务 / 子会话 turn id；timeout 秒内轮询至终态，超时返回
 // 「任务尚未结束」（不取消任务，可加大 timeout 再次调用）。
-func (s *Server) runToolResult(parent *turnCtx, node *TaskNode, args map[string]any) string {
+// execCtx = 工具执行 ctx（I-83 收尾）：gateway 取消回报 → cancel → 轮询及时退出
+// （不空耗到 timeout；被查询任务本身未受影响）。
+func (s *Server) runToolResult(parent *turnCtx, node *TaskNode, args map[string]any, execCtx context.Context) string {
 	id, _ := args["id"].(string)
 	if id == "" {
 		return "错误: id 必填"
@@ -110,12 +115,15 @@ func (s *Server) runToolResult(parent *turnCtx, node *TaskNode, args map[string]
 	}
 	deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
 	for {
+		if execCtx.Err() != nil {
+			return fmt.Sprintf("已取消: 任务 %s 查询中止（gateway 执行侧取消；被查询任务本身未受影响，可重新调用 tool_result）", id)
+		}
 		if text, state, found := s.taskResult(parent, id); found {
 			if state == "running" {
 				if time.Now().After(deadline) {
 					return fmt.Sprintf("任务尚未结束：%s 仍在运行（已等待 %.0fs）。可再次调用 tool_result(id=%q, timeout=更长秒数) 继续等待", id, timeout, id)
 				}
-				sleepCtx(parent.ctx, 500*time.Millisecond)
+				sleepCtx(execCtx, 500*time.Millisecond)
 				continue
 			}
 			return text

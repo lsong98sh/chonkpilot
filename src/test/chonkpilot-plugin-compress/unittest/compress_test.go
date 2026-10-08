@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -408,10 +409,11 @@ func TestCompressorNotifyOnSummarizeFailure(t *testing.T) {
 	api := inline.New(bus)
 	data.Reset()
 	data.Register(instanceID, workDir, dataDir)
-	prj, err := data.Prj(instanceID)
+	prj, releasePrj, err := data.Prj(instanceID)
 	if err != nil {
 		t.Fatalf("data.Prj: %v", err)
 	}
+	defer releasePrj() // 短开（D-45）：用完即释
 	if err := data.SetConfig(prj, "keep_full_max_turns", "2"); err != nil {
 		t.Fatalf("SetConfig keep_full_max_turns: %v", err)
 	}
@@ -446,7 +448,8 @@ func TestCompressorNotifyOnSummarizeFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	// 触发压缩（server.finish 发出的同主题事件；总线同步派发 → Emit 返回时已处理完）。
+	// 触发压缩（server.finish 发出的同主题事件）。**2026-10-06（OP-03）：订阅回调只入队**
+	// （总线同步派发 → Emit 返回时仅"已入队"），压缩由每会话 worker **异步**执行 → 用超时等待上报。
 	body, _ := json.Marshal(map[string]any{
 		"instance_id": instanceID, "work_dir": workDir, "data_dir": dataDir,
 		"session": session, "snapshot_turn": "t12",
@@ -465,7 +468,7 @@ func TestCompressorNotifyOnSummarizeFailure(t *testing.T) {
 			t.Fatalf("上报原因应含真实失败原因：%q", n.Reason)
 		}
 		t.Logf("raw evidence: 用户可见提示=%+v", n)
-	default:
+	case <-time.After(3 * time.Second):
 		t.Fatalf("摘要失败应上报一次用户可见提示（日志：%v）", logged)
 	}
 	if len(notices) != 0 {
@@ -499,16 +502,14 @@ func TestCompressedSummaryPersistedInSnapshot(t *testing.T) {
 	api := inline.New(bus)
 	data.Reset()
 	data.Register(instanceID, workDir, dataDir)
-	prj, err := data.Prj(instanceID)
+	prj, releasePrj, err := data.Prj(instanceID)
 	if err != nil {
 		t.Fatalf("data.Prj: %v", err)
 	}
-	// **读时兼容覆盖（D1）**：写**旧键** `keep_full_turns`（新键缺失）→ resolveOpts 应回落命中它。
-	if err := data.DeleteConfig(prj, "keep_full_max_turns"); err != nil {
-		t.Fatalf("DeleteConfig keep_full_max_turns: %v", err)
-	}
-	if err := data.SetConfig(prj, "keep_full_turns", "1"); err != nil {
-		t.Fatalf("SetConfig keep_full_turns(legacy): %v", err)
+	defer releasePrj() // 短开（D-45）：用完即释
+	// 完整区 = 末 1 轮（`keep_full_max_turns`=1）。
+	if err := data.SetConfig(prj, "keep_full_max_turns", "1"); err != nil {
+		t.Fatalf("SetConfig keep_full_max_turns: %v", err)
 	}
 	if err := data.SetConfig(prj, "keep_full_max_tokens", "100000"); err != nil {
 		t.Fatalf("SetConfig keep_full_max_tokens: %v", err)
@@ -542,11 +543,22 @@ func TestCompressedSummaryPersistedInSnapshot(t *testing.T) {
 	})
 	bus.Emit(context.Background(), "session-compress", body).Wait()
 
-	gr, err := api.SnapshotGet(facade.SnapshotGetRequest{InstanceID: instanceID, SessionID: session})
-	if err != nil || !gr.Found {
-		t.Fatalf("SnapshotGet: found=%v err=%v", gr.Found, err)
+	// 2026-10-06（OP-03）：压缩由每会话 worker **异步**执行 → 轮询快照直到回写完成
+	// （首条变 system + 摘要文本），再断言内容。
+	var got facade.Snapshot
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		gr, err := api.SnapshotGet(facade.SnapshotGetRequest{InstanceID: instanceID, SessionID: session})
+		if err != nil || !gr.Found {
+			t.Fatalf("SnapshotGet: found=%v err=%v", gr.Found, err)
+		}
+		got = gr.Snapshot
+		if len(got.Messages) > 0 && got.Messages[0].Role == "system" &&
+			strings.Contains(got.Messages[0].Content, summaryText) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	got := gr.Snapshot
 	if len(got.Messages) >= len(snap.Messages) {
 		t.Fatalf("压缩后快照应更短：%d -> %d", len(snap.Messages), len(got.Messages))
 	}
@@ -565,80 +577,4 @@ func TestCompressedSummaryPersistedInSnapshot(t *testing.T) {
 		t.Fatalf("完整区应为最后 1 轮（2 条消息），实际 %d", kept)
 	}
 	t.Logf("raw evidence: snapshot_turn=%s head=%q kept=%d", got.Turn, head.Content, len(got.Messages)-1)
-}
-
-// TestCompressorPayloadLegacyReadCompat（口径 Z4，2026-09-25）：对外载荷字段统一 snake_case 后，
-// 插件对**上批 camelCase**（`maxContextToken` / `maxOutputToken`）与**更早** `window`（仅上下文窗口）
-// 仍**只读兼容** —— 旧名同样启用兜底归并（只读不写：写入侧 server 只发 snake_case，见 turn_test）。
-// 反证：`session-compress` 不带任何窗口字段 → 不启用兜底（常规三层压缩），见同文件其余用例。
-func TestCompressorPayloadLegacyReadCompat(t *testing.T) {
-	cases := []struct {
-		name   string
-		legacy map[string]any
-	}{
-		{"camelCase 旧名", map[string]any{"maxContextToken": 500, "maxOutputToken": 500}},
-		{"最早期 window 名", map[string]any{"window": 300}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			bus, err := mq.New(mq.Options{Prefix: "chonk."})
-			if err != nil {
-				t.Fatalf("mq.New: %v", err)
-			}
-			defer bus.Close()
-
-			const instanceID, session, workDir, dataDir = "ins-legacy", "s-legacy", `C:\ws`, `C:\ws\.chonkpilot`
-			api := inline.New(bus)
-			data.Reset()
-			data.Register(instanceID, workDir, dataDir)
-			prj, err := data.Prj(instanceID)
-			if err != nil {
-				t.Fatalf("data.Prj: %v", err)
-			}
-			for k, v := range map[string]string{
-				"keep_full_max_turns": "1", "keep_full_max_tokens": "100000", "compress_token_threshold": "100",
-			} {
-				if err := data.SetConfig(prj, k, v); err != nil {
-					t.Fatalf("SetConfig %s: %v", k, err)
-				}
-			}
-			snap := fallbackSnap()
-			snap.SessionID = session
-			if _, err := api.SnapshotSet(facade.SnapshotSetRequest{InstanceID: instanceID, Snapshot: snap}); err != nil {
-				t.Fatalf("SnapshotSet: %v", err)
-			}
-			t.Cleanup(data.Reset)
-
-			if _, err := bus.On("llm-simple", 0, func(_ context.Context, _ string, v *mq.Value) error {
-				v.Result = map[string]any{"text": "MERGED"}
-				return nil
-			}); err != nil {
-				t.Fatalf("stub llm-simple: %v", err)
-			}
-			c := compress.New(compress.Options{}, inline.New(bus))
-			if err := c.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
-				t.Fatalf("Start: %v", err)
-			}
-			p := map[string]any{
-				"instance_id": instanceID, "work_dir": workDir, "data_dir": dataDir,
-				"session": session, "snapshot_turn": "t4",
-			}
-			for k, v := range tc.legacy {
-				p[k] = v
-			}
-			body, _ := json.Marshal(p)
-			bus.Emit(context.Background(), "session-compress", body).Wait()
-
-			gr, err := api.SnapshotGet(facade.SnapshotGetRequest{InstanceID: instanceID, SessionID: session})
-			if err != nil || !gr.Found {
-				t.Fatalf("SnapshotGet: found=%v err=%v", gr.Found, err)
-			}
-			got := gr.Snapshot
-			if len(got.Messages) != 3 || got.Messages[0].Role != "system" ||
-				!strings.Contains(got.Messages[0].Content, "MERGED") {
-				t.Fatalf("旧名 %q 应只读兼容并启用兜底归并（[新摘要] + 完整区 = 3 条）：%+v", tc.name, got.Messages)
-			}
-			t.Logf("raw evidence: legacy=%v -> merged head=%q n=%d", tc.legacy, got.Messages[0].Content, len(got.Messages))
-		})
-	}
 }

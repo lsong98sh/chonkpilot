@@ -511,6 +511,8 @@ def case_persistence_restart():
         _close_ide_winapi()
         _wait_ide_down(30)
     # 3. 脚本重启 IDE（同一 workdir + test-port）；经 harness 自起 → 结束即回收
+    # 夹具：预置工程规格文件 → 抑制场景向导启动自动弹出（本实例走 popen_own，不经 harness.start_gui）
+    _h.ensure_project_spec(WS)
     _h.popen_own([IDE_EXE, "--test-port=2345", "--work-dir=" + WS],
                  name="gui:filetree-restart", cwd=os.path.dirname(IDE_EXE))
     c.wait_ready(60)

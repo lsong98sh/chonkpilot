@@ -13,7 +13,7 @@ import (
 var verifyFields = []string{
 	"node_id", "task_id", "top_session", "session_id", "kind", "node_type",
 	"parent_node_id", "title", "status", "created_at", "finished_at", "tool_call_id",
-	"workdir", "closed",
+	"work_dir", "closed",
 }
 
 // Diff 是单字段差异（task_id + 字段 + 两侧取值）。
@@ -217,7 +217,7 @@ func layerRow(rec *Record) map[string]any {
 		"kind": rec.NodeType, "node_type": nodeType, "parent_node_id": rec.ParentID,
 		"title": rec.Title, "status": frontVisibleStatus(rec.State), "created_at": rec.CreatedAt,
 		"finished_at": rec.DoneAt, "tool_call_id": rec.ToolCallID,
-		"workdir": rec.WorkDir, "closed": rec.Closed,
+		"work_dir": rec.WorkDir, "closed": rec.Closed,
 	}
 }
 

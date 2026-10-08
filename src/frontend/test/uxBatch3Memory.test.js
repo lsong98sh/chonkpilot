@@ -93,37 +93,45 @@ test('⑱A 主题：点分相对主题 memory.flush，前端字面量 = Go 插�
   assert.match(go, /v\.Result = p\.flush\(v\.Payload\)/, 'handler 须把结果写回 Value.Result（promise 回执）')
 })
 
-test('⑱A 作用域与内容：显式动作取「当前会话最近一轮」；不受 min-turn-tokens 门控', () => {
+test('⑱A 作用域与内容：显式动作取「当前会话」；不受 min-turn-tokens 门控', () => {
   const go = readRepo('plugins/plugin-memory/memory.go')
   // 作用域 = payload 的 instance + session（不跨实例/会话）
   assert.match(go, /InstanceID string `json:"instance_id"`[\s\S]{0,80}Session    string `json:"session"`/,
     'payload 须为 {instance_id, session}（实例字段必带）')
-  assert.match(go, /p\.latestTurn\(req\.InstanceID, req\.Session\)/, '须按会话取轮次（限定作用域）')
-  assert.match(go, /sessionHistorySubject = "data-session-history"/, '取最近一轮走既有 data-session-history 面')
-  // 不受阈值门控：flush 不经 extract 的 tokens < MinTokens 分支
-  const flush = go.match(/func \(p \*Plugin\) flush\(payload \[\]byte\)[\s\S]*?\n\}/)
-  assert.ok(flush, '未找到 flush 主体')
-  assert.doesNotMatch(flush[0], /cfg\.MinTokens/, '手动沉淀不得受 memory.min-turn-tokens 门控')
-  assert.match(go, /saved, failed := p\.distill\(/, '须复用既有沉淀回路（distill）')
+  assert.match(go, /p\.enqueue\(turnEvent\{InstanceID: req\.InstanceID, Session: req\.Session\}, true\)/,
+    '手动沉淀须置待处理标记（force=true；作用域限定该会话）')
+  assert.match(go, /sessionHistorySubject = "data-session-history"/, '取轮次走既有 data-session-history 面')
+  // 不受阈值门控：force=true 跳过累计门控（process 内 `if !force { … cfg.MinTokens … }`）
+  assert.match(go, /func \(p \*Plugin\) process\(ev turnEvent, force bool\)/, '须有 process(ev, force) 共用回路')
+  assert.match(go, /if !force \{[\s\S]*?cfg\.MinTokens/, '手动沉淀（force）须跳过 memory.min-turn-tokens 门控')
+  assert.match(go, /p\.distillRanged\(ev, cfg, cats, turns, prog, cache\)/, '须复用既有跨轮沉淀回路（distillRanged）')
 })
 
-test('⑱A 回执：成功静默（A3）；部分失败/无启用类别分别给反馈；失败路径可见（含原因）', () => {
+test('⑱A 回执：**投递即回**（queued）；失败路径可见（含原因）；进度见 statusbar 队列状态', () => {
   const src = read(PAGE)
   const fn = fnBody(src, 'flushMemory')
   assert.ok(fn, '未找到 flushMemory')
   assert.match(fn, /res\.ok !== true/, '须校验后端 ok（不假成功）')
   assert.match(fn, /memoryIO\.flush_fail', \{ error:/, '失败须给可见文案 + 原因')
-  // A3（2026-09-24 用户口径）：沉淀成功**静默**，不弹成功提示（类别数不再回执）
-  assert.doesNotMatch(fn, /message\.success\(/, 'A3：沉淀成功须静默（不得弹空成功提示）')
-  assert.doesNotMatch(fn, /flush_ok/, 'A3：成功分支不得再引用 flush_ok 文案')
-  assert.match(fn, /memoryIO\.flush_partial', \{ count: .*failed:/, '部分失败须给成功/失败数')
-  assert.match(fn, /memoryIO\.flush_no_category/, '无启用类别须提示（不是静默成功）')
+  // A3（2026-09-24 用户口径）+ I-128：投递即回 → 成功静默（进度由 statusbar 队列状态展示）
+  assert.doesNotMatch(fn, /message\.success\(/, 'A3：沉淀成功须静默（不得弹成功提示）')
+  assert.doesNotMatch(fn, /res\.saved|res\.failed|res\.enabled/, '投递即回：不得再依赖 saved/failed/enabled（异步处理）')
+  assert.doesNotMatch(fn, /await reloadMemoryCategories\(\)/, '投递即回：不得在回执后立即重读（写回由 data-memory-refresh 驱动）')
   assert.match(fn, /memoryIO\.flush_no_session/, '无活动会话须提示')
   assert.match(fn, /message\.error\(/, '失败须经统一 message.error（可见）')
-  assert.match(fn, /await reloadMemoryCategories\(\)/, '成功后须重读类别清单（不乐观更新；经共享 composable）')
-  // 超时给足（>插件侧单次 LLM 超时）
-  assert.match(src, /const FLUSH_TIMEOUT = 120000/)
+  // 投递即回 → 短超时足够（不再等插件侧 ≈60s）
+  assert.match(src, /const FLUSH_TIMEOUT = 15000/)
   assert.match(fn, /timeout: FLUSH_TIMEOUT/)
+
+  // 队列状态展示在 statusbar（I-128；既有通知面 tool-notify，零新增主题）
+  const sb = read('views/statusbar/StatusBar.vue')
+  assert.match(sb, /useQueueStatus\(\)/, 'statusbar 须消费队列状态 composable')
+  assert.match(sb, /mq\.on\(EventNames\.toolNotify, handleQueueNotice\)/, 'statusbar 须订阅 tool-notify')
+  assert.match(sb, /queueText\('memory'|queueText\('compress'/, 'statusbar 须渲染记忆/压缩队列状态')
+  const q = read('composables/useQueueStatus.js')
+  for (const n of ['memory-queued', 'memory-start', 'memory-done', 'compress-queued', 'compress-start', 'compress-done']) {
+    assert.match(q, new RegExp("'" + n + "'"), `useQueueStatus 须识别 notice=${n}`)
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -183,7 +191,7 @@ test('⑱C 数据来源 = 既有 data-snapshot-get（压缩产物唯一落点）
   assert.match(go, /"\[已压缩早前对话\] " \+ sum/, '压缩产物 = 快照首条 system 摘要（Go 侧标记）')
   assert.match(src, /const COMPRESS_MARK = '\[已压缩早前对话\] '/, '前端识别标记须与 Go 侧一致')
   const go2 = readRepo('lib/data/persist/persist.go')
-  assert.match(go2, /"data-snapshot-get", "data-snapshot-set"/, 'data-snapshot-get 须为既有注册主题')
+  assert.match(go2, /TopicDataSnapshotGet, msgkeys\.TopicDataSnapshotSet/, 'data-snapshot-get 须为既有注册主题')
   const l2 = readRepo('test/chonkpilot-plugin-compress/unittest/compress_test.go')
   assert.match(l2, /func TestCompressedSummaryPersistedInSnapshot/, 'L2 须有「压缩产物落快照可读回」用例')
 })
@@ -238,8 +246,7 @@ test('⑱C 纯函数口径：brief() 截断阈值与「展开全文」互补', (
 // i18n / 规范
 // ═══════════════════════════════════════════════════════════════
 test('⑱ i18n：memoryIO 新增键 zh/en 齐备且占位符可插值', () => {
-  const KEYS = ['flush_section', 'flush', 'flushing', 'flush_hint', 'flush_no_session',
-    'flush_no_category', 'flush_partial', 'flush_fail',
+  const KEYS = ['flush_section', 'flush', 'flush_hint', 'flush_no_session', 'flush_fail',
     'clear', 'clear_confirm_title', 'clear_confirm', 'clear_ok', 'clear_fail',
     'records_title', 'records_refresh', 'records_note', 'records_empty', 'records_no_session',
     'records_load_failed', 'records_range_value', 'records_kept', 'records_expand', 'records_collapse']
@@ -250,20 +257,27 @@ test('⑱ i18n：memoryIO 新增键 zh/en 齐备且占位符可插值', () => {
     }
     // A3：成功静默 → flush_ok 文案已移除（成功分支不再回执类别数）
     assert.equal(io.flush_ok, undefined, `${loc} flush_ok 应已移除（A3 成功静默）`)
-    for (const k of ['flush_fail', 'flush_partial', 'clear_fail', 'records_load_failed']) {
-      assert.match(io[k], /\{error\}|\{failed\}|\{count\}/, `${loc} memoryIO.${k} 须含占位符`)
+    // I-128 投递即回：不再同步等结果 → 已废弃的「部分失败 / 无类别」文案随之移除
+    assert.equal(io.flush_partial, undefined, `${loc} flush_partial 应已移除（投递即回）`)
+    assert.equal(io.flush_no_category, undefined, `${loc} flush_no_category 应已移除（投递即回）`)
+    assert.equal(io.flushing, undefined, `${loc} flushing 应已移除（投递即回，无「沉淀中」文案）`)
+    for (const k of ['flush_fail', 'clear_fail', 'records_load_failed']) {
+      assert.match(io[k], /\{error\}/, `${loc} memoryIO.${k} 须含占位符`)
     }
     assert.match(io.records_range_value, /\{turn\}/, `${loc} records_range_value 须含 {turn}`)
     assert.match(io.records_kept, /\{count\}/, `${loc} records_kept 须含 {count}`)
     assert.match(io.records_note, loc === 'zh-CN' ? /时间/ : /time/i, `${loc} records_note 须说明时间不可得`)
+    // I-128：statusbar 队列状态文案（记忆/压缩 × 排队/进行中/完成）zh/en 齐备
+    const sb = readLocale(loc, 'statusBar.json')
+    for (const k of ['queue_memory_queued', 'queue_memory_running', 'queue_memory_done',
+      'queue_compress_queued', 'queue_compress_running', 'queue_compress_done']) {
+      assert.ok(typeof sb[k] === 'string' && sb[k].trim().length > 0, `${loc} 缺 statusBar.${k}`)
+    }
   }
   const zh = mkI18n({ memoryIO: readLocale('zh-CN', 'memoryIO.json') })
   const en = mkI18n({ memoryIO: readLocale('en-US', 'memoryIO.json') })
-  assert.match(zh.t('memoryIO.flush_partial', { count: 3, failed: 1 }), /3/, 'zh 成功数须插值')
-  assert.match(en.t('memoryIO.flush_partial', { count: 2, failed: 1 }), /2/, 'en 成功数须插值')
   for (const [loc, i18n] of [['zh-CN', zh], ['en-US', en]]) {
     for (const [key, named] of [
-      ['memoryIO.flush_partial', { count: 1, failed: 1 }],
       ['memoryIO.flush_fail', { error: 'boom' }], ['memoryIO.clear_fail', { error: 'boom' }],
       ['memoryIO.records_load_failed', { error: 'boom' }],
       ['memoryIO.records_range_value', { turn: 't-1' }], ['memoryIO.records_kept', { count: 4 }],

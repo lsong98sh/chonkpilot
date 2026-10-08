@@ -4,23 +4,25 @@
 // 一行/多行 LLM 指令。
 //
 // llm_run 脚本使用 dsl-core 语法：核心保留字 SET/IF/LOOP/PARALLEL/BREAK/CONTINUE/EXIT/END
-// + 动作动词 LLM（本文件注入）。LLM 指令：LLM "agent" "prompt" ["目的"] [=> 目标]，
+// + 动作动词 LLM（本文件注入）。LLM 指令：LLM "agent" "prompt" "目的" [=> 目标]，
 // agent=委派对象名（必填，须**可委派** —— 当前场景内成员，或 app 级场景内唯一同名 agent；
-// 见 agentDelegable）、prompt=委派提示词
-// （必填，{{}} 插值）、目的=本次子 LLM 的运行目的（可选，即子任务节点展示名；缺省回退提示词截断）；
-// 三参均可 {{}} 插值；参数间空白或逗号分隔均兼容；参数超过 3 个 = 顶层失败。文件路径须绝对 / ~/ 开头 / !/ 开头，
+// 见 agentDelegable）、prompt=委派提示词（必填，{{}} 插值）、
+// 目的=本次子 LLM 的运行目的（**必填且非空**，即子任务节点展示名；软约束 10–20 字 ——
+// 超长截断为 20 字并记录、不足仅记录，均不报错）；
+// 三参均可 {{}} 插值；参数间空白或逗号分隔均兼容；参数个数 ≠ 3 = 顶层失败
+// （缺参 / 空串 / 超过 3 个均顶层失败）。文件路径须绝对 / ~/ 开头 / !/ 开头，
 // 项目内路径用宿主注入的 {{env.CHONKPILOT_WORKDIR}} 显式拼接（相对路径拒绝）。示例：
 //
 //	SET #"{{env.CHONKPILOT_WORKDIR}}/tasks.json" => src
 //	LOOP item=src.array concurrency=3
 //	   IF item.done != true
-//	      LLM "后端开发" "实现 {{item.name}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.py"
+//	      LLM "后端开发" "实现 {{item.name}}" "实现 {{item.name}} 模块" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.py"
 //	      SET item.done => true
 //	   END
 //	END
 //
 // 执行：每个 LLM 步骤 = 独立 stateless 子轮次（runChildTurn，父会话链 + 任务树）；
-// 子任务节点（kind=llm，ParentID=根节点）展示名 = 目的（第三参，缺省回退 prompt）截断；
+// 子任务节点（kind=llm，ParentID=根节点）展示名 = 目的（第三参，必填）按 10–20 字软约束处理；
 // => 目标（变量捕获 / 文件句柄 / .eof 追加）由 dsl 引擎写入；SET 字段写即时整源写回
 // （断点续跑）；失败记错不阻塞；EXIT/取消（引擎 Cancel）跨分支终止。
 package server
@@ -34,6 +36,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/dsl"
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
@@ -74,8 +77,32 @@ func (f *jobFile) abs() (string, error) {
 
 func (f *jobFile) Path() string { return f.path }
 
-func (f *jobFile) Exists() bool {
+// absRead 解析路径 + 沙箱读校验（越界 → 错误；决策 42 §2 (250)：修复 llm 引擎句柄层裸写缺口）。
+func (f *jobFile) absRead() (string, error) {
 	abs, err := f.abs()
+	if err != nil {
+		return "", err
+	}
+	if err := agentbox.Check(abs, false); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// absWrite 解析路径 + 沙箱写校验（越界 → 错误）。
+func (f *jobFile) absWrite() (string, error) {
+	abs, err := f.abs()
+	if err != nil {
+		return "", err
+	}
+	if err := agentbox.Check(abs, true); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+func (f *jobFile) Exists() bool {
+	abs, err := f.absRead()
 	if err != nil {
 		return false
 	}
@@ -84,7 +111,7 @@ func (f *jobFile) Exists() bool {
 }
 
 func (f *jobFile) Stat() (dsl.FileInfo, error) {
-	abs, err := f.abs()
+	abs, err := f.absRead()
 	if err != nil {
 		return dsl.FileInfo{}, err
 	}
@@ -105,7 +132,7 @@ func (f *jobFile) Stat() (dsl.FileInfo, error) {
 }
 
 func (f *jobFile) ReadText() (string, error) {
-	abs, err := f.abs()
+	abs, err := f.absRead()
 	if err != nil {
 		return "", err
 	}
@@ -148,7 +175,7 @@ func (f *jobFile) ReadRange(n, m int) ([]string, error) {
 }
 
 func (f *jobFile) WriteAll(text string) error {
-	p, err := f.abs()
+	p, err := f.absWrite()
 	if err != nil {
 		return err
 	}
@@ -166,7 +193,7 @@ func (f *jobFile) Append(text string) error {
 	if text == "" {
 		return nil
 	}
-	p, err := f.abs()
+	p, err := f.absWrite()
 	if err != nil {
 		return err
 	}
@@ -211,7 +238,7 @@ func (f *jobFile) ReplaceLines(n, m int, lines []string) error {
 		tail = append([]string{}, ls[m+1:]...)
 	}
 	out := append(head, append(mid, tail...)...)
-	p, err := f.abs()
+	p, err := f.absWrite()
 	if err != nil {
 		return err
 	}
@@ -269,6 +296,25 @@ type jobEnv struct {
 	mu         sync.Mutex
 	failed     int
 	step       int
+
+	// ── DSL-3 展示（不随迭代增长）──
+	// execSteps 是步骤执行记录（跨迭代累计，扁平）；stepContainer / containerLead 由
+	// buildStaticTree 预走 AST 得到（LLM 原始参数 → 所属静态节点 id / 容器首步原始参数）；
+	// containerIDs 是静态容器节点 id（作业结束标记终态）；sessions 是各步骤子会话 id
+	// （作业结束清理 subParents 映射）。
+	execSteps      []dslExecStep
+	stepContainer  map[string]string
+	containerLead  map[string]string
+	leadCount      map[string]int
+	containerIDs   []string
+	sessions       []string
+}
+
+// dslExecStep 是一次 LLM 步骤执行的内部记录（对外投影为 DslStepRecord + 结果文本供汇总）。
+type dslExecStep struct {
+	rec    DslStepRecord
+	text   string // 成功产出的子轮文本（供回落汇总）
+	errMsg string // 失败信息（供回落汇总）
 }
 
 // runSubJob 执行 llm_run：读 script/file → dsl 解析 → 引擎执行（LLM 动词 = 子轮次）→ 汇总回填。
@@ -285,7 +331,9 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 		workDir: parent.req.WorkDir,
 		// fs 绑定轮次 instance：作业内 `!/` 路径按该 instance 的临时根解析（缺口 4：
 		// 多 instance 同进程各自独立根，互不覆盖）。
-		fs: &jobFileSys{log: &writeLog{}, inst: parent.req.InstanceID},
+		fs:            &jobFileSys{log: &writeLog{}, inst: parent.req.InstanceID},
+		stepContainer: map[string]string{},
+		containerLead: map[string]string{},
 	}
 	jr.jobSession = "job-" + newID()
 	_ = newSessionStore(s.bus, parent.req.InstanceID).EnsureSessionWithParent(jr.jobSession, parent.req.Session)
@@ -329,7 +377,15 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 	if d, derr := exedir.Dir(); derr == nil {
 		exeDir = d
 	}
-	eng := dsl.NewEngine(dsl.Options{Files: jr.fs, Actions: actions, Vars: jobEnvVars(jr.workDir, parent.req.DataDir, tempDir, exeDir)})
+	// DSL-3：按 AST 预建**静态语句树**（容器节点，不随迭代增长；LLM 步骤登记到所属静态节点）。
+	jr.buildStaticTree(ast.Stmts)
+	// 存在 $RETURN 时，超 64K 累计落盘到本 instance 临时根（DSL-2 宿主接线）。
+	returnFile := filepath.Join(tempDir, "dsl-return-"+node.TaskID+".md")
+	eng := dsl.NewEngine(dsl.Options{
+		Files: jr.fs, Actions: actions,
+		Vars:       jobEnvVars(jr.workDir, parent.req.DataDir, tempDir, exeDir),
+		ReturnFile: returnFile,
+	})
 	stopWatch := jr.watchCancel(eng)
 	_ = eng.Execute(ast)
 	close(stopWatch)
@@ -344,7 +400,10 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 			node.TaskID, len(runErrs), runErrs[0].Line, runErrs[0].Msg)
 	}
 
-	summary := jr.buildSummary(runErrs)
+	// $RETURN 结果通道（DSL-2）：Used → 取代汇总（inline 内容 / file 文件名+大小）；未用 → 回落既有汇总。
+	summary := jr.buildSummary(runErrs, eng.Return())
+	jr.finishStatic(runErrs)
+	jr.markReturn(eng.Return())
 	s.tasks.done(node.TaskID, TaskStateDone, summary, "")
 	parent.FeedToolResult(toolCallID, summary)
 }
@@ -383,12 +442,13 @@ func jobScriptOf(instanceID string, args map[string]any) (string, error) {
 	return string(raw), nil
 }
 
-// llmAction 返回 LLM 动作：agent/提示词/目的插值（agent 必填=委派对象标识，须为域 agent 或
-// **当前场景内同名 agent**（AG-1）；提示词必填；
-// 目的可选 = 本次子 LLM 的运行目的/展示名，缺省回退提示词截断）→ 建子任务节点（kind=llm，
-// ParentID=根节点；Purpose/Name/Simplified = 展示名）→ runChildTurn（agent 传递入子轮 persona；
-// 子轮次在 newTurnCtx 按该 agent 定义执行：提示词 / 工具白名单 / llmRef / 委派条件，AG-1）
-// → 节点 done/error。
+// llmAction 返回 LLM 动作：agent/提示词/目的插值（三参均必填 —— agent=委派对象标识，须为域 agent 或
+// **当前场景内同名 agent**（AG-1）；提示词必填；目的必填且非空 = 本次子 LLM 的运行目的/展示名，
+// 软约束 10–20 字）→ runChildTurn（agent 传递入子轮 persona；子轮次在 newTurnCtx 按该 agent 定义
+// 执行：提示词 / 工具白名单 / llmRef / 委派条件，AG-1）。
+//
+// DSL-3：执行记录**不建树节点**，改为追加到作业根节点 `steps[]`（扁平、跨迭代累计）；子会话内
+// 产生的工具节点经 `bindSubSession` 挂到该步所属**静态语句节点**（容器 dsl_loop/dsl_parallel 或作业根）。
 // 返回文本交给 dsl 引擎：无 => 目标进引擎汇总；有 => 目标（变量/文件/表）由引擎写入。
 func (jr *jobEnv) llmAction() dsl.Action {
 	return dsl.Action{
@@ -401,71 +461,273 @@ func (jr *jobEnv) llmAction() dsl.Action {
 			if err != nil {
 				return "", err
 			}
-			if len(parts) < 2 {
-				return "", fmt.Errorf("LLM 需要 \"agent\" \"prompt\"（语法：LLM \"agent\" \"prompt\" 或 LLM \"agent\", \"prompt\" => #\"path\"）")
+			if len(parts) < 3 {
+				// 正常路径下 checkLLMArgs 已在执行前拦下缺参；此处为执行期兜底。
+				return "", errLLMMissingArgs
 			}
 			agent, _ := sc.Interp(parts[0])
 			prompt, _ := sc.Interp(parts[1])
+			purpose, _ := sc.Interp(parts[2])
 			agent = strings.TrimSpace(agent)
 			if agent == "" {
-				return "", fmt.Errorf("LLM agent 不能为空（语法：LLM \"agent\" \"prompt\" 或 LLM \"agent\", \"prompt\" => #\"path\"）")
+				return "", fmt.Errorf("LLM agent 不能为空（语法：LLM \"agent\" \"prompt\" \"目的\"）")
 			}
 			if !jr.s.agentDelegable(jr.node.InstanceID, jr.parent.req.ScenarioID, agent) {
 				return "", fmt.Errorf("LLM agent %q 不可委派（app 级场景注册表与当前场景内均无此 agent）；可委派成员见系统提示词的团队成员段", agent)
 			}
 			if strings.TrimSpace(prompt) == "" {
-				return "", fmt.Errorf("LLM 提示词不能为空（语法：LLM \"agent\" \"prompt\" 或 LLM \"agent\", \"prompt\" => #\"path\"）")
+				return "", fmt.Errorf("LLM 提示词不能为空（语法：LLM \"agent\" \"prompt\" \"目的\"）")
+			}
+			// 目的非空硬校验（插值后仍为空 → 该步失败；字面空串在执行前已由 checkLLMArgs 拦下）。
+			if strings.TrimSpace(purpose) == "" {
+				return "", fmt.Errorf("LLM 目的不能为空（语法：LLM \"agent\" \"prompt\" \"目的\"；目的 = 子任务展示名，建议 10–20 字）")
 			}
 			session := fmt.Sprintf("%s-%d", jr.jobSession, jr.nextStep())
-			label := promptLabel(prompt) // 缺省展示名 = 提示词截断
-			if len(parts) == 3 {
-				// 第三参 = 目的（运行目的/展示名）：插值后非空才覆盖，否则回退提示词截断。
-				if purpose, _ := sc.Interp(parts[2]); strings.TrimSpace(purpose) != "" {
-					label = promptLabel(purpose)
-				}
-			}
-			child := &TaskNode{
-				Tool: jr.node.Tool, ToolCallID: jr.node.ToolCallID, ParentID: jr.node.TaskID,
-				TopSession: jr.node.TopSession, Kind: TaskKindLLM, SessionID: session,
-				InstanceID: jr.node.InstanceID, Purpose: label,
-			}
-			child.Name, child.Simplified = label, label
-			childNode, serr := jr.s.tasks.start(child)
-			if serr != nil {
-				jr.markFail()
-				return "", nil
-			}
+			label := purposeLabel(purpose) // 展示名 = 目的（10–20 字软约束：超长截断、不足记录）
+			// 静态语句节点（容器或作业根）：子会话内工具节点据此挂父（DSL-3，执行记录不建树节点）。
+			parentID := jr.stepParent(args)
+			jr.s.tasks.bindSubSession(session, parentID)
+			// 追加一条 running 执行记录（跨迭代累计，不建树节点）+ 刷新容器进度。
+			idx := jr.beginStep(session, label, args)
 
 			// 子轮次 ctx 由**发起它的本 turn 的 ctx** 派生（G-18 gapA）：父轮次取消/关闭
 			// （用户停止、级联取消）时取消信号沿链下传，子步不再跑满。
-			text, subTurn, runErr := jr.s.runChildTurn(jr.parent.ctx, jr.parent.req, session, prompt, agent)
-			jr.s.tasks.update(childNode.TaskID, func(n *TaskNode) { n.TurnID = subTurn })
+			start := time.Now()
+			text, _, runErr := jr.s.runChildTurn(jr.parent.ctx, jr.parent.req, session, prompt, agent)
+			elapsed := time.Since(start).Milliseconds()
 			if runErr != nil {
-				jr.s.tasks.done(childNode.TaskID, TaskStateError, "", runErr.Error())
+				status := TaskStateError
+				if jr.cancelled() {
+					status = TaskStateCancelled
+				}
+				jr.endStep(idx, status, elapsed, "", runErr.Error())
 				jr.markFail()
 				return "", nil // 失败记错不阻塞（后续步骤继续）
 			}
-			jr.s.tasks.done(childNode.TaskID, TaskStateDone, text, "")
+			jr.endStep(idx, TaskStateDone, elapsed, text, "")
 			return text, nil
 		},
 	}
 }
 
-// promptLabel 展示名文本（提示词 / LLM 目的共用）→ 子任务节点展示名（≤24 字符，超出截断加 …）。
-func promptLabel(prompt string) string {
-	r := []rune(strings.TrimSpace(prompt))
-	if len(r) <= 24 {
-		return string(r)
+// stepParent 取该 LLM 语句所属静态节点 id（容器 dsl_loop/dsl_parallel，或作业根 dsl_job）。
+// 未登记（AST 预走后仍在 map 外，异常）→ 回落作业根。
+func (jr *jobEnv) stepParent(rawArgs string) string {
+	if pid := jr.stepContainer[rawArgs]; pid != "" {
+		return pid
 	}
-	return string(r[:24]) + "…"
+	return jr.node.TaskID
 }
 
-// errLLMTooManyArgs LLM 指令参数过多（>3）的统一错误（严格模式；含正确语法示例）。
-var errLLMTooManyArgs = errors.New(`LLM 参数过多（最多 3 个：agent、提示词、目的）（语法：LLM "agent" "prompt" ["目的"] [=> 目标]）`)
+// beginStep 追加一条 running 执行记录（不建树节点）→ 刷新作业根 `steps[]` + 容器进度；
+// 返回记录下标（供 endStep 回填）。
+func (jr *jobEnv) beginStep(session, purpose, rawArgs string) int {
+	jr.mu.Lock()
+	jr.execSteps = append(jr.execSteps, dslExecStep{rec: DslStepRecord{
+		No: len(jr.execSteps) + 1, Status: TaskStateRunning, Purpose: purpose,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339), SessionID: session,
+	}})
+	idx := len(jr.execSteps) - 1
+	if jr.leadCount == nil {
+		jr.leadCount = map[string]int{}
+	}
+	jr.leadCount[rawArgs]++
+	jr.sessions = append(jr.sessions, session)
+	steps := jr.stepsLocked()
+	jr.mu.Unlock()
+	jr.s.tasks.update(jr.node.TaskID, func(n *TaskNode) { n.Steps = steps })
+	jr.applyContainerProgress()
+	return idx
+}
 
-// checkLLMArgs 执行前静态校验脚本内所有 LLM 指令的参数个数（参数级违规：>3 → 顶层失败，
-// 与字面相对路径预校验同层）：参数个数与插值无关，故可在执行前判定；参数不足 / 分词错误
-// 交由执行期 llmAction 报出。
+// endStep 回填执行记录终态（status/耗时/文本/错误）并广播作业根 `steps[]`。
+func (jr *jobEnv) endStep(idx int, status string, elapsed int64, text, errMsg string) {
+	jr.mu.Lock()
+	if idx >= 0 && idx < len(jr.execSteps) {
+		jr.execSteps[idx].rec.Status = status
+		jr.execSteps[idx].rec.ElapsedMs = elapsed
+		jr.execSteps[idx].text = text
+		jr.execSteps[idx].errMsg = errMsg
+	}
+	steps := jr.stepsLocked()
+	jr.mu.Unlock()
+	jr.s.tasks.update(jr.node.TaskID, func(n *TaskNode) { n.Steps = steps })
+}
+
+// stepsLocked 取执行记录快照（持 jr.mu 调用）。
+func (jr *jobEnv) stepsLocked() []DslStepRecord {
+	out := make([]DslStepRecord, len(jr.execSteps))
+	for i, s := range jr.execSteps {
+		out[i] = s.rec
+	}
+	return out
+}
+
+// applyContainerProgress 把容器首步的执行计数投影为 `loop_current`（1 起；不随迭代新增节点）。
+func (jr *jobEnv) applyContainerProgress() {
+	jr.mu.Lock()
+	type upd struct {
+		cid   string
+		count int
+	}
+	var ups []upd
+	for cid, lead := range jr.containerLead {
+		if lead == "" {
+			continue
+		}
+		if c := jr.leadCount[lead]; c > 0 {
+			ups = append(ups, upd{cid, c})
+		}
+	}
+	jr.mu.Unlock()
+	for _, u := range ups {
+		u := u
+		jr.s.tasks.update(u.cid, func(n *TaskNode) { n.LoopCurrent = u.count })
+	}
+}
+
+// markReturn 把 `$RETURN` 两态投影到作业根节点（DSL-2：inline 全文 / file 文件名 + 字节数）；
+// 未使用 → 不写任何字段（与既有载荷逐字节等价）。
+func (jr *jobEnv) markReturn(rv dsl.ReturnValue) {
+	if !rv.Used {
+		return
+	}
+	jr.s.tasks.update(jr.node.TaskID, func(n *TaskNode) {
+		if rv.Overflow {
+			n.ReturnKind = "file"
+			n.ReturnFile = filepath.Base(rv.File)
+			n.ReturnSize = rv.Size
+			return
+		}
+		n.ReturnKind = "inline"
+		n.ReturnInline = rv.Text
+	})
+}
+
+// finishStatic 收尾静态容器节点（标终态）+ 清理子会话→静态节点映射（DSL-3）。
+func (jr *jobEnv) finishStatic(runErrs []dsl.RunError) {
+	state := TaskStateDone
+	if jr.cancelled() {
+		state = TaskStateCancelled
+	} else if len(runErrs) > 0 || jr.failedCount() > 0 {
+		state = TaskStateError
+	}
+	for _, cid := range jr.containerIDs {
+		jr.s.tasks.done(cid, state, "", "")
+	}
+	jr.s.tasks.unbindSubSessions(jr.sessions)
+}
+
+// failedCount 取失败步骤数（并发安全）。
+func (jr *jobEnv) failedCount() int {
+	jr.mu.Lock()
+	defer jr.mu.Unlock()
+	return jr.failed
+}
+
+// buildStaticTree 预走 AST 建**静态语句树**：LOOP/PARALLEL → 折叠容器节点（各建一次，
+// **不随迭代增长**）；LLM 语句登记到其所属容器（或作业根）。每次迭代的执行记录一律入作业根
+// `steps[]`，不建树节点 —— DSL-3「节点=静态语句」（本实现选 steps[] 方案，故不产出
+// shadow/dsl_step 节点；前端 stepsFromNodes 对 job.steps 为首选）。
+func (jr *jobEnv) buildStaticTree(stmts []dsl.Stmt) {
+	_ = jr.walkStatic(stmts, jr.node.TaskID)
+}
+
+// walkStatic 递归预走：返回该层**首个 LLM 语句的原始参数**（供容器 lead 判定 loop_current）。
+func (jr *jobEnv) walkStatic(stmts []dsl.Stmt, parentID string) string {
+	var lead string
+	for _, st := range stmts {
+		switch t := st.(type) {
+		case *dsl.LoopStmt:
+			cid := jr.mkContainer(TaskKindDslLoop, loopLabel(t), parentID)
+			inner := jr.walkStatic(t.Block, cid)
+			if inner != "" && jr.containerLead[cid] == "" {
+				jr.containerLead[cid] = inner
+			}
+			if lead == "" {
+				lead = inner
+			}
+		case *dsl.ParallelStmt:
+			cid := jr.mkContainer(TaskKindDslParallel, "PARALLEL", parentID)
+			inner := jr.walkStatic(t.Block, cid)
+			if inner != "" && jr.containerLead[cid] == "" {
+				jr.containerLead[cid] = inner
+			}
+			if lead == "" {
+				lead = inner
+			}
+		case *dsl.IfStmt:
+			// IF 透明：块内语句挂当前容器（DSL-3 未定义 dsl_if；不新增 kind）
+			if inner := jr.walkStatic(t.Block, parentID); inner != "" && lead == "" {
+				lead = inner
+			}
+		case *dsl.ActionStmt:
+			if strings.EqualFold(t.Verb, "LLM") {
+				jr.stepContainer[t.Args] = parentID
+				if lead == "" {
+					lead = t.Args
+				}
+			}
+		}
+	}
+	return lead
+}
+
+// mkContainer 建一个折叠容器节点（kind=dsl_loop/dsl_parallel，静态、各建一次）；启动失败回落父节点。
+func (jr *jobEnv) mkContainer(kind, label, parentID string) string {
+	c := &TaskNode{
+		Tool: jr.node.Tool, ToolCallID: jr.node.ToolCallID, ParentID: parentID,
+		TopSession: jr.node.TopSession, Kind: kind, SessionID: jr.node.SessionID,
+		TurnID: jr.node.TurnID, InstanceID: jr.node.InstanceID, Name: label,
+	}
+	c.Simplified = label
+	n, err := jr.s.tasks.start(c)
+	if err != nil {
+		return parentID // 启动失败（活跃上限等）→ 挂父，不阻塞作业
+	}
+	jr.containerIDs = append(jr.containerIDs, n.TaskID)
+	return n.TaskID
+}
+
+// loopLabel 容器展示名（LOOP <迭代变量> / LOOP）。
+func loopLabel(t *dsl.LoopStmt) string {
+	if t.Var != "" {
+		return "LOOP " + t.Var
+	}
+	return "LOOP"
+}
+
+// 目的软约束区间（10–20 字）：仅约束子任务节点展示名的可读性，超出不报错。
+const (
+	purposeMinLen = 10
+	purposeMaxLen = 20
+)
+
+// purposeLabel 目的 → 子任务节点展示名（tasktree label）：软约束 10–20 字——
+// 超长（>20 字）截断为 20 字并加 …（记录日志）；不足 10 字仅记录日志（不补全、不报错）。
+func purposeLabel(purpose string) string {
+	r := []rune(strings.TrimSpace(purpose))
+	n := len(r)
+	if n > purposeMaxLen {
+		logf("[llm_run] LLM 目的超长（%d 字 > %d），展示名已截断：%q\n", n, purposeMaxLen, purpose)
+		return string(r[:purposeMaxLen]) + "…"
+	}
+	if n < purposeMinLen {
+		logf("[llm_run] LLM 目的过短（%d 字 < %d），建议 10–20 字：%q\n", n, purposeMinLen, purpose)
+	}
+	return string(r)
+}
+
+// errLLMTooManyArgs / errLLMMissingArgs LLM 指令参数个数违规（≠3）的统一错误（严格模式：顶层失败；
+// 含正确语法示例）。
+var (
+	errLLMTooManyArgs = errors.New(`LLM 参数过多（最多 3 个：agent、提示词、目的）（语法：LLM "agent" "prompt" "目的" [=> 目标]）`)
+	errLLMMissingArgs = errors.New(`LLM 需要 3 个参数：agent、提示词、目的（目的必填且非空）（语法：LLM "agent" "prompt" "目的" [=> 目标]）`)
+)
+
+// checkLLMArgs 执行前静态校验脚本内所有 LLM 指令（参数级违规：个数 ≠ 3 或任一参数为空串 →
+// 顶层失败，与字面相对路径预校验同层）：参数个数/字面空串与插值无关，故可在执行前判定；
+// 插值后为空（如 {{item.x}} 解析为空）交由执行期 llmAction 报出。
 func checkLLMArgs(sts []dsl.Stmt) error {
 	for _, st := range sts {
 		switch t := st.(type) {
@@ -474,10 +736,20 @@ func checkLLMArgs(sts []dsl.Stmt) error {
 				continue
 			}
 			parts, err := dsl.SplitArgs(t.Args)
-			if err != nil || len(parts) <= 3 {
-				continue
+			if err != nil {
+				continue // 分词错误交由执行期 llmAction 报出
 			}
-			return fmt.Errorf("第 %d 行 %s", t.Line(), errLLMTooManyArgs)
+			if len(parts) > 3 {
+				return fmt.Errorf("第 %d 行 %s", t.Line(), errLLMTooManyArgs)
+			}
+			if len(parts) < 3 {
+				return fmt.Errorf("第 %d 行 %s", t.Line(), errLLMMissingArgs)
+			}
+			for i, argName := range [...]string{"agent", "提示词", "目的"} {
+				if strings.TrimSpace(parts[i]) == "" {
+					return fmt.Errorf("第 %d 行 LLM %s 不能为空（语法：LLM \"agent\" \"prompt\" \"目的\" [=> 目标]）", t.Line(), argName)
+				}
+			}
 		case *dsl.IfStmt:
 			if err := checkLLMArgs(t.Block); err != nil {
 				return err
@@ -496,14 +768,24 @@ func checkLLMArgs(sts []dsl.Stmt) error {
 }
 
 // watchCancel 监视作业根节点：被级联取消（tool_stop/会话终止）时中止 dsl 引擎（跨分支）。
+// 并**ctx 感知**（B3）：父轮次 ctx（`parent.ctx`）取消（用户停止 / 级联取消）时立即中止引擎，
+// 不依赖 200ms 轮询的节点态（子步骤的阻塞等待随之中断）。
 func (jr *jobEnv) watchCancel(eng *dsl.Engine) chan struct{} {
 	done := make(chan struct{})
+	// 父轮次 ctx 可能为 nil（裸构造的 turnCtx，如部分单测）→ 不取 Done（该分支永不命中）。
+	var parentDone <-chan struct{}
+	if jr.parent.ctx != nil {
+		parentDone = jr.parent.ctx.Done()
+	}
 	go func() {
 		t := time.NewTicker(200 * time.Millisecond)
 		defer t.Stop()
 		for {
 			select {
 			case <-done:
+				return
+			case <-parentDone:
+				eng.Cancel()
 				return
 			case <-t.C:
 				n := jr.s.tasks.nodeIn(jr.parent.req.InstanceID, jr.node.TaskID)
@@ -536,27 +818,30 @@ func (jr *jobEnv) nextStep() int {
 	return n
 }
 
-// buildSummary 汇总：LLM 子节点步骤行 + 文件写日志 + 失败统计 / 全跳过兜底 +
-// DSL 运行时错误（runErrs，非 LLM 步骤失败；I-19：必须可见，不得静默丢弃）。
-func (jr *jobEnv) buildSummary(runErrs []dsl.RunError) string {
+// buildSummary 汇总（DSL-2 + DSL-3）：
+//   - `$RETURN` 已用（rv.Used）→ **取代**汇总：overflow → `<file: 文件名, size: N>`；inline → 全文；
+//   - 未用 → 回落既有口径：步骤执行记录（LLM 子步结果/失败）+ 文件写日志 + 失败统计 / 全跳过兜底 +
+//     DSL 运行时错误（runErrs，非 LLM 步骤失败；I-19：必须可见，不得静默丢弃）。
+func (jr *jobEnv) buildSummary(runErrs []dsl.RunError, rv dsl.ReturnValue) string {
+	if rv.Used {
+		if rv.Overflow {
+			return fmt.Sprintf("<file: %s, size: %d>", filepath.Base(rv.File), rv.Size)
+		}
+		return rv.Text
+	}
+	jr.mu.Lock()
+	steps := append([]dslExecStep{}, jr.execSteps...)
+	jr.mu.Unlock()
 	var lines []string
-	llmSteps := 0
-	for _, n := range jr.s.tasks.subtree(jr.parent.req.InstanceID, jr.node.TaskID) {
-		if n.ParentID != jr.node.TaskID || n.Kind != TaskKindLLM {
-			continue
-		}
-		llmSteps++
-		label := n.Purpose
-		if label == "" {
-			label = n.Name
-		}
-		switch n.State {
+	for _, s := range steps {
+		label := s.rec.Purpose
+		switch s.rec.Status {
 		case TaskStateDone:
-			if n.ResultSummary != "" {
-				lines = append(lines, fmt.Sprintf("【%s】%s", label, n.ResultSummary))
+			if s.text != "" {
+				lines = append(lines, fmt.Sprintf("【%s】%s", label, s.text))
 			}
-		case TaskStateError:
-			lines = append(lines, fmt.Sprintf("【%s】失败: %s", label, n.Error))
+		case TaskStateError, TaskStateCancelled:
+			lines = append(lines, fmt.Sprintf("【%s】失败: %s", label, s.errMsg))
 		}
 	}
 	lines = append(lines, jr.fs.log.snapshot()...)
@@ -564,7 +849,7 @@ func (jr *jobEnv) buildSummary(runErrs []dsl.RunError) string {
 		lines = append(lines, fmt.Sprintf("【DSL 错误】第 %d 行：%s", e.Line, e.Msg))
 	}
 	if len(lines) == 0 {
-		if llmSteps > 0 {
+		if len(steps) > 0 {
 			return "作业执行完成（无文本产出）"
 		}
 		return "本次全部跳过：断点续跑命中（或条件未命中），无新产出"

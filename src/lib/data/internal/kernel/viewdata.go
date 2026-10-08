@@ -1,8 +1,7 @@
 // 会话/消息视图与工具消息契约 helper（原 persist/view.go + persist_session.go 的 helper
 // 逐字下移；原 persist.go 的 svalOf 并入 SvalOf）。
 //
-// 存储形态（12-数据层）：messages 表 role=tool 的 content = {call,result,async} JSON；
-// 旧形态 tool_pair 的 content = ToolPairPayload JSON（读取侧自动归一，保证既有会话仍可解析）。
+// 存储形态（12-数据层）：messages 表 role=tool 的 content = {call,result,async} JSON。
 // messages 表主键 = NewMessageKey（自带时间序）。
 package kernel
 
@@ -28,26 +27,10 @@ const (
 	ToolStatusInterrupted = "interrupted" // 进程异常/应用关闭中断（abort），可手动重试
 )
 
-// ToolPairPayload 是 type="tool_pair" 消息的 content JSON 结构（存储 schema）。
-// tool_call + tool_result 两条历史合并为一条：ToolCallID（LLM 生成）与 TaskID（executor
-// 生成）落在同一条上，索引（by_call/by_task）都指向它。
-type ToolPairPayload struct {
-	ToolCallID string `json:"tool_call_id"`    // LLM 生成的 id（LLM 发起时才有）
-	TaskID     string `json:"task_id"`         // executor 生成，必有
-	Name       string `json:"name"`            // 工具名
-	Args       any    `json:"args"`            // 参数
-	Result     string `json:"result"`          // 结果内容
-	Reply      string `json:"reply,omitempty"` // 转后台任务的正式完成结果
-	Status     string `json:"status"`
-	Notify     bool   `json:"notify"` // true=调用方已离开，结果写 reply
-}
-
 // ── role=tool 消息 content 结构（{call,result,async}）──
 //
 // messages 表 role=tool 的 content = ToolContent JSON：call 承载"发起内容"（工具名/参数/
 // tool_call_id），result 承载"结果"，async 承载"转异步"（何时转后台/后台任务 id/pending）。
-// 兼容旧形态：旧 tool_pair 消息 content 为 ToolPairPayload（tool_call_id/task_id/name/args/
-// result/...），ParseToolContent 自动归一，保证既有会话仍可解析。
 
 // ToolContent 是 role=tool 消息 content 的 JSON 结构。
 type ToolContent struct {
@@ -76,8 +59,7 @@ type ToolAsyncContent struct {
 	MovedAt string `json:"moved_at,omitempty"` // 何时转后台（RFC3339）
 }
 
-// ParseToolContent 解析 role=tool 消息 content：优先新结构 {call,result,async}；
-// 旧结构 ToolPairPayload 自动归一（兼容既有会话）。无法识别 → ok=false。
+// ParseToolContent 解析 role=tool 消息 content（{call,result,async}）。无法识别 → ok=false。
 func ParseToolContent(content string) (ToolContent, bool) {
 	if strings.TrimSpace(content) == "" {
 		return ToolContent{}, false
@@ -86,49 +68,7 @@ func ParseToolContent(content string) (ToolContent, bool) {
 	if json.Unmarshal([]byte(content), &tc) == nil && (tc.Call != nil || tc.Result != nil || tc.Async != nil) {
 		return tc, true
 	}
-	// 旧结构兜底（tool_pair content = ToolPairPayload）
-	var p ToolPairPayload
-	if json.Unmarshal([]byte(content), &p) != nil || (p.Name == "" && p.Args == nil && p.Result == "") {
-		return ToolContent{}, false
-	}
-	out := ToolContent{
-		Call:   &ToolCallContent{ToolCallID: p.ToolCallID, Name: p.Name, Arguments: p.Args},
-		Result: &ToolResultContent{Content: p.Result, Status: p.Status},
-	}
-	if p.TaskID != "" {
-		out.Async = &ToolAsyncContent{TaskID: p.TaskID, Pending: p.Notify}
-	}
-	return out, true
-}
-
-// NormalizeToolContent 把 role=tool 消息 content 规整为新结构 JSON：
-// 已是新结构 → 补全 tool_call_id/status；其余（纯文本 / 旧 ToolPairPayload / 空）→ 包成
-// {result:{content}}（空内容且无关联字段 → 返回空串，不落冗余 JSON）。
-func NormalizeToolContent(content, toolCallID, status string) string {
-	tc, ok := ParseToolContent(content)
-	if !ok {
-		if strings.TrimSpace(content) == "" && toolCallID == "" && status == "" {
-			return ""
-		}
-		tc = ToolContent{}
-		if content != "" {
-			tc.Result = &ToolResultContent{Content: content}
-		}
-	}
-	if tc.Call == nil && toolCallID != "" {
-		tc.Call = &ToolCallContent{}
-	}
-	if tc.Call != nil && tc.Call.ToolCallID == "" {
-		tc.Call.ToolCallID = toolCallID
-	}
-	if tc.Result == nil {
-		tc.Result = &ToolResultContent{}
-	}
-	if tc.Result.Status == "" {
-		tc.Result.Status = status
-	}
-	b, _ := json.Marshal(tc)
-	return string(b)
+	return ToolContent{}, false
 }
 
 // ToolBrief 生成工具消息 brief（简化的工具调用内容 = 工具名 + 关键参数摘要）。
@@ -151,8 +91,8 @@ func ReasoningBrief(reasoning string) string {
 	return preview
 }
 
-// ToolLLMContent 提取 role=tool 记录给 LLM 重放用的**结果文本**：新结构 {call,result,async}
-// → result.content；旧 ToolPairPayload → result；纯文本 → 原样返回。
+// ToolLLMContent 提取 role=tool 记录给 LLM 重放用的**结果文本**：{call,result,async} →
+// result.content；无法解析（纯文本）→ 原样返回。
 //
 // 存储形态（content = {call,result,async} JSON）是给视图/前端消费的，不能直接喂回 LLM
 // （LLM 需要的是裸结果文本，与 tool_call_id 配对）；故读取侧在此归一。
@@ -166,8 +106,8 @@ func ToolLLMContent(content string) string {
 	return content
 }
 
-// ToolViewFields 从消息记录提取 tool 视图字段（新 {call,result,async} 结构；兼容旧
-// ToolPairPayload）。返回 argsJSON 为空串表示无参数。
+// ToolViewFields 从消息记录提取 tool 视图字段（{call,result,async} 结构）。返回 argsJSON
+// 为空串表示无参数。
 func ToolViewFields(m data.Record) (toolCallID, taskID, name, argsJSON, result, status string) {
 	tc, _ := ParseToolContent(Sval(m["content"]))
 	if tc.Call != nil {
@@ -297,7 +237,7 @@ func TurnIDOfMsg(r data.Record) string {
 // ── 消息全文（data-session-content）──
 
 // MessageContentsByKey 按 key 批量取消息全文：message:<id> → messages 表 content（须属
-// 该会话）；tool_call:<id> → 该会话 tool_pair 消息 content 解析出的完整参数 JSON；
+// 该会话）；tool_call:<id> → 该会话 role=tool 消息 content 解析出的完整参数 JSON；
 // tool_result:<tool_call_id> → 该会话 role=tool 消息 **content 原文**（{call,result,async} JSON
 // 字符串，2026-09-18 为「异步结果读 message 表」新增的 key 形态——调用方解析 result/async 段）。
 // 返回 {<key>: <内容字符串>}；找不到的 key 省略。
@@ -318,8 +258,7 @@ func MessageContentsByKey(prj *data.DB, sessionID string, keys []string) map[str
 				Where: data.Record{"session_id": sessionID, "tool_call_id": id},
 			})
 			if err == nil && len(recs) > 0 {
-				// 新结构 {call,result,async} 取 call.arguments；旧 ToolPairPayload 由
-				// ToolViewFields 内部归一（兼容）。
+				// {call,result,async} 取 call.arguments。
 				_, _, _, argsJSON, _, _ := ToolViewFields(recs[0])
 				out[k] = argsJSON
 			}
@@ -362,7 +301,7 @@ func MetaOfRecord(rec data.Record) map[string]any {
 }
 
 // MessageView 把 messages 表记录转为前端消费格式：
-//   - tool 消息（role=tool，content={call,result,async}）与旧 tool_pair 消息展开为 map
+//   - tool 消息（role=tool，content={call,result,async}）展开为 map
 //     （tool_call_id/tool/arguments/brief/simplified/status/...）
 //   - reasoning + brief 截断 3 行（has_more）
 //   - 其余原样透传
@@ -373,7 +312,7 @@ func MessageView(m data.Record, brief bool) any {
 	if msgID == "" {
 		msgID = Sval(m[data.KeyField])
 	}
-	if role == "tool" || (role == "assistant" && typ == "tool_pair") {
+	if role == "tool" {
 		toolCallID, taskID, name, argsJSON, result, status := ToolViewFields(m)
 		if status == "" {
 			status = ToolStatusCompleted
@@ -483,6 +422,22 @@ func NewMessageKey() string {
 	_, _ = rand.Read(b[:])
 	n := (int(b[0])<<8 | int(b[1])) % 10000
 	return fmt.Sprintf("M%s%06d%04d", now.Format("20060102150405"), now.Nanosecond()/1000, n)
+}
+
+// FindToolMessageKey 在同轮消息中找 role=tool 且 tool_call_id 匹配的既有行主键（未命中 → ""）。
+// 供 append-message 让同一工具调用的 running 行与终态**复用同一行**（就地回填，不产生重复
+// tool_pair）：重启后重试路径内存无主键时据此回填。
+func FindToolMessageKey(prj *data.DB, turnID, toolCallID string) string {
+	if prj == nil || turnID == "" || toolCallID == "" {
+		return ""
+	}
+	recs, _, err := prj.Table("messages").Query(data.Query{
+		Where: data.Record{"turn_id": turnID, "tool_call_id": toolCallID}, Limit: 1,
+	})
+	if err != nil || len(recs) == 0 {
+		return ""
+	}
+	return Sval(recs[0][data.KeyField])
 }
 
 // MsgRowToChat 把 messages 表行转 ChatMsg（tool_calls JSON 还原；role=tool 的 content 由

@@ -55,8 +55,9 @@ func HandleFileManager(workDir string, args map[string]interface{}) *cli.Result 
 	if md5Err != "" {
 		return cli.Err("filesys_run", md5Err)
 	}
-	ec := newEditCtx(workDir, expectMD5)
-	actions := fileEditActions(ec)
+	sess, _ := NewSession(workDir, expectMD5)
+	ec := sess.ec
+	actions := sess.Actions()
 
 	ast, err := dsl.Parse(script, actions)
 	if err != nil {
@@ -74,7 +75,7 @@ func HandleFileManager(workDir string, args map[string]interface{}) *cli.Result 
 	if envErr != nil {
 		return cli.Err("filesys_run", envErr.Error())
 	}
-	eng := dsl.NewEngine(dsl.Options{Files: ScriptFS{}, Actions: actions, StopOnError: false, Vars: te.Vars})
+	eng := dsl.NewEngine(dsl.Options{Files: sess.Files(), Actions: actions, StopOnError: false, Vars: te.Vars})
 	_ = eng.Execute(ast)
 
 	var scriptErrs []string

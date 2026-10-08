@@ -36,13 +36,14 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/auth"
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // login 域主题（相对主题；chonk. 前缀由总线注入，61 §4.6）。
 const (
-	SubjectLoginRegister = "login-register"
-	SubjectLoginIn       = "login-in"
-	SubjectLoginOut      = "login-out"
+	SubjectLoginRegister = msgkeys.TopicLoginRegister
+	SubjectLoginIn       = msgkeys.TopicLoginIn
+	SubjectLoginOut      = msgkeys.TopicLoginOut
 )
 
 // 形态取值（61 §4.6：三形态 = desktop / gui / browser；desktop = 桌面单体、gui = GUI 客户端

@@ -1,8 +1,8 @@
-# 2C · UI 插件扩展设计（🔵 规划）
+# 2C · UI 插件扩展设计（🔵 规划中 — 未实现，预留）
 
-> 日期：2026-08-26（2026-09-11 移入 spec）｜ 状态：🔵 草案（**未实施**；演进登记见 [40-演进计划](../40-roadmap/40-演进计划.md) P2-1）
+> 状态：🔵 **规划中（未实现，预留）**（草案；演进登记见 [40-演进计划](../40-roadmap/40-演进计划.md)；消息族 `ui-plugin-*` 已在 [61](../60-reference/61-消息一览.md) 「预留主题族」与 `61-messages.schema.json` `coverage.planned` 登记，**不进消息准则/对账**）
 > 关联：[28-plugins](28-plugins.md)（后端插件体系）· [17-前端状态与MQ](../10-architecture/17-前端状态与MQ.md)（前端状态管理通用模式）· [20-gui](20-gui.md) · 前端 `src/frontend/src/views/*`
-> 代码目录：`src/frontend/src`（插件宿主侧待实现）〔2026-09-19 订正：原 `frontend/src/views/*` 与 `src/gui/frontend/src`——前端工程已独立为 `src/frontend`，路径迁移，原文保留。〕
+> 代码目录：`src/frontend/src`（插件宿主侧待实现）
 >
 > 设计文档。按标准组织：概述 → 可插拔设计 → 插件设计 → 通信设计 → 示例 → 参考。
 
@@ -292,7 +292,7 @@ active 选择集：`activeFile / activeDir / activeTab / activeSelection / activ
 
 插件 SDK 封装以上端点，协议契约另行文档化；前端侧事件广播复用现有 `emitRemote` 通道。
 
-### 4.2 消息规范（ui-plugin-*，kebab-case）
+### 4.2 消息规范（ui-plugin-*，kebab-case）〔**规划中（未实现，预留）** —— 全表为设计稿，尚未落地；见 [61](../60-reference/61-消息一览.md)「预留主题族」〕
 
 命名空间：`ui-plugin-*`（**草案原文写作 `chonk.{workdir}.ui-plugin-*`，实施前须按 [11-MQ与消息](../10-architecture/11-MQ与消息.md) §3 改为相对主题**——不带 `chonk.`、不带点分段、不带 workdir 段；workdir 经 payload/Context 承载）。
 

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // ── 任务树（tasktree 域）──────────────────────────────────────────
@@ -43,7 +44,7 @@ func TaskNodeToWire(n facade.TaskNode) map[string]any {
 		"finished_at":   n.FinishedAt,
 		"tool_call_id":  n.ToolCallID,
 		"instance_id":   n.InstanceID,
-		"workdir":       n.WorkDir,
+		"work_dir":      n.WorkDir,
 		"state":         n.State,
 		"args_digest":   n.ArgsDigest,
 		"result_digest": n.ResultDigest,
@@ -51,11 +52,30 @@ func TaskNodeToWire(n facade.TaskNode) map[string]any {
 		"started_at":    n.StartedAt,
 		"done_at":       n.DoneAt,
 		"deleted_at":    n.DeletedAt,
+		"return_kind":   n.ReturnKind,
+		"return_inline": n.ReturnInline,
+		"return_file":   n.ReturnFile,
 	} {
 		put(row, k, v)
 	}
 	if n.Closed != nil {
 		row["closed"] = *n.Closed
+	}
+	// DSL-3 展示字段（非零才带；缺省与既有载荷逐字节等价）。
+	if n.LoopCurrent != 0 {
+		row["loop_current"] = n.LoopCurrent
+	}
+	if n.LoopTotal != 0 {
+		row["loop_total"] = n.LoopTotal
+	}
+	if n.ReturnSize != 0 {
+		row["return_size"] = n.ReturnSize
+	}
+	if n.Shadow {
+		row["shadow"] = true
+	}
+	if len(n.Steps) > 0 {
+		row["steps"] = DslStepsToWire(n.Steps)
 	}
 	return row
 }
@@ -81,19 +101,71 @@ func TaskNodeFromWire(m map[string]any) facade.TaskNode {
 		FinishedAt:   str(m["finished_at"]),
 		State:        str(m["state"]),
 		InstanceID:   str(m["instance_id"]),
-		WorkDir:      str(m["workdir"]),
+		WorkDir:      str(m["work_dir"]),
 		ArgsDigest:   str(m["args_digest"]),
 		ResultDigest: str(m["result_digest"]),
 		ExecJSON:     str(m["exec_json"]),
 		StartedAt:    str(m["started_at"]),
 		DoneAt:       str(m["done_at"]),
 		DeletedAt:    str(m["deleted_at"]),
+
+		LoopCurrent:  intOf(m["loop_current"]),
+		LoopTotal:    intOf(m["loop_total"]),
+		Steps:        DslStepsFromWire(m["steps"]),
+		Shadow:       truthy(m["shadow"]),
+		ReturnKind:   str(m["return_kind"]),
+		ReturnInline: str(m["return_inline"]),
+		ReturnFile:   str(m["return_file"]),
+		ReturnSize:   intOf(m["return_size"]),
 	}
 	if v, ok := m["closed"]; ok { // 有键才带（含 false：与"无键"语义不同）
 		closed := truthy(v)
 		n.Closed = &closed
 	}
 	return n
+}
+
+// DslStepsToWire 把门面 DSL 步骤记录转回消息面数组（`dsl_job.steps[]`）。
+func DslStepsToWire(steps []facade.DslStep) []any {
+	out := make([]any, 0, len(steps))
+	for _, s := range steps {
+		row := map[string]any{"no": s.No}
+		put(row, "status", s.Status)
+		put(row, "purpose", s.Purpose)
+		if s.ElapsedMs != 0 {
+			row["elapsed_ms"] = s.ElapsedMs
+		}
+		put(row, "created_at", s.CreatedAt)
+		put(row, "session_id", s.SessionID)
+		put(row, "statement_id", s.StatementID)
+		out = append(out, row)
+	}
+	return out
+}
+
+// DslStepsFromWire 解析消息面 `steps` 数组为门面 DSL 步骤记录（非数组 / 元素非对象 → 跳过）。
+func DslStepsFromWire(v any) []facade.DslStep {
+	arr, ok := v.([]any)
+	if !ok || len(arr) == 0 {
+		return nil
+	}
+	out := make([]facade.DslStep, 0, len(arr))
+	for _, e := range arr {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, facade.DslStep{
+			No:          intOf(m["no"]),
+			Status:      str(m["status"]),
+			Purpose:     str(m["purpose"]),
+			ElapsedMs:   int64(intOf(m["elapsed_ms"])),
+			CreatedAt:   str(m["created_at"]),
+			SessionID:   str(m["session_id"]),
+			StatementID: str(m["statement_id"]),
+		})
+	}
+	return out
 }
 
 // TaskToWire 把门面任务快照转回消息面任务行（固定键集 + 存在即带的增补字段；
@@ -117,6 +189,25 @@ func TaskToWire(t facade.Task) map[string]any {
 	if t.Awaiting != nil {
 		row["awaiting"] = t.Awaiting
 	}
+	// DSL-3 展示字段（非零才带）。
+	put(row, "return_kind", t.ReturnKind)
+	put(row, "return_inline", t.ReturnInline)
+	put(row, "return_file", t.ReturnFile)
+	if t.LoopCurrent != 0 {
+		row["loop_current"] = t.LoopCurrent
+	}
+	if t.LoopTotal != 0 {
+		row["loop_total"] = t.LoopTotal
+	}
+	if t.ReturnSize != 0 {
+		row["return_size"] = t.ReturnSize
+	}
+	if t.Shadow {
+		row["shadow"] = true
+	}
+	if len(t.Steps) > 0 {
+		row["steps"] = DslStepsToWire(t.Steps)
+	}
 	return row
 }
 
@@ -126,7 +217,7 @@ func TasktreeListResult(nodes []facade.TaskNode) map[string]any {
 	for _, n := range nodes {
 		out = append(out, TaskNodeToWire(n))
 	}
-	return map[string]any{"nodes": out}
+	return map[string]any{msgkeys.DataTasktreeListResultNodes: out}
 }
 
 // TasktreeTasksResult 组装 `data-tasktree-tasks` 结果载荷 `{list:[任务行…]}`。
@@ -135,7 +226,7 @@ func TasktreeTasksResult(list []facade.Task) map[string]any {
 	for _, t := range list {
 		out = append(out, TaskToWire(t))
 	}
-	return map[string]any{"list": out}
+	return map[string]any{msgkeys.DataTasktreeTasksResultList: out}
 }
 
 // TasktreeListFromWire 解析 `{top_session?, id?, mode?, include_closed?, shadow?}` → 门面入参。
@@ -189,7 +280,10 @@ func TasktreeDeleteFromWire(m map[string]any) facade.TasktreeDeleteRequest {
 
 // KnowledgeRootResult 组装 `data-knowledge-root` 结果载荷 `{root, kind}`。
 func KnowledgeRootResult(resp facade.KnowledgeRootResponse) map[string]any {
-	return map[string]any{"root": resp.Root, "kind": resp.Kind}
+	return map[string]any{
+		msgkeys.DataKnowledgeRootResultRoot: resp.Root,
+		msgkeys.DataKnowledgeRootResultKind: resp.Kind,
+	}
 }
 
 // KnowledgeListResult 组装 `data-knowledge-list` 结果载荷 `{dir, dirs:[{name,path}], files:[…]}`。
@@ -205,12 +299,19 @@ func KnowledgeListResult(resp facade.KnowledgeListResponse) map[string]any {
 			"description": f.Description, "modified": f.Modified,
 		})
 	}
-	return map[string]any{"dir": resp.Dir, "dirs": dirs, "files": files}
+	return map[string]any{
+		msgkeys.DataKnowledgeListResultDir:   resp.Dir,
+		msgkeys.DataKnowledgeListResultDirs:  dirs,
+		msgkeys.DataKnowledgeListResultFiles: files,
+	}
 }
 
 // KnowledgeReadResult 组装 `data-knowledge-read` 结果载荷 `{source, doc}`。
 func KnowledgeReadResult(resp facade.KnowledgeReadResponse) map[string]any {
-	return map[string]any{"source": resp.Source, "doc": resp.Doc}
+	return map[string]any{
+		msgkeys.DataKnowledgeReadResultSource: resp.Source,
+		msgkeys.DataKnowledgeReadResultDoc:    resp.Doc,
+	}
 }
 
 // KnowledgeDocFromWire 解析载荷里的 `doc` 对象 → 门面文档领域形态。
@@ -283,7 +384,10 @@ func FileListListResult(resp facade.FileListListResponse) map[string]any {
 	for _, e := range resp.List {
 		out = append(out, FileListEntryToWire(e))
 	}
-	return map[string]any{"list": out, "total": resp.Total}
+	return map[string]any{
+		msgkeys.DataFilelistListResultList:  out,
+		msgkeys.DataFilelistListResultTotal: resp.Total,
+	}
 }
 
 // FileListEntryToWire 把门面清单条目转回消息面条目（字段集 = 清单规范字段）。
@@ -339,12 +443,12 @@ func FileListDeleteFromWire(m map[string]any) facade.FileListDeleteRequest {
 
 // FileListIDResult 组装 `{ok:true, id:<键>}`（put）。
 func FileListIDResult(id string) map[string]any {
-	return map[string]any{"ok": true, "id": id}
+	return map[string]any{"ok": true, msgkeys.DataFilelistPutResultId: id}
 }
 
 // FileListDeletedResult 组装 `{ok:true, deleted:<条数>}`（del）。
 func FileListDeletedResult(n int) map[string]any {
-	return map[string]any{"ok": true, "deleted": n}
+	return map[string]any{"ok": true, msgkeys.DataFilelistDelResultDeleted: n}
 }
 
 // ── 场景（scenario 域）───────────────────────────────────────────
@@ -366,7 +470,7 @@ func ScenarioToWire(sc facade.Scenario) map[string]any {
 	}
 	out := map[string]any{
 		"id": sc.ID, "key": sc.ID, "name": sc.Name, "description": sc.Description,
-		"level": sc.Level, "agents": agents, "systemPrompt": sc.SystemPrompt,
+		"level": sc.Level, "agents": agents,
 	}
 	put(out, "createdAt", sc.CreatedAt)
 	put(out, "updatedAt", sc.UpdatedAt)
@@ -380,13 +484,12 @@ func ScenarioFromWire(m map[string]any) facade.Scenario {
 		id = str(m["key"])
 	}
 	sc := facade.Scenario{
-		ID:           id,
-		Name:         str(m["name"]),
-		Description:  str(m["description"]),
-		Level:        str(m["level"]),
-		SystemPrompt: str(m["systemPrompt"]),
-		CreatedAt:    str(m["createdAt"]),
-		UpdatedAt:    str(m["updatedAt"]),
+		ID:          id,
+		Name:        str(m["name"]),
+		Description: str(m["description"]),
+		Level:       str(m["level"]),
+		CreatedAt:   str(m["createdAt"]),
+		UpdatedAt:   str(m["updatedAt"]),
 	}
 	if raw, ok := m["agents"].([]any); ok {
 		for _, e := range raw {
@@ -416,17 +519,17 @@ func ScenarioListResult(list []facade.Scenario) map[string]any {
 	for _, sc := range list {
 		out = append(out, ScenarioToWire(sc))
 	}
-	return map[string]any{"ok": true, "list": out}
+	return map[string]any{"ok": true, msgkeys.DataScenarioListResultList: out}
 }
 
 // ScenarioGetResult 组装 `data-scenario-load` 结果载荷 `{ok:true, data: 场景}`。
 func ScenarioGetResult(sc facade.Scenario) map[string]any {
-	return map[string]any{"ok": true, "data": ScenarioToWire(sc)}
+	return map[string]any{"ok": true, msgkeys.DataScenarioLoadResultData: ScenarioToWire(sc)}
 }
 
 // ScenarioIDResult 组装 `{ok:true, id:<场景 id>}`（save）。
 func ScenarioIDResult(id string) map[string]any {
-	return map[string]any{"ok": true, "id": id}
+	return map[string]any{"ok": true, msgkeys.DataScenarioSaveResultId: id}
 }
 
 // ScenarioGetFromWire 解析 `{id | data.id, level?}` → 门面入参。
@@ -498,12 +601,12 @@ func McpListResult(list []facade.McpServer) map[string]any {
 	for _, s := range list {
 		out = append(out, McpServerToWire(s))
 	}
-	return map[string]any{"list": out}
+	return map[string]any{msgkeys.DataMcpListResultList: out}
 }
 
 // McpGetResult 组装 `data-mcp-load` 结果载荷 `{data: 定义}`。
 func McpGetResult(s facade.McpServer) map[string]any {
-	return map[string]any{"data": McpServerToWire(s)}
+	return map[string]any{msgkeys.DataMcpLoadResultData: McpServerToWire(s)}
 }
 
 // McpGetFromWire 解析 `{name | id, level?}` → 门面入参。
@@ -535,7 +638,7 @@ func McpDeleteFromWire(m map[string]any) facade.McpDeleteRequest {
 
 // McpNameResult 组装 `{ok:true, name:<server 名>}`（save 应答）。
 func McpNameResult(name string) map[string]any {
-	return map[string]any{"ok": true, "name": name}
+	return map[string]any{"ok": true, msgkeys.DataMcpSaveResultName: name}
 }
 
 // strSliceAny 把 []string 转 []any（缺省 nil → 空数组，保证 JSON 恒为数组）。
@@ -552,20 +655,23 @@ func strSliceAny(ss []string) []any {
 
 // ── 记忆库（memory 域）───────────────────────────────────────────
 
-// MemoryListResult 组装 `data-memory-list` 结果载荷 `{list:[{category,level,path,tokens}]}`。
+// MemoryListResult 组装 `data-memory-list` 结果载荷
+// `{list:[{category,level,path,tokens,prompt,prompt_override}]}`（prompt / prompt_override = OP-04
+// 类别沉淀提示词有效值与覆盖标记，由后端文件读序解析后下发）。
 func MemoryListResult(list []facade.MemoryCategory) map[string]any {
 	out := make([]any, 0, len(list))
 	for _, c := range list {
 		out = append(out, map[string]any{
 			"category": c.Category, "level": c.Level, "path": c.Path, "tokens": c.Tokens,
+			"prompt": c.Prompt, "prompt_override": c.PromptOverride,
 		})
 	}
-	return map[string]any{"list": out}
+	return map[string]any{msgkeys.DataMemoryListResultList: out}
 }
 
 // MemoryGetResult 组装 `data-memory-read` 结果载荷 `{data:{…全文…}}`。
 func MemoryGetResult(doc facade.MemoryDoc) map[string]any {
-	return map[string]any{"data": map[string]any{
+	return map[string]any{msgkeys.DataMemoryReadResultData: map[string]any{
 		"category": doc.Category, "level": doc.Level, "path": doc.Path,
 		"content": doc.Content, "tokens": doc.Tokens,
 	}}
@@ -573,7 +679,7 @@ func MemoryGetResult(doc facade.MemoryDoc) map[string]any {
 
 // MemoryIDResult 组装 `{ok:true, id:<类别>}`（save / delete）。
 func MemoryIDResult(id string) map[string]any {
-	return map[string]any{"ok": true, "id": id}
+	return map[string]any{"ok": true, msgkeys.DataMemorySaveResultId: id}
 }
 
 // MemoryGetFromWire 解析 `{category}` → 门面入参（读单类全文）。
@@ -589,4 +695,43 @@ func MemorySaveFromWire(m map[string]any) facade.MemorySaveRequest {
 // MemoryDeleteFromWire 解析 `{category}` → 门面入参（删自定义类别）。
 func MemoryDeleteFromWire(m map[string]any) facade.MemoryDeleteRequest {
 	return facade.MemoryDeleteRequest{Category: str(m["category"])}
+}
+
+// ── 记忆提取进度（data-memory-extract-*；OP-05/06，2026-10-06）──────────
+
+// MemoryExtractListResult 组装 `data-memory-extract-load` 结果载荷
+// `{list:[{session_id,category,last_turn_id}]}`（嵌套行字段，口径同 MemoryListResult）。
+func MemoryExtractListResult(list []facade.MemoryExtractRecord) map[string]any {
+	out := make([]any, 0, len(list))
+	for _, r := range list {
+		out = append(out, map[string]any{
+			"session_id": r.SessionID, "category": r.Category, "last_turn_id": r.LastTurnID,
+		})
+	}
+	return map[string]any{msgkeys.FieldList: out}
+}
+
+// MemoryExtractLoadFromWire 解析 `{session_id, category?}` → 门面入参（读进度，Category 空 = 全部类别）。
+func MemoryExtractLoadFromWire(m map[string]any) facade.MemoryExtractLoadRequest {
+	return facade.MemoryExtractLoadRequest{
+		SessionID: str(m["session_id"]),
+		Category:  str(m["category"]),
+	}
+}
+
+// MemoryExtractSaveFromWire 解析 `{session_id, category, last_turn_id}` → 门面入参（写进度）。
+func MemoryExtractSaveFromWire(m map[string]any) facade.MemoryExtractSaveRequest {
+	return facade.MemoryExtractSaveRequest{
+		SessionID:  str(m["session_id"]),
+		Category:   str(m["category"]),
+		LastTurnID: str(m["last_turn_id"]),
+	}
+}
+
+// MemoryExtractDeleteFromWire 解析 `{session_id, category?}` → 门面入参（删进度，Category 空 = 整会话）。
+func MemoryExtractDeleteFromWire(m map[string]any) facade.MemoryExtractDeleteRequest {
+	return facade.MemoryExtractDeleteRequest{
+		SessionID: str(m["session_id"]),
+		Category:  str(m["category"]),
+	}
 }

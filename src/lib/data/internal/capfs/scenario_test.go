@@ -110,10 +110,10 @@ func TestWriteScenarioDirRejectsDuplicate(t *testing.T) {
 	}
 }
 
-// ── 场景 agent 引用（P4，2026-10-01）──────────────────────────────
+// ── 场景 agent 引用（P4，2026-10-01；唯一形态 2026-10-04）──────────
 //
 // 覆盖：引用展开/生成（变量前缀映射）· 主 agent 内联 + 子 agent 引用读写往返 ·
-// **悬空引用静默删除** · 旧形态（同目录 *.agent.md）兼容读取。
+// **悬空引用静默删除** · **无 ref 的非主 agent 保存即拒绝**（内联子 agent 形态已废除）。
 
 // TestAgentRefRoundTrip 四级 capability 根 ↔ 变量前缀引用的双向映射。
 func TestAgentRefRoundTrip(t *testing.T) {
@@ -231,29 +231,26 @@ func TestReadScenarioDirDropsDanglingRefs(t *testing.T) {
 	}
 }
 
-// TestReadScenarioDirLegacyInline 旧形态兼容：scenario.json 无 agents 键 → 读同目录 *.agent.md。
-func TestReadScenarioDirLegacyInline(t *testing.T) {
+// TestWriteScenarioDirRejectsMissingRef **无 ref 的非主 agent 保存即拒绝**（内联子 agent 形态
+// 已废除：子 agent 唯一形态 = 引用）——拒绝且不落盘。
+func TestWriteScenarioDirRejectsMissingRef(t *testing.T) {
 	capRoot := t.TempDir()
 	scnRoot := filepath.Join(capRoot, DirScenarios)
-	dirPath := filepath.Join(scnRoot, "legacy")
-	if err := os.MkdirAll(dirPath, 0o755); err != nil {
-		t.Fatal(err)
+	sc := map[string]any{
+		"name": "无引用",
+		"agents": []any{
+			map[string]any{"name": "主", "isMain": true, "prompt": "主提示词"},
+			map[string]any{"name": "coder", "prompt": "写代码"}, // 非主、无 ref → 拒绝
+		},
 	}
-	if err := os.WriteFile(filepath.Join(dirPath, scenarioMetaFile), []byte(`{"name":"l"}`), 0o644); err != nil {
-		t.Fatal(err)
+	err := WriteScenarioDir(KindApp, scnRoot, "missing-ref", sc, RefRoots{App: capRoot})
+	if err == nil {
+		t.Fatal("无 ref 的非主 agent 应被拒")
 	}
-	if err := os.WriteFile(filepath.Join(dirPath, scenarioMainFile), []byte("# 主\n\n[meta]\nismain=true\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(err.Error(), "coder") || !strings.Contains(err.Error(), "ref") {
+		t.Fatalf("错误文案应含 agent 名与 ref：%v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dirPath, "coder.agent.md"), []byte("# coder\n\n[content]\n写代码\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ReadScenarioDir(KindApp, scnRoot, "legacy", RefRoots{App: capRoot})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agents, _ := got["agents"].([]any)
-	if len(agents) != 2 {
-		t.Fatalf("旧形态应读回 主+coder，实得 %d: %v", len(agents), agents)
+	if ScenarioDirExists(scnRoot, "missing-ref") {
+		t.Fatal("被拒场景不应落盘")
 	}
 }

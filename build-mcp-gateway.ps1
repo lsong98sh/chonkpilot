@@ -1,4 +1,4 @@
-﻿# build-mcp-gateway.ps1：一键构建独立 MCP gateway 部署目录
+﻿﻿﻿﻿# build-mcp-gateway.ps1：一键构建独立 MCP gateway 部署目录
 #
 # 产物布局（dist/other/ —— 与 chonkpilot-mcp-server.exe **同目录共用** capability，见 [41 D-28]）：
 #   ├── chonkpilot-mcp-gateway.exe  # gateway exe（官方 SDK 门面，对外 stdio/http/sse；
@@ -47,7 +47,7 @@ try {
 Write-Host "==> [2/2] verify"
 $probe = Join-Path $dist $dstExe
 if (-not (Test-Path $probe)) { throw "$dstExe missing in $dist" }
-if (-not (Test-Path (Join-Path $dist "capability\tools\core\chonkpilot-core-executor.exe"))) {
+if (-not (Test-Path (Join-Path $dist "capability\executors\chonkpilot-core-executor.exe"))) {
     throw "capability executors missing in $dist"
 }
 Write-Host "    ok: $dstExe + capability staged in $dist"

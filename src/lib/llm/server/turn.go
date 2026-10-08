@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
@@ -59,13 +60,13 @@ type SendReq struct {
 const defaultMaxToolIterations = 20
 
 // S6 LLM 错误恢复参数（对齐 llm-error-handling.md §一）。
-// llmRetryCount/retryDelay 为**回落默认**：usr 配置 retryCount/retryDelay（T-27 接线）未配置时生效；
-// retryDelay 非正值 → 回落本常量；retryCount **显式 0 = 不重试**（P0-A，存在性判定），
-// 仅键缺失（persist 系统默认 2）才回落 llmRetryCount。
+// llmRetryCount 为**回落默认**：usr 配置 retryCount（T-27 接线）未配置时生效；
+// retryCount **显式 0 = 不重试**（P0-A，存在性判定），仅键缺失（persist 系统默认 2）才回落。
+// 退避（重发间隔）**不自持**：经 `router.RetryWait`（`Retry-After` 优先 + 1s·2s·4s… 封顶 30s）计算，
+// 见 retryWait；不再有 `retryDelay` 配置项（2026-10-05 定案，差异登记 41 I-156）。
 const (
-	llmRetryCount   = 2               // 无内容失败重发次数（方式 A）
-	retryDelay      = 5 * time.Second // 重发间隔
-	maxAutoContinue = 3               // length/断链自动续写上限（方式 B）
+	llmRetryCount   = 2 // 无内容失败重发次数（方式 A）
+	maxAutoContinue = 3 // length/断链自动续写上限（方式 B）
 )
 
 // asyncDoneMsg 是异步任务完成消息（gateway 回执 task-report → 回填续轮）。
@@ -100,9 +101,10 @@ type turnCtx struct {
 	hist       []ChatMsg // 会话历史（llm-start 组装：摘要 + 未压缩 turn，见 BuildHistory）
 	iterations int       // 工具循环计数（maxToolIterations 保护）
 
-	mu          sync.Mutex             // 保护 pending / stash
+	mu          sync.Mutex             // 保护 pending / stash / toolMsgKeys
 	pending     map[string]pendingTool // task_id → 转异步发起信息（挂起登记）
 	stash       []ChatMsg              // 等待 pending 完成时合并提交的同步工具结果
+	toolMsgKeys map[string]string      // tool_call_id → role=tool 行主键（发起即落 running；终态回填同一行）
 	asyncDone   chan asyncDoneMsg      // gateway 回执 task-report → loop 续轮
 	continues   int                    // 自动续写计数（maxAutoContinue 保护，S6）
 	sessionLock *sessionLock           // session 排他锁（onLLMStart 获取；Close 释放）
@@ -124,12 +126,11 @@ type turnCtx struct {
 	llmEffort string
 	// 超时/重试（来自 usr 配置，启动时加载一次；T-27 接线）：
 	//   - responseTimeout/streamTimeout 传给 router `CallOptions`（首字节 / 流间隔超时）；
-	//   - retryCount/retryDelay 用于无内容失败重发（方式 A，S6）：retryCount 显式 0 = 不重试。
-	// 缺省 → 由 loadLLMRuntimeConfig 回落旧硬编码常量（120s/60s/2/5s）；非正值仅超时三项回落。
+	//   - retryCount 用于无内容失败重发（方式 A，S6）：显式 0 = 不重试；退避值不自持（见 retryWait）。
+	// 缺省 → 由 loadLLMRuntimeConfig 回落旧硬编码常量（120s/60s/2）；非正值仅超时两项回落。
 	responseTimeout time.Duration
 	streamTimeout   time.Duration
 	retryCount      int
-	retryDelay      time.Duration
 	// maxToolIterations 单轮工具循环上限（来自 provider 定义；缺省 20）。
 	maxToolIterations int
 	// allowedTools 本轮工具白名单（来自本轮 agent 的 `tools`，AG-1/AG-C4）：nil = 不限制
@@ -149,7 +150,60 @@ type turnCtx struct {
 	// forceFull 重试/恢复标记：本 turn 必须全量拼接（即使落在"非完整区"）。
 	// 仅在 recoverTurnCtx（进程重启/死 turn 恢复）构造时置位（loop 启动前，无并发写）。
 	forceFull bool
+	// subOnce / subsession：本 turn 是否为**子会话**（DSL-4，42 §2 (253)：session.parent_id != ""）。
+	// 懒判定一次并缓存于本 turnCtx（见 isSubsession）：快路径 = req.Parents 非空（runChildTurn
+	// 逐级落链，恒为子会话，零查询）；慢路径 = 主会话 / 恢复轮（req.Parents 空）→ 查一次会话行。
+	// **不落可变全局字段**，每 turn 只判一次。用途 = 「子会话压缩关闭」时的上下文超限提示（见 subsessionHint）。
+	subOnce    sync.Once
+	subsession bool
 }
+
+// isSubsession 判定本 turn 是否为子会话（42 §2 (253)：会话行 parent_id != ""）。
+//   - 快路径：req.Parents 非空 → 必为子会话（runChildTurn 逐级追加父会话链，零查询）；
+//   - 慢路径：主会话 / 恢复轮（req.Parents 空，如 recoverTurnCtx 重建）→ 经 data 门面读一次
+//     会话行判 parent_id，结果缓存于本 turnCtx（subOnce，每 turn 至多一次）。
+//
+// 读失败 / 会话不存在 → 按**主会话**处理（保守：不误跳过压缩/沉淀、不改既有行为）。
+func (tc *turnCtx) isSubsession() bool {
+	tc.subOnce.Do(func() {
+		if len(tc.req.Parents) > 0 {
+			tc.subsession = true
+			return
+		}
+		if tc.server == nil || tc.server.cfg == nil || tc.req.Session == "" {
+			return
+		}
+		resp, err := tc.server.cfg.SessionGet(facade.SessionGetRequest{
+			InstanceID: tc.req.InstanceID, SessionID: tc.req.Session,
+			Scope: tc.server.cfgScope(tc.req.InstanceID),
+		})
+		if err != nil {
+			return
+		}
+		tc.subsession = resp.Found && resp.Session.ParentID != ""
+	})
+	return tc.subsession
+}
+
+// subsessionHint 为「子会话压缩关闭」时的上下文超限失败补一句可诊断说明（42 §2 (253) DSL-4 ⑤）：
+// 子会话压缩关闭后上下文不压缩，超限即本轮失败（多为不可重试的协议错误，厂商原始报错不易解读）。
+// 仅当「本 turn 为子会话」且项目级「压缩子会话」未开启、且错误**不可重试**时追加；其余原样返回。
+func (s *Server) subsessionHint(tc *turnCtx, msg string, retryable bool) string {
+	if retryable || tc == nil || !tc.isSubsession() || s.compressSubsessionOn(tc.req.InstanceID) {
+		return msg
+	}
+	return msg + "（本 turn 为子会话，且项目「压缩子会话」未开启（设置 → 上下文管理）；子会话上下文不压缩，超限即本轮失败——如需压缩请开启该开关）"
+}
+
+// compressSubsessionOn 读项目级 `compress.subsession`（DSL-4「压缩子会话」，默认关闭）：
+// 复用 memoryPrjConfig（同一份 prj 平铺表；与 compress 插件同键同读序）。读失败 / 键缺失 → false。
+func (s *Server) compressSubsessionOn(instanceID string) bool {
+	return memoryCfgStr(s.memoryPrjConfig(instanceID)[compressSubsessionKey]) == "true"
+}
+
+// compressSubsessionKey 是「压缩子会话」项目级开关键（默认关闭）：消费方 = 本文件超限提示 +
+// compress 插件（子会话压缩门控）。键「提取子会话记忆」= memory 插件侧 `memory.subsession`（见 64 配置项一览）。
+const compressSubsessionKey = "compress.subsession"
 
 func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	// ctx 绑定 instance_id：turn 内所有 gateway 方法调用（tools/call 等）
@@ -198,12 +252,15 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	if n := currentAgentName(agentDef, agentDomain); n != "" {
 		agentName = n
 	}
-	// 系统提示词**三层按序拼接**（25 §3）：全局层（身份 / 运行环境，代码写死）→ 场景层
+	// 系统提示词**按序拼接**（25 §3）：全局层（身份 / 运行环境，代码写死）→ 目录层（四级数据根 +
+	// capability 子目录 + DSL env 用法，出厂文件 `capability/system/system-directory.md`）→ 场景层
 	// （scenario.description + 代码按场景 agents 自动拼接的成员段）→ agent 层。空层跳过；
-	// **无场景（= 通用模式）→ 只注入全局层**（无场景层 / agent 层）。
-	// {{toolchain.*}} 占位符对**合成后的整段**替换（覆盖任一层）。
-	if sysPrompt := systemPromptLayers(s.globalLayerPrompt(agentName), scenarioLayer(req.ScenarioID, desc, agents), agentLayer); sysPrompt != "" {
-		if sysPrompt = s.replaceToolchain(req.InstanceID, sysPrompt); sysPrompt != "" {
+	// **无场景（= 通用模式）→ 只注入全局层与目录层**（无场景层 / agent 层）——目录层**不受场景门控**。
+	// {{toolchain.*}} / {{path.*}} 占位符对**合成后的整段**替换（覆盖任一层）。
+	if sysPrompt := systemPromptLayers(s.globalLayerPrompt(agentName), systemDirectoryLayer(), scenarioLayer(req.ScenarioID, desc, agents), agentLayer); sysPrompt != "" {
+		sysPrompt = s.replaceToolchain(req.InstanceID, sysPrompt)
+		sysPrompt = s.replacePaths(req.InstanceID, sysPrompt)
+		if sysPrompt != "" {
 			hist = append([]ChatMsg{{Role: "system", Content: sysPrompt}}, hist...)
 		}
 	}
@@ -236,8 +293,8 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		llmMaxIter = defaultMaxToolIterations
 	}
 	llmThink, llmEffort := resolveThinkEffort(pcfg, req)
-	// 加载 usr 超时/重试配置（T-27 接线）：缺省/非正值已回落旧硬编码常量
-	respTO, streamTO, retryCnt, retryWait := s.loadLLMRuntimeConfig(req.InstanceID)
+	// 加载 usr 超时/重试配置（T-27 接线）：缺省已回落旧硬编码常量
+	respTO, streamTO, retryCnt := s.loadLLMRuntimeConfig(req.InstanceID)
 	tc := &turnCtx{
 		server:    s,
 		req:       req,
@@ -259,7 +316,6 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		responseTimeout:    respTO,
 		streamTimeout:      streamTO,
 		retryCount:         retryCnt,
-		retryDelay:         retryWait,
 		maxToolIterations:  llmMaxIter,
 		allowedTools:       allowedTools,
 		keepFullTurns:      s.loadKeepFullTurns(req.InstanceID),
@@ -271,14 +327,28 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	return tc
 }
 
-// ── 系统提示词三层（25 §3）──────────────────────────────────────────────
+// ── 系统提示词分层（25 §3）──────────────────────────────────────────────
 //
-// 按序拼接：全局层（身份 / 运行环境）→ 场景层（scenario.description + 团队成员段）→
-// agent 层（当前 agent 的 prompt，主 agent = main.agent.md）。无场景（= 通用模式）只注入全局层。
-// `memoryGuide` / `assetGuide` 是**两条功能指引**、与"全局层"不是一回事 → 仍在 msgs() 独立注入。
+// 按序拼接：全局层（身份 / 运行环境）→ 目录层（四级数据根 + capability 子目录 + DSL env 用法）→
+// 场景层（scenario.description + 团队成员段）→ agent 层（当前 agent 的 prompt，主 agent =
+// main.agent.md）。目录层**不受场景门控**；无场景（= 通用模式）注入全局层 + 目录层。
+// `memoryGuide` / `assetGuide` 是**两条功能指引**、与上述层不是一回事 → 仍在 msgs() 独立注入。
 
 // defaultAgentName = 通用模式（无场景）的默认身份名（用户口径 2026-09-26）。
 const defaultAgentName = "肥猫"
+
+// systemDirectoryDocKind 是目录层内容的出厂 system 文档 kind
+// （= `capability/system/system-directory.md`，见 src/initdata/capability/system/）。
+const systemDirectoryDocKind = "system-directory"
+
+// systemDirectoryLayer 构造系统提示词的**目录层**：四级数据根（app/user/project/prjusr）与
+// `{{path.*}}` 占位符含义、每级 `capability/` 子目录用途、DSL 只读 env（`CHONKPILOT_*`）用法。
+// 内容 = 出厂文件 `capability/system/system-directory.md`（经 data 门面读 embed 内置回落，
+// 见 OP-10）；每轮组装时读取（不入快照），缺失 → ""（该层跳过）。文中 `{{path.*}}` 由
+// replacePaths 在**整段拼接后**替换为当前实例的真实绝对路径。
+func systemDirectoryLayer() string {
+	return strings.TrimSpace(data.SystemDoc(systemDirectoryDocKind))
+}
 
 // globalLayerPrompt 构造系统提示词的**全局层**（身份 / 运行环境）——按 25 §3「代码写死」（不落
 // 文件、不 embed、不可配置）。
@@ -375,11 +445,11 @@ func membersSegment(scenarioID string, agents []scenarioAgent) string {
 	return strings.Join(lines, "\n")
 }
 
-// systemPromptLayers 按 全局层 → 场景层 → agent 层 顺序拼接为一条 system 文本（空层跳过；
+// systemPromptLayers 按 全局层 → 目录层 → 场景层 → agent 层 顺序拼接为一条 system 文本（空层跳过；
 // 非空层之间以空行分隔）。全空 → ""（调用方不注入 system）。
-func systemPromptLayers(global, scenario, agent string) string {
-	parts := make([]string, 0, 3)
-	for _, p := range []string{global, scenario, agent} {
+func systemPromptLayers(global, directory, scenario, agent string) string {
+	parts := make([]string, 0, 4)
+	for _, p := range []string{global, directory, scenario, agent} {
 		if p = strings.TrimSpace(p); p != "" {
 			parts = append(parts, p)
 		}
@@ -663,6 +733,20 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 	finish := ""
 	var streamErr error
 	attempt := 0
+	// assistant 增量落库（I-176）：流式过程中按「内容段」落库——段边界 = 思维链→正文→工具调用的
+	// 类型切换，以及流结束；每次写到**同一行**（asstKey 回填），非每 token。无可重放内容
+	//（正文 / 工具调用皆空）时不落，避免产生会被 applyReasoningRule 清空的空 assistant 行。
+	asstKey := ""
+	seg := ""
+	flushAssistant := func() {
+		if out.Len() == 0 && len(calls) == 0 {
+			return
+		}
+		key, _ := tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: out.String(), ToolCalls: calls, Reasoning: think.String()}, asstKey)
+		if key != "" {
+			asstKey = key
+		}
+	}
 	for {
 		out.Reset()
 		think.Reset()
@@ -686,12 +770,14 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 			}
 			if attempt < tc.retryCount && retryableErr(err) && probeBeforeRetry(tc.llmSpec.BaseURL) {
 				attempt++
-				sleepCtx(tc.ctx, tc.retryDelay)
+				sleepCtx(tc.ctx, retryWait(err, attempt))
 				continue
 			}
 			// 真实分类（S21）：超时/网络/429/5xx → retryable=true（前端静默续写）；
 			// 协议/鉴权（401/403）等 → false（前端显示错误气泡 + 手动继续）。
-			tc.server.llmErrorRetryable(tc, "LLM_REQUEST_FAILED", err.Error(), retryableErr(err))
+			// 子会话 + 「压缩子会话」关闭：上下文超限的可诊断提示（DSL-4，42 §2 (253) ⑤）。
+			retryable := retryableErr(err)
+			tc.server.llmErrorRetryable(tc, "LLM_REQUEST_FAILED", tc.server.subsessionHint(tc, err.Error(), retryable), retryable)
 			tc.Close()
 			return
 		}
@@ -701,14 +787,26 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 				break
 			}
 			if ev.Reasoning != "" {
+				if seg != "reason" { // 段切换 → 落已累积内容（I-176）
+					flushAssistant()
+					seg = "reason"
+				}
 				think.WriteString(ev.Reasoning)
 				tc.server.notify(tc, NotifyTypeReason, map[string]any{"text": ev.Reasoning})
 			}
 			if ev.Content != "" {
+				if seg != "content" {
+					flushAssistant()
+					seg = "content"
+				}
 				out.WriteString(ev.Content)
 				tc.server.notify(tc, NotifyTypeText, map[string]any{"text": ev.Content})
 			}
 			if len(ev.ToolCalls) > 0 {
+				if seg != "tool" {
+					flushAssistant()
+					seg = "tool"
+				}
 				calls = ev.ToolCalls
 			}
 			if ev.Done {
@@ -721,7 +819,7 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 			}
 			if out.Len() == 0 && attempt < tc.retryCount && retryableErr(streamErr) && probeBeforeRetry(tc.llmSpec.BaseURL) {
 				attempt++
-				sleepCtx(tc.ctx, tc.retryDelay)
+				sleepCtx(tc.ctx, retryWait(streamErr, attempt))
 				continue
 			}
 		}
@@ -735,21 +833,15 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 		return
 	}
 
-	// 断链恢复（S6，方式 B）：已有部分内容 → 落库半截 + 内部续写（Kind=continue，同一 turn）
+	// 断链恢复（S6/S8，方式 B 同 turn 变体）：已有部分内容 → resumePartial 落库半截 + 内部续写。
 	if streamErr != nil {
-		if out.Len() > 0 && tc.continues < maxAutoContinue {
-			tc.continues++
-			_ = tc.persistMessage(ChatMsg{Role: "assistant", Content: out.String(), ToolCalls: calls, Reasoning: think.String()})
-			tc.feed(ChatMsg{Role: "user", Kind: assembleContinueKind, Content: assembleContinueText})
-			return
-		}
-		tc.server.llmErrorRetryable(tc, "LLM_STREAM_ERROR", streamErr.Error(), retryableErr(streamErr))
-		tc.Close()
+		tc.resumePartial(asstKey, out.String(), think.String(), calls, streamErr)
 		return
 	}
 
-	// 持久化 assistant 消息（含 tool_calls / reasoning；reasoning 落库供后续轮次按协议回传）
-	_ = tc.persistMessage(ChatMsg{Role: "assistant", Content: out.String(), ToolCalls: calls, Reasoning: think.String()})
+	// 落库 assistant 消息（含 tool_calls / reasoning；reasoning 落库供后续轮次按协议回传）。
+	// 流式过程中已按「段」落过（asstKey 非空）→ 就地回填同一行；否则此处首次落库（I-176）。
+	flushAssistant()
 
 	// 轮次完成：无工具请求（stop/length 等）才发 llm-complete；
 	// tool-call 的 eof（finish_reason=tool_calls / 解析出 tool_calls）不发 complete，进入工具循环。
@@ -784,7 +876,7 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 		// 裁决项（manual→detach/cancel；never→wait/cancel）。
 		toolMeta := tc.server.gc.ToolMeta(name)
 		notifyPayload := map[string]any{
-			"tool-call-id": call.ID, "tool": name, "arguments": args,
+			"tool_call_id": call.ID, "tool": name, "arguments": args,
 		}
 		if len(toolMeta) > 0 {
 			notifyPayload["_meta"] = toolMeta
@@ -818,6 +910,11 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 				continue
 			}
 		}
+
+		// 发起即落 running（I-176）：先落一条非终态 role=tool 行，终态由 persistToolResult
+		// 回填**同一行**——使进程重启后 cleanupStaleToolPairs 能把遗留 pair 标 interrupted
+		//（前端"已中断 + 可重试"生效），且同一调用恒只一行（不破坏 LLM 重放/前端卡片）。
+		tc.persistToolRunning(call.ID, name, args)
 
 		if isTaskTool(canon) {
 			// task 型域工具（tool_stop/tool_result）：经 gateway 唯一执行入口
@@ -944,6 +1041,29 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 	}
 }
 
+// resumePartial 进程内断链续写（S6/S8，方式 B 的**同 turn 变体**）：一次 LLM 流读取被中断
+// （streamErr != nil）时的恢复动作。
+//   - 断开前**已收到部分内容**（content 非空）且未达自动续写上限（`maxAutoContinue`）→
+//     落库半截 assistant（含 tool_calls / reasoning）+ 注入「继续」（Kind=continue，非新 turn 边界）
+//     续写同一 turn —— 续写由 loop 的下一轮 chatOnce 承接，本函数返回 true；
+//   - 否则（无内容失败 / 续写已耗尽）→ 报 `LLM_STREAM_ERROR`（携带真实分类 retryable，超时/网络/
+//     429/5xx → true 由后端自动续写；协议/鉴权 → false 由前端手动「重试」）并终结本 turn，返回 false。
+//
+// 说明：**不重发**（已收内容重发会重复输出）；本函数与既有内联逻辑逐字等价，仅抽取命名。
+// asstKey 非空 = 流式过程中已按段落过该行 → 就地回填同一行（I-176）。
+func (tc *turnCtx) resumePartial(asstKey, content, reasoning string, calls []ToolCall, streamErr error) bool {
+	if content != "" && tc.continues < maxAutoContinue {
+		tc.continues++
+		_, _ = tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: content, ToolCalls: calls, Reasoning: reasoning}, asstKey)
+		tc.feed(ChatMsg{Role: "user", Kind: assembleContinueKind, Content: assembleContinueText})
+		return true
+	}
+	retryable := retryableErr(streamErr)
+	tc.server.llmErrorRetryable(tc, "LLM_STREAM_ERROR", tc.server.subsessionHint(tc, streamErr.Error(), retryable), retryable)
+	tc.Close()
+	return false
+}
+
 // msgs 返回当前轮次 LLM 上下文：会话历史（hist，含摘要）+ 当前 turn 已落消息（created_at 升序）。
 // 全量历史按 **三段结构**内置拼接（口径 X，2026-09-25）：完整区（受 `keep_full_max_turns` 轮数 +
 // `keep_full_max_tokens` 完整态 token + `compress_token_threshold` 简化区预算三条件约束，与压缩侧
@@ -995,8 +1115,15 @@ func splitTurnTokens(tokens []facade.TurnToken) (full, brief []int) {
 // persistMessage 落库 user/assistant 消息；走 AppendFull：完整保留 Kind / tool_calls /
 // reasoning，供快照组装、压缩定位与协议回传。（role=tool 结果经 persistToolResult 落库。）
 func (tc *turnCtx) persistMessage(msg ChatMsg) error {
+	_, err := tc.persistMessageKeyed(msg, "")
+	return err
+}
+
+// persistMessageKeyed 落库 user/assistant 消息；key 非空 = 就地更新该行（assistant 增量落库
+// 回填同一行，I-176），空 = 新键。返回落库主键（供后续回填复用）。
+func (tc *turnCtx) persistMessageKeyed(msg ChatMsg, key string) (string, error) {
 	store := newSessionStore(tc.server.bus, tc.req.InstanceID)
-	return store.AppendFull(tc.req.Turn, msg)
+	return store.AppendFullKeyed(tc.req.Turn, msg, key)
 }
 
 // toolCallInfo 在当前轮已落库消息中按 tool_call_id 反查工具名与参数（role=tool 的 call 段）。
@@ -1018,13 +1145,43 @@ func (tc *turnCtx) toolCallInfo(toolCallID string) (string, any) {
 	return "", nil
 }
 
+// persistToolRunning 发起即落一条非终态（running）role=tool 行（I-176）：content 仅含 call 段，
+// 终态由 persistToolResult 回填**同一行**（主键登记于 tc.toolMsgKeys，供终态/重试回填复用）。
+// 落库失败静默（不阻断执行）：此时终态仍按新键落一条完整记录（退化为旧行为）。
+func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]any) {
+	content := persist.ToolContent{
+		Call: &persist.ToolCallContent{ToolCallID: toolCallID, Name: name, Arguments: args},
+	}
+	b, _ := json.Marshal(content)
+	msg := map[string]any{
+		"role":             "tool",
+		"content":          string(b),
+		"tool_call_id":     toolCallID,
+		"tool_call_status": persist.ToolStatusRunning,
+	}
+	if meta := tc.server.gc.ToolMeta(name); len(meta) > 0 {
+		msg["_meta"] = meta
+	}
+	id, err := newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, "")
+	if err != nil || id == "" {
+		return
+	}
+	tc.mu.Lock()
+	if tc.toolMsgKeys == nil {
+		tc.toolMsgKeys = map[string]string{}
+	}
+	tc.toolMsgKeys[toolCallID] = id
+	tc.mu.Unlock()
+}
+
 // persistToolResult 落一条 role=tool 消息（content = {call,result,async}）：
 //   - call   = 发起（tool_call_id + 工具名 + 参数）；
 //   - result = 结束（结果文本 + 状态）；
 //   - async  = 转异步（非异步传 nil；转异步传 {task_id, moved_at}）。
 //
-// 一次工具调用只落**一条**记录（异步也在完成时落一条并携带 async 段），避免同一结果在
-// 历史里出现两次。status 与 tool_call_status 列保持同源。
+// 一次工具调用只落**一条**记录（I-176）：发起时已落 running 行（persistToolRunning）→ 此处带
+// 该行主键**就地回填**（recovered 轮次无内存主键时由 data 面按 (turn_id, tool_call_id) 复用）；
+// 未落过 running（白名单拒绝 / 落库失败）→ 新键落一条完整记录。status 与 tool_call_status 同源。
 func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *persist.ToolAsyncContent) {
 	name, args := tc.toolCallInfo(toolCallID)
 	content := persist.ToolContent{
@@ -1044,7 +1201,10 @@ func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *p
 	if meta := tc.server.gc.ToolMeta(name); len(meta) > 0 {
 		msg["_meta"] = meta
 	}
-	_ = newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg)
+	tc.mu.Lock()
+	key := tc.toolMsgKeys[toolCallID]
+	tc.mu.Unlock()
+	_, _ = newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key)
 }
 
 // unpersistedInputs 过滤本次进入会话、尚未由 msgs() 从库带回的新消息（I-25 去重）：
@@ -1126,7 +1286,7 @@ func askQuestion(args map[string]any) string {
 	return "请回答"
 }
 
-// ─── S6 辅助：重试判定 / 网络预检 / 取消感知等待 ─────────────
+// ─── S6 辅助：重试判定 / 退避取值 / 网络预检 / 取消感知等待 ─────────────
 
 // retryableErr 判断错误是否可自动重试（*LLMError.Retryable）。
 func retryableErr(err error) bool {
@@ -1135,6 +1295,18 @@ func retryableErr(err error) bool {
 		return le.Retryable
 	}
 	return false
+}
+
+// retryWait 取第 attempt 次可视重试前的等待时长（attempt 从 1 起计）——**退避值归 router**：
+// 经 `router.RetryWait` 计算（`Retry-After` 优先，否则 1s·2s·4s… 封顶 30s；不可重试 / nil → 0）。
+// llm 侧不再自持任何退避间隔（`retryDelay` 配置已移除，差异登记 41 I-156）；
+// 非 `*LLMError`（如 ctx 错误）→ 0，调用方据 `retryableErr` 已先行过滤，实际不会走到。
+func retryWait(err error, attempt int) time.Duration {
+	var le *LLMError
+	if !errors.As(err, &le) {
+		return 0
+	}
+	return router.RetryWait(&router.Error{Retryable: le.Retryable, RetryAfter: le.RetryAfter}, attempt)
 }
 
 // probeBeforeRetry 网络连接预检（对齐 llm-error-handling.md §一）：TCP 可达才重试，未连接不重试。

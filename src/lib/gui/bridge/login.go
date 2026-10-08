@@ -18,6 +18,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 const (
@@ -29,9 +31,9 @@ const (
 
 // loginSubjects 认证域上行 type → 相对主题（同名，61 §4.6）。
 var loginSubjects = map[string]string{
-	"login-register": "login-register",
-	"login-in":       "login-in",
-	"login-out":      "login-out",
+	msgkeys.TopicLoginRegister: msgkeys.TopicLoginRegister,
+	msgkeys.TopicLoginIn:       msgkeys.TopicLoginIn,
+	msgkeys.TopicLoginOut:      msgkeys.TopicLoginOut,
 }
 
 // authTokenValue 取桥当前持有的令牌（空 = 未持有）。
@@ -78,7 +80,7 @@ func (b *Bridge) loginEvent(subject, typ, payloadJSON string) (any, []error) {
 	result, errs := b.publishV(subject, string(raw)) // string = 原样字节（[]byte 会被 json 编码成 base64）
 	issued := takeInternalToken(result)              // 取走内部 token（返回前端前必须剥除）
 	switch {
-	case typ == "login-out":
+	case typ == msgkeys.TopicLoginOut:
 		b.clearAuthToken() // 登出：清内存 + 删文件（令牌行由服务端清）
 	case issued != "":
 		b.holdAuthToken(issued)

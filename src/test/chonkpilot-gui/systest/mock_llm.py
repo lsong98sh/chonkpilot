@@ -21,7 +21,7 @@
         "call java-real"   → self_script_run(runtime=java，打印哨兵 CK-JAVA-OK 的类；run_paths.py
                             java 真机端到端，回归 I-80：临时脚本扩展名必须 .java）
       llm_run 委派/编排 DSL（G-11 重建，run_llm.py 五.4/5/6/7 + C13/C18）：
-        "call delegate-plain"  → llm_run 单次委派（无第三参 → 展示名回退提示词截断）
+        "call delegate-plain"  → llm_run 单次委派（三参：agent/prompt/目的）
         "call delegate-purpose"→ llm_run 单次委派（第三参=目的 → 子节点展示名）
         "call batch"           → llm_run LOOP 批量（planner 产 JSON 数组 → concurrency=2）
         "call delegate-cancel" → llm_run 首步委派慢工具（供 task-stop 级联取消）
@@ -343,16 +343,31 @@ def route_tool_calls(text):
     if "call slow3p-never" in t:
         return [("slow3p_slow_sleep", {"seconds": 5, "async": "never", "timeout": 1,
                                        "tool_call_display_name": "夹具"})]
+    # ── 配置⑤ 超时自动取消（run_tool_async.py 新增用例）──
+    # 第三方 stdio 夹具：async=never + timeout=1s，配合 usr
+    # `tool_async.slow3p_slow_sleep.cancel_on_timeout` → 到 1s **自动取消**（不等裁决）
+    # → gateway `Terminate` = kill + respawn（下次快工具 pid 变化可观测「真被杀」）。
+    if "call cancel-on-timeout-3p" in t:
+        return [("slow3p_slow_sleep", {"seconds": 5, "async": "never", "timeout": 1,
+                                       "tool_call_display_name": "自动取消夹具"})]
+    # 内置执行器（self_script_run）：async=never + timeout=1s，配合 usr
+    # `tool_async.self_script_run.cancel_on_timeout` → 到 1s 自动取消 → 执行体侧真停
+    # （callTool 继承请求 ctx + exec.CommandContext）→ 无孤儿进程（`ping` 子进程随之被杀；
+    # 用唯一地址 127.0.0.99 作进程命令行探针哨兵）。
+    if "call cancel-on-timeout-self" in t:
+        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.99",
+                                     "async": "never", "timeout": 1,
+                                     "tool_call_display_name": "自动取消"})]
     # ── llm_run 委派/编排 DSL（G-11 重建：单次委派 / LOOP 批量 / 级联取消）──
     # 主轮次命中关键词 → 返回 llm_run tool_call（script = DSL 脚本）；子轮次提示词
     # （prompt）不含 "call ..." 关键词 → 普通回复，避免递归触发。
     # 工具名用网关暴露名（self_ 前缀，见 domainmcp_test.go：域工具注入 self 节点后
     # 暴露名 = self_<契约名>）；server 侧按契约名归一（TrimPrefix "self_"）。
     if "call delegate-plain" in t:
-        # 单次委派：无第三参 → 子任务展示名回退为提示词截断（delegate-plain-prompt）
+        # 单次委派：三参（agent / 提示词 / 目的）—— 子任务展示名 = 目的
         # 委派对象名须「可委派」（agentDelegable）：本套件 scenario_id=""（通用模式，无团队成员段）
         # → 只能靠 app 级场景注册表裸名唯一命中（出厂场景 = 开发场景，成员见 37-场景）。
-        return [("self_llm_run", {"script": 'LLM "后端开发" "delegate-plain-prompt"',
+        return [("self_llm_run", {"script": 'LLM "后端开发" "delegate-plain-prompt" "单次委派回显"',
                                   "tool_call_display_name": "委派"})]
     if "call delegate-purpose" in t:
         # 单次委派：第三参 = 目的（运行目的/展示名）

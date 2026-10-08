@@ -452,19 +452,20 @@ func TestFacadeScenarioInlineEqualsMQPath(t *testing.T) {
 		lr.List[0].Name != "开发场景" || lr.List[0].Level != "app" {
 		t.Fatalf("facade ScenarioList=%+v err=%v", lr, err)
 	}
-	if lr.List[0].SystemPrompt == "" {
-		t.Fatalf("默认场景 systemPrompt 应派生自主 agent（保留供兼容字段）：%+v", lr.List[0])
+	if len(lr.List[0].Agents) == 0 || lr.List[0].Agents[0].Prompt == "" {
+		t.Fatalf("默认场景主 agent 提示词应派生自 main.agent.md：%+v", lr.List[0])
 	}
 	eqWire(t, wire.ScenarioListResult(lr.List),
 		mqResult(t, bus, "data-scenario-list", map[string]any{}), "list")
 
-	// ② 门面 save（主 + 子 agent）→ MQ load 读到；save 广播 data-scenario-refresh
+	// ② 门面 save（主 + 子 agent **引用**）→ MQ load 读到；save 广播 data-scenario-refresh
 	refresh := collectTopic(t, bus, "data-scenario-refresh")
 	sr, err := api.ScenarioSave(facade.ScenarioSaveRequest{InstanceID: facadeInstance, Scenario: facade.Scenario{
 		ID: "s2", Name: "场景2", Description: "描述2",
 		Agents: []facade.ScenarioAgent{
 			{Name: "主", IsMain: true, Prompt: "主提示"},
-			{Name: "子A", RoleTag: "A", Description: "子A描述", Prompt: "A提示"},
+			// 子 agent 唯一形态 = 引用（指向 app 级出厂 agent，可解析）
+			{Name: "UX 设计师", RoleTag: "设计", Ref: "${exeDir}/capability/agents/UX 设计师.agent.md"},
 		},
 	}})
 	if err != nil || sr.ID != "s2" {
@@ -480,20 +481,21 @@ func TestFacadeScenarioInlineEqualsMQPath(t *testing.T) {
 	eqWire(t, wire.ScenarioGetResult(gr.Scenario),
 		mqResult(t, bus, "data-scenario-load", map[string]any{"id": "s2"}), "load")
 
-	// ③ MQ save（旧形态：只给 systemPrompt）→ 门面 load 读到派生主 agent；两路径一致
+	// ③ MQ save（主 agent 内联）→ 门面 load 读到；两路径一致
 	mqResult(t, bus, "data-scenario-save", map[string]any{"data": map[string]any{
-		"id": "legacy", "name": "旧形态", "systemPrompt": "旧系统提示",
+		"id": "saved", "name": "MQ 写入",
+		"agents": []any{map[string]any{"name": "主", "isMain": true, "prompt": "MQ 主提示"}},
 	}})
-	lg, err := api.ScenarioGet(facade.ScenarioGetRequest{InstanceID: facadeInstance, ScenarioID: "legacy"})
-	if err != nil || lg.Scenario.SystemPrompt != "旧系统提示" || len(lg.Scenario.Agents) == 0 {
-		t.Fatalf("门面未读到 MQ 写入（旧形态归一）：%+v err=%v", lg.Scenario, err)
+	lg, err := api.ScenarioGet(facade.ScenarioGetRequest{InstanceID: facadeInstance, ScenarioID: "saved"})
+	if err != nil || len(lg.Scenario.Agents) == 0 || lg.Scenario.Agents[0].Prompt != "MQ 主提示" {
+		t.Fatalf("门面未读到 MQ 写入：%+v err=%v", lg.Scenario, err)
 	}
 	eqWire(t, wire.ScenarioGetResult(lg.Scenario),
-		mqResult(t, bus, "data-scenario-load", map[string]any{"id": "legacy"}), "load(legacy)")
+		mqResult(t, bus, "data-scenario-load", map[string]any{"id": "saved"}), "load(mq)")
 
 	// ④ 门面 delete → MQ list 少一条；MQ delete → 门面 list 少一条
 	if _, err := api.ScenarioDelete(facade.ScenarioDeleteRequest{
-		InstanceID: facadeInstance, ScenarioID: "legacy",
+		InstanceID: facadeInstance, ScenarioID: "saved",
 	}); err != nil {
 		t.Fatalf("facade ScenarioDelete: %v", err)
 	}
@@ -526,6 +528,17 @@ func TestFacadeMemoryInlineEqualsMQPath(t *testing.T) {
 	}
 	eqWire(t, wire.MemoryListResult(lr.List),
 		mqResult(t, bus, "data-memory-list", map[string]any{}), "list")
+
+	// ①b 类别提示词**由后端下发**（OP-04）：预置类别带非空 prompt（回落 embed 出厂文件）、
+	// 初始无覆盖文件 → prompt_override = false。
+	for _, it := range lr.List {
+		if it.Prompt == "" {
+			t.Fatalf("预置类别 %s 缺下发提示词（OP-04）：%+v", it.Category, it)
+		}
+		if it.PromptOverride {
+			t.Fatalf("初始无覆盖文件，prompt_override 应为 false：%+v", it)
+		}
+	}
 
 	// ② 门面 read（预置类别）→ 两路径一致（含 tokens 口径）
 	gr, err := api.MemoryGet(facade.MemoryGetRequest{InstanceID: facadeInstance, Category: "项目概要"})

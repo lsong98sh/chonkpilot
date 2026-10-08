@@ -29,13 +29,13 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/dsl"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
@@ -56,13 +56,10 @@ func HandleDesktopRun(args map[string]interface{}) *ToolResult {
 		return &ToolResult{Success: false, Error: "script or file is required", Output: "❌ desktop_run：缺少 script 或 file", Tool: "desktop_run"}
 	}
 
-	ctx := &runCtx{
-		vars:   map[string]float64{},
-		speed:  5,
-		jitter: 3,
-		delay:  0,
-	}
-	actions := desktopActions(ctx)
+	sess, _ := NewSession()
+	defer sess.Close()
+	ctx := sess.ctx
+	actions := sess.Actions()
 
 	ast, err := dsl.Parse(script, actions)
 	if err != nil {
@@ -77,15 +74,12 @@ func HandleDesktopRun(args map[string]interface{}) *ToolResult {
 		return &ToolResult{Success: false, Error: msg, Output: "❌ desktop_run：" + msg, Tool: "desktop_run"}
 	}
 
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
 	// 宿主注入的只读 env（CHONKPILOT_* → {{env.CHONKPILOT_*}}）；缺 instance → 顶层失败。
 	te, envErr := fileops.BuildToolEnv()
 	if envErr != nil {
 		return cli.Err("desktop_run", envErr.Error())
 	}
-	eng := dsl.NewEngine(dsl.Options{Files: scriptFS{}, Actions: actions, StopOnError: true, Vars: te.Vars})
+	eng := dsl.NewEngine(dsl.Options{Files: sess.Files(), Actions: actions, StopOnError: true, Vars: te.Vars})
 	_ = eng.Execute(ast)
 	res := eng.Result()
 	if len(res.Errors) > 0 {
@@ -253,12 +247,34 @@ type scriptFile struct {
 
 func (f *scriptFile) Path() string { return f.path }
 
-// abs 解析句柄路径为绝对路径（R-11：绝对 / ~/ / !/；相对路径报错）。
-func (f *scriptFile) abs() (string, error) { return resolveLocalPath(f.path) }
+// absRead 解析句柄路径为绝对路径（R-11：绝对 / ~/ / !/；相对路径报错）+ 沙箱读校验
+// （越界 → 错误；决策 42 §2 (250)：修复既有裸写缺口）。
+func (f *scriptFile) absRead() (string, error) {
+	abs, err := resolveLocalPath(f.path)
+	if err != nil {
+		return "", err
+	}
+	if err := agentbox.Check(abs, false); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
 
-// Exists 路径不合规（R-11）时按「不存在」处理：字面违规已由预校验拦截，此处兜底 {{}} 插值。
+// absWrite 解析句柄路径 + 沙箱写校验（越界 → 错误）。
+func (f *scriptFile) absWrite() (string, error) {
+	abs, err := resolveLocalPath(f.path)
+	if err != nil {
+		return "", err
+	}
+	if err := agentbox.Check(abs, true); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// Exists 路径不合规（R-11）或被沙箱拒绝时按「不存在」处理：字面违规已由预校验拦截，此处兜底 {{}} 插值。
 func (f *scriptFile) Exists() bool {
-	abs, err := f.abs()
+	abs, err := f.absRead()
 	if err != nil {
 		return false
 	}
@@ -267,7 +283,7 @@ func (f *scriptFile) Exists() bool {
 }
 func (f *scriptFile) Stat() (dsl.FileInfo, error) {
 	// 读路径强校验（R-11）：数据源句柄 `#"path"` 亦须绝对 / ~/ / !/
-	abs, err := f.abs()
+	abs, err := f.absRead()
 	if err != nil {
 		return dsl.FileInfo{}, err
 	}
@@ -287,7 +303,7 @@ func (f *scriptFile) Stat() (dsl.FileInfo, error) {
 	return dsl.FileInfo{Path: f.path, Size: fi.Size(), Lines: int64(lines), Blocks: int64(blocks)}, nil
 }
 func (f *scriptFile) ReadText() (string, error) {
-	abs, err := f.abs()
+	abs, err := f.absRead()
 	if err != nil {
 		return "", err
 	}
@@ -327,8 +343,8 @@ func (f *scriptFile) ReadRange(n, m int) ([]string, error) {
 	return ls[n : m+1], nil
 }
 func (f *scriptFile) WriteAll(text string) error {
-	// 写入路径强校验（R-11，运行时解析：覆盖 {{}} 插值的重定向目标与 !/ 临时目录）
-	abs, err := f.abs()
+	// 写入路径强校验（R-11，运行时解析：覆盖 {{}} 插值的重定向目标与 !/ 临时目录）+ 沙箱写校验
+	abs, err := f.absWrite()
 	if err != nil {
 		return err
 	}
@@ -343,7 +359,7 @@ func (f *scriptFile) Append(text string) error {
 	if text == "" {
 		return nil
 	}
-	abs, err := f.abs()
+	abs, err := f.absWrite()
 	if err != nil {
 		return err
 	}
@@ -361,7 +377,7 @@ func (f *scriptFile) Append(text string) error {
 func (f *scriptFile) ReplaceLines(n, m int, lines []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	abs, err := f.abs()
+	abs, err := f.absWrite()
 	if err != nil {
 		return err
 	}

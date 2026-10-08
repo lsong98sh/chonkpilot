@@ -29,6 +29,7 @@ import (
 	"time"
 
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
@@ -38,11 +39,11 @@ import (
 // 对齐 61-消息一览：gateway 方法面 = mcp-<组>-<动作>，data 面 = data-<域>-<动作>）。
 const (
 	// gateway 方法面：tools/register | tools/unregister → mcp-tools-register/unregister
-	subjectToolRegister   = "mcp-tools-register"
-	subjectToolUnregister = "mcp-tools-unregister"
+	subjectToolRegister   = msgkeys.TopicMcpToolsRegister
+	subjectToolUnregister = msgkeys.TopicMcpToolsUnregister
 	// 本插件声明的 gateway 工具回调主题（gateway regProv 命中后向该主题发 {tool,args,context}，
 	// 订阅者写回 v.Result，同一主题 promise——镜像 llm domain-tool-call 模式）
-	toolCallSubject = "codegraph-tool-call"
+	toolCallSubject = msgkeys.TopicCodegraphToolCall
 
 	// prj-config 键
 	engineName        = "codegraph"                 // 引擎标识（配置键前缀 = 引擎名；ignore.ConfigOptions 用）
@@ -60,9 +61,9 @@ const (
 	actionRetry   = "retry"   // 重试失败项（引擎未记录失败明细 → 降级为全量重建）
 
 	// data 面（persist 订阅）
-	subjectPrjConfigRefresh = "data-prj-config-refresh"
-	subjectPrjConfigLoad    = "data-prj-config-load"
-	subjectPrjConfigSave    = "data-prj-config-save"
+	subjectPrjConfigRefresh = msgkeys.TopicDataPrjConfigRefresh
+	subjectPrjConfigLoad    = msgkeys.TopicDataPrjConfigLoad
+	subjectPrjConfigSave    = msgkeys.TopicDataPrjConfigSave
 
 	// 周期/超时
 	sweepInterval    = 15 * time.Second // 空闲子进程回收周期

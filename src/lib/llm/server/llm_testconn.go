@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-router"
 )
 
@@ -38,7 +39,7 @@ const (
 	// SubjectLLMTestConnection 探活方法面的相对主题。**点分形态**：GUI 桥与服务端上行入口按
 	// 「点分相对主题直通总线服务」原样注入总线（61-消息一览 §1），无需登记单字方法白名单
 	// （frontMethodSubjects 未收录的单字 type 会被静默丢弃）。
-	SubjectLLMTestConnection = "llm.test-connection"
+	SubjectLLMTestConnection = msgkeys.TopicLlmTestConnection
 
 	// llmTestPrompt 探活请求的唯一输入（越短越省）。
 	llmTestPrompt = "hi"

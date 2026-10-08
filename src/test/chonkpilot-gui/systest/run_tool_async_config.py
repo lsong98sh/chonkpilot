@@ -29,6 +29,7 @@
   F 展示口径（D2）：列表名剥前缀仅展示，`data-tool` / `:title` 保留完整暴露名
   G 无上限口径（2026-09-27）：`hard_timeout` 输入 **0 / -1** = 无上限 → 合法、显示保留、落库保留
   H 涉及文件变动（2026-09-28）：缺省映射 + 派生「打点 / 不打点」标记 + 开关保存/回读 + 恢复默认回落
+  I 超时自动取消（2026-10-07，配置⑤）：`cancel_on_timeout` 输入 > 0 → 落库 + 回读；0 = 关闭不写库
 
 前置（本脚本自起，结束自动回收；见 harness.py）：
   `dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
@@ -249,6 +250,7 @@ return [...R.querySelectorAll('.tool-name[data-tool]')].map(nm=>{
   const tip=it?it.querySelector('.b-tooltip'):null;
   const sw=it?it.querySelector('.cell-touch .b-switch'):null;
   const badge=it?it.querySelector('.cell-touch .touch-badge'):null;
+  const co=it?it.querySelector('.cell-cancel-timeout input.b-input'):null;
   return {
     tool: nm.getAttribute('data-tool'),
     disp: mono?mono.textContent.trim():'',
@@ -262,6 +264,8 @@ return [...R.querySelectorAll('.tool-name[data-tool]')].map(nm=>{
     hard: to?to.value:'',
     timeoutDisabled: to?!!to.disabled:false,
     na: !!na,
+    cancelTimeout: !!co,
+    cancelValue: co?co.value:'',
     restoreDisabled: rst?!!rst.disabled:null,
     contract: tip?tip.getAttribute('data-contract'):null,
     touchSwitch: !!sw,
@@ -687,6 +691,36 @@ def case_h3_touch_hint_and_header():
         raise TestError("页头 hint 文案异常：%r" % hint)
 
 
+def case_i_cancel_on_timeout_option():
+    """I 超时自动取消（2026-10-07，配置⑤ · spec 18 §7 B4）：`cancel_on_timeout` 输入秒数（> 0）
+    → 保存 → usr `tool_async.<工具>.cancel_on_timeout` 落库 + 回读；`0` = 关闭（不写该字段）。"""
+    require_page()
+    require_backend()
+    with _h.user_config_guard(c, [CFG_KEY]):
+        reset_key()
+        open_page()
+        tool = pick_tool()
+        if not row_of(tool)["cancelTimeout"]:
+            raise TestError("页面缺「超时自动取消」输入（.cell-cancel-timeout input）：%r" % row_of(tool))
+        set_number(tool, ".cell-cancel-timeout input.b-input", 30)
+        if not unsaved_mark():
+            raise TestError("改「超时自动取消」后应显示「未保存」")
+        click_save()
+        got = poll(lambda: (user_map().get(tool) or {}).get("cancel_on_timeout"))
+        if got != 30:
+            raise TestError("cancel_on_timeout=30 未落库：tool=%s → usr=%r" % (tool, user_map()))
+        # 回读显示（重开页面读 usr → 输入框保留 30）
+        open_page()
+        if str(row_of(tool)["cancelValue"]) != "30":
+            raise TestError("cancel_on_timeout 回读显示不符：%r" % row_of(tool)["cancelValue"])
+        # 0 = 关闭 → 该字段不写库（键项不含 cancel_on_timeout）
+        set_number(tool, ".cell-cancel-timeout input.b-input", 0)
+        click_save()
+        if (user_map().get(tool) or {}).get("cancel_on_timeout") is not None:
+            raise TestError("cancel_on_timeout=0 应为「关闭」不写库：usr=%r" % user_map())
+        print("[I] 超时自动取消：输入 30 → 落库 + 回读显示；输入 0 → 关闭不写库", flush=True)
+
+
 CASES = [
     ("A 入口与分组渲染（分组 + 四档文案/aria + 表头 ? 说明 + 干净态保存禁用）", case_a_entry_and_groups),
     ("B 默认信息移至「恢复默认」tooltip（行内无 badge/contract）", case_b_contract_moved_to_tooltip),
@@ -697,6 +731,7 @@ CASES = [
     ("G 无上限口径：hard_timeout 输入 0 / -1 合法、显示与落库均保留", case_g_unlimited_values),
     ("H 涉及文件变动：缺省映射 + 打点/不打点标记 + 保存/回读 + 恢复默认", case_h_touch_files_option),
     ("H2 新列表头 ? 说明 ≥4（含「涉及文件变动」）", case_h3_touch_hint_and_header),
+    ("I 超时自动取消：cancel_on_timeout 落库 + 回读；0 = 关闭不写库", case_i_cancel_on_timeout_option),
 ]
 
 

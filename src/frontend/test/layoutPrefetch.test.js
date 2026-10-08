@@ -88,7 +88,7 @@ test('B2 接线守卫：MainLayout 在 onMounted 消费预取结果并 applyLayo
   const m = ml.match(/onMounted\s*\(\(\)\s*=>\s*\{[\s\S]*?\n\}\)/)
   assert.ok(m, '未找到 onMounted')
   assert.match(m[0], /loadInitDataPrefetched\(\)/, 'onMounted 必须消费预取')
-  assert.match(m[0], /applyLayout\(r\.layout/, '预取结果的 layout 必须交给 applyLayout')
+  assert.match(m[0], /applyLayout\(r\[GuiInitDataKeys\.layout\]/, '预取结果的 layout（常量下标）必须交给 applyLayout')
 })
 
 test('B2 接线守卫：api/file.js 的 prefetch/consume 委托同一状态机（单飞+一次性）', () => {

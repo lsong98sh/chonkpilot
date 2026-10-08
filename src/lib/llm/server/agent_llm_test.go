@@ -17,6 +17,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,40 +29,105 @@ import (
 
 // appCapRootWithScenario 造 app 级 **capability 根**（场景根 = `<capRoot>/scenarios`，25 §6）：
 // 返回 capability 根（传 `Options.MCPServerRoot` → 数据层 AppDir 同源），并在
-// `<capRoot>/scenarios/<id>/` 写入场景（`scenario.json` + 每 agent 一个 `<名>.agent.md`）。
-// agents = agent 名 → 提示词（content 段）。用于「app 级场景内 agent」的用例。
+// `<capRoot>/scenarios/<id>/` 写入场景（`scenario.json`（子 agent 引用）+ 每 agent 一个
+// `<capRoot>/agents/<名>.agent.md` 被引用文件）。agents = agent 名 → 提示词（content 段）；
+// 名为 `main` 的成员写为 `main.agent.md`（主 agent 内联）。用于「app 级场景内 agent」的用例。
 func appCapRootWithScenario(t *testing.T, id string, agents map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	capRoot := filepath.Join(root, "capability")
 	dir := filepath.Join(capRoot, "scenarios", id)
-	if err := os.MkdirAll(capRoot, 0o755); err != nil {
-		t.Fatalf("mkdir capability: %v", err)
+	agentsDir := filepath.Join(capRoot, "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir scenario: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "scenario.json"),
-		[]byte("{\"name\":\""+id+"\"}\n"), 0o644); err != nil {
-		t.Fatalf("write scenario.json: %v", err)
-	}
+	refs := []string{}
 	for name, prompt := range agents {
 		doc := "# " + name + "\n\n[description]\n" + name + " 描述\n\n[content]\n" + prompt + "\n"
-		if err := os.WriteFile(filepath.Join(dir, name+".agent.md"), []byte(doc), 0o644); err != nil {
+		if name == "main" {
+			if err := os.WriteFile(filepath.Join(dir, "main.agent.md"), []byte(doc), 0o644); err != nil {
+				t.Fatalf("write main.agent.md: %v", err)
+			}
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(agentsDir, name+".agent.md"), []byte(doc), 0o644); err != nil {
 			t.Fatalf("write %s.agent.md: %v", name, err)
 		}
+		refs = append(refs, "${exeDir}/capability/agents/"+name+".agent.md")
+	}
+	meta, _ := json.Marshal(map[string]any{"name": id, "agents": refs})
+	if err := os.WriteFile(filepath.Join(dir, "scenario.json"), append(meta, '\n'), 0o644); err != nil {
+		t.Fatalf("write scenario.json: %v", err)
 	}
 	return capRoot
 }
 
-// agSaveScenario 保存一个场景（id + 可选 systemPrompt + agents 定义列表）。
-func agSaveScenario(t *testing.T, s *Server, id, systemPrompt string, agents []any) {
+// writeProjectAgentDoc 依据 agent 领域字段落一个**项目级 capability agent 文件**（契约分区文本），
+// 返回场景引用串（`<workDir>/.chonkpilot/capability/agents/<名>.agent.md`）。字段口径与
+// `capfs.agentToDoc` 一致（roletag/tools/llm/delegate）；子 agent 唯一形态 = 引用。
+func writeProjectAgentDoc(t *testing.T, am map[string]any) string {
 	t.Helper()
-	data := map[string]any{"id": id, "level": "project", "agents": agents}
-	if systemPrompt != "" {
-		data["systemPrompt"] = systemPrompt
+	name, _ := am["name"].(string)
+	desc, _ := am["description"].(string)
+	prompt, _ := am["prompt"].(string)
+	meta := []string{}
+	if rt, _ := am["roleTag"].(string); strings.TrimSpace(rt) != "" {
+		meta = append(meta, "roletag="+rt)
 	}
-	res := dataCall(t, s, "data-scenario-save", map[string]any{"instance_id": "ins-test", "data": data})
+	if v, ok := am["tools"]; ok && v != nil {
+		if b, err := json.Marshal(v); err == nil && string(b) != "null" {
+			meta = append(meta, "tools="+string(b))
+		}
+	}
+	if llm, _ := am["llmRef"].(string); strings.TrimSpace(llm) != "" {
+		meta = append(meta, "llm="+llm)
+	}
+	if dc, _ := am["delegateCond"].(string); strings.TrimSpace(dc) != "" {
+		meta = append(meta, "delegate="+dc)
+	}
+	var b strings.Builder
+	b.WriteString("# " + name + "\n\n")
+	if len(meta) > 0 {
+		b.WriteString("[meta]\n" + strings.Join(meta, "\n") + "\n\n")
+	}
+	if strings.TrimSpace(desc) != "" {
+		b.WriteString("[description]\n" + desc + "\n\n")
+	}
+	if strings.TrimSpace(prompt) != "" {
+		b.WriteString("[content]\n" + prompt + "\n")
+	}
+	agentsDir := filepath.Join(persist.CapProjectRoot(testWorkDir), "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, name+".agent.md"), []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write %s.agent.md: %v", name, err)
+	}
+	return "${workDir}/.chonkpilot/capability/agents/" + name + ".agent.md"
+}
+
+// agSaveScenario 保存一个场景（id + agents 定义列表）。**子 agent 唯一形态 = 引用**：
+// 非主 agent 自动落为项目级 capability agent 文件并补 `ref`（与生产落盘口径一致）；
+// 主 agent 保持内联（prompt）。
+func agSaveScenario(t *testing.T, s *Server, id string, agents []any) {
+	t.Helper()
+	for _, a := range agents {
+		am, ok := a.(map[string]any)
+		if !ok {
+			continue
+		}
+		if isMain, _ := am["isMain"].(bool); isMain {
+			continue
+		}
+		am["ref"] = writeProjectAgentDoc(t, am)
+	}
+	res := dataCall(t, s, "data-scenario-save", map[string]any{
+		"instance_id": "ins-test",
+		"data":        map[string]any{"id": id, "level": "project", "agents": agents},
+	})
 	if ok, _ := dataResult(t, res)["ok"].(bool); !ok {
 		t.Fatalf("data-scenario-save(%s) failed: %+v", id, res)
 	}
@@ -125,7 +191,7 @@ func TestScenarioAgentPromptAndDelegateCondInChildTurn(t *testing.T) {
 	rec, srv := newProviderServer(t)
 	s := newTestServer(t, srv)
 	registerProviderInstance(t, s)
-	agSaveScenario(t, s, "ag-sc", "主提示词", []any{
+	agSaveScenario(t, s, "ag-sc", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主提示词"},
 		agSubAgent("sub1", "子代理提示词XYZ", map[string]any{"delegateCond": "当需要写代码时"}),
 		agSubAgent("plain", "", nil),
@@ -171,7 +237,7 @@ func TestScenarioAgentLLMRefSelectsChildProvider(t *testing.T) {
 		map[string]any{"name": "prov-parent", "baseUrl": parentSrv.URL, "model": "mparent"},
 		map[string]any{"name": "prov-child", "baseUrl": childSrv.URL, "apiKey": "sk-child", "model": "mchild"},
 	}})
-	agSaveScenario(t, s, "ag-llm", "", []any{
+	agSaveScenario(t, s, "ag-llm", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		agSubAgent("sub-llm", "子", map[string]any{"llmRef": "prov-child"}),
 	})
@@ -264,7 +330,7 @@ func TestScenarioAgentToolsWhitelist(t *testing.T) {
 		t.Fatalf("工具面未就绪（可见 %v）", visible)
 	}
 
-	agSaveScenario(t, s, "ag-tools", "", []any{
+	agSaveScenario(t, s, "ag-tools", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{visible[0]}}),
 		agSubAgent("sub-all", "子", nil),
@@ -296,10 +362,10 @@ func TestMainAgentLLMRefTopTurn(t *testing.T) {
 		map[string]any{"name": "prov-client", "baseUrl": clientSrv.URL, "model": "mclient"},
 		map[string]any{"name": "prov-main", "baseUrl": mainSrv.URL, "model": "mmain"},
 	}})
-	agSaveScenario(t, s, "ag-top", "主提示词", []any{
+	agSaveScenario(t, s, "ag-top", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主提示词", "llmRef": "prov-main"},
 	})
-	agSaveScenario(t, s, "ag-top-empty", "主提示词", []any{
+	agSaveScenario(t, s, "ag-top-empty", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主提示词"},
 	})
 
@@ -341,7 +407,7 @@ func TestAgentDelegableScenarioAgent(t *testing.T) {
 	if s.agentDelegable("ins-test", "ag-del", "ghost") {
 		t.Fatal("注册表非空且场景内无同名 agent 时不应可委派")
 	}
-	agSaveScenario(t, s, "ag-del", "", []any{
+	agSaveScenario(t, s, "ag-del", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		agSubAgent("ghost", "场景子 agent", nil),
 	})
@@ -411,7 +477,7 @@ func TestAgentDelegableSameNameInstanceFirst(t *testing.T) {
 	if !ok || strings.TrimSpace(domainCoder.Content) == "" {
 		t.Fatalf("app 级场景内 agent coder 未登记（global 级基线缺失）：%+v", domainCoder)
 	}
-	agSaveScenario(t, s, "ag-same", "", []any{
+	agSaveScenario(t, s, "ag-same", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		agSubAgent("coder", "场景内 instance 级提示词", nil),
 	})
@@ -470,15 +536,17 @@ func mustBody(t *testing.T, rec *providerRec, i int) map[string]any {
 	return body
 }
 
-// TestSystemPromptThreeLayers（T3 / 25 §3，2026-09-25；全局层身份文案 2026-09-26）：系统提示词三层拼接 ——
+// TestSystemPromptLayers（T3 / 25 §3，2026-09-25；全局层身份文案 2026-09-26；目录层 OP-10 2026-10-06）：
+// 系统提示词分层拼接 ——
 //
-//	① 有场景 → system = 全局层（身份 = 当前 agent 名 + 运行环境）+ 场景层（description + 团队成员段）
-//	   + agent 层，且**按序**；子轮次全局层身份 = 被委派 agent 的**裸名**（不带场景前缀）；
-//	② 无场景（= 通用模式）→ **只注入全局层**（无场景层 / agent 层），身份 = 肥猫；
+//	① 有场景 → system = 全局层（身份 = 当前 agent 名 + 运行环境）+ 目录层（四级数据根 / capability
+//	   子目录 / DSL env）+ 场景层（description + 团队成员段）+ agent 层，且**按序**；子轮次全局层
+//	   身份 = 被委派 agent 的**裸名**（不带场景前缀）；
+//	② 无场景（= 通用模式）→ 注入**全局层 + 目录层**（无场景层 / agent 层），身份 = 肥猫；
 //	③ 全局层严格为模板式：`你是 {agentName}，一个全能智能体。你运行在 {env} 中。`
 //
 // 驱动：session-start（带/不带 scenario_id）+ session-send → 断言 mock LLM 请求体的 system 文本。
-func TestSystemPromptThreeLayers(t *testing.T) {
+func TestSystemPromptLayers(t *testing.T) {
 	rec, srv := newProviderServer(t)
 	s := newTestServerMCP(t, srv)
 	registerProviderInstance(t, s)
@@ -490,7 +558,10 @@ func TestSystemPromptThreeLayers(t *testing.T) {
 			"id": "lyr-sc", "level": "project", "description": "我们是一个团队",
 			"agents": []any{
 				map[string]any{"name": "main", "isMain": true, "prompt": "主 agent 提示词"},
-				agSubAgent("scout", "侦察提示词", map[string]any{"description": "负责侦察", "roleTag": "侦察员"}),
+				map[string]any{"name": "scout", "isMain": false, "prompt": "侦察提示词",
+					"description": "负责侦察", "roleTag": "侦察员",
+					"ref": writeProjectAgentDoc(t, map[string]any{"name": "scout",
+						"prompt": "侦察提示词", "description": "负责侦察", "roleTag": "侦察员"})},
 			},
 		},
 	})
@@ -505,20 +576,25 @@ func TestSystemPromptThreeLayers(t *testing.T) {
 	sysText := strings.Join(agSystemTexts(mustBody(t, rec, 0)), "\n")
 	globalWant := "你是 main，一个全能智能体。你运行在 "
 	idxGlobal := strings.Index(sysText, globalWant)
+	idxDir := strings.Index(sysText, "【目录与运行环境】")
 	idxScen := strings.Index(sysText, "【场景】我们是一个团队")
 	idxMembers := strings.Index(sysText, "【团队成员】")
 	idxMember := strings.Index(sysText, "scout（侦察员）：负责侦察")
 	idxAgent := strings.Index(sysText, "主 agent 提示词")
-	if idxGlobal < 0 || idxScen < 0 || idxMembers < 0 || idxMember < 0 || idxAgent < 0 {
-		t.Fatalf("三层内容缺失（global=%d scen=%d members=%d member=%d agent=%d）：\n%s",
-			idxGlobal, idxScen, idxMembers, idxMember, idxAgent, sysText)
+	if idxGlobal < 0 || idxDir < 0 || idxScen < 0 || idxMembers < 0 || idxMember < 0 || idxAgent < 0 {
+		t.Fatalf("四层内容缺失（global=%d dir=%d scen=%d members=%d member=%d agent=%d）：\n%s",
+			idxGlobal, idxDir, idxScen, idxMembers, idxMember, idxAgent, sysText)
 	}
 	// ③ 全局层文案严格为模板式（含"一个全能智能体"与"你运行在…中"）
 	if !strings.Contains(sysText, "一个全能智能体") || !strings.Contains(sysText, " 中。") {
 		t.Fatalf("全局层非模板式：\n%s", sysText)
 	}
-	if !(idxGlobal < idxScen && idxScen < idxMembers && idxMembers < idxMember && idxMember < idxAgent) {
-		t.Fatalf("三层未按序（全局→场景→agent）：\n%s", sysText)
+	// ④ 目录层（OP-10）：含 DSL 只读 env 说明；位于全局层之后、场景层之前
+	if !strings.Contains(sysText, "CHONKPILOT_WORKDIR") {
+		t.Fatalf("目录层缺 DSL env 说明：\n%s", sysText)
+	}
+	if !(idxGlobal < idxDir && idxDir < idxScen && idxScen < idxMembers && idxMembers < idxMember && idxMember < idxAgent) {
+		t.Fatalf("四层未按序（全局→目录→场景→agent）：\n%s", sysText)
 	}
 
 	// ①b 子轮次（被委派 agent）→ 全局层身份 = 被委派 agent 的**裸名**（不带 `<场景id>/` 前缀）
@@ -533,7 +609,7 @@ func TestSystemPromptThreeLayers(t *testing.T) {
 		t.Fatalf("全局层身份不应带场景前缀：\n%s", childSys)
 	}
 
-	// ② 无场景（通用模式）→ 只注入全局层，身份 = 肥猫
+	// ② 无场景（通用模式）→ 只注入全局层 + 目录层（无场景层 / agent 层），身份 = 肥猫
 	agStartTurn(t, s, "s-lyr-none", "t-lyr-none", "", "")
 	sendAndWait(t, s, "s-lyr-none", "t-lyr-none", "hi")
 	sysText2 := strings.Join(agSystemTexts(mustBody(t, rec, 2)), "\n")
@@ -542,5 +618,9 @@ func TestSystemPromptThreeLayers(t *testing.T) {
 	}
 	if strings.Contains(sysText2, "【场景】") || strings.Contains(sysText2, "【团队成员】") {
 		t.Fatalf("无场景不应含场景层：\n%s", sysText2)
+	}
+	// ④ 目录层**不受场景门控**：通用模式也必须注入（OP-10）
+	if !strings.Contains(sysText2, "【目录与运行环境】") || !strings.Contains(sysText2, "CHONKPILOT_WORKDIR") {
+		t.Fatalf("通用模式应注入目录层：\n%s", sysText2)
 	}
 }

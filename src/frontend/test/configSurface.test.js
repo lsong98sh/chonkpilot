@@ -116,7 +116,7 @@ test('④ 引擎页补「工具面注册态」（真实可得，不伪造进程�
     { file: 'views/settings/VftsConfig.vue', engine: 'vfts' },
   ]) {
     const src = read(file)
-    assert.match(src, /mq\.emit\('tools-list'/, `${file} 须读工具面（tools-list）`)
+    assert.match(src, /mq\.emit\(MsgClientTopics\.toolsList/, `${file} 须读工具面（tools-list）`)
     assert.match(src, new RegExp(`hasEngineTools\\(tools, '${engine}'\\)`), `${file} 须判引擎注册态`)
     assert.match(src, /projectConfig\.engine_tool_state/, `${file} 须回显引擎工具面状态`)
     assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, `${file} 不得使用 watch/watchEffect`)
@@ -224,7 +224,7 @@ test('⑤c MCP 高频工具：「工具」页签【加载工具】勾选，写�
   assert.match(tools, /config\.mcp\.hotToolsEmpty/, '缺空态提示')
   assert.match(tools, /config\.mcp\.hotToolsLoading/, '缺加载中提示')
   // 数据源 = 既有 tools-list（零新增消息面）、按 _meta.server 归属、写库原名、全部/逐项
-  assert.match(dlg, /mq\.emit\('tools-list'/, '须读既有 tools-list（零新增消息面）')
+  assert.match(dlg, /mq\.emit\(MsgClientTopics\.toolsList/, '须读既有 tools-list（零新增消息面）')
   assert.match(dlg, /srv\.alias !== name && srv\.node !== name/, '须按 _meta.server.alias/node 归属当前 server')
   assert.match(dlg, /stripToolPrefix\(/, '写库前须做暴露名 → 原名转换')
   assert.match(dlg, /\['\*'\]/, '「全部」须写 "*"（gateway isHot 语义）')

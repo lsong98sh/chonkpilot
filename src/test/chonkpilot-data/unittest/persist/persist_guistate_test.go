@@ -31,10 +31,11 @@ func TestPrjConfigGuiStateRouting(t *testing.T) {
 	save(t, "codegraph.status", `{"state":"ready"}`)
 	save(t, "history.enabled", "true")
 
-	prj, err := data.Prj("ins-test")
+	prj, releasePrj, err := data.Prj("ins-test")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer releasePrj() // 短开（D-45）：用完即释
 	pudb, err := data.PrjUsr("ins-test")
 	if err != nil {
 		t.Fatal(err)

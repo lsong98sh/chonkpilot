@@ -20,11 +20,20 @@
               <div
                 v-for="dir in recentDirs"
                 :key="dir"
-                class="b-dropdown-item"
+                class="b-dropdown-item recent-row"
                 v-mq:[EventNames.recentDirSelect].click="{ dir: dir }"
               >
                 <Icon name="folder" />
-                <span class="recent-item">{{ dir }}</span>
+                <span class="recent-item" :title="dir">{{ dir }}</span>
+                <!-- 仅删除该条「最近」记录（不删对应项目目录/数据资产）；.stop 阻止冒泡，避免同时触发「打开」 -->
+                <button
+                  type="button"
+                  class="recent-remove"
+                  :title="$t('toolbar.remove_recent_dir')"
+                  v-mq:[EventNames.recentDirRemove].click.stop="{ dir: dir }"
+                >
+                  <Icon name="close" :size="12" />
+                </button>
               </div>
               <div v-if="recentDirs.length === 0" class="b-dropdown-item is-disabled">
                 {{ $t('toolbar.no_recent_dirs') }}
@@ -224,11 +233,12 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getRecentDirs, saveRecentDir, openDir, getUserConfig, detectToolchains } from '../../api/config'
+import { getRecentDirs, saveRecentDir, removeRecentDir, openDir, getUserConfig, detectToolchains } from '../../api/config'
 import { Button, Tag, Input, message } from '../../components/ui'
 import { isChromeMissing } from '../../utils/chromeStatus'
 import { configMenuItems } from '../../utils/configMenu'
 import { onDataRefresh } from '../../utils/dataClient'
+import { classifyError } from '../../utils/errorMessage'
 import { useDirPicker } from '../../composables/useDirPicker'
 import { isBrowserForm } from '../../utils/runtimeForm'
 import Icon from '../../components/icon/Icon.vue'
@@ -236,6 +246,7 @@ import { setLocale, SUPPORTED_LANGUAGES } from '../../plugins/i18n'
 import { saveUIState, loadInitData } from '../../api/file'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+import { MsgTopics, FieldKeys, GuiSearchKeys } from '../../events/msgkeys'
 import { requireAuth } from '../../utils/instanceState'
 import { useAuth } from '../../composables/useAuth'
 import { resetClaim } from '../../composables/useInstanceClaim'
@@ -414,21 +425,28 @@ async function syncMaximizeState() {
   } catch (_) {}
 }
 
-// Open button：GUI/native 走系统目录选择框（选后开新窗口，行为不变）；
-// browser 走服务端等价面 GET /dirs 只读选择器 —— work_dir 由服务端绑定，无法切换/新开窗口
-// （明确提示，不假成功；见 19 §8.9）。
+// Open button：GUI/native = 「选目录（gui.dir.open-dialog，纯选择）」+「以新进程打开
+// （gui.dir.open，含同 work-dir 占用校验 I-74）」两步；browser 走服务端等价面 GET /dirs 只读
+// 选择器 —— work_dir 由服务端绑定，无法切换/新开窗口（明确提示，不假成功；见 19 §8.9）。
 async function handleOpenClick() {
+  let path = ''
   try {
-    const path = await pickDir()
-    if (!path) return
-    if (isBrowserForm()) {
-      message.info(t('toolbar.open_dir_browser_unsupported'))
-      return
-    }
-    await saveRecentDir(path)
-    await loadRecentDirs()
+    path = await pickDir()
   } catch (e) {
     console.error('Failed to open directory dialog:', e)
+    return
+  }
+  if (!path) return
+  if (isBrowserForm()) {
+    message.info(t('toolbar.open_dir_browser_unsupported'))
+    return
+  }
+  try {
+    await openDir(path)
+    await loadRecentDirs()
+  } catch (e) {
+    const cls = classifyError(e && e.message ? e.message : String(e))
+    message.error(t(cls.key, cls.params || {}))
   }
 }
 
@@ -438,8 +456,27 @@ async function handleRecentDir(dir) {
     await saveRecentDir(dir)
     await loadRecentDirs()
   } catch (e) { console.warn('[Toolbar] Failed to save recent dir:', e) }
-  openDir(dir)
-  showRecentDirs.value = false
+  // 「以新进程打开」：目标目录已被其它实例打开（I-74）→ 后端拒绝 → 人话提示（不再静默）。
+  try {
+    await openDir(dir)
+    showRecentDirs.value = false
+  } catch (e) {
+    const cls = classifyError(e && e.message ? e.message : String(e))
+    message.error(t(cls.key, cls.params || {}))
+  }
+}
+
+// 删除一条「最近项目」记录：**仅删记录**（gui.recent.remove）——不关闭当前窗口、不删除对应
+// 项目目录 / .chonkpilot 数据资产；删的是当前已打开项目时同样只移除该条记录。删除成功后重读
+// gui.recent.list 即时刷新下拉（不本地臆造，以后端为准）。
+async function handleRecentDirRemove(dir) {
+  try {
+    await removeRecentDir(dir)
+  } catch (e) {
+    console.warn('[Toolbar] Failed to remove recent dir:', e)
+    return
+  }
+  await loadRecentDirs()
 }
 
 function basename(path) {
@@ -476,9 +513,9 @@ function snippetPreview(snippet) {
 // 项目内检索（gui.search，61-消息一览 §1：{query} → result {results}；索引未接入 → 占位空）
 async function searchFiles(q) {
   try {
-    const env = await mq.emit('gui.search', { query: q })
+    const env = await mq.emit(MsgTopics.guiSearch, { [FieldKeys.query]: q })
     const r = env && env.backend && env.backend.result
-    return (r && Array.isArray(r.results)) ? r.results : []
+    return (r && Array.isArray(r[GuiSearchKeys.results])) ? r[GuiSearchKeys.results] : []
   } catch (_) {
     return []
   }
@@ -658,6 +695,7 @@ onMounted(() => {
   _mqUnsubs.push(mq.on(EventNames.workdirOpen, handleOpenClick))
   _mqUnsubs.push(mq.on(EventNames.recentDirsToggle, toggleRecentDirs))
   _mqUnsubs.push(mq.on(EventNames.recentDirSelect, (data) => handleRecentDir(data.dir)))
+  _mqUnsubs.push(mq.on(EventNames.recentDirRemove, (data) => handleRecentDirRemove(data.dir)))
   _mqUnsubs.push(mq.on(EventNames.themeToggle, toggleThemeDropdown))
   _mqUnsubs.push(mq.on(EventNames.themeSelect, (data) => setTheme(data.themeId)))
   _mqUnsubs.push(mq.on(EventNames.langToggle, toggleLangDropdown))
@@ -838,7 +876,37 @@ onUnmounted(() => {
 }
 
 .recent-item {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 「最近项目」行内的删除入口：仅删记录（hover 行时显示 `×`） */
+.recent-remove {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin-left: 8px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+.b-dropdown-item:hover .recent-remove,
+.recent-remove:focus-visible {
+  visibility: visible;
+}
+.recent-remove:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .open-group {

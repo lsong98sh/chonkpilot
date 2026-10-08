@@ -10,13 +10,24 @@
 package persist_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
+	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
+
+// regInstanceAs 发布 instance-register（id + work_dir 指定；B 用例需同/异 work_dir 多实例）。
+func regInstanceAs(t *testing.T, bus mq.Bus, id, wd string) {
+	t.Helper()
+	pubFire(bus, "instance-register", jb(map[string]any{
+		"instance_id": id, "client_type": "unittest", "work_dir": wd,
+	}))
+	time.Sleep(30 * time.Millisecond)
+}
 
 // expectNoMoreRefresh 断言窗口内不再收到刷新广播（"恰好 1 条"断言用）。
 func expectNoMoreRefresh(t *testing.T, ch chan map[string]any, wait time.Duration) {
@@ -183,5 +194,63 @@ func TestConfigKVSetInstanceIsolation(t *testing.T) {
 	})
 	if err != nil || got.Values["iso"] != "" {
 		t.Fatalf("实例间不应串值：%q err=%v", got.Values["iso"], err)
+	}
+}
+
+// TestConfigKVSetRefreshFansOutSameWorkDir（G-41-b）：prj 配置写后广播 `data-prj-config-refresh`
+// 需投递给**同 work_dir 的全部在册实例**（各带自身 instance_id）；异 work_dir 实例**不收**。
+func TestConfigKVSetRefreshFansOutSameWorkDir(t *testing.T) {
+	bus, _, _ := newTestPersist(t)
+	wd := t.TempDir()
+	// ins-a / ins-b 同 work_dir；ins-x 异 work_dir。
+	regInstanceAs(t, bus, "ins-a", wd)
+	regInstanceAs(t, bus, "ins-b", wd)
+	regInstanceAs(t, bus, "ins-x", t.TempDir())
+
+	ch := collectRefresh(t, bus, "prj-config")
+	res := dataResult(t, dataCall(t, bus, "data-prj-config-save", map[string]any{
+		"instance_id": "ins-a", "data": map[string]any{"key": "fan.key", "value": "v"},
+	}))
+	if res["ok"] != true {
+		t.Fatalf("save 应答不符：%+v", res)
+	}
+
+	received := map[string]bool{}
+	for i := 0; i < 2; i++ { // 同 work_dir 两实例各一条
+		ev := waitRefresh(t, ch, "prj-config")
+		if ev["id"] != "fan.key" || ev["op"] != "save" {
+			t.Fatalf("refresh 字段不符：%+v", ev)
+		}
+		id, _ := ev["instance_id"].(string)
+		received[id] = true
+	}
+	if !received["ins-a"] || !received["ins-b"] {
+		t.Fatalf("同 work_dir 两实例都应收到 refresh：%+v", received)
+	}
+	if received["ins-x"] {
+		t.Fatalf("异 work_dir 实例不应收到 refresh：%+v", received)
+	}
+	expectNoMoreRefresh(t, ch, 200*time.Millisecond)
+}
+
+// TestDataRequestRequiresInstanceID（G-41-c）：白名单（全局级域 user-config/scenario/mcp/knowledge）
+// 外的 data 请求缺 instance_id → **明确错误**（不静默走"唯一实例回退"）；白名单内正常处理。
+func TestDataRequestRequiresInstanceID(t *testing.T) {
+	bus, _, _ := newTestPersist(t)
+	regInstance(t, bus) // 已登记唯一实例（旧行为会静默回退到它）
+
+	// 严格域（如 session）缺 instance_id → {ok:false, error 指明 instance_id}
+	r := dataCall(t, bus, "data-session-list", map[string]any{"req_id": "e1"})
+	if okv, _ := r["ok"].(bool); okv {
+		t.Fatalf("data-session-list 缺 instance_id 应失败：%+v", r)
+	}
+	if msg, _ := r["error"].(string); !strings.Contains(msg, "instance_id") {
+		t.Fatalf("错误应指明缺 instance_id：%+v", r)
+	}
+
+	// 全局级域（user-config）缺 instance_id → 正常处理
+	res := dataResult(t, dataCall(t, bus, "data-user-config-list", map[string]any{"req_id": "e2"}))
+	if _, hasList := res["list"]; !hasList {
+		t.Fatalf("user-config 缺 instance_id 应正常返回 list：%+v", res)
 	}
 }

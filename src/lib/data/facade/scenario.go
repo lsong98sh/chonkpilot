@@ -2,17 +2,15 @@
 // `/<场景目录>/` 的场景元素：列举 / 定位 / 保存 / 删除）的【数据传输面】（DTO）。
 //
 // ── 为什么是「领域字段」而不是存储结构 ───────────────────────────────
-// 存储形状（内核事实）：场景 = 三级场景根（app / user / project）下 `<场景目录>/` 目录，内含
-// `scenario.json`（名称 / 描述 / 时间）+ `main.agent.md`（主 agent，固定文件名）+ 其余
-// `*.agent.md`（一文件一 agent，契约分区文本）。这些**都不出门面**：
-//   - 场景 = 领域对象（id / 名称 / 描述 / 级别 / agent 列表 / 系统提示词 / 时间），不是
+// 存储形状（内核事实）：场景 = 级别场景根（app / user / project）下 `<场景目录>/` 目录，内含
+// `scenario.json`（名称 / 描述 / 时间 + **子 agent 引用列表**）+ `main.agent.md`（主 agent，固定文件名）。
+// 这些**都不出门面**：
+//   - 场景 = 领域对象（id / 名称 / 描述 / 级别 / agent 列表 / 时间），不是
 //     "目录 + JSON + 若干 md 文件"；
 //   - agent = 领域字段（名称 / 描述 / 角色标签 / 是否主 agent / 提示词 / 工具白名单 / LLM 引用
-//     / 委派条件），不是".agent.md 分区文本"；
-//   - `systemPrompt` 是**保留供兼容的派生字段**（= 主 agent 的提示词；v6 之前独立存在）→
-//     门面保留该领域字段，写入时由实现侧归并到主 agent（不单独落盘）。**场景层提示词不再取用
-//     本字段**：系统提示词由 `llm/server` 侧按 [25-MCP与场景分层模型 §3] 三层（全局 / 场景 /
-//     agent）**自行拼接**（场景层 = `description` + 团队成员段；主 agent 的 prompt 归 agent 层）；
+//     / 委派条件），不是".agent.md 分区文本"；**子 agent 唯一形态 = 引用（Ref）**，主 agent 内联；
+//   - 系统提示词由 `llm/server` 侧按 [25-MCP与场景分层模型 §3] 三层（全局 / 场景 / agent）
+//     **自行拼接**（场景层 = `description` + 团队成员段；主 agent 的 prompt 归 agent 层）；
 //   - 级别（app / user / project）是**领域归属**（**三级均可写**；app 级自 2026-09-26 起可编辑，
 //     出厂内容由 embed 提供、app 初始化时缺失即物化），门面只承载级别语义，路径解析在实现侧（23 §7：
 //     门面不交路径规则）。
@@ -56,9 +54,6 @@ type Scenario struct {
 	Level string `json:"level,omitempty"`
 	// Agents agent 列表（主 agent 恒列首位）。
 	Agents []ScenarioAgent `json:"agents"`
-	// SystemPrompt 场景系统提示词（**保留供兼容**：= 主 agent 的提示词，写盘由 main.agent.md 承载）。
-	// 25 §3 起**场景层提示词**不再取用本字段 —— 由 `llm/server` 侧自行拼接（description + 团队成员段）。
-	SystemPrompt string `json:"systemPrompt,omitempty"`
 	// CreatedAt 创建时间（RFC3339；可选）。
 	CreatedAt string `json:"createdAt,omitempty"`
 	// UpdatedAt 更新时间（RFC3339；可选）。

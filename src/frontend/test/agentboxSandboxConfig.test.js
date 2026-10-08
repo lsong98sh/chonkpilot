@@ -65,7 +65,7 @@ test('新页签：useToolSandbox composable 按 executor 类别写 usr tool_sand
   assert.match(js, /export const EXECUTOR_CATEGORIES = \['core', 'desktop', 'browser'\]/, 'executor 类别须为 core/desktop/browser')
   assert.match(js, /if \(!EXECUTOR_CATEGORIES\.includes\(category\)\) continue/, '须按 _meta.category 过滤')
   assert.match(js, /saveUserConfig\(\{\s*\[TOOL_SANDBOX_KEY\]:\s*next\s*\}\)/, '须经 usr 配置面写该键（executor 级表）')
-  assert.match(js, /mq\.emit\('tools-list'/, '工具清单须取既有能力面 tools-list')
+  assert.match(js, /mq\.emit\(MsgClientTopics\.toolsList/, '工具清单须取既有能力面 tools-list')
   // 过滤键名不得臆造：读的是 _meta.category / _meta.server
   assert.match(js, /meta\.category/, '须读 _meta.category')
   assert.match(js, /meta\.server/, '须读 _meta.server（展示剥前缀用）')

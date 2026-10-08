@@ -29,6 +29,7 @@ import (
 
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
@@ -37,11 +38,11 @@ import (
 // 对齐 61-消息一览：gateway 方法面 = mcp-<组>-<动作>，data 面 = data-<域>-<动作>）。
 const (
 	// gateway 方法面：tools/register | tools/unregister → mcp-tools-register/unregister
-	subjectToolRegister   = "mcp-tools-register"
-	subjectToolUnregister = "mcp-tools-unregister"
+	subjectToolRegister   = msgkeys.TopicMcpToolsRegister
+	subjectToolUnregister = msgkeys.TopicMcpToolsUnregister
 	// 本插件声明的 gateway 工具回调主题（gateway regProv 命中后向该主题发 {tool,args,context}，
 	// 订阅者写回 v.Result，同一主题 promise——镜像 codegraph 插件模式）
-	toolCallSubject = "vfts-tool-call"
+	toolCallSubject = msgkeys.TopicVftsToolCall
 
 	// prj-config 键
 	engineName        = "vfts"                 // 引擎标识（配置键前缀 = 引擎名；ignore.ConfigOptions 用）
@@ -54,9 +55,9 @@ const (
 	statusKey         = "vfts.status"          // 引擎状态 JSON 文本（插件回写，UI 只读回显）
 
 	// data 面（persist 订阅）
-	subjectPrjConfigRefresh = "data-prj-config-refresh"
-	subjectPrjConfigLoad    = "data-prj-config-load"
-	subjectPrjConfigSave    = "data-prj-config-save"
+	subjectPrjConfigRefresh = msgkeys.TopicDataPrjConfigRefresh
+	subjectPrjConfigLoad    = msgkeys.TopicDataPrjConfigLoad
+	subjectPrjConfigSave    = msgkeys.TopicDataPrjConfigSave
 
 	// 周期/超时
 	sweepInterval    = 15 * time.Second // 空闲子进程回收周期
@@ -114,6 +115,9 @@ type Vfts struct {
 	probeAt    time.Time
 	probeCache *docService
 	probeWasUp bool // 上次探测是否可用（absent→running 跳变时自动接上，见 maybeDocServiceAppeared）
+
+	// engineCallFn 引擎调用注入点（默认 nil = 走共享子进程 client；管理面单测替换用）。
+	engineCallFn func(ctx context.Context, name string, args map[string]any) (string, error)
 
 	subs []mq.Sub // 订阅句柄（Start 失败回滚用；宿主不提供 Stop）
 }
@@ -203,6 +207,24 @@ func (p *Vfts) Start(d plugin.Deps) error {
 		return err
 	}
 	p.subs = append(p.subs, sh)
+
+	// 管理面（UI ↔ 插件，点分相对主题，同主题 promise 写回 v.Result）：
+	// 系统级 jieba 词典查看/编辑 + 手动重新索引（见 manage.go）。
+	for _, s := range []struct {
+		subject string
+		h       mq.VHandler
+	}{
+		{topicDictGet, p.onDictGet},
+		{topicDictSet, p.onDictSet},
+		{topicReindex, p.onReindex},
+	} {
+		sub, err := d.Bus.On(s.subject, 0, s.h)
+		if err != nil {
+			p.unsubscribeAll()
+			return err
+		}
+		p.subs = append(p.subs, sub)
+	}
 
 	// 后台循环：周期回收空闲 5 分钟的子进程（实例生命周期只由 instance-register/exit 驱动）
 	go p.loop()

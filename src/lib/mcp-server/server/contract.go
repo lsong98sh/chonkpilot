@@ -126,12 +126,24 @@ type ToolDoc struct {
 	TitleMeta   string         // meta: title（一句话标题；MCP Tool.title）
 	Async       string         // meta: async（auto|always|never|manual，缺省 auto）
 	AsyncTh     int            // meta: async-threshold（秒；async=auto 下超时自动转后台）
+	Idempotent  bool           // meta: idempotent（可重试性；缺省 false = 安全默认，见 G-20）
 	Timeout     int            // meta: timeout（秒；执行硬上限。0/-1 = 无上限；仅 TimeoutSet 时有效）
 	TimeoutSet  bool           // meta: timeout 键是否**显式声明**（区分「未设置=回落全局」与「0/-1=无上限」）
 	Args        string         // meta: args（命令行模板，{param}/{RAW-INPUT-FILE}/{RESULT-OUTPUT-FILE}）
 	Output      string         // meta: output（stdout|code|file，缺省 stdout）
 	Description string         // [description] 多行描述
 	Schema      map[string]any // [parameters] YAML → JSON Schema
+}
+
+// categoryServer 标记「由 server/gateway 自持（in-memory 节点）提供、无 executor runtime」的工具契约
+// （如 capability/tools/core/dsl_run.tool.md —— 其运行体是 gateway 的 dsl 节点）。
+// 此类契约**不作为 executor 工具注册**：mcp-server 侧无 runtime、不可用，热重扫时还会在 self 节点
+// 复现为幽灵工具（self_dsl_run）。它们只作为域工具的**描述单源**（见 ServerTools）。
+const categoryServer = "server"
+
+// isServerTool 判定工具契约是否为 server 类别（category=server，大小写/空白不敏感）。
+func isServerTool(d *ToolDoc) bool {
+	return strings.EqualFold(strings.TrimSpace(d.Category), categoryServer)
 }
 
 // loadTools 递归扫描 folder 加载全部 *.tool.md。
@@ -150,6 +162,40 @@ func loadTools(folder string) ([]*ToolDoc, error) {
 	}
 	sort.Slice(docs, func(i, j int) bool { return docs[i].Name < docs[j].Name })
 	return docs, nil
+}
+
+// ServerTools 返回契约根 root 下全部 server 类别（category=server）工具，编译为 mcp.Tool
+// （含契约 _meta 与 cfg 的用户级异步覆盖），按原语名索引。
+//
+// 这些契约**不注册为 executor 工具**（见 isServerTool）；本函数是它们唯一的读取入口，
+// 供装配层把域工具（如 gateway 的 dsl_run）的定义**单源**交给其自持节点：gateway lib 不依赖本包
+// （RB-2），故由装配层桥接注入。root 缺失 → 空 map（非错误）。
+func ServerTools(root string, cfg *Config) (map[string]*mcp.Tool, error) {
+	if _, err := os.Stat(root); err != nil {
+		if os.IsNotExist(err) {
+			return map[string]*mcp.Tool{}, nil
+		}
+		return nil, err
+	}
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
+	docs, err := loadTools(root)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]*mcp.Tool{}
+	for _, d := range docs {
+		if !isServerTool(d) {
+			continue
+		}
+		t, err := buildTool(d, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("build server tool %s: %w", d.Name, err)
+		}
+		out[d.Name] = t
+	}
+	return out, nil
 }
 
 // parseToolDoc 解析单个 *.tool.md（分区式）。
@@ -171,6 +217,7 @@ func parseToolDoc(path string) (*ToolDoc, error) {
 		TitleMeta:   meta["title"],
 		Async:       firstNonEmpty(meta["async"], "auto"),
 		AsyncTh:     atoiSafe(meta["async-threshold"]),
+		Idempotent:  isTruthy(meta["idempotent"]),
 		Args:        meta["args"],
 		Description: sec["description"],
 	}
@@ -250,6 +297,11 @@ func buildTool(d *ToolDoc, cfg *Config) (*mcp.Tool, error) {
 	// 注意：此处 >0 之外的 0/-1 亦透出，供 UI/gateway 区分「未设置」与「无上限」。
 	if d.TimeoutSet {
 		ext["timeout"] = d.Timeout
+	}
+	// 可重试性（G-20，缺省 false = 安全默认）：仅**声明为 true** 时透出；
+	// 缺失 = false（不可安全自动重试）——将来若要加重试，判据 = `_meta.idempotent == true`。
+	if d.Idempotent {
+		ext["idempotent"] = true
 	}
 	// 用户级工具异步配置覆盖（usr 键 tool_async，四档）——配置该项时才改写上面按契约写入的值；
 	// 未配置 → 原样（契约现值语义不变）。hard_timeout 不进 _meta（仅 executor 执行硬上限）。

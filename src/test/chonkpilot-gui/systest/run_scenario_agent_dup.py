@@ -96,6 +96,18 @@ def main_agent():
     return {"name": "主", "roleTag": "主", "isMain": True, "prompt": MAIN_PROMPT}
 
 
+AGENTS_DIR = os.path.join(WS, ".chonkpilot", "capability", "agents")
+
+
+def agent_ref(name):
+    """子 agent 唯一形态 = 引用（内联子 agent 已废除）：落一份项目级 `agents/<名>.agent.md`
+    夹具并返回 `${workDir}` 引用串（读侧按引用展开，悬空则静默删除 → 夹具须真实存在）。"""
+    os.makedirs(AGENTS_DIR, exist_ok=True)
+    with open(os.path.join(AGENTS_DIR, name + ".agent.md"), "w", encoding="utf-8") as f:
+        f.write("# %s\n\n[content]\n子 agent 提示词\n" % name)
+    return "${workDir}/.chonkpilot/capability/agents/%s.agent.md" % name
+
+
 # ══════════════════════════════════════════════════════════════
 # 用例
 # ══════════════════════════════════════════════════════════════
@@ -107,8 +119,8 @@ def case_reject_same_scenario_duplicate():
     try:
         scenario_save({"id": DUP_ID, "name": "重名场景", "level": "project",
                        "agents": [main_agent(),
-                                  {"name": DUP_AGENT, "prompt": "a"},
-                                  {"name": DUP_AGENT.upper(), "prompt": "b"}]})  # 大小写差异 = 重名
+                                  {"name": DUP_AGENT, "ref": agent_ref(DUP_AGENT)},
+                                  {"name": DUP_AGENT.upper(), "ref": agent_ref(DUP_AGENT.upper())}]})  # 大小写差异 = 重名
     except TestError as e:
         err = str(e)
     if not err:
@@ -130,7 +142,7 @@ def case_allow_same_name_across_scenarios():
     c.mq_on_capture(["data-scenario-refresh"])
     for sid in (SCN_A, SCN_B):
         save_ok(sid, "同名跨场景 " + sid,
-                [main_agent(), {"name": SHARED_AGENT, "prompt": "s"}])
+                [main_agent(), {"name": SHARED_AGENT, "ref": agent_ref(SHARED_AGENT)}])
     for sid in (SCN_A, SCN_B):
         rows = scenario_rows(sid)
         if not rows or rows[0].get("level") != "project":
@@ -143,7 +155,8 @@ def case_unique_names_saved():
     """③ 未重名（唯一名）→ 正常保存：落盘 + refresh 广播 + load 回读（名称/主 agent 保真）。"""
     c.mq_on_capture(["data-scenario-refresh"])
     save_ok(SCN_C, "唯一名场景",
-            [main_agent(), {"name": "alpha", "prompt": "a"}, {"name": "beta", "prompt": "b"}])
+            [main_agent(), {"name": "alpha", "ref": agent_ref("alpha")},
+             {"name": "beta", "ref": agent_ref("beta")}])
     rec = scenario_load(SCN_C, "project")
     names = [a.get("name") for a in (rec.get("agents") or [])]
     if not ({"alpha", "beta"} <= set(names)):

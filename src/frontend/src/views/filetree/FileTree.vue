@@ -76,6 +76,7 @@ import { fetchIndexIgnored, toWorkdirRelPath } from '../../utils/indexIgnored'
 import { onDataRefresh } from '../../utils/dataClient'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+import { MsgTopics, FieldKeys, GuiVcsInfoKeys } from '../../events/msgkeys'
 
 import TreeNode from './TreeNode.vue'
 
@@ -98,10 +99,10 @@ const displayPath = computed(() => {
 async function fetchVCSInfo() {
   try {
     // gui.vcs.info（61-消息一览 §1）：探测工作目录 VCS 类型 → result {git, svn}
-    const env = await mq.emit('gui.vcs.info', {})
+    const env = await mq.emit(MsgTopics.guiVcsInfo, {})
     const r = env && env.backend && env.backend.result
     vcsInfo.value = (r && typeof r === 'object')
-      ? { git: !!r.git, svn: !!r.svn }
+      ? { git: !!r[GuiVcsInfoKeys.git], svn: !!r[GuiVcsInfoKeys.svn] }
       : { git: false, svn: false }
   } catch (_) {
     vcsInfo.value = { git: false, svn: false }
@@ -959,7 +960,7 @@ async function doDuplicate(path) {
 // 在系统控制台显示（gui.console.open：打开 cmd 到路径所在目录）
 async function doOpenInConsole(path) {
   try {
-    const env = await mq.emit('gui.console.open', { path })
+    const env = await mq.emit(MsgTopics.guiConsoleOpen, { [FieldKeys.path]: path })
     const backend = env && env.backend
     const p = backend && backend.result && typeof backend.result === 'object' ? backend.result : {}
     if (!backend || !backend.ok || p.ok === false || (backend.errors && backend.errors[0])) {
@@ -1139,6 +1140,9 @@ onMounted(() => {
 
   loadInitData().then(result => {
     treeData.value = normalizeTreeDataPaths(result.treeData || [])
+    // 根级首屏排序：后端 os.ReadDir 仅按名称字母序（不分目录/文件）→ 前端补「先目录后文件·
+    // 组内字母序」（对齐 32 §FT-002），与 loadDirChildren 等其余 4 处保持一致（I-172）。
+    sortChildren(treeData.value)
     _cachedWorkDir.value = (result.workDir || '').replace(/\\/g, '/')
     // 写入模块级工作目录：api/file.js 的 filemon 请求自动填充 work_dir
     setWorkDir(_cachedWorkDir.value)

@@ -620,7 +620,7 @@ func TestTaskTreeMainSessionTopLevel(t *testing.T) {
 func TestTaskDisplayTitlePriority(t *testing.T) {
 	// ① 有注入（llm_run 委派工具节点）→ title = 注入值
 	name, purpose, simp := taskDisplay("llm_run", map[string]any{
-		"script": `LLM "worker" "p"`, "tool_call_display_name": "派活说明",
+		"script": `LLM "worker" "p" "派活展示名"`, "tool_call_display_name": "派活说明",
 	})
 	if name != "派活说明" || purpose != "派活说明" || simp != "派活说明" {
 		t.Fatalf("①注入优先失败: name=%q purpose=%q simplified=%q", name, purpose, simp)

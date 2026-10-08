@@ -1,8 +1,8 @@
 # 22 · data-persist（src/lib/data 数据面：存储内核 + persist 服务）
 
-> 日期：2026-09-10（2026-09-11 复核校正）｜ 状态：✅ 与代码一致（v6 骨架 + 服务面均已落地）
+> 状态：✅ 与代码一致
 > 关联：[12-数据层](../10-architecture/12-数据层.md)（层级/fallback 规则）· [02-配置层级](../00-overview/02-配置层级.md)
-> 代码目录（D-28：`src/data/` → `src/lib/data/`）：`src/lib/data/`（内核：`db.go` `table.go` `query.go` `configkv.go` `shared.go` `migrate.go` `seed.go` `types.go` `config.go` `projectid.go` `resolve.go` 等；服务面：`persist/`）
+> 代码目录：`src/lib/data/`（内核：`db.go` `table.go` `query.go` `configkv.go` `shared.go` `migrate.go` `seed.go` `types.go` `config.go` `projectid.go` `resolve.go` 等；服务面：`persist/`）
 
 ---
 
@@ -32,9 +32,9 @@
 |----|--------|------|
 | user-config | `data-user-config-{list,load,save,delete}` | usr config（**标量逐 key** + 专用表 `llms`/`mcps`） |
 | prj-config | `data-prj-config-{list,load,save,delete}` | prj config（无前缀；个人运行态 key 自动路由 prjusr） |
-| prompt | `data-prompt-{list,load,save,delete}` | prj config（`prompt-` 前缀；`summary_prompt` 已文件化到 `capability/prompts/summary.prompt.md`〔**订正（2026-10-01，P1）**：扁平化，旧 `capability/knowledge/prompts/` 作废〕）。**2026-09-15：`summary_prompt` 区分「继承 / 覆盖」**——load 回读项目文件 → 系统文件 → 旧 prj 键（末层内置默认）；save 时**内容为空 或 与继承值相同 → 删项目级文件（保持继承、不写覆盖）**，不同才写项目级；delete = 删项目级文件回落继承（前端另有「恢复默认」入口，`src/lib/data/internal/config/prompt.go`） |
+| prompt | `data-prompt-{list,load,save,delete}` | prj config（`prompt-` 前缀；`summary_prompt` 已文件化到 **系统文档** `capability/system/summary.md`（纯文本；读序 = 项目 → 用户 → 系统文件 → embed 内置））。**`summary_prompt` 区分「继承 / 覆盖」**——load 回读项目文件 → 用户文件 → 系统文件 → embed 内置；save 时**内容为空 或 与继承值相同 → 删项目级文件（保持继承、不写覆盖）**，不同才写项目级；delete = 删项目级文件回落继承（前端另有「恢复默认」入口，`src/lib/data/internal/config/prompt.go`） |
 | prj-security | `data-prj-security-{list,load,save,delete}` | prj config（`security-` 前缀） |
-| scenario | `data-scenario-{list,load,save,delete}` | **场景文件树（capability 根下 `scenarios/`）**：`<级别根>/capability/scenarios/<场景目录>/`（**四级** app/user/project/prjusr；id/key = 目录名；**四级均可编辑**）〔**订正（2026-10-01，P1：[42 §2 (207)](../40-roadmap/42-决策记录.md)）**：场景根**移入 capability**（原独立根 `scenarios/` 作废）、级别扩为**四级**；**无覆盖**、不允许同名场景（跨四级唯一）。**payload 不变**〕〔**订正（2026-09-26 / 2026-09-29）**：app 级**可编辑**（出厂内容 = **磁盘目录**，唯一源 `src/initdata/capability/scenarios/`；**不再 embed、不再物化**）；`restore` 动作**已删除**〕 |
+| scenario | `data-scenario-{list,load,save,delete}` | **场景文件树（capability 根下 `scenarios/`）**：`<级别根>/capability/scenarios/<场景目录>/`（**四级** app/user/project/prjusr；id/key = 目录名；**四级均可编辑**；**无覆盖**、不允许同名场景（跨四级唯一）；app 级**可编辑**，出厂内容 = **磁盘目录**、唯一源 `src/initdata/capability/scenarios/`；`restore` 动作**已删除**；payload 不变） |
 | session | `data-session-{list,get,history,latest,title,delete,active-set,active-get,content,ensure-session,ensure-turn,append-message,set-summary,complete-turn,cleanup-stale,load-messages,context}` | prj/prjusr |
 | snapshot | `data-snapshot-{get,set}` | sessions 表 `history`/`snapshot_turn` |
 | tasktree | `data-tasktree-{list,tasks,delete,upsert}` | prjusr tasktree 表 |
@@ -48,13 +48,22 @@
 
 `data.{OpenLayer, Table, Query, GetConfig/SetConfig/DeleteConfig, Register/Unregister, Prj/PrjUsr/Usr, OpenSharedLayer, UserPath/DataRoot/PrjUsrPath/PrjUsrDBPath/ProjectPath}`。
 
-> ⚠️ **收窄在途（2026-09-21）**：上列「交出库句柄」的内核 API（`OpenLayer` / `Table` / `GetConfig`
+> ⚠️ **收窄在途**：上列「交出库句柄」的内核 API（`OpenLayer` / `Table` / `GetConfig`
 > / `SetConfig` / `DeleteConfig` / `Register` / `Unregister` / `Prj` / `PrjUsr` / `Usr` /
 > `OpenSharedLayer` / `BindOf`）**跨 module 生产调用已清零**（读点改走门面：
 > llm server 的 usr `mcps` 读 = `ConfigAPI.UserConfigMCPs`；CLI 数据根准备 =
 > `data.CopyConfigTables` + `data.ReadProjectIDPath`，两者起**不暴露句柄**）。
 > 剩余消费方 = module 内（`internal/*` / `persist`）与测试；把这些符号移入 `internal`
-> 尚待拍板（测试面影响，见 [41-未决项登记](../40-roadmap/41-未决项登记.md)）。
+> 尚待拍板（测试面影响）。
+
+### 3.3 门面域（`facade.API`，inline 绑定）
+
+> `src/lib/data/facade/` 是 data 层门面的**唯一定义**（接口 + DTO，单一真相）；宿主装配期选绑定（本期唯一落地 = **inline 同进程直调**，见 [23 §7](../10-architecture/23-工程与部署拓扑.md)）。门面只放**领域字段**、不交路径规则；写入广播由实现侧在其后发出（不在请求-响应签名内）。
+
+| 门面面 | 域 | 消息面（若有） |
+|--------|----|--------------|
+| `SnapshotAPI` / `ConfigAPI` / `SessionAPI` / `TurnAPI` / `MessageAPI` / `TasktreeAPI` / `KnowledgeAPI` / `FileListAPI` / `ScenarioAPI` / `MemoryAPI` / `McpAPI` | snapshot / config / session / turn / message / tasktree / knowledge / filelist / scenario / memory / mcp | 对应 `data-<domain>-*`（§3.1 · §3.2 · §3.3 · §3.4 · §3.6） |
+| **`ProjectAPI`** | **project**（项目初始化：**工程规格文件** + 工作目录**只读探测** + **项目级 agent 落文件**） | **无消息面** —— 由 server **inline 直调**（「场景向导」用，[37 SCEN-012](../30-function-points/37-场景.md)）：`ProjectSpecExists` / `ProjectSpecRead` / `ProjectSpecWrite`（落点 `<workDir>/.chonkpilot/project_spec.md`）+ `ProjectProbe`（**只读**：`empty` / `has_code` / `has_git` / `has_readme` / `file_count` / `languages[]` / `frameworks[]` / `package_manager` / `build_tool` / `test_tool` / `lint_tool` / `top_dirs[]`）+ `ProjectAgentWrite`（把向导合成的 agent 提示词落 `<workDir>/.chonkpilot/capability/agents/<名>.agent.md`（契约分区文本），回引用串 `${workDir}/.chonkpilot/capability/agents/<名>.agent.md`；**供场景以引用承载子 agent**）。定义 = `facade/project.go`、实现 = `internal/project/`（`project.go` + `probe.go`）。本域**无变更广播**（消费者只有向导自身）。 |
 
 ---
 
@@ -113,7 +122,7 @@ persist 运行态：实例视图（订阅 `instance-register/heartbeat/exit`）�
 ## 8. 场景与边界
 
 - 未注册 instance → `ErrLayerUnavailable` / "instance not registered"。
-- 跨进程 bbolt 独占 → 同用户同项目双开 GUI 由上层 lock 拒绝。
+- 跨进程：**work-dir 占用锁**（`src/lib/core/lockfile`；启动 / 选目录入口非阻塞校验，I-74）拒绝同用户同项目双开 GUI；prj / prjusr 库的 bbolt 独占 flock 为底层兜底。
 - CLI：`dataDir` 非空时 prj 与 prjusr 同文件（`<dataDir>/chonkpilot.db`）。
 - 删除本层 key（`DeleteConfig`）= 恢复继承（不存在视为成功）。
 
@@ -122,8 +131,8 @@ persist 运行态：实例视图（订阅 `instance-register/heartbeat/exit`）�
 ## 9. 现状与待办
 
 - ✅ v6 骨架落地：三级路径、`project-id`、同构 migration、逐 key config。
-- ✅ S2–S7 已完成（2026-09-11）：死配置清理、专用表 `llms`/`mcps` 迁移、prjusr 落地（会话/轮次/消息/任务树/快照 + 个人运行态 key 路由）、capability 文件树（场景/知识库 + `summary.prompt.md`）、UI 改造、契约对齐——见 [02-配置层级 §10](../00-overview/02-配置层级.md)。
-- ✅ 场景已文件化：`scenarios/<场景目录>/`（原 `scenario_list` / `scenarios` 桶不再作为主数据）。〔**订正（2026-09-25，[25 §6](../10-architecture/25-MCP与场景分层模型.md) · T6）**：旧 `capability/prompts/<场景目录>/` 作废 → 场景改**独立根 `scenarios/`**（与 `capability/` 平级，三级 app/user/project、**无覆盖**）〕
+- ✅ S2–S7 完成：死配置清理、专用表 `llms`/`mcps` 迁移、prjusr 落地（会话/轮次/消息/任务树/快照 + 个人运行态 key 路由）、capability 文件树（场景/知识库 + `summary.prompt.md`）、UI 改造、契约对齐——见 [02-配置层级 §10](../00-overview/02-配置层级.md)。
+- ✅ 场景已文件化：`<级别根>/capability/scenarios/<场景目录>/`（四级；原 `scenario_list` / `scenarios` 桶不再作为主数据）。
 
 ---
 

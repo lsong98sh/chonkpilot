@@ -32,12 +32,18 @@ type Provider interface {
 	Name() string
 	// ListTools 返回全量工具定义（网关启动缓存）。
 	ListTools(ctx context.Context) ([]*mcp.Tool, error)
-	// Call 执行工具（超时/异步由 TaskManager 编排）。
+	// Call 执行工具（超时/异步由执行池 execPool 编排）。
 	Call(ctx context.Context, tool string, args map[string]any) (*mcp.CallToolResult, error)
 	// Invalidate 作废当前连接/子进程（kill stdio 子进程 / 断连），并**恒**重建（respawn + 重连）。
 	// 返回 rebuilt = 是否已重建（false = 重建失败，provider 暂不可用，需 unregister/register
 	// 或 reload 恢复）。内存 provider 为 no-op（返回 true）。
 	Invalidate(ctx context.Context) (rebuilt bool, err error)
+	// Terminate 是「取消 → 真停」的**按执行线统一入口**（onTaskCancel 调用；决策 42 §2 (241)）：
+	//   - spawned / 纯远程代理（proxyProvider）→ kill + respawn（纯远程无自持子进程 → 仅断请求，
+	//     对端进程可能继续运行 = 语义「尽力」）；instanceID/workdir 非空且持隔离槽 → 仅作用该槽；
+	//   - in-memory（memNode / registered）→ **协作式**：取消已由执行池 ctx 送达执行体
+	//     （gateway 只负责「把取消送到」，真停实现仍在执行体侧，见 18 §3.1/§3.4）→ 此处 no-op。
+	Terminate(ctx context.Context, instanceID, workdir string) (rebuilt bool, err error)
 	// Close 释放资源（断连 / 杀子进程）。
 	Close() error
 }
@@ -663,7 +669,7 @@ func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
 //   - 未命中（isolate=false / workdir 缺失回落共享槽 / 已被回收）→ 回落全量 Invalidate
 //     （保证取消仍真实打断在飞调用，与引入本方法前行为等价）。
 //
-// 非 proxyProvider（内存/注册型 provider）不实现本方法 → 调用方走 Provider.Invalidate。
+// Terminate 即调用本方法（取消的执行线入口）；内存/注册型 provider 的 Terminate 为协作式 no-op。
 func (p *proxyProvider) InvalidateScoped(ctx context.Context, instanceID, workdir string) (bool, error) {
 	if instanceID == "" && workdir == "" {
 		return p.Invalidate(ctx)
@@ -673,6 +679,14 @@ func (p *proxyProvider) InvalidateScoped(ctx context.Context, instanceID, workdi
 		return true, nil
 	}
 	return p.Invalidate(ctx)
+}
+
+// Terminate 是取消的**执行线入口**（`onTaskCancel` 调用）：spawned / 纯远程代理统一按
+// (instance, workdir) 作用域作废 —— 命中隔离槽 → 仅 kill 该槽子进程/断连（下次调用懒建）；
+// 否则（共享槽 / 无隔离维度）→ 全量 kill + respawn。纯远程（proxied，无自持 cmd）退化为
+// **仅断请求**（对端进程可能继续运行 = 语义「尽力」，见 18 §3.4）。
+func (p *proxyProvider) Terminate(ctx context.Context, instanceID, workdir string) (bool, error) {
+	return p.InvalidateScoped(ctx, instanceID, workdir)
 }
 
 // Close 释放资源：停空闲回收 → 关闭池中全部连接槽 → 共享槽净断（先于 kill，避免断开噪音）。
@@ -701,11 +715,13 @@ const (
 	ctxKeyToolCallID
 	ctxKeyWorkDir
 	ctxKeyDataDir
+	ctxKeyTopSession
+	ctxKeyParent
 )
 
-// withTurnContext 把请求 turn 上下文（session/turn/instance/tool_call_id + work_dir/data_dir）注入
-// 执行 context——inmemory 节点 handler 据此恢复对应 server turn，并把调用上下文以 _meta 透传给内嵌
-// mcp-server（spawn executor 时注入 CHONKPILOT_*）。
+// withTurnContext 把请求 turn 上下文（session/turn/instance/tool_call_id + work_dir/data_dir +
+// top_session/parent）注入执行 context——inmemory 节点 handler 据此恢复对应 server turn，并把调用
+// 上下文以 _meta 透传给内嵌 mcp-server（spawn executor 时注入 CHONKPILOT_*）。
 func withTurnContext(ctx context.Context, c Context) context.Context {
 	if c.Session != "" {
 		ctx = context.WithValue(ctx, ctxKeySession, c.Session)
@@ -724,6 +740,12 @@ func withTurnContext(ctx context.Context, c Context) context.Context {
 	}
 	if c.DataDir != "" {
 		ctx = context.WithValue(ctx, ctxKeyDataDir, c.DataDir)
+	}
+	if c.TopSession != "" {
+		ctx = context.WithValue(ctx, ctxKeyTopSession, c.TopSession)
+	}
+	if c.Parent != "" {
+		ctx = context.WithValue(ctx, ctxKeyParent, c.Parent)
 	}
 	return ctx
 }
@@ -747,6 +769,12 @@ func WorkDirFromContext(ctx context.Context) string { return strFromCtx(ctx, ctx
 
 // DataDirFromContext 返回 context 中的数据目录（无则空）。
 func DataDirFromContext(ctx context.Context) string { return strFromCtx(ctx, ctxKeyDataDir) }
+
+// TopSessionFromContext 返回 context 中的主会话 id（任务树归属；无则空）。
+func TopSessionFromContext(ctx context.Context) string { return strFromCtx(ctx, ctxKeyTopSession) }
+
+// ParentFromContext 返回 context 中的父任务节点 id（调用层已登记的 llm 侧节点；无则空）。
+func ParentFromContext(ctx context.Context) string { return strFromCtx(ctx, ctxKeyParent) }
 
 func strFromCtx(ctx context.Context, k ctxKey) string {
 	if v := ctx.Value(k); v != nil {

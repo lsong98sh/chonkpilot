@@ -5,6 +5,7 @@
       <div class="tab-actions">
         <!-- ⑤ dirty 标记（仅显示，不改按钮保存的时机） -->
         <span v-if="unsaved" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
+        <Button size="small" :disabled="reindexing" @click="handleReindex">{{ $t('projectConfig.index_reindex') }}</Button>
         <Button size="small" :disabled="saving || !hasProjectOverride" @click="handleResetDefaults">{{ $t('projectConfig.index_reset_default') }}</Button>
         <Button size="small" type="primary" :loading="saving" @click="handleIndexSave">{{ $t('projectConfig.save') }}</Button>
       </div>
@@ -91,6 +92,21 @@
           </div>
           <div class="vf-hint">{{ $t('projectConfig.docs_register_hint') }}</div>
         </div>
+        <hr class="b-divider" />
+        <!-- 系统级词典（jieba）：全机唯一一份，无项目级/用户级覆盖；变更后必须重新索引 -->
+        <div class="form-item form-item-full">
+          <label class="form-label">{{ $t('projectConfig.dict_section') }}</label>
+          <div class="vf-hint">{{ $t('projectConfig.dict_hint') }}</div>
+          <div class="vf-stats">
+            <span class="vf-stat">{{ $t('projectConfig.dict_dir_label') }}：{{ dictDir || $t('projectConfig.dict_dir_unavailable') }}</span>
+            <span v-if="baseDicts.length" class="vf-stat">{{ $t('projectConfig.dict_base_label') }}：{{ baseDicts.join(', ') }}</span>
+            <span class="vf-stat">{{ $t('projectConfig.dict_word_count') }}：{{ wordCount }}</span>
+          </div>
+          <Textarea v-model="userDict" :rows="6" :placeholder="$t('projectConfig.dict_user_placeholder')" />
+          <div class="vf-code-actions">
+            <Button size="small" type="primary" :loading="savingDict" :disabled="loadingDict" @click="handleDictSave">{{ $t('projectConfig.dict_save') }}</Button>
+          </div>
+        </div>
       </form>
     </div>
   </div>
@@ -102,13 +118,22 @@ import { useI18n } from 'vue-i18n'
 import { Switch, Textarea, Button, message } from '../../components/ui'
 import { getAllConfig, setConfig, setConfigs, deleteConfig } from '../../api/config'
 import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
+import { useVftsDict } from '../../composables/useVftsDict'
 import { hasEngineTools } from '../../utils/engineStatus'
 import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import mq from '../../utils/mq'
+import { MsgClientTopics } from '../../events/msgkeys.js'
 import { DEFAULT_SKIP_DIRS, VFTS_DEFAULT_EXTS } from './indexDefaults'
 
 const { t } = useI18n()
 const unsubs = []
+
+// 系统级词典（jieba）+ 重新索引（状态逻辑封装在 composable；见 useVftsDict）。
+const {
+  dictDir, userDict, wordCount, baseDicts,
+  loading: loadingDict, saving: savingDict, reindexing,
+  loadDict, saveDict, reindex: reindexAll,
+} = useVftsDict()
 
 const vfEnabled = ref(false)
 // vfts.status 由 vfts plugin 回写（JSON 文本：state/phase/progressDone/progressTotal/
@@ -279,7 +304,8 @@ async function loadConfig() {
 // 读工具面判定「查询工具已注册」（真实可得信号；插件无进程运行态下发）。
 async function loadEngineTools() {
   try {
-    const env = await mq.emit('tools-list', {})
+    // tools-list：客户端能力面 type（schema clientTopic，桥映射 mcp-tools-list），常量见 MsgClientTopics。
+    const env = await mq.emit(MsgClientTopics.toolsList, {})
     const res = env && env.backend && env.backend.result
     const tools = res && Array.isArray(res.tools) ? res.tools : []
     toolsRegistered.value = hasEngineTools(tools, 'vfts')
@@ -352,6 +378,27 @@ async function copyDocsRegister() {
   }
 }
 
+// 手动触发全量重建索引（配置页「重新索引」按钮）：后台进行，回执后给可见反馈。
+// 分词器/词典/自定义词变更后必须重建才生效（分词结果落在索引里）。
+async function handleReindex() {
+  try {
+    await reindexAll()
+    message.success(t('projectConfig.index_reindex_started'))
+  } catch (e) {
+    message.error(saveFailedText(t, e))
+  }
+}
+
+// 保存系统级自定义词（后端同时自动调度强制重建）。
+async function handleDictSave() {
+  try {
+    await saveDict()
+    message.success(t('projectConfig.dict_saved'))
+  } catch (e) {
+    message.error(saveFailedText(t, e))
+  }
+}
+
 // 保存索引配置（exts/skip-dirs/stack-gitignore）：只提交实际改动的键。
 // 非空改动值 → **一次批量写**（1 条 data-prj-config-save → 后端整批广播 1 条 data-prj-config-refresh，
 // 含 ids 全组键）触发插件重新 configure + 重建索引（插件按整批键集处理 + 去抖一轮）。
@@ -407,6 +454,7 @@ async function handleResetDefaults() {
 onMounted(() => {
   loadConfig()
   loadEngineTools()
+  loadDict()
   // data-prj-config-refresh：配置/状态变更后自动重载（统一机制 usePrjConfigRefresh，I-138）。
   // handleIndexSave 一次批量写改动的项 → 后端整批广播 1 条（含 ids）；清空项走 delete（单键广播）；
   // handleResetDefaults 逐键 delete；统一机制**按键过滤**（仅本页关注键）+ **合并突发广播为 1 次

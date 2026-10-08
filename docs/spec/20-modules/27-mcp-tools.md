@@ -1,8 +1,8 @@
 # 27 · src/lib/mcp-tools（执行层）
 
-> 日期：2026-09-10 ｜ 状态：✅ 与代码一致
+> 状态：✅ 与代码一致
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [25-mcp-server](25-mcp-server.md) · [14-安全域](../10-architecture/14-安全域-agentbox.md)
-> 代码目录（D-28：`src/mcp-tools/` → `src/lib/mcp-tools/`）：`src/lib/mcp-tools/`（`core/` `desktop/` `browser/` + `internal/*`）；**契约唯一源已迁出** → `src/initdata/capability/tools/`（executor 不再内嵌，`--help` 从磁盘读）。
+> 代码目录：`src/lib/mcp-tools/`（`core/` `desktop/` `browser/` + `internal/*`）；**契约唯一源已迁出** → `src/initdata/capability/tools/`（executor 不再内嵌，`--help` 从磁盘读）。
 
 ---
 
@@ -10,7 +10,7 @@
 
 - **一句话**：**执行层**——三个分类 exe（core / desktop / browser），被 mcp-server `callTool` **spawn-on-call**，自持实现具体工具动作，用完即退。
 - **做**：文件操作 DSL、脚本执行、HTTP 抓取、浏览器 DSL、桌面 DSL；统一输出层（`Ok`/`Err` + 200KB 落文件）。
-- **不做**：**零主仓库依赖**（仅 `src/lib/paths`）；无 DB/NATS；**无路径白名单**（越界读写成败由 agentbox 承担，见 [14-安全域](../10-architecture/14-安全域-agentbox.md)）——**〔订正（2026-09-19，[42 §2 (109)](../40-roadmap/42-决策记录.md)）：agentbox 沙箱已落地，执行器**在启用隔离时**真正拦截越界读写**（`agentbox.InitFromEnv()` + 各 choke point，见 [14 §7.1](../10-architecture/14-安全域-agentbox.md)）；未注入 `CHONKPILOT_SANDBOX` = 不启用（默认兼容）〕**；零持久状态。
+- **不做**：**零主仓库依赖**（仅 `src/lib/paths`）；无 DB/NATS；**无路径白名单**（越界读写成败由 agentbox 承担，见 [14-安全域](../10-architecture/14-安全域-agentbox.md)）——agentbox 沙箱在执行器**启用隔离时**真正拦截越界读写（`agentbox.InitFromEnv()` + 各 choke point，见 [14 §7.1](../10-architecture/14-安全域-agentbox.md)）；未注入 `CHONKPILOT_SANDBOX` = 不启用（默认兼容）；零持久状态。
 - **文件操作参数强约束（R-11）**：**所有输入/输出文件与目录参数**（含 **DSL 内所有 `#"..."` 引用**，含**数据源读取**）**必须为绝对路径或以 `~/` 开头的用户目录路径**，相对路径一律拒绝（参数级违规 → 整体失败，错误消息含原值、位置与示例）；规范见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。注意：`paths.ResolveDir` 仍服务 CLI 目录参数且允许相对（下同；是唯一允许相对处）。
 
 ---
@@ -47,12 +47,14 @@
 
 ### 3.2 各工具能力
 
+> **可重试性声明位 `idempotent`**：每个 `*.tool.md` 的 `[meta]` 新增 `idempotent`（`true` = 该工具**可安全自动重试**；缺省 / `false` = **安全默认 = 不可安全自动重试**），仅声明 `true` 时透出暴露 `_meta.idempotent=true`。声明结果：只读 `file_read`/`file_find`/`file_diff` = `true`；写/副作用 `filesys_run`（`StopOnError=false`，含 `APD`/`INS`/`PTC`）/`script_run`/`web_fetch`（POST）/`browser_run`/`desktop_run` = `false`。**DSL 运行器现不重试**；该位为将来加重试提供判据。见 [72 §2](../70-conventions/72-工具开发规范.md)。
+
 - **`filesys_run`**：DSL 动词（7 个 Raw）：`RPL`（全局替换，保行数）· `APD`（追加）· `PTC`（unified diff 增删改）· `INS`（建文件）· `DEL`（按 search 删行 / 无 search 删文件或目录）· `MOV`（移动，跨卷回退复制+删源）· `CPY`（文件/目录递归复制）。`StopOnError=false`（记错继续）。**路径（R-11）**：动词 `#"path"`、核心语句**所有文件句柄**（**LOOP/SET 数据源读取**、访问器 `.content/.lines/.array/.object/.range`、`IF exist`、`=> #"file"` 目标）、顶层 `file`、顶层 `md5` 键均须绝对 / `~/` / `!/`；字面相对路径在执行前被拒（整体失败、无副作用），`{{}}` 插值由 `ScriptFS` 执行时兜底校验。
   **返回条目**：`modified[]` / `created[]` 每条含 `{path, type, size, mtime(RFC3339), md5}`（`modified` 另含 `diff`）；目录条目 `type="dir"`、`size=0`、无 `md5`；`deleted[]` 仍为路径字符串数组（删除后无法 stat）。
 - **`file_read`**：多文件 + `ranges`/`tail`/`start+limit` + 行号 + md5/encoding/size。**路径（R-11）**：`files[].path` 须绝对 / `~/` / `!/`。
 - **`file_find`**：`output=tree|file|summary`，`depth` 剪枝、`glob`、`grep` 正则、200 行上限、时间过滤。**路径（R-11）**：`path` 须绝对 / `~/` / `!/`。
 - **`file_diff`**：三形态入参，unified diff。**路径（R-11）**：`file1`/`file2`/`files[].path`/`files[].path2`/`path[]` 均须绝对 / `~/` / `!/`。
-- **`script_run`**：runtime 白名单 `shell/cmd/bash/python/js/powershell/vbs/java`；`script` XOR `file`；`requires` **仅 `python`（`pip install`）与 `js`（`npm install --no-save`）**，其它 runtime 传 `requires` → **整体失败**；powershell 加 `-ExecutionPolicy Bypass -File`。**写临时脚本** `ck_script_*`（用完删），扩展名按 runtime（`python=.py` / `js=.js` / `powershell=.ps1` / `vbs=.vbs` / `bash=.sh` / **`java=.java`**——JDK 单文件源码模式（JEP 330）要求 `.java`，其它扩展名会被 `java` 当**类名** → `ClassNotFoundException`，见 I-80；`public` 类名与文件名不必同名）。**路径（R-11）**：`file`、`workdir`（运行目录）、`interpreter`（解释器/可执行文件路径）均须绝对 / `~/` / `!/`；`args`/`env`/`filter` 等命令参数与 runtime 内置默认命令（`cmd`/`bash`/`sh`，走 PATH）不受约束。
+- **`script_run`**：runtime 白名单 `shell/cmd/bash/python/js/powershell/vbs/java`；`script` XOR `file`；`requires` **仅 `python`（`pip install`）与 `js`（`npm install --no-save`）**，其它 runtime 传 `requires` → **整体失败**；powershell 加 `-ExecutionPolicy Bypass -File`。**写临时脚本** `ck_script_*`（用完删），扩展名按 runtime（`python=.py` / `js=.js` / `powershell=.ps1` / `vbs=.vbs` / `bash=.sh` / **`java=.java`**——JDK 单文件源码模式（JEP 330）要求 `.java`，其它扩展名会被 `java` 当**类名** → `ClassNotFoundException`；`public` 类名与文件名不必同名）。**路径（R-11）**：`file`、`workdir`（运行目录）、`interpreter`（解释器/可执行文件路径）均须绝对 / `~/` / `!/`；`args`/`env`/`filter` 等命令参数与 runtime 内置默认命令（`cmd`/`bash`/`sh`，走 PATH）不受约束。
 - **`web_fetch`**：`method/body/form/form_files/headers/cookies/save_as/encoding/follow_redirect/readTimeout`；多编码转码（gbk/big5/shift-jis/euc-jp/euc-kr/iso-8859-1）；multipart 文件上传；`save_as` 直落文件（大文件不进上下文）；UA 缺省 `ChonkPilot/1.0`。**路径（R-11）**：`save_as`、`form_files[].path` 须绝对 / `~/` / `!/`（在发请求前即拒绝）。
 - **`browser_run`**（chromedp，23 动词 Raw）：`OPN WAT CLK DBL RCL HOV CHK UCHK FILL SELO KPR KDN KUP EXP EVL SHT DOM DBG SCL DRG UPF TAB SLP`；locator JS（`__ckResolve` 支持 `>>` 链式）。**路径（R-11）**：`file`、`chrome_path`（Chrome/Edge 可执行文件）、DSL 内 `SHT`/`DOM`/`DBG`/`UPF`（最后一个参数）、核心语句文件句柄（**LOOP/SET 数据源读取**、访问器、`IF exist`）、行尾 `=> #"file"` 目标、落盘参数 `dom_file`/`console_file`/`fail_shot` 须绝对 / `~/` / `!/`；字面路径在启动浏览器前预校验。
 - **`desktop_run`**（Win32，23 动词 Raw）：`WIN MOV CLK DBL CLKR CLKM DBLR DBLM LMD LMU RMD RMU MMD MMU DRG WHL INP KPR KDN KUP IME SHT SLP`；`WIN` 后 `$X/$Y/$W/$H/$CX...` 同步进作用域；`runtime.LockOSThread()`。**路径（R-11）**：`file`、DSL 内 `SHT`、`WIN … SHT`、核心语句文件句柄（**LOOP/SET 数据源读取**、访问器、`IF exist #"…"`/`IF exist "…"`）、行尾 `=> #"file"` 目标须绝对 / `~/` / `!/`；字面路径在执行前预校验。
@@ -118,14 +120,14 @@
 
 ## 9. 现状与待办
 
-- 🗄 **已清理（P0-2，2026-09-10）**：原无入口接线的 `fileops/{write,remove,rename,dir,replace}.go` **整文件删除**；`patch.go`/`grep.go` 裁剪为仅保留被复用的 `applyUnifiedDiff`/`globMatch`（能力由 `filesys_run`/`file_find`/`file_diff` 承接）。
-- 🗄 **已订正（P0-5，2026-09-10）**：`fetch.go` 头注释改为「响应体不设自限（io.ReadAll 全读）；超长输出由 executor 统一层接管（>200KB 落临时文件）」。
-- 🗄 **已修（P0-1 附带，2026-09-10）**：`internal/browser/tab.go` 加 `maxConsoleLines=2000` 滑动窗口（原地丢弃最旧），替代已删除的 `browserLogCap` 配置。
-- ✅ **R-11 落地（2026-09-11）**：`internal/fileops/pathcheck.go` 新增 `ValidateFilePath`/`InvalidPathMessage`/`ValidateField`，`ResolvePath` 收敛为强校验（绝对或 `~/`，拒绝相对）；接入 `file_read`（`files[].path`）· `file_find`（`path`）· `file_diff`（`file1`/`file2`/`files[].path`/`files[].path2`/`path[]`）· `filesys_run`（DSL `#"path"` 执行前预校验 + 顶层 `file`/`md5` 键）· `script_run`（`file`）；同批更新 5 个契约 md。
-- ✅ **R-11 覆盖扩展（2026-09-11，补 A1-补）**：`internal/fetch/fetch.go`（`save_as`/`form_files[].path`）· `internal/browser/{handle,run,actions}.go`（`file`、`dom_file`/`console_file`/`fail_shot`、DSL `SHT`/`DOM`/`DBG`/`UPF` 与 `=> #"file"` 目标）· `internal/desktop/run.go`（`file`、DSL `SHT`/`WIN … SHT` 与 `=> #"file"` 目标）接入同一 `fileops.ValidateFilePath`；browser/desktop 对 DSL 内字面落盘路径执行前预校验、`{{}}` 插值在执行时兜底校验；同批更新 `web_fetch`/`browser_run`/`desktop_run` 3 个契约 md。（本行原述「`script_run.workdir` 保持允许相对」已由下条 A1-补2 纠正。）
-- ✅ **R-11 范围升级（2026-09-11，A1-补2）**：新增 `src/lib/dsl/paths.go` 的**只读** `CollectHandleRefs`（收集 LOOP/SET 数据源、`IF exist`、`=> 目标`、访问器参数等全部 `#"path"` 引用；纯遍历、**不改变引擎行为**，`llm_run` 不受影响）；新增 `fileops/scriptfs.go` 校验型 `ScriptFS` 并注入 `filesys_run`（核心语句数据源读取/访问器/`=> 目标` 亦须绝对 / `~/` / `!/`，`{{}}` 插值执行时兜底校验）；`browser`/`desktop` 的 `scriptFS` 读路径同样运行时可校验并纳入数据源预校验；`script_run.workdir`/`interpreter`、`browser_run.chrome_path` 纳入「必须绝对 / `~/` / `!/`」；同批更新 8 个契约 md 与 16/27/3A/63/72/14/24。
-- ✅ **R-11 二次升级（2026-09-12，决策 42 §1 R-11 / §2 时间线 (20)）**：`src/lib/paths` 新增**唯一 API** `ResolvePath(raw, base)`（规则序：空 → `!/` → `~/` → 绝对 → base 拼接 / 无 base 报错）、`SetTempRoot`/`TempRoot`（`!/` 映射 `<temp>/chonkpilot/<instance>/`）、`InvalidPathMessage`；`pathcheck.go` **降为薄封装**（删重复实现）。`scriptfs.go` 与 browser/desktop 的 `scriptFS`/落盘点改为**解析后使用绝对路径**（`!/`、`~/` 全路径可用）。executor 经新增 `fileops.HostEnv`/`BuildToolEnv`（读**自身进程环境** `CHONKPILOT_*` + 自身 exe 目录）`SetTempRoot` + 注入**只读** DSL `env`；`script_run` 同时把同名变量注入**子进程环境**（用户 `env` 同名优先）。
-- ✅ **R-11 调用上下文改由 `_meta` + 子进程 env（2026-09-12，二次升级修订）**：移除经 tool `arguments` 注入上下文 —— `mcp-server Config.SetContext`/`defaultsMap` 对 `_workdir`/`_datadir`/`_instance`/`_interpreters` 的注入**已删除**；上下文改由调用上下文（协议 `_meta`，键 `chonkpilot.{instance_id,work_dir,data_dir}`）从 gateway 透传，`mcp-server` spawn executor 时注入子进程环境 `CHONKPILOT_INSTANCE/WORKDIR/DATADIR/INTERPRETERS`（`Config.executorEnv`）。executor 从进程环境读（`cli.Run` + `fileops.HostEnv`）；**instance 为空 = 异常**（`paths.SetTempRoot/TempRoot` 不再回落 `default`，返回 `ErrNoInstance`）。DSL env 去掉兼容别名 `WORKDIR`，**只允许 `{{env.<NAME>}}`**。同批更新 8 个契约 md 与 16/24/27/63/72/3A。
+- 🗄 **已清理**：无入口接线的 `fileops/{write,remove,rename,dir,replace}.go` **整文件删除**；`patch.go`/`grep.go` 裁剪为仅保留被复用的 `applyUnifiedDiff`/`globMatch`（能力由 `filesys_run`/`file_find`/`file_diff` 承接）。
+- 🗄 **已订正**：`fetch.go` 头注释为「响应体不设自限（io.ReadAll 全读）；超长输出由 executor 统一层接管（>200KB 落临时文件）」。
+- 🗄 **已修**：`internal/browser/tab.go` 有 `maxConsoleLines=2000` 滑动窗口（原地丢弃最旧），替代已删除的 `browserLogCap` 配置。
+- ✅ **R-11 落地**：`internal/fileops/pathcheck.go` 新增 `ValidateFilePath`/`InvalidPathMessage`/`ValidateField`，`ResolvePath` 收敛为强校验（绝对或 `~/`，拒绝相对）；接入 `file_read`（`files[].path`）· `file_find`（`path`）· `file_diff`（`file1`/`file2`/`files[].path`/`files[].path2`/`path[]`）· `filesys_run`（DSL `#"path"` 执行前预校验 + 顶层 `file`/`md5` 键）· `script_run`（`file`）。
+- ✅ **R-11 覆盖扩展**：`internal/fetch/fetch.go`（`save_as`/`form_files[].path`）· `internal/browser/{handle,run,actions}.go`（`file`、`dom_file`/`console_file`/`fail_shot`、DSL `SHT`/`DOM`/`DBG`/`UPF` 与 `=> #"file"` 目标）· `internal/desktop/run.go`（`file`、DSL `SHT`/`WIN … SHT` 与 `=> #"file"` 目标）接入同一 `fileops.ValidateFilePath`；browser/desktop 对 DSL 内字面落盘路径执行前预校验、`{{}}` 插值在执行时兜底校验。
+- ✅ **R-11 范围升级**：新增 `src/lib/dsl/paths.go` 的**只读** `CollectHandleRefs`（收集 LOOP/SET 数据源、`IF exist`、`=> 目标`、访问器参数等全部 `#"path"` 引用；纯遍历、**不改变引擎行为**，`llm_run` 不受影响）；新增 `fileops/scriptfs.go` 校验型 `ScriptFS` 并注入 `filesys_run`（核心语句数据源读取/访问器/`=> 目标` 亦须绝对 / `~/` / `!/`，`{{}}` 插值执行时兜底校验）；`browser`/`desktop` 的 `scriptFS` 读路径同样运行时可校验并纳入数据源预校验；`script_run.workdir`/`interpreter`、`browser_run.chrome_path` 纳入「必须绝对 / `~/` / `!/`」。
+- ✅ **R-11 二次升级**：`src/lib/paths` 新增**唯一 API** `ResolvePath(raw, base)`（规则序：空 → `!/` → `~/` → 绝对 → base 拼接 / 无 base 报错）、`SetTempRoot`/`TempRoot`（`!/` 映射 `<temp>/chonkpilot/<instance>/`）、`InvalidPathMessage`；`pathcheck.go` **降为薄封装**（删重复实现）。`scriptfs.go` 与 browser/desktop 的 `scriptFS`/落盘点改为**解析后使用绝对路径**（`!/`、`~/` 全路径可用）。executor 经新增 `fileops.HostEnv`/`BuildToolEnv`（读**自身进程环境** `CHONKPILOT_*` + 自身 exe 目录）`SetTempRoot` + 注入**只读** DSL `env`；`script_run` 同时把同名变量注入**子进程环境**（用户 `env` 同名优先）。
+- ✅ **R-11 调用上下文改由 `_meta` + 子进程 env**：移除经 tool `arguments` 注入上下文 —— `mcp-server Config.SetContext`/`defaultsMap` 对 `_workdir`/`_datadir`/`_instance`/`_interpreters` 的注入**已删除**；上下文改由调用上下文（协议 `_meta`，键 `chonkpilot.{instance_id,work_dir,data_dir}`）从 gateway 透传，`mcp-server` spawn executor 时注入子进程环境 `CHONKPILOT_INSTANCE/WORKDIR/DATADIR/INTERPRETERS`（`Config.executorEnv`）。executor 从进程环境读（`cli.Run` + `fileops.HostEnv`）；**instance 为空 = 异常**（`paths.SetTempRoot/TempRoot` 不再回落 `default`，返回 `ErrNoInstance`）。DSL env 去掉兼容别名 `WORKDIR`，**只允许 `{{env.<NAME>}}`**。
 - 构建产物当前仅 `chonkpilot-core-executor.exe` 落盘；desktop/browser 按需 `build-mcp-server.ps1` 产出。
 
 ---
@@ -141,13 +143,13 @@
 
 ## 11. 实现约定（浏览器与执行层）
 
-> 本节由原工程规约整体迁入（2026-09-11），为**强制约定**。
+> 本节为**强制约定**。
 
 ### 11.1 Chrome 自动发现（行为规则）
 
 - 系统未安装 Chrome/Chromium → `web_*` 工具被**过滤**，且 noChrome 守卫阻止执行。
 - 前端工具栏显示警告图标（点击提示安装 Chrome/Edge）。
-- Chrome 路径由配置项 `chromePath`（usr `config` 表）经装配层 `loadExecConfig` 注入环境变量 `CHONK_CHROME`（2026-09-11 接线，见 [64-配置项一览](../60-reference/64-配置项一览.md) §3）；`~/.chonkpilot/config.json` 缓存形态**已废弃（2026-09-11 摘除，生产 Go 无读无写）**。
+- Chrome 路径由配置项 `chromePath`（usr `config` 表）经装配层 `loadExecConfig` 注入环境变量 `CHONK_CHROME`（见 [64-配置项一览](../60-reference/64-配置项一览.md) §3）；`~/.chonkpilot/config.json` 缓存形态**已废弃（生产 Go 无读无写）**。
 
 ### 11.2 chromedp API 注意事项（迁移自 rod）
 

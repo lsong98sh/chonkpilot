@@ -109,14 +109,16 @@ func TestCompressPluginEndToEnd(t *testing.T) {
 	}
 	waitTurnGone(t, s, "t2")
 
-	// compress 插件异步处理：轮询快照直到首条变为 system 摘要
+	// compress 插件**异步**处理（2026-10-06，OP-03）：轮询快照直到首条变为**压缩摘要**
+	// （role=system 且含压缩标记；注意未压缩快照的首条也可能是 system=系统提示词，故须校验标记）。
 	deadline := time.Now().Add(5 * time.Second)
 	var snap map[string]any
 	for time.Now().Before(deadline) {
 		cur := snapshotOf(t, s, "s-plg")
 		if cur != nil {
 			if hist, ok := cur["history"].([]any); ok && len(hist) > 0 {
-				if m0, ok := hist[0].(map[string]any); ok && str(m0["role"]) == "system" {
+				if m0, ok := hist[0].(map[string]any); ok && str(m0["role"]) == "system" &&
+					strings.Contains(str(m0["content"]), "[已压缩早前对话]") {
 					snap = cur
 					break
 				}

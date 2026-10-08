@@ -169,10 +169,11 @@ func TestDataPrjConfigSaveListLoadDelete(t *testing.T) {
 	}
 
 	// 落库断言（prj 主库 config 表 {v: ...} 记录）
-	db, err := data.Prj("ins-test")
+	db, releasePrj, err := data.Prj("ins-test")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer releasePrj() // 短开（D-45）：用完即释
 	var rec data.Record
 	ok, _ := db.Table("config").Get("history.enabled", &rec)
 	if !ok || rec["v"] != "false" {
@@ -256,6 +257,24 @@ func TestDataUserConfigSaveLoadListDelete(t *testing.T) {
 		t.Fatalf("item=%+v", item)
 	}
 
+	// I-127：list 元素增 `explicit`（用户**显式写入**的键）——此处 = theme + defaultScenario（字典序）；
+	// 视图内被补系统默认的键（retryCount/locale…）虽在视图里，但**不在** explicit。
+	expRaw, hasExp := item["explicit"].([]any)
+	if !hasExp {
+		t.Fatalf("list 元素缺 explicit（I-127）：%+v", item)
+	}
+	gotExp := make([]string, 0, len(expRaw))
+	for _, v := range expRaw {
+		s, _ := v.(string)
+		gotExp = append(gotExp, s)
+	}
+	if strings.Join(gotExp, ",") != "defaultScenario,theme" { // 后端 sort.Strings → 字典序
+		t.Fatalf("explicit 键清单不符：got=%v want=[defaultScenario theme]", gotExp)
+	}
+	if _, has := item["retryCount"]; !has {
+		t.Fatalf("视图应含被补系统默认的键（retryCount）：%+v", item)
+	}
+
 	// save 补 llms → theme 不被覆写（增量 merge）
 	r = dataCall(t, bus, "data-user-config-save", map[string]any{
 		"req_id": "r5",
@@ -285,8 +304,27 @@ func TestDataUserConfigSaveLoadListDelete(t *testing.T) {
 		t.Fatalf("defaultScenario=%v", d["defaultScenario"])
 	}
 
-	// delete → list 空、load 回默认（不 fail）
-	r = dataCall(t, bus, "data-user-config-delete", map[string]any{"req_id": "r7", "id": "user_config"})
+	// list：explicit 随新增显式键（llms/defaultLLM）扩张（theme/defaultScenario 仍在）；
+	// 被补系统默认的 retryCount/locale 仍不入 explicit（I-127）。
+	r = dataCall(t, bus, "data-user-config-list", map[string]any{"req_id": "r6b"})
+	item = dataList(dataResult(t, r))[0].(map[string]any)
+	expRaw, _ = item["explicit"].([]any)
+	expSet := map[string]bool{}
+	for _, v := range expRaw {
+		s, _ := v.(string)
+		expSet[s] = true
+	}
+	for _, k := range []string{"theme", "defaultScenario", "defaultLLM", "llms"} {
+		if !expSet[k] {
+			t.Fatalf("explicit 缺显式键 %s：%v", k, expSet)
+		}
+	}
+	if expSet["retryCount"] || expSet["locale"] {
+		t.Fatalf("explicit 不应含被补系统默认的键：%v", expSet)
+	}
+
+	// delete（不带 key = 清空整份）→ list 空、load 回默认（不 fail）
+	r = dataCall(t, bus, "data-user-config-delete", map[string]any{"req_id": "r7"})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("delete failed: %+v", r)
 	}
@@ -450,14 +488,15 @@ func TestDataScenarioSaveLoadListDelete(t *testing.T) {
 		t.Fatalf("user 级不应物化出厂默认场景：%v", err)
 	}
 
-	// 新建场景（id = 用户指定的目录名）
+	// 新建场景（id = 用户指定的目录名）；子 agent 唯一形态 = **引用**（指向 app 级出厂 agent）
+	ref := "${exeDir}/capability/agents/UX 设计师.agent.md"
 	r = dataCall(t, bus, "data-scenario-save", map[string]any{
 		"req_id": "r2",
 		"data": map[string]any{
 			"id": "s2", "name": "场景2", "description": "描述2",
 			"agents": []any{
 				map[string]any{"name": "主", "isMain": true, "prompt": "主提示"},
-				map[string]any{"name": "子A", "roleTag": "A", "description": "子A描述", "prompt": "A提示"},
+				map[string]any{"name": "UX 设计师", "roleTag": "设计", "ref": ref},
 			},
 		},
 	})
@@ -467,8 +506,13 @@ func TestDataScenarioSaveLoadListDelete(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(usrScen, "s2", "main.agent.md")); err != nil {
 		t.Fatalf("s2 main.agent.md missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(usrScen, "s2", "子A.agent.md")); err != nil {
-		t.Fatalf("s2 子A.agent.md missing: %v", err)
+	// 子 agent 只记引用（scenario.json.agents），场景目录内不放 *.agent.md 子文件
+	rawMeta, err := os.ReadFile(filepath.Join(usrScen, "s2", "scenario.json"))
+	if err != nil || !strings.Contains(string(rawMeta), ref) {
+		t.Fatalf("scenario.json 应记子 agent 引用 %q：%v %s", ref, err, rawMeta)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(usrScen, "s2")); len(ents) != 2 {
+		t.Fatalf("场景目录应仅含 scenario.json + main.agent.md，实得 %d 项", len(ents))
 	}
 
 	// load 按 id：name/agents 回读，主 agent 在首位
@@ -518,10 +562,11 @@ func TestDataSecuritySaveListLoadDelete(t *testing.T) {
 	}
 
 	// 落库断言：config 表 security-ws = {v: ...}
-	db, err := data.Prj("ins-test")
+	db, releasePrj, err := data.Prj("ins-test")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer releasePrj() // 短开（D-45）：用完即释
 	var rec data.Record
 	ok, _ := db.Table("config").Get("security-ws", &rec)
 	if !ok || rec["v"] != `{"dir":"C:/ws","writable":true}` {
@@ -658,10 +703,11 @@ func TestDataPromptSaveListLoad(t *testing.T) {
 	}
 
 	// 落库断言：config 表 prompt-tool_usage_prompt = {v: ...}
-	db, err := data.Prj("ins-test")
+	db, releasePrj, err := data.Prj("ins-test")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer releasePrj() // 短开（D-45）：用完即释
 	var rec data.Record
 	ok, _ := db.Table("config").Get("prompt-tool_usage_prompt", &rec)
 	if !ok || rec["v"] != "工具使用说明" {
@@ -823,7 +869,7 @@ func appCapabilityRoot(t *testing.T) string {
 // TestScenarioDefaultAgentsSeeded（25 §8.2 · 42 §2 (171) 新语义）：出厂场景 = **app 级**
 // `scenarios/default/`（出厂内容 = 磁盘目录，源 `src/initdata/capability/scenarios`，由构建脚本投放；
 // 原「list 首次 seed 物化到 user 级」已撤）——list 命中 app 级 default：1 条 isMain 主 agent
-// （Loop Engineer/主，居首）+ 8 条子 agent，name/description/roleTag 齐备。
+// （Loop Engineer/主，居首）+ 10 条**引用**子 agent，name/description/roleTag 齐备。
 func TestScenarioDefaultAgentsSeeded(t *testing.T) {
 	bus, _, _ := newTestPersistOpts(t, persist.Options{AppDir: appCapabilityRoot(t)})
 
@@ -876,8 +922,8 @@ func TestScenarioDefaultAgentsSeeded(t *testing.T) {
 	if !strings.Contains(mp, "mcp_find") || !strings.Contains(mp, "mcp_load") || !strings.Contains(mp, "记忆") {
 		t.Fatalf("主 agent prompt 应含资产检索细则（mcp_find/mcp_load/记忆）: %q", mp)
 	}
-	if subs != 8 {
-		t.Fatalf("sub agent count=%d want 8", subs)
+	if subs != 10 {
+		t.Fatalf("sub agent count=%d want 10", subs)
 	}
 }
 
@@ -1033,97 +1079,6 @@ func TestScenarioLegacyLocationIgnored(t *testing.T) {
 	}
 }
 
-// TestScenarioSystemPromptDerived：systemPrompt 是**保留供兼容的派生字段**（= 主 agent 的 prompt；
-// 25 §3 起**场景层提示词**由 llm/server 侧自行拼接、不取用本字段）——旧形态（只传 systemPrompt
-// 无 agents）save 后落到主 agent，load 回读 systemPrompt 一致（兼容写入/回读路径不变）。
-func TestScenarioSystemPromptDerived(t *testing.T) {
-	bus, _, _ := newTestPersist(t)
-
-	// 旧形态：只给 systemPrompt
-	r := dataCall(t, bus, "data-scenario-save", map[string]any{
-		"req_id": "r1",
-		"data":   map[string]any{"id": "legacy", "name": "旧形态", "systemPrompt": "旧系统提示"},
-	})
-	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
-		t.Fatalf("save legacy failed: %+v", r)
-	}
-	r = dataCall(t, bus, "data-scenario-load", map[string]any{"req_id": "r2", "id": "legacy"})
-	d, _ := dataResult(t, r)["data"].(map[string]any)
-	if d["systemPrompt"] != "旧系统提示" {
-		t.Fatalf("derived systemPrompt=%v", d["systemPrompt"])
-	}
-	ags, _ := d["agents"].([]any)
-	if len(ags) == 0 {
-		t.Fatalf("legacy save should materialize main agent: %+v", d)
-	}
-	if first := ags[0].(map[string]any); first["isMain"] != true || first["prompt"] != "旧系统提示" {
-		t.Fatalf("main agent=%+v", first)
-	}
-
-	// 默认场景：systemPrompt = main.agent.md 内容（非空）
-	r = dataCall(t, bus, "data-scenario-list", map[string]any{"req_id": "r3"})
-	for _, e := range dataList(dataResult(t, r)) {
-		m, _ := e.(map[string]any)
-		if persist.Sval(m["id"]) != "default" {
-			continue
-		}
-		if s, _ := m["systemPrompt"].(string); s == "" {
-			t.Fatalf("default scenario systemPrompt should be derived from main agent: %+v", m)
-		}
-	}
-}
-
-// TestUserConfigLegacyMigration：v5 整块 user_config → 首次访问自动拆为逐 key + 专用表
-// 并删除整块（12-数据层 迁移）。
-func TestUserConfigLegacyMigration(t *testing.T) {
-	bus, _, usrPath := newTestPersist(t)
-
-	// 预置 legacy 整块（模拟 v5 数据）
-	db, release, err := data.OpenSharedLayer(usrPath, data.LayerUsr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy := map[string]any{
-		"theme":           "dark",
-		"locale":          "en-US",
-		"responseTimeout": 120,
-		"llms":            []any{map[string]any{"name": "openai", "apiKey": "sk-x"}},
-	}
-	if err := db.Table("config").Upsert("user_config", data.Record{"v": string(jb(legacy))}); err != nil {
-		t.Fatal(err)
-	}
-	release()
-
-	// 触发 load → 自动迁移
-	r := dataCall(t, bus, "data-user-config-load", map[string]any{"req_id": "r1"})
-	d, _ := dataResult(t, r)["data"].(map[string]any)
-	if d["theme"] != "dark" || d["locale"] != "en-US" {
-		t.Fatalf("scalars not migrated: %+v", d)
-	}
-	if v, _ := d["responseTimeout"].(float64); v != 120 {
-		t.Fatalf("responseTimeout=%v", d["responseTimeout"])
-	}
-	if ll, _ := d["llms"].([]any); len(ll) != 1 {
-		t.Fatalf("llms=%+v", d["llms"])
-	}
-
-	// 整块已删除；逐 key 与专用表已就位
-	db2, release2, err := data.OpenSharedLayer(usrPath, data.LayerUsr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release2()
-	if _, ok := data.GetConfig(db2, "user_config"); ok {
-		t.Fatal("legacy blob should be removed")
-	}
-	if v, ok := data.GetConfig(db2, "theme"); !ok || v != "dark" {
-		t.Fatalf("theme key=%q ok=%v", v, ok)
-	}
-	if keys, _ := db2.Table("llms").ListKeys(); len(keys) != 1 {
-		t.Fatalf("llms table keys=%v", keys)
-	}
-}
-
 // TestUserConfigRefreshBroadcastsConfigRefresh：I-42 —— data-user-config-save/delete 后，
 // 除 data-user-config-refresh 外 persist 还广播 config-refresh（前端 ChatPanel 据此刷新 LLM
 // 列表；此前全仓无发布方）；payload 必带 instance_id（无归属取空串，61 §0）。
@@ -1163,8 +1118,8 @@ func TestUserConfigRefreshBroadcastsConfigRefresh(t *testing.T) {
 		t.Fatal("未收到 config-refresh（I-42 发布方缺失）")
 	}
 
-	// delete 无归属实例 → config-refresh 仍必带 instance_id（空串）
-	r = dataCall(t, bus, "data-user-config-delete", map[string]any{"req_id": "r2", "id": "user_config"})
+	// delete 无归属实例（不带 key = 清空整份）→ config-refresh 仍必带 instance_id（空串）
+	r = dataCall(t, bus, "data-user-config-delete", map[string]any{"req_id": "r2"})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("delete failed: %+v", r)
 	}
@@ -1178,84 +1133,6 @@ func TestUserConfigRefreshBroadcastsConfigRefresh(t *testing.T) {
 	}
 }
 
-// TestDataUserConfigCCompilerPathRoundTrip（P0-1）：① 经消息写规范键 cCompilerPath → 落库并回读
-// 一致；② 存量旧键 cPath（旧前端 / 旧数据）经消息入口一次性迁移为新键（旧键消失、新键有值）；
-// ③ 旧键 delete 请求 → 迁移后按新键删该项（不直接拒）；合法键 delete 仍只删该项。
-func TestDataUserConfigCCompilerPathRoundTrip(t *testing.T) {
-	bus, _, usrPath := newTestPersist(t)
-	const cVal = `C:\msys64\ucrt64\bin\gcc.exe`
-
-	// ① save cCompilerPath → 回读一致（前端 SettingsPathsPage C/C++ 行）
-	r := dataCall(t, bus, "data-user-config-save", map[string]any{
-		"req_id": "r1", "data": map[string]any{"cCompilerPath": cVal},
-	})
-	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
-		t.Fatalf("save cCompilerPath failed: %+v", r)
-	}
-	db, release, err := data.OpenSharedLayer(usrPath, data.LayerUsr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, ok := data.GetConfig(db, "cCompilerPath"); !ok || got != cVal {
-		t.Fatalf("cCompilerPath 未落库：ok=%v v=%q", ok, got)
-	}
-	release()
-	r = dataCall(t, bus, "data-user-config-load", map[string]any{"req_id": "r2"})
-	d, _ := dataResult(t, r)["data"].(map[string]any)
-	if v, _ := d["cCompilerPath"].(string); v != cVal {
-		t.Fatalf("load cCompilerPath=%v want %q", d["cCompilerPath"], cVal)
-	}
-
-	// 先删新键（合法键 delete = 只删该项），再写存量旧键 cPath → 入口迁移后新键取旧值
-	r = dataCall(t, bus, "data-user-config-delete", map[string]any{"req_id": "r3", "id": "cCompilerPath"})
-	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
-		t.Fatalf("delete cCompilerPath failed: %+v", r)
-	}
-	const legacyVal = `C:\legacy\gcc.exe`
-	db2, release2, err := data.OpenSharedLayer(usrPath, data.LayerUsr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := data.SetConfig(db2, "cPath", legacyVal); err != nil {
-		t.Fatal(err)
-	}
-	release2()
-
-	// ② 旧键迁移：新键有值、旧键清除
-	r = dataCall(t, bus, "data-user-config-load", map[string]any{"req_id": "r4"})
-	d, _ = dataResult(t, r)["data"].(map[string]any)
-	if v, _ := d["cCompilerPath"].(string); v != legacyVal {
-		t.Fatalf("旧键 cPath 未迁移：cCompilerPath=%v want %q", d["cCompilerPath"], legacyVal)
-	}
-	db3, release3, err := data.OpenSharedLayer(usrPath, data.LayerUsr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := data.GetConfig(db3, "cPath"); ok {
-		t.Fatal("迁移后旧键 cPath 应已清除")
-	}
-	release3()
-
-	// ③ 旧键 delete 请求（旧前端仍可能发）→ 迁移后按新键删该项（不直接拒）
-	db4, release4, err := data.OpenSharedLayer(usrPath, data.LayerUsr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := data.SetConfig(db4, "cPath", `C:\legacy2\gcc.exe`); err != nil {
-		t.Fatal(err)
-	}
-	release4()
-	r = dataCall(t, bus, "data-user-config-delete", map[string]any{"req_id": "r5", "id": "cPath"})
-	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
-		t.Fatalf("旧键 delete 应迁移后按新键删除: %+v", r)
-	}
-	r = dataCall(t, bus, "data-user-config-load", map[string]any{"req_id": "r6"})
-	d, _ = dataResult(t, r)["data"].(map[string]any)
-	if v, _ := d["cCompilerPath"].(string); v != "" {
-		t.Fatalf("delete 后 cCompilerPath=%q want 空串", v)
-	}
-}
-
 // TestDataUserConfigUnknownKeyDeleteErrors（P0-2）：未知键 delete → ok:false + 明确错误，且**不得**
 // 回落「清空整份用户配置」——theme/locale/llms/超时重试四项/自由键等既有配置全部完好。
 func TestDataUserConfigUnknownKeyDeleteErrors(t *testing.T) {
@@ -1264,7 +1141,7 @@ func TestDataUserConfigUnknownKeyDeleteErrors(t *testing.T) {
 	// 预置多类型既有配置：标量（字符串 + int）、集合 llms、自由键 recent_dirs
 	r := dataCall(t, bus, "data-user-config-save", map[string]any{"req_id": "r1", "data": map[string]any{
 		"theme": "dark", "locale": "en-US", "defaultScenario": "s1",
-		"responseTimeout": 300, "streamTimeout": 30, "retryCount": 5, "retryDelay": 9,
+		"responseTimeout": 300, "streamTimeout": 30, "retryCount": 5,
 		"llms": []any{map[string]any{
 			"name": "openai", "protocol": "openai", "apiKey": "sk-x", "model": "gpt-4",
 			"baseUrl": "http://127.0.0.1:8901/v1",
@@ -1294,7 +1171,7 @@ func TestDataUserConfigUnknownKeyDeleteErrors(t *testing.T) {
 	if d["theme"] != "dark" || d["locale"] != "en-US" || d["defaultScenario"] != "s1" {
 		t.Fatalf("既有标量键被清：theme=%v locale=%v defaultScenario=%v", d["theme"], d["locale"], d["defaultScenario"])
 	}
-	for k, want := range map[string]float64{"responseTimeout": 300, "streamTimeout": 30, "retryCount": 5, "retryDelay": 9} {
+	for k, want := range map[string]float64{"responseTimeout": 300, "streamTimeout": 30, "retryCount": 5} {
 		if v, _ := d[k].(float64); v != want {
 			t.Fatalf("既有超时/重试键被清：%s=%v want %v", k, d[k], want)
 		}

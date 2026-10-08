@@ -21,6 +21,7 @@ import mq from '../utils/mq'
 import { eventBelongsToInstance } from '../utils/instanceScope'
 import { EventNames } from '../events/event-names'
 import { newTurnId } from '../api/chat'
+import { copyDslFields } from '../utils/dslView'
 
 // data-tasktree-* 辅助：发送并等待回复。
 function tasktreeReq(action, body = {}) {
@@ -79,14 +80,18 @@ function upsert(payload) {
   // （42 §2 (126)）；显式 removeNode 的节点进入 dismissed 不再复活
 }
 
-/** 任务事件 → tasktree 节点（字段映射：type→kind、tool_name→tool、status→state）。
+/**
+ * 任务事件 → tasktree 节点（字段映射：type→kind、tool_name→tool、status→state）。
  * 主键统一 task_id：node_id = task_id（与 data-tasktree-list 落库主键一致），
- * llm 节点的会话身份另存 session_id（点击子会话/切换会话用）。 */
+ * llm 节点的会话身份另存 session_id（点击子会话/切换会话用）。
+ * DSL-3 扩展字段（容器进度 / steps / shadow / `$RETURN` 两态）经 `copyDslFields`
+ * **原样透传**（清单见 `utils/dslView.js` 的 `DSL_FIELDS`，实时事件与查询读取共用）——
+ * payload 含则带上、缺省不写 → 增量事件不误清既有字段（配合 upsertNode 的合并）。 */
 function nodeFromEvent(p) {
   const isLLM = p.kind === 'llm' || p.type === 'llm'
   // 标题：name 优先（与 DB tasktree.title=info.Name 一致），purpose 仅作回退
   const title = p.name || p.purpose || p.tool || p.tool_name || p.task_id
-  return {
+  const node = {
     node_id: p.task_id,
     node_type: isLLM ? 'session' : 'task',
     top_session: p.top_session || '',
@@ -99,6 +104,9 @@ function nodeFromEvent(p) {
     created_at: p.started_at || new Date().toISOString(),
     updated_at: p.started_at || new Date().toISOString(),
   }
+  // DSL-3 新字段随事件实时透传（payload 含则带上，缺省不写）
+  copyDslFields(p, node)
+  return node
 }
 
 function upsertNode(node) {

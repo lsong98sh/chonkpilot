@@ -7,6 +7,7 @@ category=core
 async=auto
 async-threshold=30
 timeout=60
+idempotent=true
 args=file_diff --input={RAW-INPUT-FILE}
 output=stdout
 

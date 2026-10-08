@@ -1,0 +1,2372 @@
+{
+  "name": "chonkpilot-message-contract",
+  "version": "2026-10-05",
+  "source": "docs/spec/60-reference/61-消息一览.md",
+  "authority": "61-消息一览.md（消息面唯一准则）",
+  "description": "机器可读消息面契约（B0 契约面试点）。逐主题从 61 抽取：payload = 请求/发送字段；result = publish promise 收集的应答字段；event = 下行事件载荷字段。字段名按 61 原样收录（含 §0.5 命名例外：MCP 协议 camelCase、useCase 等），不擅自改名。",
+  "conventions": {
+    "fieldNaming": "默认 snake_case；例外见 61 §0.5（resultType/structuredContent/isError/ttlMs/useCase/baseUrl/apiKey）",
+    "optional": "required=false ⇔ 61 中该字段带 ? 后缀；required=true ⇔ 61 未标 ?",
+    "types": ["string", "bool", "int", "number", "object", "array", "any"],
+    "failureEnvelope": "gui.* / 门面失败统一信封 {ok:false, error}；result 中允许通用 error 键（已在 reconciliation 侧作为 cross-cutting 允许项）",
+    "fieldDictionary": "字段语义字典（同语义唯一名）。键 = 语义键；name = 规范字段名（缺省 = 键）；aliases = 禁用别名（出现即报错）；exceptions = 允许的同语义别名（仅限 where 主题，逐条给 reason，来自 61 §0.5）。各主题字段按名引用本字典：未登记字段 / 命中别名 / 例外越位 / 类型不符 → genmsg 报错。"
+  },
+  "fieldDictionary": {
+    "accepted": { "type": "bool", "desc": "受理确认" },
+    "activated": { "type": "bool", "desc": "窗口已激活" },
+    "agents": { "type": "array", "desc": "智能体清单" },
+    "answers": { "type": "array", "desc": "ask_user 回答集合" },
+    "args": { "type": "any", "desc": "工具调用参数" },
+    "args_digest": { "type": "string", "desc": "参数摘要" },
+    "arguments": { "type": "any", "desc": "实参对象/数组" },
+    "ask_id": { "type": "string", "desc": "ask_user 关联 id" },
+    "asset_kind": { "type": "string", "desc": "资产种类" },
+    "async": { "type": "string", "desc": "异步模式" },
+    "async_threshold": { "type": "number", "desc": "异步阈值（秒）" },
+    "b64": { "type": "string", "desc": "截图 base64" },
+    "base_dicts": { "type": "array", "desc": "vfts 内嵌基础词典文件名清单" },
+    "before_turn_id": { "type": "string", "desc": "分页游标：早于该轮" },
+    "brief_tokens": { "type": "int", "desc": "摘要 token 数" },
+    "cached_rows": { "type": "int", "desc": "缓存行数" },
+    "cancelled": { "type": "bool", "desc": "已取消" },
+    "cascade": { "type": "string", "desc": "级联范围" },
+    "category": { "type": "string", "desc": "类别（记忆/工具）" },
+    "children": { "type": "array", "desc": "目录子项" },
+    "choices": { "type": "object", "desc": "向导候选" },
+    "chunks": { "type": "int", "desc": "分块数" },
+    "client_type": { "type": "string", "desc": "客户端形态" },
+    "closed": { "type": "bool", "desc": "已关闭" },
+    "code": { "type": "string", "desc": "错误码" },
+    "codegraph": { "type": "object", "desc": "codegraph 引擎状态" },
+    "command": { "type": "string", "desc": "窗口命令（query/minimize/maximize/close）" },
+    "config": { "type": "object", "desc": "配置对象" },
+    "config_saved": { "type": "array", "desc": "已保存配置项" },
+    "content": { "type": "any", "desc": "内容（文本/结构化）" },
+    "contents": { "type": "object", "desc": "按 key 的消息内容映射" },
+    "context": { "type": "object", "desc": "上下文载荷" },
+    "continue": { "type": "bool", "desc": "续轮" },
+    "count": { "type": "int", "desc": "计数" },
+    "created_at": { "type": "string", "desc": "创建时间" },
+    "cursor": { "type": "string", "desc": "分页游标" },
+    "data": { "type": "any", "desc": "数据体（对象/字符串）" },
+    "data_dir": { "type": "string", "desc": "数据根目录" },
+    "deleted": { "type": "int", "desc": "删除条数" },
+    "deleted_at": { "type": "string", "desc": "删除时间" },
+    "description": { "type": "string", "desc": "描述" },
+    "dest_dir": { "type": "string", "desc": "目标目录" },
+    "dict_dir": { "type": "string", "desc": "vfts 系统级词典目录" },
+    "diffs": { "type": "array", "desc": "差异集合" },
+    "dir": { "type": "string", "desc": "目录" },
+    "dirs": { "type": "array", "desc": "目录清单" },
+    "doc": { "type": "object", "desc": "文档对象" },
+    "doc_ids": { "type": "array", "desc": "文档 id 集合" },
+    "done_at": { "type": "string", "desc": "完成时间" },
+    "effort": { "type": "any", "desc": "推理强度" },
+    "enabled": { "type": "int", "desc": "启用数" },
+    "error": { "type": "any", "desc": "错误（对象/字符串）" },
+    "errors": { "type": "array", "desc": "错误集合" },
+    "exclude_turn": { "type": "string", "desc": "排除轮次" },
+    "exec_json": { "type": "string", "desc": "执行明细 JSON" },
+    "expires_at": { "type": "any", "desc": "过期时间" },
+    "explicit": { "type": "array", "desc": "用户显式写入的配置键清单（区分系统默认填充；导入/导出保真依据）" },
+    "failed": { "type": "array", "desc": "失败项集合" },
+    "file_id": { "type": "string", "desc": "文件 id" },
+    "files": { "type": "array", "desc": "文件清单" },
+    "filetree": { "type": "any", "desc": "文件树状态" },
+    "filter": { "type": "any", "desc": "过滤条件" },
+    "finish_reason": { "type": "string", "desc": "结束原因" },
+    "finished_at": { "type": "string", "desc": "结束时间" },
+    "full_tokens": { "type": "int", "desc": "全量 token 数" },
+    "git": { "type": "bool", "desc": "是否 git 仓库" },
+    "git_initialized": { "type": "bool", "desc": "git 已初始化" },
+    "groups": { "type": "array", "desc": "分组清单" },
+    "handler_subject": { "type": "string", "desc": "处理器主题" },
+    "hot": { "type": "bool", "desc": "热加载" },
+    "id": { "type": "string", "desc": "标识" },
+    "ids": { "type": "array", "desc": "标识集合" },
+    "include_closed": { "type": "bool", "desc": "含已关闭" },
+    "include_snapshot": { "type": "bool", "desc": "含快照" },
+    "indexed_at": { "type": "string", "desc": "索引时间" },
+    "init_git": { "type": "bool", "desc": "初始化 git" },
+    "instance_id": { "type": "string", "desc": "实例 id（业务载荷一律必带）" },
+    "is_dir": { "type": "bool", "desc": "是否目录" },
+    "key": { "type": "string", "desc": "键" },
+    "keys": { "type": "array", "desc": "键集合" },
+    "kind": { "type": "string", "desc": "种类" },
+    "last_turn": { "type": "string", "desc": "末轮" },
+    "latency_ms": { "type": "int", "desc": "首包延迟（毫秒）" },
+    "layout": { "type": "any", "desc": "布局状态" },
+    "level": { "type": "string", "desc": "级别" },
+    "limit": { "type": "int", "desc": "条数上限" },
+    "list": { "type": "any", "desc": "列表" },
+    "llm": { "type": "string", "desc": "LLM 标识" },
+    "match": { "type": "bool", "desc": "是否一致" },
+    "max_context_token": { "type": "int", "desc": "上下文 token 上限" },
+    "max_output_token": { "type": "int", "desc": "输出 token 上限" },
+    "maximized": { "type": "bool", "desc": "已最大化" },
+    "mcp_server": { "type": "object", "desc": "MCP server 定义" },
+    "md5": { "type": "string", "desc": "文件 md5" },
+    "memory": { "type": "array", "desc": "记忆条目" },
+    "memory_saved": { "type": "array", "desc": "已保存记忆" },
+    "message": { "type": "string", "desc": "消息文本" },
+    "message_id": { "type": "string", "desc": "消息 id" },
+    "messages": { "type": "any", "desc": "消息集合" },
+    "mimetype": { "type": "string", "desc": "MIME 类型" },
+    "minimized": { "type": "bool", "desc": "已最小化" },
+    "mode": { "type": "string", "desc": "模式" },
+    "model": { "type": "string", "desc": "模型名" },
+    "model_echo": { "type": "string", "desc": "回显模型名" },
+    "msg": { "type": "object", "desc": "单条消息" },
+    "mtime": { "type": "string", "desc": "修改时间" },
+    "name": { "type": "string", "desc": "名称" },
+    "namespace": { "type": "string", "desc": "命名空间" },
+    "new_name": { "type": "string", "desc": "新名称" },
+    "node_id": { "type": "string", "desc": "任务节点 id" },
+    "nodes": { "type": "array", "desc": "任务节点集合" },
+    "notice": { "type": "string", "desc": "通知文本" },
+    "offset": { "type": "int", "desc": "偏移" },
+    "ok": { "type": "bool", "desc": "成功标志" },
+    "old_level": { "type": "string", "desc": "旧级别" },
+    "old_name": { "type": "string", "desc": "旧名称" },
+    "only_in_authoritative": { "type": "any", "desc": "仅权威层有的行" },
+    "only_in_layer": { "type": "any", "desc": "仅层内有的行" },
+    "op": { "type": "string", "desc": "变更操作" },
+    "operation": { "type": "string", "desc": "文件操作类型" },
+    "options": { "type": "array", "desc": "候选项" },
+    "origin": { "type": "string", "desc": "来源" },
+    "overwrite": { "type": "any", "desc": "覆盖策略" },
+    "owner": { "type": "string", "desc": "归属" },
+    "parent": { "type": "string", "desc": "父节点" },
+    "parent_node_id": { "type": "string", "desc": "父任务节点 id" },
+    "parent_session_id": { "type": "string", "desc": "父会话 id" },
+    "parents": { "type": "any", "desc": "父轮次集合" },
+    "password": { "type": "string", "desc": "口令" },
+    "path": { "type": "string", "desc": "路径" },
+    "paths": { "type": "array", "desc": "路径集合" },
+    "payload": { "type": "any", "desc": "内层载荷" },
+    "plugin": { "type": "string", "desc": "插件名" },
+    "pre_hook_subject": { "type": "string", "desc": "前置钩子主题" },
+    "prefix": { "type": "string", "desc": "前缀" },
+    "probe": { "type": "object", "desc": "环境探测结果" },
+    "project_spec": { "type": "string", "desc": "工程规格路径/内容" },
+    "prompt": { "type": "string", "desc": "提示词" },
+    "prompts": { "type": "array", "desc": "提示词清单" },
+    "protocol": { "type": "string", "desc": "LLM 协议" },
+    "query": { "type": "string", "desc": "检索词" },
+    "questions": { "type": "array", "desc": "提问集合" },
+    "queued": { "type": "bool", "desc": "已投递队列（不等待处理完成）" },
+    "reason": { "type": "string", "desc": "原因" },
+    "recursive": { "type": "bool", "desc": "递归监视" },
+    "refreshed": { "type": "any", "desc": "已刷新项" },
+    "registered": { "type": "bool", "desc": "已注册" },
+    "reloaded": { "type": "bool", "desc": "已重载" },
+    "removed_tools": { "type": "any", "desc": "移除的工具" },
+    "resource": { "type": "any", "desc": "资源对象" },
+    "resources": { "type": "array", "desc": "资源清单" },
+    "result_digest": { "type": "string", "desc": "结果摘要" },
+    "result_summary": { "type": "string", "desc": "结果概要" },
+    "results": { "type": "array", "desc": "检索结果集合" },
+    "retryable": { "type": "bool", "desc": "可重试" },
+    "root": { "type": "string", "desc": "根路径" },
+    "rows": { "type": "int", "desc": "行数" },
+    "saved": { "type": "array", "desc": "已保存项" },
+    "scenario_id": { "type": "string", "desc": "场景 id" },
+    "scene_name": { "type": "string", "desc": "场景名" },
+    "schema": { "type": "object", "desc": "工具 schema" },
+    "scope": { "type": "string", "desc": "作用域" },
+    "server": { "type": "any", "desc": "server 名/对象" },
+    "servers": { "type": "any", "desc": "server 集合" },
+    "session": { "type": "string", "desc": "会话 id" },
+    "session_id": { "type": "string", "desc": "会话 id（数据面）" },
+    "shadow": { "type": "bool", "desc": "影子节点" },
+    "size": { "type": "int", "desc": "字节数" },
+    "snapshot": { "type": "any", "desc": "快照" },
+    "snapshot_turn": { "type": "string", "desc": "快照轮次" },
+    "source": { "type": "string", "desc": "来源" },
+    "spec_path": { "type": "string", "desc": "工程规格文件路径" },
+    "start": { "type": "int", "desc": "起始偏移" },
+    "started": { "type": "bool", "desc": "已启动" },
+    "started_at": { "type": "any", "desc": "启动时间" },
+    "state": { "type": "string", "desc": "状态" },
+    "status": { "type": "string", "desc": "状态" },
+    "summary": { "type": "string", "desc": "摘要" },
+    "svn": { "type": "bool", "desc": "是否 svn 仓库" },
+    "system": { "type": "string", "desc": "系统提示词" },
+    "tab": { "type": "string", "desc": "页签" },
+    "target_bytes": { "type": "int", "desc": "目标字节数" },
+    "target_messages": { "type": "int", "desc": "目标消息数" },
+    "task_id": { "type": "string", "desc": "任务 id" },
+    "team": { "type": "array", "desc": "团队协作成员" },
+    "text": { "type": "string", "desc": "文本" },
+    "think": { "type": "any", "desc": "思考开关/等级" },
+    "timeout": { "type": "number", "desc": "超时（秒）" },
+    "timeout_s": { "type": "number", "desc": "超时（秒，事件）" },
+    "title": { "type": "string", "desc": "标题" },
+    "tool": { "type": "string", "desc": "工具名" },
+    "tools": { "type": "any", "desc": "工具集合" },
+    "top_session": { "type": "string", "desc": "顶层会话 id" },
+    "total": { "type": "int", "desc": "总数" },
+    "touch_files": { "type": "bool", "desc": "是否写文件" },
+    "transport": { "type": "string", "desc": "传输方式" },
+    "truncated": { "type": "bool", "desc": "已截断" },
+    "turn": { "type": "string", "desc": "轮次 id" },
+    "turn_id": { "type": "string", "desc": "轮次 id（数据面）" },
+    "turn_tokens": { "type": "array", "desc": "各轮 token 数" },
+    "type": { "type": "string", "desc": "类型" },
+    "ui": { "type": "any", "desc": "UI 状态" },
+    "unregistered": { "type": "bool", "desc": "已注销" },
+    "uri": { "type": "string", "desc": "资源 uri" },
+    "url": { "type": "string", "desc": "资源 url" },
+    "user": { "type": "any", "desc": "用户" },
+    "username": { "type": "string", "desc": "用户名" },
+    "user_dict": { "type": "string", "desc": "vfts 系统级自定义词全文" },
+    "user_dict_path": { "type": "string", "desc": "vfts 系统级自定义词文件路径" },
+    "vfts": { "type": "object", "desc": "vfts 引擎状态" },
+    "waiting": { "type": "bool", "desc": "是否等待中" },
+    "window": { "type": "any", "desc": "窗口状态" },
+    "window_id": { "type": "string", "desc": "窗口 id" },
+    "windows": { "type": "array", "desc": "窗口清单" },
+    "wizard_required": { "type": "bool", "desc": "需场景向导" },
+    "word_count": { "type": "int", "desc": "词条数" },
+    "work-dir": { "name": "work_dir", "type": "string", "desc": "工作目录（绝对或相对，斜杠归一）", "aliases": ["workdir"], "exceptions": [{ "name": "workDir", "where": "gui.init-data", "reason": "61 §0.5③ gui.* 本地面历史 camelCase（I-139 闭环）" }] },
+    "tool-call-id": { "name": "tool_call_id", "type": "string", "desc": "工具调用关联 id", "aliases": ["tool-call-id"] },
+    "opened-files": { "name": "opened_files", "type": "any", "desc": "已打开文件列表（gui.ui.save 持久化载荷）", "exceptions": [{ "name": "openedFiles", "where": "gui.init-data", "reason": "61 §0.5③ 历史 camelCase" }] },
+    "init-tree-data": { "name": "treeData", "type": "array", "desc": "文件树展开数据（gui.init-data 应答）", "aliases": ["tree_data"] },
+    "init-expanded-keys": { "name": "expandedKeys", "type": "array", "desc": "文件树已展开键（gui.init-data 应答）", "aliases": ["expanded_keys"] },
+    "init-selected-key": { "name": "selectedKey", "type": "string", "desc": "文件树选中键（gui.init-data 应答）", "aliases": ["selected_key"] },
+    "init-filetree-width": { "name": "filetreeWidth", "type": "int", "desc": "文件树面板宽度（gui.init-data 应答）", "aliases": ["filetree_width"] },
+    "init-opened-file": { "name": "openedFile", "type": "string", "desc": "当前打开文件（gui.init-data 应答）", "aliases": ["opened_file"] },
+    "log-dir": { "name": "logDir", "type": "string", "desc": "GUI 文件日志目录（gui.init-data 应答，§0.5③ 家族）", "aliases": ["log_dir"] },
+    "vcs-git-installed": { "name": "gitInstalled", "type": "bool", "desc": "系统可执行 git（gui.vcs.info 应答）", "aliases": ["git_installed"] },
+    "builtin-mcp-servers": { "name": "mcpServers", "type": "array", "desc": "内置只读 MCP 列表（gui.system.builtins 应答）", "aliases": ["mcp_servers"] },
+    "prompt-use-case": { "name": "useCase", "type": "string", "desc": "提示词优化用例（61 §0.5②）", "aliases": ["use_case"] },
+    "mcp-result-type": { "name": "resultType", "type": "string", "desc": "MCP 协议字段（61 §0.5①）", "aliases": ["result_type"] },
+    "mcp-structured-content": { "name": "structuredContent", "type": "object", "desc": "MCP 协议字段（61 §0.5①）", "aliases": ["structured_content"] },
+    "mcp-is-error": { "name": "isError", "type": "bool", "desc": "MCP 协议字段（61 §0.5①）", "aliases": ["is_error"] },
+    "mcp-ttl-ms": { "name": "ttlMs", "type": "int", "desc": "MCP 协议字段（61 §0.5①）", "aliases": ["ttl_ms"] },
+    "llm-base-url": { "name": "baseUrl", "type": "string", "desc": "LLM 端点（llm.test-connection，61 §0.5④ LLM 配置历史 camelCase）", "aliases": ["base_url"] },
+    "llm-api-key": { "name": "apiKey", "type": "string", "desc": "LLM 密钥（llm.test-connection，61 §0.5④ LLM 配置历史 camelCase）", "aliases": ["api_key"] }
+  },
+  "coverage": {
+    "included": [
+      "§1 gui.* 本地面（含 §1.1 点分相对主题）",
+      "§2 filesys.* 文件面",
+      "§3 data-<domain>-* 数据面（§3.1/§3.2/§3.2a/§3.2b/§3.3/§3.4/§3.6；B1 补录）",
+      "§4 服务端方法面与事件（§4.1 实例 / §4.2 方法 / §4.3 事件 / §4.4 llm-simple / §4.5 映射 / §4.6 认证）",
+      "§5 gateway 方法面（§5.1/§5.1.1/§5.2/§5.3/§5.4/§5.4a）",
+      "§6.1 前端本地 UI 事件"
+    ],
+    "deferred": [],
+    "planned": [
+      {
+        "family": "ui-plugin-*",
+        "topics": ["ui-plugin-list", "ui-plugin-register", "ui-plugin-unregister", "ui-plugin-activate", "ui-plugin-set-enabled", "ui-plugin-set-visible", "ui-plugin-status", "ui-plugin-activated", "ui-plugin-context-get", "ui-plugin-context-subscribe", "ui-plugin-context-unsubscribe", "ui-plugin-context-changed", "ui-plugin-call", "ui-plugin-fetch", "ui-plugin-component-register", "ui-plugin-component-unregister", "ui-plugin-message", "ui-plugin-close", "ui-plugin-deactivated"],
+        "source": "docs/spec/20-modules/2C-UI插件.md §4.2",
+        "refs": ["docs/spec/40-roadmap/49-待实现项.md T-13 / P2-1（未实现）", "docs/spec/40-roadmap/41-未决项登记.md"],
+        "status": "声明未实现（🔵 规划）",
+        "note": "B5 规划项契约面：该消息族在 2C 设计稿中声明、40-roadmap 记为未实现，**不进 61 准则**、不生成 msgkeys 常量、**不纳入对账硬约束**（无生产/消费代码可驱动）；落地时按 61 变更口径（topic 增删须用户授权）转 included。"
+      }
+    ]
+  },
+  "docGaps": [],
+  "directionVocabulary": [
+    "client->gui",
+    "client->server",
+    "server->client",
+    "server<->gateway",
+    "gateway->client",
+    "gateway->registrant",
+    "frontend-local",
+    "client->data",
+    "data->client",
+    "data->server"
+  ],
+  "topics": [
+    {
+      "topic": "gui.init-data",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": {
+        "workDir": { "type": "string", "required": true },
+        "treeData": { "type": "array", "required": false },
+        "expandedKeys": { "type": "array", "required": false },
+        "selectedKey": { "type": "string", "required": false },
+        "filetreeWidth": { "type": "int", "required": false },
+        "layout": { "type": "object", "required": true },
+        "ui": { "type": "object", "required": true },
+        "openedFile": { "type": "string", "required": false },
+        "openedFiles": { "type": "array", "required": false },
+        "logDir": { "type": "string", "required": false },
+        "wizard_required": { "type": "bool", "required": false }
+      },
+      "notes": "61 单应答（桥内合并）。应答键为 camelCase（与实现 callLoadInitData / guimsg.go 一致）；I-139 已闭环（2026-10-05）。"
+    },
+    {
+      "topic": "agent-wizard",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "reason": { "type": "string", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "spec_path": { "type": "string", "required": true }
+      },
+      "notes": "宿主 → 前端事件（gui.init-data 时 project_spec.md 缺失下发）"
+    },
+    {
+      "topic": "gui.ui.save",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "layout": { "type": "any", "required": false },
+        "window": { "type": "any", "required": false },
+        "filetree": { "type": "any", "required": false },
+        "opened_files": { "type": "any", "required": false },
+        "ui": { "type": "any", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "gui.window.status",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "command": { "type": "string", "required": false } },
+      "result": {
+        "maximized": { "type": "bool", "required": true },
+        "minimized": { "type": "bool", "required": true }
+      },
+      "notes": "command ∈ query|minimize|maximize|close；null/query = 仅查询。执行对象 = 调用来源窗口。"
+    },
+    {
+      "topic": "gui.window.open-chat",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "session_id": { "type": "string", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "window_id": { "type": "string", "required": false },
+        "activated": { "type": "bool", "required": false }
+      }
+    },
+    {
+      "topic": "gui.window.list",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": { "windows": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "gui.window.closed",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "window_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "gui.window.set-title",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "title": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "gui.dir.open-dialog",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": { "path": { "type": "string", "required": false } }
+    },
+    {
+      "topic": "gui.dir.open",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "path": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "gui.recent.list",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": { "dirs": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "gui.recent.remove",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "path": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "gui.console.open",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "path": { "type": "string", "required": false } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "gui.vcs.info",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "path": { "type": "string", "required": false } },
+      "result": {
+        "git": { "type": "bool", "required": true },
+        "svn": { "type": "bool", "required": true },
+        "gitInstalled": { "type": "bool", "required": true }
+      }
+    },
+    {
+      "topic": "gui.reveal",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "path": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "gui.open-with",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "path": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "gui.search",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "query": { "type": "string", "required": true } },
+      "result": { "results": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "gui.capture",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": {
+        "file_id": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true },
+        "url": { "type": "string", "required": true },
+        "size": { "type": "int", "required": true },
+        "b64": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "gui.upload",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "data": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true }
+      },
+      "result": {
+        "file_id": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true },
+        "url": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "gui.devtools.open",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": {},
+      "notes": "本地事件无返回"
+    },
+    {
+      "topic": "gui.pick-executable",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": { "path": { "type": "string", "required": false } }
+    },
+    {
+      "topic": "gui.file.save",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "content": { "type": "string", "required": true },
+        "mode": { "type": "string", "required": false }
+      },
+      "result": { "path": { "type": "string", "required": false } }
+    },
+    {
+      "topic": "gui.toolchain.detect",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": { "tools": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "gui.system.builtins",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": { "mcpServers": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "gui.prompt-optimise",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "title": { "type": "string", "required": false },
+        "useCase": { "type": "string", "required": true },
+        "prompt": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "started": { "type": "bool", "required": true }
+      },
+      "notes": "流式结果经 optimize-token / optimize-done / optimize-error 事件"
+    },
+    {
+      "topic": "gui.prompt-vars",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": { "groups": { "type": "array", "required": true } },
+      "notes": "提示词变量目录（OP-12，2026-10-06）：items 元素 {key, desc, dslOnly}；单源 = 后端常量"
+    },
+    {
+      "topic": "optimize-token",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": { "content": { "type": "string", "required": true } }
+    },
+    {
+      "topic": "optimize-done",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": { "prompt": { "type": "string", "required": true } }
+    },
+    {
+      "topic": "optimize-error",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": { "message": { "type": "string", "required": true } }
+    },
+    {
+      "topic": "window-maximized-changed",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "maximized": { "type": "bool", "required": true },
+        "instance_id": { "type": "string", "required": true }
+      },
+      "notes": "2026-09-24 起仅发往该窗口；载荷 = {maximized, instance_id}"
+    },
+    {
+      "topic": "llm.test-connection",
+      "face": "gui",
+      "direction": "client->server",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "baseUrl": { "type": "string", "required": true },
+        "model": { "type": "string", "required": true },
+        "apiKey": { "type": "string", "required": false },
+        "protocol": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "latency_ms": { "type": "int", "required": false },
+        "model_echo": { "type": "string", "required": false },
+        "error": { "type": "object", "required": false }
+      }
+    },
+    {
+      "topic": "memory.flush",
+      "face": "gui",
+      "direction": "client->server",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "queued": { "type": "bool", "required": false },
+        "session": { "type": "string", "required": false },
+        "reason": { "type": "string", "required": false }
+      }
+    },
+
+    {
+      "topic": "filesys.list",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true },
+        "start": { "type": "int", "required": false },
+        "limit": { "type": "int", "required": false }
+      },
+      "result": {
+        "path": { "type": "string", "required": true },
+        "is_dir": { "type": "bool", "required": true },
+        "children": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "filesys.content",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true }
+      },
+      "result": {
+        "path": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true },
+        "content": { "type": "string", "required": true },
+        "truncated": { "type": "bool", "required": true }
+      }
+    },
+    {
+      "topic": "filesys.create",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "dir": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "content": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "path": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "filesys.mkdir",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "dir": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "path": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "filesys.remove",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "filesys.rename",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true },
+        "new_name": { "type": "string", "required": true },
+        "overwrite": { "type": "any", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "path": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "filesys.copy",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true },
+        "dest_dir": { "type": "string", "required": false },
+        "new_name": { "type": "string", "required": false },
+        "overwrite": { "type": "any", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "path": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "filesys.watch",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true },
+        "recursive": { "type": "bool", "required": false }
+      },
+      "result": {}
+    },
+    {
+      "topic": "filesys.unwatch",
+      "face": "filesys",
+      "direction": "client->filesys",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true }
+      },
+      "result": {}
+    },
+    {
+      "topic": "filesys.changed",
+      "face": "filesys",
+      "direction": "filesys->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": true },
+        "operation": { "type": "string", "required": false },
+        "children": { "type": "array", "required": false }
+      }
+    },
+    {
+      "topic": "filesys.watch-error",
+      "face": "filesys",
+      "direction": "filesys->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "path": { "type": "string", "required": false },
+        "error": { "type": "any", "required": true }
+      }
+    },
+
+    {
+      "topic": "data-user-config-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "list": { "type": "array", "required": true } },
+      "notes": "list 元素 = usr 主库视图（配置键 + id；键缺失处已补系统默认）+ 新增 `explicit`（用户显式写入的键清单，导入/导出保真依据）"
+    },
+    {
+      "topic": "data-user-config-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "data": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "data-user-config-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      },
+      "notes": "id 恒 = user_config（整份对象键）"
+    },
+    {
+      "topic": "data-user-config-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "id": { "type": "string", "required": false },
+        "key": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": false }
+      },
+      "notes": "带已知 key/id → 只删该项并回 id；不带 → 清空整份，回 {ok}"
+    },
+    {
+      "topic": "data-user-config-changed",
+      "face": "data",
+      "direction": "data->client",
+      "event": { "data": { "type": "object", "required": true } },
+      "notes": "usr 配置变更后下行广播（不带 instance_id → 全局）"
+    },
+    {
+      "topic": "data-user-config-refresh",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "instance_id": { "type": "string", "required": false },
+        "id": { "type": "string", "required": true },
+        "ids": { "type": "array", "required": false },
+        "op": { "type": "string", "required": true },
+        "list": { "type": "any", "required": false }
+      },
+      "notes": "save/delete 后广播；批量写只发 1 条并带 ids（全组键，id=首键）"
+    },
+    {
+      "topic": "data-prj-config-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "list": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "data-prj-config-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": { "data": { "type": "any", "required": true } }
+    },
+    {
+      "topic": "data-prj-config-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      },
+      "notes": "data 兼容单键 {key,value} 与批量 {entries:{…}}（entries 优先）"
+    },
+    {
+      "topic": "data-prj-config-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-prj-config-refresh",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "instance_id": { "type": "string", "required": false },
+        "id": { "type": "string", "required": true },
+        "ids": { "type": "array", "required": false },
+        "op": { "type": "string", "required": true },
+        "list": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "data-prj-security-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "list": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "data-prj-security-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": { "data": { "type": "any", "required": true } }
+    },
+    {
+      "topic": "data-prj-security-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-prj-security-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-prj-security-refresh",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "instance_id": { "type": "string", "required": false },
+        "id": { "type": "string", "required": true },
+        "ids": { "type": "array", "required": false },
+        "op": { "type": "string", "required": true },
+        "list": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "data-prompt-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "list": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "data-prompt-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": { "data": { "type": "any", "required": true } }
+    },
+    {
+      "topic": "data-prompt-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-prompt-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-prompt-refresh",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "instance_id": { "type": "string", "required": false },
+        "id": { "type": "string", "required": true },
+        "ids": { "type": "array", "required": false },
+        "op": { "type": "string", "required": true },
+        "list": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "data-scenario-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "list": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "data-scenario-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "id": { "type": "string", "required": true },
+        "level": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "data": { "type": "object", "required": true }
+      }
+    },
+    {
+      "topic": "data-scenario-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-scenario-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "id": { "type": "string", "required": true },
+        "level": { "type": "string", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-scenario-refresh",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "instance_id": { "type": "string", "required": false },
+        "id": { "type": "string", "required": true },
+        "ids": { "type": "array", "required": false },
+        "op": { "type": "string", "required": true },
+        "list": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "data-mcp-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "list": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "data-mcp-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "name": { "type": "string", "required": false },
+        "id": { "type": "string", "required": false },
+        "level": { "type": "string", "required": false }
+      },
+      "result": { "data": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "data-mcp-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "data": { "type": "object", "required": true },
+        "old_name": { "type": "string", "required": false },
+        "old_level": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-mcp-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "name": { "type": "string", "required": false },
+        "id": { "type": "string", "required": false },
+        "level": { "type": "string", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-mcp-refresh",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "instance_id": { "type": "string", "required": false },
+        "id": { "type": "string", "required": true },
+        "ids": { "type": "array", "required": false },
+        "op": { "type": "string", "required": true },
+        "list": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "data-memory-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "list": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "data-memory-read",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "category": { "type": "string", "required": true } },
+      "result": { "data": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "data-memory-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-memory-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-memory-refresh",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "instance_id": { "type": "string", "required": false },
+        "id": { "type": "string", "required": true },
+        "ids": { "type": "array", "required": false },
+        "op": { "type": "string", "required": true },
+        "list": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "data-memory-extract-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "category": { "type": "string", "required": false }
+      },
+      "result": { "list": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "data-memory-extract-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-memory-extract-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "data": { "type": "object", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-filelist-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "prefix": { "type": "string", "required": false },
+        "offset": { "type": "int", "required": false },
+        "limit": { "type": "int", "required": false }
+      },
+      "result": {
+        "list": { "type": "array", "required": true },
+        "total": { "type": "int", "required": true }
+      }
+    },
+    {
+      "topic": "data-filelist-put",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "key": { "type": "string", "required": false },
+        "path": { "type": "string", "required": false },
+        "size": { "type": "int", "required": false },
+        "mtime": { "type": "string", "required": false },
+        "md5": { "type": "string", "required": false },
+        "doc_ids": { "type": "array", "required": false },
+        "chunks": { "type": "int", "required": false },
+        "indexed_at": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-filelist-del",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "keys": { "type": "array", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "deleted": { "type": "int", "required": true }
+      }
+    },
+    {
+      "topic": "config-refresh",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "id": { "type": "string", "required": true },
+        "op": { "type": "string", "required": true },
+        "list": { "type": "any", "required": false }
+      },
+      "notes": "user-config save/delete 后额外兼容广播（I-42）；instance_id 必带（空串亦可）"
+    },
+    {
+      "topic": "data-session-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "filter": { "type": "any", "required": false } },
+      "result": { "list": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "data-session-get",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": { "data": { "type": "any", "required": true } }
+    },
+    {
+      "topic": "data-session-history",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "before_turn_id": { "type": "string", "required": false },
+        "target_messages": { "type": "int", "required": false },
+        "target_bytes": { "type": "int", "required": false }
+      },
+      "result": { "messages": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "data-session-content",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": false },
+        "id": { "type": "string", "required": false },
+        "keys": { "type": "array", "required": true }
+      },
+      "result": { "contents": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "data-session-latest",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "session_id": { "type": "string", "required": true } }
+    },
+    {
+      "topic": "data-session-title",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "id": { "type": "string", "required": true },
+        "title": { "type": "string", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-session-title-changed",
+      "face": "data",
+      "direction": "data->client",
+      "event": {
+        "session_id": { "type": "string", "required": true },
+        "title": { "type": "string", "required": true }
+      },
+      "notes": "不带 instance_id → 全局；会话标题变更后广播"
+    },
+    {
+      "topic": "data-session-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-session-active-set",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "session_id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-session-active-get",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": { "session_id": { "type": "string", "required": true } }
+    },
+    {
+      "topic": "data-session-ensure-session",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "parent_session_id": { "type": "string", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-session-ensure-turn",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "turn_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-session-append-message",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "turn_id": { "type": "string", "required": true },
+        "msg": { "type": "object", "required": true },
+        "key": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "data-session-set-summary",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "turn_id": { "type": "string", "required": true },
+        "summary": { "type": "string", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-session-complete-turn",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "turn_id": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "finish_reason": { "type": "string", "required": false },
+        "full_tokens": { "type": "int", "required": false },
+        "brief_tokens": { "type": "int", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-session-cleanup-stale",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {},
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "count": { "type": "int", "required": true }
+      }
+    },
+    {
+      "topic": "data-session-load-messages",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "turn_id": { "type": "string", "required": true } },
+      "result": { "messages": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "data-session-context",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "exclude_turn": { "type": "string", "required": false },
+        "include_snapshot": { "type": "bool", "required": false }
+      },
+      "result": {
+        "messages": { "type": "array", "required": true },
+        "turn_tokens": { "type": "array", "required": false }
+      }
+    },
+    {
+      "topic": "data-snapshot-get",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "session_id": { "type": "string", "required": true } },
+      "result": { "snapshot": { "type": "any", "required": true } }
+    },
+    {
+      "topic": "data-snapshot-set",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "snapshot": { "type": "object", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-knowledge-root",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "kind": { "type": "string", "required": false } },
+      "result": {
+        "root": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-knowledge-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "dir": { "type": "string", "required": true } },
+      "result": {
+        "dir": { "type": "string", "required": true },
+        "dirs": { "type": "array", "required": true },
+        "files": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "data-knowledge-read",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "path": { "type": "string", "required": true } },
+      "result": {
+        "source": { "type": "string", "required": true },
+        "doc": { "type": "object", "required": true }
+      }
+    },
+    {
+      "topic": "data-knowledge-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "path": { "type": "string", "required": true },
+        "doc": { "type": "object", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-knowledge-create",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "dir": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "path": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-knowledge-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "path": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-knowledge-rename",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "path": { "type": "string", "required": true },
+        "new_name": { "type": "string", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-knowledge-mkdir",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "parent": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "path": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-knowledge-rmdir",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "path": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-knowledge-rename-dir",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "path": { "type": "string", "required": true },
+        "new_name": { "type": "string", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-tasktree-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "top_session": { "type": "string", "required": true },
+        "mode": { "type": "string", "required": false },
+        "include_closed": { "type": "bool", "required": false }
+      },
+      "result": { "nodes": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "data-tasktree-tasks",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "top_session": { "type": "string", "required": false },
+        "include_closed": { "type": "bool", "required": false }
+      },
+      "result": { "list": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "data-tasktree-delete",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "node_id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-tasktree-upsert",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "task_id": { "type": "string", "required": true },
+        "top_session": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true },
+        "parent_node_id": { "type": "string", "required": false },
+        "title": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "created_at": { "type": "string", "required": true },
+        "finished_at": { "type": "string", "required": false },
+        "tool_call_id": { "type": "string", "required": false },
+        "content": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "instance_id": { "type": "string", "required": false },
+        "state": { "type": "string", "required": false },
+        "args_digest": { "type": "string", "required": false },
+        "result_digest": { "type": "string", "required": false },
+        "exec_json": { "type": "string", "required": false },
+        "started_at": { "type": "string", "required": false },
+        "done_at": { "type": "string", "required": false },
+        "closed": { "type": "bool", "required": false },
+        "deleted_at": { "type": "string", "required": false },
+        "shadow": { "type": "bool", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "shadow=true（P1 回滚开关）→ 改落影子桶 task_shadow"
+    },
+    {
+      "topic": "task-deleted",
+      "face": "data",
+      "direction": "data->server",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "node_id": { "type": "string", "required": true }
+      },
+      "notes": "任务树关闭（逻辑删除）后广播，同步 server 内存；shadow 模式不广播"
+    },
+    {
+      "topic": "data-index-ignored",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "paths": { "type": "array", "required": true } },
+      "result": {
+        "codegraph": { "type": "object", "required": true },
+        "vfts": { "type": "object", "required": true },
+        "truncated": { "type": "bool", "required": false }
+      }
+    },
+    {
+      "topic": "instance-claim",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "user": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false }
+      },
+      "result": {
+        "instance_id": { "type": "string", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "data_dir": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "instance-register",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "data_dir": { "type": "string", "required": false },
+        "client_type": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "instance-heartbeat",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "instance_id": { "type": "string", "required": true } },
+      "result": {}
+    },
+    {
+      "topic": "instance-exit",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "instance_id": { "type": "string", "required": true } },
+      "result": {}
+    },
+    {
+      "topic": "llm-start",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "session-start",
+      "payload": {
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "llm": { "type": "string", "required": false },
+        "think": { "type": "any", "required": false },
+        "effort": { "type": "any", "required": false },
+        "scenario_id": { "type": "string", "required": false },
+        "continue": { "type": "bool", "required": false }
+      },
+      "result": {
+        "accepted": { "type": "bool", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "llm-send",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "session-send",
+      "payload": {
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true },
+        "content": { "type": "any", "required": true },
+        "tool_call_id": { "type": "string", "required": false }
+      },
+      "result": {}
+    },
+    {
+      "topic": "llm-cancel",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "session-cancel",
+      "payload": {
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": false }
+      },
+      "result": {
+        "cancelled": { "type": "bool", "required": true },
+        "turn": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "ask-user-reply",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "session-ask-reply",
+      "payload": {
+        "ask_id": { "type": "string", "required": true },
+        "answers": { "type": "array", "required": true }
+      },
+      "result": {}
+    },
+    {
+      "topic": "tool-retry",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "task_id": { "type": "string", "required": false },
+        "tool_call_id": { "type": "string", "required": false },
+        "instance_id": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "task_id": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "task-stop",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "task_id": { "type": "string", "required": false },
+        "tool_call_id": { "type": "string", "required": false },
+        "cascade": { "type": "string", "required": false }
+      },
+      "result": {
+        "cancelled": { "type": "bool", "required": true },
+        "task_id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "task-background",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "tool_call_id": { "type": "string", "required": true } },
+      "result": { "task_id": { "type": "string", "required": true } }
+    },
+    {
+      "topic": "prompt-optimise",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "title": { "type": "string", "required": false },
+        "useCase": { "type": "string", "required": true },
+        "prompt": { "type": "string", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "server 侧相对主题 = prompt-optimise（同名，§4.5）；与 gui.prompt-optimise（本地面）为不同客户端 type"
+    },
+    {
+      "topic": "task-verify",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "top_session": { "type": "string", "required": true },
+        "include_closed": { "type": "bool", "required": false }
+      },
+      "result": {
+        "match": { "type": "bool", "required": true },
+        "diffs": { "type": "array", "required": true },
+        "rows": { "type": "int", "required": true },
+        "cached_rows": { "type": "int", "required": true },
+        "only_in_layer": { "type": "any", "required": false },
+        "only_in_authoritative": { "type": "any", "required": false },
+        "error": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "agent-wizard-probe",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "instance_id": { "type": "string", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "probe": { "type": "object", "required": false },
+        "error": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "agent-wizard-compose",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "mode": { "type": "string", "required": true },
+        "description": { "type": "string", "required": true },
+        "probe": { "type": "object", "required": true },
+        "choices": { "type": "object", "required": true },
+        "team": { "type": "array", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "agents": { "type": "array", "required": false },
+        "error": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "agent-wizard-generate",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "scenario_id": { "type": "string", "required": true },
+        "scene_name": { "type": "string", "required": true },
+        "description": { "type": "string", "required": true },
+        "agents": { "type": "array", "required": true },
+        "memory": { "type": "array", "required": true },
+        "project_spec": { "type": "string", "required": true },
+        "config": { "type": "object", "required": true },
+        "init_git": { "type": "bool", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "scenario_id": { "type": "string", "required": false },
+        "spec_path": { "type": "string", "required": false },
+        "memory_saved": { "type": "array", "required": false },
+        "errors": { "type": "array", "required": false },
+        "config_saved": { "type": "array", "required": false },
+        "git_initialized": { "type": "bool", "required": false },
+        "error": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "agent-wizard-skip",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "instance_id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "llm-simple",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "prompt": { "type": "string", "required": true },
+        "system": { "type": "string", "required": false },
+        "instance_id": { "type": "string", "required": true },
+        "llm": { "type": "string", "required": false }
+      },
+      "result": { "text": { "type": "string", "required": true } }
+    },
+    {
+      "topic": "login-register",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "username": { "type": "string", "required": true },
+        "password": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "user": { "type": "any", "required": true }
+      }
+    },
+    {
+      "topic": "login-in",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {
+        "username": { "type": "string", "required": true },
+        "password": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "user": { "type": "any", "required": true }
+      }
+    },
+    {
+      "topic": "login-out",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {},
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "session-receive",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true },
+        "payload": { "type": "any", "required": true }
+      }
+    },
+    {
+      "topic": "session-complete",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "finish_reason": { "type": "string", "required": true },
+        "parents": { "type": "any", "required": true },
+        "code": { "type": "string", "required": false },
+        "message": { "type": "string", "required": false },
+        "text": { "type": "string", "required": false },
+        "retryable": { "type": "bool", "required": false }
+      }
+    },
+    {
+      "topic": "session-compress",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "last_turn": { "type": "string", "required": true },
+        "snapshot_turn": { "type": "string", "required": true },
+        "max_context_token": { "type": "int", "required": false },
+        "max_output_token": { "type": "int", "required": false }
+      }
+    },
+    {
+      "topic": "session-ask",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "ask_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "expires_at": { "type": "any", "required": true },
+        "questions": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "session-turn-start",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "parents": { "type": "any", "required": true }
+      }
+    },
+    {
+      "topic": "session-new",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": true },
+        "parent_session_id": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "task-started",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "task_id": { "type": "string", "required": true },
+        "tool": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true },
+        "state": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "args": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "task-updated",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "task_id": { "type": "string", "required": true },
+        "tool": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true },
+        "state": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "args": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "task-done",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "task_id": { "type": "string", "required": true },
+        "tool": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true },
+        "state": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "args": { "type": "any", "required": false }
+      }
+    },
+    {
+      "topic": "server-starting",
+      "face": "server",
+      "direction": "server->client",
+      "event": { "started_at": { "type": "any", "required": true } }
+    },
+    {
+      "topic": "prompt-optimised",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true },
+        "content": { "type": "string", "required": true },
+        "error": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "tool-notify",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": true },
+        "turn_id": { "type": "string", "required": true },
+        "notice": { "type": "string", "required": true },
+        "message": { "type": "string", "required": true },
+        "message_id": { "type": "string", "required": true },
+        "task_id": { "type": "string", "required": false },
+        "plugin": { "type": "string", "required": false },
+        "kind": { "type": "string", "required": false },
+        "reason": { "type": "string", "required": false }
+      }
+    },
+
+    {
+      "topic": "mcp-tools-list",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "clientTopic": "tools-list",
+      "payload": { "cursor": { "type": "string", "required": false } },
+      "result": {
+        "resultType": { "type": "string", "required": true },
+        "tools": { "type": "array", "required": true },
+        "ttlMs": { "type": "int", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-tools-call",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "arguments": { "type": "object", "required": true }
+      },
+      "result": {
+        "resultType": { "type": "string", "required": true },
+        "content": { "type": "array", "required": false },
+        "structuredContent": { "type": "object", "required": false },
+        "isError": { "type": "bool", "required": false }
+      }
+    },
+    {
+      "topic": "mcp-tools-wait",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "clientTopic": "mcp-tools-wait",
+      "payload": {
+        "tool_call_id": { "type": "string", "required": false },
+        "task_id": { "type": "string", "required": false }
+      },
+      "result": {
+        "waiting": { "type": "bool", "required": true },
+        "task_id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-tools-register",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "description": { "type": "string", "required": true },
+        "schema": { "type": "object", "required": false },
+        "handler_subject": { "type": "string", "required": false },
+        "pre_hook_subject": { "type": "string", "required": false },
+        "owner": { "type": "string", "required": false },
+        "hot": { "type": "bool", "required": false },
+        "category": { "type": "string", "required": false },
+        "async": { "type": "string", "required": false },
+        "async_threshold": { "type": "number", "required": false },
+        "timeout": { "type": "number", "required": false },
+        "scope": { "type": "string", "required": false }
+      },
+      "result": {
+        "registered": { "type": "bool", "required": true },
+        "kind": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-tools-unregister",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "scope": { "type": "string", "required": false }
+      },
+      "result": {
+        "unregistered": { "type": "bool", "required": true },
+        "kind": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-prompts-list",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "clientTopic": "prompts-list",
+      "payload": {},
+      "result": { "prompts": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "mcp-prompts-get",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": { "name": { "type": "string", "required": true } },
+      "result": {
+        "name": { "type": "string", "required": true },
+        "description": { "type": "string", "required": true },
+        "content": { "type": "string", "required": false },
+        "type": { "type": "string", "required": false },
+        "arguments": { "type": "array", "required": false }
+      }
+    },
+    {
+      "topic": "mcp-prompts-register",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "description": { "type": "string", "required": true },
+        "arguments": { "type": "any", "required": false },
+        "content": { "type": "string", "required": false },
+        "path": { "type": "string", "required": false },
+        "asset_kind": { "type": "string", "required": false },
+        "scope": { "type": "string", "required": false }
+      },
+      "result": {
+        "registered": { "type": "bool", "required": true },
+        "kind": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-prompts-unregister",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "asset_kind": { "type": "string", "required": false },
+        "scope": { "type": "string", "required": false }
+      },
+      "result": {
+        "unregistered": { "type": "bool", "required": true },
+        "kind": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-resources-list",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "clientTopic": "resources-list",
+      "payload": {},
+      "result": { "resources": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "mcp-resources-read",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": { "uri": { "type": "string", "required": true } },
+      "result": { "resource": { "type": "any", "required": true } }
+    },
+    {
+      "topic": "mcp-resources-register",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "uri": { "type": "string", "required": false },
+        "description": { "type": "string", "required": false },
+        "mimetype": { "type": "string", "required": false },
+        "content": { "type": "string", "required": false },
+        "path": { "type": "string", "required": false },
+        "scope": { "type": "string", "required": false }
+      },
+      "result": {
+        "registered": { "type": "bool", "required": true },
+        "kind": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-resources-unregister",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "scope": { "type": "string", "required": false }
+      },
+      "result": {
+        "unregistered": { "type": "bool", "required": true },
+        "kind": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-servers-list",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": { "server": { "type": "string", "required": false } },
+      "result": { "servers": { "type": "array", "required": true } }
+    },
+    {
+      "topic": "mcp-servers-get",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": { "server": { "type": "string", "required": true } },
+      "result": { "server": { "type": "object", "required": true } }
+    },
+    {
+      "topic": "mcp-servers-register",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "url": { "type": "string", "required": false },
+        "transport": { "type": "string", "required": false },
+        "namespace": { "type": "string", "required": false },
+        "origin": { "type": "string", "required": false },
+        "scope": { "type": "string", "required": false },
+        "mcp_server": { "type": "object", "required": false }
+      },
+      "result": {
+        "registered": { "type": "bool", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-servers-unregister",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {
+        "name": { "type": "string", "required": true },
+        "scope": { "type": "string", "required": false }
+      },
+      "result": {
+        "unregistered": { "type": "bool", "required": true },
+        "name": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-gateway-check",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {},
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "tools": { "type": "any", "required": true },
+        "servers": { "type": "any", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-gateway-reload",
+      "face": "gateway",
+      "direction": "server<->gateway",
+      "payload": {},
+      "result": {
+        "reloaded": { "type": "bool", "required": true },
+        "refreshed": { "type": "any", "required": true },
+        "removed_tools": { "type": "any", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-tasks-report",
+      "face": "gateway",
+      "direction": "gateway->client",
+      "event": {
+        "task_id": { "type": "string", "required": true },
+        "tool": { "type": "string", "required": true },
+        "state": { "type": "string", "required": true },
+        "result_summary": { "type": "string", "required": true },
+        "tool_call_id": { "type": "string", "required": false },
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": false },
+        "turn": { "type": "string", "required": false },
+        "top_session": { "type": "string", "required": false },
+        "parent": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "mcp-tools-timeout",
+      "face": "gateway",
+      "direction": "gateway->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "tool_call_id": { "type": "string", "required": true },
+        "task_id": { "type": "string", "required": true },
+        "tool": { "type": "string", "required": true },
+        "reason": { "type": "string", "required": true },
+        "timeout_s": { "type": "number", "required": true },
+        "options": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "mcp-gateway-changed",
+      "face": "gateway",
+      "direction": "gateway->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true },
+        "name": { "type": "string", "required": false },
+        "status": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "history-pre-tool-hook",
+      "face": "gateway",
+      "direction": "gateway->registrant",
+      "payload": {
+        "tool": { "type": "string", "required": true },
+        "context": { "type": "object", "required": true },
+        "touch_files": { "type": "bool", "required": true }
+      },
+      "result": {}
+    },
+    {
+      "topic": "codegraph-tool-call",
+      "face": "gateway",
+      "direction": "gateway->registrant",
+      "notes": "§5.4 远程回调：codegraph 插件注册 8 个查询工具时声明 handler_subject（去掉 workdir，由 context.instance_id 路由）。B3 检索/引擎面补录（2026-10-05）。",
+      "payload": {
+        "tool": { "type": "string", "required": true },
+        "args": { "type": "any", "required": true },
+        "context": { "type": "object", "required": false }
+      },
+      "result": {
+        "resultType": { "type": "string", "required": false },
+        "content": { "type": "array", "required": false },
+        "isError": { "type": "bool", "required": false }
+      }
+    },
+    {
+      "topic": "vfts-tool-call",
+      "face": "gateway",
+      "direction": "gateway->registrant",
+      "notes": "§5.4 远程回调：vfts 插件注册 1 个查询工具 vfts_query 时声明 handler_subject（去掉 workdir，由 context.instance_id 路由）。B3 检索/引擎面补录（2026-10-05）。",
+      "payload": {
+        "tool": { "type": "string", "required": true },
+        "args": { "type": "any", "required": true },
+        "context": { "type": "object", "required": false }
+      },
+      "result": {
+        "resultType": { "type": "string", "required": false },
+        "content": { "type": "array", "required": false },
+        "isError": { "type": "bool", "required": false }
+      }
+    },
+    {
+      "topic": "vfts.dict.get",
+      "face": "vfts",
+      "direction": "client->plugin",
+      "notes": "系统级 jieba 词典查看（插件直调引擎 vfts_dict_get）。2026-10-06 P2-10 新增。",
+      "payload": {
+        "instance_id": { "type": "string", "required": true }
+      },
+      "result": {
+        "dict_dir": { "type": "string", "required": true },
+        "user_dict_path": { "type": "string", "required": true },
+        "user_dict": { "type": "string", "required": true },
+        "word_count": { "type": "int", "required": true },
+        "base_dicts": { "type": "array", "required": true },
+        "ok": { "type": "bool", "required": false },
+        "error": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "vfts.dict.set",
+      "face": "vfts",
+      "direction": "client->plugin",
+      "notes": "系统级 jieba 自定义词编辑（插件直调引擎 vfts_dict_set，成功后自动调度强制重建）。2026-10-06 P2-10 新增。",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "user_dict": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "word_count": { "type": "int", "required": false },
+        "error": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "vfts.reindex",
+      "face": "vfts",
+      "direction": "client->plugin",
+      "notes": "手动触发 vfts 全量重建（配置页「重新索引」按钮；后台进行，立即回执 started）。2026-10-06 P2-10 新增。",
+      "payload": {
+        "instance_id": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "started": { "type": "bool", "required": true }
+      }
+    },
+
+    {
+      "topic": "project-config-open",
+      "face": "frontend-local",
+      "direction": "frontend-local",
+      "payload": { "tab": { "type": "string", "required": false } },
+      "result": {}
+    },
+    {
+      "topic": "preview-tab-open",
+      "face": "frontend-local",
+      "direction": "frontend-local",
+      "payload": {
+        "kind": { "type": "string", "required": true },
+        "title": { "type": "string", "required": false },
+        "tab": { "type": "string", "required": false }
+      },
+      "result": {}
+    }
+  ]
+}

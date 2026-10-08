@@ -51,8 +51,10 @@
             <Button size="small" text class="pf-extract" @click="handleExtractDescription">
               {{ t('knowledgeList.extract_from_content') }}
             </Button>
+            <PromptVariablesButton @insert="insertDescription" />
           </div>
           <Textarea
+            ref="descRef"
             v-model="form.description"
             class="pf-area"
             :placeholder="t('knowledgeList.description_placeholder')"
@@ -74,7 +76,11 @@
 
       <template #content>
         <div class="prim-tab-body">
+          <div class="pf-desc-head">
+            <PromptVariablesButton @insert="insertContent" />
+          </div>
           <Textarea
+            ref="contentRef"
             v-model="form.content"
             class="pf-area"
             :placeholder="t('knowledgeList.content_placeholder')"
@@ -113,6 +119,8 @@ import { extractDescriptionFromContent } from '../../utils/descriptionExtract'
 import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilter'
 import { loadLlmOptions, loadToolGroups } from '../../utils/agentAssets'
 import AgentEditor from '../scenario/AgentEditor.vue'
+import PromptVariablesButton from '../../components/common/PromptVariablesButton.vue'
+import { useVariableInsert } from '../../composables/usePromptVariables'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -152,6 +160,20 @@ const levelRoots = ref({}) // { app, user, project, prjusr } → 各级 capabili
 const upperSource = ref(null) // { level, doc }：最近可回填的上一级原语（无则 null → 按钮禁用）
 
 const form = reactive({ title: '', metaRows: [], description: '', parameters: '', content: '' })
+
+// 变量插入（OP-12）：描述 / 正文各自的光标处插入（Textarea.$el 即 textarea）。
+const descRef = ref(null)
+const contentRef = ref(null)
+const { insert: insertDescription } = useVariableInsert({
+  getEl: () => descRef.value?.$el || null,
+  getValue: () => form.description,
+  setValue: (v) => { form.description = v },
+})
+const { insert: insertContent } = useVariableInsert({
+  getEl: () => contentRef.value?.$el || null,
+  getValue: () => form.content,
+  setValue: (v) => { form.content = v },
+})
 
 const dirty = computed(() => {
   if (!pristine.value) return false
@@ -530,6 +552,7 @@ onUnmounted(() => {
 .pf-desc-head {
   display: flex;
   align-items: center;
+  gap: 8px;
   flex-shrink: 0;
 }
 .pf-schema {

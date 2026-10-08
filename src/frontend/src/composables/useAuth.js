@@ -17,6 +17,7 @@
  */
 import { ref } from 'vue'
 import mq from '../utils/mq.js'
+import { MsgTopics, FieldKeys } from '../events/msgkeys.js'
 import { authed as injectedAuthed, requireAuth as injectedRequireAuth } from '../utils/instanceState.js'
 
 /** 登录失败（用户名或密码错；61 §4.6 `login-failed`）。 */
@@ -59,12 +60,12 @@ async function callLogin(topic, username, password) {
       return false
     }
     const result = backendResult(res)
-    if (!result || result.ok !== true) {
+    if (!result || result[FieldKeys.ok] !== true) {
       // 无应答 / 形态异常（如旧后端未接线）：按登录失败提示（**不静默**）。
       errorCode.value = LOGIN_FAILED
       return false
     }
-    user.value = result.user || null
+    user.value = result[FieldKeys.user] || null
     signedIn.value = true
     return true
   } finally {
@@ -74,12 +75,12 @@ async function callLogin(topic, username, password) {
 
 /** 登录（`login-in`）。 */
 export function login(username, password) {
-  return callLogin('login-in', username, password)
+  return callLogin(MsgTopics.loginIn, username, password)
 }
 
 /** 注册（`login-register`；注册成功即自动登录）。 */
 export function register(username, password) {
-  return callLogin('login-register', username, password)
+  return callLogin(MsgTopics.loginRegister, username, password)
 }
 
 /**
@@ -89,7 +90,7 @@ export function register(username, password) {
 export async function signOut() {
   busy.value = true
   try {
-    await mq.emit('login-out', {})
+    await mq.emit(MsgTopics.loginOut, {})
   } finally {
     busy.value = false
     user.value = null

@@ -1,8 +1,8 @@
 # 20 · src/lib/gui（宿主实现）+ src/desktop / src/gui（两个宿主壳）
 
-> 日期：2026-09-10 ｜ 状态：✅ 与代码一致
+> 状态：✅ 与代码一致
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [11-MQ与消息](../10-architecture/11-MQ与消息.md) · [23-filesys](23-filesys.md)
-> 代码目录（D-28 结构重整）：宿主实现（唯一一份）= `src/lib/gui/`（`main.go` 的 `Main(distFS, Options{Form})` + `bridge/` + `internal/` + `models/`）；**两个壳**（只嵌前端 dist + 传形态）= `src/desktop/`（桌面单体，`FormDesktop`）· `src/gui/`（GUI 客户端，`FormGui`，`-tags split`），各自 `frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。〔2026-09-19 订正：原「`frontend/` 只保留 embed 产物」；现为两壳各自的 `frontend/dist/`，原文保留〕
+> 代码目录（结构重整）：宿主实现（唯一一份）= `src/lib/gui/`（`main.go` 的 `Main(distFS, Options{Form})` + `bridge/` + `internal/` + `models/`）；**两个壳**（只嵌前端 dist + 传形态）= `src/desktop/`（桌面单体，`FormDesktop`）· `src/gui/`（GUI 客户端，`FormGui`，`-tags split`），各自 `frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。
 
 ---
 
@@ -53,9 +53,11 @@
 | 含 `.` 的点分主题 | 直通总线（`publishV`） |
 | 单字方法 | `frontMethodSubjects` → 域主题 |
 
-`gui.*` 本地动作：`init-data` · `ui.save` · `recent.list` · `dir.open-dialog` · `pick-executable` · **`file.save`（2026-09-20 新增，批 3 · ⑯）** · `dir.open` · `console.open` · `vcs.info` · `reveal` · `open-with` · `search` · `capture` · `upload` · `prompt-optimise` · `toolchain.detect`（6 工具链 + Chrome 探测） · `system.builtins`（exe 同目录 `config.json` 的内置 MCP 只读项，2026-09-14 移除 `llms` 段）。
+`gui.*` 本地动作：`init-data` · `ui.save` · `recent.list` · **`recent.remove`（删除最近项目记录，仅删记录不删资产）** · `dir.open-dialog` · `pick-executable` · **`file.save`** · `dir.open` · `console.open` · `vcs.info` · `reveal` · `open-with` · `search` · `capture` · `upload` · `prompt-optimise` · `toolchain.detect`（6 工具链 + Chrome 探测） · `system.builtins`（exe 同目录 `config.json` 的内置 MCP 只读项，不含 `llms` 段）。
 
-> **`gui.file.save`（2026-09-20 新增 native 能力；[61 §1](../60-reference/61-消息一览.md) · [42 §2 (133)](../40-roadmap/42-决策记录.md)）**：`guimsg.go` 分派 → `bridge/configfile.go`（+ `savefile_windows.go` 的 `GetSaveFileNameW`）。payload `{name, content, mode?}` → `{path?}`（用户取消 = `""`）：`mode` 缺省 / `"dialog"` = 系统「另存为」；`mode:"backup"` = **不弹框**，直接落 `<dataDir>/backup/<name>`（`dataDir` 未配置 → `<workDir>/.chonkpilot/backup/`）。**安全**：`content` **可能含 API Key**（`llms[].apiKey` / `mcps[].env`、`headers`）→ 本能力**绝不记录 `content`**（无日志打印、错误详情不含内容），只回传落盘路径；`name` 经 `filepath.Base` 净化（防路径穿越）、空名拒绝。**browser 形态 = 明确不支持**（`src/llm/httpapi/publish.go` 的 `browserUnsupported`；见 §9）。
+> **`gui.file.save`（native 能力；[61 §1](../60-reference/61-消息一览.md)）**：`guimsg.go` 分派 → `bridge/configfile.go`（+ `savefile_windows.go` 的 `GetSaveFileNameW`）。payload `{name, content, mode?}` → `{path?}`（用户取消 = `""`）：`mode` 缺省 / `"dialog"` = 系统「另存为」；`mode:"backup"` = **不弹框**，直接落 `<dataDir>/backup/<name>`（`dataDir` 未配置 → `<workDir>/.chonkpilot/backup/`）。**安全**：`content` **可能含 API Key**（`llms[].apiKey` / `mcps[].env`、`headers`）→ 本能力**绝不记录 `content`**（无日志打印、错误详情不含内容），只回传落盘路径；`name` 经 `filepath.Base` 净化（防路径穿越）、空名拒绝。**browser 形态 = 明确不支持**（`src/lib/llm/httpapi/publish.go` 的 `browserUnsupported`；见 §9）。
+
+> **场景向导启动触发（`agent-wizard`）**：GUI 桥在 `gui.init-data` 分支（`guimsg.go`）stat `<workDir>/.chonkpilot/project_spec.md` —— **缺失** → 应答补**只增布尔字段 `wizard_required: true`**（[61 §1](../60-reference/61-消息一览.md)），并向本窗口下发 **`agent-wizard`** 事件（`EmitFrontend`，payload `{reason:"missing_spec", work_dir, spec_path}`）；**存在** → `wizard_required: false`、不发事件。**检测落点在 GUI 桥本身（非插件）** —— 设计稿设想的 `plugin-wizard` **未落地**（[37 SCEN-012](../30-function-points/37-场景.md)）。前端消费：`MainLayout.vue` 订阅 `EventNames.agentWizard` → `openScenarioWizard`（`src/frontend/src/views/scenario/ScenarioWizardDialog.vue`，复用 `DialogShell`；向导另可经**场景编辑对话框底部【向导】按钮**手动拉起，同入口）。向导 Step1 探测经 `agent-wizard-probe`、提示词合成经 `agent-wizard-compose`（按项目特点把出厂 archetype 合成为定制化提示词，纯字符串组装；合成文本末以 `{{path.*}}` 四根路径占位符给出技能位置，**组装系统提示词时**渲染，指示 LLM 用文件工具自读，不用 `mcp_load`）、Step5 生成经 `agent-wizard-generate`（server 处理：非主 agent 合成提示词经门面 `ProjectAgentWrite` 落项目级 capability agent 文件 + 以**引用**入场景，主 agent 内联；数据访问经 data 门面 inline 直调，**不新增 `data-*` 主题**）、【关闭/稍后】经 `agent-wizard-skip`；消息面明细见 [61 §4.2](../60-reference/61-消息一览.md)。
 
 ---
 
@@ -76,14 +78,16 @@
   → Navigate(appOrigin+"/") + Run()
 ```
 
+> **启动期 WebView2 profile 孤儿清理**：`Main` 在建窗**之前**调 `pruneWebviewProfiles(~/.chonkpilot/webview2)` —— **尽力而为**清理 `gui-*` 目录中 **LastWriteTime 早于 24h** 者（本进程 profile 目录名 = 实例 id，见 `newUUID` → `gui-<数字>`；活跃 profile 被 WebView2 运行时持续写入 → 24h 未变动即判残留；当前进程自身目录在建窗时才创建、天然晚于 cutoff，**无需显式排除**）；**只认 `gui-` 前缀**（不动根下其它内容）；删除失败（被占用）逐条跳过并忽略，**不阻断启动**；清理数量 + 释放空间记 Info 日志。正常关闭仍由窗口工厂逐窗口 `RemoveAll` 清理（见 [24 §4.1](../10-architecture/24-多窗口模型设计方案.md)）。
+
 **bridge 包文件职责**：
 
 | 文件 | 职责 |
 |------|------|
 | `bridge.go` | 桥核心：instance 注册、订阅透传、`PublishEvent` 分派、`mqTypeMap`、src 防环（1s 窗口）、`EmitFrontend`、`WaitForEvent`（test-port） |
-| `guimsg.go` | `gui.*` 本地面（复用原 `/call` 内部 `callX`，`/call` 已清零） |
+| `guimsg.go` | `gui.*` 本地面（复用原 `/call` 内部 `callX`，`/call` 已清零）；含 `init-data` **场景向导启动检测**（工程规格 `<workDir>/.chonkpilot/project_spec.md` 缺失 → 应答补 `wizard_required` + 下发 `agent-wizard`） |
 | `data.go` | `data-*` 经总线 persist；prj-config 键值面；usr 配置（标量逐 key + 专用表 `llms`） |
-| `local.go` | 初始化数据、布局/窗口/UI/文件树/打开态保存（prjusr）、最近目录、打开目录、VCS、检索 |
+| `local.go` | 初始化数据、布局/窗口/UI/文件树/打开态保存（prjusr）、最近目录（list/remove）、打开目录、VCS、检索 |
 | `builtins.go` | `gui.system.builtins`：读 exe 同目录 `config.json` 的只读内置 MCP 项（`mcpServers` 段） |
 | `toolchain.go` | `gui.toolchain.detect`：探测 6 语言工具链 + Chrome 路径/版本（系统级候选不落库）；探测顺序 = PATH → 注册表 `App Paths`（HKCU→HKLM）→ 环境变量目录（JAVA_HOME/GOROOT 等）→ 常见安装目录；候选环境变量支持 `%VAR%`/`$VAR`；**Chrome 版本来自其目录 `Application\<ver>\` 的最高版本号目录**（不执行 `chrome.exe --version`） |
 | `capture.go` | 截图：隐藏本窗 → GDI 全屏 BitBlt → PNG 落盘 → `{url,b64}`（纯 syscall，无 CGO） |
@@ -97,7 +101,7 @@
 
 ## 5. 预览区（CodeView / renderType 映射）
 
-> 本节为 2026-08/09 原设计稿整体迁入，按现行实现口径整理（判定顺序与扩展名集合均以 `CodeView.vue` 为准）。
+> 本节按现行实现口径整理（判定顺序与扩展名集合均以 `CodeView.vue` 为准）。
 
 **组件职责**：
 
@@ -144,8 +148,8 @@
 | 图片平移 | `mousedown` 记录起点 + `window mousemove` 改 `scrollLeft/scrollTop` |
 | markdown / html 源码切换 | 头部「源码 / 预览」toggle（`showSource`） |
 | 文件 URL | `getFileUrl(path)`，二进制用 `raw=true` 直出 |
-| 预览页签栏溢出（`TabBar.vue`） | **2026-09-16 用户口径**：外层 `.tb-bar` = `position:relative; overflow:hidden`（裁剪）+ `ResizeObserver`（**同时观察 `.tb-bar` 与 `.tb-inner`**；另有 window `resize` 兜底）→ 尺寸/内容宽变化即重判；内层 `.tb-inner` = `display:flex; gap:2px; width:max-content; flex:none`（内容自然宽，**不收缩、不裁切、不隐藏**多余页签；不再 `flex:1`/`min-width:0`/`overflow:hidden`）；判定口径 = **按最后一个页签的位置**（`.tb-tab:last-child` 的右边界 > 外层可用宽右边界，即 `bar.right - paddingRight`，容差 0.5px；页签尚未渲染时退化为 `inner.scrollWidth > bar.clientWidth`）→ 决定是否显示 `.tb-more`（"..." 按钮，**绝对定位覆盖**在右侧：`right:0; top:50%` + 自带底色 + `inset` 左边框 + `z-index`，**不占布局宽、不参与判定回路**，故不会"有按钮→更挤→更多按钮"）；**多余页签不再隐藏**（`tb-hidden`/`visibleCount`/`visibleKeys`/`hiddenTabs`/`gotoHidden` 已删除）→ 被遮住的最后一个页签**仍渲染**（可被按钮遮住一半，属预期），**且同时出现在弹框里**。弹框 `.tb-more-pop` 列出**全部**页签（按当前内部顺序）；选中某项 → 该项移到**显示首位**、其余保持相对顺序顺移（**只改组件内部显示顺序**：`orderKeys`，`setFirst` 仅 `emit('update:modelValue')` + 关闭弹框，**不改 `props.tabs`、不 emit 排序事件、不额外通知外部**；`displayTabs` computed 在 `props.tabs` 变化时过滤已删 key、追加新增 key）。旧机制（`.tb-hidden` + 累加 `offsetWidth` 算可见数 + 隐藏多余项）**已删除** |
-| 预览页签栏右键菜单 | **关闭本页签 / 关闭右侧 / 关闭其它 / 关闭全部**（`preview-tab-close-this` · `preview-tab-close-right` · `preview-tab-close-others` · `preview-tab-close-all`）。**收敛为单一 MQ 路径（2026-09-15 后订正）**：四项菜单项**只经 `v-mq` 触发**上述四个主题（`TabBar.vue` 触发 → `CodeView.vue` 订阅），**无 emit 本地直连副本**（`TabBar` 已不再 emit 本地动作）；属**前端客户端 mq** 路径，**零新增消息主题、不经后端**。文案：**「关闭全部」（zh）/「Close All Tabs」（en）**（`common.tab_close_all`） |
+| 预览页签栏溢出（`TabBar.vue`） | 外层 `.tb-bar` = `position:relative; overflow:hidden`（裁剪）+ `ResizeObserver`（**同时观察 `.tb-bar` 与 `.tb-inner`**；另有 window `resize` 兜底）→ 尺寸/内容宽变化即重判；内层 `.tb-inner` = `display:flex; gap:2px; width:max-content; flex:none`（内容自然宽，**不收缩、不裁切、不隐藏**多余页签；不再 `flex:1`/`min-width:0`/`overflow:hidden`）；判定口径 = **按最后一个页签的位置**（`.tb-tab:last-child` 的右边界 > 外层可用宽右边界，即 `bar.right - paddingRight`，容差 0.5px；页签尚未渲染时退化为 `inner.scrollWidth > bar.clientWidth`）→ 决定是否显示 `.tb-more`（"..." 按钮，**绝对定位覆盖**在右侧：`right:0; top:50%` + 自带底色 + `inset` 左边框 + `z-index`，**不占布局宽、不参与判定回路**，故不会"有按钮→更挤→更多按钮"）；**多余页签不再隐藏**（`tb-hidden`/`visibleCount`/`visibleKeys`/`hiddenTabs`/`gotoHidden` 已删除）→ 被遮住的最后一个页签**仍渲染**（可被按钮遮住一半，属预期），**且同时出现在弹框里**。弹框 `.tb-more-pop` 列出**全部**页签（按当前内部顺序）；选中某项 → 该项移到**显示首位**、其余保持相对顺序顺移（**只改组件内部显示顺序**：`orderKeys`，`setFirst` 仅 `emit('update:modelValue')` + 关闭弹框，**不改 `props.tabs`、不 emit 排序事件、不额外通知外部**；`displayTabs` computed 在 `props.tabs` 变化时过滤已删 key、追加新增 key）。旧机制（`.tb-hidden` + 累加 `offsetWidth` 算可见数 + 隐藏多余项）**已删除** |
+| 预览页签栏右键菜单 | **关闭本页签 / 关闭右侧 / 关闭其它 / 关闭全部**（`preview-tab-close-this` · `preview-tab-close-right` · `preview-tab-close-others` · `preview-tab-close-all`）。**收敛为单一 MQ 路径**：四项菜单项**只经 `v-mq` 触发**上述四个主题（`TabBar.vue` 触发 → `CodeView.vue` 订阅），**无 emit 本地直连副本**（`TabBar` 已不再 emit 本地动作）；属**前端客户端 mq** 路径，**零新增消息主题、不经后端**。文案：**「关闭全部」（zh）/「Close All Tabs」（en）**（`common.tab_close_all`） |
 
 ---
 
@@ -154,16 +158,16 @@
 | 数据 | 载体 | 当前落层 | 目标（见 [02-配置层级](../00-overview/02-配置层级.md)） |
 |------|------|---------|------|
 | `layout` / `window` / `opened-files` / `filetree-*` | prj config 键（`{"v":"<json>"}`） | **prjusr** | 已落 **prjusr**（个人运行态；读取 prjusr 优先、回落 prj） |
-| 用户配置 `user_config` | usr config 表 | usr | usr（拆细 key） |
-| `recent_dirs` | **桥内进程内存**（无 usr 自由键通道） | 内存 | 待定（跨进程持久化未实现） |
+| 用户配置（标量逐 key + 专用表 `llms`） | usr config 表 + `llms` 专用表 | usr | usr（已拆细 key） |
+| `recent_dirs` | usr config 自由键（`data-user-config-{load,save}`；值 = JSON 数组字符串，前插 + 去重 + 10 条截断） | usr | 已落 **usr**（跨进程 / 重启持久化；`gui.recent.list` 读、`gui.recent.remove` 删记录，见 [61 §1](../60-reference/61-消息一览.md)） |
 
-**文件树展开态（`filetree-expanded-key` / `filetree-selected-path`）**：只保存展开目录的相对路径数组与选中路径，重启时经 `init-data.expandedKeys`/`selectedKey` 恢复。原 `filetree-data` 整树快照（2026-08/09 设计稿）为**只写不读**，已于 2026-09-11 摘除（见 [42-决策记录](../40-roadmap/42-决策记录.md) F）。
+**文件树展开态（`filetree-expanded-key` / `filetree-selected-path`）**：只保存展开目录的相对路径数组与选中路径，重启时经 `init-data.expandedKeys`/`selectedKey` 恢复。
 
 **MCP 配置界面**（`views/config/SettingsMCPPage.vue` 列表 + `views/config/EditMCPDialog.vue` 编辑弹窗；落库 = **四级文件化 MCP** `<级别>/capability/mcps/<名>.json`，见 [64 §6](../60-reference/64-配置项一览.md)）：编辑弹窗含「**按实例隔离**」Switch（`config.mcp.isolate`）——**三态表达**：未拨动 = **未设置**（保存时 `delete localData.isolate`，**不写库**）+ 提示「自动（未设置，按传输方式推断）」（`isolateAuto`，另附 `isolateHint`）；一旦拨动即视为**显式设置**并写 `true`/`false`（未显式设置时开关显示随 transport 变化的推断值，computed 推断、无 `watch`）。列表新增「按实例隔离」列（`isolateLabel`）：**显式设置 → 是/否**；**未设置 → 推断值 + 「（自动）」后缀**（`isolateAutoSuffix`；推断口径与 gateway `ServerEntry.IsolateEnabled()` 一致：stdio → 隔离、http/sse → 共享，transport 留空按连接点推断）。
 
-**编辑弹窗页签（2026-09-27）**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）·「**运行信息**」（运行时 | 工作目录 / **按实例隔离** | **沙箱** / 启动参数 / 环境变量）·「**工具**」（【加载工具】+ 逐项勾选）共**三页签**（2026-09-27 改造；「**启用**」移到底栏与【保存】同行）；页签**仅显示分组**，`handleSave` 仍一次性提交三页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」（2026-09-27 改造）**不再是字段**：改为独立「**工具**」页签 ——【**加载工具**】按钮按别名列出该 server 工具 + 「全部工具」= 全部 hot + 逐项勾选（数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落四级文件化 MCP 条目的 `hot_tools`；原独立弹窗 `SetMCPHotToolsDialog.vue` **已删除**（并入页签）。另：「**请求头**」「**环境变量**」改为 **KV 行编辑**（`components/ui/KeyValueEditor.vue`，可增删行），「**启动参数**」为**行列表**编辑（`args` 是 `[]string`，非 KV）。
+**编辑弹窗页签**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）·「**运行信息**」（运行时 | 工作目录 / **按实例隔离** | **沙箱** / 启动参数 / 环境变量）·「**工具**」（【加载工具】+ 逐项勾选）共**三页签**（「**启用**」移到底栏与【保存】同行）；页签**仅显示分组**，`handleSave` 仍一次性提交三页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」**不再是字段**：改为独立「**工具**」页签 ——【**加载工具**】按钮按别名列出该 server 工具 + 「全部工具」= 全部 hot + 逐项勾选（数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落四级文件化 MCP 条目的 `hot_tools`；原独立弹窗 `SetMCPHotToolsDialog.vue` **已删除**（并入页签）。另：「**请求头**」「**环境变量**」改为 **KV 行编辑**（`components/ui/KeyValueEditor.vue`，可增删行），「**启动参数**」为**行列表**编辑（`args` 是 `[]string`，非 KV）。
 
-**MCP 配置四级文件化（2026-10-01，[42 §2 (211)](../40-roadmap/42-决策记录.md)）**：MCP 配置**载体改四级文件** `<级别>/capability/mcps/<名称>.json`（app/user/project/prjusr；一个 server 一个文件）——列表页（`SettingsMCPPage`）经**新数据层 mcp 域**（`data-mcp-{list,save,delete}` + 订阅 `data-mcp-refresh`）读写，**不再整表替换 usr KV `mcpServers`**；列表新增「**级别**」列（文案 = `scenario.level.*`）。编辑弹窗「基本信息」页签新增**级别选择**（`config.mcp.level`，四级，选项文案 = `fileTree.kb_level_*`，缺省 `user`），保存按所选级别落对应级文件（改名/移级先删旧文件、不残留）；i18n = `config.mcp.level` / `config.mcp.levelHint`（zh/en）。**旧 usr KV `mcpServers` 已彻底废弃**（2026-10-01，[42 §2 (212)](../40-roadmap/42-决策记录.md)：代码零兼容、不再回落）——见 [64 §6](../60-reference/64-配置项一览.md) · [02 §7.3](../00-overview/02-配置层级.md)。
+**MCP 配置四级文件化**：MCP 配置**载体改四级文件** `<级别>/capability/mcps/<名称>.json`（app/user/project/prjusr；一个 server 一个文件）——列表页（`SettingsMCPPage`）经**新数据层 mcp 域**（`data-mcp-{list,save,delete}` + 订阅 `data-mcp-refresh`）读写，**不再整表替换 usr KV `mcpServers`**；列表新增「**级别**」列（文案 = `scenario.level.*`）。编辑弹窗「基本信息」页签新增**级别选择**（`config.mcp.level`，四级，选项文案 = `fileTree.kb_level_*`，缺省 `user`），保存按所选级别落对应级文件（改名/移级先删旧文件、不残留）；i18n = `config.mcp.level` / `config.mcp.levelHint`（zh/en）。**旧 usr KV `mcpServers` 已彻底废弃**（代码零兼容、不再回落）——见 [64 §6](../60-reference/64-配置项一览.md) · [02 §7.3](../00-overview/02-配置层级.md)。
 
 **保存时机**：① 每次展开/折叠后；② 收到变更推送后（防抖约 500ms）；③ 选中节点变化时；④ IDE 关闭时兜底保存。
 
@@ -171,8 +175,8 @@
 
 ## 7. 依赖
 
-- **上游**：`src/lib`(mq/paths) · `src/llm`(server) · `src/filesys` · `src/plugin*` · `jchv/go-webview2`（本地 `lib/go-webview2`）。
-- **indirect**：`src/data` · `src/gateway` · `src/mcp-server`。
+- **上游**：`src/lib/core`(mq/paths) · `src/lib/llm`(server) · `src/lib/filesys` · `src/plugins/plugin*` · `jchv/go-webview2`（本地 `src/lib/go-webview2`）。
+- **indirect**：`src/lib/data` · `src/lib/gateway` · `src/lib/mcp-server`。
 - **下游**：无（终端应用）。
 
 ---
@@ -195,21 +199,21 @@
 - **最大化同步**：`window-maximized-changed` 事件 → 前端切图标。
 - **`/show` 路径越界防护**：`fileserver.withinDir`（Windows 大小写不敏感），`DataDirs` 为额外放行根。
 - **防环**：本实例刚发布的主题（1s 窗口）不再回发前端。
-- **多窗口（🔵 待实施）**：窗口 ↔ `instance` **1:1**（窗 = 视口，instance = 运行态+消息归属+数据根绑定）；**`instance` 不做业务隔离**（同 `work_dir` 多 instance 共用同一 prjusr 库 → 会话列表/历史**共享**）。**关闭语义**：关任一窗口仅销毁该窗口 + 发该实例 `instance-exit`；**主窗口关闭 = 退出本进程**（其余窗口一并关闭）。**几何**：主窗口 `window.*`/`layout.*`（prjusr）；**对话窗口不持久化几何**（每次默认位置）。**不变量订正**：原「desktop = 1 进程 1 instance」不再成立（进程内 instance 数 = 窗口数），见 [20-实例隔离与后端分离](../10-architecture/20-实例隔离与后端分离.md) 订正注。
+- **多窗口（🔵 待实施）**：窗口 ↔ `instance` **1:1**（窗 = 视口，instance = 运行态+消息归属+数据根绑定）；**`instance` 不做业务隔离**（同 `work_dir` 多 instance 共用同一 prjusr 库 → 会话列表/历史**共享**）。**关闭语义**：关任一窗口仅销毁该窗口 + 发该实例 `instance-exit`；**主窗口关闭 = 退出本进程**（其余窗口一并关闭）。**几何**：主窗口 `window.*`/`layout.*`（prjusr）；**对话窗口不持久化几何**（每次默认位置）。**不变量**：进程内 instance 数 = 窗口数（非「1 进程 1 instance」），见 [20-实例隔离与后端分离](../10-architecture/20-实例隔离与后端分离.md)。
 - **退出**：`instance-exit` → persist 移除绑定 + server 取消 running turn + 释放锁；`beaconSaveLayout`（`sendBeacon`）兜底保存布局。
-- **browser 形态的 native 能力边界（2026-09-20 补注）**：`gui.file.save`（「另存为」对话框，native）**明确不支持** —— 入 `src/llm/httpapi/publish.go` 的 `browserUnsupported`（返回 `{ok:false, error}` + errors，**不静默失败**，前端降级为页面下载 / 剪贴板）；browser 形态点分主题上行另有白名单 `allowedDottedPrefixes`（现含 `filesys.` / `llm.test-connection` / `memory.flush`）。GUI 形态无此限制（桥本地实现 + 「点分直通」分支）。见 [61 §1/§1.1/§8](../60-reference/61-消息一览.md) · [42 §2 (133)](../40-roadmap/42-决策记录.md)。
+- **browser 形态的 native 能力边界**：`gui.file.save`（「另存为」对话框，native）**明确不支持** —— 入 `src/lib/llm/httpapi/publish.go` 的 `browserUnsupported`（返回 `{ok:false, error}` + errors，**不静默失败**，前端降级为页面下载 / 剪贴板）；browser 形态点分主题上行另有白名单 `allowedDottedPrefixes`（现含 `filesys.` / `llm.test-connection` / `memory.flush`）。GUI 形态无此限制（桥本地实现 + 「点分直通」分支）。见 [61 §1/§1.1/§8](../60-reference/61-消息一览.md)。
 
 ---
 
 ## 10. 现状与待办
 
 - ✅ `/call` RPC 已清零（前端无 `window.go.*` 调用点）；`compat.go` 兼容层保留。
-- ✅ `layout/window/opened-files/filetree-*` 已落 **prjusr**（个人运行态；读取 prjusr 优先、回落 prj；[02-配置层级](../00-overview/02-配置层级.md) §5）；`ui`/`opened-file` 死键与 `filetree-data` 快照已于 2026-09-11 摘除（G1/F）。
-- ⚠️ `recent_dirs` 降级为进程内存，跨进程/重启持久化未实现。
-- 🗄 `models/config.go` 的 `AgentConfig` 已废弃（project_agents 表 deprecated）。
+- ✅ `layout/window/opened-files/filetree-*` 已落 **prjusr**（个人运行态；读取 prjusr 优先、回落 prj；[02-配置层级](../00-overview/02-配置层级.md) §5）；`ui`/`opened-file` 死键与 `filetree-data` 快照已摘除。
+- ✅ `recent_dirs` 已落 **usr** config 自由键（跨进程 / 重启持久化，见 §6）；最近项目下拉支持**按条删除记录**（`gui.recent.remove`；**仅删记录，不删项目资产**）。
+- 🗄 `models/config.go` 的 `AgentConfig` 已废弃（project_agents 表 deprecated），**遗留 DB 模型（`ScenarioConfig`/`ScenarioAgent` 等）已随"无历史数据、不写兼容"口径删除**。
 - 🔵 工具栏「设置」改下拉菜单 + 配置页在 preview 打开（待改造）。
-- 🔵 **预留功能（「敬请期待」、非死代码，2026-09-26 用户裁决，见 [42 §2 (175)](../40-roadmap/42-决策记录.md)）**：`fork`（会话导航占位按钮，`src/frontend/src/views/sessions/SessionsPane.vue`，点击仅提示 `chat.fork_coming_soon`／「敬请期待」）· `analyzeDialog`（主布局预留引用，`src/frontend/src/views/layout/MainLayout.vue`）。
-- 🔵 **多窗口（主窗口 + 纯对话窗口）设计定稿、待实施**：任务分解见 [24 §7](../10-architecture/24-多窗口模型设计方案.md)（MW-1…MW-13）；含 **Resolve 审计**（多实例下 `View.Resolve` 的「唯一实例回退」失效 → 不带 `instance_id` 的数据入口须逐条排查）；数据层取 **B 方案**（desktop 走 `dataDir == ""`，见 [12 §3/§5.3](../10-architecture/12-数据层.md)）。未决 4 项见 [41 D-33~D-36](../40-roadmap/41-未决项登记.md)。
+- 🔵 **预留功能（「敬请期待」、非死代码）**：`fork`（会话导航占位按钮，`src/frontend/src/views/sessions/SessionsPane.vue`，点击仅提示 `chat.fork_coming_soon`／「敬请期待」）· `analyzeDialog`（主布局预留引用，`src/frontend/src/views/layout/MainLayout.vue`）。
+- 🔵 **多窗口（主窗口 + 纯对话窗口）设计定稿、待实施**：任务分解见 [24 §7](../10-architecture/24-多窗口模型设计方案.md)（MW-1…MW-13）；含 **Resolve 审计**（多实例下 `View.Resolve` 的「唯一实例回退」失效 → 不带 `instance_id` 的数据入口须逐条排查）；数据层取 **B 方案**（desktop 走 `dataDir == ""`，见 [12 §3/§5.3](../10-architecture/12-数据层.md)）。
 
 ---
 
@@ -222,7 +226,7 @@
 
 ## 12. 实现约定（前端与宿主）
 
-> 本节由原工程规约整体迁入（2026-09-11），为**强制约定**。
+> 本节为**强制约定**。
 
 ### 12.1 前端状态管理
 
@@ -243,7 +247,7 @@
 
 ### 12.4 Resizer 设计规范
 
-> **2026-09-28 方案 A（视觉 / 命中解耦，`components/split/SplitPanel.vue`）**：本体恒 **1px 发丝线**、命中区为 **5px 透明伪元素**，hover/拖拽只染伪元素 → **拖动瞬间不重排、不抖动**。旧口径（handle 4px + 常态 `transparent` + hover 直接改本体）**作废**，原文保留于文末。
+> **方案 A（视觉 / 命中解耦，`components/split/SplitPanel.vue`）**：本体恒 **1px 发丝线**、命中区为 **5px 透明伪元素**，hover/拖拽只染伪元素 → **拖动瞬间不重排、不抖动**。旧口径（handle 4px + 常态 `transparent` + hover 直接改本体）**作废**。
 
 1. **本体 = 真实 `<div>`**（`.split-resizer`），占布局空间 = **`var(--split-hairline)`（1px）**：水平 `width: var(--split-hairline)` + `cursor: col-resize`；垂直 `height: var(--split-hairline)` + `cursor: row-resize`。
 2. **本体常态 `background: var(--border)`**（发丝线取**边框色**，不再「露容器底色」，亦非 `transparent`）。
@@ -253,20 +257,11 @@
 6. `window mousemove` 设 `{ capture: true }`，按 `paneMin/paneMax` **clamp** 后**直改 DOM**（`targetEl.style[width|height]`）；`window mouseup` 移除 listener，恢复 cursor / userSelect。
 7. 拖拽数学走 **pane 的 `getBoundingClientRect()`**（与 resizer 宽度无关）；被 resize 的 pane 加 `flex-shrink: 0`。
 
-- **token（`variables.css` :root）**：`--split-hairline: 1px` · `--split-hit: 5px`；**`--split-gap` 已移除**（原 4px「视觉=命中」口径作废）。
+- **token（`variables.css` :root）**：`--split-hairline: 1px` · `--split-hit: 5px`；**`--split-gap` 已移除**。
 - **`gap` prop**：`SplitPanel` **保留声明但不再参与视觉 / 命中宽度**（兼容既有调用方）；`MainLayout.vue` 外层 `:gap="0"`（不渲染 resizer）+ 4 处内层 `:gap="4"`。
 - **`LAYOUT_GAPS`**：`MainLayout.vue` 由 **8 → 2**（= content\|chat + filetree\|preview 两条 1px 发丝线，与真实分隔条宽度一致；用于 filetree 宽度的 clamp 余量）。
 - **已知取舍**：命中区对称外溢 2px → 会**压住相邻 pane 边缘 2px**（点该 2px 带优先命中 resizer）。
-- **关联测试**：前端守卫 `src/frontend/test/uxLayoutSplit.test.js`（P1-6b：本体 1px / `--border` / 命中伪元素 5px / 激活 `--accent` / `--split-gap` 移除）；L4 `test_layout.py` **L1c**（真机分隔条几何与颜色）+ **L8b**（拖拽中本体恒 1px）。
-
-> **原文保留（旧口径，2026-09-26 及更早）**：
-> 1. handle 用真实 `<div>`（非 `::after`），占布局空间（`width/height: 4px`）。
-> 2. `background: transparent`，hover 变 `var(--accent)`。
-> 3. `@mousedown` 用闭包捕获 `startX/startW`，不用全局 ctx。
-> 4. `window mousemove` 设 `{ capture: true }`，clamp 到阈值。
-> 5. `window mouseup` 移除 listener，恢复 cursor / userSelect。
-> 6. 每次 `e.preventDefault() + e.stopPropagation()`。
-> 7. 被 resize 的容器加 `flex-shrink: 0`。
+- **关联测试**：前端守卫 `src/frontend/test/uxLayoutSplit.test.js`（本体 1px / `--border` / 命中伪元素 5px / 激活 `--accent` / `--split-gap` 移除）；L4 `test_layout.py` **L1c**（真机分隔条几何与颜色）+ **L8b**（拖拽中本体恒 1px）。
 
 ### 12.5 DialogShell 对话框高度
 
@@ -278,14 +273,7 @@
 .dialog-body { flex: 1; overflow: auto; min-height: 0; }
 ```
 
-**〔订正（2026-09-26）：载体口径由 `el-dialog` 改为自研 `DialogShell`〕** 原文写 `el-dialog` + `dialog-content`，但**本项目前端无 element-plus 依赖、全仓 0 处 `el-dialog`**（已 Grep 复核），实际弹窗载体 = 自研 `components/dialog/DialogShell.vue`，其等价约束已内建：JS 侧 `base.maxHeight = min(options.maxHeight, calc(100vh - 40px))`（`DialogShell.vue` `:228-233`），CSS 侧 `.dialog-shell:not(.dialog-state-maximized){ max-height: calc(100vh - 40px) }`（`:462-464`）与 `.dialog-body{ flex:1; overflow:auto; min-height:0 }`（`:518-523`）。**实质要求不变**（必须用 `max-height` 约束弹窗 + 内部 `flex:1` 撑满内容区），仅换载体。原文保留：
-
-> ~~**禁止**只在内部 div 设固定高度（header + padding 会叠加溢出）。正确做法：用 `max-height` 约束 `el-dialog`，内部 `dialog-content` 用 `flex: 1` 撑满：~~
-> ```css
-> .scenario-dialog :deep(.el-dialog) { max-height: 980px; display: flex; flex-direction: column; }
-> .scenario-dialog :deep(.el-dialog__body) { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
-> .dialog-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
-> ```
+**弹窗载体 = 自研 `components/dialog/DialogShell.vue`，其等价约束已内建**：JS 侧 `base.maxHeight = min(options.maxHeight, calc(100vh - 40px))`（`DialogShell.vue` `:228-233`），CSS 侧 `.dialog-shell:not(.dialog-state-maximized){ max-height: calc(100vh - 40px) }`（`:462-464`）与 `.dialog-body{ flex:1; overflow:auto; min-height:0 }`（`:518-523`）。**实质要求**：必须用 `max-height` 约束弹窗 + 内部 `flex:1` 撑满内容区（本项目前端无 element-plus 依赖、全仓 0 处 `el-dialog`）。
 
 ### 12.6 静态文件服务
 
@@ -295,34 +283,41 @@
 
 - 宿主用标准库 **`log/slog`**（键值对形式，如 `slog.Error("msg", "err", err)`），**禁止** `log.Printf` / `fmt.Print`。
 - 级别：启动/关闭/关键流程 → `Info`；调试 → `Debug`；异常 → `Warn` / `Error`。
-- 落盘：主进程当前**未配置文件 handler**（slog 默认输出 stderr）；而 GUI 形态为 `-H windowsgui`，stderr 不可见 → **调试信息必须显式落盘或上报**（如需文件日志，在宿主初始化处配置 handler）。**〔订正（2026-09-20）：该口径已过时 —— 宿主已挂文件 sink**，见下条订正注；原文保留。〕
+- 落盘：宿主与后端日志统一落 `<prjusr 数据根>/logs/gui.log`（详见下）。
 - 若需排查运行时问题，优先用结构化字段而非拼串。
 
-> **〔订正（2026-09-20）：日志落盘已统一到 `<dataDir>/logs/gui.log`〕**
-> ① **宿主（gui）**：`src/gui/logfile.go` 的 `dualWriter`（stderr 并存）+ `rotateWriter`（2MiB 滚动、保留 5 份）把 **slog 默认 logger** 同时写 stderr 与 `<dataDir>/logs/gui.log`（[42 §2 (122)](../40-roadmap/42-决策记录.md)）；日志目录经 `gui.init-data` 只增字段 `logDir` 下发（[61 §1](../60-reference/61-消息一览.md)）。
-> ② **后端（`src/llm/server` + 内嵌插件）**：本包输出收敛到单一出口 **`logf`**（`src/llm/server/log.go`）—— **`logf` 始终写 stdout（行为不变，`--test-port` 捕获口径不变）**；装配方经 **`server.Options.LogWriter`（`io.Writer`，nil = 仅 stdout）** 注入额外 sink 时**同写 sink**，GUI 注入的即宿主那一个 `<dataDir>/logs/gui.log` 文件 sink（`src/gui/main.go` 传 `logWriter.fileSink()`）。插件仍走 `plugin.Deps.Logf`（= `Server.pluginLogf`）→ 经**同一出口**落文件。库侧只收 `io.Writer`，**不依赖 gui 包**（[41 I-114](../40-roadmap/41-未决项登记.md)）。
-> ③ **未覆盖（如实标注）**：`src/llm/httpapi` 与 `src/llm/main.go` 的 `log.Printf`（stderr；属独立入口 / browser 形态）未接入该 sink。
-> **〔订正（2026-09-25，[24 §3.2](../10-architecture/24-多窗口模型设计方案.md) MW-8）：上条 ① 的 `<dataDir>` 已正名为 prjusr 数据根〕** 日志目录 = **`data.PrjUsrDir`（prjusr 数据根）** + `/logs`（`src/lib/gui/main.go` 传入 `attachFileLog`）：desktop 缺省（`data_dir == ""`）→ **`~/.chonkpilot/data/<prj-id>/logs/gui.log`**（跟随数据根，[41 D-33](../40-roadmap/41-未决项登记.md)）；**显式 `--data-dir`** → `<该数据根>/logs/gui.log`（口径不变）。`gui.init-data.logDir` 随之指向该处。~~`<dataDir>/logs/gui.log`~~（原文保留）。
+> **日志落盘：统一到 `<prjusr 数据根>/logs/gui.log`**
+> ① **宿主（gui）**：`src/lib/gui/logfile.go` 的 `dualWriter`（stderr 并存）+ `rotateWriter`（2MiB 滚动、保留 5 份）把 **slog 默认 logger** 同时写 stderr 与 `<prjusr 数据根>/logs/gui.log`；日志目录经 `gui.init-data` 只增字段 `logDir` 下发（[61 §1](../60-reference/61-消息一览.md)）。日志目录 = **`data.PrjUsrDir`（prjusr 数据根）** + `/logs`（`src/lib/gui/main.go` 传入 `attachFileLog`）：desktop 缺省（`data_dir == ""`）→ **`~/.chonkpilot/data/<prj-id>/logs/gui.log`**（跟随数据根）；**显式 `--data-dir`** → `<该数据根>/logs/gui.log`；`gui.init-data.logDir` 指向该处。
+> ② **后端（`src/lib/llm/server` + 内嵌插件）**：本包输出收敛到单一出口 **`logf`**（`src/lib/llm/server/log.go`）—— **`logf` 始终写 stdout（行为不变，`--test-port` 捕获口径不变）**；装配方经 **`server.Options.LogWriter`（`io.Writer`，nil = 仅 stdout）** 注入额外 sink 时**同写 sink**，GUI 注入的即宿主那一个 `<prjusr 数据根>/logs/gui.log` 文件 sink（`src/gui/main.go` 传 `logWriter.fileSink()`）。插件仍走 `plugin.Deps.Logf`（= `Server.pluginLogf`）→ 经**同一出口**落文件。库侧只收 `io.Writer`，**不依赖 gui 包**。
+> ③ **未覆盖（如实标注）**：`src/lib/llm/httpapi` 与 `src/lib/llm/main.go` 的 `log.Printf`（stderr；属独立入口 / browser 形态）未接入该 sink。
+
+> **启动分段计时日志（OP-15）：仅插桩量测，不改启动行为/顺序**。为定位「启动慢」真实原因，在启动路径按段打点。格式统一：**`[startup] <阶段> 耗时 <段>ms（累计 <总>ms）`**（段 = 距上次打点，总 = 距起点 `markStartupBegin`）。
+> - **宿主（gui，`slog`）**（`src/lib/gui/main.go`）：参数与目录解析 → prjusr 数据根解析（含 prj 库打开）→ 文件日志挂载 → MQ 总线初始化 → filesys 文件服务启动 → server 装配（capability 契约扫描 + gateway 构建）→ server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）→ 主窗口创建（bridge/WebView2 环境就绪）→ 启动流程就绪；**主窗口首屏渲染完成**在 `window.go` NavigationCompleted（roleMain）经 `logStartupStageOnce` 只记一次。
+> - **内嵌 server（`src/lib/llm/server/server.go`，统一出口 `logf`；同一 `Start` 亦为分离形态 `chonkpilot-server.exe` 入口 → 一处覆盖两形态）**：数据服务(persist)启动 → 任务层启动 → gateway 启动/下游连接 → capability fsnotify 监听 → 实例视图/心跳扫描启动 → 方法面/事件订阅 → 域工具注册 → 域 agent 注册 → 工具定义缓存预热(`gc.ListTools`) → 内嵌插件启动 → server 启动完成。
+> - **装配期（`src/lib/assembly/assemble.go`，经 `logf`）**：capability 契约扫描/注册（含 `AppToolNames` 全树 `WalkDir`）、gateway 构建。
+>
+> **采数**：桌面单体见 `<prjusr 数据根>/logs/gui.log`；分离形态 `chonkpilot-server.exe` 见 stdout。**候选耗时段**（供定位）：capability 契约扫描、gateway Start/下游连接、`gc.ListTools` 预热（15s 上限）、插件 Start、DB 迁移/seed；**优化项待采数后再定**。
+
 
 ### 12.8 主题与浮层样式（token 约定）
 
-> 2026-09-16 立（暗色浮层配色修复的防回归约定）。**主题载体 = `documentElement` 的 `data-theme` 属性，非 class** —— 页面不存在 `.dark` 之类的 class，故主题相关选择器**必须**写属性选择器（`[data-theme="dark"] …` / `[data-theme="nord"] …`）；写成 `.dark` / `:root.dark` / `xxx.dark` 属**失效选择器**（编译通过但永不命中）。
+> 暗色浮层配色修复的防回归约定。**主题载体 = `documentElement` 的 `data-theme` 属性，非 class** —— 页面不存在 `.dark` 之类的 class，故主题相关选择器**必须**写属性选择器（`[data-theme="dark"] …` / `[data-theme="nord"] …`）；写成 `.dark` / `:root.dark` / `xxx.dark` 属**失效选择器**（编译通过但永不命中）。
 
-- **主题集**：`light`（默认，`:root`）/ `dark` / `nord`（`src/frontend/src/assets/styles/variables.css`）。**无 `system`**（跟随系统未实现）；切换见 `Toolbar.vue setTheme()`。〔2026-09-19 订正：原 `frontend/src/assets/styles/variables.css`（含下文 §12.8 token 定义口径处）——前端工程已独立为 `src/frontend`，路径迁移，原文保留。〕
+- **主题集**：`light`（默认，`:root`）/ `dark` / `nord`（`src/frontend/src/assets/styles/variables.css`）。**无 `system`**（跟随系统未实现）；切换见 `Toolbar.vue setTheme()`。
 - **浮层（dialog / tooltip / popup / dropdown / 右键菜单）必须用主题 token，禁止硬编码浅色**：不得写死 `#fff` / `#f5f7fa` 之类浅色底色，或只在 `:root` 定义、暗色主题不覆写的自造 token。浮层底色一律引 `var(--panel-bg)` / `var(--bg-secondary)` / `var(--bg-primary)`，文字引 `var(--text-primary)` / `var(--text-secondary)`，描边引 `var(--border)`，hover 引 `var(--bg-hover)`。
 - **浮层/强调/页签 token（`variables.css`，dark/nord 覆写）**：
   - `--tooltip-bg` / `--tooltip-color`：tooltip 底色/文字（light = 半透明黑 + 白字；dark/nord = `var(--bg-surface)` + `var(--text-primary)`），`Tooltip.vue` 的箭头用 `border-*-color: var(--tooltip-bg)` 同步。
   - `--accent-bg`：强调背景（light = `#ecf5ff`；dark/nord = `color-mix(in srgb, var(--accent) 18%, transparent)`），用于 `Button.vue` 的 `.b-btn.is-text:hover`、`AskUserContent.vue`、`AgentEditor.vue` 等 —— 避免暗色下刺眼浅蓝。
-  - `--tab-inactive-fg`（**2026-09-24**，**2026-09-27 改绑语义色**）：页签**非激活**文字色，与激活态（`--text-primary` / `--accent`）保持可见差别。原为逐 scheme 的 `color-mix(in srgb, var(--text-primary) 78%, …)`；**2026-09-27 用户口径**改为直接绑语义次要色 `--fg-secondary`（三主题各自取值），不再用 `color-mix` 调和。消费方 = `TabBar.vue`（`.tb-tab` / `.tb-more-item`）与 `Tabs.vue`（`.b-tabs-item`）。
-  - **语义文字色 `--fg-*`（2026-09-27 立）**：统一文字角色，**新增代码优先用这组名**，不再直接写 `--text-primary` / `--danger` / `--accent`。
+  - `--tab-inactive-fg`：页签**非激活**文字色，与激活态（`--text-primary` / `--accent`）保持可见差别。取值为语义次要色 `--fg-secondary`（三主题各自取值），不用 `color-mix` 调和。消费方 = `TabBar.vue`（`.tb-tab` / `.tb-more-item`）与 `Tabs.vue`（`.b-tabs-item`）。
+  - **语义文字色 `--fg-*`**：统一文字角色，**新增代码优先用这组名**，不再直接写 `--text-primary` / `--danger` / `--accent`。
     - `--fg-primary`（主要，黑）＝ `var(--text-primary)`；`--fg-important`（重要，红）＝ `var(--danger)`；`--fg-link`（可点击，蓝）＝ `var(--accent)` —— 三者是**别名**，只在 `:root` 声明一次，自动随主题。
     - `--fg-secondary`（次要，暖灰偏黄）：**逐主题字面值** —— 消费场景 = **除 title/input 以外的说明文字**（字段 hint、页面描述、空态副文案）与**页签非激活文字**。light `#6f6a5a`（`--bg-primary #f8f9fa` 上 5.12:1；用户原拟 `#7a7566` 仅 4.04 → 压深）· dark `#b8b2a0`（`#181825` 上 7.9:1）· nord `#c9c3b2`（`#3b4252` 上 5.8:1）。
     - `--fg-disabled`（无效，灰）：light `#adb5bd` · dark `#6c7086` · nord `#7b8699`（禁用态文字，豁免 4.5 门槛）。
-- **`--bg-elevated` 为历史误用（未定义 token，已改）**：`FileTree.vue` / `MessageList.vue` 等处曾引 `--bg-elevated`（全仓无定义 → 声明无效、回落透明/浅色）→ 已改 `--bg-secondary`。新增代码不得再引该名。
+- **禁止引用未定义 token `--bg-elevated`**：全仓无定义 → 声明无效、回落透明/浅色，应为 `--bg-secondary`（`FileTree.vue` / `MessageList.vue` 等已归一）。新增代码不得再引该名。
 - **色值混用 `color-mix`**：半透明 hover/淡色底统一用 `color-mix(in srgb, var(--token) N%, transparent)`（如 `TabBar.vue .tb-more-close:hover` 用 `var(--text-primary) 8%`），以便随主题 token 自适应。
 - **DialogShell 覆写范式**（`components/dialog/DialogShell.vue`）：`.dialog-overlay` 与 `.dialog-shell` 是**兄弟节点**，需各自命中；暗色覆写以 `[data-theme="dark"] .dialog-shell, [data-theme="dark"] .dialog-overlay, [data-theme="nord"] …` 成组声明，内部只重绑 `--dialog-*` 变量到主题 token。
 - **token 定义口径（唯一权威）**：只有 `src/frontend/src/assets/styles/variables.css` 的 `:root`（= light 默认，兼公共 token）/ `[data-theme="dark"]` / `[data-theme="nord"]` 三块中**声明过**的 `--x` 才算"已定义 token"；其他位置自造名一律不算（组件级可选覆盖钩子见下方专条）。
-- **禁止引用未定义 token、禁止 `var()` 兜底硬编码**：`var(--x, <字面值>)` 若 `--x` 全仓无定义 → 恒落字面值、主题失效，属误用（同 `--bg-elevated`）。**2026-09-16 全量清理**（94 个前端文件做"使用 − 定义"差集，复核 0 残留）：
+- **禁止引用未定义 token、禁止 `var()` 兜底硬编码**：`var(--x, <字面值>)` 若 `--x` 全仓无定义 → 恒落字面值、主题失效，属误用（同 `--bg-elevated`）。**token 归一对照**（94 个前端文件做"使用 − 定义"差集，复核 0 残留）：
 
   | 原误用 token | 原兜底值 | 归一为 |
   |---|---|---|
@@ -335,17 +330,17 @@
   | `--bg-warning-soft` / `--border-warning` | `#fff8e6` / `#f0d98c` | 同上 `--warning-bg` / `--warning-border` |
   | `--font-size-sm` | `13px`（`SecurityConfig` 处 `12px`） | **新增** `:root --font-size-sm: 13px` |
   | `--border-radius` | `4px` | **新增** `:root --border-radius: 4px` |
-  | `--split-gap` | `4px` | **新增** `:root --split-gap: 4px`〔**订正（2026-09-28）：`--split-gap` 已移除** —— 改由 `--split-hairline`(1px) / `--split-hit`(5px) 承载（视觉/命中解耦），见 §12.4〕 |
+  | `--split-gap` | `4px` | **新增** `:root --split-gap: 4px`（**已移除**，改由 `--split-hairline`(1px) / `--split-hit`(5px) 承载，见 §12.4） |
   | `--dialog-bg/-border/-header-bg/-overlay-bg/-btn-hover-bg/-radius/-shadow/-header-padding/-body-padding/-text-color/-font-size/-font-family` | 亮色缺省字面值 | `DialogShell.vue` 在 `.dialog-shell` / `.dialog-overlay` 基规则内**声明 light 默认值**（dark/nord 覆写，范式同上条） |
 
   新增 token 一律落在 `variables.css`：语义随主题变的（`--warning-bg` / `--warning-border`）在 dark/nord 同段覆写，不随主题变的（尺寸/字号/圆角）只在 `:root` 声明一次。
 - **组件级可选覆盖钩子**（如 `--split-hairline` / `--split-hit`、`--dialog-*`）：允许组件暴露为覆盖点，但**默认值必须写在其声明处**（`:root` 或组件基规则），`var()` 内不得再写兜底 —— 即"未定义 token + 兜底"零容忍。
-- **实心填充的文字色**：`--danger` / `--accent` 作**背景**时，文字统一用主题最底层色 `--bg-secondary`（light 恰为纯白 = 历史 `#fff`，light 零变化；dark/nord = 主题最深底色）。深色主题下 `--danger` 本身很亮，白字对比度仅约 2.3:1。既有 `TabBar.vue .tb-close:hover`、`CodeView.vue .preview-selection-bar` 用等价的 `--bg-primary`，本轮不动。
-- **nord `--danger` 调亮（2026-09-16）**：`#bf616a` → `#f0959e`（同色相 354°，仍属 nord 红）。实测（test-port 实跑 computed style + WCAG 计算）：面板 `--panel-bg` #2e3440 **3.05 → 5.65**；工具面 `--toolbar-bg` #3b4252 **2.46 → 4.55**；实心填充（`--danger` 底 + `--bg-secondary` 字）**3.05 → 4.55**；菜单面 `--bg-surface` #4c566a **1.80 → 3.34**（**客观达不到 4.5**：该面亮度 L=0.094，需 L≥0.60 的近白粉才达标，会丢失"危险"语义；最优解是菜单/右键浮层底改用 `--bg-secondary`（→4.55），但属另一处变更，本轮未动）。`dark #f38ba8`（面板 7.17 / 工具面 5.43）与 `light #dc3545`（白底 4.53）不改。
+- **实心填充的文字色**：`--danger` / `--accent` 作**背景**时，文字统一用主题最底层色 `--bg-secondary`（light 恰为纯白 = 历史 `#fff`，light 零变化；dark/nord = 主题最深底色）。深色主题下 `--danger` 本身很亮，白字对比度仅约 2.3:1。既有 `TabBar.vue .tb-close:hover`、`CodeView.vue .preview-selection-bar` 用等价的 `--bg-primary`。
+- **nord `--danger` 调亮**：`#bf616a` → `#f0959e`（同色相 354°，仍属 nord 红）。实测（test-port 实跑 computed style + WCAG 计算）：面板 `--panel-bg` #2e3440 **3.05 → 5.65**；工具面 `--toolbar-bg` #3b4252 **2.46 → 4.55**；实心填充（`--danger` 底 + `--bg-secondary` 字）**3.05 → 4.55**；菜单面 `--bg-surface` #4c566a **1.80 → 3.34**（**客观达不到 4.5**：该面亮度 L=0.094，需 L≥0.60 的近白粉才达标，会丢失"危险"语义；最优解是菜单/右键浮层底改用 `--bg-secondary`（→4.55），但属另一处变更）。`dark #f38ba8`（面板 7.17 / 工具面 5.43）与 `light #dc3545`（白底 4.53）不改。
 
-> **对比度实测表 —— 表格为当前实测值（2026-09-20）**（tokens 取 `src/frontend/src/assets/styles/variables.css` 三主题块，对比度按 WCAG 2.1 相对亮度公式计算；阈值：正文字/小字（11–13px）**≥4.5:1**，非文本图形/图标/状态圆点（WCAG 1.4.11）**≥3:1**）。数值可由 `src/frontend` 的 `npm test`（`test/uxBatch1.test.js` 打印 `[contrast] …` 行）复现。
+> **对比度实测表 —— 表格为当前实测值**（tokens 取 `src/frontend/src/assets/styles/variables.css` 三主题块，对比度按 WCAG 2.1 相对亮度公式计算；阈值：正文字/小字（11–13px）**≥4.5:1**，非文本图形/图标/状态圆点（WCAG 1.4.11）**≥3:1**）。数值可由 `src/frontend` 的 `npm test`（`test/uxBatch1.test.js` 打印 `[contrast] …` 行）复现。
 
-**① 批 1（2026-09-20）改动的 token / 规则**
+**① token / 规则**
 
 | 元素 | 规则 / 取值 | light | dark | nord | 阈值 | 改前 |
 |---|---|---|---|---|---|---|
@@ -355,7 +350,7 @@
 | 状态徽标 `.status-badge` | `--text-primary` on `color-mix(--语义 22%, --bg-tertiary)`（5 类徽标 × 3 主题，取最低） | **9.63** | **7.18** | **4.83** | ≥4.5 | 原硬编码彩色字（`#e65100`/`#2e7d32`/`#c62828`…） |
 | 任务详情错误条 `.td-error` | `color-mix(--danger 70%, --text-primary)` on `color-mix(--danger 12%, 面板底)` | **5.77** | **6.55** | **4.57** | ≥4.5 | `#f5222d` 3.60（全主题不随主题） |
 
-**② 本轮（批 1 收口，2026-09-20）清掉的残留硬编码浅色**
+**② 残留硬编码浅色**
 
 | 元素 | 规则 / 取值 | light | dark | nord | 阈值 | 改前 |
 |---|---|---|---|---|---|---|
@@ -365,16 +360,16 @@
 | 任务节点停止图标 `.node-stop` | `var(--danger)`，底 = `--bg-primary` | **4.30** | **7.08** | **5.65** | ≥3（图形） | `#ff4d4f` 3.10 / 5.02 / 3.82 |
 | 任务详情状态圆点 `.td-status`（7px） | `is-done` → `var(--success)` / `is-error` → `var(--danger)` / `is-stopped` → `var(--text-muted)`（底取 `--bg-primary` / `--bg-secondary` 最低者） | **3.22 / 4.30 / 4.59** | **11.03 / 7.08 / 7.37** | **4.94 / 4.55 / 4.16** | ≥3（图形） | `#52c41a` 2.15 · `#f5222d` 3.87 · `#bfbfbf` 1.74（light；dark 下 success `#52c41a`、nord 下 error `#f5222d` 亦不随主题） |
 
-**③ 扫描口径（残留归零，2026-09-20）**：`src/frontend/src/**/*.{vue,js,ts,css}`（**112 个文件**，去 HTML/CSS/JS 注释后）中，**本批/批 1 清理过的硬编码浅色字面量 `#e65100` / `#ff4d4f` / `#f5222d` / `#52c41a` 零命中**（`npm test` 的「④ 全仓扫描」用例守卫）。**明确保留项（附理由，不视为漏网）**：
+**③ 扫描口径（残留归零）**：`src/frontend/src/**/*.{vue,js,ts,css}`（**112 个文件**，去 HTML/CSS/JS 注释后）中，**硬编码浅色字面量 `#e65100` / `#ff4d4f` / `#f5222d` / `#52c41a` 零命中**（`npm test` 的「④ 全仓扫描」用例守卫）。**明确保留项（附理由，不视为漏网）**：
 
-- `color: #fff`（工具条窗口关闭按钮、popover active、设置页徽标/按钮等）：**实心强调色填充上的文字**，属上文「实心填充的文字色」专条口径（light 恰为纯白 → 零变化）；dark/nord 下若要更稳，后续按该专条改用 `--bg-secondary`（本轮不动，牵动多处视觉）。
-- `#67c23a` / `#bfbfbf`（`src/frontend/src/composables/useTaskStatus.js` 的状态→图标配色映射）：既有单测 `test/useTaskStatus.test.js` **锁定「既有 4 态逐值不变」**（批 1 之外的显式决策），改动会破坏该契约 → 保留。
+- `color: #fff`（工具条窗口关闭按钮、popover active、设置页徽标/按钮等）：**实心强调色填充上的文字**，属上文「实心填充的文字色」专条口径（light 恰为纯白 → 零变化）；dark/nord 下若要更稳，后续按该专条改用 `--bg-secondary`。
+- `#67c23a` / `#bfbfbf`（`src/frontend/src/composables/useTaskStatus.js` 的状态→图标配色映射）：既有单测 `test/useTaskStatus.test.js` **锁定「既有 4 态逐值不变」**，改动会破坏该契约 → 保留。
 - `rgba(0, 0, 0, ·)` 一类中性叠底（弹层遮罩/阴影/hover）与 `rgba(255, 193, 7, ·)` + `#f0ad4e`（`MessageItem.vue .notify-row` 的 🔔 完成通知浅琥珀底/色条）：**装饰性叠底与色条，不承载文字对比度**（`.notify-row` 文字走 `--text-primary`）→ 保留。
 - `--tooltip-bg: rgba(0, 0, 0, 0.8)` / `--tooltip-color: #ffffff`：**token 定义本体**（dark/nord 已覆写为主题面色），非误用 → 保留。
 
-### 12.9 UI 一致性与交互口径（2026-09-27 用户口径）
+### 12.9 UI 一致性与交互口径
 
-> 立此节以固化一轮「界面一致性」收口（见 [42 §2 (188)/(189)](../40-roadmap/42-决策记录.md)）。新增/修改 UI 一律遵循；与此前分散决定冲突时以本节为准。
+> 本节固化「界面一致性」口径。新增/修改 UI 一律遵循；与此前分散决定冲突时以本节为准。
 
 **① 对话框（`DialogShell`）**
 - **默认高度**：未显式传 `height` 时取 `min(80vh, 640px)`（`types/dialog.js` 的 `DefaultDialogOptions`），调用方 `options.height` 可覆盖 → 消除「打开时高度跳动」。
@@ -387,7 +382,7 @@
 - **保存 / 取消 / 确定等操作按钮统一在弹窗底部按钮区，固定、不随内容滚动**（三段式：顶栏固定 / 中部滚动 / 底栏固定；底栏须为滚动容器的**兄弟节点**且 `flex-shrink: 0`）。
   - 覆盖编辑类（`EditLLMDialog` / `EditMCPDialog` / `TextEditDialog` / `ScenarioEditDialog`）与 **confirm / 选择类**（`MessageBox` / `DirPickerDialog`）；无滚动、内容自适应类（`MessageBox`、`AskUserContent`）底栏同样固定在内容之外。
 - **主操作文案统一「确定」**（`common.ok`）；不再引用 `common.confirm` / `dialog.ok` 等重复语义键。
-- **恢复类按钮统一「重置」**（配置/设置页与弹窗）；**PrimitivePanel 保留「恢复默认」**（资产语义，见 [42 §2 (183)](../40-roadmap/42-决策记录.md)）。
+- **恢复类按钮统一「重置」**（配置/设置页与弹窗）；**PrimitivePanel 保留「恢复默认」**（资产语义）。
 - 编辑类弹窗底栏的**次要项固定最左**（如 MCP 的「启用」：`margin-right: auto`），主操作（保存）保持**最右**。
 
 **③ 帮助信息载体**
@@ -401,10 +396,10 @@
 - 文字按语义取色：`--fg-primary`（主要）/ `--fg-important`（重要）/ `--fg-secondary`（次要 = 说明文字与页签非激活）/ `--fg-disabled`（无效）/ `--fg-link`（可点击）——定义与实测对比度见 §12.8。
 
 **⑤ 表格与滚动**
-- **统一用自研 `Table` 组件**（`components/ui/Table.vue`）；**不再新增原生 `<table>`**（历史遗留两处 `SecurityConfig` / `ContextConfig` 已于 2026-09-27 迁移）。
+- **统一用自研 `Table` 组件**（`components/ui/Table.vue`）；**不再新增原生 `<table>`**（`SecurityConfig` / `ContextConfig` 已迁移）。
 - 页面骨架 = `height:100%; display:flex; flex-direction:column` → 头部固定 + 正文 `flex:1; overflow:auto; min-height:0`。
 - **长表单页**（如上下文管理）允许正文整体滚一次；其中**列表/记录区自身内滚**，避免"滚到底才看到下一区块"。
-- **有表格的页**：横向滚动由**页面正文区**承担 —— `Table` 的 wrapper 置 `overflow-x: visible`、正文区 `overflow: auto`、卡片 `min-width: max-content` 随表格变宽；**滚动条始终贴 preview 区边缘**（纵向右侧、横向底部），不会出现"要滚到表格底边才见到横向滚动条"。**该范式已在工具配置 / 工具沙箱 / 上下文管理 / 安全 / LLM 五页落地**（2026-09-27；`ContextConfig` 压缩内容记录列表仍自身内滚、`SecurityConfig` 表头仍 sticky）。
+- **有表格的页**：横向滚动由**页面正文区**承担 —— `Table` 的 wrapper 置 `overflow-x: visible`、正文区 `overflow: auto`、卡片 `min-width: max-content` 随表格变宽；**滚动条始终贴 preview 区边缘**（纵向右侧、横向底部），不会出现"要滚到表格底边才见到横向滚动条"。**该范式应用于工具配置 / 工具沙箱 / 上下文管理 / 安全 / LLM 五页**（`ContextConfig` 压缩内容记录列表仍自身内滚、`SecurityConfig` 表头仍 sticky）。
 - 表格内**长文本单元格**按**像素宽度**截断（如工具配置页「工具内容介绍」`max-width: 200px` + 省略号），**不按字符数**截断。
 
 **⑥ 布局与交互**
@@ -419,7 +414,7 @@
 
 ### 12.10 状态栏（`views/statusbar/StatusBar.vue`）
 
-> 2026-09-27 立（用户口径：「statusbar 可否显示 当前索引和 codebase 的状态？未启用，完成，N/total」）。
+> 用户口径：「statusbar 可否显示 当前索引和 codebase 的状态？未启用，完成，N/total」。
 > 状态栏自左向右 = 记忆总 token 数（仅记忆库启用时显示）· **索引状态区**（恒显示）· DevTools 图标 · 撑开 · 语言切换（`LangSwitcher`）。
 
 - **索引状态区**（`.sb-section.sb-index`）：内含 **两枚徽标**（`.sb-idx[data-engine="codegraph"|"vfts"]`，**图标 + 状态文本**：图标在左、状态文本/数字紧贴其右，图标取代原引擎名文本），紧凑单行（`white-space: nowrap` + `flex-shrink: 0`），**不换行、不改变状态栏高度**（`--statusbar-height`）。两枚徽标**恒显示**（「未启用」本身即信息）。图标取自既有图标集（codegraph = `collection`，vfts = `search`）——**不新增图标资源**。
@@ -435,12 +430,12 @@
   | `state == "error"` | 失败 | `--fg-important` |
 
   > 「索引中」取 `--fg-secondary`（进行中的中性次要色）：状态栏的 `--accent` 留给可交互/选中语义（如记忆总量 hover），避免「进行中」与「可点击」混淆。
-- **悬停**：徽标**原生 `title`**（**不再用 `Tooltip` 组件**）——codegraph = 「点击设置：codegraph」、vfts = 「点击设置：Vfts 全文索引」（i18n 键 `statusBar.idx_open_codegraph` / `idx_open_vfts`，zh/en 齐备）。原 Tooltip 多行明细（引擎名/阶段/进度/索引文件数/最后索引/错误…）随本轮改版**整体移除**（`indexStatus.js` 的 `tip` 字段与 `idx_tip_*` i18n 键一并删除）。
+- **悬停**：徽标**原生 `title`**（**不再用 `Tooltip` 组件**）——codegraph = 「点击设置：codegraph」、vfts = 「点击设置：Vfts 全文索引」（i18n 键 `statusBar.idx_open_codegraph` / `idx_open_vfts`，zh/en 齐备）。原 Tooltip 多行明细（引擎名/阶段/进度/索引文件数/最后索引/错误…）**已整体移除**（`indexStatus.js` 的 `tip` 字段与 `idx_tip_*` i18n 键一并删除）。
 - **点击**：每枚徽标经既有前端事件 `EventNames.projectConfigOpen`（`project-config-open`）打开项目配置页，并**带可选 payload `tab`**（codegraph 徽标 → `tab:'codegraph'`，vfts 徽标 → `tab:'vfts'`）→ `MainLayout.handleOpenProjectConfig` 透传 → preview 页签 `kind='settings-project'` → `CodeView` 落到功能页 → `ProjectConfig` 激活对应页签。**缺省/非法 `tab` → 默认页签（`security`），不报错**（向后兼容旧发送方）。**不新增 MQ 主题**（仅给既有 payload 增可选字段，见 [61 §6.1](../60-reference/61-消息一览.md)）。
 - **异常兜底**：状态 JSON 解析失败/缺键 → 视为「未启用 / 未初始化」，静默（不抛错、不 `console.error`）。
 - **关联测试**：前端守卫 `test/statusbarIndexStatus.test.js`（映射全状态 + 4 键 + 既有广播 + 徽标 = 图标+文本/无 Tooltip + 原生 title + 点击带 tab + 跳页签链 + 禁 watch + 零新增主题 + i18n 齐备）；L4 `test_statusbar.py::SB6`（真机：无键基线 / 索引中 N-total / 完成 / 失败 / 原生 title / 点击开项目配置并定位 CodeGraph、Vfts 页签 / 收尾还原）。
 
-### 12.11 文件树：被索引排除条目灰显（2026-09-27）
+### 12.11 文件树：被索引排除条目灰显
 
 > 用户口径：「如果设置了 gitignored，目录树显示时，判断是否是排除项目。如果是，则文本颜色变成灰色。」方案 = **后端判定**（只读面 `data-index-ignored`）、位置 = 文件树（目录树）。功能点见 [32 §FT-016](../30-function-points/32-文件树与文件操作.md)。
 
@@ -451,7 +446,7 @@
 - **请求克制与降级**：同一批路径只请求一次（单飞 + 已判定缓存）；`truncated=true` 时未判定节点不灰显、不缓存、不报错；请求失败 / 主题不可用 / 应答异常 → **静默降级为不灰显**。**零新增 MQ 主题**（只新增 `data-index-ignored` 一个只读面，见 [61 §3.6](../60-reference/61-消息一览.md)）。
 - **关联测试**：前端守卫 `test/fileTreeIndexIgnored.test.js`（纯逻辑 + 请求/降级/topic/去重 + FileTree 判定时机/刷新/禁 watch + TreeNode `is-ignored`/`--fg-disabled`/title/交互保留 + 零新增主题 + i18n）；L4 `run_filetree_ignored.py`（真机：`.gitignore` 命中条目灰显（含子项祖先剪枝）+ 反选/无命中不灰 + 引擎未启用全不灰对照组）。
 
-### 12.12 项目配置「文件历史」页签（`views/settings/HistoryConfig.vue`；2026-09-27 批次③）
+### 12.12 项目配置「文件历史」页签（`views/settings/HistoryConfig.vue`）
 
 > 页签 = 项目配置页签 **`history`**（[61 §6.1 前端本地事件](../60-reference/61-消息一览.md) `project-config-open{tab?}` 取值之一）。**页签名由「自动提交」改名「文件历史」**（i18n `projectConfig.history`：zh「文件历史」/ en「File History」；旧「自动提交」语义已废弃）。后端语义见 [28-plugins §3.2](28-plugins.md)，配置键见 [64 §4](../60-reference/64-配置项一览.md)。
 
@@ -460,31 +455,15 @@
 - **① 启用开关**（`history.enabled`）：单 `Switch`；**缺省关闭**（仅显式 `"true"` 视为开）；**开启前 `confirm` 二次确认**（说明每次工具调用前会打 checkpoint、大工程可能影响效率）；无 git 时 **disable + 原因提示**（`historyConfig.no_git_installed` / `no_git_repo`，判据 = `gui.vcs.info` 的 `gitInstalled` / `git`）。保存即生效（订阅既有 `data-prj-config-refresh`）。
 - **② 保留策略**：两个数字输入 —— **保留个数**（`history.checkpoint_keep`，默认 500）/ **保留天数**（`history.checkpoint_ttl_days`，默认 7，锚点 = 链上最新检查点时间）；共用一个【保存】按钮（**正整数校验**，非法不写库并显式报错）；任一超限即修剪（后端口径）。
 - **③ 检查点时间轴（只读，**按当前会话**）**：
-  - **当前会话** = 活动会话（既有 `data-session-active-get`）→ `chainSlug`（与后端同口径）= 链 slug；只读**该会话**的键（I-135）。
+  - **当前会话** = 活动会话（既有 `data-session-active-get`）→ `chainSlug`（与后端同口径）= 链 slug；只读**该会话**的键。
   - **状态条**（`data-history-status`，读 `history.status.<slug>`）：**模式**（`active` 正常 / `fused` 已熔断放行 / `off` 未启用）· 检查点数 · 占用体积（人类可读）· 最近打点时间 · 最近耗时 · 失败次数 · 有未打点变更时附「有未打点变更」标记 · 最近错误非空时红字一行。
   - **列表**（`data-history-timeline`，读 `history.timeline.<slug>`）：列 = **序号**（相对编号，最新 `-1`，由数组索引派生、顺序不反转）/ 时间 / 工具 / 来源会话 / 文件数 / 增删（`+n`/`−m`）；**最新在前、≤200 条**；空态可区分「未启用」（`empty_disabled`）与「暂无检查点」（`empty_none`）。
-  - **【清空本会话历史】**按钮（`data-history-clear`，列表非空才可用）：**二次确认**后写 `history.clear` = **JSON `{"ts","session":"<当前会话 slug>"}`** → 后端**只清该会话的链**（`refs/chonkpilot/<slug>`；其它会话链保留，I-136）；成功给可见反馈。
+  - **【清空本会话历史】**按钮（`data-history-clear`，列表非空才可用）：**二次确认**后写 `history.clear` = **JSON `{"ts","session":"<当前会话 slug>"}`** → 后端**只清该会话的链**（`refs/chonkpilot/<slug>`；其它会话链保留）；成功给可见反馈。
 - **只读边界（有意为之）**：检查点时间轴**不提供手动恢复、不做 diff 展开**（恢复/查看差异属 LLM 侧 4 个 `history_*` 工具的职责）。
 - **数据来源与刷新**：`history.enabled`/`keep`/`ttl`/`clear` 为 **prj 键**、`history.status.<slug>` / `history.timeline.<slug>` 为**会话级内部键（落 prjusr）**，统一经既有 `data-prj-config-list`（合并 prjusr）读取、`data-prj-config-save` 写入；刷新走统一机制 `usePrjConfigRefresh`（4 精确键 + **2 会话级前缀** `history.status.` / `history.timeline.`；按键过滤 + 突发合并 + 保存期跳过）；派生用 `computed`（**禁 `watch`/`watchEffect`**）；解析失败静默降级（不刷 `console.error`）。**零新增 MQ 主题**（`event-names.js` 无 history 通道）。
 - **关联测试**：前端守卫 `test/historyCheckpoint.test.js`（纯逻辑 `utils/historyTimeline.js`：JSON 解析兜底 / 相对编号 `-1` / `active|fused|off` 归一 / 体积·时间格式化 / 默认 500·7 / **`chainSlug` 与会话级键名** · 源码守卫：两设置项键名与写库、**正整数校验先于写库**、**按当前会话读 status/timeline（活动会话 + 前缀订阅）**、禁 watch、`history.clear` 写 **JSON `{ts,session}`** + 二次确认、零新增主题、i18n zh/en 键集一致且「保留口径 / 不向分支提交 / 效率 / 工具调用前打点 / **本会话清空**」文案齐备、页签名「文件历史」）；L4 `run_hist_git.py`（真机产物断言见 [51 §2](../50-testing/51-FP与测试映射.md)：H1/H4/H6）。
 
-### 12.13 左侧资源面板分段栏与「工具」页签（`views/filetree/ExplorerPane.vue`；2026-09-29）〔**已被 §12.14 取代（2026-10-01）**〕
-
-> ⚠️ **2026-10-01（P3，[42 §2 (209)](../40-roadmap/42-决策记录.md)）**：本节「五段（含知识库/工具两页签）/三级（系统只读）」口径**已作废** —— 现为 **4 段（项目/会话/记忆/扩展）+ 扩展页 5 子 tab + 四级均可写**，见 §12.14。本节保留供历史对照。
-
-> 用户口径：「把『工具』从知识库分离出来，做成独立『工具』页签，位置在 ExplorerPane 分段栏『会话』页签的右侧；工具编辑层级与知识库一致（系统/用户/项目三级）」。
-
-- **分段栏（5 段）**：`项目 | 知识库 | 项目记忆 | 会话 | 工具`（`mode` = `project|knowledge|memory|sessions|tools`；**「工具」置于「会话」右侧 = 末位**）。`v-show` 同显 5 体（切换不销毁状态）；「刷新」图标在 `knowledge`/`memory`/**`tools`** 模式均显示并按当前模式刷新对应面板（`reload()` / `refresh()`）。
-- **分段切换**：`v-mq` → `filetree-mode-select{mode}`（[61 §6.1](../60-reference/61-消息一览.md) 未登记该内部事件；事实源 = `event-names.js`）；`setMode` 白名单增 `tools`。**保留既有语义**：`filetree-mode-toggle` 仍为休眠态（仅 `project ↔ knowledge`，不变）。
-- **两个树实例**：**知识库**与**工具**页签**共用** `views/filetree/KnowledgeTree.vue`（不复制实现），各自 `v-show` 常驻：
-  - 知识库实例：`scope="knowledge"`、`kinds=['skill','prompt','resource']`（**不再显示工具**）；
-  - 工具实例：`scope="tools"`、`kinds=['tool']`（**仅列工具**），`title-key=fileTree.mode_tools`、`empty-key=fileTree.tools_empty`。
-  - `KnowledgeTree` 新增 props：`kinds`（类型范围过滤，空 = 不过滤）、`scope`（实例标识，右键动作事件分流）、`titleKey`/`emptyKey`（标题/空态文案）。过滤口径 = 文件按后端 `type` token ∈ `kinds`；目录按最近类型目录 token ∈ `kinds`，通用容器目录（如 capability 根）仅在其为某允许类型目录的祖先时显示（映射 `utils/primitive.js` 的 `TYPE_DIR_REL`〔**订正（2026-10-01，P1）**：`TYPE_DIR_REL` 已按 6 个**扁平**子目录同步（`tool:tools`/`skill:skills`/`prompt:prompts`/`resource:resources`），旧 `knowledge/**` 归并层删除；对齐后端 `capfs.Types.Rel`）〕。根节点类名带 `kb-scope-<scope>` 便于定位。
-- **编辑层级与知识库一致（三级）**：`app`（系统，只读）/`user`（用户）/`project`（项目）均经 `kb-level-select` 切换（**两实例同订阅 → 同步切级**）；列表/新建/重命名/删除/拖拽移动与 `PrimitivePanel`（四页签 meta·描述·参数·正文、保存·恢复、恢复默认）**与知识库同一套操作与语义**（同 `data-knowledge-*` 消息面，[61 §3.3](../60-reference/61-消息一览.md)）。〔**订正（2026-10-01，P1）**：数据层 capability 已**四级**（新增 prjusr）且**四级均可读写**（系统级只读作废）；**前端四级页签 UI 属 [P3] 批次**（本轮前端已同步扁平 `TYPE_DIR_REL`，页签仍三级）。〕
-- **消息面**：**零新增/零修改**——工具读写沿用既有 `data-knowledge-*`（后端 `<级别根>/capability/{prompts,tools,resources,skills,agents,scenarios}`（6 扁平子目录）已被同一套原语机制覆盖，`kbRootOf` 四级根解析）；右键动作仍为 `kb-ctx-action`（payload 增可选 `scope`，**非新主题**，用于多实例分流）。
-- **关联测试**：前端守卫 `src/frontend/test/toolsPane.test.js`（段位置/`setMode`/两实例 kinds/右键菜单判定/三级可写性/零新增主题/i18n）；L4 `run_explore_kb.py`（C1 五段 + C2 知识库不含 tools + C3~C8/C10/C11/C13 工具页签写链路 + C12 知识库技能/提示词/资源）、`run_config_ui.py`（G 用例切「工具」页签）、`run_ui_regressions.py`（R1 从「工具」页签打开 `*.tool.md`）。
-
-### 12.14 左侧资源面板「扩展」页与四级（`views/filetree/ExplorerPane.vue` + `views/extensions/ExtensionsPane.vue`；2026-10-01，P3）
+### 12.14 左侧资源面板「扩展」页与四级（`views/filetree/ExplorerPane.vue` + `views/extensions/ExtensionsPane.vue`）
 
 > 用户口径：分段改 **`项目 / 会话 / 记忆 / 扩展`**（删「知识库」「工具」两个一级分段；「项目记忆」文案改「记忆」）；新增「扩展」页 = 顶部 **5 子 tab**（知识/技能/工具/命令/智能体）+ 右侧**【级别】**popup；**四级都可写**（撤系统级只读）。
 
@@ -492,7 +471,45 @@
 - **扩展页（`ExtensionsPane.vue`）**：`SUBTABS` = 知识(`resource`) / 技能(`skill`) / 工具(`tool`) / 命令(`prompt`) / 智能体(`agent`)（顺序固定）；内部 `v-show`/`key` 渲染 **复用** `views/filetree/KnowledgeTree.vue`（`scope=子 tab key`、`kinds=[单类型]`）。
 - **级别（四级）**：右侧【级别】按钮 → `Popover` 下拉（系统/用户/项目/项目私有，`fileTree.kb_level_*`）；**级别状态由扩展页统一持有并经 `props.level` 下发**（`KnowledgeTree` 只读 `level`，内联级别按钮组与自持 `kbLevel` **已移除**）。切换级别/子 tab 经 `:key="subTab + '-' + level"` 重挂载树（**不用 watch**）。
 - **四级均可写**：撤 `isKbReadonly`/`kb_readonly`（原「系统级只读」作废）；拖拽移动仍限当前级别根内同级。
-- **智能体子 tab**：`*.agent.md` 编辑走 `PrimitivePanel`（token=agent → **复用** `views/scenario/AgentEditor.vue`，`showCopy=false`；保存 `data-knowledge-save`）。**「启用工具过滤」开关**：开关态为**前端本地、不持久化**（后端判据 = `tools` 非空即白名单）—— 载入按 `tools` 反推回填（单源 `utils/agentToolFilter.filterToolsLoadPatch`，与场景编辑同口径）、`update:agent` 回写；**无 tools 的智能体勾选后须保持开并展开候选**〔修复 `PrimitivePanel` 曾由 `tools.length>0` 派生导致回弹，见 [42 §2 (214)](../40-roadmap/42-决策记录.md)〕。
+- **智能体子 tab**：`*.agent.md` 编辑走 `PrimitivePanel`（token=agent → **复用** `views/scenario/AgentEditor.vue`，`showCopy=false`；保存 `data-knowledge-save`）。**「启用工具过滤」开关**：开关态为**前端本地、不持久化**（后端判据 = `tools` 非空即白名单）—— 载入按 `tools` 反推回填（单源 `utils/agentToolFilter.filterToolsLoadPatch`，与场景编辑同口径）、`update:agent` 回写；**无 tools 的智能体勾选后须保持开并展开候选**（`PrimitivePanel` 不再由 `tools.length>0` 派生）。
+- **场景编辑页的子 agent = 可编辑引用**：`views/scenario/ScenarioEditDialog.vue` 对子 agent（唯一形态 = ref）**复用** `AgentEditor` 并可编辑；选中时经 `data-knowledge-read` 读被引 `agents/*.agent.md` 正文，点【保存】经 `data-knowledge-save` 写回该文件（保持 `# 名`+`[meta]`+`[description]`+`[content]`），**`scenario.json.agents` 里的 ref 不变**；ref 前缀 → 绝对路径解析单源 `utils/agentRef.js`。四级 capability 根均可写 → 不复制到项目级（见 [37 SCEN-003](../30-function-points/37-场景.md)）。
 - **消息面**：**主题零新增** —— 子 tab 复用 `filetree-mode-select`（payload 增**可选** `ext`）；级别复用 `kb-level-select{kind}`（语义改「扩展页统一持有」）。二者均为**前端内部**事件（未登记 [61 §6.1](../60-reference/61-消息一览.md)）。
 - **关联测试**：前端守卫 `src/frontend/test/extensionsPane.test.js`（4 段位置/5 子 tab 顺序与 kinds/级别 popup/四级可写/复用/零裸主题/agent token/i18n）+ `test/scenarioAgentsRef.test.js`（智能体编辑器复用）+ `test/sessionNavCopy.test.js`（导航顺序）。L4 `run_explore_kb.py` / `run_config_ui.py` / `run_ui_regressions.py` 按新 UI（「扩展」页）同步（**需新构建后实跑**）。
+
+### 12.15 提示词「变量插入」统一组件（OP-12）
+
+> 目标：把散落的提示词编辑处（场景 agent / 记忆沉淀提示词 / 总结提示词 / 技能原语描述与正文 / 场景向导）统一为「**变量插入 + 优化**」组件；变量清单**由后端提供**（前端不硬编码）。
+
+- **后端只读面 `gui.prompt-vars`**（[61 §1](../60-reference/61-消息一览.md)；`src/lib/gui/bridge/promptvars.go`）：返回分组目录 `{groups:[{id,label,items:[{key,desc,dslOnly}]}]}`；**单一数据源 = 后端常量** —— `toolchain`（java/python/node/go/rust/c/chrome，逐项取自工具链探测候选 `toolchainCandidates`）· `path`（`exeDir`/`userDir`/`dataDir`/`workDir`）· `env`（`CHONKPILOT_*`：WORKDIR/DATADIR/TEMPDIR/EXEDIR/PROJECT，**`dslOnly=true`**）。`key` = 占位符整串（含 `{{ }}`，直接插入文本）；无副作用、不落库、与实例无关。
+- **前端**：composable `composables/usePromptVariables.js`（`usePromptVariables` 拉取并**缓存**清单 + `visibleGroups(dsl)` 过滤 `dslOnly`；`useVariableInsert` 在目标 textarea 光标处插入并在下一帧恢复光标，插入算法单源 `utils/promptInsert.js`）+ 统一组件 `components/common/PromptVariablesButton.vue`（按钮 → `Popover` 分组列表 → 每项 `Tooltip` 显示 `desc` → 点击 `emit('insert', key)`）。**复用既有【优化】**（`gui.prompt-optimise`，`api/config.optimizeAgentPrompt`）——本组件只负责「变量插入」，不新增优化通道。
+- **挂载点（全清单）**：`components/common/TextEditDialog.vue`（`variables` 开关；上下文管理页「总结提示词」「记忆沉淀提示词」两处开启）· `views/scenario/AgentEditor.vue`（提示词页签工具条）· `views/knowledge/PrimitivePanel.vue`（`description` + `content` 两页签）· `views/scenario/ScenarioWizardDialog.vue`（agent 提示词 + 记忆沉淀提示词）。
+- **`{{env.*}}` 仅 DSL/脚本类编辑器列出**（`dslOnly`）：本仓前端暂无此类编辑器 → 按 `dslOnly` **预留**，不在上述编辑器显示（`PromptVariablesButton` 的 `dsl` 开关默认 `false`）。
+- **i18n**：`scenario.insert_variable`（按钮文案）/ `scenario.available_vars`（popup 标题）——原为**无实现残留**（仅 i18n 键、无引用），现由本组件使用。
+- **关联测试**：`src/lib/gui/bridge/promptvars_test.go`（返回形状 + 分派 `guiDo`）+ 前端 `src/frontend/test/promptVariablesCompress.test.js`（插入算法 / 挂载点 / i18n / 无 watch）。
+
+### 12.16 设置页保存交互口径
+
+> 用户口径（原话）：「**统一加保存**。但是**一栏页面不需要**，**对话框添保存后即为增加或者修改**。」本节固化「哪些设置页有【保存】、哪些没有」的判定（承接 §12.9 ⑦ 反馈口径；覆盖 CFG-015 名单）。
+
+- **列表型（「一栏」）页面 → 不加【保存】**：页面的增 / 删 / 改走**对话框**（或即改即存的开关），对话框底栏的【保存】= **新增 / 修改的确认**（点击即落库，见 §12.9 ②）。
+  - `views/config/SettingsMCPPage.vue`（MCP 配置，server 清单）+ `EditMCPDialog.vue`（底栏【保存】）。
+  - `views/config/SettingsLLMPage.vue` 的**「一览」页签**（provider 清单）+ `EditLLMDialog.vue`（底栏【保存】）。
+- **表单型页面 → 页签右上角加【保存】**：编辑只改本地**待保存态**（显示「未保存」，`useUnsavedMark`），点【保存】才落库；**无改动时保存按钮禁用**；成功 / 失败反馈统一走 `settingsFeedback`（`savedText(t, APPLY_INSTANT|APPLY_RESTART)` / `saveFailedText`）；**禁 `watch` / `watchEffect`**。
+  - `views/config/SettingsParamsPage.vue`（参数设置）：用户 / 项目两页签各一【保存】（`data-params-save-user` / `-project`），均**即时生效**（`APPLY_INSTANT`）；数值项前置校验非法**不写库** + 内联报错。
+  - `views/config/SettingsPathsPage.vue`（路径设置）：用户页签【保存】**需重启**（`APPLY_RESTART`）；项目页签【保存】**即时生效**（`APPLY_INSTANT`）；「选择可执行文件」只回填待保存态。
+  - `views/config/SettingsLLMPage.vue` 的**「默认模型」页签**（主对话 + 各子系统共 6 个下拉）：页签右上角一【保存】（`data-llm-save-defaults`），**即时生效**（`APPLY_INSTANT`）；编辑只改本地待保存态，空串 = 跟随默认（回落 `defaultLLM`）。
+  - 三页「重置」仍为**显式即时动作**（删本层键回落默认），完成后重算 dirty（不影响其它未保存编辑）。
+- **判定口诀**：页面主体是「一张清单 + 对话框增改」→ 列表型（无【保存】）；主体是「若干表单项」→ 表单型（有【保存】）。
+- **关联测试**：`src/frontend/test/uxBatch2Settings.test.js` · `uxBatch2Closure.test.js`（保存按钮存在 / 按 dirty 禁用 / 不再失焦即存 / 反馈标注）· `subsystemLLMDefaults.test.js`（默认模型页签显式保存 / dirty 禁用 / loading 防重 / 无 watch）。
+- `SettingsLLMPage.vue` 为**列表 + 表单混合**：**「一览」页签 = 一栏**（provider 清单，增改走 `EditLLMDialog`）→ **不加【保存】**；**「默认模型」页签 = 表单**（主对话 + 各子系统下拉）→ **加【保存】**（页签右上角，同参数 / 路径页）。
+
+### 12.17 Vfts 索引页「系统级词典」+【重新索引】按钮（`views/settings/VftsConfig.vue` + `composables/useVftsDict.js`）
+
+> 分词器固定 `jieba`（[2B-vfts §4.1](2B-vfts.md)）；词典**只有系统级一份**（全机共用、无项目/用户级覆盖）。本节固化该页两个新增入口的交互口径。
+
+- **工具栏【重新索引】**（`projectConfig.index_reindex`）：`mq.emit('vfts.reindex')` → 插件后台全量重建，**立即回执** `{ok, started}` 后给一次 `savedText` 反馈；重建期间按钮 `:disabled="reindexing"`。**明确提示「分词器 / 词典变更必须重新索引」**（词典区块 hint，`projectConfig.dict_hint`）；重建时全工作区重扫，进度经既有 `vfts.status`（`indexing` + `progressDone/progressTotal`）回显（本页状态行，**零新增消息面**）。
+- **「系统级词典」区块**（`projectConfig.dict_section`）：进页 `loadDict()` → `vfts.dict.get` 回填 `dict_dir` / `base_dicts`（内嵌基础词典，只读）/ `user_dict` / `word_count`；`Textarea` 编辑自定义词（每行一词）→【保存自定义词】`vfts.dict.set`（**后端同时自动调度强制重建**），成功后一次 `savedText` 反馈。编辑 / 读取失败走 `saveFailedText`。
+- **实现约束**：状态逻辑封装在 `useVftsDict` composable；**禁 `watch`/`watchEffect`**；`:style` 数字带 `'px'`（本页无数字样式）；i18n（zh/en）齐备。
+- **消息面**：`vfts.dict.get` / `vfts.dict.set` / `vfts.reindex`（§1.1 点分相对主题；[61 §1.1](../60-reference/61-消息一览.md)）。
+- **关联测试**：前端守卫 `src/frontend/test/vftsDictReindex.test.js`（composable 用三主题常量 / 页面区块与按钮 / msgkeys 生成物 / i18n 齐备 / 无 watch）。
 

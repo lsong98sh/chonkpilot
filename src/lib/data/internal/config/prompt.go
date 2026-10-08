@@ -1,85 +1,162 @@
-// summary_prompt 文件化（12-数据层）：上下文压缩摘要提示词不再存 prj config，
-// 改为文件 `<级别>/capability/prompts/summary.prompt.md`（系统 + 项目两级，用户级不使用）。
+// prompt 域文件化（12-数据层；OP-01/OP-02/OP-04，2026-10-06）：
+// 上下文压缩摘要提示词与记忆类别沉淀提示词改存**纯文本系统文档**
+// `<级别>/capability/system/<kind>.md`（kind = `summary` / `memory/<类别名>`；无 `[content]`
+// 分区、无 `.prompt` 后缀；系统 + 用户 + 项目三级，项目级私有级不使用）。
 //
-// 读写经既有 `data-prompt-{load,save,delete}` 消息面（key = summary_prompt）——**契约不变**，
-// 仅存储侧由 config 表 key 改为文件；文件形态 = *.prompt.md 原语文档（与知识库原语同构，
-// 便于文件树 / PrimitivePanel 展示与编辑）。
+// 读取链（OP-02）= 项目级文件 → 用户级文件 → 系统级文件 → **embed 内置**
+// （`data.SystemDoc(kind)`，= 出厂文件 `src/initdata/capability/system/<kind>.md`）。
+// 读写经既有 `data-prompt-{load,save,delete}` 消息面（key = `summary_prompt` /
+// `memory_prompt.<类别名>`）——**契约不变**，仅存储侧由 config 表 key 改为文件。
 //
-// 阶段 4「internal 下沉」：本文件由 `chonkpilot-data/persist` 整体下移（逻辑逐字未改；
-// load/save/delete 分发在 config_facade.go 的 ConfigKV* 方法内）。
+// 写级别（OP-04）：摘要与**项目级**记忆类别 → 项目级文件；唯一用户级记忆类别「用户偏好」
+// （`facade.MemoryUserCategory`）→ **用户级文件**（跨项目）。空串 / 与继承值相同 = 删覆盖
+// 文件回落继承（既有语义，避免把有效值固化为覆盖件永久遮蔽上级更新）。
+//
+// 阶段 4「internal 下沉」：本文件由 `chonkpilot-data/persist` 整体下移（load/save/delete 分发在
+// config_facade.go 的 ConfigKV* 方法内）。
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data"
+	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 )
 
-// summaryPromptKey 是 prompt 域中走文件存储的 key（其余 key 仍走 prj config 表）。
-const summaryPromptKey = "summary_prompt"
+const (
+	// summaryPromptKey 是摘要提示词的文件化 key。
+	summaryPromptKey = "summary_prompt"
+	// memoryPromptPrefix 是**记忆类别沉淀提示词**的文件化 key 前缀：`memory_prompt.<类别名>`
+	// （值 = 提示词全文；键缺失/空 → 回落继承链；OP-04 取代旧 prj `memory.prompt.<类别名>`）。
+	memoryPromptPrefix = "memory_prompt."
+)
 
-// summaryPromptFileName 独立提示词文件名（capability 的 prompts 子目录下，12-数据层）。
-const summaryPromptFileName = "summary.prompt.md"
+// systemDocKind 按 prompt 域 key 解析 system 文档 kind（非文件化键 → ok=false）：
+//   - `summary_prompt` → `summary`
+//   - `memory_prompt.<类别名>` → `memory/<类别名>`
+func systemDocKind(key string) (string, bool) {
+	if key == summaryPromptKey {
+		return "summary", true
+	}
+	if cat, ok := strings.CutPrefix(key, memoryPromptPrefix); ok && cat != "" {
+		return "memory/" + cat, true
+	}
+	return "", false
+}
 
-// summaryPromptTitle 文件内原语文档标题。
-const summaryPromptTitle = "Summary Prompt"
+// memoryPromptCategory 取该 key 承载的记忆类别名（非记忆提示词键 → 空串）。
+func memoryPromptCategory(key string) string {
+	if cat, ok := strings.CutPrefix(key, memoryPromptPrefix); ok {
+		return cat
+	}
+	return ""
+}
 
-// summaryPromptFile 项目级文件路径（workDir 空 → 空串，走系统级）。
-func summaryPromptFile(workDir string) string {
+// promptSystemFile 某级 capability 根下的提示词文档路径（= <capRoot>/system/<kind>.md）。
+func promptSystemFile(capRoot, kind string) string {
+	return capfs.SystemDocFile(capRoot, kind)
+}
+
+// promptProjectFile 项目级提示词文件路径（workDir 空 → 空串 = 走继承）。
+func promptProjectFile(workDir, kind string) string {
 	if workDir == "" {
 		return ""
 	}
-	return filepath.Join(capfs.PromptsRoot(capfs.ProjectRoot(workDir)), summaryPromptFileName)
+	return promptSystemFile(capfs.ProjectRoot(workDir), kind)
 }
 
-// readSummaryPrompt 读摘要提示词：项目文件 → 系统文件 → 旧 prj config key（兼容旧数据）；
-// 全部缺失/为空 → 内置默认（与压缩插件实际回落同源，见 chonkpilot-data.DefaultSummaryPrompt），
-// 保证设置页显示的"有效默认"与实际生效值一致（I-65 ⑧）。
-func (s *Service) readSummaryPrompt(workDir, instanceID string) string {
-	if p := summaryPromptFile(workDir); p != "" {
-		if raw, err := os.ReadFile(p); err == nil {
-			return capfs.ParseDoc(string(raw)).Content
-		}
-	}
-	return s.inheritedSummaryPrompt(instanceID)
+// promptUserFile 用户级提示词文件路径（usrPath 注入时随其所在目录）。
+func promptUserFile(usrPath, kind string) string {
+	return promptSystemFile(capfs.UserRoot(usrPath), kind)
 }
 
-// inheritedSummaryPrompt 取**继承值**（不含项目级文件）：系统级文件 → 旧 prj config key → 内置默认。
-// 用于 load 回落与 save 的"是否与继承值相同"判定（见 writeSummaryPrompt）。
-func (s *Service) inheritedSummaryPrompt(instanceID string) string {
-	if sys, err := capfs.SystemRoot(s.AppDir); err == nil {
-		if raw, err := os.ReadFile(filepath.Join(capfs.PromptsRoot(sys), summaryPromptFileName)); err == nil {
-			return capfs.ParseDoc(string(raw)).Content
-		}
+// readSystemDoc 读某级 system 文档文件的**纯文本**正文（去首尾空白；缺失/空 → ""）。
+func readSystemDoc(path string) string {
+	if path == "" {
+		return ""
 	}
-	if v := s.legacyConfigValue(instanceID, "prompt-"+summaryPromptKey); v != "" {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// readPromptDoc 读提示词有效值（OP-02/OP-04 读序）：
+// 项目级文件 → 用户级文件 → 系统级文件 → embed 内置。
+func (s *Service) readPromptDoc(workDir, kind string) string {
+	if v := readSystemDoc(promptProjectFile(workDir, kind)); v != "" {
 		return v
 	}
-	return data.DefaultSummaryPrompt
+	return s.inheritedPromptDoc(kind)
 }
 
-// writeSummaryPrompt 写项目级文件（P0 修复：消除写放大）：
-//   - 内容为空 → 删除项目级文件（回落系统级，既有语义）；
-//   - 内容与**继承值**（系统文件 → 旧 prj config → 内置默认）完全相同 → 同样删除项目级文件
-//     （保持继承）——设置页回填的是"有效值"（可能来自系统级/内置默认），点保存即固化为项目级
-//     副本会**永久遮蔽**系统级后续更新；相同即不覆盖；
-//   - 不同 → 写项目级覆盖。
-func (s *Service) writeSummaryPrompt(workDir, instanceID, content string) error {
-	p := summaryPromptFile(workDir)
-	if p == "" {
+// inheritedPromptDoc 取**继承值**（不含项目级文件）：
+// 用户级文件 → 系统级文件 → embed 内置（同一份出厂内容）。
+// 用于 load 回落与 save 的"是否与继承值相同"判定（见 writePrompt）。
+func (s *Service) inheritedPromptDoc(kind string) string {
+	if v := readSystemDoc(promptUserFile(s.UsrPath, kind)); v != "" {
+		return v
+	}
+	if sys, err := capfs.SystemRoot(s.AppDir); err == nil {
+		if v := readSystemDoc(promptSystemFile(sys, kind)); v != "" {
+			return v
+		}
+	}
+	return data.SystemDoc(kind)
+}
+
+// writePrompt 写提示词覆盖文件：
+//   - 内容为空 / 与**继承值**（用户文件 → 系统文件 → embed 内置）完全相同 → 删除覆盖文件
+//     （回落继承）——设置页回填的是"有效值"（可能来自继承），点保存即固化为覆盖件会**永久
+//     遮蔽**上级后续更新；相同即不覆盖（P0 修复：消除写放大）；
+//   - 内容不同 → 写覆盖文件：唯一用户级类别「用户偏好」写**用户级文件**，其余（含 summary）写
+//     **项目级文件**（纯文本）。
+func (s *Service) writePrompt(workDir, key, content string) error {
+	kind, ok := systemDocKind(key)
+	if !ok {
+		return fmt.Errorf("persist: unknown prompt key %q", key)
+	}
+	if strings.TrimSpace(content) == "" || strings.TrimSpace(content) == strings.TrimSpace(s.inheritedPromptDoc(kind)) {
+		return s.removePromptOverrides(workDir, key)
+	}
+	target := promptProjectFile(workDir, kind)
+	if memoryPromptCategory(key) == facade.MemoryUserCategory {
+		target = promptUserFile(s.UsrPath, kind) // 用户偏好：跨项目，写用户级
+	}
+	if target == "" {
+		return nil // 无项目级（workDir 空）且非用户级 → 无处可写，走继承
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(target, []byte(content), 0o644)
+}
+
+// removePromptOverrides 删除某 key 的覆盖文件（回落继承）：
+//   - 摘要（summary）：仅项目级文件（既有语义不变——用户/系统级为工厂资源，不删）；
+//   - 记忆类别提示词：项目级 + 用户级（两者皆为用户可编辑覆盖）
+//     ——「用户偏好」实际只落用户级，删除幂等。
+func (s *Service) removePromptOverrides(workDir, key string) error {
+	kind, ok := systemDocKind(key)
+	if !ok {
 		return nil
 	}
-	if strings.TrimSpace(content) == "" || strings.TrimSpace(content) == strings.TrimSpace(s.inheritedSummaryPrompt(instanceID)) {
+	paths := []string{promptProjectFile(workDir, kind)}
+	if memoryPromptCategory(key) != "" {
+		paths = append(paths, promptUserFile(s.UsrPath, kind))
+	}
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(p, []byte(capfs.BuildDoc(capfs.Doc{Title: summaryPromptTitle, Content: content})), 0o644)
+	return nil
 }

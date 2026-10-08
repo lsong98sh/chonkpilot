@@ -30,11 +30,11 @@ func TestChildTurnCancelPropagation(t *testing.T) {
 	childAborted := make(chan time.Duration, 4)
 
 	// 脚本 = 5 个串行 LLM 子步（每个子步 = 一个子 turn）——对齐 PoC「子步骤 5/5 vs 1/5」。
-	script := `LLM "worker" "step 1"
-LLM "worker" "step 2"
-LLM "worker" "step 3"
-LLM "worker" "step 4"
-LLM "worker" "step 5"
+	script := `LLM "worker" "step 1" "取消传播步 1"
+LLM "worker" "step 2" "取消传播步 2"
+LLM "worker" "step 3" "取消传播步 3"
+LLM "worker" "step 4" "取消传播步 4"
+LLM "worker" "step 5" "取消传播步 5"
 `
 	const trigger = "cancel please"
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

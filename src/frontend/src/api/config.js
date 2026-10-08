@@ -1,6 +1,13 @@
 import { dataClient } from '../utils/dataClient'
 import mq from '../utils/mq'
 import { EventNames } from '../events/event-names'
+import {
+  FieldKeys,
+  DataPrjConfigListKeys, DataPrjConfigLoadKeys,
+  DataUserConfigLoadKeys, DataUserConfigListKeys,
+  DataPromptLoadKeys, DataMcpListKeys, DataPrjSecurityListKeys,
+  GuiSystemBuiltinsKeys, GuiToolchainDetectKeys, GuiPickExecutableKeys, GuiPromptVarsKeys,
+} from '../events/msgkeys.js'
 
 // 配置 CRUD 走 data-<domain> 消息面（20-gui）：
 //   - user-config → data-user-config-{load,save}
@@ -30,7 +37,8 @@ function guiReq(action, body = {}) {
 // prj-config（项目配置 key-value 表）
 export async function getAllConfig() {
   const reply = await dataClient.list('prj-config')
-  const cfg = reply.list !== undefined ? reply.list : reply
+  const list = reply[DataPrjConfigListKeys.list]
+  const cfg = list !== undefined ? list : reply
   return { config: cfg || {} }
 }
 
@@ -49,7 +57,7 @@ export function setConfigs(entries) {
 export async function getConfigValue(key) {
   try {
     const reply = await dataClient.load('prj-config', key)
-    const data = reply && reply.data !== undefined ? reply.data : reply
+    const data = reply && reply[DataPrjConfigLoadKeys.data] !== undefined ? reply[DataPrjConfigLoadKeys.data] : reply
     if (data && typeof data === 'object' && data.value !== undefined) return data.value
     return data === undefined ? '' : data
   } catch (_) {
@@ -64,6 +72,12 @@ export function deleteConfig(key) {
 
 export function getRecentDirs() {
   return guiReq('recent.list', {})
+}
+
+// 从「最近项目」记录中移除一条（gui.recent.remove，61-消息一览 §1）：**仅删该条记录**，
+// 不删除 / 不移动对应项目目录及其 .chonkpilot 数据资产；记录不存在 → 幂等成功。
+export function removeRecentDir(path) {
+  return guiReq('recent.remove', { path })
 }
 
 export function saveRecentDir() {
@@ -88,7 +102,8 @@ export function openDirDialog() {
 // user-config（用户配置整体对象，usr config 表）
 export async function getUserConfig() {
   const reply = await dataClient.load('user-config')
-  const data = reply.data !== undefined ? reply.data : (reply.config !== undefined ? reply.config : reply)
+  // data-user-config-load 结果 = {data}（61 §3.1）；旧 /call 的 {config} 形态不存在（无兼容兜底）。
+  const data = reply[DataUserConfigLoadKeys.data] !== undefined ? reply[DataUserConfigLoadKeys.data] : reply
   return { config: data || {} }
 }
 
@@ -104,9 +119,11 @@ export function resetUserKey(key) {
 // usr 主库视图（批 3 · ⑯ 导出/备份数据源）：走 data-user-config-list ——
 // list 返回 **usr 主库视图**（不含 prj/prjusr 项目层覆盖，见 61-消息一览 §3.1 语义要点；
 // load 才是合并后有效值），导出/备份要的就是「这份 usr 配置本体」。
+// 注（I-127）：元素另带 `explicit`（用户显式写入的键清单）→ 导出「保真」只写显式键
+// （见 `utils/configIO.js` explicitConfigKeys），不把视图内补的系统默认固化成用户配置。
 export async function getUserConfigMain() {
   const reply = await dataClient.list('user-config')
-  const list = reply.list !== undefined ? reply.list : reply
+  const list = reply[DataUserConfigListKeys.list] !== undefined ? reply[DataUserConfigListKeys.list] : reply
   const first = Array.isArray(list) ? list[0] : list
   return first && typeof first === 'object' ? { ...first } : {}
 }
@@ -135,14 +152,14 @@ export function saveConfigFile(name, content, mode) {
 // 变更广播 data-mcp-refresh 由后端在 save/delete 后发出（前端 onDataRefresh('mcp', …) 刷新）。
 export async function listMcpServers() {
   const reply = await dataClient.list('mcp')
-  const list = reply.list !== undefined ? reply.list : reply
+  const list = reply[DataMcpListKeys.list] !== undefined ? reply[DataMcpListKeys.list] : reply
   return Array.isArray(list) ? list : []
 }
 
 export function saveMcpServer(server, oldName, oldLevel) {
   const data = { ...server }
-  if (oldName) data.old_name = oldName
-  if (oldLevel) data.old_level = oldLevel
+  if (oldName) data[FieldKeys.old_name] = oldName
+  if (oldLevel) data[FieldKeys.old_level] = oldLevel
   return dataClient.save('mcp', data)
 }
 
@@ -153,7 +170,7 @@ export function deleteMcpServer(name) {
 // 探测工具链（gui.toolchain.detect）→ {tools:[{id,name,path,version}]}（系统级候选，不落库）
 export async function detectToolchains() {
   const res = await guiReq('toolchain.detect', {})
-  return Array.isArray(res.tools) ? res.tools : []
+  return Array.isArray(res[GuiToolchainDetectKeys.tools]) ? res[GuiToolchainDetectKeys.tools] : []
 }
 
 // 系统级只读内置项（gui.system.builtins；OEM/发布资源）→ {mcpServers}
@@ -162,14 +179,21 @@ export async function detectToolchains() {
 export async function getSystemBuiltins() {
   const res = await guiReq('system.builtins', {})
   return {
-    mcpServers: Array.isArray(res.mcpServers) ? res.mcpServers : [],
+    mcpServers: Array.isArray(res[GuiSystemBuiltinsKeys.mcpServers]) ? res[GuiSystemBuiltinsKeys.mcpServers] : [],
   }
 }
 
 // 选择可执行文件（gui.pick-executable）→ {path}（取消返回空串）
 export async function pickExecutable() {
   const res = await guiReq('pick-executable', {})
-  return res.path || ''
+  return res[GuiPickExecutableKeys.path] || ''
+}
+
+// 提示词变量目录（gui.prompt-vars，OP-12）→ {groups:[{id,label,items:[{key,desc,dslOnly}]}]}
+// 单源 = 后端常量（src/lib/gui/bridge/promptvars.go）；只读、无副作用。供统一「变量插入」组件渲染。
+export async function getPromptVariables() {
+  const res = await guiReq('prompt-vars', {})
+  return Array.isArray(res[GuiPromptVarsKeys.groups]) ? res[GuiPromptVarsKeys.groups] : []
 }
 
 // prj-security（项目安全白名单条目）
@@ -207,7 +231,7 @@ function parseSecurityEntry(key, value) {
 
 export async function getProjectSecurity() {
   const reply = await dataClient.list('prj-security')
-  const list = reply.list !== undefined ? reply.list : reply
+  const list = reply[DataPrjSecurityListKeys.list] !== undefined ? reply[DataPrjSecurityListKeys.list] : reply
   if (Array.isArray(list)) return { entries: list } // 兼容数组载荷
   const entries = []
   if (list && typeof list === 'object') {
@@ -234,7 +258,7 @@ export async function saveProjectSecurity(entries, removedKeys = []) {
 // prompt（提示词，prj config 表；load 以 key 为 id，save 带 {key, value}）
 export async function getPrompt(key) {
   const reply = await dataClient.load('prompt', key)
-  const data = reply.data !== undefined ? reply.data : reply
+  const data = reply[DataPromptLoadKeys.data] !== undefined ? reply[DataPromptLoadKeys.data] : reply
   return { value: data && typeof data === 'object' && data.value !== undefined ? data.value : data }
 }
 

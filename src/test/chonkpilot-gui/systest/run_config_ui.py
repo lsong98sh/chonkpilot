@@ -803,7 +803,7 @@ def case_c_removed_items():
 #    E1 「新增类别」→ 出现在清单 + 内容编辑**弹框**（TextEditDialog）保存即关（回读 data-memory-read）
 #    E2 行内【编辑内容】→ 弹框内容正确/取消不落库 + 「删除类别」仅自定义可见 + 二次确认后消失
 #    E3 data-memory-delete 直调 → {ok,id} + 广播 data-memory-refresh(op=delete)（贴原始 payload）
-#    E4 行内【编辑提示词】→ 弹框（内置默认回填/来源提示/保存落 prj memory.prompt.<类别>/重置回落）
+#    E4 行内【编辑提示词】→ 弹框（出厂默认回填/来源提示/保存落 capability/system/memory/<类别>.md/重置回落；OP-04）
 #    F  设置页无「MCPServerConfig」死项（源：I-64 已删死结构）
 # ══════════════════════════════════════════════════════════
 
@@ -1130,128 +1130,150 @@ def case_e3_memory_delete_datamsg():
 
 
 def case_e4_memory_prompt_edit():
-    """E4 记忆类别沉淀提示词（2026-09-26 用户口径：每类别「提示词编辑」+「内容编辑」两个弹框）：
+    """E4 记忆类别沉淀提示词（OP-04 文件化，2026-10-06：每类别「提示词编辑」+「内容编辑」两个弹框）：
 
     行内【编辑提示词】→ 弹框（复用 TextEditDialog）
-      · 未自定义 → 回填**内置默认** + 来源提示「当前为内置默认」、**无**【重置】；
-      → 改内容 →【保存】→ 弹框自动关闭 → 回读 prj `memory.prompt.<类别名>` == 自定义值；
+      · 未自定义 → 回填**后端下发的有效值**（出厂文件，非空）+ 来源提示「当前为内置默认」、**无**【重置】；
+      → 改内容 →【保存】→ 弹框自动关闭 → prompt 域键 `memory_prompt.<类别名>` 有效值 == 自定义值，
+        且落盘 `<workdir>/.chonkpilot/capability/system/memory/<类别名>.md`；
       → 再次打开 → 来源提示「当前为自定义」+【重置】+ 回填自定义值；
-      →【重置】→ 弹框关闭 → **prj 键被清除**（回落内置默认）→ 再开显示「当前为内置默认」。
+      →【重置】→ 弹框关闭 → **覆盖文件被删除**（有效值回落出厂默认）→ 再开显示「当前为内置默认」。
 
-    「用户偏好」（唯一 user 级类别，用户口径明示「包括用户偏好」）同口径，落 **usr 自由键
-    `memory_prompts`**（JSON 对象字符串）；重置 → usr 键被清除。
+    「用户偏好」（唯一 user 级类别）同口径，落**用户级**文件
+    `<userRoot>/capability/system/memory/用户偏好.md`（此处以 prompt 域有效值 + 文件双断言）。
     """
     cat = PRESET_MEMORY_CATEGORIES[0]  # 项目概要（预置项目级类别，恒在清单）
-    key = "memory.prompt." + cat
+    key = "memory_prompt." + cat
+    up_key = "memory_prompt.用户偏好"
+    prj_file = os.path.join(WS, ".chonkpilot", "capability", "system", "memory", cat + ".md")
+    up_file = os.path.join(os.path.expanduser("~"), ".chonkpilot", "capability", "system", "memory", "用户偏好.md")
     sentinel = "L4-mem-prompt-%d" % int(time.time())
-    snap = _h.snapshot_prj_config(c, ["memory.enabled", key])
-    with _h.user_config_guard(c, ["memory_prompts"]):
-        try:
-            close_stray_dialogs()
-            prj_save("memory.enabled", "true")
-            open_page("settings-project", ".project-config-panel")
-            click_tab("上下文管理", ".project-config-panel")
-            # ① 行内两个编辑入口并存
-            row = next((r for r in mem_rows() if r["cat"] == cat), None)
-            if not row:
-                raise TestError("预置类别 %r 未渲染" % cat)
-            if not (row["hasPrompt"] and row["hasEdit"]):
-                raise TestError("类别行须并存【编辑提示词】/【编辑内容】：%r" % row)
-            # ② 打开提示词弹框：未自定义 → 回填内置默认 + 来源提示「内置默认」+ 无【重置】
-            if not click_row_btn(cat, "编辑提示词"):
-                raise TestError("点击【编辑提示词】失败（行/按钮缺失）")
-            if not wait_vis(TE_DLG, 10):
-                raise TestError("提示词编辑弹框未打开（TextEditDialog）")
-            hint0 = dlg_hint() or ""
-            if "内置默认" not in hint0:
-                raise TestError("未自定义应显示「当前为内置默认」来源提示：%r" % hint0)
-            if not (dlg_textarea_value() or "").strip():
-                raise TestError("未自定义应回填内置默认提示词（内容为空）")
-            if dlg_has_btn("重置"):
-                raise TestError("未自定义不应显示【重置】（无可清除项）")
-            # ③ 改内容 → 保存 → 弹框自动关闭
-            if dlg_set_textarea(sentinel) != "ok":
-                raise TestError("写入提示词弹框失败")
-            if dlg_btn("保存") != "ok":
-                raise TestError("提示词弹框缺【保存】按钮")
-            if not wait_gone(TE_DLG, 10):
-                raise TestError("保存后提示词弹框未自动关闭")
-            # ④ 回读：prj `memory.prompt.<类别名>` == 自定义值
-            got = (c.req("data-prj-config-load", {"id": key}) or {}).get("data")
-            if got != sentinel:
-                raise TestError("自定义提示词未落库 prj 键：got=%r want=%r" % (got, sentinel))
-            print("    [E4] prj %s = %r" % (key, got))
-            # ⑤ 再次打开：来源提示「自定义」+【重置】+ 内容 = 自定义值
-            if not click_row_btn(cat, "编辑提示词"):
-                raise TestError("再次点击【编辑提示词】失败")
-            if not wait_vis(TE_DLG, 10):
-                raise TestError("提示词弹框未再次打开")
-            hint1 = dlg_hint() or ""
-            if "自定义" not in hint1:
-                raise TestError("已自定义应显示「当前为自定义」来源提示：%r" % hint1)
-            if (dlg_textarea_value() or "") != sentinel:
-                raise TestError("已自定义应回填自定义值：%r" % dlg_textarea_value())
-            if not dlg_has_btn("重置"):
-                raise TestError("已自定义须显示【重置】按钮")
-            # ⑥ 重置 → 弹框关闭 → prj 键被清除（回落内置默认）
-            if dlg_btn("重置") != "ok":
-                raise TestError("点击【重置】失败")
-            if not wait_gone(TE_DLG, 10):
-                raise TestError("重置后提示词弹框未关闭")
-            if not poll(lambda: ((c.req("data-prj-config-load", {"id": key}) or {}).get("data") or "") == "", 8):
-                raise TestError("重置后 prj 键未清除：%r"
-                                % (c.req("data-prj-config-load", {"id": key})))
-            # ⑦ 再开 → 回落内置默认（来源提示 + 内容非空 + 无【重置】）
-            if not click_row_btn(cat, "编辑提示词"):
-                raise TestError("重置后【编辑提示词】不可用")
-            if not wait_vis(TE_DLG, 10):
-                raise TestError("重置后提示词弹框未打开")
-            hint2 = dlg_hint() or ""
-            if "内置默认" not in hint2:
-                raise TestError("重置后应回落「当前为内置默认」：%r" % hint2)
-            if not (dlg_textarea_value() or "").strip():
-                raise TestError("重置后应回填内置默认提示词")
-            shot("e4-memory-prompt.png")
-            # 收尾：关闭本弹框（否则 ⑧ 的用户偏好弹框会被 dlg_* 助手取到「首个」旧弹框）
-            if dlg_btn("取消") != "ok" or not wait_gone(TE_DLG, 6):
-                raise TestError("关闭项目类别提示词弹框失败")
 
-            # ⑧ 「用户偏好」（唯一 user 级）同口径 → 落 usr 自由键 `memory_prompts`
-            up_key = "memory_prompts"
-            c.req("data-user-config-delete", {"id": up_key})  # 归零：确保从「未自定义」起步
-            time.sleep(0.8)
-            if not click_userpref_btn("编辑提示词"):
-                raise TestError("用户偏好行缺【编辑提示词】入口")
-            if not wait_vis(TE_DLG, 10):
-                raise TestError("用户偏好提示词弹框未打开")
-            if "内置默认" not in (dlg_hint() or ""):
-                raise TestError("用户偏好未自定义应显示「当前为内置默认」：%r" % dlg_hint())
-            if dlg_set_textarea(sentinel) != "ok" or dlg_btn("保存") != "ok":
-                raise TestError("用户偏好提示词保存失败")
-            if not wait_gone(TE_DLG, 10):
-                raise TestError("用户偏好提示词弹框未自动关闭")
-            raw = ((c.req("data-user-config-load", {}) or {}).get("data") or {}).get(up_key)
-            if not isinstance(raw, str) or sentinel not in raw:
-                raise TestError("用户偏好提示词未落 usr 自由键：%r" % (raw,))
-            print("    [E4] usr %s = %r" % (up_key, raw))
-            # 重置 → usr 键被清除（回落内置默认）
-            if not click_userpref_btn("编辑提示词"):
-                raise TestError("用户偏好【编辑提示词】再次打开失败")
-            if not wait_vis(TE_DLG, 10):
-                raise TestError("用户偏好提示词弹框未再次打开")
-            if not dlg_has_btn("重置"):
-                raise TestError("用户偏好已自定义须显示【重置】")
-            if dlg_btn("重置") != "ok":
-                raise TestError("用户偏好【重置】点击失败")
-            if not wait_gone(TE_DLG, 10):
-                raise TestError("用户偏好重置后弹框未关闭")
-            if not poll(lambda: (((c.req("data-user-config-load", {}) or {}).get("data") or {}).get(up_key) or "") == "", 8):
-                raise TestError("用户偏好重置后 usr 键未清除：%r"
-                                % ((c.req("data-user-config-load", {}) or {}).get("data") or {}).get(up_key))
-            shot("e4-memory-userpref-prompt.png")
-        finally:
-            close_stray_dialogs()
-            _h.restore_prj_config(c, snap)
+    def prompt_val(k):
+        return (c.req("data-prompt-load", {"id": k}) or {}).get("data") or ""
+
+    def drop_prompt(k):
+        try:
+            c.req("data-prompt-delete", {"id": k})
+        except Exception:
+            pass
+
+    snap = _h.snapshot_prj_config(c, ["memory.enabled"])
+    try:
+        close_stray_dialogs()
+        # 归零：清历史覆盖文件（残留会让「未自定义」前提不成立）
+        drop_prompt(key)
+        drop_prompt(up_key)
+        prj_save("memory.enabled", "true")
+        open_page("settings-project", ".project-config-panel")
+        click_tab("上下文管理", ".project-config-panel")
+        # ① 行内两个编辑入口并存
+        row = next((r for r in mem_rows() if r["cat"] == cat), None)
+        if not row:
+            raise TestError("预置类别 %r 未渲染" % cat)
+        if not (row["hasPrompt"] and row["hasEdit"]):
+            raise TestError("类别行须并存【编辑提示词】/【编辑内容】：%r" % row)
+        # ② 打开提示词弹框：未自定义 → 回填有效值（出厂文件）+ 来源提示「内置默认」+ 无【重置】
+        if not click_row_btn(cat, "编辑提示词"):
+            raise TestError("点击【编辑提示词】失败（行/按钮缺失）")
+        if not wait_vis(TE_DLG, 10):
+            raise TestError("提示词编辑弹框未打开（TextEditDialog）")
+        hint0 = dlg_hint() or ""
+        if "内置默认" not in hint0:
+            raise TestError("未自定义应显示「当前为内置默认」来源提示：%r" % hint0)
+        if not (dlg_textarea_value() or "").strip():
+            raise TestError("未自定义应回填出厂默认提示词（内容为空）")
+        if dlg_has_btn("重置"):
+            raise TestError("未自定义不应显示【重置】（无可清除项）")
+        # ③ 改内容 → 保存 → 弹框自动关闭
+        if dlg_set_textarea(sentinel) != "ok":
+            raise TestError("写入提示词弹框失败")
+        if dlg_btn("保存") != "ok":
+            raise TestError("提示词弹框缺【保存】按钮")
+        if not wait_gone(TE_DLG, 10):
+            raise TestError("保存后提示词弹框未自动关闭")
+        # ④ 回读：prompt 域有效值 == 自定义值 + 项目级文件落盘（文件面证据）
+        if not poll(lambda: prompt_val(key) == sentinel, 8):
+            raise TestError("自定义提示词未生效（prompt 域有效值）：got=%r want=%r"
+                            % (prompt_val(key), sentinel))
+        if not os.path.isfile(prj_file):
+            raise TestError("自定义提示词未落盘项目级文件：%s" % prj_file)
+        print("    [E4] prompt %s 有效值 = %r；文件已落盘 %s" % (key, sentinel, prj_file))
+        # ⑤ 再次打开：来源提示「自定义」+【重置】+ 内容 = 自定义值
+        if not click_row_btn(cat, "编辑提示词"):
+            raise TestError("再次点击【编辑提示词】失败")
+        if not wait_vis(TE_DLG, 10):
+            raise TestError("提示词弹框未再次打开")
+        hint1 = dlg_hint() or ""
+        if "自定义" not in hint1:
+            raise TestError("已自定义应显示「当前为自定义」来源提示：%r" % hint1)
+        if (dlg_textarea_value() or "") != sentinel:
+            raise TestError("已自定义应回填自定义值：%r" % dlg_textarea_value())
+        if not dlg_has_btn("重置"):
+            raise TestError("已自定义须显示【重置】按钮")
+        # ⑥ 重置 → 弹框关闭 → 覆盖文件删除（有效值回落出厂默认，仍非空）
+        if dlg_btn("重置") != "ok":
+            raise TestError("点击【重置】失败")
+        if not wait_gone(TE_DLG, 10):
+            raise TestError("重置后提示词弹框未关闭")
+        if not poll(lambda: not os.path.isfile(prj_file), 8):
+            raise TestError("重置后覆盖文件未删除：%s" % prj_file)
+        if not (prompt_val(key) or "").strip():
+            raise TestError("重置后有效值不应为空（应回落出厂默认）：%r" % prompt_val(key))
+        # ⑦ 再开 → 回落出厂默认（来源提示 + 内容非空 + 无【重置】）
+        if not click_row_btn(cat, "编辑提示词"):
+            raise TestError("重置后【编辑提示词】不可用")
+        if not wait_vis(TE_DLG, 10):
+            raise TestError("重置后提示词弹框未打开")
+        hint2 = dlg_hint() or ""
+        if "内置默认" not in hint2:
+            raise TestError("重置后应回落「当前为内置默认」：%r" % hint2)
+        if not (dlg_textarea_value() or "").strip():
+            raise TestError("重置后应回填出厂默认提示词")
+        shot("e4-memory-prompt.png")
+        # 收尾：关闭本弹框（否则 ⑧ 的用户偏好弹框会被 dlg_* 助手取到「首个」旧弹框）
+        if dlg_btn("取消") != "ok" or not wait_gone(TE_DLG, 6):
+            raise TestError("关闭项目类别提示词弹框失败")
+
+        # ⑧ 「用户偏好」（唯一 user 级）同口径 → 落**用户级**文件
+        drop_prompt(up_key)  # 归零：确保从「未自定义」起步
+        time.sleep(0.8)
+        if not click_userpref_btn("编辑提示词"):
+            raise TestError("用户偏好行缺【编辑提示词】入口")
+        if not wait_vis(TE_DLG, 10):
+            raise TestError("用户偏好提示词弹框未打开")
+        if "内置默认" not in (dlg_hint() or ""):
+            raise TestError("用户偏好未自定义应显示「当前为内置默认」：%r" % dlg_hint())
+        if dlg_set_textarea(sentinel) != "ok" or dlg_btn("保存") != "ok":
+            raise TestError("用户偏好提示词保存失败")
+        if not wait_gone(TE_DLG, 10):
+            raise TestError("用户偏好提示词弹框未自动关闭")
+        if not poll(lambda: prompt_val(up_key) == sentinel, 8):
+            raise TestError("用户偏好提示词未生效：got=%r" % prompt_val(up_key))
+        if not os.path.isfile(up_file):
+            raise TestError("用户偏好自定义提示词未落**用户级**文件：%s" % up_file)
+        print("    [E4] prompt %s 有效值 = %r；用户级文件已落盘" % (up_key, sentinel))
+        # 重置 → 覆盖文件清除（回落出厂默认）
+        if not click_userpref_btn("编辑提示词"):
+            raise TestError("用户偏好【编辑提示词】再次打开失败")
+        if not wait_vis(TE_DLG, 10):
+            raise TestError("用户偏好提示词弹框未再次打开")
+        if not dlg_has_btn("重置"):
+            raise TestError("用户偏好已自定义须显示【重置】")
+        if dlg_btn("重置") != "ok":
+            raise TestError("用户偏好【重置】点击失败")
+        if not wait_gone(TE_DLG, 10):
+            raise TestError("用户偏好重置后弹框未关闭")
+        if not poll(lambda: not os.path.isfile(up_file), 8):
+            raise TestError("用户偏好重置后覆盖文件未删除：%s" % up_file)
+        if not (prompt_val(up_key) or "").strip():
+            raise TestError("用户偏好重置后有效值不应为空（应回落出厂默认）")
+        shot("e4-memory-userpref-prompt.png")
+    finally:
+        close_stray_dialogs()
+        drop_prompt(key)
+        drop_prompt(up_key)
+        _h.restore_prj_config(c, snap)
 
 
 def case_f_no_mcp_server_config_dead():
@@ -1490,6 +1512,8 @@ def _spawn_hist():
     ws = HIST_WS[0].upper() + HIST_WS[1:]
     if not os.path.isdir(os.path.join(HIST_WS, ".git")):
         os.makedirs(os.path.join(HIST_WS, ".git"), exist_ok=True)
+    # 夹具：预置工程规格文件 → 抑制场景向导自动弹出（本实例走 popen_own，不经 harness.start_gui）
+    _h.ensure_project_spec(HIST_WS)
     os.makedirs(HIST_DATA, exist_ok=True)
     # 起第二实例前先清掉**上次残留**占用 2347 的进程（保护底座 2345）
     _kill_port(HIST_PORT, protect_ports=(BASE_PORT,))
@@ -1834,7 +1858,7 @@ def main():
             ("E1 记忆库「新增类别」→ 出现 + 内容编辑弹框保存即关（回读）", case_e1_memory_add_and_edit),
             ("E2 行内【编辑内容】弹框（内容正确/取消不落库）+「删除类别」二次确认后消失", case_e2_memory_delete_ui),
             ("E3 data-memory-delete → {ok,id} + data-memory-refresh(op=delete) 广播", case_e3_memory_delete_datamsg),
-            ("E4 记忆类别提示词编辑（内置默认回填/来源提示/保存落 prj/重置回落）", case_e4_memory_prompt_edit),
+            ("E4 记忆类别提示词编辑（出厂默认回填/来源提示/保存落 capability 文件/重置回落；OP-04）", case_e4_memory_prompt_edit),
             ("F 设置页无「MCPServerConfig」死项", case_f_no_mcp_server_config_dead),
             ("G 恢复默认（原语 app 无/project 有+回填）+ 知识库右键无「复制到项目级」", case_g_restore_default_and_ctxmenu),
             ("D「文件历史」开关点击保存 → 重启 GUI 回读", case_d_history_restart),

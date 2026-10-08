@@ -33,6 +33,10 @@ type Options struct {
 	// 如 Vars["env"] = map[string]any{"CHONKPILOT_WORKDIR": ...} → 脚本用 {{env.CHONKPILOT_WORKDIR}} 引用。
 	// 脚本对其它键的赋值不受限（见 Scope.assignVar）。
 	Vars map[string]any
+	// ReturnFile 是 `$RETURN` 累计超过 ReturnInlineLimit 后的落盘目标路径
+	// （宿主注入，通常为 `!/` 临时根下的 dsl-return-<作业id>.md，由 FileSystem 解析）。
+	// 空串 = 无落盘目标：超阈值仍留内存（仅供测试/无持久化场景）。
+	ReturnFile string
 }
 
 // RunResult 执行结果。
@@ -57,6 +61,10 @@ type Engine struct {
 	// 宿主注入的保留变量：initVars 启动时预置根作用域；injected 标记其名字为只读。
 	initVars map[string]any
 	injected map[string]bool
+
+	// returnFile 是 `$RETURN` 超阈值落盘目标（Options.ReturnFile）；ret 是累计状态。
+	returnFile string
+	ret        returnState
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -90,7 +98,7 @@ func NewEngine(o Options) *Engine {
 		act[strings.ToUpper(a.Name)] = a
 	}
 	eng := &Engine{files: o.Files, dbs: o.DBs, act: act, stop: o.StopOnError, ctx: ctx, cancel: cancel,
-		loopLimit: o.MaxLoopIterations}
+		loopLimit: o.MaxLoopIterations, returnFile: o.ReturnFile}
 	if eng.loopLimit <= 0 {
 		eng.loopLimit = defaultMaxLoopIterations
 	}
@@ -112,6 +120,23 @@ func (e *Engine) Result() RunResult {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.res
+}
+
+// Return 返回 `$RETURN` 结果通道的最终值（两态：inline 内容 / file 路径）。
+// 脚本未使用 `=> $RETURN` 时 Used=false（宿主据此回落既有汇总逻辑，见 42 §2 (249)⑥）。
+func (e *Engine) Return() ReturnValue { return e.ret.snapshot() }
+
+// appendReturn 把一段值累计写入 `$RETURN`（值 → 文本的序列化与 SET 一致：字符串直拼、
+// 数字/布尔 → 文本、数组/对象 → JSON 文本）。
+func (e *Engine) appendReturn(val any, ln int) error {
+	text, err := valueToText(val)
+	if err != nil {
+		return lineErr(ln, "写入 $RETURN 失败：%s", err.Error())
+	}
+	if err := e.ret.append(text, e.files, e.returnFile); err != nil {
+		return lineErr(ln, "写入 $RETURN 失败：%s", err.Error())
+	}
+	return nil
 }
 
 func (e *Engine) addSummary(s string) {
@@ -167,15 +192,19 @@ func (s *Scope) setVar(name string, v any) {
 }
 
 // reservedVars 是**保留标识符**：不得作为变量名/绑定目标（SET/动作 => 目标、TYPEOF/ENTRY/
-// SPLIT/JOIN/PUSH 目标、下标写、LOOP 绑定、任何遮蔽）。当前仅 `env`（宿主注入的只读上下文）；
-// 唯一受支持用法 = 读取 `{{env.*}}`。
-var reservedVars = map[string]bool{"env": true}
+// SPLIT/JOIN/PUSH 目标、下标写、LOOP 绑定、任何遮蔽）。当前 = `env`（宿主注入的**只读**上下文，
+// 唯一受支持用法 = 读取 `{{env.*}}`）+ `$RETURN`（宿主注入的**只写**结果通道，唯一受支持用法 =
+// `SET 值 => $RETURN` / `动作 … => $RETURN`，见 return.go）。
+var reservedVars = map[string]bool{"env": true, returnVar: true}
 
 // isReservedVar 是否保留标识符（大小写敏感，与变量名规则一致）。
 func isReservedVar(name string) bool { return reservedVars[name] }
 
-// errReservedVar 构造保留字错误（统一文案）。
+// errReservedVar 构造保留字错误（统一文案；$RETURN 为只写通道，与只读 env 分别说明）。
 func errReservedVar(name string) error {
+	if name == returnVar {
+		return fmt.Errorf("%s 是宿主注入的只写结果通道，不能作为变量名/绑定目标（唯一用法：SET 值 => $RETURN）", returnVar)
+	}
 	return fmt.Errorf("%s 是保留字（宿主注入的只读上下文），不能作为变量名", name)
 }
 
@@ -236,6 +265,9 @@ func (s *Scope) interpOne(expr string) (string, error) {
 		}
 	}
 	parts := strings.Split(path, ".")
+	if parts[0] == returnVar {
+		return "", errors.New(returnNoRead) // $RETURN 只写不可读
+	}
 	v, ok := s.Lookup(parts[0])
 	if !ok {
 		return "", nil // 缺失变量插值为空
@@ -369,6 +401,11 @@ func (e *Engine) execSet(sc *Scope, st *SetStmt) error {
 // ─── 写入（SET / 动作 => 目标）───
 
 func (e *Engine) writeTarget(sc *Scope, tgt *Expr, val any, ln int) error {
+	// $RETURN：宿主注入的只写结果通道 —— 累计追加（超阈值转文件），不走变量赋值。
+	// 必须置于下方「保留标识符拒绝」之前（$RETURN 属保留标识符，但写目标是其唯一合法用法）。
+	if tgt != nil && tgt.Kind == eVar && tgt.Name == returnVar && len(tgt.Segs) == 0 && tgt.Idx == nil {
+		return e.appendReturn(val, ln)
+	}
 	// 保留标识符（env）不可作为写入目标：裸名/字段链/下标写一律拒绝（唯一合法用法是 {{env.*}} 读取）。
 	if tgt.Kind == eVar && isReservedVar(tgt.Name) {
 		return lineErr(ln, "%s", errReservedVar(tgt.Name).Error())

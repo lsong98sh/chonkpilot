@@ -90,6 +90,15 @@
           </div>
         </div>
 
+        <!-- 开关三：提取子会话记忆（DSL-4，42 §2 (253)：默认关；关 = 子会话 turn 跳过自动沉淀） -->
+        <div class="form-item form-item-12">
+          <div class="switch-row">
+            <label class="form-label">{{ $t('projectConfig.memory_subsession') }}</label>
+            <Switch :model-value="memorySubsession" :disabled="!memoryEnabled" @update:model-value="onMemorySubsessionChange" />
+          </div>
+          <div class="field-hint">{{ $t('projectConfig.memory_subsession_hint') }}</div>
+        </div>
+
         <!-- 记忆区底部：记忆总 token 数（各启用类别 tokens 之和）——**只读展示**。
              可点击的主入口（分类列表 → 内容编辑弹框）已迁至窗口状态栏底部（StatusBar），
              此处不再重复入口。 -->
@@ -135,6 +144,14 @@
               v-mq:[EventNames.contextQuickThreshold].click="{ value: b.value }"
             >{{ b.label }}</Button>
           </div>
+        </div>
+        <!-- 开关：压缩子会话（DSL-4，42 §2 (253)：默认关；关 = 子会话 turn 跳过压缩） -->
+        <div class="form-item form-item-12">
+          <div class="switch-row">
+            <label class="form-label">{{ $t('projectConfig.compress_subsession') }}</label>
+            <Switch :model-value="compressSubsession" @update:model-value="onCompressSubsessionChange" />
+          </div>
+          <div class="field-hint">{{ $t('projectConfig.compress_subsession_hint') }}</div>
         </div>
         <div class="form-item form-item-full">
           <div class="prompt-editor-header">
@@ -191,7 +208,7 @@ import { useI18n } from 'vue-i18n'
 import { Input, Button, Switch, Table, message, confirm, promptInput } from '../../components/ui'
 import { dialog } from '../../components/dialog'
 import TextEditDialog from '../../components/common/TextEditDialog.vue'
-import { getAllConfig, setConfig, setConfigs, getPrompt, setPrompt, getUserConfig, saveUserConfig, deleteConfig, resetUserKey } from '../../api/config'
+import { getAllConfig, setConfigs, getPrompt, setPrompt } from '../../api/config'
 import { readPrimitive } from '../../api/knowledge'
 import { getActiveSessionID } from '../../api/session'
 import dataClient, { onDataRefresh, dataRequest } from '../../utils/dataClient'
@@ -199,7 +216,7 @@ import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
-import { useMemoryCategories, DEFAULT_MEMORY_PROMPT } from '../../composables/useMemoryCategories'
+import { useMemoryCategories } from '../../composables/useMemoryCategories'
 import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
 
 const { t } = useI18n()
@@ -223,6 +240,12 @@ const QUICK_THRESHOLDS = [
 const keepFullMaxTurns = ref(10)
 const keepFullMaxTokens = ref(24000)
 const compressTokenThreshold = ref(20000)
+// 子会话治理开关（DSL-4，42 §2 (253)，均**默认关闭**）：
+//   - compress.subsession「压缩子会话」：关 = 子会话 turn 跳过压缩；
+//   - memory.subsession「提取子会话记忆」：关 = 子会话 turn 跳过**自动沉淀**（只关写路径，指引读路径不受影响）。
+// 落库走既有 setConfigs（prj 键），保存即生效（后端插件按 session.parent_id 分流）。
+const compressSubsession = ref(false)
+const memorySubsession = ref(false)
 // 口径 W（2026-09-25）：`< 0` = 非法值（前端显式提示，不静默；后端按「不启用」处理并留日志）；
 // `0` = 该条件不启用（只用另一条件）；**两者均为 0 = 不压缩**（保留全量、不生成摘要）。
 const keepFullMaxTurnsInvalid = computed(() => Number(keepFullMaxTurns.value) < 0)
@@ -236,8 +259,8 @@ function warnIllegalBounds() {
   }
 }
 const summarizePrompt = ref('')
-// 总结提示词来源：true = 项目级覆盖（capability/knowledge/prompts/summary.prompt.md 存在），
-// false = 继承系统级/内置默认（后端 load 回落链：项目文件 → 系统文件 → 旧 prj config → 内置默认）。
+// 总结提示词来源：true = 项目级覆盖（capability/system/summary.md 存在），
+// false = 继承（后端 load 回落链：项目文件 → 用户文件 → 系统文件 → 旧 prj config → embed 内置）。
 const summaryOverride = ref(false)
 // 加载时的有效值快照：页保存按钮据「未做覆盖且内容未改」提示"未做覆盖（沿用继承值）"。
 const summaryLoadedValue = ref('')
@@ -264,111 +287,35 @@ const memoryCategoryMaxTokens = ref(2000)
 const userPrefEnabled = ref(true)
 // 项目配置平铺 map（类别开关 memory.category.<类别名> 缺失 → 默认启用）
 const cfgMap = ref({})
-// 类别沉淀提示词：项目级 8 类落 prj `memory.prompt.<类别名>`（在 cfgMap 内）；
-// 用户偏好（唯一用户级）落 usr 自由键 `memory_prompts`（JSON 对象字符串，见 userPrefPrompts）。
-// 键前缀 / 键名与 Go 侧同字面量（chonkpilot-plugin-memory/memory.go memoryPromptPrefix / userMemoryPromptsKey）。
-const MEMORY_PROMPT_PREFIX = 'memory.prompt.'
-const USER_MEMORY_PROMPTS_KEY = 'memory_prompts'
-// usr `memory_prompts` 解析后的 map（类别名 → 提示词全文；未配置 → 空对象）
-const userPrefPrompts = ref({})
-
-// parsePromptMap 解析 usr `memory_prompts`（JSON 对象字符串）：非法 JSON / 数组 / 非对象 → 空对象。
-function parsePromptMap(raw) {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw
-  if (typeof raw === 'string' && raw.trim() !== '') {
-    try {
-      const m = JSON.parse(raw)
-      if (m && typeof m === 'object' && !Array.isArray(m)) return m
-    } catch (_) { /* 非法 JSON → 视为未配置（回落内置默认） */ }
-  }
-  return {}
-}
-
-// loadUserPrefPrompts 读 usr 自由键（data-user-config-load，既有面）：用户偏好类别的自定义提示词。
-async function loadUserPrefPrompts() {
-  try {
-    const res = await getUserConfig()
-    const cfg = res.config || {}
-    userPrefPrompts.value = parsePromptMap(cfg[USER_MEMORY_PROMPTS_KEY])
-  } catch (e) {
-    message.error(loadFailedText(t, t('projectConfig.memory_edit_prompt'), e))
-  }
-}
-
-// customPromptOf 取该类别的**自定义**提示词（未自定义 → 空串 = 将回落内置默认）。
-function customPromptOf(c) {
-  if (!c || !c.category) return ''
-  const v = c.level === 'user'
-    ? userPrefPrompts.value[c.category]
-    : cfgMap.value[MEMORY_PROMPT_PREFIX + c.category]
-  return typeof v === 'string' ? v : ''
-}
-
-// writeUserPrefPrompts 整表写 usr 自由键 memory_prompts（JSON 对象字符串）；全空 → 删键（回落缺省）。
-async function writeUserPrefPrompts(map) {
-  const next = {}
-  for (const [k, v] of Object.entries(map || {})) {
-    if (String(v == null ? '' : v).trim() !== '') next[k] = v
-  }
-  if (Object.keys(next).length === 0) {
-    await resetUserKey(USER_MEMORY_PROMPTS_KEY)
-    return
-  }
-  await saveUserConfig({ [USER_MEMORY_PROMPTS_KEY]: JSON.stringify(next) })
-}
-
-// clearMemoryPrompt 清除类别自定义提示词 → 回落内置默认（项目级删 prj 键 / 用户偏好移除 map 项）。
-async function clearMemoryPrompt(c) {
-  if (c.level === 'user') {
-    const next = { ...userPrefPrompts.value }
-    delete next[c.category]
-    await writeUserPrefPrompts(next)
-    userPrefPrompts.value = next
-    return
-  }
-  const key = MEMORY_PROMPT_PREFIX + c.category
-  await deleteConfig(key)
-  const next = { ...cfgMap.value }
-  delete next[key]
-  cfgMap.value = next
-}
-
-// saveMemoryPrompt 保存类别沉淀提示词：空白 / 与内置默认相同 → 清键（回落内置默认），否则落库。
-// 与总结提示词「与继承值相同则不覆盖」同口径：避免把内置默认固化为永久覆盖。
-async function saveMemoryPrompt(c, text) {
-  const val = String(text == null ? '' : text)
-  if (val.trim() === '' || val.trim() === DEFAULT_MEMORY_PROMPT) {
-    await clearMemoryPrompt(c)
-    return
-  }
-  if (c.level === 'user') {
-    const next = { ...userPrefPrompts.value, [c.category]: val }
-    await writeUserPrefPrompts(next)
-    userPrefPrompts.value = next
-    return
-  }
-  const key = MEMORY_PROMPT_PREFIX + c.category
-  await setConfig(key, val)
-  cfgMap.value = { ...cfgMap.value, [key]: val }
-}
+// 类别沉淀提示词**文件化**（OP-04，2026-10-06）：提示词存 `capability/system/memory/<类别名>.md`
+// （走 prompt 域文件化键 `memory_prompt.<类别名>`；读序 项目级 → 用户级 → 系统级磁盘 → embed 内置）。
+// **有效值由后端下发**（data-memory-list 的 prompt 字段）→ 前端不再持镜像常量；编辑即时落库（文件面）。
+const MEMORY_PROMPT_PREFIX = 'memory_prompt.'
+function memoryPromptKey(category) { return MEMORY_PROMPT_PREFIX + category }
 
 // openPromptEditor 打开该类别「沉淀提示词」编辑弹框（复用 TextEditDialog）：
-// 未自定义 → 回填内置默认 + 来源提示「当前为内置默认」；已自定义 → 回填自定义值 + 「恢复默认」入口。
+// 回填后端下发的**有效值**（c.prompt）；已自定义（c.prompt_override）→ 提供【恢复默认】入口。
+// 保存 / 恢复 = 即时落库（prompt 域文件面）→ 重读类别清单刷新下发值。
 function openPromptEditor(c) {
   if (!c || !c.category) return
-  const custom = customPromptOf(c)
-  const isCustom = custom.trim() !== ''
+  const key = memoryPromptKey(c.category)
   const handle = dialog.show(h(TextEditDialog, {
-    content: isCustom ? custom : DEFAULT_MEMORY_PROMPT,
+    content: c.prompt || '',
     placeholder: t('projectConfig.memory_prompt_placeholder'),
-    hint: isCustom ? t('projectConfig.memory_prompt_source_custom') : t('projectConfig.memory_prompt_source_default'),
-    reset: isCustom ? {
+    hint: c.prompt_override ? t('projectConfig.memory_prompt_source_custom') : t('projectConfig.memory_prompt_source_default'),
+    variables: true,
+    reset: c.prompt_override ? {
       label: t('projectConfig.memory_prompt_reset'),
-      // 恢复默认 = 清键回落内置默认 → 关闭弹框（与保存同口径：父组件负责落库与关闭）
+      // 恢复默认 = 删除覆盖文件（项目级 + 用户级）回落继承 → 关闭弹框 + 刷新下发值
       onClick: async () => {
-        await clearMemoryPrompt(c)
-        message.success(t('projectConfig.memory_prompt_reset_done'))
-        handle.close()
+        try {
+          await dataClient.remove('prompt', key)
+          message.success(t('projectConfig.memory_prompt_reset_done'))
+          handle.close()
+          await reloadMemoryCategories()
+        } catch (e) {
+          message.error(saveFailedText(t, e))
+        }
       },
     } : null,
     optimize: {
@@ -377,9 +324,15 @@ function openPromptEditor(c) {
       recover: true,
     },
     onSave: async (text) => {
-      await saveMemoryPrompt(c, text)
-      message.success(t('projectConfig.saved'))
-      handle.close()
+      try {
+        // 空串 / 与继承值相同 → 后端不写覆盖文件（回落继承），与总结提示词同口径。
+        await setPrompt(key, text)
+        message.success(t('projectConfig.saved'))
+        handle.close()
+        await reloadMemoryCategories()
+      } catch (e) {
+        message.error(saveFailedText(t, e))
+      }
     },
     onCancel: () => handle.close(),
   }), {
@@ -395,8 +348,8 @@ function openPromptEditor(c) {
 // FLUSH_TOPIC = 点分相对主题（桥/服务端「点分直通总线」分支受理；memory 插件订阅应答）；
 // 后端 Go 侧同字面量：chonkpilot-plugin-memory/memory.go:flushSubject。
 const FLUSH_TOPIC = 'memory.flush'
-// 手动沉淀可能跨多次 llm-simple（各类别并行）→ 给足等待（>插件侧单次 LLM 超时 60s）
-const FLUSH_TIMEOUT = 120000
+// 投递即回（I-128）：后端只受理入队后立即回执（不再同步等各类别 LLM 跑完）→ 短超时足够。
+const FLUSH_TIMEOUT = 15000
 // 压缩插件回写快照的摘要前缀（chonkpilot-plugin-compress/compress.go:DoCompress）——
 // 压缩产物唯一落点 = 会话快照（system 消息），前端据此识别「压缩记录」。
 const COMPRESS_MARK = '[已压缩早前对话] '
@@ -457,6 +410,8 @@ function currentState() {
     turns: Number(keepFullMaxTurns.value) || 0,
     tokens: Number(keepFullMaxTokens.value) || 0,
     threshold: Number(compressTokenThreshold.value) || 0,
+    compSub: !!compressSubsession.value,
+    memSub: !!memorySubsession.value,
     enabled: !!memoryEnabled.value,
     minTurn: Number(memoryMinTurnTokens.value) || 0,
     catMax: Number(memoryCategoryMaxTokens.value) || 0,
@@ -483,12 +438,14 @@ async function loadConfig() {
     const c = res.config || res
     cfgMap.value = c
     // 保留完整对话：**本轮恒保留**（下限），更早的轮超 N 轮或累计完整态 token 超 M 的那一轮起
-    // 进入**简化区**（`keep_full_max_turns`，缺失回落旧键 `keep_full_turns` 读时兼容；
-    // `keep_full_max_tokens`）；0 = 该条件不启用、两者均 0 = 不压缩（口径 V/W）；
-    // 简化区摘要阈值 `compress_token_threshold`（作用域 = 简化区）。
-    keepFullMaxTurns.value = readNum(c, 'keep_full_max_turns', readNum(c, 'keep_full_turns', 10))
+    // 进入**简化区**（`keep_full_max_turns`、`keep_full_max_tokens`）；0 = 该条件不启用、
+    // 两者均 0 = 不压缩（口径 V/W）；简化区摘要阈值 `compress_token_threshold`（作用域 = 简化区）。
+    keepFullMaxTurns.value = readNum(c, 'keep_full_max_turns', 10)
     keepFullMaxTokens.value = readNum(c, 'keep_full_max_tokens', 24000)
     compressTokenThreshold.value = readNum(c, 'compress_token_threshold', 20000)
+    // 子会话治理开关（prj 键；缺失/非 'true' → 关闭）
+    compressSubsession.value = c['compress.subsession'] === 'true'
+    memorySubsession.value = c['memory.subsession'] === 'true'
     setMemoryEnabled(c['memory.enabled'] === 'true')
     if (c['memory.min-turn-tokens'] !== undefined) memoryMinTurnTokens.value = parseInt(c['memory.min-turn-tokens']) || 0
     if (c['memory.category-max-tokens'] !== undefined) memoryCategoryMaxTokens.value = parseInt(c['memory.category-max-tokens']) || 2000
@@ -497,7 +454,6 @@ async function loadConfig() {
     // ④ 加载失败须用户可见（不再仅 console）
     message.error(loadFailedText(t, t('projectConfig.context'), e))
   }
-  await loadUserPrefPrompts()
   await loadSummaryPrompt()
   // 记忆库关闭 → 不取类别清单（关闭态页面不展示类别区，且后端 list 会落盘预置文件）
   await reloadMemoryCategories()
@@ -517,8 +473,8 @@ async function reloadMemoryCategories() {
 }
 
 // SUMMARY_PROMPT_PATH 项目级总结提示词文件（相对知识库根 → 归属项目级；
-// 与 persist 侧 summaryPromptFile 同路径：<workdir>/.chonkpilot/capability/prompts/summary.prompt.md）。
-const SUMMARY_PROMPT_PATH = 'prompts/summary.prompt.md'
+// 与 persist 侧 summaryPromptFile 同路径：<workdir>/.chonkpilot/capability/system/summary.md）。
+const SUMMARY_PROMPT_PATH = 'system/summary.md'
 
 // loadSummaryPrompt 读总结提示词（有效值 + 来源）：有效值走 data-prompt-load（后端回落链）；
 // 来源经知识库读项目级文件判定——读得到 = 项目级覆盖，读不到 = 继承系统级/内置默认。
@@ -579,6 +535,17 @@ function onCategoryToggle(c, v) {
 // 用户偏好开关（键与项目类别同构）
 function onUserPrefChange(v) {
   userPrefEnabled.value = v
+  refreshDirty()
+}
+
+// 子会话治理开关（DSL-4）：只改本地态，点【保存】才落库（走既有 setConfigs）。
+function onCompressSubsessionChange(v) {
+  compressSubsession.value = v
+  refreshDirty()
+}
+
+function onMemorySubsessionChange(v) {
+  memorySubsession.value = v
   refreshDirty()
 }
 
@@ -646,8 +613,9 @@ async function clearCategory(c) {
   }
 }
 
-// 立即沉淀（memory.flush）：显式触发一次，同步等结果（进行中 → 失败/部分失败可见提示）；
-// **成功静默**（A3：记忆沉淀成功不弹消息），成功后重读类别清单（tokens 变化 = 写入已落盘）。
+// 立即沉淀（memory.flush）：显式触发一次 —— **投递即回**（I-128）：后端只受理入队即回执，
+// 不再同步等各类别 LLM 跑完；进度 / 完成由 **statusbar 的队列状态**展示（tool-notify memory-*），
+// 写回后 data-memory-refresh 会经既有订阅刷新类别清单。成功静默（A3：记忆成功不弹消息）。
 async function flushMemory() {
   if (flushing.value) return
   flushing.value = true
@@ -670,17 +638,8 @@ async function flushMemory() {
     const reason = (backend && backend.errors && backend.errors[0]) || (res && res.reason) || ''
     if (!backend || !res || res.ok !== true) {
       message.error(t('memoryIO.flush_fail', { error: reason || t('config.feedback.loadFailedUnknown', { item: t('memoryIO.flush') }) }))
-      return
     }
-    const saved = Array.isArray(res.saved) ? res.saved : []
-    const failed = Array.isArray(res.failed) ? res.failed : []
-    if (res.enabled === 0) {
-      message.warning(t('memoryIO.flush_no_category'))
-    } else if (failed.length > 0) {
-      message.warning(t('memoryIO.flush_partial', { count: saved.length, failed: failed.length }))
-    }
-    // else：全部成功 → 静默（A3，用户口径 2026-09-24：记忆成功不显示消息）
-    await reloadMemoryCategories()
+    // else：已投递（queued）→ 静默（进度见 statusbar；A3 成功不弹消息）
   } finally {
     flushing.value = false
   }
@@ -764,6 +723,9 @@ async function handleSave() {
       keep_full_max_turns: String(keepFullMaxTurns.value),
       keep_full_max_tokens: String(keepFullMaxTokens.value),
       compress_token_threshold: String(compressTokenThreshold.value),
+      // 子会话治理开关（DSL-4，42 §2 (253)；prj 键，默认关闭）——与压缩/沉淀同域，随本页一次批量写。
+      'compress.subsession': String(compressSubsession.value),
+      'memory.subsession': String(memorySubsession.value),
       'memory.enabled': String(memoryEnabled.value),
       'memory.min-turn-tokens': String(memoryMinTurnTokens.value),
       'memory.category-max-tokens': String(memoryCategoryMaxTokens.value),
@@ -798,6 +760,7 @@ function openSummaryEditor() {
   const handle = dialog.show(h(TextEditDialog, {
     content: summarizePrompt.value,
     placeholder: t('projectConfig.summary_prompt_placeholder'),
+    variables: true,
     optimize: {
       title: t('projectConfig.summary_prompt_optimize_title'),
       useCase: t('projectConfig.summary_prompt_optimize_use_case'),
@@ -840,14 +803,16 @@ onMounted(() => {
   // 早到的广播让 loadConfig 读到「尚含旧值」的中间快照，把本地**未提交**的开关/数值冲回旧值
   // （实测缺陷：记忆库「开 → 关 → 点保存」被冲回「开」→ 其下子项随之解禁、落库值也错成 true）。
   unsubs.push(usePrjConfigRefresh({
-    keys: ['keep_full_max_turns', 'keep_full_turns', 'keep_full_max_tokens',
-      'compress_token_threshold', 'memory.enabled', 'memory.min-turn-tokens', 'memory.category-max-tokens'],
-    prefixes: ['memory.category.', 'memory.prompt.'],
+    keys: ['keep_full_max_turns', 'keep_full_max_tokens',
+      'compress_token_threshold', 'compress.subsession', 'memory.subsession',
+      'memory.enabled', 'memory.min-turn-tokens', 'memory.category-max-tokens'],
+    prefixes: ['memory.category.'],
     reload: loadConfig,
     isSaving: () => saving.value,
   }))
-  // data-user-config-refresh：用户偏好沉淀提示词（usr 自由键 memory_prompts）变更后重载（20-gui）
-  unsubs.push(onDataRefresh('user-config', loadUserPrefPrompts))
+  // data-prompt-refresh：类别沉淀提示词（prompt 域文件化键 memory_prompt.<类别名>，OP-04）变更后
+  // 重读类别清单（提示词有效值由后端随 data-memory-list 下发，前端不再直读键）。
+  unsubs.push(onDataRefresh('prompt', reloadMemoryCategories))
   // data-memory-refresh：记忆沉淀写回后刷新类别 token（20-gui；关闭态不发 list）
   unsubs.push(onDataRefresh('memory', reloadMemoryCategories))
   // llm-compress（= 总线 session-compress 的前端 type，20-gui §6 映射）：任一轮次压缩发生

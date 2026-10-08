@@ -135,7 +135,8 @@ test('落点守卫：AgentEditor 开关 on-change + ScenarioEditDialog 保存载
   assert.doesNotMatch(editor, /updateField\('filterTools'/)
 
   const dialog = read('views/scenario/ScenarioEditDialog.vue')
-  assert.match(dialog, /agents\.value\.map\(\(\{ _key, id, \.\.\.rest \}\) => rest\)/)
+  // 保存载荷仅剥前端专用键（_key / id + 引用读写快照）；tools 原样透传
+  assert.match(dialog, /agents\.value\.map\(\(\{ _key, id, _refMeta, _refOrig, \.\.\.rest \}\) => rest\)/)
   assert.match(dialog, /import \{ filterToolsLoadPatch, normalizeTools \} from '\.\.\/\.\.\/utils\/agentToolFilter'/)
   // 载入路径：现仅 loadAgents（props.scenario.agents）一条 ——
   // 「恢复默认（回填上一级）」路径已于 2026-09-26 随场景恢复默认入口摘除而删除（37 SCEN-008）

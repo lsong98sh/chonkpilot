@@ -103,9 +103,9 @@ test('转后台动作 → 发出既有 task-background{tool_call_id}（不新增
   const vue = readSrc('views/tasks/SessionTreeNode.vue')
   const m = vue.match(/async function onAwaitDetach\s*\(\)\s*\{[\s\S]*?\n\}/)
   assert.ok(m, '未找到 onAwaitDetach')
-  assert.match(m[0], /mq\.emit\('task-background',\s*\{\s*tool_call_id:\s*callId\s*\}\)/,
+  assert.match(m[0], /mq\.emit\(MsgTopics\.taskBackground,\s*\{\s*\[FieldKeys\.tool_call_id\]:\s*callId\s*\}/,
     '转后台须发既有 task-background{tool_call_id}（与工具行同动作）')
-  assert.match(vue, /EventNames\.toolsWait,\s*\{\s*tool_call_id:\s*callId\s*\}/,
+  assert.match(vue, /EventNames\.toolsWait,\s*\{\s*\[FieldKeys\.tool_call_id\]:\s*callId\s*\}/,
     '等待须发既有 mcp-tools-wait{tool_call_id}')
 })
 

@@ -1,11 +1,8 @@
 {
   "flush_section": "Memory distillation",
   "flush": "Distill now",
-  "flushing": "Distilling…",
-  "flush_hint": "Manually run one distillation: extract the latest turn of the current session into the enabled categories (the \"min turn tokens\" threshold does not apply; please stay on this page while it runs).",
+  "flush_hint": "Manually run one distillation: extract the latest turn of the current session into the enabled categories (the \"min turn tokens\" threshold does not apply; the request returns as soon as it is queued — progress is shown in the status bar \"memory distillation\" queue state, and category contents refresh when done).",
   "flush_no_session": "No active session, cannot distill.",
-  "flush_no_category": "No enabled memory category, distillation skipped.",
-  "flush_partial": "Distillation finished: {count} succeeded, {failed} failed (see notifications for details)",
   "flush_fail": "Distillation failed: {error}",
   "clear": "Clear",
   "clear_confirm_title": "Clear category content",

@@ -31,8 +31,8 @@ const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name)
 test('① 任务区默认收起：taskOpen 默认 false，已保存值仍以保存值为准', () => {
   const ml = read('views/layout/MainLayout.vue')
   assert.match(ml, /const taskOpen = ref\(false\)/, '默认值须改为 false（首屏减负）')
-  assert.match(ml, /if \(typeof l\.taskOpen === 'boolean'\) taskOpen\.value = l\.taskOpen/,
-    'applyLayout 仍须按保存值恢复（持久化/恢复不变）')
+  assert.match(ml, /const to = parseBool\(l\.taskOpen\)[\s\S]{0,80}if \(to !== null\) taskOpen\.value = to/,
+    'applyLayout 仍须按保存值恢复（持久化/恢复不变；parseBool 兼容布尔/字符串）')
   assert.match(ml, /taskOpen: taskOpen\.value/, 'measureLayout 仍须回写 taskOpen（保存链不断）')
   assert.match(ml, /mq\.on\(EventNames\.tasksToggle, \(\) => \{ taskOpen\.value = !taskOpen\.value/,
     '顶部开关仍是切换语义（收起态点击一次即展开）')

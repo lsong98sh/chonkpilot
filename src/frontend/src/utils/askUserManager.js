@@ -8,7 +8,7 @@ import { EventNames } from '../events/event-names'
 const AskUserContent = defineAsyncComponent(() => import('../views/chat/AskUserContent.vue'))
 
 // 域化（20-gui）：提问由 server `ask-user` 事件承载（AskUserDialog 订阅后
-// enqueue 到本管理器）；回答经 ask-user-reply 事件直达后端（按 ask-id 权威路由）——
+// enqueue 到本管理器）；回答经 ask-user-reply 事件直达后端（按 ask_id 权威路由）——
 // 已删除 RespondAskUser RPC、前端 deadline 判断与 sendQueue 兜底（过期判断收归后端）。
 class AskUserManager {
   queue = ref([])
@@ -49,7 +49,7 @@ class AskUserManager {
     this.batchTotal += 1
     const item = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-      // 附录 A：路由键 = ask-id（= tool-id / task_id，已归一），跨 turn 语义正确。
+      // 附录 A：路由键 = ask_id（= tool-id / task_id，已归一），跨 turn 语义正确。
       askId: data.askId || data.tool_id || '',
       question: data.question,
       options: data.options || [],
@@ -173,13 +173,13 @@ class AskUserManager {
     }
   }
 
-  // 提交路径（20-gui）：发 ask-user-reply 事件（{ask-id, answer, custom}），
+  // 提交路径（20-gui）：发 ask-user-reply 事件（{ask_id, answer, custom}），
   // server 按 ask 状态权威路由——活跃回填当前 turn；已超时关闭则转为普通 user 消息（新 turn）。
   // 前端不再判断 deadline、不再 sendQueue 兜底、不再发 askUserQueued。
   submitAnswer(item, answer) {
     const custom = item.options.includes(answer) ? '' : answer
     mq.emit(EventNames.askReply, {
-      'ask-id': item.askId,
+      ask_id: item.askId,
       answer: answer,
       custom: custom,
     })

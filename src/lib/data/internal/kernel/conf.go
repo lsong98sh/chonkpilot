@@ -10,6 +10,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // ConfigGet 读 config 表 key 的 v 字段值（不存在 → ""，不报错）。
@@ -67,7 +68,7 @@ func (b *Base) UserConfigChanged(changed map[string]any) {
 		return // 无总线（测试/无订阅场景）或空变更：无接收方/无内容，静默跳过
 	}
 	raw, _ := json.Marshal(map[string]any{"data": changed})
-	_ = b.Bus.Emit(context.Background(), "data-user-config-changed", raw)
+	_ = b.Bus.Emit(context.Background(), msgkeys.TopicDataUserConfigChanged, raw)
 }
 
 // RefreshScoped 同 Refresh，但把调用方数据根（Scope）带给 list 解析（门面 inline 绑定路径）。
@@ -79,10 +80,42 @@ func (b *Base) RefreshScoped(domain, instanceID, id, op string, scope facade.Sco
 // 61 §3.1）——载荷在既有 `{instance_id, id, op, list?}` 上**新增可选 `ids`（全组键，稳定序）**，
 // `id` = 首键（向后兼容既有单键订阅方）。单键（len(ids)==1）**不写 `ids`** → 载荷与改前
 // 逐字节等价（零影响既有订阅方）。
+//
+// 投递范围（G-41-b）：`prj-config` 为**项目共享配置**，需通知**同 work_dir 的全部在册实例**
+// （多数 MQ 按 instance 过滤 → 逐个带目标 id 下发，不漏同项目其它实例）；其余域保持来源实例单播。
 func (b *Base) RefreshScopedKeys(domain, instanceID string, ids []string, op string, scope facade.Scope) {
 	if b.Bus == nil || len(ids) == 0 {
 		return // 无总线（测试/无订阅场景）或空键集：变更广播无接收方/无内容，静默跳过
 	}
+	var list any
+	if b.DomainList != nil {
+		list = b.DomainList(domain, instanceID, scope) // 同 work_dir 各实例同源 → 计算一次复用
+	}
+	for _, target := range b.refreshTargets(domain, instanceID) {
+		b.emitRefresh(domain, target, ids, op, list)
+	}
+}
+
+// refreshTargets 计算一次 refresh 广播的投递实例集合（G-41-b）：
+//   - `prj-config`（项目共享配置）：按来源实例 work_dir 匹配**同项目全部在册实例**逐个投递；
+//   - 其余域（usr 全局 / 会话 / 快照等按实例隔离）：保持来源实例单播（行为不变）。
+//
+// 来源实例未登记 / work_dir 解析不出 → 回落 `[instanceID]`（与改前逐字节等价）。
+func (b *Base) refreshTargets(domain, instanceID string) []string {
+	if domain == facade.DomainPrjConfig {
+		if wd, _, ok := data.BindOf(instanceID); ok && wd != "" {
+			if ids := data.InstancesByWorkDir(wd); len(ids) > 0 {
+				return ids
+			}
+		}
+	}
+	return []string{instanceID}
+}
+
+// emitRefresh 按 **单个目标实例** 发出一次 `data-<domain>-refresh`（载荷形状不变：
+// `{instance_id, id, ids?, op, list?}`；`list` 由调用方一次解析、跨目标复用）。
+// user-config 域额外兼容广播 `config-refresh`（I-42；单播 → 恒 1 条，行为不变）。
+func (b *Base) emitRefresh(domain, instanceID string, ids []string, op string, list any) {
 	payload := map[string]any{"id": ids[0], "op": op}
 	if len(ids) > 1 {
 		payload["ids"] = append([]string(nil), ids...) // 批量才带（单键与改前完全一致）
@@ -90,10 +123,8 @@ func (b *Base) RefreshScopedKeys(domain, instanceID string, ids []string, op str
 	if instanceID != "" {
 		payload["instance_id"] = instanceID
 	}
-	if b.DomainList != nil {
-		if list := b.DomainList(domain, instanceID, scope); list != nil {
-			payload["list"] = list
-		}
+	if list != nil {
+		payload["list"] = list
 	}
 	b2, _ := json.Marshal(payload)
 	_ = b.Bus.Emit(context.Background(), "data-"+domain+"-refresh", b2)
@@ -103,10 +134,10 @@ func (b *Base) RefreshScopedKeys(domain, instanceID string, ids []string, op str
 			"id":          ids[0],     // 兼容广播恒单键（user-config 恒单 id，不受批量影响）
 			"op":          op,
 		}
-		if list, ok := payload["list"]; ok {
+		if list != nil {
 			cf["list"] = list
 		}
 		cb, _ := json.Marshal(cf)
-		_ = b.Bus.Emit(context.Background(), "config-refresh", cb)
+		_ = b.Bus.Emit(context.Background(), msgkeys.TopicConfigRefresh, cb)
 	}
 }

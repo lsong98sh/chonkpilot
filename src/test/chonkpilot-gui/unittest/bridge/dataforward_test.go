@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -244,6 +246,98 @@ func TestRecentListContract(t *testing.T) {
 	}
 }
 
+// TestRecentRemoveContract（最近项目下拉删除）：gui.recent.remove 仅删 usr config 自由键
+// recent_dirs 中的**该条记录**并回写剩余列表（保序），**不触碰项目目录 / 数据资产**。
+// 黑盒驱动：PublishEvent("gui.recent.remove") → guiDo recent.remove → callRemoveRecentDir；
+// data-user-config-load/save 以桩应答（同一总线），并断言目标目录的文件**仍然存在**。
+func TestRecentRemoveContract(t *testing.T) {
+	br, bus := newTestBridge(t, func(string) {})
+	defer bus.Close()
+
+	// 真实项目目录 + 标记文件（验证删除记录不删资产）。
+	projB := filepath.Join(t.TempDir(), "proj-b")
+	if err := os.MkdirAll(projB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(projB, "keep.txt")
+	if err := os.WriteFile(marker, []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirs := []string{"D:/a", projB, "D:/c"}
+
+	// 桩：读取 usr 配置 → 含 recent_dirs 的 JSON 数组字符串。
+	rawDirs, _ := json.Marshal(dirs)
+	mockPersist(t, bus, "data-user-config-load", map[string]any{
+		"ok":     true,
+		"result": map[string]any{"data": map[string]any{"recent_dirs": string(rawDirs)}},
+	})
+	// 桩：捕获 data-user-config-save 写入并回显成功应答。
+	saved := make(chan map[string]any, 1)
+	_, err := subRaw(bus, "data-user-config-save", func(_ string, payload []byte) {
+		var check struct {
+			OK *bool `json:"ok"`
+		}
+		if json.Unmarshal(payload, &check) == nil && check.OK != nil {
+			return // 跳过应答
+		}
+		var req struct {
+			ReqID string         `json:"req_id"`
+			Data  map[string]any `json:"data"`
+		}
+		if json.Unmarshal(payload, &req) != nil || req.ReqID == "" {
+			return
+		}
+		select {
+		case saved <- req.Data:
+		default:
+		}
+		reply, _ := json.Marshal(map[string]any{
+			"req_id": req.ReqID, "ok": true,
+			"result": map[string]any{"ok": true, "id": "user_config"},
+		})
+		pubFire(bus, "data-user-config-save", reply)
+	})
+	if err != nil {
+		t.Fatalf("data-user-config-save 桩订阅失败: %v", err)
+	}
+
+	res, errs := br.PublishEvent("gui.recent.remove", `{"path":`+mustJSON(projB)+`}`)
+	if len(errs) != 0 {
+		t.Fatalf("recent.remove errs 应为空: %v", errs)
+	}
+	if m, ok := res.(map[string]any); !ok || m["ok"] != true {
+		t.Fatalf("recent.remove 应回 {ok:true}，got %+v", res)
+	}
+
+	select {
+	case data := <-saved:
+		got, _ := data["recent_dirs"].(string)
+		var gotDirs []string
+		if json.Unmarshal([]byte(got), &gotDirs) != nil {
+			t.Fatalf("回写 recent_dirs 非 JSON 数组: %q", got)
+		}
+		if len(gotDirs) != 2 || gotDirs[0] != "D:/a" || gotDirs[1] != "D:/c" {
+			t.Fatalf("仅应删该条并保序，got %v", gotDirs)
+		}
+		if len(data) != 1 {
+			t.Fatalf("只应写 recent_dirs 一个键，got %+v", data)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("未捕获 data-user-config-save 写入")
+	}
+
+	// 边界：项目目录与标记文件未被触碰（只删记录，不删资产）。
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("删除记录不得删除项目资产：marker 丢失 %v", err)
+	}
+}
+
+// mustJSON 把字符串编为 JSON（测试内拼装路径 payload 用）。
+func mustJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 // noOKFilter 只保留无 ok 字段的请求载荷（应答/回声带 ok，跳过）——供契约测试采集请求。
 func noOKFilter(t *testing.T, bus mq.Bus, subject string, ch chan map[string]any) {
 	t.Helper()
@@ -308,6 +402,69 @@ func TestPrjConfigHelperContract(t *testing.T) {
 	req = <-loadCh
 	if req["id"] != "layout.x" {
 		t.Fatalf("load 请求应携带顶层 id: %+v", req)
+	}
+}
+
+// TestOpenedFilesLogicalPath（G-24）：gui.ui.save{opened_files} 落库为 workdir 相对逻辑路径
+// （workdir 外路径原样）；gui.init-data 恢复时展开回绝对（兼容旧数据里的绝对路径）。
+func TestOpenedFilesLogicalPath(t *testing.T) {
+	wd := t.TempDir()
+	outsideDir := t.TempDir()
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatalf("mq.New: %v", err)
+	}
+	defer bus.Close()
+	br := bridge.New("inst-test", wd, t.TempDir(), func(string) {}, bus)
+
+	absIn := filepath.Join(wd, "src", "a.txt")
+	outside := filepath.Join(outsideDir, "outside.txt")
+	if err := os.MkdirAll(filepath.Dir(absIn), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for _, p := range []string{absIn, outside} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	// save 侧：落库为 workdir 相对（斜杠归一）；workdir 外保持绝对。
+	saveCh := make(chan map[string]any, 4)
+	noOKFilter(t, bus, "data-prj-config-save", saveCh)
+	mockPersist(t, bus, "data-prj-config-save", map[string]any{"ok": true, "result": map[string]any{"ok": true}})
+	payload, _ := json.Marshal(map[string]any{"opened_files": []string{absIn, outside}})
+	if _, errs := br.PublishEvent("gui.ui.save", string(payload)); len(errs) > 0 {
+		t.Fatalf("ui.save errs: %v", errs)
+	}
+	req := <-saveCh
+	data, _ := req["data"].(map[string]any)
+	if data["key"] != "opened-files" {
+		t.Fatalf("应写 opened-files 键，got %+v", req)
+	}
+	var stored []string
+	if err := json.Unmarshal([]byte(data["value"].(string)), &stored); err != nil {
+		t.Fatalf("值非 JSON 数组: %v", err)
+	}
+	if len(stored) != 2 || stored[0] != "src/a.txt" || stored[1] != outside {
+		t.Fatalf("落库应为 [workdir 相对, workdir 外原样]，got %v", stored)
+	}
+
+	// load 侧：逻辑相对 → 展开绝对；旧绝对路径原样保留。
+	mockPersist(t, bus, "data-prj-config-list", map[string]any{"ok": true, "result": map[string]any{"list": map[string]any{
+		"opened-files": `["src/a.txt",` + mustJSON(outside) + `]`,
+	}}})
+	mockPersist(t, bus, "data-user-config-load", map[string]any{"ok": true, "result": map[string]any{"data": map[string]any{}}})
+	res, errs := br.PublishEvent("gui.init-data", `{}`)
+	if len(errs) > 0 {
+		t.Fatalf("init-data errs: %v", errs)
+	}
+	m, _ := res.(map[string]any)
+	opened, _ := m["openedFiles"].([]any)
+	if len(opened) != 2 {
+		t.Fatalf("init-data 应恢复 2 个打开文件，got %+v", m["openedFiles"])
+	}
+	if opened[0] != absIn || opened[1] != outside {
+		t.Fatalf("恢复应展开为绝对（旧绝对原样），got %v (want %v, %v)", opened, absIn, outside)
 	}
 }
 

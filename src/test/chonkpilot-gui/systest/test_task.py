@@ -215,7 +215,7 @@ def main():
         # ── ask_user 分支 ──
         J(gui, CLEAR_SPY)
         emit_remote(gui, 'ask-user', {
-            'ask-id': 'ask-1', 'question': '是否继续执行?', 'options': ['继续', '取消'],
+            'ask_id': 'ask-1', 'question': '是否继续执行?', 'options': ['继续', '取消'],
             'session': 'sess-term', 'turn': 'turn-1',
         })
         askVisible = wait_upto(gui, "document.querySelectorAll('.ask-user-content').length",
@@ -238,7 +238,7 @@ def main():
                                lambda v: int(v or 0) == 0) == 0
         c.check("T15 提交 → ask-user-reply 发布 + 弹窗关闭",
                 len(replies) == 1
-                and replies[0].get('ask-id') == 'ask-1'
+                and replies[0].get('ask_id') == 'ask-1'
                 and bool(replies[0].get('answer'))
                 and dialogGone, repr(replies)[:140])
 

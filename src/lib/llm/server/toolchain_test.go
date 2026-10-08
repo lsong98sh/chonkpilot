@@ -76,6 +76,30 @@ func TestToolchainPlaceholderScenarioPrompt(t *testing.T) {
 	}
 }
 
+// TestReplacePathsPlaceholders：{{path.<key>}} 四根占位符替换（exe / user / data / work）——
+// workDir 来自实例绑定；含占位符 → 渲染为绝对路径；未知 key → 原样保留；无占位符 → 直返。
+func TestReplacePathsPlaceholders(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+
+	got := s.replacePaths("ins-test",
+		"exe={{path.exeDir}} work={{path.workDir}} unknown={{path.nope}}")
+	if strings.Contains(got, "{{path.exeDir}}") || strings.Contains(got, "{{path.workDir}}") {
+		t.Fatalf("已知 path 占位符应被替换：%q", got)
+	}
+	if !strings.Contains(got, testWorkDir) {
+		t.Fatalf("workDir 未渲染为实例绑定：%q", got)
+	}
+	if !strings.Contains(got, "{{path.nope}}") {
+		t.Fatalf("未知 key 应原样保留：%q", got)
+	}
+	if same := s.replacePaths("ins-test", "无占位符"); same != "无占位符" {
+		t.Fatalf("无占位符应直返：%q", same)
+	}
+}
+
 // TestToolchainPlaceholderMemoryGuide：记忆带出指引替换（类别清单拼入指引正文，
 // 类别名含占位符即被替换）；固定文本里的 {{env.CHONKPILOT_WORKDIR}} 不受影响。
 func TestToolchainPlaceholderMemoryGuide(t *testing.T) {

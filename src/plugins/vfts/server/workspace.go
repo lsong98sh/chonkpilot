@@ -54,9 +54,11 @@ type Workspace struct {
 }
 
 const (
-	metaName  = "meta.json"
-	collDir   = "collection"
-	tokenizer = "standard" // FTS 分词器：standard（中英文均可命中，无需外置词典）
+	metaName = "meta.json"
+	collDir  = "collection"
+	// tokenizer FTS 分词器固定为 jieba（中文按词切分，提升中文召回；基础词典内嵌于
+	// third_party/jieba 并物化到系统级目录，见 dict.go）。字典/分词器变更后旧索引失效。
+	tokenizer = "jieba"
 )
 
 var wsMu sync.Mutex
@@ -134,6 +136,12 @@ func (w *Workspace) loadMeta() error {
 	var m Meta
 	if err := json.Unmarshal(b, &m); err != nil {
 		return fmt.Errorf("meta.json 解析失败: %w", err)
+	}
+	// 分词器变更（如 standard → jieba）→ 落盘集合由**旧分词器**建成、不可复用：
+	// 复位 state 强制走全量重建（Initialize 会重建集合目录并写回新 tokenizer）。
+	if m.Tokenizer != "" && m.Tokenizer != tokenizer {
+		m.State = ""
+		m.Err = ""
 	}
 	w.meta = m
 	return nil

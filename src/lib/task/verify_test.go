@@ -44,7 +44,7 @@ func TestVerifyZeroDiff(t *testing.T) {
 	if !strings.Contains(rep.String(), "零差异") {
 		t.Fatalf("报告文本=%q", rep.String())
 	}
-	if sval(fake.row("tk-1")["workdir"]) != "E:/ws" {
+	if sval(fake.row("tk-1")["work_dir"]) != "E:/ws" {
 		t.Fatalf("权威行 workdir 应非空: %+v", fake.row("tk-1"))
 	}
 }

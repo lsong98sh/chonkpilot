@@ -1,3 +1,8 @@
+// 类别沉淀提示词来源（OP-04，2026-10-06）：提示词**已文件化**并**由后端下发** ——
+// 插件不再持内置常量、不再读 prj `memory.prompt.<类别名>` / usr `memory_prompts` 键载体，
+// 而是取 `data-memory-list` 每项的 `prompt` 字段（数据层按文件读序
+// 项目级 → 用户级 → 系统级磁盘 → embed 内置解析）作 llm-simple 的 `system`；
+// **无提示词文件的类别 → 该类不提取**（不调 LLM / 不保存），并上报一次用户可见提示。
 package memory
 
 import (
@@ -40,7 +45,7 @@ func (s *systemCollector) system(category string) string {
 }
 
 // stubDistillReplies 让沉淀回路跑通所需的最小应答集（prj 配置 / 类别清单 / 旧全文 / 保存），
-// 并返回 llm-simple 的 system 收集器。
+// 并返回 llm-simple 的 system 收集器。cats 由调用方给出（每项须带 `prompt` 才参与提取）。
 func stubDistillReplies(t *testing.T, bus mq.Bus, prjList map[string]any, cats []any) *systemCollector {
 	t.Helper()
 	reply(t, bus, prjConfigListSubject, func(map[string]any) map[string]any {
@@ -51,6 +56,7 @@ func stubDistillReplies(t *testing.T, bus mq.Bus, prjList map[string]any, cats [
 			map[string]any{"role": "user", "content": strings.Repeat("甲", 200)},
 		}}
 	})
+	stubExtractFaces(t, bus, []any{map[string]any{"turn_id": "t1"}})
 	reply(t, bus, memoryListSubject, func(map[string]any) map[string]any {
 		return map[string]any{"list": cats}
 	})
@@ -73,21 +79,17 @@ func stubDistillReplies(t *testing.T, bus mq.Bus, prjList map[string]any, cats [
 	return sc
 }
 
-// TestDistillUsesCustomCategoryPrompt：项目级类别读 prj `memory.prompt.<类别名>` 作为沉淀
-// 提示词（llm-simple 的 `system`）；未配置类别的类别回落内置默认。
-func TestDistillUsesCustomCategoryPrompt(t *testing.T) {
-	bus := newTestBus(t) // 默认空 usr 配置
+// TestDistillUsesCategoryPrompt：类别沉淀提示词取自 data-memory-list 的 `prompt` 字段
+// （数据层文件读序解析结果）→ 原样作 llm-simple 的 `system`（含项目级与用户级类别）。
+func TestDistillUsesCategoryPrompt(t *testing.T) {
+	bus := newTestBus(t)
 	const custom = "自定义提示词-项目概要"
+	const userPref = "自定义提示词-用户偏好"
 	sc := stubDistillReplies(t, bus,
-		map[string]any{
-			memoryEnabledKey:              "true",
-			memoryMinTokensKey:            "1",
-			memoryPromptPrefix + "项目概要": custom,
-			memoryPromptPrefix + "开发规范": "", // 显式空串 → 与未配置同口径回落默认
-		},
+		map[string]any{memoryEnabledKey: "true", memoryMinTokensKey: "1"},
 		[]any{
-			map[string]any{"category": "项目概要", "level": "project"},
-			map[string]any{"category": "开发规范", "level": "project"},
+			map[string]any{"category": "项目概要", "level": "project", "prompt": custom},
+			map[string]any{"category": "用户偏好", "level": "user", "prompt": userPref},
 		})
 
 	p := New(Options{MinTurnTokens: 10})
@@ -95,87 +97,43 @@ func TestDistillUsesCustomCategoryPrompt(t *testing.T) {
 	p.extract(turnEvent{InstanceID: "ins-1", WorkDir: `C:\ws`, Session: "s1", LastTurn: "t1"})
 
 	if got := sc.system("项目概要"); got != custom {
-		t.Fatalf("项目概要未用自定义提示词：got=%q want=%q", got, custom)
+		t.Fatalf("项目概要未用清单下发的提示词：got=%q want=%q", got, custom)
 	}
-	if got := sc.system("开发规范"); got != defaultRewriteSystemPrompt {
-		t.Fatalf("未配置类别应回落内置默认：got=%q", got)
+	if got := sc.system("用户偏好"); got != userPref {
+		t.Fatalf("用户偏好未用清单下发的提示词：got=%q want=%q", got, userPref)
 	}
 }
 
-// TestDistillUsesUserPrefPrompt：用户级类别（用户偏好）读 usr 自由键 `memory_prompts` 中该
-// 类别的值；未配置 → 回落内置默认。键读取走一次 data-user-config-load（与 llm.memory 同批）。
-func TestDistillUsesUserPrefPrompt(t *testing.T) {
-	bus := newTestBusRaw(t)
-	const custom = "用户级自定义提示词"
-	stubUserConfig(t, bus, map[string]any{
-		userMemoryPromptsKey: `{"用户偏好":"` + custom + `"}`,
-	})
+// TestDistillSkipsCategoryWithoutPrompt：类别清单项 `prompt` 为空（= 无任何提示词文件，如新增
+// 自定义类别未建 `capability/system/memory/<类别名>.md`）→ 该类**不提取**（不调 LLM / 不保存），
+// 且上报一次用户可见提示（Kind=prompt）。
+func TestDistillSkipsCategoryWithoutPrompt(t *testing.T) {
+	bus := newTestBus(t)
 	sc := stubDistillReplies(t, bus,
 		map[string]any{memoryEnabledKey: "true", memoryMinTokensKey: "1"},
 		[]any{
-			map[string]any{"category": "用户偏好", "level": "user"},
-			map[string]any{"category": "项目概要", "level": "project"},
+			map[string]any{"category": "项目概要", "level": "project", "prompt": "P"},
+			map[string]any{"category": "新增自定义类", "level": "project"}, // 无提示词文件
 		})
-
+	spy := &noticeSpy{}
 	p := New(Options{MinTurnTokens: 10})
-	p.deps = plugin.Deps{Bus: bus}
+	p.deps = plugin.Deps{Bus: bus, Notify: spy.fn}
 	p.extract(turnEvent{InstanceID: "ins-1", WorkDir: `C:\ws`, Session: "s1", LastTurn: "t1"})
 
-	if got := sc.system("用户偏好"); got != custom {
-		t.Fatalf("用户偏好未用 usr 自定义提示词：got=%q want=%q", got, custom)
+	if got := sc.system("项目概要"); got != "P" {
+		t.Fatalf("有提示词的类别应照常提取：got=%q", got)
 	}
-	if got := sc.system("项目概要"); got != defaultRewriteSystemPrompt {
-		t.Fatalf("项目级未配置类别应回落内置默认：got=%q", got)
+	if got := sc.system("新增自定义类"); got != "" {
+		t.Fatalf("无提示词文件的类别不应调 LLM：got=%q", got)
 	}
-}
-
-// TestDistillUserPrefPromptInvalidJSONFallsBack：`memory_prompts` 非法 JSON / 空串 → 回落内置默认
-// （不视为失败，沉淀照常进行）。
-func TestDistillUserPrefPromptInvalidJSONFallsBack(t *testing.T) {
-	for _, raw := range []string{"not-json", "", "[]"} {
-		bus := newTestBusRaw(t)
-		stubUserConfig(t, bus, map[string]any{userMemoryPromptsKey: raw})
-		sc := stubDistillReplies(t, bus,
-			map[string]any{memoryEnabledKey: "true", memoryMinTokensKey: "1"},
-			[]any{map[string]any{"category": "用户偏好", "level": "user"}})
-
-		p := New(Options{MinTurnTokens: 10})
-		p.deps = plugin.Deps{Bus: bus}
-		p.extract(turnEvent{InstanceID: "ins-1", WorkDir: `C:\ws`, Session: "s1", LastTurn: "t1"})
-
-		if got := sc.system("用户偏好"); got != defaultRewriteSystemPrompt {
-			t.Fatalf("memory_prompts=%q 应回落内置默认：got=%q", raw, got)
+	got := spy.snapshot()
+	found := false
+	for _, n := range got {
+		if n.Kind == "prompt" && strings.Contains(n.Reason, "新增自定义类") {
+			found = true
 		}
 	}
-}
-
-// TestMemoryPromptForFallback：提示词取值三态（自定义 / 空白 / 未配置）与用户级判定，纯函数口径。
-func TestMemoryPromptForFallback(t *testing.T) {
-	cfg := memoryConfig{Prompts: map[string]string{
-		"项目概要": "P1",
-		"共同库":  "   ", // 全空白 → 回落默认
-	}}
-	userPrompts := map[string]string{"用户偏好": "U1", "用户决策": " "}
-
-	cases := []struct {
-		name string
-		cat  categoryInfo
-		want string
-	}{
-		{"项目级自定义", categoryInfo{Category: "项目概要", Level: "project"}, "P1"},
-		{"项目级空白值", categoryInfo{Category: "共同库", Level: "project"}, defaultRewriteSystemPrompt},
-		{"项目级未配置", categoryInfo{Category: "开发规范", Level: "project"}, defaultRewriteSystemPrompt},
-		{"用户级自定义", categoryInfo{Category: "用户偏好", Level: "user"}, "U1"},
-		{"用户级空白值", categoryInfo{Category: "用户决策", Level: "user"}, defaultRewriteSystemPrompt},
-		{"用户级未配置", categoryInfo{Category: "接口库", Level: "user"}, defaultRewriteSystemPrompt},
-	}
-	for _, tc := range cases {
-		if got := memoryPromptFor(cfg, userPrompts, tc.cat); got != tc.want {
-			t.Fatalf("%s：got=%q want=%q", tc.name, got, tc.want)
-		}
-	}
-	// nil 映射（读失败 / 无配置）→ 一律回落内置默认，不 panic。
-	if got := memoryPromptFor(memoryConfig{}, nil, categoryInfo{Category: "项目概要"}); got != defaultRewriteSystemPrompt {
-		t.Fatalf("nil 配置应回落内置默认：got=%q", got)
+	if !found {
+		t.Fatalf("无提示词文件的类别应上报可见提示（Kind=prompt）：%+v", got)
 	}
 }

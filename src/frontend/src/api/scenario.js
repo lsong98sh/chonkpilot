@@ -1,4 +1,5 @@
 import { dataClient, dataRequest } from '../utils/dataClient'
+import { DataScenarioListKeys } from '../events/msgkeys.js'
 
 // 场景 CRUD 走 data-scenario 消息面（20-gui）：list → data-scenario-list，
 // save → data-scenario-save（有 id 更新 / 无 id 新建），delete → data-scenario-delete。
@@ -6,7 +7,7 @@ import { dataClient, dataRequest } from '../utils/dataClient'
 
 export async function getScenarioList() {
   const reply = await dataClient.list('scenario')
-  const list = reply.list !== undefined ? reply.list : reply
+  const list = reply[DataScenarioListKeys.list] !== undefined ? reply[DataScenarioListKeys.list] : reply
   return { scenarios: Array.isArray(list) ? list : [] }
 }
 

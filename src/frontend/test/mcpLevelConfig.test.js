@@ -58,8 +58,8 @@ test('③ 纯逻辑：DEFAULT_MCP.level = user；api/config.js 暴露 mcp 域函
   assert.match(api, /dataClient\.list\('mcp'\)/, 'list 须走 data-mcp-list')
   assert.match(api, /dataClient\.save\('mcp', data\)/, 'save 须走 data-mcp-save')
   assert.match(api, /dataClient\.remove\('mcp', name\)/, 'delete 须走 data-mcp-delete')
-  assert.match(api, /data\.old_name = oldName/, '改名/移级须带 old_name')
-  assert.match(api, /data\.old_level = oldLevel/, '改名/移级须带 old_level')
+  assert.match(api, /data\[FieldKeys\.old_name\] = oldName/, '改名/移级须带 old_name')
+  assert.match(api, /data\[FieldKeys\.old_level\] = oldLevel/, '改名/移级须带 old_level')
 })
 
 test('④ i18n：config.mcp.level/levelHint + fileTree.kb_level_* 双语齐备', () => {

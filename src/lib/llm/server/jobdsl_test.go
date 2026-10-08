@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -80,7 +81,7 @@ func TestTaskJobDSL(t *testing.T) {
 			t.Fatal(err)
 		}
 		return `LOOP item=#"{{env.CHONKPILOT_WORKDIR}}/items.json".array
-   LLM "处理{{item.name}}" "do {{item.name}} {{item.count}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.txt"
+   LLM "处理{{item.name}}" "do {{item.name}} {{item.count}}" "批处理条目 {{item.name}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{item.name}}.txt"
 END
 `
 	})
@@ -109,9 +110,9 @@ func TestTaskJobDSLCapture(t *testing.T) {
 			t.Fatal(err)
 		}
 		d := filepath.ToSlash(dir) // DSL 字符串内 \r/\n/\t 会被转义解码，正斜杠绝对路径避免误伤
-		return `LLM "规划" "产出一段计划文本：先做 A 再做 B" => 计划
+		return `LLM "规划" "产出一段计划文本：先做 A 再做 B" "产出执行计划" => 计划
 LOOP item=#"` + d + `/items.json".array
-   LLM "执行{{item.name}}" "按计划（{{计划}}）处理 {{item.name}}" => #"` + d + `/out/{{item.name}}.txt"
+   LLM "执行{{item.name}}" "按计划（{{计划}}）处理 {{item.name}}" "执行任务 {{item.name}}" => #"` + d + `/out/{{item.name}}.txt"
 END
 `
 	})
@@ -163,7 +164,7 @@ func TestTaskJobDSLResume(t *testing.T) {
 	d := filepath.ToSlash(testWorkDir) // 正斜杠绝对路径（避免 DSL 内 \r/\n/\t 转义误伤）
 	script := `LOOP item=#"` + d + `/items.json".array concurrency=2
    IF item.done != true
-      LLM "处理{{item.name}}" "do {{item.name}}" => #"` + d + `/out/{{item.name}}.txt"
+      LLM "处理{{item.name}}" "do {{item.name}}" "处理 {{item.name}}" => #"` + d + `/out/{{item.name}}.txt"
       SET item.done => true
    END
 END
@@ -265,8 +266,16 @@ func runJobScriptCase(t *testing.T, session, turn, trigger, script string) strin
 }
 
 // runJobScriptTasks：runJobScriptCase 的变体，额外返回任务事件采集器
-// （断言 LLM 子任务节点的 purpose/name/simplified 展示字段）。
+// （断言 DSL-3 的任务树/步骤记录字段）。
 func runJobScriptTasks(t *testing.T, session, turn, trigger, script string) (string, *taskEvents) {
+	t.Helper()
+	text, te, _ := runJobScriptTasksPrep(t, session, turn, trigger, script, nil)
+	return text, te
+}
+
+// runJobScriptTasksPrep：runJobScriptTasks 的变体，可在 server 建好后、跑轮次前写入数据文件
+// （prep(dir) 收到 testWorkDir）；并返回 server（供读权威表断言全链路）。
+func runJobScriptTasksPrep(t *testing.T, session, turn, trigger, script string, prep func(dir string)) (string, *taskEvents, *Server) {
 	t.Helper()
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -295,22 +304,66 @@ func runJobScriptTasks(t *testing.T, session, turn, trigger, script string) (str
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	te := watchTasks(t, s.bus)
+	if prep != nil {
+		prep(testWorkDir)
+	}
 	startTurn(t, s, session, turn)
-	return jobTurn(t, s, session, turn, trigger), te
+	return jobTurn(t, s, session, turn, trigger), te, s
 }
 
-// findChildLLM 取任务事件中的子 LLM 节点（llm_run 派生：kind=llm 且 parent_id 非空）。
-func findChildLLM(te *taskEvents) map[string]any {
+// jobRootNode 取任务事件中的 **DSL 作业根**节点（kind=dsl_job 且 parent_id 空；llm_run 根节点）。
+func jobRootNode(te *taskEvents) map[string]any {
 	te.mu.Lock()
 	defer te.mu.Unlock()
 	for _, m := range te.started {
-		if m["kind"] == TaskKindLLM {
-			if pid, _ := m["parent_id"].(string); pid != "" {
+		if m["kind"] == TaskKindDslJob {
+			if pid, _ := m["parent_id"].(string); pid == "" {
 				return m
 			}
 		}
 	}
 	return nil
+}
+
+// jobRootDone 取作业根节点的 `tasks.done` 快照（含 DSL-3 的 `steps` / `$RETURN` 两态字段）。
+func jobRootDone(te *taskEvents) map[string]any {
+	te.mu.Lock()
+	defer te.mu.Unlock()
+	for _, m := range te.done {
+		if m["kind"] == TaskKindDslJob {
+			if pid, _ := m["parent_id"].(string); pid == "" {
+				return m
+			}
+		}
+	}
+	return nil
+}
+
+// jobStep0 取作业根 done 快照中首个步骤执行记录（DSL-3：`dsl_job.steps[]`），无 → nil。
+func jobStep0(te *taskEvents) map[string]any {
+	m := jobRootDone(te)
+	if m == nil {
+		return nil
+	}
+	arr, _ := m["steps"].([]any)
+	if len(arr) == 0 {
+		return nil
+	}
+	s, _ := arr[0].(map[string]any)
+	return s
+}
+
+// countNodesByKind 统计已 started 的节点中指定 kind 的条数（DSL-3：容器节点不随迭代增长）。
+func countNodesByKind(te *taskEvents, kind string) int {
+	te.mu.Lock()
+	defer te.mu.Unlock()
+	n := 0
+	for _, m := range te.started {
+		if m["kind"] == kind {
+			n++
+		}
+	}
+	return n
 }
 
 // TestJobScriptRelativePathFails：llm_run DSL 内相对路径 #"path" → 顶层失败（含原值与路径约束）。
@@ -332,7 +385,7 @@ func TestJobScriptEnvWorkdir(t *testing.T) {
 			t.Fatal(err)
 		}
 		return `LOOP line=#"{{env.CHONKPILOT_WORKDIR}}/in.txt".lines
-   LLM "回显" "line={{line}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{line}}.txt"
+   LLM "回显" "line={{line}}" "回显行 {{line}}" => #"{{env.CHONKPILOT_WORKDIR}}/out/{{line}}.txt"
 END
 `
 	})
@@ -350,39 +403,165 @@ END
 	}
 }
 
-// TestTaskJobDSLLLMThirdArgPurpose：LLM 第三参 = 目的 → 子 LLM 任务节点的
-// purpose/name/simplified（tasktree label）都等于该目的值。
+// TestTaskJobDSLLLMThirdArgPurpose（OP-11）：LLM 第三参 = 目的（必填）→ 作业根 `dsl_job.steps[]`
+// 记录的 `purpose`（DSL-3 步骤表展示名）等于该目的值（10–20 字正常区间原样保留）。
 func TestTaskJobDSLLLMThirdArgPurpose(t *testing.T) {
-	const purpose = "整理当日日志要点"
+	const purpose = "整理当日日志要点汇总"
 	text, te := runJobScriptTasks(t, "s-llm-purpose", "t-llm-purpose", "purpose please",
-		"LLM \"回显\" \"这条提示词很长很长很长很长很长很长很长用于验证回退截断\" \""+purpose+"\"\n")
+		"LLM \"回显\" \"这条提示词很长很长很长很长很长很长很长用于验证展示名来源\" \""+purpose+"\"\n")
 	if strings.Contains(text, "失败") {
 		t.Fatalf("作业不应失败: %q", text)
 	}
-	te.wait(t, "LLM 子任务节点", func() bool { return findChildLLM(te) != nil })
-	n := findChildLLM(te)
-	for _, k := range []string{"purpose", "name", "simplified"} {
-		if n[k] != purpose {
-			t.Fatalf("子节点 %s = %v want %q (%+v)", k, n[k], purpose, n)
-		}
+	te.wait(t, "DSL 步骤记录", func() bool { return jobStep0(te) != nil })
+	n := jobStep0(te)
+	if n["purpose"] != purpose {
+		t.Fatalf("步骤记录 purpose = %v want %q (%+v)", n["purpose"], purpose, n)
 	}
 }
 
-// TestTaskJobDSLLLMDefaultLabel（回归）：LLM 无第三参 → 子节点展示名仍 = 提示词截断（≤24 字符）。
-func TestTaskJobDSLLLMDefaultLabel(t *testing.T) {
-	const prompt = "验证缺省展示名回退为提示词截断并且这条提示词要超过二十四个字符才行"
-	want := promptLabel(prompt)
-	text, te := runJobScriptTasks(t, "s-llm-label", "t-llm-label", "label please",
-		"LLM \"回显\" \""+prompt+"\"\n")
+// TestTaskJobDSLLLMPurposeTruncated（OP-11）：目的超长（>20 字）→ 步骤记录 purpose 截断为
+// 前 20 字 + …（软约束：仅截断+记录，不报错）；作业正常完成。
+func TestTaskJobDSLLLMPurposeTruncated(t *testing.T) {
+	long := "一二三四五六七八九十一二三四五六七八九十超长后缀追加"
+	want := string([]rune(long)[:purposeMaxLen]) + "…"
+	text, te := runJobScriptTasks(t, "s-llm-long", "t-llm-long", "long purpose please",
+		"LLM \"回显\" \"提示词\" \""+long+"\"\n")
 	if strings.Contains(text, "失败") {
-		t.Fatalf("作业不应失败: %q", text)
+		t.Fatalf("超长目的不应失败: %q", text)
 	}
-	te.wait(t, "LLM 子任务节点", func() bool { return findChildLLM(te) != nil })
-	n := findChildLLM(te)
-	for _, k := range []string{"purpose", "name", "simplified"} {
-		if n[k] != want {
-			t.Fatalf("子节点 %s = %v want %q (%+v)", k, n[k], want, n)
+	te.wait(t, "DSL 步骤记录", func() bool { return jobStep0(te) != nil })
+	n := jobStep0(te)
+	if n["purpose"] != want {
+		t.Fatalf("步骤记录 purpose = %v want %q (%+v)", n["purpose"], want, n)
+	}
+}
+
+// TestJobScriptReturnReplacesSummary（DSL-2）：脚本用 `=> $RETURN` → 作业根回填 = $RETURN 内容
+// （取代 buildSummary），并投影 return_kind/return_inline 两态字段。
+func TestJobScriptReturnReplacesSummary(t *testing.T) {
+	_, te := runJobScriptTasks(t, "s-ret", "t-ret", "ret please",
+		"LLM \"回显\" \"hi\" \"回显一次\" => $RETURN\n")
+	te.wait(t, "作业 done", func() bool { return jobRootDone(te) != nil })
+	m := jobRootDone(te)
+	if m["return_kind"] != "inline" || m["return_inline"] != "hi" {
+		t.Fatalf("$RETURN inline 两态错: %+v", m)
+	}
+	if m["result_summary"] != "hi" {
+		t.Fatalf("$RETURN 应取代汇总（want %q）: %v", "hi", m["result_summary"])
+	}
+}
+
+// TestJobScriptReturnAbsentFallsBack（DSL-2）：脚本未用 `=> $RETURN` → 完全回落既有汇总
+// （步骤记录文本）且不写 return_* 字段。
+func TestJobScriptReturnAbsentFallsBack(t *testing.T) {
+	_, te := runJobScriptTasks(t, "s-ret2", "t-ret2", "ret2 please",
+		"LLM \"回显\" \"hi\" \"回显一次\"\n")
+	te.wait(t, "作业 done", func() bool { return jobRootDone(te) != nil })
+	m := jobRootDone(te)
+	if v, ok := m["return_kind"]; ok && v != "" {
+		t.Fatalf("未用 $RETURN 不应写 return_kind: %+v", m)
+	}
+	if s := str(m["result_summary"]); !strings.Contains(s, "【回显一次】hi") {
+		t.Fatalf("回落汇总应含步骤结果: %q", s)
+	}
+}
+
+// TestJobDslContainerStaticAndStepsAccumulate（DSL-3）：LOOP 建**单个**折叠容器节点（不随迭代增长），
+// 每次迭代的执行记录追加到作业根 `steps[]`（跨迭代累计，1 起编号），并更新容器 loop_current。
+func TestJobDslContainerStaticAndStepsAccumulate(t *testing.T) {
+	script := "LOOP item=#\"{{env.CHONKPILOT_WORKDIR}}/items.json\".array\n" +
+		"   LLM \"回显\" \"do {{item.name}}\" \"处理 {{item.name}}\"\n" +
+		"END\n"
+	_, te, _ := runJobScriptTasksPrep(t, "s-dsl3", "t-dsl3", "dsl3 please", script, func(dir string) {
+		if err := os.WriteFile(filepath.Join(dir, "items.json"),
+			[]byte(`[{"name":"A"},{"name":"B"},{"name":"C"}]`), 0o644); err != nil {
+			t.Fatal(err)
 		}
+	})
+	te.wait(t, "作业 done", func() bool { return jobRootDone(te) != nil })
+
+	// ① 容器节点仅 1 个（3 次迭代不新增节点）；执行记录不建 dsl_step 节点
+	if got := countNodesByKind(te, TaskKindDslLoop); got != 1 {
+		t.Fatalf("LOOP 容器节点数 = %d want 1（不随迭代增长）", got)
+	}
+	if got := countNodesByKind(te, TaskKindDslStep); got != 0 {
+		t.Fatalf("执行记录不应建 dsl_step 树节点：%d", got)
+	}
+	// ② steps[] 跨迭代累计 3 条（No 1..3、status=done、携带 session_id）
+	m := jobRootDone(te)
+	arr, _ := m["steps"].([]any)
+	if len(arr) != 3 {
+		t.Fatalf("steps 长度 = %d want 3（%+v）", len(arr), m["steps"])
+	}
+	for i, it := range arr {
+		s, _ := it.(map[string]any)
+		if got := int(s["no"].(float64)); got != i+1 {
+			t.Fatalf("steps[%d].no = %d want %d", i, got, i+1)
+		}
+		if s["status"] != TaskStateDone || str(s["session_id"]) == "" {
+			t.Fatalf("steps[%d] 字段错: %+v", i, s)
+		}
+	}
+	// ③ 容器 loop_current 更新为 3（末次广播）
+	var loopCur float64
+	te.mu.Lock()
+	for _, d := range te.done {
+		if d["kind"] == TaskKindDslLoop {
+			loopCur, _ = d["loop_current"].(float64)
+		}
+	}
+	te.mu.Unlock()
+	if int(loopCur) != 3 {
+		t.Fatalf("容器 loop_current = %v want 3", loopCur)
+	}
+}
+
+// TestPurposeLabelSoftConstraint（OP-11）：purposeLabel 的 10–20 字软约束——不足 10 字 /
+// 正常区间原样返回；超长截断为 20 字 + …；不足与超长均写日志记录（不报错）。
+func TestPurposeLabelSoftConstraint(t *testing.T) {
+	var buf bytes.Buffer
+	setLogSink(&buf)
+	t.Cleanup(func() { setLogSink(nil) })
+
+	short := "太短"
+	if got := purposeLabel(short); got != short {
+		t.Fatalf("不足 10 字应原样返回: %q", got)
+	}
+	long := strings.Repeat("字", 25)
+	if got := purposeLabel(long); got != strings.Repeat("字", purposeMaxLen)+"…" {
+		t.Fatalf("超长应截断为 %d 字 + …: %q", purposeMaxLen, got)
+	}
+	normal := "正常长度的运行目的示例"
+	if got := purposeLabel(normal); got != normal {
+		t.Fatalf("正常区间应原样返回: %q", got)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "目的超长") || !strings.Contains(logs, "目的过短") {
+		t.Fatalf("应记录超长/过短日志: %q", logs)
+	}
+}
+
+// TestJobScriptMissingPurposeFails（OP-11）：LLM 缺第三参（目的）→ 顶层失败（文案含参数要求与目的）。
+func TestJobScriptMissingPurposeFails(t *testing.T) {
+	text := runJobScriptCase(t, "s-llm-nopurpose", "t-llm-nopurpose", "no purpose please",
+		"LLM \"回显\" \"这条提示词很长很长很长很长很长很长\"\n")
+	if !strings.Contains(text, "错误") {
+		t.Fatalf("缺目的应顶层失败: %q", text)
+	}
+	if !strings.Contains(text, "3 个参数") || !strings.Contains(text, "目的") {
+		t.Fatalf("失败文案应含参数要求与目的: %q", text)
+	}
+}
+
+// TestJobScriptEmptyPurposeFails（OP-11）：LLM 第三参为空串 → 顶层失败（非空硬校验）。
+func TestJobScriptEmptyPurposeFails(t *testing.T) {
+	text := runJobScriptCase(t, "s-llm-emptypurpose", "t-llm-emptypurpose", "empty purpose please",
+		"LLM \"回显\" \"提示词\" \"\"\n")
+	if !strings.Contains(text, "错误") {
+		t.Fatalf("空目的应顶层失败: %q", text)
+	}
+	if !strings.Contains(text, "目的") || !strings.Contains(text, "不能为空") {
+		t.Fatalf("失败文案应含目的与不能为空: %q", text)
 	}
 }
 
@@ -393,27 +572,13 @@ func TestJobScriptTooManyArgsFails(t *testing.T) {
 	if !strings.Contains(text, "错误") {
 		t.Fatalf("参数过多应顶层失败: %q", text)
 	}
-	if !strings.Contains(text, "参数过多") || !strings.Contains(text, `["目的"]`) {
+	if !strings.Contains(text, "参数过多") || !strings.Contains(text, `"目的"`) {
 		t.Fatalf("失败文案应含参数过多与语法示例: %q", text)
 	}
 }
 
-// rootLLMNode 取任务事件中的**根** llm 节点（kind=llm 且 parent_id 空；llm_run 根节点）。
-func rootLLMNode(te *taskEvents) map[string]any {
-	te.mu.Lock()
-	defer te.mu.Unlock()
-	for _, m := range te.started {
-		if m["kind"] == TaskKindLLM {
-			if pid, _ := m["parent_id"].(string); pid == "" {
-				return m
-			}
-		}
-	}
-	return nil
-}
-
-// TestLLMRunRootNodeKind（G-15）：网关聚合暴露名 self_llm_run → turn.go 根节点 kind 应按
-// **契约名** llm_run 判定 = llm（此前误用暴露名 → 落 tool）。
+// TestLLMRunRootNodeKind（G-15 + DSL-3）：网关聚合暴露名 self_llm_run → turn.go 根节点 kind 应按
+// **契约名** llm_run 判定 = **dsl_job**（DSL-3 起：作业根 kind；此前为 llm，此前误用暴露名 → 落 tool）。
 func TestLLMRunRootNodeKind(t *testing.T) {
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -445,10 +610,10 @@ func TestLLMRunRootNodeKind(t *testing.T) {
 	startTurn(t, s, "s-root-kind", "t-root-kind")
 	jobTurn(t, s, "s-root-kind", "t-root-kind", "root kind please")
 
-	te.wait(t, "llm_run root node", func() bool { return rootLLMNode(te) != nil })
-	n := rootLLMNode(te)
-	if n["kind"] != TaskKindLLM {
-		t.Fatalf("llm_run 根节点 kind=%v want %s（%+v）", n["kind"], TaskKindLLM, n)
+	te.wait(t, "llm_run root node", func() bool { return jobRootNode(te) != nil })
+	n := jobRootNode(te)
+	if n["kind"] != TaskKindDslJob {
+		t.Fatalf("llm_run 根节点 kind=%v want %s（%+v）", n["kind"], TaskKindDslJob, n)
 	}
 	if n["tool"] != "self_llm_run" {
 		t.Fatalf("根节点 tool=%v want self_llm_run（暴露名）", n["tool"])

@@ -234,7 +234,7 @@ func (s *Service) ScenarioSave(req facade.ScenarioSaveRequest) (facade.ScenarioS
 	if err := s.ensureScenarioIDUnique(levels, sc.ID, kind); err != nil {
 		return facade.ScenarioSaveResponse{}, err
 	}
-	if err := capfs.WriteScenarioDir(kind, root, sc.ID, capfs.NormalizeScenarioPayload(wire.ScenarioToWire(sc)), refRootsOf(levels)); err != nil {
+	if err := capfs.WriteScenarioDir(kind, root, sc.ID, wire.ScenarioToWire(sc), refRootsOf(levels)); err != nil {
 		return facade.ScenarioSaveResponse{}, err
 	}
 	s.RefreshScoped("scenario", req.InstanceID, sc.ID, "save", req.Scope)

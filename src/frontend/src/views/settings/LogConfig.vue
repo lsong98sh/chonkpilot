@@ -52,6 +52,7 @@ import { Select, Button, message } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import { getAllConfig, setConfig } from '../../api/config'
 import { loadInitData, revealInExplorer } from '../../api/file'
+import { GuiInitDataKeys } from '../../events/msgkeys'
 import { isBrowserForm } from '../../utils/runtimeForm'
 import { logDirView } from '../../utils/logDirView'
 import { saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
@@ -88,7 +89,7 @@ async function loadConfig() {
 async function loadLogDir() {
   try {
     const r = await loadInitData()
-    logDir.value = (r && r.logDir) || ''
+    logDir.value = (r && r[GuiInitDataKeys.logDir]) || ''
   } catch (e) {
     console.warn('[LogConfig] loadLogDir error:', e)
     logDir.value = ''

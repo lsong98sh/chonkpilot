@@ -26,6 +26,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // dataReqTimeout data-* 请求超时（persist 应答同步：合并形态微秒级；给分离形态留裕量）。
@@ -297,7 +298,7 @@ func reqID(req map[string]any) string {
 // 失败返回 error（调用方按需静默丢弃，不阻塞 UI）。
 func (b *Bridge) prjConfigSave(key, value string) error {
 	raw, _ := json.Marshal(map[string]any{"data": map[string]any{"key": key, "value": value}})
-	_, errs := b.dataCall("data-prj-config-save", raw)
+	_, errs := b.dataCall(msgkeys.TopicDataPrjConfigSave, raw)
 	if len(errs) > 0 {
 		return errs[0]
 	}
@@ -308,7 +309,7 @@ func (b *Bridge) prjConfigSave(key, value string) error {
 // 无记录/失败 → ""）。
 func (b *Bridge) prjConfigLoad(key string) string {
 	raw, _ := json.Marshal(map[string]any{"id": key})
-	res, errs := b.dataCall("data-prj-config-load", raw)
+	res, errs := b.dataCall(msgkeys.TopicDataPrjConfigLoad, raw)
 	if len(errs) > 0 {
 		return ""
 	}
@@ -325,7 +326,7 @@ func (b *Bridge) prjConfigLoad(key string) string {
 // prjConfigList 一把取 prj config 表平铺 map（list 载荷 {}；应答 result.list = key→值
 // 字符串平铺；失败 → 空 map。前端启动恢复布局/UI/文件树展开键用，读缺省空值）。
 func (b *Bridge) prjConfigList() map[string]any {
-	res, errs := b.dataCall("data-prj-config-list", []byte(`{}`))
+	res, errs := b.dataCall(msgkeys.TopicDataPrjConfigList, []byte(`{}`))
 	if len(errs) > 0 {
 		return map[string]any{}
 	}
@@ -358,7 +359,7 @@ func defaultUserConfig() map[string]any {
 // readUserConfig 读用户配置（data-user-config-load；persist 无记录回落默认配置）。
 // 读取失败（超时等）→ 默认配置 + error（调用方按需提示；值不因落库异常而缺）。
 func readUserConfig(b *Bridge) (map[string]any, error) {
-	res, errs := b.dataCall("data-user-config-load", []byte(`{}`))
+	res, errs := b.dataCall(msgkeys.TopicDataUserConfigLoad, []byte(`{}`))
 	if len(errs) > 0 {
 		return defaultUserConfig(), errs[0]
 	}

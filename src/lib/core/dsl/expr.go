@@ -142,6 +142,10 @@ func evalExprValue(sc *Scope, e *Expr) (any, error) {
 			cur = &VDB{DB: sc.eng.dbs, Path: p}
 		}
 	case eVar:
+		if e.Name == returnVar {
+			// $RETURN 是只写结果通道，读取一律报错（见 return.go）。
+			return nil, lineErr(e.Ln, "%s", returnNoRead)
+		}
 		cur, _ = sc.Lookup(e.Name) // 未定义 = nil（IF 视缺失）
 	default:
 		return nil, lineErr(e.Ln, "未知表达式类型")

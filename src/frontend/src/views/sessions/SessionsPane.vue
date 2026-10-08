@@ -40,26 +40,12 @@
         :key="session.session_id"
         class="session-card"
         :class="{ active: session.session_id === currentSessionId }"
-        :title="session.work_dir || ''"
         v-mq:[EventNames.sessionSelect].click="{ session }"
       >
         <div class="session-info">
           <div class="session-title">{{ session.title || $t('chat.untitled') }}</div>
           <div class="session-meta">
-            <Tooltip placement="top">
-              <span class="session-id">#{{ session.session_id?.slice(0, 8) }}</span>
-              <template #content>
-                <div class="stats-tip">
-                  <div class="stats-tip__row"><span class="stats-tip__label">{{ $t('chat.stats_current_turn') }}</span><span class="stats-tip__value">{{ statDisplay(session.session_id, 'current_turn') }}</span></div>
-                  <div class="stats-tip__row"><span class="stats-tip__label">{{ $t('chat.stats_turn_total') }}</span><span class="stats-tip__value">{{ statDisplay(session.session_id, 'turn_total') }}</span></div>
-                  <div class="stats-tip__row"><span class="stats-tip__label">{{ $t('chat.stats_compressed') }}</span><span class="stats-tip__value">{{ statDisplay(session.session_id, 'compressed') }}</span></div>
-                  <div class="stats-tip__row"><span class="stats-tip__label">{{ $t('chat.stats_session_total') }}</span><span class="stats-tip__value">{{ statDisplay(session.session_id, 'session_total') }}</span></div>
-                </div>
-              </template>
-            </Tooltip>
-            <span v-if="session.turn_count" class="turn-count">
-              {{ $t('chat.turn_count', { count: session.turn_count }) }}
-            </span>
+            <span class="session-id">#{{ session.session_id?.slice(0, 8) }}</span>
           </div>
         </div>
         <div class="session-actions">
@@ -121,13 +107,12 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Tooltip, confirm, promptInput, message } from '../../components/ui'
+import { Button, confirm, promptInput, message } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import EmptyState from '../../components/common/EmptyState.vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import * as sessionApi from '../../api/session'
-import { statDisplay } from '../../stores/sessionStats'
 import { buildCopyMessages, serializeCopyMessages } from '../../utils/sessionCopy'
 import { useChatWindows } from '../../composables/useChatWindows'
 import { windowForSession } from '../../utils/chatWindows'
@@ -415,31 +400,6 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.stats-tip {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  white-space: nowrap;
-}
-.stats-tip__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.stats-tip__label {
-  color: rgba(255, 255, 255, 0.7);
-}
-.stats-tip__value {
-  font-family: var(--font-mono);
-  font-weight: 600;
-}
-.turn-count {
-  background: var(--bg-surface);
-  padding: 0 5px;
-  border-radius: 4px;
-  flex-shrink: 0;
 }
 /* 操作图标：hover 时显示在文本下方（一整行，右对齐） */
 .session-actions {

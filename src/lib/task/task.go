@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // 任务节点状态（与 21-llm-server §4.3 同口径）；终态 = done/error/cancelled/interrupted。
@@ -52,8 +53,8 @@ const (
 // 与 21 §9.1 交付物 1 字段表一致；唯一**新增**字段 = Title（§9.1 未列，但权威行须与
 // tasktree.title 同源才能做一致性校验——以真实代码为准，见 Verify）与 DeletedAt（P2 逻辑删除）。
 type Record struct {
-	WorkDir      string `json:"workdir"`       // 隔离键来源（D6）；权威行由 llm 事件载荷增补字段携带
-	TaskID       string `json:"task_id"`       // 调用层分配（D2）；唯一域 = (workdir, task_id)
+	WorkDir      string `json:"work_dir"`      // 隔离键来源（D6）；权威行由 llm 事件载荷增补字段携带
+	TaskID       string `json:"task_id"`       // 调用层分配（D2）；唯一域 = (work_dir, task_id)
 	InstanceID   string `json:"instance_id"`   // 仅来源标注（D6：不作隔离键、不作过滤键）
 	ParentID     string `json:"parent_id"`     // 父节点（调用层给，层不猜不重排）
 	TopSession   string `json:"top_session"`   // 组织 / 过滤维度（D7：树按主会话切分）
@@ -72,6 +73,16 @@ type Record struct {
 	DoneAt       string `json:"done_at"`       // 终态时刻
 	Closed       bool   `json:"closed"`        // 逻辑删除（§8.1-2：关闭任务 = 标记，历史保留）
 	DeletedAt    string `json:"deleted_at"`    // 逻辑删除时刻（closed 为 true 时非空）
+
+	// ── DSL 展示字段（DSL-3 / DSL-2；61 §3.4 增补，缺省为空 → 与既有载荷逐字节等价）──
+	LoopCurrent  int    `json:"loop_current"`  // 容器当前轮次（1 起；kind=dsl_loop/dsl_parallel）
+	LoopTotal    int    `json:"loop_total"`    // 容器总轮数（未知 = 0）
+	StepsJSON    string `json:"steps_json"`    // 步骤执行记录（JSON 数组文本；仅 kind=dsl_job 非空）
+	Shadow       bool   `json:"shadow"`        // 执行记录隐藏节点标记（true = 不进树）
+	ReturnKind   string `json:"return_kind"`   // `$RETURN` 两态（inline / file）
+	ReturnInline string `json:"return_inline"` // inline 全文（≤64K）
+	ReturnFile   string `json:"return_file"`   // file 文件名（>64K）
+	ReturnSize   int    `json:"return_size"`   // file 字节数
 }
 
 // Exec 是任务节点的**执行句柄**（P2 交付物 ⑤：层持有 → 取消时回调执行侧）。
@@ -184,7 +195,7 @@ func conflictOf(old, rec *Record) string {
 		name string
 		a, b string
 	}{
-		{"workdir", old.WorkDir, rec.WorkDir},
+		{"work_dir", old.WorkDir, rec.WorkDir},
 		{"top_session", old.TopSession, rec.TopSession},
 		{"node_type", old.NodeType, rec.NodeType},
 		{"tool_call_id", old.ToolCallID, rec.ToolCallID},
@@ -233,9 +244,17 @@ type nodeEvent struct {
 	ResultSummary string `json:"result_summary"`
 	Error         string `json:"error"`
 	Args          any    `json:"args"`
-	// 21 §7.4 建议的 payload 增补字段（现有发布点尚未带 → 空值；层兼容接收）。
-	WorkDir  string `json:"workdir"`
-	WorkDir2 string `json:"work_dir"`
+	// 21 §7.4 建议的 payload 增补字段（由 llm 事件发布点随 instance 绑定增补）。
+	WorkDir string `json:"work_dir"`
+	// DSL 展示字段（DSL-3 / DSL-2；llm 事件载荷增补，缺省为空）。
+	LoopCurrent  int             `json:"loop_current"`
+	LoopTotal    int             `json:"loop_total"`
+	Steps        json.RawMessage `json:"steps"`
+	Shadow       bool            `json:"shadow"`
+	ReturnKind   string          `json:"return_kind"`
+	ReturnInline string          `json:"return_inline"`
+	ReturnFile   string          `json:"return_file"`
+	ReturnSize   int             `json:"return_size"`
 }
 
 // recordFromNode 把 llm 节点快照映射为层记录（21 §9.1 交付物 1「payload → 记录映射」）。
@@ -246,9 +265,6 @@ func recordFromNode(ev *nodeEvent) (*Record, error) {
 		return nil, errors.New("task: 节点事件缺 task_id")
 	}
 	wd := ev.WorkDir
-	if wd == "" {
-		wd = ev.WorkDir2
-	}
 	kind := ev.Kind
 	if kind == "" {
 		kind = NodeTypeTool
@@ -282,7 +298,25 @@ func recordFromNode(ev *nodeEvent) (*Record, error) {
 		CreatedAt:    ev.StartedAt,
 		StartedAt:    ev.StartedAt,
 		DoneAt:       ev.FinishedAt,
+
+		LoopCurrent:  ev.LoopCurrent,
+		LoopTotal:    ev.LoopTotal,
+		StepsJSON:    rawSteps(ev.Steps),
+		Shadow:       ev.Shadow,
+		ReturnKind:   ev.ReturnKind,
+		ReturnInline: ev.ReturnInline,
+		ReturnFile:   ev.ReturnFile,
+		ReturnSize:   ev.ReturnSize,
 	}, nil
+}
+
+// rawSteps 归一事件 `steps` 原始 JSON（nil / null → 空串；其余原样为 JSON 数组文本）。
+func rawSteps(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	return s
 }
 
 // reportEvent 是 gateway mcp-tasks-report 的载荷（chonkpilot-mcp-gateway/gateway/subjects.go:29）。

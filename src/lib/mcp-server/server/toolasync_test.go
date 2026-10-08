@@ -81,6 +81,30 @@ func TestToolTimeoutMetaExposure(t *testing.T) {
 	}
 }
 
+// TestToolIdempotentMetaExposure（G-20）：`_meta.idempotent` **仅声明 true 时透出**；
+// 缺省 / 显式 false → 不写（判据 = `_meta.idempotent == true`，安全默认 false）。
+func TestToolIdempotentMetaExposure(t *testing.T) {
+	cfg := DefaultConfig()
+	// 声明 true → 透出 true
+	tool, err := buildTool(&ToolDoc{Name: "t_ro", Idempotent: true,
+		Schema: map[string]any{"type": "object"}}, cfg)
+	if err != nil {
+		t.Fatalf("buildTool: %v", err)
+	}
+	if v, ok := tool.Meta["idempotent"]; !ok || v != true {
+		t.Fatalf("契约 idempotent=true 应透出 _meta.idempotent=true：ok=%v v=%v", ok, v)
+	}
+	// 声明 false / 缺省 → 不写（缺省 = false）
+	tool, err = buildTool(&ToolDoc{Name: "t_rw", Idempotent: false,
+		Schema: map[string]any{"type": "object"}}, cfg)
+	if err != nil {
+		t.Fatalf("buildTool: %v", err)
+	}
+	if _, ok := tool.Meta["idempotent"]; ok {
+		t.Fatalf("idempotent=false/缺省 不应写 _meta.idempotent：%v", tool.Meta)
+	}
+}
+
 // TestToolAsyncOverrideModeMatrix：四档语义 + 「auto 不显式透出」口径。
 func TestToolAsyncOverrideModeMatrix(t *testing.T) {
 	cases := []struct {

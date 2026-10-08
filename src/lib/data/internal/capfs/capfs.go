@@ -14,7 +14,8 @@
 //	prompts/（命令/提示词） tools/（工具） resources/（知识/资源）
 //	skills/（技能）         agents/（智能体） scenarios/（场景）
 //
-// 系统级另有 `executors/`（内置执行器 exe，见构建脚本）。
+// 系统级另有 `executors/`（内置执行器 exe，见构建脚本）；另有**非原语** `system/` 系统文档目录
+// （见 DirSystem；不计入下面 6 类原语）。
 //
 // ⚠️ **场景根已移入 capability**：场景根 = `<级别根>/capability/scenarios/`（不再有与
 // capability **平级**的独立 `scenarios/` 根），见 ScenariosRoot / ScenarioSystemRoot /
@@ -58,6 +59,15 @@ const (
 // 智能体/场景六类知识库原语）；本目录由 MCP 配置域（internal/mcp）单独读写。
 const DirMcps = "mcps"
 
+// DirSystem 是每级 capability 根下的 **系统文档子目录**名（<级别根>/capability/system/）：
+// 存放摘要提示词（summary.md）、记忆类别沉淀提示词（memory/<类别名>.md）等**非原语**的纯文本
+// 系统文档。
+//
+// ⚠️ system **不是** mcp 原语类型 → **不加入 `Types`**（Types 仅承载 6 类原语）：system 目录
+// 不进知识库原语树、不进左侧导航（前端 KnowledgeTree 按类型 token 天然滤除），由数据层各 system
+// 读点（persist config / compress 插件 / memory 域）单独按级 fallback 读写（OP-01/OP-02/OP-04，2026-10-06）。
+const DirSystem = "system"
+
 // Level 是一级 capability 根。
 type Level struct {
 	Kind string // app|user|project|prjusr
@@ -97,10 +107,23 @@ func PrjUsrRoot(projectID string) string {
 }
 
 // PromptsRoot 某级 capability 的 prompts 分类根（= <capRoot>/prompts）。
-// 属**知识库 prompt 分类**（如 summary.prompt.md），与场景**无关**——场景根 = <capRoot>/scenarios
+// 属**知识库 prompt 分类**（如 code_review.prompt.md），与场景**无关**——场景根 = <capRoot>/scenarios
 // （capfs.ScenariosRoot，25-MCP与场景分层模型 §6）。
 func PromptsRoot(capRoot string) string {
 	return filepath.Join(capRoot, DirPrompts)
+}
+
+// SystemDir 某级 capability 的 system 分类根（= <capRoot>/system）：存放**非原语**系统文档
+// （如 summary.md、memory/<类别名>.md）。与 PromptsRoot 并列，但不属 `Types`（见 DirSystem）。
+func SystemDir(capRoot string) string {
+	return filepath.Join(capRoot, DirSystem)
+}
+
+// SystemDocFile 某级 capability 根下的 system 文档文件路径（= <capRoot>/system/<kind>.md）。
+// kind = 相对 system 目录、**去 .md** 的路径（支持子目录，如 "summary"、"memory/用户偏好"；
+// 分隔符用 `/`，内部转平台分隔符）。各 system 读点（config 域 / memory 域）共用，避免路径规则分叉。
+func SystemDocFile(capRoot, kind string) string {
+	return filepath.Join(SystemDir(capRoot), filepath.FromSlash(kind)+".md")
 }
 
 // LevelPriority 返回级别的**具体度**（数值越大越具体，用于"同名定位/覆盖"优先序）：

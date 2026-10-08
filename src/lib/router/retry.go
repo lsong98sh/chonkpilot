@@ -19,8 +19,8 @@
 //   - 429 / 5xx 等**需要决策**的失败（上报「重试中」/ 退避取值 / 次数用尽处置）→ 归 llm。
 //
 // **次数**：本层上限 **1 次**（`transparentRetryMax`），且**累计计入总次数** —— router ≤1 次 +
-// llm 侧 `retryCount` = 总额上限（**总量归 llm 掌管**，不放大、不叠成乘积；llm 侧
-// `retryCount` / `retryDelay` 四级配置语义不变）。退避为**毫秒级**
+// llm 侧 `retryCount` = 总额上限（**总量归 llm 掌管**，不放大、不叠成乘积；llm 侧 `retryCount`
+// 配置语义不变，退避值经 `RetryWait` 计算——见 `error.go`）。退避为**毫秒级**
 // （`transparentRetryBackoff`，口径区间 200–500ms）。
 package router
 

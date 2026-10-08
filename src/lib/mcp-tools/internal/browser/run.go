@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 
+	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/dsl"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
 )
@@ -33,6 +35,10 @@ type Options struct {
 // Runner 承载一次脚本执行。
 type Runner struct {
 	opt Options
+
+	parent  context.Context // 惰性启动的父上下文（Execute 传入；缺省 context.Background()）
+	started bool            // 浏览器是否已启动（惰性：首个浏览器动作执行时才启动）
+	failed  atomic.Bool     // 本次会话是否出现过动作失败（供 Close 判定失败截图）
 
 	// runtime
 	ctx         context.Context // 当前激活 tab
@@ -55,8 +61,10 @@ func stepCtx(parent context.Context, d time.Duration) (context.Context, context.
 // （参数原文透传，EVL/EXP 多行 JS 用 "… <<< ... >>>" 引号内多行表达），并因此获得
 // 核心流控 SET/IF/LOOP/PARALLEL/BREAK/CONTINUE/EXIT、变量与 {{}} 插值。首错即停。
 func Execute(parent context.Context, opt Options) (string, error) {
-	r := &Runner{opt: opt}
-	actions := browserActions(r)
+	sess, _ := NewSession(opt)
+	sess.parent = parent
+	r := sess.r
+	actions := sess.Actions()
 	ast, err := dsl.Parse(opt.Script, actions)
 	if err != nil {
 		return "", stepErr(0, "", "syntax", "解析失败: "+err.Error())
@@ -64,10 +72,8 @@ func Execute(parent context.Context, opt Options) (string, error) {
 	if len(ast.Stmts) == 0 {
 		return "", stepErr(0, "", "syntax", "脚本为空")
 	}
-	if err := r.startBrowser(parent); err != nil {
-		return "", err
-	}
-	eng := dsl.NewEngine(dsl.Options{Files: scriptFS{}, Actions: actions, StopOnError: true, Vars: opt.Vars})
+	// 惰性启动：不在执行前启动浏览器；首个浏览器动作执行时才启动（脚本无浏览器动作则完全不启动）。
+	eng := dsl.NewEngine(dsl.Options{Files: sess.Files(), Actions: actions, StopOnError: true, Vars: opt.Vars})
 	_ = eng.Execute(ast)
 	res := eng.Result()
 	r.teardown(len(res.Errors) > 0)
@@ -107,14 +113,34 @@ func (r *Runner) startBrowser(parent context.Context) (retErr error) {
 	return nil
 }
 
-// teardown 收尾：console/DOM 落盘、失败截图、关浏览器（等价旧 run 的 defer 段）。
-func (r *Runner) teardown(fail bool) {
-	_ = r.flushConsole()
-	if fail && r.opt.FailShot != "" {
-		_ = r.shotFile(r.opt.FailShot)
+// ensureStarted 惰性启动 Chrome/CDP：仅首个浏览器动作执行时调用；会话构造与脚本解析阶段
+// 不启动浏览器、不创建 chromedp 上下文（脚本无浏览器动作时不产生任何浏览器副作用）。
+func (r *Runner) ensureStarted() error {
+	if r.started {
+		return nil
 	}
-	if r.opt.DomFile != "" {
-		_ = r.domToFile(r.opt.DomFile)
+	parent := r.parent
+	if parent == nil {
+		parent = context.Background()
+	}
+	if err := r.startBrowser(parent); err != nil {
+		return err
+	}
+	r.started = true
+	return nil
+}
+
+// teardown 收尾：console/DOM 落盘、失败截图、关浏览器（等价旧 run 的 defer 段）。
+// 浏览器未启动（脚本无浏览器动作）时仅释放可能的 allocator，不做落盘/截图。
+func (r *Runner) teardown(fail bool) {
+	if r.started {
+		_ = r.flushConsole()
+		if fail && r.opt.FailShot != "" {
+			_ = r.shotFile(r.opt.FailShot)
+		}
+		if r.opt.DomFile != "" {
+			_ = r.domToFile(r.opt.DomFile)
+		}
 	}
 	r.closeBrowser()
 	if r.cancelAlloc != nil {
@@ -213,6 +239,7 @@ func browserActions(r *Runner) []dsl.Action {
 					st.JS = js // EVL/EXP 多行（引号内 <<< ... >>>）
 				}
 				if err := r.execStep(st); err != nil {
+					r.failed.Store(true)
 					if se, ok := err.(*StepError); ok {
 						return "", errors.New(se.Msg) // 行号由引擎按动作行标注
 					}
@@ -253,6 +280,7 @@ func blockJS(raw string) (string, bool) {
 }
 
 // scriptFS 核心语句（#"文件".lines 等）使用的真实文件系统（相对当前目录）。
+// 引擎句柄层读写一律过 agentbox 沙箱校验（决策 42 §2 (250)：修复既有裸写缺口）。
 type scriptFS struct{}
 
 func (scriptFS) Open(path string) dsl.FileHandle { return &fsFile{path: path} }
@@ -263,9 +291,33 @@ type fsFile struct {
 
 func (f *fsFile) Path() string { return f.path }
 
-// Exists 路径不合规（R-11）时按「不存在」处理：字面违规已由预校验拦截，此处兜底 {{}} 插值。
-func (f *fsFile) Exists() bool {
+// absRead 解析读路径（R-11）并做沙箱读校验（越界 → 错误）。
+func (f *fsFile) absRead() (string, error) {
 	abs, err := resolveLocalPath(f.path)
+	if err != nil {
+		return "", err
+	}
+	if err := agentbox.Check(abs, false); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// absWrite 解析写路径（R-11）并做沙箱写校验（越界 → 错误）。
+func (f *fsFile) absWrite() (string, error) {
+	abs, err := resolveLocalPath(f.path)
+	if err != nil {
+		return "", err
+	}
+	if err := agentbox.Check(abs, true); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+// Exists 路径不合规（R-11）或被沙箱拒绝时按「不存在」处理：字面违规已由预校验拦截，此处兜底 {{}} 插值。
+func (f *fsFile) Exists() bool {
+	abs, err := f.absRead()
 	if err != nil {
 		return false
 	}
@@ -275,7 +327,7 @@ func (f *fsFile) Exists() bool {
 
 func (f *fsFile) Stat() (dsl.FileInfo, error) {
 	// 读路径强校验（R-11）：数据源句柄 `#"path"` 亦须绝对 / ~/ / !/
-	abs, err := resolveLocalPath(f.path)
+	abs, err := f.absRead()
 	if err != nil {
 		return dsl.FileInfo{}, err
 	}
@@ -291,7 +343,7 @@ func (f *fsFile) Stat() (dsl.FileInfo, error) {
 	return dsl.FileInfo{Path: f.path, Size: fi.Size(), Lines: int64(lines), Blocks: 0}, nil
 }
 func (f *fsFile) ReadText() (string, error) {
-	abs, err := resolveLocalPath(f.path)
+	abs, err := f.absRead()
 	if err != nil {
 		return "", err
 	}
@@ -328,8 +380,8 @@ func (f *fsFile) ReadRange(n, m int) ([]string, error) {
 	return ls[n : m+1], nil
 }
 func (f *fsFile) WriteAll(text string) error {
-	// 写入路径强校验（R-11，运行时兜底：覆盖 {{}} 插值的重定向目标）
-	abs, err := resolveLocalPath(f.path)
+	// 写入路径强校验（R-11，运行时兜底：覆盖 {{}} 插值的重定向目标）+ 沙箱写校验
+	abs, err := f.absWrite()
 	if err != nil {
 		return err
 	}
@@ -342,7 +394,7 @@ func (f *fsFile) Append(text string) error {
 	if text == "" {
 		return nil
 	}
-	abs, err := resolveLocalPath(f.path)
+	abs, err := f.absWrite()
 	if err != nil {
 		return err
 	}
@@ -355,7 +407,7 @@ func (f *fsFile) Append(text string) error {
 	return err
 }
 func (f *fsFile) ReplaceLines(n, m int, lines []string) error {
-	abs, err := resolveLocalPath(f.path)
+	abs, err := f.absWrite()
 	if err != nil {
 		return err
 	}
@@ -463,6 +515,10 @@ func (r *Runner) resolve(ctx context.Context, st *Step, loc string) (string, err
 }
 
 func (r *Runner) execStep(st *Step) error {
+	// 惰性启动：首个浏览器动作执行时才启动 Chrome/CDP（无浏览器动作的脚本不启动）。
+	if err := r.ensureStarted(); err != nil {
+		return err
+	}
 	switch st.Cmd {
 	case "OPN":
 		return r.stepOPN(st)

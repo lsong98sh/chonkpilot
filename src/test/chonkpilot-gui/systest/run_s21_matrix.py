@@ -227,7 +227,6 @@ def main():
         ]
         cfg["defaultLLM"] = 0
         cfg["retryCount"] = 0
-        cfg["retryDelay"] = 1
         c.req("data-user-config-save", {"data": cfg})
         c.mq_emit("config-refresh")
         time.sleep(1.5)

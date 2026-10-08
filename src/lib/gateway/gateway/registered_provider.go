@@ -215,6 +215,13 @@ func (p *registeredProvider) Close() error { return nil }
 // Invalidate 注册工具无独立子进程/连接 → no-op（始终可用）。
 func (p *registeredProvider) Invalidate(context.Context) (bool, error) { return true, nil }
 
+// Terminate 域工具（in-memory 线）为**协作式**终止：注册回调 Emit 继承执行池 ctx（`Call` 的
+// `bus.Emit(ctx,...)`），真停在执行体侧（llm-server runSubJob 的 ctx 感知 / mcp-server）→
+// 此处 no-op（无独立子进程/连接可作废）。
+func (p *registeredProvider) Terminate(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
 // toolFor 按 (instance, tool) 查注册工具：先精确归属域（scoped 遮蔽），未命中回退 global。
 func (p *registeredProvider) toolFor(instance, tool string) (*registeredTool, bool) {
 	p.mu.RLock()

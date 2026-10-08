@@ -31,6 +31,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // registerDomainAgents 读 **app 级场景**（`<exeDir>/scenarios/<场景>/`，与 `<exeDir>/capability/`
@@ -263,8 +264,20 @@ func (s *Server) domainExecute(tc *turnCtx, callID, tool string, args map[string
 		go s.runSubJob(tc, callID, node, args)
 		return "已提交子会话执行，结果稍后回填", false
 	default:
-		// task 型：同步执行并返回文本（节点建/广播/收尾在 handler）
-		text := s.execTaskTool(tc, callID, node, tool, args)
+		// task 型：同步执行并返回文本（节点建/广播/收尾在 handler）。
+		// I-83 收尾（18 §3.4）：执行期登记取消柄（taskExecCancels）——gateway 取消
+		// （tm.cancel 补发 mcp-tasks-report{state:cancelled}）→ onGatewayTaskDone 按
+		// tool_call_id 查表 cancel，真停长跑执行体（tool_result 轮询等）；结束后注销。
+		// 被取消时不在此标 done/error——终态已由回报链推进（tasks.done 幂等，不覆盖 cancelled）。
+		execCtx, cancelExec := context.WithCancel(tc.ctx)
+		s.registerTaskExecCancel(callID, cancelExec)
+		text := s.execTaskTool(tc, callID, node, tool, args, execCtx)
+		cancelled := execCtx.Err() != nil // 先判（cancelExec 会使 Err 恒非 nil）
+		s.unregisterTaskExecCancel(callID)
+		cancelExec() // context 泄漏守卫（已取消则幂等）
+		if cancelled {
+			return "已取消: " + tool + "（gateway 执行侧取消；任务状态以回报为准）", false
+		}
 		if strings.HasPrefix(text, "错误") {
 			s.tasks.done(node.TaskID, TaskStateError, "", text)
 		} else {
@@ -311,12 +324,56 @@ func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]an
 	return s.tasks.start(node)
 }
 
+// ── task 型域工具「执行中取消」登记表（I-83 收尾，18 §3.4）─────────────
+//
+// 背景：域工具远程回调经 mq 内存总线 **Emit 同步派发**——执行体（execTaskTool）跑在
+// gateway 执行 goroutine 里，gateway 侧 `t.cancel()` 只取消发送方等待，无法中断同步
+// handler。故取消经**回报通道反向通知**：gateway tm.cancel 补发 mcp-tasks-report
+// {state:cancelled, tool_call_id} → onGatewayTaskDone → cancelTaskExec 查表 cancel。
+
+// registerTaskExecCancel 登记 tool_call_id → 执行取消柄（callID 空 = 无回报定位维度，不登记）。
+func (s *Server) registerTaskExecCancel(callID string, cancel context.CancelFunc) {
+	if callID == "" {
+		return
+	}
+	s.taskExecCancelMu.Lock()
+	defer s.taskExecCancelMu.Unlock()
+	s.taskExecCancels[callID] = cancel
+}
+
+// unregisterTaskExecCancel 注销（执行结束；回报晚到 → 查表未命中，走既有终态推进）。
+func (s *Server) unregisterTaskExecCancel(callID string) {
+	if callID == "" {
+		return
+	}
+	s.taskExecCancelMu.Lock()
+	defer s.taskExecCancelMu.Unlock()
+	delete(s.taskExecCancels, callID)
+}
+
+// cancelTaskExec 取消回报到达：真停执行中的 task 型域工具执行体（幂等；未命中 = 已结束）。
+// 命中即注销——防执行体收尾窗口内的重复回报后遗留 stale 柄（cancel 幂等，已发生的取消不受影响）。
+func (s *Server) cancelTaskExec(callID string) {
+	if callID == "" {
+		return
+	}
+	s.taskExecCancelMu.Lock()
+	cancel, ok := s.taskExecCancels[callID]
+	if ok {
+		delete(s.taskExecCancels, callID)
+	}
+	s.taskExecCancelMu.Unlock()
+	if ok {
+		cancel()
+	}
+}
+
 // methodErr 构造普通错误（mq 订阅者 error 返回 → 收集进 v.Errors）。
 func methodErr(msg string) error { return &toolError{msg: msg} }
 
 // ── agent 定义读取（AG-1 / AG-2，40-演进计划 §AG，2026-09-25）──────────
 //
-// 委派（llm_run 的 `LLM "agent" "prompt"`）与顶层轮次在**每轮开始处**读取 agent 定义
+// 委派（llm_run 的 `LLM "agent" "prompt" "目的"`）与顶层轮次在**每轮开始处**读取 agent 定义
 // （AG-C5 热生效：按 turn 生效，不缓存到进程级/包级变量）。定义来源两处，按序回退：
 //  1. 场景内 agent（`data-scenario-load` 的 `agents` 项，字段对齐门面 DTO
 //     facade.ScenarioAgent）—— 提示词 / 工具白名单 / LLM 引用 / 委派条件四字段齐备；
@@ -354,7 +411,7 @@ func (s *Server) loadScenario(instanceID, scenarioID string) (string, string, []
 	if scenarioID == "" {
 		return "", "", nil
 	}
-	res, err := dataRequest(s.bus, "data-scenario-load", map[string]any{
+	res, err := dataRequest(s.bus, msgkeys.TopicDataScenarioLoad, map[string]any{
 		"instance_id": instanceID, "data": map[string]any{"id": scenarioID},
 	})
 	if err != nil {
