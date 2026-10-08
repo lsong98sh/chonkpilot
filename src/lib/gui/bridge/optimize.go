@@ -172,7 +172,7 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 		user = strings.Join(parts, "\n") + "\n\nPrompt:\n" + prompt
 	}
 
-	body, _ := json.Marshal(map[string]any{
+	reqBody := map[string]any{
 		"model": llm.Model,
 		"messages": []map[string]string{
 			{"role": "system", "content": sys},
@@ -180,8 +180,13 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 		},
 		"stream":      true,
 		"temperature": llm.Temp,
-		"max_tokens":  llm.MaxOutputToken,
-	})
+	}
+	// max_tokens=0 表示未配置 → **省略该字段**（交由服务端默认），不可原样发 0
+	// （部分 OpenAI 兼容端点会把 0 解读为「不输出任何 token」而立即空返回）。
+	if llm.MaxOutputToken > 0 {
+		reqBody["max_tokens"] = llm.MaxOutputToken
+	}
+	body, _ := json.Marshal(reqBody)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base, bytes.NewReader(body))
 	if err != nil {
 		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: err.Error()})

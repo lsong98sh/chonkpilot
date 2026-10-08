@@ -146,7 +146,9 @@ func isMaximisedWindow(hwnd uintptr) bool {
 	var wp WINDOWPLACEMENT
 	wp.Length = uint32(unsafe.Sizeof(wp))
 	r, _, _ := procGetWindowPlacement.Call(hwnd, uintptr(unsafe.Pointer(&wp)))
-	return r != 0 && (wp.ShowCmd == 3 || wp.ShowCmd == 2) // SW_MAXIMIZE / SW_SHOWMAXIMIZED
+	// 仅 SW_SHOWMAXIMIZED(3) 视为最大化；SW_SHOWMINIMIZED(2) 是最小化（见 isMinimizedWindow），
+	// 原实现把 2 并入最大化属误判（最小化窗口会被误报为最大化）。
+	return r != 0 && wp.ShowCmd == 3
 }
 
 // windowState 是前端 SaveWindowState 落盘的窗口几何（prj config 表 window，{"v":"<json>"}）。
@@ -382,9 +384,6 @@ func (h *appHandler) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writePublishResult(w, func() (any, []error) {
-		if h.br.DispatchLocal(body.Type) {
-			return nil, nil
-		}
 		return h.br.PublishEvent(body.Type, body.Payload)
 	})
 }
@@ -572,6 +571,20 @@ func serveWebResource(h http.Handler, c *edge.Chromium, request *edge.ICoreWebVi
 	req.Header.Set("Content-Type", "application/json")
 	rr := &recorder{header: make(http.Header), status: 200}
 	h.ServeHTTP(rr, req)
+	// 响应体超上限（D-07）：原 /publish、/show/ 的响应体无界缓冲内存 → 超限即返回 413，
+	// 防止异常/超大响应体把宿主内存吃满（正常静态资源/发布应答远低于上限）。
+	if rr.truncated {
+		resp, err := c.CreateWebResourceResponse(
+			[]byte("response body too large"),
+			http.StatusRequestEntityTooLarge,
+			"Payload Too Large",
+			"Content-Type: text/plain; charset=utf-8\r\n",
+		)
+		if err != nil {
+			return nil, err
+		}
+		return resp, nil
+	}
 	if rr.header.Get("Content-Type") == "" {
 		rr.header.Set("Content-Type", "text/plain; charset=utf-8")
 	}
@@ -599,15 +612,34 @@ func forwardedHeaders(h http.Header) string {
 	return b.String()
 }
 
+// maxRecordedBody 是 recorder 缓冲的响应体上限（D-07：防 /publish、/show/ 大响应无界占内存）。
+// 128MiB 为安全网——正常静态资源/发布应答远小于此；/show/ 下超大文件预览触及上限 → 返回 413。
+const maxRecordedBody = 128 << 20
+
 type recorder struct {
-	header http.Header
-	body   []byte
-	status int
+	header    http.Header
+	body      []byte
+	status    int
+	truncated bool // 写入累计超 maxRecordedBody（body 已按上限截断）
 }
 
-func (r *recorder) Header() http.Header         { return r.header }
-func (r *recorder) Write(b []byte) (int, error) { r.body = append(r.body, b...); return len(b), nil }
-func (r *recorder) WriteHeader(s int)           { r.status = s }
+func (r *recorder) Header() http.Header { return r.header }
+
+// Write 追加响应体；累计超 maxRecordedBody 时截断并置 truncated。**不返回 error**（否则上游
+// io.Copy 会因短写提前中断，反而拿不到完整状态）；由 serveWebResource 据 truncated 改返回 413。
+func (r *recorder) Write(b []byte) (int, error) {
+	if len(r.body)+len(b) > maxRecordedBody {
+		r.truncated = true
+		if remaining := maxRecordedBody - len(r.body); remaining > 0 {
+			r.body = append(r.body, b[:remaining]...)
+		}
+		return len(b), nil
+	}
+	r.body = append(r.body, b...)
+	return len(b), nil
+}
+
+func (r *recorder) WriteHeader(s int) { r.status = s }
 
 // ── 启动分段计时（OP-15：定位启动慢，仅插桩，不改启动行为/顺序）──────────────
 //
@@ -678,6 +710,17 @@ func Main(distFS fs.FS, opts Options) {
 	// 日志级别：先以缺省级别装好 logger（早于配置可用无妨），待桥/数据面就绪后经既有配置
 	// 通道读 prj logLevel 覆盖并订阅变更即时生效（见 loglevel.go）。
 	initLogging()
+	// 主流程返回 error（**不再中途 os.Exit**，D-08）：保证已注册的收尾 defer 链按依赖序执行，
+	// 且失败经原生消息框可见（windowsgui 下 stderr 不可见，D-06，口径同 exitWorkDirBusy）。
+	if err := runMain(distFS, opts); err != nil {
+		slog.Error("gui main failed", "err", err)
+		nativeAlert("ChonkPilot", err.Error())
+		os.Exit(1)
+	}
+}
+
+// runMain 是宿主主流程（Main 的实体）；任何失败以 error 返回，由 Main 统一弹框 + 退出。
+func runMain(distFS fs.FS, opts Options) error {
 	markStartupBegin()
 
 	var workDir, dataDir, bridgeURL string
@@ -704,8 +747,7 @@ func Main(distFS fs.FS, opts Options) {
 		var err error
 		workDir, err = os.Getwd()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "cwd:", err)
-			os.Exit(1)
+			return fmt.Errorf("cwd: %w", err)
 		}
 	}
 	workDir = models.ResolveDir(workDir, "")
@@ -743,8 +785,8 @@ func Main(distFS fs.FS, opts Options) {
 	// （不可拿 models.DataDir(workDir) 当 prjusr 根，见 12-数据层 §3 实施注意）。
 	prjUsrRoot, err := data.PrjUsrDir(workDir, dataDirArg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "prjusr data root:", err)
-		os.Exit(1)
+		// 数据根初始化失败：返回 error 由 Main 弹原生消息框（windowsgui 下 stderr 不可见，D-06）。
+		return fmt.Errorf("prjusr 数据根解析失败: %w", err)
 	}
 	logStartupStage("prjusr 数据根解析（含 prj 库打开）")
 	// GUI 文件日志（可诊断性，2026-09-19）：windowsgui 下无控制台、stderr 不可见 → 在 prjusr
@@ -762,23 +804,43 @@ func Main(distFS fs.FS, opts Options) {
 	// 消息总线：命名空间前缀 chonk. 在此注入一次（server/gateway/persist/filesys/bridge
 	// 共享同一总线），业务 publish/subscribe 一律写相对主题，见 61-消息一览 §0.1。
 	// 注：instance_id 由**窗口工厂每窗口**生成（一窗口一实例，24 §2.2 C1）。
+	// 收尾依赖序（D-05）：ts.Shutdown → srv.Stop → fsys.Stop → bus.Close。
+	// 需要按**依赖序**（而非 defer LIFO 的注册逆序）停止，且早期 return err 亦须执行收尾（D-08）：
+	// 先声明 fsys/srv/ts 供收尾闭包引用，随后注册**单一**收尾 defer；无论正常收尾还是中途
+	// return err，都在 runMain 返回时按序停止（nil 守卫自动跳过未创建者）。
+	var fsys *filesys.Filesys
+	var srv *server.Server
+	var ts *testServer
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
-		slog.Error("mq new failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("mq new: %w", err)
 	}
+	defer func() {
+		if ts != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = ts.Shutdown(ctx)
+			cancel()
+		}
+		if srv != nil {
+			srv.Stop()
+		}
+		if fsys != nil {
+			fsys.Stop()
+		}
+		if bus != nil {
+			_ = bus.Close()
+		}
+	}()
 	logStartupStage("MQ 总线初始化")
 
 	// chonkpilot-filesys 文件服务：订阅 filesys.* 请求（list/content/create/…/watch/
 	// unwatch）→ 写回 Result/Errors；watch 变更经 fsnotify 广播 filesys.changed →
 	// 桥 ">" 订阅转发前端（文件域直连，61-消息一览 §2；-no-server 离线 UI 注入
 	// 测试仍可用文件树）。
-	fsys := filesys.New(bus)
+	fsys = filesys.New(bus)
 	if err := fsys.Start(); err != nil {
-		slog.Error("filesys start failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("filesys start: %w", err)
 	}
-	defer fsys.Stop()
 	logStartupStage("filesys 文件服务启动")
 
 	// ── inprocess 会话服务（GUI 内嵌 chonkpilot-server lib，同进程内存 MQ）──
@@ -786,7 +848,6 @@ func Main(distFS fs.FS, opts Options) {
 	// bridge.Start 的 instance-register 绑定（persist 自持实例视图，61-消息一览 §4.1），
 	// 宿主不再直接打开/持有数据层句柄。
 	// -no-server：跳过（UI 注入测试模式，注入事件完全控制回合，无真实 LLM/数据服务）。
-	var srv *server.Server
 	if !noServer {
 		srv = server.New(bus, server.Options{
 			LLMBase:  llmBase,
@@ -817,10 +878,8 @@ func Main(distFS fs.FS, opts Options) {
 		})
 		logStartupStage("server 装配（capability 契约扫描 + gateway 构建）")
 		if err := srv.Start(context.Background()); err != nil {
-			slog.Error("server start failed", "err", err)
-			os.Exit(1)
+			return fmt.Errorf("server start: %w", err)
 		}
-		defer srv.Stop()
 		logStartupStage("server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）")
 	}
 
@@ -834,8 +893,7 @@ func Main(distFS fs.FS, opts Options) {
 
 	subFS, err := fs.Sub(distFS, "frontend/dist")
 	if err != nil {
-		slog.Error("fs.Sub dist failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("fs.Sub dist: %w", err)
 	}
 
 	// 进程级装配上下文：窗口工厂据此**每窗口**一份桥 + appHandler（MW-1/MW-2/MW-3）。
@@ -853,8 +911,7 @@ func Main(distFS fs.FS, opts Options) {
 	}
 
 	// 测试通道（--test-port）：仅绑**主窗口**（每窗口一份 appHandler 后，多窗口回归不覆盖，
-	// 见 24 §4.5 / U-3）；console 捕获注入须在导航前（见 onWired）。
-	var ts *testServer
+	// 见 24 §4.5 / U-3）；console 捕获注入须在导航前（见 onWired）。ts 已在总线下声明（收尾闭包引用）。
 
 	// 主窗口（MW-1：主窗口同走窗口工厂；几何恢复 / 拦截器 / lifecycle / Show 逐条与改前一致）。
 	mainHost, err := startWindow(env, windowSpec{
@@ -880,7 +937,7 @@ func Main(distFS fs.FS, opts Options) {
 			ts.destroy = h.destroy
 			ts.handler = h.handler
 			// 对话窗口建窗时据此登记为可选测试目标（window_id 路由，24 §4.5）。
-			env.testSrv = ts
+			env.setTestServer(ts)
 			// 测试模式注入 console 捕获（导航前）。
 			ts.InjectConsoleCapture(h.chromium)
 			h.onReady = ts.SetReady
@@ -888,21 +945,12 @@ func Main(distFS fs.FS, opts Options) {
 		},
 	})
 	if err != nil {
-		slog.Error("main window create failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("main window create: %w", err)
 	}
 	env.windows.setMain(mainHost)
 	logStartupStage("主窗口创建（bridge/WebView2 环境就绪）")
-	// 进程级收尾（defer LIFO = 倒序执行）：总线是**进程唯一一份**，各窗口关闭只注销本实例
-	// （Bridge.CloseInstance），总线由宿主在进程收尾时统一关闭。
-	defer bus.Close()
-	if testPort > 0 {
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = ts.Shutdown(ctx)
-		}()
-	}
+	// 进程级收尾改由总线下注册的**单一收尾 defer**（依赖序 ts→srv→fsys→bus）统一完成，
+	// 不再各自 defer（原 defer LIFO 会使 bus.Close 早于 srv.Stop/fsys.Stop，D-05）。
 
 	// 桥与 appHandler 已下沉窗口工厂**每窗口一份**（window.go createWindow）：
 	// 实例注册 / 认证接线 / 数据门面 / DevTools / 日志目录 / prjusr 根均在那处逐窗口装配。
@@ -924,9 +972,10 @@ func Main(distFS fs.FS, opts Options) {
 	logStartupStage("启动流程就绪（进入窗口事件循环，首屏于导航完成后另记）")
 
 	// 主窗口关闭 = 退出本进程（24 §4.4）：其余对话窗口一并关闭（各自发 instance-exit +
-	// gui.window.closed），随后返回（总线由 defer 关闭）。
+	// gui.window.closed），随后返回（收尾 defer 按依赖序关闭 ts/srv/fsys/bus）。
 	<-mainHost.done
 	env.windows.shutdown()
+	return nil
 }
 
 // 工具函数（避免导入额外包）。

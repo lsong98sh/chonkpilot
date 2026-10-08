@@ -130,24 +130,34 @@ type catalogAsset struct {
 	Node        string          `json:"node,omitempty"`      // 来源节点名（执行层反查 provider；缺省 "server"）
 }
 
+// assetMaxBytes 是资产实时读盘上限（4MB）：防单个资产无上限读入内存（C-22）。
+const assetMaxBytes = 4 << 20
+
 // assetContent 取资产内容（RB-4 ①，2026-09-22）：`path` 非空 → **实时读盘**（内容不驻留）；
 // 无 `path` → 返回注册载荷携带的 `content`（内嵌域 agent 等无运行时落点的资产，兼容兜底）。
-// 读盘失败 → 空串（有 path 即视为唯一来源，不回退陈旧副本）。
+// 读盘失败 → ("", nil)（有 path 即视为唯一来源，不回退陈旧副本）；超上限 → 报错（调用方转工具错误）。
 //
 // 沙箱豁免（RB-4 ①）：`path` 来自**装配层注册的资产元信息**（非用户 DSL/工具入参），
 // 属受控来源 → 不施加 agentbox 校验；DSL 脚本侧读盘由执行器 dslfs 句柄统一沙箱化。
-func assetContent(a *catalogAsset) string {
+func assetContent(a *catalogAsset) (string, error) {
 	if a == nil {
-		return ""
+		return "", nil
 	}
 	if a.Path != "" {
+		fi, err := os.Stat(a.Path)
+		if err != nil {
+			return "", nil
+		}
+		if fi.Size() > assetMaxBytes {
+			return "", fmt.Errorf("asset content exceeds %d bytes: %s", assetMaxBytes, a.Path)
+		}
 		b, err := os.ReadFile(a.Path)
 		if err != nil {
-			return ""
+			return "", nil
 		}
-		return string(b)
+		return string(b), nil
 	}
-	return a.Content
+	return a.Content, nil
 }
 
 // ─── 共享能力节点（RB-3 ①：注册表按 node key 唯一，instance 只持引用集）───
@@ -235,6 +245,17 @@ func (r *registry) registerProvider(ps *providerState, proxyTools []*mcp.Tool, n
 		tools = proxyTools
 	}
 
+	// 原子性（C-07）：任一步骤失败时回滚**本次已写**的路由与 ps.tools，避免部分路由残留
+	// （既有的 registerFailed 登记保持不变 → 连接失败仍可见状态，符合 :1750 设计）。
+	origTools := len(ps.tools)
+	written := make([]string, 0, len(tools))
+	rollback := func() {
+		for _, k := range written {
+			delete(r.routes, k)
+		}
+		ps.tools = ps.tools[:origTools]
+	}
+
 	for _, t := range tools {
 		orig := t.Name
 		name := orig
@@ -252,6 +273,7 @@ func (r *registry) registerProvider(ps *providerState, proxyTools []*mcp.Tool, n
 		}
 		// 冲突按 (scope, 暴露名) 判定：global 与各 instance scoped 是独立名字空间
 		if existing, dup := r.routes[routeKey(ps.scope, name)]; dup {
+			rollback()
 			return fmt.Errorf("tool 名冲突 %q（%s 与 %s，来源 %s/%s，scope=%q）：用 servers.list alias 改名或配对", name, existing.Provider, ps.key, existing.Provider, ps.key, ps.scope)
 		}
 		t.Name = name
@@ -268,6 +290,7 @@ func (r *registry) registerProvider(ps *providerState, proxyTools []*mcp.Tool, n
 		injectDisplayName(t)
 		route := &toolRoute{Name: name, Original: orig, Provider: ps.key, Tool: t, Hot: t.Meta != nil, Scope: ps.scope}
 		r.routes[routeKey(ps.scope, name)] = route
+		written = append(written, routeKey(ps.scope, name))
 		ps.tools = append(ps.tools, route)
 	}
 	sort.Slice(ps.tools, func(i, j int) bool { return ps.tools[i].Name < ps.tools[j].Name })

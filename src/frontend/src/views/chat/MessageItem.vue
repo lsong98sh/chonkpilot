@@ -243,6 +243,9 @@ const props = defineProps({
   fromHistory: { type: Boolean, default: false },
 })
 
+// 清除裁决：message 由 MessageList 持有 → 子组件只发事件，不直改 props 内部属性（E-08）。
+const emit = defineEmits(['clear-arbitration'])
+
 
 // 折叠初始值：来自 DB 的历史消息（fromHistory，切换 session / 翻页加载）默认折叠；
 // 当前会话实时流式消息（无 fromHistory）默认展开。
@@ -557,7 +560,8 @@ async function backgroundTool() {
 // 「等待完成」发 mcp-tools-wait、「停止」走统一取消入口 task-stop。
 // 裁决后清除 message.arbitration → 提示文案与工具行裁决按钮同时隐藏；MessageList 侧 timeoutShown 保证不再弹。
 function hideArbitration() {
-  props.message.arbitration = null
+  // 交由持有方（MessageList）清除 message.arbitration（子组件不直改 props 内部属性；E-08）。
+  emit('clear-arbitration', props.message)
 }
 
 // 等待完成（never）：发 mcp-tools-wait{tool_call_id}，撤销超时、继续等待原同步调用返回。

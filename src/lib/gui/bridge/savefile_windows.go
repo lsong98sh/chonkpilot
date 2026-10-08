@@ -9,6 +9,7 @@ package bridge
 
 import (
 	"fmt"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -65,14 +66,17 @@ func pickSaveFileName(title, defaultName, filter string) (string, error) {
 		filter = "All files\x00*.*\x00\x00"
 	}
 
-	// 文件名缓冲区：初始填入 defaultName（NUL 结尾；API 就地被用户改写）
+	// 文件名缓冲区：初始填入 defaultName（NUL 结尾；API 就地被用户改写）。
+	// 必须按 **UTF-16 code unit** 写入（utf16.Encode 会正确处理非 BMP 字符的代理对），
+	// 并以 code unit 数判界；**不可**用 `for i, r := range` 的字节下标逐字符填 uint16
+	// （中文等多字节字符会错位、且留下未初始化 NUL → 被 API 当作字符串结尾）。
+	// 保留 1 个 code unit 给结尾 NUL（make 已零值初始化）。
 	fileBuf := make([]uint16, 260)
-	for i, r := range defaultName {
-		if i >= len(fileBuf)-1 {
-			break
-		}
-		fileBuf[i] = uint16(r)
+	enc := utf16.Encode([]rune(defaultName))
+	if len(enc) > len(fileBuf)-1 {
+		enc = enc[:len(fileBuf)-1]
 	}
+	copy(fileBuf, enc)
 
 	// 过滤器：UTF-16 序列（含结尾双 NUL）
 	var filterBuf []uint16

@@ -599,13 +599,16 @@ func (g *Gateway) runDSLLLM(ctx context.Context, call dslLLMCallMsg, instance, p
 		}
 	}
 
-	g.bus.Emit(ctx, msgkeys.TopicLlmSend, map[string]any{
+	send := g.bus.Emit(ctx, msgkeys.TopicLlmSend, map[string]any{
 		"instance_id": instance,
 		"session":     session,
 		"turn":        turn,
 		"type":        "text-user",
 		"content":     call.Prompt,
 	}).Wait()
+	if err := send.Err(); err != nil {
+		return "", err
+	}
 
 	select {
 	case <-done:
@@ -640,6 +643,10 @@ func (g *Gateway) runDSLLLM(ctx context.Context, call dslLLMCallMsg, instance, p
 func (g *Gateway) loadTurnText(ctx context.Context, instance, turn string) string {
 	res, err := g.dataReq(ctx, msgkeys.TopicDataSessionLoadMessages, instance, map[string]any{"turn_id": turn})
 	if err != nil {
+		// 读回失败不再静默：记日志（返回空正文，调用方按「无最终正文」处理）（C-21）。
+		if g.logf != nil {
+			g.logf("[gateway] dsl_run loadTurnText failed (instance=%s turn=%s): %v", instance, turn, err)
+		}
 		return ""
 	}
 	return pickFinalAnswer(res["messages"])

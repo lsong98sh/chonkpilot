@@ -25,27 +25,25 @@ type jobTree struct {
 	job string
 	lw  *lineWriter
 
-	mu        sync.Mutex
-	order     []string             // 容器 id（声明序）
-	nodes     map[string]*treeNode // 容器 id → 节点（parent/kind/label）
-	lead      map[string]string    // 容器 id → 首步（lead）原始参数（进度计数归属）
-	counts    map[string]int       // 容器 id → loop_current
-	stmtOwner map[string]string    // LLM 语句原始参数 → 所属容器 id（空 = 作业根）
-	stmtID    map[string]string    // LLM 语句原始参数 → 静态语句 id
-	stepNo    int                  // 步骤序号（跨迭代累计）
-	steps     map[int]*stepMsg     // 序号 → 步骤（回填终态用）
-	seq       int                  // 容器/语句 id 序号
+	mu     sync.Mutex
+	order  []string             // 容器 id（声明序）
+	nodes  map[string]*treeNode // 容器 id → 节点（parent/kind/label）
+	lead   map[string]string    // 容器 id → 首步（lead）原始参数（进度计数归属）
+	counts map[string]int       // 容器 id → loop_current
+	stmtID map[string]string    // LLM 语句原始参数 → 静态语句 id
+	stepNo int                  // 步骤序号（跨迭代累计）
+	steps  map[int]*stepMsg     // 序号 → 步骤（回填终态用）
+	seq    int                  // 容器/语句 id 序号
 }
 
 func newJobTree(job string, lw *lineWriter) *jobTree {
 	return &jobTree{
 		job: job, lw: lw,
-		nodes:     map[string]*treeNode{},
-		lead:      map[string]string{},
-		counts:    map[string]int{},
-		stmtOwner: map[string]string{},
-		stmtID:    map[string]string{},
-		steps:     map[int]*stepMsg{},
+		nodes:  map[string]*treeNode{},
+		lead:   map[string]string{},
+		counts: map[string]int{},
+		stmtID: map[string]string{},
+		steps:  map[int]*stepMsg{},
 	}
 }
 
@@ -84,7 +82,6 @@ func (t *jobTree) walkStatic(stmts []dsl.Stmt, parentID string) string {
 			}
 		case *dsl.ActionStmt:
 			if strings.EqualFold(s.Verb, "LLM") {
-				t.stmtOwner[s.Args] = parentID
 				if t.stmtID[s.Args] == "" {
 					t.seq++
 					t.stmtID[s.Args] = "s" + strconv.Itoa(t.seq)

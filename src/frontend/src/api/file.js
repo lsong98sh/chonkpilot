@@ -88,7 +88,10 @@ export function readFile(path) {
  */
 export function getFileUrl(path) {
   if (!path) return ''
-  const url = '/show/' + path.replace(/\\/g, '/')
+  // 按 `/` 分段编码（保留分隔符）：路径可能含空格/`#`/`?` 等保留字符，整串拼接会破坏 URL
+  // （E-04）。桥侧 /show/ 读 r.URL.Path（已解码），故分段编码不影响取文件。
+  const encoded = String(path).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')
+  const url = '/show/' + encoded
   const id = currentInstanceId()
   return id ? url + '?instance_id=' + encodeURIComponent(id) : url
 }
@@ -130,9 +133,17 @@ export function createDirInDir(dirPath, dirName) {
 
 // ─── GUI 本地面辅助（gui.* 消息，61-消息一览 §1）：publish + await 收集回复，
 // 与 data-session-* / filesys.* 同模式（请求结果取 backend.result，校验 ok/errors）。
+// 统一 30s 超时（对齐 fileRequest；E-06）。
+//
+// init-data「可多次读」缓存（E-13）：主视图（预取消费）、文件树、预览区（CodeView）、工具栏、
+// 日志配置等多个消费点各自在挂载时读同一份启动快照；同一窗口内 workdir 不可变（切换目录 =
+// 另开进程/窗口）→ 单飞缓存安全，一次往返服务全部消费点，消除启动期重复全量拉取。
+// 失败清空在飞，后续可重读（与 utils/initDataPrefetch 同口径）。
+let _initDataPromise = null
+
 function guiReq(action, body = {}) {
   const topic = 'gui.' + action
-  return mq.emit(topic, body).then((env) => {
+  const run = () => mq.emit(topic, body, { timeout: 30000 }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(topic + ': backend unreachable')
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
@@ -144,6 +155,11 @@ function guiReq(action, body = {}) {
     }
     return p
   })
+  if (action === 'init-data') {
+    if (!_initDataPromise) _initDataPromise = run().catch((e) => { _initDataPromise = null; throw e })
+    return _initDataPromise
+  }
+  return run()
 }
 
 export function revealInExplorer(path) {

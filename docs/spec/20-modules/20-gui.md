@@ -116,7 +116,7 @@
 |--------|------|-----------|----------|
 | 1 | 路径以 `db://` 开头 | `none` | 不渲染（数据库查看器自行处理） |
 | 2 | 备份文件（`~` / `~$` / `.swp` / `.swo`） | `unsupported` | 不支持提示 |
-| 3 | 原语文件（`*.tool.md` / `*.skill.md` / `*.prompt.md` / `*.resource.md`） | `primitive` | 原语面板 |
+| 3 | 原语文件（`*.tool.md` / `*.skill.md` / `*.prompt.md` / `*.resource.md` / `*.agent.md`） | `primitive` | 原语面板 |
 | 4 | 扩展名 = `md` | `markdown` | `@ashlesss/markstream-vue`（可切源码） |
 | 5 | 扩展名 = `pdf` | `pdf` | `<iframe>` + `raw=true` 文件 URL |
 | 6 | 扩展名 ∈ `codeExtensions` | `code` | `@file-viewer/vue3`（preset-lite code renderer，只读高亮，无工具栏） |

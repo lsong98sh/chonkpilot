@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/chonkpilot/chonkpilot-data"
 )
@@ -164,7 +165,7 @@ func expandImages(msgs []ChatMsg, opts ImageOptions) ([]messageImages, error) {
 			if perReq > maxImagesPerRequest {
 				return nil, imageErr("单次请求图片数量超限（%d > %d）: %s", perReq, maxImagesPerRequest, path)
 			}
-			part, err := loadImagePart(path)
+			part, err := loadImagePartInRoot(root, path)
 			if err != nil {
 				return nil, err
 			}
@@ -177,11 +178,50 @@ func expandImages(msgs []ChatMsg, opts ImageOptions) ([]messageImages, error) {
 	return out, nil
 }
 
-// loadImagePart 读取并校验一张图片：类型白名单（扩展名 + 魔数）、单图大小上限。
+// loadImagePartInRoot 在上传根约束下加载一张图片（B-11：先解析符号链接，复验真实路径仍在根内）。
+func loadImagePartInRoot(root, path string) (imagePart, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return imagePart{}, imageErr("图片文件不可读: %s（%v）", path, err)
+	}
+	if !withinDir(root, real) {
+		return imagePart{}, imageErr("图片路径越界（符号链接指向上传根之外）: %s", path)
+	}
+	return loadImagePart(real)
+}
+
+// imageCacheKey 是图片编码缓存键（真实路径 + 大小 + mtime → 同一文件未变则命中）。
+type imageCacheKey struct {
+	path    string
+	size    int64
+	modTime int64
+}
+
+// imageCache 是进程内图片编码缓存（B-10：同一图片每请求重复读取 + base64 重编码 → 只做一次；
+// 键含 size/mtime，文件变更自动失效；并发安全）。
+var imageCache = struct {
+	mu sync.Mutex
+	m  map[imageCacheKey]imagePart
+}{m: make(map[imageCacheKey]imagePart)}
+
+// loadImagePart 读取并校验一张图片：类型白名单（扩展名 + 魔数）、单图大小上限；
+// 命中进程内编码缓存则直接返回（path 须为已解析符号链接的真实路径）。
 func loadImagePart(path string) (imagePart, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if _, ok := imageExtMime[ext]; !ok {
 		return imagePart{}, imageErr("图片类型不支持（仅支持 png/jpeg/webp/gif）: %s", path)
+	}
+	// 先按 (path,size,mtime) 查缓存；命中即返回（免读盘 + 免重编码）。
+	fi, statErr := os.Stat(path)
+	var key imageCacheKey
+	if statErr == nil {
+		key = imageCacheKey{path: path, size: fi.Size(), modTime: fi.ModTime().UnixNano()}
+		imageCache.mu.Lock()
+		if p, ok := imageCache.m[key]; ok {
+			imageCache.mu.Unlock()
+			return p, nil
+		}
+		imageCache.mu.Unlock()
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -197,7 +237,14 @@ func loadImagePart(path string) (imagePart, error) {
 	if mime == "" {
 		return imagePart{}, imageErr("图片内容不可识别（非 png/jpeg/webp/gif）: %s", path)
 	}
-	return imagePart{mime: mime, b64: base64.StdEncoding.EncodeToString(data)}, nil
+	part := imagePart{mime: mime, b64: base64.StdEncoding.EncodeToString(data)}
+	// 回填缓存（仅当 stat 成功、键稳定；否则退化为每次重读，不影响正确性）。
+	if statErr == nil {
+		imageCache.mu.Lock()
+		imageCache.m[key] = part
+		imageCache.mu.Unlock()
+	}
+	return part, nil
 }
 
 // imageExtMime 是图片扩展名白名单（错误信息与早期拒绝用；真实 mime 以魔数为准）。

@@ -148,5 +148,24 @@ func newTag() string {
 	return "ck" + hex.EncodeToString(b)
 }
 
-// quote JS 字符串安全包装。
-func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "\\'") + "'" }
+// quote JS 字符串安全包装（单引号包裹；转义 \、' 及换行/回车，避免注入与语法破坏）。
+func quote(s string) string {
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '\'':
+			b.WriteString(`\'`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('\'')
+	return b.String()
+}

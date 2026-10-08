@@ -36,15 +36,13 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/auth"
+	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
@@ -77,12 +75,15 @@ type claimReq struct {
 // onInstanceClaim 处理一次 instance-claim（方法面：结果写 v.Result、失败码进 v.Errors）。
 func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error {
 	var req claimReq
-	_ = json.Unmarshal(v.Payload, &req)
+	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		// B-12：不再静默吞错——非法/空载荷按空请求继续（保持既有宽容语义），但留痕。
+		logf("[chonkpilot-server] instance-claim: 载荷解析失败（按空请求处理）: %v\n", err)
+	}
 
 	// ① 实例标识：入口绑定优先（见文件头 2b-2 保留口径）；无绑定 → 服务端生成 uuid v4。
 	id := req.InstanceID
 	if id == "" {
-		id = newUUID()
+		id = idgen.NewUUID()
 	}
 
 	// ② 入口绑定解析 work_dir/data_dir：本实例既有登记（入口启动期 instance-register 已登记）
@@ -276,15 +277,4 @@ func sameDir(a, b string) bool {
 	ca := filepath.Clean(filepath.FromSlash(strings.TrimSpace(a)))
 	cb := filepath.Clean(filepath.FromSlash(strings.TrimSpace(b)))
 	return strings.EqualFold(ca, cb)
-}
-
-// newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖；同 GUI 桥 / httpapi 实现）。
-func newUUID() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("ins-%d", time.Now().UnixNano())
-	}
-	buf[6] = (buf[6] & 0x0f) | 0x40
-	buf[8] = (buf[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }

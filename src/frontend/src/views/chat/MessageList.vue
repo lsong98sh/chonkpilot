@@ -56,6 +56,7 @@
           :is-active="turnActive"
           :is-last-message="i === messages.length - 1"
           :from-history="!!msg.fromHistory"
+          @clear-arbitration="onClearArbitration"
         />
         <!-- 「加载中」占位（独立 pending 状态，不在 messages 内）→ 历史全量替换不影响 -->
         <MessageItem
@@ -701,6 +702,11 @@ function clearPendingTimers() {
   if (pendingTimerThinking) { clearTimeout(pendingTimerThinking); pendingTimerThinking = null }
 }
 
+// 裁决清除：MessageItem 发事件回传消息对象（消息归本组件持有）→ 置空 arbitration（E-08）。
+function onClearArbitration(msg) {
+  if (msg) msg.arbitration = null
+}
+
 // user 气泡（send / drain 后的 message / 同轮次继续）：落库回执后渲染。
 // at = 发送时刻的消息末尾下标：即使等待回执期间流式内容先到，也按该下标插入，
 // 保持「用户消息在 assistant 输出之前」的时序（下标失效时回落追加）。
@@ -1108,6 +1114,7 @@ onUnmounted(() => {
   persistentUnsubs.forEach(fn => { try { fn() } catch (e) { console.error('[MessageList] persistentUnsubs cleanup error:', e) } })
   persistentUnsubs.length = 0
   clearTimeout(autoContinueTimer)
+  clearPendingTimers()
   cleanupAndFinish()
   resetMessages()
 })

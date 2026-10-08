@@ -31,7 +31,8 @@ const (
 
 // DefaultMaxInstances 是单进程可登记的实例数缺省上限（2026-09-19，缺口 7）。
 // 同进程服务多 instance（split 服务端 exe / 未来 browser）时防无界增长；
-// 超限注册被**明确拒绝**（HandleRegister 返回错误 + stderr 告警），已登记实例的刷新不受限。
+// 超限注册被**明确拒绝**（HandleRegister 返回错误 + 告警上报：宿主日志，无宿主时回落 stderr），
+// 已登记实例的刷新不受限。
 const DefaultMaxInstances = 64
 
 // Info 是单个实例的注册视图。
@@ -51,6 +52,8 @@ type Manager struct {
 	subs []mq.Sub
 	now  func() time.Time // 可注入时钟（测试）
 	max  int              // 实例数上限（<=0 = 不限；DefaultMaxInstances 为缺省）
+	// logf 告警上报（宿主注入；nil = 回落 stderr，见 reportWarn）。Start 前经 SetLogf 注入。
+	logf func(format string, args ...any)
 }
 
 // New 构建 Manager（不订阅；需 Start 或由宿主路由驱动 Handle*）。上限 = DefaultMaxInstances。
@@ -89,10 +92,31 @@ func (m *Manager) SetClock(now func() time.Time) {
 	m.now = now
 }
 
+// SetLogf 注入告警上报函数（宿主在 Start 前调用；传 nil = 回落 stderr，自力/无宿主模式）。
+// 注册超限等告警经此上报宿主日志（GUI 形态 stderr 不可见，必须落宿主日志）。
+func (m *Manager) SetLogf(logf func(format string, args ...any)) {
+	m.mu.Lock()
+	m.logf = logf
+	m.mu.Unlock()
+}
+
+// reportWarn 上报一条告警：已注入 logf → 走宿主日志；否则回落 stderr（兜底，不静默丢）。
+func (m *Manager) reportWarn(format string, args ...any) {
+	m.mu.RLock()
+	logf := m.logf
+	m.mu.RUnlock()
+	if logf != nil {
+		logf(format, args...)
+		return
+	}
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
+
 // Start 订阅三个主题（自驱动模式；server 内嵌、插件引用均可用）。
 // 合并单进程形态（GUI/CLI 内嵌）下实例不发布心跳、随进程生命周期结束，退出只由显式
 // `instance-exit` 处理——不做心跳超时清理（无超时判定；分离形态将来按形态标识再加）。
-// 注册超限（缺口 7）→ HandleRegister 返回错误，此处**告警到 stderr**（不静默丢）。
+// 注册超限（缺口 7）→ HandleRegister 返回错误，此处**告警上报**（经 SetLogf 注入的宿主日志；
+// 未注入时回落 stderr，不静默丢）。
 func (m *Manager) Start() error {
 	for _, s := range []struct {
 		subject string
@@ -104,7 +128,7 @@ func (m *Manager) Start() error {
 	} {
 		sub, err := m.bus.On(s.subject, 0, func(_ context.Context, subj string, v *mq.Value) error {
 			if herr := s.h(subj, v.Payload); herr != nil {
-				fmt.Fprintf(os.Stderr, "[instance] %v\n", herr)
+				m.reportWarn("[instance] %v", herr)
 			}
 			return nil
 		})

@@ -3,9 +3,10 @@
 // 能力（对齐 chonkpilot HandleFetch）:
 //   - method / body / form(form_files) / headers / cookies
 //   - save_as 下载（落盘路径须绝对或以 ~/ 开头，R-11）
-//   - readTimeout 总超时（响应头 + body 全程）
+//   - readTimeout 总超时（响应头 + body 全程；<10 秒视为 10 秒）
 //   - follow_redirect / encoding 转码
-//   - 响应体不设自限（io.ReadAll 全读）；超长输出由 executor 统一层接管（>200KB 落临时文件）
+//   - 响应体读取硬上限 maxFetchBytes（32MB，防无上限读入内存）；超限截断后仍由 executor
+//     统一层接管（见 internal/cli maxOutputBytes：>200KB 落临时文件）
 //
 // 与 chonkpilot 的差异（共通 executor 定位）:
 //   - 文件操作参数路径强约束（R-11）：save_as / form_files[].path 须为绝对路径或以 ~/
@@ -37,6 +38,10 @@ import (
 	"golang.org/x/text/encoding/traditionalchinese"
 	"golang.org/x/text/transform"
 )
+
+// maxFetchBytes 是响应体读取硬上限（32MB）：防无上限读入内存；超限截断后仍走 executor
+// 统一层「>200KB 落临时文件」通道（见 internal/cli maxOutputBytes）。
+const maxFetchBytes = 32 << 20
 
 // HandleFetch 执行 HTTP 请求。
 func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
@@ -116,10 +121,14 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 		bodyReader = bytes.NewReader([]byte(b))
 	}
 
-	// readTimeout：总超时（响应头 + body 全程）
+	// readTimeout：总超时（响应头 + body 全程）；显式给出即生效，隐式下限 10s（C-09，
+	// 与 web_fetch.tool.md / 本文件头注一致：小于 10 秒按 10 秒处理；未给出 → 默认 300）。
 	readTimeoutSec := 300
-	if t, ok := args["readTimeout"].(float64); ok && t >= 10 {
+	if t, ok := args["readTimeout"].(float64); ok && t > 0 {
 		readTimeoutSec = int(t)
+		if readTimeoutSec < 10 {
+			readTimeoutSec = 10
+		}
 	}
 
 	req, err := http.NewRequest(method, url, bodyReader)
@@ -174,9 +183,14 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	// 响应体读取（硬上限 maxFetchBytes；+1 探测是否超限）
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes+1))
 	if err != nil {
 		return cli.Err("web_fetch", fmt.Sprintf("failed to read response: %s", err))
+	}
+	truncated := len(data) > maxFetchBytes
+	if truncated {
+		data = data[:maxFetchBytes]
 	}
 
 	// encoding 转码
@@ -198,6 +212,9 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 		}
 		sizeMB := float64(len(data)) / (1024 * 1024)
 		msg := fmt.Sprintf("📥 已下载到 %s（%.2f MB，HTTP %d）", saveAs, sizeMB, resp.StatusCode)
+		if truncated {
+			msg += "（响应体超过 32MB，已截断）"
+		}
 		return cli.Ok("web_fetch", msg, map[string]interface{}{
 			"status_code": resp.StatusCode, "content_type": resp.Header.Get("Content-Type"),
 			"body_length": len(data), "saved_to": saveAs,
@@ -214,6 +231,9 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 	headers := strings.TrimSpace(headerBuf.String())
 	bodyStr := string(data)
 	msg := fmt.Sprintf("✅ HTTP %d %s\n%s\n\n%s", resp.StatusCode, resp.Status, headers, bodyStr)
+	if truncated {
+		msg += "\n...（响应体超过 32MB，已截断）"
+	}
 	return cli.Ok("web_fetch", msg, map[string]interface{}{
 		"status_code": resp.StatusCode, "content_type": resp.Header.Get("Content-Type"),
 		"body_length": len(data),

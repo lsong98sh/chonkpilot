@@ -159,8 +159,8 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 			tc := s.lookupTurn(req.Turn)
 			if tc != nil {
 				node, _ := s.domainNode(tc, req.ToolCallID, req.Name, req.Arguments)
-				text := s.execTaskTool(tc, req.ToolCallID, node, req.Name, req.Arguments, context.WithoutCancel(tc.ctx))
-				if strings.HasPrefix(text, "错误") {
+				text, isErr := s.execTaskTool(tc, req.ToolCallID, node, req.Name, req.Arguments, context.WithoutCancel(tc.ctx))
+				if isErr {
 					s.tasks.done(node.TaskID, TaskStateError, "", text)
 				} else {
 					s.tasks.done(node.TaskID, TaskStateDone, text, "")

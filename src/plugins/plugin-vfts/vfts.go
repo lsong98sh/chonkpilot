@@ -99,11 +99,11 @@ type Vfts struct {
 	exe  string // 引擎 exe 绝对路径（resolveExe 结果）
 	opt  Options
 
-	mu           sync.Mutex // 保护 insts / works / registered / regOwner / lastActiveAt
+	mu           sync.Mutex // 保护 insts / works / lastActiveAt（registered / regOwner 由 syncMu 保护——读写在 syncTools 单飞区内）
 	insts        map[string]*instRec
 	works        map[string]*workRec // key = workdir（Clean 后绝对路径）
-	registered   bool                // 查询工具是否已注册到 gateway（全局仅一份）
-	regOwner     string              // 当前注册归属的 workdir（多 workdir 同时启用时取第一个）
+	registered   bool                // 查询工具是否已注册到 gateway（全局仅一份；读写在 syncMu 单飞区内）
+	regOwner     string              // 当前注册归属的 workdir（多 workdir 同时启用时取第一个；读写在 syncMu 单飞区内）
 	lastActiveAt time.Time           // 最近一次观察到活跃实例的时刻（sweepIdleClient 空闲回收基准）
 	syncMu       sync.Mutex          // syncTools 单飞（防并发重复注册/注销）
 	clientMu     sync.Mutex          // 共享引擎子进程懒建/回收保护
@@ -345,9 +345,26 @@ func (p *Vfts) onInstanceRegister(_ string, payload []byte) {
 	wd := filepath.Clean(ev.WorkDir)
 	p.mu.Lock()
 	ir := p.insts[ev.InstanceID]
-	if ir == nil {
+	switch {
+	case ir == nil:
 		ir = &instRec{}
 		p.insts[ev.InstanceID] = ir
+	case ir.workdir == wd:
+		// 同 workdir 重复 register（幂等刷新）：只刷新时刻，不重复计数
+		// （对齐 instance.Manager「已登记实例的刷新不受影响」语义）。
+		ir.last = time.Now()
+		p.lastActiveAt = time.Now()
+		if r := p.works[wd]; r != nil && r.dataDir == "" && ev.DataDir != "" {
+			r.dataDir = ev.DataDir
+		}
+		p.mu.Unlock()
+		go p.readEnableAndEnsure(ev.InstanceID, wd)
+		return
+	case ir.workdir != "":
+		// 跨 workdir 重绑：旧 workdir 引用递减（归零不在此注销，由随后的 syncTools 收敛），新 workdir 重新计数。
+		if old := p.works[ir.workdir]; old != nil && old.refs > 0 {
+			old.refs--
+		}
 	}
 	ir.workdir = wd
 	ir.last = time.Now()
@@ -513,10 +530,8 @@ func (p *Vfts) applyPrjConfig(key, op string, list map[string]any) {
 		// 索引配置变更 → 对启用中的 workdir 强制重建索引（exts/skip-dirs/stack-gitignore/docs 变更
 		// 均须重建才生效）。
 		// 经去抖合并：一次批量保存（广播含多键 → 逐键展开）只重建一轮。
-		// docs/doc-max-mb 变更 → 先强制复探转换服务（开关打开时服务可能刚启动）。
-		if key == docsKey || key == docMaxMBKey {
-			p.probeDocsService(true)
-		}
+		// docs/doc-max-mb 变更不在总线 handler 内同步探测转换服务（慢请求不进总线派发路径）：
+		// 探测移交去抖回调内的 ensureWorkspace —— 其索引前**强制复探**（服务后启动 → 自动接上）。
 		if key == docsKey {
 			on := false
 			if list != nil {

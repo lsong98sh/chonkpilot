@@ -408,8 +408,10 @@ func isIdentStart(c byte) bool {
 func isIdentPart(c byte) bool { return isIdentStart(c) || isDigit(c) }
 
 // matchOp 贪婪匹配符号（含工具动作参数字符集：-> % + * /，避免 raw 行在 lex 层报错）。
+// 注（B-25）：不含 `#` / `@` —— 句柄前缀由 scanStatement 在进入 matchOp 之前单独处理
+// （`#` 后随引号 / `@`；`#` 后非引号 = 行内注释），故此处两个分支不可达，已删除。
 func matchOp(s string) (string, int) {
-	for _, op := range []string{">>=", "=>", "==", "!=", ">=", "<=", "->", ">", "<", "=", ".", "(", ")", ",", ":", "!", "[", "]", "+", "*", "/", "%", "#", "@"} {
+	for _, op := range []string{">>=", "=>", "==", "!=", ">=", "<=", "->", ">", "<", "=", ".", "(", ")", ",", ":", "!", "[", "]", "+", "*", "/", "%"} {
 		if strings.HasPrefix(s, op) {
 			return op, len(op)
 		}

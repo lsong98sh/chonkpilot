@@ -6,6 +6,7 @@
   "screenshot": "截图（隐藏窗口全屏截取）",
   "screenshot_no_vision": "所选 LLM 未声明「图形」能力，无法截图（设置 → LLM → 模型能力 中勾选「图形」）",
   "screenshot_failed": "截图失败，请重试",
+  "screenshot_tip": "拖拽选择截图区域 · 双击取消",
   "uploading": "上传中…",
   "upload_failed": "附件上传失败：{name}",
   "custom_answer_placeholder": "输入自定义回答...",

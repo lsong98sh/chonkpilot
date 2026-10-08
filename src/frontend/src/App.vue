@@ -65,7 +65,6 @@ const textKey = computed(() => TEXT_KEYS[state.value] || 'common.instance_claimi
 // 不广播 `session-changed`（否则会覆盖该窗口绑定的会话，24 §3.3 C5 / §6.2）。
 async function init() {
   if (!ready.value || chatOnly) return
-  if (dslStep.isDslStep) return // DSL 步骤只读窗口同口径：不读活动会话、不广播 session-changed
   try {
     const activeRes = await getActiveSessionID()
     const sessionId = activeRes?.session_id || null

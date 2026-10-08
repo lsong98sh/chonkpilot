@@ -269,8 +269,17 @@ function onHeaderMouseDown(e) {
 
 function onDragMove(e) {
   if (!dragging) return
-  position.x = dragOrigX + (e.clientX - dragStartX)
-  position.y = dragOrigY + (e.clientY - dragStartY)
+  const el = dialogRef.value
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const w = el ? el.offsetWidth : 0
+  const h = el ? el.offsetHeight : 0
+  const rawX = dragOrigX + (e.clientX - dragStartX)
+  const rawY = dragOrigY + (e.clientY - dragStartY)
+  // 视口钳制（E-10）：横向允许左右半出界但至少保留 60px 可见（便于拖回）；
+  // 纵向保证表头（拖拽把手，位于弹窗顶部）始终可见（top ≥ 0）且下缘不越界。
+  position.x = Math.max(-(w - 60), Math.min(vw - 60, rawX))
+  position.y = Math.max(0, Math.min(vh - 60, rawY))
   emit('move', { x: position.x, y: position.y })
 }
 
@@ -301,8 +310,11 @@ function onResizeMouseDown(e) {
 function onResizeMove(e) {
   if (!resizing) return
   e.preventDefault()
-  const newW = Math.max(resolvedOptions.value.minWidth || 300, resizeOrigW + (e.clientX - resizeStartX))
-  const newH = Math.max(resolvedOptions.value.minHeight || 200, resizeOrigH + (e.clientY - resizeStartY))
+  const minW = resolvedOptions.value.minWidth || 300
+  const minH = resolvedOptions.value.minHeight || 200
+  // 尺寸上限 = 视口（E-10：原先只有下限，可拖到超出视口）。
+  const newW = Math.max(minW, Math.min(window.innerWidth, resizeOrigW + (e.clientX - resizeStartX)))
+  const newH = Math.max(minH, Math.min(window.innerHeight, resizeOrigH + (e.clientY - resizeStartY)))
   size.width = newW
   size.height = newH
   emit('resize', { width: newW, height: newH })

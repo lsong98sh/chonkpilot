@@ -101,15 +101,16 @@ type turnCtx struct {
 	hist       []ChatMsg // 会话历史（llm-start 组装：摘要 + 未压缩 turn，见 BuildHistory）
 	iterations int       // 工具循环计数（maxToolIterations 保护）
 
-	mu          sync.Mutex             // 保护 pending / stash / toolMsgKeys
-	pending     map[string]pendingTool // task_id → 转异步发起信息（挂起登记）
-	stash       []ChatMsg              // 等待 pending 完成时合并提交的同步工具结果
-	toolMsgKeys map[string]string      // tool_call_id → role=tool 行主键（发起即落 running；终态回填同一行）
-	asyncDone   chan asyncDoneMsg      // gateway 回执 task-report → loop 续轮
-	continues   int                    // 自动续写计数（maxAutoContinue 保护，S6）
-	sessionLock *sessionLock           // session 排他锁（onLLMStart 获取；Close 释放）
-	result      string                 // 终态输出文本（子轮次递归时父侧读取；finish 写入）
-	turnErr     error                  // 终态错误（子轮次递归时父侧读取；finish error 写入）
+	mu           sync.Mutex              // 保护 pending / stash / toolMsgKeys
+	pending      map[string]pendingTool  // task_id → 转异步发起信息（挂起登记）
+	stash        []ChatMsg               // 等待 pending 完成时合并提交的同步工具结果
+	toolMsgKeys  map[string]string       // tool_call_id → role=tool 行主键（发起即落 running；终态回填同一行）
+	toolCallMeta map[string]toolCallMeta // tool_call_id → 发起信息（B-05：终态回填免一次全量 LoadMessages）
+	asyncDone    chan asyncDoneMsg       // gateway 回执 task-report → loop 续轮
+	continues    int                     // 自动续写计数（maxAutoContinue 保护，S6）
+	sessionLock  *sessionLock            // session 排他锁（onLLMStart 获取；Close 释放）
+	result       string                  // 终态输出文本（子轮次递归时父侧读取；finish 写入）
+	turnErr      error                   // 终态错误（子轮次递归时父侧读取；finish error 写入）
 	// finishOnce 是**原子终态标志**（E2-2）：正常完成路径与 onLLMCancel（取消）可能并发到达同一轮次
 	// （cancel 命中时正常路径的 complete 仍在飞）→ server.finish 经它保证终态仅落库/广播一次
 	// （不二次写 CompleteTurnTokens、不二次广播 llm-complete）。与 Close 的 once 相互独立。
@@ -164,6 +165,13 @@ type turnCtx struct {
 	// **不落可变全局字段**，每 turn 只判一次。用途 = 「子会话压缩关闭」时的上下文超限提示（见 subsessionHint）。
 	subOnce    sync.Once
 	subsession bool
+}
+
+// toolCallMeta 记录一次工具发起的名称与参数（persistToolRunning 时登记，B-05），
+// 供终态回填（persistToolResult）复用，避免每次工具结果都做一次全量 LoadMessages。
+type toolCallMeta struct {
+	name string
+	args map[string]any
 }
 
 // isSubsession 判定本 turn 是否为子会话（42 §2 (253)：会话行 parent_id != ""）。
@@ -578,10 +586,24 @@ func (tc *turnCtx) FeedToolResultStatus(toolCallID, content, status string) {
 	tc.feed(ChatMsg{Role: "tool", ToolCallID: toolCallID, Content: content})
 }
 
+// feedTimeout 是输入队列投递的最长等待（队列满时兜底，B-07）：feed 由工具/异步回执等**非 loop
+// 协程**调用，队列满时无限阻塞会挂住调用方 goroutine；超时则丢弃并记录（不静默吞）。
+const feedTimeout = 5 * time.Second
+
 func (tc *turnCtx) feed(msg ChatMsg) {
 	select {
 	case tc.in <- msg:
+		return
 	case <-tc.done:
+		return
+	default:
+	}
+	// 队列满：带超时重试（仅此罕见分支才分配定时器，热路径零额外开销）。
+	select {
+	case tc.in <- msg:
+	case <-tc.done:
+	case <-time.After(feedTimeout):
+		logf("[chonkpilot-server] turn %s 输入队列投递超时（满），丢弃 role=%s 消息\n", tc.req.Turn, msg.Role)
 	}
 }
 
@@ -628,9 +650,19 @@ func (tc *turnCtx) onAsyncDone(m asyncDoneMsg) {
 	tc.mu.Lock()
 	pt, ok := tc.pending[m.taskID]
 	delete(tc.pending, m.taskID)
-	stash := tc.stash
-	tc.stash = nil
+	var stash []ChatMsg
+	if ok {
+		// 仅在命中登记时取出暂存同步结果；未知回执不动 stash（其他在飞任务仍需它）。
+		stash = tc.stash
+		tc.stash = nil
+	}
 	tc.mu.Unlock()
+	if !ok {
+		// 未知 / 重复回执（task_id 未登记或已完成消费，B-02）：直接返回——不构造
+		// ToolCallID 为空串的畸形 role=tool 消息、不续轮（否则污染上下文）。
+		logf("[chonkpilot-server] onAsyncDone: 未登记的 task_id %q（重复回执？）→ 忽略\n", m.taskID)
+		return
+	}
 
 	status := "completed"
 	resultText := m.result
@@ -644,12 +676,10 @@ func (tc *turnCtx) onAsyncDone(m asyncDoneMsg) {
 		status = "failed"
 		resultText = "任务结束(" + m.state + ")" // 保持既有文案（错误详情由任务节点承载）
 	}
-	if ok {
-		// 转异步：async 段记录 task_id + 转后台时间（一条记录，完成时落库，避免同一结果两条）。
-		tc.persistToolResult(pt.toolCallID, resultText, status, &persist.ToolAsyncContent{
-			TaskID: m.taskID, MovedAt: pt.movedAt,
-		})
-	}
+	// 转异步：async 段记录 task_id + 转后台时间（一条记录，完成时落库，避免同一结果两条）。
+	tc.persistToolResult(pt.toolCallID, resultText, status, &persist.ToolAsyncContent{
+		TaskID: m.taskID, MovedAt: pt.movedAt,
+	})
 
 	msgs := append([]ChatMsg{}, stash...)
 	msgs = append(msgs, ChatMsg{Role: "tool", ToolCallID: pt.toolCallID, Content: resultText})
@@ -1201,7 +1231,11 @@ func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]a
 	if tc.toolMsgKeys == nil {
 		tc.toolMsgKeys = map[string]string{}
 	}
+	if tc.toolCallMeta == nil {
+		tc.toolCallMeta = map[string]toolCallMeta{}
+	}
 	tc.toolMsgKeys[toolCallID] = id
+	tc.toolCallMeta[toolCallID] = toolCallMeta{name: name, args: args}
 	tc.mu.Unlock()
 }
 
@@ -1214,7 +1248,21 @@ func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]a
 // 该行主键**就地回填**（recovered 轮次无内存主键时由 data 面按 (turn_id, tool_call_id) 复用）；
 // 未落过 running（白名单拒绝 / 落库失败）→ 新键落一条完整记录。status 与 tool_call_status 同源。
 func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *persist.ToolAsyncContent) {
-	name, args := tc.toolCallInfo(toolCallID)
+	// 发起信息（工具名/参数）优先取本进程内存登记（persistToolRunning 时写入，B-05）：
+	// 正常流程零额外读库；仅恢复轮次等未登记路径回落库内反查（toolCallInfo）。
+	tc.mu.Lock()
+	tcm, hasMeta := tc.toolCallMeta[toolCallID]
+	key := tc.toolMsgKeys[toolCallID]
+	tc.mu.Unlock()
+	var (
+		name string
+		args any
+	)
+	if hasMeta {
+		name, args = tcm.name, tcm.args
+	} else {
+		name, args = tc.toolCallInfo(toolCallID)
+	}
 	content := persist.ToolContent{
 		Call:   &persist.ToolCallContent{ToolCallID: toolCallID, Name: name, Arguments: args},
 		Result: &persist.ToolResultContent{Content: result, Status: status},
@@ -1232,9 +1280,6 @@ func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *p
 	if meta := tc.server.gc.ToolMeta(name); len(meta) > 0 {
 		msg["_meta"] = meta
 	}
-	tc.mu.Lock()
-	key := tc.toolMsgKeys[toolCallID]
-	tc.mu.Unlock()
 	_, _ = newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key)
 }
 

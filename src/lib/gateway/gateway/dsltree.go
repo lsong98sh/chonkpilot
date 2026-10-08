@@ -30,6 +30,11 @@ const (
 	dslParallelKind = "dsl_parallel"
 )
 
+// dslStepsInlineLimit 是**进度中**单条 task-updated 携带的 steps[] 上限（C-20）：每步全量重发
+// 会让长作业 O(N²)。截断取**最近** N 步，既不新增/修改 61 的 payload 字段语义，又限制单条消息
+// 规模；作业终态 task-done 仍发**全量** steps[]（完整回放）。
+const dslStepsInlineLimit = 200
+
 // dslTreeNode / dslTreeMsg / dslStepMsg 是执行器上行协议行（与 dslexec/protocol.go 逐字一致）。
 type dslTreeNode struct {
 	ID          string `json:"id"`
@@ -41,8 +46,8 @@ type dslTreeNode struct {
 }
 
 type dslTreeMsg struct {
-	T     string       `json:"t"`
-	Job   string       `json:"job"`
+	T     string        `json:"t"`
+	Job   string        `json:"job"`
 	Nodes []dslTreeNode `json:"nodes"`
 }
 
@@ -76,15 +81,15 @@ type dslJobReporter struct {
 	emit func(subject string, payload map[string]any)
 
 	job, instance, topSession, parent, session, turn, workDir, toolCallID string
-	rootID                                                               string
-	createdAt                                                            string
+	rootID                                                                string
+	createdAt                                                             string
 
 	mu       sync.Mutex
-	emitted  map[string]bool      // 节点 id → 已发 task-started
-	lastLoop map[string]int       // 容器 id → 已发 loop_current（去抖：仅变化才更新）
+	emitted  map[string]bool        // 节点 id → 已发 task-started
+	lastLoop map[string]int         // 容器 id → 已发 loop_current（去抖：仅变化才更新）
 	steps    map[int]map[string]any // no → 步骤行
-	order    []int                // 步骤序号（稳定顺序）
-	finished bool                 // 终态已发（防重复）
+	order    []int                  // 步骤序号（稳定顺序）
+	finished bool                   // 终态已发（防重复）
 }
 
 // newDSLJobReporter 构造作业展示上报器；emit 为 nil → 无副作用（未接线 / 单测）。
@@ -148,7 +153,7 @@ func (r *dslJobReporter) OnStep(st dslStepMsg) {
 	row["statement_id"] = st.Statement
 	row["elapsed_ms"] = st.ElapsedMs
 	root := r.baseNodeLocked(r.rootID, dslJobKind, "DSL 作业", r.parent)
-	root["steps"] = r.stepsLocked()
+	root["steps"] = r.recentStepsLocked(dslStepsInlineLimit)
 	out = append(out, dslEmit{msgkeys.TopicTaskUpdated, root})
 	r.mu.Unlock()
 	r.flush(out)
@@ -240,6 +245,19 @@ func (r *dslJobReporter) baseNodeLocked(id, kind, title, parentID string) map[st
 func (r *dslJobReporter) stepsLocked() []any {
 	out := make([]any, 0, len(r.order))
 	for _, no := range r.order {
+		out = append(out, r.steps[no])
+	}
+	return out
+}
+
+// recentStepsLocked 取最近 limit 步快照（limit<=0 或不足 → 全量）；持锁调用（C-20 进度截断用）。
+func (r *dslJobReporter) recentStepsLocked(limit int) []any {
+	if limit <= 0 || len(r.order) <= limit {
+		return r.stepsLocked()
+	}
+	start := len(r.order) - limit
+	out := make([]any, 0, limit)
+	for _, no := range r.order[start:] {
 		out = append(out, r.steps[no])
 	}
 	return out

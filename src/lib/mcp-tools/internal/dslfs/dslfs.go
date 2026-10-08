@@ -32,11 +32,21 @@ var Default = Profile{StatBlocks: true, StrictMkdirErr: true, AppendMkdir: true,
 // Browser 是 browser_run 档（历史实现，语义略宽：空文件 ReadRange 恒返回空）。
 var Browser = Profile{LenientRange: true}
 
-// File 是 dsl.FileHandle 的共享实现（零状态外的 path + profile + 写锁）。
+// File 是 dsl.FileHandle 的共享实现（path + profile；写锁见 pathLocks）。
 type File struct {
 	path string
 	prof Profile
-	mu   sync.Mutex
+}
+
+// pathLocks 是**进程级**文件写锁表（key = 解析后的绝对路径）。DSL 每次 `#"path"` 引用都会经
+// FileSystem.Open 新建句柄，句柄级互斥无法跨句柄生效（C-08）；改用按路径的进程级互斥，
+// 保证并发 ReplaceLines（LockWrites 档）对同一文件串行化。
+var pathLocks sync.Map // map[string]*sync.Mutex
+
+// pathLock 取（或新建）某绝对路径的互斥锁。
+func pathLock(abs string) *sync.Mutex {
+	v, _ := pathLocks.LoadOrStore(abs, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // New 创建句柄（path 为 DSL 原始引用；解析与校验在各方法内延迟进行）。
@@ -178,13 +188,15 @@ func (f *File) Append(text string) error {
 }
 
 func (f *File) ReplaceLines(n, m int, lines []string) error {
-	if f.prof.LockWrites {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-	}
 	abs, err := f.abs(true)
 	if err != nil {
 		return err
+	}
+	if f.prof.LockWrites {
+		// 进程级按路径写锁（跨句柄生效；见 pathLocks 注释）。
+		mu := pathLock(abs)
+		mu.Lock()
+		defer mu.Unlock()
 	}
 	cur, err := f.ReadText()
 	if err != nil {

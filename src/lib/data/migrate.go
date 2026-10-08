@@ -36,13 +36,18 @@ type Migration struct {
 // `tasktree_by_session`，并入影子表的 `task_shadow_by_session`；索引由 Table 写入口
 // 在同一事务内维护（见 indexes.go）。原影子索引桶 `task_shadow_by_instance` 已无写方、
 // 由 `task_shadow_by_session` 取代，从清单移除（既有库残留空桶不清理）。
-// **不写任何回填逻辑**（索引随新写入自然建立）。
+//
+// 注（2026-10-08 c）：A-01 索引回填——升级库（schema_version < 8）中主行早于索引存在，
+// 其后任一新写入即令索引桶非空，query.go 的「整桶空」防线随之失效，旧行前缀区段为空 →
+// Seek 落空 → 静默漏行（数据凭空消失）。故建桶后**遍历 5 张主表逐行重建索引项**
+// （indexPut 幂等：已存在键 Put 覆盖）；坏行/解码失败跳过（与查询坏行跳过口径一致）。
 var migrations = []Migration{
 	{Version: 8, Name: "schema", Up: func(tx *bolt.Tx) error {
 		for _, b := range []string{
 			bucketMeta, bucketMigrations, "config",
 			"llms", "mcps",
 			"sessions", "turns", "messages", "tasktree", "meta",
+			"file_list",
 			"sessions_by_top",
 			"turns_by_session",
 			"messages_by_session", "messages_by_turn",
@@ -51,6 +56,23 @@ var migrations = []Migration{
 			"memory_extract",
 		} {
 			if err := ensureBucket(tx, b); err != nil {
+				return err
+			}
+		}
+		// 索引回填（A-01）：遍历主表逐行重建二级索引项。写的是**索引桶**（与主表不同桶），
+		// 故可与主表 ForEach 共存；空库/新库无行 → 空转（幂等）。
+		for _, table := range []string{"sessions", "turns", "messages", "tasktree", "task_shadow"} {
+			b := tx.Bucket([]byte(table))
+			if b == nil {
+				continue
+			}
+			if err := b.ForEach(func(k, v []byte) error {
+				rec, ok := decodeRecord(v, string(k))
+				if !ok {
+					return nil // 坏行/空值 → 跳过
+				}
+				return indexPut(tx, table, string(k), rec)
+			}); err != nil {
 				return err
 			}
 		}

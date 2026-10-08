@@ -1,4 +1,4 @@
-﻿﻿﻿﻿# build-mcp-gateway.ps1：一键构建独立 MCP gateway 部署目录
+﻿# build-mcp-gateway.ps1：一键构建独立 MCP gateway 部署目录
 #
 # 产物布局（dist/other/ —— 与 chonkpilot-mcp-server.exe **同目录共用** capability，见 [41 D-28]）：
 #   ├── chonkpilot-mcp-gateway.exe  # gateway exe（官方 SDK 门面，对外 stdio/http/sse；

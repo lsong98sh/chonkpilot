@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
@@ -138,7 +139,10 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 func (s *Server) publishEvent(typ, payloadJSON, token string) (any, []error) {
 	switch {
 	case typ == msgkeys.TopicLlmStart:
-		s.splitLLMStart(payloadJSON)
+		// B-23：llm-start 拆解失败（非法载荷 / session 缺失）经既有错误应答面回前端（不再静默）。
+		if err := s.splitLLMStart(payloadJSON); err != nil {
+			return nil, []error{err}
+		}
 		return nil, nil
 	case strings.HasPrefix(typ, "gui."):
 		return s.guiDo(strings.TrimPrefix(typ, "gui."), []byte(payloadJSON))
@@ -216,7 +220,9 @@ func (s *Server) bindFilesys(payloadJSON string) (string, error) {
 //
 //	session-start {req_id, instance_id, session, turn, llm, think, effort, scenario_id, continue}
 //	session-send  {instance_id, session, turn, type:"text-user", content}
-func (s *Server) splitLLMStart(payloadJSON string) {
+//
+// 返回 error：非法载荷 / session 缺失 → 明确错误（B-23：不再静默吞错/仅记日志导致前端静默失败）。
+func (s *Server) splitLLMStart(payloadJSON string) error {
 	var p struct {
 		Session    string `json:"session"`
 		SessionID  string `json:"session_id"`
@@ -230,7 +236,10 @@ func (s *Server) splitLLMStart(payloadJSON string) {
 		Q          string `json:"q"`
 		Content    string `json:"content"`
 	}
-	_ = json.Unmarshal([]byte(payloadJSON), &p)
+	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
+		log.Printf("[server] httpapi llm-start: bad payload: %v (payload=%s)", err, payloadJSON)
+		return fmt.Errorf("llm-start: bad payload: %v", err)
+	}
 	session := p.Session
 	if session == "" {
 		session = p.SessionID
@@ -241,10 +250,10 @@ func (s *Server) splitLLMStart(payloadJSON string) {
 	}
 	if session == "" {
 		log.Printf("[server] httpapi llm-start: session required (payload=%s)", payloadJSON)
-		return
+		return errors.New("llm-start: session required")
 	}
 	if turn == "" && !p.Continue {
-		turn = "t-" + strings.ReplaceAll(newUUID(), "-", "")[:12]
+		turn = "t-" + strings.ReplaceAll(idgen.NewUUID(), "-", "")[:12]
 	}
 	content := p.Q
 	if content == "" {
@@ -253,7 +262,7 @@ func (s *Server) splitLLMStart(payloadJSON string) {
 	// 主题 session-start / session-send 为 server 域相对主题（**非 61 topic**，保留字面量）；
 	// 载荷键走 msgkeys（req_id 为内部路由键，非契约字段，保留字面量）。
 	s.publish("session-start", map[string]any{
-		"req_id":                newUUID(),
+		"req_id":                idgen.NewUUID(),
 		msgkeys.FieldInstanceId: s.instanceID,
 		msgkeys.FieldSession:    session,
 		msgkeys.FieldTurn:       turn,
@@ -270,6 +279,7 @@ func (s *Server) splitLLMStart(payloadJSON string) {
 		msgkeys.FieldType:       "text-user",
 		msgkeys.FieldContent:    content,
 	})
+	return nil
 }
 
 // filterCapabilityScope 按本实例作用域过滤能力面返回（scope 空 = 全局；保留当前实例条目）。
@@ -340,7 +350,7 @@ func (s *Server) dataViaPersist(subject string, payload []byte) (result any, err
 	if err := json.Unmarshal(payload, &req); err != nil || req == nil {
 		req = map[string]any{}
 	}
-	reqID := newUUID()
+	reqID := idgen.NewUUID()
 	req["req_id"] = reqID
 	if _, ok := req[msgkeys.FieldInstanceId]; !ok {
 		req[msgkeys.FieldInstanceId] = s.instanceID
@@ -385,8 +395,8 @@ func (s *Server) dataViaPersist(subject string, payload []byte) (result any, err
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
-	// 防环：请求与应答同主题（persist 直发），标记自发布跳过 SSE 回投。
-	s.markPublished(subject)
+	// 防环：请求与应答同主题（persist 直发），标记自发布跳过 SSE 回投（B-21：携带载荷指纹）。
+	s.markPublished(subject, raw)
 	_ = s.bus.Emit(context.Background(), subject, raw)
 	select {
 	case r := <-done:

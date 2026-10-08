@@ -839,13 +839,13 @@ func TestRunToolStopExplicitTexts(t *testing.T) {
 
 	// 执行池未注入 + 层持 exec → 明确文案（不静默）
 	s.execSink = nil
-	if got := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "执行池不可用") {
+	if got, _ := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "执行池不可用") {
 		t.Fatalf("sink 未注入应回明确文案, got %q", got)
 	}
 	s.execSink = testExecSink
 
 	// 正常停止 → 层 → sink 取消 + 级联停止文案
-	if got := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "已级联停止") {
+	if got, _ := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "已级联停止") {
 		t.Fatalf("停止文案错: %q", got)
 	}
 	if got := execCancelledRefs(); len(got) != 1 || got[0] != "tk-ts-gw" {
@@ -859,7 +859,7 @@ func TestRunToolStopExplicitTexts(t *testing.T) {
 	})
 
 	// 已终态 → 明确文案（不重复取消）
-	if got := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "已结束") {
+	if got, _ := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "已结束") {
 		t.Fatalf("已终态文案错: %q", got)
 	}
 }

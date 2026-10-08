@@ -55,7 +55,7 @@ import AskUserDialog from '../chat/AskUserDialog.vue'
 import StatusBar from '../statusbar/StatusBar.vue'
 import { setLocale } from '../../plugins/i18n'
 import { maybeAutoOpenWizard } from '../scenario/scenarioWizard'
-import mq from '../../utils/mq'
+import mq, { currentInstanceId } from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
 // 懒加载：仅在打开场景弹窗时加载
@@ -225,7 +225,8 @@ function saveLayoutDebounced() {
 // （原 /call/SaveLayoutState 随 /call 清零，2026-09-04）。
 function beaconSaveLayout() {
   try {
-    const payload = JSON.stringify({ layout: measureLayout() })
+    // beacon 退路不经 mq.emit → 手工补 instance_id（与 mq 注入同口径，61-消息一览 §0；E-03）。
+    const payload = JSON.stringify({ layout: measureLayout(), instance_id: currentInstanceId() })
     const body = JSON.stringify({ type: 'gui.ui.save', payload })
     navigator.sendBeacon('/publish', new Blob([body], { type: 'application/json' }))
   } catch (_) { /* noop */ }
@@ -301,6 +302,8 @@ onMounted(() => {
 onUnmounted(() => {
   for (const fn of _mqUnsubs) fn()
   _mqUnsubs.length = 0
+  // 卸载时清掉在飞布局去抖定时器，避免组件销毁后回调仍触发（E-16）。
+  if (layoutTimer) { clearTimeout(layoutTimer); layoutTimer = null }
   window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('beforeunload', beaconSaveLayout)
 })

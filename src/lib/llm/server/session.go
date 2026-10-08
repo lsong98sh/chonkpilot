@@ -67,6 +67,7 @@ func (st *sessionStore) ReopenTurn(turnID string) error {
 func (st *sessionStore) LatestTurnID(sessionID string) string {
 	res, err := st.req("history", map[string]any{"session_id": sessionID})
 	if err != nil {
+		logf("[chonkpilot-server] LatestTurnID(%s): %v\n", sessionID, err) // B-06：不吞错（返回值语义不变）
 		return ""
 	}
 	msgs, _ := res["messages"].(map[string]any)
@@ -114,6 +115,7 @@ func (st *sessionStore) appendMsg(turnID string, msg map[string]any, key string)
 func (st *sessionStore) LoadMessages(turnID string) []ChatMsg {
 	res, err := st.req("load-messages", map[string]any{"turn_id": turnID})
 	if err != nil {
+		logf("[chonkpilot-server] LoadMessages(%s): %v\n", turnID, err) // B-06：不吞错（返回值语义不变）
 		return nil
 	}
 	var msgs []ChatMsg
@@ -156,6 +158,7 @@ func (st *sessionStore) BuildContextTokens(sessionID, excludeTurn string, includ
 	}
 	res, err := st.req("context", data)
 	if err != nil {
+		logf("[chonkpilot-server] BuildContextTokens(%s): %v\n", sessionID, err) // B-06：不吞错（返回值语义不变）
 		return nil, nil
 	}
 	var msgs []ChatMsg

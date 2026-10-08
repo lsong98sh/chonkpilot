@@ -6,7 +6,8 @@ import (
 )
 
 // applyUnifiedDiff 应用 unified diff（支持多个 @@ hunk，按 -start 定位 + context/-/+ 逐行消费）。
-// 保留源文本的文件尾换行（无 hunk 覆盖的尾部换行不被 join 吞掉）。
+// 校验：每个 hunk 的首个上下文/删除行须与源文件对应行逐字匹配，不匹配即报错拒绝（防止按行号
+// 盲目消费破坏内容）。保留源文本的文件尾换行（无 hunk 覆盖的尾部换行不被 join 吞掉）。
 func applyUnifiedDiff(src, diffContent string) (string, error) {
 	diffLines := strings.Split(diffContent, "\n")
 	srcLines := strings.Split(src, "\n")
@@ -17,6 +18,16 @@ func applyUnifiedDiff(src, diffContent string) (string, error) {
 	var out []string
 	srcIdx := 0
 	matchedAny := false
+	hunkFirst := false // 当前 hunk 尚未消费任何上下文/删除行（用于仅校验 hunk 首行）
+	checkContext := func(lineNo int, want string) error {
+		if srcIdx >= len(srcLines) {
+			return fmt.Errorf("hunk 上下文不匹配：源文件第 %d 行缺失（期望 %q）", srcIdx+1, want)
+		}
+		if srcLines[srcIdx] != want {
+			return fmt.Errorf("hunk 上下文不匹配：源文件第 %d 行实际 %q，期望 %q", srcIdx+1, srcLines[srcIdx], want)
+		}
+		return nil
+	}
 	for _, dl := range diffLines {
 		dl = strings.TrimSuffix(dl, "\r")
 		switch {
@@ -25,15 +36,32 @@ func applyUnifiedDiff(src, diffContent string) (string, error) {
 			if _, err := fmt.Sscanf(dl, "@@ -%d", &oldStart); err == nil && oldStart > 0 {
 				srcIdx = oldStart - 1
 			}
+			hunkFirst = true
 			matchedAny = true
 		case strings.HasPrefix(dl, "---") || strings.HasPrefix(dl, "+++"):
 			// 文件头，忽略
 		case strings.HasPrefix(dl, "+"):
 			out = append(out, dl[1:])
 		case strings.HasPrefix(dl, "-"):
+			if hunkFirst {
+				if err := checkContext(srcIdx, dl[1:]); err != nil {
+					return "", err
+				}
+				hunkFirst = false
+			}
 			srcIdx++ // 跳过被删行
 		default:
 			// context 行（' ' 前缀或空行）
+			content := dl
+			if strings.HasPrefix(dl, " ") {
+				content = dl[1:]
+			}
+			if hunkFirst {
+				if err := checkContext(srcIdx, content); err != nil {
+					return "", err
+				}
+				hunkFirst = false
+			}
 			if srcIdx < len(srcLines) {
 				out = append(out, srcLines[srcIdx])
 				srcIdx++

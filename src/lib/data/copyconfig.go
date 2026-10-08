@@ -44,6 +44,9 @@ func CopyConfigTables(dstPath string, layer Layer, srcPath string) error {
 		if strings.HasPrefix(k, "_") {
 			continue
 		}
+		if k == ProjectIDKey {
+			continue // 克隆库不复用源 project-id（A-08）：跳过复制，让克隆库首次打开生成新 id，避免与源共享 prjusr 数据根
+		}
 		var rec Record
 		if ok, _ := src.Table("config").Get(k, &rec); ok {
 			if err := dst.Table("config").Upsert(k, rec); err != nil {

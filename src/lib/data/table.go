@@ -103,6 +103,37 @@ func (t *Table) Upsert(key string, rec Record) error {
 	})
 }
 
+// UpdateIn 在**单次事务内**完成「读-改-写」(RMW)：fn 接收当前行（不存在 → 空记录），
+// 返回要落库的记录；同事务迁移索引键（旧行存在则先删旧索引键、再写新）。用于把
+// Get→改→Upsert 的跨事务竞态收敛为原子操作（避免并发 lost update，A-09）。
+//
+// 语义：**隐式 upsert**（不存在 → 以 fn 返回值为新行写入），与 Upsert 的「不存在即插入」一致；
+// updated_at **由 fn 自行设置**（本原语不隐式写入，调用方按需写 RFC3339FixedNano）。
+func (t *Table) UpdateIn(key string, fn func(rec Record) Record) error {
+	return t.db.b.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte(t.name))
+		if err != nil {
+			return err
+		}
+		rec := Record{}
+		if old, ok := decodeRecord(b.Get([]byte(key)), key); ok {
+			if err := indexDelete(tx, t.name, key, old); err != nil {
+				return err
+			}
+			rec = old
+			delete(rec, KeyField) // 主键不落 value
+		}
+		out := fn(rec)
+		if out == nil {
+			out = Record{}
+		}
+		if err := indexPut(tx, t.name, key, out); err != nil {
+			return err
+		}
+		return putRecord(b, key, out)
+	})
+}
+
 // Get 按主键读（不存在 → ok=false）。
 func (t *Table) Get(key string, out *Record) (bool, error) {
 	var found bool

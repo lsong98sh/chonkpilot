@@ -120,8 +120,9 @@ func withinDir(target, root string) bool {
 	if runtime.GOOS == "windows" {
 		rel = strings.ToLower(rel)
 	}
-	// rel == "." is the root itself; anything else must not start with "..".
-	return rel == "." || !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	// rel == "." 是根自身；rel == ".." 是根的父目录（越界，必须拒绝——原判定
+	// `HasPrefix(rel, "..\\")` 对裸 ".." 不成立会误放行）；其余不得以 ".." 开头。
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // mimeByExtension returns a MIME type for common web file extensions.

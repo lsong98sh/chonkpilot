@@ -28,6 +28,12 @@ $env:Path = "e:\GoDev\go1.26\bin;" + $env:Path
 $env:GOPROXY = "https://goproxy.cn,direct"
 $env:GOTOOLCHAIN = "local"
 
+# 结束运行中的旧实例（编译前清理，释放 exe 占用）：本脚本重建 mcp-server 与 3 个 executor，
+# 同目录 gateway 共用本 capability，故一并清理（对齐 build-dsl-executor/codegraph/vfts 写法）。
+foreach ($name in @("chonkpilot-core-executor", "chonkpilot-desktop-executor", "chonkpilot-browser-executor", "chonkpilot-mcp-server", "chonkpilot-mcp-gateway")) {
+    Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $tools = Join-Path $root "src\lib\mcp-tools"
 $cmd = Join-Path $root "src\others\mcp-server"

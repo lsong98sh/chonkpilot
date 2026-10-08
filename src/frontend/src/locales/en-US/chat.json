@@ -6,6 +6,7 @@
   "screenshot": "Screenshot (hide window, full screen)",
   "screenshot_no_vision": "The selected LLM does not declare the \"Vision\" capability, so screenshot is unavailable (enable it in Settings → LLM → Model Capabilities)",
   "screenshot_failed": "Screenshot failed, please try again",
+  "screenshot_tip": "Drag to select a screenshot area · Double-click to cancel",
   "uploading": "Uploading…",
   "upload_failed": "Upload failed: {name}",
   "custom_answer_placeholder": "Type your custom answer...",

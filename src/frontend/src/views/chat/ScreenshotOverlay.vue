@@ -9,7 +9,7 @@
     <!-- 全屏截图预览（隐藏窗口后截取）：用户拖拽选区 → canvas 裁剪 -->
     <img ref="imgRef" :src="image" class="screenshot-img" draggable="false" alt="" />
     <div v-if="rect" class="screenshot-select" :style="rectStyle"></div>
-    <div class="screenshot-tip">拖拽选择截图区域 · 双击取消</div>
+    <div class="screenshot-tip">{{ $t('chat.screenshot_tip') }}</div>
   </div>
 </template>
 

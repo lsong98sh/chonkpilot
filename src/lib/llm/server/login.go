@@ -261,11 +261,13 @@ func (s *Server) allowRegister() bool {
 }
 
 // ensureUserDataDir 建该用户的数据根目录 `<用户数据根>/<uid>/`（业务数据每用户一套库）。
+// B-14：经 userDataRootPath()（持 authMu）读根，避免无锁直读 s.userDataRoot 与 ensureAuth 写竞态。
 func (s *Server) ensureUserDataDir(uid string) error {
-	if strings.TrimSpace(s.userDataRoot) == "" {
+	root := s.userDataRootPath()
+	if strings.TrimSpace(root) == "" {
 		return errors.New("auth: 用户数据根未配置")
 	}
-	return os.MkdirAll(filepath.Join(s.userDataRoot, uid), 0o700)
+	return os.MkdirAll(filepath.Join(root, uid), 0o700)
 }
 
 // ensureAuth **惰性**打开 auth 库（与业务三级库**分离**的单文件）并装配认证门面

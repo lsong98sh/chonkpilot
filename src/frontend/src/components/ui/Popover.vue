@@ -13,7 +13,7 @@
           :style="popperStyle"
           @click="closeOnContentClick && hide()"
         >
-          <div class="b-popover__arrow" :style="arrowStyle" />
+          <div class="b-popover__arrow" />
           <div class="b-popover__content">
             <slot />
           </div>
@@ -89,10 +89,6 @@ const popperStyle = computed(() => ({
   left: popperPos.value.left + 'px',
   width: props.width + 'px',
 }))
-
-const arrowStyle = computed(() => {
-  return {}
-})
 
 function toggle() {
   visible.value = !visible.value

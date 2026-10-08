@@ -5,7 +5,7 @@
 //     workdir 以 stdio 子进程形态管理；引擎全部工具带 workdir 参数（含查询工具）。
 //   - 多 workdir（T-12/P2-4）：**每个 workdir 一个独立引擎子进程**（p.clients[workdir]，
 //     独立索引内存/独立串行），互不干扰；空闲按 workdir 独立回收（childIdleTimeout）。
-//   - 本插件对外（gateway）注册 6 个查询工具：与引擎同名、schema 去掉 workdir（由插件注入）。
+//   - 本插件对外（gateway）注册 8 个查询工具：与引擎同名、schema 去掉 workdir（由插件注入）。
 //     可见性门控（enable-codegraph）与索引就绪编排全在插件内存（源 = prj-config）。
 //   - instance 生命周期驱动 workdir 引用计数与 gateway 工具注册/注销：register/exit 为变更源
 //     （heartbeat 记录时刻；合并单进程形态不发布心跳、不做心跳超时退出判定，分离形态
@@ -110,11 +110,11 @@ type Codegraph struct {
 	exe  string // 引擎 exe 绝对路径（resolveExe 结果）
 	opt  Options
 
-	mu         sync.Mutex // 保护 insts / works / registered / regOwner
+	mu         sync.Mutex // 保护 insts / works（registered / regOwner 由 syncMu 保护——读写在 syncTools 单飞区内）
 	insts      map[string]*instRec
 	works      map[string]*workRec   // key = workdir（Clean 后绝对路径）
-	registered bool                  // 6 个查询工具是否已注册到 gateway（全局仅一份）
-	regOwner   string                // 当前注册归属的 workdir（多 workdir 同时启用时取第一个）
+	registered bool                  // 8 个查询工具是否已注册到 gateway（全局仅一份；读写在 syncMu 单飞区内）
+	regOwner   string                // 当前注册归属的 workdir（多 workdir 同时启用时取第一个；读写在 syncMu 单飞区内）
 	syncMu     sync.Mutex            // syncTools 单飞（防并发重复注册/注销）
 	clientMu   sync.Mutex            // 每 workdir 引擎子进程（懒建/回收）保护
 	clients    map[string]*clientRec // key = workdir；每 workdir 一独立引擎子进程（独立索引互不干扰）
@@ -328,9 +328,25 @@ func (p *Codegraph) onInstanceRegister(_ string, payload []byte) {
 	wd := filepath.Clean(ev.WorkDir)
 	p.mu.Lock()
 	ir := p.insts[ev.InstanceID]
-	if ir == nil {
+	switch {
+	case ir == nil:
 		ir = &instRec{}
 		p.insts[ev.InstanceID] = ir
+	case ir.workdir == wd:
+		// 同 workdir 重复 register（幂等刷新）：只刷新时刻，不重复计数
+		// （对齐 instance.Manager「已登记实例的刷新不受影响」语义）。
+		ir.last = time.Now()
+		if r := p.works[wd]; r != nil && r.dataDir == "" && ev.DataDir != "" {
+			r.dataDir = ev.DataDir
+		}
+		p.mu.Unlock()
+		go p.readEnableAndEnsure(ev.InstanceID, wd)
+		return
+	case ir.workdir != "":
+		// 跨 workdir 重绑：旧 workdir 引用递减（归零不在此注销，由随后的 syncTools 收敛），新 workdir 重新计数。
+		if old := p.works[ir.workdir]; old != nil && old.refs > 0 {
+			old.refs--
+		}
 	}
 	ir.workdir = wd
 	ir.last = time.Now()

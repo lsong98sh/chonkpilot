@@ -169,6 +169,7 @@ func (p *Plugin) Start(d plugin.Deps) error {
 	// 实例视图（订阅 instance-register/heartbeat/exit）：仅用于把 instance id 解析回 work_dir，
 	// 使手动沉淀（载荷无 work_dir）与自动沉淀共用同一把 per-(workdir,类别) 锁（见 resolveWorkDir）。
 	im := instance.New(d.Bus)
+	im.SetLogf(d.Logf) // 告警上报宿主日志（d.Logf 为 nil 时 Manager 回落 stderr）
 	if err := im.Start(); err != nil {
 		return err
 	}

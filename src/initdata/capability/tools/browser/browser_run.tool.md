@@ -99,6 +99,21 @@ properties:
     headless:
         description: 无头模式（默认 true；false 弹出可见窗口便于观察/调试）
         type: boolean
+    dom_file:
+        description: 执行结束（含失败）时把整页 DOM 导出到的文件路径（可选）；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错
+        type: string
+    console_file:
+        description: 执行结束（含失败）时把累计 console 日志导出到的文件路径（可选）；路径要求同 dom_file（绝对路径、~/ 或 !/ 开头）
+        type: string
+    fail_shot:
+        description: 任意指令失败时自动截图落盘的文件路径（可选；未提供则失败时不截图）；路径要求同 dom_file
+        type: string
+    wat_timeout_ms:
+        description: WAT 等待指令的默认超时（毫秒，默认 10000）
+        type: integer
+    chrome_path:
+        description: Chrome/Edge 可执行文件路径（可选；须为绝对路径或以 ~/ 开头的用户目录路径，相对路径会报错；缺省自动探测，亦可用环境变量 CHONK_CHROME）
+        type: string
 required:
     - script
 type: object

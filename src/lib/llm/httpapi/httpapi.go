@@ -29,11 +29,11 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"log"
@@ -49,6 +49,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-filesys"
+	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
@@ -114,10 +115,11 @@ type Server struct {
 	// facade 是 data 门面绑定（非空 → data-session-* 优先走门面，见 facade_session.go）。
 	facade facade.API
 
-	// published 记录本实例近期发布的主题（防环：本包订阅了 ">"，自身 emit 的事件
-	// 不应再经 SSE 回投前端造成二次 dispatch；与桥 markPublished 同语义）。
+	// published 记录本实例近期发布的**事件指纹**（防环：本包订阅了 ">"，自身 emit 的事件不应
+	// 再经 SSE 回投前端造成二次 dispatch；与桥 markPublished 同语义）。B-21：标记值 = subject +
+	// 载荷哈希（仅真正自环被吞，**不误吞他实例同名主题事件**）。
 	publishedMu sync.Mutex
-	published   map[string]time.Time
+	published   map[string]pubStamp
 
 	// clients 是已连接的 SSE 客户端（广播入口；本 instance 的全部客户端都收到同一事件）。
 	mu      sync.Mutex
@@ -135,7 +137,7 @@ type Server struct {
 func New(bus mq.Bus, opts Options) *Server {
 	id := opts.InstanceID
 	if id == "" {
-		id = newUUID()
+		id = idgen.NewUUID()
 	}
 	addr := opts.Addr
 	if addr == "" {
@@ -154,7 +156,7 @@ func New(bus mq.Bus, opts Options) *Server {
 		addr:       addr,
 		authCheck:  opts.AuthCheck,
 		facade:     opts.Facade,
-		published:  make(map[string]time.Time),
+		published:  make(map[string]pubStamp),
 		clients:    make(map[chan []byte]struct{}),
 	}
 }
@@ -215,7 +217,13 @@ func (s *Server) Start() error {
 		return fmt.Errorf("httpapi: listen %s: %w", s.addr, err)
 	}
 	s.ln = ln
-	s.srv = &http.Server{Handler: s.Handler()}
+	// B-20：补齐读头/空闲超时（原裸 http.Server 无任何超时）。SSE `/events` 为长连接，故**不设**
+	// WriteTimeout，避免误断事件流。
+	s.srv = &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() { _ = s.srv.Serve(ln) }()
 
 	if !isLoopback(ln.Addr()) {
@@ -504,7 +512,7 @@ type envelope struct {
 // forwardEvent 把总线事件转发到 SSE：跳过本实例自发布（防环）+ 按 instance 归属过滤 +
 // 主题 → 前端 type 映射（与桥 mqTypeMap 同表）。
 func (s *Server) forwardEvent(subject string, payload []byte) {
-	if s.isSelfPublished(subject) {
+	if s.isSelfPublished(subject, payload) {
 		return
 	}
 	if !s.acceptEventInstance(eventInstanceID(payload)) {
@@ -540,21 +548,21 @@ func eventInstanceID(payload []byte) string {
 // mqTypeMap 相对主题 → 前端 type（与 chonkpilot-gui/bridge/bridge.go 的 mqTypeMap 同表；
 // 未命中的相对主题原名直通 —— data-*/filesys.* 等点分主题本就是稳定前端 type）。
 var mqTypeMap = map[string]string{
-	msgkeys.TopicSessionReceive:   "llm-receive",
-	msgkeys.TopicSessionComplete:  "llm-complete",
-	msgkeys.TopicSessionCompress:  "llm-compress",
-	msgkeys.TopicSessionAsk:       "ask-user",
-	msgkeys.TopicSessionTurnStart: "turn-start",
-	msgkeys.TopicTaskStarted:      "tasks.started",
-	msgkeys.TopicTaskUpdated:      "tasks.updated",
-	msgkeys.TopicTaskDone:         "tasks.done",
-	msgkeys.TopicServerStarting:   msgkeys.TopicServerStarting,
-	"server-status-changed":       "servers.status_changed",
-	"tool-changed":                "tools.list_changed",
-	msgkeys.TopicPromptOptimised:  msgkeys.TopicPromptOptimised,
-	msgkeys.TopicInstanceRegister: msgkeys.TopicInstanceRegister,
+	msgkeys.TopicSessionReceive:    "llm-receive",
+	msgkeys.TopicSessionComplete:   "llm-complete",
+	msgkeys.TopicSessionCompress:   "llm-compress",
+	msgkeys.TopicSessionAsk:        "ask-user",
+	msgkeys.TopicSessionTurnStart:  "turn-start",
+	msgkeys.TopicTaskStarted:       "tasks.started",
+	msgkeys.TopicTaskUpdated:       "tasks.updated",
+	msgkeys.TopicTaskDone:          "tasks.done",
+	msgkeys.TopicServerStarting:    msgkeys.TopicServerStarting,
+	"server-status-changed":        "servers.status_changed",
+	"tool-changed":                 "tools.list_changed",
+	msgkeys.TopicPromptOptimised:   msgkeys.TopicPromptOptimised,
+	msgkeys.TopicInstanceRegister:  msgkeys.TopicInstanceRegister,
 	msgkeys.TopicInstanceHeartbeat: msgkeys.TopicInstanceHeartbeat,
-	msgkeys.TopicInstanceExit:     msgkeys.TopicInstanceExit,
+	msgkeys.TopicInstanceExit:      msgkeys.TopicInstanceExit,
 }
 
 // eventType 取前端 type（显式映射优先；兜底原名直通）。
@@ -592,23 +600,63 @@ func (s *Server) broadcast(b []byte) {
 
 // ── 发布（防环）──
 
-// markPublished 记录一次本实例发布（发布前调用）。
-func (s *Server) markPublished(subject string) {
-	s.publishedMu.Lock()
-	defer s.publishedMu.Unlock()
-	s.published[subject] = time.Now()
+// pubStamp 是本实例一次发布的防环标记（B-21）：fp = subject + 载荷的指纹，at = 发布时间。
+// 仅当**载荷指纹完全一致**（同一事件自环）才判自发布，避免同名主题的他实例事件被误吞。
+type pubStamp struct {
+	fp string
+	at time.Time
 }
 
-// isSelfPublished 命中本实例刚发布的主题（1s 窗口，一次性消耗）→ 跳过转发。
-func (s *Server) isSelfPublished(subject string) bool {
+// payloadBytes 归一载荷为 JSON 原始字节（与 mq.Emit 的序列化口径一致：[]byte 直用、string 转
+// 字节、其余 json.Marshal）——供发布前记录防环指纹，确保与总线回投的 Payload 逐字节可比。
+func payloadBytes(payload any) []byte {
+	switch p := payload.(type) {
+	case nil:
+		return nil
+	case []byte:
+		return p
+	case string:
+		return []byte(p)
+	default:
+		raw, _ := json.Marshal(p)
+		return raw
+	}
+}
+
+// eventFingerprint 计算一次发布事件的指纹（subject + 载荷哈希）。
+func eventFingerprint(subject string, payload []byte) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(subject))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(payload)
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+// markPublished 记录一次本实例发布（发布前调用）。
+func (s *Server) markPublished(subject string, payload []byte) {
 	s.publishedMu.Lock()
 	defer s.publishedMu.Unlock()
-	t, ok := s.published[subject]
+	s.published[subject] = pubStamp{fp: eventFingerprint(subject, payload), at: time.Now()}
+}
+
+// isSelfPublished 判定该事件是否本实例刚发布（B-21：subject + 载荷指纹一致且 1s 窗口内，一次性
+// 消耗）→ 跳过转发。载荷不同（他实例同名主题）或已过期 → 不吞（过期项顺手清理）。
+func (s *Server) isSelfPublished(subject string, payload []byte) bool {
+	s.publishedMu.Lock()
+	defer s.publishedMu.Unlock()
+	st, ok := s.published[subject]
 	if !ok {
 		return false
 	}
+	if time.Since(st.at) >= time.Second {
+		delete(s.published, subject) // 过期：清理，不再视为自环
+		return false
+	}
+	if st.fp != eventFingerprint(subject, payload) {
+		return false // 同名主题但载荷不同 → 他实例事件，不吞（保留自身标记待自环事件匹配）
+	}
 	delete(s.published, subject)
-	return time.Since(t) < time.Second
+	return true
 }
 
 // publish 发一条事件（不等结果；用于 instance-register / instance-exit）。
@@ -616,16 +664,18 @@ func (s *Server) publish(subject string, payload any) {
 	if s.bus == nil {
 		return
 	}
-	s.markPublished(subject)
-	if v := s.bus.Emit(context.Background(), subject, payload).Wait(); v.Err() != nil {
+	raw := payloadBytes(payload)
+	s.markPublished(subject, raw)
+	if v := s.bus.Emit(context.Background(), subject, raw).Wait(); v.Err() != nil {
 		log.Printf("[server] httpapi publish %s: %v", subject, v.Err())
 	}
 }
 
 // publishV 发布并等待派发结果（promise 语义：订阅者写回的 Result + 收集的 Errors）。
 func (s *Server) publishV(subject string, payload any) (result any, errs []error) {
-	s.markPublished(subject)
-	v := s.bus.Emit(context.Background(), subject, payload).Wait()
+	raw := payloadBytes(payload)
+	s.markPublished(subject, raw)
+	v := s.bus.Emit(context.Background(), subject, raw).Wait()
 	return v.Result, v.Errors
 }
 
@@ -699,15 +749,4 @@ func isLoopback(addr net.Addr) bool {
 		return false
 	}
 	return tcp.IP.IsLoopback()
-}
-
-// newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖；同 GUI bridge）。
-func newUUID() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("ins-%d", time.Now().UnixNano())
-	}
-	buf[6] = (buf[6] & 0x0f) | 0x40
-	buf[8] = (buf[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }

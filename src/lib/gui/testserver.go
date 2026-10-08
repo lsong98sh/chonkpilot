@@ -63,7 +63,7 @@ const consoleCaptureJS = `(() => {
 //	POST /exists        → {selector, timeout} → {count, visible}
 //	POST /console       → {clear} 读取/清空 window.__chonkConsole.entries
 //	GET  /screenshot    → PNG bytes
-//	POST /publish       → {type, payload} 透传前端事件（DispatchLocal 优先，否则桥发布 mq）；
+//	POST /publish       → {type, payload} 透传前端事件（桥发布 mq；窗口面消息由宿主侧处理）；
 //	                      响应信封 {ok, result, errors}（请求-响应消息面 data-*/gui.* 走这里）
 //	POST /wait-event    → {type, timeout} 阻塞等待指定 type 的事件到达；超时返回 error
 //
@@ -166,6 +166,10 @@ func (s *testServer) InjectConsoleCapture(chromium interface{ Init(script string
 }
 
 // Start 监听 127.0.0.1:port（不绑定 0.0.0.0）。
+//
+// 安全（D-03）：仅绑回环**仍不足**以防 DNS rebinding / 恶意网页——浏览器可带 `Host: evil.com`
+// 访问 127.0.0.1 端口。故对所有端点统一做 Host 白名单校验（见 hostGuard / hostAllowed）：
+// 仅接受 127.0.0.1 / localhost / app.localhost（端口不限），其余一律 403。
 func (s *testServer) Start(port int) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ping", s.handlePing)
@@ -183,9 +187,34 @@ func (s *testServer) Start(port int) error {
 	if err != nil {
 		return err
 	}
-	s.srv = &http.Server{Handler: mux}
+	s.srv = &http.Server{Handler: s.hostGuard(mux)}
 	go func() { _ = s.srv.Serve(ln) }()
 	return nil
+}
+
+// hostGuard 包裹全部端点：Host 不在白名单 → 403（挡 DNS rebinding / 恶意页面直连回环端口）。
+func (s *testServer) hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !hostAllowed(r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// hostAllowed 判定 Host 头是否属白名单主机（仅比对主机名，忽略端口）：
+// 127.0.0.1 / localhost / app.localhost。端口缺失（`127.0.0.1`）亦接受。
+func hostAllowed(host string) bool {
+	h := host
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		h = hp
+	}
+	switch strings.ToLower(h) {
+	case "127.0.0.1", "localhost", "app.localhost":
+		return true
+	}
+	return false
 }
 
 // Shutdown 优雅关闭（进程退出前调用）。
@@ -421,8 +450,6 @@ func (s *testServer) handlePublish(w http.ResponseWriter, r *http.Request) {
 	} else if isWindowMessage(req.Type) && handler != nil {
 		// 窗口面消息（open-chat/list/set-title）：宿主侧处理（同 appHandler.handlePublish）。
 		result, errs = handler.handleWindowMessage(req.Type, req.Payload)
-	} else if br.DispatchLocal(req.Type) {
-		result = "local"
 	} else {
 		result, errs = br.PublishEvent(req.Type, req.Payload)
 	}

@@ -1,4 +1,4 @@
-﻿﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
+﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-split.ps1`；
 #   形态名（分离形态 / team）→ **`gui`（GUI 客户端 + 独立 server）**，
@@ -134,6 +134,11 @@ try {
 
 # -- 4) 服务端编译（dist/server；分离形态服务端 = llm + gateway + filesys + data 合一 exe；
 #        本 exe 同时编入 llm-server 与 data persist 的 sweep_split.go 超时清理） --
+# 前置校验：src/server 的 `//go:embed all:frontend/dist` 要求静态页产物已就位，
+# clean clone 缺失会裸报编译错 → 提前给出可操作提示。
+if (-not (Test-Path (Join-Path $srv "frontend\dist\index.html"))) {
+    throw "src/server/frontend/dist/index.html 缺失：请先运行 .\build-browser.ps1 生成前端产物"
+}
 Write-Host "==> [4/6] build chonkpilot-server.exe (-tags split) -> dist/server"
 New-Item -ItemType Directory -Force -Path $srvDist | Out-Null
 Push-Location $srv

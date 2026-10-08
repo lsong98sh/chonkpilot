@@ -561,7 +561,11 @@ func (g *Gateway) handleMCPLoad(ctx context.Context, args map[string]any) (*mcp.
 		if a.MIMEType != "" {
 			m["mimetype"] = a.MIMEType
 		}
-		if c := assetContent(a); c != "" { // RB-4 ①：有 path 实时读盘；无 path 取驻留 content
+		c, cerr := assetContent(a) // RB-4 ①：有 path 实时读盘；无 path 取驻留 content
+		if cerr != nil {
+			return toolErrorText(cerr.Error()), nil
+		}
+		if c != "" {
 			m["content"] = c
 		}
 		if len(a.Arguments) > 0 {

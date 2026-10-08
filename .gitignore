@@ -23,6 +23,9 @@ node_modules/
 # ── 3. 二进制 / 原生库（源码树内一律不入库；发行物只出现在 dist/）───────────
 *.exe
 *.dll
+# 例外：vfts 引擎构建/运行必需的原生库 zvec C-API（CGO 链接 + 运行期加载，须与引擎 exe 同目录）。
+# 同目录 zvec_c_api.lib 本就不在忽略列表；该 dll 的父目录未被整体忽略，负模式可直接生效。
+!src/plugins/vfts/third_party/zvec/windows_amd64/zvec_c_api.dll
 *.so
 *.dylib
 *.test

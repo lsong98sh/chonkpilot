@@ -98,8 +98,10 @@ func main() {
 
 	if prompt == "" && promptFile == "" {
 		// 尝试从 stdin 读取
-		stat, _ := os.Stdin.Stat()
-		if (stat.Mode() & os.ModeCharDevice) != 0 {
+		stat, statErr := os.Stdin.Stat()
+		// stat 失败按「非管道」处理（视作无可读 stdin）——不可在 stat 为 nil 时解引用
+		// （原 `stat, _ := ...` 吞错后在 nil 上取 Mode() 会 panic）。
+		if statErr != nil || (stat.Mode()&os.ModeCharDevice) != 0 {
 			fmt.Fprintln(os.Stderr, "请提供 --prompt 或 --prompt-file，或通过 stdin 传入提示词")
 			os.Exit(1)
 		}
@@ -107,6 +109,11 @@ func main() {
 		var lines []string
 		for scanner.Scan() {
 			lines = append(lines, scanner.Text())
+		}
+		// 循环结束须检查 scanner.Err()（读 stdin 出错时不得静默继续，如 I/O 错误）。
+		if err := scanner.Err(); err != nil {
+			fmt.Fprintln(os.Stderr, "读取 stdin 失败:", err)
+			os.Exit(1)
 		}
 		prompt = strings.Join(lines, "\n")
 	} else if promptFile != "" {

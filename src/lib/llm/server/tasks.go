@@ -147,7 +147,8 @@ type taskManager struct {
 	// （容器 dsl_loop/dsl_parallel，或作业根 dsl_job）。仅内存（与作业同生命周期）。
 	subParents map[string]string
 
-	stopCh chan struct{} // 停止信号（后台 cleanupLoop goroutine）
+	stopCh   chan struct{} // 停止信号（后台 cleanupLoop goroutine）
+	stopOnce sync.Once     // 停止幂等守卫（B-04：Stop 可能被多处/多次调用，close 通道不可重复）
 }
 
 // maxTaskNodes 保留任务节点上限（防无限增长；对齐主仓库 TaskManager maxTasks=200）。
@@ -190,9 +191,9 @@ func (tm *taskManager) cleanupLoop() {
 	}
 }
 
-// stop 停止后台清理 goroutine。
+// stop 停止后台清理 goroutine（B-04：sync.Once 守卫，重复调用安全）。
 func (tm *taskManager) stop() {
-	close(tm.stopCh)
+	tm.stopOnce.Do(func() { close(tm.stopCh) })
 }
 
 // cleanupTerminal 清理已终态超过 5 分钟的节点。

@@ -35,8 +35,28 @@ type promptOptimiseReq struct {
 	Content    string `json:"content,omitempty"`
 }
 
+// promptOptimiseMaxInflight 是 prompt-optimise 每实例在飞并发上限（B-24：原每次请求无条件开
+// goroutine，无界；达上限 → 明确失败而非排队阻塞总线派发）。
+const promptOptimiseMaxInflight = 2
+
+// promptSemaphore 取（懒建）某实例的并发信号量（容量 promptOptimiseMaxInflight）。
+func (s *Server) promptSemaphore(instanceID string) chan struct{} {
+	s.promptSemMu.Lock()
+	defer s.promptSemMu.Unlock()
+	if s.promptSem == nil {
+		s.promptSem = make(map[string]chan struct{})
+	}
+	sem := s.promptSem[instanceID]
+	if sem == nil {
+		sem = make(chan struct{}, promptOptimiseMaxInflight)
+		s.promptSem[instanceID] = sem
+	}
+	return sem
+}
+
 // onPromptOptimise 受理提示词生成/优化：校验 type → 经一次性无上下文会话入口（llmOnceSpec，
 // provider 由 promptOptimiseSpec 现读 `llm.promptOptimise`）后台生成，完成后广播 prompt-optimised。
+// 每实例在飞并发受 promptOptimiseMaxInflight 限制（B-24）；超出 → 广播明确错误（不静默丢弃）。
 func (s *Server) onPromptOptimise(ctx context.Context, subject string, v *mq.Value) error {
 	var req promptOptimiseReq
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
@@ -47,7 +67,18 @@ func (s *Server) onPromptOptimise(ctx context.Context, subject string, v *mq.Val
 		return nil
 	}
 	instruction := optimiseInstruction(req.Type, req.Content)
-	go s.runPromptOptimise(req.InstanceID, req.Type, instruction)
+	sem := s.promptSemaphore(req.InstanceID)
+	select {
+	case sem <- struct{}{}:
+		go func() {
+			defer func() { <-sem }()
+			s.runPromptOptimise(req.InstanceID, req.Type, instruction)
+		}()
+	default:
+		// 本实例在飞已达上限 → 明确失败（调用方据 error 提示稍后重试）。
+		s.publishPromptOptimised(req.InstanceID, req.Type, "",
+			errors.New("prompt-optimise: 本实例并发生成已达上限，请稍后重试"))
+	}
 	return nil
 }
 

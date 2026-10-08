@@ -74,7 +74,7 @@ import { onFileChanged, onFileChangedEvent } from '../../utils/fileTree'
 import { fileOpErrorText } from '../../utils/fileOpError'
 import { fetchIndexIgnored, toWorkdirRelPath } from '../../utils/indexIgnored'
 import { onDataRefresh } from '../../utils/dataClient'
-import mq from '../../utils/mq'
+import mq, { currentInstanceId } from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics, FieldKeys, GuiVcsInfoKeys } from '../../events/msgkeys'
 
@@ -1262,7 +1262,7 @@ onMounted(() => {
         x: window.screenX,
         y: window.screenY,
         maximized: isMaximizedNow(),
-      } })
+      }, instance_id: currentInstanceId() })
       const body = JSON.stringify({ type: 'gui.ui.save', payload })
       navigator.sendBeacon('/publish', new Blob([body], { type: 'application/json' }))
     } catch (_) { /* noop */ }
@@ -1276,6 +1276,9 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onKeyDown)
   document.removeEventListener('dragover', onDocDragOver)
   document.removeEventListener('drop', onDocDrop)
+  // 卸载时清掉在飞去抖定时器（快照保存 / 窗口几何保存），避免组件销毁后回调仍触发（E-16）。
+  if (snapshotDebounceTimer) { clearTimeout(snapshotDebounceTimer); snapshotDebounceTimer = null }
+  if (resizeTimer) { clearTimeout(resizeTimer); resizeTimer = null }
   for (const fn of _cleanup) fn()
 })
 </script>

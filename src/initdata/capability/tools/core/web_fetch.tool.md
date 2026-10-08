@@ -56,7 +56,7 @@ properties:
         description: GET（默认）| POST | PUT | DELETE ...
         type: string
     readTimeout:
-        description: 总超时秒数（默认 300）
+        description: 总超时秒数（响应头 + body 全程；默认 300；小于 10 秒按 10 秒处理）
         type: integer
     save_as:
         description: 下载保存路径（响应体直写文件；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错）

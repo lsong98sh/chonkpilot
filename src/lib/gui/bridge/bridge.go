@@ -26,10 +26,12 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -60,14 +62,18 @@ type Bridge struct {
 	// openDevTools 由 main 注入（宿主程序化打开 DevTools；gui.devtools.open 用）。
 	// nil = 未接线（宿主不支持该能力）→ gui.devtools.open 明确失败，不静默。
 	openDevTools func()
-	// published 记录本实例近期发布的主题（src 防环：桥订阅了 ">"（相对全通配），
-	// 本实例 /publish 的事件会被自己转发回前端造成二次 dispatch，需跳过）。
+	// published 记录本实例近期发布的事件指纹（subject → {载荷指纹, 时间}；src 防环：
+	// 桥订阅了 ">"（相对全通配），本实例 /publish 的事件会被自己转发回前端造成二次 dispatch，
+	// 需跳过）。指纹口径（D-11）避免「同主题不同载荷」被误吞。
 	publishedMu sync.Mutex
-	published   map[string]time.Time
+	published   map[string]pubStamp
 
 	// eventWaiters 供测试脚本阻塞等待特定事件（--test-port /wait-event 端点）。
+	// 按 type → (waiter id → chan) 组织：超时时**按 id 精确自摘**，不误删并发等待同类型的
+	// 其它 waiter（原实现超时/通知都整桶删除，会连带清掉他人 waiter）。
 	eventWaitersMu sync.Mutex
-	eventWaiters   map[string][]chan<- map[string]any
+	eventWaiters   map[string]map[int64]chan map[string]any
+	eventWaiterSeq int64
 
 	// ── 认证域（61 §4.6；阶段 2b-1/2b-2）─────────────────
 	// authToken 是桥**持有**的免登录令牌（desktop 形态；由 login-in/login-register 应答
@@ -95,8 +101,8 @@ func New(instanceID, workDir, dataDir string, eval Eval, bus mq.Bus) *Bridge {
 		workDir:      workDir,
 		dataDir:      dataDir,
 		eval:         eval,
-		published:    make(map[string]time.Time),
-		eventWaiters: make(map[string][]chan<- map[string]any),
+		published:    make(map[string]pubStamp),
+		eventWaiters: make(map[string]map[int64]chan map[string]any),
 	}
 }
 
@@ -144,24 +150,45 @@ func (b *Bridge) SetFacade(cfg facade.API) { b.cfg = cfg }
 // 仍可经状态栏调试图标 → 本回调打开）。
 func (b *Bridge) SetDevToolsOpener(fn func()) { b.openDevTools = fn }
 
-// markPublished 记录一次本实例发布（发布前调用）。
-func (b *Bridge) markPublished(subject string) {
+// markPublished 记录一次本实例发布（发布前调用）；标记值 = subject + 载荷指纹（D-11）。
+func (b *Bridge) markPublished(subject string, payload []byte) {
 	b.publishedMu.Lock()
 	defer b.publishedMu.Unlock()
-	b.published[subject] = time.Now()
+	b.published[subject] = pubStamp{fp: pubFingerprint(subject, payload), at: time.Now()}
 }
 
-// isSelfPublished 检查 subject 是否为本实例刚发布（1s 窗口，一次性消耗）。
-// 命中 → 删除并返回 true，forwardEvent 跳过该回环消息。
-func (b *Bridge) isSelfPublished(subject string) bool {
+// pubStamp 是本实例近期发布事件的指纹 + 时间戳。
+type pubStamp struct {
+	fp uint64
+	at time.Time
+}
+
+// pubFingerprint 计算「主题 + 载荷」的指纹（与 llm/httpapi 的 eventFingerprint 同口径）。
+func pubFingerprint(subject string, payload []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(subject))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(payload)
+	return h.Sum64()
+}
+
+// isSelfPublished 判定该事件是否为本实例刚发布（防环）。
+//
+// 2026-10-08（D-11）：标记值由「主题」改为 **subject + 载荷指纹**（与 llm/httpapi 的 B-21 同口径）。
+// 主题口径会「误吞」——同主题下本实例刚发布过、随后**他源/测试**注入的真事件（载荷不同）也会被
+// 当作自环丢弃；指纹口径只吞「逐字节相同」的那一条回环。1s 窗口内不消耗（随下次发布覆盖）。
+func (b *Bridge) isSelfPublished(subject string, payload []byte) bool {
 	b.publishedMu.Lock()
 	defer b.publishedMu.Unlock()
-	t, ok := b.published[subject]
+	st, ok := b.published[subject]
 	if !ok {
 		return false
 	}
-	delete(b.published, subject)
-	return time.Since(t) < time.Second
+	if time.Since(st.at) >= time.Second {
+		delete(b.published, subject) // 过期：清理，不再视为自环
+		return false
+	}
+	return st.fp == pubFingerprint(subject, payload)
 }
 
 // 事件信封（对齐前端 mq.js emitRemote：payload 为 JSON 字符串）。
@@ -208,7 +235,7 @@ func (b *Bridge) Start() error {
 // 行为与引入过滤前逐字节等价，过滤条件恒真）。
 // 转发后按旧 chonkpilot 协议事件面兼发兼容事件（compat.go：server 定稿协议不变，gui 对齐旧生态）。
 func (b *Bridge) forwardEvent(subject string, payload []byte) {
-	if b.isSelfPublished(subject) {
+	if b.isSelfPublished(subject, payload) {
 		return
 	}
 	if !b.acceptEventInstance(eventInstanceID(payload)) {
@@ -241,22 +268,40 @@ func eventInstanceID(payload []byte) string {
 	return probe.InstanceID
 }
 
-// WaitForEvent 阻塞等待指定 type 的事件到达（超时 = ctx deadline / 30s max）。
+// WaitForEvent 阻塞等待指定 type 的事件到达（超时 = ctx deadline）。
 // 返回事件 payload 的 map 解析结果。用于 --test-port /wait-event 端点。
 func (b *Bridge) WaitForEvent(ctx context.Context, typ string) (map[string]any, error) {
+	id := atomic.AddInt64(&b.eventWaiterSeq, 1)
 	ch := make(chan map[string]any, 1)
 	b.eventWaitersMu.Lock()
-	b.eventWaiters[typ] = append(b.eventWaiters[typ], ch)
+	if b.eventWaiters[typ] == nil {
+		b.eventWaiters[typ] = map[int64]chan map[string]any{}
+	}
+	b.eventWaiters[typ][id] = ch
 	b.eventWaitersMu.Unlock()
 	select {
 	case ev := <-ch:
 		return ev, nil
 	case <-ctx.Done():
+		// 超时：**按 id 精确自摘**（不整桶删除，避免误清并发等待同类型的其它 waiter）。
+		b.removeEventWaiter(typ, id)
 		return nil, ctx.Err()
 	}
 }
 
-// notifyEventWaiters 通知所有等待该事件类型的 waiter（非阻塞，chan 满则跳过）。
+// removeEventWaiter 按 id 精确移除一个 waiter；该类型桶空则一并清理桶本身。
+func (b *Bridge) removeEventWaiter(typ string, id int64) {
+	b.eventWaitersMu.Lock()
+	if m := b.eventWaiters[typ]; m != nil {
+		delete(m, id)
+		if len(m) == 0 {
+			delete(b.eventWaiters, typ)
+		}
+	}
+	b.eventWaitersMu.Unlock()
+}
+
+// notifyEventWaiters 通知所有等待该事件类型的 waiter（非阻塞，chan 满则跳过；通知后清空该类型）。
 func (b *Bridge) notifyEventWaiters(typ string, payload []byte) {
 	var ev map[string]any
 	_ = json.Unmarshal(payload, &ev)
@@ -510,7 +555,6 @@ func (b *Bridge) splitLLMStart(payloadJSON string) {
 		msgkeys.FieldScenarioId: p.ScenarioID,
 		msgkeys.FieldContinue:   p.Continue,
 	})
-	b.markPublished("session-start")
 	b.publish("session-send", map[string]interface{}{
 		msgkeys.FieldInstanceId: b.instanceID,
 		msgkeys.FieldSession:    session,
@@ -518,7 +562,6 @@ func (b *Bridge) splitLLMStart(payloadJSON string) {
 		msgkeys.FieldType:       "text-user",
 		msgkeys.FieldContent:    content,
 	})
-	b.markPublished("session-send")
 }
 
 // injectInstance 给 server 方法面载荷补 instance_id（payload 为 JSON 对象时）。
@@ -553,6 +596,9 @@ func (b *Bridge) publish(subject string, payload interface{}) {
 			return
 		}
 	}
+	// 发布前标记（D-11：与 publishV 统一）——否则回环消息（本桥订阅 ">"）会在 Emit 内即时
+	// 派发时未命中标记而被转发回前端。指纹口径见 isSelfPublished。
+	b.markPublished(subject, raw)
 	v := b.bus.Emit(context.Background(), subject, raw).Wait()
 	if v.Err() != nil {
 		slog.Error("bridge publish failed", "subject", subject, "err", v.Err())
@@ -562,7 +608,6 @@ func (b *Bridge) publish(subject string, payload interface{}) {
 // publishV 发布并等待派发结果（promise 语义）：返回订阅者写回的 Result 与收集的 Errors。
 // 事件类主题（无订阅者写回）→ result=nil、errs=nil，行为与 publish 一致。
 func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs []error) {
-	b.markPublished(subject)
 	var raw []byte
 	switch v := payload.(type) {
 	case string:
@@ -574,6 +619,7 @@ func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs
 			return nil, []error{err}
 		}
 	}
+	b.markPublished(subject, raw)
 	v := b.bus.Emit(context.Background(), subject, raw).Wait()
 	return v.Result, v.Errors
 }
@@ -594,27 +640,6 @@ func (b *Bridge) Close() {
 	if b.bus != nil {
 		_ = b.bus.Close()
 	}
-}
-
-// ── 本地事件（window-* 等，不进入 mq）──
-
-var locals = make(map[string][]func())
-
-// OnLocal 注册本地事件处理器（如窗口控制）。
-func (b *Bridge) OnLocal(typ string, h func()) {
-	locals[typ] = append(locals[typ], h)
-}
-
-// DispatchLocal 分发本地事件（main 处理 /publish 时先查）。
-func (b *Bridge) DispatchLocal(typ string) bool {
-	hs, ok := locals[typ]
-	if !ok {
-		return false
-	}
-	for _, h := range hs {
-		h()
-	}
-	return true
 }
 
 // newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖）。

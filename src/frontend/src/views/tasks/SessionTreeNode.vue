@@ -350,14 +350,11 @@ function fmtElapsed(sec) {
   return `${m}m ${Math.floor(n % 60)}s`
 }
 
-// 交互事件化：展开/折叠为消息（后端未来可据此监听会话树状态）
-let unsubToggle = null
-
+// 交互事件化：展开/折叠为消息（后端未来可据此监听会话树状态）。
+// 节点对象归 useTaskView store 持有 → 折叠翻转由 store 订阅 session-tree-node-toggle 完成
+// （本组件不直改 props.node.expanded；E-08）。
 onMounted(() => {
   syncElapsedTimer()
-  unsubToggle = mq.on(EventNames.sessionTreeNodeToggle, ({ node_id }) => {
-    if (node_id === props.node.node_id) props.node.expanded = !props.node.expanded
-  })
 })
 
 // isLLMRunning 变化 → 组件重渲染 → onUpdated 同步计时器（替代 watch props 派生量）。
@@ -365,7 +362,6 @@ onUpdated(syncElapsedTimer)
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
-  if (unsubToggle) unsubToggle()
 })
 </script>
 

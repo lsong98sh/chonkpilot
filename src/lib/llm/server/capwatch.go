@@ -40,14 +40,15 @@ type capWatcher struct {
 	s *Server
 	w *fsnotify.Watcher
 
-	mu       sync.Mutex
-	want     map[string]bool // 目标 capability 根（绝对、斜杠化）
-	appWant  map[string]bool // 其中系统级 app 根（T-21②：走 RegisterContracts + gateway/reload 重扫）
-	watched  map[string]bool // 已 Add 的目录
-	dirty    bool            // 本轮是否有用户/项目级根内变更待重扫
-	dirtyApp bool            // 本轮是否有 app 根内变更待重扫
-	timer    *time.Timer
-	done     chan struct{}
+	mu        sync.Mutex
+	want      map[string]bool // 目标 capability 根（绝对、斜杠化）
+	appWant   map[string]bool // 其中系统级 app 根（T-21②：走 RegisterContracts + gateway/reload 重扫）
+	watched   map[string]bool // 已 Add 的目录
+	dirty     bool            // 本轮是否有用户/项目级根内变更待重扫
+	dirtyApp  bool            // 本轮是否有 app 根内变更待重扫
+	timer     *time.Timer
+	done      chan struct{}
+	closeOnce sync.Once // Close 幂等守卫（B-16：并发/重复 Close 不双重 close）
 }
 
 // newCapWatcher 建立 watcher 并启动事件循环（失败返回错误，调用方降级）。
@@ -104,11 +105,8 @@ func (cw *capWatcher) Close() {
 	if cw == nil {
 		return
 	}
-	select {
-	case <-cw.done:
-	default:
-		close(cw.done)
-	}
+	// B-16：close(cw.done) 经 sync.Once 守卫，并发/重复 Close 不再双重 close panic。
+	cw.closeOnce.Do(func() { close(cw.done) })
 	cw.mu.Lock()
 	if cw.timer != nil {
 		cw.timer.Stop()

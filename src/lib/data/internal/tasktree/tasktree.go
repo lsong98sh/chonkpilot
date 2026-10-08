@@ -212,7 +212,23 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 	if err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
-	if err := prj.Table(tasktreeTableFor(req.Shadow)).Upsert(n.ID, rec); err != nil {
+	tb := prj.Table(tasktreeTableFor(req.Shadow))
+	// 状态列合并（A-03）：Upsert 是**全量覆盖写**，未携带的状态列会随旧值一起丢失，导致同 id
+	// 重放（如 llm 再上报 running）把「已逻辑删除」的节点复活（closed/deleted_at 被清）。故写前
+	// 读旧行，对「请求未携带即保留旧值」的状态列做合并（请求携带则以其为准）。
+	var old data.Record
+	if ok, err := tb.Get(n.ID, &old); err != nil {
+		return facade.TasktreeUpsertResponse{}, err
+	} else if ok {
+		for _, k := range []string{"closed", "deleted_at", "finished_at"} {
+			if _, has := rec[k]; !has {
+				if v, hasOld := old[k]; hasOld {
+					rec[k] = v
+				}
+			}
+		}
+	}
+	if err := tb.Upsert(n.ID, rec); err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
 	return facade.TasktreeUpsertResponse{OK: true}, nil
@@ -252,22 +268,42 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 		}
 	}
 	if req.Shadow {
+		// 逐行物理删（含索引键，由 Table 写入口同事务清理）；错误聚合上报（A-02）：
+		// 原 `_ = t.Delete(id)` 吞错 → 失败静默残留且恒返回 OK。不存在视为已删（幂等）。
+		var errs []error
 		for _, id := range toDelete {
-			_ = t.Delete(id) // 物理删（含索引键，由 Table 写入口同事务清理）
+			if err := t.Delete(id); err != nil && !errors.Is(err, data.ErrNotFound) {
+				errs = append(errs, fmt.Errorf("shadow delete %s: %w", id, err))
+			}
+		}
+		if err := errors.Join(errs...); err != nil {
+			return facade.TasktreeDeleteResponse{}, err
 		}
 		return facade.TasktreeDeleteResponse{OK: true}, nil
 	}
-	// 逻辑删除：节点 + 级联子树同样标记（行保留；幂等）
+	// 逻辑删除：节点 + 级联子树同样标记（行保留；幂等）。错误聚合上报（A-02）：逐行为独立
+	// 事务，单行失败不回滚 → 必须上报，否则静默残留未关闭节点且恒返回 OK。
 	now := time.Now().UTC().Format(time.RFC3339)
+	var errs []error
 	for _, id := range toDelete {
 		var rec data.Record
-		if ok, _ := t.Get(id, &rec); !ok {
+		ok, err := t.Get(id, &rec)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("load %s: %w", id, err))
+			continue
+		}
+		if !ok {
 			continue
 		}
 		rec["closed"] = true
 		rec["deleted_at"] = now
 		rec["updated_at"] = now
-		_ = t.Upsert(id, rec) // 行仍在 → 索引键随主行保留（由 Table 写入口维护）
+		if err := t.Upsert(id, rec); err != nil { // 行仍在 → 索引键随主行保留（由 Table 写入口维护）
+			errs = append(errs, fmt.Errorf("close %s: %w", id, err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return facade.TasktreeDeleteResponse{}, err
 	}
 	s.emitTaskDeleted(req.InstanceID, req.NodeID)
 	return facade.TasktreeDeleteResponse{OK: true}, nil

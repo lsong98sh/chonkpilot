@@ -2,9 +2,12 @@ package fileops
 
 import (
 	"crypto/md5"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -23,9 +26,9 @@ const lockRetryCount = 300
 // 返回释放函数，调用方须在操作完成后 defer release。
 func acquireLock(path string, retry int) (release func(), err error) {
 	lockPath := lockFilePath(path)
-	pid := os.Getpid()
-	host, _ := os.Hostname()
-	payload := fmt.Sprintf("%s:%d", host, pid)
+	// 持有者令牌 = host:pid + 随机串：random 段保证同进程内不同持有者也可区分
+	// （跨进程 ABA 与同进程 goroutine ABA 均能被 release 的归属比对识别）。
+	payload := lockToken()
 
 	for i := 0; i <= retry; i++ {
 		// 尝试创建锁文件
@@ -34,7 +37,7 @@ func acquireLock(path string, retry int) (release func(), err error) {
 			f.WriteString("\n")
 			f.WriteString(time.Now().Format(time.RFC3339))
 			f.Close()
-			release = func() { unlockFile(lockPath) }
+			release = func() { unlockFile(lockPath, payload) }
 			return release, nil
 		}
 
@@ -54,9 +57,26 @@ func acquireLock(path string, retry int) (release func(), err error) {
 	return nil, fmt.Errorf("file %s is locked (lockfile: %s)", path, lockPath)
 }
 
-// unlockFile 删除锁文件。
-func unlockFile(lockPath string) {
+// unlockFile 删除锁文件；**仅在归属比对通过时删除**：读回锁文件首行与本次持有者令牌一致
+// 才 Remove，否则说明锁已被突破（陈旧被抢）或已由他人持有（ABA）→ 记日志放弃，不误删他人锁。
+func unlockFile(lockPath, payload string) {
+	b, err := os.ReadFile(lockPath)
+	if err != nil {
+		return
+	}
+	if !strings.HasPrefix(string(b), payload+"\n") {
+		fmt.Fprintf(os.Stderr, "[fileops] lock owner mismatch, skip unlock: %s\n", lockPath)
+		return
+	}
 	os.Remove(lockPath)
+}
+
+// lockToken 生成锁持有者令牌（host:pid:random）。
+func lockToken() string {
+	host, _ := os.Hostname()
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%s:%d:%s", host, os.Getpid(), hex.EncodeToString(b))
 }
 
 // lockFilePath 返回锁文件路径。

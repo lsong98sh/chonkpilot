@@ -24,7 +24,10 @@ const indexSep = "\x00"
 type Index struct {
 	Bucket string   // 索引桶名（同库内）
 	Fields []string // 前缀列（按序，等值可命中）
-	Order  string   // 键内承载的排序字段（可空；created_at 字符串字典序即时间序）
+	// Order 键内承载的排序字段（可空）。**仅限字典序安全字段**（RFC3339 时间/定长文本）：
+	// query.go 的 skipSort 以键字节序当作 compareValue 语义序（A-06），数值字段会静默错序，
+	// 故不得把数值列填入 Order（需数值序时应回退内存排序，不设 Order）。
+	Order string
 	// Build 由记录值生成完整索引键；ok=false 则该行不入此索引。
 	// 写入口会把主键注入 rec[KeyField] 后再调用（键尾 = 主键）。
 	Build func(rec Record) (indexKey string, ok bool)

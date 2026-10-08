@@ -227,16 +227,16 @@ type Server struct {
 	// （tool_result 轮询等）。独立小锁：回报到达时域工具可能正执行中，避免卷入 s.mu 嵌套。
 	taskExecCancelMu sync.Mutex
 	taskExecCancels  map[string]context.CancelFunc
-	cleaned         map[string]bool       // instanceID → 已做过遗留 running 清理
-	dirNodes        map[string][]string   // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
-	capNodeMeta     map[string]capNodeRef // capability dir 节点名 → 归属实例 + 契约根（T-21 重扫定位）
-	capWorkDirs     map[string]string     // instanceID → work_dir（T-21 按实例重建 dir 节点用）
-	appTools        map[string]bool       // app 根已注册工具名（T-21② 删除/改名回收用）
-	capMu           sync.Mutex            // 串行化 capability dir 节点接入/重扫（T-21）
-	execCfgMu       sync.Mutex            // 串行化 loadExecConfig（G-27：instance-register 与 prj 执行配置刷新两路并发调用，内含「读配置 → SetRuntime/SetSecurityDirs」读改写序列，并发交错即 data race；不重入，见 loadExecConfig 头注）
-	capWatch        *capWatcher           // 用户/项目级 capability 根 fsnotify 监听（T-21 保存即生效）
-	locksDir        string                // session 锁根（默认 ~/.chonkpilot/locks；测试可注入）
-	memCache        *memoryCategoryCache  // 记忆类别清单短时 TTL 缓存（I-68 ②）
+	cleaned          map[string]bool       // instanceID → 已做过遗留 running 清理
+	dirNodes         map[string][]string   // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
+	capNodeMeta      map[string]capNodeRef // capability dir 节点名 → 归属实例 + 契约根（T-21 重扫定位）
+	capWorkDirs      map[string]string     // instanceID → work_dir（T-21 按实例重建 dir 节点用）
+	appTools         map[string]bool       // app 根已注册工具名（T-21② 删除/改名回收用）
+	capMu            sync.Mutex            // 串行化 capability dir 节点接入/重扫（T-21）
+	execCfgMu        sync.Mutex            // 串行化 loadExecConfig（G-27：instance-register 与 prj 执行配置刷新两路并发调用，内含「读配置 → SetRuntime/SetSecurityDirs」读改写序列，并发交错即 data race；不重入，见 loadExecConfig 头注）
+	capWatch         *capWatcher           // 用户/项目级 capability 根 fsnotify 监听（T-21 保存即生效）
+	locksDir         string                // session 锁根（默认 ~/.chonkpilot/locks；测试可注入）
+	memCache         *memoryCategoryCache  // 记忆类别清单短时 TTL 缓存（I-68 ②）
 	// taskLayer 任务层（21-任务层设计方案 §9.2 P2：层为唯一权威）。层订阅既有事件、同步写
 	// 权威表 tasktree（单写者；llm 不再自写库），并持有执行句柄 → 取消/转后台时回调执行侧
 	// （taskExecSink.CancelExec / DetachExec → 进程内 gateway 执行池，见 §9.3）。
@@ -253,11 +253,19 @@ type Server struct {
 	sweepStop func()
 
 	// MCP 四级文件配置保存即生效（T-25）：已下发给 gateway 的集合（对账基线）+ 串行化增量对账。
-	mcpMu      sync.Mutex
-	mcpApplied map[string]mcpgateway.ServerEntry
+	// mcpReconcileMu 串行化**整次对账**（B-15：覆盖全程保证对账互斥），mcpMu 仅保护 mcpApplied
+	// 的读写——网络调用 register/unregister 在 mcpMu 外进行，不阻塞其他 mcp 面访问。
+	mcpReconcileMu sync.Mutex
+	mcpMu          sync.Mutex
+	mcpApplied     map[string]mcpgateway.ServerEntry
 
 	// noticeSeen 是插件失败提示判重表（同轮同类只提示一次，见 pluginnotice.go）。
 	noticeSeen *noticeDedup
+
+	// promptSem 是 prompt-optimise 的**每实例在飞并发**信号量（B-24：后台生成 goroutine 数量限流，
+	// 上限 promptOptimiseMaxInflight；懒建，键 = instance_id）。
+	promptSemMu sync.Mutex
+	promptSem   map[string]chan struct{}
 
 	// ── 认证域（61 §4.6；阶段 2b-1）─────────────────
 	// auth 是认证**门面**（本期 = 本地 auth 库实现；将来可换 OS 账号 / LDAP / OIDC —— 只留装配位）；
@@ -317,6 +325,8 @@ func New(bus mq.Bus, opts Options) *Server {
 		agents:          make(map[string]AgentDef),
 		continuePending: make(map[string]bool),
 	}
+	// instance.Manager 告警接入宿主日志（F-10）：GUI/分离形态下超限告警不再只落 stderr。
+	s.im.SetLogf(logf)
 	s.memCache = newMemoryCategoryCache(memoryCategoryTTL)
 	s.noticeSeen = newNoticeDedup()
 	s.tasks = newTaskManager(s)
@@ -1424,6 +1434,10 @@ func (s *Server) turnSession(turnID string) string {
 	return ""
 }
 
+// retryCallTimeout 是 tool-retry 经 gateway 重跑一次调用的超时（B-03：对齐本包 gateway 直调
+// 既有 15s 口径，如 New 期 servers/register、各 emitGateway 调用；超时 → 走失败终态）。
+const retryCallTimeout = 15 * time.Second
+
 // onToolRetry 重试工具（不经 LLM，msg-ref §4.2 完整实现）：定位（task_id tk-* 内存直取校验
 // 会话归属；回退 {session, turn}(+tool_call_id / 前端漂移 task_id=tool_call_id) 取该轮最后一条
 // interrupted）→ gateway tools/call 重跑 → 终态广播 → 结果喂回该轮续轮（tool 结果进入下一条
@@ -1471,8 +1485,12 @@ func (s *Server) onToolRetry(_ context.Context, _ string, v *mq.Value) error {
 	if args == nil {
 		args = map[string]any{}
 	}
-	res, gwTaskID, err := s.gc.Call(context.Background(), node.Tool, args, ctxMsg)
+	// B-03：gateway 重跑带超时（原来 context.Background() 无界 → 死连接可永久挂住本 handler）。
+	ctx, cancel := context.WithTimeout(context.Background(), retryCallTimeout)
+	defer cancel()
+	res, gwTaskID, err := s.gc.Call(ctx, node.Tool, args, ctxMsg)
 	if err != nil {
+		// 失败 / 超时均走失败终态（errMsg 携带原因，超时 = context deadline exceeded）。
 		s.tasks.done(node.TaskID, TaskStateError, "", err.Error())
 		v.Result = map[string]any{"ok": false, "error": err.Error()}
 		return nil

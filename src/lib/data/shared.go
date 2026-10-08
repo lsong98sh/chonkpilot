@@ -30,8 +30,16 @@ var (
 	shared    = make(map[string]*sharedDB)
 	// openLocks 是按路径的单飞锁（每路径一把）：bbolt.Open 可能阻塞至超时，故打开动作
 	// **不持 storeMu**，只持该路径自己的锁（同路径并发只打开一次，不同路径互不阻塞）。
-	openLocks = make(map[string]*sync.Mutex)
+	// refs 记在册引用（持有者 + 等待者）；归零后回收条目，避免按路径只增不清（A-12）——
+	// 计数保证「无人持有/等待」时才删除，不会与在飞打开动作错配出两把不同的锁。
+	openLocks = make(map[string]*openLock)
 )
+
+// openLock 是路径级单飞锁 + 在册引用计数（refs 归零才可从 openLocks 移除）。
+type openLock struct {
+	mu   sync.Mutex
+	refs int
+}
 
 // Register 登记 instance 绑定（幂等；重复登记刷新 work_dir/data_dir）。
 // 登记源：server 收 instance-register 时调用（统一）；独立服务（compress 等）可凭事件载荷自登记。
@@ -188,17 +196,26 @@ func OpenSharedLayer(path string, layer Layer) (*DB, func(), error) {
 		storeMu.Unlock()
 		return s.db, releaseOnce(path, s), nil
 	}
-	// 取该路径的单飞锁（不存在则建；锁本身长期保留，避免并发下同路径出现两把不同锁）。
+	// 取该路径的单飞锁（不存在则建）并计入引用；refs>0 期间条目不会被回收。
 	pl := openLocks[path]
 	if pl == nil {
-		pl = &sync.Mutex{}
+		pl = &openLock{}
 		openLocks[path] = pl
 	}
+	pl.refs++
 	storeMu.Unlock()
 
-	// 锁外打开（同路径串行，不阻塞其他路径）。
-	pl.Lock()
-	defer pl.Unlock()
+	// 锁外打开（同路径串行，不阻塞其他路径）；收尾释放锁并归还引用（归零则回收条目）。
+	pl.mu.Lock()
+	defer func() {
+		pl.mu.Unlock()
+		storeMu.Lock()
+		pl.refs--
+		if pl.refs <= 0 {
+			delete(openLocks, path)
+		}
+		storeMu.Unlock()
+	}()
 	// 复查：等待期间他协程可能已建好缓存。
 	storeMu.Lock()
 	if s, ok := shared[path]; ok {
@@ -230,6 +247,8 @@ func releaseOnce(path string, s *sharedDB) func() {
 			if s.refs <= 0 {
 				_ = s.db.Close()
 				delete(shared, path)
+				// 单飞锁条目由 OpenSharedLayer 内的 refs 计数自行回收（A-12），此处不删，
+				// 以免与在飞的打开动作错配出两把不同的锁。
 			}
 		})
 	}

@@ -265,13 +265,6 @@ func dsScript(args map[string]interface{}) (string, string) {
 	return "", ""
 }
 
-func dsIntArg(v interface{}, def int) int {
-	if f, ok := v.(float64); ok {
-		return int(f)
-	}
-	return def
-}
-
 // runCtx 是脚本执行状态。
 type runCtx struct {
 	curHWND    syscall.Handle
@@ -652,13 +645,23 @@ func (c *runCtx) cmdKey(cmd, spec string) error {
 		time.Sleep(time.Millisecond * 30)
 		release()
 	case "KDN":
+		// 已按下的修饰键：主键失败时须逆序释放，避免键盘状态泄漏（C-05）。
+		var pressed []uint16
+		releaseMods := func() {
+			for i := len(pressed) - 1; i >= 0; i-- {
+				SendKey(pressed[i], true)
+			}
+		}
 		for _, m := range mods {
 			if !SendKey(m, false) {
+				releaseMods()
 				return fmt.Errorf("按键注入失败 %s", spec)
 			}
+			pressed = append(pressed, m)
 			time.Sleep(time.Millisecond * 20)
 		}
 		if !SendKey(mainVk, false) {
+			releaseMods()
 			return fmt.Errorf("按键注入失败 %s", spec)
 		}
 	case "KUP":
@@ -680,15 +683,7 @@ func (c *runCtx) cmdIME(arg string) error {
 	if err != nil {
 		return err
 	}
-	if err := setImeOpen(open); err != nil {
-		return err
-	}
-	mode := "中文"
-	if !open {
-		mode = "英文"
-	}
-	_ = mode
-	return nil
+	return setImeOpen(open)
 }
 
 // ─── 截图 ───

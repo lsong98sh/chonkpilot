@@ -127,13 +127,9 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 	if err != nil {
 		return infoMap(req.path, err.Error()), fmt.Errorf("stat file: %w", err)
 	}
-	// 跨进程锁：读前加锁，读毕解锁（30s 内重试，失败真失败）
-	release, lockErr := acquireLock(resolved, lockRetryCount)
-	if lockErr != nil {
-		return infoMap(req.path, lockErr.Error()), fmt.Errorf("lock: %w", lockErr)
-	}
-	defer release()
-
+	// 读操作**不加跨进程锁**：读是共享语义，与并发写无锁冲突；且锁文件落在被读文件同目录，
+	// 在 agentbox 只读目录下会因无法创建锁文件而误伤合法读（C-03）。写侧（fileops 修改类动作）
+	// 仍在写前/写后持锁，互斥语义由写侧保证。
 	info := map[string]interface{}{
 		"path": req.path, "lines": 0, "size": fi.Size(),
 		"encoding": "unknown", "modified": fi.ModTime().Format(time.RFC3339), "truncated": false,

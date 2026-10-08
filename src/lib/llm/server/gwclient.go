@@ -274,13 +274,10 @@ func (g *gwClient) AsyncMode(name string) string {
 // gatewayCall 对 gateway 任意方法做一次 Emit+await 调用（servers/list、tools/register 等透传）。
 // 方法名为组/动作（tools/register），主题 = mcp-tools-register；载荷按方法直传。
 // reqID 参数为兼容旧调用面保留（promise 化后无 req_id，忽略）。
+// 注：调用方须确保 gwClient 场景（s.gw 已装配）下使用；此处直接 emit，实例上下文由 ctx 承载。
 func (s *Server) gatewayCall(ctx context.Context, method string, args map[string]any, _ string) (map[string]any, error) {
 	if args == nil {
 		args = map[string]any{}
-	}
-	// 方法调用附带 instance 上下文（归属隔离/下游注入用）
-	if s.gw != nil {
-		// s.gw 占位保护：gatewayCall 由调用方确保 gwClient 场景使用；此处直接 emit
 	}
 	return s.emitGateway(ctx, method, args)
 }

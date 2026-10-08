@@ -57,8 +57,8 @@ func dataRequest(bus mq.Bus, subject string, req map[string]any) (map[string]any
 	defer sub.Unsubscribe()
 
 	b, _ := json.Marshal(req)
-	if f := bus.Emit(context.Background(), subject, b); f.Wait().Err() != nil {
-		return nil, f.Wait().Err()
+	if err := bus.Emit(context.Background(), subject, b).Wait().Err(); err != nil { // B-09：Wait 取一次，避免双调
+		return nil, err
 	}
 	select {
 	case r := <-done:

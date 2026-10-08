@@ -19,6 +19,7 @@
 package scriptrun
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -340,13 +341,19 @@ func mergeChildEnv(base []string, groups ...map[string]string) []string {
 	return out
 }
 
+// installTimeout 是依赖安装（pip/npm）的独立上限：安装可能因网络/交互而挂起，
+// 不能无限阻塞调用方（与主脚本执行的「上层 gateway 取消」口径分离）。
+const installTimeout = 5 * time.Minute
+
 // installRequires 安装依赖（executor 静默执行，交互式安装不支持）。
 // python → pip install；js → npm install --no-save（无 package.json 先 init -y）；其余暂不支持。
 func installRequires(rt, interp, workDir string, requires []string, env []string) *cli.Result {
+	ctx, cancel := context.WithTimeout(context.Background(), installTimeout)
+	defer cancel()
 	switch rt {
 	case "python":
 		pkgs := append([]string{"-m", "pip", "install", "--disable-pip-version-check", "-q"}, requires...)
-		cmd := exec.Command(interp, pkgs...)
+		cmd := exec.CommandContext(ctx, interp, pkgs...)
 		cmd.SysProcAttr = winproc.SysProcAttr()
 		cmd.Dir = workDir
 		cmd.Env = env
@@ -356,7 +363,7 @@ func installRequires(rt, interp, workDir string, requires []string, env []string
 		return nil
 	case "js":
 		if _, err := os.Stat(filepath.Join(workDir, "package.json")); err != nil {
-			initCmd := exec.Command("npm", "init", "-y")
+			initCmd := exec.CommandContext(ctx, "npm", "init", "-y")
 			initCmd.SysProcAttr = winproc.SysProcAttr()
 			initCmd.Dir = workDir
 			initCmd.Env = env
@@ -365,7 +372,7 @@ func installRequires(rt, interp, workDir string, requires []string, env []string
 			}
 		}
 		pkgs := append([]string{"install", "--no-save"}, requires...)
-		cmd := exec.Command("npm", pkgs...)
+		cmd := exec.CommandContext(ctx, "npm", pkgs...)
 		cmd.SysProcAttr = winproc.SysProcAttr()
 		cmd.Dir = workDir
 		cmd.Env = env

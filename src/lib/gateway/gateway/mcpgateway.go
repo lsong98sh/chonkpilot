@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -910,7 +911,8 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	run := func(ctx2 context.Context) (*mcp.CallToolResult, error) {
 		res, err := ps.prov.Call(ctx2, route.Original, args)
 		if ctx2.Err() == context.Canceled {
-			return nil, ctx2.Err() // 用户取消：不计熔断失败
+			ps.cb.cancel() // 用户取消：不计熔断失败，并复位 half-open 单飞标志（C-18）
+			return nil, ctx2.Err()
 		}
 		if err != nil {
 			ps.cb.failure()
@@ -1821,6 +1823,7 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 		}
 		g.reg.removeProvider(key)
 		if rerr := g.reg.registerProvider(ps, tools, g.params.NsPrefix); rerr != nil {
+			_ = prov.Close() // 与上分支一致：重建后注册失败 → 关子进程，避免孤儿（C-06）
 			g.notifyMCPChanged(scope, map[string]any{"kind": KindServer, "name": name, "status": "failed", "reason": rerr.Error()})
 			g.logf("[gateway] spawned server %s re-register failed: %v", name, rerr)
 			return
@@ -1834,6 +1837,8 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 // ─── 管理 REST ──────────────────────────────────────────
 
 func (g *Gateway) startManage(addr string) {
+	// 管理 REST 无鉴权（仅本机管理面）→ 强制绑定回环地址，杜绝误配 0.0.0.0 对外暴露（C-23）。
+	addr = bindLoopback(addr)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp/list", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"servers": g.reg.serverViews("")})
@@ -1843,13 +1848,39 @@ func (g *Gateway) startManage(addr string) {
 	mux.HandleFunc("/mcp/check", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "tools": len(g.reg.allTools()), "servers": g.reg.serverViews("")})
 	})
-	g.mgmtSrv = &http.Server{Addr: addr, Handler: mux}
+	g.mgmtSrv = &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		g.logf("[gateway] manage http on %s", addr)
 		if err := g.mgmtSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			g.logf("[gateway] manage http error: %v", err)
 		}
 	}()
+}
+
+// bindLoopback 强制管理地址绑定到回环：host 为空或非回环（如 0.0.0.0 / 局域网 IP）→ 改写为
+// 127.0.0.1 并保留端口；地址无法解析（缺端口）时原样返回（交由 ListenAndServe 报错）。仅回环
+// （127.0.0.0/8、::1、localhost）保持不变。
+func bindLoopback(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host != "" {
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return addr
+		}
+		if strings.EqualFold(host, "localhost") {
+			return addr
+		}
+	}
+	return net.JoinHostPort("127.0.0.1", port)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

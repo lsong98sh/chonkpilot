@@ -607,13 +607,21 @@ func (ec *editCtx) del(toks []argTok) error {
 	})
 }
 
-// delEntry 删除文件或目录（文件先加锁；目录整树删除）。
+// delEntry 删除文件或目录（文件/目录均先加锁；目录整树删除）。
 func (ec *editCtx) delEntry(disp, resolved string) error {
 	fi, serr := os.Stat(resolved)
 	if serr != nil {
 		ec.addFail(disp, "DEL", "文件不存在："+serr.Error())
 		return nil
 	}
+	// 目录与文件对齐加同一把跨进程锁（锁文件 = 目标同级的 <path>.chonk.lock）：
+	// 避免与并发写/删除竞态（C-15）。
+	release, lerr := acquireLock(resolved, lockRetryCount)
+	if lerr != nil {
+		ec.addFail(disp, "DEL", "加锁失败（30s 内重试未果）："+lerr.Error())
+		return nil
+	}
+	defer release()
 	if fi.IsDir() {
 		if err := os.RemoveAll(resolved); err != nil {
 			ec.addFail(disp, "DEL", "删除目录失败："+err.Error())
@@ -622,12 +630,6 @@ func (ec *editCtx) delEntry(disp, resolved string) error {
 		ec.addDeleted(disp)
 		return nil
 	}
-	release, lerr := acquireLock(resolved, lockRetryCount)
-	if lerr != nil {
-		ec.addFail(disp, "DEL", "加锁失败（30s 内重试未果）："+lerr.Error())
-		return nil
-	}
-	defer release()
 	if err := os.Remove(resolved); err != nil {
 		ec.addFail(disp, "DEL", "删除失败："+err.Error())
 		return nil

@@ -53,6 +53,14 @@ func (r *windowRegistry) setMain(h *windowHost) {
 //   - session 为空 / 已达上限 / 建窗失败 → ok=false（不新增字段，靠 ok 判定）。
 //
 // 返回 (window_id, activated, ok)。
+//
+// 同步建窗说明（D-16，**已评估保留**）：本函数在调用窗口的 WebView2 UI 线程上同步执行
+// startWindow（内部虽在独占线程建窗，但会阻塞调用线程至建窗完成，稳态约 0.7~1.4s）。
+// 之所以不改为「异步建窗 + 完成后回推」，是因为 61 §1 gui.window.open-chat 为**同步
+// 请求-响应**契约（返回 {ok, window_id, activated}），且**不存在**异步完成事件；
+// 改异步即需新增消息面（新增 msg/payload，须经用户确认——测试准则明令禁止擅改），
+// 同时会使 --test-port 多窗口路由（window_id 定向）失去确定性，回归风险高。
+// 故保持同步语义并在此明确声明取舍（若后续引入异步完成事件，可据此改造）。
 func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, bool) {
 	if sessionID == "" {
 		return "", false, false
@@ -86,7 +94,9 @@ func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, boo
 		frameless: false, // 对话窗口 = 原生标题栏（最大化/最小化/resize 由系统提供）
 		// --test-port 多窗口路由（24 §4.5）：本窗口登记为可选测试目标（window_id 定向）。
 		onWired: func(h *windowHost) error {
-			env.testSrv.RegisterChat(h)
+			if s := env.testServer(); s != nil {
+				s.RegisterChat(h)
+			}
 			return nil
 		},
 	})
@@ -97,6 +107,14 @@ func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, boo
 		return "", false, false
 	}
 	r.mu.Lock()
+	// 竞态防护（D-09）：建窗耗时内该窗口可能已自行关闭（finish→remove 先跑），此时
+	// remove 已把 bySession[sessionID] 清掉（或不再指向本 windowID）。若不核对即写 byID，
+	// 会残留「幽灵」条目（byID 有、窗口已亡）→ 列表/广播指向已销毁窗口。故以 bySession
+	// 一致性为准，被移除则不写入并回报失败。
+	if r.bySession[sessionID] != windowID {
+		r.mu.Unlock()
+		return windowID, false, false
+	}
 	r.byID[windowID] = h
 	main := r.main
 	r.mu.Unlock()

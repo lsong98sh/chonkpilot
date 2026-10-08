@@ -175,6 +175,8 @@ func (f *jobFile) ReadRange(n, m int) ([]string, error) {
 }
 
 func (f *jobFile) WriteAll(text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	p, err := f.absWrite()
 	if err != nil {
 		return err
@@ -193,6 +195,8 @@ func (f *jobFile) Append(text string) error {
 	if text == "" {
 		return nil
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	p, err := f.absWrite()
 	if err != nil {
 		return err
@@ -302,12 +306,12 @@ type jobEnv struct {
 	// buildStaticTree 预走 AST 得到（LLM 原始参数 → 所属静态节点 id / 容器首步原始参数）；
 	// containerIDs 是静态容器节点 id（作业结束标记终态）；sessions 是各步骤子会话 id
 	// （作业结束清理 subParents 映射）。
-	execSteps      []dslExecStep
-	stepContainer  map[string]string
-	containerLead  map[string]string
-	leadCount      map[string]int
-	containerIDs   []string
-	sessions       []string
+	execSteps     []dslExecStep
+	stepContainer map[string]string
+	containerLead map[string]string
+	leadCount     map[string]int
+	containerIDs  []string
+	sessions      []string
 }
 
 // dslExecStep 是一次 LLM 步骤执行的内部记录（对外投影为 DslStepRecord + 结果文本供汇总）。
@@ -395,15 +399,18 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 	// （agent 空 / 不可委派 / 提示词空，见本文件 llmAction）与无参 LOOP 的上限/失败终止——
 	// 二者同走 execSeq → addErr → Result.Errors（引擎 StopOnError 缺省 false：记错并继续后续步骤）。
 	runErrs := eng.Result().Errors
-	if len(runErrs) > 0 {
-		logf("[llm_run] DSL 运行时错误（作业 %s）：共 %d 条，首条 第 %d 行：%s\n",
-			node.TaskID, len(runErrs), runErrs[0].Line, runErrs[0].Msg)
-	}
-
 	// $RETURN 结果通道（DSL-2）：Used → 取代汇总（inline 内容 / file 文件名+大小）；未用 → 回落既有汇总。
 	summary := jr.buildSummary(runErrs, eng.Return())
 	jr.finishStatic(runErrs)
 	jr.markReturn(eng.Return())
+	if len(runErrs) > 0 {
+		logf("[llm_run] DSL 运行时错误（作业 %s）：共 %d 条，首条 第 %d 行：%s\n",
+			node.TaskID, len(runErrs), runErrs[0].Line, runErrs[0].Msg)
+		// B-19：存在运行时错误 → 作业节点落**失败终态**、结果按 failed 回填（不再误报 success）。
+		s.tasks.done(node.TaskID, TaskStateError, summary, runErrs[0].Msg)
+		parent.FeedToolResultStatus(toolCallID, summary, "failed")
+		return
+	}
 	s.tasks.done(node.TaskID, TaskStateDone, summary, "")
 	parent.FeedToolResult(toolCallID, summary)
 }

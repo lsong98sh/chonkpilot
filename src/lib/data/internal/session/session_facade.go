@@ -156,7 +156,9 @@ func (s *Service) SessionTitle(req facade.SessionTitleRequest) (facade.SessionTi
 		return facade.SessionTitleResponse{}, fmt.Errorf("session not found: %s", req.SessionID)
 	}
 	rec["title"] = req.Title
-	rec["updated_at"] = kernel.RFC3339Now()
+	// updated_at 与 created_at 同用纳秒格式（A-11）：秒级 RFC3339 与 created_at 的
+	// RFC3339FixedNano 混写会使同秒内字典序 ≠ 时间序。
+	rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
 	if err := prj.Table("sessions").Update(req.SessionID, rec); err != nil {
 		return facade.SessionTitleResponse{}, err
 	}
@@ -180,14 +182,24 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 	if err := prj.Table("sessions").Delete(req.SessionID); err != nil {
 		return facade.SessionDeleteResponse{}, err
 	}
+	// 级联清理 turns/messages：错误聚合上报（A-04）——原先 Query 失败 continue、Delete 错误忽略，
+	// 失败不可感知会残留孤儿数据；此处收集全部错误，任一行失败即返回失败。
+	var cascErrs []error
 	for _, table := range []string{"turns", "messages"} {
 		recs, _, err := prj.Table(table).Query(data.Query{Where: data.Record{"session_id": req.SessionID}})
 		if err != nil {
+			cascErrs = append(cascErrs, fmt.Errorf("query %s: %w", table, err))
 			continue
 		}
 		for _, r := range recs {
-			_ = prj.Table(table).Delete(kernel.Sval(r[data.KeyField]))
+			k := kernel.Sval(r[data.KeyField])
+			if err := prj.Table(table).Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
+				cascErrs = append(cascErrs, fmt.Errorf("delete %s/%s: %w", table, k, err))
+			}
 		}
+	}
+	if err := errors.Join(cascErrs...); err != nil {
+		return facade.SessionDeleteResponse{}, err
 	}
 	if cur, _ := kernel.PrjConfigVal(prj, "active_session_id"); cur == req.SessionID {
 		_ = kernel.PrjConfigSetVal(prj, "active_session_id", "")
@@ -377,16 +389,12 @@ func (s *Service) TurnSetSummary(req facade.TurnSetSummaryRequest) (facade.TurnS
 	if err != nil {
 		return facade.TurnSetSummaryResponse{}, err
 	}
-	var rec data.Record
-	if ok, err := prj.Table("turns").Get(req.TurnID, &rec); err != nil {
-		return facade.TurnSetSummaryResponse{}, err
-	} else if !ok {
-		rec = data.Record{}
-	}
-	delete(rec, data.KeyField)
-	rec["summary"] = req.Summary
-	rec["updated_at"] = time.Now().UTC().Format(time.RFC3339)
-	if err := prj.Table("turns").Upsert(req.TurnID, rec); err != nil {
+	// 单事务 RMW（A-09）：读-改-写原子化，避免并发 lost update；updated_at 用纳秒（A-11）。
+	if err := prj.Table("turns").UpdateIn(req.TurnID, func(rec data.Record) data.Record {
+		rec["summary"] = req.Summary
+		rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
+		return rec
+	}); err != nil {
 		return facade.TurnSetSummaryResponse{}, err
 	}
 	return facade.TurnSetSummaryResponse{OK: true}, nil
@@ -404,21 +412,19 @@ func (s *Service) TurnComplete(req facade.TurnCompleteRequest) (facade.TurnCompl
 	if err != nil {
 		return facade.TurnCompleteResponse{}, err
 	}
-	var rec data.Record
-	if ok, _ := prj.Table("turns").Get(req.TurnID, &rec); !ok {
-		rec = data.Record{}
-	}
-	delete(rec, data.KeyField)
-	rec["status"] = req.Status
-	rec["finish_reason"] = req.FinishReason
-	if req.FullTokens != nil {
-		rec["full_tokens"] = *req.FullTokens
-	}
-	if req.BriefTokens != nil {
-		rec["brief_tokens"] = *req.BriefTokens
-	}
-	rec["updated_at"] = time.Now().UTC().Format(time.RFC3339)
-	if err := prj.Table("turns").Upsert(req.TurnID, rec); err != nil {
+	// 单事务 RMW（A-09）：读-改-写原子化，避免并发 lost update；updated_at 用纳秒（A-11）。
+	if err := prj.Table("turns").UpdateIn(req.TurnID, func(rec data.Record) data.Record {
+		rec["status"] = req.Status
+		rec["finish_reason"] = req.FinishReason
+		if req.FullTokens != nil {
+			rec["full_tokens"] = *req.FullTokens
+		}
+		if req.BriefTokens != nil {
+			rec["brief_tokens"] = *req.BriefTokens
+		}
+		rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
+		return rec
+	}); err != nil {
 		return facade.TurnCompleteResponse{}, err
 	}
 	return facade.TurnCompleteResponse{OK: true}, nil
@@ -444,15 +450,13 @@ func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.T
 		if id == "" {
 			continue
 		}
-		var rec data.Record
-		if ok, _ := prj.Table("turns").Get(id, &rec); !ok {
-			rec = data.Record{}
-		}
-		delete(rec, data.KeyField)
-		rec["status"] = "interrupted"
-		rec["finish_reason"] = "interrupted"
-		rec["updated_at"] = time.Now().UTC().Format(time.RFC3339)
-		if err := prj.Table("turns").Upsert(id, rec); err == nil {
+		// 单事务 RMW（A-09）；updated_at 用纳秒（A-11）。
+		if err := prj.Table("turns").UpdateIn(id, func(rec data.Record) data.Record {
+			rec["status"] = "interrupted"
+			rec["finish_reason"] = "interrupted"
+			rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
+			return rec
+		}); err == nil {
 			n++
 		}
 	}
@@ -532,9 +536,7 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 		key = kernel.FindToolMessageKey(prj, req.TurnID, m.ToolCallID)
 	}
 	createdAt := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	if key == "" {
-		key = kernel.NewMessageKey()
-	} else {
+	if key != "" { // 就地更新（显式 key / 复用同轮同 call 既有行）：保留原 created_at
 		var old data.Record
 		if ok, _ := prj.Table("messages").Get(key, &old); ok {
 			if v := kernel.Sval(old["created_at"]); v != "" {
@@ -579,7 +581,21 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	if brief != "" {
 		rec["brief"] = brief
 	}
-	if err := prj.Table("messages").Upsert(key, rec); err != nil {
+	tb := prj.Table("messages")
+	if key == "" {
+		// 新消息用 Insert（A-10）：NewMessageKey 仅 4 位随机，同微秒内仍可能碰撞，
+		// Upsert 会**静默覆盖**已存在消息（丢消息）；Insert 命中 ErrExists 时重生成 key 重试一次。
+		key = kernel.NewMessageKey()
+		if err := tb.Insert(key, rec); err != nil {
+			if !errors.Is(err, data.ErrExists) {
+				return facade.MessageAppendResponse{}, err
+			}
+			key = kernel.NewMessageKey()
+			if err := tb.Insert(key, rec); err != nil {
+				return facade.MessageAppendResponse{}, err
+			}
+		}
+	} else if err := tb.Upsert(key, rec); err != nil { // 就地更新：同键覆盖
 		return facade.MessageAppendResponse{}, err
 	}
 	return facade.MessageAppendResponse{OK: true, ID: key}, nil

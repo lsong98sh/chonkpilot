@@ -94,8 +94,10 @@ func (g *Gateway) asyncOverride(exposed string) (ToolAsyncOverride, bool) {
 }
 
 // selfTouchFiles 是 **self 节点内置工具**中「涉及文件变动」的契约白名单（用户口径 2026-09-28）：
-// 只有 `filesys_run` / `script_run` 会实际写盘；其余内置工具（file_find/file_read/file_diff/
-// web_fetch/browser_run/desktop_run 等）按「不涉及」处理（省掉每次调用前的 8–9 次 git 打点进程）。
+// `filesys_run` / `script_run` 会实际写盘。`browser_run` **不列入**（C-25）：它只在**显式传入**
+// `fail_shot`/`dom_file`/`console_file` 或脚本内 SHT/DOM/DBG 重定向时才落盘，缺省（不带这些参数）
+// 不写盘；按用户口径归「不涉及」——标错只让检查点粒度变粗（轮末补点仍在、git diff 校验仍生效），
+// 不丢安全。其余内置工具（file_find/file_read/file_diff/web_fetch/desktop_run 等）同按既有口径处理。
 var selfTouchFiles = map[string]bool{
 	"filesys_run": true,
 	"script_run":  true,

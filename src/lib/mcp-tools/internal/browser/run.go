@@ -434,6 +434,12 @@ func (r *Runner) stepOPN(st *Step) error {
 	if err := chromedp.Run(r.ctx, chromedp.Navigate(url)); err != nil {
 		return stepErr(st.Line, st.Raw, "navigation", "打开失败: "+err.Error())
 	}
+	// 建连后记录初始 target id（首个 OPN 时 r.curID 尚空）：供 TAB list/switch/close 正确标记当前页（C-17）。
+	if r.curID == "" {
+		if c := chromedp.FromContext(r.ctx); c != nil && c.Target != nil {
+			r.curID = c.Target.TargetID.String()
+		}
+	}
 	return nil
 }
 

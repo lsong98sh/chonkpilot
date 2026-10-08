@@ -12,8 +12,10 @@ package snapshot
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
+	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
 
 // Get 读会话快照（无快照/无记录 → ok=false）。prj = 实例的 prjusr 主库（会话/快照层）。
@@ -33,7 +35,9 @@ func Get(prj *data.DB, sessionID string) (data.Snapshot, bool, error) {
 	return snap, snap.SnapshotTurn != "" || len(snap.History) > 0, nil
 }
 
-// Set 写会话快照（history + snapshot_turn；保留记录其他字段；session 不存在则建）。
+// Set 写会话快照（history + snapshot_turn；保留记录其他字段）。
+// 会话不存在 → 补建**完整会话行**（created_at / parent_id / title 齐备，A-15，口径同 SessionEnsure）：
+// 消除原先只落快照字段、导致「查得到却列不出」的幽灵会话；会话已存在时逐字保留原语义。
 func Set(prj *data.DB, sessionID string, snap data.Snapshot) error {
 	tb := prj.Table("sessions")
 	var rec data.Record
@@ -42,9 +46,14 @@ func Set(prj *data.DB, sessionID string, snap data.Snapshot) error {
 		return err
 	}
 	if !ok {
-		rec = data.Record{}
+		now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
+		rec = data.Record{
+			"session_id": sessionID, "title": sessionID,
+			"created_at": now, "updated_at": now, "parent_id": "",
+		}
+	} else {
+		delete(rec, data.KeyField)
 	}
-	delete(rec, data.KeyField)
 	b, err := json.Marshal(snap.History)
 	if err != nil {
 		return err

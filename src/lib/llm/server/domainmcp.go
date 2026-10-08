@@ -271,14 +271,15 @@ func (s *Server) domainExecute(tc *turnCtx, callID, tool string, args map[string
 		// 被取消时不在此标 done/error——终态已由回报链推进（tasks.done 幂等，不覆盖 cancelled）。
 		execCtx, cancelExec := context.WithCancel(tc.ctx)
 		s.registerTaskExecCancel(callID, cancelExec)
-		text := s.execTaskTool(tc, callID, node, tool, args, execCtx)
+		text, isErr := s.execTaskTool(tc, callID, node, tool, args, execCtx)
 		cancelled := execCtx.Err() != nil // 先判（cancelExec 会使 Err 恒非 nil）
 		s.unregisterTaskExecCancel(callID)
 		cancelExec() // context 泄漏守卫（已取消则幂等）
 		if cancelled {
 			return "已取消: " + tool + "（gateway 执行侧取消；任务状态以回报为准）", false
 		}
-		if strings.HasPrefix(text, "错误") {
+		// B-17：失败判定用 execTaskTool 返回的**显式 isErr 位**，不再按结果文本前缀猜测。
+		if isErr {
 			s.tasks.done(node.TaskID, TaskStateError, "", text)
 		} else {
 			s.tasks.done(node.TaskID, TaskStateDone, text, "")

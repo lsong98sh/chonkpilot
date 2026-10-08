@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-gui/internal/folder"
@@ -512,11 +513,27 @@ func callSearchProjectFiles(b *Bridge, ctx context.Context, params []json.RawMes
 	}
 	lower := strings.ToLower(query)
 
+	// 三源**并发**（本处理器在 WebView2 UI 线程上被同步调用；串行时 = file 全树遍历 +
+	// 两个引擎各 3s 超时，最坏 ~6s 冻结 UI）。并发后墙钟 ≈ max(全树遍历, 单源超时)。
+	// 结果结构/排序**不变**：各源写入各自切片，随后按原 file→vfts→codegraph 顺序合并，
+	// 再由稳定排序 + 去重保持既有优先序（file 0 > vfts 1 > codegraph 2 > path 3）。
+	var (
+		fileHits []map[string]any
+		vftsHits []map[string]any
+		cgHits   []map[string]any
+		wg       sync.WaitGroup
+	)
+	wg.Add(3)
 	// ① 文件名/路径匹配（source=file）：始终可用
-	hits := searchFileSource(b.workDir, lower, searchMaxResults)
+	go func() { defer wg.Done(); fileHits = searchFileSource(b.workDir, lower, searchMaxResults) }()
 	// ② vfts 全文（source=vfts）③ codegraph 符号（source=codegraph）：未启用/未就绪静默跳过
-	hits = append(hits, searchVftsSource(b, query, searchMaxResults)...)
-	hits = append(hits, searchCodegraphSource(b, query, searchMaxResults)...)
+	go func() { defer wg.Done(); vftsHits = searchVftsSource(b, query, searchMaxResults) }()
+	go func() { defer wg.Done(); cgHits = searchCodegraphSource(b, query, searchMaxResults) }()
+	wg.Wait()
+
+	hits := fileHits
+	hits = append(hits, vftsHits...)
+	hits = append(hits, cgHits...)
 
 	// 排序：文件名精确命中 > vfts 内容 > codegraph 符号 > 文件路径子串；再按 path 去重 + 截断
 	sort.SliceStable(hits, func(i, j int) bool { return searchRank(hits[i]) < searchRank(hits[j]) })
@@ -675,12 +692,14 @@ func searchToolCall(b *Bridge, tool string, args map[string]any, timeout time.Du
 		return "", false
 	}
 	// 防环：本实例发出的 mcp-tools-call 不回投前端（与 publishV 同语义）。
-	b.markPublished(msgkeys.TopicMcpToolsCall)
 	payload := map[string]any{
 		"instance_id": b.instanceID,
 		"work_dir":    b.workDir,
 		"name":        tool,
 		"arguments":   args,
+	}
+	if raw, err := json.Marshal(payload); err == nil {
+		b.markPublished(msgkeys.TopicMcpToolsCall, raw)
 	}
 	done := make(chan *mq.Value, 1)
 	go func() {

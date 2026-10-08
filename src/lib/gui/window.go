@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
@@ -81,7 +82,24 @@ type hostEnv struct {
 	windows        *windowRegistry
 	// testSrv 是 --test-port 的测试通道（未传 --test-port 时为 nil）：对话窗口建窗时经
 	// RegisterChat 登记为可选目标（window_id 路由，24 §4.5）。由主窗口 onWired 接线后赋值。
-	testSrv *testServer
+	// 读写跨窗口线程（主窗口 onWired 写 / 对话窗口 onWired 读 / finish 读）→ 以 mu 守护
+	// （D-10），一律经 testServer()/setTestServer() 访问，避免数据竞争。
+	testSrvMu sync.RWMutex
+	testSrv   *testServer
+}
+
+// testServer 返回 --test-port 测试通道（未传 --test-port / 尚未接线时为 nil）。
+func (e *hostEnv) testServer() *testServer {
+	e.testSrvMu.RLock()
+	defer e.testSrvMu.RUnlock()
+	return e.testSrv
+}
+
+// setTestServer 接线测试通道（主窗口 onWired，主窗口线程；先于任何对话窗口建窗）。
+func (e *hostEnv) setTestServer(s *testServer) {
+	e.testSrvMu.Lock()
+	e.testSrv = s
+	e.testSrvMu.Unlock()
 }
 
 // windowHost 是一个窗口的宿主句柄（每窗口一份：桥 / appHandler / 句柄 / 生命周期）。
@@ -212,6 +230,14 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	// 各自 instance_id（运行态分区 + 消息归属过滤）+ 各自 eval（→ 各自窗口）：后端 → 各前端
 	// 由既有 acceptEventInstance 过滤免费提供（无需改 eval 扇出），窗口间前端事件不互通。
 	h.br = bridge.New(newUUID(), env.workDir, env.dataDir, func(script string) {
+		// 窗口已销毁（done 已 close）→ 跳过 Eval（D-14：原 fire-and-forget 失败静默）。
+		// 二次 Eval 到已 Destroy 的 webview 无意义，且宿主 Eval 失败无返回通道可观测。
+		select {
+		case <-h.done:
+			slog.Debug("skip eval: window closed", "role", spec.role, "window_id", spec.windowID)
+			return
+		default:
+		}
 		w.Dispatch(func() { w.Eval(script) })
 	}, env.bus)
 	// 文件日志目录下发前端（init-data 只增字段 logDir；未挂 sink 时为空 → 字段缺省）。
@@ -314,7 +340,9 @@ func (h *windowHost) finish(env *hostEnv) {
 	if h.role == roleChat {
 		env.windows.remove(h)
 		// 关闭的窗口不再作为 --test-port 目标（多窗口路由表同步出表）。
-		env.testSrv.UnregisterChat(h.windowID)
+		if s := env.testServer(); s != nil {
+			s.UnregisterChat(h.windowID)
+		}
 	}
 	close(h.done)
 }

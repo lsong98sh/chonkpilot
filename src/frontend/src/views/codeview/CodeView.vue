@@ -66,6 +66,7 @@
                 :src="tab.rawUrl"
                 class="html-preview"
                 frameborder="0"
+                sandbox="allow-same-origin"
               />
               <pre v-else-if="tab.renderType === 'html' && tab.showSource" class="source-code"><code>{{ tab.content }}</code></pre>
               <div
@@ -257,11 +258,7 @@ function specialProps(tab) {
   return {}
 }
 
-// 功能 tab 组件的跨组件事件转发（如场景内容变更 → 通知全局重载）
-function specialEvents(tab) {
-  if (tab.kind === 'scenario') return { changed: () => mq.emit(EventNames.scenarioReload, {}) }
-  return {}
-}
+// 功能 tab 标题（i18n）
 function specialTitle(kind) {
   switch (kind) {
     case 'settings-llm': return t('config.page.llm')
@@ -365,7 +362,8 @@ function getExtension(path) { return path?.split('.').pop()?.toLowerCase() || ''
 
 function isBackupFile(path) {
   if (!path) return false
-  const name = path.split('\\').pop()?.split('/').pop() || ''
+  // 后缀/前缀比较统一小写（spec §5：所有扩展名比较均 .toLowerCase()；E-15）。
+  const name = (path.split('\\').pop()?.split('/').pop() || '').toLowerCase()
   return name.endsWith('~') || name.startsWith('~$') || name.endsWith('.swp') || name.endsWith('.swo')
 }
 

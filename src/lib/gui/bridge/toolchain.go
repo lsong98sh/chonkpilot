@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/winproc"
@@ -51,16 +52,25 @@ var toolchainCandidates = []toolchainCandidate{
 }
 
 // callDetectToolchains 探测全部候选：{tools:[{id,name,path,version}]}（未找到 → path 空）。
+//
+// 每项**并发**探测：串行 = 7 项 × 2s（probeVersion 超时）最坏冻结 UI ~14s；并发后墙钟
+// ≈ 最慢单项（~2s）。tools 按下标写入 → 输出顺序与 toolchainCandidates 逐项一致（结构不变）。
 func callDetectToolchains(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
-	tools := make([]map[string]any, 0, len(toolchainCandidates))
-	for _, c := range toolchainCandidates {
-		path := findToolchain(c)
-		item := map[string]any{"id": c.ID, "name": c.Name, "path": path, "version": ""}
-		if path != "" {
-			item["version"] = toolchainVersion(c, path)
-		}
-		tools = append(tools, item)
+	tools := make([]map[string]any, len(toolchainCandidates))
+	var wg sync.WaitGroup
+	for i, c := range toolchainCandidates {
+		wg.Add(1)
+		go func(i int, c toolchainCandidate) {
+			defer wg.Done()
+			path := findToolchain(c)
+			item := map[string]any{"id": c.ID, "name": c.Name, "path": path, "version": ""}
+			if path != "" {
+				item["version"] = toolchainVersion(c, path)
+			}
+			tools[i] = item
+		}(i, c)
 	}
+	wg.Wait()
 	return json.Marshal(map[string]any{"tools": tools})
 }
 

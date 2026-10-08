@@ -406,11 +406,6 @@ func TruncateLines(s string, maxLines int) (string, bool) {
 	return strings.Join(lines[:maxLines], "\n"), true
 }
 
-// RFC3339Now 返回消息/会话落库用 UTC RFC3339 时间戳。
-func RFC3339Now() string {
-	return time.Now().UTC().Format(time.RFC3339)
-}
-
 // RFC3339FixedNano 固定 9 位纳秒 RFC3339：保证同轮消息 created_at 字符串排序 = 时间序
 // （RFC3339Nano 裁剪尾零导致同秒不同位数排序不稳；对齐 server AppendFull）。
 const RFC3339FixedNano = "2006-01-02T15:04:05.000000000Z07:00"

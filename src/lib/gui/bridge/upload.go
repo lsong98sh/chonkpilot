@@ -32,6 +32,13 @@ type uploadAttachmentReq struct {
 	Kind string `json:"kind"` // image|file（仅用于前端缩略图样式，不校验）
 }
 
+// 附件上传大小上限（DoS 防护）：100MB 明文。base64 原文长度上限 ≈ 明文 * 4/3 + 少量填充，
+// 用于解码前快速拒绝（避免先分配巨大缓冲再解码）。
+const (
+	maxUploadBytes     = 100 << 20
+	maxUploadBase64Len = maxUploadBytes/3*4 + 8
+)
+
 // callUploadAttachment 保存附件到 <prjusr 数据根>/tmp/uploads/<uuid><ext>（安全文件名），
 // 返回 {file_id, name, path, url}；url = /show/<abs path>（同源预览，DataDirs 放行）。
 func callUploadAttachment(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
@@ -57,9 +64,17 @@ func callUploadAttachment(b *Bridge, ctx context.Context, params []json.RawMessa
 			raw = raw[i+1:]
 		}
 	}
-	content, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	// 解码前按 base64 原文长度快速拒绝（超限直接报错，不进入解码分配）。
+	if len(raw) > maxUploadBase64Len {
+		return nil, fmt.Errorf("UploadAttachment: data too large (limit %d MB)", maxUploadBytes>>20)
+	}
+	content, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
 		return nil, fmt.Errorf("UploadAttachment: bad base64: %w", err)
+	}
+	if len(content) > maxUploadBytes {
+		return nil, fmt.Errorf("UploadAttachment: data too large (limit %d MB)", maxUploadBytes>>20)
 	}
 	// 目录：prjusr 数据根 tmp/uploads（注入的 prjusr 根；缺省回落 <workDir>/.chonkpilot ——
 	// 与 server 读侧 imageUploadDir 同一口径，见 12-数据层 §3 / 24 §3.2 MW-8）

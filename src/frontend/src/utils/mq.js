@@ -102,10 +102,15 @@ function publishToBackend(topic, payload, opts = {}) {
     body: JSON.stringify({ type: topic, payload: str }),
     signal: ctl && ctl.signal,
   }).then(async (r) => {
+    // HTTP 状态非 2xx（r.ok === false）→ 失败信封（不再误判成功）；
+    // 2xx 但应答非 JSON（网关 HTML/文本错误页等）→ 同样回失败信封并带上状态码（E-02）。
+    if (r.ok === false) {
+      return { ok: false, result: null, errors: ['HTTP ' + r.status + ' non-JSON response'] }
+    }
     try {
       return await r.json()
     } catch (e) {
-      return { ok: true, result: null, errors: [] }
+      return { ok: false, result: null, errors: ['HTTP ' + r.status + ' non-JSON response'] }
     }
   }).catch((e) => {
     console.warn('[mq] publish to backend error:', e)
@@ -222,11 +227,8 @@ const mq = {
       try { await cb(payload, context) } catch (e) { console.warn('[mq] pre error:', e) }
     }
 
-    const onPromises = orderedOnCallbacks(entry).map(cb => (
-      (async () => {
-        try { return await cb(payload, context) } catch (e) { throw e }
-      })()
-    ))
+    // async 包装：把 cb 的同步抛出也归一为 rejected promise（Promise.allSettled 统一收集）。
+    const onPromises = orderedOnCallbacks(entry).map(cb => (async () => cb(payload, context))())
 
     if (onPromises.length > 0) {
       const settled = await Promise.allSettled(onPromises)

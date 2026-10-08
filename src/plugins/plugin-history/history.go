@@ -184,6 +184,7 @@ func (h *History) Start(d plugin.Deps) error {
 		return nil // git 缺失：功能禁用，不视为启动失败
 	}
 	h.im = instance.New(d.Bus)
+	h.im.SetLogf(d.Logf) // 告警上报宿主日志（d.Logf 为 nil 时 Manager 回落 stderr）
 	if err := h.im.Start(); err != nil {
 		return err
 	}

@@ -250,8 +250,13 @@ func (s *Server) reconcileUserMCPs(instanceID string) {
 	if s.gw == nil {
 		return
 	}
+	// B-15：整次对账经 mcpReconcileMu 串行化（保证并发对账互斥），但网络调用 register/unregister
+	// **不持 mcpMu**（mcpMu 只保护 mcpApplied 的读写）→ 不再阻塞其他 mcp 面访问。
+	s.mcpReconcileMu.Lock()
+	defer s.mcpReconcileMu.Unlock()
+
+	// ① 锁内仅算 diff（内存读 + 目标集合计算，无网络调用）。
 	s.mcpMu.Lock()
-	defer s.mcpMu.Unlock()
 	if s.mcpApplied == nil {
 		s.mcpApplied = map[string]mcpgateway.ServerEntry{}
 	}
@@ -261,31 +266,46 @@ func (s *Server) reconcileUserMCPs(instanceID string) {
 	for _, e := range entries {
 		next[e.ID] = e
 	}
-	changed := false
-	// ① 注销：已下发但新集合缺失或已变更（先拆后建；register 对同名 connected 会拒绝）。
+	// 注销集合：已下发但新集合缺失或已变更（先拆后建；register 对同名 connected 会拒绝）。
+	var toUnregister []string
 	for name, old := range s.mcpApplied {
 		if nw, ok := next[name]; ok && reflect.DeepEqual(nw, old) {
 			continue
 		}
+		toUnregister = append(toUnregister, name)
+	}
+	// 注册集合：新集合有而（注销后）未登记者。
+	var toRegister []mcpgateway.ServerEntry
+	for name, nw := range next {
+		if old, ok := s.mcpApplied[name]; ok && reflect.DeepEqual(old, nw) {
+			continue
+		}
+		toRegister = append(toRegister, nw)
+	}
+	s.mcpMu.Unlock()
+
+	// ② 锁外做网络调用（register/unregister 各含 30s 超时），结果回锁内提交。
+	changed := false
+	for _, name := range toUnregister {
 		if err := s.unregisterUserMCP(name); err != nil {
 			logf("[chonkpilot-server] mcp %q 热注销失败（保留原状，待下次变更重试）: %v\n", name, err)
 			continue
 		}
 		logf("[chonkpilot-server] mcp %q 已热注销\n", name)
+		s.mcpMu.Lock()
 		delete(s.mcpApplied, name)
+		s.mcpMu.Unlock()
 		changed = true
 	}
-	// ② 注册：新集合有而（注销后）未登记者。
-	for name, nw := range next {
-		if old, ok := s.mcpApplied[name]; ok && reflect.DeepEqual(old, nw) {
-			continue
-		}
+	for _, nw := range toRegister {
 		if err := s.registerUserMCP(nw); err != nil {
-			logf("[chonkpilot-server] mcp %q 热注册失败: %v\n", name, err)
+			logf("[chonkpilot-server] mcp %q 热注册失败: %v\n", nw.ID, err)
 			continue
 		}
-		logf("[chonkpilot-server] mcp %q 已热注册（热生效）\n", name)
-		s.mcpApplied[name] = nw
+		logf("[chonkpilot-server] mcp %q 已热注册（热生效）\n", nw.ID)
+		s.mcpMu.Lock()
+		s.mcpApplied[nw.ID] = nw
+		s.mcpMu.Unlock()
 		changed = true
 	}
 	if changed {

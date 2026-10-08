@@ -304,6 +304,12 @@ function ensureSubscribed() {
   mq.on(EventNames.taskStopChoice, ({ node_id }) => {
     cancelWithChoice(node_id)
   })
+  // 会话树节点展开/折叠（纯前端事件 session-tree-node-toggle）：节点对象归本 store 持有，
+  // 由持有方翻转 expanded（替代子组件直改 props.node.expanded；E-08）。
+  mq.on(EventNames.sessionTreeNodeToggle, ({ node_id }) => {
+    const n = nodes.get(node_id)
+    if (n) n.expanded = !n.expanded
+  })
 }
 
 function matches(t, sessionId, topSession) {

@@ -4,34 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/chonkpilot/chonkpilot-gui/models"
 )
-
-func TestNewNote(t *testing.T) {
-	note := models.NewNote("test-note", "test content")
-	if note == nil {
-		t.Fatal("NewNote returned nil")
-	}
-	if note.Title != "test-note" {
-		t.Errorf("Title = %q, want %q", note.Title, "test-note")
-	}
-	if note.Content != "test content" {
-		t.Errorf("Content = %q, want %q", note.Content, "test content")
-	}
-	if note.CreatedAt == "" {
-		t.Error("CreatedAt should not be empty")
-	}
-	if note.UpdatedAt == "" {
-		t.Error("UpdatedAt should not be empty")
-	}
-	// Verify timestamps are valid RFC3339
-	_, err := time.Parse(time.RFC3339, note.CreatedAt)
-	if err != nil {
-		t.Errorf("CreatedAt is not valid RFC3339: %v", err)
-	}
-}
 
 func TestLLMProvider_JSONRoundTrip(t *testing.T) {
 	p := models.LLMProvider{
@@ -163,75 +138,5 @@ func TestToolConfig_WithParameters(t *testing.T) {
 	}
 	if gotParams["arg2"] != float64(42) {
 		t.Errorf("arg2 = %v", gotParams["arg2"])
-	}
-}
-
-func TestToolCallPayload(t *testing.T) {
-	p := models.ToolCallPayload{
-		ToolCallID: "call-123",
-		Name:       "file_read",
-		Arguments:  `{"path": "/tmp/test.txt"}`,
-	}
-
-	data, err := json.Marshal(p)
-	if err != nil {
-		t.Fatalf("json.Marshal failed: %v", err)
-	}
-
-	var got models.ToolCallPayload
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("json.Unmarshal failed: %v", err)
-	}
-
-	if got.ToolCallID != "call-123" {
-		t.Errorf("ToolCallID = %q", got.ToolCallID)
-	}
-	if got.Name != "file_read" {
-		t.Errorf("Name = %q", got.Name)
-	}
-}
-
-func TestToolResultPayload(t *testing.T) {
-	p := models.ToolResultPayload{
-		ToolCallID: "call-456",
-		Name:       "run_command",
-		Result:     "exit code 0",
-	}
-
-	data, err := json.Marshal(p)
-	if err != nil {
-		t.Fatalf("json.Marshal failed: %v", err)
-	}
-
-	var got models.ToolResultPayload
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("json.Unmarshal failed: %v", err)
-	}
-
-	if got.ToolCallID != "call-456" {
-		t.Errorf("ToolCallID = %q", got.ToolCallID)
-	}
-	if got.Result != "exit code 0" {
-		t.Errorf("Result = %q", got.Result)
-	}
-}
-
-func TestReasoningPayload(t *testing.T) {
-	p := models.ReasoningPayload{
-		Content: "I need to think step by step...",
-	}
-
-	data, err := json.Marshal(p)
-	if err != nil {
-		t.Fatalf("json.Marshal failed: %v", err)
-	}
-
-	var got models.ReasoningPayload
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("json.Unmarshal failed: %v", err)
-	}
-
-	if got.Content != "I need to think step by step..." {
-		t.Errorf("Content = %q, want %q", got.Content, "I need to think step by step...")
 	}
 }
