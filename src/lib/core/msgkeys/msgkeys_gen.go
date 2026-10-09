@@ -366,7 +366,10 @@ const (
 	OptimizeDoneEventPrompt = "prompt"
 
 	// optimize-error · event
+	OptimizeErrorEventCode    = "code"
 	OptimizeErrorEventMessage = "message"
+	OptimizeErrorEventName    = "name"
+	OptimizeErrorEventStatus  = "status"
 
 	// window-maximized-changed · event
 	WindowMaximizedChangedEventInstanceId = "instance_id"

@@ -22,6 +22,7 @@ import zhMemoryIO from '../locales/zh-CN/memoryIO.json'
 import zhJsonSchema from '../locales/zh-CN/jsonSchema.json'
 import zhWizard from '../locales/zh-CN/wizard.json'
 import zhPromptVars from '../locales/zh-CN/promptVars.json'
+import zhOptimizeError from '../locales/zh-CN/optimizeError.json'
 
 import enCommon from '../locales/en-US/common.json'
 import enToolbar from '../locales/en-US/toolbar.json'
@@ -43,6 +44,7 @@ import enMemoryIO from '../locales/en-US/memoryIO.json'
 import enJsonSchema from '../locales/en-US/jsonSchema.json'
 import enWizard from '../locales/en-US/wizard.json'
 import enPromptVars from '../locales/en-US/promptVars.json'
+import enOptimizeError from '../locales/en-US/optimizeError.json'
 
 // Priority: localStorage > default
 function getInitialLocale() {
@@ -80,6 +82,7 @@ export const i18n = createI18n({
       jsonSchema: zhJsonSchema,
       wizard: zhWizard,
       promptVars: zhPromptVars,
+      optimizeError: zhOptimizeError,
     },
     'en-US': {
       common: enCommon,
@@ -102,6 +105,7 @@ export const i18n = createI18n({
       jsonSchema: enJsonSchema,
       wizard: enWizard,
       promptVars: enPromptVars,
+      optimizeError: enOptimizeError,
     },
   },
 })

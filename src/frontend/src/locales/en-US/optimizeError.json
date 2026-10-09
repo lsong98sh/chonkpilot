@@ -1,0 +1,13 @@
+{
+  "prompt_required": "Prompt is empty",
+  "config_read_failed": "Failed to read user config: {message}",
+  "no_llm_config": "No LLM configured. Add one in User Config → LLM.",
+  "llm_not_set": "Prompt-optimise LLM is not set. Choose a configured LLM.",
+  "llm_not_found": "Prompt-optimise LLM \"{name}\" not found. Reset it in User Config → LLM.",
+  "llm_config_invalid": "Invalid LLM config: {message}",
+  "llm_model_missing": "Default LLM is missing model",
+  "request_build_failed": "Failed to build LLM request: {message}",
+  "llm_request_failed": "LLM request failed: {message}",
+  "llm_status_error": "LLM returned {status}: {message}",
+  "llm_empty_response": "LLM returned no content"
+}

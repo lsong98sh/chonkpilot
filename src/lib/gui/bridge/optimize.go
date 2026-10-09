@@ -6,7 +6,10 @@
 //	流式结果经 mq 事件推送（各事件均带 instance_id，61-消息一览 §0 实例字段必带）：
 //	  optimize-token  {content, instance_id}   逐 token 增量（前端边收边回显）
 //	  optimize-done   {prompt, instance_id}    完整结果（成功收尾）
-//	  optimize-error  {message, instance_id}   失败
+//	  optimize-error  {code, message, name?, status?, instance_id}  失败
+//	    - code = 稳定静态错误码（前端 i18n 键 optimizeError.<code>，D-41）；
+//	    - message = 兜底文案 + 动态详情（网络/端点原文，前端以 {message} 插值展示）；
+//	    - name = provider 名（llm_not_found 插值）；status = HTTP 状态码串（llm_status_error 插值）。
 //
 // 2026-09-04：原 /call OptimizeAgentPrompt 注册已清零；callOptimizeAgentPrompt 保留为
 // gui.prompt-optimise 消息面内部实现（guimsg.go），流式事件推送不变。
@@ -49,6 +52,35 @@ type optimizeLLM struct {
 	MaxTokensLegacy int `json:"maxTokens"`
 }
 
+// optimizeError 提示词优化错误（D-41，2026-10-09 方案 A）：把**静态错误**与**动态详情**分离——
+//   - Code：稳定静态错误码（snake_case），前端以 `optimizeError.<Code>` 翻译；
+//   - Message：兜底文案 + 动态详情（网络/端点原文；前端以 `{message}` 插值展示，code 未识别时整串兜底）；
+//   - Params：前端插值参数（如 name=provider 名、status=HTTP 状态码串）。
+//
+// 静态文案（原硬编码中文）全部经 Code 表达，en-US 才能翻译。
+type optimizeError struct {
+	Code    string
+	Message string
+	Params  map[string]any
+}
+
+func (e *optimizeError) Error() string { return e.Message }
+
+// 错误码常量（稳定、snake_case；前端 src/frontend/src/locales/{zh-CN,en-US}/optimizeError.json 一一对应）。
+const (
+	optimizeCodePromptRequired     = "prompt_required"      // 入参 prompt 为空
+	optimizeCodeConfigReadFailed   = "config_read_failed"   // 读取用户配置失败
+	optimizeCodeNoLLMConfig        = "no_llm_config"        // 未配置任何 LLM
+	optimizeCodeLLMNotSet          = "llm_not_set"          // 提示词优化 LLM 未设置
+	optimizeCodeLLMNotFound        = "llm_not_found"        // 指定的 provider 名不存在（参数 name）
+	optimizeCodeLLMConfigInvalid   = "llm_config_invalid"   // LLM 配置格式错误
+	optimizeCodeLLMModelMissing    = "llm_model_missing"    // 默认 LLM 缺少 model
+	optimizeCodeRequestBuildFailed = "request_build_failed" // 构建 HTTP 请求失败
+	optimizeCodeLLMRequestFailed   = "llm_request_failed"   // 发起请求失败（网络/超时）
+	optimizeCodeLLMStatusError     = "llm_status_error"     // 非 200（参数 status）
+	optimizeCodeLLMEmptyResponse   = "llm_empty_response"   // 未返回内容
+)
+
 // callOptimizeAgentPrompt 立即返回（流式在后台 goroutine 推送事件）。
 func callOptimizeAgentPrompt(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	var req struct {
@@ -58,42 +90,56 @@ func callOptimizeAgentPrompt(b *Bridge, ctx context.Context, params []json.RawMe
 	}
 	unmarshalParams(params, &req)
 	if strings.TrimSpace(req.Prompt) == "" {
-		b.EmitFrontend(msgkeys.TopicOptimizeError, jsonEnvelope(map[string]any{msgkeys.FieldMessage: "prompt required", msgkeys.FieldInstanceId: b.instanceID}))
+		b.emitOptimizeError(&optimizeError{Code: optimizeCodePromptRequired, Message: "prompt required"})
 		return json.Marshal(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldStarted: false})
 	}
-	llm, err := activeLLM(b)
-	if err != nil {
-		b.EmitFrontend(msgkeys.TopicOptimizeError, jsonEnvelope(map[string]any{msgkeys.FieldMessage: err.Error(), msgkeys.FieldInstanceId: b.instanceID}))
+	llm, oerr := activeLLM(b)
+	if oerr != nil {
+		b.emitOptimizeError(oerr)
 		return json.Marshal(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldStarted: false})
 	}
 	go b.optimizeStream(req.Title, req.UseCase, req.Prompt, llm)
 	return json.Marshal(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldStarted: true})
 }
 
+// emitOptimizeError 下发 optimize-error 事件（同步路径用；instance_id 必带，61 §0）。params 可选键
+// 直接并入 payload（如 name/status），供前端 `optimizeError.<code>` 插值。
+func (b *Bridge) emitOptimizeError(e *optimizeError) {
+	payload := map[string]any{
+		msgkeys.FieldCode:       e.Code,
+		msgkeys.FieldMessage:    e.Message,
+		msgkeys.FieldInstanceId: b.instanceID,
+	}
+	for k, v := range e.Params {
+		payload[k] = v
+	}
+	b.EmitFrontend(msgkeys.TopicOptimizeError, jsonEnvelope(payload))
+}
+
 // activeLLM 取用户配置的**提示词优化 LLM**（`llm.promptOptimise` = provider name；旧记录 int 索引
 // 兼容；见 §resolveLLMRefIndex）。键缺失 / 空串已由数据层读侧回落 `defaultLLM`（SL-1）。
 // 提示词优化只支持 usr llms 中的真实 provider：取值空串或已失效（改名/删除）→ 明确报错，
 // 不猜测端点、不发请求。
-func activeLLM(b *Bridge) (optimizeLLM, error) {
+func activeLLM(b *Bridge) (optimizeLLM, *optimizeError) {
 	cfg, err := readUserConfig(b)
 	if err != nil {
-		return optimizeLLM{}, fmt.Errorf("读取用户配置失败: %w", err)
+		return optimizeLLM{}, &optimizeError{Code: optimizeCodeConfigReadFailed, Message: err.Error()}
 	}
 	llms := asAnySlice(cfg["llms"])
 	if len(llms) == 0 {
-		return optimizeLLM{}, fmt.Errorf("未配置 LLM（请在 用户配置 → LLM 中添加）")
+		return optimizeLLM{}, &optimizeError{Code: optimizeCodeNoLLMConfig, Message: "未配置 LLM（请在 用户配置 → LLM 中添加）"}
 	}
-	idx, err := resolveLLMRefIndex(cfg["llm.promptOptimise"], llms)
-	if err != nil {
-		return optimizeLLM{}, err
+	idx, oerr := resolveLLMRefIndex(cfg["llm.promptOptimise"], llms)
+	if oerr != nil {
+		return optimizeLLM{}, oerr
 	}
 	raw, _ := json.Marshal(llms[idx])
 	var llm optimizeLLM
 	if err := json.Unmarshal(raw, &llm); err != nil {
-		return optimizeLLM{}, fmt.Errorf("LLM 配置格式错误: %w", err)
+		return optimizeLLM{}, &optimizeError{Code: optimizeCodeLLMConfigInvalid, Message: err.Error()}
 	}
 	if strings.TrimSpace(llm.Model) == "" {
-		return optimizeLLM{}, fmt.Errorf("默认 LLM 缺少 model")
+		return optimizeLLM{}, &optimizeError{Code: optimizeCodeLLMModelMissing, Message: "默认 LLM 缺少 model"}
 	}
 	// 读时兼容（口径 Z1）：旧键 maxTokens（改名前的历史配置）→ 当作 maxOutputToken。
 	if llm.MaxOutputToken == 0 {
@@ -109,10 +155,10 @@ func activeLLM(b *Bridge) (optimizeLLM, error) {
 //   - 字符串 → 按 provider name 精确匹配 usr llms；
 //     未命中：空串（未设置） / 已失效名 → 错误（含原因）。
 //   - 其他（键缺失等）→ 回落下标 0（既有行为）。
-func resolveLLMRefIndex(v any, llms []any) (int, error) {
+func resolveLLMRefIndex(v any, llms []any) (int, *optimizeError) {
 	if name, ok := v.(string); ok {
 		if name == "" {
-			return 0, fmt.Errorf("提示词优化 LLM 未设置，需选择已配置的 LLM")
+			return 0, &optimizeError{Code: optimizeCodeLLMNotSet, Message: "提示词优化 LLM 未设置，需选择已配置的 LLM"}
 		}
 		for i, item := range llms {
 			m, _ := item.(map[string]any)
@@ -120,7 +166,11 @@ func resolveLLMRefIndex(v any, llms []any) (int, error) {
 				return i, nil
 			}
 		}
-		return 0, fmt.Errorf("提示词优化 LLM「%s」不存在（请在 用户配置 → LLM 中重新设置）", name)
+		return 0, &optimizeError{
+			Code:    optimizeCodeLLMNotFound,
+			Message: fmt.Sprintf("提示词优化 LLM「%s」不存在（请在 用户配置 → LLM 中重新设置）", name),
+			Params:  map[string]any{msgkeys.FieldName: name},
+		}
 	}
 	// 数字（旧记录 int 索引；含 persist 自动计算的 0/-1）：**三种形态都认** —— 门面 inline 绑定给出
 	// 内核 int（readUserConfig 用 Atoi 还原），序列化绑定（MQ/JSON）给出 float64，int64 为中间形态。
@@ -189,7 +239,10 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 	body, _ := json.Marshal(reqBody)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base, bytes.NewReader(body))
 	if err != nil {
-		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: err.Error()})
+		emit(msgkeys.TopicOptimizeError, map[string]any{
+			msgkeys.FieldCode:    optimizeCodeRequestBuildFailed,
+			msgkeys.FieldMessage: err.Error(),
+		})
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -199,13 +252,21 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: "LLM 请求失败: " + err.Error()})
+		// message 仅保留动态详情（网络/超时原文），静态前缀由 code 键化（前端以 {message} 插值）。
+		emit(msgkeys.TopicOptimizeError, map[string]any{
+			msgkeys.FieldCode:    optimizeCodeLLMRequestFailed,
+			msgkeys.FieldMessage: err.Error(),
+		})
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: fmt.Sprintf("LLM 返回 %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))})
+		emit(msgkeys.TopicOptimizeError, map[string]any{
+			msgkeys.FieldCode:    optimizeCodeLLMStatusError,
+			msgkeys.FieldStatus:  fmt.Sprintf("%d", resp.StatusCode),
+			msgkeys.FieldMessage: strings.TrimSpace(string(raw)),
+		})
 		return
 	}
 
@@ -247,7 +308,10 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 	if sb.Len() > 0 {
 		emit(msgkeys.TopicOptimizeDone, map[string]any{msgkeys.FieldPrompt: sb.String()})
 	} else {
-		emit(msgkeys.TopicOptimizeError, map[string]any{msgkeys.FieldMessage: "LLM 未返回内容"})
+		emit(msgkeys.TopicOptimizeError, map[string]any{
+			msgkeys.FieldCode:    optimizeCodeLLMEmptyResponse,
+			msgkeys.FieldMessage: "LLM 未返回内容",
+		})
 	}
 }
 

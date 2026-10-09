@@ -1,5 +1,6 @@
 import { dataClient } from '../utils/dataClient'
 import mq from '../utils/mq'
+import { i18n } from '../plugins/i18n'
 import { EventNames } from '../events/event-names'
 import {
   FieldKeys,
@@ -268,10 +269,25 @@ export function setPrompt(key, value) {
 }
 
 /**
+ * optimize-error payload → 展示文案（D-41）：优先按 `code` 翻译
+ * （i18n 命名空间 `optimizeError.*`，payload 整体作插值参数：`name`/`status`/`message`）；
+ * 未识别 code（或缺失）→ 回落 `payload.message`（后端动态详情/兜底）。
+ */
+export function resolveOptimizeError(payload) {
+  const p = payload || {}
+  const code = p.code
+  if (code) {
+    const key = 'optimizeError.' + code
+    if (i18n.global.te(key)) return i18n.global.t(key, p)
+  }
+  return p.message || 'Unknown error'
+}
+
+/**
  * 流式优化 Agent Prompt — 经 gui.prompt-optimise 消息面触发，流式结果经事件接收
  * - onToken: (content) => void
  * - onDone: (prompt) => void
- * - onError: (message) => void
+ * - onError: (message) => void（message 已按 code 本地化，见 resolveOptimizeError）
  */
 export function optimizeAgentPrompt(data, onToken, onDone, onError) {
   const unsubs = []
@@ -284,7 +300,7 @@ export function optimizeAgentPrompt(data, onToken, onDone, onError) {
   }))
   unsubs.push(mq.on(EventNames.optimizeError, (payload) => {
     unsubs.forEach(fn => fn())
-    if (onError) onError(payload.message || 'Unknown error')
+    if (onError) onError(resolveOptimizeError(payload))
   }))
 
   // payload {title, useCase, prompt} 原样透传（对齐旧 call('OptimizeAgentPrompt', data)）。

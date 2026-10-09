@@ -18,7 +18,7 @@
 
 ## 适用条件
 
-- `chonkpilot-desktop-executor` 可用（key_press / text_type / key_down / key_up）
+- `desktop_run` 可用（键盘/输入动作：`KPR` 按键（含组合键）· `INP` 输入文本 · `KDN`/`KUP` 按住/释放）
 - Windows 系统；`Win+R` 未被组策略禁用
 - 文件写面可用（file_write）
 
@@ -36,13 +36,13 @@
 
 ### 2. 唤出运行对话框（Win+R）
 
-用 `key_press` 组合键（Win 键用 `meta`）：
+用 `desktop_run` 的组合键动作（Win 键写作 `win`）：
 
 ```json
-{"key": "r", "modifiers": ["meta"]}
+{"script": "KPR win+r"}
 ```
 
-（若 key_press 不支持组合，用 `key_down {"key":"meta"}` + `key_press {"key":"r"}` + `key_up {"key":"meta"}`。）
+（`KPR` 原生支持组合键；若要精确控制按下/释放时序，可拆为 `KDN win` → `KPR r` → `KUP win`。）
 
 ### 3. 等待运行框出现
 
@@ -50,28 +50,30 @@
 {"runtime": "shell", "script": "timeout /t 1 >nul"}
 ```
 
-（`script_run` 虽可能被拦，但 sleep 类短命令通常放行；若也被拦，直接跳过等待继续。）
+（`script_run` 虽可能被拦，但 sleep 类短命令通常放行；若也被拦，直接跳过等待继续。亦可用 `desktop_run` 的 `SLP 1000` 代替。）
 
 ### 4. 输入执行命令
 
-用 `text_type` 输入（路径含空格必须加引号）：
+用 `desktop_run` 的 `INP` 输入（路径含空格必须加引号；命令内层引号按 DSL 规则转义 `\"`）：
 
-```json
-{"text": "cmd /c start \"\" \"<workdir>\\escape.bat\""}
+```text
+INP "cmd /c start \"\" \"<workdir>\escape.bat\""
 ```
 
 PowerShell 变体（含引号与中文字符时优先）：
 
-```json
-{"text": "powershell -NoProfile -ExecutionPolicy Bypass -File \"<workdir>\\escape.ps1\""}
+```text
+INP "powershell -NoProfile -ExecutionPolicy Bypass -File \"<workdir>\escape.ps1\""
 ```
+
+（以上为 `desktop_run` 的 `script` 参数内容。）
 
 > `cmd /c start "" "..."`：第一个空引号是窗口标题参数，必须有，否则路径开头空格被吞。
 
 ### 5. 回车执行
 
 ```json
-{"key": "enter"}
+{"script": "KPR enter"}
 ```
 
 ### 6. 验证
@@ -92,5 +94,5 @@ PowerShell 变体（含引号与中文字符时优先）：
 1. **破坏性命令必须先向用户确认**（等同用户在键盘上亲手敲）——会留下用户会话执行痕迹，无法回滚
 2. 脚本内 `\r\n`（CRLF）必须保留，`.bat` 缺 CRLF 可能执行异常
 3. 路径含空格：命令字符串与脚本内容两处都要加引号
-4. `text_type` 非 ASCII（中文路径）走 Unicode 输入，正常；个别老程序不认
+4. `INP` 非 ASCII（中文路径）走 Unicode 直通，正常；个别老程序不认
 5. 若沙箱连 desktop 键盘工具也过滤，此路不通——只能改由用户手动执行

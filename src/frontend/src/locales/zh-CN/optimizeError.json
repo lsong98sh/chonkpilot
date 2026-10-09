@@ -1,0 +1,13 @@
+{
+  "prompt_required": "提示词不能为空",
+  "config_read_failed": "读取用户配置失败：{message}",
+  "no_llm_config": "未配置 LLM，请先在「用户配置 → LLM」中添加",
+  "llm_not_set": "提示词优化 LLM 未设置，请选择已配置的 LLM",
+  "llm_not_found": "提示词优化 LLM「{name}」不存在，请在「用户配置 → LLM」中重新设置",
+  "llm_config_invalid": "LLM 配置格式错误：{message}",
+  "llm_model_missing": "默认 LLM 缺少 model",
+  "request_build_failed": "构建 LLM 请求失败：{message}",
+  "llm_request_failed": "LLM 请求失败：{message}",
+  "llm_status_error": "LLM 返回 {status}：{message}",
+  "llm_empty_response": "LLM 未返回内容"
+}

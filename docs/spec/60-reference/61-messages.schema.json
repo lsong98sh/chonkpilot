@@ -548,7 +548,13 @@
       "topic": "optimize-error",
       "face": "gui",
       "direction": "gui->client",
-      "event": { "message": { "type": "string", "required": true } }
+      "event": {
+        "code": { "type": "string", "required": true },
+        "message": { "type": "string", "required": true },
+        "name": { "type": "string", "required": false },
+        "status": { "type": "string", "required": false }
+      },
+      "notes": "2026-10-09 新增 code（D-41 方案 A）：静态错误码经 code 表达（前端 i18n 键 optimizeError.<code>），message 保留为兜底 + 动态详情（前端以 {message} 插值）；可选参数 name=provider 名（llm_not_found 插值）、status=HTTP 状态码串（llm_status_error 插值）"
     },
     {
       "topic": "window-maximized-changed",

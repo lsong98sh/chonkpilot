@@ -14,15 +14,26 @@
 
 ## 2. 版本（基线）
 
-- `go.mod` 声明：`go 1.16`；依赖 `golang.org/x/sys v0.0.0-20210218145245-beda7e5e158e`（**2021-02-18 快照**）、
-  `github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1`。
-- **精确上游 commit / tag 未留档**（内嵌快照引入时未记录）。据 `go 1.16` + `x/sys 2021-02` 可推定基线为
-  **2021 年前后的上游版本**；若需精确回溯，建议按下列第 4 节以「diff 上游历史」方式重建对应 commit（待补）。
+- **基准 commit：`56598839c808a2340edee99204db479f410e9bf4`**（上游 `master` HEAD，2026-02-05，提交信息
+  “Fix Windows 32-bit support for GetWindowLong/SetWindowLong functions (#81)”）——**内嵌快照 = 上游最新提交**。
+  来源：[jchv/go-webview2@5659883](https://github.com/jchv/go-webview2/commit/56598839c808a2340edee99204db479f410e9bf4)。
+- 上游**无 tag / release**（仓库 `/tags` 为空）；pkg.go.dev 仅有伪版本 `v0.0.0-...-5659883`（2026-02-05 发布）。
+- `go.mod`（与上游 HEAD **逐字节一致**）：`go 1.16`；`github.com/jchv/go-winloader
+  v0.0.0-20250406163304-c1995be93bd1`（2025-04-06，随上游提交 `0bcfea01` “Update winloader” 引入）、
+  `golang.org/x/sys v0.0.0-20210218145245-beda7e5e158e`（2021-02-18）。**注意**：上游自 2021 起未再升级 `go` 指令与
+  `x/sys`，故此二者**不能**用于年份推定（此前按 “go 1.16 + x/sys 2021-02” 猜测为 2021 年是**误判**）。
+- **判定依据（比对过的候选与差异点）**：
+  1. `internal/w32/w32_386.go` / `w32_64bit.go`：上游**仅**在 `5659883` 新增（该提交 diff 中此二文件为 `added`），
+     fork 两份内容逐字一致 → 基线 ≥ `5659883`。
+  2. `internal/w32/w32.go` var 块含 `User32GetWindowLongW` / `User32SetWindowLongW`（`5659883` 新增，位置/顺序与上游一致）。
+  3. `webview.go` `SetSize` 使用 `w32.GetWindowLong` / `w32.SetWindowLong`（`5659883` 的重构写法）。
+  4. fork 文件清单 = 上游 `master` tree（63 项，含 `webviewloader/sdk/{x64,x86,arm64}/WebView2Loader.dll`）；唯一本地新增为 `FORK.md`。
+  5. 上游提交历史自 `5659883` 起无更新（GitHub commits API 最新一页首条即 `5659883`）→ 基线 = HEAD，**可确证**。
 - 内嵌 `webviewloader/sdk/{x64,x86,arm64}/WebView2Loader.dll` 三份（`//go:embed`，随源码入库，见 `.gitignore` 负模式例外）。
 
 ## 3. 本地补丁清单（相对上游的改动）
 
-> 上游基线未精确固定，下列为**本仓已识别**的本地改动；均带中文注释、可据注释与 `D-xx` 标记定位。
+> 基线已固定为 §2 的 `5659883`；下列为**本仓已识别**的本地改动；均带中文注释、可据注释与 `D-xx` 标记定位。
 
 | # | 类别 | 位置 | 说明 |
 |---|------|------|------|
@@ -46,13 +57,13 @@
 
 ## 4. 升级路径
 
-1. 取上游目标版本：`git -C <upstream-clone> log`/`tag` 定位与 `go.mod` 基线相近的 commit，或直接取最新 release。
+1. 取上游目标版本：以 §2 记录的基准 commit `5659883` 为锚，`git -C <upstream-clone> log` 增量前进；上游无 tag/release，最新即 `master` HEAD。
 2. **diff 归因**：`diff -ru <upstream> src/lib/go-webview2` 得到全部差异 → 对照第 3 节清单，区分
    「上游已修（可丢弃本地补丁）」与「本地仍需（须重新套用）」。
 3. 重新套用本地补丁（P1~P13），保留中文注释与 `D-xx` 标记；同步更新 `webviewloader/sdk/*` DLL（如需）。
 4. 构建/回归：`go build ./...`（本模块，Windows/CGO）；消费侧（`src/lib/gui`、`src/desktop`、`src/gui`、
    `src/test/chonkpilot-gui/unittest`）跑各自 `go build ./...` 与 GUI 单测；`build-desktop.ps1` 产物验证。
-5. 更新本台账：修订第 2 节版本记录（补上**精确 commit/tag**）与第 3 节补丁清单。
+5. 更新本台账：修订第 2 节基准 commit 与第 3 节补丁清单。
 
 ## 5. 维护约定
 

@@ -864,7 +864,10 @@ export const OptimizeDoneKeys = {
 
 /** optimize-error 字段键（payload/result/event 合并去重）。 */
 export const OptimizeErrorKeys = {
+  code: 'code',
   message: 'message',
+  name: 'name',
+  status: 'status',
 }
 
 /** window-maximized-changed 字段键（payload/result/event 合并去重）。 */
