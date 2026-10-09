@@ -1,4 +1,4 @@
-﻿# build-vfts.ps1：构建并组装 chonkpilot-vfts-mcp-server 独立部署目录
+# build-vfts.ps1：构建并组装 chonkpilot-vfts-mcp-server 独立部署目录
 #
 # 产物布局（dist/plugins/vfts/，见 [41 D-28]）：
 #   ├── chonkpilot-vfts-mcp-server.exe   # 进程内 zvec FTS 全文索引 MCP server（console，CGO）
@@ -37,7 +37,7 @@ $env:CGO_CFLAGS = "-I$($zvec.Replace('\','/'))/include"
 $env:CGO_LDFLAGS = "-L$($zvecLib.Replace('\','/')) -lzvec_c_api"
 
 if (-not (Test-Path (Join-Path $zvecLib "zvec_c_api.dll"))) {
-    throw "zvec 运行库缺失：$zvecLib\zvec_c_api.dll（需先下载 zvec C-API 预编译原生库）"
+    throw "zvec 运行库缺失：$zvecLib\zvec_c_api.dll（该运行库随源码入库；缺失多为检出/清理不完整，请检查 src/plugins/vfts/third_party/zvec/windows_amd64/）"
 }
 if (-not (Test-Path (Join-Path $zvecLib "zvec_c_api.lib"))) {
     throw "zvec 链接库缺失：$zvecLib\zvec_c_api.lib（CGO 链接需 -lzvec_c_api）"

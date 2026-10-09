@@ -9,7 +9,7 @@
 |---|---|---|
 | `include/zvec/c_api.h` | zvec C-API 头（CGO 编译期 `#include`） | ✅ 跟踪 |
 | `windows_amd64/zvec_c_api.lib` | Windows/amd64 导入库（链接期） | ✅ 跟踪 |
-| `windows_amd64/zvec_c_api.dll` | Windows/amd64 运行库（≈25MB，运行时加载，**须与 vfts 引擎 exe 同目录**） | ❌ **不入库**（体积原因） |
+| `windows_amd64/zvec_c_api.dll` | Windows/amd64 运行库（≈25MB，运行时加载，**须与 vfts 引擎 exe 同目录**） | ✅ **入库**（2026-10-09 决策：仓库自包含） |
 
 ## 来源与版本
 
@@ -22,16 +22,13 @@
 
 - **Apache License 2.0**（见 `include/zvec/c_api.h` 头声明与同目录 `LICENSE.zvec`）。
 
-## 获取与校验（clean clone）
+## 版本一致性校验与升级
 
-`zvec_c_api.dll` 不入库，clean clone 后按下述步骤获取：
+头 `c_api.h`、链接库 `zvec_c_api.lib`、运行库 `zvec_c_api.dll` **三者均随源码入库**——clean clone 即可 CGO 构建与运行，`build-vfts.ps1` **无需额外下载步骤**。
 
-1. 取 `github.com/zvec-ai/zvec-go` **v0.7.0** 的 GitHub Releases 资产 `zvec-libs-windows-x64.zip`；
-2. 解出 `windows_amd64/zvec_c_api.dll` 放到本目录 `windows_amd64/`
-   （部分版本亦可用 `go run ./cmd/download-libs -version v0.7.0` 自动下载）；
-3. **版本一致性校验**：`.dll` 必须与仓库跟踪的 `windows_amd64/zvec_c_api.lib` 取自**同一 Release 同一版本**
-   ——两者版本不一致会在链接或运行时加载失败；
-4. 完整性：优先核对 Release 公布的校验值；未公布时以「同版本 Release 资产」为唯一来源。
+1. **版本一致性**：三者必须取自 `github.com/zvec-ai/zvec-go` **同一版本**（本仓 = v0.7.0）——不一致会在链接或运行时加载失败；
+2. **升级步骤**：取目标版本 GitHub Releases 资产 `zvec-libs-windows-x64.zip`，替换上述三份文件，并**同步** `src/plugins/vfts/go.mod` 的 `require github.com/zvec-ai/zvec-go` 版本；
+3. **完整性**：优先核对 Release 公布的校验值；未公布时以「同版本 Release 资产」为唯一来源。
 
-- 缺失时 `build-vfts.ps1` 会 `throw` 并给出指引。
-- 完整前置说明见 `docs/spec/00-overview/03-构建与部署.md` §5.2 与 `docs/spec/50-testing/50-测试体系.md` §5.2。
+> **历史沿革**：曾采「`.dll` 不入库 + clean clone 下载步骤」（F-03 决策）；**2026-10-09 用户决策改为入库**（与 D-38 的 `WebView2Loader.dll` 同法——消除 clean clone 的构建前置，使仓库自包含）。
+> 完整前置说明见 `docs/spec/00-overview/03-构建与部署.md` §5.2 与 `docs/spec/50-testing/50-测试体系.md` §5.2。
