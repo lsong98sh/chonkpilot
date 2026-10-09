@@ -7,6 +7,10 @@
 //   - {{env.CHONKPILOT_*}}：executor DSL 只读变量（fileops 的 Env* 常量同名；dslOnly=true，
 //     仅 DSL/脚本类编辑器列出 —— 本仓前端暂无该类编辑器，前端按 dslOnly 过滤）。
 //
+// i18n（D-41）：`label` / `desc` 一律返回**文案键**（前端 `$t()` 翻译，键表见
+// src/frontend/src/locales/{zh-CN,en-US}/promptVars.json），后端**不再下发硬编码中文 UI 文案**
+// （否则 en-US 无法翻译）。`key` 是占位符整串（含 {{ }}，直接插入文本），**非 UI 文案、不翻译**。
+//
 // 只读面：无副作用、不落库、不需要实例（变量清单与实例无关，路径取值在替换时解析）。
 package bridge
 
@@ -15,57 +19,47 @@ import (
 	"encoding/json"
 )
 
-// promptVarItem 单个可插入变量：key = 占位符整串（含 {{ }}，直接插入文本）；desc = 用途说明；
-// dslOnly = 仅 DSL/脚本类编辑器展示（前端据此过滤，避免在不相关编辑器列出 {{env.*}}）。
+// promptVarItem 单个可插入变量：key = 占位符整串（含 {{ }}，直接插入文本）；desc = 用途说明的
+// **文案键**（前端 `$t(desc)`）；dslOnly = 仅 DSL/脚本类编辑器展示（前端据此过滤）。
 type promptVarItem struct {
 	Key     string `json:"key"`
 	Desc    string `json:"desc"`
 	DSLOnly bool   `json:"dslOnly"`
 }
 
-// promptVarGroup 一组变量（id/label + items）。
+// promptVarGroup 一组变量（id/label + items）。label = 分组名的**文案键**（前端 `$t(label)`）。
 type promptVarGroup struct {
 	ID    string          `json:"id"`
 	Label string          `json:"label"`
 	Items []promptVarItem `json:"items"`
 }
 
-// toolchainVarDesc 工具链 key → 说明（与 toolchainCandidates 的 ID 同名；键集由候选清单决定）。
-var toolchainVarDesc = map[string]string{
-	"java":   "Java 可执行文件路径（usr/prj 配置 javaPath）",
-	"python": "Python 解释器路径（pythonPath）",
-	"node":   "Node.js 可执行文件路径（nodePath）",
-	"go":     "Go 工具链路径（goPath）",
-	"rust":   "Rust 编译器路径（rustPath）",
-	"c":      "C/C++ 编译器路径（cCompilerPath）",
-	"chrome": "Chrome 可执行文件路径（chromePath）",
-}
-
 // promptVarGroups 变量分组目录（toolchain → path → env；env 组 dslOnly=true）。
-// toolchain 组逐项取自 toolchainCandidates（单一数据源），避免两处各列一份 key。
+// toolchain 组逐项取自 toolchainCandidates（单一数据源），避免两处各列一份 key；
+// 各 desc/label 为文案键（`promptVars.toolchain.<id>` / `promptVars.group.<id>` 等，D-41）。
 func promptVarGroups() []promptVarGroup {
 	toolchain := make([]promptVarItem, 0, len(toolchainCandidates))
 	for _, c := range toolchainCandidates {
 		toolchain = append(toolchain, promptVarItem{
 			Key:  "{{toolchain." + c.ID + "}}",
-			Desc: toolchainVarDesc[c.ID],
+			Desc: "promptVars.toolchain." + c.ID,
 		})
 	}
 	return []promptVarGroup{
-		{ID: "toolchain", Label: "工具链路径", Items: toolchain},
-		{ID: "path", Label: "路径", Items: []promptVarItem{
-			{Key: "{{path.exeDir}}", Desc: "应用安装目录（可执行文件所在目录）"},
-			{Key: "{{path.userDir}}", Desc: "用户数据根目录 ~/.chonkpilot"},
-			{Key: "{{path.dataDir}}", Desc: "当前项目数据目录 ~/.chonkpilot/data/<项目 id>"},
-			{Key: "{{path.workDir}}", Desc: "当前项目工作目录"},
+		{ID: "toolchain", Label: "promptVars.group.toolchain", Items: toolchain},
+		{ID: "path", Label: "promptVars.group.path", Items: []promptVarItem{
+			{Key: "{{path.exeDir}}", Desc: "promptVars.path.exeDir"},
+			{Key: "{{path.userDir}}", Desc: "promptVars.path.userDir"},
+			{Key: "{{path.dataDir}}", Desc: "promptVars.path.dataDir"},
+			{Key: "{{path.workDir}}", Desc: "promptVars.path.workDir"},
 		}},
 		// {{env.*}} 同名于 executor 的 CHONKPILOT_*（fileops.Env*）；仅 DSL/脚本插值有效。
-		{ID: "env", Label: "环境变量（DSL/脚本）", Items: []promptVarItem{
-			{Key: "{{env.CHONKPILOT_WORKDIR}}", Desc: "项目工作目录", DSLOnly: true},
-			{Key: "{{env.CHONKPILOT_DATADIR}}", Desc: "数据目录", DSLOnly: true},
-			{Key: "{{env.CHONKPILOT_TEMPDIR}}", Desc: "临时目录根", DSLOnly: true},
-			{Key: "{{env.CHONKPILOT_EXEDIR}}", Desc: "可执行文件所在目录", DSLOnly: true},
-			{Key: "{{env.CHONKPILOT_PROJECT}}", Desc: "项目目录（同 WORKDIR）", DSLOnly: true},
+		{ID: "env", Label: "promptVars.group.env", Items: []promptVarItem{
+			{Key: "{{env.CHONKPILOT_WORKDIR}}", Desc: "promptVars.env.CHONKPILOT_WORKDIR", DSLOnly: true},
+			{Key: "{{env.CHONKPILOT_DATADIR}}", Desc: "promptVars.env.CHONKPILOT_DATADIR", DSLOnly: true},
+			{Key: "{{env.CHONKPILOT_TEMPDIR}}", Desc: "promptVars.env.CHONKPILOT_TEMPDIR", DSLOnly: true},
+			{Key: "{{env.CHONKPILOT_EXEDIR}}", Desc: "promptVars.env.CHONKPILOT_EXEDIR", DSLOnly: true},
+			{Key: "{{env.CHONKPILOT_PROJECT}}", Desc: "promptVars.env.CHONKPILOT_PROJECT", DSLOnly: true},
 		}},
 	}
 }

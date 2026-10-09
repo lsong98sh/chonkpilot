@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/agentbox"
@@ -48,6 +49,46 @@ var runtimes = map[string]struct{}{
 // （JEP 330 已放宽 JLS 7.6 的同名约束），故临时文件名可保持随机。
 var scriptExt = map[string]string{
 	"python": ".py", "js": ".js", "powershell": ".ps1", "vbs": ".vbs", "bash": ".sh", "java": ".java",
+}
+
+// scriptOutputLimit 是脚本 stdout+stderr 累计读取上限（8MB）：超出即封顶丢弃尾部，
+// 防脚本产出无界输出全量入内存（C-55）。结果超长仍由 executor 统一层再处理。
+const scriptOutputLimit = 8 << 20
+
+// cappedBuffer 是带累计上限的字节缓冲（并发安全：stdout/stderr 可能共写）：
+// 写满上限后丢弃其余内容并标记截断。
+type cappedBuffer struct {
+	mu      sync.Mutex
+	buf     []byte
+	limit   int
+	dropped bool
+}
+
+func (w *cappedBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if remain := w.limit - len(w.buf); remain > 0 {
+		if len(p) <= remain {
+			w.buf = append(w.buf, p...)
+		} else {
+			w.buf = append(w.buf, p[:remain]...)
+			w.dropped = true
+		}
+	} else {
+		w.dropped = true
+	}
+	return len(p), nil
+}
+
+// string 返回累计输出；发生截断时追加一行提示。
+func (w *cappedBuffer) string() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	s := string(w.buf)
+	if w.dropped {
+		s += fmt.Sprintf("\n...(输出超过 %dMB，已截断)", w.limit>>20)
+	}
+	return s
 }
 
 // HandleScriptRun 执行 script_run 工具。
@@ -136,10 +177,15 @@ func HandleScriptRun(workDir string, args map[string]interface{}) *cli.Result {
 	}
 
 	start := time.Now()
-	out, runErr := cmd.CombinedOutput()
+	// C-55：限流 Writer 接管 stdout/stderr，累计超上限即封顶丢弃尾部，防脚本无界输出全量入内存
+	//（统一层的超长截断发生在整串已读入之后，故必须在此先封顶）。
+	ob := &cappedBuffer{limit: scriptOutputLimit}
+	cmd.Stdout = ob
+	cmd.Stderr = ob
+	runErr := cmd.Run()
 	elapsed := int64(time.Since(start).Seconds())
 
-	outStr := string(out)
+	outStr := ob.string()
 
 	// filter（可选，regex 行过滤，等价 <cmd> | findstr/egrep；过滤后由统一层封装）
 	if filterExpr, _ := args["filter"].(string); filterExpr != "" {

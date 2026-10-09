@@ -302,11 +302,12 @@ type jobEnv struct {
 	step       int
 
 	// ── DSL-3 展示（不随迭代增长）──
-	// execSteps 是步骤执行记录（跨迭代累计，扁平）；stepContainer / containerLead 由
-	// buildStaticTree 预走 AST 得到（LLM 原始参数 → 所属静态节点 id / 容器首步原始参数）；
-	// containerIDs 是静态容器节点 id（作业结束标记终态）；sessions 是各步骤子会话 id
-	// （作业结束清理 subParents 映射）。
+	// execSteps 是步骤执行记录（跨迭代累计，扁平，末 jobMaxSteps 步）；stepContainer /
+	// containerLead 由 buildStaticTree 预走 AST 得到（LLM 原始参数 → 所属静态节点 id /
+	// 容器首步原始参数）；containerIDs 是静态容器节点 id（作业结束标记终态）；sessions 是
+	// 各步骤子会话 id（作业结束清理 subParents 映射）。
 	execSteps     []dslExecStep
+	stepNo        int // 单调步号（DslStepRecord.No 来源；FIFO 淘汰后仍不回退，见 jobMaxSteps）
 	stepContainer map[string]string
 	containerLead map[string]string
 	leadCount     map[string]int
@@ -320,6 +321,11 @@ type dslExecStep struct {
 	text   string // 成功产出的子轮文本（供回落汇总）
 	errMsg string // 失败信息（供回落汇总）
 }
+
+// jobMaxSteps 是单作业保留的步骤执行记录上限（B-40：防长作业 execSteps 无界累积，每步
+// 全量重发 `steps[]` 致 O(N²)）。超出即 FIFO 淘汰最旧记录、保留最近 N 步——既限制单条
+// tasks.updated 规模又不新增/修改 61 的 payload 字段语义（与 gateway dslStepsInlineLimit 同口径）。
+const jobMaxSteps = 200
 
 // runSubJob 执行 llm_run：读 script/file → dsl 解析 → 引擎执行（LLM 动词 = 子轮次）→ 汇总回填。
 func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, args map[string]any) {
@@ -500,7 +506,7 @@ func (jr *jobEnv) llmAction() dsl.Action {
 			parentID := jr.stepParent(args)
 			jr.s.tasks.bindSubSession(session, parentID)
 			// 追加一条 running 执行记录（跨迭代累计，不建树节点）+ 刷新容器进度。
-			idx := jr.beginStep(session, label, args)
+			no := jr.beginStep(session, label, args)
 
 			// 子轮次 ctx 由**发起它的本 turn 的 ctx** 派生（G-18 gapA）：父轮次取消/关闭
 			// （用户停止、级联取消）时取消信号沿链下传，子步不再跑满。
@@ -512,11 +518,11 @@ func (jr *jobEnv) llmAction() dsl.Action {
 				if jr.cancelled() {
 					status = TaskStateCancelled
 				}
-				jr.endStep(idx, status, elapsed, "", runErr.Error())
+				jr.endStep(no, status, elapsed, "", runErr.Error())
 				jr.markFail()
 				return "", nil // 失败记错不阻塞（后续步骤继续）
 			}
-			jr.endStep(idx, TaskStateDone, elapsed, text, "")
+			jr.endStep(no, TaskStateDone, elapsed, text, "")
 			return text, nil
 		},
 	}
@@ -532,14 +538,21 @@ func (jr *jobEnv) stepParent(rawArgs string) string {
 }
 
 // beginStep 追加一条 running 执行记录（不建树节点）→ 刷新作业根 `steps[]` + 容器进度；
-// 返回记录下标（供 endStep 回填）。
+// 返回记录步号 No（供 endStep 按号回填；B-40：FIFO 淘汰后下标会偏移，不能再按下标定位）。
 func (jr *jobEnv) beginStep(session, purpose, rawArgs string) int {
 	jr.mu.Lock()
+	// No 取单调步号：淘汰最旧记录后仍不回退，保证步号唯一（对齐前端展示序）。
+	jr.stepNo++
+	no := jr.stepNo
 	jr.execSteps = append(jr.execSteps, dslExecStep{rec: DslStepRecord{
-		No: len(jr.execSteps) + 1, Status: TaskStateRunning, Purpose: purpose,
+		No: no, Status: TaskStateRunning, Purpose: purpose,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339), SessionID: session,
 	}})
-	idx := len(jr.execSteps) - 1
+	// B-40：execSteps 无上限累积防护 —— 超上限 FIFO 淘汰最旧（保留最近 jobMaxSteps 步）；
+	// 复制到新底层数组，避免继续持有被淘汰前缀的旧数组内存。
+	if len(jr.execSteps) > jobMaxSteps {
+		jr.execSteps = append([]dslExecStep(nil), jr.execSteps[len(jr.execSteps)-jobMaxSteps:]...)
+	}
 	if jr.leadCount == nil {
 		jr.leadCount = map[string]int{}
 	}
@@ -549,17 +562,21 @@ func (jr *jobEnv) beginStep(session, purpose, rawArgs string) int {
 	jr.mu.Unlock()
 	jr.s.tasks.update(jr.node.TaskID, func(n *TaskNode) { n.Steps = steps })
 	jr.applyContainerProgress()
-	return idx
+	return no
 }
 
 // endStep 回填执行记录终态（status/耗时/文本/错误）并广播作业根 `steps[]`。
-func (jr *jobEnv) endStep(idx int, status string, elapsed int64, text, errMsg string) {
+// 按步号 no 定位（B-40：FIFO 淘汰后下标偏移，不能再用下标）；该记录已被淘汰 → 跳过回填。
+func (jr *jobEnv) endStep(no int, status string, elapsed int64, text, errMsg string) {
 	jr.mu.Lock()
-	if idx >= 0 && idx < len(jr.execSteps) {
-		jr.execSteps[idx].rec.Status = status
-		jr.execSteps[idx].rec.ElapsedMs = elapsed
-		jr.execSteps[idx].text = text
-		jr.execSteps[idx].errMsg = errMsg
+	for i := range jr.execSteps {
+		if jr.execSteps[i].rec.No == no {
+			jr.execSteps[i].rec.Status = status
+			jr.execSteps[i].rec.ElapsedMs = elapsed
+			jr.execSteps[i].text = text
+			jr.execSteps[i].errMsg = errMsg
+			break
+		}
 	}
 	steps := jr.stepsLocked()
 	jr.mu.Unlock()

@@ -272,8 +272,9 @@ func (s *Service) ScenarioDelete(req facade.ScenarioDeleteRequest) (facade.Scena
 	}
 	_, root := s.scenarioRootForWrite(level, workDir, prjUsrCap)
 	target := filepath.Join(root, req.ScenarioID)
-	// 越界复验（A-31）：id 已过 ValidScenarioID，此处再兜底确认删除落点仍在场景根内（防 `..` 越界删）。
-	if !capfs.StrictlyWithin(root, target) {
+	// 越界复验（A-31/A-38）：id 已过 ValidScenarioID，此处再兜底词法（StrictlyWithin）+ 实路径
+	// （RealPathInside）确认删除落点仍在场景根内（防 `..` 越界删 / 根内 symlink 被 RemoveAll 跟随）。
+	if !capfs.StrictlyWithin(root, target) || !capfs.RealPathInside(root, target) {
 		return facade.ScenarioDeleteResponse{}, errors.New("invalid scenario id: " + req.ScenarioID)
 	}
 	if err := os.RemoveAll(target); err != nil {

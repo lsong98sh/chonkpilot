@@ -12,6 +12,7 @@
   "open_with": "打开方式",
   "send_to_llm": "让 LLM 阅读此文件",
   "duplicate": "复制",
+  "duplicate_suffix": "副本",
   "created": "已创建: {name}",
   "create_failed": "创建失败",
   "renamed": "已重命名为: {name}",

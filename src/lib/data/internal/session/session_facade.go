@@ -181,7 +181,11 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 		return facade.SessionDeleteResponse{}, err
 	}
 	var check data.Record
-	if ok, _ := prj.Table("sessions").Get(req.SessionID, &check); !ok {
+	ok, err := prj.Table("sessions").Get(req.SessionID, &check)
+	if err != nil {
+		return facade.SessionDeleteResponse{}, err // A-41：读失败须上报，不得退化为「不存在」而误报删除成功
+	}
+	if !ok {
 		return facade.SessionDeleteResponse{OK: true}, nil // 不存在视为成功（幂等）
 	}
 	if err := prj.Table("sessions").Delete(req.SessionID); err != nil {
@@ -206,8 +210,14 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 	if err := errors.Join(cascErrs...); err != nil {
 		return facade.SessionDeleteResponse{}, err
 	}
-	if cur, _ := kernel.PrjConfigVal(prj, "active_session_id"); cur == req.SessionID {
-		_ = kernel.PrjConfigSetVal(prj, "active_session_id", "")
+	cur, err := kernel.PrjConfigVal(prj, "active_session_id")
+	if err != nil {
+		return facade.SessionDeleteResponse{}, err // A-41：读活动态失败须上报（否则可能残留指向已删会话的活动态）
+	}
+	if cur == req.SessionID {
+		if err := kernel.PrjConfigSetVal(prj, "active_session_id", ""); err != nil {
+			return facade.SessionDeleteResponse{}, err
+		}
 	}
 	return facade.SessionDeleteResponse{OK: true}, nil
 }
@@ -231,9 +241,17 @@ func (s *Service) SessionActiveGet(req facade.SessionActiveGetRequest) (facade.S
 		return facade.SessionActiveGetResponse{}, err
 	}
 	id := ""
-	if v, _ := kernel.PrjConfigVal(prj, "active_session_id"); v != "" {
+	v, err := kernel.PrjConfigVal(prj, "active_session_id")
+	if err != nil {
+		return facade.SessionActiveGetResponse{}, err // A-41：读失败须上报，不得静默回落
+	}
+	if v != "" {
 		var rec data.Record
-		if ok, _ := prj.Table("sessions").Get(v, &rec); ok {
+		ok, err := prj.Table("sessions").Get(v, &rec)
+		if err != nil {
+			return facade.SessionActiveGetResponse{}, err
+		}
+		if ok {
 			id = v
 		}
 	}
@@ -305,21 +323,10 @@ func (s *Service) TurnHistory(req facade.TurnHistoryRequest) (facade.TurnHistory
 	if err != nil {
 		return facade.TurnHistoryResponse{}, fmt.Errorf("query turns: %v", err)
 	}
-	// 下推会话维度：Where{session_id} 命中 messages_by_session（Fields [session_id]、Order created_at）
-	// —— OrderBy 与索引 Order 一致 → 跳过内存排序。选中轮次（turnRecs，已按本会话过滤）均属本会话，
-	// 故只取本会话消息按 turn 分组的输出与改前（全库分组后仅取本会话轮次）等价。
-	allMsgs, _, err := prj.Table("messages").Query(data.Query{
-		Where: data.Record{"session_id": req.SessionID}, OrderBy: "created_at",
-	})
-	if err != nil {
-		return facade.TurnHistoryResponse{}, fmt.Errorf("query messages: %v", err)
-	}
-	byTurn := make(map[string][]data.Record, len(allMsgs))
-	for _, m := range allMsgs {
-		tid := kernel.TurnIDOfMsg(m)
-		byTurn[tid] = append(byTurn[tid], m)
-	}
-
+	// A-39：改「整会话一次性全量读 messages」为**按轮分批读**（每轮 ≤ messagePerTurnCap，索引
+	// messages_by_turn）——只读从最新往回累计到分页目标所需的那几轮，内存有界。turns 已按
+	// session_id 过滤，按轮取到的消息即本会话消息，输出与改前逐字等价（轮内 created_at 升序）。
+	byTurn := make(map[string][]data.Record)
 	var selected []data.Record
 	accMessages, accBytes, hasMore := 0, 0, false
 	skip := req.BeforeTurnID != ""
@@ -335,7 +342,15 @@ func (s *Service) TurnHistory(req facade.TurnHistoryRequest) (facade.TurnHistory
 			hasMore = true
 			break
 		}
-		cnt, sz := kernel.TurnStatsByMap(byTurn, kernel.TurnIDOf(t))
+		tid := kernel.TurnIDOf(t)
+		if _, loaded := byTurn[tid]; !loaded {
+			recs, err := queryTurnMessages(prj, req.SessionID, tid)
+			if err != nil {
+				return facade.TurnHistoryResponse{}, fmt.Errorf("query messages: %v", err)
+			}
+			byTurn[tid] = recs
+		}
+		cnt, sz := kernel.TurnStatsByMap(byTurn, tid)
 		selected = append(selected, t)
 		accMessages += cnt
 		accBytes += sz
@@ -541,7 +556,11 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	sessionID := req.SessionID
 	if sessionID == "" {
 		var trec data.Record
-		if ok, _ := prj.Table("turns").Get(req.TurnID, &trec); ok {
+		ok, err := prj.Table("turns").Get(req.TurnID, &trec)
+		if err != nil {
+			return facade.MessageAppendResponse{}, err // A-41：回填 session_id 读失败须上报，不得落成空 session_id
+		}
+		if ok {
 			sessionID = kernel.Sval(trec["session_id"])
 		}
 	}
@@ -559,7 +578,11 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	createdAt := time.Now().UTC().Format(kernel.RFC3339FixedNano)
 	if key != "" { // 就地更新（显式 key / 复用同轮同 call 既有行）：保留原 created_at
 		var old data.Record
-		if ok, _ := prj.Table("messages").Get(key, &old); ok {
+		ok, err := prj.Table("messages").Get(key, &old)
+		if err != nil {
+			return facade.MessageAppendResponse{}, err // A-41：读既有行失败须上报，不得静默改用当前时刻
+		}
+		if ok {
 			if v := kernel.Sval(old["created_at"]); v != "" {
 				createdAt = v
 			}
@@ -646,6 +669,23 @@ func (s *Service) MessageLoad(req facade.MessageLoadRequest) (facade.MessageLoad
 	return facade.MessageLoadResponse{Messages: msgs}, nil
 }
 
+// messagePerTurnCap 单轮消息读取上限（与 MessageLoad 的 Limit 一致）：按轮分批读会话消息时
+// 每轮上限（A-39）。
+const messagePerTurnCap = 500
+
+// queryTurnMessages 读某轮消息（≤ messagePerTurnCap，created_at 升序；命中 messages_by_turn 索引
+// → 有界流式，非全桶扫）。A-39：以「按轮分批」替代「整会话一次性全量读入内存」。
+func queryTurnMessages(prj *data.DB, sessionID, turnID string) ([]data.Record, error) {
+	recs, _, err := prj.Table("messages").Query(data.Query{
+		Where:   data.Record{"turn_id": turnID, "session_id": sessionID},
+		OrderBy: "created_at", Limit: messagePerTurnCap,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return recs, nil
+}
+
 // MessageContext 组装会话历史（llm-start 恢复上下文一次到位）：
 // IncludeSnapshot 且快照非空 → 快照前缀 + 覆盖轮之后的消息（跳过 interrupted / ExcludeTurn）；
 // 否则全量历史（从最新往回找首个有 summary 的轮次作起点；summary → system "[历史摘要] "+…）。
@@ -663,25 +703,39 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 	if err != nil {
 		return facade.MessageContextResponse{}, fmt.Errorf("query turns: %v", err)
 	}
-	// 下推会话维度（同 TurnHistory）：只取本会话消息即可——后续按 turn 分组仅消费本会话轮次
-	// （turnRecs 已按 session_id 过滤），索引 messages_by_session（Order created_at）与 OrderBy 一致。
-	allMsgs, _, err := prj.Table("messages").Query(data.Query{
-		Where: data.Record{"session_id": req.SessionID}, OrderBy: "created_at",
-	})
-	if err != nil {
-		return facade.MessageContextResponse{}, fmt.Errorf("query messages: %v", err)
-	}
+	// A-39：改「整会话一次性全量读 messages」为**按轮分批读**（每轮 ≤ messagePerTurnCap，索引
+	// messages_by_turn）——只读 turnRecs 覆盖的轮次（后续两分支仅消费本会话轮次，故输出等价），
+	// 内存由「全会话消息」收敛为「本轮次集合的消息」。
 	byTurn := map[string][]data.ChatMsg{}
-	for _, m := range allMsgs {
-		if cm, ok := kernel.MsgRowToChat(m); ok {
-			byTurn[kernel.TurnIDOfMsg(m)] = append(byTurn[kernel.TurnIDOfMsg(m)], cm)
+	for _, r := range turnRecs {
+		id := kernel.TurnIDOf(r)
+		if id == "" || id == req.ExcludeTurn {
+			continue
 		}
+		if _, loaded := byTurn[id]; loaded {
+			continue
+		}
+		recs, err := queryTurnMessages(prj, req.SessionID, id)
+		if err != nil {
+			return facade.MessageContextResponse{}, fmt.Errorf("query messages: %v", err)
+		}
+		msgs := make([]data.ChatMsg, 0, len(recs))
+		for _, m := range recs {
+			if cm, ok := kernel.MsgRowToChat(m); ok {
+				msgs = append(msgs, cm)
+			}
+		}
+		byTurn[id] = msgs
 	}
 
 	// 快照分支：快照非空才走快照上下文，否则回退全量历史。
 	turnTokens := turnTokensOf(turnRecs, req.ExcludeTurn) // P3 伴随数组（只增；升序、排除 ExcludeTurn）
 	if req.IncludeSnapshot {
-		if snap, ok, _ := snapshot.Get(prj, req.SessionID); ok && len(snap.History) > 0 {
+		snap, ok, err := snapshot.Get(prj, req.SessionID)
+		if err != nil {
+			return facade.MessageContextResponse{}, fmt.Errorf("snapshot: %v", err) // A-41：读快照失败须上报，不得退化为「无快照」
+		}
+		if ok && len(snap.History) > 0 {
 			msgs := append([]data.ChatMsg{}, snap.History...)
 			found := snap.SnapshotTurn == "" // 快照无覆盖轮 → 全部轮次都拼
 			for _, r := range turnRecs {

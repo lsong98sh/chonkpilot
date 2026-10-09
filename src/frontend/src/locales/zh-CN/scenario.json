@@ -20,7 +20,8 @@
     "app": "系统",
     "user": "用户",
     "project": "项目",
-    "prjusr": "项目私有"
+    "prjusr": "项目私有",
+    "global": "全局"
   },
   "dir_name_required": "目录名不能为空（仅字母/数字/下划线/连字符）",
   "dir_name_format": "目录名只能包含字母、数字、下划线和连字符",

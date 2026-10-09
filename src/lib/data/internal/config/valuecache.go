@@ -41,6 +41,11 @@ var (
 	valueCache   = map[string]*dbValues{} // key = db 文件绝对路径
 )
 
+// maxValueCacheEntries 值缓存条目上限（A-43）：缓存按 db 文件绝对路径为维度，本进程读过的库文件
+// （不同项目 / 实例的 prj·usr·prjusr 库）会不断新增 → 无上限即随项目数无界增长。超限时丢弃**一条**
+// 旧条目（下次读自然重建，stamp 校验保证命中必新鲜，语义不受影响）。
+const maxValueCacheEntries = 64
+
 // warnf 是 config 读路径的**包级告警出口**（由装配侧 `New` 绑定 `kernel.Base.Warnf`；nil = 静默）。
 // config 读路径的若干纯函数（readConfigTable / readCollection）不持 *Service，无法直接取
 // Base.Warnf → 经此包级出口留痕（A-35：ForEach / 事务错误不再被静默吞掉）。与 valueCache 同属
@@ -76,6 +81,12 @@ func cachedConfigValues(db *data.DB) map[string]string {
 		}
 		vals := readConfigTable(db)
 		valueCacheMu.Lock()
+		if _, exists := valueCache[path]; !exists && len(valueCache) >= maxValueCacheEntries {
+			for k := range valueCache { // 超上限：丢弃任意一条旧条目（有界即可，重建代价低）
+				delete(valueCache, k)
+				break
+			}
+		}
 		valueCache[path] = &dbValues{stamp: stamp, vals: vals}
 		valueCacheMu.Unlock()
 		return vals

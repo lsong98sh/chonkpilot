@@ -470,6 +470,12 @@ func (c *Compressor) resolveSubsystemLLM(instanceID, workDir, dataDir string) st
 		InstanceID: instanceID, Scope: facade.Scope{WorkDir: workDir, DataDir: dataDir},
 	})
 	if err != nil {
+		logf := c.deps.Logf
+		if logf == nil {
+			logf = func(string, ...any) {}
+		}
+		// 留痕后再回落（对齐 F-22/B-06 口径）：配置读失败=子系统 LLM 不生效，需可见诊断。
+		logf("compress: 读 usr %s 失败（instance=%s）：%v（回落默认 LLM）", llmSubsystemKey, instanceID, err)
 		return "" // 读失败 → 不指定（回落现状）；摘要流程不中断
 	}
 	return data.LLMRefName(resp.Config[llmSubsystemKey], resp.Config["llms"])

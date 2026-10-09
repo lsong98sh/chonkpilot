@@ -130,6 +130,12 @@ func WriteMcpFile(root, name string, obj map[string]any) error {
 	if !ValidMcpName(name) {
 		return os.ErrInvalid
 	}
+	target := filepath.Join(root, McpFileName(name))
+	// 越界复验（A-38）：ValidMcpName 已挡 `..`/分隔符，此处再以 RealPathInside 复验实路径
+	// （MCP 根内指向根外的 symlink 不得被 MkdirAll/WriteFile 跟随）。
+	if !RealPathInside(root, target) {
+		return os.ErrInvalid
+	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
@@ -145,7 +151,7 @@ func WriteMcpFile(root, name string, obj map[string]any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(root, McpFileName(name)), append(raw, '\n'), 0o644)
+	return os.WriteFile(target, append(raw, '\n'), 0o644)
 }
 
 // DeleteMcpFile 删某级 MCP 根下 `<名>.json`（不存在视为成功）。
@@ -153,7 +159,12 @@ func DeleteMcpFile(root, name string) error {
 	if !ValidMcpName(name) {
 		return nil
 	}
-	if err := os.Remove(filepath.Join(root, McpFileName(name))); err != nil && !os.IsNotExist(err) {
+	target := filepath.Join(root, McpFileName(name))
+	// 越界复验（A-38）：根内指向根外的 symlink 不得被 os.Remove 跟随删除根外文件。
+	if !RealPathInside(root, target) {
+		return os.ErrInvalid
+	}
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil

@@ -3,6 +3,7 @@
 package bridge
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
@@ -67,6 +68,21 @@ func TestPromptVarGroupsShape(t *testing.T) {
 	for _, it := range e.Items {
 		if !it.DSLOnly {
 			t.Fatalf("env 项必须 dslOnly=true：%+v", it)
+		}
+	}
+}
+
+// TestPromptVarCatalogI18nKeyed：label/desc 必须是**文案键**（D-41）——一律以 "promptVars." 开头，
+// 不得是硬编码中文 UI 文案（否则 en-US 无法翻译）。key 仍是占位符整串，不受影响。
+func TestPromptVarCatalogI18nKeyed(t *testing.T) {
+	for _, g := range promptVarGroups() {
+		if !strings.HasPrefix(g.Label, "promptVars.") {
+			t.Fatalf("分组 %q 的 label 须为文案键（promptVars.*），实际 %q", g.ID, g.Label)
+		}
+		for _, it := range g.Items {
+			if !strings.HasPrefix(it.Desc, "promptVars.") {
+				t.Fatalf("变量 %q 的 desc 须为文案键（promptVars.*），实际 %q", it.Key, it.Desc)
+			}
 		}
 	}
 }

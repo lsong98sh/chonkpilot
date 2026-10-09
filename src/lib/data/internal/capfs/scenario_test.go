@@ -291,3 +291,47 @@ func TestWriteScenarioDirRejectsMissingRef(t *testing.T) {
 		t.Fatal("被拒场景不应落盘")
 	}
 }
+
+// TestExpandAgentRefRejectsEscape 越界引用（A-36）：含 `..` 逃出 capability 根的引用一律展开为
+// ("", false)（不得越权读任意文件）；根内合法引用正常展开。
+func TestExpandAgentRefRejectsEscape(t *testing.T) {
+	capRoot := t.TempDir()
+	// 根外放一个文件 + 构造经 `..` 逃逸的引用（旧实现会命中它 → 越权读）
+	if err := os.WriteFile(filepath.Join(filepath.Dir(capRoot), "secret.agent.md"), []byte("# secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentsDir := filepath.Join(capRoot, DirAgents)
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "ok.agent.md"), []byte("# ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	roots := RefRoots{App: capRoot}
+	if abs, ok := ExpandAgentRef("${exeDir}/capability/agents/ok.agent.md", roots); !ok || abs == "" {
+		t.Fatalf("根内合法引用应展开，得 (%q, %v)", abs, ok)
+	}
+	if abs, ok := ExpandAgentRef("${exeDir}/capability/../../secret.agent.md", roots); ok {
+		t.Fatalf("越界引用不得展开，得 abs=%q", abs)
+	}
+}
+
+// TestWriteScenarioDirRejectsEscapingRef 越界引用写侧拒绝（A-36）：含 `..` 逃逸的 ref 不得固化
+// 进 scenario.json（拒绝且不落盘）。
+func TestWriteScenarioDirRejectsEscapingRef(t *testing.T) {
+	capRoot := t.TempDir()
+	scnRoot := filepath.Join(capRoot, DirScenarios)
+	sc := map[string]any{
+		"name": "越界引用",
+		"agents": []any{
+			map[string]any{"name": "主", "isMain": true, "prompt": "主提示词"},
+			map[string]any{"name": "evil", "ref": "${exeDir}/capability/../../secret.agent.md"},
+		},
+	}
+	if err := WriteScenarioDir(KindApp, scnRoot, "escape-ref", sc, RefRoots{App: capRoot}); err == nil {
+		t.Fatal("越界引用应被拒")
+	}
+	if ScenarioDirExists(scnRoot, "escape-ref") {
+		t.Fatal("被拒场景不应落盘")
+	}
+}

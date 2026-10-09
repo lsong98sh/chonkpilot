@@ -17,11 +17,7 @@
             <label class="form-label">{{ $t('projectConfig.vfts') }}</label>
             <Switch v-model="vfEnabled" @update:model-value="handleChange" />
           </div>
-          <div class="vf-hint">
-            启用后本项目的 vfts 全文检索工具（vfts_query）会注入到 LLM 工具面，
-            首次启用会自动后台建索引；停用即从工具面移除（索引保留在
-            <code>.chonkpilot/vfts/</code>，重开会增量续刷）。
-          </div>
+          <div class="vf-hint">{{ $t('projectConfig.vfts_hint_pre') }}<code>.chonkpilot/vfts/</code>{{ $t('projectConfig.vfts_hint_post') }}</div>
         </div>
         <hr class="b-divider" />
         <div class="form-item form-item-full">
@@ -45,7 +41,7 @@
         <hr class="b-divider" />
         <div class="form-item form-item-full">
           <label class="form-label">{{ $t('projectConfig.index_exts_label') }}</label>
-          <Textarea v-model="vfExts" :rows="3" placeholder=".go, .js, .ts, .md, .txt（逗号或换行分隔）" />
+          <Textarea v-model="vfExts" :rows="3" :placeholder="$t('projectConfig.vfts_exts_placeholder')" />
           <div class="vf-hint">{{ $t('projectConfig.index_exts_hint') }}</div>
         </div>
         <div class="form-item form-item-full">
@@ -58,7 +54,7 @@
               <span>{{ $t('projectConfig.stack_gitignore') }}</span>
             </label>
           </div>
-          <Textarea v-model="vfSkipDirs" :rows="3" placeholder="node_modules/, dist/, !dist/keep.log（逗号或换行分隔）" />
+          <Textarea v-model="vfSkipDirs" :rows="3" :placeholder="$t('projectConfig.exclude_paths_placeholder')" />
           <div class="vf-hint">{{ $t('projectConfig.exclude_paths_hint') }}</div>
         </div>
         <hr class="b-divider" />

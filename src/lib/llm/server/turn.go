@@ -1241,6 +1241,9 @@ func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]a
 	}
 	id, err := newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, "")
 	if err != nil || id == "" {
+		// B-42：落库失败仅留痕（不阻断执行，语义不变；与终态侧 B-33 对称）。
+		logf("[chonkpilot-server] 工具 running 落库失败（turn=%s tool_call_id=%s）: err=%v id=%q\n",
+			tc.req.Turn, toolCallID, err, id)
 		return
 	}
 	tc.mu.Lock()

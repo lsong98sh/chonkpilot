@@ -15,6 +15,7 @@
   "back_to_session": "Back to session",
   "no_output": "No streaming output (built-in tool, see args below)",
   "args": "Arguments",
+  "truncated_suffix": "\n… (truncated)",
   "task_not_found": "Task not found or closed",
   "closed_label": "Closed",
   "closed_readonly_hint": "Closed tasks are read-only and cannot be restored",

@@ -49,6 +49,8 @@
   "token_count": "Token 计数",
   "message_count": "消息数",
   "create_session_failed": "创建会话失败",
+  "session_load_failed": "读取会话失败，已回退到最近会话",
+  "session_init_failed": "会话初始化失败，请重试或查看日志",
   "default_llm": "默认模型",
   "section_thinking": "思考",
   "section_tool_call": "工具调用",

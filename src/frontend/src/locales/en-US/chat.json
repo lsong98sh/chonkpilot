@@ -49,6 +49,8 @@
   "token_count": "Token Count",
   "message_count": "Message Count",
   "create_session_failed": "Failed to create session",
+  "session_load_failed": "Failed to load the session; fell back to the most recent one",
+  "session_init_failed": "Failed to initialize the session. Please retry or check the logs",
   "default_llm": "Default LLM",
   "section_thinking": "Thinking",
   "section_tool_call": "Tool Call",

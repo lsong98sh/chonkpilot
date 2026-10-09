@@ -4,7 +4,7 @@
        全部逻辑走 utils/jsonSchema.js（纯函数）。仅在用户操作时 emit（不因初始化/重解析回写）。 -->
   <div class="jse">
     <div class="jse-status">
-      <span v-if="parseError" class="jse-bad">{{ parseError }}</span>
+      <span v-if="parseError" class="jse-bad">{{ errText(parseError) }}</span>
       <span v-else-if="errors.length > 0" class="jse-bad">{{ $t('jsonSchema.invalid') }}（{{ errors.length }}）</span>
       <span v-else class="jse-ok">{{ $t('jsonSchema.valid') }}</span>
       <span class="jse-hint">{{ $t('jsonSchema.hint') }}</span>
@@ -14,7 +14,7 @@
     </div>
 
     <ul v-if="!parseError && errors.length > 0" class="jse-errors">
-      <li v-for="(e, i) in errors" :key="i">{{ e }}</li>
+      <li v-for="(e, i) in errors" :key="i">{{ errText(e) }}</li>
     </ul>
 
     <div v-if="!parseError" class="jse-tree">
@@ -134,6 +134,11 @@ onMounted(reparse)
 const rows = computed(() => schemaRows(schema.value))
 const errors = computed(() => (parseError.value ? [] : validateSchema(schema.value)))
 const serialized = computed(() => serializeSchema(schema.value))
+
+// errText 错误描述符 → 本地化文案（解析/校验错误均以 { code, ...params } 描述，code 为 jsonSchema 命名空间键名）。
+function errText(d) {
+  return d ? t('jsonSchema.' + d.code, d) : ''
+}
 
 function apply(next) {
   schema.value = next

@@ -10,6 +10,7 @@ package gui
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"log/slog"
 	"strings"
 
@@ -29,6 +30,10 @@ var logLevelVar = new(slog.LevelVar)
 func initLogging() {
 	logLevelVar.Set(slog.LevelInfo)
 	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: logLevelVar})))
+	// 把**标准库 log** 也接到同一 sink（D-43）：内嵌库（如 go-webview2 fork）用 `log.Printf`
+	// 诊断——windowsgui 下 stderr 不可见，若不接 sink 则建窗失败根因完全不可见。接后与 slog
+	// 同落 stderr + 文件 sink（文件 sink 由 attachFileLog 后挂，二者共享同一 logWriter）。
+	log.SetOutput(logWriter)
 }
 
 // parseLogLevel 把配置值解析为 slog.Level：可识别 debug/info/warn(warning)/error

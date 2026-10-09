@@ -173,7 +173,8 @@ func (s *Service) KnowledgeRead(req facade.KnowledgeReadRequest) (facade.Knowled
 	if err != nil {
 		return facade.KnowledgeReadResponse{}, err
 	}
-	raw, err := os.ReadFile(capfs.SafeJoin(root, req.Path))
+	// 读前 stat 判尺寸上限（A-40）：超大文档拒绝整读，避免把内存读爆。
+	raw, err := capfs.ReadFileCapped(capfs.SafeJoin(root, req.Path), capfs.MaxDocReadBytes)
 	if err != nil {
 		return facade.KnowledgeReadResponse{}, fmt.Errorf("read: %v", err)
 	}

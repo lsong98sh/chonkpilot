@@ -33,6 +33,7 @@
   "path_required": "文件路径为空，无法保存",
   "save_success": "已保存",
   "save_failed": "保存失败",
+  "restore_failed": "恢复失败",
   "close": "关闭",
   "tab_meta": "meta",
   "tab_description": "描述",

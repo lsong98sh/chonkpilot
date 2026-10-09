@@ -1165,7 +1165,7 @@ func (p *Vfts) syncTools() {
 		}
 	default:
 		// 已注册且归属未变：保持现状。
-		_ = len(active) > 1 // 多 workdir 并存时的差异注册是 v1 明确不做的限制
+		// 多 workdir 并存时的差异注册是 v1 明确不做的限制。
 	}
 }
 

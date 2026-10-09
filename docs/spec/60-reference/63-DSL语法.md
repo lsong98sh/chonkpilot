@@ -437,7 +437,7 @@ LOOP user=users
    LLM "<成员名>" "处理用户 {{user.name}}" "处理用户 {{user.name}}"
 ```
 
-- `concurrency`：并发度，默认 1（串行）
+- `concurrency`：并发度，默认 1（串行）；**上限 64**（`MaxLoopConcurrency`，超限在语法期报错 `concurrency 超过上限 64`，防单个输入派生海量 goroutine）
 - 可嵌套，深度 ≤ 8
 
 ### 5.3 PARALLEL

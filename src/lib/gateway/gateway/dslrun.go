@@ -300,7 +300,7 @@ func (g *Gateway) runDSLJob(ctx context.Context, args map[string]any) (string, e
 	if err != nil {
 		return "", fmt.Errorf("%s: stdout pipe: %w", dslRunToolName, err)
 	}
-	cmd.Stderr = &dslStderrWriter{logf: g.logf}
+	cmd.Stderr = &lineLogWriter{logf: g.logf, prefix: "[dsl-executor]"}
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("%s: 启动执行器: %w", dslRunToolName, err)
 	}
@@ -515,14 +515,20 @@ func (g *Gateway) dslSandboxPolicy() string {
 	return ""
 }
 
-// dslStderrWriter 把执行器 stderr 逐行转日志（避免 -H windowsgui 下 stderr 不可见）。
-type dslStderrWriter struct {
-	logf func(string, ...any)
-	mu   sync.Mutex
-	buf  []byte
+// lineLogMaxBuf 是单条未换行缓冲的上限：长时间无换行时强制截断输出，避免 buf 无界累积（C-59）。
+const lineLogMaxBuf = 64 << 10
+
+// lineLogWriter 把子进程 stderr 逐行转日志（避免 -H windowsgui 下 stderr 不可见，C-58）。
+// prefix 为日志行前缀；未出现换行的超长缓冲按 maxBuf（缺省 lineLogMaxBuf）强制截断输出（C-59）。
+type lineLogWriter struct {
+	logf   func(string, ...any)
+	prefix string
+	maxBuf int
+	mu     sync.Mutex
+	buf    []byte
 }
 
-func (w *dslStderrWriter) Write(p []byte) (int, error) {
+func (w *lineLogWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.buf = append(w.buf, p...)
@@ -534,8 +540,19 @@ func (w *dslStderrWriter) Write(p []byte) (int, error) {
 		line := strings.TrimRight(string(w.buf[:i]), "\r")
 		w.buf = w.buf[i+1:]
 		if line != "" && w.logf != nil {
-			w.logf("[dsl-executor] %s", line)
+			w.logf("%s %s", w.prefix, line)
 		}
+	}
+	// 长时间无换行 → 按上限强制截断输出并清空，防 buf 无界增长（C-59）。
+	max := w.maxBuf
+	if max <= 0 {
+		max = lineLogMaxBuf
+	}
+	if len(w.buf) > max {
+		if w.logf != nil {
+			w.logf("%s %s…（超长行截断）", w.prefix, string(w.buf[:max]))
+		}
+		w.buf = w.buf[:0]
 	}
 	return len(p), nil
 }

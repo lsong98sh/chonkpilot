@@ -95,7 +95,9 @@ test('编辑期候选按矩阵过滤：4 个级别各一例（越权项不出现
 test('接线：场景编辑 / 原语编辑按级别装载工具候选；loadToolGroups 过滤 + 级别标签', () => {
   const assets = read('utils/agentAssets.js')
   assert.match(assets, /toolAllowedForLevel\(tl, kind\)\)\s*continue/, 'loadToolGroups 按级别过滤越权项')
-  assert.match(assets, /label = g\.level && t \? t\('scenario\.level\.' \+ g\.level\) : key/, '分组标签用级别 i18n')
+  assert.match(assets, /t\('scenario\.level\.' \+ g\.level\)/, '分组标签用级别 i18n')
+  assert.match(assets, /scenario\.level\.global/, '无 server 信息的分组标签走 i18n（E-43）')
+  assert.doesNotMatch(assets, /'全局'/, '不得硬编码中文分组键（E-43）')
 
   const dlg = read('views/scenario/ScenarioEditDialog.vue')
   assert.match(dlg, /allowedLevels[\s\S]{0,40}from '\.\.\/\.\.\/utils\/agentLevelMatrix'/, '场景编辑复用级别矩阵单源')

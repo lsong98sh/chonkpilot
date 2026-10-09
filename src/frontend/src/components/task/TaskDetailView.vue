@@ -56,6 +56,7 @@
 
 <script setup>
 import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Icon from '../icon/Icon.vue'
 import { Button } from '../ui'
 import { EventNames } from '../../events/event-names'
@@ -63,6 +64,8 @@ import { useTaskView } from '../../composables/useTaskView'
 import mq from '../../utils/mq'
 
 defineOptions({ name: 'TaskDetailView' })
+
+const { t } = useI18n()
 
 const props = defineProps({
   taskId: { type: String, default: '' },
@@ -95,7 +98,8 @@ const argsText = computed(() => {
   if (!hasArgs.value) return ''
   try {
     const s = JSON.stringify(task.value.args, null, 2)
-    return s.length > 4000 ? s.slice(0, 4000) + '\n… (truncated)' : s
+    // 截断后缀走 i18n（taskView.truncated_suffix），避免 zh 界面混英文（E-44）
+    return s.length > 4000 ? s.slice(0, 4000) + t('taskView.truncated_suffix') : s
   } catch (e) {
     return String(task.value.args)
   }

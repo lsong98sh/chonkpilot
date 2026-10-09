@@ -106,6 +106,7 @@ func Build(opts Options) (*Stack, error) {
 		CallTimeout:     60 * time.Second,
 		MaxTasks:        8,
 		ExecSink:        opts.ExecSink,
+		Logf:            opts.Logf, // C-53：透传日志出口，否则 gateway 回落 log.Printf，desktop(windowsgui) 下诊断日志丢失
 	})
 	if err != nil {
 		return st, err

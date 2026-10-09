@@ -101,6 +101,12 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 				if err := agentbox.Check(abs, false); err != nil {
 					return cli.Err("web_fetch", fmt.Sprintf("form_files[%d].path：%s", i, err.Error()))
 				}
+				// C-56：上传文件尺寸上限（与响应侧 maxFetchBytes 同口径），防超大文件整读入内存。
+				if st, serr := os.Stat(abs); serr != nil {
+					return cli.Err("web_fetch", fmt.Sprintf("failed to stat form file %s: %s", fpath, serr))
+				} else if st.Size() > maxFetchBytes {
+					return cli.Err("web_fetch", fmt.Sprintf("form file %s 超过上传上限 %dMB", fpath, maxFetchBytes>>20))
+				}
 				fh, err := os.Open(abs)
 				if err != nil {
 					return cli.Err("web_fetch", fmt.Sprintf("failed to open form file %s: %s", fpath, err))

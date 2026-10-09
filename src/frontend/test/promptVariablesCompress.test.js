@@ -50,7 +50,7 @@ test('usePromptVariables：清单缓存 + dslOnly 过滤 + useVariableInsert 光
 test('PromptVariablesButton：popup 分组 + tooltip 说明 + emit insert', () => {
   const v = read('components/common/PromptVariablesButton.vue')
   assert.match(v, /<Popover/, '须用 popup 承载分组清单')
-  assert.match(v, /<Tooltip[^>]*:content="it\.desc"/, '变量项须带说明 tooltip（desc）')
+  assert.match(v, /<Tooltip[^>]*:content="\$t\(it\.desc\)"/, '变量项须带说明 tooltip（desc，走 i18n）')
   assert.match(v, /\$emit\('insert', it\.key\)/, '点击须 emit insert(key)')
   assert.match(v, /props\.dsl/, '须按 dsl 开关过滤 {{env.*}}')
   // 复用 i18n 残留键（OP-12：纳入本组件使用，不再是无实现残留）
@@ -98,8 +98,17 @@ test('i18n：scenario.insert_variable / available_vars / chat.compressing 中英
   }
 })
 
-// ── OP-03 ────────────────────────────────────────────────────────────────
+// D-41：后端 gui.prompt-vars 下发文案键（label/desc），前端 $t 翻译 → zh/en 键集须齐备一致。
+test('i18n：promptVars 文案键中英齐备且一致', () => {
+  const flat = (obj, prefix = '') => Object.entries(obj).flatMap(([k, v]) =>
+    (v && typeof v === 'object') ? flat(v, `${prefix}${k}.`) : [`${prefix}${k}`])
+  const zh = flat(JSON.parse(read('locales/zh-CN/promptVars.json'))).sort()
+  const en = flat(JSON.parse(read('locales/en-US/promptVars.json'))).sort()
+  assert.deepEqual(en, zh, 'en-US promptVars 键集须与 zh-CN 一致')
+  assert.equal(zh.length, 19, 'promptVars 键数应齐备（3 组 + 7 工具链 + 4 路径 + 5 环境变量）')
+})
 
+// ── OP-03 ────────────────────────────────────────────────────────────────
 test('useCompressStatus：compress-start/done 驱动会话级进行中集合', () => {
   const s = read('composables/useCompressStatus.js')
   assert.match(s, /data\.notice === 'compress-start'/, '须识别 compress-start')

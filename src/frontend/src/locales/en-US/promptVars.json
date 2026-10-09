@@ -1,0 +1,29 @@
+{
+  "group": {
+    "toolchain": "Toolchain paths",
+    "path": "Paths",
+    "env": "Environment variables (DSL/script)"
+  },
+  "toolchain": {
+    "java": "Java executable path (usr/prj config javaPath)",
+    "python": "Python interpreter path (pythonPath)",
+    "node": "Node.js executable path (nodePath)",
+    "go": "Go toolchain path (goPath)",
+    "rust": "Rust compiler path (rustPath)",
+    "c": "C/C++ compiler path (cCompilerPath)",
+    "chrome": "Chrome executable path (chromePath)"
+  },
+  "path": {
+    "exeDir": "Application install directory (directory of the executable)",
+    "userDir": "User data root ~/.chonkpilot",
+    "dataDir": "Current project data directory ~/.chonkpilot/data/<project id>",
+    "workDir": "Current project working directory"
+  },
+  "env": {
+    "CHONKPILOT_WORKDIR": "Project working directory",
+    "CHONKPILOT_DATADIR": "Data directory",
+    "CHONKPILOT_TEMPDIR": "Temporary directory root",
+    "CHONKPILOT_EXEDIR": "Directory of the executable",
+    "CHONKPILOT_PROJECT": "Project directory (same as WORKDIR)"
+  }
+}

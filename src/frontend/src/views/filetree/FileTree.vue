@@ -937,10 +937,12 @@ function onDocDrop(e) {
 }
 
 // 同目录副本名（前端算好经 filesys.copy new_name 传入）：a.txt → a 副本(1).txt；sub → sub 副本(1)
+// 后缀走 i18n（fileTree.duplicate_suffix），避免硬编码中文（E-39）。
 function duplicateNameOf(base, n) {
+  const suffix = t('fileTree.duplicate_suffix')
   const i = base.lastIndexOf('.')
-  if (i > 0) return `${base.slice(0, i)} 副本(${n})${base.slice(i)}`
-  return `${base} 副本(${n})`
+  if (i > 0) return `${base.slice(0, i)} ${suffix}(${n})${base.slice(i)}`
+  return `${base} ${suffix}(${n})`
 }
 
 async function doDuplicate(path) {

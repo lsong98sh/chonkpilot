@@ -48,7 +48,11 @@ func CopyConfigTables(dstPath string, layer Layer, srcPath string) error {
 			continue // 克隆库不复用源 project-id（A-08）：跳过复制，让克隆库首次打开生成新 id，避免与源共享 prjusr 数据根
 		}
 		var rec Record
-		if ok, _ := src.Table("config").Get(k, &rec); ok {
+		ok, err := src.Table("config").Get(k, &rec)
+		if err != nil {
+			return fmt.Errorf("get %s.config/%s: %w", srcPath, k, err) // A-41：读失败须报错，不得静默跳过该键
+		}
+		if ok {
 			if err := dst.Table("config").Upsert(k, rec); err != nil {
 				return err
 			}
@@ -61,7 +65,11 @@ func CopyConfigTables(dstPath string, layer Layer, srcPath string) error {
 		}
 		for _, k := range tkeys {
 			var rec Record
-			if ok, _ := src.Table(t).Get(k, &rec); ok {
+			ok, err := src.Table(t).Get(k, &rec)
+			if err != nil {
+				return fmt.Errorf("get %s.%s/%s: %w", srcPath, t, k, err) // A-41：读失败须报错
+			}
+			if ok {
 				if err := dst.Table(t).Upsert(k, rec); err != nil {
 					return err
 				}

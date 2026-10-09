@@ -10,8 +10,8 @@
     <div class="pv-panel">
       <div class="pv-title">{{ $t('scenario.available_vars') }}</div>
       <div v-for="g in visibleGroups" :key="g.id" class="pv-group">
-        <div class="pv-group-label">{{ g.label }}</div>
-        <Tooltip v-for="it in g.items" :key="it.key" :content="it.desc" placement="right">
+        <div class="pv-group-label">{{ $t(g.label) }}</div>
+        <Tooltip v-for="it in g.items" :key="it.key" :content="$t(it.desc)" placement="right">
           <button type="button" class="pv-item" @click="$emit('insert', it.key)">{{ it.key }}</button>
         </Tooltip>
       </div>

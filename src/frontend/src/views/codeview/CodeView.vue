@@ -31,6 +31,8 @@
               <span class="file-path" :title="tab.path">{{ tab.path }}</span>
               <span v-if="tab.deleted" class="deleted-badge">{{ $t('common.deleted_file') }}</span>
               <span class="file-type-tag">{{ tab.renderType }}</span>
+              <!-- 截断提示：>512KB 文本经 filesys.content 截断 → 与 HexView「仅显示前 N 字节」同口径（E-35） -->
+              <span v-if="showTruncated(tab)" class="truncated-badge">{{ $t('common.content_truncated') }}</span>
               <span v-if="tab.renderType === 'markdown' || tab.renderType === 'html'" class="source-toggle">
                 <Button text :type="tab.showSource ? 'primary' : ''" v-mq:[EventNames.codeShowSource].click>{{ $t('common.code') }}</Button>
                 <Button text :type="!tab.showSource ? 'primary' : ''" v-mq:[EventNames.codeShowPreview].click>{{ $t('common.preview') }}</Button>
@@ -418,6 +420,7 @@ async function handleFileOpen(event) {
     renderType: computeRenderType(path),
     loading: false,
     content: '',
+    truncated: false,
     showSource: false,
     deleted: false,
     rawUrl: getFileUrl(path),
@@ -441,6 +444,13 @@ function pinTab(tab) {
   }
 }
 
+// showTruncated 是否展示截断提示：仅对**由 tab.content 渲染**的类型（markdown/html/text）；
+// code 预览走 FileViewer 经 /show 取全量字节流，不受 filesys.content 截断影响（E-35）。
+const CONTENT_RENDER_TYPES = ['markdown', 'html', 'text']
+function showTruncated(tab) {
+  return tab.truncated && CONTENT_RENDER_TYPES.includes(tab.renderType)
+}
+
 async function loadFileTab(tab) {
   const rt = tab.renderType
   if (rt === 'none' || rt === 'primitive') return
@@ -453,9 +463,12 @@ async function loadFileTab(tab) {
     const result = await readFile(tab.path)
     if (!tabs.value.includes(tab)) return // tab 已关闭，丢弃
     tab.content = result.content || ''
+    // >512KB 文本由 filesys.content 截断（result.truncated=true）→ 透出提示，避免误以为看到完整文件（E-35）
+    tab.truncated = !!result.truncated
   } catch (err) {
     console.error('Failed to read file:', err)
     tab.content = ''
+    tab.truncated = false
   } finally {
     if (tabs.value.includes(tab)) tab.loading = false
   }
@@ -607,6 +620,7 @@ async function onFileChanged(data) {
     const result = await readFile(target.path)
     if (seq !== changedSeq) return
     const newContent = result.content || ''
+    target.truncated = !!result.truncated
     if (newContent !== target.content) {
       target.content = newContent
     }
@@ -912,6 +926,15 @@ onUnmounted(() => {
   padding: 1px 6px;
   border-radius: 3px;
   background: var(--danger);
+  color: var(--bg-primary);
+  flex-shrink: 0;
+}
+
+.truncated-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--warning, #e6a23c);
   color: var(--bg-primary);
   flex-shrink: 0;
 }

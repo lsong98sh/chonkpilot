@@ -14,5 +14,15 @@
   "enum_add_row": "Add enum value",
   "remove_enum": "Remove this enum value",
   "empty_value": "(empty)",
-  "set_keyword": "Set {keyword}"
+  "set_keyword": "Set {keyword}",
+  "err_parse_json": "JSON parse failed: {message}",
+  "err_parse_yaml": "YAML parse failed: {message}",
+  "err_not_object": "{path}: not an object (a JSON Schema node must be an object)",
+  "err_type": "{path}.type: must be one of {types}",
+  "err_properties": "{path}.properties: must be an object (property name -> child schema)",
+  "err_required": "{path}.required: must be an array of strings",
+  "err_items": "{path}.items: must be an object (single schema; tuple form not supported)",
+  "err_enum": "{path}.enum: must be an array",
+  "err_string_keyword": "{path}.{key}: must be a string",
+  "err_number_keyword": "{path}.{key}: must be a number"
 }

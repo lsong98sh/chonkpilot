@@ -39,8 +39,9 @@ test('JsonSchema：解析 JSON 与 mcp 契约模板形态（YAML 子集）', () 
 
   // 空文本 = 无参数（不报错）
   assert.deepEqual(parseSchemaText('   '), { schema: null, error: '' })
-  // 无法解析 → 可见错误
-  assert.ok(parseSchemaText('{{ not: valid').error.length > 0)
+  // 无法解析 → 可见错误（描述符 { code, message }；E-37：文案由渲染处按 code 走 i18n）
+  const err = parseSchemaText('{{ not: valid').error
+  assert.ok(err && err.code === 'err_parse_json' && err.message.length > 0)
 })
 
 test('JsonSchema：结构校验（类型/properties/required/items/enum）', () => {
@@ -253,11 +254,20 @@ test('JsonSchema：编辑器为共通控件（独立于知识库，逻辑纯函�
   assert.match(comp, /setKeywordValue/, '字符串关键字 chip 设值')
   assert.match(comp, /STRING_KEYWORDS/, '仅字符串关键字可点击设值')
   assert.match(comp, /set_keyword/, 'chip 设值提示文案')
+  // 解析/校验错误文案走 i18n（E-37）
+  assert.match(comp, /errText\(/, '错误文案经 errText 走 i18n')
+  assert.doesNotMatch(comp, /JSON 解析失败|必须是对象|必须是字符串数组/, '组件内不得残留硬编码校验文案')
   // i18n 命名空间独立（后续其它配置可复用）
   for (const loc of ['zh-CN', 'en-US']) {
     const js = JSON.parse(read('locales/' + loc + '/jsonSchema.json'))
     assert.ok(js.valid && js.invalid && js.complete_keyword, loc + ' 应有 jsonSchema 文案')
     assert.ok(js.enum_dialog_title && js.enum_add_row && js.remove_enum && js.set_keyword && js.empty_value, loc + ' 应有枚举弹框/chip 设值/空值占位文案')
+    assert.ok(
+      js.err_parse_json && js.err_parse_yaml && js.err_not_object && js.err_type
+      && js.err_properties && js.err_required && js.err_items && js.err_enum
+      && js.err_string_keyword && js.err_number_keyword,
+      loc + ' 应有解析/校验错误文案（E-37）',
+    )
   }
   const i18n = read('plugins/i18n.js')
   assert.match(i18n, /jsonSchema: zhJsonSchema/)

@@ -17,7 +17,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// keyModMap 组合修饰名 → VK（DesktopModKeys 别名 + win 变体）。
+// keyModMap 组合修饰名 → VK（ctrl/control/alt/shift/meta 与 win 变体）。
 var keyModMap = map[string]uint16{
 	"ctrl":    0x11,
 	"control": 0x11,

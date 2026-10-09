@@ -1,0 +1,29 @@
+{
+  "group": {
+    "toolchain": "工具链路径",
+    "path": "路径",
+    "env": "环境变量（DSL/脚本）"
+  },
+  "toolchain": {
+    "java": "Java 可执行文件路径（usr/prj 配置 javaPath）",
+    "python": "Python 解释器路径（pythonPath）",
+    "node": "Node.js 可执行文件路径（nodePath）",
+    "go": "Go 工具链路径（goPath）",
+    "rust": "Rust 编译器路径（rustPath）",
+    "c": "C/C++ 编译器路径（cCompilerPath）",
+    "chrome": "Chrome 可执行文件路径（chromePath）"
+  },
+  "path": {
+    "exeDir": "应用安装目录（可执行文件所在目录）",
+    "userDir": "用户数据根目录 ~/.chonkpilot",
+    "dataDir": "当前项目数据目录 ~/.chonkpilot/data/<项目 id>",
+    "workDir": "当前项目工作目录"
+  },
+  "env": {
+    "CHONKPILOT_WORKDIR": "项目工作目录",
+    "CHONKPILOT_DATADIR": "数据目录",
+    "CHONKPILOT_TEMPDIR": "临时目录根",
+    "CHONKPILOT_EXEDIR": "可执行文件所在目录",
+    "CHONKPILOT_PROJECT": "项目目录（同 WORKDIR）"
+  }
+}

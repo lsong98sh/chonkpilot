@@ -8,6 +8,10 @@ import { MsgClientTopics } from '../events/msgkeys.js'
 import { getUserConfig } from '../api/config'
 import { nodeLevel, toolAllowedForLevel } from './agentLevelMatrix'
 
+// 无 server 信息（alias/node 均缺）时的分组键：中性 ASCII 键（展示走 scenario.level.global 词条，E-43），
+// 不再硬编码中文「全局」。
+const GLOBAL_GROUP = 'global'
+
 // loadLlmOptions 载入 LLM 选项：首项为「默认」（value=''），其余为用户配置的 llms。
 // t = i18n 的 translate（取默认项文案）。
 export async function loadLlmOptions(t) {
@@ -46,7 +50,7 @@ export async function loadToolGroups(kind, t) {
       const meta = tl._meta || {}
       const srv = meta.server || {}
       const lvl = nodeLevel(srv.node)
-      const groupKey = srv.alias || srv.node || '全局'
+      const groupKey = srv.alias || srv.node || GLOBAL_GROUP
       if (!byServer.has(groupKey)) byServer.set(groupKey, { level: lvl, tools: [] })
       byServer.get(groupKey).tools.push({
         name: tl.name,
@@ -56,7 +60,9 @@ export async function loadToolGroups(kind, t) {
       })
     }
     for (const [key, g] of byServer) {
-      const label = g.level && t ? t('scenario.level.' + g.level) : key
+      // 级别标签：有级别走 scenario.level.<level>；无级别且为全局组 → scenario.level.global（E-43）
+      const label = g.level && t ? t('scenario.level.' + g.level)
+        : (key === GLOBAL_GROUP && t ? t('scenario.level.global') : key)
       groups.push({ name: key, label, level: g.level, tools: g.tools })
     }
   } catch (_) { /* 工具面不可用 → 空分组 */ }

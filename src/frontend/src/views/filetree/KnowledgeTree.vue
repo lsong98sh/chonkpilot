@@ -400,7 +400,8 @@ async function confirmEdit() {
   if (!val || val === oldName) {
     // 改名未发生（空/与原名相同）：新建态视为放弃 → 删除刚建的占位目录
     if (isNew) {
-      try { await deletePrimitiveDir(orig) } catch (e) { /* noop */ }
+      // 清理失败须用户可见（E-40，同 FileTree E-34）；下方刷新目录暴露残留
+      try { await deletePrimitiveDir(orig) } catch (e) { message.error(t('fileTree.delete_failed_detail', { name: oldName, error: e?.message || t('fileTree.unknown_error') })) }
     }
     await refreshPathDir(parentDir)
     return
@@ -416,7 +417,8 @@ async function confirmEdit() {
   } catch (e) {
     message.error(e?.message || t('fileTree.rename_failed'))
     if (isNew) {
-      try { await deletePrimitiveDir(orig) } catch (e) { /* noop */ }
+      // 改名失败 → 清理占位目录；清理若也失败须可见（E-40），下方刷新目录暴露残留
+      try { await deletePrimitiveDir(orig) } catch (e2) { message.error(t('fileTree.delete_failed_detail', { name: oldName, error: e2?.message || t('fileTree.unknown_error') })) }
     }
   }
   await refreshPathDir(parentDir)
@@ -431,7 +433,13 @@ async function cancelEdit() {
   editingIsNew.value = false
   editingIsDir.value = false
   if (isNew && path) {
-    try { await deletePrimitiveDir(orig) } catch (e) { /* noop */ }
+    // 取消新建 → 清理占位目录；失败须可见（否则残留孤儿且无感），并刷新父目录暴露残留（E-40）
+    try {
+      await deletePrimitiveDir(orig)
+    } catch (e) {
+      message.error(t('fileTree.delete_failed_detail', { name: (orig || '').split(/[/\\]/).pop(), error: e?.message || t('fileTree.unknown_error') }))
+    }
+    await refreshPathDir(parentOfPath(orig))
   }
 }
 

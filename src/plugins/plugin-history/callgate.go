@@ -58,7 +58,7 @@ var historyTools = []gatewayTool{
 	},
 	{
 		name:        "history_show",
-		description: "读取某一步检查点里某个文件的完整内容（用于对照/复制回写）。",
+		description: "读取某一步检查点里某个文件的内容（用于对照/复制回写；超 32KB 截断并标注）。",
 		props: map[string]any{
 			"to":   toProp("目标检查点"),
 			"path": map[string]any{"type": "string", "description": "文件路径（workdir 相对）"},
@@ -250,11 +250,15 @@ func (h *History) dispatch(ws *workState, slug, tool string, args map[string]any
 		if err != nil {
 			return "history: " + err.Error(), true
 		}
-		blob, err := h.showBlob(ws, ckpt, rel)
+		blob, truncated, err := h.showBlob(ws, ckpt, rel, showMaxBytes)
 		if err != nil {
 			return "history: " + err.Error(), true
 		}
-		return string(blob), false
+		text := string(blob)
+		if truncated {
+			text += fmt.Sprintf("\n…（文件内容超 %d 字节已截断；大文件请分段查看）", showMaxBytes)
+		}
+		return text, false
 
 	case "history_restore":
 		rel, err := safeRel(strArg(args["path"]))

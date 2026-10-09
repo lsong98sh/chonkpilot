@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -149,12 +150,16 @@ func lockFilePath(path string) string {
 	return filepath.Clean(path) + lockSuffix
 }
 
-// fileMD5 计算文件内容 MD5 hex。
+// fileMD5 计算文件内容 MD5 hex（流式，O(1) 内存；不整文件读入，避免大文件内存无界，C-54 同族）。
 func fileMD5(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	h := md5.Sum(data)
-	return fmt.Sprintf("%x", h), nil
+	defer f.Close()
+	h := md5.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

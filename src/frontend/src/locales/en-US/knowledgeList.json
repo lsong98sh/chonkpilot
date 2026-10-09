@@ -33,6 +33,7 @@
   "path_required": "File path is empty, cannot save",
   "save_success": "Saved",
   "save_failed": "Save failed",
+  "restore_failed": "Restore failed",
   "close": "Close",
   "tab_meta": "meta",
   "tab_description": "Description",

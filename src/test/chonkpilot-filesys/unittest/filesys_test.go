@@ -609,3 +609,47 @@ func TestSymlinkEscapeForbidden(t *testing.T) {
 		t.Fatalf("外部文件被改动: %v %q", err, b)
 	}
 }
+
+// childrenHas 判定 list 结果 children 是否含某名字节点。
+func childrenHas(res map[string]any, name string) bool {
+	kids, _ := res["children"].([]map[string]any)
+	for _, n := range kids {
+		if nm, _ := n["name"].(string); nm == name {
+			return true
+		}
+	}
+	return false
+}
+
+// TestHideDirsFromPrjConfigRefresh（D-39 层2）：`data-prj-config-refresh`（既有广播，载荷带
+// `list` 含 filetree.hide-dirs）到达 → filesys.list 过滤命中目录（「不显示」清单生效，
+// 复用既有消息面、零新增主题）。
+func TestHideDirsFromPrjConfigRefresh(t *testing.T) {
+	bus, _, wd := newTestFilesys(t)
+	if err := os.Mkdir(filepath.Join(wd, "target"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(wd, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 清单未下发：target 可见（缺省仅隐藏点开头）
+	res := mustOK(t, "filesys.list", call(bus, "filesys.list", map[string]any{"work_dir": wd, "path": "."}))
+	if !childrenHas(res, "target") || !childrenHas(res, "src") {
+		t.Fatalf("缺省时应两项均可见: %#v", res["children"])
+	}
+
+	// 经既有 data-prj-config-refresh 下发 filetree.hide-dirs=target（instance 绑定 → work_dir）
+	bus.Emit(context.Background(), "data-prj-config-refresh", map[string]any{
+		"instance_id": testInstanceID,
+		"list":        map[string]string{"filetree.hide-dirs": "target"},
+	}).Wait()
+
+	res = mustOK(t, "filesys.list", call(bus, "filesys.list", map[string]any{"work_dir": wd, "path": "."}))
+	if childrenHas(res, "target") {
+		t.Fatalf("清单命中后 target 不应显示: %#v", res["children"])
+	}
+	if !childrenHas(res, "src") {
+		t.Fatalf("未命中目录应保留: %#v", res["children"])
+	}
+}

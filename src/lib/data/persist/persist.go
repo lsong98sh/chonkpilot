@@ -39,6 +39,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
+	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/config"
 	"github.com/chonkpilot/chonkpilot-data/internal/filelist"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
@@ -153,6 +154,7 @@ func New(bus mq.Bus, opts Options) *Service {
 		data.SetDataHome(opts.UsrPath, filepath.Join(filepath.Dir(opts.UsrPath), "data"))
 	}
 	base := kernel.NewBase(bus, opts)
+	capfs.SetWarnf(base.Warnf) // capfs 包级告警出口注入（A-42：场景元信息解析 / 旧 agent 清理失败留痕）
 	ses := session.New(base)
 	s := &Service{
 		Base:         base,

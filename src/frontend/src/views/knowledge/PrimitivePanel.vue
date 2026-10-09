@@ -448,7 +448,10 @@ function handleRestore() {
     agentFilterTools.value = filterToolsLoadPatch({ tools: (snap.meta || {}).tools }).filterTools
     saveError.value = ''
     message.info(t('common.restored'))
-  } catch (e) { /* noop */ }
+  } catch (e) {
+    // 快照解析失败 → 点「恢复」须有反馈，不得静默（E-42）
+    message.error(t('knowledgeList.restore_failed'))
+  }
 }
 
 function onFileChanged(data) {

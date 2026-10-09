@@ -81,29 +81,51 @@ func (r RefRoots) CapRootOf(kind string) string {
 	return ""
 }
 
-// ExpandAgentRef 展开场景 agent 引用路径 → 绝对路径：按变量前缀映射到对应级 capability 根，
-// 其后为相对路径拼在根下。**悬空/越权**（变量不可解析 / 不在任一前缀下 / 目标文件缺失）→ ("", false)。
-func ExpandAgentRef(ref string, roots RefRoots) (string, bool) {
+// resolveAgentRef 展开引用的**纯路径**部分（不校验目标是否存在）：按变量前缀映射到对应级
+// capability 根后拼相对路径，并做越界复验（A-36）。返回：
+//   - abs     ：展开后的绝对路径（ok 时有效）；
+//   - matched ：ref 命中了某个变量前缀（据此区分「悬空变量」与「完全不属已知形态」）；
+//   - ok      ：命中前缀、该级根可解析、且展开结果**未越界**（词法 + 实路径双复验）。
+//
+// 越界复验（A-36）：前缀匹配**不校验** rel 中的 `..`，恶意引用（如
+// `${exeDir}/capability/../../secret`）经 Join 可逃出 capRoot → 越权读任意文件并经场景列表/
+// 详情回吐。此处词法（StrictlyWithin）判 `..` 逃逸 + 实路径（RealPathInside）判 capRoot 内
+// 指向根外的 symlink；任一越界 → ok=false。
+func resolveAgentRef(ref string, roots RefRoots) (abs string, matched, ok bool) {
 	ref = strings.TrimSpace(strings.ReplaceAll(ref, "\\", "/"))
 	if ref == "" {
-		return "", false
+		return "", false, false
 	}
 	for _, v := range refVarPrefix {
 		if ref == v.prefix || strings.HasPrefix(ref, v.prefix+"/") {
 			capRoot := roots.CapRootOf(v.kind)
 			if capRoot == "" {
-				return "", false // 该级根不可解析 → 悬空
+				return "", true, false // 该级根不可解析 → 悬空
 			}
 			rel := strings.TrimPrefix(ref, v.prefix)
 			rel = strings.TrimPrefix(rel, "/")
-			abs := filepath.Join(capRoot, filepath.FromSlash(rel))
-			if st, err := os.Stat(abs); err != nil || st.IsDir() {
-				return "", false // 悬空引用 → 静默删除
+			p := filepath.Join(capRoot, filepath.FromSlash(rel))
+			if !StrictlyWithin(capRoot, p) || !RealPathInside(capRoot, p) {
+				return "", true, false // 越界 → 拒绝
 			}
-			return abs, true
+			return p, true, true
 		}
 	}
-	return "", false
+	return "", false, false
+}
+
+// ExpandAgentRef 展开场景 agent 引用路径 → 绝对路径：按变量前缀映射到对应级 capability 根，
+// 其后为相对路径拼在根下。**悬空/越权**（变量不可解析 / 不在任一前缀下 / 越界 / 目标文件缺失）
+// → ("", false)。
+func ExpandAgentRef(ref string, roots RefRoots) (string, bool) {
+	abs, _, ok := resolveAgentRef(ref, roots)
+	if !ok {
+		return "", false
+	}
+	if st, err := os.Stat(abs); err != nil || st.IsDir() {
+		return "", false // 悬空引用 → 静默删除
+	}
+	return abs, true
 }
 
 // AgentRefOf 由绝对路径生成场景 agent 引用（须落在某级 capability 根下）；不属任一级 → ("", false)。
@@ -242,12 +264,14 @@ func ReadScenarioDir(kind, root, dir string, roots RefRoots) (map[string]any, er
 		return nil, fmt.Errorf("scenario dir not found: %s", dirPath)
 	}
 	meta := scenarioMeta{Name: dir}
-	if raw, err := os.ReadFile(filepath.Join(dirPath, scenarioMetaFile)); err == nil {
-		_ = json.Unmarshal(raw, &meta)
+	if raw, err := ReadFileCapped(filepath.Join(dirPath, scenarioMetaFile), MaxDocReadBytes); err == nil {
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			warn("scenario: 解析场景元信息 %s 失败（退化为默认元信息）：%v", filepath.Join(dirPath, scenarioMetaFile), err) // 尽力读，失败留痕（A-42）
+		}
 	}
 	agents := []any{}
 	// 主 agent：固定 main.agent.md 内联（恒排首位，UI 依赖 agents[0]）
-	if raw, err := os.ReadFile(filepath.Join(dirPath, scenarioMainFile)); err == nil {
+	if raw, err := ReadFileCapped(filepath.Join(dirPath, scenarioMainFile), MaxDocReadBytes); err == nil {
 		agents = append(agents, agentFromDoc(ParseDoc(string(raw)), scenarioMainFile))
 	}
 	// 子 agent：只从 meta.Agents 的引用展开（逐条；悬空/越权 → 静默删除）
@@ -256,7 +280,7 @@ func ReadScenarioDir(kind, root, dir string, roots RefRoots) (map[string]any, er
 		if !ok {
 			continue
 		}
-		raw, err := os.ReadFile(abs)
+		raw, err := ReadFileCapped(abs, MaxDocReadBytes)
 		if err != nil {
 			continue
 		}
@@ -358,11 +382,17 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots)
 				ref = v
 			}
 		}
+		// 写侧越界复验（A-36）：引用命中某变量前缀但展开越界 → 拒绝落盘，避免把越界引用
+		// 固化进 scenario.json（读侧 ExpandAgentRef 同样复验，此处提前拒绝）。
+		if _, matched, ok := resolveAgentRef(ref, roots); matched && !ok {
+			return fmt.Errorf("场景 %q 的 agent %q 引用越界：%s", dir, kernel.SvalOf(am["name"]), ref)
+		}
 		refs = append(refs, ref) // 引用形态：只记引用路径
 	}
 	dirPath := filepath.Join(root, dir)
-	// 越界复验（A-31）：id 已过 ValidScenarioID，此处再以 StrictlyWithin 兜底确认落点仍在场景根内。
-	if !StrictlyWithin(root, dirPath) {
+	// 越界复验（A-31/A-38）：id 已过 ValidScenarioID，此处再以 StrictlyWithin 兜底词法，
+	// 并以 RealPathInside 复验实路径（场景根内指向根外的 symlink 不得被 MkdirAll/WriteFile 跟随）。
+	if !StrictlyWithin(root, dirPath) || !RealPathInside(root, dirPath) {
 		return fmt.Errorf("场景 id %q 越出场景根", dir)
 	}
 	if err := os.MkdirAll(dirPath, 0o755); err != nil {
@@ -372,7 +402,9 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots)
 	if entries, err := os.ReadDir(dirPath); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), agentFileSuffix) {
-				_ = os.Remove(filepath.Join(dirPath, e.Name()))
+				if err := os.Remove(filepath.Join(dirPath, e.Name())); err != nil && !os.IsNotExist(err) {
+					warn("scenario: 清理旧 agent 文件 %s 失败：%v", filepath.Join(dirPath, e.Name()), err) // 尽力清理，失败留痕（A-42）
+				}
 			}
 		}
 	}

@@ -33,6 +33,21 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 )
 
+// warnf 是 capfs 的包级告警出口（由装配侧 persist.New 注入 kernel.Base.Warnf；nil = 静默）。
+// capfs 为纯 helper 包（无 *Service、不持内核），其 best-effort 失败（如场景元信息解析失败、
+// 清理旧 agent 文件失败）经此出口留痕（A-42，与 config 的包级 warnf 同法）。
+var warnf func(format string, args ...any)
+
+// SetWarnf 注入包级告警出口（装配侧调用一次；nil 亦接受 = 静默）。与 config.New 的绑定口径一致。
+func SetWarnf(fn func(format string, args ...any)) { warnf = fn }
+
+// warn 经包级出口输出告警（出口未注入 → 不输出，行为与不调用等价）。
+func warn(format string, args ...any) {
+	if warnf != nil {
+		warnf(format, args...)
+	}
+}
+
 // 四级 capability 级别标识（kind 沿用 app=系统，见 12-数据层）。
 const (
 	KindApp     = "app"     // 系统级

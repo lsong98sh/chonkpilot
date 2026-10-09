@@ -1134,8 +1134,10 @@ func (p *Plugin) request(subject string, req map[string]any) (map[string]any, er
 		return nil, err
 	}
 	defer sub.Unsubscribe()
-	if f := p.deps.Bus.Emit(context.Background(), subject, req); f.Wait().Err() != nil {
-		return nil, f.Wait().Err()
+	f := p.deps.Bus.Emit(context.Background(), subject, req)
+	v := f.Wait()
+	if err := v.Err(); err != nil {
+		return nil, err
 	}
 	select {
 	case res := <-done:

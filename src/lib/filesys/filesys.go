@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,9 @@ func (f *Filesys) Start() error {
 		// 释放失效的库连接；filesys 无此资源）→ 心跳（instance-heartbeat）无消费方，不订阅。
 		{msgkeys.TopicInstanceRegister, f.onInstanceRegister},
 		{msgkeys.TopicInstanceExit, f.onInstanceExit},
+		// 「不显示的目录」（filetree.hide-dirs）变更广播（D-39 层2）：复用既有 data-prj-config-refresh，
+		// 零新增消息 → 本实例 work_dir 的 watcher 即时重新过滤（见 onPrjConfigRefresh）。
+		{msgkeys.TopicDataPrjConfigRefresh, f.onPrjConfigRefresh},
 	} {
 		sub, err := f.bus.On(s.subject, 0, s.h)
 		if err != nil {
@@ -105,7 +109,8 @@ func (f *Filesys) onInstanceRegister(_ context.Context, _ string, v *mq.Value) e
 	return nil
 }
 
-// onInstanceExit 释放实例绑定（幂等：重复调用无副作用）。
+// onInstanceExit 释放实例绑定（幂等：重复调用无副作用）：除删除实例绑定外，还反登记该实例
+// 在 watcher 上的声明者（D-39）——声明者集只增不删会让已退出实例永久收到事件、watcher 无法回收。
 func (f *Filesys) onInstanceExit(_ context.Context, _ string, v *mq.Value) error {
 	var msg struct {
 		InstanceID string `json:"instance_id"`
@@ -115,8 +120,31 @@ func (f *Filesys) onInstanceExit(_ context.Context, _ string, v *mq.Value) error
 		return nil
 	}
 	f.mu.Lock()
+	wd := f.insts[msg.InstanceID]
 	delete(f.insts, msg.InstanceID)
 	f.mu.Unlock()
+	// 反登记 watcher 声明者（须在删除绑定前取到 work_dir）。
+	f.wm.unwatchInstance(wd, msg.InstanceID)
+	return nil
+}
+
+// onPrjConfigRefresh 处理 data-prj-config-refresh：本实例 work_dir 的「不显示的目录」
+// （filetree.hide-dirs）变更即时生效 —— 更新缓存并重新过滤该 work_dir 的 watch 集合。
+// 复用既有广播（persist 对 prj-config 域按同 work_dir 全部实例逐个下发），**零新增消息**。
+// 载荷无 `list`（无法取到值）时忽略，保持现值。
+func (f *Filesys) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) error {
+	var msg struct {
+		InstanceID string            `json:"instance_id"`
+		List       map[string]string `json:"list"`
+	}
+	if json.Unmarshal(v.Payload, &msg) != nil || msg.List == nil {
+		return nil
+	}
+	wd, ok := f.workDir(msg.InstanceID)
+	if !ok {
+		return nil
+	}
+	f.wm.applyHidden(wd, parseHiddenDirs(msg.List[hiddenDirsKey]))
 	return nil
 }
 
@@ -166,7 +194,9 @@ func (f *Filesys) onList(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errForbidden("path outside work dir"))
 		return nil
 	}
-	v.Result = map[string]any{"path": p, "is_dir": true, "children": listDirNodes(p)}
+	// 首次访问为该 work_dir 发起一次异步加载「不显示的目录」清单（非阻塞；后续 list 即用新清单）。
+	f.wm.ensureLoaded(wd, req.InstanceID)
+	v.Result = map[string]any{"path": p, "is_dir": true, "children": listDirNodes(p, f.wm.hiddenDirsOf(wd))}
 	return nil
 }
 
@@ -454,7 +484,14 @@ func (f *Filesys) onWatch(_ context.Context, _ string, v *mq.Value) error {
 	if !ok {
 		return nil
 	}
-	_ = f.wm.watch(wd, p, req.Recursive, req.InstanceID)
+	// 首次 watch 为该 work_dir 发起一次异步加载「不显示的目录」清单（非阻塞）；
+	// 加载完成后由 applyHidden → refilter 补齐（新清单与缺省不同时即时重过滤）。
+	f.wm.ensureLoaded(wd, req.InstanceID)
+	if err := f.wm.watch(wd, p, req.Recursive, req.InstanceID); err != nil {
+		// 留痕（D-40）：watch 契约无返回（fire-and-forget），失败会致文件树静默停止刷新，
+		// 至少日志留痕以便定位。
+		slog.Warn("filesys.watch failed", "work_dir", wd, "path", p, "instance_id", req.InstanceID, "err", err)
+	}
 	return nil
 }
 
@@ -634,14 +671,15 @@ func copyFile(src, dst string) error {
 }
 
 // listDirNodes 读目录浅层子项（隐藏/临时条目跳过），返回前端 tree 格式。
-func listDirNodes(dir string) []map[string]any {
+// hiddenDirs = 「不显示的目录」清单（与 watcher 递归同源，见 shouldHideDirName）。
+func listDirNodes(dir string, hiddenDirs []string) []map[string]any {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
 	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
-		if filterDirEntry(e.Name()) {
+		if filterDirEntry(e.Name(), e.IsDir(), hiddenDirs) {
 			continue
 		}
 		node := map[string]any{
@@ -658,12 +696,29 @@ func listDirNodes(dir string) []map[string]any {
 	return out
 }
 
-// filterDirEntry 判断目录子项是否应对前端隐藏。规则（I-44，对齐既有 FilterDirEntry 口径）：
-//   - "." 开头：隐藏项（.chonkpilot / .ide 等）
-//   - "~$" 开头：Office 锁文件（~$xxx.docx）
-//   - "~" 结尾：编辑器备份文件
-//   - "-wal" / "-shm" 结尾：SQLite WAL / SHM 边车文件
-func filterDirEntry(name string) bool {
+// shouldHideDirName 判定**目录名**是否「不显示」：文件树显示过滤与 watcher 递归监听的
+// **同一判据**（层2 同源）——凡是文件树不显示的目录，watcher 也不监听，反之亦然。
+//   - "." 开头：恒隐藏（.git / .svn / .chonkpilot 等，不可配置放开）；
+//   - 命中「不显示的目录」清单（目录名匹配、任意层级）。
+func shouldHideDirName(name string, hiddenDirs []string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	for _, d := range hiddenDirs {
+		if name == d {
+			return true
+		}
+	}
+	return false
+}
+
+// filterDirEntry 判断目录子项是否应对前端隐藏（文件树列表过滤）：
+//   - 目录：shouldHideDirName（点开头 + 「不显示的目录」清单）—— 与 watcher 递归同源；
+//   - 文件："."/"~$" 前缀；"~"/"-wal"/"-shm" 后缀（原口径不变，仅作用于文件）。
+func filterDirEntry(name string, isDir bool, hiddenDirs []string) bool {
+	if isDir {
+		return shouldHideDirName(name, hiddenDirs)
+	}
 	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~$") {
 		return true
 	}

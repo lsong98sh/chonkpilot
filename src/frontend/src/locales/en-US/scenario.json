@@ -20,7 +20,8 @@
     "app": "System",
     "user": "User",
     "project": "Project",
-    "prjusr": "Project Private"
+    "prjusr": "Project Private",
+    "global": "Global"
   },
   "dir_name_required": "Directory name is required (letters/digits/underscore/hyphen only)",
   "dir_name_format": "Directory name may contain only letters, digits, underscores and hyphens",

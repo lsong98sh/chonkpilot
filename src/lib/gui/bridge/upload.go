@@ -10,10 +10,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 )
 
 // showURL 构造 /show/ 预览 URL 并追加 instance_id 查询参数（与前端 getFileUrl 口径一致：
@@ -98,4 +101,65 @@ func callUploadAttachment(b *Bridge, ctx context.Context, params []json.RawMessa
 		"path":    dest,
 		"url":     b.showURL(dest),
 	})
+}
+
+// UploadKeepCap 是附件/截图留存目录（`<prjusr 根>/tmp/uploads`）的**容量上限**（D-45，洪泛兜底）。
+//
+// 口径（D-45）：该目录为**留存目录** —— 文件被已落库消息以 `![名](绝对路径)` 引用（预览经
+// `/show/` 同源取回），故**不随会话清理**（删了会破坏历史消息的缩略图）。但目录无上限会
+// 无限累积 → 启动期按容量兜底：总量超限时按 mtime **最旧优先**删除，直至降到上限内。
+// 正常使用（< 2 GiB）永不触发；仅长期累积 / 洪泛时兜底。**不更名去掉 tmp**：沿用历史路径
+// 可避免波及读写侧（llm_images / fileserver）、既有测试与文档（登记说明，见本区报告）。
+const UploadKeepCap = int64(2) << 30 // 2 GiB
+
+// SweepUploads 启动期清扫附件/截图留存目录（D-45）：**仅**在目录总量超过 cap 时，按 mtime
+// 最旧优先删除文件直至总量 ≤ cap。尽力而为（读目录 / 删除失败仅告警，不阻断启动）；不递归子目录。
+// 返回删除的文件数（正常使用恒为 0）。
+func SweepUploads(root string, cap int64) int {
+	if root == "" || cap <= 0 {
+		return 0
+	}
+	dir := filepath.Join(root, "tmp", "uploads")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0 // 目录不存在等：无需清扫
+	}
+	type uploadFile struct {
+		path  string
+		size  int64
+		mtime time.Time
+	}
+	files := make([]uploadFile, 0, len(entries))
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, uploadFile{filepath.Join(dir, e.Name()), fi.Size(), fi.ModTime()})
+		total += fi.Size()
+	}
+	if total <= cap {
+		return 0
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mtime.Before(files[j].mtime) })
+	removed := 0
+	for _, f := range files {
+		if total <= cap {
+			break
+		}
+		if err := os.Remove(f.path); err != nil {
+			slog.Warn("sweep uploads remove failed", "path", f.path, "err", err)
+			continue
+		}
+		total -= f.size
+		removed++
+	}
+	if removed > 0 {
+		slog.Warn("uploads 超容量上限，已按最旧优先清理", "dir", dir, "removed", removed, "cap_mb", cap>>20)
+	}
+	return removed
 }

@@ -119,7 +119,7 @@ const mqTopics = computed(() => {
   }
 })
 
-const moreTitle = computed(() => t('codeview.tab_more'))
+const moreTitle = computed(() => t('common.tab_more'))
 const closeThisLabel = computed(() => t('common.tab_close_this'))
 const closeRightLabel = computed(() => t('common.tab_close_right'))
 const closeOthersLabel = computed(() => t('common.tab_close_others'))

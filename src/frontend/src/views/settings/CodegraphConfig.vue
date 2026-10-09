@@ -18,11 +18,7 @@
             <label class="form-label">{{ $t('projectConfig.codegraph') }}</label>
             <Switch v-model="cgEnabled" @update:model-value="handleChange" />
           </div>
-          <div class="cg-hint">
-            启用后本项目的 codegraph 索引工具（codegraph_symbol_search 等）会注入到 LLM 工具面，
-            首次启用会自动后台建索引；停用即从工具面移除（索引保留在
-            <code>.chonkpilot/codegraph/</code>，重开会增量续刷）。
-          </div>
+          <div class="cg-hint">{{ $t('projectConfig.codegraph_hint_pre') }}<code>.chonkpilot/codegraph/</code>{{ $t('projectConfig.codegraph_hint_post') }}</div>
         </div>
         <hr class="b-divider" />
         <div class="form-item form-item-full">
@@ -47,7 +43,7 @@
         <hr class="b-divider" />
         <div class="form-item form-item-full">
           <label class="form-label">{{ $t('projectConfig.index_exts_label') }}</label>
-          <Textarea v-model="cgExts" :rows="3" placeholder=".go, .js, .ts, .py（逗号或换行分隔）" />
+          <Textarea v-model="cgExts" :rows="3" :placeholder="$t('projectConfig.codegraph_exts_placeholder')" />
           <div class="cg-hint">{{ $t('projectConfig.index_exts_hint') }}</div>
         </div>
         <div class="form-item form-item-full">
@@ -60,7 +56,7 @@
               <span>{{ $t('projectConfig.stack_gitignore') }}</span>
             </label>
           </div>
-          <Textarea v-model="cgSkipDirs" :rows="3" placeholder="node_modules/, dist/, !dist/keep.log（逗号或换行分隔）" />
+          <Textarea v-model="cgSkipDirs" :rows="3" :placeholder="$t('projectConfig.exclude_paths_placeholder')" />
           <div class="cg-hint">{{ $t('projectConfig.exclude_paths_hint') }}</div>
         </div>
       </form>

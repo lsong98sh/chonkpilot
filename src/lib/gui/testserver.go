@@ -187,7 +187,13 @@ func (s *testServer) Start(port int) error {
 	if err != nil {
 		return err
 	}
-	s.srv = &http.Server{Handler: s.hostGuard(mux)}
+	// D-44：补齐读头/空闲超时（原裸 http.Server 无任何超时，B-20 在 httpapi 已修的同族漏网）。
+	// `/wait-event` 为最长 30s 的长轮询，故**不设** WriteTimeout，避免误断长轮询/截图响应。
+	s.srv = &http.Server{
+		Handler:           s.hostGuard(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() { _ = s.srv.Serve(ln) }()
 	return nil
 }

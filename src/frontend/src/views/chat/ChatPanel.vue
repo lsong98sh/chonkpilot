@@ -596,7 +596,11 @@ async function initSession() {
             setActiveSessionID(targetSessionID).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
             return
           }
-        } catch (e) { console.error('[ChatPanel] getSession error:', e) }
+        } catch (e) {
+          console.error('[ChatPanel] getSession error:', e)
+          // 失败回退到最近会话 → 按可恢复告警可见（E-41，windowsgui 下 console 不可见）
+          message.warning(t('chat.session_load_failed'))
+        }
       }
 
       const res = await getLatestSessionID()
@@ -606,7 +610,11 @@ async function initSession() {
         setActiveSessionID(topSessionID).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
         return
       }
-    } catch (e) { console.warn('[ChatPanel] Failed to init session:', e) }
+    } catch (e) {
+      console.warn('[ChatPanel] Failed to init session:', e)
+      // 会话初始化失败 → 可见错误提示（E-41，windowsgui 下 console 不可见）
+      message.error(t('chat.session_init_failed'))
+    }
     currentSessionId.value = null
     setActiveSessionID('').catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
   } finally {

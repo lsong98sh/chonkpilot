@@ -15,6 +15,7 @@
   "back_to_session": "返回会话",
   "no_output": "该任务无流式输出（内置工具，查看下方参数）",
   "args": "调用参数",
+  "truncated_suffix": "\n… （已截断）",
   "task_not_found": "任务不存在或已关闭",
   "closed_label": "已关闭",
   "closed_readonly_hint": "已关闭任务为只读展示，不可恢复",

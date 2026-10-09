@@ -8,6 +8,7 @@ package history
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,9 +98,12 @@ func (h *History) gitEnv(ws *workState, extra []string, args ...string) (string,
 }
 
 // gitRun 底层执行：合并 stdout+stderr；失败时把输出并入 error（便于 status.lastError 诊断）。
+// 带 gitTimeout 上限：git 卡死时不再无限持有 ws.mu（否则阻塞同 workdir 后续打点/查询）。
 func (h *History) gitRun(ws *workState, extra []string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
 	all := append([]string{"-C", ws.workDir}, args...)
-	cmd := exec.Command("git", all...)
+	cmd := exec.CommandContext(ctx, "git", all...)
 	cmd.Env = append(os.Environ(), gitBaseEnv(ws.index)...)
 	cmd.Env = append(cmd.Env, extra...)
 	// 宿主为 windowsgui 无控制台：隐藏 git.exe 的控制台窗口。
@@ -112,19 +116,50 @@ func (h *History) gitRun(ws *workState, extra []string, args ...string) (string,
 	return s, nil
 }
 
+// cappedBuffer 是带上限的字节缓冲：写入超过上限的部分丢弃（仍返回已消费长度，避免 git 因
+// 管道写满阻塞），把大 blob 的读取内存钉在上限内；over 标记是否发生过丢弃（= 被截断）。
+type cappedBuffer struct {
+	buf   bytes.Buffer
+	limit int // >0 生效
+	over  bool
+}
+
+func (w *cappedBuffer) Write(p []byte) (int, error) {
+	if w.limit <= 0 {
+		return w.buf.Write(p)
+	}
+	remain := w.limit - w.buf.Len()
+	if remain <= 0 {
+		w.over = true
+		return len(p), nil
+	}
+	if len(p) > remain {
+		w.buf.Write(p[:remain])
+		w.over = true
+		return len(p), nil
+	}
+	w.buf.Write(p)
+	return len(p), nil
+}
+
 // gitRaw 执行只读 git 并以**原始字节**返回 stdout（用于读文件内容，避免编码转换）。
-func (h *History) gitRaw(ws *workState, args ...string) ([]byte, error) {
+// maxBytes>0 时最多保留前 maxBytes 字节（超出丢弃，避免大文件整读入内存）；返回是否被截断。
+// 带 gitTimeout 上限（同 gitRun）。
+func (h *History) gitRaw(ws *workState, maxBytes int, args ...string) ([]byte, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
 	all := append([]string{"-C", ws.workDir}, args...)
-	cmd := exec.Command("git", all...)
+	cmd := exec.CommandContext(ctx, "git", all...)
 	cmd.Env = append(os.Environ(), gitBaseEnv(ws.index)...)
 	cmd.SysProcAttr = winproc.SysProcAttr()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	out := &cappedBuffer{limit: maxBytes}
+	cmd.Stdout = out
+	if err := cmd.Run(); err != nil {
+		return nil, false, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
-	return out, nil
+	return out.buf.Bytes(), out.over, nil
 }
 
 // ─── 打点 ────────────────────────────────────────────────
@@ -214,7 +249,7 @@ func (h *History) doCheckpoint(ws *workState, slug, tool string, protected map[s
 	if err := os.MkdirAll(filepath.Dir(ws.index), 0o755); err != nil {
 		return "", nil, false, fmt.Errorf("建临时 index 目录失败：%w", err)
 	}
-	ensureGitignore(ws.workDir)
+	h.ensureGitignore(ws.workDir)
 	// 尊重 .gitignore（含删除）；gitlink 不递归（git add 默认不进入子模块）。
 	if _, err := h.git(ws, "add", "-A"); err != nil {
 		return "", nil, false, err
@@ -525,16 +560,18 @@ func (h *History) diffText(ws *workState, ckpt, rel string) (string, error) {
 	return out, nil
 }
 
-// showBlob 返回检查点中该文件的完整内容字节。
-func (h *History) showBlob(ws *workState, ckpt, rel string) ([]byte, error) {
+// showBlob 返回检查点中该文件的内容字节。
+// maxBytes>0 时最多读取前 maxBytes 字节（history_show 展示面，防大文件撑爆插件内存/LLM 上下文），
+// 返回 truncated=true；maxBytes<=0 读全量（history_restore 写回必须全量，截断即数据损坏）。
+func (h *History) showBlob(ws *workState, ckpt, rel string, maxBytes int) ([]byte, bool, error) {
 	kind, err := h.git(ws, "cat-file", "-t", ckpt+":"+rel)
 	if err != nil {
-		return nil, fmt.Errorf("检查点 %s 中不存在 %s", shortID(ckpt), rel)
+		return nil, false, fmt.Errorf("检查点 %s 中不存在 %s", shortID(ckpt), rel)
 	}
 	if strings.TrimSpace(kind) != "blob" {
-		return nil, fmt.Errorf("%s 不是文件（目录/子模块不支持）", rel)
+		return nil, false, fmt.Errorf("%s 不是文件（目录/子模块不支持）", rel)
 	}
-	return h.gitRaw(ws, "show", ckpt+":"+rel)
+	return h.gitRaw(ws, maxBytes, "show", ckpt+":"+rel)
 }
 
 // restoreFile 把检查点中的单文件写回工作区（**只写该文件，不碰 .git**）。
@@ -546,7 +583,8 @@ func (h *History) restoreFile(ws *workState, slug, rel, ckpt string) error {
 	if err := h.checkConsistency(ws, slug, rel); err != nil {
 		return err
 	}
-	blob, err := h.showBlob(ws, ckpt, rel)
+	// 写回必须全量内容（maxBytes=0 不限流，截断即数据损坏）。
+	blob, _, err := h.showBlob(ws, ckpt, rel, 0)
 	if err != nil {
 		return err
 	}

@@ -28,8 +28,6 @@ var (
 	ReleaseDC             = User32.NewProc("ReleaseDC")
 	GetForegroundWindow   = User32.NewProc("GetForegroundWindow")
 	SetForegroundWindow   = User32.NewProc("SetForegroundWindow")
-	GetWindowThreadProcID = User32.NewProc("GetWindowThreadProcessId")
-	AttachThreadInput     = User32.NewProc("AttachThreadInput")
 	GetClassNameW         = User32.NewProc("GetClassNameW")
 	GetSystemMetricsProc  = User32.NewProc("GetSystemMetrics")
 	PrintWindow           = User32.NewProc("PrintWindow")
@@ -71,20 +69,16 @@ const (
 	KeyEventUnicode  = 0x0004
 
 	// Window flags
-	SwpNoZOrder   = 0x0004
-	SwpShowWindow = 0x0040
-	SwHide        = 0
-	SwShow        = 5
-	SwMaximize    = 3
-	SwMinimize    = 6
-	SwRestore     = 9
+	SwpNoZOrder = 0x0004
+	SwMaximize  = 3
+	SwMinimize  = 6
+	SwRestore   = 9
 
 	// GDI
 	SrcCopy      = 0x00CC0020
 	DibRgbColors = 0
 
 	// PrintWindow flags
-	PwClientOnly        = 1
 	PwRenderFullContent = 2
 )
 
@@ -227,15 +221,6 @@ var VKMap = map[string]uint16{
 	"quote":       0xDE,
 }
 
-// DesktopModKeys maps modifier names to virtual key codes.
-var DesktopModKeys = map[string]uint16{
-	"ctrl":    0x11,
-	"control": 0x11,
-	"shift":   0x10,
-	"alt":     0x12,
-	"meta":    0x5B,
-}
-
 // SendKey sends a key event via SendInput.
 func SendKey(vk uint16, up bool) bool {
 	flags := uint32(KeyEventKeyDown)
@@ -332,18 +317,6 @@ func DesktopPressMods(vks []uint16) func() {
 			SendKey(vks[i], true)
 		}
 	}
-}
-
-// DesktopParseMods parses modifier names to VK codes.
-func DesktopParseMods(mods []interface{}) []uint16 {
-	var vks []uint16
-	for _, m := range mods {
-		s, _ := m.(string)
-		if vk, ok := DesktopModKeys[s]; ok {
-			vks = append(vks, vk)
-		}
-	}
-	return vks
 }
 
 // SendKeyUnicode sends a Unicode character via SendInput.

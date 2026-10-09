@@ -1098,7 +1098,7 @@ func (p *Codegraph) syncTools() {
 		}
 	default:
 		// 已注册且归属未变：保持现状。
-		_ = len(active) > 1 // 工具面差异注册受 gateway 无 scope 限制，明确不做
+		// 工具面差异注册受 gateway 无 scope 限制，明确不做。
 	}
 }
 

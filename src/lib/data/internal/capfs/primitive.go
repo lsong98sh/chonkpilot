@@ -7,10 +7,13 @@
 package capfs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Type 一类能力面条目（目录名复数 ↔ 文件后缀单数 ↔ 显示名）。
@@ -247,6 +250,41 @@ func SanitizeName(name string) string {
 	return name
 }
 
+// memoryCategoryNameMaxRunes 记忆类别名长度上限（字符数，防超长文件名）。
+const memoryCategoryNameMaxRunes = 64
+
+// memoryReservedNames Windows 保留设备名（拼上 .md 后仍是保留设备，故整体拒绝）。
+var memoryReservedNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
+	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
+	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
+// ValidMemoryCategoryName 校验记忆类别名的文件名字符安全性（A-37 单源，memory 域 + config 域
+// 记忆类别提示词文件复用）：非空、限长、无首尾空白、无空白/控制字符、禁路径分隔符与 Windows
+// 保留字符（/ \ : * ? " < > |）、首字符非 '.'（避免 "."/".."/隐藏文件）、非保留设备名。
+// 类别名将拼为 `<类别>.md` 与 `memory/<类别>.md`，故含 `..` / 分隔符即路径穿越 → 必须拒绝。
+func ValidMemoryCategoryName(name string) bool {
+	if name == "" || utf8.RuneCountInString(name) > memoryCategoryNameMaxRunes {
+		return false
+	}
+	if name != strings.TrimSpace(name) || strings.HasPrefix(name, ".") {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return false
+		}
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return false
+		}
+	}
+	return !memoryReservedNames[strings.ToUpper(name)]
+}
+
 // NormalizeFileName 规范化原语文件名：净化 + 确保 .md 后缀（不产生双扩展）。
 func NormalizeFileName(name string) string {
 	name = SanitizeName(name)
@@ -270,9 +308,26 @@ func FileName(name, token string) string {
 	return base + "." + token + ".md"
 }
 
+// MaxDocReadBytes 是 capability 文本文件（契约文档 / 记忆类别文件 / 系统提示词文档）整读的
+// **尺寸上限**（A-40，洪泛防护）：超限拒绝整读，避免单一超大文件把内存读爆。口径取 8MB ——
+// 承载的是用户可编辑的系统文档 / 记忆全文，故比 filesys 的 512KB 文本预览口径更宽。
+const MaxDocReadBytes = 8 << 20
+
+// ReadFileCapped 读文件（读前 os.Stat 判尺寸上限）：超限或 stat 失败 → 报错，不整读入内存（A-40）。
+func ReadFileCapped(path string, maxBytes int64) ([]byte, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if st.Size() > maxBytes {
+		return nil, fmt.Errorf("file %s exceeds read limit (%d > %d bytes)", path, st.Size(), maxBytes)
+	}
+	return os.ReadFile(path)
+}
+
 // PreviewDescription 读文件取 [description] 首行（列表描述预览，截断 60 字符）。
 func PreviewDescription(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := ReadFileCapped(path, MaxDocReadBytes)
 	if err != nil {
 		return "", err
 	}
@@ -345,4 +400,21 @@ func RealPathWithin(root, path string) bool {
 		return false
 	}
 	return StrictlyWithin(root, real)
+}
+
+// realTrustRoot 解析信任根自身的真实落点（符号链接前缀先解析；失败回落字面）。
+func realTrustRoot(root string) string {
+	if r, ok := RealPathOrAncestor(root); ok {
+		return r
+	}
+	return root
+}
+
+// RealPathInside 写/删前越界复验（A-36/A-38）：与 RealPathWithin 同法，但**先解析 root 自身**的
+// 符号链接前缀再复判 path 严格落在 root 内。capfs 各写/删入口的 root 由调用方按级别根拼接而来
+// （workdir / usrPath 可能带符号链接），故不能以字面 root 直接比对；解析 root 后再比对 → 既
+// 不误判合法请求，又能拦下 root **内部**指向根外的 symlink（如 mcps/、system/ 被链接到根外）。
+// 越界 / 不可解析 → false。
+func RealPathInside(root, path string) bool {
+	return RealPathWithin(realTrustRoot(root), path)
 }

@@ -135,6 +135,7 @@ function parseYamlish(text) {
 //   空文本 → schema = null、error = ''（= 该原语无参数，编辑器展示空 schema）；
 //   形如 JSON（`{`/`[` 开头）但语法错误 → 直接报错（不退回 YAML 猜测：用户本就按 JSON 写，错误须可见）；
 //   其余（mcp 契约模板的 YAML 子集）→ 走 YAML 解析；解析不出 → error 给可见原因。
+//   error = ''（无错）/ 错误**描述符** { code, message }（code 为 i18n 键名，文案由渲染处 t() 取，见 locales/*/jsonSchema.json）。
 export function parseSchemaText(text) {
   const s = String(text === undefined || text === null ? '' : text).trim()
   if (s === '') return { schema: null, error: '' }
@@ -142,7 +143,7 @@ export function parseSchemaText(text) {
     return { schema: JSON.parse(s), error: '' }
   } catch (e) {
     if (s[0] === '{' || s[0] === '[') {
-      return { schema: null, error: 'JSON 解析失败：' + ((e && e.message) || String(e)) }
+      return { schema: null, error: { code: 'err_parse_json', message: (e && e.message) || String(e) } }
     }
   }
   try {
@@ -150,7 +151,7 @@ export function parseSchemaText(text) {
     if (v === null) return { schema: null, error: '' }
     return { schema: v, error: '' }
   } catch (e) {
-    return { schema: null, error: 'YAML 解析失败：' + ((e && e.message) || String(e)) }
+    return { schema: null, error: { code: 'err_parse_yaml', message: (e && e.message) || String(e) } }
   }
 }
 
@@ -161,40 +162,42 @@ export function serializeSchema(schema) {
 
 // ── 结构校验（schema 文档形状）───────────────────────────────────
 
-// validateSchema 逐节点校验 Schema 文档结构 → 错误消息数组（空 = 合法）。
+// validateSchema 逐节点校验 Schema 文档结构 → 错误**描述符**数组（空 = 合法）。
+//   描述符 { code, path, key?, types? }：code 为 i18n 键名（locales/*/jsonSchema.json），
+//   path 为出错节点路径，key/types 为文案插值参数；渲染处经 t('jsonSchema.'+code, d) 取文案。
 export function validateSchema(schema) {
   const errors = []
   function walk(node, path) {
     if (!isPlainObject(node)) {
-      errors.push(path + '：不是对象（JSON Schema 节点必须是对象）')
+      errors.push({ code: 'err_not_object', path })
       return
     }
     if (node.type !== undefined) {
       if (typeof node.type !== 'string' || SCHEMA_TYPES.indexOf(node.type) < 0) {
-        errors.push(path + '.type：取值须为 ' + SCHEMA_TYPES.join('/') + ' 之一')
+        errors.push({ code: 'err_type', path, types: SCHEMA_TYPES.join('/') })
       }
     }
     if (node.properties !== undefined) {
-      if (!isPlainObject(node.properties)) errors.push(path + '.properties：必须是对象（属性名 → 子 schema）')
+      if (!isPlainObject(node.properties)) errors.push({ code: 'err_properties', path })
       else for (const k of Object.keys(node.properties)) walk(node.properties[k], path + '/properties/' + k)
     }
     if (node.required !== undefined) {
       if (!Array.isArray(node.required) || node.required.some(x => typeof x !== 'string')) {
-        errors.push(path + '.required：必须是字符串数组')
+        errors.push({ code: 'err_required', path })
       }
     }
     if (node.items !== undefined) {
-      if (!isPlainObject(node.items)) errors.push(path + '.items：必须是对象（单项 schema；数组形式的元组未支持）')
+      if (!isPlainObject(node.items)) errors.push({ code: 'err_items', path })
       else walk(node.items, path + '/items')
     }
     if (node.enum !== undefined && !Array.isArray(node.enum)) {
-      errors.push(path + '.enum：必须是数组')
+      errors.push({ code: 'err_enum', path })
     }
     for (const key of ['title', 'description', 'format', 'pattern']) {
-      if (node[key] !== undefined && typeof node[key] !== 'string') errors.push(path + '.' + key + '：必须是字符串')
+      if (node[key] !== undefined && typeof node[key] !== 'string') errors.push({ code: 'err_string_keyword', path, key })
     }
     for (const key of ['minimum', 'maximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems']) {
-      if (node[key] !== undefined && typeof node[key] !== 'number') errors.push(path + '.' + key + '：必须是数字')
+      if (node[key] !== undefined && typeof node[key] !== 'number') errors.push({ code: 'err_number_keyword', path, key })
     }
   }
   if (schema === null || schema === undefined) return errors

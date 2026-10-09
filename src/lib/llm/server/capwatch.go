@@ -49,6 +49,12 @@ type capWatcher struct {
 	timer     *time.Timer
 	done      chan struct{}
 	closeOnce sync.Once // Close 幂等守卫（B-16：并发/重复 Close 不双重 close）
+
+	// refs / instRoots 支撑实例退出时的监听回收（B-38：长驻 split 服务端下 want/watched
+	// 只增不减 → fsnotify 句柄随实例累积）。user/project 根可被多个实例共享 → 按引用计数，
+	// 仅最后一个引用者退出才摘除；prjusr 根按实例唯一。
+	refs      map[string]int             // 目标根 → 引用它的实例数
+	instRoots map[string]map[string]bool // instanceID → 该实例登记的根集合（退出时精确回收，幂等）
 }
 
 // newCapWatcher 建立 watcher 并启动事件循环（失败返回错误，调用方降级）。
@@ -58,12 +64,14 @@ func newCapWatcher(s *Server) (*capWatcher, error) {
 		return nil, err
 	}
 	cw := &capWatcher{
-		s:       s,
-		w:       w,
-		want:    make(map[string]bool),
-		appWant: make(map[string]bool),
-		watched: make(map[string]bool),
-		done:    make(chan struct{}),
+		s:         s,
+		w:         w,
+		want:      make(map[string]bool),
+		appWant:   make(map[string]bool),
+		watched:   make(map[string]bool),
+		refs:      make(map[string]int),
+		instRoots: make(map[string]map[string]bool),
+		done:      make(chan struct{}),
 	}
 	go cw.loop()
 	return cw, nil
@@ -84,20 +92,71 @@ func (cw *capWatcher) watchApp(root string) {
 }
 
 // watchInstance 登记并监听某实例可见的用户级 + 项目级 + 项目私有级 capability 根（幂等）。
+// 同一根可被多实例共享（user 根进程级、project 根按 workDir）→ 按实例集合去重并累加引用计数。
 func (cw *capWatcher) watchInstance(instanceID, workDir string) {
 	if cw == nil {
 		return
 	}
 	cw.mu.Lock()
 	defer cw.mu.Unlock()
-	cw.want[normPath(persist.CapUserRoot(cw.s.opts.UsrPath))] = true
+	var roots []string
+	roots = append(roots, normPath(persist.CapUserRoot(cw.s.opts.UsrPath)))
 	if workDir != "" {
-		cw.want[normPath(persist.CapProjectRoot(workDir))] = true
+		roots = append(roots, normPath(persist.CapProjectRoot(workDir)))
 	}
 	if root := cw.s.prjUsrCapRoot(instanceID); root != "" {
-		cw.want[normPath(root)] = true // P4：项目私有级根（prjusr）纳入热生效
+		roots = append(roots, normPath(root)) // P4：项目私有级根（prjusr）纳入热生效
+	}
+	set := cw.instRoots[instanceID]
+	if set == nil {
+		set = map[string]bool{}
+		cw.instRoots[instanceID] = set
+	}
+	for _, r := range roots {
+		if set[r] {
+			continue // 本实例已登记过 → 幂等，不重复计数
+		}
+		set[r] = true
+		cw.refs[r]++
+		cw.want[r] = true
 	}
 	cw.syncLocked()
+}
+
+// unwatchInstance 实例退出 → 回收该实例派生的 capability 根监听（B-38：want/watched 只增不减
+// → 长驻 split 服务端下 fsnotify 句柄随实例累积）。共享根按引用计数：仅最后一个引用者退出
+// 才摘除 want 条目与 fsnotify 句柄。幂等（重复调用无副作用）；app 根不在本链路（进程级恒存在）。
+func (cw *capWatcher) unwatchInstance(instanceID string) {
+	if cw == nil || instanceID == "" {
+		return
+	}
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
+	set := cw.instRoots[instanceID]
+	if set == nil {
+		return
+	}
+	delete(cw.instRoots, instanceID)
+	for r := range set {
+		cw.refs[r]--
+		if cw.refs[r] > 0 {
+			continue // 仍有其他实例引用 → 保留监听
+		}
+		delete(cw.refs, r)
+		delete(cw.want, r)
+		cw.unwatchTreeLocked(r)
+	}
+}
+
+// unwatchTreeLocked 主动摘除 root 及其子树条目的 fsnotify 监听（与 removeWatchLocked 不同：
+// 后者仅清理 watched 记录，依赖目录删除时系统自动移除句柄；此处目录仍存在，须显式 w.Remove）。
+func (cw *capWatcher) unwatchTreeLocked(root string) {
+	for d := range cw.watched {
+		if under(d, root) {
+			_ = cw.w.Remove(d)
+			delete(cw.watched, d)
+		}
+	}
 }
 
 // Close 停止事件循环并关闭 fsnotify（幂等）。

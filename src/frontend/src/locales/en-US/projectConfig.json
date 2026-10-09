@@ -50,6 +50,13 @@
   "exclude_paths": "Excluded directories and files",
   "stack_gitignore": "Stack .gitignore",
   "exclude_paths_hint": "Excluded by gitignore syntax (comma or newline separated, one rule per item): a trailing `/` matches directories only; `#` comment, `!` negation, `*`/`?`/`**`/`[..]` wildcards; rules containing `/` are anchored to the project root. `.git`/`.chonkpilot` are always excluded (cannot be negated), while `.trae`/`node_modules`/`dist` etc. are defaults that `!` can re-include. When \"Stack .gitignore\" is checked, per-directory `.gitignore`, `.git/info/exclude` and the global ignore file are additionally applied (this input has the highest priority); the index is rebuilt in the background after saving.",
+  "codegraph_hint_pre": "When enabled, this project's codegraph index tools (codegraph_symbol_search, etc.) are injected into the LLM tool surface; the first enable builds the index in the background. Disabling removes them from the tool surface (the index is kept in ",
+  "codegraph_hint_post": " and refreshed incrementally on reopening).",
+  "vfts_hint_pre": "When enabled, this project's vfts full-text search tool (vfts_query) is injected into the LLM tool surface; the first enable builds the index in the background. Disabling removes it from the tool surface (the index is kept in ",
+  "vfts_hint_post": " and refreshed incrementally on reopening).",
+  "codegraph_exts_placeholder": ".go, .js, .ts, .py (comma or newline separated)",
+  "vfts_exts_placeholder": ".go, .js, .ts, .md, .txt (comma or newline separated)",
+  "exclude_paths_placeholder": "node_modules/, dist/, !dist/keep.log (comma or newline separated)",
   "index_nothing_changed": "No changes (nothing written)",
   "index_rebuild": "Rebuild index",
   "index_rebuild_started": "Index rebuild triggered (running in background)",
@@ -198,5 +205,9 @@
   "dict_word_count": "Custom word count",
   "dict_user_placeholder": "One word per line; lines starting with # are comments (e.g. ChonkPilot)",
   "dict_save": "Save custom words",
-  "dict_saved": "Custom words saved; reindex scheduled in background"
+  "dict_saved": "Custom words saved; reindex scheduled in background",
+  "filetree": "File Tree",
+  "filetree_hide_dirs_label": "Hidden directories",
+  "filetree_hide_dirs_placeholder": ".git, .svn, .chonkpilot, target, node_modules (comma or newline separated)",
+  "filetree_hide_dirs_hint": "Matched by directory name at any depth (comma / semicolon / newline separated): matched directories are neither shown in the file tree nor watched (display and watching share one rule). Directories starting with \".\" are always hidden (not configurable). Empty = fall back to the default list (.git, .svn, .chonkpilot). Takes effect immediately after saving."
 }

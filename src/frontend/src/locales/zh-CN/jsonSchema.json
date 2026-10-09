@@ -14,5 +14,15 @@
   "enum_add_row": "添加枚举值",
   "remove_enum": "移除该枚举值",
   "empty_value": "（空）",
-  "set_keyword": "设置 {keyword}"
+  "set_keyword": "设置 {keyword}",
+  "err_parse_json": "JSON 解析失败：{message}",
+  "err_parse_yaml": "YAML 解析失败：{message}",
+  "err_not_object": "{path}：不是对象（JSON Schema 节点必须是对象）",
+  "err_type": "{path}.type：取值须为 {types} 之一",
+  "err_properties": "{path}.properties：必须是对象（属性名 → 子 schema）",
+  "err_required": "{path}.required：必须是字符串数组",
+  "err_items": "{path}.items：必须是对象（单项 schema；数组形式的元组未支持）",
+  "err_enum": "{path}.enum：必须是数组",
+  "err_string_keyword": "{path}.{key}：必须是字符串",
+  "err_number_keyword": "{path}.{key}：必须是数字"
 }

@@ -544,6 +544,9 @@ func (p *parser) parseLoop(rs *rawStmt, depth int) (Stmt, error) {
 				if conc < 1 {
 					return nil, lineErr(rs.line, "concurrency 必须 >= 1")
 				}
+				if conc > MaxLoopConcurrency {
+					return nil, lineErr(rs.line, "concurrency 超过上限 %d", MaxLoopConcurrency)
+				}
 				i += 3
 				continue
 			}

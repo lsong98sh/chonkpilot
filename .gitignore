@@ -26,6 +26,10 @@ node_modules/
 # 例外：vfts 引擎构建/运行必需的原生库 zvec C-API（CGO 链接 + 运行期加载，须与引擎 exe 同目录）。
 # 同目录 zvec_c_api.lib 本就不在忽略列表；该 dll 的父目录未被整体忽略，负模式可直接生效。
 !src/plugins/vfts/third_party/zvec/windows_amd64/zvec_c_api.dll
+# 例外：go-webview2 内嵌 fork 的 WebView2Loader.dll（x64/x86/arm64 三份，go:embed 编译期必需）。
+# 三份 DLL 随源码入库（否则 clean clone 因 //go:embed 找不到文件而**编译失败**，D-38）；
+# 父目录未被整体忽略，负模式可直接生效（仅针对该 sdk 目录开例外，不放宽 *.dll 通用忽略）。
+!src/lib/go-webview2/webviewloader/sdk/*/WebView2Loader.dll
 *.so
 *.dylib
 *.test

@@ -37,12 +37,13 @@ const (
 
 // systemDocKind 按 prompt 域 key 解析 system 文档 kind（非文件化键 → ok=false）：
 //   - `summary_prompt` → `summary`
-//   - `memory_prompt.<类别名>` → `memory/<类别名>`
+//   - `memory_prompt.<类别名>` → `memory/<类别名>`（类别名须过 capfs.ValidMemoryCategoryName，A-37：
+//     否则含 `..` / 分隔符的类别名会被拼进路径 → 越过 system 目录读写）
 func systemDocKind(key string) (string, bool) {
 	if key == summaryPromptKey {
 		return "summary", true
 	}
-	if cat, ok := strings.CutPrefix(key, memoryPromptPrefix); ok && cat != "" {
+	if cat, ok := strings.CutPrefix(key, memoryPromptPrefix); ok && capfs.ValidMemoryCategoryName(cat) {
 		return "memory/" + cat, true
 	}
 	return "", false
@@ -125,11 +126,18 @@ func (s *Service) writePrompt(workDir, key, content string) error {
 		return s.removePromptOverrides(workDir, key)
 	}
 	target := promptProjectFile(workDir, kind)
+	capRoot := capfs.ProjectRoot(workDir)
 	if memoryPromptCategory(key) == facade.MemoryUserCategory {
 		target = promptUserFile(s.UsrPath, kind) // 用户偏好：跨项目，写用户级
+		capRoot = capfs.UserRoot(s.UsrPath)
 	}
 	if target == "" {
 		return nil // 无项目级（workDir 空）且非用户级 → 无处可写，走继承
+	}
+	// 写前越界复验（A-37）：类别名已过校验，此处再以 RealPathInside 复验实路径
+	// （system 目录内指向根外的 symlink 不得被 MkdirAll/WriteFile 跟随）。
+	if !capfs.RealPathInside(capRoot, target) {
+		return fmt.Errorf("persist: prompt path escapes capability root: %s", key)
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err

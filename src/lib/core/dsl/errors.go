@@ -42,3 +42,8 @@ type RunError struct {
 
 // MaxDepth 是块嵌套深度上限（LOOP/IF/PARALLEL 均计入）。
 const MaxDepth = 8
+
+// MaxLoopConcurrency 是有参 LOOP 的 `concurrency=N` 上限（B-39：防单个输入派生海量
+// goroutine；与 llm 侧 maxActiveTasks=50 / maxTaskNodes=200 同口径的洪泛防护）。
+// 超限在**语法期**报错，不进入执行。
+const MaxLoopConcurrency = 64

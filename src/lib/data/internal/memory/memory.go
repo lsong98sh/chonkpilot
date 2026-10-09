@@ -32,8 +32,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -104,38 +102,11 @@ func isPresetMemoryCategory(category string) bool {
 	return ok
 }
 
-// memoryCategoryNameMaxRunes 自定义类别名长度上限（字符数，防超长文件名）。
-const memoryCategoryNameMaxRunes = 64
-
-// memoryReservedNames Windows 保留设备名（拼上 .md 后仍是保留设备，故整体拒绝）。
-var memoryReservedNames = map[string]bool{
-	"CON": true, "PRN": true, "AUX": true, "NUL": true,
-	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
-	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
-	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
-	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
-}
-
-// validMemoryCategoryName 校验类别名的文件名字符安全性（预置名同样满足）：
-// 非空、限长、无首尾空白、无空白/控制字符、禁路径分隔符与 Windows 保留字符
-// （/ \ : * ? " < > |）、首字符非 '.'（避免 "."/".."/隐藏文件）、非保留设备名。
+// validMemoryCategoryName 校验类别名的文件名字符安全性（预置名同样满足）。
+// 实现单源 = capfs.ValidMemoryCategoryName（A-37：memory 域与 config 域记忆类别提示词文件共用，
+// 避免两处各写一份校验、杜绝含 `..` 的类别名经拼接穿越目录）。
 func validMemoryCategoryName(name string) bool {
-	if name == "" || utf8.RuneCountInString(name) > memoryCategoryNameMaxRunes {
-		return false
-	}
-	if name != strings.TrimSpace(name) || strings.HasPrefix(name, ".") {
-		return false
-	}
-	for _, r := range name {
-		if unicode.IsControl(r) || unicode.IsSpace(r) {
-			return false
-		}
-		switch r {
-		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
-			return false
-		}
-	}
-	return !memoryReservedNames[strings.ToUpper(name)]
+	return capfs.ValidMemoryCategoryName(name)
 }
 
 // memoryPathWithin 归一后判断 path 是否落在 dir 目录内（防目录穿越；越界即拒绝）。
@@ -287,9 +258,10 @@ func (s *Service) ensureMemoryPresetsIfEnabled(instanceID, workDir string) error
 	return s.ensureMemoryPresets(workDir)
 }
 
-// readFileString 读文件全文（不存在/出错 → 空串）。
+// readFileString 读文件全文（不存在 / 出错 / 超尺寸上限 → 空串）。读前 stat 判尺寸上限（A-40），
+// 避免单一超大记忆文件把内存读爆。
 func readFileString(path string) string {
-	if raw, err := os.ReadFile(path); err == nil {
+	if raw, err := capfs.ReadFileCapped(path, capfs.MaxDocReadBytes); err == nil {
 		return string(raw)
 	}
 	return ""

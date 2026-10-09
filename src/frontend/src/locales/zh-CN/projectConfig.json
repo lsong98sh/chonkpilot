@@ -50,6 +50,13 @@
   "exclude_paths": "排除的目录和文件",
   "stack_gitignore": "叠加 gitignore",
   "exclude_paths_hint": "按 gitignore 语法排除（逗号或换行分隔，每项一条）：尾 `/` 仅匹配目录，「#」注释、「!」取反、「*」「?」「**」「[..]」通配；含 `/` 的规则相对项目根锚定。内置强制排除 `.git`/`.chonkpilot`（不可反选），`.trae`/`node_modules`/`dist` 等为可被 `!` 反选的默认排除。勾选「叠加 gitignore」后额外读取各级 `.gitignore`、`.git/info/exclude` 与全局 ignore（本输入框优先级最高）；保存后后台重建索引。",
+  "codegraph_hint_pre": "启用后本项目的 codegraph 索引工具（codegraph_symbol_search 等）会注入到 LLM 工具面，首次启用会自动后台建索引；停用即从工具面移除（索引保留在 ",
+  "codegraph_hint_post": "，重开会增量续刷）。",
+  "vfts_hint_pre": "启用后本项目的 vfts 全文检索工具（vfts_query）会注入到 LLM 工具面，首次启用会自动后台建索引；停用即从工具面移除（索引保留在 ",
+  "vfts_hint_post": "，重开会增量续刷）。",
+  "codegraph_exts_placeholder": ".go, .js, .ts, .py（逗号或换行分隔）",
+  "vfts_exts_placeholder": ".go, .js, .ts, .md, .txt（逗号或换行分隔）",
+  "exclude_paths_placeholder": "node_modules/, dist/, !dist/keep.log（逗号或换行分隔）",
   "index_nothing_changed": "无改动（未写入配置）",
   "index_rebuild": "重建索引",
   "index_rebuild_started": "已触发重建索引（后台进行）",
@@ -198,5 +205,9 @@
   "dict_word_count": "自定义词条数",
   "dict_user_placeholder": "每行一词，# 开头为注释（例如：朝彻）",
   "dict_save": "保存自定义词",
-  "dict_saved": "自定义词已保存；已后台重建索引"
+  "dict_saved": "自定义词已保存；已后台重建索引",
+  "filetree": "文件树",
+  "filetree_hide_dirs_label": "不显示的目录",
+  "filetree_hide_dirs_placeholder": ".git, .svn, .chonkpilot, target, node_modules（逗号或换行分隔）",
+  "filetree_hide_dirs_hint": "按目录名匹配（任意层级，逗号 / 分号 / 换行分隔）：命中的目录在文件树中不显示，也不再被监听（显示与监听同源）。以「.」开头的目录恒隐藏（不可配置放开）。留空 = 回落默认清单（.git, .svn, .chonkpilot）。保存后即时生效。"
 }

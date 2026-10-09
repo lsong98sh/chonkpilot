@@ -93,6 +93,10 @@ const (
 	timelineMax    = 200
 	// diffMaxBytes：history_diff 单次输出上限（超出截断并标注）。
 	diffMaxBytes = 32 * 1024
+	// showMaxBytes：history_show 单次输出上限（超出截断并标注；与 diff 同口径）。
+	showMaxBytes = diffMaxBytes
+	// gitTimeout：单次 git 子进程执行上限（本地操作；防止 git 卡死长期持有 ws.mu 阻塞同 workdir）。
+	gitTimeout = 120 * time.Second
 
 	dataTimeout = 5 * time.Second
 )
@@ -740,7 +744,8 @@ func (h *History) instanceForWorkdir(wd string) string {
 }
 
 // ensureGitignore 保证 work-dir .gitignore 含 .chonkpilot/（chonkpilot 数据目录不入库）。
-func ensureGitignore(wd string) {
+// best-effort：写失败仅告警不阻断打点（但 .chonkpilot/ 可能未被忽略，需可见诊断）。
+func (h *History) ensureGitignore(wd string) {
 	p := filepath.Join(wd, ".gitignore")
 	raw, err := os.ReadFile(p)
 	if err == nil {
@@ -763,8 +768,11 @@ func ensureGitignore(wd string) {
 	add += ".chonkpilot/\n"
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
+		h.logf()("history: 打开 .gitignore 失败（%s）：%v——.chonkpilot/ 可能未入忽略，请手工添加", p, err)
 		return
 	}
 	defer f.Close()
-	_, _ = f.WriteString(add)
+	if _, err := f.WriteString(add); err != nil {
+		h.logf()("history: 写 .gitignore 失败（%s）：%v——.chonkpilot/ 可能未入忽略，请手工添加", p, err)
+	}
 }

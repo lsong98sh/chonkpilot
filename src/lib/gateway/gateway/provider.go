@@ -10,7 +10,6 @@ package mcpgateway
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -214,7 +213,7 @@ type proxyProvider struct {
 // 仅 runtime → stdio。
 // callTimeout 复用为**池空闲回收 TTL**（既有项，不新增配置键）；<=0 时按全局默认 60s。
 func newProxyProvider(entry *ServerEntry, callTimeout time.Duration, logf func(string, ...any)) (*proxyProvider, error) {
-	shared, err := buildSlot(entry, "", "")
+	shared, err := buildSlot(entry, "", "", logf)
 	if err != nil {
 		return nil, err
 	}
@@ -238,9 +237,9 @@ func newProxyProvider(entry *ServerEntry, callTimeout time.Duration, logf func(s
 }
 
 // buildSlot 按 entry 规格构建一个连接槽（含 spawned http/sse 的自持子进程）。
-// 供首建共享槽、池内按 (instance, workdir) 懒建复用。
-func buildSlot(entry *ServerEntry, workdir, instance string) (*connSlot, error) {
-	conn, cmd, done, exited, err := buildConn(entry)
+// 供首建共享槽、池内按 (instance, workdir) 懒建复用。logf 用于子进程 stderr 接入（C-58）。
+func buildSlot(entry *ServerEntry, workdir, instance string, logf func(string, ...any)) (*connSlot, error) {
+	conn, cmd, done, exited, err := buildConn(entry, logf)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +249,7 @@ func buildSlot(entry *ServerEntry, workdir, instance string) (*connSlot, error) 
 }
 
 // buildConn 按 entry 规格构建一个下游连接（及 spawned http/sse 的自持子进程）。
-func buildConn(entry *ServerEntry) (providerConn, *exec.Cmd, chan error, *atomic.Bool, error) {
+func buildConn(entry *ServerEntry, logf func(string, ...any)) (providerConn, *exec.Cmd, chan error, *atomic.Bool, error) {
 	transportName := entry.TransportName()
 	switch transportName {
 	case "stdio", "http", "sse":
@@ -269,7 +268,7 @@ func buildConn(entry *ServerEntry) (providerConn, *exec.Cmd, chan error, *atomic
 	var exited *atomic.Bool
 	needsSpawn := entry.Runtime != "" && (transportName == "http" || transportName == "sse")
 	if needsSpawn {
-		c, d, ex, err := startProcess(entry)
+		c, d, ex, err := startProcess(entry, logf)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("spawn %q: %w", entry.ID, err)
 		}
@@ -298,9 +297,13 @@ func buildConn(entry *ServerEntry) (providerConn, *exec.Cmd, chan error, *atomic
 				proc.Env = os.Environ()
 			}
 			proc.Env = append(proc.Env, agentbox.EnvSandbox+"="+policy)
-			log.Printf("[gateway] agentbox 隔离下发: server=%s dirs=%s", entry.ID, truncateStr(policy, 500))
+			if logf != nil {
+				logf("[gateway] agentbox 隔离下发: server=%s dirs=%s", entry.ID, truncateStr(policy, 500))
+			}
 		} else if entry.Sandbox != nil && *entry.Sandbox {
-			log.Printf("[gateway] agentbox: server=%s 已开启隔离但允许目录为空（未下发策略）", entry.ID)
+			if logf != nil {
+				logf("[gateway] agentbox: server=%s 已开启隔离但允许目录为空（未下发策略）", entry.ID)
+			}
 		}
 		cli := mcp.NewClient(&mcp.Implementation{Name: "chonkpilot-mcp-gateway", Version: "0.1.0"}, nil)
 		conn = &sdkConn{cli: cli, tr: &mcp.CommandTransport{Command: proc}}
@@ -350,8 +353,9 @@ func spawnArgv(e *ServerEntry) ([]string, error) {
 }
 
 // startProcess 按 entry.runtime/args 拉起子进程（env/cwd 生效），返回进程、Wait 结果通道与
-// 退出标志（exited 由 Wait goroutine 原子置位，供无竞争读取，C-42）。
-func startProcess(e *ServerEntry) (*exec.Cmd, chan error, *atomic.Bool, error) {
+// 退出标志（exited 由 Wait goroutine 原子置位，供无竞争读取，C-42）。logf 用于把子进程 stderr
+// 逐行接入日志（-H windowsgui 下 stderr 不可见，启动/崩溃留痕，C-58）。
+func startProcess(e *ServerEntry, logf func(string, ...any)) (*exec.Cmd, chan error, *atomic.Bool, error) {
 	argv, err := spawnArgv(e)
 	if err != nil {
 		return nil, nil, nil, err
@@ -362,6 +366,8 @@ func startProcess(e *ServerEntry) (*exec.Cmd, chan error, *atomic.Bool, error) {
 		cmd.Dir = e.Cwd
 	}
 	cmd.Env = processEnv(e)
+	// C-58：子进程 stderr 逐行转日志（nil logf → 仅消费管道不输出，避免子进程写满管道阻塞）。
+	cmd.Stderr = &lineLogWriter{logf: logf, prefix: fmt.Sprintf("[gateway] spawned %s stderr:", e.ID)}
 	if err := cmd.Start(); err != nil {
 		return nil, nil, nil, err
 	}
@@ -471,7 +477,7 @@ func (p *proxyProvider) slotFor(ctx context.Context) (*connSlot, func()) {
 		return s, s.releaseFn()
 	}
 
-	slot, err := buildSlot(p.entry, wd, inst)
+	slot, err := buildSlot(p.entry, wd, inst, p.logf)
 	if err == nil {
 		err = slot.connect(ctx, p.endpoint)
 	}
@@ -689,7 +695,7 @@ func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
 		p.closing.Store(false)
 		return false, err
 	}
-	conn, cmd, done, exited, err := buildConn(p.entry)
+	conn, cmd, done, exited, err := buildConn(p.entry, p.logf)
 	if err != nil {
 		return fail(fmt.Errorf("respawn %q: %w", p.name, err))
 	}

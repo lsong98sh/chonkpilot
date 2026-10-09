@@ -307,7 +307,7 @@ func buildDatedChain(t *testing.T, h *History, ws *workState, slug string, times
 	if err := os.MkdirAll(filepath.Dir(ws.index), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ensureGitignore(ws.workDir)
+	h.ensureGitignore(ws.workDir)
 	ref := chainRefPrefix + slug
 	prev := ""
 	var recs []chainRec

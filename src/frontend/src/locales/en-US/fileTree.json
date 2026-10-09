@@ -12,6 +12,7 @@
   "open_with": "Open With",
   "send_to_llm": "Ask LLM to Read This File",
   "duplicate": "Duplicate",
+  "duplicate_suffix": "copy",
   "created": "Created: {name}",
   "create_failed": "Create failed",
   "renamed": "Renamed to: {name}",

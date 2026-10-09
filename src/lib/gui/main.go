@@ -822,6 +822,10 @@ func runMain(distFS fs.FS, opts Options) error {
 	}
 	logStartupStage("文件日志挂载")
 
+	// 附件/截图留存目录容量兜底清扫（D-45，启动期一次）：正常使用（< 2 GiB）永不触发，
+	// 仅目录无界累积/洪泛时按 mtime 最旧优先清理（口径见 bridge.SweepUploads 注释）。
+	bridge.SweepUploads(prjUsrRoot, bridge.UploadKeepCap)
+
 	// 消息总线：命名空间前缀 chonk. 在此注入一次（server/gateway/persist/filesys/bridge
 	// 共享同一总线），业务 publish/subscribe 一律写相对主题，见 61-消息一览 §0.1。
 	// 注：instance_id 由**窗口工厂每窗口**生成（一窗口一实例，24 §2.2 C1）。

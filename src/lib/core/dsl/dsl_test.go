@@ -856,6 +856,21 @@ func TestUnboundedLoopRejectsConcurrency(t *testing.T) {
 	}
 }
 
+// 有参 LOOP 的 concurrency 上限（B-39）：上限内可解析，超 MaxLoopConcurrency → 语法期报错。
+func TestLoopConcurrencyUpperBound(t *testing.T) {
+	if _, err := ParseScript(`LOOP item=["a"] concurrency=64
+END
+`); err != nil {
+		t.Fatalf("concurrency=MaxLoopConcurrency 应可解析: %v", err)
+	}
+	_, err := ParseScript(`LOOP item=["a"] concurrency=65
+END
+`)
+	if err == nil || !strings.Contains(err.Error(), "超过上限") {
+		t.Fatalf("concurrency 超上限应报错: %v", err)
+	}
+}
+
 // ─── Raw 动作 => 目标重定向（动作级输出统一写入，空输出也写）───
 
 func TestRawActionRedirectOutput(t *testing.T) {

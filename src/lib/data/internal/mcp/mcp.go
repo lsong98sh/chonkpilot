@@ -179,7 +179,10 @@ func (s *Service) McpSave(req facade.McpSaveRequest) (facade.McpSaveResponse, er
 	// 改名/移级：先删旧文件（不同名或不同级别）
 	if req.OldName != "" && (req.OldName != srv.Name || req.OldLevel != kind) {
 		if oldKind, oldRoot := s.mcpRootForWrite(req.OldLevel, workDir, prjUsrCap); req.OldLevel == "" || oldKind == req.OldLevel {
-			_ = capfs.DeleteMcpFile(oldRoot, req.OldName)
+			// 尽力清理旧定义；失败（越界 / IO）留痕，但不阻断新写入（best-effort 语义不变，A-42）。
+			if err := capfs.DeleteMcpFile(oldRoot, req.OldName); err != nil && s.Warnf != nil {
+				s.Warnf("mcp: 删除旧定义 %s/%s 失败：%v", oldRoot, req.OldName, err)
+			}
 		}
 	}
 	if err := capfs.WriteMcpFile(root, srv.Name, mcpToMap(srv)); err != nil {

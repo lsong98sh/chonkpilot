@@ -3,12 +3,17 @@ package fileops
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 )
+
+// maxReadBytes 是 file_read 单文件读入内存的硬上限（32MB，与 fetch 响应体上限同口径）：
+// 超过即只读前 maxReadBytes 字节并置 truncated=true，防超大文件整读入内存（C-54）。
+const maxReadBytes = 32 << 20
 
 // readReq 是 file_read 的单文件请求。
 type readReq struct {
@@ -134,10 +139,25 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 		"path": req.path, "lines": 0, "size": fi.Size(),
 		"encoding": "unknown", "modified": fi.ModTime().Format(time.RFC3339), "truncated": false,
 	}
-	data, err := os.ReadFile(resolved)
-	if err != nil {
-		info["error"] = err.Error()
-		return info, fmt.Errorf("read file: %w", err)
+	// C-54：超过上限的文件不再整文件读入内存（即便给了 start/limit/ranges）——只读前 maxReadBytes
+	// 字节作为内容/行数/编码的截断前缀并置 truncated=true；md5 仍流式计算全量（O(1) 内存）。
+	var data []byte
+	if fi.Size() > maxReadBytes {
+		f, oerr := os.Open(resolved)
+		if oerr != nil {
+			info["error"] = oerr.Error()
+			return info, fmt.Errorf("read file: %w", oerr)
+		}
+		data, _ = io.ReadAll(io.LimitReader(f, maxReadBytes))
+		f.Close()
+		info["truncated"] = true
+	} else {
+		var rerr error
+		data, rerr = os.ReadFile(resolved)
+		if rerr != nil {
+			info["error"] = rerr.Error()
+			return info, fmt.Errorf("read file: %w", rerr)
+		}
 	}
 	info["md5"], _ = fileMD5(resolved)
 	info["encoding"] = EncodingName(data)
@@ -153,7 +173,9 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 		return info, err
 	}
 	info["content"] = content
-	info["truncated"] = req.start > 0 || req.limit > 0 || req.tail > 0 || len(req.ranges) > 0
+	if !info["truncated"].(bool) {
+		info["truncated"] = req.start > 0 || req.limit > 0 || req.tail > 0 || len(req.ranges) > 0
+	}
 	return info, nil
 }
 

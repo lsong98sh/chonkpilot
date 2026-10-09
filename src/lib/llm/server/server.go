@@ -764,6 +764,10 @@ func (s *Server) exitInstance(instanceID string) {
 	s.clearAsksByInstanceLocked(instanceID)
 	s.mu.Unlock()
 	s.unregisterCapabilityNodes(instanceID)
+	if s.capWatch != nil {
+		// B-38：回收该实例派生的 capability 根监听（防长驻服务端 fsnotify 句柄随实例累积）。
+		s.capWatch.unwatchInstance(instanceID)
+	}
 }
 
 // onInstanceRegister 实例注册 → 接入该实例的用户级 + 项目级 capability 根（三级根的
@@ -1105,13 +1109,20 @@ func (s *Server) onLLMStart(_ context.Context, _ string, v *mq.Value) error {
 	s.mu.Lock()
 	firstUse := !s.cleaned[req.InstanceID]
 	if firstUse {
-		s.cleaned[req.InstanceID] = true
+		s.cleaned[req.InstanceID] = true // 先占位，防并发首轮重复清理
 	}
 	s.mu.Unlock()
 	if firstUse {
 		store := newSessionStore(s.bus, req.InstanceID)
-		_ = store.CleanupStaleTurns()
-		s.tasks.recoverStaleTasktree(req.InstanceID)
+		if err := store.CleanupStaleTurns(); err != nil {
+			// B-41：失败须留痕且**撤销占位** → 下次使用重试（原先吞错 + 提前置位 → 永不重试）。
+			logf("[chonkpilot-server] CleanupStaleTurns failed (instance=%s): %v\n", req.InstanceID, err)
+			s.mu.Lock()
+			delete(s.cleaned, req.InstanceID)
+			s.mu.Unlock()
+		} else {
+			s.tasks.recoverStaleTasktree(req.InstanceID)
+		}
 	}
 
 	s.mu.Lock()
