@@ -201,7 +201,14 @@ func (h *History) onToolCall(_ context.Context, _ string, v *mq.Value) error {
 }
 
 // dispatch 按工具名分派（返回人类/LLM 可读文本 + isError）。
+//
+// 持 ws.mu 全程：与本 workdir 的打点（checkpointSync）串行——restore 的
+// checkConsistency→WriteFile 与并发打点（git add -A）之间不再有 TOCTOU 窗口；
+// diff/show/status 的 git 读同口径串行（baseStatus / resolveTo 的 turn-start 分支
+// 已改为“须持 ws.mu”，不在内部重复加锁，避免自锁）。
 func (h *History) dispatch(ws *workState, slug, tool string, args map[string]any) (string, bool) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
 	switch tool {
 	case "history_status":
 		st, entries := h.buildStatus(ws, slug)

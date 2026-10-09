@@ -195,6 +195,29 @@ func ListScenarioDirs(root string) []string {
 	return out
 }
 
+// ValidScenarioID 校验场景 id 是否可作为场景目录名（A-31）。口径对齐前端 slugify 字符集
+// （小写字母/数字/下划线/连字符，另放宽大写字母）：**禁空 / `.` / `..` / 路径分隔符（`/` `\`）/
+// 其余非法字符**。非法 id **拒绝写入/定位/删除**——否则 `..` 等拼接会越出场景根（如
+// `os.RemoveAll(<root>/..)` 会删掉整棵 capability 树）。
+func ValidScenarioID(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	for i, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_':
+		case r == '-':
+			if i == 0 { // 首字符不得为连字符（前端 slugify 亦会裁掉首尾连字符）
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // scenarioMeta 是 scenario.json 结构。
 type scenarioMeta struct {
 	Name        string `json:"name"`
@@ -305,6 +328,11 @@ func ValidateScenarioAgents(scenarioID string, sc map[string]any) error {
 // 不落单独文件）；主 agent → 内联写 `main.agent.md`；**无 ref 的非主 agent → 拒绝**（子 agent 必须以
 // 引用形式保存，内联子 agent 形态已废除）。
 func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots) error {
+	// id 合法性（A-31）：非法 id（空 / `.` / `..` / 路径分隔符 / 非法字符）拒绝落盘——否则 `dir`
+	// 拼接会越出场景根（写盘先 MkdirAll/清理，越界会污染甚至删除根外目录）。
+	if !ValidScenarioID(dir) {
+		return fmt.Errorf("场景 id %q 非法：仅允许字母/数字/下划线/连字符，不得为空或含路径分隔符", dir)
+	}
 	if err := ValidateScenarioAgents(dir, sc); err != nil {
 		return err
 	}
@@ -333,6 +361,10 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots)
 		refs = append(refs, ref) // 引用形态：只记引用路径
 	}
 	dirPath := filepath.Join(root, dir)
+	// 越界复验（A-31）：id 已过 ValidScenarioID，此处再以 StrictlyWithin 兜底确认落点仍在场景根内。
+	if !StrictlyWithin(root, dirPath) {
+		return fmt.Errorf("场景 id %q 越出场景根", dir)
+	}
 	if err := os.MkdirAll(dirPath, 0o755); err != nil {
 		return err
 	}

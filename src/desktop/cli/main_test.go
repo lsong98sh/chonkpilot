@@ -5,6 +5,8 @@ import (
 	"io"
 	"path/filepath"
 	"testing"
+
+	"github.com/chonkpilot/chonkpilot-lib/paths"
 )
 
 // parseForTest 用独立的 FlagSet（ContinueOnError，静默）解析，避免污染全局 flag.CommandLine。
@@ -93,19 +95,23 @@ func TestParseFlagsUnknownFlag(t *testing.T) {
 	}
 }
 
-// TestResolveDir 相对路径 → 绝对；绝对路径保持不变。
-func TestResolveDir(t *testing.T) {
-	got := resolveDir(".")
-	abs, err := filepath.Abs(".")
-	if err != nil {
-		t.Fatal(err)
+// TestWorkDirResolution CLI `--work-dir` 目录解析改用 core paths.ResolveDir（D-35）：
+// `~` 展开 + 绝对原样 Clean + 相对以 cwd 为基准 Join，与 GUI/server 同源（原仅 filepath.Abs
+// 的本地 resolveDir 已删除）。
+func TestWorkDirResolution(t *testing.T) {
+	cwd := t.TempDir()
+	// 相对路径 → 以 cwd 为基准 Join（Clean）
+	if got, want := paths.ResolveDir(".", cwd), filepath.Clean(cwd); got != want {
+		t.Fatalf("ResolveDir(\".\", cwd) = %q，期望 %q", got, want)
 	}
-	if got != abs {
-		t.Fatalf("resolveDir(\".\") = %q，期望 %q", got, abs)
+	// 绝对路径 → 原样 Clean（保持不变）
+	abs := t.TempDir()
+	if got := paths.ResolveDir(abs, cwd); got != filepath.Clean(abs) {
+		t.Fatalf("ResolveDir(绝对) 应保持不变：%q", got)
 	}
-	dir := t.TempDir()
-	if resolveDir(dir) != dir {
-		t.Fatalf("resolveDir(绝对) 应保持不变：%q", resolveDir(dir))
+	// `~` 前缀 → 展开为用户 home（旧 filepath.Abs 不做此展开）
+	if got := paths.ResolveDir("~", cwd); !filepath.IsAbs(got) {
+		t.Fatalf("`~` 应展开为绝对 home：%q", got)
 	}
 }
 

@@ -12,3 +12,6 @@ import "syscall"
 func SysProcAttr() *syscall.SysProcAttr {
 	return nil
 }
+
+// EnsureKillOnCloseJob 非 Windows 平台为 no-op（Job Object 为 Windows 专有机制；C-40）。
+func EnsureKillOnCloseJob() {}

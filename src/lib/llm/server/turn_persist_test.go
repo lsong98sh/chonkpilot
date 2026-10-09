@@ -3,6 +3,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,5 +163,41 @@ func TestToolRetryBackfillsInterruptedRow(t *testing.T) {
 	}
 	if st := persist.Sval(rows[0]["tool_call_status"]); st != "completed" {
 		t.Fatalf("重试后状态=%q，want completed", st)
+	}
+}
+
+// TestResumePartialExhaustedPersistsTail（B-36）：断链续写次数耗尽（continues >= maxAutoContinue）
+// 时，末段正文此前既不落库也不计入 answer（终态取 answer）→ 与已落库前几段拼接后正文被截尾。
+// 修复后：耗尽分支在错误终态前补一次同口径落库（asstKey 口）+ 累积 answer，末段不丢。
+func TestResumePartialExhaustedPersistsTail(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	startTurn(t, s, "s-b36", "t-b36")
+	tc := s.lookupTurn("t-b36")
+	if tc == nil {
+		t.Fatal("turn ctx not found")
+	}
+	// 前几段已按分段落库（同一 asstKey 行）并计入 answer。
+	key, err := tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: "前段"}, "")
+	if err != nil || key == "" {
+		t.Fatalf("前段落库失败: key=%q err=%v", key, err)
+	}
+	tc.answer.WriteString("前段")
+	tc.continues = maxAutoContinue // 已耗尽 → 走错误终态分支
+
+	tc.resumePartial(key, "末段正文", "", nil, errors.New("stream broken"))
+
+	if got := tc.answer.String(); got != "前段末段正文" {
+		t.Fatalf("终态 answer 应含末段：got %q，want %q", got, "前段末段正文")
+	}
+	found := false
+	for _, r := range msgsOfTurn(t, "t-b36") {
+		if persist.Sval(r["role"]) == "assistant" && strings.Contains(persist.Sval(r["content"]), "末段正文") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("末段正文未落库（断链续写耗尽被丢弃）")
 	}
 }

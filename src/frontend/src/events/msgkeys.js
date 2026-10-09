@@ -255,6 +255,7 @@ export const FieldKeys = {
   doc_ids: 'doc_ids',
   done_at: 'done_at',
   effort: 'effort',
+  entries: 'entries',
   error: 'error',
   errors: 'errors',
   exclude_turn: 'exclude_turn',
@@ -491,6 +492,7 @@ export const FieldDict = {
   done_at: 'done_at',
   effort: 'effort',
   enabled: 'enabled',
+  entries: 'entries',
   error: 'error',
   errors: 'errors',
   exclude_turn: 'exclude_turn',
@@ -1267,6 +1269,7 @@ export const DataFilelistListKeys = {
 export const DataFilelistPutKeys = {
   chunks: 'chunks',
   doc_ids: 'doc_ids',
+  entries: 'entries',
   id: 'id',
   indexed_at: 'indexed_at',
   key: 'key',

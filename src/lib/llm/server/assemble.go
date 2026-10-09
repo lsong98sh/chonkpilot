@@ -67,7 +67,11 @@ const (
 // 取值语义（2026-09-25 口径 W，**与压缩侧 resolveOpts 同口径**）：键**存在且为数字** → 原样采用
 // （含 `0` = 该条件不启用、负数 = 非法按不启用处理）；**缺失/空/非数字** → 回落默认 10。
 func (s *Server) loadKeepFullTurns(instanceID string) int {
-	vals := s.prjConfigValues(instanceID, keepFullMaxTurnsKey)
+	return keepFullTurnsOf(s.prjConfigValues(instanceID, keepFullMaxTurnsKey))
+}
+
+// keepFullTurnsOf 从**已读** prj 配置值表折算维持轮数（纯函数，不再读配置）。
+func keepFullTurnsOf(vals map[string]string) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(vals[keepFullMaxTurnsKey])); err == nil {
 		return n
 	}
@@ -80,7 +84,11 @@ func (s *Server) loadKeepFullTurns(instanceID string) int {
 // 取值语义（2026-09-25 口径 W，**与压缩侧 resolveOpts 同口径**）：键**存在且为数字** → 原样采用
 // （含 `0` = 该条件不启用、负数 = 非法按不启用处理）；**缺失/空/非数字** → 回落默认 24000。
 func (s *Server) loadKeepFullTokens(instanceID string) int {
-	vals := s.prjConfigValues(instanceID, keepFullMaxTokensKey)
+	return keepFullTokensOf(s.prjConfigValues(instanceID, keepFullMaxTokensKey))
+}
+
+// keepFullTokensOf 从**已读** prj 配置值表折算维持轮完整态 token 上限（纯函数，不再读配置）。
+func keepFullTokensOf(vals map[string]string) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(vals[keepFullMaxTokensKey])); err == nil {
 		return n
 	}
@@ -93,7 +101,11 @@ func (s *Server) loadKeepFullTokens(instanceID string) int {
 // 取值语义（**与压缩侧 resolveOpts 同口径**）：键**存在且为数字** → 原样采用（含 `0` = 预算 0，
 // 即不进简化区）；**缺失/空/非数字** → 回落默认 20000。
 func (s *Server) loadBriefBudget(instanceID string) int {
-	vals := s.prjConfigValues(instanceID, briefBudgetKey)
+	return briefBudgetOf(s.prjConfigValues(instanceID, briefBudgetKey))
+}
+
+// briefBudgetOf 从**已读** prj 配置值表折算简化区 brief token 预算（纯函数，不再读配置）。
+func briefBudgetOf(vals map[string]string) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(vals[briefBudgetKey])); err == nil {
 		return n
 	}

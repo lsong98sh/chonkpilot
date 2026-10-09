@@ -85,8 +85,9 @@ func Emit(bus mq.Bus, subject string, req map[string]any) (map[string]any, error
 		return nil, err
 	}
 	defer sub.Unsubscribe()
-	if f := bus.Emit(context.Background(), subject, req); f.Wait().Err() != nil {
-		return nil, f.Wait().Err()
+	f := bus.Emit(context.Background(), subject, req)
+	if err := f.Wait().Err(); err != nil {
+		return nil, err
 	}
 	select {
 	case r := <-done:

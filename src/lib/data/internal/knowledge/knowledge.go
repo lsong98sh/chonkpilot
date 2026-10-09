@@ -118,6 +118,10 @@ func (s *Service) KnowledgeList(req facade.KnowledgeListRequest) (facade.Knowled
 		return facade.KnowledgeListResponse{}, err
 	}
 	dir := capfs.SafeJoin(root, req.Dir)
+	// 写前越界复验（A-32）：下方 MkdirAll 会建目录，须先确认落点真实仍在知识库根内。
+	if err := s.kbGuardWritePath(root, workDir, dir); err != nil {
+		return facade.KnowledgeListResponse{}, err
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return facade.KnowledgeListResponse{}, err
 	}
@@ -191,6 +195,10 @@ func (s *Service) KnowledgeSave(req facade.KnowledgeSaveRequest) (facade.Knowled
 		return facade.KnowledgeSaveResponse{}, err
 	}
 	p := capfs.SafeJoin(root, req.Path)
+	// 写前越界复验（A-32）：symlink 逃逸 → 拒绝，不跟随写入。
+	if err := s.kbGuardWritePath(root, workDir, p); err != nil {
+		return facade.KnowledgeSaveResponse{}, err
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		return facade.KnowledgeSaveResponse{}, err
 	}
@@ -220,6 +228,10 @@ func (s *Service) KnowledgeCreate(req facade.KnowledgeCreateRequest) (facade.Kno
 		return facade.KnowledgeCreateResponse{}, err
 	}
 	p := capfs.SafeJoin(root, rel)
+	// 写前越界复验（A-32）：symlink 逃逸 → 拒绝，不跟随写入。
+	if err := s.kbGuardWritePath(root, workDir, p); err != nil {
+		return facade.KnowledgeCreateResponse{}, err
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 		return facade.KnowledgeCreateResponse{}, err
 	}
@@ -243,7 +255,12 @@ func (s *Service) KnowledgeDelete(req facade.KnowledgeDeleteRequest) (facade.Kno
 	if err != nil {
 		return facade.KnowledgeDeleteResponse{}, err
 	}
-	if err := os.Remove(capfs.SafeJoin(root, req.Path)); err != nil {
+	p := capfs.SafeJoin(root, req.Path)
+	// 写前越界复验（A-32）：symlink 逃逸 → 拒绝，不跟随删除根外文件。
+	if err := s.kbGuardWritePath(root, workDir, p); err != nil {
+		return facade.KnowledgeDeleteResponse{}, err
+	}
+	if err := os.Remove(p); err != nil {
 		return facade.KnowledgeDeleteResponse{}, fmt.Errorf("delete: %v", err)
 	}
 	return facade.KnowledgeDeleteResponse{OK: true}, nil
@@ -266,6 +283,13 @@ func (s *Service) KnowledgeRename(req facade.KnowledgeRenameRequest) (facade.Kno
 	oldP := capfs.SafeJoin(root, req.Path)
 	newP, err := s.kbResolveMoveTarget(req.InstanceID, req.Scope, workDir, root, oldP, req.NewName, false)
 	if err != nil {
+		return facade.KnowledgeRenameResponse{}, err
+	}
+	// 写前越界复验（A-32）：源与目标真实落点都须仍在知识库根内（symlink 逃逸 → 拒绝）。
+	if err := s.kbGuardWritePath(root, workDir, oldP); err != nil {
+		return facade.KnowledgeRenameResponse{}, err
+	}
+	if err := s.kbGuardWritePath(root, workDir, newP); err != nil {
 		return facade.KnowledgeRenameResponse{}, err
 	}
 	if err := kbGuardRenameTarget(oldP, newP); err != nil {
@@ -291,7 +315,12 @@ func (s *Service) KnowledgeMkdir(req facade.KnowledgeMkdirRequest) (facade.Knowl
 	if err != nil {
 		return facade.KnowledgeMkdirResponse{}, err
 	}
-	if err := os.MkdirAll(capfs.SafeJoin(root, rel), 0o755); err != nil {
+	p := capfs.SafeJoin(root, rel)
+	// 写前越界复验（A-32）：symlink 逃逸 → 拒绝，不跟随建目录。
+	if err := s.kbGuardWritePath(root, workDir, p); err != nil {
+		return facade.KnowledgeMkdirResponse{}, err
+	}
+	if err := os.MkdirAll(p, 0o755); err != nil {
 		return facade.KnowledgeMkdirResponse{}, fmt.Errorf("mkdir: %v", err)
 	}
 	return facade.KnowledgeMkdirResponse{OK: true, Path: rel}, nil
@@ -307,7 +336,12 @@ func (s *Service) KnowledgeRmdir(req facade.KnowledgeRmdirRequest) (facade.Knowl
 	if err != nil {
 		return facade.KnowledgeRmdirResponse{}, err
 	}
-	if err := os.RemoveAll(capfs.SafeJoin(root, req.Path)); err != nil {
+	p := capfs.SafeJoin(root, req.Path)
+	// 写前越界复验（A-32）：symlink 逃逸 → 拒绝，不跟随递归删除根外目录。
+	if err := s.kbGuardWritePath(root, workDir, p); err != nil {
+		return facade.KnowledgeRmdirResponse{}, err
+	}
+	if err := os.RemoveAll(p); err != nil {
 		return facade.KnowledgeRmdirResponse{}, fmt.Errorf("rmdir: %v", err)
 	}
 	return facade.KnowledgeRmdirResponse{OK: true}, nil
@@ -329,6 +363,13 @@ func (s *Service) KnowledgeRenameDir(req facade.KnowledgeRenameDirRequest) (faca
 	oldP := capfs.SafeJoin(root, req.Path)
 	newP, err := s.kbResolveMoveTarget(req.InstanceID, req.Scope, workDir, root, oldP, req.NewName, true)
 	if err != nil {
+		return facade.KnowledgeRenameDirResponse{}, err
+	}
+	// 写前越界复验（A-32）：源与目标真实落点都须仍在知识库根内（symlink 逃逸 → 拒绝）。
+	if err := s.kbGuardWritePath(root, workDir, oldP); err != nil {
+		return facade.KnowledgeRenameDirResponse{}, err
+	}
+	if err := s.kbGuardWritePath(root, workDir, newP); err != nil {
 		return facade.KnowledgeRenameDirResponse{}, err
 	}
 	if err := kbGuardRenameTarget(oldP, newP); err != nil {
@@ -410,6 +451,37 @@ func (s *Service) kbRootOf(instanceID string, scope facade.Scope, workDir, rel s
 		}
 	}
 	return "", fmt.Errorf("kb root: path %q outside knowledge roots", rel)
+}
+
+// kbWriteTrustRoot 返回写越界复验的**信任锚**（A-32）：项目级 = 解析（可信）workDir 的符号链接后
+// 拼字面的 `.chonkpilot/capability`（该段位于工作区内、可被恶意仓库预置 symlink，故保持字面不
+// 解析 —— 目录被链接到根外即被拦下）；其余级（app/user/prjusr）= 可信根的真实落点（不存在则
+// 解析最近存在的祖先后回拼）。两侧均以解析后的可信前缀为准，避免 workdir/用户目录自身经链接时
+// 把合法请求误判越界。
+func (s *Service) kbWriteTrustRoot(root, workDir string) string {
+	if workDir != "" && filepath.Clean(root) == filepath.Clean(kbProjectRoot(workDir)) {
+		wd := workDir
+		if r, ok := capfs.RealPathOrAncestor(workDir); ok {
+			wd = r
+		}
+		return filepath.Join(wd, ".chonkpilot", "capability")
+	}
+	if r, ok := capfs.RealPathOrAncestor(root); ok {
+		return r
+	}
+	return root
+}
+
+// kbGuardWritePath 写前越界复验（A-32）：`capfs.SafeJoin` 仅纯词法校验，根内指向根外的 symlink
+// （或 symlink 目标）会被 os.WriteFile / os.MkdirAll / os.Remove / os.Rename 跟随越界。此处解析
+// path 的真实落点后复判仍在信任根内（含根自身，如列举时 MkdirAll 根）；越界 / 不可解析 → 拒绝。
+func (s *Service) kbGuardWritePath(root, workDir, path string) error {
+	trust := s.kbWriteTrustRoot(root, workDir)
+	real, ok := capfs.RealPathOrAncestor(path)
+	if !ok || !(filepath.Clean(real) == filepath.Clean(trust) || capfs.StrictlyWithin(trust, real)) {
+		return fmt.Errorf("path %q escapes knowledge root", filepath.ToSlash(path))
+	}
+	return nil
 }
 
 // kbResolveMoveTarget 解析 data-knowledge-rename / rename-dir 的 new_name → 目标绝对路径。

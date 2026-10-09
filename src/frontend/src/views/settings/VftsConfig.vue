@@ -315,10 +315,12 @@ async function loadEngineTools() {
 }
 
 async function handleChange(val) {
+  const prev = !val // Switch v-model 已先行改本地态 → 落库失败须回滚（口径同 HistoryConfig.handleChange）
   try {
     await setConfig('enable-vfts', String(val))
     message.success(savedText(t, APPLY_INSTANT))
   } catch (e) {
+    vfEnabled.value = prev // 落库失败 → 回退开关，避免显示「已启用/停用」而后端未写入
     message.error(saveFailedText(t, e))
   }
 }

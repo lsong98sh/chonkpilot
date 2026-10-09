@@ -18,6 +18,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/dsl"
+	"github.com/chonkpilot/chonkpilot-lib/winproc"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/dslfs"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
 )
@@ -39,14 +40,16 @@ type Runner struct {
 	opt Options
 
 	parent  context.Context // 惰性启动的父上下文（Execute 传入；缺省 context.Background()）
+	startMu sync.Mutex      // 串行化 ensureStarted 检查-置位与 tab 激活（started/ctx/curID 写保护，C-39）
 	started bool            // 浏览器是否已启动（惰性：首个浏览器动作执行时才启动）
 	failed  atomic.Bool     // 本次会话是否出现过动作失败（供 Close 判定失败截图）
 
 	// runtime
-	ctx         context.Context // 当前激活 tab
-	browserCtx  context.Context // browser 会话（target 管理）
-	curID       string          // 当前激活 tab target id
-	cancelCtx   context.CancelFunc
+	ctx         context.Context    // 当前激活 tab（写受 startMu 保护）
+	browserCtx  context.Context    // browser 会话（target 管理）
+	curID       string             // 当前激活 tab target id（写受 startMu 保护）
+	cancelCtx   context.CancelFunc // browserCtx 的取消（关闭浏览器，级联关闭所有 tab ctx）
+	tabCancel   context.CancelFunc // 当前激活 tab ctx 的取消（activate 建；切换时释放旧 ctx，C-44）
 	cancelAlloc context.CancelFunc
 	closed      bool
 
@@ -118,7 +121,10 @@ func Execute(parent context.Context, opt Options) (string, error) {
 }
 
 // startBrowser 启动 Chrome/CDP 生命周期。
+// 启动前把本进程加入 kill-on-close Job Object（C-40）：上游取消/超时强杀执行器进程时，
+// 其拉起的 Chrome 及孙进程随 Job 一并终止，避免孤儿化（Windows 专有；其它平台 no-op）。
 func (r *Runner) startBrowser(parent context.Context) (retErr error) {
+	winproc.EnsureKillOnCloseJob()
 	path := r.opt.ChromePath
 	if path == "" {
 		path = findBrowserPath()
@@ -149,6 +155,8 @@ func (r *Runner) startBrowser(parent context.Context) (retErr error) {
 // ensureStarted 惰性启动 Chrome/CDP：仅首个浏览器动作执行时调用；会话构造与脚本解析阶段
 // 不启动浏览器、不创建 chromedp 上下文（脚本无浏览器动作时不产生任何浏览器副作用）。
 func (r *Runner) ensureStarted() error {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
 	if r.started {
 		return nil
 	}
@@ -321,6 +329,11 @@ func (scriptFS) Open(path string) dsl.FileHandle { return dslfs.New(path, dslfs.
 func (r *Runner) closeBrowser() {
 	if !r.closed {
 		r.closed = true
+		// 先取消当前激活 tab ctx（C-44 收尾一致性），再取消 browserCtx（级联关闭全部 tab ctx）。
+		if r.tabCancel != nil {
+			r.tabCancel()
+			r.tabCancel = nil
+		}
 		if r.cancelCtx != nil {
 			r.cancelCtx()
 		}
@@ -467,11 +480,7 @@ func (r *Runner) stepOPN(st *Step) error {
 		return stepErr(st.Line, st.Raw, "navigation", "打开失败: "+err.Error())
 	}
 	// 建连后记录初始 target id（首个 OPN 时 r.curID 尚空）：供 TAB list/switch/close 正确标记当前页（C-17）。
-	if r.curID == "" {
-		if c := chromedp.FromContext(r.ctx); c != nil && c.Target != nil {
-			r.curID = c.Target.TargetID.String()
-		}
-	}
+	r.setInitialCurTarget()
 	return nil
 }
 

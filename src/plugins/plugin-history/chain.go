@@ -264,10 +264,15 @@ func (h *History) doCheckpoint(ws *workState, slug, tool string, protected map[s
 	return final, idmap, true, nil
 }
 
-// ─── 修剪（重建保留段）────────────────────────────────────
+// ─── 修剪（解链截断 / 重建保留段）────────────────────────
 
-// prune 执行修剪：保留段按 `retained` 重建（复用 tree/message/时间），ref 指向新链头；
-// 旧点不可达 → 交给 git 自动 gc（**不主动跑 gc/prune**）。无需修剪 → 返回 ("", nil, nil)。
+// prune 执行修剪：丢弃链上最老、超出保留集的点（ref 保持指向链头；旧点不可达 → 交给 git 自动 gc，
+// **不主动跑 gc/prune**）。无需修剪 → 返回 ("", nil, nil)。
+//
+// 常见情形（保留集 = 最新连续前缀，仅按 keep / ttl 截断）：用一次 `git replace --graft` 把最老保留点
+// 与将被丢弃的旧前缀解链即可（O(1)，不逐个 commit-tree 重放）——解链后更老祖先不可达，链长即 == 保留数。
+// 少见情形（保底项比 keep 窗口更旧 → 保留集非连续）：回退为“重建保留段”（复用 tree/message/时间，
+// ref 指向新链头，旧→新 id 映射经 idmap 回传）。
 func (h *History) prune(ws *workState, slug string, protected map[string]bool) (string, map[string]string, error) {
 	ref := chainRefPrefix + slug
 	keep := h.keepVal()
@@ -289,6 +294,25 @@ func (h *History) prune(ws *workState, slug string, protected map[string]bool) (
 	}
 	if !need {
 		return "", nil, nil
+	}
+	// 保留集是否为「最新连续前缀」（idx < k 全保留、其余全不保留）。
+	k := 0
+	for k < len(recs) && recs[k].retained(k, keep, limit, protected) {
+		k++
+	}
+	contiguous := k > 0
+	for i := k; i < len(recs); i++ {
+		if recs[i].retained(i, keep, limit, protected) {
+			contiguous = false
+			break
+		}
+	}
+	if contiguous {
+		if err := h.graftTruncate(ws, slug, recs[k-1].id); err != nil {
+			return "", nil, err
+		}
+		h.logf()("history: 修剪完成（workdir=%s，slug=%s）：保留 %d 个检查点（解链最老前缀，未重放）", ws.workDir, slug, k)
+		return recs[0].id, nil, nil // 链头未变（id 不变）→ 无需 idmap
 	}
 	// 保留段（旧→新）重建。
 	idmap := map[string]string{}
@@ -323,6 +347,21 @@ func (h *History) prune(ws *workState, slug string, protected map[string]bool) (
 	}
 	h.logf()("history: 修剪完成（workdir=%s，slug=%s）：保留 %d 个检查点（含保底项）", ws.workDir, slug, len(idmap))
 	return newHead, idmap, nil
+}
+
+// graftTruncate 用 `git replace --graft <oldest>`（无父）把最老保留点 oldest 与其更老的祖先解链：
+// 仅一次 git 调用即截断整段旧前缀（被丢弃段随即不可达 → 交 git 自动 gc）。同时清理**本 slug 上一次**
+// 的替换引用（其被本次截断丢弃、不再需要）——替换引用**按 slug 独立登记**（多会话共享一个 workState），
+// 故修剪某会话不会误删其它会话的替换引用；只动本插件本 slug 自己的引用，**绝不触碰用户的 `refs/replace/*`**。
+func (h *History) graftTruncate(ws *workState, slug, oldest string) error {
+	if prev := ws.grafted[slug]; prev != "" && prev != oldest {
+		_, _ = h.git(ws, "replace", "-d", prev)
+	}
+	if _, err := h.git(ws, "replace", "--graft", oldest); err != nil {
+		return err
+	}
+	ws.grafted[slug] = oldest
+	return nil
 }
 
 // fetchChain 取链上前若干检查点（新→旧）：至少覆盖"最新 keep 个"；若保底项的 id 不在其中
@@ -422,9 +461,7 @@ func (h *History) resolveTo(ws *workState, slug string, to any) (string, error) 
 		case "", "-1":
 			return head, nil
 		case "turn-start":
-			ws.mu.Lock()
-			id := ws.turnStartID
-			ws.mu.Unlock()
+			id := ws.turnStartID // 须持 ws.mu（dispatch 持有）
 			if id == "" {
 				return "", errors.New("本轮尚无检查点（turn-start 不可用）")
 			}
@@ -609,14 +646,12 @@ type timelineEntry struct {
 	Removed int    `json:"removed"`
 }
 
-// baseStatus 读 workState 的非 git 派生状态（须无外部锁）。
+// baseStatus 读 workState 的非 git 派生状态（须持 ws.mu）。
 //
 // `slug` = 目标会话链（根会话）：`lastAt`/`lastDurMs` 是 **workdir 级**的最近一次打点，
 // 仅当它属于该 slug（`ws.lastSlug == slug`）时才透出 —— 否则该会话自身尚无检查点，
 // 显示「—」而非别会话的最近打点（I-135 按会话呈现）。
 func (ws *workState) baseStatus(slug string) chainStatus {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
 	mode := "active"
 	switch {
 	case !ws.enabled.Load():
@@ -758,7 +793,7 @@ func (h *History) treeBytes(ws *workState, commit string) int64 {
 }
 
 // writeback 回写**该会话**的 history.status.<slug> / history.timeline.<slug>
-// （须在**不持有** ws.mu 时调用；slug 空 → 不动作）。
+// （须在**不持有** ws.mu 时调用；slug 空 → 不动作；内部仅在组装状态时短暂持 ws.mu）。
 //
 // 键名带会话后缀（slug = 根会话）→ 多会话并发时各自独立、互不覆盖（I-135）；
 // 落 **prjusr**（persist `localRuntimeKeys` 前缀匹配）——属本机可重建派生物。
@@ -770,7 +805,9 @@ func (h *History) writeback(ws *workState, slug string) {
 	if inst == "" {
 		return
 	}
+	ws.mu.Lock()
 	st, entries := h.buildStatus(ws, slug)
+	ws.mu.Unlock()
 	if b, err := json.Marshal(st); err == nil {
 		if err := dataclient.SaveKey(h.deps.Bus, inst, statusKeyPrefix+slug, string(b)); err != nil {
 			h.logf()("history: 回写 %s 失败（instance=%s）：%v", statusKeyPrefix+slug, inst, err)

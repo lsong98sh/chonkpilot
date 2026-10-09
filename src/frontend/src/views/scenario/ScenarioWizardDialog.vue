@@ -834,6 +834,9 @@ const sceneName = ref('')
 const agents = ref([])
 const selectedAgentIdx = ref(0)
 const optimizing = ref(false)
+// E-27：优化订阅句柄（内部 3 个 mq.on + guiReq 兜底仅在 done/error 自退订）→ 卸载时主动 abort，
+// 防止流进行中关闭弹框后订阅残留（闭包持组件 ref，残留 onToken 会写回已关闭表单）。
+let optimizeAbort = null
 // 提示词合成（agent-wizard-compose）进行中；用于预览占位与按钮态。
 const composing = ref(false)
 
@@ -1229,7 +1232,7 @@ function handleOptimize() {
   if (!a) return
   if (!a.prompt || !a.prompt.trim()) { message.warning(t('wizard.common.inputRequired')); return }
   optimizing.value = true
-  optimizeAgentPrompt(
+  optimizeAbort = optimizeAgentPrompt(
     { title: t('wizard.preview.optimizeTitle', { name: a.name }), useCase: 'agent', prompt: a.prompt },
     (chunk) => { const cur = agents.value[idx]; if (cur) cur.prompt = (cur.prompt || '') + chunk },
     (finalPrompt) => {
@@ -1489,6 +1492,8 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   if (props.notifyClosed) props.notifyClosed()
+  // E-27：卸载即中止优化（退订残留订阅），避免流进行中关闭弹框后 onToken 写回已关闭表单。
+  if (optimizeAbort) { optimizeAbort(); optimizeAbort = null }
 })
 </script>
 

@@ -155,6 +155,10 @@ type workState struct {
 	lastSlug    string // 最近一次打点所属链 slug（根会话；按会话回写状态时用于归属判定）
 	turnStartID string // 当前轮起点检查点（`to="turn-start"`）
 	prevTurnID  string // 上一轮起点检查点（保底永不删）
+	// grafted：slug → 本插件该链最近一次 `git replace --graft` 解链的最老保留点。
+	// **按 slug 独立登记**（多会话共享一个 workState；共用单槽会让修剪 B 误删 A 的替换引用 →
+	// 撤销 A 的截断）。仅供清理本插件自己的上一条替换引用，**绝不触碰用户 refs/replace/***。
+	grafted map[string]string
 }
 
 // New 构建 history 插件。
@@ -456,7 +460,9 @@ func (h *History) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) e
 				continue
 			}
 			if slug := clearTargetSession(dataclient.Strval(ev.List[clearKey])); slug != "" {
-				h.clearChain(slug)
+				if err := h.clearChain(slug); err != nil {
+					h.logf()("history: history.clear 清空目标会话链未完全成功（slug=%s）：%v", slug, err)
+				}
 			} else {
 				h.logf()("history: history.clear 值非法或未带 session（忽略，不动作）：%q", dataclient.Strval(ev.List[clearKey]))
 			}
@@ -479,13 +485,16 @@ func clearTargetSession(raw string) string {
 
 // clearChain 只清**目标会话**的检查点链（`update-ref -d refs/chonkpilot/<slug>`）+ 回写该会话状态。
 // 其它会话的链（不同 slug）**保留**；该 slug 不在某 workdir 时跳过（零副作用）。
-func (h *History) clearChain(slug string) {
+// `update-ref -d` 失败 → 记 error、**跳过**该 workdir 的锚点/熔断态复位与成功日志（链仍在，
+// 复位会让锚点指向已不存在的检查点）并返回错误；其余 workdir 仍 best-effort 继续处理。
+func (h *History) clearChain(slug string) error {
 	h.mu.Lock()
 	list := make([]*workState, 0, len(h.works))
 	for _, ws := range h.works {
 		list = append(list, ws)
 	}
 	h.mu.Unlock()
+	var firstErr error
 	for _, ws := range list {
 		if !ws.hasGit {
 			continue
@@ -495,7 +504,14 @@ func (h *History) clearChain(slug string) {
 			ws.mu.Unlock()
 			continue // 该 workdir 无此会话链 → 跳过（零副作用）
 		}
-		_, _ = h.git(ws, "update-ref", "-d", chainRefPrefix+slug)
+		if _, err := h.git(ws, "update-ref", "-d", chainRefPrefix+slug); err != nil {
+			ws.mu.Unlock()
+			h.logf()("history: history.clear 删除目标会话链失败（workdir=%s，slug=%s）：%v", ws.workDir, slug, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue // 链未删 → 不复位锚点/熔断态、不写成功日志
+		}
 		// 仅当该 workdir 的轮次锚点/熔断态归属本会话时才一并复位（不波及其它会话的保底项）。
 		if ws.lastSlug == slug {
 			ws.fused = false
@@ -512,6 +528,7 @@ func (h *History) clearChain(slug string) {
 		h.logf()("history: history.clear → 已清空目标会话检查点链（workdir=%s，slug=%s）", ws.workDir, slug)
 		h.writeback(ws, slug)
 	}
+	return firstErr
 }
 
 // ─── workState 生命周期 ────────────────────────────────────
@@ -527,6 +544,7 @@ func (h *History) ensureWork(wd string) *workState {
 	ws := &workState{
 		workDir: wd,
 		index:   filepath.Join(wd, ".chonkpilot", "history", "index"),
+		grafted: map[string]string{},
 	}
 	if _, err := os.Stat(filepath.Join(wd, ".git")); err == nil {
 		ws.hasGit = true
@@ -725,13 +743,22 @@ func (h *History) instanceForWorkdir(wd string) string {
 func ensureGitignore(wd string) {
 	p := filepath.Join(wd, ".gitignore")
 	raw, err := os.ReadFile(p)
-	if err == nil && strings.Contains(string(raw), ".chonkpilot") {
-		return
+	if err == nil {
+		// 按行匹配（而非子串），避免 `.chonkpilotfoo` 之类被误判为已含规则。
+		for _, line := range strings.Split(string(raw), "\n") {
+			switch strings.TrimSpace(line) {
+			case ".chonkpilot/", ".chonkpilot":
+				return
+			}
+		}
 	}
 	// 不存在或未忽略 → 追加（创建）
 	add := ""
 	if err != nil {
 		add = "# chonkpilot\n"
+	} else if len(raw) > 0 && raw[len(raw)-1] != '\n' {
+		// 原文件末尾无换行 → 先补换行，避免与末行规则粘连（既破坏用户规则又使新规则不生效）。
+		add = "\n"
 	}
 	add += ".chonkpilot/\n"
 	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)

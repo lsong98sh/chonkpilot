@@ -1078,6 +1078,13 @@ loop:
 				markStop()
 			case err != nil:
 				markStop() // StopOnError：停止调度其余条目
+				// B-29：与顺序 LOOP（L1022 return err 逐层上抛终止）及 PARALLEL（L1230 e.cancel）
+				// 语义对齐——StopOnError 命中（err 为 *stopErr，已由 execSeq 记入 Errors）时取消
+				// ctx，使循环之后的语句不再执行（cancel 幂等；不重复上抛，避免重记错误）。
+				// 非 StopOnError 时 execSeq 已消化错误返回 nil → 不进入本分支，既定「继续执行」不变。
+				if _, ok := err.(*stopErr); ok {
+					e.cancel()
+				}
 			}
 		}(idx)
 	}

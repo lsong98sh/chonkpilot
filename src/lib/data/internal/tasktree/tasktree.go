@@ -166,7 +166,7 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 		"title":          n.Title,
 		"status":         n.Status,
 		"created_at":     n.CreatedAt,
-		"updated_at":     time.Now().UTC().Format(time.RFC3339),
+		"updated_at":     time.Now().UTC().Format(kernel.RFC3339FixedNano),
 	}
 	// 任务层扩展字段（P2）：非空即落；旧调用方（不带这些字段）行为不变。
 	for k, v := range map[string]string{
@@ -213,13 +213,21 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 		return facade.TasktreeUpsertResponse{}, err
 	}
 	tb := prj.Table(tasktreeTableFor(req.Shadow))
-	// 状态列合并（A-03）+ 单事务 RMW（A-18）：Upsert 是**全量覆盖写**，未携带的状态列会随旧值
-	// 一起丢失，导致同 id 重放（如 llm 再上报 running）把「已逻辑删除」的节点复活（closed/
-	// deleted_at 被清）。Get→改→Upsert 跨两事务在并发下仍会互覆，故收进 UpdateIn：合并逻辑
-	// 在 fn 内基于同事务读到的旧行执行（请求携带则以其为准；行不存在 → 空记录无旧值可合并，
-	// 直接新建，口径不变）。
+	// 状态列合并（A-03/A-24）+ 单事务 RMW（A-18）：Upsert 是**全量覆盖写**，未携带的列会随旧值
+	// 一起丢失（如 llm 再上报 running 把「已逻辑删除」的节点复活，或未上报的 exec_json/
+	// return_* / steps 被清空）。Get→改→Upsert 跨两事务在并发下仍会互覆，故收进 UpdateIn：合并
+	// 逻辑在 fn 内基于同事务读到的旧行执行。合并清单 = 上方全部**条件写入列**（非空/非零/有键
+	// 才落）——「本次未携带」即不写 → 保留旧值；`closed` 经 *bool 区分「未携带」与「显式置空」，
+	// 合并同样按「未携带才保留」处理（请求携带则以请求为准）。行不存在 → 空记录无旧值可合并，
+	// 直接新建，口径不变。
 	if err := tb.UpdateIn(n.ID, func(cur data.Record) data.Record {
-		for _, k := range []string{"closed", "deleted_at", "finished_at"} {
+		for _, k := range []string{
+			"closed", "deleted_at", "finished_at",
+			"tool_call_id", "instance_id", "work_dir", "state",
+			"args_digest", "result_digest", "exec_json", "started_at", "done_at",
+			"return_kind", "return_inline", "return_file",
+			"loop_current", "loop_total", "return_size", "shadow", "steps",
+		} {
 			if _, has := rec[k]; !has {
 				if v, hasOld := cur[k]; hasOld {
 					rec[k] = v
@@ -250,11 +258,26 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	// 对每个待删节点按 ListPrefix("<id>\x00") 取直接子节点，BFS 下钻 → O(子树) 而非 O(全库)。
 	// 子节点集合口径与旧全表扫逐点一致：不排除逻辑删除行、不区分 top_session（索引对空值/删除行
 	// 均入/保留键）；seen 去重 + 环/自环防护（口径同 task/layer.go descendantsLocked）。
+	//
+	// 主键→node_id 映射**一次单事务扫描**建好（A-30）：原实现对每个直接子节点单独 t.Get
+	// （各独立 View 事务 → 级联删除 O(子树) 事务数）。索引值仅为主键，node_id 可能与主键不同，
+	// 故仍需映射而非直接取索引键；BFS 全程不变更行 → 映射结果与逐点回表逐字等价。
+	nodeIDs := map[string]string{}
+	if err := t.ForEach(func(k string, rec data.Record) error {
+		id := kernel.Sval(rec["node_id"])
+		if id == "" {
+			id = k
+		}
+		nodeIDs[k] = id
+		return nil
+	}); err != nil {
+		return facade.TasktreeDeleteResponse{}, err
+	}
 	parentIdx := prj.Table(t.Name() + "_by_parent")
 	seen := map[string]bool{req.NodeID: true}
 	toDelete := []string{req.NodeID}
 	for i := 0; i < len(toDelete); i++ {
-		kids, err := childIDs(parentIdx, t, toDelete[i])
+		kids, err := childIDs(parentIdx, nodeIDs, toDelete[i])
 		if err != nil {
 			return facade.TasktreeDeleteResponse{}, err
 		}
@@ -284,7 +307,7 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	// 事务，单行失败不回滚 → 必须上报，否则静默残留未关闭节点且恒返回 OK。
 	// 标记收进 UpdateIn 单事务 RMW（A-18）：Get→改→Upsert 跨两事务会把并发窗口内新上报的
 	// 状态用旧 rec 覆盖；行已消失 → fn 返回 nil 跳过（保持「不存在即跳过」幂等口径，不建空行）。
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
 	var errs []error
 	for _, id := range toDelete {
 		if err := t.UpdateIn(id, func(rec data.Record) data.Record {
@@ -311,8 +334,9 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 // → O(直接子节点数) 而非 O(全库)。子节点 id 口径与旧全表扫逐点一致：`node_id` 优先、缺失
 // 回落主键；脏索引（索引键在而主行缺失）跳过（旧扫主表本就不会产出该行）。
 // 索引对空值/逻辑删除行均入 / 保留键，故「含已 closed 行、跨 top_session」与旧实现一致。
-// parentIdx = 索引桶（前缀读子主键）、t = 主表（按主键回表取 node_id）。
-func childIDs(parentIdx, t *data.Table, parentID string) ([]string, error) {
+// parentIdx = 索引桶（前缀读子主键）；nodeIDs = 主键→node_id 映射（调用方单事务一次建好，
+// A-30；索引值仅为主键，node_id 可能与主键不同，故经映射转换）。
+func childIDs(parentIdx *data.Table, nodeIDs map[string]string, parentID string) ([]string, error) {
 	prefix := parentID + "\x00" // 与 data.indexes.go 的索引段分隔符一致（节点 id 不含 \x00）
 	keys, err := parentIdx.ListPrefix(prefix)
 	if err != nil {
@@ -321,13 +345,9 @@ func childIDs(parentIdx, t *data.Table, parentID string) ([]string, error) {
 	ids := make([]string, 0, len(keys))
 	for _, k := range keys {
 		pk := strings.TrimPrefix(k, prefix)
-		var rec data.Record
-		if ok, _ := t.Get(pk, &rec); !ok {
+		id, ok := nodeIDs[pk]
+		if !ok {
 			continue // 脏索引（主行缺失）→ 跳过，与全表扫描口径一致
-		}
-		id := kernel.Sval(rec["node_id"])
-		if id == "" {
-			id = pk
 		}
 		ids = append(ids, id)
 	}

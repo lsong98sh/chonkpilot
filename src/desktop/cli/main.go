@@ -31,6 +31,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/chonkpilot/chonkpilot-lib/paths"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin-codegraph"
@@ -125,15 +126,18 @@ func main() {
 		prompt = string(b)
 	}
 
-	if workDir == "" {
-		var err error
-		workDir, err = os.Getwd()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "cwd:", err)
-			os.Exit(1)
-		}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cwd:", err)
+		os.Exit(1)
 	}
-	workDir = resolveDir(workDir)
+	if workDir == "" {
+		workDir = cwd
+	}
+	// --work-dir 目录参数解析唯一入口（16-路径解析规范）：`~` 展开 → 绝对原样 Clean →
+	// 相对以 cwd 为基准 Join（与 GUI models.ResolveDir / server paths.ResolveDir 同源）。
+	// 取代原先仅 filepath.Abs、不展开 `~` 的本地 resolveDir（D-35）。
+	workDir = paths.ResolveDir(workDir, cwd)
 
 	// -- 数据根（三态语义：未传=临时隔离 / 留空=真实根 / 路径=该路径作数据根，D-45） --
 	prepared, err := cli.PrepareDataDir(workDir, dataDir, dataDirSet)
@@ -342,14 +346,6 @@ func main() {
 	if output == "final" && finalText != "" {
 		fmt.Println(finalText)
 	}
-}
-
-func resolveDir(dir string) string {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return dir
-	}
-	return abs
 }
 
 func newUUID() string {

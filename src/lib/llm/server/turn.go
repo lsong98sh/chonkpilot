@@ -256,10 +256,16 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		}
 	}
 	llmName := s.resolveAgentLLMName(req.InstanceID, agentLLMRef, "", req.LLMModel)
+	// usr 配置一次读取共用（B-37）：provider 解析 + 运行时超时/重试解析共用同一次 UserConfigGet，
+	// 取代原 loadLLMProvider + loadLLMRuntimeConfig 各读一次（同源重复往返）。解析语义不变。
+	usrCfg, cfgErr := s.loadUserConfig(req.InstanceID)
+	if cfgErr != nil {
+		logf("[chonkpilot-server] newTurnCtx: UserConfigGet failed: %v\n", cfgErr)
+	}
 	// LLM provider 配置（llm-start.llm = provider name）：命中 → baseUrl/apiKey/model/temperature/
 	// maxOutputToken/thinking 以配置为准；未命中（nil）→ 保持现状（exe flags + 请求体 think/effort）。
 	// 子轮次：llmRef 非空则用被委派 agent 的 provider，否则继承父轮次（现状）。
-	pcfg := s.loadLLMProvider(req.InstanceID, llmName)
+	pcfg := providerFromConfig(usrCfg, llmName)
 	llmTemp, llmMO, llmMC, llmMaxIter := (*float64)(nil), (*int)(nil), (*int)(nil), 0
 	llmModel := llmName // 未命中 provider：现状语义（传入值即请求体 model）
 	llmSpec := s.specFor(pcfg)
@@ -271,8 +277,11 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		llmMaxIter = defaultMaxToolIterations
 	}
 	llmThink, llmEffort := resolveThinkEffort(pcfg, req)
-	// 加载 usr 超时/重试配置（T-27 接线）：缺省已回落旧硬编码常量
-	respTO, streamTO, retryCnt := s.loadLLMRuntimeConfig(req.InstanceID)
+	// 加载 usr 超时/重试配置（T-27 接线）：缺省已回落旧硬编码常量（复用上面已读的 usrCfg）。
+	respTO, streamTO, retryCnt := llmRuntimeConfigFrom(usrCfg)
+	// 三段边界 3 键（keep_full_max_turns / keep_full_max_tokens / compress_token_threshold）
+	// 一次 ConfigKVGet 共用（B-37）：同域/同读序不变，避免逐键各自往返。
+	zoneVals := s.prjConfigValues(req.InstanceID, keepFullMaxTurnsKey, keepFullMaxTokensKey, briefBudgetKey)
 	tc := &turnCtx{
 		server:    s,
 		req:       req,
@@ -296,9 +305,9 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		retryCount:         retryCnt,
 		maxToolIterations:  llmMaxIter,
 		allowedTools:       allowedTools,
-		keepFullTurns:      s.loadKeepFullTurns(req.InstanceID),
-		keepFullTokens:     s.loadKeepFullTokens(req.InstanceID),
-		briefBudget:        s.loadBriefBudget(req.InstanceID),
+		keepFullTurns:      keepFullTurnsOf(zoneVals),
+		keepFullTokens:     keepFullTokensOf(zoneVals),
+		briefBudget:        briefBudgetOf(zoneVals),
 		turnTokens:         turnTokens,
 	}
 	go tc.loop()
@@ -1120,6 +1129,13 @@ func (tc *turnCtx) resumePartial(asstKey, content, reasoning string, calls []Too
 		tc.feed(ChatMsg{Role: "user", Kind: assembleContinueKind, Content: assembleContinueText})
 		return
 	}
+	// 续写次数耗尽（continues >= maxAutoContinue）时末段正文尚未落库、也未计入 answer（B-36）：
+	// 补一次同口径落库（asstKey 口），否则与已落库前几段拼接后正文被截尾；终态取 answer，
+	// 故同步累积。仅当本段有内容（content != ""）才补——无内容失败无末段可丢。
+	if content != "" {
+		tc.answer.WriteString(content)
+		_, _ = tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: content, ToolCalls: calls, Reasoning: reasoning}, asstKey)
+	}
 	retryable := retryableErr(streamErr)
 	tc.server.llmErrorRetryable(tc, "LLM_STREAM_ERROR", tc.server.subsessionHint(tc, streamErr.Error(), retryable), retryable)
 	tc.Close()
@@ -1280,7 +1296,11 @@ func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *p
 	if meta := tc.server.gc.ToolMeta(name); len(meta) > 0 {
 		msg["_meta"] = meta
 	}
-	_, _ = newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key)
+	// 工具终态结果落库失败仅留痕（B-33）：该结果仍会喂给 LLM，但 DB（message 表）缺此条时，
+	// 重载/重启后上下文出现「助理发起 tool_call 但无 tool 结果」断链；返回值语义不变。
+	if _, err := newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key); err != nil {
+		logf("[chonkpilot-server] 工具结果落库失败（turn=%s key=%s）: %v\n", tc.req.Turn, key, err)
+	}
 }
 
 // unpersistedInputs 过滤本次进入会话、尚未由 msgs() 从库带回的新消息（I-25 去重）：

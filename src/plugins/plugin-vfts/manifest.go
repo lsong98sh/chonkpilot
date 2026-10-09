@@ -327,6 +327,26 @@ func (p *Vfts) fileListDel(inst string, keys []string) error {
 	return err
 }
 
+// fileListPutBatch 批量 upsert（一次总线往返，对齐 fileListDel 的批量形态）；空集合 → 零动作。
+func (p *Vfts) fileListPutBatch(inst string, recs []fileRec) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	entries := make([]any, 0, len(recs))
+	for _, rec := range recs {
+		b, _ := json.Marshal(rec)
+		var data map[string]any
+		if json.Unmarshal(b, &data) != nil {
+			continue
+		}
+		entries = append(entries, data)
+	}
+	_, err := dataclient.Emit(p.deps.Bus, subjectFileListPut, map[string]any{
+		"instance_id": inst, "data": map[string]any{"entries": entries},
+	})
+	return err
+}
+
 // ─── 编排 ────────────────────────────────────────────────
 
 // incrementalSync 增量同步该 workdir：扫描 → 读清单 → diff → 引擎增量 → 回写清单。
@@ -394,8 +414,9 @@ func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []st
 		}
 	}
 
-	// 回写清单：索引结果 → put；仅 mtime 变 → put；待删除 → del
+	// 回写清单：索引结果 → put；仅 mtime 变 → put；待删除 → del。批量一次总线往返。
 	now := time.Now().UTC().Format(time.RFC3339)
+	touched := make([]fileRec, 0, len(diff.toIndex)+len(diff.toTouch))
 	for _, t := range diff.toIndex {
 		m := t.md5
 		if m == "" {
@@ -406,17 +427,14 @@ func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []st
 			m = raw
 		}
 		f := byKey[t.key]
-		if err := p.fileListPut(inst, fileRec{
+		touched = append(touched, fileRec{
 			Key: t.key, Path: t.path, Size: t.size, MTime: mtimeStr(t.mtime),
 			MD5: m, DocIDs: f.DocIDs, Chunks: f.Chunks, IndexedAt: now,
-		}); err != nil {
-			return nil, err
-		}
+		})
 	}
-	for _, rec := range diff.toTouch {
-		if err := p.fileListPut(inst, rec); err != nil {
-			return nil, err
-		}
+	touched = append(touched, diff.toTouch...)
+	if err := p.fileListPutBatch(inst, touched); err != nil {
+		return nil, err
 	}
 	delKeys := make([]string, 0, len(diff.toRemove))
 	for _, rec := range diff.toRemove {
@@ -445,6 +463,7 @@ func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	keep := map[string]bool{}
+	recs := make([]fileRec, 0, len(res.Indexed))
 	for _, f := range res.Indexed {
 		abs := absOf(r.workDir, f.Path)
 		if abs == "" {
@@ -464,12 +483,13 @@ func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []
 		if isDocPath(e.path) {
 			m = tagMD5(m, doc.parserVersion)
 		}
-		if err := p.fileListPut(inst, fileRec{
+		recs = append(recs, fileRec{
 			Key: key, Path: e.path, Size: e.size, MTime: mtimeStr(e.mtime),
 			MD5: m, DocIDs: f.DocIDs, Chunks: f.Chunks, IndexedAt: now,
-		}); err != nil {
-			return err
-		}
+		})
+	}
+	if err := p.fileListPutBatch(inst, recs); err != nil {
+		return err
 	}
 	var stale []string
 	for key := range prior {

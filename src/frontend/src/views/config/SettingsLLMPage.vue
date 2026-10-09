@@ -262,11 +262,17 @@ function openEditor(data, index) {
   const handle = dialog.show(h(EditLLMDialog, {
     initialData: { ...data },
     editIndex: index,
+    // 先备份快照再改本地列表；落库失败即回滚本地列表，且**不关框**（保留编辑内容便于重试），
+    // 成功才关框 → 列表与后端保持一致（E-30）。
     onSave: async (d, idx) => {
-      if (idx === -1) llms.value.push(d)
-      else llms.value[idx] = d
-      handle.close()
-      await saveNow(t('config.llm.saved'))
+      const snapshot = llms.value.slice()
+      const next = llms.value.slice()
+      if (idx === -1) next.push(d)
+      else next[idx] = d
+      llms.value = next
+      const ok = await saveNow(t('config.llm.saved'))
+      if (ok) handle.close()
+      else llms.value = snapshot
     },
     onCancel: () => handle.close(),
   }), { title: t('config.llm.editTitle'), width: 640, height: 620, bodyClass: 'form-dialog-body', minimizable: false, closable: true })
@@ -282,8 +288,13 @@ async function deleteLLM(index) {
     return
   }
   try { await confirm(t('config.llm.confirmDelete')) } catch { return }
-  llms.value.splice(index, 1)
-  await saveNow(t('config.llm.saved'))
+  // 落库失败即回滚本地列表（E-30）：避免删除仅存于界面、刷新/重开又回退。
+  const snapshot = llms.value.slice()
+  const next = llms.value.slice()
+  next.splice(index, 1)
+  llms.value = next
+  const ok = await saveNow(t('config.llm.saved'))
+  if (!ok) llms.value = snapshot
 }
 
 const unsubs = []

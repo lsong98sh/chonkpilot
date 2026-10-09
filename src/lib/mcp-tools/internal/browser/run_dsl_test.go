@@ -77,3 +77,17 @@ func TestBrowserUnknownVerb(t *testing.T) {
 		t.Fatal("未知动词应报错")
 	}
 }
+
+// TestStepWATEmptyArgsNoPanic（C-48）：WAT 空参须返回语法错误，不得越界 panic
+// （executor 全链无 recover，一条空参 WAT 会崩掉执行器进程）。
+func TestStepWATEmptyArgsNoPanic(t *testing.T) {
+	r := &Runner{}
+	err := r.stepWAT(&Step{Line: 1, Raw: "WAT"})
+	if err == nil {
+		t.Fatal("WAT 空参应返回语法错误")
+	}
+	se, ok := err.(*StepError)
+	if !ok || se.Cat != "syntax" {
+		t.Fatalf("WAT 空参应返回 syntax 错误，got %v", err)
+	}
+}

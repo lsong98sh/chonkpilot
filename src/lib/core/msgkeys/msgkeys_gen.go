@@ -733,6 +733,7 @@ const (
 	// data-filelist-put · payload
 	DataFilelistPutPayloadChunks    = "chunks"
 	DataFilelistPutPayloadDocIds    = "doc_ids"
+	DataFilelistPutPayloadEntries   = "entries"
 	DataFilelistPutPayloadIndexedAt = "indexed_at"
 	DataFilelistPutPayloadKey       = "key"
 	DataFilelistPutPayloadMd5       = "md5"
@@ -1604,6 +1605,7 @@ const (
 	FieldDocIds              = "doc_ids"
 	FieldDoneAt              = "done_at"
 	FieldEffort              = "effort"
+	FieldEntries             = "entries"
 	FieldError               = "error"
 	FieldErrors              = "errors"
 	FieldExcludeTurn         = "exclude_turn"

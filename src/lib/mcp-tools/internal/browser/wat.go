@@ -15,6 +15,9 @@ import (
 //	WAT netidle [timeoutMs]              # 网络空闲（近似）
 //	WAT load [timeoutMs]                 # 页面加载完成
 func (r *Runner) stepWAT(st *Step) error {
+	if len(st.Args) == 0 {
+		return stepErr(st.Line, st.Raw, "syntax", "WAT 需要参数")
+	}
 	timeout := r.opt.WatTimeoutMs
 	if timeout <= 0 {
 		timeout = 10000

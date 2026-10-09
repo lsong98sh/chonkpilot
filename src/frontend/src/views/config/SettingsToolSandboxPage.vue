@@ -20,7 +20,7 @@
       <div class="tool-toolbar">
         <span class="hint">{{ $t('config.toolSandbox.pageHint') }}</span>
         <span v-if="dirty" class="unsaved-mark" data-sandbox-unsaved>{{ $t('config.feedback.unsaved') }}</span>
-        <Button size="small" :loading="loading" @click="reload">
+        <Button size="small" :loading="loading" @click="reloadAndCheck">
           <Icon name="refresh" :size="13" /> {{ $t('config.page.redetect') }}
         </Button>
         <Button
@@ -109,13 +109,13 @@ import { Button, Switch, message } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import { useToolSandbox } from '../../composables/useToolSandbox'
 import { stripToolPrefix } from '../../utils/toolSource'
-import { saveFailedText } from '../../utils/settingsFeedback'
+import { loadFailedText, saveFailedText } from '../../utils/settingsFeedback'
 import { onDataRefresh } from '../../utils/dataClient'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
 const { t } = useI18n()
-const { loading, saving, rows, totalTools, dirty, serverSandboxOn, trustWarning, loadTrustDirs, reload, setSandbox, restore, save } = useToolSandbox()
+const { loading, saving, loadFailed, loadError, rows, totalTools, dirty, serverSandboxOn, trustWarning, loadTrustDirs, reload, setSandbox, restore, save } = useToolSandbox()
 
 // executor 显示名（新增 i18n；回退到类别名本身）
 function execLabel(category) {
@@ -133,10 +133,21 @@ function gotoTrustDirs() {
   mq.emit(EventNames.previewTabOpen, { kind: 'settings-project' })
 }
 
+// 加载失败须用户可见（四路加载任一失败 → 空态 /「未设置」会误导；对齐 SettingsToolAsyncPage 口径）。
+function showLoadFailure() {
+  if (loadFailed.value) message.error(loadFailedText(t, t('config.page.toolSandbox'), loadError.value))
+}
+
+// 「重新探测」：重载后按需给出失败提示
+async function reloadAndCheck() {
+  await reload()
+  showLoadFailure()
+}
+
 // 初始加载 + 订阅既有 prj-security 变更广播：配置信任目录后警告即时消失（无 watch）
 const unsubs = []
 onMounted(() => {
-  reload()
+  reload().then(showLoadFailure)
   unsubs.push(onDataRefresh('prj-security', loadTrustDirs))
 })
 onUnmounted(() => unsubs.forEach(fn => fn()))
@@ -159,6 +170,7 @@ function onRestore(row) {
 
 // 手动保存：无改动按钮已禁用（此处兜底）；成功给一次明确反馈。
 async function onSave() {
+  if (loadFailed.value) { showLoadFailure(); return } // 失败态拒绝保存（避免空态整键覆盖既有配置）
   if (!dirty.value) return
   try {
     const wrote = await save()

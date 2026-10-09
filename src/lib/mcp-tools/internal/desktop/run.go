@@ -186,15 +186,18 @@ func desktopActions(ctx *runCtx) []dsl.Action {
 			Run: func(sc *dsl.Scope, args string) (string, error) {
 				ctx.mu.Lock()
 				ctx.done++
-				ctx.out = "" // 每条动作独立文本输出（如 WIN list；无输出保持空串，重定向仍执行）
 				ctx.mu.Unlock()
 				// WIN 后把窗口变量同步进作用域，供 {{$CX}} 等引号内插值
 				ctx.syncVars(sc)
 				toks := tokenize(args)
 				toks = interpTokens(sc, toks)
-				err := ctx.dispatch(verb, toks)
+				// 本条动作的文本输出以**局部变量**承载（C-45）：PARALLEL 分支并发执行时不得
+				// 经共享槽 ctx.out 中转（否则互相覆盖）。dispatch 返回本条输出，最后再写回
+				// ctx.out 仅作 Summary 的「最近一次输出」而已。
+				out, err := ctx.dispatch(verb, toks)
 				ctx.syncVars(sc)
-				return ctx.getOut(), err
+				ctx.setOut(out)
+				return out, err
 			},
 		})
 	}
@@ -326,73 +329,75 @@ func (c *runCtx) winSnapshot() (syscall.Handle, Rect, Rect, map[string]float64) 
 }
 
 // dispatch 执行单条指令（cmd 大写；rest 已按 tokenize 拆分并做插值）。
-func (c *runCtx) dispatch(cmd string, rest []string) error {
+// 返回本条动作的文本输出（仅 WIN list 非空；其余为空串）与错误（C-45：输出经返回值承载，
+// 不经共享槽，避免 PARALLEL 并发动作互相覆盖）。
+func (c *runCtx) dispatch(cmd string, rest []string) (string, error) {
 	switch cmd {
 	case "WIN":
 		return c.cmdWin(rest)
 	case "MOV":
 		if len(rest) < 1 {
-			return fmt.Errorf("MOV 需要坐标")
+			return "", fmt.Errorf("MOV 需要坐标")
 		}
 		x, y, err := c.parseCoord(rest[0])
 		if err != nil {
-			return err
+			return "", err
 		}
 		c.moveTo(x, y)
-		return nil
+		return "", nil
 	case "CLK", "DBL", "CLKR", "CLKM", "DBLR", "DBLM":
-		return c.cmdClick(cmd, rest)
+		return "", c.cmdClick(cmd, rest)
 	case "LMD", "LMU", "RMD", "RMU", "MMD", "MMU":
-		return c.cmdMouseDownUp(cmd, rest)
+		return "", c.cmdMouseDownUp(cmd, rest)
 	case "DRG":
-		return c.cmdDrag(rest)
+		return "", c.cmdDrag(rest)
 	case "WHL":
-		return c.cmdWheel(rest)
+		return "", c.cmdWheel(rest)
 	case "INP":
 		if len(rest) < 1 {
-			return fmt.Errorf("INP 需要文本")
+			return "", fmt.Errorf("INP 需要文本")
 		}
 		text := unquote(rest[0])
 		for _, r := range text {
 			typeRune(r)
 		}
-		return nil
+		return "", nil
 	case "KPR", "KDN", "KUP":
 		if len(rest) < 1 {
-			return fmt.Errorf("%s 需要按键名（支持组合键，如 ctrl+s）", cmd)
+			return "", fmt.Errorf("%s 需要按键名（支持组合键，如 ctrl+s）", cmd)
 		}
-		return c.cmdKey(cmd, rest[0])
+		return "", c.cmdKey(cmd, rest[0])
 	case "IME":
 		if len(rest) < 1 {
-			return fmt.Errorf("IME 需要参数 en|cn（英文/中文输入法）")
+			return "", fmt.Errorf("IME 需要参数 en|cn（英文/中文输入法）")
 		}
-		return c.cmdIME(rest[0])
+		return "", c.cmdIME(rest[0])
 	case "SHT":
-		return c.cmdShot(rest)
+		return "", c.cmdShot(rest)
 	case "SLP":
 		if len(rest) < 1 {
-			return fmt.Errorf("SLP 需要毫秒数")
+			return "", fmt.Errorf("SLP 需要毫秒数")
 		}
 		ms := atoi(rest[0])
 		time.Sleep(time.Duration(ms) * time.Millisecond)
-		return nil
+		return "", nil
 	default:
-		return fmt.Errorf("未知指令 %q", cmd)
+		return "", fmt.Errorf("未知指令 %q", cmd)
 	}
 }
 
 // ─── 窗口 ───
 
-func (c *runCtx) cmdWin(rest []string) error {
+func (c *runCtx) cmdWin(rest []string) (string, error) {
 	if len(rest) == 0 {
-		return fmt.Errorf("WIN 需要 target 或 list")
+		return "", fmt.Errorf("WIN 需要 target 或 list")
 	}
 	if strings.EqualFold(rest[0], "list") {
 		return c.listWindows()
 	}
 	hwnd, err := c.resolveTarget(rest[0])
 	if err != nil {
-		return err
+		return "", err
 	}
 	c.bindWindow(hwnd)
 	// 后续 ops 连续执行
@@ -409,12 +414,12 @@ func (c *runCtx) cmdWin(rest []string) error {
 			ShowWindow.Call(uintptr(hwnd), SwRestore)
 		case "move":
 			if i+1 >= len(rest) {
-				return fmt.Errorf("WIN move 需要坐标")
+				return "", fmt.Errorf("WIN move 需要坐标")
 			}
 			i++
 			x, y, err := c.parseCoord(rest[i])
 			if err != nil {
-				return err
+				return "", err
 			}
 			_, rect, _, _ := c.winSnapshot()
 			SetWindowPos.Call(uintptr(hwnd), 0, uintptr(int32(x)), uintptr(int32(y)),
@@ -422,12 +427,12 @@ func (c *runCtx) cmdWin(rest []string) error {
 			c.bindWindow(hwnd)
 		case "size":
 			if i+1 >= len(rest) {
-				return fmt.Errorf("WIN size 需要坐标")
+				return "", fmt.Errorf("WIN size 需要坐标")
 			}
 			i++
 			w, h, err := c.parseCoord(rest[i])
 			if err != nil {
-				return err
+				return "", err
 			}
 			_, rect, _, _ := c.winSnapshot()
 			SetWindowPos.Call(uintptr(hwnd), 0, uintptr(int32(rect.Left)), uintptr(int32(rect.Top)),
@@ -435,15 +440,15 @@ func (c *runCtx) cmdWin(rest []string) error {
 			c.bindWindow(hwnd)
 		case "rect":
 			if i+2 >= len(rest) {
-				return fmt.Errorf("WIN rect 需要坐标+尺寸")
+				return "", fmt.Errorf("WIN rect 需要坐标+尺寸")
 			}
 			x, y, err := c.parseCoord(rest[i+1])
 			if err != nil {
-				return err
+				return "", err
 			}
 			w, h, err := c.parseCoord(rest[i+2])
 			if err != nil {
-				return err
+				return "", err
 			}
 			SetWindowPos.Call(uintptr(hwnd), 0, uintptr(int32(x)), uintptr(int32(y)),
 				uintptr(int32(w)), uintptr(int32(h)), SwpNoZOrder)
@@ -453,23 +458,23 @@ func (c *runCtx) cmdWin(rest []string) error {
 			if i+1 < len(rest) {
 				file, err := resolveLocalPath(unquote(rest[i+1]))
 				if err != nil {
-					return fmt.Errorf("WIN SHT：%s", err)
+					return "", fmt.Errorf("WIN SHT：%s", err)
 				}
 				if err := saveWindowShot(hwnd, file); err != nil {
-					return err
+					return "", err
 				}
 				i++
 			} else {
-				return fmt.Errorf("WIN SHT 需要文件名")
+				return "", fmt.Errorf("WIN SHT 需要文件名")
 			}
 		default:
-			return fmt.Errorf("未知窗口操作 %q", op)
+			return "", fmt.Errorf("未知窗口操作 %q", op)
 		}
 	}
-	return nil
+	return "", nil
 }
 
-func (c *runCtx) listWindows() error {
+func (c *runCtx) listWindows() (string, error) {
 	hwnds := EnumWindowsList()
 	var titles []string
 	for _, h := range hwnds {
@@ -480,12 +485,11 @@ func (c *runCtx) listWindows() error {
 		}
 	}
 	if len(titles) == 0 {
-		return fmt.Errorf("无可见窗口")
+		return "", fmt.Errorf("无可见窗口")
 	}
 	joined := strings.Join(titles, "\n")
-	c.setOut(joined)
 	fmt.Fprintf(os.Stderr, "[desktop_run] windows:\n%s\n", joined)
-	return nil
+	return joined, nil
 }
 
 // resolveTarget 解析窗口 target："title" / class:xxx / hwnd:123。
@@ -751,6 +755,9 @@ func (c *runCtx) cmdShot(rest []string) error {
 			return fmt.Errorf("SHT：%s", err)
 		}
 		return saveScreenShot(file)
+	}
+	if len(rest) < 3 {
+		return fmt.Errorf("SHT 需要 x,y,w,h 与文件名")
 	}
 	// SHT x,y,w,h "file.png"
 	x, y, err := c.parseCoord(rest[0])

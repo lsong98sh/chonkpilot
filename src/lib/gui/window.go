@@ -194,6 +194,9 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	if err := os.MkdirAll(wvData, 0o755); err != nil {
 		slog.Warn("webview2 data dir create failed", "dir", wvData, "err", err)
 	}
+	// 活跃标记（含本进程 pid，D-34）：prune 据此跳过其它实例正在使用的 profile，
+	// 不因「profile 根目录 mtime 超期」而误删活跃目录；目录收尾（finish/cleanup）随 RemoveAll 一并清除。
+	markProfileActive(wvData)
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug:     true,
 		AutoFocus: true,

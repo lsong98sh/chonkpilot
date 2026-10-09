@@ -135,8 +135,9 @@ test('B·可见提示文案：指明哪一项 + 原因摘要；item 标签 i18n 
 // ═══════════════════════════════════════════════════════════════
 test('C·后端语义核实：retryCount 用 n>=0（0 合法），其余三项用 n>0', () => {
   const go = readRepo('lib/llm/server/server.go')
-  const fn = go.match(/func \(s \*Server\) loadLLMRuntimeConfig[\s\S]*?\n\}/)
-  assert.ok(fn, '未找到 loadLLMRuntimeConfig')
+  // B-37：校验逻辑由 loadLLMRuntimeConfig 抽入纯函数 llmRuntimeConfigFrom（配置一次读取后分发）。
+  const fn = go.match(/func llmRuntimeConfigFrom\(d map\[string\]any\)[\s\S]*?\n\}/)
+  assert.ok(fn, '未找到 llmRuntimeConfigFrom')
   assert.match(fn[0], /configInt\(d, "responseTimeout"\); ok && n > 0/, 'responseTimeout 生效条件 = n>0')
   assert.match(fn[0], /configInt\(d, "streamTimeout"\); ok && n > 0/, 'streamTimeout 生效条件 = n>0')
   assert.match(fn[0], /configInt\(d, "retryCount"\); ok && n >= 0/, 'retryCount 生效条件 = n>=0（显式 0 = 不重试）')
@@ -181,18 +182,25 @@ test('C·SettingsParamsPage：usr 数值项前置校验（非法不写库 / 清�
     assert.doesNotMatch(src, new RegExp(`key: '${k}'[^\\n]*allowZero`), `${k} 不得允许 0（后端口径 n>0）`)
   }
 
-  const su = src.match(/async function commitUser\(f\)\s*\{[\s\S]*?\n\}/)
+  const su = src.match(/function commitUser\(f, patch, clears\)\s*\{[\s\S]*?\n\}/)
   assert.ok(su, '未找到 commitUser')
   const body = su[0]
   assert.match(body, /f\.allowZero \? validateNonNegativeInt\(rawStr\) : validatePositiveInt\(rawStr\)/,
     '须按 allowZero 分派两种校验')
   const invIdx = body.indexOf('if (!r.ok)')
   const retIdx = body.indexOf('return', invIdx)
-  const writeIdx = body.indexOf('await saveUserConfig({ [key]: r.value })')
+  const queueIdx = body.indexOf('patch[key] = r.value')
   assert.ok(invIdx >= 0, '须有非法值分支')
-  assert.ok(retIdx > invIdx && retIdx < writeIdx, '非法值须在校验处 return（不写库）')
+  assert.ok(retIdx > invIdx && (queueIdx < 0 || retIdx < queueIdx), '非法值须在校验处 return（不写库）')
   assert.match(body, /message\.error\(text\)/, '非法值须给明确错误')
-  assert.match(body, /await resetUserKey\(key\)/, '清空 = 删键回落默认（非错误）')
+  assert.match(body, /clears\.push\(key\)/, '清空 = 入批删键回落默认（非错误）')
+  // E-33 批量写：saveUserTab 把全部改动收成一次 saveUserConfig(patch)（替代逐键 N 次往返）；
+  // 清空项逐键 resetUserKey
+  const saveTab = src.match(/async function saveUserTab\(\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(saveTab, '未找到 saveUserTab')
+  assert.match(saveTab[0], /await saveUserConfig\(patch\)/, 'usr 改动须汇总为一次批量写')
+  assert.doesNotMatch(saveTab[0], /await saveUserConfig\(\{ \[key\]/, '不得再逐键写库')
+  assert.match(saveTab[0], /await resetUserKey\(k\)/, '清空项逐键删键')
   assert.match(src, /message\.success\(savedText\(t, APPLY_INSTANT\)\)/, '合法值保存成功反馈')
   // 内联报错 + 显式保存（2026-10-06 统一口径）+ 无 watch
   assert.match(src, /:error="!!userErrors\[f\.key\]"/, 'usr 非法值须内联报错')

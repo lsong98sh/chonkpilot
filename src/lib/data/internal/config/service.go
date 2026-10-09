@@ -27,4 +27,10 @@ type Service struct {
 }
 
 // New 构造 config 域服务（共享内核由装配侧注入）。
-func New(base *kernel.Base) *Service { return &Service{Base: base} }
+// 同时绑定包级告警出口（A-35：读路径纯函数经此留痕遍历/事务错误，见 valuecache.go warnf）。
+func New(base *kernel.Base) *Service {
+	if base != nil {
+		warnf = base.Warnf
+	}
+	return &Service{Base: base}
+}

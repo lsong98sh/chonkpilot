@@ -147,20 +147,25 @@ func (s *Service) SessionTitle(req facade.SessionTitleRequest) (facade.SessionTi
 	if err != nil {
 		return facade.SessionTitleResponse{}, err
 	}
-	var rec data.Record
-	ok, err := prj.Table("sessions").Get(req.SessionID, &rec)
-	if err != nil {
+	// 读改写收进 UpdateIn 单事务（A-23）：Get→改→Update 跨两事务整行覆盖会与并发写
+	// （如 snapshot.Set 同事务 RMW，见 snapshot/store.go）互丢字段。行不存在 → 保持原
+	// not found 语义（fn 放弃写入，不建行）。
+	notFound := false
+	if err := prj.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
+		if len(rec) == 0 {
+			notFound = true
+			return nil
+		}
+		rec["title"] = req.Title
+		// updated_at 与 created_at 同用纳秒格式（A-11）：秒级 RFC3339 与 created_at 的
+		// RFC3339FixedNano 混写会使同秒内字典序 ≠ 时间序。
+		rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
+		return rec
+	}); err != nil {
 		return facade.SessionTitleResponse{}, err
 	}
-	if !ok {
+	if notFound {
 		return facade.SessionTitleResponse{}, fmt.Errorf("session not found: %s", req.SessionID)
-	}
-	rec["title"] = req.Title
-	// updated_at 与 created_at 同用纳秒格式（A-11）：秒级 RFC3339 与 created_at 的
-	// RFC3339FixedNano 混写会使同秒内字典序 ≠ 时间序。
-	rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	if err := prj.Table("sessions").Update(req.SessionID, rec); err != nil {
-		return facade.SessionTitleResponse{}, err
 	}
 	s.emitSessionTitleChanged(req.SessionID, req.Title)
 	return facade.SessionTitleResponse{OK: true}, nil
@@ -390,7 +395,11 @@ func (s *Service) TurnSetSummary(req facade.TurnSetSummaryRequest) (facade.TurnS
 		return facade.TurnSetSummaryResponse{}, err
 	}
 	// 单事务 RMW（A-09）：读-改-写原子化，避免并发 lost update；updated_at 用纳秒（A-11）。
+	// 行不存在 → 放弃写入（fn 返回 nil，不建残行；A-34 与 SessionTitle 同判据）。
 	if err := prj.Table("turns").UpdateIn(req.TurnID, func(rec data.Record) data.Record {
+		if len(rec) == 0 {
+			return nil
+		}
 		rec["summary"] = req.Summary
 		rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
 		return rec
@@ -413,7 +422,11 @@ func (s *Service) TurnComplete(req facade.TurnCompleteRequest) (facade.TurnCompl
 		return facade.TurnCompleteResponse{}, err
 	}
 	// 单事务 RMW（A-09）：读-改-写原子化，避免并发 lost update；updated_at 用纳秒（A-11）。
+	// 行不存在 → 放弃写入（fn 返回 nil，不建残行；A-34 与 SessionTitle 同判据）。
 	if err := prj.Table("turns").UpdateIn(req.TurnID, func(rec data.Record) data.Record {
+		if len(rec) == 0 {
+			return nil
+		}
 		rec["status"] = req.Status
 		rec["finish_reason"] = req.FinishReason
 		if req.FullTokens != nil {

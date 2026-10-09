@@ -25,7 +25,7 @@ $exeName = "chonkpilot-dsl-executor.exe"
 
 if (-not (Test-Path $src)) {
     Write-Warning "dslexec 源目录缺失（$src），跳过 dsl executor 构建（dsl_run 运行期不可用）"
-    exit 0
+    return
 }
 
 New-Item -ItemType Directory -Force -Path $execDir | Out-Null

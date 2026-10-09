@@ -745,12 +745,16 @@ func (d *rebuildDebouncer) schedule(key string, fn func()) {
 	if t := d.timers[key]; t != nil {
 		t.Stop()
 	}
-	d.timers[key] = time.AfterFunc(d.window, func() {
+	var t *time.Timer
+	t = time.AfterFunc(d.window, func() {
 		d.mu.Lock()
-		delete(d.timers, key)
+		if d.timers[key] == t { // 旧 timer 已 fire、等待期间又注册了新 timer 时，不误删新条目
+			delete(d.timers, key)
+		}
 		d.mu.Unlock()
 		fn()
 	})
+	d.timers[key] = t
 }
 
 // instanceForWorkdir 返回该 workdir 任一活跃实例 id（读 prj-config 用；无则空串）。

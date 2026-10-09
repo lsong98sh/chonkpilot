@@ -362,7 +362,7 @@ func noOKFilter(t *testing.T, bus mq.Bus, subject string, ch chan map[string]any
 }
 
 // TestPrjConfigHelperContract（A6）：gui.* 状态落库/恢复经 prj-config 键值面透传的请求
-// 载荷契约——save {data:{key,value}} / load 顶层 {id} / list {}，对齐 persist
+// 载荷契约——save {data:{entries:{…}}}（批量）/ load 顶层 {id} / list {}，对齐 persist
 // handleConfigKV 与前端 dataClient（改动通道后 front 契约不变）。
 // 黑盒驱动：save 侧经 PublishEvent("gui.ui.save")（guiDo → callSaveLayoutState →
 // dataViaPersist），load 侧经公开 PrjConfigLoad。
@@ -391,8 +391,10 @@ func TestPrjConfigHelperContract(t *testing.T) {
 	}
 	req := <-saveCh
 	data, _ := req["data"].(map[string]any)
-	if data["key"] != "layout.x" || data["value"] != "1" {
-		t.Fatalf("save 请求载荷异常（应为 layout.x=1）: %+v", req)
+	// D-33：layout/window 由「逐键 save」收敛为「一次批量 entries」（与 data-prj-config 批量 save 同口径）。
+	entries, _ := data["entries"].(map[string]any)
+	if v, ok := entries["layout.x"].(string); !ok || v != "1" {
+		t.Fatalf("save 请求载荷异常（应为批量 entries: layout.x=1）: %+v", req)
 	}
 
 	// load 侧：PrjConfigLoad 返回应答 result.data 值字符串。

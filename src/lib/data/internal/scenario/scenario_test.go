@@ -77,6 +77,40 @@ func writeScenarioDir(t *testing.T, root, id, name, mainPrompt string, subs map[
 	}
 }
 
+// TestScenarioInvalidIDRejected 非法场景 id（空 / `.` / `..` / `../x` / 路径分隔符）→
+// Save/Get/Delete 一律**拒绝**（A-31：防 `..` 拼接越界删掉整棵 capability 树）；合法 id 放行，
+// 且非法 id 操作不波及已存在场景。
+func TestScenarioInvalidIDRejected(t *testing.T) {
+	s, appRoot, usrPath := testRoots(t)
+	if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
+		ID: "ok-scn", Level: capfs.KindUser,
+		Agents: []facade.ScenarioAgent{{Name: "主", IsMain: true, Prompt: "p"}},
+	}}); err != nil {
+		t.Fatalf("合法 id 保存应放行：%v", err)
+	}
+	for _, id := range []string{"", ".", "..", "../x", `..\x`, "a/b"} {
+		if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{ID: id, Level: capfs.KindUser}}); err == nil {
+			t.Fatalf("Save 非法 id %q 应被拒", id)
+		}
+		if _, err := s.ScenarioGet(facade.ScenarioGetRequest{ScenarioID: id}); err == nil {
+			t.Fatalf("Get 非法 id %q 应被拒", id)
+		}
+		if _, err := s.ScenarioDelete(facade.ScenarioDeleteRequest{ScenarioID: id, Level: capfs.KindUser}); err == nil {
+			t.Fatalf("Delete 非法 id %q 应被拒", id)
+		}
+	}
+	// 非法 id 操作不得波及已存在的合法场景（`..` 曾会删掉场景根 / 整棵 capability 树）
+	if !capfs.ScenarioDirExists(capfs.ScenarioUserRoot(usrPath), "ok-scn") {
+		t.Fatal("非法 id 操作不应波及已存在场景")
+	}
+	if _, err := os.Stat(appRoot); err != nil {
+		t.Fatalf("非法 id 操作不应损坏 capability 树：%v", err)
+	}
+	if _, err := s.ScenarioGet(facade.ScenarioGetRequest{ScenarioID: "ok-scn", Level: capfs.KindUser}); err != nil {
+		t.Fatalf("合法 id get 应放行：%v", err)
+	}
+}
+
 // TestScenarioAppLevelListAndGet：app 级场景可被 list / get 命中（level=app、含主 agent +
 // 子 agent 引用展开），且 list 无需去重（四级 id 全局唯一）。
 func TestScenarioAppLevelListAndGet(t *testing.T) {

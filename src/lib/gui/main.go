@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -582,7 +583,9 @@ func serveWebResource(h http.Handler, c *edge.Chromium, request *edge.ICoreWebVi
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(method, url, strings.NewReader(string(body)))
+	// D-31：直接以 *bytes.Reader 包装 body，省去 `string(body)` 对最大 128MB 请求体的整块
+	// 复制（http.NewRequest 对 *bytes.Reader 同样设置 GetBody/ContentLength，行为一致）。
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -1029,11 +1032,50 @@ func webviewDataDir(instanceID string) string {
 // 清理只认该前缀，避免误删根下其它内容。
 const webviewProfilePrefix = "gui-"
 
+// webviewProfileMarker 是每个 profile 根目录下的活跃标记文件名：窗口创建时写入本进程 pid，
+// 窗口收尾时随目录一并 RemoveAll。prune 借此区分「正在被其它实例使用」的活跃 profile（D-34）。
+const webviewProfileMarker = ".active"
+
+// stillActiveProcess = GetExitCodeProcess 的 STILL_ACTIVE 值（Windows 常量 259）。
+const stillActiveProcess = 259
+
+// markProfileActive 写入活跃标记（内容 = 本进程 pid）；尽力而为，失败仅告警不阻断建窗。
+func markProfileActive(dir string) {
+	if err := os.WriteFile(filepath.Join(dir, webviewProfileMarker),
+		[]byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+		slog.Warn("webview profile active marker write failed", "dir", dir, "err", err)
+	}
+}
+
+// profileInUse 判定 profile 目录是否「正在被使用」：读 `.active` 标记内的 pid，进程仍存活 → true。
+// 无标记 / pid 非法 / 进程已退出 → false（视为可清理的残留）。仅用于 prune 的占用防护（D-34）。
+func profileInUse(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, webviewProfileMarker))
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false // 打不开句柄（进程已退出 / 无权限）→ 非占用
+	}
+	defer windows.CloseHandle(h)
+	var code uint32
+	if err := windows.GetExitCodeProcess(h, &code); err != nil {
+		return false
+	}
+	return code == stillActiveProcess
+}
+
 // pruneWebviewProfiles 尽力而为清理孤儿 profile（被强杀/崩溃、未走退出清理的目录）：
 //   - 只清 `<root>/gui-*` 目录（本进程命名，见 webviewProfilePrefix）——不动根下其它内容；
-//   - 只清 LastWriteTime 早于 24h 的目录：活跃 profile 会被 WebView2 运行时持续落盘写入，
-//     24h 未变动即判为残留。当前进程自身的 profile 目录在建窗时（本函数之后）才创建、且活跃
-//     写入 → 天然晚于 cutoff，无需显式排除即不受影响；
+//   - **占用即跳过（D-34）**：目录内有 `.active` 标记且其 pid 进程存活 → 正在被其它实例使用，
+//     绝不删除（多项目并行时保护活跃 profile；NTFS 下仅建/删/改名目录项才更新父目录 mtime，
+//     持续写子目录文件不保证更新 profile 根 mtime，单靠 mtime 会误删活跃目录）；
+//   - 无标记 / 标记 pid 已退出 → 判为残留：再要求 LastWriteTime 早于 24h 才清；
 //   - 删除失败（被占用等）逐条跳过并忽略，**不阻断启动**。
 //
 // 返回（清理数量, 释放字节数）供日志与测试断言。
@@ -1052,6 +1094,9 @@ func pruneWebviewProfiles(root string) (removed int, freed int64) {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
+		if profileInUse(dir) {
+			continue // 占用（活跃标记的 pid 存活）→ 跳过，绝不删活跃 profile
+		}
 		size := dirSize(dir)
 		if err := os.RemoveAll(dir); err != nil {
 			continue // 被占用/失败：跳过并忽略（不阻断启动）

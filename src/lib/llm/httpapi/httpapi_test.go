@@ -536,7 +536,7 @@ func TestMultiClientFanoutAndInstanceFilter(t *testing.T) {
 	}
 
 	// ④ 任一客户端的操作不影响另一个：客户端 A 发只读 tools-list（请求不得回投为事件）
-	env := publish(t, base, "tools-list", "{}")
+	env := publish(t, base, "tools-list", `{"instance_id":`+strconvQuote(s.InstanceID())+`}`)
 	if env["ok"] != true {
 		t.Fatalf("tools-list ok=false: %v", env)
 	}
@@ -696,6 +696,30 @@ func TestPublishDataBindsInstanceID(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("未捕获到达总线的 data-session-list 请求")
+	}
+}
+
+// TestPublishBodyLimit B-31：/publish 请求体超上限（4MiB）→ 413（复用 {ok:false,errors}
+// 信封）；上限在 isLoginTopic 分支前生效（登录面同样受限）。
+func TestPublishBodyLimit(t *testing.T) {
+	_, _, base := newTestServer(t, t.TempDir())
+
+	big := strings.Repeat("a", (4<<20)+4096)
+	body, _ := json.Marshal(map[string]string{"type": "login-in", "payload": big})
+	resp, err := http.Post(base+publishPath, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /publish: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("超大请求体应 413，got %d", resp.StatusCode)
+	}
+	var env map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode 413 信封: %v", err)
+	}
+	if env["ok"] != false {
+		t.Fatalf("413 信封应 ok=false：%v", env)
 	}
 }
 

@@ -98,7 +98,8 @@ type FileListAPI interface {
 	// FileListList 读清单（可选按路径前缀过滤 + 分页）。
 	FileListList(req FileListListRequest) (FileListListResponse, error)
 
-	// FileListPut 单条 upsert（按 Key；Key 空 = 实现侧按路径推导）。
+	// FileListPut 清单写入：Entries 非空 = 批量 upsert（逐条按 Key）；否则单条 upsert
+	// （按 Key；Key 空 = 实现侧按路径推导）。
 	FileListPut(req FileListPutRequest) (FileListPutResponse, error)
 
 	// FileListDelete 按 Key 批量删除（返回实际删除条数）。

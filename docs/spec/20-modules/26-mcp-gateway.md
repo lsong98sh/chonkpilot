@@ -24,7 +24,7 @@
 | 端点 | http：`/mcp` 与 `/`；sse：`/sse` 与 `/`（facade 门面） |
 | 构建 | `build-mcp-gateway.ps1`（源 = `dist/mcp-server/capability`） |
 
-`Params`：`Bus`(必填) · `MCPServer`(装配方传入的 self 能力源) · `MCPConfig` · `Servers` / `ServersFile` · `NsPrefix` · `CallTimeout`(60s) · `ShutdownGrace`(5s) · `CBThreshold` / `CBCooldown`(30s) · `MaxTasks`(8) · `AsyncMode` · `ManageAddr` · `Logf`。
+`Params`：`Bus`(必填) · `MCPServer`(装配方传入的 self 能力源) · `MCPConfig` · `Servers` / `ServersFile` · `NsPrefix` · `CallTimeout`(60s) · `CBThreshold` / `CBCooldown`(30s) · `MaxTasks`(8) · `AsyncMode` · `ManageAddr` · `Logf`。
 
 > **接入源三类**（gateway 无 DB，全部由装配方传入或按参数读取）：
 > ① **`MCPServer`（self）** = 装配方自建的 go-sdk server，能力来自 **capability 契约扫描**（含 mcp-tools，见 [21-llm-server §2.1](21-llm-server.md)、[25-mcp-server](25-mcp-server.md)）（装配链见 §4.0）；

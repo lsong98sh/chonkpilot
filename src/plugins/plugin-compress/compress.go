@@ -389,7 +389,11 @@ func (c *Compressor) process(ev compressEvent) {
 	resp, err := c.api.SnapshotGet(facade.SnapshotGetRequest{
 		InstanceID: ev.InstanceID, SessionID: ev.Session, Scope: scope,
 	})
-	if err != nil || !resp.Found || len(resp.Snapshot.Messages) == 0 {
+	if err != nil {
+		logf("compress: 快照读取失败（instance=%s session=%s）：%v", ev.InstanceID, ev.Session, err)
+		return
+	}
+	if !resp.Found || len(resp.Snapshot.Messages) == 0 {
 		return
 	}
 	snap := resp.Snapshot // 门面 DTO（消费方只认领域模型；不再翻回内核类型）

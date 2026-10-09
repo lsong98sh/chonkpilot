@@ -146,6 +146,13 @@ func (cw *capWatcher) handle(ev fsnotify.Event) {
 			cw.addTreeLocked(p) // capability 树新增子目录 → 递归监听
 		}
 	}
+	if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+		// B-28：目录被删除/改名时 fsnotify 句柄随之失效（Windows 自动移除底层监听），
+		// 须按该路径前缀清理 watched 中相关条目（含目录树下子项），否则目录重建后
+		// syncLocked→addTreeLocked→addDirLocked 被 stale `watched[dir]=true` 短路，
+		// 不再 w.Add → **永久失去监听**（热生效静默失效直到重启）。
+		cw.removeWatchLocked(p)
+	}
 	cw.syncLocked() // 目标根可能刚被创建（此前监听其祖先）→ 补齐监听
 	if !cw.inWantLocked(p) {
 		return
@@ -201,10 +208,21 @@ func (cw *capWatcher) addDirLocked(dir string) bool {
 		return false
 	}
 	if err := cw.w.Add(dir); err != nil {
+		delete(cw.watched, dir) // B-28 兜底：w.Add 失败 → 清除可能残留的 stale 记录，保证后续可重试
 		return false
 	}
 	cw.watched[dir] = true
 	return true
+}
+
+// removeWatchLocked 从 watched 清理 path 及其子树条目（B-28：目录删除/改名后 fsnotify 句柄
+// 自动失效，须同步移除，否则重建时被 stale `watched` 记录短路而永久失去监听）。
+func (cw *capWatcher) removeWatchLocked(path string) {
+	for d := range cw.watched {
+		if under(d, path) {
+			delete(cw.watched, d)
+		}
+	}
 }
 
 // addTreeLocked 递归监听 dir 及其子目录（跳过隐藏项）。

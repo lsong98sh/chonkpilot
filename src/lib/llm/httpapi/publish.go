@@ -100,6 +100,11 @@ var browserUnsupported = map[string]string{
 	msgkeys.TopicPromptOptimise: "提示词优化（browser 形态未接线 LLM 优化面）",
 }
 
+// maxPublishBody 是 /publish 请求体大小上限（B-31）：4MiB。login-* 免鉴权分支可达，
+// 无上限的 json.NewDecoder(r.Body) 会把超大 body 整块缓冲进内存 → 未认证 DoS 面；
+// 用 http.MaxBytesReader 在解码前施加，超限回 413（复用既有 {ok:false,errors} 信封）。
+const maxPublishBody = 4 << 20
+
 // handlePublish 上行入口：解析 {type,payload} → 分派 → 应答 `{ok,result,errors}`
 // （HTTP 恒 200，与 GUI /publish 信封一致；错误收进 errors 由发送端自查）。
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
@@ -107,11 +112,18 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"POST required"}})
 		return
 	}
+	// B-31：请求体上限须在 isLoginTopic 分支之前生效——对登录面（免鉴权）同样受限。
+	r.Body = http.MaxBytesReader(w, r.Body, maxPublishBody)
 	var body struct {
 		Type    string `json:"type"`
 		Payload string `json:"payload"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"request body too large（上限 4MiB）"}})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"bad body: " + err.Error()}})
 		return
 	}
@@ -169,10 +181,19 @@ func (s *Server) publishEvent(typ, payloadJSON, token string) (any, []error) {
 			}
 			return s.publishV(typ, bound)
 		}
-		return s.publishV(typ, s.injectInstance(payloadJSON, token))
+		// B-30：instance_id 与 token 同口径（强制绑定本连接实例 / 缺失拒绝）；出错经 errors 应答。
+		bound, err := s.injectInstance(typ, payloadJSON, token)
+		if err != nil {
+			return failReply("%s: %v", typ, err)
+		}
+		return s.publishV(typ, bound)
 	}
 	if subject, ok := frontMethodSubjects[typ]; ok {
-		result, errs := s.publishV(subject, s.injectInstance(payloadJSON, token))
+		bound, err := s.injectInstance(typ, payloadJSON, token)
+		if err != nil {
+			return failReply("%s: %v", typ, err)
+		}
+		result, errs := s.publishV(subject, bound)
 		// 客户端能力面（tools/prompts/resources-list）返回全量条目（含所有 instance），
 		// 按本实例作用域过滤后再回前端（与桥 filterCapabilityScope 同判据）。
 		s.filterCapabilityScope(typ, result)

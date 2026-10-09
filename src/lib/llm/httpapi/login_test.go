@@ -43,7 +43,7 @@ func postPublish(t *testing.T, base, typ, payload, cookie string) (*http.Respons
 // TestLoginCookieCarriedByHTTPEntry：login-in → Set-Cookie（HttpOnly、不设 Max-Age）+
 // 前端 result 无 token；后续请求入口注入 cookie 令牌；login-out 清 cookie。
 func TestLoginCookieCarriedByHTTPEntry(t *testing.T) {
-	_, bus, base := newTestServer(t, "")
+	s, bus, base := newTestServer(t, "")
 
 	seenLogin := make(chan map[string]any, 1)
 	if _, err := bus.On("login-in", 0, func(_ context.Context, _ string, v *mq.Value) error {
@@ -111,8 +111,8 @@ func TestLoginCookieCarriedByHTTPEntry(t *testing.T) {
 		t.Fatalf("会话 cookie **不得**设 Max-Age（关浏览器即失效），got %q", raw)
 	}
 
-	// ② 后续请求带 cookie → 入口从连接层取令牌注入
-	_, _ = postPublish(t, base, "llm-send", `{"session":"s1","turn":"t1"}`, "sess-tok")
+	// ② 后续请求带 cookie → 入口从连接层取令牌注入（B-30：方法面须带 instance_id）
+	_, _ = postPublish(t, base, "llm-send", `{"session":"s1","turn":"t1","instance_id":`+strconvQuote(s.InstanceID())+`}`, "sess-tok")
 	if later := <-seenLater; later["token"] != "sess-tok" {
 		t.Fatalf("后续请求应注入 cookie 令牌，got %v", later["token"])
 	}

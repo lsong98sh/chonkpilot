@@ -221,22 +221,25 @@ async function detect() {
   }
 }
 
-// ① 用户级路径：**显式保存**（页签右上角【保存】）逐项落库；改后需**重启**才生效
-// （后端不重跑 usr 路径键）→ 成功反馈按 APPLY_RESTART 标注。
+// ① 用户级路径：**显式保存**（页签右上角【保存】）→ 收集全部改动为**单个对象一次批量写**
+// （1 次 saveUserConfig，替代逐键 N 次往返）；改后需**重启**才生效（后端不重跑 usr 路径键）
+// → 成功反馈按 APPLY_RESTART 标注。
 async function saveUserTab() {
   if (!userDirty.value || savingUser.value) return
   savingUser.value = true
-  let saved = 0
   try {
+    const patch = {}
     for (const it of PATH_ITEMS) {
       if (!it.levels.includes('user')) continue
       const v = userValues.value[it.key] || ''
       if (v === (lastUser.value[it.key] || '')) continue
-      await saveUserConfig({ [it.key]: v })
-      lastUser.value = { ...lastUser.value, [it.key]: v }
-      saved++
+      patch[it.key] = v
     }
-    if (saved > 0) message.success(savedText(t, APPLY_RESTART))
+    if (Object.keys(patch).length > 0) {
+      await saveUserConfig(patch)
+      lastUser.value = { ...lastUser.value, ...patch }
+      message.success(savedText(t, APPLY_RESTART))
+    }
   } catch (e) {
     message.error(saveFailedText(t, e))
   } finally {

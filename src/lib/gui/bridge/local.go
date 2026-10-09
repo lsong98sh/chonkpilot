@@ -227,17 +227,24 @@ func readDirNodesExpanded(dir string, expandedSet map[string]bool) []map[string]
 // 细 key 形态（layout.<字段> / window.<字段>）使 prj 可只预设部分项、其余继承个人值。
 // 保存失败静默丢弃（不阻塞 UI；persist 恒在线，正常不触发）。
 
+// callSaveLayoutState 保存布局：map 逐键聚合为**一次**批量 save（entries 载荷，61 §3.1），
+// N 键收敛为 1 次持久化往返 + 1 条刷新广播（D-33；门面整批能力见 config_facade.ConfigKVSet）。
 func callSaveLayoutState(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
+	entries := map[string]string{}
 	for k, v := range mapParam(params, 0) {
-		_ = b.prjConfigSave("layout."+k, cfgScalar(v))
+		entries["layout."+k] = cfgScalar(v)
 	}
+	_ = b.prjConfigSaveBatch(entries)
 	return nil, nil
 }
 
+// callSaveWindowState 保存窗口态：同 layout，map 逐键 → 一次批量 save（D-33）。
 func callSaveWindowState(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
+	entries := map[string]string{}
 	for k, v := range mapParam(params, 0) {
-		_ = b.prjConfigSave("window."+k, cfgScalar(v))
+		entries["window."+k] = cfgScalar(v)
 	}
+	_ = b.prjConfigSaveBatch(entries)
 	return nil, nil
 }
 

@@ -232,8 +232,9 @@ function toSkipDirs(v) {
   return JSON.stringify(arr)
 }
 
-// 用户级超时/重试：**显式保存**（页签右上角【保存】）逐项落库；后端每轮读取
-// （loadLLMRuntimeConfig）→ 保存即生效（无需重启）。
+// 用户级超时/重试：**显式保存**（页签右上角【保存】）。先逐项「规划」（校验 + 内联报错，不落库），
+// 再把全部改动收成**单个对象一次批量写**（1 次 saveUserConfig，替代逐键 N 次往返）；清空 = 删键
+// 回落系统默认（逐键 resetUserKey）。后端每轮读取（loadLLMRuntimeConfig）→ 保存即生效（无需重启）。
 // C 前置校验：整数；retryCount >= 0，其余 > 0（对齐后端 n>=0 / n>0 口径）；非法值**不写库** +
 // 内联报错 + 明确提示；清空 = 删键回落系统默认（与「重置」同口径，**不视为错误**）。
 async function saveUserTab() {
@@ -242,22 +243,44 @@ async function saveUserTab() {
   let saved = 0
   let failed = false
   try {
+    const patch = {}
+    const clears = []
     for (const f of timeoutFields.value) {
-      const r = await commitUser(f)
-      if (r === 'saved') saved++
-      else if (r === 'failed') failed = true
+      const r = commitUser(f, patch, clears)
+      if (r === 'queued') saved++
+      else if (r === 'invalid') failed = true
     }
-    // 单项非法 / 失败已各自给出可见提示 → 仅在有实际写入且无失败时给一次成功反馈
+    if (Object.keys(patch).length > 0) {
+      await saveUserConfig(patch)
+      applyUserSaved(patch)
+    }
+    for (const k of clears) {
+      await resetUserKey(k)
+      applyUserSaved({ [k]: Number(SYSTEM_DEFAULTS[k]) })
+    }
+    // 单项非法已各自给出可见提示 → 仅在有实际写入且无失败时给一次成功反馈
     if (saved > 0 && !failed) message.success(savedText(t, APPLY_INSTANT))
+  } catch (e) {
+    message.error(saveFailedText(t, e))
   } finally {
     savingUser.value = false
     refreshUserDirty()
   }
 }
 
-// commitUser：落库单个 usr 项。返回 'saved'（已写库）/ 'unchanged'（无改动）/ 'invalid'（非法）/
-// 'failed'（写库失败）。不含成功 toast（由 saveUserTab 统一给一次）。
-async function commitUser(f) {
+// applyUserSaved：写入成功后本地态 / 快照归位 + 清内联错误（批量写失败则不调用 → 保留编辑态）。
+function applyUserSaved(entries) {
+  userValues.value = { ...userValues.value, ...entries }
+  lastUserVals.value = { ...lastUserVals.value, ...entries }
+  const errs = { ...userErrors.value }
+  for (const k of Object.keys(entries)) errs[k] = ''
+  userErrors.value = errs
+}
+
+// commitUser：规划单个 usr 项（**同步**：校验 + 记内联错误，不落库）。返回 'queued'（入批待写）/
+// 'unchanged'（无改动）/ 'invalid'（非法 → 不写库）。待写项分别入 patch（值）/ clears（清空删键），
+// 由 saveUserTab 汇总为一次批量写。
+function commitUser(f, patch, clears) {
   const key = f.key
   const rawStr = String(userValues.value[key] ?? '').trim()
   const def = Number(SYSTEM_DEFAULTS[key])
@@ -268,39 +291,23 @@ async function commitUser(f) {
       userErrors.value = { ...userErrors.value, [key]: '' }
       return 'unchanged'
     }
-    try {
-      await resetUserKey(key)
-    } catch (e) {
-      message.error(saveFailedText(t, e))
-      return 'failed'
-    }
-    userValues.value = { ...userValues.value, [key]: def }
-    lastUserVals.value = { ...lastUserVals.value, [key]: def }
-    userErrors.value = { ...userErrors.value, [key]: '' }
-    return 'saved'
+    clears.push(key)
+    return 'queued'
   }
   const r = f.allowZero ? validateNonNegativeInt(rawStr) : validatePositiveInt(rawStr)
   if (!r.ok) {
     const text = f.allowZero ? nonNegativeIntErrorText(t, r.reason) : positiveIntErrorText(t, r.reason)
     userErrors.value = { ...userErrors.value, [key]: text }
     message.error(text)
-    return 'invalid'
+    return 'invalid' // 非法值不写库
   }
   if (String(r.value) === String(lastUserVals.value[key])) {
     userValues.value = { ...userValues.value, [key]: r.value }
     userErrors.value = { ...userErrors.value, [key]: '' }
     return 'unchanged'
   }
-  try {
-    await saveUserConfig({ [key]: r.value })
-  } catch (e) {
-    message.error(saveFailedText(t, e))
-    return 'failed'
-  }
-  userValues.value = { ...userValues.value, [key]: r.value }
-  lastUserVals.value = { ...lastUserVals.value, [key]: r.value }
-  userErrors.value = { ...userErrors.value, [key]: '' }
-  return 'saved'
+  patch[key] = r.value
+  return 'queued'
 }
 
 // 项目级服务参数：**显式保存**（页签右上角【保存】）逐项落库。

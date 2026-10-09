@@ -594,21 +594,29 @@ func (g *Gateway) handleMCPInvoke(ctx context.Context, args map[string]any) (*mc
 	if !ok {
 		return toolErrorText("provider not found"), nil
 	}
-	// 熔断放行：mcp_invoke 链路无独立 cancel 归还点，试探标志沿既有口径由 success/failure 收尾
-	// （此处只做门禁判定，不改变该链路既有取消语义）。
-	if allowed, _ := ps.cb.allow(); !allowed {
+	// 熔断放行：与主调用链 doCall 同口径——allow() 放行后本调用须以熔断器收尾
+	// （cancel/success/failure）。试探放行（isProbe）被取消时须 cancel(isProbe) 归还
+	// half-open 单飞标志，否则 probing 恒真 → 该 provider 永久 fail-closed（C-47）。
+	allowed, isProbe := ps.cb.allow()
+	if !allowed {
 		return toolErrorText(fmt.Sprintf("server %s unavailable (circuit open)", route.Provider)), nil
 	}
 
 	// 转发**调用方 ctx**（G-19）：此前此处传 context.Background() → 调用链 ctx 被丢弃，
 	// 经 mcp_invoke 发起的下游调用**无法被取消**（turn 停止/工具取消传不到下游）。
-	// 与主调用链 doCall 同口径：用户取消（ctx.Canceled）不计熔断失败（否则一次停止即可能
-	// 把 provider 熔断，后续正常调用被 "circuit open" 误伤）。
+	// 与主调用链 doCall run 闭包同口径：先判调用方取消；用户取消（ctx.Canceled）不计熔断失败
+	// （否则一次停止即可能把 provider 熔断，后续正常调用被 "circuit open" 误伤）。
 	res, err := ps.prov.Call(ctx, route.Original, arguments)
-	if err != nil {
-		if ctx.Err() != context.Canceled {
-			ps.cb.failure()
+	if ctx.Err() == context.Canceled {
+		// 仅试探调用复位 probing（普通取消不得复位，否则打破 half-open 单飞，C-32）。
+		ps.cb.cancel(isProbe)
+		if err != nil {
+			return toolErrorText(err.Error()), nil
 		}
+		return res, nil
+	}
+	if err != nil {
+		ps.cb.failure()
 		return toolErrorText(err.Error()), nil
 	}
 	ps.cb.success()

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ErrNoInstance 表示缺少 instance（宿主未注入调用上下文，决策 R-11 二次升级）：
@@ -114,6 +115,45 @@ func TempRoot() (string, error) {
 		return "", ErrNoInstance
 	}
 	return r, nil
+}
+
+// returnFilePrefix / returnFileSuffix 界定 `$RETURN` file 态落盘文件（宿主生成 dsl-return-<id>.md）。
+const (
+	returnFilePrefix = "dsl-return-"
+	returnFileSuffix = ".md"
+)
+
+// SweepStaleReturnFiles 清理临时根下**陈旧**的 `$RETURN` 落盘文件（dsl-return-*.md，mtime 早于
+// now-maxAge），返回删除数。用于作业启动兜底：常驻进程下 `$RETURN` file 态（>64K 结果）按作业
+// 线性累积且无其它删除路径（取消路径的残留也由此在下次作业时清掉）。**仅删陈旧文件** —— 保留
+// 近期结果（仍可被上层读取），故不会造成数据丢失。root 为空 / maxAge<=0 → no-op。
+func SweepStaleReturnFiles(root string, maxAge time.Duration) int {
+	if root == "" || maxAge <= 0 {
+		return 0
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0
+	}
+	cutoff := time.Now().Add(-maxAge)
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, returnFilePrefix) || !strings.HasSuffix(name, returnFileSuffix) {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		if os.Remove(filepath.Join(root, name)) == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // sanitizeInstance 清洗 instance id（仅保留字母/数字/-/_/.，其余替换为 _）；空/平凡值 → ""。

@@ -88,12 +88,20 @@ func (t *Table) Update(key string, rec Record) error {
 // Upsert 写入（不存在插入；已存在覆盖）；同事务迁移索引（created_at 变更亦正确）。
 // updated_at：rec 未携带时隐式写当前时刻（RFC3339FixedNano 纳秒口径，A-16——秒级 RFC3339
 // 与 created_at 的纳秒值混排时同秒内字典序 ≠ 时间序）；调用方已设置则保留不覆盖。
+// 补充（A-26）：补 updated_at 前先对 rec 做**浅拷贝**，不改调用方传入的 map——否则调用方复用
+// 同一 map 连续 Upsert 不同 key 时，第一次写入的 updated_at 会残留其中，第二次起 has=true
+// 被误判为「调用方已设置」而冻结时间戳。
 func (t *Table) Upsert(key string, rec Record) error {
 	if rec == nil {
 		rec = Record{}
 	}
 	if _, has := rec["updated_at"]; !has {
-		rec["updated_at"] = time.Now().UTC().Format(RFC3339FixedNano)
+		cp := make(Record, len(rec)+1)
+		for k, v := range rec {
+			cp[k] = v
+		}
+		cp["updated_at"] = time.Now().UTC().Format(RFC3339FixedNano)
+		rec = cp
 	}
 	return t.db.b.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(t.name))
@@ -260,6 +268,31 @@ func (t *Table) ForEach(fn func(key string, rec Record) error) error {
 			}
 			return fn(string(k), rec)
 		})
+	})
+}
+
+// ForEachPrefix 单事务内按主键前缀顺序遍历命中行（Seek 起扫，遇非前缀即止；k = 主键，
+// rec = 解码记录带 _key）：fn 返回错误中止遍历并透传；桶不存在 → 不调用 fn；坏行跳过。
+// 用于把「ListPrefix + 逐键 Get」（每键一个独立 View 事务，A-33）收敛为单事务前缀扫描，
+// 既不增加事务数也不劣化扫描量（仅扫本前缀，非全桶）。
+func (t *Table) ForEachPrefix(prefix string, fn func(key string, rec Record) error) error {
+	p := []byte(prefix)
+	return t.db.b.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(t.name))
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, v := c.Seek(p); k != nil && bytes.HasPrefix(k, p); k, v = c.Next() {
+			rec, ok := decodeRecord(v, string(k))
+			if !ok {
+				continue
+			}
+			if err := fn(string(k), rec); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

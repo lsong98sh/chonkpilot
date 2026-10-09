@@ -47,7 +47,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button, Textarea, message } from '../ui'
 import { optimizeAgentPrompt } from '../../api/config'
@@ -77,6 +77,9 @@ const { t } = useI18n()
 const text = ref(props.content || '')
 const saving = ref(false)
 const optimizing = ref(false)
+// E-27：优化订阅句柄（内部 3 个 mq.on + guiReq 兜底仅在 done/error 自退订）→ 卸载时主动 abort，
+// 防止流进行中关闭弹框后订阅残留（闭包持组件 ref，残留 onToken 会写回已关闭的表单）。
+let optimizeAbort = null
 // 优化前内容快照（仅 optimize.recover = true 时使用；弹框内「恢复优化」回填，**不落库**）
 const optimizeSnapshot = ref('')
 // 变量插入（OP-12）：把 {{...}} 插入到编辑框光标处（Textarea 根节点即 textarea → ref.$el）。
@@ -108,7 +111,7 @@ function handleOptimize() {
   }
   if (props.optimize.recover) optimizeSnapshot.value = text.value
   optimizing.value = true
-  optimizeAgentPrompt(
+  optimizeAbort = optimizeAgentPrompt(
     { title: props.optimize.title, useCase: props.optimize.useCase, prompt: text.value },
     (chunk) => { text.value += chunk },
     async (prompt) => {
@@ -142,6 +145,11 @@ async function handleReset() {
     saving.value = false
   }
 }
+
+// E-27：卸载即中止优化（退订残留订阅），避免流进行中关闭弹框后 onToken 写回已关闭表单。
+onUnmounted(() => {
+  if (optimizeAbort) { optimizeAbort(); optimizeAbort = null }
+})
 </script>
 
 <style scoped>

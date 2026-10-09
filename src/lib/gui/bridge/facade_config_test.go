@@ -203,3 +203,48 @@ func TestNoFacadeFallsBackToMQ(t *testing.T) {
 		t.Fatalf("MQ 路径写入未生效：%+v err=%v", got.Values, err)
 	}
 }
+
+// TestUiSaveLayoutBatchSingleBroadcast：gui.ui.save 的多键 layout 聚合为**一次**批量
+// data-prj-config-save（entries 载荷，D-33）——N 键 = 1 次持久化往返 + 1 条刷新广播，
+// 且全键落库（不再逐键 N 次 / N 条刷新）。
+func TestUiSaveLayoutBatchSingleBroadcast(t *testing.T) {
+	br, svc, bus, instanceID := newFacadeBridgeEnv(t)
+	saves := countSubjects(t, bus, "data-prj-config-save")
+	refreshes := countSubjects(t, bus, "data-prj-config-refresh")
+
+	// measureLayout 返回的多键形态（7 个键）一次 ui.save。
+	res, errs := br.PublishEvent("gui.ui.save", `{"layout":{"sidebar":280,"filetree":220,`+
+		`"code":600,"bottom":160,"right":300,"preview":200,"console":180}}`)
+	if len(errs) != 0 {
+		t.Fatalf("ui.save errs=%v", errs)
+	}
+	if m, _ := res.(map[string]any); m["ok"] != true {
+		t.Fatalf("ui.save 应答形状变化：%+v", res)
+	}
+
+	// 全键落库（一次批量写生效）。
+	keys := []string{"layout.sidebar", "layout.filetree", "layout.code", "layout.bottom",
+		"layout.right", "layout.preview", "layout.console"}
+	got, err := svc.ConfigKVGet(facade.ConfigKVGetRequest{
+		Domain: facade.DomainPrjConfig, InstanceID: instanceID, Keys: keys,
+	})
+	if err != nil {
+		t.Fatalf("批量布局回读失败：%v", err)
+	}
+	for _, k := range keys {
+		if got.Values[k] == "" {
+			t.Fatalf("布局键未落库：%s（%+v）", k, got.Values)
+		}
+	}
+	if got.Values["layout.sidebar"] != "280" {
+		t.Fatalf("布局值不符：%+v", got.Values)
+	}
+
+	time.Sleep(50 * time.Millisecond) // 等刷新广播投递
+	if n := atomic.LoadInt64(saves); n != 0 {
+		t.Fatalf("门面注入下 config 类不应走总线：请求数=%d", n)
+	}
+	if n := atomic.LoadInt64(refreshes); n != 1 {
+		t.Fatalf("多键布局应只发 1 条刷新广播（D-33）：实际=%d", n)
+	}
+}

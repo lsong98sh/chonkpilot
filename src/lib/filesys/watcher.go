@@ -18,6 +18,11 @@ import (
 
 const debounce = 60 * time.Millisecond
 
+// maxWait 是一个去抖窗口的最大等待（首事件起算，D-37）：被 watch 目录内持续写入时，
+// 若每个事件都把触发时刻重置为「现在 + debounce」，processBatch 会被无限推迟（批次广播饥饿）。
+// 故窗口内首个事件起算固定上限 maxWait，到点即强制处理（不再无限重置）。
+const maxWait = 10 * debounce
+
 // watchManager 按 work_dir 组织 fsnotify watcher。
 type watchManager struct {
 	bus      mq.Bus
@@ -86,7 +91,10 @@ type dirWatcher struct {
 	queue   map[string]fsnotify.Event
 	queueMu sync.Mutex
 	timer   *time.Timer
-	done    chan struct{}
+	// windowStart = 当前去抖窗口首个事件的时刻（首事件起算 maxWait 上限，D-37）；
+	// 零值 = 无活跃窗口。受 queueMu 保护，processBatch 处理完一批即复位。
+	windowStart time.Time
+	done        chan struct{}
 }
 
 func newDirWatcher(workDir string, bus mq.Bus) (*dirWatcher, error) {
@@ -236,29 +244,47 @@ func (dw *dirWatcher) enqueue(ev fsnotify.Event) {
 	dw.armTimer()
 }
 
-func (dw *dirWatcher) snapshot() map[string]fsnotify.Event {
-	dw.queueMu.Lock()
-	defer dw.queueMu.Unlock()
-	if len(dw.queue) == 0 {
-		return nil
+// nextWait 计算窗口内下次触发的等待：默认 debounce；但自首事件起算不得越过 maxWait——
+// 剩余不足 debounce 时取剩余（剩余 <=0 → 0，立即触发）。纯函数，便于断言（D-37）。
+func nextWait(elapsed time.Duration) time.Duration {
+	if remaining := maxWait - elapsed; remaining < debounce {
+		if remaining < 0 {
+			return 0
+		}
+		return remaining
 	}
-	batch := dw.queue
-	dw.queue = make(map[string]fsnotify.Event)
-	return batch
+	return debounce
 }
 
+// armTimer 重排本窗口的触发计时器：每事件仍做 debounce 重置，但以首事件（windowStart）
+// 起算的 maxWait 封顶（D-37）——持续写入下窗口不再被无限推后，到点即触发 processBatch。
 func (dw *dirWatcher) armTimer() {
 	dw.queueMu.Lock()
+	now := time.Now()
+	if dw.windowStart.IsZero() {
+		dw.windowStart = now
+	}
+	wait := nextWait(now.Sub(dw.windowStart))
 	if dw.timer != nil {
 		dw.timer.Stop()
 	}
-	dw.timer = time.AfterFunc(debounce, dw.processBatch)
+	dw.timer = time.AfterFunc(wait, dw.processBatch)
 	dw.queueMu.Unlock()
 }
 
 // processBatch 合并事件：广播 filesys.changed（单文件） + 目录批次。
 func (dw *dirWatcher) processBatch() {
-	batch := dw.snapshot()
+	// 取批 + 复位本窗口状态在同一临界区内完成（原子）：否则「取批后、复位前」到达的事件
+	// 会先 armTimer 排好计时器，又被复位清掉 → 该事件无计时器兜底，批次饥饿。
+	dw.queueMu.Lock()
+	batch := dw.queue
+	dw.queue = make(map[string]fsnotify.Event)
+	if dw.timer != nil {
+		dw.timer.Stop()
+		dw.timer = nil
+	}
+	dw.windowStart = time.Time{} // 本窗口结束：下一批重新起算 maxWait（D-37）
+	dw.queueMu.Unlock()
 	if len(batch) == 0 {
 		return
 	}
@@ -293,12 +319,9 @@ func (dw *dirWatcher) processBatch() {
 	for dir := range dirs {
 		dw.pubDirChanged(dir)
 	}
-	// 处理期间又来新事件 → 再调度一轮
-	dw.queueMu.Lock()
-	if len(dw.queue) > 0 && dw.timer == nil {
-		dw.timer = time.AfterFunc(debounce, dw.processBatch)
-	}
-	dw.queueMu.Unlock()
+	// 处理期间到达的新事件由 enqueue→armTimer 重排一轮（此时 windowStart 已复位 → 起新窗口），
+	// 正常重排程已完整覆盖，故此处无需再调度（D-30：原 `dw.timer == nil` 分支永假，且在
+	// stop() 后置 timer=nil 时反而会对已停 watcher 再调度一轮，删除）。
 }
 
 func operation(op fsnotify.Op) string {

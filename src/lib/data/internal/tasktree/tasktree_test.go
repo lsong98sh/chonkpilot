@@ -6,6 +6,7 @@ package tasktree
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -112,5 +113,79 @@ func TestTasktreeDeleteCascadesAndIdempotent(t *testing.T) {
 	var rec data.Record
 	if ok, _ := prj.Table("tasktree").Get("ghost", &rec); ok {
 		t.Fatal("不存在节点不应被建行")
+	}
+}
+
+// TestTasktreeUpsertPreservesUncarriedOptionalColumns（A-24）：同 id 重复上报时，**本次未携带**
+// 的可选列（state/exec_json/tool_call_id/return_*/loop_* 等）应保留旧值，不被整行覆盖清空；
+// 基础列（status 等恒写）以请求为准。updated_at 为统一纳秒口径（A-25）。
+func TestTasktreeUpsertPreservesUncarriedOptionalColumns(t *testing.T) {
+	s, scope := newTasktreeEnv(t)
+	inst := "ins-tt3"
+
+	upsertNode(t, s, inst, scope, facade.TaskNode{
+		ID: "n1", Kind: "tool", TopSession: "top1", Status: "running",
+		State: "running", ExecJSON: `{"p":1}`, ToolCallID: "tc1",
+		ReturnKind: "inline", ReturnInline: "hello", ReturnSize: 5,
+		LoopCurrent: 2, LoopTotal: 3,
+	})
+	// 第二次上报不带上述可选列 → 应保留旧值
+	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "n1", Kind: "tool", TopSession: "top1", Status: "done"})
+
+	prj, err := s.PrjUsrFor(inst, scope)
+	if err != nil {
+		t.Fatalf("prjusr: %v", err)
+	}
+	var rec data.Record
+	if ok, err := prj.Table("tasktree").Get("n1", &rec); err != nil || !ok {
+		t.Fatalf("get n1: ok=%v err=%v", ok, err)
+	}
+	if got := kernel.Sval(rec["status"]); got != "done" {
+		t.Fatalf("基础列 status 应以请求为准：got=%q", got)
+	}
+	for _, c := range []struct{ col, want string }{
+		{"state", "running"}, {"exec_json", `{"p":1}`}, {"tool_call_id", "tc1"},
+		{"return_kind", "inline"}, {"return_inline", "hello"},
+	} {
+		if got := kernel.Sval(rec[c.col]); got != c.want {
+			t.Fatalf("未携带的可选列被清空：%s got=%q want=%q", c.col, got, c.want)
+		}
+	}
+	if got := ival(rec["loop_current"]); got != 2 {
+		t.Fatalf("loop_current 未保留：%v", rec["loop_current"])
+	}
+	if got := ival(rec["loop_total"]); got != 3 {
+		t.Fatalf("loop_total 未保留：%v", rec["loop_total"])
+	}
+	if got := ival(rec["return_size"]); got != 5 {
+		t.Fatalf("return_size 未保留：%v", rec["return_size"])
+	}
+	if _, err := time.Parse(kernel.RFC3339FixedNano, kernel.Sval(rec["updated_at"])); err != nil {
+		t.Fatalf("updated_at 应为纳秒口径（A-25）：%q (%v)", rec["updated_at"], err)
+	}
+}
+
+// TestTasktreeDeleteTimestampsNanoFormat（A-25）：逻辑删除写入的 deleted_at / updated_at 采用
+// RFC3339FixedNano（与同库统一口径；秒级 RFC3339 会破坏同秒内字典序 = 时间序）。
+func TestTasktreeDeleteTimestampsNanoFormat(t *testing.T) {
+	s, scope := newTasktreeEnv(t)
+	inst := "ins-tt4"
+	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "d1", Kind: "tool", TopSession: "top1"})
+	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: inst, Scope: scope, NodeID: "d1"}); err != nil {
+		t.Fatalf("delete d1: %v", err)
+	}
+	prj, err := s.PrjUsrFor(inst, scope)
+	if err != nil {
+		t.Fatalf("prjusr: %v", err)
+	}
+	var rec data.Record
+	if ok, err := prj.Table("tasktree").Get("d1", &rec); err != nil || !ok {
+		t.Fatalf("get d1: ok=%v err=%v", ok, err)
+	}
+	for _, col := range []string{"deleted_at", "updated_at"} {
+		v := kernel.Sval(rec[col])
+		if _, err := time.Parse(kernel.RFC3339FixedNano, v); err != nil {
+			t.Fatalf("%s 应为纳秒口径（A-25）：%q (%v)", col, v, err)
+		}
 	}
 }

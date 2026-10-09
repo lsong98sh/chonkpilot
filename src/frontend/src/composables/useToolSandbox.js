@@ -51,6 +51,12 @@ function pickExecutorMap(m) {
 export function useToolSandbox() {
   const loading = ref(false)
   const saving = ref(false)
+  // 加载失败态（E-32）：四路加载（tools-list / usr 配置 / mcp 列表 / 信任目录）任一失败即置位。
+  // ① 页面据此给可见提示（否则空态 /「未设置」会误导）；
+  // ② 失败态禁止保存：此时保存会以空态整键覆盖 `tool_sandbox`，丢失未读到的既有配置。
+  const loadFailed = ref(false)
+  // 最近一次加载失败原因（供页面 loadFailedText 拼「失败原因摘要」）。
+  const loadError = ref(null)
   // 三行固定的 executor 行：{ category, tools: [{name, description, server}], on, userSet }
   const toolsByCategory = ref({})
   // workMap = 本地待保存态（拨动/恢复只改它）；savedMap = 上次落库态（用于 dirty 判定）。
@@ -60,6 +66,12 @@ export function useToolSandbox() {
   const serverSandboxOn = ref(0)
   // 项目信任目录有效条目数（prj `security-*`）——供 ②「空目录 = 全拒」内联预警。
   const trustDirCount = ref(0)
+
+  // failLoad：记录任一路加载失败（置位 + 留因由供页面文案）。整体在 reload() 开头复位。
+  function failLoad(e) {
+    loadFailed.value = true
+    loadError.value = e
+  }
 
   // 三个 executor 行（恒定三行；类别下无工具时 tools 为空数组）。
   const rows = computed(() => EXECUTOR_CATEGORIES.map((category) => {
@@ -120,6 +132,7 @@ export function useToolSandbox() {
     } catch (e) {
       console.warn('[useToolSandbox] load tools failed:', e)
       toolsByCategory.value = {}
+      failLoad(e)
     } finally {
       loading.value = false
     }
@@ -136,6 +149,7 @@ export function useToolSandbox() {
       console.warn('[useToolSandbox] load user config failed:', e)
       savedMap.value = {}
       workMap.value = {}
+      failLoad(e)
     }
   }
 
@@ -146,6 +160,7 @@ export function useToolSandbox() {
     } catch (e) {
       console.warn('[useToolSandbox] load mcp list failed:', e)
       serverSandboxOn.value = 0
+      failLoad(e)
     }
   }
 
@@ -157,10 +172,14 @@ export function useToolSandbox() {
       trustDirCount.value = countTrustDirs(res.entries)
     } catch (e) {
       console.warn('[useToolSandbox] load trust dirs failed:', e)
+      failLoad(e) // 计数保持现值（不误报/误清），但失败态须可见且禁止保存
     }
   }
 
   async function reload() {
+    // 整体加载前复位失败态：本轮任何一路失败会重新置位。
+    loadFailed.value = false
+    loadError.value = null
     await loadUserConfig()
     await loadServerSandboxCount()
     await loadTools()
@@ -180,8 +199,10 @@ export function useToolSandbox() {
   }
 
   // 手动保存：把待保存态写库。无改动 → 不写（返回 false）。全部类别未设置 → 删整键。
+  // 加载失败态（loadFailed）→ 拒绝写库：此时待保存态是空态，写入会整键覆盖、丢失既有配置。
   async function save() {
     if (!dirty.value) return false
+    if (loadFailed.value) return false
     const next = pickExecutorMap(workMap.value)
     saving.value = true
     try {
@@ -196,7 +217,7 @@ export function useToolSandbox() {
   }
 
   return {
-    loading, saving, rows, totalTools, workMap, dirty, anySandboxOn,
+    loading, saving, loadFailed, loadError, rows, totalTools, workMap, dirty, anySandboxOn,
     serverSandboxOn, trustDirCount, trustWarning, loadTrustDirs,
     reload, setSandbox, restore, save,
   }

@@ -305,6 +305,21 @@ func (b *Bridge) prjConfigSave(key, value string) error {
 	return nil
 }
 
+// prjConfigSaveBatch 批量保存 prj config 键（save 载荷 {data:{entries:{<key>:<value>,…}}}，
+// 61 §3.1 批量 entries 面；门面 ConfigKVSet 整批一次落库 + **仅 1 条**刷新广播，N 键不再 N 次往返，
+// 见 config_facade.go）。空 entries → 直接返回（不产生空请求）。
+func (b *Bridge) prjConfigSaveBatch(entries map[string]string) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(map[string]any{"data": map[string]any{"entries": entries}})
+	_, errs := b.dataCall(msgkeys.TopicDataPrjConfigSave, raw)
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
+}
+
 // prjConfigLoad 读 prj config 键（load 载荷顶层 {id}；应答 result.data = 值字符串；
 // 无记录/失败 → ""）。
 func (b *Bridge) prjConfigLoad(key string) string {

@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // HandleTypeText handles type_text tool.
@@ -46,7 +47,10 @@ func HandleTypeText(args map[string]interface{}) *ToolResult {
 		SendKeyUnicode(uint16(r), false)
 		SendKeyUnicode(uint16(r), true)
 	}
-	return &ToolResult{Success: true, Output: fmt.Sprintf("⌨️ 已输入 %d 字符", len(text)), Tool: "text_type", RawResult: map[string]interface{}{"action": "typetext", "text": text, "char_count": len(text)}}
+	// 字符数按 rune 计（C-46）：注入循环本身按 rune 遍历，提示/回报亦须一致
+	//（len(text) 为 UTF-8 字节数，中文会翻倍）。
+	n := utf8.RuneCountInString(text)
+	return &ToolResult{Success: true, Output: fmt.Sprintf("⌨️ 已输入 %d 字符", n), Tool: "text_type", RawResult: map[string]interface{}{"action": "typetext", "text": text, "char_count": n}}
 }
 
 // HandleKeyPress handles key_press tool.

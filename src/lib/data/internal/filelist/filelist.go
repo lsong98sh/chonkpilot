@@ -90,12 +90,8 @@ func (s *Service) FileListList(req facade.FileListListRequest) (facade.FileListL
 	return facade.FileListListResponse{List: all, Total: total}, nil
 }
 
-// FileListPut 单条 upsert（按 Key）：领域条目按清单规范字段落库（避免写入无关字段）。
-func (s *Service) FileListPut(req facade.FileListPutRequest) (facade.FileListPutResponse, error) {
-	e := req.Entry
-	if e.Key == "" {
-		return facade.FileListPutResponse{}, errors.New("filelist put: key required")
-	}
+// recordOf 按清单规范字段把领域条目收敛为落库记录（避免写入无关字段）。
+func recordOf(e facade.FileListEntry) data.Record {
 	rec := data.Record{}
 	for _, f := range fileListFields {
 		switch f {
@@ -117,15 +113,52 @@ func (s *Service) FileListPut(req facade.FileListPutRequest) (facade.FileListPut
 			rec[f] = e.IndexedAt
 		}
 	}
+	return rec
+}
+
+// FileListPut 清单写入：Entries 非空 → 批量 upsert（一次短开，逐条按各自 Key 落库）；
+// 否则单条 upsert（按 Key）。领域条目一律按清单规范字段落库。
+func (s *Service) FileListPut(req facade.FileListPutRequest) (facade.FileListPutResponse, error) {
+	if len(req.Entries) > 0 {
+		return s.fileListPutBatch(req)
+	}
+	e := req.Entry
+	if e.Key == "" {
+		return facade.FileListPutResponse{}, errors.New("filelist put: key required")
+	}
 	db, release, err := s.PrjFor(req.InstanceID, req.Scope) // 短开（D-45）：用完即释
 	if err != nil {
 		return facade.FileListPutResponse{}, err
 	}
 	defer release()
-	if err := db.Table(fileListTable).Upsert(e.Key, rec); err != nil {
+	if err := db.Table(fileListTable).Upsert(e.Key, recordOf(e)); err != nil {
 		return facade.FileListPutResponse{}, err
 	}
 	return facade.FileListPutResponse{OK: true, ID: e.Key}, nil
+}
+
+// fileListPutBatch 批量 upsert（一次短开；逐条落库，错误聚合上报——对齐 FileListDelete 的批量形态）。
+func (s *Service) fileListPutBatch(req facade.FileListPutRequest) (facade.FileListPutResponse, error) {
+	db, release, err := s.PrjFor(req.InstanceID, req.Scope) // 短开（D-45）：用完即释
+	if err != nil {
+		return facade.FileListPutResponse{}, err
+	}
+	defer release()
+	t := db.Table(fileListTable)
+	var errs []error
+	for _, e := range req.Entries {
+		if e.Key == "" {
+			errs = append(errs, errors.New("filelist put: key required"))
+			continue
+		}
+		if err := t.Upsert(e.Key, recordOf(e)); err != nil {
+			errs = append(errs, fmt.Errorf("filelist put %s: %w", e.Key, err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return facade.FileListPutResponse{}, err
+	}
+	return facade.FileListPutResponse{OK: true}, nil
 }
 
 // FileListDelete 按 Key 批量删除（重复键去重；不存在的键不计入 Deleted）。

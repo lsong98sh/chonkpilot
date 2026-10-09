@@ -697,24 +697,44 @@ func (s *Server) publishV(subject string, payload any) (result any, errs []error
 	return v.Result, v.Errors
 }
 
-// injectInstance 给载荷补 instance_id（幂等；与桥 injectInstance 同语义）。
-// 2026-09-20（阶段 2b-1/2b-2）：同时补**入口从连接层取**的当前令牌（cookie）——
-// **连接层为准**（无条件覆盖前端自报的同名字段；未持有 = 置空）—— 身份由入口承载、
-// **不采信前端 payload 里的身份字段**（61 §4.6 · 22 §1）；前端不可见该字段的来源。
-func (s *Server) injectInstance(payloadJSON string, token string) string {
+// injectInstance 给载荷注入**连接层身份**：`instance_id` 与当前令牌（cookie）。
+// 2026-09-20（阶段 2b-1/2b-2）：`token` 由**入口从连接层取**（无条件覆盖前端自报的同名字段；
+// 未持有 = 置空）—— 身份由入口承载、**不采信前端 payload 里的身份字段**（61 §4.6 · 22 §1）。
+// 2026-10-09（B-30）：`instance_id` 与 `token` 同口径 —— **本连接实例为准**（客户端不得自报）：
+//  ① 自报值 ≠ 本连接实例 → 无条件覆盖为本实例（Warn 记录伪造尝试：上报值 + 被覆盖事实）；
+//  ② 缺失 → 报错拒绝（error 供调用点转 errors 应答，文案含 instance_id required）；
+//  ③ 唯一豁免 = `instance-claim`（msgkeys.TopicInstanceClaim）：语义即前端启动认领实例，
+//     缺失 id 属正常（不报错；已带值仍按 ① 处理）。
+//
+// 与同入口 bindData（强制绑定）/ bindFilesys（强制绑定 work_dir）口径一致；仅加强入口校验，
+// 不改 61-消息一览 的消息字段定义（消息面不变）。
+func (s *Server) injectInstance(topic, payloadJSON, token string) (string, error) {
 	var m map[string]any
 	if err := json.Unmarshal([]byte(payloadJSON), &m); err != nil {
-		return payloadJSON
+		return payloadJSON, nil
 	}
-	if _, ok := m["instance_id"]; !ok {
-		m["instance_id"] = s.instanceID
+	raw0, present := m[msgkeys.FieldInstanceId]
+	reported, _ := raw0.(string)
+	switch {
+	case !present:
+		// ② 缺失 → 拒绝（instance-claim 豁免：前端启动认领，缺失 id 属正常）
+		if topic != msgkeys.TopicInstanceClaim {
+			log.Printf("[server] httpapi instance_id missing: topic=%s (rejected)", topic)
+			return "", fmt.Errorf("instance_id required")
+		}
+	case reported != s.instanceID:
+		// ① 自报 ≠ 本实例（含空串/非字符串）→ 无条件覆盖（伪造尝试记 Warn 留痕）
+		log.Printf("[server] httpapi instance_id forged attempt: topic=%s reported=%q overridden->%q",
+			topic, reported, s.instanceID)
+		m[msgkeys.FieldInstanceId] = s.instanceID
+		// default：reported == s.instanceID → 保留原值
 	}
 	m["token"] = token
 	raw, err := json.Marshal(m)
 	if err != nil {
-		return payloadJSON
+		return payloadJSON, nil
 	}
-	return string(raw)
+	return string(raw), nil
 }
 
 // ── 工具 ──

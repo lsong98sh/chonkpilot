@@ -312,3 +312,37 @@ func StrictlyWithin(root, child string) bool {
 	c := filepath.ToSlash(filepath.Clean(child))
 	return strings.HasPrefix(c, r+"/")
 }
+
+// RealPathOrAncestor 解析 path 的符号链接**真实落点**：path 存在 → EvalSymlinks 自身；不存在
+// （新建目标）→ 逐级上溯到**最近存在的祖先**解析后回拼尚不存在的路径段。已到根仍不可解析
+// （异常）→ ok=false。用于写前 symlink 越界复验（A-29/A-32），各域共用避免重复实现。
+func RealPathOrAncestor(path string) (string, bool) {
+	p := filepath.Clean(path)
+	var missing []string
+	for {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				real = filepath.Join(real, missing[i])
+			}
+			return real, true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", false
+		}
+		missing = append(missing, filepath.Base(p))
+		p = parent
+	}
+}
+
+// RealPathWithin 写前越界复验（A-32）：StrictlyWithin 仅纯词法校验，root 内指向 root 外的 symlink
+// （或 symlink 目标）会被 os.WriteFile / os.MkdirAll / os.RemoveAll 跟随越界。此处解析 path 的
+// 真实落点（不存在则解析最近存在的祖先后回拼，见 RealPathOrAncestor）后复判仍**严格**落在 root
+// 内；越界 / 不可解析 → false。
+func RealPathWithin(root, path string) bool {
+	real, ok := RealPathOrAncestor(path)
+	if !ok {
+		return false
+	}
+	return StrictlyWithin(root, real)
+}

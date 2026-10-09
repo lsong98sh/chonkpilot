@@ -675,7 +675,9 @@ async function confirmEdit() {
   const parentDir = getParentPath(origPath)
   if (!val || val === oldName) {
     if (isNew) {
-      try { await deleteFilePath(origPath) } catch (e) { console.error('[FileTree] deleteFilePath error:', e) }
+      // 取消新建（空名 / 未改名）→ 清理占位空文件；删除失败须用户可见（否则残留孤儿文件且无感），
+      // 其后的 refreshDirInTree 会刷新目录把残留暴露出来（E-34）。
+      try { await deleteFilePath(origPath) } catch (e) { message.error(t('fileTree.delete_failed_detail', { name: oldName, error: fileOpErrorText(e, t('fileTree.unknown_error')) })) }
     }
     await refreshDirInTree(parentDir)
     return
@@ -686,7 +688,8 @@ async function confirmEdit() {
       message.success(t('fileTree.created', { name: val }))
     } catch (e) {
       message.error(e?.message || t('fileTree.create_failed'))
-      try { await deleteFilePath(origPath) } catch (e) { console.error('[FileTree] deleteFilePath error:', e) }
+      // 创建失败 → 清理占位文件；清理若也失败须可见（否则残留孤儿文件，下方刷新目录暴露）
+      try { await deleteFilePath(origPath) } catch (e2) { message.error(t('fileTree.delete_failed_detail', { name: val, error: fileOpErrorText(e2, t('fileTree.unknown_error')) })) }
     }
   } else {
     try {
@@ -709,10 +712,14 @@ async function cancelEdit() {
   editingOrigPath.value = ''
   editingIsNew.value = false
   if (isNew) {
+    // 取消新建 → 清理占位空文件；删除失败须用户可见（否则残留孤儿文件且无感），
+    // 无论成败都刷新目录，把可能残留的空文件暴露出来（E-34）。
     try {
       await deleteFilePath(origPath)
-      await refreshDirInTree(getParentPath(origPath))
-    } catch (e) { console.error('[FileTree] deleteFilePath error:', e) }
+    } catch (e) {
+      message.error(t('fileTree.delete_failed_detail', { name: path.split(/[/\\]/).pop(), error: fileOpErrorText(e, t('fileTree.unknown_error')) }))
+    }
+    await refreshDirInTree(getParentPath(origPath))
   }
 }
 

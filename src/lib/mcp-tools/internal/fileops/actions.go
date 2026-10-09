@@ -709,6 +709,12 @@ func (ec *editCtx) mov(toks []argTok) error {
 		ec.addFail(fromD, "MOV", "源不存在："+serr.Error())
 		return nil
 	}
+	// 自覆盖 / 嵌套复制防护（C-36）：同路径 → 先复制后删源会把整棵树删光且文件被截断；
+	// 目标在源目录内 → 复制期间新建的目标目录被 Walk 递归吸入 → 无限嵌套直至路径超长。
+	if msg := rejectSelfOrNestedTarget(from, to, fi.IsDir()); msg != "" {
+		ec.addFail(fromD, "MOV", msg)
+		return nil
+	}
 	// 先建目标父目录：锁文件（O_EXCL 创建于目标路径旁）要求父目录已存在，
 	// MkdirAll 幂等且仅建目录，不削弱锁保护的写语义（C-27）。
 	if err := os.MkdirAll(filepath.Dir(to), 0755); err != nil {
@@ -788,6 +794,12 @@ func (ec *editCtx) cpy(toks []argTok) error {
 		ec.addFail(fromD, "CPY", "源不存在："+serr.Error())
 		return nil
 	}
+	// 自覆盖 / 嵌套复制防护（C-36）：同路径 → 复制自覆盖（文件截断）；目标在源目录内 →
+	// 复制期间新建的目标目录被 Walk 递归吸入 → 无限嵌套复制。目录/文件统一拒绝。
+	if msg := rejectSelfOrNestedTarget(from, to, fi.IsDir()); msg != "" {
+		ec.addFail(fromD, "CPY", msg)
+		return nil
+	}
 	// 先建目标父目录：锁文件（O_EXCL 创建于目标路径旁）要求父目录已存在，
 	// MkdirAll 幂等且仅建目录，不削弱锁保护的写语义（C-27）。
 	if err := os.MkdirAll(filepath.Dir(to), 0755); err != nil {
@@ -816,6 +828,31 @@ func (ec *editCtx) cpy(toks []argTok) error {
 	}
 	ec.addCreated(toD, to)
 	return nil
+}
+
+// rejectSelfOrNestedTarget 校验 MOV/CPY 的源与目标关系，返回拒绝消息（空 = 通过）：
+//   - 目标与源为同一路径（归一后）：复制自覆盖（文件被截断；目录先读后写同一文件）且 MOV 随后
+//     无条件删除整棵源树 → 数据丢失；
+//   - 目标位于源目录内部：复制期间新建的目标子目录被 filepath.Walk 递归吸入 → 无限嵌套复制
+//     直至路径超长报错并残留垃圾目录树。
+//
+// from / to 为 resolve 后的绝对路径；isDir = 源是否为目录（文件只需同路径判定）。
+func rejectSelfOrNestedTarget(from, to string, isDir bool) string {
+	cf, ct := filepath.Clean(from), filepath.Clean(to)
+	if cf == ct {
+		return "源与目标为同一路径（拒绝自覆盖复制/移动）"
+	}
+	if isDir && isWithinDir(ct, cf) {
+		return "目标位于源目录内部（拒绝嵌套复制/移动）"
+	}
+	return ""
+}
+
+// isWithinDir 报告 child 是否严格位于 parent 目录内部（归一后按路径分隔符前缀判定）。
+func isWithinDir(child, parent string) bool {
+	cp := filepath.Clean(parent)
+	cc := filepath.Clean(child)
+	return cc != cp && strings.HasPrefix(cc, cp+string(filepath.Separator))
 }
 
 // removeDirTree 深度优先逐项删除；先子后父，残留（被占用）路径收集返回。

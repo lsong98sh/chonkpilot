@@ -103,3 +103,37 @@ func TestCloseInstanceUnsubscribesForward(t *testing.T) {
 		t.Fatalf("CloseInstance 后事件不得再转发到本桥前端：before=%d after=%d", before, n)
 	}
 }
+
+// TestStopForwardBeforeStartUnsubscribesOnStart（D-32）：stopForward（经 CloseInstance）先于
+// Start 被调用时（此处 Once 方案无法覆盖：退订请求时 unsub 尚为 nil、Once 被空转消费后永久
+// 失效），Start 保存句柄后须立即退订，避免 ">" 订阅泄漏至总线关闭。
+func TestStopForwardBeforeStartUnsubscribesOnStart(t *testing.T) {
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatalf("bus: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close() })
+
+	var mu sync.Mutex
+	var scripts []string
+	b := New("ins-a", "wd", "dd", func(script string) {
+		mu.Lock()
+		scripts = append(scripts, script)
+		mu.Unlock()
+	}, bus)
+
+	b.CloseInstance() // 先于 Start：置停止请求（旧实现下 unsub 为 nil → Once 空转消费）
+	if err := b.Start(); err != nil {
+		t.Fatalf("bridge start: %v", err)
+	}
+
+	bus.Emit(context.Background(), "task-started",
+		map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"}).Wait()
+
+	mu.Lock()
+	n := len(scripts)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("Start 前已请求停止 → Start 后订阅须立即退订，事件不得转发：转发了 %d 条", n)
+	}
+}

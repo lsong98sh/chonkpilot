@@ -93,10 +93,13 @@ type Bridge struct {
 	cfg facade.API
 
 	// unsub 是 Start() 注册的总线 ">" 订阅句柄（D-23：CloseInstance 退订用；nil = 未订阅）。
-	// 句柄为本桥私有，退订只移除本桥转发订阅，不影响共享总线与其它窗口的桥；
-	// unsubOnce 保证退订幂等（Close/CloseInstance 重复调用不 panic、不重复退订）。
-	unsubOnce sync.Once
-	unsub     mq.Sub
+	// 句柄为本桥私有，退订只移除本桥转发订阅，不影响共享总线与其它窗口的桥。
+	// fwdMu 守护 unsub + stopRequested，退订幂等（句柄置 nil 后重复调用为空操作）；
+	// stopRequested 为 D-32 补位：stopForward 先于 Start 被请求（CloseInstance 与 Start
+	// 并发）时置位，Start 保存句柄后须立即退订，否则该句柄永不退订、订阅泄漏至总线关闭。
+	fwdMu         sync.Mutex
+	unsub         mq.Sub
+	stopRequested bool
 }
 
 // New 创建桥（inprocess 内存总线；由 main 传入共享 mq.Bus）。
@@ -229,7 +232,12 @@ func (b *Bridge) Start() error {
 	}
 	// D-23：保存订阅句柄供 CloseInstance 退订（原实现丢弃句柄 → 窗口关闭后僵尸桥
 	// 永久残留 ">" 订阅，高频事件仍对其做完整 JSON 解析）。
+	b.fwdMu.Lock()
 	b.unsub = sub
+	if b.stopRequested { // D-32：stopForward 先于本 Start 被请求 → 立即退订（不依赖 Once）
+		b.unsubForwardLocked()
+	}
+	b.fwdMu.Unlock()
 	return nil
 }
 
@@ -638,11 +646,20 @@ func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs
 // 避免僵尸桥对高频事件（llm-receive 逐 token）仍执行 eventInstanceID/compatEmit 的完整
 // JSON 解析与转发。句柄为本桥私有，不影响主桥/共享订阅；未 Start（unsub == nil）时为空操作。
 func (b *Bridge) stopForward() {
-	b.unsubOnce.Do(func() {
-		if b.unsub != nil {
-			_ = b.unsub.Unsubscribe()
-		}
-	})
+	b.fwdMu.Lock()
+	defer b.fwdMu.Unlock()
+	b.stopRequested = true // D-32：置位，令晚到的 Start 保存句柄后立即退订
+	b.unsubForwardLocked()
+}
+
+// unsubForwardLocked 退订并清空 ">" 订阅句柄（须持 fwdMu）：句柄置 nil 后重复调用为空操作，
+// 保证退订恰好一次、幂等（Close/CloseInstance 重复调用不 panic、不重复退订）。
+func (b *Bridge) unsubForwardLocked() {
+	if b.unsub == nil {
+		return
+	}
+	_ = b.unsub.Unsubscribe()
+	b.unsub = nil
 }
 
 // CloseInstance 注销本实例（发 instance-exit；persist 移除实例绑定 + server 取消名下

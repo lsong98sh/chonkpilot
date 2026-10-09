@@ -189,6 +189,9 @@ const llmOptions = ref([])
 const toolGroups = ref([])
 const allToolCategories = ref([])
 const optimizing = ref(false)
+// E-27：优化订阅句柄（内部 3 个 mq.on + guiReq 兜底仅在 done/error 自退订）→ 卸载时主动 abort，
+// 防止流进行中关闭面板后订阅残留（闭包持组件 ref，残留 onToken 会写回已关闭表单）。
+let optimizeAbort = null
 
 function metaMap() {
   const m = {}
@@ -256,7 +259,7 @@ function onAgentOptimize() {
     return
   }
   optimizing.value = true
-  optimizeAgentPrompt(
+  optimizeAbort = optimizeAgentPrompt(
     {
       title: t('scenario.optimize_title', { name: form.title || t('scenario.unnamed') }),
       useCase: t('scenario.optimize_use_case'),
@@ -478,6 +481,8 @@ onMounted(async () => {
 onUnmounted(() => {
   for (const fn of _unsubs) fn()
   _unsubs.length = 0
+  // E-27：卸载即中止优化（退订残留订阅），避免流进行中关闭面板后 onToken 写回已关闭表单。
+  if (optimizeAbort) { optimizeAbort(); optimizeAbort = null }
 })
 </script>
 

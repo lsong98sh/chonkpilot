@@ -318,6 +318,83 @@ func TestFileManagerDSL_Patch(t *testing.T) {
 // q 包裹双引号（路径含反斜杠原样保留，引号内转义不改变普通反斜杠）。
 func q(s string) string { return "\"" + s + "\"" }
 
+// TestRejectSelfOrNestedTarget（C-36）：源与目标同路径、或目标位于源目录内部 → 拒绝。
+func TestRejectSelfOrNestedTarget(t *testing.T) {
+	base := t.TempDir()
+	f := filepath.Join(base, "a.txt")
+	d := filepath.Join(base, "dir")
+	if msg := rejectSelfOrNestedTarget(f, f, false); msg == "" {
+		t.Fatalf("文件同路径应拒绝")
+	}
+	if msg := rejectSelfOrNestedTarget(d, d, true); msg == "" {
+		t.Fatalf("目录同路径应拒绝")
+	}
+	if msg := rejectSelfOrNestedTarget(d, filepath.Join(d, "sub"), true); msg == "" {
+		t.Fatalf("目标在源目录内部应拒绝")
+	}
+	// 正常目标不应误拒
+	if msg := rejectSelfOrNestedTarget(d, filepath.Join(base, "other"), true); msg != "" {
+		t.Fatalf("正常目录目标不应拒绝：%s", msg)
+	}
+	if msg := rejectSelfOrNestedTarget(f, filepath.Join(base, "b.txt"), false); msg != "" {
+		t.Fatalf("正常文件目标不应拒绝：%s", msg)
+	}
+}
+
+// TestFileManagerDSL_MoveCopySameOrNested（C-36）：同路径/嵌套复制移动被拒绝且不丢数据、
+// 不产生嵌套垃圾目录（此前 MOV 同路径会先复制后删光整棵源树；嵌套复制会无限递归）。
+func TestFileManagerDSL_MoveCopySameOrNested(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "keep.txt")
+	if err := os.WriteFile(f, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srcDir := filepath.Join(dir, "srcdir")
+	if err := os.MkdirAll(filepath.Join(srcDir, "n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "n", "b.txt"), []byte("B"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// MOV 文件到自身：拒绝，源文件内容不变（防数据丢失）
+	raw, ok := runManager(t, map[string]interface{}{"script": "MOV #" + q(f) + " #" + q(f)})
+	if !ok {
+		t.Fatalf("expected overall success, raw=%v", raw)
+	}
+	if len(failsOf(raw)) == 0 {
+		t.Fatalf("同路径 MOV 应记 fails：%v", raw)
+	}
+	if d, _ := os.ReadFile(f); string(d) != "data" {
+		t.Fatalf("同路径 MOV 不得改动源文件：%q", string(d))
+	}
+
+	// CPY 目录到自身：拒绝
+	raw2, _ := runManager(t, map[string]interface{}{"script": "CPY #" + q(srcDir) + " #" + q(srcDir)})
+	if len(failsOf(raw2)) == 0 {
+		t.Fatalf("同路径 CPY 应记 fails：%v", raw2)
+	}
+
+	// CPY 目录到其子路径：拒绝，且不创建目标目录（防无限嵌套）
+	inner := filepath.Join(srcDir, "inner")
+	raw3, _ := runManager(t, map[string]interface{}{"script": "CPY #" + q(srcDir) + " #" + q(inner)})
+	if len(failsOf(raw3)) == 0 {
+		t.Fatalf("嵌套 CPY 应记 fails：%v", raw3)
+	}
+	if _, err := os.Stat(inner); !os.IsNotExist(err) {
+		t.Fatalf("嵌套 CPY 不得创建目标目录")
+	}
+
+	// MOV 目录到其子路径：拒绝，源树完整
+	raw4, _ := runManager(t, map[string]interface{}{"script": "MOV #" + q(srcDir) + " #" + q(filepath.Join(srcDir, "sub"))})
+	if len(failsOf(raw4)) == 0 {
+		t.Fatalf("嵌套 MOV 应记 fails：%v", raw4)
+	}
+	if d, _ := os.ReadFile(filepath.Join(srcDir, "n", "b.txt")); string(d) != "B" {
+		t.Fatalf("嵌套 MOV 不得破坏源树")
+	}
+}
+
 // TestFileManagerDSL_LoopDataSource filesys_run 核心语句 LOOP 数据源（`#"f.csv".lines`）：
 // 绝对路径可读、相对路径整体失败（R-11，含数据源读取）。
 func TestFileManagerDSL_LoopDataSource(t *testing.T) {

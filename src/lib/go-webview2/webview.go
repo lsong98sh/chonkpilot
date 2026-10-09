@@ -37,6 +37,14 @@ func setWindowContext(wnd uintptr, data interface{}) {
 	windowContext[wnd] = data
 }
 
+// delWindowContext 从 windowContext 移除条目（D-28）：窗口销毁（WM_DESTROY）时必须清理，
+// 否则多窗口反复开关会永久泄漏 *webview（含 bindings/dispatchq）直至进程退出。
+func delWindowContext(wnd uintptr) {
+	windowContextSync.Lock()
+	defer windowContextSync.Unlock()
+	delete(windowContext, wnd)
+}
+
 type browser interface {
 	Embed(hwnd uintptr) bool
 	Resize()
@@ -131,19 +139,25 @@ func NewWithOptions(options WebViewOptions) WebView {
 		return nil
 	}
 
+	// Settings 获取/设置失败：**不 os.Exit**（单窗口失败不得波及其它窗口、不得跳过收尾），
+	// 改为记日志并走既有失败返回路径（返回 nil，由宿主按单窗口失败收敛，与 CreateWithOptions
+	// 失败口径一致；D-36）。调用方（gui 侧）已将 nil 视为建窗失败并回滚。
 	settings, err := chromium.GetSettings()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("failed to get webview2 settings: %v", err)
+		return nil
 	}
 	// disable context menu
 	err = settings.PutAreDefaultContextMenusEnabled(options.Debug)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("failed to set context menus enabled: %v", err)
+		return nil
 	}
 	// disable developer tools
 	err = settings.PutAreDevToolsEnabled(options.Debug && !options.DevToolsDisabled)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("failed to set devtools enabled: %v", err)
+		return nil
 	}
 	// Enable `-webkit-app-region: drag` for frameless windows so the HTML
 	// toolbar can act as a native draggable title bar (Settings9). The
@@ -300,6 +314,9 @@ func wndproc(hwnd, msg, wp, lp uintptr) uintptr {
 		case w32.WMClose:
 			_, _, _ = w32.User32DestroyWindow.Call(hwnd)
 		case w32.WMDestroy:
+			// 窗口销毁：移除 windowContext 条目（D-28，避免多窗口反复开关时 *webview 永久泄漏），
+			// 再终止消息循环。
+			delWindowContext(hwnd)
 			w.Terminate()
 		case w32.WMGetMinMaxInfo:
 			lpmmi := (*w32.MinMaxInfo)(unsafe.Pointer(lp))

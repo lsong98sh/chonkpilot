@@ -59,8 +59,6 @@ type Params struct {
 	NsPrefix string
 	// CallTimeout 全局默认调用超时（默认 60s）。
 	CallTimeout time.Duration
-	// ShutdownGrace spawned 下游优雅退出宽限（默认 5s）。
-	ShutdownGrace time.Duration
 	// CBThreshold / CBCooldown 熔断失败阈值 / 冷却期（默认 5 / 30s）。
 	CBThreshold int
 	CBCooldown  time.Duration
@@ -121,9 +119,6 @@ func New(p Params) (*Gateway, error) {
 	}
 	if p.CallTimeout <= 0 {
 		p.CallTimeout = 60 * time.Second
-	}
-	if p.ShutdownGrace <= 0 {
-		p.ShutdownGrace = 5 * time.Second
 	}
 	if p.CBCooldown <= 0 {
 		p.CBCooldown = 30 * time.Second
@@ -286,7 +281,9 @@ func (g *Gateway) Stop(ctx context.Context) error {
 
 	g.logf("[gateway] stopping ...")
 	// spawned/proxied 下游收尾（Close 终止 stdio 子进程）。
-	for _, key := range g.reg.order {
+	// providerKeys() 取注册表快照（持锁），避免直接 range g.reg.order 与并发
+	// registerProvider/removeProvider 构成 data race（C-41）。
+	for _, key := range g.reg.providerKeys() {
 		if ps, ok := g.reg.provider(key); ok {
 			if err := ps.prov.Close(); err != nil {
 				g.logf("[gateway] provider %s close: %v", key, err)
@@ -830,6 +827,16 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	if !allowed {
 		return nil, -32601, fmt.Sprintf("server %s unavailable (circuit open)", route.Provider)
 	}
+	// allow() 已放行 → 本调用须以熔断器收尾（cancel/success/failure，C-18/C-32）。正常路径由下方
+	// run 闭包异步收尾（spawn/start 成功 = run 必执行）；若在把 run 交付执行池之前**早退**
+	//（pre-hook 失败 / start·spawn 失败），则无人收尾 → 试探调用 probing 恒真 → 该 provider 永久
+	// fail-closed。用 defer 兜底：仅在未交付（settled=false）时归还试探标志（非试探 no-op）。
+	settled := false
+	defer func() {
+		if !settled {
+			ps.cb.cancel(isProbe)
+		}
+	}()
 
 	// 前置打点钩子（2026-09-27）：注册方（如 history 插件）经 tools/register 的可选字段
 	// pre_hook_subject 声明 → 在执行**任意**工具前先向该相对主题发一次**同步**请求；
@@ -952,6 +959,7 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 		if err != nil {
 			return nil, -32000, err.Error()
 		}
+		settled = true // run 已交付执行池（异步收尾熔断器）
 		// 执行态上报（P3-① 上报点 ①）：启动 → started（层落 running + exec_json）
 		g.tm.emitExec(req.InstanceID, t.ID, ExecPhaseStarted, map[string]any{"mode": mode, "threshold_s": limit})
 		return pendingResult(t.ID), 0, ""
@@ -962,6 +970,7 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 		if err != nil {
 			return nil, -32000, err.Error()
 		}
+		settled = true // run 已交付执行池（异步收尾熔断器）
 		// 执行态上报（P3-① 上报点 ①）：启动 → started（层落 running + exec_json）
 		g.tm.emitExec(spec.instanceID, t.ID, ExecPhaseStarted, map[string]any{"mode": mode, "threshold_s": limit})
 		// 无上限（工具 `_meta.timeout` 或 usr threshold 显式 0/-1）：不设超时/阈值点，
@@ -1819,8 +1828,23 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 		g.mu.Lock()
 		stopped := g.stopped
 		g.mu.Unlock()
-		if stopped || prov.closing.Load() {
+		if stopped {
 			return
+		}
+		// closing 置位 = 正被 Invalidate 主动重建（如取消 → Terminate → kill+respawn）：
+		// 本次退出属预期而非崩溃 → 不退出观测，等待重建窗口结束（closing 复位）后继续观测
+		// 新进程；仅 Close（Stop/unregister，stopCh 关闭）路径才真正退出观测（C-37；
+		// 否则新进程无人观测 → 再崩不再自动重建 → 状态幽灵 connected）。
+		if prov.closing.Load() {
+			if !g.waitSpawnedRebuild(prov) {
+				return
+			}
+			ps, ok := g.reg.provider(key)
+			if !ok || ps.status != "connected" {
+				return
+			}
+			lastStart = time.Now() // 重建后的新进程起点 → 不计快速重启
+			continue
 		}
 		ps, ok := g.reg.provider(key)
 		if !ok || ps.status != "connected" {
@@ -1848,12 +1872,24 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 			}
 			g.logf("[gateway] spawned server %s exited quickly (lived %v), backoff %v before rebuild", name, lived.Truncate(time.Millisecond), backoff)
 			time.Sleep(backoff)
-			// 退避后复查：期间可能已 Stop/unregister/移除 → 静默退出
+			// 退避后复查：期间可能已 Stop/unregister/移除 → 静默退出；若正处于 Invalidate
+			// 重建窗口（closing）→ 同主循环口径等待复位后继续观测新进程（C-37）。
 			g.mu.Lock()
 			stopped = g.stopped
 			g.mu.Unlock()
-			if stopped || prov.closing.Load() {
+			if stopped {
 				return
+			}
+			if prov.closing.Load() {
+				if !g.waitSpawnedRebuild(prov) {
+					return
+				}
+				ps2, ok2 := g.reg.provider(key)
+				if !ok2 || ps2.status != "connected" {
+					return
+				}
+				lastStart = time.Now()
+				continue
 			}
 			if _, ok := g.reg.provider(key); !ok {
 				return
@@ -1886,6 +1922,33 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 		g.notifyMCPChanged(scope, map[string]any{"kind": KindServer, "name": name, "status": "connected"})
 		g.logf("[gateway] spawned server %s restarted after exit (%v)", name, err)
 	}
+}
+
+// waitSpawnedRebuild 等待 Invalidate 重建窗口结束（closing 复位），报告是否应继续观测 spawned 进程。
+// 返回 true = 重建已完成且 provider 仍在注册中（调用方继续观测新进程）；false = 观测应终止
+//（网关 Stop / provider 已 Close（stopCh 关闭）/ 等待兜底超时）。带退避轮询避免瞬时忙等；
+// Invalidate 在成功/失败路径均复位 closing，故等待有界（90s 兜底防挂死）（C-37）。
+func (g *Gateway) waitSpawnedRebuild(prov *proxyProvider) bool {
+	delay := 20 * time.Millisecond
+	for waited := time.Duration(0); waited < 90*time.Second; waited += delay {
+		g.mu.Lock()
+		stopped := g.stopped
+		g.mu.Unlock()
+		if stopped || prov.closed() {
+			return false
+		}
+		if !prov.closing.Load() {
+			return true
+		}
+		time.Sleep(delay)
+		if delay < 500*time.Millisecond {
+			delay *= 2
+			if delay > 500*time.Millisecond {
+				delay = 500 * time.Millisecond
+			}
+		}
+	}
+	return false
 }
 
 // ─── 管理 REST ──────────────────────────────────────────

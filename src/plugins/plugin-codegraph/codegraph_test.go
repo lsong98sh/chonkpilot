@@ -932,6 +932,52 @@ func TestMultiWorkdirIndexAndQueryIsolation(t *testing.T) {
 	}
 }
 
+// TestQueryNotInitializedHintStructured：查询未就绪提示**按结构化字段判定**（而非子串匹配）——
+// 正常结果里含 "not_initialized" 子串（如文件名/符号名）不得误附提示；
+// 仅当应答 JSON 的 status/state == not_initialized 才附（口径对齐 plugin-vfts/callgate.go）。
+func TestQueryNotInitializedHintStructured(t *testing.T) {
+	const wd = "/wd-gate"
+	newP := func(reply string) *Codegraph {
+		var mu sync.Mutex
+		saved := map[string]string{}
+		p := New(Options{Exe: "dummy-not-spawned.exe"})
+		p.logf = func(string, ...any) {}
+		p.deps.Bus = newStubPersistBus(t, &mu, saved)
+		p.clients[wd] = &clientRec{
+			c:        &stubEngine{replies: map[string]string{"codegraph_symbol_search": reply}},
+			lastUsed: time.Now(),
+		}
+		p.insts["i-gate"] = &instRec{workdir: wd, last: time.Now()}
+		p.works[wd] = &workRec{workDir: wd, refs: 1, enabled: true}
+		return p
+	}
+	call := func(p *Codegraph) string {
+		v := &mq.Value{Payload: []byte(`{"tool":"codegraph_symbol_search","args":{"query":"x"},"context":{"instance_id":"i-gate"}}`)}
+		if err := p.onToolCall(context.Background(), toolCallSubject, v); err != nil {
+			t.Fatalf("onToolCall: %v", err)
+		}
+		res, _ := v.Result.(map[string]any)
+		content, _ := res["content"].([]any)
+		if len(content) != 1 {
+			t.Fatalf("应答 content 异常：%v", v.Result)
+		}
+		item, _ := content[0].(map[string]any)
+		text, _ := item["text"].(string)
+		return text
+	}
+
+	// ① 正常结果（仅子串含 not_initialized）→ 不得误附提示
+	normal := call(newP(`{"workdir":"` + wd + `","symbols":[{"name":"not_initialized_helper"}]}`))
+	if strings.Contains(normal, "索引尚未初始化") {
+		t.Fatalf("子串命中不应误附「索引未初始化」提示：%s", normal)
+	}
+	// ② 结构化应答 status/state=not_initialized → 附提示
+	gate := call(newP(`{"status":"not_initialized","state":"not_initialized","message":"请先 codegraph_initialize"}`))
+	if !strings.Contains(gate, "索引尚未初始化") {
+		t.Fatalf("结构化 not_initialized 应附提示：%s", gate)
+	}
+}
+
 // ─── 索引配置（codegraph.skip-dirs / codegraph.stack-gitignore）────────────
 
 // splitRules 是**测试专用**助手：生产侧 skip-dirs 解析已统一由

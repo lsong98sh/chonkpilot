@@ -71,13 +71,28 @@ func newStubFileListBus(t *testing.T, initial []fileRec) (mq.Bus, func() map[str
 		if !ok {
 			return nil
 		}
-		b, _ := json.Marshal(req.Data)
-		var rec fileRec
-		if json.Unmarshal(b, &rec) == nil && rec.Key != "" {
-			mu.Lock()
-			store[rec.Key] = rec
-			mu.Unlock()
+		var recs []fileRec
+		// 批量形态：data.entries:[…]；单条形态：data 平铺字段。
+		if entries, ok := req.Data["entries"].([]any); ok {
+			for _, e := range entries {
+				b, _ := json.Marshal(e)
+				var rec fileRec
+				if json.Unmarshal(b, &rec) == nil && rec.Key != "" {
+					recs = append(recs, rec)
+				}
+			}
+		} else {
+			b, _ := json.Marshal(req.Data)
+			var rec fileRec
+			if json.Unmarshal(b, &rec) == nil && rec.Key != "" {
+				recs = append(recs, rec)
+			}
 		}
+		mu.Lock()
+		for _, rec := range recs {
+			store[rec.Key] = rec
+		}
+		mu.Unlock()
 		reply(subjectFileListPut, req.ReqID, map[string]any{})
 		return nil
 	}

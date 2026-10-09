@@ -41,6 +41,19 @@ var (
 	valueCache   = map[string]*dbValues{} // key = db 文件绝对路径
 )
 
+// warnf 是 config 读路径的**包级告警出口**（由装配侧 `New` 绑定 `kernel.Base.Warnf`；nil = 静默）。
+// config 读路径的若干纯函数（readConfigTable / readCollection）不持 *Service，无法直接取
+// Base.Warnf → 经此包级出口留痕（A-35：ForEach / 事务错误不再被静默吞掉）。与 valueCache 同属
+// 包级共享状态；多 Service 实例共用同一出口（生产装配侧出口一致）。
+var warnf func(format string, args ...any)
+
+// warn 经包级出口输出告警（出口未注入 → 不输出，行为与不调用等价）。
+func warn(format string, args ...any) {
+	if warnf != nil {
+		warnf(format, args...)
+	}
+}
+
 // invalidateConfigValues 丢弃某 db 文件的 config 值缓存（写路径调用；下次读重读）。
 // 幂等：路径不在缓存时为空操作。
 func invalidateConfigValues(path string) {
@@ -71,18 +84,16 @@ func cachedConfigValues(db *data.DB) map[string]string {
 }
 
 // readConfigTable 直读 config 表全表（key → v；v 收敛口径与 kernel.ConfigGet/configKVList
-// 一致 = kernel.Sval(rec["v"])）。
+// 一致 = kernel.Sval(rec["v"])）。单事务扫描（Table.ForEach，A-27）：原 ListKeys + 逐 key
+// Get 为 N+1（每键一个独立 View 事务）。遍历/事务错误不再静默（A-35）：经包级 warn 出口留痕
+// （否则读侧凭空返回空表 / 部分表，表现为「配置列表为空」且无任何线索）。
 func readConfigTable(db *data.DB) map[string]string {
 	out := map[string]string{}
-	keys, err := db.Table("config").ListKeys()
-	if err != nil {
-		return out
-	}
-	for _, k := range keys {
-		var rec data.Record
-		if ok, _ := db.Table("config").Get(k, &rec); ok {
-			out[k] = kernel.Sval(rec["v"])
-		}
+	if err := db.Table("config").ForEach(func(k string, rec data.Record) error {
+		out[k] = kernel.Sval(rec["v"])
+		return nil
+	}); err != nil {
+		warn("config: 读 config 表失败（path=%s）：%v", db.Path(), err)
 	}
 	return out
 }

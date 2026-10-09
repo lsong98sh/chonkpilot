@@ -196,3 +196,35 @@ func TestReplaceAllClearAndWrite(t *testing.T) {
 		t.Fatalf("空集替换后应无行：keys=%v err=%v", keys, err)
 	}
 }
+
+// TestUpsertDoesNotMutateCallerRecord（A-26）：Upsert 在补隐式 updated_at 前对 rec 做浅拷贝
+// ——不得原地写调用方传入的 map。否则调用方复用同一 map 连续 Upsert 不同 key 时，第一次写入
+// 的 updated_at 会残留，第二次起被误判为「调用方已设置」而冻结时间戳。
+func TestUpsertDoesNotMutateCallerRecord(t *testing.T) {
+	db := openTestTableDB(t)
+	tb := db.Table("things")
+
+	rec := Record{"v": 1}
+	if err := tb.Upsert("k1", rec); err != nil {
+		t.Fatalf("upsert k1: %v", err)
+	}
+	if _, has := rec["updated_at"]; has {
+		t.Fatalf("Upsert 不应原地写调用方 map（副作用外泄）：%v", rec)
+	}
+
+	// 复用同一 map 连续 Upsert 另一 key：各自独立获得合法纳秒时间戳
+	if err := tb.Upsert("k2", rec); err != nil {
+		t.Fatalf("upsert k2: %v", err)
+	}
+	if _, has := rec["updated_at"]; has {
+		t.Fatalf("第二次 Upsert 仍不应改调用方 map：%v", rec)
+	}
+	for _, k := range []string{"k1", "k2"} {
+		var row Record
+		if ok, err := tb.Get(k, &row); err != nil || !ok {
+			t.Fatalf("get %s: ok=%v err=%v", k, ok, err)
+		}
+		ua, _ := row["updated_at"].(string)
+		assertFixedNano(t, k+" updated_at", ua)
+	}
+}

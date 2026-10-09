@@ -147,6 +147,36 @@ func memoryPathWithin(dir, path string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
+// memoryWriteRoot 返回写越界复验的**信任锚**：项目级 = 解析（可信）workDir 的符号链接后拼
+// 字面的 `.chonkpilot/memory`（该段位于工作区内、可被恶意仓库预置 symlink，故保持字面不解析
+// ——目录被链接到根外即被拦下）；用户级 = 用户级目录（信任，解析符号链接；解析失败回落字面）。
+// 两侧均以解析后的可信前缀为准，避免 workdir/用户目录自身经链接时把合法请求误判越界。
+func (s *Service) memoryWriteRoot(workDir, level string) string {
+	if level == "user" {
+		root := s.memoryUserDir()
+		if r, err := filepath.EvalSymlinks(root); err == nil {
+			return r
+		}
+		return root
+	}
+	wd := workDir
+	if r, err := filepath.EvalSymlinks(wd); err == nil {
+		wd = r
+	}
+	return filepath.Join(wd, ".chonkpilot", "memory")
+}
+
+// memoryPathWithinReal 写前越界复验（A-29）：memoryPathWithin 仅纯词法校验，根内指向根外的
+// symlink 会被 os.WriteFile / os.MkdirAll 跟随越界写。此处解析 path 的真实落点（不存在则解析
+// 最近存在的祖先后回拼，见 capfs.RealPathOrAncestor）后复判仍在 root 内；越界 / 不可解析 → false。
+func memoryPathWithinReal(root, path string) bool {
+	real, ok := capfs.RealPathOrAncestor(path)
+	if !ok {
+		return false
+	}
+	return memoryPathWithin(root, real)
+}
+
 // memoryProjectDir 项目级记忆目录（<workdir>/.chonkpilot/memory）。
 func memoryProjectDir(workDir string) string {
 	return filepath.Join(workDir, ".chonkpilot", "memory")
@@ -198,8 +228,12 @@ func memoryTemplate(spec memoryCategorySpec) string {
 // 用户偏好文件同样保证存在（唯一用户级）。
 func (s *Service) ensureMemoryPresets(workDir string) error {
 	for _, spec := range memoryCategorySpecs {
-		path, _, ok := s.memoryFileFor(workDir, spec.Name)
+		path, level, ok := s.memoryFileFor(workDir, spec.Name)
 		if !ok {
+			continue
+		}
+		// 写前越界复验（A-29）：符号链接逃逸 → 跳过，不落盘。
+		if !memoryPathWithinReal(s.memoryWriteRoot(workDir, level), path) {
 			continue
 		}
 		if _, err := os.Stat(path); err == nil {
@@ -393,9 +427,13 @@ func (s *Service) MemorySave(req facade.MemorySaveRequest) (facade.MemorySaveRes
 	if err != nil {
 		return facade.MemorySaveResponse{}, err
 	}
-	path, _, ok := s.memoryFileFor(workDir, req.Category)
+	path, level, ok := s.memoryFileFor(workDir, req.Category)
 	if !ok {
 		return facade.MemorySaveResponse{}, errors.New("invalid memory category name: " + req.Category)
+	}
+	// 写前越界复验（A-29）：符号链接逃逸（如目录被链接到根外）→ 拒绝，不跟随写入。
+	if !memoryPathWithinReal(s.memoryWriteRoot(workDir, level), path) {
+		return facade.MemorySaveResponse{}, errors.New("memory path escapes root: " + req.Category)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return facade.MemorySaveResponse{}, err
@@ -439,13 +477,8 @@ const memoryExtractBucket = "memory_extract"
 // memoryExtractKey 构造进度记录主键：<session_id>\x00<category>（会话 id 无 \x00）。
 func memoryExtractKey(sessionID, category string) string { return sessionID + "\x00" + category }
 
-// memoryExtractGet 读单条进度（不存在 / 读库失败 → ok=false）。
-func memoryExtractGet(db *data.DB, sessionID, category string) (facade.MemoryExtractRecord, bool) {
-	var rec data.Record
-	ok, err := db.Table(memoryExtractBucket).Get(memoryExtractKey(sessionID, category), &rec)
-	if err != nil || !ok {
-		return facade.MemoryExtractRecord{}, false
-	}
+// memoryExtractRecordOf 由落库记录构造门面记录（session_id/category 缺失时回落调用方上下文）。
+func memoryExtractRecordOf(rec data.Record, sessionID, category string) facade.MemoryExtractRecord {
 	sid := kernel.Sval(rec["session_id"])
 	if sid == "" {
 		sid = sessionID
@@ -454,7 +487,17 @@ func memoryExtractGet(db *data.DB, sessionID, category string) (facade.MemoryExt
 	if cat == "" {
 		cat = category
 	}
-	return facade.MemoryExtractRecord{SessionID: sid, Category: cat, LastTurnID: kernel.Sval(rec["last_turn_id"])}, true
+	return facade.MemoryExtractRecord{SessionID: sid, Category: cat, LastTurnID: kernel.Sval(rec["last_turn_id"])}
+}
+
+// memoryExtractGet 读单条进度（不存在 / 读库失败 → ok=false）。
+func memoryExtractGet(db *data.DB, sessionID, category string) (facade.MemoryExtractRecord, bool) {
+	var rec data.Record
+	ok, err := db.Table(memoryExtractBucket).Get(memoryExtractKey(sessionID, category), &rec)
+	if err != nil || !ok {
+		return facade.MemoryExtractRecord{}, false
+	}
+	return memoryExtractRecordOf(rec, sessionID, category), true
 }
 
 // MemoryExtractLoad 读某会话的记忆提取进度（Category 空 = 全部类别，按类别名升序）。
@@ -473,17 +516,15 @@ func (s *Service) MemoryExtractLoad(req facade.MemoryExtractLoadRequest) (facade
 		}
 		return facade.MemoryExtractLoadResponse{List: out}, nil
 	}
-	// 主键 = <session_id>\x00<category>：按前缀 Seek（等价旧「全桶 + HasPrefix」过滤，但只扫本会话）。
+	// 主键 = <session_id>\x00<category>：单事务按前缀 Seek（等价旧「前缀 Seek + 逐键 Get」，但每键
+	// 一个独立 View 事务的 N+1 收敛为 1 个事务，A-33；且不劣化扫描量 —— 仅扫本会话前缀，非全桶）。
 	// 输出顺序由末尾按类别名排序决定，与前缀 Seek 的主键字典序无关（保持等价）。
 	prefix := req.SessionID + "\x00"
-	keys, err := db.Table(memoryExtractBucket).ListPrefix(prefix)
-	if err != nil {
+	if err := db.Table(memoryExtractBucket).ForEachPrefix(prefix, func(k string, rec data.Record) error {
+		out = append(out, memoryExtractRecordOf(rec, req.SessionID, strings.TrimPrefix(k, prefix)))
+		return nil
+	}); err != nil {
 		return facade.MemoryExtractLoadResponse{}, err
-	}
-	for _, k := range keys {
-		if rec, ok := memoryExtractGet(db, req.SessionID, strings.TrimPrefix(k, prefix)); ok {
-			out = append(out, rec)
-		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Category < out[j].Category })
 	return facade.MemoryExtractLoadResponse{List: out}, nil

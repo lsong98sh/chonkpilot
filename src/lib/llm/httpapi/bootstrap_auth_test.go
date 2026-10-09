@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
@@ -90,7 +91,7 @@ func TestBootstrapUnwiredAuthCheckIsUnauthenticated(t *testing.T) {
 // TestPublishInjectsConnectionToken：上行载荷的 `token` **由入口从连接层注入并覆盖**
 // 前端自报值（22 §1「客户端不自称」）——instance-claim 凭它解析身份。
 func TestPublishInjectsConnectionToken(t *testing.T) {
-	_, bus, base := newTestServer(t, "")
+	s, bus, base := newTestServer(t, "")
 	for _, tc := range []struct{ typ, subject string }{
 		{"instance-claim", "instance-claim"}, // 认证域相关的 claim：凭连接层令牌解析身份
 		{"llm-send", "session-send"},         // 普通方法面：同一注入口径（连接层为准）
@@ -109,8 +110,13 @@ func TestPublishInjectsConnectionToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("subscribe %s: %v", tc.subject, err)
 		}
-		// 前端自报 token=fake → 入口以连接层（cookie）令牌**覆盖**
-		_, _ = postPublish(t, base, tc.typ, `{"work_dir":"C:\\w","token":"fake"}`, "conn-token")
+		// 前端自报 token=fake → 入口以连接层（cookie）令牌**覆盖**。
+		// B-30：普通方法面须带 instance_id（缺失即拒绝）；instance-claim 缺失 id 属豁免。
+		payload := `{"work_dir":"C:\\w","token":"fake"}`
+		if tc.typ != "instance-claim" {
+			payload = `{"work_dir":"C:\\w","token":"fake","instance_id":` + strconvQuote(s.InstanceID()) + `}`
+		}
+		_, _ = postPublish(t, base, tc.typ, payload, "conn-token")
 		select {
 		case req := <-seen:
 			if req["token"] != "conn-token" {
@@ -120,6 +126,69 @@ func TestPublishInjectsConnectionToken(t *testing.T) {
 			t.Fatalf("%s 未到达总线（subject=%s）", tc.typ, tc.subject)
 		}
 		_ = sub.Unsubscribe()
+	}
+}
+
+// TestPublishInstanceIDEnforced B-30：单字/点分方法面的 instance_id **入口强制绑定**（与
+// bindData / bindFilesys / token 同口径）——① 自报他实例 id → 覆盖为本实例；② 缺失 → 报错
+// 拒绝（errors 含 instance_id required，不进总线）；③ 唯一豁免 instance-claim 缺失 → 放行。
+func TestPublishInstanceIDEnforced(t *testing.T) {
+	s, bus, base := newTestServer(t, "")
+
+	seen := make(chan map[string]any, 4)
+	for _, subject := range []string{"session-send", "instance-claim"} {
+		if _, err := bus.On(subject, 0, func(_ context.Context, _ string, v *mq.Value) error {
+			var req map[string]any
+			if json.Unmarshal(v.Payload, &req) == nil && req != nil {
+				select {
+				case seen <- req:
+				default:
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ① 自报他实例 id → 覆盖为本实例（而非拒绝）
+	_, env1 := postPublish(t, base, "llm-send", `{"session":"s1","instance_id":"evil-instance"}`, "")
+	if env1["ok"] != true {
+		t.Fatalf("伪造 id 应被覆盖而非拒绝：%v", env1)
+	}
+	select {
+	case req := <-seen:
+		if req["instance_id"] != s.InstanceID() {
+			t.Fatalf("自报他实例 id 应被覆盖：got=%v want=%v", req["instance_id"], s.InstanceID())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("伪造 id 请求未到达总线")
+	}
+
+	// ② 缺失 instance_id → 报错拒绝（errors 含 instance_id required；不进总线）
+	_, env2 := postPublish(t, base, "llm-send", `{"session":"s1"}`, "")
+	if env2["ok"] != false {
+		t.Fatalf("缺失 instance_id 应拒绝：%v", env2)
+	}
+	errs, _ := env2["errors"].([]any)
+	if len(errs) == 0 || !strings.Contains(errs[0].(string), "instance_id required") {
+		t.Fatalf("缺失错误文案应含 instance_id required：%v", env2)
+	}
+	select {
+	case req := <-seen:
+		t.Fatalf("缺失 instance_id 的请求不得进总线：%v", req)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// ③ instance-claim 缺失 instance_id → 豁免放行
+	_, env3 := postPublish(t, base, "instance-claim", `{"work_dir":"C:\\w"}`, "")
+	if env3["ok"] != true {
+		t.Fatalf("instance-claim 缺失 instance_id 应放行：%v", env3)
+	}
+	select {
+	case <-seen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("instance-claim 未到达总线")
 	}
 }
 

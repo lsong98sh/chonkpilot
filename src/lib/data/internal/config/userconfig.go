@@ -112,7 +112,7 @@ func (s *Service) applyProjectOverrides(view map[string]any, instanceID string, 
 		return view
 	}
 	defer release()
-	puVals := cachedConfigValues(pudb)  // 进程内值缓存（valuecache.go，D-45）
+	puVals := cachedConfigValues(pudb) // 进程内值缓存（valuecache.go，D-45）
 	prjVals := cachedConfigValues(prj)
 	for key, kind := range inheritableConfigKeys {
 		raw := ""
@@ -335,18 +335,10 @@ func deleteUserConfig(db *data.DB) error {
 	return nil
 }
 
-// clearCollection 清空集合表全部记录（整体替换写入前 / 单 key 删除）。
+// clearCollection 清空集合表全部记录（整体替换写入前 / 单 key 删除）。单事务（ReplaceAll
+// 空集，A-28）：原 ListKeys + 逐行独立事务 Delete 非原子，中途失败集合残缺不可恢复。
 func clearCollection(db *data.DB, table string) error {
-	keys, err := db.Table(table).ListKeys()
-	if err != nil {
-		return err
-	}
-	for _, k := range keys {
-		if err := db.Table(table).Delete(k); err != nil {
-			return err
-		}
-	}
-	return nil
+	return db.Table(table).ReplaceAll(map[string]data.Record{})
 }
 
 // scalarString 把载荷标量转存储字符串（int/llmref 走整型格式化，字符串原样）。
@@ -370,22 +362,28 @@ func scalarString(v any, kind string) string {
 
 // ── 专用表（llms）读写 ─────────────────────────────
 
-// readCollection 读集合表 → 有序数组（按桶主键数值序，保持前端数组顺序）。
+// readCollection 读集合表 → 有序数组（按桶主键数值序，保持前端数组顺序）。单事务扫描
+// （Table.ForEach，A-27）：原 ListKeys + 逐 key Get 为 N+1（每键一个独立 View 事务）；
+// 回调内收集后仍按 ordOfKey(主键) 排序，保持原结果口径。遍历/事务错误不再静默（A-35）：
+// 经包级 warn 出口留痕（否则读侧凭空返回空表 / 部分表，表现为「LLM 列表为空」）。
 func readCollection(db *data.DB, table string) []map[string]any {
-	keys, err := db.Table(table).ListKeys()
-	if err != nil || len(keys) == 0 {
-		return []map[string]any{}
+	type row struct {
+		key  string
+		view map[string]any
 	}
-	sort.Slice(keys, func(i, j int) bool { return ordOfKey(keys[i]) < ordOfKey(keys[j]) })
-	out := make([]map[string]any, 0, len(keys))
-	for _, k := range keys {
-		var rec data.Record
-		if ok, _ := db.Table(table).Get(k, &rec); !ok {
-			continue
-		}
-		item := kernel.RecordView(rec, "")
-		delete(item, "ord")
-		out = append(out, item)
+	rows := make([]row, 0)
+	if err := db.Table(table).ForEach(func(k string, rec data.Record) error {
+		view := kernel.RecordView(rec, "")
+		delete(view, "ord")
+		rows = append(rows, row{key: k, view: view})
+		return nil
+	}); err != nil {
+		warn("config: 读集合表 %s 失败（path=%s）：%v", table, db.Path(), err)
+	}
+	sort.Slice(rows, func(i, j int) bool { return ordOfKey(rows[i].key) < ordOfKey(rows[j].key) })
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.view)
 	}
 	return out
 }

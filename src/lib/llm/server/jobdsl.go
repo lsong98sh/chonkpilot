@@ -377,6 +377,11 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 		parent.FeedToolResultStatus(toolCallID, "错误: "+tempErr.Error(), "failed")
 		return
 	}
+	// 作业启动兜底：清理临时根内陈旧的 `$RETURN` 落盘文件（防常驻进程下按作业线性累积；
+	// 取消路径的残留也在此被下次作业清掉；仅删陈旧文件，保留近期结果，C-43）。
+	if n := paths.SweepStaleReturnFiles(tempDir, 24*time.Hour); n > 0 {
+		logf("[llm_run] swept %d stale $RETURN files under %s\n", n, tempDir)
+	}
 	exeDir := ""
 	if d, derr := exedir.Dir(); derr == nil {
 		exeDir = d

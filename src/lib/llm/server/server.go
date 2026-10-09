@@ -851,6 +851,17 @@ func (s *Server) prjUsrCapRoot(instanceID string) string {
 	return res.Root
 }
 
+// capDirOp 是一次待发送的 capability dir 节点总线操作（register=true 注册 / false 注销）。
+// registerCapNodesLocked / reconcileCapabilityNodes 在 capMu 内**只收集**操作与维护内存态，
+// 解锁后统一 applyCapDirOps 发送（B-35）：避免跨 gateway 总线往返（registerDirNode/unregisterDirNode
+// 15s 超时、refreshTools ListTools 15s 超时）持锁串行阻塞全部 capability 接入/热重扫。
+type capDirOp struct {
+	register   bool
+	instanceID string
+	nodeName   string
+	root       string // register 时生效
+}
+
 // registerCapabilityNodes 逐根经 gateway 方法面登记 dir 节点（幂等：同名节点已登记则跳过）。
 // 同名冲突不可能发生：四级根各由独立节点承载且暴露名带节点前缀
 // （self_ / <instanceID>-user_ / <instanceID>-project_ / <instanceID>-prjusr_），
@@ -858,16 +869,24 @@ func (s *Server) prjUsrCapRoot(instanceID string) string {
 // 注册失败记日志、跳过，不影响其他节点与启动。注册后主动刷新工具缓存（见 refreshTools）。
 func (s *Server) registerCapabilityNodes(instanceID, workDir string) {
 	s.capMu.Lock()
-	defer s.capMu.Unlock()
-	s.registerCapNodesLocked(instanceID, workDir)
+	ops, hadSpecs := s.registerCapNodesLocked(instanceID, workDir)
+	s.capMu.Unlock()
+	s.applyCapDirOps(ops)
+	// 刷新工具定义缓存：dir 节点注册 gateway 不发 mcp-gateway-changed，故此处主动重拉，
+	// 使 hot=true 的用户/项目级工具进入 LLM 工具面（toolsForLLM）。
+	if hadSpecs {
+		s.refreshTools()
+	}
 }
 
 // registerCapNodesLocked 是 registerCapabilityNodes 的无锁实现（调用方须持 capMu；
-// T-21 重扫 reconcileCapabilityNodes 复用，避免自锁）。
-func (s *Server) registerCapNodesLocked(instanceID, workDir string) {
+// T-21 重扫 reconcileCapabilityNodes 复用，避免自锁）。**只在锁内**维护 dirNodes/capNodeMeta 内存态
+// 并返回待发送 ops，总线往返交由调用方解锁后 applyCapDirOps（B-35）。
+// 返回 hadSpecs = 该实例解析出了非空 capability 根（= 调用方需刷新工具缓存，与现状一致）。
+func (s *Server) registerCapNodesLocked(instanceID, workDir string) (ops []capDirOp, hadSpecs bool) {
 	specs := s.capNodeSpecs(instanceID, workDir)
 	if len(specs) == 0 {
-		return
+		return nil, false
 	}
 	for _, spec := range specs {
 		nodeName := instanceID + "-" + spec.suffix
@@ -887,13 +906,23 @@ func (s *Server) registerCapNodesLocked(instanceID, workDir string) {
 		if dup {
 			continue // 幂等：重复 instance-register（重连/换绑）不重复建节点
 		}
-		if err := s.registerDirNode(instanceID, nodeName, spec.root); err != nil {
-			logf("[chonkpilot-server] capability dir 节点注册失败（跳过 %s）: %v\n", nodeName, err)
-		}
+		ops = append(ops, capDirOp{register: true, instanceID: instanceID, nodeName: nodeName, root: spec.root})
 	}
-	// 刷新工具定义缓存：dir 节点注册 gateway 不发 mcp-gateway-changed，故此处主动重拉，
-	// 使 hot=true 的用户/项目级工具进入 LLM 工具面（toolsForLLM）。
-	s.refreshTools()
+	return ops, true
+}
+
+// applyCapDirOps 解锁后统一发送收集到的 capability dir 节点总线操作（B-35）。
+// 注册失败记日志、跳过（语义与现状一致：不影响其他节点）。
+func (s *Server) applyCapDirOps(ops []capDirOp) {
+	for _, op := range ops {
+		if op.register {
+			if err := s.registerDirNode(op.instanceID, op.nodeName, op.root); err != nil {
+				logf("[chonkpilot-server] capability dir 节点注册失败（跳过 %s）: %v\n", op.nodeName, err)
+			}
+			continue
+		}
+		s.unregisterDirNode(op.instanceID, op.nodeName)
+	}
 }
 
 // unregisterCapabilityNodes 注销实例名下全部 capability dir 节点（onExit 对称清理）。
@@ -928,14 +957,16 @@ func (s *Server) reconcileCapabilityNodes() {
 		return
 	}
 	s.capMu.Lock()
-	defer s.capMu.Unlock()
 	s.mu.Lock()
 	insts := make(map[string]string, len(s.capWorkDirs))
 	for k, v := range s.capWorkDirs {
 		insts[k] = v
 	}
 	s.mu.Unlock()
-	removed := false
+	// 锁内只维护内存态 + 收集待发送 ops（B-35）：unregister/register 与 refreshTools 等
+	// 总线往返一律挪到解锁后执行；逐实例保序（先注销旧节点、再重建）。
+	var ops []capDirOp
+	removed, hadSpecs := false, false
 	for inst, wd := range insts {
 		s.mu.Lock()
 		names := append([]string(nil), s.dirNodes[inst]...)
@@ -948,11 +979,15 @@ func (s *Server) reconcileCapabilityNodes() {
 			removed = true
 		}
 		for _, nodeName := range names {
-			s.unregisterDirNode(inst, nodeName)
+			ops = append(ops, capDirOp{instanceID: inst, nodeName: nodeName})
 		}
-		s.registerCapNodesLocked(inst, wd) // 按当前根重建（根不存在 → 自动跳过）
+		regs, spec := s.registerCapNodesLocked(inst, wd) // 按当前根重建（根不存在 → 自动跳过）
+		ops = append(ops, regs...)
+		hadSpecs = hadSpecs || spec
 	}
-	if removed {
+	s.capMu.Unlock()
+	s.applyCapDirOps(ops)
+	if removed || hadSpecs {
 		// registerCapNodesLocked 在无根时提前返回、不刷新缓存；此处兜底确保被移除的工具退出工具面。
 		s.refreshTools()
 	}
@@ -1112,10 +1147,24 @@ func (s *Server) onLLMStart(_ context.Context, _ string, v *mq.Value) error {
 
 	// 落库：session + turn（幂等；监听时检查并落库，不重新分配）——continue 复用同一 turn，
 	// 回写 running 并清空 finish_reason（原 finished/interrupted 脏状态复位）。
-	_ = store.EnsureSession(req.Session)
-	_ = store.EnsureTurn(req.Turn, req.Session)
+	// 落库失败即中止受理（B-34）：落库失败仍起状态机并喂消息 = 写向不存在的 turn，产生半成品
+	// 数据；此时释放已取得的 sessionLock，按既有拒绝应答形态回 {accepted:false,...}。
+	if err := store.EnsureSession(req.Session); err != nil {
+		lock.Release()
+		v.Result = map[string]any{"accepted": false, "error": "ensure session failed: " + err.Error()}
+		return nil
+	}
+	if err := store.EnsureTurn(req.Turn, req.Session); err != nil {
+		lock.Release()
+		v.Result = map[string]any{"accepted": false, "error": "ensure turn failed: " + err.Error()}
+		return nil
+	}
 	if req.Continue {
-		_ = store.ReopenTurn(req.Turn)
+		if err := store.ReopenTurn(req.Turn); err != nil {
+			lock.Release()
+			v.Result = map[string]any{"accepted": false, "error": "reopen turn failed: " + err.Error()}
+			return nil
+		}
 	}
 
 	// 建立 turn 状态机（调度器）：主轮次无上一级 → ctx 根为 Background（G-18 gapA）。
@@ -1955,10 +2004,17 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 	cur := st.LoadMessages(tc.req.Turn)
 	// P3：轮次结束时计算并**预存**本轮完整态/简化态 token 数（判定/拼接后续直接累加，免重复估算）。
 	fullTok, briefTok := turnTokenCounts(cur)
-	_ = st.CompleteTurnTokens(tc.req.Turn, status, finishReason, &fullTok, &briefTok)
+	// 终态落库失败仅留痕（B-32）：不重试、不改流程（终态已由 finishOnce 保护不会二次写）；
+	// 否则 DB 中该 turn 行仍为 running 而 UI 已显示 complete，下次启动 CleanupStaleTurns 会
+	// 将其标 interrupted，状态与用户所见错乱。
+	if err := st.CompleteTurnTokens(tc.req.Turn, status, finishReason, &fullTok, &briefTok); err != nil {
+		logf("[chonkpilot-server] CompleteTurnTokens 失败（session=%s turn=%s）: %v\n", tc.req.Session, tc.req.Turn, err)
+	}
 	// 写快照（唯一终态写）：snapshot_turn = 本轮（快照覆盖到最后一条 turn）
 	msgs := append(append([]ChatMsg{}, tc.hist...), cur...)
-	_ = st.SetSnapshot(tc.req.Session, msgs, tc.req.Turn)
+	if err := st.SetSnapshot(tc.req.Session, msgs, tc.req.Turn); err != nil {
+		logf("[chonkpilot-server] SetSnapshot 失败（session=%s turn=%s）: %v\n", tc.req.Session, tc.req.Turn, err)
+	}
 	ev := map[string]any{
 		"instance_id": tc.req.InstanceID, "session": tc.req.Session, "turn": tc.req.Turn,
 		"status": status, "finish_reason": finishReason,
@@ -2104,14 +2160,25 @@ func (s *Server) loadLLMProvider(instanceID string, selectedModel string) *llmPr
 	if selectedModel == "" {
 		return nil
 	}
-	res, err := s.cfg.UserConfigGet(facade.UserConfigGetRequest{
-		InstanceID: instanceID, Scope: s.cfgScope(instanceID),
-	})
+	d, err := s.loadUserConfig(instanceID)
 	if err != nil {
 		logf("[chonkpilot-server] loadLLMProvider: UserConfigGet failed: %v\n", err)
 		return providerFromConfig(nil, selectedModel)
 	}
-	return providerFromConfig(res.Config, selectedModel)
+	return providerFromConfig(d, selectedModel)
+}
+
+// loadUserConfig 读本实例的 usr 配置对象（data-user-config-load，一次往返）。失败 → (nil, err)，
+// 调用方按「无配置」处理（回落缺省）。B-37：newTurnCtx 一次读取后分发（provider 解析 +
+// 运行时超时/重试解析），避免同一轮对同一配置源重复往返。
+func (s *Server) loadUserConfig(instanceID string) (map[string]any, error) {
+	res, err := s.cfg.UserConfigGet(facade.UserConfigGetRequest{
+		InstanceID: instanceID, Scope: s.cfgScope(instanceID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res.Config, nil
 }
 
 // providerFromConfig 从**已读** usr 配置对象折算 provider name 对应的 LLM 配置（纯函数，不再读配置）：
@@ -2212,16 +2279,19 @@ func configFloat(d map[string]any, key string) (float64, bool) {
 //
 // 退避（重发间隔）**不在此配置**：经 `router.RetryWait` 计算（2026-10-05 定案，`retryDelay` 已移除）。
 func (s *Server) loadLLMRuntimeConfig(instanceID string) (responseTimeout, streamTimeout time.Duration, retryCount int) {
-	responseTimeout, streamTimeout = ResponseTimeout, StreamTimeout
-	retryCount = llmRetryCount
-	res, err := s.cfg.UserConfigGet(facade.UserConfigGetRequest{
-		InstanceID: instanceID, Scope: s.cfgScope(instanceID),
-	})
+	d, err := s.loadUserConfig(instanceID)
 	if err != nil {
 		logf("[chonkpilot-server] loadLLMRuntimeConfig: UserConfigGet failed: %v\n", err)
-		return
+		return llmRuntimeConfigFrom(nil)
 	}
-	d := res.Config
+	return llmRuntimeConfigFrom(d)
+}
+
+// llmRuntimeConfigFrom 从**已读** usr 配置对象折算超时/重试三项（纯函数，不再读配置）；
+// 缺省回落与存在性判定语义见 loadLLMRuntimeConfig。
+func llmRuntimeConfigFrom(d map[string]any) (responseTimeout, streamTimeout time.Duration, retryCount int) {
+	responseTimeout, streamTimeout = ResponseTimeout, StreamTimeout
+	retryCount = llmRetryCount
 	if d == nil {
 		return
 	}

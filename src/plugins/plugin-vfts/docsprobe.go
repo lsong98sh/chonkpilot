@@ -13,6 +13,7 @@ package vfts
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -110,7 +111,7 @@ func probeDocHealth(port int) (docHealth, bool) {
 		return h, false
 	}
 	defer resp.Body.Close()
-	dec := json.NewDecoder(resp.Body)
+	dec := json.NewDecoder(io.LimitReader(resp.Body, 64<<10))
 	if dec.Decode(&h) != nil || !h.OK {
 		return h, false
 	}

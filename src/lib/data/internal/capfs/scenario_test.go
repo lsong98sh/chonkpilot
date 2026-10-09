@@ -96,6 +96,43 @@ func TestValidateScenarioAgentsAllowsUnique(t *testing.T) {
 	}
 }
 
+// TestValidScenarioID 场景 id 校验（A-31）：禁空 / `.` / `..` / 路径分隔符（`/` `\`）/ 非法字符/
+// 首字符连字符；合法 id（字母/数字/下划线/连字符）放行。
+func TestValidScenarioID(t *testing.T) {
+	for _, id := range []string{"default", "app-scn-a", "a_b", "A1", "scn-123", "_x"} {
+		if !ValidScenarioID(id) {
+			t.Fatalf("合法 id %q 被拒", id)
+		}
+	}
+	for _, id := range []string{"", ".", "..", "../x", "a/b", `a\b`, "a b", "场景", "a.b", "-", "-x"} {
+		if ValidScenarioID(id) {
+			t.Fatalf("非法 id %q 被放行", id)
+		}
+	}
+}
+
+// TestWriteScenarioDirRejectsInvalidID 非法 id（`..` / 路径分隔符）→ 写盘**拒绝且不越界**：
+// 不得在场景根之外建目录/落盘（A-31）。
+func TestWriteScenarioDirRejectsInvalidID(t *testing.T) {
+	root := t.TempDir()
+	scnRoot := filepath.Join(root, "scenarios")
+	if err := os.MkdirAll(scnRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"..", "../evil", "a/b"} {
+		if err := WriteScenarioDir(KindUser, scnRoot, id, scenarioWith(agentNode("主", true)), RefRoots{}); err == nil {
+			t.Fatalf("非法 id %q 应被拒", id)
+		}
+	}
+	// 根外不得被写入（`..` 曾会落到 root 下）
+	if _, err := os.Stat(filepath.Join(root, "evil")); err == nil {
+		t.Fatal("非法 id 不得在场景根外建目录")
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 1 || entries[0].Name() != "scenarios" {
+		t.Fatalf("场景根外不应产生任何新条目：%v", entries)
+	}
+}
+
 // TestWriteScenarioDirRejectsDuplicate 校验在**写盘前**生效：重名 → 拒绝且**不建目录/不落盘**。
 func TestWriteScenarioDirRejectsDuplicate(t *testing.T) {
 	root := t.TempDir()

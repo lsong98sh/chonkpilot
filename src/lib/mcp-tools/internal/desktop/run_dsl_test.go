@@ -90,6 +90,33 @@ func TestDesktopUnknownVerb(t *testing.T) {
 	}
 }
 
+// TestRunCtxDispatchReturnsOutput（C-45）：dispatch 以返回值承载本条动作输出（不经共享槽），
+// 非输出动词返回空串 + nil，缺参/未知指令返回空串 + 错误。
+func TestRunCtxDispatchReturnsOutput(t *testing.T) {
+	c := &runCtx{vars: map[string]float64{}}
+	if out, err := c.dispatch("SLP", []string{"0"}); out != "" || err != nil {
+		t.Fatalf("SLP：out=%q err=%v，want 空串/nil", out, err)
+	}
+	if out, err := c.dispatch("MOV", nil); out != "" || err == nil {
+		t.Fatalf("MOV 缺参：out=%q err=%v，want 空串/错误", out, err)
+	}
+	if out, err := c.dispatch("NOPE", nil); out != "" || err == nil {
+		t.Fatalf("未知指令：out=%q err=%v，want 空串/错误", out, err)
+	}
+}
+
+// TestCmdShotInsufficientArgsNoPanic（C-49）：SHT 传入 2 个参数（坐标但缺文件名）不得越界 panic
+// （executor 全链无 recover，一条 SHT 10,10 20,20 会崩掉执行器进程）。
+func TestCmdShotInsufficientArgsNoPanic(t *testing.T) {
+	c := &runCtx{vars: map[string]float64{}}
+	if err := c.cmdShot([]string{"10,10", "20,20"}); err == nil {
+		t.Fatal("SHT 缺文件名应报错")
+	}
+	if err := c.cmdShot(nil); err == nil {
+		t.Fatal("SHT 空参应报错")
+	}
+}
+
 // TestDesktopRawActionRedirectParse：Raw 动作行尾 `=> #"file"` 由引擎分离为目标，
 // RawArgs 不含 => 段；动词原文保留（WIN list => 后参数为 list）。目标用绝对路径（R-11）。
 func TestDesktopRawActionRedirectParse(t *testing.T) {

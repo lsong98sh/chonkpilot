@@ -68,8 +68,11 @@ func (h *FileShowHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Open the file
-	f, err := os.Open(filePath)
+	// Open the file。用 realPath 打开（D-29）：放行判定基于 EvalSymlinks 结果，若仍打开
+	// 词法路径 filePath，则判定与打开之间存在 symlink 被替换的 TOCTOU 窗口，恶意仓库仍可
+	// 读出根外文件；改为直接打开复检通过的真实路径，消除该窗口（断链/不存在仍在上方复检
+	// 处先行 403，此处错误分支语义不变）。
+	f, err := os.Open(realPath)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("cannot open file: %v", err), http.StatusNotFound)
 		return

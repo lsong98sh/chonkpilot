@@ -111,6 +111,78 @@ func TestWatchNewDirBroadcastsParentBatch(t *testing.T) {
 	t.Fatal("新建目录未广播含新目录节点的父目录批次（I-43）")
 }
 
+// TestNextWaitCapsAtMaxWait 去抖等待封顶（D-37）：默认 debounce；窗口内累计耗时逼近 maxWait
+// 时等待被压缩到剩余量；超出 maxWait 即 0（立即触发，不再被持续事件无限推后）。
+func TestNextWaitCapsAtMaxWait(t *testing.T) {
+	if got := nextWait(0); got != debounce {
+		t.Fatalf("首事件应等待 debounce：got=%v", got)
+	}
+	if got := nextWait(maxWait - debounce - time.Millisecond); got != debounce {
+		t.Fatalf("剩余 > debounce 时应等待 debounce：got=%v", got)
+	}
+	if got := nextWait(maxWait - 10*time.Millisecond); got != 10*time.Millisecond {
+		t.Fatalf("剩余 < debounce 时应等待剩余量：got=%v", got)
+	}
+	if got := nextWait(maxWait + time.Millisecond); got != 0 {
+		t.Fatalf("超过 maxWait 应立即触发（0）：got=%v", got)
+	}
+}
+
+// TestWatchContinuousWritesNotStarved 持续写入下批次不被无限推后（D-37）：写入**仍在进行**时
+// 就应收到 filesys.changed（旧实现每个事件都重置 debounce，直到写入停顿才触发 → 饥饿）。
+func TestWatchContinuousWritesNotStarved(t *testing.T) {
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	wd := t.TempDir()
+	m := newWatchManager(bus)
+	defer m.Close()
+	ch := make(chan struct{}, 64)
+	if _, err := bus.On("filesys.changed", 0, func(_ context.Context, _ string, _ *mq.Value) error {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.watch(wd, wd, false, "ins-deb"); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(wd, "busy.log")
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				_ = os.WriteFile(target, []byte(time.Now().String()), 0o644)
+			}
+		}
+	}()
+
+	// 写入持续进行中：应在 maxWait 量级内收到至少一条事件（远早于写入停止 → 无饥饿）。
+	select {
+	case <-ch:
+	case <-time.After(maxWait + 2*time.Second):
+		close(stop)
+		<-done
+		t.Fatalf("持续写入下 %v 内未收到 filesys.changed（批次被无限推后，D-37 未生效）",
+			maxWait+2*time.Second)
+	}
+	close(stop)
+	<-done
+}
+
 // TestWatchRecursiveFlag：recursive 标志被消费（T-08）——递归监听时子目录内新增文件触发
 // filesys.changed；非递归监听同一路径时不触发（同一 fsnotify watcher 只监听直接子项）。
 func TestWatchRecursiveFlag(t *testing.T) {

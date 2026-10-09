@@ -519,6 +519,66 @@ func TestPruneKeepLimit(t *testing.T) {
 	}
 }
 
+// TestPruneKeepWindowPreservesIDs：连续前缀修剪走 `git replace --graft`（O(1)、不逐点重建）——
+// 保留点的 commit id **不变**（旧的“按保留段重建”会换 id）。
+func TestPruneKeepWindowPreservesIDs(t *testing.T) {
+	wd := newRepo(t)
+	x := newHarnessWithWd(t, wd, true, "3", "")
+	for i := 0; i < 4; i++ {
+		writeFileT(t, wd, "f.txt", fmt.Sprintf("v%d", i))
+		x.cp(t, "rootID", fmt.Sprintf("tool%d", i), fmt.Sprintf("turn%d", i))
+	}
+	slug := chainSlug("rootID")
+	before := strings.Fields(strings.TrimSpace(gitT(t, wd, "rev-list", chainRefPrefix+slug)))
+	if len(before) != 3 {
+		t.Fatalf("前置：keep=3 应有 3 点，got %d", len(before))
+	}
+	prevHead := before[0] // 最新点
+	// 再打一点 → 触发连续前缀修剪；上一最新点作为保留点保留、其 id 必须不变。
+	writeFileT(t, wd, "f.txt", "v4")
+	x.cp(t, "rootID", "tool4", "turn4")
+	after := strings.Fields(strings.TrimSpace(gitT(t, wd, "rev-list", chainRefPrefix+slug)))
+	if len(after) != 3 {
+		t.Fatalf("修剪后应保留 3 点，got %d", len(after))
+	}
+	if after[1] != prevHead {
+		t.Fatalf("连续前缀修剪应保留原 commit id（graft 不换 id），got %s want %s", after[1], prevHead)
+	}
+}
+
+// TestPruneTwoSessionsNoGraftUndo：多会话共享一个 workState——替换引用**按 slug 独立登记**，
+// 修剪 B 不得误删 A 的 `git replace --graft` 引用（否则 A 的截断被撤销、链长回涨，两会话 ping-pong）。
+func TestPruneTwoSessionsNoGraftUndo(t *testing.T) {
+	wd := newRepo(t)
+	x := newHarnessWithWd(t, wd, true, "2", "7")
+	ws := x.ws(t)
+	now := time.Now()
+	times := []time.Time{
+		now.Add(-3 * time.Minute), now.Add(-2 * time.Minute), now.Add(-time.Minute), now,
+	}
+	slugA, slugB := "rootAltA", "rootAltB"
+	buildDatedChain(t, x.h, ws, slugA, times)
+	buildDatedChain(t, x.h, ws, slugB, times)
+
+	// 修剪 A：连续前缀 → `git replace --graft` 解链，链长收敛到 keep=2。
+	if _, _, err := x.h.prune(ws, slugA, nil); err != nil {
+		t.Fatalf("prune A: %v", err)
+	}
+	if n := chainLen(t, wd, slugA); n != 2 {
+		t.Fatalf("修剪后 A 链长 = %d，期望 2", n)
+	}
+	// 修剪 B：A 的替换引用须保留（B 只能清自己的）→ A 链长不变（不被撤销截断）。
+	if _, _, err := x.h.prune(ws, slugB, nil); err != nil {
+		t.Fatalf("prune B: %v", err)
+	}
+	if n := chainLen(t, wd, slugB); n != 2 {
+		t.Fatalf("修剪后 B 链长 = %d，期望 2", n)
+	}
+	if n := chainLen(t, wd, slugA); n != 2 {
+		t.Fatalf("修剪 B 撤销了 A 的截断（A 链长 = %d，期望仍为 2）——替换引用未按 slug 分离", n)
+	}
+}
+
 // TestPruneTTLWindow：以**链上最新点**为锚点，超 ttl 窗口的旧点被清（keep 未超也会触发）。
 func TestPruneTTLWindow(t *testing.T) {
 	wd := newRepo(t)

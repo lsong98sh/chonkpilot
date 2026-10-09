@@ -181,7 +181,14 @@ func (p *Vfts) onToolCall(_ context.Context, _ string, v *mq.Value) error {
 	}
 	// 查询未就绪（not_initialized/indexing/error 等结构化 JSON）→ 原样透传，可附说明；
 	// 索引未初始化不自动补 index（自动初始化仅由启用流程触发）。
-	if strings.Contains(text, "not_initialized") {
+	// 按结构化应答字段判定（而非子串匹配）——命中文件内容含 "not_initialized" 的正常结果不再误附提示。
+	var gate struct {
+		Status string `json:"status"`
+		State  string `json:"state"`
+	}
+	if len(text) > 0 && text[0] == '{' &&
+		json.Unmarshal([]byte(text), &gate) == nil &&
+		(gate.Status == "not_initialized" || gate.State == "not_initialized") {
 		text += "\n（提示：vfts 全文索引尚未初始化/正在初始化——请确认项目配置已开启 vfts 后稍候重试）"
 	}
 	return reply(text, isErr)

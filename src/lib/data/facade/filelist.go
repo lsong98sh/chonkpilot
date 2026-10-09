@@ -57,12 +57,15 @@ type FileListListResponse struct {
 	Total int `json:"total"`
 }
 
-// FileListPutRequest 是清单单条写入参（按 Key upsert；Key 空 = 由实现侧按路径推导）。
+// FileListPutRequest 是清单写入参：Entry 单条 upsert（按 Key；Key 空 = 由实现侧按路径推导）；
+// Entries 非空 = 批量 upsert（逐条按各自 Key 落库，优先于 Entry）。
 type FileListPutRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
 	// Entry 清单条目（Key 可空）。
 	Entry FileListEntry `json:"entry"`
+	// Entries 批量清单条目（非空时优先于 Entry）。
+	Entries []FileListEntry `json:"entries,omitempty"`
 	// Scope 实例数据根（可选；语义同上）。
 	Scope Scope `json:"scope,omitempty"`
 }

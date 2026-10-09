@@ -44,16 +44,53 @@ func (r *Runner) listTargets() ([]tabInfo, error) {
 	return out, nil
 }
 
-// activate 切换当前激活 tab。
+// activate 切换当前激活 tab。写 r.ctx/curID 受 startMu 保护（与 ensureStarted/startBrowser 的
+// 写写竞态串行化，C-39）；切换前取消旧 tab 的 chromedp Context（C-44：旧 cancel 被丢弃会使
+// CDP session 与事件循环 goroutine 随切签累积，且旧 session 重复监听同 target 的 console）。
+// 注意：初始 r.ctx == browserCtx，无独立 tabCancel（置空）→ 不会误取消浏览器会话本身。
 func (r *Runner) activate(id string) error {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
 	if r.curID == id {
 		return nil
 	}
-	ctx, _ := chromedp.NewContext(r.browserCtx, chromedp.WithTargetID(target.ID(id)))
-	r.ctx = ctx
+	if r.tabCancel != nil {
+		r.tabCancel()
+		r.tabCancel = nil
+	}
+	ctx, cancel := chromedp.NewContext(r.browserCtx, chromedp.WithTargetID(target.ID(id)))
+	r.ctx, r.tabCancel = ctx, cancel
 	r.curID = id
 	chromedp.ListenTarget(ctx, r.onTargetEvent)
 	return nil
+}
+
+// curTargetID 读取当前激活 tab id（读受 startMu 保护，C-50：PARALLEL 下 TAB/OPN 并发读写 curID）。
+func (r *Runner) curTargetID() string {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
+	return r.curID
+}
+
+// setInitialCurTarget 首个 OPN 建连后记录初始 target id（已有则不动；读写受 startMu 保护，C-50）。
+func (r *Runner) setInitialCurTarget() {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
+	if r.curID != "" {
+		return
+	}
+	if c := chromedp.FromContext(r.ctx); c != nil && c.Target != nil {
+		r.curID = c.Target.TargetID.String()
+	}
+}
+
+// clearCurTargetIf 当前激活 tab 仍为 id 时清空（关闭最后一个 tab 后；写受 startMu 保护，C-50）。
+func (r *Runner) clearCurTargetIf(id string) {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
+	if r.curID == id {
+		r.curID = ""
+	}
 }
 
 // maxConsoleLines 浏览器 console/异常日志硬上限（滑动窗口保留最新 N 条；
@@ -104,9 +141,10 @@ func (r *Runner) stepTab(st *Step) error {
 			return stepErr(st.Line, st.Raw, "js", "列 tab 失败: "+err.Error())
 		}
 		var lines []string
+		cur := r.curTargetID()
 		for i, t := range tabs {
 			mark := " "
-			if t.ID == r.curID {
+			if t.ID == cur {
 				mark = "*"
 			}
 			lines = append(lines, fmt.Sprintf("%s[%d] %s | %s", mark, i, t.Title, t.URL))
@@ -152,10 +190,10 @@ func (r *Runner) stepTab(st *Step) error {
 		return nil
 
 	case "close":
-		if r.curID == "" {
+		id := r.curTargetID()
+		if id == "" {
 			return stepErr(st.Line, st.Raw, "js", "无当前 tab")
 		}
-		id := r.curID
 		tabs, err := r.listTargets()
 		if err != nil {
 			return stepErr(st.Line, st.Raw, "js", err.Error())
@@ -167,9 +205,7 @@ func (r *Runner) stepTab(st *Step) error {
 				break
 			}
 		}
-		if r.curID == id { // 无其它 tab
-			r.curID = ""
-		}
+		r.clearCurTargetIf(id) // 无其它 tab（activate 未改写）→ 清空
 		if err := chromedp.Run(r.browserCtx, chromedp.ActionFunc(func(c context.Context) error {
 			return target.CloseTarget(target.ID(id)).Do(c)
 		})); err != nil {

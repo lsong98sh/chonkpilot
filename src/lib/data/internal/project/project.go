@@ -37,6 +37,18 @@ func SpecPath(workDir string) string {
 	return filepath.ToSlash(filepath.Join(workDir, filepath.FromSlash(specRelPath)))
 }
 
+// projectWriteTrustRoot 返回写越界复验的**信任锚**（A-32）：解析（可信）workDir 的符号链接后拼
+// 字面的 `.chonkpilot[<sub...>]` —— 该段位于工作区内、可被恶意仓库预置 symlink（指向根外），故
+// 保持字面不解析；目录被链接到根外即被拦下。workDir 不可解析 → 回落字面。
+func projectWriteTrustRoot(workDir string, sub ...string) string {
+	wd := workDir
+	if r, ok := capfs.RealPathOrAncestor(workDir); ok {
+		wd = r
+	}
+	parts := append([]string{wd, ".chonkpilot"}, sub...)
+	return filepath.Join(parts...)
+}
+
 // ProjectSpecExists 判断工程规格文件是否存在。
 func (s *Service) ProjectSpecExists(req facade.ProjectSpecExistsRequest) (facade.ProjectSpecExistsResponse, error) {
 	wd, err := s.WorkDirFor(req.InstanceID, req.Scope)
@@ -72,6 +84,10 @@ func (s *Service) ProjectSpecWrite(req facade.ProjectSpecWriteRequest) (facade.P
 		return facade.ProjectSpecWriteResponse{}, err
 	}
 	full := filepath.Join(wd, filepath.FromSlash(specRelPath))
+	// 写前越界复验（A-32）：`.chonkpilot` 被预置为指向根外的 symlink → 拒绝，不跟随写入。
+	if !capfs.RealPathWithin(projectWriteTrustRoot(wd), full) {
+		return facade.ProjectSpecWriteResponse{}, errors.New("project spec path escapes work dir")
+	}
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return facade.ProjectSpecWriteResponse{}, err
 	}
@@ -105,6 +121,10 @@ func (s *Service) ProjectAgentWrite(req facade.ProjectAgentWriteRequest) (facade
 	}
 	capRoot := capfs.ProjectRoot(wd)
 	abs := filepath.Join(capRoot, capfs.DirAgents, capfs.FileName(name, "agent"))
+	// 写前越界复验（A-32）：`.chonkpilot` 被预置为指向根外的 symlink → 拒绝，不跟随写入。
+	if !capfs.RealPathWithin(projectWriteTrustRoot(wd, "capability"), abs) {
+		return facade.ProjectAgentWriteResponse{}, errors.New("agent path escapes work dir")
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return facade.ProjectAgentWriteResponse{}, err
 	}

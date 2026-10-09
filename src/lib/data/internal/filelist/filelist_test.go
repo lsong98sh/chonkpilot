@@ -71,3 +71,45 @@ func TestFileListPutListDelete(t *testing.T) {
 		t.Fatalf("删除后列表不符：err=%v total=%d", err, last.Total)
 	}
 }
+
+// TestFileListPutBatch 批量 upsert（Entries）：一次调用落多条（含覆盖已存在键）；
+// 空 Key → 聚合报错（不静默）；既有单条 put 路径不受影响。
+func TestFileListPutBatch(t *testing.T) {
+	s := newFileListService(t)
+	inst := "ins-flb"
+	scope := facade.Scope{WorkDir: t.TempDir(), DataDir: t.TempDir()}
+
+	// 先单条 put，随后批量覆盖同键 + 新增两条
+	if _, err := s.FileListPut(facade.FileListPutRequest{
+		InstanceID: inst, Scope: scope, Entry: facade.FileListEntry{Key: "a", Path: "/x/a.go", Size: 1},
+	}); err != nil {
+		t.Fatalf("single put: %v", err)
+	}
+	resp, err := s.FileListPut(facade.FileListPutRequest{InstanceID: inst, Scope: scope, Entries: []facade.FileListEntry{
+		{Key: "a", Path: "/x/a.go", Size: 11},
+		{Key: "b", Path: "/x/b.go", Size: 2},
+		{Key: "c", Path: "/y/c.go", Size: 3},
+	}})
+	if err != nil || !resp.OK {
+		t.Fatalf("batch put: err=%v resp=%+v", err, resp)
+	}
+	got, err := s.FileListList(facade.FileListListRequest{InstanceID: inst, Scope: scope})
+	if err != nil || got.Total != 3 {
+		t.Fatalf("batch 后列表不符：err=%v total=%d", err, got.Total)
+	}
+	var a facade.FileListEntry
+	for _, e := range got.List {
+		if e.Key == "a" {
+			a = e
+		}
+	}
+	if a.Size != 11 {
+		t.Fatalf("批量 upsert 未覆盖已存在键：%+v", a)
+	}
+	// 空 Key → 聚合报错（不静默）
+	if _, err := s.FileListPut(facade.FileListPutRequest{
+		InstanceID: inst, Scope: scope, Entries: []facade.FileListEntry{{Path: "/x/nokey.go"}},
+	}); err == nil {
+		t.Fatalf("批量含空 Key 应报错")
+	}
+}

@@ -424,7 +424,19 @@ func FileListListFromWire(m map[string]any) facade.FileListListRequest {
 }
 
 // FileListPutFromWire 解析清单条目（数据内平铺字段）→ 门面入参；key 空回落请求 id。
+// 兼容批量：`{entries:[条目…]}`（批量 upsert）优先；否则按单条平铺字段解析。
 func FileListPutFromWire(m map[string]any) facade.FileListPutRequest {
+	if raw, ok := m["entries"].([]any); ok && len(raw) > 0 {
+		entries := make([]facade.FileListEntry, 0, len(raw))
+		for _, x := range raw {
+			obj, _ := x.(map[string]any)
+			if obj == nil {
+				continue
+			}
+			entries = append(entries, FileListEntryFromWire(obj))
+		}
+		return facade.FileListPutRequest{Entries: entries}
+	}
 	e := FileListEntryFromWire(m)
 	if e.Key == "" {
 		e.Key = RequestID(m)

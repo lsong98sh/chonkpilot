@@ -1,5 +1,5 @@
 /**
- * E 区修复守卫（E-20/21/22/23/24/25/26，2026-10-08）。
+ * E 区修复守卫（E-20/21/22/23/24/25/26/27/28/29，2026-10-08/09）。
  *
  * 前端暂无组件级测试运行器（`npm test` = node:test 直跑）→ 以「源码守卫 + 纯模块行为单测」锁定：
  *   - E-20 MessageList：`await ack` 后校验受理信封（backend 缺失 / ok=false / errors 非空），
@@ -13,6 +13,10 @@
  *   - E-25 请求类 emit 统一 30s 超时（session / knowledge / config / chat ack；对齐 file.js 口径）；
  *   - E-26 MessageItem：流式渲染 100ms 时间闸 + 尾随刷新（renderTick 闸门，最终内容必渲染），
  *     DOMPurify 保持最外层净化收口，卸载清尾随 timer，不引入 watch。
+ *   - E-27 优化订阅：4 个 optimizeAgentPrompt 调用方保存 {abort}，onUnmounted 主动 abort
+ *     （流进行中关闭组件不再残留 3 个订阅）；
+ *   - E-28 MessageList：onUpdated 圆圈高亮走时间闸（turn 数变化即时刷新），滚动路径仍实时；
+ *   - E-29 MessageList：sendSameTurnContinue 拒绝分支复位「继续」按钮（不再永久消失）。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -184,4 +188,53 @@ test('E-26 MessageItem：流式渲染 100ms 时间闸 + 尾随刷新（最终内
     '卸载清尾随 timer')
   // 项目硬性规范：不引入 watch/watchEffect
   assert.doesNotMatch(src, /\bwatch\(|\bwatchEffect\(/, '不引入 watch/watchEffect')
+})
+
+// ── E-27 ──────────────────────────────────────────────────────────────
+test('E-27 优化订阅：4 个调用方保存 abort 句柄并在 onUnmounted 调用', () => {
+  const files = [
+    'components/common/TextEditDialog.vue',
+    'views/knowledge/PrimitivePanel.vue',
+    'views/scenario/ScenarioEditDialog.vue',
+    'views/scenario/ScenarioWizardDialog.vue',
+  ]
+  for (const f of files) {
+    const src = readSrc(f)
+    assert.match(src, /let optimizeAbort = null/, `${f}: 须保存 abort 句柄`)
+    assert.match(src, /optimizeAbort = optimizeAgentPrompt\(/, `${f}: 调用须保存返回的 {abort}`)
+    const un = fnBody(src, 'onUnmounted(')
+    assert.match(un, /optimizeAbort\(\)/, `${f}: onUnmounted 须调 abort()`)
+  }
+  // API 契约：abort 仍返回（签名语义不变，仅调用方接入）
+  const cfg = readSrc('api/config.js')
+  assert.match(cfg, /return \{ abort: \(\) => unsubs\.forEach\(fn => fn\(\)\) \}/,
+    'optimizeAgentPrompt 仍返回 {abort}（签名语义未改）')
+})
+
+// ── E-28 ──────────────────────────────────────────────────────────────
+test('E-28 MessageList：onUpdated 圆圈高亮时间闸限流（turn 数变化即时刷新）', () => {
+  const src = readSrc('views/chat/MessageList.vue')
+  assert.match(src, /const CIRCLE_UPDATE_THROTTLE_MS = 100/, '节流阈值常量（同 E-26 口径）')
+  const throttle = fnBody(src, 'function updateCurrentCircleThrottled()')
+  assert.match(throttle, /turnStarts\.value\.length/, '按 turn 数判断（新增 turn 即时刷新）')
+  assert.match(throttle, /Date\.now\(\)/, '时间闸')
+  assert.match(throttle, /updateCurrentCircle\(\)/, '闸门开启时调用实际全量更新')
+  const upd = fnBody(src, 'onUpdated(() => {')
+  assert.match(upd, /updateCurrentCircleThrottled\(\)/, 'onUpdated 走节流入口')
+  assert.doesNotMatch(upd, /updateCurrentCircle\(\)/, 'onUpdated 不再直调全量更新')
+  const onScrollBody = fnBody(src, 'function onScroll()')
+  assert.match(onScrollBody, /updateCurrentCircle\(\)/, 'onScroll（滚动路径）仍实时更新高亮')
+  assert.doesNotMatch(src, /\bwatch\(|\bwatchEffect\(/, '不引入 watch/watchEffect')
+})
+
+// ── E-29 ──────────────────────────────────────────────────────────────
+test('E-29 MessageList：sendSameTurnContinue 拒绝分支复位 showContinue', () => {
+  const src = readSrc('views/chat/MessageList.vue')
+  const body = fnBody(src, 'async function sendSameTurnContinue()')
+  const iChk = body.indexOf('ackRejectedReason(ack)')
+  assert.ok(iChk >= 0, '须有受理校验')
+  const branch = body.slice(iChk)
+  assert.match(branch, /handleError\(/, '拒绝 → 错误气泡')
+  assert.match(branch, /cleanupAndFinish\(\)/, '拒绝 → 复位加载态')
+  assert.match(branch, /showContinue\.value = true/, '拒绝 → 复位「继续」按钮（否则入口置 false 后永久消失）')
 })

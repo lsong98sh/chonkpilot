@@ -63,6 +63,7 @@
     "done_at": { "type": "string", "desc": "完成时间" },
     "effort": { "type": "any", "desc": "推理强度" },
     "enabled": { "type": "int", "desc": "启用数" },
+    "entries": { "type": "any", "desc": "批量条目集合（数组=条目列表，如 data-filelist-put；对象=键值对，如 data-prj-config save）" },
     "error": { "type": "any", "desc": "错误（对象/字符串）" },
     "errors": { "type": "array", "desc": "错误集合" },
     "exclude_turn": { "type": "string", "desc": "排除轮次" },
@@ -1138,11 +1139,12 @@
         "md5": { "type": "string", "required": false },
         "doc_ids": { "type": "array", "required": false },
         "chunks": { "type": "int", "required": false },
-        "indexed_at": { "type": "string", "required": false }
+        "indexed_at": { "type": "string", "required": false },
+        "entries": { "type": "array", "required": false }
       },
       "result": {
         "ok": { "type": "bool", "required": true },
-        "id": { "type": "string", "required": true }
+        "id": { "type": "string", "required": false }
       }
     },
     {

@@ -73,6 +73,9 @@ const (
 	dslDataTimeout = 3 * time.Second
 	// dslProcKillWait 是取消后等待执行器退出的宽限。
 	dslProcKillWait = 5 * time.Second
+	// dslReturnFileMaxAge 是 `$RETURN` file 态落盘文件的陈旧阈值：作业启动时清理临时根内
+	// mtime 早于该阈值的 dsl-return-*.md（防常驻进程下按作业线性累积；保留近期结果，C-43）。
+	dslReturnFileMaxAge = 24 * time.Hour
 )
 
 // ─── 行协议载荷 ─────────────────────────────────────────
@@ -272,6 +275,11 @@ func (g *Gateway) runDSLJob(ctx context.Context, args map[string]any) (string, e
 	tempRoot, err := paths.TempRootFor(instance)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", dslRunToolName, err)
+	}
+	// 作业启动兜底：清理临时根内陈旧的 `$RETURN` 落盘文件（常驻进程下防按作业线性累积；
+	// 取消路径的残留也在此被下次作业清掉；仅删陈旧文件，保留近期结果，C-43）。
+	if n := paths.SweepStaleReturnFiles(tempRoot, dslReturnFileMaxAge); n > 0 {
+		g.logf("[gateway] dsl_run: swept %d stale $RETURN files under %s", n, tempRoot)
 	}
 	jobID := newJobID()
 	returnFile := filepath.Join(tempRoot, "dsl-return-"+jobID+".md")

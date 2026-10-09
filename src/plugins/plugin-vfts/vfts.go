@@ -751,7 +751,11 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 		// 生效扩展名不可得时**不重建清单**（否则会把整张表误判为待删除而清空）
 		p.logf("vfts: %s 清单重建跳过（未取到生效扩展名）", wd)
 	} else if err := p.rebuildManifest(r, res, effExts, rules, stack, docCtx); err != nil {
+		// 清单重建失败 → 引擎索引与 file_list 清单不一致：标降级/错误状态并中止，
+		// 不再回写「成功」状态、不打印「全量重建完成」（避免状态误报成功）。
 		p.logf("vfts: %s 清单重建失败：%v", wd, err)
+		p.saveStatusErr(r, "manifest", err)
+		return
 	}
 	p.mergeSyncStatus(r, &syncStats{Added: res.Added}, docSvc)
 	p.logf("vfts: %s 全量重建完成（%d 文件 / %d 块）", wd, res.Files, res.Chunks)
@@ -930,12 +934,16 @@ func (d *rebuildDebouncer) schedule(key string, fn func()) {
 	if t := d.timers[key]; t != nil {
 		t.Stop()
 	}
-	d.timers[key] = time.AfterFunc(d.window, func() {
+	var t *time.Timer
+	t = time.AfterFunc(d.window, func() {
 		d.mu.Lock()
-		delete(d.timers, key)
+		if d.timers[key] == t { // 旧 timer 已 fire、等待期间又注册了新 timer 时，不误删新条目
+			delete(d.timers, key)
+		}
 		d.mu.Unlock()
 		fn()
 	})
+	d.timers[key] = t
 }
 
 // instanceForWorkdir 返回该 workdir 任一活跃实例 id（读 prj-config 用；无则空串）。

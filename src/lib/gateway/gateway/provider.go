@@ -122,10 +122,16 @@ type connSlot struct {
 	conn     providerConn
 	cmd      *exec.Cmd
 	done     chan error
+	// exited 由 Wait goroutine 置位（原子）：替代无同步读 cmd.ProcessState（C-42），
+	// 供 Close / waitEndpointReady 无竞争判断进程是否已退出。
+	exited   *atomic.Bool
 	closing  atomic.Bool  // 主动关闭/重建中 → 退出观测静默
 	lastUsed atomic.Int64 // 最近使用时刻（unix nano；空闲回收判据）
 	inFlight atomic.Int32 // 在飞调用数（>0 不回收）
 }
+
+// processExited 报告自持子进程是否已 Wait 完成（原子标志；cmd 为 nil 时恒 false）。
+func (s *connSlot) processExited() bool { return s.exited != nil && s.exited.Load() }
 
 // poolKeyFor 组合连接池隔离键：`<instance_id>\x00<workdir>`（instance 缺失 → 仅 workdir，
 // 与引入 instance 维度之前逐字节等价）。instance_id 与 workdir 均可能含任意字符 →
@@ -147,7 +153,7 @@ func (s *connSlot) idleFor(now time.Time) time.Duration {
 // connect 建立该槽连接：spawned http/sse 先等 url 就绪，再 Connect（含 initialize 握手）。
 func (s *connSlot) connect(ctx context.Context, endpoint string) error {
 	if s.cmd != nil {
-		if err := waitEndpointReady(ctx, endpoint, s.cmd); err != nil {
+		if err := waitEndpointReady(ctx, endpoint, s.exited); err != nil {
 			return fmt.Errorf("wait spawned endpoint: %w", err)
 		}
 	}
@@ -164,7 +170,7 @@ func (s *connSlot) connect(ctx context.Context, endpoint string) error {
 // 子进程已自行退出（崩溃监测路径）时跳过 client.Close（通道已死）。
 func (s *connSlot) Close() error {
 	s.closing.Store(true)
-	if s.conn != nil && (s.cmd == nil || s.cmd.ProcessState == nil) {
+	if s.conn != nil && (s.cmd == nil || !s.processExited()) {
 		_ = s.conn.Close()
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
@@ -188,11 +194,15 @@ type proxyProvider struct {
 	idleTTL  time.Duration
 	logf     func(string, ...any)
 
-	mu      sync.Mutex
-	shared  atomic.Pointer[connSlot] // 共享槽（isolate=false 的唯一连接；always 建；Invalidate 原地换新）
-	pool    map[string]*connSlot     // poolKeyFor(instance, workdir) → 专属槽（isolate=true）
-	buildMu map[string]*sync.Mutex   // 每池键建连锁（同键串行，不同键互不阻塞）
-	noWd    atomic.Bool              // 「缺 workdir 回落共享」告警只记一次
+	mu sync.Mutex
+	// rebuildMu 串行化 Invalidate 的「作废 + 重建」（C-52）：monitorSpawned 与取消路径
+	// （Terminate→InvalidateScoped→Invalidate）并发进入会各自 spawn，后写 shared 覆盖前者 → 孤儿进程。
+	// 锁序：rebuildMu → mu（Invalidate 内 closePooled 取 mu）；无反向路径（持 mu 者不取 rebuildMu）。
+	rebuildMu sync.Mutex
+	shared    atomic.Pointer[connSlot] // 共享槽（isolate=false 的唯一连接；always 建；Invalidate 原地换新）
+	pool      map[string]*connSlot     // poolKeyFor(instance, workdir) → 专属槽（isolate=true）
+	buildMu   map[string]*sync.Mutex   // 每池键建连锁（同键串行，不同键互不阻塞）
+	noWd      atomic.Bool              // 「缺 workdir 回落共享」告警只记一次
 
 	closing  atomic.Bool // 网关主动关闭/重建中（Close/Invalidate）→ 退出观测静默
 	stopCh   chan struct{}
@@ -230,39 +240,40 @@ func newProxyProvider(entry *ServerEntry, callTimeout time.Duration, logf func(s
 // buildSlot 按 entry 规格构建一个连接槽（含 spawned http/sse 的自持子进程）。
 // 供首建共享槽、池内按 (instance, workdir) 懒建复用。
 func buildSlot(entry *ServerEntry, workdir, instance string) (*connSlot, error) {
-	conn, cmd, done, err := buildConn(entry)
+	conn, cmd, done, exited, err := buildConn(entry)
 	if err != nil {
 		return nil, err
 	}
-	s := &connSlot{workdir: workdir, instance: instance, conn: conn, cmd: cmd, done: done}
+	s := &connSlot{workdir: workdir, instance: instance, conn: conn, cmd: cmd, done: done, exited: exited}
 	s.touch()
 	return s, nil
 }
 
 // buildConn 按 entry 规格构建一个下游连接（及 spawned http/sse 的自持子进程）。
-func buildConn(entry *ServerEntry) (providerConn, *exec.Cmd, chan error, error) {
+func buildConn(entry *ServerEntry) (providerConn, *exec.Cmd, chan error, *atomic.Bool, error) {
 	transportName := entry.TransportName()
 	switch transportName {
 	case "stdio", "http", "sse":
 	default:
-		return nil, nil, nil, fmt.Errorf("unknown transport %q", transportName)
+		return nil, nil, nil, nil, fmt.Errorf("unknown transport %q", transportName)
 	}
 	// 显式 http/sse 必须有 url（runtime+url = spawn 后就绪再连；纯 url = proxied）。
 	// 缺 url 时旧实现会先 spawn 再连空端点（必然失败）→ 此处前置明确报错，不 spawn。
 	if transportName != "stdio" && strings.TrimSpace(entry.URL) == "" {
-		return nil, nil, nil, fmt.Errorf("transport %q needs url（server %q）", transportName, entry.ID)
+		return nil, nil, nil, nil, fmt.Errorf("transport %q needs url（server %q）", transportName, entry.ID)
 	}
 
 	// spawned http/sse：先拉起子进程（connect 时再轮询 url 就绪）
 	var cmd *exec.Cmd
 	var done chan error
+	var exited *atomic.Bool
 	needsSpawn := entry.Runtime != "" && (transportName == "http" || transportName == "sse")
 	if needsSpawn {
-		c, d, err := startProcess(entry)
+		c, d, ex, err := startProcess(entry)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("spawn %q: %w", entry.ID, err)
+			return nil, nil, nil, nil, fmt.Errorf("spawn %q: %w", entry.ID, err)
 		}
-		cmd, done = c, d
+		cmd, done, exited = c, d, ex
 	}
 
 	var conn providerConn
@@ -270,7 +281,7 @@ func buildConn(entry *ServerEntry) (providerConn, *exec.Cmd, chan error, error) 
 	case "stdio":
 		argv, err := spawnArgv(entry)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		proc := exec.Command(argv[0], argv[1:]...)
 		proc.SysProcAttr = winproc.SysProcAttr()
@@ -310,7 +321,7 @@ func buildConn(entry *ServerEntry) (providerConn, *exec.Cmd, chan error, error) 
 			conn = &sdkConn{cli: cli, tr: &mcp.StreamableClientTransport{Endpoint: entry.URL, HTTPClient: httpClient}}
 		}
 	}
-	return conn, cmd, done, nil
+	return conn, cmd, done, exited, nil
 }
 
 // headerRoundTripper 给下行请求注入附加头（StreamableClientTransport 未提供 Headers 字段，
@@ -338,11 +349,12 @@ func spawnArgv(e *ServerEntry) ([]string, error) {
 	return append([]string{rt}, e.Args...), nil
 }
 
-// startProcess 按 entry.runtime/args 拉起子进程（env/cwd 生效），返回进程与 Wait 结果通道。
-func startProcess(e *ServerEntry) (*exec.Cmd, chan error, error) {
+// startProcess 按 entry.runtime/args 拉起子进程（env/cwd 生效），返回进程、Wait 结果通道与
+// 退出标志（exited 由 Wait goroutine 原子置位，供无竞争读取，C-42）。
+func startProcess(e *ServerEntry) (*exec.Cmd, chan error, *atomic.Bool, error) {
 	argv, err := spawnArgv(e)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.SysProcAttr = winproc.SysProcAttr()
@@ -351,11 +363,16 @@ func startProcess(e *ServerEntry) (*exec.Cmd, chan error, error) {
 	}
 	cmd.Env = processEnv(e)
 	if err := cmd.Start(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	return cmd, done, nil
+	exited := &atomic.Bool{}
+	go func() {
+		err := cmd.Wait()
+		exited.Store(true) // 先置退出标志（原子），再投递结果通道
+		done <- err
+	}()
+	return cmd, done, exited, nil
 }
 
 // processEnv 组装 spawned 子进程环境变量：os.Environ() 基线 + entry.Env（K=V），
@@ -373,8 +390,8 @@ func processEnv(e *ServerEntry) []string {
 }
 
 // waitEndpointReady 轮询 url 的 TCP 端点直到可连（transport-safe：http/sse 均可），
-// 或 ctx 超时 / 子进程提前退出。
-func waitEndpointReady(ctx context.Context, rawURL string, cmd *exec.Cmd) error {
+// 或 ctx 超时 / 子进程提前退出（exited 原子标志，替代无同步读 cmd.ProcessState，C-42）。
+func waitEndpointReady(ctx context.Context, rawURL string, exited *atomic.Bool) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("parse url: %w", err)
@@ -394,7 +411,7 @@ func waitEndpointReady(ctx context.Context, rawURL string, cmd *exec.Cmd) error 
 			return ctx.Err()
 		default:
 		}
-		if cmd != nil && cmd.ProcessState != nil {
+		if exited != nil && exited.Load() {
 			return fmt.Errorf("spawned process exited before ready")
 		}
 		conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
@@ -611,6 +628,17 @@ func (p *proxyProvider) WaitExit() <-chan error {
 	return done
 }
 
+// closed 报告 provider 是否已进入 Close 流程（Stop/unregister）。Close 关闭 stopCh，
+// 而 Invalidate（重建）不关闭 → 供退出观测区分「主动关停」与「临时重建窗口」（C-37）。
+func (p *proxyProvider) closed() bool {
+	select {
+	case <-p.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
 // ListTools 走共享槽（工具面为 server 级、与 workdir 无关）。
 func (p *proxyProvider) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 	conn := p.shared.Load().conn
@@ -646,6 +674,10 @@ func (p *proxyProvider) Call(ctx context.Context, tool string, args map[string]a
 // spawned http/sse：kill 自持子进程 + 断连，再按规格重新 spawn + 轮询就绪 + 连接。
 // 返回 rebuilt=false 仅在重建/重连失败时（provider 暂不可用，需重新注册/reload）。
 func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
+	// 串行化重建（C-52）：并发进入（如 monitorSpawned 重建与取消路径重建）会各自 spawn，
+	// 后写 shared 覆盖前者 → 前一子进程失去句柄成孤儿。持锁期间仍在 p.mu 内完成作废（closePooled）。
+	p.rebuildMu.Lock()
+	defer p.rebuildMu.Unlock()
 	p.closing.Store(true) // 作废/重建期间退出观测静默
 	p.closePooled()
 	_ = p.shared.Load().Close()
@@ -657,11 +689,11 @@ func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
 		p.closing.Store(false)
 		return false, err
 	}
-	conn, cmd, done, err := buildConn(p.entry)
+	conn, cmd, done, exited, err := buildConn(p.entry)
 	if err != nil {
 		return fail(fmt.Errorf("respawn %q: %w", p.name, err))
 	}
-	slot := &connSlot{conn: conn, cmd: cmd, done: done}
+	slot := &connSlot{conn: conn, cmd: cmd, done: done, exited: exited}
 	slot.touch()
 	p.shared.Store(slot)
 	if err := p.connect(ctx); err != nil {

@@ -210,6 +210,9 @@ func (s *Service) ScenarioList(req facade.ScenarioListRequest) (facade.ScenarioL
 
 // ScenarioGet 按 id 定位场景（Level 空 = 具体级优先 prjusr → project → user → app）。
 func (s *Service) ScenarioGet(req facade.ScenarioGetRequest) (facade.ScenarioGetResponse, error) {
+	if !capfs.ValidScenarioID(req.ScenarioID) {
+		return facade.ScenarioGetResponse{}, errors.New("invalid scenario id: " + req.ScenarioID)
+	}
 	s.checkFactoryScenarios()
 	m, err := s.scenarioLoadOne(s.scenarioLevelsFor(req.InstanceID, req.Scope), req.ScenarioID, req.Level)
 	if err != nil {
@@ -224,8 +227,8 @@ func (s *Service) ScenarioGet(req facade.ScenarioGetRequest) (facade.ScenarioGet
 // 另：写盘前经 `capfs.WriteScenarioDir` 做**同场景 agent 重名校验** → 重名拒绝、不落盘（42 §2 (175)）。
 func (s *Service) ScenarioSave(req facade.ScenarioSaveRequest) (facade.ScenarioSaveResponse, error) {
 	sc := req.Scenario
-	if sc.ID == "" {
-		return facade.ScenarioSaveResponse{}, errors.New("id required")
+	if !capfs.ValidScenarioID(sc.ID) {
+		return facade.ScenarioSaveResponse{}, errors.New("invalid scenario id: " + sc.ID)
 	}
 	workDir := s.WorkDirLoose(req.InstanceID, req.Scope)
 	prjUsrCap := s.prjUsrCapRoot(req.InstanceID, req.Scope)
@@ -244,8 +247,8 @@ func (s *Service) ScenarioSave(req facade.ScenarioSaveRequest) (facade.ScenarioS
 // ScenarioDelete 删除场景（app / user / project / prjusr 四级均可删；Level 空 = 具体级优先
 // prjusr → project → user → app）。
 func (s *Service) ScenarioDelete(req facade.ScenarioDeleteRequest) (facade.ScenarioDeleteResponse, error) {
-	if req.ScenarioID == "" {
-		return facade.ScenarioDeleteResponse{}, errors.New("id required")
+	if !capfs.ValidScenarioID(req.ScenarioID) {
+		return facade.ScenarioDeleteResponse{}, errors.New("invalid scenario id: " + req.ScenarioID)
 	}
 	workDir := s.WorkDirLoose(req.InstanceID, req.Scope)
 	prjUsrCap := s.prjUsrCapRoot(req.InstanceID, req.Scope)
@@ -268,7 +271,12 @@ func (s *Service) ScenarioDelete(req facade.ScenarioDeleteRequest) (facade.Scena
 		level = capfs.KindUser
 	}
 	_, root := s.scenarioRootForWrite(level, workDir, prjUsrCap)
-	if err := os.RemoveAll(filepath.Join(root, req.ScenarioID)); err != nil {
+	target := filepath.Join(root, req.ScenarioID)
+	// 越界复验（A-31）：id 已过 ValidScenarioID，此处再兜底确认删除落点仍在场景根内（防 `..` 越界删）。
+	if !capfs.StrictlyWithin(root, target) {
+		return facade.ScenarioDeleteResponse{}, errors.New("invalid scenario id: " + req.ScenarioID)
+	}
+	if err := os.RemoveAll(target); err != nil {
 		return facade.ScenarioDeleteResponse{}, err
 	}
 	s.RefreshScoped("scenario", req.InstanceID, req.ScenarioID, "delete", req.Scope)

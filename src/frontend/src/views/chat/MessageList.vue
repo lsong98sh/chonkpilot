@@ -246,6 +246,22 @@ function updateCurrentCircle() {
   currentCircle.value = circle
 }
 
+// E-28：圆圈高亮更新节流。流式回复每 chunk 触发组件更新 → onUpdated 每次都全量
+// querySelectorAll + 逐节点 offsetTop（强制同步布局），长会话 × 每 token 一次开销显著。
+// 时间闸限流（同 E-26 口径），且 turn 数变化（新增/切换 turn）时立即刷新，保证
+// 「新增 turn 时圆圈高亮正确」；滚动路径 onScroll 仍实时更新（不受此闸影响）。
+const CIRCLE_UPDATE_THROTTLE_MS = 100
+let lastCircleUpdateAt = 0
+let lastCircleTurnCount = -1
+function updateCurrentCircleThrottled() {
+  const count = turnStarts.value.length
+  const now = Date.now()
+  if (count === lastCircleTurnCount && now - lastCircleUpdateAt < CIRCLE_UPDATE_THROTTLE_MS) return
+  lastCircleTurnCount = count
+  lastCircleUpdateAt = now
+  updateCurrentCircle()
+}
+
 // 点击圈：滚动到该圈所代表 turn 的开始处。
 function scrollToTurn(turnIdx) {
   const el = listRef.value
@@ -299,7 +315,7 @@ onUpdated(() => {
     autoScroll.value = true
   }
   prevTurnActive.value = ta
-  updateCurrentCircle()
+  updateCurrentCircleThrottled()
   // 卡片渲染后补挂早到的待决裁决（mcp-tools-timeout 是 fire-and-forget，可能先于卡片到达）
   flushPendingArbitration()
 
@@ -490,6 +506,10 @@ async function sendSameTurnContinue() {
   if (rejected) {
     handleError({ message: rejected })
     cleanupAndFinish()
+    // E-29：后端拒绝「继续」→ 复位按钮，供用户再次续写（否则入口已置 false → 永久消失）。
+    // Error 气泡带 content 会让 lastTurnIncomplete 启发式误判为「有输出」→ 直接置位
+    // （同 onLlmComplete 错误分支口径）。
+    showContinue.value = true
     return
   }
   pushUserBubble(text, at)
