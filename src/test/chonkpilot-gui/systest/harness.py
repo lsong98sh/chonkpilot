@@ -72,7 +72,14 @@ ABOVE_NORMAL_PRIORITY_CLASS = getattr(subprocess, "ABOVE_NORMAL_PRIORITY_CLASS",
 
 
 def resolve_gui_exe():
-    """按候选顺序取首个存在的 GUI 产物；均不存在时返回首个候选（由启动报错）。"""
+    """按候选顺序取首个存在的 GUI 产物；均不存在时返回首个候选（由启动报错）。
+
+    `CHONK_GUI_EXE` 可显式指定被测产物（如 `dist/gui/chonkpilot-flash.exe` 以跑 flash e2e）；
+    未设或该路径不存在时按 `GUI_EXE_CANDIDATES` 顺序回落。
+    """
+    override = os.environ.get("CHONK_GUI_EXE", "").strip()
+    if override and os.path.isfile(override):
+        return override
     for p in GUI_EXE_CANDIDATES:
         if os.path.isfile(p):
             return p

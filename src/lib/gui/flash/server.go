@@ -3,8 +3,9 @@ package flash
 // flash 自动拉起服务端（🆕 2026-10-10；62 §3A / 19 §8.11）。
 //
 // 口径：flash（GUI 与 flash-cli 共用）启动时先探测约定 UDS 是否连通 —— 已连上 = 常驻 server
-// 在跑，直接复用；连不上 → 在**同目录**定位 `chonkpilot-server.exe`（或 `--server-exe` 指定）
-// → spawn `chonkpilot-server.exe --autoexit` → **带超时重试 dial**；成功继续认领，仍失败给明确错误。
+// 在跑，直接复用；连不上 → 定位 `chonkpilot-server.exe`（**同级 `server/` 优先**、或同目录、
+// 或 `--server-exe` 指定）→ spawn `chonkpilot-server.exe --autoexit` → **带超时重试 dial**；
+// 成功继续认领，仍失败给明确错误。
 //
 //   - server 已运行（UDS 连通）→ **不重复拉起**（同一份常驻 server 服务多实例）；
 //   - `--autoexit` 仅在 flash 发起 spawn 时传入（语义见 `src/server/main.go`，本包不改其语义）；
@@ -107,8 +108,10 @@ func (o ServerOptions) Ensure() (bool, error) {
 
 // resolveServerExe 定位服务端 exe：
 //   - 显式 `--server-exe` 优先（不做存在性校验，交由 spawn 报错）；
-//   - 否则按 flash exe 位置推测候选：**同目录** → **同级 `server/` 子目录**
-//     （随 `build-gui.ps1` 产物布局：flash 在 `dist/gui\`、server 在 `dist/server\`）；
+//   - 否则按 flash exe 位置推测候选：**同级 `server/` 子目录** → **同目录**
+//     （随 `build-gui.ps1` 产物布局：flash 在 `dist/gui\`、server 在 `dist/server\`）。
+//     **同级优先**：server 需其随附资产（capability/mcps/plugins 等在其 exe 同目录/）——
+//     同目录若只有裸 server exe（无资产）会拉起失败，故完整部署（同级 server/）优先。
 //     取第一个存在的候选；都不存在 → 明确错误（提示 `--server-exe`）。
 func (o ServerOptions) resolveServerExe() (string, error) {
 	if p := o.ServerExe; p != "" {
@@ -125,8 +128,8 @@ func (o ServerOptions) resolveServerExe() (string, error) {
 	}
 	dir := filepath.Dir(self)
 	candidates := []string{
-		filepath.Join(dir, ServerExeName()),
 		filepath.Join(dir, "..", "server", ServerExeName()),
+		filepath.Join(dir, ServerExeName()),
 	}
 	for _, c := range candidates {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {

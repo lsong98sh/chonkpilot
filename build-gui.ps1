@@ -31,8 +31,9 @@
 #     ├── chonkpilot-cli-client.exe   # console 宿主（同 lib 集，AsyncMode: never）
 #     ├── chonkpilot-flash.exe        # 薄壳客户端（webview2 宿主，远程总线 UDS；🆕 2026-10-10）
 #     ├── chonkpilot-flash-cli.exe    # 薄壳客户端 console 宿主（headless 远程；🆕 2026-10-10）
-#     ├── chonkpilot-server.exe       # 由本脚本从 dist/server 复制（供 flash 同目录优先发现；🆕 2026-10-10）
 #     └── frontend/dist/              # flash 前端（**非 embed**，flash 以 os.DirFS(<exeDir>) 加载；🆕 2026-10-10）
+#   （dist/gui **不放** server exe：flash 定位 server = **同级 ../server 优先** → 同目录；
+#    server 需其随附资产（capability/mcps/plugins），完整部署在 dist/server/，裸复制会拉起失败）
 #   dist/server/                 – 服务端（browser 与 gui **共用**；browser 静态页 = 内嵌面，
 #                                  来源 src/server/frontend/dist，由 build-browser.ps1 投放）
 #     ├── chonkpilot-server.exe             # 服务端：llm + gateway + filesys + data 合一 exe
@@ -198,16 +199,16 @@ try {
     Write-Host "    ok: $outSrvExe ($mb MB)"
 } finally { Pop-Location }
 
-# -- 4.5) dist/gui 陈旧产物清理 + 同步服务端 exe（flash 同目录优先搜索，需与服务端同目录）--
-#   背景：flash 的 server 候选 = 同目录优先 → `dist/gui/chonkpilot-server.exe`（见 flash/server.go）；
-#   旧构建曾把 server/旧名/引擎留在 dist/gui，会误被拉起。此处清理陈留并把当前 server 复制一份。
-Write-Host "==> [4.5/6] clean dist/gui stale + copy server"
-foreach ($stale in @("chonkpilot-gui.exe", "chonkpilot-cli.exe", "chonkpilot-codegraph-mcp-server.exe", "chonkpilot-vfts-mcp-server.exe", "zvec_c_api.dll")) {
+# -- 4.5) dist/gui 陈旧产物清理（**不**把 server 复制进 dist/gui）--
+#   背景：flash 的 server 候选 = **同级 `server/` 优先** → 同目录（见 flash/server.go:resolveServerExe）。
+#   server 需其随附资产（capability/mcps/plugins 在其 exe 同目录），裸复制 server exe 会因缺资产
+#   拉起失败（实测）。故 dist/gui 不放 server —— 由同级 `dist/server/` 提供完整部署。
+#   此处仅清理旧构建遗留的误导性产物（含历史上的裸 server exe 副本）。
+Write-Host "==> [4.5/6] clean dist/gui stale"
+foreach ($stale in @("chonkpilot-server.exe", "chonkpilot-gui.exe", "chonkpilot-cli.exe", "chonkpilot-codegraph-mcp-server.exe", "chonkpilot-vfts-mcp-server.exe", "zvec_c_api.dll")) {
     $p = Join-Path $dist $stale
     if (Test-Path $p) { Remove-Item $p -Force; Write-Host "    clean stale: $stale" }
 }
-Copy-Item $outSrvExe (Join-Path $dist "chonkpilot-server.exe") -Force
-Write-Host "    ok: dist/gui/chonkpilot-server.exe (copied from dist/server)"
 
 # -- 5) 形态无关资产：capability/（executor×4 + 契约）+ scenarios/（出厂场景） --
 Write-Host "==> [5/6] stage capability/ + scenarios/ to dist/server"
@@ -289,8 +290,8 @@ $mbDll = [Math]::Round((Get-Item (Join-Path $vfDst "zvec_c_api.dll")).Length / 1
 Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
 
 # -- 清单 --
-#   dist/gui 另含（下面未逐行输出）：chonkpilot-server.exe（从 dist/server 复制，供 flash 同目录优先发现）
-#                                   frontend/dist/（flash 前端，非 embed；flash 以 os.DirFS 加载）
+#   dist/gui **不含** server exe（server 由同级 `dist/server/` 提供；flash 以同级 server/ 优先定位）
+#   dist/gui 另含（下面未逐行输出）：frontend/dist/（flash 前端，非 embed；flash 以 os.DirFS 加载）
 $mbGui = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
 $mbCli = [Math]::Round((Get-Item $outCliExe).Length / 1MB, 1)
 $mbFlash = [Math]::Round((Get-Item $outFlashExe).Length / 1MB, 1)

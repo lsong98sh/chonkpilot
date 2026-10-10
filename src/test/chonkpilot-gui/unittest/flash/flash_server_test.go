@@ -109,8 +109,8 @@ func TestServerExeName(t *testing.T) {
 	}
 }
 
-// TestEnsureServerFindsSiblingServerDir：未给 --server-exe → 由 flash exe 推导，
-// 同目录无 server 时回落到**同级 `server/` 子目录**（随 build-gui.ps1 产物布局），并 spawn 之。
+// TestEnsureServerFindsSiblingServerDir：未给 --server-exe → 由 flash exe 推导，落在
+// **同级 `server/` 子目录**（随 build-gui.ps1 产物布局，同级优先），并 spawn 之。
 func TestEnsureServerFindsSiblingServerDir(t *testing.T) {
 	base := t.TempDir()
 	flashDir, srvDir := filepath.Join(base, "gui"), filepath.Join(base, "server")
@@ -145,7 +145,47 @@ func TestEnsureServerFindsSiblingServerDir(t *testing.T) {
 		t.Fatalf("Ensure = (started=%v, err=%v)，期望 (true, nil)", started, err)
 	}
 	if gotExe != srvExe {
-		t.Fatalf("spawn exe = %q，期望 %q（同级 server/ 回落）", gotExe, srvExe)
+		t.Fatalf("spawn exe = %q，期望 %q（同级 server/）", gotExe, srvExe)
+	}
+}
+
+// TestEnsureServerPrefersSiblingServerDir：同目录与同级 `server/` **同时存在** → **同级优先**
+// （server 需其随附资产 capability/mcps/plugins 在其部署目录，裸同目录副本会缺资产）。
+func TestEnsureServerPrefersSiblingServerDir(t *testing.T) {
+	base := t.TempDir()
+	flashDir, srvDir := filepath.Join(base, "gui"), filepath.Join(base, "server")
+	mustMkdir(t, flashDir)
+	mustMkdir(t, srvDir)
+	flashExe := filepath.Join(flashDir, "chonkpilot-flash.exe")
+	siblingExe := filepath.Join(srvDir, flash.ServerExeName())
+	sameDirExe := filepath.Join(flashDir, flash.ServerExeName())
+	for _, p := range []string{flashExe, siblingExe, sameDirExe} {
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	probe := 0
+	var gotExe string
+	started, err := flash.ServerOptions{
+		ExePath: flashExe,
+		Probe: func(string) error {
+			probe++
+			if probe == 1 {
+				return errors.New("no server")
+			}
+			return nil
+		},
+		Spawn:    func(exe string, _ []string) error { gotExe = exe; return nil },
+		Sleep:    func(time.Duration) {},
+		Timeout:  time.Second,
+		Interval: time.Millisecond,
+	}.Ensure()
+	if err != nil || !started {
+		t.Fatalf("Ensure = (started=%v, err=%v)，期望 (true, nil)", started, err)
+	}
+	if gotExe != siblingExe {
+		t.Fatalf("spawn exe = %q，期望同级优先 %q（而非同目录 %q）", gotExe, siblingExe, sameDirExe)
 	}
 }
 

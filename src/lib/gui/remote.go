@@ -70,9 +70,15 @@ func runRemote(distFS fs.FS, opts RemoteOptions) error {
 	MarkStartupBegin()
 
 	var workDirArg string
+	var dataDirArg string
 	var testPort int
 	var serverExe string
 	flag.StringVar(&workDirArg, "work-dir", "", "工作目录；空 = 最近项目 → 选目录（62 §3A）")
+	// --data-dir 与 desktop/gui 壳同名同义：覆盖**客户端本地数据根**（prjusr 落点 = flash 的
+	// 日志 / 本地根）。缺省 = `<work_dir>/.chonkpilot`（flash.DataDirFor 约定，62 §3A）。
+	// **不影响**：项目占用锁（恒在 `<work_dir>/.chonkpilot/chonkpilot.lock`，见 flash.AcquireProject）
+	// 与服务端数据根（服务端自定）；flash-cli 无此参数（仅 GUI 薄壳注册）。
+	flag.StringVar(&dataDirArg, "data-dir", "", "客户端本地数据根（默认 <work-dir>/.chonkpilot）")
 	// --test-port 是**调试构建专属**开关（-tags debugport，见 DebugPortEnabled）：
 	// release 构建下不注册本 flag（传入即 unknown flag），testPort 恒 0 → onWired 自然跳过接线。
 	if DebugPortEnabled {
@@ -120,8 +126,12 @@ func runRemote(distFS fs.FS, opts RemoteOptions) error {
 		defer wdLock.Release()
 	}
 
-	// data-dir 约定 = <work_dir>/.chonkpilot（恒非空 → PrjUsrDir 纯路径拼接，见 flash.DataDirFor）。
+	// data-dir 约定 = <work_dir>/.chonkpilot（恒非空 → PrjUsrDir 纯路径拼接，见 flash.DataDirFor）；
+	// 显式 --data-dir 覆盖之（供 e2e / 调试指定本地数据根；项目占用锁与服务端数据根均不受影响）。
 	dataDir := flash.DataDirFor(workDir)
+	if dataDirArg != "" {
+		dataDir = dataDirArg
+	}
 
 	// ── 连接 UDS + claim（本机信任免鉴权）──────────────────────────────
 	var (

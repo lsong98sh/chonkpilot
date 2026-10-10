@@ -105,7 +105,7 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 	clientType := rec.ClientType
 
 	// ③ 鉴权 + work_dir 归属校验（按**服务端判定的形态**分派；61 §4.6）。
-	workDir, dataDir, code := s.resolveClaimTarget(&req, boundWorkDir, boundDataDir)
+	workDir, dataDir, code := s.resolveClaimTarget(&req, boundWorkDir, boundDataDir, rec.WorkDir)
 	if code != "" {
 		logf("[chonkpilot-server] instance-claim %s: work_dir=%q → %s（form=%s）\n",
 			id, req.WorkDir, code, s.Form())
@@ -143,9 +143,11 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 
 // resolveClaimTarget 按形态解析本次认领的 `work_dir` / `data_dir`（61 §4.1 ① · §4.6）。
 //
-//	desktop / flash（免鉴权）：work_dir/data_dir = 入口绑定或服务端启动参数（本机单用户 /
-//	                       本地免鉴权）；
-//	                       未带绑定又无启动参数 → instance-forbidden（不静默绑定空目录）；
+//	本地前门（`req.Local`，UDS 本机信任 / 免鉴权）：
+//	                       work_dir = 客户端提议；提议为空 → 回落**实例绑定**的 work_dir
+//	                       （`instWorkDir`）；两者皆空 → instance-forbidden（不静默绑定空目录）。
+//	desktop（内嵌免鉴权，`s.Form()==FormDesktop`）：work_dir/data_dir = 实例绑定或服务端启动
+//	                       参数；未带绑定又无启动参数 → instance-forbidden；
 //	                       提议与绑定不一致 → instance-forbidden（**不静默改写入口绑定**，2a 口径）；
 //	gui / browser（要求认证）：
 //	                       无有效令牌 → instance-unauthorized；
@@ -154,13 +156,23 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 //	                       通过 → work_dir = 规范化提议；data_dir = `<用户数据根>/<uid>/`。
 //
 // 返回 (work_dir, data_dir, 错误码)；错误码空 = 通过。
-func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir string) (string, string, string) {
-	// 本地前门（🆕 2026-10-09：UDS = 本机信任）—— work_dir 取**客户端提议**（server 无绑定），
+func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir, instWorkDir string) (string, string, string) {
+	// 本地前门（🆕 2026-10-09：UDS = 本机信任）—— work_dir 取**客户端提议**；
+	// 提议为空则回落**连接已绑定实例的 work_dir**（`instWorkDir` = 实例登记的 work_dir）
+	// ——flash 薄壳的 SPA 按 desktop 语义认领时**不带 work_dir**（其 work_dir 已由 flash 自身
+	// `DialClaim` 绑定并经 instance-register 登记），缺失回落会让「免鉴权的本地前端认领」被
+	// 误判 forbidden（= 黑屏 + “无权访问该工作目录”）。
+	// **只认实例绑定**（不落 `boundWorkDir`/启动参数）：server 的启动 cwd（= `s.opts.WorkDir`，
+	// 独立 server 下即安装目录）**不是项目目录**，回落它会在实例未绑定时**静默绑定安装目录**
+	// → 使本分支的 forbidden 守卫失效（fail-open）。实例未绑定且无提议 → 明确失败。
 	// data_dir 随 work_dir 派生为 `<work_dir>/.chonkpilot`（与 desktop 单体口径一致）。
 	if req.Local {
 		wd := strings.TrimSpace(req.WorkDir)
 		if wd == "" {
-			return "", "", claimErrForbidden // 无提议 → 明确失败（不静默绑定空目录）
+			wd = strings.TrimSpace(instWorkDir)
+		}
+		if wd == "" {
+			return "", "", claimErrForbidden // 无提议且无实例绑定 → 明确失败（不静默绑定空目录）
 		}
 		wd = filepath.Clean(wd)
 		return wd, filepath.Join(wd, ".chonkpilot"), ""
