@@ -80,6 +80,7 @@ import { ref, computed, onMounted, onUpdated, nextTick, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import MessageItem from './MessageItem.vue'
 import mq from '../../utils/mq'
+import { resolvePublishError } from '../../utils/publishError'
 import { EventNames } from '../../events/event-names'
 import { createSessionMessages } from '../../utils/sessionMessages'
 import { publishLLMStart, publishLLMContinue } from '../../api/chat'
@@ -464,8 +465,8 @@ function sendContinue() {
 function ackRejectedReason(ack) {
   const backend = ack && ack.backend
   if (!backend) return 'llm-start: backend unreachable'
-  if (backend.ok === false) return (backend.errors && backend.errors[0]) || 'llm-start rejected'
-  if (Array.isArray(backend.errors) && backend.errors.length > 0) return backend.errors[0]
+  if (backend.ok === false) return resolvePublishError(backend) || (backend.errors && backend.errors[0]) || 'llm-start rejected'
+  if (Array.isArray(backend.errors) && backend.errors.length > 0) return resolvePublishError(backend) || backend.errors[0]
   return ''
 }
 

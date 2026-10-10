@@ -72,6 +72,7 @@ import { createPrimitive } from '../../api/knowledge'
 import { nearestTypeToken } from '../../utils/primitive'
 import { onFileChanged, onFileChangedEvent } from '../../utils/fileTree'
 import { fileOpErrorText } from '../../utils/fileOpError'
+import { resolvePublishError } from '../../utils/publishError'
 import { fetchIndexIgnored, toWorkdirRelPath } from '../../utils/indexIgnored'
 import { onDataRefresh } from '../../utils/dataClient'
 import mq, { currentInstanceId } from '../../utils/mq'
@@ -971,7 +972,7 @@ async function doOpenInConsole(path) {
     const backend = env && env.backend
     const p = backend && backend.result && typeof backend.result === 'object' ? backend.result : {}
     if (!backend || !backend.ok || p.ok === false || (backend.errors && backend.errors[0])) {
-      throw new Error((backend.errors && backend.errors[0]) || p.error || 'gui.console.open failed')
+      throw new Error(resolvePublishError(backend) || (backend.errors && backend.errors[0]) || p.error || 'gui.console.open failed')
     }
     message.success(t('fileTree.console_opened'))
   } catch (e) {

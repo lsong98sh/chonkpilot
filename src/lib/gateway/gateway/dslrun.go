@@ -389,6 +389,10 @@ func dslPump(ctx context.Context, stdout io.Reader, stdin io.Writer, logf func(s
 		werr    error
 		werrSet sync.Once
 	)
+	// maxConcurrentLLM 限制同一作业在飞 LLM 子轮次的并发上限（R8-C-5）：防 DSL 大量 PARALLEL 步骤
+	// 无界起 goroutine；超限的 llm_call 在信号量上排队，不阻塞 stdout 扫描（执行器会等全部 result）。
+	const maxConcurrentLLM = 8
+	sem := make(chan struct{}, maxConcurrentLLM)
 	// drain 等待在飞 LLM 子轮次回写完毕，返回回写首个错误（若有）。
 	drain := func() error {
 		llmWG.Wait()
@@ -421,6 +425,12 @@ func dslPump(ctx context.Context, stdout io.Reader, stdin io.Writer, logf func(s
 			llmWG.Add(1)
 			go func(call dslLLMCallMsg) {
 				defer llmWG.Done()
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					return // 取消时不再启动新子轮次（整作业已被拆解）
+				}
+				defer func() { <-sem }()
 				text, err := llm(ctx, call)
 				res := dslLLMResultMsg{T: "llm_result", Call: call.Call, Text: text}
 				if err != nil {
@@ -597,7 +607,8 @@ func (w *lineLogWriter) Write(p []byte) (int, error) {
 // 等 session-complete → 读该轮消息取 assistant 文本。取消：ctx 取消时级联 `llm-cancel`。
 //
 // 说明（不确定点，2026-10-07 查证）：llm-start/llm-send 方法面**不同步返回文本**
-// （onLLMStart 仅回 {accepted,session,turn}；onLLMSend 无结果），文本经流事件/落库产出 →
+// （onLLMStart 仅回 {accepted,session,turn}；onLLMSend 成功无 Result、失败回 `{accepted:false}`），
+// 文本经流事件/落库产出 →
 // 故本实现以「session-complete 终态 + data-session-load-messages 读该轮」取得结果。
 func (g *Gateway) runDSLLLM(ctx context.Context, call dslLLMCallMsg, instance, parentSession, workDir, dataDir string) (string, error) {
 	if g.bus == nil {
@@ -630,10 +641,14 @@ func (g *Gateway) runDSLLLM(ctx context.Context, call dslLLMCallMsg, instance, p
 		if s, _ := m["turn"].(string); s != turn {
 			return nil
 		}
-		comp.status = strOf(m["status"])
-		comp.code = strOf(m["code"])
-		comp.message = strOf(m["message"])
-		once.Do(func() { close(done) })
+		// 首条 session-complete 终结该轮：写 comp 与 close(done) 同纳入 once.Do，
+		// 保证读方 `<-done` 后读 comp 有 happens-before，规避多条 complete 的读写竞态（R8-C-6）。
+		once.Do(func() {
+			comp.status = strOf(m["status"])
+			comp.code = strOf(m["code"])
+			comp.message = strOf(m["message"])
+			close(done)
+		})
 		return nil
 	})
 	if err != nil {

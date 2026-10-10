@@ -245,8 +245,6 @@ func TurnIDOfMsg(r data.Record) string {
 // 返回 {<key>: <内容字符串>}；找不到的 key 省略。
 func MessageContentsByKey(prj *data.DB, sessionID string, keys []string) map[string]any {
 	out := map[string]any{}
-	// 循环外单次按会话查询（OrderBy 命中 messages_by_session），按 tool_call_id 分组 —— 避免
-	// 原按 key 逐个 Where{session_id, tool_call_id}（无 OrderBy → 禁索引路由）N 次全桶扫。
 	need := map[string]bool{}
 	for _, k := range keys {
 		switch {
@@ -256,19 +254,21 @@ func MessageContentsByKey(prj *data.DB, sessionID string, keys []string) map[str
 			need[strings.TrimPrefix(k, "tool_result:")] = true
 		}
 	}
+	// R8-A-4：改「整会话一次性全量读入内存后再按 tool_call_id 过滤」（峰值内存 = 全会话消息）
+	// 为**按需按 tool_call_id 逐 id 查询**：Where{session_id, tool_call_id} 经 messages_by_session
+	// 索引前缀路由（OrderBy 命中其 created_at），matchWhere 在回表后即过滤 → 每次仅物化该 id 的
+	// 命中行（通常 1 行），峰值内存由「全会话」收敛为「命中行」。逐 id 查询不改变结果：每个 id 的
+	// 命中集仍按 created_at 升序，取首个 / 首个 role=tool 的选取口径不变（调用方一次通常仅 1 个 key）。
 	byCall := map[string][]data.Record{}
-	if len(need) > 0 {
-		if recs, _, err := prj.Table("messages").Query(data.Query{
-			Where: data.Record{"session_id": sessionID}, OrderBy: "created_at",
-		}); err == nil {
-			for _, rec := range recs {
-				id := Sval(rec["tool_call_id"])
-				if id == "" || !need[id] {
-					continue
-				}
-				byCall[id] = append(byCall[id], rec)
-			}
+	for id := range need {
+		recs, _, err := prj.Table("messages").Query(data.Query{
+			Where:   data.Record{"session_id": sessionID, "tool_call_id": id},
+			OrderBy: "created_at",
+		})
+		if err != nil || len(recs) == 0 {
+			continue
 		}
+		byCall[id] = recs
 	}
 	for _, k := range keys {
 		switch {

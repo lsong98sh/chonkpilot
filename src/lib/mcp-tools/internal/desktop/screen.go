@@ -56,9 +56,16 @@ func captureRectToImage(srcDC uintptr, r *Rect) (*image.RGBA, error) {
 	if hbitmap == 0 {
 		return nil, fmt.Errorf("CreateDIBSection failed")
 	}
-	defer DeleteObject.Call(hbitmap)
-
-	SelectObject.Call(memDC, hbitmap)
+	// 选入 memDC（保存旧位图）。收尾须**先选回旧位图再 DeleteObject** —— 位图被选入 DC 时
+	// DeleteObject 会失败、不回收（GDI 规定）；defer LIFO 保证本闭包先于上面的 DeleteDC(memDC) 执行，
+	// 否则每次截图泄漏 1 个 DIB（R8-D-1）。
+	oldBmp, _, _ := SelectObject.Call(memDC, hbitmap)
+	defer func() {
+		if oldBmp != 0 {
+			SelectObject.Call(memDC, oldBmp)
+		}
+		DeleteObject.Call(hbitmap)
+	}()
 
 	ret, _, _ := BitBlt.Call(memDC, 0, 0, uintptr(width), uintptr(height),
 		srcDC, uintptr(r.Left), uintptr(r.Top), SrcCopy)
@@ -133,15 +140,22 @@ func captureImage(r *Rect, hwnd uintptr) (*image.RGBA, error) {
 					hbitmap, _, _ := CreateDIBSection.Call(memDC, uintptr(unsafe.Pointer(&bmi[0])), DibRgbColors,
 						uintptr(unsafe.Pointer(&bitsPtr)), 0, 0)
 					if hbitmap != 0 {
-						SelectObject.Call(memDC, hbitmap)
+						// 选入 memDC 并保存旧位图；删除前先选回旧位图（见 captureRectToImage 同款收尾，R8-D-1）。
+						oldBmp, _, _ := SelectObject.Call(memDC, hbitmap)
 						pwRet, _, _ := PrintWindow.Call(hwnd, memDC, PwRenderFullContent)
 						if pwRet != 0 {
 							pixels := make([]byte, int(width)*int(height)*4)
 							copy(pixels, unsafe.Slice((*byte)(bitsPtr), int(width)*int(height)*4))
+							if oldBmp != 0 {
+								SelectObject.Call(memDC, oldBmp)
+							}
 							DeleteObject.Call(hbitmap)
 							DeleteDC.Call(memDC)
 							ReleaseDC.Call(hwndDesktop2, dc2)
 							return bgraToRGBA(pixels, int(width), int(height)), nil
+						}
+						if oldBmp != 0 {
+							SelectObject.Call(memDC, oldBmp)
 						}
 						DeleteObject.Call(hbitmap)
 					}

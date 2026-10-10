@@ -79,15 +79,10 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 	if errMsg != "" {
 		return cli.Err("file_find", "path："+errMsg)
 	}
-	if root == "" {
-		root = "."
-	}
-	// agentbox 沙箱（仅隔离开启时生效）：显式 root 须在允许读目录内；
-	// root 缺省 "." 时不预判（下方逐条目过滤，越界条目一律剪枝/跳过，不泄漏）。
-	if root != "." {
-		if err := sandboxErr(root, false); err != nil {
-			return cli.Err("file_find", err.Error())
-		}
+	// agentbox 沙箱（仅隔离开启时生效）：root 由 ResolvePath 保证为非空绝对/展开路径（R-11），
+	// 须在允许读目录内；越界条目在下方逐条剪枝/跳过，不泄漏。
+	if err := sandboxErr(root, false); err != nil {
+		return cli.Err("file_find", err.Error())
 	}
 
 	// 单条目：rel 相对 root（tree 用）；relFull 相对 workDir（file/summary 用）。

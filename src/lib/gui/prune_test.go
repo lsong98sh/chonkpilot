@@ -54,7 +54,7 @@ func TestPruneWebviewProfiles(t *testing.T) {
 		}
 	}
 
-	removed, freed := pruneWebviewProfiles(root)
+	removed, freed := PruneWebviewProfiles(root)
 	// 应删 2 个：oldGUI（100B）+ badMarkGUI（100B 文件 + "not-a-pid" 标记 9B）。
 	wantFreed := int64(100 + 100 + len("not-a-pid"))
 	if removed != 2 || freed != wantFreed {
@@ -79,7 +79,7 @@ func TestPruneWebviewProfiles(t *testing.T) {
 
 // TestPruneWebviewProfilesMissingRoot 根目录不存在 → 静默返回（不 panic、不计清理）。
 func TestPruneWebviewProfilesMissingRoot(t *testing.T) {
-	removed, freed := pruneWebviewProfiles(filepath.Join(t.TempDir(), "nope"))
+	removed, freed := PruneWebviewProfiles(filepath.Join(t.TempDir(), "nope"))
 	if removed != 0 || freed != 0 {
 		t.Fatalf("根不存在应返回 0/0：removed=%d freed=%d", removed, freed)
 	}

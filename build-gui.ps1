@@ -30,7 +30,9 @@
 #     ├── chonkpilot-gui-client.exe   # 客户端：webview2 宿主（前端 dist go:embed）+ 心跳发布侧
 #     ├── chonkpilot-cli-client.exe   # console 宿主（同 lib 集，AsyncMode: never）
 #     ├── chonkpilot-flash.exe        # 薄壳客户端（webview2 宿主，远程总线 UDS；🆕 2026-10-10）
-#     └── chonkpilot-flash-cli.exe    # 薄壳客户端 console 宿主（headless 远程；🆕 2026-10-10）
+#     ├── chonkpilot-flash-cli.exe    # 薄壳客户端 console 宿主（headless 远程；🆕 2026-10-10）
+#     ├── chonkpilot-server.exe       # 由本脚本从 dist/server 复制（供 flash 同目录优先发现；🆕 2026-10-10）
+#     └── frontend/dist/              # flash 前端（**非 embed**，flash 以 os.DirFS(<exeDir>) 加载；🆕 2026-10-10）
 #   dist/server/                 – 服务端（browser 与 gui **共用**；browser 静态页 = 内嵌面，
 #                                  来源 src/server/frontend/dist，由 build-browser.ps1 投放）
 #     ├── chonkpilot-server.exe             # 服务端：llm + gateway + filesys + data 合一 exe
@@ -42,11 +44,16 @@
 #         └── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll
 #
 # 与 build-desktop.ps1 的关系：本脚本**只重编受 tag 影响的宿主 exe**（client / cli-client / server）；
-#   capability/ 基座 + 内置引擎 exe 属**形态无关资产**（executor exe 优先复用 dist/desktop，缺失才
-#   回退既有 build-mcp-server.ps1 / build-codegraph.ps1 / build-vfts.ps1，避免重复 CGO 构建）；
+#   capability/ 基座 + 内置引擎 exe 属**形态无关资产**（executor exe 优先复用 dist/desktop，缺失或
+#   executor 早于契约源时才回退既有 build-mcp-server.ps1 / build-codegraph.ps1 / build-vfts.ps1，避免重复 CGO 构建）；
 #   契约（prompts/tools/resources/skills/agents/system）与 scenarios 每次从唯一源 src/initdata 覆盖同步。
 #
-# 用法：.\build-gui.ps1
+# 用法：.\build-gui.ps1 [-Debug]
+#
+# -Debug：调试构建（在 `-tags split` 基础上附加 `debugport`，即 `-tags "split debugport"`），
+#         使客户端/薄壳宿主壳编入 `--test-port` 测试通道（e2e harness 用；见 src/lib/gui/debugport_*.go）。
+#         默认（发布构建）不含该通道。
+param([switch]$Debug)
 $ErrorActionPreference = "Stop"
 
 $env:GOROOT = "e:\GoDev\go1.26"
@@ -55,13 +62,14 @@ $env:GOPROXY = "https://goproxy.cn,direct"
 $env:GOTOOLCHAIN = "local"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# 宿主壳（客户端 / flash 薄壳）编译标签：-Debug 时在 split 基础上附加 debugport（编入 --test-port）。
+$guiTags = if ($Debug) { "split debugport" } else { "split" }
 # 客户端壳 / 客户端 CLI / 服务端（D-28：壳 → src/{gui,desktop,server}，lib → src/lib/*）
 $client = Join-Path $root "src\gui"
 $cli = Join-Path $root "src\desktop\cli"
 $srv = Join-Path $root "src\server"
 # flash 薄壳客户端壳（desktop 分体常驻版；🆕 2026-10-10，见 62 §3A / 19 §8.11）
 $flash = Join-Path $root "src\flash"
-$flashDist = Join-Path $flash "frontend\dist"
 $flashCli = Join-Path $flash "cli"
 # 前端源码工程已独立为 src/frontend（决策 [42 §2 (115)]）；embed 产物落
 # src/gui/frontend/dist = 客户端壳的 `//go:embed all:frontend/dist` 落点。
@@ -120,17 +128,20 @@ if (-not (Test-Path $embedHtml)) { throw "embed.html 未产出: $embedHtml" }
 Copy-Item $embedHtml (Join-Path $embedDist "index.html") -Force
 [System.IO.File]::Delete($embedHtml)
 Write-Host "    ok: $embedDist (embed.html -> index.html)"
-# 镜像到 flash 薄壳壳的 embed 落点（src/flash/frontend/dist；go:embed all:frontend/dist）。
-if (Test-Path $flashDist) { [System.IO.Directory]::Delete($flashDist, $true) }
-Copy-Item $embedDist $flashDist -Recurse -Force
-Write-Host "    ok: $flashDist ($((Get-ChildItem $flashDist -Recurse -File | Measure-Object).Count) files)"
+# 前端 dist 部署到 flash 薄壳同目录（`<exeDir>/frontend/dist`）——flash **不 embed 前端**，
+# 运行时以 os.DirFS(<exeDir>) 加载（见 src/flash/main.go）。gui-client 仍 embed。
+$flashFront = Join-Path $dist "frontend\dist"
+if (Test-Path $flashFront) { [System.IO.Directory]::Delete($flashFront, $true) }
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $flashFront) | Out-Null
+Copy-Item $embedDist $flashFront -Recurse -Force
+Write-Host "    ok: $flashFront ($((Get-ChildItem $flashFront -Recurse -File | Measure-Object).Count) files)"
 
 # -- 2) 客户端 GUI 编译（分离形态：-tags split 编入心跳发布侧；-H windowsgui：GUI 模式无控制台） --
 Write-Host "==> [2/6] build chonkpilot-gui-client.exe (-tags split)"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Push-Location $client
 try {
-    go build -tags split -ldflags "-H windowsgui" -o $outGuiExe .
+    go build -tags $guiTags -ldflags "-H windowsgui" -o $outGuiExe .
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
     $mb = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
     Write-Host "    ok: $outGuiExe ($mb MB)"
@@ -151,7 +162,7 @@ try {
 Write-Host "==> [3.5/6] build chonkpilot-flash.exe (-tags split)"
 Push-Location $flash
 try {
-    go build -tags split -ldflags "-H windowsgui" -o $outFlashExe .
+    go build -tags $guiTags -ldflags "-H windowsgui" -o $outFlashExe .
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
     $mb = [Math]::Round((Get-Item $outFlashExe).Length / 1MB, 1)
     Write-Host "    ok: $outFlashExe ($mb MB)"
@@ -162,7 +173,7 @@ try {
 Write-Host "==> [3.6/6] build chonkpilot-flash-cli.exe (-tags split)"
 Push-Location $flashCli
 try {
-    go build -tags split -o $outFlashCliExe .
+    go build -tags $guiTags -o $outFlashCliExe .
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
     $mb = [Math]::Round((Get-Item $outFlashCliExe).Length / 1MB, 1)
     Write-Host "    ok: $outFlashCliExe ($mb MB)"
@@ -187,12 +198,33 @@ try {
     Write-Host "    ok: $outSrvExe ($mb MB)"
 } finally { Pop-Location }
 
+# -- 4.5) dist/gui 陈旧产物清理 + 同步服务端 exe（flash 同目录优先搜索，需与服务端同目录）--
+#   背景：flash 的 server 候选 = 同目录优先 → `dist/gui/chonkpilot-server.exe`（见 flash/server.go）；
+#   旧构建曾把 server/旧名/引擎留在 dist/gui，会误被拉起。此处清理陈留并把当前 server 复制一份。
+Write-Host "==> [4.5/6] clean dist/gui stale + copy server"
+foreach ($stale in @("chonkpilot-gui.exe", "chonkpilot-cli.exe", "chonkpilot-codegraph-mcp-server.exe", "chonkpilot-vfts-mcp-server.exe", "zvec_c_api.dll")) {
+    $p = Join-Path $dist $stale
+    if (Test-Path $p) { Remove-Item $p -Force; Write-Host "    clean stale: $stale" }
+}
+Copy-Item $outSrvExe (Join-Path $dist "chonkpilot-server.exe") -Force
+Write-Host "    ok: dist/gui/chonkpilot-server.exe (copied from dist/server)"
+
 # -- 5) 形态无关资产：capability/（executor×4 + 契约）+ scenarios/（出厂场景） --
 Write-Host "==> [5/6] stage capability/ + scenarios/ to dist/server"
-# 基座（executor exe 等形态无关资产）优先复用 dist/desktop/capability；缺失才回退 build-mcp-server.ps1
+# 基座（executor exe 等形态无关资产）优先复用 dist/desktop/capability；缺失、或 executor 早于契约源
+# （会产出「旧 executor 配新契约」）时才回退 build-mcp-server.ps1 重编，保证执行器与契约一致。
+$initCap = Join-Path $root "src\initdata\capability"
 $capSrc = Join-Path $srcDist "capability"
-if (-not (Test-Path $capSrc)) {
-    Write-Host "    dist/desktop 无 capability/ → 回退 build-mcp-server.ps1"
+$execSrc = Join-Path $capSrc "executors"
+$srcTools = Join-Path $initCap "tools"
+$staleExec = $false
+if ((Test-Path $execSrc) -and (Test-Path $srcTools)) {
+    $execTime = (Get-ChildItem $execSrc -Filter *.exe -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
+    $toolTime = (Get-ChildItem $srcTools -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
+    if ($execTime -and $toolTime -and ($toolTime -gt $execTime)) { $staleExec = $true }
+}
+if ((-not (Test-Path $capSrc)) -or $staleExec) {
+    Write-Host "    dist/desktop 无 capability/ 或 executor 早于契约源 → 回退 build-mcp-server.ps1"
     & (Join-Path $root "build-mcp-server.ps1")
     if ($LASTEXITCODE -ne 0) { throw "build-mcp-server.ps1 failed" }
     $capSrc = Join-Path $root "dist\other\capability"
@@ -203,7 +235,6 @@ if (Test-Path $capDst) {
 }
 Copy-Item $capSrc $capDst -Recurse -Force
 # 契约子树每次从唯一源 src/initdata 覆盖同步（避免复用 dist/desktop 旧产物把过期契约/场景带入 dist/server）
-$initCap = Join-Path $root "src\initdata\capability"
 foreach ($sub in @("prompts", "tools", "resources", "skills", "agents", "system")) {
     $srcSub = Join-Path $initCap $sub
     if (-not (Test-Path $srcSub)) { throw "contracts not found: $srcSub" }
@@ -258,6 +289,8 @@ $mbDll = [Math]::Round((Get-Item (Join-Path $vfDst "zvec_c_api.dll")).Length / 1
 Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
 
 # -- 清单 --
+#   dist/gui 另含（下面未逐行输出）：chonkpilot-server.exe（从 dist/server 复制，供 flash 同目录优先发现）
+#                                   frontend/dist/（flash 前端，非 embed；flash 以 os.DirFS 加载）
 $mbGui = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
 $mbCli = [Math]::Round((Get-Item $outCliExe).Length / 1MB, 1)
 $mbFlash = [Math]::Round((Get-Item $outFlashExe).Length / 1MB, 1)

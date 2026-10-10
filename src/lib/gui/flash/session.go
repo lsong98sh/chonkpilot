@@ -11,7 +11,6 @@ package flash
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
@@ -36,6 +36,11 @@ const (
 	sessionStartSubject = "session-start"
 	sessionSendSubject  = "session-send"
 )
+
+// sessionWaitCeiling 是 ctx 无 deadline 时等待 session-complete 的默认上界（兜底）：
+// 防止 session-send 被静默丢弃（turn 已回收）时 headless 会话无限挂起。取值宽松
+// （远大于常规一轮会话），仅作兜底而非限流；调用方自带 ctx deadline 时以调用方为准。
+const sessionWaitCeiling = 30 * time.Minute
 
 // SessionOptions 是 headless 会话参数（flash-cli 解析后传入）。
 type SessionOptions struct {
@@ -155,8 +160,8 @@ func RunSession(ctx context.Context, bus mq.Bus, opts SessionOptions) error {
 
 	// session/turn 由客户端分配（服务端 onLLMStart 必填，见 61 §4.5）；对齐
 	// src/desktop/cli/main.go 的载荷面（此前缺失 → 服务端回 accepted:false 致本进程挂死）。
-	session := newUUID()
-	turn := newUUID()
+	session := idgen.NewUUID()
+	turn := idgen.NewUUID()
 	startPayload := map[string]any{
 		"instance_id": opts.InstanceID,
 		"session":     session,
@@ -196,27 +201,38 @@ func RunSession(ctx context.Context, bus mq.Bus, opts SessionOptions) error {
 	if raw, err := json.Marshal(sendPayload); err == nil && mode == OutputVerbose {
 		fmt.Fprintf(out, "[SEND] %s\n", string(raw))
 	}
+	// session-send 的成功路径**不回写 Result**（服务端 onLLMSend 命中即 return nil），但 turn
+	// 未找到/已回收时服务端回 {accepted:false, error}（R8-D-3）→ 收到即**立即报错**（空 Result
+	// = 已受理）。下方有界等待仍保留，兜底其余未回执的极端情形（如传输层丢包）。
 	if v := bus.Emit(ctx, sessionSendSubject, sendPayload).Wait(); v.Err() != nil {
 		return fmt.Errorf("session-send 失败：%w", v.Err())
+	} else if m, _ := v.Result.(map[string]any); m != nil {
+		if ok, has := m["accepted"].(bool); has && !ok {
+			return fmt.Errorf("session-send 被拒绝：%v", m["error"])
+		}
 	}
 
+	// 有界等待：session-send 被静默丢弃（turn 在 start/send 间被回收）时不再有
+	// session-complete，无界等待将一直挂到调用方 ctx 取消（headless flash-cli 的 ctx 仅由
+	// 信号取消 → 会话既不完成也不报错）。故：ctx 无 deadline 时以默认上界兜底；无论何种取消，
+	// 未收到 session-complete 一律返回明确错误（而非静默成功）。
+	waitCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, sessionWaitCeiling)
+		defer cancel()
+	}
 	select {
 	case <-done:
-	case <-ctx.Done():
+	case <-waitCtx.Done():
+		if ctx.Err() != nil {
+			return fmt.Errorf("会话未完成：上下文已取消（session=%s turn=%s）", session, turn)
+		}
+		return fmt.Errorf("会话在 %s 内未完成（session-send 可能被服务端静默丢弃）：session=%s turn=%s",
+			sessionWaitCeiling, session, turn)
 	}
 	if mode == OutputFinal && finalText != "" {
 		fmt.Fprintln(out, finalText)
 	}
 	return nil
-}
-
-// newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖；与 bridge/server 同构）。
-func newUUID() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("id-%d", time.Now().UnixNano())
-	}
-	buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
-	buf[8] = (buf[8] & 0x3f) | 0x80 // variant 10
-	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }

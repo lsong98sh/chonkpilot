@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
@@ -635,14 +636,32 @@ func readTextFile(path string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	if st.Size() > maxTextBytes {
-		buf := make([]byte, maxTextBytes)
-		n, _ := f.Read(buf)
-		return string(buf[:n]), true
+	// 上限截断（512KB）：按 UTF-8 边界收尾（避免切断多字节字符）+ ReadFull 处理短读
+	// （单次 f.Read 不保证读满，R8-C-2）。
+	truncated := st.Size() > maxTextBytes
+	limit := st.Size()
+	if truncated {
+		limit = maxTextBytes
 	}
-	buf := make([]byte, st.Size())
-	n, _ := f.Read(buf)
-	return string(buf[:n]), false
+	buf := make([]byte, limit)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return "", false
+	}
+	return string(trimIncompleteUTF8(buf[:n])), truncated
+}
+
+// trimIncompleteUTF8 丢弃末尾不完整的 UTF-8 多字节序列（截断边界落在字符中间时不留残字节乱码）。
+func trimIncompleteUTF8(b []byte) []byte {
+	for n := 1; n <= 4 && n <= len(b); n++ {
+		if utf8.RuneStart(b[len(b)-n]) {
+			if r, size := utf8.DecodeRune(b[len(b)-n:]); r == utf8.RuneError && size <= 1 {
+				return b[:len(b)-n] // 该起始字节起的序列不完整 → 丢弃
+			}
+			return b
+		}
+	}
+	return b
 }
 
 // copyTree 递归复制文件/目录（src → dst；目标已存在时覆盖）。

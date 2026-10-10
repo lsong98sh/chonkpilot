@@ -13,13 +13,15 @@ package gui
 //     前门注入 `__local=true` → 免鉴权（**不引入令牌 / UA 判定 / stdio**）；
 //   - data-dir 约定 = `<work_dir>/.chonkpilot`（**非空** → `data.PrjUsrDir` 纯路径拼接，
 //     不与 server 抢 bbolt flock；命中 `/show` 放行根）；
-//   - **锁归 flash 持有**（`chonkpilot-lib/lockfile`，per-user → RDS 多用户同开同项目不冲突）；
+//   - **锁归 flash 持有**（prjusr 单例锁 `<work_dir>/.chonkpilot/chonkpilot.lock`，与桌面
+//     单体**同名文件** → 同项目互斥）；
 //   - **无心跳**：flash 不发布 `instance-heartbeat`；**UDS 连接断开 = 实例退出**（进程退出）。
 //
 // **复用而非复制**：窗口创建 / 桥接线 / appHandler / 多窗口 / 前端静态面全部复用本包既有
 // 实现（`startWindow` / `hostEnv`）；远程模式只额外做「打开语义 + claim + 单例 + 断开退出」。
-// 故 flash 宿主外壳（`src/flash`）只是一层 `//go:embed` + 调用本入口（与 `src/desktop`
-// / `src/gui` 同构：壳声明形态，实现唯一一份 → 零重复）。
+// 故 flash 宿主外壳（`src/flash`）只负责**提供前端文件系统** + 调用本入口（与 `src/desktop`
+// / `src/gui` 同构：壳声明形态，实现唯一一份 → 零重复）——前端 distFS 可为 go:embed，
+// 亦可为 `os.DirFS(<exeDir>)`（薄壳不 embed 前端时直接用磁盘面，见 `src/flash`）。
 //
 // 形态注入（61 §4.6）：flash 复用 **`desktop`** 语义（免鉴权 + 前端不心跳）——三态取值
 // 不含 flash；理由：flash 与桌面单体同为「本机单用户免鉴权 + 存活由进程/连接判定」，
@@ -33,6 +35,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -50,25 +54,30 @@ type RemoteOptions struct {
 }
 
 // RunRemote 是 flash 薄壳宿主入口（调用方 = `src/flash` 外壳）。
-// distFS 必须是含 `frontend/dist` 前缀的嵌入文件系统（口径与 gui.Main 一致）。
+// distFS 须含 `frontend/dist` 前缀；可为 **embed** 文件系统，亦可为 `os.DirFS(<exeDir>)`
+// 等磁盘文件系统（口径与 gui.Main 一致——内部 `fs.Sub(distFS, "frontend/dist")`）。
 func RunRemote(distFS fs.FS, opts RemoteOptions) {
-	initLogging()
+	InitLogging()
 	if err := runRemote(distFS, opts); err != nil {
 		slog.Error("flash main failed", "err", err)
-		nativeAlert("ChonkPilot", err.Error())
+		NativeAlert("ChonkPilot", err.Error())
 		os.Exit(1)
 	}
 }
 
 // runRemote 是 flash 宿主主流程（失败以 error 返回，由 RunRemote 统一弹框 + 退出）。
 func runRemote(distFS fs.FS, opts RemoteOptions) error {
-	markStartupBegin()
+	MarkStartupBegin()
 
 	var workDirArg string
 	var testPort int
 	var serverExe string
 	flag.StringVar(&workDirArg, "work-dir", "", "工作目录；空 = 最近项目 → 选目录（62 §3A）")
-	flag.IntVar(&testPort, "test-port", 0, "测试通道端口（0=禁用；>0 监听 127.0.0.1 供外部脚本驱动）")
+	// --test-port 是**调试构建专属**开关（-tags debugport，见 DebugPortEnabled）：
+	// release 构建下不注册本 flag（传入即 unknown flag），testPort 恒 0 → onWired 自然跳过接线。
+	if DebugPortEnabled {
+		flag.IntVar(&testPort, "test-port", 0, "测试通道端口（0=禁用；>0 监听 127.0.0.1 供外部脚本驱动；仅 -tags debugport 构建可用）")
+	}
 	flag.StringVar(&serverExe, "server-exe", "", "服务端 exe 路径（空 = flash 同目录 / 同级 server/ 推导 chonkpilot-server.exe；自动拉起时使用）")
 	flag.Parse()
 
@@ -94,27 +103,19 @@ func runRemote(distFS fs.FS, opts RemoteOptions) error {
 	if alreadyHandled {
 		return nil // 已打开的项目：置顶既有窗口后退出（不新开窗口）
 	}
-	// 窗口单例（具名窗口类）：同用户同项目重复启动 → 置顶既有主窗口、退出（不新开）。
-	// 与下面的 work-dir 锁**并存、职责不同**：本步管「窗口单例」，锁管「项目是否已打开」。
-	winClass := flash.WindowClassName(flash.CurrentUser(), workDir)
-	winSingleton, existed, wserr := acquireWindowSingleton(winClass)
-	if wserr != nil {
-		slog.Warn("window singleton unavailable", "err", wserr) // 仅告警：不因设施故障阻断启动
-	}
-	if existed {
-		return nil
-	}
-	if winSingleton != nil {
-		defer winSingleton.release()
-	}
-	// 锁归 flash 持有（per-user；进程存活期持有，退出由 OS 回收）。
+	// 项目占用锁（prjusr 单例锁：`<work_dir>/.chonkpilot/chonkpilot.lock`，与桌面单体
+	// **同名文件** → 同项目互斥）。锁归 flash 持有（进程存活期持有，退出由 OS 回收）。
 	wdLock, busy, lerr := flash.AcquireProject(workDir)
 	switch {
 	case busy:
-		// 竞态兜底：resolveWithSingleton 已处理过占用；此处再命中 → 置顶既有窗口。
-		return bringExistingToTop(workDir, opts)
+		// 竞态兜底：resolveWithSingleton 已处理过占用；此处再命中 → 置顶既有窗口后**正常退出**
+		// （返回 nil = 退出码 0，与主路径 alreadyHandled 同口径，R9-1-6）。
+		if err := bringExistingToTop(workDir, opts); err != nil {
+			slog.Warn("竞态兜底置顶既有窗口失败", "err", err)
+		}
+		return nil
 	case lerr != nil:
-		slog.Warn("workdir lock unavailable", "err", lerr) // 仅告警：不因锁设施故障阻断启动
+		slog.Warn("prjusr lock unavailable", "err", lerr) // 仅告警：不因锁设施故障阻断启动
 	default:
 		defer wdLock.Release()
 	}
@@ -156,17 +157,17 @@ func runRemote(distFS fs.FS, opts RemoteOptions) error {
 	if err != nil {
 		return fmt.Errorf("prjusr 数据根解析失败: %w", err)
 	}
-	logDir, logErr := attachFileLog(prjUsrRoot)
+	logDir, logErr := AttachFileLog(prjUsrRoot)
 	if logErr != nil {
 		slog.Warn("file log attach failed", "err", logErr)
 	} else {
-		defer detachFileLog()
+		defer DetachFileLog()
 	}
-	logStartupStage("UDS 连接 + instance-claim")
+	LogStartupStage("UDS 连接 + instance-claim")
 
 	subFS, err := fs.Sub(distFS, "frontend/dist")
 	if err != nil {
-		return fmt.Errorf("fs.Sub dist: %w", err)
+		return fmt.Errorf("fs.Sub frontend/dist 失败（搜索根 %s，须含 frontend/dist 子目录）: %w", frontendSearchRoot(), err)
 	}
 
 	env := &hostEnv{
@@ -195,7 +196,7 @@ func runRemote(distFS fs.FS, opts RemoteOptions) error {
 
 	mainHost, err := startWindow(env, windowSpec{
 		role:      roleMain,
-		title:     mainWindowTitle(workDir),
+		title:     MainWindowTitle(workDir),
 		url:       appOrigin + "/",
 		frameless: true,
 		onWired: func(h *windowHost) error {
@@ -223,23 +224,19 @@ func runRemote(distFS fs.FS, opts RemoteOptions) error {
 		return fmt.Errorf("main window create: %w", err)
 	}
 	env.windows.setMain(mainHost)
-	if winSingleton != nil {
-		// 具名窗口类收到置顶消息 → 置顶本进程主窗口（跨线程安全）。
-		winSingleton.setBringToTop(env.windows.bringMainToTop)
-	}
 	envPtr.Store(env)
-	logStartupStage("主窗口创建（bridge/WebView2 环境就绪）")
+	LogStartupStage("主窗口创建（bridge/WebView2 环境就绪）")
 	// 连接在 claim 后、建窗前已断开 → 立即关闭（不阻塞在无连接的窗口上）。
 	if connClosed.Load() {
 		env.windows.destroyMain()
 	}
 
-	watchLogLevel(bus)
+	WatchLogLevel(bus)
 	// 记录最近项目（打开成功即记；「最近关闭 → 次近」据同一列表，见 flash 包）。
 	if err := flash.SaveRecent(flash.RecentsPath(), workDir); err != nil {
 		slog.Warn("save recents failed", "err", err)
 	}
-	logStartupStage("启动流程就绪（进入窗口事件循环）")
+	LogStartupStage("启动流程就绪（进入窗口事件循环）")
 
 	// 主窗口关闭 = 退出本进程（其余对话窗口一并关闭）；连接断开亦经 destroyMain 到达此处。
 	<-mainHost.done
@@ -263,9 +260,25 @@ func dialAndClaim(workDir string, opts RemoteOptions, onControl func(string, []b
 // logfDebug 是 flash 共享逻辑的诊断出口（写宿主统一 slog）。
 func logfDebug(format string, args ...any) { slog.Debug(fmt.Sprintf(format, args...)) }
 
+// frontendSearchRoot 报告 distFS 的**搜索根**（供 `fs.Sub` 失败时的可诊断错误 R9-3-3）：
+// 优先 `CHONK_FRONTEND_DIR`，否则 flash exe 同目录，最后 cwd——与 `src/flash` 外壳的
+// frontendFS() 推导口径一致（62 §3A）。
+func frontendSearchRoot() string {
+	if d := strings.TrimSpace(os.Getenv("CHONK_FRONTEND_DIR")); d != "" {
+		return d
+	}
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return filepath.Dir(exe)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return "."
+}
+
 // resolveWithSingleton 解析工作目录并按**单例**语义处置。返回 (workDir, alreadyHandled, err)：
-//   - alreadyHandled=true → 目标目录**已被本用户打开**（work-dir 锁占用，或已存在同用户同项目
-//     窗口）→ 已请求置顶既有窗口（调用方应退出，不新开窗口）；
+//   - alreadyHandled=true → 目标目录**已被打开**（prjusr 锁占用）→ 已请求置顶既有窗口
+//     （调用方应退出，不新开窗口）；
 //   - 跨用户冲突（前门回 `instance-forbidden`）→ 让用户换目录继续选（有界重试）；
 //   - 其余情况 → 返回待打开的工作目录。
 func resolveWithSingleton(workDirArg, base string, opts RemoteOptions) (string, bool, error) {
@@ -284,14 +297,11 @@ func resolveWithSingleton(workDirArg, base string, opts RemoteOptions) (string, 
 			}
 			return "", false, err
 		}
-		// 窗口单例（具名窗口类）：已有同用户同项目窗口 → 请求置顶后退出（不依赖 server 可达）。
-		if bringWindowToTopByClass(flash.WindowClassName(flash.CurrentUser(), workDir)) {
-			return "", true, nil
-		}
+		// 项目占用判定（prjusr 锁）：已被打开 → 置顶既有窗口后退出（不新开窗口）。
 		if flash.WorkDirFree(workDir) {
 			return workDir, false, nil // 空闲 → 待打开（正式持锁在 runRemote）
 		}
-		// 已被本用户打开 → 置顶既有窗口后退出。
+		// 已被打开 → 置顶既有窗口后退出。
 		if err := bringExistingToTop(workDir, opts); err == nil {
 			return "", true, nil
 		} else if !flash.IsForbidden(err) {

@@ -56,7 +56,12 @@ func (s *Service) ProjectSpecExists(req facade.ProjectSpecExistsRequest) (facade
 		return facade.ProjectSpecExistsResponse{}, err
 	}
 	path := SpecPath(wd)
-	_, statErr := os.Stat(filepath.Join(wd, filepath.FromSlash(specRelPath)))
+	full := filepath.Join(wd, filepath.FromSlash(specRelPath))
+	// 读前越界复验（R8-A-2）：`.chonkpilot` 被预置为指向根外的 symlink → 视为不存在，不跟随探测。
+	if !capfs.RealPathWithin(projectWriteTrustRoot(wd), full) {
+		return facade.ProjectSpecExistsResponse{Exists: false, Path: path}, nil
+	}
+	_, statErr := os.Stat(full)
 	return facade.ProjectSpecExistsResponse{Exists: statErr == nil, Path: path}, nil
 }
 
@@ -67,7 +72,12 @@ func (s *Service) ProjectSpecRead(req facade.ProjectSpecReadRequest) (facade.Pro
 		return facade.ProjectSpecReadResponse{}, err
 	}
 	path := SpecPath(wd)
-	data, readErr := os.ReadFile(filepath.Join(wd, filepath.FromSlash(specRelPath)))
+	full := filepath.Join(wd, filepath.FromSlash(specRelPath))
+	// 读前越界复验（R8-A-2，与写入口同口径）：`.chonkpilot` 被预置为指向根外的 symlink → 拒绝读取。
+	if !capfs.RealPathWithin(projectWriteTrustRoot(wd), full) {
+		return facade.ProjectSpecReadResponse{}, errors.New("project spec path escapes work dir")
+	}
+	data, readErr := os.ReadFile(full)
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
 			return facade.ProjectSpecReadResponse{Exists: false, Path: path}, nil

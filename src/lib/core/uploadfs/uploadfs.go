@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
@@ -101,6 +102,8 @@ func DecodeData(raw string) ([]byte, error) {
 //
 // R7-B-4：落盘后按 KeepCap 对该目录做容量兜底（最旧优先删除）——gui 桥与 browser 入口
 // （httpapi guiUpload）共用本函数 → 兜底**同源**，不再只有 GUI 启动期一次。
+// R8-B-5：兜底改走增量记账（maybeEnforceKeepCap）——热路径避免每次全量 os.ReadDir + 排序，
+// 仅在记账总量可能越限时才做一次全量统计；兜底语义不变。
 func Save(root, dir, origName string, content []byte) (string, error) {
 	destDir := filepath.Join(root, filepath.FromSlash(SanitizeDir(dir)))
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
@@ -111,7 +114,7 @@ func Save(root, dir, origName string, content []byte) (string, error) {
 	if err := os.WriteFile(dest, content, 0o644); err != nil {
 		return "", err
 	}
-	EnforceKeepCap(destDir, KeepCap) // 尽力而为，不阻断落盘
+	maybeEnforceKeepCap(destDir, int64(len(content))) // 尽力而为，不阻断落盘
 	return fileName, nil
 }
 
@@ -164,4 +167,46 @@ func EnforceKeepCap(dir string, cap int64) int {
 		removed++
 	}
 	return removed
+}
+
+// keepCapSum 是 uploadfs 的进程内增量记账（dir → 累计落盘字节），用于在热路径快速判
+// 「可能超限」（R8-B-5）；仅当记账值 > 阈值时才做一次全量统计。清零仅随进程重启。
+var (
+	keepCapMu  sync.Mutex
+	keepCapSum = map[string]int64{}
+)
+
+// maybeEnforceKeepCap 增量记账 dir 的新增字节；仅当记账总量 > KeepCap 时调用 EnforceKeepCap
+// 做**全量统计**（最旧优先删除）并以磁盘真实总量回填计数。尽力而为，不阻断落盘（R8-B-5）。
+func maybeEnforceKeepCap(dir string, added int64) {
+	keepCapMu.Lock()
+	keepCapSum[dir] += added
+	over := keepCapSum[dir] > KeepCap
+	keepCapMu.Unlock()
+	if !over {
+		return
+	}
+	EnforceKeepCap(dir, KeepCap)
+	total := dirTotalBytes(dir)
+	keepCapMu.Lock()
+	keepCapSum[dir] = total
+	keepCapMu.Unlock()
+}
+
+// dirTotalBytes 统计 dir 下**顶层文件**的字节总量（不递归；目录不存在 / 读取失败 → 0）。
+func dirTotalBytes(dir string) int64 {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if fi, err := e.Info(); err == nil {
+			total += fi.Size()
+		}
+	}
+	return total
 }

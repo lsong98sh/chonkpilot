@@ -4,10 +4,7 @@ package gui
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -21,29 +18,16 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-data/facade/inline"
-	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-gui/internal/fileserver"
-	"github.com/chonkpilot/chonkpilot-gui/models"
-	"github.com/chonkpilot/chonkpilot-lib/lockfile"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-llm/server"
-	"github.com/chonkpilot/chonkpilot-plugin"
-	"github.com/chonkpilot/chonkpilot-plugin-codegraph"
-	"github.com/chonkpilot/chonkpilot-plugin-compress"
-	"github.com/chonkpilot/chonkpilot-plugin-history"
-	"github.com/chonkpilot/chonkpilot-plugin-memory"
-	"github.com/chonkpilot/chonkpilot-plugin-vfts"
 	webview2 "github.com/jchv/go-webview2"
 	"github.com/jchv/go-webview2/pkg/edge"
 	"golang.org/x/sys/windows"
 )
 
 // 宿主形态（61 §4.6：desktop / gui / browser）—— **由壳静态给定**
-// （见 Main 的 `opts.Form`），不再由本包的编译开关（原 form_inprocess.go / form_split.go 的
+// （见 host.Main 的 `opts.Form`），不再由本包的编译开关（原 form_inprocess.go / form_split.go 的
 // `runtimeForm()`）决定宿主分支。
 //
 // 🆕 2026-10-09：**flash 薄壳客户端注入 `desktop` 语义**（本地免鉴权 + 前端不心跳）——
@@ -58,7 +42,7 @@ const (
 // Options 是壳传给宿主的静态启动参数。
 //
 // 注：其余启动参数（`--work-dir` / `--data-dir` / `--bridge-url` / `--test-port` /
-// `--llm-base` / `--llm-model` / `--no-server`）仍由本包在 Main 内解析命令行 —— 两个壳
+// `--llm-base` / `--llm-model` / `--no-server`）仍由 host 包在 Main 内解析命令行 —— 两个壳
 // （`src/desktop` / `src/gui`）只差**形态**一项，故只有 Form 经 Options 传入。
 type Options struct {
 	// Form 是本宿主运行形态（61 §4.6）：FormDesktop（桌面单体）| FormGui（GUI 客户端）。
@@ -343,7 +327,7 @@ type appHandler struct {
 	sessionID string // 对话窗口绑定的会话（主窗口为空）
 	// setTitle 更新本窗口标题（gui.window.set-title）：**仅对话窗口**接线；主窗口 nil → ok=false。
 	setTitle func(title string)
-	// form 是本宿主运行形态（61 §4.6：desktop / gui）——**由壳传入**（Main 的 opts.Form），
+	// form 是本宿主运行形态（61 §4.6：desktop / gui）——**由壳传入**（host.Main 的 opts.Form），
 	// 首屏注入 `window.__ck.form` 用（见 serveStatic）。
 	form string
 	// ── 认证域首屏注入（61 §4.6；阶段 2b-2）──
@@ -668,7 +652,7 @@ func (r *recorder) WriteHeader(s int) { r.status = s }
 // ── 启动分段计时（OP-15：定位启动慢，仅插桩，不改启动行为/顺序）──────────────
 //
 // 统一前缀 `[startup] <阶段> 耗时 <段>ms（累计 <总>ms）`：段 = 距上次打点，
-// 总 = 距 markStartupBegin（Main 最早期）。据此逐段定位耗时段（capability 扫描 /
+// 总 = 距 MarkStartupBegin（host.Main 最早期）。据此逐段定位耗时段（capability 扫描 /
 // gateway 启动 / 工具缓存预热 / 插件 Start / WebView2 建窗 / 首屏渲染）。
 // 日志走本包统一出口 slog（见 loglevel.go；桌面主力形态非旧 wails 的 zap）。
 var (
@@ -677,16 +661,16 @@ var (
 	startupLast time.Time
 )
 
-// markStartupBegin 重置启动计时基准（Main 最早期调用一次）。
-func markStartupBegin() {
+// MarkStartupBegin 重置启动计时基准（host.Main 最早期调用一次）。
+func MarkStartupBegin() {
 	startupMu.Lock()
 	startupT0 = time.Now()
 	startupLast = startupT0
 	startupMu.Unlock()
 }
 
-// logStartupStage 输出一段启动耗时（OP-15）：段 = 距上次打点，总 = 距 markStartupBegin。
-func logStartupStage(stage string) {
+// LogStartupStage 输出一段启动耗时（OP-15）：段 = 距上次打点，总 = 距 MarkStartupBegin。
+func LogStartupStage(stage string) {
 	startupMu.Lock()
 	now := time.Now()
 	if startupT0.IsZero() {
@@ -701,312 +685,21 @@ func logStartupStage(stage string) {
 // startupOnce 保证「首屏」类阶段只记一次（导航完成回调可能因刷新多次触发）。
 var startupOnce sync.Map
 
-// logStartupStageOnce 同 logStartupStage，但同一 key 只记一次。
+// logStartupStageOnce 同 LogStartupStage，但同一 key 只记一次。
 func logStartupStageOnce(key, stage string) {
 	if _, loaded := startupOnce.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
-	logStartupStage(stage)
-}
-
-// exitWorkDirBusy 报告「该 work-dir 已被另一个实例打开」并退出（I-74）。
-// 启动期文件日志尚未挂载 → 原生消息框 + stderr 双通道（windowsgui 构建下 stderr 不可见，
-// 消息框是唯一可见提示）。
-func exitWorkDirBusy(workDir string) {
-	msg := "该工作目录已被另一个 ChonkPilot 实例打开：\n" + workDir +
-		"\n\n请先关闭对应窗口，或改用其它目录（--work-dir <目录>）。"
-	fmt.Fprintln(os.Stderr, msg)
-	nativeAlert("ChonkPilot", msg)
-	os.Exit(1)
-}
-
-// Main 是宿主入口（webview2 宿主 + 内嵌 server/persist/filesys + 插件装配 + 桥接线）。
-//
-// **调用方 = 壳**（`src/desktop` = 桌面单体 / `src/gui` = GUI 客户端）：壳只做两件事 ——
-// `//go:embed all:frontend/dist` 拿到前端 dist，并以 `opts.Form` 声明形态；宿主实现
-// **在本包只有一份**（方案 B：零重复）。
-//
-// distFS 必须是含 `frontend/dist` 前缀的嵌入文件系统（壳的 `//go:embed all:frontend/dist`），
-// 本函数内部 `fs.Sub(distFS, "frontend/dist")` 取 dist 根（口径与改前一致）。
-// 启动参数（--work-dir/--data-dir/--bridge-url/--test-port/--llm-base/--llm-model/--no-server）
-// 仍在本函数内解析（两个壳只有形态不同，不重复解析代码）。
-func Main(distFS fs.FS, opts Options) {
-	// 日志级别：先以缺省级别装好 logger（早于配置可用无妨），待桥/数据面就绪后经既有配置
-	// 通道读 prj logLevel 覆盖并订阅变更即时生效（见 loglevel.go）。
-	initLogging()
-	// 主流程返回 error（**不再中途 os.Exit**，D-08）：保证已注册的收尾 defer 链按依赖序执行，
-	// 且失败经原生消息框可见（windowsgui 下 stderr 不可见，D-06，口径同 exitWorkDirBusy）。
-	if err := runMain(distFS, opts); err != nil {
-		slog.Error("gui main failed", "err", err)
-		nativeAlert("ChonkPilot", err.Error())
-		os.Exit(1)
-	}
-}
-
-// runMain 是宿主主流程（Main 的实体）；任何失败以 error 返回，由 Main 统一弹框 + 退出。
-func runMain(distFS fs.FS, opts Options) error {
-	markStartupBegin()
-
-	var workDir, dataDir, bridgeURL string
-	var legacyNatsURL string
-	var testPort int
-	var llmBase, llmModel string
-	var noServer bool
-	flag.StringVar(&workDir, "work-dir", "", "工作目录（前端文件树根）")
-	flag.StringVar(&dataDir, "data-dir", "", "项目数据根（默认 <workDir>/.chonkpilot；显式给出时 prj/prjusr 同根，缺省时 prjusr 落 ~/.chonkpilot/data/<prj-id>）")
-	flag.StringVar(&bridgeURL, "bridge-url", "", "分离形态（-tags split 编译）下 bridge 对端地址（HTTP）；合并单进程形态（默认构建）忽略")
-	// 兼容旧名（已废弃，勿在新脚本中使用）：nats-url 语义已演进为 bridge-url，
-	// 仅在未显式给出 --bridge-url 时生效，避免既有脚本/参数失效。
-	flag.StringVar(&legacyNatsURL, "nats-url", "", "已废弃别名：等价于 --bridge-url（仅 --bridge-url 未给出时生效）")
-	flag.IntVar(&testPort, "test-port", 0, "测试通道端口（0=禁用；>0 监听 127.0.0.1 供外部脚本驱动）")
-	flag.StringVar(&llmBase, "llm-base", "http://127.0.0.1:8901/v1", "OpenAI 兼容 base URL（inprocess 会话服务）")
-	flag.StringVar(&llmModel, "llm-model", "mock", "默认 LLM 模型名（inprocess 会话服务）")
-	flag.BoolVar(&noServer, "no-server", false, "不启动 inprocess 会话服务（UI 注入测试模式：注入事件完全控制回合，无真实 LLM）")
-	flag.Parse()
-	if bridgeURL == "" {
-		bridgeURL = legacyNatsURL
-	}
-
-	if workDir == "" {
-		var err error
-		workDir, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("cwd: %w", err)
-		}
-	}
-	workDir = models.ResolveDir(workDir, "")
-	if dataDir != "" {
-		models.SetDataDir(models.ResolveDir(dataDir, workDir))
-	}
-	// 同 work-dir 单实例占用校验（I-74）：**先于任何库打开** —— 否则第二实例会被 prj 库的
-	// bbolt 独占 flock 卡住（启动长时间无响应）。此处非阻塞取锁，占用即明确报错退出；
-	// 锁随进程存活（defer 释放；进程崩溃由 OS 回收）。锁设施自身故障（非占用）不阻断启动。
-	wdLock, wdErr := lockfile.AcquireWorkDir(workDir)
-	switch {
-	case wdErr == nil:
-		defer wdLock.Release()
-	case errors.Is(wdErr, lockfile.ErrBusy):
-		exitWorkDirBusy(workDir)
-	default:
-		slog.Warn("workdir lock unavailable", "err", wdErr) // 仅告警：不因锁设施故障阻断启动
-	}
-	// 项目数据根（prj 层所在：缺省 <workDir>/.chonkpilot；显式 --data-dir → 该目录）。
-	projectDataDir := models.DataDir(workDir)
-	// 传给 server / 桥的 data_dir（**数据层分支判据**；12-数据层 §3 · §5.3）：
-	//   - 显式 --data-dir 恒生效（prj 与 prjusr 同根，兼容既有脚本/L2 用例）；
-	//   - desktop 缺省（未给 --data-dir）**置空** → 数据层走 project-id 分支 → 个人运行态
-	//     （会话/任务树/快照）落 `~/.chonkpilot/data/<prj-id>/`（B 方案，[24 §3.2] MW-7）。
-	//     ⚠️ 不可再传 `models.DataDir(workDir)`：该访问器**恒非空**（缺省 = 项目数据根），
-	//     会让 prjusr 与 prj 同库（个人运行态落进项目目录）。
-	//   - gui 形态缺省：保持项目数据根（客户端薄壳；服务端另按用户数据根落库，本轨不改）。
-	dataDirArg := projectDataDir
-	if dataDir == "" && opts.Form == FormDesktop {
-		dataDirArg = ""
-	}
-	logStartupStage("参数与目录解析")
-	// prjusr 数据根（个人运行态非库文件的落盘根：日志 logs/、附件/截图 tmp/uploads/、
-	// fileserver 白名单；[24 §3.2] MW-8）。**必须先读 prj 库拿 project-id 才能算出**
-	// （不可拿 models.DataDir(workDir) 当 prjusr 根，见 12-数据层 §3 实施注意）。
-	prjUsrRoot, err := data.PrjUsrDir(workDir, dataDirArg)
-	if err != nil {
-		// 数据根初始化失败：返回 error 由 Main 弹原生消息框（windowsgui 下 stderr 不可见，D-06）。
-		return fmt.Errorf("prjusr 数据根解析失败: %w", err)
-	}
-	logStartupStage("prjusr 数据根解析（含 prj 库打开）")
-	// GUI 文件日志（可诊断性，2026-09-19）：windowsgui 下无控制台、stderr 不可见 → 在 prjusr
-	// 数据根 `logs/` 挂滚动文件 sink（<prjUsrRoot>/logs/gui.log，按大小滚动，见 logfile.go）。
-	// 失败降级为「仅 stderr」，不阻断启动。日志级别仍由 prj `logLevel` 运行时控制（同一 LevelVar）。
-	logDir, logErr := attachFileLog(prjUsrRoot)
-	if logErr != nil {
-		slog.Warn("file log attach failed", "err", logErr)
-	} else {
-		defer detachFileLog() // 退出时关闭文件 sink（幂等）
-		slog.Info("file log enabled", "dir", logDir)
-	}
-	logStartupStage("文件日志挂载")
-
-	// 附件/截图留存目录容量兜底清扫（D-45，启动期一次）：正常使用（< 2 GiB）永不触发，
-	// 仅目录无界累积/洪泛时按 mtime 最旧优先清理（口径见 bridge.SweepUploads 注释）。
-	bridge.SweepUploads(prjUsrRoot, bridge.UploadKeepCap)
-
-	// 消息总线：命名空间前缀 chonk. 在此注入一次（server/gateway/persist/filesys/bridge
-	// 共享同一总线），业务 publish/subscribe 一律写相对主题，见 61-消息一览 §0.1。
-	// 注：instance_id 由**窗口工厂每窗口**生成（一窗口一实例，24 §2.2 C1）。
-	// 收尾依赖序（D-05）：ts.Shutdown → srv.Stop → fsys.Stop → bus.Close。
-	// 需要按**依赖序**（而非 defer LIFO 的注册逆序）停止，且早期 return err 亦须执行收尾（D-08）：
-	// 先声明 fsys/srv/ts 供收尾闭包引用，随后注册**单一**收尾 defer；无论正常收尾还是中途
-	// return err，都在 runMain 返回时按序停止（nil 守卫自动跳过未创建者）。
-	var fsys *filesys.Filesys
-	var srv *server.Server
-	var ts *testServer
-	bus, err := mq.New(mq.Options{Prefix: "chonk."})
-	if err != nil {
-		return fmt.Errorf("mq new: %w", err)
-	}
-	defer func() {
-		if ts != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_ = ts.Shutdown(ctx)
-			cancel()
-		}
-		if srv != nil {
-			srv.Stop()
-		}
-		if fsys != nil {
-			fsys.Stop()
-		}
-		if bus != nil {
-			_ = bus.Close()
-		}
-	}()
-	logStartupStage("MQ 总线初始化")
-
-	// chonkpilot-filesys 文件服务：订阅 filesys.* 请求（list/content/create/…/watch/
-	// unwatch）→ 写回 Result/Errors；watch 变更经 fsnotify 广播 filesys.changed →
-	// 桥 ">" 订阅转发前端（文件域直连，61-消息一览 §2；-no-server 离线 UI 注入
-	// 测试仍可用文件树）。
-	fsys = filesys.New(bus)
-	if err := fsys.Start(); err != nil {
-		return fmt.Errorf("filesys start: %w", err)
-	}
-	logStartupStage("filesys 文件服务启动")
-
-	// ── inprocess 会话服务（GUI 内嵌 chonkpilot-server lib，同进程内存 MQ）──
-	// server v2 内嵌 persist（data-* 数据面应答）+ gateway + mcp-server，数据根由
-	// bridge.Start 的 instance-register 绑定（persist 自持实例视图，61-消息一览 §4.1），
-	// 宿主不再直接打开/持有数据层句柄。
-	// -no-server：跳过（UI 注入测试模式，注入事件完全控制回合，无真实 LLM/数据服务）。
-	if !noServer {
-		srv = server.New(bus, server.Options{
-			LLMBase:  llmBase,
-			LLMModel: llmModel,
-			// 服务端启动参数下发（唯一消费点 = instance-claim 的 desktop 回落，见 61 §4.1 ①：
-			// 本机单用户 + --work-dir/--data-dir）。data_dir = `dataDirArg`（desktop 缺省为空 →
-			// persist/instance 绑定 data_dir 空 → prjusr 按 project-id 落 ~/.chonkpilot/data/<id>/，
-			// 见 12-数据层 §5.1 / [24 §3.2] MW-7）。
-			WorkDir: workDir,
-			DataDir: dataDirArg,
-			// 运行形态（61 §4.6；阶段 2b-2）：**服务端判定**的形态来源（desktop / gui，
-			// **由壳经 Options.Form 传入**）→ claim 鉴权分支与首屏 requireAuth 均据此判定；
-			// **非 UA、非客户端自报**（22 §1）。
-			Form: opts.Form,
-			// 内嵌 server/插件的诊断输出（原先只写 stdout，windowsgui 下不可见）经同一文件 sink
-			// 落 <dataDir>/logs/gui.log（2026-09-20；未挂上 sink = nil → 仅 stdout，行为不变）。
-			LogWriter: logWriter.fileSink(),
-			// 内嵌插件：compress（llm-compress 压缩）+ memory（每轮异步沉淀记忆）+ history（git 快照）+ codegraph/vfts（索引工具面，默认关闭）；就绪后广播 server-starting
-			// 插件与入口桥依赖的门面绑定在**装配处**选择（23 §7）：本形态 = inline（同进程直调；
-			// bus 传宿主实际总线 → config 域写入的变更广播照旧送达订阅方，见 facade/inline）
-			Plugins: []plugin.Hook{
-				compress.New(compress.DefaultOptions(), inline.New(bus)),
-				memory.New(memory.DefaultOptions()),
-				history.New(),
-				codegraph.New(codegraph.Options{}),
-				vfts.New(vfts.Options{}),
-			},
-		})
-		logStartupStage("server 装配（capability 契约扫描 + gateway 构建）")
-		if err := srv.Start(context.Background()); err != nil {
-			return fmt.Errorf("server start: %w", err)
-		}
-		logStartupStage("server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）")
-	}
-
-	// WebView2 用户数据目录必须**一实例一份**：fork 默认 DataPath = %AppData%\<exe名>，
-	// 会让同一 exe 的多窗口共享同一 profile → 共享同一个浏览器进程（msedgewebview2.exe），
-	// 任一方销毁/崩溃都会波及另一方的窗口（历史实测：销毁一个实例会冻结其他窗口）。
-	// 多窗口起（24 §4.1）：**每窗口**一份（~/.chonkpilot/webview2/<instance_id>，由窗口工厂
-	// 创建并清理）；前端 ui.locale 有 DB 兜底（MainLayout），不依赖 WebView2 缓存留存。
-	wvRoot := webviewProfilesRoot()
-	pruneWebviewProfiles(wvRoot) // 清掉超期残留 profile（>24h 未变动的 gui-* 目录；强杀/崩溃未走退出清理的）
-
-	subFS, err := fs.Sub(distFS, "frontend/dist")
-	if err != nil {
-		return fmt.Errorf("fs.Sub dist: %w", err)
-	}
-
-	// 进程级装配上下文：窗口工厂据此**每窗口**一份桥 + appHandler（MW-1/MW-2/MW-3）。
-	env := &hostEnv{
-		bus:            bus,
-		distFS:         subFS, // embed 路径带 frontend/dist 前缀，Sub 后根即 dist 内容
-		workDir:        workDir,
-		dataDir:        dataDirArg, // 数据层分支判据（desktop 缺省为空，见上）
-		projectDataDir: projectDataDir,
-		prjUsrRoot:     prjUsrRoot,
-		logDir:         logDir,
-		form:           opts.Form,
-		srv:            srv,
-		windows:        newWindowRegistry(),
-	}
-
-	// 测试通道（--test-port）：仅绑**主窗口**（每窗口一份 appHandler 后，多窗口回归不覆盖，
-	// 见 24 §4.5 / U-3）；console 捕获注入须在导航前（见 onWired）。ts 已在总线下声明（收尾闭包引用）。
-
-	// 主窗口（MW-1：主窗口同走窗口工厂；几何恢复 / 拦截器 / lifecycle / Show 逐条与改前一致）。
-	mainHost, err := startWindow(env, windowSpec{
-		role:      roleMain,
-		title:     mainWindowTitle(workDir), // 固定 Taskbar 标题 = chonkpilot-<工程目录名>（不随会话变化）
-		url:       appOrigin + "/",
-		frameless: true,
-		onWired: func(h *windowHost) error {
-			// 日志级别接线：数据面就绪后读 prj logLevel 初值（变更订阅见下方 watchLogLevel）。
-			applyLogLevelFromConfig(logLevelVar, h.br.PrjConfigList())
-			if testPort <= 0 {
-				return nil
-			}
-			ts = newTestServer(h.w, h.br)
-			if ts == nil {
-				return errors.New("test server: webview lacks ScriptEval")
-			}
-			if err := ts.Start(testPort); err != nil {
-				return fmt.Errorf("test server start failed: %w", err)
-			}
-			// testServer 的窗口命令（gui.window.status / 窗口面消息）需要句柄/销毁回调/handler。
-			ts.hwnd = h.hwnd
-			ts.destroy = h.destroy
-			ts.handler = h.handler
-			// 对话窗口建窗时据此登记为可选测试目标（window_id 路由，24 §4.5）。
-			env.setTestServer(ts)
-			// 测试模式注入 console 捕获（导航前）。
-			ts.InjectConsoleCapture(h.chromium)
-			h.onReady = ts.SetReady
-			return nil
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("main window create: %w", err)
-	}
-	env.windows.setMain(mainHost)
-	logStartupStage("主窗口创建（bridge/WebView2 环境就绪）")
-	// 进程级收尾改由总线下注册的**单一收尾 defer**（依赖序 ts→srv→fsys→bus）统一完成，
-	// 不再各自 defer（原 defer LIFO 会使 bus.Close 早于 srv.Stop/fsys.Stop，D-05）。
-
-	// 桥与 appHandler 已下沉窗口工厂**每窗口一份**（window.go createWindow）：
-	// 实例注册 / 认证接线 / 数据门面 / DevTools / 日志目录 / prjusr 根均在那处逐窗口装配。
-
-	// 实例心跳发布侧（2026-09-20，阶段 2a）：**发布方由宿主改为前端 SPA**（61 §4.1 ②订正：
-	// 语义 = 客户端续期）。分离形态（`-tags split`）下由前端在 `instance-claim` 成功后起 30s
-	// `instance-heartbeat{instance_id}` 定时器（前端据首屏注入的 `__ck.form` 判定：desktop
-	// 不发布、gui/browser 发布 —— 与宿主编译开关 `split` 同一口径）；服务端 90s 未收即
-	// 回收（sweep_split.go，判定侧不变）。故本宿主**不再发布心跳**（原
-	// `instance.StartHeartbeat(bus, instanceID, bridgeURL)` 调用移除）；`--bridge-url`（分离
-	// 形态 bridge 对端地址）当前仅登记 + 日志（bridge 路由为分阶段落地项，见 23-工程与部署拓扑）。
-	if bridgeURL != "" {
-		slog.Info("split bridge endpoint", "bridge_url", bridgeURL)
-	}
-
-	// 日志级别：各窗口建窗时读 prj logLevel 初值（主窗口见上方 onWired）；此处订阅既有
-	// data-prj-config-refresh（**进程级一次**）→ prj 配置一变更即应用、无需重启。
-	watchLogLevel(bus)
-	logStartupStage("启动流程就绪（进入窗口事件循环，首屏于导航完成后另记）")
-
-	// 主窗口关闭 = 退出本进程（24 §4.4）：其余对话窗口一并关闭（各自发 instance-exit +
-	// gui.window.closed），随后返回（收尾 defer 按依赖序关闭 ts/srv/fsys/bus）。
-	<-mainHost.done
-	env.windows.shutdown()
-	return nil
+	LogStartupStage(stage)
 }
 
 // 工具函数（避免导入额外包）。
+//
+// newUUID 生成**实例/profile 短标识**（形态 `gui-<数字>`，源自 CreateTemp 唯一后缀），
+// **刻意非 RFC-4122 UUID**：它同时用作 WebView2 用户数据目录名（见 webviewDataDir），
+// `webviewProfilePrefix = "gui-"` 的孤儿清理（PruneWebviewProfiles）依赖该前缀——改前缀会
+// 破坏 profile 清理，故**不得**替换为 idgen.NewUUID()。真实 UUID（session/turn/req_id 等）
+// 一律走 idgen.NewUUID()（见 flash/session.go、bridge/bridge.go）。
 func newUUID() string {
 	f, err := os.CreateTemp("", "gui-*.uuid")
 	if err != nil {
@@ -1018,8 +711,8 @@ func newUUID() string {
 	return strings.TrimSuffix(name, ".uuid")
 }
 
-// webviewProfilesRoot 返回 WebView2 用户数据目录根（~/.chonkpilot/webview2）。
-func webviewProfilesRoot() string {
+// WebviewProfilesRoot 返回 WebView2 用户数据目录根（~/.chonkpilot/webview2）。
+func WebviewProfilesRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		home = os.TempDir()
@@ -1031,7 +724,7 @@ func webviewProfilesRoot() string {
 // 多实例共享同一 profile 会共享浏览器进程、互相波及（一方销毁导致另一方窗口冻结），
 // 故按 instance_id 一实例一份。
 func webviewDataDir(instanceID string) string {
-	return filepath.Join(webviewProfilesRoot(), instanceID)
+	return filepath.Join(WebviewProfilesRoot(), instanceID)
 }
 
 // webviewProfilePrefix 是本进程创建的 WebView2 profile 目录名前缀：实例 id 由 newUUID 生成
@@ -1077,7 +770,7 @@ func profileInUse(dir string) bool {
 	return code == stillActiveProcess
 }
 
-// pruneWebviewProfiles 尽力而为清理孤儿 profile（被强杀/崩溃、未走退出清理的目录）：
+// PruneWebviewProfiles 尽力而为清理孤儿 profile（被强杀/崩溃、未走退出清理的目录）：
 //   - 只清 `<root>/gui-*` 目录（本进程命名，见 webviewProfilePrefix）——不动根下其它内容；
 //   - **占用即跳过（D-34）**：目录内有 `.active` 标记且其 pid 进程存活 → 正在被其它实例使用，
 //     绝不删除（多项目并行时保护活跃 profile；NTFS 下仅建/删/改名目录项才更新父目录 mtime，
@@ -1085,8 +778,8 @@ func profileInUse(dir string) bool {
 //   - 无标记 / 标记 pid 已退出 → 判为残留：再要求 LastWriteTime 早于 24h 才清；
 //   - 删除失败（被占用等）逐条跳过并忽略，**不阻断启动**。
 //
-// 返回（清理数量, 释放字节数）供日志与测试断言。
-func pruneWebviewProfiles(root string) (removed int, freed int64) {
+// 返回（清理数量, 释放字节数）供日志与测试断言。由 host 启动期调用一次。
+func PruneWebviewProfiles(root string) (removed int, freed int64) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return 0, 0

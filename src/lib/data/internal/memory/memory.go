@@ -328,7 +328,12 @@ func memoryCustomCategories(workDir string) []string {
 func (s *Service) memoryList(workDir string) []facade.MemoryCategory {
 	out := make([]facade.MemoryCategory, 0, len(memoryCategorySpecs))
 	appendItem := func(category, path, level string) {
-		content := readFileString(path)
+		// 读前越界复验（R8-A-1，与写/删入口同口径）：预置 symlink 指向根外 → 不读（content 空），
+		// 清单项照常返回（仅限元信息，无越界内容外泄）。
+		content := ""
+		if memoryPathWithinReal(s.memoryWriteRoot(workDir, level), path) {
+			content = readFileString(path)
+		}
 		// 类别沉淀提示词：后端按文件读序解析后随清单**下发**（OP-04）——前端不再持镜像常量；
 		// 插件亦据此取 llm-simple 的 system（无提示词文件 → 该类不提取）。
 		prompt, override := s.memoryPromptForCategory(workDir, category)
@@ -380,6 +385,10 @@ func (s *Service) MemoryGet(req facade.MemoryGetRequest) (facade.MemoryGetRespon
 	path, level, ok := s.memoryFileFor(workDir, req.Category)
 	if !ok {
 		return facade.MemoryGetResponse{}, errors.New("invalid memory category name: " + req.Category)
+	}
+	// 读前越界复验（R8-A-1，与写/删入口同口径）：预置 symlink 指向根外 → 拒绝读取，不泄露根外内容。
+	if !memoryPathWithinReal(s.memoryWriteRoot(workDir, level), path) {
+		return facade.MemoryGetResponse{}, errors.New("memory path escapes root: " + req.Category)
 	}
 	if !isPresetMemoryCategory(req.Category) {
 		if _, statErr := os.Stat(path); statErr != nil {

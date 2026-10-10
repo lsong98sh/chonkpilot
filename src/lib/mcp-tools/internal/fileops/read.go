@@ -152,8 +152,9 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 		var rerr error
 		data, rerr = io.ReadAll(io.LimitReader(f, maxReadBytes))
 		f.Close()
-		if rerr != nil { // 非 EOF 的读取错误不再静默吞掉（R7-C-9）
+		if rerr != nil { // 非 EOF 的读取错误不再静默吞掉（R7-C-9）；并置项级失败，避免顶层误报 success（R8-C-4）
 			info["error"] = rerr.Error()
+			return info, fmt.Errorf("read file: %w", rerr)
 		}
 		info["truncated"] = true
 	} else {
@@ -316,9 +317,12 @@ func readFileTail(path string, n int) (string, error) {
 		return "", err
 	}
 	const chunk = 64 << 10
+	// maxTailScan 是反向扫描窗口上限（R8-C-3）：对无换行文件（minified 单行）若逐块读满会整读整文件，
+	// 故超过该窗口即停止并返回已得内容，保持「末尾 N 行」语义。
+	const maxTailScan = 8 << 20
 	var buf []byte
 	pos := fi.Size()
-	for pos > 0 {
+	for pos > 0 && int64(len(buf)) < maxTailScan {
 		readSize := int64(chunk)
 		if pos < readSize {
 			readSize = pos

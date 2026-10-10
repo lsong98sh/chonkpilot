@@ -82,7 +82,7 @@
 
 ## 8. 场景与边界
 
-- **无 `--test-port`**：该参数仅存在于 GUI 宿主。
+- **无 `--test-port`**：该参数仅存在于 GUI 宿主（且**仅 `-tags debugport` 构建**编入，release 不含，见 [03 §1.4](../00-overview/03-构建与部署.md)）。
 - **stdin 提示词**：非字符设备（管道为空）→ 报错退出。
 - **退出**：正常路径自然返回（无 `os.Exit`）；异常 `os.Exit(1)` 或 `log.Fatalf`；等待期 SIGINT/SIGTERM 由 `ctx.Done()` 结束。
 

@@ -4,8 +4,8 @@
 // 本文件给默认 slog logger 增加**文件 sink**（`<prjusr 数据根>/logs/gui.log`，**按大小滚动**、
 // 保留 N 份），与既有 stderr 输出**并存**，并沿用同一 `slog.LevelVar`（prj `logLevel` 运行时改级别 → 文件同受控）。
 //
-// 装配顺序（main.go）：initLogging() 先装（stderr，级别缺省 info）→ prjusr 数据根解析后
-// attachFileLog() 挂上文件 sink（此前日志只进 stderr，不丢文件以外的任何东西）。
+// 装配顺序（host 装配）：InitLogging() 先装（stderr，级别缺省 info）→ prjusr 数据根解析后
+// AttachFileLog() 挂上文件 sink（此前日志只进 stderr，不丢文件以外的任何东西）。
 package gui
 
 import (
@@ -24,7 +24,7 @@ const (
 	guiLogMaxFiles = 5
 )
 
-// dualWriter 是 slog 的输出目标：**始终**写 stderr；attachFileLog 挂上文件后**同时**写文件。
+// dualWriter 是 slog 的输出目标：**始终**写 stderr；AttachFileLog 挂上文件后**同时**写文件。
 // 单次 Write 一个日志行（TextHandler 每记录一次 Write），加锁保证多 goroutine 下不交错。
 type dualWriter struct {
 	mu   sync.Mutex
@@ -47,16 +47,15 @@ func (w *dualWriter) setFile(f io.Writer) {
 	w.mu.Unlock()
 }
 
-// fileSink 返回当前文件 sink（未挂上 → nil）。装配方（main）用它把**同一个** sink 注入
-// 内嵌库（chonkpilot-llm/server 的 `Options.LogWriter`，2026-09-20）——使 server/插件的
-// 诊断输出与宿主 slog 日志**同落** `<dataDir>/logs/gui.log`（库侧只收 io.Writer，不依赖 gui 包）。
+// fileSink 返回当前文件 sink（未挂上 → nil）；导出入口见 LogFileSink（供 host 装配包注入
+// 内嵌库 `Options.LogWriter`）。
 func (w *dualWriter) fileSink() io.Writer {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.file
 }
 
-// logWriter 是全局日志输出目标（initLogging 与该文件共用；包级单例）。
+// logWriter 是全局日志输出目标（InitLogging 与该文件共用；包级单例）。
 var logWriter = &dualWriter{}
 
 // rotateWriter 是按大小滚动的文件写入器：写满 guiLogMaxBytes 时把 gui.log → gui.log.1
@@ -131,10 +130,10 @@ func (w *rotateWriter) Close() error {
 	return err
 }
 
-// attachFileLog 在 **prjusr 数据根**的 `logs/` 下挂上滚动文件 sink（`<root>/logs/gui.log`；
+// AttachFileLog 在 **prjusr 数据根**的 `logs/` 下挂上滚动文件 sink（`<root>/logs/gui.log`；
 // root = `data.PrjUsrDir`，见 12-数据层 §3 / 24 §3.2），返回日志**目录**（供前端/用户定位）。
 // 失败只返回错误，调用方降级为「仅 stderr」（不阻断启动）。
-func attachFileLog(root string) (string, error) {
+func AttachFileLog(root string) (string, error) {
 	if root == "" {
 		return "", errors.New("prjusr 数据根为空")
 	}
@@ -150,8 +149,13 @@ func attachFileLog(root string) (string, error) {
 	return logDir, nil
 }
 
-// detachFileLog 关闭并摘除文件 sink（幂等；测试/退出清理用，**不改** stderr 输出）。
-func detachFileLog() {
+// LogFileSink 返回当前文件 sink（未挂上 → nil）。供 host 装配包把**同一个** sink 注入
+// 内嵌库（chonkpilot-llm/server 的 `Options.LogWriter`）——使 server/插件的诊断输出与宿主
+// slog 日志**同落** `<dataDir>/logs/gui.log`。
+func LogFileSink() io.Writer { return logWriter.fileSink() }
+
+// DetachFileLog 关闭并摘除文件 sink（幂等；测试/退出清理用，**不改** stderr 输出）。
+func DetachFileLog() {
 	logWriter.mu.Lock()
 	defer logWriter.mu.Unlock()
 	if rw, ok := logWriter.file.(*rotateWriter); ok {

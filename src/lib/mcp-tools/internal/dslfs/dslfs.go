@@ -7,6 +7,7 @@ package dslfs
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,10 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/dsl"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
 )
+
+// maxReadBytes 是 ReadText 单文件读入内存的硬上限（32MB，与 fileops.readFileCapped 同口径）：
+// 超过即只读前 maxReadBytes 字节，防 DSL `#"path"` 对超大文件整读 OOM（R8-C-1）。
+const maxReadBytes = 32 << 20
 
 // Profile 选择句柄的既有行为差异（三域历史实现不同，逐字保留）。
 type Profile struct {
@@ -106,7 +111,13 @@ func (f *File) ReadText() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	raw, err := os.ReadFile(abs)
+	// 上限截断（R8-C-1）：与 fileops.readFileCapped 同口径，超大文件只读前 maxReadBytes 字节。
+	fh, err := os.Open(abs)
+	if err != nil {
+		return "", err
+	}
+	defer fh.Close()
+	raw, err := io.ReadAll(io.LimitReader(fh, maxReadBytes))
 	if err != nil {
 		return "", err
 	}

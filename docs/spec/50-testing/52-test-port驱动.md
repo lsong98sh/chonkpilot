@@ -19,7 +19,7 @@
 
 ## 2. 总体设计
 
-- **触发**：`chonkpilot.exe --test-port=2345`（仅 IDE 模式生效；executor 模式（`--prompt` 等）忽略该参数）
+- **触发**：`chonkpilot.exe --test-port=2345`（仅 IDE 模式生效；executor 模式（`--prompt` 等）忽略该参数）。**🆕 2026-10-10**：`--test-port` 由 **build tag `debugport`** 门控 —— **仅 debug 构建存在**（`build-desktop.ps1 -Debug` / `build-gui.ps1 -Debug`，见 [03 §1.4](../00-overview/03-构建与部署.md)）；**release 构建不注册该参数**（传入即 unknown flag），也**不开任何监听**
 - **监听**：`127.0.0.1:2345`，**不绑定 `0.0.0.0`**，杜绝局域网访问
 - **默认关闭**：不传 `--test-port` 则完全不启动，发布包行为不变
 - **生命周期**：与 IDE 同生共死 —— webview 创建成功后启动 `http.Server`，程序退出前 `Shutdown`
@@ -170,7 +170,7 @@ assert "目录结构" in html
 - 无鉴权（本机测试用途，能力等价于已在本机运行的用户进程）
 - `/call/` 已废除；消息驱动通道由 `/publish` / `/wait-event` 提供
 - **端点豁免清单**（测试端口固定的白名单，注册于 `testserver.go` 路由）：`/ping`（探活，免页就绪检查）、`/eval`、`/click`、`/input`、`/text`、`/html`、`/exists`、`/console`、`/screenshot`、`/publish`、`/wait-event`
-- `--test-port` 与 `--internal` 无关联，不影响正常发布构建
+- `--test-port` 与 `--internal` 无关联（**🆕 2026-10-10 订正**：`--test-port` 现由 build tag `debugport` 门控，**release 构建不注册该参数、不开监听**；debug 构建 `-tags debugport` 才编入，见 [03 §1.4](../00-overview/03-构建与部署.md)）
 
 ## 7. 验证用例（对接《tool-call 任务与通知设计》§九）
 

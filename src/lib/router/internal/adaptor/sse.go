@@ -33,6 +33,13 @@ var ErrTruncated = errors.New("sse: 流在事件边界前中断")
 // 命中终止标记即收尾，故为行为回归）。
 var ErrStreamDone = errors.New("sse: 流已按终止标记正常收尾")
 
+// MaxSSELineBytes 是单行 SSE 的字节上限（R8-B-6）：上游灌无换行超长流时按行解析会无界
+// 缓冲吃爆内存；超过本上限 → ErrLineTooLong 断流。取 4 MiB（远大于任何合法 SSE 行）。
+const MaxSSELineBytes = 4 << 20
+
+// ErrLineTooLong 是单行长度超过 MaxSSELineBytes 时的错误（消费方据此断流并归类为协议错误）。
+var ErrLineTooLong = errors.New("sse: 单行超过上限")
+
 // SSEDecoder 把任意切分的 SSE 字节流解析为事件载荷序列。
 //
 // 设计要点：内部基于 bufio.Reader 按需读取 → **与上游 chunk 切分位置无关**（半包自动缓冲）。
@@ -76,15 +83,31 @@ func (d *SSEDecoder) Next() ([]byte, error) {
 }
 
 // readLine 读取下一行（已剥行尾 CR/LF）；eof=true 表示已到流末（此时 line 可能为无换行的末行）。
+//
+// R8-B-6：单行设 MaxSSELineBytes 上限 —— 上游灌**无换行超长流**时 `ReadString('\n')` 会
+// 无界缓冲吃爆内存；超限 → 返回 ErrLineTooLong 断流（口径对齐 core/uds 的 readFrame）。
 func (d *SSEDecoder) readLine() (line string, eof bool, err error) {
-	s, err := d.br.ReadString('\n')
-	if err != nil {
-		if errors.Is(err, io.EOF) {
-			return trimEOL(s), true, nil
+	var buf []byte
+	for {
+		chunk, err := d.br.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		if err == bufio.ErrBufferFull {
+			if len(buf) > MaxSSELineBytes {
+				return "", false, ErrLineTooLong
+			}
+			continue
 		}
-		return trimEOL(s), false, err
+		if len(buf) > MaxSSELineBytes {
+			return "", false, ErrLineTooLong
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return trimEOL(string(buf)), true, nil
+			}
+			return trimEOL(string(buf)), false, err
+		}
+		return trimEOL(string(buf)), false, nil
 	}
-	return trimEOL(s), false, nil
 }
 
 // consumeLine 处理一行，返回 true 表示该行是「事件终结空行」且当前事件含 data（可分发）。

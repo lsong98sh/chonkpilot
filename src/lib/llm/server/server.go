@@ -1209,6 +1209,8 @@ func (s *Server) onLLMStart(_ context.Context, _ string, v *mq.Value) error {
 func (s *Server) onLLMSend(_ context.Context, _ string, v *mq.Value) error {
 	var req SendReq
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		// 回执语义（R9-4-1，与下方 tc==nil 分支同口径）：载荷非法 → 明确拒绝（不再静默丢弃）。
+		v.Result = map[string]any{"accepted": false, "error": "bad request"}
 		return nil
 	}
 	s.mu.Lock()
@@ -1228,6 +1230,10 @@ func (s *Server) onLLMSend(_ context.Context, _ string, v *mq.Value) error {
 	}
 	s.mu.Unlock()
 	if tc == nil {
+		// 回执语义（R8-D-3）：turn 未找到/已回收 → 明确拒绝（不再静默丢弃），便于发送端据回执
+		// 区分「已受理 / 被丢弃」。字段沿用本域既有口径（accepted/error，同 onLLMStart）。
+		// 成功路径**不写 Result**（命中即 return nil）——二者据此可区分：空 Result = 已受理。
+		v.Result = map[string]any{"accepted": false, "error": "turn not found"}
 		return nil
 	}
 	switch req.Type {

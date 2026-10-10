@@ -224,9 +224,9 @@ func (r *windowRegistry) shutdown() {
 	}
 }
 
-// mainWindowTitle 返回主窗口固定标题（用户裁决 2026-09-26：始终 `chonkpilot-<工作目录名>`，
+// MainWindowTitle 返回主窗口固定标题（用户裁决 2026-09-26：始终 `chonkpilot-<工作目录名>`，
 // **不随会话/摘要变化**；与 chatWindowTitle 同取 workDir 末级目录名）。
-func mainWindowTitle(workDir string) string {
+func MainWindowTitle(workDir string) string {
 	return "chonkpilot-" + filepath.Base(workDir)
 }
 

@@ -5,12 +5,8 @@
 package lockfile
 
 import (
-	"errors"
 	"path/filepath"
 )
-
-// ErrUnsupported 本平台不支持文件锁。
-var ErrUnsupported = errors.New("lockfile: not supported on this platform")
 
 // canonicalPath 非 Windows：仅 Clean（大小写敏感）。
 func canonicalPath(p string) string { return filepath.Clean(p) }

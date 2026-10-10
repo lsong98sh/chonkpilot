@@ -350,13 +350,13 @@ const showMore = computed(() => props.message.has_more && !contentComplete.value
 // tool_pair 标题：优先显示 LLM 必填的 purpose 调用理由（附工具名），历史消息无 purpose 时回退工具名。
 const toolPairTitle = computed(() => {
   const p = props.message.purpose || ''
-  if (p) return p + '（' + (props.message.tool || 'tool') + '）'
-  return props.message.tool || 'tool'
+  const tool = props.message.tool || 'tool'
+  return p ? t('chat.tool_pair_title', { purpose: p, tool }) : tool
 })
 
 const moreLabel = computed(() => {
   const bytes = props.message.content_size
-  if (!bytes || bytes <= 0) return '[more]'
+  if (!bytes || bytes <= 0) return t('chat.more')
   let label
   if (bytes < 1024) label = bytes + 'B'
   else {
@@ -364,7 +364,7 @@ const moreLabel = computed(() => {
     if (kb < 1024) label = (kb >= 10 ? Math.round(kb) : Math.round(kb * 10) / 10) + 'KB'
     else label = (kb / 1024 >= 10 ? Math.round(kb / 1024) : Math.round(kb / 1024 * 10) / 10) + 'MB'
   }
-  return '[more: ' + label + ']'
+  return t('chat.more_with_size', { size: label })
 })
 
 // ── 错误人话化（批 2 – 错误呈现面）──

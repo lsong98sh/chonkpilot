@@ -38,7 +38,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -46,6 +45,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/chonkpilot/chonkpilot-lib/osuser"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
 
@@ -214,10 +214,7 @@ func registerUserName(proposed string) string {
 	if u := strings.TrimSpace(proposed); u != "" {
 		return u
 	}
-	if cu, err := user.Current(); err == nil && cu != nil && cu.Username != "" {
-		return cu.Username
-	}
-	return "unknown"
+	return osuser.CurrentUser()
 }
 
 // allowWorkDir 判定用户对 work_dir 的访问权（61 §4.6「项目选择白名单」· 22 §6.7）：

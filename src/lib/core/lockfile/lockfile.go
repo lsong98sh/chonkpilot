@@ -17,6 +17,25 @@ import (
 // ErrBusy 表示目标锁已被其它进程持有（调用方据此给出「已被打开」的明确提示）。
 var ErrBusy = errors.New("lockfile: busy")
 
+// ErrUnsupported 表示本平台不提供文件锁（非 Windows stub 返回；调用方据此降级放行）。
+// 定义于跨平台文件，供上层（如 procsingleton）在任意平台引用判定。
+var ErrUnsupported = errors.New("lockfile: not supported on this platform")
+
+// PrjUsrLockName 是 **prjusr 单例锁**文件名：flash 与桌面单体**共用同名同目录**的锁
+// （`<prjusr>/chonkpilot.lock`）→ 同一项目在本机互斥（防两实例同时打开同一项目）。
+const PrjUsrLockName = "chonkpilot.lock"
+
+// PrjUsrLockPath 返回 prjusr 数据根下的单例锁文件路径（`<prjUsrRoot>/chonkpilot.lock`）。
+func PrjUsrLockPath(prjUsrRoot string) string {
+	return filepath.Join(prjUsrRoot, PrjUsrLockName)
+}
+
+// AcquirePrjUsr 非阻塞获取 prjusr 单例锁（flash 与桌面单体共用）；已被占用 → ErrBusy。
+// 返回的 Lock 须在进程存活期持有（`defer lock.Release()`）。
+func AcquirePrjUsr(prjUsrRoot string) (*Lock, error) {
+	return Acquire(PrjUsrLockPath(prjUsrRoot))
+}
+
 // workDirLocksDir 返回占用锁根目录：`<home>/.chonkpilot/locks`（与 llm server 的
 // per-session 锁同根，见 sessionlock_windows.go）；home 不可解析 → 回落系统临时目录。
 func workDirLocksDir() string {

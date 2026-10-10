@@ -9,7 +9,7 @@
 #       │   ├── core/          #   file_find/file_read/... .tool.md
 #       │   ├── desktop/       #   desktop_run.tool.md
 #       │   └── browser/       #   browser_run.tool.md
-#       ├── skills/      # 技能契约（*.skill.md；按 core|ux|se 分级嵌套）
+#       ├── skills/      # 技能契约（*.skill.md；按 core|ux 分级嵌套，se/ 为未发布草稿，见下不投放）
 #       ├── prompts/     # 提示词契约（*.prompt.md；分级嵌套）
 #       ├── resources/   # 资源契约（*.resource.md；按 core|go|ui 分级嵌套）
 #       ├── agents/      # 智能体契约（*.agent.md；扁平）

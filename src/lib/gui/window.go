@@ -28,7 +28,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-gui/internal/fileserver"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-llm/server"
 	webview2 "github.com/jchv/go-webview2"
 	"github.com/jchv/go-webview2/pkg/edge"
 	"golang.org/x/sys/windows"
@@ -68,7 +67,8 @@ var (
 )
 
 // hostEnv 是窗口工厂的共享装配上下文（进程级，只读）：总线 / 内嵌 dist / 形态 / 内嵌 server
-// 由 Main 一次装配，各窗口按需取用（桥与 appHandler 是**每窗口一份**，见 createWindow）。
+// 由 host 一次装配（host.NewEnv），各窗口按需取用（桥与 appHandler 是**每窗口一份**，
+// 见 createWindow）。
 type hostEnv struct {
 	bus            mq.Bus
 	distFS         fs.FS // 已 fs.Sub 到 dist 根（embed 前缀 frontend/dist 已剥离）
@@ -78,7 +78,7 @@ type hostEnv struct {
 	prjUsrRoot     string // prjusr 数据根（附件/截图落盘根；[24 §3.2] MW-8）
 	logDir         string
 	form           string
-	srv            *server.Server // nil = --no-server（UI 注入测试模式）/ 远程薄壳模式
+	srv            Server // nil = --no-server（UI 注入测试模式）/ 远程薄壳模式
 	windows        *windowRegistry
 	// ── flash 远程薄壳模式（🆕 2026-10-10；见 remote.go）─────────────────
 	// instanceID 非空 → **所有窗口共享同一实例 id**（flash：一条 UDS 连接 = 一个实例，
@@ -218,7 +218,7 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		// 零代码，24 §1.1）。
 		Frameless: spec.frameless,
 		WindowOptions: webview2.WindowOptions{
-			// 主窗口 Taskbar 标题 = 固定 `chonkpilot-<工程目录名>`（不随会话变化，见 mainWindowTitle）；
+			// 主窗口 Taskbar 标题 = 固定 `chonkpilot-<工程目录名>`（不随会话变化，见 MainWindowTitle）；
 			// 对话窗口 = 缺省会话标题（见 chatWindowTitle）。
 			Title:  spec.title,
 			Width:  1280,

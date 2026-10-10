@@ -22,6 +22,7 @@ import { eventBelongsToInstance } from '../utils/instanceScope'
 import { EventNames } from '../events/event-names'
 import { newTurnId } from '../api/chat'
 import { copyDslFields } from '../utils/dslView'
+import { resolvePublishError } from '../utils/publishError'
 
 // data-tasktree-* 辅助：发送并等待回复。
 function tasktreeReq(action, body = {}) {
@@ -29,7 +30,7 @@ function tasktreeReq(action, body = {}) {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-tasktree-${action}: backend unreachable`)
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
-    const emsg = (backend.errors && backend.errors[0]) || (p && p.error) || ''
+    const emsg = resolvePublishError(backend) || (backend.errors && backend.errors[0]) || (p && p.error) || ''
     if (!backend.ok || emsg || p.ok === false) {
       const e = new Error(emsg || `data-tasktree-${action} failed`)
       e.action = action

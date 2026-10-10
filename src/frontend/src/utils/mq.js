@@ -102,9 +102,21 @@ function publishToBackend(topic, payload, opts = {}) {
     body: JSON.stringify({ type: topic, payload: str }),
     signal: ctl && ctl.signal,
   }).then(async (r) => {
-    // HTTP 状态非 2xx（r.ok === false）→ 失败信封（不再误判成功）；
-    // 2xx 但应答非 JSON（网关 HTML/文本错误页等）→ 同样回失败信封并带上状态码（E-02）。
+    // HTTP 状态非 2xx（r.ok === false）→ 失败信封（不再误判成功）；仍尝试解析响应体，
+    // 保留后端稳定错误码（如 413 的 code:'req_body_too_large' / topic_not_allowed 等仅存在于
+    // 响应体，原实现直接丢弃 → publishError.<code> 永不命中）。解析失败（网关 HTML/文本错误页等）
+    // → 回落状态码文案（E-02）。
     if (r.ok === false) {
+      let body = null
+      try { body = await r.json() } catch (e) { /* 非 JSON 响应体 */ }
+      if (body && typeof body === 'object') {
+        return {
+          ok: false,
+          result: body.result !== undefined ? body.result : null,
+          errors: (Array.isArray(body.errors) && body.errors.length) ? body.errors : ['HTTP ' + r.status],
+          code: body.code,
+        }
+      }
       return { ok: false, result: null, errors: ['HTTP ' + r.status + ' non-JSON response'] }
     }
     try {

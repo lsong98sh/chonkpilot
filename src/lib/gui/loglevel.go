@@ -24,15 +24,15 @@ const logLevelKey = "logLevel"
 // logLevelVar 全局日志级别（`slog.LevelVar` 支持运行时改；默认 info = stdlib 缺省，行为不变）。
 var logLevelVar = new(slog.LevelVar)
 
-// initLogging 安装默认 slog logger：stderr（**并可挂文件 sink**，见 logfile.go 的 logWriter）
+// InitLogging 安装默认 slog logger：stderr（**并可挂文件 sink**，见 logfile.go 的 logWriter）
 // + LevelVar 级别（进程内全部 `slog.*` 全局调用据此过滤）。早于配置可用即可调用（初值 info），
-// 级别随后由配置动态覆盖；文件 sink 待数据根解析后经 attachFileLog 挂上（此前只进 stderr）。
-func initLogging() {
+// 级别随后由配置动态覆盖；文件 sink 待数据根解析后经 AttachFileLog 挂上（此前只进 stderr）。
+func InitLogging() {
 	logLevelVar.Set(slog.LevelInfo)
 	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: logLevelVar})))
 	// 把**标准库 log** 也接到同一 sink（D-43）：内嵌库（如 go-webview2 fork）用 `log.Printf`
 	// 诊断——windowsgui 下 stderr 不可见，若不接 sink 则建窗失败根因完全不可见。接后与 slog
-	// 同落 stderr + 文件 sink（文件 sink 由 attachFileLog 后挂，二者共享同一 logWriter）。
+	// 同落 stderr + 文件 sink（文件 sink 由 AttachFileLog 后挂，二者共享同一 logWriter）。
 	log.SetOutput(logWriter)
 }
 
@@ -76,10 +76,16 @@ func applyLogLevelFromConfig(lv *slog.LevelVar, cfg map[string]any) bool {
 	return applyLogLevel(lv, s)
 }
 
-// watchLogLevel 订阅既有 `data-prj-config-refresh`（persist save/delete 后广播，载荷含最新
+// ApplyLogLevelFromConfig 把 prj 平铺配置里的 logLevel 应用到**进程全局**级别（供 host 装配包
+// 在数据面就绪后调用）。缺失/非字符串 → 返回 false，保持现值。
+func ApplyLogLevelFromConfig(cfg map[string]any) bool {
+	return applyLogLevelFromConfig(logLevelVar, cfg)
+}
+
+// WatchLogLevel 订阅既有 `data-prj-config-refresh`（persist save/delete 后广播，载荷含最新
 // `list` 平铺 map）：prj 配置一变更即应用 logLevel（即时生效、无需重启）。解析失败/无 list →
 // 静默跳过（读通道异常不阻塞宿主）。
-func watchLogLevel(bus mq.Bus) {
+func WatchLogLevel(bus mq.Bus) {
 	_, _ = bus.On(msgkeys.TopicDataPrjConfigRefresh, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var ev struct {
 			List map[string]any `json:"list"`

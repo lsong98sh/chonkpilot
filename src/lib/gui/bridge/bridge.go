@@ -23,9 +23,7 @@ package bridge
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
-	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"path/filepath"
@@ -35,6 +33,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-lib/osuser"
@@ -566,7 +565,7 @@ func (b *Bridge) splitLLMStart(payloadJSON string) {
 	// turn 缺省自动分配（旧脚本/外部注入不带 turn；server 协议 turn 必填）。
 	// 同轮次继续（continue）例外：不分配新 turn，交 server 按 session 解析最近一轮复用。
 	if turn == "" && !p.Continue {
-		turn = "t-" + strings.ReplaceAll(newUUID(), "-", "")[:12]
+		turn = "t-" + strings.ReplaceAll(idgen.NewUUID(), "-", "")[:12]
 	}
 	content := p.Q
 	if content == "" {
@@ -575,7 +574,7 @@ func (b *Bridge) splitLLMStart(payloadJSON string) {
 	// 主题 session-start / session-send 为 server 域相对主题（**非 61 topic**，保留字面量）；
 	// 载荷键走 msgkeys（req_id 为内部路由键，非契约字段，保留字面量）。
 	b.publish("session-start", map[string]interface{}{
-		"req_id":                newUUID(),
+		"req_id":                idgen.NewUUID(),
 		msgkeys.FieldInstanceId: b.instanceID,
 		msgkeys.FieldSession:    session,
 		msgkeys.FieldTurn:       turn,
@@ -701,14 +700,3 @@ func (b *Bridge) Close() {
 // currentUserName 返回本机 OS 用户名（instance-register 的必填 `user`，61 §4.1 ⑤）；
 // 收敛到 osuser.CurrentUser 单一来源（R7-D-9）。
 func currentUserName() string { return osuser.CurrentUser() }
-
-// newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖）。
-func newUUID() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("id-%d", time.Now().UnixNano())
-	}
-	buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
-	buf[8] = (buf[8] & 0x3f) | 0x80 // variant 10
-	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
-}

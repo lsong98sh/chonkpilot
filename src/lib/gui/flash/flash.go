@@ -5,8 +5,8 @@
 // [62 §3A](../../../../docs/spec/60-reference/62-命令行与参数.md)：
 //   - **打开语义**：显式 `--work-dir` → 直接采用；未给 → 按「最近关闭 → 次近 → …」取第一个
 //     **存在且未被本用户打开**的目录；都没有 → 让用户选目录；
-//   - **「已打开」判定 + 持锁 = flash 侧**（本包 `AcquireProject`，per-user → RDS 多用户
-//     同项目互不冲突）；
+//   - **「已打开」判定 + 持锁 = flash 侧**（本包 `AcquireProject`，prjusr 锁
+//     `<work_dir>/.chonkpilot/chonkpilot.lock`，与桌面单体**同名同目录** → 同项目互斥）；
 //   - **data-dir 约定** = `<work_dir>/.chonkpilot`（非空 → `data.PrjUsrDir` 纯路径拼接，
 //     不打开项目库、不与 server 抢 bbolt flock）。
 package flash
@@ -101,12 +101,15 @@ func SaveRecent(path, dir string) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
-// AcquireProject 非阻塞获取 work-dir 占用锁（per-user）。
-//   - busy=true → 该用户已打开该项目（调用方走 `instance-bring-to-top` 置顶后退出）；
+// AcquireProject 非阻塞获取 **prjusr 单例锁**（`<prjusr>/chonkpilot.lock`；flash 与桌面
+// 单体共用同名文件 → 同项目互斥）。
+//   - busy=true → 该项目已被打开（调用方走 `instance-bring-to-top` 置顶后退出）；
 //   - err != nil（非 busy）→ 锁设施故障（调用方仅告警，不阻断 —— 与既有 I-74 口径一致）；
 //   - 成功 → 返回的锁须在进程存活期持有。
+//
+// flash 的 prjusr 根 = `<work_dir>/.chonkpilot`（dataDir 恒非空 → 纯路径拼接，不开库）。
 func AcquireProject(workDir string) (l *lockfile.Lock, busy bool, err error) {
-	l, err = lockfile.AcquireWorkDir(workDir)
+	l, err = lockfile.AcquirePrjUsr(DataDirFor(workDir))
 	if errors.Is(err, lockfile.ErrBusy) {
 		return nil, true, nil
 	}
@@ -116,9 +119,16 @@ func AcquireProject(workDir string) (l *lockfile.Lock, busy bool, err error) {
 	return l, false, nil
 }
 
-// WorkDirFree 报告 work-dir 当前是否未被**本用户**打开（选目录前置校验用；不持有锁）。
+// WorkDirFree 报告该项目当前是否**未被打开**（选目录前置校验用；不持有锁）。
 // 锁设施故障（非占用）→ 放行（true）：占用校验是体验增强，不应因锁故障阻断用户操作。
-func WorkDirFree(workDir string) bool { return lockfile.WorkDirFree(workDir) }
+func WorkDirFree(workDir string) bool {
+	l, err := lockfile.AcquirePrjUsr(DataDirFor(workDir))
+	if err != nil {
+		return !errors.Is(err, lockfile.ErrBusy)
+	}
+	l.Release()
+	return true
+}
 
 // DirExists 判定路径存在且为目录（`DirResolver.Exists` 的生产实现）。
 func DirExists(dir string) bool {
@@ -132,7 +142,7 @@ type DirResolver struct {
 	BaseDir string
 	// Exists 判定目录是否存在（nil = 不校验）。
 	Exists func(string) bool
-	// Free 判定目录是否**未被本用户打开**（nil = 恒可用）。生产 = lockfile.WorkDirFree。
+	// Free 判定目录是否**未被打开**（nil = 恒可用）。生产 = flash.WorkDirFree（prjusr 锁）。
 	Free func(string) bool
 	// Picker 让用户选目录（取消 → ("", nil)，视为未选定）。nil = 无 UI → ErrNoProject。
 	Picker func() (string, error)

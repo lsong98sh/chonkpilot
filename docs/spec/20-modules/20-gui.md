@@ -2,7 +2,7 @@
 
 > 状态：✅ 与代码一致
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [11-MQ与消息](../10-architecture/11-MQ与消息.md) · [23-filesys](23-filesys.md)
-> 代码目录（结构重整）：宿主实现（唯一一份）= `src/lib/gui/`（`main.go` 的 `Main(distFS, Options{Form})` + `bridge/` + `internal/` + `models/`）；**壳**（只嵌前端 dist + 传形态）= `src/desktop/`（桌面单体，`FormDesktop`）· `src/gui/`（gui 形态客户端，`FormGui`，`-tags split`），各自 `frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。**🆕 2026-10-09**：desktop 分体常驻版薄壳客户端（`chonkpilot-flash.exe` / `chonkpilot-flash-cli.exe`）的**入口选型待定**（候选：`src/gui` 加构建变体 / 新目录），见下方分体常驻版注。
+> 代码目录（结构重整 + 🆕 2026-10-10 拆包）：**客户端能力** = `src/lib/gui/`（窗口工厂 / `bridge/` / registry / testserver / 远程薄壳 `RunRemote` / 日志 + `internal/` + `models/`）；**单体装配宿主** = `src/lib/gui/host/`（内嵌 server→persist→filesys / 插件 / 桥接线；入口 `host.Main(distFS, Options{Form})`，依赖方向 `host → gui` **单向**）。**壳**（只嵌前端 dist + 传形态 + 调 `host.Main`）= `src/desktop/`（桌面单体，`FormDesktop`）· `src/gui/`（gui 形态客户端，`FormGui`，`-tags split`），各自 `frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。**flash 薄壳** = `src/flash/`（`gui.RunRemote` 远程总线，**不链 `host`、不 embed 前端**，dist 由构建投放 `<exeDir>/frontend/dist`，以 `os.DirFS` 加载），见下方分体常驻版注。
 
 ---
 
@@ -19,15 +19,15 @@
 | 项 | 值 |
 |----|----|
 | 编译形态 | windowsgui exe（`-H windowsgui`），`//go:build windows` |
-| 前端 | Vue3 + Vite，`//go:embed all:frontend/dist` |
+| 前端 | Vue3 + Vite，`//go:embed all:frontend/dist`（**flash 薄壳例外**：dist 由 `<exeDir>/frontend/dist` 以 `os.DirFS` 加载，**不 embed**） |
 | 资源服务 | **无 HTTP server**：WebView2 `WebResourceRequested` 拦截虚拟源 `https://app.localhost` |
 | 构建 | `build-desktop.ps1`（原名 `build-standalone-gui.ps1`；内含 `npm run build`） |
 | 产物 | `dist/desktop/chonkpilot.exe` + 引擎 exe（codegraph/vfts）+ `zvec_c_api.dll` + `capability/` |
 
-**命令行参数**（`main.go`）：`--work-dir`（缺省 cwd）· `--data-dir`（缺省 `<workDir>/.chonkpilot`）· `--test-port`（>0 开测试通道）· `--llm-base` · `--llm-model` · `--no-server`（UI 注入测试）· `--bridge-url`（**分离形态（`-tags split`）下 bridge 对端地址（HTTP）**，跨进程上行 `POST /publish` / 下行 `GET /events`；合并单进程形态忽略；原名 `-nats-url`，**兼容别名保留**（帮助中标注已废弃，仅 `--bridge-url` 未给出时生效））。
+**命令行参数**（`main.go`）：`--work-dir`（缺省 cwd）· `--data-dir`（缺省 `<workDir>/.chonkpilot`）· `--test-port`（>0 开测试通道；**仅 `-tags debugport` 构建存在**，release 不含）· `--llm-base` · `--llm-model` · `--no-server`（UI 注入测试）· `--bridge-url`（**分离形态（`-tags split`）下 bridge 对端地址（HTTP）**，跨进程上行 `POST /publish` / 下行 `GET /events`；合并单进程形态忽略；原名 `-nats-url`，**兼容别名保留**（帮助中标注已废弃，仅 `--bridge-url` 未给出时生效））。
 
-> **desktop 分体常驻版（🆕 2026-10-09；🟡 更新 2026-10-10）**：薄壳客户端（`chonkpilot-flash.exe`，flash-cli 待续）**不内嵌 server / persist / filesys**，`gui.*` 本地面（打开目录 / 打开文件 / 截图）本地处理，业务消息（session / llm / task）经 **UDS**（路径 = **约定值** `%LOCALAPPDATA%\chonkpilot\server.sock`，**无 CLI 参数**）转发常驻后端 `chonkpilot-server.exe`（`src/server`，见 [62 §3A](../60-reference/62-命令行与参数.md)）。**免鉴权由前门决定**（UDS 前门 = 本机信任）；flash **不发布 `instance-heartbeat`**（存活由 UDS 连接断开判定），客户端 `form` 注入 **`desktop`**（本地免鉴权 + 不心跳，前端语义与桌面单体一致）。
-> **✅ flash 已落地（2026-10-10）**：`src/lib/gui` **远程总线模式**入口 `gui.RunRemote`（桥总线 = `uds.Client`、`srv=nil`/不建 filesys、`SetFacade(nil)` → `data-*` 走总线 persist 经 UDS 事件回投、data-dir 约定 `<work_dir>/.chonkpilot`）+ 新宿主 module `src/flash`（`//go:embed all:frontend/dist` + `RunRemote`）+ 纯逻辑包 `src/lib/gui/flash`（打开语义 / 最近项目 / per-user 锁）+ `uds.Client.OnClose`（断线 = 退出）+ `bridge.SetInstanceExitSuppressed`（共享实例多窗口）。见 [19 §8.11](../10-architecture/19-多租户服务端形态.md) / [42 §2.18](../40-roadmap/42-决策记录.md)。**仍未做**：flash-cli / 自动拉起 server /「具名窗口类」单例。
+> **desktop 分体常驻版（🆕 2026-10-09；🟡 更新 2026-10-10）**：薄壳客户端（`chonkpilot-flash.exe` / `chonkpilot-flash-cli.exe`）**不内嵌 server / persist / filesys**，`gui.*` 本地面（打开目录 / 打开文件 / 截图）本地处理，业务消息（session / llm / task）经 **UDS**（路径 = **约定值** `%LOCALAPPDATA%\chonkpilot\server.sock`，**无 CLI 参数**）转发常驻后端 `chonkpilot-server.exe`（`src/server`，见 [62 §3A](../60-reference/62-命令行与参数.md)）。**免鉴权由前门决定**（UDS 前门 = 本机信任）；flash **不发布 `instance-heartbeat`**（存活由 UDS 连接断开判定），客户端 `form` 注入 **`desktop`**（本地免鉴权 + 不心跳，前端语义与桌面单体一致）。
+> **✅ flash 已落地（2026-10-10）**：`src/lib/gui` **远程总线模式**入口 `gui.RunRemote`（桥总线 = `uds.Client`、`srv=nil`/不建 filesys、`SetFacade(nil)` → `data-*` 走总线 persist 经 UDS 事件回投、data-dir 约定 `<work_dir>/.chonkpilot`）+ 新宿主 module `src/flash`（`gui.RunRemote` + **前端 dist 不 embed**：落 `<exeDir>/frontend/dist`，以 `os.DirFS` 加载）+ 纯逻辑包 `src/lib/gui/flash`（打开语义 / 最近项目 / prjusr 文件锁）+ `uds.Client.OnClose`（断线 = 退出）+ `bridge.SetInstanceExitSuppressed`（共享实例多窗口）。见 [19 §8.11](../10-architecture/19-多租户服务端形态.md) / [42 §2.18](../40-roadmap/42-决策记录.md)。**🆕 2026-10-10**：项目单例改 **prjusr 文件锁 `chonkpilot.lock`**（flash 与桌面单体同名同目录；**原「具名窗口类」单例已删除**）；flash-cli / 自动拉起 server 均已落地。见 [42 §2.28](../40-roadmap/42-决策记录.md)。
 
 ---
 

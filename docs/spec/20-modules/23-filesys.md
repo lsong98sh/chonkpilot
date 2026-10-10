@@ -87,7 +87,7 @@ watchManager：按 work_dir 组织 map[string]*dirWatcher（+ 每 work_dir 的�
 ## 5. 数据结构与存储
 
 - 无持久化存储（纯运行态）。
-- 读内容上限 `maxTextBytes = 512KB`（超出 `truncated=true`）。
+- 读内容上限 `maxTextBytes = 512KB`（超出 `truncated=true`）；**R8-C-2**：截断**按 UTF-8 边界收尾**——丢弃末尾不完整的 UTF-8 多字节序列（`trimIncompleteUTF8`），多字节字符（中文等）不被切断产生乱码；读取用 `io.ReadFull` 处理短读。
 - `listDirNodes(dir, hiddenDirs)` 浅层列子项（跳过隐藏/临时条目），路径统一 `/`，附 `size`/`mtime`：
   - **目录** → `shouldHideDirName(name, hiddenDirs)`：`.` 开头恒隐藏 + 命中「不显示的目录」清单（`filetree.hide-dirs`）；与 watcher 递归**同源**（层2，见 §4.2）。
   - **文件** → `.` / `~$` 前缀 + `~` / `-wal` / `-shm` 后缀（原口径不变）。

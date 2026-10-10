@@ -16,6 +16,7 @@
 /src/gui/frontend/dist/
 /src/desktop/frontend/dist/
 /src/server/frontend/dist/
+/src/flash/frontend/dist/
 /src/frontend/node_modules/
 node_modules/
 .vite/

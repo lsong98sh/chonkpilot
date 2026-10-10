@@ -40,7 +40,11 @@
 # 全量组件：内嵌 lib 插件（compress/history/memory/vfts/codegraph）随 exe 编译；
 #   外置引擎 exe（codegraph/vfts）+ zvec_c_api.dll 置于 dist/desktop/mcps/{codebase,vfts}\——
 #   插件按「宿主 exe 同目录/mcps/<engine>/」解析引擎。
-# 用法：.\build-desktop.ps1
+# 用法：.\build-desktop.ps1 [-Debug]
+#
+# -Debug：调试构建（附带 `-tags debugport`），使 GUI 单体壳编入 `--test-port` 测试通道
+#         （e2e harness 用；见 src/lib/gui/debugport_*.go）。默认（发布构建）不含该通道。
+param([switch]$Debug)
 $ErrorActionPreference = "Stop"
 
 # 工具链（项目固定）：**强制**使用本仓要求的 Go 工具链。
@@ -52,6 +56,8 @@ $env:GOPROXY = "https://goproxy.cn,direct"
 $env:GOTOOLCHAIN = "local"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# GUI 单体壳的编译标签：-Debug 时附加 debugport（编入 --test-port 测试通道）。
+$desktopTags = if ($Debug) { "debugport" } else { "" }
 # 宿主壳（GUI 单体）与 CLI 单体（同在 src/desktop 工程内，见 [41 D-28]）
 $desktop = Join-Path $root "src\desktop"
 $cli = Join-Path $root "src\desktop\cli"
@@ -135,7 +141,7 @@ Write-Host "==> [2/9] build chonkpilot.exe"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Push-Location $desktop
 try {
-    go build -ldflags "-H windowsgui" -o $outGuiExe .
+    go build -tags $desktopTags -ldflags "-H windowsgui" -o $outGuiExe .
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
     $mb = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
     Write-Host "    ok: $outGuiExe ($mb MB)"

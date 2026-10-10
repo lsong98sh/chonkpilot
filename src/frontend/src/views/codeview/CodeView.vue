@@ -859,6 +859,10 @@ onUnmounted(() => {
   window.removeEventListener('scroll', onWinScroll, true)
   window.removeEventListener('blur', cleanupDrag)
   clearTimeout(selTimer)
+  // 卸载须一并清理页签落库去抖定时器（否则组件卸载后回调仍触发一次落库）与图片容器引用（防泄漏）。
+  clearTimeout(persistTimer)
+  persistTimer = null
+  imgContainers.clear()
   cleanupDrag()
 })
 </script>

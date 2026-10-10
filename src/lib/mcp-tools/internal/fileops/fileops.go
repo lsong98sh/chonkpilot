@@ -12,7 +12,6 @@ package fileops
 import (
 	"bytes"
 	"encoding/base64"
-	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -195,18 +194,6 @@ func EncodingName(data []byte) string {
 // DataURI 将二进制编码为 data URI（base64）。
 func DataURI(data []byte) string {
 	return "data:application/octet-stream;base64," + base64.StdEncoding.EncodeToString(data)
-}
-
-// ReadFileAuto 读取文件为文本；二进制返回 data URI 与标记。
-func ReadFileAuto(path string) (content string, isBinary bool, err error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false, err
-	}
-	if IsBinaryBytes(data) {
-		return DataURI(data), true, nil
-	}
-	return DecodeText(data), false, nil
 }
 
 func min(a, b int) int {

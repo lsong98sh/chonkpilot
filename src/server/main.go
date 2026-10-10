@@ -80,9 +80,10 @@ func main() {
 	// ── 进程级单例（🆕 2026-10-10；19 §8.11 · 62 §3A）：server 只要存在都只有一份 ──
 	// 第二份**立即退出**（exit code = exitDuplicate，非 0），**不得**触碰 / 覆盖既有 UDS
 	// socket，**不得**启动第二份服务。判定必须在**任何资源申请（MQ / LLM server / HTTP /
-	// UDS / DB）之前**（无副作用）。判据 = Windows **命名互斥体**（见 procsingleton 包）——
-	// **不再**依赖「UDS bind 失败」：`uds.Server.Start()` 先 `os.Remove` 旧 socket 再 listen，
-	// Windows 下重复 bind **不失败**，旧口径不成立。
+	// UDS / DB）之前**（无副作用）。判据 = **server exe 同目录的文件锁**
+	// （`<exe目录>/chonkpilot-server.lock`，见 procsingleton 包 + lockfile）——**不再**依赖
+	// 「UDS bind 失败」（`uds.Server.Start()` 先 `os.Remove` 旧 socket 再 listen，Windows 下
+	// 重复 bind **不失败**，旧口径不成立）；亦**废弃**原「命名互斥体（CreateMutexW）」判据。
 	if rel, duplicate, err := procsingleton.Acquire(osuser.CurrentUser()); err != nil {
 		// fail-closed（R7-B-8）：判定失败即**拒绝启动**并留痕——若按非单例继续，与
 		// uds.Server.Start() 无条件 os.Remove(旧 socket) 组合，异常环境下第二实例
@@ -387,8 +388,8 @@ func instanceMenuTitle(in instance.Info) string {
 
 // autoExitLoop（--autoexit；61 §4.1 ⑤）：每分钟检测一次，无在线实例且**曾有实例** → 停服务
 // （自动退出）。未指定 --autoexit 时不启动本循环 → 永久常驻。超时实例的剔除由服务端
-// sweep 与 persist 清理完成（**与 --autoexit 无关，恒生效**）；flash（UDS 前门）实例
-// 不参与按 LastBeat 的 sweep 回收。
+// sweep 与 persist 清理完成（**与 --autoexit 无关，恒生效**）；flash 实例由 UDS 前门按
+// （仍存活的）连接代发心跳续期，故不被 sweep 按 LastBeat 判超时回收。
 func autoExitLoop(ctx context.Context, im *instance.Manager, stop func()) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()

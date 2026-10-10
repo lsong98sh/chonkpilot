@@ -215,6 +215,7 @@ import dataClient, { onDataRefresh, dataRequest } from '../../utils/dataClient'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
+import { resolvePublishError } from '../../utils/publishError'
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
 import { useMemoryCategories } from '../../composables/useMemoryCategories'
 import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
@@ -635,7 +636,7 @@ async function flushMemory() {
     const env = await mq.emit(FLUSH_TOPIC, { session: sessionID }, { timeout: FLUSH_TIMEOUT })
     const backend = env && env.backend
     const res = (backend && backend.result) || null
-    const reason = (backend && backend.errors && backend.errors[0]) || (res && res.reason) || ''
+    const reason = resolvePublishError(backend) || (backend && backend.errors && backend.errors[0]) || (res && res.reason) || ''
     if (!backend || !res || res.ok !== true) {
       message.error(t('memoryIO.flush_fail', { error: reason || t('config.feedback.loadFailedUnknown', { item: t('memoryIO.flush') }) }))
     }

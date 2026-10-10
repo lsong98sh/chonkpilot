@@ -102,6 +102,7 @@
   "speaker_you": "You",
   "more": "more",
   "more_with_size": "more: {size}",
+  "tool_pair_title": "{purpose} ({tool})",
   "ask_user_title": "🤔 AI Asks You",
   "ask_user_subsession_title": "🤔 Sub-Session #{id} Asks",
   "ask_user_recommended": "Recommended",

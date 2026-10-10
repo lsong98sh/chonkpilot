@@ -489,7 +489,7 @@ func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.T
 			n++
 		}
 	}
-	cleanupStaleToolPairs(prj)
+	s.cleanupStaleToolPairs(prj)
 	return facade.TurnCleanupStaleResponse{OK: true, Count: n}, nil
 }
 
@@ -503,7 +503,7 @@ func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.T
 //   - 状态同源：同时更新 `tool_call_status` 列与 content.result.status（存在 result 段时）；
 //   - 上限 500 条/状态；单项失败跳过（启动清理尽力而为，不阻断启动）。
 //   - 状态常量取自 kernel（与 tool_pair 生命周期常量定义处单一来源一致）。
-func cleanupStaleToolPairs(prj *data.DB) {
+func (s *Service) cleanupStaleToolPairs(prj *data.DB) {
 	// R7-A-5：`tool_call_status` 无索引，原对 3 个非终态各做一次 Query{Where:{tool_call_status}}
 	// = 3 次全桶扫。改为**单次流式扫描**（Table.ForEach，单事务、不整表物化）按状态分桶（各状态
 	// 上限 500、桶序取前 500，与改前逐条等价），再统一改写；三个状态均攒满即提前结束扫描。
@@ -516,7 +516,9 @@ func cleanupStaleToolPairs(prj *data.DB) {
 	counts := map[string]int{}
 	targets := map[string][]data.Record{}
 	stop := errors.New("cleanup: all statuses capped")
-	_ = prj.Table("messages").ForEach(func(_ string, rec data.Record) error {
+	// R8-A-5：检查扫描事务错误并留痕（`stop` = 三状态攒满后的正常提前结束，不算错误）；
+	// 启动清理尽力而为，仍不阻断（仅告警）。
+	if err := prj.Table("messages").ForEach(func(_ string, rec data.Record) error {
 		if st := kernel.Sval(rec["tool_call_status"]); isStale[st] && counts[st] < perStatusCap {
 			counts[st]++
 			targets[st] = append(targets[st], rec)
@@ -527,7 +529,9 @@ func cleanupStaleToolPairs(prj *data.DB) {
 			}
 		}
 		return stop
-	})
+	}); err != nil && !errors.Is(err, stop) && s.Warnf != nil {
+		s.Warnf("session: pair 级启动清理扫描 messages 失败：%v", err)
+	}
 	for _, st := range stale {
 		for _, rec := range targets[st] {
 			key := kernel.Sval(rec[data.KeyField])

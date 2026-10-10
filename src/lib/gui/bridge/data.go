@@ -25,6 +25,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
+	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
@@ -51,7 +52,7 @@ func (b *Bridge) dataViaPersist(subject string, payload []byte) (result any, err
 	if err := json.Unmarshal(payload, &req); err != nil || req == nil {
 		req = map[string]any{}
 	}
-	req["req_id"] = newUUID()
+	req["req_id"] = idgen.NewUUID()
 	if _, ok := req["instance_id"]; !ok {
 		req["instance_id"] = b.instanceID
 	}

@@ -114,7 +114,12 @@ func ReadMcpFile(root, name string) (map[string]any, bool) {
 	if !ValidMcpName(name) {
 		return nil, false
 	}
-	raw, err := os.ReadFile(filepath.Join(root, McpFileName(name)))
+	target := filepath.Join(root, McpFileName(name))
+	// 读前越界复验（R8-A-3，与写/删同口径）：MCP 根内指向根外的 symlink 不得被 os.ReadFile 跟随。
+	if !RealPathInside(root, target) {
+		return nil, false
+	}
+	raw, err := os.ReadFile(target)
 	if err != nil {
 		return nil, false
 	}

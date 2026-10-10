@@ -64,11 +64,13 @@ type Gateway struct {
 	conns  map[string]*uds.Conn
 
 	// beatStop 保活心跳 goroutine 停止信号（Start 起、Stop 关；nil = 未启动）。
+	// stopMu 串行化 beatStop 读写（Start/Stop 可能并发，R8-B-8）。
+	stopMu   sync.Mutex
 	beatStop chan struct{}
 }
 
 // keepaliveInterval 是前门代连接发布保活心跳的周期：取 heartbeat.Interval 的一半（15s），
-// 对 heartbeat.Timeout（90s）留 2× 裕量（R7-B-1：flash 无客户端心跳，靠前门续期）。
+// 对 heartbeat.Timeout（90s）留 6× 裕量（R7-B-1：flash 无客户端心跳，靠前门续期）。
 var keepaliveInterval = heartbeat.Interval / 2
 
 // New 构造前门（未监听）。
@@ -96,15 +98,20 @@ func (g *Gateway) Start() error {
 		return err
 	}
 	g.sub = sub
+	g.stopMu.Lock()
 	g.beatStop = g.startKeepalive()
+	g.stopMu.Unlock()
 	return nil
 }
 
 // Stop 退订 + 关闭监听（总线由调用方持有，本包不 Close）。
 func (g *Gateway) Stop() {
-	if g.beatStop != nil {
-		close(g.beatStop)
-		g.beatStop = nil
+	g.stopMu.Lock()
+	stop := g.beatStop
+	g.beatStop = nil
+	g.stopMu.Unlock()
+	if stop != nil {
+		close(stop)
 	}
 	if g.sub != nil {
 		_ = g.sub.Unsubscribe()
@@ -113,6 +120,11 @@ func (g *Gateway) Stop() {
 	if g.srv != nil {
 		_ = g.srv.Close()
 	}
+	// R8-B-8：清空连接登记 —— 停止后 forward/心跳不再按旧实例路由（连接由 srv.Close 关闭，
+	// 其 OnDisconnect 亦会移除登记；此处兜底，避免 Stop 后残留悬挂登记）。
+	g.connMu.Lock()
+	g.conns = make(map[string]*uds.Conn)
+	g.connMu.Unlock()
 }
 
 // startKeepalive 起保活心跳 goroutine（周期 keepaliveInterval），返回停止信号。

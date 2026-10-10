@@ -8,17 +8,17 @@ import (
 	"testing"
 )
 
-// TestAttachFileLogEnablesFileSink：attachFileLog 建 <dataDir>/logs 并把日志同时写入文件。
+// TestAttachFileLogEnablesFileSink：AttachFileLog 建 <dataDir>/logs 并把日志同时写入文件。
 func TestAttachFileLogEnablesFileSink(t *testing.T) {
 	dir := t.TempDir()
-	logDir, err := attachFileLog(dir)
+	logDir, err := AttachFileLog(dir)
 	if err != nil {
-		t.Fatalf("attachFileLog: %v", err)
+		t.Fatalf("AttachFileLog: %v", err)
 	}
 	if want := filepath.Join(dir, "logs"); logDir != want {
 		t.Fatalf("logDir = %q，want %q", logDir, want)
 	}
-	t.Cleanup(detachFileLog) // 关闭文件句柄并还原全局 sink（避免影响其它用例）
+	t.Cleanup(DetachFileLog) // 关闭文件句柄并还原全局 sink（避免影响其它用例）
 
 	const line = "gui-log-test-line\n"
 	if _, err := logWriter.Write([]byte(line)); err != nil {

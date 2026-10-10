@@ -78,7 +78,7 @@ func (s *Server) Start() error {
 	}
 	// 清理**陈旧** socket 文件（上次异常退出遗留）。注意：Windows 下先 `os.Remove` 再
 	// `net.Listen` 同一路径**重复绑定不失败**（会顶掉旧 socket 路径），故 **bind 结果不能作
-	// 进程单例判据**；server 单例由 `chonkpilot-lib/procsingleton`（命名互斥体）判定。
+	// 进程单例判据**；server 单例由 `chonkpilot-lib/procsingleton`（文件锁）判定。
 	//
 	// R7-B-3：`os.Remove` 前先探测该 socket 是否**仍有活实例在监听**（dial 成功 = 有实例）——
 	// 有 → 拒绝启动，**不删**既有 socket（避免第二实例顶掉第一实例的前门）；仅探测失败
@@ -99,6 +99,11 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// MaxConns 是前门同时容纳的连接数上限（R8-B-1）。每条连接 = 1 goroutine + 64KiB reader 且
+// 常驻 conns → 免鉴权面（本机 UDS）需防同用户进程耗尽 FD / 内存；取 64（与实例上限同量级）。
+// 超出 → Accept 后立即关闭连接并留痕（不进入 conns / 不起读循环）。
+const MaxConns = 64
+
 // acceptLoop 接受连接并为每条连接起读循环。
 func (s *Server) acceptLoop(ln net.Listener) {
 	for {
@@ -115,6 +120,12 @@ func (s *Server) acceptLoop(ln net.Listener) {
 		}
 		c := &Conn{srv: s, nc: nc}
 		s.mu.Lock()
+		if len(s.conns) >= MaxConns {
+			s.mu.Unlock()
+			s.logf("uds: 连接数达上限 %d，拒绝新连接", MaxConns)
+			_ = nc.Close()
+			continue
+		}
 		s.conns[c] = struct{}{}
 		s.mu.Unlock()
 		go c.serve()
@@ -211,7 +222,7 @@ func (s *Server) bind(c *Conn, instanceID string) {
 	s.byInstance[instanceID] = c
 	s.mu.Unlock()
 	if old != nil && old != c {
-		// 旧连接的 serve 循环随断开退出；其断开回调因已非当前绑定（isCurrent=false）不补发
+		// 旧连接的 serve 循环随断开退出；其断开回调因已非当前绑定（IsCurrent=false）不补发
 		// instance-exit（见 serve）。
 		old.close()
 	}
@@ -228,9 +239,6 @@ func (s *Server) IsCurrent(c *Conn) bool {
 	defer s.mu.Unlock()
 	return s.byInstance[id] == c
 }
-
-// isCurrent 同 IsCurrent（包内短名）。
-func (s *Server) isCurrent(c *Conn) bool { return s.IsCurrent(c) }
 
 // unbind 解绑连接（断开时）。
 func (s *Server) unbind(c *Conn) {

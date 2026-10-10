@@ -45,7 +45,8 @@ func TestCleanupStaleToolPairs(t *testing.T) {
 		}
 	}
 
-	cleanupStaleToolPairs(db)
+	// R8-A-5：cleanupStaleToolPairs 改为 Service 方法（Warnf 留痕）；空 Warnf = 静默，行为不变。
+	(&Service{Base: kernel.NewBase(nil, kernel.Options{})}).cleanupStaleToolPairs(db)
 
 	for _, id := range []string{"m1", "m2", "m3"} {
 		var rec data.Record
