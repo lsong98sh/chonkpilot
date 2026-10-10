@@ -158,7 +158,9 @@ test('⑤ 聊天窗口：所选 LLM 未声明「图形」→ 截图按钮禁用 
   assert.match(src, /const canScreenshot = computed\(\(\) => selectedLLMCaps\.value\.includes\('vision'\)\)/, '截图前提 = 声明 vision')
   assert.match(src, /:disabled="!canScreenshot"/, '截图按钮须按能力禁用')
   assert.match(src, /chat\.screenshot_no_vision/, '禁用须给说明 tooltip（i18n）')
-  assert.match(src, /if \(!canScreenshot\.value\) return/, '事件处理须兜底（防旁路）')
+  // 🆕 2026-10-09：兜底守卫并入「防二次点击」（screenshotting 期间忽略）
+  assert.match(src, /if \(!canScreenshot\.value \|\| screenshotting\.value\) return/, '事件处理须兜底（防旁路）+ 防二次点击')
+  assert.match(src, /await captureWindow\('chat-screenshot'\)/, '截图须走两段式 gui.capture → gui.captured')
   // 配置变更（增删/改名/改能力）后须重解析默认 LLM，否则选择器与能力判定停在旧值（须重载才生效）
   assert.match(src, /if \(!llmOptions\.value\.some\(o => o\.value === selectedLLM\.value\)\)/, 'config-refresh 须重解析已失效/未选中的 LLM')
   for (const loc of LOCALES) {

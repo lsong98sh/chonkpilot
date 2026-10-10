@@ -947,15 +947,18 @@ def case_t21():
         "data": base64.b64encode(payload).decode("ascii"),
         "kind": "file",
     })
-    path = (res or {}).get("path")
-    if not path:
-        raise TestError("对话窗 gui.upload 未返回落盘路径: %s" % res)
+    name = (res or {}).get("name")
+    if not name:
+        raise TestError("对话窗 gui.upload 未返回 name: %s" % res)
     root = _b_root()
-    up_dir = os.path.normcase(os.path.normpath(os.path.join(root, "tmp", "uploads")))
-    got_dir = os.path.normcase(os.path.normpath(os.path.dirname(str(path))))
+    up_dir_raw = os.path.join(root, "tmp", "uploads")
+    path = os.path.join(up_dir_raw, str(name))
+    up_dir = os.path.normcase(os.path.normpath(up_dir_raw))
+    got_dir = os.path.normcase(os.path.normpath(os.path.dirname(path)))
     if got_dir != up_dir:
         raise TestError("附件应落 prjusr 根 tmp/uploads：期望 %s，实际 %s" % (up_dir, got_dir))
-    status, body = show_fetch(w, path)
+    # 预览走相对引用 `tmp/uploads/<name>`（fileserver 按 UploadRoot 解析）
+    status, body = show_fetch(w, "tmp/uploads/" + str(name))
     if status != 200 or body != payload.decode("ascii"):
         raise TestError("/show/ 应取回对话窗上传的附件: status=%s body=%r" % (status, body))
     close_all_chats()

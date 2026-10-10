@@ -193,7 +193,7 @@ func TestPublishInstanceIDEnforced(t *testing.T) {
 }
 
 // TestAuthMiddlewareProtectedFaces：browser 入口（AuthCheck 已接线）**服务端鉴权中间件** ——
-// 未认证时对受保护面（写操作 `/publish`、下行 `/events`、`/dirs`）返回 401 且**不进总线**；
+// 未认证时对受保护面（写操作 `/publish`、下行 `/events`）返回 401 且**不进总线**；
 // 静态面与 `login-*` 上行**豁免**（登录视图须可加载 / 登录本身即入口）；有效令牌放行。
 func TestAuthMiddlewareProtectedFaces(t *testing.T) {
 	root := t.TempDir()
@@ -222,15 +222,12 @@ func TestAuthMiddlewareProtectedFaces(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	// ① 受保护 GET 面：未认证 → 401；有效令牌 → 放行
+	// ① 受保护 GET 面（/events）：未认证 → 401；有效令牌 → 放行（SSE 200）
 	if code := get(eventsPath, ""); code != http.StatusUnauthorized {
 		t.Fatalf("/events 未认证应 401，got %d", code)
 	}
-	if code := get(dirsPath, ""); code != http.StatusUnauthorized {
-		t.Fatalf("/dirs 未认证应 401，got %d", code)
-	}
-	if code := get(dirsPath, "good-token"); code != http.StatusOK {
-		t.Fatalf("/dirs 有效令牌应 200，got %d", code)
+	if code := get(eventsPath, "good-token"); code != http.StatusOK {
+		t.Fatalf("/events 有效令牌应 200，got %d", code)
 	}
 	// ② 静态面 + shim 豁免（登录视图须可加载，否则把自己锁死）
 	if code := get("/", ""); code != http.StatusOK {
@@ -274,7 +271,7 @@ func TestAuthMiddlewareProtectedFaces(t *testing.T) {
 // 未配置认证域）→ 中间件**不启用**（行为同改前，不因"无法校验"而锁死）。
 func TestAuthMiddlewareDisabledWhenUnwired(t *testing.T) {
 	_, _, base := newTestServer(t, t.TempDir())
-	for _, path := range []string{eventsPath, dirsPath} {
+	for _, path := range []string{eventsPath} {
 		resp, err := http.Get(base + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)

@@ -1,13 +1,13 @@
 /**
- * browser 形态「目录选择器」纯逻辑（无 Vue / 无 DOM；`node --test` 可直接导入）。
+ * 「目录选择器」纯逻辑（无 Vue / 无 DOM；`node --test` 可直接导入）。
  *
- * 数据源 = 服务端等价面 `GET /dirs` 的扁平清单 `[{path,name,depth}]`（本 instance 的
- * work_dir 及其子目录，服务端已限作用域与规模，见 19 §8.9）。本模块只做「按层浏览」的视图
- * 计算，**只读**：当前层级只能取自清单内路径（work_dir 或其子目录），前端不拼接/伪造任意
- * 绝对路径；越界路径一律回落到 work_dir。
+ * 数据源 = 服务端经 `gui.show-dialog` 下发的允许目录清单 `[{path,name,depth}]`（**该用户的允许根
+ * + 其子目录**：`auth.projectRoots`，缺省用户数据根；服务端已限作用域与规模；见 61 §1）。
+ * 本模块只做「按层浏览」的视图计算，**只读**：当前层级只能取自清单内路径（允许根或其子目录），
+ * 前端不拼接/伪造任意绝对路径；越界路径一律回落到清单根。
  */
 
-/** 归一化路径：统一分隔符为 '/'，去掉尾部 '/'（与 `GET /dirs` 的 filepath.ToSlash 对齐）。 */
+/** 归一化路径：统一分隔符为 '/'，去掉尾部 '/'（与服务端 filepath.ToSlash 对齐）。 */
 export function normPath(p) {
   return String(p == null ? '' : p).replace(/\\/g, '/').replace(/\/+$/, '')
 }
@@ -26,7 +26,7 @@ export function parentOf(p) {
   return i > 0 ? n.slice(0, i) : n
 }
 
-/** p 是否等于 root 或位于 root 之下（作用域保护第二道；服务端已限 work_dir 子树）。 */
+/** p 是否等于 root 或位于 root 之下（作用域保护第二道；服务端已限允许根子树）。 */
 export function isWithinRoot(root, p) {
   const r = normPath(root)
   const n = normPath(p)
@@ -96,12 +96,4 @@ export function buildDirLevels(dirs, workDir, current) {
   }
 }
 
-/**
- * 目录选择分派（纯函数，便于单测）：
- *   - browser 形态 → `browserPick()`（服务端等价面 `GET /dirs` 选择器）；
- *   - 其余（GUI / native）→ `nativePick()`（`gui.dir.open-dialog`，**纯选择无副作用**）。
- * 返回选中路径（取消 = ''）。「以新窗口打开该目录」不在此 —— 由调用方另走 `gui.dir.open`。
- */
-export function dispatchDirPick({ isBrowser, nativePick, browserPick }) {
-  return isBrowser ? browserPick() : nativePick()
-}
+

@@ -249,7 +249,7 @@ chatOnce：
 |----|------|
 | chat（`openai` 兼容） | 该条 `content` 由 **string 变数组** `[{type:"text",text}, {type:"image_url",image_url:{url}}]`；`url` = **base64 data URL**（`data:<mime>;base64,…`）。取舍：provider `baseUrl` 多为远端、无法访问本地路径，故自带载荷；代价 = 请求体随图片线性放大 + 首字节略慢（由 `responseTimeout` 覆盖） |
 | `responses` 协议 | `input` 的 message item 的 `content` 数组追加 `{type:"input_image", image_url:"data:<mime>;base64,…"}` |
-| 源与范围 | 仅 `role=user`；仅**落在上传根**（`<prjusr 数据根>/tmp/uploads`，`imageUploadDir` → `data.PrjUsrDir`）内的引用按图片处理；**根外本地路径不读取、原样保留为文本**（避免用户手写 markdown 被当附件）。上传根与桥 `gui.upload` 落点同源：`data_dir` 非空 → 该目录；`data_dir` 空（desktop 缺省）→ `~/.chonkpilot/data/<prj-id>/tmp/uploads`。 |
+| 源与范围 | 仅 `role=user`；消息内引用为**相对数据根**的 `dir/name`（如 `tmp/uploads/<uuid>.png` / `screenshot/<uuid>.png`，见 [61 §1 gui.upload](../60-reference/61-消息一览.md)），仅**落在数据根**（`imageDataRoot` → `data.PrjUsrDir`）内的引用按图片处理；**根外路径不读取、原样保留为文本**（避免用户手写 markdown 被当附件）。数据根与桥 `gui.upload` 落点同源：`data_dir` 非空 → 该目录；`data_dir` 空（desktop 缺省）→ `~/.chonkpilot/data/<prj-id>`。（兼容历史消息的绝对路径引用） |
 | 历史 / 压缩规则 | 仅**最近 3 轮**（`defaultKeepImageTurns`，轮边界 = `isTurnBoundary`，与 `assemble.go` 同源）保留原图；更早轮次的引用**降级为文本占位** `[图片: 名]`；`plugin-compress` **无需改动**（早前轮次整轮被摘要替换） |
 | 上限 | 类型白名单 `png/jpeg/webp/gif`（扩展名 + **魔数**双重校验，mime **以魔数为准**）；**单图 5MB / 单消息 4 张 / 单请求 8 张** |
 | 错误语义 | 文件缺失/不可读/类型不支持/内容不可识别/超限 → `*LLMError{Kind: ErrProtocol, Retryable:false}` 且**不发起 HTTP 请求**（随 `llm-error` 可见，**不静默丢**）；`UploadDir` 为空 → 引用原样作文本发送（纯文本路径不回归） |

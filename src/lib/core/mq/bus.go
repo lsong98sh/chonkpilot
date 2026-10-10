@@ -74,8 +74,15 @@ func newFuture(v *Value) *Future {
 	return &Future{v: v, done: make(chan struct{})}
 }
 
+// NewFuture 构造**未完成** Future（供跨进程传输等自定义 Bus 实现使用）：调用方填充
+// Value（Result/Errors）后调用 (*Future).Resolve 完成之。
+func NewFuture(v *Value) *Future { return newFuture(v) }
+
 // resolve 完成 Future（幂等）。
 func (f *Future) resolve() { f.once.Do(func() { close(f.done) }) }
+
+// Resolve 完成 Future（幂等；供自定义传输实现使用，见 NewFuture）。
+func (f *Future) Resolve() { f.resolve() }
 
 // Done 返回完成信号（await 语义）。
 func (f *Future) Done() <-chan struct{} { return f.done }

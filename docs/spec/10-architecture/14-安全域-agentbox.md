@@ -48,7 +48,7 @@
 ### 2.3 信任目录 `security-*`（有存储无执行）
 
 - 存储：`src/lib/data/persist/persist.go`（`data-prj-security-*` → prj `config` 表 `security-<key>`）。**契约（已通往返）**：**一条目录 = 一个 persist key**（key 由前端生成的不透明 id，与目录内容无关、条目保序），value = **JSON 字符串** `{"dir","writable"}`；save 逐条 upsert + 删除已移除条目（`data-prj-security-delete`），list 返回平铺 map（剥 `security-` 前缀）→ 前端还原为条目数组。
-- UI：`src/frontend/src/views/settings/SecurityConfig.vue`（ProjectConfig「安全」页签），主题 `data-prj-security-{list,save,delete}` + `data-prj-security-refresh`；「选择目录」经 `openDirDialog()`（`gui.dir.open-dialog`，原 `PickFolder()` 已改调）。
+- UI：`src/frontend/src/views/settings/SecurityConfig.vue`（ProjectConfig「安全」页签），主题 `data-prj-security-{list,save,delete}` + `data-prj-security-refresh`；「选择目录」经 `openDirDialog()`（`gui.select-dir` → `gui.selected-dir` 两段式，🆕 2026-10-09；原 `PickFolder()` 已改调）。
 - **无任何 Go 代码读取该白名单做拦截/过滤**（除 persist 自身存取）。
 
 ### 2.4 路径解析规范

@@ -1,0 +1,2 @@
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["./print-mask-ywIAu0sS.js","./CodeView-xWZtZ2Mi.js","./app-DgrBOy8j.js","./app-B9dQhwrw.css","./Tabs-CMXk306k.js","./CodeView-Cb_RrpX2.css"])))=>i.map(i=>d[i]);
+import{D as n}from"./app-DgrBOy8j.js";const o=async e=>{const{openFileViewerPrintMaskDesigner:r}=await n(async()=>{const{openFileViewerPrintMaskDesigner:i}=await import("./print-mask-ywIAu0sS.js");return{openFileViewerPrintMaskDesigner:i}},__vite__mapDeps([0,1,2,3,4,5]),import.meta.url);return r(e)};export{o as openFileViewerPrintMaskDesignerAsync};

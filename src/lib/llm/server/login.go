@@ -46,8 +46,9 @@ const (
 	SubjectLoginOut      = msgkeys.TopicLoginOut
 )
 
-// 形态取值（61 §4.6：三形态 = desktop / gui / browser；desktop = 桌面单体、gui = GUI 客户端
-// + 独立 server）。
+// 形态取值（61 §4.6：desktop / gui / browser；desktop = 桌面单体、gui = GUI 客户端 + 独立 server、
+// browser = 浏览器）。**免鉴权由入口（前门）决定、不看 form**（🆕 2026-10-09：UDS 前门 = 本机信任
+// 免鉴权 / HTTP 前门 = 走认证；flash 薄壳客户端注入 desktop 语义）。
 const (
 	FormDesktop = "desktop"
 	FormGui     = "gui"
@@ -67,9 +68,14 @@ func (s *Server) Form() string {
 	}
 }
 
-// RequireAuth 是否要求认证（61 §4.6：**形态决定** —— desktop=false 本机单用户；
-// gui / browser=true）。入口据此注入首屏 `window.__ck.requireAuth`。
-func (s *Server) RequireAuth() bool { return s.Form() != FormDesktop }
+// RequireAuth 是否要求认证（61 §4.6 **按形态的默认口径**：desktop = false（本机单用户）；
+// gui / browser = true）。入口据此注入首屏 `window.__ck.requireAuth`。
+// **注意（🆕 2026-10-09）**：分体常驻版（flash）**不按 form 判鉴权**，而是**按前门**
+// （UDS 前门 = 本机信任 → 免鉴权 / HTTP 前门 = 走认证）；本函数仅供**按形态装配**的入口
+// （gui 壳 / browser 入口）使用。
+func (s *Server) RequireAuth() bool {
+	return s.Form() != FormDesktop
+}
 
 // userByToken 解析**入口从连接层取**的令牌（browser = cookie / GUI = 桥持有）→ 身份。
 //

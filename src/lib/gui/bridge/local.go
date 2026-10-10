@@ -443,7 +443,8 @@ func callOpenDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]by
 // 不 spawn 新窗口、不记最近目录）。「以新窗口打开该目录」是另一条动作 `gui.dir.open`
 // （`callOpenDir`）——两处语义不同：本入口供「选取一个路径」用（信任目录 / 登录选工作目录 /
 // 工具栏选项目），调用方自行决定是否再打开。
-// 返回对齐 61-消息一览 §1 的 `{path?}`：选择 → `{path:<绝对路径>}`；取消 → `{path:null}`。
+// 返回 `{path}`（取消 → `{path:null}`）；由 guimsg.go 的 `select-dir` 用例包成
+// 两段式结果事件 `gui.selected-dir{widget_id, status, path?}`（61 §1，🆕 2026-10-09）。
 func callOpenDirDialog(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	selected, err := folder.PickFolder("Select Project Directory")
 	if err != nil {
@@ -456,7 +457,7 @@ func callOpenDirDialog(b *Bridge, ctx context.Context, params []json.RawMessage)
 }
 
 // callPickExecutable 打开系统文件选择框挑选可执行文件（纯 picker，无 openNewWindow/记目录等副作用）。
-// 成功 → {path}；用户取消 → {path:""}（对齐 61-消息一览 §1 dir.open-dialog 的 {path?} 形态，
+// 成功 → {path}；用户取消 → {path:""}（对齐 61-消息一览 §1 pick-executable 的形态，
 // 取消=无 path；因无副作用不需 CANCELLED code 区分，调用方以 path 空串判定取消即可）。
 func callPickExecutable(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	selected, err := folder.PickFile("Select Executable", "Executable files\x00*.exe\x00All files\x00*.*\x00\x00")

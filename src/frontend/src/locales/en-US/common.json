@@ -154,7 +154,6 @@
   "dir_picker_title": "Select Directory",
   "dir_picker_up": "Up",
   "dir_picker_empty": "No sub-directory available here",
-  "dir_picker_load_failed": "Failed to load directory list: {error}",
   "instance_claiming": "Initializing (claiming instance)…",
   "instance_unauthorized": "Not signed in or the session has expired. Please sign in again.",
   "instance_forbidden": "No access to this working directory. Please use a directory you are allowed to access.",

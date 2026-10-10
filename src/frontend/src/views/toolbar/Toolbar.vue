@@ -233,7 +233,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getRecentDirs, saveRecentDir, removeRecentDir, openDir, getUserConfig, detectToolchains } from '../../api/config'
+import { getRecentDirs, removeRecentDir, openDir, getUserConfig, detectToolchains } from '../../api/config'
 import { Button, Tag, Input, message } from '../../components/ui'
 import { isChromeMissing } from '../../utils/chromeStatus'
 import { configMenuItems } from '../../utils/configMenu'
@@ -248,8 +248,9 @@ import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics, FieldKeys, GuiSearchKeys } from '../../events/msgkeys'
 import { requireAuth } from '../../utils/instanceState'
+import { reinitProjectState } from '../../utils/projectReinit'
 import { useAuth } from '../../composables/useAuth'
-import { resetClaim } from '../../composables/useInstanceClaim'
+import { useInstanceClaim } from '../../composables/useInstanceClaim'
 import { useUserConfigSync } from '../../composables/useUserConfigSync'
 
 const { t, locale } = useI18n()
@@ -268,8 +269,11 @@ async function onLogout() {
   resetClaim()
 }
 
-// 目录选择统一入口：GUI/native → gui.dir.open-dialog；browser → GET /dirs 只读选择器
-const { pickDir } = useDirPicker()
+// 目录选择统一入口：两形态同走 gui.select-dir 两段式（browser 由服务端经 gui.show-dialog 请 UI 弹选择器）
+const { pickDir } = useDirPicker('toolbar-open')
+
+// 实例认领（登出时复位）。
+const { resetClaim } = useInstanceClaim()
 
 const languages = SUPPORTED_LANGUAGES
 
@@ -425,9 +429,28 @@ async function syncMaximizeState() {
   } catch (_) {}
 }
 
-// Open button：GUI/native = 「选目录（gui.dir.open-dialog，纯选择）」+「以新进程打开
-// （gui.dir.open，含同 work-dir 占用校验 I-74）」两步；browser 走服务端等价面 GET /dirs 只读
-// 选择器 —— work_dir 由服务端绑定，无法切换/新开窗口（明确提示，不假成功；见 19 §8.9）。
+// Open button：native/GUI = 「选目录（gui.select-dir 两段式，纯选择）」+「以新进程打开
+// （gui.dir.open，含同 work-dir 占用校验 I-74）」两步；browser = 服务端把**本实例** work_dir
+// 切换到目标目录（gui.dir.open：服务端复用 instance-claim 按 auth.projectRoots 校验归属 +
+// 重绑定实例，越界 → 明确报错），成功后**就地刷新到新项目**（reinitProjectState：重挂主布局 +
+// 重跑启动序列，**不整页重载** —— 整页重载会卡死浏览器端交互，见 utils/projectReinit.js）。
+// 见 42 §2.23 / 42 §2.25 / 19 §8.9 §C。
+async function openDirAndRefresh(path) {
+  try {
+    await openDir(path)
+  } catch (e) {
+    const cls = classifyError(e && e.message ? e.message : String(e))
+    message.error(t(cls.key, cls.params || {}))
+    return
+  }
+  if (isBrowserForm()) {
+    // 就地刷新：重挂主布局（文件树/页签/会话等 per-project 状态重建）+ 重读活动会话。
+    await reinitProjectState()
+    return
+  }
+  await loadRecentDirs()
+}
+
 async function handleOpenClick() {
   let path = ''
   try {
@@ -437,33 +460,13 @@ async function handleOpenClick() {
     return
   }
   if (!path) return
-  if (isBrowserForm()) {
-    message.info(t('toolbar.open_dir_browser_unsupported'))
-    return
-  }
-  try {
-    await openDir(path)
-    await loadRecentDirs()
-  } catch (e) {
-    const cls = classifyError(e && e.message ? e.message : String(e))
-    message.error(t(cls.key, cls.params || {}))
-  }
+  await openDirAndRefresh(path)
 }
 
-// Dropdown: select a recent directory
+// Dropdown: select a recent directory（同样走「打开目录」= 切换项目）
 async function handleRecentDir(dir) {
-  try {
-    await saveRecentDir(dir)
-    await loadRecentDirs()
-  } catch (e) { console.warn('[Toolbar] Failed to save recent dir:', e) }
-  // 「以新进程打开」：目标目录已被其它实例打开（I-74）→ 后端拒绝 → 人话提示（不再静默）。
-  try {
-    await openDir(dir)
-    showRecentDirs.value = false
-  } catch (e) {
-    const cls = classifyError(e && e.message ? e.message : String(e))
-    message.error(t(cls.key, cls.params || {}))
-  }
+  showRecentDirs.value = false
+  await openDirAndRefresh(dir)
 }
 
 // 删除一条「最近项目」记录：**仅删记录**（gui.recent.remove）——不关闭当前窗口、不删除对应

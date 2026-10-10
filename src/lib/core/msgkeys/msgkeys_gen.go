@@ -16,7 +16,9 @@ const (
 	TopicGuiWindowList            = "gui.window.list"
 	TopicGuiWindowClosed          = "gui.window.closed"
 	TopicGuiWindowSetTitle        = "gui.window.set-title"
-	TopicGuiDirOpenDialog         = "gui.dir.open-dialog"
+	TopicGuiSelectDir             = "gui.select-dir"
+	TopicGuiSelectedDir           = "gui.selected-dir"
+	TopicGuiShowDialog            = "gui.show-dialog"
 	TopicGuiDirOpen               = "gui.dir.open"
 	TopicGuiRecentList            = "gui.recent.list"
 	TopicGuiRecentRemove          = "gui.recent.remove"
@@ -26,6 +28,7 @@ const (
 	TopicGuiOpenWith              = "gui.open-with"
 	TopicGuiSearch                = "gui.search"
 	TopicGuiCapture               = "gui.capture"
+	TopicGuiCaptured              = "gui.captured"
 	TopicGuiUpload                = "gui.upload"
 	TopicGuiDevtoolsOpen          = "gui.devtools.open"
 	TopicGuiPickExecutable        = "gui.pick-executable"
@@ -134,6 +137,8 @@ const (
 	TopicInstanceRegister         = "instance-register"
 	TopicInstanceHeartbeat        = "instance-heartbeat"
 	TopicInstanceExit             = "instance-exit"
+	TopicInstanceBringToTop       = "instance-bring-to-top"
+	TopicInstanceGotoTop          = "instance-goto-top"
 	TopicLlmStart                 = "llm-start"
 	TopicLlmSend                  = "llm-send"
 	TopicLlmCancel                = "llm-cancel"
@@ -261,8 +266,21 @@ const (
 	// gui.window.set-title · result
 	GuiWindowSetTitleResultOk = "ok"
 
-	// gui.dir.open-dialog · result
-	GuiDirOpenDialogResultPath = "path"
+	// gui.select-dir · payload
+	GuiSelectDirPayloadWidgetId = "widget_id"
+
+	// gui.select-dir · result
+	GuiSelectDirResultOk = "ok"
+
+	// gui.selected-dir · event
+	GuiSelectedDirEventPath     = "path"
+	GuiSelectedDirEventStatus   = "status"
+	GuiSelectedDirEventWidgetId = "widget_id"
+
+	// gui.show-dialog · event
+	GuiShowDialogEventKind     = "kind"
+	GuiShowDialogEventOptions  = "options"
+	GuiShowDialogEventWidgetId = "widget_id"
 
 	// gui.dir.open · payload
 	GuiDirOpenPayloadPath = "path"
@@ -311,24 +329,25 @@ const (
 	// gui.search · result
 	GuiSearchResultResults = "results"
 
+	// gui.capture · payload
+	GuiCapturePayloadWidgetId = "widget_id"
+
 	// gui.capture · result
-	GuiCaptureResultB64    = "b64"
-	GuiCaptureResultFileId = "file_id"
-	GuiCaptureResultName   = "name"
-	GuiCaptureResultPath   = "path"
-	GuiCaptureResultSize   = "size"
-	GuiCaptureResultUrl    = "url"
+	GuiCaptureResultOk = "ok"
+
+	// gui.captured · event
+	GuiCapturedEventB64      = "b64"
+	GuiCapturedEventStatus   = "status"
+	GuiCapturedEventWidgetId = "widget_id"
 
 	// gui.upload · payload
 	GuiUploadPayloadData = "data"
+	GuiUploadPayloadDir  = "dir"
 	GuiUploadPayloadKind = "kind"
 	GuiUploadPayloadName = "name"
 
 	// gui.upload · result
-	GuiUploadResultFileId = "file_id"
-	GuiUploadResultName   = "name"
-	GuiUploadResultPath   = "path"
-	GuiUploadResultUrl    = "url"
+	GuiUploadResultName = "name"
 
 	// gui.pick-executable · result
 	GuiPickExecutableResultPath = "path"
@@ -1034,16 +1053,21 @@ const (
 	InstanceClaimResultWorkDir    = "work_dir"
 
 	// instance-register · event
-	InstanceRegisterEventClientType = "client_type"
-	InstanceRegisterEventDataDir    = "data_dir"
-	InstanceRegisterEventInstanceId = "instance_id"
-	InstanceRegisterEventWorkDir    = "work_dir"
+	InstanceRegisterEventClientType     = "client_type"
+	InstanceRegisterEventDataDir        = "data_dir"
+	InstanceRegisterEventInstanceId     = "instance_id"
+	InstanceRegisterEventParentInstance = "parent_instance"
+	InstanceRegisterEventUser           = "user"
+	InstanceRegisterEventWorkDir        = "work_dir"
 
 	// instance-heartbeat · payload
 	InstanceHeartbeatPayloadInstanceId = "instance_id"
 
 	// instance-exit · payload
 	InstanceExitPayloadInstanceId = "instance_id"
+
+	// instance-bring-to-top · payload
+	InstanceBringToTopPayloadDataDir = "data_dir"
 
 	// llm-start · payload
 	LlmStartPayloadContinue   = "continue"
@@ -1615,7 +1639,6 @@ const (
 	FieldExecJson            = "exec_json"
 	FieldExpandedKeys        = "expandedKeys"
 	FieldExpiresAt           = "expires_at"
-	FieldFileId              = "file_id"
 	FieldFiles               = "files"
 	FieldFiletree            = "filetree"
 	FieldFiletreeWidth       = "filetreeWidth"
@@ -1689,6 +1712,7 @@ const (
 	FieldOverwrite           = "overwrite"
 	FieldOwner               = "owner"
 	FieldParent              = "parent"
+	FieldParentInstance      = "parent_instance"
 	FieldParentNodeId        = "parent_node_id"
 	FieldParentSessionId     = "parent_session_id"
 	FieldParents             = "parents"
@@ -1781,6 +1805,7 @@ const (
 	FieldUsername            = "username"
 	FieldVfts                = "vfts"
 	FieldWaiting             = "waiting"
+	FieldWidgetId            = "widget_id"
 	FieldWindow              = "window"
 	FieldWindowId            = "window_id"
 	FieldWindows             = "windows"

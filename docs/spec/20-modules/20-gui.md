@@ -2,7 +2,7 @@
 
 > 状态：✅ 与代码一致
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [11-MQ与消息](../10-architecture/11-MQ与消息.md) · [23-filesys](23-filesys.md)
-> 代码目录（结构重整）：宿主实现（唯一一份）= `src/lib/gui/`（`main.go` 的 `Main(distFS, Options{Form})` + `bridge/` + `internal/` + `models/`）；**两个壳**（只嵌前端 dist + 传形态）= `src/desktop/`（桌面单体，`FormDesktop`）· `src/gui/`（GUI 客户端，`FormGui`，`-tags split`），各自 `frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。
+> 代码目录（结构重整）：宿主实现（唯一一份）= `src/lib/gui/`（`main.go` 的 `Main(distFS, Options{Form})` + `bridge/` + `internal/` + `models/`）；**壳**（只嵌前端 dist + 传形态）= `src/desktop/`（桌面单体，`FormDesktop`）· `src/gui/`（gui 形态客户端，`FormGui`，`-tags split`），各自 `frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。**🆕 2026-10-09**：desktop 分体常驻版薄壳客户端（`chonkpilot-flash.exe` / `chonkpilot-flash-cli.exe`）的**入口选型待定**（候选：`src/gui` 加构建变体 / 新目录），见下方分体常驻版注。
 
 ---
 
@@ -24,7 +24,10 @@
 | 构建 | `build-desktop.ps1`（原名 `build-standalone-gui.ps1`；内含 `npm run build`） |
 | 产物 | `dist/desktop/chonkpilot.exe` + 引擎 exe（codegraph/vfts）+ `zvec_c_api.dll` + `capability/` |
 
-**命令行参数**（`main.go`）：`--work-dir`（缺省 cwd）· `--data-dir`（缺省 `<workDir>/.chonkpilot`）· `--test-port`（>0 开测试通道）· `--llm-base` · `--llm-model` · `--no-server`（UI 注入测试）· `--bridge-url`（**分离形态（`-tags split`）下 bridge 对端地址（HTTP）**；inprocess 合并形态忽略；原名 `-nats-url`，**兼容别名保留**（帮助中标注已废弃，仅 `--bridge-url` 未给出时生效））。
+**命令行参数**（`main.go`）：`--work-dir`（缺省 cwd）· `--data-dir`（缺省 `<workDir>/.chonkpilot`）· `--test-port`（>0 开测试通道）· `--llm-base` · `--llm-model` · `--no-server`（UI 注入测试）· `--bridge-url`（**分离形态（`-tags split`）下 bridge 对端地址（HTTP）**，跨进程上行 `POST /publish` / 下行 `GET /events`；合并单进程形态忽略；原名 `-nats-url`，**兼容别名保留**（帮助中标注已废弃，仅 `--bridge-url` 未给出时生效））。
+
+> **desktop 分体常驻版（🆕 2026-10-09；🟡 更新 2026-10-10）**：薄壳客户端（`chonkpilot-flash.exe`，flash-cli 待续）**不内嵌 server / persist / filesys**，`gui.*` 本地面（打开目录 / 打开文件 / 截图）本地处理，业务消息（session / llm / task）经 **UDS**（路径 = **约定值** `%LOCALAPPDATA%\chonkpilot\server.sock`，**无 CLI 参数**）转发常驻后端 `chonkpilot-server.exe`（`src/server`，见 [62 §3A](../60-reference/62-命令行与参数.md)）。**免鉴权由前门决定**（UDS 前门 = 本机信任）；flash **不发布 `instance-heartbeat`**（存活由 UDS 连接断开判定），客户端 `form` 注入 **`desktop`**（本地免鉴权 + 不心跳，前端语义与桌面单体一致）。
+> **✅ flash 已落地（2026-10-10）**：`src/lib/gui` **远程总线模式**入口 `gui.RunRemote`（桥总线 = `uds.Client`、`srv=nil`/不建 filesys、`SetFacade(nil)` → `data-*` 走总线 persist 经 UDS 事件回投、data-dir 约定 `<work_dir>/.chonkpilot`）+ 新宿主 module `src/flash`（`//go:embed all:frontend/dist` + `RunRemote`）+ 纯逻辑包 `src/lib/gui/flash`（打开语义 / 最近项目 / per-user 锁）+ `uds.Client.OnClose`（断线 = 退出）+ `bridge.SetInstanceExitSuppressed`（共享实例多窗口）。见 [19 §8.11](../10-architecture/19-多租户服务端形态.md) / [42 §2.18](../40-roadmap/42-决策记录.md)。**仍未做**：flash-cli / 自动拉起 server /「具名窗口类」单例。
 
 ---
 
@@ -53,7 +56,9 @@
 | 含 `.` 的点分主题 | 直通总线（`publishV`） |
 | 单字方法 | `frontMethodSubjects` → 域主题 |
 
-`gui.*` 本地动作：`init-data` · `ui.save` · `recent.list` · **`recent.remove`（删除最近项目记录，仅删记录不删资产）** · `dir.open-dialog` · `pick-executable` · **`file.save`** · `dir.open` · `console.open` · `vcs.info` · `reveal` · `open-with` · `search` · `capture` · `upload` · `prompt-optimise` · `toolchain.detect`（6 工具链 + Chrome 探测） · `system.builtins`（exe 同目录 `config.json` 的内置 MCP 只读项，不含 `llms` 段）。
+`gui.*` 本地动作：`init-data` · `ui.save` · `recent.list` · **`recent.remove`（删除最近项目记录，仅删记录不删资产）** · **`select-dir` / `selected-dir`（目录选择两段式，🆕 2026-10-09 由 `dir.open-dialog` 拆分；`show-dialog` 为 browser 请 UI 弹框）** · `pick-executable` · **`file.save`** · `dir.open` · `console.open` · `vcs.info` · `reveal` · `open-with` · `search` · **`capture` / `captured`（截图两段式：`captured` 只回 `b64`、**不落盘**，🆕 2026-10-09 / 2026-10-10 收敛）** · **`upload`（server 落盘 `<data_dir>/<dir>/<name>`、只回 `{name}`，🆕 2026-10-10）** · `prompt-optimise` · `toolchain.detect`（6 工具链 + Chrome 探测） · `system.builtins`（exe 同目录 `config.json` 的内置 MCP 只读项，不含 `llms` 段）。
+
+> **目录选择两段式（`gui.select-dir` / `gui.selected-dir` / `gui.show-dialog`，🆕 2026-10-09 / 2026-10-10；[61 §1](../60-reference/61-消息一览.md)）**：请求 `gui.select-dir{widget_id}`（结果事件 `gui.selected-dir{widget_id,status,path?}`）由**调用侧适配**包成 Promise（`src/frontend/src/utils/guiAsync.js::selectDir`，按 `widget_id` 关联；`api/config.js::openDirDialog` 委托）。**处理方二分**：① **GUI/WebView2** → 桥 `guimsg.go` 弹**系统原生目录框**后 `EmitFrontend(gui.selected-dir)`；② **browser/服务端** → 无原生框 → 服务端 `publish.go:guiDo` 的 `select-dir` 分支**下发 `gui.show-dialog{widget_id, kind:"select-dir", options}`**（请 UI 自行弹框，**不阻塞**）。**前端消费 `gui.show-dialog`**：`src/frontend/src/composables/useGuiShowDialog.js`（`App.vue` setup 全局订阅一次，`mq.on` 非 `watch`）→ 自研 `DialogShell` 承载 `views/common/DirPickerDialog.vue`（数据源 = 事件 `options`，**options 驱动**，按层浏览/返回上级/确认）→ 用户选定/取消/关闭发 `gui.selected-dir`（`utils/guiShowDialog.js` 纯逻辑构造载荷）。`options` 口径 = **该用户允许根**（`allowedDirs()` 根 = `auth.projectRoots`；缺省用户数据根）**及其子目录**（深≤3 / ≤200 / 跳隐藏与重型目录；原非 MQ 路由 `GET /dirs` 已删除）→ 同一用户下多个项目（如 `proj-a/b/c`）皆可选。「以新进程打开目录」是另一条动作 `gui.dir.open`：**native / GUI** = 起新进程打开；**browser（🆕 2026-10-10，`publish.go:guiDirOpen`）** = 服务端把**本实例** `work_dir` 切换到目标目录（复用既有 `instance-claim` 做归属校验 + `instance-register` 重绑定 → 入口 `applyInstanceBind` 就地更新作用域），前端选后**就地刷新**（`Toolbar.vue` → `openDir(path)` → `reinitProjectState()`：重挂主布局 + 重跑启动序列，**不整页重载**）。见 [19 §8.8 §C](../10-architecture/19-多租户服务端形态.md) · [42 §2.23](../40-roadmap/42-决策记录.md) · [42 §2.25](../40-roadmap/42-决策记录.md)。
 
 > **`gui.file.save`（native 能力；[61 §1](../60-reference/61-消息一览.md)）**：`guimsg.go` 分派 → `bridge/configfile.go`（+ `savefile_windows.go` 的 `GetSaveFileNameW`）。payload `{name, content, mode?}` → `{path?}`（用户取消 = `""`）：`mode` 缺省 / `"dialog"` = 系统「另存为」；`mode:"backup"` = **不弹框**，直接落 `<dataDir>/backup/<name>`（`dataDir` 未配置 → `<workDir>/.chonkpilot/backup/`）。**安全**：`content` **可能含 API Key**（`llms[].apiKey` / `mcps[].env`、`headers`）→ 本能力**绝不记录 `content`**（无日志打印、错误详情不含内容），只回传落盘路径；`name` 经 `filepath.Base` 净化（防路径穿越）、空名拒绝。**browser 形态 = 明确不支持**（`src/lib/llm/httpapi/publish.go` 的 `browserUnsupported`；见 §9）。
 
@@ -90,8 +95,8 @@
 | `local.go` | 初始化数据、布局/窗口/UI/文件树/打开态保存（prjusr）、最近目录（list/remove）、打开目录、VCS、检索 |
 | `builtins.go` | `gui.system.builtins`：读 exe 同目录 `config.json` 的只读内置 MCP 项（`mcpServers` 段） |
 | `toolchain.go` | `gui.toolchain.detect`：探测 6 语言工具链 + Chrome 路径/版本（系统级候选不落库）；探测顺序 = PATH → 注册表 `App Paths`（HKCU→HKLM）→ 环境变量目录（JAVA_HOME/GOROOT 等）→ 常见安装目录；候选环境变量支持 `%VAR%`/`$VAR`；**Chrome 版本来自其目录 `Application\<ver>\` 的最高版本号目录**（不执行 `chrome.exe --version`） |
-| `capture.go` | 截图：隐藏本窗 → GDI 全屏 BitBlt → PNG 落盘 → `{url,b64}`（纯 syscall，无 CGO） |
-| `upload.go` | 附件上传：base64 → **prjusr 数据根** `tmp/uploads/`（`bridge.uploadRoot()`；`--data-dir` 显式时 = 该数据根）→ `{file_id,name,path,url}` |
+| `capture.go` | 截图：隐藏本窗 → GDI 全屏 BitBlt → **只回截图字节 base64 `{b64}`**（**不落盘**；落盘由 server 决定，见 [61 §1](../60-reference/61-消息一览.md) gui.capture/gui.captured；纯 syscall，无 CGO） |
+| `upload.go` | 附件上传：base64 → **prjusr 数据根** `<dir>/`（`bridge.uploadRoot()`；`dir` 缺省 `tmp/uploads`、截图 `screenshot`；`--data-dir` 显式时 = 该数据根）→ **只回 `{name}`**（真实落盘名，不暴露服务器路径） |
 | `optimize.go` | 提示词 AI 优化：SSE 流式，事件 `optimize-token/done/error` |
 | `compat.go` | 旧协议事件名兼发（旧回归脚本用） |
 

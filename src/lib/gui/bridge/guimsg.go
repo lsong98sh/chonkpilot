@@ -137,14 +137,23 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 		}
 		return map[string]any{msgkeys.FieldOk: true}, nil
 
-	// dir.open-dialog：系统目录选择框（**纯选择、无副作用**）→ {path}（取消 {path:null}）。
+	// select-dir：目录选择**请求**（两段式，🆕 2026-10-09）—— payload {widget_id}。
+	// 弹原生目录框后**发结果事件** gui.selected-dir{widget_id, status, path?, instance_id}；
+	// 本响应只表示"已受理"（{ok}）。结果按 widget_id 关联（调用方以等待态防二次点击）。
 	// 「以新窗口打开」是另一条动作 dir.open；两处语义分离（信任目录 / 登录选工作目录等只取路径）。
-	case "dir.open-dialog":
+	case "select-dir":
 		m, err := callMap(callOpenDirDialog)
 		if err != nil {
-			return fail("dir.open-dialog: %v", err)
+			b.emitSelectedDir(p, "", "error")
+			return fail("select-dir: %v", err)
 		}
-		return m, nil
+		path, _ := m[msgkeys.FieldPath].(string)
+		status := "cancelled"
+		if path != "" {
+			status = "ok"
+		}
+		b.emitSelectedDir(p, path, status)
+		return map[string]any{msgkeys.FieldOk: true}, nil
 
 	// pick-executable：系统文件选择框挑可执行文件（纯 picker 无副作用）→ {path}（取消 {path:""}）。
 	case "pick-executable":
@@ -256,15 +265,19 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 		}
 		return map[string]any{msgkeys.FieldResults: results}, nil
 
-	// capture：窗口隐藏 + 全屏截图 → 原结果 {file_id, name, path, url, size, b64}。
+	// capture：截图**请求**（两段式）—— payload {widget_id}。窗口隐藏 + 全屏截图后**发结果事件**
+	// gui.captured{widget_id, status, b64?}；本响应只表示"已受理"（{ok}）。**不落盘**（见 61 §1）。
 	case "capture":
 		m, err := callMap(callCaptureScreen)
 		if err != nil {
+			b.emitCaptured(p, nil)
 			return fail("capture: %v", err)
 		}
-		return m, nil
+		b.emitCaptured(p, m)
+		return map[string]any{msgkeys.FieldOk: true}, nil
 
-	// upload：附件/图片上传（payload {name, data, kind} → callUploadAttachment 单对象参）→ 原结果 {url,...}。
+	// upload：附件/图片上传（payload {name, data, kind, dir?} → callUploadAttachment 单对象参）
+	// → {name}（server 决定落盘位置，只回真实文件名，见 61 §1）。
 	case "upload":
 		if len(payload) == 0 || string(payload) == "null" {
 			return fail("upload: body required")
@@ -307,6 +320,43 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 	default:
 		return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: "unsupported gui action: " + action}, nil
 	}
+}
+
+// emitSelectedDir 下发目录选择**结果**事件（gui.selected-dir，🆕 2026-10-09）。
+// 按 widget_id 关联；回带请求的 instance_id，供多窗口/多实例按实例过滤（Eval 广播到所有窗口）。
+// path 空（取消/失败）时不下发 path 字段；status ∈ ok|cancelled|error。
+func (b *Bridge) emitSelectedDir(req map[string]json.RawMessage, path, status string) {
+	ev := map[string]any{
+		msgkeys.GuiSelectedDirEventWidgetId: svalStr(req, msgkeys.FieldWidgetId),
+		msgkeys.GuiSelectedDirEventStatus:   status,
+	}
+	if path != "" {
+		ev[msgkeys.GuiSelectedDirEventPath] = path
+	}
+	if id := svalStr(req, msgkeys.FieldInstanceId); id != "" {
+		ev[msgkeys.FieldInstanceId] = id
+	}
+	b.EmitFrontend(msgkeys.TopicGuiSelectedDir, jsonEnvelope(ev))
+}
+
+// emitCaptured 下发截图**结果**事件（gui.captured）。
+// res == nil → status=error（失败）；否则 status=ok 且**仅**带 b64（截图字节 base64，供前端
+// 本地预览 + 随后 gui.upload{dir:"screenshot"}）—— 不落盘、不带 file_id/name/path/url/size
+// （不暴露服务器路径，见 61 §1）。回带请求的 instance_id（Eval 广播到所有窗口，按实例+widget_id 关联）。
+func (b *Bridge) emitCaptured(req map[string]json.RawMessage, res map[string]any) {
+	ev := map[string]any{
+		msgkeys.GuiCapturedEventWidgetId: svalStr(req, msgkeys.FieldWidgetId),
+		msgkeys.GuiCapturedEventStatus:   "ok",
+	}
+	if res == nil {
+		ev[msgkeys.GuiCapturedEventStatus] = "error"
+	} else if v, ok := res[msgkeys.GuiCapturedEventB64]; ok {
+		ev[msgkeys.GuiCapturedEventB64] = v
+	}
+	if id := svalStr(req, msgkeys.FieldInstanceId); id != "" {
+		ev[msgkeys.FieldInstanceId] = id
+	}
+	b.EmitFrontend(msgkeys.TopicGuiCaptured, jsonEnvelope(ev))
 }
 
 // svalStr 取 payload 顶层字符串字段（缺省 ""）。

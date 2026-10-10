@@ -182,7 +182,8 @@ import { getScenarioList } from '../../api/scenario'
 import { newSessionId } from '../../api/chat'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
-import { MsgTopics, GuiUploadKeys, GuiCaptureKeys } from '../../events/msgkeys'
+import { MsgTopics, GuiUploadKeys } from '../../events/msgkeys'
+import { captureWindow } from '../../utils/guiAsync'
 import MessageList from './MessageList.vue'
 import InputBox from './InputBox.vue'
 import ScreenshotOverlay from './ScreenshotOverlay.vue'
@@ -333,16 +334,17 @@ const screenshotting = ref(false) // 截图进行中（按钮 loading）
 const screenshotImage = ref('')
 async function onScreenshotDone(dataUrl) {
   try {
-    // gui.upload（61-消息一览 §1）：附件落盘数据根 tmp/uploads → result {url, path, file_id, name}
-    const env = await mq.emit(MsgTopics.guiUpload, { name: 'screenshot.png', data: dataUrl, kind: 'image' })
+    // gui.upload（61-消息一览 §1）：server 落盘到 <数据根>/screenshot/<name>，result 只回 name。
+    const env = await mq.emit(MsgTopics.guiUpload, { name: 'screenshot.png', data: dataUrl, kind: 'image', dir: 'screenshot' })
     const res = env && env.backend && env.backend.result
-    if (res && res[GuiUploadKeys.path]) {
+    const saved = res && res[GuiUploadKeys.name]
+    if (saved) {
+      // 引用 = 相对数据根的 `screenshot/<name>`（server 决定落盘位置，见 61 §1）。
       mq.emit(EventNames.chatInsertAttachment, {
         kind: 'image',
-        name: res[GuiUploadKeys.name] || 'screenshot.png',
-        path: res[GuiUploadKeys.path],
-        url: res[GuiUploadKeys.url],
-        fileId: res[GuiUploadKeys.file_id],
+        name: t('chat.screenshot'),
+        ref: 'screenshot/' + saved,
+        url: dataUrl, // 本地预览缩略图
       })
     }
   } catch (e) {
@@ -757,15 +759,15 @@ onMounted(() => {
   })
   permanentUnsubs.push(unsubLlmRetry)
 
-  // 截图：gui.capture（窗口隐藏 + 全屏截图）→ 全屏预览 overlay 拖拽选区域 → 裁剪上传附件。
+  // 截图：gui.capture（两段式，🆕 2026-10-09）→ 全屏预览 overlay 拖拽选区域 → 裁剪上传附件。
   // 前置：所选 LLM 须声明「图形」能力（按钮已禁用，此处兜底防事件旁路）。
+  // **防二次点击**：screenshotting 期间直接忽略（按钮亦置忙）。
   const unsubScreenshot = mq.on(EventNames.chatScreenshot, async () => {
-    if (!canScreenshot.value) return
+    if (!canScreenshot.value || screenshotting.value) return
     screenshotting.value = true
     try {
-      const env = await mq.emit(MsgTopics.guiCapture, {})
-      const res = env && env.backend && env.backend.result
-      if (res && res[GuiCaptureKeys.b64]) screenshotImage.value = 'data:image/png;base64,' + res[GuiCaptureKeys.b64]
+      const res = await captureWindow('chat-screenshot')
+      if (res && res.b64) screenshotImage.value = 'data:image/png;base64,' + res.b64
     } catch (e) {
       // 截图失败必须可见（调试日志保留）
       console.warn('[ChatPanel] screenshot failed:', e)

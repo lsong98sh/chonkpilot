@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -100,6 +101,10 @@ type Bridge struct {
 	fwdMu         sync.Mutex
 	unsub         mq.Sub
 	stopRequested bool
+
+	// suppressExit = 关闭本桥实例时**不**发 `instance-exit`（flash 远程薄壳：多窗口共享
+	// 同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
+	suppressExit bool
 }
 
 // New 创建桥（inprocess 内存总线；由 main 传入共享 mq.Bus）。
@@ -159,6 +164,10 @@ func (b *Bridge) SetFacade(cfg facade.API) { b.cfg = cfg }
 // 仍可经状态栏调试图标 → 本回调打开）。
 func (b *Bridge) SetDevToolsOpener(fn func()) { b.openDevTools = fn }
 
+// SetInstanceExitSuppressed 置位「关闭本桥实例时不发 instance-exit」（flash 远程薄壳：
+// 多窗口共享同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
+func (b *Bridge) SetInstanceExitSuppressed(v bool) { b.suppressExit = v }
+
 // markPublished 记录一次本实例发布（发布前调用）；标记值 = subject + 载荷指纹（D-11）。
 func (b *Bridge) markPublished(subject string, payload []byte) {
 	b.publishedMu.Lock()
@@ -215,11 +224,14 @@ func (b *Bridge) Start() error {
 	// 随后续上行请求注入（自证型 → 服务端重启后仍可解析）。
 	b.loadRememberToken()
 	// instance 注册：无 req_id、无 reply（客户端自生成 uuid；相对主题 instance-register）。
+	// `user` **必填**（61 §4.1 ⑤，🆕 2026-10-09）：`instance-bring-to-top` 据它做跨用户判定
+	// （RDS 同 data_dir 顶层实例属其他用户 → 不置顶、`instance-forbidden`）；客户端自报本机 OS 用户名。
 	b.publish(msgkeys.TopicInstanceRegister, map[string]interface{}{
-		msgkeys.FieldInstanceId: b.instanceID,
-		msgkeys.FieldWorkDir:    b.workDir,
-		msgkeys.FieldDataDir:    b.dataDir,
-		msgkeys.FieldClientType: "gui",
+		msgkeys.FieldInstanceId:           b.instanceID,
+		msgkeys.FieldWorkDir:              b.workDir,
+		msgkeys.FieldDataDir:              b.dataDir,
+		msgkeys.FieldClientType:           "gui",
+		msgkeys.InstanceRegisterEventUser: currentUserName(),
 	})
 	// 订阅总线生态事件 → 前端（相对主题全通配 ">"：总线补 chonk. 前缀后命中全部
 	// 业务事件；handler 收到去前缀后的相对主题，见 mq Options.Prefix 语义）。
@@ -670,6 +682,10 @@ func (b *Bridge) unsubForwardLocked() {
 func (b *Bridge) CloseInstance() {
 	// D-23：先退订本桥 ">" 订阅再注销实例（窗口关闭后不再有事件派发进本桥）。
 	b.stopForward()
+	// 远程薄壳（flash）：非主窗口共享实例 → 关闭时不注销（见 SetInstanceExitSuppressed）。
+	if b.suppressExit {
+		return
+	}
 	b.publish(msgkeys.TopicInstanceExit, map[string]interface{}{msgkeys.FieldInstanceId: b.instanceID})
 }
 
@@ -680,6 +696,15 @@ func (b *Bridge) Close() {
 	if b.bus != nil {
 		_ = b.bus.Close()
 	}
+}
+
+// currentUserName 返回本机 OS 用户名（instance-register 的必填 `user`，61 §4.1 ⑤）；
+// 取不到 → "unknown"（与 server 侧 registerUserName 兜底同口径，不置空）。
+func currentUserName() string {
+	if u, err := user.Current(); err == nil && u != nil && u.Username != "" {
+		return u.Username
+	}
+	return "unknown"
 }
 
 // newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖）。

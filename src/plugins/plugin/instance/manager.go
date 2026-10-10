@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,7 +43,16 @@ type Info struct {
 	WorkDir    string
 	DataDir    string
 	ClientType string
-	LastBeat   time.Time // 最近心跳/注册时间（仅记录；合并单进程形态不据此判退出）
+	// User 是实例归属用户（OS 用户名；instance-register 的 `user` 字段，61-消息一览 §4.1 ⑤，
+	// 🆕 2026-10-09，**必填**）。用途：instance-bring-to-top 的**跨用户判定**（RDS 多用户下，
+	// 同 data_dir 的顶层实例若属其他用户 → 不置顶、返回 instance-forbidden）。
+	User string
+	// ParentInstance 是子窗口实例的宿主顶层实例 id（空 = 顶层实例）。
+	// 由 instance-register 的 `parent_instance` 字段解析（61-消息一览 §4.1 ④，🆕 2026-10-09）：
+	// flash 形态下，同一个 instance 多开的窗口（共享同一 data_dir）注册时必带；server 托盘
+	// 「列举实例」据此过滤（仅顶层实例入菜单，见 ListTopLevel）。
+	ParentInstance string
+	LastBeat       time.Time // 最近心跳/注册时间（仅记录；合并单进程形态不据此判退出）
 }
 
 // Manager 监听注册/心跳/退出，维护实例视图（线程安全；自订阅需 Start）。
@@ -178,15 +189,89 @@ func (m *Manager) Count() int {
 	return len(m.recs)
 }
 
+// TopLevelByDataDir 按 `data_dir` 反查**顶层实例**（ParentInstance 为空），供
+// `instance-bring-to-top` 使用（61-消息一览 §4.1 ⑥，🆕 2026-10-09）：
+// 同一 `data_dir` 可能同时存在顶层实例与其子窗口实例（共享 data_dir）→ 只取顶层。
+// 命中多个（异常装配 / 跨用户重开）→ 返回**首个**（调用方再按 `User` 判定，不一致即拒绝）。
+// 未命中 → (Info{}, false)。
+func (m *Manager) TopLevelByDataDir(dataDir string) (Info, bool) {
+	if dataDir == "" {
+		return Info{}, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, r := range m.recs {
+		if r.ParentInstance == "" && samePath(r.DataDir, dataDir) {
+			return *r, true
+		}
+	}
+	return Info{}, false
+}
+
+// samePath 比较两个目录是否等价（大小写不敏感 + 分隔符归一；Windows 路径语义）。
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+
+// ListTopLevel 返回**顶层实例**（ParentInstance 为空；不含子窗口实例），无序。
+// server 托盘「列举实例」据此过滤（61-消息一览 §4.1 ④：子窗口实例不入菜单）。
+func (m *Manager) ListTopLevel() []Info {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Info, 0, len(m.recs))
+	for _, r := range m.recs {
+		if r.ParentInstance != "" {
+			continue
+		}
+		out = append(out, *r)
+	}
+	return out
+}
+
+// MenuInstances 过滤托盘「列举实例」菜单项（61-消息一览 §4.1 ⑥ · 62 §3A）。
+//
+// 收录规则（2026-10-10 定）：
+//   - 仅 **顶层实例**（`ParentInstance` 为空；子窗口实例不入菜单）——调用方通常已用
+//     ListTopLevel 过滤，此处再判一次以保证纯函数自洽；
+//   - **排除 browser 形态**：判据 = 该实例**是否持有 UDS 前门连接**（`connected(id)`）——
+//     browser 走 httpapi、无 UDS 连接；flash 经 UDS 前门接入 → connected=true。
+//     连接判据经参数注入（只读、无副作用，生产 = `udsapi.Gateway.Connected`）；
+//   - **仅收录 `user == 当前用户`** 的实例（跨用户不列，避免向他人暴露项目）。
+//
+// 纯函数（无副作用、不涉 MQ）：供宿主组装托盘菜单 + 独立单测。`connected` 为 nil →
+// 视为无任何连接（返回空）。结果保持入参顺序（调用方自行排序）。
+func MenuInstances(list []Info, currentUser string, connected func(instanceID string) bool) []Info {
+	out := make([]Info, 0, len(list))
+	user := strings.TrimSpace(currentUser)
+	for _, in := range list {
+		if in.ParentInstance != "" {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(in.User), user) {
+			continue
+		}
+		if connected == nil || !connected(in.ID) {
+			continue
+		}
+		out = append(out, in)
+	}
+	return out
+}
+
 // HandleRegister 处理 instance-register（宿主路由模式可直调；自驱动模式由订阅触发）。
 // 返回错误仅表示**注册被拒**（缺口 7：实例数已达上限）——已登记实例的刷新与空 id 忽略**不报错**
 // （保持既有宽容语义）。检查与插入同在写锁内完成（并发注册不会绕过上限）。
 func (m *Manager) HandleRegister(payload []byte) error {
 	var req struct {
-		InstanceID string `json:"instance_id"`
-		ClientType string `json:"client_type,omitempty"`
-		WorkDir    string `json:"work_dir"`
-		DataDir    string `json:"data_dir,omitempty"`
+		InstanceID     string `json:"instance_id"`
+		ClientType     string `json:"client_type,omitempty"`
+		WorkDir        string `json:"work_dir"`
+		DataDir        string `json:"data_dir,omitempty"`
+		User           string `json:"user,omitempty"`
+		ParentInstance string `json:"parent_instance,omitempty"`
 	}
 	_ = json.Unmarshal(payload, &req)
 	if req.InstanceID == "" {
@@ -207,6 +292,8 @@ func (m *Manager) HandleRegister(payload []byte) error {
 	current.WorkDir = req.WorkDir
 	current.DataDir = req.DataDir
 	current.ClientType = req.ClientType
+	current.User = req.User
+	current.ParentInstance = req.ParentInstance
 	current.LastBeat = now
 	m.mu.Unlock()
 	return nil

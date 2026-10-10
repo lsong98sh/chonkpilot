@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/chonkpilot/chonkpilot-gui v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
+	github.com/chonkpilot/chonkpilot-plugin v0.0.0
 )
 
 require (

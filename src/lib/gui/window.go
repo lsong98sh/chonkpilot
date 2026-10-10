@@ -78,8 +78,15 @@ type hostEnv struct {
 	prjUsrRoot     string // prjusr 数据根（附件/截图落盘根；[24 §3.2] MW-8）
 	logDir         string
 	form           string
-	srv            *server.Server // nil = --no-server（UI 注入测试模式）
+	srv            *server.Server // nil = --no-server（UI 注入测试模式）/ 远程薄壳模式
 	windows        *windowRegistry
+	// ── flash 远程薄壳模式（🆕 2026-10-10；见 remote.go）─────────────────
+	// instanceID 非空 → **所有窗口共享同一实例 id**（flash：一条 UDS 连接 = 一个实例，
+	// 见 19 §8.11）；空 → 每窗口自生成（desktop/gui 既有语义）。
+	instanceID string
+	// suppressInstanceExit = 远程薄壳下**非主窗口**关闭不发 `instance-exit`：
+	// 全部窗口共享同一实例/同一连接，实例注销只应由主窗口关闭（→ 进程退出）或连接断开触发。
+	suppressInstanceExit bool
 	// testSrv 是 --test-port 的测试通道（未传 --test-port 时为 nil）：对话窗口建窗时经
 	// RegisterChat 登记为可选目标（window_id 路由，24 §4.5）。由主窗口 onWired 接线后赋值。
 	// 读写跨窗口线程（主窗口 onWired 写 / 对话窗口 onWired 读 / finish 读）→ 以 mu 守护
@@ -232,7 +239,11 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	// ── 每窗口一个桥（MW-3）──────────────────────────────────────────────
 	// 各自 instance_id（运行态分区 + 消息归属过滤）+ 各自 eval（→ 各自窗口）：后端 → 各前端
 	// 由既有 acceptEventInstance 过滤免费提供（无需改 eval 扇出），窗口间前端事件不互通。
-	h.br = bridge.New(newUUID(), env.workDir, env.dataDir, func(script string) {
+	id := env.instanceID
+	if id == "" {
+		id = newUUID() // desktop/gui：一窗口一实例（24 §2.2 C1）
+	}
+	h.br = bridge.New(id, env.workDir, env.dataDir, func(script string) {
 		// 窗口已销毁（done 已 close）→ 跳过 Eval（D-14：原 fire-and-forget 失败静默）。
 		// 二次 Eval 到已 Destroy 的 webview 无意义，且宿主 Eval 失败无返回通道可观测。
 		select {
@@ -258,6 +269,10 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	if dt, ok := w.(webview2.DevTools); ok {
 		h.br.SetDevToolsOpener(func() { w.Dispatch(func() { dt.OpenDevToolsWindow() }) })
 	}
+	// flash 远程薄壳：非主窗口关闭不发 instance-exit（共享实例由主窗口/连接断开收尾）。
+	if env.suppressInstanceExit && spec.role != roleMain {
+		h.br.SetInstanceExitSuppressed(true)
+	}
 	if err := h.br.Start(); err != nil {
 		h.cleanup()
 		return nil, fmt.Errorf("bridge start: %w", err)
@@ -282,6 +297,9 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 			// 或显式 --data-dir）② prjusr 数据根（迁走后的附件/截图 `~/.chonkpilot/data/<prj-id>`）。
 			// 两者同列，保证迁移前后资源均可经 `/show/` 取回（WorkDir 自身另由 WorkDir 字段放行）。
 			DataDirs: []string{env.projectDataDir, env.prjUsrRoot},
+			// 相对引用解析根（🆕 2026-10-10）：消息内附件/截图引用为相对 prjusr 数据根的
+			// `dir/name`（gui.upload 落 <prjUsrRoot>/<dir>/<name>，见 61 §1）。
+			UploadRoot: env.prjUsrRoot,
 		},
 		br:          h.br,
 		hwnd:        h.hwnd,

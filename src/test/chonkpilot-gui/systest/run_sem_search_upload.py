@@ -2,9 +2,9 @@
 """B · 语义/回环级推广 ⑦：**上传 / 搜索 结果语义回环**（落盘字节 ↔ 回执 ↔ 检索命中）。
 
 覆盖（**拒绝"存在级"：断言落盘字节一致 + 回执语义 + 检索结果语义（源/类型/相对路径）**）：
-  Q1 上传语义：`gui.upload{name,data,kind}`（data = base64 哨兵）→ 回执 `{file_id,name,path,url}`
-     语义 = ① `file_id` 保留扩展名；② `name` == 传入基名；③ `path` 真实文件且**磁盘字节 == 上传字节**；
-     ④ `url` == `/show/<path>`（可带 `?instance_id=`）。
+  Q1 上传语义：`gui.upload{name,data,kind}`（data = base64 哨兵）→ 回执 `{name}`
+     语义 = ① 落盘名保留扩展名；② 只回 `name`（不暴露 path/url/file_id）；③ 落 `<data_dir>/tmp/uploads/<name>`
+     且**磁盘字节 == 上传字节**。
   Q2 搜索命中语义：workdir 落一个唯一名文件 → `gui.search{query}` → 结果含该项且
      `source=="file"` / `matchType=="filename"` / `path` == **workdir 相对斜杠路径**（非绝对盘符）。
   Q3 搜索无命中语义：换唯一哨兵查询 → 结果**不含** 上面该项（查询确实过滤，非"恒返回全量"）。
@@ -58,10 +58,6 @@ def evi(tag, **kw):
     print("[EVIDENCE] " + json.dumps({"case": tag, **kw}, ensure_ascii=False), flush=True)
 
 
-def sl(p):
-    return p.replace("\\", "/")
-
-
 def search(query):
     return (c.req("gui.search", {"query": query}) or {}).get("results") or []
 
@@ -74,23 +70,25 @@ def find_item(results, name):
 
 
 def case_q1_upload_semantics():
-    """Q1：upload → 回执语义 + 落盘字节 == 上传字节。"""
+    """Q1：upload → 回执 {name} + 落盘字节 == 上传字节（server 落盘 = <data_dir>/tmp/uploads/<name>）。"""
     r = c.req("gui.upload", {"name": UP_NAME, "data": base64.b64encode(UP_BYTES).decode("ascii"),
                              "kind": "image"}) or {}
-    fid, name, path, url = r.get("file_id") or "", r.get("name") or "", r.get("path") or "", r.get("url") or ""
-    if not fid.lower().endswith(".png"):
-        raise TestError("file_id 未保留扩展名 .png：%r" % fid)
-    if name != UP_NAME:
-        raise TestError("回执 name=%r（期望传入基名 %r）" % (name, UP_NAME))
-    if not path or not os.path.isfile(path):
-        raise TestError("回执 path 非真实文件：%r" % path)
+    name = r.get("name") or ""
+    if not name:
+        raise TestError("回执未回 name：%r" % r)
+    if not name.lower().endswith(".png"):
+        raise TestError("落盘名未保留扩展名 .png：%r" % name)
+    for k in ("path", "url", "file_id"):
+        if k in r:
+            raise TestError("回执不应含 %s（只回 name）：%r" % (k, r))
+    path = os.path.join(DD, "tmp", "uploads", name)
+    if not os.path.isfile(path):
+        raise TestError("落盘文件不存在：%r" % path)
     with open(path, "rb") as f:
         disk = f.read()
     if disk != UP_BYTES:
         raise TestError("落盘字节 != 上传字节：%r" % disk[:80])
-    if url.split("?")[0] != "/show/" + sl(path):
-        raise TestError("url 形态 != /show/<path>：%r（path=%r）" % (url, path))
-    evi("Q1 上传语义", file_id=fid, name=name, bytes=len(disk), url_head=url.split("?")[0])
+    evi("Q1 上传语义", name=name, bytes=len(disk))
 
 
 def case_q2_search_hit():

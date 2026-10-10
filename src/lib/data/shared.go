@@ -15,6 +15,10 @@ import (
 type instBind struct {
 	WorkDir string
 	DataDir string
+	// PrjUsrPath 是该 instance 首次经 PrjUsr() 打开时**实际解析到的 prjusr 库文件路径**
+	// （🆕 2026-10-09）。prjusr 为**常开**（引用不释放）→ 必须在 instance-exit 时按此路径
+	// **关闭其长连接**（释放 bbolt 文件锁），否则连接与锁会残留到进程退出（多实例服务端尤其明显）。
+	PrjUsrPath string
 }
 
 // sharedDB 是按路径缓存的连接项（引用计数）。
@@ -79,10 +83,30 @@ func InstancesByWorkDir(workDir string) []string {
 }
 
 // Unregister 移除 instance 绑定（instance-exit / 超时清理时调用）。
+// **并关闭该 instance 的 prjusr 常开连接**（🆕 2026-10-09）：prjusr 引用不释放 → 不解绑时
+// 其 bbolt 连接与文件锁会残留（D-45 同类问题：长持会锁死外部进程）。按首次打开的路径关闭缓存条目。
 func Unregister(instanceID string) {
 	storeMu.Lock()
-	defer storeMu.Unlock()
+	bind, ok := instances[instanceID]
 	delete(instances, instanceID)
+	storeMu.Unlock()
+	if ok && bind.PrjUsrPath != "" {
+		closeSharedPath(bind.PrjUsrPath)
+	}
+}
+
+// closeSharedPath 关闭并移除某 db 路径的缓存连接（无视引用计数）。
+//
+// 语义（🆕 2026-10-09）：仅用于**实例退出**场景 —— 此时该实例不应再发起请求，故直接关闭；
+// 若仍有在飞短开调用持有该连接，其后续操作会明确报错（可接受，且 instance-exit 后不应再有请求）。
+// 幂等：条目不存在 → 空操作。释放后再次访问会重新 Open（新连接）。
+func closeSharedPath(path string) {
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	if s, ok := shared[path]; ok {
+		_ = s.db.Close()
+		delete(shared, path)
+	}
 }
 
 // Reset 清空 instance 绑定与连接缓存（测试用；关闭全部缓存连接）。
@@ -149,7 +173,11 @@ func PrjUsr(instanceID string) (*DB, error) {
 		return nil, err
 	}
 	if bind.DataDir != "" {
-		db, _, err := OpenSharedLayer(ProjectPath(bind.WorkDir, bind.DataDir), LayerPrjUsr)
+		path := ProjectPath(bind.WorkDir, bind.DataDir)
+		db, _, err := OpenSharedLayer(path, LayerPrjUsr)
+		if err == nil {
+			recordPrjUsrPath(instanceID, path)
+		}
 		return db, err
 	}
 	prj, release, err := Prj(instanceID)
@@ -161,8 +189,23 @@ func PrjUsr(instanceID string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, _, err := OpenSharedLayer(PrjUsrDBPath(id), LayerPrjUsr)
+	path := PrjUsrDBPath(id)
+	db, _, err := OpenSharedLayer(path, LayerPrjUsr)
+	if err == nil {
+		recordPrjUsrPath(instanceID, path)
+	}
 	return db, err
+}
+
+// recordPrjUsrPath 记录某 instance 的 prjusr 库文件路径（供 instance-exit 关闭常开连接；
+// 🆕 2026-10-09）。绑定已被解绑（实例已退出）→ 不记（避免把已注销实例重新塞回表）。
+func recordPrjUsrPath(instanceID, path string) {
+	storeMu.Lock()
+	if b, ok := instances[instanceID]; ok {
+		b.PrjUsrPath = path
+		instances[instanceID] = b
+	}
+	storeMu.Unlock()
 }
 
 // Usr 返回 usr 层连接（全局单例：~/.chonkpilot/chonkpilot.db，跨项目）。

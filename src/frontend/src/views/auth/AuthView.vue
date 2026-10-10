@@ -86,7 +86,7 @@ const emit = defineEmits(['ready'])
 
 const { busy, errorCode, login, register, signOut, markSignedOut } = useAuth()
 const { claim, errorCode: claimErrorCode } = useInstanceClaim()
-const { pickDir: pickDirNative } = useDirPicker()
+const { pickDir: pickDirNative } = useDirPicker('auth-workdir')
 
 const mode = ref('login') // login | register
 const step = ref(props.initialStep === 'dir' ? 'dir' : 'creds')
@@ -125,7 +125,7 @@ async function submitCreds() {
   step.value = 'dir' // 登录成功 → 选目录（61 §4.6 流程）
 }
 
-/** 目录选择（GUI/native）：复用既有 gui.dir.open-dialog（browser 形态无 native 选择器）。 */
+/** 目录选择（GUI/native）：复用既有 gui.select-dir 两段式（browser 形态无 native 选择器）。 */
 async function pickDir() {
   try {
     const picked = await pickDirNative()

@@ -30,6 +30,5 @@
   "restore": "Restore",
   "close": "Close",
   "language": "Language",
-  "sign_out": "Sign out",
-  "open_dir_browser_unsupported": "Opening a directory is unavailable in browser form: the working directory is bound by the server and cannot be switched or opened in a new window"
+  "sign_out": "Sign out"
 }

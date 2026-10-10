@@ -828,8 +828,8 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 			MaxTokens:       tc.llmMaxOutputToken,
 			ResponseTimeout: tc.responseTimeout,
 			StreamTimeout:   tc.streamTimeout,
-			// 图片（P2-8）：用户消息里的 `![名](路径)` 引用 → 图片内容块（上传根受限读取）。
-			Images: ImageOptions{UploadDir: imageUploadDir(tc.req.DataDir, tc.req.WorkDir)},
+			// 图片（P2-8）：用户消息里的 `![名](dir/名)` 引用（相对数据根）→ 图片内容块（数据根受限读取）。
+			Images: ImageOptions{DataRoot: imageDataRoot(tc.req.DataDir, tc.req.WorkDir)},
 		})
 		if err != nil {
 			if tc.ctx.Err() != nil {

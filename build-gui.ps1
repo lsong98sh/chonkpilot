@@ -28,10 +28,13 @@
 # 产物：
 #   dist/gui/                    – 客户端（与 dist/desktop/ **隔离**、互不覆盖）
 #     ├── chonkpilot-gui-client.exe   # 客户端：webview2 宿主（前端 dist go:embed）+ 心跳发布侧
-#     └── chonkpilot-cli-client.exe   # console 宿主（同 lib 集，AsyncMode: never）
+#     ├── chonkpilot-cli-client.exe   # console 宿主（同 lib 集，AsyncMode: never）
+#     ├── chonkpilot-flash.exe        # 薄壳客户端（webview2 宿主，远程总线 UDS；🆕 2026-10-10）
+#     └── chonkpilot-flash-cli.exe    # 薄壳客户端 console 宿主（headless 远程；🆕 2026-10-10）
 #   dist/server/                 – 服务端（browser 与 gui **共用**；browser 静态页 = 内嵌面，
 #                                  来源 src/server/frontend/dist，由 build-browser.ps1 投放）
 #     ├── chonkpilot-server.exe             # 服务端：llm + gateway + filesys + data 合一 exe
+#     │                                     #   （-H windowsgui：GUI 子系统 + 托盘常驻（--tray 默认开）；日志 → 同目录 logs/server.log）
 #     ├── capability/                       # 契约 + executor×4（prompts/tools/resources/skills/agents/system/executors）
 #     │   └── scenarios/                    # 出厂场景（源 src/initdata/capability/scenarios）
 #     └── mcps/                             # 内置 MCP 引擎
@@ -55,6 +58,10 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $client = Join-Path $root "src\gui"
 $cli = Join-Path $root "src\desktop\cli"
 $srv = Join-Path $root "src\server"
+# flash 薄壳客户端壳（desktop 分体常驻版；🆕 2026-10-10，见 62 §3A / 19 §8.11）
+$flash = Join-Path $root "src\flash"
+$flashDist = Join-Path $flash "frontend\dist"
+$flashCli = Join-Path $flash "cli"
 # 前端源码工程已独立为 src/frontend（决策 [42 §2 (115)]）；embed 产物落
 # src/gui/frontend/dist = 客户端壳的 `//go:embed all:frontend/dist` 落点。
 $frontend = Join-Path $root "src\frontend"
@@ -64,10 +71,12 @@ $srvDist = Join-Path $root "dist\server"
 $srcDist = Join-Path $root "dist\desktop"
 $outGuiExe = Join-Path $dist "chonkpilot-gui-client.exe"
 $outCliExe = Join-Path $dist "chonkpilot-cli-client.exe"
+$outFlashExe = Join-Path $dist "chonkpilot-flash.exe"
+$outFlashCliExe = Join-Path $dist "chonkpilot-flash-cli.exe"
 $outSrvExe = Join-Path $srvDist "chonkpilot-server.exe"
 
 # -- 0) 结束运行中的旧实例（释放 exe 占用；与 build-desktop.ps1 同列表） --
-foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "chonkpilot-cli-client", "chonkpilot-server")) {
+foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "chonkpilot-cli-client", "chonkpilot-flash", "chonkpilot-flash-cli", "chonkpilot-server")) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
         Write-Host "==> kill [$name] PID=$($_.Id)"
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -110,6 +119,10 @@ if (-not (Test-Path $embedHtml)) { throw "embed.html 未产出: $embedHtml" }
 Copy-Item $embedHtml (Join-Path $embedDist "index.html") -Force
 [System.IO.File]::Delete($embedHtml)
 Write-Host "    ok: $embedDist (embed.html -> index.html)"
+# 镜像到 flash 薄壳壳的 embed 落点（src/flash/frontend/dist；go:embed all:frontend/dist）。
+if (Test-Path $flashDist) { [System.IO.Directory]::Delete($flashDist, $true) }
+Copy-Item $embedDist $flashDist -Recurse -Force
+Write-Host "    ok: $flashDist ($((Get-ChildItem $flashDist -Recurse -File | Measure-Object).Count) files)"
 
 # -- 2) 客户端 GUI 编译（分离形态：-tags split 编入心跳发布侧；-H windowsgui：GUI 模式无控制台） --
 Write-Host "==> [2/6] build chonkpilot-gui-client.exe (-tags split)"
@@ -132,8 +145,32 @@ try {
     Write-Host "    ok: $outCliExe ($mb MB)"
 } finally { Pop-Location }
 
+# -- 3.5) flash 薄壳客户端编译（src/flash → dist/gui；远程总线模式：
+#        不内嵌 server/persist/filesys，经 UDS 连常驻 chonkpilot-server.exe；-H windowsgui） --
+Write-Host "==> [3.5/6] build chonkpilot-flash.exe (-tags split)"
+Push-Location $flash
+try {
+    go build -tags split -ldflags "-H windowsgui" -o $outFlashExe .
+    if ($LASTEXITCODE -ne 0) { throw "go build failed" }
+    $mb = [Math]::Round((Get-Item $outFlashExe).Length / 1MB, 1)
+    Write-Host "    ok: $outFlashExe ($mb MB)"
+} finally { Pop-Location }
+
+# -- 3.6) flash 薄壳客户端 console 宿主编译（src/flash/cli → dist/gui；headless 远程：
+#        无窗口无 WebView2，连 UDS 经常驻 server 执行会话；无 -H windowsgui）--
+Write-Host "==> [3.6/6] build chonkpilot-flash-cli.exe (-tags split)"
+Push-Location $flashCli
+try {
+    go build -tags split -o $outFlashCliExe .
+    if ($LASTEXITCODE -ne 0) { throw "go build failed" }
+    $mb = [Math]::Round((Get-Item $outFlashCliExe).Length / 1MB, 1)
+    Write-Host "    ok: $outFlashCliExe ($mb MB)"
+} finally { Pop-Location }
+
 # -- 4) 服务端编译（dist/server；分离形态服务端 = llm + gateway + filesys + data 合一 exe；
-#        本 exe 同时编入 llm-server 与 data persist 的 sweep_split.go 超时清理） --
+#        本 exe 同时编入 llm-server 与 data persist 的 sweep_split.go 超时清理；
+#        -H windowsgui：GUI 子系统（无控制台）→ 常驻 + 系统托盘（--tray 默认开；--tray=false 关），
+#        进程日志落 exe 同目录 logs/server.log（按大小滚动，见 winlog；不入库）） --
 # 前置校验：src/server 的 `//go:embed all:frontend/dist` 要求静态页产物已就位，
 # clean clone 缺失会裸报编译错 → 提前给出可操作提示。
 if (-not (Test-Path (Join-Path $srv "frontend\dist\index.html"))) {
@@ -143,7 +180,7 @@ Write-Host "==> [4/6] build chonkpilot-server.exe (-tags split) -> dist/server"
 New-Item -ItemType Directory -Force -Path $srvDist | Out-Null
 Push-Location $srv
 try {
-    go build -tags split -o $outSrvExe .
+    go build -tags split -ldflags "-H windowsgui" -o $outSrvExe .
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
     $mb = [Math]::Round((Get-Item $outSrvExe).Length / 1MB, 1)
     Write-Host "    ok: $outSrvExe ($mb MB)"
@@ -210,12 +247,16 @@ Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
 # -- 清单 --
 $mbGui = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
 $mbCli = [Math]::Round((Get-Item $outCliExe).Length / 1MB, 1)
+$mbFlash = [Math]::Round((Get-Item $outFlashExe).Length / 1MB, 1)
+$mbFlashCli = [Math]::Round((Get-Item $outFlashCliExe).Length / 1MB, 1)
 $mbSrv = [Math]::Round((Get-Item $outSrvExe).Length / 1MB, 1)
 $capCount = (Get-ChildItem (Join-Path $srvDist "capability") -Recurse -File | Measure-Object).Count
 Write-Host "==> done (gui 形态 = GUI 客户端 + 独立 server，-tags split)"
 Write-Host "    $dist"
 Write-Host "      chonkpilot-gui-client.exe         $mbGui MB   # 客户端"
 Write-Host "      chonkpilot-cli-client.exe         $mbCli MB"
+Write-Host "      chonkpilot-flash.exe              $mbFlash MB   # 薄壳客户端（远程总线 UDS）"
+Write-Host "      chonkpilot-flash-cli.exe          $mbFlashCli MB   # 薄壳客户端 console 宿主（headless）"
 Write-Host "    $srvDist"
 Write-Host "      chonkpilot-server.exe             $mbSrv MB   # 服务端（llm+gateway+filesys+data）"
 Write-Host "      capability/                       $capCount files (prompts/tools/resources/skills/agents/system/scenarios/executors)"
@@ -224,5 +265,7 @@ Write-Host "      mcps/codebase/chonkpilot-codegraph-mcp-server.exe $mbCg MB"
 Write-Host "      mcps/vfts/chonkpilot-vfts-mcp-server.exe          $mbVf MB"
 Write-Host "      mcps/vfts/zvec_c_api.dll                          $mbDll MB"
 Write-Host "      (browser 静态页已 go:embed 进 chonkpilot-server.exe；源 = src/server/frontend/dist，由 build-browser.ps1 投放)"
-Write-Host "    run: cd $srvDist ; .\chonkpilot-server.exe    (服务端，另开) ; cd $dist ; .\chonkpilot-gui-client.exe    (客户端)"
+Write-Host "    run: cd $srvDist ; .\chonkpilot-server.exe    (服务端，GUI 子系统 + 托盘常驻，日志 logs/server.log) ; cd $dist ; .\chonkpilot-gui-client.exe    (客户端)"
+Write-Host "    flash: cd $srvDist ; .\chonkpilot-server.exe --autoexit --client-exe ..\gui\chonkpilot-flash.exe ; cd $dist ; .\chonkpilot-flash.exe --work-dir .   ( --tray 默认开，无头可 --tray=false )"
 Write-Host "    cli: cd $dist ; .\chonkpilot-cli-client.exe --prompt 'hello' --work-dir ."
+Write-Host "    flash-cli: cd $dist ; .\chonkpilot-flash-cli.exe --prompt 'hello' --work-dir .   (需 server 在跑；缺失则自动拉起)"

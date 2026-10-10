@@ -1,9 +1,10 @@
 // 图片（多模态）输入（40 P2-8「图片上传给 LLM」）。
 //
-// 数据流（**不改消息面 payload**）：前端把输入区附件序列化为 markdown 引用 `![名](路径)`
-// 随用户消息文本发送（33-对话 CHAT-014-S04；gui.upload 落 <数据根>/tmp/uploads/）→ server
-// 落库为 user 消息的 Content 文本 → 本文件在**构造 LLM 请求体时**把引用就地展开为多模态
-// 内容块（chat / responses 两协议，见 llm.go / llm_responses.go）。持久化、快照、压缩只见文本。
+// 数据流（**不改消息面 payload**）：前端把输入区附件序列化为 markdown 引用 `![名](dir/名)`
+// 随用户消息文本发送（33-对话 CHAT-014-S04；gui.upload 落 <数据根>/<dir>/<名>，引用为**相对
+// 数据根**的 `dir/名`，如 `tmp/uploads/<uuid>.png` / `screenshot/<uuid>.png`）→ server 落库为
+// user 消息的 Content 文本 → 本文件在**构造 LLM 请求体时**把引用就地展开为多模态内容块
+// （chat / responses 两协议，见 llm.go / llm_responses.go）。持久化、快照、压缩只见文本。
 //
 // 请求形态：
 //   - chat（openai 兼容）：content 由字符串改为数组
@@ -27,7 +28,7 @@
 //   - 单图 ≤ maxImageBytes、单条消息 ≤ maxImagesPerMessage、单次请求 ≤ maxImagesPerRequest；
 //   - 文件缺失/不可读/类型不支持/超限 → *LLMError{Kind: ErrProtocol}（不可重试，随 llm-error 可见）。
 //
-// 范围：仅 role=user 的消息；仅**落在上传根目录内**的引用按图片处理（上传根之外的本地路径
+// 范围：仅 role=user 的消息；仅**落在数据根目录内**的引用按图片处理（数据根之外的本地路径
 // 原样保留为文本，避免用户手写 markdown 时被当成附件读取）。
 package server
 
@@ -57,18 +58,20 @@ const (
 
 // ImageOptions 是图片展开选项（ChatOptions.Images）。
 type ImageOptions struct {
-	// UploadDir 允许读取的图片根目录（= <数据根>/tmp/uploads；imageUploadDir 生成）。
-	// 为空 → 不展开任何图片（保持纯文本，行为与历史一致）。
-	UploadDir string
+	// DataRoot 是允许读取的图片**数据根目录**（= prjusr 数据根；消息内引用为相对它的
+	// `dir/name`，见 61 §1 gui.upload / imageDataRoot 生成）。为空 → 不展开任何图片
+	//（保持纯文本，行为与历史一致）。
+	DataRoot string
 	// KeepTurns 保留原图的最近轮数（<=0 → defaultKeepImageTurns）。
 	KeepTurns int
 }
 
-// imageUploadDir 返回实例的上传目录（与桥 gui.upload 落点一致，见 chonkpilot-gui/bridge/upload.go）：
-// **prjusr 数据根**下 `tmp/uploads` —— data_dir 非空 → 该目录（prj 与 prjusr 同根）；
-// data_dir 空 → `~/.chonkpilot/data/<prj-id>/tmp/uploads`（B 方案，[24 §3.2] MW-8）。
-// work_dir/data_dir 皆空、或数据根不可解析 → 空串（调用方据此不展开，退化为纯文本）。
-func imageUploadDir(dataDir, workDir string) string {
+// imageDataRoot 返回实例的数据根（= prjusr 数据根；gui.upload 落 <数据根>/<dir>/<文件名>，
+// 消息内引用为相对该根的 `dir/name`，与桥 gui.upload 落点一致，见 chonkpilot-gui/bridge/upload.go）：
+// **prjusr 数据根** —— data_dir 非空 → 该目录（prj 与 prjusr 同根）；data_dir 空 →
+// `~/.chonkpilot/data/<prj-id>`（B 方案，[24 §3.2] MW-8）。work_dir/data_dir 皆空、或数据根
+// 不可解析 → 空串（调用方据此不展开，退化为纯文本）。
+func imageDataRoot(dataDir, workDir string) string {
 	if dataDir == "" && workDir == "" {
 		return ""
 	}
@@ -76,7 +79,7 @@ func imageUploadDir(dataDir, workDir string) string {
 	if err != nil || root == "" {
 		return ""
 	}
-	return filepath.Join(root, "tmp", "uploads")
+	return root
 }
 
 // mdImageRe 匹配 markdown 图片引用 `![名](路径)`（与前端 InputBox.parseAttachmentMarkers 同式）。
@@ -99,18 +102,18 @@ type messageImages struct {
 }
 
 // expandImages 按 opts 展开 msgs 中的图片引用，返回与 msgs 等长的结果切片。
-// UploadDir 为空 → 全部条目的 text = 原始 Content、images 为空（纯文本路径零改动）。
+// DataRoot 为空 → 全部条目的 text = 原始 Content、images 为空（纯文本路径零改动）。
 func expandImages(msgs []ChatMsg, opts ImageOptions) ([]messageImages, error) {
 	out := make([]messageImages, len(msgs))
 	for i, m := range msgs {
 		out[i].text = m.Content
 	}
-	if opts.UploadDir == "" {
+	if opts.DataRoot == "" {
 		return out, nil
 	}
-	root, err := filepath.Abs(opts.UploadDir)
+	root, err := filepath.Abs(opts.DataRoot)
 	if err != nil {
-		return out, nil // 根目录不可解析 → 退化为纯文本（非图片错误，不阻断请求）
+		return out, nil // 数据根不可解析 → 退化为纯文本（非图片错误，不阻断请求）
 	}
 	keepTurns := opts.KeepTurns
 	if keepTurns <= 0 {
@@ -145,13 +148,18 @@ func expandImages(msgs []ChatMsg, opts ImageOptions) ([]messageImages, error) {
 			b.WriteString(m.Content[last:loc[0]])
 			last = loc[1]
 			name := m.Content[loc[2]:loc[3]]
-			path := m.Content[loc[4]:loc[5]]
-			if !withinDir(root, path) {
-				b.WriteString(m.Content[loc[0]:loc[1]]) // 上传根之外的本地路径原样保留为文本
+			ref := m.Content[loc[4]:loc[5]]
+			// 引用 = 相对数据根的 `dir/name`（🆕 2026-10-10）；绝对路径引用兼容历史消息。
+			target := ref
+			if !filepath.IsAbs(ref) {
+				target = filepath.Join(root, filepath.FromSlash(ref))
+			}
+			if !withinDir(root, target) {
+				b.WriteString(m.Content[loc[0]:loc[1]]) // 数据根之外的路径原样保留为文本
 				continue
 			}
 			if name == "" {
-				name = filepath.Base(path)
+				name = filepath.Base(ref)
 			}
 			if !recent {
 				b.WriteString("[图片: " + name + "]") // 非最近轮次 → 文本占位
@@ -160,12 +168,12 @@ func expandImages(msgs []ChatMsg, opts ImageOptions) ([]messageImages, error) {
 			msgCount++
 			perReq++
 			if msgCount > maxImagesPerMessage {
-				return nil, imageErr("单条消息图片数量超限（%d > %d）: %s", msgCount, maxImagesPerMessage, path)
+				return nil, imageErr("单条消息图片数量超限（%d > %d）: %s", msgCount, maxImagesPerMessage, ref)
 			}
 			if perReq > maxImagesPerRequest {
-				return nil, imageErr("单次请求图片数量超限（%d > %d）: %s", perReq, maxImagesPerRequest, path)
+				return nil, imageErr("单次请求图片数量超限（%d > %d）: %s", perReq, maxImagesPerRequest, ref)
 			}
-			part, err := loadImagePartInRoot(root, path)
+			part, err := loadImagePartInRoot(root, target)
 			if err != nil {
 				return nil, err
 			}
@@ -178,14 +186,14 @@ func expandImages(msgs []ChatMsg, opts ImageOptions) ([]messageImages, error) {
 	return out, nil
 }
 
-// loadImagePartInRoot 在上传根约束下加载一张图片（B-11：先解析符号链接，复验真实路径仍在根内）。
+// loadImagePartInRoot 在数据根约束下加载一张图片（B-11：先解析符号链接，复验真实路径仍在根内）。
 func loadImagePartInRoot(root, path string) (imagePart, error) {
 	real, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return imagePart{}, imageErr("图片文件不可读: %s（%v）", path, err)
 	}
 	if !withinDir(root, real) {
-		return imagePart{}, imageErr("图片路径越界（符号链接指向上传根之外）: %s", path)
+		return imagePart{}, imageErr("图片路径越界（符号链接指向数据根之外）: %s", path)
 	}
 	return loadImagePart(real)
 }

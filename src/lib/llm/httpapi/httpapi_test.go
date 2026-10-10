@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -384,13 +386,14 @@ func TestSSEFiltersForeignInstance(t *testing.T) {
 }
 
 // native 能力：明确「不支持」（不静默失败、不假成功）。
-// 注：`gui.dir.open-dialog` 的**消息面**仍明确不支持（61 §1 result = `{path?}` 不变）；
-// 其**等价面** = 非 MQ 的 `GET /dirs`（见 TestNativeDirOpenDialogEquivalent）。
+// 🆕 2026-10-10：`gui.capture`（前端改用浏览器 API）、`gui.upload`（服务端落盘）、`gui.select-dir`
+// （改经 `gui.show-dialog` 下发，见 TestBrowserSelectDirEmitsShowDialog）与 `gui.dir.open`
+// （服务端切换本实例 work_dir，见 TestBrowserDirOpen）已移出禁用表，不再在此断言。
 func TestNativeCapabilitiesRejected(t *testing.T) {
 	_, _, base := newTestServer(t, t.TempDir())
 	for _, typ := range []string{
-		"gui.dir.open-dialog", "gui.pick-executable", "gui.dir.open", "gui.console.open",
-		"gui.reveal", "gui.open-with", "gui.capture", "gui.toolchain.detect",
+		"gui.pick-executable", "gui.console.open",
+		"gui.reveal", "gui.open-with", "gui.toolchain.detect",
 		"gui.system.builtins", "gui.window.status", "gui.file.save",
 	} {
 		env := publish(t, base, typ, "{}")
@@ -401,6 +404,36 @@ func TestNativeCapabilitiesRejected(t *testing.T) {
 		if len(errs) == 0 || !strings.Contains(errs[0].(string), "不支持") {
 			t.Fatalf("%s 错误不明确：%v", typ, env)
 		}
+	}
+}
+
+// browser 形态 gui.upload（🆕 2026-10-10 收敛）：服务端落盘 <dataDir>/<dir>/<name>，只回 name。
+func TestBrowserUploadLandsInDataDir(t *testing.T) {
+	dataDir := t.TempDir()
+	_, _, base := newTestServerOpts(t, Options{WorkDir: t.TempDir(), DataDir: dataDir})
+	payload, _ := json.Marshal(map[string]any{
+		"name": "a.txt",
+		"data": base64.StdEncoding.EncodeToString([]byte("hi")),
+		"kind": "file",
+		"dir":  "screenshot",
+	})
+	env := publish(t, base, "gui.upload", string(payload))
+	if env["ok"] != true {
+		t.Fatalf("gui.upload 应成功: %v", env)
+	}
+	res, _ := env["result"].(map[string]any)
+	name, _ := res["name"].(string)
+	if name == "" {
+		t.Fatalf("gui.upload 未回 name: %v", env)
+	}
+	for _, k := range []string{"path", "url", "file_id"} {
+		if _, ok := res[k]; ok {
+			t.Fatalf("gui.upload 结果不应含 %q（只回 name）: %v", k, res)
+		}
+	}
+	dest := filepath.Join(dataDir, "screenshot", name)
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("落盘文件不存在 %s: %v", dest, err)
 	}
 }
 
@@ -448,58 +481,177 @@ func TestBrowserRecentRemove(t *testing.T) {
 	}
 }
 
-// native 等价面：`GET /dirs` 返回本 instance 允许目录（work_dir 及子目录）。
-func TestNativeDirOpenDialogEquivalent(t *testing.T) {
-	wd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(wd, "sub", "deep"), 0o755); err != nil {
+// browser 形态「选择目录」：`gui.select-dir{widget_id}` → 服务端下发 `gui.show-dialog{widget_id,
+// kind:"select-dir", options}`（请 UI 自弹选择器；**本处不阻塞等待用户选择**，用户选完由 UI 自行发
+// `gui.selected-dir`）。`options` 根 = **允许根**（auth.projectRoots；缺省用户数据根）→
+// 同一用户下的多个项目（proj-a/b/c）都能选；跳隐藏与重型目录、限深限量。
+func TestBrowserSelectDirEmitsShowDialog(t *testing.T) {
+	root := t.TempDir()
+	for _, p := range []string{"proj-a", "proj-b", "proj-c"} {
+		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "proj-a", "sub", "deep"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(wd, "node_modules"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "proj-a", "node_modules"), 0o755); err != nil {
 		t.Fatal(err) // 重型目录应被跳过
 	}
-	bus, _ := mq.New(mq.Options{Prefix: "chonk."})
-	defer bus.Close()
-	s := New(bus, Options{Bus: bus, WorkDir: wd, Addr: "127.0.0.1:0"})
-	if err := s.Start(); err != nil {
+	// 实例 data_dir（`<允许根>/<uid>/`）= 该用户的元数据家目录 → **不应**出现在 options（2026-10-10）。
+	dataDir := filepath.Join(root, "uid-abc")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = s.Shutdown(context.Background()) }()
-	ts := httptest.NewServer(s.Handler())
-	defer ts.Close()
+	_, _, base := newTestServerOpts(t, Options{
+		WorkDir:      filepath.Join(root, "proj-a"),
+		DataDir:      dataDir,
+		AllowedRoots: func() []string { return []string{root} },
+	})
+	c := openSSE(t, base)
+	defer c.close()
 
-	resp, err := http.Get(ts.URL + dirsPath)
-	if err != nil {
-		t.Fatalf("GET /dirs: %v", err)
+	// 受理（不阻塞）：响应 = {ok}
+	if env := publish(t, base, "gui.select-dir", `{"widget_id":"w-1"}`); env["ok"] != true {
+		t.Fatalf("gui.select-dir 应受理 {ok}，got %v", env)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /dirs status=%d", resp.StatusCode)
+
+	raw := c.nextData("gui.show-dialog", 3*time.Second)
+	if raw == "" {
+		t.Fatalf("未收到 gui.show-dialog 事件")
 	}
-	var env map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		t.Fatalf("decode /dirs: %v", err)
+	var ev struct {
+		Type    string `json:"type"`
+		Payload string `json:"payload"`
 	}
-	if filepath.ToSlash(wd) != env["work_dir"] {
-		t.Fatalf("work_dir 不符：%v", env["work_dir"])
+	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+		t.Fatalf("decode show-dialog envelope: %v", err)
 	}
-	dirs, _ := env["dirs"].([]any)
-	if len(dirs) == 0 {
-		t.Fatalf("允许目录清单为空")
+	if ev.Type != "gui.show-dialog" {
+		t.Fatalf("事件 type 应为 gui.show-dialog，got %q", ev.Type)
 	}
-	found := map[string]bool{}
-	for _, d := range dirs {
-		m, _ := d.(map[string]any)
-		if p, _ := m["path"].(string); p != "" {
-			found[p] = true
+	var p struct {
+		WidgetID string `json:"widget_id"`
+		Kind     string `json:"kind"`
+		Options  []struct {
+			Path  string `json:"path"`
+			Depth int    `json:"depth"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal([]byte(ev.Payload), &p); err != nil {
+		t.Fatalf("decode show-dialog payload: %v (%s)", err, ev.Payload)
+	}
+	if p.WidgetID != "w-1" || p.Kind != "select-dir" {
+		t.Fatalf("show-dialog 关联/类型不符：%+v", p)
+	}
+	found := map[string]int{}
+	for _, d := range p.Options {
+		found[d.Path] = d.Depth
+	}
+	// options 根 = 允许根（depth 0）；三项目均可选（depth 1）；子目录（depth 2/3）
+	for _, want := range []string{
+		filepath.ToSlash(root),
+		filepath.ToSlash(filepath.Join(root, "proj-a")),
+		filepath.ToSlash(filepath.Join(root, "proj-b")),
+		filepath.ToSlash(filepath.Join(root, "proj-c")),
+		filepath.ToSlash(filepath.Join(root, "proj-a", "sub")),
+		filepath.ToSlash(filepath.Join(root, "proj-a", "sub", "deep")),
+	} {
+		if _, ok := found[want]; !ok {
+			t.Fatalf("options 缺少 %q：%+v", want, p.Options)
 		}
 	}
-	for _, want := range []string{filepath.ToSlash(wd), filepath.ToSlash(filepath.Join(wd, "sub")), filepath.ToSlash(filepath.Join(wd, "sub", "deep"))} {
-		if !found[want] {
-			t.Fatalf("清单缺少 %q：%v", want, dirs)
+	if found[filepath.ToSlash(root)] != 0 {
+		t.Fatalf("options 根应为允许根且 depth=0：%+v", p.Options)
+	}
+	if _, ok := found[filepath.ToSlash(filepath.Join(root, "proj-a", "node_modules"))]; ok {
+		t.Fatalf("options 不应含重型目录：%+v", p.Options)
+	}
+	// 实例 data_dir（`<允许根>/<uid>/`）不得作为可选项目出现（2026-10-10：修 uid 目录噪音）。
+	if _, ok := found[filepath.ToSlash(dataDir)]; ok {
+		t.Fatalf("options 不应含实例 data_dir（uid 目录）：%+v", p.Options)
+	}
+}
+
+// browser 形态「打开目录」= 切换项目（`gui.dir.open{path}`）：入口侧**允许根**预校验
+// （越界 / 缺 path → 明确失败）+ 复用 `instance-claim` 重绑定本实例 work_dir（合法 → 切换，
+// filesys 绑定 / init-data 同源跟随）。假 instance-claim 应答模拟 llm server 的 claim 语义。
+func TestBrowserDirOpen(t *testing.T) {
+	root := t.TempDir()
+	projA := filepath.Join(root, "proj-a")
+	projB := filepath.Join(root, "proj-b")
+	for _, d := range []string{projA, projB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if found[filepath.ToSlash(filepath.Join(wd, "node_modules"))] {
-		t.Fatalf("重型目录不应进入清单：%v", dirs)
+	_ = os.WriteFile(filepath.Join(projA, "a.txt"), []byte("a"), 0o644)
+	_ = os.WriteFile(filepath.Join(projB, "b.txt"), []byte("b"), 0o644)
+	outside := t.TempDir()
+
+	_, bus, base := newTestServerOpts(t, Options{
+		WorkDir:      projA,
+		DataDir:      t.TempDir(),
+		AllowedRoots: func() []string { return []string{root} },
+	})
+	// gui.init-data 只读面依赖数据面（config）；给最小应答避免 3s 超时等待。
+	fakePersist(t, bus, "data-prj-config-list", map[string]any{"list": map[string]any{}})
+	fakePersist(t, bus, "data-user-config-load", map[string]any{"data": map[string]any{}})
+
+	// 假 instance-claim：模拟 llm server claim —— 越界 → instance-forbidden；合法 → 写回
+	// {instance_id, work_dir, data_dir} 并照发 instance-register（触发入口 applyInstanceBind 重绑定）。
+	if _, err := bus.On("instance-claim", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var req struct {
+			InstanceID string `json:"instance_id"`
+			WorkDir    string `json:"work_dir"`
+		}
+		if json.Unmarshal(v.Payload, &req) != nil {
+			return nil
+		}
+		if !withinRoots([]string{root}, filepath.FromSlash(req.WorkDir)) {
+			v.Result = map[string]any{"ok": false, "error": "instance-forbidden"}
+			return errors.New("instance-forbidden")
+		}
+		// 归一为本机分隔符（模拟 claim 的 auth.NormalizeDir）。
+		wd := filepath.FromSlash(req.WorkDir)
+		dataDir := filepath.Join(root, "u-1")
+		reg, _ := json.Marshal(map[string]any{
+			"instance_id": req.InstanceID, "work_dir": wd, "data_dir": dataDir,
+		})
+		_ = bus.Emit(context.Background(), "instance-register", reg).Wait()
+		v.Result = map[string]any{"instance_id": req.InstanceID, "work_dir": wd, "data_dir": dataDir}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// ① 越界 → 入口侧允许根预校验拒绝（明确失败），work_dir 不变
+	if env := publish(t, base, "gui.dir.open", `{"path":`+strconvQuote(outside)+`}`); env["ok"] != false {
+		t.Fatalf("越界应拒绝：%v", env)
+	}
+	if got := filesysListPath(t, base); got != projA {
+		t.Fatalf("越界后不应切换：got=%v want=%v", got, projA)
+	}
+
+	// ② 缺 path → 失败
+	if env := publish(t, base, "gui.dir.open", `{}`); env["ok"] != false {
+		t.Fatalf("缺 path 应失败：%v", env)
+	}
+
+	// ③ 合法 → 切换本实例 work_dir（filesys 绑定 + init-data.workDir 同源跟随）
+	if env := publish(t, base, "gui.dir.open", `{"path":`+strconvQuote(projB)+`}`); env["ok"] != true {
+		t.Fatalf("合法切换应成功：%v", env)
+	}
+	if got := filesysListPath(t, base); got != projB {
+		t.Fatalf("work_dir 未切换：got=%v want=%v", got, projB)
+	}
+	env := publish(t, base, "gui.init-data", "{}")
+	if env["ok"] != true {
+		t.Fatalf("init-data ok=false: %v", env)
+	}
+	res, _ := env["result"].(map[string]any)
+	if res["workDir"] != projB {
+		t.Fatalf("切换后 init-data.workDir 未跟随：got=%v want=%v", res["workDir"], projB)
 	}
 }
 
@@ -633,6 +785,74 @@ func TestFilesysHostedAndWorkDirBound(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(wd, "new.txt")); err != nil || string(b) != "ok" {
 		t.Fatalf("写入未落盘：%v %q", err, string(b))
 	}
+}
+
+// TestInstanceRegisterRebindsScope（2026-10-10，42 §2.22）：本实例被**重新认领**（instance-register
+// 携带新 work_dir）→ 入口作用域**就地更新**：filesys 绑定 / gui.init-data.workDir 跟随切换；
+// **他实例**的 instance-register 不影响本实例（按 instance_id 过滤）。browser「打开目录」
+// = 客户端重发 instance-claim（服务端按 auth.projectRoots 校验）→ 本跟踪落地新作用域。
+func TestInstanceRegisterRebindsScope(t *testing.T) {
+	wd1, wd2 := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(wd1, "old.txt"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd2, "new.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, bus, base := newTestServerOpts(t, Options{WorkDir: wd1, DataDir: t.TempDir()})
+	fakePersist(t, bus, "data-prj-config-list", map[string]any{"list": map[string]any{}})
+	fakePersist(t, bus, "data-user-config-load", map[string]any{"data": map[string]any{}})
+
+	// ① 他实例的登记 → 忽略（本实例仍绑 wd1）
+	foreign, _ := json.Marshal(map[string]any{"instance_id": "other-instance", "work_dir": wd2})
+	_ = bus.Emit(context.Background(), "instance-register", foreign)
+	res0 := filesysListPath(t, base)
+	if res0 != wd1 {
+		t.Fatalf("他实例登记不应改变本实例作用域：got=%v want=%v", res0, wd1)
+	}
+
+	// ② 本实例重新认领到 wd2 → 作用域就地更新
+	own, _ := json.Marshal(map[string]any{
+		"instance_id": s.InstanceID(), "work_dir": wd2, "data_dir": filepath.Join(wd2, ".chonkpilot"),
+	})
+	_ = bus.Emit(context.Background(), "instance-register", own)
+	if got := filesysListPath(t, base); got != wd2 {
+		t.Fatalf("重绑后 filesys 未绑定新 work_dir：got=%v want=%v", got, wd2)
+	}
+	// gui.init-data.workDir 同源跟随
+	env := publish(t, base, "gui.init-data", "{}")
+	if env["ok"] != true {
+		t.Fatalf("init-data ok=false: %v", env)
+	}
+	res, _ := env["result"].(map[string]any)
+	if res["workDir"] != wd2 {
+		t.Fatalf("重绑后 init-data.workDir 未跟随：got=%v want=%v", res["workDir"], wd2)
+	}
+	names := map[string]bool{}
+	if nodes, ok := res["treeData"].([]any); ok {
+		for _, n := range nodes {
+			if m, ok := n.(map[string]any); ok {
+				if nm, _ := m["name"].(string); nm != "" {
+					names[nm] = true
+				}
+			}
+		}
+	}
+	if !names["new.txt"] || names["old.txt"] {
+		t.Fatalf("重绑后树应含新目录条目：%v", names)
+	}
+}
+
+// filesysListPath 发一次 filesys.list（无参）取服务端绑定的 work_dir（result.path）。
+func filesysListPath(t *testing.T, base string) string {
+	t.Helper()
+	env := publish(t, base, "filesys.list", "{}")
+	if env["ok"] != true {
+		t.Fatalf("filesys.list ok=false: %v", env)
+	}
+	res, _ := env["result"].(map[string]any)
+	p, _ := res["path"].(string)
+	return p
 }
 
 // childNames 取 filesys.list result.children 的名字集合。

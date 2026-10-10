@@ -64,7 +64,7 @@ func (s *Server) configViaFacade(subject, payloadJSON string) (any, []error, boo
 	if instanceID == "" {
 		instanceID = s.instanceID
 	}
-	scope := facade.Scope{WorkDir: s.workDir, DataDir: s.dataDir}
+	scope := facade.Scope{WorkDir: s.workDirPath(), DataDir: s.dataDirPath()}
 	fail := func(err error) (any, []error) {
 		return map[string]any{"ok": false, "error": err.Error()}, []error{err}
 	}
@@ -181,7 +181,7 @@ func (s *Server) domainViaFacade(subject, payloadJSON string) (any, []error, boo
 	if instanceID == "" {
 		instanceID = s.instanceID
 	}
-	scope := facade.Scope{WorkDir: s.workDir, DataDir: s.dataDir}
+	scope := facade.Scope{WorkDir: s.workDirPath(), DataDir: s.dataDirPath()}
 	fail := func(err error) (any, []error) {
 		return map[string]any{"ok": false, "error": err.Error()}, []error{err}
 	}

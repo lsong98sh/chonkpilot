@@ -30,6 +30,5 @@
   "restore": "还原",
   "close": "关闭",
   "language": "语言",
-  "sign_out": "登出",
-  "open_dir_browser_unsupported": "browser 形态不支持打开目录：工作目录由服务端绑定，无法切换或新开窗口"
+  "sign_out": "登出"
 }

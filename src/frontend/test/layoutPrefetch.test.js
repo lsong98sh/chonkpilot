@@ -69,7 +69,7 @@ test('B2 消费一次性；无预取（gui/browser 形态）直接实时读取',
 
 test('B2 接线守卫：App 桌面分支在 claim 之前同步发起预取（并行），且不 await', () => {
   const app = SRC('App.vue')
-  assert.match(app, /import\s*\{\s*prefetchInitData\s*\}\s*from\s*'\.\/api\/file'/, 'App.vue 必须引入 prefetchInitData')
+  assert.match(app, /import\s*\{[^}]*\bprefetchInitData\b[^}]*\}\s*from\s*'\.\/api\/file'/, 'App.vue 必须引入 prefetchInitData')
   const m = app.match(/if\s*\(!requireAuth\(\)\)\s*\{[\s\S]*?\n\}/)
   assert.ok(m, '未找到桌面分支 if (!requireAuth())')
   const branch = m[0]

@@ -138,6 +138,7 @@
     "overwrite": { "type": "any", "desc": "覆盖策略" },
     "owner": { "type": "string", "desc": "归属" },
     "parent": { "type": "string", "desc": "父节点" },
+    "parent_instance": { "type": "string", "desc": "宿主主实例 id（子窗口实例携带；空=顶层实例）" },
     "parent_node_id": { "type": "string", "desc": "父任务节点 id" },
     "parent_session_id": { "type": "string", "desc": "父会话 id" },
     "parents": { "type": "any", "desc": "父轮次集合" },
@@ -224,6 +225,7 @@
     "user_dict_path": { "type": "string", "desc": "vfts 系统级自定义词文件路径" },
     "vfts": { "type": "object", "desc": "vfts 引擎状态" },
     "waiting": { "type": "bool", "desc": "是否等待中" },
+    "widget_id": { "type": "string", "desc": "控件标识（gui.select-dir/gui.capture 请求的发起控件；用于结果关联与防二次点击）" },
     "window": { "type": "any", "desc": "窗口状态" },
     "window_id": { "type": "string", "desc": "窗口 id" },
     "windows": { "type": "array", "desc": "窗口清单" },
@@ -373,11 +375,34 @@
       "result": { "ok": { "type": "bool", "required": true } }
     },
     {
-      "topic": "gui.dir.open-dialog",
+      "topic": "gui.select-dir",
       "face": "gui",
       "direction": "client->gui",
-      "payload": {},
-      "result": { "path": { "type": "string", "required": false } }
+      "payload": { "widget_id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "目录选择**请求**（与 gui.selected-dir 两段式；🆕 2026-10-09 由 gui.dir.open-dialog 拆分）。payload 带控件标识 widget_id（防二次点击 + 结果关联）。本身**无副作用**，「以新窗口打开」是另一条动作 gui.dir.open。"
+    },
+    {
+      "topic": "gui.selected-dir",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "widget_id": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "path": { "type": "string", "required": false }
+      },
+      "notes": "目录选择**结果**（🆕 2026-10-09）：status = ok|cancelled|error（error 时 path 缺省）。发布方 = 原生宿主桥（弹原生框后）或 browser 的 UI 自身（收到 gui.show-dialog 后用户选完）。按 widget_id 关联。"
+    },
+    {
+      "topic": "gui.show-dialog",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "widget_id": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true },
+        "options": { "type": "array", "required": true }
+      },
+      "notes": "请 UI 弹对话框（🆕 2026-10-09）：**仅当处理方无法自行弹出原生框时**（= browser/服务端场景）下发给 UI，附可选清单 options；UI 渲染选择器，用户选完自行发 gui.selected-dir。kind 目前仅 select-dir（options = 服务端允许根/子树的扁平清单）。"
     },
     {
       "topic": "gui.dir.open",
@@ -443,15 +468,20 @@
       "topic": "gui.capture",
       "face": "gui",
       "direction": "client->gui",
-      "payload": {},
-      "result": {
-        "file_id": { "type": "string", "required": true },
-        "name": { "type": "string", "required": true },
-        "path": { "type": "string", "required": true },
-        "url": { "type": "string", "required": true },
-        "size": { "type": "int", "required": true },
-        "b64": { "type": "string", "required": true }
-      }
+      "payload": { "widget_id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "截图**请求**（与 gui.captured 两段式；🆕 2026-10-09 拆分）。窗口隐藏 + 全屏截图；结果经 gui.captured 下发。前端门控：所选 LLM 的 capabilities 不含 vision → 按钮禁用、不发本消息（33-对话 CHAT-018）。"
+    },
+    {
+      "topic": "gui.captured",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "widget_id": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "b64": { "type": "string", "required": false }
+      },
+      "notes": "截图**结果**（🆕 2026-10-09）：status = ok|cancelled|error；ok 时附 b64（截图字节，base64）。**落盘由 server 决定**（前端据 b64 发 gui.upload{...,dir:\"screenshot\"}）。**🆕 2026-10-10 收敛**：去 file_id/name/path/url/size（不暴露服务器路径）。按 widget_id 关联。"
     },
     {
       "topic": "gui.upload",
@@ -460,14 +490,13 @@
       "payload": {
         "name": { "type": "string", "required": true },
         "data": { "type": "string", "required": true },
-        "kind": { "type": "string", "required": true }
+        "kind": { "type": "string", "required": true },
+        "dir": { "type": "string", "required": false }
       },
       "result": {
-        "file_id": { "type": "string", "required": true },
-        "name": { "type": "string", "required": true },
-        "path": { "type": "string", "required": true },
-        "url": { "type": "string", "required": true }
-      }
+        "name": { "type": "string", "required": true }
+      },
+      "notes": "附件/截图上传（**server 落盘，只回文件名**；🆕 2026-10-10 收敛）。落盘 = <instance data_dir>/<dir>/<name>；dir = 前端指定的二级目录（缺省 tmp/uploads；截图传 screenshot）。data = base64/data URL，原样落盘；send 时 server 按 name 读回直接作 image_url（零重编码）。result 由 {file_id,name,path,url} 收敛为 {name}（不暴露服务器路径）。"
     },
     {
       "topic": "gui.devtools.open",
@@ -1570,7 +1599,9 @@
         "instance_id": { "type": "string", "required": true },
         "work_dir": { "type": "string", "required": true },
         "data_dir": { "type": "string", "required": false },
-        "client_type": { "type": "string", "required": false }
+        "client_type": { "type": "string", "required": false },
+        "user": { "type": "string", "required": true },
+        "parent_instance": { "type": "string", "required": false }
       }
     },
     {
@@ -1586,6 +1617,19 @@
       "direction": "client->server",
       "payload": { "instance_id": { "type": "string", "required": true } },
       "result": {}
+    },
+    {
+      "topic": "instance-bring-to-top",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "data_dir": { "type": "string", "required": true } },
+      "result": {}
+    },
+    {
+      "topic": "instance-goto-top",
+      "face": "server",
+      "direction": "server->client",
+      "event": {}
     },
     {
       "topic": "llm-start",

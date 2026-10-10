@@ -67,8 +67,8 @@ const securityColumns = computed(() => [
 // ⑤ dirty 可视标记（与手动保存联动：编辑/增删只改本地态 → dirty；保存成功 → 清除）
 const { dirty, markDirty, markSaved } = useUnsavedMark()
 
-// 目录选择统一入口：GUI/native → gui.dir.open-dialog；browser → GET /dirs 只读选择器
-const { pickDir } = useDirPicker()
+// 目录选择统一入口：两形态同走 gui.select-dir 两段式（browser 由服务端经 gui.show-dialog 请 UI 弹选择器）
+const { pickDir } = useDirPicker('security-trust')
 
 const props = defineProps({
   maxHeight: { type: Number, default: 600 },
@@ -131,8 +131,8 @@ function addEntry() {
   syncDirty()
 }
 
-// 选择信任目录：GUI/native 走系统目录选择框（失败回退手输）；browser 走 GET /dirs 选择器
-// （只读，限本 instance work_dir 子树；拉取失败在选择器内明确提示）。
+// 选择信任目录：GUI/native 走系统目录选择框；browser 由服务端经 gui.show-dialog 请 UI 弹选择器
+// （只读，限本 instance work_dir 子树）。失败向上抛出（调用方可回退手输）。
 async function selectDir(index) {
   try {
     const path = await pickDir()

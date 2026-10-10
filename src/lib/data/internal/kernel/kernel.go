@@ -58,7 +58,9 @@ type Base struct {
 func NewBase(bus mq.Bus, opts Options) *Base {
 	view := NewView()
 	view.warnf = opts.Warnf
-	return &Base{Bus: bus, UsrPath: opts.UsrPath, AppDir: opts.AppDir, View: view, Warnf: opts.Warnf}
+	return &Base{
+		Bus: bus, UsrPath: opts.UsrPath, AppDir: opts.AppDir, View: view, Warnf: opts.Warnf,
+	}
 }
 
 // Info 是单个实例的数据根绑定（work_dir/data_dir，61-消息一览 §4.1 payload）。

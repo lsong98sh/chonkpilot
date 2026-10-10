@@ -4,7 +4,9 @@
   <!-- 视图分派（24 §6.1 / U-2 已决）：**以 URL 为准** —— `?session-id=…#chat` → 纯对话窗口；
        其余 → 主窗口完整布局。宿主零视图判断（不注入 `__ck.view`）。 -->
   <ChatOnlyView v-else-if="ready && chatOnly" :session-id="route.sessionId" />
-  <MainLayout v-else-if="ready" />
+  <!-- 项目就地切换（browser「打开目录」）：`:key="projectEpoch"` 自增 → 主布局整树重挂载，
+       等价于整页重载后的组件重建（不整页重载）。见 utils/projectReinit.js。 -->
+  <MainLayout v-else-if="ready" :key="projectEpoch" />
   <div v-else class="ck-startup">
     <div class="ck-startup__box">{{ t(textKey) }}</div>
   </div>
@@ -22,9 +24,11 @@ import AuthView from './views/auth/AuthView.vue'
 import { useInstanceClaim, CLAIM_OK, CLAIM_UNANSWERED } from './composables/useInstanceClaim'
 import { useAuth } from './composables/useAuth'
 import { useUserConfigSync } from './composables/useUserConfigSync'
+import { useGuiShowDialog } from './composables/useGuiShowDialog'
 import { requireAuth } from './utils/instanceState.js'
 import { parseViewRoute, VIEW_CHAT } from './utils/viewRoute.js'
-import { prefetchInitData } from './api/file'
+import { prefetchInitData, invalidateInitDataCache } from './api/file'
+import { projectEpoch, setProjectReinitHandler } from './utils/projectReinit.js'
 
 const { t } = useI18n()
 const { state, claim } = useInstanceClaim()
@@ -34,6 +38,10 @@ const { signedIn } = useAuth()
 // data-user-config-changed 并各自应用 —— 主窗口（Toolbar）与纯对话窗口（无 Toolbar）都经此
 // 入口，保证「每个窗口都收到并各自应用」。
 useUserConfigSync()
+
+// gui.show-dialog 全局消费（browser 形态「选择目录」：服务端无原生框 → 请 UI 弹选择器，
+// 用户选完由 UI 自发 gui.selected-dir；模块级单例，只订阅一次）。
+useGuiShowDialog()
 
 // URL 分派（一次性解析：无前端路由，URL 不再变）。
 const route = parseViewRoute(window.location.search, window.location.hash)
@@ -80,6 +88,17 @@ async function onAuthReady() {
   await nextTick()
   init()
 }
+
+// 项目**就地切换**（browser「打开目录」：`gui.dir.open` 服务端切本实例 work_dir）→
+// Toolbar 调 `reinitProjectState()` 触发本序列，**不整页重载**（见 utils/projectReinit.js）：
+//   ① 清 init-data 单飞缓存 → 重挂后的组件重新拉取新项目快照（workDir/布局/已打开文件）；
+//   ② 等主布局重挂完成（子组件 onMounted 完毕）；
+//   ③ 重跑启动序列 `init()`（读新项目活动会话 → 广播 session-changed，驱动会话树/会话面板）。
+setProjectReinitHandler(async () => {
+  invalidateInitDataCache()
+  await nextTick()
+  await init()
+})
 
 // desktop（免鉴权）：启动即认领（不带 user/work_dir，服务端用启动参数）；
 // 认证形态：由 AuthView「登录 → 选目录」后认领（61 §4.6 流程），此处不预先发起。

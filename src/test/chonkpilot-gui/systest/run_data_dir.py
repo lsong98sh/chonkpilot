@@ -77,18 +77,20 @@ def _assert_root_layout(cli, root, workdir, expect_in_workdir=True):
     if not isinstance(res, dict):
         raise TestError(f"data-prj-config-load 返回异常（数据根项目库不可用）: {res!r}")
 
-    # ③ 运行时附件落盘到数据根 tmp/uploads
+    # ③ 运行时附件落盘到数据根 tmp/uploads（server 决定落盘位置，只回 name）
     payload = b"ck-data-dir-probe\n"
     res = cli.req("gui.upload", {
         "name": "dd_probe.txt",
         "data": base64.b64encode(payload).decode("ascii"),
         "kind": "file",
     })
-    path = (res or {}).get("path") if isinstance(res, dict) else None
-    if not path:
-        raise TestError(f"gui.upload 未返回落盘路径: {res!r}")
-    up_dir = os.path.normcase(os.path.normpath(os.path.join(root, "tmp", "uploads")))
-    got = os.path.normcase(os.path.normpath(os.path.dirname(str(path))))
+    name = (res or {}).get("name") if isinstance(res, dict) else None
+    if not name:
+        raise TestError(f"gui.upload 未返回 name: {res!r}")
+    up_dir_raw = os.path.join(root, "tmp", "uploads")
+    path = os.path.join(up_dir_raw, str(name))
+    up_dir = os.path.normcase(os.path.normpath(up_dir_raw))
+    got = os.path.normcase(os.path.normpath(os.path.dirname(path)))
     if got != up_dir:
         raise TestError(f"附件应落在数据根 tmp/uploads：期望 {up_dir}，实际 {got}")
     if not os.path.isfile(path):
@@ -173,21 +175,24 @@ def _assert_b_layout(cli, workdir, home):
     if os.path.normcase(os.path.normpath(got_log_dir)) != os.path.normcase(os.path.normpath(log_dir)):
         raise TestError(f"gui.init-data.logDir 应 = {log_dir}，实际 {got_log_dir!r}")
 
-    # ④ 附件落 prjusr 根 tmp/uploads + /show/ 可达
+    # ④ 附件落 prjusr 根 tmp/uploads + /show/ 经**相对引用**可达（server 只回 name）
     payload = b"ck-b-layout-probe\n"
     res = cli.req("gui.upload", {
         "name": "b_probe.txt",
         "data": base64.b64encode(payload).decode("ascii"),
         "kind": "file",
     })
-    path = (res or {}).get("path") if isinstance(res, dict) else None
-    if not path:
-        raise TestError(f"gui.upload 未返回落盘路径: {res!r}")
-    up_dir = os.path.normcase(os.path.normpath(os.path.join(root, "tmp", "uploads")))
-    got_dir = os.path.normcase(os.path.normpath(os.path.dirname(str(path))))
+    name = (res or {}).get("name") if isinstance(res, dict) else None
+    if not name:
+        raise TestError(f"gui.upload 未返回 name: {res!r}")
+    up_dir_raw = os.path.join(root, "tmp", "uploads")
+    path = os.path.join(up_dir_raw, str(name))
+    up_dir = os.path.normcase(os.path.normpath(up_dir_raw))
+    got_dir = os.path.normcase(os.path.normpath(os.path.dirname(path)))
     if got_dir != up_dir:
         raise TestError(f"附件应落 prjusr 根 tmp/uploads：期望 {up_dir}，实际 {got_dir}")
-    status, body = _show_fetch(cli, path)
+    # 预览走相对引用 `tmp/uploads/<name>`（fileserver 按 UploadRoot 解析，见 61 §1 gui.upload）
+    status, body = _show_fetch(cli, "tmp/uploads/" + str(name))
     if status != 200 or body != payload.decode("ascii"):
         raise TestError(f"/show/ 应取回附件（白名单可达）：status={status} body={body!r}")
 

@@ -25,6 +25,11 @@ type FileShowHandler struct {
 	// DataDirs 是额外放行根（如 --data-dir 项目数据根）：请求可从中服务文件
 	//（ide.db 预览等 /show/），路径越界防护与 WorkDir 一致。
 	DataDirs []string
+	// UploadRoot 是**相对路径引用的解析根**（🆕 2026-10-10）：附件/截图经 gui.upload 落
+	// `<UploadRoot>/<dir>/<name>`，消息内为相对引用 `dir/name`（61 §1）；/show/<dir/name> 在此
+	// 解析为 `<UploadRoot>/<dir>/<name>` 后再走既有放行/符号链接复检（须仍落在放行根内）。
+	// 空 → 相对引用一律 403（绝对路径引用行为不变）。
+	UploadRoot string
 }
 
 func (h *FileShowHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -44,6 +49,17 @@ func (h *FileShowHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if filePath == "" {
 		http.Error(w, "missing file path after /show/", http.StatusBadRequest)
 		return
+	}
+
+	// 相对引用解析（🆕 2026-10-10）：附件/截图消息内引用为相对数据根的 `dir/name`
+	//（gui.upload 收敛后只回 name，见 61 §1），前端直接 /show/<dir/name> → 在此按 UploadRoot
+	// 解析为绝对路径，随后同样经放行根 + 符号链接复检（越界仍 403）。绝对路径（历史消息）不变。
+	if !filepath.IsAbs(filePath) {
+		if h.UploadRoot == "" {
+			http.Error(w, "path outside work directory", http.StatusForbidden)
+			return
+		}
+		filePath = filepath.Join(h.UploadRoot, filepath.FromSlash(filePath))
 	}
 
 	// Reject paths that resolve outside the allowed roots (work dir + data dirs).

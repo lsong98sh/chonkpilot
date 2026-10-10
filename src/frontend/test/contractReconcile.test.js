@@ -320,17 +320,19 @@ test('gui.* 消费（FileTree / Toolbar）读键 ⊆ 契约', () => {
   })
 })
 
-test('gui.upload / gui.capture 消费（ChatPanel.vue）读键 ⊆ 契约', () => {
+test('gui.upload / gui.captured 消费（ChatPanel.vue）读键 ⊆ 契约', () => {
   const cp = read('views/chat/ChatPanel.vue')
   assertConsumer({
     topic: 'gui.upload',
     text: windowAround(cp, /async function onScreenshotDone\(dataUrl\)/, 0, 560),
     varName: 'res',
   })
+  // 🆕 2026-10-09：截图改两段式，消费点在 utils/guiAsync.js（captureWindow 读 gui.captured **事件**）
   assertConsumer({
-    topic: 'gui.capture',
-    text: windowAround(cp, /MsgTopics\.guiCapture/, 0, 380),
-    varName: 'res',
+    topic: 'gui.captured',
+    kind: 'event',
+    text: windowAround(read('utils/guiAsync.js'), /export async function captureWindow/, 0, 620),
+    varName: 'd',
   })
 })
 

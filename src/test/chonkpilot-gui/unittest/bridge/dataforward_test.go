@@ -572,9 +572,9 @@ func TestCompatLlmStartReplyNoLongerEmitsLlmStarted(t *testing.T) {
 	}
 }
 
-// TestUploadURLContainsInstanceID：gui.upload 返回的 url 须带 ?instance_id=
-// （与前端 getFileUrl 口径一致；61-消息一览 §0）。
-func TestUploadURLContainsInstanceID(t *testing.T) {
+// TestUploadResultNameOnly：gui.upload 收敛为「server 落盘、只回文件名」（61 §1，2026-10-10）——
+// result 只含 name；文件落 <prjusr 根（未注入 → <workDir>/.chonkpilot）>/tmp/uploads/<name>。
+func TestUploadResultNameOnly(t *testing.T) {
 	br, bus := newTestBridge(t, func(string) {})
 	defer bus.Close()
 	data := base64.StdEncoding.EncodeToString([]byte("hello"))
@@ -586,9 +586,19 @@ func TestUploadURLContainsInstanceID(t *testing.T) {
 	if !ok {
 		t.Fatalf("gui.upload 结果类型异常: %T", res)
 	}
-	u, _ := m["url"].(string)
-	if !strings.Contains(u, "?instance_id=inst-test") {
-		t.Fatalf("上传 url 未带 instance_id: %q", u)
+	name, _ := m["name"].(string)
+	if name == "" {
+		t.Fatalf("gui.upload 未返回 name: %v", m)
+	}
+	// 不暴露服务器路径：只回 name
+	for _, k := range []string{"path", "url", "file_id"} {
+		if _, ok := m[k]; ok {
+			t.Fatalf("gui.upload 结果不应含 %q（只回 name）: %v", k, m)
+		}
+	}
+	dest := filepath.Join(br.WorkDir(), ".chonkpilot", "tmp", "uploads", name)
+	if _, err := os.Stat(dest); err != nil {
+		t.Fatalf("落盘文件不存在 %s: %v", dest, err)
 	}
 }
 

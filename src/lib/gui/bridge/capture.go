@@ -1,5 +1,6 @@
 // 截图（FP「截图」按钮）：隐藏本窗口 → GDI 全屏 BitBlt 虚拟桌面 → 恢复窗口 →
-// PNG 落盘 prjusr 数据根 tmp/uploads/（复用附件上传目录）→ 返回 {name, path, url}。
+// 只返回截图字节的 base64（**不落盘**；落盘位置由 server 决定，前端据 b64 再发
+// gui.upload{dir:"screenshot"}，见 61-消息一览 §1 gui.captured/gui.upload）。
 // 纯 syscall（gdi32/user32），无 CGO；区域选择 UI 为后续增强，当前全屏。
 //
 // 2026-09-04：原 /call CaptureScreen 注册已清零；callCaptureScreen 保留为 gui.capture
@@ -14,11 +15,11 @@ import (
 	"fmt"
 	"image"
 	"image/png"
-	"os"
-	"path/filepath"
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 var (
@@ -63,7 +64,8 @@ type bitmapInfoHeader struct {
 	BiClrImportant  uint32
 }
 
-// callCaptureScreen 全屏截图并落盘；窗口隐藏期间 UI 冻结由调用端（HTTP goroutine）承担。
+// callCaptureScreen 全屏截图并返回截图字节 base64（**不落盘**）；窗口隐藏期间 UI 冻结由
+// 调用端（HTTP goroutine）承担。返回 {b64}，供前端本地预览 + 随后 gui.upload{dir:"screenshot"}。
 func callCaptureScreen(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	hwnd := b.hwnd
 	if hwnd == 0 {
@@ -134,23 +136,9 @@ func callCaptureScreen(b *Bridge, ctx context.Context, params []json.RawMessage)
 		return nil, fmt.Errorf("CaptureScreen: png encode: %w", err)
 	}
 
-	// 落盘（复用附件上传目录 = prjusr 数据根 tmp/uploads；见 24 §3.2 MW-8），返回 /show/ 预览 URL
-	uploadDir := filepath.Join(b.uploadRoot(), "tmp", "uploads")
-	if err := os.MkdirAll(uploadDir, 0755); err != nil {
-		return nil, err
-	}
-	fileID := newUUID() + ".png"
-	dest := filepath.Join(uploadDir, fileID)
-	if err := os.WriteFile(dest, pngBuf.Bytes(), 0644); err != nil {
-		return nil, err
-	}
+	// 只回截图字节 base64（**不落盘**；落盘位置由 server 决定，见 61 §1 gui.upload/gui.captured）。
 	return json.Marshal(map[string]any{
-		"file_id": fileID,
-		"name":    "screenshot.png",
-		"path":    dest,
-		"url":     b.showURL(dest),
-		"size":    len(pngBuf.Bytes()),
-		"b64":     base64.StdEncoding.EncodeToString(pngBuf.Bytes()), // 供前端预览/复用
+		msgkeys.FieldB64: base64.StdEncoding.EncodeToString(pngBuf.Bytes()),
 	})
 }
 

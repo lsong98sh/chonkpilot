@@ -1,5 +1,6 @@
 import { dataClient } from '../utils/dataClient'
 import mq from '../utils/mq'
+import { selectDir } from '../utils/guiAsync'
 import { i18n } from '../plugins/i18n'
 import { EventNames } from '../events/event-names'
 import {
@@ -97,8 +98,10 @@ export function getVCSInfo() {
   return guiReq('vcs.info', {})
 }
 
-export function openDirDialog() {
-  return guiReq('dir.open-dialog', {})
+// 目录选择（两段式，🆕 2026-10-09）：gui.select-dir{widget_id} → gui.selected-dir 事件。
+// widget_id = 发起控件标识（防二次点击 + 结果关联）。返回 {path}（取消 = {path:''}）；失败 reject。
+export function openDirDialog(widgetId = 'dir') {
+  return selectDir(widgetId)
 }
 
 // user-config（用户配置整体对象，usr config 表）

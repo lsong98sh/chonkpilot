@@ -25,8 +25,8 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/heartbeat"
 )
 
-// staleTimeout 是实例心跳超时阈值 = chonkpilot-lib/heartbeat.Timeout（90s = 3× 周期）——
-// 取值**单一来源**（发布侧 instance / llm 扫描侧 / 本清理侧共用同一常量）。
+// staleTimeout 是**缺省**实例心跳超时阈值 = chonkpilot-lib/heartbeat.Timeout（90s = 3× 周期）
+// —— 取值**单一来源**（发布侧 instance / llm 扫描侧 / 本清理侧共用同一常量）。
 // data 层只依赖 lib（不引 chonkpilot-plugin，分层约束见 10-分层与依赖），故经 lib 取同一来源。
 const staleTimeout = heartbeat.Timeout
 

@@ -639,11 +639,17 @@ onUnmounted(() => {
   if (renderTrailingTimer) { clearTimeout(renderTrailingTimer); renderTrailingTimer = null }
 })
 
-// 用户消息里的附件标记 `![名](本地绝对路径)` → /show/ 同源 URL，使气泡内直接显示缩略图
-// （原样渲染时 Windows 绝对路径会被当作相对 URL 而加载失败）；http(s) 等其余 src 不动。
+// 用户消息里的附件标记 → /show/ 同源 URL，使气泡内直接显示缩略图：
+//   - 本地绝对路径（历史消息，`![名](C:/…)`）原样渲染时会被当作相对 URL 而加载失败 → 转 /show/；
+//   - 相对数据根的上传引用（🆕 2026-10-10，`![名](tmp/uploads/<name>)` / `screenshot/<name>`，
+//     见 61 §1 gui.upload）同样转 /show/（fileserver 按 UploadRoot 解析相对引用）；
+//   - http(s) 等其余 src 不动。
 function withLocalImageUrls(html) {
   return html.replace(/(<img\b[^>]*?\ssrc=")([^"]+)(")/g, (m, pre, src, post) => {
-    if (/^https?:/i.test(src) || !/^[A-Za-z]:[\\/]/.test(src)) return m
+    if (/^https?:/i.test(src)) return m
+    const isAbs = /^[A-Za-z]:[\\/]/.test(src)
+    const isUploadRef = /^(?:tmp\/uploads|screenshot)\//.test(src)
+    if (!isAbs && !isUploadRef) return m
     return pre + getFileUrl(src) + post
   })
 }

@@ -25,10 +25,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
+	"github.com/chonkpilot/chonkpilot-lib/uploadfs"
 )
 
 // allowedDottedPrefixes 点分相对主题白名单（上行可注入总线的 filesys 面；其余点分主题拒绝）。
@@ -81,22 +83,25 @@ var capabilityListKeys = map[string]string{
 // 键 = gui.<action> 的 **action 后缀**（guiDo 入参，见 publishEvent `strings.TrimPrefix(typ, "gui.")`）；
 // 故 `gui.file.save` 的键须为 **`file.save`**（历史误置全名 `gui.file.save` → 恒不命中，已订正）；
 // `prompt-optimise` 的 action 后缀恰与契约主题同名 → 以 msgkeys 常量引用（值不变）。
-// 说明：`dir.open-dialog` 的**消息面**保持"明确不支持"（61 §1 已定 result = `{path?}`，browser
-// 无人机选择器可取 path；改 result = 改 payload，需用户确认）——**等价面**由入口新增的
-// 非 MQ HTTP 路由 `GET /dirs` 提供（本 instance 作用域只读面，见 19 §8.9）。
+// 2026-10-10（gui.upload 收敛为「server 落盘、只回文件名」）：
+//   - `upload` **移出**本表 → 服务端实现（guiUpload：落 <instance data_dir>/<dir>/<name>，回 {name}）；
+//   - `capture` **移出**本表 → browser 无 native 截图（前端改用浏览器 API），服务端不再拦截（回受理 {ok}）；
+//   - `select-dir` **移出**本表 → 两段式真解落地：服务端下发 `gui.show-dialog{widget_id, kind:"select-dir",
+//     options}`（本文件 guiDo `select-dir` 分支），请 UI 自弹选择器、用户选完由 UI 自行发
+//     `gui.selected-dir`（见 19 §C；关闭 [41 G-46] browser 目录选择残余）。原临时等价面
+//     `GET /dirs` 随之删除，**无双路径**。
+//   - `dir.open` **移出**本表 → browser 形态「打开目录」真解落地（2026-10-10）：服务端把**本实例**
+//     的 work_dir 切换到目标目录（`guiDirOpen`：复用既有 `instance-claim` 做归属校验 + 重绑定，
+//     见 19 §C / 42 §2.23），前端选后重载刷新。
 var browserUnsupported = map[string]string{
-	"dir.open-dialog":           "本地目录选择器（native）；等价面 = 入口 GET /dirs（列本 instance 允许目录）",
 	"pick-executable":           "本地文件选择器（native）",
-	"dir.open":                  "以新进程打开目录（native）",
 	"console.open":              "系统控制台打开目录（native）",
 	"reveal":                    "资源管理器定位（native）",
 	"file.save":                 "系统「另存为」对话框（native）；browser 形态请用页面下载/剪贴板（见批 3 · ⑯）",
 	"open-with":                 "系统「打开方式」（native）",
-	"capture":                   "窗口截图（native）",
 	"toolchain.detect":          "本机工具链探测（native）",
 	"system.builtins":           "exe 同级只读内置项（native）",
 	"window.status":             "原生窗口控制（browser 无原生窗口）",
-	"upload":                    "附件上传（browser 形态未提供 /show 字节面）",
 	msgkeys.TopicPromptOptimise: "提示词优化（browser 形态未接线 LLM 优化面）",
 }
 
@@ -157,7 +162,7 @@ func (s *Server) publishEvent(typ, payloadJSON, token string) (any, []error) {
 		}
 		return nil, nil
 	case strings.HasPrefix(typ, "gui."):
-		return s.guiDo(strings.TrimPrefix(typ, "gui."), []byte(payloadJSON))
+		return s.guiDo(strings.TrimPrefix(typ, "gui."), []byte(payloadJSON), token)
 	case strings.HasPrefix(typ, "data-"):
 		// 阶段 4 第二/三/四批（41 G-34 / G-35 / G-36）：门面已覆盖的域（config 类 · session 域 ·
 		// tasktree / knowledge / filelist / scenario / memory）**优先走 data 门面**（服务端进程内
@@ -219,14 +224,15 @@ func dottedAllowed(subject string) bool {
 // withinWorkDir 为第二道；越界 path 由其自身拒绝返回 forbidden）。
 // 同时补 instance_id（watch 声明者归属需要；已存在不覆盖）。
 func (s *Server) bindFilesys(payloadJSON string) (string, error) {
-	if strings.TrimSpace(s.workDir) == "" {
+	wd := s.workDirPath()
+	if strings.TrimSpace(wd) == "" {
 		return "", fmt.Errorf("服务端 work_dir 未绑定（--work-dir 缺失）")
 	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(payloadJSON), &m); err != nil || m == nil {
 		m = map[string]any{}
 	}
-	m[msgkeys.FieldWorkDir] = s.workDir
+	m[msgkeys.FieldWorkDir] = wd
 	if _, ok := m[msgkeys.FieldInstanceId]; !ok {
 		m[msgkeys.FieldInstanceId] = s.instanceID
 	}
@@ -434,8 +440,9 @@ func (s *Server) dataViaPersist(subject string, payload []byte) (result any, err
 // ── gui.* browser 本地面 ──
 
 // guiDo 处理 gui.<action>：native 明确不支持；只读/UI 状态面在服务端进程内实现
-// （工作目录 = 启动参数 --work-dir）。
-func (s *Server) guiDo(action string, payload []byte) (any, []error) {
+// （工作目录 = 启动参数 --work-dir / 实例认领绑定）。token = 入口从连接层取的当前令牌
+// （cookie；仅 `dir.open` 消费 —— 复用 instance-claim 做归属校验，其余动作不读）。
+func (s *Server) guiDo(action string, payload []byte, token string) (any, []error) {
 	if reason, bad := browserUnsupported[action]; bad {
 		return unsupportedReply(action, reason)
 	}
@@ -456,6 +463,29 @@ func (s *Server) guiDo(action string, payload []byte) (any, []error) {
 		return s.vcsInfo(), nil
 	case "search":
 		return map[string]any{"results": s.searchFiles(payload)}, nil
+	case "upload":
+		// browser 形态附件/截图上传：**服务端落盘、只回文件名**（61 §1，2026-10-10 收敛）。
+		return s.guiUpload(payload)
+	case "capture":
+		// browser 无 native 截图（前端改用浏览器 API：getDisplayMedia 等），服务端不再拦截；
+		// 若前端仍发本消息，仅回受理 {ok}（真正的截图结果由前端本地产生，不经 gui.captured 下发）。
+		return map[string]any{msgkeys.FieldOk: true}, nil
+	case "select-dir":
+		// browser 无原生目录框（native 能力缺失）→ 下发 gui.show-dialog{widget_id, kind:"select-dir",
+		// options}，请 UI 自弹目录选择器；**本处不阻塞等待用户选择** —— 用户选完由 UI 自行发
+		// gui.selected-dir（前端据此 resolve 其 selectDir Promise，按 widget_id 关联；见 61 §1）。
+		// 本响应仅表示"已下发"（{ok}）。options = **该用户的允许根**（= allowedDirs()，
+		// auth.projectRoots；缺省用户数据根）及其子目录，深≤3 / ≤200 项 / 跳隐藏与重型目录
+		// —— 使同一用户下的多个项目（如 proj-a/b/c）都可选。
+		s.emitFrontend(msgkeys.TopicGuiShowDialog, map[string]any{
+			msgkeys.GuiShowDialogEventWidgetId: jsonStringField(payload, msgkeys.FieldWidgetId),
+			msgkeys.GuiShowDialogEventKind:     "select-dir",
+			msgkeys.GuiShowDialogEventOptions:  s.allowedDirs(),
+		})
+		return map[string]any{msgkeys.FieldOk: true}, nil
+	case "dir.open":
+		// browser 形态「打开目录」= 切换项目（服务端把本实例 work_dir 切到 path；见 guiDirOpen）。
+		return s.guiDirOpen(payload, token)
 	default:
 		return unsupportedReply(action, "browser 形态未实现该 gui 动作")
 	}
@@ -473,10 +503,73 @@ func failReply(format string, args ...any) (any, []error) {
 	return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error()}, []error{e}
 }
 
+// emitFrontend 把 gui.* **下行事件**投递到本 instance 的 SSE 客户端（browser 形态：服务端即"gui 侧"，
+// 如 gui.show-dialog）。直接经总线 Emit（**不** markPublished）→ httpapi 的 `>` 订阅（forwardEvent）
+// 按 instance 归属过滤后回投；主题/字段全部取自 [61](../60-reference/61-消息一览.md) 契约（**不新增** MQ
+// 主题/payload）。载荷补 instance_id = 本实例（下行事件的通用归属字段，同 gui.selected-dir / gui.captured），
+// 避免多实例场景下无归属事件被所有实例回投。
+func (s *Server) emitFrontend(subject string, payload map[string]any) {
+	if s.bus == nil {
+		return
+	}
+	if _, ok := payload[msgkeys.FieldInstanceId]; !ok {
+		payload[msgkeys.FieldInstanceId] = s.instanceID
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[server] httpapi emitFrontend %s: %v", subject, err)
+		return
+	}
+	if v := s.bus.Emit(context.Background(), subject, raw).Wait(); v.Err() != nil {
+		log.Printf("[server] httpapi emitFrontend %s: %v", subject, v.Err())
+	}
+}
+
+// jsonStringField 取 payload 顶层字符串字段（缺省 / 非对象 / 非字符串 → ""）。
+func jsonStringField(payload []byte, key string) string {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(payload, &m) != nil {
+		return ""
+	}
+	var s string
+	_ = json.Unmarshal(m[key], &s)
+	return s
+}
+
+// guiUpload 处理 browser 形态 gui.upload（**服务端落盘、只回文件名**，61 §1；2026-10-10 收敛）：
+// 落盘 = `<instance data_dir>/<dir>/<name>`；dir 经 uploadfs.SanitizeDir 净化（缺省 tmp/uploads；
+// 截图传 screenshot）。data = base64/data URL。返回 {name}（真实落盘文件名，不暴露服务器路径）。
+// 与 gui 桥 callUploadAttachment 共用 uploadfs（净化/大小限制单源）。
+func (s *Server) guiUpload(payload []byte) (any, []error) {
+	var req struct {
+		Name string `json:"name"`
+		Data string `json:"data"`
+		Kind string `json:"kind"`
+		Dir  string `json:"dir"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return failReply("upload: %v", err)
+	}
+	root, err := data.PrjUsrDir(s.workDirPath(), s.dataDirPath())
+	if err != nil || root == "" {
+		return failReply("upload: 数据根不可解析（work_dir 缺失？）: %v", err)
+	}
+	content, err := uploadfs.DecodeData(req.Data)
+	if err != nil {
+		return failReply("upload: %v", err)
+	}
+	name, err := uploadfs.Save(root, req.Dir, req.Name, content)
+	if err != nil {
+		return failReply("upload: %v", err)
+	}
+	return map[string]any{msgkeys.GuiUploadResultName: name}, nil
+}
+
 // initData 返回启动初始化数据（对齐 GUI gui.init-data 的字段形态）：
 // {treeData, expandedKeys, selectedKey, workDir, filetreeWidth, layout, ui, openedFile, openedFiles}。
 // 布局/UI/已开文件经总线 persist 读取；treeData 直接读 --work-dir 磁盘（只读）。
 func (s *Server) initData() (map[string]any, error) {
+	wd := s.workDirPath()
 	cfg := s.prjConfigList()
 
 	layout := prefixedConfig(cfg, "layout.")
@@ -498,7 +591,7 @@ func (s *Server) initData() (map[string]any, error) {
 		_ = json.Unmarshal([]byte(raw), &openedFiles)
 	}
 	for i, p := range openedFiles {
-		openedFiles[i] = paths.FromLogical(s.workDir, p)
+		openedFiles[i] = paths.FromLogical(wd, p)
 	}
 	kept := openedFiles[:0]
 	for _, p := range openedFiles {
@@ -522,7 +615,7 @@ func (s *Server) initData() (map[string]any, error) {
 	}
 	selected := ""
 	if rel := sval(cfg["filetree-selected-path"]); rel != "" {
-		selected = filepath.Join(s.workDir, rel)
+		selected = filepath.Join(wd, rel)
 	}
 	absExpanded := make([]string, 0, len(expanded))
 	expandedSet := make(map[string]bool, len(expanded))
@@ -530,16 +623,16 @@ func (s *Server) initData() (map[string]any, error) {
 		if rel == "" {
 			continue
 		}
-		abs := filepath.ToSlash(filepath.Join(s.workDir, rel))
+		abs := filepath.ToSlash(filepath.Join(wd, rel))
 		absExpanded = append(absExpanded, abs)
 		expandedSet[abs] = true
 	}
 
 	return map[string]any{
-		msgkeys.GuiInitDataResultTreeData:      readDirNodesExpanded(s.workDir, expandedSet),
+		msgkeys.GuiInitDataResultTreeData:      readDirNodesExpanded(wd, expandedSet),
 		msgkeys.GuiInitDataResultExpandedKeys:  absExpanded,
 		msgkeys.GuiInitDataResultSelectedKey:   selected,
-		msgkeys.GuiInitDataResultWorkDir:       s.workDir,
+		msgkeys.GuiInitDataResultWorkDir:       wd,
 		msgkeys.GuiInitDataResultFiletreeWidth: 260,
 		msgkeys.GuiInitDataResultLayout:        layout,
 		msgkeys.GuiInitDataResultUi:            ui,
@@ -552,6 +645,7 @@ func (s *Server) initData() (map[string]any, error) {
 // layout.* / window.* → prj config；filetree-* → prj config（相对路径）；opened-files → prj config；
 // ui{theme,locale} → usr config（用户级偏好）。
 func (s *Server) guiSaveUI(payload []byte) (any, []error) {
+	wd := s.workDirPath()
 	var p map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return failReply("ui.save: %v", err)
@@ -586,7 +680,7 @@ func (s *Server) guiSaveUI(payload []byte) (any, []error) {
 					if d == "" {
 						continue
 					}
-					if r, err := filepath.Rel(s.workDir, d); err == nil {
+					if r, err := filepath.Rel(wd, d); err == nil {
 						rel = append(rel, r)
 					}
 				}
@@ -597,7 +691,7 @@ func (s *Server) guiSaveUI(payload []byte) (any, []error) {
 				}
 			}
 			if m.SelectedPath != "" {
-				if r, err := filepath.Rel(s.workDir, m.SelectedPath); err == nil {
+				if r, err := filepath.Rel(wd, m.SelectedPath); err == nil {
 					if err := s.prjConfigSave("filetree-selected-path", r); err != nil {
 						errList = append(errList, err)
 					}
@@ -614,7 +708,7 @@ func (s *Server) guiSaveUI(payload []byte) (any, []error) {
 			// 落库为 workdir 相对逻辑路径（G-24）：换挂载布局 / 迁移后仍可还原。
 			logical := make([]string, 0, len(files))
 			for _, f := range files {
-				logical = append(logical, paths.ToLogical(s.workDir, f))
+				logical = append(logical, paths.ToLogical(wd, f))
 			}
 			if b, err := json.Marshal(logical); err == nil {
 				if err := s.prjConfigSave("opened-files", string(b)); err != nil {
@@ -699,56 +793,169 @@ func (s *Server) guiRemoveRecentDir(payload []byte) (any, []error) {
 	return map[string]any{msgkeys.FieldOk: true}, nil
 }
 
+// ── gui.dir.open（browser「打开目录」= 切换项目）──
+
+// guiDirOpen 处理 browser 形态 `gui.dir.open{path}`：把**本实例**的 work_dir 切换到 path。
+//
+// 归属校验 + 重绑定**复用既有 `instance-claim`**（同一条消息，一次内部往返；61 §4.1 ①）：
+// 服务端 claim 按 `auth.projectRoots` 校验归属（越界 → `instance-forbidden`）、解析 data_dir
+// （= 该用户数据根 `<用户数据根>/<uid>/`）、写 `instance.Manager` 视图并照发 `instance-register`
+// —— 本入口据 `instance-register` **就地更新**作用域（applyInstanceBind）→ 实例视图 / 文件面
+// （filesys 绑定）/ 数据面（facade scope）/ 只读面（init-data、search、vcs）**一致切换**，
+// **不留脏状态**。故与「客户端重发 instance-claim」等价，只是把动作收敛到契约主题 `gui.dir.open`
+// 上（前端无需自行发 instance-claim）。**零新增/修改消息主题或 payload**。
+//
+// 失败原样带出 claim 错误码（`instance-forbidden` 越界 / `instance-unauthorized` 未登录）。
+// 成功回 `{ok}`（前端据此重载刷新）。
+func (s *Server) guiDirOpen(payload []byte, token string) (any, []error) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return failReply("dir.open: %v", err)
+	}
+	path := strings.TrimSpace(p.Path)
+	if path == "" {
+		return failReply("dir.open: path required")
+	}
+	clean := filepath.Clean(filepath.FromSlash(path))
+	// 入口侧**允许根**预校验（auth.projectRoots；缺省用户数据根）：越界 → 明确失败。
+	// 深层归属校验（项目登记 / 用户-项目关联）由下方 instance-claim 一并完成（复用既有实现）。
+	roots := s.allowedRoots()
+	if len(roots) == 0 {
+		return failReply("dir.open: 无允许根（auth.projectRoots 未配置）")
+	}
+	if !withinRoots(roots, clean) {
+		return failReply("dir.open: 目录不在允许根内：%s", path)
+	}
+	req, _ := json.Marshal(map[string]any{
+		msgkeys.FieldInstanceId: s.instanceID,
+		msgkeys.FieldWorkDir:    filepath.ToSlash(clean),
+	})
+	// injectInstance 补连接层身份（instance_id 绑定本实例 + token）；instance-claim 豁免缺失校验。
+	bound, err := s.injectInstance(msgkeys.TopicInstanceClaim, string(req), token)
+	if err != nil {
+		return failReply("dir.open: %v", err)
+	}
+	result, errs := s.publishV(msgkeys.TopicInstanceClaim, bound)
+	if len(errs) > 0 {
+		return failReply("dir.open: %v", errs[0])
+	}
+	if m, ok := result.(map[string]any); ok {
+		if failed, _ := m[msgkeys.FieldOk].(bool); !failed {
+			if e, _ := m[msgkeys.FieldError].(string); e != "" {
+				return failReply("dir.open: %s", e)
+			}
+		}
+	}
+	return map[string]any{msgkeys.FieldOk: true}, nil
+}
+
 // maxDirChoices / maxDirDepth 目录选择等价面的规模上限（防大目录拖垮响应/页面）。
 const (
 	maxDirChoices = 200
 	maxDirDepth   = 3
 )
 
-// allowedDirs 列出该 instance **允许的目录**（work_dir 及其子目录；深度/规模受限，
-// 跳过隐藏目录与 skipDirs 重型目录）。作为 native 目录选择器（gui.dir.open-dialog）的
-// **服务端等价面**由非 MQ 的 `GET /dirs` 暴露（61 §1 消息面 result 不变）：浏览器端只能在
-// 该清单内选择；work_dir 由服务端绑定，客户端不可改。
+// allowedRoots 取宿主注入的「允许根」列表（`auth.projectRoots`；缺省用户数据根，缺省解析在
+// llm server 侧——单一来源）。未接线（nil）→ 无允许根。
+func (s *Server) allowedRoots() []string {
+	if s.allowedRootsFn == nil {
+		return nil
+	}
+	return s.allowedRootsFn()
+}
+
+// withinRoots 判定 dir（已 Clean 的路径）是否落在某个允许根之下（**含自身**）。
+// 与 llm server `claim.go` 的 withinAnyRoot 同判据：比较用 `filepath.Rel`
+// （Windows 大小写不敏感、跨盘符返回错误 → 该根视为不匹配）。
+func withinRoots(roots []string, dir string) bool {
+	for _, r := range roots {
+		root := filepath.Clean(strings.TrimSpace(r))
+		if root == "" || root == "." {
+			continue
+		}
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			continue
+		}
+		if rel == "." {
+			return true
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// allowedDirs 列出**允许根**（`auth.projectRoots`；缺省用户数据根）及其子目录（深度/规模受限，
+// 跳过隐藏目录与 skipDirs 重型目录）。作为 native 目录选择器（gui.select-dir）的**服务端等价面**：
+// 由 guiDo `select-dir` 分支经 `gui.show-dialog` 下发给 UI（61 §1）；浏览器端只能在该清单内选择。
+// **根 = 允许根**（非当前 work_dir）→ 同一用户下的多个项目（如 proj-a/b/c）都能被选中；
+// 最终选定路径由 `gui.dir.open` 经 instance-claim 再次校验归属（服务端绑定，客户端不可越权）。
 func (s *Server) allowedDirs() []map[string]any {
 	out := make([]map[string]any, 0, 16)
-	if strings.TrimSpace(s.workDir) == "" {
-		return out
+	// 排除本实例的 **data_dir**（`<用户数据根>/<uid>/`）：它是该用户的**元数据家目录**，
+	// 不是可选项目 → 不应在「选择目录」里作为噪音项出现（2026-10-10）。
+	exclude := map[string]bool{}
+	if d := filepath.Clean(s.dataDir); d != "" && d != "." {
+		exclude[d] = true
 	}
-	root := filepath.Clean(s.workDir)
-	out = append(out, map[string]any{"path": filepath.ToSlash(root), "name": filepath.Base(root), "depth": 0})
-	var walk func(dir string, depth int)
-	walk = func(dir string, depth int) {
-		if depth >= maxDirDepth || len(out) >= maxDirChoices {
-			return
+	for _, root := range s.allowedRoots() {
+		r := filepath.Clean(strings.TrimSpace(root))
+		if r == "" || r == "." {
+			continue
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return
+		if fi, err := os.Stat(r); err != nil || !fi.IsDir() {
+			continue
 		}
-		for _, e := range entries {
-			if len(out) >= maxDirChoices {
-				return
-			}
-			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || skipDirs[e.Name()] {
-				continue
-			}
-			p := filepath.Join(dir, e.Name())
-			out = append(out, map[string]any{"path": filepath.ToSlash(p), "name": e.Name(), "depth": depth + 1})
-			walk(p, depth+1)
+		out = append(out, map[string]any{"path": filepath.ToSlash(r), "name": filepath.Base(r), "depth": 0})
+		walkDirs(r, 0, &out, exclude)
+		if len(out) >= maxDirChoices {
+			break
 		}
 	}
-	walk(root, 0)
 	return out
+}
+
+// walkDirs 递归收录 dir 的子目录（深度 ≤ maxDirDepth、总量 ≤ maxDirChoices；
+// 跳隐藏目录、skipDirs 重型目录，以及 exclude 中的路径——如实例 data_dir）。
+// depth = dir 相对其允许根的层数（根 = 0）。
+func walkDirs(dir string, depth int, out *[]map[string]any, exclude map[string]bool) {
+	if depth >= maxDirDepth || len(*out) >= maxDirChoices {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if len(*out) >= maxDirChoices {
+			return
+		}
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || skipDirs[e.Name()] {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if exclude[filepath.Clean(p)] {
+			continue
+		}
+		*out = append(*out, map[string]any{"path": filepath.ToSlash(p), "name": e.Name(), "depth": depth + 1})
+		walkDirs(p, depth+1, out, exclude)
+	}
 }
 
 // vcsInfo 探测工作目录 VCS 类型 + git 可执行性 → {git, svn, gitInstalled}（与 GUI 同语义）。
 func (s *Server) vcsInfo() map[string]any {
+	wd := s.workDirPath()
 	git := false
-	if _, err := os.Stat(filepath.Join(s.workDir, ".git")); err == nil {
+	if _, err := os.Stat(filepath.Join(wd, ".git")); err == nil {
 		git = true
 	}
 	svn := false
-	if _, err := os.Stat(filepath.Join(s.workDir, ".svn")); err == nil {
+	if _, err := os.Stat(filepath.Join(wd, ".svn")); err == nil {
 		svn = true
 	}
 	gitInstalled := false
@@ -787,7 +994,8 @@ func (s *Server) searchFiles(payload []byte) []map[string]any {
 	}
 	lower := strings.ToLower(query)
 	results := make([]map[string]any, 0, searchMaxResults)
-	_ = filepath.Walk(s.workDir, func(path string, fi os.FileInfo, err error) error {
+	wd := s.workDirPath()
+	_ = filepath.Walk(wd, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -797,7 +1005,7 @@ func (s *Server) searchFiles(payload []byte) []map[string]any {
 			}
 			return nil
 		}
-		rel, _ := filepath.Rel(s.workDir, path)
+		rel, _ := filepath.Rel(wd, path)
 		if !strings.Contains(strings.ToLower(filepath.ToSlash(rel)), lower) {
 			return nil
 		}

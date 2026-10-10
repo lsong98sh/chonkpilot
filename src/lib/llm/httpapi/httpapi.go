@@ -15,12 +15,16 @@
 //     服务端绑定（`bindFilesys` 覆盖请求载荷，浏览器端不得自报任意目录）；filesys 语义不变；
 //   - **多客户端**：本 instance 的全部 SSE 客户端共享同一广播表，事件 fan-out 到所有客户端
 //     （非本 instance 事件按上述判据不投递）；
-//   - native 能力（`gui.dir.open-dialog` / `pick-executable` / `dir.open` / `console.open` /
-//     `reveal` / `open-with` / `capture` / `toolchain.detect` / `system.builtins` /
-//     `window.status`）**明确返回"不支持"**（不静默失败、不假成功，见 19 §6）；其中
-//     `dir.open-dialog` 另提供**非 MQ 的服务端等价面** `GET /dirs`（列出本 instance
-//     允许目录；61 §1 的 result `{path?}` 不变，见 §8.9）；**不复用** testserver 的
-//     `/eval`·`/click`。
+//   - native 能力（`gui.pick-executable` / `console.open` / `reveal` / `open-with` /
+//     `toolchain.detect` / `system.builtins` / `window.status`）**明确返回"不支持"**（不静默失败、
+//     不假成功，见 19 §6）。2026-10-10：`gui.upload`（服务端落盘、只回文件名）与 `gui.capture`
+//     （前端改用浏览器 API）移出禁用表 → 服务端实现 `upload`、`capture` 回受理 {ok}；
+//     `gui.select-dir` 移出禁用表 → 服务端经 `gui.show-dialog{widget_id, kind:"select-dir", options}`
+//     请 UI 自弹目录选择器（`select-dir` 分支，见 publish.go guiDo）—— 原临时等价面非 MQ 路由
+//     `GET /dirs` 已删除，**无双路径**（关闭 [41 G-46] browser 目录选择残余）。
+//     **`gui.dir.open` 移出禁用表**（2026-10-10）→ 服务端把本实例 work_dir 切到目标目录（复用
+//     `instance-claim` 做归属校验 + 重绑定；见 publish.go `guiDirOpen` / 19 §C）：browser「打开
+//     目录」= 切换项目，前端选后重载刷新。
 //
 // 消息面：**零新增主题/payload**（61-消息一览 为唯一准则）；本包只发既有
 // `instance-register` / `instance-exit`（载荷字段与 GUI 桥一致，`client_type=browser`）。
@@ -62,7 +66,6 @@ const (
 	publishPath = "/publish"
 	eventsPath  = "/events"
 	shimPath    = "/__ck_bridge.js"
-	dirsPath    = "/dirs"
 )
 
 //go:embed ck_http_bridge.js
@@ -89,6 +92,11 @@ type Options struct {
 	// `Authenticated`）—— 首屏注入 `authed` 的**服务端判定**来源（61 §4.6：读凭证判定，
 	// 不读 UA、不接受前端自报）。nil = 未接线 → `authed` 恒 false（未认证）。
 	AuthCheck func(token string) bool
+	// AllowedRoots 返回「允许根」列表（`auth.projectRoots`；缺省 = 用户数据根）——
+	// 宿主注入 = llm server 的 `AllowedWorkRoots`（**单一来源**，默认值解析在 llm server 侧）。
+	// 消费点 = `allowedDirs()`（`gui.show-dialog` 的 options 根）与 `gui.dir.open` 的入口侧
+	// 归属预校验（见 publish.go）。nil = 未接线 → 无允许目录（`select-dir` 下发空清单）。
+	AllowedRoots func() []string
 	// Facade 是 data 门面绑定（阶段 4 第三批 / 41 G-34；装配点 = 宿主 `inline.New(bus)`）。
 	// 非空 → `data-session-*` 上行**优先走门面**（服务端进程内直调，不经 MQ；见
 	// facade_session.go），未命中/未注入 → 回落总线 persist 路径（dataViaPersist）。
@@ -112,6 +120,8 @@ type Server struct {
 	addr  string
 	// authCheck 是宿主注入的令牌有效性判定（nil = 未接线 → authed 恒 false）。
 	authCheck func(token string) bool
+	// allowedRootsFn 是宿主注入的「允许根」取值回调（nil = 未接线 → 无允许目录）。
+	allowedRootsFn func() []string
 	// facade 是 data 门面绑定（非空 → data-session-* 优先走门面，见 facade_session.go）。
 	facade facade.API
 
@@ -129,9 +139,16 @@ type Server struct {
 	// fsys 是服务端托管的文件服务（应答 filesys.*；work_dir 由服务端绑定，见 bindFilesys）。
 	fsys *filesys.Filesys
 
-	sub mq.Sub
-	ln  net.Listener
-	srv *http.Server
+	// bindMu 保护 workDir/dataDir：二者在运行期可被**重新绑定** —— browser 形态「打开目录」
+	// = 客户端重新认领（instance-claim）到目标 work_dir → 本 instance 收到 instance-register
+	// 后**就地更新**作用域（文件面 / 数据面 / 只读面随之内聚切换；见 42 §2.22）。初值由 New 按
+	// Options 填充，之后仅由 applyInstanceBind 更新（读一律经 scope/workDirPath/dataDirPath）。
+	bindMu sync.RWMutex
+
+	sub     mq.Sub
+	bindSub mq.Sub
+	ln      net.Listener
+	srv     *http.Server
 }
 
 // New 构造入口（未监听；Start 才注册 instance + 监听）。
@@ -148,22 +165,62 @@ func New(bus mq.Bus, opts Options) *Server {
 		addr = "127.0.0.1:" + addr // 裸端口 = 仅本机（默认安全绑定）
 	}
 	return &Server{
-		bus:        bus,
-		instanceID: id,
-		workDir:    opts.WorkDir,
-		dataDir:    opts.DataDir,
-		webRoot:    opts.WebRoot,
-		webFS:      opts.WebFS,
-		addr:       addr,
-		authCheck:  opts.AuthCheck,
-		facade:     opts.Facade,
-		published:  make(map[string][]pubStamp),
-		clients:    make(map[chan []byte]struct{}),
+		bus:            bus,
+		instanceID:     id,
+		workDir:        opts.WorkDir,
+		dataDir:        opts.DataDir,
+		webRoot:        opts.WebRoot,
+		webFS:          opts.WebFS,
+		addr:           addr,
+		authCheck:      opts.AuthCheck,
+		allowedRootsFn: opts.AllowedRoots,
+		facade:         opts.Facade,
+		published:      make(map[string][]pubStamp),
+		clients:        make(map[chan []byte]struct{}),
 	}
 }
 
 // InstanceID 返回单 instance 标识（日志用）。
 func (s *Server) InstanceID() string { return s.instanceID }
+
+// ── 实例作用域（work_dir / data_dir；可运行期重绑定）──
+
+// scope 取本实例当前作用域 (work_dir, data_dir) 快照（并发安全；多处消费先取快照再用）。
+func (s *Server) scope() (string, string) {
+	s.bindMu.RLock()
+	defer s.bindMu.RUnlock()
+	return s.workDir, s.dataDir
+}
+
+// workDirPath 取当前 work_dir（并发安全）。
+func (s *Server) workDirPath() string { wd, _ := s.scope(); return wd }
+
+// dataDirPath 取当前 data_dir（并发安全）。
+func (s *Server) dataDirPath() string { _, dd := s.scope(); return dd }
+
+// applyInstanceBind 处理 instance-register：**仅当**为本实例（instance_id 相符）且携带
+// work_dir 时更新作用域 —— browser 形态「打开目录」= 客户端重新认领（instance-claim）到新
+// work_dir（服务端已按 auth.projectRoots 校验，见 19 §C）；他实例 / 缺 work_dir → 忽略。
+func (s *Server) applyInstanceBind(payload []byte) {
+	var m struct {
+		InstanceID string `json:"instance_id"`
+		WorkDir    string `json:"work_dir"`
+		DataDir    string `json:"data_dir"`
+	}
+	if json.Unmarshal(payload, &m) != nil || m.InstanceID != s.instanceID {
+		return
+	}
+	wd := strings.TrimSpace(m.WorkDir)
+	if wd == "" {
+		return
+	}
+	s.bindMu.Lock()
+	s.workDir = wd
+	if dd := strings.TrimSpace(m.DataDir); dd != "" {
+		s.dataDir = dd
+	}
+	s.bindMu.Unlock()
+}
 
 // Addr 返回实际监听地址（Start 之后为真实地址）。
 func (s *Server) Addr() string {
@@ -198,12 +255,30 @@ func (s *Server) Start() error {
 	}
 	s.fsys = fsys
 
+	// instance-register 跟踪（**运行期重绑定**；见 42 §2.22）：本实例被**重新认领**到新
+	// work_dir（browser「打开目录」= 客户端重发 instance-claim）→ 收到 instance-register 后
+	// 就地更新本入口作用域，使文件面（filesys 绑定）/ 数据面（facade scope）/ 只读面（init-data、
+	// search、vcs）随之内聚切换。**复用既有 instance-register，不新增/修改消息面**。
+	bindSub, err := s.bus.On(msgkeys.TopicInstanceRegister, 0, func(_ context.Context, _ string, v *mq.Value) error {
+		s.applyInstanceBind(v.Payload)
+		return nil
+	})
+	if err != nil {
+		fsys.Stop()
+		s.fsys = nil
+		_ = sub.Unsubscribe()
+		s.sub = nil
+		return fmt.Errorf("httpapi: subscribe instance-register: %w", err)
+	}
+	s.bindSub = bindSub
+
 	// instance 注册：载荷字段与 GUI 桥一致（work_dir/data_dir 由服务端启动参数下发；
 	// 19 §5「instance-register 已带 work_dir/data_dir，消息面零变更」），client_type 标形态。
+	wd, dd := s.scope()
 	s.publish(msgkeys.TopicInstanceRegister, map[string]any{
 		"instance_id": s.instanceID,
-		"work_dir":    s.workDir,
-		"data_dir":    s.dataDir,
+		"work_dir":    wd,
+		"data_dir":    dd,
 		"client_type": "browser",
 	})
 
@@ -239,6 +314,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		_ = s.sub.Unsubscribe()
 		s.sub = nil
 	}
+	if s.bindSub != nil {
+		_ = s.bindSub.Unsubscribe()
+		s.bindSub = nil
+	}
 	if s.fsys != nil {
 		s.fsys.Stop()
 		s.fsys = nil
@@ -256,13 +335,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(publishPath, s.handlePublish)
 	mux.HandleFunc(eventsPath, s.handleEvents)
 	mux.HandleFunc(shimPath, s.handleShim)
-	mux.HandleFunc(dirsPath, s.handleDirs)
 	mux.HandleFunc("/", s.handleStatic)
 	return s.withAuth(mux)
 }
 
 // withAuth 是 HTTP 面的**服务端鉴权中间件**（browser 形态 requireAuth；61 §4.6）：未认证时对
-// **受保护面**（写操作 `/publish`、下行 `/events`、`/dirs`）返回 401 —— 令牌只从**连接层**读取
+// **受保护面**（写操作 `/publish`、下行 `/events`）返回 401 —— 令牌只从**连接层**读取
 // （cookie `chonkpilot-token` → AuthCheck，与首屏 `authed` 判定同源），**不接受前端自报**（22 §1）。
 //
 // 豁免（**必须未认证可达，否则把自己锁死**）：
@@ -286,11 +364,11 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 }
 
 // protectedRequest 判定请求是否落在**受鉴权保护**的 HTTP 面（未认证 → 401）：
-// `/events`（SSE 下行）、`/dirs`（目录清单）、`/publish`（**除 login-* 上行**）。
+// `/events`（SSE 下行）、`/publish`（**除 login-* 上行**）。
 // 静态面 / shim 面为豁免（见 withAuth 注释）。
 func (s *Server) protectedRequest(r *http.Request) bool {
 	switch r.URL.Path {
-	case eventsPath, dirsPath:
+	case eventsPath:
 		return true
 	case publishPath:
 		return !isLoginPublish(r)
@@ -321,22 +399,6 @@ func isLoginPublish(r *http.Request) bool {
 		return false
 	}
 	return isLoginTopic(probe.Type)
-}
-
-// handleDirs 是 native 目录选择器的**服务端等价面**（非 MQ HTTP 面）：
-// 列出本 instance 允许的目录（work_dir 及其子目录，规模受限）→
-// `{instance_id, work_dir, dirs:[{path,name,depth}]}`。
-// 只读、只暴露本 instance 作用域；**不下发清单外路径**（work_dir 由服务端绑定，客户端不可改）。
-func (s *Server) handleDirs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "GET required"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"instance_id": s.instanceID,
-		"work_dir":    filepath.ToSlash(s.workDir),
-		"dirs":        s.allowedDirs(),
-	})
 }
 
 // handleShim 提供前端桥 shim（SSE → window.mq.emitRemote）。
@@ -701,10 +763,11 @@ func (s *Server) publishV(subject string, payload any) (result any, errs []error
 // 2026-09-20（阶段 2b-1/2b-2）：`token` 由**入口从连接层取**（无条件覆盖前端自报的同名字段；
 // 未持有 = 置空）—— 身份由入口承载、**不采信前端 payload 里的身份字段**（61 §4.6 · 22 §1）。
 // 2026-10-09（B-30）：`instance_id` 与 `token` 同口径 —— **本连接实例为准**（客户端不得自报）：
-//  ① 自报值 ≠ 本连接实例 → 无条件覆盖为本实例（Warn 记录伪造尝试：上报值 + 被覆盖事实）；
-//  ② 缺失 → 报错拒绝（error 供调用点转 errors 应答，文案含 instance_id required）；
-//  ③ 唯一豁免 = `instance-claim`（msgkeys.TopicInstanceClaim）：语义即前端启动认领实例，
-//     缺失 id 属正常（不报错；已带值仍按 ① 处理）。
+//
+//	① 自报值 ≠ 本连接实例 → 无条件覆盖为本实例（Warn 记录伪造尝试：上报值 + 被覆盖事实）；
+//	② 缺失 → 报错拒绝（error 供调用点转 errors 应答，文案含 instance_id required）；
+//	③ 唯一豁免 = `instance-claim`（msgkeys.TopicInstanceClaim）：语义即前端启动认领实例，
+//	   缺失 id 属正常（不报错；已带值仍按 ① 处理）。
 //
 // 与同入口 bindData（强制绑定）/ bindFilesys（强制绑定 work_dir）口径一致；仅加强入口校验，
 // 不改 61-消息一览 的消息字段定义（消息面不变）。

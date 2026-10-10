@@ -38,6 +38,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -70,6 +71,9 @@ type claimReq struct {
 	User       string `json:"user"`
 	WorkDir    string `json:"work_dir"`
 	Token      string `json:"token"`
+	// Local 是**入口注入的连接层信任标记**（🆕 2026-10-09；非消息面字段，同 instance_id/token 口径）：
+	// 本机 UDS 前门注入 true → work_dir 取客户端提议、免鉴权（61 §4.6「免鉴权由前门决定」）。
+	Local bool `json:"__local"`
 }
 
 // onInstanceClaim 处理一次 instance-claim（方法面：结果写 v.Result、失败码进 v.Errors）。
@@ -114,6 +118,7 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 		"instance_id": id,
 		"work_dir":    workDir,
 		"data_dir":    dataDir,
+		"user":        registerUserName(req.User), // 🆕 2026-10-09：instance-register 的 `user` 必填
 	}
 	if clientType != "" {
 		reg["client_type"] = clientType // 既有登记值（gui/browser/cli）；未登记 → 字段缺省（不臆造）
@@ -138,7 +143,8 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 
 // resolveClaimTarget 按形态解析本次认领的 `work_dir` / `data_dir`（61 §4.1 ① · §4.6）。
 //
-//	desktop（免鉴权）：work_dir/data_dir = 入口绑定或服务端启动参数（本机单用户）；
+//	desktop / flash（免鉴权）：work_dir/data_dir = 入口绑定或服务端启动参数（本机单用户 /
+//	                       本地免鉴权）；
 //	                       未带绑定又无启动参数 → instance-forbidden（不静默绑定空目录）；
 //	                       提议与绑定不一致 → instance-forbidden（**不静默改写入口绑定**，2a 口径）；
 //	gui / browser（要求认证）：
@@ -149,7 +155,17 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 //
 // 返回 (work_dir, data_dir, 错误码)；错误码空 = 通过。
 func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir string) (string, string, string) {
-	if s.Form() == FormDesktop {
+	// 本地前门（🆕 2026-10-09：UDS = 本机信任）—— work_dir 取**客户端提议**（server 无绑定），
+	// data_dir 随 work_dir 派生为 `<work_dir>/.chonkpilot`（与 desktop 单体口径一致）。
+	if req.Local {
+		wd := strings.TrimSpace(req.WorkDir)
+		if wd == "" {
+			return "", "", claimErrForbidden // 无提议 → 明确失败（不静默绑定空目录）
+		}
+		wd = filepath.Clean(wd)
+		return wd, filepath.Join(wd, ".chonkpilot"), ""
+	}
+	if f := s.Form(); f == FormDesktop {
 		workDir, dataDir := boundWorkDir, boundDataDir
 		if strings.TrimSpace(workDir) == "" {
 			// 既无实例登记、又无启动参数 → 不静默绑定空目录（明确失败，且不引导登录）。
@@ -192,6 +208,18 @@ func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir st
 	return auth.NormalizeDir(dir), dataDir, ""
 }
 
+// registerUserName 归一 `instance-register` 的 `user` 字段（🆕 2026-10-09；61 §4.1 ⑤ 该字段必填）：
+// 取客户端提议（本机形态自报 OS 用户名），空则回落**本机 OS 用户名**（服务端进程同一用户）。
+func registerUserName(proposed string) string {
+	if u := strings.TrimSpace(proposed); u != "" {
+		return u
+	}
+	if cu, err := user.Current(); err == nil && cu != nil && cu.Username != "" {
+		return cu.Username
+	}
+	return "unknown"
+}
+
 // allowWorkDir 判定用户对 work_dir 的访问权（61 §4.6「项目选择白名单」· 22 §6.7）：
 //
 //	① work_dir（规范化后）命中**既有项目**（`projects_by_path`）→ 要求该 user 在 `access`
@@ -221,6 +249,12 @@ func (s *Server) allowWorkDir(uid, dir string) (bool, error) {
 	_, err := s.authz.GrantProject(uid, dir)
 	return err == nil, err
 }
+
+// AllowedWorkRoots 返回**允许根列表**（`auth.projectRoots`；缺省 = 用户数据根）——
+// 供 HTTP 入口（browser 形态）**同源**取「允许目录清单根」：`gui.show-dialog` 的 options
+// 与 `gui.dir.open` 归属校验都以它为准（见 `httpapi.Options.AllowedRoots`）。单一来源 =
+// 本方法（`projectRoots()`），避免入口侧另起一份默认值解析。
+func (s *Server) AllowedWorkRoots() []string { return s.projectRoots() }
 
 // projectRoots 读配置 `auth.projectRoots`（**允许根列表**）：空 = 缺省 `<用户数据根>`。
 func (s *Server) projectRoots() []string {

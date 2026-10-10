@@ -85,6 +85,8 @@ export function readFile(path) {
  * 用于二进制预览：图片、PDF、Office 文档等
  * 返回形如 /show/D:/path/to/file?instance_id=<id> 的 URL（同源，无需 CORS）
  * instance_id 为业务惯例必带字段（61-消息一览 §0）；桥侧 /show/ 只按路径取文件，忽略该 query。
+ * 另支持**相对数据根**的上传引用（🆕 2026-10-10，`tmp/uploads/<name>` / `screenshot/<name>`）：
+ * fileserver 按 `UploadRoot` 解析为绝对路径后服务（见 61 §1 gui.upload）。
  */
 export function getFileUrl(path) {
   if (!path) return ''

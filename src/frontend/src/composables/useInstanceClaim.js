@@ -17,7 +17,8 @@
  *   - 心跳 `instance-heartbeat {instance_id}`（30s；payload 由 mq 统一注入 instance_id）。
  *
  * 心跳门控（**保留既有 `-tags split` 语义**，61 §4.1 ②）：**仅分离形态**（首屏注入
- * `__ck.form` = gui / browser）发布；desktop（桌面单体默认构建）不发布、服务端亦不判超时。
+ * `__ck.form` = gui / browser）发布；desktop（桌面单体 / **flash 薄壳**）不发布、服务端亦不判超时。
+ * **flash 薄壳不发布心跳** —— 其存活由 **UDS 连接断开**判定（见 61 §4.1 · 62 §3A）。
  *
  * 模块级单例状态（App 启动/登录后认领一次；其它消费者可读同一份）。
  */
@@ -53,12 +54,12 @@ export function stopHeartbeat() {
 }
 
 /**
- * 起 30s 心跳（仅分离形态；重复调用幂等 —— 先停后起）。
+ * 起心跳（仅分离形态；重复调用幂等 —— 先停后起）。周期 30s。
  * payload = {} → mq 统一注入 instance_id → 线上载荷即 `{instance_id}`（61 §4.1 ②）。
  */
 export function startHeartbeat() {
   stopHeartbeat()
-  if (!isSplitForm()) return // desktop（桌面单体默认构建）：不发布心跳（-tags split 门控同口径）
+  if (!isSplitForm()) return // desktop（桌面单体 / flash 薄壳）：不发布心跳（-tags split 门控同口径）
   heartbeatTimer = setInterval(() => {
     mq.emit(MsgTopics.instanceHeartbeat, {})
   }, HEARTBEAT_INTERVAL_MS)

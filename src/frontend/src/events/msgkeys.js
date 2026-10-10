@@ -14,7 +14,9 @@ export const MsgTopics = {
   guiWindowList: 'gui.window.list',
   guiWindowClosed: 'gui.window.closed',
   guiWindowSetTitle: 'gui.window.set-title',
-  guiDirOpenDialog: 'gui.dir.open-dialog',
+  guiSelectDir: 'gui.select-dir',
+  guiSelectedDir: 'gui.selected-dir',
+  guiShowDialog: 'gui.show-dialog',
   guiDirOpen: 'gui.dir.open',
   guiRecentList: 'gui.recent.list',
   guiRecentRemove: 'gui.recent.remove',
@@ -24,6 +26,7 @@ export const MsgTopics = {
   guiOpenWith: 'gui.open-with',
   guiSearch: 'gui.search',
   guiCapture: 'gui.capture',
+  guiCaptured: 'gui.captured',
   guiUpload: 'gui.upload',
   guiDevtoolsOpen: 'gui.devtools.open',
   guiPickExecutable: 'gui.pick-executable',
@@ -132,6 +135,8 @@ export const MsgTopics = {
   instanceRegister: 'instance-register',
   instanceHeartbeat: 'instance-heartbeat',
   instanceExit: 'instance-exit',
+  instanceBringToTop: 'instance-bring-to-top',
+  instanceGotoTop: 'instance-goto-top',
   llmStart: 'llm-start',
   llmSend: 'llm-send',
   llmCancel: 'llm-cancel',
@@ -262,7 +267,6 @@ export const FieldKeys = {
   exec_json: 'exec_json',
   expandedKeys: 'expandedKeys',
   expires_at: 'expires_at',
-  file_id: 'file_id',
   files: 'files',
   filetree: 'filetree',
   filetreeWidth: 'filetreeWidth',
@@ -337,6 +341,7 @@ export const FieldKeys = {
   overwrite: 'overwrite',
   owner: 'owner',
   parent: 'parent',
+  parent_instance: 'parent_instance',
   parent_node_id: 'parent_node_id',
   parent_session_id: 'parent_session_id',
   parents: 'parents',
@@ -429,6 +434,7 @@ export const FieldKeys = {
   username: 'username',
   vfts: 'vfts',
   waiting: 'waiting',
+  widget_id: 'widget_id',
   window: 'window',
   window_id: 'window_id',
   windows: 'windows',
@@ -580,6 +586,7 @@ export const FieldDict = {
   overwrite: 'overwrite',
   owner: 'owner',
   parent: 'parent',
+  parent_instance: 'parent_instance',
   parent_node_id: 'parent_node_id',
   parent_session_id: 'parent_session_id',
   parents: 'parents',
@@ -669,6 +676,7 @@ export const FieldDict = {
   'vcs-git-installed': 'gitInstalled',
   vfts: 'vfts',
   waiting: 'waiting',
+  widget_id: 'widget_id',
   window: 'window',
   window_id: 'window_id',
   windows: 'windows',
@@ -741,9 +749,24 @@ export const GuiWindowSetTitleKeys = {
   title: 'title',
 }
 
-/** gui.dir.open-dialog 字段键（payload/result/event 合并去重）。 */
-export const GuiDirOpenDialogKeys = {
+/** gui.select-dir 字段键（payload/result/event 合并去重）。 */
+export const GuiSelectDirKeys = {
+  ok: 'ok',
+  widget_id: 'widget_id',
+}
+
+/** gui.selected-dir 字段键（payload/result/event 合并去重）。 */
+export const GuiSelectedDirKeys = {
   path: 'path',
+  status: 'status',
+  widget_id: 'widget_id',
+}
+
+/** gui.show-dialog 字段键（payload/result/event 合并去重）。 */
+export const GuiShowDialogKeys = {
+  kind: 'kind',
+  options: 'options',
+  widget_id: 'widget_id',
 }
 
 /** gui.dir.open 字段键（payload/result/event 合并去重）。 */
@@ -797,22 +820,23 @@ export const GuiSearchKeys = {
 
 /** gui.capture 字段键（payload/result/event 合并去重）。 */
 export const GuiCaptureKeys = {
+  ok: 'ok',
+  widget_id: 'widget_id',
+}
+
+/** gui.captured 字段键（payload/result/event 合并去重）。 */
+export const GuiCapturedKeys = {
   b64: 'b64',
-  file_id: 'file_id',
-  name: 'name',
-  path: 'path',
-  size: 'size',
-  url: 'url',
+  status: 'status',
+  widget_id: 'widget_id',
 }
 
 /** gui.upload 字段键（payload/result/event 合并去重）。 */
 export const GuiUploadKeys = {
   data: 'data',
-  file_id: 'file_id',
+  dir: 'dir',
   kind: 'kind',
   name: 'name',
-  path: 'path',
-  url: 'url',
 }
 
 /** gui.pick-executable 字段键（payload/result/event 合并去重）。 */
@@ -1582,6 +1606,8 @@ export const InstanceRegisterKeys = {
   client_type: 'client_type',
   data_dir: 'data_dir',
   instance_id: 'instance_id',
+  parent_instance: 'parent_instance',
+  user: 'user',
   work_dir: 'work_dir',
 }
 
@@ -1593,6 +1619,11 @@ export const InstanceHeartbeatKeys = {
 /** instance-exit 字段键（payload/result/event 合并去重）。 */
 export const InstanceExitKeys = {
   instance_id: 'instance_id',
+}
+
+/** instance-bring-to-top 字段键（payload/result/event 合并去重）。 */
+export const InstanceBringToTopKeys = {
+  data_dir: 'data_dir',
 }
 
 /** llm-start 字段键（payload/result/event 合并去重）。 */

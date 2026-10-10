@@ -64,7 +64,7 @@ func TestChatImageContentParts(t *testing.T) {
 	evs, err := chatTest(t, c, []ChatMsg{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Kind: "text", Content: imageMsg("shot.png", path, "这张图里是什么？")},
-	}, nil, ChatOptions{Images: ImageOptions{UploadDir: dir}})
+	}, nil, ChatOptions{Images: ImageOptions{DataRoot: dir}})
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestResponsesImageInputItem(t *testing.T) {
 	evs, err := chatTest(t, spec, []ChatMsg{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Kind: "text", Content: imageMsg("shot.png", path, "描述这张图")},
-	}, nil, ChatOptions{Images: ImageOptions{UploadDir: dir}})
+	}, nil, ChatOptions{Images: ImageOptions{DataRoot: dir}})
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestChatImageErrors(t *testing.T) {
 			defer srv.Close()
 
 			spec := openAITestSpec(srv.URL, "mock")
-			_, err := chatTest(t, spec, tc.msgs, nil, ChatOptions{Images: ImageOptions{UploadDir: dir}})
+			_, err := chatTest(t, spec, tc.msgs, nil, ChatOptions{Images: ImageOptions{DataRoot: dir}})
 			if err == nil {
 				t.Fatalf("应返回错误（%s）", tc.want)
 			}
@@ -240,7 +240,7 @@ func TestChatImageErrors(t *testing.T) {
 }
 
 // TestImageRecentTurnsRule（④）：仅最近 KeepTurns 轮保留原图，更早轮次的引用降级为文本占位；
-// 上传根之外的本地路径原样保留为文本（不读文件、不报错）。
+// 数据根之外的本地路径原样保留为文本（不读文件、不报错）。
 func TestImageRecentTurnsRule(t *testing.T) {
 	dir := t.TempDir()
 	old := writeTestFile(t, dir, "old.png", testPNG("old"))
@@ -260,7 +260,7 @@ func TestImageRecentTurnsRule(t *testing.T) {
 		{Role: "user", Kind: "text", Content: imageMsg("out.png", outside, "根外路径")},
 		{Role: "assistant", Content: "根外答复"},
 		{Role: "user", Kind: "text", Content: imageMsg("cur.png", cur, "本轮")},
-	}, nil, ChatOptions{Images: ImageOptions{UploadDir: dir, KeepTurns: 1}})
+	}, nil, ChatOptions{Images: ImageOptions{DataRoot: dir, KeepTurns: 1}})
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -298,9 +298,9 @@ func TestImageRecentTurnsRule(t *testing.T) {
 }
 
 // TestTurnSendsImagesEndToEnd：端到端接线（turn.go → ChatOptions.Images）——真实轮次里，
-// 用户消息中的附件引用（上传目录内）被展开为 image_url 内容块（data URL）。
-// 上传目录 = prjusr 数据根 tmp/uploads（instance 未带 data_dir → `~/.chonkpilot/data/<prj-id>`，
-// 测试内由 persist 的 UsrPath 隔离到临时数据主目录；与桥 gui.upload 落点同源，见 24 §3.2 MW-8）。
+// 用户消息中的附件引用（相对数据根的 `dir/name`）被展开为 image_url 内容块（data URL）。
+// 数据根 = prjusr 数据根（instance 未带 data_dir → `~/.chonkpilot/data/<prj-id>`，测试内由
+// persist 的 UsrPath 隔离到临时数据主目录；与桥 gui.upload 落点同源，见 24 §3.2 MW-8）。
 func TestTurnSendsImagesEndToEnd(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []map[string]any
@@ -324,12 +324,12 @@ func TestTurnSendsImagesEndToEnd(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	pngData := testPNG("e2e")
-	imgPath := writeTestFile(t, upDir, "shot.png", pngData)
+	writeTestFile(t, upDir, "shot.png", pngData)
 
 	startTurn(t, s, "s-img", "t-img")
 	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-img", "turn": "t-img",
-		"type": "text-user", "content": imageMsg("shot.png", imgPath, "看图"),
+		"type": "text-user", "content": imageMsg("shot.png", "tmp/uploads/shot.png", "看图"),
 	}))
 	evs := collectTurn(t, s.bus, "t-img", 10*time.Second)
 	if c := lastComplete(evs); c == nil || c["status"] != "complete" {
@@ -357,7 +357,54 @@ func TestTurnSendsImagesEndToEnd(t *testing.T) {
 	}
 }
 
-// TestImagesDisabledPlainText（⑤ 不回归）：UploadDir 为空 → 引用原样作为文本发送（无内容块）。
+// TestImageRelativeRefAndEscape：消息内引用为相对数据根的 `dir/name`（🆕 2026-10-10）；
+// 越出数据根的相对引用（`../x`）**原样保留为文本**（不读文件、不报错）。
+func TestImageRelativeRefAndEscape(t *testing.T) {
+	dir := t.TempDir()
+	pngData := testPNG("rel")
+	os.MkdirAll(filepath.Join(dir, "screenshot"), 0755)
+	writeTestFile(t, filepath.Join(dir, "screenshot"), "shot.png", pngData)
+	outside := writeTestFile(t, t.TempDir(), "out.png", testPNG("out"))
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		llmSSE(w, []string{sseChunk(map[string]any{"content": "ok"}, "stop")})
+	}))
+	defer srv.Close()
+
+	evs, err := chatTest(t, openAITestSpec(srv.URL, "mock"), []ChatMsg{
+		{Role: "user", Kind: "text", Content: imageMsg("shot.png", "screenshot/shot.png", "看图")},
+		{Role: "assistant", Content: "ok1"},
+		{Role: "user", Kind: "text", Content: imageMsg("out.png", outside, "根外路径")},
+	}, nil, ChatOptions{Images: ImageOptions{DataRoot: dir}})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	for ev := range evs {
+		if ev.Err != nil {
+			t.Fatalf("stream err: %v", ev.Err)
+		}
+	}
+	msgs, _ := got["messages"].([]any)
+	m0, _ := msgs[0].(map[string]any)
+	parts, ok := m0["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("相对引用 content=%#v want 2 块", m0["content"])
+	}
+	p1, _ := parts[1].(map[string]any)
+	iu, _ := p1["image_url"].(map[string]any)
+	if want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngData); iu["url"] != want {
+		t.Fatalf("相对引用 data URL 不符: %v", iu["url"])
+	}
+	// 数据根之外的绝对路径 → 原样保留为文本
+	m2, _ := msgs[2].(map[string]any)
+	if s, ok := m2["content"].(string); !ok || s != imageMsg("out.png", outside, "根外路径") {
+		t.Fatalf("根外路径 content=%#v want 原文", m2["content"])
+	}
+}
+
+// TestImagesDisabledPlainText（⑤ 不回归）：DataRoot 为空 → 引用原样作为文本发送（无内容块）。
 func TestImagesDisabledPlainText(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTestFile(t, dir, "shot.png", testPNG("x"))

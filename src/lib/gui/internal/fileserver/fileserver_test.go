@@ -114,3 +114,42 @@ func mkDirLink(t *testing.T, link, target string) error {
 	}
 	return exec.Command("cmd", "/c", "mklink", "/J", link, target).Run()
 }
+
+// TestShowResolvesRelativeUploadRef（🆕 2026-10-10）：消息内附件/截图引用为相对数据根的
+// `dir/name`（61 §1 gui.upload）——`/show/<dir/name>` 按 UploadRoot 解析为绝对路径后服务；
+// UploadRoot 空 或 越界相对引用（`..`）→ 403。
+func TestShowResolvesRelativeUploadRef(t *testing.T) {
+	workDir := t.TempDir()
+	prjUsrRoot := t.TempDir()
+	h := &FileShowHandler{WorkDir: workDir, DataDirs: []string{prjUsrRoot}, UploadRoot: prjUsrRoot}
+	writeFile(t, filepath.Join(prjUsrRoot, "screenshot", "shot.png"), "png-bytes")
+
+	req := httptest.NewRequest(http.MethodGet, "/show/screenshot/shot.png", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("相对引用应可服务：code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if body, _ := io.ReadAll(rec.Body); string(body) != "png-bytes" {
+		t.Fatalf("内容不符：%q", body)
+	}
+
+	// 越界相对引用 → 403（不逃逸 UploadRoot）
+	for _, p := range []string{"/show/../secret.txt", "/show/a/../../secret.txt"} {
+		r := httptest.NewRequest(http.MethodGet, p, nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("越界相对引用 %s 应 403：code=%d", p, w.Code)
+		}
+	}
+
+	// UploadRoot 空 → 相对引用 403（绝对路径引用行为不受影响）
+	h2 := &FileShowHandler{WorkDir: workDir, DataDirs: []string{prjUsrRoot}}
+	r2 := httptest.NewRequest(http.MethodGet, "/show/screenshot/shot.png", nil)
+	w2 := httptest.NewRecorder()
+	h2.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("UploadRoot 空时相对引用应 403：code=%d", w2.Code)
+	}
+}

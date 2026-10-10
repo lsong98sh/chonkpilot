@@ -22,7 +22,7 @@
  * 本模块为**叶子模块**（不 import 任何前端模块）→ 可被 `utils/mq.js` 安全引用（无循环依赖）。
  */
 
-/** 三形态取值（61 §4.6）。 */
+/** 形态取值（61 §4.6；三形态。🆕 2026-10-09：flash 薄壳客户端注入 `desktop` 语义 —— 本地免鉴权 + 不心跳）。 */
 export const FORMS = ['desktop', 'gui', 'browser']
 
 /** 首屏注入对象（`window.__ck`；未注入 → null）。 */
@@ -41,6 +41,7 @@ export function runtimeForm() {
  * 是否分离形态（= 宿主编译开关 `-tags split` 的前端口径）：
  * desktop（桌面单体）→ 不发布 instance-heartbeat、服务端不据心跳判超时；
  * gui / browser（分离形态）→ 前端 SPA 发布（61 §4.1 ②：发布侧 = 前端）。
+ * **flash 薄壳客户端注入 `desktop`**（🆕 2026-10-09）—— 不发布心跳（存活由 UDS 连接断开判定）。
  */
 export function isSplitForm() {
   return runtimeForm() !== 'desktop'

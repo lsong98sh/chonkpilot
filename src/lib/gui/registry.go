@@ -47,6 +47,29 @@ func (r *windowRegistry) setMain(h *windowHost) {
 	r.mu.Unlock()
 }
 
+// bringMainToTop 恢复并前置主窗口（flash 远程薄壳：`instance-goto-top` 控制帧处理，
+// 由 UDS 读循环 goroutine 调用 → 跨线程，ShowWindow/SetForegroundWindow 幂等安全）。
+// 主窗口尚未创建 → 空操作。
+func (r *windowRegistry) bringMainToTop() {
+	r.mu.Lock()
+	h := r.main
+	r.mu.Unlock()
+	if h != nil {
+		activateWindow(h.hwnd)
+	}
+}
+
+// destroyMain 关闭主窗口（flash 远程薄壳：UDS 连接断开 = 实例退出 → 进程退出）。
+// destroy 投 WM_CLOSE 给主窗口线程，跨线程安全；主窗口未创建 → 空操作。
+func (r *windowRegistry) destroyMain() {
+	r.mu.Lock()
+	h := r.main
+	r.mu.Unlock()
+	if h != nil {
+		h.destroy()
+	}
+}
+
 // open 打开/激活一个纯对话窗口（gui.window.open-chat，61 §1；幂等）：
 //   - 该 session 已有对话窗口 → **激活**（ShowWindow(SW_RESTORE)+SetForegroundWindow），不新建；
 //   - 未开且未达上限（maxChatWindows）→ 新建对话窗口并绑定该 session；

@@ -31,7 +31,13 @@ import (
 // 取值**单一来源** = chonkpilot-lib/heartbeat：周期 30s、超时 90s）。
 var sweepInterval = heartbeat.Interval
 
-// startInstanceSweep 起心跳超时扫描 goroutine（周期 sweepInterval），返回停止函数
+// sweepTick 返回本形态实际扫描周期 = sweepInterval（heartbeat.Interval，30s）。
+// 超时阈值统一取 heartbeat.Timeout（90s = 3× 周期）。
+func (s *Server) sweepTick() time.Duration {
+	return sweepInterval
+}
+
+// startInstanceSweep 起心跳超时扫描 goroutine（周期 sweepTick），返回停止函数
 // （幂等：可重复调用；Server.Stop 调用。停止时等待 goroutine 退出——Stop 返回后无扫描在跑）。
 func (s *Server) startInstanceSweep() func() {
 	stop := make(chan struct{})
@@ -39,7 +45,7 @@ func (s *Server) startInstanceSweep() func() {
 	var once sync.Once
 	go func() {
 		defer close(done)
-		t := time.NewTicker(sweepInterval)
+		t := time.NewTicker(s.sweepTick())
 		defer t.Stop()
 		for {
 			select {
@@ -54,15 +60,16 @@ func (s *Server) startInstanceSweep() func() {
 }
 
 // sweepStaleInstances 扫描一次：instanceManager.Sweep 返回的陈旧实例（LastBeat 距 now ≥
-// HeartbeatTimeout）逐个走既有退出清理（exitInstance）；实例视图移除由 Sweep 自身完成。
-// 清理后**补发 `instance-exit`**（G-29：超时回收 = 视同退出，与显式退出同一广播路径）——
-// 订阅方（含 filesys）据此解绑，见文件头说明。
+// heartbeat.Timeout（90s））逐个走既有退出清理（exitInstance）；实例视图移除
+// 由 Sweep 自身完成。清理后**补发 `instance-exit`**（G-29：超时回收 = 视同退出，与显式退出
+// 同一广播路径）—— 订阅方（含 filesys）据此解绑，见文件头说明。
 // 幂等：重复扫描无副作用（Sweep 已把陈旧实例移出视图 → 不再重复清理/重复广播）；
 // 订阅方重复收到同一 id（如本包与 persist 两处扫描同时判定）亦无副作用。
 func (s *Server) sweepStaleInstances() {
-	for _, info := range s.im.Sweep(heartbeat.Timeout) {
+	timeout := heartbeat.Timeout
+	for _, info := range s.im.Sweep(timeout) {
 		logf("[chonkpilot-server] 实例 %s 心跳超时 %v → 视同退出（分离形态）\n",
-			info.ID, heartbeat.Timeout)
+			info.ID, timeout)
 		s.exitInstance(info.ID)
 		s.publishInstanceExit(info.ID)
 	}

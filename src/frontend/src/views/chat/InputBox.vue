@@ -142,7 +142,7 @@ import { useI18n } from 'vue-i18n'
 import { Button, Popover, Tag, message as uiMessage } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import mq from '../../utils/mq'
-import { MsgTopics } from '../../events/msgkeys'
+import { MsgTopics, GuiUploadKeys } from '../../events/msgkeys'
 import { getFileUrl } from '../../api/file'
 import { EventNames } from '../../events/event-names'
 import { formatItemText } from '../../composables/useSendQueue'
@@ -228,13 +228,14 @@ function autoResize() {
 }
 
 // 序列化发送内容为 markdown 纯文本（20-gui）：
-//   图片 → ![名](路径)；文件 → [名](路径)；随后接文本（附件在前）
+//   图片 → ![名](dir/名)；文件 → [名](dir/名)；随后接文本（附件在前）
+//   引用 = **相对数据根**的 `dir/名`（server 落盘决定，见 61 §1 gui.upload）
 //   + 已选 prompt（25 §7）：内容并入 user 消息文本头部（**零契约变更**：消息面字段不变）
 function serialize() {
   const parts = []
   for (const a of attachments.value) {
-    if (a.kind === 'image') parts.push(`![${a.name}](${a.path})`)
-    else parts.push(`[${a.name}](${a.path})`)
+    if (a.kind === 'image') parts.push(`![${a.name}](${a.ref})`)
+    else parts.push(`[${a.name}](${a.ref})`)
   }
   const t = (text.value || '').trim()
   if (t) parts.push(t)
@@ -306,27 +307,26 @@ function onDrop(e) {
 // 附件唯一标识自增序号（上传回执按 uid 定位，避免删除其它附件导致下标漂移）
 let attachSeq = 0
 
-// ── 附件上传（gui.upload → 数据根 tmp/uploads/，result 含 /show/ 预览 url/path/file_id）──
-// 先插入「上传中」chip（图片用本地 dataUrl 作缩略图即时可见），回执后补 path/url/fileId 转为可发送；
-// 失败 → 移除该 chip 并明确报错（不静默丢）。
+// ── 附件上传（gui.upload → server 落盘 <数据根>/tmp/uploads/<name>，result 只回 name）──
+// 先插入「上传中」chip（图片用本地 dataUrl 作缩略图即时可见），回执后补 ref=`tmp/uploads/<name>`
+// 转为可发送；失败 → 移除该 chip 并明确报错（不静默丢）。
 function upload(file) {
   const kind = file.type && file.type.startsWith('image/') ? 'image' : 'file'
   const uid = 'att-' + (++attachSeq)
-  attachments.value.push({ uid, kind, name: file.name, path: '', url: '', fileId: '', pending: true })
+  attachments.value.push({ uid, kind, name: file.name, ref: '', url: '', pending: true })
   const find = () => attachments.value.find(a => a.uid === uid)
   readAsDataURL(file).then(dataUrl => {
     const a = find()
     if (a && kind === 'image') a.url = dataUrl // 本地预览（落盘前的缩略图）
     nextTick(() => autoResize())
-    return mq.emit(MsgTopics.guiUpload, { name: file.name, data: dataUrl, kind })
+    return mq.emit(MsgTopics.guiUpload, { name: file.name, data: dataUrl, kind, dir: 'tmp/uploads' })
   }).then((env) => {
     const res = env && env.backend && env.backend.result
     const a = find()
     if (!a) return
-    if (!res || !res.path) throw new Error('upload: empty result')
-    a.path = res.path
-    a.url = res.url || a.url
-    a.fileId = res.file_id || ''
+    const name = res && res[GuiUploadKeys.name]
+    if (!name) throw new Error('upload: empty result')
+    a.ref = 'tmp/uploads/' + name
     a.pending = false
     nextTick(() => autoResize())
   }).catch(e => {
@@ -389,12 +389,13 @@ function onQueueRestore({ text: restored }) {
   setEditText(text.value ? restored + '\n' + text.value : restored)
 }
 
-// 外部注入附件（截图按钮 / 后续拖入）：与粘贴/拖入图片同一链路
+// 外部注入附件（截图按钮 / 后续拖入）：与粘贴/拖入图片同一链路。
+// payload = {kind, name, ref, url?}（ref = 相对数据根的 `dir/名`，见 61 §1 gui.upload）。
 function onInsertAttachment(payload) {
-  if (!payload || !payload.path) return
+  if (!payload || !payload.ref) return
   attachments.value.push({
     kind: payload.kind || 'file', name: payload.name || 'attachment',
-    path: payload.path, url: payload.url || '', fileId: payload.fileId || '',
+    ref: payload.ref, url: payload.url || '',
   })
   nextTick(() => autoResize())
 }
@@ -404,8 +405,8 @@ function setEditText(t) {
   const { attachments: atts, text: clean } = parseAttachmentMarkers(t)
   text.value = clean
   attachments.value = atts.map(a => ({
-    kind: a.kind, name: a.name, path: a.path,
-    url: a.path && !a.path.startsWith('/') ? getFileUrl(a.path) : (a.url || ''),
+    kind: a.kind, name: a.name, ref: a.ref,
+    url: getFileUrl(a.ref),
   }))
   if (editRef.value) {
     editRef.value.innerHTML = ''
@@ -415,23 +416,25 @@ function setEditText(t) {
   nextTick(() => autoResize())
 }
 
-// 从 md 文本提取附件标记：![名](路径) → image；[名](路径) → file（仅本地路径，排除 http 链接）
+// 从 md 文本提取附件标记：![名](dir/名) → image；[名](dir/名) → file（仅本地/上传引用，排除 http 链接）
 function parseAttachmentMarkers(md) {
   const atts = []
   let clean = md
-  clean = clean.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, name, path) => {
-    if (isLocalPath(path)) atts.push({ kind: 'image', name: name || 'image', path })
+  clean = clean.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, name, ref) => {
+    if (isLocalPath(ref)) atts.push({ kind: 'image', name: name || 'image', ref })
     return ''
   })
-  clean = clean.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, name, path) => {
-    if (isLocalPath(path)) atts.push({ kind: 'file', name: name || 'file', path })
+  clean = clean.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, name, ref) => {
+    if (isLocalPath(ref)) atts.push({ kind: 'file', name: name || 'file', ref })
     return ''
   })
   return { attachments: atts, text: clean.trim() }
 }
 
+// 本地引用判定：Windows 绝对路径（历史消息）或 相对数据根的上传引用（tmp/uploads/、screenshot/）。
 function isLocalPath(p) {
-  return !/^https?:/i.test(p) && /^[A-Za-z]:[\\/]/.test(p)
+  if (/^https?:/i.test(p)) return false
+  return /^[A-Za-z]:[\\/]/.test(p) || /^(?:tmp\/uploads|screenshot)\//.test(p)
 }
 
 function placeCaretAtEnd() {

@@ -42,11 +42,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// 宿主形态（61 §4.6：三形态 = desktop / gui / browser）—— **由壳静态给定**（见 Main 的
-// `opts.Form`），不再由本包的编译开关（原 form_inprocess.go / form_split.go 的
+// 宿主形态（61 §4.6：desktop / gui / browser）—— **由壳静态给定**
+// （见 Main 的 `opts.Form`），不再由本包的编译开关（原 form_inprocess.go / form_split.go 的
 // `runtimeForm()`）决定宿主分支。
+//
+// 🆕 2026-10-09：**flash 薄壳客户端注入 `desktop` 语义**（本地免鉴权 + 前端不心跳）——
+// 免鉴权由**前门**决定（UDS = 本机信任），形态取值保持三态、不增 `flash`。
 const (
-	// FormDesktop = 桌面单体（GUI 内嵌 server，本机单用户、免鉴权）。
+	// FormDesktop = 桌面单体（GUI 内嵌 server，本机单用户、免鉴权）—— flash 薄壳同此语义。
 	FormDesktop = "desktop"
 	// FormGui = GUI 客户端 + 独立 server（可异地 → 要求认证）。
 	FormGui = "gui"
