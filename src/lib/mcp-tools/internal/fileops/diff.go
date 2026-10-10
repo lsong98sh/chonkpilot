@@ -9,6 +9,10 @@ import (
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
+// maxDiffBytes 是 file_diff 单侧文件尺寸上限（8MB）：diffmatchpatch 为 O(n²) 量级，
+// 超限直接报错而非尝试全量 diff，防大文件 OOM（R7-C-3）。
+const maxDiffBytes = 8 << 20
+
 // HandleDiff 生成两文件（或两组路径）间的统一 diff。
 func HandleDiff(workDir string, args map[string]interface{}) *cli.Result {
 	// pair 携带两侧参数的来源标签（la/lb），便于路径违规时指明是哪一个。
@@ -17,14 +21,18 @@ func HandleDiff(workDir string, args map[string]interface{}) *cli.Result {
 
 	if raw, ok := args["files"].([]interface{}); ok {
 		for i, r := range raw {
-			if m, ok := r.(map[string]interface{}); ok {
-				p, _ := m["path"].(string)
-				p2, _ := m["path2"].(string)
-				if p != "" && p2 != "" {
-					pairs = append(pairs, pair{p, p2,
-						fmt.Sprintf("files[%d].path", i), fmt.Sprintf("files[%d].path2", i)})
-				}
+			m, ok := r.(map[string]interface{})
+			if !ok {
+				return cli.Err("file_diff", fmt.Sprintf("files[%d]: expected object", i))
 			}
+			p, _ := m["path"].(string)
+			p2, _ := m["path2"].(string)
+			// 单对缺任一端 → 项级错误（不静默跳过，R7-C-11）。
+			if p == "" || p2 == "" {
+				return cli.Err("file_diff", fmt.Sprintf("files[%d]: path and path2 are required", i))
+			}
+			pairs = append(pairs, pair{p, p2,
+				fmt.Sprintf("files[%d].path", i), fmt.Sprintf("files[%d].path2", i)})
 		}
 	}
 	if f1, _ := args["file1"].(string); f1 != "" {
@@ -70,6 +78,12 @@ func HandleDiff(workDir string, args map[string]interface{}) *cli.Result {
 		}
 		if err := sandboxErr(rb, false); err != nil {
 			return cli.Err("file_diff", err.Error())
+		}
+		// R7-C-3：diffmatchpatch 为 O(n²) 内存/CPU，先按文件尺寸预检，超限直接拒绝（不整读、不 diff）。
+		for _, sp := range []struct{ disp, abs string }{{pr.a, ra}, {pr.b, rb}} {
+			if fi, serr := os.Stat(sp.abs); serr == nil && fi.Size() > maxDiffBytes {
+				return cli.Err("file_diff", fmt.Sprintf("%s 超过 diff 上限（%d 字节），请分段比较", sp.disp, maxDiffBytes))
+			}
 		}
 		da, err := os.ReadFile(ra)
 		if err != nil {

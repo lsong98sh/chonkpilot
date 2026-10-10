@@ -79,6 +79,14 @@ func (s *Server) Start() error {
 	// 清理**陈旧** socket 文件（上次异常退出遗留）。注意：Windows 下先 `os.Remove` 再
 	// `net.Listen` 同一路径**重复绑定不失败**（会顶掉旧 socket 路径），故 **bind 结果不能作
 	// 进程单例判据**；server 单例由 `chonkpilot-lib/procsingleton`（命名互斥体）判定。
+	//
+	// R7-B-3：`os.Remove` 前先探测该 socket 是否**仍有活实例在监听**（dial 成功 = 有实例）——
+	// 有 → 拒绝启动，**不删**既有 socket（避免第二实例顶掉第一实例的前门）；仅探测失败
+	//（无监听 / 陈旧遗留）才清理重绑。
+	if c, derr := net.Dial("unix", s.path); derr == nil {
+		_ = c.Close()
+		return fmt.Errorf("uds: %s 已有实例在监听（拒绝启动第二实例）", s.path)
+	}
 	_ = os.Remove(s.path)
 	ln, err := net.Listen("unix", s.path)
 	if err != nil {
@@ -185,16 +193,44 @@ func (s *Server) connOf(instanceID string) *Conn {
 	return s.byInstance[instanceID]
 }
 
-// bind 绑定 连接 ↔ 实例（1:1；重复绑定同 id 覆盖）。
+// bind 绑定 连接 ↔ 实例（1:1）。同一实例已有**它条**连接 → 新连接顶替：改绑映射 +
+// **关闭旧连接**（R7-B-2：避免旧连接僵尸驻留 conns 且被误判为活实例）。
+// 另：同一条连接改绑新实例 id 时，清除其**旧 id** 映射（R7-D-10：防旧 id 幽灵绑定，
+// 否则 connOf(旧 id) 仍命中本连接、IsCurrent 误判）。
 func (s *Server) bind(c *Conn, instanceID string) {
 	if instanceID == "" {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	// 同一实例只允许一条连接：新连接顶替旧连接（旧连接由调用方决定是否关闭 —— 此处仅解绑映射）。
+	for id, cc := range s.byInstance {
+		if cc == c && id != instanceID {
+			delete(s.byInstance, id)
+		}
+	}
+	old := s.byInstance[instanceID]
 	s.byInstance[instanceID] = c
+	s.mu.Unlock()
+	if old != nil && old != c {
+		// 旧连接的 serve 循环随断开退出；其断开回调因已非当前绑定（isCurrent=false）不补发
+		// instance-exit（见 serve）。
+		old.close()
+	}
 }
+
+// IsCurrent 报告 c 是否仍是其实例**当前绑定**的连接（断开补发 instance-exit 的判据：
+// 被新连接顶替的旧连接不应触发退出，否则会误杀新连接实例）。
+func (s *Server) IsCurrent(c *Conn) bool {
+	id := c.Instance()
+	if id == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.byInstance[id] == c
+}
+
+// isCurrent 同 IsCurrent（包内短名）。
+func (s *Server) isCurrent(c *Conn) bool { return s.IsCurrent(c) }
 
 // unbind 解绑连接（断开时）。
 func (s *Server) unbind(c *Conn) {
@@ -278,7 +314,7 @@ func (c *Conn) write(v any) error {
 func (c *Conn) serve() {
 	r := bufio.NewReaderSize(c.nc, 64<<10)
 	for {
-		line, err := r.ReadBytes('\n')
+		line, err := readFrame(r)
 		if len(line) > 0 {
 			c.handleLine(line)
 		}
@@ -289,11 +325,13 @@ func (c *Conn) serve() {
 			break
 		}
 	}
-	c.srv.unbind(c)
-	c.close()
+	// 断开回调**先于 unbind**：调用方（udsapi）据 IsCurrent(c) 判「本连接仍是实例当前绑定」
+	// → 仅当前连接补发 instance-exit；被新连接顶替的旧连接（bind 已改绑）不补发（R7-B-2）。
 	if c.srv.opts.OnDisconnect != nil {
 		c.srv.opts.OnDisconnect(c)
 	}
+	c.srv.unbind(c)
+	c.close()
 }
 
 // handleLine 解析一行并处理（非 req 帧 / 解析失败 → 忽略）。

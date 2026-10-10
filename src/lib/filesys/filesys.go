@@ -452,6 +452,12 @@ func (f *Filesys) onCopy(_ context.Context, _ string, v *mq.Value) error {
 		v.Result = map[string]any{"ok": true, "path": np}
 		return nil
 	}
+	// 嵌套复制防护（R7-C-5）：目标在源目录内部时，copyTree 先 MkdirAll(dst) 再 ReadDir(src)，
+	// 新建的目标目录会被递归吸入 → 无限嵌套复制。与 fileops 的 CPY/MOV 同款判定拒绝。
+	if fi, serr := os.Stat(p); serr == nil && fi.IsDir() && isWithinDir(np, p) {
+		v.Errors = append(v.Errors, errCopy("target inside source dir"))
+		return nil
+	}
 	if _, err := os.Stat(np); err == nil && req.Overwrite == 0 {
 		v.Errors = append(v.Errors, errExists("target already exists"))
 		return nil
@@ -605,6 +611,17 @@ func samePath(a, b string) bool {
 		return true
 	}
 	return strings.EqualFold(resolveRealPath(a), resolveRealPath(b))
+}
+
+// isWithinDir 报告 child 是否严格位于 parent 目录内部（Clean 后按分隔符前缀判定，
+// 大小写不敏感以兼容 Windows；R7-C-5 复制嵌套防护用）。
+func isWithinDir(child, parent string) bool {
+	cp := filepath.Clean(parent)
+	cc := filepath.Clean(child)
+	if strings.EqualFold(cc, cp) {
+		return false
+	}
+	return strings.HasPrefix(strings.ToLower(cc), strings.ToLower(cp)+string(filepath.Separator))
 }
 
 // readTextFile 读文本文件（超限截断）。

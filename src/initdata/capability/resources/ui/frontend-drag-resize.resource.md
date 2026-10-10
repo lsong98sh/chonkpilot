@@ -5,34 +5,34 @@ uri=mcp://chonkpilot/resources/ui/frontend-drag-resize
 mimetype=text/markdown
 
 [description]
-前端（Vue 3）拖拽改变面板尺寸的实现模式：handle 捕获 mousedown → window mousemove 计算增量并 clamp → mouseup 收尾。含完整 Resizer.vue 组件示例。
+前端（Vue 3）拖拽改变面板尺寸的实现模式（**方案 A：视觉 / 命中解耦**）：本体恒 1px 发丝线、命中区为 5px 透明伪元素；handle 捕获 mousedown → window mousemove 计算增量并 clamp → mouseup 收尾。含完整 Resizer 组件示例。
 
 [content]
 # 拖拽 Resizer（Vue 3）
 
-## 设计要点（项目 Resizer 规范）
+## 设计要点（项目 Resizer 规范，方案 A：视觉/命中解耦）
 
-1. **handle 用真实 `<div>`**（不用 `::after`），占布局空间 `width/height: 4px`
-2. `background: transparent`，hover 变 `var(--accent)`
-3. `@mousedown` 用**闭包捕获 startX/startW**，不使用全局 ctx
-4. `window mousemove` 设 `{ capture: true }`，**clamp 到阈值**
-5. `window mouseup` 移除 listener，恢复 `cursor`/`userSelect`
-6. 每次 `e.preventDefault() + e.stopPropagation()`
-7. 被 resize 的容器加 `flex-shrink: 0`（防 flex 挤压吃掉尺寸）
+1. **本体 = 真实 `<div>`**（`.split-resizer`），占布局空间 = `var(--split-hairline)`（1px）：水平 `width: var(--split-hairline)` + `cursor: col-resize`；垂直 `height: var(--split-hairline)` + `cursor: row-resize`
+2. 本体常态 `background: var(--border)`（发丝线取**边框色**，非 `transparent`）
+3. **命中区 = `::after` 绝对定位伪元素**：常态 `background: transparent`（**不占布局、不改 1px 视觉**），向两侧各外溢 `(hit − hairline)/2 ≈ 2px`，命中跨度 = `var(--split-hit)`（5px）
+4. **hover / 拖拽激活（`.is-active`）只给 `::after` 填 `var(--accent)`**；**本体恒 1px、绝不加宽**（拖动瞬间不重排、不抖动）
+5. `@mousedown` 用**闭包捕获 startX/startW**（`.stop.prevent` 阻冒泡 + 默认行为），不使用全局 ctx
+6. `window mousemove` 设 `{ capture: true }`，**clamp 到阈值**后直改 DOM；`window mouseup` 移除 listener，恢复 `cursor`/`userSelect`
+7. 拖拽数学走 pane 的 `getBoundingClientRect()`；被 resize 的 pane 加 `flex-shrink: 0`（防 flex 挤压吃掉尺寸）
 
 ## 组件示例
 
 ```vue
 <template>
   <div
-    class="resizer"
-    :class="direction"
-    @mousedown.prevent.stop="onMousedown"
+    class="split-resizer"
+    :class="[direction, { 'is-active': dragging }]"
+    @mousedown.stop.prevent="onMousedown"
   />
 </template>
 
 <script setup>
-import { onBeforeUnmount } from 'vue'
+import { ref, onBeforeUnmount } from 'vue'
 
 const props = defineProps({
   direction: { type: String, default: 'h' }, // 'h'=水平改宽 'v'=垂直改高
@@ -42,14 +42,14 @@ const props = defineProps({
 })
 const emit = defineEmits(['resize', 'resize-end'])
 
-let dragging = false
+const dragging = ref(false) // 仅用于切换 :class 的 is-active，不参与布局
 let startPos = 0   // 起始鼠标坐标
 let startSize = 0  // 起始尺寸
 let onMove = null
 let onUp = null
 
 function onMousedown(e) {
-  dragging = true
+  dragging.value = true
   startPos = props.direction === 'h' ? e.clientX : e.clientY
   startSize = props.size
   // 拖拽期间全局禁用文本选择 + 十字光标
@@ -57,7 +57,7 @@ function onMousedown(e) {
   document.body.style.userSelect = 'none'
 
   onMove = (ev) => {
-    if (!dragging) return
+    if (!dragging.value) return
     ev.preventDefault()
     ev.stopPropagation()
     const pos = props.direction === 'h' ? ev.clientX : ev.clientY
@@ -68,8 +68,8 @@ function onMousedown(e) {
     emit('resize', next)
   }
   onUp = () => {
-    if (!dragging) return
-    dragging = false
+    if (!dragging.value) return
+    dragging.value = false
     document.body.style.cursor = ''
     document.body.style.userSelect = ''
     window.removeEventListener('mousemove', onMove, true)
@@ -90,14 +90,32 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.resizer {
+/* 方案 A：本体恒 1px 发丝线（--border），命中区为 ::after 伪元素（不占布局，向两侧各外溢 ≈2px） */
+.split-resizer {
+  position: relative;
   flex-shrink: 0;
-  background: transparent;
-  transition: background 0.15s;
+  background: var(--border);
 }
-.resizer.h { width: 4px; cursor: col-resize; }
-.resizer.v { height: 4px; cursor: row-resize; }
-.resizer:hover { background: var(--accent); }
+.split-resizer.h { width: var(--split-hairline); cursor: col-resize; }
+.split-resizer.v { height: var(--split-hairline); cursor: row-resize; }
+.split-resizer::after {
+  content: '';
+  position: absolute;
+  background: transparent;
+}
+.split-resizer.h::after {
+  top: 0; bottom: 0;
+  left: calc((var(--split-hairline) - var(--split-hit)) / 2);
+  right: calc((var(--split-hairline) - var(--split-hit)) / 2);
+}
+.split-resizer.v::after {
+  left: 0; right: 0;
+  top: calc((var(--split-hairline) - var(--split-hit)) / 2);
+  bottom: calc((var(--split-hairline) - var(--split-hit)) / 2);
+}
+/* hover / 拖拽激活只染命中区，本体恒 1px、绝不加宽 */
+.split-resizer:hover::after,
+.split-resizer.is-active::after { background: var(--accent); }
 </style>
 ```
 
@@ -118,6 +136,8 @@ onBeforeUnmount(() => {
 .pane.main { flex: 1; flex-shrink: 1; }
 </style>
 ```
+
+> `--split-hairline`（1px）与 `--split-hit`（5px）为 `variables.css` `:root` 提供的 token；旧 `--split-gap` 已移除。
 
 ## 要点
 

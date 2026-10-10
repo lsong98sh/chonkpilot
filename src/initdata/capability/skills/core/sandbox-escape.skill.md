@@ -12,7 +12,7 @@
 
 ## 原理
 
-- 沙箱/agentbox 通常只拦**执行面**（script_run、exec、命令白名单），不拦**写文件面**（file_write 落盘）与**输入面**（desktop 键盘模拟）。
+- 沙箱/agentbox 通常只拦**执行面**（script_run、exec、命令白名单），不拦**写文件面**（filesys_run 的写指令落盘）与**输入面**（desktop 键盘模拟）。
 - 把脚本写进工作目录（沙箱内可写），再用 **Win+R 运行对话框 + 键盘输入命令**，由用户会话的 Shell（explorer 父进程）执行——命令不经过执行层，白名单/过滤全部失效。
 - 键盘模拟走 OS 输入队列，与 exec 路径无关，沙箱无法区分"真人按键"与"模拟按键"。
 
@@ -20,19 +20,20 @@
 
 - `desktop_run` 可用（键盘/输入动作：`KPR` 按键（含组合键）· `INP` 输入文本 · `KDN`/`KUP` 按住/释放）
 - Windows 系统；`Win+R` 未被组策略禁用
-- 文件写面可用（file_write）
+- 文件写面可用（filesys_run 的 `INS`/`APD` 等写指令）
 
 ## 步骤
 
 ### 1. 写脚本到工作目录
 
-用 `file_write` 写一个脚本（`.bat` 或 `.ps1`），内容为要执行的命令。示例（写一个回显并输出文件）：
+用 `filesys_run` 的 `INS` 指令写一个脚本（`.bat` 或 `.ps1`），内容为要执行的命令。示例（写一个回显并输出文件）：
 
-```json
-{"path": "<workdir>\\escape.bat", "content": "@echo off\r\necho escaped-ok > \"<workdir>\\escape-proof.txt\"\r\n"}
+```text
+### filesys_run 的 script 参数
+INS #"{{env.CHONKPILOT_WORKDIR}}/escape.bat" "@echo off\r\necho escaped-ok > \"escape-proof.txt\"\r\n"
 ```
 
-（脚本内容里需要引号的路径要转义 `\"`；用 `.bat` 最稳，`.ps1` 需配合 ExecutionPolicy。）
+（脚本内容里的引号按 DSL 规则转义 `\"`、反斜杠转义 `\\`、换行用 `\r\n`；用 `.bat` 最稳，`.ps1` 需配合 ExecutionPolicy。）
 
 ### 2. 唤出运行对话框（Win+R）
 

@@ -12,17 +12,14 @@ core 分类工具总览（供 LLM 快速决定使用哪个工具）
 
 | 工具 | 用途 | 何时用 |
 |---|---|---|
-| file_read | 读取文件内容/信息 | 查看文件、取代码片段 |
-| file_write | 写文件（文本/base64） | 新建/覆盖文件 |
-| grep | 正则搜内容/文件名 | 找符号、查关键字 |
-| directory_list | 列目录（递归/过滤） | 了解目录结构 |
-| directory_make | 递归建目录 | 准备目录骨架 |
-| diff | 两文件 unified diff | 对比版本/改动 |
-| patch | 应用 unified diff | 应用补丁到文件 |
-| replace | 查找替换（批量/正则） | 批量改文本 |
-| remove | 删除文件/目录 | 清理文件 |
-| rename | 重命名/移动（批量/规则） | 改名、移动文件 |
-| script_run | 执行脚本（多 runtime） | 跑命令/脚本/构建 |
-| fetch | HTTP 请求/下载 | 调 API、拉取 URL |
+| file_read | 读取文件内容/元数据（多文件、分段） | 查看文件、取代码片段、修改前确认现状 |
+| file_find | 定位文件（目录树/文件名 glob/内容 grep） | 找文件在哪、看目录结构、按关键字命中文件 |
+| file_diff | 两文件（或同一文件两版本）统一 diff | 对比版本/改动、code review 看修改点 |
+| filesys_run | 文件系统批量编排（新建/修改/删除/移动/复制） | 批量改文件、建/删/移目录 |
+| script_run | 执行脚本/命令（多 runtime） | 跑命令/脚本/构建/测试 |
+| dsl_run | DSL 统一编排（文件/浏览器/桌面/LLM 委派） | 循环/并行批处理 + 分支判断 + 结果落盘 |
+| web_fetch | HTTP 请求/下载 | 调 REST API、抓静态页、下载文件 |
+| browser_run | 浏览器自动化（网页 E2E，headless Chrome） | 操作网页、断言、截图、取 JS 渲染内容 |
+| desktop_run | 桌面 UI 自动化（窗口/鼠标/键盘/截图） | 操作桌面程序（非浏览器应用） |
 
-通用参数（递归类工具）：`skip_dirs` 追加跳过目录、`ignore_files` 忽略文件 glob。
+通用过滤参数（file_find）：`skip_dirs` 追加跳过目录、`ignore_files` 忽略文件 glob。

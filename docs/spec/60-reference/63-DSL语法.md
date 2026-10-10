@@ -71,6 +71,8 @@ LLM "<成员名>" "请分析以下内容：<<<
 
 执行器与 gateway 之间为**自建 stdio 行协议**（非 MCP；`run`/`llm_result` 下行、`llm_call`/`result`/`tree`/`step`（+`log`）上行，见 [42 §2 (254)](../40-roadmap/42-决策记录.md)）；其中下行 `run` 消息在 `script`（脚本正文）之外含**可选字段 `file`**（脚本文件绝对路径）——**`script` 为空时由受沙箱执行器读该文件**（gateway 不再代为读盘），协议**向后兼容**（无 `file` 即走 `script`，行为等价）。字段明细见 `src/lib/gateway/gateway/dslrun.go` 头注。
 
+gateway 侧 `dslPump` 对 `llm_call` 的处理为**并发执行**（R7-C-6）：每个 LLM 子轮次在独立 goroutine 内调用，结果按 **call id** 回写（`llm_result.call`，与到达顺序无关），对 stdin 的写用互斥锁串行化；收到 `result`（作业终态）前先 `drain` 等在飞子轮次回写完毕——**PARALLEL 分支中的 LLM 步骤不再退化为串行**。成功/回写首个错误经统一 `drain` 返回。
+
 ## 2. 数据类型
 
 ### 2.1 基本类型

@@ -12,7 +12,9 @@
 package uds
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +31,34 @@ const (
 // EnvUDSPath 是 UDS 路径的**环境变量覆盖**（测试 / 多实例隔离；缺省 = DefaultPath）。
 // 生产不使用 —— 双方各自推导同一约定值（62 §3A）。
 const EnvUDSPath = "CHONK_UDS"
+
+// MaxFrameBytes 是单帧（行分隔 JSON）的字节上限（R7-B-5）：对端灌无换行大流时，
+// bufio.ReadBytes 会无界缓冲吃爆内存；超过本上限 → 断连并留痕。
+// 取值 = 64 MiB：远大于任何合法业务帧（含编辑器大文件内容），又给内存设硬上限。
+const MaxFrameBytes = 64 << 20
+
+// ErrFrameTooLarge 是对端单帧超过 MaxFrameBytes 时的错误（调用方据此断连 + 留痕）。
+var ErrFrameTooLarge = errors.New("uds: frame too large")
+
+// readFrame 读一行帧（以 '\n' 结尾），单帧字节数超过 MaxFrameBytes → ErrFrameTooLarge。
+// 返回的切片为副本（可安全持有）；半帧（超限）不返回。
+func readFrame(r *bufio.Reader) ([]byte, error) {
+	var buf []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		if err == bufio.ErrBufferFull {
+			if len(buf) > MaxFrameBytes {
+				return nil, ErrFrameTooLarge
+			}
+			continue
+		}
+		if len(buf) > MaxFrameBytes {
+			return nil, ErrFrameTooLarge
+		}
+		return buf, err
+	}
+}
 
 // DefaultPath 返回 UDS 前门的**约定路径**（62 §3A）：`%LOCALAPPDATA%\chonkpilot\server.sock`。
 // 目录 ACL 限当前用户（Windows 下由 %LOCALAPPDATA% 语义保证）。

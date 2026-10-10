@@ -1,4 +1,5 @@
 import mq from '../utils/mq'
+import { resolvePublishError } from '../utils/publishError.js'
 import {
   FieldKeys,
   DataSessionListKeys, DataSessionGetKeys, DataSessionHistoryKeys,
@@ -12,7 +13,7 @@ function sessionReq(action, body = {}) {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-session-${action}: backend unreachable`)
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
-    const emsg = (backend.errors && backend.errors[0]) || (p && p.error) || ''
+    const emsg = resolvePublishError(backend) || (backend.errors && backend.errors[0]) || (p && p.error) || ''
     if (!backend.ok || emsg || p.ok === false) {
       const e = new Error(emsg || `data-session-${action} failed`)
       e.action = action

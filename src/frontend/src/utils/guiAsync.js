@@ -12,6 +12,7 @@
  * 结果唯一收口（首个匹配结果即解除监听）。
  */
 import mq from './mq'
+import { resolvePublishError } from './publishError.js'
 import { currentInstanceId } from './instanceState.js'
 import {
   MsgTopics,
@@ -46,7 +47,7 @@ function requestWithResult(reqTopic, resTopic, widgetId) {
         const backend = env && env.backend
         if (!backend || !backend.ok) {
           unsub()
-          const emsg = (backend && backend.errors && backend.errors[0]) || 'backend unreachable'
+          const emsg = resolvePublishError(backend) || (backend && backend.errors && backend.errors[0]) || 'backend unreachable'
           reject(new Error(reqTopic + ': ' + emsg))
         }
       })

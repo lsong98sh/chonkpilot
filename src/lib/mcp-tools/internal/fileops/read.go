@@ -1,6 +1,7 @@
 package fileops
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -148,8 +149,12 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 			info["error"] = oerr.Error()
 			return info, fmt.Errorf("read file: %w", oerr)
 		}
-		data, _ = io.ReadAll(io.LimitReader(f, maxReadBytes))
+		var rerr error
+		data, rerr = io.ReadAll(io.LimitReader(f, maxReadBytes))
 		f.Close()
+		if rerr != nil { // 非 EOF 的读取错误不再静默吞掉（R7-C-9）
+			info["error"] = rerr.Error()
+		}
 		info["truncated"] = true
 	} else {
 		var rerr error
@@ -164,6 +169,18 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 	info["lines"] = countLines(data)
 
 	if req.infoOnly {
+		return info, nil
+	}
+
+	// R7-C-60：>32MB 文件的 tail 语义不能建立在截断前缀上（前缀尾 ≠ 文件尾）。
+	// 改为从文件末尾反向流式定位最后 N 行，与 file_read tail 契约（只读末尾 N 行）一致。
+	if info["truncated"].(bool) && req.tail > 0 {
+		content, terr := readFileTail(resolved, req.tail)
+		if terr != nil {
+			info["error"] = terr.Error()
+			return info, terr
+		}
+		info["content"] = content
 		return info, nil
 	}
 
@@ -284,4 +301,45 @@ func addLineNumbers(lines []string, start int) string {
 		}
 	}
 	return b.String()
+}
+
+// readFileTail 从文件末尾反向分块读取最后 n 行（不整读大文件，R7-C-60）。
+// 行分割与 readContent 同语义（去掉末尾空行）；n 超过总行数时返回全部行。
+func readFileTail(path string, n int) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	const chunk = 64 << 10
+	var buf []byte
+	pos := fi.Size()
+	for pos > 0 {
+		readSize := int64(chunk)
+		if pos < readSize {
+			readSize = pos
+		}
+		pos -= readSize
+		tmp := make([]byte, readSize)
+		if _, rerr := f.ReadAt(tmp, pos); rerr != nil && rerr != io.EOF {
+			return "", rerr
+		}
+		buf = append(tmp, buf...)
+		if bytes.Count(buf, []byte{'\n'}) > n {
+			break
+		}
+	}
+	content := DecodeText(buf)
+	lines := strings.Split(content, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if n > len(lines) {
+		n = len(lines)
+	}
+	return strings.Join(lines[len(lines)-n:], "\n"), nil
 }

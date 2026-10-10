@@ -1,4 +1,5 @@
 import mq, { currentInstanceId } from '../utils/mq.js'
+import { resolvePublishError } from '../utils/publishError.js'
 import { createInitDataPrefetch } from '../utils/initDataPrefetch.js'
 import { FieldKeys, GuiUiSaveKeys, FilesysListKeys, FilesysContentKeys } from '../events/msgkeys.js'
 
@@ -38,7 +39,7 @@ function fileRequest(action, body = {}, opts = {}) {
     const backend = env && env.backend
     if (!backend) throw new Error(topic + ': backend unreachable')
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
-    const emsg = (backend.errors && backend.errors[0]) || (p && (p.message || p.error)) || ''
+    const emsg = resolvePublishError(backend) || (backend.errors && backend.errors[0]) || (p && (p.message || p.error)) || ''
     if (!backend.ok || emsg || p.code) {
       const e = new Error(emsg || (p && p.message) || (topic + ' failed'))
       if (p && p.code) e.code = p.code
@@ -157,7 +158,7 @@ function guiReq(action, body = {}) {
     const backend = env && env.backend
     if (!backend) throw new Error(topic + ': backend unreachable')
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
-    const emsg = (backend.errors && backend.errors[0]) || (p && p.error) || ''
+    const emsg = resolvePublishError(backend) || (backend.errors && backend.errors[0]) || (p && p.error) || ''
     if (!backend.ok || emsg || p.ok === false) {
       const e = new Error(emsg || (topic + ' failed'))
       e.action = action

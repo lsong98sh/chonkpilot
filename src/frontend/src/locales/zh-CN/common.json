@@ -137,6 +137,7 @@
   "bytes": "字节",
   "showing_first_bytes": "（仅显示前 {count} 字节）",
   "content_truncated": "（文件过大，仅显示前 512KB）",
+  "load_failed": "加载失败",
   "load_next_bytes": "加载下 {count} 字节",
   "hex_offset": "偏移",
   "hex_hex": "十六进制",

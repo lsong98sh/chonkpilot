@@ -15,7 +15,7 @@ import (
 //   - 判定失败（如查名转 UTF-16 失败）→ err 非 nil（调用方按**非单例**继续，仅告警）。
 //
 // 注：`x/sys/windows` 的 `CreateMutex` 在 `ERROR_ALREADY_EXISTS` 时**返回有效句柄 + 该错误**，
-// 故据此判重；`Local\` 前缀 + 用户名哈希 = 每登录会话内按当前用户隔离。
+// 故据此判重；`Global\` 前缀（跨登录会话全局）+ 用户名哈希 = 按当前用户全局隔离。
 func Acquire(user string) (release func(), duplicate bool, err error) {
 	name := Name(user)
 	p, err := windows.UTF16PtrFromString(name)

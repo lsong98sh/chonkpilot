@@ -245,6 +245,31 @@ func TurnIDOfMsg(r data.Record) string {
 // 返回 {<key>: <内容字符串>}；找不到的 key 省略。
 func MessageContentsByKey(prj *data.DB, sessionID string, keys []string) map[string]any {
 	out := map[string]any{}
+	// 循环外单次按会话查询（OrderBy 命中 messages_by_session），按 tool_call_id 分组 —— 避免
+	// 原按 key 逐个 Where{session_id, tool_call_id}（无 OrderBy → 禁索引路由）N 次全桶扫。
+	need := map[string]bool{}
+	for _, k := range keys {
+		switch {
+		case strings.HasPrefix(k, "tool_call:"):
+			need[strings.TrimPrefix(k, "tool_call:")] = true
+		case strings.HasPrefix(k, "tool_result:"):
+			need[strings.TrimPrefix(k, "tool_result:")] = true
+		}
+	}
+	byCall := map[string][]data.Record{}
+	if len(need) > 0 {
+		if recs, _, err := prj.Table("messages").Query(data.Query{
+			Where: data.Record{"session_id": sessionID}, OrderBy: "created_at",
+		}); err == nil {
+			for _, rec := range recs {
+				id := Sval(rec["tool_call_id"])
+				if id == "" || !need[id] {
+					continue
+				}
+				byCall[id] = append(byCall[id], rec)
+			}
+		}
+	}
 	for _, k := range keys {
 		switch {
 		case strings.HasPrefix(k, "message:"):
@@ -256,27 +281,20 @@ func MessageContentsByKey(prj *data.DB, sessionID string, keys []string) map[str
 			}
 		case strings.HasPrefix(k, "tool_call:"):
 			id := strings.TrimPrefix(k, "tool_call:")
-			recs, _, err := prj.Table("messages").Query(data.Query{
-				Where: data.Record{"session_id": sessionID, "tool_call_id": id},
-			})
-			if err == nil && len(recs) > 0 {
+			recs := byCall[id]
+			if len(recs) > 0 {
 				// {call,result,async} 取 call.arguments。
 				_, _, _, argsJSON, _, _ := ToolViewFields(recs[0])
 				out[k] = argsJSON
 			}
 		case strings.HasPrefix(k, "tool_result:"):
 			id := strings.TrimPrefix(k, "tool_result:")
-			recs, _, err := prj.Table("messages").Query(data.Query{
-				Where: data.Record{"session_id": sessionID, "tool_call_id": id},
-			})
-			if err == nil && len(recs) > 0 {
-				for _, rec := range recs {
-					if Sval(rec["role"]) != "tool" {
-						continue
-					}
-					out[k] = Sval(rec["content"])
-					break
+			for _, rec := range byCall[id] {
+				if Sval(rec["role"]) != "tool" {
+					continue
 				}
+				out[k] = Sval(rec["content"])
+				break
 			}
 		}
 	}
@@ -430,7 +448,9 @@ func FindToolMessageKey(prj *data.DB, turnID, toolCallID string) string {
 		return ""
 	}
 	recs, _, err := prj.Table("messages").Query(data.Query{
-		Where: data.Record{"turn_id": turnID, "tool_call_id": toolCallID}, Limit: 1,
+		Where: data.Record{"turn_id": turnID, "tool_call_id": toolCallID},
+		// OrderBy 命中 messages_by_turn（A-05：无 OrderBy 禁索引路由 → 回退全桶扫描）。
+		OrderBy: "created_at", Limit: 1,
 	})
 	if err != nil || len(recs) == 0 {
 		return ""

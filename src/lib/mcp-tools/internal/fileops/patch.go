@@ -34,6 +34,11 @@ func applyUnifiedDiff(src, diffContent string) (string, error) {
 		case strings.HasPrefix(dl, "@@"):
 			var oldStart int
 			if _, err := fmt.Sscanf(dl, "@@ -%d", &oldStart); err == nil && oldStart > 0 {
+				// 跳转到下一 hunk 前，先把两 hunk 之间未覆盖的源行原样收进 out
+				// （标准 git diff 3 行 context、两处修改相距 >6 行必产生 gap；不回填会静默丢失中间源行）。
+				if oldStart-1 > srcIdx && oldStart-1 <= len(srcLines) {
+					out = append(out, srcLines[srcIdx:oldStart-1]...)
+				}
 				srcIdx = oldStart - 1
 			}
 			hunkFirst = true

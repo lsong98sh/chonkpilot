@@ -107,6 +107,8 @@ func main() {
 			os.Exit(1)
 		}
 		scanner := bufio.NewScanner(os.Stdin)
+		// 单行可超默认 64KB（长提示词）→ 扩容至 10MB，避免 Scan 报 ErrTooLong。
+		scanner.Buffer(make([]byte, 64<<10), 10<<20)
 		var lines []string
 		for scanner.Scan() {
 			lines = append(lines, scanner.Text())
@@ -287,8 +289,11 @@ func main() {
 		if output == "sse" {
 			if ev.State == "done" && ev.ResultSummary != "" {
 				summary := ev.ResultSummary
+				// 按 rune 截断（避免中文被按字节截出半个码点）。
 				if len(summary) > 200 {
-					summary = summary[:200] + "..."
+					if r := []rune(summary); len(r) > 200 {
+						summary = string(r[:200]) + "..."
+					}
 				}
 				fmt.Printf("[工具完成] %s → %s\n", ev.Tool, summary)
 			} else if ev.State == "error" {

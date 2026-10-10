@@ -70,10 +70,6 @@ const { dirty, markDirty, markSaved } = useUnsavedMark()
 // 目录选择统一入口：两形态同走 gui.select-dir 两段式（browser 由服务端经 gui.show-dialog 请 UI 弹选择器）
 const { pickDir } = useDirPicker('security-trust')
 
-const props = defineProps({
-  maxHeight: { type: Number, default: 600 },
-})
-
 const entries = ref([])
 const saving = ref(false)
 const _unsubs = []

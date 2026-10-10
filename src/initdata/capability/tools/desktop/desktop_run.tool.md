@@ -97,6 +97,4 @@ properties:
     file:
         description: 已保存脚本文件路径（与 script 二选一；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错）
         type: string
-required:
-    - script
 type: object

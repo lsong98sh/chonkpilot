@@ -41,6 +41,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
 )
@@ -207,10 +208,63 @@ type imageCacheKey struct {
 
 // imageCache 是进程内图片编码缓存（B-10：同一图片每请求重复读取 + base64 重编码 → 只做一次；
 // 键含 size/mtime，文件变更自动失效；并发安全）。
+//
+// R7-B-44：进程级缓存加**条数上限 + TTL**（此前无界无过期，长跑进程会随访问过的图片无界
+// 累积 base64 载荷）：写入时先淘汰过期项，再按插入时刻最旧优先淘汰至 ≤ imageCacheMax。
+const (
+	imageCacheMax = 64
+	imageCacheTTL = 10 * time.Minute
+)
+
+// imageCacheEntry 是缓存项（编码结果 + 过期时刻）。
+type imageCacheEntry struct {
+	part    imagePart
+	expires time.Time
+}
+
 var imageCache = struct {
 	mu sync.Mutex
-	m  map[imageCacheKey]imagePart
-}{m: make(map[imageCacheKey]imagePart)}
+	m  map[imageCacheKey]imageCacheEntry
+}{m: make(map[imageCacheKey]imageCacheEntry)}
+
+// imageCacheGet 取未过期的缓存项（未命中/已过期 → ok=false；顺带清理过期项）。
+func imageCacheGet(k imageCacheKey) (imagePart, bool) {
+	imageCache.mu.Lock()
+	defer imageCache.mu.Unlock()
+	e, ok := imageCache.m[k]
+	if !ok {
+		return imagePart{}, false
+	}
+	if time.Now().After(e.expires) {
+		delete(imageCache.m, k)
+		return imagePart{}, false
+	}
+	return e.part, true
+}
+
+// imageCachePut 写入缓存项（TTL 自写入起算）；超上限时先清过期项、再淘汰过期时刻最旧者。
+func imageCachePut(k imageCacheKey, p imagePart) {
+	imageCache.mu.Lock()
+	defer imageCache.mu.Unlock()
+	now := time.Now()
+	for kk, e := range imageCache.m {
+		if now.After(e.expires) {
+			delete(imageCache.m, kk)
+		}
+	}
+	for len(imageCache.m) >= imageCacheMax {
+		var oldest imageCacheKey
+		var oldestExp time.Time
+		first := true
+		for kk, e := range imageCache.m {
+			if first || e.expires.Before(oldestExp) {
+				oldest, oldestExp, first = kk, e.expires, false
+			}
+		}
+		delete(imageCache.m, oldest)
+	}
+	imageCache.m[k] = imageCacheEntry{part: p, expires: now.Add(imageCacheTTL)}
+}
 
 // loadImagePart 读取并校验一张图片：类型白名单（扩展名 + 魔数）、单图大小上限；
 // 命中进程内编码缓存则直接返回（path 须为已解析符号链接的真实路径）。
@@ -224,12 +278,9 @@ func loadImagePart(path string) (imagePart, error) {
 	var key imageCacheKey
 	if statErr == nil {
 		key = imageCacheKey{path: path, size: fi.Size(), modTime: fi.ModTime().UnixNano()}
-		imageCache.mu.Lock()
-		if p, ok := imageCache.m[key]; ok {
-			imageCache.mu.Unlock()
+		if p, ok := imageCacheGet(key); ok {
 			return p, nil
 		}
-		imageCache.mu.Unlock()
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -248,9 +299,7 @@ func loadImagePart(path string) (imagePart, error) {
 	part := imagePart{mime: mime, b64: base64.StdEncoding.EncodeToString(data)}
 	// 回填缓存（仅当 stat 成功、键稳定；否则退化为每次重读，不影响正确性）。
 	if statErr == nil {
-		imageCache.mu.Lock()
-		imageCache.m[key] = part
-		imageCache.mu.Unlock()
+		imageCachePut(key, part)
 	}
 	return part, nil
 }

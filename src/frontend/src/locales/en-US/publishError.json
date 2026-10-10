@@ -1,0 +1,7 @@
+{
+  "req_body_too_large": "Request body too large (limit 4 MiB)",
+  "topic_not_allowed": "This action is not allowed in the current form",
+  "work_dir_unbound": "Working directory is not bound",
+  "gui_action_unsupported": "This desktop action is unavailable in the current form",
+  "dir_not_allowed": "Directory is outside the allowed roots"
+}

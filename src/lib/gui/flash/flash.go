@@ -16,12 +16,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-gui/models"
 	"github.com/chonkpilot/chonkpilot-lib/lockfile"
+	"github.com/chonkpilot/chonkpilot-lib/osuser"
 )
 
 // DataDirName 是 flash 本地数据根目录名（data-dir 约定 = `<work_dir>/.chonkpilot`）。
@@ -42,13 +42,9 @@ func DataDirFor(workDir string) string {
 	return filepath.Join(workDir, DataDirName)
 }
 
-// CurrentUser 返回本机 OS 用户名（instance-claim 的必填 `user`；取不到 → "unknown"）。
-func CurrentUser() string {
-	if u, err := user.Current(); err == nil && u != nil && strings.TrimSpace(u.Username) != "" {
-		return u.Username
-	}
-	return "unknown"
-}
+// CurrentUser 返回本机 OS 用户名（instance-claim 的必填 `user`；取不到 → "unknown"）；
+// 收敛到 osuser.CurrentUser 单一来源（R7-D-9）。
+func CurrentUser() string { return osuser.CurrentUser() }
 
 // RecentsPath 返回「最近项目」记录文件路径：`<home>/.chonkpilot/flash-recents.json`
 // （与 `chonkpilot-lib/lockfile` 的 work-dir 锁同根；home 不可解析 → 回落系统临时目录）。

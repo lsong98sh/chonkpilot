@@ -13,7 +13,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
 )
@@ -96,6 +98,9 @@ func DecodeData(raw string) ([]byte, error) {
 // Save 把 content 落盘到 `<root>/<cleaned dir>/<uuid><ext>`，返回真实落盘文件名（uuid+ext）。
 // dir 经 SanitizeDir 净化（越界/超限回落 DefaultDir）；保留原扩展名（便于 /show/ 与图片类型
 // 识别），文件名主体用 uuid 隔离重复上传。
+//
+// R7-B-4：落盘后按 KeepCap 对该目录做容量兜底（最旧优先删除）——gui 桥与 browser 入口
+// （httpapi guiUpload）共用本函数 → 兜底**同源**，不再只有 GUI 启动期一次。
 func Save(root, dir, origName string, content []byte) (string, error) {
 	destDir := filepath.Join(root, filepath.FromSlash(SanitizeDir(dir)))
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
@@ -106,5 +111,57 @@ func Save(root, dir, origName string, content []byte) (string, error) {
 	if err := os.WriteFile(dest, content, 0o644); err != nil {
 		return "", err
 	}
+	EnforceKeepCap(destDir, KeepCap) // 尽力而为，不阻断落盘
 	return fileName, nil
+}
+
+// KeepCap 是单个上传留存目录的容量上限（D-45 洪泛兜底，**按目录分别计算**）：2 GiB。
+// 正常使用（< 2 GiB）永不触发；仅长期累积 / 洪泛时按 mtime 最旧优先删除直至 ≤ 上限。
+const KeepCap = int64(2) << 30
+
+// EnforceKeepCap 在目录总量超过 cap 时按 mtime **最旧优先**删除文件，直至总量 ≤ cap。
+// 尽力而为（读目录 / 删除失败静默跳过）——不阻断调用方；目录不存在 → 无操作。
+// 仅删顶层文件（不递归）；返回删除的文件数。与 gui 桥既有 SweepUploads 同口径。
+func EnforceKeepCap(dir string, cap int64) int {
+	if dir == "" || cap <= 0 {
+		return 0
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	type uploadFile struct {
+		path  string
+		size  int64
+		mtime time.Time
+	}
+	files := make([]uploadFile, 0, len(entries))
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, uploadFile{filepath.Join(dir, e.Name()), fi.Size(), fi.ModTime()})
+		total += fi.Size()
+	}
+	if total <= cap {
+		return 0
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mtime.Before(files[j].mtime) })
+	removed := 0
+	for _, f := range files {
+		if total <= cap {
+			break
+		}
+		if err := os.Remove(f.path); err != nil {
+			continue
+		}
+		total -= f.size
+		removed++
+	}
+	return removed
 }

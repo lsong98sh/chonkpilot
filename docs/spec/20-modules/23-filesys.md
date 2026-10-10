@@ -123,7 +123,7 @@ watchManager：按 work_dir 组织 map[string]*dirWatcher（+ 每 work_dir 的�
 ## 8. 场景与边界
 
 - 同名冲突：`create` 命中已存在 → `exists`。
-- 复制：`copy` 支持目录整树递归。
+- 复制：`copy` 支持目录整树递归；**嵌套防护（R7-C-5）**：目标（`dest_dir` + `new_name`）落在**源目录内部**时拒绝（`copy_failed`，`target inside source dir`）——否则 `copyTree` 先建目标目录再 `ReadDir(src)` 会把新建目录递归吸入，产生**无限嵌套复制**（与 `filesys_run` 的 `CPY`/`MOV` 同款判定）。
 - 改名：`new_name` 含分隔符 = 移动；同目录 = 纯改名。
 - 越界：读/写 → `forbidden`（含 instance 未登记 / 未绑定）；watch/unwatch → 静默。
 - 「不显示的目录」：`.` 开头目录恒隐藏（不可配置放开）→ 既不显示也不监听；清单命中目录同理。文件树显示在下次 `filesys.list`（重启 / 折叠-展开 / 根刷新）时对齐；watcher 侧经 `data-prj-config-refresh` 即时重过滤。

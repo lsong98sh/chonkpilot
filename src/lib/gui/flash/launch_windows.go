@@ -16,5 +16,9 @@ const createNoWindow = 0x08000000
 func launchDetached(exe string, args []string) error {
 	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// 不托管子进程（server 独立常驻）：释放句柄，免 Wait/finalizer 延迟回收。
+	return cmd.Process.Release()
 }

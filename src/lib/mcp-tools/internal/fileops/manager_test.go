@@ -315,6 +315,27 @@ func TestFileManagerDSL_Patch(t *testing.T) {
 	}
 }
 
+// TestFileManagerDSL_PatchMultiHunkWithGap（R7-C-1）：多 hunk 且两处修改相距 >6 行（标准
+// git diff 3 行 context 必产生 gap）时，hunk 之间未被覆盖的中间源行必须原样保留，不得丢失。
+func TestFileManagerDSL_PatchMultiHunkWithGap(t *testing.T) {
+	src := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n"
+	path := tmpFile(t, "multi.txt", src)
+	// gap = line4..line7（两 hunk 之间未被 context 覆盖）
+	diffParam := `--- a\n+++ b\n@@ -1,3 +1,3 @@\n line1\n-line2\n+LINE2\n line3\n@@ -8,3 +8,3 @@\n line8\n-line9\n+LINE9\n line10\n`
+	script := "PTC #" + q(path) + " \"" + diffParam + "\""
+	raw, ok := runManager(t, map[string]interface{}{"script": script})
+	if !ok {
+		t.Fatalf("expected success, raw=%v", raw)
+	}
+	if len(failsOf(raw)) != 0 {
+		t.Fatalf("unexpected fails: %v", raw["fails"])
+	}
+	want := "line1\nLINE2\nline3\nline4\nline5\nline6\nline7\nline8\nLINE9\nline10\n"
+	if data, _ := os.ReadFile(path); string(data) != want {
+		t.Fatalf("patched = %q, want %q", string(data), want)
+	}
+}
+
 // q 包裹双引号（路径含反斜杠原样保留，引号内转义不改变普通反斜杠）。
 func q(s string) string { return "\"" + s + "\"" }
 
@@ -451,5 +472,65 @@ func TestFileManagerTempPrefix(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "r11-tmp.csv")); err != nil {
 		t.Fatalf("!/ 应落到实例临时目录：%v", err)
+	}
+}
+
+// TestHandleFindPathRequired（R7-C-7）：file_find 缺 path → 顶层错误（对齐契约 required=[path]），
+// 不再静默回落 workDir/"."。
+func TestHandleFindPathRequired(t *testing.T) {
+	res := HandleFind("", map[string]interface{}{})
+	if res.Success {
+		t.Fatalf("缺 path 应失败，got %+v", res)
+	}
+	if !strings.Contains(res.Error, "path") {
+		t.Fatalf("错误消息应指明 path，got %q", res.Error)
+	}
+}
+
+// TestHandleDiffFilesMissingSide（R7-C-11）：files[] 单对缺 path2 → 项级错误（不静默跳过）。
+func TestHandleDiffFilesMissingSide(t *testing.T) {
+	res := HandleDiff("", map[string]interface{}{
+		"files": []interface{}{map[string]interface{}{"path": absTmp(t, "a.txt")}},
+	})
+	if res.Success {
+		t.Fatalf("缺 path2 应失败，got %+v", res)
+	}
+	if !strings.Contains(res.Error, "files[0]") || !strings.Contains(res.Error, "path2") {
+		t.Fatalf("错误消息应指明 files[0].path2，got %q", res.Error)
+	}
+}
+
+// TestTruncRunes（R7-C-8）：按 rune 截断，中文不被按字节切断产生乱码。
+func TestTruncRunes(t *testing.T) {
+	s := strings.Repeat("中", 250)
+	got, trunc := truncRunes(s, 200)
+	if !trunc || !strings.HasSuffix(got, "...") {
+		t.Fatalf("应截断并补省略号，trunc=%v got=%q", trunc, got)
+	}
+	if r := []rune(strings.TrimSuffix(got, "...")); len(r) != 200 {
+		t.Fatalf("应保留 200 个 rune，got %d", len(r))
+	}
+	if strings.ContainsRune(got, '\uFFFD') {
+		t.Fatalf("不得产生乱码: %q", got)
+	}
+	// 未超长 → 原样返回
+	if v, tr := truncRunes("短", 200); tr || v != "短" {
+		t.Fatalf("未超长应原样返回，got (%q,%v)", v, tr)
+	}
+}
+
+// TestReadFileTail（R7-C-60）：从文件末尾反向读取最后 N 行，语义与 readContent tail 一致。
+func TestReadFileTail(t *testing.T) {
+	p := tmpFile(t, "tail.txt", "l1\nl2\nl3\nl4\nl5\n")
+	got, err := readFileTail(p, 2)
+	if err != nil {
+		t.Fatalf("readFileTail err: %v", err)
+	}
+	if got != "l4\nl5" {
+		t.Fatalf("tail 2 = %q，期望 %q", got, "l4\nl5")
+	}
+	// N 超过总行数 → 全量（去尾部空行）
+	if all, err := readFileTail(p, 99); err != nil || all != "l1\nl2\nl3\nl4\nl5" {
+		t.Fatalf("tail 99 = %q err=%v", all, err)
 	}
 }

@@ -9,9 +9,9 @@
 #       │   ├── core/          #   file_find/file_read/... .tool.md
 #       │   ├── desktop/       #   desktop_run.tool.md
 #       │   └── browser/       #   browser_run.tool.md
-#       ├── skills/      # 技能契约（*.skill.md；扁平）
-#       ├── prompts/     # 提示词契约（*.prompt.md；扁平）
-#       ├── resources/   # 资源契约（*.resource.md；扁平）
+#       ├── skills/      # 技能契约（*.skill.md；按 core|ux|se 分级嵌套）
+#       ├── prompts/     # 提示词契约（*.prompt.md；分级嵌套）
+#       ├── resources/   # 资源契约（*.resource.md；按 core|go|ui 分级嵌套）
 #       ├── agents/      # 智能体契约（*.agent.md；扁平）
 #       ├── system/      # 非原语系统文档（如 summary.md；OP-01/OP-02，2026-10-06）
 #       └── executors/   # 执行器（chonkpilot-{core,desktop,browser,dsl}-executor.exe；dsl 由 build-dsl-executor.ps1 产出）
@@ -59,7 +59,7 @@ try {
 } finally { Pop-Location }
 
 Write-Host "==> [2/3] deploy contracts -> capability (src/initdata -> dist/other)"
-# 契约目录覆盖式同步（6 棵平坦子树：prompts/tools/resources/skills/agents/system，清理历史 knowledge/ 残留）。
+# 契约目录覆盖式同步（6 棵契约子树：prompts/tools/resources/skills/agents/system，清理历史 knowledge/ 残留）。
 # agents/ = 智能体原语（*.agent.md；场景经 `${exeDir}/capability/agents/...` 引用，P4 2026-10-01）。
 # system/ = **非原语**系统文档目录（如 summary.md；OP-01/OP-02，2026-10-06；不属知识库原语树）。
 # 出厂数据唯一源 = src/initdata/capability（[42 决策]；2026-10-01 P2 扁平化）。
@@ -71,6 +71,11 @@ foreach ($sub in @("prompts", "tools", "resources", "skills", "agents", "system"
     if (Test-Path $capSub) { [System.IO.Directory]::Delete($capSub, $true) }
     Copy-Item $srcSub $cap -Recurse -Force
 }
+
+# 未发布草稿排除：skills/se/（用户 2026-10-10 裁决「暂不提交」，源留在 src/initdata）不随产物/出厂包投放。
+# 显式删除以保证产物可复现、不误发布。
+$seDraft = Join-Path $cap "skills\se"
+if (Test-Path $seDraft) { [System.IO.Directory]::Delete($seDraft, $true) }
 
 Write-Host "==> [3/3] build executors -> capability/executors/ (chonkpilot-mcp-tools)"
 $execDir = Join-Path $cap "executors"

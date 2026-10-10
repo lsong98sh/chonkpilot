@@ -525,3 +525,56 @@ func TestParseHiddenDirs(t *testing.T) {
 		t.Fatalf("空配置应回落缺省: %v", got)
 	}
 }
+
+// TestOnCopyRejectsNestedTarget（R7-C-5）：dest_dir 选源目录内部子目录时拒绝，
+// 且不得在源目录内创建目标（否则 copyTree 会把新建目标递归吸入 → 无限嵌套复制）。
+func TestOnCopyRejectsNestedTarget(t *testing.T) {
+	wd := t.TempDir()
+	src := filepath.Join(wd, "a")
+	if err := os.MkdirAll(filepath.Join(src, "n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f := &Filesys{insts: map[string]string{"i1": wd}}
+	payload, _ := json.Marshal(map[string]any{
+		"instance_id": "i1", "path": src, "dest_dir": filepath.Join("a", "sub"),
+	})
+	v := &mq.Value{Payload: payload}
+	if err := f.onCopy(context.Background(), "", v); err != nil {
+		t.Fatalf("onCopy err: %v", err)
+	}
+	if len(v.Errors) == 0 {
+		t.Fatalf("嵌套复制应被拒绝，errors=%v result=%v", v.Errors, v.Result)
+	}
+	if _, err := os.Stat(filepath.Join(src, "sub")); !os.IsNotExist(err) {
+		t.Fatalf("不得在源目录内创建目标目录（stat err=%v）", err)
+	}
+}
+
+// TestOnCopyNormalTargetAllowed（R7-C-5 反向）：目标在源目录之外的正常复制仍成功。
+func TestOnCopyNormalTargetAllowed(t *testing.T) {
+	wd := t.TempDir()
+	src := filepath.Join(wd, "a")
+	if err := os.MkdirAll(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f := &Filesys{insts: map[string]string{"i1": wd}}
+	payload, _ := json.Marshal(map[string]any{
+		"instance_id": "i1", "path": src, "dest_dir": "out",
+	})
+	v := &mq.Value{Payload: payload}
+	if err := f.onCopy(context.Background(), "", v); err != nil {
+		t.Fatalf("onCopy err: %v", err)
+	}
+	if len(v.Errors) != 0 {
+		t.Fatalf("正常复制不应失败: %v", v.Errors)
+	}
+	if _, err := os.Stat(filepath.Join(wd, "out", "a", "f.txt")); err != nil {
+		t.Fatalf("目标文件应存在：%v", err)
+	}
+}

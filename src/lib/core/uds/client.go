@@ -106,7 +106,9 @@ func (c *Client) Emit(ctx context.Context, subject string, payload any) *mq.Futu
 	return f
 }
 
-// Publish 是 fire-and-forget 上行（不等待应答）。
+// Publish 是上行发布（**阻塞至应答或 CallTimeout**，与 Emit 同等待遇）——返回应答/超时错误。
+// 注：与 `mq.Bus.Publish` 的「fire-and-forget」文档语义不同，本客户端无本地派发、必须等对端
+// 应答方可判定成败；调用方按错误返回处理即可（R7-B-7：注释与实现一致）。
 func (c *Client) Publish(subject string, payload []byte) error {
 	_, err := c.call(context.Background(), subject, json.RawMessage(payload))
 	return err
@@ -221,7 +223,7 @@ func (c *Client) clearPending() {
 func (c *Client) readLoop() {
 	r := bufio.NewReaderSize(c.nc, 64<<10)
 	for {
-		line, err := r.ReadBytes('\n')
+		line, err := readFrame(r)
 		if len(line) > 0 {
 			c.handleLine(line)
 		}

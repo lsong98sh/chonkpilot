@@ -42,8 +42,9 @@
 #         └── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll
 #
 # 与 build-desktop.ps1 的关系：本脚本**只重编受 tag 影响的宿主 exe**（client / cli-client / server）；
-#   capability/ 与内置引擎 exe 属**形态无关资产**，优先从 dist/desktop 复用（缺失才回退既有
-#   build-mcp-server.ps1 / build-codegraph.ps1 / build-vfts.ps1），避免重复 CGO 构建。
+#   capability/ 基座 + 内置引擎 exe 属**形态无关资产**（executor exe 优先复用 dist/desktop，缺失才
+#   回退既有 build-mcp-server.ps1 / build-codegraph.ps1 / build-vfts.ps1，避免重复 CGO 构建）；
+#   契约（prompts/tools/resources/skills/agents/system）与 scenarios 每次从唯一源 src/initdata 覆盖同步。
 #
 # 用法：.\build-gui.ps1
 $ErrorActionPreference = "Stop"
@@ -186,8 +187,9 @@ try {
     Write-Host "    ok: $outSrvExe ($mb MB)"
 } finally { Pop-Location }
 
-# -- 5) 形态无关资产：capability/（契约 + executor×3）+ scenarios/（出厂场景） --
+# -- 5) 形态无关资产：capability/（executor×4 + 契约）+ scenarios/（出厂场景） --
 Write-Host "==> [5/6] stage capability/ + scenarios/ to dist/server"
+# 基座（executor exe 等形态无关资产）优先复用 dist/desktop/capability；缺失才回退 build-mcp-server.ps1
 $capSrc = Join-Path $srcDist "capability"
 if (-not (Test-Path $capSrc)) {
     Write-Host "    dist/desktop 无 capability/ → 回退 build-mcp-server.ps1"
@@ -200,13 +202,24 @@ if (Test-Path $capDst) {
     [System.IO.Directory]::Delete($capDst, $true)
 }
 Copy-Item $capSrc $capDst -Recurse -Force
-Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
-# 出厂场景：优先复用 dist/desktop/capability/scenarios，缺失则取唯一源 src/initdata/capability/scenarios
-$scnSrc = Join-Path $srcDist "capability\scenarios"
-if (-not (Test-Path $scnSrc)) { $scnSrc = Join-Path $root "src\initdata\capability\scenarios" }
-$scnDst = Join-Path $srvDist "capability\scenarios"
+# 契约子树每次从唯一源 src/initdata 覆盖同步（避免复用 dist/desktop 旧产物把过期契约/场景带入 dist/server）
+$initCap = Join-Path $root "src\initdata\capability"
+foreach ($sub in @("prompts", "tools", "resources", "skills", "agents", "system")) {
+    $srcSub = Join-Path $initCap $sub
+    if (-not (Test-Path $srcSub)) { throw "contracts not found: $srcSub" }
+    $capSub = Join-Path $capDst $sub
+    if (Test-Path $capSub) { [System.IO.Directory]::Delete($capSub, $true) }
+    Copy-Item $srcSub $capDst -Recurse -Force
+}
+# 未发布草稿排除：skills/se/（用户 2026-10-10 裁决「暂不提交」）不随产物投放。
+$seDraft = Join-Path $capDst "skills\se"
+if (Test-Path $seDraft) { [System.IO.Directory]::Delete($seDraft, $true) }
+# 出厂场景：每次从唯一源 src/initdata/capability/scenarios 覆盖同步
+$scnSrc = Join-Path $initCap "scenarios"
+$scnDst = Join-Path $capDst "scenarios"
 if (Test-Path $scnDst) { [System.IO.Directory]::Delete($scnDst, $true) }
 Copy-Item $scnSrc $scnDst -Recurse -Force
+Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
 Write-Host "    ok: capability/scenarios/ ($((Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count) files)"
 
 # -- 6) 形态无关资产：内置 MCP 引擎（codegraph / vfts）+ zvec 运行库 → mcps/{codebase,vfts}（优先复用，缺失回退构建） --

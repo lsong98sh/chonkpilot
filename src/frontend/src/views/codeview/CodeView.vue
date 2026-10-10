@@ -39,7 +39,12 @@
               </span>
             </div>
             <div class="code-body">
-              <div v-if="tab.loading" class="loading-state">
+              <!-- 加载失败占位态：readFile 失败时置 tab.error，与空文件（content=''）区分（R7-E-4） -->
+              <div v-if="tab.error" class="load-error-state">
+                <Icon name="warning-filled" :size="48" color="var(--text-muted)" />
+                <p>{{ $t('common.load_failed') }}</p>
+              </div>
+              <div v-else-if="tab.loading" class="loading-state">
                 <Icon name="loading" :size="24" class="is-loading" />
                 <span>{{ $t('common.loading') }}</span>
               </div>
@@ -194,7 +199,7 @@ const props = defineProps({
 })
 
 // ── 多 tab 数据模型 ───────────────────────────────────
-// file tab:  { key, kind:'file', path, name, fullTitle, renderType, content, loading, showSource, deleted, rawUrl, imageZoom, naturalSize }
+// file tab:  { key, kind:'file', path, name, fullTitle, renderType, content, loading, error, showSource, deleted, rawUrl, imageZoom, naturalSize }
 // 功能 tab:  { key, kind:'settings'|'scenario', name, fullTitle }
 const tabs = ref([])
 const activeKey = ref(null)
@@ -459,6 +464,7 @@ async function loadFileTab(tab) {
   const isPdf = ext === 'pdf'
   if (binType || isPdf || hexExtensions.includes(ext) || unsupportedExtensions.includes(ext)) return
   tab.loading = true
+  tab.error = false
   try {
     const result = await readFile(tab.path)
     if (!tabs.value.includes(tab)) return // tab 已关闭，丢弃
@@ -469,6 +475,7 @@ async function loadFileTab(tab) {
     console.error('Failed to read file:', err)
     tab.content = ''
     tab.truncated = false
+    tab.error = true // 加载失败占位态，与空文件区分（R7-E-4）
   } finally {
     if (tabs.value.includes(tab)) tab.loading = false
   }
@@ -621,11 +628,13 @@ async function onFileChanged(data) {
     if (seq !== changedSeq) return
     const newContent = result.content || ''
     target.truncated = !!result.truncated
+    target.error = false
     if (newContent !== target.content) {
       target.content = newContent
     }
   } catch (err) {
     console.error('[CodeView] failed to reload changed file:', err)
+    if (seq === changedSeq) target.error = true // 重载失败 → 占位态（R7-E-4）
   }
 }
 
@@ -1274,6 +1283,18 @@ onUnmounted(() => {
 }
 
 .unsupported-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* 加载失败占位态（R7-E-4）：与 .unsupported-state 同版式 */
+.load-error-state {
   flex: 1;
   display: flex;
   flex-direction: column;

@@ -1,6 +1,7 @@
 import { dataClient } from '../utils/dataClient'
 import mq from '../utils/mq'
 import { selectDir } from '../utils/guiAsync'
+import { resolvePublishError } from '../utils/publishError.js'
 import { i18n } from '../plugins/i18n'
 import { EventNames } from '../events/event-names'
 import {
@@ -27,7 +28,7 @@ function guiReq(action, body = {}) {
     const backend = env && env.backend
     if (!backend) throw new Error(topic + ': backend unreachable')
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
-    const emsg = (backend.errors && backend.errors[0]) || (p && p.error) || ''
+    const emsg = resolvePublishError(backend) || (backend.errors && backend.errors[0]) || (p && p.error) || ''
     if (!backend.ok || emsg || p.ok === false) {
       const e = new Error(emsg || (topic + ' failed'))
       e.action = action

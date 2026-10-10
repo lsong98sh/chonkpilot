@@ -112,6 +112,4 @@ properties:
     script:
         description: 文件操作 DSL 脚本（每行一条指令，语法与样例见上）
         type: string
-required:
-    - script
 type: object

@@ -150,6 +150,8 @@ type tray struct {
 	hwnd  uintptr
 	hIcon uintptr
 	nid   notifyIconDataW
+	// cleanupOnce 使 cleanup 幂等（正常收尾 / setup 中段失败两条路径可能各调一次）。
+	cleanupOnce sync.Once
 }
 
 // 全局注册的 WndProc 目标（syscall 回调无闭包捕获 → 经 registry 按 hwnd 分发）。
@@ -216,7 +218,7 @@ func startTray(cb TrayCallbacks) (func(), error) {
 	return stop, nil
 }
 
-// setup 在锁定线程内：注册窗口类 → 建隐藏窗口 → 加托盘图标（失败 → 返回错误）。
+// setup 在锁定线程内：注册窗口类 → 建隐藏窗口 → 加托盘图标（失败 → cleanup 后返回错误）。
 func (t *tray) setup() error {
 	hInst, _, _ := procGetModuleHandleW.Call(0)
 	className := utf16Ptr("ChonkPilotTrayWnd")
@@ -229,6 +231,7 @@ func (t *tray) setup() error {
 		LpszClassName: className,
 	}
 	if ret, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); ret == 0 {
+		t.cleanup()
 		return fmt.Errorf("RegisterClassExW: %v", err)
 	}
 	hwnd, _, err := procCreateWindowExW.Call(
@@ -236,6 +239,7 @@ func (t *tray) setup() error {
 		0, 0, 0, 0, 0, 0, 0, hInst, 0,
 	)
 	if hwnd == 0 {
+		t.cleanup()
 		return fmt.Errorf("CreateWindowExW: %v", err)
 	}
 	t.hwnd = hwnd
@@ -257,6 +261,8 @@ func (t *tray) setup() error {
 	}
 	utf16Into(t.nid.SzTip[:], "ChonkPilot 常驻服务（chonkpilot-server）")
 	if ret, _, err := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&t.nid))); ret == 0 {
+		// 窗口已建、trayByHWnd 已登记 → 必须回收（否则窗口泄漏、表项残留）。
+		t.cleanup()
 		return fmt.Errorf("Shell_NotifyIconW(NIM_ADD): %v", err)
 	}
 	return nil
@@ -275,13 +281,15 @@ func (t *tray) loop() {
 	}
 }
 
-// cleanup 移除托盘图标 + 销毁窗口 + 注销类表项（在锁定线程的同一 goroutine）。
+// cleanup 移除托盘图标 + 销毁窗口 + 注销类表项（在锁定线程的同一 goroutine；幂等）。
 func (t *tray) cleanup() {
-	procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&t.nid)))
-	procDestroyWindow.Call(t.hwnd)
-	trayMu.Lock()
-	delete(trayByHWnd, t.hwnd)
-	trayMu.Unlock()
+	t.cleanupOnce.Do(func() {
+		procShellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&t.nid)))
+		procDestroyWindow.Call(t.hwnd)
+		trayMu.Lock()
+		delete(trayByHWnd, t.hwnd)
+		trayMu.Unlock()
+	})
 }
 
 // trayProc 是窗口过程（经 registry 按 hwnd 找 *tray）。

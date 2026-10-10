@@ -28,7 +28,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +37,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/chonkpilot/chonkpilot-lib/osuser"
 )
 
 // Eval 是后端 → 前端脚本执行器（WebView2 w.Eval）。
@@ -699,13 +699,8 @@ func (b *Bridge) Close() {
 }
 
 // currentUserName 返回本机 OS 用户名（instance-register 的必填 `user`，61 §4.1 ⑤）；
-// 取不到 → "unknown"（与 server 侧 registerUserName 兜底同口径，不置空）。
-func currentUserName() string {
-	if u, err := user.Current(); err == nil && u != nil && u.Username != "" {
-		return u.Username
-	}
-	return "unknown"
-}
+// 收敛到 osuser.CurrentUser 单一来源（R7-D-9）。
+func currentUserName() string { return osuser.CurrentUser() }
 
 // newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖）。
 func newUUID() string {

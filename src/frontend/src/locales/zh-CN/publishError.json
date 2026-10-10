@@ -1,0 +1,7 @@
+{
+  "req_body_too_large": "请求体过大（上限 4MiB）",
+  "topic_not_allowed": "该操作在当前形态下不被允许",
+  "work_dir_unbound": "未绑定工作目录",
+  "gui_action_unsupported": "该桌面操作在当前形态下不可用",
+  "dir_not_allowed": "目录不在允许根内"
+}

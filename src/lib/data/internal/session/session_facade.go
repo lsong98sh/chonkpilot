@@ -195,7 +195,8 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 	// 失败不可感知会残留孤儿数据；此处收集全部错误，任一行失败即返回失败。
 	var cascErrs []error
 	for _, table := range []string{"turns", "messages"} {
-		recs, _, err := prj.Table(table).Query(data.Query{Where: data.Record{"session_id": req.SessionID}})
+		// OrderBy 命中 turns_by_session / messages_by_session（A-05：无 OrderBy 禁索引路由 → 全扫）。
+		recs, _, err := prj.Table(table).Query(data.Query{Where: data.Record{"session_id": req.SessionID}, OrderBy: "created_at"})
 		if err != nil {
 			cascErrs = append(cascErrs, fmt.Errorf("query %s: %w", table, err))
 			continue
@@ -344,7 +345,7 @@ func (s *Service) TurnHistory(req facade.TurnHistoryRequest) (facade.TurnHistory
 		}
 		tid := kernel.TurnIDOf(t)
 		if _, loaded := byTurn[tid]; !loaded {
-			recs, err := queryTurnMessages(prj, req.SessionID, tid)
+			recs, err := queryTurnMessages(prj, tid)
 			if err != nil {
 				return facade.TurnHistoryResponse{}, fmt.Errorf("query messages: %v", err)
 			}
@@ -503,14 +504,32 @@ func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.T
 //   - 上限 500 条/状态；单项失败跳过（启动清理尽力而为，不阻断启动）。
 //   - 状态常量取自 kernel（与 tool_pair 生命周期常量定义处单一来源一致）。
 func cleanupStaleToolPairs(prj *data.DB) {
-	for _, st := range []string{kernel.ToolStatusPending, kernel.ToolStatusRunning, kernel.ToolStatusProvisional} {
-		recs, _, err := prj.Table("messages").Query(data.Query{
-			Where: data.Record{"tool_call_status": st}, Limit: 500,
-		})
-		if err != nil {
-			continue
+	// R7-A-5：`tool_call_status` 无索引，原对 3 个非终态各做一次 Query{Where:{tool_call_status}}
+	// = 3 次全桶扫。改为**单次流式扫描**（Table.ForEach，单事务、不整表物化）按状态分桶（各状态
+	// 上限 500、桶序取前 500，与改前逐条等价），再统一改写；三个状态均攒满即提前结束扫描。
+	const perStatusCap = 500
+	stale := []string{kernel.ToolStatusPending, kernel.ToolStatusRunning, kernel.ToolStatusProvisional}
+	isStale := map[string]bool{}
+	for _, st := range stale {
+		isStale[st] = true
+	}
+	counts := map[string]int{}
+	targets := map[string][]data.Record{}
+	stop := errors.New("cleanup: all statuses capped")
+	_ = prj.Table("messages").ForEach(func(_ string, rec data.Record) error {
+		if st := kernel.Sval(rec["tool_call_status"]); isStale[st] && counts[st] < perStatusCap {
+			counts[st]++
+			targets[st] = append(targets[st], rec)
 		}
-		for _, rec := range recs {
+		for _, st := range stale {
+			if counts[st] < perStatusCap {
+				return nil
+			}
+		}
+		return stop
+	})
+	for _, st := range stale {
+		for _, rec := range targets[st] {
 			key := kernel.Sval(rec[data.KeyField])
 			if key == "" {
 				continue
@@ -675,9 +694,11 @@ const messagePerTurnCap = 500
 
 // queryTurnMessages 读某轮消息（≤ messagePerTurnCap，created_at 升序；命中 messages_by_turn 索引
 // → 有界流式，非全桶扫）。A-39：以「按轮分批」替代「整会话一次性全量读入内存」。
-func queryTurnMessages(prj *data.DB, sessionID, turnID string) ([]data.Record, error) {
+// A-44：Where 仅用 turn_id（全局唯一，同 MessageLoad 口径）——若并带 session_id，indexFor 等长
+// 前缀平局会取先声明的 messages_by_session → 按轮读退化为 O(轮×会话消息)。
+func queryTurnMessages(prj *data.DB, turnID string) ([]data.Record, error) {
 	recs, _, err := prj.Table("messages").Query(data.Query{
-		Where:   data.Record{"turn_id": turnID, "session_id": sessionID},
+		Where:   data.Record{"turn_id": turnID},
 		OrderBy: "created_at", Limit: messagePerTurnCap,
 	})
 	if err != nil {
@@ -715,7 +736,7 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 		if _, loaded := byTurn[id]; loaded {
 			continue
 		}
-		recs, err := queryTurnMessages(prj, req.SessionID, id)
+		recs, err := queryTurnMessages(prj, id)
 		if err != nil {
 			return facade.MessageContextResponse{}, fmt.Errorf("query messages: %v", err)
 		}

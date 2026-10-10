@@ -404,6 +404,42 @@ func TestImageRelativeRefAndEscape(t *testing.T) {
 	}
 }
 
+// TestImageCacheBoundsAndTTL（R7-B-44）：图片编码缓存有界（超上限淘汰）+ 过期项清理。
+func TestImageCacheBoundsAndTTL(t *testing.T) {
+	imageCache.mu.Lock()
+	imageCache.m = make(map[imageCacheKey]imageCacheEntry)
+	imageCache.m[imageCacheKey{path: "expired"}] = imageCacheEntry{expires: time.Now().Add(-time.Minute)}
+	imageCache.mu.Unlock()
+
+	for i := 0; i < imageCacheMax+5; i++ {
+		imageCachePut(imageCacheKey{path: fmt.Sprintf("p%d", i)}, imagePart{mime: "image/png", b64: "x"})
+	}
+
+	imageCache.mu.Lock()
+	n := len(imageCache.m)
+	_, hasExpired := imageCache.m[imageCacheKey{path: "expired"}]
+	imageCache.mu.Unlock()
+	if n > imageCacheMax {
+		t.Fatalf("缓存条数超上限：got %d want ≤ %d", n, imageCacheMax)
+	}
+	if hasExpired {
+		t.Fatal("过期项应在写入时被清理")
+	}
+	// 未命中/过期项 → get 返回 false；过期项顺带被删。
+	imageCache.mu.Lock()
+	imageCache.m[imageCacheKey{path: "stale"}] = imageCacheEntry{expires: time.Now().Add(-time.Second)}
+	imageCache.mu.Unlock()
+	if _, ok := imageCacheGet(imageCacheKey{path: "stale"}); ok {
+		t.Fatal("过期项不应命中")
+	}
+	imageCache.mu.Lock()
+	_, stillThere := imageCache.m[imageCacheKey{path: "stale"}]
+	imageCache.mu.Unlock()
+	if stillThere {
+		t.Fatal("过期项命中失败时应被删除")
+	}
+}
+
 // TestImagesDisabledPlainText（⑤ 不回归）：DataRoot 为空 → 引用原样作为文本发送（无内容块）。
 func TestImagesDisabledPlainText(t *testing.T) {
 	dir := t.TempDir()

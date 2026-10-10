@@ -88,7 +88,9 @@ func (w *FileWriter) rotate() error {
 		_ = os.Rename(fmt.Sprintf("%s.%d", w.path, i), fmt.Sprintf("%s.%d", w.path, i+1))
 	}
 	if err := os.Rename(w.path, w.path+".1"); err != nil {
-		return err
+		// R7-B-9：滚动失败（如文件被其它进程占用致 Rename 失败）→ 降级重开原文件继续写
+		//（O_APPEND、size 重取），避免 w.f 已被 Close 后 Write 恒错、日志永久停摆。
+		return w.reopenAppend()
 	}
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -96,6 +98,19 @@ func (w *FileWriter) rotate() error {
 	}
 	w.f = f
 	w.size = 0
+	return nil
+}
+
+// reopenAppend 以追加方式重开原文件并重取 size（滚动失败时的降级路径）。
+func (w *FileWriter) reopenAppend() error {
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	w.f = f
+	if st, serr := f.Stat(); serr == nil {
+		w.size = st.Size()
+	}
 	return nil
 }
 

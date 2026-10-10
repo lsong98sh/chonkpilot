@@ -423,12 +423,16 @@ func (s *Service) MemoryDelete(req facade.MemoryDeleteRequest) (facade.MemoryDel
 	if err != nil {
 		return facade.MemoryDeleteResponse{}, err
 	}
-	path, _, ok := s.memoryFileFor(workDir, req.Category)
+	path, level, ok := s.memoryFileFor(workDir, req.Category)
 	if !ok {
 		return facade.MemoryDeleteResponse{}, errors.New("invalid memory category name: " + req.Category)
 	}
 	if isPresetMemoryCategory(req.Category) {
 		return facade.MemoryDeleteResponse{}, errors.New("preset memory category cannot be deleted: " + req.Category)
+	}
+	// 删前越界复验（与 MemorySave 同口径）：根内指向根外的 symlink 会被 os.Remove 跟随删除。
+	if !memoryPathWithinReal(s.memoryWriteRoot(workDir, level), path) {
+		return facade.MemoryDeleteResponse{}, errors.New("memory path escapes root: " + req.Category)
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return facade.MemoryDeleteResponse{}, err

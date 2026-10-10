@@ -380,8 +380,26 @@ func (g *Gateway) runDSLJob(ctx context.Context, args map[string]any) (string, e
 func dslPump(ctx context.Context, stdout io.Reader, stdin io.Writer, logf func(string, ...any), llm dslLLMRunner, rep dslTreeReporter) (dslResultMsg, error) {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 64*1024), 32*1024*1024) // 大返回值（$RETURN inline 上限 64K，留裕量）
+
+	// R7-C-6：llm_call 改为**并发**执行——PARALLEL 的 LLM 步骤不再被同步阻塞退化为串行；
+	// 结果按 call id 回写（llm_result 带 call 字段），与到达顺序无关。stdin 写用 wmu 串行化。
+	var (
+		llmWG   sync.WaitGroup
+		wmu     sync.Mutex // 串行化对 stdin 的 llm_result 回写
+		werr    error
+		werrSet sync.Once
+	)
+	// drain 等待在飞 LLM 子轮次回写完毕，返回回写首个错误（若有）。
+	drain := func() error {
+		llmWG.Wait()
+		wmu.Lock()
+		defer wmu.Unlock()
+		return werr
+	}
+
 	for sc.Scan() {
 		if err := ctx.Err(); err != nil {
+			_ = drain()
 			return dslResultMsg{}, err
 		}
 		line := bytes.TrimSpace(sc.Bytes())
@@ -400,14 +418,20 @@ func dslPump(ctx context.Context, stdout io.Reader, stdin io.Writer, logf func(s
 			if err := json.Unmarshal(line, &call); err != nil {
 				continue
 			}
-			text, err := llm(ctx, call)
-			res := dslLLMResultMsg{T: "llm_result", Call: call.Call, Text: text}
-			if err != nil {
-				res.Error = err.Error()
-			}
-			if err := writeProtoLine(stdin, res); err != nil {
-				return dslResultMsg{}, fmt.Errorf("写 llm_result: %w", err)
-			}
+			llmWG.Add(1)
+			go func(call dslLLMCallMsg) {
+				defer llmWG.Done()
+				text, err := llm(ctx, call)
+				res := dslLLMResultMsg{T: "llm_result", Call: call.Call, Text: text}
+				if err != nil {
+					res.Error = err.Error()
+				}
+				wmu.Lock()
+				defer wmu.Unlock()
+				if lerr := writeProtoLine(stdin, res); lerr != nil {
+					werrSet.Do(func() { werr = fmt.Errorf("写 llm_result: %w", lerr) })
+				}
+			}(call)
 		case "tree":
 			var tm dslTreeMsg
 			if err := json.Unmarshal(line, &tm); err == nil && rep != nil {
@@ -426,7 +450,12 @@ func dslPump(ctx context.Context, stdout io.Reader, stdin io.Writer, logf func(s
 		case "result":
 			var r dslResultMsg
 			if err := json.Unmarshal(line, &r); err != nil {
+				_ = drain()
 				return dslResultMsg{}, fmt.Errorf("解析 result: %w", err)
+			}
+			// result 为作业终态：先等在飞 LLM 子轮次回写完毕（执行器必先收到全部 llm_result 才发 result）。
+			if derr := drain(); derr != nil {
+				return dslResultMsg{}, derr
 			}
 			if rep != nil {
 				rep.OnResult(r)
@@ -435,7 +464,11 @@ func dslPump(ctx context.Context, stdout io.Reader, stdin io.Writer, logf func(s
 		}
 	}
 	if err := sc.Err(); err != nil {
+		_ = drain()
 		return dslResultMsg{}, err
+	}
+	if derr := drain(); derr != nil {
+		return dslResultMsg{}, derr
 	}
 	return dslResultMsg{}, errors.New("执行器未返回 result（stdout 已关闭）")
 }

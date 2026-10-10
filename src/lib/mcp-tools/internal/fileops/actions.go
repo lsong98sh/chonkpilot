@@ -35,6 +35,10 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/dsl"
 )
 
+// maxEditBytes 是 filesys_run 修改类动作（modify）单文件尺寸上限（32MB）：
+// 超限拒绝修改，避免整读整写把大文件读入内存（R7-C-4）。
+const maxEditBytes = 32 << 20
+
 // failItem 单项失败明细。
 type failItem struct {
 	File  string `json:"file"`
@@ -98,12 +102,13 @@ type editCtx struct {
 	created      []fileRef
 	deleted      []string
 	fails        []failItem
-	originals    map[string]string // resolved → 该文件首个修改动作前的文本（供最终 diff）
-	disp         map[string]string // resolved → 展示路径（用户输入原样）
-	voided       map[string]string // resolved → 校验失败原因（md5/二进制），后续动作静默跳过
-	pathViolated bool              // R-11：出现过参数级路径违规（相对路径）→ 整体失败
-	sandboxHit   bool              // agentbox：出现过沙箱越界（允许目录外读写）→ 整体失败
-	sandboxMsgs  []string          // agentbox：越界拒绝的可诊断消息（去重前）
+	originals    map[string]string              // resolved → 该文件首个修改动作前的文本（供最终 diff）
+	disp         map[string]string              // resolved → 展示路径（用户输入原样）
+	voided       map[string]string              // resolved → 校验失败原因（md5/二进制），后续动作静默跳过
+	encoders     map[string]func(string) []byte // resolved → 原编码回写函数（非 UTF-8 时非空，R7-C-12）
+	pathViolated bool                           // R-11：出现过参数级路径违规（相对路径）→ 整体失败
+	sandboxHit   bool                           // agentbox：出现过沙箱越界（允许目录外读写）→ 整体失败
+	sandboxMsgs  []string                       // agentbox：越界拒绝的可诊断消息（去重前）
 }
 
 func newEditCtx(workDir string, expectMD5 map[string]string) *editCtx {
@@ -113,6 +118,7 @@ func newEditCtx(workDir string, expectMD5 map[string]string) *editCtx {
 		originals: map[string]string{},
 		disp:      map[string]string{},
 		voided:    map[string]string{},
+		encoders:  map[string]func(string) []byte{},
 	}
 }
 
@@ -390,6 +396,12 @@ func (ec *editCtx) modify(verb, disp, resolved string, apply func(cur string) (s
 	}
 	defer release()
 
+	// R7-C-4：修改类动作整读整写，须有尺寸上限（超限拒绝，避免大文件整读入内存）。
+	if fi, serr := os.Stat(resolved); serr == nil && fi.Size() > maxEditBytes {
+		ec.addFail(disp, verb, fmt.Sprintf("文件超过编辑上限（%d 字节），拒绝修改", maxEditBytes))
+		return nil
+	}
+
 	// 该文件已因校验失败被标记 → 静默跳过（首触时已报）
 	ec.mu.Lock()
 	if _, void := ec.voided[resolved]; void {
@@ -418,6 +430,10 @@ func (ec *editCtx) modify(verb, disp, resolved string, apply func(cur string) (s
 		ec.mu.Lock()
 		ec.originals[resolved] = DecodeText(data)
 		ec.disp[resolved] = disp
+		// R7-C-12：记住原编码，写回时按原编码编码，避免 GBK/Shift-JIS/UTF-16 静默变 UTF-8。
+		if enc := encodeFor(data); enc != nil {
+			ec.encoders[resolved] = enc
+		}
 		ec.mu.Unlock()
 	}
 
@@ -434,7 +450,14 @@ func (ec *editCtx) modify(verb, disp, resolved string, apply func(cur string) (s
 		return nil
 	}
 	if changed && after != cur {
-		if werr := os.WriteFile(resolved, []byte(after), 0644); werr != nil {
+		out := []byte(after)
+		ec.mu.Lock()
+		enc := ec.encoders[resolved]
+		ec.mu.Unlock()
+		if enc != nil {
+			out = enc(after)
+		}
+		if werr := os.WriteFile(resolved, out, 0644); werr != nil {
 			ec.addFail(disp, verb, "写入失败："+werr.Error())
 		}
 	}

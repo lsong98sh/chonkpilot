@@ -16,6 +16,7 @@
  * knowledge / prompt。
  */
 import mq from './mq'
+import { resolvePublishError } from './publishError.js'
 
 /**
  * 发送 data-<domain>-<action> 并 await 收集结果（publish + promise；61-消息一览 §0.1）。
@@ -33,7 +34,7 @@ export function dataRequest(domain, action, body = {}, opts = {}) {
     const backend = env && env.backend
     if (!backend) throw new Error(`${topic}: backend unreachable`)
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
-    const emsg = (backend.errors && backend.errors[0]) || (p && p.error) || ''
+    const emsg = resolvePublishError(backend) || (backend.errors && backend.errors[0]) || (p && p.error) || ''
     if (!backend.ok || emsg || p.ok === false) {
       const e = new Error(emsg || `${topic} failed`)
       e.domain = domain

@@ -30,6 +30,7 @@ package fileops
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -199,14 +200,29 @@ func copyFile(from, to, workDir string) (string, string) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return "", fmt.Sprintf("copy %s -> %s: %s", from, to, err)
 	}
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return "", fmt.Sprintf("copy %s: %s", from, err)
-	}
-	if err := os.WriteFile(dst, data, 0644); err != nil {
+	// R7-C-4：流式复制（io.Copy），不整读源文件入内存。
+	if err := copyFileStream(src, dst); err != nil {
 		return "", fmt.Sprintf("copy %s -> %s: %s", from, to, err)
 	}
 	return from + " -> " + to, ""
+}
+
+// copyFileStream 流式复制单文件（io.Copy，O(1) 内存，R7-C-4）。
+func copyFileStream(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // copyDirRecursive 递归复制目录内容。
@@ -229,11 +245,8 @@ func copyDirRecursive(src, dst string) error {
 			}
 			return os.MkdirAll(target, 0755)
 		}
-		data, rerr := os.ReadFile(p)
-		if rerr != nil {
-			return rerr
-		}
-		return os.WriteFile(target, data, 0644)
+		// R7-C-4：逐文件流式复制，不整读入内存。
+		return copyFileStream(p, target)
 	})
 }
 

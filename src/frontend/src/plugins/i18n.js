@@ -1,5 +1,6 @@
 import { createI18n } from 'vue-i18n'
 import { saveUIState } from '../api/file'
+import { setPublishErrorTranslator } from '../utils/publishError'
 
 // Import all locale modules statically
 import zhCommon from '../locales/zh-CN/common.json'
@@ -23,6 +24,7 @@ import zhJsonSchema from '../locales/zh-CN/jsonSchema.json'
 import zhWizard from '../locales/zh-CN/wizard.json'
 import zhPromptVars from '../locales/zh-CN/promptVars.json'
 import zhOptimizeError from '../locales/zh-CN/optimizeError.json'
+import zhPublishError from '../locales/zh-CN/publishError.json'
 
 import enCommon from '../locales/en-US/common.json'
 import enToolbar from '../locales/en-US/toolbar.json'
@@ -45,6 +47,7 @@ import enJsonSchema from '../locales/en-US/jsonSchema.json'
 import enWizard from '../locales/en-US/wizard.json'
 import enPromptVars from '../locales/en-US/promptVars.json'
 import enOptimizeError from '../locales/en-US/optimizeError.json'
+import enPublishError from '../locales/en-US/publishError.json'
 
 // Priority: localStorage > default
 function getInitialLocale() {
@@ -83,6 +86,7 @@ export const i18n = createI18n({
       wizard: zhWizard,
       promptVars: zhPromptVars,
       optimizeError: zhOptimizeError,
+      publishError: zhPublishError,
     },
     'en-US': {
       common: enCommon,
@@ -106,9 +110,14 @@ export const i18n = createI18n({
       wizard: enWizard,
       promptVars: enPromptVars,
       optimizeError: enOptimizeError,
+      publishError: enPublishError,
     },
   },
 })
+
+// 注册 httpapi `/publish` 稳定错误码的 translator（D-41 同口径）：utils/publishError 据此
+// 本地化 `publishError.<code>`；node 单测不加载本插件 → utils 侧回落后端原文（零依赖）。
+setPublishErrorTranslator((key) => (i18n.global.te(key) ? i18n.global.t(key) : ''))
 
 /**
  * 应用语言到**当前窗口**（仅本地：i18n + localStorage，**不写 DB**）。

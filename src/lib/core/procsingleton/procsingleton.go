@@ -16,9 +16,10 @@ import (
 	"strings"
 )
 
-// namePrefix 是单例互斥体名前缀：`Local\` 命名空间 = 每登录会话独立（不与系统其它对象
-// 冲突），后缀 = 用户稳定哈希（按当前用户隔离）。
-const namePrefix = `Local\ChonkPilotServer_`
+// namePrefix 是单例互斥体名前缀：`Global\` 命名空间 = **跨登录会话全局**（R7-B-3：
+// `Local\` 下同用户的两个登录会话各得一份互斥体，第二份 server 会成功启动并顶掉第一份的
+// UDS socket）；后缀 = 用户稳定哈希（按当前用户隔离，故不同用户仍互不冲突）。
+const namePrefix = `Global\ChonkPilotServer_`
 
 // Name 返回 server 进程单例的命名互斥体名（同 user → 同名；跨进程稳定）。
 // user 为空 → 归一为空串（仍得确定名，作「未取到用户」的兜底单例，不 panic）。

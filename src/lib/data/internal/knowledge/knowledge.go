@@ -173,8 +173,14 @@ func (s *Service) KnowledgeRead(req facade.KnowledgeReadRequest) (facade.Knowled
 	if err != nil {
 		return facade.KnowledgeReadResponse{}, err
 	}
+	p := capfs.SafeJoin(root, req.Path)
+	// 读前越界复验（A-32 同款，补 Read 漏配）：SafeJoin 仅纯词法校验，根内指向根外的 symlink
+	// 会被 os.ReadFile 跟随越界读；此处与写入口同口径复验实路径仍在信任根内。
+	if err := s.kbGuardWritePath(root, workDir, p); err != nil {
+		return facade.KnowledgeReadResponse{}, err
+	}
 	// 读前 stat 判尺寸上限（A-40）：超大文档拒绝整读，避免把内存读爆。
-	raw, err := capfs.ReadFileCapped(capfs.SafeJoin(root, req.Path), capfs.MaxDocReadBytes)
+	raw, err := capfs.ReadFileCapped(p, capfs.MaxDocReadBytes)
 	if err != nil {
 		return facade.KnowledgeReadResponse{}, fmt.Errorf("read: %v", err)
 	}

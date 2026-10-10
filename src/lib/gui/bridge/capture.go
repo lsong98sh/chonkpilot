@@ -108,9 +108,17 @@ func callCaptureScreen(b *Bridge, ctx context.Context, params []json.RawMessage)
 	if hbm == 0 || bitsPtr == nil {
 		return nil, fmt.Errorf("CaptureScreen: CreateDIBSection failed")
 	}
-	defer pDeleteObject.Call(hbm)
+	// 选入 memDC；**收尾须先选回旧位图再 DeleteObject** —— 位图被选入 DC 时
+	// DeleteObject 会失败、不回收（GDI 规定），否则每次截图泄漏 1 个 DIB。
+	// defer LIFO：本闭包先于上面的 DeleteDC(memDC) 执行。
+	oldBmp, _, _ := pSelectObject.Call(memDC, hbm)
+	defer func() {
+		if oldBmp != 0 {
+			pSelectObject.Call(memDC, oldBmp)
+		}
+		pDeleteObject.Call(hbm)
+	}()
 
-	_, _, _ = pSelectObject.Call(memDC, hbm)
 	ok, _, _ := pBitBlt.Call(memDC, 0, 0, uintptr(w), uintptr(h), screenDC, uintptr(x), uintptr(y), uintptr(srcCopy))
 	if ok == 0 {
 		return nil, fmt.Errorf("CaptureScreen: BitBlt failed")

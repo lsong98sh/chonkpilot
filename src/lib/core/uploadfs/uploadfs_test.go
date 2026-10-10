@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSanitizeDir(t *testing.T) {
@@ -67,6 +68,41 @@ func TestDecodeData(t *testing.T) {
 	// 超限（解码前按 base64 原文长度快速拒绝）
 	if _, err := DecodeData(strings.Repeat("A", MaxBase64Len+1)); err == nil {
 		t.Fatal("超限 data 应报错")
+	}
+}
+
+// TestEnforceKeepCap（R7-B-4）：目录总量超 cap → 按 mtime 最旧优先删除至 ≤ cap；
+// 未超限 → 不动（返回 0）。
+func TestEnforceKeepCap(t *testing.T) {
+	dir := t.TempDir()
+	mk := func(name string, n int, mtime time.Time) {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, make([]byte, n), 0644); err != nil {
+			t.Fatalf("写 %s: %v", name, err)
+		}
+		if err := os.Chtimes(p, mtime, mtime); err != nil {
+			t.Fatalf("Chtimes %s: %v", name, err)
+		}
+	}
+	base := time.Now()
+	mk("old.bin", 10, base.Add(-3*time.Hour))
+	mk("mid.bin", 10, base.Add(-2*time.Hour))
+	mk("new.bin", 10, base.Add(-1*time.Hour))
+
+	if n := EnforceKeepCap(dir, 100); n != 0 {
+		t.Fatalf("未超限不应删除，got %d", n)
+	}
+	// cap=25 < 总量 30 → 删最旧 old.bin → 20 ≤ 25。
+	if n := EnforceKeepCap(dir, 25); n != 1 {
+		t.Fatalf("超限应删 1 个最旧文件，got %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "old.bin")); err == nil {
+		t.Fatal("最旧文件应被删除")
+	}
+	for _, keep := range []string{"mid.bin", "new.bin"} {
+		if _, err := os.Stat(filepath.Join(dir, keep)); err != nil {
+			t.Fatalf("%s 应保留: %v", keep, err)
+		}
 	}
 }
 

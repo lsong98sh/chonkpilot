@@ -1,4 +1,5 @@
 import mq from '../utils/mq.js'
+import { resolvePublishError } from '../utils/publishError.js'
 import {
   DataKnowledgeRootKeys, DataKnowledgeListKeys,
   DataKnowledgeReadKeys, DataKnowledgeCreateKeys,
@@ -13,7 +14,7 @@ function knowledgeReq(action, body = {}) {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-knowledge-${action}: backend unreachable`)
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
-    const emsg = (backend.errors && backend.errors[0]) || (p && p.error) || ''
+    const emsg = resolvePublishError(backend) || (backend.errors && backend.errors[0]) || (p && p.error) || ''
     if (!backend.ok || emsg || p.ok === false) {
       const e = new Error(emsg || `data-knowledge-${action} failed`)
       e.action = action

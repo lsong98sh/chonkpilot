@@ -95,8 +95,8 @@
 | `local.go` | 初始化数据、布局/窗口/UI/文件树/打开态保存（prjusr）、最近目录（list/remove）、打开目录、VCS、检索 |
 | `builtins.go` | `gui.system.builtins`：读 exe 同目录 `config.json` 的只读内置 MCP 项（`mcpServers` 段） |
 | `toolchain.go` | `gui.toolchain.detect`：探测 6 语言工具链 + Chrome 路径/版本（系统级候选不落库）；探测顺序 = PATH → 注册表 `App Paths`（HKCU→HKLM）→ 环境变量目录（JAVA_HOME/GOROOT 等）→ 常见安装目录；候选环境变量支持 `%VAR%`/`$VAR`；**Chrome 版本来自其目录 `Application\<ver>\` 的最高版本号目录**（不执行 `chrome.exe --version`） |
-| `capture.go` | 截图：隐藏本窗 → GDI 全屏 BitBlt → **只回截图字节 base64 `{b64}`**（**不落盘**；落盘由 server 决定，见 [61 §1](../60-reference/61-消息一览.md) gui.capture/gui.captured；纯 syscall，无 CGO） |
-| `upload.go` | 附件上传：base64 → **prjusr 数据根** `<dir>/`（`bridge.uploadRoot()`；`dir` 缺省 `tmp/uploads`、截图 `screenshot`；`--data-dir` 显式时 = 该数据根）→ **只回 `{name}`**（真实落盘名，不暴露服务器路径） |
+| `capture.go` | 截图：隐藏本窗 → GDI 全屏 BitBlt → **只回截图字节 base64 `{b64}`**（**不落盘**；落盘由 server 决定，见 [61 §1](../60-reference/61-消息一览.md) gui.capture/gui.captured；纯 syscall，无 CGO）。**R7-D**：收尾**先选回旧位图再 `DeleteObject`**（位图被选入 DC 时 `DeleteObject` 会失败、不回收）→ 修每次截图泄漏 1 个 DIB |
+| `upload.go` | 附件上传：base64 → **prjusr 数据根** `<dir>/`（`bridge.uploadRoot()`；`dir` 缺省 `tmp/uploads`、截图 `screenshot`；`--data-dir` 显式时 = 该数据根）→ **只回 `{name}`**（真实落盘名，不暴露服务器路径）。**R7-B-4**：落盘后按 `uploadfs.KeepCap`（2 GiB，**按目录**、mtime **最旧优先**）做**容量兜底** —— 兜底**下沉到 lib core `uploadfs.Save`**（GUI 桥与 browser `guiUpload` **同源**），不再仅 GUI 启动期一次 |
 | `optimize.go` | 提示词 AI 优化：SSE 流式，事件 `optimize-token/done/error` |
 | `compat.go` | 旧协议事件名兼发（旧回归脚本用） |
 

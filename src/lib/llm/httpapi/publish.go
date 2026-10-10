@@ -126,7 +126,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"request body too large（上限 4MiB）"}})
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"request body too large（上限 4MiB）"}, msgkeys.FieldCode: errCodeReqBodyTooLarge})
 			return
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]any{msgkeys.FieldOk: false, msgkeys.FieldErrors: []string{"bad body: " + err.Error()}})
@@ -176,13 +176,13 @@ func (s *Server) publishEvent(typ, payloadJSON, token string) (any, []error) {
 		return s.dataCall(typ, s.bindData(payloadJSON))
 	case strings.Contains(typ, "."):
 		if !dottedAllowed(typ) {
-			return nil, []error{fmt.Errorf("topic not allowed: %s（browser 形态上行白名单外）", typ)}
+			return failReplyCoded(errCodeTopicNotAllowed, "topic not allowed: %s（browser 形态上行白名单外）", typ)
 		}
 		// filesys.*：work_dir 由服务端绑定（覆盖请求载荷），浏览器端不得自报任意目录。
 		if strings.HasPrefix(typ, "filesys.") {
 			bound, err := s.bindFilesys(payloadJSON)
 			if err != nil {
-				return failReply("filesys: %v", err)
+				return failReplyCoded(errCodeWorkDirUnbound, "filesys: %v", err)
 			}
 			return s.publishV(typ, bound)
 		}
@@ -494,13 +494,35 @@ func (s *Server) guiDo(action string, payload []byte, token string) (any, []erro
 // unsupportedReply 生成"明确不支持"回复（不得静默失败 / 不得假成功）。
 func unsupportedReply(action, reason string) (any, []error) {
 	e := fmt.Errorf("browser 形态不支持 gui.%s：%s（native 能力已禁用，见 19 §3.3/§6）", action, reason)
-	return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error()}, []error{e}
+	return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error(), msgkeys.FieldCode: errCodeGuiUnsupported}, []error{e}
 }
 
 // failReply 生成失败回复（附 error 进 errors）。
 func failReply(format string, args ...any) (any, []error) {
 	e := fmt.Errorf(format, args...)
 	return map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error()}, []error{e}
+}
+
+// 稳定错误码（R7-B-10，比照 D-41 optimize-error：稳定 code + 前端 i18n 键）。
+// 向后兼容：仅在结果信封**新增** `code` 字段；`error` / `errors` 文案保持不变
+// （现有前端 `guiReq`/`mq.emit` 解析不受影响）。前端可按需取 `result.code`
+// （i18n 命名空间 `publishError.*`，见报告所列键），缺失则回落 `error` 文案。
+const (
+	errCodeReqBodyTooLarge = "req_body_too_large"
+	errCodeTopicNotAllowed = "topic_not_allowed"
+	errCodeWorkDirUnbound  = "work_dir_unbound"
+	errCodeGuiUnsupported  = "gui_action_unsupported"
+	errCodeDirNotAllowed   = "dir_not_allowed"
+)
+
+// failReplyCoded 同 failReply，另附稳定错误码 `code`（前端据其取 i18n 文案）。
+func failReplyCoded(code, format string, args ...any) (any, []error) {
+	e := fmt.Errorf(format, args...)
+	m := map[string]any{msgkeys.FieldOk: false, msgkeys.FieldError: e.Error()}
+	if code != "" {
+		m[msgkeys.FieldCode] = code
+	}
+	return m, []error{e}
 }
 
 // emitFrontend 把 gui.* **下行事件**投递到本 instance 的 SSE 客户端（browser 形态：服务端即"gui 侧"，
@@ -823,10 +845,10 @@ func (s *Server) guiDirOpen(payload []byte, token string) (any, []error) {
 	// 深层归属校验（项目登记 / 用户-项目关联）由下方 instance-claim 一并完成（复用既有实现）。
 	roots := s.allowedRoots()
 	if len(roots) == 0 {
-		return failReply("dir.open: 无允许根（auth.projectRoots 未配置）")
+		return failReplyCoded(errCodeDirNotAllowed, "dir.open: 无允许根（auth.projectRoots 未配置）")
 	}
 	if !withinRoots(roots, clean) {
-		return failReply("dir.open: 目录不在允许根内：%s", path)
+		return failReplyCoded(errCodeDirNotAllowed, "dir.open: 目录不在允许根内：%s", path)
 	}
 	req, _ := json.Marshal(map[string]any{
 		msgkeys.FieldInstanceId: s.instanceID,

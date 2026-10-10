@@ -17,8 +17,9 @@
  *   - 心跳 `instance-heartbeat {instance_id}`（30s；payload 由 mq 统一注入 instance_id）。
  *
  * 心跳门控（**保留既有 `-tags split` 语义**，61 §4.1 ②）：**仅分离形态**（首屏注入
- * `__ck.form` = gui / browser）发布；desktop（桌面单体 / **flash 薄壳**）不发布、服务端亦不判超时。
- * **flash 薄壳不发布心跳** —— 其存活由 **UDS 连接断开**判定（见 61 §4.1 · 62 §3A）。
+ * `__ck.form` = gui / browser）由**前端**发布心跳；desktop / **flash 薄壳**不自行发布。
+ * **flash 薄壳**的存活改由 **UDS 前门按连接代发 `instance-heartbeat` 续期**：只要连接在，
+ * 前门每 `heartbeat.Interval/2` 续一次，连接断开即停（= 实例退出；见 61 §4.1 · 62 §3A · 19 §8.11）。
  *
  * 模块级单例状态（App 启动/登录后认领一次；其它消费者可读同一份）。
  */

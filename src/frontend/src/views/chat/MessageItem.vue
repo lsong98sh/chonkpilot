@@ -665,12 +665,9 @@ const prettyArgs = computed(() => {
   }
 })
 
-// 命令/脚本类工具：返回结果本身就是命令输出 → 展开区"结果"标签改用"输出"
-const OUTPUT_TOOLS = new Set(['command_execute', 'python_script_execute', 'script'])
-const isOutputTool = computed(() => {
-  const tool = (props.message.tool || '').toLowerCase()
-  return OUTPUT_TOOLS.has(tool) || tool.endsWith('_script')
-})
+// 脚本类工具（script_run）：返回结果本身就是脚本输出 → 展开区"结果"标签改用"输出"
+const OUTPUT_TOOLS = new Set(['script_run'])
+const isOutputTool = computed(() => OUTPUT_TOOLS.has((props.message.tool || '').toLowerCase()))
 
 // 通知去重：历史消息 content 自带"🔔 "前缀时不显示样式图标
 const noticeHasBell = computed(() => (props.message.content || '').trimStart().startsWith('🔔'))

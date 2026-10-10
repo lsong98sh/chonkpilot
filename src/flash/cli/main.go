@@ -168,6 +168,8 @@ func resolvePrompt(opts *cliOpts) (string, error) {
 		return "", fmt.Errorf("请提供 --prompt 或 --prompt-file，或通过 stdin 传入提示词")
 	}
 	scanner := bufio.NewScanner(os.Stdin)
+	// 单行可超默认 64KB（长提示词）→ 扩容至 10MB，避免 Scan 报 ErrTooLong。
+	scanner.Buffer(make([]byte, 64<<10), 10<<20)
 	var lines []string
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())

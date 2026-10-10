@@ -911,7 +911,7 @@ func TestMessageDrivenCheckpointing(t *testing.T) {
 	emitJSON(t, x.bus, filesysChangedSubject, map[string]any{"work_dir": wd, "path": "m.txt", "operation": "write"})
 	// 前置钩子（主会话，无 top_session → 用 session 作根）
 	emitJSON(t, x.bus, preHookSubject, map[string]any{
-		"tool": "file_write",
+		"tool": "filesys_run",
 		"context": map[string]any{
 			"instance_id": testInstance, "session": "sessM", "turn": "turnM",
 		},
@@ -930,7 +930,7 @@ func TestMessageDrivenCheckpointing(t *testing.T) {
 	writeFileT(t, wd, "m.txt", "v3")
 	emitJSON(t, x.bus, filesysChangedSubject, map[string]any{"work_dir": wd, "path": "m.txt"})
 	emitJSON(t, x.bus, preHookSubject, map[string]any{
-		"tool": "file_write",
+		"tool": "filesys_run",
 		"context": map[string]any{
 			"instance_id": testInstance, "session": "sessSub", "top_session": "sessM", "turn": "turnM",
 		},

@@ -101,12 +101,16 @@ var (
 )
 
 // tasktreeIndexes 生成任务树/影子表的索引集（桶名以表名为前缀）。
+//
+// 声明顺序即等长前缀平局时的优先级（indexFor 取先声明者，见下）：更窄的 by_session 声明在 by_top
+// 之前 —— 查询 `{top_session, session_id}` 同时命中两索引（各覆盖 1 个前缀列、等长），取 by_session
+// 得到更窄行集（一会话恰属一主会话）；correctness 由回表 matchWhere 兜底，两索引结果集恒等，仅扫描宽度不同（R7-A-6）。
 func tasktreeIndexes(table string) []Index {
 	return []Index{
-		{Bucket: table + "_by_top", Fields: []string{"top_session"}, Order: "created_at",
-			Build: keyBuilder([]string{"top_session"}, "created_at")},
 		{Bucket: table + "_by_session", Fields: []string{"session_id"}, Order: "created_at",
 			Build: keyBuilder([]string{"session_id"}, "created_at")},
+		{Bucket: table + "_by_top", Fields: []string{"top_session"}, Order: "created_at",
+			Build: keyBuilder([]string{"top_session"}, "created_at")},
 		{Bucket: table + "_by_parent", Fields: []string{"parent_node_id"}, Order: "",
 			Build: keyBuilder([]string{"parent_node_id"}, "")},
 	}
@@ -195,6 +199,7 @@ func decodeRecord(raw []byte, key string) (Record, bool) {
 // ─── 查询路由（由 query.go 调用）──────────────────────────────
 
 // indexFor 选路由索引：返回最长可用等值前缀（列序连续、值均为字符串）对应的索引与前缀值。
+// 平局（等长前缀）取**先声明者** → 声明顺序即优先级（更窄的索引应声明在前，见 tasktreeIndexes）。
 // 无可用前缀 → (nil, nil)，Query 走全桶扫描。
 func indexFor(table string, where map[string]any) (*Index, []string) {
 	if len(where) == 0 {

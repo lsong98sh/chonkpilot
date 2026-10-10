@@ -11,11 +11,13 @@ package flash
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
@@ -136,8 +138,11 @@ func RunSession(ctx context.Context, bus mq.Bus, opts SessionOptions) error {
 		_ = json.Unmarshal(v.Payload, &ev)
 		if ev.State == "done" && ev.ResultSummary != "" {
 			summary := ev.ResultSummary
+			// 按 rune 截断（避免中文被按字节截出半个码点）。
 			if len(summary) > 200 {
-				summary = summary[:200] + "..."
+				if r := []rune(summary); len(r) > 200 {
+					summary = string(r[:200]) + "..."
+				}
 			}
 			fmt.Fprintf(out, "[工具完成] %s → %s\n", ev.Tool, summary)
 		} else if ev.State == "error" {
@@ -148,8 +153,14 @@ func RunSession(ctx context.Context, bus mq.Bus, opts SessionOptions) error {
 		return err
 	}
 
+	// session/turn 由客户端分配（服务端 onLLMStart 必填，见 61 §4.5）；对齐
+	// src/desktop/cli/main.go 的载荷面（此前缺失 → 服务端回 accepted:false 致本进程挂死）。
+	session := newUUID()
+	turn := newUUID()
 	startPayload := map[string]any{
 		"instance_id": opts.InstanceID,
+		"session":     session,
+		"turn":        turn,
 	}
 	if opts.LLM != "" {
 		startPayload["llm"] = opts.LLM
@@ -168,9 +179,17 @@ func RunSession(ctx context.Context, bus mq.Bus, opts SessionOptions) error {
 	}
 	if v := bus.Emit(ctx, sessionStartSubject, startPayload).Wait(); v.Err() != nil {
 		return fmt.Errorf("session-start 失败：%w", v.Err())
+	} else if m, _ := v.Result.(map[string]any); m != nil {
+		// 服务端拒绝（如 session/turn/instance 缺失、session busy）以 Result 回写且不置 Err →
+		// 必须显式判定，否则会话永不 complete → 本进程静默挂死（61 §4.5）。
+		if ok, _ := m["accepted"].(bool); !ok {
+			return fmt.Errorf("session-start 被拒绝：%v", m["error"])
+		}
 	}
 
 	sendPayload := map[string]any{
+		"session": session,
+		"turn":    turn,
 		"type":    "text-user",
 		"content": opts.Prompt,
 	}
@@ -189,4 +208,15 @@ func RunSession(ctx context.Context, bus mq.Bus, opts SessionOptions) error {
 		fmt.Fprintln(out, finalText)
 	}
 	return nil
+}
+
+// newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖；与 bridge/server 同构）。
+func newUUID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("id-%d", time.Now().UnixNano())
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40 // version 4
+	buf[8] = (buf[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }

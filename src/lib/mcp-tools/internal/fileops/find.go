@@ -2,15 +2,20 @@ package fileops
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 )
+
+// maxHitsPerFile 是单文件 grep 命中行的封顶条数（防逐行无界 append，R7-C-2）。
+const maxHitsPerFile = 200
 
 // findItem 是 file_find 的单条目。
 type findItem struct {
@@ -52,6 +57,10 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 		depth = int(v)
 	}
 	subPath, _ := args["path"].(string)
+	// path 为契约必填（file_find.tool.md required=[path]）：缺失 → 顶层错误，不静默回落 workDir/"."。
+	if strings.TrimSpace(subPath) == "" {
+		return cli.Err("file_find", "path is required")
+	}
 
 	var re *regexp.Regexp
 	if grepPattern != "" {
@@ -64,14 +73,11 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 
 	filter := ParseWalkFilter(args)
 
-	root := workDir
-	if subPath != "" {
-		resolved, errMsg := ResolvePath(subPath, workDir)
-		if errMsg != "" {
-			// 参数级路径违规（R-11）→ 顶层错误
-			return cli.Err("file_find", ValidateField("path", subPath))
-		}
-		root = resolved
+	// 参数级路径违规（R-11）→ 顶层错误：复用 ResolvePath 返回的 errMsg 并补参数名，
+	// 不再二次 ValidateField（errMsg 不丢弃，R7-C-10）。
+	root, errMsg := ResolvePath(subPath, workDir)
+	if errMsg != "" {
+		return cli.Err("file_find", "path："+errMsg)
 	}
 	if root == "" {
 		root = "."
@@ -142,7 +148,8 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 		}
 
 		if re != nil {
-			data, rerr := os.ReadFile(path)
+			// R7-C-2：整读改上限截断（maxReadBytes），避免超大文件整读入内存。
+			data, rerr := readFileCapped(path)
 			if rerr != nil || IsBinaryBytes(data) {
 				return nil
 			}
@@ -152,10 +159,14 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 				lineNum++
 				if re.MatchString(ln) {
 					s := strings.TrimSpace(ln)
-					if len(s) > 200 {
-						s = s[:200] + "..."
+					if ts, trunc := truncRunes(s, 200); trunc {
+						s = ts
 					}
 					it.hits = append(it.hits, fmt.Sprintf("%d:%s", lineNum, s))
+					// R7-C-2：单文件命中条数封顶，防逐行无界 append。
+					if len(it.hits) >= maxHitsPerFile {
+						break
+					}
 				}
 			}
 			if len(it.hits) == 0 {
@@ -207,8 +218,9 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 }
 
 // readSummaryHeadTail 读取文件前/后各最多 200 字符（单行摘录，换行折叠）。
+// 按 rune 切片，避免按字节截断多字节字符（中文等）产生乱码（R7-C-8）。
 func readSummaryHeadTail(absPath string) (string, string) {
-	data, err := os.ReadFile(absPath)
+	data, err := readFileCapped(absPath)
 	if err != nil || IsBinaryBytes(data) {
 		return "", ""
 	}
@@ -218,19 +230,41 @@ func readSummaryHeadTail(absPath string) (string, string) {
 	}
 	fold := func(s string) string {
 		s = strings.Join(strings.Fields(s), " ")
-		if len(s) > 200 {
-			s = s[:200] + "..."
+		if ts, trunc := truncRunes(s, 200); trunc {
+			return ts
 		}
 		return s
 	}
-	head := fold(content[:minInt(len(content), 200)])
-	var tail string
-	if len(content) > 400 {
-		tail = fold(content[len(content)-200:])
-	} else {
-		return head, ""
+	r := []rune(content)
+	headN := 200
+	if len(r) < headN {
+		headN = len(r)
 	}
-	return head, tail
+	head := fold(string(r[:headN]))
+	if len(r) > 400 {
+		return head, fold(string(r[len(r)-200:]))
+	}
+	return head, ""
+}
+
+// readFileCapped 读取文件内容，最多 maxReadBytes 字节（防超大文件整读入内存，R7-C-2）。
+func readFileCapped(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, maxReadBytes))
+}
+
+// truncRunes 按 rune 将 s 截断到最多 n 个字符并补 "..."；未超长返回原串与 false。
+// 避免按字节截断多字节字符（中文等）产生乱码（R7-C-8）。
+func truncRunes(s string, n int) (string, bool) {
+	r := []rune(s)
+	if len(r) <= n {
+		return s, false
+	}
+	return string(r[:n]) + "...", true
 }
 
 func findResult(mode string, lines []string) *cli.Result {
@@ -263,18 +297,7 @@ func renderFindTree(root string, items []findItem) *cli.Result {
 }
 
 func sortStrings(items []findItem) {
-	for i := 1; i < len(items); i++ {
-		for j := i; j > 0 && items[j].rel < items[j-1].rel; j-- {
-			items[j], items[j-1] = items[j-1], items[j]
-		}
-	}
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 }
 
 // findPeriod 是 file_find 的修改时间范围过滤（仅文件 mtime，闭区间含边界）。

@@ -21,7 +21,7 @@
 #   │   ├── tools/<cat>/*.tool.md
 #   │   ├── resources/<...>/*.resource.md
 #   │   ├── skills/<...>/*.skill.md
-#   │   ├── system/summary.md               # 非原语系统文档（源 src/initdata/capability/system，OP-02）
+#   │   ├── system/                         # 非原语系统文档全量（summary.md/system-directory.md/memory/*.md；源 src/initdata/capability/system，OP-02）
 #   │   ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
 #   │   └── executors/chonkpilot-{core,desktop,browser,dsl}-executor.exe
 #   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
@@ -173,7 +173,7 @@ $dslExe = Join-Path $capDst "executors\chonkpilot-dsl-executor.exe"
 if (Test-Path $dslExe) {
     Write-Host "    ok: capability/executors/chonkpilot-dsl-executor.exe"
 } else {
-    Write-Host "    [提示] capability/executors/chonkpilot-dsl-executor.exe 缺失（dslexec 源未落地）；dsl_run 运行期不可用"
+    Write-Host "    [提示] capability/executors/chonkpilot-dsl-executor.exe 缺失（build-dsl-executor.ps1 构建失败或被跳过），检查上游日志；dsl_run 运行期不可用"
 }
 
 # -- 5) 出厂场景：src/initdata/capability/scenarios → dist/desktop/capability/scenarios（覆盖式同步，不删目录本身） --

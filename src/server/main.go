@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -23,6 +22,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/chonkpilot/chonkpilot-lib/osuser"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
 	"github.com/chonkpilot/chonkpilot-lib/procsingleton"
 	"github.com/chonkpilot/chonkpilot-lib/uds"
@@ -83,8 +83,11 @@ func main() {
 	// UDS / DB）之前**（无副作用）。判据 = Windows **命名互斥体**（见 procsingleton 包）——
 	// **不再**依赖「UDS bind 失败」：`uds.Server.Start()` 先 `os.Remove` 旧 socket 再 listen，
 	// Windows 下重复 bind **不失败**，旧口径不成立。
-	if rel, duplicate, err := procsingleton.Acquire(currentUserName()); err != nil {
-		log.Printf("[server] 单例判定失败（按非单例继续）: %v", err)
+	if rel, duplicate, err := procsingleton.Acquire(osuser.CurrentUser()); err != nil {
+		// fail-closed（R7-B-8）：判定失败即**拒绝启动**并留痕——若按非单例继续，与
+		// uds.Server.Start() 无条件 os.Remove(旧 socket) 组合，异常环境下第二实例
+		// 可能删掉在跑实例的前门 socket。
+		log.Fatalf("[server] 单例判定失败，拒绝启动: %v", err)
 	} else if duplicate {
 		log.Printf("[server] 已有 chonkpilot-server 在运行 → 本进程为第二实例，退出（exit %d）", exitDuplicate)
 		os.Exit(exitDuplicate)
@@ -255,6 +258,9 @@ func main() {
 			cmd := exec.Command(p)
 			if err := cmd.Start(); err != nil {
 				log.Printf("[server] spawn flash %s: %v", p, err)
+			} else {
+				// 不托管子进程（flash 独立常驻）：释放句柄，免 Wait/finalizer 延迟回收。
+				_ = cmd.Process.Release()
 			}
 		}
 		// bringToTop 定向投递 `instance-goto-top`（无 payload，连接即定位）——
@@ -268,7 +274,7 @@ func main() {
 		// **排除 browser 形态**（browser 走 httpapi、无 UDS 连接）。收录规则见
 		// instance.MenuInstances（61 §4.1 ⑥ · 62 §3A）。托盘双击/菜单共用同一份，口径一致。
 		trayInstances := func() []instance.Info {
-			return instance.MenuInstances(im.ListTopLevel(), currentUserName(), gate.Connected)
+			return instance.MenuInstances(im.ListTopLevel(), osuser.CurrentUser(), gate.Connected)
 		}
 		stopTray, err := startTray(TrayCallbacks{
 			OnDoubleClick: func() {
@@ -353,15 +359,6 @@ func splitList(raw string) []string {
 	return out
 }
 
-// currentUserName 返回本机 OS 用户名（server 进程单例互斥体名按用户隔离；取不到 → "unknown"，
-// 与 bridge.currentUserName 同口径，不置空）。
-func currentUserName() string {
-	if u, err := user.Current(); err == nil && u != nil && u.Username != "" {
-		return u.Username
-	}
-	return "unknown"
-}
-
 // mostRecentInstanceID 返回**最近使用**的托盘可见实例 id（LastBeat 最新；无 → ""）。
 // 入参 = 已按托盘收录规则过滤的列表（顶层 + 当前用户 + flash）——见 trayInstances /
 // instance.MenuInstances（61 §4.1 ⑥ · 62 §3A）。托盘双击「打开最近实例」用。
@@ -390,7 +387,8 @@ func instanceMenuTitle(in instance.Info) string {
 
 // autoExitLoop（--autoexit；61 §4.1 ⑤）：每分钟检测一次，无在线实例且**曾有实例** → 停服务
 // （自动退出）。未指定 --autoexit 时不启动本循环 → 永久常驻。超时实例的剔除由服务端
-// sweep（flash 形态 300s）与 persist 清理完成（**与 --autoexit 无关，恒生效**）。
+// sweep 与 persist 清理完成（**与 --autoexit 无关，恒生效**）；flash（UDS 前门）实例
+// 不参与按 LastBeat 的 sweep 回收。
 func autoExitLoop(ctx context.Context, im *instance.Manager, stop func()) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()

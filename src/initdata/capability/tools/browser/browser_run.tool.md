@@ -114,6 +114,4 @@ properties:
     chrome_path:
         description: Chrome/Edge 可执行文件路径（可选；须为绝对路径或以 ~/ 开头的用户目录路径，相对路径会报错；缺省自动探测，亦可用环境变量 CHONK_CHROME）
         type: string
-required:
-    - script
 type: object

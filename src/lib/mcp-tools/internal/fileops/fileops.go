@@ -5,7 +5,7 @@
 //     未注入 = 不启用，行为与引入前等价）；文件操作参数
 //     须为绝对路径或以 ~/ 开头的用户目录路径（R-11，见 pathcheck.go），相对路径报错
 //   - 支持 UTF-16（BOM 识别为文本并解码）
-//   - grep / directory_list 递归跳过 SkipDirs（含 .svn）
+//   - file_find 递归遍历跳过 SkipDirs（含 .svn）
 //   - 零持久状态（无 DB / 无版本快照）
 package fileops
 
@@ -36,7 +36,7 @@ func ResolvePath(userPath, workDir string) (string, string) {
 	return ValidateFilePath(userPath)
 }
 
-// SkipDirs 是 grep 与 directory_list 递归遍历默认跳过的目录。
+// SkipDirs 是 file_find 递归遍历默认跳过的目录（ParseWalkFilter 使用）。
 var SkipDirs = map[string]bool{
 	".git":         true,
 	".svn":         true,
@@ -144,6 +144,38 @@ func DecodeText(data []byte) string {
 
 func hasVisible(s string) bool {
 	return strings.Count(s, "\uFFFD") < len(s)/2
+}
+
+// encodeFor 返回把文本按 data 的原始编码回写的编码函数（nil = 原样 UTF-8 写回）。
+// 与 DecodeText 的识别顺序一致，保证「解码→修改→编码」往返不改变文件编码，
+// 避免 GBK/Shift-JIS/Big5/EUC-KR/UTF-16 文件被静默写成 UTF-8（R7-C-12）。
+func encodeFor(data []byte) func(string) []byte {
+	if HasUTF16BOM(data) {
+		order := unicode.LittleEndian
+		if data[0] == 0xFE && data[1] == 0xFF {
+			order = unicode.BigEndian
+		}
+		enc := unicode.UTF16(order, unicode.UseBOM).NewEncoder()
+		return func(s string) []byte { b, _, _ := transform.Bytes(enc, []byte(s)); return b }
+	}
+	if utf8.Valid(data) {
+		return nil // 已是 UTF-8（或纯 ASCII）→ 原样写回
+	}
+	for _, c := range []struct {
+		dec transform.Transformer
+		enc transform.Transformer
+	}{
+		{simplifiedchinese.GBK.NewDecoder(), simplifiedchinese.GBK.NewEncoder()},
+		{japanese.ShiftJIS.NewDecoder(), japanese.ShiftJIS.NewEncoder()},
+		{traditionalchinese.Big5.NewDecoder(), traditionalchinese.Big5.NewEncoder()},
+		{korean.EUCKR.NewDecoder(), korean.EUCKR.NewEncoder()},
+	} {
+		if s, _, err := transform.String(c.dec, string(data)); err == nil && hasVisible(s) {
+			enc := c.enc
+			return func(str string) []byte { b, _, _ := transform.Bytes(enc, []byte(str)); return b }
+		}
+	}
+	return nil // 无法识别编码 → 保持既有 UTF-8 行为
 }
 
 // EncodingName 返回显示用编码名（UTF-16LE/BE / UTF-8 / GBK …）。

@@ -161,6 +161,68 @@ func TestUDSDisconnectCallback(t *testing.T) {
 	}
 }
 
+// TestUDSBindReplacementNoFalseExit（R7-B-2）：第二连接同 id 顶替 → 旧连接被关闭、
+// 其断开**不**补发 exit（IsCurrent=false）；当前绑定连接断开才补发。
+func TestUDSBindReplacementNoFalseExit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.sock")
+	exits := make(chan string, 8)
+	var srv *Server
+	srv = NewServer(ServerOptions{
+		Path: path,
+		OnRequest: func(c *Conn, typ string, payload json.RawMessage) Response {
+			var m map[string]any
+			_ = json.Unmarshal(payload, &m)
+			id, _ := m["instance_id"].(string)
+			c.SetInstance(id)
+			return Response{OK: true, Result: map[string]any{"instance_id": id}}
+		},
+		// 模拟 udsapi：仅当前绑定连接才补发 instance-exit。
+		OnDisconnect: func(c *Conn) {
+			if c.Instance() != "" && srv.IsCurrent(c) {
+				exits <- c.Instance()
+			}
+		},
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	cliA, err := Dial(ClientOptions{Path: path})
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	t.Cleanup(func() { _ = cliA.Close() })
+	_ = cliA.Emit(context.Background(), "instance-claim", map[string]any{"instance_id": "X"}).Wait()
+
+	cliB, err := Dial(ClientOptions{Path: path})
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	t.Cleanup(func() { _ = cliB.Close() })
+	_ = cliB.Emit(context.Background(), "instance-claim", map[string]any{"instance_id": "X"}).Wait()
+
+	if !srv.Connected("X") {
+		t.Fatal("顶替后新连接应为当前绑定")
+	}
+	// 被顶替的 A 断开：短时间内不得补发 exit（否则会误杀新连接实例）。
+	select {
+	case id := <-exits:
+		t.Fatalf("被顶替连接的断开不应补发 instance-exit: %s", id)
+	case <-time.After(500 * time.Millisecond):
+	}
+	// 当前绑定 B 断开 → 补发 exit X。
+	_ = cliB.Close()
+	select {
+	case id := <-exits:
+		if id != "X" {
+			t.Fatalf("当前连接断开应补发 instance-exit X, got %q", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("当前连接断开未补发 instance-exit")
+	}
+}
+
 func TestUDSMultiConnRouting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.sock")
 	srv := NewServer(ServerOptions{
