@@ -212,8 +212,7 @@ def case_ask_user_multi():
         time.sleep(0.5)
     else:
         raise TestError("未收到 ask-user-reply（多选提交失败）")
-    # 推荐 badge（契约 §4.3 questions[].recommended；前端要求数组）——
-    # 实测 server.ask 只透传 string 型 recommended（apps/契约类型不一致），当前为真缺陷。
+    # 推荐 badge（契约 §4.3 session-ask.recommended；server.ask 统一归一为数组，I-41）——
     if not (isinstance(o, dict) and o.get("recCount") == 1):
         raise TestError(f"推荐 badge 未渲染（recommended 未透传到 ask-user 事件）: {o}")
     run_llm.wait_event("llm-complete", max_wait=60)

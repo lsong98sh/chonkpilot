@@ -332,14 +332,14 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 	byTopic := c.byTopic()
 
 	cases := []struct {
-		subject     string // 总线相对主题（契约 topic 同名）
-		frontType   string // 桥映射后的前端 type
-		rawPayload  string
+		subject    string // 总线相对主题（契约 topic 同名）
+		frontType  string // 桥映射后的前端 type
+		rawPayload string
 	}{
 		{"session-receive", "llm-receive", `{"instance_id":"inst-test","session":"s","turn":"t","type":"text","payload":{"text":"hi"}}`},
 		{"session-complete", "llm-complete", `{"instance_id":"inst-test","session":"s","turn":"t","status":"complete","finish_reason":"stop","parents":[]}`},
 		{"session-compress", "llm-compress", `{"instance_id":"inst-test","session":"s","last_turn":"t","snapshot_turn":"u"}`},
-		{"session-ask", "ask-user", `{"instance_id":"inst-test","ask_id":"a","session":"s","turn":"t","expires_at":0,"questions":[]}`},
+		{"session-ask", "ask-user", `{"instance_id":"inst-test","ask_id":"a","session":"s","turn":"t","expires_at":0,"question":"q"}`},
 		{"server-starting", "server-starting", `{"started_at":123}`},
 		{"prompt-optimised", "prompt-optimised", `{"instance_id":"inst-test","type":"t","content":"c"}`},
 		{"tool-notify", "tool-notify", `{"instance_id":"inst-test","session_id":"s","turn_id":"t","notice":"completion","message":"m","message_id":"mid"}`},

@@ -211,7 +211,8 @@ export const FieldKeys = {
   accepted: 'accepted',
   activated: 'activated',
   agents: 'agents',
-  answers: 'answers',
+  answer: 'answer',
+  answered: 'answered',
   apiKey: 'apiKey',
   args: 'args',
   args_digest: 'args_digest',
@@ -246,6 +247,7 @@ export const FieldKeys = {
   count: 'count',
   created_at: 'created_at',
   cursor: 'cursor',
+  custom: 'custom',
   data: 'data',
   data_dir: 'data_dir',
   deleted: 'deleted',
@@ -319,6 +321,7 @@ export const FieldKeys = {
   model_echo: 'model_echo',
   msg: 'msg',
   mtime: 'mtime',
+  multi: 'multi',
   name: 'name',
   namespace: 'namespace',
   new_name: 'new_name',
@@ -358,9 +361,10 @@ export const FieldKeys = {
   prompts: 'prompts',
   protocol: 'protocol',
   query: 'query',
-  questions: 'questions',
+  question: 'question',
   queued: 'queued',
   reason: 'reason',
+  recommended: 'recommended',
   recursive: 'recursive',
   refreshed: 'refreshed',
   registered: 'registered',
@@ -449,6 +453,8 @@ export const FieldDict = {
   accepted: 'accepted',
   activated: 'activated',
   agents: 'agents',
+  answer: 'answer',
+  answered: 'answered',
   answers: 'answers',
   args: 'args',
   args_digest: 'args_digest',
@@ -483,6 +489,7 @@ export const FieldDict = {
   count: 'count',
   created_at: 'created_at',
   cursor: 'cursor',
+  custom: 'custom',
   data: 'data',
   data_dir: 'data_dir',
   deleted: 'deleted',
@@ -566,6 +573,7 @@ export const FieldDict = {
   model_echo: 'model_echo',
   msg: 'msg',
   mtime: 'mtime',
+  multi: 'multi',
   name: 'name',
   namespace: 'namespace',
   new_name: 'new_name',
@@ -604,9 +612,11 @@ export const FieldDict = {
   prompts: 'prompts',
   protocol: 'protocol',
   query: 'query',
+  question: 'question',
   questions: 'questions',
   queued: 'queued',
   reason: 'reason',
+  recommended: 'recommended',
   recursive: 'recursive',
   refreshed: 'refreshed',
   registered: 'registered',
@@ -1656,8 +1666,9 @@ export const LlmCancelKeys = {
 
 /** ask-user-reply 字段键（payload/result/event 合并去重）。 */
 export const AskUserReplyKeys = {
-  answers: 'answers',
+  answer: 'answer',
   ask_id: 'ask_id',
+  custom: 'custom',
 }
 
 /** tool-retry 字段键（payload/result/event 合并去重）。 */
@@ -1818,10 +1829,16 @@ export const SessionCompressKeys = {
 
 /** session-ask 字段键（payload/result/event 合并去重）。 */
 export const SessionAskKeys = {
+  answer: 'answer',
+  answered: 'answered',
   ask_id: 'ask_id',
+  custom: 'custom',
   expires_at: 'expires_at',
   instance_id: 'instance_id',
-  questions: 'questions',
+  multi: 'multi',
+  options: 'options',
+  question: 'question',
+  recommended: 'recommended',
   session: 'session',
   turn: 'turn',
 }

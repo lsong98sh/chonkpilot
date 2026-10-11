@@ -28,7 +28,6 @@
         v-model="customAnswer"
         :rows="3"
         :placeholder="$t('chat.custom_answer_placeholder')"
-        :disabled="multi ? selectedOptions.length > 0 : selectedOption !== null"
       ></textarea>
     </div>
 
@@ -133,30 +132,30 @@ function isRecommended(opt) {
 
 function selectOption(opt) {
   if (props.multi) {
-    // 多选：toggle；选择选项时清空"其他"文本（与单选一致：选项与自定义互斥）
+    // 多选：toggle（与「其他」自定义文本**可并存**，不互斥、不清空）
     const i = selectedOptions.value.indexOf(opt)
     if (i >= 0) {
       selectedOptions.value.splice(i, 1)
     } else {
       selectedOptions.value.push(opt)
-      customAnswer.value = ''
     }
     return
   }
+  // 单选：与「其他」自定义文本可并存（不清空 customAnswer）
   selectedOption.value = opt
-  customAnswer.value = ''
 }
 
 function submitAnswer() {
-  let answer = ''
+  // 统一口径：已选选项（单选=1 / 多选=N）+ 「其他」自定义文本（若非空且去重）以「、」拼接。
+  const parts = []
   if (props.multi) {
-    const opts = [...selectedOptions.value]
-    const custom = customAnswer.value.trim()
-    if (custom && !opts.includes(custom)) opts.push(custom)
-    answer = opts.join('、')
-  } else {
-    answer = selectedOption.value || customAnswer.value.trim()
+    parts.push(...selectedOptions.value)
+  } else if (selectedOption.value) {
+    parts.push(selectedOption.value)
   }
+  const custom = customAnswer.value.trim()
+  if (custom && !parts.includes(custom)) parts.push(custom)
+  const answer = parts.join('、')
   if (!answer) return
   emit('answer', answer)
 }

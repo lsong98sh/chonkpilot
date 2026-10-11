@@ -173,6 +173,28 @@ def case_multi():
         raise TestError("多选回答后弹窗未关闭")
 
 
+def case_custom_with_options():
+    """C12 选项 + 「其他」自定义文本（多选）可并存：勾选 + 填「其他」→ 一并拼接回链。"""
+    aid = ask_id()
+    emit_ask({"ask_id": aid, "question": "选或填：", "options": ["A", "B", "C"], "multi": True, "custom": True})
+    if not wait_el(".ask-user-content"):
+        raise TestError("选项+custom 弹窗未出现")
+    time.sleep(0.5)
+    click_btn("A")
+    time.sleep(0.2)
+    click_btn("C")
+    time.sleep(0.2)
+    # 选择选项后自定义输入框仍可用（不再互斥/禁用）→ 填「其他」
+    set_textarea(".ask-user-content", "其他补充")
+    time.sleep(0.2)
+    click_submit()
+    ev = c.wait_events("ask-user-reply", n=1, max_wait=8)
+    if ev[0]["payload"].get("answer") != "A、C、其他补充":
+        raise TestError(f"选项+自定义拼接异常: {ev}")
+    if ask_content_count() != 0:
+        raise TestError("选项+自定义回答后弹窗未关闭")
+
+
 def case_queue2():
     """排队：两个带选项的提问，回答第一个后弹出第二个。"""
     aid1, aid2 = ask_id(), ask_id()
@@ -455,6 +477,7 @@ def main():
     ok &= run_case("C9 取消：以「终止任务待讨论」文案提交回答", case_cancel)
     ok &= run_case("C10 标题栏显示第几个/共几个", case_seq_title)
     ok &= run_case("C11 无 expires_at 时前端默认 5 分钟超时（短时不转 busy）", case_no_deadline_no_immediate_busy)
+    ok &= run_case("C12 选项 + 「其他」自定义文本（多选）可并存", case_custom_with_options)
     print("RESULT:", ok)
     return 0 if ok else 1
 

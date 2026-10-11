@@ -15,7 +15,10 @@
     "accepted": { "type": "bool", "desc": "受理确认" },
     "activated": { "type": "bool", "desc": "窗口已激活" },
     "agents": { "type": "array", "desc": "智能体清单" },
-    "answers": { "type": "array", "desc": "ask_user 回答集合" },
+    "answers": { "type": "array", "desc": "ask_user 回答集合（🗑 旧目标态字段；实现已改扁平 answer）" },
+    "answer": { "type": "string", "desc": "ask_user 回答（单选=选中值或自定义文本；多选=以「、」拼接）" },
+    "answered": { "type": "bool", "desc": "该题是否已作答（续答回显）" },
+    "custom": { "type": "any", "desc": "自定义答案文本（ask-user-reply，string）或是否允许自定义（session-ask，bool）" },
     "args": { "type": "any", "desc": "工具调用参数" },
     "args_digest": { "type": "string", "desc": "参数摘要" },
     "arguments": { "type": "any", "desc": "实参对象/数组" },
@@ -134,6 +137,7 @@
     "op": { "type": "string", "desc": "变更操作" },
     "operation": { "type": "string", "desc": "文件操作类型" },
     "options": { "type": "array", "desc": "候选项" },
+    "multi": { "type": "bool", "desc": "是否允许多选（ask_user）" },
     "origin": { "type": "string", "desc": "来源" },
     "overwrite": { "type": "any", "desc": "覆盖策略" },
     "owner": { "type": "string", "desc": "归属" },
@@ -155,10 +159,12 @@
     "prompts": { "type": "array", "desc": "提示词清单" },
     "protocol": { "type": "string", "desc": "LLM 协议" },
     "query": { "type": "string", "desc": "检索词" },
-    "questions": { "type": "array", "desc": "提问集合" },
+    "questions": { "type": "array", "desc": "提问集合（🗑 旧目标态字段；实现已改扁平 question）" },
+    "question": { "type": "string", "desc": "ask_user 提问文本" },
     "queued": { "type": "bool", "desc": "已投递队列（不等待处理完成）" },
     "reason": { "type": "string", "desc": "原因" },
     "recursive": { "type": "bool", "desc": "递归监视" },
+    "recommended": { "type": "array", "desc": "ask_user 推荐选项值列表（前端高亮）" },
     "refreshed": { "type": "any", "desc": "已刷新项" },
     "registered": { "type": "bool", "desc": "已注册" },
     "reloaded": { "type": "bool", "desc": "已重载" },
@@ -1686,7 +1692,8 @@
       "busTopic": "session-ask-reply",
       "payload": {
         "ask_id": { "type": "string", "required": true },
-        "answers": { "type": "array", "required": true }
+        "answer": { "type": "string", "required": true },
+        "custom": { "type": "string", "required": false }
       },
       "result": {}
     },
@@ -1917,7 +1924,13 @@
         "session": { "type": "string", "required": true },
         "turn": { "type": "string", "required": true },
         "expires_at": { "type": "any", "required": true },
-        "questions": { "type": "array", "required": true }
+        "question": { "type": "string", "required": true },
+        "options": { "type": "array", "required": false },
+        "multi": { "type": "bool", "required": false },
+        "recommended": { "type": "array", "required": false },
+        "custom": { "type": "bool", "required": false },
+        "answer": { "type": "string", "required": false },
+        "answered": { "type": "bool", "required": false }
       }
     },
     {

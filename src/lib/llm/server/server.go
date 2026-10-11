@@ -1385,6 +1385,11 @@ func (s *Server) ask(turnID, toolID string, args map[string]any, taskID string) 
 	if multi, ok := args["multi"].(bool); ok {
 		payload["multi"] = multi
 	}
+	// custom：是否允许在选项之外填「其他」自定义文本（与 options 并存，multi 时可与多选并存）。
+	// 显式 true 才下发（缺省/非 true 不下发）；无 options 时前端本就默认 custom=true（自由文本问题）。
+	if cust, ok := args["custom"].(bool); ok && cust {
+		payload["custom"] = true
+	}
 	// recommended 统一为**数组**（前端 AskUser 按 Array 渲染高亮）；兼容单值字符串
 	// → 单元素数组（I-41：契约/server/前端三处类型对齐）。
 	if rec, ok := args["recommended"]; ok {
