@@ -392,6 +392,28 @@ function onOverlayClick() {
 // Focus on mount
 let resizeObserver = null
 let unsubDialogClose = null
+// 幂等注销守卫：dispose 可能被两处调用（onUnmounted 正常卸载；DialogManager.close 兜底），
+// 用 guard 保证监听/订阅/注册表只清理一次，避免重复 emit('closed')。
+let disposed = false
+
+// 清理副作用 + 注销 openDialogs 注册表。抽为独立函数供**两条路径**复用：
+//   ① onUnmounted（正常卸载）；
+//   ② DialogManager.close 兜底 —— render(null) 抛错时 onUnmounted 不触发，openDialogs 残留
+//      高 zIndex 条目会让无 payload 的 dialog-close 经 topDialogId() 命中已移除的「死弹窗」。
+function dispose() {
+  if (disposed) return
+  disposed = true
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  window.removeEventListener('resize', centerByMeasuredSize)
+  document.removeEventListener('mousemove', onDragMove)
+  document.removeEventListener('mouseup', onDragEnd)
+  // E-23：添加时 capture: true → 移除必须同样带 true（缺省 = 冒泡阶段，匹配失败致监听泄漏）
+  document.removeEventListener('mousemove', onResizeMove, true)
+  document.removeEventListener('mouseup', onResizeEnd)
+  openDialogs.delete(props.dialogId)
+  if (unsubDialogClose) { unsubDialogClose(); unsubDialogClose = null }
+}
 
 onMounted(() => {
   dialogRef.value?.focus()
@@ -418,16 +440,7 @@ onMounted(() => {
 
 // Cleanup
 onUnmounted(() => {
-  resizeObserver?.disconnect()
-  resizeObserver = null
-  window.removeEventListener('resize', centerByMeasuredSize)
-  document.removeEventListener('mousemove', onDragMove)
-  document.removeEventListener('mouseup', onDragEnd)
-  // E-23：添加时 capture: true → 移除必须同样带 true（缺省 = 冒泡阶段，匹配失败致监听泄漏）
-  document.removeEventListener('mousemove', onResizeMove, true)
-  document.removeEventListener('mouseup', onResizeEnd)
-  openDialogs.delete(props.dialogId)
-  if (unsubDialogClose) { unsubDialogClose(); unsubDialogClose = null }
+  dispose()
   emit('closed')
 })
 
@@ -457,6 +470,8 @@ defineExpose({
   maximize,
   restore,
   close: onClose,
+  // 兜底注销（供 DialogManager.close 在 render(null) 异常、onUnmounted 未触发时调用）
+  dispose,
 })
 </script>
 

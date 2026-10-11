@@ -117,10 +117,17 @@ class AskUserManager {
         this.closeAndAdvance(item)
       },
       onSkip: () => {
-        // 跳过：不回答（不返回）。放入 deferred（**不立即重排**）→ 关闭当前并推进；
-        // 待后续新提问到达（enqueue 开启新批次）时再排回队列尾部「稍后重问」。
-        // 修复：原先直接 queue.push 立即重排 → 单问题场景会立刻重开同一弹窗（跳过无效）。
-        this.deferred.push(item)
+        // 跳过：不回答（不返回）。分两种场景（两难兼顾）：
+        //   ① 队列非空（多问题，如 C8）→ 直接排到**队尾**（尾重排）；关闭当前后按序弹下一条，
+        //      被跳过的稍后仍会重新弹出 —— 保 C8 / FP L359「放到队尾重新弹出」语义；
+        //   ② 队列为空（单问题）→ 放入 deferred（**不重排**），避免 closeAndAdvance→processNext
+        //      立刻重开同一弹窗（原「单问题即时重开、跳过无效」bug）；待后续新提问到达
+        //      （enqueue 新批次）时再排回队尾「稍后重问」，无后续提问则保持关闭。
+        if (this.queue.value.length > 0) {
+          this.queue.value.push(item)
+        } else {
+          this.deferred.push(item)
+        }
         this.closeAndAdvance(item)
         // busy 项的 closeAndAdvance 不推进队列（busy 分支直接 return），补推进
         if (!this.current.value && this.queue.value.length > 0) {

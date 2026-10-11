@@ -115,12 +115,22 @@ class DialogManager {
       console.warn(`[DialogManager] close(${id}): render(null) error:`, e)
     }
 
-    // Step 2: 无论是否成功，强制移除 container（含其所有子 DOM）
+    // Step 2: 兜底注销 shell 侧注册表（openDialogs）与监听/订阅。
+    // render(null) 抛错时 onUnmounted 不触发 → openDialogs 残留高 zIndex 条目，
+    // 会让无 payload 的 dialog-close 经 topDialogId() 命中已移除的「死弹窗」。
+    // dispose 幂等（正常卸载时此处为空操作），两条路径都安全调用。
+    try {
+      instance.shellRef?.dispose?.()
+    } catch (e) {
+      console.warn(`[DialogManager] close(${id}): shell dispose error:`, e)
+    }
+
+    // Step 3: 无论是否成功，强制移除 container（含其所有子 DOM）
     if (container && container.parentNode) {
       container.parentNode.removeChild(container)
     }
 
-    // Step 3: 清理记录
+    // Step 4: 清理记录
     this.dialogs.delete(id)
   }
 

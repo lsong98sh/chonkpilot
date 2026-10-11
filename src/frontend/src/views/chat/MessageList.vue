@@ -254,6 +254,21 @@ function scheduleMeasureItemHeights() {
   })
 }
 
+// 高度缓存淘汰：整体重载（loadMessages 全量替换 messages）后，清理不在当前消息 id 集合内的旧条目。
+// itemHeights 以 msg.id 为键、无自然淘汰 → 同会话重载换一批消息时旧 id 会成为孤儿条目（仅内存增长）。
+// 仅在确有删除时自增 heightsVersion（触发 virtualOffsets 重建），避免无谓重算/重渲染。
+function pruneItemHeights() {
+  const map = itemHeights.value
+  if (map.size === 0) return
+  const live = new Set()
+  for (const m of messages.value) if (m && m.id) live.add(m.id)
+  let removed = false
+  for (const id of map.keys()) {
+    if (!live.has(id)) { map.delete(id); removed = true }
+  }
+  if (removed) heightsVersion.value++
+}
+
 // ── turn 导航（圆圈，FP CHAT-013「turn 导航」）──
 // 轮次开始 = 用户消息（排除通知）；最多 10 圈，>10 时每圈覆盖 2 轮。
 // （「加载中」占位已移出 messages，不再是 messages 里的待排除项。）
@@ -752,6 +767,7 @@ async function onSessionChanged({ session_id }) {
 
   if (newId) {
     await loadMessages(newId)
+    pruneItemHeights() // 整体重载后淘汰旧 msg.id 高度缓存条目
     await assessContinueState()
     // 切会话恢复：消息落库后按任务列表 awaiting 补挂超时裁决条（I-57）
     await restoreAwaitingArbitration(newId)
@@ -1310,6 +1326,7 @@ onMounted(async () => {
   if (props.sessionId) {
     activeSessionId.value = props.sessionId
     await loadMessages(props.sessionId)
+    pruneItemHeights() // 整体重载后淘汰旧 msg.id 高度缓存条目
     await assessContinueState()
     // 刷新恢复：挂载后按任务列表 awaiting 补挂超时裁决条（I-57）
     await restoreAwaitingArbitration(props.sessionId)

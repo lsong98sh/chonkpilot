@@ -80,6 +80,12 @@ export function computeRange({
 
 /**
  * 回填单条实测高度（原地更新并返回同数组；非法输入安全忽略）。
+ *
+ * 说明：本函数为**纯工具**，当前**无生产引用**（MessageList 的高度回填改用「msg.id 键的 Map」+
+ * heightsVersion 自增，不按原始下标写数组回填；见 `views/chat/MessageList.vue` measureItemHeights）。
+ * 保留不删除：属该模块「窗口化纯逻辑」的对称 API（与 buildOffsets/computeRange 配套），供单测覆盖
+ * 与后续复用；删除会牵动 test/virtualWindow.test.js 的两条用例，风险高于收益。
+ *
  * @param {Array<number|null|undefined>} heights
  * @param {number} index 消息的**原始**下标
  * @param {number} h 实测高度（px，须为正有限数）
