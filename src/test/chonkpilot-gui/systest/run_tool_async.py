@@ -1019,8 +1019,12 @@ def _procs_with_cmdline(sentinel):
 
     仅测试侧观测：经 PowerShell CIM 查询 Win32_Process（**不新增 MQ 主题、不改产品代码**）。
     sentinel 为唯一串（如 ping 目标地址 127.0.0.99）→ 精确圈定被测子进程。
+
+    排除**探针自身**：本查询的 powershell 进程命令行必含 sentinel（`-like '*<sentinel>*'`）与
+    `Get-CimInstance` → 会自匹配（假孤儿、恒失败）。用 `-notlike '*Get-CimInstance*'` 剔除之。
     """
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*%s*' } | "
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*%s*' "
+          "-and $_.CommandLine -notlike '*Get-CimInstance*' } | "
           "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress" % sentinel)
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
