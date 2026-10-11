@@ -145,10 +145,15 @@ func sandboxCapabilityRoot(t *testing.T) string {
 //   - 允许目录内 INS → 成功且落盘；
 //   - 允许目录外 INS → isError + agentbox 拒绝消息 + 不落盘。
 //
-// 未构建 capability（先跑 build-mcp-server.ps1 / build-desktop.ps1）时 Skip。
+// 未构建 capability（先跑 build-mcp-server.ps1 / build-desktop.ps1）时 Skip；
+// 设 CHONK_REQUIRE_DIST=1 则**强制失败**（防"假绿"——产物没构建却整包全绿）。
 func TestSandboxEndToEndThroughMCPServer(t *testing.T) {
 	root := sandboxCapabilityRoot(t)
 	if root == "" {
+		if os.Getenv("CHONK_REQUIRE_DIST") == "1" {
+			t.Fatalf("[CHONK_REQUIRE_DIST=1] 未找到 dist/{other,desktop,mcp-server}/capability，强制失败（防假绿）：先跑 build-mcp-server.ps1")
+		}
+		t.Logf("⚠️ 跳过（产物缺失 → 假绿风险）：未找到 dist/{other,desktop,mcp-server}/capability；设 CHONK_REQUIRE_DIST=1 可强制失败")
 		t.Skipf("未找到 dist/{other,desktop,mcp-server}/capability（先跑 build-mcp-server.ps1）")
 	}
 	base := t.TempDir()

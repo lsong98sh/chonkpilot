@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
 	"time"
 
@@ -37,6 +38,7 @@ type crField struct {
 
 type crTopic struct {
 	Topic   string             `json:"topic"`
+	Face    string             `json:"face"`
 	Payload map[string]crField `json:"payload"`
 	Result  map[string]crField `json:"result"`
 	Event   map[string]crField `json:"event"`
@@ -275,8 +277,24 @@ func TestRegistrantCallbackPayloadSubsetOfContract(t *testing.T) {
 	}
 }
 
-// gatewayNotDriven 记录本批「不可在内存总线低成本驱动」的 gateway 方法面及原因（不硬凑）。
+// TestGatewayNotDrivenRegistry 记录本批「不可在内存总线低成本驱动」的 gateway 方法面及原因（不硬凑），
+// 并**与契约主题集合做差集断言**：gateway 面（face=gateway）全部主题必须 = 本套件已驱动 ∪ 本登记表；
+// 差集非空（契约有、既未驱动又未登记）= 红，必须在下方显式列白。
 func TestGatewayNotDrivenRegistry(t *testing.T) {
+	c := crLoad(t)
+
+	// 本套件**已驱动**的 gateway 面主题（见 TestGatewayResultKeysSubsetOfContract /
+	// TestGatewayTaskReportEventSubsetOfContract / TestGatewayChangedEventSubsetOfContract /
+	// TestRegistrantCallbackPayloadSubsetOfContract 实际驱动的主题）。
+	driven := map[string]bool{
+		"mcp-tools-list": true, "mcp-tools-call": true, "mcp-tools-register": true, "mcp-tools-unregister": true,
+		"mcp-prompts-list": true, "mcp-prompts-register": true, "mcp-prompts-unregister": true,
+		"mcp-resources-list": true, "mcp-resources-register": true, "mcp-resources-unregister": true,
+		"mcp-servers-list": true, "mcp-gateway-check": true, "mcp-gateway-reload": true,
+		"mcp-tasks-report": true, "mcp-gateway-changed": true,
+		"codegraph-tool-call": true, "vfts-tool-call": true,
+	}
+
 	entries := []struct {
 		topic  string
 		reason string
@@ -287,14 +305,36 @@ func TestGatewayNotDrivenRegistry(t *testing.T) {
 		{"mcp-prompts-get", "须先注册带内容的 prompt 资产（register 后按 name 取）；结果 {name,description,content?,type?,arguments?} 可由 register/list 路径间接覆盖"},
 		{"mcp-resources-read", "须先注册 resource 资产（uri/content）"},
 		{"mcp-tools-timeout", "须控件进入 manual/never 超时裁决态（依赖超时与执行池时序），留待专测"},
+		{"mcp-tools-wait", "阻塞等待异步工具终态（依赖执行池 + 超时/取消时序），单测级最小驱动成本高；由 async 专测与 gateway 单测覆盖"},
 		{"history-pre-tool-hook", "前置钩子主题由注册方（plugin-history）声明 handler_subject/pre_hook_subject 后触发；gateway 侧仅转发，留待插件侧对账"},
 		{"codegraph-tool-call", "**结果侧**未驱动：codegraph 插件 onToolCall 需引擎子进程/实例装配；回执形状 {resultType,content,isError} 由插件单测 TestToolReply 断言。**载荷侧**已由 TestRegistrantCallbackPayloadSubsetOfContract 驱动"},
 		{"vfts-tool-call", "**结果侧**未驱动：vfts 插件 onToolCall 需引擎子进程/实例装配；回执形状由插件单测断言。**载荷侧**已由 TestRegistrantCallbackPayloadSubsetOfContract 驱动"},
 	}
+	declared := c.byTopic()
+	registered := map[string]bool{}
 	for _, e := range entries {
 		if e.topic == "" || e.reason == "" {
 			t.Errorf("未驱动登记项不完整: %+v", e)
 		}
+		if _, ok := declared[e.topic]; !ok {
+			t.Errorf("登记项非契约收录主题（须为 61 主题）: %s", e.topic)
+		}
+		registered[e.topic] = true
 		t.Logf("[未驱动] topic=%s | 理由=%s", e.topic, e.reason)
+	}
+	// 差集断言：gateway 面（face=gateway）全部主题须为「已驱动 ∪ 已登记」。
+	var missing []string
+	for _, ts := range c.Topics {
+		if ts.Face != "gateway" {
+			continue
+		}
+		if driven[ts.Topic] || registered[ts.Topic] {
+			continue
+		}
+		missing = append(missing, ts.Topic)
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("gateway 面契约主题既未驱动又未登记（契约有 = 红，须显式列白）: %v", missing)
 	}
 }

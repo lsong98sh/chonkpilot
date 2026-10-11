@@ -869,7 +869,8 @@ func appCapabilityRoot(t *testing.T) string {
 // TestScenarioDefaultAgentsSeeded（25 §8.2 · 42 §2 (171) 新语义）：出厂场景 = **app 级**
 // `scenarios/default/`（出厂内容 = 磁盘目录，源 `src/initdata/capability/scenarios`，由构建脚本投放；
 // 原「list 首次 seed 物化到 user 级」已撤）——list 命中 app 级 default：1 条 isMain 主 agent
-// （Loop Engineer/主，居首）+ 10 条**引用**子 agent，name/description/roleTag 齐备。
+// （Loop Engineer/主，居首）+ 11 条**引用**子 agent（2026-10：新增「新项目需求沟通员」），
+// name/description/roleTag 齐备。
 func TestScenarioDefaultAgentsSeeded(t *testing.T) {
 	bus, _, _ := newTestPersistOpts(t, persist.Options{AppDir: appCapabilityRoot(t)})
 
@@ -922,8 +923,8 @@ func TestScenarioDefaultAgentsSeeded(t *testing.T) {
 	if !strings.Contains(mp, "mcp_find") || !strings.Contains(mp, "mcp_load") || !strings.Contains(mp, "记忆") {
 		t.Fatalf("主 agent prompt 应含资产检索细则（mcp_find/mcp_load/记忆）: %q", mp)
 	}
-	if subs != 10 {
-		t.Fatalf("sub agent count=%d want 10", subs)
+	if subs != 11 {
+		t.Fatalf("sub agent count=%d want 11", subs)
 	}
 }
 

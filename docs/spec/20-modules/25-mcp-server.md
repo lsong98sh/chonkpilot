@@ -49,8 +49,8 @@ key=value                    # 每行一个 k=v（首个 = 分割）
 | `.prompt.md` | `PromptDoc`（description + arguments + content，`{{arg}}` 占位） | `AddPrompt`（`_meta.type=prompt`） |
 | `.resource.md` | `ResourceDoc`（meta `uri`/`mimetype` + description + content） | `AddResource`（uri 缺省 `file://<name>`） |
 
-**tool meta 键**：`runtime` · `category` · `async`(auto\|always\|never\|manual，缺省 auto) · `async-threshold` · `timeout` · `args` · `output`(stdout\|code\|file，缺省 stdout) · `hot` · `title`（一句话标题；作为 MCP Tool.Title）。**`timeout`（执行硬上限）取值语义**：键**未设置**（缺失 / 空串）→ **回落**全局（executor 回落 prj `timeout_sec` / 内置 300s）；显式 **`0` / `-1` = 无上限**（`noLimit`，不设 `WithTimeout`，永远等、可取消）；正数 = 该值。**键显式声明即透出 `_meta.timeout`（含 `0`/`-1`）**，未设置则不写。**系统工具（`category=server` / `meta`）不单独设执行硬上限** → 契约写 `timeout=0`（**`0` = 无上限**，非"回落"）。权威口径见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
-**已删除死 meta**：`runtime-version` · `version` · `find` —— 解析与 `_meta` 透出均已移除，契约文件不再书写；**`title` 保留**（H1 标题链路 = `Tool.Title`）。
+**tool meta 键**：`runtime` · `category` · `async`(auto\|always\|never\|manual，缺省 auto) · `async-threshold` · `timeout` · `args` · `output`(stdout\|code\|file，缺省 stdout) · `hot`。**工具标题不属 meta 键** —— 取自契约**首行 H1**（`Tool.Title`；见 [72-工具开发规范 §[meta] 字段明细](../70-conventions/72-工具开发规范.md)）。**`timeout`（执行硬上限）取值语义**：键**未设置**（缺失 / 空串）→ **回落**全局（executor 回落 prj `timeout_sec` / 内置 300s）；显式 **`0` / `-1` = 无上限**（`noLimit`，不设 `WithTimeout`，永远等、可取消）；正数 = 该值。**键显式声明即透出 `_meta.timeout`（含 `0`/`-1`）**，未设置则不写。**系统工具（`category=server` / `meta`）不单独设执行硬上限** → 契约写 `timeout=0`（**`0` = 无上限**，非"回落"）。权威口径见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
+**已删除死 meta**：`runtime-version` · `version` · `find` —— 解析与 `_meta` 透出均已移除，契约文件不再书写；**`title` 亦为死 meta 键**（不解析、不书写），工具标题链路 = **契约首行 H1 → `Tool.Title`**。
 仅兼容读：`entry`（已废弃，解释器类遗留）；`hot` 吸收旧 `llm`。
 透出到工具 `_meta`：`hot` / `category` / `async` / `async-threshold`（仅 `>0`） / `timeout`（**键显式声明即透出，含 `0`/`-1` = 无上限**）（+ gateway 注入 `server`；`title` 走 `Tool.Title`，**不进 `_meta`**）。
 
@@ -66,7 +66,7 @@ key=value                    # 每行一个 k=v（首个 = 分割）
 
 - `prompts/core/code_review.prompt.md`
 - `resources/{core/core-overview, go/webview2-frameless, ui/frontend-drag-resize}.resource.md`
-- `skills/core/{debug, explore, sandbox-escape}.skill.md`
+- `skills/core/{agent-prompt-rule, debug, explore, sandbox-escape}.skill.md`
 - **本目录无 `.tool.md`**（工具契约在 [27-mcp-tools](27-mcp-tools.md)，部署时合并到同一 `capability/`）。
 
 ---
@@ -152,7 +152,7 @@ defaults 与 args 合并（客户端显式覆盖默认）
 ## 9. 现状与待办
 
 - `.agent.md` 后缀常量已摘除（`*.agent.md` 扫描分支从未实现）。
-- **prompt 类型标注**：本模块 `setPromptType` 写入的 `_meta.type` **实际取值仅 `prompt` / `skill`**（`*.prompt.md`→`prompt`、`*.skill.md`→`skill`；`server.go:162-172`）；**`agent` 资产不属本模块扫描面**，由 llm server 侧 `//go:embed contracts/agents/*.agent.md` 经 gateway `prompts/register{asset_kind:"agent"}` 注入产出（见 [21-llm-server §3.4](21-llm-server.md)）。**`prompts/list` 仅返回 `type=prompt|skill`**（`.agent.md` 解析**不适用**）。
+- **prompt 类型标注**：本模块 `setPromptType` 写入的 `_meta.type` **实际取值仅 `prompt` / `skill`**（`*.prompt.md`→`prompt`、`*.skill.md`→`skill`；`server.go:162-172`）；**`agent` 资产不属本模块扫描面**，且 **agent 只「注入」不「注册」** —— llm server 侧从 **app 级场景**（`<exeDir>/capability/scenarios/*/`，经数据层门面读取）取其 agent，**仅登记到内存表**（`registerDomainAgents`）供校验与子轮提示词回落，**不经** gateway `prompts/register{asset_kind:"agent"}` 注册为资产，**亦不再** `//go:embed contracts/agents/*.agent.md`（原 embed 读法已撤，见 `src/lib/llm/server/domainmcp.go`）。**`prompts/list` 仅返回 `type=prompt|skill`**（`.agent.md` 解析**不适用**）。
 - **已删除死 meta**：`runtime-version` / `version` / `find`（解析与透出全删）；仅**兼容读**：`entry`（已废弃）。`title` 保留（H1 标题链路）。
 
 ---

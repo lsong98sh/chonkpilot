@@ -25,6 +25,9 @@ import (
 
 // coreExe 定位 chonkpilot-core-executor.exe（相对本测试源文件路径，不依赖 cwd）。
 // 落点：dist/other/capability/executors/（build-mcp-server.ps1 现行产物布局，D-28 产物分区）。
+//
+// 产物缺失默认 Skip；设环境变量 CHONK_REQUIRE_DIST=1 时改为**强制失败**（防"假绿"——产物没构建
+// 却整包全绿）。默认 `go test ./...` 在无产物时仍不报红。
 func coreExe(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -36,8 +39,19 @@ func coreExe(t *testing.T) string {
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}
-	t.Skipf("executor 未构建（先跑 build-mcp-server.ps1）")
+	requireDistOrSkip(t, "executor 未构建（先跑 build-mcp-server.ps1）", p)
 	return ""
+}
+
+// requireDistOrSkip：产物缺失时默认 Skip；设 CHONK_REQUIRE_DIST=1 则强制失败（门禁防假绿），
+// 并在默认 Skip 路径显著标注（t.Logf + 汇总提示）。
+func requireDistOrSkip(t *testing.T, reason, path string) {
+	t.Helper()
+	if os.Getenv("CHONK_REQUIRE_DIST") == "1" {
+		t.Fatalf("[CHONK_REQUIRE_DIST=1] 产物缺失，强制失败（防假绿）：%s（%s）", reason, path)
+	}
+	t.Logf("⚠️ 跳过（产物缺失 → 假绿风险）：%s（%s）；设 CHONK_REQUIRE_DIST=1 可强制失败", reason, path)
+	t.Skipf("%s", reason)
 }
 
 // runFind 以 <exe> file_find --input=<tmp.json> 执行，返回退出码与 **stdout**

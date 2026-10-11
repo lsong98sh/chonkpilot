@@ -64,7 +64,18 @@ SCRIPTS = [
 ]
 
 # 第二批：`run_*.py`（端到端/UI 断言套件；隔离与端口分配见模块 docstring）。
-RUN_SCRIPTS = [
+#
+# 计数口径：systest/ 下非 sem `run_*.py`（排除本运行器 `run_all.py` 与 `run_sem_*.py` 语义变体，
+# 后者归 SEM 组）**共 39 个**（与 [51-FP与测试映射 §6.10] 对齐；该处旧文「33」已订正）。
+#
+# 执行集 = 下方带注释的 KNOWN 列表 ∪ **`_discover_run_scripts()` 动态枚举**（并入未知新套件），
+# 再剔除 `RUN_SCRIPTS_EXCLUDE` —— 故**新增套件无需改本文件**即可被 `--group all/core` 纳入
+# （原实现只列 11 个，与"全量"自称不符 → 漏跑绝大多数 e2e）。
+#
+# 注意：动态枚举纳入的套件须「自起自收」（经 `harness` 按需拉起 GUI / mock LLM）；需外部前置者
+# 应**自报 SKIP**（`RESULT: True (SKIPPED: ...)` 约定，见模块 docstring）——SKIP 不计失败，故不会
+# 污染门禁。确无法自起（依赖人工常驻 / 不可自动化）的套件才加入下方 `RUN_SCRIPTS_EXCLUDE`。
+RUN_SCRIPTS_KNOWN = [
     "run_config_ui.py",           # 共享底座 2345（复用优先）+ 独立实例 2347
     "run_project_cfg.py",         # 共享底座 2345
     "run_ui_regressions.py",      # 共享底座 2345
@@ -76,6 +87,33 @@ RUN_SCRIPTS = [
     "run_wizard_auto.py",         # 自起（动态端口 + 临时 work-dir/data-dir/HOME；**刻意不预置** project_spec → 验向导自动弹出）
     "run_explore_kb.py",          # 自起（临时 work-dir/data-dir；扩展页四级 5 子 tab + C14 项目私有端到端）
     "run_hist_git.py",            # 自起（动态端口 + 临时目录 + 自管 mock LLM；无 git 则 SKIP）
+]
+
+# 显式排除清单：确「无法自起 / 需人工常驻前置」的套件（当前为空——全部非 sem `run_*.py` 均可经
+# harness 自起自收，产物/工具缺失者自报 SKIP）。如日后出现不可自动化的套件，在此登记并注明原因。
+RUN_SCRIPTS_EXCLUDE = []
+
+
+def _discover_run_scripts():
+    """动态枚举 systest/ 下全部非 sem `run_*.py`（排除 run_all.py 与 run_sem_*.py 语义变体）。
+
+    排序返回，便于 `--list` 稳定输出；再剔除 `RUN_SCRIPTS_EXCLUDE`。
+    """
+    import glob as _glob
+    names = []
+    for p in _glob.glob(os.path.join(HERE, "run_*.py")):
+        n = os.path.basename(p)
+        if n == "run_all.py" or n.startswith("run_sem_"):
+            continue
+        if n in RUN_SCRIPTS_EXCLUDE:
+            continue
+        names.append(n)
+    return sorted(names)
+
+
+# 第二批执行集 = KNOWN（带注释）+ 动态枚举（并入 KNOWN 未列者，保序去重在 _select_scripts）。
+RUN_SCRIPTS = RUN_SCRIPTS_KNOWN + [
+    n for n in _discover_run_scripts() if n not in RUN_SCRIPTS_KNOWN
 ]
 
 # 第三批：语义/回环级套件（`run_sem_*.py`）：自起 GUI（动态端口 + 临时 work-dir/data-dir/HOME），

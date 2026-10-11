@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
@@ -97,8 +98,9 @@ func contractLoad(t *testing.T) *contractDoc {
 	return &c
 }
 
-// assertContractKeys 断言 actual 的键集 ⊆ 声明（通用 error 恒放行）。
-// 多出的键 = 红（无豁免机制：契约=61，须改契约或改代码，见 50 §8.4）。
+// assertContractKeys 断言 actual 的键集 ⊆ 声明（通用 error 恒放行），并校验契约声明的
+// required 键**不得缺失**（缺失 = 红）。
+// 多出的键 / 缺 required 键 = 红（无豁免机制：契约=61，须改契约或改代码，见 50 §8.4）。
 // which 仅用于失败信息（"result"/"event"）。
 func assertContractKeys(t *testing.T, topic, which string, declared map[string]contractField, actual map[string]any) {
 	t.Helper()
@@ -115,6 +117,24 @@ func assertContractKeys(t *testing.T, topic, which string, declared map[string]c
 	if len(extra) > 0 {
 		t.Errorf("%s.%s 出现契约未声明的键（多键 = 红）: %v（契约声明=%v）",
 			topic, which, extra, contractKeys(declared))
+	}
+	// required 缺失 = 红：契约声明 required=true 的键必须存在。
+	// error 信封（未成功的应答）下整体豁免——失败应答本就不含业务字段。
+	if _, isErr := actual["error"]; isErr {
+		return
+	}
+	var missing []string
+	for k, f := range declared {
+		if !f.Required {
+			continue
+		}
+		if _, ok := actual[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("%s.%s 缺契约声明的 required 键（缺失 = 红）: %v", topic, which, missing)
 	}
 }
 
@@ -487,8 +507,20 @@ func TestDataKnowledgeKeysSubsetOfContract(t *testing.T) {
 }
 
 // TestDataDownlinkEventRegistry 登记 §3 数据面的**下行事件**（只由写操作触发，均在对应子测试
-// 经事件侧对账）——显式声明「无遗漏项」；本批数据面 79 主题全部可经内存总线驱动（无未驱动项）。
+// 经事件侧对账）——并**与契约主题集合做差集断言**：契约声明的数据面下行事件（direction =
+// data->client）全部必须在此显式登记；差集非空（契约有、又未登记）= 红。
 func TestDataDownlinkEventRegistry(t *testing.T) {
+	c := contractLoad(t)
+
+	// 契约中数据面全部「下行事件」主题（direction = data->client）：这类主题只能作为事件被观测，
+	// 不能被当作请求驱动 → 必须在下方显式登记，否则即为「契约有、未登记」遗漏。
+	downlink := map[string]bool{}
+	for _, ts := range c.Topics {
+		if ts.Face == "data" && ts.Direction == "data->client" {
+			downlink[ts.Topic] = true
+		}
+	}
+
 	entries := []struct {
 		topic  string
 		reason string
@@ -508,10 +540,27 @@ func TestDataDownlinkEventRegistry(t *testing.T) {
 		{"task-deleted", "由 data-tasktree-delete（非 shadow）后广播（tasktree 子测试事件侧对账）"},
 		{"session-new", "由 data-session-ensure-session 首次落库后广播（session 子测试事件侧对账）"},
 	}
+	declared := c.byTopic()
+	registered := map[string]bool{}
 	for _, e := range entries {
 		if e.topic == "" || e.reason == "" {
 			t.Errorf("未驱动登记项不完整: %+v", e)
 		}
+		if _, ok := declared[e.topic]; !ok {
+			t.Errorf("登记项非契约收录主题（须为 61 主题）: %s", e.topic)
+		}
+		registered[e.topic] = true
 		t.Logf("[事件侧对账] topic=%s | 说明=%s", e.topic, e.reason)
+	}
+	// 差集断言：数据面全部下行事件必须已显式登记。
+	var missing []string
+	for topic := range downlink {
+		if !registered[topic] {
+			missing = append(missing, topic)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("数据面下行事件未登记（契约有、未登记 = 红）: %v", missing)
 	}
 }

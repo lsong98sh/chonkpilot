@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"testing"
 	"time"
 
@@ -114,8 +115,9 @@ func (c *messageContract) byTopic() map[string]topicSpec {
 
 // ── 对账判定 ──────────────────────────────────────────────────────────────
 
-// assertKeysSubset 断言 actual 的键集合 ⊆ declared（error 为通用失败信封键，恒放行）。
-// 多出的键 = 红（无豁免机制：契约=61，须改契约或改代码，见 50 §8.4）。
+// assertKeysSubset 断言 actual 的键集合 ⊆ declared（error 为通用失败信封键，恒放行），
+// 并校验契约声明的 required 键**不得缺失**（缺失 = 红）。
+// 多出的键 / 缺 required 键 = 红（无豁免机制：契约=61，须改契约或改代码，见 50 §8.4）。
 // which 仅用于失败信息（"result"/"event"）。
 func assertKeysSubset(t *testing.T, topic, which string, declared map[string]fieldSpec, actual map[string]any) {
 	t.Helper()
@@ -132,6 +134,23 @@ func assertKeysSubset(t *testing.T, topic, which string, declared map[string]fie
 	if len(extra) > 0 {
 		t.Errorf("%s.%s 出现契约未声明的键（多键 = 红）: %v（契约声明=%v）",
 			topic, which, extra, keysOf(declared))
+	}
+	// required 缺失 = 红：契约声明 required=true 的键必须存在（error 信封下整体豁免）。
+	if _, isErr := actual["error"]; isErr {
+		return
+	}
+	var missing []string
+	for k, f := range declared {
+		if !f.Required {
+			continue
+		}
+		if _, ok := actual[k]; !ok {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Errorf("%s.%s 缺契约声明的 required 键（缺失 = 红）: %v", topic, which, missing)
 	}
 }
 
@@ -317,8 +336,8 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		frontType   string // 桥映射后的前端 type
 		rawPayload  string
 	}{
-		{"session-receive", "llm-receive", `{"session":"s","turn":"t","type":"text","payload":{"text":"hi"}}`},
-		{"session-complete", "llm-complete", `{"session":"s","turn":"t","status":"complete"}`},
+		{"session-receive", "llm-receive", `{"instance_id":"inst-test","session":"s","turn":"t","type":"text","payload":{"text":"hi"}}`},
+		{"session-complete", "llm-complete", `{"instance_id":"inst-test","session":"s","turn":"t","status":"complete","finish_reason":"stop","parents":[]}`},
 		{"session-compress", "llm-compress", `{"instance_id":"inst-test","session":"s","last_turn":"t","snapshot_turn":"u"}`},
 		{"session-ask", "ask-user", `{"instance_id":"inst-test","ask_id":"a","session":"s","turn":"t","expires_at":0,"questions":[]}`},
 		{"server-starting", "server-starting", `{"started_at":123}`},
@@ -331,12 +350,12 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		{"mcp-gateway-changed", "mcp-gateway-changed", `{"instance_id":"inst-test","kind":"tool"}`},
 		{"filesys.changed", "filesys.changed", `{"instance_id":"inst-test","work_dir":"/w","path":"/w/a","operation":"write"}`},
 		{"session-new", "session-new", `{"instance_id":"inst-test","session_id":"s"}`},
-		{"instance-register", "instance-register", `{"instance_id":"inst-test","work_dir":"/w"}`},
+		{"instance-register", "instance-register", `{"instance_id":"inst-test","work_dir":"/w","user":"u"}`},
 		{"window-maximized-changed", "window-maximized-changed", `{"maximized":true,"instance_id":"inst-test"}`},
 		{"gui.window.closed", "gui.window.closed", `{"window_id":"w","session_id":"s"}`},
 		{"optimize-token", "optimize-token", `{"content":"x"}`},
 		{"optimize-done", "optimize-done", `{"prompt":"p"}`},
-		{"optimize-error", "optimize-error", `{"message":"m"}`},
+		{"optimize-error", "optimize-error", `{"code":"x","message":"m"}`},
 	}
 
 	for _, tc := range cases {

@@ -10,8 +10,12 @@ import (
 	"unicode/utf8"
 )
 
-// factoryAgentNames 是出厂预置**子 agent** 期望集（23 个）——与向导 `AGENT_ROLE_TAGS`
-// （24 项 − 主协调者）及设计 `docs/agents-wizard/02-预置智能体目录.md` 一一对应。
+// factoryAgentNames 是出厂预置**子 agent** 期望集（24 个）——= 出厂 `capability/agents/`
+// 下全部 `.agent.md`（与出厂默认场景 `scenarios/default/scenario.json` 的 agent 引用一致）。
+//
+// 口径说明（与实现对齐，勿再互相推导）：向导 `AGENT_ROLE_TAGS`（`ScenarioWizardDialog.vue`）
+// 含**非文件**的「主协调者」且**未收录**本表的「新项目需求沟通员」——故「tag 数 − 1」并不等于
+// 本表数量，本表以**目录实际文件**为准（下方另做目录枚举双向校验）。
 //
 // 守卫目的：预置 agent 被误删 / 改名 → 场景内 `${exeDir}/capability/agents/<名>.agent.md`
 // 引用**悬空**（悬空引用在读取时被**静默删除** → 子 agent 凭空消失，无报错）。
@@ -25,6 +29,8 @@ var factoryAgentNames = []string{
 	"数据工程师", "集成协调者", "移动端开发", "DevOps 工程师",
 	"安全审查员", "性能优化师", "调试工程师", "依赖审计员",
 	"侦察工程师", "遗留分析员", "兼容守护", "迁移规划师", "文档撰写者",
+	// 新增 1（2026-10，需求沟通：00–12 步门禁，配套 skills/se/）
+	"新项目需求沟通员",
 }
 
 // factoryAgentsDir 定位仓库内出厂 agents 资源根 `src/initdata/capability/agents`
@@ -45,11 +51,35 @@ func factoryAgentsDir(t *testing.T) string {
 	return dir
 }
 
-// TestFactoryAgentsComplete 断言 23 个出厂预置 agent 文件齐备且结构完整（[meta]/roletag/[description]/[content]）。
+// TestFactoryAgentsComplete 断言 24 个出厂预置 agent 文件齐备且结构完整（[meta]/roletag/[description]/[content]）。
 func TestFactoryAgentsComplete(t *testing.T) {
 	dir := factoryAgentsDir(t)
-	if len(factoryAgentNames) != 23 {
-		t.Fatalf("期望集应含 23 个 agent，实际 %d", len(factoryAgentNames))
+	if len(factoryAgentNames) != 24 {
+		t.Fatalf("期望集应含 24 个 agent，实际 %d", len(factoryAgentNames))
+	}
+	// 双向校验：目录实际 `*.agent.md` 集合必须与期望集**逐字相等**（防漏登记 / 多出未登记文件）。
+	onDisk := map[string]bool{}
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".agent.md") {
+				continue
+			}
+			onDisk[strings.TrimSuffix(e.Name(), ".agent.md")] = true
+		}
+	} else {
+		t.Fatalf("枚举出厂 agents 目录失败：%v", err)
+	}
+	want := map[string]bool{}
+	for _, name := range factoryAgentNames {
+		want[name] = true
+		if !onDisk[name] {
+			t.Errorf("预置 agent 缺失：%s（目录无对应 .agent.md）", name)
+		}
+	}
+	for name := range onDisk {
+		if !want[name] {
+			t.Errorf("目录存在未登记的 agent 文件：%s.agent.md（须同步 factoryAgentNames）", name)
+		}
 	}
 	for _, name := range factoryAgentNames {
 		raw, err := os.ReadFile(filepath.Join(dir, name+".agent.md"))

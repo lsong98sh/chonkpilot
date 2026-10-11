@@ -42,7 +42,7 @@
 | 广播 | `filesys.watch-error` | `{instance_id, work_dir, error}` | — |
 
 - 请求公共字段：`instance_id`（**必带**，基目录解析依据，见 §4.1）· `work_dir`（**契约保留、不采信**）· `path` / `dir` / `name` / `content` / `new_name` / `dest_dir` / `overwrite`（`rename`/`copy` 覆盖开关；`0`/缺省 = 不覆盖，目标存在 → `exists`）。
-- 错误经 `v.Errors`（`{code, message}`），码：`forbidden` / `create_failed` / `mkdir_failed` / `remove_failed` / `rename_failed` / `copy_failed` / `exists`。
+- 错误经 `v.Errors`（`{code, message}`），码：`forbidden` / `create_failed` / `mkdir_failed` / `remove_failed` / `rename_failed` / `copy_failed` / `exists` / `io_error`（**读失败**：`filesys.content` 遇非常规文件 / IO 错误；码取 [61 §2.5](../60-reference/61-消息一览.md) 明列的 `IO_ERROR` 家族）。
 
 ---
 
