@@ -80,6 +80,9 @@ type hostEnv struct {
 	form           string
 	srv            Server // nil = --no-server（UI 注入测试模式）/ 远程薄壳模式
 	windows        *windowRegistry
+	// dataOffline = 「本地无数据服务」（--no-server UI 注入测试模式）；远程薄壳（flash）**非**此处
+	// （其 data-* 经 UDS 转发到常驻 server）→ 建窗时据此置桥 SetDataOffline。
+	dataOffline bool
 	// ── flash 远程薄壳模式（🆕 2026-10-10；见 remote.go）─────────────────
 	// instanceID 非空 → **所有窗口共享同一实例 id**（flash：一条 UDS 连接 = 一个实例，
 	// 见 19 §8.11）；空 → 每窗口自生成（desktop/gui 既有语义）。
@@ -263,6 +266,11 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		h.br.SetAuthCheck(env.srv.Authenticated)
 		// config 类 data-* 走数据门面（同进程直调）；未接线（-no-server）时回落总线转发。
 		h.br.SetFacade(inline.New(env.bus))
+	}
+	// --no-server（本地无数据服务）：data-* 快速失败，不经总线等 3s 超时（首屏提速）。
+	// flash 远程薄壳（srv=nil 但有 UDS server）**不**置位。
+	if env.dataOffline {
+		h.br.SetDataOffline(true)
 	}
 	// B3：DevTools 用户入口已在 WebViewOptions 屏蔽；把「程序化打开」能力注入桥
 	// （gui.devtools.open）。OpenDevToolsWindow 走 Dispatch 派发到 WebView2 UI 线程。

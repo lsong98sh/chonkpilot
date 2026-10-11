@@ -74,7 +74,8 @@ func (o ServerOptions) Ensure() (bool, error) {
 	}
 	spawn := o.Spawn
 	if spawn == nil {
-		spawn = launchDetached
+		env := o.serverEnv()
+		spawn = func(exe string, args []string) error { return launchDetached(exe, args, env) }
 	}
 	o.logf("UDS %s 未连通 → 拉起服务端 %s --autoexit", path, exe)
 	if err := spawn(exe, []string{"--autoexit"}); err != nil {
@@ -152,4 +153,15 @@ func (o ServerOptions) logf(format string, args ...any) {
 	if o.Logf != nil {
 		o.Logf(format, args...)
 	}
+}
+
+// serverEnv 构造被拉起 server 的子进程环境：非空 opts.UDSPath 经 `CHONK_UDS` 下传
+// （server 恒读 uds.DefaultPath()，其含 CHONK_UDS 覆盖）→ 自定义 UDS 的测试/多实例场景
+// 能让子进程监听同一路径（否则父进程连自定义路径、子进程却监听约定 DefaultPath，永连不上）。
+// UDSPath 为空 → 返回 nil（继承父环境，子进程走约定 DefaultPath，生产无影响）。
+func (o ServerOptions) serverEnv() []string {
+	if o.UDSPath == "" {
+		return nil
+	}
+	return append(os.Environ(), uds.EnvUDSPath+"="+o.UDSPath)
 }

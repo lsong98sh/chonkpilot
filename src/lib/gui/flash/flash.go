@@ -24,9 +24,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/osuser"
 )
 
-// DataDirName 是 flash 本地数据根目录名（data-dir 约定 = `<work_dir>/.chonkpilot`）。
-const DataDirName = ".chonkpilot"
-
 // recentsFileName 是「最近项目」记录文件名（落用户数据根 `<home>/.chonkpilot/`）。
 const recentsFileName = "flash-recents.json"
 
@@ -37,9 +34,10 @@ const RecentsCap = 10
 var ErrNoProject = errors.New("flash: 未选定项目目录")
 
 // DataDirFor 返回 flash 的项目数据根（约定值 = `<work_dir>/.chonkpilot`；**恒非空**）。
+// 目录名取单一来源 lockfile.ProjectDataDirName（flash/桌面单体/CLI 共用，避免字面量失配）。
 // 非空 → `data.PrjUsrDir(workDir, dataDir)` 走纯路径拼接（不开库、不抢 flock，见包注释）。
 func DataDirFor(workDir string) string {
-	return filepath.Join(workDir, DataDirName)
+	return filepath.Join(workDir, lockfile.ProjectDataDirName)
 }
 
 // CurrentUser 返回本机 OS 用户名（instance-claim 的必填 `user`；取不到 → "unknown"）；
@@ -122,12 +120,7 @@ func AcquireProject(workDir string) (l *lockfile.Lock, busy bool, err error) {
 // WorkDirFree 报告该项目当前是否**未被打开**（选目录前置校验用；不持有锁）。
 // 锁设施故障（非占用）→ 放行（true）：占用校验是体验增强，不应因锁故障阻断用户操作。
 func WorkDirFree(workDir string) bool {
-	l, err := lockfile.AcquirePrjUsr(DataDirFor(workDir))
-	if err != nil {
-		return !errors.Is(err, lockfile.ErrBusy)
-	}
-	l.Release()
-	return true
+	return lockfile.PrjUsrFree(DataDirFor(workDir))
 }
 
 // DirExists 判定路径存在且为目录（`DirResolver.Exists` 的生产实现）。

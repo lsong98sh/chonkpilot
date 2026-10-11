@@ -147,7 +147,9 @@ func callLoadInitData(b *Bridge, ctx context.Context, params []json.RawMessage) 
 	}
 	selected := ""
 	if s := sval(cfg["filetree-selected-path"]); s != "" {
-		selected = filepath.Join(b.workDir, s)
+		// 与树节点 path（readDirNodes 产出，已 ToSlash 归一）保持一致——否则 Windows 反斜杠
+		// 与前端正斜杠 path 不等 → 选中项易丢。
+		selected = filepath.ToSlash(filepath.Join(b.workDir, s))
 	}
 	// 展开键存相对路径 → 转绝对（正斜杠归一，与 readDirNodes 产出的 path 一致）
 	absExpanded := make([]string, 0, len(expanded))
@@ -429,7 +431,10 @@ func callOpenDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]by
 	}
 	// 同 work-dir 单实例占用校验（I-74）：目标目录已被其它实例打开 → 明确报错（不 spawn、
 	// 不记最近目录），前端据 "workdir busy" 提示「该目录已被打开，请选择其它目录」。
-	if !lockfile.WorkDirFree(dir) {
+	// 口径统一到 **prjusr 单例锁**（`<work_dir>/.chonkpilot/chonkpilot.lock`）——桌面单体
+	// （host）与 flash 持有的是此锁（锁目录名 = lockfile.ProjectDataDirName 单一来源）；
+	// 原用 lockfile.WorkDirFree（workdir 锁，另一锁文件）→ 与持有者不同锁 → 预检永不命中。
+	if !lockfile.PrjUsrFree(filepath.Join(dir, lockfile.ProjectDataDirName)) {
 		return nil, fmt.Errorf("workdir busy: %s", dir)
 	}
 	if err := openNewWindow(dir); err != nil {

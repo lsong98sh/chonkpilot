@@ -52,6 +52,13 @@ func main() {
 	logSink, closeLog := setupFileLogging()
 	defer closeLog()
 
+	// fatalf 致命退出**前**先收尾日志：log.Fatalf / os.Exit 会跳过 defer → 文件日志未 flush/close。
+	fatalf := func(format string, args ...any) {
+		log.Printf(format, args...)
+		closeLog()
+		os.Exit(1)
+	}
+
 	var (
 		servers  = flag.String("servers-file", "", "servers.list 文件（空 = 仅内嵌 mcp-server）")
 		manage   = flag.String("manage-addr", "", "gateway 管理 REST 地址（可选）")
@@ -103,9 +110,10 @@ func main() {
 		// fail-closed（R7-B-8）：判定失败即**拒绝启动**并留痕——若按非单例继续，与
 		// uds.Server.Start() 无条件 os.Remove(旧 socket) 组合，异常环境下第二实例
 		// 可能删掉在跑实例的前门 socket。
-		log.Fatalf("[server] 单例判定失败，拒绝启动: %v", err)
+		fatalf("[server] 单例判定失败，拒绝启动: %v", err)
 	} else if duplicate {
 		log.Printf("[server] 已有 chonkpilot-server 在运行 → 本进程为第二实例，退出（exit %d）", exitDuplicate)
+		closeLog()
 		os.Exit(exitDuplicate)
 	} else {
 		defer rel()
@@ -129,7 +137,7 @@ func main() {
 	// 业务 publish/subscribe 一律写相对主题，见 61-消息一览 §0.1）
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
-		log.Fatalf("[server] mq.New: %v", err)
+		fatalf("[server] mq.New: %v", err)
 	}
 	defer bus.Close()
 
@@ -139,11 +147,11 @@ func main() {
 	if *servers != "" {
 		raw, err := os.ReadFile(*servers)
 		if err != nil {
-			log.Fatalf("[server] read servers.list %s: %v", *servers, err)
+			fatalf("[server] read servers.list %s: %v", *servers, err)
 		}
 		entries, err := mcpgateway.ParseServersList(raw)
 		if err != nil {
-			log.Fatalf("[server] parse servers.list %s: %v", *servers, err)
+			fatalf("[server] parse servers.list %s: %v", *servers, err)
 		}
 		gwServers = entries
 	}
@@ -181,7 +189,7 @@ func main() {
 		},
 	})
 	if err := srv.Start(ctx); err != nil {
-		log.Fatalf("[server] server.Start: %v", err)
+		fatalf("[server] server.Start: %v", err)
 	}
 	log.Printf("[server] chonkpilot-server started: workdir=%s llm=%s/%s", wd, *llmBase, *llmModel)
 

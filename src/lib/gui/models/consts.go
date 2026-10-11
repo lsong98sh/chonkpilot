@@ -3,6 +3,8 @@ package models
 import (
 	"path/filepath"
 	"sync"
+
+	"github.com/chonkpilot/chonkpilot-lib/lockfile"
 )
 
 // 项目数据根（--data-dir）包级注册：解析后的数据根路径。
@@ -36,5 +38,7 @@ func DataDir(workDir string) string {
 	return filepath.Join(workDir, UserConfigDirName)
 }
 
-// UserConfigDirName is the user-level config directory (~/.chonkpilot).
-const UserConfigDirName = ".chonkpilot"
+// UserConfigDirName is the user-level config directory (~/.chonkpilot)。
+// 单一字面量来源 = lockfile.ProjectDataDirName（`<work_dir>/.chonkpilot` 项目数据根亦用同名：
+// flash / 桌面单体 / CLI 的 prjusr 单例锁按其拼接，避免各自维护字面量失配，见 I-74）。
+const UserConfigDirName = lockfile.ProjectDataDirName

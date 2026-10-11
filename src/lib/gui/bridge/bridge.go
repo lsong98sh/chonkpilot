@@ -92,6 +92,11 @@ type Bridge struct {
 	// （dataViaPersist），行为同改前。
 	cfg facade.API
 
+	// dataOffline = 「本地无数据服务」（--no-server UI 注入测试模式；宿主经 SetDataOffline
+	// 置位）。置位后 dataCall 直接快速失败返回空信封，不经总线等待 3s 超时。
+	// **flash 远程薄壳不置位**（data-* 经 UDS 转发到常驻 server）。
+	dataOffline bool
+
 	// unsub 是 Start() 注册的总线 ">" 订阅句柄（D-23：CloseInstance 退订用；nil = 未订阅）。
 	// 句柄为本桥私有，退订只移除本桥转发订阅，不影响共享总线与其它窗口的桥。
 	// fwdMu 守护 unsub + stopRequested，退订幂等（句柄置 nil 后重复调用为空操作）；
@@ -157,6 +162,11 @@ func (b *Bridge) uploadRoot() string {
 // 注入后 **config 类 + session 域**（data-session-*）data-* 由桥走门面（dataViaFacade）；
 // 未注入（nil，如 -no-server 薄客户端）→ 保留既有总线转发路径（行为不变）。
 func (b *Bridge) SetFacade(cfg facade.API) { b.cfg = cfg }
+
+// SetDataOffline 置位「本地无数据服务」（--no-server UI 注入测试模式）：此后 dataCall 直接
+// 快速失败返回空信封，不再经总线等待 3s 超时（首屏 init-data 会累积多个 dataCall → 数秒）。
+// **flash 远程薄壳不置位**（其 data-* 经 UDS 转发到常驻 server，须保留总线转发路径）。
+func (b *Bridge) SetDataOffline(v bool) { b.dataOffline = v }
 
 // SetDevToolsOpener 由 main 注入「程序化打开 DevTools」能力（gui.devtools.open）。
 // 与「用户能否用快捷键/右键菜单打开 DevTools」的宿主开关解耦（B3：用户入口屏蔽后，
@@ -267,6 +277,12 @@ func (b *Bridge) forwardEvent(subject string, payload []byte) {
 	if b.isSelfPublished(subject, payload) {
 		return
 	}
+	// persist 的同主题应答（`data-*` 主题 + `{req_id, ok}` 载荷）不回投前端：dataViaPersist
+	// 请求与 persist 应答走同一主题（persist.reply/fail 直发），请求由 isSelfPublished 拦截，
+	// 应答（他源发出、带 req_id + ok）须由此跳过——前端 onData* 订阅只认变更广播，不应收到应答。
+	if isDataReply(subject, payload) {
+		return
+	}
 	if !b.acceptEventInstance(eventInstanceID(payload)) {
 		return
 	}
@@ -275,6 +291,22 @@ func (b *Bridge) forwardEvent(subject string, payload []byte) {
 	b.compatEmit(typ, payload)
 	// 通知等待该事件的测试 waiter（非阻塞）
 	b.notifyEventWaiters(typ, payload)
+}
+
+// isDataReply 判定「persist 同主题应答」信封：`data-*` 主题 + 带 `req_id` 与非空 `ok` 的载荷
+// （persist 应答恒含 req_id + ok；变更广播/业务事件不带 req_id）→ forwardEvent 据此跳过回投。
+func isDataReply(subject string, payload []byte) bool {
+	if !strings.HasPrefix(subject, "data-") {
+		return false
+	}
+	var probe struct {
+		ReqID string `json:"req_id"`
+		OK    *bool  `json:"ok"`
+	}
+	if json.Unmarshal(payload, &probe) != nil {
+		return false
+	}
+	return probe.ReqID != "" && probe.OK != nil
 }
 
 // acceptEventInstance 判定事件归属是否属本实例（缺口 8）：载荷 instance 为空（无归属字段）

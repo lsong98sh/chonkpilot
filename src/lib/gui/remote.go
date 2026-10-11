@@ -95,7 +95,7 @@ func runRemote(distFS fs.FS, opts RemoteOptions) error {
 	// ── 服务端探测 + 自动拉起（62 §3A）──────────────────────────────────
 	// 约定 UDS 已连通 → 复用常驻 server、不重复拉起；未连通 → 同目录 spawn
 	// `chonkpilot-server.exe --autoexit` → 有界重试 dial（见 flash.ServerOptions）。
-	if started, err := (flash.ServerOptions{ServerExe: serverExe, Logf: logfDebug}).Ensure(); err != nil {
+	if started, err := (flash.ServerOptions{ServerExe: serverExe, UDSPath: opts.UDSPath, Logf: logfDebug}).Ensure(); err != nil {
 		return err
 	} else if started {
 		slog.Info("已拉起常驻服务端（--autoexit）")

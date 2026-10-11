@@ -86,9 +86,13 @@ func PrepareDataDir(workDir, dataDir string, dataDirSet bool) (*Prepared, error)
 }
 
 // prepareReal ② 显式留空 → 真实根（data_dir="" 下发）。
-// 顺序：work-dir 占用校验（I-74：**先于任何库打开**，避免被 prjusr 排他锁卡住）→ prjusr 试开。
+// 顺序：**prjusr 单例锁**占用校验（I-74：**先于任何库打开**，避免被 prjusr 排他锁卡住）→ prjusr 试开。
 func prepareReal(workDir string) (*Prepared, error) {
-	lock, err := lockfile.AcquireWorkDir(workDir)
+	// 占用校验统一到 **prjusr 单例锁**（`<workDir>/.chonkpilot/chonkpilot.lock`）——与桌面单体
+	// （host）/ flash 持有的是**同一把锁**（锁目录名 = lockfile.ProjectDataDirName 单一来源）；
+	// 原用 work-dir 锁（AcquireWorkDir）→ 与 GUI/flash 不同锁、互不感知 → 同 work-dir 会被
+	// GUI 与 CLI 双开（正是 prjusr 单例锁要防的）。
+	lock, err := lockfile.AcquirePrjUsr(filepath.Join(workDir, lockfile.ProjectDataDirName))
 	switch {
 	case err == nil:
 		// 持锁至 Cleanup（对齐 GUI：锁随实例存活，进程崩溃由 OS 回收）。

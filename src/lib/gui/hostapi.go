@@ -39,6 +39,9 @@ type EnvConfig struct {
 	// Server = 内嵌会话服务（nil = --no-server UI 注入测试模式 / 远程薄壳模式）。
 	// ⚠️ host 传入 **nil 接口值**（非 typed-nil），否则 `env.srv != nil` 判定会失真。
 	Server Server
+	// DataOffline = 本地无数据服务（--no-server UI 注入测试模式）：置位后桥 data-* 快速失败
+	// 返回空信封，不经总线等 3s 超时。远程薄壳（flash）**非**此处（其 data-* 经 UDS 转发）。
+	DataOffline bool
 }
 
 // Env 是窗口工厂的进程级装配上下文（host 经 NewEnv 构造后单向调用）。
@@ -57,6 +60,7 @@ func NewEnv(cfg EnvConfig) *Env {
 		logDir:               cfg.LogDir,
 		form:                 cfg.Form,
 		srv:                  cfg.Server,
+		dataOffline:          cfg.DataOffline,
 		windows:              newWindowRegistry(),
 	}
 }

@@ -6,7 +6,7 @@
 //     其余与未接线时经总线 persist 数据服务（dataViaPersist）。两条路径的应答载荷键名与
 //     形态逐字一致（61 §3），**前端消息面一字未变**。
 //   - dataViaPersist：data-* 请求-响应客户端（请求注入 req_id + instance_id；应答按
-//     req_id 匹配；3s 超时兜底 = 唯一无应答保护，no-server 离线快败窗已退役删除）
+//     req_id 匹配；无应答保护 = `b.dataOffline` 快失败（no-server 薄客户端）+ 3s 超时兜底）
 //   - prjConfigSave/Load/List：gui.* 状态（layout/window/ui/opened-files/filetree-*）
 //     落 prj config 表键值面（61-消息一览 §3.1；记录形态 {"v":"<json>"}）
 //   - readUserConfig：用户配置（usr config 表 user_config 整体对象；无记录回落默认）
@@ -31,13 +31,21 @@ import (
 )
 
 // dataReqTimeout data-* 请求超时（persist 应答同步：合并形态微秒级；给分离形态留裕量）。
-// X1 收口：persist 恒在线（GUI 恒启 server），无应答一律走本超时兜底返回失败信封。
+// X1 收口：persist 恒在线（GUI 恒启 server），未接数据服务（no-server）时 dataCall 走
+// `b.dataOffline` 快失败，其余无应答一律走本超时兜底返回失败信封。
 const dataReqTimeout = 3 * time.Second
 
 // dataCall 发一条 data-<domain>-<action> 请求：**config 类与 session 域走 data 门面**
 // （同进程直调，阶段 4 第二/三批 / 41 G-34），其余域与未注入门面时经总线（dataViaPersist，
 // 行为同改前）。两条路径的应答载荷键名/形态逐字一致，调用方（前端 promise / gui.* 本地实现）无感。
 func (b *Bridge) dataCall(subject string, payload []byte) (result any, errs []error) {
+	// --no-server（本地无数据服务）：直接快速失败返回空信封，不经总线等待 3s 超时
+	// （首屏 init-data 会串起多个 dataCall → 数秒累积）。调用方（prjConfigList /
+	// readUserConfig 等）据 errs 回落缺省空值，行为与「超时兜底」一致，仅耗时归零。
+	if b.dataOffline {
+		err := fmt.Errorf("%s: data service offline (no server)", subject)
+		return map[string]any{"ok": false, "error": err.Error()}, []error{err}
+	}
 	if res, errs, ok := b.dataViaFacade(subject, string(payload)); ok {
 		return res, errs
 	}

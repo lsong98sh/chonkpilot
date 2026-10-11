@@ -278,6 +278,8 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		LogDir:         logDir,
 		Form:           opts.Form,
 		Server:         envServer,
+		// --no-server：本地无数据服务 → 桥 data-* 快速失败（不等 3s 超时，首屏提速）。
+		DataOffline: noServer,
 	})
 
 	// 主窗口（MW-1：主窗口同走窗口工厂；几何恢复 / 拦截器 / lifecycle / Show 逐条与改前一致）。

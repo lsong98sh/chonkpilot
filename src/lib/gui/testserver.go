@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,15 +199,41 @@ func (s *testServer) Start(port int) error {
 	return nil
 }
 
-// hostGuard 包裹全部端点：Host 不在白名单 → 403（挡 DNS rebinding / 恶意页面直连回环端口）。
+// hostGuard 包裹全部端点：Host 不在白名单 → 403（挡 DNS rebinding / 恶意页面直连回环端口）；
+// 再校验来源（Origin / Sec-Fetch-Site）→ 跨源/跨站网页直连拒绝（D-03 补强，见 originAllowed）。
 func (s *testServer) hostGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !hostAllowed(r.Host) {
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return
 		}
+		if !originAllowed(r) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// originAllowed 挡住跨源/跨站网页直连回环端口（D-03 补强）：仅校验 Host 时，任意网页仍可用
+// JS `fetch('http://127.0.0.1:<port>/eval', …)` 直连（浏览器会带上 `Origin` 与
+// `Sec-Fetch-Site: cross-site`）。外部驱动脚本（python 等）通常**不带**这两者 → 放行。
+//   - `Sec-Fetch-Site: cross-site` → 拒（浏览器发起的跨站请求）；
+//   - `Origin` 存在且主机不在回环白名单 → 拒（跨源网页）；
+//   - 其余（无 Origin / 同源回环 Origin / 非浏览器）→ 放行。
+func originAllowed(r *http.Request) bool {
+	if site := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); site == "cross-site" {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true // 非浏览器请求（外部脚本）/ 同源无 Origin → 放行
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return hostAllowed(u.Host)
 }
 
 // hostAllowed 判定 Host 头是否属白名单主机（仅比对主机名，忽略端口）：

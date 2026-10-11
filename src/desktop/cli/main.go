@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/chonkpilot/chonkpilot-cli"
@@ -213,10 +214,11 @@ func main() {
 	turn := newUUID()
 
 	doneCh := make(chan struct{})
+	var doneOnce sync.Once
 	var finalText string
 
 	// session-receive：LLM 流式内容
-	bus.On(msgkeys.TopicSessionReceive, 0, func(_ context.Context, _ string, v *mq.Value) error {
+	_, err = bus.On(msgkeys.TopicSessionReceive, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		payload := v.Payload
 		var ev struct {
 			Session string          `json:"session"`
@@ -250,9 +252,12 @@ func main() {
 		// final 模式：忽略所有中间输出
 		return nil
 	})
+	if err != nil {
+		log.Fatalf("[cli] 订阅 session-receive 失败: %v", err)
+	}
 
 	// session-complete：轮次终态
-	bus.On(msgkeys.TopicSessionComplete, 0, func(_ context.Context, _ string, v *mq.Value) error {
+	_, err = bus.On(msgkeys.TopicSessionComplete, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		payload := v.Payload
 		var ev struct {
 			Session      string `json:"session"`
@@ -268,12 +273,17 @@ func main() {
 			fmt.Printf("[COMPLETE] %s\n", string(payload))
 		}
 
-		close(doneCh)
+		// 幂等关闭：session-complete 可能重复到达（重连/重放），裸 close 会 panic。
+		doneOnce.Do(func() { close(doneCh) })
 		return nil
 	})
+	if err != nil {
+		// 订阅 session-complete 失败则 doneCh 永不关闭、CLI 挂起 → 报错退出。
+		log.Fatalf("[cli] 订阅 session-complete 失败: %v", err)
+	}
 
 	// task-done：工具完成通知
-	bus.On(msgkeys.TopicTaskDone, 0, func(_ context.Context, _ string, v *mq.Value) error {
+	_, err = bus.On(msgkeys.TopicTaskDone, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		payload := v.Payload
 		if output == "verbose" {
 			fmt.Printf("[TASK] %s\n", string(payload))
@@ -302,6 +312,9 @@ func main() {
 		}
 		return nil
 	})
+	if err != nil {
+		log.Fatalf("[cli] 订阅 task-done 失败: %v", err)
+	}
 
 	// 发 session-start
 	startPayload := map[string]any{

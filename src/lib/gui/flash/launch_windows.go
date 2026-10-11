@@ -20,9 +20,12 @@ const createNoWindow = 0x08000000
 // cwd 可能为任意位置）→ 避免 server 启动 cwd 随调用方漂移。**注**：capability/mcps 等随附
 // 资产由 server 以 **`os.Executable()` 同目录**解析（与 cwd 无关，见 `capfs`），故此处只为
 // 固定 server 的启动 cwd，**不是**资产定位。见 62 §3A / 本包 server.go。
-func launchDetached(exe string, args []string) error {
+//
+// env = 子进程环境（nil = 继承父环境）；非空时含 `CHONK_UDS` 自定义 UDS 下传（见 serverEnv）。
+func launchDetached(exe string, args []string, env []string) error {
 	cmd := exec.Command(exe, args...)
 	cmd.Dir = filepath.Dir(exe)
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 	if err := cmd.Start(); err != nil {
 		return err
