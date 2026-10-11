@@ -164,13 +164,14 @@ def case_a1_select_persist():
     ids = card_ids()
     if (tag_of(S1) not in ids) or (tag_of(S2) not in ids):
         raise TestError("抽屉未列出全部会话：%r" % (ids,))
+    before = active_get()               # 点击前的活动会话（供证据对照）
     r = click_card(S2)
     if r != "clicked":
         raise TestError("点击会话卡片失败：%r（卡片=%r）" % (r, ids))
-    got = wait_for(lambda: active_get() == S2, "active-get 未落到 S2（选中后）", 15)
+    wait_for(lambda: active_get() == S2, "active-get 未落到 S2（选中后）", 15)
     wait_for(lambda: chat_tag() == tag_of(S2), "前端 .chat-session-tag 未显示 S2", 15)
     evi("A1 选择会话 → 落库回读", clicked_id=S2, active_get=active_get(), chat_tag=chat_tag(),
-        drawer_ids=ids, old_active_before=got)
+        drawer_ids=ids, old_active_before=before)
     if active_get() != S2:
         raise TestError("A 落库回读失败: active=%r 期望 %r" % (active_get(), S2))
     if chat_tag() != tag_of(S2):

@@ -129,16 +129,18 @@ def case_workdir_recent_dirs():
 
 
 def case_session_workdir():
-    """四.7 会话与工作目录关系：会话落库后 work_dir = 当前工作目录（实例级绑定）。"""
+    """四.7 会话增删查往返：data-session-ensure-session → data-session-get → data-session-delete。
+
+    注：会话 DTO（`SessionFromWire`）**不含 work_dir** —— 工作目录为**实例级**绑定（非会话字段），
+    经会话载荷不可观测；故本用例校验会话落库/回读往返与删除清理，不作 work_dir 断言
+    （原 `sess.get("work_dir")` 恒为空串 → 断言恒被跳过，无判别力）。
+    """
     sid = "prj-sess-%d" % int(time.time() * 1000)
     c.req("data-session-ensure-session", {"session_id": sid})
     res = c.req("data-session-get", {"id": sid})
     sess = res.get("data") if isinstance(res, dict) else None
-    if not isinstance(sess, dict):
-        raise TestError(f"data-session-get 未返回会话: {res!r}")
-    wd = sess.get("work_dir") or ""
-    if wd and os.path.normcase(os.path.normpath(wd)) != os.path.normcase(os.path.normpath(WS)):
-        raise TestError(f"会话 work_dir={wd!r}，期望 {WS!r}")
+    if not isinstance(sess, dict) or (sess.get("session_id") or "") != sid:
+        raise TestError(f"data-session-get 未返回目标会话: {res!r}")
     c.req("data-session-delete", {"id": sid})
 
 

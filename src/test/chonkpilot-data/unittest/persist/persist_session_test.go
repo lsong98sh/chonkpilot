@@ -102,7 +102,7 @@ func TestDataSessionListGetTitleDelete(t *testing.T) {
 		t.Fatalf("delete failed: %+v", r)
 	}
 	prj, _ := data.PrjUsr("ins-test")
-	for _, kv := range [][2]string{{"sessions", "s1"}, {"turns", "t1"}, {"turns", "t2"}, {"messages", "m1"}, {"messages", "m3"}} {
+	for _, kv := range [][2]string{{"sessions", "s1"}, {"turns", "t1"}, {"turns", "t2"}, {"messages", "m1"}, {"messages", "m2"}, {"messages", "m3"}} {
 		if ok, _ := prj.Table(kv[0]).Get(kv[1], &data.Record{}); ok {
 			t.Fatalf("%s/%s not deleted", kv[0], kv[1])
 		}

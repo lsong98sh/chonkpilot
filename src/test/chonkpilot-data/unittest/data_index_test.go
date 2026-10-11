@@ -309,12 +309,10 @@ func TestSessionTopRouting(t *testing.T) {
 		t.Fatalf("顶层路由=%v want %v", recKeys(got), ref)
 	}
 
-	// LatestTopSession 口径：按**最近活动**（last_activity 优先、回落 updated_at）取最大者。
-	// 本用例两条顶层仅置 created_at（未置 last_activity/updated_at → 活动时间同为空）→ 并列取序首，
-	// 与 OrderDesc created_at 的降序首一致 = top2（不再等价于「最近创建」的一般口径）。
-	if k := recKeys(got)[0]; k != "top2" {
-		t.Fatalf("最近顶层应为 top2: %v", recKeys(got))
-	}
+	// 注：`LatestTopSession` 的「按最近活动（last_activity 优先、回落 updated_at）取最大」口径需
+	// 构造活动时间不同的两条顶层会话方可判别，且该函数位于 `internal/kernel`（非本测试可直调的
+	// 公开面）→ 该口径由 systest `run_session_active.py` B2（经 `data-session-active-get` 消息面
+	// 区分「活动位」与「回落最近活动」）覆盖；此处不再重复（原 recKeys(got)[0]=="top2" 断言恒真、应删）。
 }
 
 // TestListPrefix：主键前缀读（顺序 = 主键字典序；空结果；空前缀 = 全部）。

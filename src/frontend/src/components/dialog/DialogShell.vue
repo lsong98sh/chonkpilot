@@ -393,7 +393,9 @@ function onOverlayClick() {
 let resizeObserver = null
 let unsubDialogClose = null
 // 幂等注销守卫：dispose 可能被两处调用（onUnmounted 正常卸载；DialogManager.close 兜底），
-// 用 guard 保证监听/订阅/注册表只清理一次，避免重复 emit('closed')。
+// 用 guard 保证监听/订阅/注册表只清理一次（避免重复清理、二次注销订阅）。
+// 注：closed 事件仍在 onUnmounted 内 emit（正常卸载路径）；兜底路径（render 抛错、onUnmounted 未触发）
+// 只做清理、不发 closed（当前无订阅者，不影响功能）。
 let disposed = false
 
 // 清理副作用 + 注销 openDialogs 注册表。抽为独立函数供**两条路径**复用：
