@@ -261,19 +261,18 @@ function updateCurrentCircle() {
   currentCircle.value = circle
 }
 
-// E-28：圆圈高亮更新节流。流式回复每 chunk 触发组件更新（onUpdated）→ 若每次都读
-// turnStarts（O(N) 计算）并全量查询/测量 DOM，长会话 × 每 token 一次开销显著。
-// 改用**消息条数**做闸门键：条数不变（仅流式增量改写末尾内容）→ 命中时间闸直接返回，
-// 不再触发 O(N) 的 turnStarts 重算；条数变化（新增消息/新 turn/切换会话）→ 立即刷新，
-// 保证「新增 turn 时圆圈高亮正确」；滚动路径 onScroll 仍实时更新（不受此闸影响）。
+// E-28：圆圈高亮更新节流（**按 turn 数**判断：新增 turn 即时刷新，其余走 100ms 时间闸）。
+// 流式回复每 chunk 触发组件更新（onUpdated）→ 全量查询/测量 DOM 开销大；
+// turn 数不变（仅流式增量改写末尾内容）→ 命中时间闸直接返回；
+// turn 数变化（新增 turn / 切换会话）→ 立即刷新；滚动路径 onScroll 仍实时更新（不受此闸影响）。
 const CIRCLE_UPDATE_THROTTLE_MS = 100
 let lastCircleUpdateAt = 0
-let lastCircleMsgCount = -1
+let lastCircleTurnCount = -1
 function updateCurrentCircleThrottled() {
-  const count = messages.value.length
+  const count = turnStarts.value.length
   const now = Date.now()
-  if (count === lastCircleMsgCount && now - lastCircleUpdateAt < CIRCLE_UPDATE_THROTTLE_MS) return
-  lastCircleMsgCount = count
+  if (count === lastCircleTurnCount && now - lastCircleUpdateAt < CIRCLE_UPDATE_THROTTLE_MS) return
+  lastCircleTurnCount = count
   lastCircleUpdateAt = now
   updateCurrentCircle()
 }
