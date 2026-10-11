@@ -315,9 +315,12 @@ func compareValue(a, b any) bool {
 
 // ─── 游标（§5.2.1 连续滚动）────────────────────────────
 
-// encodeCursor：<orderByValue>|<primaryKey> URL-safe base64。
+// encodeCursor：长度前缀编码 `<len(orderVal)>|<orderVal><primaryKey>` 后 URL-safe base64。
+//
+// 用**长度前缀**而非裸分隔符：排序值（orderVal）本身可能含 `|`，裸 `SplitN(...,"|",2)` 会把
+// 排序值拆断 → 断页错位/漏行（A-xx）。长度前缀使边界无歧义。
 func encodeCursor(orderVal, pk string) string {
-	raw := orderVal + "|" + pk
+	raw := strconv.Itoa(len(orderVal)) + "|" + orderVal + pk
 	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
@@ -326,11 +329,16 @@ func decodeCursor(cursor string) (orderVal, pk string, ok bool) {
 	if err != nil {
 		return "", "", false
 	}
-	parts := strings.SplitN(string(b), "|", 2)
-	if len(parts) != 2 {
+	s := string(b)
+	sep := strings.IndexByte(s, '|')
+	if sep < 0 {
 		return "", "", false
 	}
-	return parts[0], parts[1], true
+	n, err := strconv.Atoi(s[:sep])
+	if err != nil || n < 0 || len(s) < sep+1+n {
+		return "", "", false
+	}
+	return s[sep+1 : sep+1+n], s[sep+1+n:], true
 }
 
 // filterAfter 保留游标之后的记录：

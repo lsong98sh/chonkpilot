@@ -85,17 +85,32 @@ func InstancesByWorkDir(workDir string) []string {
 // Unregister 移除 instance 绑定（instance-exit / 超时清理时调用）。
 // **并关闭该 instance 的 prjusr 常开连接**（🆕 2026-10-09）：prjusr 引用不释放 → 不解绑时
 // 其 bbolt 连接与文件锁会残留（D-45 同类问题：长持会锁死外部进程）。按首次打开的路径关闭缓存条目。
+//
+// **按实例引用计数（🆕 2026-10-10）**：`shared` 按**库路径**缓存，而 prjusr 路径由 project-id
+// 决定 —— 同 work_dir 的多实例会解析到**同一 prjusr 库路径、共享同一 `*DB`**。若一个实例退出
+// 即直接 Close，会**关闭他人仍在用的连接**（后续请求报错）。故此处先移除本实例，再检查**是否
+// 仍有其它在册实例持有同一 prjusr 路径**：仅当无任何其它持有者时才真正 Close（= 实例级引用
+// 计数归零）。单实例场景仍能在退出时关闭连接（D-45 诉求）；幂等（重复 Unregister 空操作）。
 func Unregister(instanceID string) {
 	storeMu.Lock()
 	bind, ok := instances[instanceID]
 	delete(instances, instanceID)
-	storeMu.Unlock()
+	stillHeld := false
 	if ok && bind.PrjUsrPath != "" {
+		for _, b := range instances {
+			if b.PrjUsrPath == bind.PrjUsrPath {
+				stillHeld = true
+				break
+			}
+		}
+	}
+	storeMu.Unlock()
+	if ok && bind.PrjUsrPath != "" && !stillHeld {
 		closeSharedPath(bind.PrjUsrPath)
 	}
 }
 
-// closeSharedPath 关闭并移除某 db 路径的缓存连接（无视引用计数）。
+// closeSharedPath 关闭并移除某 db 路径的缓存连接（**调用方须先确认无其它持有者**）。
 //
 // 语义（🆕 2026-10-09）：仅用于**实例退出**场景 —— 此时该实例不应再发起请求，故直接关闭；
 // 若仍有在飞短开调用持有该连接，其后续操作会明确报错（可接受，且 instance-exit 后不应再有请求）。

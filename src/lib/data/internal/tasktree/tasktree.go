@@ -262,13 +262,15 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	// 主键→node_id 映射**一次单事务扫描**建好（A-30）：原实现对每个直接子节点单独 t.Get
 	// （各独立 View 事务 → 级联删除 O(子树) 事务数）。索引值仅为主键，node_id 可能与主键不同，
 	// 故仍需映射而非直接取索引键；BFS 全程不变更行 → 映射结果与逐点回表逐字等价。
-	nodeIDs := map[string]string{}
+	nodeIDs := map[string]string{} // 主键 → node_id
+	nodePKs := map[string]string{} // node_id → 主键（级联删除/更新按**真实主键**操作，行主键可能 ≠ node_id）
 	if err := t.ForEach(func(k string, rec data.Record) error {
 		id := kernel.Sval(rec["node_id"])
 		if id == "" {
 			id = k
 		}
 		nodeIDs[k] = id
+		nodePKs[id] = k
 		return nil
 	}); err != nil {
 		return facade.TasktreeDeleteResponse{}, err
@@ -292,9 +294,11 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	if req.Shadow {
 		// 逐行物理删（含索引键，由 Table 写入口同事务清理）；错误聚合上报（A-02）：
 		// 原 `_ = t.Delete(id)` 吞错 → 失败静默残留且恒返回 OK。不存在视为已删（幂等）。
+		// **按真实主键删（A-31）**：toDelete 承载的是 node_id，而 Delete 需主键 —— 原实现直接
+		// `t.Delete(node_id)`，行主键 ≠ node_id 时命中不到（ErrNotFound 被忽略）→ 子树未被真正删除。
 		var errs []error
 		for _, id := range toDelete {
-			if err := t.Delete(id); err != nil && !errors.Is(err, data.ErrNotFound) {
+			if err := t.Delete(pkOfNode(nodePKs, id)); err != nil && !errors.Is(err, data.ErrNotFound) {
 				errs = append(errs, fmt.Errorf("shadow delete %s: %w", id, err))
 			}
 		}
@@ -307,10 +311,12 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	// 事务，单行失败不回滚 → 必须上报，否则静默残留未关闭节点且恒返回 OK。
 	// 标记收进 UpdateIn 单事务 RMW（A-18）：Get→改→Upsert 跨两事务会把并发窗口内新上报的
 	// 状态用旧 rec 覆盖；行已消失 → fn 返回 nil 跳过（保持「不存在即跳过」幂等口径，不建空行）。
+	// **按真实主键标记（A-31）**：同 shadow 分支——UpdateIn 以 node_id 为主键会命中不到行
+	// （rec 为空 → fn 返回 nil 跳过），子树未被真正关闭。
 	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
 	var errs []error
 	for _, id := range toDelete {
-		if err := t.UpdateIn(id, func(rec data.Record) data.Record {
+		if err := t.UpdateIn(pkOfNode(nodePKs, id), func(rec data.Record) data.Record {
 			if len(rec) == 0 {
 				return nil
 			}
@@ -327,6 +333,16 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	}
 	s.emitTaskDeleted(req.InstanceID, req.NodeID)
 	return facade.TasktreeDeleteResponse{OK: true}, nil
+}
+
+// pkOfNode 取 node_id 对应的**真实桶主键**（A-31）：级联删除/更新须按主键操作，而行主键可能
+// ≠ node_id。未映射（行缺失 / 缺 node_id 字段的旧行）→ 回落 node_id 本身（Delete 得 ErrNotFound
+// 幂等跳过、UpdateIn 得空 rec 放弃写入，与「不存在即跳过」口径一致）。
+func pkOfNode(nodePKs map[string]string, nodeID string) string {
+	if pk, ok := nodePKs[nodeID]; ok {
+		return pk
+	}
+	return nodeID
 }
 
 // childIDs 返回 parentID 的**直接子节点 id 列表**（cascade 删除用）：对索引桶

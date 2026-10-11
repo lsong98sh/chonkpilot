@@ -249,9 +249,13 @@ func (s *Service) ConfigKVDelete(req facade.ConfigKVDeleteRequest) (facade.Confi
 			}
 		}()
 		for _, key := range rest {
-			kernel.ConfigDelete(prj, prefix+key)
+			if err := kernel.ConfigDelete(prj, prefix+key); err != nil {
+				return facade.ConfigKVDeleteResponse{}, err // 删失败须上报，且不得继续广播 refresh（A-xx）
+			}
 			if pudb != nil {
-				kernel.ConfigDelete(pudb, prefix+key) // 两层同删：重置 = 恢复继承
+				if err := kernel.ConfigDelete(pudb, prefix+key); err != nil { // 两层同删：重置 = 恢复继承
+					return facade.ConfigKVDeleteResponse{}, err
+				}
 			}
 		}
 	}

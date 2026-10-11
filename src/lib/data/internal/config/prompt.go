@@ -75,12 +75,15 @@ func promptUserFile(usrPath, kind string) string {
 	return promptSystemFile(capfs.UserRoot(usrPath), kind)
 }
 
-// readSystemDoc 读某级 system 文档文件的**纯文本**正文（去首尾空白；缺失/空 → ""）。
+// readSystemDoc 读某级 system 文档文件的**纯文本**正文（去首尾空白；缺失/空/超限 → ""）。
+//
+// 走同域 capfs.ReadFileCapped（尺寸上限 MaxDocReadBytes，A-40 洪泛防护）——原裸 os.ReadFile
+// **不设上限**，单一超大文件可把内存读爆。
 func readSystemDoc(path string) string {
 	if path == "" {
 		return ""
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := capfs.ReadFileCapped(path, capfs.MaxDocReadBytes)
 	if err != nil {
 		return ""
 	}

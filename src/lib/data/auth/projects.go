@@ -82,8 +82,12 @@ func (l *Local) GrantProject(uid, workDir string) (Project, error) {
 				}
 			}
 		}
+		id, err := newUUID()
+		if err != nil {
+			return err
+		}
 		proj = Project{
-			ProjectID: newUUID(),
+			ProjectID: id,
 			Name:      filepath.Base(dir),
 			WorkDir:   dir,
 			CreatedBy: uid,

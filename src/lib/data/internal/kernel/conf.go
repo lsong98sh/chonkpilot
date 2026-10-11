@@ -7,6 +7,7 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -29,8 +30,14 @@ func ConfigSet(db *data.DB, key, val string) error {
 }
 
 // ConfigDelete 删 config 表 key（不存在视为成功）。
-func ConfigDelete(db *data.DB, key string) {
-	_ = db.Table("config").Delete(key)
+//
+// **不再吞错（A-xx）**：原实现 `_ = ...Delete` 忽略删除失败 → 调用方无法感知失败仍继续广播
+// refresh（失败却报成功）。此处返回错误（不存在仍视为成功=幂等）。
+func ConfigDelete(db *data.DB, key string) error {
+	if err := db.Table("config").Delete(key); err != nil && !errors.Is(err, data.ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 // PrjConfigVal 读单值 config 键（active_session_id 等；对齐桥 configSet {v:...} 记录）。

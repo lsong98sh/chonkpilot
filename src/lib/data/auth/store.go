@@ -251,6 +251,3 @@ func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }
-
-// nowUnixNano 兜底时间源（UUID 生成失败时的降级标识用）。
-func nowUnixNano() int64 { return time.Now().UnixNano() }

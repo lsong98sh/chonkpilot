@@ -135,15 +135,20 @@ func IndexesFor(table string) []Index {
 
 // ─── 写入口维护（由 table.go 在同一事务内调用）────────────────────
 
-// buildIndexKey 计算记录在某索引下的键（主键 pk 注入 rec[KeyField]，用后移除）。
+// buildIndexKey 计算记录在某索引下的键（主键 pk 注入 rec[KeyField]）。
+//
+// **不改调用方入参（A-27）**：注入在**浅拷贝**上进行（原实现先置后删 `rec[KeyField]` 会原地改
+// 调用方传入的 map，Insert/Update 直传入参 → 并发复用同一 map 即数据竞争）。
 func buildIndexKey(idx Index, pk string, rec Record) (string, bool) {
 	if idx.Build == nil || rec == nil {
 		return "", false
 	}
-	rec[KeyField] = pk
-	key, ok := idx.Build(rec)
-	delete(rec, KeyField)
-	return key, ok
+	cp := make(Record, len(rec)+1)
+	for k, v := range rec {
+		cp[k] = v
+	}
+	cp[KeyField] = pk
+	return idx.Build(cp)
 }
 
 // indexPut 事务内写入记录的全部索引项（value = 主键）。

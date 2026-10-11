@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"time"
 )
 
 // ProjectIDKey 是项目库 config 表中 project-id 的键名。
@@ -17,15 +18,33 @@ func ReadProjectID(db *DB) (string, bool) {
 }
 
 // EnsureProjectID 读 project-id；不存在则生成 uuid 写入并返回（幂等，仅首次生成）。
+//
+// **同事务原子（🆕 2026-10-10）**：判空 + 生成 + 写入收进**同一 Update 事务**（借 Table.UpdateIn
+// 的 RMW 原语）—— bbolt 写事务全局串行，故并发调用中只有一个能看到空值并写入，其余必然读到已
+// 落库的 id。原实现「ReadProjectID（View 事务）+ SetConfig（Update 事务）」跨两事务，并发下会
+// 各自生成 uuid、后写获胜，**落败目录成孤儿**（口径同 auth/local.go RegisterWithPolicy 的同事务）。
 func EnsureProjectID(db *DB) (string, error) {
-	if id, ok := ReadProjectID(db); ok && id != "" {
-		return id, nil
+	var (
+		id     string
+		genErr error
+	)
+	err := db.Table("config").UpdateIn(ProjectIDKey, func(rec Record) Record {
+		if v, ok := rec["v"].(string); ok && v != "" {
+			id = v
+			return nil // 已有 id → 放弃写入（不覆盖）
+		}
+		nid, err := newUUID()
+		if err != nil {
+			genErr = err
+			return nil
+		}
+		id = nid
+		return Record{"v": nid, "updated_at": time.Now().UTC().Format(RFC3339FixedNano)}
+	})
+	if genErr != nil {
+		return "", genErr
 	}
-	id, err := newUUID()
 	if err != nil {
-		return "", err
-	}
-	if err := SetConfig(db, ProjectIDKey, id); err != nil {
 		return "", err
 	}
 	return id, nil

@@ -12,6 +12,7 @@ package filesys
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -221,7 +222,11 @@ func (f *Filesys) onContent(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errForbidden("path outside work dir"))
 		return nil
 	}
-	content, truncated := readTextFile(p)
+	content, truncated, err := readTextFile(p)
+	if err != nil {
+		v.Errors = append(v.Errors, errRead(err.Error()))
+		return nil
+	}
 	v.Result = map[string]any{"path": p, "kind": "file", "content": content, "truncated": truncated}
 	return nil
 }
@@ -626,15 +631,22 @@ func isWithinDir(child, parent string) bool {
 }
 
 // readTextFile 读文本文件（超限截断）。
-func readTextFile(path string) (string, bool) {
+//
+// 返回 (content, truncated, err)：
+//   - 仅接受**常规文件**（FIFO / 设备节点等可致无界阻塞，直接拒绝并报错）；
+//   - 读取失败**返回错误**（不再静默回退为空内容 —— 区分「读取失败」与「空文件」）。
+func readTextFile(path string) (string, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", false
+		return "", false, err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return "", false
+		return "", false, err
+	}
+	if !st.Mode().IsRegular() {
+		return "", false, fmt.Errorf("not a regular file: %s", path)
 	}
 	// 上限截断（512KB）：按 UTF-8 边界收尾（避免切断多字节字符）+ ReadFull 处理短读
 	// （单次 f.Read 不保证读满，R8-C-2）。
@@ -646,9 +658,9 @@ func readTextFile(path string) (string, bool) {
 	buf := make([]byte, limit)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return "", false
+		return "", false, err
 	}
-	return string(trimIncompleteUTF8(buf[:n])), truncated
+	return string(trimIncompleteUTF8(buf[:n])), truncated, nil
 }
 
 // trimIncompleteUTF8 丢弃末尾不完整的 UTF-8 多字节序列（截断边界落在字符中间时不留残字节乱码）。
@@ -664,11 +676,29 @@ func trimIncompleteUTF8(b []byte) []byte {
 	return b
 }
 
+// maxCopyDepth 是 copyTree 递归下钻的深度上限（兜底防符号链接 / 绑定挂载成环导致的无限递归；
+// 正常目录树深度远小于此）。
+const maxCopyDepth = 64
+
 // copyTree 递归复制文件/目录（src → dst；目标已存在时覆盖）。
+//
+// **不跟随符号链接 + 深度上限（R8-C-3）**：递归下钻一律用 os.Lstat / DirEntry 类型判定（**不
+// 解引用链接**），符号链接条目**跳过**（不复制）；并设深度上限兜底。否则 work_dir 内自指/成环的
+// symlink 会让原实现（os.Stat 跟随链接）无限递归至 OOM。
 func copyTree(src, dst string) error {
-	fi, err := os.Stat(src)
+	return copyTreeInto(src, dst, 0)
+}
+
+func copyTreeInto(src, dst string, depth int) error {
+	if depth > maxCopyDepth {
+		return fmt.Errorf("copy: 目录嵌套过深（>%d）: %s", maxCopyDepth, src)
+	}
+	fi, err := os.Lstat(src)
 	if err != nil {
 		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil // 不跟随符号链接（防成环）
 	}
 	if !fi.IsDir() {
 		return copyFile(src, dst)
@@ -681,7 +711,10 @@ func copyTree(src, dst string) error {
 		return err
 	}
 	for _, e := range entries {
-		if err := copyTree(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+		if e.Type()&os.ModeSymlink != 0 {
+			continue // 符号链接条目跳过（不跟随；Type 未知时由 copyTreeInto 内 Lstat 兜底识别）
+		}
+		if err := copyTreeInto(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()), depth+1); err != nil {
 			return err
 		}
 	}
@@ -689,6 +722,9 @@ func copyTree(src, dst string) error {
 }
 
 // copyFile 复制单个文件。
+//
+// 出错时**清理半截目标文件**；仅走单一 Close 路径（原实现 `defer out.Close()` 与显式 `out.Close()`
+// 构成**双重关闭**）。
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -699,8 +735,9 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst) // 清理半截目标（半写文件不得残留）
 		return err
 	}
 	return out.Close()
@@ -792,6 +829,11 @@ func errCopy(msg string) error {
 
 func errExists(msg string) error {
 	return mapError("exists", msg)
+}
+
+// errRead 读失败（非常规文件 / IO 错误）；码取 61 §2.5 明列的 IO_ERROR 家族。
+func errRead(msg string) error {
+	return mapError("io_error", msg)
 }
 
 type mapErr map[string]string

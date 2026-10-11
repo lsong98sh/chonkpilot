@@ -345,9 +345,19 @@ func (t *Table) ReplaceAll(recs map[string]Record) error {
 }
 
 // putRecord 序列化并写入桶。
+//
+// **不改调用方入参（A-27）**：`_key` 剔除在**浅拷贝**上进行 —— 若直接 `delete(rec, KeyField)`
+// 会原地修改调用方传入的 map（Insert/Update/Upsert 均直传入参），调用方在并发下复用同一 map
+// 即构成数据竞争。仅在确有 `_key` 时拷贝（常见路径零额外开销）。
 func putRecord(b *bolt.Bucket, key string, rec Record) error {
 	if rec == nil {
 		rec = Record{}
+	} else if _, has := rec[KeyField]; has {
+		cp := make(Record, len(rec))
+		for k, v := range rec {
+			cp[k] = v
+		}
+		rec = cp
 	}
 	delete(rec, KeyField) // 主键不落 value
 	v, err := json.Marshal(rec)

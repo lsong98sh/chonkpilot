@@ -91,12 +91,15 @@ type TokenIssuer interface {
 }
 
 // newUUID 生成 RFC 4122 v4 风格 UUID（不引入额外依赖；同 GUI 桥 / httpapi 实现）。
-func newUUID() string {
+//
+// **随机源失败即报错（A-xx）**：`crypto/rand` 失败时**返回错误**（由调用方失败），不再回退为
+// `usr-<UnixNano>` —— 时间戳可预测，降级会削弱 uid 的唯一性/不可猜测性（安全缺陷）。
+func newUUID() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("usr-%d", nowUnixNano())
+		return "", fmt.Errorf("auth: gen uuid: %w", err)
 	}
 	buf[6] = (buf[6] & 0x0f) | 0x40
 	buf[8] = (buf[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
 }

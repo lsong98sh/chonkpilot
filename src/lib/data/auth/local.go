@@ -66,8 +66,12 @@ func (l *Local) RegisterWithPolicy(username, password string, allowRegister bool
 	if err != nil {
 		return User{}, err
 	}
+	uid, err := newUUID()
+	if err != nil {
+		return User{}, err
+	}
 	now := time.Now().Unix()
-	rec := userRec{UID: newUUID(), Username: name, PwdHash: string(hash), CreatedAt: now}
+	rec := userRec{UID: uid, Username: name, PwdHash: string(hash), CreatedAt: now}
 	err = l.st.db.Update(func(tx *bolt.Tx) error {
 		if tx.Bucket(bucketUsersByName).Get([]byte(name)) != nil {
 			return ErrUsernameTaken
@@ -152,7 +156,11 @@ func (l *Local) IssueToken(u User, kind TokenKind) (string, error) {
 	var token string
 	switch kind {
 	case TokenSession:
-		token = newOpaqueToken()
+		tok, err := newOpaqueToken()
+		if err != nil {
+			return "", err
+		}
+		token = tok
 	case TokenRemember:
 		rec, ok, err := l.st.userByUID(u.UID)
 		if err != nil {
@@ -188,10 +196,13 @@ func (l *Local) RevokeToken(token string, kind TokenKind) error {
 var errNoToken = errors.New("auth: 令牌格式非法")
 
 // newOpaqueToken 生成会话令牌：32B 随机 → base64url（61 §4.6）。
-func newOpaqueToken() string {
+//
+// **随机源失败即报错（A-xx）**：不再回退为 `sess-<UnixNano>`（时间戳可预测 → 令牌可枚举/伪造），
+// 让调用方失败。
+func newOpaqueToken() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		return fmt.Sprintf("sess-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("auth: gen token: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(buf)
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }

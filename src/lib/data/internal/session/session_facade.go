@@ -193,7 +193,14 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 	}
 	// 级联清理 turns/messages：错误聚合上报（A-04）——原先 Query 失败 continue、Delete 错误忽略，
 	// 失败不可感知会残留孤儿数据；此处收集全部错误，任一行失败即返回失败。
+	//
+	// **turn_id 兜底（A-32）**：messages 行虽由 MessageAppend 恒写 session_id，但 session_id 依赖
+	// turns 记录**回填** —— turns 行缺失时可能落成空 session_id（孤儿），按 session_id 查询命中不到。
+	// 故删除 turns 时收集其 turn_id，对 messages 再按 turn_id 删一遍（已由 session_id 删走的行为
+	// 空结果，天然幂等），避免孤儿消息残留。（跨事务级联未收进单事务：Bolt 事务原语不跨 Table facade
+	// 暴露，故以 turn_id 兜底收敛孤儿窗口。）
 	var cascErrs []error
+	var turnIDs []string
 	for _, table := range []string{"turns", "messages"} {
 		// OrderBy 命中 turns_by_session / messages_by_session（A-05：无 OrderBy 禁索引路由 → 全扫）。
 		recs, _, err := prj.Table(table).Query(data.Query{Where: data.Record{"session_id": req.SessionID}, OrderBy: "created_at"})
@@ -203,8 +210,27 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 		}
 		for _, r := range recs {
 			k := kernel.Sval(r[data.KeyField])
+			if table == "turns" {
+				turnIDs = append(turnIDs, kernel.TurnIDOf(r))
+			}
 			if err := prj.Table(table).Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
 				cascErrs = append(cascErrs, fmt.Errorf("delete %s/%s: %w", table, k, err))
+			}
+		}
+	}
+	for _, tid := range turnIDs {
+		if tid == "" {
+			continue
+		}
+		recs, _, err := prj.Table("messages").Query(data.Query{Where: data.Record{"turn_id": tid}, OrderBy: "created_at"})
+		if err != nil {
+			cascErrs = append(cascErrs, fmt.Errorf("query messages by turn %s: %w", tid, err))
+			continue
+		}
+		for _, r := range recs {
+			k := kernel.Sval(r[data.KeyField])
+			if err := prj.Table("messages").Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
+				cascErrs = append(cascErrs, fmt.Errorf("delete messages/%s: %w", k, err))
 			}
 		}
 	}
@@ -711,6 +737,22 @@ func queryTurnMessages(prj *data.DB, turnID string) ([]data.Record, error) {
 	return recs, nil
 }
 
+// snapshotBoundaryPresent 报告快照覆盖轮（boundary = snap.SnapshotTurn）是否仍在当前轮次
+// 集合内：空串（快照无覆盖轮，全部轮次都拼）→ true；否则须在 turnRecs（排除 excludeTurn）中
+// 存在。**边界轮已被删除**（compaction 后清理等）→ false —— 若不判此，快照拼接循环里
+// `found` 恒假，会把快照之后的**全部轮次静默丢弃**（A-xx）；返回 false 供调用方回落全量历史分支。
+func snapshotBoundaryPresent(turnRecs []data.Record, boundary, excludeTurn string) bool {
+	if boundary == "" {
+		return true
+	}
+	for _, r := range turnRecs {
+		if id := kernel.TurnIDOf(r); id == boundary && id != excludeTurn {
+			return true
+		}
+	}
+	return false
+}
+
 // MessageContext 组装会话历史（llm-start 恢复上下文一次到位）：
 // IncludeSnapshot 且快照非空 → 快照前缀 + 覆盖轮之后的消息（跳过 interrupted / ExcludeTurn）；
 // 否则全量历史（从最新往回找首个有 summary 的轮次作起点；summary → system "[历史摘要] "+…）。
@@ -760,7 +802,7 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 		if err != nil {
 			return facade.MessageContextResponse{}, fmt.Errorf("snapshot: %v", err) // A-41：读快照失败须上报，不得退化为「无快照」
 		}
-		if ok && len(snap.History) > 0 {
+		if ok && len(snap.History) > 0 && snapshotBoundaryPresent(turnRecs, snap.SnapshotTurn, req.ExcludeTurn) {
 			msgs := append([]data.ChatMsg{}, snap.History...)
 			found := snap.SnapshotTurn == "" // 快照无覆盖轮 → 全部轮次都拼
 			for _, r := range turnRecs {
