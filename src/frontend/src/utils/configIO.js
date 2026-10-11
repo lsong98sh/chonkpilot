@@ -90,6 +90,7 @@ export function backupFileName(d = new Date()) {
 /**
  * 剔除密钥（**返回新对象，不改入参**）：
  *   - llms[*]：删掉密钥名字段（apiKey 等）。
+ *   - mcps[*].env / mcps[*].headers：删掉「键名」为密钥名的条目（键名即 env 变量名 / header 名）。
  * @returns {{data: object, removed: number}} removed = 被剔除的字段数（UI 据此提示）
  */
 export function redactSecrets(config) {
@@ -109,6 +110,29 @@ export function redactSecrets(config) {
     }
     return rec
   })
+
+  // mcps[].env / mcps[].headers：对象形态（键名 → 值），密钥键整个删除（与注释口径一致）
+  const redactNamedMap = (obj) => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj
+    const rec = { ...obj }
+    for (const k of Object.keys(rec)) {
+      if (isSecretName(k)) {
+        delete rec[k]
+        removed += 1
+      }
+    }
+    return rec
+  }
+  const mcps = Array.isArray(out.mcps) ? out.mcps : null
+  if (mcps) {
+    out.mcps = mcps.map((it) => {
+      if (!it || typeof it !== 'object') return it
+      const rec = { ...it }
+      if (rec.env) rec.env = redactNamedMap(rec.env)
+      if (rec.headers) rec.headers = redactNamedMap(rec.headers)
+      return rec
+    })
+  }
 
   return { data: out, removed }
 }

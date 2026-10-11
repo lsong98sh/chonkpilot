@@ -20,7 +20,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onUnmounted } from 'vue'
 
 const props = defineProps({
   content: { type: String, default: '' },
@@ -57,6 +57,14 @@ function onMouseLeave() {
   }
   visible.value = false
 }
+
+// 卸载时清理悬停延时定时器：否则 showAfter 延时未到即卸载，回调仍会写 visible
+onUnmounted(() => {
+  if (timer) {
+    clearTimeout(timer)
+    timer = null
+  }
+})
 </script>
 
 <style scoped>

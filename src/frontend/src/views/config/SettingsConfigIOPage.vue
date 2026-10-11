@@ -4,7 +4,7 @@
   覆盖三件事（**零新增数据主题**，只新增一个 native 能力 gui.file.save）：
     ① 导出：usr 主库视图（`data-user-config-list`）→ 快照 JSON（含 app/schema/exportedAt 信封）
        → `gui.file.save`（系统「另存为」；browser 形态降级为浏览器下载 + 剪贴板复制）；
-       含显著密钥警示 + 「排除密钥」选项（**默认包含**）。
+       含显著密钥警示 + 「排除密钥」选项（**默认排除**；复制到剪贴板恒排除密钥，备份亦脱敏）。
     ② 导入：选择 JSON 文件 / 粘贴 JSON → 结构校验（JSON 可解析 + 键白名单，未知键忽略并计数）
        → 确认弹窗写明「按键覆盖」的影响范围（键名 + 数量）→ 自动备份 → `data-user-config-save`。
     ③ 恢复出厂：**二次确认** → 自动备份 → `data-user-config-delete`（不带 key = 清空整份 usr 配置）。
@@ -103,7 +103,7 @@ import {
 const { t } = useI18n()
 
 const current = ref({})            // usr 主库视图（导出/备份数据源）
-const excludeSecrets = ref(false)  // 「排除密钥」开关（默认包含 = false）
+const excludeSecrets = ref(true)   // 「排除密钥」开关（**默认排除** = true，避免误导出密钥）
 const pasteText = ref('')
 const busy = ref({ export: false, import: false, reset: false })
 const importError = ref(null)      // {text, hint, detail}
@@ -138,9 +138,10 @@ function downloadText(name, text) {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-/** 备份当前配置：优先落 <dataDir>/backup/（gui.file.save mode=backup），宿主不可用 → 下载降级 */
+/** 备份当前配置：优先落 <dataDir>/backup/（gui.file.save mode=backup），宿主不可用 → 下载降级。
+ *  备份恒**排除密钥**（落盘/下载文件默认脱敏，避免备份文件泄露 API Key）。 */
 async function backupCurrent() {
-  const { envelope } = buildSnapshot(current.value, {})
+  const { envelope } = buildSnapshot(current.value, { excludeSecrets: true })
   const json = JSON.stringify(envelope, null, 2)
   const name = backupFileName(new Date())
   try {
@@ -177,7 +178,8 @@ async function onExportFile() {
 }
 
 async function onCopyExport() {
-  const snap = serializeSnapshot(current.value, { excludeSecrets: excludeSecrets.value })
+  // 复制到剪贴板恒**强制排除密钥**（剪贴板易被其它程序读取/同步，不随「排除密钥」开关放开）
+  const snap = serializeSnapshot(current.value, { excludeSecrets: true })
   try {
     await navigator.clipboard.writeText(snap.json)
     message.success(t('configIO.exportCopied'))

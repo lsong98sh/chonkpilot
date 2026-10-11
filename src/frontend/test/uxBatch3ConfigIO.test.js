@@ -259,14 +259,14 @@ test('D · 键白名单与 config 域实现 userconfig.go 逐键一致', () => {
 // ═══════════════════════════════════════════════════════════════
 // E 页面守卫（views/config/SettingsConfigIOPage.vue）
 // ═══════════════════════════════════════════════════════════════
-test('E · 页面：导出（含密钥警示 + 排除密钥默认关）/ 导入 / 恢复出厂 三区齐备', () => {
+test('E · 页面：导出（含密钥警示 + 排除密钥默认开）/ 导入 / 恢复出厂 三区齐备', () => {
   const src = read('views/config/SettingsConfigIOPage.vue')
 
   assert.match(src, /class="io-section io-export"/, '须有导出区')
   assert.match(src, /class="io-section io-import"/, '须有导入区')
   assert.match(src, /class="io-section io-reset"/, '须有恢复厂区')
   assert.match(src, /\$t\('configIO\.exportSecretWarn'\)/, '导出区须显著警示「含 API Key」')
-  assert.match(src, /const excludeSecrets = ref\(false\)/, '「排除密钥」默认关（= 默认包含）')
+  assert.match(src, /const excludeSecrets = ref\(true\)/, '「排除密钥」默认开（= 默认排除密钥）')
   assert.match(src, /class="io-switch-row io-exclude-switch"/, '「排除密钥」开关须可操作')
   assert.match(src, /type="file"/, '导入须支持选择 JSON 文件')
   assert.match(src, /accept="\.json,application\/json"/)

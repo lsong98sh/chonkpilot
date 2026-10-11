@@ -83,6 +83,8 @@ export function createSessionMessages() {
   let loadedTurnIds = new Set()    // set of turn IDs already loaded
   let currentSessionId = null       // track which session is loaded
   let loadGen = 0                   // 加载代次：切换会话/teardown 递增；await 后校验以丢弃过期批次
+  let msgIdSeq = 0                  // 消息 id 自增后缀：Date.now() 同毫秒会撞 → 追加序号保证唯一
+  let autoPreloadTimer = null       // 自动预取（后台补一批更早消息）定时器句柄（loadMessages/teardown 清理）
 
   // ── 「加载中」占位（发送后立即显示 LLM 处理进度）──
   // 独立状态，**不在 messages 数组内**：loadMessages 整体替换 messages（历史回填）
@@ -166,7 +168,7 @@ export function createSessionMessages() {
       last.content += (data.content || '')
     } else {
       messages.value.push({
-        id: Date.now().toString() + (sectionKey === 'reasoning' ? 'r' : 't'),
+        id: Date.now().toString() + (sectionKey === 'reasoning' ? 'r' : 't') + (++msgIdSeq),
         role: 'assistant',
         type: sectionKey,
         content: data.content || '',
@@ -224,7 +226,7 @@ export function createSessionMessages() {
     hidePending()
     const cls = classifyError(data)
     messages.value.push({
-      id: Date.now().toString() + 'e',
+      id: Date.now().toString() + 'e' + (++msgIdSeq),
       role: 'assistant',
       type: 'error', // 专用类型：展示层渲染「人话文案 + 原始错误」
       errorKey: cls.key,
@@ -252,6 +254,8 @@ export function createSessionMessages() {
     // 避免慢速返回把上一个会话的消息写进当前视图、或把新一代的 loading 标志置回。
     const gen = ++loadGen
 
+    // 切换/重载会话：取消上一会话挂起的自动预取定时器
+    if (autoPreloadTimer) { clearTimeout(autoPreloadTimer); autoPreloadTimer = null }
     messages.value = []
     turnActive.value = false
     currentSection = null
@@ -280,7 +284,9 @@ export function createSessionMessages() {
       // Auto-preload: if there are more turns, fetch one extra batch in background
       // so the user doesn't hit the top immediately.
       if (hasMore.value && messages.value.length > 0) {
-        setTimeout(() => {
+        if (autoPreloadTimer) clearTimeout(autoPreloadTimer)
+        autoPreloadTimer = setTimeout(() => {
+          autoPreloadTimer = null
           loadMoreMessages().catch(() => {})
         }, 100)
       }
@@ -342,6 +348,7 @@ export function createSessionMessages() {
 
   function teardown() {
     loadGen++ // 使在途加载全部失效（其 finally 不再回写状态）
+    if (autoPreloadTimer) { clearTimeout(autoPreloadTimer); autoPreloadTimer = null }
     messages.value = []
     turnActive.value = false
     currentSection = null

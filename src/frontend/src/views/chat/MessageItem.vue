@@ -396,26 +396,46 @@ function toggleCollapse() {
 
 // 列表项交互事件化：模板 v-mq 触发 → 本地按 message.id 分发到本实例
 // （多实例列表：只有 id 匹配的实例执行），同时经 /publish 通知后端。
+// O(N) 缓解（E-28）：按本消息 type **仅订阅其 DOM 实际存在的交互**，避免每条消息恒注册 6 个全局订阅。
 const _msgUnsubs = []
 onMounted(() => {
-  _msgUnsubs.push(mq.on(EventNames.msgToggleCollapse, ({ id }) => {
-    if (id === props.message.id) toggleCollapse()
-  }))
-  _msgUnsubs.push(mq.on(EventNames.msgCopyText, ({ id }) => {
-    if (id === props.message.id) copyTextContent()
-  }))
-  _msgUnsubs.push(mq.on(EventNames.msgCopyTool, ({ id }) => {
-    if (id === props.message.id) copyToolContent()
-  }))
-  _msgUnsubs.push(mq.on(EventNames.msgLoadMore, ({ id }) => {
-    if (id === props.message.id) loadMore()
-  }))
-  _msgUnsubs.push(mq.on(EventNames.msgShowFull, ({ id }) => {
-    if (id === props.message.id) showFull()
-  }))
-  _msgUnsubs.push(mq.on(EventNames.toolBackground, ({ id }) => {
-    if (id === props.message.id) backgroundTool()
-  }))
+  // 各交互与模板分支一一对应（见 <template>）：
+  //   reasoning       → 折叠 / 复制文本 / 加载更多
+  //   tool_call / tool_result → 折叠
+  //   tool_pair       → 折叠 / 复制工具内容 / 展开详情 / 转后台
+  //   其它（text / error / 未知默认分支）→ 复制文本
+  //   user-notify / pending → 无本地交互
+  const type = props.message.type
+  const need = new Set()
+  if (type === 'reasoning') {
+    need.add(EventNames.msgToggleCollapse)
+    need.add(EventNames.msgCopyText)
+    need.add(EventNames.msgLoadMore)
+  } else if (type === 'tool_call' || type === 'tool_result') {
+    need.add(EventNames.msgToggleCollapse)
+  } else if (type === 'tool_pair') {
+    need.add(EventNames.msgToggleCollapse)
+    need.add(EventNames.msgCopyTool)
+    need.add(EventNames.msgShowFull)
+    need.add(EventNames.toolBackground)
+  } else if (type !== 'user-notify' && type !== 'pending') {
+    need.add(EventNames.msgCopyText)
+  }
+
+  const handlers = {
+    [EventNames.msgToggleCollapse]: () => toggleCollapse(),
+    [EventNames.msgCopyText]: () => copyTextContent(),
+    [EventNames.msgCopyTool]: () => copyToolContent(),
+    [EventNames.msgLoadMore]: () => loadMore(),
+    [EventNames.msgShowFull]: () => showFull(),
+    [EventNames.toolBackground]: () => backgroundTool(),
+  }
+  for (const topic of need) {
+    const fn = handlers[topic]
+    _msgUnsubs.push(mq.on(topic, ({ id }) => {
+      if (id === props.message.id) fn()
+    }))
+  }
 })
 onUnmounted(() => _msgUnsubs.forEach(fn => fn()))
 

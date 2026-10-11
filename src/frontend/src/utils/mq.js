@@ -40,6 +40,18 @@ function getTopic(topic) {
   return _registry[topic]
 }
 
+/** 某 topic 的所有回调集合是否已全空。 */
+function isEmptyEntry(e) {
+  return e.pre.size === 0 && e.on.length === 0 && e.post.size === 0 &&
+    e.error.size === 0 && e.final.size === 0
+}
+
+/** 某 topic 的集合全空时删除 entry（取消订阅后回收，避免长期运行 _registry 累积空 entry）。 */
+function reclaimTopic(topic) {
+  const e = _registry[topic]
+  if (e && isEmptyEntry(e)) delete _registry[topic]
+}
+
 /** 将 payload 统一为可 dispatch 的值：跨端传输的 payload 是 JSON 字符串，自行解析。 */
 function normalizePayload(payload) {
   if (typeof payload === 'string' && payload !== '') {
@@ -173,7 +185,7 @@ const mq = {
   /** 注册 pre 阶段回调（操作开始前）。 */
   pre(topic, callback) {
     getTopic(topic).pre.add(callback)
-    return () => getTopic(topic).pre.delete(callback)
+    return () => { getTopic(topic).pre.delete(callback); reclaimTopic(topic) }
   },
 
   /**
@@ -193,6 +205,7 @@ const mq = {
     const unsub = () => {
       const i = entry.on.findIndex(x => x.cb === callback)
       if (i >= 0) entry.on.splice(i, 1)
+      reclaimTopic(topic)
     }
     return unsub
   },
@@ -200,19 +213,19 @@ const mq = {
   /** 注册 post 阶段回调（操作成功完成后）。 */
   post(topic, callback) {
     getTopic(topic).post.add(callback)
-    return () => getTopic(topic).post.delete(callback)
+    return () => { getTopic(topic).post.delete(callback); reclaimTopic(topic) }
   },
 
   /** 注册 error 阶段回调（操作出错时）。 */
   error(topic, callback) {
     getTopic(topic).error.add(callback)
-    return () => getTopic(topic).error.delete(callback)
+    return () => { getTopic(topic).error.delete(callback); reclaimTopic(topic) }
   },
 
   /** 注册 final 阶段回调（无论成功失败，始终执行）。 */
   final(topic, callback) {
     getTopic(topic).final.add(callback)
-    return () => getTopic(topic).final.delete(callback)
+    return () => { getTopic(topic).final.delete(callback); reclaimTopic(topic) }
   },
 
   /**
@@ -278,6 +291,7 @@ const mq = {
     if (!entry) return
     const i = entry.on.findIndex(x => x.cb === callback)
     if (i >= 0) entry.on.splice(i, 1)
+    reclaimTopic(topic)
   },
 
   /** 移除 topic 的所有回调。 */

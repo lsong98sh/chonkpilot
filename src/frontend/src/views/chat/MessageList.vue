@@ -220,6 +220,20 @@ const navCircles = computed(() => {
 })
 
 // 当前圈：滚动时根据 turn 位置（该轮首条消息元素顶 vs 滚动顶），当前圈高亮。
+// .message-item 节点缓存（O(N) 缓解）：条数不变时复用上次查询结果，避免每次
+// querySelectorAll 遍历整棵子树；条数变化或首节点已脱离 DOM（整列替换/切会话）时重查。
+let cachedItemNodes = null
+let cachedItemCount = -1
+function messageItemNodes(el) {
+  const count = messages.value.length
+  if (cachedItemNodes && cachedItemCount === count && cachedItemNodes.length > 0 &&
+      cachedItemNodes[0].parentElement === el && cachedItemNodes[0].isConnected) {
+    return cachedItemNodes
+  }
+  cachedItemNodes = el.querySelectorAll('.message-item')
+  cachedItemCount = count
+  return cachedItemNodes
+}
 function updateCurrentCircle() {
   const el = listRef.value
   const starts = turnStarts.value
@@ -227,7 +241,7 @@ function updateCurrentCircle() {
     currentCircle.value = -1
     return
   }
-  const items = el.querySelectorAll('.message-item')
+  const items = messageItemNodes(el)
   let cur = -1
   for (let i = 0; i < starts.length; i++) {
     const node = items[starts[i].index]
@@ -247,18 +261,19 @@ function updateCurrentCircle() {
   currentCircle.value = circle
 }
 
-// E-28：圆圈高亮更新节流。流式回复每 chunk 触发组件更新 → onUpdated 每次都全量
-// querySelectorAll + 逐节点 offsetTop（强制同步布局），长会话 × 每 token 一次开销显著。
-// 时间闸限流（同 E-26 口径），且 turn 数变化（新增/切换 turn）时立即刷新，保证
-// 「新增 turn 时圆圈高亮正确」；滚动路径 onScroll 仍实时更新（不受此闸影响）。
+// E-28：圆圈高亮更新节流。流式回复每 chunk 触发组件更新（onUpdated）→ 若每次都读
+// turnStarts（O(N) 计算）并全量查询/测量 DOM，长会话 × 每 token 一次开销显著。
+// 改用**消息条数**做闸门键：条数不变（仅流式增量改写末尾内容）→ 命中时间闸直接返回，
+// 不再触发 O(N) 的 turnStarts 重算；条数变化（新增消息/新 turn/切换会话）→ 立即刷新，
+// 保证「新增 turn 时圆圈高亮正确」；滚动路径 onScroll 仍实时更新（不受此闸影响）。
 const CIRCLE_UPDATE_THROTTLE_MS = 100
 let lastCircleUpdateAt = 0
-let lastCircleTurnCount = -1
+let lastCircleMsgCount = -1
 function updateCurrentCircleThrottled() {
-  const count = turnStarts.value.length
+  const count = messages.value.length
   const now = Date.now()
-  if (count === lastCircleTurnCount && now - lastCircleUpdateAt < CIRCLE_UPDATE_THROTTLE_MS) return
-  lastCircleTurnCount = count
+  if (count === lastCircleMsgCount && now - lastCircleUpdateAt < CIRCLE_UPDATE_THROTTLE_MS) return
+  lastCircleMsgCount = count
   lastCircleUpdateAt = now
   updateCurrentCircle()
 }
@@ -268,7 +283,7 @@ function scrollToTurn(turnIdx) {
   const el = listRef.value
   const starts = turnStarts.value
   if (!el || !starts[turnIdx]) return
-  const items = el.querySelectorAll('.message-item')
+  const items = messageItemNodes(el)
   const node = items[starts[turnIdx].index]
   if (node) el.scrollTop = Math.max(0, node.offsetTop - 8)
 }
@@ -391,6 +406,11 @@ function scrollTop() {
 function scrollBottom() {
   listRef.value?.scrollTo({ top: listRef.value.scrollHeight, behavior: 'smooth' })
 }
+
+// 当前会话 id（声明**前移**到所有使用点之前，消除「引用后置 const」的 TDZ 隐患）。
+// Tracks the last session id this component has processed to avoid duplicate
+// reloads when ChatPanel (the prop source) updates before we receive the event.
+const activeSessionId = ref(null)
 
 // 滚动事件按会话隔离：主 LLM（ChatPanel）与子 LLM（SessionChat viewer）是
 // 独立的 MessageList 实例，全局 msg-scroll-top/bottom 事件必须只作用于
@@ -556,10 +576,6 @@ function scheduleAutoContinue() {
 }
 
 // ── Session change handling (event-driven, no watch on props) ──
-// Tracks the last session id this component has processed to avoid duplicate
-// reloads when ChatPanel (the prop source) updates before we receive the event.
-const activeSessionId = ref(null)
-
 async function onSessionChanged({ session_id }) {
   const newId = session_id || null
   if (newId === activeSessionId.value) return

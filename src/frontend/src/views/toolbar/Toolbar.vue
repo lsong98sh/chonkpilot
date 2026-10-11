@@ -324,6 +324,7 @@ const winCmdClose = { command: 'close' }
 // 全局搜索防抖与过期结果丢弃：击键后 250ms 无新输入才真正请求；
 // searchSeq 递增使在途请求作废，只采纳最后一次请求的结果。
 let searchDebounceTimer = null
+let hideSearchTimer = null
 let searchSeq = 0
 
 const showRecentDirs = ref(false)
@@ -570,7 +571,8 @@ function handleSearchEnter() {
 
 function hideSearchResults() {
   // Use setTimeout to allow click on result item to fire first
-  setTimeout(() => {
+  if (hideSearchTimer) clearTimeout(hideSearchTimer)
+  hideSearchTimer = setTimeout(() => {
     showSearchResults.value = false
   }, 200)
 }
@@ -716,6 +718,9 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside, true)
   window.removeEventListener('resize', syncMaximizeState)
+  // 清理搜索去抖 / 隐藏定时器（挂起的回调不再写已卸载组件的状态）
+  if (searchDebounceTimer) { clearTimeout(searchDebounceTimer); searchDebounceTimer = null }
+  if (hideSearchTimer) { clearTimeout(hideSearchTimer); hideSearchTimer = null }
   // 取消所有 mq 监听
   _mqUnsubs.forEach(fn => fn())
 })

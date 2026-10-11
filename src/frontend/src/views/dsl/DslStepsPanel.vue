@@ -92,7 +92,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
 import { Button, Table, Tag } from '../../components/ui'
@@ -160,13 +160,19 @@ function openWindow(row) {
 }
 
 // 作业级取消（作业终止；服务端按子树级联）。防重复点击。
+let cancelResetTimer = null
 function onCancelJob() {
   if (cancelling.value) return
   cancelling.value = true
   cancelJob(props.jobId)
   // 终态由 tasks.* 事件驱动（isJobRunning 转 false → 按钮消失）；短延时复位防连点
-  setTimeout(() => { cancelling.value = false }, 600)
+  if (cancelResetTimer) clearTimeout(cancelResetTimer)
+  cancelResetTimer = setTimeout(() => { cancelling.value = false; cancelResetTimer = null }, 600)
 }
+// 卸载清理复位定时器（避免销毁后仍写 cancelling）
+onUnmounted(() => {
+  if (cancelResetTimer) { clearTimeout(cancelResetTimer); cancelResetTimer = null }
+})
 
 // 字节数格式化（$RETURN file 两态的 size）
 function fmtSize(n) {
