@@ -26,7 +26,7 @@
         class="dialog-header"
         :class="resolvedOptions.headerClass"
         @mousedown.prevent="onHeaderMouseDown"
-        v-mq:[EventNames.dialogMaximize].dblclick
+        @dblclick="onHeaderDblClick"
       >
         <span class="dialog-title">{{ title }}</span>
         <div class="dialog-header-buttons">
@@ -36,7 +36,7 @@
             text
             size="mini"
             :title="state === 'collapsed' ? $t('dialog.expand') : $t('dialog.collapse')"
-            v-mq:[EventNames.dialogToggleCollapse].click.stop
+            @click.stop="toggleCollapse"
           >
             <svg v-if="state === 'collapsed'" width="10" height="10" viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
             <svg v-else width="10" height="10" viewBox="0 0 12 12"><rect x="1" y="5.5" width="10" height="1" fill="currentColor"/></svg>
@@ -47,7 +47,7 @@
             text
             size="mini"
             :title="$t('dialog.minimize')"
-            v-mq:[EventNames.dialogMinimize].click.stop
+            @click.stop="minimize"
           >
             <svg width="10" height="10" viewBox="0 0 12 12"><rect x="1" y="5.5" width="10" height="1" fill="currentColor"/></svg>
           </Button>
@@ -57,7 +57,7 @@
             text
             size="mini"
             :title="$t('dialog.maximize')"
-            v-mq:[EventNames.dialogMaximize].click.stop
+            @click.stop="toggleMaximize"
           >
             <svg width="10" height="10" viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
           </Button>
@@ -67,7 +67,7 @@
             text
             size="mini"
             :title="$t('dialog.restore')"
-            v-mq:[EventNames.dialogRestore].click.stop
+            @click.stop="restore"
           >
             <svg width="10" height="10" viewBox="0 0 12 12">
               <rect x="3.5" y="0.5" width="8" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
@@ -80,7 +80,7 @@
             text
             size="mini"
             :title="$t('dialog.close')"
-            v-mq:[EventNames.dialogClose].click.stop
+            @click.stop="onClose"
           >
             <svg width="10" height="10" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>
           </Button>
@@ -115,12 +115,27 @@
       <div
         v-if="state === 'minimized'"
         class="dialog-minimized-bar"
-        v-mq:[EventNames.dialogRestore].click.stop
+        @click.stop="restore"
       >
         <span class="dialog-minimized-title">{{ title }}</span>
       </div>
     </div>
 </template>
+
+<script>
+// 已挂载弹窗登记（dialogId → zIndex）：普通 <script> = 模块作用域单例（<script setup> 是每实例
+// 作用域，无法跨实例判定），供「无 dialogId」的定向关闭定位最上层（唯一）弹窗。
+const openDialogs = new Map()
+
+function topDialogId() {
+  let topId = null
+  let topZ = -Infinity
+  for (const [id, z] of openDialogs) {
+    if (z > topZ) { topZ = z; topId = id }
+  }
+  return topId
+}
+</script>
 
 <script setup>
 import { ref, computed, reactive, onMounted, onUnmounted } from 'vue'
@@ -360,6 +375,12 @@ function toggleMaximize() {
   }
 }
 
+// 双击表头最大化（原经 MQ 广播，多弹窗并存时互相串扰——改为组件内直接调用）
+function onHeaderDblClick(e) {
+  if (e.target.closest('.dialog-header-buttons')) return
+  toggleMaximize()
+}
+
 function onClose() {
   emit('close')
 }
@@ -370,6 +391,7 @@ function onOverlayClick() {
 
 // Focus on mount
 let resizeObserver = null
+let unsubDialogClose = null
 
 onMounted(() => {
   dialogRef.value?.focus()
@@ -380,17 +402,19 @@ onMounted(() => {
     resizeObserver.observe(dialogRef.value)
   }
   window.addEventListener('resize', centerByMeasuredSize)
+  // 定向关闭通道（dialog-close）：emit payload 支持 {dialogId?}——有 dialogId 仅关该弹窗
+  // （按 dialogId 过滤）；无 dialogId 关当前最上层（唯一）弹窗（外部 mq_emit 可据此关掉编辑弹窗）。
+  openDialogs.set(props.dialogId, props.zIndex)
+  unsubDialogClose = mq.on(EventNames.dialogClose, (payload) => {
+    const targetId = payload && typeof payload === 'object' ? payload.dialogId : ''
+    if (targetId) {
+      if (targetId === props.dialogId) onClose()
+      return
+    }
+    if (topDialogId() === props.dialogId) onClose()
+  })
   emit('open')
-  unsubs.push(mq.on(EventNames.dialogToggleCollapse, toggleCollapse))
-  unsubs.push(mq.on(EventNames.dialogMinimize, minimize))
-  unsubs.push(mq.on(EventNames.dialogMaximize, () => {
-    if (resolvedOptions.value.maximizable) toggleMaximize()
-  }))
-  unsubs.push(mq.on(EventNames.dialogRestore, restore))
-  unsubs.push(mq.on(EventNames.dialogClose, onClose))
 })
-
-const unsubs = []
 
 // Cleanup
 onUnmounted(() => {
@@ -402,8 +426,8 @@ onUnmounted(() => {
   // E-23：添加时 capture: true → 移除必须同样带 true（缺省 = 冒泡阶段，匹配失败致监听泄漏）
   document.removeEventListener('mousemove', onResizeMove, true)
   document.removeEventListener('mouseup', onResizeEnd)
-  for (const fn of unsubs) fn()
-  unsubs.length = 0
+  openDialogs.delete(props.dialogId)
+  if (unsubDialogClose) { unsubDialogClose(); unsubDialogClose = null }
   emit('closed')
 })
 

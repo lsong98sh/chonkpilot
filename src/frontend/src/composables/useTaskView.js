@@ -20,7 +20,6 @@ import { reactive } from 'vue'
 import mq from '../utils/mq'
 import { eventBelongsToInstance } from '../utils/instanceScope'
 import { EventNames } from '../events/event-names'
-import { newTurnId } from '../api/chat'
 import { copyDslFields } from '../utils/dslView'
 import { resolvePublishError } from '../utils/publishError'
 
@@ -253,15 +252,16 @@ function nodeTree(topSession) {
   }
   // 顶层按时间倒序：created_at 优先，缺失回退 node_id（rt-* unix nano）与 seq
   items.sort((a, b) => nodeTimeOf(b) - nodeTimeOf(a))
-  const childrenOf = {}
+  // 局部「有子级」集合：仅用于根节点判定，**不写回响应式节点对象**
+  //（在 computed 内改 store 是反模式）。子级关系由消费方按 parent_node_id 自 store 派生
+  //（与 SessionTreeNode 同口径，见 SessionTree.buildChildIndex）。
+  const parentIds = new Set()
   for (const n of items) {
-    const list = childrenOf[n.parent_node_id] || (childrenOf[n.parent_node_id] = [])
-    list.push(n)
+    if (n.parent_node_id) parentIds.add(n.parent_node_id)
   }
   const roots = []
   for (const n of items) {
-    n.children = childrenOf[n.node_id] || []
-    if (!n.parent_node_id || !childrenOf[n.parent_node_id] || !nodes.has(n.parent_node_id)) {
+    if (!n.parent_node_id || !parentIds.has(n.parent_node_id) || !nodes.has(n.parent_node_id)) {
       roots.push(n)
     }
   }
@@ -428,7 +428,6 @@ function cancelWithChoice(nodeId) {
 function confirmTurnCancel({ turnId, sessionId }) {
   if (!sessionId) return
   mq.emit(EventNames.llmCancel, {
-    req_id: newTurnId(),
     session: sessionId,
     turn: turnId || '',
   })

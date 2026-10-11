@@ -67,7 +67,7 @@ import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
 import { confirm, message, promptInput } from '../../components/ui'
-import { getFileTree, getFileTreeChildren, createFileInDir, createDirInDir, renameFile, moveFile, copyFileTo, deleteFilePath, revealInExplorer, openWithDefault, openWithDialog, loadInitData, saveFileTreeState, saveWindowState, setWorkDir, newFileReqId, invalidateInitDataCache } from '../../api/file'
+import { getFileTree, getFileTreeChildren, createFileInDir, createDirInDir, renameFile, moveFile, copyFileTo, deleteFilePath, revealInExplorer, openWithDefault, openWithDialog, loadInitData, saveFileTreeState, saveWindowState, setWorkDir, invalidateInitDataCache } from '../../api/file'
 import { createPrimitive } from '../../api/knowledge'
 import { nearestTypeToken } from '../../utils/primitive'
 import { onFileChanged, onFileChangedEvent } from '../../utils/fileTree'
@@ -292,13 +292,11 @@ function onToggle(node) {
   if (node._loading) return
   if (node.expanded) {
     mq.emit(EventNames.fileCollapse, {
-      req_id: newFileReqId(),
       work_dir: _cachedWorkDir.value,
       path: node.path,
     })
   } else {
     mq.emit(EventNames.fileExpand, {
-      req_id: newFileReqId(),
       work_dir: _cachedWorkDir.value,
       path: node.path,
       recursive: true,
@@ -315,7 +313,6 @@ function declareRootWatch() {
   const wd = _cachedWorkDir.value
   if (!wd) return
   mq.emit(EventNames.fileExpand, {
-    req_id: newFileReqId(),
     work_dir: wd,
     path: wd,
     recursive: false,

@@ -37,7 +37,7 @@ export const EventNames = {
   llmStarted: 'llm-started', // 后端 → 前端：受理 ack（含 turn_id；notify=true = 后端通知轮次）——前端据此维护 currentTurnId + busy
   llmReceive: 'llm-receive', // 后端 → 前端：LLM 流增量（桥 mqTypeMap：session-receive → llm-receive；payload.type 二次分子主题 text/reason/tool-call）
   llmComplete: 'llm-complete', // 后端 → 前端：一轮终结（队列出队的唯一 ack；payload 含 turn_id/status）
-  llmCancel: 'llm-cancel', // 前端 → 后端：取消当前轮（{req_id, session, turn}，21-llm-server；替代 CancelChat RPC）
+  llmCancel: 'llm-cancel', // 前端 → 后端：取消当前轮（{session, turn}，21-llm-server；替代 CancelChat RPC）
   askUser: 'ask-user', // 后端 → 前端：LLM ask_user 提问（{ask_id, question, options?, custom?, session, turn, expires_at}；替代 tool-pair{user_ask}）
   askReply: 'ask-user-reply', // 用户回答 ask_user（前端 → 后端；{ask_id, answer, custom}；替代 ask-reply，附录 A）
 
@@ -225,10 +225,8 @@ export const EventNames = {
   // 纯 DOM 行为：弹层/菜单容器点击仅停止冒泡（无业务动作，仅使交互可观测）
   containerClick: 'container-click',
   // ── Dialog 对话框操作（DialogShell 组件内部）──
-  dialogToggleCollapse: 'dialog-toggle-collapse',
-  dialogMinimize: 'dialog-minimize',
-  dialogMaximize: 'dialog-maximize',
-  dialogRestore: 'dialog-restore',
+  // 定向关闭通道：emit payload 支持 {dialogId?} —— 有 dialogId 关该弹窗、无则关最上层（唯一）弹窗。
+  // （toggleCollapse/minimize/maximize/restore 原为全局广播、无收发方，已删除。）
   dialogClose: 'dialog-close',
 
   // ── TabBar 页签操作（TabBar 组件内部）──

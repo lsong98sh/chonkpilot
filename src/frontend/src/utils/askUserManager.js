@@ -21,6 +21,10 @@ class AskUserManager {
   // open so the user can still answer later (answer becomes a new user message
   // via backend route), but they no longer block opening the next ask.
   busy = new Map()
+  // deferred = 「跳过」的提问：不立即重排（否则单问题场景会立刻重开同一弹窗，
+  // 用户观感 = 跳过无效）。暂存于此，等下一次新提问到达（enqueue）时再排回队列尾部
+  // 「稍后重问」；无后续提问则保持关闭（等同忽略）。
+  deferred = []
   // 批次计数（标题"第几个/共几个"）：新批次开始时重置
   batchSeq = 0
   batchTotal = 0
@@ -37,6 +41,14 @@ class AskUserManager {
     if (!this.current.value && this.busy.size === 0 && !batchPending && this.queue.value.length === 0) {
       this.batchSeq = 0
       this.batchTotal = 0
+      // 上一批「跳过」的提问：新批次到达时排回队列尾部「稍后重问」，并重分配序号。
+      // （不在 onSkip 立即重排 → 避免单问题场景跳过时立刻重开同一弹窗。）
+      while (this.deferred.length > 0) {
+        const d = this.deferred.shift()
+        d.seq = ++this.batchSeq
+        this.batchTotal += 1
+        this.queue.value.push(d)
+      }
       this._flushTimer = setTimeout(() => {
         this._flushTimer = null
         // 批次结束：回填总数（item.total 创建时是当时的 batchTotal，需刷新为最终值），
@@ -105,8 +117,10 @@ class AskUserManager {
         this.closeAndAdvance(item)
       },
       onSkip: () => {
-        // 跳过：不回答（不返回），关闭弹窗后把该 ask 放到队列尾部稍后重问
-        this.queue.value.push(item)
+        // 跳过：不回答（不返回）。放入 deferred（**不立即重排**）→ 关闭当前并推进；
+        // 待后续新提问到达（enqueue 开启新批次）时再排回队列尾部「稍后重问」。
+        // 修复：原先直接 queue.push 立即重排 → 单问题场景会立刻重开同一弹窗（跳过无效）。
+        this.deferred.push(item)
         this.closeAndAdvance(item)
         // busy 项的 closeAndAdvance 不推进队列（busy 分支直接 return），补推进
         if (!this.current.value && this.queue.value.length > 0) {
@@ -185,27 +199,13 @@ class AskUserManager {
     })
   }
 
-  cancelSession(subSessionId) {
-    this.queue.value = this.queue.value.filter(
-      item => item.subSessionId !== subSessionId
-    )
-    for (const [id, entry] of this.busy) {
-      if (entry.item.subSessionId === subSessionId) {
-        entry.handle.close()
-        this.busy.delete(id)
-      }
-    }
-    if (this.current.value?.subSessionId === subSessionId) {
-      this.currentHandle.value?.close()
-      this.current.value = null
-      this.currentHandle.value = null
-      this.processNext()
-    }
-  }
-
   cancelAll() {
+    // 300ms 合并窗口内取消：必须置 null（仅 clearTimeout 不够）——否则 enqueue 的
+    // 「新批次」判定（batchPending = _flushTimer !== null）恒真，后续新提问只入队不弹出。
     clearTimeout(this._flushTimer)
+    this._flushTimer = null
     this.queue.value = []
+    this.deferred = []
     for (const [id, entry] of this.busy) {
       entry.handle.close()
       this.busy.delete(id)

@@ -81,7 +81,7 @@ test('渲染条件：SessionTreeNode 以 awaiting 存在为唯一判据（无 aw
 
 test('数据来源：SessionTree 拉 data-tasktree-tasks（awaiting 随 refresh 入 tasks 快照）', () => {
   const vue = readSrc('views/tasks/SessionTree.vue')
-  assert.match(vue, /const \{ loadTree, refresh, nodeTree, nodeTimeOf \} = useTaskView\(\)/,
+  assert.match(vue, /const \{[^}]*\brefresh\b[^}]*\} = useTaskView\(\)/,
     'SessionTree 须取 refresh')
   assert.match(vue, /await Promise\.all\(\[loadTree\(topId, 'full'\), refresh\('', topId\)\]\)/,
     '载入任务树须并行刷新任务快照（awaiting 来源 = data-tasktree-tasks，I-99）')

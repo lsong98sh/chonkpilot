@@ -108,7 +108,7 @@ import { sendQueue } from '../../composables/useSendQueue'
 import { useTaskView } from '../../composables/useTaskView'
 import {
   VIRTUALIZE_THRESHOLD, OVERSCAN, EST_ITEM_HEIGHT,
-  buildOffsets, computeRange, applyMeasured,
+  buildOffsets, computeRange,
 } from '../../utils/virtualWindow'
 
 const props = defineProps({
@@ -183,23 +183,30 @@ const lastInterruptedPair = computed(() => {
 // 仅 messages.length > VIRTUALIZE_THRESHOLD 时启用（纯逻辑见 utils/virtualWindow.js）：
 // 只渲染视口附近窗口 + 上下占位撑高；小会话完全沿用原全量渲染（enabled=false，DOM 不变）。
 // 不引入 watch/watchEffect：滚动/视口/高度变化均由 onScroll / onUpdated / ResizeObserver 回调直接赋值。
-const itemHeights = ref([])   // 消息「原始下标」→ 实测高度（px）；缺失条目 → EST_ITEM_HEIGHT 估算
+const itemHeights = ref(new Map())   // msg.id → 实测高度（px）；缺失条目 → EST_ITEM_HEIGHT 估算
 const scrollTopVal = ref(0)   // .message-list 当前 scrollTop（onScroll / 程序化滚动同步）
 const viewportH = ref(0)      // .message-list 视口高度（挂载 + ResizeObserver）
 
-// 前缀和 offsets：按 messages.length 补齐高度数组（未测条目 → undefined → 估算回退）
-function virtualOffsets() {
-  const total = messages.value.length
-  const h = itemHeights.value
-  if (h.length >= total) return buildOffsets(h, EST_ITEM_HEIGHT)
-  const padded = h.slice()
-  padded.length = total
-  return buildOffsets(padded, EST_ITEM_HEIGHT)
-}
+// 高度缓存以 **msg.id** 为键（非原始下标）：loadMoreMessages 前插更早消息会使下标整体右移，
+// 「下标键」会错位；id 键不受位置变化影响，前插/重排后窗口与占位始终对齐。
+//
+// offsets 前缀和 = 独立 computed（**纯函数**，不写任何外部缓存）：
+//   - 依赖 messages / itemHeights / heightsVersion → Vue 自动缓存；同版本内多处调用
+//     （virtual / updateCurrentCircle / scrollToTurn）只算一次，滚动（scrollTop）不触发重建；
+//   - 未达窗口化阈值（小会话全量渲染，不需要前缀和）→ 直接返回空数组，省去 O(N) 构建。
+const heightsVersion = ref(0)
+const virtualOffsets = computed(() => {
+  // 读取 heightsVersion 建立响应式依赖：测量写回自增 → 本缓存失效重建。
+  // eslint-disable-next-line no-unused-expressions
+  heightsVersion.value
+  const msgs = messages.value
+  if (msgs.length <= VIRTUALIZE_THRESHOLD) return []
+  return buildOffsets(msgs.map(m => itemHeights.value.get(m.id)), EST_ITEM_HEIGHT)
+})
 
 const virtual = computed(() => {
   const total = messages.value.length
-  const offsets = virtualOffsets()
+  const offsets = virtualOffsets.value
   const vp = viewportH.value
   // 贴底（autoScroll）时按「内容底部」计算窗口 → 流式新增消息始终在窗口内（否则末尾不渲染 → 贴不到底）
   const st = autoScroll.value ? Math.max(0, (offsets[total] || 0) - vp) : scrollTopVal.value
@@ -218,19 +225,33 @@ const windowItems = computed(() => {
   return out
 })
 
-// 渲染后测量：把当前渲染出的 .message-item 实际高度按 data-idx 回填到原始下标。
+// 渲染后测量：把当前渲染出的 .message-item 实际高度回填到其 **msg.id** 键（见 itemHeights 说明）。
 // 高度不变时不写（Vue 对同值不触发）→ 避免「测量 → 重渲染」死循环。
 function measureItemHeights() {
   if (!virtual.value.enabled) return
   const el = listRef.value
   if (!el) return
   const nodes = el.querySelectorAll('.message-item[data-idx]')
+  const map = itemHeights.value
   for (const node of nodes) {
     const idx = Number(node.getAttribute('data-idx'))
     if (!Number.isInteger(idx) || idx < 0) continue
+    const msg = messages.value[idx]
+    if (!msg || !msg.id) continue
     const h = node.offsetHeight
-    if (itemHeights.value[idx] !== h) applyMeasured(itemHeights.value, idx, h)
+    if (map.get(msg.id) !== h) { map.set(msg.id, h); heightsVersion.value++ }
   }
+}
+
+// 测量节流（P3）：onUpdated 每次更新都全量测量 = 强制同步布局（流式期高频 DOM 读写）。
+// 并入 rAF 闸：每帧最多测一次，非窗口化/无高度变化时自然不发生写入 → 不触发重渲染。
+let measureRafId = null
+function scheduleMeasureItemHeights() {
+  if (measureRafId != null) return
+  measureRafId = requestAnimationFrame(() => {
+    measureRafId = null
+    measureItemHeights()
+  })
 }
 
 // ── turn 导航（圆圈，FP CHAT-013「turn 导航」）──
@@ -322,7 +343,7 @@ function updateCurrentCircle() {
   let cur = -1
   if (virtual.value.enabled) {
     // 窗口化：DOM 下标 ≠ 消息下标 → 用实测高度前缀和估算各 turn 起始消息的 offsetTop 与 scrollTop 比较
-    const offsets = virtualOffsets()
+    const offsets = virtualOffsets.value
     for (let i = 0; i < starts.length; i++) {
       const top = offsets[starts[i].index]
       if (top !== undefined && top <= el.scrollTop + 4) cur = i
@@ -373,7 +394,7 @@ function scrollToTurn(turnIdx) {
   const origIdx = starts[turnIdx].index
   if (virtual.value.enabled) {
     // 窗口化：目标可能未渲染 → 先滚到估算 offset（触发重算窗口），nextTick 后再用真实 offsetTop 精修
-    const offsets = virtualOffsets()
+    const offsets = virtualOffsets.value
     const est = offsets[origIdx] || 0
     el.scrollTop = Math.max(0, est - 8)
     scrollTopVal.value = el.scrollTop
@@ -431,8 +452,9 @@ onUpdated(() => {
     autoScroll.value = true
   }
   prevTurnActive.value = ta
-  // 窗口化：渲染后回填实测高度（驱动 virtual/windowItems 重算；高度不变时不写 → 不死循环）
-  measureItemHeights()
+  // 窗口化：渲染后回填实测高度（驱动 virtual/windowItems 重算；高度不变时不写 → 不死循环）。
+  // 经 rAF 闸节流（流式期 onUpdated 高频触发，避免每次同步布局测量）。
+  scheduleMeasureItemHeights()
   updateCurrentCircleThrottled()
   // 卡片渲染后补挂早到的待决裁决（mcp-tools-timeout 是 fire-and-forget，可能先于卡片到达）
   flushPendingArbitration()
@@ -457,11 +479,24 @@ function scrollToBottom() {
   }
 }
 
+// 窗口化滚动度量同步（rAF 节流）：scrollTop/viewportH 变化触发 virtual 窗口重算；
+// 每个 scroll 事件都同步写入会高频重算/重渲染 → 每帧最多同步一次（其余滚动逻辑不受影响）。
+let scrollRafId = null
+function syncScrollMetrics() {
+  if (scrollRafId != null) return
+  scrollRafId = requestAnimationFrame(() => {
+    scrollRafId = null
+    const el = listRef.value
+    if (!el) return
+    scrollTopVal.value = el.scrollTop
+    if (viewportH.value !== el.clientHeight) viewportH.value = el.clientHeight
+  })
+}
+
 function onScroll() {
   const el = listRef.value
   if (!el) return
-  scrollTopVal.value = el.scrollTop // 窗口化：滚动位置驱动窗口重算
-  if (viewportH.value !== el.clientHeight) viewportH.value = el.clientHeight
+  syncScrollMetrics() // 窗口化：滚动位置驱动窗口重算（rAF 节流，见下）
   isAtTop.value = el.scrollTop <= 1
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD
   autoScroll.value = atBottom // 贴底 = 自动跟随；离底 = 暂停（`.message-list.is-scroll-paused`）
@@ -605,6 +640,11 @@ async function sendSameTurnContinue() {
   const text = retryText()
   turnHadOutput = false
   notifyTurn = false
+  // 取消残留复位（与 doSend 同口径）：无在飞 turn 时点「取消」会置位这两个标志，且仅在
+  // llm-complete 复位（无在飞 turn 就无 llm-complete）→ 会污染本轮（正常完成时误走
+  // handleCanceledQueue 把队列写回 textarea 并抑制 autoRetry）。每轮起点显式复位。
+  lastTurnCanceled.value = false
+  userCanceled = false
   // 续写即新一轮动作（会话进行中）→ 收起「继续」/空回复提示（A7）
   showContinue.value = false
   emptyReplyHint.value = false
@@ -704,8 +744,10 @@ async function onSessionChanged({ session_id }) {
   }
   resetMessages()
   toppedOut = false
-  // 切会话：消息全量替换 → 实测高度按下标失效，重置（窗口化下由渲染重新测量收敛）
-  itemHeights.value = []
+  // 切会话：消息全量替换 → 高度缓存（msg.id 键）与 offsets（computed）一并失效；
+  // 窗口化下由渲染重新测量收敛。
+  itemHeights.value = new Map()
+  heightsVersion.value++
   scrollTopVal.value = 0
 
   if (newId) {
@@ -812,6 +854,11 @@ async function doSend(batch) {
   // 每轮重置输出/通知标记（S21 空回复判定按 turn 隔离，非会话级）
   turnHadOutput = false
   notifyTurn = false
+  // 取消残留复位：无在飞 turn 时点「取消」会置位这两个标志，且仅在 llm-complete 复位
+  // （无在飞 turn 就无 llm-complete）→ 会污染后续轮次（如误走 handleCanceledQueue）。
+  // 每轮起点显式复位，确保只反映本轮取消。
+  lastTurnCanceled.value = false
+  userCanceled = false
   // 新一轮开始（会话进行中）→ 不显示「继续」/空回复提示（A7：正常回复后/进行中都不显示）
   showContinue.value = false
   emptyReplyHint.value = false
@@ -1285,6 +1332,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (listResizeObserver) { listResizeObserver.disconnect(); listResizeObserver = null }
+  if (measureRafId != null) { cancelAnimationFrame(measureRafId); measureRafId = null }
+  if (scrollRafId != null) { cancelAnimationFrame(scrollRafId); scrollRafId = null }
   if (unsubMessageSend) unsubMessageSend()
   if (unsubMessageQueue) unsubMessageQueue()
   if (unsubMessageCancel) unsubMessageCancel()

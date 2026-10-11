@@ -19,12 +19,6 @@ export function setWorkDir(dir) {
   _workDir = dir || ''
 }
 
-// 历史用途：请求 req_id 关联（reply 事件）；publish promise 化后不再需要，保留兼容（展开/折叠载荷仍携带）。
-let _seq = 0
-export function newFileReqId() {
-  return 'freq-' + Date.now().toString(36) + '-' + (++_seq).toString(36) + '-' + Math.random().toString(36).slice(2, 8)
-}
-
 /**
  * 发送 filesys.<action> 并 await 收集结果（publish + promise；61-消息一览 §0.1/§2）。
  * @param {string} action - list / content / create / mkdir / remove / rename / copy / watch / unwatch

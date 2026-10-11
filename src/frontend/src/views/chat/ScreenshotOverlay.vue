@@ -6,9 +6,13 @@
     @mouseup="onMouseUp"
     @dblclick="emit('cancel')"
   >
-    <!-- 全屏截图预览（隐藏窗口后截取）：用户拖拽选区 → canvas 裁剪 -->
-    <img ref="imgRef" :src="image" class="screenshot-img" draggable="false" alt="" />
-    <div v-if="rect" class="screenshot-select" :style="rectStyle"></div>
+    <!-- 全屏截图预览（隐藏窗口后截取）：用户拖拽选区 → canvas 裁剪。
+         img 与选框同处一个相对定位容器：选框以容器（= img 尺寸）为参照绝对定位，
+         与 localPoint 的「相对 img」坐标一致；否则 overlay 居中偏移会使选框整体错位。 -->
+    <div class="screenshot-stage">
+      <img ref="imgRef" :src="image" class="screenshot-img" draggable="false" alt="" />
+      <div v-if="rect" class="screenshot-select" :style="rectStyle"></div>
+    </div>
     <div class="screenshot-tip">{{ $t('chat.screenshot_tip') }}</div>
   </div>
 </template>
@@ -98,11 +102,17 @@ function onMouseUp() {
   cursor: crosshair;
   overflow: hidden;
 }
+/* 相对定位舞台：包裹 img 与选框，选框绝对定位以此为参照（= img 尺寸），
+   与 localPoint 的相对 img 坐标一致；水平居中由舞台 margin:auto 承担。 */
+.screenshot-stage {
+  position: relative;
+  width: fit-content;
+  margin: auto;
+}
 .screenshot-img {
   display: block;
   max-width: 100vw;
   max-height: 100vh;
-  margin: auto;
   user-select: none;
   -webkit-user-drag: none;
 }
