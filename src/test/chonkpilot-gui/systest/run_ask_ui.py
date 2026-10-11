@@ -195,6 +195,35 @@ def case_custom_with_options():
         raise TestError("选项+自定义回答后弹窗未关闭")
 
 
+def case_option_objects():
+    """C13 选项为 {value,label} 对象：渲染 label、回链 value、推荐按 value 高亮。"""
+    aid = ask_id()
+    c.mq_on_capture(["ask-user-reply"])
+    emit_ask({"ask_id": aid, "question": "对象选项：",
+              "options": [{"value": "v-build", "label": "构建"}, {"value": "v-test", "label": "测试"}],
+              "recommended": ["v-test"]})
+    if not wait_el(".ask-user-content"):
+        raise TestError("对象选项弹窗未出现")
+    time.sleep(0.5)
+    # 展示 = label
+    texts = deep_loads(c.eval("JSON.stringify([...document.querySelectorAll('.option-btn')].map(b => b.querySelector('.option-text')?.textContent.trim()))"))
+    if not any("构建" in x for x in (texts or [])) or not any("测试" in x for x in (texts or [])):
+        raise TestError(f"对象选项 label 未渲染: {texts}")
+    # 推荐徽标按 value 匹配 → 落在 label「测试」按钮内
+    n = deep_loads(c.eval("JSON.stringify([...document.querySelectorAll('.option-btn')].filter(b => b.querySelector('.rec-badge')).map(b => b.querySelector('.option-text')?.textContent.trim()))"))
+    if not any("测试" in x for x in (n or [])):
+        raise TestError(f"对象选项推荐（按 value）高亮异常: {n}")
+    # 点 label「构建」→ 回链 value「v-build」
+    click_btn("构建")
+    time.sleep(0.2)
+    click_submit()
+    ev = c.wait_events("ask-user-reply", n=1, max_wait=8)
+    if ev[0]["payload"].get("answer") != "v-build":
+        raise TestError(f"对象选项应回链 value: {ev}")
+    if ask_content_count() != 0:
+        raise TestError("对象选项回答后弹窗未关闭")
+
+
 def case_queue2():
     """排队：两个带选项的提问，回答第一个后弹出第二个。"""
     aid1, aid2 = ask_id(), ask_id()
@@ -478,6 +507,7 @@ def main():
     ok &= run_case("C10 标题栏显示第几个/共几个", case_seq_title)
     ok &= run_case("C11 无 expires_at 时前端默认 5 分钟超时（短时不转 busy）", case_no_deadline_no_immediate_busy)
     ok &= run_case("C12 选项 + 「其他」自定义文本（多选）可并存", case_custom_with_options)
+    ok &= run_case("C13 选项 {value,label} 对象：渲染 label / 回链 value", case_option_objects)
     print("RESULT:", ok)
     return 0 if ok else 1
 

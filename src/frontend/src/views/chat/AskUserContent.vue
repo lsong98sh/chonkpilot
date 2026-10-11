@@ -18,7 +18,7 @@
         :class="{ selected: isSelected(opt) }"
         v-mq:[EventNames.askUserSelectOption].click="{ uid, opt }"
       >
-        <span class="option-text">{{ opt }}</span>
+        <span class="option-text">{{ optLabel(opt) }}</span>
         <span v-if="isRecommended(opt)" class="rec-badge">{{ $t('chat.ask_user_recommended') }}</span>
       </Button>
     </div>
@@ -122,27 +122,42 @@ const canSubmit = computed(() => {
   return !!selectedOption.value || (props.custom && customAnswer.value.trim())
 })
 
+// 选项目标形状 {value,label}（工具契约 options.items）：value = 随回答返回、label = 展示文本。
+// **字符串容错**（旧载荷 / 未按对象传）：value = label = 字符串本身，保证向后兼容。
+function optLabel(o) {
+  if (o && typeof o === 'object') return String(o.label ?? o.value ?? '')
+  return o == null ? '' : String(o)
+}
+function optValue(o) {
+  if (o && typeof o === 'object') return String(o.value ?? o.label ?? '')
+  return o == null ? '' : String(o)
+}
+
 function isSelected(opt) {
-  return props.multi ? selectedOptions.value.includes(opt) : selectedOption.value === opt
+  // 选中态按 **value** 比较（选中集合存 value）
+  const v = optValue(opt)
+  return props.multi ? selectedOptions.value.includes(v) : selectedOption.value === v
 }
 
 function isRecommended(opt) {
-  return (props.recommended || []).includes(opt)
+  // recommended = 推荐选项 **值** 列表（按 value 比较，非展示 label）
+  return (props.recommended || []).includes(optValue(opt))
 }
 
 function selectOption(opt) {
+  const v = optValue(opt)
   if (props.multi) {
     // 多选：toggle（与「其他」自定义文本**可并存**，不互斥、不清空）
-    const i = selectedOptions.value.indexOf(opt)
+    const i = selectedOptions.value.indexOf(v)
     if (i >= 0) {
       selectedOptions.value.splice(i, 1)
     } else {
-      selectedOptions.value.push(opt)
+      selectedOptions.value.push(v)
     }
     return
   }
   // 单选：与「其他」自定义文本可并存（不清空 customAnswer）
-  selectedOption.value = opt
+  selectedOption.value = v
 }
 
 function submitAnswer() {
