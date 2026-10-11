@@ -1843,6 +1843,8 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 		keepFullTurns:     s.loadKeepFullTurns(instanceID),
 		keepFullTokens:    s.loadKeepFullTokens(instanceID),
 		briefBudget:       s.loadBriefBudget(instanceID),
+		// 异步看门狗超时同源加载（否则恢复轮回落缺省、忽略 prj 键 pending_task_timeout_sec）。
+		pendingTaskTimeout: pendingTaskTimeoutOf(s.prjConfigValues(instanceID, pendingTaskTimeoutKey)),
 		// 重试/恢复的 turn 强制全量拼接（即使落在"非完整区"范围）。
 		forceFull: true,
 	}

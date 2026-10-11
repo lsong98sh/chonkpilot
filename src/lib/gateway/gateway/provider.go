@@ -493,15 +493,29 @@ func (p *proxyProvider) slotFor(ctx context.Context) (*connSlot, func()) {
 		return s, s.releaseFn()
 	}
 	if f := p.building[key]; f != nil {
-		// 同池键已有他者在建连：等待其结果，复用入池槽（**不**各自 build）。
+		// 同池键已有他者在建连：等待其结果，复用入池槽（**不**各自 build）。等待**可被本调用自身
+		// 的 ctx（取消 / 超时）打断**——否则 owner 建连卡死（spawn 后既不监听也不退出、且 ctx 无
+		// deadline）时 waiter 永久阻塞，且自身任务取消（onTaskCancel→Invalidate）也无法解除等待，
+		// 执行池 goroutine / active 计数滞留。
 		p.mu.Unlock()
-		<-f.done
+		select {
+		case <-f.done:
+		case <-ctx.Done():
+			return p.shared.Load(), never
+		}
 		if f.err != nil {
 			return p.shared.Load(), never
 		}
 		if s := p.acquirePooled(key); s != nil {
 			return s, s.releaseFn()
 		}
+		return p.shared.Load(), never
+	}
+	// provider 已停（Close/Stop 关闭 stopCh）/ 正在作废重建（closing）→ **不再 spawn 新子进程**：
+	// 否则 Stop 之后到达的调用会先拉起子进程（spawned http/sse 还会 waitEndpointReady 阻塞到就绪）
+	// 再被 kill，形成「停机后 spawn」窗口与端口占用风险（对齐 Invalidate 的前置 closed 守卫）。
+	if p.closed() || p.closing.Load() {
+		p.mu.Unlock()
 		return p.shared.Load(), never
 	}
 	flight := &buildFlight{done: make(chan struct{})}

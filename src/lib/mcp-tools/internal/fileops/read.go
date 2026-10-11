@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/text/encoding/unicode"
+	"golang.org/x/text/transform"
+
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 )
 
@@ -184,6 +187,15 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 		return info, nil
 	}
 
+	// >32MB 且带 ranges/start 时，行段语义建立在截断前缀上会与真实行号错位（静默错行），
+	// 显式报错而非误导。**与 tail 同传时亦报错**：否则 ranges/start 会被下方 tail 分支静默吞掉
+	// （既不报错也不使用行段）；limit-only 取前 N 行与前缀一致，放行。
+	if truncated && (len(req.ranges) > 0 || req.start > 0) {
+		err := fmt.Errorf("文件超过读取上限（%d 字节），不支持 ranges/start 行段读取，请改用 tail 或 info", maxReadBytes)
+		info["error"] = err.Error()
+		return info, err
+	}
+
 	// R7-C-60：>32MB 文件的 tail 语义不能建立在截断前缀上（前缀尾 ≠ 文件尾）。
 	// 改为从文件末尾反向流式定位最后 N 行，与 file_read tail 契约（只读末尾 N 行）一致。
 	// line_numbers：readFileTail 原样返回内容，需按全文总行数补行号（旧实现丢行号）。
@@ -205,14 +217,6 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 		}
 		info["content"] = content
 		return info, nil
-	}
-
-	// >32MB 且带 ranges/start 时，行段语义建立在截断前缀上会与真实行号错位（静默错行），
-	// 显式报错而非误导（tail 有正确的末尾语义，已在上方单独处理；limit-only 取前 N 行与前缀一致，放行）。
-	if truncated && (len(req.ranges) > 0 || req.start > 0) {
-		err := fmt.Errorf("文件超过读取上限（%d 字节），不支持 ranges/start 行段读取，请改用 tail 或 info", maxReadBytes)
-		info["error"] = err.Error()
-		return info, err
 	}
 
 	content, err := readContent(data, req)
@@ -248,6 +252,8 @@ func countLines(data []byte) int {
 
 // countFileLines 流式统计文件总行数（O(1) 内存，不整读大文件），行分割与 readContent/readFileTail
 // 同语义（结尾**单个**换行不算新空行）："a\nb\n" → 2；"a\nb" → 2；"\n" → 1；空文件 → 0。
+// UTF-16（BOM）文件**先流式解码再按字符计 \n**——UTF-16 换行为 2 字节（LE "0A 00"/BE "00 0A"），
+// 按原始字节统计会与内容侧 DecodeText 的行语义不一致（total_lines 偏大、tail 行号基线错位）。
 // 供 >32MB 截断文件补齐 total_lines 与 tail 行号基线。
 func countFileLines(path string) (int, error) {
 	f, err := os.Open(path)
@@ -255,12 +261,22 @@ func countFileLines(path string) (int, error) {
 		return 0, err
 	}
 	defer f.Close()
+	var r io.Reader = f
+	head := make([]byte, 2)
+	n0, _ := io.ReadFull(f, head)
+	if _, serr := f.Seek(0, io.SeekStart); serr != nil {
+		return 0, serr
+	}
+	if n0 == 2 && HasUTF16BOM(head) {
+		// 与 readContent 的 DecodeText 同源（UTF16 LE + UseBOM 自动识别字节序）。
+		r = transform.NewReader(f, unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewDecoder())
+	}
 	nl := 0
 	last := byte('\n')
 	any := false
 	buf := make([]byte, 64<<10)
 	for {
-		n, rerr := f.Read(buf)
+		n, rerr := r.Read(buf)
 		if n > 0 {
 			any = true
 			nl += bytes.Count(buf[:n], []byte{'\n'})
@@ -343,11 +359,18 @@ func readContent(data []byte, req readReq) (string, error) {
 	}
 
 	if req.lineNumbers {
+		// 基线须与上方**内容选择**同源（同优先级、同裁剪）：否则 tail/start 越界或二者同传时
+		// 会用未裁剪的请求值算出行号（负值 / 错行）。选择顺序 = tail 优先，其次 start/limit。
 		base := 1
-		if req.start > 0 {
-			base = req.start
-		} else if req.tail > 0 {
-			base = len(lines) - req.tail + 1
+		switch {
+		case req.tail > 0:
+			tailN := req.tail
+			if tailN > len(lines) {
+				tailN = len(lines)
+			}
+			base = len(lines) - tailN + 1
+		case req.start > 0:
+			base = clamp(req.start, 1, len(lines))
 		}
 		return addLineNumbers(selected, base), nil
 	}

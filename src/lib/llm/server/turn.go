@@ -774,6 +774,10 @@ func (tc *turnCtx) reapStalePending() {
 	for callID, at := range tc.inflight {
 		if now.Sub(at) >= timeout {
 			staleInflight = append(staleInflight, callID)
+			// 采集即**原子认领摘除**（对齐 pending 侧 onAsyncDone 的 delete）：否则同一 id 在兜底消息
+			// 被 loop 消费（deliverInput → clearInflight）之前若再命中一次 sweep，会被重复兜底
+			// （重复落库 / 多次续轮）。消费时的 clearInflight 对已摘除 id 幂等无操作。
+			delete(tc.inflight, callID)
 		}
 	}
 	tc.mu.Unlock()

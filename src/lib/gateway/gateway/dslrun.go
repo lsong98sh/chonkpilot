@@ -352,9 +352,12 @@ func (g *Gateway) runDSLJob(ctx context.Context, args map[string]any) (string, e
 		}
 		done := make(chan struct{})
 		go func() { _ = cmd.Wait(); close(done) }()
+		// 用 NewTimer + defer Stop（而非 time.After）：提前交付时回收兜底计时器（对齐 mcpgateway.go 口径）。
+		killTimer := time.NewTimer(dslProcKillWait)
+		defer killTimer.Stop()
 		select {
 		case <-done:
-		case <-time.After(dslProcKillWait):
+		case <-killTimer.C:
 		}
 		reporter.finish("cancelled", dslResultMsg{})
 		return "", ctx.Err()
