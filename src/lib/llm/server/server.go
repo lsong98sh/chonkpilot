@@ -216,11 +216,15 @@ type Server struct {
 	// （`prompts/register asset_kind=agent` 已撤）；25 §8.1 #8 / T6：来源 = app 级场景（非代码 embed）。
 	// 运行态 map 一律以 **instKey(instance, id)** 为键（2026-09-19 缺口 5：按 instance 分桶，
 	// 同进程多 instance 互不可见/互不取消；instance 为空 → 原键，旧语义等价，见 instancescope.go）：
-	turns           map[string]*turnCtx   // instKey(instance, turn) → 会话状态机
-	busy            map[string]string     // instKey(instance, session) → running turn（同 instance 同 session 互斥）
-	continuePending map[string]bool       // instKey(instance, turn) → 下一个 text-user 以 Kind=continue 注入
-	asks            map[string]*askWaiter // instKey(instance, ask_id) → 等待的 turn + tool-call-id + 任务节点
-	tasks           *taskManager          // 任务编排（任务树/级联/批量/状态事件，§6.6）
+	turns           map[string]*turnCtx // instKey(instance, turn) → 会话状态机
+	busy            map[string]string   // instKey(instance, session) → running turn（同 instance 同 session 互斥）
+	continuePending map[string]bool     // instKey(instance, turn) → 下一个 text-user 以 Kind=continue 注入
+	// taskTurnIndex：task_id → 等待该网关任务的运行 turn（键 = instKey(instance, task_id)）。
+	// onGatewayTaskDone 据此 O(1) 定位等待 turn，免去按 s.mu 全表扫描 s.turns + 逐 turn 加锁探测
+	// pending。与 tc.pending 同步维护（登记 pending 时写入 / 消费回执 / 轮次收尾时摘除）。
+	taskTurnIndex map[string]*turnCtx
+	asks          map[string]*askWaiter // instKey(instance, ask_id) → 等待的 turn + tool-call-id + 任务节点
+	tasks         *taskManager          // 任务编排（任务树/级联/批量/状态事件，§6.6）
 	// taskExecCancels：task 型域工具「执行中取消」登记表（I-83 收尾，18 §3.4）：tool_call_id →
 	// 执行 ctx cancelFunc。domainExecute task 分支登记、结束注销；gateway 取消（tm.cancel 补发
 	// mcp-tasks-report{state:cancelled}）→ onGatewayTaskDone 查表 cancel 真停执行体
@@ -327,6 +331,7 @@ func New(bus mq.Bus, opts Options) *Server {
 		appTools:        make(map[string]bool),
 		agents:          make(map[string]AgentDef),
 		continuePending: make(map[string]bool),
+		taskTurnIndex:   make(map[string]*turnCtx),
 	}
 	// instance.Manager 告警接入宿主日志（F-10）：GUI/分离形态下超限告警不再只落 stderr。
 	s.im.SetLogf(logf)
@@ -1787,6 +1792,15 @@ func nodeFromDBRec(m map[string]any, instanceID string) *TaskNode {
 // 消息；终态 llm-complete 沿用原 {session, turn}。该轮标记 forceFull=true：即使被重试 turn
 // 落在"非维持轮"范围也必须全量拼接。
 func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
+	// 去重（P3）：同 {instance, turn} 已有存活轮次 → 直接复用，避免另起 loop 双跑
+	//（此前去重命中仍返回**未登记**的新 tc，其 loop 亦在跑 → 同 {session,turn} 双执行）。
+	tk := instKey(instanceID, turn)
+	s.mu.Lock()
+	existing := s.turns[tk]
+	s.mu.Unlock()
+	if existing != nil {
+		return existing
+	}
 	// ctx 绑定 instance_id（同 newTurnCtx）：恢复后的 gateway 方法调用同样携带实例归属。
 	ctx, cancel := context.WithCancel(withInstance(context.Background(), instanceID))
 	// WorkDir/DataDir 随 instance-id 绑定（同 onLLMStart）：恢复轮的 gateway 上下文与
@@ -1834,9 +1848,19 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 	}
 	go tc.loop()
 	s.mu.Lock()
+	// 竞态二次确认（P3）：构造期间可能已被并发恢复登记 → 回收本新 tc（Close 停其 loop）并复用
+	// 已存在者，保证同 {instance,turn} 只跑一个 loop。
+	if existing := s.turns[tk]; existing != nil {
+		s.mu.Unlock()
+		tc.Close()
+		return existing
+	}
 	// 登记键 = instKey(instance, id)（缺口 5：按 instance 分桶）。
-	s.busy[instKey(instanceID, session)] = turn
-	s.turns[instKey(instanceID, turn)] = tc
+	bk := instKey(instanceID, session)
+	if _, ok := s.busy[bk]; !ok {
+		s.busy[bk] = turn
+	}
+	s.turns[tk] = tc
 	s.mu.Unlock()
 	return tc
 }
@@ -1898,31 +1922,92 @@ func (s *Server) onGatewayTaskDone(_ string, payload []byte) {
 			s.tasks.done(node.TaskID, TaskStateError, "", ev.ResultSummary)
 		}
 	}
-	// ② 命中等待 turn → 续轮（缺口 5：按回报载荷的 instance 归属限定，不跨 instance 命中）
-	s.mu.Lock()
-	var tc *turnCtx
-	for _, t := range s.turns {
-		if ev.InstanceID != "" && t.req.InstanceID != ev.InstanceID {
-			continue
-		}
-		t.mu.Lock()
-		_, ok := t.pending[ev.TaskID]
-		t.mu.Unlock()
-		if ok {
-			tc = t
-			break
-		}
-	}
-	s.mu.Unlock()
-	if tc != nil {
+	// ② 命中等待 turn → 续轮（缺口 5：按回报载荷的 instance 归属限定，不跨 instance 命中）。
+	// 经 task_id → *turnCtx 运行态索引定位（O(1)）；未命中回退全表扫描（保守，索引与 pending
+	// 短暂不一致时仍能命中，避免漏续轮）。
+	if tc := s.taskTurnFor(ev.InstanceID, ev.Turn, ev.TaskID); tc != nil {
+		m := asyncDoneMsg{taskID: ev.TaskID, state: ev.State, result: ev.ResultSummary}
+		// 非阻塞投递（P3）：tc.asyncDone 缓冲有限（8），loop 忙时直接阻塞投递会卡住**同步派发的
+		// 总线 goroutine**（Emit 同步回调，宿主 UI 线程）→ 满则转后台 goroutine 投递，不阻塞。
 		select {
-		case tc.asyncDone <- asyncDoneMsg{taskID: ev.TaskID, state: ev.State, result: ev.ResultSummary}:
+		case tc.asyncDone <- m:
 		case <-tc.done:
+		default:
+			go func() {
+				select {
+				case tc.asyncDone <- m:
+				case <-tc.done:
+				}
+			}()
 		}
 		return
 	}
 	// ③ 调用方已离开 → 完成通知（任务节点已由 ① 更新广播）
 	s.notifyTaskCompletion(node, ev.Session, ev.Turn, ev.InstanceID, ev.Tool, ev.TaskID, ev.State)
+}
+
+// ── 异步任务运行态索引（task_id → *turnCtx）─────────────────────────────
+
+// forgetPendingTaskIndex 摘除 task_id 的运行态索引（消费回执；**仅当仍指向 tc**，避免误删新轮次登记）。
+func (s *Server) forgetPendingTaskIndex(instanceID, taskID string, tc *turnCtx) {
+	if taskID == "" {
+		return
+	}
+	s.mu.Lock()
+	k := instKey(instanceID, taskID)
+	if s.taskTurnIndex[k] == tc {
+		delete(s.taskTurnIndex, k)
+	}
+	s.mu.Unlock()
+}
+
+// forgetPendingTaskIndexLocked 摘除某轮次的**全部** pending 运行态索引（**须持 s.mu**；轮次收尾）
+// ——索引规模 = 在飞任务数，收尾时整体扫一次代价极小。
+func (s *Server) forgetPendingTaskIndexLocked(tc *turnCtx) {
+	for k, t := range s.taskTurnIndex {
+		if t == tc {
+			delete(s.taskTurnIndex, k)
+		}
+	}
+}
+
+// taskTurnFor 定位等待该网关任务的运行 turn。定位优先级：① 报带 turn → 按 {instance,turn}
+// 直取该轮并校验其 pending（O(1)，避免全表扫描）；② task_id → *turnCtx 运行态索引（O(1)）；
+// ③ 索引未命中回退全表扫描（保守，兼容索引与 pending 短暂不一致，避免漏续轮）。
+// **须在 s.mu 内访问索引 / 轮次表**。
+func (s *Server) taskTurnFor(instanceID, turn, taskID string) *turnCtx {
+	if taskID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if turn != "" {
+		if tc := s.turns[instKey(instanceID, turn)]; tc != nil && tc.pendingHas(taskID) {
+			return tc
+		}
+	}
+	if tc := s.taskTurnIndex[instKey(instanceID, taskID)]; tc != nil &&
+		(instanceID == "" || tc.req.InstanceID == instanceID) {
+		return tc
+	}
+	for _, t := range s.turns {
+		if instanceID != "" && t.req.InstanceID != instanceID {
+			continue
+		}
+		if t.pendingHas(taskID) {
+			return t
+		}
+	}
+	return nil
+}
+
+// pendingHas 报告本轮的挂起登记是否含该 task_id（**须在持有 s.mu 的前提下调用**：内部取 tc.mu，
+// 与既有全表扫描同一锁定序 s.mu → tc.mu）。
+func (tc *turnCtx) pendingHas(taskID string) bool {
+	tc.mu.Lock()
+	_, ok := tc.pending[taskID]
+	tc.mu.Unlock()
+	return ok
 }
 
 // notifyTaskCompletion 调用方已离开（无等待 turn）的异步任务完成通知：广播 tool-notify

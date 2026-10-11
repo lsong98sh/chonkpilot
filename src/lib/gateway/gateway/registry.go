@@ -195,9 +195,10 @@ func dirOriginalName(ref *dirRef, exposed string) (string, bool) {
 
 // dirRoute 由共享节点 + 引用即时合成一条路由（**不物化**进 routes 表：RB-3 ②）。
 func dirRoute(ref *dirRef, t *mcp.Tool, exposed string) *toolRoute {
+	hot, _ := t.Meta["hot"].(bool) // 取 `_meta.hot` 真值（同 registerProvider 口径；nil map 读取安全）
 	return &toolRoute{
 		Name: exposed, Original: t.Name, Provider: ref.pk,
-		Tool: t, Hot: t.Meta != nil, Scope: ref.scope,
+		Tool: t, Hot: hot, Scope: ref.scope,
 	}
 }
 
@@ -288,7 +289,10 @@ func (r *registry) registerProvider(ps *providerState, proxyTools []*mcp.Tool, n
 		// 调用展示名注入：每个工具参数列表自动加 tool_call_display_name（LLM 必填，UI/CLI 展示用），
 		// 实际调用时由 doCall 剥离（不传下游）。
 		injectDisplayName(t)
-		route := &toolRoute{Name: name, Original: orig, Provider: ps.key, Tool: t, Hot: t.Meta != nil, Scope: ps.scope}
+		// Hot 取 `_meta.hot` 真值（而非「Meta 非 nil」）：Meta 可能因其它扩展字段（category/async/
+		// display 等）非空但并非 hot，按真值判定避免把非 hot 工具误标（nil map 读取安全 → false）。
+		hot, _ := t.Meta["hot"].(bool)
+		route := &toolRoute{Name: name, Original: orig, Provider: ps.key, Tool: t, Hot: hot, Scope: ps.scope}
 		r.routes[routeKey(ps.scope, name)] = route
 		written = append(written, routeKey(ps.scope, name))
 		ps.tools = append(ps.tools, route)

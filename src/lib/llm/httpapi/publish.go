@@ -572,7 +572,13 @@ func (s *Server) guiUpload(payload []byte) (any, []error) {
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return failReply("upload: %v", err)
 	}
-	root, err := data.PrjUsrDir(s.workDirPath(), s.dataDirPath())
+	// 一次取作用域快照（并发安全）：分别取 workDirPath()/dataDirPath() 会在运行期回绑定
+	//（applyInstanceBind）下读到撕裂的 (work_dir, data_dir)，使数据根错配。
+	wd, dd := s.scope()
+	// 沙箱归属（P3）：落点根 = **服务端派生的本实例数据根**（<用户数据根>/<uid>/，见 PrjUsrDir），
+	// 非客户端可选；子目录 / 文件名再经 uploadfs.SanitizeDir / Save 净化——客户端无法借 payload
+	// 越界落盘（与 filesys 的 bindFilesys 服务端绑定同一沙箱口径）。
+	root, err := data.PrjUsrDir(wd, dd)
 	if err != nil || root == "" {
 		return failReply("upload: 数据根不可解析（work_dir 缺失？）: %v", err)
 	}
@@ -922,7 +928,9 @@ func (s *Server) allowedDirs() []map[string]any {
 	// 排除本实例的 **data_dir**（`<用户数据根>/<uid>/`）：它是该用户的**元数据家目录**，
 	// 不是可选项目 → 不应在「选择目录」里作为噪音项出现（2026-10-10）。
 	exclude := map[string]bool{}
-	if d := filepath.Clean(s.dataDir); d != "" && d != "." {
+	// 读 data_dir 走 dataDirPath()（带 bindMu 读锁）——直接读 s.dataDir 字段会与 applyInstanceBind
+	// 的写构成竞态（2026-09 起 work_dir/data_dir 运行期可重绑定）。
+	if d := filepath.Clean(s.dataDirPath()); d != "" && d != "." {
 		exclude[d] = true
 	}
 	for _, root := range s.allowedRoots() {

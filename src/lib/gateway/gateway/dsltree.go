@@ -111,6 +111,10 @@ func (r *dslJobReporter) nodeID(execID string) string { return r.rootID + "-" + 
 // OnTree 处理静态容器树快照：建作业根（首次）+ 各容器节点；容器 loop_current 变化 → 更新。
 func (r *dslJobReporter) OnTree(nodes []dslTreeNode) {
 	r.mu.Lock()
+	if r.finished { // 终态已发（task-done）：取消竞态下不再发出晚到的 task-started/updated(running)
+		r.mu.Unlock()
+		return
+	}
 	var out []dslEmit
 	out = append(out, r.ensureRootLocked()...)
 	for _, n := range nodes {
@@ -140,6 +144,10 @@ func (r *dslJobReporter) OnTree(nodes []dslTreeNode) {
 // OnStep 处理一次 LLM 步骤进度：更新作业根 `steps[]` 并发 task-updated。
 func (r *dslJobReporter) OnStep(st dslStepMsg) {
 	r.mu.Lock()
+	if r.finished { // 终态已发（task-done）：取消竞态下不再发出晚于 task-done 的 task-updated(running)
+		r.mu.Unlock()
+		return
+	}
 	out := r.ensureRootLocked()
 	row := r.steps[st.No]
 	if row == nil {

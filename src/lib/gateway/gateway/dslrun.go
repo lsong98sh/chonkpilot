@@ -71,6 +71,12 @@ const (
 	dslSandboxCategory = "core"
 	// dslDataTimeout 是 dsl LLM 子轮次所需数据面请求（ensure-session / load-messages）超时。
 	dslDataTimeout = 3 * time.Second
+	// dslLLMTurnTimeout 是单个 LLM 子轮次等待 `session-complete` 终态的**独立上限**：
+	// llm-start/llm-send 受理后，若该轮永不发 session-complete（内核异常 / 事件丢失），无此上限
+	// 则 runDSLLLM 永久阻塞 → dslPump.drain 的 llmWG.Wait() 连带楔死整个作业。超时 → 级联发
+	// llm-cancel 并返回错误（与 dslDataTimeout 同语义：轮次面等待不得无界）。取值须显著大于
+	// 正常单轮（含工具循环）耗时，避免误杀在飞子轮次。
+	dslLLMTurnTimeout = 30 * time.Minute
 	// dslProcKillWait 是取消后等待执行器退出的宽限。
 	dslProcKillWait = 5 * time.Second
 	// dslReturnFileMaxAge 是 `$RETURN` file 态落盘文件的陈旧阈值：作业启动时清理临时根内
@@ -682,7 +688,16 @@ func (g *Gateway) runDSLLLM(ctx context.Context, call dslLLMCallMsg, instance, p
 	if err := send.Err(); err != nil {
 		return "", err
 	}
+	// 镜像 llm-start 分支：onLLMSend 拒绝时回 `{accepted:false, error}` 且 error=nil，
+	// 若不检查会继续阻塞等 `<-done`（该轮从未真正启动 → 永不达）→ 作业无界挂起。
+	if m, ok := send.Result.(map[string]any); ok {
+		if accepted, _ := m["accepted"].(bool); !accepted {
+			return "", fmt.Errorf("llm-send 未受理: %s", strOf(m["error"]))
+		}
+	}
 
+	timer := time.NewTimer(dslLLMTurnTimeout)
+	defer timer.Stop()
 	select {
 	case <-done:
 	case <-ctx.Done():
@@ -691,6 +706,13 @@ func (g *Gateway) runDSLLLM(ctx context.Context, call dslLLMCallMsg, instance, p
 			"instance_id": instance, "session": session, "turn": turn,
 		})
 		return "", ctx.Err()
+	case <-timer.C:
+		// 独立超时兜底：该轮受理后永不发 session-complete → 级联 llm-cancel 并返回错误，
+		// 避免本 goroutine 永久阻塞、连带 dslPump.drain 的 llmWG.Wait() 楔死整个作业。
+		g.bus.Emit(context.Background(), msgkeys.TopicLlmCancel, map[string]any{
+			"instance_id": instance, "session": session, "turn": turn,
+		})
+		return "", fmt.Errorf("llm 轮次 %s 等待 session-complete 超时（%s）", turn, dslLLMTurnTimeout)
 	}
 	if comp.status == "error" {
 		msg := comp.message
@@ -803,12 +825,14 @@ func (g *Gateway) dataReq(ctx context.Context, subject, instanceID string, data 
 	defer sub.Unsubscribe()
 	payload := map[string]any{"instance_id": instanceID, "data": data, "req_id": reqID}
 	g.bus.Emit(ctx, subject, payload)
+	timer := time.NewTimer(dslDataTimeout)
+	defer timer.Stop()
 	select {
 	case r := <-done:
 		return r.result, r.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(dslDataTimeout):
+	case <-timer.C:
 		return nil, fmt.Errorf("%s timeout", subject)
 	}
 }

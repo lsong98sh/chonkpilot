@@ -106,6 +106,9 @@ type Gateway struct {
 	nodes   map[string]*dirNode // dir 目录节点（key = provKey("dir", scope, name)）句柄
 	mu      sync.Mutex
 	stopped bool
+	// subs 是方法面订阅句柄（subscribeAll 经 sub() 保存）：Stop 时统一退订，
+	// 避免停服后仍接收/派发方法调用（内存总线生命周期由调用方持有，需显式退订）。
+	subs []mq.Sub
 
 	mgmtSrv *http.Server
 }
@@ -280,6 +283,17 @@ func (g *Gateway) Stop(ctx context.Context) error {
 	g.mu.Unlock()
 
 	g.logf("[gateway] stopping ...")
+	// 停收新请求：退订已保存的方法面订阅句柄（总线归调用方持有 → 需显式 Unsubscribe，
+	// 否则 Stop 后仍会接收并派发方法调用）。
+	g.mu.Lock()
+	subs := g.subs
+	g.subs = nil
+	g.mu.Unlock()
+	for _, s := range subs {
+		if s != nil {
+			_ = s.Unsubscribe()
+		}
+	}
 	// spawned/proxied 下游收尾（Close 终止 stdio 子进程）。
 	// providerKeys() 取注册表快照（持锁），避免直接 range g.reg.order 与并发
 	// registerProvider/removeProvider 构成 data race（C-41）。
@@ -295,6 +309,13 @@ func (g *Gateway) Stop(ctx context.Context) error {
 		_ = g.mgmtSrv.Shutdown(ctx)
 	}
 	return nil
+}
+
+// isStopped 报告网关是否已进入 Stop（供取消路径 / 订阅路径在关停竞态下短路）。
+func (g *Gateway) isStopped() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.stopped
 }
 
 // ─── 总线订阅 ──────────────────────────────────────────
@@ -341,7 +362,12 @@ func (g *Gateway) pub(subject string, payload []byte) {
 // 可写回 v.Result 实现同主题请求-响应；返回 error 被收集进 v.Errors）。
 // 写回的结果 map 统一归一为 JSON 形态（对齐旧 -reply 载荷 JSON 编解码后的纯 map/[]any 契约）。
 func (g *Gateway) sub(subject string, fn func(subject string, v *mq.Value) error) error {
-	_, err := g.bus.On(subject, 0, func(_ context.Context, subj string, v *mq.Value) error {
+	// 关停短路：Stop 已置 stopped（并会退订既有句柄）→ 不再注册新订阅（异常启停竞态下，Stop 之后
+	// append 的句柄无人在 Stop 中退订 → 会持续接收/派发方法调用）。
+	if g.isStopped() {
+		return fmt.Errorf("gateway: stopped, refusing new subscription %q", subject)
+	}
+	s, err := g.bus.On(subject, 0, func(_ context.Context, subj string, v *mq.Value) error {
 		if err := fn(subj, v); err != nil {
 			return err
 		}
@@ -350,7 +376,19 @@ func (g *Gateway) sub(subject string, fn func(subject string, v *mq.Value) error
 		}
 		return nil
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// 保存订阅句柄（Stop 统一退订；原实现丢弃句柄 → Stop 无法退订）。
+	g.mu.Lock()
+	if g.stopped { // 双检：注册期间 Stop 已并发退订完毕 → 立即退订，避免句柄泄漏、停服后仍派发
+		g.mu.Unlock()
+		_ = s.Unsubscribe()
+		return fmt.Errorf("gateway: stopped, refusing new subscription %q", subject)
+	}
+	g.subs = append(g.subs, s)
+	g.mu.Unlock()
+	return nil
 }
 
 // notifyMCPChanged 目录/接入变化通知（单一 mcp-changed，2026-09-05 合并 tool-changed ∪
@@ -783,6 +821,11 @@ func (g *Gateway) runPreHooks(req CallReq, route *toolRoute, entry *ServerEntry)
 	return 0, ""
 }
 
+// cancelDeliverWait 是「取消后等待终态信号」的兜底上限：ep.cancel 已置终态并 markDone（doneCh
+// 立即关闭）→ 正常零等待；执行体极端不响应取消时，兜底超时后按 cancelled 交付，避免永久占用
+// mq 同步派发线程。
+const cancelDeliverWait = 5 * time.Second
+
 // doCall 执行工具调用：路由 → 熔断 → async 判定（auto/always/never/manual）→ 统一任务化执行。
 // 统一异步模型（2026-09-13，超时后交用户裁决）：
 //   - always：立即后台（返回 pending），终态经 mcp-tasks-report 回报
@@ -1008,6 +1051,10 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 				case <-t.doneCh:
 					return g.tm.manualResult(t), 0, ""
 				case <-t.detachCh:
+					// 与主 detach 分支保持一致：补执行态上报（detached）+ 日志，避免该竞态路径静默
+					//（缺上报会让任务层漏记 detached，前端/exec_json 与其它 detach 路径不一致）。
+					g.logf("[gateway] tool %s detached to background (exec %s)", req.Name, t.ID)
+					g.tm.emitExec(spec.instanceID, t.ID, ExecPhaseDetached, map[string]any{"trigger": "manual"})
 					return pendingResult(t.ID), 0, ""
 				}
 			}
@@ -1020,7 +1067,13 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 				} else {
 					g.logf("[gateway] tool %s reached timeout %v → auto-cancelled (exec %s)", req.Name, limit, t.ID)
 				}
-				<-t.doneCh // 取消已置终态（cancel 内 markDone）→ 就地交付 cancelled 结果
+				// 取消已置终态（cancel 内 markDone → doneCh 立即关闭）→ 正常零等待；兜底超时防
+				// 执行体不响应取消时永久占用 mq 同步派发线程，超时按 cancelled 交付。
+				select {
+				case <-t.doneCh:
+				case <-time.After(cancelDeliverWait):
+					g.logf("[gateway] tool %s cancel wait timed out, deliver as cancelled (exec %s)", req.Name, t.ID)
+				}
 				return g.tm.manualResult(t), 0, ""
 			}
 			// manual / never：进入「待用户裁决」——置 awaiting 态 + 发 mcp-tools-timeout，
@@ -1080,6 +1133,11 @@ func (g *Gateway) emitToolsTimeout(t *ExecTask, timeoutSec float64, options []st
 // 不再被连带打断；provider 未实现隔离维度（内存/注册型）/ 无隔离槽 → 回落全量
 // （与引入前行为等价）。
 func (g *Gateway) onTaskCancel(t *ExecTask) {
+	// 关停短路：Stop 已置 stopped → 不再作废/重建（否则会在 Close 之后 respawn 出无人观测的孤儿进程，
+	// 「重建失败」分支还会误发 failed 通知 / error 执行态）。
+	if g.isStopped() {
+		return
+	}
 	if t.ProviderKey == "" {
 		return
 	}
@@ -1824,15 +1882,36 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 	lastStart := time.Now()
 	quickRestarts := 0
 	for {
-		err := <-prov.WaitExit()
+		// 共享槽已无自持进程（如 Invalidate 失败回落空槽）：无进程可观测 → 退出观测，避免把
+		// 「空槽 WaitExit 立即返回的 nil」误判为意外退出而多一次假重建（provider 暂不可用，
+		// 恢复经 reload / unregister+register；failed 通知已由触发方 onTaskCancel 发）。
+		if !prov.SpawnedSelf() {
+			return
+		}
+		exitCh, gen := prov.WaitExit()
+		err := <-exitCh
 		g.mu.Lock()
 		stopped := g.stopped
 		g.mu.Unlock()
 		if stopped {
 			return
 		}
-		// closing 置位 = 正被 Invalidate 主动重建（如取消 → Terminate → kill+respawn）：
-		// 本次退出属预期而非崩溃 → 不退出观测，等待重建窗口结束（closing 复位）后继续观测
+		// 代际判定（先于 closing 快照，C-52 修复）：捕获代际 ≠ 当前共享槽代际 = 该槽已被重建路径
+		//（Invalidate，如取消 → Terminate → kill+respawn）主动替换 → 本次退出属预期、已被认领，
+		// 不得误判为「意外退出」而冗余 kill+respawn（否则 Invalidate 复位 closing 与退出观测存在
+		// 时序竞态：退出事件晚于 closing 复位到达即被误判）。仍等待重建窗口结束后继续观测新进程。
+		if prov.shared.Load().gen != gen {
+			if !g.waitSpawnedRebuild(prov) {
+				return
+			}
+			ps, ok := g.reg.provider(key)
+			if !ok || ps.status != "connected" {
+				return
+			}
+			lastStart = time.Now() // 重建后的新进程起点 → 不计快速重启
+			continue
+		}
+		// 代际未变：仍可能是「重建进行中、尚未替换槽」的窗口（closing 已置位）→ 等待复位后继续观测
 		// 新进程；仅 Close（Stop/unregister，stopCh 关闭）路径才真正退出观测（C-37；
 		// 否则新进程无人观测 → 再崩不再自动重建 → 状态幽灵 connected）。
 		if prov.closing.Load() {
@@ -1880,7 +1959,8 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 			if stopped {
 				return
 			}
-			if prov.closing.Load() {
+			// 退避期间亦按代际判定（同主循环口径）：已被重建路径认领或仍在重建窗口 → 不重复重建。
+			if prov.shared.Load().gen != gen || prov.closing.Load() {
 				if !g.waitSpawnedRebuild(prov) {
 					return
 				}

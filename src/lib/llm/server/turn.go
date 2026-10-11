@@ -59,6 +59,15 @@ type SendReq struct {
 // defaultMaxToolIterations 单轮工具循环上限的缺省值（provider 未显式配置时生效）。
 const defaultMaxToolIterations = 20
 
+// pending 回执兜底（P2 watchdog）：异步任务（task_id）回执丢失 / 未登记时 pending 永不归零
+// → 整轮永久挂起（无超时、无 reaper）。loop 每 pendingSweepInterval 扫描一次，对超过
+// pendingTaskTimeout 仍未回执的 pending 按 failed 占位回填并续轮（复用 onAsyncDone 同一路径）。
+// 取值保守：长时异步工具（构建 / 抓取 / 编译等）仍可正常完成，只在**回执确实丢失**时才兜底。
+const (
+	pendingSweepInterval = 30 * time.Second
+	pendingTaskTimeout   = 30 * time.Minute
+)
+
 // S6 LLM 错误恢复参数（对齐 llm-error-handling.md §一）。
 // llmRetryCount 为**回落默认**：usr 配置 retryCount（T-27 接线）未配置时生效；
 // retryCount **显式 0 = 不重试**（P0-A，存在性判定），仅键缺失（persist 系统默认 2）才回落。
@@ -101,16 +110,25 @@ type turnCtx struct {
 	hist       []ChatMsg // 会话历史（llm-start 组装：摘要 + 未压缩 turn，见 BuildHistory）
 	iterations int       // 工具循环计数（maxToolIterations 保护）
 
-	mu           sync.Mutex              // 保护 pending / stash / toolMsgKeys
-	pending      map[string]pendingTool  // task_id → 转异步发起信息（挂起登记）
+	mu      sync.Mutex             // 保护 pending / inflight / stash / toolMsgKeys
+	pending map[string]pendingTool // task_id → 转异步发起信息（挂起登记）
+	// inflight 记录已派发、结果**异步回喂**的 ask_user / llm_run 子作业（tool_call_id 集合）：
+	// 与 pending 共同构成续轮闸门（见 continueOpenLocked）——同一批 tool_calls 混有
+	// ask/子作业 + 异步工具时，只有全部结果到齐才续轮（否则未决 tool_call 只有 running
+	// 占位行，assistant.tool_calls 与 tool 结果配对破坏）。结果经 `tc.in` 回喂时在
+	// deliverInput 摘除登记（**不在 feed 时摘除**，避免与 loop 消费时序竞态）。
+	inflight     map[string]struct{}
 	stash        []ChatMsg               // 等待 pending 完成时合并提交的同步工具结果
 	toolMsgKeys  map[string]string       // tool_call_id → role=tool 行主键（发起即落 running；终态回填同一行）
 	toolCallMeta map[string]toolCallMeta // tool_call_id → 发起信息（B-05：终态回填免一次全量 LoadMessages）
-	asyncDone    chan asyncDoneMsg       // gateway 回执 task-report → loop 续轮
-	continues    int                     // 自动续写计数（maxAutoContinue 保护，S6）
-	sessionLock  *sessionLock            // session 排他锁（onLLMStart 获取；Close 释放）
-	result       string                  // 终态输出文本（子轮次递归时父侧读取；finish 写入）
-	turnErr      error                   // 终态错误（子轮次递归时父侧读取；finish error 写入）
+	// persistedResultOK 记录本 turn **成功**落库结果的 tool_call_id（I-25 去重的硬判据）：
+	// 成功 → 结果已由 msgs() 从库带回，本次输入不必重复叠加；失败 → 保留内存结果（避免丢结果）。
+	persistedResultOK map[string]bool
+	asyncDone         chan asyncDoneMsg // gateway 回执 task-report → loop 续轮
+	continues         int               // 自动续写计数（maxAutoContinue 保护，S6）
+	sessionLock       *sessionLock      // session 排他锁（onLLMStart 获取；Close 释放）
+	result            string            // 终态输出文本（子轮次递归时父侧读取；finish 写入）
+	turnErr           error             // 终态错误（子轮次递归时父侧读取；finish error 写入）
 	// finishOnce 是**原子终态标志**（E2-2）：正常完成路径与 onLLMCancel（取消）可能并发到达同一轮次
 	// （cancel 命中时正常路径的 complete 仍在飞）→ server.finish 经它保证终态仅落库/广播一次
 	// （不二次写 CompleteTurnTokens、不二次广播 llm-complete）。与 Close 的 once 相互独立。
@@ -165,6 +183,12 @@ type turnCtx struct {
 	// **不落可变全局字段**，每 turn 只判一次。用途 = 「子会话压缩关闭」时的上下文超限提示（见 subsessionHint）。
 	subOnce    sync.Once
 	subsession bool
+	// guideOnce / memGuideText / assetGuideText：「记忆 / 资产」两条指引**单轮只读一次**缓存
+	//（msgs() 每次工具迭代都会调用，指引依赖 instance/workDir/配置，单轮内视为不变）——避免
+	// 单轮内重复读配置（最多 20 次迭代 × 2 条指引）。
+	guideOnce      sync.Once
+	memGuideText   string
+	assetGuideText string
 }
 
 // toolCallMeta 记录一次工具发起的名称与参数（persistToolRunning 时登记，B-05），
@@ -599,6 +623,12 @@ func (tc *turnCtx) FeedToolResultStatus(toolCallID, content, status string) {
 // 协程**调用，队列满时无限阻塞会挂住调用方 goroutine；超时则丢弃并记录（不静默吞）。
 const feedTimeout = 5 * time.Second
 
+// feedDroppable 判定该消息在输入队列满时可否丢弃：仅「工具通知」（Role=user、Kind=notify，
+// 非必需）可丢；tool 结果与「继续」（Kind=continue）及用户文本承载 LLM 必需的续轮输入，不可丢。
+func feedDroppable(msg ChatMsg) bool {
+	return msg.Role == "user" && msg.Kind == "notify"
+}
+
 func (tc *turnCtx) feed(msg ChatMsg) {
 	select {
 	case tc.in <- msg:
@@ -607,12 +637,21 @@ func (tc *turnCtx) feed(msg ChatMsg) {
 		return
 	default:
 	}
-	// 队列满：带超时重试（仅此罕见分支才分配定时器，热路径零额外开销）。
+	if feedDroppable(msg) {
+		// 队列满：可丢类带超时重试，超时则丢弃并记录（仅此罕见分支才分配定时器，热路径零额外开销）。
+		select {
+		case tc.in <- msg:
+		case <-tc.done:
+		case <-time.After(feedTimeout):
+			logf("[chonkpilot-server] turn %s 输入队列投递超时（满），丢弃 role=%s 消息\n", tc.req.Turn, msg.Role)
+		}
+		return
+	}
+	// 不可丢类（tool 结果 / 「继续」/ 用户文本）：**阻塞投递**，仅 done / ctx 取消可中止（不丢消息）。
 	select {
 	case tc.in <- msg:
 	case <-tc.done:
-	case <-time.After(feedTimeout):
-		logf("[chonkpilot-server] turn %s 输入队列投递超时（满），丢弃 role=%s 消息\n", tc.req.Turn, msg.Role)
+	case <-tc.ctx.Done():
 	}
 }
 
@@ -626,6 +665,10 @@ func (tc *turnCtx) loop() {
 		// 运行态键 = instKey(instance, id)（缺口 5：按 instance 分桶）；清理只作用于仍指向
 		// 本 turnCtx 的登记，不误删其他 instance / 新轮次的登记。
 		key := instKey(tc.req.InstanceID, tc.req.Turn)
+		// 轮次关闭 → 摘除本轮 pending 的 task_id 运行态索引（不再有等待任务）。**无条件**执行：
+		// 仅删仍指向本 turnCtx 的项（同键换实例时，旧 tc 的陈旧索引也须清掉，避免 taskTurnFor
+		// 命中已关闭的旧 tc 而漏续轮）。
+		tc.server.forgetPendingTaskIndexLocked(tc)
 		if tc.server.turns[key] == tc {
 			delete(tc.server.turns, key)
 			if tc.server.busy[instKey(tc.req.InstanceID, tc.req.Session)] == tc.req.Turn {
@@ -638,16 +681,109 @@ func (tc *turnCtx) loop() {
 		tc.server.mu.Unlock()
 		tc.Close()
 	}()
+	// pending 回执兜底（P2 watchdog）：周期扫描超时未回执的 pending，按 failed 占位续轮。
+	sweep := time.NewTicker(pendingSweepInterval)
+	defer sweep.Stop()
 	for {
 		select {
 		case <-tc.done:
 			return
 		case m := <-tc.asyncDone:
 			tc.onAsyncDone(m)
+		case <-sweep.C:
+			tc.reapStalePending()
 		case msg := <-tc.in:
-			tc.chatOnce(msg)
+			tc.deliverInput(msg)
 		}
 	}
+}
+
+// deliverInput 消费一条输入队列消息（loop goroutine 唯一调用点）：工具结果先摘除在飞登记，
+// 再按续轮闸门决定「续轮」或「暂存」——闸门未开（仍有异步 pending / ask / 子作业在飞）时
+// 不得续轮，否则未决 tool_call 只有 running 占位行，assistant.tool_calls 与 tool 结果配对破坏。
+// 非工具消息（用户文本 / 继续 / 通知）不受闸门约束，直接进入 chatOnce。
+func (tc *turnCtx) deliverInput(msg ChatMsg) {
+	if msg.Role != "tool" {
+		tc.chatOnce(msg)
+		return
+	}
+	tc.clearInflight(msg.ToolCallID)
+	tc.mu.Lock()
+	if !tc.continueOpenLocked() {
+		tc.stash = append(tc.stash, msg)
+		tc.mu.Unlock()
+		return
+	}
+	msgs := append(append([]ChatMsg{}, tc.stash...), msg)
+	tc.stash = nil
+	tc.mu.Unlock()
+	tc.chatOnce(msgs...)
+}
+
+// reapStalePending 扫描超时未回执的 pending（回执丢失 / 未登记）——到点按 failed 占位回填并续轮，
+// 复用 onAsyncDone 同一落库 / 续轮路径（state="timeout" → 落 failed）。
+func (tc *turnCtx) reapStalePending() {
+	now := time.Now()
+	var stale []asyncDoneMsg
+	tc.mu.Lock()
+	for taskID, pt := range tc.pending {
+		t, err := time.Parse(time.RFC3339, pt.movedAt)
+		if err != nil {
+			continue
+		}
+		if now.Sub(t) >= pendingTaskTimeout {
+			stale = append(stale, asyncDoneMsg{taskID: taskID, state: "timeout"})
+		}
+	}
+	tc.mu.Unlock()
+	for _, m := range stale {
+		logf("[chonkpilot-server] pending task %s 超时未回执（>%s）→ 按 failed 占位续轮\n", m.taskID, pendingTaskTimeout)
+		tc.onAsyncDone(m)
+	}
+}
+
+// registerPending 登记「转异步挂起」（task_id → 发起信息）并同步 task_id → 本 turn 运行态索引
+// （onGatewayTaskDone 定位用）。两步各自加锁（不嵌套 tc.mu 与 s.mu，避免与 onGatewayTaskDone 的
+// 锁定序冲突）；即使两者之间被回执插入，onGatewayTaskDone 的索引未命中会回退全表扫描命中 pending
+// → 不漏续轮。
+func (tc *turnCtx) registerPending(taskID, toolCallID string) {
+	tc.mu.Lock()
+	tc.pending[taskID] = pendingTool{toolCallID: toolCallID, movedAt: time.Now().UTC().Format(time.RFC3339)}
+	tc.mu.Unlock()
+	tc.server.mu.Lock()
+	if tc.server.taskTurnIndex != nil {
+		tc.server.taskTurnIndex[instKey(tc.req.InstanceID, taskID)] = tc
+	}
+	tc.server.mu.Unlock()
+}
+
+// markInflight 登记一个已派发、结果异步回喂的 tool_call（ask_user / llm_run 子作业）。
+func (tc *turnCtx) markInflight(toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	tc.mu.Lock()
+	if tc.inflight == nil {
+		tc.inflight = map[string]struct{}{}
+	}
+	tc.inflight[toolCallID] = struct{}{}
+	tc.mu.Unlock()
+}
+
+// clearInflight 摘除一个在飞 ask/子作业登记（工具结果被 loop 消费时调用；未知 id 幂等无操作）。
+func (tc *turnCtx) clearInflight(toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	tc.mu.Lock()
+	delete(tc.inflight, toolCallID)
+	tc.mu.Unlock()
+}
+
+// continueOpenLocked 报告续轮闸门是否已开：无在飞异步 pending、且无在飞 ask/子作业。
+// **须持 tc.mu**。
+func (tc *turnCtx) continueOpenLocked() bool {
+	return len(tc.pending) == 0 && len(tc.inflight) == 0
 }
 
 // onAsyncDone 异步任务完成：落一条 role=tool 记录（call + async + result，一条记录承载
@@ -659,13 +795,9 @@ func (tc *turnCtx) onAsyncDone(m asyncDoneMsg) {
 	tc.mu.Lock()
 	pt, ok := tc.pending[m.taskID]
 	delete(tc.pending, m.taskID)
-	var stash []ChatMsg
-	if ok {
-		// 仅在命中登记时取出暂存同步结果；未知回执不动 stash（其他在飞任务仍需它）。
-		stash = tc.stash
-		tc.stash = nil
-	}
 	tc.mu.Unlock()
+	// 消费回执 → 摘除 task_id 运行态索引（onGatewayTaskDone 定位用；仅当仍指向本 turn）。
+	tc.server.forgetPendingTaskIndex(tc.req.InstanceID, m.taskID, tc)
 	if !ok {
 		// 未知 / 重复回执（task_id 未登记或已完成消费，B-02）：直接返回——不构造
 		// ToolCallID 为空串的畸形 role=tool 消息、不续轮（否则污染上下文）。
@@ -690,8 +822,20 @@ func (tc *turnCtx) onAsyncDone(m asyncDoneMsg) {
 		TaskID: m.taskID, MovedAt: pt.movedAt,
 	})
 
-	msgs := append([]ChatMsg{}, stash...)
-	msgs = append(msgs, ChatMsg{Role: "tool", ToolCallID: pt.toolCallID, Content: resultText})
+	// 本回执结果并入 stash（与在飞期间到达的同步结果一同暂存）；**仅当本 turn 已无在飞 pending**
+	// 时才冲刷 stash 并续轮 —— 否则「带部分 tool 结果提前续轮」，后续回执的 tool 结果会与已续轮
+	// 的 assistant.tool_calls 错配（工具结果未与 tool_calls 同批提交），破坏配对协议。
+	tc.mu.Lock()
+	tc.stash = append(tc.stash, ChatMsg{Role: "tool", ToolCallID: pt.toolCallID, Content: resultText})
+	// 闸门 = 无在飞 pending **且** 无在飞 ask/子作业（后者由 deliverInput 在结果消费时摘除）——
+	// 同一批混有 ask/llm_run 时，回执先到也不得提前续轮。
+	if !tc.continueOpenLocked() {
+		tc.mu.Unlock()
+		return
+	}
+	msgs := append([]ChatMsg{}, tc.stash...)
+	tc.stash = nil
+	tc.mu.Unlock()
 	tc.chatOnce(msgs...)
 }
 
@@ -791,7 +935,7 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 		}
 	}
 	base := tc.msgs()
-	msgs := append(base, unpersistedInputs(inputs, base)...)
+	msgs := append(base, tc.unpersistedInputs(inputs, base)...)
 
 	// LLM 调用 + 无内容失败重发（方式 A，S6）：Chat 失败或流错误且无内容 → 重发同一份上下文
 	var out strings.Builder
@@ -941,7 +1085,6 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 	// 任务编排（§6.6）：每工具建任务节点（kind=工具/llm/ask_user；parent_id 挂父节点，
 	// top_session 归属）→ 广播 tasks.started；同步工具短生命周期（started → done）。
 	var tools []ChatMsg
-	var pendings []string
 	for _, call := range calls {
 		name := call.Function.Name
 		args := parseArgs(call.Function.Arguments)
@@ -1049,11 +1192,15 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 
 		if isAskTool(canon) {
 			// ask_user → server ask 通道（广播 ask-user → 等 ask-user-reply → 回填，§6.4）
+			// 登记在飞（结果经 ask-user-reply 异步回喂）→ 续轮闸门须计入（见 deliverInput）。
+			tc.markInflight(call.ID)
 			tc.server.ask(tc.req.Turn, call.ID, args, node.TaskID)
 			continue
 		}
 		if isLLMTool(canon) {
 			// llm 型（llm_run）→ server 开子 session/turn → 完成回填父轮次（节点 kind=llm）
+			// 登记在飞（结果经 runSubJob 异步回喂）→ 续轮闸门须计入。
+			tc.markInflight(call.ID)
 			go tc.server.runSubJob(tc, call.ID, node, args)
 			continue
 		}
@@ -1089,12 +1236,10 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 		if taskID != "" {
 			// 转异步：登记 task_id → 发起信息（tool-call-id + 转后台时间）；任务节点挂 gateway
 			// 任务，turn 挂起等回执；结果在 onAsyncDone 落一条 role=tool（含 async 段）。
-			tc.mu.Lock()
-			tc.pending[taskID] = pendingTool{toolCallID: call.ID, movedAt: time.Now().UTC().Format(time.RFC3339)}
-			tc.mu.Unlock()
+			// 同步登记 task_id → 本 turn 运行态索引（onGatewayTaskDone 免全表扫描定位）。
+			tc.registerPending(taskID, call.ID)
 			tc.server.tasks.setGwTask(node.TaskID, taskID)
 			tc.server.tasks.setState(node.TaskID, TaskStatePending)
-			pendings = append(pendings, taskID)
 			continue
 		}
 		text := resultTextFromMap(res)
@@ -1111,15 +1256,17 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 		tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text})
 		tc.server.tasks.done(node.TaskID, TaskStateDone, text, "")
 	}
-	if len(pendings) > 0 {
-		// 有转异步：同步结果暂存，等全部 pending 完成时合并喂回（onAsyncDone）
-		tc.mu.Lock()
+	// 续轮闸门（P2）：有在飞（异步 pending / ask / 子作业）→ 本批同步结果暂存，等最后一项
+	// 到齐时合并喂回（onAsyncDone / deliverInput）；闸门已开 → 同步递归续轮（结果一次性提交）。
+	tc.mu.Lock()
+	if !tc.continueOpenLocked() {
 		tc.stash = append(tc.stash, tools...)
 		tc.mu.Unlock()
 		return
 	}
+	tc.mu.Unlock()
 	if len(tools) > 0 {
-		tc.chatOnce(tools...) // 同步递归续轮（工具结果一次性提交）
+		tc.chatOnce(tools...)
 	}
 }
 
@@ -1131,9 +1278,25 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 //   - 否则（无内容失败 / 续写已耗尽）→ 报 `LLM_STREAM_ERROR`（携带真实分类 retryable，超时/网络/
 //     429/5xx → true 由后端自动续写；协议/鉴权 → false 由前端手动「重试」）并终结本 turn。
 //
+// 断链发生在「工具调用已解析、尚未执行」时（`len(calls)>0`，ev.Err 紧随 tool_calls 到达）：这些
+// tool_calls 未执行、无对应 tool 结果 → **丢弃**（不随 assistant.tool_calls 落库，避免产生
+// 「assistant.tool_calls 无对应 tool 消息」的非法历史）且此情形**不注入「继续」**（工具已丢、
+// 续写无意义）——仅保留本次已收正文后按断链错误终结本 turn。
+//
 // 说明：**不重发**（已收内容重发会重复输出）；本函数与既有内联逻辑逐字等价，仅抽取命名。
 // asstKey 非空 = 流式过程中已按段落过该行 → 就地回填同一行（I-176）。
 func (tc *turnCtx) resumePartial(asstKey, content, reasoning string, calls []ToolCall, streamErr error) {
+	if len(calls) > 0 {
+		// 工具调用中间断：丢弃未完成的 tool_calls（不落库、不注入「继续」），仅保留已收正文后终结。
+		if content != "" {
+			tc.answer.WriteString(content)
+			_, _ = tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: content, Reasoning: reasoning}, asstKey)
+		}
+		retryable := retryableErr(streamErr)
+		tc.server.llmErrorRetryable(tc, "LLM_STREAM_ERROR", tc.server.subsessionHint(tc, streamErr.Error(), retryable), retryable)
+		tc.Close()
+		return
+	}
 	if content != "" && tc.continues < maxAutoContinue {
 		tc.answer.WriteString(content) // 跨段累积本段正文（断链续写终态取全文）
 		tc.continues++
@@ -1171,13 +1334,19 @@ func (tc *turnCtx) msgs() []ChatMsg {
 	storedFull, storedBrief := splitTurnTokens(tc.turnTokens)
 	msgs := assembleTurns(all, tc.keepFullTurns, tc.keepFullTokens, tc.briefBudget, storedFull, storedBrief, tc.forceFull)
 	msgs = applyReasoningRule(msgs)
-	if guide := tc.server.memoryGuide(tc.req.InstanceID, tc.req.WorkDir); guide != "" {
-		msgs = append([]ChatMsg{{Role: "system", Content: guide}}, msgs...)
+	// 指引只读一次（单轮内 memory/asset 两条指引不变）：msgs() 每轮工具迭代都会调用，缓存避免
+	// 重复读配置。拼接顺序与逐次读取逐字一致：先记忆后资产（先后 prepend → 最终 [资产, 记忆, ...]）。
+	tc.guideOnce.Do(func() {
+		tc.memGuideText = tc.server.memoryGuide(tc.req.InstanceID, tc.req.WorkDir)
+		tc.assetGuideText = tc.server.assetGuide(tc.req.InstanceID)
+	})
+	if tc.memGuideText != "" {
+		msgs = append([]ChatMsg{{Role: "system", Content: tc.memGuideText}}, msgs...)
 	}
 	// 知识库资产检索指引（RB-7，2026-09-21）：与记忆指引并列；门控见 assetGuide（知识库未接入 →
 	// 空串不注入）。两条路径的区别在指引正文里写明（记忆 = 文件按绝对路径读；资产 = mcp_find + mcp_load）。
-	if guide := tc.server.assetGuide(tc.req.InstanceID); guide != "" {
-		msgs = append([]ChatMsg{{Role: "system", Content: guide}}, msgs...)
+	if tc.assetGuideText != "" {
+		msgs = append([]ChatMsg{{Role: "system", Content: tc.assetGuideText}}, msgs...)
 	}
 	return msgs
 }
@@ -1315,16 +1484,27 @@ func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *p
 	// 重载/重启后上下文出现「助理发起 tool_call 但无 tool 结果」断链；返回值语义不变。
 	if _, err := newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key); err != nil {
 		logf("[chonkpilot-server] 工具结果落库失败（turn=%s key=%s）: %v\n", tc.req.Turn, key, err)
+	} else {
+		// 成功落库 → 登记硬判据（unpersistedInputs 据此剔除重复输入，见 I-25）。
+		tc.mu.Lock()
+		if tc.persistedResultOK == nil {
+			tc.persistedResultOK = map[string]bool{}
+		}
+		tc.persistedResultOK[toolCallID] = true
+		tc.mu.Unlock()
 	}
 }
 
 // unpersistedInputs 过滤本次进入会话、尚未由 msgs() 从库带回的新消息（I-25 去重）：
 //   - user 消息（含工具通知）：在 chatOnce 前置落库，msgs() 会从库带回，直接叠加会让同一条
-//     在请求里出现两次（历史中的同内容消息不参与去重——只按"已落库即由库带回"这一事实判定，
-//     不按内容匹配，故不会误吞与新提问同文的历史消息）；
-//   - role=tool 结果：同样先落库再带回，仅保留库中无同 tool_call_id 的那条（落库失败兜底，
-//     避免丢结果）。
-func unpersistedInputs(inputs, base []ChatMsg) []ChatMsg {
+//     在请求里出现两次（只按"已落库即由库带回"这一事实判定，不按内容匹配，故不会误吞与新提问
+//     同文的历史消息）；
+//   - role=tool 结果：以「本 turn 是否**成功**落库该 tool_call_id 的结果」为**硬判据**
+//     （tc.persistedResultOK，persistToolResult 成功时登记）——成功 → 库已带回 → 剔除；
+//     失败 → 保留内存结果，避免丢结果（B-33）。仅当本进程无该记录（如恢复轮次）时，退回
+//     「库中同 id 行正文**非空**且与本次一致」的保守判据（正文为空可能是 running 占位，
+//     不据此剔除，避免误吞真实空结果；正文一致时剔除，避免重复叠加）。
+func (tc *turnCtx) unpersistedInputs(inputs, base []ChatMsg) []ChatMsg {
 	need := false
 	for _, in := range inputs {
 		if in.Role == "tool" {
@@ -1332,13 +1512,21 @@ func unpersistedInputs(inputs, base []ChatMsg) []ChatMsg {
 			break
 		}
 	}
-	persisted := map[string]bool{}
+	baseContent := map[string]string{}
 	if need {
 		for _, m := range base {
 			if m.Role == "tool" {
-				persisted[m.ToolCallID] = true
+				baseContent[m.ToolCallID] = m.Content
 			}
 		}
+	}
+	ok := map[string]bool{}
+	if need {
+		tc.mu.Lock()
+		for k, v := range tc.persistedResultOK {
+			ok[k] = v
+		}
+		tc.mu.Unlock()
 	}
 	out := make([]ChatMsg, 0, len(inputs))
 	for _, in := range inputs {
@@ -1346,8 +1534,11 @@ func unpersistedInputs(inputs, base []ChatMsg) []ChatMsg {
 		case "user":
 			// 已前置落库 → 由 msgs() 从库带回，不重复叠加
 		case "tool":
-			if persisted[in.ToolCallID] {
-				continue
+			if ok[in.ToolCallID] {
+				continue // 本 turn 已成功落库 → 库已带回
+			}
+			if c, has := baseContent[in.ToolCallID]; has && c != "" && c == in.Content {
+				continue // 无本进程记录（恢复轮次）→ 保守：库中正文非空且一致 → 视作已呈现
 			}
 			out = append(out, in)
 		default:

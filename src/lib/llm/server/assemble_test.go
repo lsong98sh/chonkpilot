@@ -355,19 +355,35 @@ func TestRouterMessagesReasoning(t *testing.T) {
 
 // TestUnpersistedInputsUserDedup：本次进入会话的 user 消息已前置落库（由 msgs() 从库带回），
 // 不再重复叠加；history 中同内容消息不受影响（不按内容匹配）。
+// tool 结果：硬判据 = 本 turn 是否**成功**落库该 tool_call_id（tc.persistedResultOK）——成功即剔除；
+// 失败则保留。仅当本进程无该记录（恢复轮次）时退回「库中同 id 行正文**非空**且一致」的保守判据。
 func TestUnpersistedInputsUserDedup(t *testing.T) {
 	base := []ChatMsg{
-		{Role: "user", Kind: "text", Content: "hi"}, // 本轮刚落库的 user（历史中亦有同内容）
-		{Role: "user", Kind: "text", Content: "hi"}, // 更早历史里的同内容问题
-		{Role: "tool", ToolCallID: "c1", Content: "r1"},
+		{Role: "user", Kind: "text", Content: "hi"},     // 本轮刚落库的 user（历史中亦有同内容）
+		{Role: "user", Kind: "text", Content: "hi"},     // 更早历史里的同内容问题
+		{Role: "tool", ToolCallID: "c1", Content: "r1"}, // 已出结果（读取侧已归一为裸正文）
+		{Role: "tool", ToolCallID: "c3", Content: ""},   // 仍在 running（无 result → 正文为空）
 	}
-	out := unpersistedInputs([]ChatMsg{
+	tc := &turnCtx{}
+	out := tc.unpersistedInputs([]ChatMsg{
 		{Role: "user", Kind: "text", Content: "hi"},
-		{Role: "tool", ToolCallID: "c1", Content: "r1"}, // 已落库 → 剔除
+		{Role: "tool", ToolCallID: "c1", Content: "r1"}, // 库中已有同正文 → 剔除
+		{Role: "tool", ToolCallID: "c3", Content: "r3"}, // 库中行无结果（正文空）→ 保留
 		{Role: "tool", ToolCallID: "c2", Content: "r2"}, // 未落库 → 保留
 	}, base)
-	if len(out) != 1 || out[0].Role != "tool" || out[0].ToolCallID != "c2" {
-		t.Fatalf("应只保留未落库的 tool 输入：%+v", out)
+	if len(out) != 2 || out[0].Role != "tool" || out[0].ToolCallID != "c3" || out[1].ToolCallID != "c2" {
+		t.Fatalf("应保留未落库 / 未出结果的 tool 输入：%+v", out)
+	}
+	// 硬判据（persistedResultOK）：本 turn 成功落库 → 即便库中正文为空（running 占位）也剔除、不重复叠加；
+	// 反向：真实**空结果**且未成功落库（无登记、库中 running 正文亦空）→ 保留，避免误吞（原「正文相等」判据会误剔）。
+	tc2 := &turnCtx{persistedResultOK: map[string]bool{"c3": true}}
+	out2 := tc2.unpersistedInputs([]ChatMsg{
+		{Role: "tool", ToolCallID: "c3", Content: ""},   // 空结果但本 turn 已成功落库 → 剔除
+		{Role: "tool", ToolCallID: "c4", Content: ""},   // 空结果且未登记（库中 c4 不存在）→ 保留
+		{Role: "tool", ToolCallID: "c9", Content: "r9"}, // 未登记 → 保留
+	}, base)
+	if len(out2) != 2 || out2[0].ToolCallID != "c4" || out2[1].ToolCallID != "c9" {
+		t.Fatalf("persistedResultOK 命中应剔除（含空结果），未登记的空结果应保留：%+v", out2)
 	}
 }
 

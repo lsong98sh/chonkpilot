@@ -127,6 +127,10 @@ type connSlot struct {
 	closing  atomic.Bool  // 主动关闭/重建中 → 退出观测静默
 	lastUsed atomic.Int64 // 最近使用时刻（unix nano；空闲回收判据）
 	inFlight atomic.Int32 // 在飞调用数（>0 不回收）
+	// gen 是本槽的代际号（创建时由 proxyProvider.genSeq 分配；Invalidate 重建递增）。
+	// 退出观测（monitorSpawned）用它判定某次退出是否已被重建路径认领：捕获代际 ≠ 当前共享槽
+	// 代际 = 该槽已被替换（主动 kill 的结果），而非「意外退出」（修复 closing 复位时序竞态）。
+	gen uint64
 }
 
 // processExited 报告自持子进程是否已 Wait 完成（原子标志；cmd 为 nil 时恒 false）。
@@ -200,7 +204,8 @@ type proxyProvider struct {
 	rebuildMu sync.Mutex
 	shared    atomic.Pointer[connSlot] // 共享槽（isolate=false 的唯一连接；always 建；Invalidate 原地换新）
 	pool      map[string]*connSlot     // poolKeyFor(instance, workdir) → 专属槽（isolate=true）
-	buildMu   map[string]*sync.Mutex   // 每池键建连锁（同键串行，不同键互不阻塞）
+	buildMu   [buildLockShards]sync.Mutex // 固定分片建连锁（同池键恒得同锁；散列分片防无界增长）
+	genSeq    atomic.Uint64            // 代际序号（每次重建递增；见 connSlot.gen / WaitExit）
 	noWd      atomic.Bool              // 「缺 workdir 回落共享」告警只记一次
 
 	closing  atomic.Bool // 网关主动关闭/重建中（Close/Invalidate）→ 退出观测静默
@@ -227,8 +232,9 @@ func newProxyProvider(entry *ServerEntry, callTimeout time.Duration, logf func(s
 	}
 	p := &proxyProvider{name: entry.ID, entry: entry, kind: kind, endpoint: entry.URL,
 		inject: entry.IsBuiltin(), isolate: entry.IsolateEnabled(), idleTTL: ttl, logf: logf,
-		pool: map[string]*connSlot{}, buildMu: map[string]*sync.Mutex{},
-		stopCh: make(chan struct{})}
+		pool: map[string]*connSlot{}, stopCh: make(chan struct{})}
+	p.genSeq.Store(1)
+	shared.gen = p.genSeq.Load()
 	p.shared.Store(shared)
 	if p.isolate {
 		go p.sweepIdle() // 空闲池键连接回收（无活跃调用超时 → 关闭并移出池）
@@ -449,9 +455,10 @@ func (p *proxyProvider) warn(format string, args ...any) {
 //   - isolate=true 但 workdir 缺失 → 回落共享槽 + warn（不报错，保持可用）。
 //
 // 占用在 p.mu 内与「查池」一并完成，与 reclaimIdle 的「删除 + 关闭」互斥 → 空闲回收绝不关闭在飞槽。
-// 建连（含 spawn + 握手，可数秒）在 per-池键 锁内进行，不进 pool 全局锁——不同键并发调用
-// 各自独立建连，不被彼此的建连阻塞。专属槽建连/握手失败 → warn 并回落共享槽（保证调用可用性，
-// 如 spawned http/sse 因固定端口无法按 instance/workdir 重复拉起时退化为共享）。
+// 建连（含 spawn + 握手，可数秒）在 buildLock 与 pool 全局锁**之外**进行——不同池键并发调用各自
+// 独立建连、互不阻塞；同池键并发首调由「入池短临界区 + 双检」保证只入池一条（多建者关闭并复用）。
+// 专属槽建连/握手失败 → warn 并回落共享槽（保证调用可用性，如 spawned http/sse 因固定端口无法按
+// instance/workdir 重复拉起时退化为共享）。
 func (p *proxyProvider) slotFor(ctx context.Context) (*connSlot, func()) {
 	never := func() {}
 	if !p.isolate {
@@ -470,12 +477,15 @@ func (p *proxyProvider) slotFor(ctx context.Context) (*connSlot, func()) {
 		return s, s.releaseFn()
 	}
 
+	// 建连（含 spawn + 握手，可达数秒）在 buildLock **外**进行：buildLock 是固定分片锁，散列碰撞的
+	// 其他池键不得被本次建连长窗口阻塞；同池键的并发首调由下方「入池双检」保证只入池一条。
 	lk := p.buildLock(key)
-	lk.Lock() // 同池键建连锁：并发首调只建一条
-	defer lk.Unlock()
+	lk.Lock()
 	if s := p.acquirePooled(key); s != nil { // 双检（等锁期间可能已由他人建好）
+		lk.Unlock()
 		return s, s.releaseFn()
 	}
+	lk.Unlock()
 
 	slot, err := buildSlot(p.entry, wd, inst, p.logf)
 	if err == nil {
@@ -488,8 +498,21 @@ func (p *proxyProvider) slotFor(ctx context.Context) (*connSlot, func()) {
 		p.warn("[gateway] %s: build isolated conn for instance %s work_dir %s failed (%v) → fallback to shared conn", p.name, inst, wd, err)
 		return p.shared.Load(), never
 	}
-	slot.inFlight.Add(1) // 先占位（在飞），再入池
+	// 入池（短临界区 + 双检）：作废/重建已发起（closing）→ 关闭新槽、不入池，回落共享槽；
+	// 等锁/建连期间他方已抢先入池同键 → 关闭本次新建槽、复用在池槽（避免同键出现两条在池连接）。
 	p.mu.Lock()
+	if p.closing.Load() {
+		p.mu.Unlock()
+		_ = slot.Close()
+		return p.shared.Load(), never
+	}
+	if existing := p.pool[key]; existing != nil {
+		existing.inFlight.Add(1)
+		p.mu.Unlock()
+		_ = slot.Close()
+		return existing, existing.releaseFn()
+	}
+	slot.inFlight.Add(1) // 先占位（在飞），再入池
 	p.pool[key] = slot
 	p.mu.Unlock()
 	if slot.cmd != nil { // spawned http/sse：池化自持子进程同样挂退出观测
@@ -514,17 +537,24 @@ func (p *proxyProvider) acquirePooled(key string) *connSlot {
 // releaseFn 返回释放占用的闭包（调用方 defer）。
 func (s *connSlot) releaseFn() func() { return func() { s.inFlight.Add(-1) } }
 
-// buildLock 返回该池键的建连锁（不存在则新建；**不随回收删除**——删除会让同池键
-// 出现两把锁并发建连）。
+// buildLockShards 是建连锁的固定分片数：不同池键经散列映射到有限分片，同池键恒得同锁
+// （不同键偶有碰撞仅致建连轻微串行，无正确性影响），从而避免「按池键建锁且永不删除」的无界增长。
+const buildLockShards = 64
+
+// buildLock 返回该池键的建连锁（固定分片：按键散列映射到有限分片，内存有界；
+// 同池键恒得同锁——同键串行建连、不同键互不阻塞）。
 func (p *proxyProvider) buildLock(key string) *sync.Mutex {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	lk, ok := p.buildMu[key]
-	if !ok {
-		lk = &sync.Mutex{}
-		p.buildMu[key] = lk
+	return &p.buildMu[buildLockHash(key)%buildLockShards]
+}
+
+// buildLockHash 是池键的 FNV-1a 32 位散列（仅用于分片选择；无外部依赖）。
+func buildLockHash(s string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= 16777619
 	}
-	return lk
+	return h
 }
 
 // watchPooled 观测池化自持子进程（spawned http/sse）：意外退出 → 从池中移除（下次调用懒建）；
@@ -622,16 +652,17 @@ func (p *proxyProvider) Name() string { return p.kind + ":" + p.name }
 // 以共享槽为准（网关 monitorSpawned 的观测对象；池化槽由 watchPooled 各自观测）。
 func (p *proxyProvider) SpawnedSelf() bool { return p.shared.Load().cmd != nil }
 
-// WaitExit 返回共享槽子进程退出结果（仅自持子进程；缓冲通道，可多次/提前接收）。
-// 重建（Invalidate）后返回新进程的退出通道。
-func (p *proxyProvider) WaitExit() <-chan error {
-	done := p.shared.Load().done
-	if done == nil {
+// WaitExit 返回共享槽子进程退出结果与**该槽的代际号**（仅自持子进程；缓冲通道，可多次/提前接收）。
+// 重建（Invalidate）后返回新进程的退出通道与新代际；调用方（monitorSpawned）据此识别本次退出是否
+// 已被重建路径认领（捕获代际 ≠ 当前共享槽代际 = 该槽已被主动替换，而非意外退出）。
+func (p *proxyProvider) WaitExit() (<-chan error, uint64) {
+	s := p.shared.Load()
+	if s.done == nil {
 		ch := make(chan error, 1)
 		ch <- nil
-		return ch
+		return ch, s.gen
 	}
-	return done
+	return s.done, s.gen
 }
 
 // closed 报告 provider 是否已进入 Close 流程（Stop/unregister）。Close 关闭 stopCh，
@@ -680,6 +711,12 @@ func (p *proxyProvider) Call(ctx context.Context, tool string, args map[string]a
 // spawned http/sse：kill 自持子进程 + 断连，再按规格重新 spawn + 轮询就绪 + 连接。
 // 返回 rebuilt=false 仅在重建/重连失败时（provider 暂不可用，需重新注册/reload）。
 func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
+	// 已停（Close / Stop 已关闭 stopCh）：不再 spawn/重连——否则并发的取消路径
+	//（onTaskCancel / CancelExec → Terminate → Invalidate）会在 Stop 之后 respawn 出无人观测的
+	// 孤儿子进程（观测 goroutine 已随 Stop 退出）。
+	if p.closed() {
+		return false, fmt.Errorf("%s: provider closed", p.name)
+	}
 	// 串行化重建（C-52）：并发进入（如 monitorSpawned 重建与取消路径重建）会各自 spawn，
 	// 后写 shared 覆盖前者 → 前一子进程失去句柄成孤儿。持锁期间仍在 p.mu 内完成作废（closePooled）。
 	p.rebuildMu.Lock()
@@ -691,7 +728,10 @@ func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
 	// 报 no transport connection，而非复用已关闭/半初始化的连接）→ closing 归位（避免长期静默）。
 	fail := func(err error) (bool, error) {
 		_ = p.shared.Load().Close()
-		p.shared.Store(&connSlot{})
+		// 失败回落：保留**单调代际**（不复用零值 0）——monitorSpawned 以「捕获代际 ≠ 当前共享槽
+		// 代际」判定某次退出是否已被重建路径认领；置 0 会让空槽与任意代际都无法区分 → 代际判定
+		// 误判、多一次假重建。
+		p.shared.Store(&connSlot{gen: p.genSeq.Add(1)})
 		p.closing.Store(false)
 		return false, err
 	}
@@ -699,7 +739,7 @@ func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
 	if err != nil {
 		return fail(fmt.Errorf("respawn %q: %w", p.name, err))
 	}
-	slot := &connSlot{conn: conn, cmd: cmd, done: done, exited: exited}
+	slot := &connSlot{conn: conn, cmd: cmd, done: done, exited: exited, gen: p.genSeq.Add(1)}
 	slot.touch()
 	p.shared.Store(slot)
 	if err := p.connect(ctx); err != nil {

@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -303,14 +304,16 @@ type jobEnv struct {
 
 	// ── DSL-3 展示（不随迭代增长）──
 	// execSteps 是步骤执行记录（跨迭代累计，扁平，末 jobMaxSteps 步）；stepContainer /
-	// containerLead 由 buildStaticTree 预走 AST 得到（LLM 原始参数 → 所属静态节点 id /
-	// 容器首步原始参数）；containerIDs 是静态容器节点 id（作业结束标记终态）；sessions 是
+	// containerLead 由 buildStaticTree 预走 AST 得到（**LLM 语句源码行号** → 所属静态节点 id /
+	// 容器首条语句行号）；containerIDs 是静态容器节点 id（作业结束标记终态）；sessions 是
 	// 各步骤子会话 id（作业结束清理 subParents 映射）。
-	execSteps     []dslExecStep
-	stepNo        int // 单调步号（DslStepRecord.No 来源；FIFO 淘汰后仍不回退，见 jobMaxSteps）
-	stepContainer map[string]string
-	containerLead map[string]string
-	leadCount     map[string]int
+	execSteps []dslExecStep
+	stepNo    int // 单调步号（DslStepRecord.No 来源；FIFO 淘汰后仍不回退，见 jobMaxSteps）
+	// 三张表均以**语句源码行号**为身份（非 LLM 参数文本）：同一脚本内出现两条字面完全相同的
+	// LLM 语句时，参数文本无法区分（会互相覆盖），行号唯一。
+	stepContainer map[int]string // LLM 语句行号 → 所属静态容器节点 id
+	containerLead map[string]int // 容器节点 id → 其首条 LLM 语句行号（供 loop_current 计数）
+	leadCount     map[int]int    // LLM 语句行号 → 执行计数（仅统计容器首条，投影 loop_current）
 	containerIDs  []string
 	sessions      []string
 }
@@ -331,7 +334,20 @@ const jobMaxSteps = 200
 // 由 server.domainExecute / turn.chatOnce 经 `go runSubJob` 后台派生（子作业）——入口加 panic 兜底：
 // 单个子作业的偶发 panic 不拖垮常驻服务（附属能力失败不阻断服务口径）。
 func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, args map[string]any) {
-	defer recoverLog("runSubJob")
+	// panic 兜底（P2）：不仅回收 goroutine —— panic 路径也必须落**任务终态 + 回填父轮**，
+	// 否则子作业节点悬挂、父轮永久等待该 tool_call（无终态、无回执）。用「已终态则跳过」守卫
+	// 避免与正常收尾重复回填（tasks.done 幂等；父轮 FeedToolResultStatus 非幂等）。
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		logf("[chonkpilot-server] runSubJob panic（已恢复）: 作业 %s: %v\n%s\n", node.TaskID, r, debug.Stack())
+		if n := s.tasks.nodeIn(parent.req.InstanceID, node.TaskID); n == nil || !terminalTaskState(n.State) {
+			s.tasks.done(node.TaskID, TaskStateError, "", fmt.Sprintf("llm_run 内部错误: %v", r))
+			parent.FeedToolResultStatus(toolCallID, "错误: llm_run 内部错误（已恢复）", "failed")
+		}
+	}()
 	script, err := jobScriptOf(parent.req.InstanceID, args)
 	if err != nil {
 		s.tasks.done(node.TaskID, TaskStateError, "", err.Error())
@@ -345,8 +361,8 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 		// fs 绑定轮次 instance：作业内 `!/` 路径按该 instance 的临时根解析（缺口 4：
 		// 多 instance 同进程各自独立根，互不覆盖）。
 		fs:            &jobFileSys{log: &writeLog{}, inst: parent.req.InstanceID},
-		stepContainer: map[string]string{},
-		containerLead: map[string]string{},
+		stepContainer: map[int]string{},
+		containerLead: map[string]int{},
 	}
 	jr.jobSession = "job-" + newID()
 	_ = newSessionStore(s.bus, parent.req.InstanceID).EnsureSessionWithParent(jr.jobSession, parent.req.Session)
@@ -405,8 +421,10 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 		ReturnFile: returnFile,
 	})
 	stopWatch := jr.watchCancel(eng)
+	// defer close：eng.Execute 内若发生 panic，回收 goroutine 的 close(stopWatch) 亦执行
+	//（否则监视 goroutine 泄漏；外层 recoverLog 兜 panic）。
+	defer close(stopWatch)
 	_ = eng.Execute(ast)
-	close(stopWatch)
 
 	// DSL 运行时错误必须上报——否则作业回填文本为空/误导（如"全部跳过"），LLM 与用户均无从感知（I-19）。
 	// 来源有二：① SET/表达式/句柄等**非 LLM 步骤**失败；② **LLM 步骤的参数预检失败**
@@ -506,10 +524,12 @@ func (jr *jobEnv) llmAction() dsl.Action {
 			session := fmt.Sprintf("%s-%d", jr.jobSession, jr.nextStep())
 			label := purposeLabel(purpose) // 展示名 = 目的（10–20 字软约束：超长截断、不足记录）
 			// 静态语句节点（容器或作业根）：子会话内工具节点据此挂父（DSL-3，执行记录不建树节点）。
-			parentID := jr.stepParent(args)
+			// 以**语句行号**定位（sc.StmtLine）——同参数语句可区分，避免互相覆盖。
+			ln := sc.StmtLine()
+			parentID := jr.stepParent(ln)
 			jr.s.tasks.bindSubSession(session, parentID)
 			// 追加一条 running 执行记录（跨迭代累计，不建树节点）+ 刷新容器进度。
-			no := jr.beginStep(session, label, args)
+			no := jr.beginStep(session, label, ln)
 
 			// 子轮次 ctx 由**发起它的本 turn 的 ctx** 派生（G-18 gapA）：父轮次取消/关闭
 			// （用户停止、级联取消）时取消信号沿链下传，子步不再跑满。
@@ -532,9 +552,9 @@ func (jr *jobEnv) llmAction() dsl.Action {
 }
 
 // stepParent 取该 LLM 语句所属静态节点 id（容器 dsl_loop/dsl_parallel，或作业根 dsl_job）。
-// 未登记（AST 预走后仍在 map 外，异常）→ 回落作业根。
-func (jr *jobEnv) stepParent(rawArgs string) string {
-	if pid := jr.stepContainer[rawArgs]; pid != "" {
+// 以**语句源码行号**为身份（同参数的不同语句可区分）；未登记（AST 预走后仍在 map 外，异常）→ 回落作业根。
+func (jr *jobEnv) stepParent(ln int) string {
+	if pid := jr.stepContainer[ln]; pid != "" {
 		return pid
 	}
 	return jr.node.TaskID
@@ -542,7 +562,8 @@ func (jr *jobEnv) stepParent(rawArgs string) string {
 
 // beginStep 追加一条 running 执行记录（不建树节点）→ 刷新作业根 `steps[]` + 容器进度；
 // 返回记录步号 No（供 endStep 按号回填；B-40：FIFO 淘汰后下标会偏移，不能再按下标定位）。
-func (jr *jobEnv) beginStep(session, purpose, rawArgs string) int {
+// ln = 该 LLM 语句源码行号（leadCount 据行号计数，投影容器 loop_current）。
+func (jr *jobEnv) beginStep(session, purpose string, ln int) int {
 	jr.mu.Lock()
 	// No 取单调步号：淘汰最旧记录后仍不回退，保证步号唯一（对齐前端展示序）。
 	jr.stepNo++
@@ -557,9 +578,9 @@ func (jr *jobEnv) beginStep(session, purpose, rawArgs string) int {
 		jr.execSteps = append([]dslExecStep(nil), jr.execSteps[len(jr.execSteps)-jobMaxSteps:]...)
 	}
 	if jr.leadCount == nil {
-		jr.leadCount = map[string]int{}
+		jr.leadCount = map[int]int{}
 	}
-	jr.leadCount[rawArgs]++
+	jr.leadCount[ln]++
 	jr.sessions = append(jr.sessions, session)
 	steps := jr.stepsLocked()
 	jr.mu.Unlock()
@@ -604,7 +625,7 @@ func (jr *jobEnv) applyContainerProgress() {
 	}
 	var ups []upd
 	for cid, lead := range jr.containerLead {
-		if lead == "" {
+		if lead == 0 {
 			continue
 		}
 		if c := jr.leadCount[lead]; c > 0 {
@@ -665,39 +686,41 @@ func (jr *jobEnv) buildStaticTree(stmts []dsl.Stmt) {
 	_ = jr.walkStatic(stmts, jr.node.TaskID)
 }
 
-// walkStatic 递归预走：返回该层**首个 LLM 语句的原始参数**（供容器 lead 判定 loop_current）。
-func (jr *jobEnv) walkStatic(stmts []dsl.Stmt, parentID string) string {
-	var lead string
+// walkStatic 递归预走：返回该层**首个 LLM 语句的源码行号**（0 = 无；供容器 lead 判定 loop_current）。
+// 身份一律用语句行号（非参数文本）——同参数的不同语句可区分（否则会互相覆盖）。
+func (jr *jobEnv) walkStatic(stmts []dsl.Stmt, parentID string) int {
+	var lead int
 	for _, st := range stmts {
 		switch t := st.(type) {
 		case *dsl.LoopStmt:
 			cid := jr.mkContainer(TaskKindDslLoop, loopLabel(t), parentID)
 			inner := jr.walkStatic(t.Block, cid)
-			if inner != "" && jr.containerLead[cid] == "" {
+			if inner != 0 && jr.containerLead[cid] == 0 {
 				jr.containerLead[cid] = inner
 			}
-			if lead == "" {
+			if lead == 0 {
 				lead = inner
 			}
 		case *dsl.ParallelStmt:
 			cid := jr.mkContainer(TaskKindDslParallel, "PARALLEL", parentID)
 			inner := jr.walkStatic(t.Block, cid)
-			if inner != "" && jr.containerLead[cid] == "" {
+			if inner != 0 && jr.containerLead[cid] == 0 {
 				jr.containerLead[cid] = inner
 			}
-			if lead == "" {
+			if lead == 0 {
 				lead = inner
 			}
 		case *dsl.IfStmt:
 			// IF 透明：块内语句挂当前容器（DSL-3 未定义 dsl_if；不新增 kind）
-			if inner := jr.walkStatic(t.Block, parentID); inner != "" && lead == "" {
+			if inner := jr.walkStatic(t.Block, parentID); inner != 0 && lead == 0 {
 				lead = inner
 			}
 		case *dsl.ActionStmt:
 			if strings.EqualFold(t.Verb, "LLM") {
-				jr.stepContainer[t.Args] = parentID
-				if lead == "" {
-					lead = t.Args
+				ln := t.Line()
+				jr.stepContainer[ln] = parentID
+				if lead == 0 {
+					lead = ln
 				}
 			}
 		}

@@ -275,8 +275,13 @@ func (cw *capWatcher) syncLocked() {
 			if cw.expanded[root] {
 				continue // 已完整展开（根 + 子树监听已建立）→ 无新目录待补，跳过全树重扫
 			}
-			cw.addTreeLocked(root)
-			cw.expanded[root] = true
+			if cw.addTreeLocked(root) {
+				cw.expanded[root] = true
+			} else {
+				// 根监听失败（`w.Add` 失败，如句柄耗尽）→ 不置「已展开」标记，下次 syncLocked 重试，
+				// 避免该根永久失去监听（热生效静默失效直到重启）。
+				delete(cw.expanded, root)
+			}
 			continue
 		}
 		// 根尚不存在 / 已被删除 → 取消展开标记（其被创建时由 handle 重新展开），并监听最近祖先。
@@ -311,19 +316,26 @@ func (cw *capWatcher) removeWatchLocked(path string) {
 	}
 }
 
-// addTreeLocked 递归监听 dir 及其子目录（跳过隐藏项）。
-func (cw *capWatcher) addTreeLocked(dir string) {
-	cw.addDirLocked(dir)
+// addTreeLocked 递归监听 dir 及其子目录（跳过隐藏项）；返回**整棵子树（根 + 所有子目录）是否
+// 全部监听成功**。addDirLocked 因 `w.Add` 失败返回 false → 该目录未监听，**任一目录失败即返回
+// false**（不得只回根成败：子目录 `w.Add` 失败被忽略会配合调用方置 `expanded[root]` → 该子树
+// 内新变更永久不被监听/重试，热生效静默失效直到重启）。
+func (cw *capWatcher) addTreeLocked(dir string) bool {
+	dir = normPath(dir)
+	ok := cw.addDirLocked(dir) || cw.watched[dir]
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return ok
 	}
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		cw.addTreeLocked(filepath.Join(dir, e.Name()))
+		if !cw.addTreeLocked(filepath.Join(dir, e.Name())) {
+			ok = false
+		}
 	}
+	return ok
 }
 
 // inWantLocked 判定路径是否位于任一目标根内（含根自身）。
