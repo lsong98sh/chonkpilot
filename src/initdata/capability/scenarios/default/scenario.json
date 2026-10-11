@@ -11,6 +11,7 @@
     "${exeDir}/capability/agents/后端测试工程师.agent.md",
     "${exeDir}/capability/agents/系统测试工程师.agent.md",
     "${exeDir}/capability/agents/需求分析师.agent.md",
+    "${exeDir}/capability/agents/新项目需求沟通员.agent.md",
     "${exeDir}/capability/agents/代码审查.agent.md"
   ]
 }

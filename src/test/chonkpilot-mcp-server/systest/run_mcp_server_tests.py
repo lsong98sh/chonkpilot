@@ -290,14 +290,22 @@ def suite_core(core, work):
 
     def t_skills_list():
         # skills 复用 prompt 通道，经 _meta.type 区分（spec 25 §3.1/§4.1/§7）：无 skills/list 方法
-        # 集合 = 核心 3（skills/core/）+ 14 个 UX/前端设计技能（skills/ux/，来源 claude-ux/skills/）。
+        # 集合 = skills/core/ 4 + skills/ux/ 15（来源 claude-ux/skills/）
+        #      + skills/se/ 13 个需求工程 step 技能（供「新项目需求沟通员」agent 分步取用）。
         skills = {p["name"] for p in core.prompts_list() if (p.get("_meta") or {}).get("type") == "skill"}
         expect = {
-            "debug", "explore", "sandbox-escape",
-            "wireframe", "polish-pass", "make-tweakable", "make-a-prototype", "make-a-deck",
-            "interaction-states-pass", "hierarchy-rhythm-review", "generate-variations",
-            "frontend-aesthetic-direction", "discovery-questions", "design-system-extract",
-            "component-extract", "ai-slop-check", "accessibility-audit",
+            # skills/core/
+            "agent-prompt-rule", "debug", "explore", "sandbox-escape",
+            # skills/ux/
+            "accessibility-audit", "ai-slop-check", "component-extract", "design-system-extract",
+            "discovery-questions", "frontend-aesthetic-direction", "generate-variations",
+            "hierarchy-rhythm-review", "interaction-states-pass", "layout-discipline",
+            "make-a-deck", "make-a-prototype", "make-tweakable", "polish-pass", "wireframe",
+            # skills/se/（13 个需求工程 step 技能；名字沿用原编号文件名）
+            "0.企业画像与现状分析", "1.管理对象与管理诉求", "2.外部交互点",
+            "3.业务流程与角色 + 干系人分析", "4.生命周期", "5.可管理项", "6.权限矩阵",
+            "7.配置项", "8.对外接口", "9.通用设计维度 + MECE检查",
+            "10.数据模型与架构 + 验收标准", "11.非功能性需求", "12.总结与汇报",
         }
         assert skills == expect, skills
 
