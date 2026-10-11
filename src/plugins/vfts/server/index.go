@@ -254,6 +254,8 @@ type IncrementalRemove struct {
 // 重复调用为幂等重建：先关闭并清空集合目录，再重新建索引。
 // exts / skipDirs / stackGitignore 传非 nil 时先更新配置。返回逐文件 doc_ids（插件重建清单用）。
 func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*IndexResult, error) {
+	w.recMu.Lock()
+	defer w.recMu.Unlock()
 	if exts != nil || skipDirs != nil || stackGitignore != nil {
 		if err := w.Configure(nil, exts, skipDirs, stackGitignore, nil); err != nil {
 			return nil, err
@@ -286,7 +288,7 @@ func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*
 	defer w.zmu.Unlock()
 	if w.coll != nil {
 		_ = w.coll.Close()
-		w.coll = nil
+		w.setColl(nil)
 	}
 	if err := os.RemoveAll(w.collPath()); err != nil {
 		w.markError(fmt.Sprintf("clean store: %v", err))
@@ -340,7 +342,7 @@ func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*
 		w.markError(fmt.Sprintf("flush: %v", err))
 		return nil, err
 	}
-	w.coll = coll
+	w.setColl(coll)
 
 	w.mu.Lock()
 	w.meta.State = "ready"
@@ -521,7 +523,7 @@ func (w *Workspace) ensureCollLocked() (*zvec.Collection, error) {
 		if err != nil {
 			return nil, err
 		}
-		w.coll = coll
+		w.setColl(coll)
 		return coll, nil
 	}
 	// zvec CreateAndOpen 要求目标路径不存在：仅保证父目录存在。
@@ -532,7 +534,7 @@ func (w *Workspace) ensureCollLocked() (*zvec.Collection, error) {
 	if err != nil {
 		return nil, err
 	}
-	w.coll = coll
+	w.setColl(coll)
 	return coll, nil
 }
 
@@ -544,20 +546,25 @@ func (w *Workspace) EnsureReady() (string, error) {
 	w.mu.Lock()
 	st := w.meta.State
 	errMsg := w.meta.Err
-	has := w.coll != nil
 	w.mu.Unlock()
 
-	if !has {
-		if _, err := os.Stat(w.collPath()); err != nil {
-			return "not_initialized", ErrNotInitialized
+	// 载入态先读原子快照位（不取 zmu）：已载入则免锁，避免与 Initialize 的整段长 zmu 临界区
+	// 耦合而阻塞查询门；仅在未载入时用短 zmu 懒加载/校验落盘集合。
+	if !w.loaded.Load() {
+		w.zmu.Lock()
+		if w.coll == nil {
+			if _, err := os.Stat(w.collPath()); err != nil {
+				w.zmu.Unlock()
+				return "not_initialized", ErrNotInitialized
+			}
+			coll, err := openCollection(w.collPath())
+			if err != nil {
+				w.zmu.Unlock()
+				return "error", fmt.Errorf("打开 vfts 集合失败: %w", err)
+			}
+			w.setColl(coll)
 		}
-		coll, err := openCollection(w.collPath())
-		if err != nil {
-			return "error", fmt.Errorf("打开 vfts 集合失败: %w", err)
-		}
-		w.mu.Lock()
-		w.coll = coll
-		w.mu.Unlock()
+		w.zmu.Unlock()
 	}
 	switch st {
 	case "error":

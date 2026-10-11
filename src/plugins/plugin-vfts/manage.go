@@ -98,16 +98,20 @@ func (p *Vfts) scheduleRebuildAll(reason string) []string {
 }
 
 // scheduleRebuild 对给定 workdir 清单调度强制重建（去抖合并，后台执行）。
+// 停止态（Stop 后）→ 直接返回，不再登记去抖定时器（避免窗口内回调重新 spawn 引擎）。
 func (p *Vfts) scheduleRebuild(wds []string, reason string) []string {
 	out := append([]string(nil), wds...)
 	sort.Strings(out)
+	if p.stopped.Load() {
+		return out
+	}
 	for _, wd := range out {
 		wd := wd
 		r := reason
-		p.rebuild.schedule(wd, func() {
+		p.rebuild.schedule(wd, p.safeFunc(func() {
 			p.logf("vfts: %s → workdir %s 强制重建索引", r, wd)
 			p.ensureWorkspace(wd, true)
-		})
+		}))
 	}
 	return out
 }

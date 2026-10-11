@@ -234,7 +234,12 @@ func (p *Codegraph) onToolCall(_ context.Context, _ string, v *mq.Value) error {
 		return reply("codegraph: 该项目索引正在初始化中，请稍后重试（codegraph_status 可查进度）", false)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	text, isErr, err := p.clientFor(r.workDir).call(ctx, msg.Tool, args)
+	c := p.clientFor(r.workDir)
+	if c == nil { // Stop 后 clientFor 返回 nil：在飞回调不得解引用
+		cancel()
+		return reply("codegraph: 插件已停止", true)
+	}
+	text, isErr, err := c.call(ctx, msg.Tool, args)
 	cancel()
 	if err != nil {
 		p.logf("codegraph: %s 调用引擎失败（workdir=%s）：%v", msg.Tool, r.workDir, err)

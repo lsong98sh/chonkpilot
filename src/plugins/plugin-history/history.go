@@ -159,10 +159,6 @@ type workState struct {
 	lastSlug    string // 最近一次打点所属链 slug（根会话；按会话回写状态时用于归属判定）
 	turnStartID string // 当前轮起点检查点（`to="turn-start"`）
 	prevTurnID  string // 上一轮起点检查点（保底永不删）
-	// grafted：slug → 本插件该链最近一次 `git replace --graft` 解链的最老保留点。
-	// **按 slug 独立登记**（多会话共享一个 workState；共用单槽会让修剪 B 误删 A 的替换引用 →
-	// 撤销 A 的截断）。仅供清理本插件自己的上一条替换引用，**绝不触碰用户 refs/replace/***。
-	grafted map[string]string
 }
 
 // New 构建 history 插件。
@@ -289,10 +285,21 @@ func (h *History) gateEnabled(instanceID string) bool {
 	enabled, ok := h.gate[instanceID]
 	if !ok && !h.gateBusy[instanceID] {
 		h.gateBusy[instanceID] = true
-		go h.readGate(instanceID)
+		go h.safeReadGate(instanceID)
 	}
 	h.gateMu.Unlock()
 	return ok && enabled
+}
+
+// safeReadGate 在独立 goroutine 中执行 readGate（裸 goroutine 已脱离 mq.dispatch 的 recover，
+// 兜底恢复 panic 仅记日志，不使常驻宿主进程终止）。
+func (h *History) safeReadGate(instanceID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			h.logf()("history: readGate panic recovered（instance=%s）：%v", instanceID, r)
+		}
+	}()
+	h.readGate(instanceID)
 }
 
 // onInstanceRegister 实例注册 → 建立 workState + 触发 history.enabled 异步回读。
@@ -557,7 +564,6 @@ func (h *History) ensureWork(wd string) *workState {
 	ws := &workState{
 		workDir: wd,
 		index:   filepath.Join(wd, ".chonkpilot", "history", "index"),
-		grafted: map[string]string{},
 	}
 	if _, err := os.Stat(filepath.Join(wd, ".git")); err == nil {
 		ws.hasGit = true

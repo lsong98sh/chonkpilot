@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/chonkpilot/chonkpilot-vfts-mcp-server/third_party/jieba"
 )
@@ -23,20 +24,24 @@ import (
 // userDictName 系统级自定义词文件名（zvec jieba `user_dict_path`）。
 const userDictName = "user_dict.txt"
 
-// systemDictDir 已解析/物化的系统级词典目录（ensureSystemDict 赋值；空 = 尚未解析）。
+// systemDictOnce 单飞解析 systemDictDir。词典目录路径仅由本 Once 写入（只读消费），
+// 消除「SystemDictDir 读 / ensureSystemDict 写」与「WriteUserDict 并发调用」引起的包级变量数据竞争。
+var systemDictOnce sync.Once
+
+// systemDictDir 已解析的系统级词典目录（仅由 systemDictOnce 写入；空 = 尚未解析）。
 var systemDictDir string
 
-// SystemDictDir 返回系统级词典目录（仅解析路径，不物化）。
+// SystemDictDir 返回系统级词典目录（仅解析路径，不物化）。路径解析幂等（sync.Once 单飞）。
 // 缓存根不可得（无 HOME 等异常）→ 回落系统临时目录（保证目录恒可解析）。
 func SystemDictDir() string {
-	if systemDictDir != "" {
-		return systemDictDir
-	}
-	base, err := os.UserCacheDir()
-	if err != nil || base == "" {
-		base = os.TempDir()
-	}
-	return filepath.Join(base, "chonkpilot", "vfts", "jieba")
+	systemDictOnce.Do(func() {
+		base, err := os.UserCacheDir()
+		if err != nil || base == "" {
+			base = os.TempDir()
+		}
+		systemDictDir = filepath.Join(base, "chonkpilot", "vfts", "jieba")
+	})
+	return systemDictDir
 }
 
 // UserDictPath 返回系统级自定义词文件路径。
@@ -69,7 +74,6 @@ func ensureSystemDict() (string, error) {
 			return "", fmt.Errorf("初始化自定义词文件: %w", err)
 		}
 	}
-	systemDictDir = dir
 	return dir, nil
 }
 

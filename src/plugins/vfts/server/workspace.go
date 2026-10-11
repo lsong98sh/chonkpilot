@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	zvec "github.com/zvec-ai/zvec-go"
 )
@@ -44,11 +45,14 @@ type Workspace struct {
 	Dir   string // 规范绝对路径（'/' 分隔）
 	Store string // Dir/.chonkpilot/vfts
 
-	mu    sync.Mutex // 保护 meta / coll 指针
+	mu    sync.Mutex // 保护 meta
 	recMu sync.Mutex // 就绪/重建单飞：同一 workdir 不平行执行
-	zmu   sync.Mutex // zvec 集合操作串行（底层句柄非并发安全）
+	zmu   sync.Mutex // zvec 集合操作串行 + 保护 coll 指针（底层句柄非并发安全）
 	coll  *zvec.Collection
-	meta  Meta
+	// loaded 是「coll 是否已载入」的**原子快照位**（由 zmu 临界区内的 setColl 唯一维护）：
+	// Status / EnsureReady 据此读取载入态，无需等待 Initialize 的整段长 zmu 临界区。
+	loaded atomic.Bool
+	meta   Meta
 	// docsToken 转换服务鉴权 token（仅内存，绝不落盘/落日志；每次 vfts_configure 下发）。
 	docsToken string
 }
@@ -72,6 +76,13 @@ func StoreDir(dir string) string {
 // collPath zvec 集合目录（OS 原生分隔符，供 C-API 使用）。
 func (w *Workspace) collPath() string {
 	return filepath.Join(filepath.FromSlash(w.Store), collDir)
+}
+
+// setColl 记录集合句柄并同步 loaded 快照位（**须持 zmu**；coll 赋值的唯一入口，
+// 保证 loaded 位与实际指针一致）。
+func (w *Workspace) setColl(c *zvec.Collection) {
+	w.coll = c
+	w.loaded.Store(c != nil)
 }
 
 // Open 获取（进程内复用或从盘恢复）指定 workdir 的工作区。
@@ -115,7 +126,7 @@ func Drop(dir string) {
 		w.zmu.Lock()
 		if w.coll != nil {
 			_ = w.coll.Close()
-			w.coll = nil
+			w.setColl(nil)
 		}
 		w.zmu.Unlock()
 		delete(wsReg, abs)
@@ -198,8 +209,8 @@ type Status struct {
 func (w *Workspace) Status() Status {
 	w.mu.Lock()
 	m := w.meta
-	loaded := w.coll != nil
 	w.mu.Unlock()
+	loaded := w.loaded.Load() // 原子快照位：不取 zmu，避免与 Initialize 长临界区耦合而阻塞状态查询
 	exts := m.Exts
 	if len(exts) == 0 {
 		exts = defaultExts()
@@ -248,7 +259,7 @@ func CloseAll() {
 		w.zmu.Lock()
 		if w.coll != nil {
 			_ = w.coll.Close()
-			w.coll = nil
+			w.setColl(nil)
 		}
 		w.zmu.Unlock()
 	}

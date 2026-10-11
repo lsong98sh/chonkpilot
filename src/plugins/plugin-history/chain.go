@@ -380,23 +380,69 @@ func (h *History) prune(ws *workState, slug string, protected map[string]bool) (
 	if _, err := h.git(ws, "update-ref", ref, newHead); err != nil {
 		return "", nil, err
 	}
+	// 重建段为**新建的线性链**（不再需要任何 graft）：清理本会话遗留的替换引用（不依赖内存映射）。
+	h.cleanStaleGrafts(ws, slug, "")
 	h.logf()("history: 修剪完成（workdir=%s，slug=%s）：保留 %d 个检查点（含保底项）", ws.workDir, slug, len(idmap))
 	return newHead, idmap, nil
 }
 
 // graftTruncate 用 `git replace --graft <oldest>`（无父）把最老保留点 oldest 与其更老的祖先解链：
-// 仅一次 git 调用即截断整段旧前缀（被丢弃段随即不可达 → 交 git 自动 gc）。同时清理**本 slug 上一次**
-// 的替换引用（其被本次截断丢弃、不再需要）——替换引用**按 slug 独立登记**（多会话共享一个 workState），
-// 故修剪某会话不会误删其它会话的替换引用；只动本插件本 slug 自己的引用，**绝不触碰用户的 `refs/replace/*`**。
+// 仅一次 git 调用即截断整段旧前缀（被丢弃段随即不可达 → 交 git 自动 gc）。
+//
+// 替换引用 `refs/replace/<oldest>` **按 slug 独立登记**（多会话共享一个 workState），故修剪某会话
+// 不会误删其它会话的替换引用；只动本插件本会话自己的引用，**绝不触碰用户的 `refs/replace/*`**。
+//
+// 清理**不依赖内存记状态**：跨进程重启后内存映射丢失，上一轮留下的替换引用会成为无界残留，
+// 故每次修剪**枚举 `refs/replace/*`**、按被替换对象 commit message 的 `session=<slug>` 识别本插件
+// 本会话条目，除即将重建的 oldest 外一并删除（见 cleanStaleGrafts）。
 func (h *History) graftTruncate(ws *workState, slug, oldest string) error {
-	if prev := ws.grafted[slug]; prev != "" && prev != oldest {
-		_, _ = h.git(ws, "replace", "-d", prev)
-	}
-	if _, err := h.git(ws, "replace", "--graft", oldest); err != nil {
+	h.cleanStaleGrafts(ws, slug, oldest)
+	if _, err := h.git(ws, "replace", "-f", "--graft", oldest); err != nil {
 		return err
 	}
-	ws.grafted[slug] = oldest
 	return nil
+}
+
+// cleanStaleGrafts 删除本插件为 slug 会话登记的**陈旧** `refs/replace/*` 条目（keepID 非空时保留
+// 该条目本身，因其即将被重建）。枚举 refs/replace/*，逐个读被替换 commit 的 message，`session=<slug>`
+// 即属本插件本会话——重启后内存映射丢失也能清理，消除跨进程残留的无界累积。
+// **绝不触碰非本插件（用户）条目**：识别失败 / 对象不可读一律保守跳过。
+func (h *History) cleanStaleGrafts(ws *workState, slug, keepID string) {
+	out, err := h.git(ws, "for-each-ref", "--format=%(refname)", "refs/replace/")
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(out, "\n") {
+		ref := strings.TrimSpace(line)
+		if !strings.HasPrefix(ref, "refs/replace/") {
+			continue
+		}
+		sha := strings.TrimPrefix(ref, "refs/replace/")
+		if sha == "" || sha == keepID {
+			continue
+		}
+		if h.graftRefBelongsTo(ws, sha, slug) {
+			_, _ = h.git(ws, "replace", "-d", sha)
+		}
+	}
+}
+
+// graftRefBelongsTo 判定 `refs/replace/<sha>` 是否本插件为 slug 会话所建：被替换对象 commit 的
+// message 形如 `chonk-ckpt: session=<slug> tool=... ts=...`，解析出的 session 等于 slug 即命中。
+// 对象不可读（如已被 gc）→ 视为不属于，保守跳过（绝不误删）。
+func (h *History) graftRefBelongsTo(ws *workState, sha, slug string) bool {
+	out, err := h.git(ws, "log", "-1", "--format=%s", sha)
+	if err != nil {
+		return false
+	}
+	msg := strings.TrimSpace(out)
+	// 先要求本插件检查点前缀：否则用户自己的 `refs/replace/*`（commit message 恰好含 session=）
+	// 会被 parseCkptMsg 误判归属 → 误删其替换引用。非本插件条目一律保守跳过。
+	if !strings.HasPrefix(msg, "chonk-ckpt: ") {
+		return false
+	}
+	_, s := parseCkptMsg(msg)
+	return s == slug
 }
 
 // fetchChain 取链上前若干检查点（新→旧）：至少覆盖"最新 keep 个"；若保底项的 id 不在其中

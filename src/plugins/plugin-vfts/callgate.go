@@ -176,7 +176,12 @@ func (p *Vfts) onToolCall(_ context.Context, _ string, v *mq.Value) error {
 		return reply("vfts: 该项目索引正在初始化中，请稍后重试（vfts_status 可查进度）", false)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
-	text, isErr, err := p.sharedClient().call(ctx, msg.Tool, args)
+	c := p.sharedClient()
+	if c == nil { // Stop 后共享 client 置 nil：在飞回调不得解引用
+		cancel()
+		return reply("vfts: 插件已停止", true)
+	}
+	text, isErr, err := c.call(ctx, msg.Tool, args)
 	cancel()
 	if err != nil {
 		p.logf("vfts: %s 调用引擎失败（workdir=%s）：%v", msg.Tool, r.workDir, err)

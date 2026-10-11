@@ -196,7 +196,9 @@ func (w *Workspace) parseEntry(e srcEntry) (*FileInfo, error) {
 // exts / skipDirs / stackGitignore 传非 nil 时先更新配置（exts 空切片 = 回落全部受支持语言）。
 func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) error {
 	if exts != nil || skipDirs != nil || stackGitignore != nil {
-		w.Configure(nil, exts, skipDirs, stackGitignore)
+		if err := w.Configure(nil, exts, skipDirs, stackGitignore); err != nil {
+			return err
+		}
 	}
 	// 标记 indexing
 	w.mu.Lock()

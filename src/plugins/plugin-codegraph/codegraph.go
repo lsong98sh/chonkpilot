@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
@@ -127,6 +128,7 @@ type Codegraph struct {
 
 	stopCh   chan struct{} // 后台清扫循环停止信号（Stop 关闭）
 	stopOnce sync.Once     // Stop 幂等
+	stopped  atomic.Bool   // 停止态（Stop 置位）：停止后后台任务/去抖回调不再 spawn 引擎
 
 	subs []mq.Sub // 订阅句柄（Start 失败回滚用；宿主不提供 Stop）
 }
@@ -277,7 +279,7 @@ func (p *Codegraph) loop() {
 		case <-p.stopCh:
 			return
 		case <-t.C:
-			p.tick()
+			p.safeFunc(p.tick)() // 单轮 panic 不外溢（不终止宿主）；loop 继续调度下一轮
 		}
 	}
 }
@@ -285,7 +287,9 @@ func (p *Codegraph) loop() {
 // Stop 释放插件资源（plugin.Stopper；宿主退出时按 Start 逆序调用）：停后台清扫、退订全部订阅、
 // 关闭全部引擎子进程。幂等。
 func (p *Codegraph) Stop() {
+	p.stopped.Store(true) // 停止态：阻止去抖回调/clientFor 重新 spawn 引擎
 	p.stopOnce.Do(func() { close(p.stopCh) })
+	p.rebuild.stopAll() // 停去抖定时器（已 fire 的回调经 stopped 门控不再 spawn）
 	p.unsubscribeAll()
 	p.clientMu.Lock()
 	clients := make([]engineClient, 0, len(p.clients))
@@ -298,6 +302,27 @@ func (p *Codegraph) Stop() {
 		c.close()
 	}
 }
+
+// safeFunc 返回包裹 recover 的函数：裸 goroutine / 去抖定时器回调已脱离 mq.dispatch 的 recover，
+// 不兜会使 panic 直接终止常驻宿主进程；此处只记日志、不抛出
+// （对齐 plugin-compress/plugin-memory 的 safeProcess 既定写法）。
+func (p *Codegraph) safeFunc(fn func()) func() {
+	return func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logf := p.logf
+				if logf == nil {
+					logf = func(string, ...any) {}
+				}
+				logf("codegraph: recovered panic in background goroutine: %v", r)
+			}
+		}()
+		fn()
+	}
+}
+
+// safeGo 在独立 goroutine 中执行 fn（recover 兜底，见 safeFunc）。
+func (p *Codegraph) safeGo(fn func()) { go p.safeFunc(fn)() }
 
 // tick 单轮周期维护：实例心跳超时判定（形态开关，见 sweep_split.go / sweep_inprocess.go）
 // + 回收空闲引擎子进程。实例退出一律走既有 instanceGone 路径：显式 instance-exit（GUI/CLI
@@ -381,7 +406,7 @@ func (p *Codegraph) onInstanceRegister(_ string, payload []byte) {
 			r.dataDir = ev.DataDir
 		}
 		p.mu.Unlock()
-		go p.readEnableAndEnsure(ev.InstanceID, wd)
+		p.safeGo(func() { p.readEnableAndEnsure(ev.InstanceID, wd) })
 		return
 	case ir.workdir != "":
 		// 跨 workdir 重绑：旧 workdir 引用递减（归零不在此注销，由随后的 syncTools 收敛），新 workdir 重新计数。
@@ -404,7 +429,7 @@ func (p *Codegraph) onInstanceRegister(_ string, payload []byte) {
 
 	// 异步回读一次 enable-codegraph（慢请求不进总线派发路径）；读回后据开关触发
 	// 自动初始化并同步 gateway 工具注册。
-	go p.readEnableAndEnsure(ev.InstanceID, wd)
+	p.safeGo(func() { p.readEnableAndEnsure(ev.InstanceID, wd) })
 }
 
 func (p *Codegraph) onInstanceHeartbeat(_ string, payload []byte) {
@@ -593,13 +618,16 @@ func (p *Codegraph) applyPrjConfig(key, op string, list map[string]any) {
 		if len(affected) == 0 {
 			return
 		}
+		if p.stopped.Load() {
+			return // 停止态：不再登记去抖定时器（避免窗口内回调重新 spawn 引擎）
+		}
 		sort.Strings(affected)
 		for _, wd := range affected {
 			wd := wd
-			p.rebuild.schedule(wd, func() {
+			p.rebuild.schedule(wd, p.safeFunc(func() {
 				p.logf("codegraph: prj-config %s 变更（op=%s，去抖收敛）→ workdir %s 强制重建索引", key, op, wd)
 				p.ensureWorkspace(wd, true)
-			})
+			}))
 		}
 	case actionKey:
 		// 动作信号（清除/重建/重试）：值 = 动作名。前端每次点击都写一次该键，persist save 恒广播
@@ -631,14 +659,14 @@ func (p *Codegraph) applyPrjConfig(key, op string, list map[string]any) {
 			switch act {
 			case actionClear:
 				p.logf("codegraph: %s 清除索引产物（prj-config %s=%s）", wd, actionKey, act)
-				go p.clearWorkspace(wd)
+				p.safeGo(func() { p.clearWorkspace(wd) })
 			case actionRetry:
 				// 引擎未记录失败明细（parse 失败的文件被静默跳过，无失败清单可重试）→ 降级为全量重建。
 				p.logf("codegraph: %s 重试失败项——引擎未记录失败明细 → 降级为全量重建", wd)
-				go p.ensureWorkspace(wd, true)
+				p.safeGo(func() { p.ensureWorkspace(wd, true) })
 			default: // actionRebuild
 				p.logf("codegraph: %s 强制重建索引（prj-config %s=%s）", wd, actionKey, act)
-				go p.ensureWorkspace(wd, true)
+				p.safeGo(func() { p.ensureWorkspace(wd, true) })
 			}
 		}
 	}
@@ -672,7 +700,7 @@ func (p *Codegraph) maybeEnsure(wd string) {
 	r.cmu.Unlock()
 	if need {
 		p.logf("codegraph: %s 已启用且索引未就绪 → 后台自动初始化", wd)
-		go p.ensureWorkspace(wd, false)
+		p.safeGo(func() { p.ensureWorkspace(wd, false) })
 	}
 }
 
@@ -807,6 +835,16 @@ func (d *rebuildDebouncer) schedule(key string, fn func()) {
 	d.timers[key] = t
 }
 
+// stopAll 停止并清空全部去抖定时器（Stop 收尾用；已 fire 的回调由插件 stopped 标志门控，不再 spawn 引擎）。
+func (d *rebuildDebouncer) stopAll() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for k, t := range d.timers {
+		t.Stop()
+		delete(d.timers, k)
+	}
+}
+
 // instanceForWorkdir 返回该 workdir 任一活跃实例 id（读 prj-config 用；无则空串）。
 func (p *Codegraph) instanceForWorkdir(wd string) string {
 	p.mu.Lock()
@@ -895,9 +933,13 @@ func splitList(s string) []string {
 
 // clientFor 返回该 workdir 的引擎子进程客户端（每 workdir 一独立子进程，首调懒建；
 // 常驻复用，空闲由 sweepIdleClient 按 workdir 回收）。
+// 停止态（Stop 后）→ 返回 nil，不再重建（避免去抖回调在 Stop 后重新 spawn 引擎）。
 func (p *Codegraph) clientFor(wd string) engineClient {
 	p.clientMu.Lock()
 	defer p.clientMu.Unlock()
+	if p.stopped.Load() {
+		return nil
+	}
 	if rec := p.clients[wd]; rec != nil {
 		rec.lastUsed = time.Now()
 		return rec.c
@@ -913,8 +955,15 @@ func (p *Codegraph) engineCall(ctx context.Context, name string, args map[string
 	if p.engineMissing {
 		return "", errors.New("codegraph: 引擎不可用（未就绪）")
 	}
+	if p.stopped.Load() {
+		return "", errors.New("codegraph: 插件已停止")
+	}
 	wd, _ := args["workdir"].(string)
-	text, isErr, err := p.clientFor(wd).call(ctx, name, args)
+	c := p.clientFor(wd)
+	if c == nil {
+		return "", errors.New("codegraph: 插件已停止")
+	}
+	text, isErr, err := c.call(ctx, name, args)
 	if err != nil {
 		return text, err
 	}
@@ -1034,8 +1083,10 @@ func pollEngineProgress(stop <-chan struct{}, wd string, interval time.Duration,
 func (p *Codegraph) startProgressPoll(r *workRec) func() {
 	stop := make(chan struct{})
 	var once sync.Once
-	go pollEngineProgress(stop, r.workDir, progressPollInterval, func(done, total int) {
-		p.pushStatusPhase(r, phaseIndex, done, total)
+	p.safeGo(func() {
+		pollEngineProgress(stop, r.workDir, progressPollInterval, func(done, total int) {
+			p.pushStatusPhase(r, phaseIndex, done, total)
+		})
 	})
 	return func() { once.Do(func() { close(stop) }) }
 }
