@@ -224,6 +224,12 @@ func readContent(data []byte, req readReq) (string, error) {
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
+	// 空文件：Split 得到 [""]，去尾空行后 len==0。此时 ranges 分支的 clamp(_,1,0) 与
+	// start/limit 分支的 startIdx 都会算成 0/1，lines[startIdx-1:endIdx] 即 lines[-1:…] → 越界 panic。
+	// 直接返回空内容（tail 分支在 len==0 时本也安全，此处一并短路）。
+	if len(lines) == 0 {
+		return "", nil
+	}
 
 	var selected []string
 	switch {

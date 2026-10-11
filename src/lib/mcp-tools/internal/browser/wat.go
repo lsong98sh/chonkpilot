@@ -55,13 +55,13 @@ func (r *Runner) stepWAT(st *Step) error {
 		}
 	}
 	switch mode {
-	case "visible", "enabled":
+	case "visible", "enabled", "text":
 	default:
 		return stepErr(st.Line, st.Raw, "syntax", "WAT 仅支持 visible|enabled|text|netidle|load")
 	}
 
 	for {
-		ok, val, err := r.probe(r.ctx, loc, mode, "")
+		ok, val, err := r.probe(r.context(), loc, mode, "")
 		if err == nil {
 			if mode == "visible" && ok && truthy(val) {
 				return nil
@@ -89,7 +89,7 @@ func (r *Runner) waitLoad(st *Step, netidle bool, deadline time.Time) error {
 	prev := -1
 	for {
 		var state string
-		if err := r.evalJS(r.ctx, `document.readyState`, &state); err != nil {
+		if err := r.evalJS(r.context(), `document.readyState`, &state); err != nil {
 			return stepErr(st.Line, st.Raw, "js", "检查页面状态失败: "+err.Error())
 		}
 		complete := state == "complete"
@@ -98,7 +98,7 @@ func (r *Runner) waitLoad(st *Step, netidle bool, deadline time.Time) error {
 		}
 		if netidle && complete {
 			var n int
-			_ = r.evalJS(r.ctx, `performance.getEntriesByType('resource').length`, &n)
+			_ = r.evalJS(r.context(), `performance.getEntriesByType('resource').length`, &n)
 			if prev >= 0 && n == prev {
 				return nil
 			}

@@ -72,6 +72,15 @@ func (r *Runner) curTargetID() string {
 	return r.curID
 }
 
+// context 读取当前激活 tab 上下文（读受 startMu 保护，C-50：PARALLEL 下 TAB/OPN 的
+// activate/ensureStarted 会并发改写 r.ctx，无锁直读构成字段级 data race；所有锁外读点经此收口）。
+// 注意：仅取 startMu，不得在已持 startMu 的路径上调用（会自锁）；已持锁路径直读字段（如 setInitialCurTarget）。
+func (r *Runner) context() context.Context {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
+	return r.ctx
+}
+
 // setInitialCurTarget 首个 OPN 建连后记录初始 target id（已有则不动；读写受 startMu 保护，C-50）。
 func (r *Runner) setInitialCurTarget() {
 	r.startMu.Lock()

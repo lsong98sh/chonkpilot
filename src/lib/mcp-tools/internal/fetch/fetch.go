@@ -43,6 +43,9 @@ import (
 // 统一层「>200KB 落临时文件」通道（见 internal/cli maxOutputBytes）。
 const maxFetchBytes = 32 << 20
 
+// maxReadTimeoutSec 是 readTimeout 的上限（秒）：防超大值溢出为负导致无超时。
+const maxReadTimeoutSec = 3600
+
 // HandleFetch 执行 HTTP 请求。
 func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 	url, _ := args["url"].(string)
@@ -131,6 +134,10 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 	// 与 web_fetch.tool.md / 本文件头注一致：小于 10 秒按 10 秒处理；未给出 → 默认 300）。
 	readTimeoutSec := 300
 	if t, ok := args["readTimeout"].(float64); ok && t > 0 {
+		// 上限 clamp：防超大值 float→int 溢出为负 → http.Client{Timeout:负数} = 无超时。
+		if t > maxReadTimeoutSec {
+			t = maxReadTimeoutSec
+		}
 		readTimeoutSec = int(t)
 		if readTimeoutSec < 10 {
 			readTimeoutSec = 10
@@ -210,6 +217,10 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 
 	// save_as 下载模式（主动重定向参数：进程产物直写文件）
 	if saveAs != "" {
+		// 截断（响应体超 maxFetchBytes）：不写半截文件，明确失败，让调用方感知（数据完整性）。
+		if truncated {
+			return cli.Err("web_fetch", fmt.Sprintf("响应体超过 %dMB 上限，已截断；save_as 模式拒绝写入半截文件", maxFetchBytes>>20))
+		}
 		if err := os.MkdirAll(filepath.Dir(saveAs), 0755); err != nil {
 			return cli.Err("web_fetch", fmt.Sprintf("failed to create directory for save_as: %s", err))
 		}

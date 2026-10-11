@@ -11,6 +11,7 @@ import (
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/chromedp"
 
+	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
 )
 
@@ -18,7 +19,7 @@ import (
 func (r *Runner) elemCenter(st *Step, sel string) (x, y float64, err error) {
 	js := fmt.Sprintf(`JSON.stringify((function(){var el=document.querySelector(%s);if(!el)return null;var r=el.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})())`, quote(sel))
 	var raw string
-	if e := r.evalJS(r.ctx, js, &raw); e != nil {
+	if e := r.evalJS(r.context(), js, &raw); e != nil {
 		return 0, 0, stepErr(st.Line, st.Raw, "js", "取元素位置失败: "+e.Error())
 	}
 	var c struct {
@@ -39,7 +40,7 @@ func (r *Runner) dispatchMouse(ctx context.Context, typ input.MouseType, x, y fl
 
 // scrollIntoView 使元素可见（动作前）。
 func (r *Runner) scrollIntoView(sel string) error {
-	return chromedp.Run(r.ctx, chromedp.ScrollIntoView(sel, chromedp.ByQuery))
+	return chromedp.Run(r.context(), chromedp.ScrollIntoView(sel, chromedp.ByQuery))
 }
 
 // mouseActionAt 在目标元素上执行一次按压-释放（支持右键/双击）。
@@ -59,10 +60,10 @@ func (r *Runner) mouseActionAt(st *Step, sel string, right bool, double bool) er
 	if double {
 		clicks = 2
 	}
-	if err := r.dispatchMouse(r.ctx, input.MousePressed, x, y, btn, clicks); err != nil {
+	if err := r.dispatchMouse(r.context(), input.MousePressed, x, y, btn, clicks); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "鼠标事件失败: "+err.Error())
 	}
-	if err := r.dispatchMouse(r.ctx, input.MouseReleased, x, y, btn, clicks); err != nil {
+	if err := r.dispatchMouse(r.context(), input.MouseReleased, x, y, btn, clicks); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "鼠标事件失败: "+err.Error())
 	}
 	return nil
@@ -74,7 +75,7 @@ func (r *Runner) stepClickLike(st *Step) error {
 	if !ok {
 		return stepErr(st.Line, st.Raw, "syntax", st.Cmd+" 需要 locator")
 	}
-	sel, err := r.resolve(r.ctx, st, loc)
+	sel, err := r.resolve(r.context(), st, loc)
 	if err != nil {
 		return err
 	}
@@ -87,13 +88,13 @@ func (r *Runner) stepClickLike(st *Step) error {
 		if err != nil {
 			return err
 		}
-		if err := r.dispatchMouse(r.ctx, input.MouseMoved, x, y, input.None, 0); err != nil {
+		if err := r.dispatchMouse(r.context(), input.MouseMoved, x, y, input.None, 0); err != nil {
 			return stepErr(st.Line, st.Raw, "js", "hover 失败: "+err.Error())
 		}
 		return nil
 	case "CHK", "UCHK":
 		want := st.Cmd == "CHK"
-		ok, val, err := r.probe(r.ctx, loc, "attr", "checked")
+		ok, val, err := r.probe(r.context(), loc, "attr", "checked")
 		if err != nil {
 			return stepErr(st.Line, st.Raw, "js", err.Error())
 		}
@@ -118,23 +119,23 @@ func (r *Runner) stepFill(st *Step) error {
 	}
 	loc := st.Args[0]
 	text := st.Args[1]
-	sel, err := r.resolve(r.ctx, st, loc)
+	sel, err := r.resolve(r.context(), st, loc)
 	if err != nil {
 		return err
 	}
 	if err := r.scrollIntoView(sel); err != nil {
 		return stepErr(st.Line, st.Raw, "js", err.Error())
 	}
-	if err := chromedp.Run(r.ctx, chromedp.Click(sel, chromedp.ByQuery)); err != nil {
+	if err := chromedp.Run(r.context(), chromedp.Click(sel, chromedp.ByQuery)); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "聚焦失败: "+err.Error())
 	}
 	// 全选后输入（清空旧值）；textarea/input 走 select()
 	clearJS := fmt.Sprintf(`(function(){var el=document.querySelector(%s);if(!el)return false;if(typeof el.select==='function'){el.select();return true;}var r=document.createRange();r.selectNodeContents(el);var s=getSelection();s.removeAllRanges();s.addRange(r);return true;})()`, quote(sel))
 	var ok bool
-	if err := r.evalJS(r.ctx, clearJS, &ok); err != nil || !ok {
+	if err := r.evalJS(r.context(), clearJS, &ok); err != nil || !ok {
 		return stepErr(st.Line, st.Raw, "js", "清空输入失败")
 	}
-	if err := chromedp.Run(r.ctx, chromedp.SendKeys(sel, text, chromedp.ByQuery)); err != nil {
+	if err := chromedp.Run(r.context(), chromedp.SendKeys(sel, text, chromedp.ByQuery)); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "输入失败: "+err.Error())
 	}
 	return nil
@@ -147,14 +148,14 @@ func (r *Runner) stepSelect(st *Step) error {
 	}
 	loc := st.Args[0]
 	opt := st.Args[1]
-	sel, err := r.resolve(r.ctx, st, loc)
+	sel, err := r.resolve(r.context(), st, loc)
 	if err != nil {
 		return err
 	}
 	js := fmt.Sprintf(`(function(){var el=document.querySelector(%s);if(!el||!el.options)return false;var target=null;for(var i=0;i<el.options.length;i++){var o=el.options[i];if(o.value==%s||o.text.trim()==%s){target=o;break;}}if(!target)return false;el.value=target.value;el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`,
 		quote(sel), quote(opt), quote(opt))
 	var ok bool
-	if err := r.evalJS(r.ctx, js, &ok); err != nil {
+	if err := r.evalJS(r.context(), js, &ok); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "选择失败: "+err.Error())
 	}
 	if !ok {
@@ -230,7 +231,7 @@ func keyVK(name string) int64 {
 
 // dispatchKey 发送单次键盘事件。
 func (r *Runner) dispatchKey(typ input.KeyType, key string, vk int64) error {
-	return chromedp.Run(r.ctx, chromedp.ActionFunc(func(c context.Context) error {
+	return chromedp.Run(r.context(), chromedp.ActionFunc(func(c context.Context) error {
 		p := input.DispatchKeyEvent(typ).WithKey(key)
 		if vk > 0 {
 			p = p.WithWindowsVirtualKeyCode(vk)
@@ -272,7 +273,7 @@ func (r *Runner) stepKey(st *Step) error {
 			return stepErr(st.Line, st.Raw, "js", "key up 失败: "+err.Error())
 		}
 	default: // KPR
-		if err := chromedp.Run(r.ctx, chromedp.KeyEvent(key)); err != nil {
+		if err := chromedp.Run(r.context(), chromedp.KeyEvent(key)); err != nil {
 			return stepErr(st.Line, st.Raw, "js", "按键失败: "+err.Error())
 		}
 	}
@@ -341,11 +342,11 @@ func (r *Runner) stepScroll(st *Step) error {
 	}
 	first := st.Args[0]
 	if strings.Contains(first, "=") || strings.HasPrefix(first, "css") || strings.HasPrefix(first, "#") || strings.HasPrefix(first, ".") || strings.HasPrefix(first, "[") {
-		sel, err := r.resolve(r.ctx, st, first)
+		sel, err := r.resolve(r.context(), st, first)
 		if err != nil {
 			return err
 		}
-		if err := chromedp.Run(r.ctx, chromedp.ScrollIntoView(sel, chromedp.ByQuery)); err != nil {
+		if err := chromedp.Run(r.context(), chromedp.ScrollIntoView(sel, chromedp.ByQuery)); err != nil {
 			return stepErr(st.Line, st.Raw, "js", err.Error())
 		}
 		return nil
@@ -362,7 +363,7 @@ func (r *Runner) stepScroll(st *Step) error {
 func (r *Runner) scrollBy(dx, dy int, st *Step) error {
 	js := fmt.Sprintf(`window.scrollBy(%d, %d); true`, dx, dy)
 	var ok bool
-	if err := r.evalJS(r.ctx, js, &ok); err != nil {
+	if err := r.evalJS(r.context(), js, &ok); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "滚动失败: "+err.Error())
 	}
 	return nil
@@ -377,11 +378,11 @@ func (r *Runner) stepDrag(st *Step) error {
 	} else {
 		return stepErr(st.Line, st.Raw, "syntax", "DRG 需要 <from> -> <to>")
 	}
-	fromSel, err := r.resolve(r.ctx, st, fromLoc)
+	fromSel, err := r.resolve(r.context(), st, fromLoc)
 	if err != nil {
 		return err
 	}
-	toSel, err := r.resolve(r.ctx, st, toLoc)
+	toSel, err := r.resolve(r.context(), st, toLoc)
 	if err != nil {
 		return err
 	}
@@ -393,18 +394,18 @@ func (r *Runner) stepDrag(st *Step) error {
 	if err != nil {
 		return err
 	}
-	if err := r.dispatchMouse(r.ctx, input.MousePressed, fx, fy, input.Left, 1); err != nil {
+	if err := r.dispatchMouse(r.context(), input.MousePressed, fx, fy, input.Left, 1); err != nil {
 		return stepErr(st.Line, st.Raw, "js", err.Error())
 	}
 	stepsN := 8
 	for i := 1; i <= stepsN; i++ {
 		x := fx + (tx-fx)*float64(i)/float64(stepsN)
 		y := fy + (ty-fy)*float64(i)/float64(stepsN)
-		if err := r.dispatchMouse(r.ctx, input.MouseMoved, x, y, input.Left, 1); err != nil {
+		if err := r.dispatchMouse(r.context(), input.MouseMoved, x, y, input.Left, 1); err != nil {
 			return stepErr(st.Line, st.Raw, "js", err.Error())
 		}
 	}
-	if err := r.dispatchMouse(r.ctx, input.MouseReleased, tx, ty, input.Left, 1); err != nil {
+	if err := r.dispatchMouse(r.context(), input.MouseReleased, tx, ty, input.Left, 1); err != nil {
 		return stepErr(st.Line, st.Raw, "js", err.Error())
 	}
 	return nil
@@ -420,19 +421,24 @@ func (r *Runner) stepUpload(st *Step) error {
 	if err != nil {
 		return stepErr(st.Line, st.Raw, "path", err.Error())
 	}
-	sel, err := r.resolve(r.ctx, st, st.Args[0])
+	// agentbox 沙箱（仅隔离开启时生效）：上传本地文件属读操作，须在允许读目录内
+	// （与同域 writeFileChecked 的写校验对偶，杜绝 UPF 绕过沙箱读任意本地文件）。
+	if err := agentbox.Check(upload, false); err != nil {
+		return stepErr(st.Line, st.Raw, "path", err.Error())
+	}
+	sel, err := r.resolve(r.context(), st, st.Args[0])
 	if err != nil {
 		return err
 	}
 	var nodes []*cdp.Node
-	if err := chromedp.Run(r.ctx,
+	if err := chromedp.Run(r.context(),
 		dom.Enable(),
 		chromedp.Nodes(sel, &nodes, chromedp.ByQuery, chromedp.AtLeast(1)),
 	); err != nil || len(nodes) == 0 {
 		return stepErr(st.Line, st.Raw, "not_found", "未找到上传控件 "+sel)
 	}
 	nodeID := nodes[0].NodeID
-	if err := chromedp.Run(r.ctx, chromedp.ActionFunc(func(c context.Context) error {
+	if err := chromedp.Run(r.context(), chromedp.ActionFunc(func(c context.Context) error {
 		return dom.SetFileInputFiles([]string{upload}).WithNodeID(nodeID).Do(c)
 	})); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "设置文件失败: "+err.Error())

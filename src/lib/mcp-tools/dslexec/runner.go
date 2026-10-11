@@ -112,7 +112,7 @@ func executeJob(ctx context.Context, run inMessage, hub *llmHub, lw *lineWriter)
 		res.Error = "初始化文件会话失败：" + err.Error()
 		return res
 	}
-	wSess, err := browser.NewSession(browser.Options{})
+	wSess, err := browser.NewSession(browser.Options{Headless: true})
 	if err != nil {
 		fSess.Close()
 		res.Error = "初始化浏览器会话失败：" + err.Error()

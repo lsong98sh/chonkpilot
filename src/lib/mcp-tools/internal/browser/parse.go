@@ -41,7 +41,9 @@ func tokenize(line string) ([]string, []bool) {
 	inQuote := false
 	tokQuoted := false
 	flush := func() {
-		if cur.Len() > 0 {
+		// cur 非空，或该 token 因出现过双引号而存在（如 FILL 的空文本 ""）→ 入表；
+		// 后者保证空双引号 token 不被丢弃（契约：FILL 清空并输入）。
+		if cur.Len() > 0 || tokQuoted {
 			toks = append(toks, cur.String())
 			quotedFlags = append(quotedFlags, tokQuoted)
 			cur.Reset()

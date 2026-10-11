@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -476,12 +477,39 @@ func (r *Runner) stepOPN(st *Step) error {
 	if !ok {
 		return stepErr(st.Line, st.Raw, "syntax", "OPN 需要 URL")
 	}
-	if err := chromedp.Run(r.ctx, chromedp.Navigate(url)); err != nil {
+	// agentbox 沙箱（仅隔离开启时生效）：file:// 导航等价本地读取，须在允许读目录内
+	// （否则可借 file:// URL 绕过沙箱读任意本地文件）。
+	if p, isFile := localFileURLPath(url); isFile {
+		if err := agentbox.Check(p, false); err != nil {
+			return stepErr(st.Line, st.Raw, "path", err.Error())
+		}
+	}
+	if err := chromedp.Run(r.context(), chromedp.Navigate(url)); err != nil {
 		return stepErr(st.Line, st.Raw, "navigation", "打开失败: "+err.Error())
 	}
 	// 建连后记录初始 target id（首个 OPN 时 r.curID 尚空）：供 TAB list/switch/close 正确标记当前页（C-17）。
 	r.setInitialCurTarget()
 	return nil
+}
+
+// localFileURLPath 把 file:// URL 解析为本地路径；非 file scheme 返回 ("", false)。
+func localFileURLPath(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(u.Scheme, "file") {
+		return "", false
+	}
+	p := u.Path
+	if p == "" {
+		p = u.Opaque
+	}
+	// Windows：file:///C:/x → Path="/C:/x"，去掉前导 "/" 使 agentbox 归一为绝对盘符路径。
+	if filepath.Separator == '\\' && len(p) >= 3 && p[0] == '/' && p[2] == ':' {
+		p = p[1:]
+	}
+	if p == "" {
+		return "", false
+	}
+	return filepath.FromSlash(p), true
 }
 
 // ─── EVL（单行或多行块）───
@@ -495,7 +523,7 @@ func (r *Runner) stepEVL(st *Step) error {
 		return stepErr(st.Line, st.Raw, "syntax", "EVL 需要 JS 表达式或多行块")
 	}
 	var res interface{}
-	if err := r.evalJS(r.ctx, js, &res); err != nil {
+	if err := r.evalJS(r.context(), js, &res); err != nil {
 		return stepErr(st.Line, st.Raw, "js", "执行失败: "+err.Error())
 	}
 	return nil
@@ -524,7 +552,7 @@ func (r *Runner) stepEXP(st *Step) error {
 			return stepErr(st.Line, st.Raw, "syntax", "EXP js 需要 JS 表达式")
 		}
 		var res interface{}
-		if err := r.evalJS(r.ctx, expr, &res); err != nil {
+		if err := r.evalJS(r.context(), expr, &res); err != nil {
 			return stepErr(st.Line, st.Raw, "js", "断言表达式执行失败: "+err.Error())
 		}
 		if !truthy(res) {
@@ -546,7 +574,7 @@ func (r *Runner) stepEXP(st *Step) error {
 		if len(args) >= 3 {
 			want = args[2]
 		}
-		ok, val, err := r.probe(r.ctx, "page", mode, "")
+		ok, val, err := r.probe(r.context(), "page", mode, "")
 		if err != nil {
 			return stepErr(st.Line, st.Raw, "js", err.Error())
 		}
@@ -571,7 +599,7 @@ func (r *Runner) stepEXP(st *Step) error {
 	if len(rest) > 0 {
 		want = rest[0]
 	}
-	ok, val, err := r.probe(r.ctx, loc, mode, want)
+	ok, val, err := r.probe(r.context(), loc, mode, want)
 	if err != nil {
 		return stepErr(st.Line, st.Raw, "js", err.Error())
 	}
@@ -658,7 +686,7 @@ func (r *Runner) stepShot(st *Step) error {
 		return r.shotFile(p)
 	}
 	// 元素截图
-	sel, err := r.resolve(r.ctx, st, args[0])
+	sel, err := r.resolve(r.context(), st, args[0])
 	if err != nil {
 		return err
 	}
@@ -671,7 +699,7 @@ func (r *Runner) stepShot(st *Step) error {
 
 func (r *Runner) shotFile(name string) error {
 	var buf []byte
-	if err := chromedp.Run(r.ctx, chromedp.FullScreenshot(&buf, 90)); err != nil {
+	if err := chromedp.Run(r.context(), chromedp.FullScreenshot(&buf, 90)); err != nil {
 		return stepErr(0, name, "shot", "截图失败: "+err.Error())
 	}
 	return savePNG(name, buf)
@@ -680,7 +708,7 @@ func (r *Runner) shotFile(name string) error {
 func (r *Runner) shotElement(st *Step, sel, name string) error {
 	var rectJSON string
 	js := fmt.Sprintf(`JSON.stringify((function(){var el=document.querySelector(%s);if(!el)return null;var r=el.getBoundingClientRect();return {x:r.x+scrollX,y:r.y+scrollY,w:r.width,h:r.height};})())`, quote(sel))
-	if err := r.evalJS(r.ctx, js, &rectJSON); err != nil {
+	if err := r.evalJS(r.context(), js, &rectJSON); err != nil {
 		return stepErr(st.Line, st.Raw, "shot", "定位元素失败: "+err.Error())
 	}
 	var rc struct {
@@ -691,7 +719,7 @@ func (r *Runner) shotElement(st *Step, sel, name string) error {
 	}
 	var shot []byte
 	clip := &page.Viewport{X: rc.X, Y: rc.Y, Width: rc.W, Height: rc.H, Scale: 1}
-	if err := chromedp.Run(r.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(r.context(), chromedp.ActionFunc(func(ctx context.Context) error {
 		b, e := page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithClip(clip).Do(ctx)
 		if e != nil {
 			return e
@@ -728,16 +756,16 @@ func (r *Runner) stepDOM(st *Step) error {
 	var html string
 	if len(args) == 1 {
 		// 整页 DOM
-		if err := r.evalJS(r.ctx, `document.documentElement.outerHTML`, &html); err != nil {
+		if err := r.evalJS(r.context(), `document.documentElement.outerHTML`, &html); err != nil {
 			return stepErr(st.Line, st.Raw, "js", "取 DOM 失败: "+err.Error())
 		}
 	} else {
-		sel, err := r.resolve(r.ctx, st, args[0])
+		sel, err := r.resolve(r.context(), st, args[0])
 		if err != nil {
 			return err
 		}
 		js := fmt.Sprintf(`(function(){var el=document.querySelector(%s);if(!el)return '';return el.outerHTML;})()`, quote(sel))
-		if err := r.evalJS(r.ctx, js, &html); err != nil {
+		if err := r.evalJS(r.context(), js, &html); err != nil {
 			return stepErr(st.Line, st.Raw, "js", "取元素 DOM 失败: "+err.Error())
 		}
 		if html == "" {
@@ -780,7 +808,7 @@ func (r *Runner) stepDBG(st *Step) error {
 
 func (r *Runner) domToFile(name string) error {
 	var html string
-	if err := r.evalJS(r.ctx, "document.documentElement.outerHTML", &html); err != nil {
+	if err := r.evalJS(r.context(), "document.documentElement.outerHTML", &html); err != nil {
 		return err
 	}
 	return writeFileChecked(name, []byte(html))
