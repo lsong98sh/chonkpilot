@@ -1,4 +1,4 @@
-﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
+# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-standalone-gui.ps1`；
 #   形态名 `standalone` → **`desktop`（桌面单体）**，产物目录 `dist/standalone/` → `dist/desktop/`。
@@ -76,6 +76,31 @@ $initdataDist = Join-Path $root "dist\initdata"
 # 版本 = 日期时间戳（无独立版本源，见头注）
 $ver = Get-Date -Format "yyyyMMdd-HHmmss"
 
+# ── 破坏性操作防护（2026-10-11；本仓曾发生误删用户主目录事故，见 .trae/rules 全局规则）──
+# 统一约束：任何删除/覆盖目标必须落在**仓库根 $root 之内**（严格子路径），越界即 throw 中止。
+# 目标一律以**字面量绝对路径**传入（禁止调用方用变量拼接/通配符指向用户目录）。
+function Remove-SafeItem {
+    param([Parameter(Mandatory)][string]$LiteralPath, [switch]$Recurse)
+    $resolved = Resolve-Path -LiteralPath $LiteralPath -ErrorAction SilentlyContinue
+    if ($null -eq $resolved) { return }   # 目标不存在 = 无操作
+    $p = $resolved.Path.TrimEnd('\')
+    $rootPath = (Resolve-Path -LiteralPath $root).Path.TrimEnd('\')
+    if ($p -notlike "$rootPath\*") {      # 白名单：仅仓库根之内的严格子路径
+        throw "拒绝删除仓库外路径: $p（仅允许 $rootPath 之内）"
+    }
+    Remove-Item -LiteralPath $p -Recurse:$Recurse -Force
+}
+
+# 调用子构建脚本：子脚本以 throw（$ErrorActionPreference=Stop 下即终止）或 exit 传播失败；
+# 此处以 $? 与 $LASTEXITCODE 双判并统一 throw（仅靠 $LASTEXITCODE 在子脚本未 exit 时可能陈旧/误导）。
+function Invoke-ChildBuild {
+    param([Parameter(Mandatory)][string]$ScriptName)
+    & (Join-Path $root $ScriptName)
+    if (-not $? -or $LASTEXITCODE -ne 0) {
+        throw "$ScriptName 失败 (LASTEXITCODE=$LASTEXITCODE)"
+    }
+}
+
 # -- 0) 生成消息面键常量（契约唯一源 = docs/spec/60-reference/61-messages.schema.json） --
 # genmsg → src/lib/core/msgkeys/msgkeys_gen.go + src/frontend/src/events/msgkeys.js（**勿手改**）。
 # 先跑生成再编译，保证键常量与契约一致；漂移另有 src/tools/genmsg/gen_test.go 兜底。
@@ -101,7 +126,7 @@ Write-Host "==> [0.5/9] sync factory system docs -> data embed dir"
 $sysSrc = Join-Path $root "src\initdata\capability\system"
 $sysEmbed = Join-Path $root "src\lib\data\internal\systemfs\embedded\system"
 if (-not (Test-Path $sysSrc)) { throw "factory system docs not found: $sysSrc" }
-if (Test-Path $sysEmbed) { [System.IO.Directory]::Delete($sysEmbed, $true) }
+Remove-SafeItem -LiteralPath $sysEmbed -Recurse
 New-Item -ItemType Directory -Force -Path $sysEmbed | Out-Null
 Copy-Item (Join-Path $sysSrc "*") $sysEmbed -Recurse -Force
 Write-Host "    ok: embed system docs -> $sysEmbed ($((Get-ChildItem $sysEmbed -Recurse -File | Measure-Object).Count) files)"
@@ -129,10 +154,10 @@ try {
 $embedHtml = Join-Path $embedOut "embed.html"
 if (-not (Test-Path $embedHtml)) { throw "embed.html 未产出: $embedHtml" }
 Copy-Item $embedHtml (Join-Path $embedOut "index.html") -Force
-[System.IO.File]::Delete($embedHtml)
+Remove-SafeItem -LiteralPath $embedHtml
 Write-Host "    ok: $embedOut (embed.html -> index.html)"
 # 镜像到桌面单体壳的 embed 落点（src/desktop/frontend/dist；go:embed all:frontend/dist）
-if (Test-Path $embedDst) { [System.IO.Directory]::Delete($embedDst, $true) }
+Remove-SafeItem -LiteralPath $embedDst -Recurse
 Copy-Item $embedOut $embedDst -Recurse -Force
 Write-Host "    ok: $embedDst ($((Get-ChildItem $embedDst -Recurse -File | Measure-Object).Count) files)"
 
@@ -159,16 +184,13 @@ try {
 
 # -- 4) 构建 MCP server 契约与 executor（调用 build-mcp-server.ps1 → dist/other） --
 Write-Host "==> [4/9] build mcp-server (contracts + executors)"
-& (Join-Path $root "build-mcp-server.ps1")
-if ($LASTEXITCODE -ne 0) { throw "build-mcp-server.ps1 failed" }
+Invoke-ChildBuild "build-mcp-server.ps1"
 
 # 复制 capability/ 到发行目录
 Write-Host "    -> stage capability/ to dist/desktop"
 $capSrc = Join-Path $root "dist\other\capability"
 $capDst = Join-Path $dist "capability"
-if (Test-Path $capDst) {
-    [System.IO.Directory]::Delete($capDst, $true)
-}
+Remove-SafeItem -LiteralPath $capDst -Recurse
 Copy-Item $capSrc $capDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
 
@@ -188,15 +210,17 @@ if (-not (Test-Path $initScenarios)) { throw "scenarios not found: $initScenario
 $scnDst = Join-Path $dist "capability\scenarios"
 New-Item -ItemType Directory -Force -Path $scnDst | Out-Null
 # 覆盖式：镜像源内容（先清空源内已删除项的残留 → 逐场景目录覆盖），但**保留 scenarios 目录本身**
-Get-ChildItem -Path $scnDst -Force | Where-Object { $_.Name -notin (Get-ChildItem -Path $initScenarios -Force | ForEach-Object { $_.Name }) } | Remove-Item -Recurse -Force
+$scnKeep = Get-ChildItem -Path $initScenarios -Force | ForEach-Object { $_.Name }
+Get-ChildItem -Path $scnDst -Force | Where-Object { $_.Name -notin $scnKeep } | ForEach-Object {
+    Remove-SafeItem -LiteralPath $_.FullName -Recurse
+}
 Copy-Item (Join-Path $initScenarios "*") $scnDst -Recurse -Force
 $scnCount = (Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count
 Write-Host "    ok: capability/scenarios/ ($scnCount files)"
 
 # -- 6) codegraph 引擎构建并置于 dist/desktop/mcps/codebase/（出厂内置 MCP；默认不接入，见 42 §2 (17)） --
 Write-Host "==> [6/9] build codegraph engine -> mcps/codebase"
-& (Join-Path $root "build-codegraph.ps1")
-if ($LASTEXITCODE -ne 0) { throw "build-codegraph.ps1 failed" }
+Invoke-ChildBuild "build-codegraph.ps1"
 $cgExe = "chonkpilot-codegraph-mcp-server.exe"
 $cgDir = Join-Path $dist "mcps\codebase"
 New-Item -ItemType Directory -Force -Path $cgDir | Out-Null
@@ -206,8 +230,7 @@ Write-Host "    ok: mcps/codebase/$cgExe ($mbCg MB)"
 
 # -- 7) vfts 引擎 + zvec 运行库置于 dist/desktop/mcps/vfts/（zvec_c_api.dll 必须与引擎 exe 同目录） --
 Write-Host "==> [7/9] build vfts engine -> mcps/vfts"
-& (Join-Path $root "build-vfts.ps1")
-if ($LASTEXITCODE -ne 0) { throw "build-vfts.ps1 failed" }
+Invoke-ChildBuild "build-vfts.ps1"
 $vfExe = "chonkpilot-vfts-mcp-server.exe"
 $vftsDist = Join-Path $root "dist\plugins\vfts"
 $vfDir = Join-Path $dist "mcps\vfts"
@@ -248,13 +271,13 @@ Get-ChildItem -Path $dist -File -Force -ErrorAction SilentlyContinue |
     Where-Object { ($_.Extension -in @(".exe", ".dll")) -and ($rootExeAllow -notcontains $_.Name) } |
     ForEach-Object {
         Write-Host "    [清理] 根下陈旧产物: $($_.Name)"
-        [System.IO.File]::Delete($_.FullName)
+        Remove-SafeItem -LiteralPath $_.FullName
     }
 # 旧「与 capability 平级的独立 scenarios 根」已随 P2 移入 capability/scenarios → 清根下遗留 scenarios/ 目录
 $legacyScenarios = Join-Path $dist "scenarios"
 if (Test-Path $legacyScenarios) {
     Write-Host "    [清理] 根下陈旧目录: scenarios/（已移入 capability/scenarios/）"
-    [System.IO.Directory]::Delete($legacyScenarios, $true)
+    Remove-SafeItem -LiteralPath $legacyScenarios -Recurse
 }
 
 # -- 9) 出厂数据包 → dist/initdata/（单包 capability-<ver>.zip + initial.zip 完整出厂包，**不进 dist/desktop**）--
@@ -265,18 +288,18 @@ New-Item -ItemType Directory -Force -Path $initdataDist | Out-Null
 # 先清旧包：<ver> 是时间戳，不清会累积历史 zip（只保留本次构建的 capability-<ver>.zip + initial.zip）
 Get-ChildItem -Path $initdataDist -Filter "*.zip" -File -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "    [清理] 旧出厂包: $($_.Name)"
-    [System.IO.File]::Delete($_.FullName)
+    Remove-SafeItem -LiteralPath $_.FullName
 }
 function New-ZipFromDir {
     param([string]$Src, [string]$Zip)
-    if (Test-Path $Zip) { [System.IO.File]::Delete($Zip) }
+    Remove-SafeItem -LiteralPath $Zip
     Compress-Archive -Path $Src -DestinationPath $Zip -CompressionLevel Optimal
 }
 # 单包 = dist/desktop/capability/ 全量（含 executors exe；旧 4 分包 capability-tools/-knowledge/-executors/-scenarios 已撤）
 New-ZipFromDir (Join-Path $dist "capability") (Join-Path $initdataDist "capability-$ver.zip")
 # initial.zip：完整出厂包（**内含 exe**），= dist/desktop 全部内容（根平铺），供用户自行恢复安装
 $initialZip = Join-Path $initdataDist "initial.zip"
-if (Test-Path $initialZip) { [System.IO.File]::Delete($initialZip) }
+Remove-SafeItem -LiteralPath $initialZip
 # 排除 `.chonkpilot/`（运行时数据：会话/记忆/索引等，**绝不入出厂包**）
 $packItems = Get-ChildItem -Path $dist -Force | Where-Object { $_.Name -ne ".chonkpilot" } | ForEach-Object { $_.FullName }
 Compress-Archive -Path $packItems -DestinationPath $initialZip -CompressionLevel Optimal

@@ -10,6 +10,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -62,7 +63,7 @@ func main() {
 		// 认证域（61-消息一览 §4.6；阶段 2b-1）：auth 库 / 用户数据根 / 是否允许自助注册。
 		authDB   = flag.String("auth-db", "", "auth 库路径（bbolt 单文件，与业务三级库分离；空 = <exe 目录>/auth.db）")
 		userData = flag.String("user-data-root", "", "用户数据根（注册建 <root>/<uid>/；空 = <exe 目录>/data）")
-		allowReg = flag.Bool("allow-register", true, "是否允许自助注册（配置 auth.allowRegister；对外暴露必须关闭）")
+		allowReg = flag.Bool("allow-register", true, "是否允许自助注册（配置 auth.allowRegister；对外暴露必须关闭）。**非 loopback 的 --http-addr 且未显式传本参数时默认关闭**（fail-closed）")
 		// auth.projectRoots（阶段 2b-2）：允许根列表（逗号分隔；空 = 缺省 = 用户数据根）。
 		// 用户选定的 work_dir 落在某允许根之下且未登记为项目 → 视为用户自建项目（见 claim.go）。
 		projRoots = flag.String("project-roots", "", "允许的项目根列表（逗号分隔；空 = 用户数据根；配置 auth.projectRoots）")
@@ -76,6 +77,20 @@ func main() {
 		trayEnable = flag.Bool("tray", true, "启用系统托盘（默认开；--tray=false 关闭）——双击=打开最近实例 / 右键=退出·打开新窗口·列举实例")
 	)
 	flag.Parse()
+
+	// ── HTTP 入口非 loopback 的安全默认（fail-closed；2026-10-11）──
+	// `--allow-register` 默认 true；若 `--http-addr` 绑定**非本机**地址且用户**未显式**指定
+	// `--allow-register`，则默认**关闭自助注册**（对外暴露的注册面必须显式开启），并打 WARN。
+	// loopback 绑定（含空/裸端口/--http-addr="127.0.0.1:..."）行为**完全不变**。
+	allowRegister := *allowReg
+	if *httpAddr != "" && !httpAddrIsLoopback(*httpAddr) {
+		if !flagPassed("allow-register") {
+			allowRegister = false
+			log.Printf("[server] WARN --http-addr=%s 绑定非本机地址且未显式指定 --allow-register → 已默认关闭自助注册（fail-closed）", *httpAddr)
+		} else if *allowReg {
+			log.Printf("[server] WARN --http-addr=%s 绑定非本机地址且自助注册已开启：请自备 HTTPS 并严格限制网络暴露面（61 §4.6 硬前提）", *httpAddr)
+		}
+	}
 
 	// ── 进程级单例（🆕 2026-10-10；19 §8.11 · 62 §3A）：server 只要存在都只有一份 ──
 	// 第二份**立即退出**（exit code = exitDuplicate，非 0），**不得**触碰 / 覆盖既有 UDS
@@ -147,10 +162,11 @@ func main() {
 		// 服务端判定，非 UA、非客户端自报）→ claim 要求认证；desktop 分体常驻版 = flash（免鉴权）。
 		Form: form,
 		// 认证域（61 §4.6；阶段 2b-1）：auth 库（与业务三级库分离的单文件）+ 用户数据根 +
-		// 自助注册开关（auth.allowRegister；对外暴露必须关闭）。
+		// 自助注册开关（auth.allowRegister；对外暴露必须关闭）。allowRegister 已按绑定地址做
+		// 非 loopback fail-closed 收敛（见上）。
 		AuthDBPath:    *authDB,
 		UserDataRoot:  *userData,
-		AllowRegister: allowReg,
+		AllowRegister: &allowRegister,
 		// auth.projectRoots（阶段 2b-2）：允许根列表（空 = 缺省 = 用户数据根）。
 		ProjectRoots: splitList(*projRoots),
 		// 内嵌插件：compress（llm-compress 压缩）+ memory（每轮异步沉淀记忆）+ history（git 快照）+ codegraph/vfts（索引工具面，默认关闭）；启动就绪后广播 server-starting
@@ -195,9 +211,13 @@ func main() {
 			Facade: inline.New(bus),
 		})
 		if err := hx.Start(); err != nil {
-			log.Fatalf("[server] httpapi.Start: %v", err)
+			// HTTP 入口是**可选子系统**：启动失败不致命（记录 + 继续），与 UDS 前门口径一致
+			// ——核心（插件/数据/LLM server）已在上方就绪，不应因跨进程入口异常整体退出。
+			log.Printf("[server] HTTP 入口启动失败（可选子系统，继续运行）: %v", err)
+			hx = nil
+		} else {
+			log.Printf("[server] HTTP+SSE entry: http://%s (instance=%s static=%s)", hx.Addr(), hx.InstanceID(), staticSource(root))
 		}
-		log.Printf("[server] HTTP+SSE entry: http://%s (instance=%s static=%s)", hx.Addr(), hx.InstanceID(), staticSource(root))
 	}
 
 	// ── desktop 分体常驻版：系统托盘 + 自动退出 + 拉起 flash（🆕 2026-10-09；61 §4.1 ⑥⑦ · 62 §3A）──
@@ -206,9 +226,15 @@ func main() {
 	// 注：托盘 / spawn / autoexit 均为**可选能力**，非 flash 专属。
 	// 实例视图（UDS 前门与托盘共用同一份）：订阅 instance-register/-heartbeat/-exit，
 	// 维护 instance → {work_dir, data_dir, user, parent_instance, ...}。
-	im := instance.New(bus)
+	im := instance.New(bus) // 恒非 nil（构造即返回实例）
+	imOK := true
 	if err := im.Start(); err != nil {
-		log.Printf("[server] instance view start: %v", err)
+		// 实例视图不可用（订阅总线失败）→ **明确降级**，不得按"可用"继续：
+		//   - autoexit 判据依赖 im.Count() → 失效时 Count 恒 0，若是照常启动会自动退出循环，
+		//     会把**正在使用**的 server 误杀（与第 1 条叠加即"永不/误退出"），故不启动 autoexit；
+		//   - 托盘「列举实例」退化为空，其余托盘动作（双击/新窗口/退出）不受影响。
+		imOK = false
+		log.Printf("[server] 实例视图启动失败（降级：autoexit 不启用、托盘实例列举不可用）: %v", err)
 	} else {
 		defer im.Stop()
 	}
@@ -233,10 +259,10 @@ func main() {
 		Logf: func(format string, args ...any) { log.Printf(format, args...) },
 	})
 	if err := gate.Start(); err != nil {
-		// UDS 前门 bind 失败 = **异常告警**，**不作单例依据**（单例已由 procsingleton 在启动
-		// 最先判定）。注：`uds.Server.Start()` 先 `os.Remove` 旧 socket 再 listen → Windows 下
-		// 重复 bind **不失败**，故 bind 结果**不能**推断「已有 server 在跑」。
-		log.Printf("[server] UDS 前门启动失败: %v", err)
+		// UDS 前门是**可选子系统**（flash 接入面）：启动失败不致命（记录 + 继续），
+		// 与 HTTP 入口口径一致。注：`uds.Server.Start()` 先 `os.Remove` 旧 socket 再 listen
+		// → Windows 下重复 bind **不失败**，故 bind 结果**不能**推断「已有 server 在跑」。
+		log.Printf("[server] UDS 前门启动失败（可选子系统，继续运行）: %v", err)
 	} else {
 		log.Printf("[server] UDS entry: %s", uds.DefaultPath())
 		defer gate.Stop()
@@ -247,9 +273,9 @@ func main() {
 		spawnClient := func() {
 			p := clientPath
 			if p == "" {
-				if exe, err := os.Executable(); err == nil {
-					p = filepath.Join(filepath.Dir(exe), "chonkpilot-flash.exe")
-				}
+				// 默认探测 flash 位置：同目录 → 发行布局同级 ../gui/（见 findFlashExe）。
+				// `--client-exe` 显式指定时优先（clientPath 非空，不走探测）。
+				p = findFlashExe()
 			}
 			if p == "" {
 				log.Printf("[server] spawn flash：未定位 flash exe（可经 --client-exe 指定）")
@@ -303,8 +329,13 @@ func main() {
 			defer stopTray()
 		}
 	}
-	if *autoExit && im != nil {
-		go autoExitLoop(ctx, im, stop)
+	if *autoExit {
+		if imOK {
+			go autoExitLoop(ctx, im, stop)
+		} else {
+			// 实例视图不可用 → autoexit 判据失效，明确降级为不启用（保持常驻），避免误杀在用 server。
+			log.Printf("[server] --autoexit 已请求，但实例视图不可用 → 自动退出降级为不启用（进程保持常驻）")
+		}
 	}
 
 	<-ctx.Done()
@@ -326,26 +357,120 @@ func staticSource(root string) string {
 	return root
 }
 
-// setupFileLogging 把进程日志落 **exe 同目录 `logs/server.log`**（按大小滚动，见 winlog），
-// 并返回该 sink（供 `server.Options.LogWriter` 注入内嵌库，库侧诊断同落此文件）。本 exe 以
-// `-H windowsgui` 构建（GUI 子系统、无控制台）→ stdout/stderr 不可见，落文件是可诊断性的
-// 唯一途径（与 gui 形态 `logfile.go` 同口径；落点在 `.gitignore` 覆盖范围内，不入库）。
-// 定位 exe 目录 / 打开文件失败 → 返回 (nil, no-op)，日志回落标准库默认（stderr），**不阻断启动**。
+// setupFileLogging 把进程日志落文件（按大小滚动，见 winlog），并返回该 sink（供
+// `server.Options.LogWriter` 注入内嵌库，库侧诊断同落此文件）。本 exe 以 `-H windowsgui`
+// 构建（GUI 子系统、无控制台）→ stdout/stderr 不可见，落文件是可诊断性的唯一途径。
+//
+// 落点优先级（🆕 2026-10-11）：
+//  1. **exe 同目录 `logs/server.log`**（首选；与 gui 形态 `logfile.go` 同口径）；
+//  2. exe 目录不可写时**回落 `%LOCALAPPDATA%\chonkpilot\logs\server.log`**（仍可诊断，
+//     避免「exe 装在 Program Files 等只读位置 → 完全无日志」）；
+//  3. 两处皆不可写 → 返回 (nil, no-op)，日志回落标准库默认（stderr；GUI 子系统下不可见）。
+//
+// 任何一步失败均**不阻断启动**（落点在 `.gitignore` 覆盖范围内，不入库）。
 func setupFileLogging() (io.Writer, func()) {
-	dir, err := exedir.Dir()
-	if err != nil {
-		log.Printf("[server] 定位 exe 目录失败，日志不落文件: %v", err)
+	if dir, err := exedir.Dir(); err != nil {
+		log.Printf("[server] 定位 exe 目录失败: %v", err)
+	} else if fw, ferr := openServerLog(filepath.Join(dir, "logs", "server.log")); ferr != nil {
+		log.Printf("[server] exe 目录日志不可用: %v", ferr)
+	} else {
+		return fw, func() { _ = fw.Close() }
+	}
+	// 回落本地目录（%LOCALAPPDATA%）
+	path := fallbackLogPath()
+	if path == "" {
+		log.Printf("[server] 无 %%LOCALAPPDATA%%，日志回落 stderr（GUI 子系统下不可见）")
 		return nil, func() {}
 	}
-	path := filepath.Join(dir, "logs", "server.log")
+	fw, err := openServerLog(path)
+	if err != nil {
+		log.Printf("[server] 回落日志文件 %s 不可用: %v（日志回落 stderr，GUI 子系统下不可见）", path, err)
+		return nil, func() {}
+	}
+	log.Printf("[server] 日志回落本地目录: %s", path)
+	return fw, func() { _ = fw.Close() }
+}
+
+// openServerLog 打开滚动日志文件并把标准库 log 输出切到该文件；返回写入器（调用方负责 Close）。
+func openServerLog(path string) (*winlog.FileWriter, error) {
 	fw, err := winlog.NewFileWriter(path, winlog.DefaultMaxBytes, winlog.DefaultMaxFiles)
 	if err != nil {
-		log.Printf("[server] 打开日志文件 %s 失败，日志不落文件: %v", path, err)
-		return nil, func() {}
+		return nil, err
 	}
 	log.SetOutput(fw)
 	log.Printf("[server] 日志落点: %s", path)
-	return fw, func() { _ = fw.Close() }
+	return fw, nil
+}
+
+// fallbackLogPath 返回回落日志路径 `%LOCALAPPDATA%\chonkpilot\logs\server.log`（无本地
+// AppData 目录 → ""）。`%LOCALAPPDATA%` 缺失时再用 os.UserCacheDir()（Windows 下同值）兜底。
+func fallbackLogPath() string {
+	base := os.Getenv("LOCALAPPDATA")
+	if base == "" {
+		if d, err := os.UserCacheDir(); err == nil {
+			base = d
+		}
+	}
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(base, "chonkpilot", "logs", "server.log")
+}
+
+// findFlashExe 定位 flash 可执行文件（托盘「打开新窗口」默认路径；`--client-exe` 显式优先，
+// 由调用方处理）。候选：① `<server exe 目录>/chonkpilot-flash.exe`；② 发行布局同级
+// `<server exe 目录>/../gui/chonkpilot-flash.exe`（server 在 `dist/server`、flash 在 `dist/gui`）。
+// 取第一个存在的候选；都不存在 → ""（调用方提示 `--client-exe`）。
+func findFlashExe() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+	for _, c := range []string{
+		filepath.Join(dir, "chonkpilot-flash.exe"),
+		filepath.Join(dir, "..", "gui", "chonkpilot-flash.exe"),
+	} {
+		if fi, serr := os.Stat(c); serr == nil && !fi.IsDir() {
+			return c
+		}
+	}
+	return ""
+}
+
+// flagPassed 报告命令行是否**显式**设置了 name 指定的 flag（用于区分默认值与用户显式传值；
+// 须在 flag.Parse() 之后调用）。
+func flagPassed(name string) bool {
+	passed := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			passed = true
+		}
+	})
+	return passed
+}
+
+// httpAddrIsLoopback 判定 `--http-addr` 是否**仅绑定本机**（与 httpapi.New 的裸端口归一规则
+// 一致：裸端口 = 127.0.0.1；空 = 未启用 → 视为本机）。无法解析 / 显式绑定全部接口（host 为空，
+// 如 `:5668`）→ 视为**非本机**（fail-closed，宁可多拦）。
+func httpAddrIsLoopback(addr string) bool {
+	if addr == "" {
+		return true
+	}
+	if !strings.Contains(addr, ":") {
+		addr = "127.0.0.1:" + addr
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // splitList 把逗号分隔的启动参数拆成去空白、去空项的非空列表（空入参 → nil =
@@ -386,13 +511,24 @@ func instanceMenuTitle(in instance.Info) string {
 	return name
 }
 
-// autoExitLoop（--autoexit；61 §4.1 ⑤）：每分钟检测一次，无在线实例且**曾有实例** → 停服务
-// （自动退出）。未指定 --autoexit 时不启动本循环 → 永久常驻。超时实例的剔除由服务端
-// sweep 与 persist 清理完成（**与 --autoexit 无关，恒生效**）；flash 实例由 UDS 前门按
-// （仍存活的）连接代发心跳续期，故不被 sweep 按 LastBeat 判超时回收。
+// autoExitIdleGrace 是「被拉起但从未被使用」的宽限期（🆕 2026-10-11）：flash 先 Ensure()
+// 以 `--autoexit` 拉起本 server 后，若用户在选择目录对话框中取消，则**从未 claim** →
+// 实例视图恒空。仅以「曾有实例」为判据会导致该 server **永不退出**（僵尸常驻）——故追加：
+// 启动超过本宽限期仍**从未出现任何实例** → 亦自动退出。宽限期须明显大于 flash「拉起 →
+// 首次 claim」的正常耗时（选目录对话框停留），避免误退在用的 server。
+const autoExitIdleGrace = 2 * time.Minute
+
+// autoExitLoop（--autoexit；61 §4.1 ⑤）：每分钟检测一次，满足以下**任一**条件即停服务（自动退出）：
+//   - 曾有实例（im.Count()>0 出现过）且当前无在线实例 → 最后一个实例被删除后退出；
+//   - 自启动起超过 autoExitIdleGrace 仍从未出现任何实例 → 被拉起但从未使用（如取消选目录）。
+//
+// 未指定 --autoexit 时不启动本循环 → 永久常驻。实例视图不可用（im.Start 失败）时本循环**不启动**
+// （判据失效，见 main）。超时实例的剔除由服务端 sweep 与 persist 清理完成（**与 --autoexit 无关，
+// 恒生效**）；flash 实例由 UDS 前门按（仍存活的）连接代发心跳续期，故不被 sweep 按 LastBeat 判超时回收。
 func autoExitLoop(ctx context.Context, im *instance.Manager, stop func()) {
 	t := time.NewTicker(time.Minute)
 	defer t.Stop()
+	started := time.Now()
 	ever := false
 	for {
 		select {
@@ -405,6 +541,13 @@ func autoExitLoop(ctx context.Context, im *instance.Manager, stop func()) {
 			}
 			if ever {
 				log.Printf("[server] --autoexit：无在线实例 → 自动退出")
+				stop()
+				return
+			}
+			// 从未出现过实例：被 flash 拉起但用户从未认领（如取消选目录）→ 超过宽限期即退出，
+			// 避免「僵尸 server」常驻（本次修复的核心）。
+			if time.Since(started) >= autoExitIdleGrace {
+				log.Printf("[server] --autoexit：启动 %s 内无任何实例（被拉起但从未使用）→ 自动退出", autoExitIdleGrace)
 				stop()
 				return
 			}

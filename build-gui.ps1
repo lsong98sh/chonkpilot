@@ -1,4 +1,4 @@
-﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
+# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-split.ps1`；
 #   形态名（分离形态 / team）→ **`gui`（GUI 客户端 + 独立 server）**，
@@ -85,6 +85,21 @@ $outFlashExe = Join-Path $dist "chonkpilot-flash.exe"
 $outFlashCliExe = Join-Path $dist "chonkpilot-flash-cli.exe"
 $outSrvExe = Join-Path $srvDist "chonkpilot-server.exe"
 
+# ── 破坏性操作防护（2026-10-11；本仓曾发生误删用户主目录事故，见 .trae/rules 全局规则）──
+# 统一约束：任何删除/覆盖目标必须落在**仓库根 $root 之内**（严格子路径），越界即 throw 中止。
+# 目标一律以**字面量绝对路径**传入（禁止调用方用变量拼接/通配符指向用户目录）。
+function Remove-SafeItem {
+    param([Parameter(Mandatory)][string]$LiteralPath, [switch]$Recurse)
+    $resolved = Resolve-Path -LiteralPath $LiteralPath -ErrorAction SilentlyContinue
+    if ($null -eq $resolved) { return }   # 目标不存在 = 无操作
+    $p = $resolved.Path.TrimEnd('\')
+    $rootPath = (Resolve-Path -LiteralPath $root).Path.TrimEnd('\')
+    if ($p -notlike "$rootPath\*") {      # 白名单：仅仓库根之内的严格子路径
+        throw "拒绝删除仓库外路径: $p（仅允许 $rootPath 之内）"
+    }
+    Remove-Item -LiteralPath $p -Recurse:$Recurse -Force
+}
+
 # -- 0) 结束运行中的旧实例（释放 exe 占用；与 build-desktop.ps1 同列表） --
 foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "chonkpilot-cli-client", "chonkpilot-flash", "chonkpilot-flash-cli", "chonkpilot-server")) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
@@ -100,7 +115,7 @@ Write-Host "==> [0.5/6] sync factory system docs -> data embed dir"
 $sysSrc = Join-Path $root "src\initdata\capability\system"
 $sysEmbed = Join-Path $root "src\lib\data\internal\systemfs\embedded\system"
 if (-not (Test-Path $sysSrc)) { throw "factory system docs not found: $sysSrc" }
-if (Test-Path $sysEmbed) { [System.IO.Directory]::Delete($sysEmbed, $true) }
+Remove-SafeItem -LiteralPath $sysEmbed -Recurse
 New-Item -ItemType Directory -Force -Path $sysEmbed | Out-Null
 Copy-Item (Join-Path $sysSrc "*") $sysEmbed -Recurse -Force
 Write-Host "    ok: embed system docs -> $sysEmbed ($((Get-ChildItem $sysEmbed -Recurse -File | Measure-Object).Count) files)"
@@ -127,12 +142,12 @@ try {
 $embedHtml = Join-Path $embedDist "embed.html"
 if (-not (Test-Path $embedHtml)) { throw "embed.html 未产出: $embedHtml" }
 Copy-Item $embedHtml (Join-Path $embedDist "index.html") -Force
-[System.IO.File]::Delete($embedHtml)
+Remove-SafeItem -LiteralPath $embedHtml
 Write-Host "    ok: $embedDist (embed.html -> index.html)"
 # 前端 dist 部署到 flash 薄壳同目录（`<exeDir>/frontend/dist`）——flash **不 embed 前端**，
 # 运行时以 os.DirFS(<exeDir>) 加载（见 src/flash/main.go）。gui-client 仍 embed。
 $flashFront = Join-Path $dist "frontend\dist"
-if (Test-Path $flashFront) { [System.IO.Directory]::Delete($flashFront, $true) }
+Remove-SafeItem -LiteralPath $flashFront -Recurse
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $flashFront) | Out-Null
 Copy-Item $embedDist $flashFront -Recurse -Force
 Write-Host "    ok: $flashFront ($((Get-ChildItem $flashFront -Recurse -File | Measure-Object).Count) files)"
@@ -207,7 +222,7 @@ try {
 Write-Host "==> [4.5/6] clean dist/gui stale"
 foreach ($stale in @("chonkpilot-server.exe", "chonkpilot-gui.exe", "chonkpilot-cli.exe", "chonkpilot-codegraph-mcp-server.exe", "chonkpilot-vfts-mcp-server.exe", "zvec_c_api.dll")) {
     $p = Join-Path $dist $stale
-    if (Test-Path $p) { Remove-Item $p -Force; Write-Host "    clean stale: $stale" }
+    if (Test-Path $p) { Remove-SafeItem -LiteralPath $p; Write-Host "    clean stale: $stale" }
 }
 
 # -- 5) 形态无关资产：capability/（executor×4 + 契约）+ scenarios/（出厂场景） --
@@ -231,25 +246,23 @@ if ((-not (Test-Path $capSrc)) -or $staleExec) {
     $capSrc = Join-Path $root "dist\other\capability"
 }
 $capDst = Join-Path $srvDist "capability"
-if (Test-Path $capDst) {
-    [System.IO.Directory]::Delete($capDst, $true)
-}
+Remove-SafeItem -LiteralPath $capDst -Recurse
 Copy-Item $capSrc $capDst -Recurse -Force
 # 契约子树每次从唯一源 src/initdata 覆盖同步（避免复用 dist/desktop 旧产物把过期契约/场景带入 dist/server）
 foreach ($sub in @("prompts", "tools", "resources", "skills", "agents", "system")) {
     $srcSub = Join-Path $initCap $sub
     if (-not (Test-Path $srcSub)) { throw "contracts not found: $srcSub" }
     $capSub = Join-Path $capDst $sub
-    if (Test-Path $capSub) { [System.IO.Directory]::Delete($capSub, $true) }
+    Remove-SafeItem -LiteralPath $capSub -Recurse
     Copy-Item $srcSub $capDst -Recurse -Force
 }
 # 未发布草稿排除：skills/se/（用户 2026-10-10 裁决「暂不提交」）不随产物投放。
 $seDraft = Join-Path $capDst "skills\se"
-if (Test-Path $seDraft) { [System.IO.Directory]::Delete($seDraft, $true) }
+Remove-SafeItem -LiteralPath $seDraft -Recurse
 # 出厂场景：每次从唯一源 src/initdata/capability/scenarios 覆盖同步
 $scnSrc = Join-Path $initCap "scenarios"
 $scnDst = Join-Path $capDst "scenarios"
-if (Test-Path $scnDst) { [System.IO.Directory]::Delete($scnDst, $true) }
+Remove-SafeItem -LiteralPath $scnDst -Recurse
 Copy-Item $scnSrc $scnDst -Recurse -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
 Write-Host "    ok: capability/scenarios/ ($((Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count) files)"

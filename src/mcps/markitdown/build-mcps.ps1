@@ -1,4 +1,4 @@
-﻿# build-mcps.ps1：冻结 ChonkPilot 文档转换服务（mcps/markitdown）为 PyInstaller 产物
+# build-mcps.ps1：冻结 ChonkPilot 文档转换服务（mcps/markitdown）为 PyInstaller 产物
 #
 # 产物布局（dist/desktop/mcps/markitdown/）：
 #   ├── markitdown-mcp.exe        # PyInstaller 冻结产物（MCP + /vfts 双入口，只监听 127.0.0.1）
@@ -33,6 +33,21 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $here))  
 $venvPy = Join-Path $here ".venv\Scripts\python.exe"
 $dist = Join-Path $repoRoot "dist\desktop\mcps\markitdown"
 $work = Join-Path $here "build"
+
+# ── 破坏性操作防护（2026-10-11；本仓曾发生误删用户主目录事故，见 .trae/rules 全局规则）──
+# 删除目标必须落在**仓库根 $repoRoot 之内**（严格子路径），越界即 throw 中止。
+# 目标一律以**字面量绝对路径**传入（禁止调用方用变量拼接/通配符指向用户目录）。
+function Remove-SafeItem {
+    param([Parameter(Mandatory)][string]$LiteralPath, [switch]$Recurse)
+    $resolved = Resolve-Path -LiteralPath $LiteralPath -ErrorAction SilentlyContinue
+    if ($null -eq $resolved) { return }   # 目标不存在 = 无操作
+    $p = $resolved.Path.TrimEnd('\')
+    $rootPath = (Resolve-Path -LiteralPath $repoRoot).Path.TrimEnd('\')
+    if ($p -notlike "$rootPath\*") {      # 白名单：仅仓库根之内的严格子路径
+        throw "拒绝删除仓库外路径: $p（仅允许 $rootPath 之内）"
+    }
+    Remove-Item -LiteralPath $p -Recurse:$Recurse -Force
+}
 
 if (-not (Test-Path $venvPy)) {
     throw "venv 缺失：$venvPy`n先执行： python -m venv .venv ; .\.venv\Scripts\python.exe -m pip install -r requirements.txt"
@@ -76,14 +91,14 @@ if ($freezeMode -eq "--onedir") {
     if (-not (Test-Path $appDir)) { throw "onedir 未产出 $appDir" }
     foreach ($it in (Get-ChildItem -Force $appDir)) {
         $dst = Join-Path $dist $it.Name
-        if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }   # 覆盖上一次 onedir 残留
+        Remove-SafeItem -LiteralPath $dst -Recurse   # 覆盖上一次 onedir 残留
         Move-Item -Force $it.FullName -Destination $dist
     }
-    Remove-Item -Recurse -Force $appDir
+    Remove-SafeItem -LiteralPath $appDir -Recurse
 } else {
     # onefile：清理上一次 onedir 可能残留的 _internal\（避免新旧模式产物叠加）
     $stale = Join-Path $dist "_internal"
-    if (Test-Path $stale) { Remove-Item -Recurse -Force $stale }
+    Remove-SafeItem -LiteralPath $stale -Recurse
 }
 
 $exe = Join-Path $dist "markitdown-mcp.exe"
