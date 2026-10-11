@@ -202,7 +202,15 @@ func (cw *capWatcher) handle(ev fsnotify.Event) {
 	defer cw.mu.Unlock()
 	if ev.Op&fsnotify.Create != 0 {
 		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			cw.addTreeLocked(p) // capability 树新增子目录 → 递归监听
+			// 仅对落在目标 capability 根内的新建目录递归监听（含根自身）。祖先监听点
+			// （usr/prjusr 根尚未创建时回落到最近已存在祖先，如 <usr> = <HOME>/.chonkpilot）
+			// 内的无关目录 —— 典型如 WebView2 profile 树 <HOME>/.chonkpilot/webview2/** ——
+			// 不得纳入递归监听：否则被 fsnotify 全量接管（数万目录 + 高频变更），持 cw.mu 期间
+			// 阻塞并发的 watchInstance（→ instance-register 60s 超时）。目标根创建后由
+			// 下方 syncLocked 收敛为对其递归监听。
+			if cw.inWantLocked(p) || cw.inAppLocked(p) {
+				cw.addTreeLocked(p) // capability 树新增子目录 → 递归监听
+			}
 		}
 	}
 	if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {

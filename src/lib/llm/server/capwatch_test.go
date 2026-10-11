@@ -11,8 +11,55 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
+
+// TestCapWatchIgnoresDirsOutsideRoots 回归：flash 全新 HOME 下 instance-register 首次 60s 超时。
+// 当 usr/prjusr capability 根尚未创建时，watcher 回落到最近已存在祖先监听（如 <usr> =
+// <HOME>/.chonkpilot）；该祖先内的无关目录——典型如 WebView2 profile 树 <usr>/webview2/**——
+// **不得**被递归纳入监听：否则被 fsnotify 全量接管（运行态大树、数万目录 + 高频变更），
+// 持 cw.mu 期间阻塞并发的 watchInstance（→ instance-register 分派 60s 超时）。
+func TestCapWatchIgnoresDirsOutsideRoots(t *testing.T) {
+	cw, err := newCapWatcher(nil) // 手动喂事件驱动；本用例不触发 fire（s 不参与）
+	if err != nil {
+		t.Fatalf("newCapWatcher: %v", err)
+	}
+	defer cw.Close()
+
+	tmp := t.TempDir()
+	usrAnc := filepath.Join(tmp, "usr")         // 模拟 <usr>（如 <HOME>/.chonkpilot，已存在）
+	root := filepath.Join(usrAnc, "capability") // 目标 capability 根（尚未创建）
+	if err := os.MkdirAll(usrAnc, 0o755); err != nil {
+		t.Fatalf("mkdir usrAnc: %v", err)
+	}
+
+	cw.mu.Lock()
+	cw.want[normPath(root)] = true
+	cw.syncLocked() // 根不存在 → 回落到祖先 usrAnc 监听
+	_, watchingAnc := cw.watched[normPath(usrAnc)]
+	cw.mu.Unlock()
+	if !watchingAnc {
+		t.Fatalf("根不存在时应回落到最近已存在祖先监听: %s", usrAnc)
+	}
+
+	// 模拟运行态大树（WebView2 profile）：<usr>/webview2/gui-1/EBWebView/Cache
+	decoy := filepath.Join(usrAnc, "webview2", "gui-1", "EBWebView", "Cache")
+	if err := os.MkdirAll(decoy, 0o755); err != nil {
+		t.Fatalf("mkdir decoy: %v", err)
+	}
+	// 等价 fsnotify 对 usrAnc 直属子项 webview2 的 Create 投递。
+	cw.handle(fsnotify.Event{Name: filepath.Join(usrAnc, "webview2"), Op: fsnotify.Create})
+
+	cw.mu.Lock()
+	_, watchedWv := cw.watched[normPath(filepath.Join(usrAnc, "webview2"))]
+	_, watchedDeep := cw.watched[normPath(decoy)]
+	cw.mu.Unlock()
+	if watchedWv || watchedDeep {
+		t.Fatalf("目标根之外的目录不得纳入递归监听（webview2=%v deep=%v）", watchedWv, watchedDeep)
+	}
+}
 
 // waitTool 轮询 tools/list 直到 name 出现（want=true）/ 消失（want=false）或超时；返回耗时。
 func waitTool(t *testing.T, s *Server, name string, want bool, timeout time.Duration) (time.Duration, bool) {

@@ -32,8 +32,14 @@ def J(gui, js):
         return r
 
 
-def uploads_dir():
-    d = os.path.join(DATA_DIR, "tmp", "uploads")
+def uploads_dir(sub="tmp/uploads"):
+    """列出 `<data-root>/<sub>` 下的落盘文件（2026-10-10 口径：[61 §1](gui.upload)）。
+
+    落盘 = `<data_root>/<dir>/<uuid><ext>`：`dir` 缺省 `tmp/uploads`（普通附件），**截图传
+    `screenshot`** —— 故截图用例须查 `<data-root>/screenshot/`（原硬编码 `tmp/uploads` 为
+    变更前的旧落点，已过期）。
+    """
+    d = os.path.join(DATA_DIR, *sub.split("/"))
     return [f for f in os.listdir(d) if not f.startswith('.')] if os.path.isdir(d) else []
 
 
@@ -124,13 +130,22 @@ def main():
                          "return !!i && i.complete && i.naturalWidth>0 && i.getBoundingClientRect().width>0})()"],
                    timeout=15.0)
         drag_select(gui)
+        # 等附件落定：chip 出现 → 上传回执后 `pending` 摘除（`{name}` 才为真实落盘名 `<uuid>.png`，
+        # 见 61 §1 gui.upload / uploadfs.Save）；pending 期间 `.attach-name` 是本地展示名而非落盘名。
         wait_probe(gui, ["document.querySelectorAll('.attach-chip.attach-image').length >= 1"], timeout=20.0)
+        wait_probe(gui, ["document.querySelectorAll('.attach-chip.attach-image:not(.pending)').length >= 1"], timeout=20.0)
         chips = J(gui, "document.querySelectorAll('.attach-chip.attach-image').length")
         chipName = J(gui, "document.querySelector('.attach-chip.attach-image .attach-name')?.textContent?.trim() || ''")
         overlayGone = J(gui, "!document.querySelector('.screenshot-overlay')")
-        hasPng = any(f.endswith('.png') for f in uploads_dir())
-        c.check("S3 拖选裁剪 → 附件 + overlay 关闭", bool(hasPng) and int(chips) >= 1 and 'screenshot' in chipName and bool(overlayGone),
-                f"png={hasPng} chips={chips} name={repr(chipName)} gone={overlayGone}")
+        # 截图落点 = `<data-root>/screenshot/`（`dir:"screenshot"`，2026-10-10 口径）
+        hasPng = any(f.endswith('.png') for f in uploads_dir("screenshot"))
+        # chip 展示名 = 前端本地化标签 `t('chat.screenshot')`（ChatPanel.onScreenshotDone 写入
+        # `name: t('chat.screenshot')` + `ref: 'screenshot/<name>'`）——**不是**落盘文件名；
+        # 与截图按钮 title 同源（同一 i18n 文案）→ 用它作 locale 无关的强断言。
+        btnTitle = J(gui, """(()=>{const bs=Array.from(document.querySelectorAll('.input-actions-left .icon-btn'));const b=bs.find(x=>((x.getAttribute('title')||'').toLowerCase().indexOf('screenshot')>=0)||((x.getAttribute('title')||'').indexOf('截图')>=0));return b?(b.getAttribute('title')||''):''})()""")
+        c.check("S3 拖选裁剪 → 附件 + overlay 关闭",
+                bool(hasPng) and int(chips) >= 1 and bool(chipName) and chipName == btnTitle and bool(overlayGone),
+                f"png={hasPng} chips={chips} name={repr(chipName)} btn={repr(btnTitle)} gone={overlayGone}")
 
         # S4 附件可删除
         # L4 加固（2026-09-23，[42 §2 (148)]）：上传回执前 chip 无删除入口（InputBox.vue:9-10
