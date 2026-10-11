@@ -51,7 +51,7 @@ type browser interface {
 	Navigate(url string)
 	NavigateToString(htmlContent string)
 	Init(script string)
-	Eval(script string)
+	Eval(script string) error
 	NotifyParentWindowPositionChanged() error
 	Focus()
 }
@@ -460,12 +460,21 @@ func (w *webview) Destroy() {
 func (w *webview) Run() {
 	var msg w32.Msg
 	for {
-		_, _, _ = w32.User32GetMessageW.Call(
+		r, _, err := w32.User32GetMessageW.Call(
 			uintptr(unsafe.Pointer(&msg)),
 			0,
 			0,
 			0,
 		)
+		// GetMessageW 返回 int：>0 = 取到消息；0 = WM_QUIT（退出循环）；-1 = 出错。
+		// 原实现忽略返回值 → -1 时 msg 未填充会忙循环；此处显式处理。
+		if int32(r) == -1 {
+			log.Printf("GetMessageW error: %v", err)
+			return
+		}
+		if r == 0 {
+			return
+		}
 		if msg.Message == w32.WMApp {
 			w.m.Lock()
 			q := append([]func(){}, w.dispatchq...)
@@ -477,7 +486,7 @@ func (w *webview) Run() {
 		} else if msg.Message == w32.WMQuit {
 			return
 		}
-		r, _, _ := w32.User32GetAncestor.Call(uintptr(msg.Hwnd), w32.GARoot)
+		r, _, _ = w32.User32GetAncestor.Call(uintptr(msg.Hwnd), w32.GARoot)
 		r, _, _ = w32.User32IsDialogMessage.Call(r, uintptr(unsafe.Pointer(&msg)))
 		if r != 0 {
 			continue
@@ -550,7 +559,10 @@ func (w *webview) Init(js string) {
 }
 
 func (w *webview) Eval(js string) {
-	w.browser.Eval(js)
+	// browser.Eval 失败（如脚本含 NUL 致 UTF-16 转换失败）仅记日志，不再退出进程。
+	if err := w.browser.Eval(js); err != nil {
+		log.Printf("failed to eval script: %v", err)
+	}
 }
 
 // WebResourceInterceptor exposes the WebView2 WebResourceRequested capability

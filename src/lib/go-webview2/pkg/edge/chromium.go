@@ -4,6 +4,7 @@
 package edge
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -33,6 +34,15 @@ type Chromium struct {
 
 	// Settings
 	DataPath string
+
+	// initMu / initErr / initFailed 承载「环境 + 控制器创建」阶段的失败：
+	// EnvironmentCompleted / CreateCoreWebView2ControllerCompleted 是 COM 回调、只能返回
+	// uintptr，无法直接回传 Go error，故把失败记录到结构体字段（首个错误为准）并置
+	// initFailed 位，供发起创建的 Embed 消息泵感知后向上返回 false（单窗口失败不再
+	// os.Exit 拖垮整进程）。
+	initMu     sync.Mutex
+	initErr    error
+	initFailed uintptr
 
 	// scriptHandlers roots ExecuteScriptWithResult completion handlers until
 	// their async callback fires (native WebView2 holds only a raw pointer).
@@ -77,6 +87,27 @@ func NewChromium() *Chromium {
 	return e
 }
 
+// setInitError 记录初始化阶段（环境 / 控制器创建）的首个错误，并置「已结束」标记，
+// 供 Embed 的消息泵退出（COM 回调无法直接返回 error，见字段注释）。
+func (e *Chromium) setInitError(err error) {
+	if err == nil {
+		return
+	}
+	e.initMu.Lock()
+	if e.initErr == nil {
+		e.initErr = err
+	}
+	e.initMu.Unlock()
+	atomic.StoreUintptr(&e.initFailed, 1)
+}
+
+// InitError 返回初始化阶段的失败原因；nil = 成功或仍在进行中。
+func (e *Chromium) InitError() error {
+	e.initMu.Lock()
+	defer e.initMu.Unlock()
+	return e.initErr
+}
+
 func (e *Chromium) Embed(hwnd uintptr) bool {
 	e.hwnd = hwnd
 
@@ -102,7 +133,7 @@ func (e *Chromium) Embed(hwnd uintptr) bool {
 	}
 	var msg w32.Msg
 	for {
-		if atomic.LoadUintptr(&e.inited) != 0 {
+		if atomic.LoadUintptr(&e.inited) != 0 || atomic.LoadUintptr(&e.initFailed) != 0 {
 			break
 		}
 		r, _, _ := w32.User32GetMessageW.Call(
@@ -116,6 +147,11 @@ func (e *Chromium) Embed(hwnd uintptr) bool {
 		}
 		_, _, _ = w32.User32TranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
 		_, _, _ = w32.User32DispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
+	}
+	// 回调内记录失败时，消息泵据 initFailed 退出并向调用方回传「该窗口失败」（不再 log.Fatal 退出进程）。
+	if err := e.InitError(); err != nil {
+		log.Printf("WebView2 initialization failed: %v", err)
+		return false
 	}
 	e.Init("window.external={invoke:s=>window.chrome.webview.postMessage(s)}")
 	return true
@@ -143,10 +179,13 @@ func (e *Chromium) Init(script string) {
 	)
 }
 
-func (e *Chromium) Eval(script string) {
+// Eval 在页面执行 JS；仅脚本含 NUL 等致 UTF-16 转换失败时返回 error（原 log.Fatal 会
+// 直接退出整进程，单次求值失败不应如此）。
+func (e *Chromium) Eval(script string) error {
 	_script, err := windows.UTF16PtrFromString(script)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("WebView2 Eval: %v", err)
+		return err
 	}
 
 	_, _, _ = e.webview.vtbl.ExecuteScript.Call(
@@ -154,6 +193,7 @@ func (e *Chromium) Eval(script string) {
 		uintptr(unsafe.Pointer(_script)),
 		0,
 	)
+	return nil
 }
 
 // ExecuteScriptWithResult runs JavaScript and delivers the JSON-encoded result
@@ -234,7 +274,9 @@ func (e *Chromium) Release() uintptr {
 
 func (e *Chromium) EnvironmentCompleted(res uintptr, env *ICoreWebView2Environment) uintptr {
 	if int64(res) < 0 {
-		log.Fatalf("Creating environment failed with %08x", res)
+		// 不再 log.Fatal：记录失败供 Embed 感知（该窗口失败，不拖垮整进程）。
+		e.setInitError(fmt.Errorf("creating environment failed with %08x", res))
+		return 0
 	}
 	_, _, _ = env.vtbl.AddRef.Call(uintptr(unsafe.Pointer(env)))
 	e.environment = env
@@ -249,7 +291,9 @@ func (e *Chromium) EnvironmentCompleted(res uintptr, env *ICoreWebView2Environme
 
 func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller *ICoreWebView2Controller) uintptr {
 	if int64(res) < 0 {
-		log.Fatalf("Creating controller failed with %08x", res)
+		// 不再 log.Fatal：记录失败供 Embed 感知（该窗口失败，不拖垮整进程）。
+		e.setInitError(fmt.Errorf("creating controller failed with %08x", res))
+		return 0
 	}
 	_, _, _ = controller.vtbl.AddRef.Call(uintptr(unsafe.Pointer(controller)))
 	e.controller = controller
@@ -348,7 +392,9 @@ func (e *Chromium) PermissionRequested(_ *ICoreWebView2, args *iCoreWebView2Perm
 func (e *Chromium) WebResourceRequested(sender *ICoreWebView2, args *ICoreWebView2WebResourceRequestedEventArgs) uintptr {
 	req, err := args.GetRequest()
 	if err != nil {
-		log.Fatal(err)
+		// 单次请求失败 → 忽略该请求（交由 WebView2 走默认处理），不 log.Fatal 退出进程。
+		log.Printf("WebView2 WebResourceRequested: GetRequest failed: %v", err)
+		return 0
 	}
 	if e.WebResourceRequestedCallback != nil {
 		e.WebResourceRequestedCallback(req, args)
@@ -359,7 +405,8 @@ func (e *Chromium) WebResourceRequested(sender *ICoreWebView2, args *ICoreWebVie
 func (e *Chromium) AddWebResourceRequestedFilter(filter string, ctx COREWEBVIEW2_WEB_RESOURCE_CONTEXT) {
 	err := e.webview.AddWebResourceRequestedFilter(filter, ctx)
 	if err != nil {
-		log.Fatal(err)
+		// 过滤器注册失败仅记日志（原 log.Fatal 退出进程）；该过滤器不生效但其余不受影响。
+		log.Printf("WebView2 AddWebResourceRequestedFilter(%q) failed: %v", filter, err)
 	}
 }
 

@@ -70,6 +70,29 @@ func SanitizeName(name string) string {
 	return n
 }
 
+// safeExts 是**允许保留原扩展名**的白名单（其余一律落 `.bin`）。落盘目录经静态面 `/show/`
+// 直出，若保留可执行脚本的类型（如 .html/.svg/.xhtml/.xml）会形成**存储型 XSS** 面；
+// 白名单=已知安全的图片/音视频/文档/压缩类型。未知/危险 → `.bin`（下载为二进制，不内联渲染）。
+var safeExts = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
+	".bmp": true, ".ico": true, ".tif": true, ".tiff": true,
+	".mp3": true, ".wav": true, ".ogg": true, ".m4a": true, ".flac": true, ".aac": true,
+	".mp4": true, ".webm": true, ".mov": true, ".mkv": true, ".avi": true,
+	".pdf": true,
+	".doc": true, ".docx": true, ".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true,
+	".txt": true, ".csv": true, ".md": true, ".json": true,
+	".zip": true, ".7z": true, ".rar": true, ".gz": true,
+}
+
+// sanitizeExt 返回可安全保留的扩展名（小写）；不在白名单 → ".bin"。
+func sanitizeExt(name string) string {
+	ext := strings.ToLower(filepath.Ext(SanitizeName(name)))
+	if safeExts[ext] {
+		return ext
+	}
+	return ".bin"
+}
+
 // DecodeData 解码 payload.data（base64，允许 `data:<mime>;base64,` 前缀）：解码前按 base64
 // 原文长度快速拒绝，解码后按明文长度二次校验（DoS 防护）。空 / 非法 base64 → 明确错误。
 func DecodeData(raw string) ([]byte, error) {
@@ -97,8 +120,8 @@ func DecodeData(raw string) ([]byte, error) {
 }
 
 // Save 把 content 落盘到 `<root>/<cleaned dir>/<uuid><ext>`，返回真实落盘文件名（uuid+ext）。
-// dir 经 SanitizeDir 净化（越界/超限回落 DefaultDir）；保留原扩展名（便于 /show/ 与图片类型
-// 识别），文件名主体用 uuid 隔离重复上传。
+// dir 经 SanitizeDir 净化（越界/超限回落 DefaultDir）；扩展名经 sanitizeExt **白名单**过滤
+// （不在白名单 → `.bin`，规避静态面存储型 XSS），文件名主体用 uuid 隔离重复上传。
 //
 // R7-B-4：落盘后按 KeepCap 对该目录做容量兜底（最旧优先删除）——gui 桥与 browser 入口
 // （httpapi guiUpload）共用本函数 → 兜底**同源**，不再只有 GUI 启动期一次。
@@ -109,7 +132,7 @@ func Save(root, dir, origName string, content []byte) (string, error) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", err
 	}
-	fileName := idgen.NewUUID() + filepath.Ext(SanitizeName(origName))
+	fileName := idgen.NewUUID() + sanitizeExt(origName)
 	dest := filepath.Join(destDir, fileName)
 	if err := os.WriteFile(dest, content, 0o644); err != nil {
 		return "", err

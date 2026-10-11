@@ -56,6 +56,16 @@ type Client struct {
 	subs      []*clientSub
 	nextSubID uint64
 
+	// 事件串行消费队列：readLoop 只入队（不执行 handler），单个 worker goroutine 顺序
+	// 执行订阅回调。避免「在唯一 readLoop goroutine 上同步执行 handler」时，handler 内
+	// Emit/Publish（call 阻塞等待应答）与 readLoop 读取应答互等而自死锁。
+	// 队列无界（slice + Cond）→ readLoop 入队永不阻塞，应答始终可被及时读取（背压不作用于
+	// 读路径）；代价是极端积压时内存增长。
+	evtMu     sync.Mutex
+	evtQ      []eventFrame
+	evtCond   *sync.Cond
+	evtClosed bool
+
 	closed    chan struct{}
 	closeOnce sync.Once
 }
@@ -81,6 +91,8 @@ func Dial(opts ClientOptions) (*Client, error) {
 		pend:   make(map[int64]chan responseFrame),
 		closed: make(chan struct{}),
 	}
+	c.evtCond = sync.NewCond(&c.evtMu)
+	go c.dispatchLoop()
 	go c.readLoop()
 	return c, nil
 }
@@ -141,6 +153,13 @@ func (c *Client) Close() error {
 		close(c.closed)
 		_ = c.nc.Close()
 		c.clearPending()
+		// 唤醒并按「不再投递」收尾事件 worker：置 evtClosed + 清空待派队列，再 Broadcast
+		//（在锁内置位，保证与 worker 的 Cond.Wait 不丢唤醒、不重复投递）。
+		c.evtMu.Lock()
+		c.evtClosed = true
+		c.evtQ = nil
+		c.evtMu.Unlock()
+		c.evtCond.Broadcast()
 		if c.opts.OnClose != nil {
 			c.opts.OnClose()
 		}
@@ -263,7 +282,8 @@ func (c *Client) handleLine(line []byte) {
 		if json.Unmarshal(line, &f) != nil {
 			return
 		}
-		c.dispatch(f.Type, f.Payload)
+		// 只入队，不在 readLoop goroutine 上执行 handler（见 evtQ 字段注释）。
+		c.enqueueEvent(f)
 	case frameControl:
 		var f controlFrame
 		if json.Unmarshal(line, &f) != nil {
@@ -272,6 +292,38 @@ func (c *Client) handleLine(line []byte) {
 		if c.opts.OnControl != nil {
 			c.opts.OnControl(f.Type, f.Data)
 		}
+	}
+}
+
+// enqueueEvent 把一条下行事件追加到串行队列（无界，不阻塞 readLoop）。已关闭 → 丢弃。
+func (c *Client) enqueueEvent(f eventFrame) {
+	c.evtMu.Lock()
+	if c.evtClosed {
+		c.evtMu.Unlock()
+		return
+	}
+	c.evtQ = append(c.evtQ, f)
+	c.evtMu.Unlock()
+	c.evtCond.Signal()
+}
+
+// dispatchLoop 是**唯一**的事件消费 goroutine：顺序取出队列中的事件并派发（保序，与旧
+// 「在 readLoop 上顺序派发」一致），使 readLoop 不再被 handler 阻塞（handler 内的上行应答
+// 可被及时读取）。Close 后退出、不再投递。handler 内 panic 在 invokeHandler 内 recover。
+func (c *Client) dispatchLoop() {
+	for {
+		c.evtMu.Lock()
+		for !c.evtClosed && len(c.evtQ) == 0 {
+			c.evtCond.Wait()
+		}
+		if c.evtClosed {
+			c.evtMu.Unlock()
+			return
+		}
+		f := c.evtQ[0]
+		c.evtQ = c.evtQ[1:]
+		c.evtMu.Unlock()
+		c.dispatch(f.Type, f.Payload)
 	}
 }
 
@@ -293,8 +345,19 @@ func (c *Client) dispatch(subject string, payload json.RawMessage) {
 	})
 	for _, s := range hit {
 		v := &mq.Value{Subject: subject, Payload: payload}
-		_ = s.h(context.Background(), subject, v)
+		c.invokeHandler(s, subject, v)
 	}
+}
+
+// invokeHandler 执行单个订阅回调并 recover（单个 handler panic 不得终止消费 worker / 跳过
+// 其余订阅者）。
+func (c *Client) invokeHandler(s *clientSub, subject string, v *mq.Value) {
+	defer func() {
+		if r := recover(); r != nil && c.opts.Logf != nil {
+			c.opts.Logf("uds: client handler panic on %q: %v", subject, r)
+		}
+	}()
+	_ = s.h(context.Background(), subject, v)
 }
 
 // clientSub 是本地订阅句柄。

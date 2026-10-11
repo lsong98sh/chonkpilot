@@ -13,12 +13,17 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 const (
 	// DefaultMaxBytes 是单文件字节上限（2 MiB）；DefaultMaxFiles 是滚动备份保留份数。
 	DefaultMaxBytes int64 = 2 << 20
 	DefaultMaxFiles int   = 5
+
+	// rotateBackoff 是滚动失败后的退避时长：期间跳过滚动，避免每条日志都重试整轮
+	// rename（文件被占用等场景下 rename 会持续失败）。退避到期后再试一次。
+	rotateBackoff = 30 * time.Second
 )
 
 // FileWriter 是按大小滚动的文件写入器（并发安全，实现 io.Writer）。
@@ -31,6 +36,9 @@ type FileWriter struct {
 	maxFiles int
 	f        *os.File
 	size     int64
+	// rotateBackoffUntil：上次滚动**未生效**（如 rename 失败降级重开）后的退避截止时刻；
+	// 在此之前的 Write 跳过滚动尝试（R7-B-9 降级路径的补充：避免每条日志重试整轮 rename）。
+	rotateBackoffUntil time.Time
 }
 
 // NewFileWriter 打开（或新建）path 处的滚动日志文件，必要时创建其父目录；
@@ -71,8 +79,18 @@ func (w *FileWriter) Write(p []byte) (int, error) {
 		return 0, errors.New("winlog: file writer closed")
 	}
 	if w.size > 0 && w.size+int64(len(p)) > w.maxBytes {
-		if err := w.rotate(); err != nil {
-			return 0, err
+		// 退避窗口内跳过一次滚动尝试（滚动上次未生效时，rename 大概率仍失败）。
+		if !time.Now().Before(w.rotateBackoffUntil) {
+			rotated, err := w.rotate()
+			if err != nil {
+				return 0, err
+			}
+			if rotated {
+				w.rotateBackoffUntil = time.Time{}
+			} else {
+				// 滚动未生效（已降级重开继续写）→ 退避，避免每条日志重试整轮 rename。
+				w.rotateBackoffUntil = time.Now().Add(rotateBackoff)
+			}
 		}
 	}
 	n, err := w.f.Write(p)
@@ -81,7 +99,9 @@ func (w *FileWriter) Write(p []byte) (int, error) {
 }
 
 // rotate 关闭当前文件并后移备份（**须持锁**）：删最旧 → .(n-1)→.n … → path→path.1 → 重开。
-func (w *FileWriter) rotate() error {
+// 返回 rotated=false 表示滚动**未生效**（如 path→path.1 rename 失败，已降级重开原文件，
+// 调用方应退避）；返回 err 非 nil 表示文件已不可用（重开亦失败）。
+func (w *FileWriter) rotate() (rotated bool, err error) {
 	_ = w.f.Close()
 	_ = os.Remove(fmt.Sprintf("%s.%d", w.path, w.maxFiles))
 	for i := w.maxFiles - 1; i >= 1; i-- {
@@ -90,15 +110,18 @@ func (w *FileWriter) rotate() error {
 	if err := os.Rename(w.path, w.path+".1"); err != nil {
 		// R7-B-9：滚动失败（如文件被其它进程占用致 Rename 失败）→ 降级重开原文件继续写
 		//（O_APPEND、size 重取），避免 w.f 已被 Close 后 Write 恒错、日志永久停摆。
-		return w.reopenAppend()
+		if rerr := w.reopenAppend(); rerr != nil {
+			return false, rerr
+		}
+		return false, nil
 	}
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return err
+		return false, err
 	}
 	w.f = f
 	w.size = 0
-	return nil
+	return true, nil
 }
 
 // reopenAppend 以追加方式重开原文件并重取 size（滚动失败时的降级路径）。

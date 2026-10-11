@@ -19,6 +19,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -66,10 +67,12 @@ func fallbackLockPath(user string) string {
 // Acquire 尝试取得**指定用户**的 server 进程单例（文件锁）。返回：
 //   - duplicate=true → **该用户已有 server 在运行**（本进程应退出；**未持有**锁）；
 //   - 否则（且 err==nil）→ release 非 nil（进程退出时释放；调用方应 defer 调用）；
-//   - 锁设施故障（**非** ErrBusy，如 exe 目录只读 → MkdirAll/OpenFile 失败）→ 先回落
-//     用户缓存目录同名锁（fallbackLockPath）；回落亦失败 → **仅告警并按「非单例」继续**
-//     （release = no-op，err = nil，**不致命**）——避免只读 exe 目录令**首个实例也无法启动**
-//     （R9-1-1：fail-open；ErrBusy 仍判 duplicate，故「同一用户已有实例」的互斥不受影响）。
+//   - 单例判定设施**全部失败**（主锁非 ErrBusy 故障，且回落锁亦失败）→ 返回**非 nil err**，
+//     调用方应**拒绝启动**（R7-B-8：fail-closed）——与 `uds.Server.Start()` 无条件
+//     `os.Remove(旧 socket)` 组合时，异常环境下按非单例继续会删掉在跑实例的前门 socket。
+//
+// 语义保留：已持有锁 → 正常（返回 release）；锁被他人持有（ErrBusy）→ duplicate 正常拒绝；
+// 主锁设施故障 → 先回落用户缓存目录同名锁（fallbackLockPath），回落成功即正常。
 //
 // 非 Windows 平台不提供文件锁 → 视为恒为首实例（server 仅发行于 Windows）。
 // user = `osuser.CurrentUser()`（单例按用户隔离，见包注释）。
@@ -85,12 +88,12 @@ func Acquire(user string) (release func(), duplicate bool, err error) {
 	case errors.Is(err, lockfile.ErrUnsupported):
 		return func() {}, false, nil
 	case err != nil:
-		// R9-1-1：非 ErrBusy 的设施故障（如 exe 目录只读）→ 回落用户缓存目录同名锁；
-		// 回落成败均不致命（fail-open），避免首个实例被拒之门外。
+		// 主锁设施故障（非 ErrBusy，如 exe 目录只读）→ 回落用户缓存目录同名锁；
+		// 回落亦失败（或与主路径同一）→ fail-closed：返回错误拒绝启动（R7-B-8）。
 		fb := fallbackLockPath(user)
 		if fb == path {
-			log.Printf("[procsingleton] 单例锁不可用（%v），按非单例继续", err)
-			return func() {}, false, nil
+			log.Printf("[procsingleton] 单例锁不可用（%v）且无可用回落，拒绝启动", err)
+			return nil, false, fmt.Errorf("procsingleton: 单例锁不可用: %w", err)
 		}
 		l2, err2 := lockfile.Acquire(fb)
 		switch {
@@ -100,8 +103,8 @@ func Acquire(user string) (release func(), duplicate bool, err error) {
 			log.Printf("[procsingleton] 单例锁 %s 不可用（%v），回落 %s", path, err, fb)
 			return l2.Release, false, nil
 		default:
-			log.Printf("[procsingleton] 单例锁回落 %s 亦失败（%v），按非单例继续", fb, err2)
-			return func() {}, false, nil
+			log.Printf("[procsingleton] 单例锁回落 %s 亦失败（%v），拒绝启动", fb, err2)
+			return nil, false, fmt.Errorf("procsingleton: 单例锁及回落均不可用: %w", err2)
 		}
 	}
 	return l.Release, false, nil

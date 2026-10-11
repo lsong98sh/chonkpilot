@@ -137,17 +137,20 @@ func CreateCoreWebView2EnvironmentWithOptions(browserExecutableFolder, userDataF
 }
 
 func loadFromMemory(nativeErr error) error {
-	var err error
-	// DLL is not available natively. Try loading embedded copy.
+	// 以 memErr 为唯一判据：首次加载失败后 memErr 已置位，后续调用必须返回同一错误，
+	// 否则二次调用返回 nil（被当成功）→ 调用方以 nil Proc 调用会 panic。
+	if memErr != nil {
+		return memErr
+	}
 	memOnce.Do(func() {
 		memModule, memErr = winloader.LoadFromMemory(WebView2Loader)
 		if memErr != nil {
-			err = fmt.Errorf("Unable to load WebView2Loader.dll from disk: %v -- or from memory: %w", nativeErr, memErr)
+			memErr = fmt.Errorf("Unable to load WebView2Loader.dll from disk: %v -- or from memory: %w", nativeErr, memErr)
 			return
 		}
 		memCreate = memModule.Proc("CreateCoreWebView2EnvironmentWithOptions")
 		memCompareBrowserVersions = memModule.Proc("CompareBrowserVersions")
 		memGetAvailableCoreWebView2BrowserVersionString = memModule.Proc("GetAvailableCoreWebView2BrowserVersionString")
 	})
-	return err
+	return memErr
 }
