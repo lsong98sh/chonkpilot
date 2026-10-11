@@ -166,6 +166,7 @@ func (t *Table) Query(q Query) ([]Record, string, error) {
 		if !ok {
 			return nil, "", fmt.Errorf("data: bad cursor")
 		}
+		q.Offset = 0 // Cursor 优先于 Offset：游标已定位本页起点，忽略 Offset（否则叠加造成二次截断）
 		all = filterAfter(all, lastVal, lastKey, q.OrderBy, q.OrderDesc)
 	}
 

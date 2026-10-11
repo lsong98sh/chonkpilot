@@ -41,7 +41,7 @@ type API interface {
 // 写入（Upsert）与关闭（Delete = 逻辑删除）后由实现侧发出既有 `task-deleted`
 // （关闭时，61 §3.4 载荷不变）——订阅面不在本请求-响应签名内（23 §7）。
 type TasktreeAPI interface {
-	// TasktreeList 读某主会话的任务树节点（Mode="init" → 仅 llm/运行中存活节点）。
+	// TasktreeList 读某主会话的任务树节点（Mode="init" → 仅 LLM 作业根/运行中存活节点）。
 	TasktreeList(req TasktreeListRequest) (TasktreeListResponse, error)
 
 	// TasktreeTasks 读任务快照列表（按会话 / 主会话过滤；单源 = 任务层权威表）。

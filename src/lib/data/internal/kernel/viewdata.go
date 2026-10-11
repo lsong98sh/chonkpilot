@@ -191,9 +191,18 @@ func SortSessionsByActivity(sessions []map[string]any) {
 	})
 }
 
-// LatestTopSession 返回最近活动的顶层会话记录（无则 nil）。
+// LatestTopSession 返回**最近活动**的顶层会话记录（无则 nil）。
 // 下推顶层维度：Where{parent_id:""} 命中 sessions_by_top 索引前缀 "\x00"（顶层会话恒写 parent_id=""）；
-// OrderDesc → 内存降序取首个即最近创建（与改前全量降序后取首个顶层行等价）。
+// 「最近活动」口径与 SessionList 一致（SessionActivity：last_activity 优先、回落 updated_at），故取回
+// 顶层集合后按该口径取最大者（而非仅按 created_at 取「最新创建」——与列表排序口径统一）。
+// OrderBy created_at desc 仅用于命中索引路由，不决定最终选中项。
+//
+// ⚠️ 复杂度 O(N)（N = 顶层会话数）：sessions_by_top 索引的排序列为 created_at，而选中口径是
+// SessionActivity（last_activity/updated_at），二者不一致 → OrderDesc 使 skipSort=false，无法借索引序
+// 提前收敛；且**不能**加 Limit 截断（O(1) 首行 ≠ 最近活动行，截断会选错）。故此处必然全量物化顶层
+// 集合 + 内存扫描取最大，每次 SessionLatest / SessionActiveGet 回落（活动态失效）均付此代价。
+// 未引入「按 last_activity 排序」的专用索引（需贯穿全部会话写入口维护，超出最小修复范围）；N 由用户
+// 顶层会话数上限约束（远小于全表规模），现状可接受。
 func LatestTopSession(prj *data.DB) (data.Record, error) {
 	recs, _, err := prj.Table("sessions").Query(data.Query{
 		Where: data.Record{"parent_id": ""}, OrderBy: "created_at", OrderDesc: true,
@@ -201,10 +210,15 @@ func LatestTopSession(prj *data.DB) (data.Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(recs) == 0 {
-		return nil, nil
+	var best data.Record
+	bestAct := ""
+	for _, r := range recs {
+		act := SessionActivity(r)
+		if best == nil || act > bestAct {
+			best, bestAct = r, act
+		}
 	}
-	return recs[0], nil
+	return best, nil
 }
 
 // ── 历史分页 helper（data-session-history）──
@@ -432,12 +446,15 @@ const RFC3339FixedNano = data.RFC3339FixedNano
 // NewMessageKey 生成 messages 表主键：M + UTC 时间戳(yyyyMMddHHmmss, 14 位) + 微秒(6 位)
 // + 4 位随机数 = 25 字符（如 M202609121015307123450842）。key 自带时间序（可区间扫描）；
 // 读取/排序仍以 created_at 为准，兼容旧 key（m-<rand>）。
-func NewMessageKey() string {
+// rand 失败返回错误（不静默降级为常量后缀 —— 否则同微秒内 key 恒相同 → 碰撞；口径同 auth/projectid）。
+func NewMessageKey() (string, error) {
 	now := time.Now().UTC()
 	var b [2]byte
-	_, _ = rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("kernel: gen message key: %w", err)
+	}
 	n := (int(b[0])<<8 | int(b[1])) % 10000
-	return fmt.Sprintf("M%s%06d%04d", now.Format("20060102150405"), now.Nanosecond()/1000, n)
+	return fmt.Sprintf("M%s%06d%04d", now.Format("20060102150405"), now.Nanosecond()/1000, n), nil
 }
 
 // FindToolMessageKey 在同轮消息中找 role=tool 且 tool_call_id 匹配的既有行主键（未命中 → ""）。
@@ -448,7 +465,8 @@ func FindToolMessageKey(prj *data.DB, turnID, toolCallID string) string {
 		return ""
 	}
 	recs, _, err := prj.Table("messages").Query(data.Query{
-		Where: data.Record{"turn_id": turnID, "tool_call_id": toolCallID},
+		// role=tool 与注释/语义对齐（此前 Where 漏带 role）：同轮同 tool_call_id 的既有行取工具行。
+		Where: data.Record{"turn_id": turnID, "tool_call_id": toolCallID, "role": "tool"},
 		// OrderBy 命中 messages_by_turn（A-05：无 OrderBy 禁索引路由 → 回退全桶扫描）。
 		OrderBy: "created_at", Limit: 1,
 	})

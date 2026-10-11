@@ -27,8 +27,6 @@ package persist
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -520,11 +518,4 @@ func toInt64(v any) (int64, bool) {
 		return i, err == nil
 	}
 	return 0, false
-}
-
-// newID 生成短随机 hex id（消息 id / 短 key 用）。
-func newID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

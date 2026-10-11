@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -139,8 +140,10 @@ func (l *Local) ByToken(token string, kind TokenKind) (User, error) {
 			return User{}, ErrUnauthorized
 		}
 	}
+	// 刷新 last_used 尽力而为（touchToken 注释同）：写失败仅告警，不改变解析结果 ——
+	// 否则一次写失败会把有效令牌判为无效（与「尽力而为」语义不符）。
 	if err := l.st.touchToken(hash); err != nil {
-		return User{}, err
+		slog.Warn("auth: touch token last_used failed", "err", err)
 	}
 	return u.user(), nil
 }

@@ -517,13 +517,18 @@ func (s *Service) handleSnapshot(action string, req dataReq) {
 		}
 		okf(map[string]any{msgkeys.FieldSnapshot: snap})
 	case "set":
+		// 缺 `snapshot` 字段（或空对象）→ 明确失败：否则会写入零值快照并可能补建会话行
+		// （与门面 SnapshotSet 的入参校验对齐：不得静默落零值）。
+		raw, has := req.Data[msgkeys.FieldSnapshot].(map[string]any)
+		if !has || len(raw) == 0 {
+			failf("snapshot required")
+			return
+		}
 		var snap data.Snapshot
-		if raw, ok := req.Data[msgkeys.FieldSnapshot].(map[string]any); ok && len(raw) > 0 {
-			b, _ := json.Marshal(raw)
-			if err := json.Unmarshal(b, &snap); err != nil {
-				failf("snapshot: %v", err)
-				return
-			}
+		b, _ := json.Marshal(raw)
+		if err := json.Unmarshal(b, &snap); err != nil {
+			failf("snapshot: %v", err)
+			return
 		}
 		if err := snapshot.Set(prj, sessionID, snap); err != nil {
 			failf("%v", err)

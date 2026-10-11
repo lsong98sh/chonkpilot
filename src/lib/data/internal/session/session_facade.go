@@ -678,12 +678,20 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	if key == "" {
 		// 新消息用 Insert（A-10）：NewMessageKey 仅 4 位随机，同微秒内仍可能碰撞，
 		// Upsert 会**静默覆盖**已存在消息（丢消息）；Insert 命中 ErrExists 时重生成 key 重试一次。
-		key = kernel.NewMessageKey()
+		mk, genErr := kernel.NewMessageKey()
+		if genErr != nil {
+			return facade.MessageAppendResponse{}, genErr
+		}
+		key = mk
 		if err := tb.Insert(key, rec); err != nil {
 			if !errors.Is(err, data.ErrExists) {
 				return facade.MessageAppendResponse{}, err
 			}
-			key = kernel.NewMessageKey()
+			mk, genErr := kernel.NewMessageKey()
+			if genErr != nil {
+				return facade.MessageAppendResponse{}, genErr
+			}
+			key = mk
 			if err := tb.Insert(key, rec); err != nil {
 				return facade.MessageAppendResponse{}, err
 			}

@@ -31,7 +31,7 @@ output=stdout
 `env` 为宿主注入的保留变量、**只读**（脚本里 `SET … => env` 会报错）；引用**只能**写成 `{{env.<NAME>}}`（上表 5 个名字），**无裸名变量**（`{{WORKDIR}}`、`{{CHONKPILOT_WORKDIR}}` 均不存在）。示例：`SHT "{{env.CHONKPILOT_WORKDIR}}/shots/a.png"`、`DOM "{{env.CHONKPILOT_TEMPDIR}}/page.html"`（等价于 `DOM "!/page.html"`）。
 
 指令一览：
-- OPN "url"：打开页面
+- OPN "url"：打开页面（仅支持 http/https/file 三种协议；`view-source:`、`filesystem:` 等其它 scheme 被拒绝）
 - WAT <loc> visible|enabled|text "x" [timeoutMs] | WAT load | WAT netidle：显式等待（超时默认 10s，是唯一会等待的指令；其余指令不隐式等待）
 - CLK/DBL/RCL/HOV <loc>：单击/双击/右键/悬停；CHK/UCHK <loc>：勾选/取消
 - FILL <loc> "text"：清空并输入；SELO <loc> "option"：下拉选择（按 value 或文本）

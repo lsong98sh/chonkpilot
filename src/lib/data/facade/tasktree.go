@@ -153,7 +153,7 @@ type TasktreeListRequest struct {
 	InstanceID string `json:"instance_id"`
 	// TopSession 主会话 id（必填；空 → 由实现侧按请求 id 兜底）。
 	TopSession string `json:"top_session,omitempty"`
-	// Mode 视图模式（"init" = 仅 llm/运行中存活节点）。
+	// Mode 视图模式（"init" = 仅 LLM 作业根/运行中存活节点）。
 	Mode string `json:"mode,omitempty"`
 	// IncludeClosed 是否包含已关闭节点（缺省 = 不出视图）。
 	IncludeClosed bool `json:"include_closed,omitempty"`

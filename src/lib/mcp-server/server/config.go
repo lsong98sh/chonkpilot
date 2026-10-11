@@ -533,20 +533,28 @@ func (c *Config) defaultsMap() map[string]any {
 	return m
 }
 
-// executorEnv 组装 spawn executor 的子进程环境：继承宿主环境（剔除残留的 CHONKPILOT_*，避免泄漏
-// 第三方/上层上下文）→ 注入本次调用的 CHONKPILOT_INSTANCE/WORKDIR/DATADIR + 配置型
-// CHONKPILOT_INTERPRETERS / CHONK_CHROME，以及**按 executor 开关**的 agentbox 策略
-// CHONKPILOT_SANDBOX（sandboxPolicy 为空串 = 不注入 = 不启用隔离）。**仅内部 executor
-// 进程可见**（第三方 MCP server 不经我们 spawn，拿不到）。
+// executorEnv 组装 spawn executor 的子进程环境：继承宿主环境（剔除残留的 CHONKPILOT_* 上下文与
+// 宿主 CHONK_CHROME，避免泄漏第三方/上层上下文或与本次注入形成重复键）→ 注入本次调用的
+// CHONKPILOT_INSTANCE/WORKDIR/DATADIR + 配置型 CHONKPILOT_INTERPRETERS / CHONK_CHROME，以及
+// **按 executor 开关**的 agentbox 策略 CHONKPILOT_SANDBOX（sandboxPolicy 为空串 = 不注入 = 不启用隔离）。
+// **仅内部 executor 进程可见**（第三方 MCP server 不经我们 spawn，拿不到）。
 func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
 	base := os.Environ()
 	out := make([]string, 0, len(base)+7)
+	// chrome = 本次将注入的 CHONK_CHROME（"" = 不注入）。仅当配置 ChromePath 非空（会回注同名键）
+	// 时才剔除宿主旧值；否则保留宿主继承，兑现文档承诺的「设 CHONK_CHROME 手动覆盖」。
+	chrome := c.chromeEnv()
 	for _, kv := range base {
 		name := kv
 		if i := strings.IndexByte(kv, '='); i >= 0 {
 			name = kv[:i]
 		}
+		// 剔除宿主残留：CHONKPILOT_* 上下文（避免泄漏第三方/上层上下文）；CHONK_CHROME 仅当
+		// 本次会回注同名键时剔除（否则形成重复键 / 透传宿主旧值；Windows 大小写不敏感，用 EqualFold）。
 		if strings.HasPrefix(name, "CHONKPILOT_") {
+			continue
+		}
+		if chrome != "" && strings.EqualFold(name, "CHONK_CHROME") {
 			continue
 		}
 		out = append(out, kv)
@@ -560,7 +568,7 @@ func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
 	add("CHONKPILOT_WORKDIR", cx.WorkDir)
 	add("CHONKPILOT_DATADIR", cx.DataDir)
 	add("CHONKPILOT_INTERPRETERS", c.interpretersJSON())
-	add("CHONK_CHROME", c.chromeEnv())
+	add("CHONK_CHROME", chrome)
 	add(agentbox.EnvSandbox, sandboxPolicy)
 	return out
 }
@@ -569,12 +577,13 @@ func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
 
 // limiter 是 tools/call 的并发限流器：上限来自 Config.MaxConcurrency，可被 prj
 // max_concurrency 运行期覆盖（SetRuntime/Apply → setLimit）。
-// 实现 = 带缓冲 channel 信号量（占用 = 向 sem 投一个空结构；释放 = 取出），
+// 实现 = 互斥量保护的**在跑计数** + 通知通道（释放/换限时 close 并重建以广播唤醒等待者），
 // 故 acquire 可经 select 感知请求 ctx 的取消/超时（排队阶段即被取消，B3）。
 type limiter struct {
 	mu    sync.Mutex
 	limit int
-	sem   chan struct{}
+	cur   int           // 当前在跑数（受 mu 保护）
+	ch    chan struct{} // 名额可能释放的通知信号（close 即广播，随后重建）
 }
 
 // newLimiter 构造限流器（limit <= 0 → 1，避免零容量阻塞）。
@@ -582,7 +591,7 @@ func newLimiter(limit int) *limiter {
 	if limit <= 0 {
 		limit = 1
 	}
-	return &limiter{limit: limit, sem: make(chan struct{}, limit)}
+	return &limiter{limit: limit, ch: make(chan struct{})}
 }
 
 // ensureLimiter 懒建并返回限流器（RegisterContracts 调用；上限取当前 MaxConcurrency）。
@@ -597,30 +606,35 @@ func (c *Config) ensureLimiter() *limiter {
 
 // acquire 占用一个并发名额（达上限则等待）；请求 ctx 取消/超时 → 立即返回错误（不占名额）。
 func (l *limiter) acquire(ctx context.Context) error {
-	l.mu.Lock()
-	sem := l.sem
-	l.mu.Unlock()
-	select {
-	case sem <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	for {
+		l.mu.Lock()
+		if l.cur < l.limit {
+			l.cur++
+			l.mu.Unlock()
+			return nil
+		}
+		ch := l.ch
+		l.mu.Unlock()
+		select {
+		case <-ch: // 名额释放 / 上限调整 → 重试
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
-// release 释放一个并发名额（未持有时为安全空操作）。
+// release 释放一个并发名额（未持有时为安全空操作），并广播唤醒等待者。
 func (l *limiter) release() {
 	l.mu.Lock()
-	sem := l.sem
-	l.mu.Unlock()
-	select {
-	case <-sem:
-	default:
+	if l.cur > 0 {
+		l.cur--
 	}
+	l.notifyLocked()
+	l.mu.Unlock()
 }
 
-// setLimit 调整并发上限（<=0 忽略）；重建信号量并按在跑数保留名额（下调至低于在跑数时
-// 待在跑调用释放后收敛，语义同改前）。
+// setLimit 调整并发上限（<=0 忽略）；在跑计数不变，仅改可并发额度并广播唤醒等待者。
+// 相对于旧实现的「len(sem) 记账 + drain」：不再有换限期间的计数漂移（在跑数以独立计数为准）。
 func (l *limiter) setLimit(n int) {
 	if n <= 0 {
 		return
@@ -630,19 +644,12 @@ func (l *limiter) setLimit(n int) {
 	if n == l.limit {
 		return
 	}
-	old := l.sem
-	held := len(old) // 已占用名额数（在跑调用）
 	l.limit = n
-	// 排空旧信号量：唤醒可能在旧 sem 上阻塞的等待者（换限后它们随新 sem 继续排队），避免永久阻塞。
-	for len(old) > 0 {
-		<-old
-	}
-	if held > n {
-		held = n
-	}
-	sem := make(chan struct{}, n)
-	for i := 0; i < held; i++ {
-		sem <- struct{}{}
-	}
-	l.sem = sem
+	l.notifyLocked()
+}
+
+// notifyLocked 广播「名额可能释放」：close 当前通知通道并立即重建（调用方须持 mu）。
+func (l *limiter) notifyLocked() {
+	close(l.ch)
+	l.ch = make(chan struct{})
 }

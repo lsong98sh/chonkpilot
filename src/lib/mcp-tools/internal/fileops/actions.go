@@ -578,6 +578,12 @@ func (ec *editCtx) ins(toks []argTok) error {
 	if err := ec.guard(disp, resolved, true); err != nil {
 		return err
 	}
+	// 先建父目录（与 MOV/CPY 一致，C-27）：锁文件（O_EXCL 创建于目标路径旁）要求父目录已存在，
+	// 否则父目录不存在时锁文件创建 ENOENT → 30s 重试超时。MkdirAll 幂等，不削弱锁保护。
+	if err := os.MkdirAll(filepath.Dir(resolved), 0755); err != nil {
+		ec.addFail(disp, "INS", "创建父目录失败："+err.Error())
+		return nil
+	}
 	release, lerr := acquireLock(resolved, lockRetryCount)
 	if lerr != nil {
 		ec.addFail(disp, "INS", "加锁失败（30s 内重试未果）："+lerr.Error())
@@ -586,10 +592,6 @@ func (ec *editCtx) ins(toks []argTok) error {
 	defer release()
 	if _, serr := os.Stat(resolved); serr == nil {
 		ec.addFail(disp, "INS", "目标已存在（如需修改请用 RPL/PTC/APD）")
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(resolved), 0755); err != nil {
-		ec.addFail(disp, "INS", "创建父目录失败："+err.Error())
 		return nil
 	}
 	if err := os.WriteFile(resolved, []byte(content), 0644); err != nil {

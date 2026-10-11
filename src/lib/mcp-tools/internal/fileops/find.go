@@ -93,8 +93,11 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 		if err != nil {
 			return nil
 		}
-		// agentbox 沙箱：递归遍历剪枝——允许目录外的目录/文件一律不列出、不深入
-		if !sandboxAllowedRead(path) {
+		// agentbox 沙箱：root 已在遍历前判定允许读；递归包含语义下其**真实子路径**（普通文件 /
+		// 真实目录）必然允许，故只对**非普通类型**条目（符号链接 / Windows 目录联接 junction /
+		// 设备等——junction 是 reparse point，Go 归为非普通类型而非 ModeDir）逐项解析判定，防链接
+		// 指向允许目录外越界读；避免对每个普通条目 EvalSymlinks（大目录性能）。WalkDir 不跟随链接下钻。
+		if t := d.Type(); t != 0 && t != fs.ModeDir && !sandboxAllowedRead(path) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

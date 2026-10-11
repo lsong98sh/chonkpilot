@@ -184,6 +184,7 @@ func (f *Filesys) onList(_ context.Context, _ string, v *mq.Value) error {
 		Path       string `json:"path"`
 	}
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
 	wd, ok := f.workDir(req.InstanceID)
@@ -210,6 +211,7 @@ func (f *Filesys) onContent(_ context.Context, _ string, v *mq.Value) error {
 		Path       string `json:"path"`
 	}
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
 	wd, ok := f.workDir(req.InstanceID)
@@ -241,6 +243,7 @@ func (f *Filesys) onCreate(_ context.Context, _ string, v *mq.Value) error {
 		Content    string `json:"content"`
 	}
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
 	wd, ok := f.workDir(req.InstanceID)
@@ -283,6 +286,7 @@ func (f *Filesys) onMkdir(_ context.Context, _ string, v *mq.Value) error {
 		Name       string `json:"name"`
 	}
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
 	wd, ok := f.workDir(req.InstanceID)
@@ -324,6 +328,7 @@ func (f *Filesys) onRemove(_ context.Context, _ string, v *mq.Value) error {
 		Path       string `json:"path"`
 	}
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
 	wd, ok := f.workDir(req.InstanceID)
@@ -359,6 +364,7 @@ func (f *Filesys) onRename(_ context.Context, _ string, v *mq.Value) error {
 		Overwrite  int    `json:"overwrite"`
 	}
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
 	wd, ok := f.workDir(req.InstanceID)
@@ -419,6 +425,7 @@ func (f *Filesys) onCopy(_ context.Context, _ string, v *mq.Value) error {
 		Overwrite  int    `json:"overwrite"`
 	}
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
 	wd, ok := f.workDir(req.InstanceID)
@@ -834,6 +841,11 @@ func errExists(msg string) error {
 // errRead 读失败（非常规文件 / IO 错误）；码取 61 §2.5 明列的 IO_ERROR 家族。
 func errRead(msg string) error {
 	return mapError("io_error", msg)
+}
+
+// errBadRequest 请求载荷无法解析（非 JSON / 结构不符）；失败不再静默为「空成功」，须回错误让调用方可见。
+func errBadRequest(msg string) error {
+	return mapError("bad_request", msg)
 }
 
 type mapErr map[string]string

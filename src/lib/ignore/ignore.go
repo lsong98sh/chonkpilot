@@ -175,19 +175,20 @@ type ruleSet struct {
 	stack  bool
 	root   string
 	forced []Rule            // 内置强制（不可反选）
-	base   []Rule            // 全局 ignore + info/exclude + 默认排除（低优先级）
+	base   []Rule            // 默认排除 + 全局 ignore + info/exclude（低 → 高优先级）
 	user   []Rule            // 用户规则（最高优先级）
 	own    map[string][]Rule // 各目录 .gitignore 规则（rel 目录 → 规则；惰性加载）
 	loaded map[string]bool   // own 已加载标记（含空规则 → 不重复读盘）
 }
 
-// newRuleSet 组装规则集：低 → 高 = 内置强制 → 全局 ignore → info/exclude → 默认排除
+// newRuleSet 组装规则集：低 → 高 = 内置强制 → 默认排除 → 全局 ignore → info/exclude
 // → 各级 .gitignore（规则集内以 base 目录区分优先级）→ 用户规则。
 func newRuleSet(root string, opts Options) *ruleSet {
 	base := DefaultRules()
 	if opts.StackGitignore {
-		// 全局 ignore 与 info/exclude 位于各级 .gitignore 之前（优先级更低）
-		base = append(append(GlobalRules(), ExcludeRules(root)...), base...)
+		// 全局 ignore 与 info/exclude 位于默认排除**之后**（优先级更高），但仍在各级 .gitignore 之前。
+		base = append(base, GlobalRules()...)
+		base = append(base, ExcludeRules(root)...)
 	}
 	return &ruleSet{
 		stack:  opts.StackGitignore,

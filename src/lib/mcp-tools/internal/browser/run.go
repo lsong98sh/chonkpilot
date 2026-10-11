@@ -99,7 +99,7 @@ func stepCtx(parent context.Context, d time.Duration) (context.Context, context.
 // 核心流控 SET/IF/LOOP/PARALLEL/BREAK/CONTINUE/EXIT、变量与 {{}} 插值。首错即停。
 func Execute(parent context.Context, opt Options) (string, error) {
 	sess, _ := NewSession(opt)
-	sess.parent = parent
+	sess.r.parent = parent
 	r := sess.r
 	actions := sess.Actions()
 	ast, err := dsl.Parse(opt.Script, actions)
@@ -473,18 +473,33 @@ func strArg(st *Step, idx int) (string, bool) {
 
 // ─── OPN ───
 func (r *Runner) stepOPN(st *Step) error {
-	url, ok := strArg(st, 0)
+	rawURL, ok := strArg(st, 0)
 	if !ok {
 		return stepErr(st.Line, st.Raw, "syntax", "OPN 需要 URL")
 	}
-	// agentbox 沙箱（仅隔离开启时生效）：file:// 导航等价本地读取，须在允许读目录内
-	// （否则可借 file:// URL 绕过沙箱读任意本地文件）。
-	if p, isFile := localFileURLPath(url); isFile {
+	// scheme 白名单：仅放行 http/https/file（拒绝 view-source:file:、filesystem: 等其它 scheme，
+	// 杜绝绕过沙箱读本地文件）。**解析失败 / 空 scheme 一律拒绝**（旧实现 `err == nil && u.Scheme != ""`
+	// 在解析失败或空 scheme 时跳过整段白名单，使 file: 读校验可被绕过）。file:// 导航等价本地读取，
+	// 须在 agentbox 允许读目录内。
+	u, perr := url.Parse(rawURL)
+	if perr != nil || u.Scheme == "" {
+		return stepErr(st.Line, st.Raw, "syntax", "OPN 需要合法的 http/https/file URL: "+rawURL)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		// 网络导航，放行
+	case "file":
+		p, isFile := localFileURLPath(rawURL)
+		if !isFile {
+			return stepErr(st.Line, st.Raw, "path", "无法解析 file URL: "+rawURL)
+		}
 		if err := agentbox.Check(p, false); err != nil {
 			return stepErr(st.Line, st.Raw, "path", err.Error())
 		}
+	default:
+		return stepErr(st.Line, st.Raw, "syntax", "OPN 仅支持 http/https/file URL，收到 scheme: "+u.Scheme)
 	}
-	if err := chromedp.Run(r.context(), chromedp.Navigate(url)); err != nil {
+	if err := chromedp.Run(r.context(), chromedp.Navigate(rawURL)); err != nil {
 		return stepErr(st.Line, st.Raw, "navigation", "打开失败: "+err.Error())
 	}
 	// 建连后记录初始 target id（首个 OPN 时 r.curID 尚空）：供 TAB list/switch/close 正确标记当前页（C-17）。

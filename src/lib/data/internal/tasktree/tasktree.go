@@ -52,7 +52,7 @@ func tasktreeTableFor(shadow bool) string {
 	return "tasktree"
 }
 
-// TasktreeList 读某主会话的任务树节点（Mode="init" → 仅 llm/运行中存活节点）；
+// TasktreeList 读某主会话的任务树节点（Mode="init" → 仅 LLM 作业根/运行中存活节点）；
 // 默认过滤**逻辑删除**（closed）行，IncludeClosed=true → 一并返回（任务层内部读）。
 func (s *Service) TasktreeList(req facade.TasktreeListRequest) (facade.TasktreeListResponse, error) {
 	if req.TopSession == "" {
@@ -74,7 +74,8 @@ func (s *Service) TasktreeList(req facade.TasktreeListRequest) (facade.TasktreeL
 		if !req.IncludeClosed && closedRow(r) {
 			continue // 逻辑删除行不出视图（历史仍可经 IncludeClosed / 直查库）
 		}
-		if req.Mode == "init" && kernel.Sval(r["kind"]) != "llm" && kernel.Sval(r["status"]) != "running" {
+		// Mode="init"：保留 LLM 作业根（DSL-3 起 kind=dsl_job；原 kind=llm 已改判）或运行中存活节点。
+		if req.Mode == "init" && kernel.Sval(r["kind"]) != "dsl_job" && kernel.Sval(r["status"]) != "running" {
 			continue
 		}
 		nodes = append(nodes, wire.TaskNodeFromWire(kernel.RecordView(r, "node_id")))
@@ -165,11 +166,12 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 		"parent_node_id": n.ParentID,
 		"title":          n.Title,
 		"status":         n.Status,
-		"created_at":     n.CreatedAt,
 		"updated_at":     time.Now().UTC().Format(kernel.RFC3339FixedNano),
 	}
 	// 任务层扩展字段（P2）：非空即落；旧调用方（不带这些字段）行为不变。
+	// 注：`created_at` 亦纳入「未携带才保留」——恒写空串会清空旧值并使 OrderBy created_at 排序错位。
 	for k, v := range map[string]string{
+		"created_at":    n.CreatedAt,
 		"finished_at":   n.FinishedAt,
 		"tool_call_id":  n.ToolCallID,
 		"instance_id":   n.InstanceID,
@@ -225,7 +227,7 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 			"closed", "deleted_at", "finished_at",
 			"tool_call_id", "instance_id", "work_dir", "state",
 			"args_digest", "result_digest", "exec_json", "started_at", "done_at",
-			"return_kind", "return_inline", "return_file",
+			"return_kind", "return_inline", "return_file", "created_at",
 			"loop_current", "loop_total", "return_size", "shadow", "steps",
 		} {
 			if _, has := rec[k]; !has {

@@ -15,21 +15,24 @@ import (
 
 // Session 是一次浏览器 DSL 会话的状态容器（供统一执行器复用；单动作工具与统一执行器共用同一实现）。
 type Session struct {
-	r      *Runner
-	parent context.Context
+	r *Runner
 }
 
 // NewSession 构造浏览器会话（无副作用：不启动浏览器）。
 func NewSession(opt Options) (*Session, error) {
-	return &Session{r: &Runner{opt: opt}, parent: context.Background()}, nil
+	return &Session{r: &Runner{opt: opt}}, nil
 }
 
 // SetParent 注入父上下文：统一 DSL 编排执行器用它把作业级 context 传播到惰性启动的浏览器
 // 生命周期（parent → chromedp allocator，取消即级联关闭）。ctx 为 nil 时保持原值。
 // 既有行为不变：browser_run 的 Execute 仍在执行前以自己的 parent 覆盖。
+// 单一字段：parent 只在 Runner.parent 上，ensureStarted 读同一字段（避免只写不读）。
+// 写受 startMu 保护：与 ensureStarted 的读（同锁内）互斥，避免 C-50 同族的 parent 读写竞态。
 func (s *Session) SetParent(ctx context.Context) {
 	if ctx != nil {
-		s.parent = ctx
+		s.r.startMu.Lock()
+		s.r.parent = ctx
+		s.r.startMu.Unlock()
 	}
 }
 

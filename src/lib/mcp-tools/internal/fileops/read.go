@@ -168,6 +168,15 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 	info["md5"], _ = fileMD5(resolved)
 	info["encoding"] = EncodingName(data)
 	info["lines"] = countLines(data)
+	// 截断文件（>32MB）：info["lines"] 只是**已读前缀**的行数，非全文行数。另给真实全文行数
+	// total_lines（流式扫描，O(1) 内存），避免调用方把前缀行数误当总行数。
+	totalLines := -1
+	if info["truncated"].(bool) {
+		if total, lerr := countFileLines(resolved); lerr == nil {
+			totalLines = total
+			info["total_lines"] = total
+		}
+	}
 
 	if req.infoOnly {
 		return info, nil
@@ -175,14 +184,34 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 
 	// R7-C-60：>32MB 文件的 tail 语义不能建立在截断前缀上（前缀尾 ≠ 文件尾）。
 	// 改为从文件末尾反向流式定位最后 N 行，与 file_read tail 契约（只读末尾 N 行）一致。
+	// line_numbers：readFileTail 原样返回内容，需按全文总行数补行号（旧实现丢行号）。
 	if info["truncated"].(bool) && req.tail > 0 {
 		content, terr := readFileTail(resolved, req.tail)
 		if terr != nil {
 			info["error"] = terr.Error()
 			return info, terr
 		}
+		if req.lineNumbers && content != "" {
+			tailN := strings.Count(content, "\n") + 1
+			base := 1
+			if totalLines >= 0 {
+				base = totalLines - tailN + 1
+				if base < 1 {
+					base = 1
+				}
+			}
+			content = addLineNumbers(strings.Split(content, "\n"), base)
+		}
 		info["content"] = content
 		return info, nil
+	}
+
+	// >32MB 且带 ranges/start 时，行段语义建立在截断前缀上会与真实行号错位（静默错行），
+	// 显式报错而非误导（tail 有正确的末尾语义，已在上方单独处理；limit-only 取前 N 行与前缀一致，放行）。
+	if info["truncated"].(bool) && (len(req.ranges) > 0 || req.start > 0) {
+		err := fmt.Errorf("文件超过读取上限（%d 字节），不支持 ranges/start 行段读取，请改用 tail 或 info", maxReadBytes)
+		info["error"] = err.Error()
+		return info, err
 	}
 
 	content, err := readContent(data, req)
@@ -211,6 +240,42 @@ func countLines(data []byte) int {
 		return 1 // 文件仅由换行组成 → 视为 1 个空行
 	}
 	return strings.Count(s, "\n") + 1
+}
+
+// countFileLines 流式统计文件总行数（O(1) 内存，不整读大文件），行分割与 readContent/readFileTail
+// 同语义（结尾**单个**换行不算新空行）："a\nb\n" → 2；"a\nb" → 2；"\n" → 1；空文件 → 0。
+// 供 >32MB 截断文件补齐 total_lines 与 tail 行号基线。
+func countFileLines(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	nl := 0
+	last := byte('\n')
+	any := false
+	buf := make([]byte, 64<<10)
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			any = true
+			nl += bytes.Count(buf[:n], []byte{'\n'})
+			last = buf[n-1]
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return 0, rerr
+		}
+	}
+	if !any {
+		return 0, nil
+	}
+	if last == '\n' {
+		return nl, nil
+	}
+	return nl + 1, nil
 }
 
 // readContent 读取并切片文件内容（start/limit、tail、ranges、全文）。
@@ -335,10 +400,12 @@ func readFileTail(path string, n int) (string, error) {
 		}
 		pos -= readSize
 		tmp := make([]byte, readSize)
-		if _, rerr := f.ReadAt(tmp, pos); rerr != nil && rerr != io.EOF {
+		rn, rerr := f.ReadAt(tmp, pos)
+		if rerr != nil && rerr != io.EOF {
 			return "", rerr
 		}
-		buf = append(tmp, buf...)
+		// 并发截断时 ReadAt 可能少于请求字节，只用有效前缀（否则含 NUL）。
+		buf = append(tmp[:rn], buf...)
 		if bytes.Count(buf, []byte{'\n'}) > n {
 			break
 		}

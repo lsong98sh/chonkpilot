@@ -69,8 +69,11 @@ func (m *watchManager) watch(workDir, abs string, recursive bool, instanceID str
 		}
 		m.watchers[workDir] = dw
 	}
-	m.mu.Unlock()
+	// 「新建/取得 watcher」与「登记声明者」同处 m.mu 临界区：与 unwatchInstance 的
+	// 「反登记（declarersMu）→ 无声明者则 delete(m.watchers)+stop」互斥，避免声明登记
+	// 落到**已停止**的 dw（该实例漏刷文件树）。锁序恒为 m.mu → declarersMu，无反向嵌套。
 	dw.addDeclarer(instanceID)
+	m.mu.Unlock()
 	return dw.add(abs, recursive)
 }
 
@@ -106,6 +109,11 @@ func (m *watchManager) unwatchInstance(workDir, instanceID string) {
 	m.mu.Unlock()
 	if empty {
 		dw.stop() // 无声明者 → 停 watcher（在解锁后调用，避免持 m.mu 关闭）
+		// 无 watcher 时同步清理该 work_dir 的「不显示的目录」缓存（D-39 层2）：否则 hidden 随
+		// 出现过的 work_dir 只增不删 → 无界增长（下次 watch/list 经 ensureLoaded 重新加载）。
+		m.cfgMu.Lock()
+		delete(m.hidden, workDir)
+		m.cfgMu.Unlock()
 	}
 }
 
@@ -151,6 +159,15 @@ func (m *watchManager) ensureLoaded(workDir, instanceID string) {
 		}
 		if applied {
 			return // 加载期间已由 refresh 写入更新值 → 不覆盖（避免陈旧初值压掉新值）
+		}
+		// 写入前校验该 work_dir 仍有活跃 watcher：加载期间可能已被 unwatchInstance 清理
+		// （无声明者 → 停并移出 watcher + 删 hidden）——此时**不得**重建无 watcher 的 hidden
+		// 项（否则随出现过的 work_dir 无界增长）。无 watcher → 跳过；下次 watch/list 会重新加载。
+		m.mu.Lock()
+		_, stillWatched := m.watchers[workDir]
+		m.mu.Unlock()
+		if !stillWatched {
+			return
 		}
 		m.applyHidden(workDir, parseHiddenDirs(val))
 	}()
@@ -277,6 +294,12 @@ func (dw *dirWatcher) emit(subject string, payload map[string]any) {
 
 // add 添加一个路径（目录或文件）；recursive 时递归子目录（过滤不显示的目录）。
 func (dw *dirWatcher) add(abs string, recursive bool) error {
+	// 真实路径复检**前置到 Add 之前**（与 pubDirChanged 对齐）：指向 root 外的符号链接 / 目录联接
+	// （真实路径解析后越界）**不进表、不监听**——否则 fsnotify 会跟踪根外目标并广播其子目录清单
+	// （越权监听）。非递归单文件同样复检（符号链接文件亦可指向根外）。
+	if !withinWorkDirReal(dw.workDir, abs) {
+		return nil
+	}
 	// 「进表」与 fsnotify.Add 在同一临界区内完成：与 removeTree 的「出表 + fsnotify.Remove」
 	// 原子配对，避免二者交错留下「fsnotify 在监听、paths 无记录」的悬挂（层1 并发要求）。
 	dw.pathsMu.Lock()
@@ -292,7 +315,8 @@ func (dw *dirWatcher) add(abs string, recursive bool) error {
 	dw.pathsMu.Unlock()
 
 	if recursive {
-		fi, err := os.Stat(abs)
+		// 判目录用 Lstat（**不跟随符号链接**）；越界已在上方复检拦下（与 copyTree 不跟随软链策略一致）。
+		fi, err := os.Lstat(abs)
 		if err == nil && fi.IsDir() {
 			if err := dw.walkAdd(abs); err != nil {
 				// 留痕（D-40）：递归添加子目录失败不该静默（否则部分子目录漏 watch 无从察觉）。
@@ -481,10 +505,21 @@ func (dw *dirWatcher) processBatch() {
 	if len(batch) == 0 {
 		return
 	}
-	dirs := make(map[string]bool)
+	// 一次解析 work_dir 真实路径，本批复用（避免逐事件/逐目录重复「逐段 Readlink」）；
+	// dirs 携带各刷新目录的**真实路径**（解析一次），pubDirChanged 直接复用不再二次解析。
+	baseReal := resolveRealPath(dw.workDir)
+	dirs := make(map[string]string)
+	putDir := func(dir, dirReal string) {
+		if _, ok := dirs[dir]; !ok {
+			dirs[dir] = dirReal
+		}
+	}
 	for path, ev := range batch {
 		op := operation(ev.Op)
-		dw.pubChanged(path, op)
+		// 事件路径真实路径本事件内解析一次复用（越界复检 + pubChanged + 目录刷新 3 处旧调用合一）。
+		pathReal := resolveRealPath(path)
+		inWorkDir := withinWorkDir(dw.workDir, path) && withinWorkDir(baseReal, pathReal)
+		dw.pubChanged(path, op, inWorkDir)
 
 		// 目录删除 / 重命名（D-39 层1）→ 摘除该路径及其子孙的 watch（paths 只增不删会泄漏）。
 		// 文件事件无对应 watch 条目 → removeTree 为无操作；重命名到新路径由随后的 Create 补齐。
@@ -493,8 +528,9 @@ func (dw *dirWatcher) processBatch() {
 		}
 
 		// 新目录（recursive 语义）→ 递归添加；「不显示的目录」不监听（与文件树显示同源，层2）。
+		// 判目录用 Lstat（**不跟随符号链接**）+ 真实路径复检仍在 work_dir 内（同 copyTree 策略）。
 		if ev.Op&fsnotify.Create != 0 {
-			if fi, err := os.Stat(path); err == nil && fi.IsDir() && !shouldHideDirName(filepath.Base(path), dw.hiddenDirs()) {
+			if fi, err := os.Lstat(path); err == nil && fi.IsDir() && inWorkDir && !shouldHideDirName(filepath.Base(path), dw.hiddenDirs()) {
 				dw.pathsMu.Lock()
 				known := dw.paths[path]
 				dw.pathsMu.Unlock()
@@ -506,20 +542,23 @@ func (dw *dirWatcher) processBatch() {
 				}
 			}
 		}
-		// 刷新目录 = 事件对象父目录；事件对象本身是目录时刷新自身
-		dir := filepath.Dir(path)
-		if fi, err := os.Stat(path); err == nil && fi.IsDir() {
-			dir = path
+		// 刷新目录 = 事件对象父目录；事件对象本身是**真实目录**（Lstat，不跟随软链）时刷新自身
+		// （复用本事件已解析的真实路径，不再二次解析）。
+		if fi, err := os.Lstat(path); err == nil && fi.IsDir() && inWorkDir {
 			// 新建目录：其**父目录**也须刷新批次（父 children 需含新目录节点；
 			// 仅刷新新目录自身时父批次缺失，前端树不会插入该目录节点，I-43）。
 			if ev.Op&fsnotify.Create != 0 {
-				dirs[filepath.Dir(path)] = true
+				parent := filepath.Dir(path)
+				putDir(parent, resolveRealPath(parent))
 			}
+			putDir(path, pathReal)
+		} else {
+			parent := filepath.Dir(path)
+			putDir(parent, resolveRealPath(parent))
 		}
-		dirs[dir] = true
 	}
-	for dir := range dirs {
-		dw.pubDirChanged(dir)
+	for dir, dirReal := range dirs {
+		dw.pubDirChanged(dir, dirReal, baseReal)
 	}
 	// 处理期间到达的新事件由 enqueue→armTimer 重排一轮（此时 windowStart 已复位 → 起新窗口），
 	// 正常重排程已完整覆盖，故此处无需再调度（D-30：原 `dw.timer == nil` 分支永假，且在
@@ -541,7 +580,12 @@ func operation(op fsnotify.Op) string {
 	}
 }
 
-func (dw *dirWatcher) pubChanged(abs, op string) {
+func (dw *dirWatcher) pubChanged(abs, op string, inWorkDir bool) {
+	// 复验真实路径仍在 work_dir 内（防经符号链接 / 目录联接广播根外文件路径；与 pubDirChanged 对齐）。
+	// inWorkDir 由调用方按「词法 + 真实路径」一次判定后传入（见 processBatch），避免重复逐段解析。
+	if !inWorkDir {
+		return
+	}
 	dw.emit(msgkeys.TopicFilesysChanged, map[string]any{
 		"work_dir":  dw.workDir,
 		"path":      filepath.ToSlash(abs),
@@ -549,7 +593,12 @@ func (dw *dirWatcher) pubChanged(abs, op string) {
 	})
 }
 
-func (dw *dirWatcher) pubDirChanged(dir string) {
+func (dw *dirWatcher) pubDirChanged(dir, dirReal, baseReal string) {
+	// 复验：目录真实路径须仍在 work_dir 内（防经符号链接 / 目录联接广播根外目录的 children 清单）。
+	// dirReal / baseReal 由调用方预先解析复用（见 processBatch），避免逐目录重复「逐段 Readlink」。
+	if !withinWorkDir(dw.workDir, dir) || !withinWorkDir(baseReal, dirReal) {
+		return
+	}
 	children := listDirNodes(dir, dw.hiddenDirs())
 	dw.emit(msgkeys.TopicFilesysChanged, map[string]any{
 		"work_dir": dw.workDir,

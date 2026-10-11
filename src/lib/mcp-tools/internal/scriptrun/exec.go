@@ -247,10 +247,11 @@ func resolveWorkDir(base string, raw interface{}) (string, string) {
 // （cmd/bash/sh）走 PATH 解析，不受约束。CHONKPILOT_INTERPRETERS 为宿主注入的内部配置，不校验。
 func resolveInterpreter(rt string, args map[string]interface{}) (string, string) {
 	if i, _ := args["interpreter"].(string); i != "" {
-		if _, msg := fileops.ValidateFilePath(i); msg != "" {
+		resolved, msg := fileops.ValidateFilePath(i)
+		if msg != "" {
 			return "", "interpreter：" + msg
 		}
-		return i, ""
+		return resolved, "" // 返回解析后的绝对路径（~/ 展开生效）
 	}
 	if m := interpretersFromEnv(); m != nil {
 		if v, ok := m[rt]; ok && v != "" {
