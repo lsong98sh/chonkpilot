@@ -110,7 +110,7 @@ Initialize：
 
 ### 4.3 引擎：查询与就绪门控
 
-- `EnsureReady` 单飞：内存无集合 → 盘上有则打开 → 回 `ready`/`indexing`/`error`/`not_initialized`；`ErrNotInitialized` 供 `readyGate` 结构化应答。`EnsureReady` 持 `recMu`（与 `Initialize`/`Incremental` 单飞）；**载入态先读 `loaded` 原子快照位（不取 `zmu`）**——已载入则免锁返回，避免与 `Initialize` 的整段长 `zmu` 临界区耦合而阻塞查询门（仅在未载入时用短 `zmu` 懒加载/校验落盘集合；`loaded` 由 `zmu` 临界区内的 `setColl` 唯一维护）。
+- `EnsureReady` 单飞：内存无集合 → 盘上有则打开 → 回 `ready`/`indexing`/`error`/`not_initialized`；`ErrNotInitialized` 供 `readyGate` 结构化应答。`EnsureReady` 持 `recMu`（与 `Initialize`/`Incremental` 单飞）；**载入态读 `coll` 单原子指针（不取 `zmu`）**——已载入则免锁返回，避免与 `Initialize` 的整段长 `zmu` 临界区耦合而阻塞查询门（仅在未载入时用短 `zmu` 懒加载/校验落盘集合；`coll` 由 `zmu` 临界区内的 `setColl` 唯一写入，「是否已载入」= `coll.Load() != nil`（`isLoaded()`）——单原子写入消除「先改句柄再改标志」两段式瞬时误报）。
 - `Query`：多取文档块（`topK×5`，上限 500）→ 文件级去重 → 取前 `topK` 个文件；`path` 子串过滤；返回命中拼回绝对路径。
 - 片段定位 `snippetOf`：块内首个含检索词的行 → 返回（截断 240 字符, 行偏移）。
 

@@ -309,7 +309,9 @@ func TestSessionTopRouting(t *testing.T) {
 		t.Fatalf("顶层路由=%v want %v", recKeys(got), ref)
 	}
 
-	// LatestTopSession 口径：降序首个 = 最近创建顶层。
+	// LatestTopSession 口径：按**最近活动**（last_activity 优先、回落 updated_at）取最大者。
+	// 本用例两条顶层仅置 created_at（未置 last_activity/updated_at → 活动时间同为空）→ 并列取序首，
+	// 与 OrderDesc created_at 的降序首一致 = top2（不再等价于「最近创建」的一般口径）。
 	if k := recKeys(got)[0]; k != "top2" {
 		t.Fatalf("最近顶层应为 top2: %v", recKeys(got))
 	}

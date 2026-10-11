@@ -114,7 +114,7 @@ func TestDataSessionListGetTitleDelete(t *testing.T) {
 	}
 }
 
-// TestDataSessionActiveSetGet：active-set 写 prj config → active-get 读取（缺省回落最新会话）。
+// TestDataSessionActiveSetGet：active-set 写 prj config → active-get 读取（缺省回落最近活动会话）。
 func TestDataSessionActiveSetGet(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	seedSessions(t, bus)
@@ -136,7 +136,7 @@ func TestDataSessionActiveSetGet(t *testing.T) {
 		t.Fatalf("active-get=%+v", dataResult(t, r))
 	}
 
-	// 删除活动会话 → active 清空 → 回落最新
+	// 删除活动会话 → active 清空 → 回落最近活动
 	_ = dataCall(t, bus, "data-session-delete", map[string]any{"req_id": "r4", "instance_id": "ins-test", "id": "s1"})
 	r = dataCall(t, bus, "data-session-active-get", map[string]any{"req_id": "r5", "instance_id": "ins-test"})
 	if id, _ := dataResult(t, r)["session_id"].(string); id != "s2" {

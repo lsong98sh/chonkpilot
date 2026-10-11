@@ -64,7 +64,7 @@ LLM "<成员名>" "请分析以下内容：<<<
 - 核心语句（`SET/IF/LOOP/PARALLEL/...`）与 `$RETURN`（§4.6）在两种方言下**完全一致**。
 - 子会话：`dsl_run` 中每次 LLM 调用 = 一个**子会话**（`parent_id` 非空，不入会话列表，仅在作业步骤表格可见）。
 - **`LLM` 返回值口径**：只含该子轮次的**最终回答正文**——**不含 reasoning（思维链）与 tool 相关内容**（工具调用轮的中间正文、工具结果一律剔除）；该正文即以 `=> 目标` / `=> $RETURN` 写入的内容（`llm_run` 与 `dsl_run` 两路一致）。
-- **LLM 子轮次等待上限**：单个 LLM 子轮次等待 `session-complete` 终态有**独立上限** `dslLLMTurnTimeout`（**30min**，`dslrun.go`）——该轮受理后若**永不发** `session-complete`，超时即级联发 `llm-cancel` 并返回错误（`llm 轮次 … 等待 session-complete 超时`），避免该 goroutine 永久阻塞、连带 `dslPump.drain` 的 `llmWG.Wait()` 楔死整个作业（与 `dslDataTimeout` 同语义：轮次面等待不得无界）。
+- **LLM 子轮次等待上限**：单个 LLM 子轮次等待 `session-complete` 终态有**独立上限**，**由作业 `ctx` deadline 派生**（`dslrun.go`：ctx 有截止 → 取剩余时间为上限，避免「显式作业超时 > 30min 时子轮次被常量先杀 / 未设作业超时反被硬杀」的语义冲突；ctx 无截止 → 兜底常量 `dslLLMTurnTimeout`（**30min**））——该轮受理后若**永不发** `session-complete`，超时即级联发 `llm-cancel` 并返回错误（`llm 轮次 … 等待 session-complete 超时`），避免该 goroutine 永久阻塞、连带 `dslPump.drain` 的 `llmWG.Wait()` 楔死整个作业（与 `dslDataTimeout` 同语义：轮次面等待不得无界）。
 - **展示上报器终态后忽略晚到 `tree`/`step`**：`dslTreeReporter` 发作业终态（`task-done`）后置 `finished` 位，此后**晚到的 `tree`/`step` 上行一律忽略**（取消竞态下不再发出晚于终态的 `task-started` / `task-updated(running)`），保证面板终态不被回退。
 
 ### 1.6 统一编排的动作执行位置

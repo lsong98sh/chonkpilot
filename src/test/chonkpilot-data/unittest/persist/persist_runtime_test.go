@@ -275,6 +275,17 @@ func TestTasktreeUpsert(t *testing.T) {
 		"status": "done", "created_at": "2026-01-01T00:00:01Z",
 		"finished_at": "2026-01-01T00:00:02Z", "tool_call_id": "tc-1",
 	})
+	// mode=init 过滤口径 = kind=dsl_job（DSL-3 起作业根，原 kind=llm 已改判）**或** status=running。
+	// 补两条覆盖该分支（原用例仅 llm/running 命中、dsl_job 分支零覆盖）：
+	//   n-dsl（dsl_job + done）→ 保留；n-llm-done（llm + done）→ 过滤。
+	upsert(map[string]any{
+		"task_id": "n-dsl", "top_session": "top1", "session_id": "s-top1",
+		"kind": "dsl_job", "title": "DSL 作业根", "status": "done", "created_at": "2026-01-01T00:00:02Z",
+	})
+	upsert(map[string]any{
+		"task_id": "n-llm-done", "top_session": "top1", "session_id": "s-top1",
+		"kind": "llm", "title": "已完成会话节点", "status": "done", "created_at": "2026-01-01T00:00:03Z",
+	})
 	prj, _ := data.PrjUsr("ins-test")
 	var rec data.Record
 	if ok, _ := prj.Table("tasktree").Get("n-llm", &rec); !ok {
@@ -296,8 +307,22 @@ func TestTasktreeUpsert(t *testing.T) {
 		"instance_id": "ins-test", "data": map[string]any{"top_session": "top1", "mode": "init"},
 	}))
 	nodes, _ := r["nodes"].([]any)
-	if len(nodes) != 1 { // mode=init 仅 llm/running 存活
-		t.Fatalf("init list len=%d, want 1", len(nodes))
+	// mode=init 仅保留 kind=dsl_job（作业根）或 status=running 的存活节点：
+	//   保留 = n-llm（llm/running）、n-dsl（dsl_job/done）；
+	//   过滤 = n-tool（core_file_read/done）、n-llm-done（llm/done）。
+	got := map[string]string{}
+	for _, n := range nodes {
+		m, _ := n.(map[string]any)
+		got[persist.Sval(m["node_id"])] = persist.Sval(m["kind"])
+	}
+	if len(got) != 2 || got["n-llm"] != "llm" || got["n-dsl"] != "dsl_job" {
+		t.Fatalf("init list=%v, want {n-llm:llm, n-dsl:dsl_job}", got)
+	}
+	if _, ok := got["n-tool"]; ok {
+		t.Fatalf("kind=core_file_read+done 应被 mode=init 过滤: %v", got)
+	}
+	if _, ok := got["n-llm-done"]; ok {
+		t.Fatalf("kind=llm+done 应被 mode=init 过滤: %v", got)
 	}
 }
 

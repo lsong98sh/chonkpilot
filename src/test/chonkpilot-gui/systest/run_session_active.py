@@ -10,10 +10,10 @@
      + 前端选中态 `.chat-session-tag` == `#<id 前 8>`（DOM 落点，非内部状态）
   B1 **重启同一数据根** → `data-session-active-get` 仍 == 该 id（A 再次回读）
      + 前端选中态仍 == `#<id 前 8>`（首屏 initSession 消费活动会话位的效果证据）
-  A2/B2 **对照**：切换会话 → 再次重启 → 恢复为**新选**的 id（证明 B1 不是"总是取最新会话"
-     的偶然：第二次选择的是**更早创建**的会话，而 `LatestTopSession`（view.go:234）按
-     `created_at` 倒序 → 回落分支必然给出**另一个** id，故该对照能区分"读了活动会话位"
-     与"回落最新会话"）。
+  A2/B2 **对照**：切换会话 → 再次重启 → 恢复为**新选**的 id（证明 B1 不是"总是取最近活动会话"
+     的偶然：第二次选择的是**更早创建**的会话 S1；随后刷新**另一会话 S2** 的 updated_at，使其成为
+     `LatestTopSession`（view.go）口径下的**最近活动**顶层会话 → 「回落最近活动」分支必然给出
+     **另一个** id（S2），故该对照能区分"读了活动会话位"与"回落最近活动会话"）。
 
 观测渠道（**全部为 61-消息一览既有主题，零新增**）
   §3.2 会话域：data-session-list / -active-get / -active-set（经前端抽屉真实点击驱动）
@@ -158,7 +158,7 @@ S2 = "p6sess-b-002"
 def case_a1_select_persist():
     """A1：真实选择会话（抽屉点击）→ 落库回读 + 前端选中态一致。"""
     seed_session(S1, "P6 会话A")
-    time.sleep(1.2)                     # created_at 拉开（LatestTopSession 按 created_at 倒序 → S2 恒为"最新"）
+    time.sleep(1.2)                     # 拉开 created_at/updated_at（S2 后建 → 其活动时间亦新于 S1）
     seed_session(S2, "P6 会话B")
     open_drawer()
     ids = card_ids()
@@ -191,7 +191,10 @@ def case_b1_restart_restore():
 
 
 def case_a2_switch_other():
-    """A2（对照前置）：切换到**更早创建**的 S1 → 落库与前端选中态同步改变。"""
+    """A2（对照前置）：切换到**更早创建**的 S1 → 落库与前端选中态同步改变；
+    并刷新**另一会话 S2** 的 updated_at（改标题），令「最近活动」落到 S2 —— 与活动位 S1 不同，
+    使 B2 的「读活动位 vs 回落最近活动」可判别（`LatestTopSession` 口径 = last_activity 优先、
+    回落 updated_at；`data-session-latest` 即该口径落点）。"""
     open_drawer()
     r = click_card(S1)
     if r != "clicked":
@@ -201,10 +204,21 @@ def case_a2_switch_other():
     evi("A2 切换会话 → 落库回读", clicked_id=S1, active_get=active_get(), chat_tag=chat_tag())
     if active_get() != S1 or chat_tag() != tag_of(S1):
         raise TestError("切换未生效: active=%r tag=%r" % (active_get(), chat_tag()))
+    # 构造判别差异：刷新 S2 的活动时间（updated_at），令「最近活动」= S2 ≠ 活动位 S1。
+    c.req("data-session-title", {"data": {"id": S2, "title": "P6 会话B（最近活动）"}})
+    time.sleep(0.3)
+    latest = (c.req("data-session-latest", {}) or {}).get("session_id") or ""
+    if latest != S2:
+        raise TestError("对照前提构造失败：最近活动会话=%r 期望 S2" % latest)
+    evi("A2 构造对照差异", active_position=S1, latest_activity=S2)
 
 
 def case_b2_restart_restore_again():
-    """B2（对照）：再次重启 → 恢复为 S1（而非最新会话 S2）→ 排除"回落最新会话"的偶然。"""
+    """B2（对照）：再次重启 → 恢复为 S1（而非**最近活动**的 S2）→ 排除"回落最近活动会话"的偶然。
+    前提（本用例断言）：最近活动会话 = S2（A2 已刷新其 updated_at），与活动位 S1 不同。"""
+    latest = (c.req("data-session-latest", {}) or {}).get("session_id") or ""
+    if latest != S2:
+        raise TestError("对照前提不成立：最近活动会话=%r 期望 S2（回落候选须 ≠ 活动位 S1）" % latest)
     restart("B2")
     wait_for(lambda: chat_tag() != "", "重启后 .chat-session-tag 未出现", 40)
     act = active_get()
@@ -213,7 +227,7 @@ def case_b2_restart_restore_again():
     if act == "":
         raise TestError("重启后活动会话为空（未恢复）")
     if act == S2:
-        raise TestError("重启后回落成最新会话 %r（未读活动会话位）" % S2)
+        raise TestError("重启后回落成最近活动会话 %r（未读活动会话位）" % S2)
     if act != S1:
         raise TestError("重启后活动会话=%r 期望 %r" % (act, S1))
     if chat_tag() != tag_of(S1):
@@ -228,8 +242,8 @@ def main():
     for name, fn in [
         ("A1 选择会话（抽屉点击）→ active_session_id 落库回读 + 前端选中态", case_a1_select_persist),
         ("B1 重启同一数据根 → 仍恢复选中该会话（回读 + 首屏选中态）", case_b1_restart_restore),
-        ("A2 切换会话（更早创建的 S1）→ 落库/前端同步改变（对照前置）", case_a2_switch_other),
-        ("B2 再次重启 → 恢复为 S1（排除回落最新会话）", case_b2_restart_restore_again),
+        ("A2 切换会话（更早创建的 S1）+ 刷新 S2 活动时间 → 落库/前端同步改变（对照前置）", case_a2_switch_other),
+        ("B2 再次重启 → 恢复为 S1（排除回落最近活动会话）", case_b2_restart_restore_again),
     ]:
         total += 1
         ok += run_case(name, fn)

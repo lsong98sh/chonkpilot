@@ -86,8 +86,8 @@ def case_security_dirs():
     **一条信任目录 = 一个 key**（前端生成的不透明 id，非目录路径），
     value = JSON 字符串 {"dir","writable"}；list 返回平铺 map（key 已剥 security- 前缀）。
     """
-    # 安全目录条目值仅为不透明字符串（key→JSON 往返断言，不触盘）；路径派生自 WS，避免硬编码盘符。
-    _SEC_DIR = os.path.join(WS, "sec-a").replace("\\", "/")
+    # 安全目录条目值仅为不透明字符串（key→JSON 往返断言，不触盘）；用哨兵常量（与 run_paths.py 同风格），无需真实盘符。
+    _SEC_DIR = r"C:\probe\sec-a"
     k = "dir-systest-a"
     v1 = '{"dir":"%s","writable":true}' % _SEC_DIR
     v2 = '{"dir":"%s","writable":false}' % _SEC_DIR
