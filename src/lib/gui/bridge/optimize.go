@@ -271,16 +271,16 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 	}
 
 	var sb strings.Builder
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			break
+	// SSE **事件级**解析（对齐仓内 sse 规范；语义同 router/internal/adaptor.SSEDecoder，因
+	// module 边界（internal 包只允许 router/** import）无法直接复用，故按规范内置）：
+	//   - 一条事件可含**多个** `data:` 行 → 以 `\n` 连接后整体解析（原实现逐行处理会丢弃/截断）；
+	//   - 空行 = 事件终结；`: `注释行 / `event:` 等字段行不产生载荷；
+	//   - **跨 chunk 半包**由 bufio.Scanner 的行缓冲天然处理（无换行不切分）；
+	//   - 流末无终结空行时，残留的已累积事件仍按规范补处理。
+	doneEmitted := false
+	flush := func(payload string) (stop bool) {
+		if strings.TrimSpace(payload) == "[DONE]" {
+			return true // 终止，但 done 事件交由循环后统一按已累积内容发（与原行为一致）
 		}
 		var chunk struct {
 			Choices []struct {
@@ -290,8 +290,8 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
-		if json.Unmarshal([]byte(data), &chunk) != nil {
-			continue
+		if json.Unmarshal([]byte(payload), &chunk) != nil {
+			return false
 		}
 		for _, ch := range chunk.Choices {
 			if ch.Delta.Content == "" {
@@ -301,17 +301,46 @@ func (b *Bridge) optimizeStream(title, useCase, prompt string, llm optimizeLLM) 
 			emit(msgkeys.TopicOptimizeToken, map[string]any{msgkeys.FieldContent: ch.Delta.Content})
 			if ch.FinishReason == "stop" {
 				emit(msgkeys.TopicOptimizeDone, map[string]any{msgkeys.FieldPrompt: sb.String()})
-				return
+				doneEmitted = true
+				return true
 			}
 		}
+		return false
 	}
-	if sb.Len() > 0 {
-		emit(msgkeys.TopicOptimizeDone, map[string]any{msgkeys.FieldPrompt: sb.String()})
-	} else {
-		emit(msgkeys.TopicOptimizeError, map[string]any{
-			msgkeys.FieldCode:    optimizeCodeLLMEmptyResponse,
-			msgkeys.FieldMessage: "LLM 未返回内容",
-		})
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var dataLines []string
+	for sc.Scan() {
+		line := strings.TrimLeft(sc.Text(), " \t")
+		if line == "" { // 空行 = 事件终结
+			if len(dataLines) == 0 {
+				continue
+			}
+			payload := strings.Join(dataLines, "\n")
+			dataLines = nil
+			if flush(payload) {
+				break
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue // 注释（:）/ event: / id: 等字段：不产生载荷
+		}
+		// 剥 `data:` 前缀与其后单个可选的空格（SSE 规范）。
+		dataLines = append(dataLines, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+	}
+	if len(dataLines) > 0 { // 流末残留事件（缺终结空行）
+		flush(strings.Join(dataLines, "\n"))
+	}
+	if !doneEmitted {
+		if sb.Len() > 0 {
+			emit(msgkeys.TopicOptimizeDone, map[string]any{msgkeys.FieldPrompt: sb.String()})
+		} else {
+			emit(msgkeys.TopicOptimizeError, map[string]any{
+				msgkeys.FieldCode:    optimizeCodeLLMEmptyResponse,
+				msgkeys.FieldMessage: "LLM 未返回内容",
+			})
+		}
 	}
 }
 

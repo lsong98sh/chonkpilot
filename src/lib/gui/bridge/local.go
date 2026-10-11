@@ -727,9 +727,13 @@ func searchToolCall(b *Bridge, tool string, args map[string]any, timeout time.Du
 	if raw, err := json.Marshal(payload); err == nil {
 		b.markPublished(msgkeys.TopicMcpToolsCall, raw)
 	}
+	// 超时可取消：超时后取消 ctx → 后台 Emit 随 ctx 收手（UDS 远程总线 Emit 阻塞至应答，
+	// 内部 select 兼顾 ctx.Done）→ goroutine 不残留至 CallTimeout。
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	done := make(chan *mq.Value, 1)
 	go func() {
-		done <- b.bus.Emit(context.Background(), msgkeys.TopicMcpToolsCall, payload).Wait()
+		done <- b.bus.Emit(ctx, msgkeys.TopicMcpToolsCall, payload).Wait()
 	}()
 	select {
 	case v := <-done:
@@ -737,8 +741,8 @@ func searchToolCall(b *Bridge, tool string, args map[string]any, timeout time.Du
 			return "", false
 		}
 		return toolResultText(v.Result), true
-	case <-time.After(timeout):
-		return "", false // 超时：放弃该源（后台 goroutine 自然结束）
+	case <-ctx.Done():
+		return "", false // 超时：放弃该源（ctx 取消令后台 goroutine 随之退出）
 	}
 }
 

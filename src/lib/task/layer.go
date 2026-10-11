@@ -62,8 +62,12 @@ type Layer struct {
 	logf         func(format string, args ...any)
 	onCancelExec func(taskID string, exec Exec)
 
-	// mu 串行化 Apply（含数据面往返）——保证同步 ack（D3）与幂等 / 单调校验原子性。
-	// 单次往返为同进程内存消息（微秒级），无高频场景（D5），不构成瓶颈。
+	// mu 只守护**内存视图**（recs / execs）的读写；**绝不在持 mu 期间做数据面 IO**
+	// （2026-10-11 锁内 IO 修复）：数据面往返（store.request = bbolt 写 / 分离形态往返）一律在
+	// **锁外**进行 —— 先取视图快照 / 回读库（锁外）→ 判定（纯内存）→ 落库（锁外 IO）→ 回填热
+	// 视图（短暂持 mu）。并发正确性：同一节点的相关事件在上游（llm turn / gateway 执行）本就
+	// **顺序**发出、跨节点互不冲突，故不以一把锁串行化整条写路径；DB 仍为权威（upsert 幂等，
+	// 同 task_id 覆盖）。
 	mu      sync.Mutex
 	recs    map[string]*Record // task_id → 记录（层内热视图；DB 仍为权威）
 	execs   map[string]Exec    // task_id → 执行句柄（层持有；取消时回调执行侧）
@@ -165,8 +169,7 @@ func (l *Layer) applyNode(payload []byte) error {
 		return err
 	}
 	rec.UpdatedAt = nowRFC3339()
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	// 不持 mu：commit 内部回读库 / 落库均为数据面 IO，一律在锁外（仅取视图 / 回填时短暂持 mu）。
 	return l.commit(rec)
 }
 
@@ -178,11 +181,11 @@ func (l *Layer) applyNode(payload []byte) error {
 //	   （如 `ex-0001`），与 llm 侧登记节点 id（`tk-<hex>`）不同源，直接当未登记处理会为同一逻辑
 //	   任务多建一行子节点（「重复行」缺陷修复）；
 //	③ 仍未命中但存在既有 exec 映射（`BindExec` / 执行态补登记）→ 同样只推进、不建行；
-//	④ 仍未命中 → 走既有「有 `top_session` 则建节点」的三级回落（见 buildReportedNodeLocked）：
+//	④ 仍未命中 → 走既有「有 `top_session` 则建节点」的三级回落（见 buildReportedNode）：
 //	   回报自带 top_session 即已足以独立建行，不再依赖 llm 的 task-* 事件先登记；无 `top_session`
 //	   （旧发布方 / 缺失）→ 维持既有口径：跳过并记日志。
 //
-// 建节点失败**只告警**（见 buildReportedNodeLocked），不影响回报主路径。
+// 建节点失败**只告警**（见 buildReportedNode），不影响回报主路径。
 func (l *Layer) applyReport(payload []byte) error {
 	var ev reportEvent
 	if err := json.Unmarshal(payload, &ev); err != nil {
@@ -192,56 +195,72 @@ func (l *Layer) applyReport(payload []byte) error {
 	if err != nil {
 		return err
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	// 不持 mu：以下判定涉及的「回读库 / 落库」均为数据面 IO，一律在锁外（视图取用 / 回填时短暂持 mu）。
 	// ① 按 task_id 命中
-	if old := l.knownLocked(rep.TaskID, rep.TopSession, rep.InstanceID); old != nil {
+	if old := l.known(rep.TaskID, rep.TopSession, rep.InstanceID); old != nil {
 		return l.commitAgainst(mergeReport(old, rep), old)
 	}
 	// ② 按 tool_call_id 命中已登记节点 → 推进该节点 + 记 gateway 执行 id（不建新行）
 	//
 	// 优先级（预期行为，勿调换）：回报**同时**带 `task_id`=gateway 执行 id 与 `parent` 时，先按
 	// `tool_call_id` 推进**已登记**的本次调用节点；`parent` 只在① ② ③ 皆不命中、走 ④ 建节点回落时
-	// 才作为挂父依据（buildReportedNodeLocked ①）。理由是 `tool_call_id` 唯一且稳定地指向「本次调用
+	// 才作为挂父依据（buildReportedNode ①）。理由是 `tool_call_id` 唯一且稳定地指向「本次调用
 	// 的那一行」，而按 `parent` 建行会为同一 tool-call 多建一行子节点（重复行）——即「命中即推进、
 	// 建行才用 parent」。
-	if id := l.matchRegisteredByToolCallLocked(rep.ToolCallID, rep.TopSession, rep.InstanceID); id != "" {
-		if base := l.knownLocked(id, rep.TopSession, rep.InstanceID); base != nil {
-			l.bindExecLocked(id, rep.TaskID, base)
+	if id := l.matchRegisteredByToolCall(rep.ToolCallID, rep.TopSession, rep.InstanceID); id != "" {
+		if base := l.known(id, rep.TopSession, rep.InstanceID); base != nil {
+			l.bindExec(id, rep.TaskID, base)
 			l.logf("task: 完成回报按 tool_call_id 命中已登记节点（只推进状态 + 记 gateway 执行 id，不建新行）: gw_task_id=%s tool_call_id=%s task_id=%s",
 				rep.TaskID, rep.ToolCallID, id)
 			return l.commitAgainst(mergeReport(base, rep), base)
 		}
 	}
 	// ③ 既有 exec 映射（调用方 BindExec / 执行态补登记）
-	if id := l.llmNodeByExecLocked(rep.TaskID); id != "" {
-		if base := l.knownLocked(id, rep.TopSession, rep.InstanceID); base != nil {
+	if id := l.llmNodeByExec(rep.TaskID); id != "" {
+		if base := l.known(id, rep.TopSession, rep.InstanceID); base != nil {
 			l.logf("task: 完成回报按 exec 映射命中已登记节点（只推进状态，不建新行）: gw_task_id=%s task_id=%s",
 				rep.TaskID, id)
 			return l.commitAgainst(mergeReport(base, rep), base)
 		}
 	}
 	// ④ 未登记回落：有 top_session 则建节点
-	return l.buildReportedNodeLocked(rep)
+	return l.buildReportedNode(rep)
 }
 
-// knownLocked 取层内热视图记录（持锁调用；缺失 → 按 top_session 回读库补齐，DB 权威）。
-// top_session 未知 → 无法定位，返回 nil。
-func (l *Layer) knownLocked(taskID, topSession, instanceID string) *Record {
-	if r := l.recs[taskID]; r != nil {
+// recOf 取热视图记录（短暂持 mu；不涉及 IO）。
+func (l *Layer) recOf(taskID string) *Record {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.recs[taskID]
+}
+
+// cacheRec 回填热视图（短暂持 mu；不涉及 IO）。
+func (l *Layer) cacheRec(rec *Record) {
+	if rec == nil {
+		return
+	}
+	l.mu.Lock()
+	l.recs[rec.TaskID] = rec
+	l.mu.Unlock()
+}
+
+// known 取层内热视图记录（热视图取用短暂持 mu；缺失 → 按 top_session 回读库补齐，DB 权威；
+// 回读为数据面 IO，在**锁外**进行）。top_session 未知 → 无法定位，返回 nil。
+func (l *Layer) known(taskID, topSession, instanceID string) *Record {
+	if r := l.recOf(taskID); r != nil {
 		return r
 	}
 	return l.load(&Record{TaskID: taskID, TopSession: topSession, InstanceID: instanceID})
 }
 
-// matchRegisteredByToolCallLocked 按 `tool_call_id` 命中「已登记节点」（持锁调用）：先查层内热视图；
-// 未命中且 `top_session` 已知 → 回读库补齐热视图（仅补缺失键，热视图优先）后重试。
-// 未命中 / tool_call_id 空 → 空串（调用方继续回落）。
-func (l *Layer) matchRegisteredByToolCallLocked(toolCallID, topSession, instanceID string) string {
+// matchRegisteredByToolCall 按 `tool_call_id` 命中「已登记节点」：先查层内热视图；
+// 未命中且 `top_session` 已知 → 回读库补齐热视图（仅补缺失键，热视图优先；回读为数据面 IO，
+// 在**锁外**）后重试。未命中 / tool_call_id 空 → 空串（调用方继续回落）。
+func (l *Layer) matchRegisteredByToolCall(toolCallID, topSession, instanceID string) string {
 	if toolCallID == "" {
 		return ""
 	}
-	if id := l.matchParentByToolCallLocked(toolCallID); id != "" {
+	if id := l.matchParentByToolCall(toolCallID); id != "" {
 		return id
 	}
 	if topSession == "" {
@@ -252,6 +271,7 @@ func (l *Layer) matchRegisteredByToolCallLocked(toolCallID, topSession, instance
 		l.warn("按 tool_call_id 回读权威行失败（按未登记处理）: tool_call_id=%s %v", toolCallID, err)
 		return ""
 	}
+	l.mu.Lock()
 	for _, row := range rows {
 		r := rowToRecord(row)
 		if r == nil || l.recs[r.TaskID] != nil {
@@ -259,7 +279,8 @@ func (l *Layer) matchRegisteredByToolCallLocked(toolCallID, topSession, instance
 		}
 		l.recs[r.TaskID] = r
 	}
-	return l.matchParentByToolCallLocked(toolCallID)
+	l.mu.Unlock()
+	return l.matchParentByToolCall(toolCallID)
 }
 
 // mergeReport 把完成回报推进既有节点（层记录副本）：状态 / 结果摘要 / 工具与 tool_call_id 补全 /
@@ -285,8 +306,8 @@ func mergeReport(old *Record, rep *Record) *Record {
 	return &rec
 }
 
-// buildReportedNodeLocked 处理**未登记**的 gateway 完成回报 → **独立建节点**（I-90；持锁调用）。
-// 树归属回落顺序（每步记日志，便于诊断）：
+// buildReportedNode 处理**未登记**的 gateway 完成回报 → **独立建节点**（I-90；不持 mu，
+// 落库 IO 在锁外）。树归属回落顺序（每步记日志，便于诊断）：
 //
 //	① 回报 `parent` 非空 → 挂该父（parent 由调用层给出，层不猜不重排 —— 21 §4-2）；
 //	② `parent` 空但 `tool_call_id` 能匹配到**已登记**的 llm 侧节点 → 挂其下；
@@ -294,7 +315,7 @@ func mergeReport(old *Record, rep *Record) *Record {
 //
 // 缺 `top_session`（无法定位树）/ 状态不可识别 → 跳过并记日志（维持既有「不建树」口径）。
 // 建节点失败**只告警并返回 nil**：层内失败绝不进入回报主路径（21 §9.1 交付物 3）。
-func (l *Layer) buildReportedNodeLocked(rep *Record) error {
+func (l *Layer) buildReportedNode(rep *Record) error {
 	if rep.TopSession == "" {
 		l.logf("task: 完成回报对应的节点未登记且无 top_session（无法建树，跳过）: task_id=%s", rep.TaskID)
 		return nil
@@ -321,7 +342,7 @@ func (l *Layer) buildReportedNodeLocked(rep *Record) error {
 	}
 	if rec.ParentID != "" {
 		l.logf("task: 完成回报建节点：按回报 parent 挂父 task_id=%s parent=%s", rec.TaskID, rec.ParentID)
-	} else if pid := l.matchParentByToolCallLocked(rec.ToolCallID); pid != "" {
+	} else if pid := l.matchParentByToolCall(rec.ToolCallID); pid != "" {
 		rec.ParentID = pid
 		l.logf("task: 完成回报建节点：parent 空 → 按 tool_call_id 匹配到已登记节点作为父 task_id=%s tool_call_id=%s parent=%s",
 			rec.TaskID, rec.ToolCallID, pid)
@@ -336,14 +357,16 @@ func (l *Layer) buildReportedNodeLocked(rep *Record) error {
 	return nil
 }
 
-// matchParentByToolCallLocked 在层视图内按 `tool_call_id` 找「已登记的 llm 侧节点」（持锁调用）：
+// matchParentByToolCall 在层视图内按 `tool_call_id` 找「已登记的 llm 侧节点」（短暂持 mu）：
 // 候选 = 层内 tool_call_id 相同的节点，取**最早登记者**（D3 顺序依赖：调用层先登记节点、gateway
 // 完成回报后才到 → 同 tool_call_id 下 llm 侧节点必然更早；据此不会把「回报自建节点」选成父而互链）。
 // 未命中 / tool_call_id 空 → 空串（回落顶层）。
-func (l *Layer) matchParentByToolCallLocked(toolCallID string) string {
+func (l *Layer) matchParentByToolCall(toolCallID string) string {
 	if toolCallID == "" {
 		return ""
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	var best *Record
 	for _, r := range l.recs {
 		if r.ToolCallID != toolCallID {
@@ -435,19 +458,21 @@ func (l *Layer) descendantsLocked(rootID string) []string {
 	return out
 }
 
-// commit 提交一条记录（持锁调用）：先解析既有记录（回读库）→ 判定主体 commitAgainst。
+// commit 提交一条记录（**不持 mu**）：先解析既有记录（热视图短暂持 mu；缺失回读库 = 锁外 IO）
+// → 判定主体 commitAgainst。
 func (l *Layer) commit(rec *Record) error {
 	if rec.TaskID == "" {
 		return fmt.Errorf("task: 记录缺 task_id")
 	}
-	old := l.recs[rec.TaskID]
+	old := l.recOf(rec.TaskID)
 	if old == nil {
-		old = l.load(rec) // 跨进程 / 热视图缺失：回读库（DB 权威）
+		old = l.load(rec) // 跨进程 / 热视图缺失：回读库（DB 权威；锁外 IO）
 	}
 	return l.commitAgainst(rec, old)
 }
 
-// commitAgainst 是 commit 的判定主体（old = 已解析的既有记录 / nil = 无；持锁调用）：
+// commitAgainst 是 commit 的判定主体（old = 已解析的既有记录 / nil = 无；**不持 mu**：
+// 判定为纯内存；落库 upsert 为数据面 IO、在**锁外**；回填热视图时短暂持 mu）：
 // 撞号 / **exec_json 只增不减深合并** / 状态优先级 / 状态单调校验 → 逻辑删除标记保留 → 幂等短路 → 同步落库。
 //
 //	① 撞号（同 (workdir, task_id) 语义冲突）→ 拒绝并记错误日志，层不覆盖；
@@ -497,18 +522,19 @@ func (l *Layer) commitAgainst(rec, old *Record) error {
 		// 与既有 llm 落库口径一致（instance 不可定位 → 不落库）：避免多实例下 data 面
 		// 「唯一实例回退」把行写进别的库。层内热视图照常记录（控制面判定可用）。
 		l.warn("节点缺 instance_id（不落库，仅层内记录）: task_id=%s", rec.TaskID)
-		l.recs[rec.TaskID] = rec
+		l.cacheRec(rec)
 		return nil
 	}
-	if err := l.store.upsert(rec); err != nil {
+	if err := l.store.upsert(rec); err != nil { // 数据面 IO：锁外
 		l.warn("落库失败（仅告警，不影响主路径）: task_id=%s %v", rec.TaskID, err)
 		return err
 	}
-	l.recs[rec.TaskID] = rec
+	l.cacheRec(rec)
 	return nil
 }
 
 // load 回读库中的既有记录（幂等 / 撞号判定用；top_session 未知 → 无法定位，返回 nil）。
+// **不持 mu**：store.list 为数据面 IO，在锁外；命中行回填热视图时短暂持 mu。
 func (l *Layer) load(rec *Record) *Record {
 	if rec.TopSession == "" {
 		return nil
@@ -520,7 +546,7 @@ func (l *Layer) load(rec *Record) *Record {
 	}
 	for _, r := range rows {
 		if got := rowToRecord(r); got != nil && got.TaskID == rec.TaskID {
-			l.recs[got.TaskID] = got
+			l.cacheRec(got)
 			return got
 		}
 	}
@@ -586,7 +612,7 @@ func (l *Layer) CancelSubtree(instanceID, rootID, topSession string) []string {
 	if l.bus == nil || rootID == "" {
 		return nil
 	}
-	// ① 判定（持锁）：层内热视图 +（需求时）库回读合成子树视图
+	// ① 层内热视图 + 执行句柄**快照**（短暂持 mu；不做 IO）
 	l.mu.Lock()
 	view := make(map[string]*Record, len(l.recs))
 	for _, r := range l.recs {
@@ -594,15 +620,22 @@ func (l *Layer) CancelSubtree(instanceID, rootID, topSession string) []string {
 			view[r.TaskID] = r
 		}
 	}
+	execs := make(map[string]Exec, len(l.execs))
+	for id, ex := range l.execs {
+		execs[id] = ex
+	}
+	inst := instanceID
+	if inst == "" {
+		inst, _ = l.instanceOfLocked(topSession)
+	}
+	l.mu.Unlock()
+
+	// ② 需求时库回读（数据面 IO，**锁外**）
 	if _, ok := view[rootID]; !ok && topSession != "" {
 		// 库回读须用**真实 instance**（显式优先；缺省从层内事件记录解析该主会话的来源实例）。
 		// 解析不到 → **不**以空串走数据面「唯一实例回退」（多实例下 ErrInstanceIDRequired /
 		// 跨实例串库）：记告警并按「层不可知」处理（下方 view[rootID] 仍未知 → 返回 nil，
 		// 交调用方按自身视图判定，行为等价）。
-		inst := instanceID
-		if inst == "" {
-			inst, _ = l.instanceOfLocked(topSession)
-		}
 		if inst == "" {
 			l.warn("取消判定无法解析 instance_id（不从唯一实例回退，按层不可知处理）: root=%s top_session=%s", rootID, topSession)
 		} else if rows, err := l.store.list(inst, topSession, true); err == nil {
@@ -615,6 +648,8 @@ func (l *Layer) CancelSubtree(instanceID, rootID, topSession string) []string {
 			l.warn("取消判定回读权威行失败: root=%s %v", rootID, err)
 		}
 	}
+
+	// ③ 判定（纯内存）
 	childrenOf := map[string][]string{}
 	for _, r := range view {
 		if r.ParentID != "" {
@@ -647,16 +682,15 @@ func (l *Layer) CancelSubtree(instanceID, rootID, topSession string) []string {
 			continue // 不可逆终态：不重复取消
 		}
 		ids = append(ids, id)
-		if exec, ok := l.execs[id]; ok && exec.GWTaskID != "" {
-			callbacks = append(callbacks, pending{taskID: id, exec: exec})
+		if ex, ok := execs[id]; ok && ex.GWTaskID != "" {
+			callbacks = append(callbacks, pending{taskID: id, exec: ex})
 		}
 	}
 	if _, known := view[rootID]; !known {
 		ids = nil // 根节点层不可知 → 交调用方判定（保持既有行为等价）
 	}
-	l.mu.Unlock()
 
-	// ② 层 → 执行侧回调（锁外：执行侧可能同步回灌任务事件 → 避免自锁）
+	// ④ 层 → 执行侧回调（锁外：执行侧可能同步回灌任务事件 → 避免自锁）
 	for _, cb := range callbacks {
 		if l.onCancelExec == nil {
 			break

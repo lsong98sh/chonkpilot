@@ -139,6 +139,11 @@ func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, boo
 	// 一致性为准，被移除则不写入并回报失败。
 	if r.bySession[sessionID] != windowID {
 		r.mu.Unlock()
+		// 幽灵分支：本窗口未被登记（会话占位已被 remove 清掉，或被并发 open 改指另一窗口）。
+		// 此时窗口既未入 byID、也无任何引用 → 必须**主动销毁回滚**，否则其 WebView2 线程/profile
+		// 泄漏，且同 session 可被重复开窗（状态不一致）。不在此处改 bySession —— 它可能已指向
+		// 合法的新窗口，清掉会误伤。
+		h.destroy()
 		return windowID, false, false
 	}
 	r.byID[windowID] = h
@@ -177,7 +182,14 @@ func (r *windowRegistry) remove(h *windowHost) {
 }
 
 // broadcast 把宿主下行事件发给除 exceptWindowID 外的所有窗口（各窗口自己的桥 → 自己的前端）。
+// 非 bus 派发的**跨层直调入口** → 加 panic 兜底：单次 panic 不得崩掉宿主进程（各窗口 Emit 失败
+// 只应影响该窗口）。
 func (r *windowRegistry) broadcast(exceptWindowID, typ string, payload map[string]any) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("windowRegistry.broadcast panic", "type", typ, "err", rec)
+		}
+	}()
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return

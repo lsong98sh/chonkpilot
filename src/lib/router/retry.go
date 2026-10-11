@@ -60,6 +60,10 @@ func attemptOnce(ctx context.Context, ad adaptor.Adapter, spec Spec, req Request
 	for {
 		select {
 		case <-ctx.Done():
+			// 不 close(inner)：适配器可能仍在写（close 会 send on closed channel panic）。
+			// 依赖 `internal/adaptor.Adapter` 契约 —— Stream **必须响应 ctx 取消**（写 out 经
+			// adaptor.Emit 的 select 兼顾 ctx.Done）→ Stream 会尽快返回，errCh（带缓冲 1）不会
+			// 阻塞该 goroutine → 无泄漏。故本分支仅返回，交由适配器自收敛。
 			return emitted, errorOf(ctx.Err())
 		case err := <-errCh:
 			close(inner)

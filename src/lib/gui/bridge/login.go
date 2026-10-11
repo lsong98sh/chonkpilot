@@ -77,8 +77,11 @@ func (b *Bridge) loginEvent(subject, typ, payloadJSON string) (any, []error) {
 	if err != nil {
 		return map[string]any{"ok": false, "error": err.Error()}, []error{err}
 	}
-	result, errs := b.publishV(subject, string(raw)) // string = 原样字节（[]byte 会被 json 编码成 base64）
-	issued := takeInternalToken(result)              // 取走内部 token（返回前端前必须剥除）
+	// 与其它方法面同法地注入 instance_id（归属过滤）：否则含 token 的上行载荷因**无归属**
+	// 会被同一总线上的**其它窗口**桥放行（acceptEventInstance 对空 instance_id 放行）并转发到
+	// 其前端 → token 越窗口泄漏（本桥自身的回环已由 isSelfPublished 拦截）。
+	result, errs := b.publishV(subject, b.injectInstance(string(raw))) // string = 原样字节（[]byte 会被 json 编码成 base64）
+	issued := takeInternalToken(result)                               // 取走内部 token（返回前端前必须剥除）
 	switch {
 	case typ == msgkeys.TopicLoginOut:
 		b.clearAuthToken() // 登出：清内存 + 删文件（令牌行由服务端清）

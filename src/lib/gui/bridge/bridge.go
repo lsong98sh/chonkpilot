@@ -389,7 +389,13 @@ func (b *Bridge) evalEmit(typ, payloadJSON, src string) {
 }
 
 // EmitFrontend 把事件广播给前端（main 等外部包调用；如窗口最大化状态同步）。
+// 非 bus 派发的**跨层直调入口** → 加 panic 兜底：单次 panic 不得崩掉宿主进程。
 func (b *Bridge) EmitFrontend(typ, payloadJSON string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("bridge EmitFrontend panic", "type", typ, "err", r)
+		}
+	}()
 	b.evalEmit(typ, payloadJSON, "gui")
 }
 
@@ -653,6 +659,34 @@ func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs
 	return v.Result, v.Errors
 }
 
+// exitPublishTimeout 是退出/关闭路径发布的**等待上限**：退出路径不能因等待应答而长时间阻塞
+// 窗口线程（flash 薄壳下总线 = UDS 远程 Client，Emit 阻塞至应答或 CallTimeout=60s）。
+const exitPublishTimeout = 1 * time.Second
+
+// publishWithTimeout 发布并**至多等待 d**（fire-and-forget 语义；用于退出/关闭路径）：
+// 对进程内总线为同步派发（即时完成）；对 UDS 远程总线，Emit 会**先写出帧**再等应答，超时
+// 仅放弃等待应答（不重试）。避免窗口线程被拖到 CallTimeout（60s）而卡住退出。
+func (b *Bridge) publishWithTimeout(subject string, payload interface{}, d time.Duration) {
+	var raw []byte
+	switch v := payload.(type) {
+	case string:
+		raw = []byte(v)
+	default:
+		var err error
+		raw, err = json.Marshal(v)
+		if err != nil {
+			slog.Error("bridge publish marshal failed", "subject", subject, "err", err)
+			return
+		}
+	}
+	b.markPublished(subject, raw)
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	if v := b.bus.Emit(ctx, subject, raw).Wait(); v.Err() != nil {
+		slog.Warn("bridge publish (exit path) failed", "subject", subject, "err", v.Err())
+	}
+}
+
 // stopForward 退订本桥的总线 ">" 订阅（D-23，幂等）：窗口关闭后该桥不再收到任何事件，
 // 避免僵尸桥对高频事件（llm-receive 逐 token）仍执行 eventInstanceID/compatEmit 的完整
 // JSON 解析与转发。句柄为本桥私有，不影响主桥/共享订阅；未 Start（unsub == nil）时为空操作。
@@ -685,7 +719,9 @@ func (b *Bridge) CloseInstance() {
 	if b.suppressExit {
 		return
 	}
-	b.publish(msgkeys.TopicInstanceExit, map[string]interface{}{msgkeys.FieldInstanceId: b.instanceID})
+	// 退出路径：带短超时发布（fire-and-forget 语义）——避免窗口线程在 UDS 往返上阻塞至
+	// CallTimeout（60s）；正常路径（进程内总线）仍即时送达。
+	b.publishWithTimeout(msgkeys.TopicInstanceExit, map[string]interface{}{msgkeys.FieldInstanceId: b.instanceID}, exitPublishTimeout)
 }
 
 // Close 注销实例并关闭总线（**进程收尾**用；单窗口历史语义不变）。合并单进程仍发

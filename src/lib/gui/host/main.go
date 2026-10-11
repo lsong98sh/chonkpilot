@@ -23,6 +23,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -112,9 +113,15 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	//
 	// 取舍：正式 prjusr 根在 desktop 缺省下 = `~/.chonkpilot/data/<prj-id>/`，须**读 prj 库取
 	// project-id** 才能算出，与「锁先于库打开」矛盾 → 以**项目数据根**（= flash 的 prjusr 约定
-	// `<workDir>/.chonkpilot`；显式 --data-dir 时为该目录）作为锁目录：既满足「先于库打开」，
-	// 又与 flash 的锁**同路径**（同项目互斥，见 62 §3A / 19 §8.11）。
-	wdLock, wdErr := lockfile.AcquirePrjUsr(projectDataDir)
+	// `<workDir>/.chonkpilot`）作为锁目录：既满足「先于库打开」，又与 flash 的锁**同路径**
+	// （同项目互斥，见 62 §3A / 19 §8.11）。
+	//
+	// 锁目录**恒取** `<workDir>/.chonkpilot`（与 flash.AcquireProject 的 DataDirFor 同路径），
+	// **与 --data-dir 解耦**：若锁目录取 --data-dir（projectDataDir 在显式 --data-dir 时 = 该目录），
+	// 则同 work_dir 下 desktop(--data-dir=X) 与 flash（恒 `<work_dir>/.chonkpilot`）会各持一把锁，
+	// 互斥失效 → 同项目双实例。故锁路径统一为默认项目数据根（user-config 目录名）。
+	lockDir := filepath.Join(workDir, models.UserConfigDirName)
+	wdLock, wdErr := lockfile.AcquirePrjUsr(lockDir)
 	switch {
 	case wdErr == nil:
 		defer wdLock.Release()

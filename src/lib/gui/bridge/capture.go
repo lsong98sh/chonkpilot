@@ -28,6 +28,7 @@ var (
 
 	pGetSystemMetrics   = user32GDI.NewProc("GetSystemMetrics")
 	pShowWindow         = user32GDI.NewProc("ShowWindow")
+	pIsIconic           = user32GDI.NewProc("IsIconic")
 	pGetDC              = user32GDI.NewProc("GetDC")
 	pReleaseDC          = user32GDI.NewProc("ReleaseDC")
 	pCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
@@ -45,8 +46,11 @@ var (
 	srcCopy = 0x00CC0020
 	dibRGB  = uint32(0)
 	swHide  = uintptr(0)
-	swShow  = uintptr(5)
-	biRGB   = uint32(0)
+	// SW_SHOWNOACTIVATE(4)：显示但不抢焦点；SW_SHOWMINNOACTIVE(7)：以最小化显示且不抢焦点。
+	// 用于隐藏截图后**原样**恢复窗口（不再恒用 SW_SHOW(5)，避免把最小化/后台窗口拉成激活态）。
+	swShowNoActivate  = uintptr(4)
+	swShowMinNoActive = uintptr(7)
+	biRGB             = uint32(0)
 )
 
 // bitmapInfoHeader 与 BITMAPINFOHEADER 内存布局一致（CreateDIBSection 用）。
@@ -71,11 +75,21 @@ func callCaptureScreen(b *Bridge, ctx context.Context, params []json.RawMessage)
 	if hwnd == 0 {
 		return nil, fmt.Errorf("CaptureScreen: no window handle")
 	}
-	// 隐藏本窗口（截图不含自身）；结束时恢复
+	// 记录原显示状态：最小化（iconic）→ 收尾恢复为最小化；否则 SW_SHOWNOACTIVATE 显示回来
+	// （不抢焦点、不改尺寸/位置——隐藏并不清除 WS_MAXIMIZE 等样式）。原实现恒用
+	// SW_SHOW(5) 会把最小化/后台窗口拉成激活态并抢走焦点，破坏原窗口状态。
+	wasIconic, _, _ := pIsIconic.Call(hwnd)
+	// 隐藏本窗口（截图不含自身）；结束时按原状态恢复
 	r1, _, _ := pShowWindow.Call(hwnd, swHide)
 	_ = r1
 	time.Sleep(350 * time.Millisecond)
-	defer pShowWindow.Call(hwnd, swShow)
+	defer func() {
+		if wasIconic != 0 {
+			pShowWindow.Call(hwnd, swShowMinNoActive) // 原为最小化 → 恢复最小化且不激活
+			return
+		}
+		pShowWindow.Call(hwnd, swShowNoActivate) // 原为正常/最大化 → 无激活显示
+	}()
 
 	// 虚拟桌面几何（多显示器合并区域）
 	x := int64(systemMetric(smXVirtualScreen))

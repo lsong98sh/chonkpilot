@@ -131,8 +131,18 @@ func execPhaseState(phase string) string {
 
 // OnExecState 执行态纳入（P3-①；同步写权威表，无返回值 = 失败只告警）：
 // 解析到既有节点 → 合并状态与 exec_json（exec_json **深合并**既有值，只增不减）；未命中 →
-// 按 buildExecNodeLocked 的回落处置。
+// 按 buildExecNode 的回落处置。
+//
+// 非 bus 派发的**跨层直调入口**（宿主适配 gateway 后直接调用）→ 顶部加 panic 兜底：
+// 单次 panic 不得沿 gateway 调用路径崩掉宿主。
+//
+// **不持 mu**：解析 / 落库均为数据面 IO，在锁外（视图取用 / 回填时短暂持 mu）。
 func (l *Layer) OnExecState(ev ExecState) {
+	defer func() {
+		if r := recover(); r != nil {
+			l.warn("执行态纳入 panic（已兜底，不影响 gateway 调用路径）: gw_task_id=%s %v", ev.GWTaskID, r)
+		}
+	}()
 	if l.bus == nil || ev.GWTaskID == "" {
 		return
 	}
@@ -144,19 +154,14 @@ func (l *Layer) OnExecState(ev ExecState) {
 		l.warn("执行态序列化失败（跳过，仅告警）: gw_task_id=%s %v", ev.GWTaskID, err)
 		return
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	rec := l.execTargetLocked(&ev)
+	rec := l.execTarget(&ev)
 	if rec == nil {
-		l.buildExecNodeLocked(&ev, string(detail))
+		l.buildExecNode(&ev, string(detail))
 		return
 	}
 	// 执行句柄补充归属 provider（P3：层持 `exec.provider_key` → 取消回调定位归属 provider）
-	l.bindExecLocked(rec.TaskID, ev.GWTaskID, rec)
-	if ex, ok := l.execs[rec.TaskID]; ok && ev.ProviderKey != "" && ex.ProviderKey == "" {
-		ex.ProviderKey = ev.ProviderKey
-		l.execs[rec.TaskID] = ex
-	}
+	l.bindExec(rec.TaskID, ev.GWTaskID, rec)
+	l.setExecProviderKey(rec.TaskID, ev.ProviderKey)
 	next := *rec
 	if st := execPhaseState(ev.Phase); st != "" {
 		next.State = st
@@ -190,27 +195,34 @@ func (l *Layer) ExecStateOf(gwTaskID string) (string, bool) {
 	return "", false
 }
 
-// execTargetLocked 解析执行态的目标节点（持锁调用）：① exec 映射 → ② tool_call_id 命中已登记节点
-// （命中即补登记 exec 映射）→ ③ 空（调用方按未命中处置）。
-func (l *Layer) execTargetLocked(ev *ExecState) *Record {
-	if id := l.llmNodeByExecLocked(ev.GWTaskID); id != "" {
-		if rec := l.recs[id]; rec != nil {
+// execTarget 解析执行态的目标节点（**不持 mu**）：① exec 映射 → ② tool_call_id 命中已登记节点
+// （命中即补登记 exec 映射）→ ③ 空（调用方按未命中处置）。回读库为数据面 IO，在锁外。
+func (l *Layer) execTarget(ev *ExecState) *Record {
+	if id := l.llmNodeByExec(ev.GWTaskID); id != "" {
+		if rec := l.recOf(id); rec != nil {
 			return rec
 		}
 		if rec := l.load(&Record{TaskID: id, TopSession: ev.TopSession, InstanceID: ev.InstanceID}); rec != nil {
 			return rec
 		}
 	}
-	id := l.matchParentByToolCallLocked(ev.ToolCallID)
+	id := l.matchParentByToolCall(ev.ToolCallID)
 	if id == "" {
 		return nil
 	}
-	rec := l.recs[id]
+	rec := l.recOf(id)
 	if rec == nil {
 		return nil
 	}
-	l.bindExecLocked(id, ev.GWTaskID, rec) // 补登记映射：后续执行态 / 完成回报直接命中
+	l.bindExec(id, ev.GWTaskID, rec) // 补登记映射：后续执行态 / 完成回报直接命中
 	return rec
+}
+
+// llmNodeByExec 由 gateway 执行 id 反查 llm 节点 id（**自持 mu**；exec 映射反向查找；未登记 → 空）。
+func (l *Layer) llmNodeByExec(gwTaskID string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.llmNodeByExecLocked(gwTaskID)
 }
 
 // llmNodeByExecLocked 由 gateway 执行 id 反查 llm 节点 id（持锁调用；exec 映射反向查找；未登记 → 空）。
@@ -226,18 +238,33 @@ func (l *Layer) llmNodeByExecLocked(gwTaskID string) string {
 	return ""
 }
 
-// bindExecLocked 补登记 exec 映射（持锁调用）：已有映射（调用方显式 BindExec）→ 不覆盖。
-func (l *Layer) bindExecLocked(taskID, gwTaskID string, rec *Record) {
+// bindExec 补登记 exec 映射（**自持 mu**）：已有映射（调用方显式 BindExec）→ 不覆盖。
+func (l *Layer) bindExec(taskID, gwTaskID string, rec *Record) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if _, ok := l.execs[taskID]; ok {
 		return
 	}
 	l.execs[taskID] = Exec{GWTaskID: gwTaskID, InstanceID: rec.InstanceID, Tool: rec.Tool}
 }
 
-// buildExecNodeLocked 未命中既有节点的执行态 → 建行（持锁调用；规则见文件头 ③④）：
+// setExecProviderKey 补全执行句柄的归属 provider（**自持 mu**；仅当原为空且 incoming 非空）。
+func (l *Layer) setExecProviderKey(taskID, providerKey string) {
+	if providerKey == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if ex, ok := l.execs[taskID]; ok && ex.ProviderKey == "" {
+		ex.ProviderKey = providerKey
+		l.execs[taskID] = ex
+	}
+}
+
+// buildExecNode 未命中既有节点的执行态 → 建行（**不持 mu**；规则见文件头 ③④）：
 // 无 `top_session` 无法定位树 → 跳过；`started` 早于调用层登记窗口 → 跳过（避免孤儿重复行）；
-// 其余按 tool_call_id 三级回落挂父（同 buildReportedNodeLocked），失败只告警。
-func (l *Layer) buildExecNodeLocked(ev *ExecState, execJSON string) {
+// 其余按 tool_call_id 三级回落挂父（同 buildReportedNode），失败只告警。落库 IO 在锁外。
+func (l *Layer) buildExecNode(ev *ExecState, execJSON string) {
 	if ev.TopSession == "" {
 		l.logf("task: 执行态未命中节点且无 top_session（无法建树，跳过）: gw_task_id=%s phase=%s",
 			ev.GWTaskID, ev.Phase)
@@ -259,7 +286,7 @@ func (l *Layer) buildExecNodeLocked(ev *ExecState, execJSON string) {
 		State: state, ExecJSON: execJSON,
 		CreatedAt: ev.At, StartedAt: ev.At, UpdatedAt: ev.At,
 	}
-	if pid := l.matchParentByToolCallLocked(rec.ToolCallID); pid != "" {
+	if pid := l.matchParentByToolCall(rec.ToolCallID); pid != "" {
 		rec.ParentID = pid
 		l.logf("task: 执行态建节点：按 tool_call_id 匹配到已登记节点作为父 task_id=%s tool_call_id=%s parent=%s",
 			rec.TaskID, rec.ToolCallID, pid)
@@ -275,10 +302,6 @@ func (l *Layer) buildExecNodeLocked(ev *ExecState, execJSON string) {
 		return
 	}
 	// 登记 exec 映射（新建行以 gateway 执行 id 为节点 id）：使后续执行态 / 完成回报 / 控制面查询命中同一行
-	l.bindExecLocked(rec.TaskID, ev.GWTaskID, rec)
-	if ev.ProviderKey != "" {
-		ex := l.execs[rec.TaskID]
-		ex.ProviderKey = ev.ProviderKey
-		l.execs[rec.TaskID] = ex
-	}
+	l.bindExec(rec.TaskID, ev.GWTaskID, rec)
+	l.setExecProviderKey(rec.TaskID, ev.ProviderKey)
 }
