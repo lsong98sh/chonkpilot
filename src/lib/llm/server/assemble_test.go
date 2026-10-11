@@ -385,6 +385,14 @@ func TestUnpersistedInputsUserDedup(t *testing.T) {
 	if len(out2) != 2 || out2[0].ToolCallID != "c4" || out2[1].ToolCallID != "c9" {
 		t.Fatalf("persistedResultOK 命中应剔除（含空结果），未登记的空结果应保留：%+v", out2)
 	}
+	// 读库失败（base 缺该 id）即便本 turn 已登记成功落库 → 仍**保留**内存结果，避免丢结果（P3）。
+	tc3 := &turnCtx{persistedResultOK: map[string]bool{"c5": true}}
+	out3 := tc3.unpersistedInputs([]ChatMsg{
+		{Role: "tool", ToolCallID: "c5", Content: "r5"}, // base 无 c5（读库失败）→ 保留
+	}, nil)
+	if len(out3) != 1 || out3[0].ToolCallID != "c5" {
+		t.Fatalf("base 缺该 id 时应保留内存结果（避免读库失败丢结果）：%+v", out3)
+	}
 }
 
 // TestTurnUserMessageNotDuplicated（I-25 回归）：一次用户提问在 LLM 请求里只出现一次。

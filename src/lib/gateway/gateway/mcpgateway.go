@@ -1069,9 +1069,12 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 				}
 				// 取消已置终态（cancel 内 markDone → doneCh 立即关闭）→ 正常零等待；兜底超时防
 				// 执行体不响应取消时永久占用 mq 同步派发线程，超时按 cancelled 交付。
+				// 用 time.NewTimer + defer Stop（而非 time.After）避免兜底计时器在提前交付时不被回收。
+				ctimer := time.NewTimer(cancelDeliverWait)
+				defer ctimer.Stop()
 				select {
 				case <-t.doneCh:
-				case <-time.After(cancelDeliverWait):
+				case <-ctimer.C:
 					g.logf("[gateway] tool %s cancel wait timed out, deliver as cancelled (exec %s)", req.Name, t.ID)
 				}
 				return g.tm.manualResult(t), 0, ""
@@ -1153,6 +1156,9 @@ func (g *Gateway) onTaskCancel(t *ExecTask) {
 		if ps.entry != nil && ps.entry.ID != "" {
 			name = ps.entry.ID
 		}
+		// 注册表状态同步置 failed：否则叠加本轮 monitorSpawned 的 SpawnedSelf() 短路（空槽不再观测）
+		// 会残留 connected（幽灵）——servers/list 仍显示在线，与「重建失败」通知自相矛盾。
+		g.reg.setStatus(t.ProviderKey, "failed")
 		g.notifyMCPChanged(t.OwnerInstance, map[string]any{
 			"kind": KindServer, "name": name, "status": "failed", "reason": err.Error(),
 		})
@@ -1885,10 +1891,12 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 		// 共享槽已无自持进程（如 Invalidate 失败回落空槽）：无进程可观测 → 退出观测，避免把
 		// 「空槽 WaitExit 立即返回的 nil」误判为意外退出而多一次假重建（provider 暂不可用，
 		// 恢复经 reload / unregister+register；failed 通知已由触发方 onTaskCancel 发）。
-		if !prov.SpawnedSelf() {
+		// 单次 shared.Load() 同时取「是否自持」与退出通道（spawned=false → 不参与观测），
+		// 消除 SpawnedSelf() 与 WaitExit() 两次独立 Load 之间的窄竞态（期间重建换槽会多一次假重建）。
+		exitCh, gen, spawned := prov.WaitExit()
+		if !spawned {
 			return
 		}
-		exitCh, gen := prov.WaitExit()
 		err := <-exitCh
 		g.mu.Lock()
 		stopped := g.stopped
@@ -2006,7 +2014,7 @@ func (g *Gateway) monitorSpawned(name, key string, prov *proxyProvider) {
 
 // waitSpawnedRebuild 等待 Invalidate 重建窗口结束（closing 复位），报告是否应继续观测 spawned 进程。
 // 返回 true = 重建已完成且 provider 仍在注册中（调用方继续观测新进程）；false = 观测应终止
-//（网关 Stop / provider 已 Close（stopCh 关闭）/ 等待兜底超时）。带退避轮询避免瞬时忙等；
+// （网关 Stop / provider 已 Close（stopCh 关闭）/ 等待兜底超时）。带退避轮询避免瞬时忙等；
 // Invalidate 在成功/失败路径均复位 closing，故等待有界（90s 兜底防挂死）（C-37）。
 func (g *Gateway) waitSpawnedRebuild(prov *proxyProvider) bool {
 	delay := 20 * time.Millisecond

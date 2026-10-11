@@ -1320,3 +1320,33 @@ func TestFinishTerminalOnce(t *testing.T) {
 		t.Fatalf("取消命中已终态轮次不应重复广播：got=%d", n)
 	}
 }
+
+// TestFeedNonDroppableNotBlocking（P2）：输入队列满时不可丢类（tool 结果 / 「继续」/ 用户文本）
+// 投递**不阻塞调用方**（转后台 goroutine），且不被丢弃（消费方排空后仍可收到）——修「loop 自身
+// 投递时同步阻塞自死锁 / 非 loop 调用方阻塞总线同步派发线程」。
+func TestFeedNonDroppableNotBlocking(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tc := &turnCtx{ctx: ctx, done: make(chan struct{}), in: make(chan ChatMsg, 1)}
+	tc.in <- ChatMsg{Role: "user", Kind: "text", Content: "占位"} // 队列填满（容量 1）
+
+	done := make(chan struct{})
+	go func() {
+		tc.feed(ChatMsg{Role: "tool", ToolCallID: "c1", Content: "r1"}) // 不可丢类 + 满队列
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("feed 在队列满时阻塞了调用方（应转后台 goroutine 投递）")
+	}
+	<-tc.in // 排空 → 后台 goroutine 的投递得以落位（不丢）
+	select {
+	case m := <-tc.in:
+		if m.Role != "tool" || m.ToolCallID != "c1" {
+			t.Fatalf("后台投递的消息不符：%+v", m)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("后台 goroutine 未投递消息（消息被丢弃）")
+	}
+}

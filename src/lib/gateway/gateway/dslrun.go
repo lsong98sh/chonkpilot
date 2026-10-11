@@ -696,7 +696,17 @@ func (g *Gateway) runDSLLLM(ctx context.Context, call dslLLMCallMsg, instance, p
 		}
 	}
 
-	timer := time.NewTimer(dslLLMTurnTimeout)
+	// 子轮次等待上限：**由 ctx deadline 派生**（ctx 有截止 → 取剩余时间为上限，避免「显式作业超时 >
+	// 30min 时子轮次被 30min 常量先杀 / 未设作业超时反而被硬杀」这一与 args.timeout 的语义冲突）；
+	// ctx 无截止（未设作业超时）→ 用兜底常量，仍防该轮永不发 session-complete 时本 goroutine 永久
+	// 阻塞、连带 dslPump.drain 的 llmWG.Wait() 楔死整个作业。
+	turnTimeout := dslLLMTurnTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if d := time.Until(dl); d > 0 {
+			turnTimeout = d
+		}
+	}
+	timer := time.NewTimer(turnTimeout)
 	defer timer.Stop()
 	select {
 	case <-done:
@@ -712,7 +722,7 @@ func (g *Gateway) runDSLLLM(ctx context.Context, call dslLLMCallMsg, instance, p
 		g.bus.Emit(context.Background(), msgkeys.TopicLlmCancel, map[string]any{
 			"instance_id": instance, "session": session, "turn": turn,
 		})
-		return "", fmt.Errorf("llm 轮次 %s 等待 session-complete 超时（%s）", turn, dslLLMTurnTimeout)
+		return "", fmt.Errorf("llm 轮次 %s 等待 session-complete 超时（%s）", turn, turnTimeout)
 	}
 	if comp.status == "error" {
 		msg := comp.message

@@ -334,24 +334,29 @@ const jobMaxSteps = 200
 // 由 server.domainExecute / turn.chatOnce 经 `go runSubJob` 后台派生（子作业）——入口加 panic 兜底：
 // 单个子作业的偶发 panic 不拖垮常驻服务（附属能力失败不阻断服务口径）。
 func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, args map[string]any) {
+	// feedParent 回填父轮（防重复：首次生效）。正常收尾与 panic 兜底共用同一守卫 —— 以「父轮是否
+	// **已回填**」为判据（**不以节点是否终态**）：节点可能已终态但父轮从未回填（panic 早于回填），
+	// 若按节点终态跳过兜底会漏摘父轮 inflight 登记 → 续轮闸门永久关闭、整轮挂死（P3 修复）。
+	var feedOnce sync.Once
+	feedParent := func(content, status string) {
+		feedOnce.Do(func() { parent.FeedToolResultStatus(toolCallID, content, status) })
+	}
 	// panic 兜底（P2）：不仅回收 goroutine —— panic 路径也必须落**任务终态 + 回填父轮**，
-	// 否则子作业节点悬挂、父轮永久等待该 tool_call（无终态、无回执）。用「已终态则跳过」守卫
-	// 避免与正常收尾重复回填（tasks.done 幂等；父轮 FeedToolResultStatus 非幂等）。
+	// 否则子作业节点悬挂、父轮永久等待该 tool_call（无终态、无回执）。兜底**无条件补投一次幂等**：
+	// tasks.done 幂等（已终态不重复广播），父轮回填经 feedParent 守卫防重复。
 	defer func() {
 		r := recover()
 		if r == nil {
 			return
 		}
 		logf("[chonkpilot-server] runSubJob panic（已恢复）: 作业 %s: %v\n%s\n", node.TaskID, r, debug.Stack())
-		if n := s.tasks.nodeIn(parent.req.InstanceID, node.TaskID); n == nil || !terminalTaskState(n.State) {
-			s.tasks.done(node.TaskID, TaskStateError, "", fmt.Sprintf("llm_run 内部错误: %v", r))
-			parent.FeedToolResultStatus(toolCallID, "错误: llm_run 内部错误（已恢复）", "failed")
-		}
+		s.tasks.done(node.TaskID, TaskStateError, "", fmt.Sprintf("llm_run 内部错误: %v", r))
+		feedParent("错误: llm_run 内部错误（已恢复）", "failed")
 	}()
 	script, err := jobScriptOf(parent.req.InstanceID, args)
 	if err != nil {
 		s.tasks.done(node.TaskID, TaskStateError, "", err.Error())
-		parent.FeedToolResultStatus(toolCallID, "错误: "+err.Error(), "failed")
+		feedParent("错误: "+err.Error(), "failed")
 		return
 	}
 	// agent 不取作业顶层/父轮兜底：由每条 LLM 指令第一段（委派对象标识）携带（llmAction）
@@ -371,7 +376,7 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 	ast, err := dsl.Parse(script, actions)
 	if err != nil {
 		s.tasks.done(node.TaskID, TaskStateError, "", err.Error())
-		parent.FeedToolResultStatus(toolCallID, "错误: "+err.Error(), "failed")
+		feedParent("错误: "+err.Error(), "failed")
 		return
 	}
 	// 参数级路径违规（R-11 二次升级）：DSL 内**字面** `#"path"` 相对路径在执行前即拒绝
@@ -383,14 +388,14 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 		if _, msg := paths.ResolvePathFor(parent.req.InstanceID, ref.Path, ""); msg != "" {
 			perr := fmt.Errorf("第 %d 行 %s：%s", ref.Line, ref.Desc, msg)
 			s.tasks.done(node.TaskID, TaskStateError, "", perr.Error())
-			parent.FeedToolResultStatus(toolCallID, "错误: "+perr.Error(), "failed")
+			feedParent("错误: "+perr.Error(), "failed")
 			return
 		}
 	}
 	// 参数级违规：LLM 指令参数超过 3 个（agent / 提示词 / [目的]）→ 顶层失败（不执行任何步骤）。
 	if aerr := checkLLMArgs(ast.Stmts); aerr != nil {
 		s.tasks.done(node.TaskID, TaskStateError, "", aerr.Error())
-		parent.FeedToolResultStatus(toolCallID, "错误: "+aerr.Error(), "failed")
+		feedParent("错误: "+aerr.Error(), "failed")
 		return
 	}
 	// 宿主只读 env（与 mcp-tools 同名同值）：tempdir 按 instance 分目录，供 {{env.CHONKPILOT_WORKDIR}} 等显式拼绝对路径。
@@ -399,7 +404,7 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 	tempDir, tempErr := paths.TempRootFor(parent.req.InstanceID)
 	if tempErr != nil {
 		s.tasks.done(node.TaskID, TaskStateError, "", tempErr.Error())
-		parent.FeedToolResultStatus(toolCallID, "错误: "+tempErr.Error(), "failed")
+		feedParent("错误: "+tempErr.Error(), "failed")
 		return
 	}
 	// 作业启动兜底：清理临时根内陈旧的 `$RETURN` 落盘文件（防常驻进程下按作业线性累积；
@@ -440,11 +445,11 @@ func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, a
 			node.TaskID, len(runErrs), runErrs[0].Line, runErrs[0].Msg)
 		// B-19：存在运行时错误 → 作业节点落**失败终态**、结果按 failed 回填（不再误报 success）。
 		s.tasks.done(node.TaskID, TaskStateError, summary, runErrs[0].Msg)
-		parent.FeedToolResultStatus(toolCallID, summary, "failed")
+		feedParent(summary, "failed")
 		return
 	}
 	s.tasks.done(node.TaskID, TaskStateDone, summary, "")
-	parent.FeedToolResult(toolCallID, summary)
+	feedParent(summary, "completed")
 }
 
 // jobEnvVars 构造 llm_run 的 DSL 只读 env（与 mcp-tools 的 fileops 同名同值）：

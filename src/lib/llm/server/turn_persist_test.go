@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -199,5 +200,42 @@ func TestResumePartialExhaustedPersistsTail(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("末段正文未落库（断链续写耗尽被丢弃）")
+	}
+}
+
+// TestReapInflightFeedsFailedPlaceholder（P2）：inflight（ask_user / llm_run 子作业）超时未回填 →
+// 兜底按 failed 占位落库并回填父轮（投递到输入队列）——避免续轮闸门永久关闭、整轮挂死。
+func TestReapInflightFeedsFailedPlaceholder(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	// 仅注册 instance（不起轮次，避免 loop 消费兜底消息造成竞态）：落库需 instance 已注册。
+	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
+	}))
+	t.Cleanup(data.Reset)
+	time.Sleep(50 * time.Millisecond)
+
+	tc := &turnCtx{
+		server: s, req: StartReq{InstanceID: "ins-test", Session: "s-reap", Turn: "t-reap"},
+		in: make(chan ChatMsg, 4),
+	}
+	tc.markInflight("call-reap")
+	tc.reapInflight("call-reap", time.Minute)
+
+	select {
+	case m := <-tc.in:
+		if m.Role != "tool" || m.ToolCallID != "call-reap" {
+			t.Fatalf("兜底回填的消息不符：%+v", m)
+		}
+		if !strings.Contains(m.Content, "未收到结果") {
+			t.Fatalf("兜底文本应说明超时未回填：%q", m.Content)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reapInflight 未回填父轮（续轮闸门将永久关闭）")
+	}
+	rows := toolRowsOf(t, "t-reap")
+	if len(rows) != 1 || persist.Sval(rows[0]["tool_call_status"]) != "failed" {
+		t.Fatalf("兜底结果应落 failed 占位行：%+v", rows)
 	}
 }
