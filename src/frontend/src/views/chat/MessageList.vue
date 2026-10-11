@@ -47,7 +47,27 @@
         </div>
 
         <div v-if="messages.length === 0 && !pending" class="empty-inside">{{ $t('chat.no_messages') }}</div>
+        <!-- 窗口化渲染（仅 messages.length > VIRTUALIZE_THRESHOLD 时）：上下占位撑高、只渲染视口附近；
+             :data-idx = 原始消息下标，供高度测量回填（见 measureItemHeights）。
+             小会话（≤ 阈值）走 v-else 分支全量渲染：DOM 与行为不变（须紧邻下方 pending 注释/占位） -->
+        <template v-if="virtual.enabled">
+          <div v-if="virtual.topPad > 0" class="virtual-pad" :style="{ height: virtual.topPad + 'px' }"></div>
+          <MessageItem
+            v-for="it in windowItems"
+            :key="it.msg.id"
+            :message="it.msg"
+            :session-id="sessionId"
+            :show-header="it.origIdx === 0 || messages[it.origIdx - 1].role !== it.msg.role"
+            :is-active="turnActive"
+            :is-last-message="it.origIdx === messages.length - 1"
+            :from-history="!!it.msg.fromHistory"
+            :data-idx="it.origIdx"
+            @clear-arbitration="onClearArbitration"
+          />
+          <div v-if="virtual.bottomPad > 0" class="virtual-pad" :style="{ height: virtual.bottomPad + 'px' }"></div>
+        </template>
         <MessageItem
+          v-else
           v-for="(msg, i) in messages"
           :key="msg.id"
           :message="msg"
@@ -86,6 +106,10 @@ import { createSessionMessages } from '../../utils/sessionMessages'
 import { publishLLMStart, publishLLMContinue } from '../../api/chat'
 import { sendQueue } from '../../composables/useSendQueue'
 import { useTaskView } from '../../composables/useTaskView'
+import {
+  VIRTUALIZE_THRESHOLD, OVERSCAN, EST_ITEM_HEIGHT,
+  buildOffsets, computeRange, applyMeasured,
+} from '../../utils/virtualWindow'
 
 const props = defineProps({
   sessionId: { type: String, default: null },
@@ -154,6 +178,60 @@ const lastInterruptedPair = computed(() => {
   }
   return null
 })
+
+// ── 虚拟滚动 / 窗口化渲染（2026-10-11）──
+// 仅 messages.length > VIRTUALIZE_THRESHOLD 时启用（纯逻辑见 utils/virtualWindow.js）：
+// 只渲染视口附近窗口 + 上下占位撑高；小会话完全沿用原全量渲染（enabled=false，DOM 不变）。
+// 不引入 watch/watchEffect：滚动/视口/高度变化均由 onScroll / onUpdated / ResizeObserver 回调直接赋值。
+const itemHeights = ref([])   // 消息「原始下标」→ 实测高度（px）；缺失条目 → EST_ITEM_HEIGHT 估算
+const scrollTopVal = ref(0)   // .message-list 当前 scrollTop（onScroll / 程序化滚动同步）
+const viewportH = ref(0)      // .message-list 视口高度（挂载 + ResizeObserver）
+
+// 前缀和 offsets：按 messages.length 补齐高度数组（未测条目 → undefined → 估算回退）
+function virtualOffsets() {
+  const total = messages.value.length
+  const h = itemHeights.value
+  if (h.length >= total) return buildOffsets(h, EST_ITEM_HEIGHT)
+  const padded = h.slice()
+  padded.length = total
+  return buildOffsets(padded, EST_ITEM_HEIGHT)
+}
+
+const virtual = computed(() => {
+  const total = messages.value.length
+  const offsets = virtualOffsets()
+  const vp = viewportH.value
+  // 贴底（autoScroll）时按「内容底部」计算窗口 → 流式新增消息始终在窗口内（否则末尾不渲染 → 贴不到底）
+  const st = autoScroll.value ? Math.max(0, (offsets[total] || 0) - vp) : scrollTopVal.value
+  return computeRange({
+    total, scrollTop: st, viewport: vp, offsets,
+    threshold: VIRTUALIZE_THRESHOLD, overscan: OVERSCAN,
+  })
+})
+
+// 窗口内消息（携带原始下标）：show-header / is-last-message 用 origIdx 计算，不用窗口内相对下标
+const windowItems = computed(() => {
+  const v = virtual.value
+  if (!v.enabled) return []
+  const out = []
+  for (let i = v.start; i < v.end; i++) out.push({ msg: messages.value[i], origIdx: i })
+  return out
+})
+
+// 渲染后测量：把当前渲染出的 .message-item 实际高度按 data-idx 回填到原始下标。
+// 高度不变时不写（Vue 对同值不触发）→ 避免「测量 → 重渲染」死循环。
+function measureItemHeights() {
+  if (!virtual.value.enabled) return
+  const el = listRef.value
+  if (!el) return
+  const nodes = el.querySelectorAll('.message-item[data-idx]')
+  for (const node of nodes) {
+    const idx = Number(node.getAttribute('data-idx'))
+    if (!Number.isInteger(idx) || idx < 0) continue
+    const h = node.offsetHeight
+    if (itemHeights.value[idx] !== h) applyMeasured(itemHeights.value, idx, h)
+  }
+}
 
 // ── turn 导航（圆圈，FP CHAT-013「turn 导航」）──
 // 轮次开始 = 用户消息（排除通知）；最多 10 圈，>10 时每圈覆盖 2 轮。
@@ -241,13 +319,23 @@ function updateCurrentCircle() {
     currentCircle.value = -1
     return
   }
-  const items = messageItemNodes(el)
   let cur = -1
-  for (let i = 0; i < starts.length; i++) {
-    const node = items[starts[i].index]
-    if (!node) continue
-    if (node.offsetTop <= el.scrollTop + 4) cur = i
-    else break
+  if (virtual.value.enabled) {
+    // 窗口化：DOM 下标 ≠ 消息下标 → 用实测高度前缀和估算各 turn 起始消息的 offsetTop 与 scrollTop 比较
+    const offsets = virtualOffsets()
+    for (let i = 0; i < starts.length; i++) {
+      const top = offsets[starts[i].index]
+      if (top !== undefined && top <= el.scrollTop + 4) cur = i
+      else break
+    }
+  } else {
+    const items = messageItemNodes(el)
+    for (let i = 0; i < starts.length; i++) {
+      const node = items[starts[i].index]
+      if (!node) continue
+      if (node.offsetTop <= el.scrollTop + 4) cur = i
+      else break
+    }
   }
   if (cur === -1) cur = 0
   const circles = navCircles.value
@@ -282,8 +370,21 @@ function scrollToTurn(turnIdx) {
   const el = listRef.value
   const starts = turnStarts.value
   if (!el || !starts[turnIdx]) return
+  const origIdx = starts[turnIdx].index
+  if (virtual.value.enabled) {
+    // 窗口化：目标可能未渲染 → 先滚到估算 offset（触发重算窗口），nextTick 后再用真实 offsetTop 精修
+    const offsets = virtualOffsets()
+    const est = offsets[origIdx] || 0
+    el.scrollTop = Math.max(0, est - 8)
+    scrollTopVal.value = el.scrollTop
+    nextTick(() => {
+      const node = listRef.value?.querySelector('.message-item[data-idx="' + origIdx + '"]')
+      if (node && listRef.value) listRef.value.scrollTop = Math.max(0, node.offsetTop - 8)
+    })
+    return
+  }
   const items = messageItemNodes(el)
-  const node = items[starts[turnIdx].index]
+  const node = items[origIdx]
   if (node) el.scrollTop = Math.max(0, node.offsetTop - 8)
 }
 
@@ -330,6 +431,8 @@ onUpdated(() => {
     autoScroll.value = true
   }
   prevTurnActive.value = ta
+  // 窗口化：渲染后回填实测高度（驱动 virtual/windowItems 重算；高度不变时不写 → 不死循环）
+  measureItemHeights()
   updateCurrentCircleThrottled()
   // 卡片渲染后补挂早到的待决裁决（mcp-tools-timeout 是 fire-and-forget，可能先于卡片到达）
   flushPendingArbitration()
@@ -349,12 +452,16 @@ onUpdated(() => {
 function scrollToBottom() {
   if (listRef.value) {
     listRef.value.scrollTop = listRef.value.scrollHeight
+    scrollTopVal.value = listRef.value.scrollTop
+    if (viewportH.value !== listRef.value.clientHeight) viewportH.value = listRef.value.clientHeight
   }
 }
 
 function onScroll() {
   const el = listRef.value
   if (!el) return
+  scrollTopVal.value = el.scrollTop // 窗口化：滚动位置驱动窗口重算
+  if (viewportH.value !== el.clientHeight) viewportH.value = el.clientHeight
   isAtTop.value = el.scrollTop <= 1
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD
   autoScroll.value = atBottom // 贴底 = 自动跟随；离底 = 暂停（`.message-list.is-scroll-paused`）
@@ -597,6 +704,9 @@ async function onSessionChanged({ session_id }) {
   }
   resetMessages()
   toppedOut = false
+  // 切会话：消息全量替换 → 实测高度按下标失效，重置（窗口化下由渲染重新测量收敛）
+  itemHeights.value = []
+  scrollTopVal.value = 0
 
   if (newId) {
     await loadMessages(newId)
@@ -1110,6 +1220,8 @@ let unsubToolPairUpdate = null
 let unsubToolTimeout = null
 let unsubQueueAction = null
 let unsubChatContinue = null
+// 窗口化：视口尺寸监听（ResizeObserver，替代 watch）
+let listResizeObserver = null
 
 onMounted(async () => {
   setupPersistentStreamSubs()
@@ -1156,10 +1268,23 @@ onMounted(async () => {
     await restoreAwaitingArbitration(props.sessionId)
   }
 
+  // 窗口化：记录视口高度并随容器尺寸变化更新（ResizeObserver；不引入 watch）
+  if (listRef.value) {
+    viewportH.value = listRef.value.clientHeight
+    if (typeof ResizeObserver !== 'undefined') {
+      listResizeObserver = new ResizeObserver(() => {
+        if (!listRef.value) return
+        if (viewportH.value !== listRef.value.clientHeight) viewportH.value = listRef.value.clientHeight
+        scrollTopVal.value = listRef.value.scrollTop
+      })
+      listResizeObserver.observe(listRef.value)
+    }
+  }
   onScroll()
 })
 
 onUnmounted(() => {
+  if (listResizeObserver) { listResizeObserver.disconnect(); listResizeObserver = null }
   if (unsubMessageSend) unsubMessageSend()
   if (unsubMessageQueue) unsubMessageQueue()
   if (unsubMessageCancel) unsubMessageCancel()
@@ -1227,6 +1352,11 @@ defineExpose({ scrollTop, scrollBottom, isLoading, showContinue, lastInterrupted
   flex-direction: column;
   gap: 12px;
   position: relative;
+}
+/* 窗口化占位：固定高度撑高（不参与 flex 收缩），上下夹住窗口内渲染的消息 */
+.virtual-pad {
+  flex-shrink: 0;
+  width: 100%;
 }
 /* turn 导航：独立于滚动内容（不滚动、不随内容移动），最多 10 个圆圈；居中，
    悬停弹出该圈覆盖轮次的用户消息一览。位置/尺寸轴/边框由 .dir-* 修饰。 */
