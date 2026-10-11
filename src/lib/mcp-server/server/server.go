@@ -187,7 +187,13 @@ func setPromptType(p *mcp.Prompt, t string) {
 // 统一 JSON 结果文本（executor 子进程环境注入 CHONKPILOT_*）。
 func makeToolHandler(td *ToolDoc, cfg *Config, lim *limiter) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		lim.acquire()
+		// 并发限流：达上限排队；请求 ctx 取消/超时 → 明确失败、不执行工具（B3）。
+		if err := lim.acquire(ctx); err != nil {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: wrapFail(err.Error())}},
+				IsError: true,
+			}, nil
+		}
 		defer lim.release()
 		args := map[string]any{}
 		if raw := req.Params.Arguments; len(raw) > 0 && string(raw) != "null" {

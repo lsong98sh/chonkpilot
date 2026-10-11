@@ -119,6 +119,14 @@ type Vfts struct {
 	// engineCallFn 引擎调用注入点（默认 nil = 走共享子进程 client；管理面单测替换用）。
 	engineCallFn func(ctx context.Context, name string, args map[string]any) (string, error)
 
+	// engineMissing 引擎缺失态（Start 时 resolveExe 失败 → true）：插件以**未就绪**态运行——
+	// 保留事件订阅（配置/生命周期/回调/管理面）但不启用（工具面不注册、不 spawn 引擎），
+	// 待引擎就位后重启宿主即可用（见 Start）。
+	engineMissing bool
+
+	stopCh   chan struct{} // 后台清扫循环停止信号（Stop 关闭）
+	stopOnce sync.Once     // Stop 幂等
+
 	subs []mq.Sub // 订阅句柄（Start 失败回滚用；宿主不提供 Stop）
 }
 
@@ -165,6 +173,7 @@ func New(opts Options) *Vfts {
 		insts:   make(map[string]*instRec),
 		works:   make(map[string]*workRec),
 		rebuild: newRebuildDebouncer(opts.RebuildDebounce),
+		stopCh:  make(chan struct{}),
 	}
 }
 
@@ -182,9 +191,15 @@ func (p *Vfts) Start(d plugin.Deps) error {
 
 	exe, err := resolveExe(p.opt.Exe)
 	if err != nil {
-		return err
+		// 引擎缺失不再视为启动失败（默认注册的插件任一起不来会 fatal 宿主）：
+		// 置未就绪态——保留订阅与后续按需启用能力，工具面不注册、不 spawn 引擎。
+		p.engineMissing = true
+		p.exe = ""
+		logf("vfts: 引擎不可用（%v）——插件以未就绪态启动（工具面不注册；就位后重启宿主生效）", err)
+	} else {
+		p.engineMissing = false
+		p.exe = exe
 	}
-	p.exe = exe
 
 	// instance 生命周期（v1 事件订阅，只读）
 	for _, s := range []struct {
@@ -241,7 +256,11 @@ func (p *Vfts) Start(d plugin.Deps) error {
 	// 后台循环：周期回收空闲 5 分钟的子进程（实例生命周期只由 instance-register/exit 驱动）
 	go p.loop()
 
-	logf("vfts: 插件就绪（引擎 exe=%s，回调主题=%s）", p.exe, toolCallSubject)
+	if p.engineMissing {
+		logf("vfts: 插件就绪（引擎缺失，未就绪态；回调主题=%s）", toolCallSubject)
+	} else {
+		logf("vfts: 插件就绪（引擎 exe=%s，回调主题=%s）", p.exe, toolCallSubject)
+	}
 	return nil
 }
 
@@ -258,8 +277,27 @@ func (p *Vfts) unsubscribeAll() {
 func (p *Vfts) loop() {
 	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
-	for range t.C {
-		p.tick()
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-t.C:
+			p.tick()
+		}
+	}
+}
+
+// Stop 释放插件资源（plugin.Stopper；宿主退出时按 Start 逆序调用）：停后台清扫、退订全部订阅、
+// 关闭共享引擎子进程。幂等。
+func (p *Vfts) Stop() {
+	p.stopOnce.Do(func() { close(p.stopCh) })
+	p.unsubscribeAll()
+	p.clientMu.Lock()
+	c := p.client
+	p.client = nil
+	p.clientMu.Unlock()
+	if c != nil {
+		c.close()
 	}
 }
 
@@ -626,6 +664,9 @@ func (p *Vfts) applyPrjConfig(key, op string, list map[string]any) {
 
 // maybeEnsure 启用态且引擎状态未 ready（缓存判定）→ 后台自动 configure+index。
 func (p *Vfts) maybeEnsure(wd string) {
+	if p.engineMissing {
+		return // 引擎缺失：不启用、不 spawn（未就绪态）
+	}
 	p.mu.Lock()
 	r := p.works[wd]
 	active := r != nil && r.refs > 0 && r.enabled
@@ -648,6 +689,9 @@ func (p *Vfts) maybeEnsure(wd string) {
 //
 // 末了回写 vfts.status（含 added/updated/removed/skipped 计数）。持有该 workdir 的 cmu 串行。
 func (p *Vfts) ensureWorkspace(wd string, force bool) {
+	if p.engineMissing {
+		return // 引擎缺失：不 spawn（未就绪态）
+	}
 	p.mu.Lock()
 	r := p.works[wd]
 	p.mu.Unlock()
@@ -1045,6 +1089,9 @@ func (p *Vfts) sharedClient() *client {
 
 // engineCall 调引擎工具（全局共享 client；client 内部串行，失败重连一次）。
 func (p *Vfts) engineCall(ctx context.Context, name string, args map[string]any) (string, error) {
+	if p.engineMissing {
+		return "", errors.New("vfts: 引擎不可用（未就绪）")
+	}
 	text, isErr, err := p.sharedClient().call(ctx, name, args)
 	if err != nil {
 		return text, err
@@ -1125,7 +1172,7 @@ func (p *Vfts) syncTools() {
 		}
 	}
 	sort.Strings(active)
-	want := len(active) > 0
+	want := len(active) > 0 && !p.engineMissing // 引擎缺失 → 工具面不注册
 	owner := ""
 	if want {
 		owner = active[0]

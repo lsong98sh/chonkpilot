@@ -123,7 +123,6 @@ type ToolDoc struct {
 	Entry       string         // meta: entry（已废弃；兼容读取，解释器类遗留）
 	Hot         bool           // meta: hot（吸收原 llm；固定暴露标志）
 	Category    string         // meta: category（分类声明；缺省 = 契约根目录名派生）
-	TitleMeta   string         // meta: title（一句话标题；MCP Tool.title）
 	Async       string         // meta: async（auto|always|never|manual，缺省 auto）
 	AsyncTh     int            // meta: async-threshold（秒；async=auto 下超时自动转后台）
 	Idempotent  bool           // meta: idempotent（可重试性；缺省 false = 安全默认，见 G-20）
@@ -214,7 +213,6 @@ func parseToolDoc(path string) (*ToolDoc, error) {
 		Entry:       meta["entry"],
 		Hot:         isTruthy(meta["hot"]) || isTruthy(meta["llm"]), // llm 已并入 hot（兼容旧契约）
 		Category:    meta["category"],
-		TitleMeta:   meta["title"],
 		Async:       firstNonEmpty(meta["async"], "auto"),
 		AsyncTh:     atoiSafe(meta["async-threshold"]),
 		Idempotent:  isTruthy(meta["idempotent"]),

@@ -142,7 +142,7 @@ func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any
 	case "code":
 		return handleCode(td, out, runErr)
 	case "file":
-		return handleFile(td, resultFile)
+		return handleFile(td, resultFile, runErr)
 	default: // stdout
 		return handleStdout(td, out, runErr)
 	}
@@ -387,8 +387,15 @@ func handleCode(td *ToolDoc, out []byte, runErr error) (string, error) {
 }
 
 // handleFile 读取 {RESULT-OUTPUT-FILE}：≤ 阈值且文本 → 内容封装；否则返回路径提示。
-func handleFile(td *ToolDoc, resultFile string) (string, error) {
+// runErr 非 nil（executor 非 0 退出）且结果文件为空/读取失败时判败（对齐 handleCode 的退出码
+// 判败口径）——结果文件在 callTool 已预建为空，executor 失败但未写文件时不能把空串谎报为成功。
+func handleFile(td *ToolDoc, resultFile string, runErr error) (string, error) {
 	data, err := os.ReadFile(resultFile)
+	if runErr != nil && (err != nil || len(data) == 0) {
+		// executor 非 0 退出且未写结果文件（读取失败/空文件）→ 判败（不谎报空串成功）
+		msg := fmt.Sprintf("exit code %s", exitCodeStr(runErr))
+		return wrapFail(msg), fmt.Errorf("tool %s failed: %s", td.Name, msg)
+	}
 	if err != nil {
 		msg := fmt.Sprintf("tool %s: read result file: %v", td.Name, err)
 		return wrapFail(msg), fmt.Errorf("%s", msg)

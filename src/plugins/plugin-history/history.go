@@ -256,6 +256,15 @@ func (h *History) unsubscribeAll() {
 	h.subs = nil
 }
 
+// Stop 释放插件资源（plugin.Stopper；宿主退出时按 Start 逆序调用）：退订全部订阅 + 停实例视图
+// （git 缺失时 im 为 nil → 仅退订）。幂等。
+func (h *History) Stop() {
+	h.unsubscribeAll()
+	if h.im != nil {
+		h.im.Stop()
+	}
+}
+
 // logf 取日志函数（未装配时静默）。
 func (h *History) logf() func(string, ...any) {
 	if h.deps.Logf != nil {

@@ -8,6 +8,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -568,11 +569,12 @@ func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
 
 // limiter 是 tools/call 的并发限流器：上限来自 Config.MaxConcurrency，可被 prj
 // max_concurrency 运行期覆盖（SetRuntime/Apply → setLimit）。
+// 实现 = 带缓冲 channel 信号量（占用 = 向 sem 投一个空结构；释放 = 取出），
+// 故 acquire 可经 select 感知请求 ctx 的取消/超时（排队阶段即被取消，B3）。
 type limiter struct {
 	mu    sync.Mutex
-	cond  *sync.Cond
 	limit int
-	busy  int
+	sem   chan struct{}
 }
 
 // newLimiter 构造限流器（limit <= 0 → 1，避免零容量阻塞）。
@@ -580,9 +582,7 @@ func newLimiter(limit int) *limiter {
 	if limit <= 0 {
 		limit = 1
 	}
-	l := &limiter{limit: limit}
-	l.cond = sync.NewCond(&l.mu)
-	return l
+	return &limiter{limit: limit, sem: make(chan struct{}, limit)}
 }
 
 // ensureLimiter 懒建并返回限流器（RegisterContracts 调用；上限取当前 MaxConcurrency）。
@@ -595,33 +595,54 @@ func (c *Config) ensureLimiter() *limiter {
 	return c.limiter
 }
 
-// acquire 占用一个并发名额（达上限则等待）。
-func (l *limiter) acquire() {
+// acquire 占用一个并发名额（达上限则等待）；请求 ctx 取消/超时 → 立即返回错误（不占名额）。
+func (l *limiter) acquire(ctx context.Context) error {
 	l.mu.Lock()
-	for l.busy >= l.limit {
-		l.cond.Wait()
-	}
-	l.busy++
+	sem := l.sem
 	l.mu.Unlock()
+	select {
+	case sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-// release 释放一个并发名额。
+// release 释放一个并发名额（未持有时为安全空操作）。
 func (l *limiter) release() {
 	l.mu.Lock()
-	if l.busy > 0 {
-		l.busy--
-	}
+	sem := l.sem
 	l.mu.Unlock()
-	l.cond.Broadcast()
+	select {
+	case <-sem:
+	default:
+	}
 }
 
-// setLimit 调整并发上限（<=0 忽略）；下调至低于在跑数时待在跑调用释放后收敛。
+// setLimit 调整并发上限（<=0 忽略）；重建信号量并按在跑数保留名额（下调至低于在跑数时
+// 待在跑调用释放后收敛，语义同改前）。
 func (l *limiter) setLimit(n int) {
 	if n <= 0 {
 		return
 	}
 	l.mu.Lock()
+	defer l.mu.Unlock()
+	if n == l.limit {
+		return
+	}
+	old := l.sem
+	held := len(old) // 已占用名额数（在跑调用）
 	l.limit = n
-	l.mu.Unlock()
-	l.cond.Broadcast()
+	// 排空旧信号量：唤醒可能在旧 sem 上阻塞的等待者（换限后它们随新 sem 继续排队），避免永久阻塞。
+	for len(old) > 0 {
+		<-old
+	}
+	if held > n {
+		held = n
+	}
+	sem := make(chan struct{}, n)
+	for i := 0; i < held; i++ {
+		sem <- struct{}{}
+	}
+	l.sem = sem
 }

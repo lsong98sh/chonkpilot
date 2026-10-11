@@ -50,3 +50,11 @@ type Hook interface {
 	// 插件在此订阅所需事件并自检。全部插件 Start 成功后 server 广播 server-starting。
 	Start(d Deps) error
 }
+
+// Stopper 是**可选**插件生命周期钩子：插件若持有可释放资源（后台 goroutine、引擎子进程、
+// 订阅、实例视图等）即实现 Stop()，宿主（server）在退出时按 Start 的**逆序**调用。
+// 未实现该接口的插件视为无可释放资源（宿主跳过）。实现须**幂等**。
+type Stopper interface {
+	// Stop 释放插件持有的资源（停后台循环、关闭子进程、退订订阅等）。
+	Stop()
+}

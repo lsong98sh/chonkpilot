@@ -191,6 +191,9 @@ func (p *Codegraph) onToolCall(_ context.Context, _ string, v *mq.Value) error {
 	if msg.Tool == "" {
 		return reply("codegraph: 回调载荷缺 tool", true)
 	}
+	if p.engineMissing {
+		return reply("codegraph: 引擎不可用（未就绪）", true)
+	}
 	// 定位 instance（context.instance_id 为主；args 内 instance_id 兜底）
 	inst := ""
 	if msg.Ctx != nil {

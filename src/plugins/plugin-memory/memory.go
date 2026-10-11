@@ -197,6 +197,22 @@ func (p *Plugin) Start(d plugin.Deps) error {
 	return nil
 }
 
+// Stop 释放插件资源（plugin.Stopper；宿主退出时按 Start 逆序调用）：退订订阅 + 停实例视图。
+// 沉淀 worker 为 fire-and-forget（进程退出允许直接丢弃，不 Join/不阻塞退出）。幂等。
+func (p *Plugin) Stop() {
+	if p.sub != nil {
+		_ = p.sub.Unsubscribe()
+		p.sub = nil
+	}
+	if p.flushSub != nil {
+		_ = p.flushSub.Unsubscribe()
+		p.flushSub = nil
+	}
+	if p.im != nil {
+		p.im.Stop()
+	}
+}
+
 // logf 取日志函数（未装配时静默）。
 func (p *Plugin) logf() func(string, ...any) {
 	if p.deps.Logf != nil {

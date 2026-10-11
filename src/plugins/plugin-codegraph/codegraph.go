@@ -120,6 +120,14 @@ type Codegraph struct {
 	clients    map[string]*clientRec // key = workdir；每 workdir 一独立引擎子进程（独立索引互不干扰）
 	rebuild    *rebuildDebouncer     // 索引配置变更去抖（一次保存两键 → 只重建一次）
 
+	// engineMissing 引擎缺失态（Start 时 resolveExe 失败 → true）：插件以**未就绪**态运行——
+	// 保留事件订阅（配置/生命周期/回调）但不启用（工具面不注册、不 spawn 引擎），
+	// 待引擎就位后重启宿主即可用（见 Start）。
+	engineMissing bool
+
+	stopCh   chan struct{} // 后台清扫循环停止信号（Stop 关闭）
+	stopOnce sync.Once     // Stop 幂等
+
 	subs []mq.Sub // 订阅句柄（Start 失败回滚用；宿主不提供 Stop）
 }
 
@@ -178,6 +186,7 @@ func New(opts Options) *Codegraph {
 		works:   make(map[string]*workRec),
 		clients: make(map[string]*clientRec),
 		rebuild: newRebuildDebouncer(opts.RebuildDebounce),
+		stopCh:  make(chan struct{}),
 	}
 }
 
@@ -195,9 +204,15 @@ func (p *Codegraph) Start(d plugin.Deps) error {
 
 	exe, err := resolveExe(p.opt.Exe)
 	if err != nil {
-		return err
+		// 引擎缺失不再视为启动失败（默认注册的插件任一起不来会 fatal 宿主）：
+		// 置未就绪态——保留订阅与后续按需启用能力，工具面不注册、不 spawn 引擎。
+		p.engineMissing = true
+		p.exe = ""
+		logf("codegraph: 引擎不可用（%v）——插件以未就绪态启动（工具面不注册；就位后重启宿主生效）", err)
+	} else {
+		p.engineMissing = false
+		p.exe = exe
 	}
-	p.exe = exe
 
 	// instance 生命周期（v1 事件订阅，只读）
 	for _, s := range []struct {
@@ -236,7 +251,11 @@ func (p *Codegraph) Start(d plugin.Deps) error {
 	// 后台循环：周期回收空闲 5 分钟的子进程（实例生命周期只由 instance-register/exit 驱动）
 	go p.loop()
 
-	logf("codegraph: 插件就绪（引擎 exe=%s，回调主题=%s）", p.exe, toolCallSubject)
+	if p.engineMissing {
+		logf("codegraph: 插件就绪（引擎缺失，未就绪态；回调主题=%s）", toolCallSubject)
+	} else {
+		logf("codegraph: 插件就绪（引擎 exe=%s，回调主题=%s）", p.exe, toolCallSubject)
+	}
 	return nil
 }
 
@@ -253,8 +272,30 @@ func (p *Codegraph) unsubscribeAll() {
 func (p *Codegraph) loop() {
 	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
-	for range t.C {
-		p.tick()
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-t.C:
+			p.tick()
+		}
+	}
+}
+
+// Stop 释放插件资源（plugin.Stopper；宿主退出时按 Start 逆序调用）：停后台清扫、退订全部订阅、
+// 关闭全部引擎子进程。幂等。
+func (p *Codegraph) Stop() {
+	p.stopOnce.Do(func() { close(p.stopCh) })
+	p.unsubscribeAll()
+	p.clientMu.Lock()
+	clients := make([]engineClient, 0, len(p.clients))
+	for wd, rec := range p.clients {
+		clients = append(clients, rec.c)
+		delete(p.clients, wd)
+	}
+	p.clientMu.Unlock()
+	for _, c := range clients {
+		c.close()
 	}
 }
 
@@ -616,6 +657,9 @@ func normalizeAction(v string) string {
 
 // maybeEnsure 启用态且引擎状态未 ready（缓存判定）→ 后台自动 configure+initialize。
 func (p *Codegraph) maybeEnsure(wd string) {
+	if p.engineMissing {
+		return // 引擎缺失：不启用、不 spawn（未就绪态）
+	}
 	p.mu.Lock()
 	r := p.works[wd]
 	active := r != nil && r.refs > 0 && r.enabled
@@ -636,6 +680,9 @@ func (p *Codegraph) maybeEnsure(wd string) {
 // （先前已 ready 且非强制则跳过全量重建）→ 未就绪/强制则 initialize → status 回写 codegraph.status。
 // 持有该 workdir 的 cmu 串行；force=true 用于索引配置变更后的重建。
 func (p *Codegraph) ensureWorkspace(wd string, force bool) {
+	if p.engineMissing {
+		return // 引擎缺失：不 spawn（未就绪态）
+	}
 	p.mu.Lock()
 	r := p.works[wd]
 	p.mu.Unlock()
@@ -692,6 +739,9 @@ func (p *Codegraph) ensureWorkspace(wd string, force bool) {
 // 状态回写 codegraph.status（复用既有状态面，UI 据此回显「未初始化」）。
 // 与 ensureWorkspace 同持该 workdir 的 cmu（互斥索引编排，避免与在途重建互踩）。
 func (p *Codegraph) clearWorkspace(wd string) {
+	if p.engineMissing {
+		return // 引擎缺失：不 spawn（未就绪态）
+	}
 	p.mu.Lock()
 	r := p.works[wd]
 	active := r != nil && r.refs > 0 && r.enabled
@@ -860,6 +910,9 @@ func (p *Codegraph) clientFor(wd string) engineClient {
 // engineCall 调引擎工具（client 取自 args["workdir"] 对应的**该 workdir 独立**子进程；
 // client 内部串行，传输失败自动重连一次）。
 func (p *Codegraph) engineCall(ctx context.Context, name string, args map[string]any) (string, error) {
+	if p.engineMissing {
+		return "", errors.New("codegraph: 引擎不可用（未就绪）")
+	}
 	wd, _ := args["workdir"].(string)
 	text, isErr, err := p.clientFor(wd).call(ctx, name, args)
 	if err != nil {
@@ -1058,7 +1111,7 @@ func (p *Codegraph) syncTools() {
 		}
 	}
 	sort.Strings(active)
-	want := len(active) > 0
+	want := len(active) > 0 && !p.engineMissing // 引擎缺失 → 工具面不注册
 	owner := ""
 	if want {
 		owner = active[0]

@@ -224,6 +224,15 @@ func (c *Compressor) Start(d plugin.Deps) error {
 	return nil
 }
 
+// Stop 释放插件资源（plugin.Stopper；宿主退出时按 Start 逆序调用）：退订订阅。
+// 压缩 worker 为 per-session fire-and-forget（进程退出允许直接丢弃，不 Join/不阻塞退出）。幂等。
+func (c *Compressor) Stop() {
+	if c.sub != nil {
+		_ = c.sub.Unsubscribe()
+		c.sub = nil
+	}
+}
+
 // enqueue 入队一次 session-compress（订阅回调入口；**立即返回、不阻塞**）。
 //
 // 合并语义：同一会话键**只保留最近一次**事件载荷——同会话在压缩进行中再来的事件被合并，
