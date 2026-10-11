@@ -112,6 +112,8 @@ Start：
 Stop：置 stopped → 关闭各 provider（spawned 收尾）→ 关管理 REST（**不关上游 Bus**）
 ```
 
+- **订阅关停短路（`sub`）**：`Stop` 置 `stopped` 后（并退订既有订阅句柄）`sub()` **拒绝新订阅**（返回 `gateway: stopped, refusing new subscription`）；保存订阅句柄时**双检 `stopped`**——注册期间 `Stop` 已并发退订完毕 → **立即 `Unsubscribe` 并拒绝**（避免句柄泄漏、停服后仍接收/派发方法调用）。`Stop` 依赖 `sub()` 保存的句柄统一退订（原实现丢弃句柄 → `Stop` 无法退订）。
+
 ### 4.2 工具调用与异步（`doCall`）
 
 ```text
@@ -130,6 +132,8 @@ Stop：置 stopped → 关闭各 provider（spawned 收尾）→ 关管理 REST�
 
 > **说明**：上文 `pending→running→done|error|cancelled` 是 **gateway 内部 goroutine 执行态**（`execPool` 内存池，随进程生灭），**不等于 Task 层的权威状态**。**控制面以层（`src/lib/task`）为权威**：层 `state` 共 **8 态**——除 `pending`/`running`/`done`/`error`/`cancelled`/`interrupted` 外，另含 **执行态** `detached`（已转后台）/ `awaiting`（超时到裁决点、等用户选择）；且**状态优先级 = 终态 > 执行态(`detached`/`awaiting`) > 粗粒度(`pending`/`running`)**，`exec_json` **只增不减（深合并）**。gateway 的 4 类执行态（`started`/`detached`/`awaiting`/`error`）经 **层内 API**上报落库（`ExecSink.OnExecState`，不新增 MQ 主题）。**状态总表（8 态 + `closed` 标记 + 执行态映射 + 优先级）见 [21 §5.3](../10-architecture/21-任务层设计方案.md)**。
 
+- **取消后等待的兜底上限**：配置⑤ 超时自动取消（`cancel_on_timeout > 0`）路径中，`ep.cancel` 已置终态并 `markDone`（`doneCh` 立即关闭）→ 正常**零等待**；执行体极端不响应取消时，**`cancelDeliverWait`（5s）兜底超时后按 `cancelled` 交付**，避免永久占用 mq 同步派发线程。
+
 - **调用上下文透传边界（R-11，按来源判定）**：`doCall` 的 `req.Context`（`instance_id`/`work_dir`/`data_dir`/`session`/`turn`/`tool_call_id`）经 `withTurnContext` 注入执行 ctx。是否把上下文以 MCP `tools/call` 的 **`params._meta`**（命名空间 `chonkpilot`，`callContextMeta`）透传，**只看来源 `Origin`**：`builtin`（`memNodeProvider`：self/dir 本仓 in-memory 节点；`proxyProvider`：standalone 本仓下游）→ 透传；`user`（第三方，用户定义）→ **不携带任何 `_meta`/`CHONKPILOT_*`**。**不以是否 in-process 为界**；上下文仍**不注入 tool arguments**；gateway 自持工具/域工具的 AddTool 包装经 `execCtxFromMeta` 从 `req.Params.Meta` 恢复 ctx。见 [16 §8.4/§8.8](../10-architecture/16-路径解析规范.md)。
 
 - **执行层定位（任务编排分层）**：gateway 在任务面**只承担单次 `tools/call` 的执行层** —— spawn / 阈值计时 / `autoDetach` / `enterAwaiting`（`mcp-tools-timeout`）/ `tools/wait` / **执行池取消（`CancelExec`）与转后台（`DetachExec`）** → `tm.cancel` / `tm.detach` → `onTaskCancel` → `Provider.Terminate`（**按执行线分派**：spawned = kill + respawn；in-memory = 协作式 no-op；纯远程 = 仅断请求），终态经 `mcp-tasks-report` 回报 llm（`tasks.go` 注释原文：「tasks.done 仅回报 server，不对前端广播——**任务编排提升 server，gateway 纯执行层**」）；**任务树/父子/级联/批量/任务事件由 llm-server 编排**（`src/lib/llm/server/tasks.go`，注释原文「**gateway 是纯执行层，不对前端广播任务事件**」）。故**不得表述为「所有控制都在 gateway」**（应限定为**单次调用执行层**）。详见 [18 §3.6 A](../10-architecture/18-工具异步超时与取消.md)。
@@ -141,6 +145,7 @@ Stop：置 stopped → 关闭各 provider（spawned 收尾）→ 关管理 REST�
 
 ### 4.3 路由与隔离（`registry.go`）
 - `toolRoute{Name, Original, Provider, Tool, Hot, Scope}`；`routeKey = scope+"|"+name`。
+- `route.Hot` 来源 = 工具 `_meta.hot` 真值（`registry.go` `isHot`：`ServerEntry.HotTools` 含 `*` = 全部 hot / 含原名 = 单工具 hot；写入工具 `_meta.hot`）。
 - 暴露名 = alias 优先，否则前缀 `applyPrefix`（namespace `-` 禁前缀 / 空 → `<id>_` / 否则 `<ns>`）；dir 节点 = `NsPrefix + 原名`。
 - **同名注册报错**（按 `(scope, 暴露名)`）；global 与各 instance scoped 为独立名字空间。
 - `findFor`：instance scoped 命中**遮蔽** global，未命中回退 global；`allToolsFor` = global ∪ 归属 instance。
@@ -182,10 +187,11 @@ Stop：置 stopped → 关闭各 provider（spawned 收尾）→ 关管理 REST�
 - **每 server 单连接（共享槽）；`isolate=true` 时按 workdir 池化**：
   - **共享槽**（`p.shared`）：恒建、承担**控制面**（首连校验 / `ListTools` / 无 workdir 回落 / `Invalidate` 原地换新）。`isolate=false`（http/sse 缺省）→ **全 server 仅此一条连接**（与既有行为一致）。
   - **隔离槽**（`p.pool[workdir]`）：`isolate=true`（stdio 缺省）时**按 workdir 一槽**（各自管道 / 自持子进程，互不阻塞）。**key 来源 = 调用 ctx 的 `work_dir`**（`withTurnContext` → `ctxKeyWorkDir`，`WorkDirFromContext`；**零新增主题 / 零新增 payload**）。
-  - **懒建与并发**：`slotFor` 首调懒建（`buildSlot(entry, workdir)` + `connect`）；**每 workdir 一把建连锁 `buildMu[workdir]`**（同 workdir 并发首调只建一条、双检；**不同 workdir 各自建连、互不阻塞**，建连不进 `pool` 全局锁 `mu`）。建连 / 握手失败 → warn 并**回落共享槽**（保持调用可用，如 spawned http/sse 固定端口无法按 workdir 重复拉起时退化为共享）。
+  - **懒建与并发**：`slotFor` 首调懒建（`buildSlot(entry, workdir)` + `connect`）；**建连锁 `buildLock` = 固定分片（`buildMu[64]`，按池键散列——同池键恒得同锁、不同键碰撞仅致建连轻微串行，内存有界）**，且锁**仅护「查池」短临界区**（双检：等锁期间他人可能已建好）——**建连（spawn + 握手，可达数秒）在 `buildLock` 与 `pool` 全局锁 `mu` 之外进行**，入池再于 `mu` 短临界区**双检**（`closing` → 关闭新槽、回落共享槽；他方已抢先入池同键 → 关闭本次新建槽、复用在池槽）。**不同 workdir / instance 各自建连、互不阻塞**。建连 / 握手失败 → warn 并**回落共享槽**（保持调用可用，如 spawned http/sse 固定端口无法按 workdir 重复拉起时退化为共享）。
   - **缺 workdir**：`isolate=true` 但调用上下文无 `work_dir` → **回落共享槽 + 一次 warn**（`noWd` CAS，不报错）。
   - **空闲回收**：`sweepIdle` goroutine（仅 `isolate=true` 启动）按 TTL 回收空闲 workdir 槽——TTL **复用既有 `Params.CallTimeout`**（`newProxyProvider` 的 `callTimeout`，≤0 → 60s；**不新增配置键**），扫描间隔 = TTL/2（clamp `[100ms, 30s]`）；`reclaimIdle` 在 `mu` 内与「查池占用」互斥（**在飞调用 `inFlight>0` 的槽绝不回收**），空闲 ≥ TTL → 关闭并移出池（下次调用懒建）。
   - **作废覆盖全池**：`Invalidate`（作废 + 恒重建）/ `Close` 均先 `closePooled()`（关闭并移出池中**全部** workdir 槽）再处理共享槽；`watchPooled` 观测池化自持子进程（意外退出 → 移除出池 + warn，下次懒建）。
+  - **作废/重建的串行、短路与单调代际（C-52）**：`Invalidate` 持 **`rebuildMu`** 串行化「作废 + 重建」（并发进入会各自 spawn、后写 `shared` 覆盖前者 → 前一子进程失句柄成孤儿）；**已 `Close` / `Stop`（`stopCh` 已关）→ `Invalidate` 短路**（返回 `provider closed`，不再 spawn/重连，避免 `Stop` 之后 respawn 出无人观测的孤儿子进程）；每次重建经 `genSeq` 递增**单调代际**，**重建/重连失败回落亦保留单调代际**（不复用零值 0）——`monitorSpawned` 以「捕获代际 ≠ 当前共享槽代际」判定某次退出是否已被重建路径认领（置 0 会让空槽与任意代际无法区分 → 代际误判、多一次假重建）。
   - 判定入口 = `ServerEntry.IsolateEnabled()`（`serverslist.go:76-81`：**显式 `Isolate` 优先；缺省按 transport 推断——stdio→true（单管道无法并发处理）、http/sse→false**）；`isolate` 配置键见 [64 §6](../60-reference/64-配置项一览.md)，注册载荷见 [61 §5.1.1](../60-reference/61-消息一览.md)。
 
 ### 4.5 熔断（`breaker.go`）

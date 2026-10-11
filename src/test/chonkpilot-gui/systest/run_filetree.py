@@ -6,17 +6,19 @@
 断言：/exists /text 查 DOM + /console 查前端错误。
 """
 
-import json
 import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
 from chonk_client import ChonkClient, TestError, run_case
 
-WS = r"E:\BizWorks\chonkpilot\src\test\chonkpilot-gui\systest\ws"
+# 仓库根 = systest 上溯四级（systest → chonkpilot-gui → test → src → 仓库根）。
+_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", "..", ".."))
+WS = os.path.join(_HERE, "ws")
 WS_POSIX = WS.replace("\\", "/")
-IDE_EXE = r"e:\BizWorks\chonkpilot\dist\desktop\chonkpilot.exe"
+IDE_EXE = os.path.join(_ROOT, "dist", "desktop", "chonkpilot.exe")
 # GUI 窗口标题 = work_dir 名（main.go: Title: filepath.Base(workDir)），非 "Chonk Pilot"。
 WIN_TITLE = os.path.basename(WS)
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
@@ -503,7 +505,7 @@ def case_persistence_restart():
     # 2. mock 驱动 Alt+F4 关闭（key_press 带 window 参数自动聚焦；window = work_dir 名）
     sid = _llm_create_session()
     c.mq_emit("llm-start", {"session_id": sid, "q": "please call close",
-                            "llm": "mock", "think": "", "effort": "", "scenario_id": 0})
+                            "llm": "mock", "think": "", "effort": "", "scenario_id": ""})
     # 3. 等待 IDE 退出；Alt+F4 受 Windows 前台聚焦限制可能未生效 → WM_CLOSE 兜底
     try:
         _wait_ide_down(45)

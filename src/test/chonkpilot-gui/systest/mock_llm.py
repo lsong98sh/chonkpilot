@@ -48,7 +48,8 @@ import socket
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-SCRIPTS_WS = r"E:\BizWorks\chonkpilot\src\test\chonkpilot-gui\systest\ws"  # systest 工作目录（用例输入/输出）
+_HERE = os.path.dirname(os.path.abspath(__file__))
+SCRIPTS_WS = os.path.join(_HERE, "ws")  # systest 工作目录（用例输入/输出）
 
 # S21 空回复一次性状态："call empty" 首次返回空回复；"继续"重发同一文本时消费该标记
 # 返回正常回复（验证"空回复 → 继续 → 重发原消息"链路）。

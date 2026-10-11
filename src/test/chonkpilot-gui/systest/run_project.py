@@ -13,15 +13,15 @@ GetRecentDirs/CreateSession/GetSession/DeleteSession）一律移除，改走：
 前置：IDE --test-port=2345 --work-dir=<ws>。
 """
 
-import json
 import os
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
 from chonk_client import ChonkClient, TestError, run_case
 
-WS = r"E:\BizWorks\chonkpilot\src\test\chonkpilot-gui\systest\ws"
+WS = os.path.join(_HERE, "ws")
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
 _G = _h.acquire_gui(2345, work_dir=WS)  # 复用优先；无实例则自起并在结束时回收
 c = _G.client
@@ -86,9 +86,11 @@ def case_security_dirs():
     **一条信任目录 = 一个 key**（前端生成的不透明 id，非目录路径），
     value = JSON 字符串 {"dir","writable"}；list 返回平铺 map（key 已剥 security- 前缀）。
     """
+    # 安全目录条目值仅为不透明字符串（key→JSON 往返断言，不触盘）；路径派生自 WS，避免硬编码盘符。
+    _SEC_DIR = os.path.join(WS, "sec-a").replace("\\", "/")
     k = "dir-systest-a"
-    v1 = r'{"dir":"E:\\ckptest-sec-a","writable":true}'
-    v2 = r'{"dir":"E:\\ckptest-sec-a","writable":false}'
+    v1 = '{"dir":"%s","writable":true}' % _SEC_DIR
+    v2 = '{"dir":"%s","writable":false}' % _SEC_DIR
     # 快照-还原（51 §6-8）：同名条目原本可能已存在 → 跑前快照，finally 写回/删除。
     orig = (c.req("data-prj-security-list", {}).get("list") or {}).get(k)
     try:

@@ -1,4 +1,4 @@
-# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
+﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-standalone-gui.ps1`；
 #   形态名 `standalone` → **`desktop`（桌面单体）**，产物目录 `dist/standalone/` → `dist/desktop/`。
@@ -16,11 +16,12 @@
 # 产物（仓库根 dist\desktop\，决策 [42 §2 (16)]）：
 #   ├── chonkpilot.exe                      # webview2 宿主
 #   ├── chonkpilot-cli.exe                  # console 宿主
-#   ├── capability/                         # 契约 + executor×3 + 出厂场景（来自 dist/other + 场景源）
+#   ├── capability/                         # 契约 + executor×4 + 出厂场景（来自 dist/other + 场景源）
 #   │   ├── prompts/<...>/*.prompt.md
 #   │   ├── tools/<cat>/*.tool.md
 #   │   ├── resources/<...>/*.resource.md
 #   │   ├── skills/<...>/*.skill.md
+#   │   ├── agents/                         # 智能体契约（*.agent.md，扁平；源 src/initdata/capability/agents）
 #   │   ├── system/                         # 非原语系统文档全量（summary.md/system-directory.md/memory/*.md；源 src/initdata/capability/system，OP-02）
 #   │   ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
 #   │   └── executors/chonkpilot-{core,desktop,browser,dsl}-executor.exe
@@ -122,6 +123,9 @@ foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "ch
 # -- 0.5) 出厂 system 文档 → data 模块 embed 落点（OP-02，2026-10-06）--
 #     唯一源 = src/initdata/capability/system/**；覆盖式同步到 data 模块内 embed 落点，
 #     供 `//go:embed all:embedded/system` 编入 exe（摘要提示词等系统文档的磁盘缺失兜底）。
+#     ⚠️ src/lib/data/internal/systemfs/embedded/system/** 为**构建生成物（勿手改）**：其唯一源 =
+#     src/initdata/capability/system/**，两者须逐字节一致（本步骤每次覆盖式重建；直接改本目录 =
+#     与源静默分叉，改动会在下次构建被覆盖丢失）。
 Write-Host "==> [0.5/9] sync factory system docs -> data embed dir"
 $sysSrc = Join-Path $root "src\initdata\capability\system"
 $sysEmbed = Join-Path $root "src\lib\data\internal\systemfs\embedded\system"

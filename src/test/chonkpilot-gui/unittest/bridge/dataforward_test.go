@@ -204,7 +204,7 @@ func TestEventTypeDataKeepsOriginalName(t *testing.T) {
 
 // TestDataViaPersistTimeout（X1 收口）：persist 恒在线（GUI 恒启 server），data-* 透传
 // 无应答应走 3s 超时兜底——返回 {ok:false,error} 信封 + errs，不无限挂起。
-// （no-server 离线快败窗已退役删除，超时兜底为唯一无应答保护。）
+// （无应答保护有二：桥未接数据服务时 dataCall 走 `b.dataOffline` 快失败；否则走本 3s 超时兜底。）
 func TestDataViaPersistTimeout(t *testing.T) {
 	br, bus := newTestBridge(t, func(string) {})
 	defer bus.Close()

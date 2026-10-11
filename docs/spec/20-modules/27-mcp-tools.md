@@ -8,7 +8,7 @@
 
 ## 1. 职责与边界
 
-- **一句话**：**执行层**——三个分类 exe（core / desktop / browser），被 mcp-server `callTool` **spawn-on-call**，自持实现具体工具动作，用完即退。
+- **一句话**：**执行层**——工具分类 executor 3 个（core / desktop / browser）+ dsl 编排 executor（`chonkpilot-dsl-executor.exe`）**共 4**，被 mcp-server `callTool` **spawn-on-call**，自持实现具体工具动作，用完即退。
 - **做**：文件操作 DSL、脚本执行、HTTP 抓取、浏览器 DSL、桌面 DSL；统一输出层（`Ok`/`Err` + 200KB 落文件）。
 - **不做**：**零主仓库依赖**（仅 `src/lib/paths`）；无 DB/NATS；**无路径白名单**（越界读写成败由 agentbox 承担，见 [14-安全域](../10-architecture/14-安全域-agentbox.md)）——agentbox 沙箱在执行器**启用隔离时**真正拦截越界读写（`agentbox.InitFromEnv()` + 各 choke point，见 [14 §7.1](../10-architecture/14-安全域-agentbox.md)）；未注入 `CHONKPILOT_SANDBOX` = 不启用（默认兼容）；零持久状态。
 - **文件操作参数强约束（R-11）**：**所有输入/输出文件与目录参数**（含 **DSL 内所有 `#"..."` 引用**，含**数据源读取**）**必须为绝对路径或以 `~/` 开头的用户目录路径**，相对路径一律拒绝（参数级违规 → 整体失败，错误消息含原值、位置与示例）；规范见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。注意：`paths.ResolveDir` 仍服务 CLI 目录参数且允许相对（下同；是唯一允许相对处）。
@@ -19,7 +19,7 @@
 
 | 项 | 值 |
 |----|----|
-| 形态 | 3 个独立 exe：`chonkpilot-core-executor.exe` / `-desktop-` / `-browser-` |
+| 形态 | 3 个工具分类 executor（`chonkpilot-core-executor.exe` / `-desktop-` / `-browser-`）+ dsl 编排 executor（`chonkpilot-dsl-executor.exe`）= 共 4 |
 | 调用约定 | `<exe> <tool> --input=<参数 JSON 路径>`；`<exe> --help`；`<exe> --help <tool>` |
 | 部署 | `build-mcp-server.ps1` 编到 `capability/executors/`（扁平 `chonkpilot-<cat>-executor.exe`）；契约 `tools/<cat>/*.tool.md` 的 runtime 相对 md 写 `../../executors/<cat>.exe`（用户自建 executor 写全路径） |
 | work-dir | **概念已移除**（`workDir := ""`；不消费 `_work_dir`/`CHONK_WORK_DIR`）。文件操作参数须**绝对路径 / `~/` 开头 / `!/` 开头**（R-11），不再按 workDir 兜底解析相对路径 |
@@ -51,12 +51,12 @@
 
 - **`filesys_run`**：DSL 动词（7 个 Raw）：`RPL`（全局替换，保行数）· `APD`（追加）· `PTC`（unified diff 增删改）· `INS`（建文件）· `DEL`（按 search 删行 / 无 search 删文件或目录）· `MOV`（移动，跨卷回退复制+删源）· `CPY`（文件/目录递归复制）。`StopOnError=false`（记错继续）。顶层入参 `script` / `file` **二选一（均非必填）**（契约 `[parameters].required` 不再含 `script`）。**R7-C**：① 修改类动作（`modify`）单文件**尺寸上限 32MB**（超限拒改，避免整读整写）；② 文件复制（`CPY`/`MOV` 跨卷回退）/目录递归复制改**流式**（`io.Copy`，O(1) 内存）；③ `PTC` 支持**多 hunk（带 gap）补丁**——两 hunk 之间未被 context 覆盖的中间源行**原样保留**（此前会静默丢失）；④ 修改按**原文件编码**回写（UTF-16/GBK/Shift-JIS/Big5/EUC-KR 往返不改编码，不再静默转 UTF-8）。**路径（R-11）**：动词 `#"path"`、核心语句**所有文件句柄**（**LOOP/SET 数据源读取**、访问器 `.content/.lines/.array/.object/.range`、`IF exist`、`=> #"file"` 目标）、顶层 `file`、顶层 `md5` 键均须绝对 / `~/` / `!/`；字面相对路径在执行前被拒（整体失败、无副作用），`{{}}` 插值由 `ScriptFS` 执行时兜底校验。
   **返回条目**：`modified[]` / `created[]` 每条含 `{path, type, size, mtime(RFC3339), md5}`（`modified` 另含 `diff`）；目录条目 `type="dir"`、`size=0`、无 `md5`；`deleted[]` 仍为路径字符串数组（删除后无法 stat）。
-- **`file_read`**：多文件 + `ranges`/`tail`/`start+limit` + 行号 + md5/encoding/size。**路径（R-11）**：`files[].path` 须绝对 / `~/` / `!/`。**R7-C-60**：>32MB（`maxReadBytes`）文件的 `tail` 语义**不建立在截断前缀上**（前缀尾 ≠ 文件尾）→ 改从**文件末尾反向分块**读最后 N 行（不整读大文件）。**R8-C-3**：反向分块读设**扫描窗口上限 8MiB**（`maxTailScan`）—— 对**无换行**超大文件（minified 单行）防止逐块读满退化为整读整文件。**R8-C-4**：非 EOF 的读取错误改为**项级失败**（不再静默吞，避免顶层误报 success）。
+- **`file_read`**：多文件 + `ranges`/`tail`/`start+limit` + 行号 + md5/encoding/size。**路径（R-11）**：`files[].path` 须绝对 / `~/` / `!/`。**R7-C-60**：>32MB（`maxReadBytes`）文件的 `tail` 语义**不建立在截断前缀上**（前缀尾 ≠ 文件尾）→ 改从**文件末尾反向分块**读最后 N 行（不整读大文件）。**R8-C-3**：反向分块读设**扫描窗口上限 8MiB**（`maxTailScan`）—— 对**无换行**超大文件（minified 单行）防止逐块读满退化为整读整文件。**R8-C-4**：非 EOF 的读取错误改为**项级失败**（不再静默吞，避免顶层误报 success）。**〔订正（2026-10-11）〕**：>32MB 文件**带 `ranges`/`start` 时显式报错**（`file_read` 行段语义建立在截断前缀上会与真实行号错位 → 不再静默按前缀解释，提示改用 `tail` 或 `info`）；**`tail` / `info` 语义不受影响**（`tail` 仍走文件末尾反向分块，见 R7-C-60）；**截断文件新增 `total_lines`（全文总行数，流式扫描 O(1) 内存；`info["lines"]` 仍为已读前缀行数）**，且 **`>32MB` 时 `tail` 配合 `line_numbers` 按全文行号回填**（行号基线 = 全文总行数 - 尾段行数 + 1，不再丢失行号或按前缀错行）。
 - **`file_find`**：`output=tree|file|summary`，`depth` 剪枝、`glob`、`grep` 正则、200 行上限、时间过滤。**路径（R-11）**：`path` 须绝对 / `~/` / `!/`。**R7-C**：① `path` **必填**（缺失 → **顶层报错**，不再静默回落 `workDir`/`"."`）；② grep 单文件命中条数**封顶 200**（防逐行无界 append）；③ 整读按 `maxReadBytes` **上限截断**（`readFileCapped`）；④ 命中行 / 摘要按 **rune** 截断（中文不被按字节截出乱码）。
 - **`file_diff`**：三形态入参，unified diff。**路径（R-11）**：`file1`/`file2`/`files[].path`/`files[].path2`/`path[]` 均须绝对 / `~/` / `!/`。**R7-C**：① 单侧文件**尺寸上限 8MB**（`maxDiffBytes`；diffmatchpatch 为 O(n²)，超限**直接报错**、不做全量 diff）；② `files[]` 项缺 `path`/`path2` → **项级错误**（不静默跳过）。
 - **`script_run`**：runtime 白名单 `shell/cmd/bash/python/js/powershell/vbs/java`；`script` XOR `file`；`requires` **仅 `python`（`pip install`）与 `js`（`npm install --no-save`）**，其它 runtime 传 `requires` → **整体失败**；powershell 加 `-ExecutionPolicy Bypass -File`。**写临时脚本** `ck_script_*`（用完删），扩展名按 runtime（`python=.py` / `js=.js` / `powershell=.ps1` / `vbs=.vbs` / `bash=.sh` / **`java=.java`**——JDK 单文件源码模式（JEP 330）要求 `.java`，其它扩展名会被 `java` 当**类名** → `ClassNotFoundException`；`public` 类名与文件名不必同名）。**路径（R-11）**：`file`、`workdir`（运行目录）、`interpreter`（解释器/可执行文件路径）均须绝对 / `~/` / `!/`；`args`/`env`/`filter` 等命令参数与 runtime 内置默认命令（`cmd`/`bash`/`sh`，走 PATH）不受约束。
 - **`web_fetch`**：`method/body/form/form_files/headers/cookies/save_as/encoding/follow_redirect/readTimeout`；多编码转码（gbk/big5/shift-jis/euc-jp/euc-kr/iso-8859-1）；multipart 文件上传；`save_as` 直落文件（大文件不进上下文）；UA 缺省 `ChonkPilot/1.0`。**路径（R-11）**：`save_as`、`form_files[].path` 须绝对 / `~/` / `!/`（在发请求前即拒绝）。
-- **`browser_run`**（chromedp，23 动词 Raw）：`OPN WAT CLK DBL RCL HOV CHK UCHK FILL SELO KPR KDN KUP EXP EVL SHT DOM DBG SCL DRG UPF TAB SLP`；locator JS（`__ckResolve` 支持 `>>` 链式）。**路径（R-11）**：`file`、`chrome_path`（Chrome/Edge 可执行文件）、DSL 内 `SHT`/`DOM`/`DBG`/`UPF`（最后一个参数）、核心语句文件句柄（**LOOP/SET 数据源读取**、访问器、`IF exist`）、行尾 `=> #"file"` 目标、落盘参数 `dom_file`/`console_file`/`fail_shot` 须绝对 / `~/` / `!/`；字面路径在启动浏览器前预校验。
+- **`browser_run`**（chromedp，23 动词 Raw）：`OPN WAT CLK DBL RCL HOV CHK UCHK FILL SELO KPR KDN KUP EXP EVL SHT DOM DBG SCL DRG UPF TAB SLP`；locator JS（`__ckResolve` 支持 `>>` 链式）。**〔订正（2026-10-11）〕`OPN` 导航 scheme 白名单 = 仅放行 `http`/`https`/`file` 三种**（`file:` 走沙箱读校验），**其它 scheme（如 `view-source:`）显式拒绝**；**`url.Parse` 失败 / 空 scheme 亦显式拒绝**（报 `syntax` 错，避免解析失败或空 scheme 时整段白名单被跳过、`file:` 读校验被绕过，见 `internal/browser/run.go` `stepOPN`）。**路径（R-11）**：`file`、`chrome_path`（Chrome/Edge 可执行文件）、DSL 内 `SHT`/`DOM`/`DBG`/`UPF`（最后一个参数）、核心语句文件句柄（**LOOP/SET 数据源读取**、访问器、`IF exist`）、行尾 `=> #"file"` 目标、落盘参数 `dom_file`/`console_file`/`fail_shot` 须绝对 / `~/` / `!/`；字面路径在启动浏览器前预校验。
 - **`desktop_run`**（Win32，23 动词 Raw）：`WIN MOV CLK DBL CLKR CLKM DBLR DBLM LMD LMU RMD RMU MMD MMU DRG WHL INP KPR KDN KUP IME SHT SLP`；`WIN` 后 `$X/$Y/$W/$H/$CX...` 同步进作用域；`runtime.LockOSThread()`。**路径（R-11）**：`file`、DSL 内 `SHT`、`WIN … SHT`、核心语句文件句柄（**LOOP/SET 数据源读取**、访问器、`IF exist #"…"`/`IF exist "…"`）、行尾 `=> #"file"` 目标须绝对 / `~/` / `!/`；字面路径在执行前预校验。
 
 ---
@@ -128,7 +128,7 @@
 - ✅ **R-11 范围升级**：新增 `src/lib/dsl/paths.go` 的**只读** `CollectHandleRefs`（收集 LOOP/SET 数据源、`IF exist`、`=> 目标`、访问器参数等全部 `#"path"` 引用；纯遍历、**不改变引擎行为**，`llm_run` 不受影响）；新增 `fileops/scriptfs.go` 校验型 `ScriptFS` 并注入 `filesys_run`（核心语句数据源读取/访问器/`=> 目标` 亦须绝对 / `~/` / `!/`，`{{}}` 插值执行时兜底校验）；`browser`/`desktop` 的 `scriptFS` 读路径同样运行时可校验并纳入数据源预校验；`script_run.workdir`/`interpreter`、`browser_run.chrome_path` 纳入「必须绝对 / `~/` / `!/`」。
 - ✅ **R-11 二次升级**：`src/lib/paths` 新增**唯一 API** `ResolvePath(raw, base)`（规则序：空 → `!/` → `~/` → 绝对 → base 拼接 / 无 base 报错）、`SetTempRoot`/`TempRoot`（`!/` 映射 `<temp>/chonkpilot/<instance>/`）、`InvalidPathMessage`；`pathcheck.go` **降为薄封装**（删重复实现）。`scriptfs.go` 与 browser/desktop 的 `scriptFS`/落盘点改为**解析后使用绝对路径**（`!/`、`~/` 全路径可用）。executor 经新增 `fileops.HostEnv`/`BuildToolEnv`（读**自身进程环境** `CHONKPILOT_*` + 自身 exe 目录）`SetTempRoot` + 注入**只读** DSL `env`；`script_run` 同时把同名变量注入**子进程环境**（用户 `env` 同名优先）。
 - ✅ **R-11 调用上下文改由 `_meta` + 子进程 env**：移除经 tool `arguments` 注入上下文 —— `mcp-server Config.SetContext`/`defaultsMap` 对 `_workdir`/`_datadir`/`_instance`/`_interpreters` 的注入**已删除**；上下文改由调用上下文（协议 `_meta`，键 `chonkpilot.{instance_id,work_dir,data_dir}`）从 gateway 透传，`mcp-server` spawn executor 时注入子进程环境 `CHONKPILOT_INSTANCE/WORKDIR/DATADIR/INTERPRETERS`（`Config.executorEnv`）。executor 从进程环境读（`cli.Run` + `fileops.HostEnv`）；**instance 为空 = 异常**（`paths.SetTempRoot/TempRoot` 不再回落 `default`，返回 `ErrNoInstance`）。DSL env 去掉兼容别名 `WORKDIR`，**只允许 `{{env.<NAME>}}`**。
-- 构建产物当前仅 `chonkpilot-core-executor.exe` 落盘；desktop/browser 按需 `build-mcp-server.ps1` 产出。
+- 构建产物当前 `chonkpilot-core-executor.exe` + `chonkpilot-dsl-executor.exe`（`dslexec` 编排执行器，`build-dsl-executor.ps1` 产出）落盘；desktop/browser 按需 `build-mcp-server.ps1` 产出。
 
 ---
 

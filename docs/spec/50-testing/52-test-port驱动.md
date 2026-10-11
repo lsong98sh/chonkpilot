@@ -167,6 +167,7 @@ assert "目录结构" in html
 ## 6. 安全边界
 
 - 仅监听 `127.0.0.1`；`--test-port` 未传则不启动任何 listener
+- **Host 白名单 + 来源校验（D-03；2026-10-11 补登）**：所有端点统一校验 `Host`，仅接受 `127.0.0.1` / `localhost` / `app.localhost`（端口不限），其余 403（挡 DNS rebinding / 恶意页面直连回环端口）；**并新增 `Origin` / `Sec-Fetch-Site` 校验** —— `Sec-Fetch-Site: cross-site` 拒、`Origin` 存在且主机不在回环白名单 → 拒（跨源网页），无 `Origin` / 同源回环 `Origin` / 非浏览器（外部驱动脚本通常不带这两头）→ 放行。**防恶意网页 JS `fetch` 直连回环端口驱动 `/eval`**（见 `src/lib/gui/testserver.go` `hostGuard`/`originAllowed`）
 - 无鉴权（本机测试用途，能力等价于已在本机运行的用户进程）
 - `/call/` 已废除；消息驱动通道由 `/publish` / `/wait-event` 提供
 - **端点豁免清单**（测试端口固定的白名单，注册于 `testserver.go` 路由）：`/ping`（探活，免页就绪检查）、`/eval`、`/click`、`/input`、`/text`、`/html`、`/exists`、`/console`、`/screenshot`、`/publish`、`/wait-event`

@@ -1,7 +1,7 @@
 // L2 黑盒测试：chonkpilot-cli 启动前置编排（D-45 · I-158，src/lib/cli）。
 //
 // 覆盖：`--data-dir` 三态解析（方案 B）、临时隔离的配置复制与退出清理、
-// 真实根的 work-dir 占用校验与锁生命周期、prjusr 冲突试开报错、
+// 真实根的 prjusr 单例锁占用校验与锁生命周期、prjusr 冲突试开报错、
 // 自定数据根两分支、CopyConfigTables 源缺失跳过 / 源损坏报错。
 package unittest
 
@@ -124,8 +124,8 @@ func TestPrepareTempIsolation(t *testing.T) {
 	}
 }
 
-// TestPrepareRealLockLifecycle ② 留空 → 真实根：Mode/DataDir 正确、持有 work-dir 锁；
-// Cleanup 释放锁后可被再次获取。
+// TestPrepareRealLockLifecycle ② 留空 → 真实根：Mode/DataDir 正确、持有 **prjusr 单例锁**
+// （与桌面/flash 同源）；Cleanup 释放锁后可被再次获取。
 func TestPrepareRealLockLifecycle(t *testing.T) {
 	_, restore := isolateDataHome(t)
 	defer restore()
@@ -140,23 +140,23 @@ func TestPrepareRealLockLifecycle(t *testing.T) {
 	}
 	p.Cleanup()
 
-	l, err := lockfile.AcquireWorkDir(wd)
+	l, err := lockfile.AcquirePrjUsr(filepath.Join(wd, lockfile.ProjectDataDirName))
 	if err != nil {
-		t.Fatalf("Cleanup 后 work-dir 锁应可再次获取：%v", err)
+		t.Fatalf("Cleanup 后 prjusr 单例锁应可再次获取：%v", err)
 	}
 	l.Release()
 }
 
-// TestPrepareRealBusyError ② 真实根 + work-dir 已被另一实例占用 → 明确报错
+// TestPrepareRealBusyError ② 真实根 + prjusr 单例锁已被另一实例占用（GUI/flash）→ 明确报错
 // （提示关闭该实例或改用临时模式），不静默放行。
 func TestPrepareRealBusyError(t *testing.T) {
 	_, restore := isolateDataHome(t)
 	defer restore()
 	wd := t.TempDir()
 
-	l, err := lockfile.AcquireWorkDir(wd)
+	l, err := lockfile.AcquirePrjUsr(filepath.Join(wd, lockfile.ProjectDataDirName))
 	if err != nil {
-		t.Fatalf("预置 work-dir 占用: %v", err)
+		t.Fatalf("预置 prjusr 单例锁占用: %v", err)
 	}
 	defer l.Release()
 

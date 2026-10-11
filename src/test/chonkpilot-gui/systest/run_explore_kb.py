@@ -484,7 +484,7 @@ def prepare_ws():
 
 
 # 应用级原语夹具：C4/C5 打开并编辑 `file_diff.tool.md` —— 产品的原语保存/恢复路径会把契约
-# 原文按**规范化形态**回写（实测多出 1 字节尾换行）→ 该文件属于 **dist 产物**（dist-desktop/capability），
+# 原文按**规范化形态**回写（实测多出 1 字节尾换行）→ 该文件属于 **dist 产物**（dist/desktop/capability），
 # 套件跑完必须**按字节还原**，否则 capability 与契约源静默分叉（`sync-contracts.ps1 -Check` 会报漂移）。
 APP_CONTRACT = os.path.join(CAP_DIR, "tools", "core", "file_diff.tool.md")
 

@@ -41,7 +41,7 @@
 颜色断言口径：主按钮背景 = var(--accent)；禁用开关 opacity=0.5、禁用输入 opacity=0.6；
 保存成功提示左边框 = var(--success)。
 
-前置：dist-desktop\\chonkpilot.exe --test-port=2345 --work-dir=<大写盘符 ws>；
+前置：dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir=<大写盘符 ws>；
       本脚本自起独立实例 2347 验证「重启持久化」，结束回收。
 运行：python run_config_ui.py
 """

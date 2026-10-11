@@ -31,7 +31,7 @@ onInstanceRegister）→ 需重启才生效」**已被代码与实测推翻**）
 隔离（51-FP与测试映射 §5/§6-8）：
   * 自起 GUI：动态端口 + 独立 work-dir + 独立 `--data-dir` + 独立 `HOME`（usr 主库全新）。
     原语落在**临时 work-dir** 的 `<ws>/.chonkpilot/capability/tools/` 内 → 随 tmp_dir 删除 → 零残留；
-    不碰 `dist-desktop/capability`（系统级，run_explore_kb 的夹具区）。
+    不碰 `dist/desktop/capability`（系统级，run_explore_kb 的夹具区）。
   * 套件级快照-还原 `_h.suite_config_guard(c)`（usr+prj）。
 
 运行：python run_primitive_hot.py

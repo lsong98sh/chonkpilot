@@ -3,7 +3,7 @@
 
 前置（父会话启动）：
   1. 重建产物：`.\\build-desktop.ps1`（本次不实跑）。
-  2. IDE：`dist-desktop\\chonkpilot.exe --test-port=2345 --work-dir <大写盘符路径>`。
+  2. IDE：`dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir <大写盘符路径>`。
   3. mock LLM：`python mock_llm.py 8901`（经 llm-start 触发工具调用）。
   4. 用户配置（usr 库，经 data-user-config-load/save 消息面）的 llms 含 mock 条目
      （与 run_llm.py 同前置；%USERPROFILE%/.chonkpilot/config.json 为死文件，不再读写）。
@@ -66,11 +66,7 @@ c: ChonkClient = run_llm.c
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "mock_slow_mcp.py")
 PY = sys.executable or "python"
-# 产物 GUI + 工作目录（systest/ws）。仓库根 = systest 上溯四级（systest → chonkpilot-gui → test → src → 仓库根）。
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(HERE))))
-EXE = os.path.join(_ROOT, "dist", "desktop", "chonkpilot.exe")
-if not os.path.exists(EXE):
-    EXE = r"E:\BizWorks\chonkpilot\dist\desktop\chonkpilot.exe"
+# 产物 GUI + 工作目录（systest/ws）。
 WS = os.path.join(HERE, "ws")
 PORT = 2345
 

@@ -30,7 +30,14 @@ def main():
     # server-starting 在启动时已广播（此脚本后来才捕获不到，查事件历史）：
     evs = _loads_deep(c.eval("(() => { window.__ev = []; window.mq.on('server-starting', d => window.__ev.push('server-starting:' + JSON.stringify(d))); window.mq.on('turn-start', d => window.__ev.push('turn-start:' + JSON.stringify(d))); return 'ok'; })()"))
     time.sleep(1)
-    c.eval('window.go.app.App.CreateSession({ workDir: "", title: "" }).then(s => { window.__sid = s; window.mq.emit("llm-start", { session_id: s && (s.session_id || s.id), q: "please call llm for sub task", llm: "mock", think: "", effort: "", scenario_id: 0 }); }).catch(e => { window.__sid = "ERR:" + String(e); });')
+    # 建会话 + 发一轮（mq-only：data-session-ensure-session 落库 + session-changed 本地事件；
+    # 新架构无 window.go.app.App.CreateSession）。
+    sid = "diag-sess-%d" % int(time.time() * 1000)
+    c.req("data-session-ensure-session", {"session_id": sid})
+    c.mq_emit("session-changed", {"session_id": sid})
+    time.sleep(0.3)
+    c.mq_emit("llm-start", {"session_id": sid, "q": "please call llm for sub task",
+                            "llm": "mock", "think": "", "effort": "", "scenario_id": ""})
     time.sleep(14)
     raw = c.eval("JSON.stringify(window.__ev)")
     for line in (_loads_deep(raw) or []):

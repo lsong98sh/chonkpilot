@@ -88,6 +88,8 @@ Initialize：
   → coll.Flush → 标 ready + 计数 + NextPK=seq → saveMeta
 ```
 
+- **单飞（`recMu`）**：`Initialize` 全程持 `recMu`（与 `Incremental` / `EnsureReady` **共用同一把锁**）——同一 workdir 的「就绪 / 重建 / 增量」串行执行，避免与并发查询的自愈/重建互踩。
+
 - **文件收集（`collectFiles`）分组**：
   - **非文档类** = 生效 `exts`（配置集或 `defaultExts`），单文件上限 **8MB**（`maxFileBytes`）；二进制（前 8KB 有 NUL）跳过。
   - **文档类**（`docExts` = `.docx/.xlsx/.pptx/.pdf`）= **独立一组**，仅当 `docs` 开启时收集，单文件上限 `doc_max_bytes`（默认 50MiB）。**文档类恒从非文档集中剔除**（即便被写进 `vfts.exts`）→ 文档支持只由 `docs` 开关决定。
@@ -108,7 +110,7 @@ Initialize：
 
 ### 4.3 引擎：查询与就绪门控
 
-- `EnsureReady` 单飞：内存无集合 → 盘上有则打开 → 回 `ready`/`indexing`/`error`/`not_initialized`；`ErrNotInitialized` 供 `readyGate` 结构化应答。
+- `EnsureReady` 单飞：内存无集合 → 盘上有则打开 → 回 `ready`/`indexing`/`error`/`not_initialized`；`ErrNotInitialized` 供 `readyGate` 结构化应答。`EnsureReady` 持 `recMu`（与 `Initialize`/`Incremental` 单飞）；**载入态先读 `loaded` 原子快照位（不取 `zmu`）**——已载入则免锁返回，避免与 `Initialize` 的整段长 `zmu` 临界区耦合而阻塞查询门（仅在未载入时用短 `zmu` 懒加载/校验落盘集合；`loaded` 由 `zmu` 临界区内的 `setColl` 唯一维护）。
 - `Query`：多取文档块（`topK×5`，上限 500）→ 文件级去重 → 取前 `topK` 个文件；`path` 子串过滤；返回命中拼回绝对路径。
 - 片段定位 `snippetOf`：块内首个含检索词的行 → 返回（截断 240 字符, 行偏移）。
 
@@ -143,7 +145,7 @@ ensureWorkspace(force)：
   - **文档类行 md5 携带解析器版本**（`<md5hex>@<parserVersion>`，复用 md5 口径）：版本变化 → 该行失效重建 + 插件清缓存目录。
 - **去抖（`rebuildDebouncer`，400ms）**：设置页一次保存写 `vfts.exts`+`vfts.skip-dirs`(+`vfts.stack-gitignore`) 多键 = 多次 `data-prj-config-refresh` → 逐键展开后经去抖合并为**一轮**重建；窗口外单键变更仍触发（不漏重建）。
 - **进度推送（零新增主题）**：索引期间 `startProgressPoll` 每 500ms 读引擎落盘 `meta.json` 的 `done/total`，变化即回写 `vfts.status`（`{state:"indexing", phase:"configure"\|"index", progressDone, progressTotal}`）；收口写 `ready`/`error`。UI 只读回显该键。
-- **转换服务「后启动」容错**：`tick` 内 `maybeDocServiceAppeared` —— 存在「启用中且 docs 开启」的 workdir 且探测到服务由不可用→可用（跳变）→ 经去抖调度一次重建（自动接上，无需重启）。
+- **转换服务「后启动」容错**：`tick` 内 `maybeDocServiceAppeared` —— 存在「启用中且 docs 开启」的 workdir 且探测到服务由不可用→可用（跳变）→ 经去抖调度一次**增量同步（`ensureWorkspace(force=false)`）**（服务缺席时文档类未入清单，服务到位后被 diff 判为 `added` 增量接入；**不做全量重建**，服务抖动跳变时避免反复重建的高成本）。
 - **可见性收敛（`syncTools`，单飞）**：应注册 = 存在某 workdir `refs>0 && enabled=true`。v1 限制：gateway `tools/register` 无 scope → 同名工具全局只注册**一份**（归属排序后第一个 workdir），执行按 `context.instance_id` 路由。
 - **空闲回收（`sweepIdleClient`，15s 扫描）**：无任何活跃实例（`refs==0`）且距 `lastActiveAt` ≥ `childIdleTimeout`（5min）→ 关闭**全局共享**引擎子进程（下次 `sharedClient()` 懒重建）。这与 codegraph 的**每 workdir 独立**子进程不同（vfts 仍为全局共享 client —— 与 28-plugins §3.4 一致）。
 - **实例退出**：显式 `instance-exit` 恒有效；分离形态（`-tags split`）另由 `sweepInstances` 按 `instance.HeartbeatTimeout`（90s）判超时 → 走既有 `instanceGone`；**合并单进程形态（默认构建）为空实现**（见 `sweep_split.go` / `sweep_inprocess.go`）。
@@ -208,7 +210,7 @@ ensureWorkspace(force)：
 
 - ✅ **全文索引（FTS）已落地**：6 工具（5 管理 + 1 查询）+ gateway 注册 1 查询工具。
 - ✅ **按文件增量（清单驱动）已落地**：`file_list` diff（新/跳过/mtime-only/内容变/删除）+ 主键单调递增；全量重建后重建清单。
-- ✅ **文档类转换接入**：`docs`/`doc-max-mb` 配置 + 服务探测（pid 校验 + 探活，30s TTL）+ 转换缓存（键含 mtime/parser_version）+ 降级 + 后启动自动接上（去抖重建）。
+- ✅ **文档类转换接入**：`docs`/`doc-max-mb` 配置 + 服务探测（pid 校验 + 探活，30s TTL）+ 转换缓存（键含 mtime/parser_version）+ 降级 + 后启动自动接上（去抖**增量同步 `force=false`**）。
 - ✅ **进度推送 + 空闲回收已落地**：500ms 轮询引擎 `meta.json` → 回写 `vfts.status`（零新增主题）；`sweepIdleClient` 5min 回收共享子进程。
 - ✅ **叠加 gitignore**：`vfts.skip-dirs`/`vfts.stack-gitignore` 原样下发引擎与插件清单扫描，共用 `chonkpilot-ignore` 单一实现。
 - ✅ **jieba 分词 + 系统级词典 + 重新索引**：分词器固定 `jieba`（+`lowercase`）；基础词典 vendor 内嵌并物化到系统级目录；系统级自定义词查看/编辑（`vfts.dict.get`/`vfts.dict.set`）；配置页「重新索引」按钮（`vfts.reindex`）；分词器/词典变更 → 强制重建。

@@ -10,6 +10,8 @@ package agentboxtest
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -218,4 +220,83 @@ func TestEmptyAllowListDeniesAll(t *testing.T) {
 func strconvQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// mustSymlinkDir 在 link 处创建指向 target 的目录链接：优先符号链接；Windows 无创建符号链接
+// 特权（未开开发者模式/非管理员）时回退目录联接（mklink /J，无需特权）；均失败则 skip。
+// 软链场景用例统一经此 helper 建链，保证平台无关（不因建链失败而误报）。
+func mustSymlinkDir(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err == nil {
+		return
+	} else if runtime.GOOS != "windows" {
+		t.Skipf("当前环境无法创建目录软链: %v", err)
+	} else if out, merr := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); merr != nil {
+		t.Skipf("当前环境无法创建目录软链/联接（os.Symlink: %v；mklink: %v %s）", err, merr, out)
+	}
+}
+
+// TestSymlinkAllowedDirMissingTarget（用例①）：**允许目录为软链**时，其下**尚不存在**的新建子路径
+// 应放行（读/写）。旧实现仅在路径已存在时解析软链，导致软链允许目录下的新建文件被误拒，本用例锁定修复。
+func TestSymlinkAllowedDirMissingTarget(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	mustSymlinkDir(t, realDir, link)
+
+	p := agentbox.New([]agentbox.Rule{{Dir: link, Writable: true}})
+	newFile := filepath.Join(link, "sub", "new.txt") // 目标不存在
+	if err := p.Check(newFile, false); err != nil {
+		t.Fatalf("软链允许目录下不存在子路径读应放行: %v", err)
+	}
+	if err := p.Check(newFile, true); err != nil {
+		t.Fatalf("软链允许目录下不存在子路径写应放行: %v", err)
+	}
+}
+
+// TestSymlinkParentEscapeDenied（用例②）：目标经**软链父目录**指向允许目录**之外**（目标不存在）
+// 应拒绝。旧实现目标不存在时回退字面路径，经软链父目录的越界写会被放行，本用例锁定修复。
+func TestSymlinkParentEscapeDenied(t *testing.T) {
+	base := t.TempDir()
+	allow := filepath.Join(base, "allow")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(allow, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	escapeLink := filepath.Join(allow, "escape")
+	mustSymlinkDir(t, outside, escapeLink)
+
+	p := agentbox.New([]agentbox.Rule{{Dir: allow, Writable: true}})
+	target := filepath.Join(escapeLink, "pwned.txt") // 经软链父目录，目标不存在
+	if err := p.Check(target, true); err == nil {
+		t.Fatalf("经软链父目录越界写应拒绝: %q", target)
+	}
+	if err := p.Check(target, false); err == nil {
+		t.Fatalf("经软链父目录越界读应拒绝: %q", target)
+	}
+}
+
+// TestSymlinkTargetMissingAncestorResolution（用例③）：目标不存在时解析**最近存在祖先**后判定——
+// 多级父目录均不存在但落在允许目录内 → 放行；祖先真实但位于允许目录外 → 拒绝。
+func TestSymlinkTargetMissingAncestorResolution(t *testing.T) {
+	base := t.TempDir()
+	allow := filepath.Join(base, "allow")
+	if err := os.MkdirAll(allow, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := agentbox.New([]agentbox.Rule{{Dir: allow, Writable: true}})
+	inside := filepath.Join(allow, "a", "b", "c.txt") // 多级不存在的父目录
+	if err := p.Check(inside, true); err != nil {
+		t.Fatalf("允许目录下多级不存在目标应放行（祖先解析）: %v", err)
+	}
+	outside := filepath.Join(base, "other", "x", "y.txt")
+	if err := p.Check(outside, true); err == nil {
+		t.Fatalf("允许目录外不存在目标应拒绝: %q", outside)
+	}
 }

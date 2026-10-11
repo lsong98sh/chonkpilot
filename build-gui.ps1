@@ -1,4 +1,4 @@
-# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
+﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-split.ps1`；
 #   形态名（分离形态 / team）→ **`gui`（GUI 客户端 + 独立 server）**，
@@ -111,6 +111,9 @@ foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "ch
 # -- 0.5) 出厂 system 文档 → data 模块 embed 落点（OP-02，2026-10-06）--
 #     唯一源 = src/initdata/capability/system/**；覆盖式同步到 data 模块内 embed 落点，
 #     供 `//go:embed all:embedded/system` 编入 client/server exe（摘要提示词等系统文档的磁盘缺失兜底）。
+#     ⚠️ src/lib/data/internal/systemfs/embedded/system/** 为**构建生成物（勿手改）**：其唯一源 =
+#     src/initdata/capability/system/**，两者须逐字节一致（本步骤每次覆盖式重建；直接改本目录 =
+#     与源静默分叉，改动会在下次构建被覆盖丢失）。
 Write-Host "==> [0.5/6] sync factory system docs -> data embed dir"
 $sysSrc = Join-Path $root "src\initdata\capability\system"
 $sysEmbed = Join-Path $root "src\lib\data\internal\systemfs\embedded\system"

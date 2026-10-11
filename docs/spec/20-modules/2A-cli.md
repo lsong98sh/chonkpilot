@@ -31,7 +31,7 @@
 
 - **入**：命令行 + stdin。
 - **出**：stdout（`fmt.Print*`）；错误/stderr 用 `fmt.Fprintln(os.Stderr, ...)`，启动失败 `log.Fatalf`。
-- **总线**：订阅 `session-receive` / `session-complete` / `task-done`；发布 `instance-register`（`client_type:"cli"`）+ `session-start` + `session-send{type:"text-user"}`。
+- **总线**：订阅 `session-receive` / `session-complete` / `task-done`；发布 `instance-register`（`client_type:"cli"`）+ `session-start` + `session-send{type:"text-user"}`。**订阅失败即 `log.Fatalf` 报错退出**（三个主题均如此；尤其 `session-complete` 订阅失败会使 `doneCh` 永不关闭、CLI 挂起，故不静默容忍）。
 
 输出模式：`verbose` 全报文 dump（`[RECV]/[COMPLETE]/[TASK]/[START]/[SEND]`）· `sse` 增量文本 + `[工具]`/`[工具完成]` · `final` 仅终态文本。
 
@@ -90,7 +90,7 @@
 
 ## 9. 现状与待办（含目标态差距）
 
-- ✅ **数据根三态语义（方案 B，D-45 · 2026-10-01 反转）**：CLI `--data-dir` 三态 —— **不传** = 临时隔离（**默认**：tmp 空根 + 复制三级配置 `usr`/`prj`/`prjusr` 覆盖 `prj` 与 `llms` 表，不含会话数据；会话数据写临时目录、退出即弃——批处理不污染真实配置、不与 GUI 冲突）；**显式留空** `--data-dir=` = 真实根（与 GUI 一致：prj=`<workDir>/.chonkpilot`、prjusr=`~/.chonkpilot/data/<id>`；**参与 work-dir 占用校验** + prjusr 试开冲突报错，I-74）；**`--data-dir=<路径>`** = 该路径作 prjusr 数据根（`data.SetDataHome` 重定位）、prj 仍按 `<workDir>/.chonkpilot`（无则 tmp 空根，不污染 cwd）。「传空」与「未传」经 **`flag.Visit`** 判定。落点 `src/lib/cli`（`PrepareDataDir`/`ResolveDataMode`），`main.go` 只留 flag + 装配。见 [02-配置层级 §6.3](../00-overview/02-配置层级.md)。
+- ✅ **数据根三态语义（方案 B，D-45 · 2026-10-01 反转）**：CLI `--data-dir` 三态 —— **不传** = 临时隔离（**默认**：tmp 空根 + 复制三级配置 `usr`/`prj`/`prjusr` 覆盖 `prj` 与 `llms` 表，不含会话数据；会话数据写临时目录、退出即弃——批处理不污染真实配置、不与 GUI 冲突）；**显式留空** `--data-dir=` = 真实根（与 GUI 一致：prj=`<workDir>/.chonkpilot`、prjusr=`~/.chonkpilot/data/<id>`；占用校验 = **prjusr 单例锁**（`<workDir>/.chonkpilot/chonkpilot.lock`，`lockfile.AcquirePrjUsr`）——**与桌面单体/flash 同源、同一把锁**〔2026-10-11 订正：由 work-dir 锁 `AcquireWorkDir` 改为 prjusr 单例锁〕 + prjusr 试开冲突报错，I-74）；**`--data-dir=<路径>`** = 该路径作 prjusr 数据根（`data.SetDataHome` 重定位）、prj 仍按 `<workDir>/.chonkpilot`（无则 tmp 空根，不污染 cwd）。「传空」与「未传」经 **`flag.Visit`** 判定。落点 `src/lib/cli`（`PrepareDataDir`/`ResolveDataMode`），`main.go` 只留 flag + 装配。见 [02-配置层级 §6.3](../00-overview/02-配置层级.md)。
 - ✅ **L1 单测**：`src/desktop/cli/main_test.go`（`parseFlags` 参数解析：`--data-dir` 三态 `dataDirSet` / 输出模式校验 / 各参数绑定 / 未知参数报错；`resolveDir` / `newUUID`）。
 - ✅ **L2 单测**：`src/test/chonkpilot-cli/unittest`（I-158 落地：`ResolveDataMode` 三态 / `PrepareDataDir` 临时隔离复制与清理 / 真实根锁生命周期 / busy 报错 / prjusr 占用报错 / 自定数据根两分支 / `CopyConfigTables` 源缺失跳过 + 源损坏报错）。
 

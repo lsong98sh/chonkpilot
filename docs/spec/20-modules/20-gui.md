@@ -380,6 +380,7 @@
 - **默认高度**：未显式传 `height` 时取 `min(80vh, 640px)`（`types/dialog.js` 的 `DefaultDialogOptions`），调用方 `options.height` 可覆盖 → 消除「打开时高度跳动」。
   - **例外**：`MessageBox`（确认/输入）与 `AskUserContent`（问题数不定）显式 `height:'auto'`，保持内容自适应。
 - **三段式结构**：头部固定 + `.dialog-body` 内滚动 + **footer 固定在 `.dialog-body` 之外**（不随 body 滚动）；`DialogShell` 提供**可选 `footer` 具名插槽**（缺省不渲染任何多余 DOM）。
+- **定向关闭通道**：订阅桥事件 `dialog-close`，payload `{dialogId?}` —— 有 `dialogId` 则**仅关该弹窗**（按 `dialogId` 过滤），无则关**当前最上层（唯一）弹窗**（外部 `mq.emit` 可据此关掉编辑弹窗）；挂载期以模块级单例 `openDialogs` 登记 `dialogId → zIndex` 以定位最上层，卸载时退订并注销。**其余折叠 / 最小化 / 最大化 / 还原均为组件内部方法（`collapse`/`minimize`/`maximize`/`restore`），不经 MQ。**
 - **有表格的弹窗** → 表格**自身内滚**，减少整体滚动。
 - **页签内容与页签分割线留 0.5em 间距**（`Tabs` 的 body `padding-top: 0.5em`；如 MCP 编辑弹窗三页签）。
 

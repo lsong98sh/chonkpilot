@@ -77,8 +77,11 @@ watchManager：按 work_dir 组织 map[string]*dirWatcher（+ 每 work_dir 的�
 - 去抖常量：`debounce = 60ms`；`maxWait = 10×debounce`（D-37：批次广播不被持续事件无限推后）。
 - `recursive` 语义：`onWatch` **消费**载荷 `recursive` 并透传 `wm.watch(wd, p, req.Recursive, instanceID)`；`recursive=true` 时 `dirWatcher.add` 对目录 `walkAdd` 递归子目录（跳过不显示的目录），与新建目录自动递归一致。缺省 `false` = 仅监听本目录（白盒 `TestWatchRecursiveFlag`）。
 - **目录生命周期闭环（层1，D-39）**：`processBatch` 处理 `fsnotify.Remove` / `Rename` 时调 `dirWatcher.removeTree(path)` —— 按**路径前缀**（含自身）从 `paths` 摘除该目录及其全部子孙，并对每条 `w.Remove`（失败仅 `slog.Warn` 留痕，不阻断）。`paths` 只增不删会随目录反复重建累积泄漏（Java 项目 `target/`）。「出表 + `fsnotify.Remove`」在同一临界区（`pathsMu`）内完成，与 `add` 的「进表 + `fsnotify.Add`」原子配对，避免交错留下悬挂。
+- **越界软链 / 目录联接不进表、不监听**：`dirWatcher.add` 在「进表 + `fsnotify.Add`」**之前**先经 `withinWorkDirReal` 做**真实路径复检**（逐段 `os.Readlink`，兼容 Windows 目录联接）——指向 `work_dir` **外**的符号链接 / 目录联接**直接返回（不进 `paths`、不监听）**（否则 fsnotify 会跟踪根外目标并广播其子目录清单 = 越权监听）；非递归单文件同样复检（软链文件亦可指向根外）。判目录用 `os.Lstat`（**不跟随软链**，与 `copyTree` 策略一致）。
+- **广播前真实路径复检（`pubChanged` / `pubDirChanged`）**：`processBatch` 对每事件解析真实路径一次（`baseReal` 每批解析一次复用），`inWorkDir = withinWorkDir(workDir, path) && withinWorkDir(baseReal, pathReal)` —— **词法 + 真实路径双判定**；不满足则**不广播**（`pubChanged` 发单文件、`pubDirChanged` 发目录 `children` 前均复检，防经符号链接 / 目录联接广播根外路径或根外目录的 `children` 清单）。
 - **「不显示的目录」同源（层2，D-39）**：文件树**显示**过滤与 watcher **递归监听**共用 `shouldHideDirName(name, hiddenDirs)`（`.` 开头恒隐藏 + 命中可配置清单）→ **显示的必被监听、不显示的必不监听**。清单 = prj 配置键 `filetree.hide-dirs`（见 §5 / [64 §4](../60-reference/64-配置项一览.md)）；缺省 `defaultHiddenDirs = .git / .svn / .chonkpilot`（与「点开头」重叠，故缺省行为不变，价值在可配置扩展）。
   - **加载**：首次对该 work_dir 的 `filesys.watch` / `filesys.list` 发起**一次性异步**读取（经既有 `data-prj-config-load`，超时即回落缺省，**不阻塞**请求）；失败留痕并允许下次重试。
+  - **无 watcher 不重建 hidden 项**：异步加载完成**写回缓存前**再次校验该 work_dir 仍有活跃 watcher（`m.watchers[workDir]`）——加载期间可能已被 `unwatchInstance` 清理（停并移出 watcher + 删 `hidden`）；无 watcher → **跳过写入**（否则 `hidden` 随出现过的 work_dir 无界增长；下次 watch/list 重新加载）。
   - **变更生效**：订阅既有 `data-prj-config-refresh`（持久化 save/delete 后广播，载荷带 `list`）→ `applyHidden` 更新缓存并 `refilter` 该 work_dir 的活跃 watcher：**现已隐藏者摘除**（root 不误摘）、**由隐藏转可见者补齐**（`walkAdd` 幂等）。零新增消息、不误删用户仍在查看的目录节点。
 - `watch-error`：**watcher 运行期** fsnotify 故障时广播 `{work_dir, error}`（`watcher.go` 的 `w.Errors` 路径）。watch 失败（D-40）与 walkAdd/remove 失败均 `slog.Warn` 留痕。
 
