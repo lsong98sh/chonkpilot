@@ -151,9 +151,12 @@ type workRec struct {
 	docs    bool   // vfts.docs == "true"（文档索引开关；服务可用性另行探测）
 	refs    int    // 活跃实例引用数（同 workdir 多实例去重）
 
-	cmu   sync.Mutex
-	busy  bool   // 后台 configure/index 流程进行中（同 workdir 串行）
-	state string // 最近一次 vfts_status 原始 JSON 文本（= vfts.status 同源）
+	cmu  sync.Mutex
+	busy bool // 后台 configure/index 流程进行中（同 workdir 串行）
+	// ensuring：maybeEnsure 已调度一次后台 ensure（single-flight）——与 need 判定同临界区置位，
+	// 防「need 判定」与 ensureWorkspace 内 busy 置位之间的 TOCTOU 造成同 wd 重复调度。
+	ensuring bool
+	state    string // 最近一次 vfts_status 原始 JSON 文本（= vfts.status 同源）
 
 	// 索引配置比较基线（由 p.mu 保护）：最近一次已知的 vfts.exts / skip-dirs / stack-gitignore
 	// 与 docs / doc-max-mb 原始值。保存幂等依据——新旧值相同（重复保存同一份配置）不排重建
@@ -708,11 +711,21 @@ func (p *Vfts) maybeEnsure(wd string) {
 		return
 	}
 	r.cmu.Lock()
-	need := !r.busy && !r.ready()
+	need := !r.busy && !r.ensuring && !r.ready()
+	if need {
+		r.ensuring = true // 与 need 判定同临界区原子置位（single-flight：防 TOCTOU 重复调度）
+	}
 	r.cmu.Unlock()
 	if need {
 		p.logf("vfts: %s 已启用且索引未就绪 → 后台自动初始化", wd)
-		p.safeGo(func() { p.ensureWorkspace(wd, false) })
+		p.safeGo(func() {
+			defer func() {
+				r.cmu.Lock()
+				r.ensuring = false
+				r.cmu.Unlock()
+			}()
+			p.ensureWorkspace(wd, false)
+		})
 	}
 }
 
