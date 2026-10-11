@@ -44,6 +44,7 @@ type capWatcher struct {
 	want      map[string]bool // 目标 capability 根（绝对、斜杠化）
 	appWant   map[string]bool // 其中系统级 app 根（T-21②：走 RegisterContracts + gateway/reload 重扫）
 	watched   map[string]bool // 已 Add 的目录
+	expanded  map[string]bool // 已**完整展开**（根 + 子树递归监听已建立）的目标根 → syncLocked 跳过全树重扫
 	dirty     bool            // 本轮是否有用户/项目级根内变更待重扫
 	dirtyApp  bool            // 本轮是否有 app 根内变更待重扫
 	timer     *time.Timer
@@ -69,6 +70,7 @@ func newCapWatcher(s *Server) (*capWatcher, error) {
 		want:      make(map[string]bool),
 		appWant:   make(map[string]bool),
 		watched:   make(map[string]bool),
+		expanded:  make(map[string]bool),
 		refs:      make(map[string]int),
 		instRoots: make(map[string]map[string]bool),
 		done:      make(chan struct{}),
@@ -144,6 +146,7 @@ func (cw *capWatcher) unwatchInstance(instanceID string) {
 		}
 		delete(cw.refs, r)
 		delete(cw.want, r)
+		delete(cw.expanded, r) // 引用归零 → 摘除监听，同时清除「已展开」标记（再登记时重新展开）
 		cw.unwatchTreeLocked(r)
 	}
 }
@@ -219,6 +222,11 @@ func (cw *capWatcher) handle(ev fsnotify.Event) {
 		// syncLocked→addTreeLocked→addDirLocked 被 stale `watched[dir]=true` 短路，
 		// 不再 w.Add → **永久失去监听**（热生效静默失效直到重启）。
 		cw.removeWatchLocked(p)
+		// 若被删除/改名的正是某目标根本身 → 同步清除其「已展开」标记，使重建后能重新全树展开
+		//（避免目录已重建而 syncLocked 因陈旧标记跳过展开 → 丢失整棵子树监听）。
+		if _, ok := cw.want[p]; ok {
+			delete(cw.expanded, p)
+		}
 	}
 	cw.syncLocked() // 目标根可能刚被创建（此前监听其祖先）→ 补齐监听
 	if !cw.inWantLocked(p) {
@@ -256,12 +264,23 @@ func (cw *capWatcher) fire() {
 
 // syncLocked 保证每个目标根都有监听：根存在 → 递归监听；不存在 → 监听最近的已存在祖先
 // （根随后被创建时可在 handle 中捕获并切换监听）。
+//
+// 性能（历史缺陷修复）：本函数在**每个 fsnotify 事件**后都会被调用，而根内新建子目录已由
+// handle 的 Create 分支（addTreeLocked）即时补齐监听 —— 故对**已完整展开**的根不再重复
+// os.ReadDir 递归整棵子树（大 capability 树下持 cw.mu 全树重扫会阻塞并发的 watchInstance）。
+// 热生效语义不变：根内新子目录仍由 handle 捕获并递归监听。
 func (cw *capWatcher) syncLocked() {
 	for root := range cw.want {
 		if dirExists(root) {
+			if cw.expanded[root] {
+				continue // 已完整展开（根 + 子树监听已建立）→ 无新目录待补，跳过全树重扫
+			}
 			cw.addTreeLocked(root)
+			cw.expanded[root] = true
 			continue
 		}
+		// 根尚不存在 / 已被删除 → 取消展开标记（其被创建时由 handle 重新展开），并监听最近祖先。
+		delete(cw.expanded, root)
 		if anc := nearestExistingDir(root); anc != "" {
 			cw.addDirLocked(anc)
 		}

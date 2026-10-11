@@ -271,7 +271,10 @@ type Server struct {
 	// auth 是认证**门面**（本期 = 本地 auth 库实现；将来可换 OS 账号 / LDAP / OIDC —— 只留装配位）；
 	// authTokens 是令牌签发/吊销面（同一实现）；authStop 关库；userDataRoot 是注册建目录的根。
 	// authMu/authErr 串行化**惰性打开**（ensureAuth）：打开失败缓存错误 → login-* 一律 login-failed。
+	// authOpenOnce 保证 auth 库**唯一一次**打开（bbolt 文件锁下重复打开会阻塞/超时）：打开在锁外
+	// 进行，避免持 authMu 做磁盘 IO 阻塞并发 Authenticated()/userDataRootPath()。
 	authMu       sync.Mutex
+	authOpenOnce sync.Once
 	authErr      error
 	auth         auth.Authenticator
 	authTokens   auth.TokenIssuer
@@ -648,6 +651,13 @@ func (s *Server) llmOnceSpec(spec router.Spec, system, prompt string) (string, e
 
 // Stop 退订 + 取消全部 running turn。
 func (s *Server) Stop() {
+	// 内嵌插件 teardown（按 Start 的逆序；仅实现 plugin.Stopper 的插件有资源可关——
+	// 停后台循环/关引擎子进程/退订订阅/停实例视图）。
+	for i := len(s.plugins) - 1; i >= 0; i-- {
+		if st, ok := s.plugins[i].(plugin.Stopper); ok {
+			st.Stop()
+		}
+	}
 	if s.capWatch != nil {
 		s.capWatch.Close()
 	}
@@ -678,11 +688,17 @@ func (s *Server) Stop() {
 		s.authStop()
 		s.authStop = nil
 	}
+	// 锁内仅收集待关闭轮次，Close（含 session 锁释放 = 文件解锁 IO）在锁外逐个执行——
+	// 避免持 s.mu 做 IO 阻塞其他 s.mu 访问（stop 期仍需幂等：turnCtx.Close 自身 once 守卫）。
 	s.mu.Lock()
+	turns := make([]*turnCtx, 0, len(s.turns))
 	for _, tc := range s.turns {
-		tc.Close()
+		turns = append(turns, tc)
 	}
 	s.mu.Unlock()
+	for _, tc := range turns {
+		tc.Close()
+	}
 }
 
 // ─── tasktree 手动删除同步 ─────────────────────
@@ -750,11 +766,13 @@ func (s *Server) exitInstance(instanceID string) {
 	}
 	s.mu.Lock()
 	// 只清该 instance 名下的运行态（2026-09-19 缺口 5：按 instance 分桶 → 不误伤其他 instance）。
+	// 锁内仅做 map 摘除与收集（无 IO），Close（含 session 锁释放 = 文件解锁 IO）留到锁外执行。
+	var closing []*turnCtx
 	for key, tc := range s.turns {
 		if tc.req.InstanceID != instanceID {
 			continue
 		}
-		tc.Close()
+		closing = append(closing, tc)
 		delete(s.turns, key)
 		delete(s.busy, instKey(instanceID, tc.req.Session))
 		delete(s.continuePending, key)
@@ -763,6 +781,9 @@ func (s *Server) exitInstance(instanceID string) {
 	// 按 instance 归属整体清，不依赖 turn 存活）。
 	s.clearAsksByInstanceLocked(instanceID)
 	s.mu.Unlock()
+	for _, tc := range closing {
+		tc.Close() // 锁外释放 session 锁（文件 IO）；turnCtx.Close 幂等
+	}
 	s.unregisterCapabilityNodes(instanceID)
 	if s.capWatch != nil {
 		// B-38：回收该实例派生的 capability 根监听（防长驻服务端 fsnotify 句柄随实例累积）。
@@ -796,9 +817,16 @@ func (s *Server) onInstanceRegister(_ string, payload []byte) {
 	// MCP 条目补齐「允许目录快照」，经既有 servers/register 重下发（**零新增主题**）。
 	// 仅 sandbox=true 的条目会因快照变化触发一次重注册（respawn 该上游进程）；其余条目
 	// 快照保持 nil → 与已下发集合逐字段相同 → 零 diff、零动作。
+	// 对账含 spawn/connect/tools-list（可达数十秒）——**必须放后台**（与 onMCPConfigRefresh 完全
+	// 同口径）：本 handler 在 persist 同步派发链路内，同步执行会阻塞 instance-register 应答；
+	// MCP 对账不阻塞实例注册（工具面稍后收敛，注册语义不受影响）。故后台化并加 panic 兜底：
+	// 对账属附属能力，失败/panic 只降级当次动作，不拖垮常驻服务。
 	// 实例此刻**已登记**（persist 先订阅 instance-register 并登记绑定），故对账须带
 	// instance_id —— 使该实例的 project/prjusr 级 MCP 正确解析（否则多实例下"唯一实例回退"串库/失败）。
-	s.reconcileUserMCPs(msg.InstanceID)
+	go func() {
+		defer recoverLog("onInstanceRegister/reconcileUserMCPs")
+		s.reconcileUserMCPs(msg.InstanceID)
+	}()
 	s.mu.Lock()
 	s.capWorkDirs[msg.InstanceID] = msg.WorkDir
 	s.mu.Unlock()
@@ -2655,6 +2683,7 @@ func (s *Server) onPrjSecurityRefresh(_ string, payload []byte) {
 		return
 	}
 	go func() {
+		defer recoverLog("onPrjSecurityRefresh")
 		s.loadExecConfig(ev.InstanceID)
 		s.reconcileUserMCPs(ev.InstanceID)
 		logf("[chonkpilot-server] prj-security 变更热生效（agentbox 允许目录）: instance=%s\n", ev.InstanceID)
@@ -2732,6 +2761,7 @@ func (s *Server) onPrjConfigRefresh(_ string, payload []byte) {
 		return
 	}
 	go func() {
+		defer recoverLog("onPrjConfigRefresh")
 		for _, id := range ids {
 			s.loadExecConfig(id)
 		}

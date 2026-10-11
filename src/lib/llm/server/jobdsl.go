@@ -328,7 +328,10 @@ type dslExecStep struct {
 const jobMaxSteps = 200
 
 // runSubJob 执行 llm_run：读 script/file → dsl 解析 → 引擎执行（LLM 动词 = 子轮次）→ 汇总回填。
+// 由 server.domainExecute / turn.chatOnce 经 `go runSubJob` 后台派生（子作业）——入口加 panic 兜底：
+// 单个子作业的偶发 panic 不拖垮常驻服务（附属能力失败不阻断服务口径）。
 func (s *Server) runSubJob(parent *turnCtx, toolCallID string, node *TaskNode, args map[string]any) {
+	defer recoverLog("runSubJob")
 	script, err := jobScriptOf(parent.req.InstanceID, args)
 	if err != nil {
 		s.tasks.done(node.TaskID, TaskStateError, "", err.Error())

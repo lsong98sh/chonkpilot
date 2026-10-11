@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -48,6 +49,16 @@ func logf(format string, args ...any) {
 		_, _ = io.WriteString(w, line) // sink 写失败不影响 stdout（诊断优先）
 	}
 	_, _ = io.WriteString(os.Stdout, line)
+}
+
+// recoverLog 是后台 goroutine 的统一 panic 兜底（配 `defer recoverLog("<场景>")` 使用）：
+// 捕获 panic 并记日志（附堆栈），避免附属能力 / 子作业的偶发 panic 拖垮常驻服务
+// （与项目"附属能力失败不阻断服务"口径一致：配置刷新 / MCP 对账 / llm_run 子作业等后台
+// 任务失败只降级当次动作，不影响主路径与其他实例）。
+func recoverLog(scope string) {
+	if r := recover(); r != nil {
+		logf("[chonkpilot-server] 后台任务 panic（已恢复，不影响服务）: %s: %v\n%s\n", scope, r, debug.Stack())
+	}
 }
 
 // ── 启动分段计时（OP-15：定位启动慢，仅插桩，不改启动行为/顺序）──────────────

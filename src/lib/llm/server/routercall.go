@@ -149,12 +149,26 @@ func forwardRouterEvents(ctx context.Context, events <-chan router.Event, out ch
 	defer close(out)
 	var calls []router.ToolCall
 	sentDone := false
+	// send 非阻塞投递：消费方若已提前离开（如 ev.Err 后 break 不再排空）→ 生产端不得永久
+	// 阻塞在 `out <-`（否则 defer close(out) 不执行 → goroutine 泄漏）；ctx 取消即退出。
+	send := func(ev StreamEvent) bool {
+		select {
+		case out <- ev:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 	for ev := range events {
 		switch ev.Type {
 		case router.EvTextDelta:
-			out <- StreamEvent{Content: ev.Text, Model: ev.Model}
+			if !send(StreamEvent{Content: ev.Text, Model: ev.Model}) {
+				return
+			}
 		case router.EvReasoningDelta:
-			out <- StreamEvent{Reasoning: ev.Text, Model: ev.Model}
+			if !send(StreamEvent{Reasoning: ev.Text, Model: ev.Model}) {
+				return
+			}
 		case router.EvToolCall:
 			if ev.ToolCallFull != nil {
 				calls = append(calls, *ev.ToolCallFull)
@@ -164,10 +178,14 @@ func forwardRouterEvents(ctx context.Context, events <-chan router.Event, out ch
 			if len(calls) > 0 {
 				finish = "tool_calls" // 旧 chat 路径口径：有工具调用即 tool_calls
 			}
-			out <- StreamEvent{ToolCalls: FromRouterToolCalls(calls), Done: true, FinishReason: finish, Model: ev.Model}
+			if !send(StreamEvent{ToolCalls: FromRouterToolCalls(calls), Done: true, FinishReason: finish, Model: ev.Model}) {
+				return
+			}
 			sentDone = true
 		case router.EvError:
-			out <- StreamEvent{Err: mapRouterError(ev.Err)}
+			if !send(StreamEvent{Err: mapRouterError(ev.Err)}) {
+				return
+			}
 		}
 	}
 	if !sentDone && ctx.Err() != nil {

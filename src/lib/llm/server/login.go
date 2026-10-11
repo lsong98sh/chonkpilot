@@ -284,40 +284,59 @@ func (s *Server) ensureUserDataDir(uid string) error {
 //
 // 打开失败 → 返回 error（调用方按 `login-failed` 应答），不影响主路径
 // （与 capability watcher / 任务层同口径：附属能力失败不阻断服务）。
+//
+// 并发（双检锁）：快路径持 authMu 极短（无磁盘 IO）；慢路径**锁外**打开 bbolt，经 authOpenOnce
+// 保证唯一一次打开 —— 打开期间不持 authMu，故并发的 Authenticated()/userDataRootPath() 不被
+// 磁盘 IO 阻塞；auth/authErr/userDataRoot 的写入仍在 authMu 内，读写无竞态。
 func (s *Server) ensureAuth() error {
+	// 快路径：库已就绪 / 打开失败已缓存 → 直接返回（持锁极短）。
 	s.authMu.Lock()
-	defer s.authMu.Unlock()
 	if s.auth != nil {
+		s.authMu.Unlock()
 		return nil
 	}
 	if s.authErr != nil {
-		return s.authErr
-	}
-	dbPath := strings.TrimSpace(s.opts.AuthDBPath)
-	root := strings.TrimSpace(s.opts.UserDataRoot)
-	exeDir, err := exedir.Dir()
-	if err != nil {
-		exeDir = "."
-	}
-	if dbPath == "" {
-		dbPath = filepath.Join(exeDir, "auth.db")
-	}
-	if root == "" {
-		root = filepath.Join(exeDir, "data")
-	}
-	s.userDataRoot = root
-	lib, err := auth.OpenLocal(dbPath)
-	if err != nil {
-		logf("[chonkpilot-server] auth 库打开失败（认证不可用，login-* 一律 %s）: %s: %v\n",
-			loginErrFailed, dbPath, err)
-		s.authErr = err
+		err := s.authErr
+		s.authMu.Unlock()
 		return err
 	}
-	s.auth = lib       // Authenticator 门面（本地库实现；将来可换 OS 账号 / LDAP / OIDC）
-	s.authTokens = lib // 令牌签发/吊销面（同上装配位）
-	s.authz = lib      // 项目登记 + 用户-项目关联面（claim 归属校验用；同上装配位，2b-2）
-	s.authStop = func() { _ = lib.Close() }
-	logf("[chonkpilot-server] auth 库就绪: %s（用户数据根 %s；allowRegister=%v）\n",
-		lib.Path(), root, s.allowRegister())
-	return nil
+	s.authMu.Unlock()
+
+	// 慢路径：锁外打开库（磁盘 IO）。authOpenOnce 保证唯一一次（bbolt 文件锁下重复打开会
+	// 阻塞/超时）；并发调用者经 once 串行等待同一次结果（幂等）。
+	s.authOpenOnce.Do(func() {
+		dbPath := strings.TrimSpace(s.opts.AuthDBPath)
+		root := strings.TrimSpace(s.opts.UserDataRoot)
+		exeDir, err := exedir.Dir()
+		if err != nil {
+			exeDir = "."
+		}
+		if dbPath == "" {
+			dbPath = filepath.Join(exeDir, "auth.db")
+		}
+		if root == "" {
+			root = filepath.Join(exeDir, "data")
+		}
+		lib, err := auth.OpenLocal(dbPath) // 锁外磁盘 IO（关键：不阻塞并发 Authenticated()）
+		s.authMu.Lock()
+		defer s.authMu.Unlock()
+		if err != nil {
+			logf("[chonkpilot-server] auth 库打开失败（认证不可用，login-* 一律 %s）: %s: %v\n",
+				loginErrFailed, dbPath, err)
+			s.authErr = err
+			return
+		}
+		s.userDataRoot = root
+		s.auth = lib       // Authenticator 门面（本地库实现；将来可换 OS 账号 / LDAP / OIDC）
+		s.authTokens = lib // 令牌签发/吊销面（同上装配位）
+		s.authz = lib      // 项目登记 + 用户-项目关联面（claim 归属校验用；同上装配位，2b-2）
+		s.authStop = func() { _ = lib.Close() }
+		logf("[chonkpilot-server] auth 库就绪: %s（用户数据根 %s；allowRegister=%v）\n",
+			lib.Path(), root, s.allowRegister())
+	})
+	// 复核（双检）：返回本 goroutine 可见的打开结果。
+	s.authMu.Lock()
+	err := s.authErr
+	s.authMu.Unlock()
+	return err
 }

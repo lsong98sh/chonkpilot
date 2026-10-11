@@ -851,6 +851,10 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 		for ev := range events {
 			if ev.Err != nil {
 				streamErr = ev.Err
+				// 显式排空：生产端（forwardRouterEvents）可能仍阻塞在 `out <-`；此处 break 后
+				// 不再读取会使其永久阻塞、defer close(out) 不执行（goroutine 泄漏）→ 读到通道关闭为止。
+				for range events {
+				}
 				break
 			}
 			if ev.Reasoning != "" {
@@ -1066,6 +1070,14 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 			TopSession: topSession,
 			Parent:     node.TaskID,
 		}
+		// 主路径工具调用**不设硬 deadline**（评估结论，2026-10-11）：本调用沿 tc.ctx（仅 WithCancel，
+		// 无 deadline）出网，与 onToolRetry 的 15s 重试超时**口径不同、有意为止**——
+		//   - 异步工具（gateway 契约声明 async / 超阈值转后台）经 gwClient.Call 立即返回 pending +
+		//     task_id（见下方 taskID 分支），turn 挂起等回执，**不阻塞在单次 Call**，无需超时；
+		//   - 同步长时工具（read/build/… 无异步能力者）会真实阻塞在本 Call 直至 gateway 完成——
+		//     加硬上限会**误杀**长时工具（破坏功能），故不加；
+		//   - 收敛途径：用户停止（llm-cancel → tc.cancel）或实例退出（exitInstance → tc.Close →
+		//     cancel）会取消 tc.ctx，Call 随 ctx 取消返回；上游 gateway 自身的执行超时策略另行兜底。
 		res, taskID, err := tc.server.gc.Call(tc.ctx, name, args, ctxMsg)
 		if err != nil {
 			errText := "错误: " + err.Error()

@@ -326,6 +326,7 @@ func (s *Server) reconcileUserMCPs(instanceID string) {
 // 纯内存可同步，但统一放后台避免阻塞保存应答。
 func (s *Server) onUserConfigRefresh(_ string, _ []byte) {
 	go func() {
+		defer recoverLog("onUserConfigRefresh")
 		s.reloadToolAsyncOverrides() // 工具异步配置：变化才重注册（秒级生效，零新增主题）
 		s.reconcileLLMProviders()    // usr `llms` → router 动态增减（LR-11；纯内存，零额外主题）
 	}()
@@ -344,5 +345,8 @@ func (s *Server) onMCPConfigRefresh(_ string, payload []byte) {
 		InstanceID string `json:"instance_id"`
 	}
 	_ = json.Unmarshal(payload, &ev)
-	go s.reconcileUserMCPs(ev.InstanceID)
+	go func() {
+		defer recoverLog("onMCPConfigRefresh/reconcileUserMCPs")
+		s.reconcileUserMCPs(ev.InstanceID)
+	}()
 }
