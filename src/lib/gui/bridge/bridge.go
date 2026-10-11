@@ -293,20 +293,26 @@ func (b *Bridge) forwardEvent(subject string, payload []byte) {
 	b.notifyEventWaiters(typ, payload)
 }
 
-// isDataReply 判定「persist 同主题应答」信封：`data-*` 主题 + 带 `req_id` 与非空 `ok` 的载荷
-// （persist 应答恒含 req_id + ok；变更广播/业务事件不带 req_id）→ forwardEvent 据此跳过回投。
+// isDataReply 判定「persist 同主题应答」信封：`data-*` 主题 + 带 `req_id` 与非空 `ok`，且含
+// 应答专属信封键 `result` 或 `error` 的载荷（persist 应答恒含 req_id + ok + result|error，见
+// persist.isLoopbackReply；变更广播/业务事件不带 req_id）→ forwardEvent 据此跳过回投。
+//
+// 与 persist.isLoopbackReply（`ok + (result||error)`）对齐补上 `result||error` 判定：仅「req_id + ok」
+// 时曾把「恰好带 req_id+ok、无 result/error 的广播」误判为应答而静默丢弃（且不 notifyEventWaiters）。
 func isDataReply(subject string, payload []byte) bool {
 	if !strings.HasPrefix(subject, "data-") {
 		return false
 	}
 	var probe struct {
-		ReqID string `json:"req_id"`
-		OK    *bool  `json:"ok"`
+		ReqID  string          `json:"req_id"`
+		OK     *bool           `json:"ok"`
+		Result json.RawMessage `json:"result"`
+		Err    json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal(payload, &probe) != nil {
 		return false
 	}
-	return probe.ReqID != "" && probe.OK != nil
+	return probe.ReqID != "" && probe.OK != nil && (probe.Result != nil || probe.Err != nil)
 }
 
 // acceptEventInstance 判定事件归属是否属本实例（缺口 8）：载荷 instance 为空（无归属字段）

@@ -99,7 +99,7 @@ func stepCtx(parent context.Context, d time.Duration) (context.Context, context.
 // 核心流控 SET/IF/LOOP/PARALLEL/BREAK/CONTINUE/EXIT、变量与 {{}} 插值。首错即停。
 func Execute(parent context.Context, opt Options) (string, error) {
 	sess, _ := NewSession(opt)
-	sess.r.parent = parent
+	sess.SetParent(parent) // 统一经 SetParent 写入（startMu 保护），避免裸写 r.parent 绕过加锁路径
 	r := sess.r
 	actions := sess.Actions()
 	ast, err := dsl.Parse(opt.Script, actions)
@@ -477,13 +477,14 @@ func (r *Runner) stepOPN(st *Step) error {
 	if !ok {
 		return stepErr(st.Line, st.Raw, "syntax", "OPN 需要 URL")
 	}
-	// scheme 白名单：仅放行 http/https/file（拒绝 view-source:file:、filesystem: 等其它 scheme，
-	// 杜绝绕过沙箱读本地文件）。**解析失败 / 空 scheme 一律拒绝**（旧实现 `err == nil && u.Scheme != ""`
-	// 在解析失败或空 scheme 时跳过整段白名单，使 file: 读校验可被绕过）。file:// 导航等价本地读取，
-	// 须在 agentbox 允许读目录内。
+	// scheme 白名单：仅放行 http/https/file（拒绝 about:、data:、view-source:file:、filesystem: 等其它
+	// scheme，杜绝绕过沙箱读本地文件）。**解析失败 / 空 scheme（相对 URL、协议相对 URL 如 //host/path）
+	// 一律拒绝**（旧实现 `err == nil && u.Scheme != ""` 在解析失败或空 scheme 时跳过整段白名单，使 file:
+	// 读校验可被绕过）。file:// 导航等价本地读取，须在 agentbox 允许读目录内。
+	// 错误类别用专用 unsupported（而非 syntax）：被拒原因是「该 URL 形态不受支持」这一语义，非脚本语法错。
 	u, perr := url.Parse(rawURL)
 	if perr != nil || u.Scheme == "" {
-		return stepErr(st.Line, st.Raw, "syntax", "OPN 需要合法的 http/https/file URL: "+rawURL)
+		return stepErr(st.Line, st.Raw, "unsupported", "OPN 仅支持 http/https/file 绝对 URL（不支持相对 URL、协议相对 URL 与无 scheme URL）: "+rawURL)
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https":
@@ -497,7 +498,7 @@ func (r *Runner) stepOPN(st *Step) error {
 			return stepErr(st.Line, st.Raw, "path", err.Error())
 		}
 	default:
-		return stepErr(st.Line, st.Raw, "syntax", "OPN 仅支持 http/https/file URL，收到 scheme: "+u.Scheme)
+		return stepErr(st.Line, st.Raw, "unsupported", "OPN 仅支持 http/https/file URL，不支持 scheme: "+u.Scheme+"（如 about:、data:、view-source:）")
 	}
 	if err := chromedp.Run(r.context(), chromedp.Navigate(rawURL)); err != nil {
 		return stepErr(st.Line, st.Raw, "navigation", "打开失败: "+err.Error())

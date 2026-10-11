@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/uds"
@@ -159,9 +160,18 @@ func (o ServerOptions) logf(format string, args ...any) {
 // （server 恒读 uds.DefaultPath()，其含 CHONK_UDS 覆盖）→ 自定义 UDS 的测试/多实例场景
 // 能让子进程监听同一路径（否则父进程连自定义路径、子进程却监听约定 DefaultPath，永连不上）。
 // UDSPath 为空 → 返回 nil（继承父环境，子进程走约定 DefaultPath，生产无影响）。
+// 追加前**剔除父环境同名项**（避免 `CHONK_UDS` 出现重复项，Windows 下重复环境变量取值不确定）。
 func (o ServerOptions) serverEnv() []string {
 	if o.UDSPath == "" {
 		return nil
 	}
-	return append(os.Environ(), uds.EnvUDSPath+"="+o.UDSPath)
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if name, _, ok := strings.Cut(kv, "="); ok && strings.EqualFold(name, uds.EnvUDSPath) {
+			continue // 剔除同名项（Windows 环境变量名不区分大小写）
+		}
+		out = append(out, kv)
+	}
+	return append(out, uds.EnvUDSPath+"="+o.UDSPath)
 }

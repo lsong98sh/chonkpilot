@@ -541,17 +541,18 @@ func (c *Config) defaultsMap() map[string]any {
 func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
 	base := os.Environ()
 	out := make([]string, 0, len(base)+7)
-	// chrome = 本次将注入的 CHONK_CHROME（"" = 不注入）。仅当配置 ChromePath 非空（会回注同名键）
-	// 时才剔除宿主旧值；否则保留宿主继承，兑现文档承诺的「设 CHONK_CHROME 手动覆盖」。
-	chrome := c.chromeEnv()
+	// chrome = 本次将注入的 CHONK_CHROME（TrimSpace 后为 "" 则不注入）。剔除判据与注入判据统一用
+	// TrimSpace：避免纯空白 ChromePath「剔了旧值却不回注」的破坏性不对称。仅当会回注同名键时才剔除
+	// 宿主旧值；否则保留宿主继承，兑现文档承诺的「设 CHONK_CHROME 手动覆盖」。
+	chrome := strings.TrimSpace(c.chromeEnv())
 	for _, kv := range base {
 		name := kv
 		if i := strings.IndexByte(kv, '='); i >= 0 {
 			name = kv[:i]
 		}
-		// 剔除宿主残留：CHONKPILOT_* 上下文（避免泄漏第三方/上层上下文）；CHONK_CHROME 仅当
-		// 本次会回注同名键时剔除（否则形成重复键 / 透传宿主旧值；Windows 大小写不敏感，用 EqualFold）。
-		if strings.HasPrefix(name, "CHONKPILOT_") {
+		// 剔除宿主残留：CHONKPILOT_* 上下文（大小写不敏感，Windows 环境变量名不区分大小写，避免
+		// 重复键）；CHONK_CHROME 仅当本次会回注同名键时剔除（否则形成重复键 / 透传宿主旧值）。
+		if strings.HasPrefix(strings.ToUpper(name), "CHONKPILOT_") {
 			continue
 		}
 		if chrome != "" && strings.EqualFold(name, "CHONK_CHROME") {

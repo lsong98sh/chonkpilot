@@ -429,6 +429,12 @@ func callOpenDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]by
 	if dir == "" {
 		return nil, fmt.Errorf("path required")
 	}
+	// 目录存在性预检：PrjUsrFree 会在 `<dir>/.chonkpilot/` 内创建锁探针（MkdirAll + O_CREATE），
+	// 若对不存在路径直接调用会**凭空创建该目录**（副作用，且不校验目录存在）。故先 stat 校验
+	// 目录真实存在，否则按「无效路径」直接拒绝（不建目录、不 spawn、不记最近目录）。
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("invalid directory: %s", dir)
+	}
 	// 同 work-dir 单实例占用校验（I-74）：目标目录已被其它实例打开 → 明确报错（不 spawn、
 	// 不记最近目录），前端据 "workdir busy" 提示「该目录已被打开，请选择其它目录」。
 	// 口径统一到 **prjusr 单例锁**（`<work_dir>/.chonkpilot/chonkpilot.lock`）——桌面单体

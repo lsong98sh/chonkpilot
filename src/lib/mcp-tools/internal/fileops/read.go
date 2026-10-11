@@ -168,10 +168,12 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 	info["md5"], _ = fileMD5(resolved)
 	info["encoding"] = EncodingName(data)
 	info["lines"] = countLines(data)
-	// 截断文件（>32MB）：info["lines"] 只是**已读前缀**的行数，非全文行数。另给真实全文行数
-	// total_lines（流式扫描，O(1) 内存），避免调用方把前缀行数误当总行数。
+	// 截断文件（>32MB）：info["lines"] 只是**已读前缀**的行数，非全文行数。仅当**确需**全文行数
+	// （info=true 或 line_numbers=true）时才流式扫描 total_lines（O(1) 内存），避免「仅因 truncated
+	// 就无条件全量扫描」叠加 md5 造成的二次全量 I/O。
+	truncated := info["truncated"].(bool)
 	totalLines := -1
-	if info["truncated"].(bool) {
+	if truncated && (req.infoOnly || req.lineNumbers) {
 		if total, lerr := countFileLines(resolved); lerr == nil {
 			totalLines = total
 			info["total_lines"] = total
@@ -185,20 +187,19 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 	// R7-C-60：>32MB 文件的 tail 语义不能建立在截断前缀上（前缀尾 ≠ 文件尾）。
 	// 改为从文件末尾反向流式定位最后 N 行，与 file_read tail 契约（只读末尾 N 行）一致。
 	// line_numbers：readFileTail 原样返回内容，需按全文总行数补行号（旧实现丢行号）。
-	if info["truncated"].(bool) && req.tail > 0 {
+	if truncated && req.tail > 0 {
 		content, terr := readFileTail(resolved, req.tail)
 		if terr != nil {
 			info["error"] = terr.Error()
 			return info, terr
 		}
-		if req.lineNumbers && content != "" {
+		// 仅当基线（全文总行数）已知时才补行号：countFileLines 失败（totalLines<0）时**放弃行号**，
+		// 避免旧实现 base 回落 1 造成的「从 1 起」错误行号误导调用方。
+		if req.lineNumbers && content != "" && totalLines >= 0 {
 			tailN := strings.Count(content, "\n") + 1
-			base := 1
-			if totalLines >= 0 {
-				base = totalLines - tailN + 1
-				if base < 1 {
-					base = 1
-				}
+			base := totalLines - tailN + 1
+			if base < 1 {
+				base = 1
 			}
 			content = addLineNumbers(strings.Split(content, "\n"), base)
 		}
@@ -208,7 +209,7 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 
 	// >32MB 且带 ranges/start 时，行段语义建立在截断前缀上会与真实行号错位（静默错行），
 	// 显式报错而非误导（tail 有正确的末尾语义，已在上方单独处理；limit-only 取前 N 行与前缀一致，放行）。
-	if info["truncated"].(bool) && (len(req.ranges) > 0 || req.start > 0) {
+	if truncated && (len(req.ranges) > 0 || req.start > 0) {
 		err := fmt.Errorf("文件超过读取上限（%d 字节），不支持 ranges/start 行段读取，请改用 tail 或 info", maxReadBytes)
 		info["error"] = err.Error()
 		return info, err
@@ -220,7 +221,7 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 		return info, err
 	}
 	info["content"] = content
-	if !info["truncated"].(bool) {
+	if !truncated {
 		info["truncated"] = req.start > 0 || req.limit > 0 || req.tail > 0 || len(req.ranges) > 0
 	}
 	return info, nil
@@ -230,16 +231,19 @@ func infoMap(path, errMsg string) map[string]interface{} {
 	return map[string]interface{}{"path": path, "error": errMsg}
 }
 
-// countLines 统计逻辑行数（与 readContent 同语义：结尾换行不产生额外空行）。
+// countLines 统计逻辑行数（与 readContent/readFileTail/countFileLines **同语义**：仅去掉
+// **一个**尾换行，结尾的多个空行仍各计一行）。旧实现用 TrimRight 去掉**所有**尾换行，导致
+// 以多个空行结尾的文件中 countLines 与 countFileLines/readContent 互相矛盾。
 func countLines(data []byte) int {
 	if len(data) == 0 {
 		return 0
 	}
-	s := strings.TrimRight(string(data), "\n")
-	if s == "" {
-		return 1 // 文件仅由换行组成 → 视为 1 个空行
+	s := string(data)
+	nl := strings.Count(s, "\n")
+	if strings.HasSuffix(s, "\n") {
+		return nl // 去一个尾空行："a\nb\n"→2；"\n"→1；"\n\n"→2
 	}
-	return strings.Count(s, "\n") + 1
+	return nl + 1
 }
 
 // countFileLines 流式统计文件总行数（O(1) 内存，不整读大文件），行分割与 readContent/readFileTail
@@ -414,6 +418,21 @@ func readFileTail(path string, n int) (string, error) {
 	lines := strings.Split(content, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
+	}
+	// 反向扫描在**窗口耗尽**（pos>0，未到文件头）且窗口内行数不足以判定「首个完整行」时，buf 首行
+	// 可能是被截断的半行（chunk / maxTailScan 边界落在行中）——此时丢弃该半行，保证返回内容首行完整，
+	// 使调用方按行号基线标注时不错位（否则 tailN 按换行计数会整体错位）。判据：读 buf 前一个字节，
+	// 为 '\n' 则首行恰为行首（完整），否则为半行。若 buf 已覆盖到文件头（pos==0）或窗口内行数已 >n
+	// （首行本就不在选中范围内），则无半行问题。
+	if pos > 0 && len(lines) > 0 && len(lines) <= n {
+		atLineStart := false
+		prev := make([]byte, 1)
+		if rn, rerr := f.ReadAt(prev, pos-1); rerr == nil && rn == 1 && prev[0] == '\n' {
+			atLineStart = true
+		}
+		if !atLineStart {
+			lines = lines[1:]
+		}
 	}
 	if n > len(lines) {
 		n = len(lines)

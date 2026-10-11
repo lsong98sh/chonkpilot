@@ -221,6 +221,10 @@ func (s *testServer) hostGuard(next http.Handler) http.Handler {
 //   - `Sec-Fetch-Site: cross-site` → 拒（浏览器发起的跨站请求）；
 //   - `Origin` 存在且主机不在回环白名单 → 拒（跨源网页）；
 //   - 其余（无 Origin / 同源回环 Origin / 非浏览器）→ 放行。
+//
+// 说明：本校验**仅挡浏览器跨站**（无 Origin/Sec-Fetch-Site 的请求一律放行），**非完整防御**——
+// 本机任意进程/脚本（不带这两个头）仍可直连回环端口；安全边界依赖端口只绑 127.0.0.1 且不对
+// 外暴露（D-03 的 Host 白名单负责挡 DNS rebinding，二者合起来覆盖「浏览器侧」威胁模型）。
 func originAllowed(r *http.Request) bool {
 	if site := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); site == "cross-site" {
 		return false
