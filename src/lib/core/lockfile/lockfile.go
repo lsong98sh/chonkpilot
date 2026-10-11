@@ -25,6 +25,11 @@ var ErrUnsupported = errors.New("lockfile: not supported on this platform")
 // （`<prjusr>/chonkpilot.lock`）→ 同一项目在本机互斥（防两实例同时打开同一项目）。
 const PrjUsrLockName = "chonkpilot.lock"
 
+// ProjectDataDirName 是**项目数据根目录名**（`<work_dir>/.chonkpilot`）：flash / 桌面单体 /
+// CLI 的 prjusr 单例锁均按其拼接项目数据根（**单一字面量来源**，避免各模块各自维护独立常量、
+// 失配后「选目录预检」永不命中，见 I-74 / 62 §3A）。
+const ProjectDataDirName = ".chonkpilot"
+
 // PrjUsrLockPath 返回 prjusr 数据根下的单例锁文件路径（`<prjUsrRoot>/chonkpilot.lock`）。
 func PrjUsrLockPath(prjUsrRoot string) string {
 	return filepath.Join(prjUsrRoot, PrjUsrLockName)
@@ -34,6 +39,18 @@ func PrjUsrLockPath(prjUsrRoot string) string {
 // 返回的 Lock 须在进程存活期持有（`defer lock.Release()`）。
 func AcquirePrjUsr(prjUsrRoot string) (*Lock, error) {
 	return Acquire(PrjUsrLockPath(prjUsrRoot))
+}
+
+// PrjUsrFree 试获取即释放：prjusr 单例锁当前是否空闲（供「选目录前置校验」用，不持有）。
+// 非 ErrBusy 错误（锁设施故障 / 平台不支持）→ **放行**（true）：占用校验是体验增强，
+// 不应因锁设施故障阻断用户操作。
+func PrjUsrFree(prjUsrRoot string) bool {
+	l, err := AcquirePrjUsr(prjUsrRoot)
+	if err != nil {
+		return !errors.Is(err, ErrBusy)
+	}
+	l.Release()
+	return true
 }
 
 // workDirLocksDir 返回占用锁根目录：`<home>/.chonkpilot/locks`（与 llm server 的

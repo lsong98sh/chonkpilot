@@ -24,7 +24,6 @@ type Chromium struct {
 	inited                uintptr
 	envCompleted          *iCoreWebView2CreateCoreWebView2EnvironmentCompletedHandler
 	controllerCompleted   *iCoreWebView2CreateCoreWebView2ControllerCompletedHandler
-	webMessageReceived    *iCoreWebView2WebMessageReceivedEventHandler
 	permissionRequested   *iCoreWebView2PermissionRequestedEventHandler
 	webResourceRequested  *iCoreWebView2WebResourceRequestedEventHandler
 	acceleratorKeyPressed *ICoreWebView2AcceleratorKeyPressedEventHandler
@@ -56,7 +55,6 @@ type Chromium struct {
 	globalPermission *CoreWebView2PermissionState
 
 	// Callbacks
-	MessageCallback              func(string)
 	WebResourceRequestedCallback func(request *ICoreWebView2WebResourceRequest, args *ICoreWebView2WebResourceRequestedEventArgs)
 	NavigationCompletedCallback  func(sender *ICoreWebView2, args *ICoreWebView2NavigationCompletedEventArgs)
 	AcceleratorKeyCallback       func(uint) bool
@@ -77,7 +75,6 @@ func NewChromium() *Chromium {
 	*/
 	e.envCompleted = newICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler(e)
 	e.controllerCompleted = newICoreWebView2CreateCoreWebView2ControllerCompletedHandler(e)
-	e.webMessageReceived = newICoreWebView2WebMessageReceivedEventHandler(e)
 	e.permissionRequested = newICoreWebView2PermissionRequestedEventHandler(e)
 	e.webResourceRequested = newICoreWebView2WebResourceRequestedEventHandler(e)
 	e.acceleratorKeyPressed = newICoreWebView2AcceleratorKeyPressedEventHandler(e)
@@ -153,7 +150,6 @@ func (e *Chromium) Embed(hwnd uintptr) bool {
 		log.Printf("WebView2 initialization failed: %v", err)
 		return false
 	}
-	e.Init("window.external={invoke:s=>window.chrome.webview.postMessage(s)}")
 	return true
 }
 
@@ -306,11 +302,6 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 	_, _, _ = e.webview.vtbl.AddRef.Call(
 		uintptr(unsafe.Pointer(e.webview)),
 	)
-	_, _, _ = e.webview.vtbl.AddWebMessageReceived.Call(
-		uintptr(unsafe.Pointer(e.webview)),
-		uintptr(unsafe.Pointer(e.webMessageReceived)),
-		uintptr(unsafe.Pointer(&token)),
-	)
 	_, _, _ = e.webview.vtbl.AddPermissionRequested.Call(
 		uintptr(unsafe.Pointer(e.webview)),
 		uintptr(unsafe.Pointer(e.permissionRequested)),
@@ -341,23 +332,6 @@ func (e *Chromium) CreateCoreWebView2ControllerCompleted(res uintptr, controller
 	return 0
 }
 
-func (e *Chromium) MessageReceived(sender *ICoreWebView2, args *iCoreWebView2WebMessageReceivedEventArgs) uintptr {
-	var message *uint16
-	_, _, _ = args.vtbl.TryGetWebMessageAsString.Call(
-		uintptr(unsafe.Pointer(args)),
-		uintptr(unsafe.Pointer(&message)),
-	)
-	if e.MessageCallback != nil {
-		e.MessageCallback(w32.Utf16PtrToString(message))
-	}
-	_, _, _ = sender.vtbl.PostWebMessageAsString.Call(
-		uintptr(unsafe.Pointer(sender)),
-		uintptr(unsafe.Pointer(message)),
-	)
-	windows.CoTaskMemFree(unsafe.Pointer(message))
-	return 0
-}
-
 func (e *Chromium) SetPermission(kind CoreWebView2PermissionKind, state CoreWebView2PermissionState) {
 	e.permissions[kind] = state
 }
@@ -370,7 +344,7 @@ func (e *Chromium) PermissionRequested(_ *ICoreWebView2, args *iCoreWebView2Perm
 	var kind CoreWebView2PermissionKind
 	_, _, _ = args.vtbl.GetPermissionKind.Call(
 		uintptr(unsafe.Pointer(args)),
-		uintptr(kind),
+		uintptr(unsafe.Pointer(&kind)),
 	)
 	var result CoreWebView2PermissionState
 	if e.globalPermission != nil {

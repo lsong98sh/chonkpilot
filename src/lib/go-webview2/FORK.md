@@ -55,6 +55,13 @@
 > 窗口/生命周期/能力接口，`pkg/edge` 侧仅在需要支撑上述能力处有配套扩展（如 `CapturePreview`、
 > `ExecuteScriptWithResult`、`Show`、`AcceleratorKeyCallback`）。
 
+> **本地移除（相对上游）**：本 fork **已移除** `Bind` / `MessageReceived` / `MessageCallback` 及
+> `window.external` **注入链路**（上游的「宿主 ↔ JS 双向绑定 / 消息回调」入口）。本仓宿主 → 前端的
+> **事件透传仅经 `Eval` → `window.mq.emitRemote`**（单向投递，见 [11-MQ与消息](../../docs/spec/10-architecture/11-MQ与消息.md) ·
+> [20-gui](../../docs/spec/20-modules/20-gui.md) §12），**不再经 `window.external` 注入**。`webview.go`
+> 保留 `Init(js)`（= `AddScriptToExecuteOnDocumentCreated`，注入前端桥 shim）与 `Eval` / `EvalWithResult`；
+> `pkg/edge` 的 COM 级 `MessageReceived` 绑定保留（属上游 COM 层，本仓未使用）。
+
 ## 4. 升级路径
 
 1. 取上游目标版本：以 §2 记录的基准 commit `5659883` 为锚，`git -C <upstream-clone> log` 增量前进；上游无 tag/release，最新即 `master` HEAD。

@@ -80,7 +80,15 @@ type Scope struct {
 	// isolated 标记**并发边界作用域**（PARALLEL 分支 / 并发 LOOP 迭代）：其赋值只写本
 	// 作用域、不回写祖先，避免多 goroutine 并发改写共享 map（§6.1「分支捕获互不可见」）。
 	isolated bool
+	// curLn 是当前正在执行的动作语句源码行号（execAction 调用前写入本作用域）；供动作按
+	// **语句位置**区分同参数的不同语句（如脚本内出现两条字面相同的 LLM 语句时，不能以参数
+	// 文本为身份）。并发分支各自持有独立 scope → 写入无竞争。
+	curLn int
 }
+
+// StmtLine 返回当前动作语句的源码行号（0 = 非动作执行期）。动作实现可据此按语句位置区分
+// 同参数的不同语句（见 Scope.curLn）。
+func (s *Scope) StmtLine() int { return s.curLn }
 
 func newScope(eng *Engine, parent *Scope) *Scope {
 	return &Scope{eng: eng, parent: parent, vars: map[string]any{}}
@@ -401,6 +409,7 @@ func (e *Engine) execAction(sc *Scope, st *ActionStmt) error {
 	if st.RawArgsMode {
 		args = st.RawArgs // Raw 动作：参数原文透传（工具动词坐标/按键等自由文法）
 	}
+	sc.curLn = st.Ln // 语句位置（供动作按行号区分同参数语句；见 Scope.StmtLine）
 	text, err := a.Run(sc, args)
 	if err != nil {
 		return err

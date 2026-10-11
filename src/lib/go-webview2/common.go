@@ -68,17 +68,6 @@ type WebView interface {
 	Init(js string)
 
 	// Eval evaluates arbitrary JavaScript code. Evaluation happens asynchronously,
-	// also the result of the expression is ignored. Use RPC bindings if you want
-	// to receive notifications about the results of the evaluation.
+	// also the result of the expression is ignored.
 	Eval(js string)
-
-	// Bind binds a callback function so that it will appear under the given name
-	// as a global JavaScript function. Internally it uses webview_init().
-	// Callback receives a request string and a user-provided argument pointer.
-	// Request string is a JSON array of all the arguments passed to the
-	// JavaScript function.
-	//
-	// f must be a function
-	// f must return either value and error or just error
-	Bind(name string, f interface{}) error
 }

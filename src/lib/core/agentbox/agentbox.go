@@ -12,8 +12,10 @@
 // 本包**不**做 I/O，只做策略换算（security-* → 允许集）、路径判定与环境编解码；
 // 强制点在各消费方（executor 的文件操作 choke point / gateway 的 spawn 环境）。
 //
-// 未实现（如实标注）：① 符号链接解析（`EvalSymlinks`）——判定按**字面路径**归一，不追
-// 软链；② 审计落 DataDir（14 §5 规划）——拒绝仅记 stderr 一行（宿主捕获落日志），不写文件。
+// 未实现（如实标注）：审计落 DataDir（14 §5 规划）——拒绝仅记 stderr 一行（宿主捕获落日志），
+// 不写文件。链接解析已在判定前生效：逐段 `os.Readlink`（兼容 Windows 目录联接 junction）解析真实落点，
+// 不存在（新建目标）的路径段原样拼回 = 「解析最近存在祖先 + 拼接剩余分量」（对齐 42 决策 A-29）；
+// 允许目录与目标两侧统一同法。
 package agentbox
 
 import (
@@ -173,7 +175,7 @@ func (p *Policy) match(path string, write bool) bool {
 	return false
 }
 
-// normalizeDir 归一允许目录：`~` 展开 → Abs(Clean)。
+// normalizeDir 归一允许目录：`~` 展开 → Abs(Clean) → 解析链接（软链/junction；含最近存在祖先）。
 func normalizeDir(dir string) string {
 	d := strings.TrimSpace(dir)
 	if d == "" {
@@ -190,10 +192,10 @@ func normalizeDir(dir string) string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Clean(abs)
+	return resolveRealPath(filepath.Clean(abs))
 }
 
-// normalizeTarget 归一被判定路径：非空 → Abs(Clean)。
+// normalizeTarget 归一被判定路径：非空 → Abs(Clean) → 解析链接（软链/junction；含最近存在祖先）。
 func normalizeTarget(path string) (string, bool) {
 	s := strings.TrimSpace(path)
 	if s == "" {
@@ -203,7 +205,49 @@ func normalizeTarget(path string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return filepath.Clean(abs), true
+	return resolveRealPath(filepath.Clean(abs)), true
+}
+
+// resolveRealPath 解析路径的符号链接 / Windows 目录联接（junction）后的**真实落点**：逐段
+// os.Readlink 解析（**filepath.EvalSymlinks 不解析 Windows 目录联接**，而 os.Readlink 对符号链接与
+// 目录联接均返回目标），不存在的路径段（新建目标）原样拼回 = 「解析最近存在祖先 + 拼接剩余分量」
+// （对齐 42 决策 A-29 的语义，并兼容 junction）。链接自环 / 过深（>64 次替换）→ 回退字面路径（保守）。
+// 允许目录与目标两侧**统一**走本函数，避免旧实现的不对称（旧实现仅对已存在路径 EvalSymlinks）：
+// ①允许目录为链接时其下不存在的新建子路径被误拒；②目标经链接父目录的越界写被放行。
+func resolveRealPath(abs string) string {
+	p := filepath.Clean(abs)
+	for i := 0; i < 64; i++ {
+		next, changed := resolveLinksOnce(p)
+		if !changed {
+			return next
+		}
+		p = next
+	}
+	return abs
+}
+
+// resolveLinksOnce 对 p 逐段前进，遇到可 os.Readlink 的组件（符号链接 / Windows 目录联接）即用其
+// 目标替换（相对目标按链接所在目录解析）；不存在的段原样拼回。返回解析后路径与是否发生过替换。
+func resolveLinksOnce(p string) (string, bool) {
+	vol := filepath.VolumeName(p)
+	cur := vol + string(filepath.Separator)
+	changed := false
+	for _, seg := range strings.Split(strings.TrimPrefix(p, vol), string(filepath.Separator)) {
+		if seg == "" {
+			continue
+		}
+		next := filepath.Join(cur, seg)
+		if tgt, err := os.Readlink(next); err == nil {
+			if !filepath.IsAbs(tgt) {
+				tgt = filepath.Join(cur, tgt)
+			}
+			cur = filepath.Clean(tgt)
+			changed = true
+			continue
+		}
+		cur = next
+	}
+	return cur, changed
 }
 
 // contains 报告 target 是否等于 dir 或位于 dir 之下（递归；Windows 大小写不敏感）。
