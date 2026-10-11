@@ -47,12 +47,12 @@ type Workspace struct {
 
 	mu    sync.Mutex // 保护 meta
 	recMu sync.Mutex // 就绪/重建单飞：同一 workdir 不平行执行
-	zmu   sync.Mutex // zvec 集合操作串行 + 保护 coll 指针（底层句柄非并发安全）
-	coll  *zvec.Collection
-	// loaded 是「coll 是否已载入」的**原子快照位**（由 zmu 临界区内的 setColl 唯一维护）：
-	// Status / EnsureReady 据此读取载入态，无需等待 Initialize 的整段长 zmu 临界区。
-	loaded atomic.Bool
-	meta   Meta
+	zmu   sync.Mutex // zvec 集合操作串行 + 保护集合的生命周期
+	// coll 是集合句柄的**单原子指针**（由 zmu 临界区内的 setColl 唯一写入）：「是否已载入」
+	// 由 coll.Load() != nil 派生（见 isLoaded）。Status / EnsureReady 据此读取载入态，无需等待
+	// Initialize 的整段长 zmu 临界区；单原子写入消除「先改 coll 再改标志」两段式带来的瞬时误报。
+	coll atomic.Pointer[zvec.Collection]
+	meta Meta
 	// docsToken 转换服务鉴权 token（仅内存，绝不落盘/落日志；每次 vfts_configure 下发）。
 	docsToken string
 }
@@ -78,12 +78,14 @@ func (w *Workspace) collPath() string {
 	return filepath.Join(filepath.FromSlash(w.Store), collDir)
 }
 
-// setColl 记录集合句柄并同步 loaded 快照位（**须持 zmu**；coll 赋值的唯一入口，
-// 保证 loaded 位与实际指针一致）。
+// setColl 记录集合句柄（**须持 zmu**；coll 赋值的唯一入口）。atomic.Pointer 写入即原子发布，
+// 「是否已载入」由句柄非空派生，无「先改句柄再改标志」的两段式窗口。
 func (w *Workspace) setColl(c *zvec.Collection) {
-	w.coll = c
-	w.loaded.Store(c != nil)
+	w.coll.Store(c)
 }
+
+// isLoaded coll 是否已载入（原子快照，不取 zmu）。
+func (w *Workspace) isLoaded() bool { return w.coll.Load() != nil }
 
 // Open 获取（进程内复用或从盘恢复）指定 workdir 的工作区。
 func Open(dir string) (*Workspace, error) {
@@ -124,8 +126,8 @@ func Drop(dir string) {
 	defer wsMu.Unlock()
 	if w, ok := wsReg[abs]; ok {
 		w.zmu.Lock()
-		if w.coll != nil {
-			_ = w.coll.Close()
+		if c := w.coll.Load(); c != nil {
+			_ = c.Close()
 			w.setColl(nil)
 		}
 		w.zmu.Unlock()
@@ -154,7 +156,9 @@ func (w *Workspace) loadMeta() error {
 		m.State = ""
 		m.Err = ""
 	}
+	w.mu.Lock()
 	w.meta = m
+	w.mu.Unlock()
 	return nil
 }
 
@@ -210,7 +214,7 @@ func (w *Workspace) Status() Status {
 	w.mu.Lock()
 	m := w.meta
 	w.mu.Unlock()
-	loaded := w.loaded.Load() // 原子快照位：不取 zmu，避免与 Initialize 长临界区耦合而阻塞状态查询
+	loaded := w.isLoaded() // 原子快照位：不取 zmu，避免与 Initialize 长临界区耦合而阻塞状态查询
 	exts := m.Exts
 	if len(exts) == 0 {
 		exts = defaultExts()
@@ -257,8 +261,8 @@ func CloseAll() {
 	wsMu.Lock()
 	for _, w := range wsReg {
 		w.zmu.Lock()
-		if w.coll != nil {
-			_ = w.coll.Close()
+		if c := w.coll.Load(); c != nil {
+			_ = c.Close()
 			w.setColl(nil)
 		}
 		w.zmu.Unlock()

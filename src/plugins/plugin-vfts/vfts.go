@@ -993,9 +993,10 @@ func (p *Vfts) startProgressPoll(r *workRec) func() {
 // rebuildDebouncer 按 key 合并短窗口内的多次调度：同一 key 在窗口内重复 schedule 只保留
 // 最后一次（重置计时），窗口到期触发一次 fn。单次变更仍会（延迟 window 后）触发——不丢重建。
 type rebuildDebouncer struct {
-	window time.Duration
-	mu     sync.Mutex
-	timers map[string]*time.Timer
+	window  time.Duration
+	mu      sync.Mutex
+	timers  map[string]*time.Timer
+	stopped bool // Stop 后置位：schedule 拒绝再登记（关闭 Stop 与 schedule 之间的窄窗口竞态）
 }
 
 // newRebuildDebouncer 构造去抖器（window<=0 → defaultRebuildDebounce）。
@@ -1007,9 +1008,13 @@ func newRebuildDebouncer(window time.Duration) *rebuildDebouncer {
 }
 
 // schedule 登记 key 的一次触发：窗口内重复调度重置计时，仅最后一次生效。
+// 已 Stop（stopAll 置 stopped）→ 拒绝登记，关闭 Stop 与 schedule 之间的窄窗口竞态。
 func (d *rebuildDebouncer) schedule(key string, fn func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.stopped {
+		return
+	}
 	if t := d.timers[key]; t != nil {
 		t.Stop()
 	}
@@ -1025,10 +1030,12 @@ func (d *rebuildDebouncer) schedule(key string, fn func()) {
 	d.timers[key] = t
 }
 
-// stopAll 停止并清空全部去抖定时器（Stop 收尾用；已 fire 的回调由插件 stopped 标志门控，不再 spawn 引擎）。
+// stopAll 停止并清空全部去抖定时器并置 stopped（Stop 收尾用；此后再 schedule 一律拒绝；
+// 已 fire 的回调由插件 stopped 标志门控，不再 spawn 引擎）。
 func (d *rebuildDebouncer) stopAll() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.stopped = true
 	for k, t := range d.timers {
 		t.Stop()
 		delete(d.timers, k)

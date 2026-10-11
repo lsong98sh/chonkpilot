@@ -286,8 +286,8 @@ func (w *Workspace) Initialize(exts, skipDirs []string, stackGitignore *bool) (*
 	// 关闭旧集合并清空落盘目录（全量重建）
 	w.zmu.Lock()
 	defer w.zmu.Unlock()
-	if w.coll != nil {
-		_ = w.coll.Close()
+	if c := w.coll.Load(); c != nil {
+		_ = c.Close()
 		w.setColl(nil)
 	}
 	if err := os.RemoveAll(w.collPath()); err != nil {
@@ -515,8 +515,8 @@ func (w *Workspace) Incremental(files []IncrementalFile, removes []IncrementalRe
 
 // ensureCollLocked 确保集合已打开（须持 zmu）：内存有则复用；盘上有则打开；否则新建。
 func (w *Workspace) ensureCollLocked() (*zvec.Collection, error) {
-	if w.coll != nil {
-		return w.coll, nil
+	if c := w.coll.Load(); c != nil {
+		return c, nil
 	}
 	if _, err := os.Stat(w.collPath()); err == nil {
 		coll, err := openCollection(w.collPath())
@@ -540,32 +540,39 @@ func (w *Workspace) ensureCollLocked() (*zvec.Collection, error) {
 
 // EnsureReady 查询前的统一就绪处理：确认集合可用并返回状态。
 // state 返回 ready/indexing/not_initialized/error。
+//
+// 快路径（已载入）：直接读 meta 状态返回，**不取 recMu/zmu** —— Initialize/Incremental 全程持
+// recMu（含长 collectFiles/建索引/写入），若快路径也取 recMu 则重建期间查询门被整段阻塞，违背
+// 「免阻塞查询门」；仅在**未载入**时才取 recMu（就绪/重建单飞）做懒加载/校验落盘集合。
 func (w *Workspace) EnsureReady() (string, error) {
+	if w.isLoaded() {
+		return w.readState()
+	}
 	w.recMu.Lock()
 	defer w.recMu.Unlock()
+	w.zmu.Lock()
+	if w.coll.Load() == nil { // 等锁期间可能已被载入 → 二次确认，避免重复打开
+		if _, err := os.Stat(w.collPath()); err != nil {
+			w.zmu.Unlock()
+			return "not_initialized", ErrNotInitialized
+		}
+		coll, err := openCollection(w.collPath())
+		if err != nil {
+			w.zmu.Unlock()
+			return "error", fmt.Errorf("打开 vfts 集合失败: %w", err)
+		}
+		w.setColl(coll)
+	}
+	w.zmu.Unlock()
+	return w.readState()
+}
+
+// readState 读取 meta 状态并映射为查询门控结果。
+func (w *Workspace) readState() (string, error) {
 	w.mu.Lock()
 	st := w.meta.State
 	errMsg := w.meta.Err
 	w.mu.Unlock()
-
-	// 载入态先读原子快照位（不取 zmu）：已载入则免锁，避免与 Initialize 的整段长 zmu 临界区
-	// 耦合而阻塞查询门；仅在未载入时用短 zmu 懒加载/校验落盘集合。
-	if !w.loaded.Load() {
-		w.zmu.Lock()
-		if w.coll == nil {
-			if _, err := os.Stat(w.collPath()); err != nil {
-				w.zmu.Unlock()
-				return "not_initialized", ErrNotInitialized
-			}
-			coll, err := openCollection(w.collPath())
-			if err != nil {
-				w.zmu.Unlock()
-				return "error", fmt.Errorf("打开 vfts 集合失败: %w", err)
-			}
-			w.setColl(coll)
-		}
-		w.zmu.Unlock()
-	}
 	switch st {
 	case "error":
 		return "error", fmt.Errorf("索引出错：%s", errMsg)
@@ -586,7 +593,7 @@ func (w *Workspace) Query(match, expr string, topK int, pathFilter string) ([]ft
 	}
 	w.zmu.Lock()
 	defer w.zmu.Unlock()
-	coll := w.coll
+	coll := w.coll.Load()
 	if coll == nil {
 		return nil, ErrNotInitialized
 	}

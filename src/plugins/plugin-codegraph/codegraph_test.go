@@ -202,7 +202,7 @@ func TestRunWithRetry(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
-			err := runWithRetry(context.Background(), tc.attempts, 0, func() error {
+			err := runWithRetry(context.Background(), tc.attempts, 0, nil, func() error {
 				calls++
 				if calls <= tc.fails {
 					return errors.New("boom")

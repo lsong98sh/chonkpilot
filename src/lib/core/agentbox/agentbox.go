@@ -192,7 +192,11 @@ func normalizeDir(dir string) string {
 	if err != nil {
 		return ""
 	}
-	return resolveRealPath(filepath.Clean(abs))
+	real, ok := resolveRealPath(filepath.Clean(abs))
+	if !ok {
+		return "" // 链接链过深（fail-closed）：丢弃该允许目录规则
+	}
+	return real
 }
 
 // normalizeTarget 归一被判定路径：非空 → Abs(Clean) → 解析链接（软链/junction；含最近存在祖先）。
@@ -205,25 +209,31 @@ func normalizeTarget(path string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return resolveRealPath(filepath.Clean(abs)), true
+	real, ok := resolveRealPath(filepath.Clean(abs))
+	if !ok {
+		return "", false // 链接链过深（fail-closed）：判定为不可解析 → 拒绝
+	}
+	return real, true
 }
 
 // resolveRealPath 解析路径的符号链接 / Windows 目录联接（junction）后的**真实落点**：逐段
 // os.Readlink 解析（**filepath.EvalSymlinks 不解析 Windows 目录联接**，而 os.Readlink 对符号链接与
 // 目录联接均返回目标），不存在的路径段（新建目标）原样拼回 = 「解析最近存在祖先 + 拼接剩余分量」
-// （对齐 42 决策 A-29 的语义，并兼容 junction）。链接自环 / 过深（>64 次替换）→ 回退字面路径（保守）。
+// （对齐 42 决策 A-29 的语义，并兼容 junction）。链接自环 / 过深（>64 次替换）→ **fail-closed**：
+// 返回 ("", false)（「永不命中」值），由调用方拒绝（允许目录侧丢弃该规则、目标侧判为越界）——
+// 不回退字面路径，避免「64+ 段软链链终点指向外」被 fail-open 放行。
 // 允许目录与目标两侧**统一**走本函数，避免旧实现的不对称（旧实现仅对已存在路径 EvalSymlinks）：
 // ①允许目录为链接时其下不存在的新建子路径被误拒；②目标经链接父目录的越界写被放行。
-func resolveRealPath(abs string) string {
+func resolveRealPath(abs string) (string, bool) {
 	p := filepath.Clean(abs)
 	for i := 0; i < 64; i++ {
 		next, changed := resolveLinksOnce(p)
 		if !changed {
-			return next
+			return next, true
 		}
 		p = next
 	}
-	return abs
+	return "", false
 }
 
 // resolveLinksOnce 对 p 逐段前进，遇到可 os.Readlink 的组件（符号链接 / Windows 目录联接）即用其
@@ -247,7 +257,20 @@ func resolveLinksOnce(p string) (string, bool) {
 		}
 		cur = next
 	}
-	return cur, changed
+	return trimVolumeRootSep(cur), changed
+}
+
+// trimVolumeRootSep 去掉 volume-root（`C:\` / UNC 共享根 `\\server\share\`）的尾分隔符：
+// filepath.Clean 对 volume root **保留**尾分隔符（`Clean("C:\\") == "C:\\"`、
+// `Clean("\\\\server\\share\\") == "\\\\server\\share\\"`），故显式裁剪，使 contains 的
+// `dir+分隔符` 前缀比较成立（否则「目录规则 = 盘根 / UNC 共享根」永不命中）。
+// 非 volume-root 结果（如 `C:\a\b`）本就不带尾分隔符，不受影响。
+func trimVolumeRootSep(p string) string {
+	sep := string(filepath.Separator)
+	if len(p) > 1 && strings.HasSuffix(p, sep) {
+		return strings.TrimRight(p, sep)
+	}
+	return p
 }
 
 // contains 报告 target 是否等于 dir 或位于 dir 之下（递归；Windows 大小写不敏感）。

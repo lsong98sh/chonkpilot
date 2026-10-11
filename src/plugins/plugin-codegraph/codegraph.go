@@ -803,9 +803,10 @@ func (p *Codegraph) clearWorkspace(wd string) {
 // rebuildDebouncer 按 key 合并短窗口内的多次调度：同一 key 在窗口内重复 schedule 只保留
 // 最后一次（重置计时），窗口到期触发一次 fn。单次变更仍会（延迟 window 后）触发——不丢重建。
 type rebuildDebouncer struct {
-	window time.Duration
-	mu     sync.Mutex
-	timers map[string]*time.Timer
+	window  time.Duration
+	mu      sync.Mutex
+	timers  map[string]*time.Timer
+	stopped bool // Stop 后置位：schedule 拒绝再登记（关闭 Stop 与 schedule 之间的窄窗口竞态）
 }
 
 // newRebuildDebouncer 构造去抖器（window<=0 → defaultRebuildDebounce）。
@@ -817,9 +818,13 @@ func newRebuildDebouncer(window time.Duration) *rebuildDebouncer {
 }
 
 // schedule 登记 key 的一次触发：窗口内重复调度重置计时，仅最后一次生效。
+// 已 Stop（stopAll 置 stopped）→ 拒绝登记，关闭 Stop 与 schedule 之间的窄窗口竞态。
 func (d *rebuildDebouncer) schedule(key string, fn func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.stopped {
+		return
+	}
 	if t := d.timers[key]; t != nil {
 		t.Stop()
 	}
@@ -835,10 +840,12 @@ func (d *rebuildDebouncer) schedule(key string, fn func()) {
 	d.timers[key] = t
 }
 
-// stopAll 停止并清空全部去抖定时器（Stop 收尾用；已 fire 的回调由插件 stopped 标志门控，不再 spawn 引擎）。
+// stopAll 停止并清空全部去抖定时器并置 stopped（Stop 收尾用；此后再 schedule 一律拒绝；
+// 已 fire 的回调由插件 stopped 标志门控，不再 spawn 引擎）。
 func (d *rebuildDebouncer) stopAll() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.stopped = true
 	for k, t := range d.timers {
 		t.Stop()
 		delete(d.timers, k)
@@ -949,19 +956,26 @@ func (p *Codegraph) clientFor(wd string) engineClient {
 	return rec.c
 }
 
+// 引擎调用哨兵错误：**非瞬态**（插件已停止 / 引擎缺失），callWithRetry 不重试
+// （避免 Stop 后仍空转退避、或引擎缺席时无谓重试）。
+var (
+	errEngineUnavailable = errors.New("codegraph: 引擎不可用（未就绪）")
+	errPluginStopped     = errors.New("codegraph: 插件已停止")
+)
+
 // engineCall 调引擎工具（client 取自 args["workdir"] 对应的**该 workdir 独立**子进程；
 // client 内部串行，传输失败自动重连一次）。
 func (p *Codegraph) engineCall(ctx context.Context, name string, args map[string]any) (string, error) {
 	if p.engineMissing {
-		return "", errors.New("codegraph: 引擎不可用（未就绪）")
+		return "", errEngineUnavailable
 	}
 	if p.stopped.Load() {
-		return "", errors.New("codegraph: 插件已停止")
+		return "", errPluginStopped
 	}
 	wd, _ := args["workdir"].(string)
 	c := p.clientFor(wd)
 	if c == nil {
-		return "", errors.New("codegraph: 插件已停止")
+		return "", errPluginStopped
 	}
 	text, isErr, err := c.call(ctx, name, args)
 	if err != nil {
@@ -973,10 +987,11 @@ func (p *Codegraph) engineCall(ctx context.Context, name string, args map[string
 	return text, nil
 }
 
-// callWithRetry 调引擎工具并在失败时按 Options.RetryAttempts/RetryBackoff 重试（含首次）。
+// callWithRetry 调引擎工具并在失败时按 Options.RetryAttempts/RetryBackoff 重试（含首次）；
+// 插件已停止 / 引擎缺失等**非瞬态哨兵错误不重试**（retryableEngineErr）。
 func (p *Codegraph) callWithRetry(ctx context.Context, name string, args map[string]any) (string, error) {
 	var text string
-	err := runWithRetry(ctx, p.opt.RetryAttempts, p.opt.RetryBackoff, func() error {
+	err := runWithRetry(ctx, p.opt.RetryAttempts, p.opt.RetryBackoff, retryableEngineErr, func() error {
 		var e error
 		text, e = p.engineCall(ctx, name, args)
 		return e
@@ -984,9 +999,15 @@ func (p *Codegraph) callWithRetry(ctx context.Context, name string, args map[str
 	return text, err
 }
 
+// retryableEngineErr 判定引擎调用错误是否值得重试：停止态 / 引擎缺失为非瞬态哨兵 → 不重试。
+func retryableEngineErr(err error) bool {
+	return !errors.Is(err, errPluginStopped) && !errors.Is(err, errEngineUnavailable)
+}
+
 // runWithRetry 执行 fn 至多 attempts 次（首次 + attempts-1 次重试）；每次失败后按 backoff 退避，
-// ctx 取消即停。attempts <= 0 视为 1。返回最后一次错误（全部成功则 nil）。
-func runWithRetry(ctx context.Context, attempts int, backoff time.Duration, fn func() error) error {
+// ctx 取消即停；retryable != nil 且返回 false 时立即返回（不再退避空转）。
+// attempts <= 0 视为 1。返回最后一次错误（全部成功则 nil）。
+func runWithRetry(ctx context.Context, attempts int, backoff time.Duration, retryable func(error) bool, fn func() error) error {
 	if attempts <= 0 {
 		attempts = 1
 	}
@@ -997,6 +1018,9 @@ func runWithRetry(ctx context.Context, attempts int, backoff time.Duration, fn f
 		}
 		if i == attempts-1 {
 			break
+		}
+		if retryable != nil && !retryable(err) {
+			break // 非可重试错误（哨兵）：立即返回，不再退避空转
 		}
 		if backoff > 0 {
 			select {

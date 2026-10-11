@@ -52,7 +52,8 @@ func tasktreeTableFor(shadow bool) string {
 	return "tasktree"
 }
 
-// TasktreeList 读某主会话的任务树节点（Mode="init" → 仅 LLM 作业根/运行中存活节点）；
+// TasktreeList 读某主会话的任务树节点（Mode="init" → 仅 DSL 作业根（kind=dsl_job，DSL-3 起；
+// 原 kind=llm 已改判）/运行中存活节点）；
 // 默认过滤**逻辑删除**（closed）行，IncludeClosed=true → 一并返回（任务层内部读）。
 func (s *Service) TasktreeList(req facade.TasktreeListRequest) (facade.TasktreeListResponse, error) {
 	if req.TopSession == "" {

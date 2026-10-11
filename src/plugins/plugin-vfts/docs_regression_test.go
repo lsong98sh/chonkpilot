@@ -182,3 +182,54 @@ func TestRebuildManifestDropsUnindexedDocs(t *testing.T) {
 		t.Fatalf("非文档类应保留在清单：%+v", got)
 	}
 }
+
+// TestDocServiceAppearedIncrementalAddsDocs：转换服务「后启动」容错（maybeDocServiceAppeared →
+// 增量 force=false）必须能纳入文档类——服务缺席时文档类未入清单（docScanCtx.enabled=false，
+// 与引擎 collectFiles「整批跳过」同口径），服务上线后同一文件被 diff 判为**新增**（prior 无该 key、
+// old 为空 → incrementalSync 计入 Added）→ 增量纳入，无需全量重建（回归：曾担心「docs 开 + 服务缺席
+// → 服务上线」被 force=false 静默漏掉）。
+func TestDocServiceAppearedIncrementalAddsDocs(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "note.txt", "plain note")
+	writeTestFile(t, dir, "报告.docx", "fake docx")
+
+	docAbs := filepath.ToSlash(filepath.Join(dir, "报告.docx"))
+	docKey := keyOf(docAbs)
+
+	// ① 服务缺席：扫描不收集文档类
+	scannedAbsent, err := scanFiles(dir, []string{".txt"}, nil, false, docScanCtx{enabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := scannedAbsent[docKey]; ok {
+		t.Fatal("服务缺席时不应收集文档类")
+	}
+	// prior = 服务缺席时的清单（无文档类行）
+	prior := map[string]fileRec{}
+	for k, e := range scannedAbsent {
+		prior[k] = fileRec{Key: k, Path: e.path, Size: e.size, MTime: mtimeStr(e.mtime), MD5: "x"}
+	}
+
+	// ② 服务上线：扫描收集文档类 → diff 应为新增（toIndex，old 为空 = 计入 added）
+	doc := docScanCtx{enabled: true, maxBytes: 1 << 20, parserVersion: "v1"}
+	scannedUp, err := scanFiles(dir, []string{".txt"}, nil, false, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := scannedUp[docKey]; !ok {
+		t.Fatal("服务上线后应收集文档类")
+	}
+	d := diffManifest(scannedUp, prior, md5File, doc)
+	var docTask *indexTask
+	for i := range d.toIndex {
+		if d.toIndex[i].key == docKey {
+			docTask = &d.toIndex[i]
+		}
+	}
+	if docTask == nil {
+		t.Fatalf("服务上线后文档类应被判为待索引（新增），实际 toIndex=%+v", d.toIndex)
+	}
+	if len(docTask.old) != 0 {
+		t.Fatalf("新接入的文档类不应带旧块（old 为空 → 计入 Added）：%+v", docTask)
+	}
+}
