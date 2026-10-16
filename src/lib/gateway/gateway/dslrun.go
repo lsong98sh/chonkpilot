@@ -64,11 +64,8 @@ const (
 	dslRunToolName = "dsl_run"
 	// dslNodeName 是 gateway 自持 in-memory 节点名。
 	dslNodeName = "dsl"
-	// dslExecutorExe 是执行器产物名。
+	// dslExecutorExe 是执行器产物名（= agentbox 沙箱开关在 tool_sandbox.executors 下的单位键）。
 	dslExecutorExe = "chonkpilot-dsl-executor.exe"
-	// dslSandboxCategory 是 dsl 执行器取 agentbox 策略所用的 executor 类别
-	// （复用既有 `tool_sandbox` 开关表；执行器覆盖文件/浏览器/桌面三域动作，此处取 core 档）。
-	dslSandboxCategory = "core"
 	// dslDataTimeout 是 dsl LLM 子轮次所需数据面请求（ensure-session / load-messages）超时。
 	dslDataTimeout = 3 * time.Second
 	// dslLLMTurnTimeout 是单个 LLM 子轮次等待 `session-complete` 终态的**独立上限**：
@@ -528,7 +525,8 @@ func (g *Gateway) dslExecutorPath() (string, error) {
 
 // dslExecutorEnv 组装执行器子进程环境：继承宿主环境（剔除残留 CHONKPILOT_* 防泄漏）→ 注入
 // CHONKPILOT_INSTANCE/WORKDIR/DATADIR + agentbox 策略（CHONKPILOT_SANDBOX，来源与既有 executor
-// spawn 一致 = 共享执行配置 SandboxConfig.SandboxPolicyFor(category)；`""` = 不下发）。
+// spawn 一致 = 共享执行配置 SandboxConfig.SandboxPolicyFor(unit)；单位键 = dsl 执行器 exe 基名；
+// `""` = 不下发）。
 func (g *Gateway) dslExecutorEnv(instance, workDir, dataDir string) []string {
 	base := os.Environ()
 	out := make([]string, 0, len(base)+4)
@@ -558,11 +556,12 @@ func (g *Gateway) dslExecutorEnv(instance, workDir, dataDir string) []string {
 }
 
 // dslSandboxPolicy 取 dsl 执行器的 agentbox 策略 JSON（来源 = 装配方注入的共享执行配置；
-// 窄接口按需断言，未实现 / 未开启 → 空串 = 不下发）。类别取 dslSandboxCategory。
+// 窄接口按需断言，未实现 / 未开启 → 空串 = 不下发）。单位键 = dsl 执行器 exe 基名
+// （`tool_sandbox.executors` 下的一项；与 callTool 的按 exe 基名查开关单一口径一致）。
 func (g *Gateway) dslSandboxPolicy() string {
-	type sandboxPolicyProvider interface{ SandboxPolicyFor(category string) string }
+	type sandboxPolicyProvider interface{ SandboxPolicyFor(unit string) string }
 	if p, ok := g.params.MCPConfig.(sandboxPolicyProvider); ok && p != nil {
-		return p.SandboxPolicyFor(dslSandboxCategory)
+		return p.SandboxPolicyFor(dslExecutorExe)
 	}
 	return ""
 }

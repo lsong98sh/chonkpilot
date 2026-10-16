@@ -207,8 +207,9 @@ test('T-1：ChatPanel 头部「新建对话窗口」仅主窗口可见 + 达上�
   const cp = SRC('views/chat/ChatPanel.vue')
   // P1-9（2026-09-26 UX 评审 + 用户裁决 c）：chatOnly 下**标题条精简**——只留**场景 Tag**；
   // T-1 /「新建会话」/面板标题/会话号 等**非场景元素**包在 `<template v-if="!chatOnly">` 内随之隐藏。
-  assert.match(cp, /<div class="panel-header" :class="\{ 'panel-header-mini': chatOnly \}">/,
-    '标题条按 chatOnly 切精简形态（仅场景 Tag）')
+  // 单聊（F1，2026-10-16）：子聊天为固定参数 → 整个精简标题条一并隐藏（`fixedParams`）。
+  assert.match(cp, /<div v-if="!chatOnly \|\| !fixedParams" class="panel-header" :class="\{ 'panel-header-mini': chatOnly \}">/,
+    '标题条按 chatOnly 切精简形态（仅场景 Tag）；固定参数子聊天下整条隐藏')
   assert.match(cp, /<template v-if="!chatOnly">/,
     '非场景元素（含 T-1 与「新建会话」）随 chatOnly 隐藏')
   const btn = cp.match(/<!-- T-1[\s\S]*?<\/Button>/)
@@ -223,7 +224,9 @@ test('ChatPanel：对话窗口绑定 URL 会话（不读/不写活动会话、�
   const cp = SRC('views/chat/ChatPanel.vue')
   assert.match(cp, /sessionId:\s*\{\s*type:\s*String,\s*default:\s*''\s*\}/, '新增 sessionId 参数')
   assert.match(cp, /chatOnly:\s*\{\s*type:\s*Boolean,\s*default:\s*false\s*\}/, '新增 chatOnly 参数')
-  assert.match(cp, /if\s*\(props\.chatOnly\s*&&\s*boundSessionId\)\s*\{[\s\S]{0,80}currentSessionId\.value\s*=\s*boundSessionId/,
+  // UILAYOUT-1 §7 P2③：会话身份收敛进跨 view 共享状态（selection store）——绑定写入改为
+  // store action（`selection.setActiveSession`），"启动即绑定 URL 会话"语义不变。
+  assert.match(cp, /if\s*\(props\.chatOnly\s*&&\s*boundSessionId\)\s*\{[\s\S]{0,80}setActiveSession\(boundSessionId\)/,
     '对话窗口：启动即绑定 URL 会话')
   const sub = cp.match(/const unsubSessionChanged[\s\S]*?permanentUnsubs\.push\(unsubSessionChanged\)/)
   assert.ok(sub, '未找到 session-changed 订阅')

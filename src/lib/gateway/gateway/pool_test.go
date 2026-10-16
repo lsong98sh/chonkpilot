@@ -37,7 +37,7 @@ func newIsolateTestProvider(t *testing.T, isolate *bool, callTimeout time.Durati
 	p, err := newProxyProvider(&ServerEntry{
 		ID: "iso", Runtime: exe, Transport: "stdio", Isolate: isolate,
 		Env: []string{"GATEWAY_STDIO_HELPER=1"},
-	}, callTimeout, logf)
+	}, callTimeout, logf, nil)
 	if err != nil {
 		t.Fatalf("newProxyProvider: %v", err)
 	}

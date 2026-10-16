@@ -288,6 +288,23 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		{"instance-exit", "instance 生命周期主题；需多实例装配，单测级未驱动"},
 		{"instance-bring-to-top", "instance 生命周期主题；需多窗口装配，单测级未驱动"},
 		{"instance-goto-top", "instance 生命周期广播；需多窗口装配，单测级未驱动"},
+		// 单聊 subchat-*（2026-10-16）：B-1 登记消息面 + 跨窗口投递基础设施；**B-2 已落 handler**
+		// （生产/消费 = `subchat_open`/`subchat_finish` handler + `subchat-list`/`subchat-finish`
+		// 订阅，见 `src/lib/llm/server/subchat.go`）。本套件不伪造业务链路 → 仍登记；键/契约/文档
+		// 一致性由 chonkpilot-lib msgkeys subchat_keys_test 覆盖，**handler 行为由
+		// chonkpilot-llm/server 包 L1 单测（subchat_test.go，mq 驱动 + mq 监听）覆盖**，
+		// 定向投递由 chonkpilot-gui bridge subchat_delivery_test 覆盖。
+		{"subchat-opened", "生产者 = subchat_open handler（B-2 已落，见 server/subchat.go）；行为由 server 包 L1 subchat_test 覆盖"},
+		{"subchat-state", "生产者 = 子聊天状态变更路径（B-2 已落）；定向投递能力另由 chonkpilot-gui subchat_delivery_test 覆盖"},
+		{"subchat-list", "前端 → server 方法面（B-2 已落 handler）；同名映射由 chonkpilot-gui bridge wiring 覆盖"},
+		{"subchat-finish", "前端 → server 方法面（B-2 已落 handler）；同名映射由 chonkpilot-gui bridge wiring 覆盖"},
+		// 群聊「继续」续期（2026-10-16 · SUBCHAT-3 阶段 F）：「继续」= 前端 → server 方法面；本套件不
+		// 伪造群聊调度链路 → 仍登记；handler 行为由 server 包 L1 单测（groupchat_sched_test.go，mq 驱动）覆盖。
+		{"subchat-continue", "生产者 = subchat.go onSubchatContinue（阶段 F 已落）；同名映射由 chonkpilot-gui bridge wiring 覆盖"},
+		// 群聊参与者状态（2026-10-16 · 阶段 E）：契约/文档/键已落（61 §4.3 + schema + genmsg）；生产者 =
+		// 群聊参与者状态变更路径（**阶段 F 调度器**），消费者 = 前端头像。阶段 E 不含调度器 → 仍登记；
+		// 键一致性由 chonkpilot-lib msgkeys 覆盖，转发对账由 chonkpilot-gui bridge contract_reconcile 覆盖。
+		{"subchat-participant-state", "阶段 E 已落契约（server→client 下行）；生产者 = 群聊参与者状态路径（阶段 F 调度器），消费者 = 前端头像；转发对账由 chonkpilot-gui bridge contract_reconcile 覆盖"},
 		{"instance-register", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},
 		{"session-compress", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},
 		{"session-new", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},

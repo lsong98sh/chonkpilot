@@ -89,14 +89,16 @@ test('P1-7：turn 导航底色走主题 token（不再硬编码 rgba）', () => 
 // ═══════════════════════════════════════════════════════════════
 test('P1-9：chatOnly 下标题条精简（仅保留场景 Tag，其余隐藏；无 watch）', () => {
   const src = read('views/chat/ChatPanel.vue')
-  // 标题条两种形态共用外壳，chatOnly 加 panel-header-mini
-  assert.match(src, /<div class="panel-header" :class="\{ 'panel-header-mini': chatOnly \}">/,
-    '标题条须由 chatOnly 切到精简形态（用户裁决 c）')
+  // 标题条两种形态共用外壳，chatOnly 加 panel-header-mini；固定参数子聊天（F1）整条隐藏
+  assert.match(src, /<div v-if="!chatOnly \|\| !fixedParams" class="panel-header" :class="\{ 'panel-header-mini': chatOnly \}">/,
+    '标题条须由 chatOnly 切到精简形态（用户裁决 c）；固定参数子聊天下整条隐藏')
   // 非场景部分（标题/会话号/新建会话/新建对话窗口/留白）包在 v-if="!chatOnly" 内
   assert.match(src, /<template v-if="!chatOnly">/, '非场景部分须随 chatOnly 隐藏')
   assert.match(src, /\.panel-header-mini\s*\{[\s\S]*?justify-content:\s*flex-start/,
     '精简标题条须左对齐（无 header-spacer 撑开）')
   // 场景入口（Popover/Tag）留在标题条内 → 两种形态都可见（chatOnly 的唯一切换入口）
   assert.match(src, /v-mq:\[EventNames\.scenarioSelect\]\.click/, '场景选择入口须保留')
+  // 单聊（F1）：固定参数会话隐藏场景切换入口（服务端亦以会话参数为准 = 双保险）
+  assert.match(src, /<Popover v-if="!fixedParams"/, '固定参数子聊天须隐藏场景切换入口（F1）')
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '禁 watch/watchEffect（规则：状态用 composable / 事件订阅）')
 })

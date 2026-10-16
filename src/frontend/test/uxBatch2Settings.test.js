@@ -136,7 +136,7 @@ test('② useToolSandbox：派生预警 + 读信任目录 + 手动保存（无 w
   assert.match(js, /countTrustDirs\(res\.entries\)/, '按有效条目数判定')
   assert.doesNotMatch(js, /\bwatch(Effect)?\s*\(/, 'composable 禁止 watch')
   // 手动保存：拨动只改本地待保存态（不落库）；无改动短路；落库仍走 usr 配置面
-  assert.match(js, /function setSandbox\(category, on\)/, '拨动须改待保存态')
+  assert.match(js, /function setSandbox\(scope, key, on\)/, '拨动须改待保存态')
   assert.match(js, /const dirty = computed\(/, '须派生未保存改动')
   assert.match(js, /if \(!dirty\.value\) return false/, '无改动须短路（不落库）')
   assert.match(js, /saveUserConfig\(\{ \[TOOL_SANDBOX_KEY\]: next \}\)/)

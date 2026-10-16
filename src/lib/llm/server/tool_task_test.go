@@ -204,7 +204,7 @@ func TestTaskExecCancelViaGatewayReport(t *testing.T) {
 
 	start := time.Now()
 	text, isErr := s.domainExecute(tc, "tc-cxl-exec", "tool_result",
-		map[string]any{"id": node.TaskID, "timeout": 30.0})
+		map[string]any{"id": node.TaskID, "timeout": 30.0}, "")
 	elapsed := time.Since(start)
 	if isErr {
 		t.Fatalf("cancelled exec should not be tool-level error: %q", text)

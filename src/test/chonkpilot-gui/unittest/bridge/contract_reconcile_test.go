@@ -350,6 +350,13 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		{"mcp-gateway-changed", "mcp-gateway-changed", `{"instance_id":"inst-test","kind":"tool"}`},
 		{"filesys.changed", "filesys.changed", `{"instance_id":"inst-test","work_dir":"/w","path":"/w/a","operation":"write"}`},
 		{"session-new", "session-new", `{"instance_id":"inst-test","session_id":"s"}`},
+		// 单聊（2026-10-16，61 §4.3）：下行事件按**原名直通**前端（eventType 兜底），
+		// 载荷键 ⊆ 契约 event 声明（subchat-state 的 instance_id 为**可选** = 定向投递目标）。
+		{"subchat-opened", "subchat-opened", `{"instance_id":"inst-test","session_id":"s","parent_session_id":"p","title":"t"}`},
+		{"subchat-state", "subchat-state", `{"session_id":"s","parent_session_id":"p","lifecycle":"ready"}`},
+		// 群聊（SUBCHAT-3 阶段 E，2026-10-16）：参与者思考状态（thinking/idle/spoken）——
+		// 按原名直通前端（eventType 兜底），载荷键 ⊆ 契约 event 声明（instance_id 可选）。
+		{"subchat-participant-state", "subchat-participant-state", `{"session_id":"s","parent_session_id":"p","agent":"审查员","state":"thinking"}`},
 		{"instance-register", "instance-register", `{"instance_id":"inst-test","work_dir":"/w","user":"u"}`},
 		{"window-maximized-changed", "window-maximized-changed", `{"maximized":true,"instance_id":"inst-test"}`},
 		{"gui.window.closed", "gui.window.closed", `{"window_id":"w","session_id":"s"}`},

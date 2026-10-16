@@ -24,7 +24,7 @@ type gwRuntime interface {
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 	SetAsyncOverrides(m map[string]mcpgateway.ToolAsyncOverride)
-	SetSandboxOverrides(m map[string]bool)
+	SetSandboxOverrides(executors, mcps map[string]bool)
 	CancelExec(instanceID, idOrCall string) (bool, error)
 	DetachExec(instanceID, idOrCall string) (string, error)
 }

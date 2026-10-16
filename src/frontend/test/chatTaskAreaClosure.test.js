@@ -2,8 +2,12 @@
  * 前端聊天/任务区交互收口（2026-09-27）源码守卫。
  *
  * 覆盖：
- *   ① 任务区默认收起（`MainLayout.vue taskOpen = ref(false)`；**已保存值仍以保存值为准** → 持久化/恢复不变）；
- *   ② 顶部三开关（任务/文件树/聊天）「图标 + 文字」（i18n 双语齐备；元素顺序/类名不变 → test_toolbar 下标定位仍成立）；
+ *   ① 〔改（UILAYOUT-1 裁决 2，2026-10-16）〕chat / task / filetree **三区去掉显隐功能** →
+ *      三区始终渲染（`MainLayout.vue` 不再有 `chatOpen/filetreeOpen/taskOpen` 开关 ref、不再向
+ *      `SplitPanel` 传 `visible`、不再订阅 `chat-toggle/filetree-toggle/tasks-toggle`、不再读写
+ *      `layout.*Open` 持久化字段）；工具卡片入口（③b）仍复用既有主题（收到即 no-op，契约零增删改）；
+ *      任务区不再「默认收起」（首屏减负口径随显隐功能一并取消）。
+ *   ② 工具栏三显隐开关已移除（无 UI 入口）；MQ 主题定义保留（零增删改）。
  *   ③ 工具卡「查看任务详情」入口：显示判据 = **确有后台任务**（`message.task_id` ∪ 转后台返回的 task_id）→
  *      纯同步工具不显示；点击 = **复用既有事件**「先展开任务面板（tasks-toggle）→ 再定位
  *      （task-detail-open / subsession-changed）」，**不新增 MQ 主题**；
@@ -26,40 +30,40 @@ const LOCALES = ['zh-CN', 'en-US']
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 
 // ═══════════════════════════════════════════════════════════════
-// ① 任务区默认收起
+// ① 三区常显（显隐功能已去掉；UILAYOUT-1 裁决 2，2026-10-16）
 // ═══════════════════════════════════════════════════════════════
-test('① 任务区默认收起：taskOpen 默认 false，已保存值仍以保存值为准', () => {
+test('① 三区常显：无显隐 ref / 无 visible 传参 / 无显隐订阅 / 不读不写 layout.*Open', () => {
   const ml = read('views/layout/MainLayout.vue')
-  assert.match(ml, /const taskOpen = ref\(false\)/, '默认值须改为 false（首屏减负）')
-  assert.match(ml, /const to = parseBool\(l\.taskOpen\)[\s\S]{0,80}if \(to !== null\) taskOpen\.value = to/,
-    'applyLayout 仍须按保存值恢复（持久化/恢复不变；parseBool 兼容布尔/字符串）')
-  assert.match(ml, /taskOpen: taskOpen\.value/, 'measureLayout 仍须回写 taskOpen（保存链不断）')
-  assert.match(ml, /mq\.on\(EventNames\.tasksToggle, \(\) => \{ taskOpen\.value = !taskOpen\.value/,
-    '顶部开关仍是切换语义（收起态点击一次即展开）')
+  // 显隐开关 ref 与传参：移除
+  assert.doesNotMatch(ml, /const (chatOpen|filetreeOpen|taskOpen) = ref\(/, '三区显隐 ref 须已移除')
+  assert.doesNotMatch(ml, /visible:\s*(chatOpen|filetreeOpen|taskOpen)\.value/, '不得再向 SplitPanel 传显隐')
+  // 显隐主题：不再订阅（主题定义保留在 event-names，见 ②）
+  assert.doesNotMatch(ml, /mq\.on\(EventNames\.(chatToggle|filetreeToggle|tasksToggle)/,
+    '三区显隐主题须不再订阅（主题本身零增删改）')
+  // 持久化字段：不再读（旧键忽略、无迁移）/ 不再写
+  assert.doesNotMatch(ml, /l\.(chatOpen|taskOpen|filetreeOpen)/, 'applyLayout 不得再读三显隐字段')
+  assert.doesNotMatch(ml, /(chatOpen|taskOpen|filetreeOpen)\s*:/, '不得再读写三显隐字段（layout.<k>）')
+  assert.doesNotMatch(ml, /(chatOpen|filetreeOpen|taskOpen)\.value/, '不得再持有三显隐状态')
+  // 三区 pane 仍在（始终渲染）；仅文件树保留窄屏自适应收起
+  assert.match(ml, /\{ id: 'chat', size: effChatWidth\.value, min: 280, max: 800 \}/, 'chat 区常显')
+  assert.match(ml, /\{ id: 'bottom', size: taskHeight\.value, min: 100, max: 1200 \}/, '任务区常显')
+  assert.match(ml, /id: 'filetree',[\s\S]{0,120}visible: !narrow\.value/, '文件树常显（仅窄屏自适应）')
   assert.doesNotMatch(ml, /\bwatch(Effect)?\s*\(/, '不得使用 watch / watchEffect')
 })
 
 // ═══════════════════════════════════════════════════════════════
-// ② 三开关「图标 + 文字」
+// ② 工具栏三显隐开关已移除（MQ 主题定义保留）
 // ═══════════════════════════════════════════════════════════════
-test('② 任务/文件树/聊天三开关：图标 + 文字，且顺序与类名不变（下标定位仍成立）', () => {
+test('② 工具栏无三区显隐入口（按钮/props 已删）；event-names 三主题保留（契约零增删改）', () => {
   const tb = read('views/toolbar/Toolbar.vue')
-  // 顺序保持 tasks → filetree → chat（.toolbar-right .tb-btn 下标 3/4/5）
-  let last = -1
-  for (const ev of ['EventNames.tasksToggle', 'EventNames.filetreeToggle', 'EventNames.chatToggle']) {
-    const i = tb.indexOf(`v-mq:[${ev}].click`)
-    assert.ok(i > last, `toolbar-right 顺序须保持 tasks→filetree→chat（${ev}）`)
-    last = i
+  for (const ev of ['tasksToggle', 'filetreeToggle', 'chatToggle']) {
+    assert.doesNotMatch(tb, new RegExp('EventNames\\.' + ev), `工具栏不得再有三区显隐入口（${ev}）`)
   }
-  for (const k of ['tasks', 'filetree', 'chat']) {
-    const re = new RegExp('<span class="tb-label">\\{\\{ \\$t\\(\'toolbar\\.' + k + '\'\\) \\}\\}</span>')
-    assert.match(tb, re, `开关 ${k} 须内部补文字节点（i18n，仅加文字、不改类名/顺序）`)
-  }
-  for (const loc of LOCALES) {
-    const j = readLocale(loc, 'toolbar.json')
-    for (const k of ['tasks', 'filetree', 'chat']) {
-      assert.ok(typeof j[k] === 'string' && j[k].trim().length > 0, `${loc} 缺 toolbar.${k}`)
-    }
+  assert.doesNotMatch(tb, /(chatVisible|filetreeVisible|taskVisible)\s*:/, '三显隐 props 须已移除')
+  // MQ 主题零增删改：定义保留（前端事件名 + 后端消息常量两侧都不动）
+  const names = read('events/event-names.js')
+  for (const [k, lit] of [['chatToggle', 'chat-toggle'], ['filetreeToggle', 'filetree-toggle'], ['tasksToggle', 'tasks-toggle']]) {
+    assert.match(names, new RegExp('\\b' + k + ":\\s*'" + lit + "'"), `event-names 须保留既有 ${k}`)
   }
 })
 

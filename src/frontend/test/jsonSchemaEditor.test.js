@@ -218,21 +218,28 @@ test('JsonSchema：chip 只显关键字名、值一律走 tooltip（enum 多行 
 
 // ── 落点守卫（知识库编辑页四页签 + 共通控件） ────────────────────
 
-test('JsonSchema：知识库编辑页 = 顶部标题 / 四页签 Tabs / 底部 保存·恢复', () => {
+test('JsonSchema：知识库编辑页 = 顶部标题 / 分区页签 Tabs / 底部 保存·恢复', () => {
   const panel = read('views/knowledge/PrimitivePanel.vue')
   assert.match(panel, /prim-head/, '顶部标题区')
   assert.match(panel, /from '\.\.\/\.\.\/components\/ui\/Tabs\.vue'/, '中间用 Tabs 撑满')
-  for (const [name, key] of [['meta', 'tab_meta'], ['description', 'tab_description'], ['parameters', 'tab_parameters'], ['content', 'tab_content']]) {
+  // v2：页签 = 契约分区（预览默认 / 基本信息 / 摘要 / 参数 / 参考 / 委托 / 正文）
+  for (const [name, key] of [['preview', 'tab_preview'], ['basic', 'tab_basic'], ['summary', 'tab_summary'], ['content', 'tab_content']]) {
     assert.match(panel, new RegExp("name: '" + name + "'"), '页签 ' + name)
     assert.match(panel, new RegExp('knowledgeList\\.' + key))
   }
+  assert.match(panel, /const curTab = ref\('preview'\)/, '首个默认页签 = 预览')
   assert.match(panel, /<template #parameters>[\s\S]*JsonSchemaEditor/, '参数页签 = JSON Schema 编辑器')
   assert.match(panel, /prim-footer[\s\S]*common\.save[\s\S]*common\.restore/, '底部 保存·恢复')
   assert.doesNotMatch(panel, /source_tab|edit_tab/, '源码/编辑子页签已移除')
-  // 描述页签「从正文提取」按钮 + 提取逻辑走 utils 纯函数
-  assert.match(panel, /#description[\s\S]*knowledgeList\.extract_from_content/, '描述页签含「从正文提取」')
-  assert.match(panel, /from '\.\.\/\.\.\/utils\/descriptionExtract'/, '提取逻辑走 utils 纯函数')
-  // 描述/正文 Textarea 撑满（容器 flex + textarea flex 撑高）；修掉失效选择器、移除固定 :rows
+  // 摘要页签「从正文提取」= LLM（zprompt-summarize），不再走本地纯函数
+  assert.match(panel, /#summary[\s\S]*knowledgeList\.extract_from_content/, '摘要页签含「从正文提取」')
+  assert.match(panel, /summarizeContent/, '提取逻辑走 LLM（summarizeContent）')
+  assert.doesNotMatch(panel, /descriptionExtract/, '不再使用本地 descriptionExtract')
+  // 正文页签 = AI 生成 + AI 优化（**无「大纲」按钮**；默认正文 = 该类型大纲，新建时由后端 Template 预填）
+  assert.doesNotMatch(panel, /knowledgeList\.outline/, '不再有「大纲」按钮（req3）')
+  assert.match(panel, /knowledgeList\.ai_generate/, '正文含「AI 生成」')
+  assert.match(panel, /knowledgeList\.ai_optimize/, '正文含「AI 优化」（req3 新增）')
+  // 描述/正文 Textarea 撑满（容器 flex + textarea flex 撑高）
   assert.match(panel, /\.prim-tab-body \.pf-area/, 'pf-area 直接命中 textarea 并 flex 撑满')
   assert.doesNotMatch(panel, /pf-area :deep\(textarea\)/, '修掉恒不命中的 :deep(textarea) 选择器')
   assert.doesNotMatch(panel, /:rows="1[26]"/, '描述/正文不再用固定 :rows')
@@ -272,4 +279,24 @@ test('JsonSchema：编辑器为共通控件（独立于知识库，逻辑纯函�
   const i18n = read('plugins/i18n.js')
   assert.match(i18n, /jsonSchema: zhJsonSchema/)
   assert.match(i18n, /jsonSchema: enJsonSchema/)
+})
+
+// ── 目标文件系统操作（2026-10-15，req9 补充：编辑 md 时对目标文件三种处理）────────
+
+test('PrimitivePanel：目标文件「资源管理器打开 / 打开 / 打开方式」三入口', () => {
+  const panel = read('views/knowledge/PrimitivePanel.vue')
+  // 复用导航右键同口径的三条 gui 消息封装（api/file.js）——零新增消息面
+  assert.match(panel, /import \{ revealInExplorer, openWithDefault, openWithDialog \} from '\.\.\/\.\.\/api\/file'/,
+    '应复用 api/file 的三条封装')
+  assert.match(panel, /function handleReveal\(\) \{ revealInExplorer\(props\.path\) \}/, '资源管理器打开处理')
+  assert.match(panel, /function handleOpen\(\) \{ openWithDefault\(props\.path\) \}/, '打开处理')
+  assert.match(panel, /function handleOpenWith\(\) \{ openWithDialog\(props\.path\) \}/, '打开方式处理')
+  assert.match(panel, /class="prim-actions"/, '三入口挂顶部标题区')
+  assert.match(panel, /@click="handleReveal"[\s\S]{0,200}@click="handleOpen"[\s\S]{0,200}@click="handleOpenWith"/,
+    '三按钮顺序：资源管理器打开 → 打开 → 打开方式')
+  // 文案复用 fileTree（req6 已建）
+  for (const loc of ['zh-CN', 'en-US']) {
+    const ft = JSON.parse(read('locales/' + loc + '/fileTree.json'))
+    assert.ok(ft.reveal_in_explorer && ft.open && ft.open_with, loc + ' 缺目标文件三入口文案')
+  }
 })

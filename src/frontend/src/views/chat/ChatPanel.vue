@@ -2,8 +2,10 @@
   <div class="panel-inner">
     <!-- 标题条：主窗口 = 完整（标题/会话号/新建会话/新建对话窗口/场景 Tag）；
          纯对话窗口（chatOnly）= **精简**：只保留**场景 Tag** —— 它是该窗口唯一的场景切换入口（2026-09-26 用户裁决 c）；
-         窗口控件（最小化/最大化/关闭）由宿主原生标题栏承担，不在页面内画（WIN-018）。 -->
-    <div class="panel-header" :class="{ 'panel-header-mini': chatOnly }">
+         窗口控件（最小化/最大化/关闭）由宿主原生标题栏承担，不在页面内画（WIN-018）。
+         单聊（`kind ∈ {sub_chat, group_chat}`，F1）：**固定参数** → 隐藏场景切换入口；
+         此类窗口只可能是 chatOnly（子聊天不进主窗口）→ 整个精简标题条一并隐藏（不留空条）。 -->
+    <div v-if="!chatOnly || !fixedParams" class="panel-header" :class="{ 'panel-header-mini': chatOnly }">
       <template v-if="!chatOnly">
         <Icon name="chat-dot-square" />
         <span>{{ $t('common.main_chat') }}</span>
@@ -30,7 +32,8 @@
         </Button>
         <div class="header-spacer" />
       </template>
-      <Popover placement="bottom-end" :width="160">
+      <!-- 场景切换入口：单聊（F1）为**固定参数会话** → 隐藏（服务端亦以会话参数为准，双保险 §6 E4） -->
+      <Popover v-if="!fixedParams" placement="bottom-end" :width="160">
         <template #reference>
           <!-- 未选场景 = **通用模式**（合法态，非错误）：中性色，不用 danger（2026-09-26 用户裁决） -->
           <Tag size="small" type="info" style="cursor:pointer">
@@ -103,7 +106,19 @@
     </div>
     <div v-if="taskProgress" class="task-progress-bar">{{ taskProgress }}</div>
     <div v-if="compressing" class="compress-progress-bar">{{ $t('chat.compressing') }}</div>
+    <!-- 子聊天状态条（F3/F4/F6/F7；§3.4.5）：输入框**上方**常驻；子聊天窗口内另承载常驻「结束」。
+         `:key` = 会话 → 会话切换即重挂（重新按父会话取数 + 归零展开态），不引入 watch。 -->
+    <SubChatBar
+      :key="currentSessionId || 'none'"
+      :session-id="currentSessionId || ''"
+      :kind="sessionKind"
+      :lifecycle="sessionLifecycle"
+      @finish="handleSubChatFinish"
+      @child-closed="handleSubChatChildClosed"
+    />
+    <!-- F9：`lifecycle == finished` 的子聊天窗口**只读**（不渲染输入框；终态稳定，不"悄悄复活"） -->
     <InputBox
+      v-if="!subChatReadOnly"
       @send="handleSend"
       @cancel="handleCancel"
       @queue="handleQueue"
@@ -174,6 +189,7 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 
 import { getLatestSessionID, getSession, getActiveSessionID, setActiveSessionID } from '../../api/session'
@@ -182,20 +198,24 @@ import { getScenarioList } from '../../api/scenario'
 import { newSessionId } from '../../api/chat'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
-import { MsgTopics, GuiUploadKeys } from '../../events/msgkeys'
+import { MsgTopics, GuiUploadKeys, SubchatOpenedKeys, SubchatStateKeys } from '../../events/msgkeys'
 import { captureWindow } from '../../utils/guiAsync'
 import MessageList from './MessageList.vue'
 import InputBox from './InputBox.vue'
 import ScreenshotOverlay from './ScreenshotOverlay.vue'
+import SubChatBar from './SubChatBar.vue'
 import Icon from '../../components/icon/Icon.vue'
 import { Button, Tag, Popover, message } from '../../components/ui'
 import { useTaskView } from '../../composables/useTaskView'
 import { sendQueue } from '../../composables/useSendQueue'
 import { useChatWindows } from '../../composables/useChatWindows'
+import { finishSubChat } from '../../composables/useSubChats'
+import { isSubChatKind } from '../../utils/subchat.js'
 import { useLLMSetup } from '../../composables/useLLMSetup'
 import { useCompressStatus } from '../../composables/useCompressStatus'
 import { needsLLMConfigHint } from '../../utils/llmSetup'
 import { pluginFailureText } from '../../utils/pluginNotice'
+import { useSelectionStore } from '../../stores/selection'
 
 const { t, te } = useI18n()
 
@@ -210,13 +230,28 @@ const props = defineProps({
 })
 
 // T-1 入口：新建对话窗口（仅主窗口；达上限置灰）—— 状态来自共享的 useChatWindows 单例。
-const { atLimit, openNewChatWindow } = useChatWindows()
+// `openChat` 另供单聊 F2（`subchat-opened` 自动开窗）复用。
+const { atLimit, openNewChatWindow, openChat } = useChatWindows()
 
 const boundSessionId = props.sessionId || ''
 
-const currentSessionId = ref(null)
+// 当前主会话 = **跨 view 共享状态**（唯一真相源 = selection store，UILAYOUT-1 §3.7 P2③）：
+// 本组件只读（storeToRefs 派生），写入一律经 store action —— 原组件内 `currentSessionId` ref
+// 已删（与 SessionTree / 会话面板的双源已消除）。会话切换仍由既有 mq 主题表达。
+const selection = useSelectionStore()
+const { activeSession } = storeToRefs(selection)
+const currentSessionId = computed(() => activeSession.value.sessionId || null)
 const messageListRef = ref(null)
 const isInitializing = ref(true) // prevent rapid sends before initSession completes
+
+// ── 单聊（子聊天）会话元信息（F1 / F9）──
+// 本窗口绑定会话的 `kind` / `lifecycle`：来源 = `data-session-get`（会话行初值）+
+// `subchat-state`（实时变更）。`kind ∈ {sub_chat, group_chat}` = **固定参数**会话（F1 隐藏
+// 场景切换入口）；`lifecycle == finished` = **终态只读**（F9 不渲染输入框）。
+const sessionKind = ref('')
+const sessionLifecycle = ref('')
+const fixedParams = computed(() => isSubChatKind(sessionKind.value))
+const subChatReadOnly = computed(() => fixedParams.value && sessionLifecycle.value === 'finished')
 
 // ── 发送失败后的可行动提示（问题 A，口径变更 2026-09-20）──
 // 原「无可用 LLM → 聊天区常驻引导」已移除；改为**发送失败时**才提示（非常驻 UI）。
@@ -522,10 +557,49 @@ async function ensureSessionId() {
   if (currentSessionId.value) return currentSessionId.value
   if (props.chatOnly) return boundSessionId
   const sid = newSessionId()
-  currentSessionId.value = sid
+  // 会话切换的唯一通道 = mq（`session-changed`）；store 由订阅者统一写入（组件不直接写共享状态）。
   setActiveSessionID(sid).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
   mq.emit(EventNames.sessionChanged, { session_id: sid })
   return sid
+}
+
+// ── 单聊（子聊天）辅助（F1 / F2 / F5 / F9）────────────────────────────
+
+/** 本窗口「有效会话」：对话窗口 = URL 绑定（固定）；主窗口 = 当前活动会话（F2 归属判定共用）。 */
+function selfSessionId() {
+  return props.chatOnly ? boundSessionId : currentSessionId.value
+}
+
+/** 读会话元信息（`kind` / `lifecycle`）。失败 → 保持现状（不阻塞会话切换）。 */
+async function loadSessionMeta(sid) {
+  if (!sid) { sessionKind.value = ''; sessionLifecycle.value = ''; return }
+  try {
+    const s = await getSession(sid)
+    sessionKind.value = (s && s.kind) || ''
+    sessionLifecycle.value = (s && s.lifecycle) || ''
+  } catch (e) {
+    console.warn('[ChatPanel] load session meta failed:', e)
+  }
+}
+
+// F5：子聊天窗口内点「结束」→ 发 `subchat-finish{session_id}` → 本窗口**自关**
+// （发 `gui.window.status{command:'close'}`，`applyWindowCommand` 的 `destroy` = 本窗口自己）
+// → 宿主广播 `gui.window.closed` → 主窗口判定归属后回切原会话。
+async function handleSubChatFinish(sid) {
+  if (!sid) return
+  const ok = await finishSubChat(sid)
+  if (!ok) { message.error(t('chat.subchat_finish_failed')); return }
+  mq.emit(EventNames.guiWindowStatus, { command: 'close' })
+}
+
+// F5：状态条列表内的子聊天窗口被关闭 → 主窗口**回切原 session**（归属判定在 `SubChatBar`：
+// 已按本窗口当前会话的 `parent_id` 过滤；命中才回传）。主窗口已在父会话时为零操作（幂等）。
+function handleSubChatChildClosed(item) {
+  if (props.chatOnly || !item) return
+  const parent = item[SubchatOpenedKeys.parent_session_id] || ''
+  if (!parent || parent === currentSessionId.value) return
+  setActiveSessionID(parent).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
+  mq.emit(EventNames.sessionChanged, { session_id: parent })
 }
 
 // ── Cancel current LLM turn ──
@@ -583,7 +657,7 @@ async function initSession() {
       // 对话窗口：会话**由 URL 固定绑定** → 不读活动会话、不取最近会话、不写活动会话
       // （24 §6.2 / §3.3 C5）。
       if (props.chatOnly && boundSessionId) {
-        currentSessionId.value = boundSessionId
+        selection.setActiveSession(boundSessionId)
         return
       }
 
@@ -594,7 +668,7 @@ async function initSession() {
         try {
           const sessionRes = await getSession(targetSessionID)
           if (sessionRes && !sessionRes.parent_id) {
-            currentSessionId.value = targetSessionID
+            selection.setActiveSession(targetSessionID)
             setActiveSessionID(targetSessionID).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
             return
           }
@@ -608,7 +682,7 @@ async function initSession() {
       const res = await getLatestSessionID()
       const topSessionID = res?.session_id
       if (topSessionID) {
-        currentSessionId.value = topSessionID
+        selection.setActiveSession(topSessionID)
         setActiveSessionID(topSessionID).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
         return
       }
@@ -617,10 +691,12 @@ async function initSession() {
       // 会话初始化失败 → 可见错误提示（E-41，windowsgui 下 console 不可见）
       message.error(t('chat.session_init_failed'))
     }
-    currentSessionId.value = null
+    selection.setActiveSession(null)
     setActiveSessionID('').catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
   } finally {
     isInitializing.value = false
+    // 元信息（`kind` / `lifecycle`）随会话就绪读取：单聊 F1（固定参数）/ F9（finished 只读）依据。
+    loadSessionMeta(currentSessionId.value)
   }
 }
 
@@ -653,11 +729,10 @@ onMounted(() => {
   const unsubSessionChanged = mq.on(EventNames.sessionChanged, ({ session_id }) => {
     // 对话窗口：会话由 URL 固定绑定，**不跟随**主窗口/其它入口的会话切换（24 §6.2）。
     if (props.chatOnly) return
+    // 会话身份已由 selectionSubscribers（唯一写入点）写入 store，此处只做本组件的后续动作。
     const sid = session_id || null
-    if (sid !== currentSessionId.value) {
-      currentSessionId.value = sid
-    }
     refreshTasks(sid || '', '', { initOnly: true })
+    loadSessionMeta(sid)
   })
   permanentUnsubs.push(unsubSessionChanged)
 
@@ -801,14 +876,37 @@ onMounted(() => {
         const { getSession } = await import('../../api/session')
         const sessionRes = await getSession(currentSessionId.value)
         if (!sessionRes) {
-          currentSessionId.value = null
+          selection.setActiveSession(null)
         }
       } catch (_) {
-        currentSessionId.value = null
+        selection.setActiveSession(null)
       }
     }
+    loadSessionMeta(currentSessionId.value)
   })
   permanentUnsubs.push(unsubSessionRefresh)
+
+  // ── 单聊（子聊天）订阅（F2 自动开窗 / F7 点亮与只读）──────────────────
+  // F2：`subchat-opened` 自带 `parent_session_id`（61 §4.3）→ 本窗口绑定会话 == 父会话时自动开窗；
+  // 不匹配则忽略（`sub_session` 不发该事件 → 现行行为不变）。桥按 `instance_id` 精确过滤 →
+  // 事件只到「发起该子聊天的窗口」（本窗口），故不会重复建窗。
+  const unsubSubChatOpened = mq.on(MsgTopics.subchatOpened, async (d) => {
+    if (!d) return
+    const sid = d[SubchatOpenedKeys.session_id]
+    if (!sid || d[SubchatOpenedKeys.parent_session_id] !== selfSessionId()) return
+    const r = await openChat(sid)
+    if (!r || !r.ok) message.warning(t('chat.chat_window_limit'))
+  })
+  permanentUnsubs.push(unsubSubChatOpened)
+
+  // F7：本窗口绑定的子聊天会话状态变化 → 更新「结束」点亮（`ready`）与只读（`finished`）；
+  // 子会话新一轮开始时后端回写 `chatting`（`ready` 可逆）→ 一并回落不点亮。
+  const unsubSubChatState = mq.on(MsgTopics.subchatState, (d) => {
+    if (!d) return
+    if (d[SubchatStateKeys.session_id] !== selfSessionId()) return
+    sessionLifecycle.value = d[SubchatStateKeys.lifecycle] || ''
+  })
+  permanentUnsubs.push(unsubSubChatState)
 })
 
 onUnmounted(() => {

@@ -10,14 +10,12 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 )
 
 // maxHitsPerFile 是单文件 grep 命中行的封顶条数（防逐行无界 append，R7-C-2）。
 const maxHitsPerFile = 200
 
-// findItem 是 file_find 的单条目。
+// findItem 是 FIND 的单条目。
 type findItem struct {
 	rel   string
 	isDir bool
@@ -25,67 +23,56 @@ type findItem struct {
 	hits  []string // grep 命中行（summary+grep 模式）
 }
 
-// HandleFind 实现 file_find 工具（文件查找 DSL）：
+// findOpts 是 FIND 查询动作的解析后参数。
+type findOpts struct {
+	depth  int
+	glob   string
+	grep   string
+	output string // tree | file | summary
+	period findPeriod
+	filter *WalkFilter
+}
+
+// runFindQuery 在 disp 指定目录下查找并返回渲染文本（tree/file/summary）。
 //
-//	file_find { depth, glob, grep, output }
+//	FIND #"dir" [depth=N] [glob="*.go"] [grep="re"] [output=tree|file|summary]
+//	           [skip_dirs="a,b"] [ignore_files="*.log"] [from=YYYY-MM-DD] [to=YYYY-MM-DD]
 //	  depth:  0=递归不限；1=当前目录；2=当前+下一级（tree 模式同样受限）
 //	  glob:   文件名 glob 通配符（filepath.Match，','/'|' 多模式，支持 **）
 //	  grep:   文件内容正则匹配（命中行输出，无命中不列出）
-//	  output: tree | file | summary
-//	    tree    只输出目录结构（受 depth 限制）
-//	    file    只输出匹配文件路径
-//	    summary 文件名 + 前/后各最多 200 字符摘录；带 grep 时输出命中行；整体 ≤200 行
-func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
-	output, _ := args["output"].(string)
-	if output == "" {
-		output = "file"
+//	  output: tree=目录结构 / file=匹配文件路径 / summary=文件名+前/后各最多 200 字符摘录（≤200 行）
+//
+// 复用原 file_find 的遍历与渲染逻辑；路径解析（ResolvePath）与 agentbox 沙箱校验在此完成。
+func (ec *editCtx) runFindQuery(disp string, o findOpts) (string, error) {
+	if o.output == "" {
+		o.output = "file"
 	}
-	switch output {
+	switch o.output {
 	case "tree", "file", "summary":
 	default:
-		return cli.Err("file_find", fmt.Sprintf("invalid output %q (want tree|file|summary)", output))
+		return "", fmt.Errorf("invalid output %q (want tree|file|summary)", o.output)
 	}
-	period, perr := parseFindPeriod(args)
-	if perr != "" {
-		return cli.Err("file_find", perr)
-	}
-
-	globPattern, _ := args["glob"].(string)
-	grepPattern, _ := args["grep"].(string)
-	depth := 0
-	if v, ok := args["depth"].(float64); ok && v > 0 {
-		depth = int(v)
-	}
-	subPath, _ := args["path"].(string)
-	// path 为契约必填（file_find.tool.md required=[path]）：缺失 → 顶层错误，不静默回落 workDir/"."。
-	if strings.TrimSpace(subPath) == "" {
-		return cli.Err("file_find", "path is required")
-	}
-
 	var re *regexp.Regexp
-	if grepPattern != "" {
+	if o.grep != "" {
 		var err error
-		re, err = regexp.Compile(grepPattern)
+		re, err = regexp.Compile(o.grep)
 		if err != nil {
-			return cli.Err("file_find", fmt.Sprintf("invalid grep regex: %s", err))
+			return "", fmt.Errorf("invalid grep regex: %s", err)
 		}
 	}
-
-	filter := ParseWalkFilter(args)
-
-	// 参数级路径违规（R-11）→ 顶层错误：复用 ResolvePath 返回的 errMsg 并补参数名，
-	// 不再二次 ValidateField（errMsg 不丢弃，R7-C-10）。
-	root, errMsg := ResolvePath(subPath, workDir)
+	root, errMsg := ec.resolve(disp)
 	if errMsg != "" {
-		return cli.Err("file_find", "path："+errMsg)
+		return "", fmt.Errorf("%s", errMsg)
 	}
-	// agentbox 沙箱（仅隔离开启时生效）：root 由 ResolvePath 保证为非空绝对/展开路径（R-11），
-	// 须在允许读目录内；越界条目在下方逐条剪枝/跳过，不泄漏。
-	if err := sandboxErr(root, false); err != nil {
-		return cli.Err("file_find", err.Error())
+	if err := ec.guard(disp, root, false); err != nil {
+		return "", err
+	}
+	filter := o.filter
+	if filter == nil {
+		filter = newWalkFilter(nil, nil)
 	}
 
-	// 单条目：rel 相对 root（tree 用）；relFull 相对 workDir（file/summary 用）。
+	// 单条目：rel 相对 root（tree 用）。
 	var items []findItem
 	lineBudget := 200 // summary 整体输出行数上限
 
@@ -108,7 +95,7 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 			return nil
 		}
 		// depth 限制：超过层数即剪枝（目录/文件都不再深入）
-		if depth > 0 && strings.Count(rel, string(filepath.Separator)) >= depth {
+		if o.depth > 0 && strings.Count(rel, string(filepath.Separator)) >= o.depth {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -120,7 +107,7 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 				return filepath.SkipDir
 			}
 			// tree 模式列出目录；file/summary 不列目录但继续深入
-			if output == "tree" {
+			if o.output == "tree" {
 				items = append(items, findItem{rel: rel, isDir: true})
 			}
 			return nil
@@ -129,14 +116,14 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 		if filter.IgnoreFile(d.Name()) {
 			return nil
 		}
-		if !globMatch(d.Name(), globPattern) {
+		if !globMatch(d.Name(), o.glob) {
 			return nil
 		}
 
 		fi, ferr := d.Info()
 		// period 过滤：文件 mtime 须落在 [from, to]（含边界）；stat 失败无法判定 → 跳过
-		if period.active() {
-			if ferr != nil || !period.match(fi.ModTime()) {
+		if o.period.active() {
+			if ferr != nil || !o.period.match(fi.ModTime()) {
 				return nil
 			}
 		}
@@ -175,15 +162,15 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 		return nil
 	})
 
-	switch output {
+	switch o.output {
 	case "tree":
-		return renderFindTree(root, items)
+		return renderFindTree(items), nil
 	case "file":
 		var lines []string
 		for _, it := range items {
 			lines = append(lines, it.rel)
 		}
-		return findResult("file", lines)
+		return renderFindFlat("file", lines), nil
 	default: // summary
 		var lines []string
 		for _, it := range items {
@@ -211,7 +198,7 @@ func HandleFind(workDir string, args map[string]interface{}) *cli.Result {
 		if len(lines) > lineBudget {
 			lines = lines[:lineBudget]
 		}
-		return findResult("summary", lines)
+		return renderFindFlat("summary", lines), nil
 	}
 }
 
@@ -265,17 +252,18 @@ func truncRunes(s string, n int) (string, bool) {
 	return string(r[:n]) + "...", true
 }
 
-func findResult(mode string, lines []string) *cli.Result {
+// renderFindFlat 渲染 file/summary 模式的平铺输出（无匹配给 no matches 文案）。
+func renderFindFlat(mode string, lines []string) string {
 	if len(lines) == 0 {
-		return cli.Ok("file_find", fmt.Sprintf("(%s: no matches)", mode), map[string]interface{}{"mode": mode, "entries": []string{}, "total": 0})
+		return fmt.Sprintf("(%s: no matches)", mode)
 	}
-	return cli.Ok("file_find", strings.Join(lines, "\n"), map[string]interface{}{"mode": mode, "entries": lines, "total": len(lines)})
+	return strings.Join(lines, "\n")
 }
 
 // renderFindTree 按路径层级输出目录树（受 depth 已裁剪的 items）。
-func renderFindTree(root string, items []findItem) *cli.Result {
+func renderFindTree(items []findItem) string {
 	if len(items) == 0 {
-		return cli.Ok("file_find", "(tree: empty)", map[string]interface{}{"mode": "tree", "entries": []string{}, "total": 0})
+		return "(tree: empty)"
 	}
 	// 按路径排序保证层级连续
 	sortStrings(items)
@@ -291,14 +279,14 @@ func renderFindTree(root string, items []findItem) *cli.Result {
 			lines = append(lines, indent+"├── "+name)
 		}
 	}
-	return cli.Ok("file_find", strings.Join(lines, "\n"), map[string]interface{}{"mode": "tree", "entries": lines, "total": len(items)})
+	return strings.Join(lines, "\n")
 }
 
 func sortStrings(items []findItem) {
 	sort.Slice(items, func(i, j int) bool { return items[i].rel < items[j].rel })
 }
 
-// findPeriod 是 file_find 的修改时间范围过滤（仅文件 mtime，闭区间含边界）。
+// findPeriod 是 FIND 的修改时间范围过滤（仅文件 mtime，闭区间含边界）。
 type findPeriod struct {
 	from    time.Time
 	to      time.Time
@@ -320,48 +308,41 @@ func (p findPeriod) match(m time.Time) bool {
 	return true
 }
 
-// parseFindPeriod 解析 period 参数：{from?, to?}，可只给一端；值 = RFC3339
-// 或 YYYY-MM-DD（date-only 的 from = 当日 00:00:00，to = 当日最后一纳秒，即含整天）。
-// 返回解析失败消息（空串 = 成功；period 缺省/空对象 = 不过滤）。
-func parseFindPeriod(args map[string]interface{}) (findPeriod, string) {
-	raw, ok := args["period"].(map[string]interface{})
-	if !ok || len(raw) == 0 {
-		return findPeriod{}, ""
-	}
-	parse := func(key string) (time.Time, bool, string) {
-		v, has := raw[key]
-		if !has || v == nil {
-			return time.Time{}, false, ""
-		}
-		s, strOK := v.(string)
-		if !strOK {
-			return time.Time{}, false, fmt.Sprintf("period.%s 必须是字符串（RFC3339 或 YYYY-MM-DD）", key)
-		}
-		if t, err := time.Parse(time.RFC3339, s); err == nil {
-			return t, true, ""
-		}
-		if t, err := time.Parse("2006-01-02", s); err == nil {
-			if key == "to" { // date-only to = 当日整天含
-				t = t.Add(24*time.Hour - time.Nanosecond)
-			}
-			return t, true, ""
-		}
-		return time.Time{}, false, fmt.Sprintf("period.%s %q 无法解析（需 RFC3339 或 YYYY-MM-DD）", key, s)
-	}
-
+// parsePeriodStrings 解析 from/to 选项（可只给一端；值 = RFC3339 或 YYYY-MM-DD，
+// date-only 的 from = 当日 00:00:00，to = 当日最后一纳秒，即含整天）。返回解析失败消息
+// （空串 = 成功；两端均空 = 不过滤）。
+func parsePeriodStrings(from, to string) (findPeriod, string) {
 	var p findPeriod
-	if t, has, em := parse("from"); em != "" {
-		return p, em
-	} else if has {
+	if from != "" {
+		t, em := parsePeriodValue("from", from)
+		if em != "" {
+			return p, em
+		}
 		p.from, p.hasFrom = t, true
 	}
-	if t, has, em := parse("to"); em != "" {
-		return p, em
-	} else if has {
+	if to != "" {
+		t, em := parsePeriodValue("to", to)
+		if em != "" {
+			return p, em
+		}
 		p.to, p.hasTo = t, true
 	}
 	if p.hasFrom && p.hasTo && p.from.After(p.to) {
 		return p, "period.from 晚于 period.to（时间范围为空）"
 	}
 	return p, ""
+}
+
+// parsePeriodValue 解析单个时间值（RFC3339 或 YYYY-MM-DD）；失败返回错误消息。
+func parsePeriodValue(key, s string) (time.Time, string) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, ""
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		if key == "to" { // date-only to = 当日整天含
+			t = t.Add(24*time.Hour - time.Nanosecond)
+		}
+		return t, ""
+	}
+	return time.Time{}, fmt.Sprintf("period.%s %q 无法解析（需 RFC3339 或 YYYY-MM-DD）", key, s)
 }

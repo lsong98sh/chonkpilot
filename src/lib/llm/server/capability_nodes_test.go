@@ -21,8 +21,7 @@ func writeHotToolContract(t *testing.T, root, name string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
-	body := "# " + name + "\n\n[meta]\nhot=true\n\n[description]\n运行时能力面测试工具\n\n" +
-		"[parameters]\n{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"string\"}}}\n"
+	body := buildV2ToolDoc(name, "运行时能力面测试工具", `{"type":"object","properties":{"x":{"type":"string"}}}`, []string{"hot=true"})
 	if err := os.WriteFile(filepath.Join(dir, name+".tool.md"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write contract: %v", err)
 	}

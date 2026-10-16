@@ -21,8 +21,11 @@ func NewSession(workDir string, expectMD5 map[string]string) (*Session, error) {
 	return &Session{ec: newEditCtx(workDir, expectMD5)}, nil
 }
 
-// Actions 返回本域 DSL 动作集（RPL/APD/PTC/INS/DEL/MOV/CPY，Raw 原文透传）。
-func (s *Session) Actions() []dsl.Action { return fileEditActions(s.ec) }
+// Actions 返回本域 DSL 动作集（编辑动词 RPL/APD/PTC/INS/DEL/MOV/CPY + 查询动词 READ/DIFF/FIND，均 Raw 原文透传）。
+func (s *Session) Actions() []dsl.Action {
+	acts := fileEditActions(s.ec)
+	return append(acts, queryActions(s.ec)...)
+}
 
 // Files 返回本域 DSL 文件系统（校验型 ScriptFS，接入 agentbox 沙箱）。
 func (s *Session) Files() dsl.FileSystem { return ScriptFS{} }

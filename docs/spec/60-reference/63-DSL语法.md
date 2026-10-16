@@ -55,12 +55,21 @@ LLM "<成员名>" "请分析以下内容：<<<
 
 | 域 | 前缀 | 示例 | 说明 |
 |---|---|---|---|
-| 文件 | `FILE_` | `FILE_RPL` `FILE_APD` `FILE_MOV` `FILE_CPY` … | 对应 `filesys_run` 的 `RPL/APD/PTC/INS/DEL/MOV/CPY` |
+| 文件 | `FILE_` | `FILE_RPL` `FILE_APD` `FILE_MOV` `FILE_CPY` … · `FILE_READ` `FILE_DIFF` `FILE_FIND` | 对应 `filesys_run` 的 `RPL/APD/PTC/INS/DEL/MOV/CPY`（写）+ `READ/DIFF/FIND`（只读查询，2026-10-12 收纳原 `file_read`/`file_diff`/`file_find`） |
 | 浏览器 | `WEB_` | `WEB_OPN` `WEB_CLK` `WEB_SHT` `WEB_FILL` … | 对应 `browser_run` 动作集（含 fetch） |
 | 桌面 | `PC_` | `PC_WIN` `PC_CLK` `PC_SHT` `PC_KPR` … | 对应 `desktop_run` 动作集 |
 | LLM | 无（保持 `LLM`） | `LLM "<agent>" "<prompt>" "<目的>"` | 无冲突，保持原动词 |
 
 - **容器工具仍用裸动词方言**：`filesys_run` / `browser_run` / `desktop_run` 各自的脚本语法**不变**（`RPL`、`CLK`…）；域前缀**仅**用于 `dsl_run` 统一编排。
+- **文件只读查询动作（`READ` / `DIFF` / `FIND`）**：三动作由 `filesys_run`（裸动词）与 `dsl_run`（前缀 `FILE_READ` / `FILE_DIFF` / `FILE_FIND`）**共享同一实现**（`fileops/query_actions.go`）——**2026-10-12 收纳原 `file_read` / `file_diff` / `file_find` 三个独立工具**（契约与 handler 已删除）。参数语法（Raw 原文透传，动作内自行 `{{}}` 插值）：
+
+  ```text
+  READ #"path" [start=N] [limit=N] [tail=N] [ranges=1:10,20:30] [info] [line_numbers]
+  DIFF #"a" #"b" [#"c" #"d" ...]          # 须偶数个 #"path"，逐对产 diff
+  FIND #"dir" [depth=N] [glob="*.go"] [grep="re"] [output=tree|file|summary] [skip_dirs="a,b"] [ignore_files="*.log"] [from=YYYY-MM-DD] [to=YYYY-MM-DD]
+  ```
+
+  **返回语义**（无 `=> 目标` 时进作业汇总）：`READ` = **首行元数据**（`path`/`md5`/`encoding`/`lines`/`size`[ `truncated=true`][ `total_lines=N`]）+ 第二行起为文件内容（`start`/`limit`/`tail`/`ranges`/`line_numbers` 语义沿用文件句柄读取；`info` 仅返回元数据行）。`DIFF` = 统一 diff 文本（多对以空行分隔）。`FIND` = 查找输出文本（按 `output` 渲染 tree/file/summary）。**路径一律 R-11**（每个 `#"path"` 须绝对 / `~/` / `!/`，相对路径整体失败）。
 - 核心语句（`SET/IF/LOOP/PARALLEL/...`）与 `$RETURN`（§4.6）在两种方言下**完全一致**。
 - 子会话：`dsl_run` 中每次 LLM 调用 = 一个**子会话**（`parent_id` 非空，不入会话列表，仅在作业步骤表格可见）。
 - **`LLM` 返回值口径**：只含该子轮次的**最终回答正文**——**不含 reasoning（思维链）与 tool 相关内容**（工具调用轮的中间正文、工具结果一律剔除）；该正文即以 `=> 目标` / `=> $RETURN` 写入的内容（`llm_run` 与 `dsl_run` 两路一致）。

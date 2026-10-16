@@ -167,39 +167,13 @@
         <span class="tb-label">{{ $t('toolbar.sessions') }}</span>
       </Button>
 
-      <!-- Tasks toggle（图标 + 文字；元素顺序 / 类名不变 → test_toolbar 固定下标 3 仍成立） -->
-      <Button
-        class="tb-btn"
-        :title="taskVisible ? $t('toolbar.hide_tasks') : $t('toolbar.show_tasks')"
-        v-mq:[EventNames.tasksToggle].click
-      >
-        <Icon name="list" :color="taskVisible ? 'var(--accent)' : ''" />
-        <span class="tb-label">{{ $t('toolbar.tasks') }}</span>
-      </Button>
-
-      <!-- Filetree toggle（图标 + 文字；下标 4） -->
-      <Button
-        class="tb-btn"
-        :title="filetreeVisible ? $t('toolbar.hide_filetree') : $t('toolbar.show_filetree')"
-        v-mq:[EventNames.filetreeToggle].click
-      >
-        <Icon name="folder" :color="filetreeVisible ? 'var(--accent)' : ''" />
-        <span class="tb-label">{{ $t('toolbar.filetree') }}</span>
-      </Button>
-
-      <!-- Chat toggle（图标 + 文字；下标 5） -->
-      <Button
-        class="tb-btn"
-        :title="chatVisible ? $t('toolbar.hide_chat') : $t('toolbar.show_chat')"
-        v-mq:[EventNames.chatToggle].click
-      >
-        <Icon name="chat-dot-square" :color="chatVisible ? 'var(--accent)' : ''" />
-        <span class="tb-label">{{ $t('toolbar.chat') }}</span>
-      </Button>
+      <!-- 〔UILAYOUT-1 裁决 2（2026-10-16）〕chat / task / filetree 三区「显示/隐藏」开关**已移除**
+           （用户裁决：去掉这三个区的隐藏功能，三区始终显示，后续用其他方式实现）→
+           对应 `chat-toggle / filetree-toggle / tasks-toggle` 主题保留定义（零增删改），但已无 UI 入口。 -->
 
       <!-- 登出（认证形态 desktop/browser 才有；61 §4.6 认证域；阶段 2b-2）。
            注：类名**不用** `tb-btn` —— test_toolbar 按 `.toolbar-right .tb-btn` 固定下标定位
-           （0=theme…5=chat），新按钮带该类会错位；此处用自有类 `auth-btn`（同 chrome-warn）。 -->
+           （0=theme 1=lang 2=sessions），新按钮带该类会错位；此处用自有类 `auth-btn`（同 chrome-warn）。 -->
       <Button
         v-if="needsAuth"
         class="auth-btn"
@@ -252,6 +226,7 @@ import { reinitProjectState } from '../../utils/projectReinit'
 import { useAuth } from '../../composables/useAuth'
 import { useInstanceClaim } from '../../composables/useInstanceClaim'
 import { useUserConfigSync } from '../../composables/useUserConfigSync'
+import { useSelectionStore } from '../../stores/selection'
 
 const { t, locale } = useI18n()
 
@@ -267,6 +242,9 @@ const { signOut } = useAuth()
 async function onLogout() {
   await signOut()
   resetClaim()
+  // 跨 view 共享状态复位（UILAYOUT-1 §3.7 P2③）：登出 = 身份边界；状态已外置到 store，
+  // 组件重挂不再自带"归零" → 不清则下次登录首帧会闪现上一身份/项目的会话、文件与工作目录。
+  useSelectionStore().reset()
 }
 
 // 目录选择统一入口：两形态同走 gui.select-dir 两段式（browser 由服务端经 gui.show-dialog 请 UI 弹选择器）
@@ -282,12 +260,8 @@ const currentLang = computed(() => languages.find(l => l.code === currentLocale.
 const currentLangFlag = computed(() => currentLang.value.flag)
 const currentLangLabel = computed(() => currentLang.value.label)
 
-const props = defineProps({
-  chatVisible: { type: Boolean, default: true },
-  filetreeVisible: { type: Boolean, default: true },
-  taskVisible: { type: Boolean, default: true },
-})
-
+// 〔裁决 2（2026-10-16）〕原有 `chatVisible / filetreeVisible / taskVisible` 三个 props 随
+// 三区显隐开关一并移除（工具栏不再需要显隐状态）。
 
 const searchQuery = ref('')
 const searchResults = ref([])

@@ -1,11 +1,13 @@
-# layout-discipline
+# 基本信息
+```yaml
+name: layout-discipline
+title: layout-discipline
+```
 
-[meta]
-
-[description]
+# 摘要
 布局纪律核查：在编写或交付任何含滚动、数据表格、弹窗、输入框的界面前使用。用 RFC 2119 硬约束（MUST / MUST NOT / SHOULD / MAY）约束视口、滚动归属、弹窗与编辑区，防止溢出被掩盖、textarea 不撑满、表格依赖文档滚动。**MUST NOT 的违反应在代码审查阶段被标为阻塞项。**
 
-[content]
+# 正文
 # 布局纪律
 
 ## 一、基础约束：视口与滚动归属

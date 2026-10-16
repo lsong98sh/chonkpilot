@@ -39,11 +39,14 @@ type agentWizardProbeReq struct {
 
 // agentWizardAgentReq 是生成请求里的一个 agent（映射 facade.ScenarioAgent）。
 type agentWizardAgentReq struct {
-	Name    string `json:"name"`
-	RoleTag string `json:"roletag"`
-	IsMain  bool   `json:"is_main"`
-	Prompt  string `json:"prompt"`
-	Ref     string `json:"ref"`
+	Name    string   `json:"name"`
+	RoleTag string   `json:"roletag"`
+	IsMain  bool     `json:"is_main"`
+	Prompt  string   `json:"prompt"`
+	Ref     string   `json:"ref"`
+	Skills  []string `json:"skills"`
+	// Resources 资源名单（可选；落 agent 契约 `# 参考` 分区的 refs.resources）。
+	Resources []string `json:"resources"`
 }
 
 // agentWizardMemoryReq 是一个项目记忆条目（映射 facade.MemorySaveRequest）。
@@ -124,7 +127,7 @@ func (s *Server) onAgentWizardGenerate(_ context.Context, _ string, v *mq.Value)
 		if !a.IsMain && ref == "" {
 			resp, err := s.cfg.ProjectAgentWrite(facade.ProjectAgentWriteRequest{
 				InstanceID: req.InstanceID, Name: a.Name, RoleTag: a.RoleTag,
-				Prompt: a.Prompt, Scope: scope,
+				Prompt: a.Prompt, Skills: a.Skills, Resources: a.Resources, Scope: scope,
 			})
 			if err != nil {
 				logf("[chonkpilot-server] agent-wizard-generate: ProjectAgentWrite(%s) failed: %v\n", a.Name, err)
@@ -135,6 +138,7 @@ func (s *Server) onAgentWizardGenerate(_ context.Context, _ string, v *mq.Value)
 		}
 		agents = append(agents, facade.ScenarioAgent{
 			Name: a.Name, RoleTag: a.RoleTag, IsMain: a.IsMain, Prompt: a.Prompt, Ref: ref,
+			Skills: a.Skills, Resources: a.Resources,
 		})
 	}
 	if _, err := s.cfg.ScenarioSave(facade.ScenarioSaveRequest{

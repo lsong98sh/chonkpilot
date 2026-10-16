@@ -28,6 +28,12 @@ class DialogManager {
     let shellRef = null
     let currentState = 'normal'
     const manager = this
+    /**
+     * 关闭透出回调（UILAYOUT-1 裁决 4）：
+     * 宿主弹窗被**任意路径**关闭（DialogShell ✕ / 程序 `close(id)` / Esc）时都会调用，
+     * 供调用方（如自由布局机制层）回收自己的句柄表 / 广播可观察通知。
+     */
+    const closeHooks = []
 
     // options 必须是响应式对象：DialogShell 通过 props 接收它，
     // setOptions 直接替换属性才会触发 UI 更新（裸对象 Object.assign 不响应）。
@@ -83,7 +89,7 @@ class DialogManager {
     // shellRef 指向 defineExpose 返回的 exposed 对象（含 minimize 等所有公开方法）
     shellRef = (shellInstance && shellInstance.exposed) || null
 
-    this.dialogs.set(id, { container, shellRef })
+    this.dialogs.set(id, { container, shellRef, closeHooks })
 
     return {
       close: () => this.close(id),
@@ -94,6 +100,15 @@ class DialogManager {
       setTitle: (title) => shellRef?.setTitle?.(title),
       setOptions: (opts) => { Object.assign(reactiveOptions, opts) },
       getState: () => shellRef?.getState?.() || currentState,
+      /** 注册「关闭透出」回调（可多次；返回取消函数） */
+      onClose: (cb) => {
+        if (typeof cb !== 'function') return () => {}
+        closeHooks.push(cb)
+        return () => {
+          const i = closeHooks.indexOf(cb)
+          if (i >= 0) closeHooks.splice(i, 1)
+        }
+      },
     }
   }
 
@@ -132,6 +147,15 @@ class DialogManager {
 
     // Step 4: 清理记录
     this.dialogs.delete(id)
+
+    // Step 5: 关闭透出（UILAYOUT-1 裁决 4）—— 记录已删，回调里再调用 close(id) 是 no-op（幂等）
+    for (const cb of instance.closeHooks ?? []) {
+      try {
+        cb(id)
+      } catch (e) {
+        console.warn(`[DialogManager] close(${id}): onClose hook error:`, e)
+      }
+    }
   }
 
   closeAll() {

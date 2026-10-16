@@ -1,23 +1,33 @@
-# code_review
+# 基本信息
+```yaml
+name: code_review
+title: code_review
+```
 
-[meta]
-
-[description]
+# 摘要
 对指定文件的代码做结构化审查
 
-[arguments]
-type: object
-properties:
-  path:
-    type: string
-    description: 待审查文件路径
-  focus:
-    type: string
-    description: 审查重点（如 逻辑/性能/安全）
-required:
-  - path
+# 参数
+```json
+{
+  "properties": {
+    "focus": {
+      "description": "审查重点（如 逻辑/性能/安全）",
+      "type": "string"
+    },
+    "path": {
+      "description": "待审查文件路径",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "type": "object"
+}
+```
 
-[content]
+# 正文
 # 代码审查
 
 请对 `{{path}}` 进行结构化代码审查{{focus}}，重点：

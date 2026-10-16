@@ -138,9 +138,29 @@ func (s *Service) ProjectAgentWrite(req facade.ProjectAgentWriteRequest) (facade
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return facade.ProjectAgentWriteResponse{}, err
 	}
-	doc := capfs.Doc{Title: name, Meta: map[string]string{}, Description: req.Description, Content: req.Prompt}
+	doc := capfs.Doc{Name: name, Title: name, Meta: map[string]string{}, Description: req.Description, Content: req.Prompt}
 	if rt := strings.TrimSpace(req.RoleTag); rt != "" {
 		doc.Meta["roletag"] = rt
+	}
+	// 参考名单（skills / resources；可选）：落契约 `# 参考` 分区的 refs.*（空元素剔除）。
+	clean := func(items []string) []string {
+		out := make([]string, 0, len(items))
+		for _, it := range items {
+			if s := strings.TrimSpace(it); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	skills, resources := clean(req.Skills), clean(req.Resources)
+	if len(skills) > 0 || len(resources) > 0 {
+		doc.Refs = map[string][]string{}
+		if len(skills) > 0 {
+			doc.Refs["skills"] = skills
+		}
+		if len(resources) > 0 {
+			doc.Refs["resources"] = resources
+		}
 	}
 	if err := os.WriteFile(abs, []byte(capfs.BuildDoc(doc)), 0o644); err != nil {
 		return facade.ProjectAgentWriteResponse{}, err

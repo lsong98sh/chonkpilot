@@ -3,7 +3,18 @@
        标题栏 = **原生标题栏**（宿主 `Frameless:false`）→ 前端不画自绘标题栏、不提供拖动/最小化/关闭。
        会话**绑定** URL 的 `session-id`（不提供会话切换）；不写 `window.*`/`layout.*`。 -->
   <div class="chat-only-view">
-    <ChatPanel :session-id="sessionId" :chat-only="true" />
+    <!-- 会话类型分派（阶段 G · 群聊 §4 / D39）：`kind=group_chat` → **群聊展示板**（只读：参与者
+         头像区 + 结论流 + 右侧子会话分栏）；其余（普通会话 / 单聊 `sub_chat`）→ 既有 ChatPanel。
+         `kind` 取自同一份 `data-session-get`（标题读取顺带，零额外往返）。 -->
+    <template v-if="!kindLoaded">
+      <div class="chat-only-loading" />
+    </template>
+    <template v-else-if="isGroupChat">
+      <GroupChatBoard :session-id="sessionId" />
+    </template>
+    <template v-else>
+      <ChatPanel :session-id="sessionId" :chat-only="true" />
+    </template>
     <!-- ask-user 监听器（**无任何可视节点**，仅订阅 ask-user → 全局 AskUserManager）：
          对话窗口「可跑 tools」（WIN-018-S05）→ LLM 提问回路必需，否则该窗口无法应答提问。 -->
     <AskUserDialog />
@@ -11,13 +22,15 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ChatPanel from './ChatPanel.vue'
+import GroupChatBoard from './GroupChatBoard.vue'
 import AskUserDialog from './AskUserDialog.vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { getSession } from '../../api/session'
 import { claimedInstance } from '../../utils/instanceState'
+import { isGroupChatKind } from '../../utils/groupchat.js'
 
 const props = defineProps({
   /** URL 绑定的会话（`?session-id=…#chat`；由 App.vue 解析传入，固定不变）。 */
@@ -47,6 +60,12 @@ function hasSummary(title) {
 
 let lastTitle = ''
 
+/** 本窗绑定会话的 `kind`（= 视图分派依据，D39）：`group_chat` → 群聊展示板，其余 → ChatPanel。 */
+const sessionKind = ref('')
+/** `kind` 是否已就绪（未就绪不渲染任何分支 → 避免 ChatPanel/展示板**双挂载**闪烁）。 */
+const kindLoaded = ref(false)
+const isGroupChat = computed(() => isGroupChatKind(sessionKind.value))
+
 /** 标题变化才推送（幂等，避免重复消息）。 */
 function applyTitle(summary) {
   const title = hasSummary(summary) ? String(summary).trim() : defaultTitle()
@@ -55,14 +74,17 @@ function applyTitle(summary) {
   mq.emit(EventNames.guiWindowSetTitle, { title })
 }
 
-/** 读会话摘要（data-session-get）；读取失败 → 回落缺省标题（不静默留空标题）。 */
+/** 读会话摘要 + `kind`（同一次 data-session-get；读取失败 → 回落缺省标题、按普通会话处理）。 */
 async function refreshTitle() {
   try {
     const data = await getSession(props.sessionId)
+    sessionKind.value = (data && data.kind) || ''
     applyTitle(data && data.title)
   } catch (e) {
     console.warn('[ChatOnlyView] load session title failed:', e)
     applyTitle('')
+  } finally {
+    kindLoaded.value = true
   }
 }
 
@@ -107,5 +129,10 @@ onUnmounted(() => {
   flex-direction: column;
   background: var(--bg-primary);
   color: var(--text-primary);
+}
+/* 会话类型（`kind`）就绪前的空载（一次性 data-session-get；避免 ChatPanel/群聊展示板双挂载闪烁） */
+.chat-only-loading {
+  flex: 1;
+  min-height: 0;
 }
 </style>

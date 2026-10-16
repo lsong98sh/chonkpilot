@@ -1,11 +1,13 @@
-# design-system-extract
+# 基本信息
+```yaml
+name: design-system-extract
+title: design-system-extract
+```
 
-[meta]
-
-[description]
+# 摘要
 从品牌参考、代码库或截图中抽取设计 token（颜色、排版、间距、圆角、阴影），产出结构化的 token 文件；当要开始的设计工作需匹配一套既有视觉语言时使用。token 存在后，后续设计引用它们，无需重复索要数值也能保持体系一致。
 
-[content]
+# 正文
 # 抽取设计体系：从来源中提取 token
 
 从品牌参考、代码库或截图中抽取设计 token（颜色、排版、间距、圆角、阴影），产出结构化的 token 文件。当要开始的设计工作需匹配一套既有视觉语言时使用。token 存在后，后续设计引用它们——无需再向用户重复索要数值，也能保持体系一致。

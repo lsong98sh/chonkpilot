@@ -7,11 +7,13 @@
     <exe> <tool> --input=<参数 JSON 文件>   # 结果输出到 stdout（JSON 或文本）
     退出码：0 = 成功；1 = 失败（失败详情在 stdout）；2 = 用法错误（成功路径不出现）
 
-现行工具面（契约源 src/initdata/capability/tools/**/*.tool.md）共 8 个：
-    core    : file_read / file_find / file_diff / filesys_run / script_run / web_fetch
+现行工具面（契约源 src/initdata/capability/tools/**/*.tool.md）共 5 个：
+    core    : filesys_run / script_run / web_fetch
     browser : browser_run
     desktop : desktop_run
-（历史脚本调用的 file_write/grep/diff/patch/replace/remove/rename/directory_*/fetch 及
+（原 file_read/file_find/file_diff 三工具已收纳为 filesys_run 的只读动作 READ/DIFF/FIND
+ （dsl_run 侧前缀化为 FILE_READ/FILE_DIFF/FILE_FIND）；本脚本经 filesys_run 驱动查询动作。
+ 历史脚本调用的 file_write/grep/diff/patch/replace/remove/rename/directory_*/fetch 及
  desktop 的 windows_list/window_find/... 等已随工具面收敛删除，本脚本不再引用。）
 
 路径约束（决策 R-11）：工具与 DSL 内所有文件/目录参数须为 ① 绝对路径 ② `~/` 开头
@@ -20,7 +22,7 @@
 CHONKPILOT_WORKDIR 供 `{{env.CHONKPILOT_WORKDIR}}` 拼项目内绝对路径。
 
 用法：
-    python run_executor_tests.py            # core 六工具（无外部依赖；web_fetch 走本机回环）
+    python run_executor_tests.py            # core 三工具（无外部依赖；web_fetch 走本机回环）
     python run_executor_tests.py --all      # 追加 browser_run / desktop_run 冒烟（需 headless Chrome / 交互桌面）
 返回：0 = 全部通过（或全部跳过）；1 = 存在失败。
 """
@@ -190,85 +192,105 @@ def has_path(entries, target, key="path"):
     return any(norm_path(e.get(key, "")) == t for e in entries)
 
 
-# ─────────────────────────── file_read ───────────────────────────
+# ─────────────── 只读查询动作（经 filesys_run 驱动） ───────────────
+# READ / DIFF / FIND 已收纳为 filesys_run 的只读动作；filesys_run 顶层仅回
+# modified/created/deleted 计数，查询文本须经 `=> #"file"` 落盘后读回。
+
+def query_out(work, name):
+    d = os.path.join(work, "_query")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, name)
+
+
+def run_query(script_line, out, env=None):
+    """执行单条只读查询动作（READ/DIFF/FIND），文本经 `=> #"out"` 落盘。
+    返回 (rc, stdout, stderr, text)；text 为落盘读回文本（失败/未落盘为空串）。"""
+    if os.path.exists(out):
+        os.remove(out)
+    rc, stdout, err = run(CORE_EXE, "filesys_run",
+                          {"script": f'{script_line} => #"{fwd(out)}"'}, env=env)
+    text = read_text(out) if os.path.exists(out) else ""
+    return rc, stdout, err, text
+
+
+# ─────────────────────────── READ ───────────────────────────
 
 def suite_file_read(work):
     ok_file = os.path.join(work, "fr", "a.txt")
     write_text(ok_file, "hello\nworld\n中文内容\n")
 
     def t_content():
-        rc, out, err = run(CORE_EXE, "file_read", {"files": [{"path": ok_file}]})
-        res = as_json(out)
-        assert res and res.get("status") == "success", f"rc={rc} out={out!r} err={err!r}"
-        f0 = res["files"][0]
-        assert "中文内容" in f0.get("content", ""), f0
-        assert f0.get("md5"), f"缺少 md5: {f0}"
-        assert f0.get("encoding") == "UTF-8", f0
+        out = query_out(work, "read_content.txt")
+        rc, stdout, err, text = run_query(f'READ #"{fwd(ok_file)}"', out)
+        assert_ok(rc, stdout, err, "READ 内容")
+        meta, _, body = text.partition("\n")  # 首行元数据，第二行起为正文
+        assert "中文内容" in body, text
+        assert "md5=" in meta and "encoding=UTF-8" in meta, meta
 
     def t_info():
-        rc, out, _ = run(CORE_EXE, "file_read", {"files": [{"path": ok_file, "info": True}]})
-        res = as_json(out)
-        assert rc == 0 and res and res.get("status") == "success", out
-        f0 = res["files"][0]
-        assert "content" not in f0, f"info 模式不应返回正文: {f0}"
-        assert f0.get("lines") == 3 and f0.get("size", 0) > 0, f0
+        out = query_out(work, "read_info.txt")
+        rc, stdout, _, text = run_query(f'READ #"{fwd(ok_file)}" info', out)
+        assert rc == 0, stdout
+        assert "中文内容" not in text, f"info 模式不应返回正文: {text!r}"
+        assert "lines=3" in text and "size=" in text, text
 
     def t_range():
-        rc, out, _ = run(CORE_EXE, "file_read",
-                         {"files": [{"path": ok_file, "start": 1, "limit": 2, "line_numbers": True}]})
-        res = as_json(out)
-        assert rc == 0 and res and res.get("status") == "success", out
-        content = res["files"][0].get("content", "")
-        assert "hello" in content and "world" in content, content
-        assert "中文内容" not in content, f"limit 未生效: {content!r}"
+        out = query_out(work, "read_range.txt")
+        rc, stdout, _, text = run_query(f'READ #"{fwd(ok_file)}" start=1 limit=2 line_numbers', out)
+        assert rc == 0, stdout
+        assert "hello" in text and "world" in text, text
+        assert "中文内容" not in text, f"limit 未生效: {text!r}"
 
     def t_utf16():
         p = os.path.join(work, "fr", "u16.txt")
         write_utf16le(p, "第一行\nhello\n")
-        rc, out, _ = run(CORE_EXE, "file_read", {"files": [{"path": p}]})
-        res = as_json(out)
-        assert rc == 0 and res and res.get("status") == "success", out
-        f0 = res["files"][0]
-        assert "第一行" in f0.get("content", "") and "hello" in f0.get("content", ""), f0
-        assert f0.get("encoding") == "UTF-16LE", f0
+        out = query_out(work, "read_u16.txt")
+        rc, stdout, _, text = run_query(f'READ #"{fwd(p)}"', out)
+        assert rc == 0, stdout
+        assert "第一行" in text and "hello" in text, text
+        assert "encoding=UTF-16LE" in text, text
 
     def t_tilde():
         write_text(os.path.join(work, "tilde.txt"), "tilde-ok\n")
-        rc, out, err = run(CORE_EXE, "file_read", {"files": [{"path": "~/tilde.txt"}]},
-                           env=base_env({"USERPROFILE": work}))
-        res = as_json(out)
-        assert rc == 0 and res and res.get("status") == "success", f"rc={rc} out={out!r} err={err!r}"
-        assert "tilde-ok" in res["files"][0].get("content", ""), res
+        out = query_out(work, "read_tilde.txt")
+        rc, stdout, err, text = run_query('READ #"~/tilde.txt"', out,
+                                          env=base_env({"USERPROFILE": work}))
+        assert_ok(rc, stdout, err, "READ ~/")
+        assert "tilde-ok" in text, text
 
     def t_temp_prefix():
         root = os.path.join(tempfile.gettempdir(), "chonkpilot", INSTANCE)
         write_text(os.path.join(root, "tmp-ok.txt"), "temp-prefix-ok\n")
-        rc, out, _ = run(CORE_EXE, "file_read", {"files": [{"path": "!/tmp-ok.txt"}]})
-        res = as_json(out)
-        assert rc == 0 and res and res.get("status") == "success", out
-        assert "temp-prefix-ok" in res["files"][0].get("content", ""), res
+        out = query_out(work, "read_tmp.txt")
+        rc, stdout, _, text = run_query('READ #"!/tmp-ok.txt"', out)
+        assert rc == 0, stdout
+        assert "temp-prefix-ok" in text, text
 
     def t_relative_rejected():
-        rc, out, _ = run(CORE_EXE, "file_read", {"files": [{"path": "a.txt"}]})
-        assert_reject(rc, out, "绝对路径")
-        assert "a.txt" in out, out
+        out = query_out(work, "read_rel.txt")
+        rc, stdout, _, _ = run_query('READ #"a.txt"', out)
+        assert_reject(rc, stdout, "绝对路径")
+        assert "a.txt" in stdout, stdout
 
-    def t_missing_files():
-        rc, out, _ = run(CORE_EXE, "file_read", {})
-        assert_reject(rc, out, "array")
+    def t_missing_path():
+        # 旧 file_read 缺 `files` 数组 → "array"；新形态 READ 缺 #"path" → 动作用法错误。
+        out = query_out(work, "read_nopath.txt")
+        rc, stdout, _, _ = run_query("READ", out)
+        assert_reject(rc, stdout, "READ")
 
     def t_nonexistent():
-        rc, out, _ = run(CORE_EXE, "file_read",
-                         {"files": [{"path": os.path.join(work, "fr", "__nope__.txt")}]})
-        res = as_json(out)
-        assert rc != 0 and res and res.get("status") == "fail", f"rc={rc} out={out!r}"
+        out = query_out(work, "read_none.txt")
+        rc, stdout, _, _ = run_query(
+            f'READ #"{fwd(os.path.join(work, "fr", "__nope__.txt"))}"', out)
+        res = as_json(stdout)
+        assert rc != 0 and res and res.get("status") == "fail", f"rc={rc} stdout={stdout!r}"
 
     for fn in [t_content, t_info, t_range, t_utf16, t_tilde, t_temp_prefix,
-               t_relative_rejected, t_missing_files, t_nonexistent]:
-        check(f"[file_read] {fn.__name__[2:]}", fn)
+               t_relative_rejected, t_missing_path, t_nonexistent]:
+        check(f"[filesys_run READ] {fn.__name__[2:]}", fn)
 
 
-# ─────────────────────────── file_find ───────────────────────────
+# ─────────────────────────── FIND ───────────────────────────
 
 def suite_file_find(work):
     root = os.path.join(work, "findroot")
@@ -278,49 +300,56 @@ def suite_file_find(work):
     write_text(os.path.join(root, "sub", "d.log"), "delta\n")
 
     def t_default_file():
-        rc, out, err = run(CORE_EXE, "file_find", {"path": root})
-        assert_ok(rc, out, err, "file_find 默认 file 模式")
-        assert "a.txt" in out and "c.txt" in out, out
+        out = query_out(work, "find_default.txt")
+        rc, stdout, err, text = run_query(f'FIND #"{fwd(root)}"', out)
+        assert_ok(rc, stdout, err, "FIND 默认 file 模式")
+        assert "a.txt" in text and "c.txt" in text, text
 
     def t_glob():
-        rc, out, _ = run(CORE_EXE, "file_find", {"path": root, "glob": "*.txt"})
-        assert rc == 0, out
-        assert "a.txt" in out and "c.txt" in out, out
-        assert "b.go" not in out, f"glob 未过滤: {out!r}"
+        out = query_out(work, "find_glob.txt")
+        rc, stdout, _, text = run_query(f'FIND #"{fwd(root)}" glob="*.txt"', out)
+        assert rc == 0, stdout
+        assert "a.txt" in text and "c.txt" in text, text
+        assert "b.go" not in text, f"glob 未过滤: {text!r}"
 
     def t_depth1():
-        rc, out, _ = run(CORE_EXE, "file_find", {"path": root, "depth": 1})
-        assert rc == 0, out
-        assert "a.txt" in out and "b.go" in out, out
-        assert "c.txt" not in out, f"depth=1 应仅当前目录: {out!r}"
+        out = query_out(work, "find_depth1.txt")
+        rc, stdout, _, text = run_query(f'FIND #"{fwd(root)}" depth=1', out)
+        assert rc == 0, stdout
+        assert "a.txt" in text and "b.go" in text, text
+        assert "c.txt" not in text, f"depth=1 应仅当前目录: {text!r}"
 
     def t_grep_summary():
-        rc, out, _ = run(CORE_EXE, "file_find", {"path": root, "grep": "TODO", "output": "summary"})
-        assert rc == 0, out
-        assert "c.txt" in out and "TODO in c" in out, out
-        assert "a.txt" not in out, f"grep 不应命中无匹配文件: {out!r}"
+        out = query_out(work, "find_grep.txt")
+        rc, stdout, _, text = run_query(f'FIND #"{fwd(root)}" grep="TODO" output=summary', out)
+        assert rc == 0, stdout
+        assert "c.txt" in text and "TODO in c" in text, text
+        assert "a.txt" not in text, f"grep 不应命中无匹配文件: {text!r}"
 
     def t_tree():
-        rc, out, _ = run(CORE_EXE, "file_find", {"path": root, "output": "tree"})
-        assert rc == 0, out
+        out = query_out(work, "find_tree.txt")
+        rc, stdout, _, text = run_query(f'FIND #"{fwd(root)}" output=tree', out)
+        assert rc == 0, stdout
         for want in (".", "sub/", "a.txt"):
-            assert want in out, f"tree 缺 {want!r}: {out!r}"
+            assert want in text, f"tree 缺 {want!r}: {text!r}"
 
     def t_no_match():
-        rc, out, _ = run(CORE_EXE, "file_find", {"path": root, "glob": "*.nomatch"})
-        assert rc == 0 and "no matches" in out, out
+        out = query_out(work, "find_nomatch.txt")
+        rc, stdout, _, text = run_query(f'FIND #"{fwd(root)}" glob="*.nomatch"', out)
+        assert rc == 0 and "no matches" in text, text
 
     def t_relative_rejected():
-        rc, out, _ = run(CORE_EXE, "file_find", {"path": "src"})
-        assert_reject(rc, out, "绝对路径")
-        assert "src" in out, out
+        out = query_out(work, "find_rel.txt")
+        rc, stdout, _, _ = run_query('FIND #"src"', out)
+        assert_reject(rc, stdout, "绝对路径")
+        assert "src" in stdout, stdout
 
     for fn in [t_default_file, t_glob, t_depth1, t_grep_summary, t_tree,
                t_no_match, t_relative_rejected]:
-        check(f"[file_find] {fn.__name__[2:]}", fn)
+        check(f"[filesys_run FIND] {fn.__name__[2:]}", fn)
 
 
-# ─────────────────────────── file_diff ───────────────────────────
+# ─────────────────────────── DIFF ───────────────────────────
 
 def suite_file_diff(work):
     x = os.path.join(work, "diff", "x.txt")
@@ -329,35 +358,35 @@ def suite_file_diff(work):
     write_text(y, "a\nb\nC\n")
 
     def t_file_pair():
-        rc, out, err = run(CORE_EXE, "file_diff", {"file1": x, "file2": y})
-        assert_ok(rc, out, err, "file_diff file1+file2")
-        assert "--- " in out and "+++ " in out, out
-        assert "-c" in out and "+C" in out, out
+        out = query_out(work, "diff_pair.txt")
+        rc, stdout, err, text = run_query(f'DIFF #"{fwd(x)}" #"{fwd(y)}"', out)
+        assert_ok(rc, stdout, err, "DIFF 两文件")
+        assert "--- " in text and "+++ " in text, text
+        assert "-c" in text and "+C" in text, text
 
-    def t_files_array():
-        rc, out, _ = run(CORE_EXE, "file_diff", {"files": [{"path": x, "path2": y}]})
-        assert rc == 0 and "-c" in out and "+C" in out, out
-
-    def t_path_array():
-        rc, out, _ = run(CORE_EXE, "file_diff", {"path": [x, y]})
-        assert rc == 0 and "+C" in out, out
+    # 旧 file_diff 的 `files:[{path,path2}]` / `path:[a,b]` 两种数组入参形态已并入统一
+    # `DIFF #"a" #"b"` 语法（无独立数组参数）——原 t_files_array / t_path_array 两用例
+    # 与 t_file_pair 收敛为同一写法，不再单列。
 
     def t_identical():
-        rc, out, _ = run(CORE_EXE, "file_diff", {"file1": x, "file2": x})
-        assert rc == 0, out
+        out = query_out(work, "diff_ident.txt")
+        rc, stdout, _, _ = run_query(f'DIFF #"{fwd(x)}" #"{fwd(x)}"', out)
+        assert rc == 0, stdout
 
-    def t_no_args():
-        rc, out, _ = run(CORE_EXE, "file_diff", {})
-        assert_reject(rc, out, "provide")
+    def t_no_pairs():
+        # 旧 file_diff 空参 → "provide"；新形态 DIFF 无 #"path" → 动作用法错误。
+        out = query_out(work, "diff_none.txt")
+        rc, stdout, _, _ = run_query("DIFF", out)
+        assert_reject(rc, stdout, "DIFF")
 
     def t_relative_rejected():
-        rc, out, _ = run(CORE_EXE, "file_diff", {"file1": "a.txt", "file2": "b.txt"})
-        assert_reject(rc, out, "绝对路径")
-        assert "a.txt" in out, out
+        out = query_out(work, "diff_rel.txt")
+        rc, stdout, _, _ = run_query('DIFF #"a.txt" #"b.txt"', out)
+        assert_reject(rc, stdout, "绝对路径")
+        assert "a.txt" in stdout, stdout
 
-    for fn in [t_file_pair, t_files_array, t_path_array, t_identical,
-               t_no_args, t_relative_rejected]:
-        check(f"[file_diff] {fn.__name__[2:]}", fn)
+    for fn in [t_file_pair, t_identical, t_no_pairs, t_relative_rejected]:
+        check(f"[filesys_run DIFF] {fn.__name__[2:]}", fn)
 
 
 # ─────────────────────────── filesys_run ───────────────────────────

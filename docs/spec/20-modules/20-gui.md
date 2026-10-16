@@ -170,7 +170,7 @@
 
 **MCP 配置界面**（`views/config/SettingsMCPPage.vue` 列表 + `views/config/EditMCPDialog.vue` 编辑弹窗；落库 = **四级文件化 MCP** `<级别>/capability/mcps/<名>.json`，见 [64 §6](../60-reference/64-配置项一览.md)）：编辑弹窗含「**按实例隔离**」Switch（`config.mcp.isolate`）——**三态表达**：未拨动 = **未设置**（保存时 `delete localData.isolate`，**不写库**）+ 提示「自动（未设置，按传输方式推断）」（`isolateAuto`，另附 `isolateHint`）；一旦拨动即视为**显式设置**并写 `true`/`false`（未显式设置时开关显示随 transport 变化的推断值，computed 推断、无 `watch`）。列表新增「按实例隔离」列（`isolateLabel`）：**显式设置 → 是/否**；**未设置 → 推断值 + 「（自动）」后缀**（`isolateAutoSuffix`；推断口径与 gateway `ServerEntry.IsolateEnabled()` 一致：stdio → 隔离、http/sse → 共享，transport 留空按连接点推断）。
 
-**编辑弹窗页签**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）·「**运行信息**」（运行时 | 工作目录 / **按实例隔离** | **沙箱** / 启动参数 / 环境变量）·「**工具**」（【加载工具】+ 逐项勾选）共**三页签**（「**启用**」移到底栏与【保存】同行）；页签**仅显示分组**，`handleSave` 仍一次性提交三页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」**不再是字段**：改为独立「**工具**」页签 ——【**加载工具**】按钮按别名列出该 server 工具 + 「全部工具」= 全部 hot + 逐项勾选（数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落四级文件化 MCP 条目的 `hot_tools`；原独立弹窗 `SetMCPHotToolsDialog.vue` **已删除**（并入页签）。另：「**请求头**」「**环境变量**」改为 **KV 行编辑**（`components/ui/KeyValueEditor.vue`，可增删行），「**启动参数**」为**行列表**编辑（`args` 是 `[]string`，非 KV）。
+**编辑弹窗页签**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）·「**运行信息**」（运行时 | 工作目录 / **按实例隔离** | **沙箱** / 启动参数 / 环境变量）·「**工具**」（【加载工具】+ 逐项勾选）共**三页签**（「**启用**」移到底栏与【保存】同行）；页签**仅显示分组**，`handleSave` 仍一次性提交三页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）**〔2026-10-12：`mcps[].sandbox` 已废弃为开关来源（开关来源收敛到 usr `tool_sandbox.mcps`）；本 Switch 的写入口保留、由后端读取时迁移承接，登记 [41 `I-179`](../40-roadmap/41-未决项登记.md)〕**；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」**不再是字段**：改为独立「**工具**」页签 ——【**加载工具**】按钮按别名列出该 server 工具 + 「全部工具」= 全部 hot + 逐项勾选（数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落四级文件化 MCP 条目的 `hot_tools`；原独立弹窗 `SetMCPHotToolsDialog.vue` **已删除**（并入页签）。另：「**请求头**」「**环境变量**」改为 **KV 行编辑**（`components/ui/KeyValueEditor.vue`，可增删行），「**启动参数**」为**行列表**编辑（`args` 是 `[]string`，非 KV）。
 
 **MCP 配置四级文件化**：MCP 配置**载体改四级文件** `<级别>/capability/mcps/<名称>.json`（app/user/project/prjusr；一个 server 一个文件）——列表页（`SettingsMCPPage`）经**新数据层 mcp 域**（`data-mcp-{list,save,delete}` + 订阅 `data-mcp-refresh`）读写，**不再整表替换 usr KV `mcpServers`**；列表新增「**级别**」列（文案 = `scenario.level.*`）。编辑弹窗「基本信息」页签新增**级别选择**（`config.mcp.level`，四级，选项文案 = `fileTree.kb_level_*`，缺省 `user`），保存按所选级别落对应级文件（改名/移级先删旧文件、不残留）；i18n = `config.mcp.level` / `config.mcp.levelHint`（zh/en）。**旧 usr KV `mcpServers` 已彻底废弃**（代码零兼容、不再回落）——见 [64 §6](../60-reference/64-配置项一览.md) · [02 §7.3](../00-overview/02-配置层级.md)。
 
@@ -206,7 +206,7 @@
 - **防环**：本实例刚发布的主题（1s 窗口）不再回发前端。
 - **多窗口（🔵 待实施）**：窗口 ↔ `instance` **1:1**（窗 = 视口，instance = 运行态+消息归属+数据根绑定）；**`instance` 不做业务隔离**（同 `work_dir` 多 instance 共用同一 prjusr 库 → 会话列表/历史**共享**）。**关闭语义**：关任一窗口仅销毁该窗口 + 发该实例 `instance-exit`；**主窗口关闭 = 退出本进程**（其余窗口一并关闭）。**几何**：主窗口 `window.*`/`layout.*`（prjusr）；**对话窗口不持久化几何**（每次默认位置）。**不变量**：进程内 instance 数 = 窗口数（非「1 进程 1 instance」），见 [20-实例隔离与后端分离](../10-architecture/20-实例隔离与后端分离.md)。
 - **退出**：`instance-exit` → persist 移除绑定 + server 取消 running turn + 释放锁；`beaconSaveLayout`（`sendBeacon`）兜底保存布局。
-- **browser 形态的 native 能力边界**：`gui.file.save`（「另存为」对话框，native）**明确不支持** —— 入 `src/lib/llm/httpapi/publish.go` 的 `browserUnsupported`（返回 `{ok:false, error}` + errors，**不静默失败**，前端降级为页面下载 / 剪贴板）；browser 形态点分主题上行另有白名单 `allowedDottedPrefixes`（现含 `filesys.` / `llm.test-connection` / `memory.flush`）。GUI 形态无此限制（桥本地实现 + 「点分直通」分支）。见 [61 §1/§1.1/§8](../60-reference/61-消息一览.md)。
+- **browser 形态的 native 能力边界**：`gui.file.save`（「另存为」对话框，native）**明确不支持** —— 入 `src/lib/llm/httpapi/publish.go` 的 `browserUnsupported`（返回 `{ok:false, error}` + errors，**不静默失败**，前端降级为页面下载 / 剪贴板）；browser 形态点分主题上行另有白名单 `allowedDottedPrefixes`（现含 `filesys.` / `vfts.` / `llm.test-connection` / `config.suggest` / `memory.flush`）。GUI 形态无此限制（桥本地实现 + 「点分直通」分支）。见 [61 §1/§1.1/§8](../60-reference/61-消息一览.md)。
 
 ---
 
@@ -409,13 +409,13 @@
 - 表格内**长文本单元格**按**像素宽度**截断（如工具配置页「工具内容介绍」`max-width: 200px` + 省略号），**不按字符数**截断。
 
 **⑥ 布局与交互**
-- **任务区（下区）默认收起**（`taskOpen` 默认 `false`，首屏减负；**布局持久化/恢复照旧**）。展开入口 = 顶部工具栏「任务」开关 + **聊天内工具调用卡片的「查看任务详情」**（打开面板并定位；仅当该调用有关联 `task_id` 时显示，纯同步工具不显示）。
-- 顶部「任务 / 文件树 / 聊天」三开关 = **图标 + 文字**（`test_toolbar` 依赖 `.toolbar-right .tb-btn` 顺序，改动须同步用例）。
+- **任务区（下区）常显**（**2026-10-16 用户裁决**：三区显隐能力与 UI 入口整体移除；原「`taskOpen` 默认 `false`、首屏减负」口径已废止）→ 启动即渲染，与 chat / filetree 同口径。**已知可见变化 = 首屏多出任务区高度**。「查看任务详情」等既有发送方仍发 `tasks-toggle`，收到即 no-op。
+- ~~顶部「任务 / 文件树 / 聊天」三开关~~ **已移除（2026-10-16 用户裁决）**：三区常显、无显隐入口（三主题保留定义，不驱动显隐）。左侧工具栏右区 `tb-btn` 顺序随之变为 **0=theme 1=lang 2=sessions**（`test_toolbar` 依赖该顺序）。
 
 **⑦ 反馈**
 - **保存类操作必须有可见提示**（成功与失败都要）。
 - **失败必须有提示**（如截图失败，原为 `console.warn` 静默 → 已改 `message.error`）。
-- 纯成功且非"保存"语义的操作（切场景 / 切模型 / 新建会话 / 切换面板显隐等）**不加**提示。
+- 纯成功且非"保存"语义的操作（切场景 / 切模型 / 新建会话等）**不加**提示。
 - **不加**首次使用引导：本工具面向已有 IDE（IDEA / Eclipse 等）使用经验的开发者。
 
 ### 12.10 状态栏（`views/statusbar/StatusBar.vue`）
@@ -478,9 +478,12 @@
 - **级别（四级）**：右侧【级别】按钮 → `Popover` 下拉（系统/用户/项目/项目私有，`fileTree.kb_level_*`）；**级别状态由扩展页统一持有并经 `props.level` 下发**（`KnowledgeTree` 只读 `level`，内联级别按钮组与自持 `kbLevel` **已移除**）。切换级别/子 tab 经 `:key="subTab + '-' + level"` 重挂载树（**不用 watch**）。
 - **四级均可写**：撤 `isKbReadonly`/`kb_readonly`（原「系统级只读」作废）；拖拽移动仍限当前级别根内同级。
 - **智能体子 tab**：`*.agent.md` 编辑走 `PrimitivePanel`（token=agent → **复用** `views/scenario/AgentEditor.vue`，`showCopy=false`；保存 `data-knowledge-save`）。**「启用工具过滤」开关**：开关态为**前端本地、不持久化**（后端判据 = `tools` 非空即白名单）—— 载入按 `tools` 反推回填（单源 `utils/agentToolFilter.filterToolsLoadPatch`，与场景编辑同口径）、`update:agent` 回写；**无 tools 的智能体勾选后须保持开并展开候选**（`PrimitivePanel` 不再由 `tools.length>0` 派生）。
-- **场景编辑页的子 agent = 可编辑引用**：`views/scenario/ScenarioEditDialog.vue` 对子 agent（唯一形态 = ref）**复用** `AgentEditor` 并可编辑；选中时经 `data-knowledge-read` 读被引 `agents/*.agent.md` 正文，点【保存】经 `data-knowledge-save` 写回该文件（保持 `# 名`+`[meta]`+`[description]`+`[content]`），**`scenario.json.agents` 里的 ref 不变**；ref 前缀 → 绝对路径解析单源 `utils/agentRef.js`。四级 capability 根均可写 → 不复制到项目级（见 [37 SCEN-003](../30-function-points/37-场景.md)）。
+- **场景编辑页的子 agent = 可编辑引用**：`views/scenario/ScenarioEditDialog.vue` 对子 agent（唯一形态 = ref）**复用** `AgentEditor` 并可编辑；选中时经 `data-knowledge-read` 读被引 `agents/*.agent.md` 正文，点【保存】经 `data-knowledge-save` 写回该文件（v2 契约：`# 基本信息`+`# 摘要`+`# 委托`+`# 正文`），**`scenario.json.agents` 里的 ref 不变**；ref 前缀 → 绝对路径解析单源 `utils/agentRef.js`。四级 capability 根均可写 → 不复制到项目级（见 [37 SCEN-003](../30-function-points/37-场景.md)）。
 - **消息面**：**主题零新增** —— 子 tab 复用 `filetree-mode-select`（payload 增**可选** `ext`）；级别复用 `kb-level-select{kind}`（语义改「扩展页统一持有」）。二者均为**前端内部**事件（未登记 [61 §6.1](../60-reference/61-消息一览.md)）。
-- **关联测试**：前端守卫 `src/frontend/test/extensionsPane.test.js`（4 段位置/5 子 tab 顺序与 kinds/级别 popup/四级可写/复用/零裸主题/agent token/i18n）+ `test/scenarioAgentsRef.test.js`（智能体编辑器复用）+ `test/sessionNavCopy.test.js`（导航顺序）。L4 `run_explore_kb.py` / `run_config_ui.py` / `run_ui_regressions.py` 按新 UI（「扩展」页）同步（**需新构建后实跑**）。
+- **树形维护能力（🆕 2026-10-15）**：**单类型**子 tab 树根 = **该类型目录本身**（如 `<capRoot>/resources`，**不再多显示一层**类型目录；根节点 `title` = **真实绝对路径**）。**目录/文件右键**增【在资源管理器显示】（`gui.reveal`）；**文件**增【打开】（系统默认程序）/【打开方式】（对话框）。**知识子 tab 目录右键**增【导入】（多选文件，`data-knowledge-import`）；**知识子 tab 新建**先**选类型**（「知识（md 契约）」/「其他（任意类型文件）」）。「其他类型文件」（后端 `type='file'`，如 `config.json`）**单击仅选中、双击用系统默认程序打开**（应用内不预览——见 [41 D-60](file:///e:/BizWorks/chonkpilot/docs/spec/40-roadmap/41-未决项登记.md)）。**删除文件/目录后**经 `filesys.changed` **本地广播**（`mq.emitRemote`，**仅本地分发、不发后端**）通知预览区关闭对应页签（文件自身 / 目录下全部）；各类型新建入口加「名称即文件名、创建后不可改」提示。**原语编辑面板**（`PrimitivePanel`）顶部对**当前编辑的契约 md** 同样提供 **在资源管理器中显示 / 打开 / 打开方式** 三入口（复用 `gui.reveal` / `gui.open-with`）。见 [42 §2.30](file:///e:/BizWorks/chonkpilot/docs/spec/40-roadmap/42-决策记录.md)。
+- **原语「基本信息」按类型表单（🆕 2026-10-15）**：`PrimitivePanel` 的「基本信息」页签由**通用 KV 网格**改为**按类型字段表单**（用户口径：meta「有些值不能乱填」）——字段 = 该类型契约 meta 键，控件按值类型映射：枚举 → `Select`（候选受契约约束 + 「（未设置）」空项）、布尔 → `Switch`、数字 → `Input type=number`、文本/路径 → `Input`；字段定义与值转换 = 纯模块 `utils/metaForm.js`（`META_FIELDS` / `metaFieldsOf` / `isSchemaKey` / `fieldValueOf` / `fieldToMetaOf`）。**`name` 只读**（= 文件名，首行固定）；**skill / prompt 无专属键**（提示文案）；**agent 不渲染本表单**（整体走 `AgentEditor`）。表单未覆盖的键（用户自建）保留在下方**「自定义键」KV 区**（可增删改、原样回写）→ load → form → save **往返保真**；`form.metaRows` 仍是**唯一真源**（字段读 `metaMap()`、写 `setMeta()`）。**锁定键语义订正**：锁定键（`name` + 类型默认键）**值可清空、键不可删**（值空 → 非锁定键删行、锁定键留行清值）。**契约/消息面零变更**（仍走 `data-knowledge-save`，落盘由服务端 `contractmd.Build` 序列化）。见 [39 KB-003](../30-function-points/39-知识库与原语.md) · [42 §2.30](file:///e:/BizWorks/chonkpilot/docs/spec/40-roadmap/42-决策记录.md)。
+- **智能体编辑页签（🆕 2026-10-15）**：`AgentEditor` 的「参考」拆 **技能 / 资源** 两个页签（**表格式**：新增 + 弹窗**多选**，按 **MCP 分类分组**可勾选）；提示词页签加 **「AI 编写」**（输入简单角色 → 走 `gui.prompt-optimise` 流式撰写）；**skill 关联工具默认勾选且不可删**（`filterTools` 未启用时 = 全部工具可用）。场景编辑页的**主 agent** 同样提供 skills/resources 选择（`agents[]` 扩字段，见 [25 §3.1](25-mcp-server.md)）。
+- **关联测试**：前端守卫 `src/frontend/test/extensionsPane.test.js`（4 段位置/5 子 tab 顺序与 kinds/级别 popup/四级可写/复用/零裸主题/agent token/i18n）+ `test/scenarioAgentsRef.test.js`（智能体编辑器复用）+ `test/sessionNavCopy.test.js`（导航顺序）+ `test/primitiveMetaForm.test.js`（基本信息按类型表单：字段清单对齐契约 / 控件类型 / 值转换往返 / 自定义键与 name 只读落点守卫 / zh-en 文案全量对齐）。L4 `run_explore_kb.py` / `run_config_ui.py` / `run_ui_regressions.py` 按新 UI（「扩展」页 + 基本信息表单）同步（**需新构建后实跑**）。
 
 ### 12.15 提示词「变量插入」统一组件（OP-12）
 
@@ -518,4 +521,81 @@
 - **实现约束**：状态逻辑封装在 `useVftsDict` composable；**禁 `watch`/`watchEffect`**；`:style` 数字带 `'px'`（本页无数字样式）；i18n（zh/en）齐备。
 - **消息面**：`vfts.dict.get` / `vfts.dict.set` / `vfts.reindex`（§1.1 点分相对主题；[61 §1.1](../60-reference/61-消息一览.md)）。
 - **关联测试**：前端守卫 `src/frontend/test/vftsDictReindex.test.js`（composable 用三主题常量 / 页面区块与按钮 / msgkeys 生成物 / i18n 齐备 / 无 watch）。
+
+### 12.18 子聊天（单聊）前端：状态条 · 会话列表子节点 · 启动提醒（SUBCHAT-2 阶段 C）
+
+> 设计依据 = 单聊会话设计方案 §3.4 / §3.8（F1–F10 逐条）；消息面 = [61 §4.2/§4.3](../60-reference/61-消息一览.md)（`subchat-opened` / `subchat-list` / `subchat-finish` / `subchat-state`，**载荷零改动**）。功能点见 [33-对话 CHAT-024](../30-function-points/33-对话.md) · [31-窗口与布局 WIN-023](../30-function-points/31-窗口与布局.md)。
+
+**组件 / 模块落点**
+
+| 落点 | 职责 |
+|---|---|
+| `composables/useSubChats.js` | 接线层：`subchat-list` 取数（`parent_id` 有值 = 该父会话全部含 `finished`；缺省 = 全局未结束）· `subchat-finish` 收口 · `openSubChatWindow`（`gui.window.open-chat` 幂等）· F10 启动提醒对话框（`dialog.show`） |
+| `utils/subchat.js` | **叶子模块**（无 import / 无副作用）：`kind` 判定（`sub_chat`/`group_chat`）· 三态常量 · 可见性判据（`lifecycle ∈ {chatting, ready}`）· 文案（`purpose` 优先）与状态标签 i18n 键 |
+| `views/chat/SubChatBar.vue` | 输入框**上方常驻**状态条（默认折叠一条「N 个子聊天进行中」+ 展开 ≤15 条可滚动；每条「正在 `<purpose>`」+「继续」+「强制结束」）；子聊天窗口内另承载常驻「结束」（`ready` 点亮） |
+| `views/chat/SubChatStartupDialog.vue` | F10 启动提醒列表内容（每条 = `purpose` + 父会话标题 + 状态；点一条 → 开窗并关框） |
+
+**约定**
+
+- **订阅（零 `watch`）**：`SubChatBar` 订 `subchat-opened` / `subchat-state` / `gui.window.closed` / `data-session-title-changed` 触发刷新；`ChatPanel` 订 `subchat-opened`（F2 自动开窗）与 `subchat-state`（F7 点亮 / F9 只读）。会话切换用 `:key="currentSessionId"` 重挂替代 `watch`。
+- **状态条淡色**：组件级声明 `--subchat-bg: var(--accent-bg)` + `--subchat-border: color-mix(in srgb, var(--accent) 30%, transparent)`（§12.8 的组件级覆盖钩子口径；`var()` 内**不写兜底**，三主题自动跟随）。
+- **下游事件归属过滤**：桥只按 `instance_id` 精确过滤（无 session 级路由）→ `subchat-opened` / `subchat-state` 的归属判定一律由前端比较 `parent_session_id`（[61 §4.3](../60-reference/61-消息一览.md)）。
+- **固定参数锁入口（F1）**：`kind ∈ {sub_chat, group_chat}` → `ChatPanel` 隐藏场景切换 Tag（chatOnly 精简标题条整条隐藏）；只读（F9）→ 不渲染输入框。
+- **i18n**：新增键一律 `chat.subchat_*`（`locales/{zh-CN,en-US}/chat.json`）。
+
+### 12.19 群聊窗口（只读展示板）（SUBCHAT-3 阶段 G，🆕 2026-10-16）
+
+> 设计依据 = 群聊会话设计方案 §4（窗口 UI）· §9 D14/D28/D29/D30/D37/D41/D47/D48 · §15.4（关窗暂停/终止）；功能点见 [33-对话 CHAT-025](../30-function-points/33-对话.md) · [31-窗口与布局 WIN-024](../30-function-points/31-窗口与布局.md)。
+> **消息面零改动**（[61](../60-reference/61-消息一览.md)）：`subchat-opened` / `subchat-list` / `subchat-finish` / `subchat-continue` / `subchat-state` / `subchat-participant-state`（§4.2/§4.3）+ `data-session-history`（回带 `sender_agent`/`mentions`）· `data-session-group-participants-load`（§3.1/§3.2）+ 复用 `gui.window.open-chat` / `gui.window.closed` / `gui.window.status` / `data-session-get`。
+
+**组件 / 模块落点**
+
+| 落点 | 职责 |
+|---|---|
+| `views/chat/ChatOnlyView.vue` | **视图分派**：`kind=group_chat` → `GroupChatBoard`；其余 → `ChatPanel`（**原有行为不变**）。`kind` 取自标题读取的**同一次** `data-session-get`（零额外往返）；`kind` 就绪前渲染空载（避免双挂载闪烁） |
+| `views/chat/GroupChatBoard.vue` | 群聊窗口主体：**左**（参与者头像区（`thinking` 转 / `idle` 停 / `spoken` 打勾）+ 结论流（主 agent 靠左 / 其余靠右 / 系统提示居中，D47））｜**右**（选中 agent 的 `work_session` 只读分栏 = `MessageList(viewer=true)`，D29/D48）。**无输入框**（人只读旁观，D14） |
+| `views/chat/GroupChatCloseDialog.vue` | 关窗二选一（**暂停 / 终止**，D37/N22）——`DialogShell` 内容（`dialog.show` 承载）；暂停 = 不发消息关窗（`instance-exit` → 调度即停）/ 终止 = `subchat-finish` → `finished` |
+| `composables/useGroupChat.js` | 接线层：`data-session-group-participants-load`（名册，进程内缓存）· `data-session-history`（展示板结论流，分页取全）· `subchat-continue`（「继续」断点补跑） |
+| `composables/useSessionKinds.js` | 会话 `kind` 只读批量取数 + 进程内缓存（`data-session-get`）——供**图标区分**与**窗口额度分类**共用（`subchat-list` 结果项**不含** `kind`，不得为此改载荷） |
+| `utils/groupchat.js` | **叶子模块**（无 import / 无副作用）：群聊 kind 判定 · `work_session` id 确定性公式（与后端 `groupchatSessionID` 同源，含 FNV-1a/净化复刻）· 主 agent 靠左判据 · 参与者状态常量 |
+| `utils/chatWindows.js` + `composables/useChatWindows.js` | **额度分类**：`MAX_GROUP_CHAT_WINDOWS = 5` 与 `MAX_CHAT_WINDOWS = 5` 互不联动；默认（不传 `count`）时既有普通窗口判定**逐字不变** |
+
+**约定**
+
+- **只读硬约束**：展示板**不渲染输入框 / 不提供发言入口**；群聊本体不跑 LLM、不挂工具（D11）——判定与执行都在各参与者的 `work_session` 里。
+- **头像实时状态**：订 `subchat-participant-state`（server→client，**广播**投递 → 前端按 `session_id` 过滤；桥按原名直通，不在 `mqTypeMap`）。下同 `subchat-state`（`lifecycle` 变更）。
+- **结论流刷新触发（无新主题）**：调度器在**追加展示板消息之前**发 `spoken` 状态 → 前端收到即（延时兜底 500ms / 1500ms）重读 `data-session-history`；无专用下行事件。
+- **右侧分栏不占窗口数**（D29）：`work_session` **不另开窗口**，只在右侧只读渲染（运行中实时 / 已结束只读，D48）。
+- **收敛点亮与续跑（G5）**：收 `subchat-state{lifecycle=ready}`（主 agent 判「已收敛」，D10/D52）→ 头部状态位**点亮**并显示「可以结束了」（`chat.subchat_ready_hint` + `.gb-state.lit`）；用户拍板结束 = 复用既有 `subchat-finish`（走「关闭窗口」→「终止」）。到顶硬停后头部常驻**「继续」**（`subchat-continue`，断点补跑；有参与者 `thinking` 时禁用防误触）。
+- **关窗二选一（G4）**：窗口内「关闭窗口」→ `GroupChatCloseDialog`（`DialogShell`，`dialog.show` 承载）选**暂停**（不发消息关窗 → `instance-exit` → 后端调度即停、`lifecycle` 不变）/ **终止**（`subchat-finish` → `finished`）；失败显式提示（`chat.subchat_finish_failed`）。原生标题栏 ✕ 不可拦截 → 等价「暂停」。
+- **图标区分（D41）**：会话列表下挂 / 状态条 / 启动提醒三处入口与单聊**完全统一**，唯一区别 = 图标（`group` vs `chat-dot-round`）；图标常量在 `components/icon/icons.js`。
+- **i18n**：新增键一律 `chat.group_chat_*`（`locales/{zh-CN,en-US}/chat.json`）。
+- ⚠️ **原生关窗按钮无法拦截**：群聊窗口沿用宿主原生标题栏（`Frameless:false`）→ 系统「✕」直接投 `WM_CLOSE`（宿主无关窗前钩子，前端收不到"即将关闭"事件；不新增消息面则无下游可用主题）→ **原生 ✕ 等价「暂停」**（关窗即停机、`lifecycle` 不变，不会静默长跑）。「终止」入口 = 窗口内「关闭窗口」按钮的二选一。若要原生 ✕ 弹选择 → 需宿主关窗钩子 + 新下行事件（消息面变更，须先经确认）。
+
+### 12.20 布局容器（自由布局容器子系统 · UILAYOUT-1）
+
+> 设计依据 = [01-自由布局容器改造设计方案](../../ui-config/01-自由布局容器改造设计方案.md)（🔵 设计稿，P0–P4 已实施）。功能点见 [31-窗口与布局 WIN-008/009/010](../30-function-points/31-窗口与布局.md)。
+
+**分层（机制层 / 适配层 / 状态层）**
+
+| 层 | 落点 | 职责 |
+|----|------|------|
+| 机制层（子系统） | `src/frontend/src/layout-free/` | 复制并入的**纯前端子系统**（组件 `Lf*` 命名域 + 80 个 `lf-*` 主题）；**不认识宿主** —— mq / dialog / icon / split / 视图组件全部经 `deps.js` **注入**（去重，§3.10）。门面 = `engine.js#createLayoutEngine`（`install(app)` / `state` / `actions` / `renderLayout` / `renderBar` / `editing` / `selectedNodeId` / `validate`） |
+| 适配层 | `src/frontend/src/layout/` | 宿主唯一装配点：`views.registry.js`（区块注册表）/ `commands.js`（命令落点，含第 5 类 **`publish-mq`**）/ `persist.js`（`layout.free` ↔ `gui.ui.save`·`gui.init-data`）/ `theme.css` / `i18n.js` / `mode.js` / `bar-views/`（8 个栏视图）/ `ChonkLayout.vue`·`ChonkTopBar.vue`·`ChonkStatusBar.vue`·`barActions.js`；`layout/index.js#setupLayoutEngine(app)` 在 `main.js` 的 pinia / mqPlugin **之后**、`mount` 之前调用 |
+| 状态层 | `src/frontend/src/stores/selection.js` | **跨 view 共享状态唯一真相源**（Pinia）：`workDir` / `activeFile` / `activeSession` / `activeTask` / `explorerMode` / `activeSelection`；由 `selectionSubscribers.js` **订阅既有主题**写入，各 view 改读 store（见 [17-前端状态与MQ §9](../10-architecture/17-前端状态与MQ.md)） |
+
+**运行形态（默认 free）**
+
+- `views/layout/MainLayout.vue` **双分支**：`freeMode`（**默认 `true`**；`?layout=legacy` 回退）→ `<ChonkLayout>` 渲染 `layout.free` 文档树（顶栏 / 状态栏为条目化 `ChonkTopBar` / `ChonkStatusBar`）；**旧硬编码分支保留、不删除**。
+- **18 类条目 + 默认文档**（`persist.js#defaultLayoutDoc`）：`topToolbar` / `statusbar` / `toolbars` / `drawers`；栏条目 `kind` = `button` / `menu` / `view`；**窗口控件（最小化/最大化/关闭）** 与品牌 / 拖拽区 = 容器外壳**固定件，不进配置**（§4.2）。
+- **命令模型**：`open-view{target}`（原 4 类作语法糖）+ **`publish-mq`**（第 5 类，ADR 裁决 1；配置形状 `{type:'publish-mq', topic, payload}` — `commands.js#commandToMq` + `COMMAND_TYPES` + `config.js#validateCommand` 校验「只要求既有主题」+ `LfCommandEditor` 增「MQ 主题 + 载荷(JSON)」）。机制层不认识宿主主题，故**不校验主题存在性**（由适配层保证「只用既有主题」）。
+- **栏视图（裁决 2）**：状态栏 / 顶栏的实时 / 条件 / 动态项做成 `kind:'view'` 的 **栏视图条目**（`layout/bar-views/` 8 个：`SearchBoxView`·`RecentDirsView`·`ChromeWarnView`·`LogoutView`·`MemoryTokenView`·`QueueStatusView`·`IndexBadgeView`·`LangSwitcherView` + `WindowControls`）；**不新增 `valueExpr`/`badgeKey`/`when` 协议**（条件显示由组件自持 `v-if`）。
+- **区块保活**：机制层「**全量渲染 + `v-show`**」——显隐 / 切页签**不卸载**组件（会话 / 页签 / 流式状态留在组件内）；仅配置**删除节点**才卸载。
+- **持久化（§3.9）**：只写 `prjusr` 的 **`layout.free`** 子键（`gui.ui.save {layout:{free}}`；退出兜底 `sendBeacon('/publish')`）；读取经 `gui.init-data` 的 `layout` 子对象。**旧 7 字段**只迁移**尺寸类 4 项**；`filetreeOpen`/`taskOpen`/`chatOpen` 三键随「三区常显」裁决**忽略、不迁移**。消息面**零增删**（[61](../60-reference/61-消息一览.md)）。
+
+**尺寸口径（G-57）**：配置占比 `sizes`（持久化/权威）+ 运行态像素定尺（渲染）；拖拽只改像素、松手 `commit()` 写回占比；**配置 `sizes` 变化时**（重启回灌 / 编辑器保存）以配置为权威**幂等重量测**，用户拖拽产生的运行态**不被覆盖** —— 判据 = `LfLayoutSplit.vue#knownRatios`（[31 WIN-009/010 明细](../30-function-points/31-窗口与布局.md)）。禁止自触发渲染（[71 §7.3](../70-conventions/71-编程规范.md)）。
+
+**实现约定**：禁 `watch`/`watchEffect`/`$subscribe`（§4.2 / [17 §3](../10-architecture/17-前端状态与MQ.md)）；布局全域交互**只走 mq**（`v-mq`，与宿主指令**同协议**，见 [71 §7.4](../70-conventions/71-编程规范.md)）；弹窗走自研 `DialogShell`；`:style` 数字加 `'px'`。
+
+> ⚠️ **消息面（P6⑤）**：80 个 `lf-*` 主题登记在**机制层唯一事实源** `layout-free/events/event-names.js`（键名零前缀、值 `lf-*`）；宿主 `src/frontend/src/events/event-names.js` **不重复登记**（两文件为**不同命名域**，机制层经 `deps.js` 注入 mq，不走宿主主题表）。**是否把 `lf-*` 主题在宿主文件里做字面登记 = 待用户确认清单**（[41 G-58](../40-roadmap/41-未决项登记.md)），登记前**不改契约**。
 

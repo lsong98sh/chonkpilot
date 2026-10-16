@@ -21,7 +21,7 @@ import { dirname, join } from 'node:path'
 import { isChromeMissing } from '../src/utils/chromeStatus.js'
 import { logDirView } from '../src/utils/logDirView.js'
 import { hasEngineTools } from '../src/utils/engineStatus.js'
-import { countServerSandboxOn, countToolSandboxOn } from '../src/utils/sandboxSummary.js'
+import { countMCPsOn, countToolSandboxOn } from '../src/utils/sandboxSummary.js'
 import { isDirNode, isThirdPartyProvider, isBuiltinRuntimeProvider } from '../src/utils/toolSource.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -124,19 +124,14 @@ test('④ 引擎页补「工具面注册态」（真实可得，不伪造进程�
 })
 
 // ── ⑤ 沙箱两页状态互见 ───────────────────────────────────
-test('⑤ 摘要计数：server 级仅 stdio 计入；工具级计 true', () => {
-  assert.equal(countServerSandboxOn([
-    { sandbox: true },                       // 无 url/transport → stdio → 计
-    { sandbox: true, transport: 'stdio' },   // 计
-    { sandbox: true, url: 'http://x' },      // http → 不计
-    { sandbox: true, transport: 'http' },    // 不计
-    { sandbox: false, transport: 'stdio' },  // 关 → 不计
-  ]), 2)
-  assert.equal(countServerSandboxOn(null), 0)
-
-  assert.equal(countToolSandboxOn({ a: true, b: false, c: true }), 2)
-  assert.equal(countToolSandboxOn('{"a":true,"b":false}'), 1, 'JSON 字符串形态须可解析')
+test('⑤ 摘要计数：executors + mcps 计 true；旧形状读取时迁移', () => {
+  assert.equal(countToolSandboxOn({ executors: { a: true, b: false }, mcps: { c: true } }), 2)
+  assert.equal(countToolSandboxOn('{"executors":{"x":true}}'), 1, 'JSON 字符串形态须可解析')
   assert.equal(countToolSandboxOn(null), 0)
+  // 旧形状（executor 类别）→ 迁移：core → core + dsl 两 exe（均计）
+  assert.equal(countToolSandboxOn('{"core":true,"desktop":false}'), 2, '旧形状 core 迁移为两 exe')
+  assert.equal(countMCPsOn({ executors: { a: true }, mcps: { b: true, c: false } }), 1)
+  assert.equal(countMCPsOn('{"core":true}'), 0, '旧形状不产生 mcps')
 })
 
 test('⑤ 两页各补摘要 + 一键跳转（既有 previewTabOpen）', () => {
@@ -251,7 +246,7 @@ test('⑥ 来源判定：self/dir=builtin；第三方=非 self/dir；无 server 
 
 test('⑥ 沙箱页：executor 级行 + 第三方/http·sse 边界说明；async 页：dir 行 hard_timeout 标注并禁用', () => {
   const sandbox = read('views/config/SettingsToolSandboxPage.vue')
-  assert.match(sandbox, /:data-exec="row\.category"/, '须按 executor 类别渲染行')
+  assert.match(sandbox, /:data-exec="row\.key"/, '须按执行体单位渲染行')
   assert.match(sandbox, /thirdPartyHint/, '须给第三方 / http·sse 边界说明（不可隔离原因）')
   assert.match(sandbox, /:disabled="!dirty"/, '无改动时保存按钮禁用')
   // executor 级不再逐工具判定第三方（第三方沙箱归 MCP 弹窗「运行信息」页签）

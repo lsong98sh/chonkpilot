@@ -76,7 +76,7 @@ BASE_PORT = 2345
 APP_CAP = os.path.join(ROOT, "dist", "desktop", "capability")          # 系统级（只读）
 PROJ_CAP = os.path.join(WS, ".chonkpilot", "capability")               # 项目级
 PROJ_TOOL_DIR = os.path.join(PROJ_CAP, "tools", "core")
-PROJ_TOOL = os.path.join(PROJ_TOOL_DIR, "file_find.tool.md")           # 与 app 级同名 → 有上一级可回填
+PROJ_TOOL = os.path.join(PROJ_TOOL_DIR, "filesys_run.tool.md")           # 与 app 级同名 → 有上一级可回填
 
 # 项目设置页签期望文字（zh-CN projectConfig.json + configIO.json）
 # 2026-09-20 批 3 · ⑯：末位新增「配置导入/导出」页签（usr 全局配置的导出/导入/恢复出厂）
@@ -1386,10 +1386,10 @@ def case_g_restore_default_and_ctxmenu():
     kb = _kb()
     made_tool = False
     try:
-        # 预置：项目级同名原语（与 app 级 file_find.tool.md 配对 → 有可回填的上一级）
+        # 预置：项目级同名原语（与 app 级 filesys_run.tool.md 配对 → 有可回填的上一级）
         os.makedirs(PROJ_TOOL_DIR, exist_ok=True)
         with open(PROJ_TOOL, "w", encoding="utf-8") as f:
-            f.write("# project copy probe\n\n[meta]\nname=file_find\nkind=probe\n\n"
+            f.write("# project copy probe\n\n[meta]\nname=filesys_run\nkind=probe\n\n"
                     "[description]\nPROJECT-COPY-DESC-%d\n\n[parameters]\nproperties:\n    q:\n"
                     "        type: string\nrequired:\n    - q\n\n[content]\nproject copy body\n"
                     % int(time.time()))
@@ -1399,12 +1399,12 @@ def case_g_restore_default_and_ctxmenu():
         _kb_level(kb, "app")
         _kb_ensure_child(kb, _kb_root_parent(kb), "tools")
         _kb_ensure_child(kb, "tools", "core")
-        _kb_ensure_child(kb, "core", "file_find.tool.md")
-        _close_bottom_tabs_by_name("file_find.tool.md")  # 关掉上一轮残留页签 → 组件重新挂载
-        if not kb.click_kb_file("file_find.tool.md"):
-            raise TestError("单击 app 级 file_find.tool.md 失败")
+        _kb_ensure_child(kb, "core", "filesys_run.tool.md")
+        _close_bottom_tabs_by_name("filesys_run.tool.md")  # 关掉上一轮残留页签 → 组件重新挂载
+        if not kb.click_kb_file("filesys_run.tool.md"):
+            raise TestError("单击 app 级 filesys_run.tool.md 失败")
         if not kb.poll(lambda: kb.prim_panel_exists()
-                       and kb.prim_active_path().replace("\\", "/").endswith("file_find.tool.md"), 10):
+                       and kb.prim_active_path().replace("\\", "/").endswith("filesys_run.tool.md"), 10):
             raise TestError("app 级原语面板未打开：%r" % kb.prim_active_path())
         time.sleep(2.0)  # 上一级探测（loadLevelRoots/resolveUpperSource）为异步：留出完成时间再断言
         btns = _prim_footer_btns(kb)
@@ -1419,12 +1419,12 @@ def case_g_restore_default_and_ctxmenu():
         _kb_level(kb, "project")
         _kb_ensure_child(kb, _kb_root_parent(kb), "tools")
         _kb_ensure_child(kb, "tools", "core")
-        _kb_ensure_child(kb, "core", "file_find.tool.md")
-        _close_bottom_tabs_by_name("file_find.tool.md")  # 同上：确保新开面板为全新实例（初始非 dirty）
-        if not kb.click_kb_file("file_find.tool.md"):
-            raise TestError("单击 project 级 file_find.tool.md 失败")
+        _kb_ensure_child(kb, "core", "filesys_run.tool.md")
+        _close_bottom_tabs_by_name("filesys_run.tool.md")  # 同上：确保新开面板为全新实例（初始非 dirty）
+        if not kb.click_kb_file("filesys_run.tool.md"):
+            raise TestError("单击 project 级 filesys_run.tool.md 失败")
         if not kb.poll(lambda: kb.prim_panel_exists()
-                       and kb.prim_active_path().replace("\\", "/").endswith("file_find.tool.md"), 10):
+                       and kb.prim_active_path().replace("\\", "/").endswith("filesys_run.tool.md"), 10):
             raise TestError("project 级原语面板未打开：%r" % kb.prim_active_path())
         if not _wait_prim_rd_enabled(kb, 10):
             raise TestError("project 级「恢复默认」未出现/不可点击（应可回填 app 级同名原语）：%r"
@@ -1437,7 +1437,7 @@ def case_g_restore_default_and_ctxmenu():
             raise TestError("点击「恢复默认」后未回填为未保存草稿（dirty 未出现）")
 
         # ── G2：工具文件右键菜单项 = 重命名/删除（无「复制到项目级」） ──
-        if not kb.rclick_kb_row("file_find.tool.md", False):
+        if not kb.rclick_kb_row("filesys_run.tool.md", False):
             raise TestError("右键工具文件失败")
         if not kb.poll(lambda: len(kb.kb_menu_texts()) > 0, 6):
             raise TestError("工具文件右键菜单未弹出")

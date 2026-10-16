@@ -52,7 +52,13 @@ type Info struct {
 	// flash 形态下，同一个 instance 多开的窗口（共享同一 data_dir）注册时必带；server 托盘
 	// 「列举实例」据此过滤（仅顶层实例入菜单，见 ListTopLevel）。
 	ParentInstance string
-	LastBeat       time.Time // 最近心跳/注册时间（仅记录；合并单进程形态不据此判退出）
+	// SessionID 是本实例当前承载的会话 id（空 = 未指定，如主窗口）。
+	// 由 instance-register 的 `session_id` 字段解析（61-消息一览 §4.1 ④，🆕 2026-10-16 SUBCHAT-3
+	// 阶段 F-2）：对话/群聊窗口建窗时由窗口工厂随桥上报（= 该窗口绑定的会话）→ 支持
+	// **session → instance 反查**（见 InstanceForSession），供 llm-server 把定向消息
+	// （如 `session-ask`）投到**该会话所在窗口**。
+	SessionID string
+	LastBeat  time.Time // 最近心跳/注册时间（仅记录；合并单进程形态不据此判退出）
 }
 
 // Manager 监听注册/心跳/退出，维护实例视图（线程安全；自订阅需 Start）。
@@ -231,6 +237,65 @@ func (m *Manager) ListTopLevel() []Info {
 	return out
 }
 
+// ParentOfInstance 返回实例的**直接父实例** id（"谁开的指谁"·**逐层链**，群聊 §14.4 N20）：
+// 未登记 / 顶层实例（无父）→ ("", false)。
+//
+// 用途 = **跨窗口定向投递**的取表环节（单聊 §12.4 B4 / 群聊 §14.2）：子窗口实例要投给父窗口时，
+// 先由它取到父实例 id，再填进消息的 `instance_id` 字段（见 DeliveryTarget）。
+func (m *Manager) ParentOfInstance(instanceID string) (string, bool) {
+	if instanceID == "" {
+		return "", false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if r, ok := m.recs[instanceID]; ok && r.ParentInstance != "" {
+		return r.ParentInstance, true
+	}
+	return "", false
+}
+
+// InstanceForSession 按**会话 id 反查承载它的窗口实例 id**（session → instance 反查，🆕 2026-10-16
+// SUBCHAT-3 阶段 F-2 · 群聊 §13 D42 / §15.4 N23；闭环 41 D-62）：
+// 实例注册时随 `instance-register.session_id` 自报其承载的会话（对话窗口 = 绑定会话，群聊窗口 =
+// 群聊会话）→ 此处反查命中「该会话所在的窗口实例」。未登记 / 无实例承载该会话 → ("", false)。
+//
+// 用途 = llm-server 把**定向消息**（如 `session-ask`）投到该会话所在窗口（把返回的实例 id 填进
+// 消息 `instance_id`；桥按精确相等过滤天然投给它，**不改桥**）。与 ParentOfInstance（子→父）反向互补。
+//
+// 同一会话被多个实例登记（异常装配）→ 返回**首个**命中（与 TopLevelByDataDir 同口径）。
+func (m *Manager) InstanceForSession(sessionID string) (string, bool) {
+	if sessionID == "" {
+		return "", false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, r := range m.recs {
+		if r.SessionID != "" && r.SessionID == sessionID {
+			return r.ID, true
+		}
+	}
+	return "", false
+}
+
+// DeliveryTarget 解析「把产生自 origin 实例的一条跨窗口事件**定向投递**给谁」——返回应写入该
+// 消息 `instance_id` 字段的值（群聊 §14.2 / §14.4 N19 裁决：**不改桥** —— 桥按 instance_id
+// **精确相等**过滤，填目标 id 即天然投给它；「父 + 子都要」时不带 `instance_id`，走桥的
+// 「唯一例外」放行给所有窗口）。单聊 / 群聊共用（单聊 §12.4 B4）。
+//
+// 语义（targeted=false ⇒ 调用方按**广播**投递，即消息不带 `instance_id`）：
+//   - toParent=false → ("", false)：父 + 子都要 → 广播；
+//   - toParent=true 且 origin 有直接父 → (父实例 id, true)：定向投给**父窗口**；
+//   - toParent=true 但 origin 未登记 / 顶层无父 → ("", false)：无定向目标，退化为广播。
+func (m *Manager) DeliveryTarget(origin string, toParent bool) (target string, targeted bool) {
+	if !toParent {
+		return "", false
+	}
+	if p, ok := m.ParentOfInstance(origin); ok {
+		return p, true
+	}
+	return "", false
+}
+
 // MenuInstances 过滤托盘「列举实例」菜单项（61-消息一览 §4.1 ⑥ · 62 §3A）。
 //
 // 收录规则（2026-10-10 定）：
@@ -272,6 +337,7 @@ func (m *Manager) HandleRegister(payload []byte) error {
 		DataDir        string `json:"data_dir,omitempty"`
 		User           string `json:"user,omitempty"`
 		ParentInstance string `json:"parent_instance,omitempty"`
+		SessionID      string `json:"session_id,omitempty"`
 	}
 	_ = json.Unmarshal(payload, &req)
 	if req.InstanceID == "" {
@@ -294,6 +360,7 @@ func (m *Manager) HandleRegister(payload []byte) error {
 	current.ClientType = req.ClientType
 	current.User = req.User
 	current.ParentInstance = req.ParentInstance
+	current.SessionID = req.SessionID
 	current.LastBeat = now
 	m.mu.Unlock()
 	return nil

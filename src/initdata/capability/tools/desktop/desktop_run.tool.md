@@ -1,17 +1,19 @@
-# 桌面编排
+# 基本信息
+```yaml
+name: desktop_run
+title: 桌面编排
+args: desktop_run --input={RAW-INPUT-FILE}
+async: auto
+async-threshold: 60
+category: desktop
+hot: true
+idempotent: false
+output: stdout
+runtime: ../../executors/chonkpilot-desktop-executor.exe
+timeout: 300
+```
 
-[meta]
-runtime=../../executors/chonkpilot-desktop-executor.exe
-hot=true
-category=desktop
-async=auto
-async-threshold=60
-timeout=300
-idempotent=false
-args=desktop_run --input={RAW-INPUT-FILE}
-output=stdout
-
-[description]
+# 摘要
 **操作系统桌面 UI 自动化**：需要像真人一样操作桌面程序（记事本/Office/计算器等非浏览器应用：找窗口、点击、输入、拖拽、截图）时用它；**浏览器内网页操作请用 browser_run**。把操作写成一行一条指令的脚本；移动带缓动+随机扰动模拟真人。`#` 或 `//` 开头为注释；任何指令失败立即中止，报错带行号。
 
 **路径要求（R-11，重要）**：`file`（脚本文件路径）、脚本内**落盘路径**（`SHT "f.png"`、`WIN … SHT "f.png"`、行尾 `=> #"file"` 重定向目标）、以及 DSL 核心语句的**所有文件句柄**（**LOOP/SET 的数据源读取**，如 `LOOP row=#"items.csv".lines`；访问器 `.content/.lines/.array/.range`；`IF exist #"…"` / `IF exist "…"` 的路径）**必须是绝对路径、以 `~/` 开头的用户目录路径或以 `!/` 开头的临时目录路径**（如 `C:\work\out\notepad.png`、`~/shots/win.png`）。相对路径 → 工具**整体失败**（错误状态返回，消息含出错的原值、位置与正确写法示例）；脚本内**字面**路径在开始执行前预校验（不产生任何文件改动），`{{}}` 插值得到的路径在执行时校验。下方示例中的相对写法仅为语法示意，实际调用请一律写绝对路径、`~/` 路径或 `!/` 路径。
@@ -89,12 +91,20 @@ IF not exist #"done.flag"
 END
 ```
 
-[parameters]
-properties:
-    script:
-        description: 桌面编排脚本（一行一条指令，示例见上）
-        type: string
-    file:
-        description: 已保存脚本文件路径（与 script 二选一；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错）
-        type: string
-type: object
+# 参数
+```json
+{
+  "properties": {
+    "file": {
+      "description": "已保存脚本文件路径（与 script 二选一；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错）",
+      "type": "string"
+    },
+    "script": {
+      "description": "桌面编排脚本（一行一条指令，示例见上）",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+```
+

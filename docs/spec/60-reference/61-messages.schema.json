@@ -1,6 +1,6 @@
 {
   "name": "chonkpilot-message-contract",
-  "version": "2026-10-05",
+  "version": "2026-10-16",
   "source": "docs/spec/60-reference/61-消息一览.md",
   "authority": "61-消息一览.md（消息面唯一准则）",
   "description": "机器可读消息面契约（B0 契约面试点）。逐主题从 61 抽取：payload = 请求/发送字段；result = publish promise 收集的应答字段；event = 下行事件载荷字段。字段名按 61 原样收录（含 §0.5 命名例外：MCP 协议 camelCase、useCase 等），不擅自改名。",
@@ -14,6 +14,7 @@
   "fieldDictionary": {
     "accepted": { "type": "bool", "desc": "受理确认" },
     "activated": { "type": "bool", "desc": "窗口已激活" },
+    "agent": { "type": "string", "desc": "参与者 agent 标识（群聊：参与者名单 / 发言者 / 参与者状态；SUBCHAT-3 阶段 E，群聊方案 §10 C2/C3）" },
     "agents": { "type": "array", "desc": "智能体清单" },
     "answers": { "type": "array", "desc": "ask_user 回答集合（🗑 旧目标态字段；实现已改扁平 answer）" },
     "answer": { "type": "string", "desc": "ask_user 回答（单选=选中值或自定义文本；多选=以「、」拼接）" },
@@ -48,8 +49,10 @@
     "contents": { "type": "object", "desc": "按 key 的消息内容映射" },
     "context": { "type": "object", "desc": "上下文载荷" },
     "continue": { "type": "bool", "desc": "续轮" },
+    "convergence": { "type": "string", "desc": "群聊「收敛 / 退出条件」（主 agent 开群聊时写入，每轮注入给全体参与者；SUBCHAT-3 阶段 F，群聊方案 §18.2 / D52）" },
     "count": { "type": "int", "desc": "计数" },
     "created_at": { "type": "string", "desc": "创建时间" },
+    "current": { "type": "object", "desc": "当前表单值（config.suggest 增量补全参考；仅白名单字段）" },
     "cursor": { "type": "string", "desc": "分页游标" },
     "data": { "type": "any", "desc": "数据体（对象/字符串）" },
     "data_dir": { "type": "string", "desc": "数据根目录" },
@@ -74,6 +77,7 @@
     "expires_at": { "type": "any", "desc": "过期时间" },
     "explicit": { "type": "array", "desc": "用户显式写入的配置键清单（区分系统默认填充；导入/导出保真依据）" },
     "failed": { "type": "array", "desc": "失败项集合" },
+    "fields": { "type": "object", "desc": "配置建议字段（config.suggest 结果；仅该 kind 白名单字段）" },
     "file_id": { "type": "string", "desc": "文件 id" },
     "files": { "type": "array", "desc": "文件清单" },
     "filetree": { "type": "any", "desc": "文件树状态" },
@@ -83,6 +87,7 @@
     "full_tokens": { "type": "int", "desc": "全量 token 数" },
     "git": { "type": "bool", "desc": "是否 git 仓库" },
     "git_initialized": { "type": "bool", "desc": "git 已初始化" },
+    "goal": { "type": "string", "desc": "群聊「本次目标」（主 agent 开群聊时写入，每轮注入给全体参与者；SUBCHAT-3 阶段 F，群聊方案 §18.2 / D43）" },
     "groups": { "type": "array", "desc": "分组清单" },
     "handler_subject": { "type": "string", "desc": "处理器主题" },
     "hot": { "type": "bool", "desc": "热加载" },
@@ -101,6 +106,7 @@
     "latency_ms": { "type": "int", "desc": "首包延迟（毫秒）" },
     "layout": { "type": "any", "desc": "布局状态" },
     "level": { "type": "string", "desc": "级别" },
+    "lifecycle": { "type": "string", "desc": "子聊天生命周期（subchat-*：chatting|ready|finished；见 单聊会话设计方案 §3.4.4）" },
     "limit": { "type": "int", "desc": "条数上限" },
     "list": { "type": "any", "desc": "列表" },
     "llm": { "type": "string", "desc": "LLM 标识" },
@@ -112,6 +118,7 @@
     "md5": { "type": "string", "desc": "文件 md5" },
     "memory": { "type": "array", "desc": "记忆条目" },
     "memory_saved": { "type": "array", "desc": "已保存记忆" },
+    "mentions": { "type": "array", "desc": "群聊发言末行的 @ 名单（@某人（可多个）/ @全体 / 不写 @ = 全员）；落 messages 行同名列，供调度器定向叫号（SUBCHAT-3 阶段 E，群聊方案 §10 C6 / D27 / D33）" },
     "message": { "type": "string", "desc": "消息文本" },
     "message_id": { "type": "string", "desc": "消息 id" },
     "messages": { "type": "any", "desc": "消息集合" },
@@ -127,6 +134,7 @@
     "new_name": { "type": "string", "desc": "新名称" },
     "node_id": { "type": "string", "desc": "任务节点 id" },
     "nodes": { "type": "array", "desc": "任务节点集合" },
+    "notes": { "type": "string", "desc": "说明/提示（config.suggest 结果的可选注记）" },
     "notice": { "type": "string", "desc": "通知文本" },
     "offset": { "type": "int", "desc": "偏移" },
     "ok": { "type": "bool", "desc": "成功标志" },
@@ -142,9 +150,11 @@
     "overwrite": { "type": "any", "desc": "覆盖策略" },
     "owner": { "type": "string", "desc": "归属" },
     "parent": { "type": "string", "desc": "父节点" },
+    "parent_id": { "type": "string", "desc": "父会话 id（subchat-list 可选入参；缺省 = 全局未结束子聊天）" },
     "parent_instance": { "type": "string", "desc": "宿主主实例 id（子窗口实例携带；空=顶层实例）" },
     "parent_node_id": { "type": "string", "desc": "父任务节点 id" },
     "parent_session_id": { "type": "string", "desc": "父会话 id" },
+    "parent_session_title": { "type": "string", "desc": "父会话标题（subchat-list 结果项）" },
     "parents": { "type": "any", "desc": "父轮次集合" },
     "password": { "type": "string", "desc": "口令" },
     "path": { "type": "string", "desc": "路径" },
@@ -158,6 +168,8 @@
     "prompt": { "type": "string", "desc": "提示词" },
     "prompts": { "type": "array", "desc": "提示词清单" },
     "protocol": { "type": "string", "desc": "LLM 协议" },
+    "playbook": { "type": "string", "desc": "群聊「剧本 / 推进规则」（主 agent 开群聊时现写，每轮注入给全体参与者；SUBCHAT-3 阶段 F，群聊方案 §18.2 / D51）" },
+    "purpose": { "type": "string", "desc": "调用目的/展示名（= gateway 注入的 tool_call_display_name；单聊 §5.4 三处同名之一）" },
     "query": { "type": "string", "desc": "检索词" },
     "questions": { "type": "array", "desc": "提问集合（🗑 旧目标态字段；实现已改扁平 question）" },
     "question": { "type": "string", "desc": "ask_user 提问文本" },
@@ -176,12 +188,14 @@
     "results": { "type": "array", "desc": "检索结果集合" },
     "retryable": { "type": "bool", "desc": "可重试" },
     "root": { "type": "string", "desc": "根路径" },
+    "round": { "type": "int", "desc": "群聊**大轮次**序号（1 基；= 群聊依次叫号的那一轮，**非**子会话内部轮次。SUBCHAT-3 阶段 E，群聊方案 §5 · D44 ②）" },
     "rows": { "type": "int", "desc": "行数" },
     "saved": { "type": "array", "desc": "已保存项" },
     "scenario_id": { "type": "string", "desc": "场景 id" },
     "scene_name": { "type": "string", "desc": "场景名" },
     "schema": { "type": "object", "desc": "工具 schema" },
     "scope": { "type": "string", "desc": "作用域" },
+    "sender_agent": { "type": "string", "desc": "群聊消息的发送者 agent 标识（落 messages 行同名列；NULL/空 = 非群聊消息）；**进消息视图、不进内核 ChatMsg**（SUBCHAT-3 阶段 E，群聊方案 §10 C2 / §4 D47）" },
     "server": { "type": "any", "desc": "server 名/对象" },
     "servers": { "type": "any", "desc": "server 集合" },
     "session": { "type": "string", "desc": "会话 id" },
@@ -260,7 +274,7 @@
     "included": [
       "§1 gui.* 本地面（含 §1.1 点分相对主题）",
       "§2 filesys.* 文件面",
-      "§3 data-<domain>-* 数据面（§3.1/§3.2/§3.2a/§3.2b/§3.3/§3.4/§3.6；B1 补录）",
+      "§3 data-<domain>-* 数据面（§3.1/§3.2/§3.2a/§3.2b/§3.2c/§3.3/§3.4/§3.6；B1 补录；§3.2c = 群聊两表 SUBCHAT-3 阶段 E，2026-10-16）",
       "§4 服务端方法面与事件（§4.1 实例 / §4.2 方法 / §4.3 事件 / §4.4 llm-simple / §4.5 映射 / §4.6 认证）",
       "§5 gateway 方法面（§5.1/§5.1.1/§5.2/§5.3/§5.4/§5.4a）",
       "§6.1 前端本地 UI 事件"
@@ -560,6 +574,21 @@
       "notes": "流式结果经 optimize-token / optimize-done / optimize-error 事件"
     },
     {
+      "topic": "gui.zprompt-summarize",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "kind": { "type": "string", "required": true },
+        "title": { "type": "string", "required": false },
+        "content": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "started": { "type": "bool", "required": false }
+      },
+      "notes": "正文摘要生成（2026-10-14，v2 专用链路；供能力资产「描述·从正文提取」）：结果经 zprompt-summarized 事件"
+    },
+    {
       "topic": "gui.prompt-vars",
       "face": "gui",
       "direction": "client->gui",
@@ -592,6 +621,16 @@
       "notes": "2026-10-09 新增 code（D-41 方案 A）：静态错误码经 code 表达（前端 i18n 键 optimizeError.<code>），message 保留为兜底 + 动态详情（前端以 {message} 插值）；可选参数 name=provider 名（llm_not_found 插值）、status=HTTP 状态码串（llm_status_error 插值）"
     },
     {
+      "topic": "zprompt-summarized",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "content": { "type": "string", "required": true },
+        "error": { "type": "string", "required": false }
+      },
+      "notes": "摘要生成结果（2026-10-14）：成功 content = 摘要文本；失败 content 为空 + error"
+    },
+    {
       "topic": "window-maximized-changed",
       "face": "gui",
       "direction": "gui->client",
@@ -618,6 +657,24 @@
         "model_echo": { "type": "string", "required": false },
         "error": { "type": "object", "required": false }
       }
+    },
+    {
+      "topic": "config.suggest",
+      "face": "gui",
+      "direction": "client->server",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": true },
+        "text": { "type": "string", "required": true },
+        "current": { "type": "object", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "fields": { "type": "object", "required": false },
+        "notes": { "type": "string", "required": false },
+        "error": { "type": "object", "required": false }
+      },
+      "notes": "AI 智能填充（AICFG-1，2026-10-16）：自然语言 → 结构化字段建议；kind ∈ llm|mcp|tool 决定白名单与指令；fields 只含该 kind 白名单字段（apiKey 等绝不代填）；失败恒走 result 信封"
     },
     {
       "topic": "memory.flush",
@@ -1301,9 +1358,19 @@
       "direction": "client->data",
       "payload": {
         "session_id": { "type": "string", "required": true },
-        "parent_session_id": { "type": "string", "required": false }
+        "parent_session_id": { "type": "string", "required": false },
+        "kind": { "type": "string", "required": false },
+        "lifecycle": { "type": "string", "required": false },
+        "agent": { "type": "string", "required": false },
+        "scenario_id": { "type": "string", "required": false },
+        "llm": { "type": "string", "required": false },
+        "purpose": { "type": "string", "required": false },
+        "goal": { "type": "string", "required": false },
+        "playbook": { "type": "string", "required": false },
+        "convergence": { "type": "string", "required": false }
       },
-      "result": { "ok": { "type": "bool", "required": true } }
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "幂等建会话（已存在不覆盖）。`kind`/`lifecycle`/`agent`/`scenario_id`/`llm`/`purpose`（单聊方案 §3.2/§5.4）与 `goal`/`playbook`/`convergence`（群聊方案 §18.2，SUBCHAT-3 阶段 F）均为**可选**：**仅非空才写键**（普通会话行形状零变化）。注：server 侧建子聊天/群聊经**进程内门面**直调（不经本消息），本处仅登记消息面 payload 形状。"
     },
     {
       "topic": "data-session-ensure-turn",
@@ -1382,6 +1449,48 @@
         "messages": { "type": "array", "required": true },
         "turn_tokens": { "type": "array", "required": false }
       }
+    },
+    {
+      "topic": "data-session-group-participants-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": { "session_id": { "type": "string", "required": true } },
+      "result": { "list": { "type": "array", "required": true } },
+      "notes": "SUBCHAT-3 阶段 E（2026-10-16）· 群聊落库两表①：读某群聊的**参与者名单 + 角色**（prjusr 桶 `group_participants`，主键 `<session_id>\\x00<agent>`）。`list` 每项 = `{session_id, agent, role, seq}`，**按名单固定顺序（seq 升序）**返回；无名单 → 空数组。**不广播 -refresh**。"
+    },
+    {
+      "topic": "data-session-group-participants-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "list": { "type": "array", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "SUBCHAT-3 阶段 E：**整表替换**某群聊的参与者名单（以 `list` 为准：未出现者删除、出现者写入）。`list` 每项 = `{agent, role?}`（顺序即**名单固定顺序**，落库 `seq` = 列表位置 + 1；入参携带的 `seq` 被忽略）。**不广播 -refresh**。"
+    },
+    {
+      "topic": "data-session-group-round-targets-load",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "round": { "type": "int", "required": false }
+      },
+      "result": { "list": { "type": "array", "required": true } },
+      "notes": "SUBCHAT-3 阶段 E · 群聊落库两表②：读**每【大轮次】的投递对象**（prjusr 桶 `group_round_targets`，主键 `<session_id>\\x00<round 6 位零填充>`）。`round` 有值 → 该轮（不存在 → 空数组）；缺省/0 → 该群聊**全部轮次**（按轮次升序）。`list` 每项 = `{session_id, round, agents:[…]}`（`agents` = 本轮投递对象，按参与者名单固定顺序）。**不广播 -refresh**。"
+    },
+    {
+      "topic": "data-session-group-round-targets-save",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "round": { "type": "int", "required": true },
+        "agents": { "type": "array", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "SUBCHAT-3 阶段 E：写某 `(群聊, 大轮次)` 的投递对象（**幂等覆盖**；`round >= 1`，非法 → 明确失败）。**不广播 -refresh**。"
     },
     {
       "topic": "data-snapshot-get",
@@ -1503,6 +1612,20 @@
       "result": { "ok": { "type": "bool", "required": true } }
     },
     {
+      "topic": "data-knowledge-import",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "dir": { "type": "string", "required": true },
+        "files": { "type": "array", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "paths": { "type": "array", "required": true },
+        "errors": { "type": "array", "required": false }
+      }
+    },
+    {
       "topic": "data-tasktree-list",
       "face": "data",
       "direction": "client->data",
@@ -1607,7 +1730,8 @@
         "data_dir": { "type": "string", "required": false },
         "client_type": { "type": "string", "required": false },
         "user": { "type": "string", "required": true },
-        "parent_instance": { "type": "string", "required": false }
+        "parent_instance": { "type": "string", "required": false },
+        "session_id": { "type": "string", "required": false }
       }
     },
     {
@@ -1953,6 +2077,68 @@
         "session_id": { "type": "string", "required": true },
         "parent_session_id": { "type": "string", "required": false }
       }
+    },
+    {
+      "topic": "subchat-opened",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": true },
+        "parent_session_id": { "type": "string", "required": true },
+        "title": { "type": "string", "required": true },
+        "purpose": { "type": "string", "required": false }
+      },
+      "notes": "单聊 §5.2 / §10 Q1：instance_id = 发起该子聊天的窗口实例（父窗口）→ 桥按精确相等过滤天然投给它；purpose = gateway 注入的 tool_call_display_name（§5.4），缺省不带。"
+    },
+    {
+      "topic": "subchat-list",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "parent_id": { "type": "string", "required": false } },
+      "result": { "list": { "type": "array", "required": true } },
+      "notes": "有 parent_id → 该父会话的全部子聊天（含 finished，前端过滤）；缺省 → 全局未结束子聊天（启动提醒）。list 每项 = {session_id, purpose, title, lifecycle, parent_session_id, parent_session_title}。"
+    },
+    {
+      "topic": "subchat-finish",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "session_id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "用户拍板结束 → lifecycle=finished（单聊 §3.4.5/§3.8 F5：窗口内「结束」与状态条「强制结束」同一条消息）。"
+    },
+    {
+      "topic": "subchat-continue",
+      "face": "server",
+      "direction": "client->server",
+      "payload": { "session_id": { "type": "string", "required": true } },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "**SUBCHAT-3 阶段 F（2026-10-16）新增**：群聊「继续」续期（群聊方案 §7 ③ / D50）——到顶强制停 / 主 agent 点亮后，用户点「继续」→ 在**原线程**上续跑（`lifecycle` 回 `chatting` + 从上次大轮次之后续跑，另给一轮「最大轮次」预算）。前端 type 与相对主题**同名**（桥/入口白名单放行）。"
+    },
+    {
+      "topic": "subchat-state",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "session_id": { "type": "string", "required": true },
+        "parent_session_id": { "type": "string", "required": true },
+        "lifecycle": { "type": "string", "required": true },
+        "instance_id": { "type": "string", "required": false }
+      },
+      "notes": "状态实时同步（ready 点亮 / finished 消失）。定向投递（单聊 §12.4 B4 / 群聊 §14.2 N19）= 把目标实例 id 填进 instance_id（查 instance 表取父实例，**不改桥**）；不带 instance_id = 广播给所有窗口（父 + 子都要）。"
+    },
+    {
+      "topic": "subchat-participant-state",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "session_id": { "type": "string", "required": true },
+        "parent_session_id": { "type": "string", "required": true },
+        "agent": { "type": "string", "required": true },
+        "state": { "type": "string", "required": true },
+        "instance_id": { "type": "string", "required": false }
+      },
+      "notes": "**SUBCHAT-3 阶段 E（2026-10-16）新增**：群聊**参与者思考状态**实时推送（群聊方案 §10 C3 / §4 D16）——头像「小图标转」据此驱动。`state` ∈ `thinking`（本轮被叫到、正在判定/干活）\\|`idle`（转停且无发言 = 判「无关」）\\|`spoken`（本轮产出了结论）。`agent` = 参与者标识（同 `sessions.kind=group_chat` 的名册 `agent`）；`session_id` = **群聊会话**（非参与者工作子会话），`parent_session_id` = 其父会话（供前端归属过滤，同 subchat-state）。定向投递口径同 subchat-state（`instance_id` 非必填：有值 = 定向投递到该窗口，缺省 = 广播给所有窗口）。**生产者 = 群聊调度器（阶段 F）**；本阶段只登记契约（无生产者代码）。"
     },
     {
       "topic": "task-started",

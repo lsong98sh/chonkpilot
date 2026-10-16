@@ -1,13 +1,13 @@
-# 前端拖拽改变尺寸
+# 基本信息
+```yaml
+name: frontend-drag-resize
+title: 前端拖拽改变尺寸
+```
 
-[meta]
-uri=mcp://chonkpilot/resources/ui/frontend-drag-resize
-mimetype=text/markdown
-
-[description]
+# 摘要
 前端（Vue 3）拖拽改变面板尺寸的实现模式（**方案 A：视觉 / 命中解耦**）：本体恒 1px 发丝线、命中区为 5px 透明伪元素；handle 捕获 mousedown → window mousemove 计算增量并 clamp → mouseup 收尾。含完整 Resizer 组件示例。
 
-[content]
+# 正文
 # 拖拽 Resizer（Vue 3）
 
 ## 设计要点（项目 Resizer 规范，方案 A：视觉/命中解耦）

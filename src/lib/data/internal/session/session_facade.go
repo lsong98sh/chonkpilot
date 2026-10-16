@@ -316,11 +316,143 @@ func (s *Service) SessionEnsure(req facade.SessionEnsureRequest) (facade.Session
 		"session_id": req.SessionID, "title": req.SessionID, "created_at": now, "updated_at": now,
 		"parent_id": req.ParentSessionID,
 	}
+	// 子聊天 / 群聊的固定参数与生命周期（单聊方案 D28，2026-10-15 新增）——
+	// **仅非空才写键**：普通会话行形状与既有行为逐字节不变。
+	if req.Kind != "" {
+		row["kind"] = req.Kind
+	}
+	if req.Lifecycle != "" {
+		row["lifecycle"] = req.Lifecycle
+	}
+	if req.Agent != "" {
+		row["agent"] = req.Agent
+	}
+	if req.ScenarioID != "" {
+		row["scenario_id"] = req.ScenarioID
+	}
+	if req.LLM != "" {
+		row["llm"] = req.LLM
+	}
+	if req.Purpose != "" {
+		row["purpose"] = req.Purpose
+	}
+	// 群聊「目标 / 剧本 / 收敛条件」（SUBCHAT-3 阶段 F / 群聊方案 §18.2）：**仅非空才写键** ——
+	// 普通会话 / 单聊行形状与既有逐字节不变。
+	if req.Goal != "" {
+		row["goal"] = req.Goal
+	}
+	if req.Playbook != "" {
+		row["playbook"] = req.Playbook
+	}
+	if req.Convergence != "" {
+		row["convergence"] = req.Convergence
+	}
 	if err := prj.Table("sessions").Upsert(req.SessionID, row); err != nil {
 		return facade.SessionEnsureResponse{}, err
 	}
 	s.emitSessionNew(req.SessionID, req.ParentSessionID, req.InstanceID)
 	return facade.SessionEnsureResponse{OK: true}, nil
+}
+
+// isSubChatKind 判定会话类型是否属「子聊天」体系（`sub_chat` / `group_chat`；单聊方案 §3.4.4）：
+// 会话列表下挂、状态条、注入层都只认这两类；`sub_session`（dsl_run 的 LLM 步骤派生）走任务树。
+func isSubChatKind(kind string) bool {
+	return kind == facade.SessionKindSubChat || kind == facade.SessionKindGroupChat
+}
+
+// SessionLifecycleSet 更新子聊天生命周期（单聊方案 §3.4.4 / D24）。
+//
+// 与 SessionTitle 同形（读改写收进 UpdateIn 单事务，A-23）：只改 lifecycle / updated_at，
+// 其余字段（history / snapshot_turn / kind / agent / …）原样保留 —— 跨两事务的整行覆盖会与
+// 并发写（如 snapshot.Set 的同事务 RMW）互丢字段。行不存在 → fn 放弃写入并报错（不建残行）。
+//
+// 取值校验：仅接受 SessionLifecycle* 三态；非法值报错（**不落库**）——生命周期是子会话域的
+// 状态机，写坏值会污染后续读取方。
+func (s *Service) SessionLifecycleSet(req facade.SessionLifecycleSetRequest) (facade.SessionLifecycleSetResponse, error) {
+	if req.SessionID == "" {
+		return facade.SessionLifecycleSetResponse{}, errors.New("session: id required")
+	}
+	switch req.Lifecycle {
+	case facade.SessionLifecycleChatting, facade.SessionLifecycleReady, facade.SessionLifecycleFinished:
+	default:
+		return facade.SessionLifecycleSetResponse{}, fmt.Errorf("session: invalid lifecycle %q", req.Lifecycle)
+	}
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.SessionLifecycleSetResponse{}, err
+	}
+	notFound := false
+	if err := prj.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
+		if len(rec) == 0 {
+			notFound = true
+			return nil
+		}
+		rec["lifecycle"] = req.Lifecycle
+		rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
+		return rec
+	}); err != nil {
+		return facade.SessionLifecycleSetResponse{}, err
+	}
+	if notFound {
+		return facade.SessionLifecycleSetResponse{}, fmt.Errorf("session not found: %s", req.SessionID)
+	}
+	return facade.SessionLifecycleSetResponse{OK: true}, nil
+}
+
+// SessionSubChats 按父会话列举子聊天（单聊方案 §3.4.4 / §3.4.6；**含已结束**，交给消费方过滤）。
+//
+// 只返回 `kind ∈ {sub_chat, group_chat}`（经 SessionFromWire 的读侧回退归一）——`sub_session`
+// （dsl_run 的 LLM 步骤派生的子会话）仍走任务执行树，不在此列（D39）。
+// 数据来源 = sessions_by_top 索引（Fields=parent_id，Order=created_at）→ 按创建时间升序。
+// **不改** data-session-list 的"只返回顶层会话"语义（§3.4.6）。
+func (s *Service) SessionSubChats(req facade.SessionSubChatsRequest) (facade.SessionSubChatsResponse, error) {
+	if req.ParentSessionID == "" {
+		return facade.SessionSubChatsResponse{}, errors.New("session: parent_session_id required")
+	}
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.SessionSubChatsResponse{}, err
+	}
+	recs, _, err := prj.Table("sessions").Query(data.Query{
+		Where: data.Record{"parent_id": req.ParentSessionID}, OrderBy: "created_at",
+	})
+	if err != nil {
+		return facade.SessionSubChatsResponse{}, fmt.Errorf("list subchats: %v", err)
+	}
+	list := make([]facade.Session, 0, len(recs))
+	for _, r := range recs {
+		sess := wire.SessionFromWire(kernel.RecordView(r, "session_id"))
+		if !isSubChatKind(sess.Kind) {
+			continue // 子会话（sub_session）不进子聊天清单
+		}
+		list = append(list, sess)
+	}
+	return facade.SessionSubChatsResponse{List: list}, nil
+}
+
+// SessionSubChatsAll 全局列举子聊天（单聊方案 §3.4.7 启动提醒：跨会话枚举；**含已结束**）。
+//
+// 与 SessionSubChats 同一口径（`kind ∈ {sub_chat, group_chat}` 经 SessionFromWire 读侧归一后过滤；
+// `sub_session` 不入列），差别只在**不限父会话**：全表扫描 sessions 行后按 kind 过滤（无 kind 索引
+// → O(N)，N = 本实例会话数；启动时调用一次，可接受）。"未结束"过滤交消费方（状态条 / 启动提醒不同）。
+func (s *Service) SessionSubChatsAll(req facade.SessionSubChatsAllRequest) (facade.SessionSubChatsAllResponse, error) {
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.SessionSubChatsAllResponse{}, err
+	}
+	recs, _, err := prj.Table("sessions").Query(data.Query{OrderBy: "created_at"})
+	if err != nil {
+		return facade.SessionSubChatsAllResponse{}, fmt.Errorf("list all subchats: %v", err)
+	}
+	list := make([]facade.Session, 0, len(recs))
+	for _, r := range recs {
+		sess := wire.SessionFromWire(kernel.RecordView(r, "session_id"))
+		if !isSubChatKind(sess.Kind) {
+			continue // 子会话（sub_session）/ 顶层会话不进子聊天清单
+		}
+		list = append(list, sess)
+	}
+	return facade.SessionSubChatsAllResponse{List: list}, nil
 }
 
 // ── turn 域 ──────────────────────────────────────────────────────
@@ -662,6 +794,15 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 			rec["tool_calls"] = string(b)
 		}
 	}
+	// 群聊发言标识（SUBCHAT-3 阶段 E / 群聊方案 §10 C2·C6）：**仅非空才写键** —— 普通会话 /
+	// 单聊消息的行形状与既有逐字节一致。`sender_agent` = 发言人标识；`mentions` = 发言末行
+	// `@` 名单（JSON 数组；供调度器定向叫号与下一轮投递过滤，D27/D33）。
+	if req.SenderAgent != "" {
+		rec["sender_agent"] = req.SenderAgent
+	}
+	if len(req.Mentions) > 0 {
+		rec["mentions"] = req.Mentions
+	}
 	brief := req.Brief
 	if brief == "" {
 		if m.Role == "tool" {
@@ -987,6 +1128,9 @@ func messageViewToFacade(m data.Record, brief bool) facade.MessageView {
 		Reasoning:      kernel.Sval(m["reasoning"]),
 		Meta:           kernel.MetaOfRecord(m),
 		CreatedAt:      kernel.Sval(m["created_at"]),
+		// 群聊发言标识（SUBCHAT-3 阶段 E）：行内非空才带 → 非群聊消息的视图与既有逐字节一致。
+		SenderAgent: kernel.Sval(m["sender_agent"]),
+		Mentions:    groupStrList(m["mentions"]),
 	}
 	if tc := m["tool_calls"]; tc != nil {
 		var b []byte

@@ -855,7 +855,14 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	delete(args, "_timeout")
 	// 调用展示名剥离：gateway 注入的展示用参数（LLM 必填、UI/CLI 展示），不传下游工具。
 	// 命名不用 purpose，避免与工具自有 purpose（如 mcp_find 的任务目标）冲突（2026-09-11）。
+	// C1（2026-10-15）：在剥离**之前**取值 → 写入本次调用的 turn 上下文（req.Context.Purpose，
+	// 随 withTurnContext 下发三条注入通道：进程内 ctx / 域工具 payload.context / 进程外 _meta）。
+	// 「注入上下文」与「剥离参数」不冲突：args 仍不传下游。
+	purpose := strFrom(args, displayNameArg, "")
 	delete(args, displayNameArg)
+	if purpose != "" {
+		req.Context.Purpose = purpose
+	}
 
 	// scoped 路由：请求 instance 命中归属注册（遮蔽 global）；回退 global
 	route, ok := g.reg.findFor(req.Name, req.InstanceID)
@@ -1811,7 +1818,12 @@ func (g *Gateway) handleResourcesRead(v *mq.Value) error {
 // connectServer 接入一个 server（proxied/spawned）：建 client → spawn+就绪(spawned) →
 // 握手 → tools/list → 注册。spawned 连上后挂退出观测（意外退出 → failed 通知 + 清缓存）。
 func (g *Gateway) connectServer(ctx context.Context, e ServerEntry) error {
-	prov, err := newProxyProvider(&e, g.params.CallTimeout, g.logf)
+	// 读取时迁移：旧 usr `mcps[].sandbox=true`（经 entry.Sandbox 透传，已废弃为开关来源）
+	// 并入 tool_sandbox.mcps，使既有配置在新模型下仍生效（新写入一律走 tool_sandbox.mcps）。
+	if e.Sandbox != nil && *e.Sandbox {
+		g.mergeLegacySandboxMCP(e.SandboxName())
+	}
+	prov, err := newProxyProvider(&e, g.params.CallTimeout, g.logf, g.sandboxOnEntry)
 	if err != nil {
 		return err
 	}

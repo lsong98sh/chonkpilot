@@ -14,6 +14,8 @@ export const icons = {
 
   // Chat icons
   'chat-dot-round': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 11.5a8.5 8.5 0 0 1-8.5 8.5H5l3-3a8.5 8.5 0 1 1 13.5-5.5z"/><circle cx="12" cy="11" r="1"/><circle cx="16" cy="11" r="1"/><circle cx="8" cy="11" r="1"/></svg>',
+  // 群聊（多参与者）：用于会话列表下挂 / 启动提醒 / 状态条的**单聊 vs 群聊图标区分**（群聊 §4 D41）。
+  'group': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
   'chat-dot-square': '<svg viewBox="0 0 1024 1024" fill="currentColor"><path d="M896 685.408V192a32 32 0 0 0-32-32H160c-17.632 0-32 14.336-32 32v668.064l145.984-126.944a64.192 64.192 0 0 1 41.984-15.712H864a32 32 0 0 0 32-32zM864 96c52.928 0 96 43.072 96 96v493.408c0 52.928-43.072 96-96 96H315.968l-145.952 126.944a63.552 63.552 0 0 1-46.464 15.552A64.096 64.096 0 0 1 64 860.064V192c0-52.928 43.072-96 96-96h704z m-204.576 252.576a32 32 0 1 1 0 64H333.696a32 32 0 0 1 0-64h325.76z m-131.776 148.576a32 32 0 1 1 0 64h-193.92a32 32 0 0 1 0-64h193.92z"/></svg>',
 
   'circle-plus': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>',

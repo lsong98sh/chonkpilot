@@ -209,5 +209,10 @@
   "filetree": "File Tree",
   "filetree_hide_dirs_label": "Hidden directories",
   "filetree_hide_dirs_placeholder": ".git, .svn, .chonkpilot, target, node_modules (comma or newline separated)",
-  "filetree_hide_dirs_hint": "Matched by directory name at any depth (comma / semicolon / newline separated): matched directories are neither shown in the file tree nor watched (display and watching share one rule). Directories starting with \".\" are always hidden (not configurable). Empty = fall back to the default list (.git, .svn, .chonkpilot). Takes effect immediately after saving."
+  "filetree_hide_dirs_hint": "Matched by directory name at any depth (comma / semicolon / newline separated): matched directories are neither shown in the file tree nor watched (display and watching share one rule). Directories starting with \".\" are always hidden (not configurable). Empty = fall back to the default list (.git, .svn, .chonkpilot). Takes effect immediately after saving.",
+  "groupchat": "Group chat",
+  "groupchat_max_rounds_label": "Max group-chat rounds (project)",
+  "groupchat_max_rounds_default": "{n} (default)",
+  "groupchat_max_rounds_hint": "Hard cap on group-chat big rounds (default 20, range 20-40; a big round = one full turn of calling participants in order). Reaching the cap forces a stop + the main agent's final verdict, and the user can click Continue to resume the same thread. This page only writes configuration; the group-chat window (avatar states / conclusion stream) belongs to the group chat feature. Takes effect immediately after saving (no restart).",
+  "groupchat_saved": "Max group-chat rounds saved and applied immediately (no restart needed)"
 }

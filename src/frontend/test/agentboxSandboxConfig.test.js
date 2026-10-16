@@ -59,28 +59,33 @@ test('MCP 列表页：沙箱列已移除（编辑入口唯一 = 对话框运行�
   assert.match(vue, /config\.mcp\.sandboxEmptyHint/, '须保留 server 级语义说明')
 })
 
-test('新页签：useToolSandbox composable 按 executor 类别写 usr tool_sandbox，手动保存', () => {
+test('新页签：useToolSandbox composable 按「被 spawn 的执行体」写 usr tool_sandbox，手动保存', () => {
   const js = readSrc('composables/useToolSandbox.js')
   assert.match(js, /export const TOOL_SANDBOX_KEY = 'tool_sandbox'/, '键名须为 tool_sandbox')
-  assert.match(js, /export const EXECUTOR_CATEGORIES = \['core', 'desktop', 'browser'\]/, 'executor 类别须为 core/desktop/browser')
-  assert.match(js, /if \(!EXECUTOR_CATEGORIES\.includes\(category\)\) continue/, '须按 _meta.category 过滤')
-  assert.match(js, /saveUserConfig\(\{\s*\[TOOL_SANDBOX_KEY\]:\s*next\s*\}\)/, '须经 usr 配置面写该键（executor 级表）')
+  // 单位 = 内置 executor（exe 基名）+ 外部 MCP；executors 子表按 exe 基名，mcps 子表按 MCP 名
+  assert.match(js, /export const EXECUTOR_UNITS = \[/, '缺内置 executor 单位清单')
+  assert.match(js, /'chonkpilot-core-executor\.exe'/, '缺 core executor exe 单位键')
+  assert.match(js, /'chonkpilot-dsl-executor\.exe'/, '缺 dsl executor exe 单位键')
+  assert.match(js, /listMcpServers\(\)/, '外部 MCP 清单须取既有 data-mcp-list')
+  assert.match(js, /saveUserConfig\(\{\s*\[TOOL_SANDBOX_KEY\]:\s*next\s*\}\)/, '须经 usr 配置面写该键（结构化 executors/mcps）')
   assert.match(js, /mq\.emit\(MsgClientTopics\.toolsList/, '工具清单须取既有能力面 tools-list')
   // 过滤键名不得臆造：读的是 _meta.category / _meta.server
   assert.match(js, /meta\.category/, '须读 _meta.category')
-  assert.match(js, /meta\.server/, '须读 _meta.server（展示剥前缀用）')
+  assert.match(js, /meta\.server/, '须读 _meta.server（外部 MCP 归组 / 展示剥前缀用）')
   // 三态 + 手动保存：拨动只改待保存态，无改动不写；全部未设置 → 删整键
   assert.match(js, /const dirty = computed\(/, '须派生「未保存改动」')
   assert.match(js, /if \(!dirty\.value\) return false/, '无改动须短路（不落库）')
   assert.match(js, /resetUserKey\(TOOL_SANDBOX_KEY\)/, '全部未设置须删整键')
+  // 旧形状读取时迁移（core → core + dsl 两 exe）
+  assert.match(js, /parseToolSandboxMap/, '须经 parseToolSandboxMap 解析（含旧形状迁移）')
 })
 
 test('新页签：页面用 composable + Switch，手动保存按钮，且不出现 watch（项目规范）', () => {
   const vue = readSrc('views/config/SettingsToolSandboxPage.vue')
   assert.match(vue, /useToolSandbox\(\)/, '页面须用 useToolSandbox composable')
-  assert.match(vue, /<Switch[\s\S]*?@update:model-value="\(v\) => onToggle\(row, v\)"/, 'executor 行须有隔离 Switch')
-  // 三个 executor 行 + 只读工具清单
-  assert.match(vue, /v-for="row in rows"[\s\S]*?:data-exec="row\.category"/, '须按 executor 类别渲染行')
+  assert.match(vue, /<Switch[\s\S]*?@update:model-value="\(v\) => onToggle\(row, v\)"/, '执行体行须有隔离 Switch')
+  // 按执行体单位渲染行（内置 exe / 外部 MCP）+ 只读工具清单
+  assert.match(vue, /v-for="row in rows"[\s\S]*?:data-exec="row\.key"/, '须按执行体单位渲染行')
   assert.match(vue, /:data-tool="t\.name"/, '只读工具清单须带完整暴露名')
   // 手动保存：按钮 + 无改动禁用 + 未保存标记
   assert.match(vue, /data-sandbox-save/, '缺保存按钮')

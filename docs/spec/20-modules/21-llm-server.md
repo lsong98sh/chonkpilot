@@ -82,6 +82,7 @@
 | `domain-tool-call` | `onDomainToolCall` | 域工具远程回调 |
 | `llm-simple` | `onLLMSimple` | 单次无上下文 LLM（插件/摘要用） |
 | `llm.test-connection` | `onLLMTestConnection` | 设置 → LLM「测试连接」的**只读探活**方法面（**点分相对主题**，不经 `frontMethodSubjects` 单字白名单 —— 走桥 / 服务端上行入口的「点分直通总线」分支）。实现 `server/llm_testconn.go`：**复用主路径同一条出网链路**（= router `Call`：同一 Authorization / 协议分派 / 超时 / 错误分类）发一次最小请求（单条 `hi` + `max_tokens=1`、不下发工具），**首个非错误事件即判连通**并立即 cancel（`latency_ms` = 首包延迟），超时 = 15s 常量 `llmTestTimeout`。**只读、不落库**：用一次性 provider（唯一名 `__probe__*` 登记 → 探测后**注销**，**不改 usr `llms`、不影响运行中 provider**），**不写会话/轮次/消息/历史表**。载荷 `{instance_id, baseUrl, model, apiKey?, protocol?}`（`baseUrl`/`model` 必填，缺 → `error.kind=invalid`）→ 结果信封 `{ok, latency_ms, model_echo?, error{kind, message}}`（`kind` ∈ `network\|timeout\|rate_limit\|server\|auth\|protocol\|invalid`；handler 恒 `return nil`，结果走 `v.Result`）。**安全（硬要求）**：应答与日志一律经 `maskLLMSecrets` 脱敏（先整串替换本次 `apiKey`、再按通用密钥形态兜底）→ 上游回显的 Key 不外泄；payload/返回明细见 [61 §1.1](../60-reference/61-消息一览.md) |
+| `config.suggest` | `onConfigSuggest` | **配置建议**方法面（AICFG-1，2026-10-16；**点分相对主题**，同走「点分直通总线」分支）。实现 `server/configsuggest.go`：受理由配置页（LLM / MCP）/ 工具原语编辑页发起的「AI 智能填充 / AI 生成」—— 用户自然语言 → LLM 产出**结构化字段建议** → 只回填表单**待保存态**（不落库，落库仍由既有【保存】触发）。载荷 `{instance_id?, kind, text, current?}`（`kind ∈ llm\|mcp\|tool` 决定白名单与指令；`kind` 未知 / `text` 空 → `error.kind=invalid`）。**provider 口径统一**：与 `prompt-optimise` 一致**现读 `llm.promptOptimise`**（缺失/空串由数据层回落 `defaultLLM`；**热生效**，不缓存到进程级）→ **一次性、非流式**（`llmOnceSpec`，自带 60s 超时）→ **严格 `json.Unmarshal`** + **服务端硬过滤白名单** `configSuggestWhitelist`（三套：llm/mcp/tool）→ 结果信封 `{ok, fields, notes?, error?{kind, message}}`（handler 恒 `return nil`，结果走 `v.Result`）。**白名单（硬要求）**：`fields` **只含该 kind 白名单字段**——**`apiKey` / `level` / `enabled` / `isolate` / `sandbox` / `hot_tools` 等禁填字段即便模型输出也丢弃**（`current` 上送时同样剔除，不外送禁填项）。**错误码**：`invalid`（入参不合法）· `parse_failed`（非 JSON / 无可填字段）· 及复用 LLM 出网分类 `timeout\|network\|rate_limit\|server\|auth\|protocol`（**不新增错误码体系**）。**安全（硬要求）**：应答与日志经 `maskLLMSecrets` 脱敏（无 key）。browser 形态上行白名单 `allowedDottedPrefixes` 已放行；payload/返回明细见 [61 §1.1](../60-reference/61-消息一览.md)，FP 见 [36 `CFG-018`](../30-function-points/36-配置.md) |
 
 ### 3.2 订阅的事件面（`Subscribe`）
 
@@ -94,10 +95,10 @@
 ### 3.4 域工具与 agent 契约（`server/contracts/`）
 
 - **tools（4）**：`ask_user`（hot, async=never）· `llm_run`（hot, async=always）· `tool_stop`（hot, async=never）· `tool_result`（async=never）。
-  - **工具异步档位**：四个域工具在「工具异步」矩阵里**按执行线拆分并冻结模式** —— `llm_run`（仅异步）· `tool_stop`/`tool_result`（仅同步）· `ask_user`（仅同步 + 无超时裁决点，不纳入「⑤ 超时自动取消」）。契约 meta：`ask_user` = `category=server`/`async=never`/**`timeout=0`**/`hot=true` · `llm_run` = `category=server`/`async=always`/`hot=true`（**无 `timeout` 键**） · `tool_stop` = `category=server`/`async=never`/**`timeout=0`**/`hot=true` · `tool_result` = `category=server`/`async=never`/**`timeout=0`**。**四域工具执行硬上限统一 `timeout=0`**（系统工具 `category=server` 不单独设执行硬上限 → **`timeout=0` = 无上限**：`_meta.timeout=0` **显式透出**，gateway `limit<=0` **不设裁决点**、executor `noLimit` **不设执行硬上限**，永远等待、用户可取消；`tool_result` 的 `timeout` **入参**是轮询等待秒数、非执行硬上限）。`[meta]` 已解析并透出：`loadDomainTools` 解析 `category`/`async`/`async-threshold`/`timeout` → `tools/register` 载荷携带 → gateway `registerTool` 写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**），故这四项的 `_meta.async` 可在 `tools/list` 见到。上述工具的**提供方归属不变**（均由本模块经 `tools/register` 注册 = `registeredProvider`），仅**处理档位**按执行线归并；`ask_user` 的「不纳入 ⑤」为**我方建议，待用户确认**。详见 [18 §3.1/§4](../10-architecture/18-工具异步超时与取消.md) · [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
+  - **工具异步档位**：四个域工具在「工具异步」矩阵里**按执行线拆分并冻结模式** —— `llm_run`（仅异步）· `tool_stop`/`tool_result`（仅同步）· `ask_user`（仅同步 + 无超时裁决点，不纳入「⑤ 超时自动取消」）。契约「基本信息」yaml 键：`ask_user` = `category=server`/`async=never`/**`timeout=0`**/`hot=true` · `llm_run` = `category=server`/`async=always`/`hot=true`（**无 `timeout` 键**） · `tool_stop` = `category=server`/`async=never`/**`timeout=0`**/`hot=true` · `tool_result` = `category=server`/`async=never`/**`timeout=0`**。**四域工具执行硬上限统一 `timeout=0`**（系统工具 `category=server` 不单独设执行硬上限 → **`timeout=0` = 无上限**：`_meta.timeout=0` **显式透出**，gateway `limit<=0` **不设裁决点**、executor `noLimit` **不设执行硬上限**，永远等待、用户可取消；`tool_result` 的 `timeout` **入参**是轮询等待秒数、非执行硬上限）。「基本信息」已解析并透出：`loadDomainTools` 解析 `category`/`async`/`async-threshold`/`timeout` → `tools/register` 载荷携带 → gateway `registerTool` 写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**），故这四项的 `_meta.async` 可在 `tools/list` 见到。上述工具的**提供方归属不变**（均由本模块经 `tools/register` 注册 = `registeredProvider`），仅**处理档位**按执行线归并；`ask_user` 的「不纳入 ⑤」为**我方建议，待用户确认**。详见 [18 §3.1/§4](../10-architecture/18-工具异步超时与取消.md) · [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
 - `ask_user` **实现现状 + 目标态**：**入参 = 扁平单问**（`question`/`options`/`multi`/`custom`/`recommended`；一次工具调用 = 一问，N 问由前端 300ms 合并窗口聚合成「第几个/共几个」批次展示），答复经 `ask-user-reply`（`{ask_id, answer, custom?}`）回填该 turn 的 tool_result。**目标态（未落地）**：`questions[]` 一表 N 问 / 答复增量写穿（ask 节点 `content`，落点方案 A）/ 全部题答齐才回一个 tool_result / turn 等待态 `awaiting` 支持重启续答（详见 [34 §7](../30-function-points/34-任务.md)）。**2026-10-11** 由 [61 §4.3](../60-reference/61-消息一览.md) 口径收敛（扁平单问与实现一致）。
 - **agents（7）**：`coder` / `executor` / `planner` / `reader` / `reviewer` / `worker` / `writer` —— **agent 退出资产面**（不注册进 gateway 资产目录、不落 `syncScenarioAgents`）：`mcp_find` 的 `type` 收敛为 **`tool|skill|resource|all`**（**去 `prompt`/`agent`**）、`mcp_load` 的 `kind` 为 **`tool|skill|resource`**、**`prompts/list` 不得再列 agent**；LLM 改由**注入的团队列表**（场景层）知道可委派谁。见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。🔵 待实施。
-- 加载：`//go:embed contracts/tools/*.tool.md`（**agent 不再 embed**）→ `domainmd.go` 分段解析（`[description]`/`[parameters]`/**`[meta]`** —— `[meta]`（每行 `key=value`）现**解析并携带** `category`/`async`/`async-threshold`/`timeout`）→ `domainmcp.go` 经 `tools/register` 注入 gateway：**载荷现携 `category`/`async`/`async_threshold`/`timeout`**（`hot` 保留），gateway `registerTool` 据此写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**，见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)）。
+- 加载：`//go:embed contracts/tools/*.tool.md`（**agent 不再 embed**）→ `domainmd.go` 分段解析（v2 H1 分区：`# 摘要`/`# 参数`/**`# 基本信息`** —— 基本信息 yaml 现**解析并携带** `category`/`async`/`async-threshold`/`timeout`）→ `domainmcp.go` 经 `tools/register` 注入 gateway：**载荷现携 `category`/`async`/`async_threshold`/`timeout`**（`hot` 保留），gateway `registerTool` 据此写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**，见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)）。
 
 ---
 
@@ -121,6 +122,7 @@ chatOnce：
 
 - **pending / inflight 回执兜底（watchdog，`turn.go`）**：异步任务（`task_id`）回执丢失 / 未登记时 `pending` 永不归零 → 整轮永久挂起（无超时、无 reaper）；`ask_user` / `llm_run` 子作业的在飞登记（`inflight`）同理。`loop` 每 **`pendingSweepInterval`（30s）** 扫描一次，对超过 **`pendingTaskTimeout`** 仍未回执的 pending 与 inflight **按 `failed` 占位回填并续轮**（复用 `onAsyncDone` 同一路径）。`pendingTaskTimeout` **由项目级键 `pending_task_timeout_sec` 配置**（缺省 `defaultPendingTaskTimeout = 2h`；键缺失 / 非正整数 → 回落缺省，见 [64 §3](../60-reference/64-配置项一览.md)）。取值保守：长时异步工具仍可正常完成，仅在**回执确实丢失**时兜底。
 - **恢复轮去重（`recoverTurnCtx`）**：同 `{instance, turn}` 已有**存活轮次** → **直接复用该 tc**（不另起 `loop`）；此前去重命中仍返回**未登记**的新 tc（其 loop 亦在跑）→ 同 `{session, turn}` 双执行，已修。
+- **非主会话强制同步（SUBCHAT-2 阶段 A，2026-10-16）**：**凡非主会话（会话行 `kind` 非空 = 子聊天 / 群聊 / 子会话）里的每一次工具调用一律同步**（不得转后台）——子聊天/群聊的状态推进全靠"轮次跑完"（收口点亮、本轮屏障），工具转后台会打乱判定。落点 = `turnCtx.gatewayArgs`：强制同步时给 `gc.Call` 的 args 副本附**调用级 `async=never`**（gateway `doCall` 读取后即剥离 → **不改 `mcp-tools-call` 载荷形状与工具入参**；落库/前端展示仍用原始 args）。判定 = `turnCtx.forceSyncTools()`（与 `isSubsession` 共用**一次**会话行读取，`loadSessionInfo`）：`kind` 为空（主会话）→ 原样返回，**行为逐字节不变**。覆盖面 = turn 内两条 `gc.Call` 路径（task 型 + 普通工具）+ tool-retry 重跑（`server.go onToolRetry`，tc 可定位时同口径）。
 
 **上下文拼接（`assemble.go`）**：全量历史按 turn（边界 = `isTurnBoundary`）拼接 —— **三段结构（口径 X）**：**完整区**整轮**原文**（范围受 `keep_full_max_turns`(N) + `keep_full_max_tokens`(M) 双条件约束，均项目级配置，默认 10 / 24000；`loadKeepFullTurns`/`loadKeepFullTokens`）；**简化区**（再往前，**brief token 累计 ≤ `compress_token_threshold`(T)**）→ **【简化态原文】仅 text**（`data.BriefMessages`：去 reasoning / tool_call / tool_result；T 由 `loadBriefBudget` 读，默认 20000）；**摘要区**（更早）→ 已由压缩插件落为前导 system 摘要（原样透传），若残留同按简化态投影；重试/恢复轮强制全量（`forceFull`）。**边界算法唯一来源 = `data.LocateZones`**（**与压缩侧同一函数**：完整区 = `LocateFullTurnCount`（N/M 取先到，**本轮恒保留**，口径 V，下限 1）；简化区 = 自完整区向前逐轮累加 brief token ≤ T）。**预存 token 优先**：各轮 `full_tokens`/`brief_tokens` 随 `data-session-context` 的**只增**伴随数组 `turn_tokens` 带回（`BuildContextTokens` → `tc.turnTokens` → `splitTurnTokens`），**尾部对齐 + 缺值回退实时估算**（`data.ResolveStoredTokens`）→ 生产判定真正读取预存值。**取值语义（口径 W）**：`N==0`/`M==0` = 该条件不启用；**两者均 0 → 不压缩**（保留全量）。摘要压缩仍由压缩插件落快照（本处只做粒度收敛与简化态投影，不做摘要、不写快照）。
 
@@ -192,7 +194,49 @@ chatOnce：
 
 **systemPrompt 注入链**：**主 agent** 场景 systemPrompt 由 `domainmcp.go mainScenarioAgent` 解析；**子轮 system** 由 `childAgentSystem`（含被委派 agent 的 `prompt` / `delegateCond`）承载，见 §4.4。`turn.go` 在 `BuildContextTokens` 之后将其**前插**为系统提示，随后注入子轮次 persona（`llm_run` 每条 LLM 指令的 agent 参数）。
 
-> **systemPrompt 分层拼接**：按序拼接 = **全局层**（身份/运行环境，**代码写死**，不落文件/不 embed/不可配置）→ **目录层**（四级数据根 + `capability/` 子目录 + DSL env 说明；出厂文件 `capability/system/system-directory.md`，**每轮读取、不入快照、不受场景门控**，OP-10 增）→ **场景层**（`scenario.description` + **代码按场景 agents 自动拼接的成员段**〔名字 + roleTag + 描述〕）→ **agent 层**（`*.agent.md`，主 agent = `main.agent.md`）。**无场景（通用模式）→ 只注入全局层 + 目录层**。数据层 `Scenario.SystemPrompt` 字段**已删除**（facade DTO / wire / `ReadScenarioDir` 均不再有）；场景层提示词恒由本侧各层自拼。现 `memoryGuide`（门控 `memory.enabled=true`）/`assetGuide`（门控已接入 capability 节点）是**两条功能指引**，与"全局层"**不是一回事**。
+**systemPrompt 五层拼接 + 会话固定参数（SUBCHAT-2 阶段 A，2026-10-16）**：唯一组装点 = `turn.go resolveTurnScenario(instanceID, sessionID, scenarioID, agent)` —— 拼接顺序 **全局 → 目录 → 场景 → agent → 会话注入层**（第五层，见 [25 §3](../10-architecture/25-MCP与场景分层模型.md)）。
+- **参数优先级 = 会话固定参数 > 请求参数**：先按 `sessionID` 读会话行的 `agent` / `scenario_id`（仅子聊天有；见 [22 §5](22-data-persist.md)），非空即覆盖入参；
+- **新轮与恢复轮同口径**：`recoverTurnCtx` 虽只有 `{instance, session}`（请求里无 scenario/agent），仍经同一构造从会话行取回 → **重启后人格与第五层不丢**（此前恢复轮退化为"仅全局层 + 目录层"）；
+- **第五层注入条件 = 会话行 `kind ∈ {sub_chat, group_chat}`**，文本代码内建常量 `subChatLayerText`。
+- **群聊扩展（SUBCHAT-3 阶段 F，2026-10-16）**：`kind ∈ {group_chat, work_session}` → 注入**群聊注入层**（`chatInjectionLayer` → `groupChatInjectionLayer`）：参与者名单 + 各自角色（读 `group_participants`）+ **本次目标 / 剧本 / 收敛与退出条件**（会话行可选列 `goal` / `playbook` / `convergence`）+ 推进规则（末行 `@` 决定下一个叫谁）+ 收口协议；`work_session` 取其**父群聊会话**的注入内容。文本代码内建（`groupChatProtocolText` / `groupChatReplyRules`）。
+
+**单聊（子聊天）域工具与方法面（SUBCHAT-2 阶段 B-2，2026-10-16 · `src/lib/llm/server/subchat.go`）**：
+
+| 项 | 落点 / 行为 |
+|----|------------|
+| `subchat_open`（域工具，`category=server`/`async:never`） | 建**固定参数**子聊天会话（`kind=sub_chat` + `parent_id` + `agent`/`scenario_id`/`llm` + `lifecycle=chatting` + `purpose`，经 data 门面 `s.cfg` **inline 直调** `SessionEnsure`）→ 交接内容**以用户口吻**写为首条 `user` 消息 → 发 `subchat-opened`（父窗口自动开窗）→ **异步**发起子会话首轮 → 返回 `{ok, session_id}`（**主轮不挂起**；**每个 tool-call 一条消息只落一次**） |
+| `subchat_finish`（域工具，同上） | 把**本 turn 所属**子聊天会话置 `lifecycle=ready`（**建议态，不等于结束**）+ 发 `subchat-state`；不关窗、不回流 |
+| 子会话首轮（D30「子 agent 自动先开口」） | `startSubChatFirstTurn`：建 `turnCtx`（**不带 parents**——子聊天不进任务执行树）→ 登记 `busy`/`turns` → 广播 `turn-start` → `turnCtx.Kick()`：以**库内既有上下文**跑一次 `chatOnce()`（无新输入、不重复落库；`turn.go` loop 新增 `kick` 分支，保证 `chatOnce` 恒在 loop goroutine 内串行执行） |
+| 生命周期回写（§3.7） | **子聊天新一轮开始处**（`newTurnCtx`，用 `resolveTurnScenario` 同一次会话行读取带回的 `kind`/`lifecycle` 判定）：`lifecycle == ready` → 置回 `chatting` + 发 `subchat-state`。`recoverTurnCtx` 不走（它是既有轮次的恢复，非新一轮） |
+| `subchat-list` / `subchat-finish`（client→server 方法面） | `Start` 订阅（`s.bus.On`，主题与前端 type **同名**）：清单（`parent_id` 有值 → `SessionSubChats` 全部含 finished；缺省 → `SessionSubChatsAll` 过滤未结束）+ 补 `parent_session_title`；结束（`SessionLifecycleSet(finished)` + `subchat-state` + `{ok}`） |
+| `purpose` 来源 | **注入通道**（`payload.context.purpose` = gateway 剥离前取出的 `tool_call_display_name`）→ 落 `sessions.purpose` → 随 `subchat-opened` 下发（**不从 args 读**，见 [26 §4.3](26-mcp-gateway.md)） |
+| `subchat-state` 投递 | **广播**（不带 `instance_id`），前端按 `parent_session_id` 过滤 —— **有意设计 = 「父 + 子都要」分支**（父窗口状态条 + 子窗口都需知）。**`ask_user` 则走定向**（见下「F-2」行）：41 **D-62 已闭环（2026-10-16，方案 A：补 session→instance 反查）** |
+| 非主会话强制同步 | 子聊天（`kind` 非空）内**每次**工具调用附调用级 `async=never`（`turnCtx.forceSyncTools`/`gatewayArgs`，阶段 A 已铺；收口点亮与轮次屏障依赖轮次跑完） |
+
+> **工具分派**：`subchat_open`/`subchat_finish` 归 `isTaskTool`（chatOnce 走"task 型"分支，节点由 `domainNode` 建、**不重复建节点**）；`domainExecute` 新增 `isSubChatTool` 分支**同步**执行（结果即终态，§3.4.3）——与 `tool_stop`/`tool_result` 同族。工具契约 = `contracts/tools/{subchat_open,subchat_finish}.tool.md`（embed，阶段 B-1/B-2）。
+
+**群聊「依次认领」调度器（SUBCHAT-3 阶段 F，2026-10-16 · `src/lib/llm/server/groupchat_sched.go`；设计见 [群聊会话设计方案](../../agent-chat/群聊会话设计方案.md) §2/§3/§5/§6/§7/§18）**：
+
+| 项 | 落点 / 行为 |
+|----|------------|
+| 发起（扩展 `subchat_open`） | `participants` **≥ 2** → 建 `kind=group_chat` 会话（`lifecycle=chatting` + `parent_id` + `agent`=主 agent + `goal`/`playbook`/`convergence` 落**会话可选列**）+ 写 `group_participants`（含 `seq` 固定顺序）+ 布置任务为首条展示板消息（`role=user`，主 agent ≡ 用户）+ `subchat-opened` → **异步**起调度器；**省略 / 1 项 → 单聊**（既有路径逐字节不变） |
+| 大轮次循环（`groupSched.run`） | 按 `seq` **依次投递**（不抢、串行）；每人一轮 = `work_session` 里**一次** LLM 调用（判定 + 执行同一次）；「有关」→ 结论**立即上屏**（追加群聊展示板消息，带 `sender_agent`/`mentions`）+ 入下一轮；「无关」→ **不上屏、不入下一轮**；本轮走完（**屏障只挡下一轮启动**）→ 由发言 `@` 算下一轮投递对象并写 `group_round_targets`；**无人认领 → 主 agent 兜底** |
+| `work_session`（D12/D23） | 每个参与者一个、**跨大轮次复用**（确定性 id `work-<群聊>-<净化agent>-<hash>` + 幂等建会话）；继承群聊上下文（逐轮喂入合并发言）；工具交互全在这里；**不进子聊天清单** |
+| 参与者状态 | `subchat-participant-state`：轮到 → `thinking`、判无关 → `idle`、产出结论 → `spoken`（广播，前端按 `parent_session_id` 归属过滤） |
+| 收敛 / 终止 | 主 agent 结论文本含**单独一行**「【已收敛】」→ `lifecycle=ready` + `subchat-state`（复用既有消息）；用户 `subchat-finish` → `finished`；**硬上限** `group_chat.max_rounds`（默认 20）到顶 → 主 agent **终审**（「【已收敛】」→ 点亮；否则 **强制 `finished`** + 提示「因达上限终止，可能未完成」）；用户 `subchat-continue` → **原线程续跑**（另给一轮预算） |
+| 机读约定（不得新增消息主题） | 「无关」= work_session 最终 assistant 文本**首个非空行**恰为「无关」；「收敛」= 主 agent 文本**单独一行**「【已收敛】」；`@` 名单 = 发言**末行**的 `@xxx`（`@全体`/`@所有人` → 公开条）。详见设计稿 §18.6 |
+
+**群聊 F-2（ask 定向投递 / 驱动归属 / 关窗即停 / 断点补跑 / 工具面收窄；SUBCHAT-3 阶段 F-2，2026-10-16 · 群聊设计 §13/§15）**：
+
+| 项 | 落点 / 行为 |
+|----|------------|
+| `ask_user` **定向投递**（F2-1 · §13 D42；闭环 41 D-62） | 写侧 `instance-register` 增**可选 `session_id`**（对话/群聊窗口随桥上报承载会话，`src/lib/gui/{window,bridge}.go`）；读侧 `instance.Manager.InstanceForSession` 反查 → `ask()`（`askTargetInstance`）把目标填进 **`session-ask.instance_id`**：`work_session` → 其父 `group_chat` → 群聊窗口；`group_chat`/`sub_chat` 本体 → 承载窗口；反查不到 → 回落发起轮次实例。**`ask_user` 形态与前端弹窗零改动**；应答来自投递目标窗口时按 `askWaiter.deliverInstance` 兜底命中（`takeAskLocked`） |
+| 群聊**驱动归属** = 群聊窗口的 instance（F2-2 · §15.4 N23） | 调度器每次叫号解析 `driverInstance()`（`InstanceForSession(groupID)` 命中 → 该窗口实例；未命中 → 回落发起窗口），子轮次以它执行（**不再裸 `context.Background()`**，父 ctx = `sc.ctx`）→ ① `ask_user` 落对窗口；② **关窗即停**：该实例 `instance-exit` → `Server.exitInstance` → `stopGroupRunsForInstance` 取消运行 ctx（停机不收口） |
+| **暂停 / 终止 / 强关**（F2-3 · §15 · N22/N25） | **暂停** = 进程内停机（`sc.ctx` 取消；**不落库、无 `paused`**，`lifecycle` 保持原值）；**终止** = 既有 `subchat-finish` → `finished` + `stopGroupRun`（停掉在跑调度器）；**强关应用** = 复用既有 `interrupt`（`TurnCleanupStale` + `cleanupStaleToolPairs`，**未新增态**）。**关窗选择弹窗属阶段 G** |
+| 「继续」= **断点补跑**（F2-4 · §15.4 D45） | `groupResumePlan`：读最后一个大轮次的 `group_round_targets` → 逐个比对「本轮是否已产结论」（展示板结论计数 vs 该 agent 累计被投递次数）→ **有结论跳过、只补无结论者**（`start` 不前进、不覆盖该轮记录）→ 补齐后本轮收口、续下一轮；**本轮已齐** → 从下一轮起（F-1 到顶续跑语义）。**续法 = (甲) 从断点续**：`work_session` 跨轮复用 → 历史即断点（被中断的工具由启动清理标 `interrupted`）。**续跑计划抽取为纯函数 `groupResumePlan` 便于单测** |
+| `work_session` **工具面收窄**（F2-5 · §7/D12） | `kind == work_session` → `turnCtx.denyTools` 含 `subchat_finish`（**下发面 `llmTools` + 调用处 `toolAllowed` 双拦**，按契约名/暴露名两种口径匹配）；**单聊（`sub_chat`）不受影响**（收口仍靠 `subchat_finish`） |
+
+> **systemPrompt 分层拼接**：按序拼接 = **全局层**（身份/运行环境，**代码写死**，不落文件/不 embed/不可配置）→ **目录层**（四级数据根 + `capability/` 子目录 + DSL env 说明；出厂文件 `capability/system/system-directory.md`，**每轮读取、不入快照、不受场景门控**，OP-10 增）→ **场景层**（`scenario.description` + **代码按场景 agents 自动拼接的成员段**〔名字 + roleTag + 描述〕）→ **agent 层**（`*.agent.md`，主 agent = `main.agent.md`）→ **会话注入层**（**第五层**，`kind ∈ {sub_chat, group_chat, work_session}`：单聊 → 收口协议骨架；群聊本体 / 其 `work_session` → **群聊注入层**〔名单/角色/目标/剧本/收敛条件，`work_session` 取其父群聊会话内容〕；代码内建常量）。**无场景（通用模式）→ 只注入全局层 + 目录层**。数据层 `Scenario.SystemPrompt` 字段**已删除**（facade DTO / wire / `ReadScenarioDir` 均不再有）；场景层提示词恒由本侧各层自拼。现 `memoryGuide`（门控 `memory.enabled=true`）/`assetGuide`（门控已接入 capability 节点）是**两条功能指引**，与"全局层"**不是一回事**。
 
 > 设计要点：模型与生成参数属**用户级配置**（随 LLM 条目），场景 systemPrompt 属**场景文件**（`<级别根>/capability/scenarios/<目录>/`，级别四级 app/user/project/prjusr，**四级均可编辑**），两者均在轮次受理时解析并注入。
 >
@@ -221,7 +265,7 @@ chatOnce：
 
 **说明承载**：占位符的**用法示例与替换规则说明由场景 system prompt 承载**（默认场景主 agent = `scenarios/default/main.agent.md`），**不单独设指南契约文件**（用户口径：「工具使用指南理论上应放在系统的 prompt 里」）。出厂默认场景 = **app 级文件** `src/initdata/capability/scenarios/default/` → 投放 `<exeDir>/scenarios/default/`（与 `capability/` **平级**，源唯一 = `src/initdata/capability/scenarios/`）。
 
-**`{{path.<key>}}`**：agent `[content]`（技能 / 规范）里的 `{{path.<key>}}` 在**系统提示词分层拼接后**替换为四级根路径的**绝对路径**，指示 LLM 用文件工具自读（LLM 经 `mcp_find`/`mcp_load` 读不到能力面 `capability/skills/*`）。**目录层**（`capability/system/system-directory.md`，OP-10）也含 `{{path.*}}` → 同样在此步替换为真实绝对路径。
+**`{{path.<key>}}`**：agent「# 正文」（技能 / 规范）里的 `{{path.<key>}}` 在**系统提示词分层拼接后**替换为四级根路径的**绝对路径**，指示 LLM 用文件工具自读（LLM 经 `mcp_find`/`mcp_load` 读不到能力面 `capability/skills/*`）。**目录层**（`capability/system/system-directory.md`，OP-10）也含 `{{path.*}}` → 同样在此步替换为真实绝对路径。
 
 | 项 | 规格 |
 |----|------|

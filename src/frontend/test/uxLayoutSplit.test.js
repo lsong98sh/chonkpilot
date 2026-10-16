@@ -241,10 +241,11 @@ test('P0-3/P1-5 MainLayout：默认尺寸收紧 + flex 最小保护 + 窄屏断�
   assert.match(ml, /\{ id: 'preview', flex: true, min: PREVIEW_MIN \}/, 'preview 传 min')
   assert.match(ml, /\{ id: 'session-chat', flex: true, min: SESSION_CHAT_MIN \}/, 'session-chat 传 min')
 
-  // P1-5 小屏断点：窄屏收起文件树（preview 槽位索引不位移 → CodeView 持续挂载）
+  // P1-5 小屏断点：窄屏收起文件树（preview 槽位索引不位移 → CodeView 持续挂载）。
+  // 注（UILAYOUT-1 裁决 2，2026-10-16）：三区用户显隐开关已移除 → 文件树此处只剩**窄屏自适应**。
   assert.match(ml, /const NARROW_MAX = 900/, '小屏断点 900')
   assert.match(ml, /const narrow = computed\(\(\) => viewportW\.value <= NARROW_MAX\)/)
-  assert.match(ml, /visible: filetreeOpen\.value && !narrow\.value/, '窄屏收起文件树')
+  assert.match(ml, /visible: !narrow\.value/, '窄屏收起文件树（唯一保留的 visible 分支）')
   // 响应式：窗口缩放 → 视口宽更新 → 有效尺寸重算
   assert.match(ml, /viewportW\.value = window\.innerWidth/, 'resize 时更新视口宽')
   assert.match(ml, /const effChatWidth = computed/, '有效 chat 宽按视口 clamp')

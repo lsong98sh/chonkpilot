@@ -54,7 +54,7 @@ func writeScenarioDir(t *testing.T, root, id, name, mainPrompt string, subs map[
 			t.Fatalf("mkdir agents: %v", err)
 		}
 		for agent, prompt := range subs {
-			doc := "# " + agent + "\n\n[description]\n" + agent + "\n\n[content]\n" + prompt + "\n"
+			doc := "# 基本信息\n```yaml\nname: " + agent + "\ntitle: " + agent + "\n```\n\n# 摘要\n" + agent + "\n\n# 正文\n" + prompt + "\n"
 			if err := os.WriteFile(filepath.Join(agentsDir, agent+".agent.md"), []byte(doc), 0o644); err != nil {
 				t.Fatalf("write %s.agent.md: %v", agent, err)
 			}
@@ -70,7 +70,7 @@ func writeScenarioDir(t *testing.T, root, id, name, mainPrompt string, subs map[
 		t.Fatalf("write scenario.json: %v", err)
 	}
 	if mainPrompt != "" {
-		doc := "# 主\n\n[meta]\nismain=true\n\n[description]\n主\n\n[content]\n" + mainPrompt + "\n"
+		doc := "# 基本信息\n```yaml\nname: 主\ntitle: 主\nismain: true\n```\n\n# 摘要\n主\n\n# 正文\n" + mainPrompt + "\n"
 		if err := os.WriteFile(filepath.Join(dir, "main.agent.md"), []byte(doc), 0o644); err != nil {
 			t.Fatalf("write main.agent.md: %v", err)
 		}
@@ -247,7 +247,7 @@ func TestScenarioSaveAllowsSameAgentNameAcrossScenarios(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(agentsDir, "shared.agent.md"),
-		[]byte("# shared\n\n[content]\n共享子 agent\n"), 0o644); err != nil {
+		[]byte("# 基本信息\n```yaml\nname: shared\ntitle: shared\n```\n\n# 正文\n共享子 agent\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	ref := "${usrDir}/capability/agents/shared.agent.md"

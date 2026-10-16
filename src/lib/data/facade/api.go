@@ -34,6 +34,28 @@ type API interface {
 	MemoryAPI
 	McpAPI
 	ProjectAPI
+	GroupAPI
+}
+
+// GroupAPI 是 group 域（**群聊落库两表**：参与者名单 + 大轮次投递对象）门面面。
+//
+// 两表都落 **prjusr 库**（与会话同层），以外键 `session_id` 关联 `kind = group_chat` 的会话行
+// （见 facade/group.go 文件头）。本域**无变更广播**（subchat-* 业务事件由调度器发出，
+// 不在此请求-响应签名内；与 memory_extract 同为「进度/名册类」无 -refresh 的表）。
+//
+// 消费方 = 群聊调度器（阶段 F；按名单依次叫号 → 记本轮投递对象 → 下一轮合并投递取数）。
+type GroupAPI interface {
+	// GroupParticipantsLoad 读某群聊的参与者名单（按名单固定顺序升序；无名单 → 空数组）。
+	GroupParticipantsLoad(req GroupParticipantsLoadRequest) (GroupParticipantsLoadResponse, error)
+
+	// GroupParticipantsSave 整表替换某群聊的参与者名单（以 List 为准；Seq 按 List 顺序赋值）。
+	GroupParticipantsSave(req GroupParticipantsSaveRequest) (GroupParticipantsSaveResponse, error)
+
+	// GroupRoundTargetsLoad 读某群聊的大轮次投递对象（Round 0/缺省 = 全部轮次，按轮次升序）。
+	GroupRoundTargetsLoad(req GroupRoundTargetsLoadRequest) (GroupRoundTargetsLoadResponse, error)
+
+	// GroupRoundTargetsSave 写某 `(群聊, 大轮次)` 的投递对象（幂等覆盖）。
+	GroupRoundTargetsSave(req GroupRoundTargetsSaveRequest) (GroupRoundTargetsSaveResponse, error)
 }
 
 // TasktreeAPI 是 tasktree 域（任务树：节点列表 / 任务快照 / 幂等落库 / 关闭）门面面。
@@ -89,6 +111,11 @@ type KnowledgeAPI interface {
 
 	// KnowledgeRenameDir 目录改名或跨目录移动（G-26：限同一知识库根内）。
 	KnowledgeRenameDir(req KnowledgeRenameDirRequest) (KnowledgeRenameDirResponse, error)
+
+	// KnowledgeImport 导入 / 新建「其他类型」文件（61 §3.3）：按内容与后缀四分支落盘
+	// （①空内容 ②命中原语后缀且可解析契约 ③.md/.txt 文本转 resource 契约 ④其余原样）、
+	// 逐文件尽力而为（部分失败不中止）；写前越界复验同其余写入口（A-32）。
+	KnowledgeImport(req KnowledgeImportRequest) (KnowledgeImportResponse, error)
 }
 
 // FileListAPI 是 filelist 域（全文索引的文件清单：增量清单读写）门面面。
@@ -244,7 +271,21 @@ type SessionAPI interface {
 	SessionActiveGet(req SessionActiveGetRequest) (SessionActiveGetResponse, error)
 
 	// SessionEnsure 幂等建会话（已存在不覆盖；**首次**落库后广播 session-new）。
+	// 子聊天固定参数（kind / lifecycle / agent / scenario_id / llm）**仅非空才写键**，
+	// 由本方法**一次性写入**（单聊方案 §3.2）。
 	SessionEnsure(req SessionEnsureRequest) (SessionEnsureResponse, error)
+
+	// SessionLifecycleSet 更新子聊天生命周期（`chatting` / `ready` / `finished`；单聊方案 §3.4.4）。
+	// 只改 lifecycle/updated_at（单事务 RMW，其余字段保留）；行不存在 → 报错、不建残行。
+	SessionLifecycleSet(req SessionLifecycleSetRequest) (SessionLifecycleSetResponse, error)
+
+	// SessionSubChats 按父会话列举子聊天（`kind ∈ {sub_chat, group_chat}`，含 finished；
+	// 单聊方案 §3.4.4 / §3.4.6）。**不改** data-session-list 的"只返回顶层会话"语义。
+	SessionSubChats(req SessionSubChatsRequest) (SessionSubChatsResponse, error)
+
+	// SessionSubChatsAll 全局列举子聊天（跨父会话；`kind ∈ {sub_chat, group_chat}`，含 finished；
+	// 单聊方案 §3.4.7 启动提醒取数）。**不改** data-session-list 语义。
+	SessionSubChatsAll(req SessionSubChatsAllRequest) (SessionSubChatsAllResponse, error)
 }
 
 // TurnAPI 是 turn 域（轮次：历史分页/幂等建/摘要/终态/遗留清理）门面面。

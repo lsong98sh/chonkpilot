@@ -109,6 +109,17 @@ type Bridge struct {
 	// suppressExit = 关闭本桥实例时**不**发 `instance-exit`（flash 远程薄壳：多窗口共享
 	// 同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
 	suppressExit bool
+
+	// parentInstance 是本实例（子窗口）的**直接父窗口实例** id（空 = 顶层实例）。
+	// 随 `instance-register` 的 `parent_instance` 字段上报（61 §4.1 ④；单聊 §12.4 B4 /
+	// 群聊 §14.4 N18–N20「谁开的窗口指谁」逐层链）——server 端 instance 视图据此支持
+	// **跨窗口定向投递**（查表取父实例 id 填进消息 `instance_id`；见 plugin/instance.DeliveryTarget）。
+	parentInstance string
+	// sessionID 是本实例（窗口）**绑定的会话** id（空 = 主窗口 / 未绑定）。
+	// 随 `instance-register` 的 `session_id` 字段上报（61 §4.1 ④，🆕 2026-10-16 SUBCHAT-3 阶段 F-2）
+	// —— server 端 instance 视图据此支持 **session → instance 反查**（plugin/instance.InstanceForSession），
+	// 使定向消息（`session-ask`）投到**该会话所在窗口**（群聊 / 单聊窗口）。
+	sessionID string
 }
 
 // New 创建桥（inprocess 内存总线；由 main 传入共享 mq.Bus）。
@@ -177,6 +188,17 @@ func (b *Bridge) SetDevToolsOpener(fn func()) { b.openDevTools = fn }
 // 多窗口共享同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
 func (b *Bridge) SetInstanceExitSuppressed(v bool) { b.suppressExit = v }
 
+// SetParentInstance 注入本实例的**直接父窗口实例** id（窗口工厂在 `Start` 前调用；
+// 空 = 顶层实例）。随 `instance-register.parent_instance` 上报（61 §4.1 ④），供 server
+// 侧跨窗口定向投递（单聊 §12.4 B4）。flash 形态全窗口共享一个实例 → 不调用（无子实例）。
+func (b *Bridge) SetParentInstance(id string) { b.parentInstance = id }
+
+// SetSessionID 注入本实例（窗口）**绑定的会话** id（空 = 主窗口 / 未绑定；窗口工厂在 `Start`
+// 前按 windowSpec.sessionID 调用）。随 `instance-register.session_id` 上报（61 §4.1 ④，
+// 🆕 2026-10-16 SUBCHAT-3 阶段 F-2）：server 端据此 **session → instance 反查**，把定向消息
+// （`session-ask`）投到**该会话所在窗口**（群聊 / 单聊窗口）。
+func (b *Bridge) SetSessionID(id string) { b.sessionID = id }
+
 // markPublished 记录一次本实例发布（发布前调用）；标记值 = subject + 载荷指纹（D-11）。
 func (b *Bridge) markPublished(subject string, payload []byte) {
 	b.publishedMu.Lock()
@@ -235,13 +257,24 @@ func (b *Bridge) Start() error {
 	// instance 注册：无 req_id、无 reply（客户端自生成 uuid；相对主题 instance-register）。
 	// `user` **必填**（61 §4.1 ⑤，🆕 2026-10-09）：`instance-bring-to-top` 据它做跨用户判定
 	// （RDS 同 data_dir 顶层实例属其他用户 → 不置顶、`instance-forbidden`）；客户端自报本机 OS 用户名。
-	b.publish(msgkeys.TopicInstanceRegister, map[string]interface{}{
+	// `parent_instance`（61 §4.1 ④，🆕 2026-10-16 多窗口）：非空 = 本窗口由该实例所开（逐层链，
+	// 单聊 §12.4 B4 / 群聊 §14.4 N18–N20）→ server 实例视图据此支持跨窗口定向投递；顶层实例**不带该键**。
+	reg := map[string]interface{}{
 		msgkeys.FieldInstanceId:           b.instanceID,
 		msgkeys.FieldWorkDir:              b.workDir,
 		msgkeys.FieldDataDir:              b.dataDir,
 		msgkeys.FieldClientType:           "gui",
 		msgkeys.InstanceRegisterEventUser: currentUserName(),
-	})
+	}
+	if b.parentInstance != "" {
+		reg[msgkeys.InstanceRegisterEventParentInstance] = b.parentInstance
+	}
+	// `session_id`（61 §4.1 ④，🆕 2026-10-16）：本窗口绑定的会话（对话/群聊窗口非空；主窗口不带）→
+	// server 端 session → instance 反查（定向消息投到该会话所在窗口）。顶层/主窗口恒缺省、不受影响。
+	if b.sessionID != "" {
+		reg[msgkeys.InstanceRegisterEventSessionId] = b.sessionID
+	}
+	b.publish(msgkeys.TopicInstanceRegister, reg)
 	// 订阅总线生态事件 → 前端（相对主题全通配 ">"：总线补 chonk. 前缀后命中全部
 	// 业务事件；handler 收到去前缀后的相对主题，见 mq Options.Prefix 语义）。
 	sub, err := b.bus.On(">", 0, func(_ context.Context, subj string, v *mq.Value) error {
@@ -530,6 +563,14 @@ var frontMethodSubjects = map[string]string{
 	msgkeys.TopicAgentWizardCompose:  msgkeys.TopicAgentWizardCompose,
 	msgkeys.TopicAgentWizardGenerate: msgkeys.TopicAgentWizardGenerate,
 	msgkeys.TopicAgentWizardSkip:     msgkeys.TopicAgentWizardSkip,
+	// 单聊（2026-10-16，61 §4.2/§4.5）：子聊天清单 / 结束子聊天 —— 前端 type 与相对主题
+	// **同名**（无映射；桥注入 instance_id，server 侧 handler 属 B-2）。**注意**：二者是
+	// 无点分的单段主题 → **必须**在此白名单，否则 `PublishEvent` 静默丢弃（61 §1.1 的
+	// 「点分直通」分支只覆盖含 `.` 的主题）。
+	msgkeys.TopicSubchatList:   msgkeys.TopicSubchatList,
+	msgkeys.TopicSubchatFinish: msgkeys.TopicSubchatFinish,
+	// 群聊「继续」续期（SUBCHAT-3 阶段 F，61 §4.2/§4.5）：同为无点分单段主题 → 必须列此白名单。
+	msgkeys.TopicSubchatContinue: msgkeys.TopicSubchatContinue,
 }
 
 // capabilityListKeys 客户端能力面 topic → 结果数组键（T-31 桥侧作用域过滤用）。

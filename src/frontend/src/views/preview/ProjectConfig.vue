@@ -19,6 +19,9 @@
       <template #filetree>
         <FileTreeConfig />
       </template>
+      <template #groupchat>
+        <GroupChatConfig />
+      </template>
       <template #log>
         <LogConfig />
       </template>
@@ -39,6 +42,7 @@ import CodegraphConfig from '../settings/CodegraphConfig.vue'
 import VftsConfig from '../settings/VftsConfig.vue'
 import HistoryConfig from '../settings/HistoryConfig.vue'
 import FileTreeConfig from '../settings/FileTreeConfig.vue'
+import GroupChatConfig from '../settings/GroupChatConfig.vue'
 import LogConfig from '../settings/LogConfig.vue'
 import ConfigIOPage from '../config/SettingsConfigIOPage.vue'
 
@@ -58,6 +62,8 @@ const tabsConfig = computed(() => [
   { label: t('projectConfig.vfts'), name: 'vfts' },
   { label: t('projectConfig.history'), name: 'history' },
   { label: t('projectConfig.filetree'), name: 'filetree' },
+  // SUBCHAT-3 阶段 E：群聊最小配置项（最大轮次；群聊窗口 UI 属阶段 G）
+  { label: t('projectConfig.groupchat'), name: 'groupchat' },
   { label: t('projectConfig.log'), name: 'log' },
   // 批 3 · ⑯：配置导入/导出 + 恢复出厂（usr 全局配置；页签追加在末位，不影响既有索引）
   { label: t('configIO.tabTitle'), name: 'configIO' },

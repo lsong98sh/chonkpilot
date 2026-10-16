@@ -13,8 +13,8 @@
 // 子 agent **只能**经引用承载，场景目录内**不放** `*.agent.md` 子文件；**悬空引用静默删除**
 // （文件缺失 / 变量不可解析 → 跳过，不报错）。**无 ref 的非主 agent 保存即拒绝**。
 //
-// agent 文件沿用 mcp 四原语分区契约（# 标题 + [meta] + [description] + [content]），
-// 复用同包的契约解析/组装。
+// agent 文件沿用契约分区契约（v2：`# 基本信息` + `# 摘要` + `# 参考`(skills/tools/resources)
+// + `# 委托` + `# 正文`），复用同包的契约解析/组装。
 //
 // 四级根（app / user / project / prjusr）与 capability 根**同构**（见 ScenariosRoot / ScenarioRoots）；
 // 场景 id **全局唯一（跨级亦然）**，四级"覆盖"语义不存在（25 §6）。
@@ -472,30 +472,75 @@ func isMainAgent(a map[string]any) bool {
 	return false
 }
 
-// agentToDoc agent 字段 → 契约文档（标题 + meta + description + content）。
+// agentToDoc agent 字段 → 契约文档（v2：基本信息 name/title + 类型键 + 摘要 + 参考 + 正文）。
 func agentToDoc(a map[string]any) Doc {
-	doc := Doc{Meta: map[string]string{}, Title: kernel.SvalOf(a["name"])}
+	name := kernel.SvalOf(a["name"])
+	doc := Doc{Name: name, Title: name, Meta: map[string]string{}}
 	if rt := kernel.SvalOf(a["roleTag"]); rt != "" {
 		doc.Meta["roletag"] = rt
 	}
 	if isMainAgent(a) {
 		doc.Meta["ismain"] = "true"
 	}
-	if tools := kernel.SvalOf(a["tools"]); tools != "" {
-		doc.Meta["tools"] = tools
-	}
 	if llm := kernel.SvalOf(a["llmRef"]); llm != "" {
 		doc.Meta["llm"] = llm
 	}
+	// 委托：委派条件入「# 委托」分区（v2，2026-10-14；不再落「基本信息」meta）。
 	if dc := kernel.SvalOf(a["delegateCond"]); dc != "" {
-		doc.Meta["delegate"] = dc
+		doc.Delegate = dc
+	}
+	// 参考（skills / tools / resources）：名单类引用入「# 参考」分区（v2，2026-10-14）——
+	// 不再落「基本信息」meta（口径对齐 39 KB-009）。
+	refs := map[string][]string{}
+	for _, kind := range []string{"skills", "tools", "resources"} {
+		if items := refListOf(a[kind]); len(items) > 0 {
+			refs[kind] = items
+		}
+	}
+	if len(refs) > 0 {
+		doc.Refs = refs
 	}
 	doc.Description = kernel.SvalOf(a["description"])
 	doc.Content = kernel.SvalOf(a["prompt"])
 	return doc
 }
 
-// agentFromDoc 契约文档 → agent 字段。
+// refListOf 把引用值归一为名单（兼容 JSON 数组文本 / []any / []string；非 JSON 单值 → 单元素名单）。
+func refListOf(v any) []string {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return nil
+		}
+		var arr []string
+		if err := json.Unmarshal([]byte(s), &arr); err == nil {
+			out := arr[:0]
+			for _, it := range arr {
+				if strings.TrimSpace(it) != "" {
+					out = append(out, strings.TrimSpace(it))
+				}
+			}
+			return out
+		}
+		return []string{s}
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, it := range t {
+			if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// agentFromDoc 契约文档 → agent 字段（参考：skills / tools / resources 名单 → JSON 数组文本）。
 func agentFromDoc(doc Doc, fileName string) map[string]any {
 	isMain := strings.EqualFold(doc.Meta["ismain"], "true") ||
 		strings.EqualFold(fileName, scenarioMainFile)
@@ -507,16 +552,26 @@ func agentFromDoc(doc Doc, fileName string) map[string]any {
 		"prompt":      doc.Content,
 	}
 	if a["name"] == "" {
+		a["name"] = doc.Name
+	}
+	if a["name"] == "" {
 		a["name"] = strings.TrimSuffix(fileName, agentFileSuffix)
 	}
-	if v := doc.Meta["tools"]; v != "" {
-		a["tools"] = v
+	for _, kind := range []string{"skills", "tools", "resources"} {
+		if items := doc.Refs[kind]; len(items) > 0 {
+			if b, err := json.Marshal(items); err == nil {
+				a[kind] = string(b)
+			}
+		}
 	}
 	if v := doc.Meta["llm"]; v != "" {
 		a["llmRef"] = v
 	}
-	if v := doc.Meta["delegate"]; v != "" {
+	if v := doc.Meta["delegate"]; v != "" { // 兼容：旧口径把委派条件写在「基本信息」meta
 		a["delegateCond"] = v
+	}
+	if doc.Delegate != "" {
+		a["delegateCond"] = doc.Delegate
 	}
 	return a
 }

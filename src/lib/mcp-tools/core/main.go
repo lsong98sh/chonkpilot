@@ -17,14 +17,8 @@ func main() {
 
 func dispatch(workDir, tool string, args map[string]interface{}) *cli.Result {
 	switch tool {
-	case "file_find":
-		return fileops.HandleFind(workDir, args)
 	case "filesys_run":
 		return fileops.HandleFileManager(workDir, args)
-	case "file_read":
-		return fileops.HandleReadFile(workDir, args)
-	case "file_diff":
-		return fileops.HandleDiff(workDir, args)
 	case "script_run":
 		return scriptrun.HandleScriptRun(workDir, args)
 	case "web_fetch":

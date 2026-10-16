@@ -204,13 +204,13 @@ def case_tool_call():
     sid = new_sid()
     activate(sid)
     send_turn(sid, "工具测试")
-    llm(sid, "tool-call", {"tool_call_id": "tc-e2e-1", "tool": "file_read",
-                           "arguments": "{\"files\":[{\"path\":\"C:/work/proj/a.txt\"}]}", "simplified": "file_read"})
+    llm(sid, "tool-call", {"tool_call_id": "tc-e2e-1", "tool": "filesys_run",
+                           "arguments": "{\"script\":\"READ #\\\"C:/work/proj/a.txt\\\"\"}", "simplified": "filesys_run"})
     # handleToken 把 tool-call 渲染为 tool_pair 消息
     if not wait_el(".toolpair-section"):
         raise TestError("工具调用记录未渲染")
     txt = visible_text(".toolpair-section")
-    if "file_read" not in txt:
+    if "filesys_run" not in txt:
         raise TestError(f"工具调用记录缺工具名: {txt[:120]!r}")
     if not c.exists(".toolpair-section .status-badge.pending").get("count", 0) > 0:
         raise TestError("tool_pair 初始状态应为 pending")

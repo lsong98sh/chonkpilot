@@ -194,7 +194,7 @@ func TestScenarioAgentRefsWriteRead(t *testing.T) {
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ua := "# UX 设计师\n\n[description]\n负责交互\n\n[content]\n你是 UX 设计师\n"
+	ua := "# 基本信息\n```yaml\nname: UX 设计师\ntitle: UX 设计师\n```\n\n# 摘要\n负责交互\n\n# 参考\n```yaml\nskills:\n  - ux-review\ntools:\n  - figma\nresources:\n  - brand-guide\n```\n\n# 正文\n你是 UX 设计师\n"
 	if err := os.WriteFile(filepath.Join(agentsDir, "UX 设计师.agent.md"), []byte(ua), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -202,12 +202,28 @@ func TestScenarioAgentRefsWriteRead(t *testing.T) {
 	sc := map[string]any{
 		"name": "开发场景",
 		"agents": []any{
-			map[string]any{"name": "主", "isMain": true, "prompt": "主提示词"},
+			// 主 agent 内联：skills/resources 名单（req10）→ 落 `# 参考` 分区
+			map[string]any{
+				"name": "主", "isMain": true, "prompt": "主提示词",
+				"skills": []any{"code-review", "debug"}, "resources": []any{"style-guide"},
+			},
 			map[string]any{"name": "UX 设计师", "ref": ref, "description": "负责交互", "prompt": "你是 UX 设计师"},
 		},
 	}
 	if err := WriteScenarioDir(KindApp, scnRoot, "dev", sc, roots); err != nil {
 		t.Fatalf("WriteScenarioDir: %v", err)
+	}
+	// 主 agent 内联落盘：`# 参考` 分区承载 refs.skills / refs.resources（req10）
+	mainRaw, _ := os.ReadFile(filepath.Join(scnRoot, "dev", scenarioMainFile))
+	mainDoc, err := ParseDocErr(string(mainRaw))
+	if err != nil {
+		t.Fatalf("main.agent.md 应可解析为 v2 契约: %v", err)
+	}
+	if got := mainDoc.Refs["skills"]; len(got) != 2 || got[0] != "code-review" || got[1] != "debug" {
+		t.Fatalf("main 契约 refs.skills = %v，want [code-review debug]", got)
+	}
+	if got := mainDoc.Refs["resources"]; len(got) != 1 || got[0] != "style-guide" {
+		t.Fatalf("main 契约 refs.resources = %v，want [style-guide]", got)
 	}
 	// scenario.json 记引用（主 agent 不在其中）
 	raw, _ := os.ReadFile(filepath.Join(scnRoot, "dev", scenarioMetaFile))
@@ -235,9 +251,17 @@ func TestScenarioAgentRefsWriteRead(t *testing.T) {
 	if first["isMain"] != true {
 		t.Fatalf("agents[0] 应为主 agent: %v", first)
 	}
+	// 主 agent 的 skills/resources 以 JSON 数组文本读回（agentFromDoc 口径）
+	if first["skills"] != `["code-review","debug"]` || first["resources"] != `["style-guide"]` {
+		t.Fatalf("agents[0] skills/resources 读回异常: %v", first)
+	}
 	second, _ := agents[1].(map[string]any)
 	if second["ref"] != ref || second["name"] != "UX 设计师" {
 		t.Fatalf("agents[1] 应为引用（ref=%q）: %v", ref, second)
+	}
+	// 子 agent（引用形态）：skills/tools/resources 来自被引文件契约
+	if second["skills"] != `["ux-review"]` || second["tools"] != `["figma"]` || second["resources"] != `["brand-guide"]` {
+		t.Fatalf("agents[1] 引用契约 refs 读回异常: %v", second)
 	}
 }
 
@@ -255,7 +279,7 @@ func TestReadScenarioDirDropsDanglingRefs(t *testing.T) {
 		[]byte(`{"name":"d","agents":["${exeDir}/capability/agents/ghost.agent.md"]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dirPath, scenarioMainFile), []byte("# 主\n\n[meta]\nismain=true\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dirPath, scenarioMainFile), []byte("# 基本信息\n```yaml\nname: main\ntitle: 主\nismain: \"true\"\n```\n\n# 正文\n主提示\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := ReadScenarioDir(KindApp, scnRoot, "dangling", roots)

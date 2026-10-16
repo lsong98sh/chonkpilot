@@ -60,6 +60,10 @@ func (s *Server) turnBySessionLocked(instanceID, session string) *turnCtx {
 // takeAskLocked 取走并注销 ask 等待登记（**须持 s.mu**；返回 (等待项, 是否命中)）。
 // instance 非空 → 只在该 instance 的桶内命中；空 → 先按原键，再全桶回退（ask id 全局唯一，
 // 兼容未带 instance_id 的旧调用方）。
+//
+// **定向投递兜底**（SUBCHAT-3 阶段 F-2）：`ask_user` 卡片按会话所在窗口投递 → 应答来自**投递目标
+// 窗口**（其实例 ≠ 登记实例）→ 按 askID 命中「`deliverInstance` == 该实例」的登记（ask id 全局唯一；
+// 仅在按 instKey 未命中时兜底，不放松既有按 instance 精确命中语义）。
 func (s *Server) takeAskLocked(instanceID, askID string) (*askWaiter, bool) {
 	if askID == "" {
 		return nil, false
@@ -70,6 +74,12 @@ func (s *Server) takeAskLocked(instanceID, askID string) (*askWaiter, bool) {
 		return w, true
 	}
 	if instanceID != "" {
+		for k, w := range s.asks {
+			if w.askID == askID && w.deliverInstance == instanceID {
+				delete(s.asks, k)
+				return w, true
+			}
+		}
 		return nil, false
 	}
 	for k, w := range s.asks {
@@ -111,12 +121,13 @@ func (s *Server) clearAsksByTurnLocked(instanceID, turnID string) {
 
 // clearAsksByInstanceLocked 摘除某实例的**全部** ask 等待登记（实例退出；**须持 s.mu**）。
 // 退出清理时该实例的轮次可能已被移出 s.turns，故按 instance 归属整体清（不依赖 turn 存活）。
+// 含**定向投递目标为该实例**的登记（SUBCHAT-3 阶段 F-2：群聊窗口关闭 → 其名下卡片一并失效）。
 func (s *Server) clearAsksByInstanceLocked(instanceID string) {
 	if instanceID == "" {
 		return
 	}
 	for k, w := range s.asks {
-		if w.instanceID == instanceID {
+		if w.instanceID == instanceID || w.deliverInstance == instanceID {
 			delete(s.asks, k)
 		}
 	}

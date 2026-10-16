@@ -42,6 +42,10 @@ chat 面：prompt                                     ← 用户在输入框选�
 | 目录 | 四级数据根（app/user/project/prjusr）与 `{{path.*}}` 占位符含义 + 每级 `capability/` 子目录用途 + DSL 只读 env（`CHONKPILOT_WORKDIR/DATADIR/TEMPDIR/EXEDIR/PROJECT`）用法 | 出厂文件 `capability/system/system-directory.md`（**纯文本、无分区**；embed 内置回落，同 OP-02） |
 | 场景 | `scenario.description`（"我们是一个团队…"）+ **代码按场景 agents 自动拼接的成员段**（名字 + roleTag + 描述） | **组合生成**（非人写死） |
 | agent | 当前 agent 的 prompt | `*.agent.md`（主 agent = `main.agent.md`） |
+| **会话注入**（第五层 🆕） | **子聊天专属指令**：单聊（`sub_chat`）= 收口协议骨架（完成时调用 `subchat_finish` 自报）；**群聊**（`group_chat` 本体 / `work_session` 参与者）= **群聊注入层**（参与者名单 + 角色 + 本次目标 + 剧本 + 收敛/退出条件 + 推进规则 + 收口协议，**每轮注入给全体**） | **代码内建常量**（`turn.go subChatLayerText` / `groupChatProtocolText` / `groupChatReplyRules`；不落库、不 embed、不可配置） |
+
+- **会话注入层（第五层，SUBCHAT-2 阶段 A / SUBCHAT-3 阶段 F，2026-10-16）**：注入条件 = **会话行 `kind`**（**确定的事实**——不依赖模型发挥 / 场景配置 / 工具入参；`sessions.kind` 见 [22 §5](../20-modules/22-data-persist.md)）；文本**必须代码内建**（改文案走代码评审）；`subchat_open` **无 `inject` 入参**。分流见 [21-llm-server §4.5](../20-modules/21-llm-server.md)：`sub_chat` → 收口协议骨架（**统一一套、不按 `purpose` / `agent` 分化**）；`group_chat` / `work_session` → **群聊注入层**（`work_session` 取**其父群聊会话**的注入内容），**名单 + 角色 + 目标 + 剧本 + 收敛条件**每轮注入给全体参与者（阶段 F 已落）。
+- **参数优先级（会话固定参数 > 请求参数）**：`resolveTurnScenario(instanceID, sessionID, scenarioID, agent)` **优先取会话行落库的固定参数**（`agent` / `scenario_id`，仅子聊天有），其次才取请求参数 → **新轮与恢复轮同口径**（恢复轮请求里无 scenario/agent 入参，仍从会话行取回，重启后人格不丢）。判定点只有唯一的提示词组装处 → 第五层天然覆盖两条路径。
 
 - **目录层不受场景门控**（OP-10）：**有场景 / 通用模式两条路径都注入**；内容每轮组装时读取（不入快照），文中 `{{path.*}}` 与其余 prompt 文本同口径，由 `replacePaths` 在**整段拼接后**替换为当前实例的真实绝对路径（见 [21 §4.7](../20-modules/21-llm-server.md)）。
 - **无场景时（=「通用模式」）**：**只注入全局层 + 目录层**，无场景层 / agent 层。**UI 文案 = 「通用场景」**（chat 场景下拉**固定首项**）：选中即关闭场景；可点 ★ 设为默认（`defaultScenario` 保留值 `__general__`，重开/重启后仍为通用）。

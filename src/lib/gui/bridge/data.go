@@ -430,6 +430,38 @@ func asAnySlice(v any) []any {
 	return nil
 }
 
+// SessionKind 读某会话的 `kind`（`sessions.kind`；群聊 = `group_chat`）。
+//
+// 用途 = **群聊窗口单独额度**判定（群聊方案 §9 D28/D30 · 阶段 G G3）：宿主在 `open-chat` 建窗前
+// 需知道目标会话是不是群聊，而 `gui.window.list` / `open-chat` 的**载荷不变**（零新增字段）→
+// 不能由前端传，只能宿主自取。取数经既有**只读**消息 `data-session-get`（门面直调 / 总线二选一，
+// 见 dataCall）。
+// **取不到**（未注入门面且总线不可用 / 会话不存在 / 超时 / --no-server）→ 空串 →
+// 调用方按**普通会话**处理 → 普通对话窗口的既有额度与行为逐字不变。
+func (b *Bridge) SessionKind(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	payload, err := json.Marshal(map[string]any{"id": sessionID})
+	if err != nil {
+		return ""
+	}
+	res, errs := b.dataCall(msgkeys.TopicDataSessionGet, payload)
+	if len(errs) > 0 {
+		return ""
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		return ""
+	}
+	// 应答形态 = `{data: 会话行|null}`（wire.SessionGetResult；门面与总线两条路径逐字一致）。
+	data, ok := m["data"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return sval(data["kind"])
+}
+
 // sval 把 Record/载荷值转字符串（string 原样；数字/bool 等 fmt 兜底；nil → ""）。
 func sval(v any) string {
 	if v == nil {

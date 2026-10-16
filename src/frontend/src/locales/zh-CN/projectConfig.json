@@ -209,5 +209,10 @@
   "filetree": "文件树",
   "filetree_hide_dirs_label": "不显示的目录",
   "filetree_hide_dirs_placeholder": ".git, .svn, .chonkpilot, target, node_modules（逗号或换行分隔）",
-  "filetree_hide_dirs_hint": "按目录名匹配（任意层级，逗号 / 分号 / 换行分隔）：命中的目录在文件树中不显示，也不再被监听（显示与监听同源）。以「.」开头的目录恒隐藏（不可配置放开）。留空 = 回落默认清单（.git, .svn, .chonkpilot）。保存后即时生效。"
+  "filetree_hide_dirs_hint": "按目录名匹配（任意层级，逗号 / 分号 / 换行分隔）：命中的目录在文件树中不显示，也不再被监听（显示与监听同源）。以「.」开头的目录恒隐藏（不可配置放开）。留空 = 回落默认清单（.git, .svn, .chonkpilot）。保存后即时生效。",
+  "groupchat": "群聊",
+  "groupchat_max_rounds_label": "群聊最大轮次（项目级）",
+  "groupchat_max_rounds_default": "{n}（默认）",
+  "groupchat_max_rounds_hint": "群聊「依次叫号」的大轮次硬上限（默认 20，可选 20–40）：到顶强制停 + 主 agent 终审，用户可点「继续」在原线程上续跑。本页只写配置，群聊窗口（头像状态 / 结论流）见群聊会话。保存后即时生效（无需重启）。",
+  "groupchat_saved": "群聊最大轮次已保存并即时生效（无需重启）"
 }

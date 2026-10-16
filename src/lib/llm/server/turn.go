@@ -127,6 +127,11 @@ type turnCtx struct {
 	once       sync.Once
 	hist       []ChatMsg // 会话历史（llm-start 组装：摘要 + 未压缩 turn，见 BuildHistory）
 	iterations int       // 工具循环计数（maxToolIterations 保护）
+	// kick 是「以**库内既有上下文**触发一次 LLM 循环」的内部触发（缓冲 1；子聊天首轮专用，
+	// SUBCHAT-2 阶段 B-2）：交接内容已由 subchat_open handler 同步落库 → 本触发只让 loop 跑一次
+	// chatOnce()（无新输入、不重复落库 → msgs() 从库带回交接消息）。loop 唯一消费点，保证
+	// chatOnce 恒在 loop goroutine 内执行（与异步回执 / 工具结果续轮同一串行口径）。
+	kick chan struct{}
 
 	mu      sync.Mutex             // 保护 pending / inflight / stash / toolMsgKeys
 	pending map[string]pendingTool // task_id → 转异步发起信息（挂起登记）
@@ -187,6 +192,11 @@ type turnCtx struct {
 	// P4 2026-10-01：解析后按**场景级别的可用工具级别矩阵**过滤（越权/不存在 → 静默剔除，
 	// 见 filterWhitelistByLevel）——故此处非空集合恒为"场景级别可用 ∩ 本实例可见"的子集。
 	allowedTools map[string]struct{}
+	// denyTools 是本轮**硬拒**（调用面收窄）的工具名集（契约名口径）：`work_session`（群聊参与者
+	// 干活子会话）排除 `subchat_finish`（SUBCHAT-3 阶段 F-2 · 群聊 §7 / D12：群聊收敛以主 agent
+	// 「【已收敛】」标记 + 用户拍板为准，子 agent 自报结束无意义）。`llmTools` 下发面与 `toolAllowed`
+	// 调用处**双拦**（挡模型幻觉）。空 = 不拒绝（其余会话零开销、行为逐字节不变）。
+	denyTools map[string]struct{}
 	// keepFullTurns / keepFullTokens / briefBudget 三段边界（项目级 `keep_full_max_turns` /
 	// `keep_full_max_tokens` / `compress_token_threshold`，启动时加载一次）：完整区 = 最近 N 轮 / M token；
 	// 简化区 = 再往前 brief token 累计 <= T（仅 text 投影）；算法与压缩侧共用（data.LocateZones）。
@@ -199,12 +209,15 @@ type turnCtx struct {
 	// forceFull 重试/恢复标记：本 turn 必须全量拼接（即使落在"非完整区"）。
 	// 仅在 recoverTurnCtx（进程重启/死 turn 恢复）构造时置位（loop 启动前，无并发写）。
 	forceFull bool
-	// subOnce / subsession：本 turn 是否为**子会话**（DSL-4，42 §2 (253)：session.parent_id != ""）。
-	// 懒判定一次并缓存于本 turnCtx（见 isSubsession）：快路径 = req.Parents 非空（runChildTurn
-	// 逐级落链，恒为子会话，零查询）；慢路径 = 主会话 / 恢复轮（req.Parents 空）→ 查一次会话行。
-	// **不落可变全局字段**，每 turn 只判一次。用途 = 「子会话压缩关闭」时的上下文超限提示（见 subsessionHint）。
-	subOnce    sync.Once
-	subsession bool
+	// subOnce / subsession / sessionKind：会话行信息（**一次读取**，两级判定共用同一缓存）。
+	//   - subsession = 本 turn 是否为**子会话**（DSL-4，42 §2 (253)：session.parent_id != ""）；
+	//   - sessionKind = 会话行 `kind`（读侧归一：行缺 kind 且 parent_id 非空 ⇒ sub_session）。
+	// 快路径 = req.Parents 非空（runChildTurn 逐级落链，恒为子会话，零查询）；慢路径 = 主会话 /
+	// 恢复轮（req.Parents 空）→ 查一次会话行。**不落可变全局字段**，每 turn 只判一次。
+	// 用途 = 「子会话压缩关闭」的超限提示（subsessionHint）+ **非主会话强制同步**（forceSyncTools）。
+	subOnce     sync.Once
+	subsession  bool
+	sessionKind string
 	// guideOnce / memGuideText / assetGuideText：「记忆 / 资产」两条指引**单轮只读一次**缓存
 	//（msgs() 每次工具迭代都会调用，指引依赖 instance/workDir/配置，单轮内视为不变）——避免
 	// 单轮内重复读配置（最多 20 次迭代 × 2 条指引）。
@@ -220,16 +233,18 @@ type toolCallMeta struct {
 	args map[string]any
 }
 
-// isSubsession 判定本 turn 是否为子会话（42 §2 (253)：会话行 parent_id != ""）。
-//   - 快路径：req.Parents 非空 → 必为子会话（runChildTurn 逐级追加父会话链，零查询）；
-//   - 慢路径：主会话 / 恢复轮（req.Parents 空，如 recoverTurnCtx 重建）→ 经 data 门面读一次
-//     会话行判 parent_id，结果缓存于本 turnCtx（subOnce，每 turn 至多一次）。
+// loadSessionInfo 懒加载本 turn 的会话行信息（**只读一次**，isSubsession / forceSyncTools 共用）：
+//   - 快路径：req.Parents 非空 → 必为子会话（runChildTurn 逐级追加父会话链，零查询）→
+//     按现行路径口径标 `sub_session`（dsl_run 的 LLM 步骤派生，单聊方案 D23）；
+//   - 慢路径：主会话 / 恢复轮（req.Parents 空）→ 经 data 门面读一次会话行，
+//     kind 由数据层读侧归一（行缺 kind 且 parent_id 非空 ⇒ sub_session）。
 //
 // 读失败 / 会话不存在 → 按**主会话**处理（保守：不误跳过压缩/沉淀、不改既有行为）。
-func (tc *turnCtx) isSubsession() bool {
+func (tc *turnCtx) loadSessionInfo() {
 	tc.subOnce.Do(func() {
 		if len(tc.req.Parents) > 0 {
 			tc.subsession = true
+			tc.sessionKind = facade.SessionKindSubSession
 			return
 		}
 		if tc.server == nil || tc.server.cfg == nil || tc.req.Session == "" {
@@ -243,8 +258,40 @@ func (tc *turnCtx) isSubsession() bool {
 			return
 		}
 		tc.subsession = resp.Found && resp.Session.ParentID != ""
+		tc.sessionKind = resp.Session.Kind
 	})
+}
+
+// isSubsession 判定本 turn 是否为子会话（会话行 parent_id != ""；见 loadSessionInfo）。
+func (tc *turnCtx) isSubsession() bool {
+	tc.loadSessionInfo()
 	return tc.subsession
+}
+
+// forceSyncTools 判定本 turn 的工具调用是否**强制同步**（不得转后台；SUBCHAT-2 阶段 A · 单聊
+// §12.5 B5 / 群聊 §16 · D40）：**非主会话（kind 非空）一律 `AsyncMode = never`**。
+//
+// 理由：单聊/群聊的**收口点亮**与"本轮屏障"全靠"轮次跑完"，工具一旦转后台、轮次提前结束 →
+// 判定全乱。适用范围 = 该会话里的**每一次**工具调用（不区分工具自身 async 档）。主会话
+// （kind 为空）返回 false → 行为逐字节不变。
+func (tc *turnCtx) forceSyncTools() bool {
+	tc.loadSessionInfo()
+	return tc.sessionKind != ""
+}
+
+// gatewayArgs 返回本次工具调用**下发给 gateway 的参数**：非主会话强制同步时附**调用级 async
+// 覆盖**（`async=never`）——gateway `doCall` 读取后即剥离、不传下游，故不改 `mcp-tools-call`
+// 载荷形状与工具入参（主会话原样返回，零开销）。**落库 / 前端展示仍用原始 args**（调用方传原参）。
+func (tc *turnCtx) gatewayArgs(args map[string]any) map[string]any {
+	if !tc.forceSyncTools() {
+		return args
+	}
+	out := make(map[string]any, len(args)+1)
+	for k, v := range args {
+		out[k] = v
+	}
+	out["async"] = "never"
+	return out
 }
 
 // subsessionHint 为「子会话压缩关闭」时的上下文超限失败补一句可诊断说明（42 §2 (253) DSL-4 ⑤）：
@@ -283,11 +330,18 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	// 若仍走快照分支会与下方 msgs() 的 LoadMessages(本 turn) 重复——改用全量历史分支并
 	// 排除本 turn，本 turn 既有消息由 msgs() 从库带回，保证该 turn 恒为末段（全量拼接）。
 	hist, turnTokens := newSessionStore(s.bus, req.InstanceID).BuildContextTokens(req.Session, req.Turn, !req.Continue)
-	// 场景 + agent 解析 + 系统提示词三层（**新建轮与恢复轮共用同一构造**，见 resolveTurnScenario）。
-	sc := s.resolveTurnScenario(req.InstanceID, req.ScenarioID, req.Agent)
+	// 场景 + agent 解析 + 系统提示词五层（**新建轮与恢复轮共用同一构造**，见 resolveTurnScenario）。
+	// 会话固定参数（子聊天的 agent / scenario_id，落库在会话行）优先于请求参数。
+	sc := s.resolveTurnScenario(req.InstanceID, req.Session, req.ScenarioID, req.Agent)
 	if sc.sysPrompt != "" {
 		hist = append([]ChatMsg{{Role: "system", Content: sc.sysPrompt}}, hist...)
 	}
+	// 单聊生命周期回写（§3.7 / §3.5）：**子会话新一轮开始处**，若该子聊天 `lifecycle == ready`
+	// → 置回 `chatting`（`ready` 只是"最近一轮的建议"、非终态；用户继续聊 → 新一轮即回 chatting）。
+	// 落点 = 轮次启动路径（本构造被 onLLMStart / startSubChatFirstTurn 共用）；判定用 sc 的
+	// 会话行取值（同一次读取），主会话 / 子会话（sub_session）零开销。恢复轮（recoverTurnCtx）
+	// 不走此处——它是**既有轮次**的恢复，不是新一轮。
+	s.reopenSubChatOnNewTurn(req.InstanceID, req.Session, sc)
 	// agent 级 LLM 引用（AG-C1 逐级回落）：agent.llmRef →（空）子系统键 →（空）现有通道
 	// （req.LLMModel）→（空）defaultLLM →（空）系统默认。每轮开始解析 = 热生效（AG-C5）。
 	agentLLMRef := ""
@@ -302,6 +356,14 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		}
 	}
 	llmName := s.resolveAgentLLMName(req.InstanceID, agentLLMRef, "", req.LLMModel)
+	// 工具面**硬拒**集（SUBCHAT-3 阶段 F-2）：`work_session`（群聊参与者干活子会话）排除
+	// `subchat_finish` —— 群聊收敛以主 agent「【已收敛】」标记 + 用户拍板为准（§7 / D10 / D12）；
+	// **单聊（sub_chat）不受影响**（其收口仍靠 subchat_finish）。其余会话（kind 空 / 主会话 /
+	// sub_session）→ 空集，零开销、行为逐字节不变。
+	var denyTools map[string]struct{}
+	if sc.kind == facade.SessionKindWorkSession {
+		denyTools = map[string]struct{}{subchatFinishTool: {}}
+	}
 	// usr 配置一次读取共用（B-37）：provider 解析 + 运行时超时/重试解析共用同一次 UserConfigGet，
 	// 取代原 loadLLMProvider + loadLLMRuntimeConfig 各读一次（同源重复往返）。解析语义不变。
 	usrCfg, cfgErr := s.loadUserConfig(req.InstanceID)
@@ -336,6 +398,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		in:        make(chan ChatMsg, 64),
 		done:      make(chan struct{}),
 		hist:      hist,
+		kick:      make(chan struct{}, 1),
 		pending:   make(map[string]pendingTool),
 		asyncDone: make(chan asyncDoneMsg, 8),
 
@@ -352,6 +415,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		pendingTaskTimeout: pendingTaskTimeoutOf(zoneVals),
 		maxToolIterations:  llmMaxIter,
 		allowedTools:       allowedTools,
+		denyTools:          denyTools,
 		keepFullTurns:      keepFullTurnsOf(zoneVals),
 		keepFullTokens:     keepFullTokensOf(zoneVals),
 		briefBudget:        briefBudgetOf(zoneVals),
@@ -370,13 +434,33 @@ type turnScenario struct {
 	level string
 	// agentDef 是本轮生效 agent 定义（nil = 无场景 / 无 agent）。
 	agentDef *scenarioAgent
+	// kind / lifecycle 是**会话行**的 kind 与 lifecycle（随固定参数同一次读取带回；单聊方案 §3.7）。
+	// 用途 = 子聊天生命周期回写（`ready → chatting`，见 newTurnCtx / reopenSubChatOnNewTurn）——
+	// 复用同一次会话行读取，不额外查询。
+	kind      string
+	lifecycle string
 }
 
 // resolveTurnScenario 读场景（AG-1 / AG-2 · 25 §3，每轮读一次 = 配置热生效，AG-C5，不缓存）→
-// 解析本轮生效 agent 定义 → 拼系统提示词（全局 + 目录 + 场景 + agent 四层，按序拼接、空层跳过、
-// 占位符整段替换）。**新建轮（newTurnCtx）与恢复轮（recoverTurnCtx）同口径**：恢复轮无
-// scenarioID / agent（未持久化）→ desc/agents 为空 → 仅注入全局层 + 目录层（同「通用模式」）。
-func (s *Server) resolveTurnScenario(instanceID, scenarioID, agent string) turnScenario {
+// 解析本轮生效 agent 定义 → 拼系统提示词（全局 + 目录 + 场景 + agent + **会话注入**五层，按序
+// 拼接、空层跳过、占位符整段替换）。
+//
+// 参数优先级（单聊方案 §3.3 / §4：**会话固定参数 > 请求参数**，SUBCHAT-2 阶段 A）：优先取
+// **会话行落库的固定参数**（`agent` / `scenario_id`，仅子聊天有），其次才取请求参数。
+//
+// **新建轮（newTurnCtx）与恢复轮（recoverTurnCtx）同口径**：二者共用本构造 —— 恢复轮虽无
+// scenarioID / agent 入参（未持久化在请求里），仍按上方优先级**从会话行取回**固定参数，
+// 故重启后人格不丢（不再退化为"仅全局层 + 目录层"）。**第五层天然覆盖两条路径**：判定点只有
+// 这一处组装点。
+func (s *Server) resolveTurnScenario(instanceID, sessionID, scenarioID, agent string) turnScenario {
+	// 会话固定参数（会话行 kind / scenario_id / agent / lifecycle + 群聊 目标/剧本/收敛；见 sessionRow）。
+	sess := s.sessionRow(instanceID, sessionID)
+	if sess.ScenarioID != "" {
+		scenarioID = sess.ScenarioID
+	}
+	if sess.Agent != "" {
+		agent = sess.Agent
+	}
 	desc, level, agents := s.loadScenario(instanceID, scenarioID)
 	// 本轮生效的 agent 定义：子轮次（agent 非空）= 被委派 agent —— 按**统一判据**
 	// （resolveAgentDef：instance 级场景内同名 agent 优先，未命中回落 global 级 = app 级场景内的
@@ -407,14 +491,18 @@ func (s *Server) resolveTurnScenario(instanceID, scenarioID, agent string) turnS
 		agentName = n
 	}
 	// 系统提示词**按序拼接**（25 §3）：全局层（身份 / 运行环境，代码写死）→ 目录层（四级数据根 +
-	// capability 子目录 + DSL env 用法）→ 场景层（scenario.description + 成员段）→ agent 层。
+	// capability 子目录 + DSL env 用法）→ 场景层（scenario.description + 成员段）→ agent 层 →
+	// **会话注入层**（第五层，仅子聊天会话非空；单聊方案 §3.3 / D37，代码内建）。
 	// 空层跳过；`{{toolchain.*}}` / `{{path.*}}` 占位符对**合成后的整段**替换（覆盖任一层）。
-	sysPrompt := systemPromptLayers(s.globalLayerPrompt(agentName), systemDirectoryLayer(), scenarioLayer(scenarioID, desc, agents), agentLayer)
+	sysPrompt := systemPromptLayers(s.globalLayerPrompt(agentName), systemDirectoryLayer(), scenarioLayer(scenarioID, desc, agents), agentLayer, s.chatInjectionLayer(instanceID, sess))
 	if sysPrompt != "" {
 		sysPrompt = s.replaceToolchain(instanceID, sysPrompt)
 		sysPrompt = s.replacePaths(instanceID, sysPrompt)
 	}
-	return turnScenario{sysPrompt: sysPrompt, level: level, agentDef: agentDef}
+	return turnScenario{
+		sysPrompt: sysPrompt, level: level, agentDef: agentDef,
+		kind: sess.Kind, lifecycle: sess.Lifecycle,
+	}
 }
 
 // ── 系统提示词分层（25 §3）──────────────────────────────────────────────
@@ -535,16 +623,161 @@ func membersSegment(scenarioID string, agents []scenarioAgent) string {
 	return strings.Join(lines, "\n")
 }
 
-// systemPromptLayers 按 全局层 → 目录层 → 场景层 → agent 层 顺序拼接为一条 system 文本（空层跳过；
-// 非空层之间以空行分隔）。全空 → ""（调用方不注入 system）。
-func systemPromptLayers(global, directory, scenario, agent string) string {
-	parts := make([]string, 0, 4)
-	for _, p := range []string{global, directory, scenario, agent} {
+// systemPromptLayers 按 全局层 → 目录层 → 场景层 → agent 层 → 会话注入层 顺序拼接为一条 system
+// 文本（空层跳过；非空层之间以空行分隔）。全空 → ""（调用方不注入 system）。
+func systemPromptLayers(layers ...string) string {
+	parts := make([]string, 0, len(layers))
+	for _, p := range layers {
 		if p = strings.TrimSpace(p); p != "" {
 			parts = append(parts, p)
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// ── 会话注入层（第五层，单聊方案 §3.3 / D37；SUBCHAT-2 阶段 A）──────────
+//
+// 承载「子聊天」专属指令（本阶段 = 收口协议骨架：完成时调用 subchat_finish 自报）。约定：
+//   - **判定依据 = 会话行 `kind`**（确定的事实，不依赖模型发挥 / 场景配置 / 工具入参）；
+//   - **文本必须代码内建**（放到外部即可改、被改错就失去意义 → 改文案走代码评审）；
+//   - **所有子聊天（sub_chat / group_chat）统一一套**，不按 purpose / agent 分化；
+//   - 群聊在此基础上另加"参与者名单 + 角色"（见群聊方案 §8 · D43，后续阶段）。
+
+// subChatLayerText 是会话注入层正文（代码内建常量；工具入参细节留待工具契约落地时与
+// `src/initdata/capability/tools/**` 对齐，此处只写协议骨架）。
+const subChatLayerText = `[子聊天协议]
+你当前在一个独立的「子聊天」会话中，与用户进行一段有明确目标的讨论。
+当本次讨论的目标已经达成、你认为可以收尾时，调用 subchat_finish 工具自报完成（这只是"你建议结束"，是否结束由用户决定）。
+你不必等待用户催促：达成目标即可自报；用户也可随时结束本次子聊天。`
+
+// subChatInjectionLayer 按会话 `kind` 返回会话注入层文本（非子聊天 → "" = 不注入该层）。
+func subChatInjectionLayer(kind string) string {
+	if !isSubChatKind(kind) {
+		return ""
+	}
+	return subChatLayerText
+}
+
+// chatInjectionLayer 返回会话注入层（第五层）文本（非子聊天体系 → "" = 不注入该层）：
+//   - `sub_chat`（单聊）→ 收口协议骨架（既有行为逐字节不变）；
+//   - `group_chat`（群聊本体）/ `work_session`（参与者的干活子会话）→ **群聊注入层**（群聊方案
+//     §18.2 / D43 / D51 / D52）：参与者名单 + 各自角色 + 本次目标 + 剧本 + 收敛/退出条件
+//     （`work_session` 取其**父群聊会话**的注入内容）+ 推进规则 + 收口协议；**每轮注入给全体**。
+//
+// 文本**代码内建**（沿用单聊第五层"必须代码内建"的口径）：放到外部即可被改、被改错就失去意义。
+func (s *Server) chatInjectionLayer(instanceID string, sess facade.Session) string {
+	switch sess.Kind {
+	case facade.SessionKindSubChat:
+		return subChatLayerText
+	case facade.SessionKindGroupChat:
+		return s.groupChatInjectionLayer(instanceID, sess)
+	case facade.SessionKindWorkSession:
+		// 干活子会话：注入内容取自**父群聊会话**（名单 + 目标 + 剧本 + 收敛条件）。
+		return s.groupChatInjectionLayer(instanceID, s.sessionRow(instanceID, sess.ParentID))
+	default:
+		return ""
+	}
+}
+
+// groupChatInjectionLayer 构造**群聊注入层**文本（`group` = 群聊会话行）。
+// `group.Kind != group_chat`（父会话取不到 / 类型不符）→ ""（不注入，保守）。
+func (s *Server) groupChatInjectionLayer(instanceID string, group facade.Session) string {
+	if group.Kind != facade.SessionKindGroupChat {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(groupChatProtocolText)
+	if roster := s.groupRosterSegment(instanceID, group.ID); roster != "" {
+		b.WriteString("\n【参与者与职责】\n" + roster)
+	}
+	if g := strings.TrimSpace(group.Goal); g != "" {
+		b.WriteString("\n【本次目标】\n" + g)
+	}
+	if p := strings.TrimSpace(group.Playbook); p != "" {
+		b.WriteString("\n【剧本 / 推进规则】\n" + p)
+	}
+	if c := strings.TrimSpace(group.Convergence); c != "" {
+		b.WriteString("\n【收敛 / 退出条件】\n" + c)
+	}
+	mainAgent := strings.TrimSpace(group.Agent)
+	b.WriteString("\n" + groupChatReplyRules(mainAgent))
+	// 收口协议（与单聊共用一套的既有文本；群聊里主 agent 的收敛由「已收敛」标记承担）。
+	b.WriteString("\n\n" + subChatLayerText)
+	return b.String()
+}
+
+// groupRosterSegment 生成群聊参与者名单段（每行 `- <agent>：<role>`；顺序 = 名单固定顺序 D3）。
+// 读不到 → ""（`groupChatInjectionLayer` 跳过该段）。
+func (s *Server) groupRosterSegment(instanceID, groupID string) string {
+	if s == nil || s.cfg == nil || groupID == "" {
+		return ""
+	}
+	res, err := s.cfg.GroupParticipantsLoad(facade.GroupParticipantsLoadRequest{
+		InstanceID: instanceID, SessionID: groupID, Scope: s.cfgScope(instanceID),
+	})
+	if err != nil {
+		logf("[chonkpilot-server] groupRosterSegment(%s): %v\n", groupID, err)
+		return ""
+	}
+	lines := make([]string, 0, len(res.List))
+	for _, p := range res.List {
+		line := "- " + p.Agent
+		if r := strings.TrimSpace(p.Role); r != "" {
+			line += "：" + r
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// groupChatProtocolText 是群聊注入层的协议头（代码内建）。
+const groupChatProtocolText = `[群聊协议]
+你正在参与一个多智能体「群聊」（展示板：只有结论会上屏；你的完整思考与工具过程留在你自己的会话里）。`
+
+// groupChatReplyRules 生成群聊「本轮该怎么回应」的推进规则说明（代码内建；`mainAgent` 空 = 不点主 agent 名）。
+// 机读约定（**可机读**，供调度器判定）：
+//   - **无关**：回复的**首个非空行**恰为「无关」→ 判「无关」（不上屏、不进入下一轮）；
+//   - **收敛**：主 agent 回复中**单独一行**为「【已收敛】」→ 判目标达成（点亮「可以结束了」）。
+func groupChatReplyRules(mainAgent string) string {
+	var b strings.Builder
+	b.WriteString(`【本轮该怎么回应】
+- 你被叫到时，先判断本轮群聊发言是否与你**相关**：
+    · **无关** → 只回复「无关」（首个非空行恰为这两个字）——不会上屏，也不会进入下一轮；
+    · **相关** → 直接给出你的**结论**（有文件产物请在结论文本里带上文件路径）。
+- 用你回复的**最后一行**写 @ 名单，决定下一个叫谁：@某人（可多个，如 @A @B）/ @全体 / 不写 @ = 全体。
+- 收敛要有耐心：判定收敛前先看「有没有实质推进」，不得草率收敛。`)
+	if a := strings.TrimSpace(mainAgent); a != "" {
+		b.WriteString("\n- 主 agent（" + a + "）负责兜底与判定收敛：判目标达成时，在你回复里**单独一行**写「【已收敛】」。")
+	}
+	return b.String()
+}
+
+// isSubChatKind 判定会话类型是否属「子聊天」体系（`sub_chat` / `group_chat`）——与数据层
+// `session.isSubChatKind` 同一口径（此处不依赖数据层内部包，故按 facade 常量比对）。
+func isSubChatKind(kind string) bool {
+	return kind == facade.SessionKindSubChat || kind == facade.SessionKindGroupChat
+}
+
+// sessionRow 读会话行（单聊方案 §3.2 / §3.3 / §3.7）：返回 kind / lifecycle / scenario_id / agent
+// 以及群聊的 goal / playbook / convergence（SUBCHAT-3 阶段 F）。lifecycle 供子聊天生命周期回写
+// （ready→chatting）复用同一次读取。
+// 读失败 / 会话不存在 / 无数据门面 → 空 Session（按"普通会话"处理，保守不改既有行为）。
+// kind 已经由数据层读侧归一（行缺 kind 且 parent_id 非空 ⇒ sub_session，见 wire.SessionFromWire）。
+func (s *Server) sessionRow(instanceID, sessionID string) facade.Session {
+	if s == nil || s.cfg == nil || sessionID == "" {
+		return facade.Session{}
+	}
+	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{
+		InstanceID: instanceID, SessionID: sessionID, Scope: s.cfgScope(instanceID),
+	})
+	if err != nil {
+		logf("[chonkpilot-server] sessionRow(%s): %v\n", sessionID, err)
+		return facade.Session{}
+	}
+	if !resp.Found {
+		return facade.Session{}
+	}
+	return resp.Session
 }
 
 // resolveThinkEffort 解析本轮的思考参数（→ ChatOptions.Think/Effort → reasoning_effort）。
@@ -642,6 +875,20 @@ func (tc *turnCtx) FeedToolResultStatus(toolCallID, content, status string) {
 	tc.feed(ChatMsg{Role: "tool", ToolCallID: toolCallID, Content: content})
 }
 
+// Kick 请求 loop 以**库内既有上下文**跑一次 LLM 循环（无新输入、不重复落库）——子聊天首轮
+// 专用（SUBCHAT-2 阶段 B-2）：交接内容已由 subchat_open handler 同步落库，msgs() 从库带回。
+// 非阻塞（缓冲 1，重复请求合并为一次）；loop 已关（done）→ 丢弃。直接构造的 turnCtx（测试）
+// 无 kick 通道 → no-op。
+func (tc *turnCtx) Kick() {
+	if tc.kick == nil {
+		return
+	}
+	select {
+	case tc.kick <- struct{}{}:
+	default:
+	}
+}
+
 // feedTimeout 是输入队列投递的最长等待（队列满时兜底，B-07）：feed 由工具/异步回执等**非 loop
 // 协程**调用，队列满时无限阻塞会挂住调用方 goroutine；超时则丢弃并记录（不静默吞）。
 const feedTimeout = 5 * time.Second
@@ -721,6 +968,9 @@ func (tc *turnCtx) loop() {
 			tc.onAsyncDone(m)
 		case <-sweep.C:
 			tc.reapStalePending()
+		case <-tc.kick:
+			// 以库内既有上下文跑一次 LLM 循环（子聊天首轮；无新输入、不重复落库，见 Kick）。
+			tc.chatOnce()
 		case msg := <-tc.in:
 			tc.deliverInput(msg)
 		}
@@ -910,21 +1160,51 @@ func (tc *turnCtx) onAsyncDone(m asyncDoneMsg) {
 // 名字口径 = LLM 工具面的**暴露名**（与 `toolAllowed` 同一名字空间）。
 func (tc *turnCtx) llmTools() []ToolDef {
 	if tc.allowedTools == nil {
-		return tc.server.toolsForLLM(tc.req.InstanceID)
+		return tc.filterDeniedTools(tc.server.toolsForLLM(tc.req.InstanceID))
 	}
 	out := make([]ToolDef, 0, len(tc.allowedTools))
 	for _, t := range tc.server.visibleTools(tc.req.InstanceID) {
-		if _, ok := tc.allowedTools[t.Name]; ok {
+		if _, ok := tc.allowedTools[t.Name]; ok && !tc.toolDenied(t.Name) {
 			out = append(out, t)
 		}
 	}
 	return out
 }
 
+// filterDeniedTools 从下发面剔除本轮**硬拒**工具（denyTools 空 → 原样返回，零拷贝）。
+func (tc *turnCtx) filterDeniedTools(in []ToolDef) []ToolDef {
+	if len(tc.denyTools) == 0 {
+		return in
+	}
+	out := make([]ToolDef, 0, len(in))
+	for _, t := range in {
+		if !tc.toolDenied(t.Name) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// toolDenied 判定该工具名是否被本轮**硬拒**（调用面收窄，见 turnCtx.denyTools）。名字口径 = LLM
+// 工具面**暴露名**（`self_*` 前缀）或契约名（剥前缀）皆可命中；空集 → 恒 false。
+func (tc *turnCtx) toolDenied(name string) bool {
+	if len(tc.denyTools) == 0 {
+		return false
+	}
+	if _, ok := tc.denyTools[name]; ok {
+		return true
+	}
+	_, ok := tc.denyTools[strings.TrimPrefix(name, "self_")]
+	return ok
+}
+
 // toolAllowed 判定本轮是否允许调用该工具（AG-C4 白名单语义；**调用处硬拒** G-45 ③）：
 // allowedTools 为空（agent 未配 tools / 配 `[]` / 解析不到名字）= **不限制**（全量放行）；
 // 非空 = 仅白名单内。名字口径 = LLM 工具面的**暴露名**（与 llmTools 过滤同一名字空间）。
 func (tc *turnCtx) toolAllowed(name string) bool {
+	if tc.toolDenied(name) {
+		return false // 硬拒（work_session 排除 subchat_finish 等）先于白名单判定
+	}
 	if tc.allowedTools == nil {
 		return true
 	}
@@ -1210,7 +1490,8 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 				ToolCallID: call.ID,
 				TopSession: topSession,
 			}
-			res, _, err := tc.server.gc.Call(tc.ctx, name, args, ctxMsg)
+			// A5：非主会话强制同步（gatewayArgs 附调用级 async=never；主会话原样）。
+			res, _, err := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(args), ctxMsg)
 			if err != nil {
 				errText := "错误: " + err.Error()
 				tc.persistToolResult(call.ID, errText, "failed", nil)
@@ -1288,7 +1569,8 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 		//     加硬上限会**误杀**长时工具（破坏功能），故不加；
 		//   - 收敛途径：用户停止（llm-cancel → tc.cancel）或实例退出（exitInstance → tc.Close →
 		//     cancel）会取消 tc.ctx，Call 随 ctx 取消返回；上游 gateway 自身的执行超时策略另行兜底。
-		res, taskID, err := tc.server.gc.Call(tc.ctx, name, args, ctxMsg)
+		// A5：非主会话强制同步（gatewayArgs 附调用级 async=never → 工具不得转后台；主会话原样）。
+		res, taskID, err := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(args), ctxMsg)
 		if err != nil {
 			errText := "错误: " + err.Error()
 			tc.persistToolResult(call.ID, errText, "failed", nil)

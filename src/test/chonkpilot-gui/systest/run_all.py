@@ -133,7 +133,7 @@ SEM_SCRIPTS = [
     "run_sem_task_tree.py",       # 任务树/委派结果回读：树结构 → 委派子任务 → 结果回写父节点（§4.4）
     "run_sem_kb_skill_loop.py",   # 知识库原语 skill/prompt 读写回环：写→落盘→读回 + 能力面移除（§3.3）
     "run_sem_search_upload.py",   # 搜索/上传结果语义：上传落盘 + filelist 入索引 + 搜索命中（§2/§3.3）
-    "run_sem_window_layout_loop.py",  # 窗口与布局持久化回环：尺寸写→落库→重启 DOM 对应 + 显隐切换 + 主题/语言落库广播（31）
+    "run_sem_window_layout_loop.py",  # 窗口与布局持久化回环：尺寸写→落库→重启 DOM 对应 + 三区常显（旧显隐键忽略） + 主题/语言落库广播（31）
     "run_sem_session_loop.py",    # 会话生命周期回环：建/重命名广播/活动切换/删除闭合/跨重启（33 对话）
     "run_sem_filetree_tree.py",   # 项目树展示语义 + 预览页签回环：隐藏过滤/排序 + 临时·固定页签（32 文件树）
     "run_sem_task_status_loop.py",  # 任务节点状态语义 + 逻辑删除只读回环：图标文案迁移 + 「已关闭」（34 任务）

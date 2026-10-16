@@ -310,6 +310,8 @@ const mq = {
 // ─── Vue 指令: v-mq ───
 // 用法:
 //   触发模式: v-mq:topic.click="payload"  →  监听 DOM 事件 → mq.emit(topic, payload)
+//             `payload` 为**函数**时在事件时刻求值（`(e, instance)` 的返回值即载荷）——
+//             与机制层内置指令（`layout-free/utils/mq.js`）**同协议**（2026-10-16 对齐）。
 //   订阅模式: v-mq:topic.on="handler"      →  mq.on(topic, handler)（挂载时注册，卸载时取消）
 //   标准修饰符: .stop .prevent .once
 
@@ -362,14 +364,32 @@ const mqPlugin = {
           el.addEventListener(domEvent, (e) => e.stopPropagation())
         }
 
-        const handler = () => {
-          mq.emit(topic, binding.value)
+        // 触发模式：绑定值为**函数**时在「事件时刻」求值取载荷（`(e, instance)`），非函数原样作载荷。
+        // 机制层模板（`src/frontend/src/layout-free/**`）一律写 `v-mq:[t].click="() => payload"`
+        // 形态，其内置指令（`layout-free/utils/mq.js`）会调用该函数；而 `layout-free/engine.js`
+        // 的 `install` 判定「宿主已装 v-mq → 复用同协议指令」——故宿主侧必须**同协议**，否则
+        // 发出的载荷是**函数对象**本身（订阅方读字段全为空 → 「点了没反应」；
+        // 2026-10-16 UILAYOUT-1 P4 修：菜单叶子/主题/语言等条目皆中此招）。
+        //
+        // 载荷从**最新** binding 读取（`el._mqBinding` 由 updated 刷新）：指令的 binding 对象
+        // 每轮更新都会重建，若在 mounted 缓存 value，v-for 复用的节点在条目切换后 payload 会
+        // 指向旧对象（stale payload，写错目标）。
+        el._mqBinding = binding
+        const handler = (e) => {
+          const current = el._mqBinding || binding
+          const raw = current.value
+          const payload = typeof raw === 'function' ? raw(e, current.instance) : raw
+          mq.emit(topic, payload)
           if (mods.includes('once')) {
             el.removeEventListener(domEvent, handler)
           }
         }
         el.addEventListener(domEvent, handler)
         el._mqCleanup = () => el.removeEventListener(domEvent, handler)
+      },
+
+      updated(el, binding) {
+        el._mqBinding = binding
       },
 
       unmounted(el) {

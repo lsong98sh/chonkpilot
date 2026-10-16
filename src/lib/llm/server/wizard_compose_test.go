@@ -22,7 +22,7 @@ func composeCapRoot(t *testing.T, agents map[string]string) string {
 		t.Fatalf("mkdir agents: %v", err)
 	}
 	for name, content := range agents {
-		doc := "# " + name + "\n\n[meta]\nroletag=前端\n\n[description]\n" + name + " 描述\n\n[content]\n" + content + "\n"
+		doc := buildV2AgentDoc(name, name+" 描述", content, "", []string{"roletag=前端"}, nil)
 		if err := os.WriteFile(filepath.Join(dir, name+".agent.md"), []byte(doc), 0o644); err != nil {
 			t.Fatalf("write %s.agent.md: %v", name, err)
 		}

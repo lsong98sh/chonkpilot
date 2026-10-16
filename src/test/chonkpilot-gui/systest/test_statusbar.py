@@ -135,13 +135,15 @@ def main():
         c.check("SB1 statusbar 存在", bool(sb), f"sb={sb}")
 
         # SB2 「打开全部配置」图标已移除（B2，2026-09-24）+ 索引状态区（2026-09-27）
-        # → 状态栏 = 索引状态区 + DevTools 两项，不存在上一批的配置菜单容器（.sb-menu）
+        # 〔2026-10-16 UILAYOUT-1 P4①：状态栏**条目化**〕状态栏 = 自由布局栏三区（`layout.free.statusbar.items`）：
+        #   靠左 = 记忆 token（条形视图，默认未启用记忆库 → 不渲染）/ 队列（空闲不渲染）/ 索引徽标（恒显示 2 枚）；
+        #   靠右 = DevTools（配置按钮）+ 语言切换（条形视图）。无 `.sb-menu` 配置菜单容器。
         secs = J(gui, "document.querySelectorAll('.statusbar .sb-section').length")
         menu = J(gui, "document.querySelectorAll('.statusbar .sb-menu').length")
         mem = J(gui, "document.querySelectorAll('.statusbar .sb-mem').length")
         idx_badges = J(gui, "document.querySelectorAll('.statusbar .sb-index .sb-idx').length")
-        c.check("SB2 配置入口图标已移除（索引状态区 + DevTools 两项 + 无菜单）",
-                int(secs) == 2 and int(menu) == 0 and int(mem) == 0 and int(idx_badges) == 2,
+        c.check("SB2 状态栏条目化：索引状态区两枚徽标 + 无配置菜单 + 记忆入口默认隐藏",
+                int(menu) == 0 and int(mem) == 0 and int(idx_badges) == 2 and int(secs) >= 1,
                 f"sections={secs} menu={menu} mem={mem} idx={idx_badges}")
 
         # SB2b 记忆总 token 数入口（A4 迁移）：启用记忆库后状态栏出现入口，数值为数字，
@@ -264,10 +266,9 @@ def main():
         J(gui, "(()=>{const bs=Array.from(document.querySelectorAll('.lang-switcher .lang-btn'));const b=bs.find(x=>!x.classList.contains('active'));if(b)b.click();return 'ok'})()")
         time.sleep(0.5)
 
-        # SB5 调试入口（B3）：图标存在（title=打开 DevTools）+ gui.devtools.open 通道可用
-        # （用户 F12/右键入口已在宿主层屏蔽 → 该消息面是唯一入口；61 §1 该主题**无返回**：
-        #  信封成功即通道可用，宿主不支持时会返回 errors → req 抛错）
-        dbg = J(gui, "(()=>{const es=Array.from(document.querySelectorAll('.statusbar .sb-section'));"
+        # SB5 调试入口（B3）：条目存在（title=打开 DevTools；条目化后为栏按钮 `bar-btn`）+
+        # gui.devtools.open 通道可用
+        dbg = J(gui, "(()=>{const es=Array.from(document.querySelectorAll('.statusbar [title]'));"
                      "return es.filter(e=>(e.getAttribute('title')||'').indexOf('DevTools')>=0).length})()")
         dev_ok, dev_detail = False, ''
         try:

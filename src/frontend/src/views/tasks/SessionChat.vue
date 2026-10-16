@@ -24,7 +24,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import Icon from '../../components/icon/Icon.vue'
@@ -34,10 +35,16 @@ import TaskDetailView from '../../components/task/TaskDetailView.vue'
 import DslStepsPanel from '../dsl/DslStepsPanel.vue'
 import { useTaskView } from '../../composables/useTaskView'
 import { useDslView } from '../../composables/useDslView'
+import { useSelectionStore } from '../../stores/selection'
 
-const sessionId = ref(null)
-// 任务详情模式：点击会话树任务行后右侧显示任务详情（非会话消息）
-const taskId = ref(null)
+// 任务区当前选中项 = **跨 view 共享状态**（唯一真相源 = selection store，UILAYOUT-1 §3.7 P2③）：
+//   - `sessionId` ← `subsession-changed`；`taskId` ← `task-detail-open`（叠加态，选中子会话即清）。
+// 本组件只读（storeToRefs 派生）——原组件内 sessionId / taskId 两个 ref 已删（双源已消除）；
+// 写入 = 既有订阅者（stores/selectionSubscribers.js）。
+const selection = useSelectionStore()
+const { activeTask } = storeToRefs(selection)
+const sessionId = computed(() => activeTask.value.sessionId || null)
+const taskId = computed(() => activeTask.value.taskId || null)
 
 // DSL 作业：任务是 DSL 作业根 → 右侧改渲染步骤表格（DslStepsPanel）
 const { isJobNode } = useDslView()
@@ -46,24 +53,17 @@ const dslJobId = computed(() => (taskId.value && isJobNode(taskId.value) ? taskI
 // ── TaskView：会话树增量刷新（子会话切换时补全初始状态）──
 const { refresh: refreshTasks } = useTaskView()
 
+// 选中子会话（payload = session_id）：store 写入由订阅者承担，本组件只补任务快照。
 function onSubSessionChanged({ session_id: newId }) {
-  sessionId.value = newId || null
-  taskId.value = null // 返回会话模式：清掉任务详情
-  refreshTasks(sessionId.value || '', '', { initOnly: true })
-}
-
-function onTaskDetailOpen({ task_id }) {
-  taskId.value = task_id || null
+  refreshTasks(newId || '', '', { initOnly: true })
 }
 
 onMounted(() => {
   mq.on(EventNames.subsessionChanged, onSubSessionChanged)
-  mq.on(EventNames.taskDetailOpen, onTaskDetailOpen)
 })
 
 onUnmounted(() => {
   mq.off(EventNames.subsessionChanged, onSubSessionChanged)
-  mq.off(EventNames.taskDetailOpen, onTaskDetailOpen)
 })
 </script>
 

@@ -28,6 +28,10 @@ import (
 
 // SessionFromWire 把消息面会话行转成门面 DTO（`history`/`snapshot_turn` 两列 → 领域快照）。
 // 行缺 `history` 键 = 该会话从未写过快照 → DTO 的 Snapshot 为 nil（保真"无快照"语义）。
+//
+// 子聊天字段（kind / lifecycle / agent / scenario_id / llm，单聊方案 §3.2）逐列搬运。
+// **历史数据回退口径**：行缺 `kind` 键（2026-10-15 新增字段之前落库的行）且 `parent_id` 非空
+// ⇒ 视为 `sub_session`（保守：旧行只可能是 `dsl_run` 派生的子会话，不影响新功能）。
 func SessionFromWire(row map[string]any) facade.Session {
 	s := facade.Session{
 		ID:           str(row["session_id"]),
@@ -36,6 +40,18 @@ func SessionFromWire(row map[string]any) facade.Session {
 		CreatedAt:    str(row["created_at"]),
 		UpdatedAt:    str(row["updated_at"]),
 		LastActivity: str(row["last_activity"]),
+		Kind:         str(row["kind"]),
+		Lifecycle:    str(row["lifecycle"]),
+		Agent:        str(row["agent"]),
+		ScenarioID:   str(row["scenario_id"]),
+		LLM:          str(row["llm"]),
+		Purpose:      str(row["purpose"]),
+		Goal:         str(row["goal"]),
+		Playbook:     str(row["playbook"]),
+		Convergence:  str(row["convergence"]),
+	}
+	if s.Kind == "" && s.ParentID != "" {
+		s.Kind = facade.SessionKindSubSession
 	}
 	if _, ok := row["history"]; ok {
 		var hist []data.ChatMsg
@@ -51,7 +67,8 @@ func SessionFromWire(row map[string]any) facade.Session {
 }
 
 // SessionToWire 把门面会话 DTO 转回消息面行（快照 → `history` JSON 字符串 + `snapshot_turn`）。
-// 非空字段才写键（与既有 `RecordView` 的"存在即带"口径一致）。
+// 非空字段才写键（与既有 `RecordView` 的"存在即带"口径一致）——**普通顶层会话（五列皆空）
+// 的行形状与既有逐字节一致**（单聊方案 §3.2「仅非空才写键」）。
 func SessionToWire(s facade.Session) map[string]any {
 	row := map[string]any{"session_id": s.ID}
 	put(row, "title", s.Title)
@@ -59,6 +76,16 @@ func SessionToWire(s facade.Session) map[string]any {
 	put(row, "created_at", s.CreatedAt)
 	put(row, "updated_at", s.UpdatedAt)
 	put(row, "last_activity", s.LastActivity)
+	put(row, "kind", s.Kind)
+	put(row, "lifecycle", s.Lifecycle)
+	put(row, "agent", s.Agent)
+	put(row, "scenario_id", s.ScenarioID)
+	put(row, "llm", s.LLM)
+	put(row, "purpose", s.Purpose)
+	// 群聊「目标 / 剧本 / 收敛条件」（SUBCHAT-3 阶段 F）：非空才写键 → 非群聊会话行逐字节一致。
+	put(row, "goal", s.Goal)
+	put(row, "playbook", s.Playbook)
+	put(row, "convergence", s.Convergence)
 	if s.Snapshot != nil {
 		kern := data.SnapshotFromFacade(*s.Snapshot)
 		b, err := json.Marshal(kern.History)
@@ -209,6 +236,12 @@ func MessageViewToWire(v facade.MessageView) map[string]any {
 	put(row, "tool_call_status", v.ToolCallStatus)
 	put(row, "reasoning", v.Reasoning)
 	put(row, "created_at", v.CreatedAt)
+	// 群聊发言标识（SUBCHAT-3 阶段 E / 群聊方案 §10 C2·C6）：非空才带 → 非群聊消息行的视图
+	// 与既有逐字节一致（`mentions` 恒为数组，不用 null）。
+	put(row, "sender_agent", v.SenderAgent)
+	if len(v.Mentions) > 0 {
+		row["mentions"] = strSliceAny(v.Mentions)
+	}
 	if len(v.ToolCalls) > 0 {
 		// 存储/消息面形状 = JSON 字符串（工具调用嵌套 function{name,arguments}）
 		if b, err := json.Marshal(messagesToolCalls(v.ToolCalls)); err == nil {
@@ -280,10 +313,66 @@ func MessageContentResult(contents map[string]string) map[string]any {
 	return map[string]any{msgkeys.DataSessionContentResultContents: out}
 }
 
+// ── 群聊两表（group 域：参与者名单 / 大轮次投递对象；data-session-group-*）──────
+//
+// SUBCHAT-3 阶段 E（2026-10-16）。落库形状 = prjusr 两桶（`group_participants` /
+// `group_round_targets`，见 internal/session/group.go）；本处只做「行 ↔ 领域 DTO」字段搬运。
+
+// GroupParticipantsResult 组装 `data-session-group-participants-load` 结果载荷
+// `{list:[{session_id, agent, role, seq}]}`（按名单固定顺序升序）。
+func GroupParticipantsResult(list []facade.GroupParticipant) map[string]any {
+	out := make([]any, 0, len(list))
+	for _, p := range list {
+		out = append(out, map[string]any{
+			"session_id": p.SessionID, "agent": p.Agent, "role": p.Role, "seq": p.Seq,
+		})
+	}
+	return map[string]any{msgkeys.DataSessionGroupParticipantsLoadResultList: out}
+}
+
+// GroupParticipantsFromWire 解析 save 载荷的 `list:[{agent, role?}]` → 门面名单
+// （`session_id` 由外层载荷提供；空 agent / 非对象元素跳过；顺序保留 = 固定顺序）。
+func GroupParticipantsFromWire(sessionID string, m map[string]any) []facade.GroupParticipant {
+	raw, ok := m["list"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]facade.GroupParticipant, 0, len(raw))
+	for _, e := range raw {
+		obj, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		agent := str(obj["agent"])
+		if agent == "" {
+			continue
+		}
+		out = append(out, facade.GroupParticipant{
+			SessionID: sessionID, Agent: agent, Role: str(obj["role"]),
+		})
+	}
+	return out
+}
+
+// GroupRoundTargetsResult 组装 `data-session-group-round-targets-load` 结果载荷
+// `{list:[{session_id, round, agents:[…]}]}`（按轮次升序）。
+func GroupRoundTargetsResult(list []facade.GroupRoundTarget) map[string]any {
+	out := make([]any, 0, len(list))
+	for _, t := range list {
+		out = append(out, map[string]any{
+			"session_id": t.SessionID, "round": t.Round, "agents": strSliceAny(t.Agents),
+		})
+	}
+	return map[string]any{msgkeys.DataSessionGroupRoundTargetsLoadResultList: out}
+}
+
 // MessageAppendFromWire 解析 `data-session-append-message` 载荷 → 门面入参。
 //
 // 兼容既有两种形态（61 §3.2a）：`{turn_id, msg:{…}}`（嵌套）与扁平形态（字段直接在载荷上）。
 // msg 的工具调用形状 = 消息面嵌套 `function{name,arguments}`（经内核 ChatMsg 归一为门面平铺）。
+// **群聊发言标识（SUBCHAT-3 阶段 E，2026-10-16 增）**：`sender_agent` / `mentions` 在
+// msg 内（嵌套）或载荷顶层（扁平）均可 —— 两者都是「消息自身的领域字段」，不进内核 ChatMsg
+// （LLM 请求不含它们），故直取后落到 MessageAppendRequest 同名入参。
 func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
 	req := facade.MessageAppendRequest{TurnID: str(m["turn_id"]), Key: str(m["key"])}
 	nested, _ := m["msg"].(map[string]any)
@@ -307,6 +396,15 @@ func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
 	req.SessionID = p.SessionID
 	req.Brief = p.Brief
 	req.ToolCallStatus = p.ToolCallStatus
+	// 群聊发言标识：优先 msg 内，回落载荷顶层（两者同现时 msg 内为准）。
+	req.SenderAgent = str(nested["sender_agent"])
+	if req.SenderAgent == "" {
+		req.SenderAgent = str(m["sender_agent"])
+	}
+	req.Mentions = strList(nested["mentions"])
+	if req.Mentions == nil {
+		req.Mentions = strList(m["mentions"])
+	}
 	return req
 }
 

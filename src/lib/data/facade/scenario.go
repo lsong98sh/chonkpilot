@@ -33,6 +33,10 @@ type ScenarioAgent struct {
 	Prompt string `json:"prompt,omitempty"`
 	// Tools 工具白名单（可选；空 = 不设白名单）。
 	Tools string `json:"tools,omitempty"`
+	// Skills 技能名单（可选；落盘进 agent 契约 `# 参考` 分区的 refs.skills）。
+	Skills []string `json:"skills,omitempty"`
+	// Resources 资源名单（可选；落盘进 agent 契约 `# 参考` 分区的 refs.resources）。
+	Resources []string `json:"resources,omitempty"`
 	// LLMRef LLM 引用（可选；空 = 继承默认 LLM）。
 	LLMRef string `json:"llmRef,omitempty"`
 	// DelegateCond 委派条件（可选）。

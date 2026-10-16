@@ -2,7 +2,7 @@ import mq from '../utils/mq.js'
 import { resolvePublishError } from '../utils/publishError.js'
 import {
   DataKnowledgeRootKeys, DataKnowledgeListKeys,
-  DataKnowledgeReadKeys, DataKnowledgeCreateKeys,
+  DataKnowledgeReadKeys, DataKnowledgeCreateKeys, DataKnowledgeImportKeys,
 } from '../events/msgkeys.js'
 
 // data-knowledge-* 消息辅助：发送并等待回复（E-25：统一 30s 超时，对齐 fileRequest/guiReq 口径，
@@ -42,6 +42,17 @@ export function savePrimitive(path, doc) {
 
 export function createPrimitive(dir, type, name) {
   return knowledgeReq('create', { dir, type, name }).then((r) => r[DataKnowledgeCreateKeys.path])
+}
+
+// 导入 / 新建「其他类型」文件（data-knowledge-import，61 §3.3）：
+// files = [{ name, content }]，content = **base64** 文件字节（空串 = 新建空文件）。
+// 后端按内容与后缀三分支落盘（契约原样 / 文本转化 `.resource.md` / 其他原样）；
+// **逐文件尽力而为**，部分失败不中止 → 回 { paths:[相对路径], errors:[{name, error}] }。
+export function importPrimitive(dir, files) {
+  return knowledgeReq('import', { dir, files }).then((r) => ({
+    paths: r[DataKnowledgeImportKeys.paths] || [],
+    errors: r[DataKnowledgeImportKeys.errors] || [],
+  }))
 }
 
 export function deletePrimitive(path) {

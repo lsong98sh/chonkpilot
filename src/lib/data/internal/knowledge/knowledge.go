@@ -21,6 +21,7 @@
 package knowledge
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -28,11 +29,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
+	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 )
 
 // Service 是 knowledge 域门面实现（inline 绑定与 MQ 信封层共用）。
@@ -46,15 +49,17 @@ func New(base *kernel.Base) *Service { return &Service{Base: base} }
 // 编译期断言：实现完整 knowledge 域门面（缺方法即编译不过）。
 var _ facade.KnowledgeAPI = (*Service)(nil)
 
-// kbDocToFacade 契约文档（分区解析结果）→ 门面文档领域形态。
+// kbDocToFacade 契约文档（v2 解析结果）→ 门面文档领域形态。
 func kbDocToFacade(d capfs.Doc) facade.KnowledgeDoc {
 	return facade.KnowledgeDoc{
-		Title:         d.Title,
-		Meta:          d.Meta,
-		Description:   d.Description,
-		Parameters:    d.Parameters,
-		Content:       d.Content,
-		ParamsSection: d.ParamsSection,
+		Name:        d.Name,
+		Title:       d.Title,
+		Meta:        d.Meta,
+		Description: d.Description,
+		Parameters:  d.Parameters,
+		Refs:        d.Refs,
+		Delegate:    d.Delegate,
+		Content:     d.Content,
 	}
 }
 
@@ -65,12 +70,14 @@ func kbDocFromFacade(d facade.KnowledgeDoc) capfs.Doc {
 		meta = map[string]string{}
 	}
 	return capfs.Doc{
-		Title:         d.Title,
-		Meta:          meta,
-		Description:   d.Description,
-		Parameters:    d.Parameters,
-		Content:       d.Content,
-		ParamsSection: d.ParamsSection,
+		Name:        d.Name,
+		Title:       d.Title,
+		Meta:        meta,
+		Description: d.Description,
+		Parameters:  d.Parameters,
+		Refs:        d.Refs,
+		Delegate:    d.Delegate,
+		Content:     d.Content,
 	}
 }
 
@@ -145,9 +152,8 @@ func (s *Service) KnowledgeList(req facade.KnowledgeListRequest) (facade.Knowled
 			resp.Dirs = append(resp.Dirs, facade.KnowledgeDir{Name: name, Path: filepath.ToSlash(p)})
 			continue
 		}
-		if !strings.HasSuffix(strings.ToLower(name), ".md") {
-			continue
-		}
+		// 列出**所有非隐藏文件**（req4「其他类型」/ req5「导入」落盘的 json 等须在树里可见）：
+		// Type 按 capfs.TypeOfFile 给出（原语 token 或 `file`）；Description 对非 md 容错取文本行。
 		info, _ := e.Info()
 		modified := ""
 		if info != nil {
@@ -184,7 +190,15 @@ func (s *Service) KnowledgeRead(req facade.KnowledgeReadRequest) (facade.Knowled
 	if err != nil {
 		return facade.KnowledgeReadResponse{}, fmt.Errorf("read: %v", err)
 	}
-	return facade.KnowledgeReadResponse{Source: string(raw), Doc: kbDocToFacade(capfs.ParseDoc(string(raw)))}, nil
+	// v2 契约：原语文件（*.type.md）严格解析（缺 基本信息/name、正文非最后分区 → 报错）；
+	// 其它 .md（非原语）容错只回原文（不阻断预览）。
+	doc, perr := capfs.ParseDocErr(string(raw))
+	if perr != nil {
+		if capfs.TypeOfFile(filepath.Base(p), filepath.Dir(p)) != "file" {
+			return facade.KnowledgeReadResponse{}, fmt.Errorf("parse: %v", perr)
+		}
+	}
+	return facade.KnowledgeReadResponse{Source: string(raw), Doc: kbDocToFacade(doc)}, nil
 }
 
 // KnowledgeSave 保存原语文档（按契约序列化回写）。
@@ -192,7 +206,13 @@ func (s *Service) KnowledgeSave(req facade.KnowledgeSaveRequest) (facade.Knowled
 	if req.Path == "" {
 		return facade.KnowledgeSaveResponse{}, errors.New("path required")
 	}
-	raw := capfs.BuildDoc(kbDocFromFacade(req.Doc))
+	d := kbDocFromFacade(req.Doc)
+	if strings.TrimSpace(d.Name) == "" {
+		// 契约不变量：name = 文件名（去 `.<token>.md`）——调用方漏传 name 时按路径补齐，
+		// 避免写出非法契约（v2 起 name 必填，Build 会报错）。
+		d.Name = contractmd.NameOfFile(filepath.Base(filepath.FromSlash(req.Path)))
+	}
+	raw := capfs.BuildDoc(d)
 	workDir, err := s.WorkDirFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.KnowledgeSaveResponse{}, err
@@ -388,6 +408,127 @@ func (s *Service) KnowledgeRenameDir(req facade.KnowledgeRenameDirRequest) (faca
 	return facade.KnowledgeRenameDirResponse{OK: true}, nil
 }
 
+// importPrimitiveTokens 是「导入原样落盘」（分支①）认可的原语后缀 token（61 §3.3：token ∈
+// tool/skill/prompt/resource/agent）；不含目录形态的 scenario。
+var importPrimitiveTokens = map[string]bool{
+	"tool": true, "skill": true, "prompt": true, "resource": true, "agent": true,
+}
+
+// KnowledgeImport 导入 / 新建「其他类型」文件（61 §3.3 `data-knowledge-import`）：目录右键「导入」
+// （多选）· 资源页签新建选「其他」（单文件、空内容）。逐文件按**判定顺序**落盘：
+//
+//	① content 空（或 base64 解码后 0 字节）→ **原样落盘**（「新建 → 其他」直接创建）；
+//	② name 命中原语后缀（`<base>.<token>.md`）且内容可经 capfs.ParseDocErr 解析为 v2 契约
+//	   → **原样落盘**（保留文件名与内容字节）；
+//	③ 未命中 ①② 且 name 为 `.md`/`.txt` 且内容为**合法 UTF-8 文本** → **转化**为
+//	   `<去后缀名>.resource.md` 契约（Template("resource") 为骨架 + 正文 = 原文）；
+//	④ 其余（json/yaml/图片/二进制…）→ **原样落盘**（保留文件名，字节原样）。
+//
+// 逐文件尽力而为：单文件失败只记 errors、不中止整批；成功项照常落盘并列入 Paths。
+// 目标已存在 → 拒绝（不覆盖，口径同 KnowledgeCreate 的 `"%s exists"`）。
+// 写前越界复验（A-32）同 KnowledgeSave/Create/Mkdir：SafeJoin 拼路径 + kbGuardWritePath 复验。
+func (s *Service) KnowledgeImport(req facade.KnowledgeImportRequest) (facade.KnowledgeImportResponse, error) {
+	workDir, err := s.WorkDirFor(req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.KnowledgeImportResponse{}, err
+	}
+	root, err := s.kbRootOf(req.InstanceID, req.Scope, workDir, req.Dir)
+	if err != nil {
+		return facade.KnowledgeImportResponse{}, err
+	}
+	resp := facade.KnowledgeImportResponse{OK: true}
+	addErr := func(name string, err error) {
+		resp.Errors = append(resp.Errors, facade.KnowledgeImportError{Name: name, Error: err.Error()})
+	}
+	for _, f := range req.Files {
+		// name 净化：filepath.Base 去路径前缀（防穿越）；空 / `.` / `..` → 拒绝。
+		name := filepath.Base(strings.TrimSpace(f.Name))
+		if name == "" || name == "." || name == ".." {
+			addErr(f.Name, errors.New("name required"))
+			continue
+		}
+		raw, derr := decodeImportContent(f.Content)
+		if derr != nil {
+			addErr(name, derr)
+			continue
+		}
+		outName, outBytes := importTransform(name, raw)
+		rel := filepath.ToSlash(filepath.Join(req.Dir, outName))
+		p := capfs.SafeJoin(root, rel)
+		// 写前越界复验（A-32）：symlink 逃逸 → 拒绝，不跟随写入（逐文件都做）。
+		if err := s.kbGuardWritePath(root, workDir, p); err != nil {
+			addErr(name, err)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			addErr(name, err)
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			addErr(name, fmt.Errorf("%s exists", outName))
+			continue
+		}
+		if err := os.WriteFile(p, outBytes, 0o644); err != nil {
+			addErr(name, fmt.Errorf("import: %v", err))
+			continue
+		}
+		resp.Paths = append(resp.Paths, rel)
+	}
+	return resp, nil
+}
+
+// importTransform 按**四分支判定顺序**决定落盘文件名与字节（61 §3.3；返回最终文件名 + 待写字节）：
+//
+//	① content 空（或 base64 解码后 0 字节）→ 原样落盘（「新建 → 其他」直接创建：输入名称即落盘，
+//	   不转化、不追加后缀、保留 name 原名）；
+//	② 命中原语后缀（`<base>.<token>.md`）且内容可解析为 v2 契约 → 原样落盘；
+//	③ `.md`/`.txt` 且内容为合法 UTF-8 文本 → 转化为 `<去后缀名>.resource.md` 契约；
+//	④ 其余 → 原样落盘。
+func importTransform(name string, raw []byte) (string, []byte) {
+	// ① content 空 → 原样落盘（避免「新建其他类型」的 .md/.txt 名被误转化为 .resource.md）。
+	if len(raw) == 0 {
+		return name, raw
+	}
+	// ② 命中原语后缀（`<base>.<token>.md`）且内容可解析为 v2 契约 → 原样落盘。
+	// capfs.TypeOfFile(name, "")：父目录空 → 仅按文件名后缀判定（不落目录名兜底）。
+	if tok := capfs.TypeOfFile(name, ""); importPrimitiveTokens[tok] {
+		if _, err := capfs.ParseDocErr(string(raw)); err == nil {
+			return name, raw
+		}
+	}
+	// ③ `.md`/`.txt` 且内容为合法 UTF-8 文本 → 转化为 `<去后缀名>.resource.md` 契约。
+	low := strings.ToLower(name)
+	if strings.HasSuffix(low, ".md") || strings.HasSuffix(low, ".txt") {
+		if utf8.Valid(raw) {
+			stem := capfs.SanitizeName(strings.TrimSuffix(name, filepath.Ext(name)))
+			if stem == "" {
+				stem = "resource"
+			}
+			doc := capfs.Template("resource", stem)
+			doc.Content = string(raw)
+			return stem + ".resource.md", []byte(capfs.BuildDoc(doc))
+		}
+	}
+	// ④ 其余 → 原样落盘（保留文件名，字节原样）。
+	return name, raw
+}
+
+// decodeImportContent 解码导入载荷的文件内容（base64）；空串 = 空文件（资源页签「其他」单文件无内容）。
+// 兼容省略填充的 base64（RawStdEncoding 兜底）；两者皆失败 → 报错。
+func decodeImportContent(content string) ([]byte, error) {
+	s := strings.TrimSpace(content)
+	if s == "" {
+		return nil, nil
+	}
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	if b, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	return nil, errors.New("invalid base64 content")
+}
+
 // ── 根解析 ──────────────────────────────────────────
 
 // kbAppRoot 系统级知识库根（AppDir 注入 / 宿主可执行目录/capability）。
@@ -507,17 +648,22 @@ func (s *Service) kbResolveMoveTarget(instanceID string, scope facade.Scope, wor
 	if name == "" {
 		return "", fmt.Errorf("new_name required")
 	}
+	// raw 文件语义（req5）：源文件非原语（capfs.TypeOfFile == "file"，如 config.json）→ 改名只走
+	// sanitize（**原样名、不追加 .md**）；否则维持 NormalizeFileName（补 .md）。目录语义不变。
+	rawFile := !isDir && capfs.TypeOfFile(filepath.Base(oldP), filepath.Dir(oldP)) == "file"
+	normalizeLast := func(seg string) string {
+		if isDir || rawFile {
+			return capfs.SanitizeName(seg)
+		}
+		return capfs.NormalizeFileName(seg)
+	}
 	slashed := filepath.ToSlash(strings.ReplaceAll(name, "\\", "/"))
 	var target string
 	if !strings.Contains(slashed, "/") { // 纯名 = 同目录改名（旧语义不变）
 		if slashed == "." || slashed == ".." {
 			return "", fmt.Errorf("new_name: %q invalid", newName)
 		}
-		if isDir {
-			target = filepath.Join(filepath.Dir(oldP), capfs.SanitizeName(name))
-		} else {
-			target = filepath.Join(filepath.Dir(oldP), capfs.NormalizeFileName(name))
-		}
+		target = filepath.Join(filepath.Dir(oldP), normalizeLast(name))
 	} else { // 跨目录移动：逐段净化/校验后拼接在源根下
 		rootSlash := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(root)), "/")
 		rel := slashed
@@ -541,12 +687,7 @@ func (s *Service) kbResolveMoveTarget(instanceID string, scope facade.Scope, wor
 			}
 			out = append(out, seg)
 		}
-		last := out[len(out)-1]
-		if isDir {
-			out[len(out)-1] = capfs.SanitizeName(last)
-		} else {
-			out[len(out)-1] = capfs.NormalizeFileName(last)
-		}
+		out[len(out)-1] = normalizeLast(out[len(out)-1])
 		target = filepath.Join(root, filepath.Join(out...))
 	}
 	if !capfs.StrictlyWithin(root, target) {

@@ -306,3 +306,38 @@ func TestPrjExecConfigHotApply(t *testing.T) {
 	// prj 库——等其结束后再退出，避免 TempDir 清理时句柄仍被占用（测试环境专有）。
 	time.Sleep(300 * time.Millisecond)
 }
+
+// TestDomainToolPurposeInjection（A4 · C1 / SUBCHAT-2 阶段 A）：域工具 handler 经**注入通道**取本次
+// 调用的 purpose（`payload["context"]["purpose"]`）——args 里的 `tool_call_display_name` 已被
+// gateway `doCall` 剥离，handler 只能从这里读。
+//   ① 回调载荷（`registered_provider.turnContextPayload` 形状）解析入 `domainToolMsg.Context.Purpose`；
+//   ② `domainExecute` 把注入值送达节点构建 → 域工具任务节 purpose 以注入值兜底。
+func TestDomainToolPurposeInjection(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServerMCP(t, llm)
+
+	// ① 载荷解析
+	const purpose = "整理当日要点汇总"
+	payload := `{"tool":"tool_result","args":{"id":"missing-task","timeout":0},` +
+		`"context":{"instance_id":"ins-test","turn":"t-purpose","session":"s-purpose","tool_call_id":"tc-purpose","purpose":"` + purpose + `"}}`
+	var msg domainToolMsg
+	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
+		t.Fatalf("unmarshal domain-tool-call: %v", err)
+	}
+	if msg.Context == nil || msg.Context.Purpose != purpose {
+		t.Fatalf("context.purpose 未解析：%+v", msg.Context)
+	}
+
+	// ② 注入值经 domainExecute → domainNode 兜底任务节 purpose
+	tc := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-purpose", Turn: "t-purpose"},
+		ctx: context.Background()}
+	text, _ := s.domainExecute(tc, "tc-purpose", "tool_result",
+		map[string]any{"id": "missing-task", "timeout": 0.0}, msg.Context.Purpose)
+	if !strings.Contains(text, "未找到任务") {
+		t.Fatalf("查询不存在的任务应返回明确失败文本：%q", text)
+	}
+	if n := s.tasks.findByToolCall("ins-test", "tc-purpose"); n == nil || n.Purpose != purpose {
+		t.Fatalf("域工具任务节 purpose 应由注入通道兜底：%+v", n)
+	}
+}

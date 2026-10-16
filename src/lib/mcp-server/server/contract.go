@@ -1,10 +1,9 @@
-// 契约加载（25-mcp-server，2026-08-30 定稿）：
+// 契约加载（25-mcp-server，v2 2026-10-14）：
 // 递归扫描契约根，按文件后缀识别四原语（*.tool.md / *.skill.md / *.prompt.md / *.resource.md），
-// 分区式解析（[meta] key=value / [description] 多行 / [parameters] YAML JSON Schema / [content]）。
+// 解析委托 **contractmd**（H1 分区 + yaml/json 代码块，唯一实现）；本包不再自持分区解析。
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -13,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"gopkg.in/yaml.v3"
 )
@@ -26,62 +26,24 @@ const (
 	suffixResource = ".resource.md"
 )
 
-// ─── 分区解析 ─────────────────────────────
+// ─── 解析（委托 contractmd 单一实现） ─────────────────────────
+// v2 起分区解析（H1 分区 + yaml/json 代码块）统一由
+// github.com/chonkpilot/chonkpilot-lib/contractmd 提供；本包不再自持 splitSections/parseMeta/firstHeading。
 
-// splitSections 按 `[section]` 头把文件分为多个分区（返回 分区名 → 内容）。
-func splitSections(data []byte) map[string]string {
-	m := map[string]string{}
-	sec := ""
-	var buf bytes.Buffer
-	for _, ln := range strings.Split(string(data), "\n") {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") && len(t) > 2 {
-			if sec != "" {
-				m[sec] = strings.TrimSpace(buf.String())
-			}
-			sec = t[1 : len(t)-1]
-			buf.Reset()
-			continue
-		}
-		if sec != "" {
-			buf.WriteString(ln)
-			buf.WriteString("\n")
-		}
+// parseSchemaJSON 解析参数段（v2 为 JSON 文本；容错回落 YAML，便于手写契约）。
+func parseSchemaJSON(s string) (map[string]any, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
 	}
-	if sec != "" {
-		m[sec] = strings.TrimSpace(buf.String())
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err == nil {
+		return m, nil
 	}
-	return m
-}
-
-// firstHeading 取首行 `# xxx`（可读标题；不参与契约，原语名 = 文件名）。
-func firstHeading(data []byte) (string, bool) {
-	for _, ln := range strings.Split(string(data), "\n") {
-		t := strings.TrimSpace(ln)
-		if t == "" {
-			continue
-		}
-		if strings.HasPrefix(t, "# ") {
-			return strings.TrimSpace(strings.TrimPrefix(t, "# ")), true
-		}
-		return "", false
+	if err := yaml.Unmarshal([]byte(s), &m); err != nil {
+		return nil, err
 	}
-	return "", false
-}
-
-// parseMeta 解析 [meta] 分区（每行 key=value，首个 `=` 分割）。
-func parseMeta(s string) map[string]string {
-	m := map[string]string{}
-	for _, ln := range strings.Split(s, "\n") {
-		ln = strings.TrimSpace(ln)
-		if ln == "" {
-			continue
-		}
-		if i := strings.IndexByte(ln, '='); i > 0 {
-			m[strings.TrimSpace(ln[:i])] = strings.TrimSpace(ln[i+1:])
-		}
-	}
-	return m
+	return m, nil
 }
 
 // ─── 递归扫描 ─────────────────────────────
@@ -197,17 +159,21 @@ func ServerTools(root string, cfg *Config) (map[string]*mcp.Tool, error) {
 	return out, nil
 }
 
-// parseToolDoc 解析单个 *.tool.md（分区式）。
+// parseToolDoc 解析单个 *.tool.md（v2：H1 分区，委托 contractmd）。
 func parseToolDoc(path string) (*ToolDoc, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	sec := splitSections(data)
-	meta := parseMeta(sec["meta"])
+	c, err := contractmd.Parse(string(data))
+	if err != nil {
+		return nil, err
+	}
+	meta := c.Meta
 
 	doc := &ToolDoc{
 		Name:        strings.TrimSuffix(filepath.Base(path), suffixTool),
+		Title:       c.Title,
 		Dir:         filepath.Dir(path),
 		Runtime:     meta["runtime"],
 		Entry:       meta["entry"],
@@ -217,7 +183,7 @@ func parseToolDoc(path string) (*ToolDoc, error) {
 		AsyncTh:     atoiSafe(meta["async-threshold"]),
 		Idempotent:  isTruthy(meta["idempotent"]),
 		Args:        meta["args"],
-		Description: sec["description"],
+		Description: c.Description,
 	}
 	if v, ok := meta["timeout"]; ok && v != "" {
 		if _, err := fmt.Sscanf(v, "%d", &doc.Timeout); err != nil {
@@ -229,15 +195,9 @@ func parseToolDoc(path string) (*ToolDoc, error) {
 	if doc.Output == "" {
 		doc.Output = "stdout"
 	}
-	if h, ok := firstHeading(data); ok {
-		doc.Title = h
-	}
-	if p := sec["parameters"]; p != "" {
-		var schema map[string]any
-		if err := yaml.Unmarshal([]byte(p), &schema); err != nil {
-			return nil, fmt.Errorf("parameters yaml: %w", err)
-		}
-		doc.Schema = schema
+	doc.Schema, err = parseSchemaJSON(c.Parameters)
+	if err != nil {
+		return nil, fmt.Errorf("parameters: %w", err)
 	}
 	if doc.Name == "" || doc.Description == "" {
 		return nil, fmt.Errorf("name/description required")
@@ -361,11 +321,14 @@ func loadSkills(folder string) ([]*SkillDoc, error) {
 		if err != nil {
 			return nil, err
 		}
-		sec := splitSections(data)
+		c, err := contractmd.Parse(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", f, err)
+		}
 		d := &SkillDoc{
 			Name:        strings.TrimSuffix(filepath.Base(f), suffixSkill),
-			Description: sec["description"],
-			Body:        sec["content"],
+			Description: c.Description,
+			Body:        c.Content,
 		}
 		if d.Name == "" || d.Description == "" {
 			return nil, fmt.Errorf("%s: name/description required", f)
@@ -405,14 +368,17 @@ func loadPrompts(folder string) ([]*PromptDoc, error) {
 		if err != nil {
 			return nil, err
 		}
-		sec := splitSections(data)
+		c, err := contractmd.Parse(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", f, err)
+		}
 		d := &PromptDoc{
 			Name:        strings.TrimSuffix(filepath.Base(f), suffixPrompt),
-			Description: sec["description"],
-			Body:        sec["content"],
+			Description: c.Description,
+			Body:        c.Content,
 		}
-		if args, err := parsePromptArgs(sec["arguments"]); err != nil {
-			return nil, fmt.Errorf("%s: arguments yaml: %w", f, err)
+		if args, err := parsePromptArgs(c.Parameters); err != nil {
+			return nil, fmt.Errorf("%s: arguments: %w", f, err)
 		} else {
 			d.Arguments = args
 		}
@@ -424,11 +390,14 @@ func loadPrompts(folder string) ([]*PromptDoc, error) {
 	return docs, nil
 }
 
-// parsePromptArgs 解析 [arguments]（JSON Schema 形态）为参数列表（按名称排序）。
+// parsePromptArgs 解析参数段（JSON Schema 形态）为参数列表（按名称排序）。
 func parsePromptArgs(s string) ([]*PromptArg, error) {
-	var schema map[string]any
-	if err := yaml.Unmarshal([]byte(s), &schema); err != nil {
+	schema, err := parseSchemaJSON(s)
+	if err != nil {
 		return nil, err
+	}
+	if schema == nil {
+		return nil, nil
 	}
 	required := map[string]bool{}
 	if r, ok := schema["required"].([]any); ok {
@@ -476,10 +445,11 @@ func buildPrompt(d *PromptDoc) *mcp.Prompt {
 type ResourceDoc struct {
 	URI         string // meta: uri（缺省 file://<name>）
 	Name        string // 原语名 = 文件名
-	MIMEType    string // meta: mimetype
+	MIMEType    string // 内容 MIME：meta `path` 有则按该文件后缀识别，否则 text/markdown
 	Description string // [description]
-	Path        string // RB-4 ①：来源契约文件路径（内容按需读盘，不驻留）
-	Content     string // [content]（兼容兜底：仅无 Path 时使用）
+	File        string // meta: path → 外部内容文件（非空 = 资源内容取自该文件、「无正文」）
+	Path        string // RB-4 ①：来源契约文件路径（无 File 时按需读盘取「正文」，不驻留）
+	Content     string // [content]（兼容兜底：仅无 Path/File 时使用）
 }
 
 // loadResources 递归扫描 folder 加载全部 *.resource.md。
@@ -494,14 +464,29 @@ func loadResources(folder string) ([]*ResourceDoc, error) {
 		if err != nil {
 			return nil, err
 		}
-		sec := splitSections(data)
-		meta := parseMeta(sec["meta"])
+		c, err := contractmd.Parse(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", f, err)
+		}
+		name := strings.TrimSuffix(filepath.Base(f), suffixResource)
+		// 外部内容文件（meta `path`，2026-10-14）：资源内容取自该文件（**无「正文」**），
+		// mimetype 按其后缀识别；相对路径按契约文件所在目录解析。无 `path` → 契约「正文」
+		// markdown，mimetype 恒 text/markdown。
+		file := strings.TrimSpace(c.Meta["path"])
+		if file != "" && !filepath.IsAbs(file) {
+			file = filepath.Join(filepath.Dir(f), filepath.FromSlash(file))
+		}
+		mime := contractmd.DefaultMimetype
+		if file != "" {
+			mime = contractmd.MimetypeOfFile(file)
+		}
 		d := &ResourceDoc{
-			URI:         meta["uri"],
-			Name:        strings.TrimSuffix(filepath.Base(f), suffixResource),
-			MIMEType:    meta["mimetype"],
-			Description: sec["description"],
-			Path:        f, // RB-4 ①：内容不驻留，makeResourceHandler 按 Path 实时读盘取 [content]
+			URI:         contractmd.InferURI(name), // 隐式 uri（不落盘，注册时派生）
+			Name:        name,
+			MIMEType:    mime,
+			Description: c.Description,
+			File:        file,
+			Path:        f, // RB-4 ①：内容不驻留，makeResourceHandler 按 Path 实时读盘取正文
 		}
 		if d.Name == "" || d.Description == "" {
 			return nil, fmt.Errorf("%s: name/description required", f)

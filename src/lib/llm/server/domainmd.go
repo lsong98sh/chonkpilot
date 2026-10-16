@@ -15,13 +15,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 )
 
 //go:embed contracts/tools/*.tool.md
 var domainToolsFS embed.FS
 
 // AgentDef 是 app 级场景内的 agent 定义（来自 `<exeDir>/scenarios/*/` 内的 agent 文件：
-// `# 名` + [description] + [content]，content = 该 agent 的提示词）。
+// v2 契约「# 基本信息 + # 摘要 + # 正文」，正文 = 该 agent 的提示词）。
 type AgentDef struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -44,13 +46,20 @@ func loadDomainTools() ([]ToolDef, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读 %s: %w", e.Name(), err)
 		}
-		desc, params, meta, err := parseToolMD(string(md))
+		c, err := contractmd.Parse(string(md))
 		if err != nil {
 			return nil, fmt.Errorf("解析 %s: %w", e.Name(), err)
 		}
+		var params map[string]any
+		if strings.TrimSpace(c.Parameters) != "" {
+			if err := json.Unmarshal([]byte(c.Parameters), &params); err != nil {
+				return nil, fmt.Errorf("解析 %s: 参数段非合法 JSON: %w", e.Name(), err)
+			}
+		}
+		meta := c.Meta
 		defs = append(defs, ToolDef{
 			Name:        strings.TrimSuffix(e.Name(), ".tool.md"),
-			Description: desc,
+			Description: c.Description,
 			Parameters:  params,
 			Category:    meta["category"],
 			Async:       meta["async"],
@@ -62,37 +71,6 @@ func loadDomainTools() ([]ToolDef, error) {
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	return defs, nil
-}
-
-// parseToolMD 解析域工具契约 md：取 [description] 段（LLM 视角描述）、
-// [parameters] 段（JSON schema）与 [meta] 段（key=value；async/category/timeout 等透出用）。
-func parseToolMD(md string) (desc string, params map[string]any, meta map[string]string, err error) {
-	segs := parseSectionMD(md)
-	desc = segs["description"]
-	meta = parseMetaLines(segs["meta"])
-	p := segs["parameters"]
-	if p == "" {
-		return desc, nil, meta, nil
-	}
-	if err := json.Unmarshal([]byte(p), &params); err != nil {
-		return "", nil, nil, fmt.Errorf("parameters 段非合法 JSON: %w", err)
-	}
-	return desc, params, meta, nil
-}
-
-// parseMetaLines 解析 [meta] 段（每行 key=value，首个 `=` 分割）为键值映射。
-func parseMetaLines(s string) map[string]string {
-	m := map[string]string{}
-	for _, ln := range strings.Split(s, "\n") {
-		ln = strings.TrimSpace(ln)
-		if ln == "" {
-			continue
-		}
-		if i := strings.IndexByte(ln, '='); i > 0 {
-			m[strings.TrimSpace(ln[:i])] = strings.TrimSpace(ln[i+1:])
-		}
-	}
-	return m
 }
 
 // atoiField 取契约 meta 的整数字段（空/非法 → 0；对齐 25-mcp-server atoiSafe 语义）。
@@ -117,30 +95,4 @@ func atoiFieldSigned(s string) int {
 func metaKeySet(m map[string]string, key string) bool {
 	v, ok := m[key]
 	return ok && strings.TrimSpace(v) != ""
-}
-
-// parseSectionMD 通用 markdown 分段解析：取 [section] 标题与内容映射。
-func parseSectionMD(md string) map[string]string {
-	segs := map[string]string{}
-	cur := ""
-	var b strings.Builder
-	for _, ln := range strings.Split(md, "\n") {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") && len(t) > 2 {
-			if cur != "" {
-				segs[cur] = strings.TrimSpace(b.String())
-				b.Reset()
-			}
-			cur = strings.Trim(t, "[]")
-			continue
-		}
-		if cur != "" {
-			b.WriteString(ln)
-			b.WriteString("\n")
-		}
-	}
-	if cur != "" {
-		segs[cur] = strings.TrimSpace(b.String())
-	}
-	return segs
 }

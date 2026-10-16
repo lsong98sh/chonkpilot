@@ -55,20 +55,33 @@ type ServerEntry struct {
 	Isolate     *bool             // 按 workdir 隔离连接（nil = 按 transport 推断：stdio→true / http|sse→false）
 	Scope       string            // 归属域："" = global（servers.list/静态缺省）；servers/register 载荷 scope（instance id uuid）
 	Origin      string            // 来源：builtin（本仓自有/内置）/ user（用户定义/第三方）；空 = user（安全默认；`servers.list` 解析器显式填 builtin，见 parseServersList）
-	// Sandbox 是 agentbox 沙箱开关（usr `mcps` 条目的 `sandbox` 键；register 载荷 mcp_server.sandbox）：
-	// nil/未设置 = **不隔离**（与引入前行为一致）；true = 对该上游 spawn 生效。
+	// Sandbox 是 agentbox 沙箱开关的**旧载体**（usr `mcps` 条目的 `sandbox` 键；register 载荷
+	// mcp_server.sandbox）：nil/未设置 = 不隔离（与引入前行为一致）；true = 对该上游 spawn 生效。
+	//
+	// **已废弃为开关来源（2026-10-12 重整）**：沙箱开关统一收敛到 usr `tool_sandbox.mcps`
+	// （key = MCP 条目名），gateway 在 stdio spawn 时按 entry.Name 查该表决定是否注入
+	// `CHONKPILOT_SANDBOX`。本字段仅作**读取时迁移**输入（gateway 把 true 并入 tool_sandbox.mcps，
+	// 见 tooloverride.go mergeLegacySandboxMCP），**不再直接作为开关**。
 	// **与 Isolate 语义不同、互不替代**：Isolate = 连接池按 (instance, workdir) 隔离；
 	// Sandbox = 把「可读 / 可写目录（递归）」策略下发到 spawn 出的上游进程。
 	// **仅 stdio 传输生效**（http/sse 不隔离，见 14-安全域-agentbox）。
 	Sandbox *bool `json:"sandbox,omitempty"`
 	// SandboxDirs 是该 server 的 agentbox 允许目录快照（prj `security-*` → {dir, writable}），
-	// 由装配层注入；仅 Sandbox=true + 传输 stdio + 非空时随 spawn 环境变量下发。
+	// 由装配层注入；仅开关开启（tool_sandbox.mcps）+ 传输 stdio + 非空时随 spawn 环境变量下发。
 	SandboxDirs []agentbox.Rule `json:"sandbox_dirs,omitempty"`
 }
 
 // IsBuiltin 是否本仓自有/内置来源——**唯一**决定是否注入内部上下文 `_meta["chonkpilot"]` 的条件；
 // 空/未知来源按 user 处理（安全默认：不注入）。
 func (e ServerEntry) IsBuiltin() bool { return normalizeOrigin(e.Origin) == OriginBuiltin }
+
+// SandboxName 返回该 server 在 usr `tool_sandbox.mcps` 中的键：显示名 Name 优先，缺省回落 ID。
+func (e ServerEntry) SandboxName() string {
+	if s := strings.TrimSpace(e.Name); s != "" {
+		return s
+	}
+	return strings.TrimSpace(e.ID)
+}
 
 // TransportName 返回归一传输名：显式 transport 优先；缺省按连接点推断（url → http；仅 runtime → stdio）。
 // buildConn 与隔离推断共用同一判据（单一来源）。
@@ -93,7 +106,9 @@ func (e ServerEntry) IsolateEnabled() bool {
 }
 
 // SandboxPolicyJSON 返回 spawn 上游进程时注入的 agentbox 策略 JSON（`""` = **不注入**）。
-// 生效条件（三者同时满足）：显式 Sandbox=true + 传输为 stdio + 允许目录非空。
+// sandboxOn 由调用方按 **usr `tool_sandbox.mcps[entry.SandboxName()]`** 决定（不再来自
+// entry.Sandbox——该字段已废弃为开关来源、仅作迁移输入）。生效条件（三者同时满足）：
+// 开关开启 + 传输为 stdio + 允许目录非空。
 //
 //   - **仅 stdio**：http/sse 上游不经我们 spawn（或子进程与连接解耦），不施加隔离（用户口径）；
 //   - **空目录不注入**：上游进程非本仓实现、无法验证其 agentbox 行为；空允许集若被严格实现
@@ -101,8 +116,8 @@ func (e ServerEntry) IsolateEnabled() bool {
 //
 // 注：上游进程是否真正据此限制文件访问，取决于该进程是否实现 agentbox 消费方
 // （本仓 executor 已实现；第三方进程仅「透传」，不构成强制）。
-func (e ServerEntry) SandboxPolicyJSON() string {
-	if e.Sandbox == nil || !*e.Sandbox {
+func (e ServerEntry) SandboxPolicyJSON(sandboxOn bool) string {
+	if !sandboxOn {
 		return ""
 	}
 	if e.TransportName() != "stdio" {

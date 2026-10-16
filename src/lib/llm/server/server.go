@@ -224,7 +224,12 @@ type Server struct {
 	// pending。与 tc.pending 同步维护（登记 pending 时写入 / 消费回执 / 轮次收尾时摘除）。
 	taskTurnIndex map[string]*turnCtx
 	asks          map[string]*askWaiter // instKey(instance, ask_id) → 等待的 turn + tool-call-id + 任务节点
-	tasks         *taskManager          // 任务编排（任务树/级联/批量/状态事件，§6.6）
+	// groupRuns 是**运行中的群聊调度器**登记表（SUBCHAT-3 阶段 F-2）：groupID → 运行句柄。
+	// 用途 = 「关窗即停」（§15.4 N23）：群聊窗口实例 `instance-exit` → 停掉由该实例驱动的调度器
+	// （见 stopGroupRunsForInstance）。独立小锁（不含 IO，避免与 s.mu 锁序纠缠）。
+	groupMu   sync.Mutex
+	groupRuns map[string]*groupSched
+	tasks     *taskManager // 任务编排（任务树/级联/批量/状态事件，§6.6）
 	// taskExecCancels：task 型域工具「执行中取消」登记表（I-83 收尾，18 §3.4）：tool_call_id →
 	// 执行 ctx cancelFunc。domainExecute task 分支登记、结束注销；gateway 取消（tm.cancel 补发
 	// mcp-tasks-report{state:cancelled}）→ onGatewayTaskDone 查表 cancel 真停执行体
@@ -291,9 +296,13 @@ type Server struct {
 type askWaiter struct {
 	askID      string // ask id（无 instance 维度的旧载荷回退查找用）
 	instanceID string // 归属实例（隔离键之一；ask id 全局唯一，此处仅登记归属）
-	turnID     string
-	toolID     string
-	taskID     string // ask_user 任务节点 id（reply 到达 → tasks.done）
+	// deliverInstance 是**卡片投递目标窗口实例**（SUBCHAT-3 阶段 F-2 · 群聊 §13 D42）：由会话
+	// → 实例反查解析（`session-ask.instance_id` 取此值）；应答来自该窗口（≠ 登记实例）时按它命中
+	// （见 takeAskLocked）。空 / 与 instanceID 相同 = 无定向（回落 turn 实例，旧行为）。
+	deliverInstance string
+	turnID          string
+	toolID          string
+	taskID          string // ask_user 任务节点 id（reply 到达 → tasks.done）
 	// expiresAt 是等待登记过期时刻（与 payload expires_at 同源，E2-1）：到期未应答 → 惰性回收
 	// （见 purgeExpiredAsksLocked），避免无答复的 ask 常驻内存。
 	expiresAt time.Time
@@ -323,6 +332,7 @@ func New(bus mq.Bus, opts Options) *Server {
 		turns:           make(map[string]*turnCtx),
 		busy:            make(map[string]string),
 		asks:            make(map[string]*askWaiter),
+		groupRuns:       make(map[string]*groupSched),
 		taskExecCancels: make(map[string]context.CancelFunc),
 		cleaned:         make(map[string]bool),
 		dirNodes:        make(map[string][]string),
@@ -473,6 +483,7 @@ func (s *Server) Start(ctx context.Context) error {
 		{SubjectLoginIn, s.onLoginIn},                     // 认证域：登录
 		{SubjectLoginOut, s.onLoginOut},                   // 认证域：登出
 		{SubjectLLMTestConnection, s.onLLMTestConnection}, // 设置→LLM「测试连接」只读探活（点分主题直通总线）
+		{SubjectConfigSuggest, s.onConfigSuggest},         // 配置页/工具原语「AI 智能填充」（点分主题直通总线；AICFG-1）
 		{domainSubject(msgkeys.TopicLlmStart), s.onLLMStart},
 		{domainSubject(msgkeys.TopicLlmSend), s.onLLMSend},
 		{domainSubject(msgkeys.TopicLlmCancel), s.onLLMCancel},
@@ -482,6 +493,12 @@ func (s *Server) Start(ctx context.Context) error {
 		{domainSubject(msgkeys.TopicTaskVerify), s.onTaskVerify}, // 一致性校验方法面（I-87；只读，层为后端）
 		{domainSubject(msgkeys.TopicToolRetry), s.onToolRetry},
 		{domainSubject(msgkeys.TopicPromptOptimise), s.onPromptOptimise},
+		// 单聊（子聊天）方法面（61 §4.3/§4.5；SUBCHAT-2 阶段 B-2）：清单 / 用户拍板结束。
+		// 主题为无点分的单段 kebab（relative subject 与前端 type 同名，桥/入口已放行）。
+		{domainSubject(msgkeys.TopicSubchatList), s.onSubchatList},
+		{domainSubject(msgkeys.TopicSubchatFinish), s.onSubchatFinish},
+		// 群聊「继续」续期（SUBCHAT-3 阶段 F，61 §4.2/§4.5）：同名单段主题。
+		{domainSubject(msgkeys.TopicSubchatContinue), s.onSubchatContinue},
 		// 场景向导方法面（2026-10-04）
 		{domainSubject(msgkeys.TopicAgentWizardProbe), s.onAgentWizardProbe},
 		{domainSubject(msgkeys.TopicAgentWizardCompose), s.onAgentWizardCompose},
@@ -623,6 +640,11 @@ func (s *Server) onLLMSimple(_ context.Context, _ string, v *mq.Value) error {
 	return nil
 }
 
+// llmOnceTimeout 一次性无上下文 LLM 调用的**外层 ctx 超时上限**（llm-simple / prompt-optimise /
+// config.suggest 共用入口 llmOnceSpec）。默认 60s；`var` 便于单测临时替换（同 llmTestTimeout 范式），
+// 使「生成耗时较长 → 明确超时错误」边界（配置智能填充 §6）可在毫秒级验证。
+var llmOnceTimeout = 60 * time.Second
+
 // llmOnceSpec 单轮无上下文 LLM 调用（60s 超时；无可用 LLM → error），按 spec 选 provider
 // （spec 来自 specFor(loadLLMProvider(...))：命中 usr provider → 该 provider；
 // 未命中/未指定 → exe flags 隐含默认 `__default__`，与旧 `s.llm` 默认客户端同口径：
@@ -631,7 +653,7 @@ func (s *Server) llmOnceSpec(spec router.Spec, system, prompt string) (string, e
 	if s.rt == nil {
 		return "", errors.New("llm not available")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), llmOnceTimeout)
 	defer cancel()
 	msgs := []ChatMsg{{Role: "user", Content: prompt}}
 	if system != "" {
@@ -789,6 +811,9 @@ func (s *Server) exitInstance(instanceID string) {
 	for _, tc := range closing {
 		tc.Close() // 锁外释放 session 锁（文件 IO）；turnCtx.Close 幂等
 	}
+	// 关窗即停（SUBCHAT-3 阶段 F-2 · 群聊 §15.4 N23）：本实例若为某群聊的**驱动实例**（群聊窗口），
+	// 其退出 → 停机该群聊调度器（进程内停机，lifecycle 不变；重开点「继续」据 round_targets 断点补跑）。
+	s.stopGroupRunsForInstance(instanceID)
 	s.unregisterCapabilityNodes(instanceID)
 	if s.capWatch != nil {
 		// B-38：回收该实例派生的 capability 根监听（防长驻服务端 fsnotify 句柄随实例累积）。
@@ -1359,22 +1384,26 @@ func (s *Server) onAskUserReply(_ context.Context, _ string, v *mq.Value) error 
 func (s *Server) ask(turnID, toolID string, args map[string]any, taskID string) string {
 	askID := "ask-" + newID()
 	expiresAt := time.Now().Add(askTTL)
+	// 实例归属从 turn 取（业务 payload 一律必带 instance_id，见 61-消息一览 §0.1）；
+	// 登记键 = instKey(instance, ask)（缺口 5：按 instance 分桶，不与其他 instance 串味）。
+	turnInstance := ""
+	if tc := s.lookupTurn(turnID); tc != nil {
+		turnInstance = tc.req.InstanceID
+	}
+	// 定向投递（SUBCHAT-3 阶段 F-2 · 群聊 §13 D42）：卡片投到**该会话所在窗口**（`work_session`
+	// → 父群聊窗口；群聊/单聊本体 → 承载窗口），解析不到 → 回落 turn 实例（旧行为，零变化）。
+	deliverInstance := s.askTargetInstance(turnInstance, turnID)
 	s.mu.Lock()
 	// 惰性回收过期等待登记（E2-1）：无答复的 ask 到期即摘除，避免常驻内存。
 	s.purgeExpiredAsksLocked(time.Now())
-	// 实例归属从 turn 取（业务 payload 一律必带 instance_id，见 61-消息一览 §0.1）；
-	// 登记键 = instKey(instance, ask)（缺口 5：按 instance 分桶，不与其他 instance 串味）。
-	instanceID := ""
-	if tc := s.lookupTurnLocked("", turnID); tc != nil {
-		instanceID = tc.req.InstanceID
-	}
-	s.asks[instKey(instanceID, askID)] = &askWaiter{
-		askID: askID, instanceID: instanceID, turnID: turnID, toolID: toolID, taskID: taskID,
+	s.asks[instKey(turnInstance, askID)] = &askWaiter{
+		askID: askID, instanceID: turnInstance, deliverInstance: deliverInstance,
+		turnID: turnID, toolID: toolID, taskID: taskID,
 		expiresAt: expiresAt,
 	}
 	s.mu.Unlock()
 	payload := map[string]any{
-		"instance_id": instanceID,
+		"instance_id": deliverInstance,
 		"ask_id":      askID, "question": askQuestion(args),
 		"session": s.turnSession(turnID), "turn": turnID,
 		"expires_at": expiresAt.UTC().Format(time.RFC3339),
@@ -1416,6 +1445,31 @@ func (s *Server) ask(turnID, toolID string, args map[string]any, taskID string) 
 	}
 	s.publish("ask-user", payload)
 	return askID
+}
+
+// askTargetInstance 解析 `ask_user` 卡片的**定向投递目标窗口实例**（= `session-ask.instance_id`；
+// SUBCHAT-3 阶段 F-2 · 群聊 §13 D42 「按 instance 投递，不集中到主窗口」· §15.4 N23）：
+// 目标 = **该会话所在窗口**，按会话类型推导：
+//   - `work_session`（参与者干活子会话，无专属窗口）→ 其**父 group_chat** → 群聊窗口实例；
+//   - `group_chat` / `sub_chat` 本体 → 承载该会话的窗口实例（窗口建窗时随 `instance-register.session_id` 登记）；
+//   - 未命中（窗口未开 / 普通会话 / 无门面）→ **回落 turn 实例**（= 现状，零行为变化）。
+//
+// 「父 + 子都要」的广播分支（不带 `instance_id`）**不适用于 ask**：单问单答只需**抛问的那个会话窗口**
+// 作答，故恒定向（本函数恒返回非空——最次回落 turn 实例）。
+func (s *Server) askTargetInstance(turnInstance, turnID string) string {
+	sess := s.turnSession(turnID)
+	if sess == "" {
+		return turnInstance
+	}
+	row := s.sessionRow(turnInstance, sess)
+	lookup := sess
+	if row.Kind == facade.SessionKindWorkSession && row.ParentID != "" {
+		lookup = row.ParentID // 干活子会话 → 父群聊会话 → 群聊窗口实例
+	}
+	if ins, ok := s.im.InstanceForSession(lookup); ok && ins != "" {
+		return ins
+	}
+	return turnInstance
 }
 
 // onTaskStop 用户手动结束任务（§6.3 场景 7 / §6.6 取消）：级联定位任务子树 →
@@ -1592,7 +1646,12 @@ func (s *Server) onToolRetry(_ context.Context, _ string, v *mq.Value) error {
 	// B-03：gateway 重跑带超时（原来 context.Background() 无界 → 死连接可永久挂住本 handler）。
 	ctx, cancel := context.WithTimeout(context.Background(), retryCallTimeout)
 	defer cancel()
-	res, gwTaskID, err := s.gc.Call(ctx, node.Tool, args, ctxMsg)
+	// A5：非主会话强制同步（重跑同属"该会话里的工具调用"）——tc 缺失（按库重建失败）时不改参数。
+	callArgs := args
+	if tc != nil {
+		callArgs = tc.gatewayArgs(args)
+	}
+	res, gwTaskID, err := s.gc.Call(ctx, node.Tool, callArgs, ctxMsg)
 	if err != nil {
 		// 失败 / 超时均走失败终态（errMsg 携带原因，超时 = context deadline exceeded）。
 		s.tasks.done(node.TaskID, TaskStateError, "", err.Error())
@@ -1816,9 +1875,10 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 		req.WorkDir = rec.WorkDir
 		req.DataDir = rec.DataDir
 	}
-	// 系统提示词三层（**与新建轮同一构造**，见 resolveTurnScenario）：恢复轮无 scenario/agent
-	// （未持久化）→ desc/agents 为空 → 仅注入全局层 + 目录层（同「通用模式」）。
-	sc := s.resolveTurnScenario(instanceID, "", "")
+	// 系统提示词五层（**与新建轮同一构造**，见 resolveTurnScenario）：恢复轮请求里无 scenario/agent
+	// **入参**，但会话固定参数（子聊天的 agent / scenario_id，落库在会话行）经同一构造**取回**
+	// → 人格与第五层（会话注入层）在重启后不丢（SUBCHAT-2 阶段 A）。
+	sc := s.resolveTurnScenario(instanceID, session, "", "")
 	var hist []ChatMsg
 	if sc.sysPrompt != "" {
 		hist = []ChatMsg{{Role: "system", Content: sc.sysPrompt}}
@@ -2639,39 +2699,41 @@ func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]m
 	return out
 }
 
-// toolSandboxUserConfigKey 是 **executor 级沙箱开关**的 usr 键（64-配置项一览 §3，agentbox 决策
-// 42 §2 (109)；2026-09-26 由工具级改为 executor 级）：值 = 结构化 JSON 对象字符串
-// `{"core": true|false, "desktop": true|false, "browser": true|false}`（persist 自由键通道，
-// 形态同 tool_async）。key = executor 类别（= 契约 `_meta.category`，`src/mcp-tools` 的三个
-// 执行器能力目录）；**未配置 / false = 不启用隔离（默认兼容）**。**旧形态（按工具暴露名）不再生效**。
-// 消费链：loadExecConfig → gateway SetSandboxOverrides → mcp-server Config.SetToolSandbox →
-// callTool 按 `td.Category` 查开关 → 开启时 spawn executor 注入 CHONKPILOT_SANDBOX
-// （允许目录 = prj `security-*`）。
+// toolSandboxUserConfigKey 是 **agentbox 沙箱开关**的 usr 键（64-配置项一览 §3，agentbox 决策
+// 42 §2 (109)；2026-10-12 由 executor 类别重整为**被 spawn 的执行体**单位）：值 = 结构化 JSON
+// 对象字符串，形状 = `{"executors":{"<executor exe 基名>":true|false},
+// "mcps":{"<外部 MCP 名>":true|false}}`（persist 自由键通道，形态同 tool_async）。
+//   - executors：内置 executor，key = executor exe 基名（chonkpilot-{core,desktop,browser,dsl}-executor.exe）；
+//   - mcps：外部 MCP，key = MCP 条目名（gateway stdio spawn 时按 name 查）。
+// **未配置 / false = 不启用隔离（默认兼容）**。**旧形状（按 executor 类别 core/desktop/browser、
+// 及 usr `mcps[].sandbox`）读取时迁移**（见 mcpms.ParseToolSandbox / gateway mergeLegacySandboxMCP）。
+// 消费链：loadExecConfig/reloadToolAsyncOverrides → gateway SetSandboxOverrides → mcp-server
+// Config.SetToolSandbox → callTool 按**解析后的 runtime exe 基名**查开关 / gateway stdio spawn
+// 按 MCP 名查开关 → 开启时注入 CHONKPILOT_SANDBOX（允许目录 = prj `security-*`）。
 const toolSandboxUserConfigKey = "tool_sandbox"
 
 // applyToolSandbox 解析 usr `tool_sandbox` 并写入内嵌 mcp-server Config（SetToolSandbox）。
-// raw 为空/键缺失 → 清空全部开关（= 全部 executor 不隔离，保守默认）；非法 JSON → 忽略并记日志、
-// 保留现值。开关表变化无需重注册工具（开关在每次 tools/call 的 spawn 时读取，秒级生效）。
+// raw 为空/键缺失 → 清空全部开关（= 全部执行体不隔离，保守默认）；非法 JSON → 忽略并记日志、
+// 保留现值；**旧形状 → 读取时迁移为新形状**（ParseToolSandbox）。
+// 开关表变化无需重注册工具（开关在每次 tools/call 的 spawn 时读取，秒级生效）。
 func (s *Server) applyToolSandbox(raw string) {
 	if s.mcpCfg == nil {
 		return
 	}
-	var next map[string]bool
-	if strings.TrimSpace(raw) != "" {
-		if err := json.Unmarshal([]byte(raw), &next); err != nil {
-			logf("[chonkpilot-server] %s 解析失败（忽略，保留现值）: %v\n", toolSandboxUserConfigKey, err)
-			return
-		}
-	}
-	// 沙箱开关**下沉 gateway 统一写入**共享执行配置（I-82）：表 key = executor 类别（全局），
-	// gateway 直接转发给 mcp-server Config.SetToolSandbox（仅本仓 spawn 的 builtin executor 消费；
-	// 第三方 MCP 无本仓 executor，不施加）。
-	// 无 gateway（独立/测试形态）→ 回落直写（保持既有行为）。
-	if s.gw != nil {
-		s.gw.SetSandboxOverrides(next)
+	cfg, err := mcpms.ParseToolSandbox(raw)
+	if err != nil {
+		logf("[chonkpilot-server] %s 解析失败（忽略，保留现值）: %v\n", toolSandboxUserConfigKey, err)
 		return
 	}
-	s.mcpCfg.SetToolSandbox(next)
+	// 沙箱开关**下沉 gateway 统一写入**共享执行配置（I-82）：executors（exe 基名）+ mcps（MCP 名）
+	// 均为全局键位，gateway 直接转发给 mcp-server Config.SetToolSandbox（内置 executor 由 callTool
+	// 按 exe 基名消费；外部 MCP 由 gateway stdio spawn 按名消费）。
+	// 无 gateway（独立/测试形态）→ 回落直写（保持既有行为）。
+	if s.gw != nil {
+		s.gw.SetSandboxOverrides(cfg.Executors, cfg.MCPs)
+		return
+	}
+	s.mcpCfg.SetToolSandbox(cfg.Executors, cfg.MCPs)
 }
 
 // securityRules 读该实例的 prj `security-*`（信任目录）并换算为 agentbox 允许目录集
@@ -2734,24 +2796,16 @@ func (s *Server) gatewaySandboxRules() []agentbox.Rule {
 	return out
 }
 
-// applyGatewaySandboxDirs 为**开启 sandbox** 的 usr mcps 条目补上允许目录快照；
-// 未开启（nil/false）的条目保持 nil（与既有已下发集合逐字段相同 → 零 diff、不触发重连）。
+// applyGatewaySandboxDirs 为 usr mcps 条目补上 agentbox 允许目录快照（prj `security-*` 汇总）。
+// 快照恒填（开关由 usr `tool_sandbox.mcps` 决定、在 gateway stdio spawn 时按 MCP 名查询）；
+// 目录快照变化 → 条目 diff → 重注册/重连，使新允许目录在下一次 spawn 生效。
 func (s *Server) applyGatewaySandboxDirs(entries []mcpgateway.ServerEntry) {
-	need := false
-	for _, e := range entries {
-		if e.Sandbox != nil && *e.Sandbox {
-			need = true
-			break
-		}
-	}
-	if !need {
+	if len(entries) == 0 {
 		return
 	}
 	rules := s.gatewaySandboxRules()
 	for i := range entries {
-		if entries[i].Sandbox != nil && *entries[i].Sandbox {
-			entries[i].SandboxDirs = rules
-		}
+		entries[i].SandboxDirs = rules
 	}
 }
 

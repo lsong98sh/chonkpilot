@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
+	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
@@ -158,7 +159,10 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 		if s != nil && isTaskTool(req.Name) {
 			tc := s.lookupTurn(req.Turn)
 			if tc != nil {
-				node, _ := s.domainNode(tc, req.ToolCallID, req.Name, req.Arguments)
+				// 模拟 doCall：剥离前取出展示名 → 经**注入通道**（payload.context.purpose）送达
+				// handler（C1 / SUBCHAT-2 阶段 A）。
+				purpose := str(req.Arguments["tool_call_display_name"])
+				node, _ := s.domainNode(tc, req.ToolCallID, req.Name, req.Arguments, purpose)
 				text, isErr := s.execTaskTool(tc, req.ToolCallID, node, req.Name, req.Arguments, context.WithoutCancel(tc.ctx))
 				if isErr {
 					s.tasks.done(node.TaskID, TaskStateError, "", text)
@@ -1348,5 +1352,119 @@ func TestFeedNonDroppableNotBlocking(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("后台 goroutine 未投递消息（消息被丢弃）")
+	}
+}
+
+// ── SUBCHAT-2 阶段 A：会话注入层 / 会话固定参数 / 非主会话强制同步 ──────
+
+// ensureTestSession 经数据门面幂等建会话（测试用；Scope 显式传入以免依赖实例自登记）。
+func ensureTestSession(t *testing.T, s *Server, id string, req facade.SessionEnsureRequest) {
+	t.Helper()
+	req.InstanceID, req.SessionID, req.Scope = "ins-test", id, s.cfgScope("ins-test")
+	if _, err := s.cfg.SessionEnsure(req); err != nil {
+		t.Fatalf("SessionEnsure(%s): %v", id, err)
+	}
+}
+
+// TestResolveTurnScenarioSubChatInjectionLayer（A3 / SUBCHAT-2 阶段 A · 单聊 §3.3 / D37）：
+//   - 会话注入层（第五层）判定 = 会话行 `kind ∈ {sub_chat, group_chat}`（**确定事实**，与请求参数无关）；
+//   - 普通顶层会话 / 子会话（`sub_session`，含"历史行缺 kind 且 parent_id 非空"的读侧回退）/ 未知会话
+//     → 不注入（既有行为不变）；
+//   - 会话固定参数（agent / scenario_id）**优先于请求参数**（新轮与恢复轮同口径）。
+func TestResolveTurnScenarioSubChatInjectionLayer(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc((&llmRecorder{}).handler))
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+
+	ensureTestSession(t, s, "s-main", facade.SessionEnsureRequest{})
+	ensureTestSession(t, s, "s-subchat", facade.SessionEnsureRequest{
+		ParentSessionID: "s-main", Kind: facade.SessionKindSubChat,
+		Lifecycle: facade.SessionLifecycleChatting, Agent: "agent-x", ScenarioID: "scn-x", LLM: "llm-x",
+	})
+	ensureTestSession(t, s, "s-group", facade.SessionEnsureRequest{
+		ParentSessionID: "s-main", Kind: facade.SessionKindGroupChat,
+	})
+	// 历史/子会话：parent_id 非空但无 kind → 读侧回退 sub_session（不属子聊天体系）
+	ensureTestSession(t, s, "s-subsession", facade.SessionEnsureRequest{ParentSessionID: "s-main"})
+
+	// ① 普通顶层会话：不注入
+	if sc := s.resolveTurnScenario("ins-test", "s-main", "", ""); strings.Contains(sc.sysPrompt, subChatLayerText) {
+		t.Fatalf("普通顶层会话不应注入会话注入层：%q", sc.sysPrompt)
+	}
+	// ② 未知会话（读不到行）：保守不注入
+	if sc := s.resolveTurnScenario("ins-test", "s-ghost", "", ""); strings.Contains(sc.sysPrompt, subChatLayerText) {
+		t.Fatalf("未知会话不应注入会话注入层：%q", sc.sysPrompt)
+	}
+	// ③ 子会话（sub_session）→ 不注入（两类由 kind 分流：子会话仍走任务执行树）
+	if sc := s.resolveTurnScenario("ins-test", "s-subsession", "", ""); strings.Contains(sc.sysPrompt, subChatLayerText) {
+		t.Fatalf("子会话（sub_session）不应注入会话注入层：%q", sc.sysPrompt)
+	}
+	// ④ 子聊天 → 注入第五层 + 会话固定 agent 生效（请求 agent 为空也取回）
+	sc := s.resolveTurnScenario("ins-test", "s-subchat", "", "")
+	if !strings.Contains(sc.sysPrompt, subChatLayerText) {
+		t.Fatalf("子聊天应注入会话注入层：%q", sc.sysPrompt)
+	}
+	if !strings.Contains(sc.sysPrompt, "agent-x") {
+		t.Fatalf("应取会话行固定 agent（agent 层 persona）：%q", sc.sysPrompt)
+	}
+	// ⑤ 群聊同属「子聊天」体系 → 同注入（统一一套，不分化）
+	if gsc := s.resolveTurnScenario("ins-test", "s-group", "", ""); !strings.Contains(gsc.sysPrompt, subChatLayerText) {
+		t.Fatalf("群聊应注入会话注入层：%q", gsc.sysPrompt)
+	}
+	// ⑥ 会话固定参数优先于请求参数：请求另给 agent/scenario，仍以会话行为准
+	sc2 := s.resolveTurnScenario("ins-test", "s-subchat", "req-scn", "req-agent")
+	if strings.Contains(sc2.sysPrompt, "req-agent") || !strings.Contains(sc2.sysPrompt, "agent-x") {
+		t.Fatalf("会话固定参数应优先于请求参数：%q", sc2.sysPrompt)
+	}
+}
+
+// TestForceSyncToolsNonMainSession（A5 / SUBCHAT-2 阶段 A · 单聊 §12.5 B5 · 群聊 §16 D40）：
+// **非主会话（kind 非空）一律强制工具同步** —— gatewayArgs 附调用级 `async=never`
+// （gateway doCall 读取后剥离，不改 mcp-tools-call 载荷形状与工具入参）；主会话行为不变。
+func TestForceSyncToolsNonMainSession(t *testing.T) {
+	llm := httptest.NewServer(http.HandlerFunc((&llmRecorder{}).handler))
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+
+	ensureTestSession(t, s, "s-main", facade.SessionEnsureRequest{})
+	ensureTestSession(t, s, "s-subchat", facade.SessionEnsureRequest{
+		ParentSessionID: "s-main", Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleChatting,
+	})
+	ensureTestSession(t, s, "s-subsession", facade.SessionEnsureRequest{ParentSessionID: "s-main"})
+
+	// 主会话：不强制、args 原样返回（零开销、行为不变）
+	main := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-main"}}
+	in := map[string]any{"path": "a.txt"}
+	if main.forceSyncTools() {
+		t.Fatal("主会话不应强制同步")
+	}
+	if got := main.gatewayArgs(in); len(got) != len(in) {
+		t.Fatalf("主会话 args 应原样返回：%v", got)
+	}
+	if _, has := main.gatewayArgs(in)["async"]; has {
+		t.Fatal("主会话不得附 async 覆盖")
+	}
+
+	// 子聊天：强制同步 → 附 async=never；**不就地修改**调用方 args（落库/展示仍用原始）
+	sub := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-subchat"}}
+	if !sub.forceSyncTools() {
+		t.Fatal("子聊天应强制同步")
+	}
+	got := sub.gatewayArgs(in)
+	if got["async"] != "never" {
+		t.Fatalf("子聊天应附调用级 async=never：%v", got)
+	}
+	if _, mutated := in["async"]; mutated {
+		t.Fatalf("不得就地修改调用方 args：%v", in)
+	}
+
+	// 子会话（一切非主会话）同样强制；快路径（req.Parents 非空 = runChildTurn 子轮次）零查询即判
+	if legacy := (&turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-subsession"}}); !legacy.forceSyncTools() {
+		t.Fatal("子会话（非主会话）应强制同步")
+	}
+	if child := (&turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-unknown", Parents: []string{"s-main"}}}); !child.forceSyncTools() {
+		t.Fatal("Parents 非空的子轮次应强制同步")
 	}
 }

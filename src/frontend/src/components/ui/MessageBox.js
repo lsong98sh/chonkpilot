@@ -111,6 +111,8 @@ export function promptInput(placeholder, initialValue = '', options = {}) {
     let resolved = false
     let handle = null
     const multiline = !!options.multiline
+    // options.hint：输入框上方提示行（如「名称创建后不可修改」）。空 = 不显示。
+    const hint = String(options.hint || '')
     const value = ref(initialValue)
 
     const finish = (val) => {
@@ -130,6 +132,17 @@ export function promptInput(placeholder, initialValue = '', options = {}) {
           'div',
           { style: { padding: '8px 0' } },
           [
+            hint
+              ? h('div', {
+                style: {
+                  fontSize: '12px',
+                  color: 'var(--text-secondary, #888)',
+                  marginBottom: '6px',
+                  lineHeight: '1.5',
+                  whiteSpace: 'normal',
+                },
+              }, hint)
+              : null,
             multiline
               ? h(Textarea, {
                 modelValue: value.value,

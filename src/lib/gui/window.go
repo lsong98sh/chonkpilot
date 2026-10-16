@@ -42,6 +42,10 @@ const (
 // maxChatWindows 是独立对话窗口数量上限（24 §8 U-5 已决：≤5，不含主窗口）。
 const maxChatWindows = 5
 
+// maxGroupChatWindows 是**群聊窗口单独**数量上限（群聊方案 §9 D28/D30 · N13/N17 已决：5；
+// 与普通对话窗口**互不联动** —— 见 registry.go 的额度分类判定）。
+const maxGroupChatWindows = 5
+
 // coInitApartmentThreaded = COINIT_APARTMENTTHREADED（0x2；WebView2 要求 STA，24 §4.1）。
 const coInitApartmentThreaded = 2
 
@@ -142,6 +146,10 @@ type windowSpec struct {
 	title     string
 	url       string
 	frameless bool
+	// parentInstance 是**开本窗口的那个窗口的实例 id**（"谁开的指谁"，逐层链；空 = 顶层）。
+	// 用于跨窗口定向投递（61 §4.1 ④ · 单聊 §12.4 B4 / 群聊 §14.4 N18–N20）：随
+	// `instance-register.parent_instance` 上报，server 实例视图据此把子实例的事件投回父窗口。
+	parentInstance string
 	// onWired 在**窗口线程**上、webview 建好（句柄已解析、桥与 handler 已就绪）后、
 	// 导航前调用（主窗口用于 --test-port 接线）；返回错误 → 中止建窗。
 	onWired func(h *windowHost) error
@@ -257,6 +265,18 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		}
 		w.Dispatch(func() { w.Eval(script) })
 	}, env.bus)
+	// 窗口父子链（61 §4.1 ④ · 单聊 §12.4 B4）：desktop/gui 每窗口一个实例 → 新窗口登记
+	// 「谁开的指谁」（= 调用来源窗口实例，逐层链）。flash 形态全窗口**共享同一实例**
+	// （env.instanceID 非空）→ 无子实例，不写（写了会自指）。
+	if env.instanceID == "" && spec.parentInstance != "" {
+		h.br.SetParentInstance(spec.parentInstance)
+	}
+	// session 绑定上报（61 §4.1 ④ · 群聊 §13 D42 / §15.4 N23；🆕 2026-10-16 SUBCHAT-3 阶段 F-2）：
+	// desktop/gui 对话/群聊窗口每窗一个实例，登记其**绑定的会话** → server 端据此 **session → instance
+	// 反查**，把定向消息（`session-ask`）投到该会话所在窗口。flash 形态全窗口共享同一实例 → 不写。
+	if env.instanceID == "" && spec.sessionID != "" {
+		h.br.SetSessionID(spec.sessionID)
+	}
 	// 文件日志目录下发前端（init-data 只增字段 logDir；未挂 sink 时为空 → 字段缺省）。
 	h.br.SetLogDir(env.logDir)
 	// prjusr 数据根注入桥（附件/截图落盘根；[24 §3.2] MW-8）。

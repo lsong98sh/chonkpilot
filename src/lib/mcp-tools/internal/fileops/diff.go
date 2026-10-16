@@ -2,105 +2,14 @@ package fileops
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
-// maxDiffBytes 是 file_diff 单侧文件尺寸上限（8MB）：diffmatchpatch 为 O(n²) 量级，
+// maxDiffBytes 是 DIFF 单侧文件尺寸上限（8MB）：diffmatchpatch 为 O(n²) 量级，
 // 超限直接报错而非尝试全量 diff，防大文件 OOM（R7-C-3）。
 const maxDiffBytes = 8 << 20
-
-// HandleDiff 生成两文件（或两组路径）间的统一 diff。
-func HandleDiff(workDir string, args map[string]interface{}) *cli.Result {
-	// pair 携带两侧参数的来源标签（la/lb），便于路径违规时指明是哪一个。
-	type pair struct{ a, b, la, lb string }
-	var pairs []pair
-
-	if raw, ok := args["files"].([]interface{}); ok {
-		for i, r := range raw {
-			m, ok := r.(map[string]interface{})
-			if !ok {
-				return cli.Err("file_diff", fmt.Sprintf("files[%d]: expected object", i))
-			}
-			p, _ := m["path"].(string)
-			p2, _ := m["path2"].(string)
-			// 单对缺任一端 → 项级错误（不静默跳过，R7-C-11）。
-			if p == "" || p2 == "" {
-				return cli.Err("file_diff", fmt.Sprintf("files[%d]: path and path2 are required", i))
-			}
-			pairs = append(pairs, pair{p, p2,
-				fmt.Sprintf("files[%d].path", i), fmt.Sprintf("files[%d].path2", i)})
-		}
-	}
-	if f1, _ := args["file1"].(string); f1 != "" {
-		if f2, _ := args["file2"].(string); f2 != "" {
-			pairs = append(pairs, pair{f1, f2, "file1", "file2"})
-		}
-	}
-	if raw, ok := args["path"].([]interface{}); ok && len(raw) == 2 {
-		a, _ := raw[0].(string)
-		b, _ := raw[1].(string)
-		if a != "" && b != "" {
-			pairs = append(pairs, pair{a, b, "path[0]", "path[1]"})
-		}
-	}
-	if len(pairs) == 0 {
-		return cli.Err("file_diff", "provide file1+file2, path:[a,b], or files:[{path,path2}]")
-	}
-
-	// 参数级路径违规（R-11）→ 顶层错误（指明来源参数）
-	for _, pr := range pairs {
-		if msg := ValidateField(pr.la, pr.a); msg != "" {
-			return cli.Err("file_diff", msg)
-		}
-		if msg := ValidateField(pr.lb, pr.b); msg != "" {
-			return cli.Err("file_diff", msg)
-		}
-	}
-
-	dmp := diffmatchpatch.New()
-	var outputs []string
-	for _, pr := range pairs {
-		ra, errMsg := ResolvePath(pr.a, workDir)
-		if errMsg != "" {
-			return cli.Err("file_diff", errMsg)
-		}
-		rb, errMsg := ResolvePath(pr.b, workDir)
-		if errMsg != "" {
-			return cli.Err("file_diff", errMsg)
-		}
-		// agentbox 沙箱（仅隔离开启时生效）：两侧文件均须在允许读目录内
-		if err := sandboxErr(ra, false); err != nil {
-			return cli.Err("file_diff", err.Error())
-		}
-		if err := sandboxErr(rb, false); err != nil {
-			return cli.Err("file_diff", err.Error())
-		}
-		// R7-C-3：diffmatchpatch 为 O(n²) 内存/CPU，先按文件尺寸预检，超限直接拒绝（不整读、不 diff）。
-		for _, sp := range []struct{ disp, abs string }{{pr.a, ra}, {pr.b, rb}} {
-			if fi, serr := os.Stat(sp.abs); serr == nil && fi.Size() > maxDiffBytes {
-				return cli.Err("file_diff", fmt.Sprintf("%s 超过 diff 上限（%d 字节），请分段比较", sp.disp, maxDiffBytes))
-			}
-		}
-		da, err := os.ReadFile(ra)
-		if err != nil {
-			return cli.Err("file_diff", fmt.Sprintf("read %s: %s", pr.a, err))
-		}
-		db, err := os.ReadFile(rb)
-		if err != nil {
-			return cli.Err("file_diff", fmt.Sprintf("read %s: %s", pr.b, err))
-		}
-		textA := DecodeText(da)
-		textB := DecodeText(db)
-		diffs := dmp.DiffMain(textA, textB, false)
-		dmp.DiffCleanupSemantic(diffs)
-		outputs = append(outputs, renderUnifiedDiff(pr.a, pr.b, diffs))
-	}
-	return cli.Ok("file_diff", strings.Join(outputs, "\n"), map[string]interface{}{"pairs": len(pairs)})
-}
 
 // renderUnifiedDiff 生成简化的统一 diff 文本（- / + / 空格前缀行）。
 func renderUnifiedDiff(a, b string, diffs []diffmatchpatch.Diff) string {

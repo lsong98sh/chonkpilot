@@ -30,33 +30,73 @@
 
 ## 3. 对外接口
 
-### 3.1 契约格式（分区式，**非 frontmatter**）
+### 3.1 契约格式（H1 分区 + 代码块，**v2**，2026-10-14）
 
-```text
-# <标题>                      # 仅作可读标题（不等于原语名；原语名 = 文件名去后缀）
-[meta]
-key=value                    # 每行一个 k=v（首个 = 分割）
-[description]                # 多行
-[parameters]                 # tool：YAML → JSON Schema
-[arguments]                  # prompt：JSON Schema（required/properties）
-[content]                    # 正文
+> **变更**：由旧「`# 标题` + `[meta]`/`[description]`/`[parameters]`/`[arguments]`/`[content]` 方括号分区」**全面切换**为「**H1 分区 + yaml/json 代码块**」。**旧格式不再兼容读**（一次性迁移全部出厂资产与工具契约）。**单一解析源**：全仓仅保留一份解析/序列化实现（见 §3.4），旧的多处重复实现全部删除。
+
+````text
+# 基本信息
+```yaml
+name: <原语名>          # 唯一标识（= 文件名去后缀；保存时校验同级同类型唯一）
+title: <可读标题>        # 原「首行 # 标题」
+<类型专属键>             # 见下
 ```
 
-| 后缀 | 解析 | 注册 |
-|------|------|------|
-| `.tool.md` | `ToolDoc`（meta + description + parameters） | `srv.AddTool` |
-| `.skill.md` | `SkillDoc`（`[description]`+`[content]`，**`[meta]` 不参与**） | 转 `PromptDoc` + `_meta.type=skill` → `AddPrompt` |
-| `.prompt.md` | `PromptDoc`（description + arguments + content，`{{arg}}` 占位） | `AddPrompt`（`_meta.type=prompt`） |
-| `.resource.md` | `ResourceDoc`（meta `uri`/`mimetype` + description + content） | `AddResource`（uri 缺省 `file://<name>`） |
+# 摘要
+<description 文本>        # 原 [description]
 
-**tool meta 键**：`runtime` · `category` · `async`(auto\|always\|never\|manual，缺省 auto) · `async-threshold` · `timeout` · `args` · `output`(stdout\|code\|file，缺省 stdout) · `hot`。**工具标题不属 meta 键** —— 取自契约**首行 H1**（`Tool.Title`；见 [72-工具开发规范 §[meta] 字段明细](../70-conventions/72-工具开发规范.md)）。**`timeout`（执行硬上限）取值语义**：键**未设置**（缺失 / 空串）→ **回落**全局（executor 回落 prj `timeout_sec` / 内置 300s）；显式 **`0` / `-1` = 无上限**（`noLimit`，不设 `WithTimeout`，永远等、可取消）；正数 = 该值。**键显式声明即透出 `_meta.timeout`（含 `0`/`-1`）**，未设置则不写。**系统工具（`category=server` / `meta`）不单独设执行硬上限** → 契约写 `timeout=0`（**`0` = 无上限**，非"回落"）。权威口径见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
-**已删除死 meta**：`runtime-version` · `version` · `find` —— 解析与 `_meta` 透出均已移除，契约文件不再书写；**`title` 亦为死 meta 键**（不解析、不书写），工具标题链路 = **契约首行 H1 → `Tool.Title`**。
+# 参数                    # 仅 tool / prompt
+```json
+{"type":"object","properties":{},"required":[]}
+```
+
+# 参考                    # 仅 skill / agent
+```yaml
+skills:
+  - <name>
+tools:
+  - <name>
+```
+
+# 委托                    # 仅 agent（原 meta delegate）
+<委派条件文本>
+
+# 正文
+<markdown 正文>          # 原 [content]；必须是最后一个分区，其后整段原样归属正文
+````
+
+| 后缀 | 解析分区 | 注册 |
+|------|---------|------|
+| `.tool.md` | 基本信息 + 摘要 + 参数 | `srv.AddTool` |
+| `.skill.md` | 基本信息 + 摘要 + 参考 + 正文 | 转 `PromptDoc` + `_meta.type=skill` → `AddPrompt` |
+| `.prompt.md` | 基本信息 + 摘要 + 参数 + 正文 | `AddPrompt`（`_meta.type=prompt`） |
+| `.resource.md` | 基本信息 + 摘要 + 正文（或 meta `path` 外部内容文件） | `AddResource`（`uri` **隐式派生**；`mimetype` 有 `path` → 按该文件后缀，否则 `text/markdown`） |
+
+**分区规则**
+
+- 分区名固定集合 = `基本信息 / 摘要 / 参数 / 参考 / 委托 / 正文`；按序出现。**`正文` 必须是最后一个分区**——其后出现的任何 `#` 行均属正文文本，不再视为分区（兼容正文 markdown 自带 H1）。
+- 除 `正文` 外，出现非固定分区名的 H1 → **解析报错**（不静默吞并）。
+- 分区缺失 = 对应字段为空（`摘要`/`参数`/`参考`/`委托` 可缺省；`基本信息` 必存在且含 `name`）。
+
+**基本信息（yaml）类型专属键**
+
+- `tool` → `runtime`·`category`·`async`·`async-threshold`·`timeout`·`args`·`output`·`hot`（字段语义同旧 `[meta]`，见 [72 §2](../70-conventions/72-工具开发规范.md)）
+- `agent` → `roletag`·`ismain`·`llm`；**名单类引用入「# 参考」分区**（`skills` / `tools` / `resources`，每项 = 同类型原语的 `name`），**委派条件入「# 委托」分区**（2026-10-14：不再落「基本信息」）。🆕 **2026-10-15（D-58）**：**场景主 agent**（内联）经 `data-scenario-save/load` 的 `agents[]` 落盘，其 `skills` / `resources`（**可选 `string[]`**）与 agent 原语**同形**（同落「# 参考」分区 `refs.skills` / `refs.resources`）；`agents[]` 为**字段增补**，`data-scenario-*` 主题零增删。
+- `skill` → 无必填键；`prompt` → 无（参数走「# 参数」）；`resource` → 无（`uri` 隐式）；**可选 `path`** = 指向**外部内容文件**（相对契约文件目录或绝对路径）——有则资源**无「正文」**、内容取自该文件、`mimetype` 按其后缀识别
+
+**治理规则**
+
+- **`name` 必填**：`基本信息` 至少保留 `name` 一个键，**不可删**；其余键按类型可增删。**唯一性 = 同一可见集（app ∪ usr ∪ prj ∪ prjusr）内、同类型不重名**（`app` 已有 `abc` → 其下 `usr/prj/prjusr` 不得再有 `abc`；不同项目之间可同名）。
+- **隐式字段**（**不写盘、界面不显示、仅在注册 MCP 时提供给消费端**）：`resource.uri` = `mcp://chonkpilot/resources/<name>`；`mimetype`：**有 meta `path`（外部内容文件）→ 按该文件后缀识别**（`MimetypeOfFile`，确定性表，未收录 → `application/octet-stream`），否则 = `text/markdown`。**外部文件为二进制时**资源内容经 MCP `blob`（base64）返回，文本经 `text`（2026-10-14）。
+
+**tool「基本信息」键**（v2：写在 `# 基本信息` 的 yaml 块，非旧 `[meta]`）：`runtime` · `category` · `async`(auto\|always\|never\|manual，缺省 auto) · `async-threshold` · `timeout` · `args` · `output`(stdout\|code\|file，缺省 stdout) · `hot`。**工具标题** = 「基本信息」的 `title` 键（v2；原「首行 H1」→ `Tool.Title`，见 [72 §2](../70-conventions/72-工具开发规范.md)）。**`timeout`（执行硬上限）取值语义**：键**未设置**（缺失 / 空串）→ **回落**全局（executor 回落 prj `timeout_sec` / 内置 300s）；显式 **`0` / `-1` = 无上限**（`noLimit`，不设 `WithTimeout`，永远等、可取消）；正数 = 该值。**键显式声明即透出 `_meta.timeout`（含 `0`/`-1`）**，未设置则不写。**系统工具（`category=server` / `meta`）不单独设执行硬上限** → 契约写 `timeout=0`（**`0` = 无上限**，非"回落"）。权威口径见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
+**已删除死 meta**：`runtime-version` · `version` · `find` —— 解析与 `_meta` 透出均已移除，契约文件不再书写；**`title` 亦为死 meta 键**（不解析、不书写），工具标题链路 = **「基本信息」`title` → `Tool.Title`**。
 仅兼容读：`entry`（已废弃，解释器类遗留）；`hot` 吸收旧 `llm`。
 透出到工具 `_meta`：`hot` / `category` / `async` / `async-threshold`（仅 `>0`） / `timeout`（**键显式声明即透出，含 `0`/`-1` = 无上限**）（+ gateway 注入 `server`；`title` 走 `Tool.Title`，**不进 `_meta`**）。
 
 > **目录资产注册 payload 的 `path`**：`.prompt.md` / `.resource.md` 解析出的 `PromptDoc` / `ResourceDoc` 仍是**静态内容**（`[content]`）；gateway 侧目录资产注册面 `prompts/register`（`{name, description, arguments?, content?, path?, asset_kind?}`）与 `resources/register`（`{name, uri?, description?, mimetype?, content?, path?}`）**新增可选 `path`** = 运行时内容来源路径，**有则该资产内容按需读盘、不驻留 `content`**（无 `path` 时仍用 `content` 兼容兜底，`catalogAsset.Path` + `assetContent()`）。**payload 明细以 [61 §5.1.1](../60-reference/61-消息一览.md) 为准**（本模块仅消费同一契约根扫描出的原语，5 字段均为 gateway `regMsg` 字段）。
 
-> **文本占位**：`*.prompt.md` / `*.skill.md` 的 `[content]` 支持 `{{toolchain.<key>}}`（key ∈ `java`/`python`/`node`/`go`/`rust`/`c`/`chrome`）——`makePromptHandler` 渲染时按 `Config.Toolchain`（装配层注入的 usr `*Path` 值）替换；已知 key 未配置 → 空串、未知 key → 原样保留、不影响 `{{arg}}` 与 DSL `{{env.X}}`（实现 `server/toolchain.go ReplaceToolchain`，见 [21-llm-server](21-llm-server.md)）。
+> **文本占位**：`*.prompt.md` / `*.skill.md` 的「# 正文」支持 `{{toolchain.<key>}}`（key ∈ `java`/`python`/`node`/`go`/`rust`/`c`/`chrome`）——`makePromptHandler` 渲染时按 `Config.Toolchain`（装配层注入的 usr `*Path` 值）替换；已知 key 未配置 → 空串、未知 key → 原样保留、不影响 `{{arg}}` 与 DSL `{{env.X}}`（实现 `server/toolchain.go ReplaceToolchain`，见 [21-llm-server](21-llm-server.md)）。
 
 ### 3.2 config.json
 
@@ -68,6 +108,15 @@ key=value                    # 每行一个 k=v（首个 = 分割）
 - `resources/{core/core-overview, go/webview2-frameless, ui/frontend-drag-resize}.resource.md`
 - `skills/core/{agent-prompt-rule, debug, explore, sandbox-escape}.skill.md`
 - **本目录无 `.tool.md`**（工具契约在 [27-mcp-tools](27-mcp-tools.md)，部署时合并到同一 `capability/`）。
+
+### 3.4 单一契约解析器（v2，2026-10-14）
+
+> **背景（现状核查结论）**：v1 的方括号分区解析在仓库里存在 **4 份互不调用的重复实现**——data 层 `capfs`（`ParseDoc/BuildDoc`）、mcp-server `contract`（`splitSections/parseMeta/firstHeading`）、llm-server `domainmd`（`parseSectionMD`）、mcp-tools `cli`（`firstTitle`）——仅靠注释「与另一处保持一致」人工同步，边界行为（未知分区 / `arguments` vs `parameters` / 标题缺失）无统一保证。
+
+- **唯一实现**：收敛为**单一契约解析包**（H1 分区解析 + 序列化 + 模板 + 「文件名 ↔ 类型」映射 + 隐式字段派生）。上述 4 处**全部改为调用它，旧实现一律删除**（无兼容分支）。
+- **消费方**：data 层读写、mcp-server 注册扫描、llm-server 域工具契约读取、mcp-tools CLI `--help`、gateway 目录资产加载，均复用同包。
+- **前端**：`utils/agentRef.js` 等仅做「领域模型 ↔ 契约字段」映射，不自行解析分区；序列化以同包规则为准。
+- **保存即刷新（保持现状，2026-10-14 裁定）**：保存后**由 fsnotify（capwatch，去抖 60ms）隐式热生效**——**不新增显式刷新消息**（见 §4.4/§7）。
 
 ---
 
@@ -102,14 +151,14 @@ defaults 与 args 合并（客户端显式覆盖默认）
         stdout：JSON 原样透传；纯文本封装 {status,output}
         code  ：按退出码判定
         file  ：fileThreshold=200KB；≤阈值且合法 UTF-8 且无 NUL → 直返内容，
-                否则"结果已保存至 <path>（N 字节），用 file_read 提取"
+                否则"结果已保存至 <path>（N 字节），用 filesys_run READ 提取"
 ```
 
 - **不设置 `cmd.Dir`**（子进程继承宿主 cwd；仅契约 runtime/entry 按契约目录相对解析）。
 - **ctx 继承请求（B3 已落地）**：`callTool` 的 `ctx2` **派生自请求 ctx**（原为 `context.Background()`）——取消经 in-memory 传输的 `notifications/cancelled` 取消 handler 请求 ctx，`exec.CommandContext` 随之 kill 子进程（「收到取消 → 真停」写在执行体侧，见 [18 §3.7](../10-architecture/18-工具异步超时与取消.md)）。有硬上限时 `ctx2 = WithTimeout(请求 ctx)`；显式 `0`/`-1`（无上限）时 `ctx2 = 请求 ctx`（不设超时点，取消仍可达）。
 - **调用上下文（R-11 二次升级）与子进程注入**：调用上下文（`instance_id`/`work_dir`/`data_dir`）经 MCP `tools/call` 的 **`params._meta`** 命名空间 `chonkpilot` 透传（`server.CallContext` / `callContextFromMeta` / `CallContextMeta`；**不进 tool arguments**）。**上下文存在但 instance 为空 → 工具执行失败（异常）；完全无上下文（外部直连 stdio/HTTP 客户端）→ 不注入、不报错**。spawn executor 时 `Config.executorEnv` 把 `CHONKPILOT_INSTANCE/WORKDIR/DATADIR/INTERPRETERS` 与 `CHONK_CHROME` 注入**子进程环境变量**（继承宿主环境前**剥离**残留 `CHONKPILOT_*`）。`defaultsMap` 只注入 `skip_dirs`/`ignore_files`/`fileext`（原 `_workdir`/`_datadir`/`_instance`/`_interpreters` 注入已移除）。`Config.SetContext` 已删除。
   - **来源边界**：本仓 mcp-server（内嵌 self / dir 节点 / standalone 自有部署）在 gateway 侧标注 `Origin=builtin` → 收到 `_meta["chonkpilot"]`；第三方（用户定义）server 为 `Origin=user`，gateway 不向其携带 `_meta`，故其永远拿不到 `CHONKPILOT_*`（判定见 [26-mcp-gateway](26-mcp-gateway.md) 来源标注段）。
-- **agentbox 沙箱（executor 级）**：`Config` 增 `SecurityDirs []agentbox.Rule`（prj `security-*` 换算的「可读 / 可写目录（递归）」）与 `ToolSandbox map[string]bool`（usr `tool_sandbox`，**executor 级**开关：key = 类别 core/desktop/browser），装配层经 `SetSecurityDirs`/`SetToolSandbox` 注入（gateway `SetSandboxOverrides` 直写共享 Config）。`callTool` 按 **`td.Category`**（= 契约 `_meta.category`）查开关，命中即 `executorEnv(cx, policy)` **额外注入 `CHONKPILOT_SANDBOX`**（策略 JSON）→ 执行器侧 `src/lib/agentbox` 强制拦截越界读写，并记一行日志 `[mcp-server] agentbox 隔离生效：category=… tool=… dirs=…`。**未配置 = 不注入 = 不启用隔离**（默认兼容）；**旧形态（按工具暴露名）不再生效**。见 [14 §7](../10-architecture/14-安全域-agentbox.md) · [64 §3](../60-reference/64-配置项一览.md)。
+- **agentbox 沙箱（被 spawn 执行体级）**：`Config` 增 `SecurityDirs []agentbox.Rule`（prj `security-*` 换算的「可读 / 可写目录（递归）」）与 `ToolSandbox`（usr `tool_sandbox`，**管理单位 = 被 spawn 的执行体**：内置 executor 按 **exe 基名**、外部 MCP 按 **mcp 名**；**2026-10-12 由 executor 类别 core/desktop/browser 重整**，旧形状读取时迁移），装配层经 `SetSecurityDirs`/`SetToolSandbox` 注入（gateway `SetSandboxOverrides` 直写共享 Config）。`callTool` 按 **被 spawn 执行体的 exe 基名**（解析后 runtime `argv[0]` 的 `filepath.Base`）查开关，命中即 `executorEnv(cx, policy)` **额外注入 `CHONKPILOT_SANDBOX`**（策略 JSON）→ 执行器侧 `src/lib/agentbox` 强制拦截越界读写，并记一行日志 `[mcp-server] agentbox 隔离生效：unit=… tool=… dirs=…`。**未配置 = 不注入 = 不启用隔离**（默认兼容）；**旧工具暴露名形态不再生效**。见 [14 §7](../10-architecture/14-安全域-agentbox.md) · [64 §3](../60-reference/64-配置项一览.md)。
 - **执行硬上限与 ctx 语义（已落地，详见 [18-工具异步超时与取消](../10-architecture/18-工具异步超时与取消.md)）**：`resolveExecTimeout` 硬上限（usr `hard_timeout` 优先于契约 `timeout`，每级「未设置」才回落；显式 `0`/`-1` = 无上限 → 不设 `WithTimeout`）**保留**；`ctx2` 继承请求 ctx（B3）→ gateway 经 ctx 下沉 cancel 可被执行体侧消费（**kill 留在本模块 lib**，决策 42 §2 (241)）。
 
 ---

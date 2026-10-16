@@ -49,3 +49,61 @@ export function primitiveLabelKey(tok) {
 export function primitiveTagType(tok) {
   return { tool: 'primary', skill: 'success', prompt: 'warning', resource: 'info', agent: 'warning' }[tok] || 'info'
 }
+
+// ── v2 契约（H1 分区 + yaml/json 代码块，见 25-mcp-server §3.1）──────────────
+
+// 各类型的「默认键」：新建时**必须显示且不可删除**（连同 name）。其余键可增删。
+export const PRIMITIVE_META_DEFAULTS = {
+  tool: ['runtime', 'args', 'output'],
+  skill: [],
+  prompt: [],
+  resource: [],
+  agent: ['roletag', 'ismain', 'llm'],
+}
+
+// 各类型「正文」的推荐大纲（骨架，指导用户逐段填写；也是「AI 生成」的依据）。
+export const PRIMITIVE_OUTLINES = {
+  tool: ['## 用途', '## 适用场景', '## 用法示例', '## 注意事项'],
+  skill: ['## 目标', '## 步骤', '## 检查点', '## 反例'],
+  prompt: ['## 角色', '## 任务', '## 输入', '## 输出要求'],
+  resource: ['## 概述', '## 要点', '## 参考'],
+  agent: ['## 职责', '## 工作方式', '## 协作', '## 输出'],
+}
+
+// 各类型出现「参数」页签（JSON Schema）。
+export function hasParamsTab(tok) {
+  return tok === 'tool' || tok === 'prompt'
+}
+
+// 各类型出现「参考」页签（skills / tools 名单）。
+export function hasRefsTab(tok) {
+  return tok === 'skill' || tok === 'agent'
+}
+
+// buildContractMd 按 v2 规则把表单组装为契约 markdown（**预览**用；落盘以服务端 Build 为准）。
+export function buildContractMd(doc) {
+  const d = doc || {}
+  const lines = ['# 基本信息', '```yaml', 'name: ' + String(d.name || '').trim()]
+  if (String(d.title || '').trim()) lines.push('title: ' + String(d.title).trim())
+  const meta = d.meta || {}
+  Object.keys(meta)
+    .filter((k) => k && k !== 'name' && k !== 'title' && String(meta[k] ?? '').trim() !== '')
+    .sort()
+    .forEach((k) => lines.push(k + ': ' + String(meta[k]).trim()))
+  lines.push('```', '')
+  if (String(d.description || '').trim()) lines.push('# 摘要', String(d.description).trim(), '')
+  if (String(d.parameters || '').trim()) lines.push('# 参数', '```json', String(d.parameters).trim(), '```', '')
+  const refs = d.refs || {}
+  const refKeys = Object.keys(refs).filter((k) => (refs[k] || []).length > 0).sort()
+  if (refKeys.length) {
+    lines.push('# 参考', '```yaml')
+    refKeys.forEach((k) => {
+      lines.push(k + ':')
+      refs[k].forEach((it) => lines.push('  - ' + String(it).trim()))
+    })
+    lines.push('```', '')
+  }
+  if (String(d.delegate || '').trim()) lines.push('# 委托', String(d.delegate).trim(), '')
+  if (String(d.content || '').trim()) lines.push('# 正文', String(d.content).trim())
+  return lines.join('\n')
+}

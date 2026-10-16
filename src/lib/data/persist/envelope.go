@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -472,6 +474,63 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		// P3（2026-09-25）：结果载荷**只增**伴随数组 turn_tokens（每项 {turn_id,full,brief}）；
 		// 无可带项时**不写该键** → 与旧载荷逐字节等价（旧订阅方零影响）。
 		okf(wire.ContextResult(resp.Messages, resp.TurnTokens))
+	// ── 群聊两表（SUBCHAT-3 阶段 E，2026-10-16；prjusr：group_participants /
+	// group_round_targets）──
+	// 载荷接受扁平与 `{data:{…}}` 两形（parseDataReq 已把顶层业务字段并入 Data，见其注释）。
+	// **不广播 -refresh**（名册/进度类表；读方 = 群聊调度器，按其节奏读）。
+	case "group-participants-load":
+		sid := Sval(wireReq[msgkeys.FieldSessionId])
+		if sid == "" {
+			sid = sessionIDOf(req)
+		}
+		resp, err := s.GroupParticipantsLoad(facade.GroupParticipantsLoadRequest{
+			InstanceID: req.InstanceID, SessionID: sid,
+		})
+		if err != nil {
+			failf("%v", err)
+			return
+		}
+		okf(wire.GroupParticipantsResult(resp.List))
+	case "group-participants-save":
+		sid := Sval(wireReq[msgkeys.FieldSessionId])
+		if sid == "" {
+			sid = sessionIDOf(req)
+		}
+		if _, err := s.GroupParticipantsSave(facade.GroupParticipantsSaveRequest{
+			InstanceID: req.InstanceID, SessionID: sid,
+			List: wire.GroupParticipantsFromWire(sid, wireReq),
+		}); err != nil {
+			failf("%v", err)
+			return
+		}
+		okf(wire.OKResult())
+	case "group-round-targets-load":
+		sid := Sval(wireReq[msgkeys.FieldSessionId])
+		if sid == "" {
+			sid = sessionIDOf(req)
+		}
+		resp, err := s.GroupRoundTargetsLoad(facade.GroupRoundTargetsLoadRequest{
+			InstanceID: req.InstanceID, SessionID: sid, Round: intVal(wireReq["round"]),
+		})
+		if err != nil {
+			failf("%v", err)
+			return
+		}
+		okf(wire.GroupRoundTargetsResult(resp.List))
+	case "group-round-targets-save":
+		sid := Sval(wireReq[msgkeys.FieldSessionId])
+		if sid == "" {
+			sid = sessionIDOf(req)
+		}
+		if _, err := s.GroupRoundTargetsSave(facade.GroupRoundTargetsSaveRequest{
+			InstanceID: req.InstanceID, SessionID: sid,
+			Round:  intVal(wireReq["round"]),
+			Agents: stringSlice(wireReq["agents"]),
+		}); err != nil {
+			failf("%v", err)
+			return
+		}
+		okf(wire.OKResult())
 	}
 }
 
@@ -684,6 +743,30 @@ func (s *Service) handleKnowledge(action string, req dataReq, _ []byte) {
 			return
 		}
 		okf(wire.OKResult())
+	case "import": // 导入 / 新建「其他类型」（61 §3.3；逐文件尽力而为 → ok + paths + errors）
+		r := wire.KnowledgeImportFromWire(m)
+		r.InstanceID = req.InstanceID
+		resp, err := s.KnowledgeImport(r)
+		if err != nil {
+			failf(err)
+			return
+		}
+		paths := make([]any, 0, len(resp.Paths))
+		for _, p := range resp.Paths {
+			paths = append(paths, p)
+		}
+		result := map[string]any{
+			msgkeys.DataKnowledgeImportResultOk:    resp.OK,
+			msgkeys.DataKnowledgeImportResultPaths: paths,
+		}
+		if len(resp.Errors) > 0 {
+			errs := make([]any, 0, len(resp.Errors))
+			for _, e := range resp.Errors {
+				errs = append(errs, map[string]any{msgkeys.FieldName: e.Name, msgkeys.FieldError: e.Error})
+			}
+			result[msgkeys.DataKnowledgeImportResultErrors] = errs
+		}
+		okf(result)
 	}
 }
 
@@ -887,4 +970,26 @@ func stringSlice(v any) []string {
 		}
 	}
 	return out
+}
+
+// intVal 从消息面载荷取整数值（JSON 数字 / 字符串十进制；缺省 / 非法 → 0）。
+// 供群聊两表（SUBCHAT-3 阶段 E：`round` 等）的信封层取值。
+func intVal(v any) int {
+	switch t := v.(type) {
+	case float64:
+		return int(t)
+	case int:
+		return t
+	case int64:
+		return int(t)
+	case json.Number:
+		if n, err := t.Int64(); err == nil {
+			return int(n)
+		}
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
+			return n
+		}
+	}
+	return 0
 }

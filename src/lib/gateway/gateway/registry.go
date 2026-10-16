@@ -133,31 +133,32 @@ type catalogAsset struct {
 // assetMaxBytes 是资产实时读盘上限（4MB）：防单个资产无上限读入内存（C-22）。
 const assetMaxBytes = 4 << 20
 
-// assetContent 取资产内容（RB-4 ①，2026-09-22）：`path` 非空 → **实时读盘**（内容不驻留）；
+// assetContentBytes 取资产内容字节（RB-4 ①，2026-09-22）：`path` 非空 → **实时读盘**（内容不驻留）；
 // 无 `path` → 返回注册载荷携带的 `content`（内嵌域 agent 等无运行时落点的资产，兼容兜底）。
-// 读盘失败 → ("", nil)（有 path 即视为唯一来源，不回退陈旧副本）；超上限 → 报错（调用方转工具错误）。
+// 读盘失败 → (nil, nil)（有 path 即视为唯一来源，不回退陈旧副本）；超上限 → 报错（调用方转工具错误）。
+// 返回**原始字节**：资源外部文件可为二进制（如 png），调用方按 mimetype 决定经 text 还是 blob 承载。
 //
 // 沙箱豁免（RB-4 ①）：`path` 来自**装配层注册的资产元信息**（非用户 DSL/工具入参），
 // 属受控来源 → 不施加 agentbox 校验；DSL 脚本侧读盘由执行器 dslfs 句柄统一沙箱化。
-func assetContent(a *catalogAsset) (string, error) {
+func assetContentBytes(a *catalogAsset) ([]byte, error) {
 	if a == nil {
-		return "", nil
+		return nil, nil
 	}
 	if a.Path != "" {
 		fi, err := os.Stat(a.Path)
 		if err != nil {
-			return "", nil
+			return nil, nil
 		}
 		if fi.Size() > assetMaxBytes {
-			return "", fmt.Errorf("asset content exceeds %d bytes: %s", assetMaxBytes, a.Path)
+			return nil, fmt.Errorf("asset content exceeds %d bytes: %s", assetMaxBytes, a.Path)
 		}
 		b, err := os.ReadFile(a.Path)
 		if err != nil {
-			return "", nil
+			return nil, nil
 		}
-		return string(b), nil
+		return b, nil
 	}
-	return a.Content, nil
+	return []byte(a.Content), nil
 }
 
 // ─── 共享能力节点（RB-3 ①：注册表按 node key 唯一，instance 只持引用集）───

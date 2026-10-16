@@ -281,12 +281,12 @@ def case_plain_chat():
 
 
 def case_tool_call():
-    """五.3 工具调用：q 含 'call tool' → mock 返回 tool_calls(file_read) → tool-pair/tool-result。"""
+    """五.3 工具调用：q 含 'call tool' → mock 返回 tool_calls(dsl_run FILE_READ) → tool-pair/tool-result。"""
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
     c.mq_on_capture(EVENTS)
     sid = create_session()
     activate_session(sid)
-    start_turn(sid, "please call tool file_read on a.txt")
+    start_turn(sid, "please call tool FILE_READ on a.txt")
     confirm_turn(sid)
     # 工具调用事件
     tc = wait_event("llm-tool-call", max_wait=60)
@@ -306,7 +306,7 @@ def case_tool_call():
         if "hello from a.txt" in txt:
             return
         time.sleep(1)
-    raise TestError("最终回复未包含 file_read 结果（hello from a.txt）")
+    raise TestError("最终回复未包含 dsl_run FILE_READ 结果（hello from a.txt）")
 
 
 def case_payload_llm_config():
@@ -446,12 +446,12 @@ def case_chat_display():
 
 def case_toolpair_dom():
     """五.13 tool-pair 显示、展开、详情：msg-toggle-collapse 展开 → arguments/result 可见。"""
-    # 复用最近会话：触发一次带 file_read 的 turn 产生 tool-pair 消息
+    # 复用最近会话：触发一次带 dsl_run FILE_READ 的 turn 产生 tool-pair 消息
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
     c.mq_on_capture(EVENTS)
     sid = create_session()
     activate_session(sid)
-    start_turn(sid, "please call tool file_read on a.txt")
+    start_turn(sid, "please call tool FILE_READ on a.txt")
     confirm_turn(sid)
     wait_event("llm-complete", max_wait=90)
     # tool-pair 消息落点（DOM）

@@ -1084,7 +1084,7 @@ func TestProxyProviderInvalidateRespawns(t *testing.T) {
 	p, err := newProxyProvider(&ServerEntry{
 		ID: "h", Runtime: exe, Transport: "stdio", Origin: OriginBuiltin,
 		Env: []string{"GATEWAY_STDIO_HELPER=1"},
-	}, 5*time.Second, t.Logf)
+	}, 5*time.Second, t.Logf, nil)
 	if err != nil {
 		t.Fatalf("newProxyProvider: %v", err)
 	}

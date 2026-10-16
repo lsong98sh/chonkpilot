@@ -120,11 +120,14 @@ func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any
 	// 不改变 stdio 管道，stdout/stderr 捕获逻辑不受影响。
 	cmd.SysProcAttr = winproc.SysProcAttr()
 	// 子进程环境：CHONKPILOT_*（调用上下文 + 解释器配置）+ CHONK_CHROME（浏览器路径）
-	// + CHONKPILOT_SANDBOX（**仅该工具所属 executor 类别在 tool_sandbox 开关中启用隔离时**
+	// + CHONKPILOT_SANDBOX（**仅当该工具 spawn 的执行体在 tool_sandbox 开关中启用隔离时**
 	// 注入的 agentbox 策略；未配置 = 不注入 = 默认兼容）。仅本仓 spawn 的内部 executor 进程可见。
-	sandboxPolicy := cfg.SandboxPolicyFor(td.Category)
+	// 沙箱**管理单位 = 被 spawn 的执行体**（内置 executor 取 exe 基名；2026-10-12 由 executor
+	// 类别重整）：argv[0] 即解析后的 runtime（exe 绝对路径 / 解释器名），取基名作单位键。
+	sandboxUnit := filepath.Base(argv[0])
+	sandboxPolicy := cfg.SandboxPolicyFor(sandboxUnit)
 	if sandboxPolicy != "" {
-		log.Printf("[mcp-server] agentbox 隔离生效：category=%s tool=%s dirs=%s", td.Category, td.Name, truncate(sandboxPolicy, 500))
+		log.Printf("[mcp-server] agentbox 隔离生效：unit=%s tool=%s dirs=%s", sandboxUnit, td.Name, truncate(sandboxPolicy, 500))
 	}
 	cmd.Env = cfg.executorEnv(cx, sandboxPolicy)
 	out, runErr := cmd.Output()

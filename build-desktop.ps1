@@ -1,4 +1,4 @@
-﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
+# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-standalone-gui.ps1`；
 #   形态名 `standalone` → **`desktop`（桌面单体）**，产物目录 `dist/standalone/` → `dist/desktop/`。
@@ -170,7 +170,10 @@ Write-Host "==> [2/9] build chonkpilot.exe"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Push-Location $desktop
 try {
-    go build -tags $desktopTags -ldflags "-H windowsgui" -o $outGuiExe .
+    # 仅在非空时传 -tags：Windows PowerShell 5.1 会丢弃空串实参，
+    # 使 `-tags` 误吞 `-ldflags`，进而把 `-H windowsgui` 当成未知顶层参数（见 2026-10-14 修复）。
+    $tagsArg = if ($desktopTags) { @("-tags", $desktopTags) } else { @() }
+    go build @tagsArg -ldflags "-H windowsgui" -o $outGuiExe .
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
     $mb = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
     Write-Host "    ok: $outGuiExe ($mb MB)"

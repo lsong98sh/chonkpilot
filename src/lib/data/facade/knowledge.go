@@ -37,20 +37,24 @@ type KnowledgeFile struct {
 	Modified string `json:"modified"`
 }
 
-// KnowledgeDoc 是知识库文档的**领域形态**（标题 / 元信息 / 描述 / 参数段 / 正文）。
+// KnowledgeDoc 是知识库文档的**领域形态**（v2 契约，见 [25-mcp-server §3.1](../../20-modules/25-mcp-server.md)）。
 type KnowledgeDoc struct {
-	// Title 标题。
+	// Name 原语名（= 文件名去后缀；「基本信息」name；必填、不可删）。
+	Name string `json:"name"`
+	// Title 可读标题（「基本信息」title）。
 	Title string `json:"title"`
-	// Meta 元信息（键 → 值；按类型含 runtime/entry/args/output、arguments、uri/mimetype 等）。
+	// Meta 「基本信息」其余键（类型专属，按类型含 runtime/args/output、async、hot 等）。
 	Meta map[string]string `json:"meta"`
-	// Description 描述。
+	// Description 摘要。
 	Description string `json:"description"`
-	// Parameters 参数段（YAML 文本；段名见 ParamsSection）。
+	// Parameters 参数（json 文本；仅 tool / prompt）。
 	Parameters string `json:"parameters"`
+	// Refs 参考（仅 skill / agent）：键 skills / tools → 名称列表。
+	Refs map[string][]string `json:"refs,omitempty"`
+	// Delegate 委托条件（仅 agent）。
+	Delegate string `json:"delegate,omitempty"`
 	// Content 正文。
 	Content string `json:"content"`
-	// ParamsSection 参数段分区名（`[parameters]` / `[arguments]`；空 = 默认 `[parameters]`）。
-	ParamsSection string `json:"params_section,omitempty"`
 }
 
 // ── 请求 / 响应 ────────────────────────────────────────────────────
@@ -237,4 +241,42 @@ type KnowledgeRenameDirRequest struct {
 type KnowledgeRenameDirResponse struct {
 	// OK 是否成功（失败走 error）。
 	OK bool `json:"ok"`
+}
+
+// KnowledgeImportFile 是导入 / 新建「其他类型」的单个文件（领域字段）。
+type KnowledgeImportFile struct {
+	// Name 文件名（实现侧经 filepath.Base 净化，防路径穿越）。
+	Name string `json:"name"`
+	// Content 文件内容（base64 编码的文件字节；空 = 空文件）。
+	Content string `json:"content"`
+}
+
+// KnowledgeImportRequest 是导入 / 新建「其他类型」入参（61 §3.3 `data-knowledge-import`）。
+type KnowledgeImportRequest struct {
+	// InstanceID 实例 id。
+	InstanceID string `json:"instance_id,omitempty"`
+	// Dir 目标目录（空 / 相对 = project 根）。
+	Dir string `json:"dir,omitempty"`
+	// Files 待落盘文件列表（逐文件尽力而为）。
+	Files []KnowledgeImportFile `json:"files"`
+	// Scope 实例数据根（可选；语义同上）。
+	Scope Scope `json:"scope,omitempty"`
+}
+
+// KnowledgeImportError 是单个文件落盘失败项（重试定位用）。
+type KnowledgeImportError struct {
+	// Name 失败文件名（用量 = 调用方给出的原始名）。
+	Name string `json:"name"`
+	// Error 失败原因。
+	Error string `json:"error"`
+}
+
+// KnowledgeImportResponse 是导入 / 新建「其他类型」出参。
+type KnowledgeImportResponse struct {
+	// OK 是否成功（逐文件尽力而为：单项失败不改写本字段，失败项在 Errors）。
+	OK bool `json:"ok"`
+	// Paths 成功落盘文件的**知识库根相对路径**（口径同 KnowledgeCreate / KnowledgeMkdir 的 Path）。
+	Paths []string `json:"paths"`
+	// Errors 落盘失败项（成功项照常落盘并列入 Paths）。
+	Errors []KnowledgeImportError `json:"errors,omitempty"`
 }

@@ -41,6 +41,11 @@ type Migration struct {
 // 其后任一新写入即令索引桶非空，query.go 的「整桶空」防线随之失效，旧行前缀区段为空 →
 // Seek 落空 → 静默漏行（数据凭空消失）。故建桶后**遍历 5 张主表逐行重建索引项**
 // （indexPut 幂等：已存在键 Put 覆盖）；坏行/解码失败跳过（与查询坏行跳过口径一致）。
+//
+// 注（2026-10-16 d）：SUBCHAT-3 阶段 E 新增**群聊两表**（prjusr）—— `group_participants`
+// （参与者名单 + 角色）与 `group_round_targets`（每【大轮次】的投递对象）。两表**无二级索引**
+// （查询模式 = 单前缀 Seek，主键首段即 `session_id`，见 indexes.go IndexesFor 未登记 +
+// facade/group.go 文件头）；**不参与**下方主表索引回填（无索引可建）。旧库（已有行）不受影响。
 var migrations = []Migration{
 	{Version: 8, Name: "schema", Up: func(tx *bolt.Tx) error {
 		for _, b := range []string{
@@ -54,6 +59,7 @@ var migrations = []Migration{
 			"tasktree_by_parent", "tasktree_by_top", "tasktree_by_session",
 			"task_shadow", "task_shadow_by_top", "task_shadow_by_parent", "task_shadow_by_session",
 			"memory_extract",
+			"group_participants", "group_round_targets",
 		} {
 			if err := ensureBucket(tx, b); err != nil {
 				return err

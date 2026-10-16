@@ -101,6 +101,7 @@ var guardedFiles = []string{
 	"src/lib/llm/server/claim.go",
 	"src/lib/llm/server/login.go",
 	"src/lib/llm/server/llm_testconn.go",
+	"src/lib/llm/server/configsuggest.go", // AICFG-1（2026-10-16）：config.suggest 方法面
 	"src/lib/llm/server/domainmcp.go",
 	"src/lib/llm/server/gwclient.go",
 	"src/lib/llm/server/prompt.go",

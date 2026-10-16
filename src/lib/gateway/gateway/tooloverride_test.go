@@ -35,24 +35,26 @@ func (f fakeScanner) Scan(root string) (*mcp.Server, error) {
 	return ms, nil
 }
 
-// fakeSandboxCfg 是 SandboxConfig 的测试替身：记录最近一次写入的 executor 类别开关表。
+// fakeSandboxCfg 是 SandboxConfig 的测试替身：记录最近一次写入的开关表（executors + mcps）。
 type fakeSandboxCfg struct {
-	mu  sync.Mutex
-	eff map[string]bool
+	mu        sync.Mutex
+	executors map[string]bool
+	mcps      map[string]bool
 }
 
-func (f *fakeSandboxCfg) SetToolSandbox(eff map[string]bool) bool {
+func (f *fakeSandboxCfg) SetToolSandbox(executors, mcps map[string]bool) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.eff = eff
+	f.executors = executors
+	f.mcps = mcps
 	return true
 }
 
-// enabled 报告最近一次写入中该 executor 类别是否开启隔离。
-func (f *fakeSandboxCfg) enabled(category string) bool {
+// enabled 报告最近一次写入中该 executor 单位（exe 基名）是否开启隔离。
+func (f *fakeSandboxCfg) enabled(unit string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.eff[category]
+	return f.executors[unit]
 }
 
 // toolMetaByName 从 tools/list 结果里取指定工具名的 `_meta`（无 → nil）。
@@ -113,9 +115,9 @@ func TestToolAsyncOverrideAffectsDoCall(t *testing.T) {
 	}
 }
 
-// TestSandboxOverrideForwardsExecutorCategories：executor 级开关表（key = 类别
-// core/desktop/browser）直接写入共享执行配置，无需按提供方归属归一（类别是全局的）。
-func TestSandboxOverrideForwardsExecutorCategories(t *testing.T) {
+// TestSandboxOverrideForwardsExecutorUnits：沙箱开关表（executors: key = exe 基名）直接写入
+// 共享执行配置，无需按提供方归属归一（键位全局）。
+func TestSandboxOverrideForwardsExecutorUnits(t *testing.T) {
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
 		t.Fatalf("bus: %v", err)
@@ -139,21 +141,39 @@ func TestSandboxOverrideForwardsExecutorCategories(t *testing.T) {
 	}
 
 	// 未开启 → 不隔离
-	if cfg.enabled("core") {
+	if cfg.enabled("chonkpilot-core-executor.exe") {
 		t.Fatal("未开启时不应隔离")
 	}
-	// 按 executor 类别开启 → 直接写入共享执行配置
-	g.SetSandboxOverrides(map[string]bool{"core": true, "browser": true})
-	if !cfg.enabled("core") || !cfg.enabled("browser") {
-		t.Fatal("executor 类别开启后应在共享执行配置生效")
+	// 按执行体单位（exe 基名）开启 → 直接写入共享执行配置
+	g.SetSandboxOverrides(map[string]bool{"chonkpilot-core-executor.exe": true, "chonkpilot-browser-executor.exe": true}, nil)
+	if !cfg.enabled("chonkpilot-core-executor.exe") || !cfg.enabled("chonkpilot-browser-executor.exe") {
+		t.Fatal("执行体单位开启后应在共享执行配置生效")
 	}
-	if cfg.enabled("desktop") {
-		t.Fatal("未开启的类别不应隔离")
+	if cfg.enabled("chonkpilot-desktop-executor.exe") {
+		t.Fatal("未开启的单位不应隔离")
 	}
 	// 关闭 → 收回
-	g.SetSandboxOverrides(map[string]bool{"core": false})
-	if cfg.enabled("core") {
+	g.SetSandboxOverrides(map[string]bool{"chonkpilot-core-executor.exe": false}, nil)
+	if cfg.enabled("chonkpilot-core-executor.exe") {
 		t.Fatal("关闭后应收回隔离")
+	}
+	// mcps 子表：外部 MCP 开关不写入 executors，但 gateway 侧可按名查询（sandboxMCPOn）
+	g.SetSandboxOverrides(nil, map[string]bool{"ext": true})
+	if !g.sandboxMCPOn("ext") {
+		t.Fatal("mcps 开关应可被 gateway 按名查询")
+	}
+	if g.sandboxMCPOn("missing") {
+		t.Fatal("未配置的 MCP 不应命中")
+	}
+	// 读取时迁移：旧 mcps[].sandbox=true 并入 mcps（connectServer 调用 mergeLegacySandboxMCP）
+	g2, err := New(Params{Bus: bus, MCPConfig: &fakeSandboxCfg{}, Logf: t.Logf})
+	if err != nil {
+		t.Fatalf("new g2: %v", err)
+	}
+	t.Cleanup(func() { _ = g2.Stop(context.Background()) })
+	g2.mergeLegacySandboxMCP("legacy-mcp")
+	if !g2.sandboxMCPOn("legacy-mcp") {
+		t.Fatal("旧 mcps[].sandbox 迁移后应命中")
 	}
 }
 

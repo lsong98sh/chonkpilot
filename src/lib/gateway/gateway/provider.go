@@ -56,6 +56,11 @@ type providerConn interface {
 	Close() error
 }
 
+// sandboxOnFunc 报告某外部 MCP（entry）当前是否开启 agentbox 沙箱。由 gateway 注入
+// （读实时开关表 usr `tool_sandbox.mcps`，key = entry.SandboxName()）；nil = 一律不注入
+// （独立单测 / 未接线）。见 tooloverride.go SetSandboxOverrides。
+type sandboxOnFunc func(entry *ServerEntry) bool
+
 // sdkConn 官方 SDK client 会话（stdio CommandTransport / http StreamableClientTransport /
 // sse 旧式 SSEClientTransport）。
 type sdkConn struct {
@@ -203,6 +208,9 @@ type proxyProvider struct {
 	endpoint string       // http/sse 连接点（url，就绪轮询用）
 	inject   bool         // 来源=builtin → 调用携带 _meta 内部上下文；user（第三方）→ 不携带
 	isolate  bool         // 按 (instance, workdir) 隔离（ServerEntry.IsolateEnabled()）
+	// sandboxOn 报告该 MCP 当前是否开启 agentbox 沙箱（stdio spawn 时按 entry 名查
+	// usr `tool_sandbox.mcps`）；nil = 不注入。见 buildConn。
+	sandboxOn sandboxOnFunc
 	idleTTL  time.Duration
 	logf     func(string, ...any)
 
@@ -229,8 +237,8 @@ type proxyProvider struct {
 // transport 缺省推断（对齐 26-mcp-gateway）：url 存在 → http（runtime+url = spawn 后连 url）；
 // 仅 runtime → stdio。
 // callTimeout 复用为**池空闲回收 TTL**（既有项，不新增配置键）；<=0 时按全局默认 60s。
-func newProxyProvider(entry *ServerEntry, callTimeout time.Duration, logf func(string, ...any)) (*proxyProvider, error) {
-	shared, err := buildSlot(entry, "", "", logf)
+func newProxyProvider(entry *ServerEntry, callTimeout time.Duration, logf func(string, ...any), sandboxOn sandboxOnFunc) (*proxyProvider, error) {
+	shared, err := buildSlot(entry, sandboxOn, "", "", logf)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +251,7 @@ func newProxyProvider(entry *ServerEntry, callTimeout time.Duration, logf func(s
 		ttl = 60 * time.Second // 与 Params.CallTimeout 默认一致
 	}
 	p := &proxyProvider{name: entry.ID, entry: entry, kind: kind, endpoint: entry.URL,
-		inject: entry.IsBuiltin(), isolate: entry.IsolateEnabled(), idleTTL: ttl, logf: logf,
+		inject: entry.IsBuiltin(), isolate: entry.IsolateEnabled(), sandboxOn: sandboxOn, idleTTL: ttl, logf: logf,
 		pool: map[string]*connSlot{}, building: map[string]*buildFlight{}, stopCh: make(chan struct{})}
 	shared.gen = p.genSeq.Add(1) // 代际 1（genSeq 同步推进；后续 Invalidate 自 2 起递增）
 	p.shared.Store(shared)
@@ -255,8 +263,8 @@ func newProxyProvider(entry *ServerEntry, callTimeout time.Duration, logf func(s
 
 // buildSlot 按 entry 规格构建一个连接槽（含 spawned http/sse 的自持子进程）。
 // 供首建共享槽、池内按 (instance, workdir) 懒建复用。logf 用于子进程 stderr 接入（C-58）。
-func buildSlot(entry *ServerEntry, workdir, instance string, logf func(string, ...any)) (*connSlot, error) {
-	conn, cmd, done, exited, err := buildConn(entry, logf)
+func buildSlot(entry *ServerEntry, sandboxOn sandboxOnFunc, workdir, instance string, logf func(string, ...any)) (*connSlot, error) {
+	conn, cmd, done, exited, err := buildConn(entry, sandboxOn, logf)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +274,7 @@ func buildSlot(entry *ServerEntry, workdir, instance string, logf func(string, .
 }
 
 // buildConn 按 entry 规格构建一个下游连接（及 spawned http/sse 的自持子进程）。
-func buildConn(entry *ServerEntry, logf func(string, ...any)) (providerConn, *exec.Cmd, chan error, *atomic.Bool, error) {
+func buildConn(entry *ServerEntry, sandboxOn sandboxOnFunc, logf func(string, ...any)) (providerConn, *exec.Cmd, chan error, *atomic.Bool, error) {
 	transportName := entry.TransportName()
 	switch transportName {
 	case "stdio", "http", "sse":
@@ -305,9 +313,12 @@ func buildConn(entry *ServerEntry, logf func(string, ...any)) (providerConn, *ex
 			proc.Dir = entry.Cwd // stdio 子进程工作目录（与 startProcess 同语义）
 		}
 		proc.Env = processEnv(entry)
-		// agentbox 沙箱（决策 42 §2 (104)/(109)）：**仅 stdio** 的 spawn 下发策略
+		// agentbox 沙箱（决策 42 §2 (104)/(109)；2026-10-12 重整）：开关来自 usr
+		// `tool_sandbox.mcps[entry.SandboxName()]`（经 sandboxOn 实时查询，不再来自 entry.Sandbox），
+		// 允许目录来自 entry.SandboxDirs（prj `security-*` 快照）。**仅 stdio** 下发
 		// （http/sse 不施加，见 14-安全域-agentbox）；未开开关 / 无允许目录 → 不下发（默认兼容）。
-		if policy := entry.SandboxPolicyJSON(); policy != "" {
+		sandboxEnabled := sandboxOn != nil && sandboxOn(entry)
+		if policy := entry.SandboxPolicyJSON(sandboxEnabled); policy != "" {
 			// processEnv 无 env 时返回 nil（子进程继承父环境）；此时若直接 append，Env 变非 nil
 			// 且只剩沙箱一条 → 子进程丢 PATH 等（exec 见非 nil Env 即不再继承）。故先补基线。
 			if proc.Env == nil {
@@ -315,11 +326,11 @@ func buildConn(entry *ServerEntry, logf func(string, ...any)) (providerConn, *ex
 			}
 			proc.Env = append(proc.Env, agentbox.EnvSandbox+"="+policy)
 			if logf != nil {
-				logf("[gateway] agentbox 隔离下发: server=%s dirs=%s", entry.ID, truncateStr(policy, 500))
+				logf("[gateway] agentbox 隔离下发: server=%s dirs=%s", entry.SandboxName(), truncateStr(policy, 500))
 			}
-		} else if entry.Sandbox != nil && *entry.Sandbox {
+		} else if sandboxEnabled {
 			if logf != nil {
-				logf("[gateway] agentbox: server=%s 已开启隔离但允许目录为空（未下发策略）", entry.ID)
+				logf("[gateway] agentbox: server=%s 已开启隔离但允许目录为空（未下发策略）", entry.SandboxName())
 			}
 		}
 		cli := mcp.NewClient(&mcp.Implementation{Name: "chonkpilot-mcp-gateway", Version: "0.1.0"}, nil)
@@ -523,7 +534,7 @@ func (p *proxyProvider) slotFor(ctx context.Context) (*connSlot, func()) {
 	p.mu.Unlock()
 
 	// 建连（含 spawn + 握手，可达数秒）在 p.mu 外进行：不同池键并发建连互不阻塞。
-	slot, err := buildSlot(p.entry, wd, inst, p.logf)
+	slot, err := buildSlot(p.entry, p.sandboxOn, wd, inst, p.logf)
 	if err == nil {
 		err = slot.connect(ctx, p.endpoint)
 	}
@@ -756,7 +767,7 @@ func (p *proxyProvider) Invalidate(ctx context.Context) (bool, error) {
 		p.closing.Store(false)
 		return false, err
 	}
-	conn, cmd, done, exited, err := buildConn(p.entry, p.logf)
+	conn, cmd, done, exited, err := buildConn(p.entry, p.sandboxOn, p.logf)
 	if err != nil {
 		return fail(fmt.Errorf("respawn %q: %w", p.name, err))
 	}
@@ -829,6 +840,7 @@ const (
 	ctxKeyDataDir
 	ctxKeyTopSession
 	ctxKeyParent
+	ctxKeyPurpose
 )
 
 // withTurnContext 把请求 turn 上下文（session/turn/instance/tool_call_id + work_dir/data_dir +
@@ -859,6 +871,9 @@ func withTurnContext(ctx context.Context, c Context) context.Context {
 	if c.Parent != "" {
 		ctx = context.WithValue(ctx, ctxKeyParent, c.Parent)
 	}
+	if c.Purpose != "" {
+		ctx = context.WithValue(ctx, ctxKeyPurpose, c.Purpose)
+	}
 	return ctx
 }
 
@@ -887,6 +902,10 @@ func TopSessionFromContext(ctx context.Context) string { return strFromCtx(ctx, 
 
 // ParentFromContext 返回 context 中的父任务节点 id（调用层已登记的 llm 侧节点；无则空）。
 func ParentFromContext(ctx context.Context) string { return strFromCtx(ctx, ctxKeyParent) }
+
+// PurposeFromContext 返回 context 中本次调用的**运行目的**（= 注入的展示名参数
+// tool_call_display_name，C1 2026-10-15 补入上下文；无则空）。
+func PurposeFromContext(ctx context.Context) string { return strFromCtx(ctx, ctxKeyPurpose) }
 
 func strFromCtx(ctx context.Context, k ctxKey) string {
 	if v := ctx.Value(k); v != nil {

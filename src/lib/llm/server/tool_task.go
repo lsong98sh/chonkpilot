@@ -26,9 +26,12 @@ func turnInstance(tc *turnCtx) string {
 
 // ─── 识别 ─────────────────────────────────────────────
 
-// isTaskTool 判断工具是否为 task 型（server 编排，不转发 gateway 普通路径）。
+// isTaskTool 判断工具是否为 task 型（server 编排，不转发 gateway 普通路径）：
+// tool_stop / tool_result（task 型）+ subchat_open / subchat_finish（单聊型，SUBCHAT-2 阶段
+// B-2）——单聊工具经 gateway 域回调执行（节点由 domainNode 建），走本分支以免 chatOnce 再建
+// 一个重复节点（见 turn.chatOnce 的 isTaskTool 分支）。
 func isTaskTool(name string) bool {
-	return name == "tool_stop" || name == "tool_result"
+	return name == "tool_stop" || name == "tool_result" || isSubChatTool(name)
 }
 
 // execTaskTool 执行 task 型工具并返回 (结果文本, isErr)（不含 tasks.done / FeedToolResult——

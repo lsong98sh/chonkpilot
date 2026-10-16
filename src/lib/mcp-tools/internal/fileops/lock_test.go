@@ -1,7 +1,6 @@
 package fileops
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -129,7 +128,7 @@ func TestCanBreakLockFallback(t *testing.T) {
 	}
 }
 
-func TestHandleReadFileMD5(t *testing.T) {
+func TestReadFileMD5(t *testing.T) {
 	dir := t.TempDir()
 	content := "hello world\nline2\n"
 	f := filepath.Join(dir, "test.txt")
@@ -138,29 +137,11 @@ func TestHandleReadFileMD5(t *testing.T) {
 	// 先计算正确 md5
 	expectedMD5, _ := fileMD5(f)
 
-	args := map[string]interface{}{
-		"files": []interface{}{
-			map[string]interface{}{
-				"path": f,
-				"info": true,
-			},
-		},
+	info, err := readOne(readReq{path: f, infoOnly: true}, "")
+	if err != nil {
+		t.Fatalf("readOne failed: %v", err)
 	}
-	res := HandleReadFile("", args)
-	if !res.Success {
-		t.Fatalf("HandleReadFile failed: %s", res.Error)
-	}
-	// 解析 Output JSON 中的 files
-	var out struct {
-		Files []map[string]interface{} `json:"files"`
-	}
-	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
-		t.Fatalf("parse output: %s", err)
-	}
-	if len(out.Files) == 0 {
-		t.Fatal("no files returned")
-	}
-	md5, ok := out.Files[0]["md5"].(string)
+	md5, ok := info["md5"].(string)
 	if !ok || md5 == "" {
 		t.Fatal("md5 not returned in file info")
 	}

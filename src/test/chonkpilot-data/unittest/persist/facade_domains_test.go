@@ -248,8 +248,8 @@ func TestFacadeKnowledgeInlineEqualsMQPath(t *testing.T) {
 	mqResult(t, bus, "data-knowledge-save", map[string]any{"data": map[string]any{
 		"path": cr.Path,
 		"doc": map[string]any{
-			"title": "my_tool", "description": "改过的描述",
-			"parameters": "properties:\n    a:\n        type: string",
+			"name": "my_tool", "title": "my_tool", "description": "改过的描述",
+			"parameters": "{\n  \"type\": \"object\",\n  \"properties\": {}\n}",
 			"content":    "正文",
 		},
 	}})

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // fakePersist 在给定总线上注册最小 persist 应答（同主题 emit {req_id, ok, result}），
@@ -1093,5 +1094,57 @@ func TestMarkPublishedConcurrentSameSubject(t *testing.T) {
 	}
 	if s.isSelfPublished(subject, payloads[0]) {
 		t.Fatal("命中应一次性消耗，不应二次命中")
+	}
+}
+
+// ── browser 上行点分主题白名单：config.suggest 放行（AICFG-1，2026-10-16）──
+
+// TestDottedWhitelistConfigSuggest 断言 browser 上行白名单 `allowedDottedPrefixes` 放行
+// `config.suggest`（点分直通总线 → 同主题写回 v.Result），且白名单外点分主题仍被拒
+// （稳定错误码 topic_not_allowed）。
+func TestDottedWhitelistConfigSuggest(t *testing.T) {
+	// ① 白名单判定：config.suggest 放行；未登记的点分主题拒绝。
+	if !dottedAllowed(msgkeys.TopicConfigSuggest) {
+		t.Fatalf("allowedDottedPrefixes 未放行 %s（browser 上行将回 topic not allowed）", msgkeys.TopicConfigSuggest)
+	}
+	for _, s := range []string{"config.unknown", "evil.topic"} {
+		if dottedAllowed(s) {
+			t.Fatalf("白名单外点分主题 %s 不应放行", s)
+		}
+	}
+
+	// ② 真实上行链路：config.suggest 经 /publish 注入总线，服务端订阅者写 v.Result → 回投同主题应答。
+	bus, _ := mq.New(mq.Options{Prefix: "chonk."})
+	defer bus.Close()
+	s := New(bus, Options{Bus: bus, WorkDir: t.TempDir(), Addr: "127.0.0.1:0"})
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Shutdown(context.Background()) }()
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	if _, err := bus.On(msgkeys.TopicConfigSuggest, 0, func(_ context.Context, _ string, v *mq.Value) error {
+		v.Result = map[string]any{"ok": true, "fields": map[string]any{"model": "glm-4.6"}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	env := publish(t, ts.URL, msgkeys.TopicConfigSuggest, `{"instance_id":"ins-1","kind":"llm","text":"用 GLM"}`)
+	if env["ok"] != true {
+		t.Fatalf("config.suggest 应放行并回投应答，实得 %#v", env)
+	}
+	res, _ := env["result"].(map[string]any)
+	fields, _ := res["fields"].(map[string]any)
+	if fields["model"] != "glm-4.6" {
+		t.Fatalf("应答未回投（result=%#v）", env["result"])
+	}
+
+	// ③ 负向对照：白名单外点分主题 → 受理层明确拒绝（topic_not_allowed）。
+	bad := publish(t, ts.URL, "evil.topic", "{}")
+	badRes, _ := bad["result"].(map[string]any)
+	if bad["ok"] != false || badRes["code"] != errCodeTopicNotAllowed {
+		t.Fatalf("白名单外点分主题应拒绝（topic_not_allowed），实得 %#v", bad)
 	}
 }

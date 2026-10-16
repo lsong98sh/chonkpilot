@@ -39,7 +39,9 @@ import (
 // 分支无需改，browser 入口需在此显式放行，否则返回 topic not allowed。
 // 2026-10-06（P2-10）：新增前缀 `vfts.`（vfts 管理面：vfts.dict.get / vfts.dict.set /
 // vfts.reindex —— 插件订阅、同主题 promise 写回 v.Result）。
-var allowedDottedPrefixes = []string{"filesys.", "vfts.", msgkeys.TopicLlmTestConnection, msgkeys.TopicMemoryFlush}
+// 2026-10-16（AICFG-1）：新增点分主题 `config.suggest`（配置页/工具原语「AI 智能填充」，
+// 服务端 server 订阅、同主题 promise 写回 v.Result）。
+var allowedDottedPrefixes = []string{"filesys.", "vfts.", msgkeys.TopicLlmTestConnection, msgkeys.TopicConfigSuggest, msgkeys.TopicMemoryFlush}
 
 // frontMethodSubjects 前端单字方法 type → 相对域主题（与桥 frontMethodSubjects 同表；
 // 未列出的单字 type 视为纯前端事件，不注入总线）。
@@ -69,6 +71,13 @@ var frontMethodSubjects = map[string]string{
 	msgkeys.TopicAgentWizardCompose:  msgkeys.TopicAgentWizardCompose,
 	msgkeys.TopicAgentWizardGenerate: msgkeys.TopicAgentWizardGenerate,
 	msgkeys.TopicAgentWizardSkip:     msgkeys.TopicAgentWizardSkip,
+	// 单聊（2026-10-16，61 §4.2/§4.5）：子聊天清单 / 结束子聊天 —— 与相对主题**同名**
+	// （无映射；入口注入 instance_id，server 侧 handler 属 B-2）。与 GUI 桥
+	// `frontMethodSubjects` 同表口径：无点分的单段主题**必须**列白名单，否则上行被静默忽略。
+	msgkeys.TopicSubchatList:   msgkeys.TopicSubchatList,
+	msgkeys.TopicSubchatFinish: msgkeys.TopicSubchatFinish,
+	// 群聊「继续」续期（2026-10-16，SUBCHAT-3 阶段 F，61 §4.2/§4.5）：同为无点分单段主题 → 必须列白名单。
+	msgkeys.TopicSubchatContinue: msgkeys.TopicSubchatContinue,
 }
 
 // capabilityListKeys 客户端能力面 topic → 结果数组键（按本实例作用域过滤用）。

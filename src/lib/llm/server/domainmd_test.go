@@ -2,8 +2,8 @@ package server
 
 import "testing"
 
-// 域工具契约 embed 加载：4 个齐全（阶段 1 收敛后终态 = ask_user/llm_run/tool_stop/tool_result）
-// + parameters 为合法 JSON schema。
+// 域工具契约 embed 加载：6 个齐全（ask_user / llm_run / tool_stop / tool_result +
+// 单聊 subchat_open / subchat_finish，SUBCHAT-2 阶段 B-2）+ parameters 为合法 JSON schema。
 func TestLoadDomainTools(t *testing.T) {
 	defs, err := loadDomainTools()
 	if err != nil {
@@ -11,6 +11,7 @@ func TestLoadDomainTools(t *testing.T) {
 	}
 	want := map[string]bool{
 		"ask_user": false, "llm_run": false, "tool_stop": false, "tool_result": false,
+		"subchat_open": false, "subchat_finish": false,
 	}
 	for _, d := range defs {
 		if _, ok := want[d.Name]; !ok {
@@ -43,10 +44,12 @@ func TestLoadDomainToolsMeta(t *testing.T) {
 	}
 	wantAsync := map[string]string{
 		"ask_user": "never", "tool_result": "never", "tool_stop": "never", "llm_run": "always",
+		"subchat_open": "never", "subchat_finish": "never",
 	}
 	// 契约显式声明 timeout=0（= 无上限）者；llm_run 契约未声明 timeout → TimeoutSet=false。
 	wantTimeoutSet := map[string]bool{
 		"ask_user": true, "tool_result": true, "tool_stop": true, "llm_run": false,
+		"subchat_open": true, "subchat_finish": true,
 	}
 	got := map[string]ToolDef{}
 	for _, d := range defs {

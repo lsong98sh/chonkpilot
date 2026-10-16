@@ -1,201 +1,57 @@
-// mcp 四原语契约解析/组装 + 文件名规范化（原 persist/persist_knowledge.go 的契约段逐字下移）。
+// capfs 的文件系统辅助（路径/文件名/尺寸上限/越界校验）+ 契约解析的**薄委托**。
 //
-// 文件格式 = mcp 四原语统一契约（# 标题 + [meta] k=v + [description] + [parameters]|[arguments]
-// + [content]，与 chonkpilot-mcp-server/server/contract.go 一致）；capability 根下 **6 个扁平
-// 子目录**：`prompts/` `tools/` `resources/` `skills/` `agents/` `scenarios/`（**删除**旧
-// `knowledge/**` 归并层），见 capfs 包注释。
+// v2（2026-10-14）：契约解析/序列化**唯一实现**已收敛到
+// github.com/chonkpilot/chonkpilot-lib/contractmd（H1 分区 + yaml/json 代码块）。
+// 本包不再自持分区解析（旧 `[meta]`/`[description]`/… 方括号分区**已废除**），
+// 仅别名复用其类型/清单并保留 data 层所需文件系统工具。
+//
+// capability 根下 **6 个扁平子目录**：`prompts/` `tools/` `resources/` `skills/` `agents/`
+// `scenarios/`（旧 `knowledge/**` 归并层已删除）。
 package capfs
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 )
 
-// Type 一类能力面条目（目录名复数 ↔ 文件后缀单数 ↔ 显示名）。
-type Type struct {
-	Dir   string // 类型目录名（prompts/tools/resources/skills/agents/scenarios）
-	Rel   string // 相对 capability 根的物理路径（= Dir；扁平子目录）
-	Token string // 文件后缀 token（prompt/tool/resource/skill/agent/scenario）
-	Label string // 显示名（提示词/工具/资源/技能/智能体/场景）
-}
+// Type 一类能力面条目（= contractmd.Type）。
+type Type = contractmd.Type
 
-// Types 是 6 类能力面条目的规范清单（顺序即知识库根下的展示顺序）。
-// Rel = 相对 capability 根的物理路径（**扁平**：Rel == Dir；旧 `knowledge/**` 归并层已删除）。
-// 场景（scenario）为**目录**形态（`scenarios/<场景目录>/`，非 `*.scenario.md` 文件）——
-// 目录/文件规则沿用现状（见 scenario.go）；此处仅提供类型名映射。
-var Types = []Type{
-	{Dir: DirPrompts, Rel: DirPrompts, Token: "prompt", Label: "提示词"},
-	{Dir: DirTools, Rel: DirTools, Token: "tool", Label: "工具"},
-	{Dir: DirResources, Rel: DirResources, Token: "resource", Label: "资源"},
-	{Dir: DirSkills, Rel: DirSkills, Token: "skill", Label: "技能"},
-	{Dir: DirAgents, Rel: DirAgents, Token: "agent", Label: "智能体"},
-	{Dir: DirScenarios, Rel: DirScenarios, Token: "scenario", Label: "场景"},
-}
+// Types 是 6 类能力面条目的规范清单（= contractmd.Types）。
+var Types = contractmd.Types
 
-func typeByDir(dir string) *Type {
-	for i := range Types {
-		if Types[i].Dir == dir {
-			return &Types[i]
-		}
-	}
-	return nil
-}
+// Doc 解析后的原语文档（= contractmd.Doc）。
+//
+// v2 字段：Name（基本信息 name，= 文件名去后缀）/ Title（基本信息 title）/ Meta（基本信息其余键）/
+// Description（摘要）/ Parameters（参数，json 文本）/ Refs（参考：skills/tools）/ Delegate（委托）/ Content（正文）。
+type Doc = contractmd.Doc
 
-func typeByToken(tok string) *Type {
-	for i := range Types {
-		if Types[i].Token == tok {
-			return &Types[i]
-		}
-	}
-	return nil
-}
-
-// Doc 解析后的原语文档（前端「编辑」表单模型）。
-type Doc struct {
-	Title         string            `json:"title"`
-	Meta          map[string]string `json:"meta"`
-	Description   string            `json:"description"`
-	Parameters    string            `json:"parameters"`
-	Content       string            `json:"content"`
-	ParamsSection string            `json:"params_section,omitempty"` // [parameters]|[arguments]（保存回写同款分区名）
-}
-
-// sectionKey 识别一行是否为契约分区头；返回小写 key（meta/description/parameters/arguments/content）。
-func sectionKey(ln string) (string, bool) {
-	t := strings.TrimSpace(ln)
-	if !strings.HasPrefix(t, "[") || !strings.HasSuffix(t, "]") {
-		return "", false
-	}
-	k := strings.ToLower(strings.TrimSpace(t[1 : len(t)-1]))
-	switch k {
-	case "meta", "description", "parameters", "arguments", "content":
-		return k, true
-	}
-	return "", false
-}
-
-// ParseDoc 按 mcp 契约分区解析：首行 "# 标题" + [meta]/[description]/
-// [parameters]|[arguments]/[content]。未知分区与其内容并入 content 前的非分区行一律忽略
-// （契约加载器只认上述分区；此处取各分区原文，保证再保存不丢分区结构）。
+// ParseDoc 解析 v2 契约文本；解析失败时返回**尽力而为的 doc**（供列表/展示场景容错）。
+// 需要严格错误（缺 基本信息/name、正文非最后分区等）时用 ParseDocErr。
 func ParseDoc(raw string) Doc {
-	doc := Doc{Meta: map[string]string{}}
-	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	lines := strings.Split(raw, "\n")
-	section := ""
-	var sectionLines []string
-	flush := func() {
-		body := strings.TrimSpace(strings.Join(sectionLines, "\n"))
-		switch section {
-		case "meta":
-			for _, ln := range sectionLines {
-				if i := strings.Index(ln, "="); i > 0 {
-					doc.Meta[strings.TrimSpace(ln[:i])] = strings.TrimSpace(ln[i+1:])
-				}
-			}
-		case "description":
-			doc.Description = body
-		case "parameters", "arguments":
-			doc.Parameters = body
-			doc.ParamsSection = "[" + section + "]"
-		case "content":
-			doc.Content = body
-		}
-		sectionLines = nil
-	}
-	head := true
-	for _, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if head && strings.HasPrefix(t, "# ") && section == "" {
-			doc.Title = strings.TrimSpace(t[2:])
-			head = false
-			continue
-		}
-		head = false
-		if k, ok := sectionKey(t); ok {
-			flush()
-			section = k
-			continue
-		}
-		if section != "" {
-			sectionLines = append(sectionLines, ln)
-		}
-	}
-	flush()
+	doc, _ := contractmd.Parse(raw)
 	return doc
 }
 
-// BuildDoc 组装 mcp 契约分区 markdown（仅写出非空分区；标题保留首行）。
-func BuildDoc(doc Doc) string {
-	var sb strings.Builder
-	if strings.TrimSpace(doc.Title) != "" {
-		sb.WriteString("# " + strings.TrimSpace(doc.Title) + "\n\n")
-	}
-	if len(doc.Meta) > 0 {
-		sb.WriteString("[meta]\n")
-		keys := make([]string, 0, len(doc.Meta))
-		for k := range doc.Meta {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			v := strings.TrimSpace(doc.Meta[k])
-			if v != "" {
-				sb.WriteString(k + "=" + v + "\n")
-			}
-		}
-		sb.WriteString("\n")
-	}
-	if strings.TrimSpace(doc.Description) != "" {
-		sb.WriteString("[description]\n")
-		sb.WriteString(strings.TrimSpace(doc.Description) + "\n\n")
-	}
-	if strings.TrimSpace(doc.Parameters) != "" {
-		sb.WriteString(parametersSectionName(doc) + "\n")
-		sb.WriteString(strings.TrimSpace(doc.Parameters) + "\n\n")
-	}
-	if strings.TrimSpace(doc.Content) != "" {
-		sb.WriteString("[content]\n")
-		sb.WriteString(strings.TrimSpace(doc.Content) + "\n")
-	}
-	return sb.String()
+// ParseDocErr 严格解析 v2 契约文本（返回错误）。
+func ParseDocErr(raw string) (Doc, error) {
+	return contractmd.Parse(raw)
 }
 
-// parametersSectionName 参数区标题：优先 doc.ParamsSection（解析时保留的 [arguments]/[parameters]），
-// 缺省 [parameters]（prompt 类型模板创建时显式传 [arguments]）。
-func parametersSectionName(doc Doc) string {
-	if doc.ParamsSection == "[arguments]" || doc.ParamsSection == "[parameters]" {
-		return doc.ParamsSection
-	}
-	return "[parameters]"
-}
+// BuildDoc 组装 v2 契约文本（唯一序列化实现）。
+func BuildDoc(doc Doc) string { return contractmd.Build(doc) }
 
 // Template 按类型生成新建模板 doc。
 func Template(token, name string) Doc {
-	doc := Doc{Meta: map[string]string{}, Title: name}
-	doc.Description = name + " 描述"
-	switch token {
-	case "tool":
-		doc.Meta["runtime"] = ""
-		doc.Meta["entry"] = ""
-		doc.Meta["args"] = ""
-		doc.Meta["output"] = ""
-		doc.ParamsSection = "[parameters]"
-		doc.Parameters = "properties:\n    arg1:\n        type: string\n        description: 参数描述\nrequired:\n    - arg1"
-	case "prompt":
-		doc.Meta["arguments"] = ""
-		doc.ParamsSection = "[arguments]"
-		doc.Parameters = "properties:\n    arg1:\n        type: string\n        description: 参数描述\nrequired:\n    - arg1"
-	case "resource":
-		doc.Meta["uri"] = ""
-		doc.Meta["mimetype"] = ""
-	default: // skill / agent / scenario（最小 doc：仅标题 + 描述）
-	}
-	return doc
+	return contractmd.Template(contractmd.Kind(token), name)
 }
 
 // TypeOfArg 归一化创建原语的 type：接受 token（tool/…）或目录名（tools/…）。
@@ -204,10 +60,10 @@ func TypeOfArg(t string) *Type {
 	if t == "" {
 		return nil
 	}
-	if p := typeByToken(t); p != nil {
+	if p := contractmd.TypeByToken(t); p != nil {
 		return p
 	}
-	if p := typeByDir(t); p != nil {
+	if p := contractmd.TypeByDir(t); p != nil {
 		return p
 	}
 	return nil
@@ -216,25 +72,14 @@ func TypeOfArg(t string) *Type {
 // TypeOfFile 由文件名（优先）或父目录推导原语类型 token：
 // xxx.tool.md → tool；裸 xxx.md 在类型目录下 → 该目录 token；否则 file。
 func TypeOfFile(fileName, dir string) string {
-	if p := typeByToken(typeTokenOfFile(fileName)); p != nil {
+	if p := contractmd.TypeOfFileName(fileName); p != nil {
 		return p.Token
 	}
 	dirBase := filepath.Base(filepath.ToSlash(dir))
-	if p := typeByDir(dirBase); p != nil {
+	if p := contractmd.TypeByDir(dirBase); p != nil {
 		return p.Token
 	}
 	return "file"
-}
-
-// typeTokenOfFile 提取文件名中的类型 token：`*.tool.md` 等 → tool；否则空。
-func typeTokenOfFile(name string) string {
-	low := strings.ToLower(name)
-	for _, t := range Types {
-		if strings.HasSuffix(low, "."+t.Token+".md") {
-			return t.Token
-		}
-	}
-	return ""
 }
 
 // SanitizeName 文件名净化：去路径分隔符与非法字符。
@@ -299,7 +144,7 @@ func FileName(name, token string) string {
 	base := SanitizeName(name)
 	low := strings.ToLower(base)
 	// 去掉已带类型后缀/纯 .md
-	if p := typeByToken(typeTokenOfFile(base)); p != nil {
+	if p := contractmd.TypeOfFileName(base); p != nil {
 		base = strings.TrimSuffix(base, "."+p.Token+".md")
 	} else if strings.HasSuffix(low, ".md") {
 		base = base[:len(base)-3]
@@ -325,22 +170,65 @@ func ReadFileCapped(path string, maxBytes int64) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// PreviewDescription 读文件取 [description] 首行（列表描述预览，截断 60 字符）。
+// PreviewDescription 读文件取摘要首行（列表描述预览）：
+//   - `.md`（含原语契约）→ 解析 v2 契约取摘要首行（整读上限 MaxDocReadBytes，A-40）；
+//   - 其余（json/yaml/图片/二进制…）→ **只读文件头部**有限前缀取首个文本行（含 NUL / 该行非合法
+//     UTF-8 → 视为二进制，返回空串），**不整读大文件**（req4/req5：非 md 文件也须在列表里可见）。
 func PreviewDescription(path string) (string, error) {
-	raw, err := ReadFileCapped(path, MaxDocReadBytes)
+	if strings.HasSuffix(strings.ToLower(filepath.Base(path)), ".md") {
+		raw, err := ReadFileCapped(path, MaxDocReadBytes)
+		if err != nil {
+			return "", err
+		}
+		return truncatePreview(ParseDoc(string(raw)).Description), nil
+	}
+	raw, err := ReadPrefix(path, previewProbeBytes)
 	if err != nil {
 		return "", err
 	}
-	doc := ParseDoc(string(raw))
-	lines := strings.Split(doc.Description, "\n")
-	if len(lines) == 0 {
-		return "", nil
+	return truncatePreview(textPreviewLine(raw)), nil
+}
+
+// previewProbeBytes 非原语文件描述预览的**前缀探测**上限（只读文件头部，避免整读大文件）。
+const previewProbeBytes = 8 << 10
+
+// ReadPrefix 读文件头部有限字节（不超过 maxBytes；不做尺寸拒绝，供预览/探测用）。
+func ReadPrefix(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	first := strings.TrimSpace(lines[0])
-	if len(first) > 60 {
-		first = first[:60] + "…"
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, maxBytes))
+}
+
+// truncatePreview 取文本首行并截断为 60 字符（列表描述预览口径）。
+func truncatePreview(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
 	}
-	return first, nil
+	s = strings.TrimSpace(s)
+	if len(s) > 60 {
+		s = s[:60] + "…"
+	}
+	return s
+}
+
+// textPreviewLine 从文件头部字节取首个文本行：含 NUL 或该行非合法 UTF-8 → 视二进制返回空串。
+func textPreviewLine(raw []byte) string {
+	if bytes.IndexByte(raw, 0) >= 0 {
+		return ""
+	}
+	line := raw
+	if i := bytes.IndexByte(raw, '\n'); i >= 0 {
+		line = raw[:i]
+	}
+	line = bytes.TrimRight(line, "\r")
+	s := string(line)
+	if !utf8.ValidString(s) {
+		return ""
+	}
+	return s
 }
 
 // SafeJoin 拼接路径（相对 rel 在 root 下；绝对 rel 原样——归属已由调用方校验）。

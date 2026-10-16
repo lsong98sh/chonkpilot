@@ -190,7 +190,7 @@ test('TreeNode：命中节点带 is-ignored，样式 = 文本 --fg-disabled（�
 
 test('TreeNode：灰显节点加原生 title（i18n，不改布局/换行）', () => {
   const tn = read('views/filetree/TreeNode.vue')
-  assert.match(tn, /:title="node\._ignored \? \$t\('fileTree\.index_ignored'\) : undefined"/, '灰显节点应带 i18n 原生 title')
+  assert.match(tn, /:title="node\._ignored \? \$t\('fileTree\.index_ignored'\) : \(node\._tooltip \|\| undefined\)"/, '灰显节点带 i18n 原生 title；否则回落 _tooltip（根节点真实路径）')
   assert.doesNotMatch(tn, /index_ignored[\s\S]{0,80}white-space/, '不得因 title 改变换行/布局')
 })
 

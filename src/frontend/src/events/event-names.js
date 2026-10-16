@@ -58,6 +58,9 @@ export const EventNames = {
   optimizeToken: 'optimize-token',
   optimizeDone: 'optimize-done',
   optimizeError: 'optimize-error',
+  // 摘要生成（v2 专用链路，61-消息一览 §4）：请求 zprompt-summarize / 结果事件 zprompt-summarized。
+  summarize: 'zprompt-summarize',
+  summarized: 'zprompt-summarized',
   // 文件域（filesys 直连，61-消息一览 §2）：变更统一 filesys.changed
   // （有 children = 目录批次免二次 list；无 children = 单文件 operation）。
   // 请求发 filesys.list/content/create/remove…；watch/unwatch 声明即展开/收起。

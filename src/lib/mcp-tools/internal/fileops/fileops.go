@@ -35,7 +35,7 @@ func ResolvePath(userPath, workDir string) (string, string) {
 	return ValidateFilePath(userPath)
 }
 
-// SkipDirs 是 file_find 递归遍历默认跳过的目录（ParseWalkFilter 使用）。
+// SkipDirs 是 FIND 递归遍历默认跳过的目录（newWalkFilter 使用）。
 var SkipDirs = map[string]bool{
 	".git":         true,
 	".svn":         true,
@@ -51,32 +51,28 @@ var SkipDirs = map[string]bool{
 	".nuxt":        true,
 }
 
-// WalkFilter 是递归遍历的过滤配置（工具参数 skip_dirs + ignore_files 与内置默认合并）。
+// WalkFilter 是递归遍历的过滤配置（FIND 的 skip_dirs + ignore_files 与内置默认合并）。
 type WalkFilter struct {
 	SkipDirs    map[string]bool
 	IgnoreFiles []string // glob 模式（支持逗号/竖线分隔），匹配文件名则跳过
 }
 
-// ParseWalkFilter 解析工具参数（--input 内）：
-//   - skip_dirs: 目录名数组，追加到内置默认集（.git/.svn/node_modules/...），不替换
-//   - ignore_files: 文件 glob 模式数组（如 ["*.log", "*.pyc"]），递归遍历时跳过
-func ParseWalkFilter(args map[string]interface{}) *WalkFilter {
+// newWalkFilter 构造遍历过滤配置：
+//   - skipDirs: 目录名，追加到内置默认集（.git/.svn/node_modules/...），不替换
+//   - ignoreFiles: 文件 glob 模式（如 "*.log"），递归遍历时跳过
+func newWalkFilter(skipDirs, ignoreFiles []string) *WalkFilter {
 	f := &WalkFilter{SkipDirs: map[string]bool{}}
 	for k := range SkipDirs {
 		f.SkipDirs[k] = true
 	}
-	if raw, ok := args["skip_dirs"].([]interface{}); ok {
-		for _, r := range raw {
-			if s, ok := r.(string); ok && s != "" {
-				f.SkipDirs[s] = true
-			}
+	for _, s := range skipDirs {
+		if s != "" {
+			f.SkipDirs[s] = true
 		}
 	}
-	if raw, ok := args["ignore_files"].([]interface{}); ok {
-		for _, r := range raw {
-			if s, ok := r.(string); ok && s != "" {
-				f.IgnoreFiles = append(f.IgnoreFiles, s)
-			}
+	for _, s := range ignoreFiles {
+		if s != "" {
+			f.IgnoreFiles = append(f.IgnoreFiles, s)
 		}
 	}
 	return f

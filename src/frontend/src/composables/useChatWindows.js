@@ -6,6 +6,11 @@
  *   - `gui.window.open-chat {session_id}` → `{ok, window_id, activated}`（**幂等**：已开即激活）；
  *   - `gui.window.closed {window_id, session_id}`（宿主下行）→ 解除本地「已打开」态。
  *
+ * 🆕 **窗口额度分两类**（群聊 §9 D28/D30 · N13/N17；阶段 G G3）：**群聊窗口单独计上限 5**，与
+ * 普通对话窗口（≤5，24 §8 U-5）**互不联动**。`gui.window.list` 只回 `{window_id, session_id}`，
+ * 故本层经 `useSessionKinds`（既有只读 `data-session-get` + 进程内缓存）补齐每个已开窗口的
+ * 会话 `kind` → 按类计数（`utils/chatWindows.js` 纯逻辑）。
+ *
  * 判定（置灰 / 激活 / 建窗）全部委托**纯模块** `utils/chatWindows.js`（可直跑单测）；
  * 本模块只负责**状态与消息接线**（模块级单例，主窗口的多个入口共享同一份已开窗口清单）。
  *
@@ -18,16 +23,40 @@ import { EventNames } from '../events/event-names'
 import { newSessionId } from '../api/chat'
 import { ensureSession } from '../api/session'
 import {
+  GROUP_CHAT_KIND,
   MAX_CHAT_WINDOWS,
+  MAX_GROUP_CHAT_WINDOWS,
   chatEntryState,
+  countGroupChatWindows,
+  countNormalChatWindows,
   mergeOpenedWindow,
   removeClosedWindow,
 } from '../utils/chatWindows.js'
+import { loadSessionKinds, sessionKindMap } from './useSessionKinds.js'
 
 /** 已开对话窗口清单（模块级单例；只含对话窗口，主窗口不入注册表）。 */
 const windows = ref([])
 
+/** 已开窗口的会话 `kind`（session_id → kind；额度分类计数的依据）。 */
+const kinds = ref({})
+
 let subscribed = false
+
+/** 某已开会话的 `kind`（未取到 → 空串 = 按普通窗口计）。 */
+function kindOf(sessionId) {
+  return kinds.value[sessionId] || ''
+}
+
+/** 补齐已开窗口的会话 `kind`（缓存命中则零往返）。 */
+async function refreshKinds() {
+  const ids = windows.value.map((w) => w && w.session_id).filter(Boolean)
+  try {
+    await loadSessionKinds(ids)
+    kinds.value = sessionKindMap(ids)
+  } catch (e) {
+    console.warn('[chatWindows] load session kinds failed:', e)
+  }
+}
 
 /** 订阅一次宿主下行广播（gui.window.closed）→ 窗口关闭即解除占用（T-3 恢复可点）。 */
 function ensureSubscribed() {
@@ -47,6 +76,7 @@ export async function refreshWindows() {
   } catch (e) {
     console.warn('[chatWindows] gui.window.list failed:', e)
   }
+  await refreshKinds()
   return windows.value
 }
 
@@ -64,6 +94,7 @@ export async function openChat(sessionId) {
       session_id: sessionId,
       activated: r.activated,
     })
+    await refreshKinds()
   }
   return r
 }
@@ -88,13 +119,22 @@ export function openSessionChatWindow(sessionId) {
   return openChat(sessionId)
 }
 
-/** 入口态（I-1 判定唯一入口；`mainSessionId` 仅主窗口传）。 */
-export function entryStateFor(sessionId, mainSessionId = '') {
+/**
+ * 入口态（I-1 判定唯一入口；`mainSessionId` 仅主窗口传）。
+ * @param {string} sessionId 目标会话
+ * @param {string} mainSessionId 主窗口当前活动会话
+ * @param {string} kind 目标会话类型（`group_chat` → 按**群聊独立额度**判定；缺省 = 普通额度）
+ */
+export function entryStateFor(sessionId, mainSessionId = '', kind = '') {
+  const group = kind === GROUP_CHAT_KIND
   return chatEntryState({
     windows: windows.value,
     sessionId,
     mainSessionId,
-    max: MAX_CHAT_WINDOWS,
+    max: group ? MAX_GROUP_CHAT_WINDOWS : MAX_CHAT_WINDOWS,
+    count: group
+      ? countGroupChatWindows(windows.value, kindOf)
+      : countNormalChatWindows(windows.value, kindOf),
   })
 }
 
@@ -102,7 +142,8 @@ export function useChatWindows() {
   ensureSubscribed()
   return {
     windows,
-    atLimit: computed(() => windows.value.length >= MAX_CHAT_WINDOWS),
+    atLimit: computed(() => countNormalChatWindows(windows.value, kindOf) >= MAX_CHAT_WINDOWS),
+    atGroupLimit: computed(() => countGroupChatWindows(windows.value, kindOf) >= MAX_GROUP_CHAT_WINDOWS),
     refreshWindows,
     openChat,
     openNewChatWindow,

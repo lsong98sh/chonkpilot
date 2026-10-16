@@ -3,7 +3,7 @@
        两行布局（标题 / #id + 轮数，超出省略号）；hover → 操作图标显示在文本下方；
        操作 = 重命名 · 删除 · fork（占位「敬请期待」）· 复制对话（json-array，不含 system）
               · 用新窗口打开（纯对话窗口，多窗口；T-3）。 -->
-  <div class="sessions-pane">
+  <div ref="paneRef" class="sessions-pane">
     <!-- 第一行：新建会话 / 新建对话窗口（图标按钮） -->
     <div class="sp-row">
       <span class="sp-heading">{{ $t('chat.session_list') }}</span>
@@ -43,9 +43,52 @@
         v-mq:[EventNames.sessionSelect].click="{ session }"
       >
         <div class="session-info">
-          <div class="session-title">{{ session.title || $t('chat.untitled') }}</div>
+          <div class="session-title-row">
+            <!-- F8 · 回看入口（单聊 §3.4.6 / D32）：主会话行下挂**子聊天**子节点——展开时经
+                 `subchat-list{parent_id}` **懒加载**（**含已结束**）；点击 → `gui.window.open-chat`。
+                 仅 `kind ∈ {sub_chat, group_chat}`（`subchat-list` 已过滤；`sub_session` 仍走任务树）。 -->
+            <button
+              v-if="!subchatToggleHidden(session)"
+              type="button"
+              class="session-subchat-toggle"
+              :disabled="!!subchatLoading[session.session_id]"
+              :title="$t('chat.subchat_toggle')"
+              @click.stop="toggleSubChats(session)"
+            >
+              <Icon :name="subchatsExpanded(session) ? 'arrow-down' : 'arrow-right'" :size="12" />
+            </button>
+            <div v-if="editingId !== session.session_id" class="session-title">{{ session.title || $t('chat.untitled') }}</div>
+            <!-- 就地改名（与文件改名同范式）：Enter 提交 / Esc 取消 / 失焦提交；交互不触发会话选中 -->
+            <Input
+              v-else
+              :model-value="editingValue"
+              @update:model-value="editingValue = $event"
+              class="session-title-input"
+              @keyup.enter="confirmRename"
+              @keyup.escape="cancelRename"
+              @blur="confirmRename"
+              @mousedown.stop
+              @click.stop
+            />
+          </div>
           <div class="session-meta">
             <span class="session-id">#{{ session.session_id?.slice(0, 8) }}</span>
+          </div>
+        </div>
+        <div v-if="subchatsExpanded(session)" class="session-subchats">
+          <div v-if="subchatsOf(session).length === 0" class="session-subchat-empty">
+            {{ $t('chat.subchat_none') }}
+          </div>
+          <div
+            v-for="c in subchatsOf(session)"
+            :key="c.session_id"
+            class="session-subchat"
+            @click.stop="openSubChatNode(c)"
+          >
+            <!-- 单聊 / 群聊**图标区分**（群聊 §4 D41：下挂入口与单聊完全统一，唯一区别 = 图标） -->
+            <Icon :name="isGroupChatKind(c.kind) ? 'group' : 'chat-dot-round'" :size="12" class="session-subchat-icon" />
+            <span class="session-subchat-name" :class="{ ready: c.lifecycle === SUBCHAT_READY }">{{ subChatName(c) }}</span>
+            <span class="session-subchat-state">{{ $t(subChatStateKey(c.lifecycle)) }}</span>
           </div>
         </div>
         <div class="session-actions">
@@ -105,25 +148,47 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, confirm, promptInput, message } from '../../components/ui'
+import { Button, Input, confirm, message } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import EmptyState from '../../components/common/EmptyState.vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+import { MsgTopics, FieldKeys } from '../../events/msgkeys'
 import * as sessionApi from '../../api/session'
 import { buildCopyMessages, serializeCopyMessages } from '../../utils/sessionCopy'
 import { useChatWindows } from '../../composables/useChatWindows'
 import { windowForSession } from '../../utils/chatWindows'
+import { listSubChats } from '../../composables/useSubChats'
+import { SUBCHAT_READY, subChatName, subChatStateKey } from '../../utils/subchat.js'
+import { isGroupChatKind } from '../../utils/groupchat.js'
+import { useSelectionStore } from '../../stores/selection'
 
 defineOptions({ name: 'SessionsPane' })
 
 const { t } = useI18n()
 
+// 跨 view 共享状态（UILAYOUT-1 §3.7）：主会话唯一真相源 = store 的 `activeSession.sessionId`。
+const selection = useSelectionStore()
+
 const sessions = ref([])
+// 本组件内的**副本**（会话行 active 高亮 / 「删除当前会话」判定 / 开窗入口态）；写入口径见 load()
+// —— store 优先、后端仅兜底（裁决 1，2026-10-16）。
 const currentSessionId = ref(null)
 const copyingId = ref('')
+
+// 就地改名状态（与文件树改名同范式）：editingId = 正在改名的会话 id；editingValue = 输入值。
+const paneRef = ref(null)
+const editingId = ref('')
+const editingValue = ref('')
+
+// ── F8 · 会话列表挂子聊天（单聊 §3.4.6 / D32）────────────────────────
+// 主会话行下挂**子聊天**子节点：**展开时懒加载**（`subchat-list{parent_id}`，返回**含已结束**）；
+// 点击子节点 → `gui.window.open-chat`（幂等）。子聊天属「子会话域」，不改 `data-session-list`。
+const subchatChildren = ref({}) // parentId → 子聊天清单
+const subchatExpanded = ref({}) // parentId → 是否展开
+const subchatLoading = ref({})  // parentId → 取数中（防连点）
 
 // 纯对话窗口入口（T-2…T-5，24 §6.4 / 不变量 I-1）：已开窗口清单 + 新会话开窗。
 // `windows` **只含对话窗口**（主窗口不入注册表）→ 「主窗当前会话」由本地 currentSessionId 判定。
@@ -170,6 +235,63 @@ async function handleNewChatWindow() {
   }
 }
 
+// ── F8 · 子聊天子节点 ────────────────────────────────────────────────
+function subchatsExpanded(session) {
+  return !!subchatExpanded.value[session && session.session_id]
+}
+
+function subchatsOf(session) {
+  const sid = session && session.session_id
+  return (sid && subchatChildren.value[sid]) || []
+}
+
+/** 已加载且为空 → 隐藏展开入口（懒加载未知前保留入口）。 */
+function subchatToggleHidden(session) {
+  const sid = session && session.session_id
+  if (!sid) return true
+  const list = subchatChildren.value[sid]
+  return Array.isArray(list) && list.length === 0 && !subchatExpanded.value[sid]
+}
+
+/** 按父会话取子聊天（**含 `finished`** —— 会话列表是「已结束」的唯一回看入口，§3.4.6）。 */
+async function loadSubChatsOf(sid) {
+  if (!sid) return []
+  try {
+    const list = await listSubChats(sid)
+    subchatChildren.value = { ...subchatChildren.value, [sid]: list }
+    return list
+  } catch (e) {
+    console.warn('[SessionsPane] subchat-list failed:', e)
+    return []
+  }
+}
+
+/** 展开 / 收起：**首次展开时懒加载**（后续展开直接用已加载清单）。 */
+async function toggleSubChats(session) {
+  const sid = session && session.session_id
+  if (!sid) return
+  const next = !subchatExpanded.value[sid]
+  subchatExpanded.value = { ...subchatExpanded.value, [sid]: next }
+  if (next && !Array.isArray(subchatChildren.value[sid]) && !subchatLoading.value[sid]) {
+    subchatLoading.value = { ...subchatLoading.value, [sid]: true }
+    await loadSubChatsOf(sid)
+    subchatLoading.value = { ...subchatLoading.value, [sid]: false }
+  }
+}
+
+/** 子聊天子节点点击 → 打开 / 前置纯对话窗口（幂等）；撞窗口上限 → 明确提示（§6 E5；
+    群聊为**独立额度** → 用群聊专属文案，群聊 §9 D28/D30）。 */
+async function openSubChatNode(item) {
+  const sid = item && item[FieldKeys.session_id]
+  if (!sid) return
+  const r = await openSessionChatWindow(sid)
+  if (!r || !r.ok) {
+    message.warning(t(isGroupChatKind(item[FieldKeys.kind])
+      ? 'chat.group_chat_window_limit'
+      : 'chat.chat_window_limit'))
+  }
+}
+
 // load：取会话列表 + 当前活动会话（用于 active 高亮与「删除当前会话」判定）+ 已开对话窗口
 // （T-3 置灰依据 = gui.window.list，只含对话窗口）。
 async function load() {
@@ -180,7 +302,16 @@ async function load() {
       refreshWindows(),
     ])
     sessions.value = res || []
-    currentSessionId.value = active?.session_id || null
+    // UILAYOUT-1 裁决 1（2026-10-16）：store 优先、后端兜底。
+    //  · store 非空 → 取 store 值（**共享会话已在飞**，如 ChatPanel 新建会话已置新 id、
+    //    `setActiveSessionID` 尚未落库）；此时**不得**用后端 `session-active-get` 的旧值覆盖，
+    //    否则会把共享会话清掉（与本组件已订阅的事件链语义冲突）。
+    //  · store 为空 → 用后端活动会话兜底（首屏 / 前端尚未收到 `session-changed`）。
+    const storeSid = selection.activeSessionId
+    currentSessionId.value = storeSid || active?.session_id || null
+    // F8：已加载过的子聊天随列表一并刷新（打开/切回「会话」页签即与最新状态对齐）。
+    const pids = Object.keys(subchatChildren.value)
+    if (pids.length) await Promise.all(pids.map((pid) => loadSubChatsOf(pid)))
   } catch (e) {
     console.warn('[SessionsPane] Failed to load sessions:', e)
   }
@@ -190,6 +321,8 @@ async function load() {
 // T-4 / T-5（I-1 推论）：该会话**已被对话窗口绑定** → 主窗口**不切换**，改为**激活**该窗口。
 async function handleSelect(session) {
   if (!session) return
+  // 改名态中切换会话 → 先提交未决改名（避免编辑框残留）
+  if (editingId.value && editingId.value !== session.session_id) confirmRename()
   if (windowForSession(windows.value, session.session_id)) {
     await openSessionChatWindow(session.session_id)
     return
@@ -269,16 +402,39 @@ async function handleCopy(session) {
   }
 }
 
-async function handleRename(session) {
-  const newName = await promptInput(t('chat.rename_prompt'), session.title || '')
-  if (newName !== null && newName.trim() !== '' && newName !== session.title) {
-    try {
-      await sessionApi.updateSessionTitle(session.session_id, newName.trim())
-      sessions.value = await sessionApi.listSessions()
-    } catch (e) {
-      message.error(t('chat.rename_failed') + ' ' + (e.message || e))
-    }
-  }
+// 就地改名（inplace-editor，与文件改名同范式）：右键/按钮触发 → 标题行内渲染 Input，
+// Enter 提交、Esc 取消、失焦提交；提交仍走 sessionApi.updateSessionTitle。
+function startRename(session) {
+  if (!session) return
+  editingId.value = session.session_id
+  editingValue.value = session.title || ''
+  nextTick(() => {
+    const input = paneRef.value?.querySelector('.session-title-input')
+    if (!input) return
+    input.focus()
+    input.select?.()
+  })
+}
+
+function cancelRename() {
+  if (!editingId.value) return
+  editingId.value = ''
+  editingValue.value = ''
+}
+
+// 提交改名（编辑态来自 editingId；会话对象按 id 在当前列表内查找）。
+function confirmRename() {
+  const id = editingId.value
+  if (!id) return
+  const s = sessions.value.find(x => x.session_id === id)
+  const val = (editingValue.value || '').trim()
+  editingId.value = ''
+  editingValue.value = ''
+  if (!val || val === ((s && s.title) || '')) return
+  sessionApi.updateSessionTitle(id, val)
+    .then(() => sessionApi.listSessions())
+    .then(list => { sessions.value = list || [] })
+    .catch(e => message.error(t('chat.rename_failed') + ' ' + (e.message || e)))
 }
 
 async function handleCreate() {
@@ -306,11 +462,20 @@ onMounted(() => {
     if (session) handleSelect(session)
   }))
   _unsubs.push(mq.on(EventNames.sessionRename, ({ session }) => {
-    if (session) handleRename(session)
+    if (session) startRename(session)
   }))
   _unsubs.push(mq.on(EventNames.sessionDelete, ({ session }) => {
     if (session) handleDelete(session)
   }))
+  // F8：已加载的父会话 → 子聊天状态变化（`subchat-opened` / `subchat-state`）时刷新其子节点
+  // （未加载过的父会话不在这里预取 —— 仍是展开时懒加载）。
+  const refreshParent = (d) => {
+    const pid = d && d[FieldKeys.parent_session_id]
+    if (!pid) return
+    if (Object.prototype.hasOwnProperty.call(subchatChildren.value, pid)) loadSubChatsOf(pid)
+  }
+  _unsubs.push(mq.on(MsgTopics.subchatOpened, refreshParent))
+  _unsubs.push(mq.on(MsgTopics.subchatState, refreshParent))
 })
 onUnmounted(() => _unsubs.forEach(fn => fn()))
 </script>
@@ -379,13 +544,90 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   flex-direction: column;
   gap: 2px;
 }
+/* 标题行：展开箭头（F8 子聊天）+ 标题/改名输入框 */
+.session-title-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.session-subchat-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.session-subchat-toggle:hover {
+  color: var(--accent);
+}
 .session-title {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 子聊天子节点（F8）：缩进挂在父会话行下；点击打开对话窗口（含已结束 → 只读回看） */
+.session-subchats {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 2px 18px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+.session-subchat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.session-subchat:hover {
+  background: var(--bg-hover);
+}
+.session-subchat-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.session-subchat-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.session-subchat-name.ready {
+  color: var(--accent);
+  font-weight: 600;
+}
+.session-subchat-state,
+.session-subchat-empty {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.session-subchat-empty {
+  padding: 2px 4px;
+}
+/* 就地改名的输入框（Input 根节点即 <input>，class 直接落在它上面） */
+.session-title-input {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 6px;
 }
 .session-meta {
   display: flex;

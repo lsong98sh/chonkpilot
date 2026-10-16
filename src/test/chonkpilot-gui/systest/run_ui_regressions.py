@@ -78,11 +78,11 @@ def case_r1_knowledge_md_preview():
         kb.click_kb_dir("core")
     assert kb.poll(lambda: any(kb.row_label(r).endswith(".tool.md") for r in kb.kb_rows())), \
         "core 下无 *.tool.md 行"
-    # 选一个 .md 原语 → preview
-    assert kb.click_kb_file("file_find.tool.md"), "单击 file_find.tool.md 失败"
+    # 选一个 .md 原语 → preview（file_find 已收纳为 filesys_run 的 FIND 动作 → 改用 filesys_run 契约）
+    assert kb.click_kb_file("filesys_run.tool.md"), "单击 filesys_run.tool.md 失败"
     assert kb.poll(lambda: kb.prim_panel_exists()), "PrimitivePanel 未打开"
     path = kb.prim_active_path()
-    if not path.replace("\\", "/").endswith("file_find.tool.md"):
+    if not path.replace("\\", "/").endswith("filesys_run.tool.md"):
         raise TestError("活动原语面板路径异常：%r" % path)
     # 内容渲染（P3-C2 新口径，2026-09-24）：原「源码」页签已移除（子页签改为 meta·描述·参数·正文
     # 四页签，见 PrimitivePanel.vue / run_explore_kb.py:295-296）→ 原「源码渲染出内容（不再 loading）」

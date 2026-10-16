@@ -139,8 +139,7 @@ func TestListToolsContracts(t *testing.T) {
 			t.Errorf("tool %s: inputSchema nil", tl.Name)
 		}
 	}
-	want := []string{"browser_run", "desktop_run", "file_diff", "file_find", "file_read",
-		"filesys_run", "script_run", "web_fetch"}
+	want := []string{"browser_run", "desktop_run", "filesys_run", "script_run", "web_fetch"}
 	assertNameSet(t, names, want)
 }
 

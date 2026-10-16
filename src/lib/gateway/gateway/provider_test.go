@@ -46,7 +46,7 @@ func probeFields(t *testing.T, path string) map[string]string {
 // sse → SSEClientTransport（旧式 SSE）、http / 缺省+url → StreamableClientTransport；
 // headers → 两分支均经自定义 http.Client 注入。
 func TestBuildConnTransportSelection(t *testing.T) {
-	conn, cmd, done, _, err := buildConn(&ServerEntry{ID: "s1", URL: "http://127.0.0.1:1/sse", Transport: "sse"}, nil)
+	conn, cmd, done, _, err := buildConn(&ServerEntry{ID: "s1", URL: "http://127.0.0.1:1/sse", Transport: "sse"}, nil, nil)
 	if err != nil {
 		t.Fatalf("sse buildConn: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestBuildConnTransportSelection(t *testing.T) {
 	}
 
 	// 显式 http
-	conn, _, _, _, err = buildConn(&ServerEntry{ID: "h1", URL: "http://127.0.0.1:2/mcp", Transport: "http"}, nil)
+	conn, _, _, _, err = buildConn(&ServerEntry{ID: "h1", URL: "http://127.0.0.1:2/mcp", Transport: "http"}, nil, nil)
 	if err != nil {
 		t.Fatalf("http buildConn: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestBuildConnTransportSelection(t *testing.T) {
 	}
 
 	// 缺省 + 仅 url → 推断 http（streamable）
-	conn, _, _, _, err = buildConn(&ServerEntry{ID: "d1", URL: "http://127.0.0.1:3/mcp"}, nil)
+	conn, _, _, _, err = buildConn(&ServerEntry{ID: "d1", URL: "http://127.0.0.1:3/mcp"}, nil, nil)
 	if err != nil {
 		t.Fatalf("default buildConn: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestBuildConnTransportSelection(t *testing.T) {
 		conn, _, _, _, err := buildConn(&ServerEntry{
 			ID: "hd", URL: "http://127.0.0.1:4/x", Transport: tr,
 			Headers: map[string]string{"X-K": "v"},
-		}, nil)
+		}, nil, nil)
 		if err != nil {
 			t.Fatalf("%s+headers buildConn: %v", tr, err)
 		}
@@ -113,7 +113,7 @@ func TestBuildConnExplicitTransportNeedsURL(t *testing.T) {
 	for _, tr := range []string{"http", "sse"} {
 		conn, cmd, done, _, err := buildConn(&ServerEntry{
 			ID: "bad", Runtime: "chonkpilot-no-such-exe-xyz.exe", Transport: tr,
-		}, nil)
+		}, nil, nil)
 		if err == nil {
 			t.Fatalf("transport=%s 缺 url 应报错（conn=%v）", tr, conn)
 		}
@@ -178,7 +178,7 @@ func TestSpawnedStdioCwdAndEnvExpansion(t *testing.T) {
 			"GATEWAY_PROBE_P1=%GATEWAY_PROBE_DIR%\\p1.out", // %VAR%
 			"GATEWAY_PROBE_P2=${GATEWAY_PROBE_DIR}/p2.out", // ${VAR}
 		},
-	}, 5*time.Second, t.Logf)
+	}, 5*time.Second, t.Logf, nil)
 	if err != nil {
 		t.Fatalf("newProxyProvider: %v", err)
 	}

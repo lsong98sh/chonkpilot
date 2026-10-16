@@ -1,0 +1,124 @@
+@import './view.css';
+
+/* 自由布局容器 · 子系统基础样式（UILAYOUT-1 §3.10）。
+   ⚠️ 并入主工程后（P3）本文件**不再声明 `html/body/#app`、`body`、`::-webkit-scrollbar*`
+   等全局规则** —— 那些是宿主 `assets/styles/global.css` 的职责，重复声明会覆盖宿主外观
+   （10px 滚动条 / 13px body 字号）。子系统 `--lf-*` 默认值保留作 standalone 兜底，
+   宿主经 `src/frontend/src/layout/theme.css` 把它映射到既有主题 token（三主题自动跟随）。 */
+:root {
+  --lf-bg: #f5f6f8;
+  --lf-panel: #ffffff;
+  --lf-border: #dfe3e8;
+  --lf-border-strong: #c3cad3;
+  --lf-text: #1f2933;
+  --lf-text-weak: #6b7785;
+  --lf-accent: #2f6bff;
+  --lf-accent-soft: #e8efff;
+  --lf-select: #ffd97a;
+  --lf-select-border: #f0a000;
+  --lf-bar: #ffffff;
+  --lf-tree-hover: #eef2f8;
+  --lf-radius: 6px;
+  --lf-font: 'Segoe UI', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* ── 分割条（照 chonkpilot 的口径做成全局变量）──
+     视觉与命中解耦：本体恒发丝线，hover/拖拽只加粗伪元素命中区。
+     两值与 pane 尺寸无关；拖拽数学只读 pane 的 getBoundingClientRect。 */
+  --split-hairline: 1px; /* resizer 本体发丝线宽 */
+  --split-hit: 5px; /* resizer 命中区宽（伪元素撑开，常态透明） */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+/* 表单元素字号/颜色继承（子系统编辑器内部控件的兜底；不覆盖宿主已有的类选择器规则） */
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--lf-text);
+}
+
+.lf-btn {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--lf-border-strong);
+  border-radius: var(--lf-radius);
+  background: #fff;
+  color: var(--lf-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lf-btn:hover {
+  border-color: var(--lf-accent);
+  color: var(--lf-accent);
+}
+
+.lf-btn.primary {
+  background: var(--lf-accent);
+  border-color: var(--lf-accent);
+  color: #fff;
+}
+
+.lf-btn.primary:hover {
+  filter: brightness(1.08);
+  color: #fff;
+}
+
+.lf-btn.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+
+.lf-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.lf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.lf-field > label {
+  font-size: 12px;
+  color: var(--lf-text-weak);
+}
+
+.lf-field input[type='text'],
+.lf-field select {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--lf-border-strong);
+  border-radius: var(--lf-radius);
+  background: #fff;
+  width: 100%;
+}
+
+.lf-empty {
+  color: var(--lf-text-weak);
+  font-size: 12px;
+  padding: 12px;
+  text-align: center;
+}
+
+.lf-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--lf-accent-soft);
+  color: var(--lf-accent);
+  font-size: 11px;
+}

@@ -29,7 +29,6 @@
                 @update:model-value="onTreeSelect"
               />
               <span class="file-path" :title="tab.path">{{ tab.path }}</span>
-              <span v-if="tab.deleted" class="deleted-badge">{{ $t('common.deleted_file') }}</span>
               <span class="file-type-tag">{{ tab.renderType }}</span>
               <!-- 截断提示：>512KB 文本经 filesys.content 截断 → 与 HexView「仅显示前 N 字节」同口径（E-35） -->
               <span v-if="showTruncated(tab)" class="truncated-badge">{{ $t('common.content_truncated') }}</span>
@@ -130,10 +129,11 @@
       <!-- 底部页签栏（公共 TabBar：溢出折叠/右键关闭/双击固定）
            右键菜单四项统一走 MQ（preview-tab-close-*，下方 onMounted 订阅）；此处只接页签自身交互事件 -->
       <TabBar
-        v-model="activeKey"
+        :model-value="activeKey"
         :tabs="tabItems"
         position="bottom"
         :ctx-topics="previewTabCtxTopics"
+        @update:model-value="setActiveKey"
         @close="closeTab"
         @pin="pinTabByKey"
       />
@@ -180,6 +180,7 @@ import { isPrimitiveFile } from '../../utils/primitive'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { GuiInitDataKeys } from '../../events/msgkeys'
+import { useSelectionStore } from '../../stores/selection'
 
 const baseViewerOptions = { preset: [litePreset, officePreset], theme: 'light' }
 // 代码预览：隐藏全局工具栏（缩放/搜索/下载/打印/导出/主题）与 renderer 内部
@@ -212,6 +213,22 @@ function basename(path) {
 function findTab(pred) { return tabs.value.find(pred) }
 
 const activeTab = computed(() => tabs.value.find(t => t.key === activeKey.value) || null)
+
+// ── 预览激活项 → 跨 view 共享状态（selection store，UILAYOUT-1 §3.7 / §6）──
+// `activeFile` = **只读镜像**（一期 CodeView 自管页签集合与内容，§4.1 ③）：页签打开 / 切换 /
+// 关闭时回写，供栏条目 / 命令 / 其它 view 读；**不反向驱动** CodeView 页签。
+// 激活项为功能页页签（settings / scenario…）→ 无文件镜像（path 空）。
+const selection = useSelectionStore()
+function mirrorActiveFile() {
+  const tab = activeTab.value
+  if (tab && tab.kind === 'file') selection.setActiveFile({ path: tab.path, renderType: tab.renderType })
+  else selection.setActiveFile({ path: '', renderType: '' })
+}
+/** 激活页签的**唯一入口**（含 TabBar 选中、文件/功能页打开、关闭回落）：改 activeKey 并同步镜像。 */
+function setActiveKey(key) {
+  activeKey.value = key || null
+  mirrorActiveFile()
+}
 
 // ── 公共 TabBar 适配（底部页签栏逻辑抽出为 components/tabs/TabBar.vue）──
 const tabItems = computed(() => tabs.value.map(tab => ({
@@ -285,7 +302,7 @@ function specialTitle(kind) {
 function openSpecialTab(kind, title, innerTab) {
   let tab = findTab(t => t.kind === kind)
   if (tab) {
-    activeKey.value = tab.key
+    setActiveKey(tab.key)
     // 已开页：可选 innerTab（如项目配置页签）→ 更新请求（nonce 递增以触发页内切换）
     if (innerTab) {
       tab.innerTab = innerTab
@@ -304,7 +321,7 @@ function openSpecialTab(kind, title, innerTab) {
     tab.innerTabNonce = 1
   }
   tabs.value.push(tab)
-  activeKey.value = tab.key
+  setActiveKey(tab.key)
 }
 
 // ── 文件树下拉（filetreeVisible=false 时的文件选择器）──
@@ -405,7 +422,7 @@ async function handleFileOpen(event) {
   if (existing) {
     // 双击打开已存在的临时页签 → 转为固定
     if (!temporary && existing.temporary) existing.temporary = false
-    activeKey.value = existing.key
+    setActiveKey(existing.key)
     return
   }
 
@@ -427,13 +444,12 @@ async function handleFileOpen(event) {
     content: '',
     truncated: false,
     showSource: false,
-    deleted: false,
     rawUrl: getFileUrl(path),
     imageZoom: 1,
     naturalSize: { w: 0, h: 0 },
   })
   tabs.value.push(tab)
-  activeKey.value = tab.key
+  setActiveKey(tab.key)
 
   // 打开文件持久化：**立即做一次全量写**（I-81：原先"单元素覆盖写 + 300ms 去抖全量写"并发，
   // 若在该窗口内进程被杀，键会退化为只剩最后打开的一个文件 → 下次启动页签丢失）。
@@ -493,7 +509,7 @@ function closeTab(key) {
   tabs.value.splice(idx, 1)
   if (activeKey.value === key) {
     const next = tabs.value[Math.min(idx, tabs.value.length - 1)]
-    activeKey.value = next ? next.key : null
+    setActiveKey(next ? next.key : null)
   }
   persistOpenedFiles()
 }
@@ -506,15 +522,27 @@ function closeTabs(keys) {
   tabs.value = tabs.value.filter(t => !set.has(t.key))
   if (removingActive) {
     const next = tabs.value[tabs.value.length - 1]
-    activeKey.value = next ? next.key : null
+    setActiveKey(next ? next.key : null)
   }
   persistOpenedFiles()
 }
 
 function closeAllTabs() {
   tabs.value.splice(0, tabs.value.length)
-  activeKey.value = null
+  setActiveKey(null)
   persistOpenedFiles()
+}
+
+// 按路径收口：命中路径自身 或 其下子路径的**文件页签**全部关闭（目录删除 → 连其下所有页签）。
+function closeTabsByPath(changedKey) {
+  const hit = tabs.value
+    .filter(t => t.kind === 'file')
+    .filter(t => {
+      const k = normPathKey(t.path)
+      return k === changedKey || k.startsWith(changedKey + '/')
+    })
+    .map(t => t.key)
+  if (hit.length) closeTabs(hit)
 }
 
 let persistTimer = null
@@ -609,18 +637,21 @@ async function onFileChanged(data) {
   if (!data || Array.isArray(data.children)) return
   const changedPath = data?.path
   if (!changedPath) return
-  const ext = getExtension(changedPath)
-  if (getBinaryType(ext) || ext === 'pdf' || hexExtensions.includes(ext) || unsupportedExtensions.includes(ext)) return
   const changedKey = normPathKey(changedPath)
-  const target = tabs.value.find(tab => tab.kind === 'file' && normPathKey(tab.path) === changedKey && tab.renderType !== 'primitive')
-  if (!target) return
 
-  // op 映射：operation 'remove' ↔ 旧 'deleted'
+  // 删除（文件 / 目录）→ **关闭**路径命中的已开页签（目录 = 连其下全部页签）：
+  // 不再保留「已删除」占位页签（2026-10-15 需求：树形导航删除后页签须关闭）。
   const op = data.operation || data.op
   if (op === 'remove' || op === 'deleted') {
-    target.deleted = true
+    closeTabsByPath(changedKey)
     return
   }
+
+  const ext = getExtension(changedPath)
+  if (getBinaryType(ext) || ext === 'pdf' || hexExtensions.includes(ext) || unsupportedExtensions.includes(ext)) return
+  // 原语文件（*.type.md，renderType='primitive'）由 PrimitivePanel 自管，不在此重载原始内容。
+  const target = tabs.value.find(tab => tab.kind === 'file' && normPathKey(tab.path) === changedKey && tab.renderType !== 'primitive')
+  if (!target) return
 
   const seq = ++changedSeq
   try {
@@ -678,6 +709,10 @@ function isPointInSelection(x, y) {
 function hideSelBar() {
   selBar.visible = false
   selBar.text = ''
+  // 预览区选中文本 → 跨 view 共享状态（selection.activeSelection，UILAYOUT-1 §3.7）：
+  // 快照由生产者（本组件）落库（`preview-selection-to-chat` 载荷为空，无法由订阅者取值）。
+  // range 槽一期不采集（DOM Range → 字符偏移映射属后续增强），恒为 null。
+  selection.setActiveSelection({ text: '' })
 }
 
 function updateSelBar() {
@@ -703,6 +738,7 @@ function updateSelBar() {
     return
   }
   selBar.text = text
+  selection.setActiveSelection({ text }) // 镜像当前选区（见 hideSelBar 注）
   const barW = 116
   selBar.x = Math.max(4, Math.min(rect.left + rect.width / 2 - barW / 2, window.innerWidth - barW - 8))
   selBar.y = Math.max(4, rect.top - 34)
@@ -931,15 +967,6 @@ onUnmounted(() => {
   background: var(--bg-surface);
   color: var(--text-muted);
   text-transform: uppercase;
-  flex-shrink: 0;
-}
-
-.deleted-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--danger);
-  color: var(--bg-primary);
   flex-shrink: 0;
 }
 

@@ -8,15 +8,27 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// writeToolDocForTest 在 dir 下写一个最小 *.tool.md（name = 文件名；meta 为 [meta] 分区正文）。
+// writeToolDocForTest 在 dir 下写一个最小 v2 *.tool.md（基本信息 yaml + 摘要 + 参数）。
+// meta 以旧口径 `k=v` 行传入，这里转成 yaml `k: v` 写进「基本信息」。
 func writeToolDocForTest(t *testing.T, dir, name, meta string) {
 	t.Helper()
-	body := "# " + name + "\n\n[meta]\n" + meta + "\n\n[description]\n" + name + " 描述\n\n[parameters]\ntype: object\nproperties: {}\n"
+	yamlMeta := ""
+	for _, ln := range strings.Split(meta, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		if i := strings.IndexByte(ln, '='); i > 0 {
+			yamlMeta += strings.TrimSpace(ln[:i]) + ": " + strings.TrimSpace(ln[i+1:]) + "\n"
+		}
+	}
+	body := "# 基本信息\n```yaml\nname: " + name + "\n" + yamlMeta + "```\n\n# 摘要\n" + name + " 描述\n\n# 参数\n```json\n{\"type\":\"object\",\"properties\":{}}\n```\n"
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

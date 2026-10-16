@@ -206,8 +206,9 @@ var fileVerbSet = func() map[string]bool {
 }()
 
 // prevalidateScriptPaths 在执行前预校验 DSL 内**字面**文件句柄（R-11）：
-// 返回违规消息列表（空 = 通过）。两类来源：
-//   - 动作动词参数内的 `#"路径"`（RPL/APD/... 为 Raw，逐个 token 校验）；
+// 返回违规消息列表（空 = 通过）。三类来源：
+//   - 编辑动作动词参数内的 `#"路径"`（RPL/APD/... 为 Raw，逐个 token 校验）；
+//   - 查询动作动词参数内的 `#"路径"`（READ/DIFF/FIND 为 Raw，经 tokenizeQueryArgs 逐个文件 token 校验）；
 //   - 核心语句的文件句柄（LOOP/SET 数据源、IF exist、访问器、`=> 目标`、TYPEOF/ENTRY/
 //     SPLIT/JOIN/PUSH 的值）——经 dsl.CollectHandleRefs 收集。
 //
@@ -230,20 +231,37 @@ func prevalidateScriptPaths(script *dsl.Script) []string {
 		for _, st := range sts {
 			switch t := st.(type) {
 			case *dsl.ActionStmt:
-				if !t.RawArgsMode || !fileVerbSet[strings.ToUpper(t.Verb)] {
+				if !t.RawArgsMode {
 					continue
 				}
-				toks, err := tokenizeFileArgs(t.RawArgs)
-				if err != nil {
-					continue // 语法错误交由引擎报
-				}
+				upper := strings.ToUpper(t.Verb)
 				label := fmt.Sprintf("第 %d 行 %s", t.Line(), t.Verb)
-				for _, tk := range toks {
-					if !tk.file || strings.Contains(tk.text, "{{") {
-						continue
+				switch {
+				case fileVerbSet[upper]:
+					toks, err := tokenizeFileArgs(t.RawArgs)
+					if err != nil {
+						continue // 语法错误交由引擎报
 					}
-					if msg := ValidateField(label, tk.text); msg != "" {
-						msgs = append(msgs, msg)
+					for _, tk := range toks {
+						if !tk.file || strings.Contains(tk.text, "{{") {
+							continue
+						}
+						if msg := ValidateField(label, tk.text); msg != "" {
+							msgs = append(msgs, msg)
+						}
+					}
+				case queryVerbSet[upper]:
+					toks, err := tokenizeQueryArgs(t.RawArgs)
+					if err != nil {
+						continue // 语法错误交由引擎报
+					}
+					for _, tk := range toks {
+						if tk.kind != qFile || strings.Contains(tk.text, "{{") {
+							continue
+						}
+						if msg := ValidateField(label, tk.text); msg != "" {
+							msgs = append(msgs, msg)
+						}
 					}
 				}
 			case *dsl.IfStmt:

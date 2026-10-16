@@ -29,6 +29,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/uds"
 	"github.com/chonkpilot/chonkpilot-lib/winlog"
 	"github.com/chonkpilot/chonkpilot-llm/httpapi"
+	"github.com/chonkpilot/chonkpilot-llm/llmbridge"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-llm/udsapi"
 	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
@@ -82,6 +83,12 @@ func main() {
 		// 托盘**默认开**（🆕 2026-10-10）：本 exe 无控制台（-H windowsgui），系统托盘是唯一交互入口；
 		// `--tray=false` 可显式关闭（如 browser 形态的无头部署）。
 		trayEnable = flag.Bool("tray", true, "启用系统托盘（默认开；--tray=false 关闭）——双击=打开最近实例 / 右键=退出·打开新窗口·列举实例")
+		// LLM 桥接入口（BRIDGE-1，2026-10-16）：独立固定端口 127.0.0.1:5669（**默认开、仅 loopback、
+		// 免 api-key**）的透明反向代理——本机脚本用自选协议的 SDK 指向 /llm/<name>/... 即调用本机已配置
+		// LLM。**仅 server 形态装配**（桌面单体是否同开 = 设计稿 §7 步骤 8 待定，本任务不实施）。
+		// 空 = 关闭；非 loopback 绑定 → 桥**拒启**（fail-closed，免鉴权）。
+		// 见 docs/llm-bridge/LLM桥接端口设计方案.md。
+		llmBridgeAddr = flag.String("llm-bridge-addr", "127.0.0.1:5669", "LLM 桥接入口监听地址（默认开；裸端口如 5669 = 127.0.0.1:5669；**仅 loopback**，非 loopback 拒启；空 = 关闭）")
 	)
 	flag.Parse()
 
@@ -228,6 +235,35 @@ func main() {
 		}
 	}
 
+	// ── LLM 桥接入口（BRIDGE-1，2026-10-16；**默认开**）──
+	// 独立固定端口（默认 127.0.0.1:5669）的透明反向代理：本机脚本免 api-key 调本机已配置 LLM。
+	// **仅 server 形态装配**（桌面单体是否同开 = 设计稿 §7 步骤 8 待定，未实施）。
+	// 免鉴权 → **仅 loopback**：非 loopback 绑定 → 桥自拒启（fail-closed，见 llmbridge.Start）。
+	// 与 --http-addr（5668，MQ 面）完全独立：端口 / 路由 / 中间件均不共用；零新增 MQ 主题。
+	var bx *llmbridge.Server
+	if *llmBridgeAddr != "" {
+		bx = llmbridge.New(llmbridge.Options{
+			Addr: *llmBridgeAddr,
+			// provider 解析 = llm server 的只读查询（**不 Register / 不 Call / 不经 canon**；
+			// 只读 usr `llms` 配置：name → base_url / apiKey / protocol）。
+			Resolve: func(name string) (llmbridge.Target, bool) {
+				t, ok := srv.ResolveBridgeTarget(name)
+				if !ok {
+					return llmbridge.Target{}, false
+				}
+				return llmbridge.Target{BaseURL: t.BaseURL, APIKey: t.APIKey, Protocol: t.Protocol}, true
+			},
+		})
+		if err := bx.Start(); err != nil {
+			// 可选子系统：启动失败不致命（记录 + 继续），与 HTTP 入口 / UDS 前门口径一致。
+			// 非 loopback 绑定 → 桥拒启（拒绝的是桥，不阻断核心服务）。
+			log.Printf("[server] LLM 桥接入口启动失败（可选子系统，继续运行）: %v", err)
+			bx = nil
+		} else {
+			log.Printf("[server] LLM bridge entry: http://%s (routes=/llm/<name>/...)", bx.Addr())
+		}
+	}
+
 	// ── desktop 分体常驻版：系统托盘 + 自动退出 + 拉起 flash（🆕 2026-10-09；61 §4.1 ⑥⑦ · 62 §3A）──
 	// 托盘驻留：双击=打开最近实例（无则 spawn flash）；右键=退出/打开新窗口/列举实例（子窗口实例不列）。
 	// --autoexit：最后一个实例被删除（连接断开 ∪ 显式 exit）后自动退出；未指定则永久常驻。
@@ -351,6 +387,11 @@ func main() {
 	if hx != nil {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = hx.Shutdown(shutCtx)
+		cancel()
+	}
+	if bx != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = bx.Shutdown(shutCtx)
 		cancel()
 	}
 	srv.Stop()

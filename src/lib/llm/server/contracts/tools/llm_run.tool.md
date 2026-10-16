@@ -1,11 +1,13 @@
-# llm_run
+# 基本信息
+```yaml
+name: llm_run
+title: llm_run
+async: always
+category: server
+hot: true
+```
 
-[meta]
-category=server
-async=always
-hot=true
-
-[description]
+# 摘要
 LLM 委派/编排统一 DSL 执行器（script 或 file 二选一传入 DSL 脚本）：把"委派子 agent → 循环/并行批量处理 → 结果落盘 + 状态写回"固化成一份可执行脚本；**单次委派 = 一行 LLM 指令**（不再需要单独的委派/批量工具）。DSL 语法与既有批处理脚本 DSL 一致：行式指令，核心指令 SET/IF/LOOP/PARALLEL/BREAK/CONTINUE/EXIT/END 可任意嵌套（深度 ≤ 8），END 结束 LOOP/PARALLEL/IF 块，### 或 # 开头为注释行；文本一律双引号字符串并支持 {{}} 插值。
 
 **路径要求（R-11）**：`file`（脚本文件路径）与 DSL 内**所有文件/目录引用**（`#"path"` 句柄，含 LOOP/SET 的数据源读取、访问器、`=> #"file"` 目标、`IF exist` 的路径）**必须是绝对路径、以 `~/` 开头的用户目录路径或以 `!/` 开头的临时目录路径**；相对路径 → **顶层失败**（带行号/用途与原值，不写任何文件）。**相对路径不再按隐式 workDir 兜底解析**；项目内路径请用 `{{env.CHONKPILOT_WORKDIR}}` 显式拼接。
@@ -57,5 +59,20 @@ LOOP item=#"{{env.CHONKPILOT_WORKDIR}}/files.json".array
 END
 ```
 
-[parameters]
-{"type":"object","properties":{"script":{"type":"string","description":"DSL 脚本文本（见 description 语法；与 file 二选一；单行 LLM 指令即一次委派）"},"file":{"type":"string","description":"已保存 DSL 脚本文件路径（与 script 二选一；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错）"}}}
+# 参数
+```json
+{
+  "properties": {
+    "file": {
+      "description": "已保存 DSL 脚本文件路径（与 script 二选一；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错）",
+      "type": "string"
+    },
+    "script": {
+      "description": "DSL 脚本文本（见 description 语法；与 file 二选一；单行 LLM 指令即一次委派）",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+```
+

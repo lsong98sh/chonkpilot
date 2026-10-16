@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/agentbox"
+	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
 )
 
@@ -198,7 +199,9 @@ func helpList(root, dir string) int {
 		name := strings.TrimSuffix(path.Base(n), ".tool.md")
 		title := ""
 		if data, rerr := fs.ReadFile(fsys, n); rerr == nil {
-			title = firstTitle(data)
+			if c, perr := contractmd.Parse(string(data)); perr == nil {
+				title = c.Title
+			}
 		}
 		if title != "" {
 			fmt.Printf("%-20s %s\n", name, title)
@@ -231,21 +234,6 @@ func helpShow(root, dir, name string) int {
 	return 0
 }
 
-// firstTitle 取首行 `# xxx`（可读标题；无标题返回空）。
-func firstTitle(data []byte) string {
-	for _, ln := range strings.Split(string(data), "\n") {
-		t := strings.TrimSpace(ln)
-		if t == "" {
-			continue
-		}
-		if strings.HasPrefix(t, "# ") {
-			return strings.TrimSpace(strings.TrimPrefix(t, "# "))
-		}
-		return ""
-	}
-	return ""
-}
-
 // emit 原样透出 handler 结果到 stdout（executor 不做 JSON 探测/封装）：
 //   - handler Output 为 JSON 字符串 → 原样输出（mcp-server 端判定 JSON 后透传）
 //   - handler Output 为纯文本 → 原样输出（mcp-server 端判定非 JSON 后封装为 JSON）
@@ -257,9 +245,9 @@ func emit(_ string, res *Result) int {
 		data = res.Error
 	}
 	if int64(len(data)) > maxOutputBytes && !json.Valid([]byte(data)) {
-		// 纯文本超限：写临时文件 + 提示（完整内容由 file_read 提取）
+		// 纯文本超限：写临时文件 + 提示（完整内容由 FILE_READ 提取）
 		if of, err := writeTempOutput(data); err == nil {
-			data = fmt.Sprintf("输出超过 %d KB，已保存至 %s（用 file_read 读取）", maxOutputBytes/1024, of)
+			data = fmt.Sprintf("输出超过 %d KB，已保存至 %s（用 FILE_READ 读取）", maxOutputBytes/1024, of)
 		} else {
 			data = data[:maxOutputBytes] + "\n...（输出截断）"
 		}

@@ -1,0 +1,45 @@
+/**
+ * 自由布局容器 · 主题映射层（UILAYOUT-1 §3.10 · §7 P3④）。
+ *
+ * 机制层（`layout-free/`）自带一套 `--lf-*` 变量（standalone 期默认值，见
+ * `layout-free/styles/global.css`）；并入主工程后由**本文件把它映射到宿主既有 token**
+ * （`assets/styles/variables.css` 的 `--bg-primary` / `--accent` / `--border` …）——
+ * 三主题（light / dark / nord）随宿主 `data-theme` **自动切换**，机制层零改样式。
+ *
+ * 载入顺序（`main.js`）：宿主 `assets/styles/global.css` → 本文件。
+ * 本文件先 `@import` 机制层基础样式（其 `:root` 默认值会被下方映射覆盖），
+ * 再写映射规则（同优先级、后写者胜）。
+ *
+ * 〔去重/裁剪〕机制层的 `html/body/#app`、`body`、`::-webkit-scrollbar*` 等**全局规则已从
+ * `layout-free/styles/global.css` 移除**（宿主 global.css 是这些规则的唯一主人）——
+ * 否则 lf 的 10px 滚动条与 13px body 字号会覆盖宿主全局外观（§3.10 去重口径）。
+ */
+
+@import '../layout-free/styles/global.css';
+
+:root {
+  /* 面 / 线 / 字 */
+  --lf-bg: var(--bg-primary);
+  --lf-panel: var(--bg-secondary);
+  --lf-border: var(--border);
+  --lf-border-strong: var(--bg-surface);
+  --lf-text: var(--text-primary);
+  --lf-text-weak: var(--text-muted);
+
+  /* 强调色：`--lf-accent-soft` 取宿主的**淡底** token（`--accent-bg`），
+     而非字面 `var(--accent)` —— soft 在机制层是**背景**角色（`.lf-btn:hover` / `.lf-tag` /
+     设计态标记底色），用强调色本身当底色会让其上文字不可读。 */
+  --lf-accent: var(--accent);
+  --lf-accent-soft: var(--accent-bg);
+  --lf-select: var(--accent-bg);
+  --lf-select-border: var(--accent);
+
+  /* 栏 / 悬停 / 圆角 / 字体 */
+  --lf-bar: var(--toolbar-bg);
+  --lf-tree-hover: var(--bg-hover);
+  --lf-radius: var(--border-radius);
+  --lf-font: inherit;
+
+  /* `--split-hairline` / `--split-hit`（分割条视觉/命中解耦口径）宿主与机制层取值一致
+     （均 1px / 5px），无需映射。 */
+}

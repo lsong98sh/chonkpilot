@@ -32,6 +32,7 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import Icon from '../../components/icon/Icon.vue'
@@ -39,9 +40,15 @@ import { Button } from '../../components/ui'
 import EmptyState from '../../components/common/EmptyState.vue'
 import SessionTreeNode from './SessionTreeNode.vue'
 import { useTaskView } from '../../composables/useTaskView'
+import { useSelectionStore } from '../../stores/selection'
 
 const loading = ref(false)
-const currentTopId = ref(null)
+// 当前**主会话**（树根）= **跨 view 共享状态**：唯一真相源 = selection store（UILAYOUT-1 §3.7 P2③，
+// 原组件内 `currentTopId` ref 已删 —— 与 ChatPanel / 会话面板的双源已消除）。写入 = 既有
+// `session-changed` 的订阅者（store 在引导期注册，先于本组件订阅执行）。
+const selection = useSelectionStore()
+const { activeSession } = storeToRefs(selection)
+const currentTopId = computed(() => activeSession.value.sessionId || null)
 const selectedId = ref(null)
 const { loadTree, refresh, nodeTree, nodeTimeOf, nodes } = useTaskView()
 
@@ -191,7 +198,7 @@ function shouldAutoSelectNew() {
 onMounted(() => {
   const unsubs = []
   unsubs.push(mq.on(EventNames.sessionChanged, ({ session_id }) => {
-    currentTopId.value = session_id
+    // 主会话身份已由 selectionSubscribers（唯一写入点）写入 store → 此处只做本组件的树动作。
     if (session_id) loadTreeFor(session_id)
     else {
       selectedId.value = null

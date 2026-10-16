@@ -12,7 +12,7 @@
       }"
       :style="{ paddingLeft: 8 + depth * 18 + 'px' }"
       :data-path="node.path"
-      :title="node._ignored ? $t('fileTree.index_ignored') : undefined"
+      :title="node._ignored ? $t('fileTree.index_ignored') : (node._tooltip || undefined)"
       draggable="true"
       @click="$emit('row-click', node, $event)"
       @dblclick="$emit('row-dblclick', node)"

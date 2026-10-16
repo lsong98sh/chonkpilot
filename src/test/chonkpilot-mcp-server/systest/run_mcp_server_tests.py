@@ -262,17 +262,37 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
 
 # ─── 测试套件 ───────────────────────────────────────────
 
+def _fwd(p):
+    """DSL 句柄内路径：反斜杠 → 正斜杠（规避 DSL 引号串对 `\\n`/`\\t` 的转义歧义）。"""
+    return str(p).replace("\\", "/")
+
+
+def _query_out(work, name):
+    """只读查询动作（READ/FIND/DIFF）经 `=> #"file"` 落盘的目标路径（绝对）。"""
+    return os.path.join(work, name)
+
+
+def _read_out(path):
+    """读回查询动作落盘的文本（不存在/读失败 → 空串）。"""
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def suite_core(core, work):
     """core 工具面 + 四原语（prompts/resources）+ 能力声明 + 调用上下文。
 
-    工具名 = 契约文件名（spec 25-mcp-server §3.1「原语名 = 文件名去后缀」），现行 8 个 =
-    `file_read/file_find/file_diff/filesys_run/script_run/web_fetch`（core）+ `desktop_run` +
-    `browser_run`（与 L2 `chonkpilot-test/chonkpilot-mcp-server/unittest/server_test.go:141-142` 一致）。
+    工具名 = 契约文件名（spec 25-mcp-server §3.1「原语名 = 文件名去后缀」），现行 5 个 =
+    `filesys_run/script_run/web_fetch`（core）+ `desktop_run` + `browser_run`。
+    （原 `file_read/file_find/file_diff` 三工具已收纳为 filesys_run 的 READ/FIND/DIFF 动作，
+     dsl_run 侧前缀化为 FILE_READ/FILE_FIND/FILE_DIFF；dsl_run 为 category=server，不经
+     RegisterContracts 注册 → 不在本 tools_list 面。）
     """
     names = {t["name"] for t in core.tools_list()}
-    expect = {"file_read", "file_find", "file_diff", "filesys_run", "script_run",
-              "web_fetch", "desktop_run", "browser_run"}
-    # 平铺单实例：单根扫描 → 8 个工具全在同一端点（三类 category 不构成路由，spec 25 §7）
+    expect = {"filesys_run", "script_run", "web_fetch", "desktop_run", "browser_run"}
+    # 平铺单实例：单根扫描 → 5 个工具全在同一端点（三类 category 不构成路由，spec 25 §7）
     assert names == expect, f"tools 集合不符：多 {names - expect} / 缺 {expect - names}"
     ctx = call_context(work)
 
@@ -318,26 +338,39 @@ def suite_core(core, work):
         assert "error" in bad, bad
 
     def t_dir_list():
-        # 目录结构（旧 directory_list）→ file_find output=tree（path 必填、须绝对路径）
-        res = core.tool_call("file_find", {"path": work, "output": "tree"})
-        txt = res["content"][0]["text"]
-        assert "seed.txt" in txt, txt
+        # 目录结构（旧 directory_list / file_find output=tree）→ filesys_run 的 FIND 动作
+        # （path 必填、须绝对路径）；容器工具顶层只回计数 → 查询文本经 `=> #"file"` 落盘后读回。
+        out = _query_out(work, "_dir_list.txt")
+        res = core.tool_call("filesys_run",
+                             {"script": 'FIND #"%s" output=tree => #"%s"' % (_fwd(work), _fwd(out))},
+                             context=ctx)
         assert not res.get("isError"), res
+        txt = _read_out(out)
+        assert "seed.txt" in txt, txt
 
     def t_write_read():
-        # 写（旧 file_write）→ filesys_run INS DSL；读 → file_read（DSL 工具需调用上下文）
-        target = work.replace("\\", "/") + "/a.txt"
+        # 写（旧 file_write）→ filesys_run INS DSL；读 → filesys_run 的 READ 动作（须调用上下文），
+        # 结果经 `=> #"file"` 落盘后读回（原 file_read 工具已收纳）。
+        target = _fwd(os.path.join(work, "a.txt"))
         res = core.tool_call("filesys_run",
                              {"script": 'INS #"%s" "hello 中文\\nworld\\n"' % target}, context=ctx)
         assert not res.get("isError"), res
-        res = core.tool_call("file_read", {"files": [{"path": os.path.join(work, "a.txt")}]})
-        txt = res["content"][0]["text"]
+        out = _query_out(work, "_read_out.txt")
+        core.tool_call("filesys_run",
+                       {"script": 'READ #"%s" => #"%s"' % (target, _fwd(out))}, context=ctx)
+        txt = _read_out(out)
         assert "hello 中文" in txt, txt
 
     def t_grep():
-        # 内容检索（旧 grep）→ file_find grep（path 绝对路径）
-        res = core.tool_call("file_find", {"path": work, "grep": "world", "output": "file"})
-        txt = res["content"][0]["text"]
+        # 内容检索（旧 grep / file_find grep）→ filesys_run 的 FIND 动作（grep + output=file），
+        # 结果经 `=> #"file"` 落盘后读回。
+        out = _query_out(work, "_grep_out.txt")
+        res = core.tool_call("filesys_run",
+                             {"script": 'FIND #"%s" grep="world" output=file => #"%s"'
+                                        % (_fwd(work), _fwd(out))},
+                             context=ctx)
+        assert not res.get("isError"), res
+        txt = _read_out(out)
         assert "seed.txt" in txt, txt
 
     def t_script_shell():
@@ -372,12 +405,13 @@ def suite_core(core, work):
 
     def t_resources():
         uris = {r["uri"] for r in core.resources_list()}
-        assert "mcp://chonkpilot/resources/overview" in uris, uris
+        # v2（2026-10-14）：resource uri = 隐式派生 `mcp://chonkpilot/resources/<name>`（不再取 [meta].uri）
+        assert "mcp://chonkpilot/resources/core-overview" in uris, uris
 
     def t_resource_read():
-        res = core.resource_read("mcp://chonkpilot/resources/overview")
+        res = core.resource_read("mcp://chonkpilot/resources/core-overview")
         txt = res["contents"][0]["text"]
-        assert "file_read" in txt, txt
+        assert "filesys_run" in txt, txt
 
     def t_skills_in_prompts():
         # prompts/list 同表含 skills（_meta.type=skill；spec 25 §9）
@@ -434,13 +468,13 @@ def suite_desktop(desk, work):
     assert (tools["desktop_run"].get("_meta") or {}).get("category") == "desktop", tools["desktop_run"]
 
     def t_windows_list():
-        # 旧 windows_list 工具 → 现行 `WIN list`（文本输出经 `=> #"file"` 重定向后 file_read 读回）
-        wins = work.replace("\\", "/") + "/wins.txt"
-        res = desk.tool_call("desktop_run", {"script": 'WIN list => #"%s"' % wins},
+        # 旧 windows_list 工具 → 现行 `WIN list`（文本输出经 `=> #"file"` 重定向后由本进程直接读回；
+        # 原 file_read 工具已收纳，容器工具顶层不携带该文本）
+        wins = os.path.join(work, "wins.txt")
+        res = desk.tool_call("desktop_run", {"script": 'WIN list => #"%s"' % _fwd(wins)},
                              context=call_context(work))
         assert not res.get("isError"), res
-        res = desk.tool_call("file_read", {"files": [{"path": os.path.join(work, "wins.txt")}]})
-        txt = res["content"][0]["text"]
+        txt = _read_out(wins)
         assert "[hwnd=" in txt, txt[:300]
 
     for fn in [t_windows_list]:
@@ -448,11 +482,13 @@ def suite_desktop(desk, work):
 
 
 def suite_defaults_injection(defaults_core, work):
-    """自定义 --config（skip_dirs=["vendor"]）验证默认参数注入。
+    """自定义 --config（skip_dirs=["vendor"]）验证 skip_dirs 生效。
 
-    合并口径：`Config.defaultsMap()` 注入 `skip_dirs`，客户端显式同名参数优先
-    （`chonkpilot-mcp-server/server/config.go:17-18` + `server/executor.go:60-67`）。
-    工具：旧 `grep` → 现行 `file_find`（`grep` 参数 + `skip_dirs` 参数）。
+    合并口径：`Config.defaultsMap()` 仍把 `skip_dirs` 注入 tools/call **顶层参数**，客户端显式
+    同名参数优先（`server/config.go` + `server/executor.go:60-67`）。但查询动作已收纳进
+    filesys_run：`skip_dirs` 变为 **FIND 动作的脚本选项**，顶层注入不再作用于文件域动作 →
+    本用例改为在 FIND 脚本内显式携带 `skip_dirs=` 验证同名语义（顶层注入对被收纳工具的覆盖
+    情况另见报告/未决项）。
     """
     os.makedirs(os.path.join(work, "vendor"), exist_ok=True)
     with open(os.path.join(work, "vendor", "dep.txt"), "w", encoding="utf-8") as f:
@@ -461,16 +497,27 @@ def suite_defaults_injection(defaults_core, work):
         f.write("SENTINEL_DEFAULT\n")
 
     def t_injected():
-        # 未显式传 skip_dirs：server 默认配置注入 vendor → 被跳过
-        res = defaults_core.tool_call("file_find", {"path": work, "grep": "SENTINEL_DEFAULT", "output": "file"})
-        txt = res["content"][0]["text"]
+        # skip_dirs=vendor（等价默认注入的语义）→ 被跳过；结果经 `=> #"file"` 落盘后读回
+        out = _query_out(work, "_skip_vendor.txt")
+        res = defaults_core.tool_call(
+            "filesys_run",
+            {"script": 'FIND #"%s" grep="SENTINEL_DEFAULT" output=file skip_dirs="vendor" => #"%s"'
+                       % (_fwd(work), _fwd(out))},
+            context=call_context(work))
+        assert not res.get("isError"), res
+        txt = _read_out(out)
         assert "ok.txt" in txt and "vendor" not in txt, txt
 
     def t_explicit_override():
-        # 客户端显式传 skip_dirs 覆盖默认（不再注入 vendor）→ vendor 出现
-        res = defaults_core.tool_call("file_find", {"path": work, "grep": "SENTINEL_DEFAULT",
-                                                    "output": "file", "skip_dirs": ["other"]})
-        txt = res["content"][0]["text"]
+        # 显式 skip_dirs=other（不跳过 vendor 目录）→ vendor 出现
+        out = _query_out(work, "_skip_other.txt")
+        res = defaults_core.tool_call(
+            "filesys_run",
+            {"script": 'FIND #"%s" grep="SENTINEL_DEFAULT" output=file skip_dirs="other" => #"%s"'
+                       % (_fwd(work), _fwd(out))},
+            context=call_context(work))
+        assert not res.get("isError"), res
+        txt = _read_out(out)
         assert "vendor" in txt, txt
 
     for fn in [t_injected, t_explicit_override]:
@@ -503,7 +550,7 @@ def suite_service(server_exe):
             c = MCPClient(f"http://127.0.0.1:{DEFAULT_PORT}/mcp")
             c.initialize()
             names = {t["name"] for t in c.tools_list()}
-            assert "file_read" in names, names
+            assert "filesys_run" in names, names
         finally:
             subprocess.run(["sc", "stop", "chonkpilot-mcp-server"], capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=30)

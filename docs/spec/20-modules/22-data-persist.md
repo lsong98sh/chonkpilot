@@ -35,7 +35,7 @@
 | prompt | `data-prompt-{list,load,save,delete}` | prj config（`prompt-` 前缀；`summary_prompt` 已文件化到 **系统文档** `capability/system/summary.md`（纯文本；读序 = 项目 → 用户 → 系统文件 → embed 内置））。**`summary_prompt` 区分「继承 / 覆盖」**——load 回读项目文件 → 用户文件 → 系统文件 → embed 内置；save 时**内容为空 或 与继承值相同 → 删项目级文件（保持继承、不写覆盖）**，不同才写项目级；delete = 删项目级文件回落继承（前端另有「恢复默认」入口，`src/lib/data/internal/config/prompt.go`） |
 | prj-security | `data-prj-security-{list,load,save,delete}` | prj config（`security-` 前缀） |
 | scenario | `data-scenario-{list,load,save,delete}` | **场景文件树（capability 根下 `scenarios/`）**：`<级别根>/capability/scenarios/<场景目录>/`（**四级** app/user/project/prjusr；id/key = 目录名；**四级均可编辑**；**无覆盖**、不允许同名场景（跨四级唯一）；app 级**可编辑**，出厂内容 = **磁盘目录**、唯一源 `src/initdata/capability/scenarios/`；`restore` 动作**已删除**；payload 不变） |
-| session | `data-session-{list,get,history,latest,title,delete,active-set,active-get,content,ensure-session,ensure-turn,append-message,set-summary,complete-turn,cleanup-stale,load-messages,context}` | prj/prjusr |
+| session | `data-session-{list,get,history,latest,title,delete,active-set,active-get,content,ensure-session,ensure-turn,append-message,set-summary,complete-turn,cleanup-stale,load-messages,context,group-participants-load,group-participants-save,group-round-targets-load,group-round-targets-save}` | prj/prjusr（末四者 = 群聊两表，prjusr；SUBCHAT-3 阶段 E，**不广播 -refresh**） |
 | snapshot | `data-snapshot-{get,set}` | sessions 表 `history`/`snapshot_turn` |
 | tasktree | `data-tasktree-{list,tasks,delete,upsert}` | prjusr tasktree 表 |
 | knowledge | `data-knowledge-{root,list,read,save,create,delete,rename,mkdir,rmdir,rename-dir}` | capability 文件树（直接文件读写） |
@@ -64,6 +64,13 @@
 |--------|----|--------------|
 | `SnapshotAPI` / `ConfigAPI` / `SessionAPI` / `TurnAPI` / `MessageAPI` / `TasktreeAPI` / `KnowledgeAPI` / `FileListAPI` / `ScenarioAPI` / `MemoryAPI` / `McpAPI` | snapshot / config / session / turn / message / tasktree / knowledge / filelist / scenario / memory / mcp | 对应 `data-<domain>-*`（§3.1 · §3.2 · §3.3 · §3.4 · §3.6） |
 | **`ProjectAPI`** | **project**（项目初始化：**工程规格文件** + 工作目录**只读探测** + **项目级 agent 落文件**） | **无消息面** —— 由 server **inline 直调**（「场景向导」用，[37 SCEN-012](../30-function-points/37-场景.md)）：`ProjectSpecExists` / `ProjectSpecRead` / `ProjectSpecWrite`（落点 `<workDir>/.chonkpilot/project_spec.md`）+ `ProjectProbe`（**只读**：`empty` / `has_code` / `has_git` / `has_readme` / `file_count` / `languages[]` / `frameworks[]` / `package_manager` / `build_tool` / `test_tool` / `lint_tool` / `top_dirs[]`）+ `ProjectAgentWrite`（把向导合成的 agent 提示词落 `<workDir>/.chonkpilot/capability/agents/<名>.agent.md`（契约分区文本），回引用串 `${workDir}/.chonkpilot/capability/agents/<名>.agent.md`；**供场景以引用承载子 agent**）。定义 = `facade/project.go`、实现 = `internal/project/`（`project.go` + `probe.go`）。本域**无变更广播**（消费者只有向导自身）。 |
+
+> 🆕 **session 域新增能力（SUBCHAT-2 阶段 A/B-2，2026-10-16；均**无消息面**——由 llm-server **inline 直调** `s.cfg`）**：
+> - `SessionEnsure` 支持**一次性写入**子聊天固定参数（`kind` / `lifecycle` / `agent` / `scenario_id` / `llm` / `purpose`）——**仅非空才写键**（普通顶层会话行形状与既有逐字节一致）；
+> - 新增 `SessionLifecycleSet`（子聊天三态 `chatting` / `ready` / `finished` 更新；非法值报错不落库；行不存在报错不建残行）；
+> - 新增 `SessionSubChats`（按父会话列举子聊天 `kind ∈ {sub_chat, group_chat}`，**含 finished**）与 `SessionSubChatsAll`（**全局**列举，跨父会话；单聊 §3.4.7 启动提醒取数）；
+> - **`purpose`（阶段 B-2）**：`sessions` 行的子聊天**运行目的 / 展示名**（= gateway 注入的 `tool_call_display_name`，由 `subchat_open` handler 经注入通道读得后落库；单聊 §5.4），随 `subchat-opened` / `subchat-list` 下发；
+> - **对外消息面（`subchat-*` 4 条）已登记**（阶段 B-1）·**handler/订阅已落**（阶段 B-2，见 [21-llm-server](21-llm-server.md)）；`data-session-list` 语义**不变**（仍只返回顶层会话，见 [61 §3.2](../60-reference/61-消息一览.md)）。
 
 ---
 
@@ -97,6 +104,17 @@ usr 库：data.OpenSharedLayer(UserPath, LayerUsr)（UsrPath 可注入，测试�
 
 见 [12-数据层 §6](../10-architecture/12-数据层.md)：三层同构桶（`_meta/_migrations/config/llms/mcps/sessions/turns/messages/scenarios/permission/tasktree/meta` + 索引桶）；config 记录 `{"v": value}`。
 persist 运行态：实例视图（订阅 `instance-register/heartbeat/exit`）、按路径连接缓存（`shared` + 引用计数）。
+
+**`sessions` 行（prj/prjusr）**：`session_id` / `title` / `parent_id` / `created_at` / `updated_at`（+ 快照列 `history` / `snapshot_turn`）+ **子聊天固定参数可选列** `kind` / `lifecycle` / `agent` / `scenario_id` / `llm` / `purpose`（SUBCHAT-2 阶段 A/B-2，2026-10-16；**仅非空才写键** → 普通顶层会话行形状与既有逐字节一致）。
+- `kind`：`""` = 普通顶层会话 · `sub_chat` = 子聊天（`subchat_open` 创建）· `group_chat` = 群聊（N 个 agent、人只旁观）· `work_session` = **参与者的干活子会话**（群聊专属，`parent_id` = 群聊会话；SUBCHAT-3 阶段 E/D23，**与 `sub_session` 不同物**）· `sub_session` = `dsl_run` 的 LLM 步骤派生的子会话；不变量 `kind ∈ {sub_session, sub_chat, group_chat, work_session} ⟺ parent_id != ""`。
+- `lifecycle`：仅子聊天（`kind ∈ {sub_chat, group_chat}`）有，三态 `chatting` / `ready` / `finished`。
+- `purpose`：仅子聊天有，= 本次子聊天的**运行目的 / 展示名**（gateway 注入的 `tool_call_display_name`，单聊 §5.4）。
+- **读侧回退**：行缺 `kind` 且 `parent_id` 非空（2026-10-15 前落库的历史子会话行）⇒ 视为 `sub_session`（`facade/wire/wire.go SessionFromWire`）。
+- 顶层列表（`data-session-list` / `latest`）仍按 `parent_id == ""` 过滤（`sessions_by_top` 索引），**只返回顶层会话**。
+
+**`messages` 行群聊可选列（SUBCHAT-3 阶段 E，2026-10-16）**：`sender_agent`（群聊发言者标识）/ `mentions`（发言末行 `@` 名单，JSON 数组）—— **仅非空才写键** → 普通会话 / 单聊消息行形状与既有逐字节一致；随 `data-session-append-message` 落库（payload 增 `sender_agent?` / `mentions?`）、随 `data-session-history` 的**消息视图**回带（[61 §3.2/§3.2a](../60-reference/61-消息一览.md)）。**不进内核 `ChatMsg`**（= 不进 LLM 请求；展示与调度元数据）。
+
+**群聊两表（SUBCHAT-3 阶段 E，2026-10-16；prjusr 专用表）**：`group_participants`（参与者名单 + 角色；主键 `<session_id>\x00<agent>`，列 `{session_id, agent, role, seq, created_at, updated_at}`；`seq` = 名单固定顺序）· `group_round_targets`（每【大轮次】的投递对象；主键 `<session_id>\x00<round 6 位零填充>`，列 `{session_id, round, agents[], created_at, updated_at}`）。两表**逻辑外键 = `session_id`**（关联 `sessions.kind == group_chat`）；读写经 `data-session-group-*`（**不广播 -refresh**）；**无二级索引**（单前缀 Seek）。设计见 [群聊会话设计方案 §5 · D44](../../agent-chat/群聊会话设计方案.md) · [12-数据层 §6.1](../10-architecture/12-数据层.md)。
 
 ---
 

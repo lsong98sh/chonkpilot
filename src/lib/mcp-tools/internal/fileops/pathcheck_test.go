@@ -94,51 +94,49 @@ func TestValidateFilePath(t *testing.T) {
 	})
 }
 
-// TestHandleReadFileRejectsRelative file_read files[].path 相对 → 顶层错误。
-func TestHandleReadFileRejectsRelative(t *testing.T) {
-	res := HandleReadFile("", map[string]interface{}{
-		"files": []interface{}{map[string]interface{}{"path": "a.txt"}},
-	})
-	if res.Success {
-		t.Fatalf("相对路径应失败，got %+v", res)
+// TestReadActionRejectsRelative READ #"a.txt" 相对 → 动作失败（错误含原值与约束）。
+func TestReadActionRejectsRelative(t *testing.T) {
+	ec := newEditCtx("", nil)
+	_, err := ec.runRead("a.txt", readReq{path: "a.txt"})
+	if err == nil {
+		t.Fatalf("相对路径应失败")
 	}
-	if !strings.Contains(res.Error, "files[0].path") || !strings.Contains(res.Error, "a.txt") {
-		t.Fatalf("错误消息应指明位置与原值，got %q", res.Error)
-	}
-}
-
-// TestHandleFindRejectsRelative file_find path 相对 → 顶层错误。
-func TestHandleFindRejectsRelative(t *testing.T) {
-	res := HandleFind("", map[string]interface{}{"path": "src"})
-	if res.Success {
-		t.Fatalf("相对路径应失败，got %+v", res)
-	}
-	if !strings.Contains(res.Error, "path") || !strings.Contains(res.Error, "src") {
-		t.Fatalf("错误消息应指明参数与原值，got %q", res.Error)
+	if !strings.Contains(err.Error(), "a.txt") || !strings.Contains(err.Error(), "绝对路径") {
+		t.Fatalf("错误消息应含原值与路径约束，got %q", err.Error())
 	}
 }
 
-// TestHandleDiffRejectsRelative file_diff 各入参形态相对 → 顶层错误并指明来源。
-func TestHandleDiffRejectsRelative(t *testing.T) {
+// TestFindActionRejectsRelative FIND #"src" 相对 → 动作失败。
+func TestFindActionRejectsRelative(t *testing.T) {
+	ec := newEditCtx("", nil)
+	_, err := ec.runFindQuery("src", findOpts{})
+	if err == nil {
+		t.Fatalf("相对路径应失败")
+	}
+	if !strings.Contains(err.Error(), "src") {
+		t.Fatalf("错误消息应含原值，got %q", err.Error())
+	}
+}
+
+// TestDiffActionRejectsRelative DIFF 各侧相对 → 动作失败并指明来源。
+func TestDiffActionRejectsRelative(t *testing.T) {
 	cases := []struct {
 		name string
-		args map[string]interface{}
+		pair [2]string
 		want string
 	}{
-		{"file1相对", map[string]interface{}{"file1": "a.txt", "file2": "b.txt"}, "file1"},
-		{"file2相对", map[string]interface{}{"file1": absTmp(t, "a.txt"), "file2": "b.txt"}, "file2"},
-		{"files相对", map[string]interface{}{"files": []interface{}{
-			map[string]interface{}{"path": "a.txt", "path2": absTmp(t, "b.txt")}}}, "files[0].path"},
-		{"path数组相对", map[string]interface{}{"path": []interface{}{"a.txt", absTmp(t, "b.txt")}}, "path[0]"},
+		{"两侧相对", [2]string{"a.txt", "b.txt"}, "a.txt"},
+		{"第二侧相对", [2]string{absTmp(t, "a.txt"), "b.txt"}, "b.txt"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res := HandleDiff("", tc.args)
-			if res.Success {
-				t.Fatalf("相对路径应失败，got %+v", res)
+			ec := newEditCtx("", nil)
+			_, err := ec.runDiff([][2]string{tc.pair})
+			if err == nil {
+				t.Fatalf("相对路径应失败")
 			}
-			if !strings.Contains(res.Error, tc.want) {
-				t.Fatalf("错误消息应指明 %q，got %q", tc.want, res.Error)
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误消息应指明 %q，got %q", tc.want, err.Error())
 			}
 		})
 	}

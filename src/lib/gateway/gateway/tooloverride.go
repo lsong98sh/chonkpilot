@@ -10,14 +10,18 @@
 // SetAsyncOverrides / SetSandboxOverrides 注入**已归一**的覆盖表，gateway 在
 //   - 构造 tools/list 的 `_meta`（handleToolsList）时按**暴露名**再应用一次（async / async-threshold）；
 //   - doCall 的异步判定处按暴露名应用（mode / threshold）；
-//   - 沙箱：**executor 级**（key = 类别 core/desktop/browser，2026-09-26 起）→ 直接写入共享
-//     Config（category 全局，无需按提供方归属归一）。
+//   - 沙箱：**被 spawn 执行体级**（2026-10-12 起；executors 按 executor exe 基名 / mcps 按 MCP 条目名）
+//     → 内置 executor 写**共享 Config**（由 mcp-server 每次 spawn 读，即时生效）；
+//     外部 MCP 由本网关在 stdio spawn 时按 entry 名查本表 → 开关**变化**时主动作废受影响连接（I-178）。
 //
 // **零新增 MQ 主题**、**不改既有 payload 形状**（取值落在既有 tools/list `_meta` 内）。
 package mcpgateway
 
 import (
+	"context"
+	"strings"
 	"sync"
+	"time"
 )
 
 // ToolAsyncOverride 是工具级异步覆盖（mode + threshold + touch_files），与 mcp-server 契约侧同形但
@@ -47,18 +51,24 @@ type ToolAsyncOverride struct {
 }
 
 // SandboxConfig 是 dir 节点 / self **共享的执行配置**窄接口（RB-2：依赖倒置，同 ExecSink 手法）：
-// gateway 只经它把 executor 级沙箱开关（类别键位 core/desktop/browser）写入执行侧，
+// gateway 只经它把 agentbox 沙箱开关（**管理单位 = 被 spawn 的执行体**）写入执行侧，
 // **不依赖具体 mcp-server 类型**。实现方 = 装配方持有的 mcp-server 执行配置
 // （方法签名与其 `SetToolSandbox` 一致）。
+//   - executors：内置 executor 开关（key = executor exe 基名）；
+//   - mcps：外部 MCP 开关（key = MCP 条目名）。
 type SandboxConfig interface {
-	SetToolSandbox(eff map[string]bool) bool
+	SetToolSandbox(executors, mcps map[string]bool) bool
 }
 
 // toolOverrideState 保存覆盖表（读写锁保护；与 tools/list、doCall 并发读取）。
 type toolOverrideState struct {
-	mu      sync.RWMutex
-	async   map[string]ToolAsyncOverride
-	sandbox map[string]bool // key = executor 类别（core/desktop/browser）
+	mu sync.RWMutex
+	// async = 工具级异步覆盖（key = 暴露名）。
+	async map[string]ToolAsyncOverride
+	// sandboxExecutors = 内置 executor 沙箱开关（key = executor exe 基名）；
+	// sandboxMCPs = 外部 MCP 沙箱开关（key = MCP 条目名）。
+	sandboxExecutors map[string]bool
+	sandboxMCPs      map[string]bool
 }
 
 // SetAsyncOverrides 注入工具级异步覆盖表（key = 暴露名）。nil/空 = 清空（回落契约现值）。
@@ -68,16 +78,116 @@ func (g *Gateway) SetAsyncOverrides(m map[string]ToolAsyncOverride) {
 	g.tov.mu.Unlock()
 }
 
-// SetSandboxOverrides 注入 **executor 级**沙箱开关表（key = executor 类别 core/desktop/browser），
-// 并写入共享执行配置（`SandboxConfig.SetToolSandbox`）。
+// SetSandboxOverrides 注入 agentbox 沙箱开关（**管理单位 = 被 spawn 的执行体**，
+// 2026-10-12 由 executor 类别重整），并写入共享执行配置（`SandboxConfig.SetToolSandbox`）。
 //
-// 语义（2026-09-26 决策：沙箱由工具级改为 executor 级）：开关按**工具所属 executor 类别**生效
-// （= 契约 `_meta.category`），仅本仓 spawn 的 builtin executor 消费；第三方（spawned/proxied）
-// MCP 在第三方进程内执行、无本仓 executor → 本表不施加（其沙箱另见 usr `mcps[].sandbox`，
-// 仅 stdio 且须第三方实现 agentbox 消费方）。**旧形态（按工具暴露名）不再生效**。
-func (g *Gateway) SetSandboxOverrides(m map[string]bool) {
+//   - executors：内置 executor 开关（key = executor exe 基名）；
+//   - mcps：外部 MCP 开关（key = MCP 条目名，与 gateway stdio spawn 的 entry.Name 对应）。
+//
+// 语义：内置 executor 由 mcp-server callTool 按**解析后的 runtime exe 基名**查表（本表 executors）；
+// 外部 MCP 由本网关在 **stdio spawn 时按 entry.Name 查本表 mcps** 决定是否注入
+// `CHONKPILOT_SANDBOX`（允许目录仍来自 prj `security-*`，随 entry 快照）。**旧形态
+// （按 executor 类别 / usr `mcps[].sandbox`）读取时迁移（装配层 / 本网关），不再作开关来源**。
+func (g *Gateway) SetSandboxOverrides(executors, mcps map[string]bool) {
 	g.tov.mu.Lock()
-	g.tov.sandbox = m
+	old := g.tov.sandboxMCPs
+	g.tov.sandboxExecutors = executors
+	g.tov.sandboxMCPs = mcps
+	g.tov.mu.Unlock()
+	g.applySandboxToConfig()
+	// I-178：外部 MCP 的沙箱以**长连接子进程**为单位（sandboxOn 虽为实时回调，但仅在 spawn/重连时
+	// 读取）→ 开关**变化**时须主动作废受影响 MCP 的连接，下次调用即按新开关重连（即时生效）。
+	if changed := boolMapDiff(old, mcps); len(changed) > 0 {
+		go g.reconnectMCPsForSandbox(changed)
+	}
+}
+
+// sandboxReconnectTimeout 是开关变化触发的外部 MCP 重连（Invalidate）单次上限（防握手无界阻塞）。
+const sandboxReconnectTimeout = 30 * time.Second
+
+// boolMapDiff 返回 a→b 之间**值发生变化**的键（含新增 / 移除 / true↔false 翻转）。
+func boolMapDiff(a, b map[string]bool) []string {
+	var out []string
+	for k, v := range b {
+		if av, ok := a[k]; !ok || av != v {
+			out = append(out, k)
+		}
+	}
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// reconnectMCPsForSandbox 对沙箱开关变化的外部 MCP（**stdio 且自持子进程**）作废连接并重连：
+// sandboxOn 为实时回调，故 respawn 即按新开关注入 `CHONKPILOT_SANDBOX`（I-178）。
+// 仅 stdio 传输才受 agentbox 约束（http/sse 无 spawn 子进程）→ 其余跳过。加载失败只记日志、不阻断。
+func (g *Gateway) reconnectMCPsForSandbox(names []string) {
+	if g.reg == nil {
+		return
+	}
+	want := make(map[string]bool, len(names))
+	for _, n := range names {
+		want[strings.TrimSpace(n)] = true
+	}
+	for _, key := range g.reg.providerKeys() {
+		ps, ok := g.reg.provider(key)
+		if !ok || ps == nil || ps.entry == nil || ps.prov == nil {
+			continue
+		}
+		if ps.entry.TransportName() != "stdio" || !want[ps.entry.SandboxName()] {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), sandboxReconnectTimeout)
+		rebuilt, err := ps.prov.Invalidate(ctx)
+		cancel()
+		if g.logf != nil {
+			if err != nil {
+				g.logf("[gateway] sandbox 开关变化：重连外部 MCP %q 失败：%v", ps.entry.SandboxName(), err)
+			} else {
+				g.logf("[gateway] sandbox 开关变化：重连外部 MCP %q（rebuilt=%v）", ps.entry.SandboxName(), rebuilt)
+			}
+		}
+	}
+}
+
+// sandboxMCPOn 报告某外部 MCP（条目名）是否开启 agentbox 沙箱（读锁保护）。供 provider 在
+// stdio spawn 时按 entry.Name 查询（见 provider.go buildConn）。
+func (g *Gateway) sandboxMCPOn(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	g.tov.mu.RLock()
+	defer g.tov.mu.RUnlock()
+	return g.tov.sandboxMCPs[name]
+}
+
+// sandboxOnEntry 是 provider 侧查询回调（sandboxOnFunc）：按 entry 名查 usr `tool_sandbox.mcps`。
+func (g *Gateway) sandboxOnEntry(entry *ServerEntry) bool {
+	if entry == nil {
+		return false
+	}
+	return g.sandboxMCPOn(entry.SandboxName())
+}
+
+// mergeLegacySandboxMCP 是**读取时迁移**：把旧 usr `mcps[].sandbox=true`（经 ServerEntry.Sandbox
+// 透传，已废弃为开关来源）并入 tool_sandbox.mcps，使新模型下仍生效（新写入一律走 tool_sandbox.mcps）。
+// 已显式配置该名 → 不覆盖（tool_sandbox 优先）。
+func (g *Gateway) mergeLegacySandboxMCP(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	g.tov.mu.Lock()
+	if g.tov.sandboxMCPs == nil {
+		g.tov.sandboxMCPs = map[string]bool{}
+	}
+	if _, ok := g.tov.sandboxMCPs[name]; !ok {
+		g.tov.sandboxMCPs[name] = true
+	}
 	g.tov.mu.Unlock()
 	g.applySandboxToConfig()
 }
@@ -145,8 +255,8 @@ func applyAsyncOverrideMeta(meta map[string]any, ov ToolAsyncOverride) {
 	}
 }
 
-// applySandboxToConfig 把 executor 级开关表写入**共享执行配置**（key 已是 executor 类别，
-// 无需按提供方归属归一——类别是全局的，只有本仓 spawn 的 executor 会消费）。
+// applySandboxToConfig 把沙箱开关表写入**共享执行配置**（executors: key = exe 基名；mcps: key =
+// MCP 条目名；两者均为全局键位，无需按提供方归属归一）。
 // 无共享执行配置（独立 gateway / 单测）时无执行侧可施加，直接返回。
 func (g *Gateway) applySandboxToConfig() {
 	cfg := g.params.MCPConfig
@@ -154,7 +264,8 @@ func (g *Gateway) applySandboxToConfig() {
 		return
 	}
 	g.tov.mu.RLock()
-	sb := g.tov.sandbox
+	ex := g.tov.sandboxExecutors
+	mc := g.tov.sandboxMCPs
 	g.tov.mu.RUnlock()
-	cfg.SetToolSandbox(sb) // nil/空 → 清空（= 全部 executor 不隔离）
+	cfg.SetToolSandbox(ex, mc) // 空 → 清空（= 全部执行体不隔离）
 }

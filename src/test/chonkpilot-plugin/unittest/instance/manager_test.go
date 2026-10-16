@@ -227,3 +227,111 @@ func TestInstanceLimitUnlimited(t *testing.T) {
 		t.Fatalf("Count=%d, want 100", m.Count())
 	}
 }
+
+// ── 跨窗口定向投递（单聊 §12.4 B4 / 群聊 §14.2 · §14.4 N18–N21；2026-10-16） ──────────
+//
+// 写侧 = `instance-register.parent_instance`（谁开的窗口指谁，**逐层链**）；投递侧 = 查表取
+// **直接父**实例 id 填进消息 `instance_id`（**不改桥** —— 桥按精确相等过滤天然投给它）；
+// 「父 + 子都要」= 不带 `instance_id`（广播，走桥的「唯一例外」）。
+
+// regPayloadParent 发布一条带 `parent_instance` 的 instance-register（子窗口实例）。
+func regPayloadParent(id, parent string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"instance_id": id, "work_dir": "w", "parent_instance": parent,
+	})
+	return b
+}
+
+// TestParentOfInstanceChain 逐层链：只取**直接父**（不通通指主窗口，群聊 §14.4 N20）。
+func TestParentOfInstanceChain(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.HandleRegister(regPayload("main", "w", "d"))       // 顶层（不带 parent_instance）
+	m.HandleRegister(regPayloadParent("child", "main"))  // 子
+	m.HandleRegister(regPayloadParent("grand", "child")) // 孙
+
+	if info, ok := m.Lookup("child"); !ok || info.ParentInstance != "main" {
+		t.Fatalf("注册视图未记录 parent_instance: %+v ok=%v", info, ok)
+	}
+	if p, ok := m.ParentOfInstance("grand"); !ok || p != "child" {
+		t.Fatalf("ParentOfInstance(grand)=(%q,%v)，want (child,true)", p, ok)
+	}
+	if p, ok := m.ParentOfInstance("child"); !ok || p != "main" {
+		t.Fatalf("ParentOfInstance(child)=(%q,%v)，want (main,true)", p, ok)
+	}
+	if p, ok := m.ParentOfInstance("main"); ok || p != "" {
+		t.Fatalf("顶层实例应无父，got (%q,%v)", p, ok)
+	}
+	if p, ok := m.ParentOfInstance("ghost"); ok || p != "" {
+		t.Fatalf("未登记实例应无父，got (%q,%v)", p, ok)
+	}
+	if p, ok := m.ParentOfInstance(""); ok || p != "" {
+		t.Fatalf("空 id 应无父，got (%q,%v)", p, ok)
+	}
+}
+
+// TestDeliveryTarget 定向投递解析：查表 → 目标 instance_id；广播分支（父 + 子都要）。
+func TestDeliveryTarget(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.HandleRegister(regPayload("main", "w", "d"))
+	m.HandleRegister(regPayloadParent("child", "main"))
+
+	cases := []struct {
+		name     string
+		origin   string
+		toParent bool
+		wantID   string
+		wantHit  bool
+	}{
+		{"子 → 父（定向投递，填父实例 id）", "child", true, "main", true},
+		{"顶层 → 父（无目标，回落广播）", "main", true, "", false},
+		{"未登记 → 父（无目标，回落广播）", "ghost", true, "", false},
+		{"父 + 子都要（广播，不带 instance_id）", "child", false, "", false},
+		{"空 origin + 要父（无目标，回落广播）", "", true, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, hit := m.DeliveryTarget(tc.origin, tc.toParent)
+			if id != tc.wantID || hit != tc.wantHit {
+				t.Fatalf("DeliveryTarget(%q,%v)=(%q,%v)，want (%q,%v)",
+					tc.origin, tc.toParent, id, hit, tc.wantID, tc.wantHit)
+			}
+		})
+	}
+}
+
+// regPayloadSession 发布一条带 `session_id` 的 instance-register（会话承载窗口实例）。
+func regPayloadSession(id, sessionID string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"instance_id": id, "work_dir": "w", "session_id": sessionID,
+	})
+	return b
+}
+
+// TestInstanceForSession 会话 → 实例反查（session→instance；SUBCHAT-3 阶段 F-2 · 群聊 §13 D42，
+// 闭环 41 D-62）：窗口注册时自报承载会话 → 按会话反查窗口实例；主窗口（无 session_id）/ 未登记
+// 会话 → 无命中；会话字段可随注册刷新。
+func TestInstanceForSession(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.HandleRegister(regPayload("main", "w", "d"))               // 主窗口（不带 session_id）
+	m.HandleRegister(regPayloadSession("ins-sub", "subchat-1"))  // 单聊窗口
+	m.HandleRegister(regPayloadSession("ins-group", "group-1"))  // 群聊窗口
+	m.HandleRegister(regPayloadSession("ghost-holder", ""))      // session_id 空 → 不构成承载
+
+	if ins, ok := m.InstanceForSession("subchat-1"); !ok || ins != "ins-sub" {
+		t.Fatalf("InstanceForSession(subchat-1)=(%q,%v)，want (ins-sub,true)", ins, ok)
+	}
+	if ins, ok := m.InstanceForSession("group-1"); !ok || ins != "ins-group" {
+		t.Fatalf("InstanceForSession(group-1)=(%q,%v)，want (ins-group,true)", ins, ok)
+	}
+	if ins, ok := m.InstanceForSession("nope"); ok || ins != "" {
+		t.Fatalf("未承载的会话应无命中，got (%q,%v)", ins, ok)
+	}
+	if ins, ok := m.InstanceForSession(""); ok || ins != "" {
+		t.Fatalf("空 session_id 应无命中，got (%q,%v)", ins, ok)
+	}
+	// 注册刷新可更新承载会话（窗口复用 / 换绑；不改变已登记其余字段语义）。
+	m.HandleRegister(regPayloadSession("ins-sub", "subchat-2"))
+	if ins, ok := m.InstanceForSession("subchat-2"); !ok || ins != "ins-sub" {
+		t.Fatalf("刷新后 InstanceForSession(subchat-2)=(%q,%v)，want (ins-sub,true)", ins, ok)
+	}
+}

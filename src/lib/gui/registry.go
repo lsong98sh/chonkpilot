@@ -5,6 +5,12 @@ package gui
 // 对话窗口注册表（24 §4.3 / MW-4·MW-6 最小面）：window_id ↔ hwnd/session_id 一对一。
 // **只登记对话窗口**；主窗口不入表（主窗口"当前活动会话"由主窗口前端自知，故宿主不追踪，
 // 见 24 §4.3）。职责：open-chat 幂等（已开 → 激活）/ 上限（≤5）/ 列表 / 关闭广播。
+//
+// 🆕 **窗口额度分两类**（群聊方案 §9 D28/D30 · N13/N17；SUBCHAT-3 阶段 G G3）：**群聊窗口
+// （`sessions.kind == group_chat`）单独计上限 5**，与普通对话窗口（≤5，24 §8 U-5）**互不联动**。
+// 目标会话是不是群聊由**宿主侧**判定（`open-chat` 载荷不变 → 不能由前端传）：建窗前经既有
+// **只读**消息 `data-session-get` 取 `kind`（`Bridge.SessionKind`）；**取不到 → 按普通会话处理**
+// → 普通聊天窗口的既有额度与行为**逐字不变**。
 
 import (
 	"encoding/json"
@@ -15,11 +21,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // chatCloseWait 是进程收尾时等待单个对话窗口自行关闭的上限（超时即放弃等待，进程随即退出）。
 const chatCloseWait = 2 * time.Second
+
+// groupChatKind 是群聊会话类型标识（`sessions.kind`，群聊方案 D25；与 data 层常量同值）。
+const groupChatKind = "group_chat"
 
 // windowRef 是 gui.window.list 的窗口条目（61 §1：{window_id, session_id}）。
 type windowRef struct {
@@ -32,12 +42,45 @@ type windowRegistry struct {
 	mu        sync.Mutex
 	byID      map[string]*windowHost // window_id → 窗口
 	bySession map[string]string      // session_id → window_id（占用判定 / 幂等激活）
-	seq       int
-	main      *windowHost // 主窗口（广播 gui.window.closed / 定位新窗口用；不入 byID）
+	// groupSessions = session_id → 是否群聊窗口（额度分类计数依据；与 bySession 同生命周期，
+	// 含**占位中**（建窗未完成）的会话 → 并发 open 也不会越过各自类别的上限）。
+	groupSessions map[string]bool
+	seq           int
+	main          *windowHost // 主窗口（广播 gui.window.closed / 定位新窗口用；不入 byID）
 }
 
 func newWindowRegistry() *windowRegistry {
-	return &windowRegistry{byID: map[string]*windowHost{}, bySession: map[string]string{}}
+	return &windowRegistry{
+		byID:          map[string]*windowHost{},
+		bySession:     map[string]string{},
+		groupSessions: map[string]bool{},
+	}
+}
+
+// limitFor 返回该类别窗口的数量上限（群聊独立额度，群聊方案 §9 D28/D30；普通窗口同 24 §8 U-5）。
+func limitFor(group bool) int {
+	if group {
+		return maxGroupChatWindows
+	}
+	return maxChatWindows
+}
+
+// countLocked 统计该类别**已占位**的对话窗口数（含建窗进行中；调用方须持有 r.mu）。
+// 口径与改前一致（改前 = `len(r.bySession)`）；无群聊窗口时普通类别计数 == `len(r.bySession)`
+// → 普通聊天窗口的既有额度与行为不变。
+func (r *windowRegistry) countLocked(group bool) int {
+	n := 0
+	for sid := range r.bySession {
+		if r.groupSessions[sid] == group {
+			n++
+		}
+	}
+	return n
+}
+
+// atLimitLocked 判定该类别是否已达上限（调用方须持有 r.mu）。
+func (r *windowRegistry) atLimitLocked(group bool) bool {
+	return r.countLocked(group) >= limitFor(group)
 }
 
 // setMain 登记主窗口（Main 建完主窗口后调用一次）。
@@ -75,6 +118,10 @@ func (r *windowRegistry) destroyMain() {
 //   - 未开且未达上限（maxChatWindows）→ 新建对话窗口并绑定该 session；
 //   - session 为空 / 已达上限 / 建窗失败 → ok=false（不新增字段，靠 ok 判定）。
 //
+// parentInstance = **调用来源窗口的实例 id**（"谁开的指谁"，逐层链；空 = 不明来源）。
+// 新窗口实例据此把 `instance-register.parent_instance` 上报（61 §4.1 ④ · 单聊 §12.4 B4 /
+// 群聊 §14.4 N18–N20），server 实例视图据此支持跨窗口定向投递。
+//
 // 返回 (window_id, activated, ok)。
 //
 // 同步建窗说明（D-16，**已评估保留**）：本函数在调用窗口的 WebView2 UI 线程上同步执行
@@ -84,10 +131,13 @@ func (r *windowRegistry) destroyMain() {
 // 改异步即需新增消息面（新增 msg/payload，须经用户确认——测试准则明令禁止擅改），
 // 同时会使 --test-port 多窗口路由（window_id 定向）失去确定性，回归风险高。
 // 故保持同步语义并在此明确声明取舍（若后续引入异步完成事件，可据此改造）。
-func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, bool) {
+func (r *windowRegistry) open(env *hostEnv, br *bridge.Bridge, sessionID, parentInstance string) (string, bool, bool) {
 	if sessionID == "" {
 		return "", false, false
 	}
+	// 目标会话是不是群聊（`kind=group_chat`）：经既有只读 `data-session-get` 取（`open-chat` 载荷
+	// 不变）；取不到 → 按普通会话处理（既有行为不变）。群聊窗口走**独立额度**（<maxGroupChatWindows）。
+	group := br != nil && br.SessionKind(sessionID) == groupChatKind
 	r.mu.Lock()
 	if id, ok := r.bySession[sessionID]; ok {
 		h := r.byID[id]
@@ -97,13 +147,14 @@ func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, boo
 		}
 		return id, true, true
 	}
-	if len(r.bySession) >= maxChatWindows {
+	if r.atLimitLocked(group) {
 		r.mu.Unlock()
 		return "", false, false
 	}
 	r.seq++
 	windowID := "w" + strconv.Itoa(r.seq)
 	r.bySession[sessionID] = windowID // **先占位**：并发 open 也不会越过上限
+	r.groupSessions[sessionID] = group
 	idx := len(r.bySession) - 1
 	r.mu.Unlock()
 
@@ -112,6 +163,8 @@ func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, boo
 		windowID:  windowID,
 		sessionID: sessionID,
 		title:     chatWindowTitle(env.workDir),
+		// 父子链（"谁开的指谁"，逐层链；61 §4.1 ④）：本窗口实例的直接父 = 调用来源窗口实例。
+		parentInstance: parentInstance,
 		// URL 路由承载视图与绑定会话（24 §1.1 / §6.1）：宿主零视图判断，前端按 URL 分派。
 		url:       appOrigin + "/?session-id=" + url.QueryEscape(sessionID) + "#chat",
 		frameless: false, // 对话窗口 = 原生标题栏（最大化/最小化/resize 由系统提供）
@@ -129,6 +182,7 @@ func (r *windowRegistry) open(env *hostEnv, sessionID string) (string, bool, boo
 	if err != nil {
 		r.mu.Lock()
 		delete(r.bySession, sessionID)
+		delete(r.groupSessions, sessionID)
 		r.mu.Unlock()
 		return "", false, false
 	}
@@ -173,6 +227,7 @@ func (r *windowRegistry) remove(h *windowHost) {
 	delete(r.byID, h.windowID)
 	if r.bySession[h.sessionID] == h.windowID {
 		delete(r.bySession, h.sessionID)
+		delete(r.groupSessions, h.sessionID)
 	}
 	r.mu.Unlock()
 	r.broadcast(h.windowID, msgkeys.TopicGuiWindowClosed, map[string]any{
@@ -267,7 +322,10 @@ func (h *appHandler) handleWindowMessage(typ, payloadJSON string) (any, []error)
 			SessionID string `json:"session_id"`
 		}
 		_ = json.Unmarshal([]byte(payloadJSON), &p)
-		windowID, activated, ok := h.env.windows.open(h.env, p.SessionID)
+		// 新窗口的直接父实例 = **本 handler 所属窗口的实例**（"谁开的指谁"，逐层链）。
+		// 本窗口的桥一并传入：建窗前经既有只读 `data-session-get` 判目标会话是否群聊
+		// （群聊窗口**独立额度**，群聊 §9 D28/D30；普通窗口额度与行为不变）。
+		windowID, activated, ok := h.env.windows.open(h.env, h.br, p.SessionID, h.br.InstanceID())
 		return map[string]any{
 			msgkeys.GuiWindowOpenChatResultOk:        ok,
 			msgkeys.GuiWindowOpenChatResultWindowId:  windowID,

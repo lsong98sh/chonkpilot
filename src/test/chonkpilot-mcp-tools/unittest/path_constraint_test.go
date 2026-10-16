@@ -82,11 +82,12 @@ func TestPathConstraintRejectsRelative(t *testing.T) {
 		args map[string]any
 		want string // 错误消息须含的原值
 	}{
-		{"file_read.files[].path", "file_read",
-			map[string]any{"files": []any{map[string]any{"path": "a.txt"}}}, "a.txt"},
-		{"file_find.path", "file_find", map[string]any{"path": "src"}, "src"},
-		{"file_diff.file1", "file_diff",
-			map[string]any{"file1": "a.txt", "file2": "b.txt"}, "a.txt"},
+		{"filesys_run.READ相对", "filesys_run",
+			map[string]any{"script": `READ #"a.txt"`}, "a.txt"},
+		{"filesys_run.FIND相对", "filesys_run",
+			map[string]any{"script": `FIND #"src"`}, "src"},
+		{"filesys_run.DIFF相对", "filesys_run",
+			map[string]any{"script": `DIFF #"a.txt" #"b.txt"`}, "a.txt"},
 		{"filesys_run.DSL", "filesys_run",
 			map[string]any{"script": "RPL #\"src/main.py\" \"a\" \"b\""}, "src/main.py"},
 		{"filesys_run.md5key", "filesys_run",
@@ -129,21 +130,23 @@ func TestPathConstraintAcceptsAbsolute(t *testing.T) {
 	f := writeTmp(t, "ok.txt", "hello\n")
 	dir := filepath.Dir(f)
 
-	t.Run("file_read", func(t *testing.T) {
-		code, out := runTool(t, exe, "file_read", map[string]any{"files": []any{map[string]any{"path": f}}}, baseEnv())
+	t.Run("filesys_run READ", func(t *testing.T) {
+		code, out := runTool(t, exe, "filesys_run", map[string]any{"script": `READ #"` + filepath.ToSlash(f) + `"`}, baseEnv())
 		if code != 0 {
 			t.Fatalf("绝对路径应成功，code=%d out=%q", code, out)
 		}
 	})
-	t.Run("file_find", func(t *testing.T) {
-		code, out := runTool(t, exe, "file_find", map[string]any{"path": dir}, baseEnv())
+	t.Run("filesys_run FIND", func(t *testing.T) {
+		code, out := runTool(t, exe, "filesys_run", map[string]any{"script": `FIND #"` + filepath.ToSlash(dir) + `"`}, baseEnv())
 		if code != 0 {
 			t.Fatalf("绝对路径应成功，code=%d out=%q", code, out)
 		}
 	})
-	t.Run("file_diff", func(t *testing.T) {
+	t.Run("filesys_run DIFF", func(t *testing.T) {
 		f2 := writeTmp(t, "ok2.txt", "world\n")
-		code, out := runTool(t, exe, "file_diff", map[string]any{"file1": f, "file2": f2}, baseEnv())
+		code, out := runTool(t, exe, "filesys_run", map[string]any{
+			"script": `DIFF #"` + filepath.ToSlash(f) + `" #"` + filepath.ToSlash(f2) + `"`,
+		}, baseEnv())
 		if code != 0 {
 			t.Fatalf("绝对路径应成功，code=%d out=%q", code, out)
 		}
@@ -170,22 +173,26 @@ func TestPathConstraintAcceptsTempPrefix(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	env := map[string]string{"CHONKPILOT_INSTANCE": "l2instance"}
-	code, out := runTool(t, exe, "file_read", map[string]any{
-		"files": []any{map[string]any{"path": "!/l2.txt"}},
+	code, out := runTool(t, exe, "filesys_run", map[string]any{
+		"script": `READ #"!/l2.txt" => #"!/l2-out.txt"`,
 	}, env)
 	if code != 0 {
 		t.Fatalf("!/ 前缀应成功，code=%d out=%q", code, out)
 	}
-	if !strings.Contains(out, "temp-prefix-ok") {
-		t.Fatalf("应读到临时目录文件内容，out=%q", out)
+	data, rerr := os.ReadFile(filepath.Join(root, "l2-out.txt"))
+	if rerr != nil {
+		t.Fatalf("读取落盘结果失败：%v（out=%q）", rerr, out)
+	}
+	if !strings.Contains(string(data), "temp-prefix-ok") {
+		t.Fatalf("应读到临时目录文件内容，got %q", string(data))
 	}
 }
 
 // TestPathConstraintTempPrefixRequiresInstance 缺 CHONKPILOT_INSTANCE 时 !/ 解析 → 顶层错误（缺 instance）。
 func TestPathConstraintTempPrefixRequiresInstance(t *testing.T) {
 	exe := coreExe(t)
-	code, out := runTool(t, exe, "file_read", map[string]any{
-		"files": []any{map[string]any{"path": "!/l2.txt"}},
+	code, out := runTool(t, exe, "filesys_run", map[string]any{
+		"script": `READ #"!/l2.txt"`,
 	}, map[string]string{"CHONKPILOT_INSTANCE": ""})
 	if code == 0 {
 		t.Fatalf("缺 instance 时 !/ 应失败，got code=0 out=%q", out)

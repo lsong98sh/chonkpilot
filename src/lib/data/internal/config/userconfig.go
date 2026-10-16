@@ -75,14 +75,15 @@ var userConfigFreeKeys = map[string]bool{
 	// → 暴露 _meta.async / async-threshold + executor 硬上限；**保存即生效**（既有
 	// data-user-config-refresh 订阅，零新增主题）。「恢复默认」= 删该工具键项（整表覆盖写）。
 	"tool_async": true,
-	// tool_sandbox = **executor 级沙箱开关**（agentbox，**结构化 JSON 对象字符串**，形状
-	// {"core":true|false,"desktop":true|false,"browser":true|false}；key = executor 类别
-	// = 契约 `_meta.category`。消费方见 64-配置项一览 §3：llm server loadExecConfig →
-	// gateway SetSandboxOverrides → mcp-server Config.SetToolSandbox → callTool 按
-	// `td.Category` 查开关 → 开启时 spawn executor 注入 CHONKPILOT_SANDBOX
-	// （允许目录 = prj `security-*`）；**保存即生效**（既有 data-user-config-refresh 订阅，
-	// 零新增主题）。**未配置 = 不隔离**（默认兼容）。**旧形态（按工具暴露名）不再生效**。
-	// 「恢复未设置」= 删该 executor 键项（整表覆盖写 / 末项删整键）。
+	// tool_sandbox = **agentbox 沙箱开关**（**结构化 JSON 对象字符串**，管理单位 = 被 spawn 的
+	// 执行体，形状 {"executors":{"<executor exe 基名>":true|false},"mcps":{"<外部 MCP 名>":true|false}}；
+	// executors = 内置 executor（exe 基名），mcps = 外部 MCP（条目名）。消费方见 64-配置项一览 §3：
+	// llm server applyToolSandbox → gateway SetSandboxOverrides → mcp-server Config.SetToolSandbox
+	// → callTool 按**解析后的 runtime exe 基名**查开关 / gateway stdio spawn 按 MCP 名查开关
+	// → 开启时注入 CHONKPILOT_SANDBOX（允许目录 = prj `security-*`）；**保存即生效**（既有
+	// data-user-config-refresh 订阅，零新增主题）。**未配置 = 不隔离**（默认兼容）。**旧形状
+	// （按 executor 类别 core/desktop/browser）与 usr `mcps[].sandbox` 读取时迁移**为新形状。
+	// 「恢复未设置」= 删该执行体键项（整表覆盖写 / 末项删整键）。
 	"tool_sandbox": true,
 	// 注（OP-04，2026-10-06）：原 `memory_prompts`（用户级记忆类别沉淀提示词）自由键**已移除**
 	// —— 记忆类别提示词改**文件化**（`capability/system/memory/<类别名>.md`，走 prompt 域

@@ -141,6 +141,27 @@ func (b *Bridge) domainViaFacade(subject, payloadJSON string) (any, []error, boo
 				return res, errs, true
 			}
 			return map[string]any{"ok": true, "path": resp.Path}, nil, true
+		case "import": // 导入 / 新建「其他类型」（61 §3.3；应答形态与 persist 信封逐字一致）
+			r := wire.KnowledgeImportFromWire(req)
+			r.InstanceID, r.Scope = instanceID, scope
+			resp, err := b.cfg.KnowledgeImport(r)
+			if err != nil {
+				res, errs := fail(err)
+				return res, errs, true
+			}
+			paths := make([]any, 0, len(resp.Paths))
+			for _, p := range resp.Paths {
+				paths = append(paths, p)
+			}
+			out := map[string]any{"ok": resp.OK, "paths": paths}
+			if len(resp.Errors) > 0 {
+				list := make([]any, 0, len(resp.Errors))
+				for _, e := range resp.Errors {
+					list = append(list, map[string]any{"name": e.Name, "error": e.Error})
+				}
+				out["errors"] = list
+			}
+			return out, nil, true
 		case "delete":
 			r := wire.KnowledgeDeleteFromWire(req)
 			r.InstanceID, r.Scope = instanceID, scope

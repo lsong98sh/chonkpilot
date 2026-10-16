@@ -2,6 +2,7 @@ import mq, { currentInstanceId } from '../utils/mq.js'
 import { resolvePublishError } from '../utils/publishError.js'
 import { createInitDataPrefetch } from '../utils/initDataPrefetch.js'
 import { FieldKeys, GuiUiSaveKeys, FilesysListKeys, FilesysContentKeys } from '../events/msgkeys.js'
+import { useSelectionStore } from '../stores/selection.js'
 
 // 文件域直连 filesys（20-gui / 61-消息一览 §2）：
 //   - 目录子项：filesys.list{work_dir, path} → HTTP result {path, is_dir, children}
@@ -12,11 +13,17 @@ import { FieldKeys, GuiUiSaveKeys, FilesysListKeys, FilesysContentKeys } from '.
 //   - 变更广播：filesys.changed（children=目录批次 / 单文件 operation），前端 mq.on 订阅
 // 返回结构保持旧契约（{content}/{tree}/{children}），组件消费字段不变；错误 err.code 保留（exists 等）。
 
-// 前端当前工作目录（项目根）：由 FileTree / CodeView 在 LoadInitData 后写入，
-// filesys 请求自动填充 work_dir（越界校验与 watch 范围均依赖它）。
-let _workDir = ''
+// 前端当前工作目录（项目根）：**唯一真相源 = selection store**（UILAYOUT-1 §3.7 P2③，原模块级
+// 缓存变量已删）。filesys 请求自动填充 work_dir（越界校验与 watch 范围均依赖它）。
+// 写入 = 本函数（唯一漏斗）← `gui.init-data` 应答的 workDir，由 FileTree / CodeView 消费点调用；
+// work_dir 无既有 mq 主题可依（§3.8 零新增主题）→ 不能改由 selectionSubscribers 写。
 export function setWorkDir(dir) {
-  _workDir = dir || ''
+  useSelectionStore().setWorkDir(dir)
+}
+
+/** 读当前工作目录（store 唯一真相源）。 */
+function currentWorkDir() {
+  return useSelectionStore().workDir
 }
 
 /**
@@ -29,7 +36,7 @@ export function setWorkDir(dir) {
 function fileRequest(action, body = {}, opts = {}) {
   const timeout = opts.timeout || 30000
   const topic = 'filesys.' + action
-  return mq.emit(topic, { [FieldKeys.work_dir]: _workDir, ...body }, { timeout }).then((env) => {
+  return mq.emit(topic, { [FieldKeys.work_dir]: currentWorkDir(), ...body }, { timeout }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(topic + ': backend unreachable')
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}
@@ -48,7 +55,7 @@ function fileRequest(action, body = {}, opts = {}) {
  * 返回 {tree: {path, is_dir, children}}（对齐旧 GetFileTree 契约）。
  */
 export function getFileTree(path) {
-  return fileRequest('list', { path: path || _workDir || '' })
+  return fileRequest('list', { path: path || currentWorkDir() || '' })
     .then((p) => ({
       tree: { path: p[FilesysListKeys.path] || '', is_dir: true, children: p[FilesysListKeys.children] || [] },
     }))

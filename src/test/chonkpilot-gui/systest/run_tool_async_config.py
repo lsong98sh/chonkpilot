@@ -641,7 +641,7 @@ def case_h_touch_files_option():
     # 缺省映射：self 白名单（filesys_run / script_run）= 打点，其余 self 内置 = 不打点
     whit = next((r for r in rs if (r["tool"] or "").endswith(TOUCH_WHITELIST)), None)
     other = None
-    for suf in ("file_read", "file_find", "file_diff", "web_fetch"):
+    for suf in ("web_fetch", "dsl_run"):
         other = next((r for r in rs if (r["tool"] or "").endswith(suf)), None)
         if other:
             break

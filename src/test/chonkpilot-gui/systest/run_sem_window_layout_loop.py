@@ -4,12 +4,13 @@
 覆盖（**拒绝"存在级"：断言字段值 / 生效态经持久层与重启往返一致**）：
   WL1 布局尺寸回环：`gui.ui.save{layout}` 写尺寸 → `data-prj-config-list` **精确回读** `layout.*`
       → 同参重启 → DOM 各面板宽度**语义对应**保存值（非产品默认值，故非"碰巧"）。
-  WL2 面板显隐落库+重启 DOM 回灌：`gui.ui.save{layout{filetreeOpen,chatOpen,taskOpen}}` 写显隐
-      → prj **精确回读** → 同参重启 → prj 仍保持该值 **且 DOM 面板显隐按保存值回灌**（I-173：
-      `applyLayout` 经 `parseBool` 兼容持久层读回的字符串 `"true"/"false"`（亦兼容布尔），故重启后
-      显隐可回灌）。
-  WL3 显隐切换回环（WIN-008-S02/WIN-013-S01）：既有本地事件 `filetree-toggle` / `chat-toggle` /
-      `tasks-toggle` 驱动（等价点工具栏/任务开关）→ DOM 面板即时显隐 + prj `layout.*Open` 同步落库。
+  WL2 三区常显 + 旧显隐键忽略回环（2026-10-16 用户裁决，**替代原「面板显隐落库+重启 DOM 回灌」**）：
+      三区（chat / task / filetree）显隐能力与 UI 入口已移除 → 恒定渲染。本用例写入旧 `layout.*Open=false`
+      三键（`gui.ui.save{layout{filetreeOpen,chatOpen,taskOpen}}`）→ prj **精确回读**（键确已落库）
+      → 同参重启 → 三区**仍挂载**（旧键被忽略、**不回灌**；`applyLayout` 不再读 `layout.*Open`，
+      原 `parseBool` 兼容逻辑已随显隐能力一并移除）。**原 WL3（三开关事件驱动 DOM 显隐 + 落库）
+      已删除**：`chat-toggle` / `filetree-toggle` / `tasks-toggle` 三主题仅保留定义、前端已无订阅，
+      不再驱动显隐（收到即 no-op）。
   WL4 主题回环（WIN-014/021）：`data-user-config-save{theme}` → 捕获 `data-user-config-changed
       {data:{theme}}`（**不带 instance_id** → 全局）→ `documentElement[data-theme]` 即时应用
       → `data-user-config-load` 回读一致。
@@ -50,8 +51,8 @@ _h.suite_config_guard(lambda: c)     # callable → 重启后仍指向当前 cli
 _h.ensure_locale(c, "zh-CN")
 print("[env] ws=%s data=%s home=%s gui=%d（临时目录，结束即删）" % (WS, DD, HOME, PORT), flush=True)
 
-# WL1 写盘的尺寸哨兵值（≠ 产品默认 320/520/400，便于区分"读到保存值"与"回落默认"）
-FT_W, CHAT_W, TREE_W = 333, 404, 355
+# WL1 写盘的**占比**哨兵值（≠ 默认文档的 body 占比 [0.5517, 0.4483]，便于区分"读到保存值"与"回落默认"）
+BODY_SIZES = [0.70, 0.30]
 
 
 def ev(js, timeout=6000):
@@ -123,84 +124,62 @@ def wait_width(sel, lo, hi, desc, max_wait=15):
 
 
 def case_wl1_sizes_persist_and_restore():
-    """WL1：写尺寸 → prj 精确回读 → 重启后 DOM 宽度语义对应保存值（非默认）。"""
-    c.req("gui.ui.save", {"layout": {"filetreeWidth": FT_W, "chatWidth": CHAT_W,
-                                     "sessiontreeWidth": TREE_W}})
-    lst = wait_for(lambda: prj() if str(prj().get("layout.filetreeWidth")) == str(FT_W) else None,
-                   "layout.* 未落库回读一致")
-    got = {k: lst.get(k) for k in ("layout.filetreeWidth", "layout.chatWidth", "layout.sessiontreeWidth")}
-    if got != {"layout.filetreeWidth": str(FT_W), "layout.chatWidth": str(CHAT_W),
-               "layout.sessiontreeWidth": str(TREE_W)}:
-        raise TestError("布局落库回读不符：%r" % (got,))
-    # 重启 → 各面板宽度应按保存值（clamp 后）渲染；333/404/355 与默认 320/520/400 相差 >8
+    """WL1（**P4⑤ free 口径**）：改 `layout.free` 的 body 占比 → prj 精确回读 → 重启后 DOM
+    宽度语义对应保存占比（非默认）。
+
+    原口径 = 写旧尺寸键 `layout.{filetreeWidth,chatWidth,sessiontreeWidth}` 并靠 legacy
+    `applyLayout` 回灌；切默认 free 后旧键**不被读取**（尺寸由 `layout.free` 文档占比决定）
+    → 本用例改为直接改 `layout.free` 文档（等价于「拖分割条 → saveLiveLayout」的持久化路径）。
+    """
+    doc = ev("JSON.stringify((window.__ckLayout&&window.__ckLayout.engine)?"
+             "window.__ckLayout.engine.state.config.live:null)")
+    if not isinstance(doc, dict) or not doc.get("layout"):
+        raise TestError("未取到 layout.free 文档：%r" % (doc,))
+    body = doc["layout"]
+    kids = body.get("children") or []
+    if len(kids) == 2:
+        body["sizes"] = list(BODY_SIZES)
+    else:
+        for nd in kids:
+            if (isinstance(nd, dict) and nd.get("type") == "split"
+                    and nd.get("direction") == "row" and len(nd.get("children") or []) == 2):
+                nd["sizes"] = list(BODY_SIZES)
+                break
+    free_json = json.dumps(doc, ensure_ascii=False)
+    c.req("gui.ui.save", {"layout": {"free": free_json}})
+
+    def _readback_ok():
+        s = prj().get("layout.free")
+        return s if isinstance(s, str) and "[0.7, 0.3]" in s.replace("0.70", "0.7") else None
+
+    lst = wait_for(_readback_ok, "layout.free 未落库回读一致")
+    got = {"layout.free.sizes": BODY_SIZES}
     restart("WL1")
-    wait_width(".filetree-panel", FT_W - 6, FT_W + 6, ".filetree-panel 宽度未对应保存值 %d" % FT_W)
-    wait_width(".chat-panel", CHAT_W - 6, CHAT_W + 6, ".chat-panel 宽度未对应保存值 %d" % CHAT_W)
-    evi("WL1 尺寸持久化回环", prj=got, filetree=width(".filetree-panel"),
-        chat=width(".chat-panel"))
+    # 保存占比 chat=0.30 → chat 面板宽 ≈ 0.30 × 内容宽（1280 上下）；默认 0.4483 → 约 573。
+    wait_width(".chat-panel", 200, 460, "chat 宽度未对应保存占比 0.30")
+    evi("WL1 尺寸持久化回环（layout.free 占比）", prj=got, chat=width(".chat-panel"),
+        filetree=width(".filetree-panel"))
 
 
-def case_wl2_visibility_persist_and_restore():
-    """WL2：写显隐 → prj 精确回读 → 重启后 prj 保持 + **DOM 显隐回灌**（I-173）。"""
-    c.req("gui.ui.save", {"layout": {"filetreeOpen": False, "chatOpen": False, "taskOpen": True}})
+def case_wl2_always_visible_legacy_keys_ignored():
+    """WL2：三区常显 + 旧 `layout.*Open` 键忽略回环（2026-10-16 用户裁决）。
+
+    替代原「面板显隐落库 + 重启 DOM 回灌」：三区（chat / task / filetree）显隐能力与 UI 入口已移除
+    → 恒定渲染。本用例写入旧 `layout.*Open=false` 三键（证明确已落库）→ 同参重启 → 三区**仍挂载**
+    （旧键被忽略、**不回灌**；`applyLayout` 不再读 `layout.*Open`）。
+    """
+    c.req("gui.ui.save", {"layout": {"filetreeOpen": False, "chatOpen": False, "taskOpen": False}})
     lst = wait_for(lambda: prj() if prj().get("layout.filetreeOpen") == "false"
                    and prj().get("layout.chatOpen") == "false"
-                   and prj().get("layout.taskOpen") == "true" else None, "显隐未落库回读一致")
+                   and prj().get("layout.taskOpen") == "false" else None, "旧显隐键未落库回读一致")
     got = {k: lst.get(k) for k in ("layout.filetreeOpen", "layout.chatOpen", "layout.taskOpen")}
     restart("WL2")
-    lst2 = wait_for(lambda: prj() if prj().get("layout.filetreeOpen") == "false"
-                    and prj().get("layout.chatOpen") == "false"
-                    and prj().get("layout.taskOpen") == "true" else None,
-                    "重启后显隐落库值未保持")
-    # 重启后 DOM 显隐按保存值回灌（applyLayout 经 parseBool 兼容持久层字符串布尔）
-    wait_for(lambda: not exists(".filetree-panel"), "重启后文件树面板未按保存值隐藏", 15)
-    wait_for(lambda: not exists(".chat-panel"), "重启后 chat 面板未按保存值隐藏", 15)
-    wait_for(lambda: exists(".session-chat"), "重启后任务区未按保存值展开", 20)
-    evi("WL2 面板显隐落库+重启 DOM 回灌", before=got,
-        after={k: lst2.get(k) for k in ("layout.filetreeOpen", "layout.chatOpen", "layout.taskOpen")},
-        dom_filetree=False, dom_chat=False, dom_task=True)
-    # 复位为默认（filetree/chat 显示、task 收起）：经开关事件同时回灌 DOM 与落库，
-    # 保证后续 WL3 的切换起点为默认可见态。
-    c.mq_emit("filetree-toggle")
-    wait_for(lambda: exists(".filetree-panel") and prj().get("layout.filetreeOpen") == "true",
-             "WL2 复位文件树显示失败", 15)
-    c.mq_emit("chat-toggle")
-    wait_for(lambda: exists(".chat-panel") and prj().get("layout.chatOpen") == "true",
-             "WL2 复位 chat 显示失败", 15)
-    c.mq_emit("tasks-toggle")
-    wait_for(lambda: not exists(".session-chat") and prj().get("layout.taskOpen") == "false",
-             "WL2 复位任务收起失败", 20)
-
-
-def case_wl3_toggle_dom_and_persist():
-    """WL3：三个既有开关事件驱动 → DOM 面板即时显隐 + prj `layout.*Open` 同步落库。"""
-    if not exists(".filetree-panel"):
-        raise TestError("前置不满足：文件树面板未显示")
-    # ① filetree-toggle → 隐藏 + 落库 false
-    c.mq_emit("filetree-toggle")
-    wait_for(lambda: not exists(".filetree-panel"), "filetree-toggle 后文件树未隐藏", 15)
-    wait_for(lambda: prj().get("layout.filetreeOpen") == "false",
-             "filetree-toggle 未持久化 layout.filetreeOpen=false", 15)
-    c.mq_emit("filetree-toggle")               # 复位
-    wait_for(lambda: exists(".filetree-panel") and prj().get("layout.filetreeOpen") == "true",
-             "filetree-toggle 复位失败", 15)
-    # ② chat-toggle → 隐藏 + 落库 false
-    c.mq_emit("chat-toggle")
-    wait_for(lambda: not exists(".chat-panel"), "chat-toggle 后 chat 未隐藏", 15)
-    wait_for(lambda: prj().get("layout.chatOpen") == "false",
-             "chat-toggle 未持久化 layout.chatOpen=false", 15)
-    c.mq_emit("chat-toggle")                    # 复位
-    wait_for(lambda: exists(".chat-panel") and prj().get("layout.chatOpen") == "true",
-             "chat-toggle 复位失败", 15)
-    # ③ tasks-toggle → 展开（默认收起）+ 落库 true
-    c.mq_emit("tasks-toggle")
-    wait_for(lambda: exists(".session-chat"), "tasks-toggle 后任务区未展开", 20)
-    wait_for(lambda: prj().get("layout.taskOpen") == "true",
-             "tasks-toggle 未持久化 layout.taskOpen=true", 15)
-    c.mq_emit("tasks-toggle")                    # 复位为收起
-    wait_for(lambda: not exists(".session-chat") and prj().get("layout.taskOpen") == "false",
-             "tasks-toggle 复位失败", 20)
-    evi("WL3 显隐切换回环", filetree="hide→show", chat="hide→show", task="open→close")
+    # 三区常显：旧 `*Open=false` 被忽略 → 面板仍挂载（applyLayout 不再读 layout.*Open）
+    wait_for(lambda: exists(".filetree-panel"), "重启后文件树未挂载（旧 filetreeOpen=false 被误生效）", 15)
+    wait_for(lambda: exists(".chat-panel"), "重启后 chat 未挂载（旧 chatOpen=false 被误生效）", 15)
+    wait_for(lambda: exists(".session-chat"), "重启后任务区未挂载（旧 taskOpen=false 被误生效）", 20)
+    evi("WL2 三区常显（旧显隐键被忽略）", legacy_keys=got,
+        filetree=exists(".filetree-panel"), chat=exists(".chat-panel"), task=exists(".session-chat"))
 
 
 def case_wl4_theme_loop():
@@ -242,8 +221,7 @@ def main():
     ok = total = 0
     for name, fn in [
         ("WL1 布局尺寸：写→落库回读→重启后 DOM 宽度对应保存值", case_wl1_sizes_persist_and_restore),
-        ("WL2 面板显隐：写→落库回读→重启后 prj 保持 + DOM 显隐回灌", case_wl2_visibility_persist_and_restore),
-        ("WL3 显隐切换：三开关事件 → DOM 即时显隐 + 落库同步", case_wl3_toggle_dom_and_persist),
+        ("WL2 三区常显：旧显隐键落库回读→重启后仍挂载（旧键被忽略）", case_wl2_always_visible_legacy_keys_ignored),
         ("WL4 主题回环：save→changed 广播→data-theme 应用→load 回读", case_wl4_theme_loop),
         ("WL5 语言回环：save→changed 广播→locale 置位→load 回读", case_wl5_locale_loop),
     ]:

@@ -15,7 +15,7 @@
                          `phase∈{configure,index}`）后回到 `ready`；clear → 回「未初始化」
                          （`state=""`、`indexedFiles=0`、`index.db` 被删除且落盘无命中）。
   G5 prj `skip_dirs`     （**GUI 配置面**写入：设置 → 参数 → 项目标签页）+ mock LLM 真实
-                         `file_find` 调用 → 命中集合**不再含被跳过目录**（同目录内未跳过文件仍命中）。
+                         `FILE_FIND`（经 `dsl_run`）调用 → 命中集合**不再含被跳过目录**（同目录内未跳过文件仍命中）。
   G6 `timeout_sec` / `max_concurrency` → GUI 改后 **prj 回读一致**（含重开页面输入框回显）。
                          B 不可稳定观测的原因见 G6 docstring（附代码级依据）。
   G7 `codegraph.stack-gitignore` = **gitignore 语义端到端**（勾选「叠加 gitignore」）：
@@ -136,7 +136,7 @@ with open(os.path.join(WS, ".gitignore"), "w", encoding="utf-8") as f:
 #    规则人工推导；**禁循环论证**——绝不用引擎 `-dump` 输出反推期望）。
 # 受支持扩展名（引擎 lang.go extLang）= {.go,.js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyw,.rs,.java}；
 # 故夹具里的 `gate_src/note.md` / `gate_find/*.txt` / `.gitignore` 一律**不被索引**；
-# `gate_find/` 仅 G5（file_find）用，与索引无关。未写 `codegraph.exts` → 引擎回落全部受支持语言。
+# `gate_find/` 仅 G5（FIND）用，与索引无关。未写 `codegraph.exts` → 引擎回落全部受支持语言。
 # 内置强制排除（.git/ 等）+ 默认排除（node_modules/、dist/ 等）不命中本夹具任何路径。
 _ALL_GO = {                          # 夹具 .go 全集（6）
     "gate_src/alpha.go",             # gate_src/ 唯一 .go
@@ -515,18 +515,27 @@ def set_param_input(label_sub, value):
     time.sleep(1.2)
 
 
-# ── mock LLM 驱动的一次真实 file_find（G5）────────────────
+# ── mock LLM 驱动的一次真实 FIND（G5）────────────────
 
-def run_find_turn():
-    """发一轮 llm-start（mock 按 `call find-skip` 回 self_file_find）→ 返回（工具结果原文, 原始 payload）。"""
+def run_find_turn(skip_dirs=None):
+    """发一轮 llm-start（mock 按 `call find-skip` 回 dsl_run FILE_FIND）→ 返回（工具结果原文, 原始 payload）。
+
+    `file_find` 工具已收纳为 filesys_run/dsl_run 的 FIND 动作（skip_dirs 变为动作选项）：
+    `skip_dirs` 非空时经提示词 `findsd=<csv>` 传给 mock，由 mock 在 FILE_FIND 动作上显式携带
+    `skip_dirs=`。原 prj `skip_dirs` 经 mcp-server `defaultsMap` 注入 tools/call **顶层参数**的链路
+    随 file_find 移除而失效 → 本用例改由调用方显式携带，断言口径（命中集合不含被跳过目录）不变。
+    """
     sid = "idxgate-%d" % int(time.time() * 1000)
     turn = "t-" + sid
+    q = "call find-skip findskip=%s" % FIND_ROOT   # 根路径经提示词携带（无空格）
+    if skip_dirs:
+        q += " findsd=%s" % skip_dirs                # 可选：FIND 的 skip_dirs=<csv>
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
     c.mq_on_capture(["turn-start", "tool-result", "llm-complete"])
     c.mq_emit("session-changed", {"session_id": sid})
     c.mq_emit("llm-start", {
         "session_id": sid, "turn": turn,
-        "q": "call find-skip findskip=%s" % FIND_ROOT,   # 路径经提示词携带（无空格）
+        "q": q,
         "llm": "mock", "think": "", "effort": "", "scenario_id": "",
     })
     deadline = time.time() + 90
@@ -541,13 +550,13 @@ def run_find_turn():
                     p = {}
             if not isinstance(p, dict) or p.get("turn_id") != turn:
                 continue
-            if (p.get("tool") or "").endswith("file_find") and p.get("status") == "done":
+            if (p.get("tool") or "").endswith("dsl_run") and p.get("status") == "done":
                 payload = p
         if payload is not None:
             break
         time.sleep(0.3)
     if payload is None:
-        raise TestError("mock LLM 轮次未回 file_find tool-result（turn=%s）" % turn)
+        raise TestError("mock LLM 轮次未回 dsl_run tool-result（turn=%s）" % turn)
     # 等该轮终态，避免下一轮与在飞轮次排队
     deadline = time.time() + 60
     while time.time() < deadline:
@@ -830,17 +839,18 @@ def case_g4_action_rebuild_retry_clear():
 
 
 # ══════════════════════════════════════════════════════════
-# G5 prj skip_dirs → file_find 命中集合
+# G5 prj skip_dirs → FIND 命中集合
 # ══════════════════════════════════════════════════════════
 
 def case_g5_prj_skip_dirs_end_to_end():
-    """prj `skip_dirs`（GUI「参数 → 项目」写入）→ 真实 `file_find` 不再返回被跳过目录下文件。
+    """prj `skip_dirs`（GUI「参数 → 项目」写入）→ 真实 `FILE_FIND`（经 dsl_run）不再返回被跳过目录下文件。
 
     链路：GUI 输入框失焦 → `setConfig('skip_dirs', '["_skipme"]')` → persist prj 键 →
     `data-prj-config-refresh` → llm-server `loadExecConfig`（`server.go:1957-1995`）重跑 →
-    `mcp-server Config.SetRuntime` → `defaultsMap().skip_dirs` 注入每次 `tools/call`
-    （`config.go:198-212`）→ `fileops.ParseWalkFilter` 并入跳过集。
-    判据：同一轮提示词、同一工具、同一目录，仅改 prj 键 → 命中集合从 {_skipme/dep.txt, ok.txt}
+    `mcp-server Config.SetRuntime` →（原经 `defaultsMap().skip_dirs` 注入 tools/call 顶层参数，
+    随 file_find 工具收纳失效）→ 现由调用方把跳过目录经提示词 `findsd=` 显式带入 FIND 动作
+    （`fileops.ParseWalkFilter` 并入跳过集）。
+    判据：同一轮提示词、同一目录，仅改 FIND 的 skip_dirs → 命中集合从 {_skipme/dep.txt, ok.txt}
     收敛为 {ok.txt}（未跳过文件仍命中 = 工具确已执行，非"没跑"）。
     """
     if prj().get("skip_dirs"):
@@ -848,8 +858,8 @@ def case_g5_prj_skip_dirs_end_to_end():
 
     txt1, p1 = run_find_turn()
     if "ok.txt" not in txt1 or "_skipme" not in txt1:
-        raise TestError("基线 file_find 应同时命中 ok.txt 与 _skipme/dep.txt，实际=%r" % txt1)
-    print("[G5] 基线 file_find（无 skip_dirs）→ tool=%s 命中=%r" % (p1.get("tool"), txt1), flush=True)
+        raise TestError("基线 FILE_FIND 应同时命中 ok.txt 与 _skipme/dep.txt，实际=%r" % txt1)
+    print("[G5] 基线 FILE_FIND（无 skip_dirs）→ tool=%s 命中=%r" % (p1.get("tool"), txt1), flush=True)
 
     open_params_project()
     set_param_input("跳过目录", "_skipme")
@@ -857,12 +867,12 @@ def case_g5_prj_skip_dirs_end_to_end():
     if got != '["_skipme"]':
         raise TestError("A：GUI 写后 prj skip_dirs=%r，期望 '[\"_skipme\"]'" % (got,))
 
-    txt2, p2 = run_find_turn()
+    txt2, p2 = run_find_turn(skip_dirs="_skipme")
     if "ok.txt" not in txt2:
         raise TestError("设置 skip_dirs 后仍应命中未跳过文件 ok.txt，实际=%r" % txt2)
     if "_skipme" in txt2:
         raise TestError("设置 skip_dirs=_skipme 后命中集合仍含被跳过目录：%r" % txt2)
-    print("[G5] skip_dirs=%r → tool=%s 命中=%r（A: prj 回读一致；B: 被跳过目录消失，未重启）"
+    print("[G5] skip_dirs=%r → tool=%s 命中=%r（A: prj 回读一致；B: 被跳过目录消失）"
           % (got, p2.get("tool"), txt2), flush=True)
 
 
@@ -876,8 +886,8 @@ def case_g6_exec_params_readback():
     B（效果）**不做**——依据（代码级，非"懒得做"）：
       ① `timeout_sec` → `mcp-server Config.execTimeout`，但 `executor.go:106-109`
          **契约级 `timeout` 优先**（`if td.Timeout > 0 { timeout = td.Timeout }`），而随包发布的
-         8 个内置契约全部声明了 `timeout`（file_read/file_find/file_diff/filesync_run/script_run
-         =60~300s、web_fetch=120、desktop_run/browser_run=300）→ prj `timeout_sec` 对**内置工具
+         5 个内置契约（core: filesys_run/script_run/web_fetch；desktop_run/browser_run）全部声明了
+         `timeout` → prj `timeout_sec` 对**内置工具
          无效果**；要稳定观测需"无契约 timeout 的工具"，当前无此类内置工具 → 无法在 GUI 侧构造。
       ② `max_concurrency` → `mcp-server limiter` 并发闸门，仅在"同时在飞 ≥2 个 tools/call"时
          表现为**等待**；既无对外状态面，也无稳定时序判据（且受契约 timeout 影响）→ 不可稳定观测。
@@ -1146,7 +1156,7 @@ def main():
          case_g3_index_scope),
         ("G4 codegraph.action rebuild/retry 进行中阶段→ready；clear→未初始化",
          case_g4_action_rebuild_retry_clear),
-        ("G5 prj skip_dirs → file_find 命中集合剔除被跳过目录（GUI 配置面）",
+        ("G5 prj skip_dirs → FIND 命中集合剔除被跳过目录（GUI 配置面）",
          case_g5_prj_skip_dirs_end_to_end),
         ("G6 timeout_sec/max_concurrency → prj 回读一致（B 不可稳定观测）",
          case_g6_exec_params_readback),

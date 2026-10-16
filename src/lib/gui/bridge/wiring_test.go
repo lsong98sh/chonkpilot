@@ -9,10 +9,15 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // TestFrontMethodWaitWiring 上行「等待完成」白名单接线：漏了则前端 emit 被静默丢弃。
@@ -48,6 +53,134 @@ func TestToolsTimeoutPassthrough(t *testing.T) {
 	b := &Bridge{}
 	if got := b.eventType("mcp-tools-timeout"); got != "mcp-tools-timeout" {
 		t.Fatalf("mcp-tools-timeout 应原名直通前端，实际 %q", got)
+	}
+}
+
+// TestFrontMethodSubchatWiring 上行单聊主题白名单接线（2026-10-16，61 §4.2/§4.5）：
+// `subchat-list` / `subchat-finish` 是**无点分的单段主题** → 不走「点分直通」分支，
+// 必须列 `frontMethodSubjects`（同名映射），否则 `PublishEvent` 静默丢弃（前端按钮无反应）。
+// 下行事件（`subchat-opened` / `subchat-state`）无需登记：`eventType` 原名直通。
+func TestFrontMethodSubchatWiring(t *testing.T) {
+	for _, typ := range []string{msgkeys.TopicSubchatList, msgkeys.TopicSubchatFinish, msgkeys.TopicSubchatContinue} {
+		subj, ok := frontMethodSubjects[typ]
+		if !ok {
+			t.Fatalf("frontMethodSubjects 缺少 %s：前端上行将被静默丢弃", typ)
+		}
+		if subj != typ {
+			t.Fatalf("%s 应同名映射到相对主题 %s，实际 %q", typ, typ, subj)
+		}
+	}
+	b := &Bridge{}
+	for _, typ := range []string{msgkeys.TopicSubchatOpened, msgkeys.TopicSubchatState} {
+		if got := b.eventType(typ); got != typ {
+			t.Fatalf("下行事件 %s 应原名直通前端，实际 %q", typ, got)
+		}
+	}
+}
+
+// TestRegisterCarriesParentInstance 写侧父子链（61 §4.1 ④ · 单聊 §12.4 B4）：
+// SetParentInstance 后 Start 上报的 instance-register 带直接父实例；顶层实例**不带该键**。
+func TestRegisterCarriesParentInstance(t *testing.T) {
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatalf("mq.New: %v", err)
+	}
+	defer func() { _ = bus.Close() }()
+
+	regs := make(chan map[string]any, 8)
+	if _, err := bus.On(msgkeys.TopicInstanceRegister, 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) == nil {
+			select {
+			case regs <- m:
+			default:
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	child := New("child-1", "wd", "", func(string) {}, bus)
+	child.SetParentInstance("parent-1")
+	if err := child.Start(); err != nil {
+		t.Fatalf("child.Start: %v", err)
+	}
+	select {
+	case m := <-regs:
+		if m[msgkeys.InstanceRegisterEventInstanceId] != "child-1" {
+			t.Fatalf("instance-register 实例 id 不符: %+v", m)
+		}
+		if m[msgkeys.InstanceRegisterEventParentInstance] != "parent-1" {
+			t.Fatalf("子窗口 instance-register 应带 parent_instance=parent-1: %+v", m)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未捕获子窗口 instance-register")
+	}
+
+	top := New("top-1", "wd", "", func(string) {}, bus)
+	if err := top.Start(); err != nil {
+		t.Fatalf("top.Start: %v", err)
+	}
+	select {
+	case m := <-regs:
+		if _, ok := m[msgkeys.InstanceRegisterEventParentInstance]; ok {
+			t.Fatalf("顶层实例不得带 parent_instance: %+v", m)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未捕获顶层 instance-register")
+	}
+}
+
+// TestRegisterCarriesSessionID 写侧会话绑定（61 §4.1 ④ · 群聊 §13 D42 / §15.4 N23；
+// 🆕 2026-10-16 SUBCHAT-3 阶段 F-2）：SetSessionID 后 Start 上报的 instance-register 带
+// `session_id`（= 该窗口承载的会话）；主窗口（未设置）**不带该键**。
+func TestRegisterCarriesSessionID(t *testing.T) {
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatalf("mq.New: %v", err)
+	}
+	defer func() { _ = bus.Close() }()
+
+	regs := make(chan map[string]any, 8)
+	if _, err := bus.On(msgkeys.TopicInstanceRegister, 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) == nil {
+			select {
+			case regs <- m:
+			default:
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	chat := New("chat-1", "wd", "", func(string) {}, bus)
+	chat.SetSessionID("group-abc")
+	if err := chat.Start(); err != nil {
+		t.Fatalf("chat.Start: %v", err)
+	}
+	select {
+	case m := <-regs:
+		if m[msgkeys.InstanceRegisterEventSessionId] != "group-abc" {
+			t.Fatalf("对话/群聊窗口 instance-register 应带 session_id=group-abc: %+v", m)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未捕获对话窗口 instance-register")
+	}
+
+	main := New("main-1", "wd", "", func(string) {}, bus)
+	if err := main.Start(); err != nil {
+		t.Fatalf("main.Start: %v", err)
+	}
+	select {
+	case m := <-regs:
+		if _, ok := m[msgkeys.InstanceRegisterEventSessionId]; ok {
+			t.Fatalf("主窗口不得带 session_id: %+v", m)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未捕获主窗口 instance-register")
 	}
 }
 

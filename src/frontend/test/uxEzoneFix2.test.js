@@ -87,7 +87,7 @@ test('E-32 useToolSandbox：四路加载失败置 loadFailed，重载复位，�
   for (const h of [
     'async function loadTools()',
     'async function loadUserConfig()',
-    'async function loadServerSandboxCount()',
+    'async function loadMcpList()',
     'async function loadTrustDirs()',
   ]) {
     assert.match(fnBody(js, h), /failLoad\(e\)/, `${h} 失败须置 loadFailed`)

@@ -6,12 +6,14 @@ package mcpgateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -266,7 +268,13 @@ func (g *Gateway) loadNodeAsset(inst, kind, name, uri string) (map[string]any, b
 			c := res.Contents[0]
 			hit = map[string]any{
 				"kind": KindResource, "name": name, "uri": c.URI, "mimetype": c.MIMEType,
-				"content": c.Text, "node": nodeName, "scope": scope,
+				"node": nodeName, "scope": scope,
+			}
+			// 内容承载：文本经 `content`；二进制（如 png）经 `blob`（base64，对齐 MCP）。
+			if c.Text != "" {
+				hit["content"] = c.Text
+			} else if len(c.Blob) > 0 {
+				hit["blob"] = base64.StdEncoding.EncodeToString(c.Blob)
 			}
 			return nil
 		}
@@ -561,12 +569,17 @@ func (g *Gateway) handleMCPLoad(ctx context.Context, args map[string]any) (*mcp.
 		if a.MIMEType != "" {
 			m["mimetype"] = a.MIMEType
 		}
-		c, cerr := assetContent(a) // RB-4 ①：有 path 实时读盘；无 path 取驻留 content
+		b, cerr := assetContentBytes(a) // RB-4 ①：有 path 实时读盘；无 path 取驻留 content
 		if cerr != nil {
 			return toolErrorText(cerr.Error()), nil
 		}
-		if c != "" {
-			m["content"] = c
+		if len(b) > 0 {
+			// 内容承载：文本经 `content`；二进制（mimetype 非文本，如 png）经 `blob`（base64，对齐 MCP）。
+			if a.MIMEType != "" && !contractmd.IsTextMime(a.MIMEType) {
+				m["blob"] = base64.StdEncoding.EncodeToString(b)
+			} else {
+				m["content"] = string(b)
+			}
 		}
 		if len(a.Arguments) > 0 {
 			m["arguments"] = a.Arguments

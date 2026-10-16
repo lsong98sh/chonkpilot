@@ -1,11 +1,13 @@
-# make-a-deck
+# 基本信息
+```yaml
+name: make-a-deck
+title: make-a-deck
+```
 
-[meta]
-
-[description]
+# 摘要
 用单个 HTML 文件构建幻灯片演示——固定尺寸画面（通常 1920×1080，16:9）并 letterbox 适配任意视口；当用户要一份 deck、演示、幻灯片或 pitch 时使用。
 
-[content]
+# 正文
 # 制作演示文稿：HTML 幻灯片
 
 用单个 HTML 文件构建幻灯片演示，固定尺寸画面（通常 1920×1080，16:9），并对任意视口做 letterbox 适配。当用户要一份 deck、演示、幻灯片或 pitch 时使用。缩放逻辑不要手搓——本仓没有现成 deck 起手组件，直接用单文件 HTML/CSS/JS 自行实现。

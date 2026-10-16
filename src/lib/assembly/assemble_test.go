@@ -28,7 +28,7 @@ var _ mcpgateway.ContractScanner = (*Stack)(nil)
 func writeToolContract(t *testing.T, dir, name string) {
 	t.Helper()
 	path := filepath.Join(dir, name+".tool.md")
-	body := "# " + name + "\n\n[description]\nfixture tool " + name + "\n\n[parameters]\ntype: object\n"
+	body := "# 基本信息\n```yaml\nname: " + name + "\n```\n\n# 摘要\nfixture tool " + name + "\n\n# 参数\n```json\n{\"type\":\"object\"}\n```\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write fixture %s: %v", path, err)
 	}
@@ -38,7 +38,7 @@ func writeToolContract(t *testing.T, dir, name string) {
 func writeBadToolContract(t *testing.T, dir string) {
 	t.Helper()
 	path := filepath.Join(dir, "bad.tool.md")
-	if err := os.WriteFile(path, []byte("# bad\n\n[parameters]\ntype: array\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("# 基本信息\n```yaml\nname: bad\n```\n\n# 摘要\nbad\n\n# 参数\n```json\n{\"type\":\"array\"}\n```\n"), 0o644); err != nil {
 		t.Fatalf("write bad fixture %s: %v", path, err)
 	}
 }

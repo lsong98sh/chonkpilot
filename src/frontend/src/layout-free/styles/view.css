@@ -1,0 +1,144 @@
+.v-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: #fff;
+}
+
+.v-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--lf-border);
+  background: #fafbfd;
+  flex: none;
+}
+
+.v-title {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.v-icon {
+  font-size: 13px;
+}
+
+.v-sub {
+  color: var(--lf-text-weak);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.v-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+}
+
+.v-foot {
+  flex: none;
+  border-top: 1px solid var(--lf-border);
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--lf-text-weak);
+  background: #fafbfd;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+
+.row:hover {
+  background: var(--lf-tree-hover);
+}
+
+.row .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row .size {
+  color: var(--lf-text-weak);
+  font-size: 11px;
+}
+
+.card {
+  border: 1px solid var(--lf-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: #fff;
+}
+
+.card h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.kv span:last-child {
+  color: var(--lf-text-weak);
+}
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bubble {
+  max-width: 82%;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.bubble.me {
+  align-self: flex-end;
+  background: var(--lf-accent-soft);
+  border: 1px solid #c9d8ff;
+}
+
+.bubble.ai {
+  align-self: flex-start;
+  background: #f4f6f9;
+  border: 1px solid var(--lf-border);
+}
+
+.composer {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--lf-border);
+  background: #fafbfd;
+}
+
+.composer input {
+  flex: 1;
+  height: 26px;
+  border: 1px solid var(--lf-border-strong);
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
+.mono {
+  font-family: 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+}

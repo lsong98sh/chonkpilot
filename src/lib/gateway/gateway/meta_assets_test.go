@@ -9,6 +9,7 @@ package mcpgateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -259,8 +260,69 @@ func TestMCPLoadNodeAssetReadsLive(t *testing.T) {
 	}
 }
 
+// blobScanner 提供**二进制**外部文件资源（MCP blob 承载）的扫描替身。
+type blobScanner struct {
+	name string
+	uri  string
+	mime string
+	blob []byte
+}
+
+func (s blobScanner) Scan(root string) (*mcp.Server, error) {
+	ms := mcp.NewServer(&mcp.Implementation{Name: "kb-blob", Version: "1.0.0"}, nil)
+	ms.AddResource(&mcp.Resource{URI: s.uri, Name: s.name, Description: "二进制资源", MIMEType: s.mime},
+		func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{
+				{URI: s.uri, MIMEType: s.mime, Blob: s.blob},
+			}}, nil
+		})
+	return ms, nil
+}
+
+// TestMCPLoadResourceBlob：节点原语资源内容为**二进制**（MCP blob）时，mcp_load 经 `blob`（base64）
+// 承载、不带 `content`（对齐 MCP；2026-10-14）。
+func TestMCPLoadResourceBlob(t *testing.T) {
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatalf("bus: %v", err)
+	}
+	t.Cleanup(func() { bus.Close() })
+
+	raw := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a}
+	sc := blobScanner{name: "logo", uri: "mcp://chonkpilot/resources/logo", mime: "image/png", blob: raw}
+	g, err := New(Params{Bus: bus, ContractScanner: sc, Logf: t.Logf})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	t.Cleanup(func() { _ = g.Stop(context.Background()) })
+	if err := g.registerDirNode("kb", t.TempDir(), "ins-kb"); err != nil {
+		t.Fatalf("registerDirNode: %v", err)
+	}
+
+	res, err := g.handleMCPLoad(instCtx("ins-kb"), map[string]any{"kind": "resource", "name": "logo"})
+	if err != nil || res.IsError {
+		t.Fatalf("mcp_load: err=%v res=%+v", err, res)
+	}
+	tc, _ := res.Content[0].(*mcp.TextContent)
+	if tc == nil {
+		t.Fatalf("content 类型 = %T", res.Content[0])
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &m); err != nil {
+		t.Fatalf("解析 load: %v (%s)", err, tc.Text)
+	}
+	if m["mimetype"] != "image/png" {
+		t.Fatalf("mimetype = %v, want image/png", m["mimetype"])
+	}
+	if want := base64.StdEncoding.EncodeToString(raw); m["blob"] != want {
+		t.Fatalf("blob = %v, want %s", m["blob"], want)
+	}
+	if _, ok := m["content"]; ok {
+		t.Fatalf("二进制资源不应带 content: %v", m["content"])
+	}
+}
+
 // TestRegisteredAssetPathReadsLive：RB-4 ①（2026-09-22）—— 注册资产带 `path` = 内容不驻留 + 实时读盘。
-// 覆盖验收：① 改文件后 mcp_load 取到新内容；② 无 path 的内嵌资产携 content → mcp_load 不回归；
 // ③ registry 内不常驻「有 path 资产」的内容（catalogAsset.Content 为空）。
 // 25 §5/T2：资产 kind 由 agent 改为 **skill**（agent 已撤出资产面），且 prompts/get 只服务节点原语。
 func TestRegisteredAssetPathReadsLive(t *testing.T) {

@@ -25,10 +25,12 @@ import { useInstanceClaim, CLAIM_OK, CLAIM_UNANSWERED } from './composables/useI
 import { useAuth } from './composables/useAuth'
 import { useUserConfigSync } from './composables/useUserConfigSync'
 import { useGuiShowDialog } from './composables/useGuiShowDialog'
+import { maybeShowUnfinishedSubChats } from './composables/useSubChats'
 import { requireAuth } from './utils/instanceState.js'
 import { parseViewRoute, VIEW_CHAT } from './utils/viewRoute.js'
 import { prefetchInitData, invalidateInitDataCache } from './api/file'
 import { projectEpoch, setProjectReinitHandler } from './utils/projectReinit.js'
+import { useSelectionStore } from './stores/selection'
 
 const { t } = useI18n()
 const { state, claim } = useInstanceClaim()
@@ -81,6 +83,10 @@ async function init() {
     console.warn('[App] init session-changed failed:', e)
     mq.emit(EventNames.sessionChanged, { session_id: null })
   }
+  // 单聊 F10（§3.4.7）：主窗口就绪后判断一次「有未结束子聊天 → 启动提醒对话框」。
+  // **仅主窗口**（对话窗口跳过）；`subchat-list{}`（全局，不带 parent_id）；每次启动判断一次
+  // （页会话内只判一次，见 useSubChats 的幂等守卫）。
+  maybeShowUnfinishedSubChats()
 }
 
 // 登录 / 选目录 + 认领完成（AuthView 内部已 claim 成功）→ 等主页挂载（nextTick）→ 既有初始化。
@@ -95,6 +101,10 @@ async function onAuthReady() {
 //   ② 等主布局重挂完成（子组件 onMounted 完毕）；
 //   ③ 重跑启动序列 `init()`（读新项目活动会话 → 广播 session-changed，驱动会话树/会话面板）。
 setProjectReinitHandler(async () => {
+  // ⓪ 跨 view 共享状态复位（UILAYOUT-1 §3.7 P2③）：状态已外置到 store，组件重挂不再自带"归零"
+  //    → 必须**先**清（同步，早于下方 nextTick 触发的整树重挂），否则新项目首帧会闪现旧项目的
+  //    当前会话 / 任务 / 已打开文件（本序列的既有语义即"当前会话与任务树均被重置"）。
+  useSelectionStore().reset()
   invalidateInitDataCache()
   await nextTick()
   await init()

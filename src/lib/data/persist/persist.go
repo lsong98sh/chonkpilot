@@ -81,6 +81,10 @@ var dataReqSubjects = []string{
 	msgkeys.TopicDataSessionEnsureSession, msgkeys.TopicDataSessionEnsureTurn, msgkeys.TopicDataSessionAppendMessage,
 	msgkeys.TopicDataSessionSetSummary, msgkeys.TopicDataSessionCompleteTurn, msgkeys.TopicDataSessionCleanupStale,
 	msgkeys.TopicDataSessionLoadMessages, msgkeys.TopicDataSessionContext,
+	// 群聊两表（SUBCHAT-3 阶段 E，2026-10-16）：参与者名单 / 每大轮次投递对象（prjusr；
+	// group_participants / group_round_targets）。**不广播 -refresh**（名册/进度类表）。
+	msgkeys.TopicDataSessionGroupParticipantsLoad, msgkeys.TopicDataSessionGroupParticipantsSave,
+	msgkeys.TopicDataSessionGroupRoundTargetsLoad, msgkeys.TopicDataSessionGroupRoundTargetsSave,
 	// 会话快照域（A3 扩展；sessions 表 history/snapshot_turn 两字段读写）
 	msgkeys.TopicDataSnapshotGet, msgkeys.TopicDataSnapshotSet,
 	// 任务树域（§3.4）
@@ -130,6 +134,7 @@ type Service struct {
 	facade.MemoryAPI
 	facade.McpAPI
 	facade.ProjectAPI
+	facade.GroupAPI
 
 	mu      sync.Mutex
 	subs    []mq.Sub // 全部订阅句柄（Start 累计 / Stop 退订）
@@ -168,6 +173,8 @@ func New(bus mq.Bus, opts Options) *Service {
 		MemoryAPI:    memory.New(base),
 		McpAPI:       mcp.New(base),
 		ProjectAPI:   project.New(base),
+		// 群聊两表（参与者名单 / 大轮次投递对象）与会话同域同库（prjusr）→ 复用 session 实现。
+		GroupAPI: ses,
 	}
 	// refresh 广播附带的域列表（订阅面）由信封层提供 → 与各域 list 应答同源。
 	base.DomainList = s.domainList

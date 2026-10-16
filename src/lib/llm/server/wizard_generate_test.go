@@ -55,7 +55,7 @@ func TestAgentWizardGenerateWritesAgentFilesAndRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent 文件未落盘（%s）：%v", abs, err)
 	}
-	if !strings.Contains(string(raw), "合成的前端提示词") || !strings.Contains(string(raw), "roletag=前端") {
+	if !strings.Contains(string(raw), "合成的前端提示词") || !strings.Contains(string(raw), "roletag: 前端") {
 		t.Fatalf("agent 文件内容不符：\n%s", raw)
 	}
 

@@ -123,24 +123,43 @@ test('agentRef：ref 前缀 → 级别根 → 绝对路径（四级前缀）', (
   assert.equal(resolveAgentRefAbs('${exeDir}/capability/agents/z.agent.md', { app: '' }), '')
 })
 
-test('agentRef：ref 型 agent 可读 → 编辑 → 写回（格式保真、ref 不变）', () => {
+test('agentRef：ref 型 agent 可读 → 编辑 → 写回（v2 分区：参考/委托，格式保真、ref 不变）', () => {
   const refForm = '${exeDir}/capability/agents/代码审查.agent.md'
-  // 读：契约文档 → 可编辑模型（未知 meta 保留在 _refMeta）
-  const doc = { title: '代码审查', meta: { roletag: '审查', custom: 'keep' }, description: '审查', content: '旧提示词' }
+  // 读：契约文档 → 可编辑模型（未知 meta 保留在 _refMeta；参考/委托取各自分区）
+  const doc = {
+    title: '代码审查',
+    meta: { roletag: '审查', custom: 'keep' },
+    refs: { tools: ['mcp__x__read'], skills: ['debug'] },
+    description: '审查',
+    delegate: '当需要代码审查时',
+    content: '旧提示词',
+  }
   const agent = { name: '代码审查', ref: refForm, ...agentModelFromDoc(doc) }
   assert.equal(agent.prompt, '旧提示词')
   assert.equal(agent.roleTag, '审查')
+  assert.equal(agent.delegateCond, '当需要代码审查时')
+  assert.deepEqual(agent.tools, ['mcp__x__read'])
+  assert.deepEqual(agent.skills, ['debug'])
   assert.equal(agent._refMeta.custom, 'keep')
-  // 编辑：改提示词 + 勾选工具
+  // 编辑：改提示词 + 勾选工具/技能 + 填资源 + 改委托
   agent.prompt = '新提示词'
   agent.tools = ['mcp__x__read']
-  // 写回：生成契约文档（未知 meta 保留；tools 以 JSON 串落 meta）
+  agent.skills = ['debug', 'explore']
+  agent.resources = ['core-overview']
+  agent.delegateCond = '新条件'
+  // 写回：v2 分区（参考 = skills/tools/resources 名单；委托独立分区；未知 meta 保留）
   const out = agentDocOf(agent)
+  assert.equal(out.name, '代码审查')
   assert.equal(out.title, '代码审查')
   assert.equal(out.content, '新提示词')
   assert.equal(out.meta.custom, 'keep')
   assert.equal(out.meta.roletag, '审查')
-  assert.equal(out.meta.tools, '["mcp__x__read"]')
+  assert.equal('tools' in out.meta, false, 'tools 不再落「基本信息」meta')
+  assert.equal('delegate' in out.meta, false, 'delegate 不再落「基本信息」meta')
+  assert.deepEqual(out.refs.tools, ['mcp__x__read'])
+  assert.deepEqual(out.refs.skills, ['debug', 'explore'])
+  assert.deepEqual(out.refs.resources, ['core-overview'])
+  assert.equal(out.delegate, '新条件')
   // ref 不变：写回文档不含 ref，场景 agent 的 ref 字段未被改写
   assert.equal('ref' in out, false)
   assert.equal(agent.ref, refForm)

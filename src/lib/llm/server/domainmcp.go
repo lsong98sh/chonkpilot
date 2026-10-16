@@ -212,6 +212,11 @@ type domainToolMsg struct {
 		Session    string `json:"session"`
 		InstanceID string `json:"instance_id"`
 		ToolCallID string `json:"tool_call_id"`
+		// Purpose 是本次调用的**运行目的**（C1 注入通道 · SUBCHAT-2 阶段 A）：= gateway 注入的
+		// 展示名参数 `tool_call_display_name`，由 `doCall` 在**剥离该 args 键之前**取出、随
+		// `payload["context"]` 下发（`registered_provider.turnContextPayload`）。handler 只能从这里
+		// 读——args 里该键已被剥离（如未来 `subchat_open` 取作子聊天 purpose）。
+		Purpose string `json:"purpose"`
 	} `json:"context"`
 }
 
@@ -226,12 +231,13 @@ func (s *Server) onDomainToolCall(_ context.Context, _ string, v *mq.Value) erro
 	if msg.Tool == "" {
 		return methodErr("tool is required")
 	}
-	tc, callID := (*turnCtx)(nil), ""
+	tc, callID, purpose := (*turnCtx)(nil), "", ""
 	if msg.Context != nil {
 		tc = s.lookupTurnIn(msg.Context.InstanceID, msg.Context.Turn)
 		callID = msg.Context.ToolCallID
+		purpose = msg.Context.Purpose
 	}
-	text, isErr := s.domainExecute(tc, callID, msg.Tool, msg.Args)
+	text, isErr := s.domainExecute(tc, callID, msg.Tool, msg.Args, purpose)
 	v.Result = map[string]any{
 		"resultType": "complete",
 		"content":    []any{map[string]any{"type": "text", "text": text}},
@@ -245,12 +251,16 @@ func (s *Server) onDomainToolCall(_ context.Context, _ string, v *mq.Value) erro
 //   - llm 型（llm_run）→ runSubJob goroutine（DSL/委派子会话完成回填父轮次）；
 //   - task 型 → execTaskTool 同步执行（节点 done 广播在收尾）。
 //
+// purpose = 本次调用的运行目的（C1 注入通道；args 里的展示名已被 gateway 剥离 → 只能经此送达
+// handler）。本阶段用于补全域工具任务节的 purpose/label（见 domainNode）；后续 `subchat_open`
+// 等 handler 直接消费本参数。
+//
 // isErr=true 表示工具级失败（无 turn 兜底 / 节点构建失败）。
-func (s *Server) domainExecute(tc *turnCtx, callID, tool string, args map[string]any) (string, bool) {
+func (s *Server) domainExecute(tc *turnCtx, callID, tool string, args map[string]any, purpose string) (string, bool) {
 	if tc == nil {
 		return "域工具必须经 server turn 调用（turn 上下文缺失）", true
 	}
-	node, derr := s.domainNode(tc, callID, tool, args)
+	node, derr := s.domainNode(tc, callID, tool, args, purpose)
 	if derr != nil {
 		return derr.Error(), true
 	}
@@ -263,6 +273,17 @@ func (s *Server) domainExecute(tc *turnCtx, callID, tool string, args map[string
 		// 异步子会话：开 goroutine 执行 llm_run DSL（结果回填父轮次）
 		go s.runSubJob(tc, callID, node, args)
 		return "已提交子会话执行，结果稍后回填", false
+	case isSubChatTool(tool):
+		// 单聊域工具（subchat_open / subchat_finish，SUBCHAT-2 阶段 B-2）：**同步**执行并返回
+		// 文本（结果即终态，§3.4.3）；子聊天首轮的异步起轮在 handler 内自行派生（不在此挂起主轮）。
+		// 不进 default 的「执行中取消」登记：两者皆毫秒级快操作、无长跑执行体可中断。
+		text, isErr := s.execSubChatTool(tc, tool, args, purpose)
+		if isErr {
+			s.tasks.done(node.TaskID, TaskStateError, "", text)
+		} else {
+			s.tasks.done(node.TaskID, TaskStateDone, text, "")
+		}
+		return text, false
 	default:
 		// task 型：同步执行并返回文本（节点建/广播/收尾在 handler）。
 		// I-83 收尾（18 §3.4）：执行期登记取消柄（taskExecCancels）——gateway 取消
@@ -310,7 +331,11 @@ func (s *Server) lookupTurnIn(instanceID, turn string) *turnCtx {
 }
 
 // domainNode 构建并广播域工具任务节点（对齐 turn.go 建 node 逻辑）。
-func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]any) (*TaskNode, error) {
+//
+// purpose = C1 注入通道带来的本次调用运行目的：域工具经 gateway 回调执行时，args 里的
+// `tool_call_display_name` 已被 `doCall` 剥离 → `taskDisplay` 取不到展示名；此处以注入值兜底，
+// 使域工具（ask_user / llm_run / tool_* 及将来的 subchat_*）任务节同样带上 purpose/label。
+func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]any, purpose string) (*TaskNode, error) {
 	node := &TaskNode{
 		Tool:       tool,
 		ToolCallID: callID,
@@ -321,6 +346,9 @@ func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]an
 		InstanceID: tc.req.InstanceID,
 	}
 	node.Name, node.Purpose, node.Simplified = taskDisplay(tool, args)
+	if node.Purpose == "" && purpose != "" {
+		node.Purpose = purpose // 注入通道兜底（args 内展示名已被剥离）；name/simplified 取值口径不变
+	}
 	node.args = args
 	return s.tasks.start(node)
 }

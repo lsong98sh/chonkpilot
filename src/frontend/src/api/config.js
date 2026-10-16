@@ -5,7 +5,7 @@ import { resolvePublishError } from '../utils/publishError.js'
 import { i18n } from '../plugins/i18n'
 import { EventNames } from '../events/event-names'
 import {
-  FieldKeys,
+  FieldKeys, MsgTopics,
   DataPrjConfigListKeys, DataPrjConfigLoadKeys,
   DataUserConfigLoadKeys, DataUserConfigListKeys,
   DataPromptLoadKeys, DataMcpListKeys, DataPrjSecurityListKeys,
@@ -273,6 +273,32 @@ export function setPrompt(key, value) {
 }
 
 /**
+ * AI 智能填充（AICFG-1）— 经点分相对主题 `config.suggest`（MsgTopics.configSuggest）触发：
+ * 自然语言描述 → 后端 LLM 产出**结构化字段建议**（一次性应答，非流式）。
+ *   - kind ∈ 'llm' | 'mcp' | 'tool'（目标表单种类；决定白名单与指令）；
+ *   - text = 用户自然语言；current = 当前表单值（可选，供增量补全）；
+ *   - 返回 { fields, notes }（fields 只含该 kind 白名单字段，**apiKey 绝不代填**）；
+ *   - 失败 reject（Error.message = 后端 error.message；Error.kind = error.kind 供调用方分流）。
+ * 只回填前端**待保存态**（调用方负责），落库仍走既有【保存】——本函数不写任何配置。
+ * 后端一次性生成最多 60s（llmOnceSpec），前端超时给足裕量（>60s），避免误判超时。
+ */
+export function suggestConfig(kind, text, current) {
+  const body = { kind, text }
+  if (current && Object.keys(current).length) body.current = current
+  return mq.emit(MsgTopics.configSuggest, body, { timeout: 90000 }).then((env) => {
+    const backend = env && env.backend
+    const result = backend && backend.result
+    if (!result) throw new Error(MsgTopics.configSuggest + ': backend unreachable')
+    if (!result.ok) {
+      const e = new Error((result.error && result.error.message) || (MsgTopics.configSuggest + ' failed'))
+      e.kind = result.error && result.error.kind
+      throw e
+    }
+    return { fields: result.fields || {}, notes: result.notes || '' }
+  })
+}
+
+/**
  * optimize-error payload → 展示文案（D-41）：优先按 `code` 翻译
  * （i18n 命名空间 `optimizeError.*`，payload 整体作插值参数：`name`/`status`/`message`）；
  * 未识别 code（或缺失）→ 回落 `payload.message`（后端动态详情/兜底）。
@@ -313,5 +339,28 @@ export function optimizeAgentPrompt(data, onToken, onDone, onError) {
     if (onError) onError(err.message || 'Request failed')
   })
 
+  return { abort: () => unsubs.forEach(fn => fn()) }
+}
+
+/**
+ * 摘要生成（v2 专用链路）— 经 `zprompt-summarize` 消息面触发，结果经 `zprompt-summarized` 事件返回。
+ * 供原语「描述·从正文提取」用（LLM 摘要，替代旧的本地截取）。
+ * - onDone: (summary) => void
+ * - onError: (message) => void
+ */
+export function summarizeContent(data, onDone, onError) {
+  const unsubs = []
+  unsubs.push(mq.on(EventNames.summarized, (payload) => {
+    unsubs.forEach(fn => fn())
+    if (payload && payload.error) {
+      if (onError) onError(payload.error)
+      return
+    }
+    if (onDone) onDone(payload ? (payload.content || '') : '')
+  }))
+  guiReq(EventNames.summarize, data).catch(err => {
+    unsubs.forEach(fn => fn())
+    if (onError) onError((err && err.message) || 'Request failed')
+  })
   return { abort: () => unsubs.forEach(fn => fn()) }
 }

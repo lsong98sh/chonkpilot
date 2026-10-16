@@ -413,7 +413,7 @@ func TestDomainToolsListFields(t *testing.T) {
 	t.Fatalf("self_ask_user not in tools list within 10s (tools=%+v)", tools)
 found:
 	// 条目 payload 字段断言
-	for _, name := range []string{"self_ask_user", "self_llm_run", "self_tool_result", "self_tool_stop"} {
+	for _, name := range []string{"self_ask_user", "self_llm_run", "self_tool_result", "self_tool_stop", "self_subchat_open", "self_subchat_finish"} {
 		foundTool := false
 		for _, it := range tools {
 			m, _ := it.(map[string]any)

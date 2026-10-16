@@ -24,6 +24,7 @@ const (
 	EnvInstance     = "CHONKPILOT_INSTANCE"     // 运行实例 id
 	EnvWorkDir      = "CHONKPILOT_WORKDIR"      // 项目工作目录（宿主 _meta.work_dir）
 	EnvDataDir      = "CHONKPILOT_DATADIR"      // 数据目录（宿主 _meta.data_dir）
+	EnvPurpose      = "CHONKPILOT_PURPOSE"      // 本次调用的运行目的（宿主 _meta.purpose；C1 2026-10-15）
 	EnvTempDir      = "CHONKPILOT_TEMPDIR"      // 临时目录根（= <temp>/chonkpilot/<instance>/）
 	EnvExeDir       = "CHONKPILOT_EXEDIR"       // 当前可执行文件所在目录
 	EnvProject      = "CHONKPILOT_PROJECT"      // 项目目录（与 CHONKPILOT_WORKDIR 同值）
@@ -55,6 +56,7 @@ func HostEnv() map[string]string {
 	return map[string]string{
 		EnvWorkDir: workDir,
 		EnvDataDir: dataDir,
+		EnvPurpose: strings.TrimSpace(os.Getenv(EnvPurpose)),
 		EnvTempDir: tempDir,
 		EnvExeDir:  exeDir,
 		EnvProject: workDir,

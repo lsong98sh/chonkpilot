@@ -123,6 +123,11 @@ func turnContextPayload(ctx context.Context) map[string]string {
 	if v := ToolCallIDFromContext(ctx); v != "" {
 		m["tool_call_id"] = v
 	}
+	// C1（2026-10-15）：本次调用的运行目的（doCall 剥离展示名前取出）——域工具 handler 读
+	// payload["context"]["purpose"]（如 subchat_open 取作子聊天 purpose）。
+	if v := PurposeFromContext(ctx); v != "" {
+		m["purpose"] = v
+	}
 	return m
 }
 

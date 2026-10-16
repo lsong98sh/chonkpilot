@@ -128,7 +128,14 @@
     "testing": "Testing connection…",
     "testOk": "Connected ({latency} ms)",
     "testOkModel": "Connected: {model} ({latency} ms)",
-    "testInvalid": "Fill in the Base URL and Model first"
+    "testInvalid": "Fill in the Base URL and Model first",
+    "aiFill": "AI Fill",
+    "aiFillPlaceholder": "Describe your need in one sentence, e.g. use Zhipu GLM glm-4.6 as the main model",
+    "aiFillHint": "AI suggests field values from your description and only fills the form (not saved). Verify with Test Connection before saving.",
+    "aiGenerating": "Generating suggestions…",
+    "aiSuggested": "AI",
+    "aiFillInvalid": "Description required",
+    "aiFillNote": "AI note: {notes}"
   },
   "mcp": {
     "name": "Name",
@@ -176,7 +183,7 @@
     "sandboxHint": "agentbox restricts the server subprocess file access to the trust dirs (readable/writable, recursive) of the project security page; applies to stdio & spawn only (http/sse point at a fixed-port process not spawned by us — neither isolation nor sandboxing is possible). The sandbox does NOT depend on isolation — no need to enable per-instance isolation first. Unset = no sandbox (default); an empty allow-list means no policy is sent (= none applied, not an all-reject).",
     "sandboxEmptyHint": "Server-level sandbox: effective only when the switch is on + transport is stdio + the trust-dir list is non-empty; an empty trust-dir config means NO isolation is applied (it is NOT an all-reject) and is independent of per-instance isolation (no need to enable it first); only the executor-level sandbox rejects everything when its trust dirs are empty.",
     "sandboxStdioOnly": "Only stdio & spawn MCP servers can be sandboxed; http/sse point at a fixed port — neither isolation nor sandboxing is possible",
-    "toolSandboxSummary": "Plus {n} executor-level sandbox switches",
+    "toolSandboxSummary": "Plus {n} sandbox switches (built-in executors / external MCPs)",
     "gotoToolSandbox": "Go to tool sandbox config",
     "hotToolsAllLabel": "All tools (every tool is hot)",
     "hotToolsEmpty": "No tools for this server (disabled / not connected / no tools)",
@@ -190,7 +197,14 @@
     "env": "Environment",
     "envPlaceholder": "One K=V per line, e.g. NODE_ENV=production (values support %VAR% and ${VAR} expansion)",
     "headers": "Headers",
-    "headersPlaceholder": "One K=V per line, e.g. Authorization=Bearer xxx"
+    "headersPlaceholder": "One K=V per line, e.g. Authorization=Bearer xxx",
+    "aiFill": "AI Fill",
+    "aiFillPlaceholder": "Describe your need in one sentence, e.g. connect a GitHub MCP (stdio via npx)",
+    "aiFillHint": "AI suggests field values from your description and only fills the form (not saved). An MCP draft must be saved and connected before Load Tools.",
+    "aiGenerating": "Generating suggestions…",
+    "aiSuggested": "AI",
+    "aiFillInvalid": "Description required",
+    "aiFillNote": "AI note: {notes}"
   },
   "table": {
     "operation": "Operation"
@@ -231,24 +245,24 @@
     "checkpointOff": "No checkpoint"
   },
   "toolSandbox": {
-    "pageHint": "User-level config (usr db): one switch per executor category (core / desktop / browser — the three self executors) controlling all tools under that executor; when enabled, agentbox restricts their file access to the trust dirs (readable/writable, recursive) of the project security page. Changes are written only when you click Save (Save is disabled when there are no changes). Unset = no isolation.",
-    "empty": "No isolatable executor tools scanned (core / desktop / browser)",
+    "pageHint": "User-level config (usr db): the sandbox switch is per spawned execution body — one row per built-in executor exe (core / desktop / browser / dsl) and one row per external MCP entry (stdio & spawn only); when enabled, agentbox restricts its file access to the trust dirs (readable/writable, recursive) of the project security page. Changes are written only when you click Save (Save is disabled when there are no changes). Unset = no isolation.",
+    "empty": "No isolatable execution bodies scanned (built-in executors / external MCPs)",
     "execCore": "Core executor",
     "execDesktop": "Desktop executor",
     "execBrowser": "Browser executor",
     "supportedTools": "Supported tools",
-    "noTools": "No tools in this executor",
-    "switchHint": "Whether agentbox sandboxing is enabled for this executor (all its tools; unset = no isolation)",
+    "noTools": "No tools for this execution body",
+    "switchHint": "Whether agentbox sandboxing is enabled for this execution body (all its tools; unset = no isolation)",
     "stateOn": "On",
     "stateOff": "Off",
     "stateUnset": "Not set",
     "restoreDefault": "Reset",
     "saved": "Tool sandbox config saved",
-    "thirdPartyHint": "The sandbox applies per executor and only covers self tools (core / desktop / browser). Configure third-party MCP sandboxing in the MCP dialog's Runtime tab (only stdio & spawn can be isolated / sandboxed); http/sse point at an existing process on a fixed port (not spawned by us) — neither isolation nor sandboxing is possible.",
-    "serverSummary": "Server-level sandbox: {n} enabled (stdio only)",
+    "thirdPartyHint": "External MCP sandboxing (stdio & spawn only — subprocesses we launch) is now configured on this page too: one switch per MCP entry. http/sse point at an existing fixed-port process (not spawned by us) — neither isolation nor sandboxing is possible.",
+    "serverSummary": "External MCP sandbox: {n} enabled (stdio only)",
     "gotoMcp": "Go to MCP config",
-    "trustDirWarning": "Sandboxing is on but the project trust dirs are empty: an empty allow-list in agentbox means deny-all, so currently **every file operation of the sandboxed executors is rejected**. Configure the readable/writable dirs first.",
-    "trustDirWarningRow": "Trust dirs empty → all file operations of this executor will be rejected",
+    "trustDirWarning": "Sandboxing is on but the project trust dirs are empty: an empty allow-list in agentbox means deny-all, so currently **every file operation of the sandboxed execution bodies is rejected**. Configure the readable/writable dirs first.",
+    "trustDirWarningRow": "Trust dirs empty → all file operations of this execution body will be rejected",
     "gotoTrustDirs": "Configure readable/writable dirs"
   },
   "tech": {

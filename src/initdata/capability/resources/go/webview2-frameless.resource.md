@@ -1,13 +1,13 @@
-# Go WebView2 去标题栏并保持拖动/缩放
+# 基本信息
+```yaml
+name: webview2-frameless
+title: Go WebView2 去标题栏并保持拖动/缩放
+```
 
-[meta]
-uri=mcp://chonkpilot/resources/go/webview2-frameless
-mimetype=text/markdown
-
-[description]
+# 摘要
 Go + WebView2 无边框窗口实现（去 WS_CAPTION 保 move/resize）：窗口样式位操作 + WM_NCHITTEST 子类化，含完整 Go 代码、八方向边缘热区、拖动区与常见坑。开发桌面工具/自绘标题栏窗口时使用。
 
-[content]
+# 正文
 # Go + WebView2 无边框窗口（去 caption 保 move/resize）
 
 ## 目标

@@ -29,31 +29,31 @@
 
 ## 3. 对外接口
 
-### 3.1 工具清单（8 个，`src/initdata/capability/tools/`）
+### 3.1 工具清单（5 个，`src/initdata/capability/tools/`）
+
+> **〔2026-10-12：`file_read` / `file_find` / `file_diff` 三个独立工具已彻底删除（契约与 handler 均移除）〕**，能力**收纳为 `filesys_run` 的裸动词动作 `READ` / `DIFF` / `FIND`**（同一实现 `internal/fileops/query_actions.go`）；`dsl_run` 经前缀化得到 `FILE_READ` / `FILE_DIFF` / `FILE_FIND`。core 分类由六工具收敛为三工具（`filesys_run` / `script_run` / `web_fetch`）。
 
 | 分类 | 工具 | meta 要点 |
 |------|------|-----------|
-| core | `file_find` | hot，find=true，timeout=120 |
-| core | `file_read` | hot，timeout=60 |
-| core | `filesys_run` | hot，timeout=60（DSL 文件操作） |
-| core | `file_diff` | hot，timeout=60 |
+| core | `filesys_run` | hot，timeout=60（DSL 文件操作，含只读查询动作 `READ`/`DIFF`/`FIND`） |
 | core | `script_run` | hot，**timeout=300** |
 | core | `web_fetch` | hot，timeout=120 |
 | desktop | `desktop_run` | hot，threshold=60，timeout=300 |
 | browser | `browser_run` | hot，threshold=60，timeout=300 |
 
-公共 meta：`args=<tool> --input={RAW-INPUT-FILE}`、`output=stdout`、`async=auto`、`async-threshold=30`（core）。
+公共「基本信息」键：`args=<tool> --input={RAW-INPUT-FILE}`、`output=stdout`、`async=auto`、`async-threshold=30`（core）。
 契约**单一数据源** = `src/initdata/capability/tools`（`capability/` 只是 `build-mcp-server.ps1` 铺出的**部署副本**）；同步规则与**副本漂移恢复**见 [03-构建与部署](../00-overview/03-构建与部署.md) §7（`.\sync-contracts.ps1`，勿手改部署目录）。
 
 ### 3.2 各工具能力
 
-> **可重试性声明位 `idempotent`**：每个 `*.tool.md` 的 `[meta]` 新增 `idempotent`（`true` = 该工具**可安全自动重试**；缺省 / `false` = **安全默认 = 不可安全自动重试**），仅声明 `true` 时透出暴露 `_meta.idempotent=true`。声明结果：只读 `file_read`/`file_find`/`file_diff` = `true`；写/副作用 `filesys_run`（`StopOnError=false`，含 `APD`/`INS`/`PTC`）/`script_run`/`web_fetch`（POST）/`browser_run`/`desktop_run` = `false`。**DSL 运行器现不重试**；该位为将来加重试提供判据。见 [72 §2](../70-conventions/72-工具开发规范.md)。
+> **可重试性声明位 `idempotent`**：每个 `*.tool.md` 的「基本信息」yaml 新增 `idempotent`（`true` = 该工具**可安全自动重试**；缺省 / `false` = **安全默认 = 不可安全自动重试**），仅声明 `true` 时透出暴露 `_meta.idempotent=true`。声明结果：写/副作用 `filesys_run`（`StopOnError=false`，含 `APD`/`INS`/`PTC`）/`script_run`/`web_fetch`（POST）/`browser_run`/`desktop_run` = `false`。**〔2026-10-12〕** 原三个只读工具 `file_read`/`file_find`/`file_diff` 已删除（`idempotent=true` 随之移除）；其能力收纳为 `filesys_run` 的只读动作 `READ`/`DIFF`/`FIND`（工具整体仍为 `false`，因含写动作）。**DSL 运行器现不重试**；该位为将来加重试提供判据。见 [72 §2](../70-conventions/72-工具开发规范.md)。
 
-- **`filesys_run`**：DSL 动词（7 个 Raw）：`RPL`（全局替换，保行数）· `APD`（追加）· `PTC`（unified diff 增删改）· `INS`（建文件）· `DEL`（按 search 删行 / 无 search 删文件或目录）· `MOV`（移动，跨卷回退复制+删源）· `CPY`（文件/目录递归复制）。`StopOnError=false`（记错继续）。顶层入参 `script` / `file` **二选一（均非必填）**（契约 `[parameters].required` 不再含 `script`）。**R7-C**：① 修改类动作（`modify`）单文件**尺寸上限 32MB**（超限拒改，避免整读整写）；② 文件复制（`CPY`/`MOV` 跨卷回退）/目录递归复制改**流式**（`io.Copy`，O(1) 内存）；③ `PTC` 支持**多 hunk（带 gap）补丁**——两 hunk 之间未被 context 覆盖的中间源行**原样保留**（此前会静默丢失）；④ 修改按**原文件编码**回写（UTF-16/GBK/Shift-JIS/Big5/EUC-KR 往返不改编码，不再静默转 UTF-8）。**路径（R-11）**：动词 `#"path"`、核心语句**所有文件句柄**（**LOOP/SET 数据源读取**、访问器 `.content/.lines/.array/.object/.range`、`IF exist`、`=> #"file"` 目标）、顶层 `file`、顶层 `md5` 键均须绝对 / `~/` / `!/`；字面相对路径在执行前被拒（整体失败、无副作用），`{{}}` 插值由 `ScriptFS` 执行时兜底校验。
+- **`filesys_run`**：DSL 动词（**10 个 Raw：7 写 + 3 只读查询**）：写动作 `RPL`（全局替换，保行数）· `APD`（追加）· `PTC`（unified diff 增删改）· `INS`（建文件）· `DEL`（按 search 删行 / 无 search 删文件或目录）· `MOV`（移动，跨卷回退复制+删源）· `CPY`（文件/目录递归复制）；**只读查询动作 `READ` / `DIFF` / `FIND`（2026-10-12 收纳原 `file_read` / `file_diff` / `file_find`，实现 `internal/fileops/query_actions.go`；`dsl_run` 经前缀化为 `FILE_READ` / `FILE_DIFF` / `FILE_FIND`）**。`StopOnError=false`（记错继续）。顶层入参 `script` / `file` **二选一（均非必填）**（契约 `[parameters].required` 不再含 `script`）。**R7-C**：① 修改类动作（`modify`）单文件**尺寸上限 32MB**（超限拒改，避免整读整写）；② 文件复制（`CPY`/`MOV` 跨卷回退）/目录递归复制改**流式**（`io.Copy`，O(1) 内存）；③ `PTC` 支持**多 hunk（带 gap）补丁**——两 hunk 之间未被 context 覆盖的中间源行**原样保留**（此前会静默丢失）；④ 修改按**原文件编码**回写（UTF-16/GBK/Shift-JIS/Big5/EUC-KR 往返不改编码，不再静默转 UTF-8）。**路径（R-11）**：动词 `#"path"`、核心语句**所有文件句柄**（**LOOP/SET 数据源读取**、访问器 `.content/.lines/.array/.object/.range`、`IF exist`、`=> #"file"` 目标）、顶层 `file`、顶层 `md5` 键均须绝对 / `~/` / `!/`；字面相对路径在执行前被拒（整体失败、无副作用），`{{}}` 插值由 `ScriptFS` 执行时兜底校验。
   **返回条目**：`modified[]` / `created[]` 每条含 `{path, type, size, mtime(RFC3339), md5}`（`modified` 另含 `diff`）；目录条目 `type="dir"`、`size=0`、无 `md5`；`deleted[]` 仍为路径字符串数组（删除后无法 stat）。
-- **`file_read`**：多文件 + `ranges`/`tail`/`start+limit` + 行号 + md5/encoding/size。**路径（R-11）**：`files[].path` 须绝对 / `~/` / `!/`。**R7-C-60**：>32MB（`maxReadBytes`）文件的 `tail` 语义**不建立在截断前缀上**（前缀尾 ≠ 文件尾）→ 改从**文件末尾反向分块**读最后 N 行（不整读大文件）。**R8-C-3**：反向分块读设**扫描窗口上限 8MiB**（`maxTailScan`）—— 对**无换行**超大文件（minified 单行）防止逐块读满退化为整读整文件。**R8-C-4**：非 EOF 的读取错误改为**项级失败**（不再静默吞，避免顶层误报 success）。**〔订正（2026-10-11）〕**：>32MB 文件**带 `ranges`/`start` 时显式报错**（`file_read` 行段语义建立在截断前缀上会与真实行号错位 → 不再静默按前缀解释，提示改用 `tail` 或 `info`）；**`tail` / `info` 语义不受影响**（`tail` 仍走文件末尾反向分块，见 R7-C-60）；**截断文件新增 `total_lines`（全文总行数，流式扫描 O(1) 内存；`info["lines"]` 仍为已读前缀行数）**，且 **`>32MB` 时 `tail` 配合 `line_numbers` 按全文行号回填**（行号基线 = 全文总行数 - 尾段行数 + 1，不再丢失行号或按前缀错行）。
-- **`file_find`**：`output=tree|file|summary`，`depth` 剪枝、`glob`、`grep` 正则、200 行上限、时间过滤。**路径（R-11）**：`path` 须绝对 / `~/` / `!/`。**R7-C**：① `path` **必填**（缺失 → **顶层报错**，不再静默回落 `workDir`/`"."`）；② grep 单文件命中条数**封顶 200**（防逐行无界 append）；③ 整读按 `maxReadBytes` **上限截断**（`readFileCapped`）；④ 命中行 / 摘要按 **rune** 截断（中文不被按字节截出乱码）。
-- **`file_diff`**：三形态入参，unified diff。**路径（R-11）**：`file1`/`file2`/`files[].path`/`files[].path2`/`path[]` 均须绝对 / `~/` / `!/`。**R7-C**：① 单侧文件**尺寸上限 8MB**（`maxDiffBytes`；diffmatchpatch 为 O(n²)，超限**直接报错**、不做全量 diff）；② `files[]` 项缺 `path`/`path2` → **项级错误**（不静默跳过）。
+- **`READ`（只读查询动作；原 `file_read`）**：`READ #"path" [start=N] [limit=N] [tail=N] [ranges=1:10,20:30] [info] [line_numbers]`。**返回语义**：**首行为元数据**（`path`/`md5`/`encoding`/`lines`/`size`[ `truncated=true`][ `total_lines=N`]），第二行起为内容；`info` 模式只返回元数据行。多文件 + `ranges`/`tail`/`start+limit` + 行号 + md5/encoding/size。**路径（R-11）**：`#"path"` 须绝对 / `~/` / `!/`。**R7-C-60**：>32MB（`maxReadBytes`）文件的 `tail` 语义**不建立在截断前缀上**（前缀尾 ≠ 文件尾）→ 改从**文件末尾反向分块**读最后 N 行（不整读大文件）。**R8-C-3**：反向分块读设**扫描窗口上限 8MiB**（`maxTailScan`）—— 对**无换行**超大文件（minified 单行）防止逐块读满退化为整读整文件。**R8-C-4**：非 EOF 的读取错误改为**项级失败**（不再静默吞，避免顶层误报 success）。**〔订正（2026-10-11）〕**：>32MB 文件**带 `ranges`/`start` 时显式报错**（行段语义建立在截断前缀上会与真实行号错位 → 不再静默按前缀解释，提示改用 `tail` 或 `info`）；**`tail` / `info` 语义不受影响**（`tail` 仍走文件末尾反向分块，见 R7-C-60）；**截断文件新增 `total_lines`（全文总行数，流式扫描 O(1) 内存；元数据 `lines` 仍为已读前缀行数）**，且 **`>32MB` 时 `tail` 配合 `line_numbers` 按全文行号回填**（行号基线 = 全文总行数 - 尾段行数 + 1，不再丢失行号或按前缀错行）。
+- **`FIND`（只读查询动作；原 `file_find`）**：`FIND #"dir" [depth=N] [glob="*.go"] [grep="re"] [output=tree|file|summary] [skip_dirs="a,b"] [ignore_files="*.log"] [from=YYYY-MM-DD] [to=YYYY-MM-DD]`。**返回语义**：返回查找输出文本（按 `output` 渲染 tree/file/summary）。`output=tree|file|summary`，`depth` 剪枝、`glob`、`grep` 正则、200 行上限、时间过滤。**路径（R-11）**：`#"dir"` 须绝对 / `~/` / `!/`。**R7-C**：① `path` **必填**（缺失 → **顶层报错**，不再静默回落 `workDir`/`"."`）；② grep 单文件命中条数**封顶 200**（防逐行无界 append）；③ 整读按 `maxReadBytes` **上限截断**（`readFileCapped`）；④ 命中行 / 摘要按 **rune** 截断（中文不被按字节截出乱码）。
+- **`DIFF`（只读查询动作；原 `file_diff`）**：`DIFF #"a" #"b" [#"c" #"d" ...]`（**须偶数个 `#"path"`**，逐对产 diff，多对以空行分隔）。**返回语义**：返回**统一 diff 文本**（unified diff）。三形态入参收敛为 `#"path"` 逐对。**路径（R-11）**：各 `#"path"` 须绝对 / `~/` / `!/`。**R7-C**：① 单侧文件**尺寸上限 8MB**（`maxDiffBytes`；diffmatchpatch 为 O(n²)，超限**直接报错**、不做全量 diff）；② 选项/标志不接受（`DIFF` 仅接受偶数个文件句柄）。
+> **〔2026-10-12〕收纳与回显边界**：三查询动作经 `filesys_run` 工具调用时，**容器输出（`HandleFileManager`）不回显查询动作文本**（仅 modified/created/deleted/fails + 计数摘要，不含 DSL 引擎动作输出汇总）→ 经 `filesys_run` 的 `READ`/`DIFF`/`FIND` 须写 `=> 目标` 才有结果；`dsl_run` 路径正常回显（fallbackSummary）。未决项见 [41 `I-177`](../40-roadmap/41-未决项登记.md)。
 - **`script_run`**：runtime 白名单 `shell/cmd/bash/python/js/powershell/vbs/java`；`script` XOR `file`；`requires` **仅 `python`（`pip install`）与 `js`（`npm install --no-save`）**，其它 runtime 传 `requires` → **整体失败**；powershell 加 `-ExecutionPolicy Bypass -File`。**写临时脚本** `ck_script_*`（用完删），扩展名按 runtime（`python=.py` / `js=.js` / `powershell=.ps1` / `vbs=.vbs` / `bash=.sh` / **`java=.java`**——JDK 单文件源码模式（JEP 330）要求 `.java`，其它扩展名会被 `java` 当**类名** → `ClassNotFoundException`；`public` 类名与文件名不必同名）。**路径（R-11）**：`file`、`workdir`（运行目录）、`interpreter`（解释器/可执行文件路径）均须绝对 / `~/` / `!/`；`args`/`env`/`filter` 等命令参数与 runtime 内置默认命令（`cmd`/`bash`/`sh`，走 PATH）不受约束。
 - **`web_fetch`**：`method/body/form/form_files/headers/cookies/save_as/encoding/follow_redirect/readTimeout`；多编码转码（gbk/big5/shift-jis/euc-jp/euc-kr/iso-8859-1）；multipart 文件上传；`save_as` 直落文件（大文件不进上下文）；UA 缺省 `ChonkPilot/1.0`。**路径（R-11）**：`save_as`、`form_files[].path` 须绝对 / `~/` / `!/`（在发请求前即拒绝）。
 - **`browser_run`**（chromedp，23 动词 Raw）：`OPN WAT CLK DBL RCL HOV CHK UCHK FILL SELO KPR KDN KUP EXP EVL SHT DOM DBG SCL DRG UPF TAB SLP`；locator JS（`__ckResolve` 支持 `>>` 链式）。**〔订正（2026-10-11）〕`OPN` 导航 scheme 白名单 = 仅放行 `http`/`https`/`file` 三种**（`file:` 走沙箱读校验），**其它 scheme 显式拒绝**（如 `view-source:` · **`about:`** · **`data:`** 等）；**`url.Parse` 失败 / 空 scheme 亦显式拒绝**——**相对 / 协议相对 URL**（`/path`、`//host/path`，解析后 scheme 为空）**同样不支持**（报 `syntax` 错，避免解析失败或空 scheme 时整段白名单被跳过、`file:` 读校验被绕过，见 `internal/browser/run.go` `stepOPN`）。**路径（R-11）**：`file`、`chrome_path`（Chrome/Edge 可执行文件）、DSL 内 `SHT`/`DOM`/`DBG`/`UPF`（最后一个参数）、核心语句文件句柄（**LOOP/SET 数据源读取**、访问器、`IF exist`）、行尾 `=> #"file"` 目标、落盘参数 `dom_file`/`console_file`/`fail_shot` 须绝对 / `~/` / `!/`；字面路径在启动浏览器前预校验。
@@ -69,7 +69,7 @@
   → 读 --input JSON（容忍 UTF-8 BOM）→ dispatch(tool, args)
   → handler 执行 → cli.Result{Success, Output, Error, Tool, RawResult}
   → cli.emit：原样透出 Output（判定权在 mcp-server）
-       仅"纯文本 且 >200KB 且 !json.Valid" → 写 %TEMP%/ck-out-*.log + 提示用 file_read 读取
+       仅"纯文本 且 >200KB 且 !json.Valid" → 写 %TEMP%/ck-out-*.log + 提示用 filesys_run READ 读取
   → stdout 结果 JSON；stderr 轻量日志 [executor] tool=... status=... elapsed=...
   → 退出码 0 成功 / 1 失败 / 2 参数错误
 ```
@@ -120,10 +120,11 @@
 
 ## 9. 现状与待办
 
-- 🗄 **已清理**：无入口接线的 `fileops/{write,remove,rename,dir,replace}.go` **整文件删除**；`patch.go`/`grep.go` 裁剪为仅保留被复用的 `applyUnifiedDiff`/`globMatch`（能力由 `filesys_run`/`file_find`/`file_diff` 承接）。
+- 🗄 **已清理**：无入口接线的 `fileops/{write,remove,rename,dir,replace}.go` **整文件删除**；`patch.go`/`grep.go` 裁剪为仅保留被复用的 `applyUnifiedDiff`/`globMatch`（能力由 `filesys_run`（含 `READ`/`DIFF`/`FIND` 动作）承接）。
 - 🗄 **已订正**：`fetch.go` 头注释为「响应体不设自限（io.ReadAll 全读）；超长输出由 executor 统一层接管（>200KB 落临时文件）」。
 - 🗄 **已修**：`internal/browser/tab.go` 有 `maxConsoleLines=2000` 滑动窗口（原地丢弃最旧），替代已删除的 `browserLogCap` 配置。
-- ✅ **R-11 落地**：`internal/fileops/pathcheck.go` 新增 `ValidateFilePath`/`InvalidPathMessage`/`ValidateField`，`ResolvePath` 收敛为强校验（绝对或 `~/`，拒绝相对）；接入 `file_read`（`files[].path`）· `file_find`（`path`）· `file_diff`（`file1`/`file2`/`files[].path`/`files[].path2`/`path[]`）· `filesys_run`（DSL `#"path"` 执行前预校验 + 顶层 `file`/`md5` 键）· `script_run`（`file`）。
+- ✅ **R-11 落地**：`internal/fileops/pathcheck.go` 新增 `ValidateFilePath`/`InvalidPathMessage`/`ValidateField`，`ResolvePath` 收敛为强校验（绝对或 `~/`，拒绝相对）；接入 `READ`（`#"path"`）· `FIND`（`#"dir"`）· `DIFF`（偶数个 `#"path"`）**（三查询动作，2026-10-12 收纳原 `file_read`/`file_find`/`file_diff` 工具）**· `filesys_run`（DSL `#"path"` 执行前预校验 + 顶层 `file`/`md5` 键）· `script_run`（`file`）。
+- 📌 **〔2026-10-12〕工具面收敛**：`file_read` / `file_find` / `file_diff` 三工具契约（`tools/core/{file_read,file_find,file_diff}.tool.md`）与 handler 均已删除；只读查询实现留存为 `fileops/query_actions.go`，经 `filesys_run` 裸动词 / `dsl_run` 前缀动作暴露。
 - ✅ **R-11 覆盖扩展**：`internal/fetch/fetch.go`（`save_as`/`form_files[].path`）· `internal/browser/{handle,run,actions}.go`（`file`、`dom_file`/`console_file`/`fail_shot`、DSL `SHT`/`DOM`/`DBG`/`UPF` 与 `=> #"file"` 目标）· `internal/desktop/run.go`（`file`、DSL `SHT`/`WIN … SHT` 与 `=> #"file"` 目标）接入同一 `fileops.ValidateFilePath`；browser/desktop 对 DSL 内字面落盘路径执行前预校验、`{{}}` 插值在执行时兜底校验。
 - ✅ **R-11 范围升级**：新增 `src/lib/dsl/paths.go` 的**只读** `CollectHandleRefs`（收集 LOOP/SET 数据源、`IF exist`、`=> 目标`、访问器参数等全部 `#"path"` 引用；纯遍历、**不改变引擎行为**，`llm_run` 不受影响）；新增 `fileops/scriptfs.go` 校验型 `ScriptFS` 并注入 `filesys_run`（核心语句数据源读取/访问器/`=> 目标` 亦须绝对 / `~/` / `!/`，`{{}}` 插值执行时兜底校验）；`browser`/`desktop` 的 `scriptFS` 读路径同样运行时可校验并纳入数据源预校验；`script_run.workdir`/`interpreter`、`browser_run.chrome_path` 纳入「必须绝对 / `~/` / `!/`」。
 - ✅ **R-11 二次升级**：`src/lib/paths` 新增**唯一 API** `ResolvePath(raw, base)`（规则序：空 → `!/` → `~/` → 绝对 → base 拼接 / 无 base 报错）、`SetTempRoot`/`TempRoot`（`!/` 映射 `<temp>/chonkpilot/<instance>/`）、`InvalidPathMessage`；`pathcheck.go` **降为薄封装**（删重复实现）。`scriptfs.go` 与 browser/desktop 的 `scriptFS`/落盘点改为**解析后使用绝对路径**（`!/`、`~/` 全路径可用）。executor 经新增 `fileops.HostEnv`/`BuildToolEnv`（读**自身进程环境** `CHONKPILOT_*` + 自身 exe 目录）`SetTempRoot` + 注入**只读** DSL `env`；`script_run` 同时把同名变量注入**子进程环境**（用户 `env` 同名优先）。

@@ -152,3 +152,85 @@ test('i18n：mode_extensions / ext_tab_* / kb_level_prjusr / type_agent 在 zh +
     assert.ok(ft.mode_sessions && ft.mode_memory, loc + ' 缺既有 mode_sessions/mode_memory')
   }
 })
+
+// ── 2026-10-15 扩展页维护改造（req1~req12）前端守卫 ──────────────────────────
+// 同法：`*.vue` 源码守卫（无组件级测试运行器）。
+
+test('扩展树 req1：单类型子 tab 隐去类型目录层 + 根节点显示真实路径', () => {
+  const tree = read('views/filetree/KnowledgeTree.vue')
+  // 单类型 → 树根 = 类型目录本身（不再多显示一层）
+  assert.match(tree, /const singleTypeRel = computed\(/, '应计算单类型相对类型目录')
+  assert.match(tree, /if \(singleTypeRel\.value\) r = r \+ '\/' \+ singleTypeRel\.value/, '树根应下钻到类型目录')
+  // 根节点 title = 真实路径
+  assert.match(tree, /_tooltip: root\.value/, '根节点应带真实路径 tooltip')
+})
+
+test('扩展树 req3/req4：新建先选类型（md 契约 / 其他任意类型文件）', () => {
+  const tree = read('views/filetree/KnowledgeTree.vue')
+  assert.match(tree, /resourceScope/, '应识别「资源」子树（唯一支持任意类型文件）')
+  assert.match(tree, /newDlg = ref\(\{ open: false, dir: '', kind: 'md', name: '' \}\)/, 'newDlg 状态（默认 md）')
+  assert.match(tree, /fileTree\.new_resource_md/, '新建弹框含「知识（md 契约）」选项')
+  assert.match(tree, /fileTree\.new_resource_other/, '新建弹框含「其他（任意类型文件）」选项')
+  assert.match(tree, /fileTree\.name_immutable_hint/, '新建应提示「名称不可变」')
+  // md 走 createPrimitive、other 走 importPrimitive（空内容 → 原样落盘）
+  assert.match(tree, /await doCreateTypeFile\(dir, 'resource', name\)/, 'md 分支走 data-knowledge-create')
+  assert.match(tree, /await importPrimitive\(dir, \[\{ name, content: '' \}\]\)/, 'other 分支走 data-knowledge-import（空内容）')
+})
+
+test('扩展树 req5：目录右键「导入」多文件（data-knowledge-import）', () => {
+  const tree = read('views/filetree/KnowledgeTree.vue')
+  assert.match(tree, /key: 'import', label: t\('fileTree\.import_files'\)/, '右键应有「导入」项')
+  assert.match(tree, /async function doImport\(dirPath\)/, '应有 doImport')
+  assert.match(tree, /el\.multiple = true/, '文件选择应支持多选')
+  assert.match(tree, /readFileBase64/, '应读为 base64（对齐 payload content）')
+  const api = read('api/knowledge.js')
+  assert.match(api, /export function importPrimitive\(dir, files\)/, 'api 应导出 importPrimitive')
+  assert.match(api, /knowledgeReq\('import', \{ dir, files \}\)/, '走 data-knowledge-import 主题')
+})
+
+test('扩展树 req6：目录/文件右键 = 资源管理器显示；文件 = 打开 / 打开方式', () => {
+  const tree = read('views/filetree/KnowledgeTree.vue')
+  assert.match(tree, /revealInExplorer, openWithDefault, openWithDialog/, '应引入 gui 三个系统能力封装')
+  assert.match(tree, /key: 'reveal', label: t\('fileTree\.reveal_in_explorer'\)/, '应有「在资源管理器显示」')
+  assert.match(tree, /key: 'open', label: t\('fileTree\.open'\)/, '文件应有「打开」')
+  assert.match(tree, /key: 'openWith', label: t\('fileTree\.open_with'\)/, '文件应有「打开方式」')
+})
+
+test('扩展树 req4：其他类型文件（type=file）上树 + 单击仅选中 / 双击系统默认打开', () => {
+  const tree = read('views/filetree/KnowledgeTree.vue')
+  // 放行 type='file'（仅资源子树）
+  assert.match(tree, /f\.type === 'file' && resourceScope\.value/, 'loadChildren 应放行 raw 文件（资源子树）')
+  assert.match(tree, /if \(raw\.type === 'file'\) return resourceScope\.value/, 'fileInScope 应按资源子树放行')
+  // 交互：单击仅选中、双击系统默认打开（应用内不预览）
+  assert.match(tree, /if \(node\.type === 'file'\) return/, 'raw 文件单击仅选中')
+  assert.match(tree, /if \(node\.type === 'file'\) \{[\s\S]{0,80}doOpen\(node\.path\)/, 'raw 文件双击系统默认打开')
+})
+
+test('扩展树 req2：删除后本地广播 filesys.changed 关闭对应页签', () => {
+  const tree = read('views/filetree/KnowledgeTree.vue')
+  assert.match(tree, /function notifyRemoved\(path\)/, '应有 notifyRemoved')
+  assert.match(tree, /mq\.emitRemote\(\{ type: EventNames\.fileChanged, payload: \{ path: p, operation: 'remove' \} \}\)/,
+    '删除后应本地广播 filesys.changed（仅本地分发）')
+  assert.match(tree, /notifyRemoved\(node\.path\)/, 'removeNode 应调用 notifyRemoved')
+})
+
+test('i18n：req2/req4/req5 新词条在 zh + en 齐备', () => {
+  for (const loc of LOCALES) {
+    const ft = readLocale(loc, 'fileTree.json')
+    for (const k of ['name_immutable_hint', 'new_resource_title', 'new_resource_md', 'new_resource_other',
+      'other_file_name_ph', 'import_files', 'import_done', 'import_partial', 'import_failed',
+      'import_failed_detail', 'import_no_files', 'open', 'open_with', 'reveal_in_explorer']) {
+      assert.ok(ft[k], loc + ' 缺 ' + k)
+    }
+  }
+})
+
+test('req12：主会话列表改就地改名（inplace-editor，非 promptInput 弹框）', () => {
+  const sp = read('views/sessions/SessionsPane.vue')
+  assert.match(sp, /class="session-title-input"/, '标题行应就地渲染 Input')
+  assert.match(sp, /@keyup\.enter="confirmRename"/, 'Enter 提交')
+  assert.match(sp, /@keyup\.escape="cancelRename"/, 'Esc 取消')
+  assert.match(sp, /function startRename\(session\)/, '应有 startRename')
+  assert.match(sp, /sessionApi\.updateSessionTitle\(id, val\)/, '提交仍走 updateSessionTitle')
+  assert.doesNotMatch(sp, /promptInput/, '不得再用 promptInput（弹框改名）')
+})

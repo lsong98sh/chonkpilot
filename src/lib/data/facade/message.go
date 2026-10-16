@@ -50,6 +50,14 @@ type MessageView struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 	// Meta 该工具自身的元信息（工具契约 `_meta` 续存字段）。
 	Meta map[string]any `json:"meta,omitempty"`
+	// SenderAgent 群聊发言者标识（**群聊专属**：该条消息由哪个参与者 agent 产出；SUBCHAT-3
+	// 阶段 E，群聊方案 §10 C2）。空 = 非群聊消息（普通会话 / 单聊 / 系统注入）。
+	// **不进内核 ChatMsg**（= 不进 LLM 请求）：它是展示/调度元数据，不是对话内容。
+	SenderAgent string `json:"sender_agent,omitempty"`
+	// Mentions 群聊发言末行的 `@` 名单（**群聊专属**：`@某人`（可多个）/ `@全体` / 不写 `@`
+	// = 全员；群聊方案 §10 C6 / D27 / D33）—— 供调度器**定向叫号**与下一轮**投递过滤**。
+	// 空 = 无 `@`（公开发言 = 投给全员）。同样**不进内核 ChatMsg**。
+	Mentions []string `json:"mentions,omitempty"`
 	// CreatedAt 创建时间（RFC3339）。
 	CreatedAt string `json:"created_at,omitempty"`
 	// HasMore 正文被截断（还有更多内容，前端据此提供"查看全文"）。
@@ -93,6 +101,12 @@ type MessageAppendRequest struct {
 	// Key 显式指定/复用消息主键（可选）：非空 = 按该主键**就地更新**（回填）；
 	// 空 = 由实现侧生成新键（role=tool 且带 tool_call_id 时按 (turn_id, tool_call_id) 复用既有行）。
 	Key string `json:"key,omitempty"`
+	// SenderAgent 群聊发言者标识（可选；**群聊专属**，SUBCHAT-3 阶段 E / 群聊方案 §10 C2）。
+	// 空 = 不写该键（普通会话行形状零变化）；非空 = 落 messages 行同名列 + 随消息视图下发。
+	SenderAgent string `json:"sender_agent,omitempty"`
+	// Mentions 群聊发言末行的 `@` 名单（可选；**群聊专属**，SUBCHAT-3 阶段 E / 群聊方案
+	// §10 C6）。空 = 不写该键。
+	Mentions []string `json:"mentions,omitempty"`
 	// Scope 实例数据根（可选；语义同 SnapshotGetRequest.Scope）。
 	Scope Scope `json:"scope,omitempty"`
 }

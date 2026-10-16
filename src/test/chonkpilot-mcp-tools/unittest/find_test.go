@@ -13,6 +13,7 @@ package chonkpilotmcptools
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,20 +55,24 @@ func requireDistOrSkip(t *testing.T, reason, path string) {
 	t.Skipf("%s", reason)
 }
 
-// runFind 以 <exe> file_find --input=<tmp.json> 执行，返回退出码与 **stdout**
-// （executor 的 stderr 是运行日志，不混入结果；结果 JSON/文本只走 stdout）。
+// runFind 以 <exe> filesys_run（DSL FIND 动作）执行查找，返回退出码与 **FIND 输出文本**。
+// 原 file_find 独立工具已收纳为 filesys_run 的 FIND 动作；FIND 的返回文本经 `=> #"<outfile>"`
+// 落盘后读回（filesys_run 的 JSON payload 不含动作文本，只含 modified/created/deleted/fails）。
 func runFind(t *testing.T, exe string, args map[string]any) (int, string) {
 	t.Helper()
+	out := filepath.Join(t.TempDir(), "find-out.txt")
+	script := buildFindScript(args, out)
 	dir := t.TempDir()
 	in := filepath.Join(dir, "in.json")
-	raw, err := json.Marshal(args)
+	raw, err := json.Marshal(map[string]any{"script": script})
 	if err != nil {
 		t.Fatalf("marshal args: %v", err)
 	}
 	if err := os.WriteFile(in, raw, 0o600); err != nil {
 		t.Fatalf("write input: %v", err)
 	}
-	cmd := exec.Command(exe, "file_find", "--input="+in)
+	cmd := exec.Command(exe, "filesys_run", "--input="+in)
+	cmd.Env = append(os.Environ(), "CHONKPILOT_INSTANCE=unittest-l2")
 	var so, se bytes.Buffer
 	cmd.Stdout = &so
 	cmd.Stderr = &se
@@ -78,7 +83,60 @@ func runFind(t *testing.T, exe string, args map[string]any) (int, string) {
 	} else if err != nil {
 		t.Fatalf("exec: %v (stderr=%q)", err, se.String())
 	}
-	return code, so.String()
+	data, rerr := os.ReadFile(out)
+	if rerr != nil {
+		return code, so.String() // 失败：stdout 为错误消息
+	}
+	return code, string(data)
+}
+
+// buildFindScript 把 file_find 风格参数映射为 FIND DSL 脚本（`=> #"<out>"` 捕获输出）。
+func buildFindScript(args map[string]any, out string) string {
+	parts := []string{`FIND #"` + filepath.ToSlash(args["path"].(string)) + `"`}
+	if v, ok := args["depth"].(float64); ok && v > 0 {
+		parts = append(parts, fmt.Sprintf("depth=%d", int(v)))
+	}
+	if v, ok := args["glob"].(string); ok && v != "" {
+		parts = append(parts, "glob="+quoteArg(v))
+	}
+	if v, ok := args["grep"].(string); ok && v != "" {
+		parts = append(parts, "grep="+quoteArg(v))
+	}
+	if v, ok := args["output"].(string); ok && v != "" {
+		parts = append(parts, "output="+v)
+	}
+	if v, ok := args["skip_dirs"].([]any); ok && len(v) > 0 {
+		parts = append(parts, "skip_dirs="+quoteArg(joinAny(v)))
+	}
+	if v, ok := args["ignore_files"].([]any); ok && len(v) > 0 {
+		parts = append(parts, "ignore_files="+quoteArg(joinAny(v)))
+	}
+	if p, ok := args["period"].(map[string]any); ok {
+		if s, ok := p["from"].(string); ok {
+			parts = append(parts, "from="+quoteArg(s))
+		}
+		if s, ok := p["to"].(string); ok {
+			parts = append(parts, "to="+quoteArg(s))
+		}
+	}
+	parts = append(parts, `=> #"`+filepath.ToSlash(out)+`"`)
+	return strings.Join(parts, " ")
+}
+
+// joinAny 把 []any 拼成逗号分隔字符串。
+func joinAny(v []any) string {
+	ss := make([]string, 0, len(v))
+	for _, x := range v {
+		ss = append(ss, fmt.Sprint(x))
+	}
+	return strings.Join(ss, ",")
+}
+
+// quoteArg 用双引号包裹 FIND 选项值并转义反斜杠/引号。
+func quoteArg(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
 }
 
 // normPath 归一化输出行路径（反斜杠 → 斜杠、清理）。输出行 = 相对搜索根的 rel 路径。
@@ -339,7 +397,7 @@ func TestFindPeriodInvalid(t *testing.T) {
 		args map[string]any
 		want string
 	}{
-		{"from 非字符串", map[string]any{"path": root, "period": map[string]any{"from": 123}}, "period.from 必须是字符串"},
+		// 注：原「period.from 非字符串」用例无法在 FIND DSL 中表达（选项值恒为字符串），已移除。
 		{"from 无法解析", map[string]any{"path": root, "period": map[string]any{"from": "not-a-date"}}, "无法解析"},
 		{"to 无法解析", map[string]any{"path": root, "period": map[string]any{"to": "2026-13-01"}}, "无法解析"},
 		{"from 晚于 to", map[string]any{"path": root, "period": map[string]any{"from": "2026-09-02", "to": "2026-09-01"}}, "period.from 晚于 period.to"},

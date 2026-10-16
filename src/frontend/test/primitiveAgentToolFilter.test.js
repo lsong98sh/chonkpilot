@@ -42,9 +42,9 @@ test('PrimitivePanel：filterTools 为本地态（禁派生）+ 载入回填 + u
   assert.match(panel, /filterTools: agentFilterTools\.value,/)
   // 禁止旧缺陷写法：由 tools.length 持续派生（无工具时打开即被反推回弹）
   assert.doesNotMatch(panel, /filterTools:\s*tools\.length\s*>\s*0/)
-  // 载入（fillForm）与「恢复」快照回滚：均按 tools 反推回填
-  assert.match(panel, /agentFilterTools\.value = filterToolsLoadPatch\(\{ tools: \(doc\.meta \|\| \{\}\)\.tools \}\)\.filterTools/)
-  assert.match(panel, /agentFilterTools\.value = filterToolsLoadPatch\(\{ tools: \(snap\.meta \|\| \{\}\)\.tools \}\)\.filterTools/)
+  // 载入（fillForm）按「参考」tools 反推回填；「恢复」经 fillForm(snap) 复用同一路径
+  assert.match(panel, /agentFilterTools\.value = filterToolsLoadPatch\(\{ tools: refs\.tools \}\)\.filterTools/)
+  assert.match(panel, /function handleRestore\(\)[\s\S]*fillForm\(snap\)/)
   // AgentEditor 开关 emit update:agent → 回写本地开关态
   assert.match(panel, /agentFilterTools\.value = !!a\.filterTools/)
   // 前端铁律：不得用 watch / watchEffect
@@ -81,10 +81,10 @@ test('无工具智能体：勾选开关保持开（状态机纯逻辑，回弹�
 
 test('AgentEditor：候选树 / no-filter-hint 由 filterTools 门控（开关开 → 树可见、提示消失）', () => {
   const ed = read(EDITOR)
-  // 候选树：filterTools 且候选非空 → 展示（开关开、无工具智能体展开后可见）
-  assert.match(ed, /v-if="agent\.filterTools && allToolCategories\.length > 0" class="tool-tree"/)
+  // 候选树：filterTools 开 → 展示（含「技能关联工具」合成分组与锁定项，故不再要求候选非空）
+  assert.match(ed, /v-if="agent\.filterTools" class="tool-tree"/, '候选树由 filterTools 门控')
   // 无过滤提示：仅在 filterTools=off 时展示（开关开 → 消失）
-  assert.match(ed, /v-if="!agent\.filterTools" class="no-filter-hint"/)
+  assert.match(ed, /v-else class="no-filter-hint"/, '无过滤提示 v-else（filterTools=off）')
 })
 
 test('场景侧不受影响：ScenarioEditDialog 仍为一次性回填 + 整对象回写（禁派生）', () => {

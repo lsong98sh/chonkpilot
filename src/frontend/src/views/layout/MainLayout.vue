@@ -2,14 +2,15 @@
   <div class="main-layout">
     <SplitPanel direction="vertical" :gap="0" :panes="outerConfig">
       <template #pane-0>
-        <Toolbar
-          :chat-visible="chatOpen"
-          :filetree-visible="filetreeOpen && !narrow"
-          :task-visible="taskOpen"
-        />
+        <!-- 自由布局形态（P4⑤ 默认）：顶栏由 `layout.free` 的 topToolbar 条目渲染（含窗口控件固定右端） -->
+        <ChonkTopBar v-if="freeMode" />
+        <Toolbar v-else />
       </template>
       <template #pane-1>
-        <SplitPanel direction="horizontal" :gap="4" :panes="bodyConfig" @size-changed="saveLayoutDebounced">
+        <!-- 自由布局容器（UILAYOUT-1 P3⑤ / P4⑤）：**默认形态**（`?layout=legacy` 可回退） -->
+        <ChonkLayout v-if="freeMode" />
+        <!-- 旧布局分支（**保留**：`?layout=legacy` 时使用 —— 可回退 / 可对比） -->
+        <SplitPanel v-else direction="horizontal" :gap="4" :panes="bodyConfig" @size-changed="saveLayoutDebounced">
           <template #pane-0>
             <SplitPanel direction="vertical" :gap="4" :panes="topBottomConfig" @size-changed="saveLayoutDebounced">
               <template #pane-0>
@@ -31,15 +32,25 @@
           </template>
         </SplitPanel>
       </template>
-      <template #pane-2><StatusBar /></template>
+      <template #pane-2>
+        <!-- 自由布局形态（P4⑤ 默认）：状态栏由 `layout.free` 的 statusbar 条目渲染 -->
+        <ChonkStatusBar v-if="freeMode" />
+        <StatusBar v-else />
+      </template>
     </SplitPanel>
+
+    <!-- 自由布局容器的运行期外壳（仅 free 形态挂载）：具名抽屉 + 内容设置编辑器 -->
+    <template v-if="freeMode">
+      <LfDrawerHost />
+      <LfContentSettingsDialog />
+    </template>
 
     <AskUserDialog />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, defineAsyncComponent, h, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, defineAsyncComponent, h } from 'vue'
 import { dialog } from '../../components/dialog'
 import { useI18n } from 'vue-i18n'
 import { SplitPanel } from '../../components/split'
@@ -57,6 +68,17 @@ import { setLocale } from '../../plugins/i18n'
 import { maybeAutoOpenWizard } from '../scenario/scenarioWizard'
 import mq, { currentInstanceId } from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+// ── 自由布局容器（UILAYOUT-1 §7 P3⑤）──────────────────────────────
+// 宿主唯一装配点 = `layout/index.js`（main.js 在 pinia/mqPlugin 之后调用）；
+// `ChonkLayout` = 容器渲染点；抽屉 / 内容设置编辑器为容器的运行期外壳（仅 free 形态挂载）。
+import ChonkLayout from '../../layout/ChonkLayout.vue'
+import ChonkTopBar from '../../layout/ChonkTopBar.vue'
+import ChonkStatusBar from '../../layout/ChonkStatusBar.vue'
+import LfDrawerHost from '../../layout-free/components/drawer/LfDrawerHost.vue'
+import LfContentSettingsDialog from '../../layout-free/components/settings/LfContentSettingsDialog.vue'
+import { getLayoutEngine, getLayoutPersist } from '../../layout'
+import { LAYOUT_MODE_FREE, LAYOUT_MODE_LEGACY, parseLayoutParam, resolveLayoutMode } from '../../layout/mode.js'
+import { extractFreeDoc, toFreeString } from '../../layout/persist.js'
 
 // 懒加载：仅在打开场景弹窗时加载
 const ScenarioDialogContent = defineAsyncComponent(() => import('../scenario/ScenarioDialogContent.vue'))
@@ -65,12 +87,19 @@ const { t } = useI18n()
 
 const CodeView = defineAsyncComponent(() => import('../codeview/CodeView.vue'))
 
-const chatOpen = ref(true)
-const filetreeOpen = ref(true)
-// 任务区（SessionTree + SessionChat）默认**收起**（首屏减负）：无已保存值时收起；
-// 存在已保存值（applyLayout 读 layout.taskOpen）仍以保存值为准，用户拖拽/开关后的持久化与恢复不变。
-const taskOpen = ref(false)
+// 区块显隐（UILAYOUT-1 裁决 2，2026-10-16）：`chat` / `task` / `filetree` 三区**去掉显隐功能**
+// （「显示/隐藏」入口与切换能力一并移除，后续用其他方式实现）→ 三区**始终渲染**（不再传
+// `SplitPanel` 的 `visible`），故此处不再有 `chatOpen / filetreeOpen / taskOpen` 三个开关 ref。
+// 唯一的例外 = **窄屏自适应**收起文件树（`narrow`，见 `filetreeConfig`）——那是响应式适配，
+// 不是用户显隐入口（P3 按设计稿 §5 映射为区域 `minWidth` + 窄屏自动隐藏）。
 const analyzeDialog = ref(null)
+
+// ── 布局形态（UILAYOUT-1 §3.9 / §3.13 / §7 P3⑤ / P4⑤）────────────────────────
+//   free   = 自由布局容器（`<ChonkLayout>` + 条目化顶栏 / 状态栏）—— **默认**；
+//   legacy = 既有硬编码分支（**始终保留**，可回退 / 可对比）。
+// 判定：`?layout=legacy` → 回退旧分支；`?layout=free` / 未指定 → free（P4⑤ 裁决 3「切默认 free」）。
+const layoutForced = parseLayoutParam(window.location.search)
+const freeMode = ref(layoutForced !== LAYOUT_MODE_LEGACY)
 
 // ── 布局分隔条位置（持久化 + 恢复校验）──────────────────────
 // 保存：拖拽结束（SplitPanel size-changed）/ 窗口 resize / 退出（beforeunload
@@ -123,24 +152,26 @@ const outerConfig = computed(() => [
 
 const bodyConfig = computed(() => [
   { id: 'content', flex: true, min: PREVIEW_MIN },
-  { id: 'chat', size: effChatWidth.value, min: 280, max: 800, visible: chatOpen.value },
+  // chat 区：始终渲染（裁决 2，2026-10-16 —— 不再有 visible 显隐）
+  { id: 'chat', size: effChatWidth.value, min: 280, max: 800 },
 ])
 
 const topBottomConfig = computed(() => [
   { id: 'top', flex: true, min: PREVIEW_MIN },
-  { id: 'bottom', size: taskHeight.value, min: 100, max: 1200, visible: taskOpen.value },
+  // 任务区：始终渲染（裁决 2 —— 原「默认收起 / 首屏减负」随显隐功能一并取消）
+  { id: 'bottom', size: taskHeight.value, min: 100, max: 1200 },
 ])
 
-// 窄屏（≤ NARROW_MAX）：自动收起文件树（保留占位索引 → preview 槽位不位移）。
+// 窄屏（≤ NARROW_MAX）自适应收起文件树（保留占位索引 → preview 槽位不位移）。
 // 三列无法同时容纳时优先保 preview（CodeView / 设置 / 场景页 = 主内容面，须持续挂载）
-// 与 chat；文件树为导航面，放大窗口即恢复。
+// 与 chat；文件树为导航面，放大窗口即恢复。**非用户显隐入口**（裁决 2 只移除用户显隐）。
 const filetreeConfig = computed(() => [
   {
     id: 'filetree',
     size: effFiletreeWidth.value,
     min: 180,
     max: 600,
-    visible: filetreeOpen.value && !narrow.value,
+    visible: !narrow.value,
   },
   { id: 'preview', flex: true, min: PREVIEW_MIN },
 ])
@@ -154,16 +185,10 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v))
 }
 
-// 显隐开关读回值恒为字符串 "true"/"false"（存经 cfgScalar、读经 prefixedConfig→sval，
-// I-173）→ 兼容布尔与字符串两种形态；非法/缺失 → null（保持默认，不覆盖）。
-function parseBool(v) {
-  if (v === true || v === 'true') return true
-  if (v === false || v === 'false') return false
-  return null
-}
-
 // 应用保存的布局（启动恢复）。所有尺寸先按窗口实际大小 clamp：
 // 保存值来自上一次会话，窗口可能已变小/换显示器，直接套用会溢出。
+// 〔裁决 2（2026-10-16）〕**不再读** `layout.filetreeOpen / taskOpen / chatOpen` —— 三区已无显隐：
+// 持久层里残留的旧键（旧版本落库）**一律忽略**（缺失即按显示处理），不做数据迁移。
 function applyLayout(l) {
   if (!l) return
   const vw = window.innerWidth
@@ -182,17 +207,34 @@ function applyLayout(l) {
   const fh = clamp(Number(l.filetreeHeight) || (contentH - 4 - 500), 200, contentH - 4 - 100)
   filetreeHeight.value = fh
   taskHeight.value = Math.max(100, contentH - 4 - fh)
-  // toolbar 开关状态（filetree / 子 session(task) / chat 是否显示）。读回值为字符串
-  // "true"/"false"（见 parseBool 注，I-173）→ 兼容布尔与字符串，缺失/非法保持默认。
-  const fo = parseBool(l.filetreeOpen)
-  if (fo !== null) filetreeOpen.value = fo
-  const to = parseBool(l.taskOpen)
-  if (to !== null) taskOpen.value = to
-  const co = parseBool(l.chatOpen)
-  if (co !== null) chatOpen.value = co
 }
 
-// 测量各面板实际渲染尺寸 + toolbar 开关状态（拖拽/缩放/切换后的真实值）
+// ── 自由布局形态（UILAYOUT-1 §3.9 恢复 / §7 P3⑤ / P4⑤）────────────────────────
+// 启动恢复：`gui.init-data` 的 `layout.free` 文档 → 灌进布局域 store → `<ChonkLayout>` 渲染。
+// 无文档 = 采用适配层默认文档（P4⑤ 起 free 是默认形态）；`?layout=legacy` → 回退旧分支。
+function applyFreeLayout(layoutState) {
+  const engine = getLayoutEngine()
+  const persist = getLayoutPersist()
+  if (!engine || !persist) return
+  const doc = extractFreeDoc(layoutState)
+  const mode = resolveLayoutMode({ forced: layoutForced })
+  if (mode !== LAYOUT_MODE_FREE) {
+    freeMode.value = false
+    return
+  }
+  if (doc) persist.adopt(engine.state.config, layoutState)
+  else persist.adoptDefault(engine.state.config)
+  freeMode.value = true
+}
+
+// 默认 free：setup 期即灌默认文档 → 首帧就是容器（不等 init-data 往返，避免旧分支闪现）
+if (freeMode.value) {
+  const persist = getLayoutPersist()
+  const engine = getLayoutEngine()
+  if (persist && engine) persist.adoptDefault(engine.state.config)
+}
+
+// 测量各面板实际渲染尺寸（拖拽/缩放后的真实值）
 function measureLayout() {
   const rect = (el) => (el && el.getBoundingClientRect ? el.getBoundingClientRect() : null)
   const fw = rect(fileTreeEl.value?.$el)
@@ -204,14 +246,13 @@ function measureLayout() {
     filetreeHeight: ok(fw) ? Math.round(fw.height) : filetreeHeight.value,
     chatWidth: ok(cw) ? Math.round(cw.width) : chatWidth.value,
     sessiontreeWidth: ok(sw) ? Math.round(sw.width) : sessiontreeWidth.value,
-    filetreeOpen: filetreeOpen.value,
-    taskOpen: taskOpen.value,
-    chatOpen: chatOpen.value,
   }
 }
 
 let layoutTimer = null
 function saveLayoutDebounced() {
+  // 自由布局形态：尺寸由容器的 `saveLiveLayout` → `layout.free` 落库，旧 7 字段不再写（§3.9）
+  if (freeMode.value) return
   clearTimeout(layoutTimer)
   layoutTimer = setTimeout(() => {
     layoutTimer = null
@@ -226,7 +267,12 @@ function saveLayoutDebounced() {
 function beaconSaveLayout() {
   try {
     // beacon 退路不经 mq.emit → 手工补 instance_id（与 mq 注入同口径，61-消息一览 §0；E-03）。
-    const payload = JSON.stringify({ layout: measureLayout(), instance_id: currentInstanceId() })
+    // 自由布局形态：投递 `layout.free`（§3.9 退出兜底；与 `gui.ui.save` 同 payload 形状）。
+    const engine = getLayoutEngine()
+    const layoutState = freeMode.value
+      ? { free: toFreeString(engine ? engine.state.config.live : null) }
+      : measureLayout()
+    const payload = JSON.stringify({ layout: layoutState, instance_id: currentInstanceId() })
     const body = JSON.stringify({ type: 'gui.ui.save', payload })
     navigator.sendBeacon('/publish', new Blob([body], { type: 'application/json' }))
   } catch (_) { /* noop */ }
@@ -273,9 +319,9 @@ onMounted(() => {
   _mqUnsubs.push(mq.on(EventNames.agentWizard, handleAgentWizard))
   // 会话入口（工具栏 Sessions 按钮）→ 切到左侧导航「会话」页签（原会话抽屉已迁入该页签，P3-C1）
   _mqUnsubs.push(mq.on(EventNames.sessionsOpen, () => mq.emit(EventNames.filetreeModeSelect, { mode: 'sessions' })))
-  _mqUnsubs.push(mq.on(EventNames.chatToggle, () => { chatOpen.value = !chatOpen.value; nextTick(saveLayoutDebounced) }))
-  _mqUnsubs.push(mq.on(EventNames.filetreeToggle, () => { filetreeOpen.value = !filetreeOpen.value; nextTick(saveLayoutDebounced) }))
-  _mqUnsubs.push(mq.on(EventNames.tasksToggle, () => { taskOpen.value = !taskOpen.value; nextTick(saveLayoutDebounced) }))
+  // 〔裁决 2（2026-10-16）〕`chat-toggle / filetree-toggle / tasks-toggle` 三个显隐主题**不再订阅**：
+  // 三区始终渲染（无显隐能力）。主题本身仍定义在 `events/event-names.js`（零增删改；
+  // 由聊天内「查看任务详情」等既有发送方继续发，收到即 no-op）。
 
   // 启动恢复：LoadInitData 返回 layout / ui；应用前已做窗口关系校验。
   // locale：localStorage（getInitialLocale 同步初始化）优先，缺失时用 DB
@@ -284,6 +330,8 @@ onMounted(() => {
   // 恢复随首帧生效；无预取（gui/browser 或已被消费）→ 回落实时读取（行为同改前）。
   loadInitDataPrefetched().then(r => {
     applyLayout(r[GuiInitDataKeys.layout] || null)
+    // 自由布局形态（P3⑤）：有 `layout.free` → 采用文档并切到容器；无 → 保持旧分支
+    applyFreeLayout(r[GuiInitDataKeys.layout] || null)
     const ui = r[GuiInitDataKeys.ui] || null
     if (ui && ui.locale && !localStorage.getItem('chonkpilot-locale')) {
       setLocale(ui.locale)

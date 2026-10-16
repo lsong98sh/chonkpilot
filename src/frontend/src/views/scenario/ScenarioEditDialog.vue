@@ -97,9 +97,13 @@
               <AgentEditor
                 :key="selectedAgentIdx"
                 :agent="normalizedSelectedAgent"
+                :kind="form.level || 'user'"
                 :llm-options="llmOptions"
                 :tool-groups="toolGroups"
                 :all-tool-categories="allToolCategories"
+                :skill-options="skillOptions"
+                :resource-options="resourceOptions"
+                :mcp-resources="mcpResources"
                 :optimizing="optimizing"
                 :show-copy="false"
                 @update:agent="updateAgentField"
@@ -147,7 +151,7 @@ import { saveScenario } from '../../api/scenario'
 import { getKnowledgeRoot, listPrimitives, readPrimitive, savePrimitive } from '../../api/knowledge'
 import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilter'
 import { resolveAgentRefAbs, agentModelFromDoc, agentDocOf } from '../../utils/agentRef'
-import { loadLlmOptions, loadToolGroups as loadToolGroupsShared } from '../../utils/agentAssets'
+import { loadLlmOptions, loadToolGroups as loadToolGroupsShared, loadSkillOptions as loadSkillOptionsShared, loadResourceOptions as loadResourceOptionsShared, loadMcpResources as loadMcpResourcesShared } from '../../utils/agentAssets'
 import { allowedLevels } from '../../utils/agentLevelMatrix'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
@@ -182,6 +186,9 @@ let nextKey = 1
 const llmOptions = ref([])
 const toolGroups = ref([])
 const allToolCategories = ref([])
+const skillOptions = ref([])
+const resourceOptions = ref([])
+const mcpResources = ref([])
 
 // 右侧页签：agent 编辑 ｜「组合后系统提示词」只读预览（25 §3 三层拼接结果）
 const rightTab = ref('agent')
@@ -203,11 +210,18 @@ const selectedAgent = computed(() => {
  * Normalize tools string → array for AgentEditor consumption.
  * The backend stores tools as an array in agents_json, but keep this tolerant
  * of legacy JSON-string values.
+ * skills / resources 同为可选 string[]（req10）：既有数据缺这两个字段 → 按空数组兜底，
+ * 不报错、不写脏数据。
  */
 const normalizedSelectedAgent = computed(() => {
   const agent = selectedAgent.value
   if (!agent) return null
-  return { ...agent, tools: normalizeTools(agent.tools) }
+  return {
+    ...agent,
+    tools: normalizeTools(agent.tools),
+    skills: normalizeTools(agent.skills),
+    resources: normalizeTools(agent.resources),
+  }
 })
 
 // 注（2026-09-26，用户口径）：**场景不提供「恢复默认 / 回填上一级」** ——
@@ -271,6 +285,11 @@ async function writeBackRefAgents() {
     const abs = resolveAgentRefAbs(a.ref, levelRoots.value)
     if (!abs) {
       throw new Error(t('scenario.ref_unresolved') + ': ' + a.ref)
+    }
+    // v2 契约：name = 文件名（去 `.agent.md`）——agentDocOf 已带 name；为空时按路径兜底。
+    if (!doc.name) {
+      const base = String(abs).replace(/\\/g, '/').split('/').pop() || ''
+      doc.name = base.replace(/\.agent\.md$/i, '')
     }
     tasks.push(savePrimitive(abs, doc))
   }
@@ -421,6 +440,8 @@ function onLevelChange(kind) {
   form.value.level = kind
   loadAgentOptions()        // 级别变 → 可用智能体集合变（矩阵）
   loadToolGroups()          // 级别变 → 工具候选集合变（同一矩阵）
+  loadSkillOptions()        // 级别变 → 技能候选集合变（同一矩阵）
+  loadResourceOptions()     // 级别变 → 本地资源候选集合变（同一矩阵）
 }
 
 // ── 智能体选择（从 agents/ 引用；P4 2026-10-01）─────────────────
@@ -474,6 +495,8 @@ async function onPickAgent(abs) {
     isMain: false,
     prompt: '',
     tools: [],
+    skills: [],
+    resources: [],
     ref: abs,
     _key: `ref-${nextKey++}`,
   })
@@ -578,7 +601,7 @@ onMounted(async () => {
     createDefaultMainAgent()
   }
   // LLM 选项 + 工具候选：**在 form.level 就位后**装载（工具候选按场景级别矩阵过滤 → 越权项不出现）
-  await Promise.all([loadLLMOptions(), loadToolGroups()])
+  await Promise.all([loadLLMOptions(), loadToolGroups(), loadSkillOptions(), loadResourceOptions(), loadMcpResources()])
   // 智能体选择项：按当前场景级别（矩阵）列出可用 agents/ 原语
   await loadAgentOptions()
 })
@@ -601,6 +624,21 @@ async function loadToolGroups() {
   allToolCategories.value = groups
 }
 
+// 技能候选：按当前场景级别（矩阵）过滤 → 越权项不出现；装载逻辑与「智能体原语编辑」共用。
+async function loadSkillOptions() {
+  skillOptions.value = await loadSkillOptionsShared(form.value.level || 'user', t)
+}
+
+// 本地资源候选：同上（本地 resource 原语按级别矩阵过滤）。
+async function loadResourceOptions() {
+  resourceOptions.value = await loadResourceOptionsShared(form.value.level || 'user', t)
+}
+
+// MCP resources（经客户端能力面 resources-list，按 server/node 分组）：与级别无关，装载一次即可。
+async function loadMcpResources() {
+  mcpResources.value = await loadMcpResourcesShared(t)
+}
+
 // slugify 名称 → 合法目录名（小写字母/数字/下划线/连字符；其余归一为连字符）
 function slugify(name) {
   return String(name || '')
@@ -618,6 +656,8 @@ function createDefaultMainAgent() {
     roleTag: 'main',
     prompt: '',
     tools: [],
+    skills: [],
+    resources: [],
     llmRef: '',
     delegateCond: '',
     isMain: true,

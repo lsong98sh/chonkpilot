@@ -17,6 +17,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
 )
 
@@ -31,7 +32,10 @@ type CallContext struct {
 	InstanceID string
 	WorkDir    string
 	DataDir    string
-	Present    bool
+	// Purpose 是本次调用的运行目的（C1 2026-10-15）：= gateway 展示名参数 tool_call_display_name，
+	// 由 doCall 剥离前取出、随调用上下文透传 → spawn executor 时落 CHONKPILOT_PURPOSE。
+	Purpose string
+	Present bool
 }
 
 // callContextFromMeta 从 tools/call 请求的 _meta 解析调用上下文（无命名空间 → Present=false）。
@@ -47,6 +51,7 @@ func callContextFromMeta(meta mcp.Meta) CallContext {
 	cx.InstanceID, _ = raw["instance_id"].(string)
 	cx.WorkDir, _ = raw["work_dir"].(string)
 	cx.DataDir, _ = raw["data_dir"].(string)
+	cx.Purpose, _ = raw["purpose"].(string)
 	return cx
 }
 
@@ -58,14 +63,19 @@ func (cx CallContext) err() error {
 	return nil
 }
 
-// CallContextMeta 构造协议 _meta（命名空间 chonkpilot：instance_id/work_dir/data_dir）。
+// CallContextMeta 构造协议 _meta（命名空间 chonkpilot：instance_id/work_dir/data_dir/purpose）。
 // 供调用链上游（gateway）在 tools/call 时透传调用上下文；第三方 client 不应携带。
-func CallContextMeta(instanceID, workDir, dataDir string) mcp.Meta {
-	return mcp.Meta{metaNamespace: map[string]any{
+// purpose（C1 2026-10-15）= 本次调用的运行目的，空串则不写该键（保持既有形态）。
+func CallContextMeta(instanceID, workDir, dataDir, purpose string) mcp.Meta {
+	ns := map[string]any{
 		"instance_id": instanceID,
 		"work_dir":    workDir,
 		"data_dir":    dataDir,
-	}}
+	}
+	if purpose != "" {
+		ns["purpose"] = purpose
+	}
+	return mcp.Meta{metaNamespace: ns}
 }
 
 // RegisterContracts 扫描契约根 root（递归四后缀）并把原语注册进调用方传入的 go-sdk server：
@@ -252,14 +262,30 @@ func makePromptHandler(d *PromptDoc, cfg *Config) mcp.PromptHandler {
 	}
 }
 
-// makeResourceHandler 返回静态资源内容（RB-4 ①，2026-09-22）：来源契约文件路径（r.Path）非空 →
-// **实时读盘**取 `[content]` 段（内容不驻留）；无 Path → 返回扫描期副本 r.Content（兼容兜底）。
+// makeResourceHandler 返回静态资源内容：① meta `path` 外部内容文件非空 → **实时读盘**取该文件
+// 字节（文本 → Text、二进制 → Blob，内容不驻留）；② 否则来源契约文件路径（r.Path）非空 →
+// **实时读盘**取「正文」段（内容不驻留）；③ 都没有 → 返回扫描期副本 r.Content（兼容兜底）。
 func makeResourceHandler(r *ResourceDoc) mcp.ResourceHandler {
 	return func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		if r.File != "" {
+			b, err := os.ReadFile(r.File)
+			if err != nil {
+				return nil, err
+			}
+			c := &mcp.ResourceContents{URI: r.URI, MIMEType: r.MIMEType}
+			if contractmd.IsTextMime(r.MIMEType) {
+				c.Text = string(b)
+			} else {
+				c.Blob = b
+			}
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{c}}, nil
+		}
 		text := r.Content
 		if r.Path != "" {
 			if b, err := os.ReadFile(r.Path); err == nil {
-				text = splitSections(b)["content"]
+				if c, perr := contractmd.Parse(string(b)); perr == nil {
+					text = c.Content
+				}
 			}
 		}
 		return &mcp.ReadResourceResult{

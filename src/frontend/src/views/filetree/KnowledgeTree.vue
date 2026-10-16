@@ -52,6 +52,35 @@
         </template>
       </div>
     </Teleport>
+
+    <!-- 新建（资源：先选类型）弹框 —— 知识（md 契约）/ 其他（任意类型文件，按名原样落盘）。
+         其他类型文件 = 资源可经契约 meta `path` 引用的外部内容文件（如 config.json）。 -->
+    <div v-if="newDlg.open" class="kb-modal-overlay" @click.self="closeNewDlg">
+      <div class="kb-modal">
+        <div class="kb-modal-head">{{ t('fileTree.new_resource_title') }}</div>
+        <div class="kb-modal-body">
+          <label class="kb-radio">
+            <input type="radio" value="md" v-model="newDlg.kind" />
+            <span>{{ t('fileTree.new_resource_md') }}</span>
+          </label>
+          <label class="kb-radio">
+            <input type="radio" value="other" v-model="newDlg.kind" />
+            <span>{{ t('fileTree.new_resource_other') }}</span>
+          </label>
+          <div class="kb-hint">{{ t('fileTree.name_immutable_hint') }}</div>
+          <Input
+            v-model="newDlg.name"
+            class="kb-new-name"
+            :placeholder="newDlg.kind === 'md' ? t('fileTree.new_of_type_prompt', { type: typeLabel('resource') }) : t('fileTree.other_file_name_ph')"
+            @keyup.enter="confirmNewDlg"
+          />
+        </div>
+        <div class="kb-modal-footer">
+          <Button size="small" @click="closeNewDlg">{{ t('common.cancel') }}</Button>
+          <Button size="small" type="primary" :disabled="!newDlg.name.trim()" @click="confirmNewDlg">{{ t('common.confirm') }}</Button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -59,12 +88,14 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import TreeNode from './TreeNode.vue'
-import { confirm, message, promptInput } from '../../components/ui'
+import { confirm, message, promptInput, Input, Button } from '../../components/ui'
 import {
   getKnowledgeRoot, listPrimitives,
   createPrimitiveDir, renamePrimitiveDir, deletePrimitiveDir,
   createPrimitive, renamePrimitive, deletePrimitive, movePrimitive,
+  importPrimitive,
 } from '../../api/knowledge'
+import { revealInExplorer, openWithDefault, openWithDialog } from '../../api/file'
 import { nearestTypeToken, TYPE_DIR_REL } from '../../utils/primitive'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
@@ -97,6 +128,17 @@ const kbHeaderTitle = computed(() => rootName.value || t(props.titleKey))
 const kindFilter = computed(() => new Set(props.kinds || []))
 const filtering = computed(() => kindFilter.value.size > 0)
 
+// 单一类型子 tab（扩展页每子 tab = 一个类型）：类型目录**即该级别**（如 resources 就是「知识-系统」级），
+// 故树根直接挂「该类型目录」本身、**不再显示类型目录这一层**（资源 → <capRoot>/resources，
+// 而非 <capRoot> / resources / …）。仅当 kinds 恰为一个类型时生效。
+const singleTypeRel = computed(() => {
+  if (!filtering.value || props.kinds.length !== 1) return ''
+  return TYPE_DIR_REL[props.kinds[0]] || ''
+})
+
+// 是否为「资源（知识）」子树：资源是唯一支持「任意类型文件」与「导入」的类型（其余类型只维护契约 md）。
+const resourceScope = computed(() => filtering.value && props.kinds.length === 1 && props.kinds[0] === 'resource')
+
 // 路径相对知识库根（正斜杠；根自身 → 空串，越界 → 原样）
 function relToRoot(p) {
   const r = String(root.value || '').replace(/\\/g, '/').replace(/\/+$/, '')
@@ -121,9 +163,11 @@ function dirInScope(path) {
   return false
 }
 
-// 文件是否落在类型范围内：按后端给出的原语类型 token 判定
+// 文件是否落在类型范围内：按后端给出的原语类型 token 判定；
+// 「其他类型文件」（type='file'）仅在资源子树放行（与 loadChildren 同口径）。
 function fileInScope(raw) {
   if (!filtering.value) return true
+  if (raw.type === 'file') return resourceScope.value
   return kindFilter.value.has(raw.type || '')
 }
 
@@ -148,6 +192,9 @@ const editingIsNew = ref(false)
 // 正在改名的行是目录还是文件（I-73②：目录行必须走 rename-dir 目录语义，文件行走 rename 文件语义）
 const editingIsDir = ref(false)
 
+// 新建（资源）弹框状态：kind = md（契约文件 / data-knowledge-create） | other（任意类型文件 / data-knowledge-import）。
+const newDlg = ref({ open: false, dir: '', kind: 'md', name: '' })
+
 // ── 加载 ──
 function treeNode(raw) {
   const n = { label: raw.name, path: raw.path.replace(/\\/g, '/'), is_dir: raw.is_dir }
@@ -171,7 +218,9 @@ async function loadChildren(node) {
       .map(raw => treeNode({ ...raw, is_dir: true })) // 后端 dirs 条目不含 is_dir，目录本身即目录
       .filter(n => dirInScope(n.path)) // 类型范围过滤（工具页签 / 知识库页签互不显示对方目录）
     const files = (res.files || [])
-      .filter(f => f.type && f.type !== 'file') // 仅 *.type.md / 类型目录下的原语
+      // 仅 *.type.md / 类型目录下的原语；「其他类型文件」（后端 type='file'，如导入的 config.json）
+      // 只在资源子树放行（其余类型只维护契约 md）。
+      .filter(f => (f.type && f.type !== 'file') || (f.type === 'file' && resourceScope.value))
       .filter(fileInScope) // 类型范围过滤
       .map(raw => treeNode({ ...raw, is_dir: false }))
     node.children = [...dirs, ...files]
@@ -189,10 +238,15 @@ async function loadRoot() {
   loading.value = true
   try {
     const res = await getKnowledgeRoot(props.level)
-    root.value = (res && res.root) || ''
+    // 单一类型子 tab：树根 = 该类型目录（隐去类型目录层——类型目录即该级别，如 resources = 知识-系统级）；
+    // 其余情况（无过滤 / 多类型）树根 = capability 根。
+    let r = ((res && res.root) || '').replace(/\\/g, '/').replace(/\/+$/, '')
+    if (singleTypeRel.value) r = r + '/' + singleTypeRel.value
+    root.value = r
     const lv = KB_LEVELS.find(l => l.kind === props.level)
     rootName.value = t(props.titleKey) + (lv ? ' -' + t(lv.label) : '')
-    const rnode = { label: rootName.value, path: root.value, is_dir: true, expanded: false, children: [], _loading: false, type: '' }
+    // _tooltip：根节点展示**真实路径**（此前根节点无 title，看不到实际路径）。
+    const rnode = { label: rootName.value, path: root.value, is_dir: true, expanded: false, children: [], _loading: false, type: '', _tooltip: root.value }
     treeData.value = [rnode]
   } catch (e) {
     treeData.value = []
@@ -238,6 +292,9 @@ function onRowClick(node) {
     onToggle(node)
     return
   }
+  // 「其他类型文件」（type='file'，如导入的 config.json）：应用内不可预览
+  // （CodeView 经 filesys 按 work_dir 读，读不到 capability 绝对路径）→ 单击仅选中。
+  if (node.type === 'file') return
   mq.emit(EventNames.fileOpen, { path: node.path, temporary: true })
 }
 
@@ -248,6 +305,11 @@ function onRowDblClick(node) {
   selectedKey.value = node.path
   if (node.is_dir) {
     onToggle(node)
+    return
+  }
+  // 其他类型文件：双击用系统默认程序打开（外部维护）。
+  if (node.type === 'file') {
+    doOpen(node.path)
     return
   }
   mq.emit(EventNames.fileOpen, { path: node.path, temporary: false })
@@ -475,7 +537,13 @@ function openCtx(e, items, data) {
 }
 
 function blankItems() {
-  return [{ key: 'mkdir', label: t('fileTree.new_folder') }]
+  const items = [{ key: 'mkdir', label: t('fileTree.new_folder') }]
+  // 空白区右键（资源子树）→ 亦可导入（目标 = 当前类型目录根）
+  if (resourceScope.value) {
+    items.push({ divider: true })
+    items.push({ key: 'import', label: t('fileTree.import_files') })
+  }
+  return items
 }
 
 function dirItems(node) {
@@ -486,6 +554,12 @@ function dirItems(node) {
     items.push({ divider: true })
   }
   items.push({ key: 'mkdir', label: t('fileTree.new_folder') })
+  // 导入仅对「资源」子树开放（导入含转化语义：契约原样 / 文本转 `.resource.md` / 其他原样）
+  if (resourceScope.value || nearestTypeToken(node.path) === 'resource') {
+    items.push({ key: 'import', label: t('fileTree.import_files') })
+  }
+  items.push({ divider: true })
+  items.push({ key: 'reveal', label: t('fileTree.reveal_in_explorer') })
   items.push({ divider: true })
   items.push({ key: 'rename', label: t('fileTree.rename') })
   items.push({ key: 'delete', label: t('fileTree.delete'), danger: true })
@@ -494,6 +568,11 @@ function dirItems(node) {
 
 function fileItems(node) {
   return [
+    { key: 'open', label: t('fileTree.open') },
+    { key: 'openWith', label: t('fileTree.open_with') },
+    { divider: true },
+    { key: 'reveal', label: t('fileTree.reveal_in_explorer') },
+    { divider: true },
     { key: 'rename', label: t('fileTree.rename') },
     { key: 'delete', label: t('fileTree.delete'), danger: true },
   ]
@@ -510,13 +589,29 @@ function onRowContext(e, node) {
 
 function closeCtx() { ctx.value.visible = false }
 
-function runCtx(item) {
+async function runCtx(item) {
   const d = ctx.value.data
   closeCtx()
   if (item.key === 'mkdir') createDir(d ? d.path : root.value)
-  else if (item.key === 'newType') createTypeFile(d.path, nearestTypeToken(d.path))
+  else if (item.key === 'newType' && d) runNewType(d.path, nearestTypeToken(d.path))
+  else if (item.key === 'import') await doImport(d ? d.path : root.value)
+  else if (item.key === 'open' && d) await doOpen(d.path)
+  else if (item.key === 'openWith' && d) await doOpenWith(d.path)
+  else if (item.key === 'reveal' && d) await doReveal(d.path)
   else if (item.key === 'rename' && d) renameNode(d)
   else if (item.key === 'delete' && d) removeNode(d)
+}
+
+// 系统能力（OS 级，绝对路径）：在资源管理器定位 / 系统默认程序打开 / 「打开方式」对话框。
+// 复用既有 gui.reveal / gui.open-with（api/file.js），对 capability 绝对路径同样适用。
+async function doReveal(path) {
+  try { await revealInExplorer(path) } catch (_) { message.error(t('fileTree.open_resource_manager_failed')) }
+}
+async function doOpen(path) {
+  try { await openWithDefault(path) } catch (_) { message.error(t('fileTree.open_failed')) }
+}
+async function doOpenWith(path) {
+  try { await openWithDialog(path) } catch (_) { message.error(t('fileTree.open_failed')) }
 }
 
 // ── 动作 ──
@@ -551,12 +646,28 @@ async function createDir(parentPath) {
   startEdit(target, target.split('/').pop() || i18nNewDir.value, true, true)
 }
 
+// 右键「新建XX」：资源（知识）先弹**类型选择**（md 契约 / 其他任意类型文件，req4）；
+// 其余类型沿用输入名即建契约文件（名称即文件名、创建后不可改）。
+function runNewType(dirPath, token) {
+  if (!token) return
+  if (token === 'resource') {
+    openNewDlg(dirPath)
+    return
+  }
+  createTypeFile(dirPath, token)
+}
+
 async function createTypeFile(dirPath, token) {
   if (!token) return
-  const name = await promptInput(t('fileTree.new_of_type_prompt', { type: typeLabel(token) }), '')
+  // 「名称不可变」提示：name = 文件名、落盘即定型（保存走 data-knowledge-save，不改名）。
+  const name = await promptInput(t('fileTree.new_of_type_prompt', { type: typeLabel(token) }), '', { hint: t('fileTree.name_immutable_hint') })
   if (!name) return
+  await doCreateTypeFile(dirPath, token, name)
+}
+
+// 建契约文件 + 刷新父/自身目录 + 打开新文件（createPrimitive 返回路径**字符串**，I-73① 口径）。
+async function doCreateTypeFile(dirPath, token, name) {
   try {
-    // createPrimitive 亦返回路径**字符串**（同 I-73① 的二次解包口径）
     const newPath = String((await createPrimitive(dirPath, token, name)) || '').replace(/\\/g, '/')
     message.success(t('fileTree.created', { name }))
     // 刷新类型目录自身（新文件直接出现在该目录下）；节点未加载时回退刷新其父目录
@@ -573,6 +684,127 @@ async function createTypeFile(dirPath, token) {
   } catch (e) {
     message.error(e?.message || t('fileTree.create_failed'))
   }
+}
+
+// ── 资源：新建（先选类型）弹框 ──
+function openNewDlg(dirPath) {
+  newDlg.value = { open: true, dir: String(dirPath || root.value || '').replace(/\\/g, '/'), kind: 'md', name: '' }
+  nextTick(() => {
+    const el = document.querySelector('.knowledge-tree .kb-new-name')
+    if (el) el.focus()
+  })
+}
+
+function closeNewDlg() {
+  newDlg.value = { open: false, dir: '', kind: 'md', name: '' }
+}
+
+async function confirmNewDlg() {
+  const dlg = newDlg.value
+  const name = String(dlg.name || '').trim()
+  if (!name) return
+  const dir = dlg.dir
+  const kind = dlg.kind
+  closeNewDlg()
+  if (kind === 'md') {
+    // 知识（md 契约）：走 data-knowledge-create（名称去后缀，落 `<名>.resource.md`）
+    await doCreateTypeFile(dir, 'resource', name)
+    return
+  }
+  // 其他：任意类型文件，按名原样落盘（内容为空）——供资源契约 meta `path` 引用
+  let res
+  try {
+    res = await importPrimitive(dir, [{ name, content: '' }])
+  } catch (e) {
+    message.error(e?.message || t('fileTree.create_failed'))
+    return
+  }
+  const errs = res.errors || []
+  if (errs.length) {
+    message.error(t('fileTree.import_failed_detail', { name: errs[0].name, error: errs[0].error }))
+  } else {
+    message.success(t('fileTree.created', { name }))
+  }
+  await refreshDirAfterWrite(dir)
+}
+
+// ── 导入（data-knowledge-import，61 §3.3）──
+// 原生文件选择（WebView2 支持 `<input type="file" multiple>`；browser 形态上传经 POST /publish），
+// 读为 base64 → 后端按内容与后缀三分支落盘（契约原样 / 文本转 `.resource.md` / 其他原样）。
+function pickFiles() {
+  return new Promise((resolve) => {
+    const el = document.createElement('input')
+    el.type = 'file'
+    el.multiple = true
+    el.style.display = 'none'
+    let done = false
+    const finish = (files) => {
+      if (done) return
+      done = true
+      el.remove()
+      resolve(files)
+    }
+    el.addEventListener('change', () => finish(Array.from(el.files || [])))
+    el.addEventListener('cancel', () => finish([]))
+    document.body.appendChild(el)
+    el.click()
+  })
+}
+
+function readFileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader()
+    fr.onload = () => {
+      const s = String(fr.result || '')
+      const i = s.indexOf(',')
+      resolve(i >= 0 ? s.slice(i + 1) : '')
+    }
+    fr.onerror = () => reject(fr.error || new Error('read failed'))
+    fr.readAsDataURL(file)
+  })
+}
+
+async function doImport(dirPath) {
+  const dir = String(dirPath || root.value || '').replace(/\\/g, '/')
+  const picked = await pickFiles()
+  if (!picked || picked.length === 0) return
+  let files
+  try {
+    files = await Promise.all(picked.map(async (f) => ({ name: f.name, content: await readFileBase64(f) })))
+  } catch (e) {
+    message.error(t('fileTree.import_failed') + ': ' + (e?.message || e))
+    return
+  }
+  let res
+  try {
+    res = await importPrimitive(dir, files)
+  } catch (e) {
+    message.error(t('fileTree.import_failed') + ': ' + (e?.message || e))
+    return
+  }
+  const okN = (res.paths || []).length
+  const errs = res.errors || []
+  if (errs.length === 0) {
+    message.success(t('fileTree.import_done', { n: okN }))
+  } else if (okN > 0) {
+    message.warning(t('fileTree.import_partial', { n: okN, m: errs.length }))
+  } else {
+    message.error(t('fileTree.import_failed_detail', { name: errs[0].name, error: errs[0].error }))
+    return
+  }
+  // 逐项失败原因可见（最多列 3 条，避免刷屏）
+  for (const e of errs.slice(0, 3)) {
+    message.error(t('fileTree.import_failed_detail', { name: e.name, error: e.error }))
+  }
+  await refreshDirAfterWrite(dir)
+}
+
+// 写入后刷新目录（新文件直接出现在该目录下）；目录未加载时回退刷新其父目录。
+async function refreshDirAfterWrite(dirPath) {
+  const dir = String(dirPath || '').replace(/\\/g, '/')
+  const node = findNode(treeData.value, dir)
+  if (node && node.is_dir) await refreshNode(node)
+  else await refreshParentOf(dir)
 }
 
 async function renameNode(node) {
@@ -592,10 +824,20 @@ async function removeNode(node) {
     if (node.is_dir) await deletePrimitiveDir(node.path)
     else await deletePrimitive(node.path)
     message.success(t('fileTree.deleted', { name: node.label }))
+    notifyRemoved(node.path)
     await refreshParentOf(node.path)
   } catch (e) {
     message.error(e?.message || t('fileTree.delete_failed'))
   }
+}
+
+// 删除后通知预览区关闭对应已开页签（文件自身 / 目录下全部）。仅**本地分发**（mq.emitRemote，
+// 不发后端）：knowledge 面删除不经 filesys watcher、无后端 filesys.changed 广播，故复用同一
+// 主题在本地广播一次，由 CodeView 按路径收口（payload 与 61 §filesys.changed 事件一致）。
+function notifyRemoved(path) {
+  const p = String(path || '').replace(/\\/g, '/')
+  if (!p) return
+  mq.emitRemote({ type: EventNames.fileChanged, payload: { path: p, operation: 'remove' } })
 }
 
 // 外部改动（预览面板保存 / 磁盘变化）→ 刷新对应父目录
@@ -717,5 +959,66 @@ defineExpose({ reload, loadRoot })
   height: 1px;
   margin: 4px 8px;
   background: var(--border, #dee2e6);
+}
+
+/* 新建（资源：先选类型）弹框 */
+.kb-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+.kb-modal {
+  width: 360px;
+  max-width: calc(100vw - 40px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  background: var(--bg-primary, #fff);
+  border: 1px solid var(--border, #dee2e6);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+.kb-modal-head {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+}
+.kb-modal-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.kb-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.kb-radio input {
+  margin: 0;
+}
+.kb-hint {
+  font-size: 12px;
+  color: var(--text-muted, #888);
+  line-height: 1.5;
+}
+.kb-new-name {
+  margin-top: 2px;
+}
+.kb-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
 }
 </style>

@@ -71,29 +71,33 @@ export function resolveAgentRefAbs(ref, roots) {
 }
 
 /**
- * 契约文档（[meta]/[description]/[content] 的领域形态）→ 可编辑 agent 模型字段
- * （AgentEditor 消费；`_refMeta` 保留原始 meta，供写回时保真）。
+ * 契约文档（v2：`# 基本信息` / `# 摘要` / `# 参考` / `# 委托` / `# 正文` 的领域形态）→ 可编辑
+ * agent 模型字段（AgentEditor 消费；`_refMeta` / `_refRefs` 保留原始分区，供写回时保真）。
  */
 export function agentModelFromDoc(doc, fallback = {}) {
   const d = doc || {}
   const meta = { ...(d.meta || {}) }
-  const tools = normalizeTools(meta.tools)
+  const refs = d.refs || {}
+  const tools = normalizeTools(refs.tools)
   return {
     name: d.title || fallback.name || '',
     description: d.description || '',
     roleTag: meta.roletag || '',
     prompt: d.content || '',
     tools,
+    skills: normalizeTools(refs.skills),
+    resources: normalizeTools(refs.resources),
     filterTools: tools.length > 0,
     llmRef: meta.llm || '',
-    delegateCond: meta.delegate || '',
+    delegateCond: d.delegate || '',
     _refMeta: meta,
+    _refRefs: refs,
   }
 }
 
 /**
- * 可编辑 agent 模型字段 → 契约文档（写回被引文件；保持 `# 名` + `[meta]` + `[description]` +
- * `[content]` 结构，后端 capfs.BuildDoc 按此序列化）。`_refMeta` 中的未知 meta 键保留。
+ * 可编辑 agent 模型字段 → 契约文档（写回被引文件；v2 分区：基本信息 name/title + 类型键 + 摘要 +
+ * 参考(skills/tools/resources) + 委托 + 正文；`_refMeta` / `_refRefs` 中的未知键保留）。
  */
 export function agentDocOf(agent) {
   const a = agent || {}
@@ -104,13 +108,24 @@ export function agentDocOf(agent) {
     else delete meta[k]
   }
   setMeta('roletag', a.roleTag)
-  const tools = normalizeTools(a.tools)
-  setMeta('tools', tools.length ? JSON.stringify(tools) : '')
   setMeta('llm', a.llmRef)
-  setMeta('delegate', a.delegateCond)
+  // 参考（skills / tools / resources）：名单类引用入「# 参考」分区（v2，2026-10-14）。
+  const refs = { ...(a._refRefs || {}) }
+  const setRef = (k, list) => {
+    const items = normalizeTools(list)
+    if (items.length) refs[k] = items
+    else delete refs[k]
+  }
+  setRef('skills', a.skills)
+  setRef('tools', a.tools)
+  setRef('resources', a.resources)
+  const name = String(a.name || '').trim()
   return {
-    title: String(a.name || '').trim(),
+    name,
+    title: name,
     meta,
+    refs,
+    delegate: String(a.delegateCond || '').trim(),
     description: String(a.description || '').trim(),
     content: String(a.prompt || '').trim(),
   }

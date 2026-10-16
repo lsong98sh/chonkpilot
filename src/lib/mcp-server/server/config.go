@@ -10,6 +10,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -153,12 +154,14 @@ type Config struct {
 	// 语义 = 「可读 / 可写目录」且**递归**），装配层（chonkpilot-llm/server loadExecConfig）
 	// 按实例读取后注入。空表 = 无允许目录（仅在 ToolSandbox 开启时才有意义：空集 = 全拒）。
 	SecurityDirs []agentbox.Rule `json:"-"`
-	// ToolSandbox 是**executor 级沙箱开关**（usr 键 `tool_sandbox`，装配层注入；见
-	// chonkpilot-llm/server/server.go loadExecConfig）：key = executor 类别（契约
-	// `_meta.category`：core / desktop / browser），value = 是否对该 executor 的**全部工具**
-	// 施加 agentbox 限制（越界读写一律拒绝）。**未配置 / false = 不启用隔离**
-	// （缺省与现状行为一致，不影响既有用户）。**旧形态（按工具暴露名）不再生效**。
-	ToolSandbox map[string]bool `json:"-"`
+	// ToolSandbox 是 agentbox 沙箱开关（usr 键 `tool_sandbox`，装配层注入；见
+	// chonkpilot-llm/server/server.go applyToolSandbox）。**管理单位 = 被 spawn 的执行体**：
+	//   - Executors：内置 executor，key = executor **exe 基名**（见 ExecutorExe* 常量）；
+	//   - MCPs：外部 MCP，key = MCP 条目名。
+	// value = 是否对该执行体施加 agentbox 限制（越界读写一律拒绝）。**未配置 / false = 不启用
+	// 隔离**（缺省与现状一致）。**旧形态（按 executor 类别 core/desktop/browser）读取时迁移**，
+	// 见 ParseToolSandbox。
+	ToolSandbox ToolSandboxConfig `json:"-"`
 
 	// mu 保护运行期可被覆盖的字段（SetRuntime：装配层 instance-register 后注入 usr/prj 配置）；
 	// limiter 为并发限流器（RegisterContracts 懒建，上限随 MaxConcurrency 运行期调整）。
@@ -407,21 +410,88 @@ func (c *Config) SetSecurityDirs(rules []agentbox.Rule) {
 	c.SecurityDirs = next
 }
 
-// SetToolSandbox 运行期覆盖 **executor 级沙箱开关**（装配层读 usr 键 `tool_sandbox` 后注入）。
-// key = executor 类别（core / desktop / browser）；传入 nil/空表 = 清空（= 全部 executor 不隔离，
-// 默认兼容）；返回开关表是否变化。归一化：key 去空白，空键丢弃；显式 false 项保留（语义等同缺省）。
-func (c *Config) SetToolSandbox(raw map[string]bool) bool {
-	next := map[string]bool{}
-	for k, v := range raw {
-		k = strings.TrimSpace(k)
-		if k == "" {
-			log.Printf("[mcp-server] tool_sandbox: 忽略空类别项")
-			continue
-		}
-		next[k] = v
+// 内置 executor 产物名（= agentbox 开关在 `executors` 下的单位键；与 src/mcp-tools 产物一致）。
+const (
+	ExecutorExeCore    = "chonkpilot-core-executor.exe"
+	ExecutorExeDesktop = "chonkpilot-desktop-executor.exe"
+	ExecutorExeBrowser = "chonkpilot-browser-executor.exe"
+	ExecutorExeDSL     = "chonkpilot-dsl-executor.exe"
+)
+
+// ToolSandboxConfig 是 agentbox 沙箱开关（usr 键 `tool_sandbox`，**管理单位 = 被 spawn 的执行体**）：
+//   - Executors：内置 executor，key = executor **exe 基名**（chonkpilot-*-executor.exe）；
+//   - MCPs：外部 MCP（gateway stdio spawn），key = MCP 条目名。
+//
+// value = 是否对该执行体施加 agentbox 限制。**未配置 / false = 不启用隔离**（默认兼容）。
+type ToolSandboxConfig struct {
+	Executors map[string]bool `json:"executors"`
+	MCPs      map[string]bool `json:"mcps"`
+}
+
+// legacySandboxCategoryMap 把**旧形状**（按 executor 类别 core/desktop/browser，2026-09-26 形态）
+// 迁移到**新形状**的单位键（exe 基名）：`core` → core 与 dsl 两个 exe **同置**（等价旧行为：
+// dsl 执行器覆盖文件/浏览器/桌面三域动作，旧实现复用 core 档），desktop → desktop exe，
+// browser → browser exe。
+var legacySandboxCategoryMap = map[string][]string{
+	"core":    {ExecutorExeCore, ExecutorExeDSL},
+	"desktop": {ExecutorExeDesktop},
+	"browser": {ExecutorExeBrowser},
+}
+
+// ParseToolSandbox 解析 usr `tool_sandbox` 值（JSON 对象字符串），**兼容新旧两种形状**：
+//   - 新形状：`{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`；
+//   - 旧形状：`{"core":bool,"desktop":bool,"browser":bool}`（2026-09-26 executor 类别形态）→
+//     **读取时迁移**（见 legacySandboxCategoryMap），不报错、不停机；
+//   - 空串 → 空配置（= 全部不隔离）；非法 JSON → 返回错误（调用方保留现值、不误清空）。
+func ParseToolSandbox(raw string) (ToolSandboxConfig, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ToolSandboxConfig{}, nil
 	}
-	if len(next) == 0 {
-		next = nil
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(s), &probe); err != nil {
+		return ToolSandboxConfig{}, fmt.Errorf("tool_sandbox: JSON 解析失败: %w", err)
+	}
+	if _, ok := probe["executors"]; ok {
+		return decodeNewToolSandbox([]byte(s))
+	}
+	if _, ok := probe["mcps"]; ok {
+		return decodeNewToolSandbox([]byte(s))
+	}
+	// 旧形状 → 迁移为单位键（未知键按旧—旧形态忽略）。
+	var legacy map[string]bool
+	if err := json.Unmarshal([]byte(s), &legacy); err != nil {
+		return ToolSandboxConfig{}, err
+	}
+	ex := map[string]bool{}
+	for cat, on := range legacy {
+		for _, exe := range legacySandboxCategoryMap[strings.ToLower(strings.TrimSpace(cat))] {
+			ex[exe] = on
+		}
+	}
+	return ToolSandboxConfig{Executors: ex}, nil
+}
+
+// decodeNewToolSandbox 解析新形状 `{"executors":{...},"mcps":{...}}`。
+func decodeNewToolSandbox(data []byte) (ToolSandboxConfig, error) {
+	var v struct {
+		Executors map[string]bool `json:"executors"`
+		MCPs      map[string]bool `json:"mcps"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return ToolSandboxConfig{}, err
+	}
+	return ToolSandboxConfig{Executors: v.Executors, MCPs: v.MCPs}, nil
+}
+
+// SetToolSandbox 运行期覆盖 agentbox 沙箱开关（装配层读 usr 键 `tool_sandbox` 后注入）。
+// executors = 内置 executor 开关（key = exe 基名）；mcps = 外部 MCP 开关（key = MCP 名）。
+// 传入空 = 清空（= 全部执行体不隔离，默认兼容）；返回开关表是否变化。
+// 归一化：key 去空白，空键丢弃；显式 false 项保留（语义等同缺省）。
+func (c *Config) SetToolSandbox(executors, mcps map[string]bool) bool {
+	next := ToolSandboxConfig{
+		Executors: normalizeSandboxMap(executors, "executor"),
+		MCPs:      normalizeSandboxMap(mcps, "mcp"),
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -432,19 +502,32 @@ func (c *Config) SetToolSandbox(raw map[string]bool) bool {
 	return true
 }
 
-// SandboxPolicyFor 返回该 **executor 类别** 应注入的 agentbox 策略 JSON（`""` = **不注入**，
-// 即不启用隔离）。category = 工具契约 `_meta.category`（core / desktop / browser，= 执行器类别；
-// 空串 / 未知类别 → 不命中）。开关未配置 / 显式 false → 不启用。
-// 策略内容 = SecurityDirs 的 JSON（可为空数组 = 空允许集 → 执行器侧全拒的严格语义）。
+// normalizeSandboxMap 归一单张开关表：key 去空白，空键丢弃并记日志；空表 → nil。
+func normalizeSandboxMap(raw map[string]bool, kind string) map[string]bool {
+	out := map[string]bool{}
+	for k, v := range raw {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			log.Printf("[mcp-server] tool_sandbox: 忽略空%s项", kind)
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// SandboxPolicyFor 返回该 **执行体单位键** 应注入的 agentbox 策略 JSON（`""` = **不注入**，
+// 即不启用隔离）。unit = 被 spawn 执行体的单位键——内置 executor 取 **exe 基名**
+// （如 chonkpilot-core-executor.exe），外部 MCP 取 **MCP 条目名**。空串 / 未命中 / 显式 false →
+// 不启用。策略内容 = SecurityDirs 的 JSON（可为空数组 = 空允许集 → 执行器侧全拒的严格语义）。
 // 读锁保护（与 SetSecurityDirs/SetToolSandbox 互斥）。
-func (c *Config) SandboxPolicyFor(category string) string {
+func (c *Config) SandboxPolicyFor(unit string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if len(c.ToolSandbox) == 0 {
-		return ""
-	}
-	on, ok := c.ToolSandbox[category]
-	if !ok || !on {
+	if !c.ToolSandbox.Executors[unit] && !c.ToolSandbox.MCPs[unit] {
 		return ""
 	}
 	b, err := json.Marshal(c.SecurityDirs)
@@ -470,8 +553,13 @@ func sameRules(a, b []agentbox.Rule) bool {
 	return true
 }
 
-// sameToolSandbox 比较两张 executor 开关表是否等价。
-func sameToolSandbox(a, b map[string]bool) bool {
+// sameToolSandbox 比较两张 agentbox 开关表是否等价（executors + mcps 两张子表）。
+func sameToolSandbox(a, b ToolSandboxConfig) bool {
+	return sameBoolMap(a.Executors, b.Executors) && sameBoolMap(a.MCPs, b.MCPs)
+}
+
+// sameBoolMap 比较两张 map[string]bool 是否等价。
+func sameBoolMap(a, b map[string]bool) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -535,12 +623,12 @@ func (c *Config) defaultsMap() map[string]any {
 
 // executorEnv 组装 spawn executor 的子进程环境：继承宿主环境（剔除残留的 CHONKPILOT_* 上下文与
 // 宿主 CHONK_CHROME，避免泄漏第三方/上层上下文或与本次注入形成重复键）→ 注入本次调用的
-// CHONKPILOT_INSTANCE/WORKDIR/DATADIR + 配置型 CHONKPILOT_INTERPRETERS / CHONK_CHROME，以及
+// CHONKPILOT_INSTANCE/WORKDIR/DATADIR/PURPOSE + 配置型 CHONKPILOT_INTERPRETERS / CHONK_CHROME，以及
 // **按 executor 开关**的 agentbox 策略 CHONKPILOT_SANDBOX（sandboxPolicy 为空串 = 不注入 = 不启用隔离）。
 // **仅内部 executor 进程可见**（第三方 MCP server 不经我们 spawn，拿不到）。
 func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
 	base := os.Environ()
-	out := make([]string, 0, len(base)+7)
+	out := make([]string, 0, len(base)+8)
 	// chrome = 本次将注入的 CHONK_CHROME（TrimSpace 后为 "" 则不注入）。剔除判据与注入判据统一用
 	// TrimSpace：避免纯空白 ChromePath「剔了旧值却不回注」的破坏性不对称。仅当会回注同名键时才剔除
 	// 宿主旧值；否则保留宿主继承，兑现文档承诺的「设 CHONK_CHROME 手动覆盖」。
@@ -568,6 +656,7 @@ func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
 	add("CHONKPILOT_INSTANCE", cx.InstanceID)
 	add("CHONKPILOT_WORKDIR", cx.WorkDir)
 	add("CHONKPILOT_DATADIR", cx.DataDir)
+	add("CHONKPILOT_PURPOSE", cx.Purpose) // C1：本次调用的运行目的（gateway 展示名参数）
 	add("CHONKPILOT_INTERPRETERS", c.interpretersJSON())
 	add("CHONK_CHROME", chrome)
 	add(agentbox.EnvSandbox, sandboxPolicy)

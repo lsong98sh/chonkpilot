@@ -1,13 +1,12 @@
 <!--
   工具沙箱配置页（usr 级；设置菜单 → preview tab kind = settings-tool-sandbox）
 
-  需求（用户口径，[42 §2 (104)/(109)]，2026-09-26 改为 **executor 级**）：沙箱不是工具级，
-  而是 **self 的执行器级** —— 三个 executor（core / desktop / browser，= 契约
-  `_meta.category`）各一个开关，管制该执行器下**全部工具**；开关写 usr 自由键 `tool_sandbox`
-  （`{"core":bool,"desktop":bool,"browser":bool}`，未设置 = 不隔离，默认兼容）。
-
-  仅 **self 的 executor 工具**（本仓 spawn 子进程执行）可隔离；第三方 stdio&spawn 的 MCP 的沙箱
-  在 MCP 对话框「运行信息」页签（usr `mcps[].sandbox`）设置，http/sse（及非 spawn 的 stdio）无法施加沙箱。
+  需求（用户口径，[42 §2 (104)/(109)]，2026-10-12 重整）：沙箱开关**按「被 spawn 的执行体」为单位**——
+  - 内置 executor：按 **exe** 一行（chonkpilot-{core,desktop,browser,dsl}-executor.exe），
+    管制该执行体下**全部工具**；
+  - 外部 MCP：按 **MCP 条目**一行（仅 stdio&spawn 可施加沙箱，http/sse 不可）；
+  开关写 usr 自由键 `tool_sandbox`（`{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`，
+  未设置 = 不隔离，默认兼容；旧形状 `{core,desktop,browser}` 读取时迁移）。
 
   手动保存：拨动 Switch / 「恢复未设置」只改本地待保存态（显示「未保存」），点【保存】才落库；
   **无改动时保存按钮禁用**。
@@ -57,15 +56,16 @@
       <div v-if="!totalTools" class="tool-empty">{{ $t('config.toolSandbox.empty') }}</div>
 
       <div class="exec-list">
-        <div v-for="row in rows" :key="row.category" class="exec-row" :data-exec="row.category">
+        <div v-for="row in rows" :key="row.key" class="exec-row" :data-exec="row.key">
           <div class="exec-row-head">
-            <span class="exec-name">{{ execLabel(row.category) }}</span>
-            <span class="exec-cat mono">（{{ row.category }}）</span>
+            <span class="exec-name mono">{{ row.unit }}</span>
+            <span class="exec-cat mono">（{{ row.kind === 'mcp' ? 'MCP' : row.category }}）</span>
 
             <div class="exec-switch" :title="$t('config.toolSandbox.switchHint')">
               <Switch
                 :model-value="row.on"
-                :aria-label="$t('config.toolSandbox.switchHint') + ': ' + row.category"
+                :disabled="!row.applicable"
+                :aria-label="$t('config.toolSandbox.switchHint') + ': ' + row.unit"
                 @update:model-value="(v) => onToggle(row, v)"
               />
             </div>
@@ -81,8 +81,8 @@
             </div>
           </div>
 
-          <!-- 只读：该 executor 支持的工具（数据源 = tools-list 的 _meta.category；
-               展示剥前缀，:title = 完整暴露名） -->
+          <!-- 只读：该执行体支持的工具（内置 executor 数据源 = tools-list 的 _meta.category；
+               外部 MCP 数据源 = _meta.server.alias 归组；展示剥前缀，:title = 完整暴露名） -->
           <div class="exec-tools">
             <span v-if="!row.tools.length" class="exec-none">{{ $t('config.toolSandbox.noTools') }}</span>
             <template v-else>
@@ -117,11 +117,8 @@ import { EventNames } from '../../events/event-names'
 const { t } = useI18n()
 const { loading, saving, loadFailed, loadError, rows, totalTools, dirty, serverSandboxOn, trustWarning, loadTrustDirs, reload, setSandbox, restore, save } = useToolSandbox()
 
-// executor 显示名（新增 i18n；回退到类别名本身）
-function execLabel(category) {
-  const key = 'config.toolSandbox.exec' + category.charAt(0).toUpperCase() + category.slice(1)
-  return t(key)
-}
+// 行的写入 scope：内置 executor → executors；外部 MCP → mcps。
+function scopeOf(row) { return row.kind === 'mcp' ? 'mcps' : 'executors' }
 
 // 「两页状态互见」跳转 / 第三方沙箱入口：既有 preview tab 通道（kind=settings-mcp），零新增消息面。
 function gotoMcp() {
@@ -160,12 +157,12 @@ function stateText(row) {
 
 // 拨动 Switch = 只改本地待保存态（不落库、不弹提示；点【保存】才写）
 function onToggle(row, v) {
-  setSandbox(row.category, v)
+  setSandbox(scopeOf(row), row.key, v)
 }
 
-// 「恢复未设置」= 从待保存态移除该类别（不落库；点【保存】才写）
+// 「恢复未设置」= 从待保存态移除该单位（不落库；点【保存】才写）
 function onRestore(row) {
-  restore(row.category)
+  restore(scopeOf(row), row.key)
 }
 
 // 手动保存：无改动按钮已禁用（此处兜底）；成功给一次明确反馈。

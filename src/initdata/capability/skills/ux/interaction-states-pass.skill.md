@@ -1,11 +1,13 @@
-# interaction-states-pass
+# 基本信息
+```yaml
+name: interaction-states-pass
+title: interaction-states-pass
+```
 
-[meta]
-
-[description]
+# 摘要
 核查每个交互元素是否具备完整状态集（default/hover/active/disabled/focus/loading）以及过渡与反馈，并补齐缺失项；当设计要交给用户前、或用户关心"交互反馈/状态/hover/focus"时使用。**没有状态反馈的交互元素会显得是坏的**——没有 hover 的按钮看起来像标签；焦点环被移除会挡住键盘用户。
 
-[content]
+# 正文
 # 交互状态核查
 
 核查每个交互元素是否具备完整状态集（default、hover、active、disabled、focus、loading）以及过渡与反馈；补齐缺失的。**没有状态反馈的交互元素会显得是坏的**——没有 hover 的按钮看起来像标签；焦点环被移除会挡住键盘用户。这是设计交给用户前的一道安全网。

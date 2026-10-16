@@ -4,8 +4,11 @@
 package capfs
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -119,5 +122,47 @@ func TestLevelOfNode(t *testing.T) {
 		if got := LevelOfNode(c.node); got != c.want {
 			t.Errorf("LevelOfNode(%q) = %q, want %q", c.node, got, c.want)
 		}
+	}
+}
+
+// TestPreviewDescriptionTolerant 列表描述预览（req4/req5）：`.md` 取契约摘要首行；非 md 只读头部
+// 前缀取文本行——含 NUL / 非合法 UTF-8 → 空串（二进制），且**不整读大文件**（超 MaxDocReadBytes
+// 的非 md 文件仍能出描述，不得因整读拒读）。
+func TestPreviewDescriptionTolerant(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, data []byte) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// 契约 md → 摘要首行
+	contractDoc := Template("resource", "note")
+	contractDoc.Description = "摘要首行\n第二行"
+	if got, _ := PreviewDescription(write("note.resource.md", []byte(BuildDoc(contractDoc)))); got != "摘要首行" {
+		t.Fatalf("md 契约摘要首行 = %q，want 摘要首行", got)
+	}
+	// 非 md 文本 → 首个文本行
+	if got, _ := PreviewDescription(write("config.json", []byte("{\"a\":1}\nsecond\n"))); got != `{"a":1}` {
+		t.Fatalf("json 文本行 = %q，want {\"a\":1}", got)
+	}
+	// 非 md 二进制（含 NUL）→ 空串（不炸）
+	if got, _ := PreviewDescription(write("logo.png", []byte{0x89, 'P', 'N', 'G', 0x00, 0x1a, 0xff})); got != "" {
+		t.Fatalf("二进制描述应为空串，实得 %q", got)
+	}
+	// 非 md 非法 UTF-8 → 空串
+	if got, _ := PreviewDescription(write("bad.bin", []byte{0xff, 0xfe, 'a', 'b'})); got != "" {
+		t.Fatalf("非法 UTF-8 描述应为空串，实得 %q", got)
+	}
+	// 超上限大文件（非 md）→ 不整读，前缀首行仍可出
+	big := append([]byte("hello world\n"), bytes.Repeat([]byte("y"), MaxDocReadBytes+1024)...)
+	if got, err := PreviewDescription(write("huge.log", big)); err != nil || got != "hello world" {
+		t.Fatalf("大非 md 文件应按前缀出描述（不整读），实得 (%q, %v)", got, err)
+	}
+	// 长行截断（> 60 字节 + …）
+	long := strings.Repeat("x", 80)
+	if got, _ := PreviewDescription(write("long.txt", []byte(long+"\n"))); got != long[:60]+"…" {
+		t.Fatalf("长行应截断为 60 字符 + …，实得 %q", got)
 	}
 }

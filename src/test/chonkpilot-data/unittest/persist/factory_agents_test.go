@@ -51,7 +51,8 @@ func factoryAgentsDir(t *testing.T) string {
 	return dir
 }
 
-// TestFactoryAgentsComplete 断言 24 个出厂预置 agent 文件齐备且结构完整（[meta]/roletag/[description]/[content]）。
+// TestFactoryAgentsComplete 断言 24 个出厂预置 agent 文件齐备且结构完整
+// （v2 契约 2026-10-14：「# 基本信息」含 name/roletag +「# 摘要」+「# 正文」）。
 func TestFactoryAgentsComplete(t *testing.T) {
 	dir := factoryAgentsDir(t)
 	if len(factoryAgentNames) != 24 {
@@ -88,18 +89,18 @@ func TestFactoryAgentsComplete(t *testing.T) {
 			continue
 		}
 		text := string(raw)
-		if !strings.Contains(text, "[meta]") || !strings.Contains(text, "roletag=") {
-			t.Errorf("%s：缺 [meta]/roletag", name)
+		if !strings.Contains(text, "# 基本信息") || !strings.Contains(text, "roletag:") {
+			t.Errorf("%s：缺「# 基本信息」/roletag", name)
 		}
-		if !strings.Contains(text, "[description]") {
-			t.Errorf("%s：缺 [description]", name)
+		if !strings.Contains(text, "# 摘要") {
+			t.Errorf("%s：缺「# 摘要」", name)
 		}
-		if !strings.Contains(text, "[content]") {
-			t.Errorf("%s：缺 [content]", name)
+		if !strings.Contains(text, "# 正文") {
+			t.Errorf("%s：缺「# 正文」", name)
 		}
-		// [content] 非空（防占位/空壳）：提炼后须是可用正文。
-		if idx := strings.Index(text, "[content]"); idx >= 0 {
-			content := strings.TrimSpace(text[idx+len("[content]"):])
+		// 「# 正文」非空（防占位/空壳）：提炼后须是可用正文。
+		if idx := strings.Index(text, "# 正文"); idx >= 0 {
+			content := strings.TrimSpace(text[idx+len("# 正文"):])
 			if utf8.RuneCountInString(content) < 30 {
 				t.Errorf("%s：[content] 过短（疑为占位/空壳，%d 字）", name, utf8.RuneCountInString(content))
 			}

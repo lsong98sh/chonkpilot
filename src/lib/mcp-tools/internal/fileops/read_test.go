@@ -2,13 +2,10 @@ package fileops
 
 import (
 	"bufio"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 )
 
 // TestCountLinesConsistency 验证 countLines / countFileLines 与 readContent 同语义：
@@ -45,6 +42,7 @@ func TestCountLinesConsistency(t *testing.T) {
 }
 
 // TestReadLargeFileSemantics 覆盖 >32MB 文件的 total_lines、ranges/start 报错、tail+line_numbers 行号基线。
+// 复用 readOne（READ 动作的核心读取逻辑）。
 func TestReadLargeFileSemantics(t *testing.T) {
 	// 每行 64 字节（63 个 'x' + '\n'）→ 540000 行 ≈ 34.5MB（> maxReadBytes=32MB）。
 	const lineCount = 540000
@@ -53,47 +51,50 @@ func TestReadLargeFileSemantics(t *testing.T) {
 	path := writeBigFile(t, lineCount, 64)
 
 	t.Run("info 给 total_lines 与截断前缀行数", func(t *testing.T) {
-		info := readFileInfo(t, HandleReadFile("", oneFile(path, map[string]interface{}{"info": true})))
+		info, err := readOne(readReq{path: path, infoOnly: true}, "")
+		if err != nil {
+			t.Fatalf("readOne(info): %v", err)
+		}
 		if info["truncated"] != true {
 			t.Fatalf("应 truncated=true, got %v", info["truncated"])
 		}
-		if got := info["total_lines"]; got != float64(lineCount) {
+		if got := info["total_lines"]; got != lineCount {
 			t.Fatalf("total_lines = %v, want %d", got, lineCount)
 		}
-		if got := info["lines"]; got != float64(prefixLines) {
+		if got := info["lines"]; got != prefixLines {
 			t.Fatalf("lines（前缀）= %v, want %d", got, prefixLines)
 		}
 	})
 
 	t.Run("ranges 报错", func(t *testing.T) {
-		res := HandleReadFile("", oneFile(path, map[string]interface{}{"ranges": []interface{}{[]interface{}{1.0, 3.0}}}))
-		if res.Success {
-			t.Fatalf(">32MB 文件 ranges 应报错")
-		}
-		if info := readFileInfo(t, res); !strings.Contains(asStr(info["error"]), "ranges/start") {
-			t.Fatalf("错误应提示 ranges/start 不支持, got %v", info["error"])
+		_, err := readOne(readReq{path: path, ranges: [][2]int{{1, 3}}}, "")
+		if err == nil || !strings.Contains(err.Error(), "ranges/start") {
+			t.Fatalf(">32MB 文件 ranges 应报错且提示 ranges/start, got %v", err)
 		}
 	})
 
 	t.Run("start 报错", func(t *testing.T) {
-		res := HandleReadFile("", oneFile(path, map[string]interface{}{"start": 5.0}))
-		if res.Success {
-			t.Fatalf(">32MB 文件 start 应报错")
-		}
-		if info := readFileInfo(t, res); !strings.Contains(asStr(info["error"]), "ranges/start") {
-			t.Fatalf("错误应提示 ranges/start 不支持, got %v", info["error"])
+		_, err := readOne(readReq{path: path, start: 5}, "")
+		if err == nil || !strings.Contains(err.Error(), "ranges/start") {
+			t.Fatalf(">32MB 文件 start 应报错且提示 ranges/start, got %v", err)
 		}
 	})
 
 	t.Run("limit 取前缀仍可读", func(t *testing.T) {
-		info := readFileInfo(t, HandleReadFile("", oneFile(path, map[string]interface{}{"limit": 3.0})))
+		info, err := readOne(readReq{path: path, limit: 3}, "")
+		if err != nil {
+			t.Fatalf("readOne(limit): %v", err)
+		}
 		if got := strings.Count(asStr(info["content"]), "\n") + 1; got != 3 {
 			t.Fatalf("limit=3 应返回 3 行, got %d（content=%q）", got, info["content"])
 		}
 	})
 
 	t.Run("tail+line_numbers 用全文行号基线", func(t *testing.T) {
-		info := readFileInfo(t, HandleReadFile("", oneFile(path, map[string]interface{}{"tail": 3.0, "line_numbers": true})))
+		info, err := readOne(readReq{path: path, tail: 3, lineNumbers: true}, "")
+		if err != nil {
+			t.Fatalf("readOne(tail): %v", err)
+		}
 		content := asStr(info["content"])
 		// 末尾 3 行 → 全文行号 539998..540000
 		for _, want := range []string{"539998", "539999", "540000"} {
@@ -154,30 +155,6 @@ func writeBigFile(t *testing.T, lineCount, lineBytes int) string {
 		t.Fatal(err)
 	}
 	return p
-}
-
-// oneFile 构造 file_read 的单文件参数。
-func oneFile(path string, extra map[string]interface{}) map[string]interface{} {
-	m := map[string]interface{}{"path": path}
-	for k, v := range extra {
-		m[k] = v
-	}
-	return map[string]interface{}{"files": []interface{}{m}}
-}
-
-// readFileInfo 解析 file_read 输出 JSON 并返回首个文件条目。
-func readFileInfo(t *testing.T, res *cli.Result) map[string]interface{} {
-	t.Helper()
-	var payload struct {
-		Files []map[string]interface{} `json:"files"`
-	}
-	if err := json.Unmarshal([]byte(res.Output), &payload); err != nil {
-		t.Fatalf("解析输出失败: %v (output=%s)", err, res.Output)
-	}
-	if len(payload.Files) == 0 {
-		t.Fatalf("输出无 files 条目: %s", res.Output)
-	}
-	return payload.Files[0]
 }
 
 // asStr 把 interface{} 断言为 string（非字符串返回空）。

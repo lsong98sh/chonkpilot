@@ -183,6 +183,11 @@ func callContextMeta(ctx context.Context) mcp.Meta {
 	if v := ParentFromContext(ctx); v != "" {
 		ns["parent"] = v
 	}
+	// C1（2026-10-15）：本次调用的运行目的 → 透传给内嵌 mcp-server（其 executorEnv 落
+	// CHONKPILOT_PURPOSE 供 executor 进程读取）。
+	if v := PurposeFromContext(ctx); v != "" {
+		ns["purpose"] = v
+	}
 	if len(ns) == 0 {
 		return nil
 	}
@@ -223,6 +228,9 @@ func execCtxFromMeta(ctx context.Context, meta mcp.Meta) context.Context {
 	}
 	if s, ok := ns["parent"].(string); ok {
 		c.Parent = s
+	}
+	if s, ok := ns["purpose"].(string); ok {
+		c.Purpose = s
 	}
 	return withTurnContext(ctx, c)
 }

@@ -8,7 +8,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -20,8 +19,7 @@ func writeAsyncToolContract(t *testing.T, root, name string, metaLines []string)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
-	body := "# " + name + "\n\n[meta]\nhot=true\n" + strings.Join(metaLines, "\n") +
-		"\n\n[description]\n工具异步配置用例\n\n[parameters]\n{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"string\"}}}\n"
+	body := buildV2ToolDoc(name, "工具异步配置用例", `{"type":"object","properties":{"x":{"type":"string"}}}`, append([]string{"hot=true"}, metaLines...))
 	if err := os.WriteFile(filepath.Join(dir, name+".tool.md"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write contract: %v", err)
 	}

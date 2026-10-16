@@ -475,28 +475,28 @@ func TestFileManagerTempPrefix(t *testing.T) {
 	}
 }
 
-// TestHandleFindPathRequired（R7-C-7）：file_find 缺 path → 顶层错误（对齐契约 required=[path]），
+// TestFindActionPathRequired（R7-C-7）：FIND 缺 path → 动作失败（对齐契约 required=[path]），
 // 不再静默回落 workDir/"."。
-func TestHandleFindPathRequired(t *testing.T) {
-	res := HandleFind("", map[string]interface{}{})
-	if res.Success {
-		t.Fatalf("缺 path 应失败，got %+v", res)
+func TestFindActionPathRequired(t *testing.T) {
+	ec := newEditCtx("", nil)
+	_, err := ec.runFindQuery("", findOpts{})
+	if err == nil {
+		t.Fatalf("缺 path 应失败")
 	}
-	if !strings.Contains(res.Error, "path") {
-		t.Fatalf("错误消息应指明 path，got %q", res.Error)
+	if !strings.Contains(err.Error(), "path") {
+		t.Fatalf("错误消息应指明 path，got %q", err.Error())
 	}
 }
 
-// TestHandleDiffFilesMissingSide（R7-C-11）：files[] 单对缺 path2 → 项级错误（不静默跳过）。
-func TestHandleDiffFilesMissingSide(t *testing.T) {
-	res := HandleDiff("", map[string]interface{}{
-		"files": []interface{}{map[string]interface{}{"path": absTmp(t, "a.txt")}},
-	})
-	if res.Success {
-		t.Fatalf("缺 path2 应失败，got %+v", res)
+// TestDiffActionRequiresPairs（R7-C-11）：DIFF 单侧（奇数个 #"path"）→ 动作失败（不静默跳过）。
+func TestDiffActionRequiresPairs(t *testing.T) {
+	ec := newEditCtx("", nil)
+	_, err := ec.runDiffTokens([]qToken{{kind: qFile, text: absTmp(t, "a.txt")}})
+	if err == nil {
+		t.Fatalf("奇数个 #\"path\" 应失败")
 	}
-	if !strings.Contains(res.Error, "files[0]") || !strings.Contains(res.Error, "path2") {
-		t.Fatalf("错误消息应指明 files[0].path2，got %q", res.Error)
+	if !strings.Contains(err.Error(), "偶数") {
+		t.Fatalf("错误消息应提示偶数个路径，got %q", err.Error())
 	}
 }
 

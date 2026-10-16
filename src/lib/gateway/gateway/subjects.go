@@ -86,6 +86,12 @@ type Context struct {
 	// 使任务层可在「未登记」时**独立建节点**（见 chonkpilot-task/layer.go applyReport）。
 	TopSession string `json:"top_session,omitempty"` // 该调用所属主会话（top_session）
 	Parent     string `json:"parent,omitempty"`      // 已登记的 llm 侧节点 task_id（无则空）
+	// Purpose 是本次工具调用的**运行目的**（= gateway 注入的展示名参数 tool_call_display_name，
+	// doCall 在剥离该 args 键**之前**取出 → 随调用上下文下发）。C1（2026-10-15）：
+	// 展示名原来只在上游调用记录层可见、被剥离后下游任何 handler 都拿不到；此处补进上下文，
+	// 使三条注入通道（进程内 ctx / 域工具 payload.context / 进程外 _meta→CHONKPILOT_PURPOSE）
+	// 都能取到（如 subchat_open 需要它作为子聊天的 purpose）。
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // CallReq 是 tools/call 载荷（无 req_id；响应经同主题 v.Result）。

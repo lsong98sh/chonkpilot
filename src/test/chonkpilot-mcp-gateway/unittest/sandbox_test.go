@@ -1,9 +1,10 @@
 // sandbox_test.go — chonkpilot-mcp-gateway 的 agentbox 下发判定单测（L2，工程目录
 // chonkpilot-test/chonkpilot-mcp-gateway/unittest）。
 //
-// 覆盖 ServerEntry.SandboxPolicyJSON 的**生效条件**（决策 42 §2 (109)）：
-//   - 显式 Sandbox=true + 传输 stdio + 允许目录非空 → 下发策略 JSON；
-//   - 缺任一条件（未开开关 / http·sse / 允许目录为空）→ 不下发（默认兼容，不污染上游环境）。
+// 覆盖 ServerEntry.SandboxPolicyJSON 的**生效条件**（决策 42 §2 (109)；2026-10-12 重整：开关来源
+// 由 usr `tool_sandbox.mcps[mcp名]` 决定，经 sandboxOn 传入，不再来自 entry.Sandbox）：
+//   - sandboxOn=true + 传输 stdio + 允许目录非空 → 下发策略 JSON；
+//   - 缺任一条件（开关关 / http·sse / 允许目录为空）→ 不下发（默认兼容，不污染上游环境）。
 package mcpgatewaytest
 
 import (
@@ -15,9 +16,6 @@ import (
 	mcpgw "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
 )
 
-// boolPtr 返回布尔指针（三态字段用）。
-func boolPtr(b bool) *bool { return &b }
-
 // TestSandboxPolicyJSONGate：下发判定的四类边界。
 func TestSandboxPolicyJSONGate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "proj")
@@ -26,17 +24,17 @@ func TestSandboxPolicyJSONGate(t *testing.T) {
 	cases := []struct {
 		name string
 		e    mcpgw.ServerEntry
+		on   bool
 		want bool
 	}{
-		{"stdio+开启+目录非空 → 下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", Sandbox: boolPtr(true), SandboxDirs: rules}, true},
-		{"未设置开关 → 不下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", SandboxDirs: rules}, false},
-		{"显式 false → 不下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", Sandbox: boolPtr(false), SandboxDirs: rules}, false},
-		{"http 传输 → 不下发（仅 stdio 隔离）", mcpgw.ServerEntry{ID: "s", Runtime: "node", URL: "http://127.0.0.1:1/mcp", Sandbox: boolPtr(true), SandboxDirs: rules}, false},
-		{"sse 传输 → 不下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", URL: "http://127.0.0.1:1/sse", Transport: "sse", Sandbox: boolPtr(true), SandboxDirs: rules}, false},
-		{"允许目录为空 → 不下发（避免空策略=全拒）", mcpgw.ServerEntry{ID: "s", Runtime: "node", Sandbox: boolPtr(true)}, false},
+		{"stdio+开启+目录非空 → 下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", SandboxDirs: rules}, true, true},
+		{"开关关 → 不下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", SandboxDirs: rules}, false, false},
+		{"http 传输 → 不下发（仅 stdio 隔离）", mcpgw.ServerEntry{ID: "s", Runtime: "node", URL: "http://127.0.0.1:1/mcp", SandboxDirs: rules}, true, false},
+		{"sse 传输 → 不下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", URL: "http://127.0.0.1:1/sse", Transport: "sse", SandboxDirs: rules}, true, false},
+		{"允许目录为空 → 不下发（避免空策略=全拒）", mcpgw.ServerEntry{ID: "s", Runtime: "node"}, true, false},
 	}
 	for _, c := range cases {
-		got := c.e.SandboxPolicyJSON()
+		got := c.e.SandboxPolicyJSON(c.on)
 		if c.want && got == "" {
 			t.Fatalf("%s：应下发策略，got 空", c.name)
 		}
@@ -58,10 +56,10 @@ func TestSandboxEnvValueParsableByAgentbox(t *testing.T) {
 	allow := filepath.Join(t.TempDir(), "allow")
 	deny := filepath.Join(t.TempDir(), "deny")
 	e := mcpgw.ServerEntry{
-		ID: "up", Runtime: "node", Sandbox: boolPtr(true),
+		ID: "up", Runtime: "node",
 		SandboxDirs: []agentbox.Rule{{Dir: allow, Writable: true}},
 	}
-	raw := e.SandboxPolicyJSON()
+	raw := e.SandboxPolicyJSON(true)
 	if raw == "" {
 		t.Fatal("应下发策略")
 	}

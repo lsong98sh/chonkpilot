@@ -75,6 +75,10 @@ type ProjectAgentWriteRequest struct {
 	Description string `json:"description,omitempty"`
 	// Prompt agent 提示词（= 契约文档 [content] 正文）。
 	Prompt string `json:"prompt"`
+	// Skills 技能名单（可选；落契约 `# 参考` 分区的 refs.skills）。
+	Skills []string `json:"skills,omitempty"`
+	// Resources 资源名单（可选；落契约 `# 参考` 分区的 refs.resources）。
+	Resources []string `json:"resources,omitempty"`
 	// Scope 实例数据根（可选）。
 	Scope Scope `json:"scope,omitempty"`
 }

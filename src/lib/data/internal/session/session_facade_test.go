@@ -4,12 +4,14 @@ package session
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
+	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
 
 // TestCleanupStaleToolPairs 覆盖三种非终态（pending/running/provisional）→ interrupted，
@@ -194,5 +196,261 @@ func TestTurnSetSummaryCompleteNoOrphanRow(t *testing.T) {
 	}
 	if kernel.Sval(rec["session_id"]) != "s1" || kernel.Sval(rec["summary"]) != "summary" || kernel.Sval(rec["status"]) != "done" {
 		t.Fatalf("行存在时更新异常：%v", rec)
+	}
+}
+
+// fixedParamKeys 是子聊天固定参数列（单聊方案 §3.2 / §5.4；**仅非空才写键**）：
+// kind/lifecycle/agent/scenario_id/llm + purpose（= gateway 注入的 tool_call_display_name）。
+var fixedParamKeys = []string{"kind", "lifecycle", "agent", "scenario_id", "llm", "purpose"}
+
+// newSessionEnvBus 同 newSessionEnv，但注入内存总线 —— SessionEnsure 首次落库会广播 session-new
+// （emitSessionNew 无 nil 守卫），故建会话类用例须带总线。
+func newSessionEnvBus(t *testing.T) (*Service, facade.Scope) {
+	t.Helper()
+	usrDir, wd, dd := t.TempDir(), t.TempDir(), t.TempDir()
+	data.Reset()
+	t.Cleanup(data.Reset)
+	bus, err := mq.New(mq.Options{Prefix: "cktest."})
+	if err != nil {
+		t.Fatalf("mq.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bus.Close() })
+	s := New(kernel.NewBase(bus, kernel.Options{UsrPath: filepath.Join(usrDir, "usr.db"), AppDir: usrDir}))
+	return s, facade.Scope{WorkDir: wd, DataDir: dd}
+}
+
+// TestSessionEnsureFixedParamsNonEmptyOnly（A1 · SUBCHAT-2 阶段 A）：子聊天固定参数由 SessionEnsure
+// **一次性写入且仅非空才写键** —— 普通顶层会话行形状与既有逐字节一致（多一个空键即红）；
+// 幂等二次调用不覆盖既有行（含固定参数）。
+func TestSessionEnsureFixedParamsNonEmptyOnly(t *testing.T) {
+	s, scope := newSessionEnvBus(t)
+	inst := "ins-fixed"
+	prj, err := s.PrjUsrFor(inst, scope)
+	if err != nil {
+		t.Fatalf("prjusr: %v", err)
+	}
+	tb := prj.Table("sessions")
+
+	// ① 普通顶层会话：不得出现任何固定参数键（行形状不变）
+	if _, err := s.SessionEnsure(facade.SessionEnsureRequest{InstanceID: inst, Scope: scope, SessionID: "s-plain"}); err != nil {
+		t.Fatalf("ensure plain: %v", err)
+	}
+	var rec data.Record
+	if ok, err := tb.Get("s-plain", &rec); err != nil || !ok {
+		t.Fatalf("get s-plain: ok=%v err=%v", ok, err)
+	}
+	for _, k := range fixedParamKeys {
+		if _, has := rec[k]; has {
+			t.Fatalf("普通顶层会话不应写 %q 键（行形状须与既有一致）：%v", k, rec)
+		}
+	}
+	if got := kernel.Sval(rec["parent_id"]); got != "" {
+		t.Fatalf("顶层会话 parent_id 应为空串：%q", got)
+	}
+
+	// ② 子聊天：固定参数一次性写入（kind + lifecycle + agent/scenario_id/llm + purpose）
+	if _, err := s.SessionEnsure(facade.SessionEnsureRequest{
+		InstanceID: inst, Scope: scope, SessionID: "s-chat", ParentSessionID: "s-plain",
+		Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleChatting,
+		Agent: "agent-x", ScenarioID: "scn-x", LLM: "llm-x", Purpose: "整理当日要点",
+	}); err != nil {
+		t.Fatalf("ensure subchat: %v", err)
+	}
+	if ok, err := tb.Get("s-chat", &rec); err != nil || !ok {
+		t.Fatalf("get s-chat: ok=%v err=%v", ok, err)
+	}
+	for k, want := range map[string]string{
+		"parent_id": "s-plain", "kind": facade.SessionKindSubChat,
+		"lifecycle": facade.SessionLifecycleChatting, "agent": "agent-x",
+		"scenario_id": "scn-x", "llm": "llm-x", "purpose": "整理当日要点",
+	} {
+		if got := kernel.Sval(rec[k]); got != want {
+			t.Fatalf("固定参数 %q = %q want %q（%v）", k, got, want, rec)
+		}
+	}
+
+	// ③ 幂等：二次 ensure 不覆盖既有行（lifecycle/agent 等保持首次值）
+	if _, err := s.SessionEnsure(facade.SessionEnsureRequest{
+		InstanceID: inst, Scope: scope, SessionID: "s-chat", ParentSessionID: "s-plain",
+		Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleFinished, Agent: "other",
+	}); err != nil {
+		t.Fatalf("ensure subchat 2nd: %v", err)
+	}
+	if ok, _ := tb.Get("s-chat", &rec); !ok {
+		t.Fatal("get s-chat（二次）失败")
+	}
+	if kernel.Sval(rec["lifecycle"]) != facade.SessionLifecycleChatting || kernel.Sval(rec["agent"]) != "agent-x" {
+		t.Fatalf("幂等 ensure 不应覆盖既有行：%v", rec)
+	}
+}
+
+// TestSessionSubChatsAndKindFallback（A1 读侧回退 + A2 列举 · SUBCHAT-2 阶段 A）：
+//   - 行缺 `kind` 且 `parent_id` 非空（历史数据）⇒ 读侧视为 `sub_session`；
+//   - `SessionSubChats` 只返回 `kind ∈ {sub_chat, group_chat}`（含 finished），按创建时间升序，
+//     且**只按父会话过滤**（别的父的不入列）；
+//   - `SessionList` 语义不变（仍只返回顶层会话）。
+func TestSessionSubChatsAndKindFallback(t *testing.T) {
+	s, scope := newSessionEnv(t)
+	inst := "ins-subchats"
+	prj, err := s.PrjUsrFor(inst, scope)
+	if err != nil {
+		t.Fatalf("prjusr: %v", err)
+	}
+	tb := prj.Table("sessions")
+	insert := func(id, parent, kind, lifecycle, created string) {
+		t.Helper()
+		r := data.Record{
+			"session_id": id, "title": id, "parent_id": parent,
+			"created_at": created, "updated_at": created,
+		}
+		if kind != "" {
+			r["kind"] = kind
+		}
+		if lifecycle != "" {
+			r["lifecycle"] = lifecycle
+		}
+		if err := tb.Insert(id, r); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	const t0 = "2026-01-01T00:00:00.000000000Z"
+	insert("s-top", "", "", "", t0)
+	insert("s-legacy", "s-top", "", "", "2026-01-01T00:00:01.000000000Z")                  // 历史子会话（无 kind）
+	insert("s-chat1", "s-top", facade.SessionKindSubChat, facade.SessionLifecycleChatting, "2026-01-01T00:00:02.000000000Z")
+	insert("s-chat2", "s-top", facade.SessionKindSubChat, facade.SessionLifecycleFinished, "2026-01-01T00:00:03.000000000Z")
+	insert("s-group", "s-top", facade.SessionKindGroupChat, facade.SessionLifecycleReady, "2026-01-01T00:00:04.000000000Z")
+	insert("s-other", "s-other-parent", facade.SessionKindSubChat, facade.SessionLifecycleChatting, "2026-01-01T00:00:05.000000000Z")
+
+	// ① 读侧回退：历史子会话行（无 kind）视为 sub_session
+	got, err := s.SessionGet(facade.SessionGetRequest{InstanceID: inst, Scope: scope, SessionID: "s-legacy"})
+	if err != nil || !got.Found {
+		t.Fatalf("SessionGet(s-legacy): found=%v err=%v", got.Found, err)
+	}
+	if got.Session.Kind != facade.SessionKindSubSession {
+		t.Fatalf("历史子会话应回退为 sub_session：%q", got.Session.Kind)
+	}
+	if top, err := s.SessionGet(facade.SessionGetRequest{InstanceID: inst, Scope: scope, SessionID: "s-top"}); err != nil || top.Session.Kind != "" {
+		t.Fatalf("顶层会话 kind 应为空：%+v err=%v", top.Session, err)
+	}
+
+	// ② 子聊天列举：只 sub_chat / group_chat（含 finished），按创建时间升序，只按父过滤
+	sub, err := s.SessionSubChats(facade.SessionSubChatsRequest{InstanceID: inst, Scope: scope, ParentSessionID: "s-top"})
+	if err != nil {
+		t.Fatalf("SessionSubChats: %v", err)
+	}
+	var ids []string
+	for _, x := range sub.List {
+		ids = append(ids, x.ID)
+	}
+	if want := "s-chat1,s-chat2,s-group"; strings.Join(ids, ",") != want {
+		t.Fatalf("子聊天列举不符（应 %q，含 finished、排除 sub_session 与别的父）：got %v", want, ids)
+	}
+	if sub.List[1].Lifecycle != facade.SessionLifecycleFinished {
+		t.Fatalf("finished 子聊天应照常列出（回看入口）：%+v", sub.List[1])
+	}
+
+	// ③ data-session-list 语义不变：仍只返回顶层会话
+	list, err := s.SessionList(facade.SessionListRequest{InstanceID: inst, Scope: scope})
+	if err != nil {
+		t.Fatalf("SessionList: %v", err)
+	}
+	for _, x := range list.List {
+		if x.ParentID != "" {
+			t.Fatalf("顶层会话列表混入子会话：%+v", x)
+		}
+	}
+
+	// ④ 父会话必填
+	if _, err := s.SessionSubChats(facade.SessionSubChatsRequest{InstanceID: inst, Scope: scope}); err == nil {
+		t.Fatal("缺 parent_session_id 应报错")
+	}
+
+	// ⑤ 全局列举（SessionSubChatsAll，单聊 §3.4.7 启动提醒）：跨父会话返回全部子聊天
+	// （仅 sub_chat / group_chat，含 finished；顶层会话与 sub_session 不入列）。
+	all, err := s.SessionSubChatsAll(facade.SessionSubChatsAllRequest{InstanceID: inst, Scope: scope})
+	if err != nil {
+		t.Fatalf("SessionSubChatsAll: %v", err)
+	}
+	var allIDs []string
+	for _, x := range all.List {
+		allIDs = append(allIDs, x.ID)
+	}
+	if got, want := strings.Join(allIDs, ","), "s-chat1,s-chat2,s-group,s-other"; got != want {
+		t.Fatalf("全局子聊天列举不符（应 %q，排除顶层/sub_session）：got %v", want, allIDs)
+	}
+}
+
+// TestSessionLifecycleSet（A2 · SUBCHAT-2 阶段 A）：三态更新的四个口径 ——
+//   - 合法值 → 只改 lifecycle/updated_at（单事务 RMW 保留其余字段，updated_at 纳秒）；
+//   - 非法值 → 报错且**不落库**；
+//   - 行不存在 → 报错且**不建残行**；
+//   - ready 可逆回 chatting。
+func TestSessionLifecycleSet(t *testing.T) {
+	s, scope := newSessionEnv(t)
+	inst := "ins-lifecycle"
+	prj, err := s.PrjUsrFor(inst, scope)
+	if err != nil {
+		t.Fatalf("prjusr: %v", err)
+	}
+	tb := prj.Table("sessions")
+	const created = "2026-01-01T00:00:00.000000000Z"
+	if err := tb.Insert("s1", data.Record{
+		"session_id": "s1", "title": "子聊天", "parent_id": "s-top",
+		"kind": facade.SessionKindSubChat, "lifecycle": facade.SessionLifecycleChatting,
+		"history": `[{"x":1}]`, "snapshot_turn": "t9",
+		"created_at": created, "updated_at": created,
+	}); err != nil {
+		t.Fatalf("insert s1: %v", err)
+	}
+
+	set := func(lifecycle string) error {
+		t.Helper()
+		_, err := s.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
+			InstanceID: inst, Scope: scope, SessionID: "s1", Lifecycle: lifecycle,
+		})
+		return err
+	}
+	if err := set(facade.SessionLifecycleFinished); err != nil {
+		t.Fatalf("SessionLifecycleSet(finished): %v", err)
+	}
+	var rec data.Record
+	if ok, _ := tb.Get("s1", &rec); !ok {
+		t.Fatal("get s1 失败")
+	}
+	if kernel.Sval(rec["lifecycle"]) != facade.SessionLifecycleFinished {
+		t.Fatalf("lifecycle 未更新：%v", rec)
+	}
+	if kernel.Sval(rec["history"]) != `[{"x":1}]` || kernel.Sval(rec["snapshot_turn"]) != "t9" || kernel.Sval(rec["kind"]) != facade.SessionKindSubChat {
+		t.Fatalf("单事务 RMW 应保留其余字段：%v", rec)
+	}
+	if _, err := time.Parse(kernel.RFC3339FixedNano, kernel.Sval(rec["updated_at"])); err != nil {
+		t.Fatalf("updated_at 应为纳秒口径：%q（%v）", rec["updated_at"], err)
+	}
+
+	// ready 可逆：finished → ready（语义上由新一轮开始处写回；此处只验写面）
+	if err := set(facade.SessionLifecycleReady); err != nil {
+		t.Fatalf("SessionLifecycleSet(ready): %v", err)
+	}
+	if ok, _ := tb.Get("s1", &rec); !ok || kernel.Sval(rec["lifecycle"]) != facade.SessionLifecycleReady {
+		t.Fatalf("ready 写回失败：%v", rec)
+	}
+
+	// 非法值 → 报错且不落库
+	if err := set("bogus"); err == nil {
+		t.Fatal("非法 lifecycle 应报错")
+	}
+	if ok, _ := tb.Get("s1", &rec); !ok || kernel.Sval(rec["lifecycle"]) != facade.SessionLifecycleReady {
+		t.Fatalf("非法值不得落库：%v", rec)
+	}
+
+	// 行不存在 → 报错且不建残行
+	if _, err := s.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
+		InstanceID: inst, Scope: scope, SessionID: "ghost", Lifecycle: facade.SessionLifecycleFinished,
+	}); err == nil {
+		t.Fatal("会话不存在应报错")
+	}
+	var ghost data.Record
+	if ok, _ := tb.Get("ghost", &ghost); ok {
+		t.Fatal("not found 路径不应建行")
 	}
 }

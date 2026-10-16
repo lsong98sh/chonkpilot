@@ -58,6 +58,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import Icon from '../../components/icon/Icon.vue'
 import FileTree from './FileTree.vue'
@@ -66,23 +67,28 @@ import SessionsPane from '../sessions/SessionsPane.vue'
 import ExtensionsPane from '../extensions/ExtensionsPane.vue'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+import { useSelectionStore } from '../../stores/selection'
 
 defineOptions({ name: 'ExplorerPane' })
 
 const { t } = useI18n()
 
-const mode = ref('project') // project | sessions | memory | extensions
+// 左侧模式（project | sessions | memory | extensions）= **跨 view 共享状态**：
+// 唯一真相源 = selection store（UILAYOUT-1 §3.7 P2③），本组件只读（storeToRefs）；
+// 写入 = 下方既有 mq 订阅受理四模式后写 store（模式不再由本组件各自持有 —— 双源已消除）。
+const selection = useSelectionStore()
+const { explorerMode: mode } = storeToRefs(selection)
 const memTreeRef = ref(null)
 const extPaneRef = ref(null)
 const _unsubs = []
 
 function setMode(m) {
-  if (m === 'project' || m === 'sessions' || m === 'memory' || m === 'extensions') mode.value = m
+  if (m === 'project' || m === 'sessions' || m === 'memory' || m === 'extensions') selection.setExplorerMode(m)
 }
 
 onMounted(() => {
   _unsubs.push(mq.on(EventNames.filetreeModeToggle, () => {
-    mode.value = mode.value === 'project' ? 'extensions' : 'project'
+    setMode(mode.value === 'project' ? 'extensions' : 'project')
   }))
   _unsubs.push(mq.on(EventNames.filetreeModeSelect, (d) => {
     if (d && d.mode) setMode(d.mode)

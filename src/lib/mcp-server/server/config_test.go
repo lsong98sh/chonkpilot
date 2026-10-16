@@ -70,12 +70,24 @@ func TestCallContextFromMeta(t *testing.T) {
 		}
 	})
 	t.Run("上下文齐全", func(t *testing.T) {
-		cx := callContextFromMeta(CallContextMeta("ins-1", `C:\w`, `C:\d`))
+		cx := callContextFromMeta(CallContextMeta("ins-1", `C:\w`, `C:\d`, "审查这次改动"))
 		if !cx.Present || cx.err() != nil {
 			t.Fatalf("正常上下文不应报错，got %+v err=%v", cx, cx.err())
 		}
 		if cx.InstanceID != "ins-1" || cx.WorkDir != `C:\w` || cx.DataDir != `C:\d` {
 			t.Fatalf("上下文解析不符: %+v", cx)
+		}
+		// C1：purpose（本次调用运行目的）随 _meta 往返
+		if cx.Purpose != "审查这次改动" {
+			t.Fatalf("purpose 解析不符: %q", cx.Purpose)
+		}
+	})
+	t.Run("无 purpose 不写键", func(t *testing.T) {
+		meta := CallContextMeta("ins-1", `C:\w`, `C:\d`, "")
+		if ns, ok := meta[metaNamespace].(map[string]any); ok {
+			if _, exists := ns["purpose"]; exists {
+				t.Fatal("purpose 为空时不应写入 _meta 键")
+			}
 		}
 	})
 }
@@ -87,10 +99,14 @@ func TestExecutorEnv(t *testing.T) {
 	cfg.SetRuntime(0, 0, map[string]string{"python": "C:\\Python\\python.exe"}, `C:\Chrome\chrome.exe`, nil)
 	t.Setenv("CHONKPILOT_INSTANCE", "stale-should-be-stripped")
 	t.Setenv("CHONKPILOT_SANDBOX", `[{"dir":"C:\\stale","writable":true}]`) // 残留策略也须被剥离
-	env := cfg.executorEnv(CallContext{InstanceID: "ins-1", WorkDir: `C:\w`, DataDir: `C:\d`}, "")
+	env := cfg.executorEnv(CallContext{InstanceID: "ins-1", WorkDir: `C:\w`, DataDir: `C:\d`, Purpose: "审查这次改动"}, "")
 	got := envMap(env)
 	if got["CHONKPILOT_INSTANCE"] != "ins-1" || got["CHONKPILOT_WORKDIR"] != `C:\w` || got["CHONKPILOT_DATADIR"] != `C:\d` {
 		t.Fatalf("CHONKPILOT_* 注入不符: %v", got)
+	}
+	// C1：purpose（本次调用运行目的）落 CHONKPILOT_PURPOSE（进程外通道）
+	if got["CHONKPILOT_PURPOSE"] != "审查这次改动" {
+		t.Fatalf("应注入 CHONKPILOT_PURPOSE，got %q", got["CHONKPILOT_PURPOSE"])
 	}
 	if got["CHONKPILOT_INSTANCE"] == "stale-should-be-stripped" {
 		t.Fatal("残留 CHONKPILOT_INSTANCE 应被剥离")
@@ -108,6 +124,10 @@ func TestExecutorEnv(t *testing.T) {
 	env2 := cfg.executorEnv(CallContext{InstanceID: "ins-1"}, `[{"dir":"C:\\p","writable":true}]`)
 	if got2 := envMap(env2)[agentbox.EnvSandbox]; got2 == "" {
 		t.Fatal("传入策略时应注入 CHONKPILOT_SANDBOX")
+	}
+	// C1：purpose 为空 → 不注入该键（保持既有形态）
+	if v, ok := envMap(env2)["CHONKPILOT_PURPOSE"]; ok {
+		t.Fatalf("purpose 为空时不应注入 CHONKPILOT_PURPOSE，got %q", v)
 	}
 }
 

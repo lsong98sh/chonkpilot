@@ -1,22 +1,45 @@
 <template>
   <div class="edit-dialog">
-    <!-- 表单区（唯一滚动容器；底栏按钮区固定在其外，不随内容滚动） -->
-    <div class="edit-scroll">
+    <!-- 表单区（唯一滚动容器；底栏按钮区固定在其外，不随内容滚动）。
+         @input/@change 兜底清除「AI 建议」标记：AI 回填是程序化写值（不触发原生事件），
+         用户一旦手填/改选即触发原生事件冒泡 → 标记清除（零 watch，见项目规则）。 -->
+    <div class="edit-scroll" @input="clearAiMarks" @change="clearAiMarks">
+      <!-- AI 填充（AICFG-1）：自然语言 → 结构化字段建议 → **只回填待保存态**（不落库）。
+           后端经点分相对主题 config.suggest（MsgTopics.configSuggest）；apiKey 绝不代填。 -->
+      <div class="ai-fill">
+        <div class="ai-fill-row">
+          <Textarea
+            v-model="aiText"
+            class="ai-fill-input"
+            :rows="2"
+            :placeholder="$t('config.llm.aiFillPlaceholder')"
+          />
+          <Button
+            size="small"
+            :loading="aiLoading"
+            :disabled="aiLoading || !aiText.trim()"
+            @click="generateSuggest"
+          >{{ $t('config.llm.aiFill') }}</Button>
+        </div>
+        <div class="ai-fill-hint">{{ $t('config.llm.aiFillHint') }}</div>
+        <div v-if="aiError" class="ai-fill-error">{{ aiError }}</div>
+        <div v-else-if="aiNotes" class="ai-fill-note">{{ $t('config.llm.aiFillNote', { notes: aiNotes }) }}</div>
+      </div>
       <div class="form-layout">
         <div class="form-item form-item-12">
-          <label class="form-label">{{ $t('config.llm.name') }}</label>
+          <label class="form-label">{{ $t('config.llm.name') }}<span v-if="aiMark('name')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
           <Input v-model="localData.name" :placeholder="$t('config.llm.namePlaceholder')" />
         </div>
         <div class="form-item form-item-12">
-          <label class="form-label">{{ $t('config.llm.model') }}</label>
+          <label class="form-label">{{ $t('config.llm.model') }}<span v-if="aiMark('model')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
           <Input v-model="localData.model" :placeholder="$t('config.llm.modelPlaceholder')" />
         </div>
         <div class="form-item form-item-12">
-          <label class="form-label">{{ $t('config.llm.protocol') }}</label>
+          <label class="form-label">{{ $t('config.llm.protocol') }}<span v-if="aiMark('protocol')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
           <Select v-model="localData.protocol" :options="protocolOptions" />
         </div>
         <div class="form-item form-item-12">
-          <label class="form-label">{{ $t('config.llm.baseUrl') }}</label>
+          <label class="form-label">{{ $t('config.llm.baseUrl') }}<span v-if="aiMark('baseUrl')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
           <Input v-model="localData.baseUrl" :placeholder="$t('config.llm.baseUrlPlaceholder')" />
         </div>
         <div class="form-item form-item-12">
@@ -24,13 +47,13 @@
           <Input v-model="localData.apiKey" type="password" />
         </div>
         <div class="form-item form-item-12">
-          <label class="form-label">{{ $t('config.llm.temperature') }}</label>
+          <label class="form-label">{{ $t('config.llm.temperature') }}<span v-if="aiMark('temperature')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
           <input type="range" v-model.number="localData.temperature" min="0" max="2" step="0.1" style="width:100%" />
           <span class="temp-value">{{ localData.temperature }}</span>
         </div>
         <div class="form-item form-item-12">
           <div class="label-with-presets">
-            <label class="form-label">{{ $t('config.llm.maxOutputToken') }}</label>
+            <label class="form-label">{{ $t('config.llm.maxOutputToken') }}<span v-if="aiMark('maxOutputToken')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
             <span class="token-presets">
               <Button
                 v-for="p in tokenPresets"
@@ -49,6 +72,7 @@
               <Tooltip :content="$t('config.llm.maxContextTokenHint')" placement="top">
                 <Icon name="help" :size="13" class="label-help" />
               </Tooltip>
+              <span v-if="aiMark('maxContextToken')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span>
             </label>
             <span class="token-presets">
               <Button
@@ -63,7 +87,7 @@
         </div>
         <div class="form-item form-item-12">
           <div class="label-switch-row">
-            <label class="form-label">{{ $t('config.llm.thinking') }}</label>
+            <label class="form-label">{{ $t('config.llm.thinking') }}<span v-if="aiMark('thinking')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
             <Switch v-model="localData.thinking" />
           </div>
           <Select v-model="localData.reasoningEffort" :options="reasoningOptions" :placeholder="$t('config.llm.reasoningPlaceholder')" :disabled="!localData.thinking" />
@@ -75,6 +99,7 @@
             <Tooltip :content="$t('config.llm.capabilitiesHint')" placement="top">
               <Icon name="help" :size="13" class="label-help" />
             </Tooltip>
+            <span v-if="aiMark('capabilities')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span>
           </label>
           <div class="cap-row">
             <label class="b-checkbox">
@@ -93,6 +118,7 @@
             <Tooltip :content="$t('config.llm.maxToolIterationsHint')" placement="top">
               <Icon name="help" :size="13" class="label-help" />
             </Tooltip>
+            <span v-if="aiMark('maxToolIterations')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span>
           </label>
           <Input type="number" v-model.number="localData.maxToolIterations" min="0" max="2000" step="1" style="width:100%" />
         </div>
@@ -131,10 +157,11 @@
 <script setup>
 import { reactive, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Input, Select, Switch, Tooltip } from '../../components/ui'
+import { Button, Input, Textarea, Select, Switch, Tooltip } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import { DEFAULT_LLM_PROTOCOL, RESPONSES_LLM_PROTOCOL } from '../../config/defaults'
 import { classifyError } from '../../utils/errorMessage'
+import { suggestConfig } from '../../api/config'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -177,6 +204,72 @@ function setToken(field, value) { localData[field] = value }
 
 function handleSave() {
   emit('save', { ...localData }, props.editIndex)
+  aiFields.value = [] // 保存后清「AI 建议」标记
+}
+
+// ── AI 填充（AICFG-1）：自然语言 → 结构化字段建议（config.suggest）──────────────
+// 只回填**待保存态**、标「AI 建议」；**apiKey 绝不代填**（不在白名单，后端亦丢弃）。
+// 回填后由用户点既有【测试连接】验证，再点【保存】落库（本组件不写任何配置）。
+// 白名单（§4）：可填 + 仅建议值字段（apiKey 不在内）。
+const AI_LLM_FIELDS = [
+  'name', 'model', 'protocol', 'baseUrl',
+  'maxContextToken', 'maxOutputToken', 'thinking', 'reasoningEffort',
+  'capabilities', 'temperature', 'maxToolIterations',
+]
+
+const aiText = ref('')
+const aiLoading = ref(false)
+const aiFields = ref([]) // 被 AI 回填的字段键（用于「AI 建议」标记）
+const aiError = ref('')
+const aiNotes = ref('')
+
+function aiMark(key) { return aiFields.value.includes(key) }
+// 用户手填/改选即清除标记（由 .edit-scroll 的 @input/@change 原生事件冒泡触发；零 watch）。
+function clearAiMarks() {
+  if (aiFields.value.length) aiFields.value = []
+}
+
+// 只把白名单字段写入待保存态（apiKey 与未知字段一律不动）。
+function applySuggest(fields) {
+  const applied = []
+  for (const k of AI_LLM_FIELDS) {
+    if (!(k in fields)) continue
+    if (k === 'capabilities') {
+      localData.capabilities = Array.isArray(fields.capabilities)
+        ? fields.capabilities.filter((v) => typeof v === 'string')
+        : []
+    } else {
+      localData[k] = fields[k]
+    }
+    applied.push(k)
+  }
+  aiFields.value = applied
+}
+
+// 生成建议：current 上传白名单字段（apiKey 不上送，后端二次过滤）供增量补全。
+async function generateSuggest() {
+  const text = (aiText.value || '').trim()
+  if (aiLoading.value || !text) return
+  aiLoading.value = true
+  aiError.value = ''
+  aiNotes.value = ''
+  try {
+    const current = {}
+    for (const k of AI_LLM_FIELDS) current[k] = localData[k]
+    const res = await suggestConfig('llm', text, current)
+    applySuggest(res.fields || {})
+    aiNotes.value = res.notes || ''
+  } catch (e) {
+    const msg = (e && e.message) || String(e)
+    if (e && e.kind === 'invalid') {
+      aiError.value = t('config.llm.aiFillInvalid')
+    } else {
+      const cls = classifyError(msg)
+      aiError.value = t(cls.key, cls.params)
+    }
+  } finally {
+    aiLoading.value = false
+  }
 }
 
 // ── 测试连接（批 3 ⑮）：用当前表单配置**只读探活**一次 ──────────────────────
@@ -281,6 +374,44 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   font-size: 12px;
   color: var(--fg-secondary);
   margin-left: 4px;
+}
+/* AI 填充（AICFG-1）：自然语言输入 + 【AI 填充】按钮 + 提示/结果行 */
+.ai-fill {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.ai-fill-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.ai-fill-input {
+  flex: 1;
+  min-width: 0;
+}
+.ai-fill-hint,
+.ai-fill-note,
+.ai-fill-error {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.ai-fill-hint { color: var(--text-muted); }
+.ai-fill-note { color: var(--accent); }
+.ai-fill-error { color: color-mix(in srgb, var(--danger) 70%, var(--text-primary)); }
+/* 「AI 建议」标记（被 AI 回填的字段；用户手填即清除） */
+.ai-badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 16px;
+  color: var(--accent);
+  border: 1px solid currentColor;
+  border-radius: 3px;
 }
 /* label 旁的 ? 术语说明（Tooltip 入口） */
 .label-help {

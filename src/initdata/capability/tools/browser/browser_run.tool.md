@@ -1,17 +1,19 @@
-# 浏览器编排
+# 基本信息
+```yaml
+name: browser_run
+title: 浏览器编排
+args: browser_run --input={RAW-INPUT-FILE}
+async: auto
+async-threshold: 60
+category: browser
+hot: true
+idempotent: false
+output: stdout
+runtime: ../../executors/chonkpilot-browser-executor.exe
+timeout: 300
+```
 
-[meta]
-runtime=../../executors/chonkpilot-browser-executor.exe
-hot=true
-category=browser
-async=auto
-async-threshold=60
-timeout=300
-idempotent=false
-args=browser_run --input={RAW-INPUT-FILE}
-output=stdout
-
-[description]
+# 摘要
 **浏览器自动化（网页 E2E）**：需要像真实用户一样操作网页——打开页面、定位元素、点击/填表/下拉、断言页面状态、截图，或拿**JS 渲染后才存在**的内容时用它（headless Chrome）；**纯静态抓取/API 请求用 web_fetch**。把操作写成一行一条指令的脚本。`###` 开头为注释；指令名大小写不敏感；执行语义 **fail-fast**（除 WAT 外任何指令失败立即中止，报错带行号与原因）。
 
 **路径要求（R-11，重要）**：`file`（脚本文件路径）、脚本内本地文件路径（`SHT` 截图 / `DOM` 导出 html / `DBG` console 日志 / `UPF` 上传文件，均为该指令的**最后一个参数**）、行尾 `=> #"file"` 重定向目标、DSL 核心语句的文件句柄（**LOOP/SET 的数据源读取**，如 `LOOP row=#"queries.csv".lines`，以及访问器 `.content/.lines/.array/.range`、`IF exist` 的路径）、`dom_file`/`console_file`/`fail_shot` 落盘路径、以及 `chrome_path`（Chrome/Edge 可执行文件路径，若提供），**都必须是绝对路径、以 `~/` 开头的用户目录路径或以 `!/` 开头的临时目录路径**（如 `C:\work\out\page.png`、`~/shots/page.png`）。相对路径 → 工具**整体失败**（错误状态返回，消息含出错的原值、位置与正确写法示例）；脚本内**字面**路径在启动浏览器前预校验（不产生任何文件改动），`{{}}` 插值得到的路径在执行时校验。下方示例中的相对写法仅为语法示意，实际调用请一律写绝对路径、`~/` 路径或 `!/` 路径。
@@ -88,30 +90,44 @@ LOOP row=#"queries.csv".lines.range(1,-1)
 END
 ```
 
-[parameters]
-properties:
-    script:
-        description: 浏览器编排脚本（一行一条指令，示例见上）
-        type: string
-    file:
-        description: 已保存脚本文件路径（与 script 二选一；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错）
-        type: string
-    headless:
-        description: 无头模式（默认 true；false 弹出可见窗口便于观察/调试）
-        type: boolean
-    dom_file:
-        description: 执行结束（含失败）时把整页 DOM 导出到的文件路径（可选）；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错
-        type: string
-    console_file:
-        description: 执行结束（含失败）时把累计 console 日志导出到的文件路径（可选）；路径要求同 dom_file（绝对路径、~/ 或 !/ 开头）
-        type: string
-    fail_shot:
-        description: 任意指令失败时自动截图落盘的文件路径（可选；未提供则失败时不截图）；路径要求同 dom_file
-        type: string
-    wat_timeout_ms:
-        description: WAT 等待指令的默认超时（毫秒，默认 10000）
-        type: integer
-    chrome_path:
-        description: Chrome/Edge 可执行文件路径（可选；须为绝对路径或以 ~/ 开头的用户目录路径，相对路径会报错；缺省自动探测，亦可用环境变量 CHONK_CHROME）
-        type: string
-type: object
+# 参数
+```json
+{
+  "properties": {
+    "chrome_path": {
+      "description": "Chrome/Edge 可执行文件路径（可选；须为绝对路径或以 ~/ 开头的用户目录路径，相对路径会报错；缺省自动探测，亦可用环境变量 CHONK_CHROME）",
+      "type": "string"
+    },
+    "console_file": {
+      "description": "执行结束（含失败）时把累计 console 日志导出到的文件路径（可选）；路径要求同 dom_file（绝对路径、~/ 或 !/ 开头）",
+      "type": "string"
+    },
+    "dom_file": {
+      "description": "执行结束（含失败）时把整页 DOM 导出到的文件路径（可选）；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错",
+      "type": "string"
+    },
+    "fail_shot": {
+      "description": "任意指令失败时自动截图落盘的文件路径（可选；未提供则失败时不截图）；路径要求同 dom_file",
+      "type": "string"
+    },
+    "file": {
+      "description": "已保存脚本文件路径（与 script 二选一；必须为绝对路径、以 ~/ 开头的用户目录路径或以 !/ 开头的临时目录路径，相对路径会报错）",
+      "type": "string"
+    },
+    "headless": {
+      "description": "无头模式（默认 true；false 弹出可见窗口便于观察/调试）",
+      "type": "boolean"
+    },
+    "script": {
+      "description": "浏览器编排脚本（一行一条指令，示例见上）",
+      "type": "string"
+    },
+    "wat_timeout_ms": {
+      "description": "WAT 等待指令的默认超时（毫秒，默认 10000）",
+      "type": "integer"
+    }
+  },
+  "type": "object"
+}
+```
+

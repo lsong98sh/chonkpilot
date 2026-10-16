@@ -2,7 +2,6 @@ package fileops
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,8 +10,6 @@ import (
 
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
-
-	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 )
 
 // maxReadBytes 是 file_read 单文件读入内存的硬上限（32MB，与 fetch 响应体上限同口径）：
@@ -28,98 +25,6 @@ type readReq struct {
 	tail        int
 	infoOnly    bool
 	ranges      [][2]int
-}
-
-// HandleReadFile 读取一个或多个文件（v2 契约）。
-// 结构化输出（无展示文本）：顶层 {status, files:[...]}；每文件含 path/md5/encoding/lines/size/content（或 error）。
-func HandleReadFile(workDir string, args map[string]interface{}) *cli.Result {
-	raw, ok := args["files"]
-	if !ok {
-		return cli.Err("file_read", "arguments must be a JSON array")
-	}
-	rawFiles, ok := raw.([]interface{})
-	if !ok || len(rawFiles) == 0 {
-		return cli.Err("file_read", "expected a non-empty array of file objects")
-	}
-
-	var reqs []readReq
-	for i, raw := range rawFiles {
-		m, ok := raw.(map[string]interface{})
-		if !ok {
-			return cli.Err("file_read", fmt.Sprintf("[%d]: expected object", i))
-		}
-		path, _ := m["path"].(string)
-		if path == "" {
-			return cli.Err("file_read", fmt.Sprintf("[%d]: path is required", i))
-		}
-		// 参数级路径违规（R-11）→ 顶层错误，不降级为单文件 error 条目
-		if msg := ValidateField(fmt.Sprintf("files[%d].path", i), path); msg != "" {
-			return cli.Err("file_read", msg)
-		}
-		req := readReq{path: path}
-		if v, ok := m["start"].(float64); ok {
-			req.start = int(v)
-		}
-		if v, ok := m["limit"].(float64); ok {
-			req.limit = int(v)
-		}
-		if v, ok := m["line_numbers"].(bool); ok {
-			req.lineNumbers = v
-		}
-		if v, ok := m["tail"].(float64); ok {
-			req.tail = int(v)
-		}
-		if v, ok := m["info"].(bool); ok {
-			req.infoOnly = v
-		}
-		if rawRanges, ok := m["ranges"].([]interface{}); ok {
-			for _, rr := range rawRanges {
-				if r, ok := rr.([]interface{}); ok && len(r) == 2 {
-					s, _ := r[0].(float64)
-					e, _ := r[1].(float64)
-					req.ranges = append(req.ranges, [2]int{int(s), int(e)})
-				}
-			}
-		}
-		reqs = append(reqs, req)
-	}
-
-	var fileInfos []map[string]interface{}
-	var errs []string
-	for _, req := range reqs {
-		info, err := readOne(req, workDir)
-		if err != nil {
-			if info == nil {
-				info = infoMap(req.path, err.Error())
-			}
-			errs = append(errs, fmt.Sprintf("%s: %s", req.path, err))
-		}
-		fileInfos = append(fileInfos, info)
-	}
-
-	status := "success"
-	var payload map[string]interface{}
-	if len(errs) > 0 {
-		status = "fail"
-		payload = map[string]interface{}{
-			"status": status,
-			"error":  strings.Join(errs, "\n"),
-			"files":  fileInfos,
-		}
-	} else {
-		payload = map[string]interface{}{
-			"status": status,
-			"files":  fileInfos,
-		}
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return cli.Err("file_read", "marshal result: "+err.Error())
-	}
-	if status == "fail" {
-		return &cli.Result{Success: false, Output: string(data), Error: strings.Join(errs, "\n"), Tool: "file_read"}
-	}
-	return cli.Ok("file_read", string(data), nil)
 }
 
 // readOne 读取单个文件，返回结构化 info（path/md5/encoding/lines/size/content 等）；错误时 info 带 error。

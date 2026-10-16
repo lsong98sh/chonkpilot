@@ -37,7 +37,7 @@ func appMultiScenarioRoot(t *testing.T, scenarios map[string]map[string]string) 
 		}
 		refs := []string{}
 		for name, prompt := range agents {
-			doc := "# " + name + "\n\n[description]\n" + name + " 描述\n\n[content]\n" + prompt + "\n"
+			doc := buildV2AgentDoc(name, name+" 描述", prompt, "", nil, nil)
 			if name == "main" {
 				if err := os.WriteFile(filepath.Join(dir, "main.agent.md"), []byte(doc), 0o644); err != nil {
 					t.Fatalf("write main.agent.md: %v", err)

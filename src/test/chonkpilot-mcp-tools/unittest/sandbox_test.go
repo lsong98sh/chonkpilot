@@ -115,9 +115,9 @@ func TestSandboxEnforcedWhenEnabled(t *testing.T) {
 		t.Fatalf("应留下 stderr 审计行：[agentbox] ...；stderr=%q", se)
 	}
 
-	// ③ 允许目录外读 → 拒绝
-	readArgs := map[string]any{"files": []any{map[string]any{"path": denyFile}}}
-	code, out, _ = runExecutorEnv(t, exe, "file_read", readArgs, env)
+	// ③ 允许目录外读 → 拒绝（经 filesys_run 的 READ 动作）
+	readArgs := map[string]any{"script": `READ #"` + filepath.ToSlash(denyFile) + `"`}
+	code, out, _ = runExecutorEnv(t, exe, "filesys_run", readArgs, env)
 	if code == 0 {
 		t.Fatalf("允许目录外读必须失败：exit=0 out=%q", out)
 	}
@@ -126,8 +126,8 @@ func TestSandboxEnforcedWhenEnabled(t *testing.T) {
 	}
 
 	// ④ 允许目录内读 → 成功
-	readArgs = map[string]any{"files": []any{map[string]any{"path": inside}}}
-	if code, out, se = runExecutorEnv(t, exe, "file_read", readArgs, env); code != 0 {
+	readArgs = map[string]any{"script": `READ #"` + filepath.ToSlash(inside) + `"`}
+	if code, out, se = runExecutorEnv(t, exe, "filesys_run", readArgs, env); code != 0 {
 		t.Fatalf("允许目录内读应成功：exit=%d out=%q stderr=%q", code, out, se)
 	}
 }
@@ -153,8 +153,8 @@ func TestSandboxDisabledByDefault(t *testing.T) {
 		if _, err := os.Stat(tc); err != nil {
 			t.Fatalf("未开启隔离时应落盘 %s：%v", tc, err)
 		}
-		readArgs := map[string]any{"files": []any{map[string]any{"path": tc}}}
-		if code, out, se = runExecutorEnv(t, exe, "file_read", readArgs, nil); code != 0 {
+		readArgs := map[string]any{"script": `READ #"` + filepath.ToSlash(tc) + `"`}
+		if code, out, se = runExecutorEnv(t, exe, "filesys_run", readArgs, nil); code != 0 {
 			t.Fatalf("未开启隔离时读应成功 %s：exit=%d out=%q stderr=%q", tc, code, out, se)
 		}
 	}

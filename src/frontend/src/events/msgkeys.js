@@ -34,12 +34,15 @@ export const MsgTopics = {
   guiToolchainDetect: 'gui.toolchain.detect',
   guiSystemBuiltins: 'gui.system.builtins',
   guiPromptOptimise: 'gui.prompt-optimise',
+  guiZpromptSummarize: 'gui.zprompt-summarize',
   guiPromptVars: 'gui.prompt-vars',
   optimizeToken: 'optimize-token',
   optimizeDone: 'optimize-done',
   optimizeError: 'optimize-error',
+  zpromptSummarized: 'zprompt-summarized',
   windowMaximizedChanged: 'window-maximized-changed',
   llmTestConnection: 'llm.test-connection',
+  configSuggest: 'config.suggest',
   memoryFlush: 'memory.flush',
   filesysList: 'filesys.list',
   filesysContent: 'filesys.content',
@@ -113,6 +116,10 @@ export const MsgTopics = {
   dataSessionCleanupStale: 'data-session-cleanup-stale',
   dataSessionLoadMessages: 'data-session-load-messages',
   dataSessionContext: 'data-session-context',
+  dataSessionGroupParticipantsLoad: 'data-session-group-participants-load',
+  dataSessionGroupParticipantsSave: 'data-session-group-participants-save',
+  dataSessionGroupRoundTargetsLoad: 'data-session-group-round-targets-load',
+  dataSessionGroupRoundTargetsSave: 'data-session-group-round-targets-save',
   dataSnapshotGet: 'data-snapshot-get',
   dataSnapshotSet: 'data-snapshot-set',
   dataKnowledgeRoot: 'data-knowledge-root',
@@ -125,6 +132,7 @@ export const MsgTopics = {
   dataKnowledgeMkdir: 'data-knowledge-mkdir',
   dataKnowledgeRmdir: 'data-knowledge-rmdir',
   dataKnowledgeRenameDir: 'data-knowledge-rename-dir',
+  dataKnowledgeImport: 'data-knowledge-import',
   dataTasktreeList: 'data-tasktree-list',
   dataTasktreeTasks: 'data-tasktree-tasks',
   dataTasktreeDelete: 'data-tasktree-delete',
@@ -160,6 +168,12 @@ export const MsgTopics = {
   sessionAsk: 'session-ask',
   sessionTurnStart: 'session-turn-start',
   sessionNew: 'session-new',
+  subchatOpened: 'subchat-opened',
+  subchatList: 'subchat-list',
+  subchatFinish: 'subchat-finish',
+  subchatContinue: 'subchat-continue',
+  subchatState: 'subchat-state',
+  subchatParticipantState: 'subchat-participant-state',
   taskStarted: 'task-started',
   taskUpdated: 'task-updated',
   taskDone: 'task-done',
@@ -210,6 +224,7 @@ export const MsgClientTopics = {
 export const FieldKeys = {
   accepted: 'accepted',
   activated: 'activated',
+  agent: 'agent',
   agents: 'agents',
   answer: 'answer',
   answered: 'answered',
@@ -244,8 +259,10 @@ export const FieldKeys = {
   contents: 'contents',
   context: 'context',
   continue: 'continue',
+  convergence: 'convergence',
   count: 'count',
   created_at: 'created_at',
+  current: 'current',
   cursor: 'cursor',
   custom: 'custom',
   data: 'data',
@@ -269,6 +286,7 @@ export const FieldKeys = {
   exec_json: 'exec_json',
   expandedKeys: 'expandedKeys',
   expires_at: 'expires_at',
+  fields: 'fields',
   files: 'files',
   filetree: 'filetree',
   filetreeWidth: 'filetreeWidth',
@@ -279,6 +297,7 @@ export const FieldKeys = {
   git: 'git',
   gitInstalled: 'gitInstalled',
   git_initialized: 'git_initialized',
+  goal: 'goal',
   groups: 'groups',
   handler_subject: 'handler_subject',
   hot: 'hot',
@@ -298,6 +317,7 @@ export const FieldKeys = {
   latency_ms: 'latency_ms',
   layout: 'layout',
   level: 'level',
+  lifecycle: 'lifecycle',
   limit: 'limit',
   list: 'list',
   llm: 'llm',
@@ -327,6 +347,7 @@ export const FieldKeys = {
   new_name: 'new_name',
   node_id: 'node_id',
   nodes: 'nodes',
+  notes: 'notes',
   notice: 'notice',
   offset: 'offset',
   ok: 'ok',
@@ -344,6 +365,7 @@ export const FieldKeys = {
   overwrite: 'overwrite',
   owner: 'owner',
   parent: 'parent',
+  parent_id: 'parent_id',
   parent_instance: 'parent_instance',
   parent_node_id: 'parent_node_id',
   parent_session_id: 'parent_session_id',
@@ -352,6 +374,7 @@ export const FieldKeys = {
   path: 'path',
   paths: 'paths',
   payload: 'payload',
+  playbook: 'playbook',
   plugin: 'plugin',
   pre_hook_subject: 'pre_hook_subject',
   prefix: 'prefix',
@@ -360,6 +383,7 @@ export const FieldKeys = {
   prompt: 'prompt',
   prompts: 'prompts',
   protocol: 'protocol',
+  purpose: 'purpose',
   query: 'query',
   question: 'question',
   queued: 'queued',
@@ -378,6 +402,7 @@ export const FieldKeys = {
   results: 'results',
   retryable: 'retryable',
   root: 'root',
+  round: 'round',
   rows: 'rows',
   scenario_id: 'scenario_id',
   scene_name: 'scene_name',
@@ -452,6 +477,7 @@ export const FieldKeys = {
 export const FieldDict = {
   accepted: 'accepted',
   activated: 'activated',
+  agent: 'agent',
   agents: 'agents',
   answer: 'answer',
   answered: 'answered',
@@ -486,8 +512,10 @@ export const FieldDict = {
   contents: 'contents',
   context: 'context',
   continue: 'continue',
+  convergence: 'convergence',
   count: 'count',
   created_at: 'created_at',
+  current: 'current',
   cursor: 'cursor',
   custom: 'custom',
   data: 'data',
@@ -513,6 +541,7 @@ export const FieldDict = {
   expires_at: 'expires_at',
   explicit: 'explicit',
   failed: 'failed',
+  fields: 'fields',
   file_id: 'file_id',
   files: 'files',
   filetree: 'filetree',
@@ -522,6 +551,7 @@ export const FieldDict = {
   full_tokens: 'full_tokens',
   git: 'git',
   git_initialized: 'git_initialized',
+  goal: 'goal',
   groups: 'groups',
   handler_subject: 'handler_subject',
   hot: 'hot',
@@ -545,6 +575,7 @@ export const FieldDict = {
   latency_ms: 'latency_ms',
   layout: 'layout',
   level: 'level',
+  lifecycle: 'lifecycle',
   limit: 'limit',
   list: 'list',
   llm: 'llm',
@@ -563,6 +594,7 @@ export const FieldDict = {
   md5: 'md5',
   memory: 'memory',
   memory_saved: 'memory_saved',
+  mentions: 'mentions',
   message: 'message',
   message_id: 'message_id',
   messages: 'messages',
@@ -579,6 +611,7 @@ export const FieldDict = {
   new_name: 'new_name',
   node_id: 'node_id',
   nodes: 'nodes',
+  notes: 'notes',
   notice: 'notice',
   offset: 'offset',
   ok: 'ok',
@@ -594,14 +627,17 @@ export const FieldDict = {
   overwrite: 'overwrite',
   owner: 'owner',
   parent: 'parent',
+  parent_id: 'parent_id',
   parent_instance: 'parent_instance',
   parent_node_id: 'parent_node_id',
   parent_session_id: 'parent_session_id',
+  parent_session_title: 'parent_session_title',
   parents: 'parents',
   password: 'password',
   path: 'path',
   paths: 'paths',
   payload: 'payload',
+  playbook: 'playbook',
   plugin: 'plugin',
   pre_hook_subject: 'pre_hook_subject',
   prefix: 'prefix',
@@ -611,6 +647,7 @@ export const FieldDict = {
   'prompt-use-case': 'useCase',
   prompts: 'prompts',
   protocol: 'protocol',
+  purpose: 'purpose',
   query: 'query',
   question: 'question',
   questions: 'questions',
@@ -629,12 +666,14 @@ export const FieldDict = {
   results: 'results',
   retryable: 'retryable',
   root: 'root',
+  round: 'round',
   rows: 'rows',
   saved: 'saved',
   scenario_id: 'scenario_id',
   scene_name: 'scene_name',
   schema: 'schema',
   scope: 'scope',
+  sender_agent: 'sender_agent',
   server: 'server',
   servers: 'servers',
   session: 'session',
@@ -881,6 +920,15 @@ export const GuiPromptOptimiseKeys = {
   useCase: 'useCase',
 }
 
+/** gui.zprompt-summarize 字段键（payload/result/event 合并去重）。 */
+export const GuiZpromptSummarizeKeys = {
+  content: 'content',
+  kind: 'kind',
+  ok: 'ok',
+  started: 'started',
+  title: 'title',
+}
+
 /** gui.prompt-vars 字段键（payload/result/event 合并去重）。 */
 export const GuiPromptVarsKeys = {
   groups: 'groups',
@@ -904,6 +952,12 @@ export const OptimizeErrorKeys = {
   status: 'status',
 }
 
+/** zprompt-summarized 字段键（payload/result/event 合并去重）。 */
+export const ZpromptSummarizedKeys = {
+  content: 'content',
+  error: 'error',
+}
+
 /** window-maximized-changed 字段键（payload/result/event 合并去重）。 */
 export const WindowMaximizedChangedKeys = {
   instance_id: 'instance_id',
@@ -921,6 +975,18 @@ export const LlmTestConnectionKeys = {
   model_echo: 'model_echo',
   ok: 'ok',
   protocol: 'protocol',
+}
+
+/** config.suggest 字段键（payload/result/event 合并去重）。 */
+export const ConfigSuggestKeys = {
+  current: 'current',
+  error: 'error',
+  fields: 'fields',
+  instance_id: 'instance_id',
+  kind: 'kind',
+  notes: 'notes',
+  ok: 'ok',
+  text: 'text',
 }
 
 /** memory.flush 字段键（payload/result/event 合并去重）。 */
@@ -1398,8 +1464,17 @@ export const DataSessionActiveGetKeys = {
 
 /** data-session-ensure-session 字段键（payload/result/event 合并去重）。 */
 export const DataSessionEnsureSessionKeys = {
+  agent: 'agent',
+  convergence: 'convergence',
+  goal: 'goal',
+  kind: 'kind',
+  lifecycle: 'lifecycle',
+  llm: 'llm',
   ok: 'ok',
   parent_session_id: 'parent_session_id',
+  playbook: 'playbook',
+  purpose: 'purpose',
+  scenario_id: 'scenario_id',
   session_id: 'session_id',
 }
 
@@ -1455,6 +1530,34 @@ export const DataSessionContextKeys = {
   messages: 'messages',
   session_id: 'session_id',
   turn_tokens: 'turn_tokens',
+}
+
+/** data-session-group-participants-load 字段键（payload/result/event 合并去重）。 */
+export const DataSessionGroupParticipantsLoadKeys = {
+  list: 'list',
+  session_id: 'session_id',
+}
+
+/** data-session-group-participants-save 字段键（payload/result/event 合并去重）。 */
+export const DataSessionGroupParticipantsSaveKeys = {
+  list: 'list',
+  ok: 'ok',
+  session_id: 'session_id',
+}
+
+/** data-session-group-round-targets-load 字段键（payload/result/event 合并去重）。 */
+export const DataSessionGroupRoundTargetsLoadKeys = {
+  list: 'list',
+  round: 'round',
+  session_id: 'session_id',
+}
+
+/** data-session-group-round-targets-save 字段键（payload/result/event 合并去重）。 */
+export const DataSessionGroupRoundTargetsSaveKeys = {
+  agents: 'agents',
+  ok: 'ok',
+  round: 'round',
+  session_id: 'session_id',
 }
 
 /** data-snapshot-get 字段键（payload/result/event 合并去重）。 */
@@ -1540,6 +1643,15 @@ export const DataKnowledgeRenameDirKeys = {
   path: 'path',
 }
 
+/** data-knowledge-import 字段键（payload/result/event 合并去重）。 */
+export const DataKnowledgeImportKeys = {
+  dir: 'dir',
+  errors: 'errors',
+  files: 'files',
+  ok: 'ok',
+  paths: 'paths',
+}
+
 /** data-tasktree-list 字段键（payload/result/event 合并去重）。 */
 export const DataTasktreeListKeys = {
   include_closed: 'include_closed',
@@ -1617,6 +1729,7 @@ export const InstanceRegisterKeys = {
   data_dir: 'data_dir',
   instance_id: 'instance_id',
   parent_instance: 'parent_instance',
+  session_id: 'session_id',
   user: 'user',
   work_dir: 'work_dir',
 }
@@ -1856,6 +1969,50 @@ export const SessionNewKeys = {
   instance_id: 'instance_id',
   parent_session_id: 'parent_session_id',
   session_id: 'session_id',
+}
+
+/** subchat-opened 字段键（payload/result/event 合并去重）。 */
+export const SubchatOpenedKeys = {
+  instance_id: 'instance_id',
+  parent_session_id: 'parent_session_id',
+  purpose: 'purpose',
+  session_id: 'session_id',
+  title: 'title',
+}
+
+/** subchat-list 字段键（payload/result/event 合并去重）。 */
+export const SubchatListKeys = {
+  list: 'list',
+  parent_id: 'parent_id',
+}
+
+/** subchat-finish 字段键（payload/result/event 合并去重）。 */
+export const SubchatFinishKeys = {
+  ok: 'ok',
+  session_id: 'session_id',
+}
+
+/** subchat-continue 字段键（payload/result/event 合并去重）。 */
+export const SubchatContinueKeys = {
+  ok: 'ok',
+  session_id: 'session_id',
+}
+
+/** subchat-state 字段键（payload/result/event 合并去重）。 */
+export const SubchatStateKeys = {
+  instance_id: 'instance_id',
+  lifecycle: 'lifecycle',
+  parent_session_id: 'parent_session_id',
+  session_id: 'session_id',
+}
+
+/** subchat-participant-state 字段键（payload/result/event 合并去重）。 */
+export const SubchatParticipantStateKeys = {
+  agent: 'agent',
+  instance_id: 'instance_id',
+  parent_session_id: 'parent_session_id',
+  session_id: 'session_id',
+  state: 'state',
 }
 
 /** task-started 字段键（payload/result/event 合并去重）。 */

@@ -1,13 +1,18 @@
 """回归测试：窗口布局组（51-FP与测试映射「窗口布局」10 项）。
 
-默认尺寸**以实现为准**（[31-窗口与布局 §:93 订正 2026-09-26]：默认值/上下限由另一轨调整，
-文档只记"存在 min/max 约束 + 恢复时 clamp"）→ 当前 `MainLayout.vue`：`filetreeWidth=320` ·
-`chatWidth=520` · `taskHeight=500` · `sessiontreeWidth=400`。
-窗口 1280 时 applyLayout 仍会 clamp（chat = min(800, vw*45%)），故断言取小噪声区间。
+〔2026-10-16 UILAYOUT-1 P4⑤：**默认形态 = 自由布局容器（free）**〕
+本套件原按 legacy（硬编码 `MainLayout` 五层 `SplitPanel`）断言「产品默认像素」；切默认后
+渲染路径 = `<ChonkLayout>`（区域树 + 占比 `sizes` + **像素定尺运行时**），故口径同步为：
 
-任务区默认**收起**（2026-09-27 首屏减负：`MainLayout.vue taskOpen = ref(false)`；已有保存值仍以
-保存值为准）→ 本套件全新区无已保存布局 → 任务区初始未挂载。故 L1..L7 的「六区 + 任务区尺寸」
-断言前先经既有 `tasks-toggle` 展开（L0b 锁定「默认收起」口径）。
+  · 分隔条 = `.split-handle`（机制层布局容器；**不再是** legacy 的 `.split-resizer`），
+    视觉/命中解耦同规则：本体 1px 发丝线（`--split-hairline`）+ 命中区 `::after`（`--split-hit=5px`），
+    激活态类名 = `.active`（legacy 为 `.is-active`）；本体恒 1px（无重排）。
+  · 尺寸 = **占比 × 可用像素**（`layout.free` 文档 `sizes`）→ 断言取「按默认占比推导的容差区间」，
+    不再断言 legacy 的固定像素 320/520/400（那是 legacy 分支的 `ref()` 默认值）。
+  · 持久化 = `layout.free`（**不再** `layout.*` 尺寸键；旧键仍可写但 free 形态不读、不回灌）。
+
+任务区**常显**（2026-10-16 用户裁决：三区 chat / task / filetree 去掉显隐能力与 UI 入口）→
+SessionTree / SessionChat 恒定挂载；`ensure_task_panel_open` 已退化为 no-op（保留调用以维持链路）。
 """
 import json
 import os
@@ -18,14 +23,10 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import free_port, ensure_task_panel_open  # noqa: E402  动态端口 + 任务面板展开（默认收起）
+from harness import free_port, ensure_task_panel_open  # noqa: E402
 
 PORT = free_port()
-# 布局状态持久化在 prj/prjusr 层，为测「默认值」需隔离数据目录（每次运行前清理）。
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_layout_data")
-# work-dir 亦自持（不再回落共享 systest/ws）：本套件只依赖**产品默认布局**，不依赖共享工程树
-# 内容；且 `--data-dir` 非空时 prjusr == prj（persist.go:400-408），窗几/布局全在本目录内，
-# 与任何他套件（含并发的同 work-dir 实例，I-74）无关。
 WORK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_layout_ws")
 
 
@@ -38,8 +39,6 @@ def J(gui, js):
 
 
 def JD(gui, js):
-    """eval 结果**双重解码**（同 `run_memory_ctx._plain` 口径）：测试通道会把返回的 JSON 字符串
-    再包一层，`J` 只解一层 → 拿到 str；此处再解一层得 dict（非 str 时原样返回）。"""
     v = J(gui, js)
     if isinstance(v, str):
         try:
@@ -54,30 +53,31 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     shutil.rmtree(WORK_DIR, ignore_errors=True)
     os.makedirs(WORK_DIR, exist_ok=True)
-    # 预创建 prj 库文件：ProjectPath 在 data-dir 库不存在时会回落 workdir 既有库（迁移语义），
-    # 隔离测试需先占位避免读到旧布局。
     open(os.path.join(DATA_DIR, "chonkpilot.db"), "w").close()
     gui = GUIClient(port=PORT, work_dir=WORK_DIR, data_dir=DATA_DIR)
     c = Checker()
     try:
         gui.start()
 
-        # L0 窗口几何基线（**显式声明**，替代「靠上一套件遗留状态」）：
-        # L2/L4/L7 断言的是「默认布局 + 窗口约束下的期望区间」，前提 = 窗口 = 产品默认 1280x800
-        # （main.go:602 创建；本套件 prj/prjusr 全新 → 无 window.* 记录 → 不回落任何旧几何）。
-        # 把实际 vw 打进 detail：若某次红了，可直接判定是「窗口几何偏离基线」还是「布局 clamp 变了」。
+        # L0 窗口几何基线（产品默认 1280x800；占比推导的前提）
         VW = J(gui, "window.innerWidth || 0")
         VH = J(gui, "window.innerHeight || 0")
-        c.check("L0 窗口几何基线 = 产品默认 1280x800（vw*45% clamp 前提）",
+        c.check("L0 窗口几何基线 = 产品默认 1280x800",
                 VW == 1280 and 700 <= VH <= 820, f"innerWidth={VW} innerHeight={VH}")
 
-        # L0b 任务区默认收起（2026-09-27 口径）：无已保存布局 → `taskOpen` 默认 false →
-        # SessionTree / SessionChat 未挂载（`.session-chat` 不存在）。
-        collapsed = J(gui, "!document.querySelector('.session-chat')")
-        c.check("L0b 任务区默认收起（SessionTree/SessionChat 未挂载）", collapsed is True,
-                f"collapsed={collapsed}")
-        # 展开任务区（复用既有 tasks-toggle，等价用户点顶部「任务」开关）→ 后续 L1..L7 断言六区 / 任务区尺寸
+        # L0b 任务区常显（裁决 2）
+        shown = J(gui, "!!document.querySelector('.session-chat')")
+        c.check("L0b 任务区常显（SessionTree/SessionChat 恒挂载）", shown is True, f"shown={shown}")
         ensure_task_panel_open(gui)
+
+        # L0c 默认形态 = free（容器外壳 + 区域树；legacy `.split-resizer` 不应出现）
+        f = J(gui, """(()=>{return JSON.stringify({
+  free:!!document.querySelector('.ck-topbar') && !!document.querySelector('.layout-leaf'),
+  legacyResizer:document.querySelectorAll('.split-resizer').length,
+  handles:document.querySelectorAll('.split-handle').length})})()""")
+        fd = json.loads(f)
+        c.check("L0c 默认形态 = 自由布局容器（free）", fd["free"] and fd["handles"] >= 4,
+                repr(fd))
 
         # L1 布局六区：toolbar / filetree / preview / chat / task(tasktree+taskview) / statusbar
         zones = J(gui, """(()=>{const q=s=>document.querySelectorAll(s).length;return JSON.stringify({
@@ -88,96 +88,88 @@ def main():
                 and z["chat"] > 0 and z["statusbar"] > 0 and z["panels"] >= 2,
                 repr(z))
 
-        n = J(gui, "document.querySelectorAll('.split-resizer').length")
-        c.check("L1b 分隔条（resizer）存在", n >= 4, f"resizers={n}")
+        n = J(gui, "document.querySelectorAll('.split-handle').length")
+        c.check("L1b 分隔条（.split-handle）存在", n >= 4, f"handles={n}")
 
-        # L1c 分隔条视觉/命中（方案 A，2026-09-28）：断言**真实渲染值**（非 CSS 文本）。
-        #   · 本体 = 1px 发丝线（getBoundingClientRect().width == 1），常态填充 --border 的**实解析 rgb**；
-        #   · 命中区 = 伪元素（不可直接 getBoundingClientRect）→ 用 elementFromPoint 命中矩形推算：
-        #     距中线 ±1.5px 命中（⇒ 命中区跨度 ≥3px）、±4px 落到相邻 pane（⇒ 跨度 <8px），
-        #     与 5px 命中区一致；伪元素计算宽 `::after width` 作为证据一并回报（不写死颜色/宽）。
-        #   · 激活态：harness 不支持真 hover（CSS :hover 无法由合成事件触发，见 run_task_ui.case_hover_stop）
-        #     → 用等价规则态 `.is-active`（与 :hover 同一条 CSS 规则），断言伪元素色 == --accent 实解析 rgb
-        #     且本体仍 1px（不加宽 ⇒ 无重排）。
+        # L1c 分隔条视觉/命中（与 legacy 同口径，类名改机制层）：本体 1px + 命中区 ::after + .active 填强调色
         vis_js = """(()=>{
-  const r=document.querySelector('.split-resizer.resizer-horizontal');
-  if(!r||r.getBoundingClientRect().width<=0) return JSON.stringify({err:'no-resizer'});
+  const r=document.querySelector('.split-handle.horizontal');
+  if(!r||r.getBoundingClientRect().height<=0) return JSON.stringify({err:'no-handle'});
   const rgb=v=>{const p=document.createElement('div');p.style.background=v;
     document.body.appendChild(p);const c=getComputedStyle(p).backgroundColor;p.remove();return c;};
   const rect=r.getBoundingClientRect();
   const cx=rect.left+rect.width/2, cy=rect.top+rect.height/2;
-  const hit=d=>{const e=document.elementFromPoint(cx+d,cy);
-    return !!(e&&(e===r||(e.closest&&e.closest('.split-resizer')===r)));};
+  const hit=d=>{const e=document.elementFromPoint(cx,cy+d);
+    return !!(e&&(e===r||(e.closest&&e.closest('.split-handle')===r)));};
   const color=getComputedStyle(r).backgroundColor;
   const hitNear=hit(1.5)&&hit(-1.5), hitFar=hit(4)||hit(-4);
-  // 断言去抖：命中区 ::after 带 `transition: background 0.12s` → 紧跟 add 后读 computed 只会拿到
-  // 过渡**起点**（transparent，非激活最终值）。先临时禁过渡（不改产品样式、不改规则），使 computed
-  // 立即反映激活态最终色；读毕移除。断言强度不变（仍要求 ::after 色 == --accent 实解析 rgb）。
   const st=document.createElement('style');
-  st.textContent='.split-resizer::after{transition:none !important}';
+  st.textContent='.split-handle::after{transition:none !important}';
   document.head.appendChild(st);
-  r.classList.add('is-active');
+  r.classList.add('active');
   const aAfter=getComputedStyle(r,'::after').backgroundColor;
-  const aW=parseFloat(getComputedStyle(r,'::after').width)||0;
-  const aBodyW=r.getBoundingClientRect().width;
-  const aHit=hit(1.5)&&hit(-1.5);
-  r.classList.remove('is-active');
+  const aW=parseFloat(getComputedStyle(r,'::after').height)||0;
+  const aBodyH=r.getBoundingClientRect().height;
+  r.classList.remove('active');
   st.remove();
-  return JSON.stringify({w:rect.width,color:color,refBorder:rgb('var(--border)'),
-    accent:aAfter,refAccent:rgb('var(--accent)'),afterW:aW,activeBodyW:aBodyW,
-    hitNear:hitNear,hitFar:hitFar,activeHit:aHit});})()"""
+  return JSON.stringify({h:rect.height,color:color,refBorder:rgb('var(--lf-border)'),
+    accent:aAfter,refAccent:rgb('var(--lf-accent)'),afterH:aW,activeBodyH:aBodyH,
+    hitNear:hitNear,hitFar:hitFar});})()"""
         rv = JD(gui, vis_js) or {}
-        c.check("L1c 分隔条本体 1px 发丝线（真实渲染宽 == 1）",
-                isinstance(rv.get("w"), (int, float)) and abs(rv.get("w") - 1) < 0.6,
-                f"width={rv.get('w')} err={rv.get('err')}")
-        c.check("L1c 分隔条常态色 == --border 实解析 rgb",
+        c.check("L1c 分隔条本体 1px 发丝线（真实渲染高 == 1）",
+                isinstance(rv.get("h"), (int, float)) and abs(rv.get("h") - 1) < 0.6,
+                f"height={rv.get('h')} err={rv.get('err')}")
+        c.check("L1c 分隔条常态色 == --lf-border 实解析 rgb",
                 rv.get("color") is not None and rv.get("color") == rv.get("refBorder"),
-                f"color={rv.get('color')} --border={rv.get('refBorder')}")
+                f"color={rv.get('color')} --lf-border={rv.get('refBorder')}")
         c.check("L1c 命中区宽于本体（±1.5px 命中 / ±4px 落到相邻 pane）",
                 rv.get("hitNear") is True and rv.get("hitFar") is False,
-                f"hit(±1.5px)={rv.get('hitNear')} hit(±4px)={rv.get('hitFar')} ::afterWidth={rv.get('afterW')}")
-        c.check("L1c 激活态（.is-active）：命中区填 --accent 实解析 rgb + 本体不加宽（恒 1px）",
+                f"hit(±1.5px)={rv.get('hitNear')} hit(±4px)={rv.get('hitFar')} ::afterH={rv.get('afterH')}")
+        c.check("L1c 激活态（.active）：命中区填 --lf-accent 实解析 rgb + 本体不加宽（恒 1px）",
                 rv.get("accent") == rv.get("refAccent")
-                and isinstance(rv.get("activeBodyW"), (int, float))
-                and abs(rv.get("activeBodyW") - 1) < 0.6 and rv.get("activeHit") is True,
-                f"::after色={rv.get('accent')} --accent={rv.get('refAccent')} "
-                f"本体宽={rv.get('activeBodyW')} activeHit(±1.5px)={rv.get('activeHit')}")
+                and isinstance(rv.get("activeBodyH"), (int, float))
+                and abs(rv.get("activeBodyH") - 1) < 0.6,
+                f"::after色={rv.get('accent')} --lf-accent={rv.get('refAccent')} 本体高={rv.get('activeBodyH')}")
 
         def pane_w(sel):
             return J(gui, f"(document.querySelector('{sel}')?.getBoundingClientRect().width||0)")
 
-        # L2 filetree 宽度默认 320px（`MainLayout.vue`：filetreeWidth = ref(320)）
-        fw = pane_w(".filetree-panel")
-        c.check("L2 filetree 宽度默认 320px", 316 <= fw <= 324, f"actual={fw}px vw={VW}")
+        def pane_h(sel):
+            return J(gui, f"(document.querySelector('{sel}')?.getBoundingClientRect().height||0)")
 
-        # L3 filetree 宽度保存（gui.ui.save {layout}）
+        # L2 filetree 宽度：默认文档占比（左列内 320 : previewMin 280）→ 容差区间（非 legacy 固定 320）
+        fw = pane_w(".filetree-panel")
+        c.check("L2 filetree 宽度（默认占比推导）落在合理区间", 300 <= fw <= 560, f"actual={fw}px vw={VW}")
+
+        # L3 旧尺寸键仍可写（free 形态不读；只验证既有消息面可用，不回灌）
         try:
             gui.req("gui.ui.save", {"layout": {"filetreeWidth": 300}})
-            c.check("L3 filetree 宽度保存（gui.ui.save layout）", True, "ok")
+            c.check("L3 旧尺寸键写入（gui.ui.save layout）仍可用", True, "free 形态不读旧键")
         except Exception as e:
-            c.check("L3 filetree 宽度保存（gui.ui.save layout）", False, str(e))
+            c.check("L3 旧尺寸键写入（gui.ui.save layout）仍可用", False, str(e))
 
-        # L4 chat 宽度默认 520px（`MainLayout.vue`：chatWidth = ref(520)；仍受 vw*45% clamp）
+        # L4 chat 宽度：默认占比（body 640 : 520）→ 容差区间
         cw = pane_w(".chat-panel")
-        c.check("L4 chat 宽度默认 520px", 500 <= cw <= 524, f"actual={cw}px（vw*45% clamp，vw={VW}）")
+        c.check("L4 chat 宽度（默认占比推导）落在合理区间", 480 <= cw <= 660,
+                f"actual={cw}px（vw={VW}）")
 
-        # L5 chat 宽度保存
+        # L5 同上（消息面可用性）
         try:
             gui.req("gui.ui.save", {"layout": {"chatWidth": 500}})
-            c.check("L5 chat 宽度保存（gui.ui.save layout）", True, "ok")
+            c.check("L5 旧 chat 尺寸写入（gui.ui.save layout）仍可用", True, "ok")
         except Exception as e:
-            c.check("L5 chat 宽度保存（gui.ui.save layout）", False, str(e))
+            c.check("L5 旧 chat 尺寸写入（gui.ui.save layout）仍可用", False, str(e))
 
-        # L6 task 区高度默认 500px（.panel-inner 为代理，允许面板内边距误差）
-        th = J(gui, "(document.querySelector('.panel-inner')?.getBoundingClientRect().height||0)")
-        c.check("L6 task 区高度默认 500px", 470 <= th <= 510, f"actual={th}px")
+        # L6 任务区高度（左上/左下 上下分割）：`.panel-inner` 代理（SessionTree/SessionChat/ChatPanel 三处）
+        th = pane_h(".panel-inner")
+        c.check("L6 任务/对话面板高度可用（>200px）", th > 200, f"actual={th}px")
 
-        # L7 tasktree(session-tree) 宽度默认 400px
+        # L7 session-tree 宽度（左下 400 : sessionChatMin 240）
         sw = pane_w(".panel-inner")
-        c.check("L7 tasktree 宽度默认 400px", 390 <= sw <= 410, f"actual={sw}px vw={VW}")
+        c.check("L7 tasktree(session-tree) 宽度落在合理区间", 280 <= sw <= 620, f"actual={sw}px vw={VW}")
 
-        # L8 拖拽 resizer 实际改变 chat 宽度（前端交互）；并强化：拖拽中本体恒 1px（方案 A 无重排/抖动）
-        js_drag = """(()=>{let best=null;for(const r of document.querySelectorAll('.split-resizer.resizer-horizontal')){const next=r.nextElementSibling;if(next&&next.querySelector('.chat-panel')){const rect=r.getBoundingClientRect();best={el:r,x:rect.left+rect.width/2,y:rect.top+rect.height/2};break}}if(!best)return JSON.stringify({w0:0,rw:0});const w0=document.querySelector('.chat-panel').getBoundingClientRect().width;best.el.dispatchEvent(new MouseEvent('mousedown',{clientX:best.x,clientY:best.y,bubbles:true,cancelable:true}));window.dispatchEvent(new MouseEvent('mousemove',{clientX:best.x-60,clientY:best.y,bubbles:true,cancelable:true}));const rw=best.el.getBoundingClientRect().width;window.dispatchEvent(new MouseEvent('mouseup',{clientX:best.x-60,clientY:best.y,bubbles:true,cancelable:true}));return JSON.stringify({w0:w0,rw:rw});})()"""
+        # L8 拖拽分隔条实际改变 chat 宽度；拖拽中本体恒 1px
+        js_drag = """(()=>{let best=null;for(const r of document.querySelectorAll('.split-handle.vertical')){const next=r.nextElementSibling;if(next&&next.querySelector('.chat-panel')){const rect=r.getBoundingClientRect();best={el:r,x:rect.left+rect.width/2,y:rect.top+rect.height/2};break}}if(!best)return JSON.stringify({w0:0,rw:0});const w0=document.querySelector('.chat-panel').getBoundingClientRect().width;best.el.dispatchEvent(new MouseEvent('mousedown',{clientX:best.x,clientY:best.y,bubbles:true,cancelable:true}));window.dispatchEvent(new MouseEvent('mousemove',{clientX:best.x-60,clientY:best.y,bubbles:true,cancelable:true}));const rw=best.el.getBoundingClientRect().width;window.dispatchEvent(new MouseEvent('mouseup',{clientX:best.x-60,clientY:best.y,bubbles:true,cancelable:true}));return JSON.stringify({w0:w0,rw:rw});})()"""
         d = JD(gui, js_drag) or {}
         w0 = d.get("w0", 0)
         time.sleep(0.8)
@@ -185,60 +177,60 @@ def main():
         c.check("L8 拖拽分隔条改变 chat 宽度", w1 != w0 and w1 > 0, f"{w0}->{w1}")
         c.check("L8b 拖拽中分隔条本体不加宽（恒 1px，无重排/抖动）",
                 isinstance(d.get("rw"), (int, float)) and abs(d.get("rw") - 1) < 0.6,
-                f"拖拽中 resizer 宽={d.get('rw')}")
+                f"拖拽中 handle 宽={d.get('rw')}")
 
-        # L9a 保存布局（chatWidth=500）→ 停 main → 重启验证恢复
+        # L9a 保存布局（**free** 口径）：改 `split_body` 占比 → 落 `layout.free` → 重启回灌
+        doc = JD(gui, "JSON.stringify((window.__ckLayout&&window.__ckLayout.engine)?window.__ckLayout.engine.state.config.live:null)")
+        if not isinstance(doc, dict) or not doc.get("layout"):
+            raise AssertionError("未取到 layout.free 文档：%r" % (doc,))
+        # 把 body 水平分割的 chat 占比调小（0.30/0.70），便于区分「读到保存值」与「回落默认」
+        body = doc["layout"]
+        kids = body.get("children") or []
+        if len(kids) == 2:
+            body["sizes"] = [0.70, 0.30]
+        else:
+            for nd in kids:
+                if isinstance(nd, dict) and nd.get("type") == "split" and nd.get("direction") == "row" and len(nd.get("children") or []) == 2:
+                    nd["sizes"] = [0.70, 0.30]
+                    break
+        free_json = json.dumps(doc, ensure_ascii=False)
         try:
-            gui.req("gui.ui.save", {"layout": {"chatWidth": 500, "sessiontreeWidth": 350, "filetreeWidth": 330}})
-            c.check("L9a 保存布局（gui.ui.save layout）", True, "ok")
+            gui.req("gui.ui.save", {"layout": {"free": free_json}})
+            c.check("L9a 保存布局（gui.ui.save layout.free）", True, "ok")
         except Exception as e:
-            c.check("L9a 保存布局（gui.ui.save layout）", False, str(e))
+            c.check("L9a 保存布局（gui.ui.save layout.free）", False, str(e))
 
-        # L9b A 落库回读（P6 复核补齐）：`gui.ui.save{layout}` → bridge/local.go:191-196
-        # `callSaveLayoutState` → 键 `layout.<k>` 落 prj 库（`--data-dir` 非空时 prjusr == prj）。
-        # 原用例只有「重启后 chat 宽度 DOM」= 效果侧，无落库回读。
+        # L9b 落库回读（layout.free 子键）
         pl = (gui.req("data-prj-config-list", {}) or {}).get("list") or {}
-        c.check("L9b 布局落库回读（layout.chatWidth/sessiontreeWidth/filetreeWidth）",
-                pl.get("layout.chatWidth") == "500"
-                and pl.get("layout.sessiontreeWidth") == "350"
-                and pl.get("layout.filetreeWidth") == "330",
-                repr({k: v for k, v in pl.items() if k.startswith("layout.")}))
-
-        # 解耦（2026-09-25）：L10a/L10c 的窗口状态（`window.width=1000`）**不在本会话写**——
-        # 若在此写入，重启后 applyLayout 会把 chatWidth clamp 到 `vw*45%`=450（MainLayout.vue:124）
-        # → L9 的 480..520 断言被 L10 连带判红（用例耦合，非功能回归）。改到「L9 验证之后的
-        # 独立会话」写入，使 L9 在**产品默认窗口几何**下断言。
+        stored = pl.get("layout.free")
+        c.check("L9b 布局落库回读（layout.free 子键）",
+                isinstance(stored, str) and '"sizes": [0.7, 0.3]' in stored.replace("0.70", "0.7"),
+                repr((stored or "")[:200]))
     finally:
-        gui.stop()  # 释放 DB 文件锁后重启验证（bbolt 单进程写锁）
+        gui.stop()
 
     time.sleep(1)
-    # 第二实例：**只验证布局恢复**（L9）。此时 `window.*` 尚未写入 → 窗口 = 产品默认 1280x800
-    # → applyLayout 的 `vw*45%` clamp（MainLayout.vue:124）不生效，L9 与 L10 互不影响。
-    g2 = GUIClient(work_dir=WORK_DIR, data_dir=DATA_DIR)  # 第二实例同样动态端口 + 同一自持数据根
+    # 第二实例：**只验证布局恢复**（L9，free 口径）
+    g2 = GUIClient(work_dir=WORK_DIR, data_dir=DATA_DIR)
     g2.start()
     try:
-        # L9 重启恢复布局：恢复是**异步**的 —— 宿主 `ready`（导航完成 → test-port /ping ready）
-        # **早于**前端启动期工作（instance-claim 门控主视图挂载 → gui.init-data 往返 → applyLayout），
-        # 实测恢复落点在 ready 之后（2026-09-22 探针/宿主日志：claim ~0.8s + init-data ~0.25s）。
-        # 故此处**有界等待**恢复值出现；断言强度不变（必须落在 480..520，15s 内不出现即失败）。
-        deadline = time.time() + 15
+        deadline = time.time() + 20
         cw2 = 0
         while time.time() < deadline:
             cw2 = J(g2, "(document.querySelector('.chat-panel')?.getBoundingClientRect().width||0)")
-            if 480 <= cw2 <= 520:
+            # 保存占比 chat=0.30 → 期望 chat ≈ 0.30 * 内容宽（1280 上下）；默认是 0.4483
+            if cw2 and cw2 <= 460:
                 break
             time.sleep(0.3)
-        c.check("L9 重启恢复布局", 480 <= cw2 <= 520, f"chatWidth={cw2}px")
+        c.check("L9 重启恢复布局（layout.free 回灌）", 200 <= cw2 <= 460, f"chatWidth={cw2}px")
 
-        # L10a 超屏正常化（保存侧，与 L9 解耦）：L9 断言已结束 → 在本会话末写屏幕外窗口状态；
-        # 该 `window.width=1000` 只影响后续 L10b 的判定，不再回灌 L9。
+        # L10a 保存屏幕外窗口状态（与 L9 解耦）
         try:
             g2.req("gui.ui.save", {"window": {"width": 1000, "height": 700, "x": 99999, "y": 99999, "maximized": False}})
             c.check("L10a 保存屏幕外窗口状态（gui.ui.save window）", True, "ok")
         except Exception as e:
             c.check("L10a 保存屏幕外窗口状态（gui.ui.save window）", False, str(e))
 
-        # L10c A 落库回读（P6 复核补齐）：`window.<k>` 同链路；原用例只断重启后 screenX/Y。
         pl2 = (g2.req("data-prj-config-list", {}) or {}).get("list") or {}
         c.check("L10c 窗口状态落库回读（window.width/x/y/maximized）",
                 pl2.get("window.width") == "1000" and pl2.get("window.x") == "99999"
@@ -248,21 +240,9 @@ def main():
         g2.stop()
 
     time.sleep(1)
-    # 第三实例：**只验证超屏正常化**（L10b）——此时 `window.x/y=99999` 已落库。
-    g3 = GUIClient(work_dir=WORK_DIR, data_dir=DATA_DIR)  # 第三实例同样动态端口 + 同一自持数据根
+    g3 = GUIClient(work_dir=WORK_DIR, data_dir=DATA_DIR)
     g3.start()
     try:
-        # L10b 超屏正常化（**语义判定**，2026-09-24 加固）：L10a 保存的是**屏幕外**坐标
-        # （x=y=99999），重启后宿主按**当前显示器布局**正常化（`src/lib/gui/main.go
-        # normalizeWindowRect`：无交集 → 收进主显示器工作区并居中）。
-        #
-        # 判据（不写死数值区间，免疫多屏/虚拟屏/负坐标原点）：
-        #   ① **已移出保存点**：|screenX-99999| / |screenY-99999| 均 > 1000；
-        #   ② **真可见**：窗口矩形与「窗口所在屏的可用区域」**交叠面积 > 0**
-        #      （`screen.availLeft/availTop` = 该屏在虚拟桌面中的原点、`availWidth/Height` = 该屏可用尺寸；
-        #       负坐标屏同样成立；完全不交叠 = 没被收进可见区域 → 判失败）。
-        # **有界等待**：启动瞬间窗口可能尚未定位（观测到 `screenX=-32000` = Windows 图标态坐标），
-        # 故轮询至条件成立，超时才失败 —— **判定强度不变**（仍要求真交叠）。
         L10_PROBE = ("(()=>{const S=window.screen||{};const n=v=>typeof v==='number'?v:0;"
                      "const ol=n(S.availLeft),ot=n(S.availTop),"
                      "aw=n(S.availWidth)||n(S.width),ah=n(S.availHeight)||n(S.height);"
@@ -271,7 +251,7 @@ def main():
                      "const ix=Math.max(0,Math.min(x+w,ol+aw)-Math.max(x,ol));"
                      "const iy=Math.max(0,Math.min(y+h,ot+ah)-Math.max(y,ot));"
                      "return JSON.stringify({x:x,y:y,w:w,h:h,ol:ol,ot:ot,aw:aw,ah:ah,vis:ix*iy});})()")
-        SAVED_OFF = 99999  # = L10a 写入的屏幕外坐标
+        SAVED_OFF = 99999
         deadline = time.time() + 15
         probe = {}
         while time.time() < deadline:

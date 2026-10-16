@@ -303,6 +303,18 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 		}
 		return m, nil
 
+	// zprompt-summarize：正文摘要生成（payload {kind, title?, content} → callZpromptSummarize）
+	// → 立即返回 {ok, started}；结果经 zprompt-summarized 事件推送（61 §1，2026-10-14）。
+	case "zprompt-summarize":
+		if len(payload) == 0 || string(payload) == "null" {
+			return fail("zprompt-summarize: body required")
+		}
+		m, err := callMap(callZpromptSummarize, json.RawMessage(payload))
+		if err != nil {
+			return fail("zprompt-summarize: %v", err)
+		}
+		return m, nil
+
 	// devtools.open：宿主程序化打开 DevTools（61 §1；B3）。DevTools 的**用户入口**
 	// （F12 / Ctrl+Shift+I 快捷键、右键菜单 Inspect）已在宿主层屏蔽，本动作 = 唯一入口。
 	// **无返回**（61 §1 该主题「返回 = 无（本地事件）」）；宿主不支持 → 明确失败，不静默。

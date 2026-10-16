@@ -17,6 +17,7 @@ package wire
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
@@ -376,6 +377,26 @@ func KnowledgeRenameDirFromWire(m map[string]any) facade.KnowledgeRenameDirReque
 	return facade.KnowledgeRenameDirRequest{Path: str(m["path"]), NewName: str(m["new_name"])}
 }
 
+// KnowledgeImportFromWire 解析 `{dir?, files:[{name, content}]}` → 门面入参（61 §3.3
+// `data-knowledge-import`；`content` = base64 文件字节，缺省 = 空文件）。非对象元素跳过。
+func KnowledgeImportFromWire(m map[string]any) facade.KnowledgeImportRequest {
+	req := facade.KnowledgeImportRequest{Dir: str(m["dir"])}
+	raw, ok := m["files"].([]any)
+	if !ok {
+		return req
+	}
+	for _, e := range raw {
+		fm, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		req.Files = append(req.Files, facade.KnowledgeImportFile{
+			Name: str(fm["name"]), Content: str(fm["content"]),
+		})
+	}
+	return req
+}
+
 // ── 文件清单（filelist 域）────────────────────────────────────────
 
 // FileListListResult 组装 `data-filelist-list` 结果载荷 `{list:[条目…], total}`。
@@ -478,6 +499,14 @@ func ScenarioToWire(sc facade.Scenario) map[string]any {
 		put(row, "llmRef", a.LLMRef)
 		put(row, "delegateCond", a.DelegateCond)
 		put(row, "ref", a.Ref)
+		// 参考名单（skills / resources；可选，非空才带）：供 capfs。agentToDoc 的 refListOf 消费，
+		// 同时作为 list/get 应答载荷字段（61 §3.4 agents[] 元素形状）。
+		if len(a.Skills) > 0 {
+			row["skills"] = strSliceAny(a.Skills)
+		}
+		if len(a.Resources) > 0 {
+			row["resources"] = strSliceAny(a.Resources)
+		}
 		agents = append(agents, row)
 	}
 	out := map[string]any{
@@ -516,6 +545,8 @@ func ScenarioFromWire(m map[string]any) facade.Scenario {
 				IsMain:       truthy(am["isMain"]),
 				Prompt:       str(am["prompt"]),
 				Tools:        str(am["tools"]),
+				Skills:       strListJSON(am["skills"]),
+				Resources:    strListJSON(am["resources"]),
 				LLMRef:       str(am["llmRef"]),
 				DelegateCond: str(am["delegateCond"]),
 				Ref:          str(am["ref"]),
@@ -663,6 +694,42 @@ func strSliceAny(ss []string) []any {
 		out = append(out, s)
 	}
 	return out
+}
+
+// strListJSON 解析场景 agent 的**引用名单**（skills / resources）：兼容
+//   - 数组形态（[]any / []string）—— 前端载荷（61 §3.4 agents[] 元素）；
+//   - JSON 数组文本（string）—— capfs 读盘结果（agentFromDoc 把契约 refs 序列化为 JSON 数组文本）；
+//   - 非 JSON 单值字符串 → 单元素名单。
+//
+// 空元素被剔除；解析不出 → nil。与 capfs.refListOf 同口径（写/读两侧对同一值可往返）。
+func strListJSON(v any) []string {
+	if s, ok := v.(string); ok {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil
+		}
+		var arr []string
+		if err := json.Unmarshal([]byte(s), &arr); err == nil {
+			out := make([]string, 0, len(arr))
+			for _, it := range arr {
+				if it = strings.TrimSpace(it); it != "" {
+					out = append(out, it)
+				}
+			}
+			return out
+		}
+		return []string{s}
+	}
+	if ss := strList(v); len(ss) > 0 {
+		out := make([]string, 0, len(ss))
+		for _, it := range ss {
+			if it = strings.TrimSpace(it); it != "" {
+				out = append(out, it)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // ── 记忆库（memory 域）───────────────────────────────────────────

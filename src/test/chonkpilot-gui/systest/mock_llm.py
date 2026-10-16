@@ -9,12 +9,12 @@
       has_tool_result/n_requests）· GET /lastbody（请求体多模态摘要）。
 行为：把最后一个 user 消息回显为回复；根据文本关键词返回 tool_calls 以驱动
       testplan 相关场景（工具调用 / cancel）：
-        "call tool"   → self_file_read a.txt        （工具调用链路，testplan 五.3）
+        "call tool"   → dsl_run FILE_READ a.txt（工具调用链路，testplan 五.3）
         "call cancel" → self_script_run 长命令      （testplan 五.8）
         "call slow-never" → self_script_run 慢命令（call-level async=never + timeout=1s；
                             run_tool_async.py 断言 mcp-tools-timeout options=[wait,cancel]）
-        "call find-skip"  → self_file_find（grep=GATE_SKIP_SENTINEL；路径由提示词携带
-                            `findskip=<绝对路径>`；run_index_gate.py 断言 prj skip_dirs 端到端）
+        "call find-skip"  → dsl_run FILE_FIND（grep=GATE_SKIP_SENTINEL；根路径由提示词携带
+                            `findskip=<绝对路径>`，可选跳过目录 `findsd=<csv>`；run_index_gate.py 断言）
         "call interp-probe" → self_script_run（runtime 由提示词携带 `rt=<runtime>`；run_paths.py
                             断言 CHONK_CHROME / CHONKPILOT_INTERPRETERS 子进程 env 注入
                             与「被启动解释器 == 配置 *Path 值」）
@@ -34,9 +34,9 @@
         "call hist-restore-nopath"→ self_history_restore{}（空 path，应被拒绝）
         "call hist-restore-dir"    + histrel=<相对目录>
                                   → self_history_restore（目录，应被拒绝）
-      **工具名一律用网关暴露名**（self 节点 entry.ID 前缀 `self_`）：server 按暴露名
-      调 gateway tools/call，未带前缀的裸名无法路由（I-20）——file_read/script_run/
-      user_ask/tool_result/llm_run 均为 self_* 形态。
+      **工具名一律用网关暴露名**：self 节点（entry.ID=self）前缀 `self_`（filesys_run/script_run/
+      user_ask/tool_result/llm_run 均为 self_* 形态）；gateway 自持 `dsl` 节点 namespace="-"
+      → 暴露名**恰为** `dsl_run`（裸名）。未带前缀的裸名无法路由（I-20）。
       "BATCHLIST" 由 reply_override 直接回 JSON 文本数组（供 SET raw.array 解析）。
 工具结果回填后再次收到调用时文本不再含关键词 → 返回普通回复，避免循环。
 """
@@ -399,15 +399,21 @@ def route_tool_calls(text):
         # 供根节点 task-stop 级联取消（C13 子会话工具链 + C18 级联）。
         return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.1",
                                      "tool_call_display_name": "测试"})]
-    # P4 索引/执行参数批次（run_index_gate.py）：file_find 走项目级 skip_dirs 端到端。
-    # 搜索根路径由提示词携带（`findskip=<绝对路径>`，无空格）——mock 按关键词回一次
-    # file_find 调用，使「prj skip_dirs 生效 → 命中集合不含被跳过目录」可在 GUI 侧断言。
+    # P4 索引/执行参数批次（run_index_gate.py）：查询动作 FIND 走 skip_dirs 端到端。
+    # 搜索根路径由提示词携带（`findskip=<绝对路径>`，无空格）+ 可选跳过目录 `findsd=<csv>`
+    # ——mock 按关键词回一次 `dsl_run`（FILE_FIND），使「skip_dirs 生效 → 命中集合
+    # 不含被跳过目录」可在 GUI 侧断言。（原 prj skip_dirs 经 tools/call 顶层参数注入，随
+    # file_find 工具收纳为 FIND 动作而失效 → 改由调用方显式携带，见 run_index_gate.run_find_turn。）
     # 位置：必须早于下面的 `call py`/`call cancel` 等宽关键词分支（本关键词互不包含，仍前置求稳）。
     if "call find-skip" in t:
         m = re.search(r"findskip=([^\s\"']+)", text)
         root = m.group(1) if m else SCRIPTS_WS
-        return [("self_file_find", {"path": root, "grep": "GATE_SKIP_SENTINEL",
-                                    "output": "file", "tool_call_display_name": "跳过目录验证"})]
+        sd = _prompt_arg(text, "findsd")  # 可选：FIND 的 skip_dirs=<a,b>
+        line = 'FILE_FIND #"%s" grep="GATE_SKIP_SENTINEL" output=file' % root.replace("\\", "/")
+        if sd:
+            line += ' skip_dirs="%s"' % sd
+        return [("dsl_run", {"script": line + " => $RETURN",
+                             "tool_call_display_name": "跳过目录验证"})]
     # I-80 回归（run_paths.py）：java 真机单文件源码模式——runtime=java + 打印哨兵的类。
     # 与 `call interp-probe rt=java`（夹具：假解释器回显 execPath）互补：本桩用**真机 java**
     # 证明 java runtime 真能跑（临时脚本扩展名必须 .java；.jsh 会被当类名 → ClassNotFoundException）。
@@ -477,8 +483,12 @@ def route_tool_calls(text):
     # 普通工具场景
     # R-11：文件操作参数须为绝对路径或以 ~/ 开头（相对路径会被执行器拒绝），
     # 故用 ws 绝对路径（与 run_llm.py 期望的 "hello from a.txt" 对应）。
+    # 原 file_read 工具已收纳为 dsl_run 的 FILE_READ 动作 → 经 dsl_run（gateway 自持 dsl 节点，
+    # 暴露名裸 `dsl_run`）携带 DSL 脚本，`=> $RETURN` 使读取结果（元数据行 + 文件内容）随工具
+    # 结果内联返回，供 mock 回显断言。
     if "call tool" in t and "without" not in t:
-        return [("self_file_read", {"files": [{"path": os.path.join(SCRIPTS_WS, "a.txt")}]})]
+        a_abs = os.path.join(SCRIPTS_WS, "a.txt").replace("\\", "/")
+        return [("dsl_run", {"script": 'FILE_READ #"%s" => $RETURN' % a_abs})]
     if "call async-cmd" in t:
         # C13/C18：子会话命令转后台（_async=true）→ 20s 长运行，使 batch 根任务保持运行中
         #（验证 task-stop 级联 / 任务树实时状态；script_run = 产品命令执行工具）

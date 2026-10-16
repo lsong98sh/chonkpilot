@@ -46,7 +46,7 @@ func appCapRootWithScenario(t *testing.T, id string, agents map[string]string) s
 	}
 	refs := []string{}
 	for name, prompt := range agents {
-		doc := "# " + name + "\n\n[description]\n" + name + " 描述\n\n[content]\n" + prompt + "\n"
+		doc := buildV2AgentDoc(name, name+" 描述", prompt, "", nil, nil)
 		if name == "main" {
 			if err := os.WriteFile(filepath.Join(dir, "main.agent.md"), []byte(doc), 0o644); err != nil {
 				t.Fatalf("write main.agent.md: %v", err)
@@ -77,33 +77,26 @@ func writeProjectAgentDoc(t *testing.T, am map[string]any) string {
 	if rt, _ := am["roleTag"].(string); strings.TrimSpace(rt) != "" {
 		meta = append(meta, "roletag="+rt)
 	}
-	if v, ok := am["tools"]; ok && v != nil {
-		if b, err := json.Marshal(v); err == nil && string(b) != "null" {
-			meta = append(meta, "tools="+string(b))
-		}
-	}
 	if llm, _ := am["llmRef"].(string); strings.TrimSpace(llm) != "" {
 		meta = append(meta, "llm="+llm)
 	}
-	if dc, _ := am["delegateCond"].(string); strings.TrimSpace(dc) != "" {
-		meta = append(meta, "delegate="+dc)
+	// 参考（tools）：名单类引用落「# 参考」分区（v2，2026-10-14）
+	refs := map[string][]string{}
+	if v, ok := am["tools"]; ok && v != nil {
+		if b, err := json.Marshal(v); err == nil {
+			var arr []string
+			if json.Unmarshal(b, &arr) == nil && len(arr) > 0 {
+				refs["tools"] = arr
+			}
+		}
 	}
-	var b strings.Builder
-	b.WriteString("# " + name + "\n\n")
-	if len(meta) > 0 {
-		b.WriteString("[meta]\n" + strings.Join(meta, "\n") + "\n\n")
-	}
-	if strings.TrimSpace(desc) != "" {
-		b.WriteString("[description]\n" + desc + "\n\n")
-	}
-	if strings.TrimSpace(prompt) != "" {
-		b.WriteString("[content]\n" + prompt + "\n")
-	}
+	dc, _ := am["delegateCond"].(string)
+	body := buildV2AgentDoc(name, desc, prompt, dc, meta, refs)
 	agentsDir := filepath.Join(persist.CapProjectRoot(testWorkDir), "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("mkdir agents: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(agentsDir, name+".agent.md"), []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentsDir, name+".agent.md"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write %s.agent.md: %v", name, err)
 	}
 	return "${workDir}/.chonkpilot/capability/agents/" + name + ".agent.md"
