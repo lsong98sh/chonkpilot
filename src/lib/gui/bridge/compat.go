@@ -12,7 +12,8 @@ package bridge
 // 每轮受理确权请用 turn-start（session-turn-start）。
 //
 // 数据源边界：仅转换 server 已发布的事件。tool-notify 由 server 直接发布（相对主题原名直通，
-// 不经本兼容层，见 MessageList.onCompletionNotice）；llm-retry 无源，均不在此转换。
+// 不经本兼容层，见 MessageList.onCompletionNotice）；llm-retry 由 server 的 session-retry
+// 经桥 mqTypeMap 映射为前端 type（RETRY-1，2026-10-17），亦不经本兼容层。
 
 import (
 	"encoding/json"
@@ -73,13 +74,15 @@ func (b *Bridge) compatEmit(typ string, raw []byte) {
 			if v, ok := m["retryable"].(bool); ok {
 				retryable = v
 			}
-			// retry_attempt/retry_count：**兼容占位常量**——llm-complete 载荷不携带重试计数，
-			// 桥侧无可取真实值（唯一真实值为 retryable），保留旧字段仅为旧订阅方（ChatPanel
-			// 进度文案）解析不变；其取值为 1/0 时 `attempt<=maxRetries` 恒 false → 不误报"重试中"。
+			// retry_attempt/retry_count：**透传 session-complete 的真实计数**（RETRY-1，2026-10-17；
+			// 旧版为占位常量 1/0）。retry_attempt = 已执行的重试次数、retry_count = 允许的最大次数；
+			// 字段缺失（旧发布方）→ 0/0。终态 retry_wait_ms 恒 0（中间态走 llm-retry 主题）。
+			attempt, _ := m["retry_attempt"].(float64)
+			count, _ := m["retry_count"].(float64)
 			emit("llm-error", mustJSON(map[string]any{
 				"session_id": sid, "turn_id": tid,
 				"code": sval(m["code"]), "message": sval(m["message"]),
-				"retryable": retryable, "retry_attempt": 1, "retry_count": 0,
+				"retryable": retryable, "retry_attempt": int(attempt), "retry_count": int(count),
 			}))
 		}
 	case "tasks.started":

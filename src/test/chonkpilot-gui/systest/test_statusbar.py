@@ -73,6 +73,54 @@ def prj_del(gui, key):
     gui.req('data-prj-config-delete', {'id': key})
 
 
+# ── STB-1（长任务状态条目 + 详情页）辅助 ─────────────────────────────
+SHOTS = os.path.join("E:\\TEMP", "ck-l4-visual", "stb")
+
+
+def shot(gui, name):
+    """截图（仓库外证据目录）；失败仅告警，不影响断言。"""
+    try:
+        os.makedirs(SHOTS, exist_ok=True)
+        p = os.path.join(SHOTS, name)
+        with open(p, "wb") as f:
+            f.write(gui._get("/screenshot"))
+        print("    [shot] %s" % p, flush=True)
+        return p
+    except Exception as e:  # noqa: BLE001
+        print("    [warn] screenshot %s 失败: %s" % (name, e), flush=True)
+        return ""
+
+
+def emit_notice(gui, payload):
+    """经**后端 → 前端同一入口**注入一条 tool-notify（mq.emitRemote；不伪造 DOM/状态）。"""
+    js = "window.mq.emitRemote({type:'tool-notify', payload: JSON.stringify(%s)}); 'ok'" % json.dumps(payload)
+    return J(gui, js)
+
+
+def task_state_js(kind):
+    return ("(()=>{const e=document.querySelector('.statusbar .sb-task[data-task=\"%s\"]');"
+            "if(!e)return null;return {text:((e.querySelector('.sb-task-state')||{}).textContent||'').trim(),"
+            "cls:e.className||'',title:e.getAttribute('title')||''}})()" % kind)
+
+
+def task_state(gui, kind):
+    return J(gui, task_state_js(kind))
+
+
+def detail_text_js(kind):
+    return ("(()=>{const e=document.querySelector('.task-detail[data-detail=\"%s\"]');"
+            "return e?(e.textContent||'').replace(/\\s+/g,' ').trim():''})()" % kind)
+
+
+def active_preview_tab_js():
+    return ("(()=>{const e=document.querySelector('.code-view .tb-tab.active .tb-name');"
+            "return e?(e.textContent||'').trim():''})()")
+
+
+def has_el_js(selector):
+    return "!!document.querySelector(%s)" % json.dumps(selector)
+
+
 def _deep(v, n=4):
     """循环解包 JSON 字符串：test-port 的 eval 会把 JSON.stringify 的结果**再包一层**，
     `J` 只解一层 → 拿到的是 str（同 `run_memory_ctx._plain` / `test_layout.JD` 口径）。"""
@@ -142,9 +190,11 @@ def main():
         menu = J(gui, "document.querySelectorAll('.statusbar .sb-menu').length")
         mem = J(gui, "document.querySelectorAll('.statusbar .sb-mem').length")
         idx_badges = J(gui, "document.querySelectorAll('.statusbar .sb-index .sb-idx').length")
-        c.check("SB2 状态栏条目化：索引状态区两枚徽标 + 无配置菜单 + 记忆入口默认隐藏",
-                int(menu) == 0 and int(mem) == 0 and int(idx_badges) == 2 and int(secs) >= 1,
-                f"sections={secs} menu={menu} mem={mem} idx={idx_badges}")
+        # STB-1：记忆提取 / 上下文压缩各一枚长任务状态条目（空闲 / 未启用也显示 = 每类任务都有 view）
+        tasks = J(gui, "document.querySelectorAll('.statusbar .sb-task[data-task]').length")
+        c.check("SB2 状态栏条目化：索引状态区两枚徽标 + 长任务两条目 + 无配置菜单 + 记忆入口默认隐藏",
+                int(menu) == 0 and int(mem) == 0 and int(idx_badges) == 2 and int(tasks) == 2 and int(secs) >= 1,
+                f"sections={secs} menu={menu} mem={mem} idx={idx_badges} tasks={tasks}")
 
         # SB2b 记忆总 token 数入口（A4 迁移）：启用记忆库后状态栏出现入口，数值为数字，
         # 点击 → 记忆分类列表 → 选中 → 内容编辑弹框（可编辑、可保存）
@@ -194,7 +244,7 @@ def main():
                 isinstance(cg_idx, str) and '索引中' in cg_idx and '3/8' in cg_idx,
                 f"text={cg_idx!r} settle={settle_cg!r}")
 
-        # ③ state=ready → 「完成」；悬停为原生 title（「点击设置：codegraph」）
+        # ③ state=ready → 「完成」；悬停为原生 title（「点击查看索引详情：codegraph」）
         prj_save(gui, 'codegraph.status', json.dumps(
             {'state': 'ready', 'progressDone': 8, 'progressTotal': 8, 'indexedFiles': 2, 'indexedSymbols': 5}))
         cg_ready = wait_upto(gui, "(()=>{const e=document.querySelector('.sb-index .sb-idx[data-engine=\"codegraph\"]');"
@@ -202,9 +252,9 @@ def main():
                              lambda v: v == '完成')
         cg_title = J(gui, "(()=>{const e=document.querySelector('.sb-index .sb-idx[data-engine=\"codegraph\"]');"
                           "return e?(e.getAttribute('title')||''):''})()")
-        c.check("SB6c codegraph 完成：「完成」+ 原生 title（点击设置：codegraph）",
+        c.check("SB6c codegraph 完成：「完成」+ 原生 title（点击查看索引详情：codegraph）",
                 cg_ready == '完成' and isinstance(cg_title, str)
-                and '点击设置' in cg_title and 'codegraph' in cg_title,
+                and '点击查看' in cg_title and 'codegraph' in cg_title,
                 f"text={cg_ready!r} title={cg_title!r}")
 
         # ④ state=error → 「失败」
@@ -226,21 +276,37 @@ def main():
                 isinstance(vf_idx, str) and '索引中' in vf_idx and '2/4' in vf_idx,
                 f"text={vf_idx!r} settle={settle_vf!r}")
 
-        # ⑥ 点击徽标 → 既有 project-config-open（打开项目配置页并定位到对应页签）
+        # ⑥ 点击徽标 → 统一命令 open-view{status-index} → preview 索引详情页（STB-1 口径变更：
+        #    不再直接跳项目配置；详情页内保留「去设置」入口，配置仍可达）。
+        #    此时 codegraph=error（kaboom）、vfts=indexing 2/4 → 详情页应同时呈现错误文本与进度。
         J(gui, "document.querySelector('.sb-index .sb-idx[data-engine=\"codegraph\"]')?.click(); 'ok'")
+        tab_idx = wait_upto(gui, active_preview_tab_js(), lambda v: v == '代码索引详情')
+        idx_txt = _deep(wait_upto(gui, detail_text_js("index"),
+                                  lambda v: isinstance(v, str) and 'kaboom' in v and '2/4' in v))
+        go_set = J(gui, has_el_js('.task-detail[data-detail="index"] [data-action="go-settings"]'))
+        c.check("SB6f 点击 codegraph 徽标 → 预览区索引详情（错误 + vfts 进度 + 去设置）",
+                tab_idx == '代码索引详情' and isinstance(idx_txt, str) and 'kaboom' in idx_txt
+                and '2/4' in idx_txt and bool(go_set),
+                f"tab={tab_idx!r} txt={str(idx_txt)[:120]!r} go={go_set}")
+        shot(gui, "04-detail-index.png")
+
+        # 详情页「去设置」→ 既有 project-config-open（配置仍可达）：CodeGraph / Vfts 页签
+        J(gui, "document.querySelector('.task-detail[data-detail=\"index\"] [data-action=\"go-settings\"]')?.click(); 'ok'")
         opened = wait_upto(gui, "document.querySelectorAll('.project-config-panel').length", lambda v: int(v or 0) >= 1)
         active_cg = wait_upto(gui, "(()=>{const e=document.querySelector('.project-config-panel .b-tabs-item.active');"
                                    "return e?(e.textContent||'').trim():''})()",
                               lambda v: v == 'CodeGraph 索引')
-        c.check("SB6f 点击 codegraph 徽标 → 打开项目配置且 CodeGraph 页签 active",
+        c.check("SB6f2 索引详情「去设置」→ 项目配置 CodeGraph 页签",
                 int(opened or 0) >= 1 and active_cg == 'CodeGraph 索引',
                 f"panels={opened} active={active_cg!r}")
-        # 已开页签再点 vfts 徽标 → 页内切到 Vfts 页签（nonce 递增路径）
+        # 回索引详情 → Vfts 区「去设置」→ 页内切到 Vfts 页签
         J(gui, "document.querySelector('.sb-index .sb-idx[data-engine=\"vfts\"]')?.click(); 'ok'")
+        wait_upto(gui, active_preview_tab_js(), lambda v: v == '代码索引详情')
+        J(gui, "document.querySelector('.task-detail[data-detail=\"index\"] [data-action=\"go-settings-vfts\"]')?.click(); 'ok'")
         active_vf = wait_upto(gui, "(()=>{const e=document.querySelector('.project-config-panel .b-tabs-item.active');"
                                    "return e?(e.textContent||'').trim():''})()",
                               lambda v: v == 'Vfts 全文索引')
-        c.check("SB6f2 点击 vfts 徽标 → 项目配置页切到 Vfts 页签",
+        c.check("SB6f3 索引详情 Vfts「去设置」→ 项目配置页切到 Vfts 页签",
                 active_vf == 'Vfts 全文索引', f"active={active_vf!r}")
 
         # ⑥ 收尾还原键值（还原后两徽标回「未启用」）
@@ -252,6 +318,94 @@ def main():
                                      ".map(e=>(e.textContent||'').trim()))",
                                 lambda v: _deep(v) == ['未启用', '未启用']))
         c.check("SB6g 收尾还原 → 两徽标回「未启用」", back == ['未启用', '未启用'], f"back={back!r}")
+
+        # ── SB7 记忆提取状态条目 + 详情页（STB-1）─────────────────────────────
+        # 数据源 = 既有通知面 tool-notify，经**后端 → 前端同一入口**（window.mq.emitRemote）注入；
+        # 不伪造 DOM/状态（与真实插件广播同一条链路）。
+        # 基线：记忆库已还原关闭 → 条目仍存在（「记忆 · 未启用」）；压缩条目「压缩 · 空闲」。
+        mem0 = task_state(gui, 'memory') or {}
+        cmp0 = task_state(gui, 'compress') or {}
+        c.check("SB7a 长任务条目恒可见（记忆未启用 / 压缩空闲）",
+                '未启用' in (mem0.get('text') or '') and '空闲' in (cmp0.get('text') or ''),
+                f"mem={mem0!r} compress={cmp0!r}")
+
+        emit_notice(gui, {'notice': 'memory-start', 'plugin': 'memory', 'session_id': 's-stb',
+                          'turn_id': 't-stb-1', 'message': '正在沉淀记忆…',
+                          'message_id': 'stb-mem-start-1'})
+        mem1 = wait_upto(gui, task_state_js('memory'),
+                         lambda v: isinstance(v, dict) and '记忆沉淀中' in (v.get('text') or ''))
+        c.check("SB7b 记忆提取进行中 → 状态条目文案 + 进行中色",
+                isinstance(mem1, dict) and '记忆沉淀中' in (mem1.get('text') or '')
+                and 'is-progress' in (mem1.get('cls') or ''),
+                f"mem={mem1!r}")
+        shot(gui, "01-statusbar-memory-running.png")
+
+        # 点击条目 → preview 详情页（DOM 文本含状态；含「去设置」）
+        J(gui, "document.querySelector('.statusbar .sb-task[data-task=\"memory\"]')?.click(); 'ok'")
+        tab_mem = wait_upto(gui, active_preview_tab_js(), lambda v: v == '记忆提取详情')
+        mem_txt = _deep(wait_upto(gui, detail_text_js("memory"),
+                                  lambda v: isinstance(v, str) and '记忆沉淀中' in v and '最近一次任务' in v))
+        mem_go = J(gui, has_el_js('.task-detail[data-detail="memory"] [data-action="go-settings"]'))
+        c.check("SB7c 点击记忆条目 → 预览区详情页（状态 + 最近一次任务 + 去设置）",
+                tab_mem == '记忆提取详情' and isinstance(mem_txt, str) and '记忆沉淀中' in mem_txt
+                and '最近一次任务' in mem_txt and bool(mem_go),
+                f"tab={tab_mem!r} txt={str(mem_txt)[:140]!r} go={mem_go}")
+        shot(gui, "02-detail-memory-running.png")
+
+        # 失败（既有 plugin-failure）→ 条目错误态 + 详情页错误文本（不弹 toast、不静默）
+        emit_notice(gui, {'notice': 'plugin-failure', 'plugin': 'memory', 'kind': 'save',
+                          'reason': 'stb-boom', 'message': '⚠️ 记忆沉淀失败：stb-boom',
+                          'message_id': 'stb-mem-fail-1'})
+        mem2 = wait_upto(gui, task_state_js('memory'),
+                         lambda v: isinstance(v, dict) and '失败' in (v.get('text') or ''))
+        mem_err_txt = _deep(wait_upto(gui, detail_text_js("memory"),
+                                      lambda v: isinstance(v, str) and 'stb-boom' in v))
+        c.check("SB7d 记忆提取失败 → 条目错误态 + 详情错误文本",
+                isinstance(mem2, dict) and '失败' in (mem2.get('text') or '')
+                and 'is-error' in (mem2.get('cls') or '')
+                and isinstance(mem_err_txt, str) and 'stb-boom' in mem_err_txt,
+                f"mem={mem2!r} txt={str(mem_err_txt)[:140]!r}")
+        shot(gui, "03-detail-memory-error.png")
+
+        # worker 失败后仍补发 memory-done → 不覆盖错误态（失败必须可见）
+        emit_notice(gui, {'notice': 'memory-done', 'plugin': 'memory', 'session_id': 's-stb',
+                          'turn_id': 't-stb-1', 'message': '记忆沉淀完成',
+                          'message_id': 'stb-mem-done-1'})
+        time.sleep(0.4)
+        mem3 = task_state(gui, 'memory') or {}
+        c.check("SB7e 失败优先于 done（错误态不被「完成」洗掉）",
+                '失败' in (mem3.get('text') or ''), f"mem={mem3!r}")
+
+        # ── SB8 上下文压缩状态条目 + 详情页（STB-1）───────────────────────────
+        emit_notice(gui, {'notice': 'compress-start', 'plugin': 'compress', 'session_id': 's-stb',
+                          'turn_id': 't-stb-2', 'message': '正在压缩上下文…',
+                          'message_id': 'stb-cmp-start-1'})
+        cmp1 = wait_upto(gui, task_state_js('compress'),
+                         lambda v: isinstance(v, dict) and '压缩中' in (v.get('text') or ''))
+        c.check("SB8a 压缩进行中 → 状态条目文案 + 进行中色",
+                isinstance(cmp1, dict) and '压缩中' in (cmp1.get('text') or '')
+                and 'is-progress' in (cmp1.get('cls') or ''),
+                f"compress={cmp1!r}")
+        J(gui, "document.querySelector('.statusbar .sb-task[data-task=\"compress\"]')?.click(); 'ok'")
+        tab_cmp = wait_upto(gui, active_preview_tab_js(), lambda v: v == '上下文压缩详情')
+        cmp_txt = _deep(wait_upto(gui, detail_text_js("compress"),
+                                  lambda v: isinstance(v, str) and '压缩中' in v and '最近一次任务' in v))
+        cmp_go = J(gui, has_el_js('.task-detail[data-detail="compress"] [data-action="go-settings"]'))
+        c.check("SB8b 点击压缩条目 → 预览区详情页（状态 + 最近一次任务 + 去设置）",
+                tab_cmp == '上下文压缩详情' and isinstance(cmp_txt, str) and '压缩中' in cmp_txt
+                and '最近一次任务' in cmp_txt and bool(cmp_go),
+                f"tab={tab_cmp!r} txt={str(cmp_txt)[:140]!r} go={cmp_go}")
+        shot(gui, "05-detail-compress-running.png")
+
+        # 完成 → 条目「压缩完成」（3s 后自动隐藏；此处即时断言）
+        emit_notice(gui, {'notice': 'compress-done', 'plugin': 'compress', 'session_id': 's-stb',
+                          'turn_id': 't-stb-2', 'message': '上下文压缩完成',
+                          'message_id': 'stb-cmp-done-1'})
+        cmp2 = wait_upto(gui, task_state_js('compress'),
+                         lambda v: isinstance(v, dict) and '压缩完成' in (v.get('text') or ''),
+                         max_wait=2.0)
+        c.check("SB8c 压缩完成 → 条目「压缩完成」",
+                isinstance(cmp2, dict) and '压缩完成' in (cmp2.get('text') or ''), f"compress={cmp2!r}")
 
         # SB3 语言切换：2 个按钮 + 一个 active
         langBtns = J(gui, "document.querySelectorAll('.lang-switcher .lang-btn').length")

@@ -52,7 +52,9 @@ class GUIClient:
     三条路径都会 taskkill /F /T 整棵进程树，不留 WebView2 残留。
     """
 
-    def __init__(self, port=None, exe=None, work_dir=None, data_dir=None, wait_ready=30):
+    # wait_ready 与 harness.start_gui 的 ready_timeout 缺省（90s）对齐（G-61）：30s 在批跑/机器繁忙时
+    # 会先于「`.panel-inner` + WebView2 就绪」超时，产生「单跑全绿、批跑假红」。
+    def __init__(self, port=None, exe=None, work_dir=None, data_dir=None, wait_ready=90):
         self.port = int(port or harness.free_port())
         self.base = f"http://127.0.0.1:{self.port}"
         self.exe = exe or DEFAULT_EXE

@@ -84,6 +84,7 @@ var domainTopics = map[string]string{
 	// 事件（server → 订阅者；键为前端/internal 名，非契约主题者保留字面量）
 	"llm-receive":                msgkeys.TopicSessionReceive,
 	"llm-complete":               msgkeys.TopicSessionComplete,
+	"llm-retry":                  msgkeys.TopicSessionRetry,
 	"llm-compress":               msgkeys.TopicSessionCompress,
 	"ask-user":                   msgkeys.TopicSessionAsk,
 	"turn-start":                 msgkeys.TopicSessionTurnStart,
@@ -2228,11 +2229,17 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		ev["text"] = text
 	}
 	// retryable（S21 定稿新增**可选**字段）：错误终态携带该 turn 的真实可重试分类
-	//（= *LLMError.Retryable：超时/网络/429/5xx → true；协议/鉴权等 → false），
-	// 前端据此决定"静默自动续写"还是"错误气泡 + 手动继续"；正常完成/取消不带
-	//（旧订阅方按缺省处理，向后兼容；语义见 61-消息一览 §4.3 session-complete）。
+	//（= *LLMError.Retryable：超时/网络/429/5xx → true；协议/鉴权等 → false）；
+	// 正常完成/取消不带（旧订阅方按缺省处理，向后兼容；语义见 61-消息一览 §4.3 session-complete）。
 	if retryable != nil {
 		ev["retryable"] = *retryable
+		// RETRY-1（2026-10-17）：错误终态携带**真实**重试计数（旧版为桥侧占位常量 1/0）。
+		// retry_attempt = 已执行的重试次数（0 = 未重试；次数用尽时 = retry_count）；
+		// retry_count   = 允许的最大重试次数（usr retryCount，0 = 不重试）；
+		// retry_wait_ms = 0（终态，不再等待）→ 与中间态 session-retry 的 wait_ms>0 区分。
+		ev["retry_attempt"] = tc.retryAttempt
+		ev["retry_count"] = tc.retryCount
+		ev["retry_wait_ms"] = 0
 	}
 	s.publish("llm-complete", ev)
 	// 压缩扩展点事件：唯一终态落库后发出（处置由 chonkpilot-plugin-compress；无订阅者 = 不压缩）

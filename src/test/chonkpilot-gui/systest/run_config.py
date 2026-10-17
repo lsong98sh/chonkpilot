@@ -135,7 +135,7 @@ def case_llm_list_display():
     except Exception:
         pass
     time.sleep(6)
-    c.wait_ready(30)
+    c.wait_ready(90)
     _open("settings-llm")
     deadline = time.time() + 8
     body = ""

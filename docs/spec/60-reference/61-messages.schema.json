@@ -90,6 +90,7 @@
     "goal": { "type": "string", "desc": "群聊「本次目标」（主 agent 开群聊时写入，每轮注入给全体参与者；SUBCHAT-3 阶段 F，群聊方案 §18.2 / D43）" },
     "groups": { "type": "array", "desc": "分组清单" },
     "handler_subject": { "type": "string", "desc": "处理器主题" },
+    "hit": { "type": "string", "desc": "窗口边缘命中区（gui.window.resize：left/right/top/bottom/topleft/topright/bottomleft/bottomright）" },
     "hot": { "type": "bool", "desc": "热加载" },
     "id": { "type": "string", "desc": "标识" },
     "ids": { "type": "array", "desc": "标识集合" },
@@ -186,6 +187,9 @@
     "result_digest": { "type": "string", "desc": "结果摘要" },
     "result_summary": { "type": "string", "desc": "结果概要" },
     "results": { "type": "array", "desc": "检索结果集合" },
+    "retry_attempt": { "type": "int", "desc": "重试序号：中间态 = 即将执行的第几次重试（1 起）；终态 = 已执行的重试次数（0 = 未重试）（RETRY-1，2026-10-17）" },
+    "retry_count": { "type": "int", "desc": "允许的最大重试次数（usr retryCount；0 = 不重试）（RETRY-1，2026-10-17）" },
+    "retry_wait_ms": { "type": "int", "desc": "下一次重试前等待毫秒（中间态 > 0；终态 = 0）（RETRY-1，2026-10-17）" },
     "retryable": { "type": "bool", "desc": "可重试" },
     "root": { "type": "string", "desc": "根路径" },
     "round": { "type": "int", "desc": "群聊**大轮次**序号（1 基；= 群聊依次叫号的那一轮，**非**子会话内部轮次。SUBCHAT-3 阶段 E，群聊方案 §5 · D44 ②）" },
@@ -525,6 +529,14 @@
       "payload": {},
       "result": {},
       "notes": "本地事件无返回"
+    },
+    {
+      "topic": "gui.window.resize",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "hit": { "type": "string", "required": true } },
+      "result": {},
+      "notes": "本地事件无返回；仅 frameless 主窗口（前端边缘命中 → StartResize(HT*)）"
     },
     {
       "topic": "gui.pick-executable",
@@ -2022,7 +2034,24 @@
         "code": { "type": "string", "required": false },
         "message": { "type": "string", "required": false },
         "text": { "type": "string", "required": false },
-        "retryable": { "type": "bool", "required": false }
+        "retryable": { "type": "bool", "required": false },
+        "retry_attempt": { "type": "int", "required": false },
+        "retry_count": { "type": "int", "required": false },
+        "retry_wait_ms": { "type": "int", "required": false }
+      }
+    },
+    {
+      "topic": "session-retry",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "retryable": { "type": "bool", "required": true },
+        "retry_attempt": { "type": "int", "required": true },
+        "retry_count": { "type": "int", "required": true },
+        "retry_wait_ms": { "type": "int", "required": true }
       }
     },
     {

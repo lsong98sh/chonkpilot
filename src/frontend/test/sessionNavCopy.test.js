@@ -160,3 +160,19 @@ test('对话导航方向：组件参数 direction + 主 chat=right / 子会话=b
   assert.match(css, /\.dir-bottom \.turn-nav \{[\s\S]*?flex-direction: row[\s\S]*?height: 22px[\s\S]*?border-top/, 'dir-bottom: 横行 + height + 上边框')
   assert.match(css, /\.dir-bottom \.turn-nav-pop \{ bottom: calc\(100% \+ 8px\)/, 'dir-bottom: 弹层向上弹')
 })
+
+// ── 展示层改名（RENAME-1，2026-10-17）：子会话 → 任务树 / 子会话详情 → 任务详情 ──
+test('RENAME-1：面板标题 = 任务树 / 任务详情（zh/en）；键名与契约标识不变', () => {
+  for (const loc of LOCALES) {
+    const isZh = loc === 'zh-CN'
+    const common = readLocale(loc, 'common.json')
+    const chat = readLocale(loc, 'chat.json')
+    assert.equal(common.sub_sessions, isZh ? '任务树' : 'Task Tree', loc + ' common.sub_sessions')
+    assert.equal(common.session_detail, isZh ? '任务详情' : 'Task Detail', loc + ' common.session_detail')
+    assert.ok(!/子会话|sub-session/i.test(chat.select_subsession), loc + ' 空态文案不得再含「子会话」')
+    assert.ok(!/子会话|sub-session/i.test(chat.ask_user_subsession_title), loc + ' ask_user 标题不得再含「子会话」')
+  }
+  // 只改文案、不改键：两个面板标题的消费者仍指向既有 i18n 键
+  assert.match(read('views/tasks/SessionTree.vue'), /common\.sub_sessions/, 'SessionTree 标题仍读 common.sub_sessions')
+  assert.match(read('views/tasks/SessionChat.vue'), /common\.session_detail/, 'SessionChat 标题仍读 common.session_detail')
+})

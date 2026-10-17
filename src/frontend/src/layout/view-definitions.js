@@ -165,6 +165,29 @@ export const VIEW_DEFINITIONS = [
     defaultWidth: 200,
     defaultHeight: 20,
   },
+  /* 长任务状态条目（STB-1）：记忆提取 / 上下文压缩各一枚（数据源 = tool-notify） */
+  {
+    key: 'memory-status',
+    labelKey: 'view.memoryStatus',
+    label: '记忆提取状态',
+    icon: 'collection',
+    mode: 'singleton',
+    host: 'bar',
+    designable: true,
+    defaultWidth: 120,
+    defaultHeight: 20,
+  },
+  {
+    key: 'compress-status',
+    labelKey: 'view.compressStatus',
+    label: '上下文压缩状态',
+    icon: 'document',
+    mode: 'singleton',
+    host: 'bar',
+    designable: true,
+    defaultWidth: 120,
+    defaultHeight: 20,
+  },
   {
     key: 'lang-switcher',
     labelKey: 'view.langSwitcher',
@@ -175,6 +198,35 @@ export const VIEW_DEFINITIONS = [
     designable: true,
     defaultWidth: 64,
     defaultHeight: 20,
+  },
+  /* ── 长任务详情页（STB-1）：状态栏条目点击 → `open-view{status-*}` → preview 功能页 ──
+     数据驱动（真实任务状态），设计态不挂载真实组件（designable:false）。 */
+  {
+    key: 'status-memory',
+    labelKey: 'view.statusMemory',
+    label: '记忆提取详情',
+    icon: 'collection',
+    mode: 'singleton',
+    host: 'layout',
+    designable: false,
+  },
+  {
+    key: 'status-compress',
+    labelKey: 'view.statusCompress',
+    label: '上下文压缩详情',
+    icon: 'document',
+    mode: 'singleton',
+    host: 'layout',
+    designable: false,
+  },
+  {
+    key: 'status-index',
+    labelKey: 'view.statusIndex',
+    label: '代码索引详情',
+    icon: 'search',
+    mode: 'singleton',
+    host: 'layout',
+    designable: false,
   },
 ]
 

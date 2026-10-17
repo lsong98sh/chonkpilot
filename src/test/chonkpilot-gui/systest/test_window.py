@@ -3,10 +3,12 @@
 每条 FP 一个 check；不可运行时验证的项如实标注（需代码审查/OS 级）。
 运行：python test_window.py（cwd 任意，脚本自定位）
 
-状态无关性：本套件用**共享** work-dir（`ws`，prj 库继承历史持久化布局）→ 依赖布局可见性的
-断言（W5 `.split-resizer` 计数）必须**先经既有 MQ 开关归一到已知状态**再断言、用后还原，
-否则结果随前序套件遗留状态漂移（见 W5 处注释）。
+W5 = **真机拖动**（Win32 真实鼠标事件 + `GetWindowRect` 前后对比）：frameless 主窗口的
+resize 由前端边缘命中条承担（`WindowResizeHandles.vue` → `gui.window.resize` → `StartResize`），
+故必须走真实鼠标路径才能覆盖（手法同 [41 G-56]：`SetCursorPos` + `mouse_event`，非 SendMessage）。
 """
+import ctypes
+import ctypes.wintypes as wt
 import json
 import os
 import sys
@@ -19,6 +21,90 @@ from harness import free_port, snapshot_config, restore_config  # noqa: E402  �
 
 PORT = free_port()
 
+# ── Win32 真实鼠标拖拽（W5；同 41-未决项登记 G-56 手法）────────────────────────
+_u32 = ctypes.windll.user32
+_EnumWindowsProc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_SWP_NOZORDER = 0x0004
+_SWP_NOACTIVATE = 0x0010
+_SPI_GETWORKAREA = 0x0030
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", wt.LONG), ("top", wt.LONG), ("right", wt.LONG), ("bottom", wt.LONG)]
+
+
+def _find_main_hwnd(pid):
+    """取标题 `chonkpilot-*` 的可见顶层窗口（找不到则回落首个可见顶层窗口）。"""
+    found = []
+
+    def cb(hwnd, _lp):
+        p = wt.DWORD()
+        _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(p))
+        if p.value == pid and _u32.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(256)
+            _u32.GetWindowTextW(hwnd, buf, 256)
+            found.append((int(hwnd), buf.value))
+        return True
+
+    _u32.EnumWindows(_EnumWindowsProc(cb), 0)
+    for hwnd, title in found:
+        if title.startswith("chonkpilot-"):
+            return hwnd, title
+    return (found[0][0], found[0][1]) if found else (None, "")
+
+
+def _wrect(hwnd):
+    """GetWindowRect → [left, top, right, bottom]（物理像素）。"""
+    r = _RECT()
+    if not _u32.GetWindowRect(hwnd, ctypes.byref(r)):
+        return None
+    return [int(r.left), int(r.top), int(r.right), int(r.bottom)]
+
+
+def _work_area():
+    r = _RECT()
+    if not _u32.SystemParametersInfoW(_SPI_GETWORKAREA, 0, ctypes.byref(r), 0):
+        return [0, 0, 1920, 1040]
+    return [int(r.left), int(r.top), int(r.right), int(r.bottom)]
+
+
+def _drag(x0, y0, x1, y1, steps=14, hold=0.03):
+    """真实鼠标拖拽：移动到起点 → 左键按下 → 分步移动 → 抬起。"""
+    _u32.SetCursorPos(int(x0), int(y0))
+    time.sleep(0.25)
+    _u32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.20)
+    for i in range(1, steps + 1):
+        _u32.SetCursorPos(int(x0 + (x1 - x0) * i / steps), int(y0 + (y1 - y0) * i / steps))
+        time.sleep(hold)
+    time.sleep(0.20)
+    _u32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.45)
+
+
+def _normalize_window(hwnd):
+    """把窗口挪到工作区内已知尺寸（保证四边都在屏内，末端拖动不出屏）。"""
+    wa = _work_area()
+    w = max(640, min(900, (wa[2] - wa[0]) - 320))
+    h = max(420, min(520, (wa[3] - wa[1]) - 280))
+    x, y = wa[0] + 100, wa[1] + 80
+    _u32.SetWindowPos(hwnd, 0, x, y, w, h, _SWP_NOZORDER | _SWP_NOACTIVATE)
+    time.sleep(0.6)
+    _u32.SetForegroundWindow(hwnd)
+    time.sleep(0.5)
+    # 客户区点一下激活焦点（避免拖拽被「非活动窗口」路径吞掉）
+    r = _wrect(hwnd)
+    _u32.SetCursorPos(r[0] + 120, r[1] + 120)
+    time.sleep(0.2)
+    _u32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.05)
+    _u32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.5)
+
+
 
 def J(gui, js):
     """eval 原始结果解码（EvalWithResult 返回 JSON 编码值）。"""
@@ -29,62 +115,8 @@ def J(gui, js):
         return r
 
 
-# ── 布局可见性归一（W5；只读产品 DOM + **既有** MQ 开关，不新增消息面）──────────
-# `.split-resizer` 由 `components/split/SplitPanel.vue` 按「相邻两个**可见** pane」渲染
-# （`splitLayout.js shouldShowResizer`：`visible:false` 的 pane 不参与布局、也不产出分隔条）。
-# 四区全可见时才有 4 条：① filetree|preview ② content|chat ③ top|bottom(task) ④ session-tree|session-chat。
-# 本套件用**共享** work-dir（`ws`，prj 库继承历史持久化布局）→ 面板可见性不确定 → 直接数分隔条
-# 属「状态依赖」断言（实测该库 `layout.taskOpen=false` → 只剩 2 条）。故断言前先经既有开关归一到
-# 「全可见」，用后还原。
-_PANE_PROBES = (
-    ("chat-toggle", ".chat-panel"),        # ChatPanel 内（chat pane 隐藏 → 不挂载）
-    ("filetree-toggle", ".explorer-pane"),  # ExplorerPane 根（filetree pane 隐藏 → 不挂载）
-    ("tasks-toggle", ".session-chat"),     # SessionChat 内（task pane 隐藏 → 不挂载）
-)
-
-
-def _resizer_count(gui):
-    """当前渲染的 `.split-resizer` 数（随面板可见性变化）。"""
-    try:
-        return int(J(gui, "document.querySelectorAll('.split-resizer').length") or 0)
-    except Exception:
-        return -1
-
-
-def _pane_evidence(gui):
-    """W5 取证：视口宽 + 三区 pane 是否已挂载（供失败时定位是哪块被收起）。"""
-    return J(gui, """(()=>({vw:window.innerWidth,
-  chat:!!document.querySelector('.chat-panel'),
-  filetree:!!document.querySelector('.explorer-pane'),
-  task:!!document.querySelector('.session-chat'),
-  resizers:document.querySelectorAll('.split-resizer').length}))()""")
-
-
-def _ensure_panes_visible(gui):
-    """经**既有** MQ 开关把三区（chat/filetree/task）归一到「已挂载」；返回被自己切换过的主题列表。
-
-    幂等：已挂载的区不发开关。返回列表供用例末尾**还原**（回跑前布局，不给后续套件留状态）。
-    """
-    flipped = []
-    for topic, sel in _PANE_PROBES:
-        if not J(gui, "!!document.querySelector('%s')" % sel):
-            gui.eval("window.mq.emit('%s', {}); 'ok'" % topic)
-            flipped.append(topic)
-    return flipped
-
-
-def _wait_resizers(gui, least=4, timeout=8.0):
-    """有界轮询 `.split-resizer` 数稳定到 >= least（等 Vue 重渲染落定）；超时返回最后观测值。"""
-    deadline = time.time() + timeout
-    n = _resizer_count(gui)
-    while n < least and time.time() < deadline:
-        time.sleep(0.2)
-        n = _resizer_count(gui)
-    return n
-
-
 def main():
-    gui = GUIClient(port=PORT)
+    gui = GUIClient(port=PORT, wait_ready=90)
     c = Checker()
     # 套件级配置快照-还原（51 §6-8）：本套件用**共享** work-dir（ws/.chonkpilot 库，无 --data-dir），
     # 最大化/还原窗口会把 prj 的 `window.*`（x/y/width/height/maximized）写实；usr 库亦为机器主库
@@ -124,37 +156,43 @@ def main():
         css = J(gui, """(()=>{let f=false;for(const s of document.styleSheets){let r;try{r=s.cssRules}catch(e){continue}for(const x of r||[]){const st=x.selectorText||'';if(st.includes('win-close')&&st.includes('hover')){const bg=(x.style&&(x.style.backgroundColor||x.style.background))||'';if(bg.includes('232, 17, 35')||bg.includes('e81123')){f=true}}}}return f})()""")
         c.check("W4b 关闭按钮 hover 红色背景（#e81123）", bool(css))
 
-        # W5 支持 Resize（八个方向）：frameless 保留 WS_THICKFRAME → 系统边缘热区原生八方向 resize。
-        #
-        # **分隔条计数口径**：`.split-resizer` 只在「相邻两个可见 pane」之间渲染（SplitPanel.vue +
-        # splitLayout.js shouldShowResizer）。四区齐备（filetree|preview · content|chat · top|bottom(task)
-        # · session-tree|session-chat）才 = 4。**实测根因**：本套件用共享 work-dir（`ws`），其 prj 库
-        # 持久化了 `layout.taskOpen=false`（任务区收起）→ 任务区两种 pane 均 `visible:false`，其 slot
-        # 不挂载 → top|bottom 与 session-* 两条分隔条随之消失，只剩 filetree|preview + content|chat
-        # = **2** 条。即「面板被收起 → 分隔条变少」是 SplitPanel 的**正确行为**（非产品缺陷），
-        # 而 W5 语义（系统八方向 resize 能力）要求四区齐备。
-        # 故先经**既有** MQ 开关（chat-toggle/filetree-toggle/tasks-toggle，等价用户点顶部开关）
-        # 把三区归一到「全可见」→ 等 DOM 稳定 → 断言 n>=4；用后**还原**，不留状态给后续套件。
-        n0 = _resizer_count(gui)
-        flipped = _ensure_panes_visible(gui)
-        n = _wait_resizers(gui, least=4)
-        c.check("W5 布局分隔条存在 + frameless 保留系统八方向 resize",
-                n >= 4,
-                f"resizers={n}（归一前 {n0}；flipped={flipped or '无'}；state={_pane_evidence(gui)}；"
-                f"WS_THICKFRAME 保留：系统边缘热区八方向 resize，见 webview.go）")
-        # 还原自己切换过的面板（回跑前布局）；并留足 > saveLayoutState 500ms 防抖，
-        # 避免其晚于 finally 的配置快照还原、把「归一态」回灌 prj 库。
-        if flipped:
-            for topic in flipped:
-                gui.eval("window.mq.emit('%s', {}); 'ok'" % topic)
-            deadline = time.time() + 5.0
-            while _resizer_count(gui) != n0 and time.time() < deadline:
-                time.sleep(0.2)
-            time.sleep(0.8)
+        # W5 真实 resize（八方向能力抽样：右 + 下）：frameless 主窗口**系统层无边缘命中区**
+        # （WebView2 子窗铺满客户区 → WM_NCHITTEST 恒 HTCLIENT，G-59），由前端
+        # `WindowResizeHandles.vue` 的 8 条命中条 mousedown 发 gui.window.resize{hit}，
+        # 宿主 StartResize(HT*) 进入系统原生 resize 模态循环。故本项**必须**用真实鼠标事件
+        # （SetCursorPos + mouse_event，同 41 G-56 手法），以 GetWindowRect 前后对比取证。
+        hwnd, wtitle = _find_main_hwnd(gui.proc.pid)
+        handles = J(gui, "document.querySelectorAll('.win-resize-handle').length")
+        c.check("W5a 前端边缘命中层已渲染（8 条）", int(handles or 0) == 8,
+                f"hwnd={hwnd} title={wtitle!r} handles={handles}")
 
-        # W6 点击 Toolbar 后拖拽移动
+        if hwnd:
+            _normalize_window(hwnd)
+            # ① 右边框（距边 3px）：向右拖 140px
+            r0 = _wrect(hwnd)
+            x, y = r0[2] - 3, r0[1] + (r0[3] - r0[1]) // 2
+            _drag(x, y, x + 140, y)
+            r1 = _wrect(hwnd)
+            dw = (r1[2] - r1[0]) - (r0[2] - r0[0])
+            c.check("W5 真机拖动右边框 → 宽度 +140px（±3px）", abs(dw - 140) <= 3,
+                    f"before={r0} after={r1} delta_w={dw} drag=({x},{y})->({x + 140},{y})")
+
+            # ② 下边框（距边 3px）：向下拖 110px（窗口已归一到工作区内，末端不出屏）
+            r2 = _wrect(hwnd)
+            x, y = r2[0] + (r2[2] - r2[0]) // 2, r2[3] - 3
+            _drag(x, y, x, y + 110)
+            r3 = _wrect(hwnd)
+            dh = (r3[3] - r3[1]) - (r2[3] - r2[1])
+            c.check("W5b 真机拖动下边框 → 高度 +110px（±3px）", abs(dh - 110) <= 3,
+                    f"before={r2} after={r3} delta_h={dh} drag=({x},{y})->({x},{y + 110})")
+        else:
+            c.check("W5 真机拖动右边框 → 宽度 +140px（±3px）", False, "未找到主窗口 hwnd")
+            c.check("W5b 真机拖动下边框 → 高度 +110px（±3px）", False, "未找到主窗口 hwnd")
+
+        # W6 点击 Toolbar 后拖拽移动：CSS `-webkit-app-region: drag` 只证明**拖拽区**存在
+        # （移动由系统 app-region 负责）；**不代表**系统八方向 resize 可用（后者由 W5/W5b 真机拖动覆盖）。
         region = J(gui, "getComputedStyle(document.querySelector('.toolbar')).getPropertyValue('-webkit-app-region').trim()")
-        c.check("W6 Toolbar 拖拽区（-webkit-app-region: drag）", region == "drag", repr(region))
+        c.check("W6 Toolbar 拖拽区（-webkit-app-region: drag；仅移动语义）", region == "drag", repr(region))
 
         # W7 Taskbar 自定义图标
         c.check("W7 Taskbar 自定义图标", J(gui, "!!document.querySelector('.win-controls')"),

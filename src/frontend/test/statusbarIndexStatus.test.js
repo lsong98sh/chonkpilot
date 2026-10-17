@@ -108,21 +108,24 @@ test('StatusBar：徽标 = [图标] + 状态文本，悬停原生 title（不再
   assert.match(sb, /:title="\$t\('statusBar\.idx_open_vfts'\)"/, 'vfts 徽标应有原生 title')
 })
 
-test('StatusBar：点击走既有 projectConfigOpen（带 tab），且不新增 MQ 主题', () => {
+test('StatusBar：点击 → 统一命令 open-view{status-index}（STB-1），零新增 MQ 主题', () => {
   const sb = read('views/statusbar/StatusBar.vue')
-  assert.match(sb, /EventNames\.projectConfigOpen/, '点击应走既有 project-config-open')
-  // 两枚徽标各自映射页签：codegraph → tab:'codegraph'；vfts → tab:'vfts'
-  assert.match(sb, /projectConfigOpen\]\.click="\{ tab: 'codegraph' \}"/, 'codegraph 徽标点击应带 tab=codegraph')
-  assert.match(sb, /projectConfigOpen\]\.click="\{ tab: 'vfts' \}"/, 'vfts 徽标点击应带 tab=vfts')
-  // 允许的既有主题：点击类（projectConfigOpen / guiDevToolsOpen）+ 队列状态消费（toolNotify，I-128）——
-  // 三者均为**既有**主题，本节仍守「状态栏不新增 MQ 主题」。
+  assert.match(sb, /openStatusDetail/, '点击应走统一命令（layout/statusDetail.js → open-view）')
+  assert.match(sb, /openDetail\('index'\)/, '索引徽标点击应打开 status-index 详情')
+  // 允许的既有主题：调试入口（guiDevToolsOpen）+ 队列状态消费（toolNotify，I-128）——
+  // 均为**既有**主题；状态栏不新增 MQ 主题。
   const used = [...sb.matchAll(/EventNames\.(\w+)/g)].map(m => m[1])
-  assert.deepEqual([...new Set(used)].sort(), ['guiDevToolsOpen', 'projectConfigOpen', 'toolNotify'],
-    '状态栏只允许复用既有主题（projectConfigOpen / guiDevToolsOpen / toolNotify）')
+  assert.deepEqual([...new Set(used)].sort(), ['guiDevToolsOpen', 'toolNotify'],
+    '状态栏只允许复用既有主题（guiDevToolsOpen / toolNotify）')
   // 不得出现"裸"主题字面量（新增主题的典型形态）
   assert.doesNotMatch(sb, /mq\.emit\(\s*['"]/, '不得出现裸主题字面量')
+  // 栏视图条目（默认 free 形态）同样走 open-view
+  const badge = read('layout/bar-views/IndexBadgeView.vue')
+  assert.match(badge, /openStatusDetail\('index'\)/, '栏视图徽标点击应打开 status-index 详情')
+  assert.doesNotMatch(badge, /projectConfigOpen/, '栏视图徽标不再直接跳配置页（详情页内保留「去设置」）')
   const names = read('events/event-names.js')
-  assert.doesNotMatch(names, /idxIndex|indexStatus|statusbarIndex|index-status-badge/, 'event-names 不得新增索引状态主题')
+  assert.doesNotMatch(names, /idxIndex|indexStatus|statusbarIndex|index-status-badge|statusDetail/,
+    'event-names 不得新增索引 / 长任务状态主题')
 })
 
 test('跳页签链：MainLayout 透传 tab → CodeView 落到功能页 → ProjectConfig 激活页签', () => {
@@ -166,9 +169,9 @@ test('i18n：索引状态区键 zh/en 齐备', () => {
     assert.ok(sb.memoryTotal && sb.memoryTotalLabel, loc + ' 既有记忆键应保留')
     assert.equal(sb.openDevTools !== undefined, true, loc + ' 既有 DevTools 键应保留')
   }
-  assert.equal(zh.idx_open_codegraph, '点击设置：codegraph')
-  assert.equal(zh.idx_open_vfts, '点击设置：Vfts 全文索引')
+  assert.equal(zh.idx_open_codegraph, '点击查看索引详情：codegraph')
+  assert.equal(zh.idx_open_vfts, '点击查看索引详情：Vfts 全文索引')
   const en = readLocale('en-US', 'statusBar.json')
-  assert.equal(en.idx_open_codegraph, 'Click to configure: codegraph')
-  assert.equal(en.idx_open_vfts, 'Click to configure: Vfts full-text index')
+  assert.equal(en.idx_open_codegraph, 'Click to view index details: codegraph')
+  assert.equal(en.idx_open_vfts, 'Click to view index details: Vfts full-text index')
 })

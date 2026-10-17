@@ -48,6 +48,10 @@ export const PREVIEW_TAB_TARGETS = [
   'settings-project',
   'scenario',
   'memory-user-pref',
+  // 长任务详情页（STB-1）：状态栏条目 → preview 功能页（零新增消息主题）
+  'status-memory',
+  'status-compress',
+  'status-index',
 ]
 
 /** 文件 / 会话逻辑目标（非注册表 view；供宿主侧命令使用，§3.5 表） */

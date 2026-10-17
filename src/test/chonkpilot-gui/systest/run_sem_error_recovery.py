@@ -6,16 +6,18 @@
      → 出现**空回复提示**（`.empty-reply-hint` 文案非空）+「继续」按钮（`.continue-btn`）
      —— 空回复虽 retryable=false 仍给手动继续入口（对齐 §5.2 口径）。
   E2 不可重试错误（S16 / ERR-001-S01，如鉴权）：`llm-complete{status:error, code:AUTH_FAILED,
-     retryable:false}` → 出现**手动「继续」按钮**（不可自动重试 → 只显示按钮等用户，§5.2）。
-  E3 可自动重试错误（S15/S17，如 5xx/429）：`llm-complete{status:error, code:TIMEOUT,
-     retryable:true}` → **不**立即出现手动「继续」按钮（后端/前端走自动续写支路，不给重复手动入口）
-     —— 以 `retryable` 字段区分手动/自动恢复（§5.2 · `onLlmComplete`）。
+     retryable:false}` → 下方提示条（唯一错误面）**含「查看错误信息」+ retry 次数**，聊天流内
+     **无** `.error-bubble`；同时给**手动「继续」按钮**（§5.2）。
+  E3 可重试错误终态（S15/S17，如 5xx/429）：`llm-complete{status:error, code:TIMEOUT,
+     retryable:true, retry_wait_ms:0}` = **重试已耗尽**（RETRY-1，2026-10-17 口径：
+     中间态走 llm-retry，终态才出错误）→ 与 E2 同：下方提示条 + 手动「继续」；
+     **不再**静默自动续写（否则重试不可见）。
 
 隔离（51-FP与测试映射 §5/§6-8）：自起 GUI（动态端口 + 独立临时 work-dir/data-dir/**独立 HOME**）；
 套件级快照-还原 `_h.suite_config_guard(c)`。会话数据落临时库，结束即弃。
 
-观测渠道（**均为 61-消息一览既有主题，零新增**）：
-  §4.3 `llm-complete`（错误终态，含可选 `retryable`/`code`）· `session-changed`（本地）· DOM。
+观测渠道（**均为 61-消息一览既有主题**）：§4.3 `llm-complete`（错误终态，含 `retryable` /
+`retry_attempt` / `retry_count` / `retry_wait_ms`）· `session-changed`（本地）· DOM。
 
 运行：python run_sem_error_recovery.py
 """
@@ -65,10 +67,6 @@ def wait_upto(js, ok, max_wait=15.0, interval=0.2):
     return v
 
 
-def continue_count():
-    return int(J("document.querySelectorAll('.continue-btn').length") or 0)
-
-
 def open_session(sid):
     """切到独立会话（重置上一轮空回复/继续态），等历史回填 + 会话身份生效。"""
     c.mq_emit("session-changed", {"session_id": sid})
@@ -95,30 +93,62 @@ def case_e1_empty_reply():
 
 
 def case_e2_nonretryable_manual():
-    """E2：不可重试错误 → 手动「继续」按钮（ERR-001-S01，retryable=false）。"""
+    """E2：不可重试错误 → 下方提示条（唯一错误面）+ 手动「继续」按钮。"""
     open_session(SID_AUTH)
     emit_remote("llm-complete", {"session": SID_AUTH, "status": "error",
                                  "code": "AUTH_FAILED", "message": "401 unauthorized",
-                                 "retryable": False})
+                                 "retryable": False, "retry_attempt": 0, "retry_count": 0,
+                                 "retry_wait_ms": 0})
+    surface = wait_upto("""(()=>{const b=document.querySelector('.llm-fail-hint.llm-error-hint');
+      const t=document.querySelector('.llm-fail-detail-toggle');
+      const n=document.querySelectorAll('.message-item.assistant .error-bubble').length;
+      return {bar:!!b,text:b?b.textContent.trim():'',toggle:!!t,bubbles:n}})()""",
+                        lambda v: isinstance(v, dict) and v.get("bar") and v.get("toggle"))
     n = wait_upto("document.querySelectorAll('.continue-btn').length",
                   lambda v: isinstance(v, int) and v >= 1, max_wait=8.0)
     if not (isinstance(n, int) and n >= 1):
         raise TestError("不可重试错误未出现手动「继续」按钮（count=%r）" % (n,))
-    print("[EVIDENCE] " + json.dumps({"case": "E2 不可重试→手动入口", "continue": n},
+    if not isinstance(surface, dict) or not surface.get("bar"):
+        raise TestError("不可重试错误未出现在下方提示条（.llm-fail-hint.llm-error-hint）")
+    if not surface.get("toggle"):
+        raise TestError("下方提示条缺「查看错误信息」入口")
+    if int(surface.get("bubbles") or 0) != 0:
+        raise TestError("聊天流内不应出现 .error-bubble（got %r）" % surface.get("bubbles"))
+    if "已重试 0/0 次" not in (surface.get("text") or ""):
+        raise TestError("提示条须显示 retry 次数（已重试 0/0 次）：%r" % surface.get("text"))
+    print("[EVIDENCE] " + json.dumps({"case": "E2 不可重试→下方提示条+手动入口",
+                                      "continue": n, "hint": (surface.get("text") or "")[:120],
+                                      "has_toggle": surface.get("toggle"),
+                                      "bubbles": surface.get("bubbles")},
                                      ensure_ascii=False), flush=True)
 
 
-def case_e3_retryable_auto():
-    """E3：可自动重试错误 → 不立即给手动「继续」（走自动续写，retryable=true）。"""
+def case_e3_retryable_terminal():
+    """E3：可重试错误**终态**（retry_wait_ms=0）= 重试已耗尽 → 下方提示条 + 手动「继续」；
+    不再静默自动续写（RETRY-1 口径：中间态走 llm-retry，终态才出错误）。"""
     open_session(SID_TIMEOUT)
     emit_remote("llm-complete", {"session": SID_TIMEOUT, "status": "error",
                                  "code": "TIMEOUT", "message": "stream idle timeout",
-                                 "retryable": True})
-    time.sleep(0.5)  # 自动支路（400ms 起自动续写）已接管 → 手动入口保持抑制
-    n = continue_count()
-    if n != 0:
-        raise TestError("可自动重试错误不应立即出现手动「继续」按钮（count=%r）" % (n,))
-    print("[EVIDENCE] " + json.dumps({"case": "E3 可重试→抑制手动入口", "continue": n},
+                                 "retryable": True, "retry_attempt": 2, "retry_count": 2,
+                                 "retry_wait_ms": 0})
+    surface = wait_upto("""(()=>{const b=document.querySelector('.llm-fail-hint.llm-error-hint');
+      const t=document.querySelector('.llm-fail-detail-toggle');
+      const n=document.querySelectorAll('.message-item.assistant .error-bubble').length;
+      return {bar:!!b,text:b?b.textContent.trim():'',toggle:!!t,bubbles:n}})()""",
+                        lambda v: isinstance(v, dict) and v.get("bar"))
+    n = wait_upto("document.querySelectorAll('.continue-btn').length",
+                  lambda v: isinstance(v, int) and v >= 1, max_wait=8.0)
+    if not (isinstance(n, int) and n >= 1):
+        raise TestError("重试耗尽的终态错误应给手动「继续」入口（count=%r）" % (n,))
+    if not isinstance(surface, dict) or not surface.get("bar"):
+        raise TestError("终态错误未出现在下方提示条（自动续写应已取消）")
+    if int(surface.get("bubbles") or 0) != 0:
+        raise TestError("聊天流内不应出现 .error-bubble（got %r）" % surface.get("bubbles"))
+    if "已重试 2/2 次" not in (surface.get("text") or ""):
+        raise TestError("提示条须显示真实 retry 次数（已重试 2/2 次）：%r" % surface.get("text"))
+    print("[EVIDENCE] " + json.dumps({"case": "E3 可重试终态→下方提示条+手动入口",
+                                      "continue": n, "hint": (surface.get("text") or "")[:120],
+                                      "bubbles": surface.get("bubbles")},
                                      ensure_ascii=False), flush=True)
 
 
@@ -129,8 +159,8 @@ def main():
     ok = total = 0
     for name, fn in [
         ("E1 空回复：提示 + 手动「继续」", case_e1_empty_reply),
-        ("E2 不可重试错误：手动「继续」入口", case_e2_nonretryable_manual),
-        ("E3 可自动重试：抑制手动入口（自动续写支路）", case_e3_retryable_auto),
+        ("E2 不可重试错误：下方提示条 + 手动「继续」入口", case_e2_nonretryable_manual),
+        ("E3 可重试错误终态：下方提示条 + 手动「继续」（不再静默续写）", case_e3_retryable_terminal),
     ]:
         total += 1
         ok += run_case(name, fn)

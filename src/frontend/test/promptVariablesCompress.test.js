@@ -119,7 +119,8 @@ test('useCompressStatus：compress-start/done 驱动会话级进行中集合', (
 test('ChatPanel：compress-* 分流为进度指示（不弹 toast）并渲染指示条', () => {
   const c = read('views/chat/ChatPanel.vue')
   assert.match(c, /import \{ useCompressStatus \} from '\.\.\/\.\.\/composables\/useCompressStatus'/)
-  assert.match(c, /if \(data\.notice === 'compress-start' \|\| data\.notice === 'compress-done'\)/, '须在 tool-notify 分派 compress-*')
+  // STB-1：长任务（记忆 / 压缩）统一先经 useQueueStatus 归并，再在同一条 notice 上分流压缩进度
+  assert.match(c, /if \(notice === 'compress-start' \|\| notice === 'compress-done'\)/, '须在 tool-notify 分派 compress-*')
   assert.match(c, /handleCompressNotice\(data\)[\s\S]*?return/, 'compress-* 处理须提前 return（不走 toast）')
   assert.match(c, /<div v-if="compressing" class="compress-progress-bar">\{\{ \$t\('chat\.compressing'\) \}\}<\/div>/, '须渲染压缩指示条')
 })

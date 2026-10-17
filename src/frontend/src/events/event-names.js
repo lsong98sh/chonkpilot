@@ -264,6 +264,7 @@ export const EventNames = {
   guiWindowClosed: 'gui.window.closed', // 宿主 → 前端：对话窗口关闭广播 {window_id, session_id}（解除入口占用）
   guiWindowSetTitle: 'gui.window.set-title', // **仅独立对话窗口**：标题随会话摘要变化更新：payload {title}
   guiDevToolsOpen: 'gui.devtools.open', // 状态栏调试图标 → 宿主程序化打开 DevTools（61 §1）
+  guiWindowResize: 'gui.window.resize', // frameless 主窗口边缘命中 → 宿主 StartResize(HT*)（61 §1；WIN-1 / G-59）
   windowMaximizedChanged: 'window-maximized-changed', // 后端执行最大化后广播，同步按钮图标
   sessionsOpen: 'sessions-open',
   analyzeOpen: 'analyze-open',

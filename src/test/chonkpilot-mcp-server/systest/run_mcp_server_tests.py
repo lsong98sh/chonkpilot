@@ -311,7 +311,7 @@ def suite_core(core, work):
     def t_skills_list():
         # skills 复用 prompt 通道，经 _meta.type 区分（spec 25 §3.1/§4.1/§7）：无 skills/list 方法
         # 集合 = skills/core/ 4 + skills/ux/ 15（来源 claude-ux/skills/）
-        #      + skills/se/ 13 个需求工程 step 技能（供「新项目需求沟通员」agent 分步取用）。
+        #      + skills/se/ 14 个需求工程 step 技能（供「新项目需求沟通员」agent 分步取用）。
         skills = {p["name"] for p in core.prompts_list() if (p.get("_meta") or {}).get("type") == "skill"}
         expect = {
             # skills/core/
@@ -321,11 +321,12 @@ def suite_core(core, work):
             "discovery-questions", "frontend-aesthetic-direction", "generate-variations",
             "hierarchy-rhythm-review", "interaction-states-pass", "layout-discipline",
             "make-a-deck", "make-a-prototype", "make-tweakable", "polish-pass", "wireframe",
-            # skills/se/（13 个需求工程 step 技能；名字沿用原编号文件名）
+            # skills/se/（14 个需求工程 step 技能；名字沿用原编号文件名）
             "0.企业画像与现状分析", "1.管理对象与管理诉求", "2.外部交互点",
             "3.业务流程与角色 + 干系人分析", "4.生命周期", "5.可管理项", "6.权限矩阵",
             "7.配置项", "8.对外接口", "9.通用设计维度 + MECE检查",
             "10.数据模型与架构 + 验收标准", "11.非功能性需求", "12.总结与汇报",
+            "术语与命名守门",
         }
         assert skills == expect, skills
 
@@ -428,7 +429,7 @@ def suite_core(core, work):
         # 改为经 prompts/get 取 skill 正文并断言其应然内容（含工具面指引）
         res = core.prompt_get("explore", {"goal": "了解结构"})
         txt = res["messages"][0]["content"]["text"]
-        assert "探索项目" in txt and "directory_list" in txt, txt[:200]
+        assert "探索项目" in txt and "FIND" in txt, txt[:200]
 
     def t_task_param_ignored():
         # MCP tasks 不属 mcp-server 契约面（server.go:71-159 只注册四原语；capabilities 无 tasks）：

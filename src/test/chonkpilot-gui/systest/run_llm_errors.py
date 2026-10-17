@@ -24,6 +24,14 @@
        （无 llm-retry 事件）、首次错误快速到达
   S23  错误分类单元测试见 chonkpilot/pkg/executor/llm/netprobe_test.go（go test）
   S25  发送前校验 LLM 配置：llms 置空 → 发送被拦截（无 llm-start）+ warning 提示
+  RETRY-1（2026-10-17）可见重试：
+    "call retry-twice"   前两次 429（Retry-After: 2）→ 第三次成功
+                         → 断言 llm-retry 中间态（真实计数 1/3、wait_ms>0）+ DOM「正在重试 1/3（等待 2 秒）」
+                           + 成功后无 `.error-bubble` / 无残留提示条（截图 E:\\TEMP\\ck-l4-visual\\retry\\）
+    "call retry-exhaust" 每次都 500 → 重试耗尽
+                         → 断言终态 session-complete{status:error, retryable:true, retry_attempt=2,
+                           retry_count=2, retry_wait_ms=0}；错误**只在下方提示条**（含「已重试 2/2 次」
+                           与「查看错误信息」原始详情）；聊天流内查不到 `.error-bubble`
 """
 
 import copy
@@ -247,6 +255,21 @@ def case_send_blocked_no_llm():
         write_cfg(cfg)
         c.mq_emit("config-refresh")
         time.sleep(1.5)
+        # `llms` 置空时 config-refresh **不会**清空前端 llmList（既有语义：编辑期间不闪空）→
+        # 本用例需「空 llms」生效，故重载一次让 llmList 按新配置重新初始化（仅本用例；跑前快照已存）。
+        try:
+            c.eval("location.reload(); 'ok'")
+        except Exception:
+            pass
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                if _loads_deep(c.eval("!!document.querySelector('.panel-inner')")) is True:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        time.sleep(1.0)
         # 输入文本（输入区为 contenteditable 富文本：写 innerHTML + input 事件 → onEdit 同步 text）
         r = _loads_deep(c.eval("""(() => {
           const el = document.querySelector('.richtext-input');
@@ -292,11 +315,183 @@ def case_send_blocked_no_llm():
         c.mq_emit("config-refresh")
 
 
+# ── RETRY-1（2026-10-17）：可见重试 + 终态错误只在下方提示条 ────────────
+
+SHOTS = os.path.join("E:\\TEMP", "ck-l4-visual", "retry")
+
+
+def _save_shot(name):
+    """截图（仓库外证据目录）；失败仅告警，不影响断言。"""
+    try:
+        os.makedirs(SHOTS, exist_ok=True)
+        p = os.path.join(SHOTS, name)
+        c.screenshot(p)
+        print("    [shot] %s" % p, flush=True)
+        return p
+    except Exception as e:
+        print("    [warn] screenshot %s 失败: %s" % (name, e), flush=True)
+        return ""
+
+
+def _dom(js):
+    v = _loads_deep(c.eval(js))
+    return "" if v is None else v  # 保留 0（计数为 0 是有效断言值，不能被 `or ''` 吃掉）
+
+
+def _prep_mock_cfg(retry_count):
+    """配置只含 mock（8901）+ 指定 retryCount；返回 usr 快照（调用方 finally 还原）。"""
+    snap = _h.snapshot_user_config(c, ["llms", "defaultLLM", "retryCount"])
+    backup = read_cfg()
+    cfg = copy.deepcopy(backup)
+    cfg["llms"] = [{
+        "name": "mock", "protocol": "openai", "apiKey": "mock-key", "model": "mock-model",
+        "baseUrl": "http://127.0.0.1:8901/v1", "temperature": 0.7,
+        "maxOutputToken": 4096, "thinking": False,
+    }]
+    cfg["defaultLLM"] = 0
+    cfg["retryCount"] = retry_count
+    write_cfg(cfg)
+    c.mq_emit("config-refresh")
+    c.mq_emit("chat-select-llm", {"name": "mock"})
+    time.sleep(1.5)
+    return snap
+
+
+def _watch_retry_dom(max_wait=40):
+    """轮询可见重试提示条，收集不同文案 + 首帧截图；llm-complete 到达即停。"""
+    texts, shot = [], ""
+    end = time.time() + max_wait
+    while time.time() < end:
+        try:
+            t = _dom("(()=>{const e=document.querySelector('.llm-retry-hint');"
+                     "return e?e.textContent.trim():''})()")
+        except Exception:
+            t = ""
+        if t and t not in texts:
+            texts.append(t)
+            if not shot:
+                shot = _save_shot("retry-in-progress.png")
+        if c.events_of("llm-complete", clear=False):
+            break
+        time.sleep(0.2)
+    return texts, shot
+
+
+def case_visible_retry_then_success():
+    """RETRY-1：429（前两次，Retry-After: 2）→ 重试可见（「正在重试 n/N（等待 s 秒）」）
+    → 第三次成功：不落错误、提示条消失、聊天流无 `.error-bubble`。"""
+    reset_mock_state()
+    snap = _prep_mock_cfg(3)
+    try:
+        c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
+        c.mq_on_capture(EVENTS)
+        sid = create_session()
+        activate_session(sid)
+        time.sleep(1.5)
+        start_turn(sid, "please call retry-twice", llm="mock")
+        confirm_turn(sid, max_wait=60)
+        texts, shot = _watch_retry_dom(max_wait=40)
+        done = wait_event("llm-complete", max_wait=60)
+        payload = done[0]["payload"]
+        retries = c.events_of("llm-retry", clear=False)
+        bubbles = _dom("document.querySelectorAll('.message-item.assistant .error-bubble').length")
+        fail_bars = _dom("document.querySelectorAll('.llm-fail-hint.llm-error-hint').length")
+        body = _dom("document.body.innerText")
+        print("[EVIDENCE] " + json.dumps({
+            "case": "RETRY-1 重试后成功", "retry_texts": texts, "retry_events": len(retries),
+            "retry_payloads": [r.get("payload") for r in retries],
+            "status": payload.get("status"), "error_bubbles": bubbles,
+            "error_hint_bars": fail_bars, "shot": shot,
+            "body_has_retry": "重试" in body,
+        }, ensure_ascii=False), flush=True)
+        if payload.get("status") != "complete":
+            raise TestError("重试后应正常完成，实际: %s" % payload)
+        if len(retries) < 2:
+            raise TestError("应收到 2 条中间态 llm-retry（前两次 429），实际 %d" % len(retries))
+        rp = [r.get("payload") or {} for r in retries]
+        if not (rp[0].get("retry_attempt") == 1 and rp[0].get("retry_count") == 3):
+            raise TestError("首条中间态计数应为 1/3：%s" % rp[0])
+        if not (rp[0].get("retry_wait_ms") or 0) > 0:
+            raise TestError("中间态 retry_wait_ms 应 >0：%s" % rp[0])
+        if not texts:
+            raise TestError("重试期间未显示 .llm-retry-hint（用户不可见）")
+        if not any(("重试" in t and "1/3" in t and "2" in t) for t in texts):
+            raise TestError("重试文案应含「重试 1/3」与等待秒数 2：%r" % texts)
+        if bubbles != 0:
+            raise TestError("成功路径聊天流内不得出现 .error-bubble（got %s）" % bubbles)
+        if fail_bars != 0:
+            raise TestError("成功路径下方不得残留错误提示条（got %s）" % fail_bars)
+        if _dom("document.querySelectorAll('.llm-retry-hint').length") != 0:
+            raise TestError("成功终态后重试提示条未消失")
+    finally:
+        _h.restore_user_config(c, snap)
+        c.mq_emit("config-refresh")
+
+
+def case_retry_exhaust_terminal_hint():
+    """RETRY-1/ERRUX-1：重试耗尽 → 终态错误**只在下方提示条**（摘要 + 已重试 n/N + 查看错误信息），
+    聊天流内查不到 `.error-bubble`；中间态重试文案仍可见。"""
+    reset_mock_state()
+    snap = _prep_mock_cfg(2)
+    try:
+        c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
+        c.mq_on_capture(EVENTS)
+        sid = create_session()
+        activate_session(sid)
+        time.sleep(1.5)
+        start_turn(sid, "please call retry-exhaust", llm="mock")
+        confirm_turn(sid, max_wait=60)
+        texts, shot = _watch_retry_dom(max_wait=40)
+        done = wait_event("llm-complete", max_wait=60)
+        payload = done[0]["payload"]
+        time.sleep(0.8)
+        bubbles = _dom("document.querySelectorAll('.message-item.assistant .error-bubble').length")
+        bar_text = _dom("(()=>{const e=document.querySelector('.llm-fail-hint.llm-error-hint');"
+                        "return e?e.textContent.trim():''})()")
+        shot2 = _save_shot("retry-exhaust-terminal.png")
+        # 展开「查看错误信息」→ 原始错误全文可见（幂等点击）
+        c.eval("(()=>{const b=document.querySelector('.llm-fail-detail-toggle');if(b)b.click();return 'ok'})()")
+        time.sleep(0.4)
+        raw = _dom("(()=>{const e=document.querySelector('.llm-fail-raw');"
+                   "return e?e.textContent.trim():''})()")
+        shot3 = _save_shot("retry-exhaust-detail.png")
+        print("[EVIDENCE] " + json.dumps({
+            "case": "RETRY-1 重试耗尽终态", "retry_texts": texts, "status": payload.get("status"),
+            "retryable": payload.get("retryable"), "retry_attempt": payload.get("retry_attempt"),
+            "retry_count": payload.get("retry_count"), "retry_wait_ms": payload.get("retry_wait_ms"),
+            "error_bubbles": bubbles, "hint_text": bar_text, "raw_detail": raw[:160],
+            "shots": [shot, shot2, shot3],
+        }, ensure_ascii=False), flush=True)
+        if payload.get("status") != "error":
+            raise TestError("重试耗尽应为 error 终态：%s" % payload)
+        if payload.get("retryable") is not True:
+            raise TestError("5xx 耗尽 retryable 应为 true：%s" % payload)
+        if not (payload.get("retry_attempt") == 2 and payload.get("retry_count") == 2):
+            raise TestError("终态真实计数应为 2/2：%s" % payload)
+        if payload.get("retry_wait_ms") != 0:
+            raise TestError("终态 retry_wait_ms 应为 0：%s" % payload)
+        if bubbles != 0:
+            raise TestError("聊天流内不得出现 .error-bubble（got %s）" % bubbles)
+        if not bar_text:
+            raise TestError("终态错误未出现在下方提示条（.llm-fail-hint.llm-error-hint）")
+        if "已重试 2/2 次" not in bar_text:
+            raise TestError("提示条应显示 retry 次数「已重试 2/2 次」：%r" % bar_text)
+        if not raw:
+            raise TestError("「查看错误信息」未展开原始错误（.llm-fail-raw 为空）")
+    finally:
+        _h.restore_user_config(c, snap)
+        c.mq_emit("config-refresh")
+
+
 def main():
     ok = 0
     total = 0
     c.console(clear=True)
     total += 1; ok += run_case("S21 空回复实时提示（completed 无输出 → 提示 + 继续）", case_empty_reply)
+    total += 1; ok += run_case("RETRY-1 重试可见且最终成功（中间态 n/N + 等待秒数；无错误气泡）",
+                               case_visible_retry_then_success)
+    total += 1; ok += run_case("RETRY-1/ERRUX-1 重试耗尽 → 终态只在下方提示条（详情 + retry 次数）",
+                               case_retry_exhaust_terminal_hint)
     total += 1; ok += run_case("§一 网络连接预检（端点不可达不重试，无 llm-retry）", case_network_precheck)
     total += 1; ok += run_case("S25 发送前校验 LLM 配置（llms 空 → 拦截 + 提示）", case_send_blocked_no_llm)
     errs = c.console()

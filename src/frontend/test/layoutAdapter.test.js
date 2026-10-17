@@ -85,9 +85,14 @@ const BAR_VIEWS = [
   'memory-token',
   'queue-status',
   'index-badge',
+  // STB-1：每类长任务一个状态栏条目
+  'memory-status',
+  'compress-status',
   'lang-switcher',
 ]
-const EXPECTED_VIEWS = [...LAYOUT_VIEWS, ...BAR_VIEWS]
+/** 长任务详情 view（STB-1：preview 功能页；登记进注册表供 open-view 解析） */
+const DETAIL_VIEWS = ['status-memory', 'status-compress', 'status-index']
+const EXPECTED_VIEWS = [...LAYOUT_VIEWS, ...BAR_VIEWS, ...DETAIL_VIEWS]
 
 test('① 全部区块定义齐备，字段完整（key/labelKey/label/icon/mode/host/designable）', () => {
   assert.deepEqual(VIEW_DEFINITIONS.map((v) => v.key), EXPECTED_VIEWS, '定义顺序 = 布局区块 + 栏视图条目')
@@ -107,6 +112,8 @@ test('① 全部区块定义齐备，字段完整（key/labelKey/label/icon/mode
   // 设计态兜底（§3.11）：需要真实数据的区块标记 designable:false
   assert.equal(definitionOf('task-detail').designable, false)
   assert.equal(definitionOf('dsl-steps').designable, false)
+  // 长任务详情（STB-1）：真实任务数据 → 设计态不挂载
+  for (const k of DETAIL_VIEWS) assert.equal(definitionOf(k).designable, false, `${k} designable 应为 false`)
 })
 
 test('① 组件映射：全部区块接真实组件（含栏视图条目 search 等，P4 抽取后接线）', () => {

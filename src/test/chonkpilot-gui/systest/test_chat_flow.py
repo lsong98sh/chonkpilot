@@ -44,10 +44,11 @@ def send_msg(gui, sid, text):
     time.sleep(0.4)
 
 
-def complete_turn(gui, sid, status='completed', message=''):
+def complete_turn(gui, sid, status='completed', message='', **extra):
     p = {'session': sid, 'status': status}
     if message:
         p['message'] = message
+    p.update(extra)  # RETRY-1：retry_attempt / retry_count / retry_wait_ms（真实计数）
     emit_remote(gui, 'llm-complete', p)
     time.sleep(0.5)
 
@@ -156,23 +157,26 @@ def main():
         contBtn = wait_upto(gui, "!!document.querySelector('.continue-btn')", lambda v: v is True)
         c.check("CF5 空回复 → 提示 + 继续按钮", bool(hint) and bool(contBtn), f"hint={repr(hint)[:30]} cont={contBtn}")
 
-        # CF6 不可恢复错误（401）：llm-error retryable=false + llm-complete error → 人话错误气泡 + 继续按钮
-        # 批 2（错误呈现面）口径更新：错误气泡不再直出 `Error: <原始串>`，改为「人话文案 + 可展开原始详情」；
-        # 已识别类别的原始串默认折叠 → 先断言人话文案与详情入口存在，再展开断言原始串可查（强度不降）。
-        #（L4 加固（[42 §2 (148)]）：`.error-bubble` 首渲染实测 max 0.632s > 原固定 sleep 0.50s → 改**有界轮询**）
+        # CF6 不可恢复错误（401）：llm-error retryable=false + llm-complete error
+        # ERRUX-1 口径（2026-10-17）：错误**只在下方提示条**显示（聊天流内不再渲染错误气泡）；
+        # 提示条 = 人话摘要 + retry 次数 +「查看错误信息」（展开原始错误）。
         send_msg(gui, sid, '触发 401')
         emit_remote(gui, 'llm-error', {'retryable': False, 'message': 'invalid api key'})
-        complete_turn(gui, sid, status='error', message='invalid api key')
-        human = wait_upto(gui, "document.querySelector('.message-bubble.error-bubble .error-text')?.textContent?.trim() || ''",
+        complete_turn(gui, sid, status='error', message='invalid api key',
+                      retry_attempt=0, retry_count=0, retry_wait_ms=0)
+        human = wait_upto(gui, "document.querySelector('.llm-fail-hint.llm-error-hint .llm-fail-text')?.textContent?.trim() || ''",
                           lambda v: bool(v))
-        detailBtn = wait_upto(gui, "!!document.querySelector('.message-bubble.error-bubble .error-detail-bar .more-link')",
+        detailBtn = wait_upto(gui, "!!document.querySelector('.llm-fail-detail-toggle')",
                               lambda v: v is True)
-        J(gui, "document.querySelector('.message-bubble.error-bubble .error-detail-bar .more-link')?.click(); 'ok'")
-        errBubble = wait_upto(gui, "document.body.textContent.includes('invalid api key')", lambda v: v is True)
+        J(gui, "document.querySelector('.llm-fail-detail-toggle')?.click(); 'ok'")
+        rawDetail = wait_upto(gui, "document.querySelector('.llm-fail-raw')?.textContent?.includes('invalid api key') || false",
+                              lambda v: v is True)
+        noBubble = wait_upto(gui, "document.querySelectorAll('.message-item.assistant .error-bubble').length === 0",
+                             lambda v: v is True)
         contBtn = wait_upto(gui, "!!document.querySelector('.continue-btn')", lambda v: v is True)
-        c.check("CF6 不可恢复错误 → 人话气泡 + 原始详情可展开 + 继续按钮",
-                bool(human) and bool(detailBtn) and bool(errBubble) and bool(contBtn),
-                f"human={repr(human)[:40]} detailBtn={detailBtn} raw={errBubble} cont={contBtn}")
+        c.check("CF6 不可恢复错误 → 只在下方提示条（摘要+详情+retry 次数）+ 继续按钮，聊天流无气泡",
+                bool(human) and bool(detailBtn) and bool(rawDetail) and bool(noBubble) and bool(contBtn),
+                f"human={repr(human)[:40]} detailBtn={detailBtn} raw={rawDetail} noBubble={noBubble} cont={contBtn}")
 
         # CF7 会话进行中自动滚到底部（发送新 turn 后接近底部）
         send_msg(gui, sid, '最后一条很长的消息' + '内容' * 20)

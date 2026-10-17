@@ -46,6 +46,9 @@
     </template>
 
     <AskUserDialog />
+
+    <!-- frameless 主窗口边缘 resize 命中层（WIN-1 / G-59）：仅 GUI/桌面形态渲染（browser 无宿主） -->
+    <WindowResizeHandles />
   </div>
 </template>
 
@@ -54,6 +57,7 @@ import { ref, computed, onMounted, onUnmounted, defineAsyncComponent, h } from '
 import { dialog } from '../../components/dialog'
 import { useI18n } from 'vue-i18n'
 import { SplitPanel } from '../../components/split'
+import WindowResizeHandles from '../../components/shell/WindowResizeHandles.vue'
 import { loadInitDataPrefetched, saveLayoutState } from '../../api/file'
 import { GuiInitDataKeys } from '../../events/msgkeys'
 import { computeContentHeight, readRootPx, FALLBACK_TOOLBAR_HEIGHT, FALLBACK_STATUSBAR_HEIGHT } from '../../utils/cssToken'

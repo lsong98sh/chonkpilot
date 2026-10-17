@@ -93,8 +93,16 @@ func runFind(t *testing.T, exe string, args map[string]any) (int, string) {
 // buildFindScript 把 file_find 风格参数映射为 FIND DSL 脚本（`=> #"<out>"` 捕获输出）。
 func buildFindScript(args map[string]any, out string) string {
 	parts := []string{`FIND #"` + filepath.ToSlash(args["path"].(string)) + `"`}
-	if v, ok := args["depth"].(float64); ok && v > 0 {
-		parts = append(parts, fmt.Sprintf("depth=%d", int(v)))
+	// depth 可能以 int（Go 字面量）或 float64（JSON 解码）传入 —— 两者都要接，否则 depth 静默丢失。
+	switch v := args["depth"].(type) {
+	case float64:
+		if v > 0 {
+			parts = append(parts, fmt.Sprintf("depth=%d", int(v)))
+		}
+	case int:
+		if v > 0 {
+			parts = append(parts, fmt.Sprintf("depth=%d", v))
+		}
 	}
 	if v, ok := args["glob"].(string); ok && v != "" {
 		parts = append(parts, "glob="+quoteArg(v))

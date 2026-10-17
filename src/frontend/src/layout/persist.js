@@ -217,11 +217,13 @@ export function chonkTopToolbar() {
   ])
 }
 
-/** 状态栏条目（§3.4 栏拆解表：实时项 → 栏视图条目，裁决 2） */
+/** 状态栏条目（§3.4 栏拆解表：实时项 → 栏视图条目，裁决 2；STB-1 长任务状态条目） */
 export function chonkStatusbar() {
   return barWith([
     barView('sb_memory', 'left', 'memory-token'),
-    barView('sb_queue', 'left', 'queue-status'),
+    // 长任务状态条目：记忆提取 / 上下文压缩（数据源 = tool-notify；点击 → preview 详情页）
+    barView('sb_memory_status', 'left', 'memory-status'),
+    barView('sb_compress_status', 'left', 'compress-status'),
     barView('sb_index', 'left', 'index-badge'),
     barButton('sb_devtools', 'right', 'DevTools', 'terminal', pmq('gui.devtools.open', {}), { style: 'icon' }),
     barView('sb_lang', 'right', 'lang-switcher'),

@@ -1212,10 +1212,11 @@ function onLlmComplete(d) {
   // 的时序影响；字段缺省（旧载荷/手工注入事件，如 run_chat_flow CF6）→ 回退 llm-error 记录值。
   const retryable = (typeof d.retryable === 'boolean') ? d.retryable : lastTurnRetryable
   lastTurnRetryable = retryable
-  // 自动续写场景：回复未写完，或 error 但该错误**可自动重试**（超时/网络/5xx），
-  // 且非用户主动取消；viewer（子会话只读）不自动。
-  // 不可自动重试的错误（如 API Key 401、空回复）→ 不自动续写，显示错误气泡/空回复提示 +"继续"。
-  const autoRetry = (unfinished || (wasError && retryable)) && !isEmptyReplyErr && !userCanceled && !props.viewer
+  // 自动续写场景（RETRY-1 口径，2026-10-17）：**仅**"回复未写完"（length 截断 / 断链 / 中断）。
+  // 错误终态（含 retryable=true）**不再**由前端触发自动续写——重试由后端可见重试承担
+  //（session-retry → 提示条「正在重试 n/N」），次数用尽即终态：只在下方提示条显示错误，
+  // 并给手动「继续」入口。否则前端静默续写会让"重试"重新变成不可见。
+  const autoRetry = unfinished && !wasError && !isEmptyReplyErr && !userCanceled && !props.viewer
   const emptyReply = !turnHadOutput && !notifyTurn && (d.status === 'complete' || isEmptyReplyErr)
   if (wasError && !isEmptyReplyErr) {
     if (autoRetry) {

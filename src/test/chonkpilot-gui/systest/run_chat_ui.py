@@ -138,7 +138,7 @@ def msg_count():
 
 def case_no_session():
     # 断言**主对话区**（.chat-panel）空态提示。同名 .empty-prompt 另有一处 = SessionChat 子会话区
-    # （文案「选择子会话以查看其对话」），而 visible_text 取「最后一个可见」→ 当主对话区有会话
+    # （文案「选择任务以查看其对话」，而 visible_text 取「最后一个可见」→ 当主对话区有会话
     # （启动 initSession 异步恢复上次活动/最新会话）时只剩子会话区那处 → 误判。
     # 故：限定 .chat-panel 作用域 + 重发 session-changed(null) 直至主对话区进入空态。
     ok = False

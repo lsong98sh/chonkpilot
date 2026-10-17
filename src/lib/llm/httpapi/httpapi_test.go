@@ -395,7 +395,7 @@ func TestNativeCapabilitiesRejected(t *testing.T) {
 	for _, typ := range []string{
 		"gui.pick-executable", "gui.console.open",
 		"gui.reveal", "gui.open-with", "gui.toolchain.detect",
-		"gui.system.builtins", "gui.window.status", "gui.file.save",
+		"gui.system.builtins", "gui.window.status", "gui.window.resize", "gui.file.save",
 	} {
 		env := publish(t, base, typ, "{}")
 		if env["ok"] != false {

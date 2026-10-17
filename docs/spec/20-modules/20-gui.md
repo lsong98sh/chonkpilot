@@ -192,7 +192,8 @@
 |------|------|------|
 | 无 HTTP server | WebView2 `WebResourceRequested` 虚拟源拦截 | 免端口、免监听、资源不落盘 |
 | 前端资源 no-cache | 强制 `no-cache, no-store, must-revalidate` | WebView2 会持久缓存旧页面 |
-| Frameless 保留 WS_THICKFRAME | 无原生标题栏 + 系统八方向 resize | 自绘 toolbar + 原生 resize 体验 |
+| Frameless 保留 WS_THICKFRAME | 无原生标题栏；`WS_THICKFRAME` **只保留最大化 / 贴靠等原生行为** | frameless 下 WebView2 子窗铺满客户区 → `WM_NCHITTEST` 恒 `HTCLIENT`，**系统层无边缘 resize 命中区**（WIN-1 / G-59） |
+| 窗口 resize（frameless 主窗口） | 前端边缘命中 → `gui.window.resize{hit}` → 宿主 `StartResize(HT*)` 进入系统原生 resize 模态循环 | 系统无命中区，只能由前端补命中：`components/shell/WindowResizeHandles.vue` 渲染 8 条透明命中条（4 边 6px / 4 角 12px，`-webkit-app-region: no-drag`），`mousedown` 发消息；`guiDo` 把方位映射为 `HTLEFT(10)…HTBOTTOMRIGHT(17)` 后调 `webview2.WindowResizer.StartResize`（`src/lib/gui/bridge/guimsg.go` / `window.go`；设计见 [go-webview2/FORK.md](../../../src/lib/go-webview2/FORK.md) P4）。**仅 frameless 装配**；对话窗口（原生标题栏/边框）不装配 → 明确失败。 |
 | 拖动用 `-webkit-app-region: drag` | CSS 区域拖拽，控件 `no-drag` | 免手写拖动逻辑 |
 | `--test-port` 仅 127.0.0.1 | 外部脚本驱动端点 | 测试专用，见 [52-test-port驱动](../50-testing/52-test-port驱动.md) |
 
@@ -418,12 +419,33 @@
 - 纯成功且非"保存"语义的操作（切场景 / 切模型 / 新建会话等）**不加**提示。
 - **不加**首次使用引导：本工具面向已有 IDE（IDEA / Eclipse 等）使用经验的开发者。
 
-### 12.10 状态栏（`views/statusbar/StatusBar.vue`）
+### 12.10 状态栏（`views/statusbar/StatusBar.vue` / 默认 `layout/bar-views/*`）
 
 > 用户口径：「statusbar 可否显示 当前索引和 codebase 的状态？未启用，完成，N/total」。
 > 状态栏自左向右 = 记忆总 token 数（仅记忆库启用时显示）· **索引状态区**（恒显示）· DevTools 图标 · 撑开 · 语言切换（`LangSwitcher`）。
+> **STB-1（2026-10-17）**：记忆提取 / 上下文压缩 / 代码索引（含 AST）**各一个长任务状态 view**，点击 → preview 详情页；长任务**不再用 toast**。
 
-- **索引状态区**（`.sb-section.sb-index`）：内含 **两枚徽标**（`.sb-idx[data-engine="codegraph"|"vfts"]`，**图标 + 状态文本**：图标在左、状态文本/数字紧贴其右，图标取代原引擎名文本），紧凑单行（`white-space: nowrap` + `flex-shrink: 0`），**不换行、不改变状态栏高度**（`--statusbar-height`）。两枚徽标**恒显示**（「未启用」本身即信息）。图标取自既有图标集（codegraph = `collection`，vfts = `search`）——**不新增图标资源**。
+**长任务状态条目（STB-1，默认 free 形态 = `layout/bar-views/`）**
+
+| 条目（viewKey） | 数据源（零新增主题 / 键） | 空闲 | 排队 / 进行中 | 完成 / 失败 | 点击 |
+|---|---|---|---|---|---|
+| `memory-status`（记忆提取） | 既有通知面 `tool-notify`：`memory-{queued,start,done}` + `plugin-failure{plugin:memory}`；`memory.enabled` 仅用于「未启用」文案 | `记忆 · 未启用`（记忆库关闭）/ `记忆 · 空闲` | `记忆沉淀排队中` / `记忆沉淀中…`（进行中色） | `记忆沉淀完成` / `记忆 · 失败`（错误色，title = 错误原文） | `open-view{status-memory}` → preview「记忆提取详情」 |
+| `compress-status`（上下文压缩） | 同上：`compress-{queued,start,done}` + `plugin-failure{plugin:compress}` | `压缩 · 空闲` | `压缩排队中` / `压缩中…`（进行中色） | `压缩完成` / `压缩 · 失败`（错误色） | `open-view{status-compress}` → preview「上下文压缩详情」 |
+| `index-badge`（代码索引；codegraph + vfts 两枚徽标同一详情页） | prj 既有键 `enable-codegraph` / `codegraph.status` / `enable-vfts` / `vfts.status` | `未启用` / `未初始化` | `索引中 N/total`（`progressTotal>0`） | `完成` / `失败`（错误色） | `open-view{status-index}` → preview「代码索引详情」 |
+
+- **条目恒可见**（「每种任务都有一个状态 view」）：空闲 / 未启用也渲染（中性色 `--fg-disabled`），不因空闲而消失。
+- **失败不静默**：`plugin-failure`（既有 notice）落到条目错误色 + 详情页错误文本；**worker 失败后仍会补发 `*-done` → 前端「失败优先」**（`reduceTask`：error 态忽略后续 done），避免失败被「完成」洗掉。
+- **AST 口径**：引擎 `codegraph.status.phase` 仅 `configure|index`（插件回写），**未单独暴露 AST 阶段** → AST 并入代码索引条目 / 详情页「索引阶段」说明，**不编造独立进度**。
+- **去 toast（STB-1）**：记忆 / 压缩的进度 / 完成 / 失败不再走 `ChatPanel.sendNotify`（`message.info`）；`tool-notify` 长任务取值在 `sessionGuard` **之前**归并进 `useQueueStatus`（状态栏是项目级，跨会话可见），命中即 `return`（仅压缩进度继续驱动会话内联指示条）。其它插件的 `plugin-failure` 提示链路保持不变。
+- **零新增消息面**：仅消费既有 `tool-notify` 取值（`memory-*` / `compress-*` / `plugin-failure`）与既有 prj 键；命令复用 `open-view{viewKey,target}` → `preview-tab-open{kind}`。
+
+**长任务详情页（preview 功能页，`views/status/*`）**
+
+- `status-memory` / `status-compress`：当前状态（含自动隐藏后的「空闲/未启用」）、最近一次任务（状态 / 开始 / 最近更新 / 会话 / 轮次 / 错误）、**真实 notice 状态时间线**（有界 20 条；数据只有 notice → **不伪造队列条目**）。「去设置」→ `project-config-open{tab:'context'}`。
+- `status-index`：codegraph / vfts 两区块 —— 状态、`phase`（配置 / 索引阶段）、进度 `done/total` + 进度条、`indexedFiles` / `indexedSymbols` / `chunkCount`、`lastIndexedAt`（UnixNano → 本地时间）、`loaded`、`err` / `message`。「去设置」→ `project-config-open{tab:'codegraph'}`（Vfts 区块另有 `tab:'vfts'`）。
+- **三页均注册进** `layout/view-definitions.js`（`status-*`，`designable:false`）+ `layout/views.registry.js`（组件映射）+ `CodeView.specialComponents`（功能页页签 / 标题 i18n `statusBar.detail.*`）。
+
+**索引状态区（`.sb-section.sb-index`）**：内含 **两枚徽标**（`.sb-idx[data-engine="codegraph"|"vfts"]`，**图标 + 状态文本**），紧凑单行，**恒显示**。图标取自既有图标集（codegraph = `collection`，vfts = `search`）。
 - **数据源**（全部**既有** prj-config 键，**零新增消息面**）：`enable-codegraph` + `codegraph.status`；`enable-vfts` + `vfts.status`。取数 = `getAllConfig()`（`data-prj-config-list`）；刷新 = 既有广播 `onDataRefresh('prj-config', reload)`；显示值用 `computed` 派生（**禁 watch/watchEffect**）。
 - **状态映射**（纯函数 `src/frontend/src/utils/indexStatus.js`）：
 
@@ -436,10 +458,10 @@
   | `state == "error"` | 失败 | `--fg-important` |
 
   > 「索引中」取 `--fg-secondary`（进行中的中性次要色）：状态栏的 `--accent` 留给可交互/选中语义（如记忆总量 hover），避免「进行中」与「可点击」混淆。
-- **悬停**：徽标**原生 `title`**（**不再用 `Tooltip` 组件**）——codegraph = 「点击设置：codegraph」、vfts = 「点击设置：Vfts 全文索引」（i18n 键 `statusBar.idx_open_codegraph` / `idx_open_vfts`，zh/en 齐备）。原 Tooltip 多行明细（引擎名/阶段/进度/索引文件数/最后索引/错误…）**已整体移除**（`indexStatus.js` 的 `tip` 字段与 `idx_tip_*` i18n 键一并删除）。
-- **点击**：每枚徽标经既有前端事件 `EventNames.projectConfigOpen`（`project-config-open`）打开项目配置页，并**带可选 payload `tab`**（codegraph 徽标 → `tab:'codegraph'`，vfts 徽标 → `tab:'vfts'`）→ `MainLayout.handleOpenProjectConfig` 透传 → preview 页签 `kind='settings-project'` → `CodeView` 落到功能页 → `ProjectConfig` 激活对应页签。**缺省/非法 `tab` → 默认页签（`security`），不报错**（向后兼容旧发送方）。**不新增 MQ 主题**（仅给既有 payload 增可选字段，见 [61 §6.1](../60-reference/61-消息一览.md)）。
+- **悬停**：徽标**原生 `title`**（**不再用 `Tooltip` 组件**）——codegraph = 「点击查看索引详情：codegraph」、vfts = 「点击查看索引详情：Vfts 全文索引」（i18n 键 `statusBar.idx_open_codegraph` / `idx_open_vfts`，zh/en 齐备；STB-1 改文案指向详情页）。原 Tooltip 多行明细**已整体移除**。
+- **点击**（STB-1 口径变更）：每枚徽标 → 统一命令 `open-view{viewKey:'status-index', target:'auto'}`（`layout/statusDetail.js`）→ 既有 `preview-tab-open{kind:'status-index'}` → preview 打开「代码索引详情」；**不再直接跳项目配置**。配置仍可从详情页「去设置」到达：`projectConfigOpen{tab:'codegraph'}` / `{tab:'vfts'}` → `MainLayout.handleOpenProjectConfig` 透传 → `ProjectConfig` 激活对应页签（缺省/非法 tab → 默认页签 `security`）。**零新增 MQ 主题**。
 - **异常兜底**：状态 JSON 解析失败/缺键 → 视为「未启用 / 未初始化」，静默（不抛错、不 `console.error`）。
-- **关联测试**：前端守卫 `test/statusbarIndexStatus.test.js`（映射全状态 + 4 键 + 既有广播 + 徽标 = 图标+文本/无 Tooltip + 原生 title + 点击带 tab + 跳页签链 + 禁 watch + 零新增主题 + i18n 齐备）；L4 `test_statusbar.py::SB6`（真机：无键基线 / 索引中 N-total / 完成 / 失败 / 原生 title / 点击开项目配置并定位 CodeGraph、Vfts 页签 / 收尾还原）。
+- **关联测试**：前端守卫 `test/statusbarIndexStatus.test.js`（映射全状态 + 4 键 + 既有广播 + 徽标 = 图标+文本/无 Tooltip + 原生 title + **点击走 open-view 详情** + 零新增主题 + i18n 齐备）· `test/statusTasks.test.js`（长任务条目状态映射 / 点击 open-view / 详情页注册与「去设置」/ 去 toast / 详情字段）· `test/layoutAdapter.test.js`（注册表新增 `memory-status` / `compress-status` / `status-*`）；L4 `test_statusbar.py::SB6/SB7/SB8`（真机：索引中 N-total / 完成 / 失败 → 点击开**索引详情**（错误 + 进度 + 去设置 → CodeGraph/Vfts 页签）；记忆/压缩条目（未启用/空闲基线 → 进行中 → 点击开详情 → 失败错误文本 → 失败优先于 done → 完成）；截图存 `E:\TEMP\ck-l4-visual\stb\`）。
 
 ### 12.11 文件树：被索引排除条目灰显
 
@@ -542,6 +564,7 @@
 - **下游事件归属过滤**：桥只按 `instance_id` 精确过滤（无 session 级路由）→ `subchat-opened` / `subchat-state` 的归属判定一律由前端比较 `parent_session_id`（[61 §4.3](../60-reference/61-消息一览.md)）。
 - **固定参数锁入口（F1）**：`kind ∈ {sub_chat, group_chat}` → `ChatPanel` 隐藏场景切换 Tag（chatOnly 精简标题条整条隐藏）；只读（F9）→ 不渲染输入框。
 - **i18n**：新增键一律 `chat.subchat_*`（`locales/{zh-CN,en-US}/chat.json`）。
+- **展示层命名（RENAME-1，2026-10-17）**：面板标题「子会话 / 子会话详细」→ **「任务树 / 任务详情」**（键名不变：`common.sub_sessions` 读作「任务树」、`common.session_detail` 读作「任务详情」）；`chat.select_subsession` 空态与 `chat.ask_user_subsession_title` 同步改为「任务」。**契约与代码标识仍用 `subchat_*` / `subsession-changed`（不改）**——概念层仍是子会话/子聊天，仅展示层改称任务。
 
 ### 12.19 群聊窗口（只读展示板）（SUBCHAT-3 阶段 G，🆕 2026-10-16）
 
@@ -581,7 +604,7 @@
 | 层 | 落点 | 职责 |
 |----|------|------|
 | 机制层（子系统） | `src/frontend/src/layout-free/` | 复制并入的**纯前端子系统**（组件 `Lf*` 命名域 + 80 个 `lf-*` 主题）；**不认识宿主** —— mq / dialog / icon / split / 视图组件全部经 `deps.js` **注入**（去重，§3.10）。门面 = `engine.js#createLayoutEngine`（`install(app)` / `state` / `actions` / `renderLayout` / `renderBar` / `editing` / `selectedNodeId` / `validate`） |
-| 适配层 | `src/frontend/src/layout/` | 宿主唯一装配点：`views.registry.js`（区块注册表）/ `commands.js`（命令落点，含第 5 类 **`publish-mq`**）/ `persist.js`（`layout.free` ↔ `gui.ui.save`·`gui.init-data`）/ `theme.css` / `i18n.js` / `mode.js` / `bar-views/`（8 个栏视图）/ `ChonkLayout.vue`·`ChonkTopBar.vue`·`ChonkStatusBar.vue`·`barActions.js`；`layout/index.js#setupLayoutEngine(app)` 在 `main.js` 的 pinia / mqPlugin **之后**、`mount` 之前调用 |
+| 适配层 | `src/frontend/src/layout/` | 宿主唯一装配点：`views.registry.js`（区块注册表）/ `commands.js`（命令落点，含第 5 类 **`publish-mq`**）/ `persist.js`（`layout.free` ↔ `gui.ui.save`·`gui.init-data`）/ `theme.css` / `i18n.js` / `mode.js` / `bar-views/`（10 个栏视图 + STB-1 长任务条目；长任务详情页组件在 `src/frontend/src/views/status/`）/ `ChonkLayout.vue`·`ChonkTopBar.vue`·`ChonkStatusBar.vue`·`barActions.js`；`layout/index.js#setupLayoutEngine(app)` 在 `main.js` 的 pinia / mqPlugin **之后**、`mount` 之前调用 |
 | 状态层 | `src/frontend/src/stores/selection.js` | **跨 view 共享状态唯一真相源**（Pinia）：`workDir` / `activeFile` / `activeSession` / `activeTask` / `explorerMode` / `activeSelection`；由 `selectionSubscribers.js` **订阅既有主题**写入，各 view 改读 store（见 [17-前端状态与MQ §9](../10-architecture/17-前端状态与MQ.md)） |
 
 **运行形态（默认 free）**
@@ -589,7 +612,7 @@
 - `views/layout/MainLayout.vue` **双分支**：`freeMode`（**默认 `true`**；`?layout=legacy` 回退）→ `<ChonkLayout>` 渲染 `layout.free` 文档树（顶栏 / 状态栏为条目化 `ChonkTopBar` / `ChonkStatusBar`）；**旧硬编码分支保留、不删除**。
 - **18 类条目 + 默认文档**（`persist.js#defaultLayoutDoc`）：`topToolbar` / `statusbar` / `toolbars` / `drawers`；栏条目 `kind` = `button` / `menu` / `view`；**窗口控件（最小化/最大化/关闭）** 与品牌 / 拖拽区 = 容器外壳**固定件，不进配置**（§4.2）。
 - **命令模型**：`open-view{target}`（原 4 类作语法糖）+ **`publish-mq`**（第 5 类，ADR 裁决 1；配置形状 `{type:'publish-mq', topic, payload}` — `commands.js#commandToMq` + `COMMAND_TYPES` + `config.js#validateCommand` 校验「只要求既有主题」+ `LfCommandEditor` 增「MQ 主题 + 载荷(JSON)」）。机制层不认识宿主主题，故**不校验主题存在性**（由适配层保证「只用既有主题」）。
-- **栏视图（裁决 2）**：状态栏 / 顶栏的实时 / 条件 / 动态项做成 `kind:'view'` 的 **栏视图条目**（`layout/bar-views/` 8 个：`SearchBoxView`·`RecentDirsView`·`ChromeWarnView`·`LogoutView`·`MemoryTokenView`·`QueueStatusView`·`IndexBadgeView`·`LangSwitcherView` + `WindowControls`）；**不新增 `valueExpr`/`badgeKey`/`when` 协议**（条件显示由组件自持 `v-if`）。
+- **栏视图（裁决 2）**：状态栏 / 顶栏的实时 / 条件 / 动态项做成 `kind:'view'` 的 **栏视图条目**（`layout/bar-views/` **10 个**：`SearchBoxView`·`RecentDirsView`·`ChromeWarnView`·`LogoutView`·`MemoryTokenView`·`QueueStatusView`（legacy 兼容）·`IndexBadgeView`·`MemoryStatusView`·`CompressStatusView`·`LangSwitcherView` + `WindowControls`）；**不新增 `valueExpr`/`badgeKey`/`when` 协议**（条件显示由组件自持 `v-if`）。**长任务详情页**（`status-memory` / `status-compress` / `status-index`，STB-1）以 `host:'layout'` 注册（可在布局区放置），默认通过状态栏条目的 `open-view` 在 preview 功能页打开。
 - **区块保活**：机制层「**全量渲染 + `v-show`**」——显隐 / 切页签**不卸载**组件（会话 / 页签 / 流式状态留在组件内）；仅配置**删除节点**才卸载。
 - **持久化（§3.9）**：只写 `prjusr` 的 **`layout.free`** 子键（`gui.ui.save {layout:{free}}`；退出兜底 `sendBeacon('/publish')`）；读取经 `gui.init-data` 的 `layout` 子对象。**旧 7 字段**只迁移**尺寸类 4 项**；`filetreeOpen`/`taskOpen`/`chatOpen` 三键随「三区常显」裁决**忽略、不迁移**。消息面**零增删**（[61](../60-reference/61-消息一览.md)）。
 
@@ -598,4 +621,19 @@
 **实现约定**：禁 `watch`/`watchEffect`/`$subscribe`（§4.2 / [17 §3](../10-architecture/17-前端状态与MQ.md)）；布局全域交互**只走 mq**（`v-mq`，与宿主指令**同协议**，见 [71 §7.4](../70-conventions/71-编程规范.md)）；弹窗走自研 `DialogShell`；`:style` 数字加 `'px'`。
 
 > ⚠️ **消息面（P6⑤）**：80 个 `lf-*` 主题登记在**机制层唯一事实源** `layout-free/events/event-names.js`（键名零前缀、值 `lf-*`）；宿主 `src/frontend/src/events/event-names.js` **不重复登记**（两文件为**不同命名域**，机制层经 `deps.js` 注入 mq，不走宿主主题表）。**是否把 `lf-*` 主题在宿主文件里做字面登记 = 待用户确认清单**（[41 G-58](../40-roadmap/41-未决项登记.md)），登记前**不改契约**。
+
+### 12.21 错误呈现与可见重试（ERRUX-1 / RETRY-1，🆕 2026-10-17）
+
+> 用户口径（2026-10-17 实测反馈）：同一错误曾在**聊天流错误气泡**与**下方提示条**重复出现；
+> 自动重试**不可见**（i18n 文案存在但无数据源）。契约见 [61 §4.3](../60-reference/61-消息一览.md)。
+
+| 面 | 组件/选择器 | 职责 |
+|----|------------|------|
+| **唯一错误面** | `ChatPanel.vue` → `.llm-fail-hint.llm-error-hint` | 终态错误（`llm-complete{status:error}`，空回复除外）：人话摘要（`utils/errorMessage.js#classifyError`）+ **「已重试 n/N 次」**（`chat.retry_count_label`，取真实 `retry_attempt`/`retry_count`）+ **「查看错误信息」**（`.llm-fail-detail-toggle` 展开 `.llm-fail-raw` 原始错误全文）+（需要时）「去配置 LLM」CTA |
+| **重试可见** | `ChatPanel.vue` → `.llm-fail-hint.llm-retry-hint` | 重试中间态（`session-retry` → 前端 `llm-retry`）：`chat.llm_retry`「正在重试 {attempt}/{max}（等待 {wait} 秒）」，等待秒数 = `retry_wait_ms` 四舍五入；**不落错误消息、不进聊天流**；成功/终态即消失 |
+| **聊天流** | `MessageItem.vue` | **不再渲染轮次错误气泡**（`type:'error'` 分支为空模板；头像/时间戳同 suppressed）。错误消息**仍保留在数据流**（复制/诊断/回放可用），仅不渲染。工具级 `.pair-error-hint`（工具结果失败）**保留**，不属本次目标 |
+
+**判据（与 61 §4.3 一致）**：`retryable=true && retry_wait_ms>0` = 中间态；终态 = `retryable=false` 或次数用尽（`retry_wait_ms=0`），仅发一次。
+**前端行为变更**：`MessageList.onLlmComplete` 的自动续写**仅**用于"回复未写完"（length/断链/中断）；`wasError`（含 `retryable=true`）**不再**静默续写 —— 否则重试仍不可见；终态错误给手动「继续」。
+**约束**：提示条按会话隔离（`session-changed` / 新发送即清空）；禁 `watch`，重试/终态均经既有 `mq.on` + 本地 `ref` 驱动。
 

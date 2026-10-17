@@ -271,6 +271,10 @@ const specialComponents = {
   scenario: defineAsyncComponent(() => import('../scenario/ScenarioDialogContent.vue')),
   // 「用户偏好」只读预览（左侧「项目记忆」点击 user 级条目 → 预览区，与项目级一致，不再弹窗）
   'memory-user-pref': defineAsyncComponent(() => import('../memory/UserPrefView.vue')),
+  // 长任务详情页（STB-1）：状态栏条目 → open-view{status-*} → 预览区功能页
+  'status-memory': defineAsyncComponent(() => import('../status/MemoryStatusDetail.vue')),
+  'status-compress': defineAsyncComponent(() => import('../status/CompressStatusDetail.vue')),
+  'status-index': defineAsyncComponent(() => import('../status/IndexStatusDetail.vue')),
 }
 function specialComponent(kind) { return specialComponents[kind] || null }
 
@@ -295,6 +299,9 @@ function specialTitle(kind) {
     case 'settings-project': return t('config.page.project')
     case 'scenario': return t('scenario.title')
     case 'memory-user-pref': return t('projectConfig.memory_user_pref')
+    case 'status-memory': return t('statusBar.detail.memoryTitle')
+    case 'status-compress': return t('statusBar.detail.compressTitle')
+    case 'status-index': return t('statusBar.detail.indexTitle')
     default: return kind
   }
 }

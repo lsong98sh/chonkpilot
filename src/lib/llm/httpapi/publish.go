@@ -111,6 +111,7 @@ var browserUnsupported = map[string]string{
 	"toolchain.detect":          "本机工具链探测（native）",
 	"system.builtins":           "exe 同级只读内置项（native）",
 	"window.status":             "原生窗口控制（browser 无原生窗口）",
+	"window.resize":             "原生窗口缩放（browser 无原生窗口）",
 	msgkeys.TopicPromptOptimise: "提示词优化（browser 形态未接线 LLM 优化面）",
 }
 

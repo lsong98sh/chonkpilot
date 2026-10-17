@@ -1,8 +1,8 @@
 <!--
-  栏视图条目 `index-badge`（UILAYOUT-1 §7 P4① / 裁决 2）：codegraph / vfts 索引状态徽标。
-  从 `views/statusbar/StatusBar.vue` 平移（实时值 → 栏视图条目）。
+  栏视图条目 `index-badge`（UILAYOUT-1 §7 P4① / 裁决 2；STB-1 改点击落点）：codegraph / vfts 索引状态徽标。
   数据源 = prj 配置既有键（enable-codegraph / codegraph.status / enable-vfts / vfts.status）；
-  刷新 = 既有 `data-prj-config-refresh` 广播；点击 → 既有 `project-config-open {tab}`。
+  刷新 = 既有 `data-prj-config-refresh` 广播；点击 → 统一命令 `open-view{status-index}`
+  （preview 详情页；详情页内保留「去设置」入口，配置仍可达）。**零新增 MQ 主题**。
 -->
 <template>
   <div class="sb-section sb-index">
@@ -11,7 +11,7 @@
       :class="'is-' + cgBadge.tone"
       data-engine="codegraph"
       :title="$t('statusBar.idx_open_codegraph')"
-      v-mq:[EventNames.projectConfigOpen].click="{ tab: 'codegraph' }"
+      @click="openDetail"
     >
       <Icon name="collection" :size="12" class="sb-idx-icon" />
       <span class="sb-idx-state">{{ cgBadge.text }}</span>
@@ -21,7 +21,7 @@
       :class="'is-' + vfBadge.tone"
       data-engine="vfts"
       :title="$t('statusBar.idx_open_vfts')"
-      v-mq:[EventNames.projectConfigOpen].click="{ tab: 'vfts' }"
+      @click="openDetail"
     >
       <Icon name="search" :size="12" class="sb-idx-icon" />
       <span class="sb-idx-state">{{ vfBadge.text }}</span>
@@ -30,17 +30,15 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '../../components/icon'
-import { getAllConfig } from '../../api/config'
-import { onDataRefresh } from '../../utils/dataClient'
 import { indexBadge } from '../../utils/indexStatus'
-import { EventNames } from '../../events/event-names'
+import { usePrjConfigSnapshot } from '../../composables/usePrjConfigSnapshot'
+import { openStatusDetail } from '../statusDetail.js'
 
 const { t } = useI18n()
-
-const prjCfg = ref({})
+const { prjCfg } = usePrjConfigSnapshot()
 
 const cgBadge = computed(() => indexBadge({
   enabledRaw: prjCfg.value['enable-codegraph'],
@@ -53,22 +51,9 @@ const vfBadge = computed(() => indexBadge({
   t,
 }))
 
-async function reloadPrjConfig() {
-  try {
-    const res = await getAllConfig()
-    const cfg = res.config || res || {}
-    prjCfg.value = cfg && typeof cfg === 'object' ? cfg : {}
-  } catch (_) {
-    prjCfg.value = {}
-  }
+function openDetail() {
+  openStatusDetail('index')
 }
-
-let offRefresh = null
-onMounted(() => {
-  reloadPrjConfig()
-  offRefresh = onDataRefresh('prj-config', reloadPrjConfig)
-})
-onUnmounted(() => { if (typeof offRefresh === 'function') offRefresh() })
 </script>
 
 <style scoped>

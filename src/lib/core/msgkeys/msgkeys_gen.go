@@ -31,6 +31,7 @@ const (
 	TopicGuiCaptured                      = "gui.captured"
 	TopicGuiUpload                        = "gui.upload"
 	TopicGuiDevtoolsOpen                  = "gui.devtools.open"
+	TopicGuiWindowResize                  = "gui.window.resize"
 	TopicGuiPickExecutable                = "gui.pick-executable"
 	TopicGuiFileSave                      = "gui.file.save"
 	TopicGuiToolchainDetect               = "gui.toolchain.detect"
@@ -166,6 +167,7 @@ const (
 	TopicLoginOut                         = "login-out"
 	TopicSessionReceive                   = "session-receive"
 	TopicSessionComplete                  = "session-complete"
+	TopicSessionRetry                     = "session-retry"
 	TopicSessionCompress                  = "session-compress"
 	TopicSessionAsk                       = "session-ask"
 	TopicSessionTurnStart                 = "session-turn-start"
@@ -362,6 +364,9 @@ const (
 
 	// gui.upload · result
 	GuiUploadResultName = "name"
+
+	// gui.window.resize · payload
+	GuiWindowResizePayloadHit = "hit"
 
 	// gui.pick-executable · result
 	GuiPickExecutableResultPath = "path"
@@ -1326,11 +1331,23 @@ const (
 	SessionCompleteEventInstanceId   = "instance_id"
 	SessionCompleteEventMessage      = "message"
 	SessionCompleteEventParents      = "parents"
+	SessionCompleteEventRetryAttempt = "retry_attempt"
+	SessionCompleteEventRetryCount   = "retry_count"
+	SessionCompleteEventRetryWaitMs  = "retry_wait_ms"
 	SessionCompleteEventRetryable    = "retryable"
 	SessionCompleteEventSession      = "session"
 	SessionCompleteEventStatus       = "status"
 	SessionCompleteEventText         = "text"
 	SessionCompleteEventTurn         = "turn"
+
+	// session-retry · event
+	SessionRetryEventInstanceId   = "instance_id"
+	SessionRetryEventRetryAttempt = "retry_attempt"
+	SessionRetryEventRetryCount   = "retry_count"
+	SessionRetryEventRetryWaitMs  = "retry_wait_ms"
+	SessionRetryEventRetryable    = "retryable"
+	SessionRetryEventSession      = "session"
+	SessionRetryEventTurn         = "turn"
 
 	// session-compress · event
 	SessionCompressEventInstanceId      = "instance_id"
@@ -1789,6 +1806,7 @@ const (
 	FieldGoal                = "goal"
 	FieldGroups              = "groups"
 	FieldHandlerSubject      = "handler_subject"
+	FieldHit                 = "hit"
 	FieldHot                 = "hot"
 	FieldId                  = "id"
 	FieldIds                 = "ids"
@@ -1888,6 +1906,9 @@ const (
 	FieldResultSummary       = "result_summary"
 	FieldResultType          = "resultType"
 	FieldResults             = "results"
+	FieldRetryAttempt        = "retry_attempt"
+	FieldRetryCount          = "retry_count"
+	FieldRetryWaitMs         = "retry_wait_ms"
 	FieldRetryable           = "retryable"
 	FieldRoot                = "root"
 	FieldRound               = "round"

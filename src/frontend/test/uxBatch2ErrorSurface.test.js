@@ -192,19 +192,14 @@ test('B·MessageList：错误终态把 message+code 一并交给映射（缺 mes
 // ═══════════════════════════════════════════════════════════════
 // B 应用点 2：工具卡失败结果（MessageItem）
 // ═══════════════════════════════════════════════════════════════
-test('B·MessageItem：错误气泡 = 人话文案 + 可展开原始错误（原始串不丢弃、仍可复制）', () => {
+test('B·MessageItem：轮次错误**聊天流内不渲染**（ERRUX-1 口径变更 2026-10-17；唯一错误面 = 下方提示条）', () => {
   const src = read('views/chat/MessageItem.vue')
-  assert.match(src, /import \{ classifyError \} from '\.\.\/\.\.\/utils\/errorMessage'/, '须引入统一映射')
-  const branch = src.match(/v-else-if="message\.type === 'error'"[\s\S]*?\n    <\/div>/)
-  assert.ok(branch, '未找到 error 气泡分支')
-  assert.match(branch[0], /\{\{ errorText \}\}/, '主文案须走映射后的人话文案')
-  assert.match(branch[0], /chat\.error_detail_label/, '须有「原始错误」折叠入口（i18n）')
-  assert.match(branch[0], /v-if="errorDetailOpen"/, '原始串须可按需展开')
-  assert.match(branch[0], /\{\{ message\.content \}\}/, '展开内容 = 原样保留的原始串')
-  // 文案计算：errorKey 存在 → i18n；兼容无分类旧形态
-  assert.match(src, /props\.message\.errorKey, props\.message\.errorParams/, 'errorText 须用 i18n 渲染 key+params')
-  assert.match(src, /props\.message\.errorKey === 'chat\.error_unknown'/, '未知兜底默认展开（原串是唯一线索）')
-  // 原始串为空时复制仍可用（回落人话文案）
+  assert.match(src, /import \{ classifyError \} from '\.\.\/\.\.\/utils\/errorMessage'/, '须引入统一映射（工具卡失败原因仍用）')
+  // 原「人话错误气泡 + 展开原始错误」分支已移除：错误只在 ChatPanel 下方提示条显示
+  assert.doesNotMatch(src, /class="[^"]*error-bubble/, '聊天流内不得再渲染错误气泡')
+  assert.match(src, /v-else-if="message\.type === 'error'"><\/template>/,
+    'type=error 分支须保留为空（消息数据保留、仅不渲染）')
+  // 原始串为空时复制仍可用（回落人话文案；错误消息虽不渲染但复制通道保留）
   assert.match(src, /localContent\.value \|\| props\.message\.content \|\| errorText\.value \|\| ''/, '复制须回落人话文案')
 })
 
@@ -221,14 +216,18 @@ test('B·MessageItem：工具卡失败在原始结果上方叠加人话原因（
   assert.ok(pair, '人话原因须紧邻原始结果 <pre>（两者并存，不互相替换）')
 })
 
-test('B·样式：错误文案/底色走主题 token（无硬编码色值）', () => {
-  const src = read('views/chat/MessageItem.vue')
-  for (const sel of ['.error-bubble', '.error-text', '.pair-error-hint']) {
-    const rule = src.match(new RegExp(sel.replace('.', '\\.') + '\\s*\\{[\\s\\S]*?\\n\\}'))
-    assert.ok(rule, `未找到 ${sel} 规则`)
-    assert.doesNotMatch(rule[0], /#|rgba?\(/, `${sel} 不得硬编码色值`)
-    assert.match(rule[0], /var\(--(danger|bg-tertiary|text-primary|text-secondary)\)/, `${sel} 须走主题 token`)
-  }
+test('B·样式：工具失败人话提示 / 提示条原始错误走主题 token（无硬编码色值）', () => {
+  const item = read('views/chat/MessageItem.vue')
+  const rule = item.match(/\.pair-error-hint\s*\{[\s\S]*?\n\}/)
+  assert.ok(rule, '未找到 .pair-error-hint 规则')
+  assert.doesNotMatch(rule[0], /#|rgba?\(/, '.pair-error-hint 不得硬编码色值')
+  assert.match(rule[0], /var\(--danger\)/, '.pair-error-hint 须走主题 token')
+  // ERRUX-1：错误详情改在下方提示条（ChatPanel.llm-fail-raw），同样走主题 token
+  const panel = read('views/chat/ChatPanel.vue')
+  const raw = panel.match(/\.llm-fail-raw\s*\{[\s\S]*?\n\}/)
+  assert.ok(raw, '未找到 .llm-fail-raw 规则')
+  assert.doesNotMatch(raw[0], /#|rgba?\(/, '.llm-fail-raw 不得硬编码色值')
+  assert.match(raw[0], /var\(--(bg-tertiary|text-secondary)\)/, '.llm-fail-raw 须走主题 token')
 })
 
 // ═══════════════════════════════════════════════════════════════

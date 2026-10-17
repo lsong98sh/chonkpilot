@@ -314,6 +314,11 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		{"task-started", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},
 		{"task-updated", "事件载荷键由前端/任务区对账覆盖（B2 未直接驱动）"},
 		{"task-done", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},
+		// 可见重试中间态（2026-10-17 · RETRY-1）：生产者 = turn.go emitRetry（每次失败后、等待前），
+		// 消费者 = 前端下方提示条（"正在重试 n/N（等待 s 秒）"）。本套件不伪造 LLM 重试链路 → 仍登记；
+		// 行为（计数递增 / 终态仅一次 / 成功不发 / retryCount=0 不重试 / Retry-After 等待值）由
+		// server 包 L1 TestTurnVisibleRetryEvents 覆盖。
+		{"session-retry", "生产者 = turn.go emitRetry（RETRY-1）；行为由 server 包 L1 TestTurnVisibleRetryEvents 覆盖；转发键由 B0 对账覆盖"},
 	}
 	declared := c.byTopic()
 	registered := map[string]bool{}

@@ -29,6 +29,7 @@ export const MsgTopics = {
   guiCaptured: 'gui.captured',
   guiUpload: 'gui.upload',
   guiDevtoolsOpen: 'gui.devtools.open',
+  guiWindowResize: 'gui.window.resize',
   guiPickExecutable: 'gui.pick-executable',
   guiFileSave: 'gui.file.save',
   guiToolchainDetect: 'gui.toolchain.detect',
@@ -164,6 +165,7 @@ export const MsgTopics = {
   loginOut: 'login-out',
   sessionReceive: 'session-receive',
   sessionComplete: 'session-complete',
+  sessionRetry: 'session-retry',
   sessionCompress: 'session-compress',
   sessionAsk: 'session-ask',
   sessionTurnStart: 'session-turn-start',
@@ -300,6 +302,7 @@ export const FieldKeys = {
   goal: 'goal',
   groups: 'groups',
   handler_subject: 'handler_subject',
+  hit: 'hit',
   hot: 'hot',
   id: 'id',
   ids: 'ids',
@@ -400,6 +403,9 @@ export const FieldKeys = {
   result_digest: 'result_digest',
   result_summary: 'result_summary',
   results: 'results',
+  retry_attempt: 'retry_attempt',
+  retry_count: 'retry_count',
+  retry_wait_ms: 'retry_wait_ms',
   retryable: 'retryable',
   root: 'root',
   round: 'round',
@@ -554,6 +560,7 @@ export const FieldDict = {
   goal: 'goal',
   groups: 'groups',
   handler_subject: 'handler_subject',
+  hit: 'hit',
   hot: 'hot',
   id: 'id',
   ids: 'ids',
@@ -664,6 +671,9 @@ export const FieldDict = {
   result_digest: 'result_digest',
   result_summary: 'result_summary',
   results: 'results',
+  retry_attempt: 'retry_attempt',
+  retry_count: 'retry_count',
+  retry_wait_ms: 'retry_wait_ms',
   retryable: 'retryable',
   root: 'root',
   round: 'round',
@@ -886,6 +896,11 @@ export const GuiUploadKeys = {
   dir: 'dir',
   kind: 'kind',
   name: 'name',
+}
+
+/** gui.window.resize 字段键（payload/result/event 合并去重）。 */
+export const GuiWindowResizeKeys = {
+  hit: 'hit',
 }
 
 /** gui.pick-executable 字段键（payload/result/event 合并去重）。 */
@@ -1923,10 +1938,24 @@ export const SessionCompleteKeys = {
   instance_id: 'instance_id',
   message: 'message',
   parents: 'parents',
+  retry_attempt: 'retry_attempt',
+  retry_count: 'retry_count',
+  retry_wait_ms: 'retry_wait_ms',
   retryable: 'retryable',
   session: 'session',
   status: 'status',
   text: 'text',
+  turn: 'turn',
+}
+
+/** session-retry 字段键（payload/result/event 合并去重）。 */
+export const SessionRetryKeys = {
+  instance_id: 'instance_id',
+  retry_attempt: 'retry_attempt',
+  retry_count: 'retry_count',
+  retry_wait_ms: 'retry_wait_ms',
+  retryable: 'retryable',
+  session: 'session',
   turn: 'turn',
 }
 

@@ -26,6 +26,20 @@ import (
 // guiCallFunc 是 gui.* 消息面内部复用的 callX 处理器签名（原 dataCall 随 /call 链删除）。
 type guiCallFunc = func(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error)
 
+// windowResizeHitCodes 把前端边缘命中方位映射为 Win32 WM_NCHITTEST 命中码
+// （HTLEFT/HTRIGHT/HTTOP/HTBOTTOM/HTTOPLEFT/HTTOPRIGHT/HTBOTTOMLEFT/HTBOTTOMRIGHT）。
+// 仅 frameless 主窗口使用（gui.window.resize → StartResize，见 go-webview2/FORK.md P4）。
+var windowResizeHitCodes = map[string]uintptr{
+	"left":        10, // HTLEFT
+	"right":       11, // HTRIGHT
+	"top":         12, // HTTOP
+	"topleft":     13, // HTTOPLEFT
+	"topright":    14, // HTTOPRIGHT
+	"bottom":      15, // HTBOTTOM
+	"bottomleft":  16, // HTBOTTOMLEFT
+	"bottomright": 17, // HTBOTTOMRIGHT
+}
+
 // guiDo 处理 gui.<action> 本地请求（前缀已由调用方剥掉），返回结果与错误。
 // 写回风格对齐 PublishEvent 结果信封：成功返回结果对象；失败返回 {ok:false, error} 并附 errs。
 func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error) {
@@ -323,6 +337,23 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 			return fail("devtools.open: not supported by host")
 		}
 		b.openDevTools()
+		return nil, nil
+
+	// window.resize：frameless 主窗口的系统原生 resize（WIN-1 / G-59，2026-10-17；61 §1）。
+	// 根因：frameless + WebView2 子窗铺满客户区 → WM_NCHITTEST 恒 HTCLIENT，系统层无边缘命中区；
+	// 故前端在最外圈做边缘命中（WindowResizeHandles.vue），mousedown 发本消息 → 这里映射到
+	// Win32 HT* 并调 StartResize（ReleaseCapture + WM_NCLBUTTONDOWN → DefWindowProc 模态 resize 循环）。
+	// **无返回**（61 §1 该主题「返回 = 无（本地事件）」）；非 frameless / 宿主未装配 → 明确失败，不静默。
+	case "window.resize":
+		if b.startResize == nil {
+			return fail("window.resize: not supported by host")
+		}
+		hit := svalStr(p, msgkeys.GuiWindowResizePayloadHit)
+		code, ok := windowResizeHitCodes[hit]
+		if !ok {
+			return fail("window.resize: invalid hit %q", hit)
+		}
+		b.startResize(code)
 		return nil, nil
 
 	// window.status：不应到达（main 已特判）。防御性空返回。

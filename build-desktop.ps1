@@ -1,4 +1,4 @@
-# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
+﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI + CLI）构建（无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-standalone-gui.ps1`；
 #   形态名 `standalone` → **`desktop`（桌面单体）**，产物目录 `dist/standalone/` → `dist/desktop/`。

@@ -13,17 +13,16 @@
       <span class="sb-mem-value">{{ memoryTotal }}</span>
     </div>
 
-    <!-- 索引 / codebase 状态区（2026-09-27）：codegraph / vfts 两枚徽标，恒显示（「未启用」本身即信息）。
-         数据源 = prj 配置既有键（enable-codegraph / codegraph.status / enable-vfts / vfts.status），
-         刷新 = 既有 data-prj-config-refresh 广播。每枚徽标 = [图标] + 状态文本（图标在左、文本/数字紧贴其右），
-         紧凑单行不换行；悬停原生 title；点击 → 既有 project-config-open（带 tab 定位到对应设置页签）。 -->
+    <!-- 索引 / codebase 状态区（2026-09-27；STB-1 改点击落点）：codegraph / vfts 两枚徽标，恒显示
+         （「未启用」本身即信息）。数据源 = prj 配置既有键；刷新 = 既有 data-prj-config-refresh 广播。
+         点击 → 统一命令 open-view{status-index}（preview 详情页；详情页内保留「去设置」入口）。 -->
     <div class="sb-section sb-index">
       <span
         class="sb-idx"
         :class="'is-' + cgBadge.tone"
         data-engine="codegraph"
         :title="$t('statusBar.idx_open_codegraph')"
-        v-mq:[EventNames.projectConfigOpen].click="{ tab: 'codegraph' }"
+        @click="openDetail('index')"
       >
         <Icon name="collection" :size="12" class="sb-idx-icon" />
         <span class="sb-idx-state">{{ cgBadge.text }}</span>
@@ -33,25 +32,27 @@
         :class="'is-' + vfBadge.tone"
         data-engine="vfts"
         :title="$t('statusBar.idx_open_vfts')"
-        v-mq:[EventNames.projectConfigOpen].click="{ tab: 'vfts' }"
+        @click="openDetail('index')"
       >
         <Icon name="search" :size="12" class="sb-idx-icon" />
         <span class="sb-idx-state">{{ vfBadge.text }}</span>
       </span>
     </div>
 
-    <!-- 记忆沉淀 / 上下文压缩**队列状态**（I-128）：数据源 = 既有通知面 tool-notify
-         （notice ∈ {memory,compress}-{queued,start,done}）；空闲（null）不渲染，完成态保持数秒后自动隐藏。 -->
+    <!-- 记忆提取 / 上下文压缩**队列状态**（I-128；STB-1 点击 → 详情页）：
+         数据源 = 既有通知面 tool-notify；空闲（null）不渲染，完成态保持数秒后自动隐藏。 -->
     <div v-if="memoryQueue || compressQueue" class="sb-section sb-queue">
       <span
         v-if="memoryQueue"
         class="sb-q"
         :class="'is-' + memoryQueue.state"
+        @click="openDetail('memory')"
       >{{ queueText('memory', memoryQueue.state) }}</span>
       <span
         v-if="compressQueue"
         class="sb-q"
         :class="'is-' + compressQueue.state"
+        @click="openDetail('compress')"
       >{{ queueText('compress', compressQueue.state) }}</span>
     </div>
 
@@ -81,9 +82,15 @@ import { onDataRefresh } from '../../utils/dataClient'
 import { indexBadge } from '../../utils/indexStatus'
 import { useMemoryCategories } from '../../composables/useMemoryCategories'
 import { useQueueStatus } from '../../composables/useQueueStatus'
+import { openStatusDetail } from '../../layout/statusDetail.js'
 import mq from '../../utils/mq'
 
 const { t } = useI18n()
+
+// 长任务条目点击 → preview 详情页（STB-1；统一命令 open-view，零新增 MQ 主题）
+function openDetail(kind) {
+  openStatusDetail(kind)
+}
 
 // 记忆沉淀 / 上下文压缩队列状态（I-128）：订阅既有通知面 tool-notify（StatusBar 侧消费）
 const { memoryQueue, compressQueue, handleNotice: handleQueueNotice } = useQueueStatus()
@@ -237,6 +244,7 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   white-space: nowrap;
+  cursor: pointer;
 }
 .sb-q.is-queued {
   color: var(--fg-disabled);

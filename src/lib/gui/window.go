@@ -223,8 +223,11 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		// DevTools（宿主仍可程序化打开 → 状态栏调试图标 gui.devtools.open）。Debug 保留 true
 		// 使默认右键菜单（复制/粘贴等）仍可用。
 		DevToolsDisabled: true,
-		// 主窗口 Frameless：无原生标题栏/边框（WM_NCCALCSIZE=0），HTML 自绘标题栏；保留
-		// WS_THICKFRAME → 系统八方向 resize / 最大化 / 贴靠保持原生（与旧 chonkpilot 一致）。
+		// 主窗口 Frameless：无原生标题栏/边框（WM_NCCALCSIZE=0），HTML 自绘标题栏。
+		// **注意**：frameless 下 WebView2 子窗（Chrome_RenderWidgetHostHWND）铺满整个客户区 →
+		// WM_NCHITTEST 恒 HTCLIENT，**系统层不存在边缘 resize 命中区**；WS_THICKFRAME 只保留
+		// 最大化 / 贴靠等原生行为。resize 由**前端边缘命中 + gui.window.resize → StartResize(HT*)**
+		// 提供（见下方面向 WindowResizer 的装配与 go-webview2/FORK.md P4）。
 		// 对话窗口用**原生标题栏**（最大化/最小化/关闭/拖动/八方向 resize 全由系统提供，
 		// 零代码，24 §1.1）。
 		Frameless: spec.frameless,
@@ -296,6 +299,14 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	// （gui.devtools.open）。OpenDevToolsWindow 走 Dispatch 派发到 WebView2 UI 线程。
 	if dt, ok := w.(webview2.DevTools); ok {
 		h.br.SetDevToolsOpener(func() { w.Dispatch(func() { dt.OpenDevToolsWindow() }) })
+	}
+	// WIN-1 / G-59（2026-10-17）：frameless 主窗口无系统边缘命中区（见上方 Frameless 注释）→
+	// 注入「进入系统原生 resize 模态循环」能力，由前端边缘命中后经 gui.window.resize 调起。
+	// **仅 frameless 装配**；非 frameless（对话窗口走原生标题栏/边框）保持 nil → 明确失败。
+	if spec.frameless {
+		if rs, ok := w.(webview2.WindowResizer); ok {
+			h.br.SetWindowResizer(rs.StartResize)
+		}
 	}
 	// flash 远程薄壳：非主窗口关闭不发 instance-exit（共享实例由主窗口/连接断开收尾）。
 	if env.suppressInstanceExit && spec.role != roleMain {

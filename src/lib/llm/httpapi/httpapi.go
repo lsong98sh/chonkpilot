@@ -613,6 +613,7 @@ func eventInstanceID(payload []byte) string {
 var mqTypeMap = map[string]string{
 	msgkeys.TopicSessionReceive:    "llm-receive",
 	msgkeys.TopicSessionComplete:   "llm-complete",
+	msgkeys.TopicSessionRetry:      "llm-retry",
 	msgkeys.TopicSessionCompress:   "llm-compress",
 	msgkeys.TopicSessionAsk:        "ask-user",
 	msgkeys.TopicSessionTurnStart:  "turn-start",

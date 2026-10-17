@@ -14,6 +14,11 @@
     "memoryToken": "记忆 token",
     "queueStatus": "队列状态",
     "indexBadge": "索引徽标",
+    "memoryStatus": "记忆提取状态",
+    "compressStatus": "上下文压缩状态",
+    "statusMemory": "记忆提取详情",
+    "statusCompress": "上下文压缩详情",
+    "statusIndex": "代码索引详情",
     "langSwitcher": "语言切换",
     "dslStepsNoJob": "未指定作业（jobId），请在区域设置里配置参数"
   },

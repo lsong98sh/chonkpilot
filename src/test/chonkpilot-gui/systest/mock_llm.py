@@ -10,6 +10,8 @@
 行为：把最后一个 user 消息回显为回复；根据文本关键词返回 tool_calls 以驱动
       testplan 相关场景（工具调用 / cancel）：
         "call tool"   → dsl_run FILE_READ a.txt（工具调用链路，testplan 五.3）
+        "call retry-twice"   → 前两次 429（Retry-After: 2）→ 第三次正常回复（RETRY-1 重试后成功）
+        "call retry-exhaust" → 每次 500（RETRY-1 重试耗尽 → 终态错误）
         "call cancel" → self_script_run 长命令      （testplan 五.8）
         "call slow-never" → self_script_run 慢命令（call-level async=never + timeout=1s；
                             run_tool_async.py 断言 mcp-tools-timeout options=[wait,cancel]）
@@ -54,6 +56,12 @@ SCRIPTS_WS = os.path.join(_HERE, "ws")  # systest 工作目录（用例输入/�
 # S21 空回复一次性状态："call empty" 首次返回空回复；"继续"重发同一文本时消费该标记
 # 返回正常回复（验证"空回复 → 继续 → 重发原消息"链路）。
 _EMPTY_ONCE = {"active": False}
+
+# RETRY-1（2026-10-17）可见重试分支的一次性状态：
+#   "call retry-twice"  → 前两次 429（Retry-After: 2）→ 第三次正常回复（重试后成功，不落错误）；
+#   "call retry-exhaust"→ 每次都 500（重试耗尽 → 终态错误，只在下方提示条显示）。
+# /reset 归零（跨次运行确定性）。
+_RETRY_STATE = {"twice": 0, "exhaust": 0}
 
 # 记录最近一次请求的可观测证据（GET /last），供 run_llm_config.py / run_llm_fields.py 断言：
 #   - 既有字段（向后兼容，语义与取值不变）：model / temperature / max_tokens；
@@ -540,11 +548,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_status(self, code, obj, retry_after=None):
+        """非 200 应答（RETRY-1 重试分支）：可选 Retry-After 头 → 前端可见等待秒数。"""
+        data = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        if retry_after:
+            self.send_header("Retry-After", str(retry_after))
+        self.end_headers()
+        self.wfile.write(data)
+
     # 测试辅助：GET /reset 重置一次性状态机（_EMPTY_ONCE）与请求记录，
     # 使"空回复"链用例跨次运行确定性（避免状态残留导致交替行为）。
     def do_GET(self):
         if self.path == "/reset":
             _EMPTY_ONCE["active"] = False
+            _RETRY_STATE["twice"] = 0
+            _RETRY_STATE["exhaust"] = 0
             _LAST_REQ.clear()
             _LAST_BODY.clear()
             _REQ_SEQ["n"] = 0
@@ -575,6 +596,31 @@ class Handler(BaseHTTPRequestHandler):
         # 记录请求证据（GET /last）：含既有三字段 + path/protocol/reasoning_effort/
         # authorization/system/has_tool_result/n_requests（见 _request_summary）
         _request_summary(self.path, body, self.headers.get("Authorization", ""))
+
+        # RETRY-1（2026-10-17）：可见重试分支——
+        #   retry-twice：前两次 429 + Retry-After: 2（等待秒数可见）→ 第三次正常回复；
+        #   retry-exhaust：每次都 500（retryCount 次重试后终态错误）。
+        # 返回 HTTP 状态码 → Go 侧 router 归类为可重试（retryable）→ 发 session-retry（前端 llm-retry）。
+        if "call retry-exhaust" in text:
+            _RETRY_STATE["exhaust"] += 1
+            self._send_status(500, {"error": {"message": "mock retry-exhaust"}})
+            return
+        if "call retry-twice" in text:
+            _RETRY_STATE["twice"] += 1
+            if _RETRY_STATE["twice"] <= 2:
+                self._send_status(429, {"error": {"message": "mock retry-twice rate limited"}},
+                                  retry_after="2")
+                return
+            reply = "mock-retry-succeeded: " + text
+            if stream:
+                self._send_stream([
+                    {"choices": [{"delta": {"role": "assistant", "content": reply},
+                                  "finish_reason": "stop"}]},
+                ])
+            else:
+                self._send_json({"choices": [{"message": {"role": "assistant", "content": reply},
+                                              "finish_reason": "stop"}]})
+            return
 
         # C15 断链恢复：发送部分文本后强制 RST 中断（connection reset → 客户端识别为
         # 重试类错误 → runner resumePartial 追加"继续"续写）。干净 FIN 会被客户端当作

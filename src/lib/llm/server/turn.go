@@ -150,6 +150,10 @@ type turnCtx struct {
 	persistedResultOK map[string]bool
 	asyncDone         chan asyncDoneMsg // gateway 回执 task-report → loop 续轮
 	continues         int               // 自动续写计数（maxAutoContinue 保护，S6）
+	// retryAttempt = 本 turn **当前 LLM 调用**已执行的重试次数（RETRY-1，2026-10-17）：
+	// 每次失败重发前自增并随中间态 `session-retry`（前端 llm-retry）广播；终态
+	// `session-complete{status:error}` 携带该值（0 = 未重试）。仅在 loop goroutine 读写。
+	retryAttempt int
 	sessionLock       *sessionLock      // session 排他锁（onLLMStart 获取；Close 释放）
 	result            string            // 终态输出文本（子轮次递归时父侧读取；finish 写入）
 	turnErr           error             // 终态错误（子轮次递归时父侧读取；finish error 写入）
@@ -1287,6 +1291,7 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 	finish := ""
 	var streamErr error
 	attempt := 0
+	tc.retryAttempt = 0 // RETRY-1：重试计数按「本次 LLM 调用」重置（终态/中间态均取该值）
 	// assistant 增量落库（I-176）：流式过程中按「内容段」落库——段边界 = 思维链→正文→工具调用的
 	// 类型切换，以及流结束；每次写到**同一行**（asstKey 回填），非每 token。无可重放内容
 	//（正文 / 工具调用皆空）时不落，避免产生会被 applyReasoningRule 清空的空 assistant 行。
@@ -1324,7 +1329,7 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 			}
 			if attempt < tc.retryCount && retryableErr(err) && probeBeforeRetry(tc.llmSpec.BaseURL) {
 				attempt++
-				sleepCtx(tc.ctx, retryWait(err, attempt))
+				tc.emitRetry(err, attempt)
 				continue
 			}
 			// 真实分类（S21）：超时/网络/429/5xx → retryable=true（前端静默续写）；
@@ -1377,7 +1382,7 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 			}
 			if out.Len() == 0 && attempt < tc.retryCount && retryableErr(streamErr) && probeBeforeRetry(tc.llmSpec.BaseURL) {
 				attempt++
-				sleepCtx(tc.ctx, retryWait(streamErr, attempt))
+				tc.emitRetry(streamErr, attempt)
 				continue
 			}
 		}
@@ -1959,6 +1964,23 @@ func retryWait(err error, attempt int) time.Duration {
 		return 0
 	}
 	return router.RetryWait(&router.Error{Retryable: le.Retryable, RetryAfter: le.RetryAfter}, attempt)
+}
+
+// emitRetry 发布**可见重试中间态**（RETRY-1，2026-10-17）：`session-retry`
+//（前端 type = `llm-retry`）→ 前端提示条显示「正在重试 n/N（等待 s 秒）」；随后按
+// `router.RetryWait` 退避等待。**不落错误消息、不进聊天流**（与终态 session-complete 区分：
+// 中间态 retryable=true 且 retry_wait_ms>0；终态 retry_wait_ms=0）。
+func (tc *turnCtx) emitRetry(err error, attempt int) {
+	wait := retryWait(err, attempt)
+	tc.retryAttempt = attempt
+	tc.server.publish("llm-retry", map[string]any{
+		"instance_id": tc.req.InstanceID, "session": tc.req.Session, "turn": tc.req.Turn,
+		"retryable": true,
+		// retry_attempt = 即将执行的第几次重试（1 起）；retry_count = 允许的最大重试次数
+		"retry_attempt": attempt, "retry_count": tc.retryCount,
+		"retry_wait_ms": int(wait / time.Millisecond),
+	})
+	sleepCtx(tc.ctx, wait)
 }
 
 // probeBeforeRetry 网络连接预检（对齐 llm-error-handling.md §一）：TCP 可达才重试，未连接不重试。

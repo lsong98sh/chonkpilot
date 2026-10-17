@@ -6,9 +6,14 @@
 `llm-error.retryable`）。四情形：
 
   ① EMPTY_REPLY（retryable=false）→ 显示「空回复」提示 + 「继续」按钮；**不**自动续写
-  ② 5xx（retryable=true）→ **自动续写**（静默清理占位气泡，不显示错误气泡）
-  ③ 401（auth，retryable=false）→ 显示错误气泡 + 「继续」按钮；**不**自动续写
+  ② 5xx（retryable=true，retryCount=0）→ **错误只在下方提示条**（ERRUX-1：含 retry 次数 +
+     「查看错误信息」），聊天流内**无** `.error-bubble`；前端不再静默自动续写（llm-start=1）
+  ③ 401（auth，retryable=false）→ 同上：下方提示条 + 「继续」按钮；**不**自动续写
   ④ complete 无输出 → 提示 + 继续（回归护栏，前端注入终态）
+
+> 2026-10-17 口径变更（RETRY-1 / ERRUX-1）：原「② 静默自动续写（无错误气泡）」与
+> 「③ 错误气泡」均已过时 —— 自动重试改由**后端可见重试**承担（session-retry → llm-retry），
+> 终态错误**只在 ChatPanel 下方提示条**呈现。
 
 隔离与回收：GUI 由 harness 自起（动态端口 + 独立 work-dir/data-dir/HOME），mock LLM 由
 harness 自起（8901 复用优先），本脚本内嵌状态 mock（500/401）为进程内线程；结束全部回收。
@@ -28,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chonk_client import ChonkClient, TestError  # noqa: E402
 import harness as _h  # noqa: E402
 
-EVENTS = ["llm-start", "llm-complete", "llm-error", "turn-start"]
+EVENTS = ["llm-start", "llm-complete", "llm-error", "llm-retry", "turn-start"]
 
 
 # ══════════════════════════════════════════════════════════
@@ -155,10 +160,11 @@ def settle(c, idle=6.0, min_complete=1, max_wait=90):
 def dom(c, sid):
     """当前会话消息区关键 DOM。
 
-    **错误呈现面口径（批 2，2026-09-20，见 MessageItem.vue:175-188）**：轮次错误不再直出
-    `Error: <原始串>`，而是 `.message-bubble.error-bubble` 内含 `.error-text`（人话分类文案，
-    由 `utils/errorMessage.js` 的 `classifyError` 映射）+ `.error-detail-bar .more-link`（展开
-    折叠的原始串 `<pre class="error-detail-raw">`）。故「错误气泡」= 新选择器 `.error-bubble`。
+    **错误呈现面口径（ERRUX-1，2026-10-17）**：聊天流内**不再渲染**错误气泡
+    （`MessageItem` 的 `.error-bubble` 已移除）；唯一错误面 = ChatPanel 下方提示条
+    `.llm-fail-hint.llm-error-hint`（人话摘要 + 「已重试 n/N 次」+「查看错误信息」展开
+    `.llm-fail-raw`）；重试中间态 = `.llm-retry-hint`。故本函数**仍统计 `.error-bubble`**
+    （必须恒为 0，作为"聊天流无错误"的硬断言）。
     """
     return {
         "empty_hint_text": jp(c.eval("(document.querySelector('.empty-reply-hint')||{}).textContent||''")),
@@ -169,19 +175,23 @@ def dom(c, sid):
         "error_text": jp(c.eval(
             "(()=>{const e=document.querySelector('.message-item.assistant .error-bubble .error-text');"
             "return e?e.textContent.trim().slice(0,120):''})()")),
+        "error_hint_count": c.exists(".llm-fail-hint.llm-error-hint").get("count", 0),
+        "error_hint_text": jp(c.eval(
+            "(()=>{const e=document.querySelector('.llm-fail-hint.llm-error-hint');"
+            "return e?e.textContent.trim().slice(0,240):''})()")),
+        "retry_hint_count": c.exists(".llm-retry-hint").get("count", 0),
     }
 
 
 def error_detail_raw(c):
-    """展开（幂等）错误气泡的「原始错误」详情，返回原始串 `<pre class="error-detail-raw">` 文本。
+    """展开（幂等）下方提示条的「查看错误信息」，返回原始错误 `<pre class="llm-fail-raw">` 文本。
 
-    批 2 口径：已识别类别的原始串**默认折叠**，点 `.error-detail-bar .more-link` 展开 →
-    原始串仍可核验（不丢弃）。返回 '' = 无错误气泡 / 详情未渲染。"""
-    c.eval("(()=>{const B=document.querySelector('.message-item.assistant .error-bubble');if(!B)return 'no-bubble';"
-           "if(!B.querySelector('.error-detail-raw')){const m=B.querySelector('.error-detail-bar .more-link');"
-           "if(m)m.click();}return 'ok';})()")
+    ERRUX-1 口径：提示条 = 唯一错误面；原始错误默认折叠，点 `.llm-fail-detail-toggle` 展开 →
+    原始串仍可核验（不丢弃）。返回 '' = 无提示条 / 详情未渲染。"""
+    c.eval("(()=>{const t=document.querySelector('.llm-fail-detail-toggle');if(!t)return 'no-toggle';"
+           "if(!document.querySelector('.llm-fail-raw'))t.click();return 'ok';})()")
     time.sleep(0.4)
-    return jp(c.eval("(()=>{const e=document.querySelector('.message-item.assistant .error-bubble .error-detail-raw');"
+    return jp(c.eval("(()=>{const e=document.querySelector('.llm-fail-raw');"
                      "return e?e.textContent.trim():''})()")) or ""
 
 
@@ -275,16 +285,21 @@ def main():
             d = dom(c, sid)
             cnt = counts(c)
             evi("2-5xx", first_status=first.get("status"), first_code=first.get("code"),
-                first_retryable=first.get("retryable"), llm_complete=len(done),
-                llm_start=cnt["llm-start"], hint_after_first=d1["empty_hint_count"],
-                hint=d["empty_hint_count"], continue_btn=d["continue_btn"],
-                error_bubbles=d["error_bubbles"], error_text=d["error_text"])
-            chk("② 5xx: 首次终态 status=error + retryable=true",
-                first.get("status") == "error" and first.get("retryable") is True, first)
-            chk("② 自动续写（llm-complete≥2 / llm-start≥2）",
-                len(done) >= 2 and cnt["llm-start"] >= 2, {"complete": len(done), "start": cnt["llm-start"]})
-            chk("② 静默：无错误气泡 + 无空回复提示",
-                d["error_bubbles"] == 0 and d["empty_hint_count"] == 0, d)
+                first_retryable=first.get("retryable"), first_retry_count=first.get("retry_count"),
+                llm_complete=len(done), llm_start=cnt["llm-start"], llm_retry=cnt["llm-retry"],
+                hint_after_first=d1["empty_hint_count"], hint=d["empty_hint_count"],
+                continue_btn=d["continue_btn"], error_bubbles=d["error_bubbles"],
+                error_hint=d["error_hint_count"], error_hint_text=d["error_hint_text"][:120])
+            chk("② 5xx: 终态 status=error + retryable=true + retry_count=0",
+                first.get("status") == "error" and first.get("retryable") is True
+                and first.get("retry_count") == 0, first)
+            # 2026-10-17 新口径：前端**不再**静默自动续写（自动重试 = 后端可见重试；
+            # retryCount=0 时直接终态）→ 只发起 1 个 llm-start / 1 个 llm-complete
+            chk("② 不再静默自动续写（llm-complete=1 / llm-start=1 / llm-retry=0）",
+                len(done) == 1 and cnt["llm-start"] == 1 and cnt["llm-retry"] == 0,
+                {"complete": len(done), "start": cnt["llm-start"], "retry": cnt["llm-retry"]})
+            chk("② 错误只在下方提示条（聊天流无 .error-bubble + 提示条存在）",
+                d["error_bubbles"] == 0 and d["error_hint_count"] > 0 and d["empty_hint_count"] == 0, d)
         except Exception as e:
             chk("② 5xx 用例执行", False, "%s: %s" % (type(e).__name__, e))
 
@@ -303,25 +318,25 @@ def main():
             d = dom(c, sid)
             cnt = counts(c)
             raw_msg = (p.get("message") or "").strip()
-            raw_detail = error_detail_raw(c)  # 展开折叠的原始串（幂等）
+            raw_detail = error_detail_raw(c)  # 展开提示条的「查看错误信息」（幂等）
             evi("3-401", status=p.get("status"), code=p.get("code"), retryable=p.get("retryable"),
                 message=raw_msg[:80], llm_complete=len(done), llm_start=cnt["llm-start"],
                 hint=d["empty_hint_count"], continue_btn=d["continue_btn"],
-                error_bubbles=d["error_bubbles"], error_text=d["error_text"],
+                error_bubbles=d["error_bubbles"], error_hint=d["error_hint_count"],
+                error_hint_text=d["error_hint_text"][:120],
                 raw_detail=raw_detail[:80], raw_has_msg=bool(raw_msg) and raw_msg in raw_detail)
             chk("③ 401: status=error + retryable=false",
                 p.get("status") == "error" and p.get("retryable") is False, p)
-            # 新 UI 口径（批 2「错误呈现面」）：错误以 `.error-bubble`/`.error-text` 呈现**人话
-            # 分类文案**（复用 errorMessage 分类口径：auth → 文案含状态参数「401」，不写死整句中文），
-            # 原始串折叠入可展开详情 → 展开后仍可核验。核心校验「错误确实被呈现」与「原始串不丢失」
-            # 一并覆盖（强度不降）。
-            chk("③ 人话错误气泡 + 原始串可展开核验 + 继续按钮",
-                d["error_bubbles"] >= 1 and bool(d["error_text"])
-                and not d["error_text"].startswith("Error:")
-                and "401" in d["error_text"]
+            # 2026-10-17（ERRUX-1）：错误**只在下方提示条**（人话摘要含 401 +「已重试 n/N 次」），
+            # 原始串经「查看错误信息」展开后仍可核验；聊天流内查不到 `.error-bubble`。
+            chk("③ 下方提示条（401 摘要 + retry 次数 + 原始详情可展开）+ 继续按钮；聊天流无气泡",
+                d["error_bubbles"] == 0
+                and d["error_hint_count"] > 0
+                and "401" in d["error_hint_text"]
+                and "已重试" in d["error_hint_text"]
                 and bool(raw_msg) and raw_msg in raw_detail
                 and d["continue_btn"] > 0,
-                {"bubbles": d["error_bubbles"], "human": d["error_text"],
+                {"bubbles": d["error_bubbles"], "hint": d["error_hint_text"],
                  "raw_detail": raw_detail[:80], "continue": d["continue_btn"]})
             chk("③ 不自动续写（llm-complete=1 / llm-start=1）",
                 len(done) == 1 and cnt["llm-start"] == 1, {"complete": len(done), "start": cnt["llm-start"]})

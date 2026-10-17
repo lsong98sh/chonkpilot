@@ -14,6 +14,11 @@
     "memoryToken": "Memory tokens",
     "queueStatus": "Queue status",
     "indexBadge": "Index badges",
+    "memoryStatus": "Memory extraction status",
+    "compressStatus": "Context compression status",
+    "statusMemory": "Memory extraction details",
+    "statusCompress": "Context compression details",
+    "statusIndex": "Code index details",
     "langSwitcher": "Language",
     "dslStepsNoJob": "No job specified (jobId) — configure params in area settings"
   },

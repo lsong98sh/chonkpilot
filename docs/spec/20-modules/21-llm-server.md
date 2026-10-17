@@ -136,9 +136,10 @@ chatOnce：
 - **`llm-compress` 载荷（只增）**：唯一终态落库后随事件携带**可选** `max_context_token` / `max_output_token`（各自 = provider 对应字段 `maxContextToken` / `maxOutputToken`：**上下文窗口**（兜底归并窗口来源）/ **最大输出 token**（输出预留 + 摘要目标基数），nil/未配置则不带；见 [28 §3.1](28-plugins.md)）。**载荷字段命名统一 snake_case**（口径 Z3/Z4）。
 - **压缩处置非阻塞（OP-03）**：`llm-compress` 广播后，compress 插件**只入队即返回**（每会话串行 worker 异步压缩）——`finish` 不再等待压缩完成，发终态的 turn 收尾 goroutine 及时 `Close()`、会话锁及时释放。**载荷与主题零变更**；详见 [28 §3.1](28-plugins.md)。
 
-- **终态载荷** `{status, finish_reason, code?, message?, text?, **retryable?**}`；`finish(tc, status, finishReason, code, message, text, retryable *bool)` 为**单点终态**。
+- **终态载荷** `{status, finish_reason, code?, message?, text?, **retryable?**, **retry_attempt?**, **retry_count?**, **retry_wait_ms?**}`；`finish(tc, status, finishReason, code, message, text, retryable *bool)` 为**单点终态**。
 - **`retryable` 为可选字段**：非 nil 才随 `llm-complete` 携带。**仅错误终态携带**——`complete()`（正常/取消）传 nil **不带**；`llmError()`（`EMPTY_REPLY`/`TOOL_LOOP_LIMIT`/`DB_ERROR`，无 `*LLMError` 分类来源）**固定 `false`**；`llmErrorRetryable()`（`LLM_REQUEST_FAILED`/`LLM_STREAM_ERROR`）取 `*LLMError.Retryable`（`turn.go` `retryableErr`；超时/网络/429/5xx → `true`，鉴权/协议 → `false`）。契约详见 [61 §4.3](../60-reference/61-消息一览.md)。
-- 消费方 = 前端：`retryable=true` → 静默自动续写；`false` → 不自动续写、显示错误气泡 +「继续」（手动）。
+- **可见重试（RETRY-1，2026-10-17）**：`chatOnce` 的每次"可重试失败 + 即将重发"先发**中间态** `session-retry{instance_id, session, turn, retryable:true, retry_attempt, retry_count, retry_wait_ms}`（`turn.go#emitRetry`，`retry_wait_ms` 来源 = `router.RetryWait`）再等待；错误终态携带**真实** `retry_attempt`（已执行重试次数）/`retry_count`（usr `retryCount`，0 = 不重试）/`retry_wait_ms=0`。主轮次与子轮次/群聊 `work_session` 同走 `chatOnce`，行为一致。
+- 消费方 = 前端：重试中间态 → 下方提示条「正在重试 n/N（等待 s 秒）」；**终态错误 → 唯一错误面 = 下方提示条**（摘要 + 「已重试 n/N 次」+「查看错误信息」），聊天流内不再渲染错误气泡（ERRUX-1）。前端**不再**对 `retryable` 错误静默自动续写（否则重试不可见）。
 
 ### 4.3 任务树（`tasks.go` / `tool_task.go`）
 

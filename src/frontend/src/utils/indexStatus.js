@@ -76,3 +76,42 @@ export function indexBadge({ enabledRaw, statusRaw, t }) {
 
   return { tone: TONE[key], text }
 }
+
+/**
+ * 索引详情页模型（纯函数）：同一个状态 JSON → 结构化字段（不做任何补造）。
+ * 字段口径见文件头（引擎 Status + 插件回写 phase / message）。
+ * @param {{enabledRaw?:string, statusRaw?:string, t:(k:string)=>string}} p
+ */
+export function indexDetail({ enabledRaw, statusRaw, t }) {
+  const enabled = enabledRaw === 'true'
+  const s = parseStatus(statusRaw)
+  const key = stateKey(enabled, s)
+  const done = num(s && s.progressDone)
+  const total = num(s && s.progressTotal)
+  return {
+    enabled,
+    state: s && typeof s.state === 'string' ? s.state : '',
+    tone: TONE[key],
+    stateText: t('statusBar.' + key),
+    done,
+    total,
+    hasProgress: total > 0,
+    files: num(s && s.indexedFiles),
+    symbols: num(s && s.indexedSymbols),
+    chunks: num(s && s.chunkCount),
+    phase: s && typeof s.phase === 'string' ? s.phase : '',
+    lastIndexedAt: num(s && s.lastIndexedAt),
+    loaded: !!(s && s.loaded),
+    error: String((s && (s.err || s.message)) || ''),
+  }
+}
+
+/**
+ * `lastIndexedAt`（UnixNano）→ 本地时间文本；缺省 / 非法 → ''（不显示，不编造时间）。
+ * @param {number|string} ns
+ */
+export function statusTime(ns) {
+  const n = Number(ns)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  return new Date(Math.floor(n / 1e6)).toLocaleString()
+}

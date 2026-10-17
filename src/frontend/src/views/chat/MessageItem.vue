@@ -1,7 +1,7 @@
 <template>
   <div class="message-item" :class="[message.role, message.type]" :data-id="message.id">
     <!-- Avatar: only show for first message in a group (user-notify 除外，走 🔔 通知样式) -->
-    <div v-if="showHeader && message.type !== 'user-notify' && (message.role === 'assistant' || message.role === 'user' || message.role === 'tool' || message.type === 'tool_pair')" class="speaker-line" :class="message.role === 'tool_pair' ? 'assistant' : message.role">
+    <div v-if="showHeader && message.type !== 'error' && message.type !== 'user-notify' && (message.role === 'assistant' || message.role === 'user' || message.role === 'tool' || message.type === 'tool_pair')" class="speaker-line" :class="message.role === 'tool_pair' ? 'assistant' : message.role">
       <template v-if="message.role === 'assistant' || message.type === 'tool_pair'">
         <span class="speaker-icon assistant">
             <svg style="width: 1em; height: 1em; vertical-align: middle; fill: currentcolor; overflow: hidden;" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg">
@@ -26,7 +26,7 @@
     </div>
 
     <!-- Timestamp: show for every message (user-notify 在通知行内自显时间) -->
-    <div v-if="message.type !== 'user-notify' && (message.role === 'assistant' || message.role === 'user' || message.role === 'tool' || message.type === 'tool_pair')" class="timestamp-line">
+    <div v-if="message.type !== 'error' && message.type !== 'user-notify' && (message.role === 'assistant' || message.role === 'user' || message.role === 'tool' || message.type === 'tool_pair')" class="timestamp-line">
       <span class="speaker-time">{{ formattedTime }}</span>
     </div>
 
@@ -188,20 +188,10 @@
       </div>
     </div>
 
-    <!-- 轮次错误气泡（批 2 – 错误呈现面）：不再直出 `Error: <原始串>`，
-         改为「人话文案（按 errorMessage 分类映射）+ 可展开的原始错误」（原始串不丢弃）。 -->
-    <div v-else-if="message.type === 'error'" class="message-row">
-      <div class="message-bubble error-bubble">
-        <div class="error-text">{{ errorText }}</div>
-        <div class="error-detail-bar">
-          <span class="more-link" @click.stop="toggleErrorDetail">{{ $t('chat.error_detail_label') }}</span>
-        </div>
-        <pre v-if="errorDetailOpen" class="force-wrap error-detail-raw">{{ message.content }}</pre>
-      </div>
-      <div class="bubble-footer">
-        <Icon name="copy-document" :size="14" class="copy-icon" :title="$t('common.copy')" v-mq:[EventNames.msgCopyText].click.stop="{ id: message.id }" />
-      </div>
-    </div>
+    <!-- 轮次错误：**聊天流内不再渲染错误气泡**（ERRUX-1，2026-10-17，用户口径：与下方提示条重复）。
+         唯一错误呈现面 = ChatPanel 的 `.llm-fail-hint`（摘要 + retry 次数 +「查看错误信息」）。
+         错误消息仍在数据流（`type:'error'`，复制/诊断/回放可用），仅不渲染。 -->
+    <template v-else-if="message.type === 'error'"></template>
 
     <div v-else class="message-row">
       <div class="message-bubble">
@@ -367,18 +357,13 @@ const moreLabel = computed(() => {
   return t('chat.more_with_size', { size: label })
 })
 
-// ── 错误人话化（批 2 – 错误呈现面）──
-// 轮次错误气泡：errorKey/errorParams 由 sessionMessages.handleError 按 errorMessage 分类映射写入；
-// 原始错误串保留在 message.content（折叠可查、可复制）。未识别类别（error_unknown）默认展开，
-// 让用户直接看到原始串（此时通用文案信息量最低，原串才是唯一线索）。
-const errorDetailOpen = ref(props.message.errorKey === 'chat.error_unknown')
+// ── 错误消息（数据流保留、**不渲染**，ERRUX-1）──
+// errorKey/errorParams 由 sessionMessages.handleError 按 errorMessage 分类映射写入；
+// errorText 仅用于复制兜底（原始错误串保留在 message.content）。
 const errorText = computed(() => {
   if (!props.message.errorKey) return props.message.content || '' // 兼容无分类的旧形态
   return t(props.message.errorKey, props.message.errorParams || {})
 })
-function toggleErrorDetail() {
-  errorDetailOpen.value = !errorDetailOpen.value
-}
 
 // 工具失败结果（`错误: <原始串>`）的人话原因：仅识别出类别时叠加一行提示；
 // 未识别（error_unknown）→ 不叠加（工具自身的中文 Output 往往已可读，原串照常展示在下方）。
@@ -905,33 +890,7 @@ const formattedTime = computed(() => {
   font-size: 12px;
 }
 
-/* ── 错误人话化（批 2 – 错误呈现面）──
-   文字/底色走主题 token（同 .td-error 口径：--danger 70% + --text-primary 混色、12% 淡底），
-   无硬编码色值；原始错误块用面板色，与正文区分。 */
-.error-bubble {
-  background: color-mix(in srgb, var(--danger) 12%, var(--bg-tertiary));
-  border-left: 3px solid var(--danger);
-}
-
-.error-text {
-  color: color-mix(in srgb, var(--danger) 70%, var(--text-primary));
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.error-detail-bar {
-  margin-top: 4px;
-}
-
-.error-detail-raw {
-  margin-top: 4px;
-  padding: 6px 8px;
-  border-radius: 4px;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-}
-
-/* 工具卡失败结果上方的人话原因（原始结果仍在下方 <pre> 内原样展示） */
+/* ── 工具卡失败结果上方的人话原因（原始结果仍在下方 <pre> 内原样展示）── */
 .pair-error-hint {
   margin-bottom: 4px;
   font-size: 12px;

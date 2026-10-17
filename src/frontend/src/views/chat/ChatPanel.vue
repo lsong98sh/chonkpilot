@@ -82,13 +82,33 @@
     <MessageList ref="messageListRef" :session-id="currentSessionId" direction="right" />
     <!-- 发送失败后的可行动提示（口径 2026-09-20：本回合失败即提示，不限「未配置」）：非常驻，仅该次失败后出现；CTA 直达「设置 → LLM」。
          非阻塞（不弹模态、不阻断编辑）；同一次失败只提示一次（见 onLlmCompleteHint）；配置一变化即消失（useLLMSetup 回调）。 -->
-    <div v-if="llmSetupFailed" class="llm-fail-hint">
-      <span class="llm-fail-text">{{ $t('chat.llm_setup_failed_hint') }}</span>
+    <!-- 可见重试中间态（RETRY-1，2026-10-17）：后端每次失败重发前发 session-retry（前端 llm-retry）
+         → 这里显示「正在重试 n/N（等待 s 秒）」；**不落错误消息、不进聊天流**；成功即消失。 -->
+    <div v-if="retryText" class="llm-fail-hint llm-retry-hint">
+      <span class="llm-fail-text">{{ retryText }}</span>
+    </div>
+    <!-- 终态错误：**唯一错误呈现面**（ERRUX-1，2026-10-17）。聊天流内不再渲染错误气泡；
+         本提示条 = 摘要（人话分类）+ retry 次数 +「查看错误信息」（展开原始错误全文）+ 可选 CTA。
+         终态判据：llm-complete{status:error, retry_wait_ms=0}（中间态走上方 llm-retry）。 -->
+    <div v-if="llmFail" class="llm-fail-hint llm-error-hint">
+      <span class="llm-fail-text">
+        {{ $t(llmFail.key, llmFail.params) }}
+        <span class="llm-fail-retry">{{ $t('chat.retry_count_label', { n: llmFail.attempt, max: llmFail.count }) }}</span>
+      </span>
       <button
+        type="button"
+        class="llm-fail-cta llm-fail-detail-toggle"
+        @click="llmFailDetailOpen = !llmFailDetailOpen"
+      >{{ llmFailDetailOpen ? $t('chat.error_detail_hide') : $t('chat.error_detail_toggle') }}</button>
+      <button
+        v-if="llmSetupFailed"
         type="button"
         class="llm-fail-cta"
         v-mq:[EventNames.previewTabOpen].click="{ kind: 'settings-llm' }"
       >{{ $t('chat.llm_setup_failed_cta') }}</button>
+      <pre v-if="llmFailDetailOpen" class="force-wrap llm-fail-raw">{{ llmFail.raw }}</pre>
+      <!-- 可行动说明（本回合失败即提示；与既有 CTA 同一 i18n）——仅在需要去配置时追加一行 -->
+      <span v-if="llmSetupFailed" class="llm-fail-setup">{{ $t('chat.llm_setup_failed_hint') }}</span>
     </div>
     <!-- 继续/重试操作区（输入区上方，**左对齐**）：turn 未完成 →"继续"（**文本按钮**）；存在中断工具 →"重试"；空回复提示。
          显示条件（A7，2026-09-24 用户口径）：正常回复后不显示 / 会话进行中（isLoading）不显示 —— 仅"需要继续"时出现。 -->
@@ -213,8 +233,10 @@ import { finishSubChat } from '../../composables/useSubChats'
 import { isSubChatKind } from '../../utils/subchat.js'
 import { useLLMSetup } from '../../composables/useLLMSetup'
 import { useCompressStatus } from '../../composables/useCompressStatus'
+import { useQueueStatus } from '../../composables/useQueueStatus'
 import { needsLLMConfigHint } from '../../utils/llmSetup'
 import { pluginFailureText } from '../../utils/pluginNotice'
+import { classifyError } from '../../utils/errorMessage'
 import { useSelectionStore } from '../../stores/selection'
 
 const { t, te } = useI18n()
@@ -258,21 +280,60 @@ const subChatReadOnly = computed(() => fixedParams.value && sessionLifecycle.val
 // 口径：**兜底可用**（D-30 后 = router 内置兜底 echo，无可用 provider 时启用；此前 = 内置项
 // `echo`）→ 不以「usr llms 是否为空」作门槛，改为**本回合失败即提示**（`needsLLMConfigHint`，
 // 空回复除外）；提示文案同时覆盖「未配置可用 LLM」与「当前 provider 调用失败」两种情形（同一 CTA）。
-const llmSetupFailed = ref(false) // 「去配置 LLM」可行动提示是否可见（仅失败后，非常驻）
+const llmSetupFailed = ref(false) // 「去配置 LLM」CTA 是否可见（随终态错误提示条一起出现）
 let llmSetupHintKey = ''          // 已提示过的失败标识（turn id）：同一次失败只提示一次
+// ── 错误呈现（ERRUX-1，2026-10-17）：**唯一错误面 = 本提示条**（聊天流内不再渲染错误气泡）──
+// retryText = 重试中间态（RETRY-1，session-retry → 前端 llm-retry）；llmFail = 终态错误
+//（status=error 且非 EMPTY_REPLY；含人话分类 key/params、原始错误全文、真实 retry 计数）。
+const retryText = ref('')
+const llmFail = ref(null)
+const llmFailDetailOpen = ref(false)
 
 // useLLMSetup：订阅既有配置刷新（data-user-config-refresh + IDE config-refresh），
 // 配置一变化（用户在设置页配好 LLM / 改了 provider）→ **提示立即消失**（不必等下一次发送）。
 useLLMSetup(() => { llmSetupFailed.value = false })
 
-// llm-complete{status:error} → 提示去配置（空回复、非 error 终态不提示，见 needsLLMConfigHint）。
+// clearFailHint 收起本轮的可见重试 / 终态错误提示（新一次发送、会话切换、成功终态）。
+function clearFailHint() {
+  retryText.value = ''
+  llmFail.value = null
+  llmFailDetailOpen.value = false
+  llmSetupFailed.value = false
+}
+
+// llm-complete 终态 → 下方提示条（唯一错误面）：
+//   ① 成功/取消：清掉重试进度与错误提示（不残留）；
+//   ② error（非 EMPTY_REPLY）：错误摘要（人话分类）+ 原始错误全文 + 真实 retry 计数；
+//   ③ EMPTY_REPLY：沿用既有「空回复」提示 +「继续」（不在本提示条重复）。
 function onLlmCompleteHint(d) {
   const sid = currentSessionId.value
   const es = d && (d.session || d.session_id)
   if (sid && es && es !== sid) return
+  retryText.value = '' // 终态到达：重试中间态一律收起（成功也不残留）
+  if (!d || d.status !== 'error') {
+    llmFail.value = null
+    llmFailDetailOpen.value = false
+    llmSetupFailed.value = false
+    return
+  }
+  if (d.code === 'EMPTY_REPLY') {
+    llmFail.value = null
+    llmFailDetailOpen.value = false
+    return
+  }
+  const cls = classifyError({ message: d.message, code: d.code })
+  llmFail.value = {
+    key: cls.key,
+    params: cls.params,
+    raw: (d.message || '').trim() || cls.detail || d.code || '',
+    // RETRY-1：真实计数（session-complete 携带；0/0 = 未重试）
+    attempt: Number(d.retry_attempt) || 0,
+    count: Number(d.retry_count) || 0,
+  }
+  llmFailDetailOpen.value = false
   if (!needsLLMConfigHint(d)) return
   const key = (d && (d.turn || d.turn_id)) || ''
-  if (key && key === llmSetupHintKey) return // 同一次失败（同 turn，含自动续写重试）不再重复提示
+  if (key && key === llmSetupHintKey) return // 同一次失败（同 turn）不再重复提示
   llmSetupHintKey = key
   llmSetupFailed.value = true
 }
@@ -464,6 +525,9 @@ const taskProgress = ref('')
 const { isCompressing, handleNotice: handleCompressNotice } = useCompressStatus()
 const compressing = computed(() => isCompressing(currentSessionId.value))
 
+// ── 长任务状态（STB-1）：记忆提取 / 上下文压缩 → 状态栏条目 + 详情页；**不再弹 toast** ──
+const { handleNotice: handleLongTaskNotice } = useQueueStatus()
+
 // ── Tool task notifications (executor tool-notify events) ──
 const pendingNotifications = ref([])
 
@@ -491,7 +555,7 @@ const queueItems = computed(() => sendQueue.itemsOf(selectedLLMPayloadName()))
 // 直接 doSend（MessageList onMessageSend → sendChatMessage），不入队。
 async function handleSend(text) {
   if (!text.trim() || isInitializing.value) return
-  llmSetupFailed.value = false // 新一次发送：上一次失败的提示不再保留（本次若失败会重新提示）
+  clearFailHint() // 新一次发送：上一次的失败提示 / 重试进度不再保留（本次若失败会重新提示）
   const cfgErr = llmConfigReady()
   if (cfgErr) {
     message.warning(t(cfgErr))
@@ -511,7 +575,7 @@ async function handleSend(text) {
 // 不显示气泡），等 LLM 结束后由 drain 发送（docs/spec/00-overview/01-端到端数据流.md §5.3）。
 async function handleQueue(text) {
   if (!text.trim() || isInitializing.value) return
-  llmSetupFailed.value = false // 同上：新一次发送（入队）清掉上一次失败的提示
+  clearFailHint() // 同上：新一次发送（入队）清掉上一次的失败提示 / 重试进度
   const cfgErr = llmConfigReady()
   if (cfgErr) {
     message.warning(t(cfgErr))
@@ -731,6 +795,7 @@ onMounted(() => {
     if (props.chatOnly) return
     // 会话身份已由 selectionSubscribers（唯一写入点）写入 store，此处只做本组件的后续动作。
     const sid = session_id || null
+    clearFailHint() // 错误提示条按会话隔离：切换会话不残留上一会话的失败/重试进度
     refreshTasks(sid || '', '', { initOnly: true })
     loadSessionMeta(sid)
   })
@@ -777,13 +842,20 @@ onMounted(() => {
   }
 
   const unsubNotify = mq.on(EventNames.toolNotify, (data) => {
-    if (!sessionGuard(data)) return
-    // 压缩进度（OP-03，notice=compress-start/compress-done）：驱动会话级「正在压缩上下文」指示，
-    // **不弹 toast**（与 tool-notify 其它取值的提示路径分流）。
-    if (data.notice === 'compress-start' || data.notice === 'compress-done') {
-      handleCompressNotice(data)
+    // 长任务（记忆提取 / 上下文压缩，STB-1）：进度 / 完成 / 失败统一落状态栏条目 + 详情页，
+    // **不弹 toast**（失败态由条目错误色 + 详情页错误文本承担，不静默吞掉）。
+    // 注：跨会话也要记录（状态栏是项目级），故这段在 sessionGuard 之前。
+    const notice = String(data.notice || '')
+    const isLongTask = data.plugin === 'memory' || data.plugin === 'compress'
+      || notice.startsWith('memory-') || notice.startsWith('compress-')
+    if (isLongTask) {
+      handleLongTaskNotice(data)
+      if (!sessionGuard(data)) return
+      // 压缩进度（OP-03）：驱动会话级「正在压缩上下文」指示（内联，不是 toast）。
+      if (notice === 'compress-start' || notice === 'compress-done') handleCompressNotice(data)
       return
     }
+    if (!sessionGuard(data)) return
     // 完成通知（notice=completion）：chat 窗口已有 user-notify 消息，不再弹 toast（去重）。
     if (data.notice === 'completion') return
     // 插件失败（notice=plugin-failure）：按 plugin/kind 映射 i18n 文案（I-117；zh-CN/en-US 双语），
@@ -811,26 +883,23 @@ onMounted(() => {
   })
   permanentUnsubs.push(unsubProgress)
 
-  const unsubLlmError = mq.on(EventNames.llmError, (data) => {
-    if (!sessionGuard(data)) return
-    const retryable = data.retryable === true
-    const attempt = data.retry_attempt || 1
-    const maxRetries = data.retry_count || 1
-    if (retryable && attempt <= maxRetries) {
-      taskProgress.value = t('chat.llm_error_retrying', { attempt, max: maxRetries })
-    } else {
-      taskProgress.value = ''
-    }
-  })
-  permanentUnsubs.push(unsubLlmError)
-
+  // 可见重试中间态（RETRY-1）：session-retry → 前端 llm-retry，载荷 =
+  // {retryable:true, retry_attempt, retry_count, retry_wait_ms}；等待秒数取 retry_wait_ms 四舍五入。
+  // 只更新提示条进度：**不落错误消息、不进聊天流**（终态才走 llm-complete 的错误提示条）。
   const unsubLlmRetry = mq.on(EventNames.llmRetry, (data) => {
-    if (!sessionGuard(data)) return
-    const attempt = data.retry_attempt || 1
-    const maxRetries = data.retry_count || 1
-    const waitSec = data.wait_seconds || 5
-    // 重试文案走 i18n（键既有；zh/en 双语，参数 attempt/max/wait）
-    taskProgress.value = t('chat.llm_retry', { attempt, max: maxRetries, wait: waitSec })
+    // session-retry 载荷用 `session`（61 §4.3），兼容旧 llm-retry 的 `session_id`
+    const sid = currentSessionId.value
+    const es = data.session_id || data.session
+    if (sid && es && es !== sid) return
+    const attempt = Number(data.retry_attempt) || 0
+    const maxRetries = Number(data.retry_count) || 0
+    if (attempt <= 0) return
+    const waitSec = Math.round((Number(data.retry_wait_ms) || 0) / 1000)
+    // 重试文案走 i18n（chat.llm_retry；参数 attempt/max/wait）
+    retryText.value = t('chat.llm_retry', { attempt, max: maxRetries, wait: waitSec })
+    // 进入重试 = 尚无终态错误（旧错误提示/详情收起）
+    llmFail.value = null
+    llmFailDetailOpen.value = false
   })
   permanentUnsubs.push(unsubLlmRetry)
 
@@ -975,6 +1044,30 @@ onUnmounted(() => {
 }
 .llm-fail-cta:hover {
   opacity: 0.8;
+}
+/* ── 可见重试 / 终态错误提示条（RETRY-1 / ERRUX-1，2026-10-17）──
+   终态错误条 = 摘要 + retry 次数 +「查看错误信息」+（可选）CTA；原始错误展开占整行（flex-basis:100%）。 */
+.llm-error-hint {
+  flex-wrap: wrap;
+}
+.llm-fail-retry {
+  margin-left: 6px;
+  color: var(--text-muted);
+}
+.llm-fail-raw {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 160px;
+  overflow: auto;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.llm-fail-setup {
+  flex-basis: 100%;
+  color: var(--text-secondary);
 }
 
 :deep(.popover-list) {

@@ -62,6 +62,9 @@ type Bridge struct {
 	// openDevTools 由 main 注入（宿主程序化打开 DevTools；gui.devtools.open 用）。
 	// nil = 未接线（宿主不支持该能力）→ gui.devtools.open 明确失败，不静默。
 	openDevTools func()
+	// startResize 由窗口工厂注入（frameless 主窗口的系统原生 resize；gui.window.resize 用）。
+	// nil = 未接线（非 frameless 窗口 / 宿主不支持）→ gui.window.resize 明确失败，不静默。
+	startResize func(uintptr)
 	// published 记录本实例近期发布的事件指纹（subject → {载荷指纹, 时间}；src 防环：
 	// 桥订阅了 ">"（相对全通配），本实例 /publish 的事件会被自己转发回前端造成二次 dispatch，
 	// 需跳过）。指纹口径（D-11）避免「同主题不同载荷」被误吞。
@@ -183,6 +186,11 @@ func (b *Bridge) SetDataOffline(v bool) { b.dataOffline = v }
 // 与「用户能否用快捷键/右键菜单打开 DevTools」的宿主开关解耦（B3：用户入口屏蔽后，
 // 仍可经状态栏调试图标 → 本回调打开）。
 func (b *Bridge) SetDevToolsOpener(fn func()) { b.openDevTools = fn }
+
+// SetWindowResizer 由窗口工厂注入「进入系统原生 resize 模态循环」能力（gui.window.resize）。
+// 仅 frameless 主窗口装配（其 WebView2 子窗铺满客户区 → 系统无边缘命中区，需前端命中后回调；
+// 见 go-webview2/FORK.md P4）；非 frameless 窗口不装配（nil）→ gui.window.resize 明确失败。
+func (b *Bridge) SetWindowResizer(fn func(uintptr)) { b.startResize = fn }
 
 // SetInstanceExitSuppressed 置位「关闭本桥实例时不发 instance-exit」（flash 远程薄壳：
 // 多窗口共享同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
@@ -424,6 +432,7 @@ var mqTypeMap = map[string]string{
 	// session 域（值 = 稳定前端 type，非契约主题）
 	msgkeys.TopicSessionReceive:   "llm-receive",
 	msgkeys.TopicSessionComplete:  "llm-complete",
+	msgkeys.TopicSessionRetry:     "llm-retry",
 	msgkeys.TopicSessionCompress:  "llm-compress",
 	msgkeys.TopicSessionAsk:       "ask-user",
 	msgkeys.TopicSessionTurnStart: "turn-start",

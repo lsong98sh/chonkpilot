@@ -125,6 +125,193 @@ func TestTurnLLMRetryableAutoRetry(t *testing.T) {
 	}
 }
 
+// retryEvents 取可见重试中间态（session-retry：有 retry_attempt、无 status）。
+func retryEvents(evs []map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, ev := range evs {
+		if _, ok := ev["status"]; ok {
+			continue
+		}
+		if _, ok := ev["retry_attempt"]; ok {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// errorTerminalCount 统计错误终态条数（deliver 一次终态 = 唯一一次错误）。
+func errorTerminalCount(evs []map[string]any) int {
+	n := 0
+	for _, ev := range evs {
+		if ev["status"] == "error" {
+			n++
+		}
+	}
+	return n
+}
+
+// numEq 判断 JSON 解包后的数值键是否等于 want（collectTurn 经 json.Unmarshal → float64）。
+func numEq(v any, want int) bool {
+	f, ok := v.(float64)
+	return ok && int(f) == want
+}
+
+// TestTurnVisibleRetryEvents（RETRY-1，2026-10-17）：可见重试中间态与真实计数。
+// ① 每次失败发一条 session-retry（计数递增），终态错误只发一次且携带真实计数；
+// ② 重试后成功 → 只有中间态 + complete，无错误终态；
+// ③ retryCount=0 → 无中间态，直接终态（attempt=0）；
+// ④ 等待值 = router.RetryWait（Retry-After 优先）。
+func TestTurnVisibleRetryEvents(t *testing.T) {
+	t.Run("每次失败发中间态且计数递增/终态仅一次", func(t *testing.T) {
+		calls := &llmCallCounter{}
+		llm := failingLLMServer(calls)
+		defer llm.Close()
+		s := newTestServer(t, llm)
+		registerTestInstance(t, s)
+		saveRetryConfig(t, s, 2)
+		startTurn(t, s, "s-vr1", "t-vr1")
+		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+			"instance_id": "ins-test", "session": "s-vr1", "turn": "t-vr1",
+			"type": "text-user", "content": "always fail please",
+		}))
+		evs := collectTurn(t, s.bus, "t-vr1", 20*time.Second)
+		retries := retryEvents(evs)
+		if len(retries) != 2 {
+			t.Fatalf("session-retry 次数=%d want 2（retryCount=2）：%+v", len(retries), retries)
+		}
+		for i, r := range retries {
+			if !numEq(r["retry_attempt"], i+1) {
+				t.Fatalf("第 %d 条 retry_attempt=%v want %d", i+1, r["retry_attempt"], i+1)
+			}
+			if !numEq(r["retry_count"], 2) {
+				t.Fatalf("retry_count=%v want 2", r["retry_count"])
+			}
+			if ms, _ := r["retry_wait_ms"].(float64); ms <= 0 {
+				t.Fatalf("中间态 retry_wait_ms=%v want >0", r["retry_wait_ms"])
+			}
+			if r["retryable"] != true {
+				t.Fatalf("中间态应 retryable=true: %+v", r)
+			}
+		}
+		if n := errorTerminalCount(evs); n != 1 {
+			t.Fatalf("错误终态条数=%d want 1：%+v", n, evs)
+		}
+		c := lastComplete(evs)
+		if c == nil || c["status"] != "error" || c["retryable"] != true {
+			t.Fatalf("终态应为 error/retryable=true：%+v", c)
+		}
+		if !numEq(c["retry_attempt"], 2) || !numEq(c["retry_count"], 2) || !numEq(c["retry_wait_ms"], 0) {
+			t.Fatalf("终态计数=%v/%v/%v want 2/2/0", c["retry_attempt"], c["retry_count"], c["retry_wait_ms"])
+		}
+		if n := calls.load(); n != 3 {
+			t.Fatalf("LLM 请求数=%d want 3（1 次 + 2 次重试）", n)
+		}
+	})
+
+	t.Run("重试后成功→仅中间态+complete无错误", func(t *testing.T) {
+		var calls atomic.Int32
+		llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			if calls.Add(1) == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"error":"boom"}`)
+				return
+			}
+			llmSSE(w, []string{
+				sseChunk(map[string]any{"content": "recovered"}, ""),
+				sseChunk(map[string]any{}, "stop"),
+			})
+		}))
+		defer llm.Close()
+		s := newTestServer(t, llm)
+		registerTestInstance(t, s)
+		saveRetryConfig(t, s, 2)
+		startTurn(t, s, "s-vr2", "t-vr2")
+		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+			"instance_id": "ins-test", "session": "s-vr2", "turn": "t-vr2",
+			"type": "text-user", "content": "fail once",
+		}))
+		evs := collectTurn(t, s.bus, "t-vr2", 20*time.Second)
+		if n := len(retryEvents(evs)); n != 1 {
+			t.Fatalf("session-retry 次数=%d want 1：%+v", n, retryEvents(evs))
+		}
+		if n := errorTerminalCount(evs); n != 0 {
+			t.Fatalf("成功后不得出现错误终态（got %d）：%+v", n, evs)
+		}
+		c := lastComplete(evs)
+		if c == nil || c["status"] != "complete" || !strings.Contains(str(c["text"]), "recovered") {
+			t.Fatalf("want complete(recovered)：%+v", c)
+		}
+	})
+
+	t.Run("retryCount=0→无中间态直接终态", func(t *testing.T) {
+		calls := &llmCallCounter{}
+		llm := failingLLMServer(calls)
+		defer llm.Close()
+		s := newTestServer(t, llm)
+		registerTestInstance(t, s)
+		saveRetryConfig(t, s, 0)
+		startTurn(t, s, "s-vr3", "t-vr3")
+		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+			"instance_id": "ins-test", "session": "s-vr3", "turn": "t-vr3",
+			"type": "text-user", "content": "no retry please",
+		}))
+		evs := collectTurn(t, s.bus, "t-vr3", 20*time.Second)
+		if n := len(retryEvents(evs)); n != 0 {
+			t.Fatalf("retryCount=0 不应有 session-retry（got %d）", n)
+		}
+		c := lastComplete(evs)
+		if c == nil || c["status"] != "error" {
+			t.Fatalf("want error terminal：%+v", c)
+		}
+		if !numEq(c["retry_attempt"], 0) || !numEq(c["retry_count"], 0) || !numEq(c["retry_wait_ms"], 0) {
+			t.Fatalf("retryCount=0 终态计数=%v/%v/%v want 0/0/0",
+				c["retry_attempt"], c["retry_count"], c["retry_wait_ms"])
+		}
+		if n := calls.load(); n != 1 {
+			t.Fatalf("LLM 请求数=%d want 1（不重试）", n)
+		}
+	})
+
+	t.Run("等待值=Retry-After", func(t *testing.T) {
+		var calls atomic.Int32
+		llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			calls.Add(1)
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":"rate limited"}`)
+		}))
+		defer llm.Close()
+		s := newTestServer(t, llm)
+		registerTestInstance(t, s)
+		saveRetryConfig(t, s, 1)
+		startTurn(t, s, "s-vr4", "t-vr4")
+		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+			"instance_id": "ins-test", "session": "s-vr4", "turn": "t-vr4",
+			"type": "text-user", "content": "rate limited please",
+		}))
+		evs := collectTurn(t, s.bus, "t-vr4", 20*time.Second)
+		retries := retryEvents(evs)
+		if len(retries) != 1 {
+			t.Fatalf("session-retry 次数=%d want 1：%+v", len(retries), retries)
+		}
+		if ms, _ := retries[0]["retry_wait_ms"].(float64); ms != 2000 {
+			t.Fatalf("retry_wait_ms=%v want 2000（Retry-After: 2）", retries[0]["retry_wait_ms"])
+		}
+		c := lastComplete(evs)
+		if c == nil || c["status"] != "error" || !numEq(c["retry_attempt"], 1) || !numEq(c["retry_count"], 1) {
+			t.Fatalf("终态应为 error 且计数 1/1：%+v", c)
+		}
+	})
+}
+
 // TestTurnCancelInterrupted：运行中 cancel（session-cancel）→ 终态 interrupted（非 error）。
 func TestTurnCancelInterrupted(t *testing.T) {
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
