@@ -71,7 +71,7 @@
  * 状态逻辑一律走 composable（`useAuth` / `useInstanceClaim` / `useDirPicker`）；
  * 交互走 `mq.emit`（见各 composable 内部），不直调 `window.go.*`。
  */
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { Button, Input } from '../../components/ui'
 import { useAuth, LOGIN_FAILED, LOGIN_USERNAME_TAKEN } from '../../composables/useAuth.js'
 import { useDirPicker } from '../../composables/useDirPicker.js'
@@ -96,6 +96,12 @@ const workDir = ref('')
 const errKey = ref('')
 
 const isBrowser = isBrowserForm()
+
+// 已登录（cookie / 免登录令牌有效）→ 先尝试自动认领默认/已绑定工作目录；
+// browser 无默认授权目录时会失败并留在 dir 步骤，行为与原先一致。
+onMounted(() => {
+  if (step.value === 'dir') tryAutoClaim()
+})
 
 /** 登录/注册错误码 → 文案 key（未知码原样带出 = 通用失败，不静默）。 */
 function credsErrKey(code) {
@@ -122,7 +128,29 @@ async function submitCreds() {
     return
   }
   password.value = ''
-  step.value = 'dir' // 登录成功 → 选目录（61 §4.6 流程）
+  step.value = 'dir' // 登录成功 → 先尝试默认工作目录；失败再让用户选目录
+  await tryAutoClaim()
+}
+
+/**
+ * 登录后优先认领「已绑定 / 默认工作目录」，避免首屏强制用户选目录：
+ *   - GUI / flash：UDS / 桥已绑定默认工作目录 → 直接认领成功，进主界面；
+ *   - browser：服务端没有默认授权目录 → 回落 dir 步骤，由用户选择（保持既有行为）。
+ */
+async function tryAutoClaim() {
+  const ok = await claim({ user: username.value.trim() || undefined })
+  if (ok) {
+    emit('ready')
+    return
+  }
+  const code = claimErrorCode.value
+  if (code === 'instance-unauthorized') {
+    markSignedOut()
+    step.value = 'creds'
+    errKey.value = 'common.auth_err_unauthorized'
+    return
+  }
+  // instance-forbidden / 其他失败 → 留在 dir 步骤，让用户选目录（不误报登录失败）。
 }
 
 /** 目录选择（GUI/native）：复用既有 gui.select-dir 两段式（browser 形态无 native 选择器）。 */

@@ -66,7 +66,8 @@ def _assert_root_layout(cli, root, workdir, expect_in_workdir=True):
       与 `--data-dir` 无关，故不作为数据根归属断言。）
 
     expect_in_workdir=True（默认模式）：数据根本身就是 <workdir>/.chonkpilot，不检查零污染；
-    False（分离模式）：数据根必须在 workdir 外，workdir 不得出现 .chonkpilot。
+    False（分离模式）：数据根必须在 workdir 外 → workdir 下不得出现数据根标志（chonkpilot.db）；
+    `<workDir>/.chonkpilot` 本身允许存在（项目级 capability 根 + 单实例锁，见 60 §115 / 19 §8.11）。
     """
     db = os.path.join(root, PROJ_DB)
     if not os.path.isfile(db):
@@ -100,9 +101,16 @@ def _assert_root_layout(cli, root, workdir, expect_in_workdir=True):
             raise TestError(f"附件内容不一致: {path}")
 
     if not expect_in_workdir:
-        # workdir 零污染：不得出现 .chonkpilot
-        if os.path.exists(os.path.join(workdir, ".chonkpilot")):
-            raise TestError(f"workdir 被污染：{os.path.join(workdir, '.chonkpilot')}")
+        # 分离模式：**数据根**不得落在 workdir（--data-dir 必须生效）。
+        # 注（2026-10-17 对齐实现）：`<workDir>/.chonkpilot` 可能被创建，属**既有规格**：
+        #   ① 项目级 capability 根固定 `<workDir>/.chonkpilot/capability`（60-名词约定 §115，
+        #      与 --data-dir 无关）；
+        #   ② 项目单实例锁恒取 `<workDir>/.chonkpilot/chonkpilot.lock`（与 flash 同路径互斥，
+        #      与 --data-dir 解耦，见 19 §8.11 / 62 §3A）。
+        # → 断言改为：workdir 下不得出现**数据根标志**（项目主库 chonkpilot.db）。
+        wd_ck = os.path.join(workdir, ".chonkpilot")
+        if os.path.isfile(os.path.join(wd_ck, PROJ_DB)):
+            raise TestError(f"数据根落回 workdir（{os.path.join(wd_ck, PROJ_DB)}），--data-dir 未生效")
     # 数据根下不得再嵌套 .chonkpilot
     if os.path.exists(os.path.join(root, ".chonkpilot")):
         raise TestError(f"数据根不应包含 .chonkpilot 子层: {os.path.join(root, '.chonkpilot')}")

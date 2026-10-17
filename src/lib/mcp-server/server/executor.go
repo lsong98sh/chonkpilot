@@ -116,6 +116,16 @@ func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any
 		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx2, argv[0], argv[1:]...)
+	// 取消/超时 → 杀**进程树**：默认 CommandContext 仅 TerminateProcess 直接子进程，
+	// 执行器自行拉起的孙进程（script 执行器 → cmd.exe → ping.exe 等）会孤儿化
+	//（run_tool_async J「无孤儿」判据）。WaitDelay 兜底管道未被孙进程释放时的 Wait 阻塞。
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return winproc.KillTree(cmd.Process.Pid)
+	}
+	cmd.WaitDelay = 5 * time.Second
 	// 隐藏子进程控制台窗口（executor 等 console 子系统 exe 被 spawn 时不闪黑窗）；
 	// 不改变 stdio 管道，stdout/stderr 捕获逻辑不受影响。
 	cmd.SysProcAttr = winproc.SysProcAttr()

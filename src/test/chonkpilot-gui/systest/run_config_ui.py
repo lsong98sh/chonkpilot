@@ -80,7 +80,7 @@ PROJ_TOOL = os.path.join(PROJ_TOOL_DIR, "filesys_run.tool.md")           # 与 a
 
 # 项目设置页签期望文字（zh-CN projectConfig.json + configIO.json）
 # 2026-09-20 批 3 · ⑯：末位新增「配置导入/导出」页签（usr 全局配置的导出/导入/恢复出厂）
-PROJ_TABS = ["安全", "上下文管理", "CodeGraph 索引", "Vfts 全文索引", "文件历史", "日志", "配置导入/导出"]
+PROJ_TABS = ["安全", "上下文管理", "CodeGraph 索引", "Vfts 全文索引", "文件历史", "文件树", "群聊", "日志", "配置导入/导出"]
 
 
 # ── 通用工具 ────────────────────────────────────────────────
@@ -1387,18 +1387,27 @@ def case_g_restore_default_and_ctxmenu():
     made_tool = False
     try:
         # 预置：项目级同名原语（与 app 级 filesys_run.tool.md 配对 → 有可回填的上一级）
+        # 格式口径（2026-10-17）：当前契约 = **H1 分区 Markdown**（`# 基本信息/摘要/参数`）；
+        # 旧 `[meta]` INI 夹具会被解析器拒（"未找到任何 H1 分区（需 基本信息）"）→ 原语面板
+        # load 失败、pristine=null → 「恢复默认」后 dirty 永不出现。故以 app 级同名文件为模板
+        # 复制并改写标题/摘要（保证可解析且与上一级内容不同）。
         os.makedirs(PROJ_TOOL_DIR, exist_ok=True)
+        ts = int(time.time())
+        with open(os.path.join(APP_CAP, "tools", "core", "filesys_run.tool.md"), encoding="utf-8") as f:
+            base = f.read()
+        head, rest = base.split("# 摘要", 1)
+        _, tail = rest.split("# 参数", 1)
+        probe_md = (head.replace("title: 文件系统编排", "title: PROJECT-COPY-PROBE-%d" % ts, 1)
+                    + "# 摘要\nPROJECT-COPY-DESC-%d\n\n# 参数" % ts + tail)
         with open(PROJ_TOOL, "w", encoding="utf-8") as f:
-            f.write("# project copy probe\n\n[meta]\nname=filesys_run\nkind=probe\n\n"
-                    "[description]\nPROJECT-COPY-DESC-%d\n\n[parameters]\nproperties:\n    q:\n"
-                    "        type: string\nrequired:\n    - q\n\n[content]\nproject copy body\n"
-                    % int(time.time()))
+            f.write(probe_md)
         made_tool = True
 
         # ── G1a：app 级原语 → 不显示「恢复默认」 ──
+        # 树口径（2026-10-17 对齐实现）：工具页签的根行下直接是**分类目录**
+        # （browser/core/desktop…，即 capability/tools/<cat>/），不再有中间 "tools" 层。
         _kb_level(kb, "app")
-        _kb_ensure_child(kb, _kb_root_parent(kb), "tools")
-        _kb_ensure_child(kb, "tools", "core")
+        _kb_ensure_child(kb, _kb_root_parent(kb), "core")
         _kb_ensure_child(kb, "core", "filesys_run.tool.md")
         _close_bottom_tabs_by_name("filesys_run.tool.md")  # 关掉上一轮残留页签 → 组件重新挂载
         if not kb.click_kb_file("filesys_run.tool.md"):
@@ -1417,8 +1426,7 @@ def case_g_restore_default_and_ctxmenu():
 
         # ── G1b：project 级原语 → 显示「恢复默认」且点击回填（dirty） ──
         _kb_level(kb, "project")
-        _kb_ensure_child(kb, _kb_root_parent(kb), "tools")
-        _kb_ensure_child(kb, "tools", "core")
+        _kb_ensure_child(kb, _kb_root_parent(kb), "core")
         _kb_ensure_child(kb, "core", "filesys_run.tool.md")
         _close_bottom_tabs_by_name("filesys_run.tool.md")  # 同上：确保新开面板为全新实例（初始非 dirty）
         if not kb.click_kb_file("filesys_run.tool.md"):
@@ -1443,10 +1451,12 @@ def case_g_restore_default_and_ctxmenu():
             raise TestError("工具文件右键菜单未弹出")
         menu = kb.kb_menu_texts()
         kb.close_menus()
+        # 口径（2026-10-17 对齐实现）：菜单还含「打开 / 打开方式 / 在资源管理器中显示」等通用项；
+        # 断言改为「不得出现复制类项 + 必须含 重命名/删除」（新增通用项不算回归）。
         if any("复制" in x for x in menu):
             raise TestError("工具文件右键菜单仍含「复制到项目级」/复制项：%r" % menu)
-        if set(menu) != {"重命名", "删除"}:
-            raise TestError("工具文件右键菜单项不符（应仅 重命名/删除）：%r" % menu)
+        if not {"重命名", "删除"}.issubset(set(menu)):
+            raise TestError("工具文件右键菜单缺 重命名/删除：%r" % menu)
 
         # G3 已摘除（2026-09-26）：场景「恢复默认/回填上一级」入口整体移除 —— 见用例 docstring。
     finally:

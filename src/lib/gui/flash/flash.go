@@ -144,7 +144,8 @@ type DirResolver struct {
 // Resolve 按打开语义决定工作目录：
 //   - explicit 非空 → 采用之；**已打开** → 让用户选目录；
 //   - 否则按 recents 顺序取第一个存在且可用的目录；
-//   - 都不满足 → 让用户选目录；仍未选定 → ErrNoProject。
+//   - 都没有 → 创建并使用默认工作目录（%APPDATA%\chonkpilot\workspace）；
+//   - 默认目录也不可用 → 让用户选目录；仍未选定 → ErrNoProject。
 func (r DirResolver) Resolve(explicit string, recents []string) (string, error) {
 	if strings.TrimSpace(explicit) != "" {
 		d := models.ResolveDir(explicit, r.BaseDir)
@@ -161,6 +162,9 @@ func (r DirResolver) Resolve(explicit string, recents []string) (string, error) 
 		if r.exists(d) && r.free(d) {
 			return d, nil
 		}
+	}
+	if d, err := models.EnsureDefaultWorkspace(); err == nil && r.exists(d) && r.free(d) {
+		return d, nil
 	}
 	return r.pick()
 }

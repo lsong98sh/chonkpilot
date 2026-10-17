@@ -6,7 +6,7 @@
      且 == 磁盘字节；`doc.description` == 夹具描述（契约分区语义解析对齐）。
   K2 写回环：改 `doc.description` → `data-knowledge-save` → `data-knowledge-read` 读回 == 新值
      且**磁盘文件**含新值（UIdata↔磁盘 回环）。
-  K3 原语写→能力面回环：`data-knowledge-create{type=tool}` → 磁盘契约含 `[meta]/[description]`
+  K3 原语写→能力面回环：`data-knowledge-create{type=tool}` → 磁盘契约含 `# 基本信息/# 摘要`
      分区 → 客户端能力面 `tools-list` **出现**该工具（写原语 → 能力面可观测）。
   K4 删除闭合：`data-knowledge-delete` → 磁盘消失 **且** `tools-list` 不再含（回环闭合）。
 
@@ -49,9 +49,10 @@ NEW_DESC = "SEMKB-NEW-desc-7c9"
 
 os.makedirs(RES_DIR, exist_ok=True)
 os.makedirs(TOOLS_DIR, exist_ok=True)
+# 契约格式 = H1 分区 Markdown（旧 `[meta]/[description]/[content]` INI 已废除）
 with open(RES_FILE, "w", encoding="utf-8") as f:
-    f.write("# sem_kb\n\n[meta]\nname=sem_kb\nkind=smoke\n\n[description]\n%s\n\n[content]\n%s\n"
-            % (ORIG_DESC, ORIG_BODY))
+    f.write("# 基本信息\n```yaml\nname: sem_kb\nkind: smoke\n```\n\n"
+            "# 摘要\n%s\n\n# 正文\n%s\n" % (ORIG_DESC, ORIG_BODY))
 
 _g = _h.start_gui(port=_h.free_port(), work_dir=WS, data_dir=DD, home=HOME)
 c = _g.client
@@ -119,7 +120,7 @@ def case_k3_create_tool_hot():
     if not os.path.isfile(TOOL_FILE):
         raise TestError("create 未落盘：%s 不存在（返回 path=%r）" % (TOOL_FILE, r.get("path")))
     content = open(TOOL_FILE, encoding="utf-8").read()
-    if "[meta]" not in content or "[description]" not in content:
+    if "# 基本信息" not in content or "# 摘要" not in content:
         raise TestError("落盘内容缺契约分区：%r" % content[:120])
     # 能力面：不重启轮询
     end = time.time() + 30

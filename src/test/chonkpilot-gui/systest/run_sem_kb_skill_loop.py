@@ -3,11 +3,11 @@
 
 覆盖（**拒绝"存在级"：断言内容对齐 + 写后读回一致 + 落盘字节 + 类型归属 + 删除闭合**）：
   P1 skill 建→读：`data-knowledge-create{dir,type=skill,name}` → 文件 `<name>.skill.md` 落盘且含
-     `[meta]/[description]` 契约分区 → `data-knowledge-read` 的 `doc.description` == 模板默认（内容级）。
+     `# 基本信息/# 摘要` 契约分区 → `data-knowledge-read` 的 `doc.description` == 模板默认（内容级）。
   P2 skill 编辑回环：改 `doc.description`/`doc.content` → `data-knowledge-save` → 读回 == 新值 **且**
      磁盘含新值（UIdata↔磁盘 回环）。
-  P3 prompt 建→读（分区语义）：`type=prompt` → 文件 `<name>.prompt.md` → `doc.parameters` 含 `arg1`
-     且 `doc.paramsSection == "[arguments]"`（prompt 类型用 arguments 区，非 parameters）。
+  P3 prompt 建→读（分区语义）：`type=prompt` → 文件 `<name>.prompt.md`；磁盘含 `# 参数` 分区 →
+     `doc.parameters` 为合法 JSON Schema（type=object）。
   P4 列表归属 + 删除闭合：`data-knowledge-list{dir}` 两项 `type` 分别为 `skill`/`prompt`；
      `data-knowledge-delete` 两文件 → 磁盘消失 **且** list 不再含（回环闭合）。
 
@@ -97,8 +97,8 @@ def case_p1_create_skill_read():
     if not os.path.isfile(SKILL_FILE):
         raise TestError("create skill 未落盘：%s（返回=%r）" % (SKILL_FILE, r))
     content = disk_text(SKILL_FILE)
-    if "[description]" not in content:
-        raise TestError("落盘内容缺 [description] 契约分区：%r" % content[:120])
+    if "# 基本信息" not in content or "# 摘要" not in content:
+        raise TestError("落盘内容缺 H1 契约分区：%r" % content[:120])
     doc = read(SKILL_FILE).get("doc") or {}
     if doc.get("description") != SKILL + " 描述":
         raise TestError("read doc.description=%r（期望模板默认 %r）"
@@ -127,16 +127,26 @@ def case_p2_skill_edit_roundtrip():
 
 
 def case_p3_create_prompt_arguments():
-    """P3：create prompt → 落盘 `<name>.prompt.md`；read 的 arguments 区语义（paramsSection == [arguments]）。"""
+    """P3：create prompt → 落盘 `<name>.prompt.md`；`# 参数` 分区 = 合法 JSON Schema（type=object）。
+
+    v2 契约起「参数」统一为 JSON Schema（`# 参数` 分区），旧 `[arguments]` 区与
+    `doc.paramsSection` 字段均已废除。
+    """
     r = c.req("data-knowledge-create", {"dir": sl(PROMPT_DIR), "type": "prompt", "name": PROMPT}) or {}
     if not os.path.isfile(PROMPT_FILE):
         raise TestError("create prompt 未落盘：%s（返回=%r）" % (PROMPT_FILE, r))
+    content = disk_text(PROMPT_FILE)
+    if "# 参数" not in content:
+        raise TestError("prompt 模板缺 `# 参数` 分区：%r" % content[:160])
     doc = read(PROMPT_FILE).get("doc") or {}
-    if doc.get("params_section") != "[arguments]":
-        raise TestError("prompt 类型 params_section=%r（期望 [arguments]）" % doc.get("params_section"))
-    if "arg1" not in (doc.get("parameters") or ""):
-        raise TestError("prompt 模板缺 arg1 参数：%r" % (doc.get("parameters") or "")[:160])
-    evi("P3 prompt 建→读", path=r.get("path"), params_section=doc.get("params_section"))
+    try:
+        schema = json.loads(doc.get("parameters") or "")
+    except Exception as e:
+        raise TestError("doc.parameters 非合法 JSON：%r（%s）" % (doc.get("parameters") or "", e))
+    if schema.get("type") != "object":
+        raise TestError("prompt 参数 Schema type=%r（期望 object；schema=%r）"
+                        % (schema.get("type"), schema))
+    evi("P3 prompt 建→读", path=r.get("path"), schema_type=schema.get("type"))
 
 
 def case_p4_list_and_delete_closed():
@@ -170,7 +180,7 @@ def main():
     for name, fn in [
         ("P1 skill 建→读：落盘契约分区 + doc.description 默认", case_p1_create_skill_read),
         ("P2 skill 编辑回环：save → 读回==新值 + 磁盘落盘", case_p2_skill_edit_roundtrip),
-        ("P3 prompt 建→读：paramsSection==[arguments] + arg1", case_p3_create_prompt_arguments),
+        ("P3 prompt 建→读：`# 参数` + JSON Schema(type=object)", case_p3_create_prompt_arguments),
         ("P4 列表归属 + 删除闭合：type 正确 + 磁盘/list 均移除", case_p4_list_and_delete_closed),
     ]:
         total += 1

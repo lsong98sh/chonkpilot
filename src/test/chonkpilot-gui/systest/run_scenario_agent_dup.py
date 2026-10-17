@@ -103,8 +103,10 @@ def agent_ref(name):
     """子 agent 唯一形态 = 引用（内联子 agent 已废除）：落一份项目级 `agents/<名>.agent.md`
     夹具并返回 `${workDir}` 引用串（读侧按引用展开，悬空则静默删除 → 夹具须真实存在）。"""
     os.makedirs(AGENTS_DIR, exist_ok=True)
+    # H1 分区契约（旧 `[content]` INI 已废除；无 `# 基本信息/name` 会被解析器拒）
     with open(os.path.join(AGENTS_DIR, name + ".agent.md"), "w", encoding="utf-8") as f:
-        f.write("# %s\n\n[content]\n子 agent 提示词\n" % name)
+        f.write("# 基本信息\n```yaml\nname: %s\n```\n\n# 摘要\n子 agent 夹具\n\n"
+                "# 正文\n子 agent 提示词\n" % name)
     return "${workDir}/.chonkpilot/capability/agents/%s.agent.md" % name
 
 

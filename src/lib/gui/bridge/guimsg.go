@@ -26,8 +26,9 @@ import (
 // guiCallFunc 是 gui.* 消息面内部复用的 callX 处理器签名（原 dataCall 随 /call 链删除）。
 type guiCallFunc = func(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error)
 
-// windowResizeHitCodes 把前端边缘命中方位映射为 Win32 WM_NCHITTEST 命中码
-// （HTLEFT/HTRIGHT/HTTOP/HTBOTTOM/HTTOPLEFT/HTTOPRIGHT/HTBOTTOMLEFT/HTBOTTOMRIGHT）。
+// windowResizeHitCodes 把前端命中方位映射为 Win32 WM_NCHITTEST 命中码
+// （HTLEFT/HTRIGHT/HTTOP/HTBOTTOM/HTTOPLEFT/HTTOPRIGHT/HTBOTTOMLEFT/HTBOTTOMRIGHT
+// + HTCAPTION = 顶栏拖拽移动）。
 // 仅 frameless 主窗口使用（gui.window.resize → StartResize，见 go-webview2/FORK.md P4）。
 var windowResizeHitCodes = map[string]uintptr{
 	"left":        10, // HTLEFT
@@ -38,6 +39,10 @@ var windowResizeHitCodes = map[string]uintptr{
 	"bottom":      15, // HTBOTTOM
 	"bottomleft":  16, // HTBOTTOMLEFT
 	"bottomright": 17, // HTBOTTOMRIGHT
+	// caption：顶栏 mousedown → 系统**移动**模态循环。WebView2 的 app-region 非客户区
+	// 在 WM_NCCALCSIZE=0 的自绘 frameless 窗口上实测不触发（settings9 enabled=true 仍无效），
+	// 故与 resize 同链路显式进入 WM_NCLBUTTONDOWN(HTCAPTION)。
+	"caption": 2, // HTCAPTION
 }
 
 // guiDo 处理 gui.<action> 本地请求（前缀已由调用方剥掉），返回结果与错误。

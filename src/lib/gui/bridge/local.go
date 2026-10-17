@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-gui/flash"
 	"github.com/chonkpilot/chonkpilot-gui/internal/folder"
 	"github.com/chonkpilot/chonkpilot-lib/lockfile"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
@@ -340,6 +341,9 @@ func (b *Bridge) recordRecentDir(dir string) {
 	raw, _ := json.Marshal(kept)
 	body, _ := json.Marshal(map[string]any{"data": map[string]any{recentDirsKey: string(raw)}})
 	_, _ = b.dataCall(msgkeys.TopicDataUserConfigSave, body)
+	// 同步到 flash 的最近项目文件：桌面单体 / GUI / flash 共用同一份「最近项目」，
+	// 下次启动（含 flash 薄壳）可直接恢复，不需要先弹目录选择。
+	_ = flash.SaveRecent(flash.RecentsPath(), dir)
 }
 
 // recentDirsList 读 usr config 自由键 recent_dirs（JSON 数组字符串）→ 最近目录快照；

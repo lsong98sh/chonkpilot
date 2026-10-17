@@ -134,6 +134,8 @@
   "preview_not_available": "Preview not available for this file type",
   "select_file_to_preview": "Select a file to preview",
   "choose_from_sidebar": "Choose a file from the explorer sidebar",
+  "current_workspace": "Current workspace",
+  "open_workspace": "Open / New Workspace",
   "bytes": "bytes",
   "showing_first_bytes": "(showing first {count} bytes)",
   "content_truncated": "(file too large, showing first 512KB)",

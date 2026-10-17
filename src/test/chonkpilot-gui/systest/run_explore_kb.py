@@ -300,18 +300,34 @@ class KB:
         self.js("document.body.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))")
 
     # ── 弹窗输入 / 确认 ──
+    # 两类弹窗：promptInput → `.dialog-shell .b-input`；资源「新建」类型选择 →
+    # `.knowledge-tree .kb-modal .kb-new-name`（KnowledgeTree 内联弹框，非 DialogShell）。
+    _INPUT_SEL_JS = ("const el=document.querySelector('.dialog-shell .b-input')"
+                     "||document.querySelector('.knowledge-tree .kb-modal .kb-new-name')"
+                     "||document.querySelector('.kb-modal .kb-new-name');")
+
     def set_dialog_input(self, val):
-        return self.js("(function(){const el=document.querySelector('.dialog-shell .b-input');if(!el)return false;const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;s.call(el,%s);el.dispatchEvent(new Event('input',{bubbles:true}));return true})()" % json.dumps(val))
+        return self.js("(function(){" + self._INPUT_SEL_JS + "if(!el)return false;const s=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;s.call(el,%s);el.dispatchEvent(new Event('input',{bubbles:true}));return true})()" % json.dumps(val))
 
     def dialog_enter(self):
-        return self.js("(function(){const el=document.querySelector('.dialog-shell .b-input');if(!el)return false;el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+        # dialog-shell（promptInput）走 keydown；kb-modal（Input @keyup.enter）走 keyup → 两者都发。
+        return self.js("(function(){" + self._INPUT_SEL_JS + "if(!el)return false;"
+                       "el.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));"
+                       "el.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
 
     def click_primary(self):
-        return self.js("(function(){const el=document.querySelector('.dialog-shell button.b-btn--primary');if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()")
+        return self.js("(function(){const el=document.querySelector('.dialog-shell button.b-btn--primary')"
+                       "||document.querySelector('.kb-modal-footer button.b-btn--primary');"
+                       "if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()")
 
     def click_any_button_text(self, cands):
+        # 只点**可见**原语面板的 footer：多页签并存时 DOM 首个面板可能是隐藏页签
+        # （隐藏面板的保存按钮点了不生效 → dirty 永不清除）。
         jl = json.dumps(cands, ensure_ascii=False)
-        return self.js("(function(){const btns=Array.from(document.querySelectorAll('.prim-panel .prim-footer button.b-btn'));const el=btns.find(n=>%s.some(x=>n.textContent.trim()===x||n.textContent.trim().indexOf(x)>=0));if(!el)return false;el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true})()" % jl)
+        return self.js("(function(){const ps=Array.from(document.querySelectorAll('.prim-panel')).filter(n=>n.offsetParent!==null);"
+                       "for(const P of ps){const btns=Array.from(P.querySelectorAll('.prim-footer button.b-btn'));"
+                       "const el=btns.find(n=>%s.some(x=>n.textContent.trim()===x||n.textContent.trim().indexOf(x)>=0));"
+                       "if(el){el.dispatchEvent(new MouseEvent('click',{bubbles:true}));return true}}return false})()" % jl)
 
     # ── preview 面板 ──
     def ensure_explorer_visible(self, timeout=12):
@@ -392,14 +408,29 @@ class KB:
             time.sleep(0.5)
         return False
 
-    def enter_tools(self, dirs=("tools",), timeout=10):
+    def enter_tools(self, dirs=(), timeout=10):
         """切到「工具」页签（位于「会话」右侧）并展开指定目录链（先展开根）。
 
-        工具树复用 KnowledgeTree（kinds=['tool']），根下即 `tools/`，故 dirs 默认 ("tools",)。
+        口径（2026-10-17）：单类型子 tab 的树根 = **类型目录本身**（`<级别根>/tools`），
+        其子节点直接是分类目录（core/browser/…）→ 不再有中间 "tools" 行。
+        dirs 直接写分类名（如 ("core",)）；空 = 仅展开根。
         """
         if not self.switch_mode("tools"):
             return False
         return self.ensure_kb_expanded(list(dirs), timeout)
+
+    def rclick_kb_root(self, timeout=10):
+        """右键**当前树根行**（类型目录 = 原 "tools"/"resources" 节点）。
+
+        注：根标签含级别后缀（"工具 -系统"），而 rclick 的按名定位口径 = 首 token →
+        此处直接对**可见树的第一行**（即根）派发 contextmenu，避免名称口径冲突。
+        """
+        ok = self.js("""(function(){const els=[...document.querySelectorAll('.knowledge-tree .tree-row.is-dir')].filter(n=>n.offsetParent!==null);
+          const el=els[0];if(!el)return false;const r=el.getBoundingClientRect();
+          el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:r.left+10,clientY:r.top+8}));return true})()""")
+        if not ok:
+            return False
+        return bool(self.poll(lambda: len(self.kb_menu_texts()) > 0, timeout=4))
 
     def _vis_panel(self):
         return self.js("(function(){const ps=Array.from(document.querySelectorAll('.prim-panel'));return ps.find(n=>n.offsetParent!==null)||(ps.length?ps[ps.length-1]:null)})()")
@@ -480,7 +511,11 @@ def prepare_ws():
     os.makedirs(os.path.join(PJ_DIR, "core"))
     demo = os.path.join(PJ_DIR, "core", "demo.tool.md")
     with open(demo, "w", encoding="utf-8") as f:
-        f.write("# demo\n\n[meta]\nname=demo\nkind=smoke\n\n[description]\nDemo tool for project tree smoke.\n\n[parameters]\nproperties:\n    q:\n        type: string\nrequired:\n    - q\n\n[content]\nRun a demo.\n")
+        # 契约格式 = H1 分区 Markdown（旧 `[meta]` INI 已废除，解析器要求「基本信息」分区）
+        f.write("# 基本信息\n```yaml\nname: demo\ntitle: demo\nkind: smoke\n```\n\n"
+                "# 摘要\nDemo tool for project tree smoke.\n\n"
+                "# 参数\n```json\n{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}},\"required\":[\"q\"]}\n```\n\n"
+                "# 正文\nRun a demo.\n")
 
 
 # 应用级原语夹具：C4/C5 打开并编辑 `dsl_run.tool.md` —— 产品的原语保存/恢复路径会把契约
@@ -576,8 +611,9 @@ def main():
         # ── C2 扩展页各子 tab 单类型过滤 + 根行命名 ──
         def c2():
             # 扩展页子 tab 单类型：知识=resources / 技能=skills / 工具=tools / 命令=prompts / 智能体=agents。
-            # 根行名 = "<子tab文案> -<级别>"（如「知识 -系统」）。
-            for ext, dirname in (("resource", "resources"), ("skill", "skills")):
+            # 口径（2026-10-17）：单类型树根 = **类型目录本身**（`<级别根>/<type>`），其下直接是
+            # 分类目录（core/go/ui…）→ 不再出现 `<type>` 子目录行，也不显示其它类型目录。
+            for ext in ("resource", "skill"):
                 assert kb.switch_mode("extensions", ext=ext), f"切扩展页子 tab {ext} 失败"
                 rows = kb.kb_rows()
                 assert rows, f"扩展页（{ext}）树无行（根未加载）"
@@ -585,34 +621,38 @@ def main():
                 assert root_label.startswith(EXT_LABELS[ext][0]) or root_label.startswith(EXT_LABELS[ext][1]), \
                     f"根行名异常（{ext}）：{root_label!r}"
                 assert kb.click_kb_root(), f"点击根失败：{root_label}"
-                # 展开到类型目录（切换子 tab 会重挂载树；ensure 幂等展开根 + 类型目录）
-                assert kb.ensure_kb_expanded([dirname]), f"扩展页（{ext}）展开 {dirname} 失败"
-                # 仅当前子 tab 的类型目录可见（其余类型目录不显示）
+                # 仅当前子 tab 的类型目录内容可见（其余类型目录不显示）
+                assert kb.ensure_kb_expanded([], timeout=10), f"扩展页（{ext}）根展开失败"
                 dirlabels = {kb.row_label(r) for r in kb.kb_rows() if r["d"]}
-                assert dirname in dirlabels, f"{ext} 子 tab 应显示 {dirname} 目录：{dirlabels}"
                 for other in ("tools", "prompts", "resources", "skills", "agents"):
-                    if other != dirname:
-                        assert other not in dirlabels, f"{ext} 子 tab 不应显示 {other}：{dirlabels}"
+                    assert other not in dirlabels, f"{ext} 子 tab 不应显示 {other}：{dirlabels}"
+                # 根下应出现该类型目录内的分类目录（证明树确已加载）
+                assert any(d in dirlabels for d in
+                           ("core", "go", "ui", "ux", "browser", "desktop")), \
+                    f"{ext} 子 tab 根下无分类目录（树未加载）：{dirlabels}"
 
-        # ── C3 工具页签：tools→core → *.tool.md（2026-09-29 由知识库迁到独立「工具」页签）──
+        # ── C3 工具页签：root(=tools)→core → *.tool.md（2026-09-29 由知识库迁到独立「工具」页签）──
         def c3():
-            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
+            assert kb.enter_tools(("core",)), "切「工具」页签 / 展开 core 失败"
             ok = kb.wait_kb_row("core", True)
-            assert ok, "tools 未展开出 core"
-            assert kb.click_kb_dir("core"), "点击 core 失败"
+            assert ok, "工具树未展开出 core"
+            # enter_tools 已展开 core（再点会收起）→ 直接等文件行
             ok = kb.poll(lambda: any(r and kb.row_label(r).endswith(".tool.md") for r in kb.kb_rows()))
+            if not ok:
+                assert kb.click_kb_dir("core"), "点击 core 失败"
+                ok = kb.poll(lambda: any(r and kb.row_label(r).endswith(".tool.md") for r in kb.kb_rows()))
             assert ok, "core 下未出现 *.tool.md 行"
             files = [kb.row_label(r) for r in kb.kb_rows() if not r["d"]]
             assert files, "无原语文件行"
 
         # ── C4 打开原语 → PrimitivePanel（顶部标题 / 四页签 Tabs / 底部保存·恢复） ──
         def c4():
-            assert kb.enter_tools(("tools", "core")), "切「工具」页签 / 展开 tools/core 失败"
+            assert kb.enter_tools(("core",)), "切「工具」页签 / 展开 core 失败"
             assert kb.click_kb_file("dsl_run.tool.md"), "点击 dsl_run.tool.md 失败"
             ok = kb.poll(lambda: kb.prim_panel_exists())
             assert ok, "PrimitivePanel 未打开"
             names = kb.prim_tab_names()
-            assert names == ["meta", "描述", "参数", "正文"], f"应有 meta/描述/参数/正文 四页签：{names}"
+            assert names == ["预览", "基本信息", "摘要", "参数", "正文"], f"应有 预览/基本信息/摘要/参数/正文 五页签：{names}"
             assert kb.prim_active_path().endswith("dsl_run.tool.md"), f"标题路径异常：{kb.prim_active_path()!r}"
             assert kb.prim_title_value(), "顶部标题为空"
             ftxt = kb.prim_footer_text()
@@ -620,7 +660,7 @@ def main():
 
         # ── C5 页签：描述（编辑 + dirty + 恢复，不改磁盘）/ meta（键值表单）/ 参数（JSON Schema 树） ──
         def c5():
-            assert kb.prim_click_tab(["描述", "Description"]), "切换描述页签失败"
+            assert kb.prim_click_tab(["摘要", "Summary", "Description"]), "切换摘要页签失败"
             ok = kb.poll(lambda: (kb.prim_edit_info() or {}).get("ok"))
             assert ok, "描述页签未就绪"
             before = open(os.path.join(CAP_DIR, "tools", "core", "dsl_run.tool.md"), "rb").read()
@@ -636,7 +676,7 @@ def main():
             after = open(os.path.join(CAP_DIR, "tools", "core", "dsl_run.tool.md"), "rb").read()
             assert before == after, "恢复后磁盘文件被改动"
             # meta 页签：键=值 输入行
-            assert kb.prim_click_tab(["meta", "Meta"]), "切换 meta 页签失败"
+            assert kb.prim_click_tab(["基本信息", "Basic Info", "meta", "Meta"]), "切换基本信息页签失败"
             ok = kb.poll(lambda: (kb.prim_edit_info() or {}).get("inputs", 0) >= 2)
             assert ok, f"meta 页签应有键值输入：{kb.prim_edit_info()}"
             # 参数页签：JSON Schema 编辑器（树形层级）
@@ -644,10 +684,10 @@ def main():
             ok = kb.poll(lambda: kb.prim_schema_rows() >= 1)
             assert ok, "参数页签未渲染 JSON Schema 树"
 
-        # ── C6 右键 tools → 新建目录/新建工具（工具页签） ──
+        # ── C6 右键树根(工具类型目录) → 新建目录/新建工具（工具页签） ──
         def c6():
-            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
-            assert kb.rclick_kb_row_retry("tools", True), "右键 tools 失败"
+            assert kb.enter_tools(), "切「工具」页签失败"
+            assert kb.rclick_kb_root(), "右键工具树根失败"
             ok = kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             assert ok, "右键菜单未弹出"
             texts = kb.kb_menu_texts()
@@ -659,8 +699,8 @@ def main():
 
         # ── C7 新建工具 smoke_it（工具页签） ──
         def c7():
-            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
-            assert kb.rclick_kb_row_retry("tools", True), "右键 tools(2) 失败"
+            assert kb.enter_tools(), "切「工具」页签失败"
+            assert kb.rclick_kb_root(), "右键工具树根失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             texts = kb.kb_menu_texts()
             hit = next((x for x in texts if is_new_of_type(x)), None)
@@ -672,8 +712,8 @@ def main():
             assert kb.dialog_enter(), "回车确认失败"
             ok = kb.poll(lambda: os.path.exists(SMOKE_FILE))
             assert ok, "smoke_it.tool.md 未在磁盘生成"
-            data = read_until(SMOKE_FILE, ["[meta]", "[description]"])
-            assert "[meta]" in data and "[description]" in data, "模板缺契约分区"
+            data = read_until(SMOKE_FILE, ["# 基本信息", "# 摘要"])
+            assert "# 基本信息" in data and "# 摘要" in data, "模板缺契约分区"
             ok = kb.wait_kb_row("smoke_it.tool.md", False)
             assert ok, "smoke_it.tool.md 未出现在树行"
             # 新建后应自动打开 preview（可见面板，非首个 DOM 面板）
@@ -685,12 +725,12 @@ def main():
 
         # ── C8 编辑保存 + 删除清理（工具页签） ──
         def c8():
-            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
+            assert kb.enter_tools(), "切「工具」页签失败"
             # 先经底部页签栏激活 smoke 文件页签（新建后不保证自动聚焦）
             assert kb.activate_bottom_tab("smoke_it.tool.md"), "preview 底部无 smoke 页签"
             ok = kb.poll(lambda: kb.prim_active_path().replace("\\", "/").endswith("smoke_it.tool.md"))
             assert ok, f"smoke 页签激活失败，活动面板={kb.prim_active_path()}"
-            assert kb.prim_click_tab(["描述", "Description"]), "C8 切描述页签失败"
+            assert kb.prim_click_tab(["摘要", "Summary", "Description"]), "C8 切摘要页签失败"
             kb.poll(lambda: (kb.prim_edit_info() or {}).get("ok"))
             active_path = kb.prim_active_path().replace("\\", "/")
             assert active_path.endswith("smoke_it.tool.md"), f"活动面板不是 smoke 文件：{active_path}"
@@ -728,11 +768,11 @@ def main():
             """
             assert kb.switch_mode("tools"), "C9 切「工具」页签失败"
             assert kb.switch_kb_level("project", "项目"), f"切项目级失败：{[kb.row_label(r) for r in kb.kb_rows()]}"
-            assert kb.ensure_kb_expanded(["tools", "core"]), "项目级 tools/core 未展开"
+            assert kb.ensure_kb_expanded(["core"]), "项目级 core 未展开"
             ok = kb.poll(lambda: any(kb.row_label(r) == "demo.tool.md" and not r["d"] for r in kb.kb_rows()))
             assert ok, "项目级 core 下无 demo.tool.md"
-            # 右键 typed 目录验证菜单
-            assert kb.rclick_kb_row_retry("tools", True), "右键项目 tools 失败"
+            # 右键树根（类型目录 = tools）验证菜单
+            assert kb.rclick_kb_root(), "右键项目工具树根失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             txts = kb.kb_menu_texts()
             assert any(("新建目录" in x or x == "New Folder") for x in txts), f"项目菜单缺 新建目录：{txts}"
@@ -758,9 +798,9 @@ def main():
                  除磁盘断言外，同时断言**无 error toast**（`.b-message--error`）。
               覆盖不降：磁盘写入 / 树行可见 / 改名生效 / 删除 四段齐备（新增 F2 与右键两条目录改名路径）。
             """
-            # ① 右键「新建目录」→ 落盘 + 树行出现 + 自动内联改名
-            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
-            assert kb.rclick_kb_row_retry("tools", True), "右键 tools 失败"
+            # ① 右键树根（工具类型目录）「新建目录」→ 落盘 + 树行出现 + 自动内联改名
+            assert kb.enter_tools(), "切「工具」页签失败"
+            assert kb.rclick_kb_root(), "右键工具树根失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             texts = kb.kb_menu_texts()
             hit = next((x for x in texts if x in ("新建目录", "New Folder")), None)
@@ -837,15 +877,14 @@ def main():
         # ── C11 工具页签：F2 重命名文件（保留 .tool.md 后缀，改回原名） ──
         def c11():
             # 确保 core 展开（C10 刷新 tools 后 core 可能被重建收起；仅当目标行不可见才点击）
-            assert kb.enter_tools(), "切「工具」页签 / 展开 tools 失败"
+            assert kb.enter_tools(), "切「工具」页签失败"
 
             def has_kb(name, is_dir):
                 return any(kb.row_label(r) == name and (is_dir is None or r["d"] == is_dir) for r in kb.kb_rows())
 
             if not has_kb("filesys_run.tool.md", False):
                 if not has_kb("core", True):
-                    assert kb.click_kb_dir("tools"), "点击 tools 失败"
-                    assert kb.wait_kb_row("core", True), "core 不可见"
+                    assert kb.ensure_kb_expanded([]) or kb.wait_kb_row("core", True), "core 不可见"
                 assert kb.click_kb_dir("core"), "点击 core 失败"
                 assert kb.wait_kb_row("filesys_run.tool.md", False), "filesys_run.tool.md 不可见"
             assert kb.click_kb_file("filesys_run.tool.md"), "单击 filesys_run.tool.md 失败"
@@ -882,33 +921,36 @@ def main():
             ]
             for dirname, ext, en_label, _zh_label, fname, path, suffix in cases:
                 assert kb.switch_mode("extensions", ext=ext), f"{dirname} 切扩展页子 tab 失败"
-                # 幂等展开根（切换子 tab 会重挂载树 → 需重新展开）
+                # 幂等展开根（切换子 tab 会重挂载树 → 需重新展开；根 = 类型目录本身）
                 assert kb.ensure_kb_expanded([]), f"扩展页（{ext}）根展开失败"
-                assert kb.wait_kb_row(dirname, True), f"{dirname} 目录不可见"
-                assert kb.rclick_kb_row_retry(dirname, True), f"右键 {dirname} 失败"
+                assert kb.rclick_kb_root(), f"右键 {ext} 树根失败"
                 kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
                 texts = kb.kb_menu_texts()
                 hit = next((x for x in texts if is_new_of_type(x) and (en_label in x or ("技能" in x and "新建" in x) or ("提示词" in x and "新建" in x) or ("资源" in x and "新建" in x))), None)
                 assert hit, f"{dirname} 菜单无新建项：{texts}"
                 assert kb.kb_click_menu(hit), f"点击 {hit} 失败"
-                ok = kb.poll(lambda: kb.js("!!document.querySelector('.dialog-shell .b-input')"))
+                # resource 走 KnowledgeTree 内联弹框（.kb-modal .kb-new-name），其余走 promptInput
+                ok = kb.poll(lambda: kb.js(
+                    "!!document.querySelector('.dialog-shell .b-input')"
+                    "||!!document.querySelector('.knowledge-tree .kb-modal .kb-new-name')"))
                 assert ok, f"{dirname} 名称输入框未弹出"
                 assert kb.set_dialog_input(fname), f"输入 {fname} 失败"
                 assert kb.dialog_enter(), "回车确认失败"
                 ok = kb.poll(lambda: os.path.exists(path))
                 assert ok, f"{suffix} 文件未生成：{path}"
-                needles = ["[description]"] + (["[arguments]"] if dirname == "prompts" else [])
+                # 模板 = H1 分区契约（旧 [description]/[arguments] 方括号分区已废除）
+                needles = ["# 基本信息", "# 摘要"] + (["# 参数"] if dirname == "prompts" else [])
                 data = read_until(path, needles)
-                assert "[description]" in data, f"{suffix} 模板缺 [description]"
+                assert "# 基本信息" in data and "# 摘要" in data, f"{suffix} 模板缺 H1 分区"
                 if dirname == "prompts":
-                    assert "[arguments]" in data, "prompt 模板缺 [arguments]"
+                    assert "# 参数" in data, "prompt 模板缺 参数 分区"
                 ok = kb.poll(lambda: any(kb.row_label(r) == fname + suffix for r in kb.kb_rows()))
                 assert ok, f"{fname}{suffix} 未出现在树行"
-            # 清理三个文件（右键删除；逐子 tab 切换 + 展开类型目录）
+            # 清理三个文件（右键删除；逐子 tab 切换 + 展开根）
             for fname, suffix, ext, dirname in [("sk_s1", ".skill.md", "skill", "skills"), ("pr_s1", ".prompt.md", "prompt", "prompts"), ("re_s1", ".resource.md", "resource", "resources")]:
                 label = fname + suffix
                 assert kb.switch_mode("extensions", ext=ext), f"{label} 切扩展页子 tab 失败"
-                assert kb.ensure_kb_expanded([dirname]), f"{label} 扩展页展开 {dirname} 失败"
+                assert kb.ensure_kb_expanded([]), f"{label} 扩展页根展开失败"
                 assert kb.rclick_kb_row_retry(label, False), f"右键 {label} 失败"
                 kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
                 dtexts = kb.kb_menu_texts()
@@ -926,13 +968,13 @@ def main():
             """项目级原语完整写链路（迁移后 = 知识库树「项目」级，见 C9 迁移说明）。"""
             assert kb.switch_mode("tools"), "C13 切「工具」页签失败"
             assert kb.switch_kb_level("project", "项目"), "C13 切项目级失败"
-            assert kb.ensure_kb_expanded(["tools"]), "C13 项目级 tools 未展开"
-            # 右键 tools → 新建工具
-            assert kb.rclick_kb_row_retry("tools", True), "右键项目 tools 失败"
+            assert kb.ensure_kb_expanded([]), "C13 项目级工具树根未展开"
+            # 右键树根（类型目录 = tools）→ 新建工具
+            assert kb.rclick_kb_root(), "右键项目工具树根失败"
             kb.poll(lambda: len(kb.kb_menu_texts()) > 0)
             txts = kb.kb_menu_texts()
             hit = next((x for x in txts if is_new_of_type(x) and ("Tool" in x or "工具" in x)), None)
-            assert hit, f"项目 tools 菜单无 新建工具：{txts}"
+            assert hit, f"项目工具树根菜单无 新建工具：{txts}"
             assert kb.kb_click_menu(hit), "点击 新建工具 失败"
             ok = kb.poll(lambda: kb.js("!!document.querySelector('.dialog-shell .b-input')"))
             assert ok, "项目新建名称输入框未弹出"
@@ -940,8 +982,8 @@ def main():
             assert kb.dialog_enter(), "回车确认失败"
             ok = kb.poll(lambda: os.path.exists(PJ_FILE))
             assert ok, f"pj_smoke.tool.md 未在项目级 {PJ_DIR} 生成"
-            data = read_until(PJ_FILE, ["[meta]", "[description]"])
-            assert "[meta]" in data and "[description]" in data, "项目模板缺契约分区"
+            data = read_until(PJ_FILE, ["# 基本信息", "# 摘要"])
+            assert "# 基本信息" in data and "# 摘要" in data, "项目模板缺契约分区"
             ok = kb.wait_kb_row("pj_smoke.tool.md", False)
             assert ok, "pj_smoke.tool.md 未出现在项目级树行"
             # 打开新建文件（与 C7 同口径：新建后 preview 是否**自动聚焦**不作硬断言，
@@ -952,7 +994,7 @@ def main():
                 assert ok, "项目级 smoke 未打开 preview 页签"
             ok = kb.poll(lambda: kb.prim_active_path().replace("\\", "/").endswith("pj_smoke.tool.md"))
             assert ok, f"活动原语面板不是 pj_smoke：{kb.prim_active_path()}"
-            assert kb.prim_click_tab(["描述", "Description"]), "C13 切描述页签失败"
+            assert kb.prim_click_tab(["摘要", "Summary", "Description"]), "C13 切摘要页签失败"
             kb.poll(lambda: (kb.prim_edit_info() or {}).get("ok"))
             pj_desc = "Project primitive saved via GUI " + str(int(time.time()))
             kb.prim_set_ta(0, pj_desc)
@@ -994,22 +1036,23 @@ def main():
             os.makedirs(tool_dir, exist_ok=True)
             fixture = os.path.join(tool_dir, "prjusr_smoke.tool.md")
             with open(fixture, "w", encoding="utf-8") as f:
-                f.write("# prjusr_smoke\n\n[meta]\nname=prjusr_smoke\nkind=smoke\n\n"
-                        "[description]\n项目私有级工具（C14 L4 夹具）\n\n[parameters]\nproperties: {}\nrequired: []\n\n"
-                        "[content]\nnoop.\n")
+                f.write("# 基本信息\n```yaml\nname: prjusr_smoke\nkind: smoke\n```\n\n"
+                        "# 摘要\n项目私有级工具（C14 L4 夹具）\n\n"
+                        "# 参数\n```json\n{\"type\":\"object\",\"properties\":{},\"required\":[]}\n```\n\n"
+                        "# 正文\nnoop.\n")
             try:
                 # 正例：级别=项目私有 → 树行可见
                 assert kb.switch_kb_level("prjusr", "项目私有"), \
                     f"C14 切项目私有级失败：{[kb.row_label(x) for x in kb.kb_rows()]}"
-                assert kb.ensure_kb_expanded(["tools"]), "C14 项目私有级 tools 未展开"
+                assert kb.ensure_kb_expanded([]), "C14 项目私有级工具树根未展开"
                 ok = kb.poll(lambda: any(kb.row_label(x) == "prjusr_smoke.tool.md" for x in kb.kb_rows()))
                 assert ok, f"项目私有级资产未在树行出现：{[kb.row_label(x) for x in kb.kb_rows()]}"
-                # 反证：级别=系统 → 展开 app tools（有 app 内容为对照）→ 看不到该 prjusr 资产
+                # 反证：级别=系统 → 展开 app 工具树根（有 app 内容为对照）→ 看不到该 prjusr 资产
                 assert kb.switch_kb_level("app", "系统"), \
                     f"C14 切系统级失败：{[kb.row_label(x) for x in kb.kb_rows()]}"
-                assert kb.ensure_kb_expanded(["tools"]), "C14 系统级 tools 未展开"
-                # 对照：app 级 tools 下应有 core 目录（证明树确已加载，反证非"没渲染"）
-                assert kb.wait_kb_row("core", True), "C14 系统级 tools 未列出 core（树未加载，反证无意义）"
+                assert kb.ensure_kb_expanded([]), "C14 系统级工具树根未展开"
+                # 对照：app 级工具树下应有 core 目录（证明树确已加载，反证非"没渲染"）
+                assert kb.wait_kb_row("core", True), "C14 系统级工具树未列出 core（树未加载，反证无意义）"
                 ok = kb.poll(lambda: not any(kb.row_label(x) == "prjusr_smoke.tool.md" for x in kb.kb_rows()),
                              timeout=3)
                 assert ok, "系统级不应看到项目私有级资产（按级隔离失败）"

@@ -2,15 +2,15 @@
 """B · 语义/回环级推广 ⑧：**任务树 / 委派结果回读**（真实委派 → 层落库 → 数据面回读 → 逻辑删除闭合）。
 
 覆盖（**拒绝"存在级"：断言委派节点归属 / 展示名 / 终态回读 + 单源一致 + 逻辑删除闭合**）：
-  T1 委派落库回读：主会话发 `llm-start`（q 命中 mock 关键词 → `llm_run` 单次委派「后端开发」，
-     展示名 = 目的「委派展示名-自定义」）→ `data-tasktree-list{top_session}` **按层权威表回读**：
-     ① 根节点 `node_type=session` / `session_id==主会话` / 无 `parent_id`；② 子节点
-     `parent_id==根节点 id` / `node_type=session` / `session_id == job-*（子会话）` / `title==目的`
-     （委派身份 + 归属 = 语义级，非仅"有节点"）。
-  T2 终态 + 单源一致：`data-tasktree-tasks{top_session}` 同 **id** 行 `status/state==done`（子轮次终态
+  T1 委派落库回读（**DSL-3 口径**）：主会话发 `llm-start`（q 命中 mock 关键词 → `llm_run` 单次委派
+     「后端开发」）→ `data-tasktree-list{top_session}` **按层权威表回读**：作业根节点
+     `kind=dsl_job` / `node_type=tool` / `session_id==主会话` / 无 `parent_node_id` / `title==委派`
+     （工具展示名）；**LLM 委派步骤不建树节点**（[34-任务 §DSL-3]），记录在根节点
+     `steps[]`：`purpose==委派展示名-自定义` / `session_id==job-*（子会话）` / `status=done`。
+  T2 终态 + 单源一致：`data-tasktree-tasks{top_session}` 同 **id** 行 `status/state==done`（终态
      回读）；list 与 tasks 两视图同 id（P2 单源：运行态与持久态同源）。
-  T3 逻辑删除闭合：`data-tasktree-delete{node_id=子节点}` → **默认** `data-tasktree-list` 不再含该子节点
-     （过滤 closed），`include_closed=true` 仍含且 `closed==true`（历史保留）；根节点不受影响。
+  T3 逻辑删除闭合：`data-tasktree-delete{node_id=作业根}` → **默认** `data-tasktree-list` 不再含该节点
+     （过滤 closed），`include_closed=true` 仍含且 `closed==true`（历史保留）。
 
 隔离（51-FP与测试映射 §5/§6-8）：自起 GUI（动态端口 + 独立临时 work-dir/data-dir/**独立 HOME**）
 + 自管 mock LLM（`-llm-base` 兜底 + usr `llms` 临时写入）；会话/任务落临时库，结束即弃；
@@ -107,7 +107,7 @@ def main():
     RES = {}
 
     def case_t1_delegate_readback():
-        """T1：真实委派 → 层权威表回读根/子节点（归属 + 展示名 + 子会话）。"""
+        """T1：真实委派 → 层权威表回读作业根 + `steps[]`（归属 + 展示名 + 子会话）。"""
         c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
         c.mq_on_capture(["turn-start", "tasks.started", "tasks.updated", "tasks.done"])
         _h.install_session_history_spy(c)
@@ -120,73 +120,73 @@ def main():
                          lambda p: canon_tool(p) == "llm_run" and not p.get("parent_id")
                          and p.get("top_session") == SID, max_wait=90)
         if not root:
-            raise TestError("未建立 llm_run 根任务节点（tasks.started）")
-        child = poll_find("tasks.started",
-                          lambda p: canon_tool(p) == "llm_run" and p.get("parent_id") == root.get("task_id"),
-                          max_wait=90)
-        if not child:
-            raise TestError("未建立 llm_run 子任务节点（委派子会话）")
-        RES.update(root_id=root.get("task_id"), child_id=child.get("task_id"),
-                   child_session=child.get("session_id") or "")
+            raise TestError("未建立 llm_run 作业根任务节点（tasks.started）")
+        rid = root.get("task_id") or ""
+        # DSL-3：委派步骤不建树节点 → 等作业根终态，`steps[]` 在 done 事件/层行里回读
+        done = poll_find("tasks.done",
+                         lambda p: p.get("task_id") == rid and p.get("state") == "done",
+                         max_wait=120)
+        if not done:
+            raise TestError("llm_run 作业根未达 done（tasks.done）：%r" % (root,))
+        RES.update(root_id=rid)
 
         nodes = tree_nodes()
-        rn = node_by_id(nodes, RES["root_id"])
-        cn = node_by_id(nodes, RES["child_id"])
-        if not rn or not cn:
-            raise TestError("层权威表回读缺根/子节点：root=%r child=%r（nodes=%r）"
-                            % (rn, cn, nodes))
-        if rn.get("node_type") != "session" or rn.get("session_id") != SID or rn.get("parent_node_id"):
-            raise TestError("根节点形态不符：%r" % rn)
-        if cn.get("parent_node_id") != RES["root_id"]:
-            raise TestError("子节点 parent_node_id=%r（期望根 id=%r）"
-                            % (cn.get("parent_node_id"), RES["root_id"]))
-        if cn.get("node_type") != "session":
-            raise TestError("子节点 node_type=%r（期望 session）" % cn.get("node_type"))
-        if not str(cn.get("session_id") or "").startswith("job-"):
-            raise TestError("子节点 session_id=%r（期望 job-* 子会话）" % cn.get("session_id"))
-        if cn.get("title") != DEP_LABEL:
-            raise TestError("子节点 title=%r（期望委派目的 %r）" % (cn.get("title"), DEP_LABEL))
-        evi("T1 委派落库回读", root_id=RES["root_id"], child_id=RES["child_id"],
-            child_session=cn.get("session_id"), title=cn.get("title"))
+        rn = node_by_id(nodes, rid)
+        if not rn:
+            raise TestError("层权威表回读缺作业根：root=%r（nodes=%r）" % (rid, nodes))
+        if rn.get("kind") != "dsl_job" or rn.get("node_type") != "tool":
+            raise TestError("作业根形态不符（期望 kind=dsl_job/node_type=tool）：%r" % rn)
+        if rn.get("session_id") != SID or rn.get("parent_node_id"):
+            raise TestError("作业根归属不符：session_id=%r parent=%r"
+                            % (rn.get("session_id"), rn.get("parent_node_id")))
+        if rn.get("title") != "委派":
+            raise TestError("作业根 title=%r（期望工具展示名 委派）" % (rn.get("title"),))
+        steps = rn.get("steps") or []
+        if len(steps) != 1:
+            raise TestError("作业根 steps 数量=%d（期望 1；steps=%r）" % (len(steps), steps))
+        st = steps[0]
+        if st.get("purpose") != DEP_LABEL:
+            raise TestError("步骤 purpose=%r（期望委派目的 %r）" % (st.get("purpose"), DEP_LABEL))
+        if not str(st.get("session_id") or "").startswith("job-"):
+            raise TestError("步骤 session_id=%r（期望 job-* 子会话）" % (st.get("session_id"),))
+        if st.get("status") != "done":
+            raise TestError("步骤 status=%r（期望 done）" % (st.get("status"),))
+        RES.update(step_session=st.get("session_id") or "")
+        evi("T1 委派落库回读", root_id=rid, kind=rn.get("kind"), title=rn.get("title"),
+            step_session=st.get("session_id"), step_purpose=st.get("purpose"))
 
     def case_t2_done_and_single_source():
         """T2：tasks 视图同 id 行 status/state==done（终态回读 + 单源）。"""
-        cid = RES.get("child_id") or ""
-        done = poll_find("tasks.done",
-                         lambda p: p.get("task_id") == cid and p.get("state") == "done", max_wait=120)
-        if not done:
-            raise TestError("子 LLM 节点未达 done（tasks.done）")
-        rows = [t for t in tasks() if t.get("task_id") == cid]
+        rid = RES.get("root_id") or ""
+        rows = [t for t in tasks() if t.get("task_id") == rid]
         if not rows:
-            raise TestError("data-tasktree-tasks 未含子节点 id=%r（list=%r）" % (cid, tasks()))
+            raise TestError("data-tasktree-tasks 未含作业根 id=%r（list=%r）" % (rid, tasks()))
         row = rows[0]
         if row.get("status") != "done" and row.get("state") != "done":
-            raise TestError("子节点终态 status=%r state=%r（期望 done）"
+            raise TestError("作业根终态 status=%r state=%r（期望 done）"
                             % (row.get("status"), row.get("state")))
-        # 单源：list 与 tasks 两视图同 id（子节点）
-        if node_by_id(tree_nodes(), cid) is None:
-            raise TestError("list 视图未含同 id 子节点 %r（单源不一致）" % cid)
-        evi("T2 终态 + 单源一致", child_id=cid, status=row.get("status"), state=row.get("state"))
+        # 单源：list 与 tasks 两视图同 id
+        if node_by_id(tree_nodes(), rid) is None:
+            raise TestError("list 视图未含同 id 节点 %r（单源不一致）" % rid)
+        evi("T2 终态 + 单源一致", root_id=rid, status=row.get("status"), state=row.get("state"))
 
     def case_t3_logical_delete_closed():
-        """T3：delete → 默认 list 过滤该子节点；include_closed 仍含且 closed==true；根不受影响。"""
-        cid = RES.get("child_id") or ""
-        r = c.req("data-tasktree-delete", {"node_id": cid}) or {}
+        """T3：delete → 默认 list 过滤该节点；include_closed 仍含且 closed==true（历史保留）。"""
+        rid = RES.get("root_id") or ""
+        r = c.req("data-tasktree-delete", {"node_id": rid}) or {}
         if not r.get("ok"):
             raise TestError("data-tasktree-delete 未成功：%r" % r)
         end = time.time() + 10
-        while time.time() < end and node_by_id(tree_nodes(), cid) is not None:
+        while time.time() < end and node_by_id(tree_nodes(), rid) is not None:
             time.sleep(0.3)
-        if node_by_id(tree_nodes(), cid) is not None:
-            raise TestError("关闭后默认 list 仍含子节点 %r（closed 未过滤）" % cid)
-        with_closed = node_by_id(tree_nodes(include_closed=True), cid)
+        if node_by_id(tree_nodes(), rid) is not None:
+            raise TestError("关闭后默认 list 仍含节点 %r（closed 未过滤）" % rid)
+        with_closed = node_by_id(tree_nodes(include_closed=True), rid)
         if not with_closed:
-            raise TestError("include_closed=true 仍未含子节点 %r（历史未保留）" % cid)
+            raise TestError("include_closed=true 仍未含节点 %r（历史未保留）" % rid)
         if with_closed.get("closed") is not True:
             raise TestError("include_closed 行 closed=%r（期望 true）" % with_closed.get("closed"))
-        if node_by_id(tree_nodes(), RES.get("root_id")) is None:
-            raise TestError("关闭子节点波及根节点（根不应被关闭）")
-        evi("T3 逻辑删除闭合", child_id=cid, closed_filtered=True,
+        evi("T3 逻辑删除闭合", root_id=rid, closed_filtered=True,
             closed_flag=with_closed.get("closed"))
 
     c.console(clear=True)
@@ -194,9 +194,9 @@ def main():
           "驱动 = llm-start（委派）+ data-tasktree-*（既有主题）", flush=True)
     ok = total = 0
     for name, fn in [
-        ("T1 委派落库回读：根/子节点归属 + 展示名 + 子会话", case_t1_delegate_readback),
+        ("T1 委派落库回读：dsl_job 根 + steps[]（目的/子会话/落库）", case_t1_delegate_readback),
         ("T2 终态 + 单源一致：tasks 同 id 行 done + list 同 id", case_t2_done_and_single_source),
-        ("T3 逻辑删除闭合：默认过滤 + include_closed 保留 + 根不受影响", case_t3_logical_delete_closed),
+        ("T3 逻辑删除闭合：默认过滤 + include_closed 保留", case_t3_logical_delete_closed),
     ]:
         total += 1
         ok += run_case(name, fn)

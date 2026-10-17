@@ -68,9 +68,11 @@ def click_by_text(selector, text):
 
 
 def write_fixture():
+    """agent 契约夹具（H1 分区 Markdown；旧 `[description]/[content]` INI 已废除）。"""
     os.makedirs(os.path.dirname(AGENT_FILE), exist_ok=True)
-    doc = ("# %s\n\n[description]\nref agent 夹具\n\n[content]\n%s 原始提示词正文\n"
-           % (SUB, ORIG_MARK))
+    doc = ("# 基本信息\n```yaml\nname: %s\n```\n\n"
+           "# 摘要\nref agent 夹具\n\n"
+           "# 正文\n%s 原始提示词正文\n" % (SUB, ORIG_MARK))
     with open(AGENT_FILE, "w", encoding="utf-8") as f:
         f.write(doc)
 

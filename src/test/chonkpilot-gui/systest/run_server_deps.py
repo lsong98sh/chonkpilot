@@ -108,6 +108,23 @@ def msg_count():
     return deep_loads(c.eval("document.querySelectorAll('.message-list .message-item').length"))
 
 
+def msg_total():
+    """消息**总数**：窗口化渲染（>120 条）只渲染视口附近 → DOM 条数 ≠ 总数。
+
+    窗口化分支的 MessageItem 带 `data-idx`（原始下标）→ max(data-idx)+1；
+    小会话走全量渲染（无 data-idx）→ 回落 DOM 条数。
+    """
+    return deep_loads(c.eval("""(() => {
+      const els = [...document.querySelectorAll('.message-list .message-item')];
+      let max = -1;
+      for (const e of els) {
+        const v = parseInt(e.getAttribute('data-idx') || '-1', 10);
+        if (v > max) max = v;
+      }
+      return max >= 0 ? max + 1 : els.length;
+    })()"""))
+
+
 def scroll_to_top():
     c.eval("""(() => {
       const el = document.querySelector('.message-list');
@@ -162,8 +179,8 @@ def case_load_more_keep_position():
     activate(SID_MAIN)
     scroll_to_bottom()
     time.sleep(1.0)
-    # 确保不在顶部（消息足够多时底部 ≠ 顶部）
-    n0 = msg_count()
+    # 确保不在顶部（消息足够多时底部 ≠ 顶部）；用总条数（窗口化下 DOM 条数被裁剪）
+    n0 = msg_total()
     if n0 < 2:
         raise TestError(f"消息过少无法测加载: {n0}")
     # 记录当前顶部附近某元素位置：滚动到中间，记录 scrollTop + 首条可见消息
@@ -175,21 +192,23 @@ def case_load_more_keep_position():
     })()"""))
     time.sleep(0.5)
     # 滚到顶触发 loadMore
-    before = msg_count()
+    before = msg_total()
     scroll_to_top()
     deadline = time.time() + 20
     loaded = False
     while time.time() < deadline:
         scroll_to_top()
         time.sleep(0.8)
-        if msg_count() > before:
+        if msg_total() > before:
             loaded = True
             break
     if not loaded:
         # 可能 auto-preload 已全部加载（hasMore=false）→ 记录为可接受（数据已全量）
-        if wait_el(".top-indicator") and "reached" in (visible_text(".top-indicator") or "").lower():
+        if wait_el(".top-indicator") and any(
+                k in (visible_text(".top-indicator") or "")
+                for k in ("到顶了", "已到最早", "reached", "no more", "开始")):
             return True
-        raise TestError(f"滚顶未加载到更早消息: before={before} after={msg_count()}")
+        raise TestError(f"滚顶未加载到更早消息: before={before} after={msg_total()}")
     # 加载后阅读位置保持：当前 scrollTop 相对新增内容偏移正确（scrollHeight 增长且 scrollTop 增长）
     time.sleep(1.0)
     st_after = deep_loads(c.eval("(() => { const el = document.querySelector('.message-list'); return el ? el.scrollTop : -1; })()"))
@@ -232,13 +251,13 @@ def case_autoscroll_pause_resume():
 def case_session_persistence():
     activate(SID_MAIN)
     time.sleep(1.0)
-    n_main = msg_count()
+    n_main = msg_total()
     if n_main < 2:
         raise TestError(f"主会话消息异常: {n_main}")
     # 切到 other（3 轮 6 条）
     activate(SID_OTHER)
     time.sleep(1.0)
-    n_other = msg_count()
+    n_other = msg_total()
     if n_other != 6:
         raise TestError(f"other 会话消息数异常（应为 6）: {n_other}")
     txt = deep_loads(c.eval("""(() => {
@@ -250,7 +269,7 @@ def case_session_persistence():
     # 切回 main → 消息恢复（分页：最近批次 300 + auto-preload 300；更早批次滚顶加载）
     activate(SID_MAIN)
     time.sleep(1.5)
-    n_back = msg_count()
+    n_back = msg_total()
     if n_back < 300:
         raise TestError(f"切回主会话消息未恢复: {n_back}")
     last = deep_loads(c.eval("""(() => {
@@ -471,7 +490,8 @@ def case_subsession_viewer():
     if not wait_el(".empty-prompt"):
         raise TestError("未选择子会话时缺提示（L320）")
     txt = visible_text(".empty-prompt")
-    if not any(k in txt for k in ("选择子会话", "Select a sub")):
+    # RENAME-1（子会话展示层改称「任务」）：空态文案 = 「选择任务以查看其对话」
+    if not any(k in txt for k in ("选择子会话", "选择任务", "Select a sub", "Select a task")):
         raise TestError(f"未选择子会话提示异常: {txt[:60]!r}")
     return True
 

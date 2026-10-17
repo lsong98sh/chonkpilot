@@ -15,7 +15,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import free_port, snapshot_config, restore_config  # noqa: E402  动态端口；套件级配置快照-还原
+from harness import free_port, snapshot_config, restore_config, ensure_llm_configured  # noqa: E402  动态端口；套件级配置快照-还原；LLM 前置
 from harness import install_session_history_spy, wait_session_history  # noqa: E402  切会话→发送竞态（历史回填覆盖）
 
 PORT = free_port()
@@ -52,6 +52,7 @@ def main():
     try:
         gui.start()
         snap = snapshot_config(gui)
+        ensure_llm_configured(gui)  # S25 前置：无 LLM 选项 → 发送被拦截（IT3/IT4 断言发送）
         for _ in range(30):
             if J(gui, "document.querySelector('.panel-inner')") and J(gui, "document.querySelector('[contenteditable=\"true\"]')"):
                 break

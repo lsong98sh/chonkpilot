@@ -156,8 +156,13 @@ func NewWithOptions(options WebViewOptions) WebView {
 	// Enable `-webkit-app-region: drag` for frameless windows so the HTML
 	// toolbar can act as a native draggable title bar (Settings9). The
 	// property takes effect on the next navigation.
+	//
+	// 必须 QueryInterface 取 ICoreWebView2Settings9 再调用（见 GetSettings9 注释）：
+	// 经基接口 vtable 直接调扩展槽位会「返回成功但不生效」→ app-region 拖不动窗口。
 	if options.Frameless {
-		if err := settings.PutIsNonClientRegionSupportEnabled(true); err != nil {
+		if s9, err := settings.GetSettings9(); err != nil {
+			log.Printf("failed to query settings9 (non-client region): %v", err)
+		} else if err := s9.PutIsNonClientRegionSupportEnabled(true); err != nil {
 			log.Printf("failed to enable non-client region support: %v", err)
 		}
 	}

@@ -19,8 +19,8 @@ _ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", "..", ".."))
 WS = os.path.join(_HERE, "ws")
 WS_POSIX = WS.replace("\\", "/")
 IDE_EXE = os.path.join(_ROOT, "dist", "desktop", "chonkpilot.exe")
-# GUI 窗口标题 = work_dir 名（main.go: Title: filepath.Base(workDir)），非 "Chonk Pilot"。
-WIN_TITLE = os.path.basename(WS)
+# GUI 窗口标题 = `chonkpilot-<work_dir 名>`（gui.MainWindowTitle：固定任务栏标题，不随会话变化）。
+WIN_TITLE = "chonkpilot-" + os.path.basename(WS)
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
 _G = _h.acquire_gui(2345, work_dir=WS)  # 复用优先；无实例则自起并在结束时回收
 c = _G.client
@@ -481,7 +481,7 @@ def _wait_ide_down(max_wait=60):
 def _close_ide_winapi():
     """WM_CLOSE 兜底：FindWindowW + PostMessage（等价 Alt+F4 的关闭路径，不受前台聚焦限制）。
 
-    窗口标题 = work_dir 名（main.go: Title: filepath.Base(workDir)），非 "Chonk Pilot"。
+    窗口标题 = `chonkpilot-<work_dir 名>`（gui.MainWindowTitle）。
     """
     import ctypes
     u = ctypes.windll.user32

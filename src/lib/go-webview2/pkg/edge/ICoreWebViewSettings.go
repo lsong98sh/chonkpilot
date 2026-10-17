@@ -404,11 +404,49 @@ func (i *ICoreWebViewSettings) PutIsSwipeNavigationEnabled(enabled bool) error {
 	return nil
 }
 
+// GetSettings9 通过 QueryInterface 取 ICoreWebView2Settings9 接口指针。
+//
+// **必须**经 QI 取扩展接口：`GetSettings` 返回的是 ICoreWebView2Settings（基接口）
+// 指针，其 vtable 不保证含 Settings9 扩展槽位；直接经基接口调用
+// PutIsNonClientRegionSupportEnabled 属未定义行为（实测返回成功但**不生效**，
+// 表现为 `app-region: drag` 拖不动窗口）。IID 见 WebView2 SDK
+// IID_ICoreWebView2Settings9 = {0528a73b-e92d-49f4-927a-e547dddaa37d}。
+func (i *ICoreWebViewSettings) GetSettings9() (*ICoreWebViewSettings, error) {
+	var result *ICoreWebViewSettings
+	iid := NewGUID("{0528a73b-e92d-49f4-927a-e547dddaa37d}")
+	_, _, err := i.vtbl.QueryInterface.Call(
+		uintptr(unsafe.Pointer(i)),
+		uintptr(unsafe.Pointer(iid)),
+		uintptr(unsafe.Pointer(&result)),
+	)
+	if err != windows.ERROR_SUCCESS {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetIsNonClientRegionSupportEnabled 读取 `app-region` 非客户区支持开关（Settings9）。
+// 注意：应经 GetSettings9() 取得接口指针后再调用（见上）。COM BOOL = 4 字节 → int32。
+func (i *ICoreWebViewSettings) GetIsNonClientRegionSupportEnabled() (bool, error) {
+	var v int32
+	var err error
+	_, _, err = i.vtbl.GetIsNonClientRegionSupportEnabled.Call(
+		uintptr(unsafe.Pointer(i)),
+		uintptr(unsafe.Pointer(&v)),
+	)
+	if err != windows.ERROR_SUCCESS {
+		return false, err
+	}
+	return v != 0, nil
+}
+
 // PutIsNonClientRegionSupportEnabled enables/disables the `app-region` CSS
 // feature (ICoreWebView2Settings9). When TRUE, elements styled with
 // `-webkit-app-region: drag` are treated like the window title bar (dragging,
 // system menu on right-click, double-click maximize/restore). Takes effect
 // after the next navigation.
+//
+// 注意：应经 GetSettings9() 取得接口指针后再调用（见上）。
 func (i *ICoreWebViewSettings) PutIsNonClientRegionSupportEnabled(enabled bool) error {
 	var err error
 

@@ -46,6 +46,9 @@ TAB_FAMILIES = [
     ("CodeGraph 索引", r".*CodeGraph.*"),
     ("Vfts 全文索引", r".*Vfts.*"),
     ("文件历史 / History", r"^(文件历史|历史|History)$"),
+    # 2026-10-16（UILAYOUT-1 批）新增两页签：文件树 / 群聊（位于「文件历史」之后、「日志」之前）
+    ("文件树 / File Tree", r"^(文件树|File Tree|Filetree)$"),
+    ("群聊 / Group Chat", r"^(群聊|Group Chat)$"),
     ("日志 / Log", r"^(日志|Log)$"),
     ("配置导入/导出 / Config IO", r".*(配置导入/导出|Config IO|Import).*"),
 ]
@@ -281,7 +284,7 @@ def main():
     c.console(clear=True)
     total = 0
     ok = 0
-    total += 1; ok += run_case("K1 项目配置 7 页签（安全/上下文管理/CodeGraph/Vfts/文件历史/日志/配置导入导出）", case_tabs)
+    total += 1; ok += run_case("K1 项目配置 9 页签（安全/上下文管理/CodeGraph/Vfts/文件历史/文件树/群聊/日志/配置导入导出）", case_tabs)
     total += 1; ok += run_case("K2 安全页签：添加信任目录", case_security)
     total += 1; ok += run_case("K3 上下文管理：输入 + 快速阈值 + 保存", case_context)
     total += 1; ok += run_case("K4 总结提示词自动加载 + 来源标注 + 重置", case_summary_prompt_load)

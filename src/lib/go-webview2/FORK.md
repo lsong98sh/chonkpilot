@@ -40,7 +40,7 @@
 | P1 | 生命周期 | `webview.go`（`windowContext` / `delWindowContext` / `wndproc` WM_DESTROY） | 窗口销毁（WM_DESTROY）清理 `windowContext` 条目，避免多窗口反复开关时 `*webview` 永久泄漏（**D-28**）；WM_NCCREATE 期间登记 `*webview`（使首个 WM_NCCALCSIZE 即按 frameless 处理）。 |
 | P2 | 窗口样式 | `webview.go`（`WebViewOptions.Frameless` / `wndproc` WM_NCCALCSIZE / `CreateWithOptions`） | 无边框窗口支持：WM_NCCALCSIZE 返回 0 隐藏原生标题栏/边框；保留 `WS_OVERLAPPEDWINDOW` 使原生 resize/最大化/贴靠保持；最大化时把客户区钳到监视器工作区。 |
 | P3 | 窗口样式 | `webview.go`（`WebViewOptions.Hidden` / `Show` / `WebViewLifecycle`） | 建窗后可先隐藏，导航完成后 `Show()`，避免首屏白闪；`WebViewLifecycle.SetNavigationCompletedCallback` 供宿主挂导航完成回调。 |
-| P4 | 窗口样式 | `webview.go`（`WindowResizer` / `StartResize`） | 前端命中边缘后调用 `StartResize(HT*)` 进入系统原生 resize 模态循环。 |
+| P4 | 窗口样式 | `webview.go`（`WindowResizer` / `StartResize`） | 前端命中方位后调用 `StartResize(HT*)` 进入系统原生 **resize** 模态循环；同一入口传 `HTCAPTION(2)` 即进入系统**移动**循环（frameless 主窗口顶栏拖拽，G-63）。 |
 | P5 | DevTools | `webview.go`（`WebViewOptions.DevToolsDisabled` / `DevTools` / `OpenDevToolsWindow`） | 屏蔽用户 F12/右键菜单开 DevTools，同时保留宿主机**程序化**打开能力（`DevTools.OpenDevToolsWindow`）。 |
 | P6 | 加速键 | `webview.go`（`Accelerator` / `SetAcceleratorKeyCallback`） | 拦截加速键（如 F12），返回 true 表示吞掉、false 交 WebView2 处理。 |
 | P7 | 脚本 | `webview.go`（`ScriptEval` / `EvalWithResult`） | 同步执行 JS 并取回 JSON 结果（阻塞至完成回调或超时）；**不可在 UI 线程调用**（会死锁）。 |
@@ -50,6 +50,7 @@
 | P11 | 布局 | `webview.go`（`wndproc` WM_MOVE / WM_MOVING） | 窗口移动时调用 `NotifyParentWindowPositionChanged`，使 WebView2 控件跟随。 |
 | P12 | 权限 | `webview.go`（`NewWithOptions`） | 授予 `ClipboardRead` 权限（富文本粘贴场景）。 |
 | P13 | 供应链 | `webviewloader/` | `//go:embed` 内嵌三架构 `WebView2Loader.dll`，运行期磁盘加载失败时回退内存加载（`module.go`）。 |
+| P14 | 设置接口 | `pkg/edge/ICoreWebViewSettings.go`（`GetSettings9`） | `ICoreWebView2Settings9`（`IsNonClientRegionSupportEnabled`）必须经 **`QueryInterface`**（IID `{0528a73b-e92d-49f4-927a-e547dddaa37d}`）取接口指针后再调用；经基接口 vtable 直调扩展槽位会「返回成功但不生效」（G-63）。 |
 
 > 说明：`pkg/edge/*`、`internal/w32/*` 为上游 WebView2 COM 绑定层；本地改动集中在 `webview.go` 的
 > 窗口/生命周期/能力接口，`pkg/edge` 侧仅在需要支撑上述能力处有配套扩展（如 `CapturePreview`、

@@ -31,6 +31,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-gui"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
+	"github.com/chonkpilot/chonkpilot-gui/flash"
 	"github.com/chonkpilot/chonkpilot-gui/models"
 	"github.com/chonkpilot/chonkpilot-lib/lockfile"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
@@ -93,10 +94,9 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	}
 
 	if workDir == "" {
-		var err error
-		workDir, err = os.Getwd()
-		if err != nil {
-			return fmt.Errorf("cwd: %w", err)
+		workDir = defaultWorkDir()
+		if workDir == "" {
+			return fmt.Errorf("无法确定工作目录")
 		}
 	}
 	workDir = models.ResolveDir(workDir, "")
@@ -325,6 +325,26 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	<-mainHost.Done()
 	env.Shutdown()
 	return nil
+}
+
+// defaultWorkDir 在未显式 --work-dir 时解析工作目录：
+// 最近项目（存在且未被占用）→ 默认工作目录（%APPDATA%\chonkpilot\workspace）→ 当前 cwd。
+func defaultWorkDir() string {
+	for _, d := range flash.LoadRecents(flash.RecentsPath()) {
+		if d == "" {
+			continue
+		}
+		if flash.DirExists(d) && flash.WorkDirFree(d) {
+			return d
+		}
+	}
+	if d, err := models.EnsureDefaultWorkspace(); err == nil {
+		return d
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return ""
 }
 
 // exitWorkDirBusy 报告「该 work-dir 已被另一个实例打开」并退出（I-74）。

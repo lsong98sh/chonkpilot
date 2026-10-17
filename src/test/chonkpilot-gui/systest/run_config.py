@@ -252,8 +252,23 @@ def case_general_params():
         })()"""))
         if r != "ok":
             raise TestError(f"未找到 responseTimeout 输入框: {r}")
-        time.sleep(1.2)
-        v = _user_cfg().get("responseTimeout")
+        # 手动保存口径（SettingsParamsPage 已改 unsaved-mark + 【保存】）：编辑只改本地态，
+        # 点用户级保存按钮（[data-params-save-user]）才批量落库 → 再轮询确认写入。
+        saved = _loads_deep(c.eval("""(() => {
+          const b=document.querySelector('[data-params-save-user]');
+          if(!b) return 'no-btn';
+          if(b.disabled) return 'disabled';
+          b.click(); return 'ok';
+        })()"""))
+        if saved != "ok":
+            raise TestError(f"用户级保存按钮不可用: {saved}")
+        deadline = time.time() + 10
+        v = None
+        while time.time() < deadline:
+            v = _user_cfg().get("responseTimeout")
+            if v == 123:
+                break
+            time.sleep(0.4)
         if v != 123:
             raise TestError(f"responseTimeout={v}，期望 123")
     finally:

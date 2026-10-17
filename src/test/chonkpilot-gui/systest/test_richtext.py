@@ -17,7 +17,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import ensure_locale, free_port, snapshot_config, restore_config  # noqa: E402  动态端口 + 语言确定性（发送控件按英文文案断言）+ 套件级配置快照-还原
+from harness import ensure_locale, ensure_llm_configured, free_port, snapshot_config, restore_config  # noqa: E402  动态端口 + 语言确定性 + LLM 前置 + 套件级配置快照-还原
 
 PORT = free_port()
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -95,6 +95,7 @@ def main():
     try:
         gui.start()
         snap = snapshot_config(gui)
+        ensure_llm_configured(gui)  # S25 前置：无 LLM 选项 → 发送被拦截（R7 断言发送序列化）
         # 语言确定性（51 §6-8）：本套件按英文文案断言，不依赖他套件遗留在 usr 库的 ui.locale
         ensure_locale(gui, "en-US")
         for _ in range(30):
@@ -120,16 +121,24 @@ def main():
         c.check("R3 Shift+Enter 换行不发送", 'hello richtext' in t, repr(t))
 
         # R4 粘贴图片 → 附件缩略图 chip（有界轮询替代固定 sleep，见 wait_upto）
-        # L4 加固（2026-09-23，[42 §2 (148)]）：断言除「chip 出现」外还要求**上传回执后**的
-        # `/show/` 缩略图 src（InputBox.vue:257 `a.url = res.url || a.url`，回执前是本地 dataURL）
-        # → 轮询条件须**同时**覆盖两者（原仅等 chip，负载下回执未到即读 src 得 data:URL）。
+        # 缩略图口径（2026-10-17 对齐实现）：图片 chip 的 `src` 恒为**本地 dataURL**
+        # （InputBox.upload `a.url = dataUrl`，仅作落盘前预览）；上传回执只补 `a.ref` 并清
+        # `pending`（不再把 src 换成 `/show/…`，见 InputBox.vue upload 回执分支）。
+        # 故断言 = chip 出现 + dataURL 缩略图 + **回执已到**（`.attach-chip.pending` 消失，
+        # 即上传完成、可发送）；落盘证据仍由 R6（tmp/uploads 文件）覆盖。
         paste_image(gui)
-        stamp = wait_upto(gui, """(()=>{const c=document.querySelector('.attach-chip.attach-image .attach-thumb');return {n:document.querySelectorAll('.attach-chip.attach-image').length,src:c?(c.getAttribute('src')||''):''}})()""",
+        stamp = wait_upto(gui, """(()=>{const c=document.querySelector('.attach-chip.attach-image .attach-thumb');
+          const chip=c?c.closest('.attach-chip'):null;return {n:document.querySelectorAll('.attach-chip.attach-image').length,
+          src:c?(c.getAttribute('src')||''):'',pending:chip?chip.classList.contains('pending'):null}})()""",
                           lambda v: isinstance(v, dict) and int(v.get('n') or 0) >= 1
-                          and str(v.get('src') or '').startswith('/show/'), max_wait=10.0)
+                          and str(v.get('src') or '').startswith('data:image/')
+                          and v.get('pending') is False, max_wait=10.0)
         imgChips = (stamp or {}).get('n')
         imgSrc = (stamp or {}).get('src') or ''
-        c.check("R4 粘贴图片 → 缩略图附件", int(imgChips or 0) >= 1 and imgSrc.startswith('/show/'), f"chips={imgChips} src={imgSrc[:40]}")
+        imgPending = (stamp or {}).get('pending')
+        c.check("R4 粘贴图片 → 缩略图附件（回执后 pending 清除）",
+                int(imgChips or 0) >= 1 and imgSrc.startswith('data:image/') and imgPending is False,
+                f"chips={imgChips} src={imgSrc[:40]} pending={imgPending}")
 
         # R5 拖入文件 → 文件 chip；删除 → 消失
         # L4 加固（2026-09-23，[42 §2 (148)]）：chip 在**上传回执前**只有「上传中」态、**无删除入口**

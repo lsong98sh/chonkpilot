@@ -197,17 +197,43 @@ def button_need_state():
 
 
 def drag_filetree(dx):
-    """拖文件树|预览 分隔条（+dx = 预览变窄）。"""
+    """拖文件树|预览 分隔条（+dx = 预览变窄）。
+
+    口径（2026-10-17 对齐 UILAYOUT-1 自由布局）：主界面已由 `layout-free` 渲染，
+    预览页签栏所在的 pane 在 `.layout-split`（拖拽条 = `.split-handle`，mousedown 在
+    handle、mousemove/mouseup 在 window）；旧 `SplitPanel` 的 `.split-resizer` 仍存在
+    但**不属于预览 pane**（原选择器会返回 no-resizer → 拖拽无效、P9 恒红）。
+    → 优先取「紧邻 `.code-view` 所在 `.split-child` 左侧」的 `.split-handle`；无则回退旧 resizer。
+    """
     c.eval("""(() => {
+      const cv = document.querySelector('.code-view');
+      const pane = cv ? cv.closest('.split-child') : null;
+      const fire = (el, x, y) => {
+        el.dispatchEvent(new MouseEvent('mousedown', { clientX: x, clientY: y, bubbles: true, cancelable: true }));
+        window.dispatchEvent(new MouseEvent('mousemove', { clientX: x + %d, clientY: y, bubbles: true, cancelable: true }));
+        window.dispatchEvent(new MouseEvent('mouseup', { clientX: x + %d, clientY: y, bubbles: true, cancelable: true }));
+        return 'ok';
+      };
+      if (pane) {
+        const pr = pane.getBoundingClientRect();
+        let best = null, bd = 1e9;
+        for (const h of document.querySelectorAll('.split-handle')) {
+          const r = h.getBoundingClientRect();
+          if (!(r.width > 0 && r.height > 0)) continue;
+          if (r.width > 12) continue; // 仅竖分隔（列宽变化）
+          const d = Math.abs((r.left + r.width / 2) - pr.left);
+          if (d < bd) { bd = d; best = h; }
+        }
+        if (best && bd < 24) {
+          const r = best.getBoundingClientRect();
+          return fire(best, r.left + r.width / 2, r.top + r.height / 2);
+        }
+      }
       for (const r of document.querySelectorAll('.split-resizer.resizer-horizontal')) {
         const next = r.nextElementSibling;
         if (next && next.querySelector('.code-view')) {
           const rect = r.getBoundingClientRect();
-          const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-          r.dispatchEvent(new MouseEvent('mousedown', { clientX: x, clientY: y, bubbles: true, cancelable: true }));
-          window.dispatchEvent(new MouseEvent('mousemove', { clientX: x + %d, clientY: y, bubbles: true, cancelable: true }));
-          window.dispatchEvent(new MouseEvent('mouseup', { clientX: x + %d, clientY: y, bubbles: true, cancelable: true }));
-          return 'ok';
+          return fire(r, rect.left + rect.width / 2, rect.top + rect.height / 2);
         }
       }
       return 'no-resizer';

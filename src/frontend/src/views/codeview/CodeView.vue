@@ -142,6 +142,11 @@
       <Icon name="document" :size="48" color="var(--text-muted)" />
       <p>{{ $t('common.select_file_to_preview') }}</p>
       <p class="hint">{{ $t('common.choose_from_sidebar') }}</p>
+      <div v-if="selection.workDir" class="workspace-card">
+        <div class="workspace-card__label">{{ $t('common.current_workspace') }}</div>
+        <div class="workspace-card__path" :title="selection.workDir">{{ selection.workDir }}</div>
+        <Button @click="openWorkspace">{{ $t('common.open_workspace') }}</Button>
+      </div>
     </div>
 
     <!-- 选中文本浮动操作条：预览区选中文字 → 添加到主 chat 输入框 -->
@@ -181,6 +186,7 @@ import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { GuiInitDataKeys } from '../../events/msgkeys'
 import { useSelectionStore } from '../../stores/selection'
+import { pickAndOpenDir } from '../../layout/workdirActions'
 
 const baseViewerOptions = { preset: [litePreset, officePreset], theme: 'light' }
 // 代码预览：隐藏全局工具栏（缩放/搜索/下载/打印/导出/主题）与 renderer 内部
@@ -219,6 +225,11 @@ const activeTab = computed(() => tabs.value.find(t => t.key === activeKey.value)
 // 关闭时回写，供栏条目 / 命令 / 其它 view 读；**不反向驱动** CodeView 页签。
 // 激活项为功能页页签（settings / scenario…）→ 无文件镜像（path 空）。
 const selection = useSelectionStore()
+
+/** 空态：打开 / 新建工作目录（系统目录选择器可新建文件夹）。 */
+async function openWorkspace() {
+  await pickAndOpenDir()
+}
 function mirrorActiveFile() {
   const tab = activeTab.value
   if (tab && tab.kind === 'file') selection.setActiveFile({ path: tab.path, renderType: tab.renderType })
@@ -1357,6 +1368,33 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--text-muted);
   opacity: 0.7;
+}
+
+.workspace-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: 560px;
+  margin-top: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+.workspace-card__label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.workspace-card__path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 /* 浮动条：背景用主题强调色 token（原引用未定义 token `--accent-color` + 兜底 #409eff，

@@ -27,6 +27,7 @@ _EnumWindowsProc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 _MOUSEEVENTF_LEFTDOWN = 0x0002
 _MOUSEEVENTF_LEFTUP = 0x0004
+_SWP_NOSIZE = 0x0001
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
 _SPI_GETWORKAREA = 0x0030
@@ -72,11 +73,17 @@ def _work_area():
 
 
 def _drag(x0, y0, x1, y1, steps=14, hold=0.03):
-    """真实鼠标拖拽：移动到起点 → 左键按下 → 分步移动 → 抬起。"""
+    """真实鼠标拖拽：移动到起点 → 左键按下 → 分步移动 → 抬起。
+
+    按下后**停顿 0.8s** 再移动：frameless resize 的模态循环由前端 mousedown →
+    gui.window.resize → 宿主 StartResize（跨 JS→HTTP→UI 线程）延迟进入；若按下即快速移动，
+    循环进入时鼠标已前进一段，该段位移不会计入窗口尺寸（满载下实测 140px 只得到 +50px）。
+    停顿让循环在鼠标仍位于起点时进入，测量的是「窗口跟随鼠标」的真实终态（断言仍 ±3px）。
+    """
     _u32.SetCursorPos(int(x0), int(y0))
     time.sleep(0.25)
     _u32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.20)
+    time.sleep(0.80)
     for i in range(1, steps + 1):
         _u32.SetCursorPos(int(x0 + (x1 - x0) * i / steps), int(y0 + (y1 - y0) * i / steps))
         time.sleep(hold)
@@ -185,12 +192,24 @@ def main():
             dh = (r3[3] - r3[1]) - (r2[3] - r2[1])
             c.check("W5b 真机拖动下边框 → 高度 +110px（±3px）", abs(dh - 110) <= 3,
                     f"before={r2} after={r3} delta_h={dh} drag=({x},{y})->({x},{y + 110})")
+
+            # ③ 顶栏拖动 → 窗口整体移动：非交互区 mousedown → gui.window.resize{hit=caption}
+            #    → 宿主 WM_NCLBUTTONDOWN(HTCAPTION) 系统移动循环（WebView2 app-region 不生效）。
+            r4 = _wrect(hwnd)
+            mx, my = r4[0] + 40, r4[1] + 20  # 品牌区（非交互）
+            _drag(mx, my, mx + 120, my + 80)
+            r5 = _wrect(hwnd)
+            dx, dy = r5[0] - r4[0], r5[1] - r4[1]
+            c.check("W5c 真机拖动顶栏 → 窗口移动 (+120,+80)", abs(dx - 120) <= 3 and abs(dy - 80) <= 3,
+                    f"before={r4} after={r5} moved=({dx},{dy}) drag=({mx},{my})->({mx + 120},{my + 80})")
+            _u32.SetWindowPos(hwnd, 0, r4[0], r4[1], 0, 0, _SWP_NOSIZE | _SWP_NOZORDER)
+            time.sleep(0.4)
         else:
             c.check("W5 真机拖动右边框 → 宽度 +140px（±3px）", False, "未找到主窗口 hwnd")
             c.check("W5b 真机拖动下边框 → 高度 +110px（±3px）", False, "未找到主窗口 hwnd")
 
-        # W6 点击 Toolbar 后拖拽移动：CSS `-webkit-app-region: drag` 只证明**拖拽区**存在
-        # （移动由系统 app-region 负责）；**不代表**系统八方向 resize 可用（后者由 W5/W5b 真机拖动覆盖）。
+        # W6 顶栏拖拽区样式：仅证明 CSS drag 标记存在；**实际移动**由 W5c（caption → 系统移动循环）
+        # 覆盖（WebView2 app-region 在本项目自绘 frameless 窗口上不触发，不作为判据）。
         region = J(gui, "getComputedStyle(document.querySelector('.toolbar')).getPropertyValue('-webkit-app-region').trim()")
         c.check("W6 Toolbar 拖拽区（-webkit-app-region: drag；仅移动语义）", region == "drag", repr(region))
 

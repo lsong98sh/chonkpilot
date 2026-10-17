@@ -113,6 +113,7 @@
 | 视图 | 组件 | 职责 |
 |------|------|------|
 | 主预览 | `CodeView.vue` | 多 tab 预览区：底部 tab 栏，按 `renderType` 分派渲染；功能页 tab（settings / scenario / dbviewer / tools / knowledge） |
+| 空态 | `CodeView.vue` | 无 tab 时显示**当前工作目录**路径 + 「打开 / 新建工作目录」按钮；点击复用既有 `workdir-open` / `gui.dir.open` 语义，不再强制启动即选目录 |
 | 二进制查看 | `HexView.vue` | `hex` 类型文件的十六进制展示 |
 
 **renderType 判定**（顺序即源码顺序，`CodeView.vue::computeRenderType`）：
@@ -194,7 +195,7 @@
 | 前端资源 no-cache | 强制 `no-cache, no-store, must-revalidate` | WebView2 会持久缓存旧页面 |
 | Frameless 保留 WS_THICKFRAME | 无原生标题栏；`WS_THICKFRAME` **只保留最大化 / 贴靠等原生行为** | frameless 下 WebView2 子窗铺满客户区 → `WM_NCHITTEST` 恒 `HTCLIENT`，**系统层无边缘 resize 命中区**（WIN-1 / G-59） |
 | 窗口 resize（frameless 主窗口） | 前端边缘命中 → `gui.window.resize{hit}` → 宿主 `StartResize(HT*)` 进入系统原生 resize 模态循环 | 系统无命中区，只能由前端补命中：`components/shell/WindowResizeHandles.vue` 渲染 8 条透明命中条（4 边 6px / 4 角 12px，`-webkit-app-region: no-drag`），`mousedown` 发消息；`guiDo` 把方位映射为 `HTLEFT(10)…HTBOTTOMRIGHT(17)` 后调 `webview2.WindowResizer.StartResize`（`src/lib/gui/bridge/guimsg.go` / `window.go`；设计见 [go-webview2/FORK.md](../../../src/lib/go-webview2/FORK.md) P4）。**仅 frameless 装配**；对话窗口（原生标题栏/边框）不装配 → 明确失败。 |
-| 拖动用 `-webkit-app-region: drag` | CSS 区域拖拽，控件 `no-drag` | 免手写拖动逻辑 |
+| 窗口移动（frameless 主窗口） | 顶栏非交互区 `mousedown` → 位移 >4px 后发 `gui.window.resize{hit:'caption'}` → 宿主 `WM_NCLBUTTONDOWN(HTCAPTION)` 进入系统移动模态循环 | **WebView2 `app-region` 在本项目自绘 frameless 窗口上实测不触发**（`ICoreWebView2Settings9.IsNonClientRegionSupportEnabled=true` 已生效仍无拖拽区）→ 与 resize 同链路显式进入系统循环（`ChonkTopBar.vue` 阈值判定保留单击/双击；`guimsg.go` 的 `caption → 2(HTCAPTION)`）。CSS 仍保留 `app-region: drag/no-drag` 仅作语义标记。**2026-10-17 修** |
 | `--test-port` 仅 127.0.0.1 | 外部脚本驱动端点 | 测试专用，见 [52-test-port驱动](../50-testing/52-test-port驱动.md) |
 
 ---

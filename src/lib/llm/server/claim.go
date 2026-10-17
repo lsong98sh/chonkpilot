@@ -38,6 +38,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -152,7 +153,8 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 //	gui / browser（要求认证）：
 //	                       无有效令牌 → instance-unauthorized；
 //	                       `user` 提议与连接层身份不一致 → instance-unauthorized；
-//	                       `work_dir` 提议为空 / 无权访问 → instance-forbidden；
+//	                       `work_dir` 提议为空 → 默认 `<用户数据根>/workspace`（首次自动创建）；
+//	                       默认目录/提议无权访问 → instance-forbidden；
 //	                       通过 → work_dir = 规范化提议；data_dir = `<用户数据根>/<uid>/`。
 //
 // 返回 (work_dir, data_dir, 错误码)；错误码空 = 通过。
@@ -198,10 +200,22 @@ func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir, i
 		logf("[chonkpilot-server] instance-claim: user 提议 %q 与连接层身份 %q 不一致\n", p, u.Username)
 		return "", "", claimErrUnauthorized
 	}
+	dataDir := s.userDataDir(u.UID)
+	if dataDir == "" {
+		dataDir = boundDataDir // 未配置用户数据根（异常装配）→ 回落既有绑定，不阻断认领
+	}
 	dir := strings.TrimSpace(req.WorkDir)
 	if dir == "" {
-		// desktop / browser 的 work_dir **必填**（61 §4.1 ①）；未提供 → 不臆造，提示换目录。
-		return "", "", claimErrForbidden
+		// 首次登录未选目录 → 自动落到该用户的默认工作目录 `<用户数据根>/workspace`；
+		// 由 allowWorkDir 按 projectRoots 校验（默认允许根 = 用户数据根 → 自动建项目）。
+		if dataDir == "" {
+			return "", "", claimErrForbidden
+		}
+		dir = filepath.Join(dataDir, "workspace")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			logf("[chonkpilot-server] instance-claim: 创建默认工作目录失败 %s: %v\n", dir, err)
+			return "", "", claimErrForbidden
+		}
 	}
 	// `auth.projectRoots` 允许根（缺省 = 用户数据根，见 authform 部分）。
 	ok, err := s.allowWorkDir(u.UID, dir)
@@ -212,10 +226,6 @@ func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir, i
 	}
 	if !ok {
 		return "", "", claimErrForbidden
-	}
-	dataDir := s.userDataDir(u.UID)
-	if dataDir == "" {
-		dataDir = boundDataDir // 未配置用户数据根（异常装配）→ 回落既有绑定，不阻断认领
 	}
 	return auth.NormalizeDir(dir), dataDir, ""
 }

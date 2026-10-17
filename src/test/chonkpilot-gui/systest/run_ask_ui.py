@@ -176,6 +176,7 @@ def case_multi():
 def case_custom_with_options():
     """C12 选项 + 「其他」自定义文本（多选）可并存：勾选 + 填「其他」→ 一并拼接回链。"""
     aid = ask_id()
+    c.mq_on_capture(["ask-user-reply"])  # 重置捕获缓冲（否则 wait_events 会命中更早用例的旧事件）
     emit_ask({"ask_id": aid, "question": "选或填：", "options": ["A", "B", "C"], "multi": True, "custom": True})
     if not wait_el(".ask-user-content"):
         raise TestError("选项+custom 弹窗未出现")
@@ -189,7 +190,7 @@ def case_custom_with_options():
     time.sleep(0.2)
     click_submit()
     ev = c.wait_events("ask-user-reply", n=1, max_wait=8)
-    if ev[0]["payload"].get("answer") != "A、C、其他补充":
+    if ev[0]["payload"].get("ask_id") != aid or ev[0]["payload"].get("answer") != "A、C、其他补充":
         raise TestError(f"选项+自定义拼接异常: {ev}")
     if ask_content_count() != 0:
         raise TestError("选项+自定义回答后弹窗未关闭")

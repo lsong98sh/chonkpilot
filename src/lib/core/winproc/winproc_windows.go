@@ -6,6 +6,8 @@
 package winproc
 
 import (
+	"os/exec"
+	"strconv"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -24,6 +26,20 @@ func SysProcAttr() *syscall.SysProcAttr {
 		HideWindow:    true,
 		CreationFlags: createNoWindow,
 	}
+}
+
+// KillTree 终止指定进程及其**全部子孙进程**（Windows：`taskkill /T /F`）。
+//
+// 用途：取消/超时强杀执行器（直接子进程）时，执行器自行拉起的孙进程
+// （如 script 执行器 → cmd.exe → ping.exe）会孤儿化；仅 TerminateProcess 直接子进程不够，
+// 必须按进程树终止（run_tool_async J 的「无孤儿」判据）。
+func KillTree(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	c := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
+	c.SysProcAttr = SysProcAttr()
+	return c.Run()
 }
 
 // ─── kill-on-close Job Object（孤儿进程回收，C-40）──────────────────────────

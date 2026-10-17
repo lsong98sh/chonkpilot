@@ -681,10 +681,12 @@ async function sendSameTurnContinue() {
   )
   if (turn) currentTurnId.value = turn
   // 落库回执到达后再渲染 user 气泡（不再乐观插入）；等待期间已切会话 → 不渲染
-  await ack
+  // （`await ack` 不回写原变量 → 必须用返回值；直接把 Promise 交给 ackRejectedReason
+  //  会让 `ack.backend` 恒为 undefined → 每次发送都被判「backend unreachable」）
+  const ackRes = await ack
   if (activeSessionId.value && activeSessionId.value !== sid) return
   // E-20：后端未受理（无 llm-complete 终态）→ 错误气泡 + 复位加载态，防死锁
-  const rejected = ackRejectedReason(ack)
+  const rejected = ackRejectedReason(ackRes)
   if (rejected) {
     handleError({ message: rejected })
     cleanupAndFinish()
@@ -909,11 +911,12 @@ async function doSend(batch) {
     lastTurnId.value = turnId
   }
   // 落库回执到达后再渲染 user 气泡；等待期间已切会话 → 不渲染
-  await ack
+  // （`await ack` 不回写原变量 → 必须用返回值，见 sendSameTurnContinue 同注）
+  const ackRes = await ack
   if (activeSessionId.value && activeSessionId.value !== sid) return
   // E-20：后端未受理（无 llm-complete 终态）→ 错误气泡 + 复位加载态，防死锁；
   // 本轮记录的 turn id 一并作废（后端未知该 turn，不可作为后续「同轮次继续」目标）。
-  const rejected = ackRejectedReason(ack)
+  const rejected = ackRejectedReason(ackRes)
   if (rejected) {
     if (lastTurnId.value === turnId) lastTurnId.value = null
     handleError({ message: rejected })

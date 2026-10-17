@@ -96,8 +96,20 @@ def case_add_refreshes_chat_list():
             raise TestError("添加场景弹窗未出现（.edit-dialog-body）")
 
         # 3. 填名称（第一个 input 即场景名；原生 setter + input 事件）
-        c.input(".edit-dialog-body input", NAME, 5000)
-        time.sleep(0.5)
+        # 竞态（2026-10-17 实测）：弹窗 DOM 出现后编辑框仍在 `await loadLevelRoots()` 异步初始化，
+        # 紧跟其后的写入会被随后的 `form.value = {...}` 回填覆盖（表现为保存报「请输入场景名称」）。
+        # → 有界重试：写入后读回校验，未生效则再写（不改产品代码，只改「何时写」）。
+        deadline = time.time() + 10
+        val = ''
+        while time.time() < deadline:
+            c.input(".edit-dialog-body input", NAME, 5000)
+            time.sleep(0.35)
+            val = _loads_deep(c.eval(
+                "document.querySelector('.edit-dialog-body input')?.value || ''")) or ''
+            if val == NAME:
+                break
+        if val != NAME:
+            raise TestError(f"场景名称写入未生效（当前 {val!r}）")
 
         # 4. 保存（scenario-save → handleSave → onDone → scenario-reload 广播）
         c.mq_emit("scenario-save")

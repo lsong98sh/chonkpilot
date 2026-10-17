@@ -312,8 +312,9 @@ function openPromptEditor(c) {
         try {
           await dataClient.remove('prompt', key)
           message.success(t('projectConfig.memory_prompt_reset_done'))
-          handle.close()
+          // 同 onSave：先刷新清单再关（重开即刻读到回落后的 prompt_override=false）
           await reloadMemoryCategories()
+          handle.close()
         } catch (e) {
           message.error(saveFailedText(t, e))
         }
@@ -329,8 +330,11 @@ function openPromptEditor(c) {
         // 空串 / 与继承值相同 → 后端不写覆盖文件（回落继承），与总结提示词同口径。
         await setPrompt(key, text)
         message.success(t('projectConfig.saved'))
-        handle.close()
+        // 先刷新类别清单（prompt_override 由后端随 data-memory-list 下发）再关弹框：
+        // 原顺序「先 close 后 reload」会让用户紧接着重开时读到**旧行数据**（仍显示
+        // 「内置默认」且无【重置】）——实测 E4 竞态（2026-10-17）。
         await reloadMemoryCategories()
+        handle.close()
       } catch (e) {
         message.error(saveFailedText(t, e))
       }

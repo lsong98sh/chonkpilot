@@ -70,9 +70,13 @@ def case_r1_knowledge_md_preview():
     assert kb.ensure_explorer_visible(), "filetree 区未能挂载"
     assert kb.switch_mode("tools"), "切换「工具」页签失败 active=%s" % kb.mode_active()
     time.sleep(0.8)
-    # 系统（app）级 capability 根（幂等展开，避免把已展开状态收起）；根标签 = 「工具 -级别」
-    _kb_ensure("tools", "工具")
-    _kb_ensure("core", "tools")
+    # 系统（app）级 capability 根（幂等展开，避免把已展开状态收起）：
+    # 单类型子 tab 的树根 = **类型目录本身**（不再有 "tools" 中间节点）→ 直接展开根，
+    # 根下即为分类目录（core 等）。
+    assert kb.ensure_kb_expanded([]), "展开工具树根失败"
+    if not _kb_dir_visible("core"):
+        kb.click_kb_dir("core")
+    assert kb.poll(lambda: _kb_dir_visible("core")), "展开 core 失败"
     # core 目录需展开才加载其子文件
     if not any(kb.row_label(r).endswith(".tool.md") for r in kb.kb_rows()):
         kb.click_kb_dir("core")
@@ -84,15 +88,14 @@ def case_r1_knowledge_md_preview():
     path = kb.prim_active_path()
     if not path.replace("\\", "/").endswith("filesys_run.tool.md"):
         raise TestError("活动原语面板路径异常：%r" % path)
-    # 内容渲染（P3-C2 新口径，2026-09-24）：原「源码」页签已移除（子页签改为 meta·描述·参数·正文
-    # 四页签，见 PrimitivePanel.vue / run_explore_kb.py:295-296）→ 原「源码渲染出内容（不再 loading）」
-    # 校准为「**.md 原语被解析并渲染出字段**」：描述页签正文非空（读到 [description]）+
-    # 参数页签渲染出 JSON Schema 树（读到 [parameters]）。两者皆空 = 未读取/加载失败。
-    assert kb.prim_click_tab(["描述", "Description"]), "切换描述页签失败"
-    assert kb.poll(lambda: (kb.prim_edit_info() or {}).get("ok")), "描述页签未就绪"
+    # 内容渲染（v2 契约页签口径，2026-10）：子页签 = 预览/基本信息/摘要/参数/正文
+    # → 原「源码渲染出内容（不再 loading）」校准为「**.md 原语被解析并渲染出字段**」：
+    # 摘要页签正文非空（读到 `# 摘要`）+ 参数页签渲染出 JSON Schema 树（读到 `# 参数`）。
+    assert kb.prim_click_tab(["摘要", "Summary"]), "切换摘要页签失败"
+    assert kb.poll(lambda: (kb.prim_edit_info() or {}).get("ok")), "摘要页签未就绪"
     desc = kb.prim_get_ta(0)
     if not desc or len(desc.strip()) < 20:
-        raise TestError("描述页签未渲染出内容（疑似未读取/加载失败）：%r" % (desc or "")[:60])
+        raise TestError("摘要页签未渲染出内容（疑似未读取/加载失败）：%r" % (desc or "")[:60])
     assert kb.prim_click_tab(["参数", "Parameters"]), "切换参数页签失败"
     if not kb.poll(lambda: kb.prim_schema_rows() >= 1):
         raise TestError("参数页签未渲染 JSON Schema 树（[parameters] 未解析）")

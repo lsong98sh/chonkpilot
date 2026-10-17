@@ -134,6 +134,8 @@
   "preview_not_available": "此文件类型不支持预览",
   "select_file_to_preview": "选择文件以预览",
   "choose_from_sidebar": "从左侧文件树中选择文件",
+  "current_workspace": "当前工作目录",
+  "open_workspace": "打开 / 新建工作目录",
   "bytes": "字节",
   "showing_first_bytes": "（仅显示前 {count} 字节）",
   "content_truncated": "（文件过大，仅显示前 512KB）",

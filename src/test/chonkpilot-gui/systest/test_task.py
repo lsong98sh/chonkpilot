@@ -18,7 +18,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import ensure_locale, free_port, snapshot_config, restore_config, ensure_task_panel_open  # noqa: E402  动态端口 + 语言确定性（T12 Cancel 按英文文案断言）+ 套件级配置快照-还原 + 任务面板展开
+from harness import ensure_locale, ensure_llm_configured, free_port, snapshot_config, restore_config, ensure_task_panel_open  # noqa: E402  动态端口 + 语言确定性 + LLM 前置 + 套件级配置快照-还原 + 任务面板展开
 from harness import install_session_history_spy, wait_session_history  # noqa: E402  切会话→发送竞态（历史回填覆盖）
 
 PORT = free_port()
@@ -111,6 +111,7 @@ def main():
     try:
         gui.start()
         snap = snapshot_config(gui)
+        ensure_llm_configured(gui)  # S25 前置：无 LLM 选项 → 发送被拦截（T12 需先发一条进入 busy）
         # 语言确定性（51 §6-8）：本套件按英文文案断言，不依赖他套件遗留在 usr 库的 ui.locale
         ensure_locale(gui, "en-US")
         for _ in range(30):

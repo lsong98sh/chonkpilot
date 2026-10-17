@@ -125,7 +125,10 @@ def case_h2_create_hot():
     if not os.path.isfile(PRJ_TOOL_FILE):
         raise TestError("A 落盘失败：%s 不存在（返回 path=%r）" % (PRJ_TOOL_FILE, path))
     content = open(PRJ_TOOL_FILE, encoding="utf-8").read()
-    if "[meta]" not in content or "[description]" not in content:
+    # 契约格式 = **H1 分区 Markdown**（2026-10 起；旧 `[meta]` INI 夹具已废弃）：
+    # 基本信息 / 摘要 / 参数 三个 H1 分区齐备即视为落盘内容合格。
+    if ("# 基本信息" not in content or "# 摘要" not in content
+            or "# 参数" not in content):
         raise TestError("A 落盘内容缺契约分区: %r" % (content[:120],))
     # B：不重启 → 轮询客户端能力面
     hit, elapsed = wait_hot(lambda ns: matches(ns), "新建原语未进入工具面（热生效失败）")

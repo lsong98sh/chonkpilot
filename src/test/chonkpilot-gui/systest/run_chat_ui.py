@@ -99,9 +99,17 @@ def activate(sid, wait_reload=True):
 
 
 def _wait_reloaded(sid, max_wait=20):
-    """等本会话的 `data-tasktree-tasks`（重载链末端）到达。"""
+    """等本会话的 `data-tasktree-tasks`（重载链末端）到达**两次**。
+
+    ChatPanel 与 MessageList 在同一个 session-changed 上各发一次（`session_id` 相同、
+    载荷无法区分）：ChatPanel 的在 handler 内**立即**发（早于消息重载），MessageList 的在
+    `loadMessages → assessContinueState → restoreAwaitingArbitration` 之后发。只等第一条会
+    在「消息重载尚未完成」时就返回（E5 偶发：通知先 push，随后被整体重载清空）。
+    等两条 = 两个来源都已发过，MessageList 的必然在内（不依赖两者先后顺序）。
+    """
     deadline = time.time() + max_wait
     while time.time() < deadline:
+        hits = 0
         for e in (c.events_of(RELOAD_TOPIC, clear=False) or []):
             p = e.get("payload") if isinstance(e, dict) else None
             if isinstance(p, str):
@@ -110,7 +118,9 @@ def _wait_reloaded(sid, max_wait=20):
                 except Exception:
                     p = None
             if isinstance(p, dict) and p.get("session_id") == sid:
-                return True
+                hits += 1
+        if hits >= 2:
+            return True
         time.sleep(0.3)
     return False
 

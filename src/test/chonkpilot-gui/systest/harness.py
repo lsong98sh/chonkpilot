@@ -37,8 +37,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -421,6 +423,122 @@ def user_config_load(client):
     """读 usr 主库配置（data-user-config-load）→ 合并后的 data 对象（含系统默认兜底）。"""
     res = client.req("data-user-config-load", {})
     return (res.get("data") or {}) if isinstance(res, dict) else {}
+
+
+_HANG_SRV = None
+
+
+class _HangLLMHandler(BaseHTTPRequestHandler):
+    """只收不回的 chat/completions 端点：连接保持到用例结束 → 该轮**不自行终态**。
+
+    发送链路用例（CF/IT/T12/SD 等）需要「turn 起来但不自动完成」：前端在 `llm-start` 回执后
+    才渲染 user 气泡 + 忙碌态，随后由用例自己注入 `llm-receive` / `session-complete`。
+    指向死端口会**立刻连接失败**（无气泡、无忙碌），故用挂起端点。
+    """
+
+    protocol_version = 'HTTP/1.0'  # 与 mock_llm 一致：无 Content-Length → 读至连接关闭（我们永不关闭）
+
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0) or 0)
+        if n:
+            try:
+                self.rfile.read(n)
+            except Exception:
+                pass
+        # **先回 SSE 头 + 一个合法首 chunk，再挂起**：后端以「流已建立 / 首个 chunk」为
+        # llm-start 受理时点（回执后前端才渲染 user 气泡 + 忙碌态）；chunk 形状照抄
+        # mock_llm.py（只含 choices[].delta）——否则 router 判协议错误 → 立即失败终态。
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            chunk = {"choices": [{"delta": {"role": "assistant", "content": ""},
+                                  "finish_reason": None}]}
+            self.wfile.write(("data: %s\n\n" % json.dumps(chunk)).encode('utf-8'))
+            self.wfile.flush()
+        except Exception:
+            return
+        time.sleep(120)
+
+    def log_message(self, *a):
+        pass
+
+
+def hang_llm_base():
+    """进程内单例的挂起 LLM 端点 → baseUrl（`http://127.0.0.1:<port>/v1`）。
+
+    守护线程 + 随机空闲端口，无需显式回收（进程退出即释放）。
+    """
+    global _HANG_SRV
+    if _HANG_SRV is None:
+        srv = ThreadingHTTPServer(('127.0.0.1', 0), _HangLLMHandler)
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        _HANG_SRV = srv
+    return 'http://127.0.0.1:%d/v1' % _HANG_SRV.server_address[1]
+
+
+def ensure_llm_configured(client, name="mock-llm", model="mock-model", base_url=None):
+    """保证 usr 配置里至少有一个可用 LLM 记录（**发送链路套件的前置**，S25 口径）。
+
+    `35-错误处理与恢复 S25` / `ChatPanel.llmConfigReady`：**无任何 LLM 选项 → 发送被拦截**
+    （`message.warning` + `chat-queue-restore`），不发起 `message-send`。因此凡「断言发送成功」
+    的套件必须先满足该前置；否则测到的是「被拦截」而不是发送。
+
+    默认 baseUrl = `hang_llm_base()`（只收不回）：turn 会起来（渲染 user 气泡 + 忙碌态）但
+    **不会自行完成**，用例仍可用 `llm-receive` / `session-complete` 精确控制时序。
+
+    已有 `llms`（≥1 条）→ **不动**（不覆盖用户/他套件配置）；返回是否写入。
+    记录形状对齐 `SettingsLLMPage` 保存的 usr 记录（`name`/`protocol`/`baseUrl`/`model`/`apiKey`）；
+    `defaultLLM` 缺省（-1）时前端 `resolveDefaultLLM` 会回落到 `llms[0]`，无需另写。
+    """
+    cfg = user_config_load(client) or {}
+    llms = cfg.get("llms")
+    llms = llms if isinstance(llms, list) else []
+    dflt = cfg.get("defaultLLM")
+    has_default = isinstance(dflt, int) and dflt >= 0
+    ours = [i for i, e in enumerate(llms) if isinstance(e, dict) and e.get("name") == name]
+    if llms and not ours and has_default:
+        return False  # 已有**真实** LLM 配置且默认项有效 → 不动
+    patch = {}
+    if ours:
+        # 本套件自己的占位条目：baseUrl 指向**本进程**的挂起端点（跨进程会失效，必须改写）
+        idx = ours[0]
+        rec = dict(llms[idx])
+        rec.update({"protocol": "openai", "baseUrl": base_url or hang_llm_base(),
+                    "model": model, "apiKey": ""})
+        new_llms = list(llms)
+        new_llms[idx] = rec
+        patch["llms"] = new_llms
+        if not has_default:
+            patch["defaultLLM"] = idx
+    elif not llms:
+        patch["llms"] = [{
+            "name": name, "protocol": "openai", "baseUrl": base_url or hang_llm_base(),
+            "model": model, "apiKey": "",
+        }]
+        if not has_default:
+            # defaultLLM 是 llms 的下标：-1（缺省）在前端会回落到 llms[0]，但**后端**解析默认
+            # provider 时依赖它 → 不写会出现「publish ok 但不起 turn」（无 user 气泡/无忙碌态）。
+            patch["defaultLLM"] = 0
+    if patch:
+        client.req("data-user-config-save", {"data": patch})
+    # ChatPanel 在**挂载时**一次性读 usr llms；本函数在 start() 之后调用 → 必须重载页面
+    # 才能让新配置生效（否则 llmOptions 仍为空、发送仍被 S25 拦截）。
+    try:
+        client.eval("location.reload(); 'ok'")
+    except Exception:
+        pass
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        try:
+            if _plain(client.eval("!!document.querySelector('[contenteditable][data-drop-target=\"chat-input\"]')")) in (True, 'true'):
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return True
 
 
 def _key_is_default(key, val):

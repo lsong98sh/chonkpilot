@@ -1,6 +1,6 @@
 # LLM 桥接端口设计方案（独立稿）
 
-> 状态：✅ **已实施（步骤 1–7，2026-10-16）**；**步骤 8（桌面单体是否同开）= ⏳ 待定**（本任务不实施）· **独立文档 · 未并入 `docs/spec` 架构**（spec 侧订正已按 §7 步骤 4/5/7 落）
+> 状态：✅ **已实施（步骤 1–7，2026-10-16）**；**步骤 8（桌面单体同开）= ✅ 已定「需要」（2026-10-17，用户）→ 待实施**（见 §7）· **独立文档 · 未并入 `docs/spec` 架构**（spec 侧订正已按 §7 步骤 4/5/7 落）
 > 日期：2026-10-16
 > 关联（**spec**）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md)（登记项 `BRIDGE-1`）· [21-llm-server](../spec/20-modules/21-llm-server.md) · [19-多租户服务端形态](../spec/10-architecture/19-多租户服务端形态.md) · [62-命令行与参数](../spec/60-reference/62-命令行与参数.md) · [2D-router](../spec/20-modules/2D-router.md) · [11-MQ与消息](../spec/10-architecture/11-MQ与消息.md) · [50-测试体系](../spec/50-testing/50-测试体系.md)
 > 代码目录（拟）：`src/lib/llm/llmbridge/`（**新增**）· `src/lib/llm/server/server.go`（导出只读查询）· `src/server/main.go`（装配）
@@ -138,7 +138,7 @@ c.messages.create(model="claude-...", max_tokens=1024, messages=[...])
 ## 6. 边界与异常
 
 - **并发**：无状态（每次请求独立解析 provider），天然并发安全。
-- **桌面单体形态**：`src/server/main.go` 的 HTTP 面既有先例（httpapi 仅挂 server 形态）；**桌面单体（`chonkpilot.exe`）是否同时开本入口，待定**（见 §7 步骤 8）。
+- **桌面单体形态**：`src/server/main.go` 的 HTTP 面既有先例（httpapi 仅挂 server 形态）；**桌面单体（`chonkpilot.exe`）是否同时开本入口 = ✅ 已定「同开」（2026-10-17，用户）→ 待实施**（见 §7 步骤 8）。
 - **密钥**：apiKey 只随请求内存流转，**不落日志**（对齐既有掩码口径）。
 
 ---
@@ -154,12 +154,13 @@ c.messages.create(model="claude-...", max_tokens=1024, messages=[...])
 | 5 | 订正 [19 §8.7](../spec/10-architecture/19-多租户服务端形态.md)「外部 bridge 不存在」（**实现后**并入 spec） | ✅ | docs |
 | 6 | 测试：openai 型转发 / anthropic 型转发（路径拼接 + 鉴权覆盖 + 流式直通） | ✅ | `src/lib/llm/llmbridge/llmbridge_test.go` · `src/lib/llm/server/bridge_test.go` · `src/test/chonkpilot-llm/unittest/llmbridge_test.go` |
 | 7 | 测试体系登记：HTTP 面豁免「MQ 驱动」断言（见 [50-测试体系](../spec/50-testing/50-测试体系.md)） | ✅ | docs（50 §7） |
-| 8 | 桌面单体形态是否同开（**待定**） | ⏳ | — |
+| 8 | 桌面单体形态**同开**（2026-10-17 用户定案「需要」） | 🔵 待实施 | 拟：`src/desktop` 单体装配同一 `llmbridge`（默认 `127.0.0.1:5669`、仅 loopback、非 loopback 拒启、免 api-key、零 MQ 变更） |
 
 > **实施说明（2026-10-16）**：
 > - **步骤 2 落点** = `src/lib/llm/server/bridge.go`（同 `package server`；设计稿 §7 原记 `server.go`，为避免与既有实现文件混杂而独立成文件）。
 > - **`protocol` 返回原值（关键）**：`ResolveBridgeTarget` 读 usr `llms[].protocol` 的**原始值**，**不经** `NormalizeLLMProtocol` —— 后者把 `anthropic` 折叠为 `openai`（`llm.go`：未知/缺省 → openai），而归一化只属 router 出网口径；桥接入口是**不经 router 的透明反代**，必须按原值区分鉴权头（anthropic → `x-api-key`）。**零行为变更**（既有 router 路径与归一表均未改）。
-> - **装配范围**：仅 `src/server/main.go`（server 形态）；**桌面单体（`chonkpilot.exe`）未接入**（步骤 8 待定）。
+> - **装配范围**：仅 `src/server/main.go`（server 形态）；**桌面单体（`chonkpilot.exe`）未接入**（步骤 8 **已定「同开」（2026-10-17，用户）→ 待实施**）。
+> - **步骤 8 定案（2026-10-17，用户）**：桌面单体**同开**本入口；实施时与 server 形态**同口径**（默认 `127.0.0.1:5669`、仅 loopback、非 loopback 拒启、免 api-key、零 MQ 主题/payload 变更），并补桌面单体 HTTP 转发冒烟测试 + 同步 [62 §3](../spec/60-reference/62-命令行与参数.md) / [19 §8.7](../spec/10-architecture/19-多租户服务端形态.md) / [49 BRIDGE-1](../spec/40-roadmap/49-待实现项.md)。
 
 ---
 

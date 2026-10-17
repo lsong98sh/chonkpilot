@@ -284,6 +284,15 @@ def session_card_disabled(s):
     return v
 
 
+def wait_card_bound(s, timeout=10.0):
+    """等会话行刷新出「已开窗」态（按钮置灰 = gui.window.list 已含该会话）。
+
+    `open_sessions_pane()` 的 mode-select 会异步 `load()`（含 `refreshWindows()`）；
+    不等它就点行，`windows.value` 可能仍是旧快照 → 护栏（已绑定 → 只激活）失效（T10 偶发红）。
+    """
+    poll(lambda: session_card_disabled(s), lambda v: bool(v.get("disabled")), timeout=timeout)
+
+
 def click_session_card(s):
     """点击会话行（T-4 / T-5 推论：已开窗 → 激活对应窗口、主窗不切换）。"""
     js = """(()=>{
@@ -404,48 +413,74 @@ def case_t04():
 
 
 def case_t05():
-    """MW-T05 前端 → 前端不互通：主窗发布前端主题 → 对话窗不收到该事件回发。"""
+    """MW-T05 前端 → 前端不互通：主窗**前端内**发布纯前端主题 → 对话窗不收到。
+
+    口径订正（2026-10-17，G-41-b / data/shared.go `InstancesByWorkDir`）：
+    `data-prj-config-refresh` 是**项目级变更 → 同 work_dir 全部实例**的服务端扇出广播
+    （每实例各得一份、`instance_id` 盖收件实例自己的），**不再是**实例隔离探针。
+    本用例改用**纯前端**主题（`chat-toggle-think`：仅前端本地 dispatch，后端无处理方）
+    由主窗前端 `mq.emit` 驱动 —— 若前端间互通，对话窗会捕获到该主题。
+    """
     close_all_chats()
     s = sid("t05")
     ensure_session(s)
     w = open_and_wait(s)
     cm, cw = cl(""), cl(w)
-    cm.mq_on_capture(["data-prj-config-refresh"])
-    cw.mq_on_capture(["data-prj-config-refresh"])
-    # 驱动：主窗发布（真实消息面：prj 配置保存 → 服务方广播 data-<domain>-refresh）
-    req("", "data-prj-config-save", {"data": {"key": "mw.probe5", "value": "1"}})
-    evm = cm.wait_events("data-prj-config-refresh", 1, 20)
+    cm.mq_on_capture(["chat-toggle-think"])
+    cw.mq_on_capture(["chat-toggle-think"])
+    # 驱动：主窗**前端**发本地事件（不经测试通道 publish，保证是真实前端内 dispatch）
+    cm.eval("window.mq.emit('chat-toggle-think'); 'ok'", 10000)
+    evm = cm.wait_events("chat-toggle-think", 1, 10)
     if not evm:
-        raise TestError("主窗未收到本实例的 data-prj-config-refresh（后端事件未回本窗）")
-    time.sleep(1.5)  # 给跨窗（若串台）足够到达窗口
-    evw = cw.events_of("data-prj-config-refresh")
+        raise TestError("主窗前端未本地 dispatch chat-toggle-think（观测面不可用）")
+    time.sleep(1.2)  # 给跨窗（若串台）足够到达窗口
+    evw = cw.events_of("chat-toggle-think")
     if evw:
-        raise TestError("前端之间应不互通，但对话窗收到了主窗实例的事件: %s" % evw)
-    req("", "data-prj-config-delete", {"id": "mw.probe5"})
+        raise TestError("前端之间应不互通，但对话窗收到了主窗前端事件: %s" % evw)
     close_all_chats()
 
 
 def case_t06():
-    """MW-T06 后端 → 各前端：每个窗口各得**本实例**的后端事件。"""
+    """MW-T06 后端 → 各前端：项目级变更按 **work_dir 扇出**，每窗各得**本实例**副本。
+
+    口径订正（2026-10-17，G-41-b）：`data-prj-config-refresh` 由实现侧按
+    `InstancesByWorkDir(workDir)` 逐实例投递（载荷 `instance_id` = **收件实例**）→
+    同项目的所有窗口都会收到刷新（这正是多窗即时生效所需）；断言改为：
+      ① 主窗保存 → 主窗收到（instance_id = 主窗实例）；
+      ② 对话窗保存 → 对话窗收到（instance_id = 对话窗实例）；
+      ③ 主窗也收到对话窗触发的广播，但**盖的是主窗自己的 instance_id**（不串归属）。
+    """
     close_all_chats()
     s = sid("t06")
     ensure_session(s)
     w = open_and_wait(s)
+    im, iw = inst(""), inst(w)
     cm, cw = cl(""), cl(w)
     cm.mq_on_capture(["data-prj-config-refresh"])
     cw.mq_on_capture(["data-prj-config-refresh"])
-    # 主窗触发后端事件 → 主窗收
+    # ① 主窗触发后端事件 → 主窗收（归属 = 主窗实例）
     req("", "data-prj-config-save", {"data": {"key": "mw.probe6a", "value": "1"}})
-    if not cm.wait_events("data-prj-config-refresh", 1, 20):
+    evm1 = cm.wait_events("data-prj-config-refresh", 1, 20)
+    if not evm1:
         raise TestError("主窗未收到后端事件")
-    # 对话窗触发后端事件 → 对话窗收（各前端各得本实例事件）
+    if (evm1[0].get("payload") or {}).get("instance_id") != im:
+        raise TestError("主窗副本的 instance_id 应为主窗实例: %s" % (evm1[0],))
+    # ② 对话窗触发后端事件 → 对话窗收（归属 = 对话窗实例）
     pub(w, "data-prj-config-save", {"data": {"key": "mw.probe6b", "value": "1"}})
-    if not cw.wait_events("data-prj-config-refresh", 1, 20):
+    evw = cw.wait_events("data-prj-config-refresh", 1, 20)
+    if not evw:
         raise TestError("对话窗未收到本实例后端事件（后端 → 各前端不成立）")
-    # 反向：对话窗事件不得投给主窗（实例隔离）
-    evm = cm.events_of("data-prj-config-refresh")
-    if any((e.get("payload") or {}).get("id") == "mw.probe6b" for e in evm):
-        raise TestError("对话窗实例的后端事件被投给了主窗（隔离失效）: %s" % evm)
+    if (evw[0].get("payload") or {}).get("instance_id") != iw:
+        raise TestError("对话窗副本的 instance_id 应为对话窗实例: %s" % (evw[0],))
+    # ③ 主窗也收到同一变更的**自己那份**：不得携对话窗实例 id（归属不串）
+    evm2 = cm.events_of("data-prj-config-refresh")
+    own = [e for e in evm2 if (e.get("payload") or {}).get("instance_id") == im]
+    foreign = [e for e in evm2 if (e.get("payload") or {}).get("instance_id") == iw]
+    if foreign:
+        raise TestError("主窗收到了盖对话窗实例 id 的副本（归属串台）: %s" % foreign)
+    if not any("mw.probe6b" in json.dumps((e.get("payload") or {}).get("list") or {})
+               for e in own):
+        raise TestError("主窗未收到对话窗触发的变更副本（项目级扇出失效）: %s" % evm2)
     for k in ("mw.probe6a", "mw.probe6b"):
         req("", "data-prj-config-delete", {"id": k})
     close_all_chats()
@@ -509,6 +544,7 @@ def case_t09():
     w = open_and_wait(s_a)
     open_sessions_pane()
     poll(lambda: len(wins()), lambda v: v == 1, timeout=10.0)
+    wait_card_bound(s_a)
     r = click_session_card(s_a)
     if r != "ok":
         raise TestError("未找到会话行 %s: %r" % (s_a[:8], r))
@@ -532,6 +568,7 @@ def case_t10():
     _m.mq_emit("session-changed", {"session_id": s_y})
     open_and_wait(s_x)
     open_sessions_pane()
+    wait_card_bound(s_x)
     if click_session_card(s_x) != "ok":
         raise TestError("未找到会话行 %s" % s_x[:8])
     time.sleep(2.0)

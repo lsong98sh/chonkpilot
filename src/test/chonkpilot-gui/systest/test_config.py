@@ -52,16 +52,17 @@ def main():
         time.sleep(0.5)
 
         # ── 项目配置（ide.db → ProjectConfig） ──
-        # 页签集 = security/context/codegraph/vfts/history/log + configIO 共 7 个（ProjectConfig.vue tabsConfig；
-        # 2026-09-19 新增「日志」页签；2026-09-20 批 3 · ⑯ 末位新增「配置导入/导出」页签 → 6 → 7）
+        # 页签集 = security/context/codegraph/vfts/history/filetree/groupchat/log + configIO 共 9 个
+        # （ProjectConfig.vue tabsConfig；2026-09-19 新增「日志」、2026-09-20 新增「配置导入/导出」，
+        #  2026-10-16 新增「文件树」「群聊」→ 7 → 9；下表索引同步后移 2）。
         J(gui, "window.mq.emit('project-config-open'); 'ok'")
         time.sleep(1.0)
         pc = J(gui, "!!document.querySelector('.project-config-panel')")
         tabs = J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item').length")
-        c.check("C1 项目配置页打开 + 7 页签", bool(pc) and int(tabs) == 7, f"pc={pc} tabs={tabs}")
+        c.check("C1 项目配置页打开 + 9 页签", bool(pc) and int(tabs) == 9, f"pc={pc} tabs={tabs}")
 
-        # C1b 日志页签（索引 5）→ 日志级别选择 + 日志目录入口（有路径 或 明确提示）
-        J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[5]?.click(); 'ok'")
+        # C1b 日志页签（索引 7）→ 日志级别选择 + 日志目录入口（有路径 或 明确提示）
+        J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[7]?.click(); 'ok'")
         time.sleep(0.9)
         logPage = J(gui, "!!document.querySelector('.project-config-panel .log-root')")
         logSel = J(gui, "document.querySelectorAll('.project-config-panel .log-root .b-select').length")
@@ -131,9 +132,9 @@ def main():
                 and 'SetActiveSessionID' not in (e.get('text') or '')]
         c.check("无前端错误（config 组）", len(errs) == 0, repr(errs[:3]))
 
-        # ── 批 3 · ⑯ 配置 导入/导出 + 恢复出厂（页签索引 6；usr 全局配置） ──
+        # ── 批 3 · ⑯ 配置 导入/导出 + 恢复出厂（页签索引 8；usr 全局配置） ──
         # C20 页签与三区：导出（密钥警示 + 排除密钥默认关）/ 导入（粘贴框）/ 恢复厂（范围文案）
-        J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[6]?.click(); 'ok'")
+        J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[8]?.click(); 'ok'")
         time.sleep(1.0)
         io_root = J(gui, "!!document.querySelector('.config-io-root')")
         io_export = J(gui, "!!document.querySelector('.config-io-root .io-export')")
@@ -143,12 +144,14 @@ def main():
         excl_on = J(gui, "!!document.querySelector('.config-io-root .io-exclude-switch .b-switch.is-checked')")
         paste_box = J(gui, "!!document.querySelector('.config-io-root .io-import textarea')")
         scope_txt = J(gui, "document.querySelector('.config-io-root .io-reset-scope')?.textContent || ''")
-        c.check("C20 配置导入/导出页签（导出/导入/恢复厂三区 + 密钥警示 + 排除密钥默认关）",
+        # 「排除密钥」默认 = **开**（SettingsConfigIOPage.vue `excludeSecrets = ref(true)`：默认脱敏，
+        # 取消勾选才会写入 apiKey）；旧断言「默认关」与实现/文案不符（2026-10-17 对齐）。
+        c.check("C20 配置导入/导出页签（导出/导入/恢复厂三区 + 密钥警示 + 排除密钥默认开）",
                 bool(io_root) and bool(io_export) and bool(io_import) and bool(io_reset)
-                and 'API Key' in warn_txt and (not excl_on) and bool(paste_box)
+                and 'API Key' in warn_txt and bool(excl_on) and bool(paste_box)
                 and ('不含项目级配置' in scope_txt or 'Project-level' in scope_txt),
                 f"root={io_root} exp={io_export} imp={io_import} rst={io_reset} warn={warn_txt[:20]!r} "
-                f"exclOn={excl_on} paste={paste_box}")
+                f"exclOn={excl_on} paste={paste_box} scope={scope_txt[:20]!r}")
 
         # 批 3（⑯）新增 checks 的对话框定位：页面可能同时存在多个 `.dialog-shell`
         # （如 C5b 打开过的 LLM 编辑框未关）→ 必须取**最上层且可见**的那个，否则会读到陈旧对话框。

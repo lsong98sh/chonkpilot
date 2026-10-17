@@ -12,7 +12,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import ensure_locale, free_port, snapshot_config, restore_config  # noqa: E402  动态端口 + 语言确定性（H1/H6/H7 按英文文案断言）+ 套件级配置快照-还原
+from harness import ensure_locale, ensure_llm_configured, free_port, snapshot_config, restore_config  # noqa: E402  动态端口 + 语言确定性 + LLM 前置 + 套件级配置快照-还原
 
 PORT = free_port()
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_chat_data")
@@ -51,6 +51,7 @@ def main():
     try:
         gui.start()
         snap = snapshot_config(gui)
+        ensure_llm_configured(gui)  # S25 前置：无 LLM 选项 → 发送被拦截（H7 断言发送放行）
         # 语言确定性（51 §6-8）：本套件按英文文案断言，不依赖他套件遗留在 usr 库的 ui.locale
         ensure_locale(gui, "en-US")
         for _ in range(30):

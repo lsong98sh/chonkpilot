@@ -501,7 +501,11 @@ def param_rows():
 
 
 def set_param_input(label_sub, value):
-    """按标签子串定位项目级参数输入框：原生 setter + input + blur（= 用户编辑后失焦落库）。"""
+    """按标签子串定位项目级参数输入框：原生 setter + input 后点【保存】落库。
+
+    参数页已改为**手动保存**（编辑只改本地待保存态，`[data-params-save-project]`
+    才写 prj 库）——仅 blur 不落库（旧「失焦即落库」口径已废）。
+    """
     r = ev("""(()=>{const R=document.querySelector('.settings-page');if(!R)return 'no-root';
       const row=[...R.querySelectorAll('.param-row')]
         .find(x=>((x.querySelector('.param-label')||{}).textContent||'').includes(%s));
@@ -512,7 +516,19 @@ def set_param_input(label_sub, value):
            % (json.dumps(label_sub), json.dumps(value)))
     if r != "ok":
         raise TestError("写参数输入框失败（%s）：%s" % (label_sub, r))
-    time.sleep(1.2)
+    r2 = ev("""(()=>{const b=document.querySelector('.settings-page [data-params-save-project]');
+      if(!b)return 'no-btn';if(!b.disabled)b.click();return 'ok';})()""")
+    if r2 != "ok":
+        raise TestError("点击项目参数【保存】失败：%s" % (r2,))
+    # 等保存完成（dirty 清除 → 按钮回 disabled），再留少量时间给 persist 写库
+    end = time.time() + 6
+    while time.time() < end:
+        st = ev("""(()=>{const b=document.querySelector('.settings-page [data-params-save-project]');
+          if(!b)return 'no-btn';return b.disabled?'saved':'dirty';})()""")
+        if st == "saved":
+            break
+        time.sleep(0.3)
+    time.sleep(0.4)
 
 
 # ── mock LLM 驱动的一次真实 FIND（G5）────────────────

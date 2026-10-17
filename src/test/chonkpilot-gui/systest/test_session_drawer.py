@@ -24,7 +24,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import free_port, snapshot_config, restore_config  # noqa: E402  动态端口；套件级配置快照-还原
+from harness import free_port, snapshot_config, restore_config, ensure_llm_configured  # noqa: E402  动态端口；套件级配置快照-还原；LLM 前置
 
 PORT = free_port()
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_sess_drawer_data")
@@ -111,6 +111,7 @@ def main():
     try:
         gui.start()
         snap = snapshot_config(gui)
+        ensure_llm_configured(gui)  # S25 前置：无 LLM 选项 → 发送被拦截（SD 用例依赖发送建会话）
         for _ in range(30):
             if J(gui, "document.querySelector('.panel-inner')"):
                 break
@@ -159,14 +160,17 @@ def main():
                 stillOpen and active in (s1.get('session_id'), s2.get('session_id')),
                 f"open={stillOpen} active={repr(active)[:20]}")
 
-        # SD4 重命名（promptInput 对话框）→ 标题更新
+        # SD4 重命名（**就地编辑**：SessionsPane 改为行内 Input，无 promptInput 对话框）
+        # v-mq session-rename → startRename → `.session-title-input`（Enter 提交 / 失焦提交）。
         J(gui, "document.querySelector('.sessions-pane .session-card .session-actions button')?.click(); 'ok'")  # 第一个 = rename
-        wait_upto(gui, "!!document.querySelector('.dialog-shell .b-input')", lambda v: v is True)
-        set_dialog_input(gui, 'Renamed One')
-        click_primary_dialog(gui)
+        inline = wait_upto(gui, "!!document.querySelector('.sessions-pane .session-title-input')", lambda v: v is True)
+        J(gui, """(()=>{const el=document.querySelector('.sessions-pane .session-title-input');if(!el)return 'no-input';
+          el.value='Renamed One';el.dispatchEvent(new Event('input',{bubbles:true}));
+          el.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true}));return 'ok'})()""")
         title1 = wait_upto(gui, "document.querySelector('.sessions-pane .session-card .session-title')?.textContent?.trim() || ''",
                            lambda v: v == 'Renamed One')
-        c.check("SD4 重命名会话标题更新", title1 == 'Renamed One', f"t={repr(title1)}")
+        c.check("SD4 重命名会话标题更新（就地编辑）", bool(inline) and title1 == 'Renamed One',
+                f"inline={inline} t={repr(title1)}")
 
         # SD5 删除非当前会话（.session-card:not(.active)）→ 确认后卡片移除（剩 1 = 当前）
         J(gui, """(()=>{const cards=Array.from(document.querySelectorAll('.sessions-pane .session-card'));const t=cards.find(x=>!x.classList.contains('active'));if(t)t.querySelector('.session-actions button:nth-child(2)').click();return !!t})()""")  # 第二个按钮 = delete
