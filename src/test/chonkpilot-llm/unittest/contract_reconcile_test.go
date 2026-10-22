@@ -271,9 +271,7 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		{"prompt-optimise", "经默认 LLM 流式优化（异步事件 prompt-optimised），时序依赖强，留待专测"},
 		{"task-verify", "需任务层宿主 + 权威表行；装配成本高"},
 		{"instance-claim", "依赖认证域（令牌/claim 校验），需 auth 库装配；其广播 instance-register 已由桥/持久面对账覆盖"},
-		{"login-register", "依赖 auth 库（bcrypt/令牌落盘）与入口承载；需专测"},
-		{"login-in", "同上（认证域）"},
-		{"login-out", "同上（认证域）"},
+		// 认证面（login-*）随 PRODSIM-1（2026-10-22）本地 auth 整体移除，61 已无该族主题 → 登记项同步删除。
 		{"llm.test-connection", "需 mock LLM 探活 + provider 装配；留待专测（其消费端键已由前端对账覆盖）"},
 		{"memory.flush", "由 memory 插件消费（非 server 生产）；不在本面对账"},
 		{"session-ask", "需 ask_user 工具调用链路（mock LLM 触发 tool-call）；留待专测"},
@@ -319,6 +317,10 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		// 行为（计数递增 / 终态仅一次 / 成功不发 / retryCount=0 不重试 / Retry-After 等待值）由
 		// server 包 L1 TestTurnVisibleRetryEvents 覆盖。
 		{"session-retry", "生产者 = turn.go emitRetry（RETRY-1）；行为由 server 包 L1 TestTurnVisibleRetryEvents 覆盖；转发键由 B0 对账覆盖"},
+		// 中断提示（2026-10-20 · RETRY-2）：生产者 = 引擎中断路径（断流 / finish_reason=length），
+		// 消费者 = 前端提示条（「服务器错误，是否继续。」）+ 后端自动续写计时。本套件不伪造
+		// 断流/截断 → 仍登记；行为由 server 包 L1 engine_turn_test / 前端提示条用例覆盖。
+		{"session-interrupted", "生产者 = 引擎中断路径（RETRY-2）；行为由 server 包 L1 engine_turn_test 覆盖；转发键由 B0 对账覆盖"},
 		// INBOX（2026-10-18 · 中途插话）：方法面由 server 包 L2 inbox_test 驱动（需可控异步工具 +
 		// 待插入相位，黑盒套件不伪造该时序）→ 本套件登记；键/契约/文档一致性由 chonkpilot-lib msgkeys
 		// 与 61 schema 对账覆盖。
