@@ -14,7 +14,7 @@ C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变�
   C10 KB 目录全 UI 写链路（I-73 修复）：新建子目录 → 树行出现 + 自动进入内联改名 →
       改名 smoke_dir1 → F2 改目录名 smoke_dir2（目录语义，不追加 .md）→ 右键「重命名」
       改回 smoke_dir1 → 删除目录
-  C11 KB F2 重命名文件（保留 .tool.md 后缀，zz_find ↔ filesys_run 往返）
+  C11 KB F2 重命名文件（保留 .tool.md 后缀，zz_find ↔ script_run 往返）
   C12 扩展页 技能/命令/知识 三子 tab 分别新建（.skill/.prompt/.resource 契约模板）+ 删除清理
   C9 项目级知识库（`<workDir>/.chonkpilot/capability`）tools/core/demo.tool.md → PrimitivePanel；
      右键 typed 目录菜单含新建目录/新建工具
@@ -64,7 +64,9 @@ DIR_SMOKE2 = os.path.join(TOOLS_DIR, "smoke_dir2")
 # 「新建目录」默认名 = i18n fileTree.new_folder（zh-CN "新建目录"）；中断残留需在用例前后清理
 DIR_DEFAULT_NAME = "新建目录"
 DIR_DEFAULT = os.path.join(TOOLS_DIR, DIR_DEFAULT_NAME)
-CORE_FIND = os.path.join(CAP_DIR, "tools", "core", "filesys_run.tool.md")
+# C11 用的 core 级契约夹具（口径变更 2026-10-22：原 `filesys_run.tool.md` / `dsl_run.tool.md`
+# 已随 GATEWAY-2 L1/L2 删除 → 改用仍存在的 `script_run.tool.md`）。
+CORE_FIND = os.path.join(CAP_DIR, "tools", "core", "script_run.tool.md")
 # 非 tools 原语现位于 capability 根下**扁平**子目录（skills/prompts/resources；旧 knowledge/ 归并层已删）
 SKILL_FILE = os.path.join(CAP_DIR, "skills", "sk_s1.skill.md")
 PROMPT_FILE = os.path.join(CAP_DIR, "prompts", "pr_s1.prompt.md")
@@ -518,10 +520,12 @@ def prepare_ws():
                 "# 正文\nRun a demo.\n")
 
 
-# 应用级原语夹具：C4/C5 打开并编辑 `dsl_run.tool.md` —— 产品的原语保存/恢复路径会把契约
+# 应用级原语夹具：C4/C5 打开并编辑 `script_run.tool.md` —— 产品的原语保存/恢复路径会把契约
 # 原文按**规范化形态**回写（实测多出 1 字节尾换行）→ 该文件属于 **dist 产物**（dist/desktop/capability），
 # 套件跑完必须**按字节还原**，否则 capability 与契约源静默分叉（`sync-contracts.ps1 -Check` 会报漂移）。
-APP_CONTRACT = os.path.join(CAP_DIR, "tools", "core", "dsl_run.tool.md")
+# 口径变更（2026-10-22）：原夹具 `dsl_run.tool.md` 已随 GATEWAY-2 L1 删除 DSL 而移除 → 改用
+# 仍存在的 `script_run.tool.md`（同一断言面：core 级 .md 原语的预览/编辑/恢复）。
+APP_CONTRACT = os.path.join(CAP_DIR, "tools", "core", "script_run.tool.md")
 
 
 def snapshot_app_contract():
@@ -648,12 +652,12 @@ def main():
         # ── C4 打开原语 → PrimitivePanel（顶部标题 / 四页签 Tabs / 底部保存·恢复） ──
         def c4():
             assert kb.enter_tools(("core",)), "切「工具」页签 / 展开 core 失败"
-            assert kb.click_kb_file("dsl_run.tool.md"), "点击 dsl_run.tool.md 失败"
+            assert kb.click_kb_file("script_run.tool.md"), "点击 script_run.tool.md 失败"
             ok = kb.poll(lambda: kb.prim_panel_exists())
             assert ok, "PrimitivePanel 未打开"
             names = kb.prim_tab_names()
             assert names == ["预览", "基本信息", "摘要", "参数", "正文"], f"应有 预览/基本信息/摘要/参数/正文 五页签：{names}"
-            assert kb.prim_active_path().endswith("dsl_run.tool.md"), f"标题路径异常：{kb.prim_active_path()!r}"
+            assert kb.prim_active_path().endswith("script_run.tool.md"), f"标题路径异常：{kb.prim_active_path()!r}"
             assert kb.prim_title_value(), "顶部标题为空"
             ftxt = kb.prim_footer_text()
             assert ("保存" in ftxt or "Save" in ftxt) and ("恢复" in ftxt or "Restore" in ftxt), f"footer 缺保存/恢复：{ftxt!r}"
@@ -663,7 +667,7 @@ def main():
             assert kb.prim_click_tab(["摘要", "Summary", "Description"]), "切换摘要页签失败"
             ok = kb.poll(lambda: (kb.prim_edit_info() or {}).get("ok"))
             assert ok, "描述页签未就绪"
-            before = open(os.path.join(CAP_DIR, "tools", "core", "dsl_run.tool.md"), "rb").read()
+            before = open(os.path.join(CAP_DIR, "tools", "core", "script_run.tool.md"), "rb").read()
             orig = kb.prim_get_ta(0)
             assert orig, "description 为空"
             kb.prim_set_ta(0, orig + " [SMOKE_EDIT]")
@@ -673,7 +677,7 @@ def main():
             ok = kb.poll(lambda: not kb.prim_dirty())
             assert ok, "恢复后 dirty 未清除"
             assert kb.prim_get_ta(0) == orig, "恢复后 description 未还原"
-            after = open(os.path.join(CAP_DIR, "tools", "core", "dsl_run.tool.md"), "rb").read()
+            after = open(os.path.join(CAP_DIR, "tools", "core", "script_run.tool.md"), "rb").read()
             assert before == after, "恢复后磁盘文件被改动"
             # meta 页签：键=值 输入行
             assert kb.prim_click_tab(["基本信息", "Basic Info", "meta", "Meta"]), "切换基本信息页签失败"
@@ -882,15 +886,17 @@ def main():
             def has_kb(name, is_dir):
                 return any(kb.row_label(r) == name and (is_dir is None or r["d"] == is_dir) for r in kb.kb_rows())
 
-            if not has_kb("filesys_run.tool.md", False):
+            # 口径变更（2026-10-22）：F2 重命名夹具由 `filesys_run.tool.md`（已删除）改为
+            # `script_run.tool.md`；断言面不变（保留 .tool.md 后缀往返 + 树行同步）。
+            if not has_kb("script_run.tool.md", False):
                 if not has_kb("core", True):
                     assert kb.ensure_kb_expanded([]) or kb.wait_kb_row("core", True), "core 不可见"
                 assert kb.click_kb_dir("core"), "点击 core 失败"
-                assert kb.wait_kb_row("filesys_run.tool.md", False), "filesys_run.tool.md 不可见"
-            assert kb.click_kb_file("filesys_run.tool.md"), "单击 filesys_run.tool.md 失败"
+                assert kb.wait_kb_row("script_run.tool.md", False), "script_run.tool.md 不可见"
+            assert kb.click_kb_file("script_run.tool.md"), "单击 script_run.tool.md 失败"
             kb.poll(lambda: kb.prim_panel_exists())
             assert kb.press_f2(), "F2 发送失败"
-            ok = kb.poll(lambda: kb.inline_input() == "filesys_run.tool.md")
+            ok = kb.poll(lambda: kb.inline_input() == "script_run.tool.md")
             assert ok, f"F2 未进入编辑或初始值不对：{kb.inline_input()!r}"
             assert kb.set_inline_input("zz_find.tool.md"), "设置新名失败"
             assert kb.inline_enter(), "内联确认失败"
@@ -902,12 +908,12 @@ def main():
             assert kb.click_kb_row_retry("zz_find.tool.md", False), "单击 zz_find 失败"
             assert kb.press_f2()
             kb.poll(lambda: kb.inline_input() == "zz_find.tool.md")
-            assert kb.set_inline_input("filesys_run.tool.md")
+            assert kb.set_inline_input("script_run.tool.md")
             assert kb.inline_enter()
             ok = kb.poll(lambda: os.path.exists(CORE_FIND) and not os.path.exists(os.path.join(CAP_DIR, "tools", "core", "zz_find.tool.md")))
-            assert ok, "改回 filesys_run.tool.md 未生效"
-            ok = kb.wait_kb_row("filesys_run.tool.md", False)
-            assert ok, "树行未恢复 filesys_run.tool.md"
+            assert ok, "改回 script_run.tool.md 未生效"
+            ok = kb.wait_kb_row("script_run.tool.md", False)
+            assert ok, "树行未恢复 script_run.tool.md"
 
         # ── C12 类型目录新建 技能/提示词/资源 模板（扩展页 5 子 tab，2026-10-01 P3） ──
         def c12():

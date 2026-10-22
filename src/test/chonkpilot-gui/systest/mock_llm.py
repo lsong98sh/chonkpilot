@@ -9,7 +9,7 @@
       has_tool_result/n_requests）· GET /lastbody（请求体多模态摘要）。
 行为：把最后一个 user 消息回显为回复；根据文本关键词返回 tool_calls 以驱动
       testplan 相关场景（工具调用 / cancel）：
-        "call tool"   → dsl_run FILE_READ a.txt（工具调用链路，testplan 五.3）
+        "call tool"   → self_file_read（{purpose, targets:[{path}]}；工具调用链路，testplan 五.3）
         "call retry-twice"   → 前两次 429（Retry-After: 2）→ 第三次正常回复（RETRY-1 重试后成功）
         "call retry-exhaust" → 每次 500（RETRY-1 重试耗尽 → 终态错误）
         "call cancel" → self_script_run 长命令      （testplan 五.8）
@@ -22,24 +22,26 @@
                             与「被启动解释器 == 配置 *Path 值」）
         "call java-real"   → self_script_run(runtime=java，打印哨兵 CK-JAVA-OK 的类；run_paths.py
                             java 真机端到端，回归 I-80：临时脚本扩展名必须 .java）
-      dsl_run 委派/编排 DSL（G-11 重建，run_llm.py 五.4/5/6/7 + C13/C18）：
-        "call delegate-plain"  → dsl_run 单次委派（三参：agent/prompt/目的）
-        "call delegate-purpose"→ dsl_run 单次委派（第三参=目的 → 子节点展示名）
-        "call batch"           → dsl_run LOOP 批量（planner 产 JSON 数组 → concurrency=2）
-        "call delegate-cancel" → dsl_run 首步委派慢工具（供 task-stop 级联取消）
-        "call delegate-slow"   → 子会话内慢命令（self_script_run ping 20s）
+      **任务/工具面（GATEWAY-2 L1 起）**：`dsl_run` 与 DSL 作业根 `kind=dsl_job` **已整体删除**，
+      委派/批量/子会话改由「普通工具调用的任务节点」承载（run_llm.py 五.4/5/6/7 + C13/C18）：
+        "call delegate-plain"  → self_script_run（tools 展示名 = tool_call_display_name「单次委派回显」）
+        "call delegate-purpose"→ self_script_run（展示名「委派展示名-自定义」）
+        "call batch"           → **一次 assistant 消息内两条** self_script_run（批处理一/批处理二）
+        "call delegate-cancel" → self_script_run ping 20s（展示名「慢步子任务」，供 task-stop 取消）
+        "call delegate-slow"   → self_script_run ping 20s（长任务占位）
       文件历史检查点链（run_hist_git.py，2026-09-27 批次③语义；参数由提示词携带）：
         "call hist-write"         + histabs=<绝对路径> histfrom=<旧> histval=<新>
-                                  → self_filesys_run（RPL 真实改文件 → 置脏 → 打点）
+                                  → self_file_replace（精确替换真实改文件 → 置脏 → 打点）
+        "call hist-dirty-write"   → self_history_restore + 紧随 self_script_run 改文件
+                                  （H6「涉及文件变动」：script_run 是现行缺省「涉及」的内置工具）
         "call hist-restore"       + histrel=<workdir 相对路径> [histto=<负整数|commit id>]
                                   → self_history_restore（单文件回滚）
         "call hist-restore-nopath"→ self_history_restore{}（空 path，应被拒绝）
         "call hist-restore-dir"    + histrel=<相对目录>
                                   → self_history_restore（目录，应被拒绝）
-      **工具名一律用网关暴露名**：self 节点（entry.ID=self）前缀 `self_`（filesys_run/script_run/
-      user_ask/tool_result 均为 self_* 形态）；`dsl_run` 经 core 注册时的 `aliases` 映射保留裸名
-      → 暴露名**恰为** `dsl_run`。未带前缀的裸名无法路由（I-20）。
-      "BATCHLIST" 由 reply_override 直接回 JSON 文本数组（供 SET raw.array 解析）。
+      **工具名一律用网关暴露名**：self 节点（entry.ID=self，namespace=`self_`）前缀 `self_`
+      （file_read/file_replace/script_run/user_ask/tool_result 均为 self_* 形态）。未带前缀的
+      裸名无法路由（I-20）。
 工具结果回填后再次收到调用时文本不再含关键词 → 返回普通回复，避免循环。
 """
 
@@ -280,20 +282,6 @@ def tool_calls_chunks(calls):
     return chunks
 
 
-def reply_override(text):
-    """返回非 None 时直接作为 LLM 回复文本（先于 tool_calls 路由，不触发工具）。
-
-    用于 dsl_run DSL 场景：planner 子轮次需产出 JSON 文本数组，供 DSL
-    `SET raw.array => tasks` 解析为列表后 LOOP 迭代（字符串 .array 访问器）。
-    """
-    if "batchlist" in text.lower():
-        return json.dumps([
-            {"name": "批处理一", "prompt": "batch item one"},
-            {"name": "批处理二", "prompt": "batch item two"},
-        ], ensure_ascii=False)
-    return None
-
-
 def _prompt_arg(text, name, default=""):
     """取提示词里的 `name=值` 参数（供 run_hist_git.py 传文件/内容/目标点）。
 
@@ -332,12 +320,14 @@ def route_tool_calls(text):
     # 调用级 async=never + timeout=1s（gateway 执行前剥离）→ 慢工具到超时点发 mcp-tools-timeout
     # {reason:"timeout", options:["wait","cancel"]}；第三方软缺省 never 同理（本路由用 builtin 工具
     # 复现 never 分支，使 GUI 端可断言超时事件与 options）。
-    # INBOX（2026-10-18 · run_inbox.py）：慢工具**须无可裁决超时**才会被 llm-server 强制
-    # async=always → 立即 pending，为「工具执行中插话」留出窗口。script_run/desktop_run 契约
-    # 声明 timeout:300（走超时裁决，保持同步），故用 dsl_run（契约 async:always、无 _meta.timeout）
-    # + PC_SLP 8s。
+    # INBOX（2026-10-18 · run_inbox.py）：慢工具须**立即 pending**，为「工具执行中插话」留出
+    # 窗口。口径变更（GATEWAY-2 L1）：原用 `dsl_run`（契约 async:always、无 _meta.timeout），
+    # DSL 退役后改 `self_script_run` + **调用级 `async=always`**（script_run 契约 timeout:300 属
+    # 「有超时裁决点」，turn.gatewayArgs 不强制异步，但显式调用级 async 优先 → 派发即 pending）。
     if "call slow-insert" in t:
-        return [("dsl_run", {"script": "PC_SLP 8000", "tool_call_display_name": "插话慢工具"})]
+        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 8 127.0.0.1",
+                                     "async": "always",
+                                     "tool_call_display_name": "插话慢工具"})]
     if "call slow-never" in t:
         return [("self_script_run", {"runtime": "cmd", "script": "ping -n 12 127.0.0.1",
                                      "async": "never", "timeout": 1,
@@ -377,44 +367,34 @@ def route_tool_calls(text):
         return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.99",
                                      "async": "never", "timeout": 1,
                                      "tool_call_display_name": "自动取消"})]
-    # ── dsl_run 委派/编排 DSL（G-11 重建：单次委派 / LOOP 批量 / 级联取消）──
-    # 主轮次命中关键词 → 返回 dsl_run tool_call（script = DSL 脚本）；子轮次提示词
-    # （prompt）不含 "call ..." 关键词 → 普通回复，避免递归触发。
-    # 工具名用网关暴露名（self_ 前缀，见 domainmcp_test.go：域工具注入 self 节点后
-    # 暴露名 = self_<契约名>）；server 侧按契约名归一（TrimPrefix "self_"）。
+    # ── 任务/工具面（GATEWAY-2 L1：`dsl_run` + DSL 作业根已删除）──
+    # 原 dsl_run 的 `LLM "<agent>" "<prompt>" "<目的>"` 委派步骤 / LOOP 批量 / 执行器子会话
+    # 一并退役；现行等价能力 = **普通工具调用的任务节点**（kind=tool）：展示名取
+    # `tool_call_display_name`（§3.4 title 优先级），一次 assistant 消息内的多条 tool_call
+    # 即「批量」。断言口径见 run_llm.py 五.4/5/6/7 + C13/C18。
     if "call delegate-plain" in t:
-        # 单次委派：三参（agent / 提示词 / 目的）—— 子任务展示名 = 目的
-        # 委派对象名须「可委派」（agentDelegable）：本套件 scenario_id=""（通用模式，无团队成员段）
-        # → 只能靠 app 级场景注册表裸名唯一命中（出厂场景 = 开发场景，成员见 37-场景）。
-        return [("dsl_run", {"script": 'LLM "后端开发" "delegate-plain-prompt" "单次委派回显"',
-                                  "tool_call_display_name": "委派"})]
+        # 单次调用 + 自定义展示名（原：第三参「目的」→ 步骤展示名）
+        return [("self_script_run", {"runtime": "cmd", "script": "echo delegate-plain",
+                                     "tool_call_display_name": "单次委派回显"})]
     if "call delegate-purpose" in t:
-        # 单次委派：第三参 = 目的（运行目的/展示名）
-        return [("dsl_run", {"script": 'LLM "后端开发" "delegate-purpose-prompt" "委派展示名-自定义"',
-                                  "tool_call_display_name": "委派"})]
+        # 单次调用 + 自定义展示名（原：第三参=目的）
+        return [("self_script_run", {"runtime": "cmd", "script": "echo delegate-purpose",
+                                     "tool_call_display_name": "委派展示名-自定义"})]
     if "call batch" in t:
-        # LOOP 批量：首步产出 JSON 数组（落盘到 workDir 的 g11-batch.json）
-        # → 文件句柄 .array 解析为列表（.array 是文件句柄访问器，字符串变量无此访问器）
-        # → concurrency=2 迭代委派。路径用 {{env.CHONKPILOT_WORKDIR}} 显式拼绝对路径（R-11）。
-        script = (
-            'LLM "架构设计师" "BATCHLIST 只输出 JSON 数组" "生成批处理清单" '
-            '=> #"{{env.CHONKPILOT_WORKDIR}}/g11-batch.json"\n'
-            'LOOP item=#"{{env.CHONKPILOT_WORKDIR}}/g11-batch.json".array concurrency=2\n'
-            '   LLM "后端开发" "{{item.prompt}}" "{{item.name}}"\n'
-            'END'
-        )
-        return [("dsl_run", {"script": script, "tool_call_display_name": "批量"})]
+        # 批量：**一次消息两条工具调用** → 两个任务节点（原：dsl_run LOOP + planner 清单）
+        return [
+            ("self_script_run", {"runtime": "cmd", "script": "echo batch-one",
+                                 "tool_call_display_name": "批处理一"}),
+            ("self_script_run", {"runtime": "cmd", "script": "echo batch-two",
+                                 "tool_call_display_name": "批处理二"}),
+        ]
     if "call delegate-cancel" in t:
-        # 级联取消：首步委派慢工具（script_run ping 20s 阻塞）→ 期间对根节点 task-stop；
-        # 第二步为「取消后置步」哨兵（取消生效则不得启动）。
-        script = (
-            'LLM "后端开发" "please call delegate-slow" "慢步子任务"\n'
-            'LLM "后端开发" "delegate-after-cancel" "取消后置步"'
-        )
-        return [("dsl_run", {"script": script, "tool_call_display_name": "取消"})]
+        # 取消：慢工具任务节点（ping 20s）→ 期间 task-stop 该节点；原为 dsl_run 首步委派 +
+        # 「取消后置步」哨兵（DSL 终止语义），后者随 DSL 退役，改断言「取消后不得再达 done」。
+        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.1",
+                                     "tool_call_display_name": "慢步子任务"})]
     if "call delegate-slow" in t:
-        # 子会话内慢工具（dsl_run 子步骤）：暴露名 self_script_run，20s 同步阻塞，
-        # 供根节点 task-stop 级联取消（C13 子会话工具链 + C18 级联）。
+        # 长任务占位（子会话内慢命令的工具侧等价）
         return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.1",
                                      "tool_call_display_name": "测试"})]
     # P5 元工具进程外验收（run_meta_tools.py）：DSL 已下线 llm_run；三个 gateway 元工具由
@@ -475,33 +455,40 @@ def route_tool_calls(text):
         return [("self_script_run", {"runtime": rt, "script": script,
                                      "tool_call_display_name": "解释器探针"})]
     # ── 文件历史检查点链（run_hist_git.py；2026-09-27 批次③语义）──
-    # ① 真实改文件（filesys_run RPL `histfrom=旧` → `histval=新`，`histabs=<绝对路径，正斜杠>`）
-    #    → 触发 filesys.changed → 插件置脏 → 前置钩子 / 轮末补点打点（检查点链）。
+    # ① 真实改文件（口径变更：`filesys_run` + RPL DSL 已删除 → 改用文件域 `self_file_replace`
+    #    `{purpose, targets:[{path, find, replace}]}`，`histfrom=旧` → `histval=新`，
+    #    `histabs=<绝对路径>`）→ 触发 filesys.changed → 插件置脏 → 前置钩子 / 轮末补点打点。
     # ② history_restore 单文件回滚：`histrel=<workdir 相对路径>` + 可选 `histto=<负整数|commit id>`。
     # ③ 空 path → 拒绝；④ 目录 path（`histrel=<相对目录>`）→ 拒绝（单文件、禁止批量）。
     # ⑤ 「涉及文件变动」端到端（run_hist_git H6）：**同一轮内两次工具调用**——
     #    ① history_restore（执行时**同步置脏**，确定性，不依赖 fswatcher 去抖）
-    #    → ② filesys_run RPL 改文件（其**前置钩子**读到脏位 → 该工具的 touch_files 决定是否打点）。
+    #    → ② 改文件工具的**前置钩子**读脏位 → 该工具的 touch_files 决定是否打点。
+    #    口径变更：改文件工具改用 `self_script_run`（现行缺省「涉及文件变动」的内置工具 =
+    #    script_run；`file_*` 文件域工具缺省不涉及，故不能用来验证 +2/+1 差异）。
     if "call hist-dirty-write" in t:
         rel = _prompt_arg(text, "histrel")
         to = _prompt_arg(text, "histto")
         p = _prompt_arg(text, "histabs")
-        frm = _prompt_arg(text, "histfrom")
         val = _prompt_arg(text, "histval")
         rargs = {"path": rel, "tool_call_display_name": "历史回滚"}
         if to:
             rargs["to"] = int(to) if re.fullmatch(r"-?\d+", to) else to
+        # cmd 精确写盘（内容 = val + 行尾；与旧 RPL「保留行尾」的盘面口径一致）。
+        # 注：本机仅 cmd 解释器可用（powershell/js 的 interpreter 未配置 → script_run 直接失败），
+        # 故 H6 的「改文件工具」用 runtime=cmd。
+        script = "echo %s> %s" % (val, p)
         return [
             ("self_history_restore", rargs),
-            ("self_filesys_run", {"script": 'RPL #"%s" "%s" "%s"' % (p, frm, val),
-                                  "tool_call_display_name": "历史打点"}),
+            ("self_script_run", {"runtime": "cmd", "script": script,
+                                 "tool_call_display_name": "历史打点"}),
         ]
     if "call hist-write" in t:
         p = _prompt_arg(text, "histabs")
         frm = _prompt_arg(text, "histfrom")
         to = _prompt_arg(text, "histval")
-        return [("self_filesys_run", {"script": 'RPL #"%s" "%s" "%s"' % (p, frm, to),
-                                      "tool_call_display_name": "历史打点"})]
+        return [("self_file_replace", {"purpose": "历史打点（真实改文件）",
+                                       "targets": [{"path": p, "find": frm, "replace": to}],
+                                       "tool_call_display_name": "历史打点"})]
     if "call hist-restore-nopath" in t:
         return [("self_history_restore", {"tool_call_display_name": "历史回滚"})]
     if "call hist-restore-dir" in t:
@@ -516,12 +503,13 @@ def route_tool_calls(text):
     # 普通工具场景
     # R-11：文件操作参数须为绝对路径或以 ~/ 开头（相对路径会被执行器拒绝），
     # 故用 ws 绝对路径（与 run_llm.py 期望的 "hello from a.txt" 对应）。
-    # 原 file_read 工具已收纳为 dsl_run 的 FILE_READ 动作 → 经 dsl_run（core-mcp-server 独立 executor，
-    # 暴露名裸 `dsl_run`）携带 DSL 脚本，`=> $RETURN` 使读取结果（元数据行 + 文件内容）随工具
-    # 结果内联返回，供 mock 回显断言。
+    # 口径变更（GATEWAY-2 L2）：文件域已拆为 11 个独立工具，统一参数 `{purpose, targets[]}`
+    # （单文件也写成 1 元素数组）→ 直接调 `self_file_read`，读取结果（含 content）随工具结果
+    # 回填，供 mock 回显断言。
     if "call tool" in t and "without" not in t:
         a_abs = os.path.join(SCRIPTS_WS, "a.txt").replace("\\", "/")
-        return [("dsl_run", {"script": 'FILE_READ #"%s" => $RETURN' % a_abs})]
+        return [("self_file_read", {"purpose": "读取 a.txt（工具调用链路）",
+                                    "targets": [{"path": a_abs}]})]
     if "call async-cmd" in t:
         # C13/C18：子会话命令转后台（_async=true）→ 20s 长运行，使 batch 根任务保持运行中
         #（验证 task-stop 级联 / 任务树实时状态；script_run = 产品命令执行工具）
@@ -701,19 +689,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_stream(tool_calls_chunks(calls))
             else:
                 self._send_json(tool_calls_message(calls))
-            return
-
-        # 文本覆盖回复（dsl_run DSL 的 planner 步骤：输出 JSON 数组文本）
-        override = reply_override(text)
-        if override is not None:
-            if stream:
-                self._send_stream([
-                    {"choices": [{"delta": {"role": "assistant", "content": override},
-                                  "finish_reason": "stop"}]},
-                ])
-            else:
-                self._send_json({"choices": [{"message": {"role": "assistant", "content": override},
-                                              "finish_reason": "stop"}]})
             return
 
         # 分页/截断数据（FP L125/127/128/149）：返回 ~80KB 文本——单条超后端 has_more

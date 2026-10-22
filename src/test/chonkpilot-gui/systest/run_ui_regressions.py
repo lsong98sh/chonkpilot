@@ -82,11 +82,12 @@ def case_r1_knowledge_md_preview():
         kb.click_kb_dir("core")
     assert kb.poll(lambda: any(kb.row_label(r).endswith(".tool.md") for r in kb.kb_rows())), \
         "core 下无 *.tool.md 行"
-    # 选一个 .md 原语 → preview（file_find 已收纳为 filesys_run 的 FIND 动作 → 改用 filesys_run 契约）
-    assert kb.click_kb_file("filesys_run.tool.md"), "单击 filesys_run.tool.md 失败"
+    # 选一个 .md 原语 → preview（口径变更 2026-10-22：`file_find` / `filesys_run` 契约均已删除 →
+    # 改用仍存在的 core 级 `script_run.tool.md`；断言面不变：原语被解析并渲染出字段）
+    assert kb.click_kb_file("script_run.tool.md"), "单击 script_run.tool.md 失败"
     assert kb.poll(lambda: kb.prim_panel_exists()), "PrimitivePanel 未打开"
     path = kb.prim_active_path()
-    if not path.replace("\\", "/").endswith("filesys_run.tool.md"):
+    if not path.replace("\\", "/").endswith("script_run.tool.md"):
         raise TestError("活动原语面板路径异常：%r" % path)
     # 内容渲染（v2 契约页签口径，2026-10）：子页签 = 预览/基本信息/摘要/参数/正文
     # → 原「源码渲染出内容（不再 loading）」校准为「**.md 原语被解析并渲染出字段**」：

@@ -29,7 +29,7 @@
      `history.timeline.<目标>` = `[]`、`status.<目标>.checkpointCount` = 0；**其它会话的链与其回写保留**
      （I-136 —— 不再按仓库粒度清空全部 `refs/chonkpilot/*`）。
   H6 「涉及文件变动」（usr `tool_async.<工具>.touch_files`）：**同一轮内两次工具调用**
-     （`history_restore` 执行时同步置脏 → `filesys_run` 的前置钩子据此判定）——
+     （`history_restore` 执行时同步置脏 → 紧随的改文件工具（现行 = `script_run`）前置钩子据此判定）——
      缺省（涉及）链路 +2（前置点 + 轮末补点）；显式 `false`（不涉及）→ 前置钩子**放行不打点**、只余
      轮末补点 → +1（含 usr 键保存/回读）。
   H5 非 git 仓库：另起独立实例（workdir 无 `.git`，`gui.vcs.info.git=false`）→ 即使
@@ -110,7 +110,7 @@ def git(wd, *args):
 
 
 def fwd(p):
-    """绝对路径 → 正斜杠（filesys_run DSL 句柄内 `\\` 是转义符，反斜杠路径会被误解析）。"""
+    """绝对路径 → 正斜杠（工具参数统一用 `/`：Windows 路径在 JSON 内免转义、跨执行器一致）。"""
     return p.replace("\\", "/")
 
 
@@ -285,7 +285,11 @@ def tool_text(tr):
 
 
 def write_file(frm, to):
-    """驱动一轮**真实改文件**（filesys_run RPL：frm → to，盘面内容实测已变）。"""
+    """驱动一轮**真实改文件**（`file_replace`：精确替换 frm → to，盘面内容实测已变）。
+
+    口径变更（GATEWAY-2 L2）：`filesys_run` + `RPL` DSL 已删除 → 改用文件域工具
+    `file_replace`（`{purpose, targets:[{path, find, replace}]}`）。
+    """
     return run_turn("call hist-write histabs=%s histfrom=%s histval=%s"
                     % (fwd(os.path.join(WS, HIST_FILE)), frm, to))
 
@@ -302,7 +306,7 @@ def case_h3_default_off_no_tools_no_chain():
     """`history.enabled` 缺失（默认关闭）→ 工具面无 history_*；真实改文件一轮**不产生**检查点。
 
     判据（真实产物）：① 基线工具面**非空**且不含 history_*（排除"工具面空"假绿）；
-    ② prj `history.enabled` 缺失；③ mock 驱动 filesys_run 真实改文件（v0→w0，盘面实测已变）
+    ② prj `history.enabled` 缺失；③ mock 驱动真实改文件（`file_replace`，v0→w0，盘面实测已变）
     → `refs/chonkpilot/*` 仍为空（前置钩子与轮末补点都不打点 = 零 git 调用）。
     """
     names = tools()
@@ -580,20 +584,24 @@ def case_h6_touch_files_flag():
     机制（**同一轮内两次工具调用**，确定性、不依赖 fswatcher 去抖）：
       ① `history_restore` 执行时**同步置脏**（`restoreFile` → `ws.dirty=true`）；其自身前置钩子
          时脏位尚未置（= 不打点），且 self 非白名单工具缺省即「不涉及」；
-      ② 紧随其后的 `filesys_run` 前置钩子读到脏位 → 该工具的 `touch_files` 决定是否打点：
+      ② 紧随其后的改文件工具前置钩子读到脏位 → 该工具的 `touch_files` 决定是否打点：
          · 缺省（= 涉及）→ ②前置点（前置状态）+ 轮末补点（最终产像）→ 链 **+2**；
          · usr `tool_async.<工具>.touch_files=false` → 放行不打点 → 只余轮末补点 → 链 **+1**。
 
+    口径变更（GATEWAY-2 L1/L2）：`filesys_run` 已删除 → ② 改用 `script_run`（PowerShell 精确写盘）。
+    现行缺省「涉及文件变动」的 self 内置工具白名单 = `[filesys_run, script_run]`，其中仅
+    `script_run` 仍存在；`file_*` 文件域工具缺省**不涉及**，无法用于验证 +2/+1 差异。
+
     并断言 usr 键**保存 → 回读**（新选项落库）。
     """
-    fs = [n for n in tools() if n.endswith("filesys_run")]
+    fs = [n for n in tools() if n.endswith("script_run")]
     if not fs:
-        raise TestError("工具面无 filesys_run（无法验证 touch_files 生效面）")
+        raise TestError("工具面无 script_run（无法验证 touch_files 生效面）")
     tool = fs[0]
     ref = CHAIN_PREFIX + SID
     abs_hist = fwd(os.path.join(WS, HIST_FILE))
 
-    # 前置：H4 已清空本会话链 → 直写盘面 + 驱动一轮（filesys_run RPL）重建链，
+    # 前置：H4 已清空本会话链 → 直写盘面 + 驱动一轮（file_replace）重建链，
     # 并把盘面收敛到链头（`history_restore{to:-1}` 的一致性前提）
     if ref not in refs():
         write_disk("h6z\n")
@@ -615,7 +623,7 @@ def case_h6_touch_files_flag():
     if n1 - n0 != 2:
         raise TestError("缺省（涉及）应 +2（前置点 + 轮末补点），实际 +%d（n0=%d n1=%d）"
                         % (n1 - n0, n0, n1))
-    print("[H6] 缺省（涉及）：history_restore 置脏 → filesys_run 前置点 + 轮末补点 → 链 +%d" % (n1 - n0),
+    print("[H6] 缺省（涉及）：history_restore 置脏 → script_run 前置点 + 轮末补点 → 链 +%d" % (n1 - n0),
           flush=True)
 
     # ── 保存 usr 新选项：tool_async.<工具>.touch_files=false → 回读 ──

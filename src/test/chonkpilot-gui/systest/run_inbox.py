@@ -4,9 +4,11 @@
 覆盖：工具执行中（强制异步 pending）插入一段对话 → 插话在本轮结束前被处理（出流）；
 主轮不提前 complete；工具回执后主轮续轮。
 设计：docs/agent-chat/中途插话设计方案.md §3.1（S1）/ §7（INS-001）。
-驱动：`llm-start`（mock 关键词 "call slow-insert" → `dsl_run` + `PC_SLP 8000`：契约
-      `async=always` 且无 `_meta.timeout` → llm-server 强制异步 pending）
+驱动：`llm-start`（mock 关键词 "call slow-insert" → `self_script_run` + 调用级
+      `async=always` + `ping -n 8`：派发即 pending，工具执行中留出插话窗口）
       → `llm-inbox-add`；断言：`llm-receive`（插话回显）先于 `llm-complete`。
+      口径变更（GATEWAY-2 L1）：原用 `dsl_run`（契约 async:always、无 _meta.timeout）驱动
+      「强制异步 pending」；DSL 删除后改 `script_run` 显式 `async=always`（同一 pending 语义）。
 前置：usr llms 含 name="mock" 条目（套件级快照-还原；usr 主库不受 --data-dir 隔离）。
 """
 
