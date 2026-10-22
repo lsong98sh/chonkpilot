@@ -16,9 +16,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 )
 

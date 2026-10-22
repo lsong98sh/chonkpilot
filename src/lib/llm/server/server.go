@@ -41,11 +41,11 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 )
 

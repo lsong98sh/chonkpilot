@@ -14,7 +14,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

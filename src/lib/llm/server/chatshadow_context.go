@@ -25,7 +25,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/chonkpilot/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-chat"
 )
 
 // chatContextProvider 把宿主「读库 + 压缩 + 提示词拼装」接到 `chat.ContextProvider`。

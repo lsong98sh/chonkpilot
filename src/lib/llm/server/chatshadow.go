@@ -9,9 +9,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-chat"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // ─── LLMClient（router 报文级 step）───────────────────────────────────

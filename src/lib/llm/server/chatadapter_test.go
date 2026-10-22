@@ -14,10 +14,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-chat"
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 )
 
 // jsonKeys 返回结构体按 JSON tag 展开后的键集合（排序）。

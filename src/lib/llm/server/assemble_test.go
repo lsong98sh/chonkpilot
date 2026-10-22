@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // mkToolCall 造一条工具调用（参数已序列化）。

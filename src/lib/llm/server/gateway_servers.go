@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 )
 
 // mcpEntry 是单条 MCP 定义（字段名对齐 servers.list 规范 / 前端表单 / 四级 MCP 配置文件的字段）。

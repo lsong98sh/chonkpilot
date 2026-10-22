@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // newSSEServer 起一个受测端点（测试结束自动关闭）。

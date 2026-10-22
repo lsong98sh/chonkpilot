@@ -28,7 +28,7 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // exeDefaultSpecName 是**exe flags 隐含默认**（`-llm-base`/`-llm-model`）在 router 中的保留 provider 名。

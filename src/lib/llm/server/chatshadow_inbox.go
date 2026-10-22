@@ -9,7 +9,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/chonkpilot/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-chat"
 )
 
 // chatInbox 是 chat.Inbox 的宿主实现：per-turn 内存 FIFO（生产投递点在 P3 切换时接入）。

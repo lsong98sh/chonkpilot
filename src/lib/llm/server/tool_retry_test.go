@@ -19,7 +19,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 )
 
 // llmRecorder 记录 /chat/completions 每次请求收到的 messages，并以固定文本回复

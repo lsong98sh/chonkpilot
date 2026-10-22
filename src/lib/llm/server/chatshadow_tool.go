@@ -11,8 +11,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-chat"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-chat"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 )
 
 // ─── ToolCatalog ─────────────────────────────────────────────────────

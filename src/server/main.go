@@ -29,7 +29,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-llm/queuehooks"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-llm/vftsindexer"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 )
 
 // exitDuplicate 是「检测到已有 server 在运行 → 本进程为第二实例」的退出码（约定：非 0）。

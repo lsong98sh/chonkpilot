@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-chat"
 )
 
 // chatToolInvokerFromTurn 用当前 turn 的生产策略装配 invoker（**不接管**：调用方仍是 P3 的开关）。

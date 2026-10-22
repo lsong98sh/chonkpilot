@@ -11,7 +11,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 )
 
 // ToolDef 是 LLM 工具定义（对齐 21-llm-server FetchTools 映射）。

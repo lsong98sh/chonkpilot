@@ -13,10 +13,7 @@ require (
 )
 
 require (
-	github.com/chonkpilot/chonkpilot-chat v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-mcp-gateway v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-router v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-task v0.0.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
@@ -34,14 +31,12 @@ require (
 )
 
 replace (
-	github.com/chonkpilot/chonkpilot-chat => ../../../../chonkpilot-chat
 	github.com/chonkpilot/chonkpilot-data => ../data
 	github.com/chonkpilot/chonkpilot-filesys => ../filesys
 	github.com/chonkpilot/chonkpilot-gwadapter => ../gwadapter
 	github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 	github.com/chonkpilot/chonkpilot-lib => ../core
 	github.com/chonkpilot/chonkpilot-llm => ../llm
-	github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../../chonkpilot-mcp-gateway
 	github.com/chonkpilot/chonkpilot-mcp-server => ../mcp-server
 	github.com/chonkpilot/chonkpilot-plugin => ../../plugins/plugin
 	github.com/chonkpilot/chonkpilot-plugin-codegraph => ../../plugins/plugin-codegraph
@@ -49,7 +44,6 @@ replace (
 	github.com/chonkpilot/chonkpilot-plugin-history => ../../plugins/plugin-history
 	github.com/chonkpilot/chonkpilot-plugin-memory => ../../plugins/plugin-memory
 	github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vfts
-	github.com/chonkpilot/chonkpilot-router => ../../../../chonkpilot-router
 	github.com/chonkpilot/chonkpilot-task => ../task
 	github.com/jchv/go-webview2 => ../go-webview2
 )
@@ -65,6 +59,9 @@ require (
 	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-memory v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-vfts v0.0.0 // indirect
+	github.com/lsong98sh/chonkpilot-chat v0.0.0-00010101000000-000000000000 // indirect
+	github.com/lsong98sh/chonkpilot-mcp-gateway v0.0.0-00010101000000-000000000000 // indirect
+	github.com/lsong98sh/chonkpilot-router v0.0.0-00010101000000-000000000000 // indirect
 	github.com/sgtdi/fswatcher v1.3.0 // indirect
 )
 
@@ -73,3 +70,9 @@ replace github.com/chonkpilot/chonkpilot-appwire => ../appwire
 replace github.com/chonkpilot/chonkpilot-assembly => ../assembly
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../mcp-tools
+
+replace github.com/lsong98sh/chonkpilot-chat => ../../../../chonkpilot-chat
+
+replace github.com/lsong98sh/chonkpilot-router => ../../../../chonkpilot-router
+
+replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../../chonkpilot-mcp-gateway

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-chat"
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // TestChatToolCatalogTools：ToolDef → chat.ToolSpec（InputSchema 原文；Servers 恒空）。

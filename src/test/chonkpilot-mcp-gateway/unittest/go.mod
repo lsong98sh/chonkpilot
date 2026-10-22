@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
-	github.com/chonkpilot/chonkpilot-mcp-gateway v0.0.0
+	github.com/lsong98sh/chonkpilot-mcp-gateway v0.0.0-00010101000000-000000000000
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 )
 
@@ -24,8 +24,8 @@ replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
 
 replace github.com/chonkpilot/chonkpilot-gwadapter => ../../../lib/gwadapter
 
-replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../../../chonkpilot-mcp-gateway
-
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../../../lib/mcp-server
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools
+
+replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../../../chonkpilot-mcp-gateway

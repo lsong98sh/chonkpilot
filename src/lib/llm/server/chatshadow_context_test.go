@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-chat"
 )
 
 // TestChatContextProviderBuild（A4-P2 修正后）：历史 = 已压缩轮次（当前轮被 exclude_turn 排除），

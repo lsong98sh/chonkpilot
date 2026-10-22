@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // snapToolCall 构造 chat 工具调用。

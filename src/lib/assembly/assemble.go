@@ -27,7 +27,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 )

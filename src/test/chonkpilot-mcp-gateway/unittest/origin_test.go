@@ -18,7 +18,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	mcpgw "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgw "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
 )
 

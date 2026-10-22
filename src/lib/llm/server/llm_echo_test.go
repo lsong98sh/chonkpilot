@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // echoTextOf 拼接 llm-receive 事件里 type=text 的增量（= 本轮回复文本）。

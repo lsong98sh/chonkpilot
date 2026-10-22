@@ -1,7 +1,7 @@
 // Package mcpgatewaytest — chonkpilot-mcp-gateway 黑盒回归测试
 // （工程目录 chonkpilot-test/chonkpilot-mcp-gateway/unittest）。
 //
-// 通过公开包 github.com/chonkpilot/chonkpilot-mcp-gateway/gateway 集成测试：
+// 通过公开包 github.com/lsong98sh/chonkpilot-mcp-gateway/gateway 集成测试：
 // 内存总线 + mock 工具经公开方法面 `tools/register`（handler_subject 回调）接入
 // → New/Start → 经总线方法面（mcp-* 相对主题，chonk. 前缀由总线注入）驱动：
 // 覆盖工具执行、自动异步（meta/请求级）、手动转后台、异步完成通知（mcp-tasks-report）、
@@ -26,7 +26,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	mcpgw "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgw "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
 )
 

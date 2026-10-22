@@ -14,7 +14,7 @@ package server
 import (
 	"context"
 
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 )
 

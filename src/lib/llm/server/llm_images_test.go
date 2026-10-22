@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // testPNG 构造可被魔数识别的 PNG 字节序列（8 字节签名 + 载荷；仅够类型/大小校验用）。

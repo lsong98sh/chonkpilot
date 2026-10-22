@@ -4,16 +4,16 @@ go 1.26.0
 
 require (
 	github.com/chonkpilot/chonkpilot-assembly v0.0.0
-	github.com/chonkpilot/chonkpilot-chat v0.0.0
 	github.com/chonkpilot/chonkpilot-data v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
-	github.com/chonkpilot/chonkpilot-mcp-gateway v0.0.0
 	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-compress v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0
-	github.com/chonkpilot/chonkpilot-router v0.0.0
 	github.com/chonkpilot/chonkpilot-task v0.0.0
+	github.com/lsong98sh/chonkpilot-chat v0.0.0-00010101000000-000000000000
+	github.com/lsong98sh/chonkpilot-mcp-gateway v0.0.0-00010101000000-000000000000
+	github.com/lsong98sh/chonkpilot-router v0.0.0-00010101000000-000000000000
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/sgtdi/fswatcher v1.3.0
 	golang.org/x/sys v0.47.0
@@ -43,15 +43,11 @@ replace github.com/chonkpilot/chonkpilot-data => ../data
 
 replace github.com/chonkpilot/chonkpilot-assembly => ../assembly
 
-replace github.com/chonkpilot/chonkpilot-chat => ../../../../chonkpilot-chat
-
 replace github.com/chonkpilot/chonkpilot-filesys => ../filesys
 
 replace github.com/chonkpilot/chonkpilot-lib => ../core
 
 replace github.com/chonkpilot/chonkpilot-gwadapter => ../gwadapter
-
-replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../../chonkpilot-mcp-gateway
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../mcp-server
 
@@ -71,6 +67,10 @@ replace github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 
 replace github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vfts
 
-replace github.com/chonkpilot/chonkpilot-router => ../../../../chonkpilot-router
-
 replace github.com/chonkpilot/chonkpilot-task => ../task
+
+replace github.com/lsong98sh/chonkpilot-chat => ../../../../chonkpilot-chat
+
+replace github.com/lsong98sh/chonkpilot-router => ../../../../chonkpilot-router
+
+replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../../chonkpilot-mcp-gateway

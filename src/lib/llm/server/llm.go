@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-chat"
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // 超时分级（对齐 llm-error-handling.md §一）：首字节 ResponseTimeout / chunk 间隔 StreamTimeout。

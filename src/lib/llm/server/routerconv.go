@@ -20,7 +20,7 @@ package server
 import (
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // ToRouterMessage 转换单条 chat 消息：纯文本 → 单个 text 块（Content 为空 → 无内容块）。

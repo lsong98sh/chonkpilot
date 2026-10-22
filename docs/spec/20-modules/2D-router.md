@@ -29,7 +29,7 @@
 
 | 项 | 值 |
 |----|----|
-| 编译形态 | **纯 lib**（module `github.com/chonkpilot/chonkpilot-router`），无 `main`、无独立 exe |
+| 编译形态 | **纯 lib**（module `github.com/lsong98sh/chonkpilot-router`），无 `main`、无独立 exe |
 | 运行位置 | 进程内（llm-server） |
 | 依赖方向 | `router → internal/adaptor → internal/canon`（**单向无环**）；本包**只 import 标准库 + 自身 `internal/*`**，**不 import 任何其它 chonkpilot-* module** |
 | 装配方 | `src/lib/llm/server`：`router.New(router.Config{})` → `Register` / `Reconcile`（`server.go` / `routercall.go`） |

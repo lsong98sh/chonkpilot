@@ -3,16 +3,13 @@ module github.com/chonkpilot/chonkpilot-test/chonkpilot-llm/unittest
 go 1.26.0
 
 require (
-	github.com/chonkpilot/chonkpilot-chat v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-data v0.0.0
 	github.com/chonkpilot/chonkpilot-ignore v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-llm v0.0.0
-	github.com/chonkpilot/chonkpilot-router v0.0.0 // indirect
 )
 
 require (
-	github.com/chonkpilot/chonkpilot-mcp-gateway v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-task v0.0.0 // indirect
@@ -32,8 +29,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/chonkpilot/chonkpilot-chat => ../../../../../chonkpilot-chat
-
 replace github.com/chonkpilot/chonkpilot-data => ../../../lib/data
 
 replace github.com/chonkpilot/chonkpilot-ignore => ../../../lib/ignore
@@ -44,11 +39,7 @@ replace github.com/chonkpilot/chonkpilot-llm => ../../../lib/llm
 
 replace github.com/chonkpilot/chonkpilot-gwadapter => ../../../lib/gwadapter
 
-replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../../../chonkpilot-mcp-gateway
-
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../../../lib/mcp-server
-
-replace github.com/chonkpilot/chonkpilot-router => ../../../../../chonkpilot-router
 
 replace github.com/chonkpilot/chonkpilot-plugin => ../../../plugins/plugin
 
@@ -62,9 +53,18 @@ require (
 	github.com/chonkpilot/chonkpilot-assembly v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-mcp-tools v0.0.0 // indirect
+	github.com/lsong98sh/chonkpilot-chat v0.0.0-00010101000000-000000000000 // indirect
+	github.com/lsong98sh/chonkpilot-mcp-gateway v0.0.0-00010101000000-000000000000 // indirect
+	github.com/lsong98sh/chonkpilot-router v0.0.0-00010101000000-000000000000 // indirect
 	github.com/sgtdi/fswatcher v1.3.0 // indirect
 )
 
 replace github.com/chonkpilot/chonkpilot-assembly => ../../../lib/assembly
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools
+
+replace github.com/lsong98sh/chonkpilot-chat => ../../../../../chonkpilot-chat
+
+replace github.com/lsong98sh/chonkpilot-router => ../../../../../chonkpilot-router
+
+replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../../../chonkpilot-mcp-gateway
