@@ -13,6 +13,7 @@ GetRecentDirs/CreateSession/GetSession/DeleteSession）一律移除，改走：
 前置：IDE --test-port=2345 --work-dir=<ws>。
 """
 
+import json
 import os
 import sys
 import time
@@ -86,11 +87,13 @@ def case_security_dirs():
     **一条信任目录 = 一个 key**（前端生成的不透明 id，非目录路径），
     value = JSON 字符串 {"dir","writable"}；list 返回平铺 map（key 已剥 security- 前缀）。
     """
-    # 安全目录条目值仅为不透明字符串（key→JSON 往返断言，不触盘）；用哨兵常量（与 run_paths.py 同风格），无需真实盘符。
-    _SEC_DIR = r"C:\probe\sec-a"
+    # 信任目录条目值 = `{dir,writable}` JSON；2026-10 起**校验 dir 真实存在**（validateSecurityEntry）
+    # → 用 workspace 下的临时目录，且用 json.dumps 构造（Windows 反斜杠必须转义，手拼会得到非法 JSON）。
+    sec_dir = os.path.join(WS, "sec-a")
+    os.makedirs(sec_dir, exist_ok=True)
     k = "dir-systest-a"
-    v1 = '{"dir":"%s","writable":true}' % _SEC_DIR
-    v2 = '{"dir":"%s","writable":false}' % _SEC_DIR
+    v1 = json.dumps({"dir": sec_dir, "writable": True}, ensure_ascii=False)
+    v2 = json.dumps({"dir": sec_dir, "writable": False}, ensure_ascii=False)
     # 快照-还原（51 §6-8）：同名条目原本可能已存在 → 跑前快照，finally 写回/删除。
     orig = (c.req("data-prj-security-list", {}).get("list") or {}).get(k)
     try:

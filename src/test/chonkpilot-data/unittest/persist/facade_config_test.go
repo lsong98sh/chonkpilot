@@ -73,18 +73,29 @@ func TestFacadeConfigKVInlineEqualsMQPath(t *testing.T) {
 
 	for _, domain := range []string{facade.DomainPrjConfig, facade.DomainPrompt, facade.DomainPrjSecurity} {
 		viaFacadeKey, viaMQKey := "k-facade", "k-mq"
+		viaFacadeVal, viaMQVal := "v-facade", "v-mq"
 		if domain != facade.DomainPrjConfig {
 			// 前缀域：list 会与其它域名并存，用同一实例同域两键交叉验证
 			viaFacadeKey, viaMQKey = "p-facade", "p-mq"
 		}
+		if domain == facade.DomainPrjSecurity {
+			// security 域值形状 = `{dir,writable}` JSON，且 dir 必须是**真实存在**的绝对目录
+			//（validateSecurityEntry 自 2026-10 起校验存在性）→ 用测试临时目录构造，不再用占位路径。
+			mk := func(dir string, writable bool) string {
+				b, _ := json.Marshal(map[string]any{"dir": dir, "writable": writable})
+				return string(b)
+			}
+			viaFacadeVal = mk(t.TempDir(), false)
+			viaMQVal = mk(t.TempDir(), true)
+		}
 		// ① 门面写 k-facade；MQ 写 k-mq（同一域、同一实例）
 		if _, err := api.ConfigKVSet(facade.ConfigKVSetRequest{
 			Domain: domain, InstanceID: facadeInstance,
-			Entries: map[string]string{viaFacadeKey: "v-facade"},
+			Entries: map[string]string{viaFacadeKey: viaFacadeVal},
 		}); err != nil {
 			t.Fatalf("[%s] facade ConfigKVSet: %v", domain, err)
 		}
-		mqSaveKV(t, bus, domain, viaMQKey, "v-mq")
+		mqSaveKV(t, bus, domain, viaMQKey, viaMQVal)
 
 		// ② 交叉读：门面读 MQ 写的键 + MQ 读门面写的键（同一落点）
 		resp, err := api.ConfigKVGet(facade.ConfigKVGetRequest{
@@ -93,13 +104,13 @@ func TestFacadeConfigKVInlineEqualsMQPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("[%s] facade ConfigKVGet: %v", domain, err)
 		}
-		if resp.Values[viaMQKey] != "v-mq" || resp.Values[viaFacadeKey] != "v-facade" {
+		if resp.Values[viaMQKey] != viaMQVal || resp.Values[viaFacadeKey] != viaFacadeVal {
 			t.Fatalf("[%s] 门面读回与写入不一致：%+v", domain, resp.Values)
 		}
-		if got := mqLoadKV(t, bus, domain, viaFacadeKey); got != "v-facade" {
+		if got := mqLoadKV(t, bus, domain, viaFacadeKey); got != viaFacadeVal {
 			t.Fatalf("[%s] MQ 读门面写入不一致：%q", domain, got)
 		}
-		if got := mqLoadKV(t, bus, domain, viaMQKey); got != "v-mq" {
+		if got := mqLoadKV(t, bus, domain, viaMQKey); got != viaMQVal {
 			t.Fatalf("[%s] MQ 读 MQ 写入不一致：%q", domain, got)
 		}
 

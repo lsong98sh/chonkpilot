@@ -637,9 +637,14 @@ func TestDataSecurityEntryKeyRoundTrip(t *testing.T) {
 		}
 	}
 
-	// 1) 增两条
-	v1 := `{"dir":"E:/trust-a","writable":false}`
-	v2 := `{"dir":"E:/trust-b","writable":true}`
+	// 1) 增两条（dir 必须是**真实存在**的绝对目录 —— validateSecurityEntry 校验存在性）
+	secDir := func(dir string, writable bool) string {
+		b, _ := json.Marshal(map[string]any{"dir": dir, "writable": writable})
+		return string(b)
+	}
+	dirA, dirB := t.TempDir(), t.TempDir()
+	v1 := secDir(dirA, false)
+	v2 := secDir(dirB, true)
 	if ok, _ := secSave("s1", "dir-k1", v1)["ok"].(bool); !ok {
 		t.Fatal("save entry1 failed")
 	}
@@ -652,7 +657,7 @@ func TestDataSecurityEntryKeyRoundTrip(t *testing.T) {
 	}
 
 	// 2) 改：同 key 换 value（= 勾选 writable）
-	v1b := `{"dir":"E:/trust-a","writable":true}`
+	v1b := secDir(dirA, true)
 	if ok, _ := secSave("s4", "dir-k1", v1b)["ok"].(bool); !ok {
 		t.Fatal("update entry1 failed")
 	}

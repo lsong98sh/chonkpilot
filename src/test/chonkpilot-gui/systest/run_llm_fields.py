@@ -340,7 +340,7 @@ def main():
         """
         with _h.user_config_guard(c, ["llms", "defaultLLM"]):
             opt = mk_entry("p-opt", apiKey="sk-" + SENT + "-OPT", model="m-opt-sent",
-                           temperature=0.25, maxOutputToken=123, baseUrl="http://127.0.0.1:%d/v1" % m2.port)
+                           temperature=0.25, maxOutputToken=321, baseUrl="http://127.0.0.1:%d/v1" % m2.port)
             save_llms([opt], default="p-opt")
             if user_cfg().get("defaultLLM") != "p-opt":
                 raise TestError("A 回读失败: defaultLLM=%r" % user_cfg().get("defaultLLM"))

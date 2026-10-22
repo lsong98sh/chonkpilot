@@ -284,15 +284,19 @@ def _read_out(path):
 def suite_core(core, work):
     """core 工具面 + 四原语（prompts/resources）+ 能力声明 + 调用上下文。
 
-    工具名 = 契约文件名（spec 25-mcp-server §3.1「原语名 = 文件名去后缀」），现行 5 个 =
-    `filesys_run/script_run/web_fetch`（core）+ `desktop_run` + `browser_run`。
-    （原 `file_read/file_find/file_diff` 三工具已收纳为 filesys_run 的 READ/FIND/DIFF 动作，
-     dsl_run 侧前缀化为 FILE_READ/FILE_FIND/FILE_DIFF；dsl_run 为 category=server，不经
-     RegisterContracts 注册 → 不在本 tools_list 面。）
+    工具名 = 契约文件名（spec 25-mcp-server §3.1「原语名 = 文件名去后缀」）。现行工具面
+    （2026-10-22 实测）= **core 2**（`script_run` / `web_fetch`）+ **file 域 11**
+    （`file_read/write/replace/patch/copy/move/delete/find/diff/detect/iconv`，`runtime: builtin`
+    进程内 handler）。`desktop_run` / `browser_run` 已随 GATEWAY-2 L9/L10 改为插件形态
+    （UDS 自持 exe，**不注册 MCP 工具**），故不在本 `tools_list` 面。
     """
     names = {t["name"] for t in core.tools_list()}
-    expect = {"filesys_run", "script_run", "web_fetch", "desktop_run", "browser_run"}
-    # 平铺单实例：单根扫描 → 5 个工具全在同一端点（三类 category 不构成路由，spec 25 §7）
+    expect = {
+        "script_run", "web_fetch",
+        "file_read", "file_write", "file_replace", "file_patch", "file_copy", "file_move",
+        "file_delete", "file_find", "file_diff", "file_detect", "file_iconv",
+    }
+    # 平铺单实例：单根扫描 → 全部工具在同一端点（多 category 不构成路由，spec 25 §7）
     assert names == expect, f"tools 集合不符：多 {names - expect} / 缺 {expect - names}"
     ctx = call_context(work)
 
@@ -339,39 +343,40 @@ def suite_core(core, work):
         assert "error" in bad, bad
 
     def t_dir_list():
-        # 目录结构（旧 directory_list / file_find output=tree）→ filesys_run 的 FIND 动作
-        # （path 必填、须绝对路径）；容器工具顶层只回计数 → 查询文本经 `=> #"file"` 落盘后读回。
-        out = _query_out(work, "_dir_list.txt")
-        res = core.tool_call("filesys_run",
-                             {"script": 'FIND #"%s" output=tree => #"%s"' % (_fwd(work), _fwd(out))},
-                             context=ctx)
+        # 列目录 = `file_find` 的 dir 模式（GATEWAY-2 L2：原 filesys_run FIND 动作 → 独立工具；
+        # 统一参数 `{purpose, targets[]}`，单目标也写成数组）。
+        res = core.tool_call("file_find", {
+            "purpose": "列目录",
+            "targets": [{"root": _fwd(work), "depth": 1, "output": "tree"}],
+        }, context=ctx)
         assert not res.get("isError"), res
-        txt = _read_out(out)
+        txt = res["content"][0]["text"]
         assert "seed.txt" in txt, txt
 
     def t_write_read():
-        # 写（旧 file_write）→ filesys_run INS DSL；读 → filesys_run 的 READ 动作（须调用上下文），
-        # 结果经 `=> #"file"` 落盘后读回（原 file_read 工具已收纳）。
+        # 写 → `file_write`；读 → `file_read`（两者均 `{purpose, targets[]}`，runtime=builtin）。
         target = _fwd(os.path.join(work, "a.txt"))
-        res = core.tool_call("filesys_run",
-                             {"script": 'INS #"%s" "hello 中文\\nworld\\n"' % target}, context=ctx)
+        res = core.tool_call("file_write", {
+            "purpose": "写夹具",
+            "targets": [{"path": target, "content": "hello 中文\nworld\n"}],
+        }, context=ctx)
         assert not res.get("isError"), res
-        out = _query_out(work, "_read_out.txt")
-        core.tool_call("filesys_run",
-                       {"script": 'READ #"%s" => #"%s"' % (target, _fwd(out))}, context=ctx)
-        txt = _read_out(out)
+        res = core.tool_call("file_read", {
+            "purpose": "读回夹具",
+            "targets": [{"path": target}],
+        }, context=ctx)
+        assert not res.get("isError"), res
+        txt = res["content"][0]["text"]
         assert "hello 中文" in txt, txt
 
     def t_grep():
-        # 内容检索（旧 grep / file_find grep）→ filesys_run 的 FIND 动作（grep + output=file），
-        # 结果经 `=> #"file"` 落盘后读回。
-        out = _query_out(work, "_grep_out.txt")
-        res = core.tool_call("filesys_run",
-                             {"script": 'FIND #"%s" grep="world" output=file => #"%s"'
-                                        % (_fwd(work), _fwd(out))},
-                             context=ctx)
+        # 内容检索 = `file_find` 的 grep 模式（返回命中行号与行内容）
+        res = core.tool_call("file_find", {
+            "purpose": "内容检索",
+            "targets": [{"root": _fwd(work), "grep": "world"}],
+        }, context=ctx)
         assert not res.get("isError"), res
-        txt = _read_out(out)
+        txt = res["content"][0]["text"]
         assert "seed.txt" in txt, txt
 
     def t_script_shell():
@@ -412,7 +417,8 @@ def suite_core(core, work):
     def t_resource_read():
         res = core.resource_read("mcp://chonkpilot/resources/core-overview")
         txt = res["contents"][0]["text"]
-        assert "filesys_run" in txt, txt
+        # 2026-10-22：core 概览已随 GATEWAY-2 L2 改为**文件域 11 工具**口径
+        assert "file_read" in txt and "script_run" in txt, txt
 
     def t_skills_in_prompts():
         # prompts/list 同表含 skills（_meta.type=skill；spec 25 §9）
@@ -459,37 +465,31 @@ def suite_core(core, work):
 
 
 def suite_desktop(desk, work):
-    """desktop 分类：现行**单工具** `desktop_run`（DSL 编排；spec 25 §3.1 meta `category=desktop`）。
+    """desktop / browser 分类（2026-10-22 起）：**不再注册 MCP 工具**。
 
-    旧的 18 个细粒度工具（key_down/mouse_click/windows_list…）已收敛为 DSL 指令
-    （`src/initdata/capability/tools/desktop/desktop_run.tool.md`：WIN/MOV/CLK/…）。
+    GATEWAY-2 L9/L10 把浏览器 / 桌面自动化改为常驻插件（UDS `browser.sock` / `desktop.sock`，
+    端点 `start` / `stop` / `operation`），工具面只剩 core 2 + file 11 →
+    本套件改为**正向断言"未注册"**（原 `desktop_run` 断言已随契约删除）。
     """
-    tools = {t["name"]: t for t in desk.tools_list()}
-    assert "desktop_run" in tools, sorted(tools)
-    assert (tools["desktop_run"].get("_meta") or {}).get("category") == "desktop", tools["desktop_run"]
 
-    def t_windows_list():
-        # 旧 windows_list 工具 → 现行 `WIN list`（文本输出经 `=> #"file"` 重定向后由本进程直接读回；
-        # 原 file_read 工具已收纳，容器工具顶层不携带该文本）
-        wins = os.path.join(work, "wins.txt")
-        res = desk.tool_call("desktop_run", {"script": 'WIN list => #"%s"' % _fwd(wins)},
-                             context=call_context(work))
-        assert not res.get("isError"), res
-        txt = _read_out(wins)
-        assert "[hwnd=" in txt, txt[:300]
+    def t_tool_face_excludes_desktop_browser():
+        tools = {t["name"]: t for t in desk.tools_list()}
+        assert "desktop_run" not in tools and "browser_run" not in tools, sorted(tools)
+        cats = {(t.get("_meta") or {}).get("category") for t in tools.values()}
+        assert "desktop" not in cats and "browser" not in cats, cats
 
-    for fn in [t_windows_list]:
+    for fn in [t_tool_face_excludes_desktop_browser]:
         check(f"[desktop] {fn.__name__[2:]}", fn)
 
 
 def suite_defaults_injection(defaults_core, work):
-    """自定义 --config（skip_dirs=["vendor"]）验证 skip_dirs 生效。
+    """自定义 `--config`（`defaults.skip_dirs=["vendor"]`）装载 + 文件域工具可用。
 
-    合并口径：`Config.defaultsMap()` 仍把 `skip_dirs` 注入 tools/call **顶层参数**，客户端显式
-    同名参数优先（`server/config.go` + `server/executor.go:60-67`）。但查询动作已收纳进
-    filesys_run：`skip_dirs` 变为 **FIND 动作的脚本选项**，顶层注入不再作用于文件域动作 →
-    本用例改为在 FIND 脚本内显式携带 `skip_dirs=` 验证同名语义（顶层注入对被收纳工具的覆盖
-    情况另见报告/未决项）。
+    2026-10-22 口径变更：`skip_dirs` 原为 `filesys_run` 的 FIND **脚本选项**；GATEWAY-2 L2 把
+    文件域拆成独立工具后，`file_find` 契约**没有 skip_dirs 参数**（统一 `{purpose, targets[]}`，
+    `additionalProperties:false`）→ 「跳过 vendor」语义已随 DSL 退役移除。
+    因此本套件只验证**自定义 config 能被装载且文件域工具照常工作**；跳过语义等新契约（若恢复）
+    再补断言，不在此处硬编码现状。
     """
     os.makedirs(os.path.join(work, "vendor"), exist_ok=True)
     with open(os.path.join(work, "vendor", "dep.txt"), "w", encoding="utf-8") as f:
@@ -497,31 +497,16 @@ def suite_defaults_injection(defaults_core, work):
     with open(os.path.join(work, "ok.txt"), "w", encoding="utf-8") as f:
         f.write("SENTINEL_DEFAULT\n")
 
-    def t_injected():
-        # skip_dirs=vendor（等价默认注入的语义）→ 被跳过；结果经 `=> #"file"` 落盘后读回
-        out = _query_out(work, "_skip_vendor.txt")
-        res = defaults_core.tool_call(
-            "filesys_run",
-            {"script": 'FIND #"%s" grep="SENTINEL_DEFAULT" output=file skip_dirs="vendor" => #"%s"'
-                       % (_fwd(work), _fwd(out))},
-            context=call_context(work))
+    def t_custom_config_and_file_find():
+        res = defaults_core.tool_call("file_find", {
+            "purpose": "自定义 config 下查找",
+            "targets": [{"root": _fwd(work), "grep": "SENTINEL_DEFAULT"}],
+        }, context=call_context(work))
         assert not res.get("isError"), res
-        txt = _read_out(out)
-        assert "ok.txt" in txt and "vendor" not in txt, txt
+        txt = res["content"][0]["text"]
+        assert "ok.txt" in txt, txt
 
-    def t_explicit_override():
-        # 显式 skip_dirs=other（不跳过 vendor 目录）→ vendor 出现
-        out = _query_out(work, "_skip_other.txt")
-        res = defaults_core.tool_call(
-            "filesys_run",
-            {"script": 'FIND #"%s" grep="SENTINEL_DEFAULT" output=file skip_dirs="other" => #"%s"'
-                       % (_fwd(work), _fwd(out))},
-            context=call_context(work))
-        assert not res.get("isError"), res
-        txt = _read_out(out)
-        assert "vendor" in txt, txt
-
-    for fn in [t_injected, t_explicit_override]:
+    for fn in [t_custom_config_and_file_find]:
         check(f"[defaults] {fn.__name__[2:]}", fn)
 
 
@@ -593,6 +578,19 @@ def _require_alive(entry):
     raise AssertionError(f"server {tag} 已退出（exit={p.returncode}）：{tail}")
 
 
+def _runtime_of(tool_md):
+    """读 .tool.md 的 `runtime:` 行（缺省 → ""；`builtin` 表示进程内 handler，无 exe）。"""
+    try:
+        with open(tool_md, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith("runtime:"):
+                    return s.split(":", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        return ""
+    return ""
+
+
 def main():
     global echo_port
     ap = argparse.ArgumentParser()
@@ -625,10 +623,39 @@ def main():
     exe_names = [fn for fn in os.listdir(args.exec_dir) if fn.lower().endswith(".exe")]
     if not exe_names:
         _die(f"未在 --exec-dir={args.exec_dir} 找到 executor exe\n       {BUILD_HINT}")
+    # 前置判据（2026-10-22 起）= **按契约 runtime 逐条解析**，不再假设「一分类一 exe」：
+    #   - `runtime: builtin`（file / meta 域，进程内 handler）→ 无需产物；
+    #   - `runtime: ../../executors/<exe>` → 产物在 --exec-dir；
+    #   - `runtime: ../../../mcps/<组>/<exe>`（codegraph / vfts）→ 产物在 <dist>/mcps/。
+    # 解析基准 = 部署布局 `<dist>/capability/tools/<cat>/`（与按 runtime 运行的路径同构）。
+    dist_root = pathlib.Path(args.exec_dir).resolve().parent.parent
+    # mcps/<组>/<exe>（codegraph / vfts 引擎）不在 dist/other 投放，也可能只在 dist/desktop → 允许多候选根。
+    dist_roots = [dist_root, REPO / "dist" / "desktop", REPO / "dist" / "other"]
+    external = {}  # rel（<dist> 相对路径）→ 实际源文件绝对路径
+    missing = []
     for cat in cat_dirs:
-        want = f"chonkpilot-{cat}-executor.exe"
-        if want not in exe_names:
-            _die(f"--exec-dir 缺 {want}（与 --tools-dir 分类 {cat} 对应）\n       {BUILD_HINT}")
+        cdir = os.path.join(args.tools_dir, cat)
+        for fn in sorted(os.listdir(cdir)):
+            if not fn.endswith(".tool.md"):
+                continue
+            rt = _runtime_of(os.path.join(cdir, fn))
+            if not rt or rt == "builtin":
+                continue
+            rel = os.path.relpath(os.path.normpath(
+                os.path.join(str(dist_root), "capability", "tools", cat, rt)), str(dist_root))
+            hit = None
+            for cand in dist_roots:
+                p = cand / rel
+                if p.is_file():
+                    hit = p
+                    break
+            if hit is None:
+                missing.append(rel)
+                continue
+            if not rel.replace("\\", "/").startswith("capability" + "/"):
+                external[rel] = str(hit)
+    if missing:
+        _die("契约 runtime 指向的产物缺失：\n       " + "\n       ".join(sorted(missing)) + f"\n       {BUILD_HINT}")
     print(f"被测 server: {args.server_exe}")
     print(f"契约源: --root={args.root} + --tools-dir={args.tools_dir}；executor 产物: {args.exec_dir}")
 
@@ -637,9 +664,11 @@ def main():
     echo_port = echo.server_address[1]
     threading.Thread(target=echo.serve_forever, daemon=True).start()
 
-    # tools 契约在 src/initdata/capability/tools；与 skills/prompts/resources 源契约合并为单根（扁平），
-    # 并把 executor exe 放进 tmp_root/executors/（tool.md runtime 相对契约文件写 ../../executors/<exe>）
-    tmp_root = tempfile.mkdtemp(prefix="ck-contracts-")
+    # 临时部署根：`<work>/capability/{skills,prompts,resources,tools,executors}` +
+    # `<work>/mcps/...`（codegraph / vfts 的 runtime `../../../mcps/<组>/<exe>` 需同构可解析）。
+    work_root = tempfile.mkdtemp(prefix="ck-contracts-")
+    tmp_root = os.path.join(work_root, "capability")
+    os.makedirs(tmp_root, exist_ok=True)
     for prim in ("skills", "prompts", "resources"):
         shutil.copytree(os.path.join(args.root, prim), os.path.join(tmp_root, prim))
     shutil.copytree(args.tools_dir, os.path.join(tmp_root, "tools"))
@@ -648,6 +677,10 @@ def main():
     for fn in exe_names:
         shutil.copy2(os.path.join(args.exec_dir, fn), os.path.join(tmp_root, "executors", fn))
         n_exe += 1
+    for rel, src in sorted(external.items()):
+        dst = os.path.join(work_root, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(src, dst)
     merged_root = tmp_root
     cfg_path = None
 
@@ -690,8 +723,8 @@ def main():
         for entry in servers:
             entry[0].terminate()
         echo.shutdown()
-        if tmp_root:
-            shutil.rmtree(tmp_root, ignore_errors=True)
+        if work_root:
+            shutil.rmtree(work_root, ignore_errors=True)
         if cfg_path and os.path.exists(cfg_path):
             os.remove(cfg_path)
         for entry in servers:

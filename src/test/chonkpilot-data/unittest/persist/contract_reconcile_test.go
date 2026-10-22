@@ -242,10 +242,12 @@ func TestDataProducerKeysSubsetOfContract(t *testing.T) {
 		bus, _, _ := newTestPersist(t)
 		regInstance(t, bus)
 		refresh := collectTopic(t, bus, "data-prj-security-refresh")
+		// dir 必须是真实存在的绝对目录（validateSecurityEntry 校验存在性）→ 用临时目录构造。
+		secDir, _ := json.Marshal(map[string]any{"dir": t.TempDir(), "writable": true})
 		assertDataResult(t, c, bus, "data-prj-security-list", map[string]any{"req_id": "r1", "instance_id": "ins-test"})
 		assertDataResult(t, c, bus, "data-prj-security-save", map[string]any{
 			"req_id": "r2", "instance_id": "ins-test",
-			"data": map[string]any{"key": "dir-smoke", "value": `{"dir":"E:/x","writable":true}`},
+			"data": map[string]any{"key": "dir-smoke", "value": string(secDir)},
 		})
 		assertDataEvent(t, c, "data-prj-security-refresh", waitEvent(t, refresh, "data-prj-security-refresh"))
 		assertDataResult(t, c, bus, "data-prj-security-load", map[string]any{
