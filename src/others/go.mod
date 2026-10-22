@@ -6,7 +6,7 @@ require (
 	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0
-	github.com/lsong98sh/chonkpilot-mcp-gateway v0.0.0-00010101000000-000000000000
+	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 )
 
@@ -35,5 +35,3 @@ replace (
 )
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../lib/mcp-tools
-
-replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../chonkpilot-mcp-gateway

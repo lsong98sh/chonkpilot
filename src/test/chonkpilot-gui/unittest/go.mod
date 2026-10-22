@@ -44,7 +44,3 @@ replace github.com/jchv/go-webview2 => ../../../lib/go-webview2
 replace github.com/chonkpilot/chonkpilot-assembly => ../../../lib/assembly
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools
-
-replace github.com/lsong98sh/chonkpilot-chat => ../../../../../chonkpilot-chat
-
-replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../../../chonkpilot-mcp-gateway

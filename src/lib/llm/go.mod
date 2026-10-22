@@ -11,9 +11,9 @@ require (
 	github.com/chonkpilot/chonkpilot-plugin-compress v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0
 	github.com/chonkpilot/chonkpilot-task v0.0.0
-	github.com/lsong98sh/chonkpilot-chat v0.0.0-00010101000000-000000000000
-	github.com/lsong98sh/chonkpilot-mcp-gateway v0.0.0-00010101000000-000000000000
-	github.com/lsong98sh/chonkpilot-router v0.0.0-00010101000000-000000000000
+	github.com/lsong98sh/chonkpilot-chat v0.1.0
+	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0
+	github.com/lsong98sh/chonkpilot-router v0.1.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/sgtdi/fswatcher v1.3.0
 	golang.org/x/sys v0.47.0
@@ -68,9 +68,3 @@ replace github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 replace github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vfts
 
 replace github.com/chonkpilot/chonkpilot-task => ../task
-
-replace github.com/lsong98sh/chonkpilot-chat => ../../../../chonkpilot-chat
-
-replace github.com/lsong98sh/chonkpilot-router => ../../../../chonkpilot-router
-
-replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../../chonkpilot-mcp-gateway

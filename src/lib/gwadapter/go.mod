@@ -10,7 +10,7 @@ go 1.26.0
 
 require (
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
-	github.com/lsong98sh/chonkpilot-mcp-gateway v0.0.0-00010101000000-000000000000
+	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 )
 
@@ -26,5 +26,3 @@ require (
 )
 
 replace github.com/chonkpilot/chonkpilot-lib => ../core
-
-replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../../chonkpilot-mcp-gateway
