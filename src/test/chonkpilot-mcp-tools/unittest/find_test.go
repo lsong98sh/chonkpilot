@@ -3,19 +3,16 @@
 //
 // mcp-tools 的工具实现全部位于 internal/（外部模块无法 import），且 executor 与上层
 // 的契约是进程级（<exe> <tool> --input=<json> → stdout JSON/文本），因此本测试为
-// **进程级黑盒**：exec chonkpilot-core-executor.exe，断言 stdout/退出码（对齐
-// chonkpilot-test/chonkpilot-mcp-tools/systest/run_executor_tests.py 的调用形态）。
+// **进程级黑盒**：exec chonkpilot-tools-executor.exe（file 域 11 个原子工具），断言
+// stdout（results[]/summary）与退出码。
 //
-// 被测 exe：`dist/other/capability/executors/chonkpilot-core-executor.exe`（须经
+// 被测 exe：`dist/other/capability/executors/chonkpilot-tools-executor.exe`（须经
 // build-mcp-server.ps1 构建；D-28 产物分区后不在场时测试 Skip）。
 package chonkpilotmcptools
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -24,24 +21,29 @@ import (
 	"time"
 )
 
-// coreExe 定位 chonkpilot-core-executor.exe（相对本测试源文件路径，不依赖 cwd）。
-// 落点：dist/other/capability/executors/（build-mcp-server.ps1 现行产物布局，D-28 产物分区）。
+// distExe 定位 dist/other/capability/executors 下的 executor（相对本测试源文件路径，不依赖 cwd）。
 //
 // 产物缺失默认 Skip；设环境变量 CHONK_REQUIRE_DIST=1 时改为**强制失败**（防"假绿"——产物没构建
 // 却整包全绿）。默认 `go test ./...` 在无产物时仍不报红。
-func coreExe(t *testing.T) string {
+func distExe(t *testing.T, name string) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
-	p := filepath.Join(root, "dist", "other", "capability", "executors", "chonkpilot-core-executor.exe")
+	p := filepath.Join(root, "dist", "other", "capability", "executors", name)
 	if _, err := os.Stat(p); err == nil {
 		return p
 	}
 	requireDistOrSkip(t, "executor 未构建（先跑 build-mcp-server.ps1）", p)
 	return ""
+}
+
+// toolsExe 定位 file 域统一执行器 chonkpilot-tools-executor.exe。
+func toolsExe(t *testing.T) string {
+	t.Helper()
+	return distExe(t, "chonkpilot-tools-executor.exe")
 }
 
 // requireDistOrSkip：产物缺失时默认 Skip；设 CHONK_REQUIRE_DIST=1 则强制失败（门禁防假绿），
@@ -55,123 +57,90 @@ func requireDistOrSkip(t *testing.T, reason, path string) {
 	t.Skipf("%s", reason)
 }
 
-// runFind 以 <exe> filesys_run（DSL FIND 动作）执行查找，返回退出码与 **FIND 输出文本**。
-// 原 file_find 独立工具已收纳为 filesys_run 的 FIND 动作；FIND 的返回文本经 `=> #"<outfile>"`
-// 落盘后读回（filesys_run 的 JSON payload 不含动作文本，只含 modified/created/deleted/fails）。
-func runFind(t *testing.T, exe string, args map[string]any) (int, string) {
-	t.Helper()
-	out := filepath.Join(t.TempDir(), "find-out.txt")
-	script := buildFindScript(args, out)
-	dir := t.TempDir()
-	in := filepath.Join(dir, "in.json")
-	raw, err := json.Marshal(map[string]any{"script": script})
-	if err != nil {
-		t.Fatalf("marshal args: %v", err)
-	}
-	if err := os.WriteFile(in, raw, 0o600); err != nil {
-		t.Fatalf("write input: %v", err)
-	}
-	cmd := exec.Command(exe, "filesys_run", "--input="+in)
-	cmd.Env = append(os.Environ(), "CHONKPILOT_INSTANCE=unittest-l2")
-	var so, se bytes.Buffer
-	cmd.Stdout = &so
-	cmd.Stderr = &se
-	err = cmd.Run()
-	code := 0
-	if ee, ok := err.(*exec.ExitError); ok {
-		code = ee.ExitCode()
-	} else if err != nil {
-		t.Fatalf("exec: %v (stderr=%q)", err, se.String())
-	}
-	data, rerr := os.ReadFile(out)
-	if rerr != nil {
-		return code, so.String() // 失败：stdout 为错误消息
-	}
-	return code, string(data)
+// findHit 是 file_find 的一处内容命中。
+type findHit struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
 }
 
-// buildFindScript 把 file_find 风格参数映射为 FIND DSL 脚本（`=> #"<out>"` 捕获输出）。
-func buildFindScript(args map[string]any, out string) string {
-	parts := []string{`FIND #"` + filepath.ToSlash(args["path"].(string)) + `"`}
-	// depth 可能以 int（Go 字面量）或 float64（JSON 解码）传入 —— 两者都要接，否则 depth 静默丢失。
-	switch v := args["depth"].(type) {
-	case float64:
-		if v > 0 {
-			parts = append(parts, fmt.Sprintf("depth=%d", int(v)))
+// findItem 是 file_find 的一个结果项（json 模式）。
+type findItem struct {
+	Rel  string    `json:"rel"`
+	Hits []findHit `json:"hits"`
+}
+
+// findOut 是 file_find 单个 target 的结果（含状态与三种输出形态）。
+type findOut struct {
+	Status       string     `json:"status"`
+	Error        string     `json:"error"`
+	Items        []findItem `json:"items"`
+	Lines        []string   `json:"lines"`
+	Text         string     `json:"text"`
+	MatchedTotal int        `json:"matched_total"`
+	Truncated    bool       `json:"truncated"`
+}
+
+// runFind 以 file_find 执行一次查找。args 沿用旧 FIND 用例的参数名
+// （path/glob/grep/depth/output/limit/period），在内部映射为新形状
+// {purpose, targets:[{root, ...}]}；返回退出码、首个 target 结果与原始 stdout。
+func runFind(t *testing.T, exe string, args map[string]any) (int, findOut, string) {
+	t.Helper()
+	target := map[string]any{"root": args["path"]}
+	for _, k := range []string{
+		"glob", "grep", "regex", "depth", "output", "limit", "meta",
+		"maxHitsPerFile", "skipDirs", "ignoreFiles", "from", "to",
+	} {
+		if v, ok := args[k]; ok {
+			target[k] = v
 		}
-	case int:
-		if v > 0 {
-			parts = append(parts, fmt.Sprintf("depth=%d", v))
-		}
-	}
-	if v, ok := args["glob"].(string); ok && v != "" {
-		parts = append(parts, "glob="+quoteArg(v))
-	}
-	if v, ok := args["grep"].(string); ok && v != "" {
-		parts = append(parts, "grep="+quoteArg(v))
-	}
-	if v, ok := args["output"].(string); ok && v != "" {
-		parts = append(parts, "output="+v)
-	}
-	if v, ok := args["skip_dirs"].([]any); ok && len(v) > 0 {
-		parts = append(parts, "skip_dirs="+quoteArg(joinAny(v)))
-	}
-	if v, ok := args["ignore_files"].([]any); ok && len(v) > 0 {
-		parts = append(parts, "ignore_files="+quoteArg(joinAny(v)))
 	}
 	if p, ok := args["period"].(map[string]any); ok {
-		if s, ok := p["from"].(string); ok {
-			parts = append(parts, "from="+quoteArg(s))
+		if v, ok := p["from"]; ok {
+			target["from"] = v
 		}
-		if s, ok := p["to"].(string); ok {
-			parts = append(parts, "to="+quoteArg(s))
+		if v, ok := p["to"]; ok {
+			target["to"] = v
 		}
 	}
-	parts = append(parts, `=> #"`+filepath.ToSlash(out)+`"`)
-	return strings.Join(parts, " ")
-}
+	payload := map[string]any{"purpose": "file_find 黑盒测试", "targets": []any{target}}
+	code, out := runTool(t, exe, "file_find", payload, baseEnv())
 
-// joinAny 把 []any 拼成逗号分隔字符串。
-func joinAny(v []any) string {
-	ss := make([]string, 0, len(v))
-	for _, x := range v {
-		ss = append(ss, fmt.Sprint(x))
+	var env struct {
+		Results []findOut `json:"results"`
 	}
-	return strings.Join(ss, ",")
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		if code != 0 {
+			return code, findOut{Status: "failed", Error: out}, out
+		}
+		t.Fatalf("stdout 不是结果 JSON：%v\n%s", err, out)
+	}
+	if len(env.Results) == 0 {
+		t.Fatalf("results 为空：%s", out)
+	}
+	return code, env.Results[0], out
 }
 
-// quoteArg 用双引号包裹 FIND 选项值并转义反斜杠/引号。
-func quoteArg(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return `"` + s + `"`
-}
-
-// normPath 归一化输出行路径（反斜杠 → 斜杠、清理）。输出行 = 相对搜索根的 rel 路径。
+// normPath 归一化输出行路径（反斜杠 → 斜杠、清理）。结果 rel 是相对搜索根的路径。
 func normPath(s string) string {
 	return filepath.ToSlash(filepath.Clean(strings.TrimSpace(s)))
 }
 
-// assertFileSet 断言 file 模式输出 = 期望路径集合（顺序无关、数量一致、无重复/多余行）。
-// 空期望时断言 "(file: no matches)"。
-func assertFileSet(t *testing.T, exit int, out string, want []string) {
+// assertFileSet 断言 items 模式结果 = 期望路径集合（顺序无关、数量一致、无重复/多余项）。
+// 空期望时断言零条目。
+func assertFileSet(t *testing.T, code int, res findOut, out string, want []string) {
 	t.Helper()
-	if exit != 0 {
-		t.Fatalf("exit=%d 应成功；out=%q", exit, out)
-	}
-	if len(want) == 0 {
-		if !strings.Contains(out, "(file: no matches)") {
-			t.Fatalf("期望无匹配文案，got out=%q", out)
-		}
-		return
+	if code != 0 {
+		t.Fatalf("exit=%d 应成功；out=%q", code, out)
 	}
 	got := map[string]bool{}
-	for _, ln := range strings.Split(out, "\n") {
-		ln = strings.TrimSpace(ln)
-		if ln == "" || strings.HasPrefix(ln, "(file:") {
-			continue
+	for _, it := range res.Items {
+		got[normPath(it.Rel)] = true
+	}
+	if len(want) == 0 {
+		if len(got) != 0 {
+			t.Fatalf("期望无匹配，got=%v (out=%q)", sortedKeys(got), out)
 		}
-		got[normPath(ln)] = true
+		return
 	}
 	wantMap := map[string]bool{}
 	for _, w := range want {
@@ -239,116 +208,165 @@ func makeTree(t *testing.T) (string, map[string]time.Time) {
 	return root, mts
 }
 
-// —— 回归基线：无过滤 / glob / depth / grep / summary / tree / 无匹配 ——
+// makeDatedTree 建 mtime 固定日期的目录树（date-only period 过滤用）：
+//
+//	a.txt 2026-06-15 / sub/e.txt 2026-06-14 / b.txt 2026-06-16 / c.txt 2026-06-17 / sub/d.txt 2026-06-18
+func makeDatedTree(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	at := func(day int) time.Time { return time.Date(2026, 6, day, 10, 0, 0, 0, time.Local) }
+	files := map[string]time.Time{
+		"a.txt":     at(15),
+		"b.txt":     at(16),
+		"c.txt":     at(17),
+		"sub/d.txt": at(18),
+		"sub/e.txt": at(14),
+	}
+	for rel, mt := range files {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(abs), err)
+		}
+		if err := os.WriteFile(abs, []byte(rel), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+		if err := os.Chtimes(abs, mt, mt); err != nil {
+			t.Fatalf("chtimes %s: %v", rel, err)
+		}
+	}
+	return root
+}
+
+// —— 回归基线：无过滤 / glob / depth / grep / limit / tree / 无匹配 ——
 
 func TestFindBaseline(t *testing.T) {
-	exe := coreExe(t)
+	exe := toolsExe(t)
 	root, _ := makeTree(t)
 
 	t.Run("全部递归列出", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{"path": root})
-		assertFileSet(t, code, out, []string{"a.txt", "b.txt", "c.txt", "sub/d.txt", "sub/e.txt"})
+		code, res, out := runFind(t, exe, map[string]any{"path": root})
+		assertFileSet(t, code, res, out, []string{"a.txt", "b.txt", "c.txt", "sub/d.txt", "sub/e.txt"})
 	})
-	t.Run("glob 过滤", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{"path": root, "glob": "*.txt"})
-		assertFileSet(t, code, out, []string{"a.txt", "b.txt", "c.txt", "sub/d.txt", "sub/e.txt"})
+	t.Run("glob 后缀全命中", func(t *testing.T) {
+		code, res, out := runFind(t, exe, map[string]any{"path": root, "glob": "*.txt"})
+		assertFileSet(t, code, res, out, []string{"a.txt", "b.txt", "c.txt", "sub/d.txt", "sub/e.txt"})
+	})
+	t.Run("glob 递归 **/", func(t *testing.T) {
+		code, res, out := runFind(t, exe, map[string]any{"path": root, "glob": "**/*.txt"})
+		assertFileSet(t, code, res, out, []string{"sub/d.txt", "sub/e.txt"})
 	})
 	t.Run("glob 仅根", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{"path": root, "glob": "a.*"})
-		assertFileSet(t, code, out, []string{"a.txt"})
+		code, res, out := runFind(t, exe, map[string]any{"path": root, "glob": "a.*"})
+		assertFileSet(t, code, res, out, []string{"a.txt"})
 	})
 	t.Run("depth=1 仅当前目录", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{"path": root, "depth": 1})
-		assertFileSet(t, code, out, []string{"a.txt", "b.txt", "c.txt"})
+		code, res, out := runFind(t, exe, map[string]any{"path": root, "depth": 1})
+		assertFileSet(t, code, res, out, []string{"a.txt", "b.txt", "c.txt"})
 	})
 	t.Run("glob 无匹配", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{"path": root, "glob": "*.nomatch"})
-		assertFileSet(t, code, out, nil)
+		code, res, out := runFind(t, exe, map[string]any{"path": root, "glob": "*.nomatch"})
+		assertFileSet(t, code, res, out, nil)
 	})
-	t.Run("grep 命中（summary）", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{"path": root, "grep": "TODO", "output": "summary"})
+	t.Run("limit 截断", func(t *testing.T) {
+		code, res, out := runFind(t, exe, map[string]any{"path": root, "limit": 2})
 		if code != 0 {
 			t.Fatalf("exit=%d out=%q", code, out)
 		}
-		if !strings.Contains(out, "c.txt") {
-			t.Fatalf("grep 应命中 c.txt，out=%q", out)
+		if len(res.Items) != 2 {
+			t.Fatalf("limit=2 应只返回 2 项，got=%d out=%q", len(res.Items), out)
 		}
-		if strings.Contains(out, "a.txt") || strings.Contains(out, "sub") {
-			t.Fatalf("grep 不应命中其他文件，out=%q", out)
+		if res.MatchedTotal != 5 {
+			t.Fatalf("matched_total 应为精确值 5，got=%d out=%q", res.MatchedTotal, out)
 		}
-		if !strings.Contains(out, "TODO in c") {
-			t.Fatalf("summary 应含命中行内容，out=%q", out)
+		if !res.Truncated {
+			t.Fatalf("超限应置 truncated=true，out=%q", out)
+		}
+		assertFileSet(t, code, res, out, []string{"a.txt", "b.txt"})
+	})
+	t.Run("grep 命中", func(t *testing.T) {
+		code, res, out := runFind(t, exe, map[string]any{"path": root, "grep": "TODO"})
+		if code != 0 {
+			t.Fatalf("exit=%d out=%q", code, out)
+		}
+		if len(res.Items) != 1 || normPath(res.Items[0].Rel) != "c.txt" {
+			t.Fatalf("grep 应只命中 c.txt，got=%+v out=%q", res.Items, out)
+		}
+		if len(res.Items[0].Hits) == 0 {
+			t.Fatalf("grep 结果应含命中行，out=%q", out)
+		}
+		if !strings.Contains(res.Items[0].Hits[0].Text, "TODO in c") {
+			t.Fatalf("命中行应含原文，got=%q", res.Items[0].Hits[0].Text)
 		}
 	})
 	t.Run("tree 输出", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{"path": root, "output": "tree"})
+		code, res, out := runFind(t, exe, map[string]any{"path": root, "output": "tree"})
 		if code != 0 {
 			t.Fatalf("exit=%d out=%q", code, out)
 		}
-		for _, want := range []string{".", "sub/", "a.txt", "e.txt"} {
-			if !strings.Contains(out, want) {
-				t.Fatalf("tree 缺 %q，out=%q", want, out)
+		for _, want := range []string{"a.txt", "e.txt", "  d.txt"} {
+			if !strings.Contains(res.Text, want) {
+				t.Fatalf("tree 缺 %q，text=%q", want, res.Text)
 			}
 		}
 	})
 	t.Run("tree 空目录", func(t *testing.T) {
 		empty := t.TempDir()
-		code, out := runFind(t, exe, map[string]any{"path": empty, "output": "tree"})
-		if code != 0 || !strings.Contains(out, "(tree: empty)") {
-			t.Fatalf("tree 空目录应输出 (tree: empty)；code=%d out=%q", code, out)
+		code, res, out := runFind(t, exe, map[string]any{"path": empty, "output": "tree"})
+		if code != 0 {
+			t.Fatalf("exit=%d out=%q", code, out)
+		}
+		if strings.TrimSpace(res.Text) != "" || res.MatchedTotal != 0 {
+			t.Fatalf("空目录应无条目，got text=%q matched_total=%d out=%q", res.Text, res.MatchedTotal, out)
 		}
 	})
 }
 
-// —— period：RFC3339 / date-only / 边界 / 单端 / 组合 ——
+// —— period：date-only（YYYY-MM-DD）区间 / 边界 / 单端 / 组合 ——
 
 func TestFindPeriod(t *testing.T) {
-	exe := coreExe(t)
-	root, mts := makeTree(t)
-	rfc := func(rel string) string { return mts[filepath.Base(rel)].Format(time.RFC3339) }
+	exe := toolsExe(t)
+	root := makeDatedTree(t)
 
-	t.Run("闭区间精确命中（含边界）", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{
+	t.Run("闭区间（含两端）", func(t *testing.T) {
+		code, res, out := runFind(t, exe, map[string]any{
 			"path":   root,
-			"period": map[string]any{"from": rfc("b.txt"), "to": rfc("d.txt")},
+			"period": map[string]any{"from": "2026-06-16", "to": "2026-06-17"},
 		})
-		// 边界 b.txt(==from) 与 d.txt(==to) 都应含；a/e 排除
-		assertFileSet(t, code, out, []string{"b.txt", "c.txt", "sub/d.txt"})
+		assertFileSet(t, code, res, out, []string{"b.txt", "c.txt"})
 	})
 	t.Run("仅 from（≥）", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{
+		code, res, out := runFind(t, exe, map[string]any{
 			"path":   root,
-			"period": map[string]any{"from": rfc("c.txt")},
+			"period": map[string]any{"from": "2026-06-17"},
 		})
-		assertFileSet(t, code, out, []string{"c.txt", "sub/d.txt"})
+		assertFileSet(t, code, res, out, []string{"c.txt", "sub/d.txt"})
 	})
 	t.Run("仅 to（≤）", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{
+		code, res, out := runFind(t, exe, map[string]any{
 			"path":   root,
-			"period": map[string]any{"to": rfc("b.txt")},
+			"period": map[string]any{"to": "2026-06-16"},
 		})
-		assertFileSet(t, code, out, []string{"a.txt", "b.txt", "sub/e.txt"})
+		assertFileSet(t, code, res, out, []string{"a.txt", "b.txt", "sub/e.txt"})
 	})
 	t.Run("区间无文件", func(t *testing.T) {
-		mid := mts["b.txt"].Add(time.Minute) // 落在 a-b 之间无文件
-		code, out := runFind(t, exe, map[string]any{
+		code, res, out := runFind(t, exe, map[string]any{
 			"path":   root,
-			"period": map[string]any{"from": mid.Add(-time.Second).Format(time.RFC3339), "to": mid.Format(time.RFC3339)},
+			"period": map[string]any{"from": "2026-06-20", "to": "2026-06-21"},
 		})
-		assertFileSet(t, code, out, nil)
+		assertFileSet(t, code, res, out, nil)
 	})
 	t.Run("与 glob 组合", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{
+		code, res, out := runFind(t, exe, map[string]any{
 			"path":   root,
 			"glob":   "*.txt",
-			"period": map[string]any{"to": rfc("b.txt")},
+			"period": map[string]any{"to": "2026-06-16"},
 		})
-		assertFileSet(t, code, out, []string{"a.txt", "b.txt", "sub/e.txt"})
+		assertFileSet(t, code, res, out, []string{"a.txt", "b.txt", "sub/e.txt"})
 	})
 }
 
 func TestFindPeriodDateOnly(t *testing.T) {
-	exe := coreExe(t)
+	exe := toolsExe(t)
 	root := t.TempDir()
 	// 固定锚点日（避开“今天”漂移）；mtime 设于日内 10:00/23:00（本地时区）
 	dayFrom := time.Date(2026, 6, 15, 10, 0, 0, 0, time.Local)
@@ -370,61 +388,68 @@ func TestFindPeriodDateOnly(t *testing.T) {
 	}
 
 	t.Run("date-only from 含当日整天", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{
+		code, res, out := runFind(t, exe, map[string]any{
 			"path":   root,
 			"period": map[string]any{"from": "2026-06-15"},
 		})
 		// in1(6-15 10:00) 与 in2(6-16 23:00) ≥ 6-15 00:00 均含；out(6-14) 排除
-		assertFileSet(t, code, out, []string{"in1.txt", "in2.txt"})
+		assertFileSet(t, code, res, out, []string{"in1.txt", "in2.txt"})
 	})
 	t.Run("date-only to 含当日整天", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{
+		code, res, out := runFind(t, exe, map[string]any{
 			"path":   root,
 			"period": map[string]any{"to": "2026-06-15"},
 		})
 		// in1 与 out ≤ 6-15 23:59:59 含；in2(6-16) 排除
-		assertFileSet(t, code, out, []string{"in1.txt", "out.txt"})
+		assertFileSet(t, code, res, out, []string{"in1.txt", "out.txt"})
 	})
 	t.Run("date-only 区间单日", func(t *testing.T) {
-		code, out := runFind(t, exe, map[string]any{
+		code, res, out := runFind(t, exe, map[string]any{
 			"path":   root,
 			"period": map[string]any{"from": "2026-06-16", "to": "2026-06-16"},
 		})
-		assertFileSet(t, code, out, []string{"in2.txt"})
+		assertFileSet(t, code, res, out, []string{"in2.txt"})
 	})
 }
 
-// —— period 非法输入：必须报错且不返回文件 ——
+// —— period 非法输入：格式错误 → 失败；非字符串 / 非对象 → 宽松忽略 ——
 
 func TestFindPeriodInvalid(t *testing.T) {
-	exe := coreExe(t)
-	root, _ := makeTree(t)
+	exe := toolsExe(t)
+	root := makeDatedTree(t)
 
 	invalid := []struct {
 		name string
 		args map[string]any
 		want string
 	}{
-		// 注：原「period.from 非字符串」用例无法在 FIND DSL 中表达（选项值恒为字符串），已移除。
-		{"from 无法解析", map[string]any{"path": root, "period": map[string]any{"from": "not-a-date"}}, "无法解析"},
-		{"to 无法解析", map[string]any{"path": root, "period": map[string]any{"to": "2026-13-01"}}, "无法解析"},
-		{"from 晚于 to", map[string]any{"path": root, "period": map[string]any{"from": "2026-09-02", "to": "2026-09-01"}}, "period.from 晚于 period.to"},
-		{"period 非对象", map[string]any{"path": root, "period": "2026-09-01"}, ""}, // 顶层非对象 → 不过滤（宽松容忍）
+		{"from 无法解析", map[string]any{"path": root, "period": map[string]any{"from": "not-a-date"}}, "bad from"},
+		{"to 无法解析", map[string]any{"path": root, "period": map[string]any{"to": "2026-13-01"}}, "bad to"},
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
-			code, out := runFind(t, exe, tc.args)
-			if tc.want == "" {
-				// 顶层 period 非对象被容忍 → 应成功且列出全部
-				assertFileSet(t, code, out, []string{"a.txt", "b.txt", "c.txt", "sub/d.txt", "sub/e.txt"})
-				return
-			}
+			code, res, out := runFind(t, exe, tc.args)
 			if code == 0 {
 				t.Fatalf("非法输入应失败退出，got code=0 out=%q", out)
 			}
-			if !strings.Contains(out, tc.want) {
+			if !strings.Contains(res.Error, tc.want) {
 				t.Fatalf("错误消息应含 %q，got out=%q", tc.want, out)
 			}
+		})
+	}
+
+	// 宽松容忍：period 非对象 / 非字符串值 → 视为不过滤（列出全部）。
+	tolerant := []struct {
+		name string
+		args map[string]any
+	}{
+		{"period 非对象", map[string]any{"path": root, "period": "2026-09-01"}},
+		{"from 非字符串", map[string]any{"path": root, "from": 20260901}},
+	}
+	for _, tc := range tolerant {
+		t.Run(tc.name, func(t *testing.T) {
+			code, res, out := runFind(t, exe, tc.args)
+			assertFileSet(t, code, res, out, []string{"a.txt", "b.txt", "c.txt", "sub/d.txt", "sub/e.txt"})
 		})
 	}
 }

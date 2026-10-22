@@ -33,6 +33,19 @@ const (
 	ErrorInvalid ErrorKind = "invalid"
 )
 
+// Phase 是**失败阶段**（仅内部用于重试分流，不进消息面）。
+//
+// 决策顺序（RETRY-2）：先按 Kind（auth/protocol/invalid 直接终态；rate_limit/server 按次数重试）；
+// Kind 为 network/timeout 时再按 Phase 分流（dial / first_byte → 上限 retryCount；stream 且
+// Emitted == 0 → 最多 1 次）。适配器未赋值（空串）按 PhaseStream 保守处理。
+type Phase string
+
+const (
+	PhaseDial      Phase = "dial"       // DNS / TCP / TLS 未建立
+	PhaseFirstByte Phase = "first_byte" // 请求已发出，未收到首字节（含首字节超时）
+	PhaseStream    Phase = "stream"     // 已开始收流（已收到响应头/首字节）
+)
+
 // Error 是分类错误（适配器返回、事件携带、Call 前置校验共用同一类型）。
 type Error struct {
 	Kind       ErrorKind
@@ -40,6 +53,15 @@ type Error struct {
 	Retryable  bool
 	Status     int           // HTTP 状态码（0 = 非 HTTP 失败）
 	RetryAfter time.Duration // 0 = 未提供（解析 Retry-After）
+	Phase      Phase         // 失败阶段（空 = 未标注，按 stream 保守处理）
+}
+
+// WithPhase 标注失败阶段（nil 安全，便于适配器在错误构造处链式调用）。
+func (e *Error) WithPhase(p Phase) *Error {
+	if e != nil {
+		e.Phase = p
+	}
+	return e
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("[%s] %s", e.Kind, e.Message) }

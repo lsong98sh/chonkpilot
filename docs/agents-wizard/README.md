@@ -1,6 +1,7 @@
 # 场景向导（Agent Wizard）设计包
 
-> 状态：🔵 设计稿 ｜ 日期：2026-10-04
+> 状态：✅ **已实施（2026-10-21 核验）** ｜ 设计稿日期：2026-10-04
+> 代码落点：`src/lib/llm/server/wizard.go`（`onAgentWizardProbe` / `onAgentWizardGenerate` / `onAgentWizardSkip`）· `wizard_compose.go` · 前端 `views/scenario/ScenarioWizardDialog.vue` · i18n `locales/*/wizard.json` · 测试 `wizard_compose_test.go` / `wizard_generate_test.go` · L4 `systest/run_sem_wizard.py`
 > 关联：[提示词内容纲要](../提示词内容纲要.md) · [模式选项详细](../模式选项详细.md) · [25-MCP与场景分层模型](../../docs/spec/10-architecture/25-MCP与场景分层模型.md) · [37-场景](../../docs/spec/30-function-points/37-场景.md) · [61-消息一览](../../docs/spec/60-reference/61-消息一览.md) · [28-plugins](../../docs/spec/20-modules/28-plugins.md)
 
 ## 1. 一句话目标

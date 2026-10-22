@@ -192,7 +192,7 @@ agent **只"注入"不"注册"**：
 | **第三方** | **一律加别名** | 第三方（下游 server，`Origin=user`）条目一律带**来源别名前缀** `<server名>_`（`entrySourcePrefix`），与内置 `self_*`、知识库条目区分 |
 
 - **格式约定**：
-  - **agent 场景前缀** = **`<场景id>/<agent名>`**（分隔符 `/`；场景 id = 场景目录名，本模块 §6）——**注入面**（§3 团队成员段）、**`llm_run` 委派**、**`agentDelegable`**、**子轮次 system 读取**（`registeredAgentDef` / `resolveAgentDef`）**同一口径**；引用可带前缀（精确命中）或裸名（注册表内**唯一**同名才命中；跨场景重名须带前缀；裸名歧义 → 不解析）。
+  - **agent 场景前缀** = **`<场景id>/<agent名>`**（分隔符 `/`；场景 id = 场景目录名，本模块 §6）——**注入面**（§3 团队成员段）、**`dsl_run` 委派**、**`agentDelegable`**、**子轮次 system 读取**（`registeredAgentDef` / `resolveAgentDef`）**同一口径**；引用可带前缀（精确命中）或裸名（注册表内**唯一**同名才命中；跨场景重名须带前缀；裸名歧义 → 不解析）。
   - **第三方别名（来源前缀）** = **`<server名>_`**（沿用既有 `applyPrefix` 缺省形态，非新分隔符；`namespace "-"` 对第三方**不生效** → 强制回落该前缀）；名字往返一致（`mcp_find` / `mcp_load` 返回名 = 可直接 `tools/call` / `mcp_invoke` 的名）。
   - **唯一性拒绝策略** = 同类同名注册**拒绝并返回含来源的明确错误**（**不静默覆盖**）；gateway 落点见 [26 §4.3.1](../20-modules/26-mcp-gateway.md)。
 - **张力闭环**：④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）：④ 随 `data-scenario-restore` 消息删除而消失（app 级改为**可直接编辑**）；⑥ 由「app 级可编辑 + 场景 id 全局唯一」承载。

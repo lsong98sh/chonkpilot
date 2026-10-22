@@ -115,6 +115,13 @@ export const MsgTopics = {
   dataSessionSetSummary: 'data-session-set-summary',
   dataSessionCompleteTurn: 'data-session-complete-turn',
   dataSessionCleanupStale: 'data-session-cleanup-stale',
+  dataInboxAppend: 'data-inbox-append',
+  dataInboxList: 'data-inbox-list',
+  dataInboxUpdate: 'data-inbox-update',
+  dataInboxCommit: 'data-inbox-commit',
+  dataAskPending: 'data-ask-pending',
+  dataTurnEventAppend: 'data-turn-event-append',
+  dataTurnEventCleanup: 'data-turn-event-cleanup',
   dataSessionLoadMessages: 'data-session-load-messages',
   dataSessionContext: 'data-session-context',
   dataSessionGroupParticipantsLoad: 'data-session-group-participants-load',
@@ -148,6 +155,10 @@ export const MsgTopics = {
   instanceGotoTop: 'instance-goto-top',
   llmStart: 'llm-start',
   llmSend: 'llm-send',
+  llmInboxAdd: 'llm-inbox-add',
+  llmInboxList: 'llm-inbox-list',
+  llmInboxDiscard: 'llm-inbox-discard',
+  llmInboxPromote: 'llm-inbox-promote',
   llmCancel: 'llm-cancel',
   askUserReply: 'ask-user-reply',
   toolRetry: 'tool-retry',
@@ -166,6 +177,7 @@ export const MsgTopics = {
   sessionReceive: 'session-receive',
   sessionComplete: 'session-complete',
   sessionRetry: 'session-retry',
+  sessionInterrupted: 'session-interrupted',
   sessionCompress: 'session-compress',
   sessionAsk: 'session-ask',
   sessionTurnStart: 'session-turn-start',
@@ -238,10 +250,13 @@ export const FieldKeys = {
   asset_kind: 'asset_kind',
   async: 'async',
   async_threshold: 'async_threshold',
+  at: 'at',
+  auto_continue_delay_ms: 'auto_continue_delay_ms',
   b64: 'b64',
   baseUrl: 'baseUrl',
   base_dicts: 'base_dicts',
   before_turn_id: 'before_turn_id',
+  brief: 'brief',
   brief_tokens: 'brief_tokens',
   cached_rows: 'cached_rows',
   cancelled: 'cancelled',
@@ -305,7 +320,9 @@ export const FieldKeys = {
   hit: 'hit',
   hot: 'hot',
   id: 'id',
+  idempotency_key: 'idempotency_key',
   ids: 'ids',
+  inbox_id: 'inbox_id',
   include_closed: 'include_closed',
   include_snapshot: 'include_snapshot',
   indexed_at: 'indexed_at',
@@ -313,6 +330,7 @@ export const FieldKeys = {
   instance_id: 'instance_id',
   isError: 'isError',
   is_dir: 'is_dir',
+  items: 'items',
   key: 'key',
   keys: 'keys',
   kind: 'kind',
@@ -377,6 +395,7 @@ export const FieldKeys = {
   path: 'path',
   paths: 'paths',
   payload: 'payload',
+  pending_only: 'pending_only',
   playbook: 'playbook',
   plugin: 'plugin',
   pre_hook_subject: 'pre_hook_subject',
@@ -403,6 +422,7 @@ export const FieldKeys = {
   result_digest: 'result_digest',
   result_summary: 'result_summary',
   results: 'results',
+  retention_days: 'retention_days',
   retry_attempt: 'retry_attempt',
   retry_count: 'retry_count',
   retry_wait_ms: 'retry_wait_ms',
@@ -415,6 +435,7 @@ export const FieldKeys = {
   schema: 'schema',
   scope: 'scope',
   selectedKey: 'selectedKey',
+  seq: 'seq',
   server: 'server',
   servers: 'servers',
   session: 'session',
@@ -446,6 +467,7 @@ export const FieldKeys = {
   title: 'title',
   tool: 'tool',
   tool_call_id: 'tool_call_id',
+  tool_call_status: 'tool_call_status',
   tools: 'tools',
   top_session: 'top_session',
   total: 'total',
@@ -495,9 +517,12 @@ export const FieldDict = {
   asset_kind: 'asset_kind',
   async: 'async',
   async_threshold: 'async_threshold',
+  at: 'at',
+  auto_continue_delay_ms: 'auto_continue_delay_ms',
   b64: 'b64',
   base_dicts: 'base_dicts',
   before_turn_id: 'before_turn_id',
+  brief: 'brief',
   brief_tokens: 'brief_tokens',
   'builtin-mcp-servers': 'mcpServers',
   cached_rows: 'cached_rows',
@@ -563,7 +588,9 @@ export const FieldDict = {
   hit: 'hit',
   hot: 'hot',
   id: 'id',
+  idempotency_key: 'idempotency_key',
   ids: 'ids',
+  inbox_id: 'inbox_id',
   include_closed: 'include_closed',
   include_snapshot: 'include_snapshot',
   indexed_at: 'indexed_at',
@@ -575,6 +602,7 @@ export const FieldDict = {
   init_git: 'init_git',
   instance_id: 'instance_id',
   is_dir: 'is_dir',
+  items: 'items',
   key: 'key',
   keys: 'keys',
   kind: 'kind',
@@ -644,6 +672,7 @@ export const FieldDict = {
   path: 'path',
   paths: 'paths',
   payload: 'payload',
+  pending_only: 'pending_only',
   playbook: 'playbook',
   plugin: 'plugin',
   pre_hook_subject: 'pre_hook_subject',
@@ -671,6 +700,7 @@ export const FieldDict = {
   result_digest: 'result_digest',
   result_summary: 'result_summary',
   results: 'results',
+  retention_days: 'retention_days',
   retry_attempt: 'retry_attempt',
   retry_count: 'retry_count',
   retry_wait_ms: 'retry_wait_ms',
@@ -684,6 +714,7 @@ export const FieldDict = {
   schema: 'schema',
   scope: 'scope',
   sender_agent: 'sender_agent',
+  seq: 'seq',
   server: 'server',
   servers: 'servers',
   session: 'session',
@@ -714,6 +745,7 @@ export const FieldDict = {
   title: 'title',
   tool: 'tool',
   'tool-call-id': 'tool_call_id',
+  tool_call_status: 'tool_call_status',
   tools: 'tools',
   top_session: 'top_session',
   total: 'total',
@@ -1532,6 +1564,85 @@ export const DataSessionCleanupStaleKeys = {
   ok: 'ok',
 }
 
+/** data-inbox-append 字段键（payload/result/event 合并去重）。 */
+export const DataInboxAppendKeys = {
+  content: 'content',
+  effort: 'effort',
+  id: 'id',
+  idempotency_key: 'idempotency_key',
+  instance_id: 'instance_id',
+  llm: 'llm',
+  ok: 'ok',
+  scenario_id: 'scenario_id',
+  session: 'session',
+  source: 'source',
+  think: 'think',
+  turn_id: 'turn_id',
+  type: 'type',
+}
+
+/** data-inbox-list 字段键（payload/result/event 合并去重）。 */
+export const DataInboxListKeys = {
+  instance_id: 'instance_id',
+  items: 'items',
+  ok: 'ok',
+  session: 'session',
+  status: 'status',
+}
+
+/** data-inbox-update 字段键（payload/result/event 合并去重）。 */
+export const DataInboxUpdateKeys = {
+  content: 'content',
+  id: 'id',
+  instance_id: 'instance_id',
+  ok: 'ok',
+  status: 'status',
+  turn_id: 'turn_id',
+  type: 'type',
+}
+
+/** data-inbox-commit 字段键（payload/result/event 合并去重）。 */
+export const DataInboxCommitKeys = {
+  brief: 'brief',
+  id: 'id',
+  inbox_id: 'inbox_id',
+  instance_id: 'instance_id',
+  msg: 'msg',
+  ok: 'ok',
+  session_id: 'session_id',
+  tool_call_status: 'tool_call_status',
+  turn_id: 'turn_id',
+}
+
+/** data-ask-pending 字段键（payload/result/event 合并去重）。 */
+export const DataAskPendingKeys = {
+  ask_id: 'ask_id',
+  instance_id: 'instance_id',
+  items: 'items',
+  ok: 'ok',
+  pending_only: 'pending_only',
+}
+
+/** data-turn-event-append 字段键（payload/result/event 合并去重）。 */
+export const DataTurnEventAppendKeys = {
+  at: 'at',
+  instance_id: 'instance_id',
+  ok: 'ok',
+  payload: 'payload',
+  seq: 'seq',
+  session_id: 'session_id',
+  turn_id: 'turn_id',
+  type: 'type',
+}
+
+/** data-turn-event-cleanup 字段键（payload/result/event 合并去重）。 */
+export const DataTurnEventCleanupKeys = {
+  deleted: 'deleted',
+  instance_id: 'instance_id',
+  ok: 'ok',
+  retention_days: 'retention_days',
+}
+
 /** data-session-load-messages 字段键（payload/result/event 合并去重）。 */
 export const DataSessionLoadMessagesKeys = {
   messages: 'messages',
@@ -1785,6 +1896,46 @@ export const LlmSendKeys = {
   type: 'type',
 }
 
+/** llm-inbox-add 字段键（payload/result/event 合并去重）。 */
+export const LlmInboxAddKeys = {
+  content: 'content',
+  effort: 'effort',
+  id: 'id',
+  idempotency_key: 'idempotency_key',
+  instance_id: 'instance_id',
+  llm: 'llm',
+  ok: 'ok',
+  scenario_id: 'scenario_id',
+  session: 'session',
+  think: 'think',
+  turn: 'turn',
+  type: 'type',
+}
+
+/** llm-inbox-list 字段键（payload/result/event 合并去重）。 */
+export const LlmInboxListKeys = {
+  instance_id: 'instance_id',
+  items: 'items',
+  ok: 'ok',
+  session: 'session',
+  status: 'status',
+}
+
+/** llm-inbox-discard 字段键（payload/result/event 合并去重）。 */
+export const LlmInboxDiscardKeys = {
+  id: 'id',
+  instance_id: 'instance_id',
+  ok: 'ok',
+}
+
+/** llm-inbox-promote 字段键（payload/result/event 合并去重）。 */
+export const LlmInboxPromoteKeys = {
+  id: 'id',
+  instance_id: 'instance_id',
+  ok: 'ok',
+  type: 'type',
+}
+
 /** llm-cancel 字段键（payload/result/event 合并去重）。 */
 export const LlmCancelKeys = {
   cancelled: 'cancelled',
@@ -1954,6 +2105,17 @@ export const SessionRetryKeys = {
   retry_attempt: 'retry_attempt',
   retry_count: 'retry_count',
   retry_wait_ms: 'retry_wait_ms',
+  retryable: 'retryable',
+  session: 'session',
+  turn: 'turn',
+}
+
+/** session-interrupted 字段键（payload/result/event 合并去重）。 */
+export const SessionInterruptedKeys = {
+  auto_continue_delay_ms: 'auto_continue_delay_ms',
+  code: 'code',
+  instance_id: 'instance_id',
+  message: 'message',
   retryable: 'retryable',
   session: 'session',
   turn: 'turn',

@@ -18,6 +18,8 @@ import { createLayoutEngine } from '../layout-free/engine.js'
 import { createViewRegistry } from './views.registry.js'
 import { createLayoutTranslator, setLayoutTranslator } from './i18n.js'
 import { createLayoutPersist } from './persist.js'
+import { installProfileCommands, profileEditorSave, useProfileStore } from './profiles.js'
+import { setLayoutDeps } from '../layout-free/deps.js'
 import { i18n } from '../plugins/i18n'
 import mq from '../utils/mq'
 import { loadInitData, saveLayoutState } from '../api/file'
@@ -57,8 +59,14 @@ export function setupLayoutEngine(app) {
   })
   engine.install(app)
 
+  // 布局档案（UILAYOUT-2 / WIN-026）：编辑器保存钩子 + 命令订阅
+  setLayoutDeps({ editorSaveHook: profileEditorSave })
+  installProfileCommands()
+
   // 诊断/联调入口（非业务 API；不参与任何逻辑）
-  if (typeof window !== 'undefined') window.__ckLayout = { engine, persist }
+  if (typeof window !== 'undefined') {
+    window.__ckLayout = { engine, persist, profiles: useProfileStore() }
+  }
   return engine
 }
 

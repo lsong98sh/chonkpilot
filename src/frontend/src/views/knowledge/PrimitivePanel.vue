@@ -8,7 +8,7 @@
     <!-- 顶部标题：类型标签 + 标题（可编辑，智能体模式由 AgentEditor 承载名称）+ 路径 + 未保存标记 -->
     <div class="prim-head">
       <Tag v-if="token" size="small" :type="tagType">{{ typeLabel }}</Tag>
-      <Input v-if="!isAgent" v-model="form.title" class="prim-title" :placeholder="t('knowledgeList.title_ph')" />
+      <Input v-if="!isAgent" v-model="form.title" :maxlength="MAX_TITLE" required class="prim-title" :placeholder="t('knowledgeList.title_ph')" />
       <span class="prim-path" :title="path">{{ path }}</span>
       <span v-if="dirty" class="prim-dirty">{{ t('common.unsaved') }}</span>
       <!-- 目标文件（当前编辑的契约 md）的系统处理：与导航右键同口径（gui.reveal / gui.open-with） -->
@@ -249,6 +249,8 @@ import PromptVariablesButton from '../../components/common/PromptVariablesButton
 import { useVariableInsert } from '../../composables/usePromptVariables'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+// INPUTVAL-1：原语标题必填 + ≤128 字符。
+import { MAX_TITLE, trimStr } from '../../utils/fieldRules'
 
 const props = defineProps({
   path: { type: String, required: true },
@@ -756,6 +758,12 @@ async function handleOptimizeContent() {
 
 async function handleSave() {
   if (!props.path) return
+  // INPUTVAL-1：非智能体原语的标题必填（空标题会导致列表不可读）。
+  if (!isAgent.value && !trimStr(form.title)) {
+    message.warning(t('fieldRules.required', { field: t('knowledgeList.title_ph') }))
+    return
+  }
+  form.title = trimStr(form.title)
   saving.value = true
   saveError.value = ''
   try {

@@ -35,6 +35,16 @@ var userConfigKeyKinds = map[string]string{
 	"responseTimeout": "int",
 	"streamTimeout":   "int",
 	"retryCount":      "int",
+	"retryBudgetSec":  "int",
+	// RETRY-2 续写（2026-10-20）：语义级自动续写开关 / 宽限期 / 续写文案。
+	"autoContinue":         "bool",
+	"autoContinueDelaySec": "int",
+	"continueText":         "string",
+	// NEXTRUN-1：连续自动接续上限（默认 30；0 = 关闭 → `next_run` 工具不下发）。
+	"nextRunMax": "int",
+	// MOD-1 M3：TurnState 事件日志分级 + 保留天数（清理只作用于终态 turn）。
+	"turnEventLog":              "string",
+	"turnEventLogRetentionDays": "int",
 	// defaultLLM（llmref，2026-09-15 改）：值 = LLM 选择引用 —— **name 字符串**（usr llms 记录名，
 	// 或内置 provider 名如 echo；空串 = 显式「系统默认（启动参数）」= 不指定 provider → 回落 exe
 	// 启动参数）。读侧兼容旧记录：值能解析为整数时按**旧 int 索引**（llms[v]）原样回读，消费点
@@ -138,26 +148,34 @@ func (s *Service) applyProjectOverrides(view map[string]any, instanceID string, 
 // userConfigSystemDefaults 是系统级默认（fallback 终点 = 资源/常量，不落库；
 // 12-数据层）。usr 无该 key 时由这里补默认值，保证前端消费字段完整。
 // 注：defaultLLM 的默认值依赖 llms 集合（第一个可用 / 无则 -1），在 readUserConfig 内计算。
-// 超时/重试三项与旧硬编码 / llm server 回落常量一致（responseTimeout=120s、streamTimeout=60s、
-// retryCount=2）；retryCount 按**存在性**判定——显式 0 = 不重试（P0-A，缺键才回落本默认 2）；
-// 另两项 0/缺省 = 用默认（非正值不下发）。**退避间隔不在此**（经 router.RetryWait 计算，2026-10-05）。
+// 超时/重试四项与 llm server 回落常量一致（responseTimeout=120s、streamTimeout=60s、
+// retryCount=5、retryBudgetSec=60）；retryCount 按**存在性**判定——显式 0 = 不重试（P0-A，缺键才回落本默认 5）；
+// retryBudgetSec 显式 <=0 = 关闭预算（router 回退固定指数）。另两项 0/缺省 = 用默认（非正值不下发）。
 var userConfigSystemDefaults = map[string]any{
 	// theme 缺省 = light：与前端唯一默认主题一致（`Toolbar.vue` currentTheme 初值 + `:root` token）。
 	// 原值 "system"（2026-09-16 订正）无实现 —— 无 `[data-theme="system"]` 规则、前端可选集仅
 	// light/dark/nord，写 system 只会回落 `:root` 浅色，故常量直接对齐 `light`。
-	"theme":           "light",
-	"locale":          "zh-CN",
-	"chromePath":      "",
-	"javaPath":        "",
-	"pythonPath":      "",
-	"nodePath":        "",
-	"goPath":          "",
-	"rustPath":        "",
-	"cCompilerPath":   "",
-	"responseTimeout": 120,
-	"streamTimeout":   60,
-	"retryCount":      2,
-	"defaultScenario": "",
+	"theme":                "light",
+	"locale":               "zh-CN",
+	"chromePath":           "",
+	"javaPath":             "",
+	"pythonPath":           "",
+	"nodePath":             "",
+	"goPath":               "",
+	"rustPath":             "",
+	"cCompilerPath":        "",
+	"responseTimeout":      120,
+	"streamTimeout":        60,
+	"retryCount":           5,
+	"retryBudgetSec":       60,
+	"autoContinue":         true,
+	"autoContinueDelaySec": 600,
+	"continueText":         "继续",
+	"nextRunMax":           30,
+	// MOD-1 M3：事件日志默认 outline（满足重放判据）；保留 7 天（0 = 永久）。
+	"turnEventLog":              "outline",
+	"turnEventLogRetentionDays": 7,
+	"defaultScenario":           "",
 }
 
 // readUserConfig 组装用户配置对象：逐 key 标量（缺失补系统默认）+ 专用表集合。

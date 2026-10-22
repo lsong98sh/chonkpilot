@@ -126,7 +126,8 @@ def main():
         c.check("Q3 队列 popover 2 项", int(items) == 2, f"items={items}")
 
         # 撤回第一条（↩）→ 文本写回输入区 + 队列剩 1
-        J(gui, "document.querySelector('.queue-popover .queue-item .queue-item-actions button')?.click(); 'ok'")  # 第一个 = 撤回
+        # INBOX：next_turn 项前置「立刻插入」，故撤回 = 倒数第二个动作按钮（不按下标猜）。
+        J(gui, "document.querySelector('.queue-popover .queue-item .queue-item-actions button:nth-last-child(2)')?.click(); 'ok'")  # 倒数第二 = 撤回
         time.sleep(0.6)
         ta = J(gui, "document.querySelector('[contenteditable][data-drop-target=\"chat-input\"]')?.innerText || ''")
         badge = J(gui, "document.querySelector('.queue-indicator .queue-badge')?.textContent?.trim() || ''")
@@ -135,7 +136,7 @@ def main():
         # 删除第二条（✕）→ 队列清空徽章消失（撤回后 popover 关闭，先重新打开）
         J(gui, "document.querySelector('.queue-indicator')?.click(); 'ok'")
         time.sleep(0.5)
-        J(gui, "document.querySelector('.queue-popover .queue-item .queue-item-actions button:nth-child(2)')?.click(); 'ok'")  # 第二个 = 删除
+        J(gui, "document.querySelector('.queue-popover .queue-item .queue-item-actions button:last-child')?.click(); 'ok'")  # 最后一个 = 删除
         time.sleep(0.6)
         badgeGone = J(gui, "!document.querySelector('.queue-indicator .queue-badge')")
         c.check("Q5 删除 → 队列清空", bool(badgeGone))

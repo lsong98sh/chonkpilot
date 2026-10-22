@@ -97,13 +97,46 @@ func ReasoningBrief(reasoning string) string {
 // 存储形态（content = {call,result,async} JSON）是给视图/前端消费的，不能直接喂回 LLM
 // （LLM 需要的是裸结果文本，与 tool_call_id 配对）；故读取侧在此归一。
 func ToolLLMContent(content string) string {
+	return ToolLLMContentStatus(content, "")
+}
+
+// ToolLLMContentStatus 同 ToolLLMContent，并按行级 `tool_call_status` 给出**明确占位文案**
+// （中途插话设计 §3.8：运行中 / 已中断 / 已取消的工具不得投影为空串——插入轮与重启后的
+// 「继续」都会带上未完成的工具行，空串会让 LLM 误判为"工具返回了空结果"）。
+//
+// status 为空（旧数据 / 无状态列）→ 与旧行为逐字节一致。
+func ToolLLMContentStatus(content, status string) string {
 	if tc, ok := ParseToolContent(content); ok {
 		if tc.Result != nil {
-			return tc.Result.Content
+			if strings.TrimSpace(tc.Result.Content) != "" {
+				return tc.Result.Content
+			}
+			return toolPlaceholder(status)
 		}
-		return ""
+		return toolPlaceholder(status)
+	}
+	if strings.TrimSpace(content) == "" {
+		return toolPlaceholder(status)
 	}
 	return content
+}
+
+// toolPlaceholder 返回未完成 / 空结果工具给 LLM 的占位文案（见设计 §3.8 状态表）。
+func toolPlaceholder(status string) string {
+	switch status {
+	case "running", "pending", "provisional":
+		return "（工具执行中，结果稍后返回）"
+	case "interrupted":
+		return "（工具已中断，未获得结果；如需重试请使用「重试」）"
+	case "cancelled":
+		return "（工具已取消）"
+	case "failed":
+		return "（工具执行失败）"
+	case "completed":
+		return "（工具执行完成，无文本输出）"
+	default:
+		return ""
+	}
 }
 
 // ToolViewFields 从消息记录提取 tool 视图字段（{call,result,async} 结构）。返回 argsJSON
@@ -457,6 +490,24 @@ func NewMessageKey() (string, error) {
 	return fmt.Sprintf("M%s%06d%04d", now.Format("20060102150405"), now.Nanosecond()/1000, n), nil
 }
 
+// NewInboxKey 生成 inbox_items 表主键：I + UTC 时间戳 + 微秒 + 4 位随机数（同 NewMessageKey 口径，
+// 自带时间序；读取/排序仍以 created_at 为准）。
+func NewInboxKey() (string, error) {
+	now := time.Now().UTC()
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("kernel: gen inbox key: %w", err)
+	}
+	n := (int(b[0])<<8 | int(b[1])) % 10000
+	return fmt.Sprintf("I%s%06d%04d", now.Format("20060102150405"), now.Nanosecond()/1000, n), nil
+}
+
+// InboxMessageKey 返回 inbox 提交的**确定性消息主键**（同一 inbox 恒同键）：
+// data-inbox-commit 的重试幂等依据（消息行已存在 → 只补置 consumed，不重复落库）。
+func InboxMessageKey(inboxID string) string {
+	return "M-INBOX-" + inboxID
+}
+
 // FindToolMessageKey 在同轮消息中找 role=tool 且 tool_call_id 匹配的既有行主键（未命中 → ""）。
 // 供 append-message 让同一工具调用的 running 行与终态**复用同一行**（就地回填，不产生重复
 // tool_pair）：重启后重试路径内存无主键时据此回填。
@@ -485,7 +536,8 @@ func MsgRowToChat(rec data.Record) (data.ChatMsg, bool) {
 	}
 	if m.Role == "tool" {
 		// role=tool 存储形态为 {call,result,async} JSON；LLM 重放需要裸结果文本 → 归一。
-		m.Content = ToolLLMContent(Sval(rec["content"]))
+		// 未完成 / 空结果的工具按状态给明确占位（设计 §3.8），不得投影为空串。
+		m.Content = ToolLLMContentStatus(Sval(rec["content"]), Sval(rec["tool_call_status"]))
 	} else {
 		m.Content = Sval(rec["content"])
 	}

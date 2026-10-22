@@ -17,7 +17,7 @@ import (
 // BoltOpenTimeout 是打开 chonkpilot.db（含 auth 库）的锁等待上限（bbolt 单文件排他锁）。
 // Timeout=0（默认 nil）= 无限等待 → 库被另一进程长持时 CLI/GUI 会静默挂起；显式超时
 // 使冲突**快速失败、报错可见**（D-45：GUI × CLI 并发访问同一项目库的第一道兜底，
-// 形态级占用校验见 2A-cli §6 work-dir 锁）。
+// 形态级占用校验见 prjusr 单例锁（`<workDir>/.chonkpilot/chonkpilot.lock`）。
 const BoltOpenTimeout = 3 * time.Second
 
 // Layer 是数据层标识（v6：三级同构；系统级无库）。

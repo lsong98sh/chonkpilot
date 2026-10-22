@@ -179,7 +179,7 @@ func newTestGW(t *testing.T, callTimeout time.Duration) (mq.Bus, *Gateway) {
 	if err != nil {
 		t.Fatalf("bus: %v", err)
 	}
-	g, err := New(Params{Bus: bus, CallTimeout: callTimeout, MaxTasks: 8, Logf: t.Logf})
+	g, err := New(Params{Transport: newTestTransport(bus), CallTimeout: callTimeout, MaxTasks: 8, Logf: t.Logf})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -910,33 +910,22 @@ func TestThirdPartySoftNever(t *testing.T) {
 	}
 }
 
-// TestContractNeverNotOverridable：契约显式 async=never → 调用级不可覆盖（仍 never；
-// options 无 detach，detach 请求被拒）。
-func TestContractNeverNotOverridable(t *testing.T) {
+// TestContractNeverOverridableByCallAlways（INBOX Q1，2026-10-18）：契约显式 async=never
+// **可被调用级 `async=always` 覆盖** → 立即 pending（不再等超时裁决）——中途插话要求
+// 执行层全量强制异步，否则插话不成立。
+func TestContractNeverOverridableByCallAlways(t *testing.T) {
 	bus, g := newTestGW(t, 5*time.Second)
 	fk := newFakeProvider("fk", OriginBuiltin)
 	addFakeProvider(t, g, fk, "slow")
 	// 契约显式 never（builtin，非第三方缺省）
 	setToolMeta(t, g, "fk_slow", map[string]any{"async": "never", "timeout": 0.1})
-	evCh := subTimeout(t, bus)
-	out := gwCallAsync(bus, "tools/call", map[string]any{
+	res := gwCall(t, bus, "tools/call", map[string]any{
 		"name": "fk_slow", "tool_call_id": "call-lock", "arguments": map[string]any{"async": "always"},
 	})
-	ev := waitTimeoutEvent(t, evCh)
-	taskID, _ := ev["task_id"].(string)
-	// 无 detach：DetachExec 应被拒（never 的 options 不含 detach）
-	if _, err := g.DetachExec("", "call-lock"); err == nil {
-		t.Fatalf("契约 never 不应允许 detach")
-	}
-	_ = gwCall(t, bus, "tools/wait", map[string]any{"task_id": taskID})
+	taskID := gwPendingTaskID(t, res)
 	close(fk.release)
-	select {
-	case out := <-out:
-		if got := gwText(out.res); got != "done:slow" {
-			t.Fatalf("契约 never 覆盖无效（应仍为 never 并交付结果），got %q", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("call 未返回")
+	if st := awaitTerminal(t, g, taskID); st["state"] != "done" {
+		t.Fatalf("调用级 always 覆盖后任务 state = %v, want done", st["state"])
 	}
 }
 

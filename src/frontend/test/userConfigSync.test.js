@@ -20,7 +20,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { configFromChangedEvent, themeLocaleFromConfig } from '../src/utils/userConfigApply.js'
+import { configFromChangedEvent, themeLocaleFromConfig, mergeUserConfig } from '../src/utils/userConfigApply.js'
 import { EventNames } from '../src/events/event-names.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -56,6 +56,30 @@ test('取值：只认非空字符串 theme / locale（缺键 = 未携带，不�
   assert.deepEqual(themeLocaleFromConfig({ locale: '' }), { theme: '', locale: '' })
   assert.deepEqual(themeLocaleFromConfig({ theme: 1, locale: null }), { theme: '', locale: '' })
   assert.deepEqual(themeLocaleFromConfig(null), { theme: '', locale: '' })
+})
+
+// ── T14：usr 配置「load 一次 + changed 增量」合并语义 ──────────────────
+test('mergeUserConfig：有则覆盖、无则新增，不原地修改', () => {
+  const prev = { theme: 'light', locale: 'zh-CN' }
+  const next = mergeUserConfig(prev, { theme: 'dark', defaultLLM: 'x' })
+  assert.deepEqual(next, { theme: 'dark', locale: 'zh-CN', defaultLLM: 'x' })
+  assert.deepEqual(prev, { theme: 'light', locale: 'zh-CN' })
+})
+
+test('mergeUserConfig：null / 非对象增量 → 原样返回（不误清空）', () => {
+  const prev = { theme: 'dark' }
+  assert.deepEqual(mergeUserConfig(prev, null), prev)
+  assert.deepEqual(mergeUserConfig(prev, 'x'), prev)
+  assert.deepEqual(mergeUserConfig(null, null), {})
+})
+
+test('接线守卫：useUserConfig 只 load 一次 + 订阅 changed 增量', () => {
+  const src = SRC('composables/useUserConfig.js')
+  assert.match(src, /getUserConfig\(\)/)
+  assert.match(src, /EventNames\.userConfigChanged/)
+  assert.match(src, /ensureLoaded/)
+  // 不得反向写库（防 save → changed → save 自激）
+  assert.doesNotMatch(src, /saveUserConfig|data-user-config-save/)
 })
 
 // ── 2) 主题字面量（与 Go 侧广播 / 61 §3.1 逐字一致）────────────────

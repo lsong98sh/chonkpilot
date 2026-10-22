@@ -9,6 +9,7 @@
       ref="inputRef"
       v-model="text"
       class="text-edit-input"
+      :maxlength="MAX_TEXT"
       :placeholder="placeholder"
       :disabled="saving || optimizing"
     />
@@ -53,6 +54,8 @@ import { Button, Textarea, message } from '../ui'
 import { optimizeAgentPrompt } from '../../api/config'
 import PromptVariablesButton from './PromptVariablesButton.vue'
 import { useVariableInsert } from '../../composables/usePromptVariables'
+// INPUTVAL-1：提示词 / 正文 / 记忆内容 ≤256 KB 字符。
+import { MAX_TEXT } from '../../utils/fieldRules'
 
 const props = defineProps({
   // 初始内容（打开时的值；编辑期间为组件内部状态）

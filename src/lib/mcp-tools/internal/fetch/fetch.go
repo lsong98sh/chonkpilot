@@ -27,7 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
 	"golang.org/x/text/encoding"
@@ -65,10 +64,6 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 		if msg != "" {
 			return cli.Err("web_fetch", "save_as："+msg)
 		}
-		// agentbox 沙箱（仅隔离开启时生效）：落盘路径须在允许写目录内
-		if err := agentbox.Check(resolved, true); err != nil {
-			return cli.Err("web_fetch", "save_as："+err.Error())
-		}
 		saveAs = resolved
 	}
 
@@ -99,10 +94,6 @@ func HandleFetch(workDir string, args map[string]interface{}) *cli.Result {
 				abs, msg := fileops.ValidateFilePath(fpath)
 				if msg != "" {
 					return cli.Err("web_fetch", fmt.Sprintf("form_files[%d].path：%s", i, msg))
-				}
-				// agentbox 沙箱（仅隔离开启时生效）：上传文件须在允许读目录内
-				if err := agentbox.Check(abs, false); err != nil {
-					return cli.Err("web_fetch", fmt.Sprintf("form_files[%d].path：%s", i, err.Error()))
 				}
 				// C-56：上传文件尺寸上限（与响应侧 maxFetchBytes 同口径），防超大文件整读入内存。
 				if st, serr := os.Stat(abs); serr != nil {

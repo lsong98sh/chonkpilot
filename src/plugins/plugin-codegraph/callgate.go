@@ -14,9 +14,46 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-plugin"
 )
+
+// 索引库被另一进程占用（跨进程排他打开 / bbolt 打开超时）时的有界等待与失败文本
+// （2026-10-19 用户定稿：等 2-3 秒仍失败 → 工具失败「正在索引，不可用」）。
+const (
+	indexBusyWait    = 3 * time.Second
+	indexBusyPoll    = 200 * time.Millisecond
+	indexBusyMessage = "正在索引，不可用（索引库被另一进程占用，已等待约 3 秒，请稍后重试）"
+)
+
+// isIndexBusyText 判定引擎错误文本是否为索引库被占用。
+func isIndexBusyText(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "lock") || strings.Contains(s, "timeout") ||
+		strings.Contains(s, "being used by another process") || strings.Contains(s, "另一个进程")
+}
+
+// isIndexBusyReply 判定「结构化就绪门应答」是否表示库被占用：引擎把 EnsureReady 的
+// 瞬时 lock 错误折叠成 `{status:"error", message:"...timeout..."}`（isErr=false）。
+func isIndexBusyReply(s string) bool {
+	if len(s) == 0 || s[0] != '{' {
+		return false
+	}
+	var gate struct {
+		Status  string `json:"status"`
+		State   string `json:"state"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(s), &gate) != nil {
+		return false
+	}
+	if gate.Status != "error" && gate.State != "error" {
+		return false
+	}
+	return isIndexBusyText(gate.Message)
+}
 
 // gatewayTool 注册到 gateway 的查询工具定义。
 type gatewayTool struct {
@@ -163,6 +200,7 @@ type toolCallMsg struct {
 		Session    string `json:"session"`
 		InstanceID string `json:"instance_id"`
 		ToolCallID string `json:"tool_call_id"`
+		Purpose    string `json:"purpose"`
 	} `json:"context"`
 }
 
@@ -179,7 +217,7 @@ func toolReply(text string, isErr bool) map[string]any {
 // 记录不存在或未启用 → 提示文本；否则注入 workdir 调**该 workdir 独立**的引擎子进程
 // 并原样回传文本/isErr。同一 workdir 的调用经 rec.cmu 串行；不同 workdir 互不阻塞
 // （多 workdir 场景下某 workdir 的长索引不再阻塞其它 workdir 的查询）。
-func (p *Codegraph) onToolCall(_ context.Context, _ string, v *mq.Value) error {
+func (p *Codegraph) onToolCall(ctx context.Context, _ string, v *mq.Value) error {
 	reply := func(text string, isErr bool) error {
 		v.Result = toolReply(text, isErr)
 		return nil
@@ -233,30 +271,80 @@ func (p *Codegraph) onToolCall(_ context.Context, _ string, v *mq.Value) error {
 	if r.busy { // 该 workdir 正在后台 configure/initialize：拒绝并发查询（引擎单会话串行更稳）
 		return reply("codegraph: 该项目索引正在初始化中，请稍后重试（codegraph_status 可查进度）", false)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+	// 查询未就绪（not_initialized/indexing/error 等结构化 JSON）→ 原样透传，可附说明；
+	// 索引未初始化不自动补 init（自动初始化仅由启用流程触发）。
+	// 按结构化应答字段判定（而非子串匹配）——命中文件内容/文件名含 "not_initialized" 的正常结果
+	// 不再误附提示（口径对齐 plugin-vfts/callgate.go）。
+	annotate := func(text string) string {
+		var gate struct {
+			Status string `json:"status"`
+			State  string `json:"state"`
+		}
+		if len(text) > 0 && text[0] == '{' &&
+			json.Unmarshal([]byte(text), &gate) == nil &&
+			(gate.Status == "not_initialized" || gate.State == "not_initialized") {
+			text += "\n（提示：codegraph 索引尚未初始化/正在初始化——请确认项目配置已开启 codegraph 后稍候重试）"
+		}
+		return text
+	}
+
+	// 委托 core-mcp-server（一工具一 exe，取消只杀本次 executor）；core 未就绪/不可达 → 回落本地引擎。
+	if p.toolExec != nil {
+		if te := p.toolExec(); te != nil {
+			var session, turn, callID, purpose string
+			if msg.Ctx != nil {
+				session, turn, callID, purpose = msg.Ctx.Session, msg.Ctx.Turn, msg.Ctx.ToolCallID, msg.Ctx.Purpose
+			}
+			text, isErr, terr := te.Exec(ctx, msg.Tool, args, plugin.ExecContext{
+				InstanceID: inst,
+				Session:    session,
+				Turn:       turn,
+				ToolCallID: callID,
+				WorkDir:    r.workDir,
+				DataDir:    r.dataDir,
+				Purpose:    purpose,
+			})
+			if terr == nil {
+				return reply(annotate(text), isErr)
+			}
+			if ctx.Err() != nil {
+				return reply("codegraph: 调用已取消", true)
+			}
+			p.logf("codegraph: %s 经 core 执行失败 → 回落本地引擎：%v", msg.Tool, terr)
+		}
+	}
+	callCtx, cancel := context.WithTimeout(ctx, callTimeout)
 	c := p.clientFor(r.workDir)
 	if c == nil { // Stop 后 clientFor 返回 nil：在飞回调不得解引用
 		cancel()
 		return reply("codegraph: 插件已停止", true)
 	}
-	text, isErr, err := c.call(ctx, msg.Tool, args)
+	// 本地引擎回落：索引库可能被 resident indexer / 管理动作短窗口占用 → 有界等待。
+	deadline := time.Now().Add(indexBusyWait)
+	var text string
+	var isErr bool
+	var err error
+	for {
+		text, isErr, err = c.call(callCtx, msg.Tool, args)
+		busy := (err != nil && isIndexBusyText(err.Error())) || (isErr && isIndexBusyText(text)) || isIndexBusyReply(text)
+		if !busy || !time.Now().Before(deadline) || callCtx.Err() != nil {
+			break
+		}
+		select {
+		case <-callCtx.Done():
+		case <-time.After(indexBusyPoll):
+		}
+	}
 	cancel()
 	if err != nil {
+		if isIndexBusyText(err.Error()) {
+			return reply(indexBusyMessage, true)
+		}
 		p.logf("codegraph: %s 调用引擎失败（workdir=%s）：%v", msg.Tool, r.workDir, err)
 		return reply("codegraph: 引擎调用失败: "+err.Error(), true)
 	}
-	// 查询未就绪（not_initialized/indexing/error 等结构化 JSON）→ 原样透传，可附说明；
-	// 索引未初始化不自动补 init（自动初始化仅由启用流程触发）。
-	// 按结构化应答字段判定（而非子串匹配）——命中文件内容/文件名含 "not_initialized" 的正常结果
-	// 不再误附提示（口径对齐 plugin-vfts/callgate.go）。
-	var gate struct {
-		Status string `json:"status"`
-		State  string `json:"state"`
+	if (isErr && isIndexBusyText(text)) || isIndexBusyReply(text) {
+		return reply(indexBusyMessage, true)
 	}
-	if len(text) > 0 && text[0] == '{' &&
-		json.Unmarshal([]byte(text), &gate) == nil &&
-		(gate.Status == "not_initialized" || gate.State == "not_initialized") {
-		text += "\n（提示：codegraph 索引尚未初始化/正在初始化——请确认项目配置已开启 codegraph 后稍候重试）"
-	}
-	return reply(text, isErr)
+	return reply(annotate(text), isErr)
 }

@@ -1,6 +1,8 @@
 <template>
+  <!-- 日志窗口（PRODSIM-1）：`#log` → 只读日志尾部，不参与认证 / 认领 / 项目视图 -->
+  <LogView v-if="logOnly" />
   <!-- 认证形态（desktop / browser）未认证 → 登录/注册视图（61 §4.6：`authed` 由服务端判定） -->
-  <AuthView v-if="showAuth" :initial-step="showLogin ? 'creds' : 'dir'" @ready="onAuthReady" />
+  <AuthView v-else-if="showAuth" :initial-step="showLogin ? 'creds' : 'dir'" @ready="onAuthReady" />
   <!-- 视图分派（24 §6.1 / U-2 已决）：**以 URL 为准** —— `?session-id=…#chat` → 纯对话窗口；
        其余 → 主窗口完整布局。宿主零视图判断（不注入 `__ck.view`）。 -->
   <ChatOnlyView v-else-if="ready && chatOnly" :session-id="route.sessionId" />
@@ -20,6 +22,7 @@ import { EventNames } from './events/event-names'
 import { getActiveSessionID } from './api/session'
 import MainLayout from './views/layout/MainLayout.vue'
 import ChatOnlyView from './views/chat/ChatOnlyView.vue'
+import LogView from './views/log/LogView.vue'
 import AuthView from './views/auth/AuthView.vue'
 import { useInstanceClaim, CLAIM_OK, CLAIM_UNANSWERED } from './composables/useInstanceClaim'
 import { useAuth } from './composables/useAuth'
@@ -27,7 +30,7 @@ import { useUserConfigSync } from './composables/useUserConfigSync'
 import { useGuiShowDialog } from './composables/useGuiShowDialog'
 import { maybeShowUnfinishedSubChats } from './composables/useSubChats'
 import { requireAuth } from './utils/instanceState.js'
-import { parseViewRoute, VIEW_CHAT } from './utils/viewRoute.js'
+import { parseViewRoute, VIEW_CHAT, VIEW_LOG } from './utils/viewRoute.js'
 import { prefetchInitData, invalidateInitDataCache } from './api/file'
 import { projectEpoch, setProjectReinitHandler } from './utils/projectReinit.js'
 import { useSelectionStore } from './stores/selection'
@@ -48,6 +51,10 @@ useGuiShowDialog()
 // URL 分派（一次性解析：无前端路由，URL 不再变）。
 const route = parseViewRoute(window.location.search, window.location.hash)
 const chatOnly = route.view === VIEW_CHAT
+const logOnly = route.view === VIEW_LOG
+// PRODSIM-1（多项目主窗口）：主窗口 URL 携带本项目的 work_dir（`?work-dir=`），
+// claim 时作为提议上送；缺失（对话窗口 / 旧链接）→ 服务端回落实例登记的 work_dir。
+const workDirParam = new URLSearchParams(window.location.search).get('work-dir') || ''
 
 // 认证形态（gui / browser：`__ck.requireAuth`）：需登录 / 选目录后才进主页。
 // 首屏 `authed`（服务端读凭证判定）→ 已认证者直接进「选目录」步（**不再要求凭证**）；
@@ -74,7 +81,7 @@ const textKey = computed(() => TEXT_KEYS[state.value] || 'common.instance_claimi
 // 对话窗口**跳过**：它绑定 URL 的 `session-id` → 不读活动会话（`session-active-get`）、
 // 不广播 `session-changed`（否则会覆盖该窗口绑定的会话，24 §3.3 C5 / §6.2）。
 async function init() {
-  if (!ready.value || chatOnly) return
+  if (!ready.value || chatOnly || logOnly) return
   try {
     const activeRes = await getActiveSessionID()
     const sessionId = activeRes?.session_id || null
@@ -112,12 +119,12 @@ setProjectReinitHandler(async () => {
 
 // desktop（免鉴权）：启动即认领（不带 user/work_dir，服务端用启动参数）；
 // 认证形态：由 AuthView「登录 → 选目录」后认领（61 §4.6 流程），此处不预先发起。
-if (!requireAuth()) {
+if (!requireAuth() && !logOnly) {
   // 与认领**并行**预取 init-data：布局/UI 恢复（MainLayout.applyLayout）不再等主视图挂载
   // 才发起 → 首帧即按落盘布局渲染（消除默认布局闪现；见 api/file.js 预取说明）。
   // 对话窗口不预取：它不参与 layout/window 恢复（不写也不读几何，24 §3.3 C5）。
   if (!chatOnly) prefetchInitData()
-  claim().then(async () => {
+  claim(workDirParam ? { work_dir: workDirParam } : {}).then(async () => {
     await nextTick()
     init()
   })

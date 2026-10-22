@@ -1,6 +1,6 @@
 // task 型域工具（tool_stop / tool_result）：
 // server 自带工具叠加在 gateway 工具之上发给 LLM（对齐 21-llm-server 任务编排 +
-// 域工具契约 server/contracts/tools/{tool_stop,tool_result}.tool.md）。
+// 域工具契约 llm/contracts/tools/{tool_stop,tool_result}.tool.md）。
 //
 // 识别与执行：turn 内工具分发命中 isTaskTool → 经 gateway 唯一执行入口（域工具回调
 // domain-tool-call）→ execTaskTool 同步执行（tool_stop 级联取消 / tool_result 返回
@@ -28,8 +28,8 @@ func turnInstance(tc *turnCtx) string {
 
 // isTaskTool 判断工具是否为 task 型（server 编排，不转发 gateway 普通路径）：
 // tool_stop / tool_result（task 型）+ subchat_open / subchat_finish（单聊型，SUBCHAT-2 阶段
-// B-2）——单聊工具经 gateway 域回调执行（节点由 domainNode 建），走本分支以免 chatOnce 再建
-// 一个重复节点（见 turn.chatOnce 的 isTaskTool 分支）。
+// B-2）——单聊工具经 gateway 域回调执行（节点由 domainNode 建），走本分支以免再建
+// 一个重复节点（见 turn.dispatchToolCall 的 isTaskTool 分支）。
 func isTaskTool(name string) bool {
 	return name == "tool_stop" || name == "tool_result" || isSubChatTool(name)
 }

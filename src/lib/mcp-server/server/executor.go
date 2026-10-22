@@ -1,6 +1,9 @@
 // 执行链路（25-mcp-server）：tools/call → 按契约 meta 组装命令
 // （<runtime>[ <entry>] <args 替换>）→ spawn → 按 output 模式（stdout/code/file）返回结果。
 // 结果统一 JSON {output, status, ...} 输出到 stdout（对齐 cli.go 契约）。
+//
+// runtime == "builtin"（L3 2026-10-21）：不走 spawn，进程内执行（见 builtin.go），
+// 调用 ctx / 超时 / 结果封装与 spawn 路径同口径。
 package server
 
 import (
@@ -8,7 +11,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +68,11 @@ func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any
 	}
 	for k, v := range args {
 		payload[k] = v
+	}
+
+	// runtime == "builtin"：进程内执行（file 组 → toolset；meta/domain 组 → toolmeta），不 spawn。
+	if isBuiltinRuntime(td.Runtime) {
+		return callBuiltin(ctx, cfg, td, payload, cx)
 	}
 
 	// 参数 JSON 临时文件（仅模板引用 {RAW-INPUT-FILE} 时生成；大内容走文件，无 argv 限制）
@@ -129,17 +136,9 @@ func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any
 	// 隐藏子进程控制台窗口（executor 等 console 子系统 exe 被 spawn 时不闪黑窗）；
 	// 不改变 stdio 管道，stdout/stderr 捕获逻辑不受影响。
 	cmd.SysProcAttr = winproc.SysProcAttr()
-	// 子进程环境：CHONKPILOT_*（调用上下文 + 解释器配置）+ CHONK_CHROME（浏览器路径）
-	// + CHONKPILOT_SANDBOX（**仅当该工具 spawn 的执行体在 tool_sandbox 开关中启用隔离时**
-	// 注入的 agentbox 策略；未配置 = 不注入 = 默认兼容）。仅本仓 spawn 的内部 executor 进程可见。
-	// 沙箱**管理单位 = 被 spawn 的执行体**（内置 executor 取 exe 基名；2026-10-12 由 executor
-	// 类别重整）：argv[0] 即解析后的 runtime（exe 绝对路径 / 解释器名），取基名作单位键。
-	sandboxUnit := filepath.Base(argv[0])
-	sandboxPolicy := cfg.SandboxPolicyFor(sandboxUnit)
-	if sandboxPolicy != "" {
-		log.Printf("[mcp-server] agentbox 隔离生效：unit=%s tool=%s dirs=%s", sandboxUnit, td.Name, truncate(sandboxPolicy, 500))
-	}
-	cmd.Env = cfg.executorEnv(cx, sandboxPolicy)
+	// 子进程环境：CHONKPILOT_*（调用上下文 + 解释器配置）+ CHONK_CHROME（浏览器路径）。
+	// 仅本仓 spawn 的内部 executor 进程可见。
+	cmd.Env = cfg.executorEnv(cx)
 	out, runErr := cmd.Output()
 
 	// noLimit（0/-1 = 无上限）时 ctx2 = 请求 ctx（不设超时点）→ DeadlineExceeded 分支永不命中，
@@ -159,6 +158,32 @@ func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any
 	default: // stdout
 		return handleStdout(td, out, runErr)
 	}
+}
+
+// callBuiltin 进程内执行 runtime == builtin 的工具：
+//   - 超时/取消口径与 spawn 路径一致（resolveExecTimeout 派生 ctx，到点/取消 → 同名错误）；
+//   - 输出封装复用 handleStdout（stdout 模式：JSON 原样透传 / 纯文本 success·fail JSON），
+//     保证文件工具的结构化 JSON（file_read 的 files/md5 等）与 spawn 路径逐字一致。
+func callBuiltin(ctx context.Context, cfg *Config, td *ToolDoc, payload map[string]any, cx CallContext) (string, error) {
+	timeout, noLimit := resolveExecTimeout(cfg, td)
+	ctx2 := ctx
+	if !noLimit {
+		var cancel context.CancelFunc
+		ctx2, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+	}
+	res := dispatchBuiltin(ctx2, cfg, td, payload, cx)
+	if ctx2.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("tool %s timeout after %ds", td.Name, timeout)
+	}
+	if ctx2.Err() == context.Canceled {
+		return "", fmt.Errorf("tool %s cancelled", td.Name)
+	}
+	var runErr error
+	if res.IsError {
+		runErr = fmt.Errorf("tool %s failed", td.Name)
+	}
+	return handleStdout(td, []byte(res.Text), runErr)
 }
 
 // resolveExecTimeout 返回 tools/call 的**执行硬上限**（秒）与「是否无上限」——即子进程被杀的时间点。
@@ -425,11 +450,4 @@ func exitCodeStr(err error) string {
 		return strconv.Itoa(ee.ExitCode())
 	}
 	return err.Error()
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return strings.TrimSpace(s[:n]) + "..."
 }

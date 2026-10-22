@@ -18,43 +18,100 @@ func instKey(instanceID, id string) string {
 	return instanceID + "\x00" + id
 }
 
-// lookupTurnLocked 取指定 instance 的运行 turn（**须持 s.mu**）：
+// lookupTurnSessionLocked 取指定 instance 的运行 turn（接口形态；**须持 s.mu**）：
 //   - instance 非空 → 只在该 instance 的桶内命中（跨 instance 不可见）；
 //   - instance 空（旧调用方未带 instance_id）→ 先按原键，再全桶扫描（同旧语义）。
-func (s *Server) lookupTurnLocked(instanceID, turnID string) *turnCtx {
+func (s *Server) lookupTurnSessionLocked(instanceID, turnID string) turnSession {
 	if turnID == "" {
 		return nil
 	}
-	if tc := s.turns[instKey(instanceID, turnID)]; tc != nil {
-		return tc
+	if sess := s.turns[instKey(instanceID, turnID)]; sess != nil {
+		return sess
 	}
 	if instanceID != "" {
 		return nil
 	}
-	for _, tc := range s.turns {
-		if tc.req.Turn == turnID {
-			return tc
+	for _, sess := range s.turns {
+		if sess.TurnID() == turnID {
+			return sess
 		}
 	}
 	return nil
 }
 
-// turnBySessionLocked 按 session 找运行 turn（**须持 s.mu**）：instance 非空 → 限定该 instance；
-// 空 → 全表（同旧语义）。
-func (s *Server) turnBySessionLocked(instanceID, session string) *turnCtx {
+// lookupTurnSessionByKeyLocked 按键直取运行 turn（接口形态；**须持 s.mu**；不做跨桶回退）。
+func (s *Server) lookupTurnSessionByKeyLocked(key string) turnSession {
+	return s.turns[key]
+}
+
+// lookupTurnLocked 取指定 instance 的运行 turn（**须持 s.mu**；旧 *turnCtx 语义不变）：
+// 内部经 lookupTurnSessionLocked 定位后断言为 *turnCtx；非 *turnCtx（后续 engineTurn）→
+// nil + 留痕（该分支在现行代码路径不可达，仅防御）。
+func (s *Server) lookupTurnLocked(instanceID, turnID string) *turnCtx {
+	sess := s.lookupTurnSessionLocked(instanceID, turnID)
+	if sess == nil {
+		return nil
+	}
+	tc, ok := sess.(*turnCtx)
+	if !ok {
+		logf("[chonkpilot-server] lookupTurnLocked: turn %s 不是 *turnCtx（%T），按未命中处理\n", turnID, sess)
+		return nil
+	}
+	return tc
+}
+
+// turnCtxByKeyLocked 按键直取 *turnCtx（**须持 s.mu**；不做跨桶回退）：仅用于仍需内部字段的
+// 旧路径（recoverTurnCtx / taskTurnFor）。
+func (s *Server) turnCtxByKeyLocked(key string) *turnCtx {
+	sess := s.lookupTurnSessionByKeyLocked(key)
+	if sess == nil {
+		return nil
+	}
+	tc, ok := sess.(*turnCtx)
+	if !ok {
+		logf("[chonkpilot-server] turnCtxByKeyLocked: %s 不是 *turnCtx（%T），按未命中处理\n", key, sess)
+		return nil
+	}
+	return tc
+}
+
+// registerTurnLocked 登记运行 turn（**须持 s.mu**）：容器只要求 turnSession ——
+// 实例退出 / Stop 等生命周期路径只用身份访问器与 Close()，不依赖 turnCtx 内部字段。
+func (s *Server) registerTurnLocked(key string, sess turnSession) {
+	s.turns[key] = sess
+}
+
+// turnBySessionSessionLocked 按 session 找运行 turn 的接口句柄（**须持 s.mu**）：instance 非空 →
+// 限定该 instance；空 → 全表（同旧语义）。
+func (s *Server) turnBySessionSessionLocked(instanceID, session string) turnSession {
 	if session == "" {
 		return nil
 	}
-	for _, tc := range s.turns {
-		if tc.req.Session != session {
+	for _, sess := range s.turns {
+		if sess.SessionID() != session {
 			continue
 		}
-		if instanceID != "" && tc.req.InstanceID != instanceID {
+		if instanceID != "" && sess.InstanceID() != instanceID {
 			continue
 		}
-		return tc
+		return sess
 	}
 	return nil
+}
+
+// turnBySessionLocked 按 session 找运行 turn（**须持 s.mu**）：旧 *turnCtx 语义不变
+// （内部断言；非 *turnCtx → nil + 留痕）。
+func (s *Server) turnBySessionLocked(instanceID, session string) *turnCtx {
+	sess := s.turnBySessionSessionLocked(instanceID, session)
+	if sess == nil {
+		return nil
+	}
+	tc, ok := sess.(*turnCtx)
+	if !ok {
+		logf("[chonkpilot-server] turnBySessionLocked: session %s 不是 *turnCtx（%T），按未命中处理\n", session, sess)
+		return nil
+	}
+	return tc
 }
 
 // takeAskLocked 取走并注销 ask 等待登记（**须持 s.mu**；返回 (等待项, 是否命中)）。

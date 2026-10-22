@@ -43,6 +43,7 @@
             <div class="path-input">
               <Input
                 v-model="userValues[it.key]"
+                :maxlength="MAX_PATH"
                 :placeholder="it.detected || $t('config.autoDetectPlaceholder')"
                 @update:model-value="refreshUserDirty"
               />
@@ -72,6 +73,7 @@
             <div class="path-input">
               <Input
                 v-model="prjValues[it.key]"
+                :maxlength="MAX_PATH"
                 :placeholder="it.userValue || it.detected || $t('config.autoDetectPlaceholder')"
                 @update:model-value="refreshPrjDirty"
               />
@@ -89,6 +91,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Tabs, Input, Button, message } from '../../components/ui'
+// INPUTVAL-1：路径 ≤512 字符、绝对路径（空 = 未配置，允许）。
+import { MAX_PATH, isAbsolutePath, trimStr } from '../../utils/fieldRules'
 import Icon from '../../components/icon/Icon.vue'
 import {
   getUserConfig, saveUserConfig, resetUserKey,
@@ -231,7 +235,11 @@ async function saveUserTab() {
     const patch = {}
     for (const it of PATH_ITEMS) {
       if (!it.levels.includes('user')) continue
-      const v = userValues.value[it.key] || ''
+      const v = trimStr(userValues.value[it.key])
+      if (v && !isAbsolutePath(v)) {
+        message.warning(t('fieldRules.invalidPath', { field: it.name }))
+        return
+      }
       if (v === (lastUser.value[it.key] || '')) continue
       patch[it.key] = v
     }
@@ -257,7 +265,11 @@ async function saveProjectTab() {
   try {
     for (const it of PATH_ITEMS) {
       if (!it.levels.includes('project')) continue
-      const v = prjValues.value[it.key] || ''
+      const v = trimStr(prjValues.value[it.key])
+      if (v && !isAbsolutePath(v)) {
+        message.warning(t('fieldRules.invalidPath', { field: it.name }))
+        return
+      }
       if (v === (lastPrj.value[it.key] || '')) continue
       await setConfig(it.key, v)
       lastPrj.value = { ...lastPrj.value, [it.key]: v }

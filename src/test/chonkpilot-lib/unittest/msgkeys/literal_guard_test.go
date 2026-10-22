@@ -127,7 +127,6 @@ var guardedFiles = []string{
 	"src/plugins/plugin-vfts/vfts.go",
 	"src/plugins/plugin-vfts/manifest.go",
 	"src/plugins/plugin-vfts/callgate.go",
-	"src/desktop/cli/main.go",
 }
 
 // findRepoRoot 从本测试源文件向上查找到含契约文件的仓库根。

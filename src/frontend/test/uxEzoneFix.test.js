@@ -53,7 +53,8 @@ test('E-20 MessageList：await ack 后校验受理信封，未受理即复位加
   for (const hdr of ['async function doSend(batch)', 'async function sendSameTurnContinue()']) {
     const body = fnBody(vue, hdr)
     const iAck = body.indexOf('await ack')
-    const iChk = body.indexOf('ackRejectedReason(ack)')
+    // 实现里应答变量名为 ackRes（`const rejected = ackRejectedReason(ackRes)`）→ 前缀匹配。
+    const iChk = body.indexOf('ackRejectedReason(ack')
     assert.ok(iChk > iAck, `${hdr} 须在 await ack 之后校验信封`)
     const branch = body.slice(iChk)
     assert.match(branch, /handleError\(/, '未受理须走既有错误处理（错误气泡，用户可见）')
@@ -231,7 +232,7 @@ test('E-28 MessageList：onUpdated 圆圈高亮时间闸限流（turn 数变化�
 test('E-29 MessageList：sendSameTurnContinue 拒绝分支复位 showContinue', () => {
   const src = readSrc('views/chat/MessageList.vue')
   const body = fnBody(src, 'async function sendSameTurnContinue()')
-  const iChk = body.indexOf('ackRejectedReason(ack)')
+  const iChk = body.indexOf('ackRejectedReason(ack')
   assert.ok(iChk >= 0, '须有受理校验')
   const branch = body.slice(iChk)
   assert.match(branch, /handleError\(/, '拒绝 → 错误气泡')

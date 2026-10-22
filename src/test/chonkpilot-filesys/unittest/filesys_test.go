@@ -2,7 +2,7 @@
 // 黑盒形态（外部测试模块）：经公开 API filesys.New/Start/Stop + chonk. 前缀内存总线驱动，
 // 错误 code 经 reflect 从私有 mapErr{code,message} 的底层 map 提取。
 // 覆盖 list/content 查询、create/mkdir/remove/rename/copy（含 dest_dir/new_name 改名复制）写操作、
-// 错误形态与 watch → filesys.changed 广播（真实 fsnotify 事件）。
+// 错误形态与 watch → filesys.changed 广播（真实 fswatcher 事件）。
 package filesys_test
 
 import (
@@ -450,7 +450,7 @@ func TestWatchChangedAndUnwatch(t *testing.T) {
 		t.Fatalf("watch errors=%v", v.Errors)
 	}
 
-	// 真实创建文件 → 1s 内必须收到 filesys.changed（fsnotify + 60ms 去抖）
+	// 真实创建文件 → 1s 内必须收到 filesys.changed（fswatcher + 60ms 去抖）
 	nf := filepath.Join(wd, "watch-new.txt")
 	if err := os.WriteFile(nf, []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)

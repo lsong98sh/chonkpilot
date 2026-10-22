@@ -26,7 +26,10 @@ type API interface {
 	ConfigAPI
 	SessionAPI
 	TurnAPI
+	TurnEventAPI
+	AskAPI
 	MessageAPI
+	InboxAPI
 	TasktreeAPI
 	KnowledgeAPI
 	FileListAPI
@@ -35,6 +38,7 @@ type API interface {
 	McpAPI
 	ProjectAPI
 	GroupAPI
+	IndexQueueAPI
 }
 
 // GroupAPI 是 group 域（**群聊落库两表**：参与者名单 + 大轮次投递对象）门面面。
@@ -286,6 +290,15 @@ type SessionAPI interface {
 	// SessionSubChatsAll 全局列举子聊天（跨父会话；`kind ∈ {sub_chat, group_chat}`，含 finished；
 	// 单聊方案 §3.4.7 启动提醒取数）。**不改** data-session-list 语义。
 	SessionSubChatsAll(req SessionSubChatsAllRequest) (SessionSubChatsAllResponse, error)
+
+	// SessionNextRunCheckAndAdd 上限判定 + 自增（单事务 RMW；NEXTRUN-1 §3.3.2）。
+	SessionNextRunCheckAndAdd(req SessionNextRunCheckAndAddRequest) (SessionNextRunCheckAndAddResponse, error)
+	// SessionNextRunReset 计数器归零（用户发送即重置；会话不存在 → 幂等成功）。
+	SessionNextRunReset(req SessionNextRunResetRequest) (SessionNextRunResetResponse, error)
+	// SessionNextRunGet 读当前计数（测试 / 诊断）。
+	SessionNextRunGet(req SessionNextRunGetRequest) (SessionNextRunGetResponse, error)
+	// SessionNextRunDec 计数器补偿 -1（inbox 落库失败时回滚本次自增；不小于 0）。
+	SessionNextRunDec(req SessionNextRunDecRequest) (SessionNextRunDecResponse, error)
 }
 
 // TurnAPI 是 turn 域（轮次：历史分页/幂等建/摘要/终态/遗留清理）门面面。
@@ -306,6 +319,15 @@ type TurnAPI interface {
 	TurnCleanupStale(req TurnCleanupStaleRequest) (TurnCleanupStaleResponse, error)
 }
 
+// TurnEventAPI 是 turn 事件日志域（MOD-1 M3；prjusr 级 `turn_events` 表）门面面。
+type TurnEventAPI interface {
+	// TurnEventAppend 追加一条事件（幂等：同 turn_id + seq；type 不一致 → 失败）。
+	TurnEventAppend(req TurnEventAppendRequest) (TurnEventAppendResponse, error)
+
+	// TurnEventCleanup 删除终态且超过保留天数的 turn 的事件（0 = 永久；<0 = 不清理）。
+	TurnEventCleanup(req TurnEventCleanupRequest) (TurnEventCleanupResponse, error)
+}
+
 // MessageAPI 是 message 域（消息：落库/重建/上下文/取正文）门面面。
 type MessageAPI interface {
 	// MessageAppend 落一条消息（role=tool 的正文由实现侧规整为工具载荷；brief 缺省时尽力生成）。
@@ -321,4 +343,16 @@ type MessageAPI interface {
 
 	// MessageContent 按 key 批量取正文（未命中的 key 省略）。
 	MessageContent(req MessageContentRequest) (MessageContentResponse, error)
+}
+
+// InboxAPI 是 inbox 域（中途插话 / 等下一轮；prjusr 级持久化）门面面。
+type InboxAPI interface {
+	// InboxAppend 写入一条待处理发送（status=pending；幂等键命中 → 返回既有 id）。
+	InboxAppend(req InboxAppendRequest) (InboxAppendResponse, error)
+	// InboxList 按会话读 inbox 项（status 缺省 = pending，按 created_at 升序）。
+	InboxList(req InboxListRequest) (InboxListResponse, error)
+	// InboxUpdate 更新 inbox 项（status / type / turn_id；空字段 = 不改）。
+	InboxUpdate(req InboxUpdateRequest) (InboxUpdateResponse, error)
+	// InboxCommit 原子消费一条 inbox（同事务落 messages + 置 consumed；同 InboxID 幂等）。
+	InboxCommit(req InboxCommitRequest) (InboxCommitResponse, error)
 }

@@ -114,6 +114,8 @@
   "task_failed_suffix": "（{failed} 个失败）",
   "compressing": "正在压缩上下文…",
   "llm_retry": "正在重试 {attempt}/{max}（等待 {wait} 秒）...",
+  "llm_interrupted": "服务器错误，是否继续。",
+  "continue_link": "继续",
   "llm_error_retrying": "LLM 错误，重试 {attempt}/{max}...",
   "retry_count_label": "已重试 {n}/{max} 次",
   "error_detail_toggle": "查看错误信息",

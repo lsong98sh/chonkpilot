@@ -74,6 +74,10 @@
 |---------|---------|------|
 | `session-start`（llm-start） | `onLLMStart` | 受理轮次 |
 | `session-send`（llm-send） | `onLLMSend` | 驱动：text-user / tool-result / text-notify |
+| `inbox-add`（客户端 topic `llm-inbox-add`） | `onInboxAdd` | **INBOX 统一发送入口**：按当前相位分类 `insert`（工具等待期立即插入）/ `next_turn`，落 prjusr `inbox_items` |
+| `inbox-list`（`llm-inbox-list`） | `onInboxList` | 读回 pending 项（队列指示器 / 重启拉回） |
+| `inbox-discard`（`llm-inbox-discard`） | `onInboxDiscard` | 撤回 / 删除 inbox 项（置 `discarded`，不入 messages） |
+| `inbox-promote`（`llm-inbox-promote`） | `onInboxPromote` | `next_turn → insert`「立刻插入」；无运行轮时 = 重启后「继续」消费 |
 | `session-cancel`（客户端 topic `llm-cancel`） | `onLLMCancel` | 取消 |
 | `session-ask-reply`（客户端主题 `ask-user-reply`） | `onAskUserReply` | 提问应答 |
 | `task-stop` | `onTaskStop` | 手动结束任务（级联） |
@@ -92,13 +96,18 @@
 
 `session-receive`（reason/text/tool-call）· `session-complete`（唯一终态）· `session-compress` · `session-ask` · `session-turn-start` · `task-started`/`task-updated`/`task-done` · `server-starting` · `prompt-optimised`。
 
-### 3.4 域工具与 agent 契约（`server/contracts/`）
+### 3.4 域工具与 agent 契约（`llm/contracts/`）
 
-- **tools（4）**：`ask_user`（hot, async=never）· `llm_run`（hot, async=always）· `tool_stop`（hot, async=never）· `tool_result`（async=never）。
-  - **工具异步档位**：四个域工具在「工具异步」矩阵里**按执行线拆分并冻结模式** —— `llm_run`（仅异步）· `tool_stop`/`tool_result`（仅同步）· `ask_user`（仅同步 + 无超时裁决点，不纳入「⑤ 超时自动取消」）。契约「基本信息」yaml 键：`ask_user` = `category=server`/`async=never`/**`timeout=0`**/`hot=true` · `llm_run` = `category=server`/`async=always`/`hot=true`（**无 `timeout` 键**） · `tool_stop` = `category=server`/`async=never`/**`timeout=0`**/`hot=true` · `tool_result` = `category=server`/`async=never`/**`timeout=0`**。**四域工具执行硬上限统一 `timeout=0`**（系统工具 `category=server` 不单独设执行硬上限 → **`timeout=0` = 无上限**：`_meta.timeout=0` **显式透出**，gateway `limit<=0` **不设裁决点**、executor `noLimit` **不设执行硬上限**，永远等待、用户可取消；`tool_result` 的 `timeout` **入参**是轮询等待秒数、非执行硬上限）。「基本信息」已解析并透出：`loadDomainTools` 解析 `category`/`async`/`async-threshold`/`timeout` → `tools/register` 载荷携带 → gateway `registerTool` 写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**），故这四项的 `_meta.async` 可在 `tools/list` 见到。上述工具的**提供方归属不变**（均由本模块经 `tools/register` 注册 = `registeredProvider`），仅**处理档位**按执行线归并；`ask_user` 的「不纳入 ⑤」为**我方建议，待用户确认**。详见 [18 §3.1/§4](../10-architecture/18-工具异步超时与取消.md) · [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
+- **tools（6）**：`ask_user`（hot, async=never）· `subchat_open`（hot, async=never）· `subchat_finish`（hot, async=never）· `tool_stop`（hot, async=never）· `tool_result`（async=never）· `next_run`（hot, async=never；**NEXTRUN-1**，见 §4.10）。
+  - **`next_run`（NEXTRUN-1）**：模型主动登记**下一轮提示词**（inbox `next_turn`、`source=llm`），本轮正常结束后由 `finish → consumeNextTurn` 自动起新 turn；**仅主会话**（子聊天 / 群聊 / 子会话 / DSL 子轮次经 `denyTools` 不下发且调用处拒绝）；会话级计数 `sessions.next_run_count` + usr `nextRunMax`（默认 30，`0` = 关闭）——用户发送（`llm-start` / `llm-send{type:text-user}` / `llm-inbox-add` / `llm-inbox-promote`）重置 0，每次成功受理 +1，达上限返回固定文案且不登记；同轮多次调用 last-wins，本轮 `error`/`interrupted`/`cancelled` 终态丢弃本 turn 的 LLM 排队项；**零新增 MQ 主题**。
+  - **DSL 编排入口已统一为 `dsl_run`**：2026-10-19 起由 **core-mcp-server 的独立 executor**承接，**执行体即 `chonkpilot-dsl-executor.exe`**（源 `src/lib/mcp-tools/dslexec`、`async=always`；2026-10-20 合并，作业与 DSL 引擎同进程）；LLM 步骤与展示上报经插件桥调用本模块原子能力 `plugin/v1/dsl.llm`（子轮次）/ `plugin/v1/dsl.report`（→ `task-*`）。**不存在 `llm_run` 域工具**（契约/注册/dispatch 均已删除）；gateway 不再自持 DSL 节点。
+  - **工具异步档位**：域工具按执行线拆分并冻结模式 —— `tool_stop`/`tool_result`（仅同步）· `ask_user`/`subchat_open`/`subchat_finish`（仅同步 + 无超时裁决点，不纳入「⑤ 超时自动取消」）。契约「基本信息」yaml 键：`category=server`/`async=never`/**`timeout=0`**/`hot=true`。**域工具执行硬上限统一 `timeout=0`**（系统工具 `category=server` 不单独设执行硬上限 → **`timeout=0` = 无上限**：`_meta.timeout=0` **显式透出**，gateway `limit<=0` **不设裁决点**、executor `noLimit` **不设执行硬上限**，永远等待、用户可取消；`tool_result` 的 `timeout` **入参**是轮询等待秒数、非执行硬上限）。「基本信息」已解析并透出：`loadDomainTools` 解析 `category`/`async`/`async-threshold`/`timeout` → `tools/register` 载荷携带 → gateway `registerTool` 写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**），故这些工具的 `_meta.async` 可在 `tools/list` 见到。上述工具的**提供方归属不变**（均由本模块经 `tools/register` 注册 = `registeredProvider`），仅**处理档位**按执行线归并；`ask_user` 的「不纳入 ⑤」为**我方建议，待用户确认**。详见 [18 §3.1/§4](../10-architecture/18-工具异步超时与取消.md) · [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
 - `ask_user` **实现现状 + 目标态**：**入参 = 扁平单问**（`question`/`options`/`multi`/`custom`/`recommended`；一次工具调用 = 一问，N 问由前端 300ms 合并窗口聚合成「第几个/共几个」批次展示），答复经 `ask-user-reply`（`{ask_id, answer, custom?}`）回填该 turn 的 tool_result。**目标态（未落地）**：`questions[]` 一表 N 问 / 答复增量写穿（ask 节点 `content`，落点方案 A）/ 全部题答齐才回一个 tool_result / turn 等待态 `awaiting` 支持重启续答（详见 [34 §7](../30-function-points/34-任务.md)）。**2026-10-11** 由 [61 §4.3](../60-reference/61-消息一览.md) 口径收敛（扁平单问与实现一致）。
 - **agents（7）**：`coder` / `executor` / `planner` / `reader` / `reviewer` / `worker` / `writer` —— **agent 退出资产面**（不注册进 gateway 资产目录、不落 `syncScenarioAgents`）：`mcp_find` 的 `type` 收敛为 **`tool|skill|resource|all`**（**去 `prompt`/`agent`**）、`mcp_load` 的 `kind` 为 **`tool|skill|resource`**、**`prompts/list` 不得再列 agent**；LLM 改由**注入的团队列表**（场景层）知道可委派谁。见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。🔵 待实施。
-- 加载：`//go:embed contracts/tools/*.tool.md`（**agent 不再 embed**）→ `domainmd.go` 分段解析（v2 H1 分区：`# 摘要`/`# 参数`/**`# 基本信息`** —— 基本信息 yaml 现**解析并携带** `category`/`async`/`async-threshold`/`timeout`）→ `domainmcp.go` 经 `tools/register` 注入 gateway：**载荷现携 `category`/`async`/`async_threshold`/`timeout`**（`hot` 保留），gateway `registerTool` 据此写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**，见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)）。
+- 加载：`//go:embed tools/*.tool.md`（`src/lib/llm/contracts/embed.go` 的 `contracts.FS`；**agent 不再 embed**）→ `domainmd.go` 分段解析（v2 H1 分区：`# 摘要`/`# 参数`/**`# 基本信息`** —— 基本信息 yaml 现**解析并携带** `category`/`async`/`async-threshold`/`timeout`）→ `domainmcp.go` 经 `tools/register` 注入 gateway：**载荷现携 `category`/`async`/`async_threshold`/`timeout`**（`hot` 保留），gateway `registerTool` 据此写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**，见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)）。该 embed 为**唯一副本**（`build-mcp-server.ps1` 另覆盖式同步到 `capability/tools/server/`，供 core 按 `core-only` 契约注册与 executor 执行；不再各存手工副本）。
+- **BRIDGE-2 T7（2026-10-18）—— 域工具进程外实现**：桌面单体 / server 形态下，`ask_user` / `tool_stop` / `tool_result` / `subchat_open` / `subchat_finish` 由 **`chonkpilot-server-tools.exe`** 经 `plugin/v1/tools.register`（`handler_subject=domain-tool-call-ext`）注册——**server 零域工具**（进程内 `registerDomainTools` 在 `CHONKPILOT_EXTERNAL_TOOLS=1` 时跳过）。server 只保留**原子能力**（`plugin/v1/turn.context` · `task.node.start|done` · `task.result` · `tool.stop` · `ask.user` · `subchat.open|finish`，实现见 `plugin_caps.go`），任务树唯一写者仍是 server。单测 / CLI 不设开关 → 保持原进程内全量注册。两条回调主题分离（进程内 `domain-tool-call` 与外部 `domain-tool-call-ext`），避免同主题双订阅导致重复执行 / 结果双写。外移进程由宿主持有生命周期（`src/lib/llm/servertools`，spawn / Kill），失败不阻断核心服务（工具面降级）。
+- **BRIDGE-2 T7 增补（2026-10-19）—— 元工具进程外实现**：`mcp_find` / `mcp_load` / `mcp_invoke` 同样外移：契约 = `src/lib/llm/cmd/server-tools/contracts/meta/*.tool.md`，实现 = `cmd/server-tools/meta.go`，由 server-tools 以 `handler_subject=meta-tool-call-ext` 注册；取数走插件桥能力面（`plugin/v1/tools.list|call`、`prompts.list|get`、`resources.list|read`、`llm.step`）。`CHONKPILOT_EXTERNAL_TOOLS=1` 时 gateway `registerMetaTools` 直接跳过（进程内模式仍用于单测 / CLI）。**契约「基本信息」**：`category=meta` / `async=never` / `hot=true` / `timeout=0`（无执行硬上限）。跨进程取消经 `plugin.tool.cancel{call_id}` 传播；`timeout=0/-1` → 调用载荷 `no_timeout:true`（pluginbridge 不套 11 分钟兜底）。验收 L4 `run_meta_tools.py` 4/4。
+- **一工具一 exe（2026-10-19，G-68 第二步，取代上两条的 server-tools）**：`chonkpilot-server-tools.exe` 已删除 —— domain 6（`ask_user`/`tool_result`/`tool_stop`/`subchat_open`/`subchat_finish`/`next_run`）/ meta 3 各为独立 executor（`src/lib/llm/cmd/*-exec`，公共外壳 `execmain`），契约标 `core-only: true` + `runtime`（domain 契约源仍为本模块 `contracts/tools/`，构建同步到 `capability/tools/server/`；meta 契约源 `src/initdata/capability/tools/meta/`），由 core-mcp-server 注册并经 `ExecTool.Call` 执行。`CHONKPILOT_EXTERNAL_TOOLS=1` 的语义 = 由 core 接管（server 零域工具）；原子能力面（`plugin_caps.go`）不变。`next_run` 的跨进程路径 = 该 executor → `plugin/v1/next.run`。验收 L4 `run_meta_tools.py` 4/4 · `run_sem_tool_result.py` 3/3 · `run_tool_async.py` 11/11。
 
 ---
 
@@ -118,11 +127,11 @@ chatOnce：
   → 有 pending 则 stash；否则递归续轮
 ```
 
-常量：`maxToolIterations=20` · `llmRetryCount=2` · `maxAutoContinue=3`。其中 **`llmRetryCount`（及超时 `ResponseTimeout`/`StreamTimeout`）为「回落默认」**——经 `loadLLMRuntimeConfig`（`data-user-config-load` 读 usr 标量）加载，在 `newTurnCtx`/`recoverTurnCtx` 各一次，**下个新 turn 生效**；读取失败/键缺失/非正值时用上述常量。**重试退避间隔不自持**：可视重试经 `router.RetryWait`（`Retry-After` 优先 + 指数退避），`retryDelay` 常量/配置项已移除。
+常量：`maxToolIterations=20` · `llmRetryCount=5` · `llmRetryBudget=60s` · `maxAutoContinue=3`。其中 **`llmRetryCount` / `llmRetryBudget`（及超时 `ResponseTimeout`/`StreamTimeout`）为「回落默认」**——经 `loadLLMRuntimeConfig`（`data-user-config-load` 读 usr 标量）加载，在 `newTurnCtx`/`recoverTurnCtx` 各一次，**下个新 turn 生效**；读取失败/键缺失/非正值时用上述常量。**RETRY-2（2026-10-20）：报文级重试整体下沉 router** —— turn 把 `MaxRetries=&retryCount` / `RetryBudget` / `RetryObserver(tc)` 传给 `ChatOptions`→`router.CallOptions`；`retryCount` 不含首次请求，显式 0 = 不重试；退避由 router 按预算归一化，llm 侧**不再自持重试循环 / `probeBeforeRetry` / `retryDelay`**。
 
-- **pending / inflight 回执兜底（watchdog，`turn.go`）**：异步任务（`task_id`）回执丢失 / 未登记时 `pending` 永不归零 → 整轮永久挂起（无超时、无 reaper）；`ask_user` / `llm_run` 子作业的在飞登记（`inflight`）同理。`loop` 每 **`pendingSweepInterval`（30s）** 扫描一次，对超过 **`pendingTaskTimeout`** 仍未回执的 pending 与 inflight **按 `failed` 占位回填并续轮**（复用 `onAsyncDone` 同一路径）。`pendingTaskTimeout` **由项目级键 `pending_task_timeout_sec` 配置**（缺省 `defaultPendingTaskTimeout = 2h`；键缺失 / 非正整数 → 回落缺省，见 [64 §3](../60-reference/64-配置项一览.md)）。取值保守：长时异步工具仍可正常完成，仅在**回执确实丢失**时兜底。
+- **pending / inflight 回执兜底（watchdog，`turn.go`）**：异步任务（`task_id`）回执丢失 / 未登记时 `pending` 永不归零 → 整轮永久挂起（无超时、无 reaper）；`ask_user` 的在飞登记（`inflight`）同理。`loop` 每 **`pendingSweepInterval`（30s）** 扫描一次，对超过 **`pendingTaskTimeout`** 仍未回执的 pending 与 inflight **按 `failed` 占位回填并续轮**（复用 `onAsyncDone` 同一路径）。`pendingTaskTimeout` **由项目级键 `pending_task_timeout_sec` 配置**（缺省 `defaultPendingTaskTimeout = 2h`；键缺失 / 非正整数 → 回落缺省，见 [64 §3](../60-reference/64-配置项一览.md)）。取值保守：长时异步工具仍可正常完成，仅在**回执确实丢失**时兜底。
 - **恢复轮去重（`recoverTurnCtx`）**：同 `{instance, turn}` 已有**存活轮次** → **直接复用该 tc**（不另起 `loop`）；此前去重命中仍返回**未登记**的新 tc（其 loop 亦在跑）→ 同 `{session, turn}` 双执行，已修。
-- **非主会话强制同步（SUBCHAT-2 阶段 A，2026-10-16）**：**凡非主会话（会话行 `kind` 非空 = 子聊天 / 群聊 / 子会话）里的每一次工具调用一律同步**（不得转后台）——子聊天/群聊的状态推进全靠"轮次跑完"（收口点亮、本轮屏障），工具转后台会打乱判定。落点 = `turnCtx.gatewayArgs`：强制同步时给 `gc.Call` 的 args 副本附**调用级 `async=never`**（gateway `doCall` 读取后即剥离 → **不改 `mcp-tools-call` 载荷形状与工具入参**；落库/前端展示仍用原始 args）。判定 = `turnCtx.forceSyncTools()`（与 `isSubsession` 共用**一次**会话行读取，`loadSessionInfo`）：`kind` 为空（主会话）→ 原样返回，**行为逐字节不变**。覆盖面 = turn 内两条 `gc.Call` 路径（task 型 + 普通工具）+ tool-retry 重跑（`server.go onToolRetry`，tc 可定位时同口径）。
+- **工具强制异步（INBOX，2026-10-17）**：`turnCtx.gatewayArgs` 对**普通工具一律附调用级 `async=always`**（含契约显式 `never`；gateway `doCall` 读取后剥离 → 不改 `mcp-tools-call` 载荷与工具入参）——派发即返回 `task_id`、主循环让出到 `select`，插话才可能被消费。**例外 = 本进程域工具**（`ask_user` / `subchat_open` / `subchat_finish` / `tool_stop` / `tool_result`）：由 llm-server 同步编排（毫秒级），异步化会把返回体改成 pending、改变其契约语义且对插话无收益。**第二类例外 = 契约显式声明超时裁决点（`_meta.timeout > 0`）的工具**：保留原 `never`/`manual` 档位，使既有 `mcp-tools-timeout` 裁决 UI 仍可达。**第三类例外 = 调用级已显式给出 `async` / `_async`**（LLM 或夹具明确要求 `never`/`manual`）：尊重原值不覆盖 —— `mcp-tools-timeout` 裁决与 `tool_async.<tool>.cancel_on_timeout` 都依赖同步等待语义，覆盖会让既有能力不可达（2026-10-18 实跑 `run_tool_async.py` D/I 验证）。原 A5「非主会话强制同步（`async=never`）」**已废止**（否则子会话 / 群聊插话不成立）；「收口点亮 / 本轮屏障」改判 `pending` 清空 + turn 终态。详见 §4.10。
 
 **上下文拼接（`assemble.go`）**：全量历史按 turn（边界 = `isTurnBoundary`）拼接 —— **三段结构（口径 X）**：**完整区**整轮**原文**（范围受 `keep_full_max_turns`(N) + `keep_full_max_tokens`(M) 双条件约束，均项目级配置，默认 10 / 24000；`loadKeepFullTurns`/`loadKeepFullTokens`）；**简化区**（再往前，**brief token 累计 ≤ `compress_token_threshold`(T)**）→ **【简化态原文】仅 text**（`data.BriefMessages`：去 reasoning / tool_call / tool_result；T 由 `loadBriefBudget` 读，默认 20000）；**摘要区**（更早）→ 已由压缩插件落为前导 system 摘要（原样透传），若残留同按简化态投影；重试/恢复轮强制全量（`forceFull`）。**边界算法唯一来源 = `data.LocateZones`**（**与压缩侧同一函数**：完整区 = `LocateFullTurnCount`（N/M 取先到，**本轮恒保留**，口径 V，下限 1）；简化区 = 自完整区向前逐轮累加 brief token ≤ T）。**预存 token 优先**：各轮 `full_tokens`/`brief_tokens` 随 `data-session-context` 的**只增**伴随数组 `turn_tokens` 带回（`BuildContextTokens` → `tc.turnTokens` → `splitTurnTokens`），**尾部对齐 + 缺值回退实时估算**（`data.ResolveStoredTokens`）→ 生产判定真正读取预存值。**取值语义（口径 W）**：`N==0`/`M==0` = 该条件不启用；**两者均 0 → 不压缩**（保留全量）。摘要压缩仍由压缩插件落快照（本处只做粒度收敛与简化态投影，不做摘要、不写快照）。
 
@@ -138,8 +147,10 @@ chatOnce：
 
 - **终态载荷** `{status, finish_reason, code?, message?, text?, **retryable?**, **retry_attempt?**, **retry_count?**, **retry_wait_ms?**}`；`finish(tc, status, finishReason, code, message, text, retryable *bool)` 为**单点终态**。
 - **`retryable` 为可选字段**：非 nil 才随 `llm-complete` 携带。**仅错误终态携带**——`complete()`（正常/取消）传 nil **不带**；`llmError()`（`EMPTY_REPLY`/`TOOL_LOOP_LIMIT`/`DB_ERROR`，无 `*LLMError` 分类来源）**固定 `false`**；`llmErrorRetryable()`（`LLM_REQUEST_FAILED`/`LLM_STREAM_ERROR`）取 `*LLMError.Retryable`（`turn.go` `retryableErr`；超时/网络/429/5xx → `true`，鉴权/协议 → `false`）。契约详见 [61 §4.3](../60-reference/61-消息一览.md)。
-- **可见重试（RETRY-1，2026-10-17）**：`chatOnce` 的每次"可重试失败 + 即将重发"先发**中间态** `session-retry{instance_id, session, turn, retryable:true, retry_attempt, retry_count, retry_wait_ms}`（`turn.go#emitRetry`，`retry_wait_ms` 来源 = `router.RetryWait`）再等待；错误终态携带**真实** `retry_attempt`（已执行重试次数）/`retry_count`（usr `retryCount`，0 = 不重试）/`retry_wait_ms=0`。主轮次与子轮次/群聊 `work_session` 同走 `chatOnce`，行为一致。
-- 消费方 = 前端：重试中间态 → 下方提示条「正在重试 n/N（等待 s 秒）」；**终态错误 → 唯一错误面 = 下方提示条**（摘要 + 「已重试 n/N 次」+「查看错误信息」），聊天流内不再渲染错误气泡（ERRUX-1）。前端**不再**对 `retryable` 错误静默自动续写（否则重试不可见）。
+- **可见重试（RETRY-1 / RETRY-2）**：重试由 **router** 执行，turn 实现 `router.RetryObserver.OnRetry` → 每次重发前发布**中间态** `session-retry{instance_id, session, turn, retryable:true, retry_attempt, retry_count, retry_wait_ms}`（`turn.go#OnRetry`，`retry_wait_ms` 由 router 传入）；错误终态携带**真实** `retry_attempt`（已执行重试次数）/`retry_count`（usr `retryCount`，0 = 不重试）/`retry_wait_ms=0`。主轮次与子轮次/群聊 `work_session` 同走 `chatOnce`，行为一致。
+- 消费方 = 前端：重试中间态 → 下方提示条「正在重试 n/N（等待 s 秒）」；**终态错误 → 唯一错误面 = 下方提示条**（摘要 + 「已重试 n/N 次」+「查看错误信息」），聊天流内不再渲染错误气泡（ERRUX-1）。前端**不再**静默自动续写（自动续写由后端按宽限期承担，见下条）。
+- **`next_run` 终态收敛（NEXTRUN-1）**：`finish` 落定后若本轮为 `error` / `interrupted` / `cancelled`（非 `complete`/`incomplete`），按 `turn_id` 丢弃本 turn 的 LLM 排队项（`source=llm` 的 `pending` → `discarded`），避免"僵尸提示词"在用户结束本轮后又自动起轮；计数 `next_run_count` 不回滚（上限仍按用户视角累计，用户发送即重置）。
+- **语义级中断 + 自动续写（RETRY-2，2026-10-20）**：`Emitted > 0` 中断 / `finish_reason=length` → 发 `session-interrupted`（前端 `llm-interrupted`）并**不结束 turn**；前端显示「服务器错误，是否继续。」+「继续」链接（点击 = 发送 `continueText` 用户消息）。usr `autoContinue=true` 时排程宽限期 `autoContinueDelaySec`（默认 600s），到期且**仍停在原会话、无任何用户操作** → 同 turn 内追加一条 `continueText`（`Kind=continue`）；用户在该 session 发任意消息 / 插话 / 切会话 / 关窗 → 取消（`continueSeq` 代次 + `data-session-active-get` 校验）；每次中断最多 1 次，`maxAutoContinue=3` 为同 turn 硬上限；再失败即终态（提示条保留、手动可继续）。`autoContinue=false` → 中断即终态（不发宽限期），提示条照旧。
 
 ### 4.3 任务树（`tasks.go` / `tool_task.go`）
 
@@ -148,15 +159,16 @@ chatOnce：
 - **任务编排分层**：**任务编排归本模块** —— 任务树/级联/批量/任务事件（`tasks.started`/`tasks.updated` 节流 ≤250ms/`tasks.done`）由 `server/tasks.go` 编排（节点 `kind` = `tool`/`llm`/`ask_user`，`parent_id` 挂父、`top_session` 归属；`tasks.go:1-6` 注释原文「**gateway 是纯执行层，不对前端广播任务事件**」）；**gateway 只做单次 `tools/call` 的执行层异步/裁决/取消**（`src/lib/gateway/gateway/tasks.go:1-4` · `mcpgateway.go:640-651`），终态经 `mcp-tasks-report` 回报本模块。**取消链** = `cancelSubtree`（`server.go:1071-1085` `onTaskStop` / `tool_task.go:39-67` `runToolStop`）→ 子树登记的 gwID 逐个经**进程内 sink** `s.execSink.CancelExec` 交 gateway（`gwclient.TaskCancel` 已移除）；`process_id` 分支直接 OS kill（`tool_task.go:48-57`）。**既有缺口（未修）**：`turn.go:609` 仅在「已转异步」分支登记 `gwTaskID` → 在飞的 **manual / never** 任务打不到级联取消。详见 [18 §3.6](../10-architecture/18-工具异步超时与取消.md)。
 - `ask_user` **实现现状 + 目标态**：**扁平单问**（一次工具调用 = 一问，`question`/`options`/`multi`/`custom`/`recommended`）；答复经 `ask-user-reply` 回填该 turn 的 tool_result。**目标态（未落地）**：`questions[]` 一表 N 问；节点 `content` 承载表单态（questions/answers/state）；**增量答复写穿** → **全部题答齐才聚合为一个 tool_result**；turn 停在 `awaiting`（免被启动清理误标 `interrupted`），重开经 `recoverTurnCtx` 重播表单。
 
-### 4.4 子会话与 DSL（`subllm.go` / `jobdsl.go`）
+### 4.4 子会话与 DSL（`dsl_caps.go` / `plugin_caps.go`）
 
-- `isLLMTool` 仅 `llm_run`（唯一注册 llm 型）→ `runSubJob` 执行 DSL 作业。`agent_list` 已下线（`registerDomainTools` 现仅注入 4 个域工具契约）；**子 agent 发现改由注入的团队列表（场景层）承担**（`mcp_find(type=agent)` 不再成立 —— `type` 收敛为 `tool|skill|resource|all`）。🔵 待实施，见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。
+- **DSL 编排不在本模块的工具面**：`llm_run` 已下线；`dsl_run` 已于 2026-10-19 外移为 core-mcp-server 的独立 executor（见 §3.4）。本模块保留其**原子能力**（`dslLLM` / `dslReport`）：`plugin/v1/dsl.llm` 执行 LLM 子轮次（`session-start`/`session-send`/`session-complete`），`plugin/v1/dsl.report` 把 tree/step/result 交给 `server/dsl_report.go` 的 `dslJobReporter` → `task-*`（**任务层唯一写者仍是 server**）。本模块不再有 `isLLMTool` / `runSubJob` 分支，也不建 `dsl_job` 节点。`agent_list` 已下线（`registerDomainTools` 现仅注入 5 个域工具契约）；**子 agent 发现改由注入的团队列表（场景层）承担**（`mcp_find(type=agent)` 不再成立 —— `type` 收敛为 `tool|skill|resource|all`）。🔵 待实施，见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。
 - **子轮次 agent 定义接线**：`agents` 由 `map[string]struct{}` 改存 **agent 定义**（`domainmcp.go`：`loadScenario`/`scenarioAgentOf`/`mainScenarioAgent`/`childAgentSystem`/`resolveAgentLLMName`/`parseToolWhitelist`）；**四项生效** —— `prompt`/`delegateCond` → 子轮 system（`childAgentSystem`）；`tools` → 工具下发面（`turnCtx.allowedTools` + `llmTools()` 过滤）；`llmRef` → provider（子轮 = 被委派 agent，顶层 = 主 agent）。**`llmRef` 逐级回落**：`agent.llmRef` →（空）→ `llm.<子系统>` →（空）→ 继承通道（顶层 `llm-start.llm` / 子轮父轮 provider）→（空）→ `defaultLLM` →（空）→ 系统默认（经 `data.LLMRefName` 折算 int 索引）；**热生效** = `newTurnCtx` **每轮解析一次**、无进程级缓存。**空值 = 不限制/不干预**（`tools` 空/`[]` = 不限制）。删除已无调用方的 `loadScenarioSystemPrompt`（主 agent = `mainScenarioAgent`）。内置 agent 集**不是代码内嵌契约**（不 `//go:embed contracts/agents/*.agent.md`）—— 统一为 **app 级场景**（`<exeDir>/scenarios/*/`；出厂内容由 **embed** 提供、app 初始化（首次 list）缺失即物化，**app 级可编辑**，25 §6），`registerDomainAgents` 经数据层门面 `facade.ScenarioAPI.ScenarioList` 读取（路径/三级根规则单源在数据层，本层不拼路径）；`registeredAgentDef` 回落来源 = 「app 级场景内的同名 agent」（全量链路见 §4.4 上方注）。`builtin-agents/` 已删除 —— 发布 `scenarios/` 仅 `default/`（「开发场景」）；「通用」= 无场景的通用模式（无目录）；`registerDomainAgents` 扫描全部 app 级场景（当前仅 1 个）。
 - **场景子 agent 白名单硬拒**：`turn.go` 在工具调用**分发前**按 `turnCtx.toolAllowed(name)` **硬拒**白名单外工具（**不落 gateway**、不建任务节点，以失败文本落 role=tool 回喂；名字口径 = LLM 工具面**暴露名**，与 `llmTools()` 同一名字空间）。agent 只注入 context、不注册资产（`mcp_find(type=agent)` / `prompts/list` 不再列 agent）；`mcp_invoke` 旁路加固同保留。🔵 待实施。见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。
-- **`runSubJob` panic 兜底**：入口 `recover` **不仅回收 goroutine** —— panic 路径亦**落任务失败终态（`TaskStateError`）并回填父轮**（`parent.FeedToolResultStatus(toolCallID, …, "failed")`），否则子作业节点悬挂、父轮永久等待该 tool_call（无终态、无回执）；用「已终态则跳过」守卫避免与正常收尾重复回填（`tasks.done` 幂等；父轮 `FeedToolResultStatus` 非幂等）。
+- **子作业/子轮次 panic 兜底**：入口 `recover` **不仅回收 goroutine** —— panic 路径亦**落任务失败终态（`TaskStateError`）并回填父轮**（`parent.FeedToolResultStatus(toolCallID, …, "failed")`），否则子作业节点悬挂、父轮永久等待该 tool_call（无终态、无回执）；用「已终态则跳过」守卫避免与正常收尾重复回填（`tasks.done` 幂等；父轮 `FeedToolResultStatus` 非幂等）。
 - `runChildTurn`：子轮**复用同一 turnCtx 状态机**，`Parents=父链+父session`，业务同主轮。
-- `llm_run` DSL：`dsl.Parse` + 注入 `LLM "agent" "prompt" "目的" [=> 目标]` 动词（**三参必填**：agent/提示词/目的；目的 = purpose/展示名，即 tasktree 节点 label，**软约束 10–20 字 —— 超长截断为 20 字并记录、不足仅记录，均不报错**；**参数个数 ≠ 3 或任一参数为空串 → 顶层失败**，报错含语法示例与行号）；`watchCancel` **200ms 轮询根节点取消 + 父轮次 ctx 感知（B3）**（父 ctx 取消 → 立即中止引擎、打断子步骤阻塞等待）。见 [3A §TOOL-009](../30-function-points/3A-工具与编排.md) · 契约 [llm_run.tool.md](../../../src/lib/llm/server/contracts/tools/llm_run.tool.md)。
-- **路径收紧 + 只读 env（R-11 二次升级）**：`jobScriptOf` 的 `file` 与 DSL 内所有 `#"path"` 须**绝对 / `~/` / `!/`**，相对路径 → **顶层失败**（`jobFile.abs()` 严格 `paths.ResolvePath(raw,"")`，不再按 workDir 静默 `Join`；执行前经 `dsl.CollectHandleRefs` 预校验字面句柄，含 `{{}}` 的跳过、运行时严格解析兜底）；同时把同一套**只读** `env` 注入 `dsl.Options.Vars`：`CHONKPILOT_WORKDIR`（= 轮次 `req.WorkDir`）/`DATADIR`（= `req.DataDir`）/`TEMPDIR`（= `paths.SetTempRoot(req.InstanceID)` 返回值，按 instance 分目录）/`EXEDIR`（server exe 目录）/`PROJECT`（= workdir）；**无裸名别名**（`WORKDIR` 已删除），LLM 用 `{{env.CHONKPILOT_WORKDIR}}` 显式拼项目内绝对路径（不再依赖隐式 workDir 兜底）。见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。
+- **DSL 语法与执行**：`dsl_run` 接受 `dsl.Parse` 脚本（`LLM "agent" "prompt" "目的" [=> 目标]` 三参必填：agent/提示词/目的 = 步骤展示名，软约束 10–20 字）；执行体 = `chonkpilot-dsl-executor.exe`（一工具一 exe，一作业一进程，引擎与编排同进程）；LLM 步骤经插件桥 `plugin/v1/dsl.llm` → 本模块起子轮次并等 `session-complete`。见 [3A §TOOL-009](../30-function-points/3A-工具与编排.md) · [63-DSL语法](../60-reference/63-DSL语法.md) · 契约 [dsl_run.tool.md](../../../src/initdata/capability/tools/core/dsl_run.tool.md)。
+- **路径收紧 + 只读 env（R-11 二次升级）**：`dsl_run` 的 `file` 由 **executor（`dslexec.execTool`）** 严格 `paths.ResolvePathFor(instance, file, "")` 校验后在本进程读取；DSL 内 `#"path"` 句柄由引擎在运行时按同一严格口径解析（相对路径即该步失败）。解释器注入**只读** `env`（`dslexec.envVars`）：`CHONKPILOT_WORKDIR` / `DATADIR` / `TEMPDIR`（按 instance 分目录）/ `EXEDIR` / `PROJECT`；LLM 用 `{{env.CHONKPILOT_WORKDIR}}` 显式拼项目内绝对路径（不再依赖隐式 workDir 兜底）。见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。
+- **工具执行全进程外（P6，2026-10-19）**：`CHONKPILOT_EXTERNAL_TOOLS=1`（桌面单体 / server 默认）时，系统级 app 根只注册 **prompts / skills / resources 资产**（`Config.SkipTools=true`），5 个可执行工具（`filesys_run` / `script_run` / `web_fetch` / `browser_run` / `desktop_run`）改由 `chonkpilot-self-tools.exe` 经插件桥 `plugin/v1/tools.register` 注册（`handler_subject=self-tool-call-ext`），gateway 注入 self 节点后仍以 `self_<name>` 暴露；执行 = 外部进程 spawn executor。app 根工具契约热变更由 self-tools 自身 fswatcher 重扫（unregister→register）。非外部模式（单测 / CLI）保持进程内 `RegisterContracts`。
 - **实例上下文改由调用上下文（`_meta`）承载（R-11 二次升级修订）**：`loadExecConfig(instanceID)` 仅注入 usr/prj 执行配置（解释器/chrome/超时/并发/skip_dirs）；实例上下文**不再经 `mcpCfg.SetContext` 注入 tool arguments**，改由每次工具调用经 `mcpgateway.Context`（`mcp-tools-call` payload）→ gateway → mcp-server `params._meta` 透传。`llm-start` 的 `InstanceID` 为空 → 顶层错误（`accepted:false`，不进 turn）；`gwClient.Call` 的调用上下文 `InstanceID` 为空 → 直接返回错误（不下发）。`llm_start` 的 `work_dir`/`data_dir` 随 `instance-register` 绑定，`gwClient.call` 现随 payload 携带 `data_dir`。
 
 ### 4.5 LLM 出网（`src/lib/router` 统一入口）
@@ -306,6 +318,41 @@ chatOnce：
 
 ---
 
+### 4.10 中途插话（INBOX 帧栈，2026-10-17）
+
+> 设计权威：[中途插话设计方案](../../agent-chat/中途插话设计方案.md)。消息面见 [61 §4.3](../60-reference/61-消息一览.md)。
+
+**目标**：工具执行期间（`toolPending`）允许用户插入一段对话并**优先处理**；流式输出期（reason/text/tool-call）不允许打断，消息先入 inbox；插入轮自身可再调工具（嵌套）；插入结束后按"外层工具是否已完成"自动续轮。
+
+**执行模型**
+
+- 工具派发即异步（§4.1 强制异步）→ `chatOnce` 返回、`loop` 回到 `select`，`inboxCh` 才可能被消费。
+- 帧（frame）= 一次进行中的 LLM 轮次及其工具等待集合；**LIFO 栈**，栈顶帧是唯一可发起 LLM 请求者。主帧状态仍由 `turnCtx` 的 `pending`/`inflight`/`stash`/`answer` 承载，插入帧为 `insertFrame`。
+- 恢复判定（唯一入口 `maybeResumeTop`，双条件 AND）：**帧 == 栈顶** ∧ **本帧 `pending`/`inflight` 均空**；回执只清 `pending`，不直接续轮 → S4（插入先结束）/ S5（回执先到）/ S4.5（等待期反复插入）都退化为同一判定，且只续一次。
+- 插入帧终结**不发 `session-complete`、不关 turn**（`session-complete` 仍只在整个栈清空时发一次）；插入轮产生的全部消息写**主 turn 的 `turn_id`**。
+- 插入轮恢复外层时临时注入「续接说明」system 文本（不落库 / 不进快照 / 不参与压缩）。
+- 未完成 / 空结果工具在 LLM 投影中按 `tool_call_status` 给明确占位（`ToolLLMContentStatus`：执行中 / 已中断 / 已取消 / 失败 / 完成无输出），**不得为空串**。
+
+**发送入口（inbox 优先，含空闲首条）**
+
+| 当前相位 | `llm-inbox-add` 分类 | 后续 |
+|---|---|---|
+| `toolPending` / `awaitJoin` | `insert` | 立即落 `messages` 并 push 插入帧 |
+| `streaming` / 无运行轮 | `next_turn` | 等本轮结束；主会话由 `finish` 后 `consumeNextTurn` 起新一轮（同批多条**合并为一次**请求、逐条落库）；**无运行轮 → 立即消费起轮**，turn id 由服务端分配并经 `turn-start` 回填前端；子会话 / 群聊由各自调度器驱动 |
+
+> 同轮次「继续」（`llm-start{continue:true}`）复用既有 turn，不走 inbox 队列（非新轮语义）。
+
+- inbox 持久化 = prjusr `inbox_items`（`data-inbox-append/list/update`），每会话 pending ≤ 50；同 `idempotency_key` 幂等。
+- 消费顺序（Q6）：inbox 行先落库 → 写 `messages` → **立即**置 `consumed`（崩溃重复窗口 = 一次落库）；`insert` 落库失败/相位变化保持 `pending`；`next_turn` 批次在起轮前与逐条写库前**二次 pending 复核**；`discard` 仅对 `pending` 生效（已 `consumed` 拒绝；撤回后不得再落 message）。
+- 撤回 = `discarded`；`next_turn → insert` 显式提升（`llm-inbox-promote`）；无运行轮时 promote = 重启后「继续」消费。
+- 重启：帧栈**不重建**；非终态工具由 `TurnCleanupStale` 收敛 `interrupted`；inbox pending 拉回、**不自动发送**。
+- 收尾（G-65）：`TurnCleanupStale` 同一启动触发点顺带清理**终态 inbox 行**（`consumed`/`discarded` 保留 7 天，`pending` 永不自动删）；`SessionDelete` 级联删除该会话全部 `inbox_items`（含幂等删除不存在会话时的历史孤儿行）。
+- **LLM 自登记排队项（NEXTRUN-1）**：`next_run(prompt)` 写 `next_turn` 行（`source=llm`、`turn_id=当前轮`、幂等键 `next-run:<turn>`），同轮多次调用就地覆盖 `content`（last-wins）；`consumeNextTurn` 消费时**过期判据** = 该行 `turn_id` 不等于会话最新轮 → 置 `discarded`（不落消息），合法项落消息 `kind=next_run`。`source` 字段仅允许 `llm`（用户排队项为空）。计数器 / 上限 / 重置与终态收敛见 §3.4、§4.2。
+
+**边界**：插入帧 LLM 失败 → 仅丢弃该帧并恢复外层（主轮不受影响）；帧深上限 5；`llm-cancel` = 全局终止（所有帧 + 在飞工具，恰一次 `interrupted`，不回到原任务）。
+
+---
+
 ## 5. 数据结构与存储
 
 - 无本地存储：全部经 `data-*` 消息面（`session.go` 的 `sessionStore` 方法 ↔ 主题一一对应）：`ensure-session`/`ensure-turn`/`append-message`/`load-messages`/`context`/`complete-turn`/`cleanup-stale`/`set-summary` + `data-snapshot-set`。
@@ -341,7 +388,7 @@ chatOnce：
 - **实例未注册** → `{accepted:false, error:"instance not registered"}`。
 - **用户/项目/项目私有级 capability 动态接入**：`onInstanceRegister` 经 `capNodeSpecs` 解析**存在的**用户级 `~/.chonkpilot/capability`（`persist.CapUserRoot`）、项目级 `<workDir>/.chonkpilot/capability`（`persist.CapProjectRoot`）与**项目私有级**（prjusr；根由门面 `KnowledgeRoot(kind=prjusr)` 解析，与知识库/场景写读同源）→ gateway `servers/register`（dir 节点，`scope=instance_id`，节点名 `<id>-user`/`<id>-project`/`<id>-prjusr`）；目录缺失跳过、重复注册幂等（`dirNodes` 记账）、`onExit` 对称 `servers/unregister`。注册后主动 `s.gc.ListTools` 刷新工具缓存（gateway dir 节点注册不发 `mcp-gateway-changed`），使 `hot==true` 的契约进 `toolsForLLM`。**`@mcp` 旧名已废弃**（项目根为 [02-配置层级 §7.2](../00-overview/02-配置层级.md) 的 `.chonkpilot/capability`；系统级 `<exeDir>/capability` 仍由 self 节点承载）。
 - **agent 工具白名单级别矩阵**：`newTurnCtx` 读场景级别（`loadScenario` 增返回 `level`）→ `filterWhitelistByLevel` 按"同级或更高级"矩阵**静默剔除**越权 / 不存在（不在本实例可见工具面）的工具名（工具级别由 `_meta.server.node` → `capfs.LevelOfNode` 判定；场景级别不可判定 / 工具级别无法判定 → 放行；空白名单 = 不限制语义不变）。矩阵单源 = `capfs.AgentToolLevels / LevelAllowed`（`persist` 转发）。详见 [25 §4.5](../10-architecture/25-MCP与场景分层模型.md)。
-- **原语保存热生效（capwatch）**：`src/lib/llm/server/capwatch.go` 对**用户级 / 项目级 / 项目私有级** capability 根加 fsnotify 监听（60ms 去抖合并 create/write/chmod），`fire` 按脏标记分流——① **用户级/项目级/项目私有级** → `reconcileCapabilityNodes`（复用 `servers/unregister`+`register` 重建 dir 节点）；② **系统级 app 根**（`<exeDir>/capability`，内嵌 self 节点）→ `Server.reloadAppContracts`：重跑 `RegisterContracts` 进同一内嵌 go-sdk server（同名覆盖更新 / 新增注入）+ `RemoveTools` 回收已删/改名工具 → 复用既有方法面 `gateway/reload` 让 self 节点重拉 list。**增/改/删数十毫秒级生效、app 根只读语义不变（UI 不可改）、零新增消息面主题**。**已知边界**：app 根目前**仅对 `*.tool.md` 做删除回收**（prompt/skill/resource 的删除不回收，保留至重启）；`gateway/reload` 会连带重列外部下游。监听失败不致命（退化为"需重注册/重启生效"的既有行为）。**子树监听须整棵成功才置 `expanded`**：`addTreeLocked` 递归监听返回「根 + **所有子目录**」是否全部 `w.Add` 成功——**任一子目录失败即整棵 false**，调用方据此**不置 `expanded[root]`**（否则该子树内新变更**永久不被监听/重试**、热生效静默失效直到重启）。
+- **原语保存热生效（capwatch）**：`src/lib/llm/server/capwatch.go` 对**用户级 / 项目级 / 项目私有级** capability 根加 fswatcher 监听（60ms 去抖合并 create/write/chmod；`WithCooldown(0)` + 自管定时器），`fire` 按脏标记分流——① **用户级/项目级/项目私有级** → `reconcileCapabilityNodes`（复用 `servers/unregister`+`register` 重建 dir 节点）；② **系统级 app 根**（`<exeDir>/capability`，内嵌 self 节点）→ `Server.reloadAppContracts`：重跑 `RegisterContracts` 进同一内嵌 go-sdk server（同名覆盖更新 / 新增注入）+ `RemoveTools` 回收已删/改名工具 → 复用既有方法面 `gateway/reload` 让 self 节点重拉 list。**增/改/删数十毫秒级生效、app 根只读语义不变（UI 不可改）、零新增消息面主题**。**已知边界**：app 根目前**仅对 `*.tool.md` 做删除回收**（prompt/skill/resource 的删除不回收，保留至重启）；`gateway/reload` 会连带重列外部下游。监听失败不致命（退化为"需重注册/重启生效"的既有行为）。**递归监听由 fswatcher 单句柄承担**：根存在 → `AddPath(root, WatchNested)`；根不存在 → `AddPath(nearestExistingDir(root), WatchTopLevel)`，根创建后 `sync` 收敛；不再逐子目录 `Add`（原 `expanded/addTreeLocked` 机制已移除）。
 - **取消**：`llm-cancel` 无 turn 时按 session 回退运行中轮次。
 
 ---
@@ -359,5 +406,108 @@ chatOnce：
 
 ## 10. 关联测试
 
-`src/lib/llm/server/*_test.go`：`llm_test`（流解析/错误分类）· `assemble_test`（**三段拼接**：完整区原文 / 简化区**仅 text**（`TestAssembleTurnsBriefZoneTextOnly`/`TestAssembleTurnsThreeZones`）/ token 边界与预存优先（`TestAssembleTurnsTokenBound`）；口径 X）· `llm_testconn_test`（`llm.test-connection` 只读探活 —— `TestLLMTestConnectionOK` / `...AuthMaskedKey`（Key 脱敏）/ `...Network` / `...Timeout` / `...InvalidParams` / `...ResponsesProtocol`（Responses 协议映射 `max_output_tokens`）/ `TestMaskLLMSecrets`，见 §3.1）· `llm_images_test`（图片多模态：`TestChatImageContentParts`/`TestResponsesImageInputItem`/`TestChatImageErrors`（6 子例，**HTTP hits=0**）/`TestImageRecentTurnsRule`/`TestImagesDisabledPlainText`/`TestTurnSendsImagesEndToEnd`，见 §4.9）· `turn_test`/`turn_cover_test`（续写/空回复/auth/异步/压缩事件/取消）· `tool_task_test`（tool_stop 级联/tool_result 取结果）· `tool_retry_test`（定位/重启恢复）· `tasks_test` · `session_test`（含 **`TestBuildContextTokensReadsPrestored`**：P3 读通道真取预存值） · `sessionlock_test` · `prompt_test` · `plugins_test` · `jobdsl_test` · `domainmd_test` · `domainmcp_test`。
-黑盒：`src/test/chonkpilot-llm/unittest/llm_test.go`（仅经公开主题驱动）。
+`src/lib/llm/server/*_test.go`：`llm_test`（流解析/错误分类）· `assemble_test`（**三段拼接**：完整区原文 / 简化区**仅 text**（`TestAssembleTurnsBriefZoneTextOnly`/`TestAssembleTurnsThreeZones`）/ token 边界与预存优先（`TestAssembleTurnsTokenBound`）；口径 X）· `llm_testconn_test`（`llm.test-connection` 只读探活 —— `TestLLMTestConnectionOK` / `...AuthMaskedKey`（Key 脱敏）/ `...Network` / `...Timeout` / `...InvalidParams` / `...ResponsesProtocol`（Responses 协议映射 `max_output_tokens`）/ `TestMaskLLMSecrets`，见 §3.1）· `llm_images_test`（图片多模态：`TestChatImageContentParts`/`TestResponsesImageInputItem`/`TestChatImageErrors`（6 子例，**HTTP hits=0**）/`TestImageRecentTurnsRule`/`TestImagesDisabledPlainText`/`TestTurnSendsImagesEndToEnd`，见 §4.9）· `turn_test`/`turn_cover_test`（续写/空回复/auth/异步/压缩事件/取消）· `tool_task_test`（tool_stop 级联/tool_result 取结果）· `tool_retry_test`（定位/重启恢复）· **`inbox_test`**（中途插话：S1 插入 / S3 嵌套工具 / S4 awaitJoin / S5 回执先到 / S4.5 重入 / 重复回执幂等 / 流式期 next_turn 与合并 / promote / 全局取消 / 上限 50 / **Q6 撤回优先 + 已消费不可撤回 + 批次 pending 复核** —— `TestInbox*`，见 §4.10）· `tasks_test` · `session_test`（含 **`TestBuildContextTokensReadsPrestored`**：P3 读通道真取预存值） · `sessionlock_test` · `prompt_test` · `plugins_test` · `jobdsl_test` · `domainmd_test` · `domainmcp_test`。
+黑盒：`src/test/chonkpilot-llm/unittest/llm_test.go`（仅经公开主题驱动）；L1 `src/lib/llm/server/inbox_test.go`（S01–S07 + Q6 顺序/撤回：撤回后不落 message、已消费不可撤回、批次逐条 pending 复核）；`src/test/chonkpilot-data/unittest/persist/facade_inbox_test.go`（inbox 持久化 / 幂等 / 上限 / 重启保留 / 会话级联）；`src/lib/data/internal/kernel/viewdata_inbox_test.go`（工具状态投影占位）。L4：`src/test/chonkpilot-gui/systest/run_inbox.py`（真实 exe + mock LLM：工具执行中 `llm-inbox-add` → 插话先出流、主轮不提前终态）。
+
+---
+
+## 11. chat 引擎与端口（MOD-1，2026-10-20）
+
+> 组件内核 = **`src/lib/chat/`**（独立 module `chonkpilot-chat`，`go.mod` 仅标准库）；宿主适配器 = `src/lib/llm/server/chatshadow{,_tool,_context}.go` + 接管装配 `engine_turn.go`。
+> **生产唯一执行路径 = 引擎（A4-P4b，2026-10-21）**：所有轮次（主会话 / 子聊天 / 子会话 / 干活子会话 / DSL 子轮次 / 恢复轮）一律由 `runEngineLoop`（`loop()` 唯一执行体）执行；**无回滚开关**（不读任何环境变量），旧 `chatOnce` / P3a 单步接管 / 旧输入等待路径已删除。终态仍由 `Server.finish` 唯一收口。本节不改任何消息契约。
+
+### 11.1 端口（消费方 = chat 定义，实现方 = 宿主）
+
+| 端口 | 定义 | 宿主实现 | 语义要点 |
+|------|------|----------|----------|
+| `ContextProvider` | `Build(ctx, ContextRequest) (Context, error)` | `chatshadow_context.go`（`BuildContextTokens` + `chatTurnUserInputs` + `resolveTurnScenario`） | 读库 / 压缩 / 五层 system prompt 拼装全归宿主；**每轮只调一次**；`SystemPrompt` 不重复塞进 `Messages`；**`Build` 含本轮已落库用户输入**（A4-P2：历史 `exclude_turn` 排除当前轮 + 本轮 `role=user`（kind `""/text/insert/continue`）按 created_at 顺序追加；本轮 assistant / tool 由引擎重新生成，不进上下文） |
+| `TurnStore` | `SaveMessage` · `CommitInbox` · `AppendEvent` | `chatshadow.go`（`AppendFullKeyed` · `data-inbox-commit` · `data-turn-event-append`） | `CommitInbox` = **同一事务**落消息 + 置 `consumed`（`M-INBOX-<inbox_id>` 确定性主键幂等） |
+| `EventSink` | `Emit(ctx, Event)` | `chatshadow.go` 的 `chatEventSink` | **必须非阻塞**；`llm_delta`→`llm-receive` · `llm_retry`→`llm-retry` · `turn_complete`→`llm-complete`（**零新增主题**） |
+| `ToolInvoker` | `Dispatch` / `Cancel` / `Detach` | `chatshadow_tool.go` | `Dispatch` = 策略硬拒 → `ask_user` 走宿主 ask 通道 → `mcp-tools-call` → 同步结果 / `status=pending` 挂起（`OpID` = gateway task_id）；工具级错误编码为 `ToolResult.IsError` |
+| `ToolCatalog` | `Servers` / `Tools` | `chatshadow_tool.go` | `Tools` = 宿主**已过滤**的下发面（`[]ToolDef` → `ToolSpec`，`_meta` 透传）；`Servers` 恒空（服务目录属管理面） |
+| `Clock` | `Now` / `After` | `chatadapter.go`（系统时钟） | 续写宽限期 / 轮询 / 超时；测试可注入假时钟 |
+| `LLMClient` | `Step(ctx, StepRequest, StepOptions)` | `chatLLMClient`（`chatshadow.go`） | chat 与 router 的唯一接触面；协议 / 流解析 / **报文级重试**归 router |
+| `Inbox` | `Poll(ctx) (InboxItem, bool, error)`（**非阻塞**） | 宿主队列（`llm-inbox-*` / 工具回执） | `insert` → 同事务消费 + 插入帧；`tool_result` → 仅轮内等待中消费；其余类型引擎忽略（宿主保留/丢弃） |
+
+### 11.2 执行路径
+
+```text
+RunTurn(ctx, turnID)  /  RunSubTurn(ctx, req)        // engine.go
+ └─ run → runFrame（可重入，一帧一次）
+      ├─ ContextProvider.Build（每轮一次）
+      ├─ step：LLMClient.Step(StepRequest, StepOptions)
+      │    ├─ OnRetry → EventLLMRetry（可见重试）
+      │    └─ 事件经 Apply 推进 TurnState + TurnStore.AppendEvent（受 turnEventLog 分级）
+      ├─ 工具循环：Dispatch → 同步结果 / Pending（按 PendingWait 等待回执或立即返回）
+      └─ 终态：completed / failed / canceled / pending（`awaiting_tool`）
+```
+
+- 状态变更**只经** `chat.Apply(state, event)`（`turnstate.go`：`Seq` 单调、未知事件显式失败、插入帧 LIFO、终态守卫）；路由状态 `TurnState` 可 JSON 往返。
+- 插话帧栈（`engine.go`）：`maxInsertDepth = 5`；插入帧收口给出**一次性续接说明** `InsertResumeNote`（仅下一次 `StepRequest` 首位临时插入 system，不落库、不进快照）；全局 step 计数跨帧（`defaultMaxSteps = 32`）。
+- 异步回执续轮：`RuntimeConfig.PendingWait > 0` 时轮内等待（`PollInterval`，缺省 50ms），命中匹配 `CallID` 的 `tool_result` 后按同步路径回填（`deliverToolResult`，**不重复 Dispatch**）；超时合成 `IsError` 占位续轮、不终结整轮。
+- 自动续写：`AutoContinue`（零值关闭）/ `AutoContinueDelay`（缺省 600s）/ `AutoContinueText`（缺省「继续」）/ `AutoContinueMax`（缺省 1）。中断判定 = 已产生文本后的断流 或 `finish_reason=length`；宽限期内有插话 / 回执 → 取消续写；到期无输入才追加 `kind=continue` 的 user 消息。
+- 可见重试：`RetryCount` / `RetryBudget` 由宿主配置注入并原样透传给 `StepOptions`；**次数与退避的单一所有者仍是 router**，引擎只把 `OnRetry` 折成 `EventLLMRetry`。
+
+### 11.3 事件日志
+
+- 表 `turn_events`（prjusr，schema v11）；写入 = `data-turn-event-append`（同 `turn_id` + `seq` 幂等、`type` 冲突失败），清理 = `data-turn-event-cleanup`。
+- 分级 `turnEventLog`（`none` / `minimal` / `outline` / `verbose`，默认 `outline`）；`none` / `minimal` **不可重放**。
+- 保留期 `turnEventLogRetentionDays`（默认 7，`0` = 永久）；`running` 永不按时间删。
+
+### 11.4 影子与旧路径删除（如实口径）
+
+- 已落：`chat/trace.go` 的 `Recorder` / `ShadowTurnStore` / `Trace` / `Diff` / `Verify` —— 同一事件序列 + 同一 LLM 桩下，`StepRequest` 序列与写入序列**逐项相等**（`TestChatShadowParity` / `TestChatToolLoopThroughAdapters`）。
+- **旧路径已删除（A4-P4b，2026-10-21）**：`chatOnce`（旧 LLM+工具循环）· `deliverInput` · `consumeInbox` · `reapStalePending` / `reapInflight`（旧看门狗）· `maybeResumeTop` / `finishInsertFrame` / `abortCurrentFrame` / `setResumeNote` / `takeResumeNote`（旧插入帧续接）· `resumePartial` / `unpersistedInputs` · P3a 单步接管（`engine_step.go`：`engineTextEligible` / `runEngineStep`）；`turnCtx` 的 `engineMode` / `iterations` / `answer` / `stash` / `resumeNote` / `persistedResultOK` 字段一并删除。
+- **保留（引擎依赖）**：`turnCtx` 结构 / `newTurnCtx` / `msgs` / `persistMessage` / `dispatchToolCall` / `finish` / `complete` / `Close` / `finishOnce` / `llmTools` / `gatewayArgs` / `toolAllowed` / `markInflight` / `registerPending` / 任务树 / ask / `raiseInterrupted` / `publishInterrupted` / `runEngineLoop` / `enginePump` / `engineFirstInput` / `engineRouteInput` / `engineRouteInsert` / `engineFinish`。
+- **无回滚开关**：`chatEngineEnabled` / `engineTurnSelectable` 与相关环境变量判定已删除 → 引擎是唯一执行路径。
+- 跨进程恢复（进程崩溃 → 宿主收敛 / 重建实例继续）语义不变：收敛到终态 + 保留已落库消息；恢复轮由引擎从历史继续。
+
+### 11.5 生产执行：整轮引擎（唯一路径；A4-P4b 收口 2026-10-21）
+
+- **开关**：无（引擎为唯一执行路径，不读取任何环境变量；不存在回滚旧路径的开关）。
+- **覆盖范围**：全部轮次 → 主会话（会话行 `kind` 空）· 子聊天（`sub_chat`）· 子会话（`sub_session`，含 `runChildTurn` 的 llm 委派 / `subllm`）· 群聊参与者干活子会话（`work_session`）· DSL 子轮次（`isDSLSubTurn`）· **恢复轮**（`recoverTurnCtx`，`isRecovery=true`）。`group_chat` 本体不跑 LLM（无 turn 执行）。
+  - **恢复轮**：上下文种子 = `tc.msgs()`（hist + 本轮**全部已落库消息**，system/user/assistant/tool 顺序一致，`forceFull=true` 保证全量）→ 引擎**只从历史继续下一次 LLM 调用**，不重复派发已完成工具。断链（assistant 有 `tool_calls` 但该轮缺 tool 行，启动清理未覆盖的极端情况）→ `runEngineLoop` 在**收到首个输入之后、落首条输入之前**调 `engineSynthesizeDanglingToolResults()`：逐条合成 `role=tool` + `tool_call_status=interrupted`（文案 = 数据层 `interrupted` 占位「（工具已中断，未获得结果；如需重试请使用「重试」）」）并落库 + 记 WARN；已存在的 tool 行（任何终态）不覆盖（幂等）；合成行紧跟 `assistant.tool_calls`（保证协议顺序）。
+- **子轮次 AutoContinue**：父链非空 / `sub_session` / `work_session` → **强制关闭**（`engineAutoContinue()`），不计 `AutoContinueMax`；子聊天（`sub_chat`）保留 usr 配置（其窗口可成为活动会话，与生产 `activeSessionOK` 一致）。`length` 且续写关闭时仍由宿主补发同形 `llm-interrupted`（`auto_continue_delay_ms=0`）。
+- **装配**（`engine_turn.go`）：
+  - `ContextProvider` = `tc.msgs()`（生产同一份上下文：系统提示词 + 引导 + 本轮已落库消息）；
+  - `TurnStore.SaveMessage` → `tc.persistMessage`（**role=tool 跳过**：结果由 `dispatchToolCall` / 异步回执路径落库）；`CommitInbox` = 落消息 + 置 consumed；`AppendEvent` no-op（生产不写 `turn_events`）；
+  - `EventSink`：`llm_delta`→`llm-receive{type:text}` · `llm_retry`→`llm-retry` · `session_interrupted`→`llm-interrupted`（code 折回生产口径 `LLM_INCOMPLETE` / `LLM_STREAM_ERROR`）；`turn_complete` / 工具事件**有意不发**（终态仍由 `Server.finish` 唯一收口）；
+  - `ToolInvoker` = **生产 `dispatchToolCall`**（白名单硬拒 / mcp_invoke 旁路加固 / running+result 同一行 / 任务树 / ask / 异步登记全部同源）；`Pending` → 引擎 `PendingWait`；
+  - `ToolCatalog` = `tc.llmTools()`（生产下发面）；`LLM` = `newChatLLMClient`（同 ChatOptions，请求前按 `applyReasoningRule` 归一思维链回传）；
+  - `RuntimeConfig`：`MaxSteps = maxToolIterations` · `EventLogLevel = none` · `PendingWait = pending_task_timeout_sec`（缺省 2h）· `PollInterval = 50ms` · `AutoContinue* = usr`（`autoContinue` / `autoContinueDelaySec` / `continueText`，上限 = `maxAutoContinue`）· `PendingPlaceholder` = 数据层 running 行投影文案。
+- **输入漏斗（唯一消费者 = 引擎）**：`tc.in`（工具结果 → `tool_result`；用户文本 → `insert`）· `tc.inboxCh`（相位 / 撤回 / 空内容判据 → 交引擎建插入帧）· `tc.asyncDone`（`handleAsyncDone` 落库后投 `tool_result`）。
+- **终态映射**：正常 → `complete`；`length` → `incomplete`（未开启续写时宿主补发 `llm-interrupted`，与生产同形）；`ctx` 取消 → 静默（取消路径已发 `interrupted`）；错误 → `LLM_REQUEST_FAILED`（retryable 取 `*LLMError`）；`ErrMaxSteps` → `TOOL_LOOP_LIMIT`；空回复 → `EMPTY_REPLY`。
+- **行为证据**（`llm/server/engine_turn_test.go`，引擎唯一路径单跑断言落库消息 / role=tool 行终态 / 任务树事件 / `llm-receive` 文本 / `llm-complete`）：纯文本 · 同步工具 · 异步工具 · ask · 插话 · `length` · 取消 · 同轮次继续 · 图片 · 空回复；**子聊天**（`TestEngineTurnSubChat`）；**恢复轮**：始终引擎（`TestEngineTurnRecoveryAlwaysEngine`）+ 半途恢复（`TestEngineTurnRecoveryMidTurn`：user/assistant(tool_calls)/tool(completed) 三条进入下一步请求、gateway 零调用 = 不重复派发、落库 / 终态与新建轮「继续」一致）+ 断链合成（`TestEngineTurnRecoveryDanglingCall`）；逐路径覆盖另由 `TestSubChat*` / `TestGroupChat*` / `TestDSLSubTurnDeniesAskUser` / `TestRecoverTurnCtx*` 回归承担。
+- **已知边界（如实登记）**：① 异步回执等待由引擎 `PendingWait` 兜底（同阈值），**超时占位结果不落库**（仅回填续轮）；② 同一 step 的多路异步调用**串行派发**（结果 / 落库 / 任务树终态一致，时序不同）；③ 断流错误（已产出文本后）收敛为 `LLM_REQUEST_FAILED`（`retryable` 与文案保持生产口径）；④ 自动续写用尽后的第 N+1 次中断提示 `auto_continue_delay_ms` 取配置值（生产为 0）；⑤ 插入帧深超限时引擎留 pending；⑥ 中途 `text-notify` 输入引擎不消费（留痕；主会话仅在轮次首输入前出现 `continue`）；⑦ **子轮次（父链 / `sub_session` / `work_session`）中断提示** `auto_continue_delay_ms=0`（生产按 usr 配置值展示倒计时，但因 `activeSessionOK` 不成立同样不会真正续写）。
+
+
+---
+
+## 12. 恢复（MOD-1，2026-10-20）
+
+### 12.1 落点
+
+| 数据 | 落点 | 写入方 | 用途 |
+|------|------|--------|------|
+| turn 事件日志 | prjusr `turn_events`（`data-turn-event-append` / `-cleanup`） | llm-server | 重放游标 / 收口依据；按保留天数清理 |
+| ask 发起记录 | `messages.ask_id`（**仅 `ask_user` 的 role=tool 运行行**；**不建 ask 表**） | llm-server（`persistToolRunning(..., askID)`） | 重启 / 超时后回查「这题答过没有」 |
+| 待答 ask 查询 | `data-ask-pending` | persist（`facade.AskAPI`） | `ask_id` 空 + `pending_only` = 启动扫描；`ask_id` 非空 = 精确回查（含终态） |
+| inbox 原子消费 | `data-inbox-commit`（消息 + `consumed` 同事务；主键 `M-INBOX-<inbox_id>`） | persist | 消除「消息已落、inbox 未消费」重复窗口；重试幂等 |
+| 失效回执 | `askrecover.go` 的 `replyExpiredAsk` | llm-server | 未命中等待登记时不静默：已终态 → 明确失败；非终态 → 转普通 user 消息开新 turn |
+
+### 12.2 行为
+
+- **启动扫描**（首次使用 instance、遗留清理**之前**）：`data-ask-pending{pending_only:true}` 只统计未答 ask 并留痕；随后既有 `CleanupStaleTurns`（`session.go`）把非终态 turn 收敛为 `interrupted`，`cleanupStaleToolPairs` 收敛未完成 tool 对。
+- **DSL 子轮次**：`runDSLSubTurn` 起轮前 `markDSLSubTurn`，`newTurnCtx` 命中 → `denyTools{ask_user}`（下发面 + 调用处双拦），避免无人值守永久挂起。
+- **已回答不重问**：答案的最终形态 = tool result；回填即落库，重启后无需重问。
+- **待生产切换**：帧栈「继续」（插入帧执行）在引擎侧已实现（`maxInsertDepth=5`），但生产 `turnCtx` 仍不重建帧栈；**跨进程重建**（崩溃后按 `TurnState` + 事件日志重建实例）亦随生产切换。当前崩溃语义 = 收敛到终态 + 保留已落库消息。
+
+### 12.3 恢复五问（[71 §3.3](../70-conventions/71-编程规范.md)）
+
+| # | 问题 | 现状回答 |
+|:--:|------|----------|
+| 1 | 状态落在哪 | 内存 = `turnCtx`（生产）/ `TurnState` + `frameRun`（引擎）；持久化 = `messages`（含 `ask_id` / tool 状态）、`inbox_items`、`turn_events`。崩溃即丢的只有**运行中帧栈与在飞登记** |
+| 2 | 受理即持久化 | 用户输入 / 插话 / ask 回答 / 工具结果**先落库再推进**；inbox 走 `data-inbox-commit` 同事务（消息 + `consumed`） |
+| 3 | 非终态谁收口 | 启动 `CleanupStaleTurns` → `interrupted`；`cleanupStaleToolPairs` → 未完成 tool 对；`pendingSweepInterval`（30s）看门狗按 `pending_task_timeout_sec` 兜底回填 |
+| 4 | 重启后重建 vs 收敛 | 当前 = **收敛到终态并保留已落库消息**；引擎具备 `TurnState` 快照 + 事件日志重建能力，**跨进程重建随生产切换启用** |
+| 5 | 副作用语义 | inbox 消费 = **至多一次**（确定性主键 + 同事务 + 已 consumed 直接返回）；ask 答案 = tool result（回填落库后不重问）；工具按 `tool_call_id` 幂等回填，不重派发已完成工具；启动清理幂等可重跑 |

@@ -7,6 +7,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"io"
 	"log"
@@ -19,26 +21,24 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-data/facade/inline"
+	"github.com/chonkpilot/chonkpilot-appwire"
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-lib/osuser"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
 	"github.com/chonkpilot/chonkpilot-lib/procsingleton"
 	"github.com/chonkpilot/chonkpilot-lib/uds"
 	"github.com/chonkpilot/chonkpilot-lib/winlog"
+	"github.com/chonkpilot/chonkpilot-llm/codegraphindexer"
+	"github.com/chonkpilot/chonkpilot-llm/coretools"
 	"github.com/chonkpilot/chonkpilot-llm/httpapi"
 	"github.com/chonkpilot/chonkpilot-llm/llmbridge"
+	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
+	"github.com/chonkpilot/chonkpilot-llm/queuehooks"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-llm/udsapi"
+	"github.com/chonkpilot/chonkpilot-llm/vftsindexer"
 	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
-	"github.com/chonkpilot/chonkpilot-plugin"
-	"github.com/chonkpilot/chonkpilot-plugin-codegraph"
-	"github.com/chonkpilot/chonkpilot-plugin-compress"
-	"github.com/chonkpilot/chonkpilot-plugin-history"
-	"github.com/chonkpilot/chonkpilot-plugin-memory"
-	"github.com/chonkpilot/chonkpilot-plugin-vfts"
 
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
@@ -62,7 +62,6 @@ func main() {
 
 	var (
 		servers  = flag.String("servers-file", "", "servers.list 文件（空 = 仅内嵌 mcp-server）")
-		manage   = flag.String("manage-addr", "", "gateway 管理 REST 地址（可选）")
 		llmBase  = flag.String("llm-base", "http://127.0.0.1:8901/v1", "OpenAI 兼容 base URL")
 		llmModel = flag.String("llm-model", "mock", "默认 LLM 模型名")
 		// HTTP + SSE 跨进程入口（browser 形态最小切片 D；**默认关闭**，19 §8.5）。
@@ -75,6 +74,12 @@ func main() {
 		// auth.projectRoots（阶段 2b-2）：允许根列表（逗号分隔；空 = 缺省 = 用户数据根）。
 		// 用户选定的 work_dir 落在某允许根之下且未登记为项目 → 视为用户自建项目（见 claim.go）。
 		projRoots = flag.String("project-roots", "", "允许的项目根列表（逗号分隔；空 = 用户数据根；配置 auth.projectRoots）")
+		// 插件桥接入口（默认 UDS，PRODSIM-1）：路径 = 本机 UDS；`tcp://host:port` 走 TCP。
+		pluginAddr = flag.String("plugin-addr", pluginbridge.DefaultAddr(), "插件桥接入口（默认 UDS；空 = 关闭；UDS 路径，或 tcp://127.0.0.1:port）")
+		// 插件 HTTP 前门（P4b-2a，默认关闭）：与帧面共用同一套 handler / 白名单 / 审计。
+		// 仅允许 loopback；空 = 不监听（不改变默认行为）。
+		pluginHTTPAddr  = flag.String("plugin-http-addr", "", "插件 HTTP 前门监听地址（空 = 关闭；仅 loopback，支持 127.0.0.1:0 随机端口）")
+		pluginHTTPToken = flag.String("plugin-http-token", "", "插件 HTTP 前门 Bearer token（空且 --plugin-http-addr 非空 → 自动生成 32 字节随机 hex 并打日志）")
 		// 🆕 2026-10-10 desktop 分体常驻版（flash + server；61 §4.1 ⑥⑦ · 62 §3A）：
 		// 均为**可选能力**，非 flash 专属；server 无 `--desktop-server` / 无 `form=flash`
 		//（免鉴权由**前门**决定；UDS 前门 = 本机信任）。
@@ -140,65 +145,146 @@ func main() {
 	dd := filepath.Join(wd, ".chonkpilot")
 	root := paths.ResolveDir(*webRoot, wd)
 
-	// 0. 消息总线（进程内内存 MQ，2026-09-03 去 NATS；命名空间前缀 chonk. 在此注入一次，
-	// 业务 publish/subscribe 一律写相对主题，见 61-消息一览 §0.1）
-	bus, err := mq.New(mq.Options{Prefix: "chonk."})
-	if err != nil {
-		fatalf("[server] mq.New: %v", err)
-	}
-	defer bus.Close()
-
 	// 1. LLM 会话服务（内嵌 mcp-server + gateway + persist 数据服务，21-llm-server）
 	// RB-2：servers.list 由**面层**（本 exe）读取解析后传 `GatewayServers`——gateway lib 不读「源」。
 	var gwServers []mcpgateway.ServerEntry
 	if *servers != "" {
-		raw, err := os.ReadFile(*servers)
-		if err != nil {
-			fatalf("[server] read servers.list %s: %v", *servers, err)
+		raw, rerr := os.ReadFile(*servers)
+		if rerr != nil {
+			fatalf("[server] read servers.list %s: %v", *servers, rerr)
 		}
-		entries, err := mcpgateway.ParseServersList(raw)
-		if err != nil {
-			fatalf("[server] parse servers.list %s: %v", *servers, err)
+		entries, perr := mcpgateway.ParseServersList(raw)
+		if perr != nil {
+			fatalf("[server] parse servers.list %s: %v", *servers, perr)
 		}
 		gwServers = entries
 	}
-	srv := server.New(bus, server.Options{
-		LLMBase:           *llmBase,
-		LLMModel:          *llmModel,
-		GatewayServers:    gwServers,
-		GatewayManageAddr: *manage,
-		// 库侧诊断额外 sink（🆕 2026-10-10）：内嵌 llm server（插件日志经 plugin.Deps.Logf 同此出口）
-		// 与宿主同落 `logs/server.log`；nil = 仅 stdout（GUI 子系统下不可见），见 log.go。
-		LogWriter: logSink,
-		// 服务端启动参数下发（唯一消费点 = instance-claim 的 desktop 回落，见 61 §4.1 ①）
-		WorkDir: wd,
-		DataDir: dd,
-		// 运行形态（61 §4.6；阶段 2b-2）：本 exe 的客户端入口 = httpapi。默认 browser（形态由
-		// 服务端判定，非 UA、非客户端自报）→ claim 要求认证；desktop 分体常驻版 = flash（免鉴权）。
-		Form: form,
+	// BRIDGE-2 T7 / G-68：启用插件入口（帧或 HTTP 任一）时，域/元工具由 core-mcp-server
+	// 的一工具一 exe 承接；进程内不再注册（避免与 core 的工具面重复）。
+	if *pluginAddr != "" || *pluginHTTPAddr != "" {
+		_ = os.Setenv("CHONKPILOT_EXTERNAL_TOOLS", "1")
+	}
+
+	// 0+1. 共用脊柱（appwire）：总线 → data 门面 → llm server + 默认插件。
+	// 启动期输入快照（BootConfig）：只记环境输入（路径 / 旗标 / LLM 缺省 / 认证 / 池参数）；
+	// **不复制 usr/prj 运行期配置** —— 由 llm/server 按实例从数据面读取并热生效（12-数据层）。
+	specs := make([]appwire.ServerSpec, 0, len(gwServers))
+	for _, e := range gwServers {
+		specs = append(specs, appwire.ServerSpec{
+			ID: e.ID, Name: e.Name, Category: e.Category, Transport: e.Transport, Enabled: e.Enabled,
+		})
+	}
+	cfg := appwire.Snapshot(appwire.BootConfig{
+		Form:           form,
+		WorkDir:        wd,
+		DataDir:        dd,
+		ProjectDataDir: dd,
+		LLMBase:        *llmBase,
+		LLMModel:       *llmModel,
+		Servers:        specs,
+		Pool:           appwire.DefaultPool(),
 		// 认证域（61 §4.6；阶段 2b-1）：auth 库（与业务三级库分离的单文件）+ 用户数据根 +
 		// 自助注册开关（auth.allowRegister；对外暴露必须关闭）。allowRegister 已按绑定地址做
 		// 非 loopback fail-closed 收敛（见上）。
-		AuthDBPath:    *authDB,
-		UserDataRoot:  *userData,
-		AllowRegister: &allowRegister,
-		// auth.projectRoots（阶段 2b-2）：允许根列表（空 = 缺省 = 用户数据根）。
-		ProjectRoots: splitList(*projRoots),
-		// 内嵌插件：compress（llm-compress 压缩）+ memory（每轮异步沉淀记忆）+ history（git 快照）+ codegraph/vfts（索引工具面，默认关闭）；启动就绪后广播 server-starting
-		// 插件依赖的门面绑定在**装配处**选择（23 §7）：本形态 = inline（同进程直调；bus 传宿主
-		// 实际总线 → config 域写入的变更广播照旧送达订阅方，见 facade/inline）。
-		Plugins: []plugin.Hook{
-			compress.New(compress.DefaultOptions(), inline.New(bus)),
-			memory.New(memory.DefaultOptions()),
-			history.New(),
-			codegraph.New(codegraph.Options{}),
-			vfts.New(vfts.Options{}),
+		Auth: appwire.Auth{
+			DBPath:        *authDB,
+			UserDataRoot:  *userData,
+			AllowRegister: &allowRegister,
+			ProjectRoots:  splitList(*projRoots),
 		},
 	})
-	if err := srv.Start(ctx); err != nil {
+	app, err := appwire.Build(cfg, appwire.BuildOptions{GatewayServers: gwServers, LogWriter: logSink})
+	if err != nil {
+		fatalf("[server] appwire.Build: %v", err)
+	}
+	bus := app.Bus
+	defer bus.Close()
+	srv := app.Server
+	if err := app.Start(ctx); err != nil {
 		fatalf("[server] server.Start: %v", err)
 	}
 	log.Printf("[server] chonkpilot-server started: workdir=%s llm=%s/%s", wd, *llmBase, *llmModel)
+
+	// ── 插件桥接入口（BRIDGE-2；默认关闭）──
+	// 与 udsapi / httpapi 并列：连接 = 一个插件身份；能力经 pluginbridge Registry 叠加。
+	var pb *pluginbridge.Server
+	var coreTools *coretools.Supervisor
+	var vftsIdx *vftsindexer.Manager
+	var cgIdx *codegraphindexer.Manager
+	if *pluginAddr != "" || *pluginHTTPAddr != "" {
+		// HTTP 前门未显式给 token → 生成 32 字节随机 hex（仅 loopback + Bearer 双保险；
+		// 日志落 exe 同目录 logs/server.log，便于本地调试读取）。
+		httpToken := *pluginHTTPToken
+		if *pluginHTTPAddr != "" && httpToken == "" {
+			var buf [32]byte
+			if _, err := rand.Read(buf[:]); err != nil {
+				fatalf("[server] 生成插件 HTTP token 失败: %v", err)
+			}
+			httpToken = hex.EncodeToString(buf[:])
+			log.Printf("[server] plugin bridge HTTP token（自动生成，仅本次进程有效）: %s", httpToken)
+		}
+		// data 门面（inline 同进程直调）：resident indexer 的待索引队列控制帧（P4b-1）
+		// 经 queuehooks 适配器桥接到门面；与 filesys 入队同源（共用 appwire 装配的同一绑定）。
+		pb = pluginbridge.New(pluginbridge.Options{
+			Bus:     bus,
+			Addr:    *pluginAddr,
+			Version: "server",
+			Form:    string(form),
+			// HTTP 前门（P4b-2a）：与帧面共用同一套 handler / 白名单 / 审计；
+			// 空 = 不监听（默认关闭）。
+			HTTPAddr:  *pluginHTTPAddr,
+			HTTPToken: httpToken,
+			// plugin.index.take / ack / pending → data 门面待索引队列；
+			// WorkDirs = 活实例 work_dir（plugin.index.workdirs，单实例多 workdir 项目发现）。
+			IndexQueue: queuehooks.New(app.Facade),
+			WorkDirs:   srv.LiveWorkDirs,
+			Logf:       log.Printf,
+		})
+		if err := pb.Start(); err != nil {
+			log.Printf("[server] 插件入口启动失败（可选子系统，继续运行）: %v", err)
+			pb = nil
+		} else {
+			defer pb.Close()
+			srv.SetFilters(pb.Filters())
+			srv.SetPluginRegistry(pb.Registry())
+			log.Printf("[server] plugin bridge: %s", pb.Addr())
+			if addr := pb.HTTPAddr(); addr != "" {
+				log.Printf("[server] plugin bridge HTTP: http://%s%s", addr, "/plugin/v1/")
+			}
+			// 2026-10-19（G-68 第二步）：meta/domain 控制面工具已并入 core-mcp-server 的
+			// 一工具一 exe 执行面（不再启动 chonkpilot-server-tools.exe）。
+			// 2026-10-19：core-mcp-server = 工具唯一前门（一工具一 executor），由 server 拉起并监管；
+			// gateway 以内置 HTTP 下游接入（namespace=self_ → 暴露名不变）。取代 self-tools 的
+			// tools.register/tools.call 路径。启动失败不致命：工具面降级，核心功能不受影响。
+			capRoot := ""
+			if dir, derr := exedir.Dir(); derr == nil {
+				capRoot = filepath.Join(dir, "capability")
+			}
+			if sup, err := coretools.Start(coretools.Options{
+				Root:        capRoot,
+				WorkDir:     wd,
+				DataDir:     dd,
+				PluginAddr:  pb.Addr(),
+				PluginToken: httpToken,
+				Output:      logSink,
+				Logf:        func(format string, args ...any) { log.Printf(format, args...) },
+			}); err != nil {
+				log.Printf("[server] core-mcp-server 启动失败: %v", err)
+			} else {
+				coreTools = sup
+				defer coreTools.Stop()
+				// usr/prj 执行配置热生效 → 推送给 core（timeout/并发/解释器/Chrome/沙箱等）。
+				srv.SetCoreRuntimePusher(sup.PushRuntime)
+				// 插件查询工具（codegraph_* / vfts_query）执行委托 core：一工具一 exe，单次取消。
+				srv.SetToolExec(coretools.NewExecClient(sup.URL(), sup.Token()))
+				if rerr := srv.RegisterCoreServer(sup.URL(), sup.Token()); rerr != nil {
+					log.Printf("[server] core-mcp-server 注册失败: %v", rerr)
+				} else {
+					log.Printf("[server] core-mcp-server started (url=%s root=%s)", sup.URL(), capRoot)
+				}
+			}
+		}
+	}
 
 	// ── HTTP + SSE 跨进程入口（browser 形态最小切片 D；**默认关闭**）──
 	// 开关 = --http-addr（空 = 不监听）；单 instance 由 --work-dir/--data-dir 派生（经
@@ -223,7 +309,7 @@ func main() {
 			// data 门面绑定（阶段 4 第三批 / 41 G-34）：`data-session-*` 上行优先走门面
 			// （服务端进程内直调，不经 MQ），未命中回落总线 persist 路径。绑定在**装配处**
 			// 选择（23 §7）：本形态 = inline（bus 传宿主实际总线 → 变更广播照旧送达订阅方）。
-			Facade: inline.New(bus),
+			Facade: app.Facade,
 		})
 		if err := hx.Start(); err != nil {
 			// HTTP 入口是**可选子系统**：启动失败不致命（记录 + 继续），与 UDS 前门口径一致
@@ -382,8 +468,54 @@ func main() {
 		}
 	}
 
+	// 全部模块就绪 → 插件桥广播 server-ready（常驻索引器据此开始消费队列；P3）。
+	// 载荷为插件传输帧（非 MQ 主题），见 pluginbridge.MarkReady；pb 未启用时跳过。
+	if pb != nil {
+		pb.MarkReady(map[string]any{"form": "server", "at": time.Now().UTC().Format(time.RFC3339)})
+	}
+
+	// resident indexer（vfts P4b-2b / codegraph P5）：**每宿主进程每插件单实例**
+	// （单实例多 workdir，2026-10-19）。项目发现由宿主实例表提供
+	// （plugin.index.workdirs → srv.LiveWorkDirs），indexer 进程内含托盘输出窗口。
+	// 不设 enable 门控（MVP 始终启动）；exe 缺失 → 静默跳过并只记一次日志。
+	if pb != nil {
+		logf := func(format string, args ...any) { log.Printf(format, args...) }
+		vftsExe := vftsIndexerExePath()
+		if st, err := os.Stat(vftsExe); err == nil && !st.IsDir() {
+			vftsIdx = vftsindexer.New(logf)
+			if err := vftsIdx.Ensure(context.Background(), vftsindexer.Options{
+				DataRoot:   dd,
+				PluginAddr: pb.Addr(),
+				IndexerExe: vftsExe,
+				Logf:       logf,
+				Shutdown:   pb.ShutdownPlugin,
+			}); err != nil {
+				log.Printf("[server] vfts indexer 启动失败: %v", err)
+			}
+		} else {
+			log.Printf("[server] vfts indexer 未安装（跳过）: %s", vftsExe)
+		}
+		cgExe := codegraphIndexerExePath()
+		if st, err := os.Stat(cgExe); err == nil && !st.IsDir() {
+			cgIdx = codegraphindexer.New(logf)
+			if err := cgIdx.Ensure(context.Background(), codegraphindexer.Options{
+				DataRoot:   dd,
+				PluginAddr: pb.Addr(),
+				IndexerExe: cgExe,
+				Logf:       logf,
+				Shutdown:   pb.ShutdownPlugin,
+			}); err != nil {
+				log.Printf("[server] codegraph indexer 启动失败: %v", err)
+			}
+		} else {
+			log.Printf("[server] codegraph indexer 未安装（跳过）: %s", cgExe)
+		}
+	}
+
 	<-ctx.Done()
 	log.Printf("[server] shutting down ...")
+	// 先停外部工具进程（其调用依赖 server / 插件桥），再按依赖序收尾。
+	coreTools.Stop()
 	if hx != nil {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = hx.Shutdown(shutCtx)
@@ -393,6 +525,14 @@ func main() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = bx.Shutdown(shutCtx)
 		cancel()
+	}
+	// resident indexer（vfts / codegraph）：优雅停止（StopAll 经 plugin.shutdown 通知
+	// indexer，依赖 pb 仍在线），插件桥由 deferred Close 稍后关闭。
+	if vftsIdx != nil {
+		vftsIdx.StopAll()
+	}
+	if cgIdx != nil {
+		cgIdx.StopAll()
 	}
 	srv.Stop()
 }
@@ -464,6 +604,38 @@ func fallbackLogPath() string {
 		return ""
 	}
 	return filepath.Join(base, "chonkpilot", "logs", "server.log")
+}
+
+// vftsIndexerExePath 定位 resident indexer：优先 server exe 同目录，
+// 其次发行布局 `mcps/vfts/`（build-desktop / build-gui 的投放位置）。
+func vftsIndexerExePath() string {
+	const name = "chonkpilot-vfts-indexer.exe"
+	exe, err := os.Executable()
+	if err != nil {
+		return name
+	}
+	dir := filepath.Dir(exe)
+	primary := filepath.Join(dir, name)
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	return filepath.Join(dir, "mcps", "vfts", name)
+}
+
+// codegraphIndexerExePath 定位 resident codegraph indexer：优先 server exe 同目录，
+// 其次发行布局 `mcps/codebase/`（build-desktop / build-gui 的投放位置）。
+func codegraphIndexerExePath() string {
+	const name = "chonkpilot-codegraph-indexer.exe"
+	exe, err := os.Executable()
+	if err != nil {
+		return name
+	}
+	dir := filepath.Dir(exe)
+	primary := filepath.Join(dir, name)
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	return filepath.Join(dir, "mcps", "codebase", name)
 }
 
 // findFlashExe 定位 flash 可执行文件（托盘「打开新窗口」默认路径；`--client-exe` 显式优先，

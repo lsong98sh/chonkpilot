@@ -37,8 +37,9 @@ const (
 	// schemaV1 当前索引库格式版本（bucket 结构/值编码变更时递增）。
 	schemaV1 = "codegraph-index/1"
 
-	// dbOpenTimeout bolt 打开/等待写锁的上限（异常持锁时快速失败，不无限阻塞）。
-	dbOpenTimeout = 5 * time.Second
+	// dbOpenTimeout bolt 打开/等待写锁的上限（异常持锁时快速失败，不无限阻塞）：
+	// 1.5s 与查询侧「有界等待 2-3s → 正在索引，不可用」口径对齐（2026-10-19 用户定稿）。
+	dbOpenTimeout = 1500 * time.Millisecond
 )
 
 // fileMeta 文件条目元数据（files bucket 的值，键 = 相对路径；符号单独存 symbols bucket）。

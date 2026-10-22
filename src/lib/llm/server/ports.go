@@ -27,6 +27,7 @@ type gwRuntime interface {
 	SetSandboxOverrides(executors, mcps map[string]bool)
 	CancelExec(instanceID, idOrCall string) (bool, error)
 	DetachExec(instanceID, idOrCall string) (string, error)
+	SetBeforeToolCall(fn func(tool string, args map[string]any) (map[string]any, error))
 }
 
 // execController 是 llm 对**执行池控制面**的窄接口（RB-5 L4；层 → 执行侧取消/转后台）。

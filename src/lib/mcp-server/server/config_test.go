@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 )
 
 // TestApplyInterpretersChromePath 验证 Apply 解析新增的 interpreters / chrome_path（含非空才生效语义）。
@@ -92,21 +90,38 @@ func TestCallContextFromMeta(t *testing.T) {
 	})
 }
 
-// TestExecutorEnv 验证 executor 子进程环境注入 CHONKPILOT_*（含剥离残留）+ CHONK_CHROME
-// + agentbox 策略（仅按工具开关注入）。
+// TestCallContextMetaTreeRoundTrip 验证 top_session / parent（任务树归属）经 _meta 往返——
+// core-mcp-server 的 ExecTool.Call 重建 _meta 时必须携带（2026-10-19 dsl_run 外移回归）。
+func TestCallContextMetaTreeRoundTrip(t *testing.T) {
+	meta := CallContextMetaTree("ins-1", `C:\w`, `C:\d`, "p", "s-1", "t-1", "tc-1", "top-1", "parent-1")
+	cx := callContextFromMeta(meta)
+	if cx.TopSession != "top-1" || cx.Parent != "parent-1" {
+		t.Fatalf("top_session/parent 未往返: %+v", cx)
+	}
+	if cx.SessionID != "s-1" || cx.TurnID != "t-1" || cx.ToolCallID != "tc-1" {
+		t.Fatalf("会话/轮次/call id 未往返: %+v", cx)
+	}
+	// 空串 → 不写键（保持既有 _meta 形态）
+	meta = CallContextMetaTree("ins-1", `C:\w`, `C:\d`, "", "", "", "", "", "")
+	ns, _ := meta[metaNamespace].(map[string]any)
+	for _, k := range []string{"top_session", "parent"} {
+		if _, exists := ns[k]; exists {
+			t.Fatalf("%s 为空时不应写入 _meta 键", k)
+		}
+	}
+}
+
+// TestExecutorEnv 验证 executor 子进程环境注入 CHONKPILOT_*（含剥离残留）+ CHONK_CHROME。
 func TestExecutorEnv(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SetRuntime(0, 0, map[string]string{"python": "C:\\Python\\python.exe"}, `C:\Chrome\chrome.exe`, nil)
 	t.Setenv("CHONKPILOT_INSTANCE", "stale-should-be-stripped")
 	t.Setenv("CHONKPILOT_SANDBOX", `[{"dir":"C:\\stale","writable":true}]`) // 残留策略也须被剥离
-	env := cfg.executorEnv(CallContext{InstanceID: "ins-1", WorkDir: `C:\w`, DataDir: `C:\d`, Purpose: "审查这次改动"}, "")
+	env := cfg.executorEnv(CallContext{InstanceID: "ins-1", WorkDir: `C:\w`, DataDir: `C:\d`, Purpose: "审查这次改动",
+		TopSession: "top-1", Parent: "parent-1"})
 	got := envMap(env)
 	if got["CHONKPILOT_INSTANCE"] != "ins-1" || got["CHONKPILOT_WORKDIR"] != `C:\w` || got["CHONKPILOT_DATADIR"] != `C:\d` {
 		t.Fatalf("CHONKPILOT_* 注入不符: %v", got)
-	}
-	// C1：purpose（本次调用运行目的）落 CHONKPILOT_PURPOSE（进程外通道）
-	if got["CHONKPILOT_PURPOSE"] != "审查这次改动" {
-		t.Fatalf("应注入 CHONKPILOT_PURPOSE，got %q", got["CHONKPILOT_PURPOSE"])
 	}
 	if got["CHONKPILOT_INSTANCE"] == "stale-should-be-stripped" {
 		t.Fatal("残留 CHONKPILOT_INSTANCE 应被剥离")
@@ -117,17 +132,14 @@ func TestExecutorEnv(t *testing.T) {
 	if got["CHONK_CHROME"] != `C:\Chrome\chrome.exe` {
 		t.Fatalf("应注入 CHONK_CHROME，got %q", got["CHONK_CHROME"])
 	}
-	if _, ok := got[agentbox.EnvSandbox]; ok {
-		t.Fatalf("未开启工具沙箱开关时不应注入 %s：%q", agentbox.EnvSandbox, got[agentbox.EnvSandbox])
-	}
-	// 传入策略（= 某工具已开启隔离）→ 注入
-	env2 := cfg.executorEnv(CallContext{InstanceID: "ins-1"}, `[{"dir":"C:\\p","writable":true}]`)
-	if got2 := envMap(env2)[agentbox.EnvSandbox]; got2 == "" {
-		t.Fatal("传入策略时应注入 CHONKPILOT_SANDBOX")
-	}
-	// C1：purpose 为空 → 不注入该键（保持既有形态）
-	if v, ok := envMap(env2)["CHONKPILOT_PURPOSE"]; ok {
-		t.Fatalf("purpose 为空时不应注入 CHONKPILOT_PURPOSE，got %q", v)
+	// 2026-10-21（L3）：meta/domain 工具进程内执行后，这些键不再注入子进程。
+	env2 := cfg.executorEnv(CallContext{InstanceID: "ins-1"})
+	for _, k := range []string{"CHONKPILOT_PURPOSE", "CHONKPILOT_SESSION", "CHONKPILOT_TURN",
+		"CHONKPILOT_TOOL_CALL_ID", "CHONKPILOT_TOP_SESSION", "CHONKPILOT_PARENT",
+		"CHONKPILOT_PLUGIN_ADDR", "CHONKPILOT_PLUGIN_HTTP_TOKEN"} {
+		if v, ok := envMap(env2)[k]; ok {
+			t.Fatalf("%s 不应再注入子进程，got %q", k, v)
+		}
 	}
 }
 

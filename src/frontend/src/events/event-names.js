@@ -18,6 +18,8 @@ export const EventNames = {
   toolNotify: 'tool-notify', // 任务通知（运行中任务数）
   llmError: 'llm-error', // LLM 调用错误
   llmRetry: 'llm-retry', // LLM 重试
+  llmInterrupted: 'llm-interrupted', // LLM 语义级中断（RETRY-2：服务器错误，是否继续）
+  dataSessionActiveSet: 'data-session-active-set', // 当前活动会话（切会话/关窗 → 取消自动续写）
   error: 'error', // 轮次错误
   complete: 'complete', // 轮次完成
   toolPair: 'tool-pair', // 工具调用完整信息（后端 → 前端：开始/转异步/终态全量广播；气泡终态已由 tasks.* 驱动，保留兼容）
@@ -38,6 +40,12 @@ export const EventNames = {
   llmReceive: 'llm-receive', // 后端 → 前端：LLM 流增量（桥 mqTypeMap：session-receive → llm-receive；payload.type 二次分子主题 text/reason/tool-call）
   llmComplete: 'llm-complete', // 后端 → 前端：一轮终结（队列出队的唯一 ack；payload 含 turn_id/status）
   llmCancel: 'llm-cancel', // 前端 → 后端：取消当前轮（{session, turn}，21-llm-server；替代 CancelChat RPC）
+  // INBOX（中途插话 / 等下一轮，2026-10-17）：所有"非空闲"发送先落 prjusr inbox，
+  // 由 llm-server 按相位分类 insert / next_turn（61 §4.3；设计 docs/agent-chat/中途插话设计方案.md）
+  llmInboxAdd: 'llm-inbox-add', // 前端 → 后端：统一发送入口 {instance_id, session, llm, content, think?, effort?, scenario_id?}
+  llmInboxList: 'llm-inbox-list', // 前端 → 后端：读回 pending 项（队列指示器 / 重启拉回）
+  llmInboxDiscard: 'llm-inbox-discard', // 前端 → 后端：撤回 / 删除一条 inbox 项
+  llmInboxPromote: 'llm-inbox-promote', // 前端 → 后端：next_turn → insert「立刻插入」
   askUser: 'ask-user', // 后端 → 前端：LLM ask_user 提问（{ask_id, question, options?, custom?, session, turn, expires_at}；替代 tool-pair{user_ask}）
   askReply: 'ask-user-reply', // 用户回答 ask_user（前端 → 后端；{ask_id, answer, custom}；替代 ask-reply，附录 A）
 

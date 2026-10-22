@@ -298,6 +298,46 @@ func TestResolveAgentLLMNameFallbackChain(t *testing.T) {
 	}
 }
 
+// waitCapabilityQuiescent（测试辅助）：等待 capability 根热重扫静默 —— 去抖脏标记已清、无在途
+// 收集（capMu）与在途总线应用（capApplyMu）。热重扫对 dir 节点是 unregister→register 重建，
+// 重建间隙的工具面不完整；测试取基准快照前须先收敛，避免把间隙当成稳定态。
+func waitCapabilityQuiescent(t *testing.T, s *Server) {
+	t.Helper()
+	cw := s.capWatch
+	if cw == nil {
+		return
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	// 要求连续 500ms 静默：fswatcher 事件投递可能晚于写入，单次无脏标记不足以判定收敛。
+	quiet := 0
+	for time.Now().Before(deadline) {
+		cw.mu.Lock()
+		dirty := cw.dirty || cw.dirtyApp
+		cw.mu.Unlock()
+		if !dirty {
+			// 收集阶段持 capMu → 拿到即说明无在途收集；应用阶段持 capApplyMu → 拿到即说明无在途应用。
+			s.capMu.Lock()
+			s.capMu.Unlock()
+			s.capApplyMu.Lock()
+			s.capApplyMu.Unlock()
+			cw.mu.Lock()
+			dirty = cw.dirty || cw.dirtyApp
+			cw.mu.Unlock()
+		}
+		if dirty {
+			quiet = 0
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		quiet++
+		if quiet*20 >= 500 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("capability 热重扫未在 8s 内静默")
+}
+
 // TestScenarioAgentToolsWhitelist（AG-1 / AG-C4 ④）：tools 非空 → 仅白名单工具进 LLM 工具面；
 // tools 空 → 不限制（全量下发）。
 func TestScenarioAgentToolsWhitelist(t *testing.T) {
@@ -308,19 +348,42 @@ func TestScenarioAgentToolsWhitelist(t *testing.T) {
 	registerTestInstance(t, s) // instance-register：persist 绑定 + capability dir 节点（项目级工具）接入
 
 	var visible []string
+	collect := func() []string {
+		out := []string{}
+		for _, d := range s.toolsForLLM("ins-test") {
+			out = append(out, d.Name)
+		}
+		return out
+	}
+	hasProject := func(names []string) bool {
+		a, b := false, false
+		for _, n := range names {
+			if strings.HasSuffix(n, "ins-test-project_ag_tool_a") {
+				a = true
+			}
+			if strings.HasSuffix(n, "ins-test-project_ag_tool_b") {
+				b = true
+			}
+		}
+		return a && b
+	}
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		visible = nil
-		for _, d := range s.toolsForLLM("ins-test") {
-			visible = append(visible, d.Name)
-		}
-		if len(visible) >= 2 {
+		visible = collect()
+		if hasProject(visible) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if len(visible) < 2 {
-		t.Fatalf("工具面未就绪（可见 %v）", visible)
+	if !hasProject(visible) {
+		t.Fatalf("工具面未就绪（项目级 dir 节点工具缺失，可见 %v）", visible)
+	}
+	// capability 根 fswatcher 去抖后可能再触发热重扫（unregister→register 重建节点）：
+	// 等热重扫静默后重取稳定快照，避免把重建间隙的临时工具面当作基准。
+	waitCapabilityQuiescent(t, s)
+	visible = collect()
+	if !hasProject(visible) {
+		t.Fatalf("工具面未就绪（项目级 dir 节点工具缺失，可见 %v）", visible)
 	}
 
 	agSaveScenario(t, s, "ag-tools", []any{
@@ -328,6 +391,13 @@ func TestScenarioAgentToolsWhitelist(t *testing.T) {
 		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{visible[0]}}),
 		agSubAgent("sub-all", "子", nil),
 	})
+	// 场景落盘在项目 capability 根内（scenarios/、agents/）→ 会触发 dir 节点热重建；
+	// 等静默后重取基准快照，否则基准可能落在重建间隙（工具面暂时缺少项目级工具）。
+	waitCapabilityQuiescent(t, s)
+	visible = collect()
+	if !hasProject(visible) {
+		t.Fatalf("工具面未就绪（项目级 dir 节点工具缺失，可见 %v）", visible)
+	}
 
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-ag-tools", Turn: "t-ag-tools", ScenarioID: "ag-tools"}
 	agRunChild(t, s, parentReq, "s-ag-tools-allow", "do", "sub-allow")
@@ -339,8 +409,15 @@ func TestScenarioAgentToolsWhitelist(t *testing.T) {
 
 	agRunChild(t, s, parentReq, "s-ag-tools-all", "do", "sub-all")
 	allBody, _, _ := rec.first(t, 1)
-	if got := agToolNames(allBody); len(got) != len(visible) {
-		t.Fatalf("tools 空应不限制：tools=%v want %v", got, visible)
+	// NEXTRUN-1：子轮次不下发 `next_run`（工具面收敛，denyTools），全量期望需剔除。
+	wantAll := make([]string, 0, len(visible))
+	for _, n := range visible {
+		if n != "self_"+nextRunTool {
+			wantAll = append(wantAll, n)
+		}
+	}
+	if got := agToolNames(allBody); len(got) != len(wantAll) {
+		t.Fatalf("tools 空应不限制：tools=%v want %v", got, wantAll)
 	}
 }
 

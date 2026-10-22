@@ -158,8 +158,9 @@ func assembleTurns(hist []ChatMsg, keepFullTurns, keepFullTokens, briefBudget in
 	fullTokens := make([]int, len(turns))
 	briefTokens := make([]int, len(turns))
 	for i, t := range turns {
-		fullTokens[i] = data.EstimateTokensOfMessages(t)
-		briefTokens[i] = data.EstimateTokensOfMessages(data.BriefMessages(t))
+		raw := dataMessagesFromChat(t) // M2：估算 / 简化构造仍复用 data 侧（进 wire 前保持同源）
+		fullTokens[i] = data.EstimateTokensOfMessages(raw)
+		briefTokens[i] = data.EstimateTokensOfMessages(data.BriefMessages(raw))
 	}
 	fullTokens = data.ResolveStoredTokens(storedFull, fullTokens)
 	briefTokens = data.ResolveStoredTokens(storedBrief, briefTokens)
@@ -173,7 +174,7 @@ func assembleTurns(hist []ChatMsg, keepFullTurns, keepFullTokens, briefBudget in
 			continue
 		}
 		// 简化区 / 摘要区残留：仅 text（去 reasoning / tool_call / tool_result）。
-		out = append(out, data.BriefMessages(t)...)
+		out = append(out, chatMessagesFromData(data.BriefMessages(dataMessagesFromChat(t)))...)
 	}
 	return out
 }
@@ -196,8 +197,9 @@ func splitTurns(msgs []ChatMsg) [][]ChatMsg {
 //   - 简化态 = **仅 text**（`data.BriefMessages`：去 reasoning / tool_call / tool_result）——
 //     **与组装侧简化区投影、压缩侧简化区预算同一构造**（P4 口径一致性）。
 func turnTokenCounts(turn []ChatMsg) (full, brief int) {
-	full = data.EstimateTokensOfMessages(turn)
-	brief = data.EstimateTokensOfMessages(data.BriefMessages(turn))
+	raw := dataMessagesFromChat(turn)
+	full = data.EstimateTokensOfMessages(raw)
+	brief = data.EstimateTokensOfMessages(data.BriefMessages(raw))
 	return full, brief
 }
 

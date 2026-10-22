@@ -11,7 +11,7 @@
 //  3. 系统命令型（shell/cmd/bash）内置默认（cmd/bash 由 OS 提供）
 //  4. 其余 runtime 未配置 → 直接报错（提示 LLM 安装/配置 runtime）
 //
-// 执行层（mcp-tools）无沙箱/无 datadir：不做路径白名单（agentbox 管控）；
+// 执行层（mcp-tools）无沙箱/无 datadir：不做应用层路径白名单（越界写由进程级沙箱约束）；
 // `file`（脚本文件）、`workdir`（运行目录）、`interpreter`（解释器/可执行文件路径）
 // 均受 R-11 约束（须绝对路径 / `~/` 开头 / `!/` 开头，见 fileops.ValidateFilePath），相对路径拒绝。
 // 宿主注入的 CHONKPILOT_*（fileops.HostEnv）注入子进程环境（用户 env 同名优先）。
@@ -31,7 +31,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/winproc"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/cli"
 	"github.com/chonkpilot/chonkpilot-mcp-tools/internal/fileops"
@@ -116,16 +115,10 @@ func HandleScriptRun(workDir string, args map[string]interface{}) *cli.Result {
 		workDir = "."
 	}
 	// file 参数强校验（R-11）：必须绝对路径或 ~/ 开头，否则顶层错误。
-	// agentbox 沙箱（仅隔离开启时生效）：脚本文件须在允许读目录内。
-	// 说明：脚本**内部**的文件读写无法拦截（任意子进程）——本工具在隔离开启下仍属
-	// 「仅参数面约束、非强制」通道，见 14-安全域-agentbox §5 登记。
 	if filePath != "" {
 		resolved, msg := fileops.ValidateFilePath(filePath)
 		if msg != "" {
 			return cli.Err("script_run", "file："+msg)
-		}
-		if err := agentbox.Check(resolved, false); err != nil {
-			return cli.Err("script_run", "file："+err.Error())
 		}
 		filePath = resolved
 	}

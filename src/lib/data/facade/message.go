@@ -98,6 +98,9 @@ type MessageAppendRequest struct {
 	Brief string `json:"brief,omitempty"`
 	// ToolCallStatus 工具调用状态（可选；role=tool 时随结果载荷落库）。
 	ToolCallStatus string `json:"tool_call_status,omitempty"`
+	// AskID ask 关联 id（可选；MOD-1 M6b，仅 ask_user 的 role=tool 行）。
+	// 空 = 不写该键（普通消息行形状零变化）；非空 = 落 messages.ask_id，供重启后按 ask 回查。
+	AskID string `json:"ask_id,omitempty"`
 	// Key 显式指定/复用消息主键（可选）：非空 = 按该主键**就地更新**（回填）；
 	// 空 = 由实现侧生成新键（role=tool 且带 tool_call_id 时按 (turn_id, tool_call_id) 复用既有行）。
 	Key string `json:"key,omitempty"`

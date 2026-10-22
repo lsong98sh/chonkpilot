@@ -19,6 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	mcpgw "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	"github.com/chonkpilot/chonkpilot-mcp-gateway/mqadapter"
 )
 
 // metaEcho 是回显 `_meta["chonkpilot"]` 的下游 server（记录最近一次收到的命名空间）。
@@ -68,7 +69,7 @@ func startOriginGW(t *testing.T, entries []mcpgw.ServerEntry) mq.Bus {
 		t.Fatalf("bus: %v", err)
 	}
 	gw, err := mcpgw.New(mcpgw.Params{
-		Bus: bus, Servers: entries, CallTimeout: 5 * time.Second, MaxTasks: 4, Logf: t.Logf,
+		Transport: mqadapter.New(bus), Servers: entries, CallTimeout: 5 * time.Second, MaxTasks: 4, Logf: t.Logf,
 	})
 	if err != nil {
 		t.Fatalf("new: %v", err)

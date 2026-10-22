@@ -4,9 +4,10 @@ import { useConfigStore } from '../stores/config'
 import { useRuntimeStore } from '../stores/runtime'
 import { useEditStore } from '../stores/edit'
 import { useKeysStore } from '../stores/keys'
-import { getDialog, getMq, saveLayoutDoc } from '../deps.js'
+import { getDialog, getEditorSaveHook, getMq, saveLayoutDoc } from '../deps.js'
 import LfDialogView from '../views/LfDialogView.vue'
-import { viewLabel } from '../config/views'
+import { getView, viewLabel } from '../config/views'
+import { hasViewTarget } from './viewPool'
 import { regionKind } from '../utils/regions'
 import { collectLeaves, findLeaf } from '../utils/layout'
 
@@ -108,6 +109,13 @@ export function installMqCommands() {
   })
 
   on(EventNames.tabsOpen, (d) => {
+    if (!d?.viewKey) return false
+    // 单例 view 已在任何落点（区域 / 页签 / 抽屉 / 栏位）→ 拒绝重复打开（UILAYOUT-2 / D25）
+    const def = getView(d.viewKey)
+    if (def?.mode === 'singleton' && hasViewTarget(d.viewKey)) {
+      runtime.setHint(`「${def.label}」已在布局中打开，不能重复打开`)
+      return false
+    }
     const target = resolveTabsTarget(d.targetLeafId)
     if (!target) {
       runtime.setHint('布局中没有自由 tab 容器区域')
@@ -211,6 +219,17 @@ export function installMqCommands() {
     edit.showJson = !edit.showJson
   })
   on(EventNames.editorSave, async () => {
+    // 布局档案编辑（WIN-026）：由宿主钩子处理「保存到档案 / 当前档案」，
+    // 机制层不认识档案概念；钩子返回真值 = 已处理（含提示与关窗）。
+    const hook = getEditorSaveHook()
+    if (hook) {
+      const handled = await hook({
+        profileId: edit.profileId,
+        draft: () => config.snapshotDraft(),
+        validate: () => config.validate(),
+      })
+      if (handled) return handled
+    }
     const res = config.save()
     if (res.ok) {
       runtime.pruneTabs(collectLeaves(config.live.layout).map((l) => l.id))
@@ -271,6 +290,34 @@ export function installMqCommands() {
   on(EventNames.areaSetInstanceKey, (d) => config.setAreaInstanceKey(d.nodeId, d.instanceKey))
   on(EventNames.areaSetTabs, (d) => config.setAreaTabs(d.nodeId, d.tabs))
   on(EventNames.areaSetConstraint, (d) => config.setLeafConstraint(d.nodeId, d.direction, { min: d.min, max: d.max }))
+  on(EventNames.areaSetFlex, (d) => config.setLeafFlex(d.nodeId, d.flex === true))
+  // 区域显隐（WIN-025）：设计态写草稿；运行态直接改 live 并落盘
+  on(EventNames.areaSetVisible, (d) => {
+    if (!d?.nodeId) return false
+    const ok = config.setLeafVisible(d.nodeId, d.visible !== false)
+    if (!ok) runtime.setHint('无法隐藏：该区域被标记为「不允许隐藏」，或至少需保留一个可见区域')
+    return ok
+  })
+  // 「不允许隐藏」标记（UILAYOUT-2）：只约束直接隐藏，祖先隐藏连带不受限
+  on(EventNames.areaSetHideLocked, (d) => {
+    if (!d?.nodeId) return false
+    return config.setNodeHideLocked(d.nodeId, d.locked === true)
+  })
+  on(EventNames.areaToggleVisible, (d) => {
+    if (d?.nodeId) {
+      const leaf = findLeaf(config.live.layout, d.nodeId)
+      if (!leaf) return false
+      const ok = config.setLiveLeafVisible(d.nodeId, leaf.visible === false)
+      if (!ok) runtime.setHint('至少保留一个可见区域')
+      return ok
+    }
+    if (d?.viewKey) {
+      const ok = config.toggleLiveLeafByView(d.viewKey)
+      if (!ok) runtime.setHint('当前布局中没有该区域（或至少需保留一个可见区域）')
+      return ok
+    }
+    return false
+  })
   on(EventNames.areaSwap, (d) => config.swapSibling(d.nodeId, d.delta))
   on(EventNames.areaSetToolbar, (d) =>
     config.setAreaToolbar(d.nodeId, { toolbarId: d.toolbarId ?? null, position: d.position }),
@@ -422,6 +469,12 @@ export function installMqCommands() {
       case 'swap-next':
         config.swapSibling(nodeId, 1)
         break
+      case 'toggle-visible': {
+        // 设计态右键：改草稿（保存后生效）
+        const leaf = findLeaf(config.draft.layout, nodeId)
+        if (leaf) config.setLeafVisible(nodeId, leaf.visible === false)
+        break
+      }
       case 'open-settings':
         edit.openEditor('layout')
         edit.select(nodeId)

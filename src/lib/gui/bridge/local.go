@@ -439,6 +439,16 @@ func callOpenDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]by
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("invalid directory: %s", dir)
 	}
+	// PRODSIM-1（单进程多项目）：宿主注入 opener 时**同进程**打开/激活该目录的主窗口 ——
+	// 已打开 → 前置（不再报 "workdir busy"）；未打开 → 新建主窗口。
+	if b.projectOpener != nil {
+		if err := b.projectOpener(dir); err != nil {
+			return nil, err
+		}
+		b.recordRecentDir(dir)
+		return json.Marshal(map[string]string{"code": "OK", "message": "Project opened", "path": dir})
+	}
+	// 旧路径（flash 等形态）：spawn 新进程 + prjusr 单例锁预检。
 	// 同 work-dir 单实例占用校验（I-74）：目标目录已被其它实例打开 → 明确报错（不 spawn、
 	// 不记最近目录），前端据 "workdir busy" 提示「该目录已被打开，请选择其它目录」。
 	// 口径统一到 **prjusr 单例锁**（`<work_dir>/.chonkpilot/chonkpilot.lock`）——桌面单体

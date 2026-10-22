@@ -166,6 +166,11 @@ func (s *Service) ConfigKVSet(req facade.ConfigKVSetRequest) (facade.ConfigKVSet
 	if len(req.Entries) == 0 {
 		return facade.ConfigKVSetResponse{}, errors.New("persist: config entries required")
 	}
+	// INPUTVAL-1 P0-3：写侧复验已知键（路径 / security 结构 / 数值范围 / 文本长度）。
+	// 失败即整批拒绝（不写任何键），错误带键名定位；未知键沿用既有语义。
+	if err := ValidateConfigKV(req.Domain, req.Entries); err != nil {
+		return facade.ConfigKVSetResponse{}, err
+	}
 	keys := make([]string, 0, len(req.Entries))
 	for k := range req.Entries {
 		keys = append(keys, k)
@@ -308,6 +313,11 @@ func (s *Service) UserConfigSet(req facade.UserConfigSetRequest) (facade.UserCon
 	}
 	defer release()
 	defer invalidateConfigValues(db.Path()) // 写后失效 config 值缓存（valuecache.go D-45）
+	// INPUTVAL-1 P0-2/P0-3：写侧复验（llms 逐条 + 已知标量键）。校验先于任何写入 →
+	// 失败不产生部分写入（整表替换也不会清空旧数据）。
+	if err := ValidateUserConfigPayload(req.Entries); err != nil {
+		return facade.UserConfigSetResponse{}, err
+	}
 	if err := saveUserConfig(db, req.Entries); err != nil {
 		return facade.UserConfigSetResponse{}, err
 	}

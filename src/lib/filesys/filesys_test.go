@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/sgtdi/fswatcher"
 )
 
 // TestListDirNodesFilter：隐藏/临时条目过滤（I-44，对齐旧 FilterDirEntry 口径）：
@@ -61,7 +62,7 @@ func TestWatchNewDirBroadcastsParentBatch(t *testing.T) {
 	defer bus.Close()
 
 	wd := t.TempDir()
-	m := newWatchManager(bus)
+	m := newWatchManager(bus, nil)
 	defer m.Close()
 
 	ch := make(chan map[string]any, 64)
@@ -128,6 +129,36 @@ func TestNextWaitCapsAtMaxWait(t *testing.T) {
 	}
 }
 
+// TestOperationNormalize 事件操作归一：fswatcher（Windows）重命名新旧名均为 EventRename，
+// 且同窗口内同路径事件类型会合并 → 以「处理时对象是否存在」定语义，保证 indexer / 文件树一致。
+func TestOperationNormalize(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(dir, "gone.txt")
+	cases := []struct {
+		name  string
+		path  string
+		types []fswatcher.EventType
+		want  string
+	}{
+		{"存在 + Create", file, []fswatcher.EventType{fswatcher.EventCreate}, "create"},
+		{"存在 + Rename（改名新路径）", file, []fswatcher.EventType{fswatcher.EventRename}, "create"},
+		{"存在 + Mod/Rename 合并", file, []fswatcher.EventType{fswatcher.EventMod, fswatcher.EventRename}, "create"},
+		{"存在 + Mod", file, []fswatcher.EventType{fswatcher.EventMod}, "write"},
+		{"不存在 + Rename（改名旧路径）", gone, []fswatcher.EventType{fswatcher.EventRename}, "rename"},
+		{"不存在 + Remove", gone, []fswatcher.EventType{fswatcher.EventRemove}, "remove"},
+		{"不存在 + Create/Remove 合并", gone, []fswatcher.EventType{fswatcher.EventCreate, fswatcher.EventRemove}, "remove"},
+	}
+	for _, c := range cases {
+		if got := operation(c.path, c.types); got != c.want {
+			t.Errorf("%s：operation=%q，期望 %q", c.name, got, c.want)
+		}
+	}
+}
+
 // TestWatchContinuousWritesNotStarved 持续写入下批次不被无限推后（D-37）：写入**仍在进行**时
 // 就应收到 filesys.changed（旧实现每个事件都重置 debounce，直到写入停顿才触发 → 饥饿）。
 func TestWatchContinuousWritesNotStarved(t *testing.T) {
@@ -137,7 +168,7 @@ func TestWatchContinuousWritesNotStarved(t *testing.T) {
 	}
 	defer bus.Close()
 	wd := t.TempDir()
-	m := newWatchManager(bus)
+	m := newWatchManager(bus, nil)
 	defer m.Close()
 	ch := make(chan struct{}, 64)
 	if _, err := bus.On("filesys.changed", 0, func(_ context.Context, _ string, _ *mq.Value) error {
@@ -184,44 +215,8 @@ func TestWatchContinuousWritesNotStarved(t *testing.T) {
 }
 
 // TestWatchRecursiveFlag：recursive 标志被消费（T-08）——递归监听时子目录内新增文件触发
-// filesys.changed；非递归监听同一路径时不触发（同一 fsnotify watcher 只监听直接子项）。
+// filesys.changed；非递归监听同一路径时不触发（fswatcher WatchTopLevel 只投递直接子项事件）。
 func TestWatchRecursiveFlag(t *testing.T) {
-	// 期望收到 path == want 的单文件 changed 事件（含 operation），超时返回 false。
-	waitChanged := func(t *testing.T, ch chan map[string]any, want string, d time.Duration) bool {
-		t.Helper()
-		deadline := time.Now().Add(d)
-		for time.Now().Before(deadline) {
-			select {
-			case ev := <-ch:
-				if _, isBatch := ev["children"]; isBatch {
-					continue
-				}
-				if ev["path"] == filepath.ToSlash(want) {
-					return true
-				}
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
-		return false
-	}
-	newCh := func(t *testing.T, bus mq.Bus) chan map[string]any {
-		t.Helper()
-		ch := make(chan map[string]any, 64)
-		if _, err := bus.On("filesys.changed", 0, func(_ context.Context, _ string, v *mq.Value) error {
-			var ev map[string]any
-			if json.Unmarshal(v.Payload, &ev) == nil {
-				select {
-				case ch <- ev:
-				default:
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return ch
-	}
-
 	t.Run("recursive=true 子目录内新增触发", func(t *testing.T) {
 		bus, err := mq.New(mq.Options{Prefix: "chonk."})
 		if err != nil {
@@ -233,9 +228,9 @@ func TestWatchRecursiveFlag(t *testing.T) {
 		if err := os.Mkdir(sub, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		m := newWatchManager(bus)
+		m := newWatchManager(bus, nil)
 		defer m.Close()
-		ch := newCh(t, bus)
+		ch := newChangedCh(t, bus)
 		if err := m.watch(wd, wd, true, "ins-rec"); err != nil {
 			t.Fatal(err)
 		}
@@ -243,7 +238,7 @@ func TestWatchRecursiveFlag(t *testing.T) {
 		if err := os.WriteFile(deep, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if !waitChanged(t, ch, deep, 5*time.Second) {
+		if !waitChangedPath(t, ch, deep, 5*time.Second) {
 			t.Fatal("recursive=true 时子目录内新增文件未触发 filesys.changed")
 		}
 	})
@@ -259,9 +254,9 @@ func TestWatchRecursiveFlag(t *testing.T) {
 		if err := os.Mkdir(sub, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		m := newWatchManager(bus)
+		m := newWatchManager(bus, nil)
 		defer m.Close()
-		ch := newCh(t, bus)
+		ch := newChangedCh(t, bus)
 		if err := m.watch(wd, wd, false, "ins-norec"); err != nil {
 			t.Fatal(err)
 		}
@@ -269,7 +264,7 @@ func TestWatchRecursiveFlag(t *testing.T) {
 		if err := os.WriteFile(deep, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if waitChanged(t, ch, deep, 500*time.Millisecond) {
+		if waitChangedPath(t, ch, deep, 500*time.Millisecond) {
 			t.Fatal("recursive=false 时子目录内新增文件不应触发 filesys.changed")
 		}
 		// 反向确认 watcher 正常工作：直接子项新增仍触发
@@ -277,10 +272,48 @@ func TestWatchRecursiveFlag(t *testing.T) {
 		if err := os.WriteFile(top, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if !waitChanged(t, ch, top, 5*time.Second) {
+		if !waitChangedPath(t, ch, top, 5*time.Second) {
 			t.Fatal("直接子项新增未触发 filesys.changed（watcher 未工作）")
 		}
 	})
+}
+
+// newChangedCh 订阅 filesys.changed 并把 payload 投进带缓冲通道。
+func newChangedCh(t *testing.T, bus mq.Bus) chan map[string]any {
+	t.Helper()
+	ch := make(chan map[string]any, 64)
+	if _, err := bus.On("filesys.changed", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var ev map[string]any
+		if json.Unmarshal(v.Payload, &ev) == nil {
+			select {
+			case ch <- ev:
+			default:
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return ch
+}
+
+// waitChangedPath 期望收到 path == want 的单文件 changed 事件（含 operation），超时返回 false。
+func waitChangedPath(t *testing.T, ch chan map[string]any, want string, d time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		select {
+		case ev := <-ch:
+			if _, isBatch := ev["children"]; isBatch {
+				continue
+			}
+			if ev["path"] == filepath.ToSlash(want) {
+				return true
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return false
 }
 
 // ─── D-39 层1：目录生命周期闭环 ─────────────────────────────────
@@ -298,21 +331,21 @@ func pollUntil(t *testing.T, timeout time.Duration, cond func() bool, msg string
 	t.Fatal(msg)
 }
 
-// hasPath 判定 dirWatcher.paths 是否含某路径（受 pathsMu 保护）。
+// hasPath 判定 dirWatcher.paths（**声明根集合**，子目录由 fswatcher 递归接管）是否含某路径。
 func hasPath(dw *dirWatcher, abs string) bool {
 	dw.pathsMu.Lock()
 	defer dw.pathsMu.Unlock()
-	return dw.paths[abs]
+	return dw.paths[filepath.Clean(abs)]
 }
 
-// pathsLen 取 dirWatcher.paths 条目数。
+// pathsLen 取 dirWatcher.paths（声明根集合）条目数。
 func pathsLen(dw *dirWatcher) int {
 	dw.pathsMu.Lock()
 	defer dw.pathsMu.Unlock()
 	return len(dw.paths)
 }
 
-// TestRemoveTreeClearsSubtree：removeTree 按前缀摘除目标及其全部子孙（层1 单元）。
+// TestRemoveTreeClearsSubtree：removeTree 按前缀摘除目标及其全部子孙的**声明条目**（层1 单元）。
 func TestRemoveTreeClearsSubtree(t *testing.T) {
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
@@ -320,37 +353,45 @@ func TestRemoveTreeClearsSubtree(t *testing.T) {
 	}
 	defer bus.Close()
 	wd := t.TempDir()
-	target := filepath.Join(wd, "target", "classes")
-	if err := os.MkdirAll(target, 0o755); err != nil {
+	target := filepath.Join(wd, "target")
+	if err := os.MkdirAll(filepath.Join(target, "classes"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(wd, "src"), 0o755); err != nil {
+	src := filepath.Join(wd, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	m := newWatchManager(bus)
+	m := newWatchManager(bus, nil)
 	defer m.Close()
 	if err := m.watch(wd, wd, true, "ins-rm"); err != nil {
+		t.Fatal(err)
+	}
+	// 显式声明 target 与 src（子目录本身不再逐条登记）。
+	if err := m.watch(wd, target, true, "ins-rm"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.watch(wd, src, true, "ins-rm"); err != nil {
 		t.Fatal(err)
 	}
 	dw := m.watchers[wd]
 	if dw == nil {
 		t.Fatal("watcher 未建立")
 	}
-	if !hasPath(dw, filepath.Join(wd, "target")) || !hasPath(dw, target) {
-		t.Fatalf("watch 后应含 target 子目录树: %v", dw.paths)
+	if !hasPath(dw, target) || !hasPath(dw, src) {
+		t.Fatalf("watch 后应含 target/src 声明根: %v", dw.paths)
 	}
 
-	dw.removeTree(filepath.Join(wd, "target"))
-	if hasPath(dw, filepath.Join(wd, "target")) || hasPath(dw, target) {
-		t.Fatalf("removeTree 后 target 及其子孙应出表: %v", dw.paths)
+	dw.removeTree(target)
+	if hasPath(dw, target) {
+		t.Fatalf("removeTree 后 target 应出表: %v", dw.paths)
 	}
-	// 无关路径不受影响
-	if !hasPath(dw, filepath.Join(wd, "src")) {
-		t.Fatalf("removeTree 误删无关路径 src: %v", dw.paths)
+	// 无关声明根不受影响
+	if !hasPath(dw, src) || !hasPath(dw, wd) {
+		t.Fatalf("removeTree 误删无关声明根: %v", dw.paths)
 	}
 }
 
-// TestProcessBatchRemoveDirClearsPaths：目录被删除（fsnotify Remove）后 paths 无残留（层1 闭环）。
+// TestProcessBatchRemoveDirClearsPaths：目录被删除（fswatcher Remove）后其声明条目无残留（层1 闭环）。
 func TestProcessBatchRemoveDirClearsPaths(t *testing.T) {
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
@@ -358,30 +399,33 @@ func TestProcessBatchRemoveDirClearsPaths(t *testing.T) {
 	}
 	defer bus.Close()
 	wd := t.TempDir()
-	m := newWatchManager(bus)
+	target := filepath.Join(wd, "target")
+	if err := os.MkdirAll(filepath.Join(target, "classes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := newWatchManager(bus, nil)
 	defer m.Close()
 	if err := m.watch(wd, wd, true, "ins-rm2"); err != nil {
+		t.Fatal(err)
+	}
+	// 显式声明 target 为监听根（模拟前端展开了该目录）。
+	if err := m.watch(wd, target, true, "ins-rm2"); err != nil {
 		t.Fatal(err)
 	}
 	dw := m.watchers[wd]
 	if dw == nil {
 		t.Fatal("watcher 未建立")
 	}
+	if !hasPath(dw, target) {
+		t.Fatalf("target 应已声明: %v", dw.paths)
+	}
 
-	// 新建 target/ 目录树 → 等待 watcher 递归纳入
-	target := filepath.Join(wd, "target", "classes")
-	if err := os.MkdirAll(target, 0o755); err != nil {
+	// 删除整个 target 树 → 等待声明条目清理
+	if err := os.RemoveAll(target); err != nil {
 		t.Fatal(err)
 	}
-	pollUntil(t, 5*time.Second, func() bool { return hasPath(dw, target) }, "新建目录未纳入 watch")
-
-	// 删除整个 target 树 → 等待 paths 清理
-	if err := os.RemoveAll(filepath.Join(wd, "target")); err != nil {
-		t.Fatal(err)
-	}
-	pollUntil(t, 5*time.Second, func() bool {
-		return !hasPath(dw, filepath.Join(wd, "target")) && !hasPath(dw, target)
-	}, "目录删除后 paths 仍有残留（层1 未闭环）")
+	pollUntil(t, 5*time.Second, func() bool { return !hasPath(dw, target) },
+		"目录删除后声明条目仍有残留（层1 未闭环）")
 	if got := pathsLen(dw); got != 1 { // 仅剩 work_dir 根
 		t.Fatalf("删除后应仅剩 work_dir 根，实得 %d 条: %v", got, dw.paths)
 	}
@@ -390,7 +434,7 @@ func TestProcessBatchRemoveDirClearsPaths(t *testing.T) {
 // ─── D-39 层2：显示与监听同源 ───────────────────────────────────
 
 // TestShouldHideDirNameSameSource：目录判定同源 —— 对同一目录名，
-// 文件树过滤（filterDirEntry(isDir=true)）与 watcher 递归（shouldHideDirName）返回一致。
+// 文件树过滤（filterDirEntry(isDir=true)）与 watcher 事件过滤（shouldHideDirName）返回一致。
 func TestShouldHideDirNameSameSource(t *testing.T) {
 	hidden := []string{"target", "node_modules", "out"}
 	names := []string{".git", ".hidden", "target", "node_modules", "out", "src", "Target", "dist", ""}
@@ -441,37 +485,9 @@ func TestListDirNodesHiddenDirsFilter(t *testing.T) {
 	}
 }
 
-// TestWalkAddSkipsHiddenDirs：watcher 递归跳过隐藏清单目录（与文件树同源，层2）。
-func TestWalkAddSkipsHiddenDirs(t *testing.T) {
-	bus, err := mq.New(mq.Options{Prefix: "chonk."})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer bus.Close()
-	wd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(wd, "target", "classes"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(wd, "src"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	m := newWatchManager(bus)
-	defer m.Close()
-	m.applyHidden(wd, []string{"target"}) // 装载清单（幂等；无 watcher 时仅记缓存）
-	if err := m.watch(wd, wd, true, "ins-hide"); err != nil {
-		t.Fatal(err)
-	}
-	dw := m.watchers[wd]
-	if hasPath(dw, filepath.Join(wd, "target")) || hasPath(dw, filepath.Join(wd, "target", "classes")) {
-		t.Fatalf("隐藏清单目录不应被 watch: %v", dw.paths)
-	}
-	if !hasPath(dw, filepath.Join(wd, "src")) {
-		t.Fatalf("可见目录应被 watch: %v", dw.paths)
-	}
-}
-
-// TestRefilterAppliesHiddenChange：清单变更即时重过滤 —— 现已隐藏者摘除，「由隐藏转可见」者补齐。
-func TestRefilterAppliesHiddenChange(t *testing.T) {
+// TestWatchSkipsHiddenDirEvents：隐藏清单内的目录事件不广播（与文件树显示同源，层2）；
+// 监听本身由 fswatcher 递归覆盖，不再按清单增删 watch。
+func TestWatchSkipsHiddenDirEvents(t *testing.T) {
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
 		t.Fatal(err)
@@ -482,32 +498,89 @@ func TestRefilterAppliesHiddenChange(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(target, "classes"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	src := filepath.Join(wd, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := newWatchManager(bus, nil)
+	defer m.Close()
+	m.applyHidden(wd, []string{"target"}) // 装载清单（无 watcher 时仅记缓存）
+	ch := newChangedCh(t, bus)
+	if err := m.watch(wd, wd, true, "ins-hide"); err != nil {
+		t.Fatal(err)
+	}
+
+	hiddenFile := filepath.Join(target, "classes", "deep.txt")
+	if err := os.WriteFile(hiddenFile, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if waitChangedPath(t, ch, hiddenFile, 500*time.Millisecond) {
+		t.Fatal("隐藏目录内文件不应广播 filesys.changed")
+	}
+
+	visible := filepath.Join(src, "a.txt")
+	if err := os.WriteFile(visible, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitChangedPath(t, ch, visible, 5*time.Second) {
+		t.Fatal("可见目录内文件应广播 filesys.changed（watcher 未工作）")
+	}
+}
+
+// TestRefilterAppliesHiddenChange：清单变更即时生效（事件过滤）——现已隐藏者不再广播，
+// 「由隐藏转可见」者恢复广播；监听根集合不随清单增删（fswatcher 递归接管）。
+func TestRefilterAppliesHiddenChange(t *testing.T) {
+	bus, err := mq.New(mq.Options{Prefix: "chonk."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+	wd := t.TempDir()
+	target := filepath.Join(wd, "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(wd, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	m := newWatchManager(bus)
+	m := newWatchManager(bus, nil)
 	defer m.Close()
+	ch := newChangedCh(t, bus)
 	if err := m.watch(wd, wd, true, "ins-refilter"); err != nil {
 		t.Fatal(err)
 	}
 	dw := m.watchers[wd]
-	if !hasPath(dw, target) {
-		t.Fatalf("初始应 watch target: %v", dw.paths)
+
+	// 初始可见 → 广播
+	f1 := filepath.Join(target, "f1.txt")
+	if err := os.WriteFile(f1, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitChangedPath(t, ch, f1, 5*time.Second) {
+		t.Fatal("初始应广播 target 内变更")
 	}
 
-	// 加入清单 → target 及其子树摘除，root 与 src 保留
+	// 加入清单 → target 内变更不再广播；声明根集合不变
 	m.applyHidden(wd, []string{"target"})
-	if hasPath(dw, target) || hasPath(dw, filepath.Join(target, "classes")) {
-		t.Fatalf("清单加入后 target 树应摘除: %v", dw.paths)
+	f2 := filepath.Join(target, "f2.txt")
+	if err := os.WriteFile(f2, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !hasPath(dw, wd) || !hasPath(dw, filepath.Join(wd, "src")) {
-		t.Fatalf("root/src 不应被误摘: %v", dw.paths)
+	if waitChangedPath(t, ch, f2, 500*time.Millisecond) {
+		t.Fatal("清单加入后 target 内变更不应广播")
+	}
+	if !hasPath(dw, wd) || hasPath(dw, target) {
+		t.Fatalf("refilter 不应增删声明根: %v", dw.paths)
 	}
 
-	// 移出清单 → target 树补齐（由隐藏转可见）
+	// 移出清单 → 恢复广播
 	m.applyHidden(wd, []string{"node_modules"})
-	if !hasPath(dw, target) || !hasPath(dw, filepath.Join(target, "classes")) {
-		t.Fatalf("清单移除后 target 树应补齐: %v", dw.paths)
+	f3 := filepath.Join(target, "f3.txt")
+	if err := os.WriteFile(f3, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitChangedPath(t, ch, f3, 5*time.Second) {
+		t.Fatal("清单移除后 target 内变更应恢复广播")
 	}
 }
 

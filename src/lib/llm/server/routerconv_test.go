@@ -1,5 +1,6 @@
-// 白盒：canonical（router.Message / router.ToolCall）↔ 快照（data.ChatMsg / data.ToolCall）
-// 双向往返等价（迁自原 `chonkpilot-router/conv` 的 LR-1 白盒，落位见 routerconv.go 文件头）。
+// 白盒：canonical（router.Message / router.ToolCall）↔ chat 自持消息（chat.Message / chat.ToolCall）
+// 双向往返等价（迁自原 `chonkpilot-router/conv` 的 LR-1 白盒，落位见 routerconv.go 文件头；
+// MOD-1 M2 起消息类型 = chat 自持，快照 wire 互转在 chatadapter.go）。
 //
 // 覆盖：Role / Kind / Content（文本）/ ToolCallID / Reasoning / 多枚 tool_calls；
 // 以及两条**设计口径**（见 routerconv.go 文件头）：① Meta 不进入 canonical（不下发 LLM）；
@@ -10,23 +11,17 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-router"
 )
 
-// snapToolCall 构造快照工具调用（type 固定 function，与 llm 侧落库口径一致）。
-func snapToolCall(id, name, args string) data.ToolCall {
-	var c data.ToolCall
-	c.Type = "function"
-	c.ID = id
-	c.Function.Name = name
-	c.Function.Arguments = args
-	return c
+// snapToolCall 构造 chat 工具调用。
+func snapToolCall(id, name, args string) ToolCall {
+	return ToolCall{ID: id, Name: name, Arguments: args}
 }
 
-// toRouterMessages 快照消息序列 → canonical（顺序保持；测试用，逐条 ToRouterMessage）。
+// toRouterMessages 消息序列 → canonical（顺序保持；测试用，逐条 ToRouterMessage）。
 // 生产侧无批转换入口——组装/请求构造都逐条经 ToRouterMessage。
-func toRouterMessages(msgs []data.ChatMsg) []router.Message {
+func toRouterMessages(msgs []ChatMsg) []router.Message {
 	out := make([]router.Message, 0, len(msgs))
 	for _, m := range msgs {
 		out = append(out, ToRouterMessage(m))
@@ -34,13 +29,13 @@ func toRouterMessages(msgs []data.ChatMsg) []router.Message {
 	return out
 }
 
-// TestRouterConvChatMsgRoundTripEquivalence：快照 → canonical → 快照，逐字段等价。
+// TestRouterConvChatMsgRoundTripEquivalence：chat 消息 → canonical → chat 消息，逐字段等价。
 func TestRouterConvChatMsgRoundTripEquivalence(t *testing.T) {
-	msgs := []data.ChatMsg{
+	msgs := []ChatMsg{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Kind: "text", Content: "问"},
 		{Role: "assistant", Content: "答", Reasoning: "思考链",
-			ToolCalls: []data.ToolCall{
+			ToolCalls: []ToolCall{
 				snapToolCall("tc-1", "core_file_read", `{"path":"a.txt"}`),
 				snapToolCall("tc-2", "core_file_write", `{"path":"b.txt","text":"x"}`),
 			}},
@@ -70,7 +65,7 @@ func TestRouterConvChatMsgRoundTripEquivalence(t *testing.T) {
 	}
 
 	// 回写：与输入逐字段等价。
-	back := make([]data.ChatMsg, 0, len(canon))
+	back := make([]ChatMsg, 0, len(canon))
 	for _, m := range canon {
 		back = append(back, FromRouterMessage(m))
 	}
@@ -89,7 +84,7 @@ func TestRouterConvMessageRoundTripStable(t *testing.T) {
 		}},
 		{Role: router.RoleTool, ToolCallID: "tc-1", Content: []router.Part{{Type: router.PartText, Text: "done"}}},
 	}
-	snap := make([]data.ChatMsg, 0, len(in))
+	snap := make([]ChatMsg, 0, len(in))
 	for _, m := range in {
 		snap = append(snap, FromRouterMessage(m))
 	}
@@ -101,7 +96,7 @@ func TestRouterConvMessageRoundTripStable(t *testing.T) {
 
 // TestRouterConvMessageDropsMeta：Meta（`_meta`）不进入 canonical（不下发 LLM）→ 回写后为空。
 func TestRouterConvMessageDropsMeta(t *testing.T) {
-	in := data.ChatMsg{Role: "tool", ToolCallID: "tc-1", Content: "结果", Meta: map[string]any{"async": true, "category": "core"}}
+	in := ChatMsg{Role: "tool", ToolCallID: "tc-1", Content: "结果", Meta: map[string]any{"async": true, "category": "core"}}
 	canon := ToRouterMessage(in)
 	if canon.Role != router.RoleTool || canon.ToolCallID != "tc-1" || len(canon.Content) != 1 {
 		t.Fatalf("canonical=%+v want 保留 Role/ToolCallID/文本", canon)
@@ -128,8 +123,7 @@ func TestRouterConvMessageImagePartsNotInSnapshot(t *testing.T) {
 	}
 }
 
-// TestRouterConvToolCallsEmptyToNil：空工具调用 → nil（快照侧 omitempty 口径，避免写出 `[]`）；
-// 回写 type 恒为 function。
+// TestRouterConvToolCallsEmptyToNil：空工具调用 → nil（快照侧 omitempty 口径，避免写出 `[]`）。
 func TestRouterConvToolCallsEmptyToNil(t *testing.T) {
 	if got := ToRouterToolCalls(nil); got != nil {
 		t.Fatalf("ToRouterToolCalls(nil)=%+v want nil", got)
@@ -138,7 +132,7 @@ func TestRouterConvToolCallsEmptyToNil(t *testing.T) {
 		t.Fatalf("FromRouterToolCalls(nil)=%+v want nil", got)
 	}
 	back := FromRouterToolCalls([]router.ToolCall{{ID: "tc-1", Name: "f", Arguments: "{}"}})
-	if len(back) != 1 || back[0].Type != "function" {
-		t.Fatalf("回写 ToolCall=%+v want type=function", back)
+	if len(back) != 1 || back[0].Name != "f" || back[0].Arguments != "{}" {
+		t.Fatalf("回写 ToolCall=%+v want {f, {}}", back)
 	}
 }

@@ -10,9 +10,9 @@
  * **为何不落 localStorage**（§3.9）：布局是「项目实例态」（与既有 `layout.*` 同域），
  * 沿用 prj 配置面才能跨 desktop / gui / browser / flash 形态一致。
  *
- * 旧字段迁移（§3.9 + **2026-10-16 更正注**）：只承接**尺寸类**四字段
- * （`filetreeWidth` / `filetreeHeight` / `chatWidth` / `sessiontreeWidth`）；
- * `filetreeOpen` / `taskOpen` / `chatOpen` 三键**已随「三区常显」裁决失去语义 → 忽略、不迁移**。
+ * **旧字段迁移已删除**（UILAYOUT-2-A，2026-10-21）：`?layout=legacy` 与旧 7 字段
+ * （`filetreeWidth` / `filetreeHeight` / `chatWidth` / `sessiontreeWidth` / `*Open`）
+ * 一并移除 → 存量旧键**不再读取、不再迁移**，首次启动直接采用默认文档。
  *
  * 本模块是**纯逻辑 + 注入 IO**（`createLayoutPersist({ save, load })`）：
  * 不 import `api/file.js`（宿主 IO 由装配层注入）→ 可在 node:test 直跑。
@@ -24,33 +24,21 @@ import { EventNames as LfEventNames } from '../layout-free/events/event-names.js
 /** 文档版本（沿用参考工程 `defaultConfig.js` 的单文档模型，结构不改） */
 export const DOC_VERSION = 6
 
-/* ── 默认尺寸（与既有 MainLayout 的默认值/下限同源）────────────
-   〔对齐〕`MainLayout.vue`：filetreeWidth 320 / chatWidth 520 / sessiontreeWidth 400；
-   PREVIEW_MIN 280 / SESSION_CHAT_MIN 240；filetree 180..600 / session-tree 200..600 / chat 280..800。 */
+/* ── 默认尺寸（语义命名，不复用已删除的旧配置键名）──────────── */
 const D = {
-  filetreeWidth: 320,
-  filetreeHeight: 516,
-  chatWidth: 520,
-  sessiontreeWidth: 400,
-  taskHeight: 500,
+  explorerWidth: 320,
+  explorerHeight: 516,
+  chatPaneWidth: 520,
+  sessionListWidth: 400,
+  sessionPaneHeight: 500,
   previewMin: 280,
   sessionChatMin: 240,
-  filetreeMin: 180,
-  filetreeMax: 600,
-  sessiontreeMin: 200,
-  sessiontreeMax: 600,
+  explorerMin: 180,
+  explorerMax: 600,
+  sessionListMin: 200,
+  sessionListMax: 600,
   chatMin: 280,
   chatMax: 800,
-}
-
-/** 空栏结构（与机制层 `createBar()` 同形：对象而非数组） */
-function createBar() {
-  return { background: '', zoneBackground: { left: '', center: '', right: '' }, items: [] }
-}
-
-function num(v, fallback) {
-  const n = Number(v)
-  return Number.isFinite(n) && n > 0 ? n : fallback
 }
 
 /** 占比归一（和 = 1；非法/全 0 → 均分） */
@@ -70,69 +58,43 @@ function split(id, direction, children, sizes) {
 }
 
 /**
- * 旧 7 字段（实际只读尺寸类 4 项）→ 布局文档（等价现有硬编码布局）。
+ * 适配层默认文档（无任何落盘配置时的布局）：五区结构 + **ChonkPilot 默认栏 / 抽屉**。
  *
- * 结构（与现有 `MainLayout` 五层 `SplitPanel` 一一对应；`toolbar` / `statusbar` 由宿主组件承担
- * —— 一期不做栏条目化，故 `topToolbar` / `statusbar` 保持空条目）：
+ * 结构（UILAYOUT-2 定稿；legacy 硬编码分支已删除，本函数是唯一默认文档来源）：
  *   row [ column [ row [explorer | preview], row [session-tree | session-chat] ] | chat ]
- *
- * @param {object} [legacy] `gui.init-data` 的 `layout` 子对象（旧版 7 字段）；缺省 = 默认尺寸
  */
-export function migrateLegacyDoc(legacy = {}) {
-  const l = legacy && typeof legacy === 'object' ? legacy : {}
-  const filetreeW = num(l.filetreeWidth, D.filetreeWidth)
-  const filetreeH = num(l.filetreeHeight, D.filetreeHeight)
-  const chatW = num(l.chatWidth, D.chatWidth)
-  const sessiontreeW = num(l.sessiontreeWidth, D.sessiontreeWidth)
-  // 下方面板高（旧字段未直接持久化 → 由内容高与上方面板高推导；缺省取 D.taskHeight）
-  const taskH = num(l.taskHeight, D.taskHeight)
-  // 尺寸类三键按 §3.9 只做 clamp（与既有 applyLayout 的窗口关系校验同口径，此处按名义值 clamp）
-  const filetree = Math.min(D.filetreeMax, Math.max(D.filetreeMin, filetreeW))
-  const sessiontree = Math.min(D.sessiontreeMax, Math.max(D.sessiontreeMin, sessiontreeW))
-  const chat = Math.min(D.chatMax, Math.max(D.chatMin, chatW))
-
+export function defaultLayoutDoc() {
   const leftTop = split(
     'split_left_top',
     'row',
     [
-      leaf('leaf_file', 'explorer', { minWidth: D.filetreeMin, maxWidth: D.filetreeMax }),
-      leaf('leaf_preview', 'preview', { minWidth: D.previewMin }),
+      leaf('leaf_file', 'explorer', { minWidth: D.explorerMin, maxWidth: D.explorerMax }),
+      leaf('leaf_preview', 'preview', { minWidth: D.previewMin, flex: 1 }),
     ],
-    ratio([filetree, D.previewMin]),
+    ratio([D.explorerWidth, D.previewMin]),
   )
   const leftBottom = split(
     'split_left_bottom',
     'row',
     [
-      leaf('leaf_session_tree', 'session-tree', { minWidth: D.sessiontreeMin, maxWidth: D.sessiontreeMax }),
-      leaf('leaf_session_chat', 'session-chat', { minWidth: D.sessionChatMin }),
+      leaf('leaf_session_tree', 'session-tree', { minWidth: D.sessionListMin, maxWidth: D.sessionListMax }),
+      leaf('leaf_session_chat', 'session-chat', { minWidth: D.sessionChatMin, flex: 1 }),
     ],
-    ratio([sessiontree, D.sessionChatMin]),
+    ratio([D.sessionListWidth, D.sessionChatMin]),
   )
-  const leftCol = split('split_left', 'column', [leftTop, leftBottom], ratio([filetreeH, taskH]))
+  leftTop.flex = 1
+  const leftCol = split('split_left', 'column', [leftTop, leftBottom], ratio([D.explorerHeight, D.sessionPaneHeight]))
   const chatLeaf = leaf('leaf_chat', 'chat', { minWidth: D.chatMin, maxWidth: D.chatMax })
-  // 左列宽 vs 对话宽：旧字段未记「左列总宽」→ 用左右两列各自的代表宽之和（尺度关系等价）
   const body = split(
     'split_body',
     'row',
     [leftCol, chatLeaf],
-    ratio([Math.max(filetree + D.previewMin, sessiontree + D.sessionChatMin), chat]),
+    ratio([Math.max(D.explorerWidth + D.previewMin, D.sessionListWidth + D.sessionChatMin), D.chatPaneWidth]),
   )
 
   return {
     version: DOC_VERSION,
     layout: body,
-    topToolbar: createBar(),
-    statusbar: createBar(),
-    toolbars: [],
-    drawers: [],
-  }
-}
-
-/** 适配层默认文档（无任何落盘配置时的布局：等价现有硬编码布局 + **ChonkPilot 默认栏 / 抽屉**）。 */
-export function defaultLayoutDoc() {
-  return {
-    ...migrateLegacyDoc({}),
     topToolbar: chonkTopToolbar(),
     statusbar: chonkStatusbar(),
     toolbars: chonkToolbars(),
@@ -211,7 +173,8 @@ export function chonkTopToolbar() {
     lang,
     barButton('tb_sessions', 'right', '会话', 'message-box', pmq('sessions-open', {})),
     barButton('tb_drawer', 'right', '任务详情', 'panel-right', pmq(LfEventNames.drawerToggle, { drawerId: 'drawer_task' })),
-    barButton('tb_editor', 'right', '布局设置', 'sliders-horizontal', pmq(LfEventNames.editorOpen, { tab: 'layout' })),
+    // 布局档案下拉（UILAYOUT-2）：列表 / 切换 / 新建 / 编辑当前 / 恢复初始布局
+    barView('tb_layouts', 'right', 'layout-profiles'),
     barView('tb_chrome', 'right', 'chrome-warn'),
     barView('tb_logout', 'right', 'logout'),
   ])

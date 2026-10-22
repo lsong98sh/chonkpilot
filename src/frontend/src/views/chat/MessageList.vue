@@ -103,7 +103,10 @@ import mq from '../../utils/mq'
 import { resolvePublishError } from '../../utils/publishError'
 import { EventNames } from '../../events/event-names'
 import { createSessionMessages } from '../../utils/sessionMessages'
-import { publishLLMStart, publishLLMContinue } from '../../api/chat'
+import {
+  publishLLMContinue,
+  publishInboxAdd, listInbox, discardInbox, promoteInbox,
+} from '../../api/chat'
 import { sendQueue } from '../../composables/useSendQueue'
 import { useTaskView } from '../../composables/useTaskView'
 import {
@@ -441,6 +444,13 @@ const currentTurnId = ref(null)
 const lastTurnId = ref(null)
 // 最近一次发送的参数（同轮次继续时沿用，保证场景 system_prompt / 模型选择不丢）。
 let lastSendParams = { llm: '', think: 'on', effort: 'high', scenarioId: '' }
+// INBOX 起轮等待（Q6：空闲发送也先落 inbox）：服务端在无运行轮时由 consumeNextTurn
+// 起新一轮并广播 `turn-start`（客户端 type）。收到前用 10s 看门狗兜底（未起轮 → 保持队列）。
+let awaitingInboxTurn = false
+let inboxStartTimer = null
+function clearInboxStartTimer() {
+  if (inboxStartTimer) { clearTimeout(inboxStartTimer); inboxStartTimer = null }
+}
 const turnUnsubs = []
 // 常驻流订阅（onMounted 注册，组件销毁清理）：脚本注入 llm-start 不经 doSend，
 // 流事件（llm-receive/llm-complete/llm-token）仍按 session+turn 过滤渲染。
@@ -700,11 +710,15 @@ async function sendSameTurnContinue() {
 }
 
 // ── 截断/断链续写（llm-complete status=incomplete / error）──
-// LLM 回复未写完时自动发"继续"，最多 MAX 次防死循环；超限或用户手动取消/出错后转手动按钮。
+// LLM 回复未写完时由**后端**按宽限期自动续写（RETRY-2）；前端只保留手动「继续」入口。
 // 仅主 chat（viewer 只读不自动）。
-const MAX_AUTO_CONTINUE = 3
 const autoContinueCount = ref(0)
-let autoContinueTimer = null
+// 终态事件序号：onLlmComplete 每处理一次当前会话的终态 +1。切换会话是异步多段
+// （loadMessages / refreshInbox / assessContinueState），若终态在切换过程中到达，
+// 切换尾部的 assessContinueState 会把事件刚置位的「继续」按历史重新算成 false
+// （L4 run_sem_error_recovery E3 间歇复现）→ 用序号判定「切换期间是否已有终态」，
+// 有则不再用历史覆盖事件结论。
+let terminalSeq = 0
 
 // 手动/自动重试的实际发送文本：
 //   已收到部分内容（最后一条是 assistant 输出）→ "继续"（方式 B：续写，避免重发重复）
@@ -729,23 +743,15 @@ function retryText() {
   return t('common.continue')
 }
 
-function scheduleAutoContinue() {
-  clearTimeout(autoContinueTimer)
-  autoContinueTimer = setTimeout(() => {
-    if (isLoading.value || !props.sessionId) return
-    // 断链/截断自动续写同样走同轮次继续（不新开 turn）
-    sendSameTurnContinue()
-  }, 400)
-}
-
 // ── Session change handling (event-driven, no watch on props) ──
 async function onSessionChanged({ session_id }) {
   const newId = session_id || null
   if (newId === activeSessionId.value) return
-  // 切换会话：取消挂起的自动续写并重置计数（自动续写仅针对当前会话连续截断）
-  clearTimeout(autoContinueTimer)
+  const seqAtSwitch = terminalSeq
+  // 切换会话：重置续写计数（自动续写由后端承担，切换即取消；见 data-session-active-set）
   autoContinueCount.value = 0
   activeSessionId.value = newId
+  mq.emit(EventNames.dataSessionActiveSet, { session_id: newId || '' })
   // 空回复/输出标记随会话重置（S21）
   turnHadOutput = false
   notifyTurn = false
@@ -770,7 +776,9 @@ async function onSessionChanged({ session_id }) {
   if (newId) {
     await loadMessages(newId)
     pruneItemHeights() // 整体重载后淘汰旧 msg.id 高度缓存条目
-    await assessContinueState()
+    await refreshInbox() // 切会话：拉回该会话 pending inbox（重启/切换后队列可见）
+    // 切换期间已收到当前会话终态 → 事件结论优先，不用历史覆盖（见 terminalSeq 注释）
+    if (terminalSeq === seqAtSwitch) await assessContinueState()
     // 切会话恢复：消息落库后按任务列表 awaiting 补挂超时裁决条（I-57）
     await restoreAwaitingArbitration(newId)
   } else {
@@ -779,6 +787,8 @@ async function onSessionChanged({ session_id }) {
 }
 
 function cleanupAndFinish() {
+  awaitingInboxTurn = false
+  clearInboxStartTimer()
   turnUnsubs.forEach(fn => { try { fn() } catch (e) { console.error('[MessageList] turnUnsubs cleanup error:', e) } })
   turnUnsubs.length = 0
   isLoading.value = false
@@ -828,46 +838,84 @@ function setupPersistentStreamSubs() {
     if (d.type === 'text' && d.content) handleToken({ type: 'text', content: d.content })
   }
   persistentUnsubs.push(mq.on(EventNames.llmToken, onLegacyToken))
+
+  // turn-start（桥 mqTypeMap：session-turn-start → turn-start）：INBOX 起轮时**服务端分配**
+  // turn id，前端据此回填 currentTurnId（llm-receive/complete 的 turn 过滤依赖它）。
+  const onTurnStart = (d) => {
+    const sid = activeSessionId.value || props.sessionId
+    const dsid = d.session || d.session_id
+    if (sid && dsid && dsid !== sid) return
+    if (!d.turn) return
+    currentTurnId.value = d.turn
+    lastTurnId.value = d.turn
+    awaitingInboxTurn = false
+    clearInboxStartTimer()
+    // 起轮即消费：把本地队列镜像与 consumed 状态对齐（避免幽灵队列徽标）。
+    refreshInbox()
+  }
+  persistentUnsubs.push(mq.on('turn-start', onTurnStart))
 }
 
 // ── Handle user message sending (from ChatPanel via mq) ──
-// 【发送】只在 LLM 空闲时可用（busy 时 UI 无发送按钮）→ 直接 doSend，不入队；
-// busy 兜底（防御）→ 入队，等 turn 完全结束后由 drainQueue 发送。
+// INBOX（Q6）：**所有发送先落 prjusr inbox**（含空闲首条）。服务端按当前相位分类：
+//   - 工具等待期 → insert（立即插入）；流式期 → next_turn（等本轮结束）；
+//   - 无运行轮 → next_turn 并**立即消费起轮**（turn id 由服务端分配，经 `turn-start` 回填）。
+// 前端不再直接发 llm-start/llm-send（同轮次继续 continue 除外：复用既有 turn，不新起轮）。
 function onMessageSend(data) {
   if (data.sessionId !== props.sessionId) return
   if (!data.text?.trim()) return
   if (isLoading.value) {
-    sendQueue.enqueue({ type: 'message', llm: data.llm || currentLlm.value, payload: data })
+    inboxAdd(data)
     return
   }
   doSend({ ...data, type: 'message', llm: data.llm || currentLlm.value })
 }
 
 // ── Handle queue (from ChatPanel via mq) ──
-// 【入队】仅前端操作：文本放入待发队列（不写 DB、不启动 turn、不显示气泡），
-// LLM 结束后由 drainQueue 发送（docs/spec/00-overview/01-端到端数据流.md §5.3）。
+// 【入队】同样落 inbox（持久化、重启可拉回），不再只是前端内存。
 function onMessageQueue(data) {
   if (data.sessionId !== props.sessionId) return
   if (!data.text?.trim()) return
-  sendQueue.enqueue({ type: 'message', llm: data.llm || currentLlm.value, payload: data })
+  inboxAdd(data)
 }
 
-// ── 发送队列出口：busy（本 LLM turn 进行中）时跳过，等 executorDone 后由调用方再次触发 ──
-// 队列按 LLM 分桶：取当前 LLM 的待发内容（队列只承载用户消息，附录 A）。
+// inboxAdd：统一发送入口（忙碌 / 显式入队）。失败静默（服务器拒收时无 id，队列不显示）。
+async function inboxAdd(data) {
+  const sid = props.sessionId
+  if (!sid) return
+  await publishInboxAdd(
+    sid,
+    data.text,
+    data.llm || currentLlm.value,
+    data.thinkFlag || 'on',
+    data.effortLevel || 'high',
+    data.scenarioId,
+  )
+  await refreshInbox()
+}
+
+// refreshInbox：以服务端 `llm-inbox-list` 的 pending 项重建本地镜像（队列指示器 / 重启拉回）。
+async function refreshInbox() {
+  const sid = activeSessionId.value || props.sessionId
+  if (!sid) {
+    sendQueue.syncInbox([], '')
+    return
+  }
+  const res = await listInbox(sid)
+  const items = res?.backend?.result?.items || []
+  sendQueue.syncInbox(items, sid)
+}
+
+// ── 发送队列出口：inbox 由 llm-server 在本轮结束后自动消费（next_turn），
+// 前端只做镜像刷新，不再本地出队发送（避免重复发送）。
 function drainQueue() {
-  if (isLoading.value) return
-  const batch = sendQueue.shiftBatch(currentLlm.value)
-  if (!batch) return
-  doSend(batch)
+  refreshInbox()
 }
 
-// 真正发送一批（message 单条）。user 气泡只在"真正发送"时显示（入队不显示，§3.5.2）；
-// 且**不再乐观插入**——等「落库回执」（llm-start 经桥同步受理、server 落库 session/turn
-// 后的 /publish 应答）到达才渲染（T5 方案 B，避免被 loadMessages 的历史全量替换冲掉）。
-// server 协议（阶段三）：turn 前端自分配 uuid（publishLLMStart 生成），发布 llm-start
-// 事件（桥拆 llm-start + llm-send{text-user}）；turn 已知即可立即订阅流事件
-// （llm-receive/llm-complete 按 session+turn 过滤，规避旧事件竞态 s4）。
-// notify 批次已归后端（server 空闲自动触发通知轮次），前端不再处理。
+// 真正发送一批（message 单条）。Q6「先入 inbox 再落 message」：**统一走 `llm-inbox-add`** ——
+// 无运行轮时服务端立即消费起轮并广播 `turn-start`（前端据此回填 turn id）；忙碌/流式期则入队。
+// user 气泡在 inbox 应答（已落库）之后渲染；等待期间已切会话 → 不渲染。
+// 同轮次继续（continue）仍走既有 llm-start{continue}（复用原 turn，不新起轮）。
 async function doSend(batch) {
   // 每轮重置输出/通知标记（S21 空回复判定按 turn 隔离，非会话级）
   turnHadOutput = false
@@ -890,14 +938,6 @@ async function doSend(batch) {
   startPendingProgress()
   const sid = props.sessionId
   const at = messages.value.length // user 气泡插入点（发送时刻的消息末尾）
-  const { turn: turnId, ack } = publishLLMStart(
-    sid,
-    batch.text,
-    batch.llm || '',
-    batch.thinkFlag || 'on',
-    batch.effortLevel || 'high',
-    batch.scenarioId,
-  )
   // 记录本轮发送参数，供「同轮次继续」复用（场景/模型/思考档不丢）
   lastSendParams = {
     llm: batch.llm || currentLlm.value || '',
@@ -905,21 +945,44 @@ async function doSend(batch) {
     effort: batch.effortLevel || 'high',
     scenarioId: batch.scenarioId || '',
   }
-  // turn 前端自分配：无需等后端 ack 即可过滤流事件（常驻订阅已注册）。
-  if (turnId) {
-    currentTurnId.value = turnId
-    lastTurnId.value = turnId
-  }
+  // 统一 inbox 入口：服务端按相位分类；无运行轮 → 立即消费起轮（turn id 服务端分配）。
+  const ack = publishInboxAdd(
+    sid,
+    batch.text,
+    batch.llm || currentLlm.value || '',
+    batch.thinkFlag || 'on',
+    batch.effortLevel || 'high',
+    batch.scenarioId,
+  )
+  // 起轮等待 + 看门狗（未收到 turn-start → 消息仍在队列，复位 loading，用户可点「继续」）。
+  awaitingInboxTurn = true
+  clearInboxStartTimer()
+  inboxStartTimer = setTimeout(async () => {
+    if (!awaitingInboxTurn) return
+    awaitingInboxTurn = false
+    await refreshInbox()
+    cleanupAndFinish()
+  }, 10000)
   // 落库回执到达后再渲染 user 气泡；等待期间已切会话 → 不渲染
   // （`await ack` 不回写原变量 → 必须用返回值，见 sendSameTurnContinue 同注）
   const ackRes = await ack
   if (activeSessionId.value && activeSessionId.value !== sid) return
-  // E-20：后端未受理（无 llm-complete 终态）→ 错误气泡 + 复位加载态，防死锁；
-  // 本轮记录的 turn id 一并作废（后端未知该 turn，不可作为后续「同轮次继续」目标）。
+  // E-20：后端未受理（无 turn-start/llm-complete 终态）→ 错误气泡 + 复位加载态，防死锁。
   const rejected = ackRejectedReason(ackRes)
-  if (rejected) {
-    if (lastTurnId.value === turnId) lastTurnId.value = null
-    handleError({ message: rejected })
+  const result = ackRes && ackRes.backend && ackRes.backend.result
+  if (rejected || (result && result.ok === false)) {
+    awaitingInboxTurn = false
+    clearInboxStartTimer()
+    handleError({ message: rejected || 'inbox-add rejected' })
+    cleanupAndFinish()
+    return
+  }
+  await refreshInbox()
+  if (String(result && result.type || '') === 'insert') {
+    // 竞态：会话实际仍在运行（前端 isLoading 尚未跟上）→ 已立即插入，无需等新轮。
+    awaitingInboxTurn = false
+    clearInboxStartTimer()
+    if (batch.type === 'message') pushUserBubble(batch.text, at)
     cleanupAndFinish()
     return
   }
@@ -979,21 +1042,36 @@ function onMessageCancel() {
   confirmTurnCancel({ turnId, sessionId: sid })
 }
 
-// ── canceled 队列简化（§3.5.3 / §3.4.1）：当前 LLM 桶的待发消息写回 textarea ──
-function handleCanceledQueue() {
-  const texts = sendQueue.takeTexts(currentLlm.value)
-  if (texts.length === 0) return
-  mq.emit(EventNames.chatQueueRestore, { text: texts.join('\n') })
+// ── canceled 队列简化（§3.5.3 / §3.4.1）：当前 LLM 桶的待发消息撤回并写回 textarea ──
+// INBOX：撤回 = 服务端置 discarded（不再只改内存），随后重建本地镜像。
+async function handleCanceledQueue() {
+  await refreshInbox()
+  const items = sendQueue.itemsOf(currentLlm.value)
+  if (items.length === 0) return
+  const texts = []
+  for (const it of items) {
+    const t = it.payload?.text || ''
+    if (t.trim()) texts.push(t)
+    await discardInbox(it.id)
+  }
+  await refreshInbox()
+  if (texts.length > 0) mq.emit(EventNames.chatQueueRestore, { text: texts.join('\n') })
 }
 
-// ── 队列项操作（InputBox popover）：撤回（删除 + 写回 textarea）/ 删除 ──
-function onQueueAction({ id, action }) {
+// ── 队列项操作（InputBox popover）：撤回（删除 + 写回 textarea）/ 删除 / 立刻插入 ──
+async function onQueueAction({ id, action }) {
   const item = sendQueue.takeById(id)
   if (!item) return
   if (action === 'recall') {
     const text = item.payload?.text || ''
     if (text && text.trim()) mq.emit(EventNames.chatQueueRestore, { text })
+    await discardInbox(id)
+  } else if (action === 'insert') {
+    await promoteInbox(id)
+  } else {
+    await discardInbox(id)
   }
+  await refreshInbox()
 }
 
 // ── 异步任务完成通知（后端 sendCompletionNotice 推送 tool-notify / notice=completion）──
@@ -1196,6 +1274,7 @@ function onLlmComplete(d) {
   if (sid && d.session_id && d.session_id !== sid) return
   if (d.turn && currentTurnId.value && d.turn !== currentTurnId.value) return
   if (d.turn_id && currentTurnId.value && d.turn_id !== currentTurnId.value) return
+  terminalSeq++
   // server 协议状态枚举映射（20-gui）：
   //   complete↔completed（正常完成）；incomplete（length 截断）；error（错误，错误信息随
   //   message/code 携带，无独立 llm-error 主题）；interrupted↔cancelled（用户取消/中断）。
@@ -1240,17 +1319,8 @@ function onLlmComplete(d) {
   } else {
     drainQueue() // turn 完全结束（LLM 域终结）：发送队列中等待的用户消息
   }
-  if (autoRetry) {
-    userCanceled = false
-    autoContinueCount.value++
-    if (autoContinueCount.value < MAX_AUTO_CONTINUE) {
-      scheduleAutoContinue()
-    } else {
-      // 连续断链/截断达到上限：转手动"继续"按钮
-      showContinue.value = true
-    }
-    return
-  }
+  // RETRY-2：前端**不再**静默自动续写（自动续写由后端按宽限期执行，见 llm-interrupted）；
+  // 错误/截断终态只保留手动「继续」入口。
   userCanceled = false
   autoContinueCount.value = 0
   // 空回复（S21）：complete 且无任何 assistant 输出 → 实时提示 +"继续"（重发原消息）
@@ -1329,8 +1399,10 @@ onMounted(async () => {
   // If already have sessionId on mount, load messages + 评估"继续"
   if (props.sessionId) {
     activeSessionId.value = props.sessionId
+    mq.emit(EventNames.dataSessionActiveSet, { session_id: props.sessionId })
     await loadMessages(props.sessionId)
     pruneItemHeights() // 整体重载后淘汰旧 msg.id 高度缓存条目
+    await refreshInbox() // 重启拉回：pending inbox（默认不自动发送，仅显示队列）
     await assessContinueState()
     // 刷新恢复：挂载后按任务列表 awaiting 补挂超时裁决条（I-57）
     await restoreAwaitingArbitration(props.sessionId)
@@ -1352,6 +1424,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  // 关窗/卸载 → 清空活动会话（后端据此取消待触发的自动续写；提示条随窗口消失）。
+  mq.emit(EventNames.dataSessionActiveSet, { session_id: '' })
   if (listResizeObserver) { listResizeObserver.disconnect(); listResizeObserver = null }
   if (measureRafId != null) { cancelAnimationFrame(measureRafId); measureRafId = null }
   if (scrollRafId != null) { cancelAnimationFrame(scrollRafId); scrollRafId = null }
@@ -1373,6 +1447,7 @@ onUnmounted(() => {
   persistentUnsubs.forEach(fn => { try { fn() } catch (e) { console.error('[MessageList] persistentUnsubs cleanup error:', e) } })
   persistentUnsubs.length = 0
   clearTimeout(autoContinueTimer)
+  clearInboxStartTimer()
   clearPendingTimers()
   cleanupAndFinish()
   resetMessages()

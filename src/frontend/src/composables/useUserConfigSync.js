@@ -21,6 +21,7 @@ import mq from '../utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { applyLocale } from '../plugins/i18n'
 import { configFromChangedEvent, themeLocaleFromConfig } from '../utils/userConfigApply.js'
+import { useUserConfig } from './useUserConfig.js'
 
 /** 本窗口当前生效主题（事件同步；Toolbar 的主题勾选态以此为准）。 */
 const theme = ref('light')
@@ -38,11 +39,16 @@ function applyConfig(cfg) {
   if (lc) applyLocale(lc)
 }
 
-/** 订阅一次宿主下行广播（模块级单例）。 */
+/** 订阅一次宿主下行广播（模块级单例）；并做一次全量加载，补齐首屏 theme/locale。 */
 function ensureSubscribed() {
   if (subscribed) return
   subscribed = true
   mq.on(EventNames.userConfigChanged, (raw) => applyConfig(configFromChangedEvent(raw)))
+  // T14：usr 配置只 load 一次；后续走 data-user-config-changed 增量。
+  const { ensureLoaded } = useUserConfig()
+  ensureLoaded().then((cfg) => {
+    if (cfg && Object.keys(cfg).length > 0) applyConfig(cfg)
+  })
 }
 
 /**

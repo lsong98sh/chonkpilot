@@ -5,7 +5,6 @@ go 1.26.0
 require (
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-mcp-gateway v0.0.0
-	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 )
 
@@ -18,7 +17,6 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
@@ -26,3 +24,5 @@ replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
 replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../lib/gateway
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../../../lib/mcp-server
+
+replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools

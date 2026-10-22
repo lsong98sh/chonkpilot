@@ -1,9 +1,7 @@
 // Package fileops 是 chonkpilot-mcp-tools 自持的 file 分类工具实现。
 // 特性（与主仓库 executor 的差异）：
-//   - 路径白名单/越界拦截由 agentbox 沙箱承担（**2026-09-19 已落地**，见 sandbox.go：宿主经
-//     CHONKPILOT_SANDBOX 注入「可读 / 可写目录（递归）」策略，本包在各 choke point 强制拦截；
-//     未注入 = 不启用，行为与引入前等价）；文件操作参数
-//     须为绝对路径或以 ~/ 开头的用户目录路径（R-11，见 pathcheck.go），相对路径报错
+//   - 路径越界的强制拦截由**进程级沙箱**（gateway spawn 时施加）承担，本包不做应用层路径白名单；
+//     文件操作参数须为绝对路径或以 ~/ 开头的用户目录路径（R-11，见 pathcheck.go），相对路径报错
 //   - 支持 UTF-16（BOM 识别为文本并解码）
 //   - file_find 递归遍历跳过 SkipDirs（含 .svn）
 //   - 零持久状态（无 DB / 无版本快照）

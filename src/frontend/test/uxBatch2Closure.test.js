@@ -144,8 +144,11 @@ test('C·后端语义核实：retryCount 用 n>=0（0 合法），其余三项�
   // persist 侧（config 域实现）系统默认（回落终点）
   // 阶段 4 internal 下沉：config 域实现已由 persist 下沉 internal/config。
   const p = readRepo('lib/data/internal/config/userconfig.go')
-  assert.match(p, /"responseTimeout": 120/, 'persist 默认 responseTimeout=120')
-  assert.match(p, /"retryCount":\s+2/, 'persist 默认 retryCount=2')
+  assert.match(p, /"responseTimeout":\s+120/, 'persist 默认 responseTimeout=120')
+  assert.match(p, /"retryCount":\s+5/, 'persist 默认 retryCount=5（RETRY-2）')
+  assert.match(p, /"retryBudgetSec":\s+60/, 'persist 默认 retryBudgetSec=60（RETRY-2）')
+  assert.match(p, /"turnEventLog":\s+"outline"/, 'persist 默认 turnEventLog=outline（MOD-1 M3）')
+  assert.match(p, /"turnEventLogRetentionDays":\s+7/, 'persist 默认 turnEventLogRetentionDays=7（MOD-1 M3）')
 })
 
 test('C·validateNonNegativeInt：0 合法、负数/非整数/空拒绝', () => {

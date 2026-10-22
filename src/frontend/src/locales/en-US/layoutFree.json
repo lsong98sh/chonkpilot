@@ -20,6 +20,7 @@
     "statusCompress": "Context compression details",
     "statusIndex": "Code index details",
     "langSwitcher": "Language",
+    "layoutProfiles": "Layouts",
     "dslStepsNoJob": "No job specified (jobId) — configure params in area settings"
   },
   "container": {

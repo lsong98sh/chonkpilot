@@ -7,7 +7,13 @@
     @contextmenu="onContextMenu"
   >
     <template v-for="(child, i) in node.children" :key="child.id">
-      <div class="split-child" :style="childStyle(i)">
+      <!-- 隐藏区域用 v-show 保活（不卸载）：见 WIN-025 / 「区块保活」硬约束 -->
+      <div
+        v-show="isVisible(child)"
+        class="split-child"
+        :data-child-id="child.id"
+        :style="childStyle(i)"
+      >
         <LfLayoutNodeRenderer
           :node="child"
           :depth="depth + 1"
@@ -15,8 +21,9 @@
           :selected-id="selectedId"
         />
       </div>
+      <!-- 分割条只出现在相邻两个可见子区之间 -->
       <div
-        v-if="i < node.children.length - 1"
+        v-if="hasNextVisible(i)"
         class="split-handle"
         :class="[
           node.direction === 'row' ? 'vertical' : 'horizontal',
@@ -84,6 +91,63 @@ const ratios = computed(() => {
   return props.node.sizes?.length === n ? props.node.sizes : Array.from({ length: n }, () => 1 / n)
 })
 
+/* ── 区域显隐（WIN-025）───────────────────────────────────
+   隐藏 = `visible === false`（缺省可见）。隐藏子区**保持挂载**（v-show），
+   但不参与尺寸分配、不渲染分割条；占比只在可见子区之间归一。 */
+
+function isVisible(node) {
+  return node?.visible !== false
+}
+
+const visibleChildren = computed(() => props.node.children.filter(isVisible))
+
+/** 可见子区的归一占比（按配置占比在可见子集上重新归一） */
+const visibleRatios = computed(() => {
+  const list = props.node.children
+  const vals = list.map((c, i) => (isVisible(c) ? Math.max(0, Number(ratios.value[i]) || 0) : 0))
+  const sum = vals.reduce((a, b) => a + b, 0)
+  const n = visibleChildren.value.length
+  if (!(sum > 0)) return Array.from({ length: n }, () => 1 / Math.max(1, n))
+  return vals.filter((_, i) => isVisible(list[i])).map((v) => v / sum)
+})
+
+/** 第 i 个子区在「可见子区序列」里的下标（不可见 → -1） */
+function visibleIndexOf(i) {
+  const list = props.node.children
+  if (!isVisible(list[i])) return -1
+  let n = -1
+  for (let k = 0; k <= i; k += 1) if (isVisible(list[k])) n += 1
+  return n
+}
+
+/** i 之后的下一个可见子区下标（没有 → -1） */
+function nextVisibleIndex(i) {
+  const list = props.node.children
+  for (let k = i + 1; k < list.length; k += 1) if (isVisible(list[k])) return k
+  return -1
+}
+
+/** 第 i 个子区后面是否要画分割条（i 可见且后面还有可见子区） */
+function hasNextVisible(i) {
+  return isVisible(props.node.children[i]) && nextVisibleIndex(i) !== -1
+}
+
+/** 子区 style：隐藏 → 不占尺寸（v-show 承担 display:none）；可见 → 像素定尺 / 占比兜底 */
+function childStyle(i) {
+  const child = props.node.children[i]
+  if (!isVisible(child)) return {}
+  const px = paneSizes[child?.id]
+  if (px == null) {
+    // 首帧：还没有量到像素 → 用可见子集占比撑开，避免闪一下 0 宽
+    const vi = visibleIndexOf(i)
+    const gr = visibleRatios.value[vi] ?? 1 / Math.max(1, visibleChildren.value.length)
+    return { flexGrow: String(gr), flexShrink: '1', flexBasis: '0' }
+  }
+  return isRow.value
+    ? { width: `${px}px`, flex: '0 0 auto', minWidth: '0', minHeight: '0' }
+    : { height: `${px}px`, flex: '0 0 auto', minWidth: '0', minHeight: '0' }
+}
+
 /**
  * 运行态像素当前对应的**配置占比**快照（G-57 方案②）。
  *
@@ -114,33 +178,26 @@ function containerPx() {
   return isRow.value ? el.clientWidth : el.clientHeight
 }
 
-/** 子区 style：有实测像素就用像素定尺，否则先按占比给 flex（首帧防跳） */
-function childStyle(i) {
-  const child = props.node.children[i]
-  const px = paneSizes[child?.id]
-  if (px == null) {
-    // 首帧：还没有量到像素 → 用占比撑开，避免闪一下 0 宽
-    return { flexGrow: String(ratios.value[i] ?? 1), flexShrink: '1', flexBasis: '0' }
-  }
-  return isRow.value
-    ? { width: `${px}px`, flex: '0 0 auto', minWidth: '0', minHeight: '0' }
-    : { height: `${px}px`, flex: '0 0 auto', minWidth: '0', minHeight: '0' }
-}
-
 /**
  * 量测并写入各子区像素。
- * 容器像素 - 所有分割条像素 = 各子区应占总量；按当前实测比例分配，
- * 保证**「子区之和 + 分割条 = 容器」**这条不变量在初始化时就成立。
+ * 容器像素 - 所有分割条像素 = 各子区应占总量。
+ *
+ * 尺寸两态（UILAYOUT-2）：
+ *   - 数值节点（`flex` 缺省 / 0）：按可见子集占比取目标，clamp 到 `[min, max]`；
+ *     非强制量测时**保留当前像素**（用户拖拽 / 窗口缩放后不跳变）。
+ *   - 弹性节点（`flex > 0`）：吃掉数值节点之外的**剩余空间**，份额按占比归一。
+ *   - 无弹性节点 → 全部按占比分配（等价一期行为）。
  */
 function measure(force = false) {
   const el = containerRef.value
   if (!el) return
   const total = containerPx()
   if (total <= 0) return
-  const children = props.node.children
+  // 只量可见子区：隐藏子区不参与「子区之和 + 分割条 = 容器」不变量
+  const children = visibleChildren.value
+  if (!children.length) return
   const handlePx = handleThickness() * Math.max(0, children.length - 1)
   const avail = Math.max(0, total - handlePx)
-  if (!children.length) return
 
   const existing = children.map((c) => paneSizes[c.id])
   const haveAll = existing.every((v) => Number.isFinite(v) && v > 0)
@@ -151,15 +208,61 @@ function measure(force = false) {
     if (Math.abs(used - avail) <= 1) return
   }
 
-  // 权重：force 时纯按配置占比；否则优先用现有实测像素（保持视觉比例）
-  const weights = children.map((c, i) => {
-    if (force) return Math.max(0.0001, ratios.value[i] ?? 1 / children.length)
-    const px = existing[i]
-    return Number.isFinite(px) && px > 0 ? px : Math.max(0.0001, ratios.value[i] ?? 1 / children.length)
-  })
-  const sum = weights.reduce((a, b) => a + b, 0) || 1
+  const isFlex = (c) => Number(c?.flex) > 0
+  const flexIdx = []
   children.forEach((c, i) => {
-    paneSizes[c.id] = (weights[i] / sum) * avail
+    if (isFlex(c)) flexIdx.push(i)
+  })
+
+  // 无弹性：按可见子集占比分配（一期行为）
+  if (!flexIdx.length) {
+    const weights = children.map((c, i) => {
+      if (force) return Math.max(0.0001, visibleRatios.value[i] ?? 1 / children.length)
+      const px = existing[i]
+      return Number.isFinite(px) && px > 0 ? px : Math.max(0.0001, visibleRatios.value[i] ?? 1 / children.length)
+    })
+    const sum = weights.reduce((a, b) => a + b, 0) || 1
+    children.forEach((c, i) => {
+      paneSizes[c.id] = (weights[i] / sum) * avail
+    })
+    return
+  }
+
+  const ratioSum = visibleRatios.value.reduce((a, b) => a + b, 0) || 1
+  const target = new Array(children.length).fill(0)
+  let numericSum = 0
+
+  children.forEach((c, i) => {
+    if (isFlex(c)) return
+    const ratio = Math.max(0.0001, visibleRatios.value[i] ?? 1 / children.length)
+    let px =
+      force || !Number.isFinite(existing[i]) || existing[i] <= 0
+        ? (avail * ratio) / ratioSum
+        : existing[i]
+    const range = rangeOf(c, props.node.direction)
+    px = Math.max(range.min, Math.min(range.max, px))
+    target[i] = px
+    numericSum += px
+  })
+
+  let remaining = avail - numericSum
+  if (remaining < 0) {
+    // 数值节点挤爆容器 → 等比缩小，弹性节点归零
+    const k = numericSum > 0 ? avail / numericSum : 0
+    children.forEach((c, i) => {
+      if (!isFlex(c)) target[i] *= k
+    })
+    remaining = 0
+  }
+
+  const flexRatioSum = flexIdx.reduce((a, i) => a + Math.max(0.0001, visibleRatios.value[i] ?? 0), 0) || 1
+  flexIdx.forEach((i) => {
+    const r = Math.max(0.0001, visibleRatios.value[i] ?? 0)
+    target[i] = remaining * (r / flexRatioSum)
+  })
+
+  children.forEach((c, i) => {
+    paneSizes[c.id] = target[i]
   })
 }
 
@@ -186,7 +289,7 @@ function rangeOf(child, direction) {
 function handleEnabled(index) {
   const direction = props.node.direction
   const a = props.node.children[index]
-  const b = props.node.children[index + 1]
+  const b = props.node.children[nextVisibleIndex(index)]
   if (!a || !b) return false
   // 只需要判「有没有交集」，pairPx 用一个足够大的探测值即可
   return pairDragRange(a, b, direction, PAIR_PROBE) !== null
@@ -218,7 +321,7 @@ function onDragStart(index, event) {
   const horizontal = isRow.value
   const children = props.node.children
   const a = children[index]
-  const b = children[index + 1]
+  const b = children[nextVisibleIndex(index)]
   if (!a || !b) return
 
   const total = containerPx()
@@ -238,8 +341,9 @@ function onDragStart(index, event) {
   if (!range) return
 
   const startPos = event[prop]
-  const elA = el.children[index * 2]
-  const elB = el.children[index * 2 + 2]
+  // 隐藏子区仍在 DOM（v-show），不能用 children 下标推算 → 按 data-child-id 精确取
+  const elA = el.querySelector(`[data-child-id="${a.id}"]`)
+  const elB = el.querySelector(`[data-child-id="${b.id}"]`)
 
   dragging.value = index
   document.body.style.cursor = cursor
@@ -276,11 +380,28 @@ function onDragStart(index, event) {
 
 /** 松手：把像素换算成占比写回配置（像素只活在运行时） */
 function commit() {
-  const n = props.node.children.length
-  const px = props.node.children.map((c) => paneSizes[c.id] ?? 0)
+  const children = props.node.children
+  const vis = children.filter(isVisible)
+  const px = vis.map((c) => paneSizes[c.id] ?? 0)
   const sum = px.reduce((x, y) => x + y, 0)
   if (sum <= 0) return
-  const sizes = px.map((v) => v / sum)
+  // 隐藏子区保留其原占比；可见子区按实测像素分配剩余份额（全部可见时等价旧行为）
+  const cur = ratios.value
+  let hiddenTotal = 0
+  children.forEach((c, i) => {
+    if (!isVisible(c)) hiddenTotal += Math.max(0, Number(cur[i]) || 0)
+  })
+  hiddenTotal = Math.min(0.9, hiddenTotal)
+  const remain = 1 - hiddenTotal
+  const raw = new Array(children.length).fill(0)
+  let vi = 0
+  children.forEach((c, i) => {
+    if (isVisible(c)) raw[i] = (px[vi++] / sum) * remain
+    else raw[i] = Math.max(0, Number(cur[i]) || 0)
+  })
+  const total = raw.reduce((x, y) => x + y, 0)
+  if (!(total > 0)) return
+  const sizes = raw.map((v) => v / total)
   // 用户拖拽落账：配置即将等于该占比 → 记账之，避免「配置自己变了」触发重量测覆盖运行态（G-57）
   markRatiosKnown(sizes)
   // 走 mq：设计态改草稿、运行态直接改 live（随后由 saveLiveLayout 落盘）
@@ -298,6 +419,7 @@ let ro = null
 
 onMounted(() => {
   lastChildSig = childSignature()
+  lastVisibleIds = visibleIdSet()
   markRatiosKnown()
   measure(true)
   if (typeof ResizeObserver !== 'undefined' && containerRef.value) {
@@ -316,11 +438,48 @@ onBeforeUnmount(() => {
   }
 })
 
-/** 子节点集合签名：仅「结构变了」（分割 / 删除 / 交换）才重量测 */
+/** 子节点集合签名：仅「结构 / 显隐变了」才重量测 */
 function childSignature() {
-  return props.node.children.map((c) => c.id).join('|')
+  return props.node.children.map((c) => `${c.id}:${isVisible(c) ? 1 : 0}`).join('|')
 }
 let lastChildSig = ''
+/** 上一次渲染时的可见子区集合（用于捕获「隐藏瞬间」的占比快照） */
+let lastVisibleIds = new Set()
+
+function visibleIdSet() {
+  return new Set(props.node.children.filter(isVisible).map((c) => c.id))
+}
+
+/**
+ * 隐藏瞬间的占比快照（UILAYOUT-2）：把刚被隐藏子区的当前像素占比写回 `sizes[i]`，
+ * 其余子区沿用配置占比；随后由配置更新触发一次权威重量测。
+ * 返回 true = 已派发 sizes（调用方不必再强制量测）。
+ */
+function captureHideSnapshot(nextVisible) {
+  const total = containerPx()
+  if (!total) return false
+  const handlePx = handleThickness() * Math.max(0, nextVisible.size - 1)
+  const avail = Math.max(0, total - handlePx)
+  if (!avail) return false
+  const raw = props.node.children.map((c, i) => {
+    const wasVisible = lastVisibleIds.has(c.id)
+    const nowVisible = nextVisible.has(c.id)
+    const px = paneSizes[c.id]
+    if (wasVisible && !nowVisible && Number.isFinite(px) && px > 0) return px / avail
+    return Math.max(0, Number(ratios.value[i]) || 0)
+  })
+  const sum = raw.reduce((a, b) => a + b, 0)
+  if (!(sum > 0)) return false
+  const sizes = raw.map((v) => Number((v / sum).toFixed(6)))
+  if (ratiosEqual(sizes, ratios.value)) return false
+  getMq().emit(EventNames.layoutSetSizes, {
+    nodeId: props.node.id,
+    sizes,
+    target: props.design ? 'draft' : 'live',
+  })
+  if (!props.design) config.saveLiveLayout()
+  return true
+}
 
 /**
  * 子节点集合变化（分割 / 删除 / 交换）→ 重量测；
@@ -332,12 +491,19 @@ let lastChildSig = ''
 onUpdated(() => {
   const sig = childSignature()
   if (sig !== lastChildSig) {
+    // 显隐变化：先把「刚被隐藏」子区的当前占比写回配置（UILAYOUT-2 快照），
+    // 配置更新后由下方「配置占比变化」分支做权威重量测。
+    const nextVisible = visibleIdSet()
+    const snapped = captureHideSnapshot(nextVisible)
+    lastVisibleIds = nextVisible
     lastChildSig = sig
     Object.keys(paneSizes).forEach((k) => {
       if (!props.node.children.some((c) => c.id === k)) delete paneSizes[k]
     })
-    markRatiosKnown()
-    measure(true)
+    if (!snapped) {
+      markRatiosKnown()
+      measure(true)
+    }
     return
   }
   // 配置 `sizes` 变了（≠ 用户拖拽自己写回的那份）→ 权威化：按新占比重量测（幂等，不改配置）

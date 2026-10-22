@@ -325,6 +325,8 @@ type appHandler struct {
 	role      string // roleMain / roleChat（24 §4.2）
 	windowID  string // 对话窗口注册 id（主窗口为空）
 	sessionID string // 对话窗口绑定的会话（主窗口为空）
+	// proj 是本窗口所属项目（PRODSIM-1 多项目）；nil = flash / --no-server（用 env.windows）。
+	proj *projectCtx
 	// setTitle 更新本窗口标题（gui.window.set-title）：**仅对话窗口**接线；主窗口 nil → ok=false。
 	setTitle func(title string)
 	// form 是本宿主运行形态（61 §4.6：desktop / gui）——**由壳传入**（host.Main 的 opts.Form），
@@ -335,6 +337,16 @@ type appHandler struct {
 	// （桥持有的令牌有效 = true）。两者**均由服务端（宿主）判定**，前端零额外往返。
 	requireAuth bool
 	authed      func() bool
+	// logDir 是 GUI 文件日志目录（PRODSIM-1 日志窗口经 `/api/log/tail` 读取；空 = 未挂 sink）。
+	logDir string
+}
+
+// windows 返回本窗口所属项目的小窗口表（nil 项目 → 进程级表，flash / --no-server）。
+func (h *appHandler) windows() *windowRegistry {
+	if h.proj != nil {
+		return h.proj.windows
+	}
+	return h.env.windows
 }
 
 func (h *appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -342,11 +354,44 @@ func (h *appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/publish":
 		h.handlePublish(w, r)
+	case path == "/api/log/tail":
+		h.serveLogTail(w, r)
 	case strings.HasPrefix(path, "/show/"):
 		h.fileHandler.ServeHTTP(w, r)
 	default:
 		h.serveStatic(w, r, path)
 	}
+}
+
+// serveLogTail 返回 GUI 日志文件尾部（日志窗口只读通道，PRODSIM-1）。
+// 只读本进程日志目录下的 gui.log，不接受任意路径（避免变成越权文件读取面）。
+// 查询参数 lines（1..5000，缺省 500）控制返回行数。
+func (h *appHandler) serveLogTail(w http.ResponseWriter, r *http.Request) {
+	if h.logDir == "" {
+		http.Error(w, "log dir unavailable", http.StatusNotFound)
+		return
+	}
+	lines := 500
+	if v := r.URL.Query().Get("lines"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 5000 {
+			lines = n
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(h.logDir, guiLogFileName))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	// 取尾部 lines 行（日志按 2MB 滚动，整读可接受）。
+	parts := bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n"))
+	if len(parts) > lines {
+		parts = parts[len(parts)-lines:]
+	}
+	out := bytes.Join(parts, []byte("\n"))
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out)
 }
 
 // handlePublish 前端事件 → 本地事件优先，否则桥发布到 mq；

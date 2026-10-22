@@ -319,6 +319,13 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		// 行为（计数递增 / 终态仅一次 / 成功不发 / retryCount=0 不重试 / Retry-After 等待值）由
 		// server 包 L1 TestTurnVisibleRetryEvents 覆盖。
 		{"session-retry", "生产者 = turn.go emitRetry（RETRY-1）；行为由 server 包 L1 TestTurnVisibleRetryEvents 覆盖；转发键由 B0 对账覆盖"},
+		// INBOX（2026-10-18 · 中途插话）：方法面由 server 包 L2 inbox_test 驱动（需可控异步工具 +
+		// 待插入相位，黑盒套件不伪造该时序）→ 本套件登记；键/契约/文档一致性由 chonkpilot-lib msgkeys
+		// 与 61 schema 对账覆盖。
+		{"llm-inbox-add", "INBOX 统一发送入口；行为由 server 包 L2 inbox_test（TestInbox*）覆盖"},
+		{"llm-inbox-list", "INBOX 读回；行为由 server 包 L2 inbox_test + data 黑盒 facade_inbox_test 覆盖"},
+		{"llm-inbox-discard", "INBOX 撤回；行为由 server 包 L2 inbox_test 覆盖"},
+		{"llm-inbox-promote", "INBOX 提升（无运行轮时 = 继续）；行为由 server 包 L2 inbox_test 覆盖"},
 	}
 	declared := c.byTopic()
 	registered := map[string]bool{}

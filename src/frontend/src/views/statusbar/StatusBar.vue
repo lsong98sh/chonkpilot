@@ -72,15 +72,15 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { EventNames } from '../../events/event-names'
 import LangSwitcher from '../lang/LangSwitcher.vue'
 import Icon from '../../components/icon/Icon.vue'
-import { getAllConfig } from '../../api/config'
 import { onDataRefresh } from '../../utils/dataClient'
 import { indexBadge } from '../../utils/indexStatus'
 import { useMemoryCategories } from '../../composables/useMemoryCategories'
+import { useProjectConfig } from '../../composables/useProjectConfig'
 import { useQueueStatus } from '../../composables/useQueueStatus'
 import { openStatusDetail } from '../../layout/statusDetail.js'
 import mq from '../../utils/mq'
@@ -109,9 +109,9 @@ const {
   openCategoryList,
 } = useMemoryCategories()
 
-// prj 配置快照：一次读取供「记忆」门控（memory.enabled）与「索引状态」两枚徽标（4 个既有键）派生。
+// prj 配置快照（T14 项目层）：模块级 store 只 load 一次，之后由 data-prj-config-refresh 增量更新。
 // 读失败静默（不谎报状态、不打断状态栏；下次广播/重载再试）。
-const prjCfg = ref({})
+const { projectConfig: prjCfg, ensureLoaded: ensurePrjLoaded, subscribe: subscribePrj } = useProjectConfig()
 
 // 索引徽标模型（computed 派生，不用 watch）：tone → 字色 token；text = 状态文案（图标 + 文本由模板拼装）。
 const cgBadge = computed(() => indexBadge({
@@ -128,12 +128,9 @@ const vfBadge = computed(() => indexBadge({
 // 读 prj 配置 → 记忆开关 + 索引状态；随后取记忆类别清单（仅启用时发 data-memory-list）。
 async function reloadPrjConfig() {
   try {
-    const res = await getAllConfig()
-    const cfg = res.config || res || {}
-    prjCfg.value = cfg && typeof cfg === 'object' ? cfg : {}
+    const cfg = await ensurePrjLoaded()
     setEnabled(cfg['memory.enabled'] === 'true')
   } catch (_) {
-    prjCfg.value = {}
     setEnabled(false)
   }
   try {
@@ -144,8 +141,11 @@ async function reloadPrjConfig() {
 const _unsubs = []
 onMounted(() => {
   reloadPrjConfig()
-  // data-prj-config-refresh：配置变更（记忆开关 / 索引开关 / 索引状态回写）后 server 广播 → 重载
-  _unsubs.push(onDataRefresh('prj-config', reloadPrjConfig))
+  // data-prj-config-refresh：store 已增量更新；此处只同步「记忆开关」并刷新类别清单。
+  _unsubs.push(subscribePrj((cfg) => {
+    setEnabled(cfg['memory.enabled'] === 'true')
+    loadMemoryList().catch(() => {})
+  }))
   // data-memory-refresh：记忆沉淀写回后刷新类别 token（总量随之更新）
   _unsubs.push(onDataRefresh('memory', () => { loadMemoryList().catch(() => {}) }))
   // tool-notify：记忆/压缩队列状态（I-128；仅 memory-*/compress-* 取值，其余忽略）

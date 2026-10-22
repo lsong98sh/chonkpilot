@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-lib/sandbox"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -168,6 +169,11 @@ func TestSpawnedStdioCwdAndEnvExpansion(t *testing.T) {
 		t.Skipf("skip：测试二进制路径不可用（%v）", err)
 	}
 	dir := t.TempDir() // 同时作为 entry.Cwd 与探针目录
+	// stdio 子进程现以 Low IL 启动（写隔离）：探针目录须先打 Low IL 标签，否则子进程写不进去。
+	// 打标需要 WRITE_OWNER（继承 ACL 仅 Modify 的目录会 Access denied）→ 无权限时跳过本用例。
+	if err := sandbox.EnsureLowIL(dir); err != nil {
+		t.Skipf("skip：无法给探针目录打 Low IL 标签（Low IL 子进程无法写入）：%v", err)
+	}
 	t.Setenv("GATEWAY_PROBE_DIR", dir)
 
 	p, err := newProxyProvider(&ServerEntry{

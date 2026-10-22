@@ -33,16 +33,12 @@ func readOne(req readReq, workDir string) (map[string]interface{}, error) {
 	if errMsg != "" {
 		return infoMap(req.path, errMsg), fmt.Errorf("%s", errMsg)
 	}
-	// agentbox 沙箱（仅隔离开启时生效）：允许目录外的读一律拒绝
-	if err := sandboxErr(resolved, false); err != nil {
-		return infoMap(req.path, err.Error()), err
-	}
 	fi, err := os.Stat(resolved)
 	if err != nil {
 		return infoMap(req.path, err.Error()), fmt.Errorf("stat file: %w", err)
 	}
 	// 读操作**不加跨进程锁**：读是共享语义，与并发写无锁冲突；且锁文件落在被读文件同目录，
-	// 在 agentbox 只读目录下会因无法创建锁文件而误伤合法读（C-03）。写侧（fileops 修改类动作）
+	// 在只读目录下会因无法创建锁文件而误伤合法读（C-03）。写侧（fileops 修改类动作）
 	// 仍在写前/写后持锁，互斥语义由写侧保证。
 	info := map[string]interface{}{
 		"path": req.path, "lines": 0, "size": fi.Size(),

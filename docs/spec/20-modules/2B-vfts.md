@@ -45,6 +45,9 @@
 | `vfts_query` | ✓ | 检索：`match`（自然语言匹配串）/ `query`（布尔表达式，**不支持 `content:` 字段前缀**）至少其一；`topK`（默认 20，文件级去重）；`path` 子串过滤。返回命中文件 + `snippet`/`line`/`score`/`loc`。 |
 
 - 查询必备 `workdir`；`readyGate` 未就绪 → 结构化应答（`not_initialized`/`pending`(indexing)/`error`，**不算协议错误**）。`vfts_dict_get`/`vfts_dict_set` 为**系统级**（无 `workdir`；由插件 vfts.dict.* 面调用）。
+- **resident indexer 完整性门（2026-10-19）**：`<workdir>/.chonkpilot/vfts/status.json`（`{state, pending, message, updated_at}`，由 indexer 原子写）。`readyGate` 先读它：`indexing` / `pending>0` → 有界等待（5s，100ms 轮询）→ 结构化 `pending`；`error` → 结构化 `error`；文件不存在 → 回落既有 `EnsureReady`（向后兼容）。见 [插件桥设计稿 §11.8.6](../../bridge-plugin/插件桥接端口设计方案.md)。
+- **resident indexer（2026-10-19，P4b；同日改单实例多 workdir + 托盘 + 并发口径）**：`chonkpilot-vfts-indexer.exe`（源 `src/plugins/vfts/cmd/indexer`，与引擎同模块）**每宿主进程仅一个实例**（GUI 子系统 + 托盘，启动隐藏、固定 960×600、每次弹出屏幕居中；单击托盘看执行输出）。**单实例判定 = 窗口类 + 同名窗口**（注册窗口类后 `FindWindowW` 命中同名顶层窗口 → 进程 code 0 退出；实测 `CS_GLOBALCLASS` 注册本身不跨进程冲突，故以窗口存在性为判据；`pluginhost.Spec.NoLock=true`，无文件单实例锁）；`pluginhost` 只负责崩溃退避监管。连插件桥后**等 `server-ready`**，再每轮经 `plugin.index.workdirs`（宿主活实例去重 work_dir）发现项目，**按 workdir 加锁**（`<workdir>/.chonkpilot/vfts/indexer.lock`，项目之间互不阻塞）并**非阻塞派发给 5 个工作线程**（每线程独占一个引擎进程）：`plugin.index.take` → 合并同路径变更 → 调引擎 `vfts_index`（首次全量；之后增量带旧 `doc_ids`）→ `plugin.index.ack`。本地清单 `<workdir>/.chonkpilot/vfts/manifest-indexer.json`（只存 `doc_ids`），与引擎应答 `indexed[]` 同步；`status.json` 随批次更新。**引擎生命周期（2026-10-19）**：工作线程空闲 5s / 本批失败后即 `close` 引擎子进程（下批懒重连）——zvec/rocksdb 对索引目录持**排他 LOCK**，常驻不关会阻塞 plugin-vfts 的全量重建（`RemoveAll collection` 失败）。env：`CHONKPILOT_PLUGIN_ADDR` / `CHONKPILOT_PLUGIN_ID`（缺省 `vfts-indexer`）/ `CHONKPILOT_VFTS_ENGINE`（不再需要 `WORK_DIR` / `INDEX_DIR`）。
+- **查询侧 LOCK 处理（2026-10-19）**：查询 executor 遇 zvec 集合被占用 → 有界重试（200ms×15 ≈ **3s**），超时返回「**正在索引，不可用**（索引库被另一进程占用，已等待约 3 秒，请稍后重试）」；就绪门 `status=error` **保留原始错误文本**，executor / 插件 `callgate` 按 lock/timeout 识别（结构化应答也可重试）。登记 [41 G-67](../40-roadmap/41-未决项登记.md)；跨进程故障注入测试见 codegraph 侧 `execx/lock_test.go`（同口径）。
 - **引擎侧 `Configure` 的 `enabled` 仅记录/存档**，真正门控在插件（与 codegraph 同口径）。
 
 ### 3.2 插件注册到 gateway 的查询工具（1）
@@ -54,6 +57,8 @@
 | `vfts_query` | 与引擎**同名同描述**，schema **去掉 `workdir`**（由插件按 `context.instance_id` 注入）；`handler_subject=vfts-tool-call`，`hot=true`，`category=vfts`，`owner=vfts`。 |
 
 管理工具（`vfts_configure`/`vfts_index`/`vfts_status`/`vfts_dict_get`/`vfts_dict_set`）**不注册**给 gateway——插件直接调引擎。
+
+**查询一工具一 exe（2026-10-19，G-68 第二步）**：`vfts_query` 另有独立 executor `chonkpilot-vfts-query-executor.exe`（源 `src/plugins/vfts/cmd/exec-query` + 外壳 `execx`）；契约 `src/initdata/capability/tools/vfts/vfts_query.tool.md` 标 `internal: true` 并带 `runtime`（不进 core `tools/list`）。插件 `onToolCall` **先委托 core**（`plugin.Deps.ToolExec`），core 不可用或失败且 ctx 未取消 → 回落本地引擎（`tools.call` 原路径）。查询 executor 直连 zvec 索引；zvec/rocksdb 对 collection 持**排他 LOCK**，故 ① 插件侧 `ensureWorkspace` 管理动作（索引/重建）结束后立即 `releaseEngineAfterManagement()` 关闭共享引擎、置 `client=nil`（下批懒重连）；② executor 对「LOCK 被占用」类错误做有界重试（200ms × 15）。
 
 ### 3.3 插件订阅/发布的消息面（[61-消息一览](../60-reference/61-消息一览.md)）
 

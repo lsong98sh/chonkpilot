@@ -36,6 +36,7 @@ import MemoryTokenView from './bar-views/MemoryTokenView.vue'
 import QueueStatusView from './bar-views/QueueStatusView.vue'
 import IndexBadgeView from './bar-views/IndexBadgeView.vue'
 import LangSwitcherView from './bar-views/LangSwitcherView.vue'
+import LayoutProfilesView from './bar-views/LayoutProfilesView.vue'
 import MemoryStatusView from './bar-views/MemoryStatusView.vue'
 import CompressStatusView from './bar-views/CompressStatusView.vue'
 import MemoryStatusDetail from '../views/status/MemoryStatusDetail.vue'
@@ -71,6 +72,7 @@ export const VIEW_COMPONENTS = {
   'queue-status': QueueStatusView,
   'index-badge': IndexBadgeView,
   'lang-switcher': LangSwitcherView,
+  'layout-profiles': LayoutProfilesView,
   // ── 长任务状态条目 + 详情页（STB-1）──
   'memory-status': MemoryStatusView,
   'compress-status': CompressStatusView,

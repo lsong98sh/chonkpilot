@@ -20,7 +20,9 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -37,6 +39,9 @@ import (
 const (
 	roleMain = "main"
 	roleChat = "chat"
+	// roleLog 是**日志窗口**（PRODSIM-1）：进程级唯一、创建后默认隐藏，仅作为 server 进程的
+	// 窗口载体（单例判断 / 托盘唤出 / 关闭 = hide）。不绑定会话、不参与窗口额度。
+	roleLog = "log"
 )
 
 // maxChatWindows 是独立对话窗口数量上限（24 §8 U-5 已决：≤5，不含主窗口）。
@@ -100,6 +105,82 @@ type hostEnv struct {
 	// （D-10），一律经 testServer()/setTestServer() 访问，避免数据竞争。
 	testSrvMu sync.RWMutex
 	testSrv   *testServer
+	// ── PRODSIM-1 日志窗口 ─────────────────────────────────────────────
+	// logHost 是进程级唯一的日志窗口（创建后默认隐藏，关闭=收起，托盘可唤出）。
+	// 它是 server 进程的窗口载体：即使所有项目主窗口都关闭，进程仍靠它 + 托盘常驻。
+	logMu   sync.Mutex
+	logHost *windowHost
+	// ── PRODSIM-1 多项目 ────────────────────────────────────────────────
+	// projects = 规范化 work_dir → 项目上下文（**同 work_dir 唯一**，唯一事实来源）。
+	// 主窗口关闭 → 该项目从这里移除（进程继续常驻）。
+	projMu   sync.Mutex
+	projects map[string]*projectCtx
+	// projectOpener 是宿主注入的「同进程打开项目」回调（gui.dir.open 用）；
+	// nil = 未接线（flash 等形态）→ 桥回落 spawn 新进程。
+	projectOpener func(dir string) error
+}
+
+// projectKey 归一 work_dir 作为映射键（Windows 大小写不敏感）。
+func projectKey(workDir string) string {
+	p, err := filepath.Abs(workDir)
+	if err != nil {
+		p = workDir
+	}
+	return strings.ToLower(filepath.Clean(p))
+}
+
+// lookupProject 返回已打开的项目上下文（nil = 未打开）。
+func (e *hostEnv) lookupProject(workDir string) *projectCtx {
+	e.projMu.Lock()
+	defer e.projMu.Unlock()
+	return e.projects[projectKey(workDir)]
+}
+
+// addProject 登记项目上下文；已存在 → 返回既有 + false（调用方应激活其主窗口）。
+func (e *hostEnv) addProject(p *projectCtx) (*projectCtx, bool) {
+	e.projMu.Lock()
+	defer e.projMu.Unlock()
+	k := projectKey(p.workDir)
+	if old, ok := e.projects[k]; ok {
+		return old, false
+	}
+	e.projects[k] = p
+	return p, true
+}
+
+// removeProject 移除项目上下文（主窗口关闭时）。
+func (e *hostEnv) removeProject(p *projectCtx) {
+	e.projMu.Lock()
+	defer e.projMu.Unlock()
+	k := projectKey(p.workDir)
+	if e.projects[k] == p {
+		delete(e.projects, k)
+	}
+}
+
+// projectsSnapshot 返回全部已打开项目（托盘「项目列表」）。
+func (e *hostEnv) projectsSnapshot() []*projectCtx {
+	e.projMu.Lock()
+	defer e.projMu.Unlock()
+	out := make([]*projectCtx, 0, len(e.projects))
+	for _, p := range e.projects {
+		out = append(out, p)
+	}
+	return out
+}
+
+// logWindow 返回日志窗口（未创建 = nil）。
+func (e *hostEnv) logWindow() *windowHost {
+	e.logMu.Lock()
+	defer e.logMu.Unlock()
+	return e.logHost
+}
+
+// setLogWindow 登记日志窗口。
+func (e *hostEnv) setLogWindow(h *windowHost) {
+	e.logMu.Lock()
+	e.logHost = h
+	e.logMu.Unlock()
 }
 
 // testServer 返回 --test-port 测试通道（未传 --test-port / 尚未接线时为 nil）。
@@ -119,8 +200,12 @@ func (e *hostEnv) setTestServer(s *testServer) {
 // windowHost 是一个窗口的宿主句柄（每窗口一份：桥 / appHandler / 句柄 / 生命周期）。
 type windowHost struct {
 	role      string // roleMain / roleChat
+	instID    string // 本窗口实例 id（GUI 反向通道 / 消息定向用）
 	windowID  string // 对话窗口的注册 id（主窗口为空）
 	sessionID string // 对话窗口绑定的会话（主窗口为空）
+	// proj 是本窗口所属**项目上下文**（PRODSIM-1 多项目）；nil = flash 远程薄壳 /
+	// --no-server（沿用 hostEnv 的进程级单项目字段）。
+	proj *projectCtx
 
 	w        webview2.WebView
 	br       *bridge.Bridge
@@ -138,6 +223,44 @@ type windowHost struct {
 // destroy 关闭本窗口（投 WM_CLOSE 给本窗口线程；跨线程安全）。
 func (h *windowHost) destroy() { h.w.Destroy() }
 
+// destroyForced 强制销毁本窗口（无视 HideOnClose）—— 程序收尾关日志窗口用。
+func (h *windowHost) destroyForced() {
+	if f, ok := h.w.(interface{ DestroyForced() }); ok {
+		f.DestroyForced()
+		return
+	}
+	h.destroy()
+}
+
+// show 显示并前置本窗口（跨线程安全；日志窗口由托盘「显示日志」唤出）。
+func (h *windowHost) show() {
+	if lc, ok := h.w.(webview2.WebViewLifecycle); ok {
+		lc.Show()
+	}
+	activateWindow(h.hwnd)
+}
+
+// hide 隐藏本窗口（不销毁；日志窗口关闭 = 收起回托盘）。
+func (h *windowHost) hide() {
+	if lc, ok := h.w.(webview2.WebViewLifecycle); ok {
+		lc.Hide()
+	}
+}
+
+// projectCtx 是一个**项目**的宿主上下文（PRODSIM-1：单进程可开多个项目主窗口）。
+// 进程级资源（bus / srv / distFS / 日志）在 hostEnv；项目级资源（数据根 / 小窗口表 / 主窗口）
+// 在此。同一 work_dir 只允许一个 projectCtx（唯一事实来源 = hostEnv.projects 映射表）。
+type projectCtx struct {
+	workDir        string
+	dataDir        string
+	projectDataDir string
+	prjUsrRoot     string
+	// windows 是本项目的小窗口注册表（主窗口 + 单聊/群聊/子聊窗口）。
+	windows *windowRegistry
+	// mainHost 是本项目的主窗口（同 work_dir 唯一；关闭 = 移除本项目，进程继续常驻）。
+	mainHost *windowHost
+}
+
 // windowSpec 描述一个待建窗口。
 type windowSpec struct {
 	role      string
@@ -146,6 +269,8 @@ type windowSpec struct {
 	title     string
 	url       string
 	frameless bool
+	// proj 是本窗口所属项目上下文（nil = 沿用 hostEnv 的项目级字段，flash / --no-server）。
+	proj *projectCtx
 	// parentInstance 是**开本窗口的那个窗口的实例 id**（"谁开的指谁"，逐层链；空 = 顶层）。
 	// 用于跨窗口定向投递（61 §4.1 ④ · 单聊 §12.4 B4 / 群聊 §14.4 N18–N20）：随
 	// `instance-register.parent_instance` 上报，server 实例视图据此把子实例的事件投回父窗口。
@@ -153,6 +278,14 @@ type windowSpec struct {
 	// onWired 在**窗口线程**上、webview 建好（句柄已解析、桥与 handler 已就绪）后、
 	// 导航前调用（主窗口用于 --test-port 接线）；返回错误 → 中止建窗。
 	onWired func(h *windowHost) error
+	// ── PRODSIM-1 窗口层级 ─────────────────────────────────────────────
+	// hidden = 建窗后保持隐藏，且首次导航完成也**不自动 Show**（日志窗口）。
+	hidden bool
+	// hideOnClose = 用户点关闭只隐藏、不销毁（日志窗口：关闭 = 收回托盘）。
+	hideOnClose bool
+	// owner = 本窗口的 owner（hwndParent）；非 0 时随 owner 最小化/销毁（小窗口指主窗口，
+	// 主窗口指日志窗口——保证所有窗口都是同一 owner 链，进程退出行为一致）。
+	owner uintptr
 }
 
 // startWindow 建窗：窗口创建（含全部装配）在**独立 goroutine + 独占 OS 线程**上同步完成；
@@ -203,6 +336,12 @@ func startWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 // createWindow 在**调用线程**（= 本窗口的独占线程）上创建 webview 并完成全部装配：
 // 独立 DataPath → 独立桥（instance_id + eval）→ 独立 appHandler → 拦截器 / lifecycle 回调。
 func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
+	// 项目级字段（PRODSIM-1）：spec.proj 优先（单进程多项目）；nil → 沿用 hostEnv 的
+	// 进程级单项目字段（flash 远程薄壳 / --no-server 注入测试）。
+	wd, dd, pdd, pur := env.workDir, env.dataDir, env.projectDataDir, env.prjUsrRoot
+	if spec.proj != nil {
+		wd, dd, pdd, pur = spec.proj.workDir, spec.proj.dataDir, spec.proj.projectDataDir, spec.proj.prjUsrRoot
+	}
 	// 每窗口一份 WebView2 用户数据目录：fork 默认 DataPath = %AppData%\<exe名>，多窗口共享
 	// 同一 profile 会共享浏览器进程，任一方销毁/崩溃波及另一方（历史实测：销毁一个实例会
 	// 冻结其他窗口）。前端 ui.locale 有 DB 兜底（MainLayout），不依赖 WebView2 缓存留存。
@@ -216,8 +355,9 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	// 不因「profile 根目录 mtime 超期」而误删活跃目录；目录收尾（finish/cleanup）随 RemoveAll 一并清除。
 	markProfileActive(wvData)
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
-		Debug:     true,
-		AutoFocus: true,
+		Debug: true,
+		// 隐藏窗口（日志窗口）不得抢焦点。
+		AutoFocus: !spec.hidden,
 		DataPath:  wvData,
 		// DevTools 用户入口屏蔽（B3）：F12 / Ctrl+Shift+I 快捷键与右键菜单 Inspect 不再打开
 		// DevTools（宿主仍可程序化打开 → 状态栏调试图标 gui.devtools.open）。Debug 保留 true
@@ -231,6 +371,10 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		// 对话窗口用**原生标题栏**（最大化/最小化/关闭/拖动/八方向 resize 全由系统提供，
 		// 零代码，24 §1.1）。
 		Frameless: spec.frameless,
+		// PRODSIM-1：日志窗口隐藏 + 关闭=收起；owner 层级（小窗口随主窗口）。
+		Hidden:      spec.hidden,
+		HideOnClose: spec.hideOnClose,
+		Owner:       spec.owner,
 		WindowOptions: webview2.WindowOptions{
 			// 主窗口 Taskbar 标题 = 固定 `chonkpilot-<工程目录名>`（不随会话变化，见 MainWindowTitle）；
 			// 对话窗口 = 缺省会话标题（见 chatWindowTitle）。
@@ -245,7 +389,7 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		return nil, errors.New("webview2.NewWithOptions returned nil")
 	}
 	h := &windowHost{
-		role: spec.role, windowID: spec.windowID, sessionID: spec.sessionID,
+		role: spec.role, windowID: spec.windowID, sessionID: spec.sessionID, proj: spec.proj,
 		w: w, wvData: wvData, done: make(chan struct{}),
 	}
 	h.hwnd = hwndOf(w)
@@ -257,7 +401,8 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	if id == "" {
 		id = newUUID() // desktop/gui：一窗口一实例（24 §2.2 C1）
 	}
-	h.br = bridge.New(id, env.workDir, env.dataDir, func(script string) {
+	h.instID = id
+	h.br = bridge.New(id, wd, dd, func(script string) {
 		// 窗口已销毁（done 已 close）→ 跳过 Eval（D-14：原 fire-and-forget 失败静默）。
 		// 二次 Eval 到已 Destroy 的 webview 无意义，且宿主 Eval 失败无返回通道可观测。
 		select {
@@ -283,7 +428,9 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	// 文件日志目录下发前端（init-data 只增字段 logDir；未挂 sink 时为空 → 字段缺省）。
 	h.br.SetLogDir(env.logDir)
 	// prjusr 数据根注入桥（附件/截图落盘根；[24 §3.2] MW-8）。
-	h.br.SetPrjUsrRoot(env.prjUsrRoot)
+	h.br.SetPrjUsrRoot(pur)
+	// PRODSIM-1：gui.dir.open 走同进程打开项目（宿主注入；nil → 桥回落 spawn 新进程）。
+	h.br.SetProjectOpener(env.projectOpener)
 	if env.srv != nil {
 		// 认证域（61 §4.6；阶段 2b-2）：首屏 authed 由服务端读桥持有的令牌判定。
 		h.br.SetAuthCheck(env.srv.Authenticated)
@@ -312,6 +459,11 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	if env.suppressInstanceExit && spec.role != roleMain {
 		h.br.SetInstanceExitSuppressed(true)
 	}
+	// 日志窗口（PRODSIM-1）：不注册 instance（它不参与 claim / 业务消息，只读 /api/log/tail）——
+	// 否则会白占一个实例额度、且直到进程退出才注销。
+	if spec.role == roleLog {
+		h.br.SetNoInstance()
+	}
 	if err := h.br.Start(); err != nil {
 		h.cleanup()
 		return nil, fmt.Errorf("bridge start: %w", err)
@@ -331,14 +483,14 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	h.handler = &appHandler{
 		distFS: env.distFS,
 		fileHandler: &fileserver.FileShowHandler{
-			WorkDir: env.workDir,
+			WorkDir: wd,
 			// 放行根（[24 §3.2] MW-8）：① 项目数据根（prj 库/旧附件等，`<workDir>/.chonkpilot`
 			// 或显式 --data-dir）② prjusr 数据根（迁走后的附件/截图 `~/.chonkpilot/data/<prj-id>`）。
 			// 两者同列，保证迁移前后资源均可经 `/show/` 取回（WorkDir 自身另由 WorkDir 字段放行）。
-			DataDirs: []string{env.projectDataDir, env.prjUsrRoot},
+			DataDirs: []string{pdd, pur},
 			// 相对引用解析根（🆕 2026-10-10）：消息内附件/截图引用为相对 prjusr 数据根的
 			// `dir/name`（gui.upload 落 <prjUsrRoot>/<dir>/<name>，见 61 §1）。
-			UploadRoot: env.prjUsrRoot,
+			UploadRoot: pur,
 		},
 		br:          h.br,
 		hwnd:        h.hwnd,
@@ -347,9 +499,11 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		requireAuth: env.srv != nil && env.srv.RequireAuth(),
 		authed:      h.br.Authed,
 		env:         env,
+		proj:        spec.proj,
 		role:        spec.role,
 		windowID:    spec.windowID,
 		sessionID:   spec.sessionID,
+		logDir:      env.logDir, // 日志窗口 /api/log/tail（PRODSIM-1）
 	}
 	if spec.role == roleChat {
 		// gui.window.set-title：**仅独立对话窗口**（主窗口标题不变，61 §1）。
@@ -383,7 +537,10 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 				logStartupStageOnce("main-first-paint", "主窗口首屏渲染完成") // OP-15（一次）
 				restoreWindowFromConfig(h.br, h.hwnd)
 			}
-			lifecycle.Show()
+			// 隐藏窗口（日志窗口）保持隐藏，仅由托盘「显示日志」显式 Show。
+			if !spec.hidden {
+				lifecycle.Show()
+			}
 		})
 	}
 	return h, nil
@@ -397,12 +554,24 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 func (h *windowHost) finish(env *hostEnv) {
 	h.br.CloseInstance()
 	_ = os.RemoveAll(h.wvData)
+	// 本窗口所属项目的小窗口表（多项目 PRODSIM-1）；nil → flash / --no-server 用进程级表。
+	wins := env.windows
+	if h.proj != nil {
+		wins = h.proj.windows
+	}
 	if h.role == roleChat {
-		env.windows.remove(h)
+		wins.remove(h)
 		// 关闭的窗口不再作为 --test-port 目标（多窗口路由表同步出表）。
 		if s := env.testServer(); s != nil {
 			s.UnregisterChat(h.windowID)
 		}
+	}
+	// PRODSIM-1：主窗口关闭 = 关掉本项目所有小窗口（cancel 会话）+ 从项目表移除，
+	// **进程继续常驻**（托盘「退出」才结束）。
+	if h.role == roleMain && h.proj != nil {
+		h.proj.windows.shutdown()
+		h.proj.windows.setMain(nil)
+		env.removeProject(h.proj)
 	}
 	close(h.done)
 }

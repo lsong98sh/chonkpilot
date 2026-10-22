@@ -42,7 +42,7 @@ function sampleConfig() {
   return {
     id: 'user-config',
     // —— 视图内被补系统默认、但用户未显式配置的键（导出时不应写入快照）——
-    retryCount: 2,
+    retryCount: 5,
     defaultScenario: '',
     // —— 显式写入的键 ——
     theme: 'dark',

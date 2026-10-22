@@ -2,7 +2,7 @@ package flash
 
 // flash 无窗口宿主（flash-cli）的会话驱动（🆕 2026-10-10；🅐 flash-cli）。
 //
-// 逐字对齐 `src/desktop/cli/main.go` 的**命令面与输出格式**（话题/payload 一字不改）：
+// 逐字对齐原 CLI 单体（2026-10-22 已删除）的**命令面与输出格式**（话题/payload 一字不改）：
 // 发起 `session-start` + `session-send`，打印 `session-receive` / `session-complete` /
 // `task-done`。输出模式 = sse（默认，流式）/ final（仅最终文本）/ verbose（全报文 dump）。
 //
@@ -159,7 +159,7 @@ func RunSession(ctx context.Context, bus mq.Bus, opts SessionOptions) error {
 	}
 
 	// session/turn 由客户端分配（服务端 onLLMStart 必填，见 61 §4.5）；对齐
-	// src/desktop/cli/main.go 的载荷面（此前缺失 → 服务端回 accepted:false 致本进程挂死）。
+	// 原 CLI 单体的载荷面（此前缺失 → 服务端回 accepted:false 致本进程挂死）。
 	session := idgen.NewUUID()
 	turn := idgen.NewUUID()
 	startPayload := map[string]any{

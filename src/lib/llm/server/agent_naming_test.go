@@ -2,15 +2,11 @@
 // （场景前缀消歧，见 domainmcp.go agentRegKey），注入面（团队成员段）/ 委派判定（agentDelegable）/
 // 子轮 system 读取（registeredAgentDef / resolveAgentDef）**统一带前缀**。
 //
-// 驱动（MQ）：session-start（带 scenario_id）+ session-send；mock LLM 主轮返回 llm_run 委派 →
-// 断言主轮 system 团队成员段带前缀 + 子轮 system 用**被委派那一个**同名 agent 的定义。
+// 本文件覆盖注册表 / 解析 / 可委派判定（委派执行由 gateway `dsl_run` 承担，不在本包单测内）。
 package server
 
 import (
 	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,42 +87,6 @@ func (r *sseRecorder) systemTexts() []string {
 	return out
 }
 
-// delegateRecorder LLM：主轮（提示词含 trigger）→ 返回 llm_run 委派 agent；其余（含子轮）回显提示词。
-func delegateRecorder(t *testing.T, trigger, agent string) (*sseRecorder, *httptest.Server) {
-	t.Helper()
-	rec := &sseRecorder{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		var m map[string]any
-		_ = json.Unmarshal(raw, &m)
-		rec.add(m)
-		var typed struct {
-			Messages []ChatMsg `json:"messages"`
-		}
-		_ = json.Unmarshal(raw, &typed)
-		text := lastText(typed.Messages)
-		if strings.Contains(text, trigger) {
-			args := jb(map[string]any{"script": `LLM "` + agent + `" "x" "命名回归展示名"` + "\n"})
-			llmSSE(w, []string{
-				sseChunk(map[string]any{"content": ""}, ""),
-				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
-					"index": 0, "id": "tc-nm", "type": "function",
-					"function": map[string]any{"name": "self_llm_run", "arguments": string(args)},
-				}}}, "tool_calls"),
-			})
-			return
-		}
-		var chunks []string
-		for _, ch := range text {
-			chunks = append(chunks, sseChunk(map[string]any{"content": string(ch)}, ""))
-		}
-		chunks = append(chunks, sseChunk(map[string]any{}, "stop"))
-		llmSSE(w, chunks)
-	}))
-	t.Cleanup(srv.Close)
-	return rec, srv
-}
-
 // TestAgentNamingRegistryUnique 注册表键 = `<场景id>/<agent名>`：跨场景同名 agent 各自独立
 // （不覆盖）；裸名歧义 → 不解析（须用前缀）；带前缀引用**可委派**。
 func TestAgentNamingRegistryUnique(t *testing.T) {
@@ -160,48 +120,5 @@ func TestAgentNamingRegistryUnique(t *testing.T) {
 	}
 	if s.agentDelegable("ins-test", "", "scen-a/ghost") {
 		t.Fatal("不存在的前缀引用不应可委派")
-	}
-}
-
-// TestAgentScenarioPrefixMQDriven 端到端（MQ 驱动）：注入面（团队成员段）带场景前缀；
-// 委派跨场景同名 agent（scen-b/dup）→ 子轮 system 取**那一份**定义（非当前场景的同名）。
-func TestAgentScenarioPrefixMQDriven(t *testing.T) {
-	rec, srv := delegateRecorder(t, "delegate please", "scen-b/dup")
-	root := appMultiScenarioRoot(t, map[string]map[string]string{
-		"scen-a": {"main": "A-主提示词", "dup": "场景A-dup提示词"},
-		"scen-b": {"dup": "场景B-dup提示词"},
-	})
-	s := newTestServerMCPAppRoot(t, srv, root)
-	registerProviderInstance(t, s)
-
-	agStartTurn(t, s, "s-nm", "t-nm", "", "scen-a")
-	sendAndWait(t, s, "s-nm", "t-nm", "delegate please")
-
-	// 注入面：主轮系统提示词的团队成员段带场景前缀 `<场景id>/<agent名>`
-	mainBody := rec.bodyAt(0)
-	if mainBody == nil {
-		t.Fatal("未见主轮 LLM 请求体")
-	}
-	mainSys := strings.Join(agSystemTexts(mainBody), "\n")
-	if !strings.Contains(mainSys, "scen-a/dup") {
-		t.Fatalf("团队成员段应带场景前缀 scen-a/dup：\n%s", mainSys)
-	}
-
-	// 子轮：被委派 scen-b/dup → agent 层用 scen-b 那一条定义（跨场景前缀消歧）
-	childSys := ""
-	for _, st := range rec.systemTexts() {
-		if strings.Contains(st, "[子会话 agent: scen-b/dup]") {
-			childSys = st
-			break
-		}
-	}
-	if childSys == "" {
-		t.Fatalf("未见子轮 system（[子会话 agent: scen-b/dup]）：%v", rec.systemTexts())
-	}
-	if !strings.Contains(childSys, "场景B-dup提示词") {
-		t.Fatalf("子轮应取 scen-b/dup 的定义：\n%s", childSys)
-	}
-	if strings.Contains(childSys, "场景A-dup提示词") {
-		t.Fatalf("子轮误取同名 scen-a/dup 的定义：\n%s", childSys)
 	}
 }

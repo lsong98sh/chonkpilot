@@ -1,7 +1,7 @@
 # ChonkPilot 规格文档集（docs/spec）
 
 > 状态：✅ **正式规格唯一入口**（全目录收敛、补缺口）
-> 规模：`00-overview/`(4) · `10-architecture/`(16) · `20-modules/`(16) · `30-function-points/`(11, 146 FP) · `40-roadmap/`(4) · `50-testing/`(4) · `60-reference/`(5) · `70-conventions/`(3) · `_templates/`(3)
+> 规模：`00-overview/`(4) · `10-architecture/`(17) · `20-modules/`(16) · `30-function-points/`(11, 146 FP) · `40-roadmap/`(4) · `50-testing/`(4) · `60-reference/`(5) · `70-conventions/`(3) · `_templates/`(3)
 > 收敛：原 `docs/` 下全部草稿与专题**已整体废弃移除**；消息面唯一准则 = [61-消息一览](60-reference/61-消息一览.md)（原「消息面参考」稿已并入）。
 > **硬性规则**：**本目录不得引用 `docs/spec/` 以外的任何文档**（含历史稿与 IDE 侧规则；链接/路径/文件名均不得出现）。**引用源码 / 脚本 / 配置路径不受限**——那是定位，不是文档依赖。需要的外部内容必须先迁入本目录对应篇章，再做目录内互链。决策与迁移台账见 [42-决策记录](40-roadmap/42-决策记录.md) §3/§4。
 >
@@ -68,7 +68,8 @@ docs/spec/
 │   ├── 22-实例与会话标识.md            实例/会话标识与三形态口径
 │   ├── 23-工程与部署拓扑.md            工程拓扑 / 装配 / 部署形态
 │   ├── 24-多窗口模型设计方案.md         主窗口 + 纯对话窗口（多窗口模型 / 路由 / 数据 / 任务分解 MW）（🔵 设计定稿，待实施）
-│   └── 25-MCP与场景分层模型.md          MCP / Agent / 场景 三层职责（能力面 · 场景面 · chat 面；提示词三层拼接 · 工具面语义 · agent 退出资产面 · 场景独立根）（🔵 设计定稿，待实施）
+│   ├── 25-MCP与场景分层模型.md          MCP / Agent / 场景 三层职责（能力面 · 场景面 · chat 面；提示词三层拼接 · 工具面语义 · agent 退出资产面 · 场景独立根）（🔵 设计定稿，待实施）
+│   └── 26-h5-app.md                    H5 远程访问（chonkpilot-app）：影子连接绑定 PC 的 instance · 空闲发送 / 运行中停止 · 不排队（🚧 初稿，待评审）
 ├── 20-modules/                        ← 每个模块的设计（统一模板）
 │   ├── 20-gui.md                      宿主 + bridge + 前端（含预览区 renderType 映射）
 │   ├── 21-llm-server.md               会话 / LLM 服务层
@@ -112,7 +113,7 @@ docs/spec/
 │   ├── 60-名词约定.md                 领域名词 ↔ 代码标识
 │   ├── 61-消息一览.md                 消息面**唯一准则**（主题清单 + payload 明细）
 │   ├── 62-命令行与参数.md             全 exe 参数 + 环境变量
-│   ├── 63-DSL语法.md                  DSL 语法唯一规范（llm_run/filesys_run/desktop_run/browser_run）
+│   ├── 63-DSL语法.md                  DSL 语法唯一规范（dsl_run/filesys_run/desktop_run/browser_run）
 │   └── 64-配置项一览.md                配置项**唯一 reference**（key/级别/默认/消费方/状态）
 ├── 70-conventions/                    ← 工程规范
 │   ├── 71-编程规范.md                 代码组织 / 命名 / 日志 / 错误处理 / 开发环境等

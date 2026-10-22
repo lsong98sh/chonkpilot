@@ -1,5 +1,5 @@
 // task 型域工具（tool_stop / tool_result）单测
-// （对齐 21-llm-server 任务编排 + 域工具契约 server/contracts/tools/{tool_stop,tool_result}.tool.md）：
+// （对齐 21-llm-server 任务编排 + 域工具契约 llm/contracts/tools/{tool_stop,tool_result}.tool.md）：
 // tool_stop 级联取消、tool_result 返回转后台结果。
 package server
 

@@ -82,8 +82,9 @@ test('StatusBar：索引状态区读既有 4 键 + 既有广播刷新 + computed
   for (const key of ['enable-codegraph', 'codegraph.status', 'enable-vfts', 'vfts.status']) {
     assert.ok(sb.includes(`'${key}'`), '状态栏应读 prj 键 ' + key)
   }
-  assert.match(sb, /getAllConfig\(\)/, '应经既有 getAllConfig 取数')
-  assert.match(sb, /onDataRefresh\('prj-config'/, '应订阅既有 data-prj-config-refresh')
+  assert.match(sb, /useProjectConfig\(\)/, '应经项目配置 store（T14：load 一次 + refresh 增量）取数')
+  assert.match(sb, /subscribePrj/, '应订阅 store 的项目配置增量更新')
+  assert.doesNotMatch(sb, /getAllConfig/, '不应再自行 getAllConfig（统一走 store）')
   assert.match(sb, /computed\(/, '显示值应用 computed 派生')
   assert.match(sb, /sb-index/, '应有索引状态区容器')
   assert.match(sb, /data-engine="codegraph"/, '应有 codegraph 徽标')

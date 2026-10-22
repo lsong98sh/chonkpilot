@@ -153,6 +153,12 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 	if n.ID == "" {
 		return facade.TasktreeUpsertResponse{}, errors.New("task_id required")
 	}
+	// INPUTVAL-1 P0-4：任务状态枚举白名单（写坏值会让前端任务树 / 恢复判定失真）。
+	switch n.Status {
+	case "", "pending", "running", "done", "error", "cancelled", "interrupted":
+	default:
+		return facade.TasktreeUpsertResponse{}, fmt.Errorf("tasktree: invalid status %q", n.Status)
+	}
 	nodeType := "tool"
 	if n.Kind == "llm" {
 		nodeType = "session"

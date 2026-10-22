@@ -25,22 +25,26 @@ export function levelAllowed(kind, level) {
   return allowedLevels(kind).includes(level)
 }
 
-// nodeLevel capability dir 节点名 → 级别：
-//   "self" → app；"<instanceID>-user" / "-project" / "-prjusr" → 对应级；
+// nodeLevel capability 节点名 → 级别：
+//   "self" / "core" → app（2026-10-19 一工具一 exe：内置 app 级工具由 core-mcp-server 以
+//     namespace=self_ 接入，`_meta.server.node = "core"`；语义仍为系统级内置能力源）；
+//   "<instanceID>-user" / "-project" / "-prjusr" → 对应级；
 //   无法判定（第三方节点 / 裸名）→ ''（调用方放行，不误剔除）。
 export function nodeLevel(node) {
   const n = String(node || '')
-  if (n === 'self') return 'app'
+  if (n === 'self' || n === 'core') return 'app'
   if (n.endsWith('-user')) return 'user'
   if (n.endsWith('-project')) return 'project'
   if (n.endsWith('-prjusr')) return 'prjusr'
   return ''
 }
 
-// toolLevelOf 工具项 → 级别（取 `_meta.server.node`；无法判定 → ''）。
+// toolLevelOf 工具项 → 级别（取 `_meta.server.node`；node 无法判定时回落 alias；仍无法判定 → ''）。
+// 2026-10-19（一工具一 exe）：app 级工具经 core-mcp-server 以 `namespace=self_` 接入 →
+// `node=core`（app 级，见 nodeLevel）；alias 回落用于节点名未知的兼容形态。
 export function toolLevelOf(tool) {
   const srv = (tool && tool._meta && tool._meta.server) || {}
-  return nodeLevel(srv.node)
+  return nodeLevel(srv.node) || nodeLevel(srv.alias)
 }
 
 // toolAllowedForLevel 编辑期判定某工具是否属当前级别的**可用集合**：

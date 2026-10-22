@@ -20,6 +20,7 @@
     "statusCompress": "上下文压缩详情",
     "statusIndex": "代码索引详情",
     "langSwitcher": "语言切换",
+    "layoutProfiles": "布局",
     "dslStepsNoJob": "未指定作业（jobId），请在区域设置里配置参数"
   },
   "container": {

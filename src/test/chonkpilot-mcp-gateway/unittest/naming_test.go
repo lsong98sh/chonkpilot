@@ -2,18 +2,17 @@
 //
 //	① 同类同名注册 → **报错**（拒绝，**不静默覆盖**）：tool / skill / resource 三面各验一次；
 //	③ 第三方（Origin=user）条目**一律带来源别名（前缀）**——即使显式 namespace "-" 也不得去前缀，
-//	   故与内置（self_*）同名工具经别名区分后**都可 find + 都可 load**（并可调用）；
-//	④ 名字**往返一致**：mcp_find 返回的名字可直接喂 mcp_load / mcp_invoke。
+//	   与内置（self_*）同名工具经别名区分（暴露名各自唯一、无裸名）。
 //
-// 驱动：内存总线 + 自备能力源 server（self）+ httptest 承载的 streamable HTTP 下游（第三方）。
+// 驱动：内存总线 + 工具经公开方法面 `tools/register` 接入 + httptest 承载的 streamable HTTP
+// 下游（第三方）。GATEWAY-2 L5：meta 工具（mcp_find/mcp_load/mcp_invoke）已迁出 gateway
+// （toolmeta），本套件不再断言该面。
 package mcpgatewaytest
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -64,24 +63,6 @@ func toolsListNames(t *testing.T, bus mq.Bus) map[string]bool {
 	return out
 }
 
-// findToolNames 解析 mcp_find 文本结果（{tools:[{name},...]}）的 name 集合。
-func findToolNames(t *testing.T, res map[string]any) map[string]bool {
-	t.Helper()
-	var body struct {
-		Tools []struct {
-			Name string `json:"name"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal([]byte(textOf(t, res)), &body); err != nil {
-		t.Fatalf("解析 mcp_find 结果失败：%v（txt=%s）", err, textOf(t, res))
-	}
-	out := map[string]bool{}
-	for _, x := range body.Tools {
-		out[x.Name] = true
-	}
-	return out
-}
-
 // TestNamingDuplicateRejected ① 同类同名注册 → 报错（不静默覆盖）；且既有条目内容不被改写。
 func TestNamingDuplicateRejected(t *testing.T) {
 	bus, _ := startTestGW(t, nil)
@@ -105,12 +86,6 @@ func TestNamingDuplicateRejected(t *testing.T) {
 	}); err == nil {
 		t.Fatal("同名 skill 重复注册应报错（不得静默覆盖）")
 	}
-	load := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_mcp_load", "arguments": map[string]any{"name": "dup_skill", "kind": "skill"},
-	})
-	if txt := textOf(t, load); !strings.Contains(txt, "内容-首个") || strings.Contains(txt, "内容-第二个") {
-		t.Fatalf("重复注册失败后原 skill 内容应保持首个: %q", txt)
-	}
 
 	// resource（resources/register）：重复 → 报错
 	if err := callMethodErr(t, bus, "resources/register", map[string]any{
@@ -125,9 +100,9 @@ func TestNamingDuplicateRejected(t *testing.T) {
 	}
 }
 
-// TestThirdPartyAliasUniqueAndRoundTrip ③④ 第三方条目一律带来源别名 → 与内置同名工具
-// 别名区分后都可 find + 都可 load（且 find 的名可直接 load / invoke，名字往返一致）。
-func TestThirdPartyAliasUniqueAndRoundTrip(t *testing.T) {
+// TestThirdPartyAliasUnique ③ 第三方条目一律带来源别名 → 与内置同名工具经别名区分后
+// 暴露名各自唯一（无裸名）。
+func TestThirdPartyAliasUnique(t *testing.T) {
 	// 先起下游（cleanup 逆序：gateway.Stop 先于 ts.Close，关闭 SSE 长连再收 httptest，避免 Close 阻塞）
 	probe := startProbeServer(t)
 	bus, _ := startTestGW(t, nil)
@@ -152,35 +127,5 @@ func TestThirdPartyAliasUniqueAndRoundTrip(t *testing.T) {
 	}
 	if names["dup_probe"] {
 		t.Fatalf("不应出现裸名 dup_probe（第三方未加别名 = 撞名风险），got %v", names)
-	}
-
-	// ③ 两者都可 find；④ find 给的名字直接喂 mcp_load / mcp_invoke（名字往返一致）
-	find := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_mcp_find", "arguments": map[string]any{"type": "tool", "query": "dup_probe"},
-	})
-	found := findToolNames(t, find)
-	for _, want := range []string{"self_dup_probe", "probe_dup_probe"} {
-		if !found[want] {
-			t.Fatalf("mcp_find 应含 %s，got %v（txt=%s）", want, found, textOf(t, find))
-		}
-		load := callMethod(t, bus, "tools/call", map[string]any{
-			"name": "self_mcp_load", "arguments": map[string]any{"name": want, "kind": "tool"},
-		})
-		if load["isError"] == true {
-			t.Fatalf("mcp_load(%s) 应命中（名字往返一致）: %v", want, textOf(t, load))
-		}
-	}
-
-	// 第三方别名可调用（find/load 给的名字 = 可传回的名字）
-	inv := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_mcp_invoke", "arguments": map[string]any{
-			"name": "probe_dup_probe", "arguments": map[string]any{},
-		},
-	})
-	if inv["isError"] == true {
-		t.Fatalf("mcp_invoke(probe_dup_probe) 应成功: %v", textOf(t, inv))
-	}
-	if !strings.Contains(textOf(t, inv), "probe-ok") {
-		t.Fatalf("mcp_invoke(probe_dup_probe) 结果异常: %q", textOf(t, inv))
 	}
 }

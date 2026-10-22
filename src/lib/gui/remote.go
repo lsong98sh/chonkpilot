@@ -193,6 +193,7 @@ func runRemote(distFS fs.FS, opts RemoteOptions) error {
 		instanceID:           claim.InstanceID,
 		suppressInstanceExit: true,
 		windows:              newWindowRegistry(),
+		projects:             map[string]*projectCtx{},
 	}
 
 	var ts *testServer

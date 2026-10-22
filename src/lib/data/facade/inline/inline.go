@@ -31,7 +31,10 @@ type binding struct {
 	facade.ConfigAPI
 	facade.SessionAPI
 	facade.TurnAPI
+	facade.TurnEventAPI
+	facade.AskAPI
 	facade.MessageAPI
+	facade.InboxAPI
 	facade.TasktreeAPI
 	facade.KnowledgeAPI
 	facade.FileListAPI
@@ -40,6 +43,7 @@ type binding struct {
 	facade.McpAPI
 	facade.ProjectAPI
 	facade.GroupAPI
+	facade.IndexQueueAPI
 }
 
 // 编译期断言：合成结果 = 完整门面。
@@ -59,18 +63,22 @@ func New(bus mq.Bus) facade.API {
 func NewWithOptions(bus mq.Bus, opts persist.Options) facade.API {
 	svc := persist.New(bus, opts)
 	return &binding{
-		SnapshotAPI:  snapshot.New(),
-		ConfigAPI:    svc,
-		SessionAPI:   svc,
-		TurnAPI:      svc,
-		MessageAPI:   svc,
-		TasktreeAPI:  svc,
-		KnowledgeAPI: svc,
-		FileListAPI:  svc,
-		ScenarioAPI:  svc,
-		MemoryAPI:    svc,
-		McpAPI:       svc,
-		ProjectAPI:   svc,
-		GroupAPI:     svc,
+		SnapshotAPI:   snapshot.New(),
+		ConfigAPI:     svc,
+		SessionAPI:    svc,
+		TurnAPI:       svc,
+		TurnEventAPI:  svc,
+		AskAPI:        svc,
+		MessageAPI:    svc,
+		InboxAPI:      svc,
+		TasktreeAPI:   svc,
+		KnowledgeAPI:  svc,
+		FileListAPI:   svc,
+		ScenarioAPI:   svc,
+		MemoryAPI:     svc,
+		McpAPI:        svc,
+		ProjectAPI:    svc,
+		GroupAPI:      svc,
+		IndexQueueAPI: svc,
 	}
 }

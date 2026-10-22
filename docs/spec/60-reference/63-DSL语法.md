@@ -1,8 +1,10 @@
 # 63 · DSL语法（ChonkPilot DSL 核心规范）
 
-> 状态：✅ **已定稿并落地**（`src/lib/dsl` 独立包；四个工具 llm_run / filesys_run / desktop_run / browser_run 均已接入同一引擎）
+> ⛔ **本篇整体作废（2026-10-21，GATEWAY-2 L1「DSL 退役」）** —— `src/lib/dsl`、`build-dsl-executor.ps1`、`chonkpilot-dsl-executor.exe`、`dsl_run` 以及 `filesys_run` / `desktop_run` / `browser_run` 三个容器工具**已全部从仓库删除**；`plugin/v1/dsl.*` 一并移除。**本文件仅作历史存档**（保留供追溯语法演进），**不得**再作为实现依据。现行工具面见 [27-mcp-tools](../20-modules/27-mcp-tools.md) · [3A-工具与编排](../30-function-points/3A-工具与编排.md)；文件域能力 = 11 个 `file_*` 工具，脚本 / 网络 = `script_run` / `web_fetch`。
+>
+> 状态：🗑️ **已作废（历史存档）**
 > 关联：[24-lib](../20-modules/24-lib.md)（`dsl` 包）· [72-工具开发规范](../70-conventions/72-工具开发规范.md) · [27-mcp-tools](../20-modules/27-mcp-tools.md) · [3A-工具与编排](../30-function-points/3A-工具与编排.md)
-> 版本：v2026-09-10
+> 版本：v2026-09-10（历史）
 > 适用范围：llm_run（批处理编排/委派）、filesys_run（文件操作）、desktop_run（桌面交互）、browser_run（浏览器自动化）
 > 共同目标：统一的词法、类型、流控与输出语义，各 DSL 共享同一套核心规范
 
@@ -73,16 +75,18 @@ LLM "<成员名>" "请分析以下内容：<<<
 - 核心语句（`SET/IF/LOOP/PARALLEL/...`）与 `$RETURN`（§4.6）在两种方言下**完全一致**。
 - 子会话：`dsl_run` 中每次 LLM 调用 = 一个**子会话**（`parent_id` 非空，不入会话列表，仅在作业步骤表格可见）。
 - **`LLM` 返回值口径**：只含该子轮次的**最终回答正文**——**不含 reasoning（思维链）与 tool 相关内容**（工具调用轮的中间正文、工具结果一律剔除）；该正文即以 `=> 目标` / `=> $RETURN` 写入的内容（`llm_run` 与 `dsl_run` 两路一致）。
-- **LLM 子轮次等待上限**：单个 LLM 子轮次等待 `session-complete` 终态有**独立上限**，**由作业 `ctx` deadline 派生**（`dslrun.go`：ctx 有截止 → 取剩余时间为上限，避免「显式作业超时 > 30min 时子轮次被常量先杀 / 未设作业超时反被硬杀」的语义冲突；ctx 无截止 → 兜底常量 `dslLLMTurnTimeout`（**30min**））——该轮受理后若**永不发** `session-complete`，超时即级联发 `llm-cancel` 并返回错误（`llm 轮次 … 等待 session-complete 超时`），避免该 goroutine 永久阻塞、连带 `dslPump.drain` 的 `llmWG.Wait()` 楔死整个作业（与 `dslDataTimeout` 同语义：轮次面等待不得无界）。
-- **展示上报器终态后忽略晚到 `tree`/`step`**：`dslTreeReporter` 发作业终态（`task-done`）后置 `finished` 位，此后**晚到的 `tree`/`step` 上行一律忽略**（取消竞态下不再发出晚于终态的 `task-started` / `task-updated(running)`），保证面板终态不被回退。
+- **LLM 子轮次等待上限**：单个 LLM 子轮次等待 `session-complete` 终态有**独立上限**，**由能力调用 `ctx` deadline 派生**（`src/lib/llm/server/dsl_caps.go`：ctx 有截止 → 取剩余时间为上限；ctx 无截止 → 兜底常量 `dslLLMTurnTimeout`（**30min**））——该轮受理后若**永不发** `session-complete`，超时即级联发 `llm-cancel` 并返回错误（`llm 轮次 … 等待 session-complete 超时`），避免该 goroutine 永久阻塞、连带 executor 的 `drain` 楔死整个作业。
+- **展示上报器终态后忽略晚到 `tree`/`step`**：server 侧 `dslJobReporter`（`src/lib/llm/server/dsl_report.go`）发作业终态（`task-done`）后置 `finished` 位，此后**晚到的 `tree`/`step` 上行一律忽略**（取消竞态下不再发出晚于终态的 `task-started` / `task-updated(running)`），保证面板终态不被回退。
 
 ### 1.6 统一编排的动作执行位置
 
-`dsl_run` 的文件/浏览器/桌面动作**全部在受保护子进程**（`chonkpilot-dsl-executor.exe`）内执行 —— 进程级 agentbox 沙箱（`CHONKPILOT_SANDBOX`）天然生效；LLM 步骤由该进程经 stdio 协议回报 gateway，再由 gateway 经 MQ 执行子轮次（见 [42 §2 (247)](../40-roadmap/42-决策记录.md)）。
+`dsl_run` 的文件/浏览器/桌面动作**全部在工具执行体**（`chonkpilot-dsl-executor.exe`）内执行 —— 进程级 agentbox 沙箱（`CHONKPILOT_SANDBOX`）天然生效；**作业编排与 DSL 引擎同进程**（2026-10-20 合并，不再有独立编排 exe）：LLM 步骤由该执行体直接经插件桥 `plugin/v1/dsl.llm` 请 llm-server 执行子轮次（`session-start`/`session-send`/`session-complete`）；展示事件经 `plugin/v1/dsl.report` 交给 server（任务层唯一写者）。
 
-执行器与 gateway 之间为**自建 stdio 行协议**（非 MCP；`run`/`llm_result` 下行、`llm_call`/`result`/`tree`/`step`（+`log`）上行，见 [42 §2 (254)](../40-roadmap/42-决策记录.md)）；其中下行 `run` 消息在 `script`（脚本正文）之外含**可选字段 `file`**（脚本文件绝对路径）——**`script` 为空时由受沙箱执行器读该文件**（gateway 不再代为读盘），协议**向后兼容**（无 `file` 即走 `script`，行为等价）。字段明细见 `src/lib/gateway/gateway/dslrun.go` 头注。
+> **历史兼容**：执行体内部仍保留自建 stdio 行协议（`run`/`llm_result` 下行、`llm_call`/`result`/`tree`/`step` 上行），但**不再用于真实工具调用**——仅保留给 `dslexec` 的进程内回环测试与旧协议兼容；工具入口统一为 `<exe> dsl_run --input=<params.json>`。
 
-gateway 侧 `dslPump` 对 `llm_call` 的处理为**并发执行**（R7-C-6）：每个 LLM 子轮次在独立 goroutine 内调用，结果按 **call id** 回写（`llm_result.call`，与到达顺序无关），对 stdin 的写用互斥锁串行化；收到 `result`（作业终态）前先 `drain` 等在飞子轮次回写完毕——**PARALLEL 分支中的 LLM 步骤不再退化为串行**。成功/回写首个错误经统一 `drain` 返回。
+> **协议细节（测试/兼容面）**：下行 `run` 消息在 `script`（脚本正文）之外含**可选字段 `file`**（脚本文件绝对路径）——**`script` 为空时由执行体读该文件**；字段明细见 `src/lib/mcp-tools/dslexec/protocol.go` 头注。`Pump` 的并发 `llm_call` 处理（按 call id 回写、信号量并发上限 8）同样仅由回环测试覆盖。
+
+**取消收口**：取消时 core 直接杀 executor 进程树（执行体自身；已无独立解释器子进程），executor 来不及发 `finish` → llm-server 在 gateway `mcp-tasks-report{state:cancelled|error}` 上按 `tool_call_id` 找到作业上报器补发终态，任务树/面板不会留 running 孤儿。
 
 ## 2. 数据类型
 

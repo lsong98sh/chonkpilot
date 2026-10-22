@@ -27,6 +27,8 @@ import zhOptimizeError from '../locales/zh-CN/optimizeError.json'
 import zhPublishError from '../locales/zh-CN/publishError.json'
 // 自由布局容器（UILAYOUT-1 §3.12 / §7 P3④）：机制层文案 + 区块名 + 命令提示
 import zhLayoutFree from '../locales/zh-CN/layoutFree.json'
+// 字段校验提示（INPUTVAL-1）
+import zhFieldRules from '../locales/zh-CN/fieldRules.json'
 
 import enCommon from '../locales/en-US/common.json'
 import enToolbar from '../locales/en-US/toolbar.json'
@@ -51,6 +53,7 @@ import enPromptVars from '../locales/en-US/promptVars.json'
 import enOptimizeError from '../locales/en-US/optimizeError.json'
 import enPublishError from '../locales/en-US/publishError.json'
 import enLayoutFree from '../locales/en-US/layoutFree.json'
+import enFieldRules from '../locales/en-US/fieldRules.json'
 
 // Priority: localStorage > default
 function getInitialLocale() {
@@ -91,6 +94,7 @@ export const i18n = createI18n({
       optimizeError: zhOptimizeError,
       publishError: zhPublishError,
       layoutFree: zhLayoutFree,
+      fieldRules: zhFieldRules,
     },
     'en-US': {
       common: enCommon,
@@ -116,6 +120,7 @@ export const i18n = createI18n({
       optimizeError: enOptimizeError,
       publishError: enPublishError,
       layoutFree: enLayoutFree,
+      fieldRules: enFieldRules,
     },
   },
 })

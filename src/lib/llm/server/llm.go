@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-data"
+	"github.com/chonkpilot/chonkpilot-chat"
+	"github.com/chonkpilot/chonkpilot-router"
 )
 
 // 超时分级（对齐 llm-error-handling.md §一）：首字节 ResponseTimeout / chunk 间隔 StreamTimeout。
@@ -22,11 +23,13 @@ const (
 	StreamTimeout   = 60 * time.Second  // 流 chunk 间隔超时（两次 chunk 之间）
 )
 
-// ChatMsg / ToolCall 是 chat 消息类型，统一别名到 chonkpilot-data（快照契约一致）：
+// ChatMsg / ToolCall 是 **chat 组件自持类型**（MOD-1 M2）：内部一律使用
+// `chonkpilot-chat` 的 `Message` / `ToolCall`；与 data.ChatMsg（快照 / 落库行）的互转
+// 只在 chatadapter.go（`ChatMessageFromData` / `ChatMessageToData`）。
 // data.ChatMsg 含 Kind 标记（user 消息 text=用户提问 / notify=工具完成通知），
 // 压缩模块（chonkpilot-plugin-compress）据此在快照内定位保留段、排除工具通知。
-type ChatMsg = data.ChatMsg
-type ToolCall = data.ToolCall
+type ChatMsg = chat.Message
+type ToolCall = chat.ToolCall
 
 // StreamEvent 是流式事件（llm 侧**消费契约**，形状不随出网实现变更）：`Content`/`Reasoning`
 // 为增量，终态 = `Done`（附带 `FinishReason` 与拼装完成的 `ToolCalls`），失败 = `Err`。
@@ -107,4 +110,11 @@ type ChatOptions struct {
 	// Images 图片（多模态）输入选项（P2-8）：UploadDir 非空时把用户消息里的
 	// `![名](路径)` 引用展开为图片内容块；空 → 纯文本（历史行为）。见 llm_images.go。
 	Images ImageOptions
+
+	// RETRY-2 报文级重试（透传到 router.CallOptions）：
+	// MaxRetries nil = 保持旧行为（仅 network 透明重发 1 次；llm-simple / prompt-optimise 用）；
+	// turn 始终传入配置值（&retryCount，0 = 不重试）。
+	MaxRetries    *int
+	RetryBudget   time.Duration        // 0 = 默认 60s；<0 = 关闭预算（固定指数）
+	RetryObserver router.RetryObserver // 非阻塞上报（turnCtx 实现）
 }

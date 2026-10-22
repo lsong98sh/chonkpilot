@@ -10,7 +10,11 @@
 // （共享订阅 instance-register/heartbeat/exit）——插件不感知 server 内部结构。
 package plugin
 
-import "github.com/chonkpilot/chonkpilot-lib/mq"
+import (
+	"context"
+
+	"github.com/chonkpilot/chonkpilot-lib/mq"
+)
 
 // Deps 是宿主（server）注入内嵌插件的最小依赖。
 type Deps struct {
@@ -24,6 +28,29 @@ type Deps struct {
 	// 也不可见）。宿主（server）负责**去重/限频 + 呈现**（经既有通知面，不新增 MQ 主题）；
 	// 插件侧只负责"如实上报一次失败"，不阻塞流程、不改终态、不抛出。
 	Notify func(Notice)
+	// ToolExec 返回**进程外工具执行器**（core-mcp-server 的 /internal/exec），可选。
+	// 非 nil → 插件的 LLM 工具调用委托给 core（每次 spawn 一个单工具 executor，
+	// 取消只影响本次调用）；nil → 插件用本地引擎执行（CLI / core 未就绪的降级路径）。
+	// 用函数而非值：插件在 server.Start 时启动，core 在插件桥就绪后才拉起（晚于插件）。
+	ToolExec func() ToolExec
+}
+
+// ToolExec 是「一次工具调用 → core 执行器」的最小契约（跨进程实现见 llm/coretools）。
+type ToolExec interface {
+	// Exec 执行一次工具：args 已含插件注入的 workdir；返回结果文本与 isError。
+	// ctx 取消 → core 只杀本次 executor 进程树（不影响其它并发调用）。
+	Exec(ctx context.Context, tool string, args map[string]any, cx ExecContext) (text string, isError bool, err error)
+}
+
+// ExecContext 是工具调用的上下文（core 侧落 _meta.chonkpilot / executor 环境变量）。
+type ExecContext struct {
+	InstanceID string
+	Session    string
+	Turn       string
+	ToolCallID string
+	WorkDir    string
+	DataDir    string
+	Purpose    string
 }
 
 // Notice 是插件上报的**用户可见**失败提示（非阻塞、不打扰；宿主决定是否/如何呈现）。

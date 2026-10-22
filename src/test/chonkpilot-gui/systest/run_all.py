@@ -66,7 +66,8 @@ SCRIPTS = [
 # 第二批：`run_*.py`（端到端/UI 断言套件；隔离与端口分配见模块 docstring）。
 #
 # 计数口径：systest/ 下非 sem `run_*.py`（排除本运行器 `run_all.py` 与 `run_sem_*.py` 语义变体，
-# 后者归 SEM 组）**共 39 个**（与 [51-FP与测试映射 §6.10] 对齐；该处旧文「33」已订正）。
+# 后者归 SEM 组）**共 43 个**（含 2026-10-19 新增 `run_meta_tools.py` / `run_plugin_gui.py` /
+# `run_llm_bridge.py`；与 [51-FP与测试映射 §6.10] 对齐；该处旧文「33」已订正）。
 #
 # 执行集 = 下方带注释的 KNOWN 列表 ∪ **`_discover_run_scripts()` 动态枚举**（并入未知新套件），
 # 再剔除 `RUN_SCRIPTS_EXCLUDE` —— 故**新增套件无需改本文件**即可被 `--group all/core` 纳入

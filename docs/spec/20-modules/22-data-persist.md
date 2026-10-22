@@ -105,7 +105,7 @@ usr 库：data.OpenSharedLayer(UserPath, LayerUsr)（UsrPath 可注入，测试�
 见 [12-数据层 §6](../10-architecture/12-数据层.md)：三层同构桶（`_meta/_migrations/config/llms/mcps/sessions/turns/messages/scenarios/permission/tasktree/meta` + 索引桶）；config 记录 `{"v": value}`。
 persist 运行态：实例视图（订阅 `instance-register/heartbeat/exit`）、按路径连接缓存（`shared` + 引用计数）。
 
-**`sessions` 行（prj/prjusr）**：`session_id` / `title` / `parent_id` / `created_at` / `updated_at`（+ 快照列 `history` / `snapshot_turn`）+ **子聊天固定参数可选列** `kind` / `lifecycle` / `agent` / `scenario_id` / `llm` / `purpose`（SUBCHAT-2 阶段 A/B-2，2026-10-16；**仅非空才写键** → 普通顶层会话行形状与既有逐字节一致）。
+**`sessions` 行（prj/prjusr）**：`session_id` / `title` / `parent_id` / `created_at` / `updated_at`（+ 快照列 `history` / `snapshot_turn`）+ **子聊天固定参数可选列** `kind` / `lifecycle` / `agent` / `scenario_id` / `llm` / `purpose`（SUBCHAT-2 阶段 A/B-2，2026-10-16；**仅非空才写键** → 普通顶层会话行形状与既有逐字节一致）+ **`next_run_count`**（NEXTRUN-1，2026-10-21；`next_run` 连续自动接续计数，**非零才写键 / 归零即删键**；单事务读改写 `SessionNextRunCheckAndAdd|Reset|Get|Dec`，见 [21 §3.4](../20-modules/21-llm-server.md)）。
 - `kind`：`""` = 普通顶层会话 · `sub_chat` = 子聊天（`subchat_open` 创建）· `group_chat` = 群聊（N 个 agent、人只旁观）· `work_session` = **参与者的干活子会话**（群聊专属，`parent_id` = 群聊会话；SUBCHAT-3 阶段 E/D23，**与 `sub_session` 不同物**）· `sub_session` = `dsl_run` 的 LLM 步骤派生的子会话；不变量 `kind ∈ {sub_session, sub_chat, group_chat, work_session} ⟺ parent_id != ""`。
 - `lifecycle`：仅子聊天（`kind ∈ {sub_chat, group_chat}`）有，三态 `chatting` / `ready` / `finished`。
 - `purpose`：仅子聊天有，= 本次子聊天的**运行目的 / 展示名**（gateway 注入的 `tool_call_display_name`，单聊 §5.4）。

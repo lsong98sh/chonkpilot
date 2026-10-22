@@ -117,6 +117,13 @@ const (
 	TopicDataSessionSetSummary            = "data-session-set-summary"
 	TopicDataSessionCompleteTurn          = "data-session-complete-turn"
 	TopicDataSessionCleanupStale          = "data-session-cleanup-stale"
+	TopicDataInboxAppend                  = "data-inbox-append"
+	TopicDataInboxList                    = "data-inbox-list"
+	TopicDataInboxUpdate                  = "data-inbox-update"
+	TopicDataInboxCommit                  = "data-inbox-commit"
+	TopicDataAskPending                   = "data-ask-pending"
+	TopicDataTurnEventAppend              = "data-turn-event-append"
+	TopicDataTurnEventCleanup             = "data-turn-event-cleanup"
 	TopicDataSessionLoadMessages          = "data-session-load-messages"
 	TopicDataSessionContext               = "data-session-context"
 	TopicDataSessionGroupParticipantsLoad = "data-session-group-participants-load"
@@ -150,6 +157,10 @@ const (
 	TopicInstanceGotoTop                  = "instance-goto-top"
 	TopicLlmStart                         = "llm-start"
 	TopicLlmSend                          = "llm-send"
+	TopicLlmInboxAdd                      = "llm-inbox-add"
+	TopicLlmInboxList                     = "llm-inbox-list"
+	TopicLlmInboxDiscard                  = "llm-inbox-discard"
+	TopicLlmInboxPromote                  = "llm-inbox-promote"
 	TopicLlmCancel                        = "llm-cancel"
 	TopicAskUserReply                     = "ask-user-reply"
 	TopicToolRetry                        = "tool-retry"
@@ -168,6 +179,7 @@ const (
 	TopicSessionReceive                   = "session-receive"
 	TopicSessionComplete                  = "session-complete"
 	TopicSessionRetry                     = "session-retry"
+	TopicSessionInterrupted               = "session-interrupted"
 	TopicSessionCompress                  = "session-compress"
 	TopicSessionAsk                       = "session-ask"
 	TopicSessionTurnStart                 = "session-turn-start"
@@ -935,6 +947,85 @@ const (
 	DataSessionCleanupStaleResultCount = "count"
 	DataSessionCleanupStaleResultOk    = "ok"
 
+	// data-inbox-append · payload
+	DataInboxAppendPayloadContent        = "content"
+	DataInboxAppendPayloadEffort         = "effort"
+	DataInboxAppendPayloadIdempotencyKey = "idempotency_key"
+	DataInboxAppendPayloadInstanceId     = "instance_id"
+	DataInboxAppendPayloadLlm            = "llm"
+	DataInboxAppendPayloadScenarioId     = "scenario_id"
+	DataInboxAppendPayloadSession        = "session"
+	DataInboxAppendPayloadSource         = "source"
+	DataInboxAppendPayloadThink          = "think"
+	DataInboxAppendPayloadTurnId         = "turn_id"
+	DataInboxAppendPayloadType           = "type"
+
+	// data-inbox-append · result
+	DataInboxAppendResultId = "id"
+	DataInboxAppendResultOk = "ok"
+
+	// data-inbox-list · payload
+	DataInboxListPayloadInstanceId = "instance_id"
+	DataInboxListPayloadSession    = "session"
+	DataInboxListPayloadStatus     = "status"
+
+	// data-inbox-list · result
+	DataInboxListResultItems = "items"
+	DataInboxListResultOk    = "ok"
+
+	// data-inbox-update · payload
+	DataInboxUpdatePayloadContent    = "content"
+	DataInboxUpdatePayloadId         = "id"
+	DataInboxUpdatePayloadInstanceId = "instance_id"
+	DataInboxUpdatePayloadStatus     = "status"
+	DataInboxUpdatePayloadTurnId     = "turn_id"
+	DataInboxUpdatePayloadType       = "type"
+
+	// data-inbox-update · result
+	DataInboxUpdateResultOk = "ok"
+
+	// data-inbox-commit · payload
+	DataInboxCommitPayloadBrief          = "brief"
+	DataInboxCommitPayloadInboxId        = "inbox_id"
+	DataInboxCommitPayloadInstanceId     = "instance_id"
+	DataInboxCommitPayloadMsg            = "msg"
+	DataInboxCommitPayloadSessionId      = "session_id"
+	DataInboxCommitPayloadToolCallStatus = "tool_call_status"
+	DataInboxCommitPayloadTurnId         = "turn_id"
+
+	// data-inbox-commit · result
+	DataInboxCommitResultId = "id"
+	DataInboxCommitResultOk = "ok"
+
+	// data-ask-pending · payload
+	DataAskPendingPayloadAskId       = "ask_id"
+	DataAskPendingPayloadInstanceId  = "instance_id"
+	DataAskPendingPayloadPendingOnly = "pending_only"
+
+	// data-ask-pending · result
+	DataAskPendingResultItems = "items"
+	DataAskPendingResultOk    = "ok"
+
+	// data-turn-event-append · payload
+	DataTurnEventAppendPayloadAt         = "at"
+	DataTurnEventAppendPayloadInstanceId = "instance_id"
+	DataTurnEventAppendPayloadPayload    = "payload"
+	DataTurnEventAppendPayloadSeq        = "seq"
+	DataTurnEventAppendPayloadSessionId  = "session_id"
+	DataTurnEventAppendPayloadTurnId     = "turn_id"
+	DataTurnEventAppendPayloadType       = "type"
+
+	// data-turn-event-append · result
+	DataTurnEventAppendResultOk = "ok"
+
+	// data-turn-event-cleanup · payload
+	DataTurnEventCleanupPayloadInstanceId    = "instance_id"
+	DataTurnEventCleanupPayloadRetentionDays = "retention_days"
+
+	// data-turn-event-cleanup · result
+	DataTurnEventCleanupResultDeleted = "deleted"
+	DataTurnEventCleanupResultOk      = "ok"
+
 	// data-session-load-messages · payload
 	DataSessionLoadMessagesPayloadTurnId = "turn_id"
 
@@ -1181,6 +1272,46 @@ const (
 	LlmSendPayloadTurn       = "turn"
 	LlmSendPayloadType       = "type"
 
+	// llm-inbox-add · payload
+	LlmInboxAddPayloadContent        = "content"
+	LlmInboxAddPayloadEffort         = "effort"
+	LlmInboxAddPayloadIdempotencyKey = "idempotency_key"
+	LlmInboxAddPayloadInstanceId     = "instance_id"
+	LlmInboxAddPayloadLlm            = "llm"
+	LlmInboxAddPayloadScenarioId     = "scenario_id"
+	LlmInboxAddPayloadSession        = "session"
+	LlmInboxAddPayloadThink          = "think"
+	LlmInboxAddPayloadTurn           = "turn"
+
+	// llm-inbox-add · result
+	LlmInboxAddResultId   = "id"
+	LlmInboxAddResultOk   = "ok"
+	LlmInboxAddResultType = "type"
+
+	// llm-inbox-list · payload
+	LlmInboxListPayloadInstanceId = "instance_id"
+	LlmInboxListPayloadSession    = "session"
+	LlmInboxListPayloadStatus     = "status"
+
+	// llm-inbox-list · result
+	LlmInboxListResultItems = "items"
+	LlmInboxListResultOk    = "ok"
+
+	// llm-inbox-discard · payload
+	LlmInboxDiscardPayloadId         = "id"
+	LlmInboxDiscardPayloadInstanceId = "instance_id"
+
+	// llm-inbox-discard · result
+	LlmInboxDiscardResultOk = "ok"
+
+	// llm-inbox-promote · payload
+	LlmInboxPromotePayloadId         = "id"
+	LlmInboxPromotePayloadInstanceId = "instance_id"
+
+	// llm-inbox-promote · result
+	LlmInboxPromoteResultOk   = "ok"
+	LlmInboxPromoteResultType = "type"
+
 	// llm-cancel · payload
 	LlmCancelPayloadSession = "session"
 	LlmCancelPayloadTurn    = "turn"
@@ -1348,6 +1479,15 @@ const (
 	SessionRetryEventRetryable    = "retryable"
 	SessionRetryEventSession      = "session"
 	SessionRetryEventTurn         = "turn"
+
+	// session-interrupted · event
+	SessionInterruptedEventAutoContinueDelayMs = "auto_continue_delay_ms"
+	SessionInterruptedEventCode                = "code"
+	SessionInterruptedEventInstanceId          = "instance_id"
+	SessionInterruptedEventMessage             = "message"
+	SessionInterruptedEventRetryable           = "retryable"
+	SessionInterruptedEventSession             = "session"
+	SessionInterruptedEventTurn                = "turn"
 
 	// session-compress · event
 	SessionCompressEventInstanceId      = "instance_id"
@@ -1742,10 +1882,13 @@ const (
 	FieldAssetKind           = "asset_kind"
 	FieldAsync               = "async"
 	FieldAsyncThreshold      = "async_threshold"
+	FieldAt                  = "at"
+	FieldAutoContinueDelayMs = "auto_continue_delay_ms"
 	FieldB64                 = "b64"
 	FieldBaseDicts           = "base_dicts"
 	FieldBaseUrl             = "baseUrl"
 	FieldBeforeTurnId        = "before_turn_id"
+	FieldBrief               = "brief"
 	FieldBriefTokens         = "brief_tokens"
 	FieldCachedRows          = "cached_rows"
 	FieldCancelled           = "cancelled"
@@ -1809,7 +1952,9 @@ const (
 	FieldHit                 = "hit"
 	FieldHot                 = "hot"
 	FieldId                  = "id"
+	FieldIdempotencyKey      = "idempotency_key"
 	FieldIds                 = "ids"
+	FieldInboxId             = "inbox_id"
 	FieldIncludeClosed       = "include_closed"
 	FieldIncludeSnapshot     = "include_snapshot"
 	FieldIndexedAt           = "indexed_at"
@@ -1817,6 +1962,7 @@ const (
 	FieldInstanceId          = "instance_id"
 	FieldIsDir               = "is_dir"
 	FieldIsError             = "isError"
+	FieldItems               = "items"
 	FieldKey                 = "key"
 	FieldKeys                = "keys"
 	FieldKind                = "kind"
@@ -1880,6 +2026,7 @@ const (
 	FieldPath                = "path"
 	FieldPaths               = "paths"
 	FieldPayload             = "payload"
+	FieldPendingOnly         = "pending_only"
 	FieldPlaybook            = "playbook"
 	FieldPlugin              = "plugin"
 	FieldPreHookSubject      = "pre_hook_subject"
@@ -1906,6 +2053,7 @@ const (
 	FieldResultSummary       = "result_summary"
 	FieldResultType          = "resultType"
 	FieldResults             = "results"
+	FieldRetentionDays       = "retention_days"
 	FieldRetryAttempt        = "retry_attempt"
 	FieldRetryCount          = "retry_count"
 	FieldRetryWaitMs         = "retry_wait_ms"
@@ -1918,6 +2066,7 @@ const (
 	FieldSchema              = "schema"
 	FieldScope               = "scope"
 	FieldSelectedKey         = "selectedKey"
+	FieldSeq                 = "seq"
 	FieldServer              = "server"
 	FieldServers             = "servers"
 	FieldSession             = "session"
@@ -1949,6 +2098,7 @@ const (
 	FieldTitle               = "title"
 	FieldTool                = "tool"
 	FieldToolCallId          = "tool_call_id"
+	FieldToolCallStatus      = "tool_call_status"
 	FieldTools               = "tools"
 	FieldTopSession          = "top_session"
 	FieldTotal               = "total"

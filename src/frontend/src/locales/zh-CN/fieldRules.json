@@ -1,0 +1,11 @@
+{
+  "required": "{field} 必填",
+  "tooLong": "{field} 超长（上限 {max} 字符）",
+  "invalidUrl": "{field} 必须以 http:// 或 https:// 开头",
+  "invalidPath": "{field} 必须为绝对路径",
+  "invalidNumber": "{field} 超出范围（{min}–{max}）",
+  "invalidId": "{field} 格式不正确",
+  "tooManyAttachments": "单条最多 {max} 个附件",
+  "attachmentTooLarge": "单个文件不得超过 {max} MB",
+  "messageTooLong": "消息超长（{len}/{max} 字符）"
+}

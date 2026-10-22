@@ -2,9 +2,13 @@
  * useToolSandbox — agentbox 沙箱配置页（usr 键 `tool_sandbox`）
  *
  * 管理单位（用户口径，2026-10-12 重整）：沙箱开关**按「被 spawn 的执行体」为单位**——
- *   - 内置 executor：按 **exe** 一行（chonkpilot-{core,desktop,browser,dsl}-executor.exe，
- *     工具面归组按其契约 `_meta.category`：core / desktop / browser / server）；
- *   - 外部 MCP：按 **MCP 条目**一行（仅 stdio&spawn 可施加沙箱，http/sse 不可）。
+ *   - 内置 executor：按 **exe** 一行（2026-10-21 GATEWAY-2/L1 起只剩 tools / script / web 三个；
+ *     browser / desktop 已改为常驻插件，不受本开关约束）；
+ *   - 外部 MCP：按 **MCP 条目**一行（仅 stdio 可施加沙箱，http/sse 不可）。
+ *
+ * 实施位置（2026-10-21 GATEWAY-2/L7）：开关下发后由 **gateway 在 spawn stdio 进程时**实施
+ * **进程级写隔离**（`src/lib/core/sandbox`：Windows Low IL 令牌 + Job Object，只限写、读不受限、
+ * 不改 DACL）；原「执行体内 agentbox 拦截」已删除。
  *
  * 存储形态：usr 自由键 `tool_sandbox` = JSON 对象
  *   `{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`
@@ -33,12 +37,12 @@ export const TOOL_SANDBOX_KEY = 'tool_sandbox'
 
 // 内置 executor 单位：unit = executor exe 基名（写入 tool_sandbox.executors 的键），
 // category = 该执行体工具契约的 `_meta.category`（tools-list 归组用）。
-// dsl 执行器（dsl_run，契约 category=server）覆盖文件/浏览器/桌面三域动作。
+// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 只剩 tools / script / web 三个 executor；
+// browser / desktop 已改为常驻插件（UDS，不接 gateway），不受本开关约束。
 export const EXECUTOR_UNITS = [
-  { unit: 'chonkpilot-core-executor.exe', category: 'core' },
-  { unit: 'chonkpilot-desktop-executor.exe', category: 'desktop' },
-  { unit: 'chonkpilot-browser-executor.exe', category: 'browser' },
-  { unit: 'chonkpilot-dsl-executor.exe', category: 'server' },
+  { unit: 'chonkpilot-tools-executor.exe', category: 'file' },
+  { unit: 'chonkpilot-script-executor.exe', category: 'script' },
+  { unit: 'chonkpilot-web-executor.exe', category: 'web' },
 ]
 
 // isSet：该键是否显式设置（区分 true / false 与「未设置」）。

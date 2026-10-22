@@ -199,6 +199,18 @@ export const VIEW_DEFINITIONS = [
     defaultWidth: 64,
     defaultHeight: 20,
   },
+  /* 布局档案下拉（UILAYOUT-2 / WIN-026）：切换 / 新建 / 编辑当前 / 恢复初始布局 */
+  {
+    key: 'layout-profiles',
+    labelKey: 'view.layoutProfiles',
+    label: '布局',
+    icon: 'grid',
+    mode: 'singleton',
+    host: 'bar',
+    designable: false,
+    defaultWidth: 120,
+    defaultHeight: 26,
+  },
   /* ── 长任务详情页（STB-1）：状态栏条目点击 → `open-view{status-*}` → preview 功能页 ──
      数据驱动（真实任务状态），设计态不挂载真实组件（designable:false）。 */
   {

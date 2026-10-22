@@ -8,10 +8,11 @@
         <div class="ck-auth__title">
           {{ mode === 'register' ? $t('common.auth_register_title') : $t('common.auth_login_title') }}
         </div>
-        <Input v-model="username" :placeholder="$t('common.auth_username')" :disabled="busy" />
+        <Input v-model="username" :maxlength="MAX_NAME" :placeholder="$t('common.auth_username')" :disabled="busy" />
         <Input
           v-model="password"
           type="password"
+          :maxlength="MAX_KEY"
           :placeholder="$t('common.auth_password')"
           :disabled="busy"
           @keyup.enter="submitCreds"
@@ -32,6 +33,7 @@
         <div class="ck-auth__dir">
           <Input
             v-model="workDir"
+            :maxlength="MAX_PATH"
             :placeholder="$t('common.auth_dir_placeholder')"
             :disabled="busy"
             @keyup.enter="submitDir"
@@ -77,6 +79,8 @@ import { useAuth, LOGIN_FAILED, LOGIN_USERNAME_TAKEN } from '../../composables/u
 import { useDirPicker } from '../../composables/useDirPicker.js'
 import { useInstanceClaim } from '../../composables/useInstanceClaim.js'
 import { isBrowserForm } from '../../utils/runtimeForm.js'
+// INPUTVAL-1：用户名 / 密码 / 工作目录的长度与格式（绝对路径）校验。
+import { MAX_NAME, MAX_KEY, MAX_PATH, isAbsolutePath } from '../../utils/fieldRules'
 
 const props = defineProps({
   /** 起始步骤：'creds'（未认证）| 'dir'（已认证，只需选目录）。 */
@@ -119,6 +123,15 @@ async function submitCreds() {
   const name = username.value.trim()
   if (!name || !password.value) {
     errKey.value = 'common.input_required'
+    return
+  }
+  // INPUTVAL-1：用户名 1–64（不含空白）、密码 ≤512（后端 auth 域仍为权威拦截）。
+  if (name.length > MAX_NAME || /\s/.test(name)) {
+    errKey.value = 'common.auth_err_username_format'
+    return
+  }
+  if (password.value.length > MAX_KEY) {
+    errKey.value = 'common.auth_err_password_len'
     return
   }
   errKey.value = ''
@@ -167,6 +180,11 @@ async function submitDir() {
   const dir = workDir.value.trim()
   if (!dir) {
     errKey.value = 'common.input_required'
+    return
+  }
+  // INPUTVAL-1：工作目录必须为绝对路径（后端 instance-claim 复验）。
+  if (!isAbsolutePath(dir)) {
+    errKey.value = 'common.auth_err_dir_absolute'
     return
   }
   errKey.value = ''

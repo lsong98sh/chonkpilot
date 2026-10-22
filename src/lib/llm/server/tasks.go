@@ -26,7 +26,7 @@ import (
 // TaskKind 任务节点类型（21-llm-server：kind=工具/llm/ask_user）。
 const (
 	TaskKindTool    = "tool"     // 普通工具（同步/异步，经 gateway tools/call 执行）
-	TaskKindLLM     = "llm"      // llm 型工具（llm_run DSL）→ server 开子会话执行
+	TaskKindLLM     = "llm"      // 历史 llm 型节点 kind（当前无工具产出；保留取值兼容既有数据）
 	TaskKindAskUser = "ask_user" // ask_user 工具 → server ask 通道（广播 ask-user → 等 reply → 回填）
 )
 
@@ -662,6 +662,13 @@ func (tm *taskManager) subtree(instanceID, rootID string) []*TaskNode {
 func (tm *taskManager) cancelSubtree(instanceID, rootID string) int {
 	nodes := tm.subtree(instanceID, rootID)
 	if len(nodes) == 0 {
+		// 本层（server 内存任务视图）未知该节点：它可能由**任务层/外部上报器**持有——如 gateway
+		// 的 `dsl_job` 作业根只经 task-* 事件上报，不进入 tm.nodes。此时仍以任务层为权威判定，
+		// 并由层回调执行侧取消（OnCancelExec → gateway tm.cancel → dsl_run ctx 取消 → 上报器
+		// 发 task-done{cancelled}）；本层无节点快照 → 不重复广播终态（终态事件由节点 owner 发）。
+		if tm.srv != nil && tm.srv.taskLayer != nil {
+			return len(tm.srv.taskLayer.CancelSubtree(instanceID, rootID, ""))
+		}
 		return 0
 	}
 	topSession := ""
@@ -726,17 +733,13 @@ func (tm *taskManager) cancelByTurn(instanceID, turnID string) int {
 	return total
 }
 
-// taskKindOf 工具 → 任务节点 kind（ask_user / DSL 作业 / 普通工具）。
-// llm 型（llm_run）根节点 kind = **dsl_job**（DSL-3 展示：作业根，前端 isDslJob 判定入口）。
+// taskKindOf 工具 → 任务节点 kind（ask_user / 普通工具）。
+// `dsl_run` 的节点由 gateway 展示上报器创建（kind=dsl_job），不经本函数。
 func taskKindOf(tool string) string {
-	switch {
-	case isAskTool(tool):
+	if isAskTool(tool) {
 		return TaskKindAskUser
-	case isLLMTool(tool):
-		return TaskKindDslJob
-	default:
-		return TaskKindTool
 	}
+	return TaskKindTool
 }
 
 // taskDisplay 任务节点展示字段（标题取值优先级，对齐 34-任务 / I-38）：
@@ -759,12 +762,6 @@ func taskDisplay(tool string, args map[string]any) (string, string, string) {
 	switch {
 	case isAskTool(tool):
 		simplified = askQuestion(args)
-	case isLLMTool(tool):
-		// ② llm 型显式 title 更明确，覆盖注入展示名
-		if title, ok := args["title"].(string); ok && title != "" {
-			name = title
-		}
-		simplified = name
 	default:
 		simplified = purpose
 	}

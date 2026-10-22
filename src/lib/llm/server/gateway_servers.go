@@ -3,7 +3,7 @@
 // 转换为 gateway 下游 ServerEntry，作为 Params.Servers 传入内嵌 gateway
 // （RB-2：这是 gateway 接入列表的**唯一**来源——gateway lib 不读文件）。
 //
-// **单体（chonkpilot-gui / chonkpilot-cli 内嵌本 llm server）的 MCP server 配置一律取自
+// **单体（chonkpilot-gui 内嵌本 llm server）的 MCP server 配置一律取自
 // 四级文件化视图（app / user / project / prjusr）**（2026-10-01 起旧 usr KV `mcpServers`
 // 彻底废弃、代码零兼容），也不读 exe 同目录 config.json 的 `mcpServers` 段
 // （该段属 mcp-server / mcp-gateway **独立 exe** 自身行为，见 25-mcp-server / 26-mcp-gateway）。

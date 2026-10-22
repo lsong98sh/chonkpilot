@@ -143,6 +143,10 @@ func (s *Service) SessionTitle(req facade.SessionTitleRequest) (facade.SessionTi
 	if req.SessionID == "" {
 		return facade.SessionTitleResponse{}, errors.New("session: id required")
 	}
+	// INPUTVAL-1：标题 ≤128 字符、不含控制字符（空 = 未命名，允许）。
+	if err := validateSessionTitle(req.Title); err != nil {
+		return facade.SessionTitleResponse{}, err
+	}
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SessionTitleResponse{}, err
@@ -186,6 +190,11 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 		return facade.SessionDeleteResponse{}, err // A-41：读失败须上报，不得退化为「不存在」而误报删除成功
 	}
 	if !ok {
+		// 会话不存在视为成功（幂等），但 **inbox 级联仍执行**：历史孤儿行（会话先被删/旧版本
+		// 遗留）在此收敛，避免 `session_id` 过滤下永不被消费的无主行长期占空间。
+		if err := deleteInboxBySession(prj, req.SessionID); err != nil {
+			return facade.SessionDeleteResponse{}, err
+		}
 		return facade.SessionDeleteResponse{OK: true}, nil // 不存在视为成功（幂等）
 	}
 	if err := prj.Table("sessions").Delete(req.SessionID); err != nil {
@@ -233,6 +242,10 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 				cascErrs = append(cascErrs, fmt.Errorf("delete messages/%s: %w", k, err))
 			}
 		}
+	}
+	// INBOX 级联（设计 §5.2）：删除该会话的 inbox 项（含 pending），不留孤儿。
+	if err := deleteInboxBySession(prj, req.SessionID); err != nil {
+		cascErrs = append(cascErrs, err)
 	}
 	if err := errors.Join(cascErrs...); err != nil {
 		return facade.SessionDeleteResponse{}, err
@@ -591,6 +604,10 @@ func (s *Service) TurnComplete(req facade.TurnCompleteRequest) (facade.TurnCompl
 	if req.TurnID == "" || req.Status == "" {
 		return facade.TurnCompleteResponse{}, errors.New("session: turn_id and status required")
 	}
+	// INPUTVAL-1 P0-4：轮次状态枚举白名单（写坏值会污染恢复 / 清理判定）。
+	if !turnStatusValid(req.Status) {
+		return facade.TurnCompleteResponse{}, fmt.Errorf("session: invalid turn status %q", req.Status)
+	}
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.TurnCompleteResponse{}, err
@@ -648,6 +665,7 @@ func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.T
 		}
 	}
 	s.cleanupStaleToolPairs(prj)
+	s.cleanupInboxTTL(prj, time.Now().UTC())
 	return facade.TurnCleanupStaleResponse{OK: true, Count: n}, nil
 }
 
@@ -732,6 +750,13 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 		return facade.MessageAppendResponse{}, err
 	}
 	m := data.MessageFromFacade(req.Message)
+	// INPUTVAL-1 P0-4：角色枚举 + 正文长度（写侧拒绝，不截断）。
+	if !messageRoleValid(m.Role) {
+		return facade.MessageAppendResponse{}, fmt.Errorf("session: invalid message role %q", m.Role)
+	}
+	if err := validateMessageContent(m.Role, m.Content); err != nil {
+		return facade.MessageAppendResponse{}, err
+	}
 
 	// session_id：显式优先；否则由轮次记录回填（messages 表恒写 session_id）。
 	sessionID := req.SessionID
@@ -746,8 +771,7 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 		}
 	}
 
-	// role=tool 的 content 由调用方按 {call,result,async} 结构给出，原样落库。
-	content := m.Content
+	// role=tool 的 content 由调用方按 {call,result,async} 结构给出，原样落库（见 buildMessageRecord）。
 
 	// 主键（I-176）：显式 key 优先（running → 终态就地回填）；未给 key 且为带 tool_call_id 的
 	// role=tool 行 → 复用同轮同 call 的既有行（重启后重试路径无内存主键，避免重复 tool_pair）；
@@ -770,51 +794,7 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 		}
 	}
 
-	rec := data.Record{
-		"session_id": sessionID, "turn_id": req.TurnID, "role": m.Role, "content": content,
-		"created_at": createdAt,
-	}
-	if m.ToolCallID != "" {
-		rec["tool_call_id"] = m.ToolCallID
-	}
-	if m.Kind != "" {
-		rec["kind"] = m.Kind
-	}
-	if req.ToolCallStatus != "" {
-		rec["tool_call_status"] = req.ToolCallStatus
-	}
-	if m.Reasoning != "" {
-		rec["reasoning"] = m.Reasoning
-	}
-	if len(m.Meta) > 0 {
-		rec["_meta"] = m.Meta
-	}
-	if len(m.ToolCalls) > 0 {
-		if b, err := json.Marshal(m.ToolCalls); err == nil {
-			rec["tool_calls"] = string(b)
-		}
-	}
-	// 群聊发言标识（SUBCHAT-3 阶段 E / 群聊方案 §10 C2·C6）：**仅非空才写键** —— 普通会话 /
-	// 单聊消息的行形状与既有逐字节一致。`sender_agent` = 发言人标识；`mentions` = 发言末行
-	// `@` 名单（JSON 数组；供调度器定向叫号与下一轮投递过滤，D27/D33）。
-	if req.SenderAgent != "" {
-		rec["sender_agent"] = req.SenderAgent
-	}
-	if len(req.Mentions) > 0 {
-		rec["mentions"] = req.Mentions
-	}
-	brief := req.Brief
-	if brief == "" {
-		if m.Role == "tool" {
-			tc, _ := kernel.ParseToolContent(content)
-			brief = kernel.ToolBrief(tc)
-		} else if m.Reasoning != "" {
-			brief = kernel.ReasoningBrief(m.Reasoning)
-		}
-	}
-	if brief != "" {
-		rec["brief"] = brief
-	}
+	rec := buildMessageRecord(req.TurnID, sessionID, createdAt, m, req.ToolCallStatus, req.Brief, req.SenderAgent, req.AskID, req.Mentions)
 	tb := prj.Table("messages")
 	if key == "" {
 		// 新消息用 Insert（A-10）：NewMessageKey 仅 4 位随机，同微秒内仍可能碰撞，
@@ -841,6 +821,60 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 		return facade.MessageAppendResponse{}, err
 	}
 	return facade.MessageAppendResponse{OK: true, ID: key}, nil
+}
+
+// buildMessageRecord 组装 messages 行（append-message / inbox-commit 共用，落库形状单源）。
+func buildMessageRecord(turnID, sessionID, createdAt string, m data.ChatMsg, toolCallStatus, briefIn, senderAgent, askID string, mentions []string) data.Record {
+	rec := data.Record{
+		"session_id": sessionID, "turn_id": turnID, "role": m.Role, "content": m.Content,
+		"created_at": createdAt,
+	}
+	if m.ToolCallID != "" {
+		rec["tool_call_id"] = m.ToolCallID
+	}
+	if m.Kind != "" {
+		rec["kind"] = m.Kind
+	}
+	if toolCallStatus != "" {
+		rec["tool_call_status"] = toolCallStatus
+	}
+	// ask 关联 id（MOD-1 M6b）：仅 ask_user 运行行写键 → 重启 / 超时后按 ask_id 回查会话。
+	if askID != "" {
+		rec["ask_id"] = askID
+	}
+	if m.Reasoning != "" {
+		rec["reasoning"] = m.Reasoning
+	}
+	if len(m.Meta) > 0 {
+		rec["_meta"] = m.Meta
+	}
+	if len(m.ToolCalls) > 0 {
+		if b, err := json.Marshal(m.ToolCalls); err == nil {
+			rec["tool_calls"] = string(b)
+		}
+	}
+	// 群聊发言标识（SUBCHAT-3 阶段 E / 群聊方案 §10 C2·C6）：**仅非空才写键** —— 普通会话 /
+	// 单聊消息的行形状与既有逐字节一致。`sender_agent` = 发言人标识；`mentions` = 发言末行
+	// `@` 名单（JSON 数组；供调度器定向叫号与下一轮投递过滤，D27/D33）。
+	if senderAgent != "" {
+		rec["sender_agent"] = senderAgent
+	}
+	if len(mentions) > 0 {
+		rec["mentions"] = mentions
+	}
+	brief := briefIn
+	if brief == "" {
+		if m.Role == "tool" {
+			tc, _ := kernel.ParseToolContent(m.Content)
+			brief = kernel.ToolBrief(tc)
+		} else if m.Reasoning != "" {
+			brief = kernel.ReasoningBrief(m.Reasoning)
+		}
+	}
+	if brief != "" {
+		rec["brief"] = brief
+	}
+	return rec
 }
 
 // MessageLoad 读该轮次全部消息（created_at 升序，limit 500；供 LLM 会话重建）。

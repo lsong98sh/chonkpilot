@@ -2,10 +2,10 @@
 //
 // 定位（对齐 26-mcp-gateway，2026-08-29 收敛 tools-only；降级纯执行层）：
 //   - 无独立 exe / 无条件编译 / 无 CLI；由 chonkpilot-server import 内嵌（New/Start/Stop）
-//   - 上游通道 = 进程内内存 Bus（chonkpilot-lib/mq，唯一实现，2026-09-05 D1 去 NATS）：
-//     复用调用方总线（Params.Bus 必填），方法面 <域>-<动词> 相对主题 + 同主题 promise
-//     （Emit/On 同一条主题：订阅者写 v.Result，发送方 await 同一主题；payload 无 req_id、
-//     无 -reply 主题，2026-09-05 与 mq 内核对称）；事件/心跳/退出为广播
+//   - 上游通道 = 宿主注入的 Transport 端口（MOD-1 M0.5；内核零 MQ 依赖）：
+//     出站 Call/Publish + 入站 Subscribe；mq 实现见 mqadapter 包。方法面 <域>-<动词>
+//     相对主题 + 同主题 promise（订阅者写回结果，发送方 await 同一主题；payload 无 req_id、
+//     无 -reply 主题）；事件/心跳/退出为广播
 //   - 下游 = 标准 MCP client：默认对接 chonkpilot-mcp-server（内置默认 servers.list），
 //     也可经 servers.list 声明其他 server（spawned runtime= + args= / proxied url=）
 //   - 原语面 = 工具路由 + 目录资产：tools 全量聚合；agent/prompt/skill/resource 经
@@ -25,33 +25,20 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/chonkpilot/chonkpilot-lib/agentbox"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/sandbox"
 )
 
-// Params 是网关配置（对齐 26-mcp-gateway，tools-only 精简版；2026-09-07 收敛：
-// 能力源 = 装配方自建的官方 go-sdk server（MCPServer 参数传入），gateway 不自建 mcp-server 容器）。
+// Params 是网关配置（对齐 26-mcp-gateway；GATEWAY-2 L5「纯化」后 gateway **只**持
+// Contracts / Policy / Dispatcher / TaskLayer，不再持有任何工具实现或能力源）。
 type Params struct {
-	// Bus 是上游总线（chonkpilot-lib/mq 进程内内存实现，唯一通道；**必填**——
-	// 11-MQ与消息：内嵌模式同进程共享调用方总线，2026-09-05 D1 去 NATS 后无自建后端）。
-	Bus mq.Bus
-	// MCPServer 装配方传入的官方 go-sdk server（能力源：capability 契约已经
-	// chonkpilot-mcp-server/server.RegisterContracts 注册；gateway 自持工具（meta/域注册）
-	// 随后 AddTool 注入其上），作为内置 self 节点聚合——gateway 聚合时 tools 来自其 list。
-	// nil = 装配方不提供内置能力源（仅外部下游）。
-	MCPServer *mcp.Server
-	// MCPConfig 是 dir 节点 / self 共享的**执行配置**（RB-2：窄接口，gateway 只经
-	// `SetToolSandbox` 施加工具级沙箱开关，**不依赖具体 mcp-server 类型**）。装配方注入；
-	// nil = 无共享执行配置（独立 gateway / 单测）→ 工具级沙箱开关无处施加，跳过。
-	MCPConfig SandboxConfig
-	// ContractScanner 是**契约目录扫描器**（RB-2：依赖倒置，同 ExecSink 手法）：gateway 不读
-	// 「源」（目录/文件），`servers/register{dir}` 的「扫目录 + 建官方 server」由持有 mcp-server
-	// 实现的一方（装配方）注入。nil = 未注入 → dir 注册返回明确错误（gateway 可独立运行）。
-	ContractScanner ContractScanner
+	// Transport 是上游通道端口（**必填**；MQ 实现见 mqadapter 包）：
+	// gateway 内核只经它出站（Call/Publish）与入站（Subscribe）——不再 import mq / msgkeys。
+	Transport Transport
 	// Servers 接入列表（推荐：由调用方从 usr 层 chonkpilot.db 读取后解析传入，26-mcp-gateway）。
 	// RB-2：gateway **不读 servers.list 文件**——读文件由面层（exe main / 装配方）完成后传入。
 	Servers []ServerEntry
@@ -73,15 +60,12 @@ type Params struct {
 	// 层 + 进程内 sink 提供，见 21 §9.3）。由装配方（chonkpilot-llm/server）注入层适配器；
 	// **未注入 = nil → 全部 no-op**（库内调用 / 单测 / gateway 单体 exe 行为与引入前等价）。
 	ExecSink ExecSink
-	// DSLExecutor 是 `dsl_run` 执行器 exe 的显式路径覆盖（空 = 自动解析：exeDir 同级，
-	// 或 exeDir/capability/executors/；见 dslrun.go dslExecutorPath）。契约
-	// `capability/tools/core/dsl_run.tool.md` 对应的运行体由 gateway spawn（决策 42 §2 (247)）。
-	DSLExecutor string
-	// ServerTools 是 **category=server 契约工具**的定义单源（key = 原语名，如 dsl_run）。
-	// 由装配层经 `mcp-server/server.ServerTools(root, cfg)` 注入（gateway lib 不依赖 mcp-server 包，
-	// RB-2）；gateway 自持节点（dsl 等）**优先取之**为工具定义，缺失 → 回落内置定义。
-	// 该类契约不再注册为 executor 工具（不出现于 self 节点），故这是其唯一定义来源。
-	ServerTools map[string]*mcp.Tool
+	// ProgressHandler / ElicitHandler 是下游上行通知的装配方回调（L8 通知路由）：
+	// progress 已按 progressToken（= call_id）归位到具体调用；elicitation 按 progressToken
+	// （可能为空）投递。nil = 未注入 → progress 丢弃 + warn、elicitation 不注册 handler
+	//（客户端不声明该能力，避免第三方 server 发起无人处理的请求）。
+	ProgressHandler func(ProgressEvent)
+	ElicitHandler   func(callID string, req *mcp.ElicitRequest) (*mcp.ElicitResult, error)
 	// Logf 日志输出（默认 log.Printf）。
 	Logf func(format string, args ...any)
 }
@@ -91,7 +75,7 @@ type Gateway struct {
 	params Params
 	logf   func(string, ...any)
 
-	bus mq.Bus // 上游总线（Params.Bus，唯一通道）
+	transport Transport // 上游通道端口（Params.Transport，唯一通道）
 
 	reg     *registry
 	tm      *execPool
@@ -99,26 +83,33 @@ type Gateway struct {
 	// tov 是工具级覆盖表（usr tool_async/tool_sandbox 的归一结果，装配方注入；见 tooloverride.go）：
 	// 在 tools/list `_meta` 与 doCall 异步判定处按暴露名统一施加（含 dir 节点/第三方工具，I-82）。
 	tov toolOverrideState
-	// self 节点：Params.MCPServer（能力源 + gateway 注入工具）的 in-memory 会话；
-	// 聚合时 tools 来自其 list（registerProvider 一次，注入工具后经 reconcileSelf 刷新）。
-	self    *memNode
-	selfKey string
-	nodes   map[string]*dirNode // dir 目录节点（key = provKey("dir", scope, name)）句柄
+	// beforeToolCall 是 tool.before_call filter 的进程内钩子（装配方注入；nil = 不启用）。
+	// 在 doCall 剥离内部参数后、路由/执行前调用；返回 error = fail-closed（工具不执行）。
+	hookMu         sync.RWMutex
+	beforeToolCall func(tool string, args map[string]any) (map[string]any, error)
+	// regKey / regPS 是注册工具提供方（tools/register 的本地/远程回调）在注册表中的常驻条目：
+	// L5 之前这些工具被 AddTool 注入 self 能力源再经其 list 聚合；纯化后直接以普通提供方
+	// 参与路由（暴露名仍 = self_<原名>，对外零变更），注册/注销后经 refreshRegistered 刷新。
+	regKey  string
+	regPS   *providerState
 	mu      sync.Mutex
 	stopped bool
-	// subs 是方法面订阅句柄（subscribeAll 经 sub() 保存）：Stop 时统一退订，
-	// 避免停服后仍接收/派发方法调用（内存总线生命周期由调用方持有，需显式退订）。
-	subs []mq.Sub
+	// subs 是方法面订阅句柄（subscribeAll 经 Transport.Subscribe 保存）：Stop 时统一退订，
+	// 避免停服后仍接收/派发方法调用（通道生命周期由调用方持有，需显式退订）。
+	subs []Unsubscribe
 
 	mgmtSrv *http.Server
+
+	// callSeq 是 doCall 生成 call_id 的序号（无 tool_call_id 时用 `call-%06d`）——
+	// 同一标识贯穿 pool_key=call 池键 / 取消定位 / progressToken 路由（L6.3·L7·L8）。
+	callSeq atomic.Uint64
 }
 
 // New 构建网关（不启动；随后 Start）。
-// Bus 为必填（进程内内存 MQ 是唯一上游实现，2026-09-05 D1 去 NATS）。
-// MCPServer 可为 nil（无内置能力源）；不为 nil 时 Start 建 self 节点聚合。
+// Transport 为必填（上游出站/入站通道端口；mq 实现见 mqadapter）。
 func New(p Params) (*Gateway, error) {
-	if p.Bus == nil {
-		return nil, fmt.Errorf("gateway: Bus is required (in-process mq is the only transport)")
+	if p.Transport == nil {
+		return nil, fmt.Errorf("gateway: Transport is required (host provides the message channel port)")
 	}
 	if p.CallTimeout <= 0 {
 		p.CallTimeout = 60 * time.Second
@@ -133,15 +124,30 @@ func New(p Params) (*Gateway, error) {
 		p.Logf = log.Printf
 	}
 	g := &Gateway{
-		params:  p,
-		logf:    p.Logf,
-		reg:     newRegistry(),
-		bus:     p.Bus,
-		regProv: newRegisteredProvider(p.Bus, p.CallTimeout),
-		nodes:   map[string]*dirNode{},
+		params:    p,
+		logf:      p.Logf,
+		reg:       newRegistry(),
+		transport: p.Transport,
+		regProv:   newRegisteredProvider(p.Transport, p.CallTimeout),
+		regKey:    provKey("reg", scopeGlobal, "self"),
+	}
+	g.regPS = &providerState{
+		key:    g.regKey,
+		entry:  &ServerEntry{ID: "self", Name: "内置能力源", Category: "core", Origin: OriginBuiltin},
+		prov:   g.regProv,
+		status: "connected",
+		cb:     newBreaker(p.CBThreshold, p.CBCooldown, true),
+		scope:  scopeGlobal,
 	}
 	g.tm = newExecPool(p.MaxTasks, g.reportTaskDone, g.onTaskCancel, g.onExecState)
 	return g, nil
+}
+
+// SetBeforeToolCall 注入 tool.before_call 钩子（nil = 关闭）。
+func (g *Gateway) SetBeforeToolCall(fn func(tool string, args map[string]any) (map[string]any, error)) {
+	g.hookMu.Lock()
+	g.beforeToolCall = fn
+	g.hookMu.Unlock()
 }
 
 // ── 任务层窄接口（P3：执行态上报 + 控制面以层为准）─────────────────────────
@@ -174,29 +180,20 @@ func layerImmutableTerminal(state string) bool {
 	return false
 }
 
-// Start 启动网关：建 self 节点（MCPServer 非空）→ 加载 servers.list + 接入下游 → 订阅方法面 → 管理 REST。
+// Start 启动网关：注册注册工具提供方 → 接入下游 → 订阅方法面 → 管理 REST。
+// L5：gateway 不再持有能力源/工具实现——工具全部来自 Params.Servers 的下游 MCP client。
 func (g *Gateway) Start(ctx context.Context) error {
-	// self 节点：能力源（Params.MCPServer）in-memory 会话 → 工具聚合（list 来源）
-	if g.params.MCPServer != nil {
-		if err := g.connectSelf(ctx); err != nil {
-			return fmt.Errorf("connect self: %w", err)
-		}
-		// gateway 自持 meta 工具注入 self（聚合 tools 来自其 list）
-		g.registerMetaTools()
-	}
-
-	// dsl_run 工具：gateway 自持 in-memory 节点（暴露名 = dsl_run；spawn 独立受保护执行器，
-	// 决策 42 §2 (247)）。契约（capability/tools/core/dsl_run.tool.md）为单源定义；
-	// 失败不阻塞启动（仅告警，工具面缺 dsl_run）。
-	if err := g.registerDSLNode(ctx); err != nil {
-		g.logf("[gateway] dsl node 注册失败（dsl_run 不可用）: %v", err)
+	// 注册工具提供方（tools/register 的本地 handler / 远程回调）常驻入表；
+	// 工具由 registerTool/unregisterTool 经 refreshRegistered 增量刷新。
+	if err := g.refreshRegistered(); err != nil {
+		return fmt.Errorf("register registered provider: %w", err)
 	}
 
 	// 加载接入列表：**只接成品**（RB-2）——调用方（exe main / 装配方）读 usr db 或 servers.list
-	// 后经 Params.Servers 传入；gateway lib 不读文件（空列表 = 工具面仅来自 self 能力源，不报错）。
+	// 后经 Params.Servers 传入；gateway lib 不读文件（空列表 = 工具面为空，不报错）。
 	entries := g.params.Servers
 	if len(entries) == 0 {
-		g.logf("[gateway] 无 servers 配置源（Params.Servers 为空），接入列表为空，仅使用 self 能力源")
+		g.logf("[gateway] 无 servers 配置源（Params.Servers 为空），接入列表为空，工具面为空")
 	}
 	for _, e := range entries {
 		if !e.Enabled {
@@ -221,51 +218,16 @@ func (g *Gateway) Start(ctx context.Context) error {
 	return nil
 }
 
-// connectSelf 连接参数能力源 server 为 self 节点（global scope；聚合 = 其 tools list）。
-func (g *Gateway) connectSelf(ctx context.Context) error {
-	node, err := newMemNode("self", g.params.MCPServer)
+// refreshRegistered 刷新注册工具提供方的路由（tools/register·unregister 后调用）：
+// 先移除旧路由，再以当前注册工具表（registeredProvider.ListTools）重新注册。
+// 提供方对象（g.regPS）保持同一实例 —— 连接对象与熔断状态不随刷新重建。
+func (g *Gateway) refreshRegistered() error {
+	tools, err := g.regProv.ListTools(context.Background())
 	if err != nil {
 		return err
 	}
-	g.self = node
-	g.selfKey = provKey("mem", scopeGlobal, "self")
-	tools, err := node.ListTools(ctx)
-	if err != nil {
-		node.Close()
-		return fmt.Errorf("self list tools: %w", err)
-	}
-	ps := &providerState{
-		key:    g.selfKey,
-		entry:  &ServerEntry{ID: "self", Name: "内置能力源", Category: "core", Origin: OriginBuiltin},
-		prov:   &memNodeProvider{node: node, inject: true}, // self=内置来源：调用以协议 _meta 透传调用上下文
-		status: "connected",
-		cb:     newBreaker(g.params.CBThreshold, g.params.CBCooldown, true),
-		scope:  scopeGlobal,
-	}
-	if err := g.reg.registerProvider(ps, tools, ""); err != nil {
-		node.Close()
-		return err
-	}
-	g.logf("[gateway] self node connected: %d tools", len(tools))
-	return nil
-}
-
-// reconcileSelf 刷新 self 节点工具路由（gateway 注入工具 AddTool/RemoveTools 后调用：
-// 移除旧路由 → 重拉 list 注册，AddTool 已生效故新 list 含注入工具）。
-func (g *Gateway) reconcileSelf() error {
-	if g.self == nil || g.selfKey == "" {
-		return nil
-	}
-	ps, ok := g.reg.provider(g.selfKey)
-	if !ok {
-		return nil
-	}
-	tools, err := g.self.ListTools(context.Background())
-	if err != nil {
-		return err
-	}
-	g.reg.removeProvider(g.selfKey)
-	return g.reg.registerProvider(ps, tools, "")
+	g.reg.removeProvider(g.regKey)
+	return g.reg.registerProvider(g.regPS, tools, "")
 }
 
 // Stop 优雅退出：停收新请求 → 关闭下游（spawned/proxied 收尾）。
@@ -289,9 +251,9 @@ func (g *Gateway) Stop(ctx context.Context) error {
 	subs := g.subs
 	g.subs = nil
 	g.mu.Unlock()
-	for _, s := range subs {
-		if s != nil {
-			_ = s.Unsubscribe()
+	for _, unsub := range subs {
+		if unsub != nil {
+			_ = unsub()
 		}
 	}
 	// spawned/proxied 下游收尾（Close 终止 stdio 子进程）。
@@ -318,77 +280,72 @@ func (g *Gateway) isStopped() bool {
 	return g.stopped
 }
 
-// ─── 总线订阅 ──────────────────────────────────────────
+// ─── 入站方法面（Transport.Subscribe）─────────────────
 
-// subscribeAll 订阅方法调用主题（2026-09-06 统一 mcp 域：相对主题 mcp-<组>-<动作>，
-// chonk. 前缀由外部注入总线的 Options.Prefix 提供）。
-// 方法面 = mq 对称 promise：handler 执行后写回 v.Result（失败返回 error → 收集进 v.Errors），
-// 无独立 -reply 主题（2026-09-05 移除 reply 过渡期机制）。
-// 方法集（2026-09-06 重构）：标准原语（list/call/get/read）+ 分组注册/管理
-// （tools|prompts|resources|servers 的 register/unregister、servers/get、
+// methodList 是 gateway 接收的方法名（2026-09-06 重构）：标准原语（list/call/get/read）+
+// 分组注册/管理（tools|prompts|resources|servers 的 register/unregister、servers/get、
 // gateway/check|reload）；扩展方法**始终注册**（不再 --manage 门控）。
 // 2026-09-18：`tools/background`、`tasks/list|status|result|cancel` 方法面**已移除**
 // （用户决定）：转后台 / 取消改由任务层 + 进程内 sink 直调（`(*Gateway).DetachExec` /
 // `(*Gateway).CancelExec`，见 tasks.go ExecSink）；异步结果以 message 表为准。
 // heartbeat / instance-exit 已不消费：实例生命周期为 GUI 客户端消息（instance-*，
 // 消费方 = server，61-消息一览 §4.1）；gateway 为内嵌执行层，随进程存续。
+var methodList = []string{
+	"tools/list", "tools/call", "tools/wait",
+	"tools/register", "tools/unregister",
+	"prompts/list", "prompts/get",
+	"prompts/register", "prompts/unregister",
+	"resources/list", "resources/read",
+	"resources/register", "resources/unregister",
+	"servers/list", "servers/get", "servers/register", "servers/unregister",
+	"gateway/check", "gateway/reload",
+}
+
+// Methods 返回 gateway 接收的方法名（只读副本；宿主可据此装配入站适配）。
+func Methods() []string { return append([]string(nil), methodList...) }
+
+// subscribeAll 经宿主入站端口登记方法面（相对操作名 mcp-<组>-<动作>）。
+// 方法面 = 同主题请求-响应：Handle 返回结果 JSON；失败返回 error（由宿主适配器转换为通道错误）。
 func (g *Gateway) subscribeAll() error {
-	for _, m := range []string{
-		"tools/list", "tools/call", "tools/wait",
-		"tools/register", "tools/unregister",
-		"prompts/list", "prompts/get",
-		"prompts/register", "prompts/unregister",
-		"resources/list", "resources/read",
-		"resources/register", "resources/unregister",
-		"servers/list", "servers/get", "servers/register", "servers/unregister",
-		"gateway/check", "gateway/reload",
-	} {
+	for _, m := range methodList {
 		method := m
-		if err := g.sub(methodSubject(method), func(_ string, v *mq.Value) error {
-			return g.dispatch(method, v)
-		}); err != nil {
+		unsub, err := g.transport.Subscribe(Op(methodSubject(method)), func(ctx context.Context, payload []byte) ([]byte, error) {
+			return g.Handle(ctx, method, payload)
+		})
+		if err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-// pub 统一发布到总线（相对主题；前缀由总线 Options.Prefix 注入；fire-and-forget = Emit 不 await）。
-func (g *Gateway) pub(subject string, payload []byte) {
-	_ = g.bus.Emit(context.Background(), subject, payload)
-}
-
-// sub 统一订阅总线（相对主题；handler 收到去前缀后的相对 subject 与 *Value——
-// 可写回 v.Result 实现同主题请求-响应；返回 error 被收集进 v.Errors）。
-// 写回的结果 map 统一归一为 JSON 形态（对齐旧 -reply 载荷 JSON 编解码后的纯 map/[]any 契约）。
-func (g *Gateway) sub(subject string, fn func(subject string, v *mq.Value) error) error {
-	// 关停短路：Stop 已置 stopped（并会退订既有句柄）→ 不再注册新订阅（异常启停竞态下，Stop 之后
-	// append 的句柄无人在 Stop 中退订 → 会持续接收/派发方法调用）。
-	if g.isStopped() {
-		return fmt.Errorf("gateway: stopped, refusing new subscription %q", subject)
-	}
-	s, err := g.bus.On(subject, 0, func(_ context.Context, subj string, v *mq.Value) error {
-		if err := fn(subj, v); err != nil {
-			return err
+		// 保存订阅句柄（Stop 统一退订）。
+		g.mu.Lock()
+		if g.stopped { // 双检：注册期间 Stop 已并发退订完毕 → 立即退订，避免句柄泄漏、停服后仍派发
+			g.mu.Unlock()
+			_ = unsub()
+			return fmt.Errorf("gateway: stopped, refusing new subscription %q", method)
 		}
-		if m, ok := v.Result.(map[string]any); ok {
-			v.Result = resultJSON(m)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	// 保存订阅句柄（Stop 统一退订；原实现丢弃句柄 → Stop 无法退订）。
-	g.mu.Lock()
-	if g.stopped { // 双检：注册期间 Stop 已并发退订完毕 → 立即退订，避免句柄泄漏、停服后仍派发
+		g.subs = append(g.subs, unsub)
 		g.mu.Unlock()
-		_ = s.Unsubscribe()
-		return fmt.Errorf("gateway: stopped, refusing new subscription %q", subject)
 	}
-	g.subs = append(g.subs, s)
-	g.mu.Unlock()
 	return nil
+}
+
+// Handle 处理一次方法调用（入站端口实现点）：payload = 原始请求；返回结果 JSON（nil = 无结果）。
+func (g *Gateway) Handle(ctx context.Context, method string, payload []byte) ([]byte, error) {
+	if g.isStopped() {
+		return nil, fmt.Errorf("gateway: stopped")
+	}
+	c := &call{req: payload}
+	if err := g.dispatch(method, c); err != nil {
+		return nil, err
+	}
+	if c.Result == nil {
+		return nil, nil
+	}
+	return json.Marshal(c.Result)
+}
+
+// pub 统一发布（相对操作名；前缀等通道细节由宿主 adapter 负责；fire-and-forget）。
+func (g *Gateway) pub(subject string, payload []byte) {
+	_ = g.transport.Publish(context.Background(), Op(subject), payload)
 }
 
 // notifyMCPChanged 目录/接入变化通知（单一 mcp-changed，2026-09-05 合并 tool-changed ∪
@@ -444,7 +401,7 @@ func (g *Gateway) reportTaskDone(t *ExecTask) {
 // ─── 方法分发 ────────────────────────────────────────────
 
 // dispatch 分发方法调用：handler 成功写回 v.Result；失败返回 error（收集进 v.Errors）。
-func (g *Gateway) dispatch(method string, v *mq.Value) error {
+func (g *Gateway) dispatch(method string, v *call) error {
 	switch method {
 	case "tools/list":
 		return g.handleToolsList(v)
@@ -480,7 +437,7 @@ func (g *Gateway) dispatch(method string, v *mq.Value) error {
 // tools/register → 注册工具；prompts/register → prompt/skill 目录资产（asset_kind 定类别，
 // 缺省 prompt；25 §5/T2：agent 已撤出资产面）；resources/register → resource 资产；
 // servers/register → 接入下游 server。
-func (g *Gateway) handleRegByMethod(method string, v *mq.Value) error {
+func (g *Gateway) handleRegByMethod(method string, v *call) error {
 	var req regMsg
 	if err := v.JSON(&req); err != nil {
 		return methodError(-32700, "parse error: %s", err.Error())
@@ -505,7 +462,7 @@ func (g *Gateway) handleRegByMethod(method string, v *mq.Value) error {
 // handleUnregByMethod 按原语分组注销（2026-09-06，取代 mcp.unregister 统一 kind）：
 // tools/unregister {name}；prompts/unregister {name, asset_kind?}；resources/unregister {name}；
 // servers/unregister {name}。
-func (g *Gateway) handleUnregByMethod(method string, v *mq.Value) error {
+func (g *Gateway) handleUnregByMethod(method string, v *call) error {
 	var req regMsg
 	if err := v.JSON(&req); err != nil {
 		return methodError(-32700, "parse error: %s", err.Error())
@@ -543,7 +500,7 @@ func assetKindOf(req regMsg) string {
 }
 
 // handleServersGet 获取单个 server 视图（name/type/status/tools，3A-工具与编排）。
-func (g *Gateway) handleServersGet(v *mq.Value) error {
+func (g *Gateway) handleServersGet(v *call) error {
 	var req ServerReq
 	if err := v.JSON(&req); err != nil {
 		return methodError(-32700, "parse error: %s", err.Error())
@@ -561,7 +518,7 @@ func (g *Gateway) handleServersGet(v *mq.Value) error {
 
 // handleGatewayCheck 健康检查（gateway 组方法，**始终注册**，2026-09-06 不再 --manage 门控；
 // 取代原 manage REST /mcp/check）。回执 {ok, tools, servers}。
-func (g *Gateway) handleGatewayCheck(v *mq.Value) error {
+func (g *Gateway) handleGatewayCheck(v *call) error {
 	v.Result = map[string]any{
 		"ok":      true,
 		"tools":   len(g.reg.allTools()),
@@ -573,7 +530,7 @@ func (g *Gateway) handleGatewayCheck(v *mq.Value) error {
 // handleGatewayReload 刷新暴露缓存（2026-09-06 语义修正：只重拉已接入 provider 的
 // tools/list 并重建路由，**不断开连接、不做 unregister+register**，动态注册的 server/tool
 // 不受影响）。回执 {reloaded, refreshed, removed_tools}。
-func (g *Gateway) handleGatewayReload(v *mq.Value) error {
+func (g *Gateway) handleGatewayReload(v *call) error {
 	var req Context
 	_ = v.JSON(&req)
 	keys := g.reg.providerKeys()
@@ -585,19 +542,6 @@ func (g *Gateway) handleGatewayReload(v *mq.Value) error {
 		}
 		ps, ok := g.reg.provider(key)
 		if !ok || ps.status != "connected" || ps.prov == nil {
-			continue
-		}
-		if ps.ref != nil {
-			// dir 共享节点（RB-3 ②）：工具按引用集即时展开、**不在 routes 物化** → 只重拉共享
-			// 节点的工具表（不重建路由）；计数语义与旧实现一致（removed += 该引用侧工具数）。
-			tools, err := ps.prov.ListTools(context.Background())
-			if err != nil {
-				g.logf("[gateway] reload: %s list failed: %v", key, err)
-				continue
-			}
-			g.reg.refreshSharedNode(ps.ref, tools)
-			removed += len(tools)
-			refreshed++
 			continue
 		}
 		tools, err := ps.prov.ListTools(context.Background())
@@ -625,16 +569,13 @@ func (g *Gateway) serverInfoOf(providerKey string) map[string]any {
 	return g.reg.serverInfoOf(providerKey)
 }
 
-func (g *Gateway) handleToolsList(v *mq.Value) error {
+func (g *Gateway) handleToolsList(v *call) error {
 	var req ListReq
 	_ = v.JSON(&req)
 	// 2026-09-07 定稿：list 无参数全量（含所有 instance），每项带 scope/node——UI 按需获取并展示；
 	// find/load 与 tools/call 仍按 instance 隔离（findFor/allToolsFor 保留）。
 	// RB-3 ③（2026-09-22）：**按 instance 构建路径**——载荷带 instance_id（桥/客户端直取会注入）
 	// → 仅返回「global ∪ 归属该 instance」；缺省（UI 全量 / llm 缓存）→ 全量路径（保留）。
-	// 沙箱开关归一到执行配置（仅 builtin：self/dir 节点）——工具面一变化（含 dir 节点注册）即重算，
-	// 保证 tools/call 前 Config 键位与最新路由一致（I-82）。
-	g.applySandboxToConfig()
 	routes := g.reg.routesAll()
 	if req.InstanceID != "" {
 		routes = g.reg.routesFor(req.InstanceID)
@@ -677,7 +618,7 @@ func (g *Gateway) handleToolsList(v *mq.Value) error {
 	return nil
 }
 
-func (g *Gateway) handleToolsCall(v *mq.Value) error {
+func (g *Gateway) handleToolsCall(v *call) error {
 	var req CallReq
 	if err := v.JSON(&req); err != nil {
 		return methodError(-32700, "parse error: %s", err.Error())
@@ -732,13 +673,14 @@ func (g *Gateway) CancelExec(instanceID, idOrCall string) (bool, error) {
 	if err := g.tm.cancelRef(instanceID, idOrCall); err != nil {
 		return false, methodError(-32602, "%s", err.Error())
 	}
+	g.logf("[gateway] exec cancelled (ref=%s instance=%s)", idOrCall, instanceID)
 	return true, nil
 }
 
 // handleToolsWait 处理「等待完成」裁决（mcp-tools-wait，统一异步模型 2026-09-13）：
 // 撤销超时、继续等原调用返回并交付结果。载荷 {instance_id, tool_call_id|task_id}；
 // 仅 never（options 含 wait）的非终态任务可等待。回执 {waiting: true, task_id}。
-func (g *Gateway) handleToolsWait(v *mq.Value) error {
+func (g *Gateway) handleToolsWait(v *call) error {
 	var req struct {
 		InstanceID string `json:"instance_id,omitempty"`
 		ToolCallID string `json:"tool_call_id,omitempty"`
@@ -812,8 +754,7 @@ func (g *Gateway) runPreHooks(req CallReq, route *toolRoute, entry *ServerEntry)
 	ctx, cancel := context.WithTimeout(context.Background(), g.params.CallTimeout)
 	defer cancel()
 	for _, subj := range subjects {
-		v := g.bus.Emit(ctx, subj, payload).Wait()
-		if err := v.Err(); err != nil {
+		if _, err := g.transport.Call(ctx, Op(subj), marshal(payload)); err != nil {
 			g.logf("[gateway] tool %s rejected by pre-hook %s: %v", req.Name, subj, err)
 			return -32000, fmt.Sprintf("pre-hook %s rejected call: %v", subj, err)
 		}
@@ -862,6 +803,20 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	delete(args, displayNameArg)
 	if purpose != "" {
 		req.Context.Purpose = purpose
+	}
+
+	// tool.before_call：装配方注入的 filter 链（fail-closed；返回 error 即不执行）。
+	g.hookMu.RLock()
+	before := g.beforeToolCall
+	g.hookMu.RUnlock()
+	if before != nil {
+		newArgs, ferr := before(req.Name, args)
+		if ferr != nil {
+			return nil, -32603, ferr.Error()
+		}
+		if newArgs != nil {
+			args = newArgs
+		}
 	}
 
 	// scoped 路由：请求 instance 命中归属注册（遮蔽 global）；回退 global
@@ -936,8 +891,10 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 	case "false", "0":
 		mode = "auto"
 	}
-	if explicitNever {
-		mode = "never" // 契约显式 never 不可被调用级覆盖
+	// INBOX（2026-10-17）：显式 `async=always` 允许覆盖契约的 `never`（否则插话前提不成立）；
+	// 其余调用级模式仍不得覆盖契约显式 never（保持原锁死语义）。
+	if explicitNever && strings.ToLower(callMode) != "always" {
+		mode = "never" // 契约显式 never：除显式 always 外，调用级不可覆盖
 	}
 	switch mode {
 	case "auto", "always", "never", "manual":
@@ -969,6 +926,13 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 
 	execCtx := context.Background()
 	execCtx = withTurnContext(execCtx, req.Context)
+	// L6.3/L7/L8：本次调用的 call_id（LLM tool-call id 优先，否则 gateway 自增）——同一标识
+	// 用作 per-call 池键、取消定位（CancelCall）与 progressToken（下游 progress 精确路由）。
+	callID := strings.TrimSpace(req.ToolCallID)
+	if callID == "" {
+		callID = fmt.Sprintf("call-%06d", g.callSeq.Add(1))
+	}
+	execCtx = withCallID(execCtx, callID)
 	run := func(ctx2 context.Context) (*mcp.CallToolResult, error) {
 		res, err := ps.prov.Call(ctx2, route.Original, args)
 		if ctx2.Err() == context.Canceled {
@@ -992,7 +956,7 @@ func (g *Gateway) doCall(req CallReq) (map[string]any, int, string) {
 		tool: req.Name, instanceID: req.InstanceID, session: req.Session,
 		turn: req.Turn, workDir: req.WorkDir, toolCallID: req.ToolCallID,
 		topSession: req.TopSession, parent: req.Parent, // I-90：任务树归属随回报回传
-		providerKey: route.Provider,
+		providerKey: route.Provider, callID: callID,
 	}
 
 	// 阈值 / 超时点（秒）：auto = 转后台阈值，其余 = 超时点（随 started 上报，供层记 exec_json）。
@@ -1157,6 +1121,21 @@ func (g *Gateway) onTaskCancel(t *ExecTask) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// L7 取消阶梯：provider 支持按调用取消（CallCanceller = proxyProvider）且有 call_id →
+	// 走 CancelCall（L0 协议取消 → L1 宽限 grace_ms → L2 关连接 → L3 杀进程树），
+	// 同槽其他在飞调用按 cascade-report 连带终止（任务层置 slot_killed 错误摘要）。
+	if cc, ok := ps.prov.(CallCanceller); ok && t.CallID != "" {
+		rep, cerr := cc.CancelCall(ctx, t.CallID, 0) // grace=0 → 用 provider 配置（grace_ms，缺省 2000）
+		if len(rep.Cascaded) > 0 {
+			n := g.tm.cancelCascade(t.CallID, rep.Cascaded)
+			g.logf("[gateway] provider %s: cancel %s cascade-aborted %d exec(s) on same slot: %v", t.ProviderKey, t.CallID, n, rep.Cascaded)
+		}
+		if cerr != nil {
+			g.logf("[gateway] provider %s: cancel call %s failed: %v（graceful=%v conn_closed=%v killed=%v）",
+				t.ProviderKey, t.CallID, cerr, rep.Graceful, rep.ConnClosed, rep.Killed)
+		}
+		return
+	}
 	rebuilt, err := ps.prov.Terminate(ctx, t.OwnerInstance, t.WorkDir)
 	if err != nil {
 		name := t.ProviderKey
@@ -1330,7 +1309,7 @@ func taskStatusMap(t *ExecTask) map[string]any {
 	return m
 }
 
-func (g *Gateway) handleServersList(v *mq.Value) error {
+func (g *Gateway) handleServersList(v *call) error {
 	var req ServerReq
 	_ = v.JSON(&req)
 	v.Result = map[string]any{"servers": g.reg.serverViews(req.Server)}
@@ -1354,59 +1333,62 @@ type regServerSpec struct {
 	HotTools    []string          `json:"hot_tools,omitempty"`
 	TimeoutSec  int               `json:"timeout,omitempty"`
 	Isolate     *bool             `json:"isolate,omitempty"` // 按 workdir 隔离连接；缺省（null）= 按 transport 推断：stdio→true / http|sse→false
-	// Sandbox/SandboxDirs：agentbox 沙箱（仅 stdio 的 spawn 下发；nil/未设置 = 不隔离）。
+	// 池化配置（L6；键名与 servers.list / ServerEntry 一致）。
+	PoolKey       string `json:"pool_key,omitempty"`       // shared（缺省）| call
+	PoolSize      int    `json:"pool_size,omitempty"`      // 每池键连接槽数（缺省 1）
+	MaxConcurrent int    `json:"max_concurrent,omitempty"` // 每 server 在途调用上限（缺省 5；超出排队）
+	GraceMs       int    `json:"grace_ms,omitempty"`       // 取消阶梯 L1 宽限期（毫秒，缺省 2000）
+	KillPolicy    string `json:"kill_policy,omitempty"`    // 固定 cascade-report
+	// Sandbox/SandboxDirs：沙箱（仅 stdio 的 spawn 下发；nil/未设置 = 不隔离）。
 	// 与 Isolate 独立、互不替代（语义见 ServerEntry.Sandbox）。
-	Sandbox     *bool           `json:"sandbox,omitempty"`
-	SandboxDirs []agentbox.Rule `json:"sandbox_dirs,omitempty"`
-	Origin      string          `json:"origin,omitempty"` // 来源：builtin/user；缺省 user（安全默认）
+	Sandbox     *bool          `json:"sandbox,omitempty"`
+	SandboxDirs []sandbox.Rule `json:"sandbox_dirs,omitempty"`
+	Origin      string         `json:"origin,omitempty"` // 来源：builtin/user；缺省 user（安全默认）
 }
 
 // regMsg 是 mcp.register / mcp.unregister 统一载荷（61-消息一览 §5.1.1，2026-09-05 定稿；
 // 2026-09-05 方法面 promise 化：无 req_id，响应经同主题 v.Result）。
 // kind 缺省 = server；tool/agent/prompt/skill/resource 见各分支。
 type regMsg struct {
-	InstanceID     string          `json:"instance_id,omitempty"`
-	Kind           string          `json:"kind,omitempty"` // server(缺省)/tool/agent/prompt/skill/resource
-	Name           string          `json:"name"`
-	Dir            string          `json:"dir,omitempty"`              // kind=server：dir 类型节点（本地契约根，如 <workdir>/@mcp；gateway 自建 server 扫描）
-	URL            string          `json:"url,omitempty"`              // kind=server（顶层兼容：proxied）
-	Transport      string          `json:"transport,omitempty"`        // kind=server（顶层兼容）
-	Namespace      string          `json:"namespace,omitempty"`        // kind=server
-	MCPServer      *regServerSpec  `json:"mcp_server,omitempty"`       // kind=server：进程规格（runtime→spawned）
-	Description    string          `json:"description,omitempty"`      // kind=tool/asset
-	Node           string          `json:"node,omitempty"`             // kind=asset：来源节点名（缺省 "server"）
-	Schema         string          `json:"schema,omitempty"`           // kind=tool（JSON Schema 文本）
-	HandlerSubject string          `json:"handler_subject,omitempty"`  // kind=tool 远程回调主题
-	PreHookSubject string          `json:"pre_hook_subject,omitempty"` // kind=tool 可选：前置钩子主题（执行任意工具前同步调用；失败即拒绝该调用）
-	Owner          string          `json:"owner,omitempty"`            // kind=tool
-	Hot            bool            `json:"hot,omitempty"`              // kind=tool
-	Category       string          `json:"category,omitempty"`         // kind=tool（_meta.category 元分类）
-	Async          string          `json:"async,omitempty"`            // kind=tool（_meta.async；auto 不显式透出）
-	AsyncThreshold float64         `json:"async_threshold,omitempty"`  // kind=tool（_meta.async-threshold，秒）
-	Timeout        *float64        `json:"timeout,omitempty"`          // kind=tool（_meta.timeout，秒；**指针区分「未设置」与「0/-1 = 无上限」**）
-	AssetKind      string          `json:"asset_kind,omitempty"`       // prompts/register 资产类别：prompt|skill（缺省 prompt；2026-09-06；25 §5/T2：agent 已撤）
-	Scope          string          `json:"scope,omitempty"`            // 注册归属域（2026-09-06）：缺省/"global" = 全局；instance id（uuid）= instance 级
-	URI            string          `json:"uri,omitempty"`              // kind=resource
-	MIMEType       string          `json:"mimetype,omitempty"`         // kind=resource
-	Path           string          `json:"path,omitempty"`             // kind=asset：运行时内容来源路径（RB-4 ①；有则内容按需读盘，与 content 二选一）
-	Content        string          `json:"content,omitempty"`          // kind=asset（无 path 时驻留；内嵌资产兼容兜底）
-	Arguments      json.RawMessage `json:"arguments,omitempty"`        // kind=asset（原文透传）
-	Origin         string          `json:"origin,omitempty"`           // kind=server：来源 builtin|user（缺省 user）；仅 builtin 注入 _meta 内部上下文
+	InstanceID     string            `json:"instance_id,omitempty"`
+	Kind           string            `json:"kind,omitempty"` // server(缺省)/tool/agent/prompt/skill/resource
+	Name           string            `json:"name"`
+	Dir            string            `json:"dir,omitempty"`              // kind=server：**已移除**（GATEWAY-2 L5）；携带时明确报错，须改用 mcp_server{runtime,args,transport=stdio}
+	URL            string            `json:"url,omitempty"`              // kind=server（顶层兼容：proxied）
+	Transport      string            `json:"transport,omitempty"`        // kind=server（顶层兼容）
+	Namespace      string            `json:"namespace,omitempty"`        // kind=server
+	Aliases        map[string]string `json:"aliases,omitempty"`          // kind=server：原语名 → 暴露名（alias 优先于 namespace 前缀）
+	ServerSpec     *regServerSpec    `json:"mcp_server,omitempty"`       // kind=server：进程规格（runtime→spawned）
+	Description    string            `json:"description,omitempty"`      // kind=tool/asset
+	Node           string            `json:"node,omitempty"`             // kind=asset：来源节点名（缺省 "server"）
+	Schema         string            `json:"schema,omitempty"`           // kind=tool（JSON Schema 文本）
+	HandlerSubject string            `json:"handler_subject,omitempty"`  // kind=tool 远程回调主题
+	PreHookSubject string            `json:"pre_hook_subject,omitempty"` // kind=tool 可选：前置钩子主题（执行任意工具前同步调用；失败即拒绝该调用）
+	Owner          string            `json:"owner,omitempty"`            // kind=tool
+	Hot            bool              `json:"hot,omitempty"`              // kind=tool
+	Category       string            `json:"category,omitempty"`         // kind=tool（_meta.category 元分类）
+	Async          string            `json:"async,omitempty"`            // kind=tool（_meta.async；auto 不显式透出）
+	AsyncThreshold float64           `json:"async_threshold,omitempty"`  // kind=tool（_meta.async-threshold，秒）
+	Timeout        *float64          `json:"timeout,omitempty"`          // kind=tool（_meta.timeout，秒；**指针区分「未设置」与「0/-1 = 无上限」**）
+	AssetKind      string            `json:"asset_kind,omitempty"`       // prompts/register 资产类别：prompt|skill（缺省 prompt；2026-09-06；25 §5/T2：agent 已撤）
+	Scope          string            `json:"scope,omitempty"`            // 注册归属域（2026-09-06）：缺省/"global" = 全局；instance id（uuid）= instance 级
+	URI            string            `json:"uri,omitempty"`              // kind=resource
+	MIMEType       string            `json:"mimetype,omitempty"`         // kind=resource
+	Path           string            `json:"path,omitempty"`             // kind=asset：运行时内容来源路径（RB-4 ①；有则内容按需读盘，与 content 二选一）
+	Content        string            `json:"content,omitempty"`          // kind=asset（无 path 时驻留；内嵌资产兼容兜底）
+	Arguments      json.RawMessage   `json:"arguments,omitempty"`        // kind=asset（原文透传）
+	Origin         string            `json:"origin,omitempty"`           // kind=server：来源 builtin|user（缺省 user）；仅 builtin 注入 _meta 内部上下文
 }
 
-func (g *Gateway) registerServer(v *mq.Value, req regMsg) error {
+func (g *Gateway) registerServer(v *call, req regMsg) error {
 	if req.Name == "" {
 		return methodError(-32602, "name required (kind=server)")
 	}
 	scope := normalizeScope(req.Scope)
-	// dir 类型节点（本地契约根，如 <workdir>/@mcp）：gateway 自建官方 server + RegisterContracts 扫描
+	// dir 类型节点（本地契约根）已随 L5 纯化移除：capability 目录改由装配方以普通
+	// stdio 下游（core-mcp-server --stdio --root <dir>）经 mcp_server 规格登记。
 	if req.Dir != "" {
-		if err := g.registerDirNode(req.Name, req.Dir, scope); err != nil {
-			return methodError(-32000, "%s", err.Error())
-		}
-		g.logf("[gateway] server (dir) registered: %s dir=%s scope=%q", req.Name, req.Dir, scope)
-		v.Result = map[string]any{"registered": true, "kind": KindServer, "type": "dir", "name": req.Name}
-		return nil
+		return methodError(-32602, "dir server 已移除（GATEWAY-2 L5）：请以 mcp_server{runtime,args,transport=stdio} 登记目录节点")
 	}
 	// 合并规格：顶层 url/transport/namespace 兼容旧载荷；mcp_server 承载完整进程规格。
 	entry := &ServerEntry{
@@ -1417,11 +1399,14 @@ func (g *Gateway) registerServer(v *mq.Value, req regMsg) error {
 	// 来源标注：顶层 origin 优先，其次 mcp_server.origin；缺省/未知 → user（安全默认）。
 	// 仅 Origin=builtin（本仓自有/内置）才向其注入 _meta 内部上下文。
 	origin := req.Origin
-	if origin == "" && req.MCPServer != nil {
-		origin = req.MCPServer.Origin
+	if origin == "" && req.ServerSpec != nil {
+		origin = req.ServerSpec.Origin
 	}
 	entry.Origin = normalizeOrigin(origin)
-	if s := req.MCPServer; s != nil {
+	if len(req.Aliases) > 0 {
+		entry.Aliases = req.Aliases
+	}
+	if s := req.ServerSpec; s != nil {
 		entry.Runtime = s.Runtime
 		entry.Args = s.Args
 		entry.Description = s.Description
@@ -1432,6 +1417,11 @@ func (g *Gateway) registerServer(v *mq.Value, req regMsg) error {
 		entry.HotTools = s.HotTools
 		entry.TimeoutSec = s.TimeoutSec
 		entry.Isolate = s.Isolate // nil = 按 transport 推断（stdio→true）
+		entry.PoolKey = s.PoolKey
+		entry.PoolSize = s.PoolSize
+		entry.MaxConcurrent = s.MaxConcurrent
+		entry.GraceMs = s.GraceMs
+		entry.KillPolicy = s.KillPolicy
 		entry.Sandbox = s.Sandbox // nil/未设置 = 不隔离（默认兼容）；仅 stdio 的 spawn 生效
 		entry.SandboxDirs = s.SandboxDirs
 		if req.URL == "" {
@@ -1475,7 +1465,7 @@ func (g *Gateway) registerServer(v *mq.Value, req regMsg) error {
 	return nil
 }
 
-func (g *Gateway) registerTool(v *mq.Value, req regMsg) error {
+func (g *Gateway) registerTool(v *call, req regMsg) error {
 	if req.Name == "" {
 		return methodError(-32602, "name is required (kind=tool)")
 	}
@@ -1525,31 +1515,19 @@ func (g *Gateway) registerTool(v *mq.Value, req regMsg) error {
 	if err := g.regProv.RegisterTool(rt); err != nil {
 		return methodError(-32000, "%s", err.Error())
 	}
-	// 注入 self（参数能力源 server）；经 self 节点 list/路由 → handler 委托 regProv 执行
-	if g.params.MCPServer == nil {
-		g.regProv.UnregisterTool(scope, req.Name)
-		return methodError(-32000, "tool %q register failed: no self MCPServer", req.Name)
-	}
-	toolName := req.Name
-	g.params.MCPServer.AddTool(t, func(ctx context.Context, callReq *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args, err := argsFromRequest(callReq.Params.Arguments)
-		if err != nil {
-			return toolErrorText(err.Error()), nil
-		}
-		// 调用上下文经协议 _meta（doCall 调用前透传）→ 重建执行 ctx（regProv 据此转发远程回调）
-		return g.regProv.Call(execCtxFromMeta(ctx, callReq.Params.Meta), toolName, args)
-	})
-	if err := g.reconcileSelf(); err != nil {
+	// 注册工具直接以提供方身份参与路由（L5：不再 AddTool 注入 self 能力源）：
+	// 刷新工具表 → 暴露名 = applyPrefix(<entry.ID=self>_, 原名) = self_<原名>（对外零变更）。
+	if err := g.refreshRegistered(); err != nil {
 		g.regProv.UnregisterTool(scope, req.Name)
 		return methodError(-32000, "tool %q register failed: %s", req.Name, err.Error())
 	}
 	g.notifyMCPChanged(req.InstanceID, map[string]any{"kind": KindTool, "name": req.Name})
-	g.logf("[gateway] tool injected into self: %s (owner=%s, scope=%q)", req.Name, owner, scope)
+	g.logf("[gateway] tool registered: %s (owner=%s, scope=%q)", req.Name, owner, scope)
 	v.Result = map[string]any{"registered": true, "kind": KindTool, "name": req.Name}
 	return nil
 }
 
-func (g *Gateway) registerAsset(v *mq.Value, req regMsg, kind string) error {
+func (g *Gateway) registerAsset(v *call, req regMsg, kind string) error {
 	if req.Name == "" {
 		return methodError(-32602, "name is required (kind=%s)", kind)
 	}
@@ -1572,20 +1550,11 @@ func (g *Gateway) registerAsset(v *mq.Value, req regMsg, kind string) error {
 	return nil
 }
 
-func (g *Gateway) unregisterServer(v *mq.Value, req regMsg) error {
+func (g *Gateway) unregisterServer(v *call, req regMsg) error {
 	if req.Name == "" {
 		return methodError(-32602, "name is required (kind=server)")
 	}
 	scope := normalizeScope(req.Scope)
-	// dir 类型节点优先（无 command/url 形态）
-	if existed, removed := g.unregisterDirNode(req.Name, scope); existed {
-		g.notifyMCPChanged(req.InstanceID, map[string]any{"kind": KindServer, "name": req.Name, "status": "unregistered"})
-		g.logf("[gateway] server (dir) unregistered: %s (removed %d tools)", req.Name, removed)
-		v.Result = map[string]any{
-			"unregistered": true, "kind": KindServer, "name": req.Name, "removed_tools": removed,
-		}
-		return nil
-	}
 	removed := 0
 	spawned := false
 	for _, key := range []string{provKey("spawned", scope, req.Name), provKey("proxied", scope, req.Name)} {
@@ -1610,23 +1579,22 @@ func (g *Gateway) unregisterServer(v *mq.Value, req regMsg) error {
 	return nil
 }
 
-func (g *Gateway) unregisterTool(v *mq.Value, req regMsg) error {
+func (g *Gateway) unregisterTool(v *call, req regMsg) error {
 	if req.Name == "" {
 		return methodError(-32602, "name is required (kind=tool)")
 	}
 	scope := normalizeScope(req.Scope)
 	g.regProv.UnregisterTool(scope, req.Name)
-	if g.params.MCPServer != nil {
-		g.params.MCPServer.RemoveTools(req.Name)
-		_ = g.reconcileSelf()
+	if err := g.refreshRegistered(); err != nil {
+		g.logf("[gateway] tool unregister refresh: %v", err)
 	}
 	g.notifyMCPChanged(req.InstanceID, map[string]any{"kind": KindTool, "name": req.Name})
-	g.logf("[gateway] tool unregistered from self: %s (scope=%q)", req.Name, scope)
+	g.logf("[gateway] tool unregistered: %s (scope=%q)", req.Name, scope)
 	v.Result = map[string]any{"unregistered": true, "kind": KindTool, "name": req.Name}
 	return nil
 }
 
-func (g *Gateway) unregisterAsset(v *mq.Value, req regMsg, kind string) error {
+func (g *Gateway) unregisterAsset(v *call, req regMsg, kind string) error {
 	g.reg.delAssetFor(normalizeScope(req.Scope), kind, req.Name)
 	g.notifyMCPChanged(req.InstanceID, map[string]any{"kind": kind, "name": req.Name})
 	g.logf("[gateway] asset unregistered: %s/%s", kind, req.Name)
@@ -1634,184 +1602,13 @@ func (g *Gateway) unregisterAsset(v *mq.Value, req regMsg, kind string) error {
 	return nil
 }
 
-// ─── prompts / resources（原语面：经 self + dir 节点实时拉取，带 scope/type 区分）───
+// ─── prompts / resources 原语面 ───
+//
+// L5（2026-10-21）：原「经 self + dir 节点实时拉取」实现已删除 —— gateway 不再持有能力源，
+// 原语面改为遍历已接入下游 provider 的 list/get/read（见 primitives.go）。
 
-// handlePromptsList 2026-09-07 定稿：全量返回（节点原语 + 注册 prompt/skill 资产），
-// 每项带 type（prompt/skill）+ scope + node；不带参数过滤——UI 按需分流。
-// 25 §5/T2（2026-09-25）：**agent 已撤出资产面** → 本表不再列 agent。
-func (g *Gateway) handlePromptsList(v *mq.Value) error {
-	list := make([]any, 0, 32)
-	ctx := context.Background()
-	_ = g.forEachMemNodeAll(func(n *memNode, nodeName, scope string) error {
-		ps, err := n.ListPrompts(ctx)
-		if err != nil {
-			return nil // 单节点失败不阻塞
-		}
-		for _, p := range ps {
-			typ := "prompt"
-			if p.Meta != nil {
-				if tv, ok := p.Meta["type"].(string); ok && tv != "" {
-					typ = tv
-				}
-			}
-			entry := map[string]any{
-				"name": p.Name, "description": p.Description,
-				"type": typ, "scope": scope, "node": nodeName,
-			}
-			if len(p.Arguments) > 0 {
-				args := make([]map[string]any, 0, len(p.Arguments))
-				for _, a := range p.Arguments {
-					args = append(args, map[string]any{
-						"name":        a.Name,
-						"description": a.Description,
-						"required":    a.Required,
-					})
-				}
-				entry["arguments"] = args
-			}
-			list = append(list, entry)
-		}
-		return nil
-	})
-	// 注册资产并入（prompt/skill，全量 + scope/node）；25 §5/T2：agent 已撤出资产面 → 不再列举。
-	for _, kind := range []string{KindPrompt, KindSkill} {
-		for _, a := range g.reg.assetsByKind(kind) {
-			entry := map[string]any{
-				"name": a.Name, "description": a.Description,
-				"type": kind, "scope": a.Scope,
-			}
-			if a.Node != "" {
-				entry["node"] = a.Node
-			}
-			if len(a.Arguments) > 0 {
-				entry["arguments"] = a.Arguments
-			}
-			list = append(list, entry)
-		}
-	}
-	v.Result = map[string]any{"prompts": list}
-	return nil
-}
-
-// handlePromptsGet 返回单个 prompt/skill 详细内容（**节点原语**实时读取）。
-// 25 §5/T2（2026-09-25）：**agent 已撤出资产面** —— 原「先 agent 资产」分支已撤（agent 不再
-// 注册为资产，且不可经此读取）。
-func (g *Gateway) handlePromptsGet(v *mq.Value) error {
-	var req struct {
-		Context
-		Name string `json:"name"`
-	}
-	if err := v.JSON(&req); err != nil {
-		return methodError(-32700, "parse error: %s", err.Error())
-	}
-	if req.Name == "" {
-		return methodError(-32602, "name is required")
-	}
-	// 节点原语（self + 归属 dir）
-	ctx := context.Background()
-	found := false
-	_ = g.eachMemNode(req.InstanceID, func(n *memNode) error {
-		if found {
-			return nil
-		}
-		res, err := n.GetPrompt(ctx, req.Name, nil)
-		if err != nil {
-			return nil
-		}
-		if len(res.Messages) == 0 {
-			return nil
-		}
-		if tc, ok := res.Messages[0].Content.(*mcp.TextContent); ok {
-			found = true
-			v.Result = map[string]any{
-				"name":        req.Name,
-				"description": "",
-				"content":     tc.Text,
-				"type":        "prompt",
-			}
-		}
-		return nil
-	})
-	if !found {
-		return methodError(-32602, "prompt %q not found", req.Name)
-	}
-	return nil
-}
-
-// handleResourcesList 2026-09-07 定稿：全量返回（节点原语 + 注册 resource 资产），带 scope/node。
-func (g *Gateway) handleResourcesList(v *mq.Value) error {
-	list := make([]any, 0, 32)
-	ctx := context.Background()
-	_ = g.forEachMemNodeAll(func(n *memNode, nodeName, scope string) error {
-		rs, err := n.ListResources(ctx)
-		if err != nil {
-			return nil
-		}
-		for _, r := range rs {
-			list = append(list, map[string]any{
-				"uri":         r.URI,
-				"name":        r.Name,
-				"description": r.Description,
-				"mimeType":    r.MIMEType,
-				"scope":       scope,
-				"node":        nodeName,
-			})
-		}
-		return nil
-	})
-	for _, a := range g.reg.assetsByKind(KindResource) {
-		entry := map[string]any{
-			"uri": a.URI, "name": a.Name, "description": a.Description,
-			"mimeType": a.MIMEType, "scope": a.Scope,
-		}
-		if a.Node != "" {
-			entry["node"] = a.Node
-		}
-		list = append(list, entry)
-	}
-	v.Result = map[string]any{"resources": list}
-	return nil
-}
-
-// handleResourcesRead 返回单个 resource 详细内容（self + 归属 dir 节点按 uri 读取）。
-func (g *Gateway) handleResourcesRead(v *mq.Value) error {
-	var req struct {
-		Context
-		URI string `json:"uri"`
-	}
-	if err := v.JSON(&req); err != nil {
-		return methodError(-32700, "parse error: %s", err.Error())
-	}
-	if req.URI == "" {
-		return methodError(-32602, "uri is required")
-	}
-	ctx := context.Background()
-	var hit *mcp.ResourceContents
-	_ = g.eachMemNode(req.InstanceID, func(n *memNode) error {
-		if hit != nil {
-			return nil
-		}
-		res, err := n.ReadResource(ctx, req.URI)
-		if err != nil {
-			return nil
-		}
-		if len(res.Contents) > 0 {
-			hit = res.Contents[0]
-		}
-		return nil
-	})
-	if hit == nil {
-		return methodError(-32602, "resource %q not found", req.URI)
-	}
-	v.Result = map[string]any{
-		"uri":         hit.URI,
-		"name":        hit.URI,
-		"description": "",
-		"mimeType":    hit.MIMEType,
-		"content":     hit.Text,
-	}
-	return nil
-}
+// handlePromptsGet / handleResourcesList / handleResourcesRead 与 handlePromptsList 同处
+// primitives.go（下游 provider 原语聚合）。
 
 // ─── 下游接入 ────────────────────────────────────────────
 
@@ -1823,7 +1620,8 @@ func (g *Gateway) connectServer(ctx context.Context, e ServerEntry) error {
 	if e.Sandbox != nil && *e.Sandbox {
 		g.mergeLegacySandboxMCP(e.SandboxName())
 	}
-	prov, err := newProxyProvider(&e, g.params.CallTimeout, g.logf, g.sandboxOnEntry)
+	prov, err := newProxyProvider(&e, g.params.CallTimeout, g.logf, g.sandboxOnEntry,
+		NotifyHandlers{Progress: g.params.ProgressHandler, Elicit: g.params.ElicitHandler})
 	if err != nil {
 		return err
 	}

@@ -197,7 +197,10 @@ test('⑧ AuthView.vue：登录/注册 + 选目录 → claim；错误分派符�
   assert.match(src, /claim\(\{ user: username\.value\.trim\(\) \|\| undefined, work_dir: dir \}\)/, '选目录后须发 instance-claim{user?, work_dir}')
   assert.match(src, /code === 'instance-unauthorized'\)[\s\S]{0,200}markSignedOut\(\)/, 'unauthorized → 回登录视图')
   assert.match(src, /code === 'instance-forbidden' \? 'common\.auth_err_forbidden'/, 'forbidden → 提示换目录（不跳登录）')
-  assert.equal((src.match(/markSignedOut\(\)/g) || []).length, 1, 'markSignedOut 只允许在 unauthorized 分支调用')
+  // 两条 claim 路径（登录后认领 / 已认证直接选目录）各自有 unauthorized 分支 → 2 处合法调用；
+  // 断言二者都紧跟 `instance-unauthorized` 判定（不得在其它错误分支跳登录）。
+  assert.equal((src.match(/code === 'instance-unauthorized'\)[\s\S]{0,120}markSignedOut\(\)/g) || []).length, 2,
+    'markSignedOut 只允许在 unauthorized 分支调用（两条 claim 路径各一处）')
   assert.doesNotMatch(src, /window\.go\./, '禁止直调 window.go.*')
   assert.match(src, /isBrowserForm\(\)/, '目录选择器仅在 GUI/native 形态提供')
 })

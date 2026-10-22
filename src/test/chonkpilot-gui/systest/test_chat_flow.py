@@ -111,13 +111,21 @@ def main():
         #（T5 方案 B：user 气泡不再乐观插入 —— 以「落库回执」（llm-start /publish 应答）为渲染时点，
         #  故断言必须**有界等待**（实测回执延迟中位 ~30ms / 最大 <100ms，预算 15s 富余）；
         #  断言条件与强度不变，只是把「读」的下界从"同步渲染"改为"回执后渲染"。）
+        J(gui, "window.__turnStarts=[];window.mq.on('turn-start', d=>window.__turnStarts.push(d));'ok'")
         send_msg(gui, sid, '帮我写一个排序函数')
         uBubble = wait_upto(gui, """(()=>{const els=Array.from(document.querySelectorAll('.message-item.user .message-content'));const last=els[els.length-1];return last?last.textContent.trim():''})()""",
                             lambda v: v == '帮我写一个排序函数', max_wait=15.0)
+        # Q6：空闲首条也先入 inbox → 服务端 consumeNextTurn 起轮 → turn-start 回填 turn id。
+        starts = wait_upto(gui, "JSON.stringify((window.__turnStarts||[]).map(d=>d.session||d.session_id))",
+                           lambda v: sid in str(v), max_wait=10.0)
+        c.check("CF1b 空闲发送先入 inbox → 服务端起轮（turn-start 回填）", sid in str(starts),
+                "starts=%r" % (starts,))
         cancelBtn = wait_upto(gui, """(()=>{const bs=Array.from(document.querySelectorAll('.input-actions-right button'));return bs.some(b=>(b.textContent||'').trim()==='Cancel'||(b.textContent||'').trim()==='取消')})()""",
                               lambda v: v is True)
+        _btns = J(gui, "JSON.stringify(Array.from(document.querySelectorAll('.input-actions-right button')).map(b=>(b.textContent||'').trim()))")
         c.check("CF1 发送即显 user 气泡 + 忙碌 Cancel",
-                uBubble == '帮我写一个排序函数' and bool(cancelBtn), f"bubble={repr(uBubble)} cancel={cancelBtn}")
+                uBubble == '帮我写一个排序函数' and bool(cancelBtn),
+                "bubble=%r cancel=%r buttons=%s" % (uBubble, cancelBtn, _btns))
 
         # CF2 思考过程：reason → .reasoning-section 渲染 + 折叠/展开
         emit_remote(gui, 'llm-receive', {'type': 'reason', 'text': '用户想要一个排序函数，先考虑算法选择。', 'session': sid})

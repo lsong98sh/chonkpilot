@@ -1,6 +1,6 @@
 // 「不显示的目录」配置读取（D-39 层2）。
 //
-// filesys 严格只依赖 chonkpilot-lib + fsnotify（不依赖 data / plugin 模块，见 10-分层与依赖 §5），
+// filesys 严格只依赖 chonkpilot-lib + fswatcher（不依赖 data / plugin 模块，见 10-分层与依赖 §5），
 // 故此处按既有 `data-prj-config-load` 消息契约自行做一次请求-响应（语义与 plugins 内
 // dataclient.ReadKey 一致，仅作用于本模块，避免引入反向依赖）。配置键经既有 data-prj-config
 // 面读写，**零新增消息**。

@@ -113,6 +113,8 @@ export function promptInput(placeholder, initialValue = '', options = {}) {
     const multiline = !!options.multiline
     // options.hint：输入框上方提示行（如「名称创建后不可修改」）。空 = 不显示。
     const hint = String(options.hint || '')
+    // options.maxlength：输入长度上限（INPUTVAL-1：弹框输入统一支持，不设全局默认值）。
+    const maxlength = options.maxlength ? Number(options.maxlength) : undefined
     const value = ref(initialValue)
 
     const finish = (val) => {
@@ -148,6 +150,7 @@ export function promptInput(placeholder, initialValue = '', options = {}) {
                 modelValue: value.value,
                 placeholder,
                 rows: 6,
+                maxlength,
                 autofocus: true,
                 style: { width: '100%' },
                 'onUpdate:modelValue': (v) => { value.value = v },
@@ -156,6 +159,7 @@ export function promptInput(placeholder, initialValue = '', options = {}) {
               : h(Input, {
                 modelValue: value.value,
                 placeholder,
+                maxlength,
                 'onUpdate:modelValue': (v) => { value.value = v },
                 autofocus: true,
                 style: { width: '100%' },

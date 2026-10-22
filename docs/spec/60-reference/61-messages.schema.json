@@ -11,6 +11,50 @@
     "failureEnvelope": "gui.* / 门面失败统一信封 {ok:false, error}；result 中允许通用 error 键（已在 reconciliation 侧作为 cross-cutting 允许项）",
     "fieldDictionary": "字段语义字典（同语义唯一名）。键 = 语义键；name = 规范字段名（缺省 = 键）；aliases = 禁用别名（出现即报错）；exceptions = 允许的同语义别名（仅限 where 主题，逐条给 reason，来自 61 §0.5）。各主题字段按名引用本字典：未登记字段 / 命中别名 / 例外越位 / 类型不符 → genmsg 报错。"
   },
+  "x-chonk": {
+    "version": 1,
+    "desc": "BRIDGE-2 消息元数据（设计方案 §11.12）。解析顺序：topics[topic] > prefixes[最长前缀] > defaults。未列出的主题一律按 defaults（kind=event / observe / mutable=none），不需要逐条登记。",
+    "defaults": {
+      "kind": "event",
+      "direction": "server->client",
+      "scope": "instance-optional",
+      "frequency": "low",
+      "visibility": "observe",
+      "mutable": "none",
+      "drop": false
+    },
+    "prefixes": {
+      "gui.": {"kind": "control", "direction": "client->gui", "scope": "instance-required", "visibility": "call"},
+      "lf-": {"kind": "control", "direction": "gui-local", "scope": "local", "visibility": "call"},
+      "instance-": {"kind": "control", "direction": "client->server", "scope": "instance-required", "visibility": "call"},
+      "data-": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
+      "filesys.": {"kind": "query", "direction": "client->server", "scope": "instance-required", "visibility": "call"},
+      "mcp-": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
+      "session-": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe"},
+      "subchat-": {"kind": "command", "direction": "client->server", "scope": "instance-required", "visibility": "call"},
+      "task-": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe"},
+      "tool-": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe"},
+      "ask-": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe"},
+      "llm-": {"kind": "event", "direction": "server->client", "scope": "instance-optional", "visibility": "observe"},
+      "memory.": {"kind": "command", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
+      "vfts.": {"kind": "command", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
+      "prompt-": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"}
+    },
+    "topics": {
+      "session-start": {"kind": "command", "direction": "client->server", "scope": "instance-required", "visibility": "filter", "mutable": "payload", "mutable_fields": ["llm", "scenario_id", "think", "effort"], "immutable_fields": ["session", "turn", "instance_id"]},
+      "session-send": {"kind": "command", "direction": "client->server", "scope": "instance-required", "visibility": "filter", "mutable": "payload", "mutable_fields": ["content"], "immutable_fields": ["session", "turn", "type", "tool_call_id", "instance_id"]},
+      "llm-simple": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "filter", "mutable": "payload", "mutable_fields": ["prompt", "system", "llm"], "immutable_fields": ["instance_id"]},
+      "mcp-tools-call": {"kind": "command", "direction": "client->gateway", "scope": "instance-required", "visibility": "filter", "mutable": "payload", "mutable_fields": ["arguments"], "immutable_fields": ["name", "tool_call_id", "instance_id"]},
+      "llm-inbox-add": {"kind": "command", "direction": "client->server", "scope": "instance-required", "visibility": "call"},
+      "llm-inbox-list": {"kind": "query", "direction": "client->server", "scope": "instance-required", "visibility": "call"},
+      "llm-inbox-discard": {"kind": "command", "direction": "client->server", "scope": "instance-required", "visibility": "call"},
+      "llm-inbox-promote": {"kind": "command", "direction": "client->server", "scope": "instance-required", "visibility": "call"},
+      "session-receive": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
+      "session-complete": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
+      "tool-notify": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
+      "task-updated": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"}
+    }
+  },
   "fieldDictionary": {
     "accepted": { "type": "bool", "desc": "受理确认" },
     "activated": { "type": "bool", "desc": "窗口已激活" },
@@ -27,12 +71,14 @@
     "asset_kind": { "type": "string", "desc": "资产种类" },
     "async": { "type": "string", "desc": "异步模式" },
     "async_threshold": { "type": "number", "desc": "异步阈值（秒）" },
+    "at": { "type": "string", "desc": "事件时间（RFC3339；turn_events.at）" },
     "b64": { "type": "string", "desc": "截图 base64" },
     "base_dicts": { "type": "array", "desc": "vfts 内嵌基础词典文件名清单" },
     "before_turn_id": { "type": "string", "desc": "分页游标：早于该轮" },
     "brief_tokens": { "type": "int", "desc": "摘要 token 数" },
     "cached_rows": { "type": "int", "desc": "缓存行数" },
     "cancelled": { "type": "bool", "desc": "已取消" },
+    "brief": { "type": "string", "desc": "落库摘要（消息简版正文；inbox 提交时可显式给定）" },
     "cascade": { "type": "string", "desc": "级联范围" },
     "category": { "type": "string", "desc": "类别（记忆/工具）" },
     "children": { "type": "array", "desc": "目录子项" },
@@ -92,7 +138,9 @@
     "handler_subject": { "type": "string", "desc": "处理器主题" },
     "hit": { "type": "string", "desc": "窗口边缘命中区（gui.window.resize：left/right/top/bottom/topleft/topright/bottomleft/bottomright）" },
     "hot": { "type": "bool", "desc": "热加载" },
+    "inbox_id": { "type": "string", "desc": "inbox 项标识（同 id 幂等）" },
     "id": { "type": "string", "desc": "标识" },
+    "idempotency_key": { "type": "string", "desc": "幂等键（inbox 消费去重）" },
     "ids": { "type": "array", "desc": "标识集合" },
     "include_closed": { "type": "bool", "desc": "含已关闭" },
     "include_snapshot": { "type": "bool", "desc": "含快照" },
@@ -100,6 +148,7 @@
     "init_git": { "type": "bool", "desc": "初始化 git" },
     "instance_id": { "type": "string", "desc": "实例 id（业务载荷一律必带）" },
     "is_dir": { "type": "bool", "desc": "是否目录" },
+    "items": { "type": "array", "desc": "条目集合（inbox 待处理项等）" },
     "key": { "type": "string", "desc": "键" },
     "keys": { "type": "array", "desc": "键集合" },
     "kind": { "type": "string", "desc": "种类" },
@@ -159,6 +208,7 @@
     "parents": { "type": "any", "desc": "父轮次集合" },
     "password": { "type": "string", "desc": "口令" },
     "path": { "type": "string", "desc": "路径" },
+    "pending_only": { "type": "bool", "desc": "只回非终态（data-ask-pending 启动扫描）" },
     "paths": { "type": "array", "desc": "路径集合" },
     "payload": { "type": "any", "desc": "内层载荷" },
     "plugin": { "type": "string", "desc": "插件名" },
@@ -184,12 +234,14 @@
     "removed_tools": { "type": "any", "desc": "移除的工具" },
     "resource": { "type": "any", "desc": "资源对象" },
     "resources": { "type": "array", "desc": "资源清单" },
+    "retention_days": { "type": "int", "desc": "保留天数（0 = 永久；<0 = 不清理；MOD-1 M3 turn_events）" },
     "result_digest": { "type": "string", "desc": "结果摘要" },
     "result_summary": { "type": "string", "desc": "结果概要" },
     "results": { "type": "array", "desc": "检索结果集合" },
     "retry_attempt": { "type": "int", "desc": "重试序号：中间态 = 即将执行的第几次重试（1 起）；终态 = 已执行的重试次数（0 = 未重试）（RETRY-1，2026-10-17）" },
     "retry_count": { "type": "int", "desc": "允许的最大重试次数（usr retryCount；0 = 不重试）（RETRY-1，2026-10-17）" },
     "retry_wait_ms": { "type": "int", "desc": "下一次重试前等待毫秒（中间态 > 0；终态 = 0）（RETRY-1，2026-10-17）" },
+    "auto_continue_delay_ms": { "type": "int", "desc": "后端自动续写宽限期毫秒（0 = 不自动续写）（RETRY-2，2026-10-20）" },
     "retryable": { "type": "bool", "desc": "可重试" },
     "root": { "type": "string", "desc": "根路径" },
     "round": { "type": "int", "desc": "群聊**大轮次**序号（1 基；= 群聊依次叫号的那一轮，**非**子会话内部轮次。SUBCHAT-3 阶段 E，群聊方案 §5 · D44 ②）" },
@@ -204,6 +256,7 @@
     "servers": { "type": "any", "desc": "server 集合" },
     "session": { "type": "string", "desc": "会话 id" },
     "session_id": { "type": "string", "desc": "会话 id（数据面）" },
+    "seq": { "type": "number", "desc": "事件序号（per-turn 单调；MOD-1 M3 turn_events）" },
     "shadow": { "type": "bool", "desc": "影子节点" },
     "size": { "type": "int", "desc": "字节数" },
     "snapshot": { "type": "any", "desc": "快照" },
@@ -229,6 +282,7 @@
     "timeout_s": { "type": "number", "desc": "超时（秒，事件）" },
     "title": { "type": "string", "desc": "标题" },
     "tool": { "type": "string", "desc": "工具名" },
+    "tool_call_status": { "type": "string", "desc": "工具调用生命周期状态（pending/running/provisional/completed/failed/cancelled/interrupted）" },
     "tools": { "type": "any", "desc": "工具集合" },
     "top_session": { "type": "string", "desc": "顶层会话 id" },
     "total": { "type": "int", "desc": "总数" },
@@ -1442,6 +1496,116 @@
       }
     },
     {
+      "topic": "data-inbox-append",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn_id": { "type": "string", "required": false },
+        "type": { "type": "string", "required": true },
+        "llm": { "type": "string", "required": false },
+        "content": { "type": "string", "required": true },
+        "think": { "type": "any", "required": false },
+        "effort": { "type": "any", "required": false },
+        "scenario_id": { "type": "string", "required": false },
+        "idempotency_key": { "type": "string", "required": false },
+        "source": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-inbox-list",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "status": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "items": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "data-inbox-update",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "id": { "type": "string", "required": true },
+        "status": { "type": "string", "required": false },
+        "type": { "type": "string", "required": false },
+        "turn_id": { "type": "string", "required": false },
+        "content": { "type": "string", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-inbox-commit",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "inbox_id": { "type": "string", "required": true },
+        "turn_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": false },
+        "msg": { "type": "object", "required": true },
+        "brief": { "type": "string", "required": false },
+        "tool_call_status": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "data-ask-pending",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "ask_id": { "type": "string", "required": false },
+        "pending_only": { "type": "bool", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "items": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "data-turn-event-append",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": false },
+        "turn_id": { "type": "string", "required": true },
+        "seq": { "type": "number", "required": true },
+        "type": { "type": "string", "required": true },
+        "at": { "type": "string", "required": false },
+        "payload": { "type": "any", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "data-turn-event-cleanup",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "retention_days": { "type": "int", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "deleted": { "type": "int", "required": true }
+      }
+    },
+    {
       "topic": "data-session-load-messages",
       "face": "data",
       "direction": "client->data",
@@ -1808,6 +1972,69 @@
       "result": {}
     },
     {
+      "topic": "llm-inbox-add",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "inbox-add",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": false },
+        "llm": { "type": "string", "required": false },
+        "content": { "type": "string", "required": true },
+        "think": { "type": "any", "required": false },
+        "effort": { "type": "any", "required": false },
+        "scenario_id": { "type": "string", "required": false },
+        "idempotency_key": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true }
+      },
+      "notes": "**INBOX（2026-10-17）新增**：中途插话/等下一轮的统一发送入口。服务端按当前 phase 分类：`toolPending`/`awaitJoin` → `insert`（立即插入并消费）；`streaming`/无运行轮 → `next_turn`（等本轮结束或重启后「继续」）。见 `docs/agent-chat/中途插话设计方案.md` §3.3 / §5.1.1。"
+    },
+    {
+      "topic": "llm-inbox-list",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "inbox-list",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "status": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "items": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "llm-inbox-discard",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "inbox-discard",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "id": { "type": "string", "required": true }
+      },
+      "result": { "ok": { "type": "bool", "required": true } }
+    },
+    {
+      "topic": "llm-inbox-promote",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "inbox-promote",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "id": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "type": { "type": "string", "required": true }
+      }
+    },
+    {
       "topic": "llm-cancel",
       "face": "server",
       "direction": "client->server",
@@ -2052,6 +2279,20 @@
         "retry_attempt": { "type": "int", "required": true },
         "retry_count": { "type": "int", "required": true },
         "retry_wait_ms": { "type": "int", "required": true }
+      }
+    },
+    {
+      "topic": "session-interrupted",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "code": { "type": "string", "required": true },
+        "message": { "type": "string", "required": false },
+        "retryable": { "type": "bool", "required": true },
+        "auto_continue_delay_ms": { "type": "int", "required": true }
       }
     },
     {

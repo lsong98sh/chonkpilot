@@ -86,9 +86,28 @@ func TestResolveOpenDirRecentsOrder(t *testing.T) {
 	}
 }
 
-// TestResolveOpenDirNoProject：无显式、无可用最近、无 picker → ErrNoProject（不静默绑定空目录）。
-func TestResolveOpenDirNoProject(t *testing.T) {
+// TestResolveOpenDirFallsBackToDefaultWorkspace：无显式、无可用最近 → 创建并使用默认工作目录
+// （%APPDATA%\chonkpilot\workspace，G-64 口径），不再返回 ErrNoProject。
+func TestResolveOpenDirFallsBackToDefaultWorkspace(t *testing.T) {
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	r := flash.DirResolver{BaseDir: t.TempDir(), Exists: dirExists, Free: func(string) bool { return true }}
+	got, err := r.Resolve("", nil)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if filepath.Base(got) != "workspace" {
+		t.Fatalf("resolved dir = %q, want basename %q", got, "workspace")
+	}
+}
+
+// TestResolveOpenDirNoProject：无显式、无可用最近、默认目录也不可用、无 picker → ErrNoProject。
+func TestResolveOpenDirNoProject(t *testing.T) {
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	r := flash.DirResolver{BaseDir: t.TempDir(), Exists: dirExists, Free: func(string) bool { return false }}
 	_, err := r.Resolve("", nil)
 	if !errors.Is(err, flash.ErrNoProject) {
 		t.Fatalf("err = %v, want ErrNoProject", err)

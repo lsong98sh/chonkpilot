@@ -139,7 +139,12 @@ func TestListToolsContracts(t *testing.T) {
 			t.Errorf("tool %s: inputSchema nil", tl.Name)
 		}
 	}
-	want := []string{"browser_run", "desktop_run", "filesys_run", "script_run", "web_fetch"}
+	// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 文件域为 11 个原子工具，browser/desktop 改为插件（不再是 MCP 工具）。
+	want := []string{
+		"file_copy", "file_delete", "file_detect", "file_diff", "file_find", "file_iconv",
+		"file_move", "file_patch", "file_read", "file_replace", "file_write",
+		"script_run", "web_fetch",
+	}
 	assertNameSet(t, names, want)
 }
 

@@ -5,12 +5,15 @@
       <div class="edit-title-input">
         <Input
           v-model="form.name"
+          :maxlength="MAX_NAME"
+          required
           :placeholder="$t('scenario.placeholder.scene_name')"
           class="title-input"
         />
         <Input
           v-if="isNew"
           v-model="form.id"
+          :maxlength="MAX_NAME"
           :placeholder="$t('scenario.fields.dirName')"
           class="dir-input"
         />
@@ -155,6 +158,8 @@ import { loadLlmOptions, loadToolGroups as loadToolGroupsShared, loadSkillOption
 import { allowedLevels } from '../../utils/agentLevelMatrix'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+// INPUTVAL-1：场景名 / 目录名 1–64 字符。
+import { MAX_NAME, tooLong } from '../../utils/fieldRules'
 
 const { t } = useI18n()
 
@@ -335,10 +340,17 @@ function findDuplicateAgentName(list) {
 
 /** 名称必填校验（「保存」/「另存为」共用）：为空 → i18n 提示并返回 false。 */
 function ensureName() {
-  if (!form.value.name.trim()) {
+  const name = String(form.value.name || '').trim()
+  if (!name) {
     message.warning(t('scenario.placeholder.name'))
     return false
   }
+  // INPUTVAL-1：场景名 1–64 字符、不含控制字符。
+  if (tooLong(name, MAX_NAME)) {
+    message.warning(t('fieldRules.tooLong', { field: t('scenario.fields.name'), max: MAX_NAME }))
+    return false
+  }
+  form.value.name = name
   return true
 }
 
@@ -353,7 +365,7 @@ async function handleSave() {
       message.warning(t('scenario.dir_name_required'))
       return
     }
-    if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(id) || id.length > MAX_NAME) {
       message.warning(t('scenario.dir_name_format'))
       return
     }
@@ -370,14 +382,14 @@ async function handleSave() {
 async function handleSaveAs() {
   if (!ensureName()) return
   const suggested = (form.value.id || slugify(form.value.name) || '') + '-copy'
-  const input = await promptInput(t('scenario.save_as_prompt'), suggested)
+  const input = await promptInput(t('scenario.save_as_prompt'), suggested, { maxlength: MAX_NAME })
   if (input === null) return
   const id = String(input).trim()
   if (!id) {
     message.warning(t('scenario.dir_name_required'))
     return
   }
-  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+  if (!/^[A-Za-z0-9_-]+$/.test(id) || id.length > MAX_NAME) {
     message.warning(t('scenario.dir_name_format'))
     return
   }
@@ -400,6 +412,18 @@ function handleWizard() {
 async function doSave(idOverride) {
   // 同场景内 agent 重名预检（2026-09-26 用户裁决，42 §2 (175)）：与后端 capfs 校验同口径
   // （trim + 大小写不敏感）；命中即以 i18n 文案显式提示，不发请求。后端仍为权威拦截（兜底）。
+  // INPUTVAL-1：Agent 名必填 + ≤64 字符（后端 capfs 仍为权威拦截）。
+  for (const a of agents.value) {
+    const n = String(a && a.name ? a.name : '').trim()
+    if (!n) {
+      message.warning(t('fieldRules.required', { field: t('scenario.fields.name') }))
+      return
+    }
+    if (tooLong(n, MAX_NAME)) {
+      message.warning(t('fieldRules.tooLong', { field: t('scenario.fields.name'), max: MAX_NAME }))
+      return
+    }
+  }
   const dupName = findDuplicateAgentName(agents.value)
   if (dupName) {
     message.warning(t('scenario.agent_duplicate', { name: dupName }))

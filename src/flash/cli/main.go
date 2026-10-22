@@ -4,7 +4,7 @@
 // `DirResolver` / `AcquireProject` / `DataDirFor` + 自动拉起 server + `DialClaim`），差别仅在于
 // **headless 远程**：无 WebView2、无窗口 —— 连 UDS、claim、发起一轮会话、把结果打印到 stdout。
 //
-// **零新增 MQ 主题/字段**：命令面与输出格式**逐字对齐** `src/desktop/cli/main.go`
+// **零新增 MQ 主题/字段**：命令面与输出格式**逐字对齐**原 CLI 单体（`chonkpilot-cli.exe`，2026-10-22 已删除）
 // （`session-start` / `session-send` 发起；`session-receive` / `session-complete` / `task-done` 打印）。
 //
 // 用法：

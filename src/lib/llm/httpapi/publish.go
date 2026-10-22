@@ -51,6 +51,11 @@ var allowedDottedPrefixes = []string{"filesys.", "vfts.", msgkeys.TopicLlmTestCo
 var frontMethodSubjects = map[string]string{
 	msgkeys.TopicLlmSend:        "session-send",
 	msgkeys.TopicLlmCancel:      "session-cancel",
+	// INBOX（2026-10-18，中途插话 / 等下一轮）：客户端四条方法面 → llm-server 同名处理器。
+	msgkeys.TopicLlmInboxAdd:     "inbox-add",
+	msgkeys.TopicLlmInboxList:    "inbox-list",
+	msgkeys.TopicLlmInboxDiscard: "inbox-discard",
+	msgkeys.TopicLlmInboxPromote: "inbox-promote",
 	msgkeys.TopicAskUserReply:   "session-ask-reply",
 	msgkeys.TopicTaskStop:       msgkeys.TopicTaskStop,
 	msgkeys.TopicTaskBackground: msgkeys.TopicTaskBackground,

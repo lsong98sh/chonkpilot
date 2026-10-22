@@ -31,6 +31,7 @@
               <label class="form-label">{{ $t('scenario.fields.name') }}</label>
               <Input
                 :modelValue="agent.name"
+                :maxlength="MAX_NAME"
                 @update:modelValue="updateField('name', $event)"
                 :placeholder="$t('scenario.fields.name')"
               />
@@ -81,6 +82,7 @@
             :modelValue="agent.prompt"
             @update:modelValue="updateField('prompt', $event)"
             :rows="12"
+            :maxlength="MAX_TEXT"
             :placeholder="$t('scenario.placeholder.systemPrompt')"
           />
         </div>
@@ -366,6 +368,8 @@ import { stripToolPrefix } from '../../utils/toolSource'
 import { filterToolsTogglePatch, normalizeTools } from '../../utils/agentToolFilter'
 import { EventNames } from '../../events/event-names'
 import { useVariableInsert } from '../../composables/usePromptVariables'
+// INPUTVAL-1：Agent 名 ≤64 字符；系统提示词 ≤256 KB 字符。
+import { MAX_NAME, MAX_TEXT } from '../../utils/fieldRules'
 
 const { t } = useI18n()
 

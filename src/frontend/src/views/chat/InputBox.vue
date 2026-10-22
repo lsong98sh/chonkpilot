@@ -67,6 +67,8 @@
       @drop.prevent="onDrop"
       @dragover.prevent
     ></div>
+    <!-- INPUTVAL-1：单条消息 ≤16K 字符（contenteditable 无 maxlength → 输入/粘贴时截断 + 可见提示）。 -->
+    <div v-if="overLimit" class="input-limit">{{ limitText }}</div>
 
     <div class="input-actions">
       <div class="input-actions-left">
@@ -85,6 +87,16 @@
               <span class="queue-item-label">{{ itemLabel() }}</span>
               <span class="queue-item-content" :title="rawText(it)">{{ itemPreview(it) }}</span>
               <span class="queue-item-actions">
+                <!-- INBOX：next_turn 项可「立刻插入」（等下一轮 → 立即插入） -->
+                <Button
+                  v-if="it.inboxType === 'next_turn'"
+                  text
+                  size="mini"
+                  title="立刻插入"
+                  v-mq:[EventNames.chatQueueAction].click="{ id: it.id, action: 'insert' }"
+                >
+                  ⤵
+                </Button>
                 <Button
                   text
                   size="mini"
@@ -148,6 +160,11 @@ import { EventNames } from '../../events/event-names'
 import { formatItemText } from '../../composables/useSendQueue'
 import { useChatPrompts } from '../../composables/useChatPrompts'
 import { composeUserText, promptTagOf } from '../../utils/chatPrompt'
+// INPUTVAL-1：单条 ≤16K 字符；附件单文件 ≤20 MB、单条最多 9 个。
+import {
+  MAX_CHAT_CHARS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
+  charLen, attachmentTooLarge, attachmentCountExceeded,
+} from '../../utils/fieldRules'
 
 const { t } = useI18n()
 
@@ -192,7 +209,11 @@ function onPickNone() {
 // （空内容 prompt 不构成可发送内容 → 与 MessageList 的「空文本不入轮」一致）。
 const uploading = computed(() => attachments.value.some(a => a.pending))
 const hasPromptContent = computed(() => !!(selectedPrompt.value && String(selectedPrompt.value.content || '').trim()))
-const canSend = computed(() => !uploading.value && !!(text.value.trim() || attachments.value.length || hasPromptContent.value))
+// INPUTVAL-1：单条消息上限（按 Unicode 码点，与后端 maxChatInputChars 同口径）。
+const overLimit = computed(() => charLen(text.value) > MAX_CHAT_CHARS)
+const limitText = computed(() => t('fieldRules.messageTooLong', { len: charLen(text.value), max: MAX_CHAT_CHARS }))
+const canSend = computed(() => !overLimit.value && !uploading.value &&
+  !!(text.value.trim() || attachments.value.length || hasPromptContent.value))
 
 // popover 列表项预览：每行一条（类型前缀 + 内容截断）；队列只承载用户消息（附录 A）
 function itemLabel() {
@@ -213,6 +234,19 @@ function rawText(it) {
 
 function onEdit() {
   text.value = editRef.value ? editRef.value.innerText : ''
+  // 超限 → 就地截断到上限（不静默扩大，也不阻止输入；提示条同时可见）。
+  if (charLen(text.value) > MAX_CHAT_CHARS && editRef.value) {
+    text.value = Array.from(text.value).slice(0, MAX_CHAT_CHARS).join('')
+    editRef.value.innerText = text.value
+    const sel = window.getSelection()
+    if (sel) {
+      const r = document.createRange()
+      r.selectNodeContents(editRef.value)
+      r.collapse(false)
+      sel.removeAllRanges()
+      sel.addRange(r)
+    }
+  }
   autoResize()
 }
 
@@ -290,8 +324,8 @@ function onPaste(e) {
     return
   }
   e.preventDefault()
-  const t = e.clipboardData && e.clipboardData.getData('text/plain')
-  if (t) insertAtCursor(t)
+  const pasted = e.clipboardData && e.clipboardData.getData('text/plain')
+  if (pasted) insertAtCursor(pasted)
 }
 
 // 拖入：有文件 → 上传附件（本组件处理，stopPropagation 阻止冒泡到 document）；
@@ -311,6 +345,15 @@ let attachSeq = 0
 // 先插入「上传中」chip（图片用本地 dataUrl 作缩略图即时可见），回执后补 ref=`tmp/uploads/<name>`
 // 转为可发送；失败 → 移除该 chip 并明确报错（不静默丢）。
 function upload(file) {
+  // INPUTVAL-1：单文件 ≤20 MB、单条最多 9 个（超限明确提示，不上传）。
+  if (attachmentTooLarge(file.size)) {
+    uiMessage.warning(t('fieldRules.attachmentTooLarge', { max: MAX_ATTACHMENT_BYTES / (1024 * 1024) }))
+    return
+  }
+  if (attachmentCountExceeded(attachments.value.length + 1)) {
+    uiMessage.warning(t('fieldRules.tooManyAttachments', { max: MAX_ATTACHMENTS }))
+    return
+  }
   const kind = file.type && file.type.startsWith('image/') ? 'image' : 'file'
   const uid = 'att-' + (++attachSeq)
   attachments.value.push({ uid, kind, name: file.name, ref: '', url: '', pending: true })
@@ -514,6 +557,12 @@ onUnmounted(() => {
   content: attr(data-placeholder);
   color: var(--text-muted, #999);
   pointer-events: none;
+}
+/* 输入超长提示（INPUTVAL-1：≤16K 字符；粘贴截断 + 可见提示） */
+.input-limit {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--danger);
 }
 
 /* 附件区 */

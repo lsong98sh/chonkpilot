@@ -2,7 +2,7 @@
   <div class="tree-node">
     <div
       class="node-row"
-      :class="{ selected: edit.selectedNodeId === node.id }"
+      :class="{ selected: edit.selectedNodeId === node.id, hidden: node.type !== 'split' && !visible }"
       :style="{ paddingLeft: `${depth * 14 + 6}px` }"
       v-mq:[EventNames.layoutSelectNode].click.stop="{ nodeId: node.id }"
       @contextmenu="onContext"
@@ -25,6 +25,14 @@
         <span v-if="instanceKey" class="key">{{ instanceKey }}</span>
       </template>
       <span class="grow" />
+      <button
+        v-if="node.type !== 'split'"
+        class="mini"
+        :title="visible ? '隐藏该区域' : '显示该区域'"
+        v-mq:[EventNames.areaSetVisible].click.stop="{ nodeId: node.id, visible: !visible }"
+      >
+        <LfIcon :name="visible ? 'eye' : 'eye-closed'" :size="11" />
+      </button>
       <button
         class="mini"
         title="分割（左右）"
@@ -65,6 +73,8 @@ const props = defineProps({
 const edit = useEditStore()
 
 const collapsed = computed(() => edit.isCollapsed(props.node.id))
+/** 区域显隐（WIN-025）：容器不可隐藏，仅叶子区域 */
+const visible = computed(() => props.node.visible !== false)
 
 /** 区域图标：单容器用 view 图标，tab 容器用类型图标 */
 const nodeIcon = computed(() => {
@@ -112,6 +122,13 @@ function onContext(event) {
 .node-row.selected {
   background: var(--lf-select);
   box-shadow: inset 0 0 0 1px var(--lf-select-border);
+}
+
+/* 已隐藏区域：整行降透明度（仍可点选 / 恢复） */
+.node-row.hidden .ico,
+.node-row.hidden .label,
+.node-row.hidden .key {
+  opacity: 0.45;
 }
 
 .caret {

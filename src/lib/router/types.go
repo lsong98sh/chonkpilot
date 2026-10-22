@@ -22,6 +22,12 @@ type (
 	Reasoning   = canon.Reasoning
 	CallOptions = canon.CallOptions
 	Request     = canon.Request
+	// Phase / RetryContext / RetryPolicy / RetryObserver / DefaultPolicy：报文级重试（RETRY-2）。
+	Phase         = canon.Phase
+	RetryContext  = canon.RetryContext
+	RetryPolicy   = canon.RetryPolicy
+	RetryObserver = canon.RetryObserver
+	DefaultPolicy = canon.DefaultPolicy
 	// EventType / ToolCallDelta / Event：流式事件。
 	EventType     = canon.EventType
 	ToolCallDelta = canon.ToolCallDelta
@@ -48,6 +54,13 @@ const (
 	ProtocolResponses = canon.ProtocolResponses
 	ProtocolAnthropic = canon.ProtocolAnthropic
 	ProtocolEcho      = canon.ProtocolEcho
+)
+
+// 失败阶段（Error.Phase 取值；RETRY-2 仅内部用于重试分流）。
+const (
+	PhaseDial      = canon.PhaseDial
+	PhaseFirstByte = canon.PhaseFirstByte
+	PhaseStream    = canon.PhaseStream
 )
 
 // 事件类型（EventType 取值；LR-5 七类，terminal = done / error）。

@@ -261,6 +261,9 @@ func routerCallOptions(opts ChatOptions) router.CallOptions {
 		TopP:            opts.TopP,
 		ResponseTimeout: opts.ResponseTimeout,
 		StreamTimeout:   opts.StreamTimeout,
+		MaxRetries:      opts.MaxRetries,
+		Budget:          opts.RetryBudget,
+		Observer:        opts.RetryObserver,
 	}
 	effort := opts.Effort
 	if effort == "" {

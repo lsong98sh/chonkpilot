@@ -56,7 +56,7 @@ func TestTurnSnapshotCrossTurn(t *testing.T) {
 	// 第二轮：组装应命中快照（GetSessionHistory 有值 = 增量生效）
 	startTurn(t, s, "s-snap", "t2")
 	s.mu.Lock()
-	tc := s.turns[instKey("ins-test", "t2")]
+	tc := s.lookupTurnLocked("ins-test", "t2")
 	s.mu.Unlock()
 	snap := snapshotOf(t, s, "s-snap") // 快照经 persist data-snapshot-get 读（同库断言）
 	hist, _ := snap["history"].([]any)

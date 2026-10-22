@@ -28,16 +28,17 @@ test('① 对话框：两项字段存在、绑定新名、值域正确（maxCont
   const src = read(DIALOG)
   // 最大输出 Token：沿用现值域 256~1000000/step256（上界随 Token 快捷值 1M 放开），名称/绑定改为 maxOutputToken。
   assert.match(src, /config\.llm\.maxOutputToken/, '须有「最大输出 Token」标签（i18n）')
+  // INPUTVAL-1：值域改由 utils/fieldRules 常量提供（OUT_TOKEN_MIN=256 / OUT_TOKEN_MAX=1000000，见 fieldRules.test.js）。
   assert.match(
     src,
-    /v-model\.number="localData\.maxOutputToken"\s+min="256"\s+max="1000000"\s+step="256"/,
+    /v-model\.number="localData\.maxOutputToken"\s+:min="OUT_TOKEN_MIN"\s+:max="OUT_TOKEN_MAX"\s+step="256"/,
     'maxOutputToken 须绑定新名且值域 256~1000000/step256',
   )
   // 上下文窗口（新增）：min=0 / max=1e9 / step=1，0 = 不启用兜底（带 hint）。
   assert.match(src, /config\.llm\.maxContextToken/, '须有「上下文窗口」标签（i18n）')
   assert.match(
     src,
-    /v-model\.number="localData\.maxContextToken"\s+min="0"\s+max="1000000000"\s+step="1"/,
+    /v-model\.number="localData\.maxContextToken"\s+min="0"\s+:max="CTX_TOKEN_MAX"\s+step="1"/,
     'maxContextToken 须绑定新名且值域 0~1e9/step1',
   )
   assert.match(src, /config\.llm\.maxContextTokenHint/, '须有 0 = 不启用兜底的 hint（i18n）')

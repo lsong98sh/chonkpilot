@@ -37,6 +37,15 @@
       </button>
       <div class="ctx-sep" />
       <button
+        class="ctx-item"
+        :disabled="!isArea"
+        v-mq:[EventNames.contextMenuSelect].click="{ action: 'toggle-visible', nodeId }"
+      >
+        <LfIcon class="ico" :name="nodeVisible ? 'eye-closed' : 'eye'" :size="13" />
+        {{ nodeVisible ? '隐藏该区域' : '显示该区域' }}
+      </button>
+      <div class="ctx-sep" />
+      <button
         class="ctx-item danger"
         :disabled="leafCount <= 1"
         v-mq:[EventNames.contextMenuSelect].click="{ action: 'remove-area', nodeId }"
@@ -65,6 +74,9 @@ const config = useConfigStore()
 const nodeId = computed(() => edit.contextMenu.nodeId)
 const node = computed(() => findNode(config.draft.layout, nodeId.value))
 const isContainer = computed(() => !!node.value && isSplit(node.value))
+/** 区域显隐（WIN-025）：仅叶子可隐藏 */
+const isArea = computed(() => !!node.value && isLeaf(node.value))
+const nodeVisible = computed(() => node.value?.visible !== false)
 const leafCount = computed(() => config.leaves.length)
 const title = computed(() => {
   const n = node.value

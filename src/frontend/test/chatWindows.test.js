@@ -20,7 +20,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { VIEW_CHAT, VIEW_MAIN, parseViewRoute } from '../src/utils/viewRoute.js'
+import { VIEW_CHAT, VIEW_LOG, VIEW_MAIN, parseViewRoute } from '../src/utils/viewRoute.js'
 import {
   MAX_CHAT_WINDOWS,
   chatEntryState,
@@ -58,6 +58,12 @@ test('视图分派：session-id 经 URL 解码（宿主 url.QueryEscape 语义�
   const r = parseViewRoute('?session-id=s%20a%2Fb', '#chat')
   assert.equal(r.view, VIEW_CHAT)
   assert.equal(r.sessionId, 's a/b')
+})
+
+test('视图分派：`#log` → 日志窗口（PRODSIM-1，不绑定会话）', () => {
+  assert.deepEqual(parseViewRoute('', '#log'), { view: VIEW_LOG, sessionId: '' })
+  assert.deepEqual(parseViewRoute('?session-id=s1', '#log'), { view: VIEW_LOG, sessionId: '' })
+  assert.equal(parseViewRoute('', '#log2').view, VIEW_MAIN)
 })
 
 // ── 2) 入口态判定（I-1：已开窗 / 主窗当前会话 / 上限）─────────────
@@ -147,7 +153,7 @@ test('消息主题与 61 §1 逐字一致，open-chat 入参 = {session_id}', ()
 
 test('App.vue：按 URL 分派 ChatOnlyView，且对话窗口不触发主窗口会话初始化', () => {
   const app = SRC('App.vue')
-  assert.match(app, /import\s*\{\s*parseViewRoute,\s*VIEW_CHAT\s*\}\s*from\s*'\.\/utils\/viewRoute\.js'/,
+  assert.match(app, /import\s*\{[^}]*parseViewRoute[^}]*\}\s*from\s*'\.\/utils\/viewRoute\.js'/,
     'App.vue 必须用 URL 分派纯模块（不注入 __ck.view）')
   assert.match(app, /parseViewRoute\(window\.location\.search,\s*window\.location\.hash\)/,
     '分派来源 = location.search + location.hash')
@@ -157,7 +163,7 @@ test('App.vue：按 URL 分派 ChatOnlyView，且对话窗口不触发主窗口�
   // init()（读活动会话 + 广播 session-changed）在对话窗口必须跳过
   const init = app.match(/async function init\(\)\s*\{[\s\S]*?\n\}/)
   assert.ok(init, '未找到 init()')
-  assert.match(init[0], /if\s*\(!ready\.value\s*\|\|\s*chatOnly\)\s*return/, '对话窗口跳过活动会话初始化')
+  assert.match(init[0], /if\s*\(!ready\.value\s*\|\|\s*chatOnly\s*\|\|\s*logOnly\)\s*return/, '对话窗口 / 日志窗口跳过活动会话初始化')
   // 对话窗口不预取布局
   assert.match(app, /if\s*\(!chatOnly\)\s*prefetchInitData\(\)/, '对话窗口不预取 init-data（不读几何）')
 })

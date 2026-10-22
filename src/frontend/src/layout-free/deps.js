@@ -36,6 +36,12 @@ const state = {
   components: {},
   /** 宿主全局对话框服务（既有 `components/dialog` 的 `dialog` 单例） */
   dialog: null,
+  /**
+   * 宿主「布局档案」编辑保存钩子（WIN-026）：`({ profileId, draft, validate }) => Promise<object|null|false>`。
+   * 返回真值 = 已由宿主处理（机制层不再走默认 save / 落 `layout.free`）；
+   * 返回 `null` / `false` = 未处理 → 走传统保存路径。
+   */
+  editorSaveHook: null,
 }
 
 /** 注入依赖（只覆盖显式传入的非空项；`components` 做浅合并）。 */
@@ -63,6 +69,11 @@ export function getMq() {
 /** 宿主全局对话框服务（未注入 → null，调用方自行降级）。 */
 export function getDialog() {
   return state.dialog
+}
+
+/** 宿主「布局档案」编辑保存钩子（未注入 → null）。 */
+export function getEditorSaveHook() {
+  return state.editorSaveHook
 }
 
 /**

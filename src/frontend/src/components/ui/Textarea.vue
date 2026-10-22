@@ -7,6 +7,9 @@
     :value="modelValue"
     :placeholder="placeholder"
     :rows="rows"
+    :maxlength="maxlength"
+    :minlength="minlength"
+    :required="required"
     @input="$emit('update:modelValue', $event.target.value)"
   ></textarea>
 </template>
@@ -17,7 +20,11 @@ defineProps({
   disabled: Boolean,
   readonly: Boolean,
   error: Boolean,
-  rows: { type: Number, default: 4 }
+  rows: { type: Number, default: 4 },
+  // INPUTVAL-1：原样透传原生约束（不设全局默认上限）。
+  maxlength: { type: [Number, String], default: undefined },
+  minlength: { type: [Number, String], default: undefined },
+  required: { type: Boolean, default: false }
 })
 defineEmits(['update:modelValue'])
 </script>

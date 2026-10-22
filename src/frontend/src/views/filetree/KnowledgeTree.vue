@@ -660,7 +660,7 @@ function runNewType(dirPath, token) {
 async function createTypeFile(dirPath, token) {
   if (!token) return
   // 「名称不可变」提示：name = 文件名、落盘即定型（保存走 data-knowledge-save，不改名）。
-  const name = await promptInput(t('fileTree.new_of_type_prompt', { type: typeLabel(token) }), '', { hint: t('fileTree.name_immutable_hint') })
+  const name = await promptInput(t('fileTree.new_of_type_prompt', { type: typeLabel(token) }), '', { hint: t('fileTree.name_immutable_hint'), maxlength: 128 })
   if (!name) return
   await doCreateTypeFile(dirPath, token, name)
 }

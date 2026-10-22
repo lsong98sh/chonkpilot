@@ -54,6 +54,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
+	"github.com/chonkpilot/chonkpilot-lib/indexkind"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
@@ -247,7 +248,22 @@ func (s *Server) Start() error {
 	// 托管 filesys 组件（服务端 exe 内应答 filesys.*；此前服务端无应答方 → 文件树展开为空）。
 	// work_dir 由服务端绑定（bindFilesys 覆盖请求载荷，浏览器端不得自报任意目录），
 	// filesys 自身语义不变（仍以 work_dir 为管理单位、withinWorkDir 为第二道）。
-	fsys := filesys.New(s.bus)
+	// 待索引队列（P2）：仅在有 data 门面时注入（nil = 不入队，避免无门面形态报错）。
+	var indexQueue filesys.IndexQueue
+	if s.facade != nil {
+		dataFacade := s.facade
+		indexQueue = filesys.IndexQueueFunc(func(c filesys.IndexChange) error {
+			_, err := dataFacade.IndexQueueAppend(facade.IndexQueueAppendRequest{
+				WorkDir:   c.WorkDir,
+				Path:      c.Path,
+				Operation: c.Operation,
+				Consumers: indexkind.All,
+				Scope:     facade.Scope{WorkDir: c.WorkDir},
+			})
+			return err
+		})
+	}
+	fsys := filesys.NewWithOptions(s.bus, filesys.Options{IndexQueue: indexQueue})
 	if err := fsys.Start(); err != nil {
 		_ = sub.Unsubscribe()
 		s.sub = nil

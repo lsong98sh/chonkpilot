@@ -90,8 +90,9 @@ func TestInstanceClaimEntryBound(t *testing.T) {
 	if res["instance_id"] != id {
 		t.Fatalf("应答 instance_id = %v，期望 %s", res["instance_id"], id)
 	}
-	if res["work_dir"] != testWorkDir || res["data_dir"] != dataDir {
-		t.Fatalf("应答绑定 = %v/%v，期望 %s/%s", res["work_dir"], res["data_dir"], testWorkDir, dataDir)
+	// PRODSIM-1：desktop 形态 data_dir 恒空（prjusr 按 project-id 落数据根），work_dir 取实例登记。
+	if res["work_dir"] != testWorkDir || res["data_dir"] != "" {
+		t.Fatalf("应答绑定 = %v/%v，期望 %s/空", res["work_dir"], res["data_dir"], testWorkDir)
 	}
 
 	// claim 成功后照发 instance-register（主题与 payload 不改：data/filesys 据此登记，G-21）
@@ -100,9 +101,9 @@ func TestInstanceClaimEntryBound(t *testing.T) {
 		t.Fatalf("instance-register 广播 = %v，期望 instance_id=%s work_dir=%s", m, id, testWorkDir)
 	}
 
-	// 内存实例表（{instance_id, work_dir, data_dir, lastBeat, client_type}）
+	// 内存实例表（{instance_id, work_dir, data_dir, lastBeat, client_type}）；PRODSIM-1：data_dir 空
 	rec, ok := s.im.Lookup(id)
-	if !ok || rec.WorkDir != testWorkDir || rec.DataDir != dataDir || rec.ClientType != "gui" {
+	if !ok || rec.WorkDir != testWorkDir || rec.DataDir != "" || rec.ClientType != "gui" {
 		t.Fatalf("内存实例表登记 = %+v (ok=%v)", rec, ok)
 	}
 	if rec.LastBeat.IsZero() {
@@ -123,9 +124,10 @@ func TestInstanceClaimEntryBound(t *testing.T) {
 	drainClaimBroadcast(t, got) // 重复认领亦照发（幂等：消费方按 instance_id 覆盖）
 }
 
-// TestInstanceClaimWorkDirProposalForbidden：work_dir 提议与入口绑定不一致 →
-// {ok:false, error:"instance-forbidden"}（同码进 errors），**不广播、不改写绑定**（不跳登录）。
-func TestInstanceClaimWorkDirProposalForbidden(t *testing.T) {
+// TestInstanceClaimWorkDirProposalWins：PRODSIM-1（desktop 多项目）—— 入口已绑定实例时，
+// work_dir 提议**优先**（= 该窗口所属项目），不再按「与绑定不一致 → instance-forbidden」
+// 拒绝；data_dir 空；内存实例表随认领更新为新提议。
+func TestInstanceClaimWorkDirProposalWins(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -138,36 +140,45 @@ func TestInstanceClaimWorkDirProposalForbidden(t *testing.T) {
 	}))
 	drainClaimBroadcast(t, got)
 
+	proposal := filepath.Join(testWorkDir, "elsewhere")
 	v := s.bus.Emit(context.Background(), SubjectInstanceClaim, jb(map[string]any{
-		"instance_id": id, "work_dir": filepath.Join(testWorkDir, "elsewhere"),
+		"instance_id": id, "work_dir": proposal,
 	})).Wait()
+	if v.Err() != nil {
+		t.Fatalf("instance-claim 失败: %v", v.Err())
+	}
 	res, _ := v.Result.(map[string]any)
-	if res == nil || res["ok"] != false || res["error"] != claimErrForbidden {
-		t.Fatalf("期望 {ok:false, error:%s}，got %v", claimErrForbidden, v.Result)
+	if res == nil || res["instance_id"] != id || res["work_dir"] != filepath.Clean(proposal) || res["data_dir"] != "" {
+		t.Fatalf("期望 work_dir 取提议 %s 且 data_dir 空，got %v", filepath.Clean(proposal), v.Result)
 	}
-	if v.Err() == nil || !strings.Contains(v.Err().Error(), claimErrForbidden) {
-		t.Fatalf("错误码应同时进 errors（前端可读任一通道），got %v", v.Err())
+	if m := drainClaimBroadcast(t, got); m["work_dir"] != filepath.Clean(proposal) {
+		t.Fatalf("instance-register 广播应带提议 work_dir，got %v", m)
 	}
-	assertNoBroadcast(t, got)
-	if rec, ok := s.im.Lookup(id); !ok || rec.WorkDir != testWorkDir {
-		t.Fatalf("绑定不应被提议改写: %+v (ok=%v)", rec, ok)
+	if rec, ok := s.im.Lookup(id); !ok || rec.WorkDir != filepath.Clean(proposal) {
+		t.Fatalf("内存实例表应更新为提议: %+v (ok=%v)", rec, ok)
 	}
 }
 
-// TestInstanceClaimGeneratesIDAndFallsBackToStartupParams：无入口绑定（裸发布方）→ 服务端
-// 生成 uuid v4；work_dir/data_dir 回落**启动参数**（Options.WorkDir/DataDir，缺省 cwd 由宿主解析）。
-func TestInstanceClaimGeneratesIDAndFallsBackToStartupParams(t *testing.T) {
+// TestInstanceClaimWorkDirFromProposal：无入口绑定（裸发布方）→ 服务端生成 uuid v4；
+// PRODSIM-1：desktop **不再回落启动参数** —— 无提议 → forbidden；带提议 → 用提议。
+func TestInstanceClaimWorkDirFromProposal(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	t.Cleanup(data.Reset)
 
-	// 启动参数（宿主 flag 解析后注入；见 chonkpilot-llm/main.go）
+	// 启动参数仍设置（用于验证「不再使用」）。
 	s.opts.WorkDir = testWorkDir
 	s.opts.DataDir = filepath.Join(testWorkDir, ".chonkpilot")
 
+	// ① 无提议、无实例登记 → 明确失败（不静默绑定启动参数 / 安装目录）。
+	if res, _ := claimOnce(t, s, map[string]any{}); res == nil || res["error"] != claimErrForbidden {
+		t.Fatalf("无 work_dir 提议应 %s，got %v", claimErrForbidden, res)
+	}
+
+	// ② 带提议 → 成功；data_dir 为空（prjusr 按 project-id 落数据根）。
 	got := claimBroadcasts(t, s)
-	v := s.bus.Emit(context.Background(), SubjectInstanceClaim, jb(map[string]any{})).Wait()
+	v := s.bus.Emit(context.Background(), SubjectInstanceClaim, jb(map[string]any{"work_dir": testWorkDir})).Wait()
 	if v.Err() != nil {
 		t.Fatalf("instance-claim 失败: %v", v.Err())
 	}
@@ -179,11 +190,11 @@ func TestInstanceClaimGeneratesIDAndFallsBackToStartupParams(t *testing.T) {
 	if len(id) != 36 || strings.Count(id, "-") != 4 {
 		t.Fatalf("应生成 uuid v4，got %q", id)
 	}
-	if res["work_dir"] != testWorkDir {
-		t.Fatalf("work_dir 应回落启动参数 %s，got %v", testWorkDir, res["work_dir"])
+	if res["work_dir"] != filepath.Clean(testWorkDir) {
+		t.Fatalf("work_dir 应取提议 %s，got %v", testWorkDir, res["work_dir"])
 	}
-	if res["data_dir"] != s.opts.DataDir {
-		t.Fatalf("data_dir 应回落启动参数 %s，got %v", s.opts.DataDir, res["data_dir"])
+	if res["data_dir"] != "" {
+		t.Fatalf("data_dir 应为空（不再回落启动参数），got %v", res["data_dir"])
 	}
 	if m := drainClaimBroadcast(t, got); m["instance_id"] != id {
 		t.Fatalf("instance-register 广播 id 应与应答一致: %v vs %s", m["instance_id"], id)

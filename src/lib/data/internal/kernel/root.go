@@ -58,6 +58,20 @@ func (b *Base) UsrDB() (*data.DB, func(), error) {
 	return data.OpenSharedLayer(p, data.LayerUsr)
 }
 
+// scopeWithDataDir 补齐「只带 work_dir」的调用方 Scope 的 data_dir（filesys 变更入队 /
+// 插件桥队列控制帧等）：复用同 work_dir 已登记实例的非空 data_dir，避免在 work_dir 下
+// 另建 prj 库（`--data-dir` 分离形态的 workdir 零污染、12-数据层 / 24 §3）。
+// 无可复用绑定（未登记 / 全部 data_dir 为空）→ 原样返回（既有缺省语义不变）。
+func scopeWithDataDir(scope facade.Scope) facade.Scope {
+	if scope.Empty() || scope.WorkDir == "" || scope.DataDir != "" {
+		return scope
+	}
+	if dd, ok := data.DataDirByWorkDir(scope.WorkDir); ok {
+		scope.DataDir = dd
+	}
+	return scope
+}
+
 // CfgInstBind 解析实例数据根：① 本进程实例视图（instance_id 显式命中）② 调用方带入 Scope
 // （自登记进 data 绑定表后返回）③ data 绑定表（同源另一视图）。解析不出 → 报"未登记"。
 func (b *Base) CfgInstBind(instanceID string, scope facade.Scope) (workDir, dataDir string, err error) {
@@ -67,6 +81,7 @@ func (b *Base) CfgInstBind(instanceID string, scope facade.Scope) (workDir, data
 		}
 	}
 	if !scope.Empty() {
+		scope = scopeWithDataDir(scope)
 		data.Register(instanceID, scope.WorkDir, scope.DataDir)
 		return scope.WorkDir, scope.DataDir, nil
 	}
@@ -87,6 +102,7 @@ func (b *Base) InstBindingFor(instanceID string, scope facade.Scope) (string, st
 		return info.WorkDir, info.DataDir, true
 	}
 	if !scope.Empty() {
+		scope = scopeWithDataDir(scope)
 		data.Register(instanceID, scope.WorkDir, scope.DataDir)
 		return scope.WorkDir, scope.DataDir, true
 	}
@@ -129,6 +145,7 @@ func (b *Base) PrjFor(instanceID string, scope facade.Scope) (*data.DB, func(), 
 		}
 	}
 	if !scope.Empty() {
+		scope = scopeWithDataDir(scope)
 		data.Register(instanceID, scope.WorkDir, scope.DataDir)
 		return data.Prj(instanceID)
 	}
@@ -148,6 +165,7 @@ func (b *Base) PrjUsrFor(instanceID string, scope facade.Scope) (*data.DB, error
 		return b.PrjUsrByInst(id, info)
 	}
 	if !scope.Empty() {
+		scope = scopeWithDataDir(scope)
 		data.Register(instanceID, scope.WorkDir, scope.DataDir)
 		return data.PrjUsr(instanceID)
 	}

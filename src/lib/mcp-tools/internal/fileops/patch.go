@@ -5,6 +5,11 @@ import (
 	"strings"
 )
 
+// ApplyFileDiff 是 applyUnifiedDiff 的导出包装（供 file_patch 原子工具复用）。
+func ApplyFileDiff(src, diffContent string) (string, error) {
+	return applyUnifiedDiff(src, diffContent)
+}
+
 // applyUnifiedDiff 应用 unified diff（支持多个 @@ hunk，按 -start 定位 + context/-/+ 逐行消费）。
 // 校验：每个 hunk 的首个上下文/删除行须与源文件对应行逐字匹配，不匹配即报错拒绝（防止按行号
 // 盲目消费破坏内容）。保留源文本的文件尾换行（无 hunk 覆盖的尾部换行不被 join 吞掉）。

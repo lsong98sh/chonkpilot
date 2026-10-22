@@ -42,7 +42,7 @@
   （`git log` + `git show`）取出，且必然是本链祖先（`resolveTo` 以 `merge-base --is-ancestor` 校验）
   → 内容判据逐字确定。`to` 缺省（-1，= 链头）的语义单列一条（H2 ②，幂等：盘面 == 链头 → 写回同内容）。
 
-「轮末补点」的确定性观测（H1 / H2 前置）：打点的脏位来自 `filesys.changed`（fsnotify **60ms 去抖**）。
+「轮末补点」的确定性观测（H1 / H2 前置）：打点的脏位来自 `filesys.changed`（fswatcher **60ms 去抖**）。
   缺陷② 已修（轮末补点**不依赖脏位、强制走流程**）：`session-complete` 的补点不再等 `filesys.changed`
   到达（原实现「脏才打点」会与去抖赛跑而偶发漏点，实跑 2026-09-28 首轮即命中：H1 轮后链长=1、
   链头仍是改动前内容）。故本套件**无需任何续轮延迟**：工具改文件的盘面已落定，强制补点即捕获
@@ -577,7 +577,7 @@ def ucfg():
 def case_h6_touch_files_flag():
     """「涉及文件变动」= false → 前置打点钩子**直接放行、不打点**（只余轮末补点）；缺省 = 打点。
 
-    机制（**同一轮内两次工具调用**，确定性、不依赖 fsnotify 去抖）：
+    机制（**同一轮内两次工具调用**，确定性、不依赖 fswatcher 去抖）：
       ① `history_restore` 执行时**同步置脏**（`restoreFile` → `ws.dirty=true`）；其自身前置钩子
          时脏位尚未置（= 不打点），且 self 非白名单工具缺省即「不涉及」；
       ② 紧随其后的 `filesys_run` 前置钩子读到脏位 → 该工具的 `touch_files` 决定是否打点：

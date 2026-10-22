@@ -84,6 +84,24 @@ var migrations = []Migration{
 		}
 		return nil
 	}},
+	// v9（2026-10-17，INBOX）：中途插话 / 等下一轮的 prjusr 级待处理队列。
+	// 只加桶、无二级索引（查询模式 = 按 session_id 全桶过滤后按 created_at 排序，量级 ≤ 50/会话）。
+	{Version: 9, Name: "inbox", Up: func(tx *bolt.Tx) error {
+		return ensureBucket(tx, "inbox_items")
+	}},
+	// v10（resident indexer，P1）：持久化待索引队列（prjusr 级 `index_queue` 表）。
+	// 写入方 = filesys（create/write/remove/rename），消费方 = resident indexer（取一批 → 索引 →
+	// 回执）。查询模式 = 按 `work_dir` + `state` 过滤、`created_at` 升序；队列量小，
+	// **不建二级索引**（全桶过滤后内存排序即可）。
+	{Version: 10, Name: "index_queue", Up: func(tx *bolt.Tx) error {
+		return ensureBucket(tx, "index_queue")
+	}},
+	// v11（MOD-1 M3，2026-10-20）：TurnState 事件日志（prjusr 级 `turn_events` 表）。
+	// 主键 `<turn_id>/<seq 12 位>` → 同 turn 顺序扫描即重放；无二级索引（按 turn 前缀扫，
+	// 清理按 turns 终态 + 保留天数过滤）。只加桶，不涉及既有表。
+	{Version: 11, Name: "turn_events", Up: func(tx *bolt.Tx) error {
+		return ensureBucket(tx, "turn_events")
+	}},
 }
 
 // readSchemaVersion 读 _meta.schema_version（默认 0）。

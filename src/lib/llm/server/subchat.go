@@ -181,7 +181,7 @@ func (s *Server) startSubChatFirstTurn(instanceID, sessionID, turnID string) {
 		return // 会话已有活动轮次（异常/并发）→ 不双开
 	}
 	s.busy[bk] = turnID
-	s.turns[tk] = tc
+	s.registerTurnLocked(tk, tc)
 	s.mu.Unlock()
 	s.emitTurnStart(req)
 	tc.Kick() // 触发一次 LLM 循环（库内交接内容 → 子 agent 先开口）

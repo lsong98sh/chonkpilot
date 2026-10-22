@@ -110,6 +110,9 @@ type Codegraph struct {
 	logf func(format string, args ...any)
 	exe  string // 引擎 exe 绝对路径（resolveExe 结果）
 	opt  Options
+	// toolExec（可选）：core-mcp-server 内部执行面。非 nil 时查询工具委托 core（一工具一 exe），
+	// 本地引擎仅用于管理调用（configure/initialize/status）；nil → 本地引擎执行（CLI 形态）。
+	toolExec func() plugin.ToolExec
 
 	mu         sync.Mutex // 保护 insts / works（registered / regOwner 由 syncMu 保护——读写在 syncTools 单飞区内）
 	insts      map[string]*instRec
@@ -206,6 +209,7 @@ func (p *Codegraph) Start(d plugin.Deps) error {
 		logf = func(string, ...any) {}
 	}
 	p.logf = logf
+	p.toolExec = d.ToolExec
 
 	exe, err := resolveExe(p.opt.Exe)
 	if err != nil {

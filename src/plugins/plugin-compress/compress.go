@@ -173,7 +173,7 @@ func (c *Compressor) Name() string { return "compress" }
 // summarize 经无上下文单轮 LLM mq（相对主题 llm-simple，server 订阅；chonk. 前缀注入）
 // 请求摘要——插件只 mq 通讯，不依赖宿主函数注入（2026-09-08 定稿）。
 // instanceID 为触发事件（session-compress）载荷中的实例 id，随请求透传（61-消息一览 §0
-// 实例字段必带；对照 gateway/meta_tools.go llmToolPick 的写法）。
+// 实例字段必带；对照 gateway 各请求载荷的 instance_id 写法）。
 // system = 摘要提示词（resolveSummaryPrompt 按级读 capability/system/summary.md，缺省 embed 内置默认）；
 // 空则不带（llm-simple 请求 {prompt[, system], instance_id[, llm]}）。
 // llm = 本子系统的默认 LLM（provider name，见 resolveSubsystemLLM）；空则**不带该字段**

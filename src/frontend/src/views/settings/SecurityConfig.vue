@@ -23,7 +23,7 @@
       <Table :columns="securityColumns" :data="entries" :empty-text="$t('security.empty')" size="small">
         <template #dir="{ index }">
           <div class="security-dir-row">
-            <Input v-model="entries[index].dir" :placeholder="$t('security.dir_placeholder')" @change="syncDirty" />
+            <Input v-model="entries[index].dir" :maxlength="MAX_PATH" :placeholder="$t('security.dir_placeholder')" @change="syncDirty" />
             <Button size="small" v-mq:[EventNames.securitySelectDir].click="{ index }">...</Button>
           </div>
         </template>
@@ -53,6 +53,8 @@ import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+// INPUTVAL-1：信任目录 = 必填 + 绝对路径（≤512 字符）；后端复验目录存在性。
+import { MAX_PATH, isAbsolutePath, trimStr } from '../../utils/fieldRules'
 
 const { t } = useI18n()
 
@@ -107,6 +109,19 @@ async function load() {
 // 信任目录由 agentbox 在下次 tools/call spawn 时读取 → 保存即生效（onPrjSecurityRefresh 热生效）。
 async function save() {
   if (!dirty.value || saving.value) return
+  // INPUTVAL-1：逐行校验（空目录 / 相对路径 → 明确提示，不落库）。
+  for (const e of entries.value) {
+    const dir = trimStr(e.dir)
+    if (!dir) {
+      message.warning(t('fieldRules.required', { field: t('security.trust_dir') }))
+      return
+    }
+    if (!isAbsolutePath(dir)) {
+      message.warning(t('fieldRules.invalidPath', { field: t('security.trust_dir') }))
+      return
+    }
+    e.dir = dir
+  }
   saving.value = true
   try {
     await saveProjectSecurity(entries.value, _removedKeys)

@@ -65,8 +65,13 @@ test('nodeLevel / toolLevelOf：节点名 → 级别；无法判定 → 空串',
   assert.equal(nodeLevel('ins-with-dash-user'), 'user') // instanceID 含连字符仍按末段后缀
   assert.equal(nodeLevel('third-party'), '')            // 第三方 → 无法判定
   assert.equal(nodeLevel(''), '')
+  // 2026-10-19 一工具一 exe：内置 app 级工具由 core-mcp-server 接入 → node=core 即 app
+  assert.equal(nodeLevel('core'), 'app')
   assert.equal(toolLevelOf({ _meta: { server: { node: 'self' } } }), 'app')
   assert.equal(toolLevelOf({ _meta: { server: { node: 'ins-1-prjusr' } } }), 'prjusr')
+  assert.equal(toolLevelOf({ _meta: { server: { node: 'core', alias: 'core' } } }), 'app')
+  // node 无法判定 → 回落 alias（兼容节点名未知、别名为级别后缀的形态）
+  assert.equal(toolLevelOf({ _meta: { server: { node: 'third-party', alias: 'ins-1-project' } } }), 'project')
   assert.equal(toolLevelOf({}), '')
   assert.equal(toolLevelOf(null), '')
 })

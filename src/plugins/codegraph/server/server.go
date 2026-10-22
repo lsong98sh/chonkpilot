@@ -57,6 +57,17 @@ var toolSpecs = []toolSpec{
 		Required: []string{"workdir"},
 		Fn:       toolStatus,
 	},
+	{
+		Name:        "codegraph_index_paths",
+		Description: "按路径增量更新某 workdir 的索引（供常驻 indexer 消费变更队列）：files 重新索引、remove 删除条目；不受支持/被排除/解析失败的文件从索引删除并计入 skipped。",
+		Props: map[string]any{
+			"workdir": map[string]any{"type": "string", "description": "项目根目录（绝对路径）"},
+			"files":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "需要新增/重新索引的文件绝对路径"},
+			"remove":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "需要从索引删除的文件绝对路径"},
+		},
+		Required: []string{"workdir"},
+		Fn:       toolIndexPaths,
+	},
 	// ---- 查询类（hot=true）----
 	{
 		Name:        "codegraph_symbol_search",
@@ -257,9 +268,64 @@ func needWS(args map[string]any) (*Workspace, error) {
 	return Open(wd)
 }
 
+// 查询门在「有待索引项」时的有界等待参数（包级变量便于测试覆写）。
+var (
+	indexReadyWait = 5 * time.Second
+	indexReadyPoll = 100 * time.Millisecond
+)
+
+// gateIndexStatus 依据 status.json 拦截查询：
+//   - 文件不存在 / 读取失败 → (nil, false)，走既有 EnsureReady 兜底（向后兼容）；
+//   - error → 返回结构化 error 应答；
+//   - indexing 或 pending>0 → 有界等待（默认 5s / 100ms 轮询），就绪后继续 EnsureReady；
+//     超时 → 返回结构化 pending 应答（不视为协议错误）；
+//   - ready 且 pending==0 → (nil, false)，继续 EnsureReady。
+func gateIndexStatus(workDir string) (any, bool) {
+	st, err := ReadIndexStatus(workDir)
+	if err != nil || st == nil {
+		return nil, false
+	}
+	if st.State == "error" {
+		return map[string]any{"status": "error", "state": "error", "message": st.Message}, true
+	}
+	if st.State == "ready" && st.Pending <= 0 {
+		return nil, false
+	}
+	if st.State != "indexing" && st.Pending <= 0 {
+		return nil, false
+	}
+	deadline := time.Now().Add(indexReadyWait)
+	for {
+		if !time.Now().Before(deadline) {
+			return map[string]any{
+				"status":  "pending",
+				"state":   "indexing",
+				"pending": st.Pending,
+				"message": "codegraph 索引仍在处理中，请稍后重试",
+			}, true
+		}
+		time.Sleep(indexReadyPoll)
+		next, rerr := ReadIndexStatus(workDir)
+		if rerr != nil || next == nil {
+			// 等待期间状态文件消失 / 读失败 → 回退到既有 EnsureReady 判定。
+			return nil, false
+		}
+		st = next
+		if st.State == "error" {
+			return map[string]any{"status": "error", "state": "error", "message": st.Message}, true
+		}
+		if st.State == "ready" && st.Pending <= 0 {
+			return nil, false
+		}
+	}
+}
+
 // readyGate 查询类统一门：返回 (应答, workspace, 是否就绪)。
 // 未就绪时返回结构化应答，不视为协议错误。
 func readyGate(args map[string]any) (any, *Workspace, bool) {
+	if resp, blocked := gateIndexStatus(getString(args, "workdir")); blocked {
+		return resp, nil, false
+	}
 	w, err := needWS(args)
 	if err != nil {
 		return map[string]any{"status": "error", "message": err.Error()}, nil, false
@@ -277,7 +343,13 @@ func readyGate(args map[string]any) (any, *Workspace, bool) {
 			"message": "codegraph 索引仍在构建中，请稍后重试或先 codegraph_initialize",
 		}, w, false
 	case "error":
-		return map[string]any{"status": "error", "state": "error", "message": s.Err}, w, false
+		msg := s.Err
+		if msg == "" && err != nil {
+			// EnsureReady 的瞬时错误（如索引库被另一进程占用）不改 meta → 用原始错误文本，
+			// 让 executor / 插件按 lock/timeout 判定并做有界重试。
+			msg = err.Error()
+		}
+		return map[string]any{"status": "error", "state": "error", "message": msg}, w, false
 	default:
 		return map[string]any{
 			"status": "not_initialized", "state": st,
@@ -331,6 +403,19 @@ func toolStatus(_ context.Context, args map[string]any) (any, error) {
 	}
 	_, _ = w.LoadIndex()
 	return w.Status(), nil
+}
+
+// toolIndexPaths 按路径增量更新索引（管理工具，供 resident indexer 调用）。
+func toolIndexPaths(_ context.Context, args map[string]any) (any, error) {
+	w, err := needWS(args)
+	if err != nil {
+		return nil, err
+	}
+	indexed, removed, skipped, err := w.IndexPaths(getStrings(args, "files"), getStrings(args, "remove"))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "indexed": indexed, "removed": removed, "skipped": skipped}, nil
 }
 
 // ---- 查询工具实现 ----

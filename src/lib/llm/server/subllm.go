@@ -43,7 +43,7 @@ func (s *Server) runChildTurn(parentCtx context.Context, parentReq StartReq, sub
 	// 键 = instKey(instance, id)（缺口 5：子轮次与主轮次同 instance 桶）。
 	s.mu.Lock()
 	s.busy[instKey(subReq.InstanceID, subSession)] = subTurn
-	s.turns[instKey(subReq.InstanceID, subTurn)] = tc
+	s.registerTurnLocked(instKey(subReq.InstanceID, subTurn), tc)
 	s.mu.Unlock()
 	// 子轮次开始广播（turn-start 带 parents 链；前端会话树插入 + history 过滤主会话）
 	s.emitTurnStart(subReq)

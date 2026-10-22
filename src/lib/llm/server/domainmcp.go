@@ -248,7 +248,6 @@ func (s *Server) onDomainToolCall(_ context.Context, _ string, v *mq.Value) erro
 
 // domainExecute 执行域工具并返回结果文本（回调统一路径）：
 //   - ask_user → ask 通道（广播 ask-user → 等 ask-user-reply → 回填 done）；
-//   - llm 型（llm_run）→ runSubJob goroutine（DSL/委派子会话完成回填父轮次）；
 //   - task 型 → execTaskTool 同步执行（节点 done 广播在收尾）。
 //
 // purpose = 本次调用的运行目的（C1 注入通道；args 里的展示名已被 gateway 剥离 → 只能经此送达
@@ -269,10 +268,16 @@ func (s *Server) domainExecute(tc *turnCtx, callID, tool string, args map[string
 		// 异步交互：广播 ask-user 等待回答（结果经 ask-user-reply 回填 turn）
 		s.ask(tc.req.Turn, callID, args, node.TaskID)
 		return "已向用户提问，等待回答", false
-	case isLLMTool(tool):
-		// 异步子会话：开 goroutine 执行 llm_run DSL（结果回填父轮次）
-		go s.runSubJob(tc, callID, node, args)
-		return "已提交子会话执行，结果稍后回填", false
+	case tool == nextRunTool:
+		// NEXTRUN-1：`next_run` = 同步快操作（登记下一轮 inbox 项）；结果即终态。
+		text, isErr := s.runNextRun(tc, args)
+		if isErr {
+			s.tasks.done(node.TaskID, TaskStateError, "", text)
+		} else {
+			s.tasks.done(node.TaskID, TaskStateDone, text, "")
+		}
+		// 与 subchat 域工具同口径：工具级失败与否由结果文本表达，isError 位不向 gateway 传递。
+		return text, false
 	case isSubChatTool(tool):
 		// 单聊域工具（subchat_open / subchat_finish，SUBCHAT-2 阶段 B-2）：**同步**执行并返回
 		// 文本（结果即终态，§3.4.3）；子聊天首轮的异步起轮在 handler 内自行派生（不在此挂起主轮）。
@@ -307,6 +312,17 @@ func (s *Server) domainExecute(tc *turnCtx, callID, tool string, args map[string
 		}
 		return text, false
 	}
+}
+
+// lookupTurnSession 按 (instance, turn) 查运行 turn 的接口句柄（s.mu 保护；A4-P3a-0）。
+// instance 维度缺省（全桶回退），语义与 lookupTurn 一致。
+func (s *Server) lookupTurnSession(instanceID, turn string) turnSession {
+	if turn == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookupTurnSessionLocked(instanceID, turn)
 }
 
 // lookupTurn 按 turn id 查会话状态机（s.mu 保护）。instance 维度缺省（全桶回退）——旧调用方/

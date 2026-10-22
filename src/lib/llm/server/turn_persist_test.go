@@ -3,8 +3,6 @@
 package server
 
 import (
-	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,7 +53,7 @@ func TestToolRunningRowBackfilledSameRow(t *testing.T) {
 	if tc == nil {
 		t.Fatal("turn ctx not found")
 	}
-	tc.persistToolRunning("call-i176", "core_file_read", map[string]any{"path": "a.txt"})
+	tc.persistToolRunning("call-i176", "core_file_read", map[string]any{"path": "a.txt"}, "")
 
 	rows := toolRowsOf(t, "t-i176-a")
 	if len(rows) != 1 {
@@ -164,78 +162,5 @@ func TestToolRetryBackfillsInterruptedRow(t *testing.T) {
 	}
 	if st := persist.Sval(rows[0]["tool_call_status"]); st != "completed" {
 		t.Fatalf("重试后状态=%q，want completed", st)
-	}
-}
-
-// TestResumePartialExhaustedPersistsTail（B-36）：断链续写次数耗尽（continues >= maxAutoContinue）
-// 时，末段正文此前既不落库也不计入 answer（终态取 answer）→ 与已落库前几段拼接后正文被截尾。
-// 修复后：耗尽分支在错误终态前补一次同口径落库（asstKey 口）+ 累积 answer，末段不丢。
-func TestResumePartialExhaustedPersistsTail(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
-	startTurn(t, s, "s-b36", "t-b36")
-	tc := s.lookupTurn("t-b36")
-	if tc == nil {
-		t.Fatal("turn ctx not found")
-	}
-	// 前几段已按分段落库（同一 asstKey 行）并计入 answer。
-	key, err := tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: "前段"}, "")
-	if err != nil || key == "" {
-		t.Fatalf("前段落库失败: key=%q err=%v", key, err)
-	}
-	tc.answer.WriteString("前段")
-	tc.continues = maxAutoContinue // 已耗尽 → 走错误终态分支
-
-	tc.resumePartial(key, "末段正文", "", nil, errors.New("stream broken"))
-
-	if got := tc.answer.String(); got != "前段末段正文" {
-		t.Fatalf("终态 answer 应含末段：got %q，want %q", got, "前段末段正文")
-	}
-	found := false
-	for _, r := range msgsOfTurn(t, "t-b36") {
-		if persist.Sval(r["role"]) == "assistant" && strings.Contains(persist.Sval(r["content"]), "末段正文") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("末段正文未落库（断链续写耗尽被丢弃）")
-	}
-}
-
-// TestReapInflightFeedsFailedPlaceholder（P2）：inflight（ask_user / llm_run 子作业）超时未回填 →
-// 兜底按 failed 占位落库并回填父轮（投递到输入队列）——避免续轮闸门永久关闭、整轮挂死。
-func TestReapInflightFeedsFailedPlaceholder(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
-	// 仅注册 instance（不起轮次，避免 loop 消费兜底消息造成竞态）：落库需 instance 已注册。
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
-		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
-	}))
-	t.Cleanup(data.Reset)
-	time.Sleep(50 * time.Millisecond)
-
-	tc := &turnCtx{
-		server: s, req: StartReq{InstanceID: "ins-test", Session: "s-reap", Turn: "t-reap"},
-		in: make(chan ChatMsg, 4),
-	}
-	tc.markInflight("call-reap")
-	tc.reapInflight("call-reap", time.Minute)
-
-	select {
-	case m := <-tc.in:
-		if m.Role != "tool" || m.ToolCallID != "call-reap" {
-			t.Fatalf("兜底回填的消息不符：%+v", m)
-		}
-		if !strings.Contains(m.Content, "未收到结果") {
-			t.Fatalf("兜底文本应说明超时未回填：%q", m.Content)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("reapInflight 未回填父轮（续轮闸门将永久关闭）")
-	}
-	rows := toolRowsOf(t, "t-reap")
-	if len(rows) != 1 || persist.Sval(rows[0]["tool_call_status"]) != "failed" {
-		t.Fatalf("兜底结果应落 failed 占位行：%+v", rows)
 	}
 }

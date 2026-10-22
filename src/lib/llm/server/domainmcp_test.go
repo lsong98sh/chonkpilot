@@ -39,6 +39,8 @@ func newTestServerMCP(t *testing.T, llmSrv *httptest.Server) *Server {
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// data 层共享连接关闭须在 s.Stop 之后、TempDir 清理之前（LIFO；Windows 库句柄）。
+	t.Cleanup(closeTestDataStore)
 	t.Cleanup(s.Stop)
 	return s
 }
@@ -65,12 +67,13 @@ func newTestServerMCPAppRoot(t *testing.T, llmSrv *httptest.Server, appRoot stri
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	t.Cleanup(closeTestDataStore)
 	t.Cleanup(s.Stop)
 	return s
 }
 
 // TestEmbeddedGatewayDomainToolsHot：tools/list 应含全部注册域工具且 hot=true
-// （tools/register hot=true，契约见 server/contracts/tools/*.tool.md）。
+// （tools/register hot=true，契约见 llm/contracts/tools/*.tool.md）。
 func TestEmbeddedGatewayDomainToolsHot(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -84,23 +87,22 @@ func TestEmbeddedGatewayDomainToolsHot(t *testing.T) {
 	for _, d := range defs {
 		if d.Hot {
 			// 2026-09-07 list 全量后暴露名带能力源前缀（self_*，gateway self 节点 entry.ID 前缀）；
-			// 断言按原始契约名归一（ask_user/llm_run/... = self_ 前缀剥离）。
+			// 断言按原始契约名归一（ask_user/... = self_ 前缀剥离）。
 			want[strings.TrimPrefix(d.Name, "self_")] = true
 		}
 	}
-	for _, n := range []string{"ask_user", "llm_run", "tool_result", "tool_stop"} {
+	for _, n := range []string{"ask_user", "tool_result", "tool_stop"} {
 		if !want[n] {
 			t.Fatalf("域工具 %s 未在 tools/list 中（hot got %v）", n, want)
 		}
 	}
 }
 
-// TestEmbeddedGatewaySystemToolsMeta：系统工具（域工具 category=server + gateway 元工具
-// category=meta）经 tools/list 透出的 `_meta` 应含**正确的 async 模式**；契约 / 注入时**显式声明
-// timeout=0**（= 无上限）者透出 `_meta.timeout=0`，未声明者不含 timeout（回落全局）。
-// 用户口径 2026-09-27：`tool_*`/`ask_user` 契约声明 timeout=0 = 执行硬上限无（永远等，可取消）；
-// 元工具（mcp_find/mcp_load/mcp_invoke）注入时**也显式声明 timeout=0**（无上限，绝对优先、可取消）；
-// `llm_run` 契约未声明 timeout → 不含该键（回落全局）。
+// TestEmbeddedGatewaySystemToolsMeta：系统工具（域工具 category=server）经 tools/list 透出的
+// `_meta` 应含**正确的 async 模式**；契约注入时**显式声明 timeout=0**（= 无上限）者透出
+// `_meta.timeout=0`，未声明者不含 timeout（回落全局）。
+// 用户口径 2026-09-27：`tool_*`/`ask_user` 契约声明 timeout=0 = 执行硬上限无（永远等，可取消）。
+// （GATEWAY-2 L5：meta 工具 mcp_find/mcp_load/mcp_invoke 已随 self 节点整体移除。）
 func TestEmbeddedGatewaySystemToolsMeta(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -140,10 +142,6 @@ func TestEmbeddedGatewaySystemToolsMeta(t *testing.T) {
 	check("tool_stop", "never", "server", zero)
 	check("tool_result", "never", "server", zero)
 	check("ask_user", "never", "server", zero)
-	check("llm_run", "always", "server", nil)
-	check("mcp_find", "never", "meta", zero)
-	check("mcp_load", "never", "meta", zero)
-	check("mcp_invoke", "never", "meta", zero)
 }
 
 func keysOf(m map[string]ToolDef) []string {
@@ -310,8 +308,9 @@ func TestPrjExecConfigHotApply(t *testing.T) {
 // TestDomainToolPurposeInjection（A4 · C1 / SUBCHAT-2 阶段 A）：域工具 handler 经**注入通道**取本次
 // 调用的 purpose（`payload["context"]["purpose"]`）——args 里的 `tool_call_display_name` 已被
 // gateway `doCall` 剥离，handler 只能从这里读。
-//   ① 回调载荷（`registered_provider.turnContextPayload` 形状）解析入 `domainToolMsg.Context.Purpose`；
-//   ② `domainExecute` 把注入值送达节点构建 → 域工具任务节 purpose 以注入值兜底。
+//
+//	① 回调载荷（`registered_provider.turnContextPayload` 形状）解析入 `domainToolMsg.Context.Purpose`；
+//	② `domainExecute` 把注入值送达节点构建 → 域工具任务节 purpose 以注入值兜底。
 func TestDomainToolPurposeInjection(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()

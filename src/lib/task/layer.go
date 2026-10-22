@@ -71,8 +71,12 @@ type Layer struct {
 	mu      sync.Mutex
 	recs    map[string]*Record // task_id → 记录（层内热视图；DB 仍为权威）
 	execs   map[string]Exec    // task_id → 执行句柄（层持有；取消时回调执行侧）
-	subs    []mq.Sub
-	started bool
+	// pendingExecs 暂存「早于节点登记到达」的 started 执行态（tool_call_id → 最近一次）；
+	// 节点随后登记时补绑（exec.go bindPendingExec）→ 否则长跑执行在完成前拿不到 exec 句柄，
+	// task-stop 无法下发执行侧取消（dsl_run 作业根即此形态）。
+	pendingExecs map[string]ExecState
+	subs         []mq.Sub
+	started      bool
 }
 
 // New 构造层（不订阅；需 Start）。bus 为空 → 层退化为空实现（不 panic）。
@@ -92,6 +96,7 @@ func New(bus mq.Bus, opts Options) *Layer {
 		onCancelExec: opts.OnCancelExec,
 		recs:         make(map[string]*Record),
 		execs:        make(map[string]Exec),
+		pendingExecs: make(map[string]ExecState),
 	}
 }
 
@@ -260,7 +265,7 @@ func (l *Layer) matchRegisteredByToolCall(toolCallID, topSession, instanceID str
 	if toolCallID == "" {
 		return ""
 	}
-	if id := l.matchParentByToolCall(toolCallID); id != "" {
+	if id := l.matchParentByToolCallScoped(toolCallID, instanceID, topSession); id != "" {
 		return id
 	}
 	if topSession == "" {
@@ -280,7 +285,7 @@ func (l *Layer) matchRegisteredByToolCall(toolCallID, topSession, instanceID str
 		l.recs[r.TaskID] = r
 	}
 	l.mu.Unlock()
-	return l.matchParentByToolCall(toolCallID)
+	return l.matchParentByToolCallScoped(toolCallID, instanceID, topSession)
 }
 
 // mergeReport 把完成回报推进既有节点（层记录副本）：状态 / 结果摘要 / 工具与 tool_call_id 补全 /
@@ -342,7 +347,7 @@ func (l *Layer) buildReportedNode(rep *Record) error {
 	}
 	if rec.ParentID != "" {
 		l.logf("task: 完成回报建节点：按回报 parent 挂父 task_id=%s parent=%s", rec.TaskID, rec.ParentID)
-	} else if pid := l.matchParentByToolCall(rec.ToolCallID); pid != "" {
+	} else if pid := l.matchParentByToolCallScoped(rec.ToolCallID, rec.InstanceID, rec.TopSession); pid != "" {
 		rec.ParentID = pid
 		l.logf("task: 完成回报建节点：parent 空 → 按 tool_call_id 匹配到已登记节点作为父 task_id=%s tool_call_id=%s parent=%s",
 			rec.TaskID, rec.ToolCallID, pid)
@@ -355,6 +360,38 @@ func (l *Layer) buildReportedNode(rep *Record) error {
 		return nil
 	}
 	return nil
+}
+
+// matchParentByToolCallScoped 同 matchParentByToolCall，但按 instance / top_session 限定归属
+// （非空才作约束）。gateway 执行 id 跨进程复用（ex-0001…）、tool_call_id 也可能重现 → 执行态
+// 与完成回报的候选匹配必须带归属，否则会错绑上一进程遗留节点。
+func (l *Layer) matchParentByToolCallScoped(toolCallID, instanceID, topSession string) string {
+	if toolCallID == "" {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var best *Record
+	for _, r := range l.recs {
+		if r.ToolCallID != toolCallID {
+			continue
+		}
+		// 归属约束（非空才生效）：exec id 跨进程复用（ex-0001…）+ tool_call_id 可重现，
+		// 不限定归属会把新执行态错绑到上一进程遗留（启动恢复后 interrupted）的节点。
+		if instanceID != "" && r.InstanceID != instanceID {
+			continue
+		}
+		if topSession != "" && r.TopSession != topSession {
+			continue
+		}
+		if best == nil || earlierRegistered(r, best) {
+			best = r
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.TaskID
 }
 
 // matchParentByToolCall 在层视图内按 `tool_call_id` 找「已登记的 llm 侧节点」（短暂持 mu）：
@@ -515,7 +552,8 @@ func (l *Layer) commitAgainst(rec, old *Record) error {
 			}
 		}
 		if sameRecord(old, rec) {
-			return nil // ⑥ 幂等：重复事件不产生重复落库
+			l.bindPendingExec(rec) // 节点已知但执行态早到（started 先于登记）→ 补绑 exec 句柄
+			return nil             // ⑥ 幂等：重复事件不产生重复落库
 		}
 	}
 	if rec.InstanceID == "" {
@@ -523,6 +561,7 @@ func (l *Layer) commitAgainst(rec, old *Record) error {
 		// 「唯一实例回退」把行写进别的库。层内热视图照常记录（控制面判定可用）。
 		l.warn("节点缺 instance_id（不落库，仅层内记录）: task_id=%s", rec.TaskID)
 		l.cacheRec(rec)
+		l.bindPendingExec(rec)
 		return nil
 	}
 	if err := l.store.upsert(rec); err != nil { // 数据面 IO：锁外
@@ -530,6 +569,7 @@ func (l *Layer) commitAgainst(rec, old *Record) error {
 		return err
 	}
 	l.cacheRec(rec)
+	l.bindPendingExec(rec)
 	return nil
 }
 
@@ -697,6 +737,7 @@ func (l *Layer) CancelSubtree(instanceID, rootID, topSession string) []string {
 		}
 		l.onCancelExec(cb.taskID, cb.exec)
 	}
+	l.logf("task: CancelSubtree root=%s ids=%d callbacks=%d", rootID, len(ids), len(callbacks))
 	sort.Strings(ids)
 	return ids
 }

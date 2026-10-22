@@ -154,14 +154,11 @@ func TestChatToolCallsMergedIntoDone(t *testing.T) {
 	if serr != nil || text != "" || finish != "tool_calls" {
 		t.Fatalf("text=%q finish=%q err=%v", text, finish, serr)
 	}
-	if len(calls) != 1 || calls[0].ID != "call-1" || calls[0].Function.Name != "core_file_read" {
+	if len(calls) != 1 || calls[0].ID != "call-1" || calls[0].Name != "core_file_read" {
 		t.Fatalf("calls=%+v", calls)
 	}
-	if calls[0].Function.Arguments != `{"files":[]}` {
-		t.Fatalf("arguments 聚合错: %q", calls[0].Function.Arguments)
-	}
-	if calls[0].Type != toolCallTypeFunction {
-		t.Fatalf("ToolCall.Type=%q want function", calls[0].Type)
+	if calls[0].Arguments != `{"files":[]}` {
+		t.Fatalf("arguments 聚合错: %q", calls[0].Arguments)
 	}
 }
 

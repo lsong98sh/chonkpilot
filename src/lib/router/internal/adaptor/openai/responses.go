@@ -172,7 +172,7 @@ func (a *ResponsesAdapter) Stream(ctx context.Context, spec canon.Spec, req cano
 		return err
 	}
 	if !terminal {
-		return canon.NewError(canon.ErrorNetwork, "流在终态事件（completed/incomplete/failed）前结束（断链）")
+		return canon.NewError(canon.ErrorNetwork, "流在终态事件（completed/incomplete/failed）前结束（断链）").WithPhase(canon.PhaseStream)
 	}
 
 	// 终态（只投一次）：拼装完成的 tool_call → usage → done。

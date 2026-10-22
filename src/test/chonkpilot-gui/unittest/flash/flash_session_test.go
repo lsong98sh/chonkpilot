@@ -1,5 +1,5 @@
 // flash_session_test.go — flash 无窗口宿主（flash-cli）的会话驱动 `flash.RunSession` 验证
-// （🆕 2026-10-10）。命令面与输出格式逐字对齐 `src/desktop/cli/main.go`。
+// （🆕 2026-10-10）。命令面与输出格式逐字对齐原 CLI 单体（2026-10-22 已删除）。
 //
 // 以**进程内 mq** 作被驱动总线：发起 `session-start` / `session-send`，回投
 // `session-receive` / `task-done` / `session-complete`，断言 sse / final / verbose 输出。

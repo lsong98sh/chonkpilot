@@ -1,15 +1,16 @@
-﻿# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
+# build-gui.ps1：ChonkPilot GUI 客户端形态构建（GUI 客户端 + 独立 server，`-tags split`，无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-split.ps1`；
 #   形态名（分离形态 / team）→ **`gui`（GUI 客户端 + 独立 server）**，
 #   产物目录 `dist/split/` → `dist/gui/`。**编译期 tag 仍为 `split`**（源文件名
 #   `sweep_split.go` / `*_inprocess.go` 与之绑定，未改名），脚本名与产物路径**仅机械改名**，
 #   构建流程/行为**零变更**。
-#   **（第二刀，2026-09-21）产物名**：客户端 `chonkpilot-gui.exe` → **`chonkpilot-gui-client.exe`**、
-#   `chonkpilot-cli.exe` → **`chonkpilot-cli-client.exe`**（服务端 `chonkpilot-server.exe` 名不变，
-#   与 browser 形态**同一份 exe**）。
+#   **（第二刀，2026-09-21）产物名**：客户端 `chonkpilot-gui.exe` → **`chonkpilot-gui-client.exe`**；
+#   服务端 `chonkpilot-server.exe` 名不变，与 browser 形态**同一份 exe**。
+#   **（PRODSIM-1 L4，2026-10-22）CLI 单体已删除**：`chonkpilot-cli.exe` / `chonkpilot-cli-client.exe` /
+#   `src/desktop/cli` / `src/lib/cli` 全量移除，本脚本不再产出 CLI。
 #   **（D-28，2026-09-21）源与产物分区**：客户端壳 = **`src/gui`**（嵌前端 dist + 形态 `gui.FormGui`），
-#   客户端 CLI = **`src/desktop/cli`**（同 lib 集，`-tags split`），服务端 = **`src/server`**；
+#   服务端 = **`src/server`**；
 #   宿主实现唯一一份在 `src/lib/gui`。**产物分区**：客户端 exe → `dist/gui/`；
 #   服务端 exe + 引擎 + capability → **`dist/server/`**（browser 与 gui **共用**；browser 静态页
 #   由 `build-browser.ps1` 投放到 **`src/server/frontend/dist`**，随本脚本第 4 步 go:embed 进
@@ -28,7 +29,6 @@
 # 产物：
 #   dist/gui/                    – 客户端（与 dist/desktop/ **隔离**、互不覆盖）
 #     ├── chonkpilot-gui-client.exe   # 客户端：webview2 宿主（前端 dist go:embed）+ 心跳发布侧
-#     ├── chonkpilot-cli-client.exe   # console 宿主（同 lib 集，AsyncMode: never）
 #     ├── chonkpilot-flash.exe        # 薄壳客户端（webview2 宿主，远程总线 UDS；🆕 2026-10-10）
 #     ├── chonkpilot-flash-cli.exe    # 薄壳客户端 console 宿主（headless 远程；🆕 2026-10-10）
 #     └── frontend/dist/              # flash 前端（**非 embed**，flash 以 os.DirFS(<exeDir>) 加载；🆕 2026-10-10）
@@ -42,9 +42,9 @@
 #     │   └── scenarios/                    # 出厂场景（源 src/initdata/capability/scenarios）
 #     └── mcps/                             # 内置 MCP 引擎
 #         ├── codebase/chonkpilot-codegraph-mcp-server.exe
-#         └── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll
+#         └── vfts/chonkpilot-vfts-mcp-server.exe + chonkpilot-vfts-indexer.exe + zvec_c_api.dll
 #
-# 与 build-desktop.ps1 的关系：本脚本**只重编受 tag 影响的宿主 exe**（client / cli-client / server）；
+# 与 build-desktop.ps1 的关系：本脚本**只重编受 tag 影响的宿主 exe**（client / server）；
 #   capability/ 基座 + 内置引擎 exe 属**形态无关资产**（executor exe 优先复用 dist/desktop，缺失或
 #   executor 早于契约源时才回退既有 build-mcp-server.ps1 / build-codegraph.ps1 / build-vfts.ps1，避免重复 CGO 构建）；
 #   契约（prompts/tools/resources/skills/agents/system）与 scenarios 每次从唯一源 src/initdata 覆盖同步。
@@ -65,9 +65,8 @@ $env:GOTOOLCHAIN = "local"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 # 宿主壳（客户端 / flash 薄壳）编译标签：-Debug 时在 split 基础上附加 debugport（编入 --test-port）。
 $guiTags = if ($Debug) { "split debugport" } else { "split" }
-# 客户端壳 / 客户端 CLI / 服务端（D-28：壳 → src/{gui,desktop,server}，lib → src/lib/*）
+# 客户端壳 / 服务端（D-28：壳 → src/{gui,server}，lib → src/lib/*）
 $client = Join-Path $root "src\gui"
-$cli = Join-Path $root "src\desktop\cli"
 $srv = Join-Path $root "src\server"
 # flash 薄壳客户端壳（desktop 分体常驻版；🆕 2026-10-10，见 62 §3A / 19 §8.11）
 $flash = Join-Path $root "src\flash"
@@ -80,7 +79,6 @@ $dist = Join-Path $root "dist\gui"
 $srvDist = Join-Path $root "dist\server"
 $srcDist = Join-Path $root "dist\desktop"
 $outGuiExe = Join-Path $dist "chonkpilot-gui-client.exe"
-$outCliExe = Join-Path $dist "chonkpilot-cli-client.exe"
 $outFlashExe = Join-Path $dist "chonkpilot-flash.exe"
 $outFlashCliExe = Join-Path $dist "chonkpilot-flash-cli.exe"
 $outSrvExe = Join-Path $srvDist "chonkpilot-server.exe"
@@ -101,7 +99,7 @@ function Remove-SafeItem {
 }
 
 # -- 0) 结束运行中的旧实例（释放 exe 占用；与 build-desktop.ps1 同列表） --
-foreach ($name in @("chonkpilot", "chonkpilot-cli", "chonkpilot-gui-client", "chonkpilot-cli-client", "chonkpilot-flash", "chonkpilot-flash-cli", "chonkpilot-server")) {
+foreach ($name in @("chonkpilot", "chonkpilot-gui-client", "chonkpilot-flash", "chonkpilot-flash-cli", "chonkpilot-server")) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
         Write-Host "==> kill [$name] PID=$($_.Id)"
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -122,6 +120,22 @@ Remove-SafeItem -LiteralPath $sysEmbed -Recurse
 New-Item -ItemType Directory -Force -Path $sysEmbed | Out-Null
 Copy-Item (Join-Path $sysSrc "*") $sysEmbed -Recurse -Force
 Write-Host "    ok: embed system docs -> $sysEmbed ($((Get-ChildItem $sysEmbed -Recurse -File | Measure-Object).Count) files)"
+
+# -- 0.6) 契约 embed 副本（GATEWAY-2 C，2026-10-21）--
+#     唯一源 = src/initdata/capability/{tools,prompts,skills,resources}；覆盖式同步到 mcp-server 包的
+#     `//go:embed all:contracts` 落点（磁盘 capability 根缺失时的 app 层契约兜底）。
+#     ⚠️ 该目录为**构建生成物（勿手改，不入库；仅 .gitkeep 占位）**，直接改会被下次构建覆盖。
+Write-Host "==> [0.6/6] sync builtin contracts -> mcp-server embed dir"
+$embedCap = Join-Path $root "src\lib\mcp-server\server\contracts"
+$initCap = Join-Path $root "src\initdata\capability"
+New-Item -ItemType Directory -Force -Path $embedCap | Out-Null
+foreach ($sub in @("tools", "prompts", "skills", "resources")) {
+    $subSrc = Join-Path $initCap $sub
+    if (-not (Test-Path $subSrc)) { throw "contracts not found: $subSrc" }
+    Remove-SafeItem -LiteralPath (Join-Path $embedCap $sub) -Recurse
+    Copy-Item $subSrc $embedCap -Recurse -Force
+}
+Write-Host "    ok: embed contracts -> $embedCap ($((Get-ChildItem $embedCap -Recurse -File | Measure-Object).Count) files)"
 
 # -- 1) 前端构建（工程 src/frontend；embed 入口 → src/gui/frontend/dist 供 go:embed） --
 Write-Host "==> [1/6] build frontend (embed entry)"
@@ -166,15 +180,7 @@ try {
     Write-Host "    ok: $outGuiExe ($mb MB)"
 } finally { Pop-Location }
 
-# -- 3) CLI 编译（console 模式，无 -H windowsgui） --
-Write-Host "==> [3/6] build chonkpilot-cli-client.exe (-tags split)"
-Push-Location $cli
-try {
-    go build -tags split -o $outCliExe .
-    if ($LASTEXITCODE -ne 0) { throw "go build failed" }
-    $mb = [Math]::Round((Get-Item $outCliExe).Length / 1MB, 1)
-    Write-Host "    ok: $outCliExe ($mb MB)"
-} finally { Pop-Location }
+# -- 3) （已撤销，PRODSIM-1 L4 2026-10-22：CLI 单体 chonkpilot-cli-client.exe 全量删除） --
 
 # -- 3.5) flash 薄壳客户端编译（src/flash → dist/gui；远程总线模式：
 #        不内嵌 server/persist/filesys，经 UDS 连常驻 chonkpilot-server.exe；-H windowsgui） --
@@ -217,13 +223,61 @@ try {
     Write-Host "    ok: $outSrvExe ($mb MB)"
 } finally { Pop-Location }
 
+# -- 4.2) 进程外 server 域工具（BRIDGE-2 T7；与 server exe 同目录）--
+Write-Host "==> [4.2/6] build chonkpilot-server-tools.exe -> dist/server"
+$llmDir = Join-Path $root "src\lib\llm"
+$outToolsExe = Join-Path $srvDist "chonkpilot-server-tools.exe"
+Push-Location $llmDir
+try {
+    go build -o $outToolsExe .\cmd\server-tools
+    if ($LASTEXITCODE -ne 0) { throw "go build failed" }
+    $mb = [Math]::Round((Get-Item $outToolsExe).Length / 1MB, 1)
+    Write-Host "    ok: $outToolsExe ($mb MB)"
+} finally { Pop-Location }
+
+# -- 4.3) 系统级 app 根工具的进程外实现（P6；server 按 <exeDir>/mcps/self-tools/ 查找）--
+Write-Host "==> [4.3/6] stage chonkpilot-self-tools.exe -> dist/server/mcps/self-tools"
+$selfToolDst = Join-Path $srvDist "mcps\self-tools"
+New-Item -ItemType Directory -Force -Path $selfToolDst | Out-Null
+$selfToolSrc = Join-Path $root "dist\other\chonkpilot-self-tools.exe"
+if (Test-Path $selfToolSrc) {
+    Copy-Item $selfToolSrc $selfToolDst -Force
+} else {
+    Write-Host "    dist/other 无 self-tools → 直接构建（src/lib/mcp-server/cmd/self-tools）"
+    Push-Location (Join-Path $root "src\lib\mcp-server")
+    try {
+        go build -o (Join-Path $selfToolDst "chonkpilot-self-tools.exe") .\cmd\self-tools
+        if ($LASTEXITCODE -ne 0) { throw "build self-tools failed" }
+    } finally { Pop-Location }
+}
+$mbSelf = [Math]::Round((Get-Item (Join-Path $selfToolDst "chonkpilot-self-tools.exe")).Length / 1MB, 1)
+Write-Host "    ok: mcps/self-tools/chonkpilot-self-tools.exe ($mbSelf MB)"
+
+# -- 4.4) 工具唯一前门（2026-10-19；server 按 <exeDir>/mcps/core-mcp/ 查找）--
+Write-Host "==> [4.4/6] stage chonkpilot-core-mcp-server.exe -> dist/server/mcps/core-mcp"
+$coreMcpDst = Join-Path $srvDist "mcps\core-mcp"
+New-Item -ItemType Directory -Force -Path $coreMcpDst | Out-Null
+$coreMcpSrc = Join-Path $root "dist\other\chonkpilot-core-mcp-server.exe"
+if (Test-Path $coreMcpSrc) {
+    Copy-Item $coreMcpSrc $coreMcpDst -Force
+} else {
+    Write-Host "    dist/other 无 core-mcp-server → 直接构建（src/lib/mcp-server/cmd/core-mcp-server）"
+    Push-Location (Join-Path $root "src\lib\mcp-server")
+    try {
+        go build -o (Join-Path $coreMcpDst "chonkpilot-core-mcp-server.exe") .\cmd\core-mcp-server
+        if ($LASTEXITCODE -ne 0) { throw "build core-mcp-server failed" }
+    } finally { Pop-Location }
+}
+$mbCore = [Math]::Round((Get-Item (Join-Path $coreMcpDst "chonkpilot-core-mcp-server.exe")).Length / 1MB, 1)
+Write-Host "    ok: mcps/core-mcp/chonkpilot-core-mcp-server.exe ($mbCore MB)"
+
 # -- 4.5) dist/gui 陈旧产物清理（**不**把 server 复制进 dist/gui）--
 #   背景：flash 的 server 候选 = **同级 `server/` 优先** → 同目录（见 flash/server.go:resolveServerExe）。
 #   server 需其随附资产（capability/mcps/plugins 在其 exe 同目录），裸复制 server exe 会因缺资产
 #   拉起失败（实测）。故 dist/gui 不放 server —— 由同级 `dist/server/` 提供完整部署。
 #   此处仅清理旧构建遗留的误导性产物（含历史上的裸 server exe 副本）。
 Write-Host "==> [4.5/6] clean dist/gui stale"
-foreach ($stale in @("chonkpilot-server.exe", "chonkpilot-gui.exe", "chonkpilot-cli.exe", "chonkpilot-codegraph-mcp-server.exe", "chonkpilot-vfts-mcp-server.exe", "zvec_c_api.dll")) {
+foreach ($stale in @("chonkpilot-server.exe", "chonkpilot-gui.exe", "chonkpilot-cli.exe", "chonkpilot-cli-client.exe", "chonkpilot-codegraph-mcp-server.exe", "chonkpilot-codegraph-indexer.exe", "chonkpilot-vfts-mcp-server.exe", "chonkpilot-vfts-indexer.exe", "chonkpilot-self-tools.exe", "zvec_c_api.dll")) {
     $p = Join-Path $dist $stale
     if (Test-Path $p) { Remove-SafeItem -LiteralPath $p; Write-Host "    clean stale: $stale" }
 }
@@ -262,6 +316,12 @@ foreach ($sub in @("prompts", "tools", "resources", "skills", "agents", "system"
 # 未发布草稿排除：skills/se/（用户 2026-10-10 裁决「暂不提交」）不随产物投放。
 $seDraft = Join-Path $capDst "skills\se"
 Remove-SafeItem -LiteralPath $seDraft -Recurse
+# 域工具契约（唯一源 = src/lib/llm/contracts/tools；core-only → 仅 core 执行）
+$domainToolsSrc = Join-Path $root "src\lib\llm\contracts\tools"
+$serverToolsDst = Join-Path $capDst "tools\server"
+New-Item -ItemType Directory -Force -Path $serverToolsDst | Out-Null
+Copy-Item (Join-Path $domainToolsSrc "*.tool.md") $serverToolsDst -Force
+Write-Host "    ok: capability/tools/server ($((Get-ChildItem $serverToolsDst -Filter *.tool.md -File | Measure-Object).Count) files)"
 # 出厂场景：每次从唯一源 src/initdata/capability/scenarios 覆盖同步
 $scnSrc = Join-Path $initCap "scenarios"
 $scnDst = Join-Path $capDst "scenarios"
@@ -285,6 +345,37 @@ New-Item -ItemType Directory -Force -Path $cgDst | Out-Null
 Copy-Item $cgSrc $cgDst -Force
 $mbCg = [Math]::Round((Get-Item (Join-Path $cgDst $cgExe)).Length / 1MB, 1)
 Write-Host "    ok: mcps/codebase/$cgExe ($mbCg MB)"
+# codegraph 查询工具一工具一 exe（优先 dist/desktop/mcps/codebase，缺失回退 dist/plugins/codegraph）
+$cgExecNames = @(
+    "chonkpilot-codegraph-symbol-search-executor.exe",
+    "chonkpilot-codegraph-symbol-info-executor.exe",
+    "chonkpilot-codegraph-callers-executor.exe",
+    "chonkpilot-codegraph-callees-executor.exe",
+    "chonkpilot-codegraph-dependency-graph-executor.exe",
+    "chonkpilot-codegraph-circular-deps-executor.exe",
+    "chonkpilot-codegraph-complexity-executor.exe",
+    "chonkpilot-codegraph-module-summary-executor.exe")
+foreach ($e in $cgExecNames) {
+    $src = Join-Path $srcDist "mcps\codebase\$e"
+    if (-not (Test-Path $src)) { $src = Join-Path $root "dist\plugins\codegraph\$e" }
+    if (-not (Test-Path $src)) { throw "missing codegraph query executor: $e（先跑 build-codegraph.ps1）" }
+    Copy-Item $src $cgDst -Force
+}
+Write-Host "    ok: mcps/codebase/ codegraph query executors ($($cgExecNames.Count))"
+
+# resident codegraph indexer（P5）：与引擎同目录；优先复用 dist/desktop/mcps/codebase，缺失回退 dist/plugins/codegraph。
+$cgIdxExe = "chonkpilot-codegraph-indexer.exe"
+$cgIdxSrc = Join-Path $srcDist "mcps\codebase\$cgIdxExe"
+if (-not (Test-Path $cgIdxSrc)) {
+    $cgIdxSrc = Join-Path $root "dist\plugins\codegraph\$cgIdxExe"
+}
+if (Test-Path $cgIdxSrc) {
+    Copy-Item $cgIdxSrc $cgDst -Force
+    $mbCgIdx = [Math]::Round((Get-Item (Join-Path $cgDst $cgIdxExe)).Length / 1MB, 1)
+    Write-Host "    ok: mcps/codebase/$cgIdxExe ($mbCgIdx MB)"
+} else {
+    Write-Host "    [警告] 未找到 $cgIdxExe（dist/desktop/mcps/codebase 与 dist/plugins/codegraph 均缺失）；常驻索引器将不可用"
+}
 
 $vfExe = "chonkpilot-vfts-mcp-server.exe"
 $vfSrc = Join-Path $srcDist "mcps\vfts\$vfExe"
@@ -301,6 +392,28 @@ $vfDst = Join-Path $srvDist "mcps\vfts"
 New-Item -ItemType Directory -Force -Path $vfDst | Out-Null
 Copy-Item $vfSrc $vfDst -Force
 Copy-Item $dllSrc $vfDst -Force
+# vfts_query 一工具一 exe（与 zvec_c_api.dll 同目录）
+$vfQuerySrc = Join-Path $srcDist "mcps\vfts\chonkpilot-vfts-query-executor.exe"
+if (-not (Test-Path $vfQuerySrc)) { $vfQuerySrc = Join-Path $root "dist\plugins\vfts\chonkpilot-vfts-query-executor.exe" }
+if (Test-Path $vfQuerySrc) {
+    Copy-Item $vfQuerySrc $vfDst -Force
+    Write-Host "    ok: mcps/vfts/chonkpilot-vfts-query-executor.exe"
+} else {
+    Write-Host "    [警告] 未找到 chonkpilot-vfts-query-executor.exe；vfts_query 运行期不可用"
+}
+# resident indexer（P4b-2b）：与引擎同目录；优先复用 dist/desktop/mcps/vfts，缺失回退 dist/plugins/vfts。
+$vfIdxExe = "chonkpilot-vfts-indexer.exe"
+$vfIdxSrc = Join-Path $srcDist "mcps\vfts\$vfIdxExe"
+if (-not (Test-Path $vfIdxSrc)) {
+    $vfIdxSrc = Join-Path $root "dist\plugins\vfts\$vfIdxExe"
+}
+if (Test-Path $vfIdxSrc) {
+    Copy-Item $vfIdxSrc $vfDst -Force
+    $mbVfIdx = [Math]::Round((Get-Item (Join-Path $vfDst $vfIdxExe)).Length / 1MB, 1)
+    Write-Host "    ok: mcps/vfts/$vfIdxExe ($mbVfIdx MB)"
+} else {
+    Write-Host "    [警告] 未找到 $vfIdxExe（dist/desktop/mcps/vfts 与 dist/plugins/vfts 均缺失）；常驻索引器将不可用"
+}
 $mbVf = [Math]::Round((Get-Item (Join-Path $vfDst $vfExe)).Length / 1MB, 1)
 $mbDll = [Math]::Round((Get-Item (Join-Path $vfDst "zvec_c_api.dll")).Length / 1MB, 1)
 Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
@@ -309,7 +422,6 @@ Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
 #   dist/gui **不含** server exe（server 由同级 `dist/server/` 提供；flash 以同级 server/ 优先定位）
 #   dist/gui 另含（下面未逐行输出）：frontend/dist/（flash 前端，非 embed；flash 以 os.DirFS 加载）
 $mbGui = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
-$mbCli = [Math]::Round((Get-Item $outCliExe).Length / 1MB, 1)
 $mbFlash = [Math]::Round((Get-Item $outFlashExe).Length / 1MB, 1)
 $mbFlashCli = [Math]::Round((Get-Item $outFlashCliExe).Length / 1MB, 1)
 $mbSrv = [Math]::Round((Get-Item $outSrvExe).Length / 1MB, 1)
@@ -317,7 +429,6 @@ $capCount = (Get-ChildItem (Join-Path $srvDist "capability") -Recurse -File | Me
 Write-Host "==> done (gui 形态 = GUI 客户端 + 独立 server，-tags split)"
 Write-Host "    $dist"
 Write-Host "      chonkpilot-gui-client.exe         $mbGui MB   # 客户端"
-Write-Host "      chonkpilot-cli-client.exe         $mbCli MB"
 Write-Host "      chonkpilot-flash.exe              $mbFlash MB   # 薄壳客户端（远程总线 UDS）"
 Write-Host "      chonkpilot-flash-cli.exe          $mbFlashCli MB   # 薄壳客户端 console 宿主（headless）"
 Write-Host "    $srvDist"
@@ -325,10 +436,10 @@ Write-Host "      chonkpilot-server.exe             $mbSrv MB   # 服务端（ll
 Write-Host "      capability/                       $capCount files (prompts/tools/resources/skills/agents/system/scenarios/executors)"
 Write-Host "      capability/scenarios/             出厂场景"
 Write-Host "      mcps/codebase/chonkpilot-codegraph-mcp-server.exe $mbCg MB"
+Write-Host "      mcps/codebase/chonkpilot-codegraph-indexer.exe    $mbCgIdx MB"
 Write-Host "      mcps/vfts/chonkpilot-vfts-mcp-server.exe          $mbVf MB"
 Write-Host "      mcps/vfts/zvec_c_api.dll                          $mbDll MB"
 Write-Host "      (browser 静态页已 go:embed 进 chonkpilot-server.exe；源 = src/server/frontend/dist，由 build-browser.ps1 投放)"
 Write-Host "    run: cd $srvDist ; .\chonkpilot-server.exe    (服务端，GUI 子系统 + 托盘常驻，日志 logs/server.log) ; cd $dist ; .\chonkpilot-gui-client.exe    (客户端)"
 Write-Host "    flash: cd $srvDist ; .\chonkpilot-server.exe --autoexit --client-exe ..\gui\chonkpilot-flash.exe ; cd $dist ; .\chonkpilot-flash.exe --work-dir .   ( --tray 默认开，无头可 --tray=false )"
-Write-Host "    cli: cd $dist ; .\chonkpilot-cli-client.exe --prompt 'hello' --work-dir ."
 Write-Host "    flash-cli: cd $dist ; .\chonkpilot-flash-cli.exe --prompt 'hello' --work-dir .   (需 server 在跑；缺失则自动拉起)"

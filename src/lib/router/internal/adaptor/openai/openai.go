@@ -146,7 +146,7 @@ func (a *Adapter) Stream(ctx context.Context, spec canon.Spec, req canon.Request
 	// 或 `finish_reason`（兼容端点可省 `[DONE]` 但会带 `finish_reason`）；两者都未出现 = 流被
 	// 截断（EOF 落在事件边界上，SSE 层无法察觉）→ network（可重试），由 llm 侧走断链续写。
 	if !sawDone && finish == "" {
-		return canon.NewError(canon.ErrorNetwork, "流在 [DONE]/finish_reason 前结束（断链）")
+		return canon.NewError(canon.ErrorNetwork, "流在 [DONE]/finish_reason 前结束（断链）").WithPhase(canon.PhaseStream)
 	}
 
 	// 终态（只投一次）：拼装完成的 tool_call → usage（末片）→ done。

@@ -247,6 +247,13 @@ func TestAutoContinueAccumulatesAnswer(t *testing.T) {
 	defer srv.Close()
 
 	s := newTestServer(t, srv)
+	registerTestInstance(t, s)
+	// RETRY-2：宽限期设为 0（立即自动续写），保留本用例的"自动续写累积"语义。
+	if res := dataCall(t, s, "data-user-config-save", map[string]any{
+		"instance_id": "ins-test", "data": map[string]any{"autoContinueDelaySec": 0},
+	}); res["ok"] != true {
+		t.Fatalf("save user-config failed: %+v", res)
+	}
 	const session, turn = "s-acc", "t-acc"
 	startTurn(t, s, session, turn)
 	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{

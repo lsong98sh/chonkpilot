@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 """testplan.md 七.x 数据根归属测试（--data-dir 分离 + **数据层 B 方案**）。
 
-前置：chonkpilot.exe 可用（GUI 模式，无需 LLM）；console 模式用例无需 LLM 配置。
+前置：chonkpilot.exe 可用（GUI 模式）。
 用例：
   一.1 B 方案（**不传 --data-dir**，[24 §3] MW-7/MW-8）：prj 库恒留
        `<workdir>/.chonkpilot/chonkpilot.db`；prjusr 库 + 日志 + 附件/截图落
        `<home>/.chonkpilot/data/<project-id>/`（个人运行态不进项目目录）。对应 MW-T19/20/21。
   一.2 分离模式（绝对）：--data-dir=<独立目录> → 数据根独立，workdir 零污染。
   一.3 分离模式（相对）：--data-dir=data → <workdir>/data。
-  一.4 临时模式：console 裸 --data-dir + --prompt → 临时数据根创建于系统 temp，进程退出自动删除。
   一.5 ~ 展开：--data-dir=~/ck-dd-home → <home>/ck-dd-home。
 
 显式 --data-dir 形态（一.2/一.3/一.5）数据根「内容」断言口径见 _assert_root_layout
@@ -19,7 +18,6 @@ import base64
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -28,7 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chonk_client import ChonkClient, TestError, run_case
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
 
-EXE = r"e:\BizWorks\chonkpilot\dist\desktop\chonkpilot.exe"
 PROJ_DB = "chonkpilot.db"
 
 
@@ -255,7 +252,9 @@ def case_separate_absolute():
     try:
         proc, cli = _spawn_ide(_h.free_port(), ws, [f"--data-dir={data}"])
         time.sleep(1.0)
-        _assert_root_layout(cli, data, ws)
+        # 分离模式：数据根在 workdir 外 → 必须校验 workdir 零污染（2026-10-19 补强，
+        # 此前漏传 expect_in_workdir=False，导致 index_queue 在 workdir 下建库未被发现）
+        _assert_root_layout(cli, data, ws, expect_in_workdir=False)
     finally:
         if proc:
             _kill_proc(proc)
@@ -275,35 +274,6 @@ def case_separate_relative():
     finally:
         if proc:
             _kill_proc(proc)
-        shutil.rmtree(os.path.dirname(ws), ignore_errors=True)
-
-
-def case_temp_mode():
-    """一.4 裸 --data-dir（console）→ 临时数据根创建于系统 temp，进程退出自动删除。
-
-    LLM 指向本机不可达端点（127.0.0.1:1）强制快速失败：连接拒绝 → 报错退出，
-    cleanupTempDB 在 defer 中执行，临时目录必须被删除。
-    """
-    ws = os.path.join(tempfile.gettempdir(), "ck-dd-temp", "ws")
-    os.makedirs(ws, exist_ok=True)
-    temp_root = os.path.join(tempfile.gettempdir(), "chonkpilot")
-    try:
-        os.makedirs(temp_root, exist_ok=True)
-        before = set(os.listdir(temp_root))
-        r = subprocess.run(
-            [EXE, f"--work-dir={ws}", "--data-dir", "--prompt=hi",
-             "--llm-protocol=openai", "--llm-model=no-such-model",
-             "--llm-api-url=http://127.0.0.1:1", "--llm-api-key=x", "--output=json"],
-            cwd=os.path.dirname(EXE), capture_output=True, text=True, timeout=180,
-        )
-        # LLM 连接失败 → 预期非零退出
-        if r.returncode == 0:
-            raise TestError("临时模式 LLM 连接失败应报错退出，却成功退出")
-        after = set(os.listdir(temp_root))
-        added = after - before
-        if added:
-            raise TestError(f"临时数据根未被清理，残留: {added}")
-    finally:
         shutil.rmtree(os.path.dirname(ws), ignore_errors=True)
 
 
@@ -332,7 +302,6 @@ def main():
     total += 1; ok += run_case("一.1 B 方案：prj 留项目内 + prjusr 库/日志/附件落 ~/.chonkpilot/data/<id>/", case_default_mode)
     total += 1; ok += run_case("一.2 分离模式（绝对）：数据根平铺 + workdir 零污染", case_separate_absolute)
     total += 1; ok += run_case("一.3 分离模式（相对）：<workdir>/data 平铺", case_separate_relative)
-    total += 1; ok += run_case("一.4 临时模式：临时数据根退出自动删除", case_temp_mode)
     total += 1; ok += run_case("一.5 ~ 展开：--data-dir=~/ck-dd-home → <home>/ck-dd-home", case_home_expand)
     print(f"\n--data-dir 数据根：{ok}/{total} 通过")
     return 0 if ok == total else 1

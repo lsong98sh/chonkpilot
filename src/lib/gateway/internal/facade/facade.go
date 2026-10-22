@@ -21,7 +21,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+
+	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
 )
 
 // Adapter 是 mq ↔ mcp 双向适配器。
@@ -69,14 +70,14 @@ func (a *Adapter) Start(ctx context.Context) error {
 	}
 	// 订阅 gateway 目录/接入变化通知（相对主题 mcp-gateway-changed，2026-09-06 与 lib 同步）。
 	// 句柄由 goroutine 捕获，Stop 触发后**退订**（避免 Stop 后回调仍注册）。
-	sub, err := a.bus.On(msgkeys.TopicMcpGatewayChanged, 0, func(_ context.Context, _ string, _ *mq.Value) error {
+	sub, err := a.bus.On(mcpgateway.SubjectMCPChanged, 0, func(_ context.Context, _ string, _ *mq.Value) error {
 		_ = a.reconcileTools(context.Background())
 		_ = a.reconcilePrompts(context.Background())
 		_ = a.reconcileResources(context.Background())
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("subscribe %s: %w", msgkeys.TopicMcpGatewayChanged, err)
+		return fmt.Errorf("subscribe %s: %w", mcpgateway.SubjectMCPChanged, err)
 	}
 	a.wg.Add(1)
 	go func() {

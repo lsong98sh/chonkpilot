@@ -143,17 +143,17 @@ func (e Exchange) do(ctx context.Context, url string, headers map[string]string,
 		// 明确报超时（不留半死响应，避免下游读到残缺流）。
 		_ = resp.Body.Close()
 		cancelReq()
-		return nil, nil, canon.NewError(canon.ErrorTimeout, "首字节超时（"+e.responseTimeout.String()+"）")
+		return nil, nil, canon.NewError(canon.ErrorTimeout, "首字节超时（"+e.responseTimeout.String()+"）").WithPhase(canon.PhaseFirstByte)
 	}
 	if err != nil {
 		cancelReq()
 		switch {
 		case firstByteTimeout.Load():
-			return nil, nil, canon.NewError(canon.ErrorTimeout, "首字节超时（"+e.responseTimeout.String()+"）")
+			return nil, nil, canon.NewError(canon.ErrorTimeout, "首字节超时（"+e.responseTimeout.String()+"）").WithPhase(canon.PhaseFirstByte)
 		case ctx.Err() != nil:
 			return nil, nil, canon.NewError(canon.ErrorProtocol, ctx.Err().Error())
 		default:
-			return nil, nil, TransportError(err)
+			return nil, nil, TransportError(err).WithPhase(TransportPhase(err))
 		}
 	}
 	return resp, cancelReq, nil
@@ -199,19 +199,19 @@ func (e Exchange) pump(ctx context.Context, body io.Reader, onPayload func(paylo
 		case <-ctx.Done():
 			return canon.NewError(canon.ErrorProtocol, ctx.Err().Error())
 		case <-timer.C:
-			return canon.NewError(canon.ErrorTimeout, "流 chunk 间隔超时（"+e.streamTimeout.String()+"）")
+			return canon.NewError(canon.ErrorTimeout, "流 chunk 间隔超时（"+e.streamTimeout.String()+"）").WithPhase(canon.PhaseStream)
 		case it := <-ch:
 			if it.err != nil {
 				if errors.Is(it.err, io.EOF) {
 					return nil
 				}
-				return TransportError(it.err)
+				return TransportError(it.err).WithPhase(canon.PhaseStream)
 			}
 			if err := onPayload(it.payload); err != nil {
 				if errors.Is(err, ErrStreamDone) {
 					return nil // 终止标记（[DONE] / 终态事件）→ 立即收尾，不等上游关连接（见 ErrStreamDone）
 				}
-				return canon.ToError(err)
+				return canon.ToError(err).WithPhase(canon.PhaseStream)
 			}
 			timer.Reset(e.streamTimeout)
 		}
@@ -235,10 +235,10 @@ func readAllWithin(ctx context.Context, body io.Reader, d time.Duration) ([]byte
 	case <-ctx.Done():
 		return nil, canon.NewError(canon.ErrorProtocol, ctx.Err().Error())
 	case <-timer.C:
-		return nil, canon.NewError(canon.ErrorTimeout, "响应读取超时（"+d.String()+"）")
+		return nil, canon.NewError(canon.ErrorTimeout, "响应读取超时（"+d.String()+"）").WithPhase(canon.PhaseFirstByte)
 	case r := <-ch:
 		if r.err != nil {
-			return nil, TransportError(r.err)
+			return nil, TransportError(r.err).WithPhase(canon.PhaseFirstByte)
 		}
 		return r.buf, nil
 	}

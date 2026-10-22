@@ -3,17 +3,19 @@ module github.com/chonkpilot/chonkpilot-test/chonkpilot-gui/unittest
 go 1.26.0
 
 require (
+	github.com/chonkpilot/chonkpilot-data v0.0.0
 	github.com/chonkpilot/chonkpilot-gui v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin v0.0.0
 )
 
 require (
-	github.com/chonkpilot/chonkpilot-data v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-ignore v0.0.0 // indirect
 	go.etcd.io/bbolt v1.4.2 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
+
+replace github.com/chonkpilot/chonkpilot-chat => ../../../lib/chat
 
 replace github.com/chonkpilot/chonkpilot-data => ../../../lib/data
 
@@ -41,6 +43,6 @@ replace github.com/chonkpilot/chonkpilot-task => ../../../lib/task
 
 replace github.com/jchv/go-webview2 => ../../../lib/go-webview2
 
-require github.com/chonkpilot/chonkpilot-assembly v0.0.0 // indirect
-
 replace github.com/chonkpilot/chonkpilot-assembly => ../../../lib/assembly
+
+replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools

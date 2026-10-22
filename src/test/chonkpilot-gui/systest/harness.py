@@ -538,6 +538,14 @@ def ensure_llm_configured(client, name="mock-llm", model="mock-model", base_url=
         except Exception:
             pass
         time.sleep(0.5)
+    # 选中本函数保证可用的条目：usr 主库不受 --data-dir 隔离，他套件遗留的默认 LLM
+    # （如 8901 的 mock）可能已死 → 不显式选中会让 llm-start 静默失败（无忙碌态 / 断言串扰）。
+    # 需要特定 LLM 的套件在 ensure 之后自行 `chat-select-llm` 覆盖（run_llm / test_queue 等）。
+    try:
+        time.sleep(0.2)
+        client.eval("window.mq.emit('chat-select-llm', {name: %s}); 'ok'" % json.dumps(name))
+    except Exception:
+        pass
     return True
 
 
@@ -822,10 +830,12 @@ class GUIHandle(ProcResource):
 
     kind = "gui"
 
-    def __init__(self, proc, port, work_dir, data_dir=None, owned=True, ready_timeout=90):
+    def __init__(self, proc, port, work_dir, data_dir=None, owned=True, ready_timeout=90,
+                 plugin_uds=None):
         ProcResource.__init__(self, proc=proc, name="gui:%d" % port, owned=owned, port=port)
         self.work_dir = work_dir
         self.data_dir = data_dir
+        self.plugin_uds = plugin_uds
         self.client = wait_ready(port, timeout=ready_timeout)
         # 启动就绪栏栅（2026-09-23，[42 §2 (148)]）：`/ping ready` 由**宿主**应答（首次导航完成），
         # **早于**前端首屏 bundle 执行完毕 —— 此刻 WebView2 UI 线程仍繁忙，紧随其后的首个 `/eval`
@@ -854,7 +864,7 @@ def ensure_project_spec(work_dir):
 
 
 def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
-              ready_timeout=90, extra_args=(), no_window=True):
+              ready_timeout=90, extra_args=(), no_window=True, plugin_addr=None):
     """自起 GUI（未给 port 则取空闲端口）；登记为结束时回收。
 
     显式给 port 时先**等该端口真正空闲**（上一实例 taskkill 后的异步释放窗口），避免新实例与
@@ -873,10 +883,19 @@ def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
         os.makedirs(data_dir, exist_ok=True)
         cmd.append("--data-dir=%s" % data_dir)
     cmd.extend(extra_args)
-    env = None
+    # 插件桥地址一实例一份（BRIDGE-2 测试隔离）：`CHONK_PLUGIN_UDS` 覆盖 UDS 路径；
+    # 显式给 plugin_addr（如 tcp://127.0.0.1:PORT）→ `CHONK_PLUGIN_LISTEN`，用于 Python
+    # 无 AF_UNIX 的平台（Windows）驱动插件面验收。
+    if plugin_addr:
+        plugin_uds = plugin_addr
+        plugin_env = {"CHONK_PLUGIN_LISTEN": plugin_addr}
+    else:
+        plugin_uds = os.path.join(tempfile.gettempdir(), "ck-plugin-%d.sock" % port)
+        plugin_env = {"CHONK_PLUGIN_UDS": plugin_uds}
+    env = dict(os.environ)
+    env.update(plugin_env)
     if home:
         os.makedirs(home, exist_ok=True)
-        env = dict(os.environ)
         env["USERPROFILE"] = home   # Go os.UserHomeDir() 在 Windows 取 USERPROFILE
         env["HOME"] = home
     flags = (CREATE_NO_WINDOW if no_window else 0) | ABOVE_NORMAL_PRIORITY_CLASS
@@ -884,7 +903,8 @@ def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
     res = ProcResource(proc=proc, name="gui:%d" % port, port=port)
     register(res)
     try:
-        h = GUIHandle(proc, port, work_dir, data_dir, owned=True, ready_timeout=ready_timeout)
+        h = GUIHandle(proc, port, work_dir, data_dir, owned=True,
+                      ready_timeout=ready_timeout, plugin_uds=plugin_uds)
     except Exception:
         res.stop()
         raise

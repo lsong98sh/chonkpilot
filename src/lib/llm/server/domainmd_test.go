@@ -2,16 +2,17 @@ package server
 
 import "testing"
 
-// 域工具契约 embed 加载：6 个齐全（ask_user / llm_run / tool_stop / tool_result +
-// 单聊 subchat_open / subchat_finish，SUBCHAT-2 阶段 B-2）+ parameters 为合法 JSON schema。
+// 域工具契约 embed 加载：6 个齐全（ask_user / tool_stop / tool_result +
+// 单聊 subchat_open / subchat_finish，SUBCHAT-2 阶段 B-2 + next_run，NEXTRUN-1）
+// + parameters 为合法 JSON schema。
 func TestLoadDomainTools(t *testing.T) {
 	defs, err := loadDomainTools()
 	if err != nil {
 		t.Fatalf("loadDomainTools: %v", err)
 	}
 	want := map[string]bool{
-		"ask_user": false, "llm_run": false, "tool_stop": false, "tool_result": false,
-		"subchat_open": false, "subchat_finish": false,
+		"ask_user": false, "tool_stop": false, "tool_result": false,
+		"subchat_open": false, "subchat_finish": false, "next_run": false,
 	}
 	for _, d := range defs {
 		if _, ok := want[d.Name]; !ok {
@@ -36,20 +37,20 @@ func TestLoadDomainTools(t *testing.T) {
 // TestLoadDomainToolsMeta：域工具契约 [meta] 被解析并携带（category/async/timeout），
 // 使注册载荷能透出为工具 `_meta`（工具异步页据此显示正确模式；见 domainmcp.go registerDomainTools）。
 // 用户口径（2026-09-27）：系统工具（category=server）执行硬上限 = 无（timeout=0 或未声明）。
-// timeout=0 者 TimeoutSet=true（显式声明 = 无上限，透出 _meta.timeout=0）；未声明者（llm_run）false。
+// timeout=0 者 TimeoutSet=true（显式声明 = 无上限，透出 _meta.timeout=0）。
 func TestLoadDomainToolsMeta(t *testing.T) {
 	defs, err := loadDomainTools()
 	if err != nil {
 		t.Fatalf("loadDomainTools: %v", err)
 	}
 	wantAsync := map[string]string{
-		"ask_user": "never", "tool_result": "never", "tool_stop": "never", "llm_run": "always",
-		"subchat_open": "never", "subchat_finish": "never",
+		"ask_user": "never", "tool_result": "never", "tool_stop": "never",
+		"subchat_open": "never", "subchat_finish": "never", "next_run": "never",
 	}
-	// 契约显式声明 timeout=0（= 无上限）者；llm_run 契约未声明 timeout → TimeoutSet=false。
+	// 契约显式声明 timeout=0（= 无上限）者。
 	wantTimeoutSet := map[string]bool{
-		"ask_user": true, "tool_result": true, "tool_stop": true, "llm_run": false,
-		"subchat_open": true, "subchat_finish": true,
+		"ask_user": true, "tool_result": true, "tool_stop": true,
+		"subchat_open": true, "subchat_finish": true, "next_run": true,
 	}
 	got := map[string]ToolDef{}
 	for _, d := range defs {

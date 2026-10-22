@@ -388,6 +388,7 @@ func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
 		SessionID      string `json:"session_id,omitempty"`
 		Brief          string `json:"brief,omitempty"`
 		ToolCallStatus string `json:"tool_call_status,omitempty"`
+		AskID          string `json:"ask_id,omitempty"`
 	}
 	if json.Unmarshal(raw, &p) != nil {
 		return req
@@ -396,6 +397,11 @@ func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
 	req.SessionID = p.SessionID
 	req.Brief = p.Brief
 	req.ToolCallStatus = p.ToolCallStatus
+	// ask 关联 id：优先 msg 内，回落载荷顶层（MOD-1 M6b）。
+	req.AskID = p.AskID
+	if req.AskID == "" {
+		req.AskID = str(m["ask_id"])
+	}
 	// 群聊发言标识：优先 msg 内，回落载荷顶层（两者同现时 msg 内为准）。
 	req.SenderAgent = str(nested["sender_agent"])
 	if req.SenderAgent == "" {

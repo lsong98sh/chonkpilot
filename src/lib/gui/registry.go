@@ -90,6 +90,49 @@ func (r *windowRegistry) setMain(h *windowHost) {
 	r.mu.Unlock()
 }
 
+// findByInstance 按实例 id 查窗口（空 id = 主窗口；找不到 = nil）。
+func (r *windowRegistry) findByInstance(instanceID string) *windowHost {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if instanceID == "" {
+		return r.main
+	}
+	if r.main != nil && r.main.instID == instanceID {
+		return r.main
+	}
+	for _, h := range r.byID {
+		if h.instID == instanceID {
+			return h
+		}
+	}
+	return nil
+}
+
+// instances 返回当前全部窗口实例 id（去重；主窗口在前）。
+func (r *windowRegistry) instances() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := make(map[string]struct{}, len(r.byID)+1)
+	out := make([]string, 0, len(r.byID)+1)
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	if r.main != nil {
+		add(r.main.instID)
+	}
+	for _, h := range r.byID {
+		add(h.instID)
+	}
+	return out
+}
+
 // bringMainToTop 恢复并前置主窗口（flash 远程薄壳：`instance-goto-top` 控制帧处理，
 // 由 UDS 读循环 goroutine 调用 → 跨线程，ShowWindow/SetForegroundWindow 幂等安全）。
 // 主窗口尚未创建 → 空操作。
@@ -131,9 +174,14 @@ func (r *windowRegistry) destroyMain() {
 // 改异步即需新增消息面（新增 msg/payload，须经用户确认——测试准则明令禁止擅改），
 // 同时会使 --test-port 多窗口路由（window_id 定向）失去确定性，回归风险高。
 // 故保持同步语义并在此明确声明取舍（若后续引入异步完成事件，可据此改造）。
-func (r *windowRegistry) open(env *hostEnv, br *bridge.Bridge, sessionID, parentInstance string) (string, bool, bool) {
+func (r *windowRegistry) open(env *hostEnv, proj *projectCtx, br *bridge.Bridge, sessionID, parentInstance string) (string, bool, bool) {
 	if sessionID == "" {
 		return "", false, false
+	}
+	// 项目级字段（PRODSIM-1）：proj 优先；nil → 沿用 hostEnv 单项目字段（flash / --no-server）。
+	workDir := env.workDir
+	if proj != nil {
+		workDir = proj.workDir
 	}
 	// 目标会话是不是群聊（`kind=group_chat`）：经既有只读 `data-session-get` 取（`open-chat` 载荷
 	// 不变）；取不到 → 按普通会话处理（既有行为不变）。群聊窗口走**独立额度**（<maxGroupChatWindows）。
@@ -160,9 +208,11 @@ func (r *windowRegistry) open(env *hostEnv, br *bridge.Bridge, sessionID, parent
 
 	h, err := startWindow(env, windowSpec{
 		role:      roleChat,
+		proj:      proj,
 		windowID:  windowID,
 		sessionID: sessionID,
-		title:     chatWindowTitle(env.workDir),
+		title:     chatWindowTitle(workDir),
+		// owner 暂不启用（PRODSIM-1）：owned window 不出现在任务栏；从属关系待真机验收。
 		// 父子链（"谁开的指谁"，逐层链；61 §4.1 ④）：本窗口实例的直接父 = 调用来源窗口实例。
 		parentInstance: parentInstance,
 		// URL 路由承载视图与绑定会话（24 §1.1 / §6.1）：宿主零视图判断，前端按 URL 分派。
@@ -325,14 +375,14 @@ func (h *appHandler) handleWindowMessage(typ, payloadJSON string) (any, []error)
 		// 新窗口的直接父实例 = **本 handler 所属窗口的实例**（"谁开的指谁"，逐层链）。
 		// 本窗口的桥一并传入：建窗前经既有只读 `data-session-get` 判目标会话是否群聊
 		// （群聊窗口**独立额度**，群聊 §9 D28/D30；普通窗口额度与行为不变）。
-		windowID, activated, ok := h.env.windows.open(h.env, h.br, p.SessionID, h.br.InstanceID())
+		windowID, activated, ok := h.windows().open(h.env, h.proj, h.br, p.SessionID, h.br.InstanceID())
 		return map[string]any{
 			msgkeys.GuiWindowOpenChatResultOk:        ok,
 			msgkeys.GuiWindowOpenChatResultWindowId:  windowID,
 			msgkeys.GuiWindowOpenChatResultActivated: activated,
 		}, nil
 	case msgkeys.TopicGuiWindowList:
-		return map[string]any{msgkeys.GuiWindowListResultWindows: h.env.windows.list()}, nil
+		return map[string]any{msgkeys.GuiWindowListResultWindows: h.windows().list()}, nil
 	case msgkeys.TopicGuiWindowSetTitle:
 		// 仅独立对话窗口可改标题（主窗口 handler 未接线 setTitle → ok=false，标题不变，61 §1）。
 		if h.setTitle == nil {

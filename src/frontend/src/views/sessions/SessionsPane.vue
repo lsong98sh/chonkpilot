@@ -62,6 +62,7 @@
             <Input
               v-else
               :model-value="editingValue"
+              :maxlength="MAX_TITLE"
               @update:model-value="editingValue = $event"
               class="session-title-input"
               @keyup.enter="confirmRename"
@@ -164,6 +165,8 @@ import { listSubChats } from '../../composables/useSubChats'
 import { SUBCHAT_READY, subChatName, subChatStateKey } from '../../utils/subchat.js'
 import { isGroupChatKind } from '../../utils/groupchat.js'
 import { useSelectionStore } from '../../stores/selection'
+// INPUTVAL-1：会话标题 ≤128 字符（空 = 未命名，不提交空值）。
+import { MAX_TITLE } from '../../utils/fieldRules'
 
 defineOptions({ name: 'SessionsPane' })
 

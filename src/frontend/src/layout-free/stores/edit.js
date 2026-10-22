@@ -30,6 +30,8 @@ export const useEditStore = defineStore('edit', {
     tabMore: {},
     /** tab 右键菜单 */
     tabMenu: { visible: false, x: 0, y: 0, scope: 'free', ownerId: '', key: '' },
+    /** 编辑目标档案（WIN-026）：'' = 传统（保存即应用）；'__current__' = 当前布局；其它 = 档案 id */
+    profileId: '',
   }),
   getters: {
     selectedBarItemId: (state) => state.selectedBarItem[state.tab === 'statusbar' ? 'statusbar' : 'topToolbar'] ?? '',
@@ -48,6 +50,10 @@ export const useEditStore = defineStore('edit', {
       this.contextMenu.visible = false
       this.showJson = false
       this.dropdowns = {}
+      this.profileId = ''
+    },
+    setProfileId(id) {
+      this.profileId = id ?? ''
     },
     select(nodeId) {
       this.selectedNodeId = nodeId ?? ''

@@ -505,6 +505,10 @@ function onNumberBlur(row, field) {
     if (raw === '' || raw === null || raw === undefined || n === 0) {
       row.cancelOnTimeout = '' // 关闭（不写库）
     } else if (!isCancelOnTimeout(raw)) {
+      // INPUTVAL-1 P2-1：非法值不再静默回落（明确提示；回落已落库值）。
+      message.warning(t('fieldRules.invalidNumber', {
+        field: t('config.toolAsync.cancelOnTimeout'), min: 0, max: '-',
+      }))
       row.cancelOnTimeout = u0 && u0.cancel_on_timeout != null && Number(u0.cancel_on_timeout) > 0
         ? String(u0.cancel_on_timeout) : ''
     }
@@ -515,6 +519,11 @@ function onNumberBlur(row, field) {
   const legal = isLimitValue(raw)
   const emptyHard = field === 'hard_timeout' && (raw === '' || raw === null)
   if (!legal && !emptyHard) {
+    // INPUTVAL-1 P2-1：非法值不再静默回落（明确提示；回落已落库值 / 默认值）。
+    message.warning(t('fieldRules.invalidNumber', {
+      field: t(field === 'threshold' ? 'config.toolAsync.threshold' : 'config.toolAsync.hardTimeout'),
+      min: -1, max: '-',
+    }))
     const u = savedMap.value[row.name]
     if (field === 'threshold') {
       row.threshold = u && u.threshold != null ? String(u.threshold) : String(defaultThreshold(row))

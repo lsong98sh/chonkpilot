@@ -28,11 +28,11 @@
       <div class="form-layout">
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('config.llm.name') }}<span v-if="aiMark('name')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
-          <Input v-model="localData.name" :placeholder="$t('config.llm.namePlaceholder')" />
+          <Input v-model="localData.name" :maxlength="MAX_NAME" required :placeholder="$t('config.llm.namePlaceholder')" />
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('config.llm.model') }}<span v-if="aiMark('model')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
-          <Input v-model="localData.model" :placeholder="$t('config.llm.modelPlaceholder')" />
+          <Input v-model="localData.model" :maxlength="MAX_TITLE" :placeholder="$t('config.llm.modelPlaceholder')" />
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('config.llm.protocol') }}<span v-if="aiMark('protocol')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
@@ -40,11 +40,11 @@
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('config.llm.baseUrl') }}<span v-if="aiMark('baseUrl')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
-          <Input v-model="localData.baseUrl" :placeholder="$t('config.llm.baseUrlPlaceholder')" />
+          <Input v-model="localData.baseUrl" :maxlength="MAX_URL" :placeholder="$t('config.llm.baseUrlPlaceholder')" />
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('config.llm.apiKey') }}</label>
-          <Input v-model="localData.apiKey" type="password" />
+          <Input v-model="localData.apiKey" type="password" :maxlength="MAX_KEY" />
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">{{ $t('config.llm.temperature') }}<span v-if="aiMark('temperature')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span></label>
@@ -63,7 +63,7 @@
               >{{ p.label }}</Button>
             </span>
           </div>
-          <Input type="number" v-model.number="localData.maxOutputToken" min="256" max="1000000" step="256" style="width:100%" />
+          <Input type="number" v-model.number="localData.maxOutputToken" :min="OUT_TOKEN_MIN" :max="OUT_TOKEN_MAX" step="256" style="width:100%" />
         </div>
         <div class="form-item form-item-12">
           <div class="label-with-presets">
@@ -83,7 +83,7 @@
               >{{ p.label }}</Button>
             </span>
           </div>
-          <Input type="number" v-model.number="localData.maxContextToken" min="0" max="1000000000" step="1" style="width:100%" />
+          <Input type="number" v-model.number="localData.maxContextToken" min="0" :max="CTX_TOKEN_MAX" step="1" style="width:100%" />
         </div>
         <div class="form-item form-item-12">
           <div class="label-switch-row">
@@ -120,7 +120,7 @@
             </Tooltip>
             <span v-if="aiMark('maxToolIterations')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span>
           </label>
-          <Input type="number" v-model.number="localData.maxToolIterations" min="0" max="2000" step="1" style="width:100%" />
+          <Input type="number" v-model.number="localData.maxToolIterations" min="0" :max="TOOL_ITER_MAX" step="1" style="width:100%" />
         </div>
         <!-- 测试连接（批 3 ⑮）：用**当前表单里的配置**真实探活一次（只读探测：不落库、不改生效配置）。
              结果就地展示：成功 = 延迟 + 回显模型名；失败 = 人话文案（复用 errorMessage 分类映射）+
@@ -157,13 +157,18 @@
 <script setup>
 import { reactive, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Input, Textarea, Select, Switch, Tooltip } from '../../components/ui'
+import { Button, Input, Textarea, Select, Switch, Tooltip, message } from '../../components/ui'
 import Icon from '../../components/icon/Icon.vue'
 import { DEFAULT_LLM_PROTOCOL, RESPONSES_LLM_PROTOCOL } from '../../config/defaults'
 import { classifyError } from '../../utils/errorMessage'
 import { suggestConfig } from '../../api/config'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
+// INPUTVAL-1：字段基线（与后端 validate.go 同源口径）。
+import {
+  MAX_NAME, MAX_TITLE, MAX_URL, MAX_KEY, OUT_TOKEN_MIN, OUT_TOKEN_MAX,
+  CTX_TOKEN_MAX, TOOL_ITER_MAX, TEMP_MAX, trimStr, tooLong, isHttpUrl,
+} from '../../utils/fieldRules'
 
 const { t } = useI18n()
 
@@ -202,7 +207,41 @@ const tokenPresets = [
 ]
 function setToken(field, value) { localData[field] = value }
 
+// 字段级错误提示（INPUTVAL-1 P2-1：明确提示，替代 blur 静默回落）。
+function warn(rule, params) {
+  message.warning(t(`fieldRules.${rule}`, params))
+}
+
+// 保存前校验（前端体验层；后端 UserConfigSet 复验并拒绝非法值）。
+// model / baseUrl 空 = 显式继承系统默认（既有语义）→ 只校验非空值的格式与长度。
 function handleSave() {
+  const name = trimStr(localData.name)
+  if (!name) return warn('required', { field: t('config.llm.name') })
+  if (tooLong(name, MAX_NAME)) return warn('tooLong', { field: t('config.llm.name'), max: MAX_NAME })
+  const model = trimStr(localData.model)
+  if (tooLong(model, MAX_TITLE)) return warn('tooLong', { field: t('config.llm.model'), max: MAX_TITLE })
+  const baseUrl = trimStr(localData.baseUrl)
+  if (baseUrl && !isHttpUrl(baseUrl)) return warn('invalidUrl', { field: t('config.llm.baseUrl') })
+  const temp = Number(localData.temperature)
+  if (!Number.isFinite(temp) || temp < 0 || temp > TEMP_MAX) {
+    return warn('invalidNumber', { field: t('config.llm.temperature'), min: 0, max: TEMP_MAX })
+  }
+  const outTok = Number(localData.maxOutputToken)
+  if (localData.maxOutputToken !== '' && (!Number.isInteger(outTok) || outTok < OUT_TOKEN_MIN || outTok > OUT_TOKEN_MAX)) {
+    return warn('invalidNumber', { field: t('config.llm.maxOutputToken'), min: OUT_TOKEN_MIN, max: OUT_TOKEN_MAX })
+  }
+  const ctxTok = Number(localData.maxContextToken)
+  if (localData.maxContextToken !== '' && (!Number.isInteger(ctxTok) || ctxTok < 0 || ctxTok > CTX_TOKEN_MAX)) {
+    return warn('invalidNumber', { field: t('config.llm.maxContextToken'), min: 0, max: CTX_TOKEN_MAX })
+  }
+  const iter = Number(localData.maxToolIterations)
+  if (localData.maxToolIterations !== '' && (!Number.isInteger(iter) || iter < 0 || iter > TOOL_ITER_MAX)) {
+    return warn('invalidNumber', { field: t('config.llm.maxToolIterations'), min: 0, max: TOOL_ITER_MAX })
+  }
+  localData.name = name
+  localData.model = model
+  localData.baseUrl = baseUrl
+  localData.apiKey = trimStr(localData.apiKey)
   emit('save', { ...localData }, props.editIndex)
   aiFields.value = [] // 保存后清「AI 建议」标记
 }

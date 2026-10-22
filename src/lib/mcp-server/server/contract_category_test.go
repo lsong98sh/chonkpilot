@@ -1,6 +1,6 @@
-// 契约注册类别白盒：category=server 的 *.tool.md 不注册为 executor 工具（避免无 runtime 占位工具 /
-// 热重扫幽灵工具 self_dsl_run）；其它 category（core/desktop/browser）与**无 category** 一律照常注册。
-// 被过滤的 server 类别契约经 ServerTools 单源提供（供装配层桥接给 gateway 自持节点）。
+// 契约注册类别白盒：category=server 且**无 runtime** 的 *.tool.md 不注册为 executor 工具（避免无 runtime
+// 占位工具 / 热重扫幽灵工具）；其它 category（core/desktop/browser）与**无 category** 一律照常注册。
+// 被过滤的 server 类别契约经 ServerTools 单源提供（当前无此类契约；`dsl_run` 已外移为 runtime executor）。
 package server
 
 import (

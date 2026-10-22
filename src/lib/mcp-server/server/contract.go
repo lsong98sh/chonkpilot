@@ -6,7 +6,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,48 +45,30 @@ func parseSchemaJSON(s string) (map[string]any, error) {
 	return m, nil
 }
 
-// ─── 递归扫描 ─────────────────────────────
-
-// scanFolder 递归扫描契约根，按后缀分组返回文件路径。
-func scanFolder(root string) (tools, skills, prompts, resources []string, err error) {
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			return nil
-		}
-		name := d.Name()
-		switch {
-		case strings.HasSuffix(name, suffixTool):
-			tools = append(tools, path)
-		case strings.HasSuffix(name, suffixSkill):
-			skills = append(skills, path)
-		case strings.HasSuffix(name, suffixPrompt):
-			prompts = append(prompts, path)
-		case strings.HasSuffix(name, suffixResource):
-			resources = append(resources, path)
-		}
-		return nil
-	})
-	return
-}
+// ─── 递归扫描（来源分层见 contractsource.go） ─────────────────────────
+// 扫描 + 同名覆盖合并由 `ScanAll([]Source)` 统一承担（GATEWAY-2 C）；本文件只做**解析**。
 
 // ─── Tool 契约（*.tool.md） ─────────────────────────
 
 // ToolDoc 是 *.tool.md 契约（25-mcp-server；要素对齐 dist/scripts/markitdown.json）。
 // 注意：category 由 meta 声明（缺省无分类）；分类目录归属不影响原语名（原语名 = 文件名）。
 type ToolDoc struct {
-	Name        string         // 原语名 = 文件名（不含 .tool.md）
-	Title       string         // H1 可读标题
-	Dir         string         // 契约文件所在目录（entry 相对解析基准）
-	Runtime     string         // meta: runtime（执行器 exe/PATH 名，或解释器如 python/node）
-	Entry       string         // meta: entry（已废弃；兼容读取，解释器类遗留）
-	Hot         bool           // meta: hot（吸收原 llm；固定暴露标志）
-	Category    string         // meta: category（分类声明；缺省 = 契约根目录名派生）
-	Async       string         // meta: async（auto|always|never|manual，缺省 auto）
-	AsyncTh     int            // meta: async-threshold（秒；async=auto 下超时自动转后台）
-	Idempotent  bool           // meta: idempotent（可重试性；缺省 false = 安全默认，见 G-20）
+	Name       string // 原语名 = 文件名（不含 .tool.md）
+	Title      string // H1 可读标题
+	Dir        string // 契约文件所在目录（entry 相对解析基准）
+	Runtime    string // meta: runtime（executor exe/PATH 名、解释器如 python/node，或 "builtin" = 进程内执行）
+	Entry      string // meta: entry（已废弃；兼容读取，解释器类遗留）
+	Hot        bool   // meta: hot（吸收原 llm；固定暴露标志）
+	Category   string // meta: category（分类声明；缺省 = 契约根目录名派生）
+	Async      string // meta: async（auto|always|never|manual，缺省 auto）
+	AsyncTh    int    // meta: async-threshold（秒；async=auto 下超时自动转后台）
+	Idempotent bool   // meta: idempotent（可重试性；缺省 false = 安全默认，见 G-20）
+	// Internal=true（meta: internal）：仅作为 core-mcp-server 的**内部执行器**（/internal/exec），
+	// 不进入 MCP tools/list（插件查询工具：由插件按启用状态注册给 gateway，执行经 core）。
+	Internal bool
+	// CoreOnly=true（meta: core-only）：只在 core-mcp-server（外部工具模式）注册执行；
+	// 进程内 mcp-server（CLI / 单机 mcp-server.exe）不注册（meta/domain 控制面工具）。
+	CoreOnly    bool
 	Timeout     int            // meta: timeout（秒；执行硬上限。0/-1 = 无上限；仅 TimeoutSet 时有效）
 	TimeoutSet  bool           // meta: timeout 键是否**显式声明**（区分「未设置=回落全局」与「0/-1=无上限」）
 	Args        string         // meta: args（命令行模板，{param}/{RAW-INPUT-FILE}/{RESULT-OUTPUT-FILE}）
@@ -96,28 +77,38 @@ type ToolDoc struct {
 	Schema      map[string]any // [parameters] YAML → JSON Schema
 }
 
-// categoryServer 标记「由 server/gateway 自持（in-memory 节点）提供、无 executor runtime」的工具契约
-// （如 capability/tools/core/dsl_run.tool.md —— 其运行体是 gateway 的 dsl 节点）。
-// 此类契约**不作为 executor 工具注册**：mcp-server 侧无 runtime、不可用，热重扫时还会在 self 节点
-// 复现为幽灵工具（self_dsl_run）。它们只作为域工具的**描述单源**（见 ServerTools）。
+// categoryServer 标记「由 server/gateway 自持提供、无 executor runtime」的工具契约。
+// 2026-10-19 起 `dsl_run` 已外移为 core 独立 executor（runtime），当前**无此类契约**；
+// 保留判定以兼容未来「自持工具」形态：此类契约**不作为 executor 工具注册**（mcp-server 侧无 runtime、
+// 不可用，热重扫时还会在 self 节点复现为幽灵工具）。它们只作为域工具的**描述单源**（见 ServerTools）。
 const categoryServer = "server"
 
-// isServerTool 判定工具契约是否为 server 类别（category=server，大小写/空白不敏感）。
+// isServerTool 判定工具契约是否由 gateway/域自持（category=server **且无 runtime**）。
+// 有 runtime 的 category=server 契约（ask_user/tool_result/… 的 core-only 版本）仍是外部执行器，
+// 归属 core-mcp-server 注册（见 ToolDoc.CoreOnly）。
 func isServerTool(d *ToolDoc) bool {
-	return strings.EqualFold(strings.TrimSpace(d.Category), categoryServer)
+	return strings.EqualFold(strings.TrimSpace(d.Category), categoryServer) && strings.TrimSpace(d.Runtime) == ""
 }
 
-// loadTools 递归扫描 folder 加载全部 *.tool.md。
+// loadTools 递归扫描 folder 加载全部 *.tool.md（磁盘单层；来源分层场景见 registerContracts）。
 func loadTools(folder string) ([]*ToolDoc, error) {
-	files, _, _, _, err := scanFolder(folder)
+	files, _, err := ScanAll([]Source{{Label: "disk", Dir: folder}})
 	if err != nil {
 		return nil, err
 	}
+	return parseTools(files)
+}
+
+// parseTools 把已合并的契约文件解析为 ToolDoc（只取 tool 类）。
+func parseTools(files []*ContractFile) ([]*ToolDoc, error) {
 	var docs []*ToolDoc
 	for _, f := range files {
+		if f.Kind != kindTool {
+			continue
+		}
 		d, err := parseToolDoc(f)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", f, err)
+			return nil, fmt.Errorf("%s: %w", f.Rel, err)
 		}
 		docs = append(docs, d)
 	}
@@ -129,8 +120,8 @@ func loadTools(folder string) ([]*ToolDoc, error) {
 // （含契约 _meta 与 cfg 的用户级异步覆盖），按原语名索引。
 //
 // 这些契约**不注册为 executor 工具**（见 isServerTool）；本函数是它们唯一的读取入口，
-// 供装配层把域工具（如 gateway 的 dsl_run）的定义**单源**交给其自持节点：gateway lib 不依赖本包
-// （RB-2），故由装配层桥接注入。root 缺失 → 空 map（非错误）。
+// 供装配层把「无 runtime 的 category=server」定义**单源**交出（gateway lib 不依赖本包，RB-2）。
+// 当前无此类契约（`dsl_run` 已于 2026-10-19 外移为 runtime executor）。root 缺失 → 空 map（非错误）。
 func ServerTools(root string, cfg *Config) (map[string]*mcp.Tool, error) {
 	if _, err := os.Stat(root); err != nil {
 		if os.IsNotExist(err) {
@@ -147,7 +138,7 @@ func ServerTools(root string, cfg *Config) (map[string]*mcp.Tool, error) {
 	}
 	out := map[string]*mcp.Tool{}
 	for _, d := range docs {
-		if !isServerTool(d) {
+		if !isServerTool(d) || d.CoreOnly {
 			continue
 		}
 		t, err := buildTool(d, cfg)
@@ -160,21 +151,17 @@ func ServerTools(root string, cfg *Config) (map[string]*mcp.Tool, error) {
 }
 
 // parseToolDoc 解析单个 *.tool.md（v2：H1 分区，委托 contractmd）。
-func parseToolDoc(path string) (*ToolDoc, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	c, err := contractmd.Parse(string(data))
+func parseToolDoc(f *ContractFile) (*ToolDoc, error) {
+	c, err := contractmd.Parse(string(f.Data))
 	if err != nil {
 		return nil, err
 	}
 	meta := c.Meta
 
 	doc := &ToolDoc{
-		Name:        strings.TrimSuffix(filepath.Base(path), suffixTool),
+		Name:        f.Name,
 		Title:       c.Title,
-		Dir:         filepath.Dir(path),
+		Dir:         f.Dir,
 		Runtime:     meta["runtime"],
 		Entry:       meta["entry"],
 		Hot:         isTruthy(meta["hot"]) || isTruthy(meta["llm"]), // llm 已并入 hot（兼容旧契约）
@@ -182,6 +169,8 @@ func parseToolDoc(path string) (*ToolDoc, error) {
 		Async:       firstNonEmpty(meta["async"], "auto"),
 		AsyncTh:     atoiSafe(meta["async-threshold"]),
 		Idempotent:  isTruthy(meta["idempotent"]),
+		Internal:    isTruthy(meta["internal"]),
+		CoreOnly:    isTruthy(meta["core-only"]),
 		Args:        meta["args"],
 		Description: c.Description,
 	}
@@ -309,29 +298,33 @@ type SkillDoc struct {
 	Body        string // [content]
 }
 
-// loadSkills 递归扫描 folder 加载全部 *.skill.md。
+// loadSkills 递归扫描 folder 加载全部 *.skill.md（磁盘单层）。
 func loadSkills(folder string) ([]*SkillDoc, error) {
-	_, files, _, _, err := scanFolder(folder)
+	files, _, err := ScanAll([]Source{{Label: "disk", Dir: folder}})
 	if err != nil {
 		return nil, err
 	}
+	return parseSkills(files)
+}
+
+// parseSkills 把已合并的契约文件解析为 SkillDoc（只取 skill 类）。
+func parseSkills(files []*ContractFile) ([]*SkillDoc, error) {
 	var docs []*SkillDoc
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			return nil, err
+		if f.Kind != kindSkill {
+			continue
 		}
-		c, err := contractmd.Parse(string(data))
+		c, err := contractmd.Parse(string(f.Data))
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", f, err)
+			return nil, fmt.Errorf("%s: %w", f.Rel, err)
 		}
 		d := &SkillDoc{
-			Name:        strings.TrimSuffix(filepath.Base(f), suffixSkill),
+			Name:        f.Name,
 			Description: c.Description,
 			Body:        c.Content,
 		}
 		if d.Name == "" || d.Description == "" {
-			return nil, fmt.Errorf("%s: name/description required", f)
+			return nil, fmt.Errorf("%s: name/description required", f.Rel)
 		}
 		docs = append(docs, d)
 	}
@@ -356,34 +349,38 @@ type PromptArg struct {
 	Required    bool
 }
 
-// loadPrompts 递归扫描 folder 加载全部 *.prompt.md。
+// loadPrompts 递归扫描 folder 加载全部 *.prompt.md（磁盘单层）。
 func loadPrompts(folder string) ([]*PromptDoc, error) {
-	_, _, files, _, err := scanFolder(folder)
+	files, _, err := ScanAll([]Source{{Label: "disk", Dir: folder}})
 	if err != nil {
 		return nil, err
 	}
+	return parsePrompts(files)
+}
+
+// parsePrompts 把已合并的契约文件解析为 PromptDoc（只取 prompt 类）。
+func parsePrompts(files []*ContractFile) ([]*PromptDoc, error) {
 	var docs []*PromptDoc
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			return nil, err
+		if f.Kind != kindPrompt {
+			continue
 		}
-		c, err := contractmd.Parse(string(data))
+		c, err := contractmd.Parse(string(f.Data))
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", f, err)
+			return nil, fmt.Errorf("%s: %w", f.Rel, err)
 		}
 		d := &PromptDoc{
-			Name:        strings.TrimSuffix(filepath.Base(f), suffixPrompt),
+			Name:        f.Name,
 			Description: c.Description,
 			Body:        c.Content,
 		}
 		if args, err := parsePromptArgs(c.Parameters); err != nil {
-			return nil, fmt.Errorf("%s: arguments: %w", f, err)
+			return nil, fmt.Errorf("%s: arguments: %w", f.Rel, err)
 		} else {
 			d.Arguments = args
 		}
 		if d.Name == "" || d.Description == "" {
-			return nil, fmt.Errorf("%s: name/description required", f)
+			return nil, fmt.Errorf("%s: name/description required", f.Rel)
 		}
 		docs = append(docs, d)
 	}
@@ -452,44 +449,50 @@ type ResourceDoc struct {
 	Content     string // [content]（兼容兜底：仅无 Path/File 时使用）
 }
 
-// loadResources 递归扫描 folder 加载全部 *.resource.md。
+// loadResources 递归扫描 folder 加载全部 *.resource.md（磁盘单层）。
 func loadResources(folder string) ([]*ResourceDoc, error) {
-	_, _, _, files, err := scanFolder(folder)
+	files, _, err := ScanAll([]Source{{Label: "disk", Dir: folder}})
 	if err != nil {
 		return nil, err
 	}
+	return parseResources(files)
+}
+
+// parseResources 把已合并的契约文件解析为 ResourceDoc（只取 resource 类）。
+func parseResources(files []*ContractFile) ([]*ResourceDoc, error) {
 	var docs []*ResourceDoc
 	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			return nil, err
+		if f.Kind != kindResource {
+			continue
 		}
-		c, err := contractmd.Parse(string(data))
+		c, err := contractmd.Parse(string(f.Data))
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", f, err)
+			return nil, fmt.Errorf("%s: %w", f.Rel, err)
 		}
-		name := strings.TrimSuffix(filepath.Base(f), suffixResource)
 		// 外部内容文件（meta `path`，2026-10-14）：资源内容取自该文件（**无「正文」**），
 		// mimetype 按其后缀识别；相对路径按契约文件所在目录解析。无 `path` → 契约「正文」
 		// markdown，mimetype 恒 text/markdown。
 		file := strings.TrimSpace(c.Meta["path"])
 		if file != "" && !filepath.IsAbs(file) {
-			file = filepath.Join(filepath.Dir(f), filepath.FromSlash(file))
+			file = filepath.Join(f.Dir, filepath.FromSlash(file))
 		}
 		mime := contractmd.DefaultMimetype
 		if file != "" {
 			mime = contractmd.MimetypeOfFile(file)
 		}
 		d := &ResourceDoc{
-			URI:         contractmd.InferURI(name), // 隐式 uri（不落盘，注册时派生）
-			Name:        name,
+			URI:         contractmd.InferURI(f.Name), // 隐式 uri（不落盘，注册时派生）
+			Name:        f.Name,
 			MIMEType:    mime,
 			Description: c.Description,
 			File:        file,
-			Path:        f, // RB-4 ①：内容不驻留，makeResourceHandler 按 Path 实时读盘取正文
+			Path:        f.Path, // RB-4 ①：内容不驻留，makeResourceHandler 按 Path 实时读盘取正文
+		}
+		if d.Path == "" {
+			d.Content = c.Content // 内嵌来源无磁盘路径 → 用扫描期正文兜底（makeResourceHandler ③）
 		}
 		if d.Name == "" || d.Description == "" {
-			return nil, fmt.Errorf("%s: name/description required", f)
+			return nil, fmt.Errorf("%s: name/description required", f.Rel)
 		}
 		docs = append(docs, d)
 	}

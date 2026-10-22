@@ -275,9 +275,64 @@ func needWS(args map[string]any) (*Workspace, error) {
 	return Open(wd)
 }
 
+// 查询门在「有待索引项」时的有界等待参数（包级变量便于测试覆写）。
+var (
+	indexReadyWait = 5 * time.Second
+	indexReadyPoll = 100 * time.Millisecond
+)
+
+// gateIndexStatus 依据 status.json 拦截查询：
+//   - 文件不存在 / 读取失败 → (nil, false)，走既有 EnsureReady 兜底（向后兼容）；
+//   - error → 返回结构化 error 应答；
+//   - indexing 或 pending>0 → 有界等待（默认 5s / 100ms 轮询），就绪后继续 EnsureReady；
+//     超时 → 返回结构化 pending 应答（不视为协议错误）；
+//   - ready 且 pending==0 → (nil, false)，继续 EnsureReady。
+func gateIndexStatus(workDir string) (any, bool) {
+	st, err := ReadIndexStatus(workDir)
+	if err != nil || st == nil {
+		return nil, false
+	}
+	if st.State == "error" {
+		return map[string]any{"status": "error", "state": "error", "message": st.Message}, true
+	}
+	if st.State == "ready" && st.Pending <= 0 {
+		return nil, false
+	}
+	if st.State != "indexing" && st.Pending <= 0 {
+		return nil, false
+	}
+	deadline := time.Now().Add(indexReadyWait)
+	for {
+		if !time.Now().Before(deadline) {
+			return map[string]any{
+				"status":  "pending",
+				"state":   "indexing",
+				"pending": st.Pending,
+				"message": "索引仍在处理中，请稍后重试",
+			}, true
+		}
+		time.Sleep(indexReadyPoll)
+		next, rerr := ReadIndexStatus(workDir)
+		if rerr != nil || next == nil {
+			// 等待期间状态文件消失 / 读失败 → 回退到既有 EnsureReady 判定。
+			return nil, false
+		}
+		st = next
+		if st.State == "error" {
+			return map[string]any{"status": "error", "state": "error", "message": st.Message}, true
+		}
+		if st.State == "ready" && st.Pending <= 0 {
+			return nil, false
+		}
+	}
+}
+
 // readyGate 查询类统一门：返回 (应答, workspace, 是否就绪)。
 // 未就绪时返回结构化应答，不视为协议错误。
 func readyGate(args map[string]any) (any, *Workspace, bool) {
+	if resp, blocked := gateIndexStatus(getString(args, "workdir")); blocked {
+		return resp, nil, false
+	}
 	w, err := needWS(args)
 	if err != nil {
 		return map[string]any{"status": "error", "message": err.Error()}, nil, false
@@ -295,7 +350,13 @@ func readyGate(args map[string]any) (any, *Workspace, bool) {
 			"message": "vfts 全文索引仍在构建中，请稍后重试或先 vfts_index",
 		}, w, false
 	case "error":
-		return map[string]any{"status": "error", "state": "error", "message": s.Err}, w, false
+		msg := s.Err
+		if msg == "" && err != nil {
+			// EnsureReady 的瞬时错误（如集合被另一进程占用）不改 meta → 用原始错误文本，
+			// 让 executor / 插件按 lock/timeout 判定并做有界重试。
+			msg = err.Error()
+		}
+		return map[string]any{"status": "error", "state": "error", "message": msg}, w, false
 	default:
 		return map[string]any{
 			"status": "not_initialized", "state": st,

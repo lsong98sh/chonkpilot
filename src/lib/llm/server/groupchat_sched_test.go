@@ -426,19 +426,29 @@ func TestGroupChatNoClaimFallbackAndCapContinue(t *testing.T) {
 			t.Fatalf("无人认领后每轮应只叫主 agent：round=%d agents=%v", tg.Round, tg.Agents)
 		}
 	}
-	// 「无关」不上屏；但有系统提示（因达上限终止）
-	msgs := boardMessages(t, s, gid)
-	foundNotice := false
-	for _, m := range msgs {
-		if strings.Contains(str(m["content"]), "因达轮次上限终止") {
-			foundNotice = true
+	// 「无关」不上屏；但有系统提示（因达上限终止）。
+	// 提示在 lifecycle=finished 之后追加（finalReview 先置终态再 appendBoardNotice）→ 观察到
+	// finished 时看板可能尚未落到提示，故轮询等待（与既有异步落盘语义一致）。
+	var msgs []map[string]any
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		msgs = boardMessages(t, s, gid)
+		foundNotice := false
+		for _, m := range msgs {
+			if strings.Contains(str(m["content"]), "因达轮次上限终止") {
+				foundNotice = true
+			}
+			if strings.Contains(str(m["content"]), "无关") {
+				t.Fatalf("「无关」不得上屏：%+v", m)
+			}
 		}
-		if strings.Contains(str(m["content"]), "无关") {
-			t.Fatalf("「无关」不得上屏：%+v", m)
+		if foundNotice || time.Now().After(deadline) {
+			if !foundNotice {
+				t.Fatalf("到顶未达成应有提示：%+v", msgs)
+			}
+			break
 		}
-	}
-	if !foundNotice {
-		t.Fatalf("到顶未达成应有提示：%+v", msgs)
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	// 用户「继续」→ chatting + **断点补跑**（F2-4/D45）：上一大轮次投递对象 = [main]，main 无结论

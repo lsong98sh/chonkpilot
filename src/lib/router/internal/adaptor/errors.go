@@ -61,7 +61,7 @@ func StatusError(status int, header http.Header, body []byte) *canon.Error {
 			msg = "unknown status"
 		}
 	}
-	e := canon.NewStatusError(status, "llm http "+strconv.Itoa(status)+": "+msg)
+	e := canon.NewStatusError(status, "llm http "+strconv.Itoa(status)+": "+msg).WithPhase(canon.PhaseFirstByte)
 	if header != nil {
 		e.RetryAfter = ParseRetryAfter(header.Get("Retry-After"))
 	}
@@ -83,6 +83,17 @@ func TransportError(err error) *canon.Error {
 		return canon.NewError(canon.ErrorTimeout, err.Error())
 	}
 	return canon.NewError(canon.ErrorNetwork, err.Error())
+}
+
+// TransportPhase 判定传输失败的阶段（RETRY-2 分流）：连接未建立（`net.OpError.Op == "dial"`）→
+// `PhaseDial`；其余（DNS 之外的连接失败 / 请求已发出但无响应）→ `PhaseFirstByte`。
+// 已开始收流后的失败由 `pump` 显式标注 `PhaseStream`。
+func TransportPhase(err error) canon.Phase {
+	var oe *net.OpError
+	if errors.As(err, &oe) && oe.Op == "dial" {
+		return canon.PhaseDial
+	}
+	return canon.PhaseFirstByte
 }
 
 // ErrorTypeKind 把**流内错误对象**的 `error.type`（OpenAI 兼容与 Anthropic 两套词表的并集）映射为

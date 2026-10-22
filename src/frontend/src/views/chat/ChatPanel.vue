@@ -87,6 +87,12 @@
     <div v-if="retryText" class="llm-fail-hint llm-retry-hint">
       <span class="llm-fail-text">{{ retryText }}</span>
     </div>
+    <!-- 语义级中断（RETRY-2）：已输出内容后中断 / length 截断 → 「服务器错误，是否继续。」+ 链接。
+         「继续」点击 = 按正常发送路径发一条 continueText 用户消息（同时取消后端自动续写）。 -->
+    <div v-if="interrupted" class="llm-fail-hint llm-interrupted-hint">
+      <span class="llm-fail-text">{{ $t('chat.llm_interrupted') }}</span>
+      <button type="button" class="llm-fail-cta" @click="onInterruptedContinue">{{ $t('chat.continue_link') }}</button>
+    </div>
     <!-- 终态错误：**唯一错误呈现面**（ERRUX-1，2026-10-17）。聊天流内不再渲染错误气泡；
          本提示条 = 摘要（人话分类）+ retry 次数 +「查看错误信息」（展开原始错误全文）+ 可选 CTA。
          终态判据：llm-complete{status:error, retry_wait_ms=0}（中间态走上方 llm-retry）。 -->
@@ -232,6 +238,7 @@ import { useChatWindows } from '../../composables/useChatWindows'
 import { finishSubChat } from '../../composables/useSubChats'
 import { isSubChatKind } from '../../utils/subchat.js'
 import { useLLMSetup } from '../../composables/useLLMSetup'
+import { useUserConfig } from '../../composables/useUserConfig'
 import { useCompressStatus } from '../../composables/useCompressStatus'
 import { useQueueStatus } from '../../composables/useQueueStatus'
 import { needsLLMConfigHint } from '../../utils/llmSetup'
@@ -286,6 +293,9 @@ let llmSetupHintKey = ''          // 已提示过的失败标识（turn id）：
 // retryText = 重试中间态（RETRY-1，session-retry → 前端 llm-retry）；llmFail = 终态错误
 //（status=error 且非 EMPTY_REPLY；含人话分类 key/params、原始错误全文、真实 retry 计数）。
 const retryText = ref('')
+// interrupted = 语义级中断提示（RETRY-2，llm-interrupted）：{code, message, delayMs}；
+// 点击「继续」= 发一条 continueText 用户消息（正常发送路径 → 后端收到后取消自动续写）。
+const interrupted = ref(null)
 const llmFail = ref(null)
 const llmFailDetailOpen = ref(false)
 
@@ -296,6 +306,7 @@ useLLMSetup(() => { llmSetupFailed.value = false })
 // clearFailHint 收起本轮的可见重试 / 终态错误提示（新一次发送、会话切换、成功终态）。
 function clearFailHint() {
   retryText.value = ''
+  interrupted.value = null
   llmFail.value = null
   llmFailDetailOpen.value = false
   llmSetupFailed.value = false
@@ -310,6 +321,7 @@ function onLlmCompleteHint(d) {
   const es = d && (d.session || d.session_id)
   if (sid && es && es !== sid) return
   retryText.value = '' // 终态到达：重试中间态一律收起（成功也不残留）
+  interrupted.value = null // 终态到达：中断提示一并收起（后续由 llm-complete 错误提示接管）
   if (!d || d.status !== 'error') {
     llmFail.value = null
     llmFailDetailOpen.value = false
@@ -551,6 +563,13 @@ const queueCount = computed(() => sendQueue.countOf(selectedLLMPayloadName()))
 const queueItems = computed(() => sendQueue.itemsOf(selectedLLMPayloadName()))
 
 // ── 发送消息（LLM 空闲时）──
+// RETRY-2：中断提示条的「继续」= 发一条 continueText 用户消息（正常发送路径；后端收到即取消自动续写）。
+const { userConfig } = useUserConfig()
+async function onInterruptedContinue() {
+  interrupted.value = null
+  const txt = String(userConfig.value?.continueText || '继续')
+  await handleSend(txt)
+}
 // busy 时无【发送】按钮（只有【取消】【入队】），此入口仅在空闲态可用；
 // 直接 doSend（MessageList onMessageSend → sendChatMessage），不入队。
 async function handleSend(text) {
@@ -902,6 +921,32 @@ onMounted(() => {
     llmFailDetailOpen.value = false
   })
   permanentUnsubs.push(unsubLlmRetry)
+
+  // 语义级中断（RETRY-2）：session-interrupted → 前端 llm-interrupted。
+  // 提示条「服务器错误，是否继续。」+「继续」链接；点击 = 正常发送一条 continueText 用户消息。
+  const unsubLlmInterrupted = mq.on(EventNames.llmInterrupted, (data) => {
+    const sid = currentSessionId.value
+    const es = data && (data.session_id || data.session)
+    if (sid && es && es !== sid) return
+    retryText.value = ''
+    llmFail.value = null
+    llmFailDetailOpen.value = false
+    interrupted.value = {
+      code: (data && data.code) || '',
+      message: (data && data.message) || '',
+      delayMs: Number(data && data.auto_continue_delay_ms) || 0,
+    }
+  })
+  permanentUnsubs.push(unsubLlmInterrupted)
+
+  // 收到本会话后续流增量（手动继续或后端自动续写已生效）→ 收起中断提示。
+  const unsubInterruptedClear = mq.on(EventNames.llmReceive, (data) => {
+    const sid = currentSessionId.value
+    const es = data && (data.session_id || data.session)
+    if (sid && es && es !== sid) return
+    interrupted.value = null
+  })
+  permanentUnsubs.push(unsubInterruptedClear)
 
   // 截图：gui.capture（两段式，🆕 2026-10-09）→ 全屏预览 overlay 拖拽选区域 → 裁剪上传附件。
   // 前置：所选 LLM 须声明「图形」能力（按钮已禁用，此处兜底防事件旁路）。

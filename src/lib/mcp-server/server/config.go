@@ -16,8 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 )
 
 // ToolAsyncOverride 是**单个工具**的用户级异步配置覆盖（usr 键 `tool_async` 的一个值；
@@ -150,17 +148,23 @@ type Config struct {
 	// threshold / hard_timeout。空表 = 全部按契约现值（默认行为不变）。
 	ToolAsync map[string]ToolAsyncOverride `json:"-"`
 
-	// SecurityDirs 是 agentbox 沙箱的**允许目录集**（prj `security-*`：一条 = {dir, writable}，
-	// 语义 = 「可读 / 可写目录」且**递归**），装配层（chonkpilot-llm/server loadExecConfig）
-	// 按实例读取后注入。空表 = 无允许目录（仅在 ToolSandbox 开启时才有意义：空集 = 全拒）。
-	SecurityDirs []agentbox.Rule `json:"-"`
+	// SkipTools（P6 2026-10-19）为 true 时 RegisterContracts 只注册资产（prompts/skills/resources），
+	// **不注册工具**：系统级 app 根的可执行工具改由外部进程（chonkpilot-self-tools）经插件桥注册/执行。
+	// 仅影响同一 cfg 上的 RegisterContracts 调用；dir 节点扫描经 RegisterContractsWithTools 强制包含工具。
+	SkipTools bool `json:"-"`
+
+	// BridgeAddr / BridgeToken（2026-10-19）：插件桥地址与 HTTP token（域/元工具经 plugin/v1.*
+	// 取能力）。2026-10-21（L3）起 meta/domain 工具进程内执行，由 toolmeta.Run 直接消费，不再注入子进程。空 = 不连接。
+	BridgeAddr  string `json:"-"`
+	BridgeToken string `json:"-"`
 	// ToolSandbox 是 agentbox 沙箱开关（usr 键 `tool_sandbox`，装配层注入；见
 	// chonkpilot-llm/server/server.go applyToolSandbox）。**管理单位 = 被 spawn 的执行体**：
 	//   - Executors：内置 executor，key = executor **exe 基名**（见 ExecutorExe* 常量）；
 	//   - MCPs：外部 MCP，key = MCP 条目名。
-	// value = 是否对该执行体施加 agentbox 限制（越界读写一律拒绝）。**未配置 / false = 不启用
+	// value = 是否对该执行体施加限制（越界读写一律拒绝）。**未配置 / false = 不启用
 	// 隔离**（缺省与现状一致）。**旧形态（按 executor 类别 core/desktop/browser）读取时迁移**，
 	// 见 ParseToolSandbox。
+	// 2026-10-21：沙箱改由 gateway 在 spawn 时以进程级 Low IL 施加；本开关暂保留待 L6 迁移。
 	ToolSandbox ToolSandboxConfig `json:"-"`
 
 	// mu 保护运行期可被覆盖的字段（SetRuntime：装配层 instance-register 后注入 usr/prj 配置）；
@@ -395,27 +399,15 @@ func (c *Config) toolAsyncOverride(name string) (ToolAsyncOverride, bool) {
 	return ov, ok
 }
 
-// ─── agentbox 沙箱（决策 42 §2 (104)/(109)）────────────────
+// ─── 工具沙箱开关（决策 42 §2 (104)/(109)）────────────────
 
-// SetSecurityDirs 运行期覆盖 agentbox 允许目录集（装配层按实例读 prj `security-*` 后注入）。
-// 传入 nil/空 → 清空（= 无允许目录；仅在 executor 级开关开启时才生效）。
-// 加写锁，避免与 tools/call 的 SandboxPolicyFor 读取构成 data race。
-func (c *Config) SetSecurityDirs(rules []agentbox.Rule) {
-	next := append([]agentbox.Rule{}, rules...)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if sameRules(c.SecurityDirs, next) {
-		return
-	}
-	c.SecurityDirs = next
-}
-
-// 内置 executor 产物名（= agentbox 开关在 `executors` 下的单位键；与 src/mcp-tools 产物一致）。
+// 内置 executor 产物名（= 开关在 `executors` 下的单位键；与 src/mcp-tools 产物一致）。
+// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 删 core / desktop / browser / dsl 四个 executor；
+// 文件域 11 个原子工具统一由 tools-executor 承载；desktop/browser 改为常驻插件（非 executor，不在本表）。
 const (
-	ExecutorExeCore    = "chonkpilot-core-executor.exe"
-	ExecutorExeDesktop = "chonkpilot-desktop-executor.exe"
-	ExecutorExeBrowser = "chonkpilot-browser-executor.exe"
-	ExecutorExeDSL     = "chonkpilot-dsl-executor.exe"
+	ExecutorExeTools  = "chonkpilot-tools-executor.exe"
+	ExecutorExeScript = "chonkpilot-script-executor.exe"
+	ExecutorExeWeb    = "chonkpilot-web-executor.exe"
 )
 
 // ToolSandboxConfig 是 agentbox 沙箱开关（usr 键 `tool_sandbox`，**管理单位 = 被 spawn 的执行体**）：
@@ -429,13 +421,11 @@ type ToolSandboxConfig struct {
 }
 
 // legacySandboxCategoryMap 把**旧形状**（按 executor 类别 core/desktop/browser，2026-09-26 形态）
-// 迁移到**新形状**的单位键（exe 基名）：`core` → core 与 dsl 两个 exe **同置**（等价旧行为：
-// dsl 执行器覆盖文件/浏览器/桌面三域动作，旧实现复用 core 档），desktop → desktop exe，
-// browser → browser exe。
+// 迁移到**新形状**的单位键（exe 基名）。2026-10-21（GATEWAY-2/L1）DSL 退役后：
+// `core` → tools（文件域 11 工具）；`desktop` / `browser` 已改为插件（非 executor），迁移为空
+// （旧配置里这两项被忽略，插件自身不接 gateway、不受 agentbox 开关约束）。
 var legacySandboxCategoryMap = map[string][]string{
-	"core":    {ExecutorExeCore, ExecutorExeDSL},
-	"desktop": {ExecutorExeDesktop},
-	"browser": {ExecutorExeBrowser},
+	"core": {ExecutorExeTools},
 }
 
 // ParseToolSandbox 解析 usr `tool_sandbox` 值（JSON 对象字符串），**兼容新旧两种形状**：
@@ -519,41 +509,7 @@ func normalizeSandboxMap(raw map[string]bool, kind string) map[string]bool {
 	return out
 }
 
-// SandboxPolicyFor 返回该 **执行体单位键** 应注入的 agentbox 策略 JSON（`""` = **不注入**，
-// 即不启用隔离）。unit = 被 spawn 执行体的单位键——内置 executor 取 **exe 基名**
-// （如 chonkpilot-core-executor.exe），外部 MCP 取 **MCP 条目名**。空串 / 未命中 / 显式 false →
-// 不启用。策略内容 = SecurityDirs 的 JSON（可为空数组 = 空允许集 → 执行器侧全拒的严格语义）。
-// 读锁保护（与 SetSecurityDirs/SetToolSandbox 互斥）。
-func (c *Config) SandboxPolicyFor(unit string) string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if !c.ToolSandbox.Executors[unit] && !c.ToolSandbox.MCPs[unit] {
-		return ""
-	}
-	b, err := json.Marshal(c.SecurityDirs)
-	if err != nil {
-		return ""
-	}
-	if c.SecurityDirs == nil {
-		return "[]" // 无允许目录 → 空集（执行器侧解释为全拒）
-	}
-	return string(b)
-}
-
-// sameRules 比较两张允许目录表是否等价（顺序敏感：配置面保序）。
-func sameRules(a, b []agentbox.Rule) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// sameToolSandbox 比较两张 agentbox 开关表是否等价（executors + mcps 两张子表）。
+// sameToolSandbox 比较两张开关表是否等价（executors + mcps 两张子表）。
 func sameToolSandbox(a, b ToolSandboxConfig) bool {
 	return sameBoolMap(a.Executors, b.Executors) && sameBoolMap(a.MCPs, b.MCPs)
 }
@@ -623,10 +579,13 @@ func (c *Config) defaultsMap() map[string]any {
 
 // executorEnv 组装 spawn executor 的子进程环境：继承宿主环境（剔除残留的 CHONKPILOT_* 上下文与
 // 宿主 CHONK_CHROME，避免泄漏第三方/上层上下文或与本次注入形成重复键）→ 注入本次调用的
-// CHONKPILOT_INSTANCE/WORKDIR/DATADIR/PURPOSE + 配置型 CHONKPILOT_INTERPRETERS / CHONK_CHROME，以及
-// **按 executor 开关**的 agentbox 策略 CHONKPILOT_SANDBOX（sandboxPolicy 为空串 = 不注入 = 不启用隔离）。
+// CHONKPILOT_INSTANCE/WORKDIR/DATADIR + 配置型 CHONKPILOT_INTERPRETERS / CHONK_CHROME。
 // **仅内部 executor 进程可见**（第三方 MCP server 不经我们 spawn，拿不到）。
-func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
+//
+// 2026-10-21（L3）：meta/domain 控制面工具已进程内执行（toolmeta），其会话/轮次/call id /
+// purpose / 任务树 / 插件桥地址令牌不再需要注入子进程，故只保留 script/web 两个 executor
+// 所需内容（instance/workdir/datadir/解释器/chrome）。
+func (c *Config) executorEnv(cx CallContext) []string {
 	base := os.Environ()
 	out := make([]string, 0, len(base)+8)
 	// chrome = 本次将注入的 CHONK_CHROME（TrimSpace 后为 "" 则不注入）。剔除判据与注入判据统一用
@@ -656,11 +615,78 @@ func (c *Config) executorEnv(cx CallContext, sandboxPolicy string) []string {
 	add("CHONKPILOT_INSTANCE", cx.InstanceID)
 	add("CHONKPILOT_WORKDIR", cx.WorkDir)
 	add("CHONKPILOT_DATADIR", cx.DataDir)
-	add("CHONKPILOT_PURPOSE", cx.Purpose) // C1：本次调用的运行目的（gateway 展示名参数）
 	add("CHONKPILOT_INTERPRETERS", c.interpretersJSON())
 	add("CHONK_CHROME", chrome)
-	add(agentbox.EnvSandbox, sandboxPolicy)
 	return out
+}
+
+// bridge 返回插件桥地址 / HTTP token（读锁保护；进程内 meta/domain 执行使用）。
+func (c *Config) bridge() (addr, token string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.BridgeAddr, c.BridgeToken
+}
+
+// SetBridge 注入插件桥地址 / HTTP token（进程内 meta/domain 工具经 plugin/v1/* 取能力）。
+func (c *Config) SetBridge(addr, token string) {
+	c.mu.Lock()
+	c.BridgeAddr, c.BridgeToken = addr, token
+	c.mu.Unlock()
+}
+
+// RuntimeConfig 是可在运行期从宿主推送给 core-mcp-server 的执行配置快照
+// （2026-10-19：core 独立进程后，usr/prj 配置由 server 经 /internal/runtime 推送）。
+type RuntimeConfig struct {
+	TimeoutSec     int                          `json:"timeout_sec"`
+	MaxConcurrency int                          `json:"max_concurrency"`
+	Interpreters   map[string]string            `json:"interpreters,omitempty"`
+	ChromePath     string                       `json:"chrome_path,omitempty"`
+	SkipDirs       []string                     `json:"skip_dirs,omitempty"`
+	ToolAsync      map[string]ToolAsyncOverride `json:"tool_async,omitempty"`
+	ToolSandbox    ToolSandboxConfig            `json:"tool_sandbox,omitempty"`
+}
+
+// ApplyRuntime 应用运行期配置快照（core-mcp-server /internal/runtime）。
+func (c *Config) ApplyRuntime(rc RuntimeConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if rc.TimeoutSec > 0 {
+		c.TimeoutSec = rc.TimeoutSec
+	}
+	if rc.MaxConcurrency > 0 {
+		c.MaxConcurrency = rc.MaxConcurrency
+		if c.limiter != nil {
+			c.limiter.setLimit(rc.MaxConcurrency)
+		}
+	}
+	if rc.Interpreters != nil {
+		c.Interpreters = rc.Interpreters
+	}
+	if rc.ChromePath != "" {
+		c.ChromePath = rc.ChromePath
+	}
+	if len(rc.SkipDirs) > 0 {
+		c.Defaults.SkipDirs = rc.SkipDirs
+	}
+	if rc.ToolAsync != nil {
+		c.ToolAsync = rc.ToolAsync
+	}
+	c.ToolSandbox = rc.ToolSandbox
+}
+
+// RuntimeSnapshot 返回当前运行期配置快照（server 推送用；读锁保护）。
+func (c *Config) RuntimeSnapshot() RuntimeConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return RuntimeConfig{
+		TimeoutSec:     c.TimeoutSec,
+		MaxConcurrency: c.MaxConcurrency,
+		Interpreters:   c.Interpreters,
+		ChromePath:     c.ChromePath,
+		SkipDirs:       c.Defaults.SkipDirs,
+		ToolAsync:      c.ToolAsync,
+		ToolSandbox:    c.ToolSandbox,
+	}
 }
 
 // ─── 并发限流器（运行期可调整上限）────────────────────

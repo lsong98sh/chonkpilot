@@ -491,13 +491,12 @@ func TestSubChatSessionsPurposeKeySubset(t *testing.T) {
 	}
 }
 
-// TestNonMainSessionToolCallForcesSyncMQ（A5 / SUBCHAT-2 阶段 D · 单聊 §12.5 B5 · 群聊 §16 D40）：
-// **非主会话（`sub_chat` / `sub_session`）里的工具调用经 mq 可观测到调用级 `async=never`**
-// （主题 `mcp-tools-call` 的 `arguments.async`）；**主会话不带该覆盖**（行为逐字节不变）。
+// TestAllSessionsToolCallForceAsyncMQ（INBOX §9 Q5）：**全形态强制异步** —— 主会话 / 子聊天 /
+// 子会话里的工具调用经 mq 均可观测到调用级 `async=always`（主题 `mcp-tools-call` 的
+// `arguments.async`）；原 A5「非主会话强制同步（async=never）」已废止。
 // 驱动 = `session-send`（text-user → mock LLM 回工具调用）；断言 = 监听 `mcp-tools-call`
-// （MQ 驱动 + MQ 监听，50-测试体系 §1）。补 `TestForceSyncToolsNonMainSession`（白盒直调）
-// 的黑盒等价：三态（主 / 子聊天 / 子会话）皆经真实轮次链路观测。
-func TestNonMainSessionToolCallForcesSyncMQ(t *testing.T) {
+// （MQ 驱动 + MQ 监听，50-测试体系 §1）。
+func TestAllSessionsToolCallForceAsyncMQ(t *testing.T) {
 	llm := mockLLMServer() // "sync tool" 分支 → core_file_read 工具调用（含 tool_call_display_name）
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -512,31 +511,23 @@ func TestNonMainSessionToolCallForcesSyncMQ(t *testing.T) {
 	rec := newBusRecorder(t, s.bus)
 	for _, tc := range []struct {
 		session, turn string
-		wantNever     bool
 	}{
-		{"s-fs-main", "t-fs-main", false}, // 主会话：不强制
-		{"s-fs-chat", "t-fs-chat", true},  // 子聊天（sub_chat）
-		{"s-fs-sess", "t-fs-sess", true},  // 子会话（sub_session）
+		{"s-fs-main", "t-fs-main"},
+		{"s-fs-chat", "t-fs-chat"},
+		{"s-fs-sess", "t-fs-sess"},
 	} {
 		startTurn(t, s, tc.session, tc.turn)
 		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": tc.session, "turn": tc.turn,
 			"type": "text-user", "content": "sync tool please",
 		}))
-		if c := lastComplete(collectTurn(t, s.bus, tc.turn, 10*time.Second)); c == nil || c["status"] != "complete" {
-			t.Fatalf("%s：本轮未 complete", tc.session)
-		}
+		collectTurn(t, s.bus, tc.turn, 10*time.Second)
 		call := rec.wait(t, "mcp-tools-call", func(m map[string]any) bool {
 			return str(m["session"]) == tc.session
 		}, 3*time.Second)
 		args, _ := call["arguments"].(map[string]any)
-		got, has := args["async"]
-		if tc.wantNever {
-			if !has || got != "never" {
-				t.Fatalf("非主会话 %s 的工具调用应附调用级 async=never：%+v", tc.session, args)
-			}
-		} else if has {
-			t.Fatalf("主会话 %s 不得附 async 覆盖：%+v", tc.session, args)
+		if got, has := args["async"]; !has || got != "always" {
+			t.Fatalf("%s 的工具调用应附调用级 async=always：%+v", tc.session, args)
 		}
 	}
 }

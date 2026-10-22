@@ -186,6 +186,15 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 			}
 			return nil
 		}
+		// INBOX 测试桩：`_inbox_manual` → 返回 pending（task_id = tk-<tool_call_id>），
+		// **不自动回执**，由用例在需要时手动发 mcp-tasks-report（控时序：S4/S4.5/S5）。
+		if manual, _ := req.Arguments["_inbox_manual"].(bool); manual {
+			v.Result = map[string]any{
+				"content":           []any{map[string]any{"type": "text", "text": "任务已转后台执行"}},
+				"structuredContent": map[string]any{"status": "pending", "task_id": "tk-" + req.ToolCallID},
+			}
+			return nil
+		}
 		if async, _ := req.Arguments["_async"].(bool); async {
 			v.Result = map[string]any{
 				"content":           []any{map[string]any{"type": "text", "text": "任务已转后台执行"}},
@@ -345,8 +354,22 @@ func newTestServer(t *testing.T, llmSrv *httptest.Server) *Server {
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// data 层共享连接关闭（data.Prj 打开 workdir 库）必须在 s.Stop **之后**（LIFO：先注册后执行）
+	// 且早于 TempDir 清理，否则 Windows 上库句柄未释放 → TempDir RemoveAll 失败。
+	t.Cleanup(closeTestDataStore)
 	t.Cleanup(s.Stop)
 	return s
+}
+
+// closeTestDataStore 关闭 data 层共享连接缓存（prj / prjusr 库）。
+//
+// 必须由各测试服务器在 s.Stop **之前**注册（LIFO ⇒ 在 Stop 之后执行）。Windows 上 Stop 返回后
+// 仍可能有收尾 goroutine 续写历史而**重新开库**，故有界重试，避免 TempDir RemoveAll 撞上库句柄。
+func closeTestDataStore() {
+	for i := 0; i < 5; i++ {
+		data.Reset()
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // startTurn 注册 instance + 发 llm-start 并等 ack（使用 Emit + Wait，2026-09-04 移除 reply 过渡期机制）。
@@ -356,8 +379,6 @@ func startTurn(t *testing.T, s *Server, session, turn string) {
 	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
-	// 数据层连接缓存关闭（data.Prj 打开 workdir 库）需先于 TempDir 清理（LIFO）
-	t.Cleanup(data.Reset)
 	time.Sleep(50 * time.Millisecond)
 	f := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
 		"req_id": "r-" + turn, "instance_id": "ins-test", "session": session, "turn": turn,
@@ -427,6 +448,13 @@ func TestTurnLengthAutoContinue(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+	// RETRY-2：宽限期设为 0（立即自动续写）——本用例验证 length → 续写 → complete。
+	if res := dataCall(t, s, "data-user-config-save", map[string]any{
+		"instance_id": "ins-test", "data": map[string]any{"autoContinueDelaySec": 0},
+	}); res["ok"] != true {
+		t.Fatalf("save user-config failed: %+v", res)
+	}
 	startTurn(t, s, "s-len", "t-len")
 
 	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
@@ -1025,7 +1053,7 @@ func TestLLMRuntimeConfigWiring(t *testing.T) {
 
 	startTurn(t, s, "s-rt", "t-rt")
 	s.mu.Lock()
-	tc := s.turns[instKey("ins-test", "t-rt")]
+	tc := s.lookupTurnLocked("ins-test", "t-rt")
 	s.mu.Unlock()
 	if tc == nil {
 		t.Fatal("turnCtx not created")
@@ -1038,24 +1066,38 @@ func TestLLMRuntimeConfigWiring(t *testing.T) {
 	}
 }
 
-// TestLLMRuntimeConfigFallback：超时两项配置为非正值（0）→ 回落旧硬编码常量；retryCount 例外
-// （P0-A 存在性判定）：显式 0 = **不重试**，不再回落默认 2。
+// TestLLMRuntimeConfigFallback：超时两项配置为非正值（0）→ 写侧拒绝（INPUTVAL-1：timeout 必须 >0，
+// 读侧对存量脏数据仍回落到旧硬编码常量）；retryCount 例外（P0-A 存在性判定）：显式 0 = **不重试**，
+// 不再回落默认 2。
 func TestLLMRuntimeConfigFallback(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
 
-	dataCall(t, s, "data-user-config-save", map[string]any{
+	// timeout=0 非法：整批拒绝（不写坏旧配置）。
+	bad := dataCall(t, s, "data-user-config-save", map[string]any{
 		"instance_id": "ins-test",
 		"data": map[string]any{
-			"responseTimeout": 0, "streamTimeout": 0, "retryCount": 0,
+			"responseTimeout": 0, "streamTimeout": 0,
 		},
 	})
+	if ok, _ := bad["ok"].(bool); ok {
+		t.Fatalf("responseTimeout/streamTimeout=0 应被写侧拒绝：%+v", bad)
+	}
 
-	respTO, streamTO, rc := s.loadLLMRuntimeConfig("ins-test")
+	// retryCount=0 合法且显式生效（不回落默认）。
+	save := dataCall(t, s, "data-user-config-save", map[string]any{
+		"instance_id": "ins-test",
+		"data":        map[string]any{"retryCount": 0},
+	})
+	if ok, _ := dataResult(t, save)["ok"].(bool); !ok {
+		t.Fatalf("retryCount=0 应可保存：%+v", save)
+	}
+
+	respTO, streamTO, _, rc := s.loadLLMRuntimeConfig("ins-test")
 	if respTO != ResponseTimeout || streamTO != StreamTimeout {
-		t.Fatalf("0 值应回落常量: resp=%v stream=%v，want %v/%v",
+		t.Fatalf("未配置应回落常量: resp=%v stream=%v，want %v/%v",
 			respTO, streamTO, ResponseTimeout, StreamTimeout)
 	}
 	if rc != 0 {
@@ -1092,8 +1134,8 @@ func failingLLMServer(c *llmCallCounter) *httptest.Server {
 }
 
 // TestTurnRetryCountSemantics：retryCount 存在性判定（P0-A）端到端——以**实际 HTTP 请求数**为
-// 原始证据（每次尝试 = 1 次请求）：显式 0 → 1 次（不重试）；显式 1 → 2 次；缺省 → 3 次（默认 2 次重试）。
-// 退避经 router.RetryWait（1s/2s…）；不再有 retryDelay 配置。
+// 原始证据（每次尝试 = 1 次请求）：显式 0 → 1 次（不重试）；显式 1 → 2 次；缺省 → 6 次（默认 5 次重试）。
+// 退避由 router 按 retryBudgetSec 归一化（RETRY-2；测试统一给小预算）。
 func TestTurnRetryCountSemantics(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1101,8 +1143,8 @@ func TestTurnRetryCountSemantics(t *testing.T) {
 		wantCall int
 	}{
 		{"显式0=不重试", map[string]any{"retryCount": 0}, 1},
-		{"显式1=重试1次", map[string]any{"retryCount": 1}, 2},
-		{"缺省=默认2次", map[string]any{}, 3},
+		{"显式1=重试1次", map[string]any{"retryCount": 1, "retryBudgetSec": 1}, 2},
+		{"缺省=默认5次", map[string]any{"retryBudgetSec": 1}, 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := &llmCallCounter{}
@@ -1132,42 +1174,14 @@ func TestTurnRetryCountSemantics(t *testing.T) {
 	}
 }
 
-// TestRetryWaitUsesRouter：llm 可视重试的退避值经 `router.RetryWait` 计算（2026-10-05 定案，
-// 不再自持 retryDelay）——断言指数退避（1s/2s/4s）+ `Retry-After` 优先，且源 router 错误的
-// `Retry-After` 经 `mapRouterError` 透传（生产路径）。
-func TestRetryWaitUsesRouter(t *testing.T) {
-	// 无 Retry-After → 指数退避 1s·2s·4s（口径与 router.RetryWait 白盒一致）。
-	rate := &LLMError{Kind: ErrRateLimit, Retryable: true}
-	if got := retryWait(rate, 1); got != time.Second {
-		t.Fatalf("attempt=1 → %v want 1s", got)
-	}
-	if got := retryWait(rate, 2); got != 2*time.Second {
-		t.Fatalf("attempt=2 → %v want 2s", got)
-	}
-	if got := retryWait(rate, 3); got != 4*time.Second {
-		t.Fatalf("attempt=3 → %v want 4s", got)
-	}
-	// Retry-After 优先于指数退避。
-	after := &LLMError{Kind: ErrRateLimit, Retryable: true, RetryAfter: 3 * time.Second}
-	if got := retryWait(after, 5); got != 3*time.Second {
-		t.Fatalf("Retry-After 优先 → %v want 3s", got)
-	}
-	// 不可重试 / 非 *LLMError → 0（调用方已先行过滤）。
-	if got := retryWait(&LLMError{Kind: ErrAuth}, 1); got != 0 {
-		t.Fatalf("不可重试 → %v want 0", got)
-	}
-	if got := retryWait(context.Canceled, 1); got != 0 {
-		t.Fatalf("非 *LLMError → %v want 0", got)
-	}
-	// 源 router 错误的 Retry-After 经 mapRouterError 透传（生产路径）。
+// TestMapRouterErrorRetryAfterPassthrough：源 router 错误的 `Retry-After` 经 `mapRouterError`
+// 原样透传（RETRY-2 后退避由 router 计算，但错误分类字段仍需保真）。
+func TestMapRouterErrorRetryAfterPassthrough(t *testing.T) {
 	re := &router.Error{Kind: router.ErrorRateLimit, Retryable: true, RetryAfter: 4 * time.Second}
 	mapped := mapRouterError(re)
 	var le *LLMError
 	if !errors.As(mapped, &le) || !le.Retryable || le.RetryAfter != 4*time.Second {
 		t.Fatalf("mapRouterError 未透传 Retry-After: %+v", mapped)
-	}
-	if got := retryWait(mapped, 9); got != 4*time.Second {
-		t.Fatalf("透传后 Retry-After 优先 → %v want 4s", got)
 	}
 }
 
@@ -1213,16 +1227,16 @@ func TestCurrentAgentName(t *testing.T) {
 }
 
 // TestLLMRuntimeConfigSystemDefaults：完全未配置（用户未写任何超时/重试项）→ 有效值
-// = 系统默认 120s/60s/2（与 persist userConfigSystemDefaults 及旧硬编码一致，防默认放宽回归）。
+// = 系统默认 120s/60s/5 次/60s（与 persist userConfigSystemDefaults 一致，防默认放宽回归）。
 func TestLLMRuntimeConfigSystemDefaults(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
 
-	respTO, streamTO, rc := s.loadLLMRuntimeConfig("ins-test")
-	if respTO != 120*time.Second || streamTO != 60*time.Second || rc != 2 {
-		t.Fatalf("未配置默认 = %v/%v/%d，want 120s/60s/2", respTO, streamTO, rc)
+	respTO, streamTO, budget, rc := s.loadLLMRuntimeConfig("ins-test")
+	if respTO != 120*time.Second || streamTO != 60*time.Second || rc != 5 || budget != 60*time.Second {
+		t.Fatalf("未配置默认 = %v/%v/%d/%v，want 120s/60s/5/60s", respTO, streamTO, rc, budget)
 	}
 }
 
@@ -1248,11 +1262,25 @@ func TestSystemDefaultParamsMirror(t *testing.T) {
 		t.Fatalf("user-config-load 无 data: %+v", res)
 	}
 	for key, want := range map[string]int{
-		"responseTimeout": 120, "streamTimeout": 60, "retryCount": 2,
+		"responseTimeout": 120, "streamTimeout": 60, "retryCount": 5, "retryBudgetSec": 60, "autoContinueDelaySec": 600,
+		"nextRunMax": 30,
 	} {
 		if got, ok := configInt(d, key); !ok || got != want {
 			t.Fatalf("系统默认 %s=%v want %d（前端 SYSTEM_DEFAULTS 镜像须同步）", key, d[key], want)
 		}
+	}
+	if v, ok := d["autoContinue"].(bool); !ok || !v {
+		t.Fatalf("系统默认 autoContinue=%v want true", d["autoContinue"])
+	}
+	if v, ok := d["continueText"].(string); !ok || v != "继续" {
+		t.Fatalf("系统默认 continueText=%v want 继续", d["continueText"])
+	}
+	// MOD-1 M3：事件日志分级 + 保留天数（前端 SYSTEM_DEFAULTS 镜像须同步）。
+	if v, ok := d["turnEventLog"].(string); !ok || v != "outline" {
+		t.Fatalf("系统默认 turnEventLog=%v want outline", d["turnEventLog"])
+	}
+	if v, ok := configInt(d, "turnEventLogRetentionDays"); !ok || v != 7 {
+		t.Fatalf("系统默认 turnEventLogRetentionDays=%v want 7", d["turnEventLogRetentionDays"])
 	}
 
 	// ② 项目级三项
@@ -1419,10 +1447,10 @@ func TestResolveTurnScenarioSubChatInjectionLayer(t *testing.T) {
 	}
 }
 
-// TestForceSyncToolsNonMainSession（A5 / SUBCHAT-2 阶段 A · 单聊 §12.5 B5 · 群聊 §16 D40）：
-// **非主会话（kind 非空）一律强制工具同步** —— gatewayArgs 附调用级 `async=never`
-// （gateway doCall 读取后剥离，不改 mcp-tools-call 载荷形状与工具入参）；主会话行为不变。
-func TestForceSyncToolsNonMainSession(t *testing.T) {
+// TestGatewayArgsForceAsyncAllSessions（INBOX §9 Q5）：工具**全量强制异步** ——
+// gatewayArgs 对主会话 / 子会话 / 群聊一律附调用级 `async=always`（原 A5「非主会话强制同步」
+// 已废止，否则插话不成立），且不就地修改调用方 args（落库/展示仍用原始）。
+func TestGatewayArgsForceAsyncAllSessions(t *testing.T) {
 	llm := httptest.NewServer(http.HandlerFunc((&llmRecorder{}).handler))
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -1434,37 +1462,37 @@ func TestForceSyncToolsNonMainSession(t *testing.T) {
 	})
 	ensureTestSession(t, s, "s-subsession", facade.SessionEnsureRequest{ParentSessionID: "s-main"})
 
-	// 主会话：不强制、args 原样返回（零开销、行为不变）
-	main := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-main"}}
-	in := map[string]any{"path": "a.txt"}
-	if main.forceSyncTools() {
-		t.Fatal("主会话不应强制同步")
-	}
-	if got := main.gatewayArgs(in); len(got) != len(in) {
-		t.Fatalf("主会话 args 应原样返回：%v", got)
-	}
-	if _, has := main.gatewayArgs(in)["async"]; has {
-		t.Fatal("主会话不得附 async 覆盖")
-	}
-
-	// 子聊天：强制同步 → 附 async=never；**不就地修改**调用方 args（落库/展示仍用原始）
-	sub := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-subchat"}}
-	if !sub.forceSyncTools() {
-		t.Fatal("子聊天应强制同步")
-	}
-	got := sub.gatewayArgs(in)
-	if got["async"] != "never" {
-		t.Fatalf("子聊天应附调用级 async=never：%v", got)
-	}
-	if _, mutated := in["async"]; mutated {
-		t.Fatalf("不得就地修改调用方 args：%v", in)
+	for name, tc := range map[string]*turnCtx{
+		"主会话":     {server: s, req: StartReq{InstanceID: "ins-test", Session: "s-main"}},
+		"子聊天":     {server: s, req: StartReq{InstanceID: "ins-test", Session: "s-subchat"}},
+		"子会话":     {server: s, req: StartReq{InstanceID: "ins-test", Session: "s-subsession"}},
+		"Parents": {server: s, req: StartReq{InstanceID: "ins-test", Session: "s-unknown", Parents: []string{"s-main"}}},
+	} {
+		in := map[string]any{"path": "a.txt"}
+		got := tc.gatewayArgs("ext_tool", in)
+		if got["async"] != "always" {
+			t.Fatalf("%s 应附调用级 async=always：%v", name, got)
+		}
+		if _, mutated := in["async"]; mutated {
+			t.Fatalf("%s 不得就地修改调用方 args：%v", name, in)
+		}
 	}
 
-	// 子会话（一切非主会话）同样强制；快路径（req.Parents 非空 = runChildTurn 子轮次）零查询即判
-	if legacy := (&turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-subsession"}}); !legacy.forceSyncTools() {
-		t.Fatal("子会话（非主会话）应强制同步")
+	// 本进程域工具（llm-server 同步编排）不得被强制异步：返回体契约不可改为 pending。
+	for _, name := range []string{"subchat_open", "self_subchat_finish", "ask_user", "tool_stop", "tool_result"} {
+		if _, has := (&turnCtx{}).gatewayArgs(name, map[string]any{})["async"]; has {
+			t.Fatalf("%s 为进程内工具，不得注入 async 覆盖", name)
+		}
 	}
-	if child := (&turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-unknown", Parents: []string{"s-main"}}}); !child.forceSyncTools() {
-		t.Fatal("Parents 非空的子轮次应强制同步")
+
+	// 调用级显式 async / _async（超时裁决 / cancel_on_timeout 依赖同步等待）→ 尊重原值，不覆盖。
+	for _, k := range []string{"async", "_async"} {
+		got := (&turnCtx{}).gatewayArgs("ext_tool", map[string]any{k: "never"})
+		if got[k] != "never" {
+			t.Fatalf("调用级 %s=never 不得被覆盖：%v", k, got)
+		}
+		if _, has := got["async"]; has && k != "async" {
+			t.Fatalf("调用级 %s 已显式给出，不得再注入 async：%v", k, got)
+		}
 	}
 }

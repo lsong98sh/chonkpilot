@@ -136,7 +136,8 @@ def click_visible_tab(tab_pattern, panel_scope):
 # 用于从 `tools-list` 判出每项工具的级别 + 展示名（= stripToolPrefix 剥前缀后的原名）。
 def _node_level(node):
     n = str(node or '')
-    if n == 'self':
+    # 2026-10-19（一工具一 exe）：内置 app 级工具由 core-mcp-server 接入（node=core）
+    if n in ('self', 'core'):
         return 'app'
     if n.endswith('-user'):
         return 'user'
@@ -160,9 +161,12 @@ def _tools_list():
 
 
 def _displayed_level(tl):
-    """工具项 → (展示名, 级别)；级别 = nodeLevel(_meta.server.node)。"""
+    """工具项 → (展示名, 级别)；级别 = nodeLevel(_meta.server.node) || nodeLevel(alias)。
+    2026-10-19（一工具一 exe）：app 级工具经 core-mcp-server 接入（node=core）→ core 判 app；
+    alias 回落用于节点名未知的兼容形态。"""
     srv = (tl.get('_meta') or {}).get('server') or {}
-    return _strip_tool_prefix(tl.get('name'), srv.get('alias'), srv.get('node')), _node_level(srv.get('node'))
+    lvl = _node_level(srv.get('node')) or _node_level(srv.get('alias'))
+    return _strip_tool_prefix(tl.get('name'), srv.get('alias'), srv.get('node')), lvl
 
 
 def _poll_js(expr, timeout=10, interval=0.3):

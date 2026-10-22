@@ -1,4 +1,5 @@
-// 域工具契约统一走 embed（server/contracts/tools/*.tool.md），替代代码内硬编码：对齐
+// 域工具契约统一走 embed（`llm/contracts/tools/*.tool.md`，与进程外
+// `chonkpilot-server-tools.exe` 共用**同一份**，不再各存副本），替代代码内硬编码：对齐
 // 「契约即文件、各工程自有 tools/skills/prompts/agents 放各自 contracts 目录」规范。
 // 域工具无外部 executor，契约 embed 进 chonkpilot-server 二进制（执行它的进程）。
 //
@@ -9,18 +10,15 @@
 package server
 
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/chonkpilot/chonkpilot-llm/contracts"
 	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 )
-
-//go:embed contracts/tools/*.tool.md
-var domainToolsFS embed.FS
 
 // AgentDef 是 app 级场景内的 agent 定义（来自 `<exeDir>/scenarios/*/` 内的 agent 文件：
 // v2 契约「# 基本信息 + # 摘要 + # 正文」，正文 = 该 agent 的提示词）。
@@ -33,7 +31,7 @@ type AgentDef struct {
 // loadDomainTools 从 embed 契约加载全部域工具。
 // 文件名（不含 .tool.md）= 工具名；排序保证注册顺序稳定。
 func loadDomainTools() ([]ToolDef, error) {
-	entries, err := domainToolsFS.ReadDir("contracts/tools")
+	entries, err := contracts.FS.ReadDir("tools")
 	if err != nil {
 		return nil, fmt.Errorf("读域工具契约目录: %w", err)
 	}
@@ -42,7 +40,7 @@ func loadDomainTools() ([]ToolDef, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".tool.md") {
 			continue
 		}
-		md, err := domainToolsFS.ReadFile("contracts/tools/" + e.Name())
+		md, err := contracts.FS.ReadFile("tools/" + e.Name())
 		if err != nil {
 			return nil, fmt.Errorf("读 %s: %w", e.Name(), err)
 		}

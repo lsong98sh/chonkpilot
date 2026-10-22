@@ -566,7 +566,7 @@ function isCustomCategory(c) {
 async function addCategory() {
   let name
   try {
-    name = await promptInput(t('projectConfig.memory_new_category_placeholder'))
+    name = await promptInput(t('projectConfig.memory_new_category_placeholder'), '', { maxlength: 64 })
   } catch { return }
   if (name === null || name === undefined) return
   name = String(name).trim()

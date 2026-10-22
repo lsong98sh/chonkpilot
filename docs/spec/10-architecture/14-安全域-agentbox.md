@@ -1,6 +1,8 @@
 # 14 · 安全域（agentbox）
 
-> 状态：🟢 **已实现**（后端核心 + 执行层强制，见 §7；配置面 UI 见 §7.1 #6 / §7.2 #5；**仅余下列未覆盖面**：`script_run` 脚本体文件读写、`browser_run`/`desktop_run` 落盘句柄、审计落盘、§3.3 其余规划 —— 见 §7.2）
+> ⛔ **〔订正（2026-10-21，GATEWAY-2 L7）：`agentbox` 包已删除，本篇正文为历史口径〕** 现行实现 = **gateway 进程级写隔离**：spawn **stdio** 下游（含内置 executor / 第三方 stdio MCP）时以 `src/lib/core/sandbox` 启动子进程 —— **Windows Low Integrity Level 令牌 + Job Object**（进程树 / 内存 / CPU 约束，`KILL_ON_JOB_CLOSE`）。边界：**只限制写**（Low IL 写不了 Medium IL 对象），**读不受限**；**不改任何 DACL**，允许写目录须先 `sandbox.EnsureLowIL(dir)` 打标（`(OI)(CI)L`），**未打标 = fail-closed（只能读）**；**http/sse 下游不做沙箱**。应用层路径校验 / `DenyRead` 黑名单 / `CHONKPILOT_SANDBOX` 注入**全部移除**。配置面仍为 prj `security-*`（`{dir, writable}`）与 usr `tool_sandbox`（单位 = 执行体 exe 基名 / 外部 MCP 名，**仅 stdio**）。遗留：项目 work_dir / temp 默认可写条目 = [41 G-75](../40-roadmap/41-未决项登记.md)（✅ 2026-10-22 已实施：server 侧内存合并默认项 + gateway 按 `SandboxDirs` WritableRoots 打 Low IL 标）。权威口径见 [26 §0](../20-modules/26-mcp-gateway.md) · [18 订正块](18-工具异步超时与取消.md)。
+>
+> 状态：🗑️ **历史（agentbox 已删除）；现行 = 进程级 Low IL + Job（见上）**
 > 关联：[00-架构总纲](../00-overview/00-架构总纲.md) §6 · [02-配置层级](../00-overview/02-配置层级.md)（`security-*`）· [27-mcp-tools](../20-modules/27-mcp-tools.md) · [26-mcp-gateway](../20-modules/26-mcp-gateway.md)
 > 定位：安全域 = **agentbox 沙箱**（根限定 `work_dir`），是工具执行与资源读取的统一约束层。
 >

@@ -24,24 +24,27 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-appwire"
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-gui"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-gui/flash"
 	"github.com/chonkpilot/chonkpilot-gui/models"
+	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/lockfile"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/tray"
+	"github.com/chonkpilot/chonkpilot-llm/codegraphindexer"
+	"github.com/chonkpilot/chonkpilot-llm/coretools"
+	"github.com/chonkpilot/chonkpilot-llm/llmbridge"
+	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
+	"github.com/chonkpilot/chonkpilot-llm/queuehooks"
 	"github.com/chonkpilot/chonkpilot-llm/server"
-	"github.com/chonkpilot/chonkpilot-plugin"
-	"github.com/chonkpilot/chonkpilot-plugin-codegraph"
-	"github.com/chonkpilot/chonkpilot-plugin-compress"
-	"github.com/chonkpilot/chonkpilot-plugin-history"
-	"github.com/chonkpilot/chonkpilot-plugin-memory"
-	"github.com/chonkpilot/chonkpilot-plugin-vfts"
+	"github.com/chonkpilot/chonkpilot-llm/vftsindexer"
 )
 
 // Main 是单体装配宿主入口（webview2 宿主 + 内嵌 server/persist/filesys + 插件装配 + 桥接线）。
@@ -176,14 +179,55 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	var fsys *filesys.Filesys
 	var srv *server.Server
 	var ts *gui.TestServer
-	bus, err := mq.New(mq.Options{Prefix: "chonk."})
-	if err != nil {
-		return fmt.Errorf("mq new: %w", err)
+	var pb *pluginbridge.Server
+	var bx *llmbridge.Server
+	var coreTools *coretools.Supervisor
+	var vftsIdx *vftsindexer.Manager
+	var cgIdx *codegraphindexer.Manager
+
+	// ── 共用脊柱（appwire，GATEWAY-2 L12）：总线 → data 门面 → filesys → llm server + 默认插件 ──
+	// 启动期输入快照（BootConfig）：只记环境输入（路径 / 旗标 / LLM 缺省 / 认证 / 池参数）；
+	// **不复制运行期配置** —— usr/prj 由 llm/server 按实例从数据面读取并热生效（12-数据层）。
+	capRoot := ""
+	if dir, derr := exedir.Dir(); derr == nil {
+		capRoot = filepath.Join(dir, "capability")
 	}
+	// 一工具一 exe：桌面单体由 core-mcp-server 注册/执行 app、meta、domain 工具（server 内不再注册）。
+	if !noServer && opts.Form == gui.FormDesktop {
+		_ = os.Setenv("CHONKPILOT_EXTERNAL_TOOLS", "1")
+	}
+	app, err := appwire.Build(appwire.Snapshot(appwire.BootConfig{
+		Form:           opts.Form,
+		WorkDir:        workDir,
+		DataDir:        dataDirArg,
+		ProjectDataDir: projectDataDir,
+		CapabilityRoot: capRoot,
+		LLMBase:        llmBase,
+		LLMModel:       llmModel,
+		NoServer:       noServer,
+		Filesys:        true,
+		Pool:           appwire.DefaultPool(),
+		EnvKeys:        []string{"CHONK_PLUGIN_LISTEN", "CHONK_PLUGIN_HTTP_ADDR", "CHONK_PLUGIN_HTTP_TOKEN", "CHONK_LLM_BRIDGE_ADDR"},
+	}), appwire.BuildOptions{LogWriter: gui.LogFileSink()})
+	if err != nil {
+		return err
+	}
+	bus := app.Bus
+	fsys = app.Filesys
+	srv = app.Server
+	dataFacade := app.Facade
 	defer func() {
+		// core-mcp-server 依赖插件桥与 server：先停（断连即退出），再按依赖序收尾。
+		coreTools.Stop()
 		if ts != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = ts.Shutdown(ctx)
+			cancel()
+		}
+		// LLM 桥接入口（BRIDGE-1 步骤 8）：依赖 srv 的只读 provider 解析 → 先于 srv 停止。
+		if bx != nil {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = bx.Shutdown(shutCtx)
 			cancel()
 		}
 		if srv != nil {
@@ -192,60 +236,126 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		if fsys != nil {
 			fsys.Stop()
 		}
-		if bus != nil {
-			_ = bus.Close()
+		// resident indexer（vfts / codegraph）：优雅停止（StopAll 经 plugin.shutdown 通知
+		// indexer，依赖 pb 仍在线），最后才关插件桥。
+		if vftsIdx != nil {
+			vftsIdx.StopAll()
 		}
+		if cgIdx != nil {
+			cgIdx.StopAll()
+		}
+		if pb != nil {
+			_ = pb.Close()
+		}
+		_ = bus.Close()
 	}()
-	gui.LogStartupStage("MQ 总线初始化")
-
-	// chonkpilot-filesys 文件服务：订阅 filesys.* 请求（list/content/create/…/watch/
-	// unwatch）→ 写回 Result/Errors；watch 变更经 fsnotify 广播 filesys.changed →
-	// 桥 ">" 订阅转发前端（文件域直连，61-消息一览 §2；-no-server 离线 UI 注入
-	// 测试仍可用文件树）。
-	fsys = filesys.New(bus)
-	if err := fsys.Start(); err != nil {
-		return fmt.Errorf("filesys start: %w", err)
-	}
-	gui.LogStartupStage("filesys 文件服务启动")
+	gui.LogStartupStage("MQ 总线 + filesys 文件服务 + server 装配（appwire 共用脊柱）")
 
 	// ── inprocess 会话服务（GUI 内嵌 chonkpilot-server lib，同进程内存 MQ）──
 	// server v2 内嵌 persist（data-* 数据面应答）+ gateway + mcp-server，数据根由
 	// bridge.Start 的 instance-register 绑定（persist 自持实例视图，61-消息一览 §4.1），
 	// 宿主不再直接打开/持有数据层句柄。
 	// -no-server：跳过（UI 注入测试模式，注入事件完全控制回合，无真实 LLM/数据服务）。
-	if !noServer {
-		srv = server.New(bus, server.Options{
-			LLMBase:  llmBase,
-			LLMModel: llmModel,
-			// 服务端启动参数下发（唯一消费点 = instance-claim 的 desktop 回落，见 61 §4.1 ①：
-			// 本机单用户 + --work-dir/--data-dir）。data_dir = `dataDirArg`（desktop 缺省为空 →
-			// persist/instance 绑定 data_dir 空 → prjusr 按 project-id 落 ~/.chonkpilot/data/<id>/，
-			// 见 12-数据层 §5.1 / [24 §3.2] MW-7）。
-			WorkDir: workDir,
-			DataDir: dataDirArg,
-			// 运行形态（61 §4.6；阶段 2b-2）：**服务端判定**的形态来源（desktop / gui，
-			// **由壳经 Options.Form 传入**）→ claim 鉴权分支与首屏 requireAuth 均据此判定；
-			// **非 UA、非客户端自报**（22 §1）。
-			Form: opts.Form,
-			// 内嵌 server/插件的诊断输出（原先只写 stdout，windowsgui 下不可见）经同一文件 sink
-			// 落 <dataDir>/logs/gui.log（2026-09-20；未挂上 sink = nil → 仅 stdout，行为不变）。
-			LogWriter: gui.LogFileSink(),
-			// 内嵌插件：compress（llm-compress 压缩）+ memory（每轮异步沉淀记忆）+ history（git 快照）+ codegraph/vfts（索引工具面，默认关闭）；就绪后广播 server-starting
-			// 插件与入口桥依赖的门面绑定在**装配处**选择（23 §7）：本形态 = inline（同进程直调；
-			// bus 传宿主实际总线 → config 域写入的变更广播照旧送达订阅方，见 facade/inline）
-			Plugins: []plugin.Hook{
-				compress.New(compress.DefaultOptions(), inline.New(bus)),
-				memory.New(memory.DefaultOptions()),
-				history.New(),
-				codegraph.New(codegraph.Options{}),
-				vfts.New(vfts.Options{}),
-			},
-		})
+	if srv != nil {
 		gui.LogStartupStage("server 装配（capability 契约扫描 + gateway 构建）")
-		if err := srv.Start(context.Background()); err != nil {
+		// 服务端启动参数（WorkDir/DataDir/Form/LogWriter/Plugins）已在 appwire.Build 内装配；
+		// data_dir = `dataDirArg`（desktop 缺省为空 → persist/instance 绑定 data_dir 空 →
+		// prjusr 按 project-id 落 ~/.chonkpilot/data/<id>/，见 12-数据层 §5.1 / [24 §3.2] MW-7）。
+		if err := app.Start(context.Background()); err != nil {
 			return fmt.Errorf("server start: %w", err)
 		}
 		gui.LogStartupStage("server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）")
+
+		// 插件桥接入口（BRIDGE-2）：桌面单体默认开启；gui 客户端不在此进程监听（由 server 提供）。
+		if opts.Form == gui.FormDesktop {
+			pb = pluginbridge.New(pluginbridge.Options{
+				Bus:     bus,
+				Version: "desktop",
+				Form:    string(opts.Form),
+				// 监听地址覆盖（测试 / 多实例隔离）：tcp://127.0.0.1:PORT 或 UDS 路径；
+				// 缺省 = pluginbridge.DefaultAddr()（UDS；`CHONK_PLUGIN_UDS` 可覆盖路径）。
+				Addr: os.Getenv("CHONK_PLUGIN_LISTEN"),
+				// HTTP 前门（P4b-2a，默认关闭）：env 为空 = 不监听（不改变默认行为）；
+				// 仅 loopback，token 非空时要求 Bearer。
+				HTTPAddr:  os.Getenv("CHONK_PLUGIN_HTTP_ADDR"),
+				HTTPToken: os.Getenv("CHONK_PLUGIN_HTTP_TOKEN"),
+				// resident indexer 的待索引队列控制帧（plugin.index.*）→ data 门面直调
+				// （P4b-1；与 filesys 入队共用同一 inline 绑定）；WorkDirs = 活实例 work_dir
+				// （plugin.index.workdirs，单实例多 workdir 的项目发现）。
+				IndexQueue: queuehooks.New(dataFacade),
+				WorkDirs: func() []string {
+					if srv == nil {
+						return nil
+					}
+					return srv.LiveWorkDirs()
+				},
+				Logf: func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) },
+			})
+			if err := pb.Start(); err != nil {
+				slog.Warn("plugin bridge 启动失败（可选子系统，继续运行）", "err", err)
+				pb = nil
+			} else {
+				srv.SetFilters(pb.Filters())
+				srv.SetPluginRegistry(pb.Registry())
+				slog.Info("plugin bridge started", "addr", pb.Addr())
+				// 2026-10-19（G-68 第二步）：meta/domain 控制面工具已并入 core-mcp-server 的
+				// 一工具一 exe 执行面（不再启动 chonkpilot-server-tools.exe）。
+				// 2026-10-19：core-mcp-server = 工具唯一前门（一工具一 executor），由宿主拉起并监管；
+				// gateway 以内置 HTTP 下游接入（namespace=self_ → 暴露名不变）。取代 self-tools 的
+				// tools.register/tools.call 路径。启动失败不致命：工具面降级，核心功能不受影响。
+				if sup, err := coretools.Start(coretools.Options{
+					Root:       capRoot,
+					WorkDir:    workDir,
+					DataDir:    dataDirArg,
+					PluginAddr: pb.Addr(),
+					Output:     gui.LogFileSink(),
+					Logf:       func(format string, args ...any) { slog.Warn(fmt.Sprintf(format, args...)) },
+				}); err != nil {
+					slog.Warn("core-mcp-server 启动失败", "err", err)
+				} else {
+					coreTools = sup
+					// usr/prj 执行配置热生效 → 推送给 core（timeout/并发/解释器/Chrome/沙箱等）。
+					srv.SetCoreRuntimePusher(sup.PushRuntime)
+					// 插件查询工具（codegraph_* / vfts_query）执行委托 core：一工具一 exe，单次取消。
+					srv.SetToolExec(coretools.NewExecClient(sup.URL(), sup.Token()))
+					if rerr := srv.RegisterCoreServer(sup.URL(), sup.Token()); rerr != nil {
+						slog.Warn("core-mcp-server 注册失败", "err", rerr)
+					} else {
+						slog.Info("core-mcp-server started", "url", sup.URL(), "root", capRoot)
+					}
+				}
+			}
+		}
+
+		// ── LLM 桥接入口（BRIDGE-1 步骤 8，2026-10-19）：桌面单体同开 ──
+		// 独立固定端口（默认 127.0.0.1:5669，`CHONK_LLM_BRIDGE_ADDR` 覆盖，`off`/空串关闭）的
+		// 透明反向代理：本机脚本免 api-key 调本机已配置 LLM（route `/llm/<name>/...`）。
+		// 免鉴权 → **仅 loopback**：非 loopback 绑定由桥自拒启（fail-closed）。启动失败不致命。
+		if opts.Form == gui.FormDesktop {
+			addr := strings.TrimSpace(os.Getenv("CHONK_LLM_BRIDGE_ADDR"))
+			if addr == "" {
+				addr = "127.0.0.1:5669"
+			}
+			if addr != "off" && addr != "-" {
+				bx = llmbridge.New(llmbridge.Options{
+					Addr: addr,
+					// provider 解析 = llm server 只读查询（不 Register / 不 Call / 不经 canon）。
+					Resolve: func(name string) (llmbridge.Target, bool) {
+						t, ok := srv.ResolveBridgeTarget(name)
+						if !ok {
+							return llmbridge.Target{}, false
+						}
+						return llmbridge.Target{BaseURL: t.BaseURL, APIKey: t.APIKey, Protocol: t.Protocol}, true
+					},
+				})
+				if err := bx.Start(); err != nil {
+					slog.Warn("LLM 桥接入口启动失败（可选子系统，继续运行）", "err", err)
+					bx = nil
+				} else {
+					slog.Info("LLM bridge started", "addr", bx.Addr())
+				}
+			}
+		}
 	}
 
 	// WebView2 用户数据目录必须**一实例一份**：fork 默认 DataPath = %AppData%\<exe名>，
@@ -282,29 +392,69 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		DataOffline: noServer,
 	})
 
-	// 主窗口（MW-1：主窗口同走窗口工厂；几何恢复 / 拦截器 / lifecycle / Show 逐条与改前一致）。
-	// 测试通道（--test-port）：仅绑**主窗口**（每窗口一份 appHandler 后，多窗口回归不覆盖，
-	// 见 24 §4.5 / U-3）；console 捕获注入须在导航前（见 onWired）。
-	mainHost, err := env.StartMainWindow(gui.MainWindowSpec{
-		Title: gui.MainWindowTitle(workDir), // 固定 Taskbar 标题 = chonkpilot-<工程目录名>（不随会话变化）
-		OnWired: func(h *gui.Window) error {
-			// 日志级别接线：数据面就绪后读 prj logLevel 初值（变更订阅见下方 WatchLogLevel）。
-			gui.ApplyLogLevelFromConfig(h.Bridge().PrjConfigList())
-			if testPort <= 0 {
-				return nil
-			}
-			t, err := env.AttachTestServer(h, testPort)
-			if err != nil {
-				return err
-			}
-			ts = t
+	// 插件桥 GUI 反向通道 / 实例列表：窗口宿主就绪后注入。
+	if pb != nil {
+		pb.SetGUI(gui.NewPluginGUIController(env))
+		pb.SetExistingInstanceIDs(env.InstanceIDs)
+	}
+
+	// 项目主窗口（PRODSIM-1：单进程多项目，统一走 OpenProject —— 同 work_dir 唯一）。
+	// 测试通道（--test-port）：仅绑进程内**第一个**主窗口。
+	onProjectWired := func(h *gui.Window) error {
+		// 日志级别接线：数据面就绪后读 prj logLevel 初值（变更订阅见下方 WatchLogLevel）。
+		gui.ApplyLogLevelFromConfig(h.Bridge().PrjConfigList())
+		if testPort <= 0 || env.HasTestServer() {
 			return nil
-		},
-	})
-	if err != nil {
+		}
+		t, err := env.AttachTestServer(h, testPort)
+		if err != nil {
+			return err
+		}
+		ts = t
+		return nil
+	}
+	// openProject 是同进程「打开项目」的统一入口（托盘 / gui.dir.open 复用）。
+	openProject := func(dir string) error {
+		if st, statErr := os.Stat(dir); statErr != nil || !st.IsDir() {
+			return fmt.Errorf("无效的项目目录: %s", dir)
+		}
+		pdd := filepath.Join(dir, models.UserConfigDirName)
+		pur, perr := data.PrjUsrDir(dir, "")
+		if perr != nil {
+			return fmt.Errorf("项目数据根解析失败: %w", perr)
+		}
+		_, _, oerr := env.OpenProject(gui.ProjectConfig{
+			WorkDir:        dir,
+			DataDir:        "",
+			ProjectDataDir: pdd,
+			PrjUsrRoot:     pur,
+			Title:          gui.MainWindowTitle(dir),
+			OnWired:        onProjectWired,
+		})
+		return oerr
+	}
+	// 回调必须先于**任何窗口创建**注入（createWindow 会把它转给桥的 gui.dir.open）。
+	env.SetProjectOpener(openProject)
+
+	// ── 日志窗口（PRODSIM-1）：进程级唯一、创建后**默认隐藏** ──
+	// 它是 server 进程的窗口载体：所有项目主窗口关闭后，进程仍靠它 + 托盘常驻；
+	// 关闭 = 收起回托盘（HideOnClose），托盘「显示日志」唤出。
+	if _, logErr := env.StartLogWindow(gui.LogWindowSpec{Title: "chonkpilot 日志"}); logErr != nil {
+		slog.Warn("log window create failed（继续，无日志窗口）", "err", logErr)
+	}
+	gui.LogStartupStage("日志窗口创建（隐藏）")
+
+	// 首个项目主窗口。
+	if _, _, err := env.OpenProject(gui.ProjectConfig{
+		WorkDir:        workDir,
+		DataDir:        dataDirArg,
+		ProjectDataDir: projectDataDir,
+		PrjUsrRoot:     prjUsrRoot,
+		Title:          gui.MainWindowTitle(workDir), // 固定 Taskbar 标题 = chonkpilot-<工程目录名>
+		OnWired:        onProjectWired,
+	}); err != nil {
 		return fmt.Errorf("main window create: %w", err)
 	}
-	env.SetMain(mainHost)
 	gui.LogStartupStage("主窗口创建（bridge/WebView2 环境就绪）")
 	// 进程级收尾改由总线下注册的**单一收尾 defer**（依赖序 ts→srv→fsys→bus）统一完成，
 	// 不再各自 defer（原 defer LIFO 会使 bus.Close 早于 srv.Stop/fsys.Stop，D-05）。
@@ -320,11 +470,143 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	gui.WatchLogLevel(bus)
 	gui.LogStartupStage("启动流程就绪（进入窗口事件循环，首屏于导航完成后另记）")
 
-	// 主窗口关闭 = 退出本进程（24 §4.4）：其余对话窗口一并关闭（各自发 instance-exit +
-	// gui.window.closed），随后返回（收尾 defer 按依赖序关闭 ts/srv/fsys/bus）。
-	<-mainHost.Done()
-	env.Shutdown()
+	// 全部模块就绪 → 插件桥广播 server-ready（常驻索引器据此开始消费队列；P3）。
+	// payload 为插件传输帧（非 MQ 主题），见 pluginbridge.MarkReady。
+	if pb != nil {
+		pb.MarkReady(map[string]any{"form": string(opts.Form), "at": time.Now().UTC().Format(time.RFC3339)})
+	}
+
+	// resident indexer（vfts P4b-2b / codegraph P5）：**每宿主进程每插件单实例**
+	// （单实例多 workdir，2026-10-19）。项目发现由宿主实例表提供
+	// （plugin.index.workdirs → srv.LiveWorkDirs），indexer 进程内含托盘输出窗口。
+	// 不设 enable 门控（MVP 始终启动）；exe 缺失 → 静默跳过并只记一次日志。
+	if pb != nil {
+		logf := func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) }
+		vftsExe := vftsIndexerExePath()
+		if st, err := os.Stat(vftsExe); err == nil && !st.IsDir() {
+			vftsIdx = vftsindexer.New(logf)
+			if err := vftsIdx.Ensure(context.Background(), vftsindexer.Options{
+				DataRoot:   prjUsrRoot,
+				PluginAddr: pb.Addr(),
+				IndexerExe: vftsExe,
+				Logf:       logf,
+				Shutdown:   pb.ShutdownPlugin,
+			}); err != nil {
+				slog.Warn("vfts indexer 启动失败", "err", err)
+			}
+		} else {
+			slog.Info("vfts indexer 未安装（跳过）", "exe", vftsExe)
+		}
+		cgExe := codegraphIndexerExePath()
+		if st, err := os.Stat(cgExe); err == nil && !st.IsDir() {
+			cgIdx = codegraphindexer.New(logf)
+			if err := cgIdx.Ensure(context.Background(), codegraphindexer.Options{
+				DataRoot:   prjUsrRoot,
+				PluginAddr: pb.Addr(),
+				IndexerExe: cgExe,
+				Logf:       logf,
+				Shutdown:   pb.ShutdownPlugin,
+			}); err != nil {
+				slog.Warn("codegraph indexer 启动失败", "err", err)
+			}
+		} else {
+			slog.Info("codegraph indexer 未安装（跳过）", "exe", cgExe)
+		}
+	}
+
+	// ── 托盘（PRODSIM-1）：常驻入口 —— 显示日志 / 打开项目 / 项目列表 / 退出 ──
+	// 托盘不可用（启动失败）→ 退回旧行为：所有项目主窗口关闭即退出。
+	exitCh := make(chan struct{})
+	var exitOnce sync.Once
+	requestExit := func() { exitOnce.Do(func() { close(exitCh) }) }
+	trayStop, trayErr := tray.Start(tray.Callbacks{
+		Tip:           "Chonkpilot",
+		OnDoubleClick: func() { env.ShowLogWindow() },
+		OnShowLog:     func() { env.ShowLogWindow() },
+		OnOpenProject: func() {
+			dir := pickDirectory("选择项目目录")
+			if dir == "" {
+				return
+			}
+			if err := openProject(dir); err != nil {
+				gui.NativeAlert("Chonkpilot", err.Error())
+			}
+		},
+		OnExit: func() {
+			env.Shutdown()       // 关所有项目主窗口/小窗口（各自发 instance-exit）
+			env.CloseLogWindow() // 强制销毁（无视 HideOnClose）
+			requestExit()
+		},
+		ListProjects: func() []tray.Instance {
+			ps := env.Projects()
+			out := make([]tray.Instance, 0, len(ps))
+			for _, p := range ps {
+				out = append(out, tray.Instance{ID: p.WorkDir, Title: p.Title})
+			}
+			return out
+		},
+		OnPickProject: func(workDir string) { env.ActivateProject(workDir) },
+	})
+	if trayErr != nil {
+		slog.Warn("tray start failed（无托盘：所有主窗口关闭即退出）", "err", trayErr)
+		waitAllProjectsClosed(env, exitCh)
+		return nil
+	}
+	defer trayStop()
+	gui.LogStartupStage("托盘就绪")
+
+	// PRODSIM-1：进程常驻 —— 只有托盘「退出」才结束。
+	// 单个项目主窗口关闭只移除该项目（见 windowHost.finish），server 与日志窗口继续运行。
+	<-exitCh
 	return nil
+}
+
+// waitAllProjectsClosed 是无托盘时的退回路径：轮询到所有项目主窗口关闭（或退出信号）后返回。
+func waitAllProjectsClosed(env *gui.Env, exitCh <-chan struct{}) {
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-exitCh:
+			return
+		case <-tick.C:
+			if len(env.Projects()) == 0 {
+				return
+			}
+		}
+	}
+}
+
+// vftsIndexerExePath 定位 resident indexer：优先宿主 exe 同目录，
+// 其次发行布局 `mcps/vfts/`（build-desktop / build-gui 的投放位置）。
+func vftsIndexerExePath() string {
+	const name = "chonkpilot-vfts-indexer.exe"
+	exe, err := os.Executable()
+	if err != nil {
+		return name
+	}
+	dir := filepath.Dir(exe)
+	primary := filepath.Join(dir, name)
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	return filepath.Join(dir, "mcps", "vfts", name)
+}
+
+// codegraphIndexerExePath 定位 resident codegraph indexer：优先宿主 exe 同目录，
+// 其次发行布局 `mcps/codebase/`（build-desktop / build-gui 的投放位置）。
+func codegraphIndexerExePath() string {
+	const name = "chonkpilot-codegraph-indexer.exe"
+	exe, err := os.Executable()
+	if err != nil {
+		return name
+	}
+	dir := filepath.Dir(exe)
+	primary := filepath.Join(dir, name)
+	if _, err := os.Stat(primary); err == nil {
+		return primary
+	}
+	return filepath.Join(dir, "mcps", "codebase", name)
 }
 
 // defaultWorkDir 在未显式 --work-dir 时解析工作目录：

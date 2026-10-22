@@ -1,8 +1,7 @@
 // 注册工具提供方（registeredProvider）：server 域工具/网关自持工具经 mcp.register(kind=tool)
 // 注册进 gateway（tools.register 已并入，61-消息一览 §5.1.1 2026-09-05），
-// 命中执行时：本地 handler 直调，远程回调 = Emit 到注册时声明的回调主题（handler_subject，
-// 相对主题，chonk. 前缀注入；61-消息一览 §5.4）——订阅者写 v.Result，发送方 await 同一主题，
-// 无独立回执主题、无 req_id。
+// 命中执行时：本地 handler 直调，远程回调 = 经宿主 Dispatcher.Call 到注册时声明的回调操作名
+// （handler_subject；61-消息一览 §5.4）——订阅方返回结果 JSON，无独立回执主题、无 req_id。
 package mcpgateway
 
 import (
@@ -15,8 +14,6 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
 
 // registeredTool 是注册的工具录（含本地 handler 或远程回调主题）。
@@ -37,11 +34,11 @@ type registeredTool struct {
 }
 
 // registeredProvider 是注册工具的执行服务。
-// 支持两种模式：本地 handler（gateway 自持工具）+ 远程回调（server 域工具，bus 转发）。
+// 支持两种模式：本地 handler（gateway 自持工具）+ 远程回调（server 域工具，经宿主 Dispatcher 转发）。
 type registeredProvider struct {
 	mu          sync.RWMutex
 	tools       map[string]*registeredTool
-	bus         mq.Bus // 回调总线（进程内内存实现）
+	disp        Dispatcher // 回调通道（宿主端口；nil = 不可远程回调）
 	callTimeout time.Duration
 	// preHooks = 前置钩子主题引用计数（同主题多工具注册 → 计数）；preHookN = 快速判定（原子，无钩子时零开销）。
 	preHooks map[string]int
@@ -49,10 +46,10 @@ type registeredProvider struct {
 }
 
 // newRegisteredProvider 创建注册工具表。
-func newRegisteredProvider(bus mq.Bus, callTimeout time.Duration) *registeredProvider {
+func newRegisteredProvider(disp Dispatcher, callTimeout time.Duration) *registeredProvider {
 	return &registeredProvider{
 		tools:       map[string]*registeredTool{},
-		bus:         bus,
+		disp:        disp,
 		callTimeout: callTimeout,
 		preHooks:    map[string]int{},
 	}
@@ -87,25 +84,49 @@ func (p *registeredProvider) Call(ctx context.Context, tool string, args map[str
 		return rt.Handler(ctx, args)
 	}
 
-	// 远程回调（注册方 = server 域工具）：Emit 到回调主题并 await 同一主题——
-	// 订阅者同步执行并写回 v.Result（成功 = map{content, isError} 或 *mcp.CallToolResult），
-	// 失败以 error 返回（收集进 v.Errors）。无独立 -reply 主题、payload 无 req_id。
-	if rt.HandlerSubject == "" || p.bus == nil {
+	// 远程回调（注册方 = server 域工具）：经宿主 Dispatcher 同步调用回调操作名——
+	// 订阅方同步执行并返回结果 JSON（成功 = {content, isError} 或 CallToolResult 同形），
+	// 失败以 error 返回。无独立 -reply 主题、payload 无 req_id。
+	if rt.HandlerSubject == "" || p.disp == nil {
 		return nil, fmt.Errorf("tool %q has no handler and no callback subject", tool)
 	}
 
 	payload := map[string]any{"tool": tool, "args": args}
+	// no_timeout：契约显式 timeout=0/-1 = 无上限（系统工具 / 元工具）→ 跨进程回调不设
+	// 执行硬上限（pluginbridge 侧据此去掉 11 分钟兜底），仅由取消收敛（BRIDGE-2 ⑥）。
+	if toolTimeoutUnlimited(rt.Tool) {
+		payload["no_timeout"] = true
+	}
 	// 携带 doCall 经 withTurnContext 注入的 turn 上下文（session/turn/instance/tool_call_id）——
 	// 回调方（server 域工具 handler）据此恢复对应 server turn。
 	if c := turnContextPayload(ctx); len(c) > 0 {
 		payload["context"] = c
 	}
-	f := p.bus.Emit(ctx, rt.HandlerSubject, payload)
-	v := f.Wait()
-	if err := v.Err(); err != nil {
+	raw, err := p.disp.Call(ctx, Op(rt.HandlerSubject), marshal(payload))
+	if err != nil {
 		return nil, fmt.Errorf("exec %s: %w", tool, err)
 	}
-	return toolResultFromValue(v)
+	return toolResultFromReply(raw)
+}
+
+// toolTimeoutUnlimited 报告工具契约是否显式声明 timeout=0/-1（无上限）。
+// `_meta.timeout` 缺失 = 未设置（走默认上限），不视为无上限。
+func toolTimeoutUnlimited(t *mcp.Tool) bool {
+	if t == nil || t.Meta == nil {
+		return false
+	}
+	switch v := t.Meta["timeout"].(type) {
+	case float64:
+		return v == 0 || v == -1
+	case int:
+		return v == 0 || v == -1
+	case int64:
+		return v == 0 || v == -1
+	case json.Number:
+		n, err := v.Float64()
+		return err == nil && (n == 0 || n == -1)
+	}
+	return false
 }
 
 // turnContextPayload 从执行 ctx 提取 turn 上下文（provider.go withTurnContext 注入）→ JSON 形态。
@@ -123,6 +144,14 @@ func turnContextPayload(ctx context.Context) map[string]string {
 	if v := ToolCallIDFromContext(ctx); v != "" {
 		m["tool_call_id"] = v
 	}
+	// P6（2026-10-19）：进程外工具（self-tools）需 work_dir/data_dir 才能 spawn executor 时注入
+	// CHONKPILOT_WORKDIR / CHONKPILOT_DATADIR（与内嵌 mcp-server 的 _meta 通道同源）。
+	if v := WorkDirFromContext(ctx); v != "" {
+		m["work_dir"] = v
+	}
+	if v := DataDirFromContext(ctx); v != "" {
+		m["data_dir"] = v
+	}
 	// C1（2026-10-15）：本次调用的运行目的（doCall 剥离展示名前取出）——域工具 handler 读
 	// payload["context"]["purpose"]（如 subchat_open 取作子聊天 purpose）。
 	if v := PurposeFromContext(ctx); v != "" {
@@ -131,26 +160,24 @@ func turnContextPayload(ctx context.Context) map[string]string {
 	return m
 }
 
-// toolResultFromValue 把订阅者写回的 v.Result 归一为 *mcp.CallToolResult。
-// 支持 *mcp.CallToolResult 直写与 map{content, isError} 形态；未写回 → 视为超时失败。
-func toolResultFromValue(v *mq.Value) (*mcp.CallToolResult, error) {
-	if v.Result == nil {
+// toolResultFromReply 把订阅方返回的结果 JSON 归一为 *mcp.CallToolResult。
+// 支持 {content, isError} 与 mcp.CallToolResult 同形；空结果（无订阅/超时）→ 失败。
+func toolResultFromReply(raw []byte) (*mcp.CallToolResult, error) {
+	if len(raw) == 0 {
 		return nil, fmt.Errorf("exec timeout after no result")
 	}
-	if res, ok := v.Result.(*mcp.CallToolResult); ok {
-		return res, nil
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("exec reply: unexpected result %s", string(raw))
 	}
-	if m, ok := v.Result.(map[string]any); ok {
-		res := &mcp.CallToolResult{}
-		if content, ok := m["content"]; ok {
-			res.Content = contentList(content)
-		}
-		if isErr, ok := m["isError"].(bool); ok {
-			res.IsError = isErr
-		}
-		return res, nil
+	res := &mcp.CallToolResult{}
+	if content, ok := m["content"]; ok {
+		res.Content = contentList(content)
 	}
-	return nil, fmt.Errorf("exec reply: unexpected result type %T", v.Result)
+	if isErr, ok := m["isError"].(bool); ok {
+		res.IsError = isErr
+	}
+	return res, nil
 }
 
 // contentList 把订阅者写回的 content（[]mcp.Content / []any / []map，每项 {type,...}）

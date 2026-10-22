@@ -5,7 +5,7 @@
 轮次确权：主会话 turn-start（mq-only；llm-started 兼容事件已无源，不再等待）。
 断言：window.mq.on 捕获 turn-start / llm-token / llm-tool-call / tool-pair / tool-result /
       llm-receive / complete / llm-complete 事件链；DOM 断言消息落点（.message-item）。
-      G-11 重建的 llm_run 委派/批量/子会话/级联取消用例（五.4/5/6/7 + C13/C18）经
+      G-11 重建的 dsl_run 委派/批量/子会话/级联取消用例（五.4/5/6/7 + C13/C18）经
       tasks.started/updated/done（前端 tasks.*，payload=TaskNode）与 llm-receive
       （子轮次流，payload 带 session/turn）断言；主题/payload 均取自 61-消息一览，无新增。
 前置：IDE 以 --test-port=2345 启动；mock_llm.py 监听 127.0.0.1:8901；
@@ -33,7 +33,7 @@ _SEQ = [0]
 EVENTS = ["turn-start", "llm-started", "llm-token", "llm-tool-call", "tool-pair", "tool-result",
           "llm-receive", "complete", "llm-complete", "error"]
 
-# G-11 重建：llm_run 委派/编排场景额外断言的任务树 / 子会话事件。
+# G-11 重建：dsl_run 委派/编排场景额外断言的任务树 / 子会话事件。
 # 主题与 payload 见 docs/spec/60-reference/61-消息一览.md §4.3（task-started/updated/done →
 # 前端 tasks.*）与 §4.5（llm-receive ← session-receive）；不引入任何新主题。
 DELEGATE_EVENTS = EVENTS + ["tasks.started", "tasks.updated", "tasks.done", "llm-receive",
@@ -104,7 +104,7 @@ def confirm_turn(sid, max_wait=60):
     return _wait_main_turn_start(sid, max_wait=max_wait)
 
 
-# ── llm_run 委派/编排场景辅助（G-11 重建）──────────────────────────────
+# ── dsl_run 委派/编排场景辅助（G-11 重建）──────────────────────────────
 
 def _payloads(topic):
     """当前累积的某主题事件载荷（dict）列表；不清空，容忍 test-port deferral 批量推送。"""
@@ -162,20 +162,20 @@ def _start_and_main_session(sid, q):
     return sid
 
 
-def _llm_run_root(main_sid, max_wait=60):
-    """定位本轮 llm_run **作业根节点**（DSL-3：kind=dsl_job；工具名按契约名归一；顶层无 parent_id）。
+def _dsl_run_root(main_sid, max_wait=60):
+    """定位本轮 dsl_run **作业根节点**（DSL-3：kind=dsl_job；工具名按契约名归一；顶层无 parent_id）。
 
-    DSL-3 起，llm_run 的每个 LLM 委派步骤**不再建树节点**（记录入作业根 `steps[]`，见
+    DSL-3 起，dsl_run 的每个 LLM 委派步骤**不再建树节点**（记录入作业根 `steps[]`，见
     61-消息一览 §3.4 增补字段：`dsl_job.steps[]`），故此处只确权作业根；步骤级断言改查
     根节点最新快照的 `steps[]`（_job_steps / _poll_steps）。
     """
     root = poll_find("tasks.started",
-                     lambda p: _canon_tool(p) == "llm_run" and not p.get("parent_id")
+                     lambda p: _canon_tool(p) == "dsl_run" and not p.get("parent_id")
                      and p.get("top_session") == main_sid, max_wait=max_wait)
     if not root:
-        raise TestError("未建立 llm_run 作业根节点（tasks.started）")
+        raise TestError("未建立 dsl_run 作业根节点（tasks.started）")
     if root.get("kind") != "dsl_job":
-        raise TestError(f"llm_run 作业根 kind={root.get('kind')!r}，期望 dsl_job（DSL-3）")
+        raise TestError(f"dsl_run 作业根 kind={root.get('kind')!r}，期望 dsl_job（DSL-3）")
     return root
 
 
@@ -241,7 +241,7 @@ def _step_label(s):
 
 
 def _assert_sub_turn(sub):
-    """子会话（job-*）确已产生子轮次：turn-start（parents 非空）与 llm-receive 均带该 session。"""
+    """子会话（执行器派生的 job id-N）确已产生子轮次：turn-start（parents 非空）与 llm-receive 均带该 session。"""
     if not poll_find("turn-start",
                      lambda p: p.get("session") == sub and p.get("parents"), max_wait=60):
         raise TestError(f"未见子会话 {sub} 的 turn-start（子 turn 未产生）")
@@ -620,8 +620,8 @@ def case_resume_partial():
     raise TestError("断链续写未完成（未见 PARTIAL-TEXT- 与 mock-reply: 继续）")
 
 
-# ── G-11 重建：llm_run DSL 委派/批量/子会话/级联取消（原五.4/5/6/7 + C13/C16/C18 等价场景）──
-# 驱动：主轮次 q 命中 mock_llm 关键词 → 返回 llm_run tool_call（script=DSL）；每个 LLM 步骤
+# ── G-11 重建：dsl_run DSL 委派/批量/子会话/级联取消（原五.4/5/6/7 + C13/C16/C18 等价场景）──
+# 驱动：主轮次 q 命中 mock_llm 关键词 → 返回 dsl_run tool_call（script=DSL）；每个 LLM 步骤
 # 即子会话（runChildTurn）。断言仅依赖 61-消息一览 的主题/payload：tasks.started/updated/
 # done（前端 tasks.*，payload = TaskNode；**DSL-3 起作业根 kind=dsl_job，LLM 委派步骤记录入
 # 根节点 `steps[]`，不再建 kind=llm 子节点**）与 llm-receive（子轮次流，payload 带 session/turn）。
@@ -634,18 +634,19 @@ def _delegate_single(q, expect_label):
     sid = create_session()
     activate_session(sid)
     main_sid = _start_and_main_session(sid, q)
-    root = _llm_run_root(main_sid)
+    root = _dsl_run_root(main_sid)
     step = _poll_steps(root, lambda s: _step_label(s) == expect_label, max_wait=90)
     if not step:
         raise TestError(f"作业根 steps[] 未见展示名 {expect_label!r}"
                         f"（实际 {[_step_label(s) for s in _job_steps(root)]}）")
     sub = step.get("session_id") or ""
-    if not sub.startswith("job-"):
-        raise TestError(f"子会话 id 异常（应 job-*）: {sub!r}")
+    if not sub or sub == main_sid:
+        raise TestError(f"子会话 id 异常（应为执行器派生的子会话）: {sub!r}")
     if not _poll_steps(root,
                        lambda s: _step_label(s) == expect_label and s.get("status") == "done",
                        max_wait=90):
-        raise TestError("子 LLM 步骤（steps[] 记录）未达到 done")
+        raise TestError("子 LLM 步骤（steps[] 记录）未达到 done（实际 %r）"
+                        % ([(s.get("purpose"), s.get("status")) for s in _job_steps(root)],))
     _assert_sub_turn(sub)
     wait_event("llm-complete", max_wait=90)
 
@@ -662,13 +663,13 @@ def case_delegate_single_purpose():
 
 def case_delegate_loop():
     """五.6 LOOP 批量委派（DSL-3）：planner + 2 worker → `steps[]` 3 条记录
-    （各 job-* 子会话）+ LOOP 折叠容器节点（kind=dsl_loop，静态、不随迭代增长）。"""
+    （各执行器派生子会话）+ LOOP 折叠容器节点（kind=dsl_loop，静态、不随迭代增长）。"""
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
     c.mq_on_capture(DELEGATE_EVENTS)
     sid = create_session()
     activate_session(sid)
     main_sid = _start_and_main_session(sid, "please call batch")
-    root = _llm_run_root(main_sid)
+    root = _dsl_run_root(main_sid)
     want = {"生成批处理清单", "批处理一", "批处理二"}
 
     def _labels():
@@ -677,8 +678,8 @@ def case_delegate_loop():
     # 3 个子步骤：planner 产出清单 + 2 个 worker（LOOP 迭代；concurrency=2）
     wait_until(lambda: want <= _labels(), "3 个 LOOP 子步骤记录（steps[]）", max_wait=90)
     subs = {s.get("session_id") for s in _job_steps(root) if _step_label(s) in want}
-    if len(subs) != 3 or not all(s and s.startswith("job-") for s in subs):
-        raise TestError(f"LOOP 子会话 id 异常（应 3 个 job-*）: {subs}")
+    if len(subs) != 3 or not all(subs):
+        raise TestError(f"LOOP 子会话 id 异常（应 3 个非空子会话）: {subs}")
     # LOOP 折叠容器节点（kind=dsl_loop）挂作业根下（不随迭代新增）
     if not poll_find("tasks.started",
                      lambda p: p.get("parent_id") == root["task_id"]
@@ -701,7 +702,7 @@ def case_delegate_subsession():
     sid = create_session()
     activate_session(sid)
     main_sid = _start_and_main_session(sid, "please call delegate-plain")
-    root = _llm_run_root(main_sid)
+    root = _dsl_run_root(main_sid)
     step = _poll_steps(root, lambda s: _step_label(s) == "单次委派回显", max_wait=90)
     if not step:
         raise TestError("作业根 steps[] 未见子步骤记录（单次委派回显）")
@@ -711,8 +712,8 @@ def case_delegate_subsession():
     if not isinstance(step.get("no"), int):
         raise TestError("步骤记录缺跨迭代序号 no")
     sub = step.get("session_id") or ""
-    if not sub.startswith("job-"):
-        raise TestError(f"子会话 id 异常（应 job-*）: {sub!r}")
+    if not sub or sub == main_sid:
+        raise TestError(f"子会话 id 异常（应为执行器派生的子会话）: {sub!r}")
     # 子轮次实际产生并被子会话定位（turn-start 带 parents + llm-receive 带该 session）
     _assert_sub_turn(sub)
     wait_event("llm-complete", max_wait=90)
@@ -726,14 +727,14 @@ def case_delegate_cancel():
     sid = create_session()
     activate_session(sid)
     main_sid = _start_and_main_session(sid, "please call delegate-cancel")
-    root = _llm_run_root(main_sid)
+    root = _dsl_run_root(main_sid)
     # 首个子步骤（慢步子任务）委派子会话内执行慢工具（script_run ping 20s）
     step = _poll_steps(root, lambda s: _step_label(s) == "慢步子任务", max_wait=60)
     if not step:
         raise TestError("作业根 steps[] 未见首个子步骤（慢步子任务）")
     sub = step.get("session_id") or ""
-    if not sub.startswith("job-"):
-        raise TestError(f"子会话 id 异常（应 job-*）: {sub!r}")
+    if not sub or sub == main_sid:
+        raise TestError(f"子会话 id 异常（应非空且不是主会话）: {sub!r}")
     # 子会话内确已调用慢工具（llm-tool-call 带子会话 session；C13 子会话工具链）
     if not poll_find("llm-tool-call",
                      lambda p: (p.get("tool") or "").endswith("script_run")
@@ -771,7 +772,7 @@ def main():
     total += 1; ok += run_case("C14 ask_user 双路由（弹窗 + 回填）", case_ask_user_duplex)
     total += 1; ok += run_case("C15 断链恢复（resumePartial 续写）", case_resume_partial)
     total += 1; ok += run_case("C17 通知按 message_id 去重", case_notify_dedup)
-    # ── G-11 重建：llm_run DSL 委派/批量/子会话/级联取消（原五.4/5/6/7 + C13/C16/C18 等价场景）──
+    # ── G-11 重建：dsl_run DSL 委派/批量/子会话/级联取消（原五.4/5/6/7 + C13/C16/C18 等价场景）──
     total += 1; ok += run_case("五.4 单次委派（无目的 → 展示名回退提示词）", case_delegate_single_plain)
     total += 1; ok += run_case("五.5 单次委派（第三参=目的 → 展示名）", case_delegate_single_purpose)
     total += 1; ok += run_case("五.6 LOOP 批量委派（string.array + concurrency=2）", case_delegate_loop)

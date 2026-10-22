@@ -8,7 +8,7 @@
 
 ## 1. 职责与边界
 
-- **一句话**：**执行层**——工具分类 executor 3 个（core / desktop / browser）+ dsl 编排 executor（`chonkpilot-dsl-executor.exe`）**共 4**，被 mcp-server `callTool` **spawn-on-call**，自持实现具体工具动作，用完即退。
+- **一句话**：**执行层**——工具分类 executor 3 个（core / desktop / browser）+ **`dsl_run` 工具执行体**（`chonkpilot-dsl-executor.exe`，2026-10-20 起作业与引擎同进程）**共 4**，被 mcp-server `callTool` **spawn-on-call**，自持实现具体工具动作，用完即退。
 - **做**：文件操作 DSL、脚本执行、HTTP 抓取、浏览器 DSL、桌面 DSL；统一输出层（`Ok`/`Err` + 200KB 落文件）。
 - **不做**：**零主仓库依赖**（仅 `src/lib/paths`）；无 DB/NATS；**无路径白名单**（越界读写成败由 agentbox 承担，见 [14-安全域](../10-architecture/14-安全域-agentbox.md)）——agentbox 沙箱在执行器**启用隔离时**真正拦截越界读写（`agentbox.InitFromEnv()` + 各 choke point，见 [14 §7.1](../10-architecture/14-安全域-agentbox.md)）；未注入 `CHONKPILOT_SANDBOX` = 不启用（默认兼容）；零持久状态。
 - **文件操作参数强约束（R-11）**：**所有输入/输出文件与目录参数**（含 **DSL 内所有 `#"..."` 引用**，含**数据源读取**）**必须为绝对路径或以 `~/` 开头的用户目录路径**，相对路径一律拒绝（参数级违规 → 整体失败，错误消息含原值、位置与示例）；规范见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。注意：`paths.ResolveDir` 仍服务 CLI 目录参数且允许相对（下同；是唯一允许相对处）。
@@ -19,9 +19,9 @@
 
 | 项 | 值 |
 |----|----|
-| 形态 | 3 个工具分类 executor（`chonkpilot-core-executor.exe` / `-desktop-` / `-browser-`）+ dsl 编排 executor（`chonkpilot-dsl-executor.exe`）= 共 4 |
-| 调用约定 | `<exe> <tool> --input=<参数 JSON 路径>`；`<exe> --help`；`<exe> --help <tool>` |
-| 部署 | `build-mcp-server.ps1` 编到 `capability/executors/`（扁平 `chonkpilot-<cat>-executor.exe`）；契约 `tools/<cat>/*.tool.md` 的 runtime 相对 md 写 `../../executors/<cat>.exe`（用户自建 executor 写全路径） |
+| 形态 | 3 个工具分类 executor（`chonkpilot-core-executor.exe` / `-desktop-` / `-browser-`）+ **`dsl_run` 工具执行体**（`chonkpilot-dsl-executor.exe`）= 共 4；**另有** meta 3 / domain 5 的一工具一 exe（`chonkpilot-{meta-find,meta-load,meta-invoke,ask-user,tool-result,tool-stop,subchat-open,subchat-finish}-executor.exe`，见 [21 §3](21-llm-server.md)）与 codegraph/vfts 查询 executor（见 [29](29-codegraph.md) / [2B](2B-vfts.md)） |
+| 调用约定 | `<exe> <tool> --input=<参数 JSON 路径>`；`<exe> --help`；`<exe> --help <tool>`（一工具一 exe 亦沿用同一外壳约定） |
+| 部署 | `build-mcp-server.ps1` 编到 `capability/executors/`（扁平 `chonkpilot-<cat>-executor.exe`；meta/domain 同目录扁平）；契约 `tools/<cat>/*.tool.md` 的 runtime 相对 md 写 `../../executors/<cat>.exe`（用户自建 executor 写全路径） |
 | work-dir | **概念已移除**（`workDir := ""`；不消费 `_work_dir`/`CHONK_WORK_DIR`）。文件操作参数须**绝对路径 / `~/` 开头 / `!/` 开头**（R-11），不再按 workDir 兜底解析相对路径 |
 | 宿主注入 env | executor **从自身进程环境**读宿主注入的 `CHONKPILOT_*`（`CHONKPILOT_INSTANCE/WORKDIR/DATADIR/INTERPRETERS`；`mcp-server` spawn 时注入子进程环境，**不再经 `tools/call` 保留参数 `_instance`/`_workdir`/`_datadir`**），经 `fileops.HostEnv`/`BuildToolEnv` 构造**只读** DSL `env`：`CHONKPILOT_WORKDIR/DATADIR/TEMPDIR/EXEDIR/PROJECT`，并 `paths.SetTempRoot(CHONKPILOT_INSTANCE)` 定 `!/` 落地根；`script_run` 另注入子进程环境（用户 `env` 同名优先）并读 `CHONKPILOT_INTERPRETERS` 解析解释器。缺 `CHONKPILOT_INSTANCE` 且需要 `!/` 或 DSL env → 顶层失败（`ErrNoInstance`）；纯绝对路径非 DSL 调用不受影响 |
 
@@ -129,7 +129,7 @@
 - ✅ **R-11 范围升级**：新增 `src/lib/dsl/paths.go` 的**只读** `CollectHandleRefs`（收集 LOOP/SET 数据源、`IF exist`、`=> 目标`、访问器参数等全部 `#"path"` 引用；纯遍历、**不改变引擎行为**，`llm_run` 不受影响）；新增 `fileops/scriptfs.go` 校验型 `ScriptFS` 并注入 `filesys_run`（核心语句数据源读取/访问器/`=> 目标` 亦须绝对 / `~/` / `!/`，`{{}}` 插值执行时兜底校验）；`browser`/`desktop` 的 `scriptFS` 读路径同样运行时可校验并纳入数据源预校验；`script_run.workdir`/`interpreter`、`browser_run.chrome_path` 纳入「必须绝对 / `~/` / `!/`」。
 - ✅ **R-11 二次升级**：`src/lib/paths` 新增**唯一 API** `ResolvePath(raw, base)`（规则序：空 → `!/` → `~/` → 绝对 → base 拼接 / 无 base 报错）、`SetTempRoot`/`TempRoot`（`!/` 映射 `<temp>/chonkpilot/<instance>/`）、`InvalidPathMessage`；`pathcheck.go` **降为薄封装**（删重复实现）。`scriptfs.go` 与 browser/desktop 的 `scriptFS`/落盘点改为**解析后使用绝对路径**（`!/`、`~/` 全路径可用）。executor 经新增 `fileops.HostEnv`/`BuildToolEnv`（读**自身进程环境** `CHONKPILOT_*` + 自身 exe 目录）`SetTempRoot` + 注入**只读** DSL `env`；`script_run` 同时把同名变量注入**子进程环境**（用户 `env` 同名优先）。
 - ✅ **R-11 调用上下文改由 `_meta` + 子进程 env**：移除经 tool `arguments` 注入上下文 —— `mcp-server Config.SetContext`/`defaultsMap` 对 `_workdir`/`_datadir`/`_instance`/`_interpreters` 的注入**已删除**；上下文改由调用上下文（协议 `_meta`，键 `chonkpilot.{instance_id,work_dir,data_dir}`）从 gateway 透传，`mcp-server` spawn executor 时注入子进程环境 `CHONKPILOT_INSTANCE/WORKDIR/DATADIR/INTERPRETERS`（`Config.executorEnv`）。executor 从进程环境读（`cli.Run` + `fileops.HostEnv`）；**instance 为空 = 异常**（`paths.SetTempRoot/TempRoot` 不再回落 `default`，返回 `ErrNoInstance`）。DSL env 去掉兼容别名 `WORKDIR`，**只允许 `{{env.<NAME>}}`**。
-- 构建产物当前 `chonkpilot-core-executor.exe` + `chonkpilot-dsl-executor.exe`（`dslexec` 编排执行器，`build-dsl-executor.ps1` 产出）落盘；desktop/browser 按需 `build-mcp-server.ps1` 产出。
+- 构建产物当前 `chonkpilot-core-executor.exe` + `chonkpilot-dsl-executor.exe`（`dslexec`，**`dsl_run` 工具执行体**，`build-dsl-executor.ps1` 产出）落盘；desktop/browser 按需 `build-mcp-server.ps1` 产出。
 
 ---
 

@@ -114,6 +114,8 @@
   "task_failed_suffix": " ({failed} failed)",
   "compressing": "Compressing context…",
   "llm_retry": "Retrying {attempt}/{max} (waiting {wait}s)...",
+  "llm_interrupted": "Server error. Continue?",
+  "continue_link": "Continue",
   "llm_error_retrying": "LLM error, retrying {attempt}/{max}...",
   "retry_count_label": "Retried {n}/{max} times",
   "error_detail_toggle": "Show error details",

@@ -125,3 +125,9 @@ ehthumbs.db
 /tools/
 # 外部参考材料（claude-ux 技能原文 / 各类提示词参考）：仅供本机取用，不入库
 /prompts-ref/
+
+# ── 14. 契约 embed 构建期副本（GATEWAY-2 C）────────────────────────────────
+# `src/lib/mcp-server/server/contracts/**` = 构建脚本从 src/initdata/capability 覆盖同步的
+# //go:embed 副本（唯一源在原处，不入库）；仅 `.gitkeep` 占位入库，保证 clean clone 可编译。
+/src/lib/mcp-server/server/contracts/*
+!/src/lib/mcp-server/server/contracts/.gitkeep

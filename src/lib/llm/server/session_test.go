@@ -164,14 +164,7 @@ func TestSessionContextSnapshot(t *testing.T) {
 	appendFull(t, st, "t1", ChatMsg{Role: "user", Kind: "text", Content: "已压缩的问题"})
 	appendFull(t, st, "t2", ChatMsg{Role: "user", Kind: "text", Content: "新问题"})
 	// 写快照（含 tool_calls / kind 往返）
-	toolCall := ToolCall{
-		ID:   "c1",
-		Type: "function",
-		Function: struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		}{Name: "core_file_read", Arguments: `{"x":1}`},
-	}
+	toolCall := ToolCall{ID: "c1", Name: "core_file_read", Arguments: `{"x":1}`}
 	if err := st.SetSnapshot("s1", []ChatMsg{
 		{Role: "user", Kind: "text", Content: "已压缩的问题"},
 		{Role: "assistant", Content: "已压缩的回答", ToolCalls: []ToolCall{toolCall}},

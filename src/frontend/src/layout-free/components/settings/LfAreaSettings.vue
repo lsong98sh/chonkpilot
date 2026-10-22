@@ -26,6 +26,24 @@
     <div v-else-if="node.type === 'split'" class="as-body">
       <template v-if="tab === 'basic'">
         <div class="as-group">
+          <div class="group-title">显示</div>
+          <div class="btn-row">
+            <button
+              class="lf-btn"
+              :class="{ primary: visible }"
+              v-mq:[EventNames.areaSetVisible].click="{ nodeId: node.id, visible: !visible }"
+            >
+              <LfIcon :name="visible ? 'eye' : 'eye-closed'" :size="13" />
+              {{ visible ? '显示中（点击隐藏）' : '已隐藏（点击显示）' }}
+            </button>
+          </div>
+          <p class="tip">隐藏 = 不显示、不参与尺寸分配；组件保持挂载，状态不丢（至少保留一个可见区域）。</p>
+          <label class="lock-row">
+            <input type="checkbox" :checked="node.hideLocked === true" @change="onHideLocked" />
+            不允许隐藏（父容器隐藏时仍会跟随隐藏）
+          </label>
+        </div>
+        <div class="as-group">
           <div class="group-title">背景色</div>
           <LfColorField :model="node.background ?? ''" @color="setBackground" />
           <p class="tip">空 = 跟随主题。容器背景渲染在子区域之下。</p>
@@ -140,6 +158,24 @@
           <p class="tip">空 = 跟随主题。</p>
         </div>
         <div class="as-group">
+          <div class="group-title">显示</div>
+          <div class="btn-row">
+            <button
+              class="lf-btn"
+              :class="{ primary: visible }"
+              v-mq:[EventNames.areaSetVisible].click="{ nodeId: node.id, visible: !visible }"
+            >
+              <LfIcon :name="visible ? 'eye' : 'eye-closed'" :size="13" />
+              {{ visible ? '显示中（点击隐藏）' : '已隐藏（点击显示）' }}
+            </button>
+          </div>
+          <label class="lock-row">
+            <input type="checkbox" :checked="node.hideLocked === true" @change="onHideLocked" />
+            不允许隐藏（父容器隐藏时仍会跟随隐藏）
+          </label>
+          <p class="tip">隐藏 = 不显示、不参与尺寸分配；组件保持挂载，状态不丢。</p>
+        </div>
+        <div class="as-group">
           <div class="lf-field">
             <label>区域标题（设计态显示；运行态不显示）</label>
             <input type="text" :value="node.title ?? ''" placeholder="例如：工作区" @input="onTitle" />
@@ -208,6 +244,10 @@
               <LfIcon name="lock" :size="13" /> 锁定为当前尺寸
             </button>
           </div>
+          <label class="lock-row">
+            <input type="checkbox" :checked="Number(node.flex) > 0" @change="onFlex" />
+            弹性：吃掉剩余空间（固定尺寸邻居不被拉伸）
+          </label>
           <p v-if="isFixed" class="warn">已锁定：该区域尺寸固定为 {{ minPx }} px，相邻分割条不可拖拽。</p>
         </div>
       </template>
@@ -385,6 +425,21 @@ const leafCount = computed(() => config.leaves.length)
 
 const kind = computed(() => regionKind(node.value))
 const tabPos = computed(() => tabPosition(node.value))
+/** 区域显隐（WIN-025）：`visible === false` = 隐藏 */
+const visible = computed(() => node.value?.visible !== false)
+/** 「不允许隐藏」标记（UILAYOUT-2） */
+function onHideLocked(e) {
+  const id = node.value?.id
+  if (!id) return
+  getMq().emit(EventNames.areaSetHideLocked, { nodeId: id, locked: e.target.checked })
+}
+
+/** 数值 / 弹性两态（UILAYOUT-2） */
+function onFlex(e) {
+  const id = node.value?.id
+  if (!id) return
+  getMq().emit(EventNames.areaSetFlex, { nodeId: id, flex: e.target.checked })
+}
 const kindText = computed(() => {
   const n = node.value
   if (!n) return '未选择'
@@ -652,6 +707,16 @@ function onTabs(next) {
   color: var(--lf-text-weak);
   line-height: 1.6;
   margin: 6px 0 0;
+}
+
+.lock-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--lf-text-weak);
+  cursor: pointer;
 }
 
 .desc {

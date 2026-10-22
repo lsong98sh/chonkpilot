@@ -15,7 +15,7 @@ import {
   resolveBarArray,
   resolveBarObject,
 } from '../config/config-normalize'
-import { createLayoutActions } from './config-layout-actions'
+import { createLayoutActions, hasVisibleLeaf } from './config-layout-actions'
 import { createBarActions } from './config-bar-actions'
 import { createDrawerActions } from './config-drawer-actions'
 
@@ -299,6 +299,12 @@ export const useConfigStore = defineStore('config', {
         ;(leaf.tabs ?? []).forEach((t, i) => checkView(t, `${where} 第 ${i + 1} 个标签页`))
       })
 
+      // 区域显隐（WIN-025 / UILAYOUT-2）：至少保留一个「有效可见」叶子
+      // （自身可见且所有祖先可见；容器隐藏时其子树不计入）
+      if (!hasVisibleLeaf(this.draft.layout)) {
+        errors.push('至少需要保留一个可见区域（全部隐藏时无法保存）。')
+      }
+
       this.draft.drawers.forEach((d) => {
         const where = `抽屉「${d.label}」`
         if (!['left', 'right', 'top', 'bottom'].includes(d.position)) errors.push(`${where} 的弹出位置不合法。`)
@@ -396,6 +402,11 @@ export const useConfigStore = defineStore('config', {
       this.dirty = false
       this.messages = []
       return { ok: true, errors: [] }
+    },
+
+    /** 只把草稿规范化为快照（不应用 / 不落盘）—— 布局档案保存用（WIN-026） */
+    snapshotDraft() {
+      return normalize(cloneTree(this.draft))
     },
 
     revert() {

@@ -1,7 +1,8 @@
-﻿# build-codegraph.ps1：构建并组装 chonkpilot-codegraph-mcp-server 独立部署目录
+# build-codegraph.ps1：构建并组装 chonkpilot-codegraph-mcp-server 独立部署目录
 #
 # 产物布局（dist/plugins/codegraph/，见 [41 D-28]）：
-#   └── chonkpilot-codegraph-mcp-server.exe   # 进程内 tree-sitter 索引 MCP server（console，CGO）
+#   ├── chonkpilot-codegraph-mcp-server.exe   # 进程内 tree-sitter 索引 MCP server（console，CGO）
+#   └── chonkpilot-codegraph-indexer.exe      # 常驻增量索引器（P5，GUI 子系统 + 托盘，CGO；单实例多 workdir）
 #
 # 源（D-28 src 结构）：`src/plugins/codegraph`（engine 本体；插件侧 = `src/plugins/plugin-codegraph`）。
 # 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop、
@@ -29,6 +30,13 @@ New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 # kill 运行中的旧实例，避免 exe 被占用
 Get-Process -Name "chonkpilot-codegraph-mcp-server" -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name "chonkpilot-codegraph-indexer" -ErrorAction SilentlyContinue | Stop-Process -Force
+foreach ($n in @("chonkpilot-codegraph-symbol-search-executor", "chonkpilot-codegraph-symbol-info-executor",
+        "chonkpilot-codegraph-callers-executor", "chonkpilot-codegraph-callees-executor",
+        "chonkpilot-codegraph-dependency-graph-executor", "chonkpilot-codegraph-circular-deps-executor",
+        "chonkpilot-codegraph-complexity-executor", "chonkpilot-codegraph-module-summary-executor")) {
+    Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force
+}
 
 Write-Host "==> build codegraph mcp-server (CGO console exe)"
 Push-Location $mod
@@ -37,6 +45,37 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "build failed" }
     $exe = Get-Item (Join-Path $dist "chonkpilot-codegraph-mcp-server.exe")
     Write-Host "    ok: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB)"
+} finally { Pop-Location }
+
+Write-Host "==> build codegraph resident indexer (P5；GUI/tray exe：启动隐藏 + 托盘输出窗口)"
+Push-Location $mod
+try {
+    go build -ldflags "-H windowsgui" -o (Join-Path $dist "chonkpilot-codegraph-indexer.exe") ./cmd/indexer
+    if ($LASTEXITCODE -ne 0) { throw "indexer build failed" }
+    $idxExe = Get-Item (Join-Path $dist "chonkpilot-codegraph-indexer.exe")
+    Write-Host "    ok: $($idxExe.Name) ($([math]::Round($idxExe.Length/1MB,1)) MB)"
+} finally { Pop-Location }
+
+# 查询工具「一工具一 exe」（G-68 第二步）：由 core-mcp-server 按契约 spawn；直接读落盘
+# bbolt 索引执行查询，不依赖插件常驻引擎。
+Write-Host "==> build codegraph query executors (一工具一 exe)"
+Push-Location $mod
+try {
+    foreach ($pair in @(
+            @("cmd/exec-symbol-search", "chonkpilot-codegraph-symbol-search-executor.exe"),
+            @("cmd/exec-symbol-info", "chonkpilot-codegraph-symbol-info-executor.exe"),
+            @("cmd/exec-callers", "chonkpilot-codegraph-callers-executor.exe"),
+            @("cmd/exec-callees", "chonkpilot-codegraph-callees-executor.exe"),
+            @("cmd/exec-dependency-graph", "chonkpilot-codegraph-dependency-graph-executor.exe"),
+            @("cmd/exec-circular-deps", "chonkpilot-codegraph-circular-deps-executor.exe"),
+            @("cmd/exec-complexity", "chonkpilot-codegraph-complexity-executor.exe"),
+            @("cmd/exec-module-summary", "chonkpilot-codegraph-module-summary-executor.exe"))) {
+        $pkg = $pair[0]
+        $exeName = $pair[1]
+        go build -o (Join-Path $dist $exeName) "./$pkg"
+        if ($LASTEXITCODE -ne 0) { throw "build $exeName failed" }
+        Write-Host "    ok: $exeName"
+    }
 } finally { Pop-Location }
 
 Write-Host "==> done. run (必须显式指定运行形态):"

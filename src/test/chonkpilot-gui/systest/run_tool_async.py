@@ -806,9 +806,11 @@ def case_awaiting_restore_dom():
          **复现**且带裁决按钮；
       2b) **任务区裁决条（I-103）**：`SessionTree.loadTreeFor` 并行读 `data-tasktree-tasks` →
          `SessionTreeNode` 对 `awaiting` 节点**直接渲染 `.node-awaiting` 裁决条**（**不依赖消息卡**，
-         这正是 I-103 修的点）→ 刷新后**仍可见且可操作**；
-      3) **操作证据（I-103）**：点击裁决条「取消」按钮 → 既有 `task-stop{task_id}` → 层行
-         `cancelled`（不留待裁决任务）。
+         这正是 I-103 修的点）→ 刷新后**仍可见且可操作**。
+         **去重口径**：若刷新后卡片裁决条已复现（`role=tool` 在飞行存在），`MessageList` 会
+         `clearAwaiting` → 节点条按设计让位；此时本用例改由卡片条承担取消动作，不再要求节点条。
+      3) **操作证据（I-103）**：点击裁决条「取消」按钮 → 既有 `task-stop`（节点条 = `{task_id}` /
+         卡片条 = `{tool_call_id}`，服务端均反查归一）→ 层行 `cancelled`（不留待裁决任务）。
 
     注：**「切会话」不适用作恢复触发**（实测：切会话重载消息时在飞工具卡 `toolpair-section`
     未从库重建 → 无卡片可挂；**刷新**才会重建卡片）——故本用例用**刷新**（与 I-57 口径一致）。
@@ -865,19 +867,28 @@ def case_awaiting_restore_dom():
 
     # 2b) I-103：任务区（SessionTree/SessionTreeNode）**直接按 awaiting 渲染裁决条** ——
     #     刷新后**仍可见且可操作**（不依赖消息卡；manual options=[detach,cancel] → 转异步 + 取消）。
-    bar = _wait_await_bar(max_wait=10)
-    print("    [I-103] 刷新后任务区裁决条 DOM: %s" % json.dumps(bar, ensure_ascii=False))
-    if not bar.get("found"):
-        raise TestError("刷新后任务区未渲染裁决条（.node-awaiting；I-103 未生效）: %s" % bar)
-    # 提示取节点标题（= mock 的 tool_call_display_name「转后台」）+ timeout_s 秒数（同工具行口径）。
-    if "转后台" not in (bar.get("text") or ""):
-        raise TestError("裁决条提示未含工具名（节点标题=转后台）: %r" % bar.get("text"))
-    if "1s" not in (bar.get("text") or ""):
-        raise TestError("裁决条提示未含超时秒数（timeout_s=%s）: %r" % (CALL_TIMEOUT_S, bar.get("text")))
-    if not bar.get("hasDetach"):
-        raise TestError("裁决条缺「转异步」按钮（manual options 含 detach）: %s" % bar)
-    if not bar.get("hasCancel"):
-        raise TestError("裁决条缺「取消」按钮（options 含 cancel）: %s" % bar)
+    #     **去重口径**（awaitingTaskBar.test.js「同一 tool_call_id 已有卡片 → 任务区节点条让位」）：
+    #     卡片裁决条存在时 MessageList.tryAttachArbitration 会 clearAwaiting → 节点条按设计不渲染。
+    #     故只有「卡片不存在」时才断言节点条；卡片存在时改由卡片条承担取消动作。
+    bar = None
+    bar_mode = "card" if dom.get("found") else "node"
+    if bar_mode == "node":
+        bar = _wait_await_bar(max_wait=10)
+        print("    [I-103] 刷新后任务区裁决条 DOM: %s" % json.dumps(bar, ensure_ascii=False))
+        if not bar.get("found"):
+            raise TestError("刷新后任务区未渲染裁决条（.node-awaiting；I-103 未生效）: %s" % bar)
+        # 提示取节点标题（= mock 的 tool_call_display_name「转后台」）+ timeout_s 秒数（同工具行口径）。
+        if "转后台" not in (bar.get("text") or ""):
+            raise TestError("裁决条提示未含工具名（节点标题=转后台）: %r" % bar.get("text"))
+        if "1s" not in (bar.get("text") or ""):
+            raise TestError("裁决条提示未含超时秒数（timeout_s=%s）: %r" % (CALL_TIMEOUT_S, bar.get("text")))
+        if not bar.get("hasDetach"):
+            raise TestError("裁决条缺「转异步」按钮（manual options 含 detach）: %s" % bar)
+        if not bar.get("hasCancel"):
+            raise TestError("裁决条缺「取消」按钮（options 含 cancel）: %s" % bar)
+    else:
+        print("    [I-103] 卡片裁决条已复现（%s）→ 任务区节点条按去重设计让位；取消动作走卡片条"
+              % dom.get("label"))
 
     # 3) 操作证据（I-103）：点击裁决条「取消」→ 既有 task-stop{task_id} → 层行 cancelled。
     #    若工具已自行完成（终态 done）→ 无待裁决任务（容忍，不失败）。
@@ -893,10 +904,19 @@ def case_awaiting_restore_dom():
     probe_install = _install_task_stop_probe(delay_ms=_delay_ms)
     print("    [I-106] task-stop 探针安装: %s（诊断延迟 %dms）" % (probe_install, _delay_ms))
     t_click = time.time()
-    click = _click_await_cancel()
-    print("    [I-103] 点击裁决条「取消」: %s" % click)
+    if bar_mode == "card":
+        # 卡片条「停止」= MessageItem 工具行 .background-btn.stop-btn（仲裁态显示 → task-stop{tool_call_id}）
+        click = _ev("""(function(){
+  const b=document.querySelector('.background-btn.stop-btn');
+  if(!b) return 'no-btn';
+  b.click(); return 'ok';
+})()""")
+    else:
+        click = _click_await_cancel()
+    print("    [I-103] 点击裁决条「取消」(%s): %s" % (bar_mode, click))
     if click != "ok":
-        raise TestError("点击任务区裁决条「取消」失败（DOM 未命中 .node-awaiting .await-btn-danger）: %s" % click)
+        raise TestError("点击裁决条「取消」失败（%s 路径未命中：node=.node-awaiting .await-btn-danger / "
+                        "card=.background-btn.stop-btn）: %s" % (bar_mode, click))
     t_snap = time.time()
     snap = _layer_node(sid, p["tool_call_id"], max_wait=0)  # 紧贴点击的第 1 次快照（仅证据）
     probe = _wait_task_stop_ack(max_wait=15)                 # 等 task-stop 回执（有界）
@@ -905,9 +925,9 @@ def case_awaiting_restore_dom():
 
     pr = (probe or {}).get("probe") or {}
     pl = pr.get("payload") or {}
-    if not pl.get("task_id"):
-        raise TestError("裁决条「取消」未发出有效 task-stop（载荷=%r；前端 onAwaitCancel 空 id 静默返回？）"
-                        % (pl,))
+    if not (pl.get("task_id") or pl.get("tool_call_id")):
+        raise TestError("裁决条「取消」未发出有效 task-stop（载荷=%r；%s 路径空 id 静默返回？）"
+                        % (pl, bar_mode))
     backend = ((pr.get("env") or {}).get("backend") or {})
     errs = backend.get("errors") or []
     if not backend.get("ok") or errs:

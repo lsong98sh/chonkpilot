@@ -50,16 +50,6 @@ type ToolAsyncOverride struct {
 	CancelOnTimeoutSet bool   `json:"-"`
 }
 
-// SandboxConfig 是 dir 节点 / self **共享的执行配置**窄接口（RB-2：依赖倒置，同 ExecSink 手法）：
-// gateway 只经它把 agentbox 沙箱开关（**管理单位 = 被 spawn 的执行体**）写入执行侧，
-// **不依赖具体 mcp-server 类型**。实现方 = 装配方持有的 mcp-server 执行配置
-// （方法签名与其 `SetToolSandbox` 一致）。
-//   - executors：内置 executor 开关（key = executor exe 基名）；
-//   - mcps：外部 MCP 开关（key = MCP 条目名）。
-type SandboxConfig interface {
-	SetToolSandbox(executors, mcps map[string]bool) bool
-}
-
 // toolOverrideState 保存覆盖表（读写锁保护；与 tools/list、doCall 并发读取）。
 type toolOverrideState struct {
 	mu sync.RWMutex
@@ -79,12 +69,13 @@ func (g *Gateway) SetAsyncOverrides(m map[string]ToolAsyncOverride) {
 }
 
 // SetSandboxOverrides 注入 agentbox 沙箱开关（**管理单位 = 被 spawn 的执行体**，
-// 2026-10-12 由 executor 类别重整），并写入共享执行配置（`SandboxConfig.SetToolSandbox`）。
+// 2026-10-12 由 executor 类别重整）。
 //
 //   - executors：内置 executor 开关（key = executor exe 基名）；
 //   - mcps：外部 MCP 开关（key = MCP 条目名，与 gateway stdio spawn 的 entry.Name 对应）。
 //
-// 语义：内置 executor 由 mcp-server callTool 按**解析后的 runtime exe 基名**查表（本表 executors）；
+// 语义：内置 executor 由执行侧（mcp-server 执行配置 / core-mcp-server）按其键位消费，
+// **装配方同时写入该配置**（L5：gateway 不再持有执行配置/能力源，只保留外部 MCP 连接侧）；
 // 外部 MCP 由本网关在 **stdio spawn 时按 entry.Name 查本表 mcps** 决定是否注入
 // `CHONKPILOT_SANDBOX`（允许目录仍来自 prj `security-*`，随 entry 快照）。**旧形态
 // （按 executor 类别 / usr `mcps[].sandbox`）读取时迁移（装配层 / 本网关），不再作开关来源**。
@@ -94,7 +85,6 @@ func (g *Gateway) SetSandboxOverrides(executors, mcps map[string]bool) {
 	g.tov.sandboxExecutors = executors
 	g.tov.sandboxMCPs = mcps
 	g.tov.mu.Unlock()
-	g.applySandboxToConfig()
 	// I-178：外部 MCP 的沙箱以**长连接子进程**为单位（sandboxOn 虽为实时回调，但仅在 spawn/重连时
 	// 读取）→ 开关**变化**时须主动作废受影响 MCP 的连接，下次调用即按新开关重连（即时生效）。
 	if changed := boolMapDiff(old, mcps); len(changed) > 0 {
@@ -189,7 +179,6 @@ func (g *Gateway) mergeLegacySandboxMCP(name string) {
 		g.tov.sandboxMCPs[name] = true
 	}
 	g.tov.mu.Unlock()
-	g.applySandboxToConfig()
 }
 
 // asyncOverride 取某暴露名的异步覆盖（未配置 → ok=false）。
@@ -253,19 +242,4 @@ func applyAsyncOverrideMeta(meta map[string]any, ov ToolAsyncOverride) {
 	if ov.Threshold > 0 {
 		meta["async-threshold"] = float64(ov.Threshold)
 	}
-}
-
-// applySandboxToConfig 把沙箱开关表写入**共享执行配置**（executors: key = exe 基名；mcps: key =
-// MCP 条目名；两者均为全局键位，无需按提供方归属归一）。
-// 无共享执行配置（独立 gateway / 单测）时无执行侧可施加，直接返回。
-func (g *Gateway) applySandboxToConfig() {
-	cfg := g.params.MCPConfig
-	if cfg == nil {
-		return
-	}
-	g.tov.mu.RLock()
-	ex := g.tov.sandboxExecutors
-	mc := g.tov.sandboxMCPs
-	g.tov.mu.RUnlock()
-	cfg.SetToolSandbox(ex, mc) // 空 → 清空（= 全部执行体不隔离）
 }

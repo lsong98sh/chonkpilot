@@ -762,7 +762,7 @@ function typeLabelT(tok) {
 // 类型目录下新建原语文件（项目 @mcp 与知识库(capability) 一致走 CreatePrimitive 契约模板）
 async function doCreateTypeFile(dirPath, tok) {
   if (!tok) return
-  const name = await promptInput(t('fileTree.new_of_type_prompt', { type: typeLabelT(tok) }), '')
+  const name = await promptInput(t('fileTree.new_of_type_prompt', { type: typeLabelT(tok) }), '', { maxlength: 128 })
   if (!name) return
   try {
     const res = await createPrimitive(dirPath, tok, name)

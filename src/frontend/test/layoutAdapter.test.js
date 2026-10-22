@@ -13,7 +13,7 @@
  */
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { register } from 'node:module'
@@ -26,7 +26,6 @@ register('./support/vue-sfc-hooks.mjs', import.meta.url)
 await new Promise((r) => setTimeout(r, 0))
 
 import { VIEW_DEFINITIONS, buildViewRegistry, definitionOf, hostOf } from '../src/layout/view-definitions.js'
-import { LAYOUT_MODE_FREE, LAYOUT_MODE_LEGACY, parseLayoutParam, resolveLayoutMode } from '../src/layout/mode.js'
 import { setLayoutTranslator } from '../src/layout/i18n.js'
 import mq from '../src/utils/mq.js'
 import { EventNames } from '../src/events/event-names.js'
@@ -47,7 +46,6 @@ const {
   createLayoutPersist,
   defaultLayoutDoc,
   extractFreeDoc,
-  migrateLegacyDoc,
   parseFreeDoc,
   toFreeString,
 } = await import('../src/layout/persist.js')
@@ -89,6 +87,7 @@ const BAR_VIEWS = [
   'memory-status',
   'compress-status',
   'lang-switcher',
+  'layout-profiles',
 ]
 /** 长任务详情 view（STB-1：preview 功能页；登记进注册表供 open-view 解析） */
 const DETAIL_VIEWS = ['status-memory', 'status-compress', 'status-index']
@@ -307,9 +306,10 @@ test('③ 默认文档：栏 / 自定义工具栏 / 抽屉非空，含编辑器�
     ...doc.toolbars.flatMap((t) => t.items),
   ]
   const flat = all.flatMap((it) => [it, ...(it.children ?? [])])
+  // 布局档案入口（UILAYOUT-2）：默认栏含 `layout-profiles` 栏视图条目
   assert.ok(
-    flat.some((it) => it.command?.type === 'publish-mq' && it.command.topic === 'lf-editor-open'),
-    '默认栏必须含「打开内容设置编辑器」的条目（lf-editor-open）',
+    flat.some((it) => it.kind === 'view' && it.viewKey === 'layout-profiles'),
+    '默认栏必须含「布局」档案下拉条目（layout-profiles）',
   )
   // 抽屉示例可开 / 关：含 toggle-drawer 命令
   assert.ok(
@@ -325,17 +325,20 @@ test('③ 默认文档：栏 / 自定义工具栏 / 抽屉非空，含编辑器�
   }
 })
 
-test('③ 旧 7 字段迁移：只承接尺寸类 4 项（显隐三键忽略，§3.9 更正注）', () => {
-  const withVisibility = migrateLegacyDoc({ filetreeOpen: false, taskOpen: false, chatOpen: false })
-  assert.deepEqual(withVisibility, migrateLegacyDoc({}), '三显隐键必须被忽略（三区已常显）')
-  const small = migrateLegacyDoc({ filetreeWidth: 100, chatWidth: 100, sessiontreeWidth: 100, filetreeHeight: 300 })
-  const big = migrateLegacyDoc({ filetreeWidth: 1200, chatWidth: 2000, sessiontreeWidth: 1200 })
-  // clamp 下界/上界生效（与既有 MainLayout 的阈值同源）
-  assert.equal(small.layout.children[0].children[0].children[0].maxWidth, 600)
-  assert.notDeepEqual(small.layout.sizes, big.layout.sizes, '尺寸类字段必须反映到占比')
-  // 结构不变（只有占比/尺寸不同）
-  const shape = (d) => JSON.stringify(d.layout, (k, v) => (k === 'sizes' ? undefined : k === 'id' ? undefined : v))
-  assert.equal(shape(small), shape(big))
+test('③ 默认文档：五区结构 + 默认栏 / 抽屉（legacy 迁移已删除）', () => {
+  const doc = defaultLayoutDoc()
+  // row [ column [ row[explorer|preview], row[session-tree|session-chat] ] | chat ]
+  const leftCol = doc.layout.children[0]
+  assert.equal(leftCol.children[0].children[0].view.viewKey, 'explorer')
+  assert.equal(leftCol.children[0].children[1].view.viewKey, 'preview')
+  assert.equal(leftCol.children[1].children[0].view.viewKey, 'session-tree')
+  assert.equal(leftCol.children[1].children[1].view.viewKey, 'session-chat')
+  assert.equal(doc.layout.children[1].view.viewKey, 'chat')
+  // 默认栏 / 抽屉齐备
+  assert.ok(doc.topToolbar.items.length > 0, '默认顶栏条目')
+  assert.ok(doc.statusbar.items.length > 0, '默认状态栏条目')
+  assert.ok(doc.drawers.length > 0, '默认抽屉示例')
+  assert.equal(doc.version, DOC_VERSION)
 })
 
 test('③ parseFreeDoc / extractFreeDoc：合法解析、非法回落 null（§6 不静默丢库）', () => {
@@ -390,35 +393,30 @@ test('③ createLayoutPersist：save 写 `{free}` 子键（零新增字段名）
   assert.equal(await createLayoutPersist().load(), null, '未注入 load → null')
 })
 
-test('③ 落库形状守卫：persist.js 不含三显隐键、只读尺寸类旧字段', () => {
+test('③ legacy 清理守卫：persist.js 不含旧尺寸 / 显隐键与迁移函数', () => {
   const src = CODE('layout/persist.js')
-  for (const k of ['filetreeOpen', 'taskOpen', 'chatOpen']) {
-    assert.doesNotMatch(src, new RegExp(k), `${k} 已失去语义，不得出现在迁移里（§3.9 更正注）`)
-  }
-  for (const k of ['filetreeWidth', 'filetreeHeight', 'chatWidth', 'sessiontreeWidth']) {
-    assert.match(src, new RegExp(k), `尺寸类字段 ${k} 须承接`)
+  for (const k of [
+    'filetreeWidth',
+    'filetreeHeight',
+    'chatWidth',
+    'sessiontreeWidth',
+    'filetreeOpen',
+    'taskOpen',
+    'chatOpen',
+    'migrateLegacyDoc',
+  ]) {
+    assert.doesNotMatch(src, new RegExp(k), `${k} 已随 legacy 删除（UILAYOUT-2-A）`)
   }
 })
 
-/* ═══════════════ ④ 布局形态判定（§3.9 / §3.13） ═══════════════ */
+/* ═══════════════ ④ 形态唯一化（UILAYOUT-2-A：legacy 已删除） ═══════════════ */
 
-test('④ parseLayoutParam：只认 legacy|free，其它忽略', () => {
-  assert.equal(parseLayoutParam('?layout=legacy'), LAYOUT_MODE_LEGACY)
-  assert.equal(parseLayoutParam('?layout=free'), LAYOUT_MODE_FREE)
-  assert.equal(parseLayoutParam('?layout=nope'), '')
-  assert.equal(parseLayoutParam('?other=1'), '')
-  assert.equal(parseLayoutParam(''), '')
-  assert.equal(parseLayoutParam(), '')
-})
-
-test('④ resolveLayoutMode：默认 free；`?layout=legacy` 回退旧分支（P4⑤ 裁决 3）', () => {
-  assert.equal(resolveLayoutMode({ forced: '' }), LAYOUT_MODE_FREE)
-  assert.equal(resolveLayoutMode({}), LAYOUT_MODE_FREE)
-  assert.equal(resolveLayoutMode({ forced: 'free' }), LAYOUT_MODE_FREE)
-  assert.equal(resolveLayoutMode({ forced: 'legacy' }), LAYOUT_MODE_LEGACY)
-  assert.equal(resolveLayoutMode({ forced: 'legacy', hasFreeDoc: true }), LAYOUT_MODE_LEGACY)
-  assert.equal(resolveLayoutMode({ forced: '', hasFreeDoc: true }), LAYOUT_MODE_FREE)
-  assert.equal(resolveLayoutMode({ forced: 'legacy', hasFreeDoc: false }), LAYOUT_MODE_LEGACY)
+test('④ legacy 已删除：mode.js 不存在、`?layout` 不再影响形态', () => {
+  assert.equal(existsSync(join(HERE, '..', 'src', 'layout', 'mode.js')), false, 'mode.js 必须已删除')
+  const ml = CODE('views/layout/MainLayout.vue')
+  for (const k of ['legacy', 'freeMode', 'layoutForced', 'resolveLayoutMode', 'LAYOUT_MODE', 'parseLayoutParam']) {
+    assert.doesNotMatch(ml, new RegExp(k), `MainLayout 不得残留 ${k}`)
+  }
 })
 
 /* ═══════════════ ⑤ 装配落点与主题（§3.10 / P3④⑤） ═══════════════ */
@@ -438,31 +436,17 @@ test('⑤ main.js：theme.css 在宿主 global.css 之后；引擎装配在 pini
   assert.match(main, /import \{ setupLayoutEngine \} from '\.\/layout'/)
 })
 
-test('⑤ MainLayout：双分支（容器 / 旧布局），旧渲染路径保留可回退；free 形态顶栏 / 状态栏条目化', () => {
+test('⑤ MainLayout：唯一容器形态（legacy 分支已删除）', () => {
   const ml = SRC('views/layout/MainLayout.vue')
-  assert.match(ml, /<ChonkLayout v-if="freeMode" \/>/, '容器装配点')
-  assert.match(ml, /<SplitPanel v-else direction="horizontal"/, '旧布局分支必须保留（可回退/对比）')
-  assert.match(ml, /const freeMode = ref\(layoutForced !== LAYOUT_MODE_LEGACY\)/, 'P4⑤：默认 free')
-  assert.match(ml, /resolveLayoutMode\(\{ forced: layoutForced \}\)/, 'P4⑤：形态判定不再依赖 hasFreeDoc')
-  assert.match(ml, /applyFreeLayout\(r\[GuiInitDataKeys\.layout\] \|\| null\)/, '启动恢复走 init-data')
-  assert.match(ml, /import ChonkLayout from '\.\.\/\.\.\/layout\/ChonkLayout\.vue'/)
-  // P4①：free 形态顶栏 / 状态栏由条目化外壳渲染（legacy 分支保留原组件）
-  assert.match(ml, /<ChonkTopBar v-if="freeMode" \/>/, 'free 形态顶栏外壳')
-  assert.match(ml, /<ChonkStatusBar v-if="freeMode" \/>/, 'free 形态状态栏外壳')
-  assert.match(ml, /<Toolbar v-else \/>/, 'legacy 顶栏保留')
-  assert.match(ml, /<StatusBar v-else \/>/, 'legacy 状态栏保留')
+  assert.match(ml, /<ChonkLayout \/>/, '容器装配点')
+  assert.match(ml, /<ChonkTopBar \/>/, '顶栏外壳')
+  assert.match(ml, /<ChonkStatusBar \/>/, '状态栏外壳')
   assert.match(ml, /<LfDrawerHost \/>/, '容器运行期外壳：具名抽屉')
   assert.match(ml, /<LfContentSettingsDialog \/>/, '容器运行期外壳：内容设置编辑器')
-  // 自由形态不写旧 7 字段（尺寸落 layout.free）
-  const deb = ml.match(/function saveLayoutDebounced\(\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(deb, '未找到 saveLayoutDebounced')
-  assert.match(deb[0], /if \(freeMode\.value\) return/, '自由形态不得回写旧尺寸字段')
-  // beacon 兜底按形态投递
+  assert.match(ml, /<LfViewPool \/>/, '运行时视图池（WIN-027）')
+  assert.match(ml, /applyFreeLayout\(r\[GuiInitDataKeys\.layout\] \|\| null\)/, '启动恢复走 init-data')
+  // beacon 兜底投递 layout.free
   assert.match(ml, /\{ free: toFreeString\(/)
-  // 既有口径未被破坏（P2 收尾成果）
-  assert.match(ml, /\{ id: 'chat', size: effChatWidth\.value, min: 280, max: 800 \}/)
-  assert.match(ml, /visible: !narrow\.value/)
-  assert.doesNotMatch(CODE('views/layout/MainLayout.vue'), /(chatOpen|filetreeOpen|taskOpen)/, '三区显隐须保持已移除')
 })
 
 test('⑤ 主题映射与去重：--lf-* → 宿主 token；机制层不再声明宿主级全局规则', () => {

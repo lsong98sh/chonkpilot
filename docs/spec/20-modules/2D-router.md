@@ -14,13 +14,13 @@
   - 统一 canonical 请求 / 响应 / 事件类型与错误分类（`internal/canon` 定义，根包别名再导出）；
   - Provider 注册表（`Register` / `Unregister` / `Reconcile`）与协议适配器表；
   - 一次 `Call` 的**全生命周期**：编码 → 发送（HTTP）→ 流式读取 → 解析 → 出事件；**持有连接生命周期**；
-  - **连接层透明重试**（≤1 次；判据见 §4/§5）；
+  - **报文级重试**（RETRY-2）：`CallOptions.MaxRetries` 为 nil → 旧行为（仅 `network` 透明重发 ≤1 次）；设置后按 `Emitted` + `Kind`/`Phase` 分流、预算归一化退避、`Observer` 非阻塞上报（判据见 §4/§5）；
   - 协议实现：`openai`（chat completions）· `responses`（OpenAI Responses API）· `anthropic`（`/v1/messages`）· `echo`（内置兜底）。
 - **不做**（边界，防职责蔓延）：
   - **无状态**：不出现轮次（turn）/ 会话（session）概念 —— 无历史管理、上下文拼接、工具循环、子 LLM 调度（全归 [21-llm-server](21-llm-server.md) 编排）；
   - **只做出网（LLM）**：工具执行 / 注册 / 清单归 gateway，本包只接收 `[]ToolDef`；
   - **不访问 data**：`data.ChatMsg` ↔ canonical 的薄转换落在 llm 侧（`src/lib/llm/server/routerconv.go`）；
-  - **不做「需要决策或可见的重试」**：超时 / 已输出后失败 / 上报「重试中」/ cancel / 次数用尽处置全归 llm；
+  - **不做语义级重试**：已输出内容后的续写 / cancel / 续写宽限期全归 llm；本层只做「原样重发」，`Observer` 只上报、不承载 UI 决策；
   - 形态 = **纯 lib**（无 facade / 无 MQ / 无 DB / 无 exe，与 `src/lib/core/dsl` 同类）。
 
 ---
@@ -91,15 +91,21 @@ Call(ctx, req)
  │    └─ Provider=="" 或 =="echo" → spec=builtinFallback, ad=adapters["echo"]
  ├─ 前置校验：未注册 provider / 协议无适配器 → 返回 *Error{invalid}（不返回通道）
  ├─ Options.Model 空 → 回落 Spec.DefaultModel
- └─ 起 goroutine（defer close(out)）：
-      loop attempt=0,1,…：
-        (emitted, err) = attemptOnce(ctx, ad, spec, req, out)
-        err==nil → return
-        若 emitted==0 且 attempt<1 且 err.Kind==network 且 ctx 未取消：
-             sleepCtx(300ms)（被取消 → 收手）→ continue（透明重发）
-        ctx 已取消 → return（不投错误事件）
-        否则投一条 Event{Type: error, Err: err} → return
+ └─ 起 goroutine（defer close(out)）：runWithRetries
+      MaxRetries == nil（legacy，llm-simple / prompt-optimise）：
+        (emitted, err) = attemptOnce(...)
+        emitted==0 且 attempt<1 且 err.Kind==network → sleepCtx(300ms) → 重发
+        否则投 Event{error} → return
+      MaxRetries != nil（configured，llm turn）：
+        (emitted, err) = attemptOnce(...)
+        emitted>0 → 永不重发（投 error）
+        次数用尽 / stream 阶段硬帽已用 → 投 error
+        policy.Decide(rc) → 不可重试 → 投 error
+        wait > 剩余预算 → 投 error（不缩短等待）
+        Observer.OnRetry(rc, wait) → sleepCtx(wait) → budget -= wait → 重发
 ```
+
+**重试矩阵（configured）**：`Kind` 优先，`network`/`timeout` 再看 `Phase`（`dial` / `first_byte` / `stream`）；`rate_limit` / `server` 按次数重试；`auth` / `protocol` / `invalid` 直接终态；`stream` 阶段最多重发 1 次（占用 `retryCount` 名额）。
 
 ### 4.2 `attemptOnce`（`retry.go`）
 
@@ -132,24 +138,27 @@ Stream(ctx, spec, req, out)
 
 ## 5. 失败态
 
-### 5.1 错误分类（`Error{Kind, Message, Retryable, Status, RetryAfter}`）
+### 5.1 错误分类（`Error{Kind, Message, Retryable, Status, RetryAfter, Phase}`）
 
-| Kind | 触发 | 可重试 | 归属 |
+| Kind | 触发 | 可重试 | 归属（RETRY-2） |
 |------|------|:------:|------|
-| `network` | 连接失败 / 重置 / 断链 / SSE `ErrTruncated` 半包 | ✅ | router 透明重试 ≤1；余归 llm |
-| `timeout` | 首字节 / 流间隔超时 | ✅ | **llm 决策**（router 不透明重发） |
-| `rate_limit` | 429 | ✅ | llm 决策（退避取 `RetryWait`） |
-| `server` | 5xx | ✅ | llm 决策 |
+| `network` | 连接失败 / 重置 / 断链 / SSE `ErrTruncated` 半包 | ✅ | **router**：`dial`/`first_byte` ≤`retryCount`；`stream` ≤1 次（`Emitted==0`） |
+| `timeout` | 首字节 / 流间隔超时 | ✅ | **router**：同 `network`（按 `Phase` 分流；`stream` 超时也计 1 次硬帽） |
+| `rate_limit` | 429 | ✅ | **router**：≤`retryCount`，`Retry-After` 优先 |
+| `server` | 5xx | ✅ | **router**：≤`retryCount` |
 | `auth` | 401 / 403 | ❌ | 直接透出 |
 | `protocol` | 解析失败 / 其余 4xx / 非 4xx5xx 异常 | ❌ | 直接透出 |
 | `invalid` | 调用方用法错误（未注册 provider / 空 Name·Protocol / adapter nil / 硬降级） | ❌ | 前置校验，不经 HTTP |
 
 - `KindFromStatus`：401/403 → auth；429 → rate_limit；5xx → server；其余 → protocol。
-- `RetryWait(err, attempt)`（根包）：`Retry-After` 优先，否则指数退避 1s·2s·4s… 封顶 30s；不可重试 / nil → 0。
+- `Phase`：`dial`（连接未建立）/ `first_byte`（未收首字节，含首字节超时）/ `stream`（已开始收流）；空值按 `stream` 保守处理。
+- `RetryWait(err, attempt)`（根包，保留兼容）：`Retry-After` 优先，否则指数退避 1s·2s·4s… 封顶 30s；**router 内部默认改用 `DefaultPolicy`（预算归一化）**，`RetryWait` 仅供旧调用方 / 单测。
 
-### 5.2 透明重试的唯一判据
+### 5.2 重试判据
 
-**仅当「尚未向上层输出过任何事件」（`emitted == 0`）且失败属连接层（`network`）** 才透明重发 ≤1 次（毫秒级退避 300ms）。一旦已投出任何事件（哪怕一个 `text_delta`）→ 立即透出错误，**绝不重发**。超时 / 429 / 5xx 一律交 llm。
+- **唯一硬判据**：`Emitted == 0` 才允许重发；已向上层投出任何事件（哪怕一个 `text_delta`）→ 立即透出错误，**绝不重发**。
+- **预算**：`Budget`（默认 60s，`<0` = 关闭）按 2 倍指数权重归一化：`k = Budget / (2^N - 1)`，第 i 次等待 `k × 2^(i-1)`；只累加等待时间；`Retry-After` 从剩余预算扣减，不足则直接终态（不缩短等待）。
+- `Observer` 同步调用（实现方必须非阻塞），panic 被 recover，不影响决策。
 
 ### 5.3 声明式降级（`adaptor.Degrade`）
 
@@ -174,15 +183,24 @@ Stream(ctx, spec, req, out)
 ## 6. 依赖与边界
 
 - **上游依赖**：仅标准库 + 自身 `internal/{canon,adaptor}`。**零本仓库其它 module 依赖**（同 `dsl` 类）。
-- **下游消费方**：`src/lib/llm/server`（经 `routerconv.go` 折算消息、`routercall.go` 注册/对账/调用、`llm_testconn.go` 探活、`turn.go` 保留可视重试循环）；`gui` / `server` / `desktop` 经 llm 间接依赖（Go `replace` 不跨 module 传递，各 module 自行 `require` + `replace ../router`）。
+- **下游消费方**：`src/lib/llm/server`（经 `routerconv.go` 折算消息、`routercall.go` 注册/对账/调用、`llm_testconn.go` 探活、`turn.go` 传 `MaxRetries`/`RetryBudget`/`RetryObserver` 并实现 `OnRetry` 发布 `llm-retry`）；`gui` / `server` / `desktop` 经 llm 间接依赖（Go `replace` 不跨 module 传递，各 module 自行 `require` + `replace ../router`）。
 - **接口不引入 Provider 标识符**：本包用 `Spec` 表示 LLM 服务商；gateway `Provider` = 工具提供方（同名异义）。
+
+---
+
+### 6.1 MOD-1：传输层边界与宿主 adapter（2026-10-20）
+
+- **职责只有报文级**：协议编解码 / SSE 流解析 / 连接与双超时 / 错误分类 / **报文级重试**（次数 · 预算 · 退避 · `Emitted==0` 判据）——即「同一份报文能不能原样再发一次」。
+- **可见重试事件归宿主**：router 只经非阻塞 `CallOptions.Observer.OnRetry` 上报（`RetryContext` / `wait`）；宿主适配器 `src/lib/llm/server/chatshadow.go` 的 `chatLLMClient` 把 `StepOptions.OnRetry` 折成引擎事件 `EventLLMRetry` → `chatEventSink` 发既有 `llm-retry`（前端 `session-retry`），**payload 与现状一致**。router 不决定是否让用户可见、不决定续写。
+- **不感知 chat / gateway / MQ**：router 零 turn/session 概念、零工具执行、零 MQ 主题；chat 的 `LLMClient.Step` 端口与 router 的 `Call` 之间的类型互转只在宿主（`routerconv.go` / `chatshadow.go`）。
+- **边界断言**：`src/lib/router/deps_test.go`（`TestDepsPureLib`）以 `go list -deps` 断言 router 依赖图不含 `chonkpilot-lib/mq` · `msgkeys` · `chonkpilot-mcp-gateway/gateway` · `chonkpilot-llm`；模块内两两无 import 由此固化。
 
 ---
 
 ## 7. 现状与待办
 
 - ✅ 已实施：canonical 类型、注册/分派、四协议实现、SSE/共用件、增量聚合、usage 归一、声明式降级、错误分类与退避值、`llm` 接线。
-- ✅ **`router.RetryWait` 已接线**：llm 可视重试经 `RetryWait(err, attempt)` 取退避（`Retry-After` 优先 + 指数退避），`RetryAfter` 由 `routercall.go` `mapRouterError` 透传；llm **不再自持 `retryDelay`**（该配置项已整体移除），`retryCount` 次数语义不变。
+- ✅ **报文级重试已下沉 router（RETRY-2，2026-10-20）**：`CallOptions.MaxRetries/Budget/Policy/Observer`；`Error.Phase` 由适配器标注；llm 侧删除可见重试循环与 `probeBeforeRetry`，只实现 `OnRetry` 发布 `session-retry`（前端 `llm-retry`）。`MaxRetries == nil` 的调用方（`llm-simple` / `prompt-optimise` / 探活）行为不变。
 - 已知线格式差异（事件语义不变）：恒带 `stream_options.include_usage`；上限字段按模型择一（`max_completion_tokens`）；无参工具补空 schema；空文本图消息省略空文本块；非 2xx 错误串按 JSON 取值。
 
 ---
@@ -191,7 +209,7 @@ Stream(ctx, spec, req, out)
 
 **L1 白盒（`src/lib/router/**`，仅此层，无 L2/L3/L4 专门套件）**：
 
-- 根包：`router_test.go`（注册/分派/`Call` 契约/能力/内置 echo 回落/透明重试 5 例/并发）· `reconcile_test.go`（Add/增量/Remove/Failed/同名后者胜）· `error_test.go`（Kind↔Retryable / 状态码映射 / `ToError` / `RetryWait`）· `alias_test.go`。
+- 根包：`router_test.go`（注册/分派/`Call` 契约/能力/内置 echo 回落/透明重试 5 例/并发）· `retry_config_test.go`（RETRY-2：429 重试+预算权重、Emitted>0 不重发、stream 硬帽、dial 次数、显式 0、Observer panic 隔离、预算门槛、auth 不重试、DefaultPolicy 权重）· `reconcile_test.go` · `error_test.go`（Kind↔Retryable / 状态码映射 / `ToError` / `RetryWait`）· `alias_test.go`。
 - `internal/adaptor`：`sse_test.go`（多行/注释心跳/空白/CRLF/半包/截断）· `exchange_test.go`（SSE 泵与单发 JSON）· `errors_test.go`（状态码/Retry-After/传输错误/流内 error）· `toolcall_test.go` · `usage_test.go` · `degrade_test.go` · `fixture_test.go`（`testdata/*.sse.json` 金样本）。
 - `internal/adaptor/openai`：`openai_test.go`（编码/上限字段/SSE 映射/无 `[DONE]`/按 index 工具/截断/非 SSE 体/错误分类）· `responses_test.go`（Responses 全链）。
 - `internal/adaptor/anthropic`：`anthropic_test.go`（编码/签名往返/`max_tokens` 必填/thinking 与采样互斥/端点拼接/校验/流映射/无 `message_stop`/流内错误/HTTP 分类）。

@@ -156,6 +156,9 @@ func (l *Layer) OnExecState(ev ExecState) {
 	}
 	rec := l.execTarget(&ev)
 	if rec == nil {
+		l.logf("task: 执行态未命中节点（phase=%s gw=%s tool_call_id=%s top_session=%s）",
+			ev.Phase, ev.GWTaskID, ev.ToolCallID, ev.TopSession)
+		l.stashPendingExec(ev) // 节点可能稍后才登记（如 dsl_run 作业根）→ 登记时补绑
 		l.buildExecNode(&ev, string(detail))
 		return
 	}
@@ -206,7 +209,7 @@ func (l *Layer) execTarget(ev *ExecState) *Record {
 			return rec
 		}
 	}
-	id := l.matchParentByToolCall(ev.ToolCallID)
+	id := l.matchParentByToolCallScoped(ev.ToolCallID, ev.InstanceID, ev.TopSession)
 	if id == "" {
 		return nil
 	}
@@ -216,6 +219,49 @@ func (l *Layer) execTarget(ev *ExecState) *Record {
 	}
 	l.bindExec(id, ev.GWTaskID, rec) // 补登记映射：后续执行态 / 完成回报直接命中
 	return rec
+}
+
+// pendingExecLimit 限制 pendingExecs 容量（防「始终无节点登记」的执行态永久累积；超限丢最早键）。
+const pendingExecLimit = 256
+
+// stashPendingExec 暂存「未命中已登记节点」的 started 执行态（tool_call_id 为键）：
+// 长跑执行（如 dsl_run 作业根在 spawn 后才由上报器建节点）在节点登记前拿不到 exec 句柄，
+// 若不暂存 → 完成前 task-stop 无法下发执行侧取消。
+func (l *Layer) stashPendingExec(ev ExecState) {
+	if ev.Phase != ExecPhaseStarted || ev.ToolCallID == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.pendingExecs) >= pendingExecLimit {
+		for k := range l.pendingExecs {
+			delete(l.pendingExecs, k)
+			break
+		}
+	}
+	l.pendingExecs[ev.ToolCallID] = ev
+}
+
+// bindPendingExec 节点登记后补绑「早于登记到达」的执行态：先补 exec 映射，再以同一执行态
+// 重走 OnExecState（此时按 exec 映射命中节点 → 状态 / exec_json 按既有规则合并落库）。
+// **不持 mu**（OnExecState 会走数据面 IO）。
+func (l *Layer) bindPendingExec(rec *Record) {
+	if rec == nil || rec.ToolCallID == "" {
+		return
+	}
+	l.mu.Lock()
+	ev, ok := l.pendingExecs[rec.ToolCallID]
+	if ok {
+		delete(l.pendingExecs, rec.ToolCallID)
+	}
+	l.mu.Unlock()
+	if !ok {
+		return
+	}
+	l.bindExec(rec.TaskID, ev.GWTaskID, rec)
+	l.setExecProviderKey(rec.TaskID, ev.ProviderKey)
+	l.logf("task: 节点登记后补绑执行态: task=%s gw=%s", rec.TaskID, ev.GWTaskID)
+	l.OnExecState(ev)
 }
 
 // llmNodeByExec 由 gateway 执行 id 反查 llm 节点 id（**自持 mu**；exec 映射反向查找；未登记 → 空）。
@@ -286,7 +332,7 @@ func (l *Layer) buildExecNode(ev *ExecState, execJSON string) {
 		State: state, ExecJSON: execJSON,
 		CreatedAt: ev.At, StartedAt: ev.At, UpdatedAt: ev.At,
 	}
-	if pid := l.matchParentByToolCall(rec.ToolCallID); pid != "" {
+	if pid := l.matchParentByToolCallScoped(rec.ToolCallID, rec.InstanceID, rec.TopSession); pid != "" {
 		rec.ParentID = pid
 		l.logf("task: 执行态建节点：按 tool_call_id 匹配到已登记节点作为父 task_id=%s tool_call_id=%s parent=%s",
 			rec.TaskID, rec.ToolCallID, pid)

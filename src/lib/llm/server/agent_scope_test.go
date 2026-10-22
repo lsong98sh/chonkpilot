@@ -24,10 +24,9 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
 )
 
-// gatewayToolName 按后缀定位 gateway 工具面中的**暴露名**（如 mcp_invoke → self_mcp_invoke）。
+// gatewayToolName 按后缀定位 gateway 工具面中的**暴露名**（如 tool_stop → self_tool_stop）。
 func gatewayToolName(t *testing.T, s *Server, suffix string) string {
 	t.Helper()
 	for _, d := range s.gc.Tools() {
@@ -35,48 +34,8 @@ func gatewayToolName(t *testing.T, s *Server, suffix string) string {
 			return d.Name
 		}
 	}
-	t.Fatalf("工具 %q 未在 gateway 工具面（meta 工具未注入？）", suffix)
+	t.Fatalf("工具 %q 未在 gateway 工具面", suffix)
 	return ""
-}
-
-// gatewayToolText 经 gwClient 调一个 gateway 工具（暴露名按后缀定位，如 self_mcp_find）→ 结果文本。
-func gatewayToolText(t *testing.T, s *Server, instance, tool string, args map[string]any) string {
-	t.Helper()
-	name := gatewayToolName(t, s, tool)
-	res, _, err := s.gc.Call(context.Background(), name, args, mcpgateway.Context{InstanceID: instance})
-	if err != nil {
-		t.Fatalf("调用 %s: %v", name, err)
-	}
-	return resultTextFromMap(res)
-}
-
-// TestScenarioSubAgentNotRegistered（25 §5/T2，2026-09-25）：agent 只"注入"不"注册" ——
-// 场景子 agent **不**进入资产检索面：mcp_find(type=agent) 与 mcp_load(kind=agent) 明确报错，
-// mcp_find(type=all) 结果不含场景子 agent（旧 G-45 ②「注入资产目录使其可发现」已整体撤除）。
-func TestScenarioSubAgentNotRegistered(t *testing.T) {
-	_, srv := newProviderServer(t)
-	s := newTestServerMCP(t, srv)
-	registerTestInstance(t, s) // instance-register：数据层绑定 + capability 根（场景落盘/读取）
-
-	agSaveScenario(t, s, "disc-a", []any{
-		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
-		agSubAgent("scout-a", "侦察提示词甲", map[string]any{"description": "甲探测", "roleTag": "侦察"}),
-	})
-	agStartTurn(t, s, "s-disc-a1", "t-disc-a1", "", "disc-a")
-	sendAndWait(t, s, "s-disc-a1", "t-disc-a1", "hello")
-
-	// ① mcp_find(type=agent)：agent 已移出 LLM 检索面 → 明确报错
-	if txt := gatewayToolText(t, s, "ins-test", "mcp_find", map[string]any{"type": "agent"}); !strings.Contains(txt, "unknown type") {
-		t.Fatalf("mcp_find(type=agent) 应报 unknown type，got %q", txt)
-	}
-	// ② mcp_find(type=all)：不含场景子 agent（未注册资产）
-	if txt := gatewayToolText(t, s, "ins-test", "mcp_find", map[string]any{"type": "all"}); strings.Contains(txt, "scout-a") {
-		t.Fatalf("场景子 agent 不应出现在 mcp_find(type=all)（不注册资产）：%q", txt)
-	}
-	// ③ mcp_load(kind=agent)：kind 已收敛为 tool|skill|resource → 明确报错
-	if txt := gatewayToolText(t, s, "ins-test", "mcp_load", map[string]any{"kind": "agent", "name": "scout-a"}); !strings.Contains(txt, "unknown kind") {
-		t.Fatalf("mcp_load(kind=agent) 应报 unknown kind，got %q", txt)
-	}
 }
 
 // toolResultText 读某会话内一次工具调用的 role=tool 结果文本（未落库 → 失败）。
@@ -183,116 +142,11 @@ func TestToolWhitelistHardReject(t *testing.T) {
 	}
 }
 
-// TestMCPInvokeWhitelistBypassBlocked（项 5a，2026-09-25）：mcp_invoke **旁路加固** —— 白名单
-// 非空时，经 mcp_invoke 转调的**目标工具**也必须落在同一白名单内，否则在分发前拒绝
-// （不落 gateway、不建任务节点 = 未真正执行）；目标在白名单内 → 放行；`[]` = 不限制；
-// 主 agent（未配 tools）不受影响。
-func TestMCPInvokeWhitelistBypassBlocked(t *testing.T) {
-	// mock LLM：首回合发 `self_mcp_invoke{name: <目标>, arguments:{id: preNodeID, timeout:0}}`
-	// （经 meta 工具转调目标工具）；拿到 tool 结果后收尾。
-	// 暴露名在 server 起来后才可确定（gateway 注入前缀）→ 经闭包变量回填。
-	var invokeName, targetName, preNodeID string
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Messages []ChatMsg `json:"messages"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		hasToolResult := false
-		for _, m := range body.Messages {
-			if m.Role == "tool" {
-				hasToolResult = true
-			}
-		}
-		if !hasToolResult {
-			args := jb(map[string]any{
-				"name":      targetName,
-				"arguments": map[string]any{"id": preNodeID, "timeout": 0},
-			})
-			llmSSE(w, []string{
-				sseChunk(map[string]any{"content": ""}, ""),
-				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
-					"index": 0, "id": "tc-inv", "type": "function",
-					"function": map[string]any{"name": invokeName, "arguments": string(args)},
-				}}}, "tool_calls"),
-			})
-			return
-		}
-		llmSSE(w, []string{
-			sseChunk(map[string]any{"content": "收尾"}, ""),
-			sseChunk(map[string]any{}, "stop"),
-		})
-	}))
-	defer llm.Close()
-
-	s := newTestServerMCP(t, llm)
-	registerTestInstance(t, s)
-	invokeName = gatewayToolName(t, s, "mcp_invoke")
-	targetName = gatewayToolName(t, s, "tool_result")
-
-	// 预建已终态任务节点：目标工具被放行时经 mcp_invoke 取回其摘要（= 「真正执行」的可观测证据）。
-	pre, err := s.tasks.start(&TaskNode{
-		Tool: "tool_result", Kind: TaskKindTool, SessionID: "s-inv", TurnID: "t-inv",
-		InstanceID: "ins-test", TopSession: "s-inv", Name: "pre", Purpose: "p",
-	})
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	preNodeID = pre.TaskID
-	s.tasks.done(pre.TaskID, TaskStateDone, "旁路放行结果", "")
-
-	agSaveScenario(t, s, "ag-inv", []any{
-		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
-		// 白名单只含 mcp_invoke → 目标工具在白名单外（旁路场景）
-		agSubAgent("sub-bypass", "子", map[string]any{"tools": []string{invokeName}}),
-		// 白名单同时含 mcp_invoke 与目标工具 → 转调放行
-		agSubAgent("sub-target-ok", "子", map[string]any{"tools": []string{invokeName, targetName}}),
-		// `[]` = 不限制
-		agSubAgent("sub-free", "子", map[string]any{"tools": []string{}}),
-	})
-	parentReq := StartReq{InstanceID: "ins-test", Session: "s-inv", Turn: "t-inv", ScenarioID: "ag-inv"}
-
-	// ① 白名单外目标工具 → 拒绝执行：**旁路加固专属文案**（"目标工具"，区别于 ③ 的直接调用拒
-	// 绝文案 —— 证明拒绝来自本加固而非既有 toolAllowed 判定）+ **未取回摘要** + **未建任务节点**
-	agRunChild(t, s, parentReq, "s-inv-bypass", "do", "sub-bypass")
-	got := toolResultText(t, s, "s-inv-bypass", "tc-inv")
-	if !strings.Contains(got, "目标工具") {
-		t.Fatalf("旁路调用应被旁路加固拒绝（结果 = %q）", got)
-	}
-	if strings.Contains(got, "旁路放行结果") {
-		t.Fatalf("白名单外目标工具被真正执行：%q", got)
-	}
-	if n := s.tasks.findByToolCall("ins-test", "tc-inv"); n != nil {
-		t.Fatalf("旁路调用不应建任务节点（未分发、未执行），实得 %+v", n)
-	}
-
-	// ② 目标工具在白名单内 → 转调放行（经 gateway 真正执行目标工具）
-	agRunChild(t, s, parentReq, "s-inv-ok", "do", "sub-target-ok")
-	if got := toolResultText(t, s, "s-inv-ok", "tc-inv"); !strings.Contains(got, "旁路放行结果") {
-		t.Fatalf("白名单内目标工具应放行（结果 = %q）", got)
-	}
-
-	// ③ `[]` = 不限制（mcp_invoke 与其目标工具均不受限）
-	agRunChild(t, s, parentReq, "s-inv-free", "do", "sub-free")
-	if got := toolResultText(t, s, "s-inv-free", "tc-inv"); !strings.Contains(got, "旁路放行结果") {
-		t.Fatalf("空白名单应不限制（结果 = %q）", got)
-	}
-
-	// ④ 主 agent（未配 tools）不受影响
-	agSaveScenario(t, s, "ag-inv-main", []any{
-		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
-	})
-	agStartTurn(t, s, "s-inv-main", "t-inv-main", "", "ag-inv-main")
-	sendAndWait(t, s, "s-inv-main", "t-inv-main", "do")
-	if got := toolResultText(t, s, "s-inv-main", "tc-inv"); !strings.Contains(got, "旁路放行结果") {
-		t.Fatalf("主 agent（无白名单）应放行（结果 = %q）", got)
-	}
-}
-
 // TestToolWhitelistIncludesNonHotTool（T1 / 25 §4.3，2026-09-25）：白名单语义修正的回归 ——
 //
 //	① 白名单含**非 hot** 工具 → 该工具**出现在**下发的 `tools` 参数
 //	   （旧缺陷：`llmTools` = hot 集 ∩ 白名单 → 白名单里的非 hot 工具被吞掉，配了却永远传不到 LLM）；
-//	② 空白名单（`[]`）→ 缺省下发面 = **hot 集**（非 hot 工具不出现；hot/meta 工具在）。
+//	② 空白名单（`[]`）→ 缺省下发面 = **hot 集**（非 hot 工具不出现；hot 工具在）。
 //
 // 驱动：注册一个非 hot 工具 → 刷新工具缓存 → 发子轮次（session-start + session-send）→
 // 断言 mock LLM **请求体**的 tools 清单（发/收两侧均经 MQ）。
@@ -325,14 +179,14 @@ func TestToolWhitelistIncludesNonHotTool(t *testing.T) {
 		t.Fatalf("白名单中的非 hot 工具未下发（T1 缺陷未修）：tools=%v want 含 %s", got, nonHot)
 	}
 
-	// ② 空白名单 → 缺省 hot 集：非 hot 工具不出现；meta（hot）工具在
+	// ② 空白名单 → 缺省 hot 集：非 hot 工具不出现；hot 工具在
 	agRunChild(t, s, parentReq, "s-wl2-free", "do", "sub-free")
 	got2 := agToolNames(mustBody(t, rec, 1))
 	if containsStr(got2, nonHot) {
 		t.Fatalf("空白名单应只下 hot 集：非 hot 工具不应出现（tools=%v）", got2)
 	}
-	if !containsStr(got2, gatewayToolName(t, s, "mcp_find")) {
-		t.Fatalf("空白名单应含 meta 工具（hot）：tools=%v", got2)
+	if !containsStr(got2, gatewayToolName(t, s, "tool_stop")) {
+		t.Fatalf("空白名单应含 hot 工具（tool_stop）：tools=%v", got2)
 	}
 }
 
@@ -374,6 +228,7 @@ func TestToolWhitelistLevelMatrix(t *testing.T) {
 	}
 	writeHotToolContract(t, prjUsrRoot, "lv_prjusr")
 	s.registerCapabilityNodes("ins-test", testWorkDir) // 一次性重扫接入 user/project/prjusr
+	waitCapabilityQuiescent(t, s)                     // 避开热重扫重建 dir 节点的间隙
 
 	userTool := "ins-test-user_lv_user"
 	prjTool := "ins-test-project_lv_prj"

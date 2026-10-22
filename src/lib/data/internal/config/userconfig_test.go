@@ -87,8 +87,8 @@ func TestDeleteUserConfigClearsWholeUsrScope(t *testing.T) {
 
 	// 读回视图：标量回落系统默认、集合为空、自由键缺省
 	view := readUserConfig(db)
-	if view["theme"] != "light" || view["retryCount"] != 2 {
-		t.Fatalf("清空后未回落系统默认：theme=%v retryCount=%v", view["theme"], view["retryCount"])
+	if view["theme"] != "light" || view["retryCount"] != 5 || view["retryBudgetSec"] != 60 {
+		t.Fatalf("清空后未回落系统默认：theme=%v retryCount=%v retryBudgetSec=%v", view["theme"], view["retryCount"], view["retryBudgetSec"])
 	}
 	if arr, _ := view["llms"].([]map[string]any); len(arr) != 0 {
 		t.Fatalf("llms 未清空：%v", view["llms"])

@@ -1,5 +1,5 @@
 <template>
-  <LfViewHost :view-ref="viewRef" />
+  <LfViewHost :view-ref="viewRef" :pooled="false" />
 </template>
 
 <script setup>

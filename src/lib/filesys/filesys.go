@@ -42,7 +42,12 @@ type Filesys struct {
 
 // New 构建文件服务（未启动，调用 Start 后开始订阅）。
 func New(bus mq.Bus) *Filesys {
-	return &Filesys{bus: bus, wm: newWatchManager(bus), insts: map[string]string{}}
+	return NewWithOptions(bus, Options{})
+}
+
+// NewWithOptions 构建文件服务并注入可选依赖（未启动，调用 Start 后开始订阅）。
+func NewWithOptions(bus mq.Bus, opts Options) *Filesys {
+	return &Filesys{bus: bus, wm: newWatchManager(bus, opts.IndexQueue), insts: map[string]string{}}
 }
 
 // Start 订阅全部 filesys.* 主题并开始处理请求。

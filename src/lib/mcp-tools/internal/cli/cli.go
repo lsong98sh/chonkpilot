@@ -24,7 +24,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/agentbox"
 	"github.com/chonkpilot/chonkpilot-lib/contractmd"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
 )
@@ -117,13 +116,6 @@ func Run(dispatch Dispatch, help Help) int {
 	// 缺 instance 时不设置 → `!/` 由 paths.ResolvePath 报错（instance 为空即异常）。
 	if inst := strings.TrimSpace(os.Getenv("CHONKPILOT_INSTANCE")); inst != "" {
 		_, _ = paths.SetTempRoot(inst)
-	}
-
-	// agentbox 沙箱策略装载（决策 42 §2 (104)/(109)）：宿主 spawn executor 时经
-	// CHONKPILOT_SANDBOX 注入「可读 / 可写目录（递归）」策略；未注入 → 不启用（默认兼容）。
-	// 必须在 dispatch 之前完成：文件类工具的路径判定读进程级策略。
-	if p := agentbox.InitFromEnv(); p != nil {
-		fmt.Fprintf(os.Stderr, "[executor] agentbox 已启用：允许目录 %d 条\n", len(p.Rules()))
 	}
 
 	start := time.Now()

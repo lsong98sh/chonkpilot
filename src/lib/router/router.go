@@ -118,9 +118,9 @@ func (r *Router) Unregister(name string) error {
 // **内置兜底**（D-30）：`Request.Provider` 为空或等于内置保留名（`echo`）→ 回落内置 echo provider
 // （见 `builtinFallback`）；**其它未注册名仍报 invalid**（不静默兜底）。
 //
-// **连接层透明重试**（2026-09-22 定案，见 `retry.go` 与 40 §LR §1.1）：仅当**尚未向上层输出过任何
-// 事件**且失败属连接层（`Kind: network`）时，透明重发 ≤1 次（毫秒级退避）；已输出过任何事件（哪怕
-// 一个 `text_delta`）→ 立即透出错误，绝不重发。超时 / 429 / 5xx 等归 llm 决策（本层不重发）。
+// **报文级重试**（RETRY-2）：`CallOptions.MaxRetries` 为 nil 时保持旧行为（仅 `network` 透明重发
+// ≤1 次）；设置后按 `Emitted` + `Kind`/`Phase` 分流，次数上限 = `*MaxRetries`（不含首次），
+// 退避由 `Policy`（默认 `DefaultPolicy`）计算，`Observer` 非阻塞上报（见 `retry.go`）。
 func (r *Router) Call(ctx context.Context, req Request) (<-chan Event, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -152,27 +152,7 @@ func (r *Router) Call(ctx context.Context, req Request) (<-chan Event, error) {
 	out := make(chan Event)
 	go func() {
 		defer close(out)
-		for attempt := 0; ; attempt++ {
-			emitted, err := attemptOnce(ctx, ad, spec, req, out)
-			if err == nil {
-				return // 成功（含已投 done）
-			}
-			// 透明重发：唯一判据 = 尚未向上层输出过任何事件 + 连接层失败 + 次数未用尽。
-			if emitted == 0 && attempt < transparentRetryMax && transparentRetryable(err) && ctx.Err() == nil {
-				if !sleepCtx(ctx, transparentRetryBackoff) {
-					return // 退避期被取消：不再投事件
-				}
-				continue
-			}
-			if ctx.Err() != nil {
-				return // 消费方已离开 / 已取消：不投错误事件（err 为取消类）
-			}
-			select {
-			case out <- Event{Type: EvError, Model: req.Options.Model, Err: err}:
-			case <-ctx.Done(): // 消费方已离开 / 已取消：不阻塞
-			}
-			return
-		}
+		runWithRetries(ctx, ad, spec, req, out)
 	}()
 	return out, nil
 }

@@ -179,6 +179,14 @@ func (b *internalBus) Emit(ctx context.Context, subject string, payload any) *Fu
 	return f
 }
 
+// EmitAsync 在后台派发一条消息（不等待订阅者完成）；用于「命令类」两次 publish：
+// 先 ack 受理，完成 / 错误由后续事件主题回传。实现不在 Bus 接口内（可选能力）。
+func (b *internalBus) EmitAsync(ctx context.Context, subject string, payload any) {
+	go func() {
+		_ = b.Emit(ctx, subject, payload)
+	}()
+}
+
 // dispatch 执行单个订阅者；panic / error → 收集进 v.Errors（不中断后续）。
 func (b *internalBus) dispatch(ctx context.Context, subject string, v *Value, e handlerEntry) {
 	if e.v1 {

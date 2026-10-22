@@ -1,76 +1,43 @@
-// sandbox_test.go — chonkpilot-mcp-gateway 的 agentbox 下发判定单测（L2，工程目录
+// sandbox_test.go — chonkpilot-mcp-gateway 的沙箱规则单测（L2，工程目录
 // chonkpilot-test/chonkpilot-mcp-gateway/unittest）。
 //
-// 覆盖 ServerEntry.SandboxPolicyJSON 的**生效条件**（决策 42 §2 (109)；2026-10-12 重整：开关来源
-// 由 usr `tool_sandbox.mcps[mcp名]` 决定，经 sandboxOn 传入，不再来自 entry.Sandbox）：
-//   - sandboxOn=true + 传输 stdio + 允许目录非空 → 下发策略 JSON；
-//   - 缺任一条件（开关关 / http·sse / 允许目录为空）→ 不下发（默认兼容，不污染上游环境）。
+// 覆盖 `sandbox.Rule` 的 JSON 解析与 `sandbox.WritableRoots` 的提取结果：
+// 进程级沙箱（gateway 在 spawn 时施加 Low IL）的「允许写目录」即由此规则集换算而来。
+// 注：应用层路径校验（原 agentbox.Check/Allowed）已废弃，本测试不再断言下发/拦截行为。
 package mcpgatewaytest
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/agentbox"
-	mcpgw "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	"github.com/chonkpilot/chonkpilot-lib/sandbox"
 )
 
-// TestSandboxPolicyJSONGate：下发判定的四类边界。
-func TestSandboxPolicyJSONGate(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "proj")
-	rules := []agentbox.Rule{{Dir: dir, Writable: true}}
+// TestSandboxRuleParseAndWritableRoots：`security-*` 的 value 形状 [{dir, writable}] 可解析，
+// 且 WritableRoots 只取可写目录（TrimSpace / 跳过空 Dir / 去重 / 保序）。
+func TestSandboxRuleParseAndWritableRoots(t *testing.T) {
+	raw := `[
+		{"dir":"C:\\work\\proj","writable":true},
+		{"dir":"C:\\work\\ro","writable":false},
+		{"dir":"  C:\\work\\proj  ","writable":true},
+		{"dir":"   ","writable":true}
+	]`
+	var rules []sandbox.Rule
+	if err := json.Unmarshal([]byte(raw), &rules); err != nil {
+		t.Fatalf("sandbox.Rule JSON 解析失败：%v", err)
+	}
+	if len(rules) != 4 {
+		t.Fatalf("规则条数 = %d, want 4", len(rules))
+	}
+	if rules[0].Dir != `C:\work\proj` || !rules[0].Writable {
+		t.Fatalf("首条规则解析不符：%+v", rules[0])
+	}
+	if rules[1].Writable {
+		t.Fatalf("只读目录不应被标记为可写：%+v", rules[1])
+	}
 
-	cases := []struct {
-		name string
-		e    mcpgw.ServerEntry
-		on   bool
-		want bool
-	}{
-		{"stdio+开启+目录非空 → 下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", SandboxDirs: rules}, true, true},
-		{"开关关 → 不下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", SandboxDirs: rules}, false, false},
-		{"http 传输 → 不下发（仅 stdio 隔离）", mcpgw.ServerEntry{ID: "s", Runtime: "node", URL: "http://127.0.0.1:1/mcp", SandboxDirs: rules}, true, false},
-		{"sse 传输 → 不下发", mcpgw.ServerEntry{ID: "s", Runtime: "node", URL: "http://127.0.0.1:1/sse", Transport: "sse", SandboxDirs: rules}, true, false},
-		{"允许目录为空 → 不下发（避免空策略=全拒）", mcpgw.ServerEntry{ID: "s", Runtime: "node"}, true, false},
-	}
-	for _, c := range cases {
-		got := c.e.SandboxPolicyJSON(c.on)
-		if c.want && got == "" {
-			t.Fatalf("%s：应下发策略，got 空", c.name)
-		}
-		if !c.want && got != "" {
-			t.Fatalf("%s：不应下发策略，got %q", c.name, got)
-		}
-		if !c.want {
-			continue
-		}
-		var parsed []agentbox.Rule
-		if err := json.Unmarshal([]byte(got), &parsed); err != nil || len(parsed) != 1 || parsed[0].Dir != dir {
-			t.Fatalf("%s：策略 JSON 内容不符：%q err=%v", c.name, got, err)
-		}
-	}
-}
-
-// TestSandboxEnvValueParsableByAgentbox：下发值可被执行器侧（agentbox.Parse）装载为策略。
-func TestSandboxEnvValueParsableByAgentbox(t *testing.T) {
-	allow := filepath.Join(t.TempDir(), "allow")
-	deny := filepath.Join(t.TempDir(), "deny")
-	e := mcpgw.ServerEntry{
-		ID: "up", Runtime: "node",
-		SandboxDirs: []agentbox.Rule{{Dir: allow, Writable: true}},
-	}
-	raw := e.SandboxPolicyJSON(true)
-	if raw == "" {
-		t.Fatal("应下发策略")
-	}
-	p, err := agentbox.Parse(raw)
-	if err != nil || p == nil {
-		t.Fatalf("执行器侧应能装载下发策略：err=%v", err)
-	}
-	if err := p.Check(filepath.Join(allow, "a.txt"), true); err != nil {
-		t.Fatalf("允许目录内写应放行：%v", err)
-	}
-	if err := p.Check(filepath.Join(deny, "a.txt"), true); err == nil {
-		t.Fatal("目录外写应拒绝")
+	roots := sandbox.WritableRoots(rules)
+	if len(roots) != 1 || roots[0] != `C:\work\proj` {
+		t.Fatalf("WritableRoots = %v, want [C:\\work\\proj]", roots)
 	}
 }

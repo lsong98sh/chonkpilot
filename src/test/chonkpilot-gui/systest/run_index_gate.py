@@ -874,7 +874,8 @@ def case_g5_prj_skip_dirs_end_to_end():
 
     txt1, p1 = run_find_turn()
     if "ok.txt" not in txt1 or "_skipme" not in txt1:
-        raise TestError("基线 FILE_FIND 应同时命中 ok.txt 与 _skipme/dep.txt，实际=%r" % txt1)
+        raise TestError("基线 FILE_FIND 应同时命中 ok.txt 与 _skipme/dep.txt，实际=%r（payload=%r）"
+                        % (txt1, p1))
     print("[G5] 基线 FILE_FIND（无 skip_dirs）→ tool=%s 命中=%r" % (p1.get("tool"), txt1), flush=True)
 
     open_params_project()

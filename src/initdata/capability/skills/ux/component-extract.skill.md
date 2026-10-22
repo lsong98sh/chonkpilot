@@ -57,6 +57,6 @@ title: component-extract
 
 ## 阶段 5：产出并交接
 
-把清单写入文件（如 `component-inventory.md`，用 `filesys_run` 的 `INS` 落盘），每个组件一节，按上面的结构组织——一份用户可交给开发者的文档。可选地渲染一个"组件库"页面，展示每个组件及其变体与状态（单文件 HTML/CSS 网格即可）。
+把清单写入文件（如 `component-inventory.md`，用 `file_write` 落盘），每个组件一节，按上面的结构组织——一份用户可交给开发者的文档。可选地渲染一个"组件库"页面，展示每个组件及其变体与状态（单文件 HTML/CSS 网格即可）。
 
 然后建议下一步：若 token 还没做，走 `design-system-extract`；把库构建成真实代码；对组件走 `polish-pass`；或对库用 `make-tweakable`。总结：按类别盘点的组件、标出的不一致与缺口、输出文件路径、建议的下一步。

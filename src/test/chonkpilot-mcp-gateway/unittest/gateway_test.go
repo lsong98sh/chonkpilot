@@ -2,7 +2,7 @@
 // （工程目录 chonkpilot-test/chonkpilot-mcp-gateway/unittest）。
 //
 // 通过公开包 github.com/chonkpilot/chonkpilot-mcp-gateway/gateway 集成测试：
-// 内存总线 + 自备能力源官方 go-sdk server（mock 工具，经 Params.MCPServer 参数传入）
+// 内存总线 + mock 工具经公开方法面 `tools/register`（handler_subject 回调）接入
 // → New/Start → 经总线方法面（mcp-* 相对主题，chonk. 前缀由总线注入）驱动：
 // 覆盖工具执行、自动异步（meta/请求级）、手动转后台、异步完成通知（mcp-tasks-report）、
 // 任务取消、任务异常（不串扰返回数据）。
@@ -26,6 +26,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	mcpgw "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
+	"github.com/chonkpilot/chonkpilot-mcp-gateway/mqadapter"
 )
 
 // mockSpec 描述测试用 mock 工具（handler 本地执行，经 self 能力源 server 注册）。
@@ -36,7 +37,10 @@ type mockSpec struct {
 	handle func(ctx context.Context) (*mcp.CallToolResult, error)
 }
 
-// startTestGW 建内存总线 + 自备能力源官方 server（含 mock 工具）+ 真实 Gateway 装配。
+// startTestGW 建内存总线 + 真实 Gateway 装配；mock 工具经**公开方法面** `tools/register`
+// （handler_subject = 本测试订阅的回调主题）接入。
+// GATEWAY-2 L5：gateway 只接 Transport + Servers，不再接受进程内能力源（Params.MCPServer 已删除）；
+// 注册工具仍以 `self_<原名>` 暴露（注册提供方固定 entry.ID=self）。
 func startTestGW(t *testing.T, specs []mockSpec) (mq.Bus, *mcpgw.Gateway) {
 	t.Helper()
 	ctx := context.Background()
@@ -44,20 +48,7 @@ func startTestGW(t *testing.T, specs []mockSpec) (mq.Bus, *mcpgw.Gateway) {
 	if err != nil {
 		t.Fatalf("bus: %v", err)
 	}
-	ms := mcp.NewServer(&mcp.Implementation{Name: "test-cap", Version: "1.0.0"}, nil)
-	for _, s := range specs {
-		h := s.handle
-		ms.AddTool(&mcp.Tool{
-			Name:        s.name,
-			Description: s.desc,
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-			Meta:        s.meta,
-		},
-			func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return h(ctx)
-			})
-	}
-	gw, err := mcpgw.New(mcpgw.Params{Bus: bus, MCPServer: ms, CallTimeout: 3 * time.Second, MaxTasks: 4, Logf: t.Logf})
+	gw, err := mcpgw.New(mcpgw.Params{Transport: mqadapter.New(bus), CallTimeout: 3 * time.Second, MaxTasks: 4, Logf: t.Logf})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -68,6 +59,50 @@ func startTestGW(t *testing.T, specs []mockSpec) (mq.Bus, *mcpgw.Gateway) {
 		_ = gw.Stop(context.Background())
 		bus.Close()
 	})
+	for _, s := range specs {
+		spec := s
+		handler := spec.handle
+		subject := "test-tool-call-" + spec.name
+		sub, err := bus.On(subject, 0, func(_ context.Context, _ string, v *mq.Value) error {
+			res, herr := handler(ctx)
+			if herr != nil {
+				return herr
+			}
+			text := ""
+			if res != nil {
+				for _, c := range res.Content {
+					if tc, ok := c.(*mcp.TextContent); ok {
+						text = tc.Text
+						break
+					}
+				}
+			}
+			v.Result = map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": text}},
+				"isError": res != nil && res.IsError,
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("subscribe %s: %v", subject, err)
+		}
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+		payload := map[string]any{
+			"name": spec.name, "description": spec.desc, "handler_subject": subject,
+		}
+		for k, v := range spec.meta {
+			switch k {
+			case "async":
+				payload["async"] = v
+			case "async-threshold":
+				payload["async_threshold"] = v
+			case "timeout":
+				payload["timeout"] = v
+			}
+		}
+		callMethod(t, bus, "tools/register", payload)
+	}
 	return bus, gw
 }
 
@@ -325,8 +360,9 @@ func TestBackgroundManualAfterDone(t *testing.T) {
 	}
 }
 
-// TestNeverNotOverridable 回归：契约 async=never 不可被调用级 async 覆盖（仍同步返回，不转后台）。
-func TestNeverNotOverridable(t *testing.T) {
+// TestContractNeverOverridableByCallAlways（INBOX Q1）：契约 async=never **允许**被调用级
+// `async=always` 覆盖 → 派发即转后台（pending + task_id），主循环让出以便插话消费。
+func TestContractNeverOverridableByCallAlways(t *testing.T) {
 	bus, _ := startTestGW(t, []mockSpec{{
 		name: "tool_never", desc: "never",
 		meta: map[string]any{"async": "never"},
@@ -337,11 +373,9 @@ func TestNeverNotOverridable(t *testing.T) {
 	res := callMethod(t, bus, "tools/call", map[string]any{
 		"name": "self_tool_never", "arguments": map[string]any{"async": "always"},
 	})
-	if got := textOf(t, res); got != "never-ok" {
-		t.Fatalf("never 应同步返回，got %q (res=%v)", got, res)
-	}
-	if _, pending := res["structuredContent"]; pending {
-		t.Fatalf("never 不应转后台: %v", res)
+	sc, _ := res["structuredContent"].(map[string]any)
+	if sc == nil || sc["status"] != "pending" || sc["task_id"] == "" {
+		t.Fatalf("契约 never + 调用级 always 应转后台（pending+task_id），got %v", res)
 	}
 }
 
@@ -581,74 +615,5 @@ func TestExecControlRemovedFaces(t *testing.T) {
 		if v.Result != nil {
 			t.Fatalf("%s 已移除，不应有回执: %v", m, v.Result)
 		}
-	}
-}
-
-// TestMCPFindAllNoQuery：mcp_find 无 query/purpose → 不再报缺参，返回该类型全部条目。
-// 25 §5/T2（2026-09-25）：type 收敛为 tool|skill|resource|all → 本用例以 type=skill 列全部技能，
-// 并断言 type=agent 已移出检索面（明确报错）。
-func TestMCPFindAllNoQuery(t *testing.T) {
-	bus, _ := startTestGW(t, nil)
-	// 注册一个 skill 资产（scope 缺省 = global）
-	callMethod(t, bus, "prompts/register", map[string]any{
-		"name": "coder-sk", "description": "编码技能", "asset_kind": "skill", "content": "你是编码技能",
-	})
-	// 无 query / 无 purpose，仅 type=skill
-	res := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_mcp_find", "arguments": map[string]any{"type": "skill"},
-	})
-	if res["isError"] == true {
-		t.Fatalf("mcp_find 缺 query/purpose 不应报错: %v", textOf(t, res))
-	}
-	txt := textOf(t, res)
-	if !strings.Contains(txt, `"coder-sk"`) {
-		t.Fatalf("mcp_find(type=skill) 无 query 应返回全部技能，got %q", txt)
-	}
-	// 对照：带不匹配关键词 → 不返回该资产（关键词过滤仍生效）
-	res2 := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_mcp_find", "arguments": map[string]any{"type": "skill", "query": "不存在的技能"},
-	})
-	if txt2 := textOf(t, res2); strings.Contains(txt2, `"coder-sk"`) {
-		t.Fatalf("mcp_find 带关键词应过滤，got %q", txt2)
-	}
-	// 25 §5/T2：type=agent 已移出 LLM 检索面 → 明确报错（不再返回 agent 条目）
-	res3 := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_mcp_find", "arguments": map[string]any{"type": "agent"},
-	})
-	if res3["isError"] != true {
-		t.Fatalf("mcp_find(type=agent) 应明确报错（agent 已退出资产面），got %v", textOf(t, res3))
-	}
-}
-
-// TestMCPFindPurposeAllTypes：purpose 语义推荐对**所有 type** 生效（非仅 tool/all）——
-// type=skill 时同样走 llm-simple 推荐，且候选清单按 type 收敛（仅 skill 资产、不含普通工具）。
-// 25 §5/T2（2026-09-25）：原 type=agent 改为 type=skill（agent 已移出检索面）。
-func TestMCPFindPurposeAllTypes(t *testing.T) {
-	bus, _ := startTestGW(t, []mockSpec{{name: "tool_x", desc: "普通工具"}})
-	callMethod(t, bus, "prompts/register", map[string]any{
-		"name": "coder-sk", "description": "编码技能", "asset_kind": "skill", "content": "你是编码技能",
-	})
-	// 假 llm-simple：捕获候选清单（system），返回带标记的推荐 JSON
-	var gotSystem string
-	if _, err := bus.On("llm-simple", 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var req struct{ Prompt, System string }
-		_ = json.Unmarshal(v.Payload, &req)
-		gotSystem = req.System
-		v.Result = map[string]any{"text": `{"tools":[{"name":"coder-sk","reason":"LLM-PICK"}]}`}
-		return nil
-	}); err != nil {
-		t.Fatalf("subscribe llm-simple: %v", err)
-	}
-	res := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_mcp_find", "arguments": map[string]any{"type": "skill", "purpose": "写一段 Go 代码"},
-	})
-	if txt := textOf(t, res); !strings.Contains(txt, "LLM-PICK") {
-		t.Fatalf("purpose 应走 LLM 语义推荐（type=skill），got %q", txt)
-	}
-	if !strings.Contains(gotSystem, "coder-sk(skill)") {
-		t.Fatalf("候选清单应含 skill 资产，system=%q", gotSystem)
-	}
-	if strings.Contains(gotSystem, "tool_x") {
-		t.Fatalf("type=skill 候选不应含普通工具，system=%q", gotSystem)
 	}
 }

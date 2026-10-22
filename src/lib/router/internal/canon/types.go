@@ -10,6 +10,7 @@
 package canon
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
@@ -104,6 +105,77 @@ type CallOptions struct {
 	Reasoning       *Reasoning
 	ResponseTimeout time.Duration // 首字节超时（<=0 = 适配器默认）
 	StreamTimeout   time.Duration // 流 chunk 间隔超时（<=0 = 适配器默认）
+
+	// RETRY-2（报文级重试；仅本层使用，不下发给适配器）：
+	// MaxRetries nil = 保持旧行为（仅 network 透明重发 1 次）；&0 = 不重试；&n = 重试 n 次（不含首次）。
+	MaxRetries *int
+	Budget     time.Duration  // 退避合计总预算（仅 MaxRetries 已设置时生效；0 = 默认 60s）
+	Policy     RetryPolicy    // nil = DefaultPolicy
+	Observer   RetryObserver  // nil = 不上报
+	Meta       map[string]any // 宿主播传（session/turn），router 不解释
+}
+
+// RetryContext 是一次重试决策的上下文。
+type RetryContext struct {
+	Attempt int           // 第几次重试（从 1 起）
+	Phase   Phase         // 失败阶段
+	Err     *Error        // 本次失败
+	Emitted int           // 本次已向上层输出的事件数（0 才允许重发）
+	Budget  time.Duration // 剩余退避预算
+}
+
+// RetryPolicy 是重试策略（纯函数；nil = DefaultPolicy）。
+type RetryPolicy interface {
+	Decide(ctx context.Context, rc RetryContext) (retry bool, wait time.Duration)
+}
+
+// RetryObserver 是重试上报（实现方**必须非阻塞**；router 同步调用并 recover，不等待）。
+type RetryObserver interface {
+	OnRetry(ctx context.Context, rc RetryContext, wait time.Duration)
+	OnExhausted(ctx context.Context, rc RetryContext, err *Error)
+}
+
+// DefaultPolicy 是默认策略：Retry-After 优先 → 按 2 倍指数权重把预算归一化到各次等待；
+// 无预算时回落固定指数（1s·2s·4s…，不设单次上限）。
+type DefaultPolicy struct {
+	MaxRetries int           // 总重试次数（用于计算权重分母 2^N-1）
+	Budget     time.Duration // 0 = 不使用预算（固定指数）
+}
+
+// Decide 实现 RetryPolicy。
+func (p DefaultPolicy) Decide(_ context.Context, rc RetryContext) (bool, time.Duration) {
+	if rc.Err == nil || !rc.Err.Retryable || rc.Emitted > 0 {
+		return false, 0
+	}
+	switch rc.Err.Kind {
+	case ErrorRateLimit, ErrorServer:
+		// 按次数重试
+	case ErrorNetwork, ErrorTimeout:
+		switch rc.Phase {
+		case PhaseDial, PhaseFirstByte, PhaseStream, "":
+			// 阶段分流由重试循环执行（stream 另有「最多 1 次」硬帽）
+		default:
+			return false, 0
+		}
+	default:
+		return false, 0
+	}
+	if rc.Err.RetryAfter > 0 {
+		return true, rc.Err.RetryAfter
+	}
+	if p.Budget <= 0 {
+		return true, time.Second << uint(rc.Attempt-1)
+	}
+	n := p.MaxRetries
+	if n <= 0 {
+		n = 1
+	}
+	weights := int64(1)<<uint(n) - 1 // 1+2+…+2^(n-1) = 2^n - 1
+	k := p.Budget / time.Duration(weights)
+	if k <= 0 {
+		k = 1
+	}
+	return true, k * time.Duration(int64(1)<<uint(rc.Attempt-1))
 }
 
 // Request 是「一次」调用请求（无会话 / 轮次字段，见包注释边界）。

@@ -31,7 +31,7 @@
           <div class="form-layout">
             <div class="form-item form-item-12">
               <label class="form-label">{{ $t('config.mcp.name') }}<span v-if="aiMark('name')" class="ai-badge">{{ $t('config.mcp.aiSuggested') }}</span></label>
-              <Input v-model="localData.name" :placeholder="$t('config.mcp.namePlaceholder')" />
+              <Input v-model="localData.name" :maxlength="MAX_NAME" required :placeholder="$t('config.mcp.namePlaceholder')" />
             </div>
             <!-- 级别（四级文件化配置：app/user/project/prjusr；保存落对应级 `capability/mcps/<名>.json`） -->
             <div class="form-item form-item-12">
@@ -58,7 +58,7 @@
             <!-- 连接字段从属 transport：http/sse → url；stdio → runtime + args（auto 两者皆可） -->
             <div v-if="showUrl" class="form-item form-item-full">
               <label class="form-label">{{ $t('config.mcp.serverUrl') }}<span v-if="aiMark('url')" class="ai-badge">{{ $t('config.mcp.aiSuggested') }}</span></label>
-              <Input v-model="localData.url" :placeholder="$t('config.mcp.urlPlaceholder')" />
+              <Input v-model="localData.url" :maxlength="MAX_URL" :placeholder="$t('config.mcp.urlPlaceholder')" />
             </div>
             <div class="form-item form-item-12">
               <label class="form-label">{{ $t('config.mcp.namespace') }}<span v-if="aiMark('namespace')" class="ai-badge">{{ $t('config.mcp.aiSuggested') }}</span></label>
@@ -92,11 +92,11 @@
             <!-- 「运行时」与「工作目录」同一行；运行时隐藏（http/sse）时工作目录占整行 -->
             <div v-if="showSpawn" class="form-item form-item-12">
               <label class="form-label">{{ $t('config.mcp.runtime') }}<span v-if="aiMark('runtime')" class="ai-badge">{{ $t('config.mcp.aiSuggested') }}</span></label>
-              <Input v-model="localData.runtime" :placeholder="$t('config.mcp.runtimePlaceholder')" />
+              <Input v-model="localData.runtime" :maxlength="MAX_PATH" :placeholder="$t('config.mcp.runtimePlaceholder')" />
             </div>
             <div class="form-item" :class="showSpawn ? 'form-item-12' : 'form-item-full'">
               <label class="form-label">{{ $t('config.mcp.cwd') }}</label>
-              <Input v-model="localData.cwd" :placeholder="$t('config.mcp.cwdPlaceholder')" />
+              <Input v-model="localData.cwd" :maxlength="MAX_PATH" :placeholder="$t('config.mcp.cwdPlaceholder')" />
             </div>
             <!-- 两个隔离开关：紧跟「运行时|工作目录」行，同排两列 -->
             <div class="form-item form-item-12">
@@ -191,6 +191,8 @@
 import { reactive, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button, Input, Textarea, Select, Switch, Tabs, Tooltip, KeyValueEditor, message } from '../../components/ui'
+// INPUTVAL-1：字段基线（与后端 validate.go 同源口径）。
+import { MAX_NAME, MAX_URL, MAX_PATH, isHttpUrl, isAbsolutePath, tooLong, trimStr } from '../../utils/fieldRules'
 import Icon from '../../components/icon/Icon.vue'
 import { stripToolPrefix } from '../../utils/toolSource'
 import { classifyError } from '../../utils/errorMessage'
@@ -416,8 +418,22 @@ function handleSave() {
     message.warning(t('config.mcp.nameFormat'))
     return
   }
-  const runtime = (localData.runtime || '').trim()
-  const url = (localData.url || '').trim()
+  if (tooLong(name, MAX_NAME)) {
+    message.warning(t('fieldRules.tooLong', { field: t('config.mcp.name'), max: MAX_NAME }))
+    return
+  }
+  const runtime = trimStr(localData.runtime)
+  const url = trimStr(localData.url)
+  // INPUTVAL-1：URL http/https；cwd 绝对路径（空 = 不设，允许继承）。
+  if (url && !isHttpUrl(url)) {
+    message.warning(t('fieldRules.invalidUrl', { field: t('config.mcp.serverUrl') }))
+    return
+  }
+  const cwd = trimStr(localData.cwd)
+  if (cwd && !isAbsolutePath(cwd)) {
+    message.warning(t('fieldRules.invalidPath', { field: t('config.mcp.cwd') }))
+    return
+  }
   const connectorOK = transport.value === 'stdio'
     ? !!runtime
     : (transport.value === 'http' || transport.value === 'sse' ? !!url : (!!runtime || !!url))
@@ -430,7 +446,7 @@ function handleSave() {
   localData.args = textToArgs(argsText.value)
   localData.url = url
   localData.namespace = (localData.namespace || '').trim()
-  localData.cwd = (localData.cwd || '').trim()
+  localData.cwd = cwd
   localData.timeout = Number(localData.timeout) || 0
   // transport 缺省留空：gateway 只认 http/sse/stdio，空值按 command/url 推断
   localData.transport = transport.value === 'auto' ? '' : transport.value

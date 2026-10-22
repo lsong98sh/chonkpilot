@@ -43,6 +43,6 @@ title: interaction-states-pass
 
 ## 阶段 5：应用修复并总结
 
-用设计体系的 token 补齐每个缺失的状态或反馈元素。体系未定义时用：hover 深 10–15%（或 `color-mix`）；active 再深 10% 或 `scale(0.98)`；disabled 不透明度 0.6 + `cursor: not-allowed`；focus `outline: 2px solid var(--color-primary); outline-offset: 2px`；过渡 `0.2s ease`。若正确状态不明显（如切换按钮"在 active 上的 hover"），做一个判断并注明（用 `filesys_run` 改文件）。
+用设计体系的 token 补齐每个缺失的状态或反馈元素。体系未定义时用：hover 深 10–15%（或 `color-mix`）；active 再深 10% 或 `scale(0.98)`；disabled 不透明度 0.6 + `cursor: not-allowed`；focus `outline: 2px solid var(--color-primary); outline-offset: 2px`；过渡 `0.2s ease`。若正确状态不明显（如切换按钮"在 active 上的 hover"），做一个判断并注明（用文件工具 `file_read` / `file_write` / `file_replace` / `file_find` 改文件）。
 
 总结：盘点了哪些元素、按类别补了哪些状态、新增或归一了哪些过渡、补了哪些反馈、哪些判断需要用户复核。

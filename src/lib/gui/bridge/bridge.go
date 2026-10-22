@@ -18,7 +18,7 @@
 // tasks.started 等字符串不变）；data-*/filesys.* 等点分相对主题原名直通（不裁剪）。
 //
 // 文件变更跟踪（旧 dirWatcher 轮询）已随 filesys 组件化移除：前端文件变化走
-// chonkpilot-filesys 服务（fsnotify → filesys.changed 广播 → 桥 > 订阅转发前端）。
+// chonkpilot-filesys 服务（fswatcher → filesys.changed 广播 → 桥 > 订阅转发前端）。
 package bridge
 
 import (
@@ -65,6 +65,9 @@ type Bridge struct {
 	// startResize 由窗口工厂注入（frameless 主窗口的系统原生 resize；gui.window.resize 用）。
 	// nil = 未接线（非 frameless 窗口 / 宿主不支持）→ gui.window.resize 明确失败，不静默。
 	startResize func(uintptr)
+	// projectOpener 由宿主注入（PRODSIM-1 单进程多项目）：`gui.dir.open` 走它**同进程**
+	// 打开/激活项目主窗口。nil → 旧行为（spawn 新进程；flash 等形态）。
+	projectOpener func(dir string) error
 	// published 记录本实例近期发布的事件指纹（subject → {载荷指纹, 时间}；src 防环：
 	// 桥订阅了 ">"（相对全通配），本实例 /publish 的事件会被自己转发回前端造成二次 dispatch，
 	// 需跳过）。指纹口径（D-11）避免「同主题不同载荷」被误吞。
@@ -112,6 +115,10 @@ type Bridge struct {
 	// suppressExit = 关闭本桥实例时**不**发 `instance-exit`（flash 远程薄壳：多窗口共享
 	// 同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
 	suppressExit bool
+
+	// noInstance = 本窗口**不注册 instance**（PRODSIM-1 日志窗口）：不占实例额度、
+	// 不参与 claim / 定向投递，关闭时也不发 instance-exit。仅保留 Eval 与总线订阅。
+	noInstance bool
 
 	// parentInstance 是本实例（子窗口）的**直接父窗口实例** id（空 = 顶层实例）。
 	// 随 `instance-register` 的 `parent_instance` 字段上报（61 §4.1 ④；单聊 §12.4 B4 /
@@ -162,6 +169,10 @@ func (b *Bridge) SetLogDir(dir string) { b.logDir = dir }
 // 附件/截图等个人运行态非库文件按它落盘（见 uploadRoot）。空 = 未注入（回落旧行为）。
 func (b *Bridge) SetPrjUsrRoot(dir string) { b.prjUsrRoot = dir }
 
+// SetProjectOpener 由宿主注入「同进程打开项目」回调（PRODSIM-1 单进程多项目）：
+// `gui.dir.open` 优先走它（已打开 → 激活，未打开 → 新建主窗口）；nil = 旧行为（spawn 新进程）。
+func (b *Bridge) SetProjectOpener(fn func(dir string) error) { b.projectOpener = fn }
+
 // uploadRoot 返回附件/截图落盘根：注入的 prjusr 数据根优先；未注入 → 回落 <workDir>/.chonkpilot
 // （= prj 数据根，旧行为；-no-server 薄客户端/分离形态宿主不解析 prjusr 根时仍可用）。
 func (b *Bridge) uploadRoot() string {
@@ -195,6 +206,10 @@ func (b *Bridge) SetWindowResizer(fn func(uintptr)) { b.startResize = fn }
 // SetInstanceExitSuppressed 置位「关闭本桥实例时不发 instance-exit」（flash 远程薄壳：
 // 多窗口共享同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
 func (b *Bridge) SetInstanceExitSuppressed(v bool) { b.suppressExit = v }
+
+// SetNoInstance 标记本窗口**不注册 instance**（PRODSIM-1 日志窗口；须在 Start 前调用）：
+// Start 不发 instance-register、CloseInstance 不发 instance-exit（不占实例额度）。
+func (b *Bridge) SetNoInstance() { b.noInstance = true }
 
 // SetParentInstance 注入本实例的**直接父窗口实例** id（窗口工厂在 `Start` 前调用；
 // 空 = 顶层实例）。随 `instance-register.parent_instance` 上报（61 §4.1 ④），供 server
@@ -282,7 +297,9 @@ func (b *Bridge) Start() error {
 	if b.sessionID != "" {
 		reg[msgkeys.InstanceRegisterEventSessionId] = b.sessionID
 	}
-	b.publish(msgkeys.TopicInstanceRegister, reg)
+	if !b.noInstance {
+		b.publish(msgkeys.TopicInstanceRegister, reg)
+	}
 	// 订阅总线生态事件 → 前端（相对主题全通配 ">"：总线补 chonk. 前缀后命中全部
 	// 业务事件；handler 收到去前缀后的相对主题，见 mq Options.Prefix 语义）。
 	sub, err := b.bus.On(">", 0, func(_ context.Context, subj string, v *mq.Value) error {
@@ -543,6 +560,11 @@ func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error
 var frontMethodSubjects = map[string]string{
 	msgkeys.TopicLlmSend:        "session-send",
 	msgkeys.TopicLlmCancel:      "session-cancel",
+	// INBOX（2026-10-18，中途插话 / 等下一轮）：客户端四条方法面 → llm-server 同名处理器。
+	msgkeys.TopicLlmInboxAdd:     "inbox-add",
+	msgkeys.TopicLlmInboxList:    "inbox-list",
+	msgkeys.TopicLlmInboxDiscard: "inbox-discard",
+	msgkeys.TopicLlmInboxPromote: "inbox-promote",
 	msgkeys.TopicAskUserReply:   "session-ask-reply",
 	msgkeys.TopicTaskStop:       msgkeys.TopicTaskStop,
 	msgkeys.TopicTaskBackground: msgkeys.TopicTaskBackground,
@@ -803,6 +825,10 @@ func (b *Bridge) unsubForwardLocked() {
 func (b *Bridge) CloseInstance() {
 	// D-23：先退订本桥 ">" 订阅再注销实例（窗口关闭后不再有事件派发进本桥）。
 	b.stopForward()
+	// noInstance（日志窗口）：从未注册 → 不注销。
+	if b.noInstance {
+		return
+	}
 	// 远程薄壳（flash）：非主窗口共享实例 → 关闭时不注销（见 SetInstanceExitSuppressed）。
 	if b.suppressExit {
 		return

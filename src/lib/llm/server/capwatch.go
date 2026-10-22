@@ -1,7 +1,7 @@
 // T-21：capability 原语保存后立即生效（无需重启）——三级根全覆盖。
 //
 // ① 用户级 + 项目级 capability 根（12-数据层三级根中由 server 经 gateway dir 节点动态接入的
-// 两级）加 fsnotify 监听：原语文件（*.tool.md/*.prompt.md/*.skill.md/*.resource.md）保存/新建/
+// 两级）加 fswatcher 监听：原语文件（*.tool.md/*.prompt.md/*.skill.md/*.resource.md）保存/新建/
 // 删除 → 去抖合并 → 复用既有 servers/unregister + servers/register 重扫 dir 节点
 // （见 Server.reconcileCapabilityNodes）→ 工具面数十毫秒内反映变化。
 //
@@ -13,13 +13,16 @@
 package server
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
+	"github.com/sgtdi/fswatcher"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
@@ -31,28 +34,33 @@ type capNodeRef struct {
 	Root       string
 }
 
-// capWatchDebounce 变更合并去抖：一次保存常触发多个 fsnotify 事件（create/write/chmod），
+// capWatchDebounce 变更合并去抖：一次保存常触发多个 fswatcher 事件（create/mod/chmod），
 // 合并为单次重扫，避免重复重注册（"一次保存 → 一次 reconcile"）。
 const capWatchDebounce = 60 * time.Millisecond
+
+// capWatchReadyTimeout = 等待 fswatcher 初始路径就绪（WithReadyChannel）的兜底上限。
+const capWatchReadyTimeout = 5 * time.Second
 
 // capWatcher 监听 app + 用户/项目级 capability 根，变更去抖后触发对应重扫。
 type capWatcher struct {
 	s *Server
-	w *fsnotify.Watcher
+	w fswatcher.Watcher
 
 	mu        sync.Mutex
-	want      map[string]bool // 目标 capability 根（绝对、斜杠化）
-	appWant   map[string]bool // 其中系统级 app 根（T-21②：走 RegisterContracts + gateway/reload 重扫）
-	watched   map[string]bool // 已 Add 的目录
-	expanded  map[string]bool // 已**完整展开**（根 + 子树递归监听已建立）的目标根 → syncLocked 跳过全树重扫
-	dirty     bool            // 本轮是否有用户/项目级根内变更待重扫
-	dirtyApp  bool            // 本轮是否有 app 根内变更待重扫
+	want      map[string]bool                 // 目标 capability 根（绝对、斜杠化）
+	appWant   map[string]bool                 // 其中系统级 app 根（T-21②：走 RegisterContracts + gateway/reload 重扫）
+	synced    map[string]fswatcher.WatchDepth // 已 AddPath 的根/祖先 → 监听深度（Nested / TopLevel）
+	dirty     bool                            // 本轮是否有用户/项目级根内变更待重扫
+	dirtyApp  bool                            // 本轮是否有 app 根内变更待重扫
 	timer     *time.Timer
 	done      chan struct{}
 	closeOnce sync.Once // Close 幂等守卫（B-16：并发/重复 Close 不双重 close）
 
-	// refs / instRoots 支撑实例退出时的监听回收（B-38：长驻 split 服务端下 want/watched
-	// 只增不减 → fsnotify 句柄随实例累积）。user/project 根可被多个实例共享 → 按引用计数，
+	cancel context.CancelFunc
+	ready  <-chan struct{}
+
+	// refs / instRoots 支撑实例退出时的监听回收（B-38：长驻 split 服务端下 want/synced
+	// 只增不减 → 句柄随实例累积）。user/project 根可被多个实例共享 → 按引用计数，
 	// 仅最后一个引用者退出才摘除；prjusr 根按实例唯一。
 	refs      map[string]int             // 目标根 → 引用它的实例数
 	instRoots map[string]map[string]bool // instanceID → 该实例登记的根集合（退出时精确回收，幂等）
@@ -60,23 +68,70 @@ type capWatcher struct {
 
 // newCapWatcher 建立 watcher 并启动事件循环（失败返回错误，调用方降级）。
 func newCapWatcher(s *Server) (*capWatcher, error) {
-	w, err := fsnotify.NewWatcher()
+	// New 必须显式给至少一个路径（否则默认监听 cwd）；此处取用户级 capability 根或其最近
+	// 已存在祖先（兜底系统临时目录），后续 syncLocked 按需增删目标根。
+	initial := capInitialRoot(s)
+	ready := make(chan struct{})
+	w, err := fswatcher.New(
+		fswatcher.WithPath(initial, fswatcher.WithDepth(fswatcher.WatchTopLevel)),
+		fswatcher.WithCooldown(0), // 去抖由本结构自管（capWatchDebounce）
+		fswatcher.WithSeverity(fswatcher.SeverityNone),
+		fswatcher.WithReadyChannel(ready),
+	)
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	cw := &capWatcher{
 		s:         s,
 		w:         w,
 		want:      make(map[string]bool),
 		appWant:   make(map[string]bool),
-		watched:   make(map[string]bool),
-		expanded:  make(map[string]bool),
+		synced:    map[string]fswatcher.WatchDepth{normPath(initial): fswatcher.WatchTopLevel},
 		refs:      make(map[string]int),
 		instRoots: make(map[string]map[string]bool),
 		done:      make(chan struct{}),
+		cancel:    cancel,
+		ready:     ready,
 	}
+	go cw.runWatcher(ctx)
 	go cw.loop()
 	return cw, nil
+}
+
+// capInitialRoot 返回 fswatcher 的初始监听路径（必须已存在）：用户级 capability 根 →
+// 其最近已存在祖先 → 系统临时目录（测试/无 Home 兜底）。TopLevel 深度，避免误把大树整体递归接管。
+func capInitialRoot(s *Server) string {
+	if s != nil {
+		root := normPath(persist.CapUserRoot(s.opts.UsrPath))
+		if dirExists(root) {
+			return root
+		}
+		if anc := nearestExistingDir(root); anc != "" {
+			return anc
+		}
+	}
+	return normPath(os.TempDir())
+}
+
+// runWatcher 驱动 fswatcher 主循环（阻塞至 ctx 取消 / Close）；失败只记日志
+// （下次 instance-register 重建监听）。
+func (cw *capWatcher) runWatcher(ctx context.Context) {
+	if err := cw.w.Watch(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Warn("capability watcher stopped", "err", err)
+	}
+}
+
+// waitReadyLocked 等待 fswatcher 初始路径就绪（AddPath/DropPath 仅运行中可用）；超时/停止则放弃。
+// 调用方须持 cw.mu。
+func (cw *capWatcher) waitReadyLocked() {
+	timer := time.NewTimer(capWatchReadyTimeout)
+	defer timer.Stop()
+	select {
+	case <-cw.ready:
+	case <-cw.done:
+	case <-timer.C:
+	}
 }
 
 // watchApp 登记并监听系统级 app capability 根（T-21②：<exeDir>/capability，内嵌 self 节点承载；
@@ -125,9 +180,9 @@ func (cw *capWatcher) watchInstance(instanceID, workDir string) {
 	cw.syncLocked()
 }
 
-// unwatchInstance 实例退出 → 回收该实例派生的 capability 根监听（B-38：want/watched 只增不减
-// → 长驻 split 服务端下 fsnotify 句柄随实例累积）。共享根按引用计数：仅最后一个引用者退出
-// 才摘除 want 条目与 fsnotify 句柄。幂等（重复调用无副作用）；app 根不在本链路（进程级恒存在）。
+// unwatchInstance 实例退出 → 回收该实例派生的 capability 根监听（B-38：want/synced 只增不减
+// → 长驻 split 服务端下句柄随实例累积）。共享根按引用计数：仅最后一个引用者退出
+// 才摘除 want 条目与 fswatcher 句柄。幂等（重复调用无副作用）；app 根不在本链路（进程级恒存在）。
 func (cw *capWatcher) unwatchInstance(instanceID string) {
 	if cw == nil || instanceID == "" {
 		return
@@ -146,50 +201,47 @@ func (cw *capWatcher) unwatchInstance(instanceID string) {
 		}
 		delete(cw.refs, r)
 		delete(cw.want, r)
-		delete(cw.expanded, r) // 引用归零 → 摘除监听，同时清除「已展开」标记（再登记时重新展开）
-		cw.unwatchTreeLocked(r)
-	}
-}
-
-// unwatchTreeLocked 主动摘除 root 及其子树条目的 fsnotify 监听（与 removeWatchLocked 不同：
-// 后者仅清理 watched 记录，依赖目录删除时系统自动移除句柄；此处目录仍存在，须显式 w.Remove）。
-func (cw *capWatcher) unwatchTreeLocked(root string) {
-	for d := range cw.watched {
-		if under(d, root) {
-			_ = cw.w.Remove(d)
-			delete(cw.watched, d)
+		// 引用归零 → 摘除该根及其祖先补位条目的监听（递归句柄随根一并收敛）
+		for p := range cw.synced {
+			if under(p, r) {
+				cw.dropLocked(p)
+			}
 		}
 	}
 }
 
-// Close 停止事件循环并关闭 fsnotify（幂等）。
+// Close 停止事件循环并关闭 fswatcher（幂等）。
 func (cw *capWatcher) Close() {
 	if cw == nil {
 		return
 	}
 	// B-16：close(cw.done) 经 sync.Once 守卫，并发/重复 Close 不再双重 close panic。
 	cw.closeOnce.Do(func() { close(cw.done) })
+	cw.cancel()
+	cw.w.Close()
 	cw.mu.Lock()
 	if cw.timer != nil {
 		cw.timer.Stop()
 		cw.timer = nil
 	}
 	cw.mu.Unlock()
-	_ = cw.w.Close()
 }
 
-// loop 读取 fsnotify 事件；Errors 通道故障仅静默（下次实例注册会重建监听）。
+// loop 读取 fswatcher 事件；Dropped 通道仅消费（丢弃不致命：事件面本身已去抖合并）；
+// 通道关闭即退出（下次实例注册重建监听）。
 func (cw *capWatcher) loop() {
+	events := cw.w.Events()
+	dropped := cw.w.Dropped()
 	for {
 		select {
-		case ev, ok := <-cw.w.Events:
+		case ev, ok := <-events:
 			if !ok {
 				return
 			}
 			cw.handle(ev)
-		case _, ok := <-cw.w.Errors:
+		case _, ok := <-dropped:
 			if !ok {
-				return
+				dropped = nil // 通道关闭 → 摘除该分支（避免零值忙轮询）
 			}
 		case <-cw.done:
 			return
@@ -197,38 +249,18 @@ func (cw *capWatcher) loop() {
 	}
 }
 
-// handle 处理单个事件：新建目录递归加监听；目标根内变更置脏并调度去抖重扫。
-// 祖先目录（根尚未创建时的监听点）内的无关文件（如 usr db）变动只做监听补齐，不触发重扫。
-func (cw *capWatcher) handle(ev fsnotify.Event) {
-	p := normPath(ev.Name)
+// handle 处理单个事件：Create/Remove/Rename 后补齐监听（fswatcher 递归自动覆盖新增子树）；
+// 目标根内变更置脏并调度去抖重扫。祖先目录（根尚未创建时的监听点）内的无关文件
+// （如 usr db / WebView2 profile）变动只做监听补齐，不触发重扫。
+func (cw *capWatcher) handle(ev fswatcher.WatchEvent) {
+	p := normPath(ev.Path)
 	cw.mu.Lock()
 	defer cw.mu.Unlock()
-	if ev.Op&fsnotify.Create != 0 {
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			// 仅对落在目标 capability 根内的新建目录递归监听（含根自身）。祖先监听点
-			// （usr/prjusr 根尚未创建时回落到最近已存在祖先，如 <usr> = <HOME>/.chonkpilot）
-			// 内的无关目录 —— 典型如 WebView2 profile 树 <HOME>/.chonkpilot/webview2/** ——
-			// 不得纳入递归监听：否则被 fsnotify 全量接管（数万目录 + 高频变更），持 cw.mu 期间
-			// 阻塞并发的 watchInstance（→ instance-register 60s 超时）。目标根创建后由
-			// 下方 syncLocked 收敛为对其递归监听。
-			if cw.inWantLocked(p) || cw.inAppLocked(p) {
-				cw.addTreeLocked(p) // capability 树新增子目录 → 递归监听
-			}
-		}
+	if hasEventType(ev.Types, fswatcher.EventCreate) ||
+		hasEventType(ev.Types, fswatcher.EventRemove) ||
+		hasEventType(ev.Types, fswatcher.EventRename) {
+		cw.syncLocked() // 目标根可能刚被创建/删除（此前监听其祖先）→ 收敛监听
 	}
-	if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
-		// B-28：目录被删除/改名时 fsnotify 句柄随之失效（Windows 自动移除底层监听），
-		// 须按该路径前缀清理 watched 中相关条目（含目录树下子项），否则目录重建后
-		// syncLocked→addTreeLocked→addDirLocked 被 stale `watched[dir]=true` 短路，
-		// 不再 w.Add → **永久失去监听**（热生效静默失效直到重启）。
-		cw.removeWatchLocked(p)
-		// 若被删除/改名的正是某目标根本身 → 同步清除其「已展开」标记，使重建后能重新全树展开
-		//（避免目录已重建而 syncLocked 因陈旧标记跳过展开 → 丢失整棵子树监听）。
-		if _, ok := cw.want[p]; ok {
-			delete(cw.expanded, p)
-		}
-	}
-	cw.syncLocked() // 目标根可能刚被创建（此前监听其祖先）→ 补齐监听
 	if !cw.inWantLocked(p) {
 		return
 	}
@@ -262,80 +294,55 @@ func (cw *capWatcher) fire() {
 	}
 }
 
-// syncLocked 保证每个目标根都有监听：根存在 → 递归监听；不存在 → 监听最近的已存在祖先
-// （根随后被创建时可在 handle 中捕获并切换监听）。
-//
-// 性能（历史缺陷修复）：本函数在**每个 fsnotify 事件**后都会被调用，而根内新建子目录已由
-// handle 的 Create 分支（addTreeLocked）即时补齐监听 —— 故对**已完整展开**的根不再重复
-// os.ReadDir 递归整棵子树（大 capability 树下持 cw.mu 全树重扫会阻塞并发的 watchInstance）。
-// 热生效语义不变：根内新子目录仍由 handle 捕获并递归监听。
+// syncLocked 保证每个目标根都有监听：根存在 → 递归监听（WatchNested）；不存在 → 监听最近的
+// 已存在祖先（WatchTopLevel，根随后被创建时由 handle 捕获并收敛为递归监听）。
+// 递归子树由 fswatcher 自动接管，不再逐目录展开（大 capability 树下无全树 ReadDir）。
 func (cw *capWatcher) syncLocked() {
 	for root := range cw.want {
 		if dirExists(root) {
-			if cw.expanded[root] {
-				continue // 已完整展开（根 + 子树监听已建立）→ 无新目录待补，跳过全树重扫
-			}
-			if cw.addTreeLocked(root) {
-				cw.expanded[root] = true
-			} else {
-				// 根监听失败（`w.Add` 失败，如句柄耗尽）→ 不置「已展开」标记，下次 syncLocked 重试，
-				// 避免该根永久失去监听（热生效静默失效直到重启）。
-				delete(cw.expanded, root)
-			}
+			cw.ensureWatchLocked(root, fswatcher.WatchNested)
 			continue
 		}
-		// 根尚不存在 / 已被删除 → 取消展开标记（其被创建时由 handle 重新展开），并监听最近祖先。
-		delete(cw.expanded, root)
+		// 根尚不存在 / 已被删除 → 摘除该根监听（避免目录重建后按陈旧句柄短路），改监听最近祖先。
+		if _, ok := cw.synced[root]; ok {
+			cw.dropLocked(root)
+		}
 		if anc := nearestExistingDir(root); anc != "" {
-			cw.addDirLocked(anc)
+			cw.ensureWatchLocked(anc, fswatcher.WatchTopLevel)
 		}
 	}
 }
 
-// addDirLocked 添加对 dir 的监听（幂等）；已监听返回 false。
-func (cw *capWatcher) addDirLocked(dir string) bool {
-	dir = normPath(dir)
-	if cw.watched[dir] {
-		return false
+// ensureWatchLocked 保证 path 以至少 depth 的深度被监听（幂等）。fswatcher 不允许重复
+// AddPath，故 TopLevel → Nested 升级须先 DropPath 再 AddPath。
+func (cw *capWatcher) ensureWatchLocked(path string, depth fswatcher.WatchDepth) {
+	path = normPath(path)
+	if cur, ok := cw.synced[path]; ok {
+		if depth != fswatcher.WatchNested || cur == fswatcher.WatchNested {
+			return
+		}
+		cw.dropLocked(path)
 	}
-	if err := cw.w.Add(dir); err != nil {
-		delete(cw.watched, dir) // B-28 兜底：w.Add 失败 → 清除可能残留的 stale 记录，保证后续可重试
-		return false
+	cw.waitReadyLocked()
+	if err := cw.w.AddPath(path, fswatcher.WithDepth(depth)); err != nil {
+		// 已由初始路径/其它根监听（synced 未覆盖的竞态）→ 登记深度，避免反复失败。
+		if strings.Contains(err.Error(), "already being watched") {
+			cw.synced[path] = depth
+			return
+		}
+		slog.Debug("capability watch add failed", "path", path, "err", err)
+		return
 	}
-	cw.watched[dir] = true
-	return true
+	cw.synced[path] = depth
 }
 
-// removeWatchLocked 从 watched 清理 path 及其子树条目（B-28：目录删除/改名后 fsnotify 句柄
-// 自动失效，须同步移除，否则重建时被 stale `watched` 记录短路而永久失去监听）。
-func (cw *capWatcher) removeWatchLocked(path string) {
-	for d := range cw.watched {
-		if under(d, path) {
-			delete(cw.watched, d)
-		}
+// dropLocked 摘除对 path 的监听并清理 synced 记录（未监听/未运行仅留痕）。
+func (cw *capWatcher) dropLocked(path string) {
+	cw.waitReadyLocked()
+	if err := cw.w.DropPath(path); err != nil {
+		slog.Debug("capability watch drop failed", "path", path, "err", err)
 	}
-}
-
-// addTreeLocked 递归监听 dir 及其子目录（跳过隐藏项）；返回**整棵子树（根 + 所有子目录）是否
-// 全部监听成功**。addDirLocked 因 `w.Add` 失败返回 false → 该目录未监听，**任一目录失败即返回
-// false**（不得只回根成败：子目录 `w.Add` 失败被忽略会配合调用方置 `expanded[root]` → 该子树
-// 内新变更永久不被监听/重试，热生效静默失效直到重启）。
-func (cw *capWatcher) addTreeLocked(dir string) bool {
-	dir = normPath(dir)
-	ok := cw.addDirLocked(dir) || cw.watched[dir]
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ok
-	}
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		if !cw.addTreeLocked(filepath.Join(dir, e.Name())) {
-			ok = false
-		}
-	}
-	return ok
+	delete(cw.synced, path)
 }
 
 // inWantLocked 判定路径是否位于任一目标根内（含根自身）。
@@ -352,6 +359,16 @@ func (cw *capWatcher) inWantLocked(path string) bool {
 func (cw *capWatcher) inAppLocked(path string) bool {
 	for root := range cw.appWant {
 		if under(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasEventType 判定事件类型集合是否含 t。
+func hasEventType(types []fswatcher.EventType, t fswatcher.EventType) bool {
+	for _, x := range types {
+		if x == t {
 			return true
 		}
 	}

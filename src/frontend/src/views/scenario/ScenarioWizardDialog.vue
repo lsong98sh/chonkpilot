@@ -1061,7 +1061,7 @@ function removeTeamMember(idx) {
   if (team.value[idx] && !team.value[idx].isMain) team.value.splice(idx, 1)
 }
 async function addTeamMember() {
-  const name = await promptInput(t('wizard.summary.addMemberPrompt'))
+  const name = await promptInput(t('wizard.summary.addMemberPrompt'), '', { maxlength: 64 })
   if (name === null) return
   const n = String(name).trim()
   if (!n) return
@@ -1203,7 +1203,7 @@ function removeMemory(idx) {
   }
 }
 async function addMemoryCategory() {
-  const name = await promptInput(t('wizard.memory.addCategoryPrompt'))
+  const name = await promptInput(t('wizard.memory.addCategoryPrompt'), '', { maxlength: 64 })
   if (name === null) return
   const n = String(name).trim()
   if (!n) return

@@ -20,21 +20,44 @@
             <span v-if="userDirty" class="unsaved-mark">{{ $t('config.feedback.unsaved') }}</span>
             <Button size="small" type="primary" :disabled="!userDirty" :loading="savingUser" data-params-save-user @click="saveUserTab">{{ $t('common.save') }}</Button>
           </div>
-          <div v-for="f in timeoutFields" :key="f.key" class="param-row">
-            <label class="param-label">{{ f.label }}</label>
-            <div class="param-input">
-              <!-- C 数值项：前置校验（非法值不写库并内联报错） -->
-              <Input
-                type="number"
-                v-model.number="userValues[f.key]"
-                :min="f.min" :max="f.max" :step="f.step"
-                :error="!!userErrors[f.key]"
-                @update:model-value="refreshUserDirty"
-              />
-              <span class="unit">{{ f.unit }}</span>
-              <span v-if="userErrors[f.key]" class="param-error">{{ userErrors[f.key] }}</span>
+          <div v-for="g in userGroups" :key="g.key" class="param-group">
+            <h4 class="param-group-title">{{ g.label }}</h4>
+            <div v-for="f in g.fields" :key="f.key" class="param-row">
+              <label class="param-label">{{ f.label }}</label>
+              <div class="param-input">
+                <!-- 布尔项（自动续写开关） -->
+                <Switch
+                  v-if="f.type === 'bool'"
+                  :model-value="!!userValues[f.key]"
+                  @update:model-value="(v) => { userValues[f.key] = v; refreshUserDirty() }"
+                />
+                <!-- 文本项（续写文案） -->
+                <Input
+                  v-else-if="f.type === 'text'"
+                  v-model="userValues[f.key]"
+                  @update:model-value="refreshUserDirty"
+                />
+                <!-- 下拉项（事件日志分级） -->
+                <Select
+                  v-else-if="f.type === 'select'"
+                  :model-value="userValues[f.key]"
+                  :options="f.options"
+                  @update:model-value="(v) => { userValues[f.key] = v; refreshUserDirty() }"
+                />
+                <!-- 数值项：前置校验（非法值不写库并内联报错） -->
+                <Input
+                  v-else
+                  type="number"
+                  v-model.number="userValues[f.key]"
+                  :min="f.min" :max="f.max" :step="f.step"
+                  :error="!!userErrors[f.key]"
+                  @update:model-value="refreshUserDirty"
+                />
+                <span v-if="f.unit" class="unit">{{ f.unit }}</span>
+                <span v-if="userErrors[f.key]" class="param-error">{{ userErrors[f.key] }}</span>
+              </div>
+              <Button size="small" :disabled="!userOverridden(f.key)" v-mq:[EventNames.configResetKey].click="{ level: 'user', key: f.key }">{{ $t('config.page.reset') }}</Button>
             </div>
-            <Button size="small" :disabled="!userOverridden(f.key)" v-mq:[EventNames.configResetKey].click="{ level: 'user', key: f.key }">{{ $t('config.page.reset') }}</Button>
           </div>
         </div>
       </template>
@@ -72,7 +95,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Tabs, Input, Button, message } from '../../components/ui'
+import { Tabs, Input, Button, Switch, Select, message } from '../../components/ui'
 import {
   getUserConfig, saveUserConfig, resetUserKey,
   getAllConfig, setConfig, deleteConfig,
@@ -99,19 +122,48 @@ const tabs = computed(() => [
   { label: t('config.page.projectTab'), name: 'project' },
 ])
 
-// 超时重试（系统/用户两级）；allowZero = 该项显式 0 合法（仅 retryCount，见后端 loadLLMRuntimeConfig
-// 的 n>=0 口径；其余两项后端口径为 n>0，0 会被静默回落默认）
-// 注：重试退避间隔不自持（经 router.RetryWait：Retry-After 优先 + 指数退避），故无 retryDelay 项。
-const timeoutFields = computed(() => [
-  { key: 'responseTimeout', label: t('config.responseTimeout'), min: 0, max: 600, step: 30, unit: 's' },
-  { key: 'streamTimeout', label: t('config.streamTimeout'), min: 0, max: 600, step: 30, unit: 's' },
+// 用户页签两组（RETRY-2，2026-10-20）：
+//   - 「LLM Router」= 报文级超时/重试（router 消费：responseTimeout/streamTimeout/retryCount/retryBudgetSec）；
+//   - 「会话」= 语义级续写（llm 消费：autoContinue / autoContinueDelaySec / continueText）。
+// allowZero = 该项显式 0 合法（retryCount / retryBudgetSec：0 = 不重试 / 关闭预算）；
+// 其余数值项后端口径为 n>0，0 会被静默回落默认。
+const routerFields = computed(() => [
+  // INPUTVAL-1 已拍板：timeout 必须 > 0（0 非法）；UI min 与后端 validatePositiveInt 对齐。
+  { key: 'responseTimeout', label: t('config.responseTimeout'), min: 1, max: 600, step: 30, unit: 's' },
+  { key: 'streamTimeout', label: t('config.streamTimeout'), min: 1, max: 600, step: 30, unit: 's' },
   { key: 'retryCount', label: t('config.retryCount'), min: 0, max: 10, step: 1, unit: '', allowZero: true },
+  { key: 'retryBudgetSec', label: t('config.retryBudgetSec'), min: 0, max: 600, step: 10, unit: 's', allowZero: true },
+])
+const sessionFields = computed(() => [
+  { key: 'autoContinue', label: t('config.autoContinue'), type: 'bool' },
+  { key: 'autoContinueDelaySec', label: t('config.autoContinueDelaySec'), min: 0, max: 86400, step: 60, unit: 's', allowZero: true },
+  { key: 'continueText', label: t('config.continueText'), type: 'text' },
+  // NEXTRUN-1：`next_run` 连续自动接续上限（0 = 关闭 → 工具不下发）。
+  { key: 'nextRunMax', label: t('config.nextRunMax'), min: 0, max: 1000, step: 1, unit: '', allowZero: true },
+  // MOD-1 M3：TurnState 事件日志分级 + 终态事件保留天数（0 = 永久）。
+  {
+    key: 'turnEventLog',
+    label: t('config.turnEventLog'),
+    type: 'select',
+    options: [
+      { value: 'none', label: t('config.turnEventLog_none') },
+      { value: 'minimal', label: t('config.turnEventLog_minimal') },
+      { value: 'outline', label: t('config.turnEventLog_outline') },
+      { value: 'verbose', label: t('config.turnEventLog_verbose') },
+    ],
+  },
+  { key: 'turnEventLogRetentionDays', label: t('config.turnEventLogRetentionDays'), min: 0, max: 3650, step: 1, unit: 'd', allowZero: true },
+])
+const userFields = computed(() => [...routerFields.value, ...sessionFields.value])
+const userGroups = computed(() => [
+  { key: 'router', label: t('config.group.llmRouter'), fields: routerFields.value },
+  { key: 'session', label: t('config.group.session'), fields: sessionFields.value },
 ])
 
 // 系统默认值表（代码常量，不落库；「系统」页签展示 + 各输入框 placeholder 与「重置」判定共用一份）。
 // 【前端镜像，须与后端常量同步】后端权威源（变更任一项必须同步本表 + 对应断言测试）：
-//   - responseTimeout/streamTimeout/retryCount →
-//     chonkpilot-data/internal/config/userconfig.go userConfigSystemDefaults（120/60/2）
+//   - responseTimeout/streamTimeout/retryCount/retryBudgetSec/autoContinue/autoContinueDelaySec/continueText/nextRunMax →
+//     chonkpilot-data/internal/config/userconfig.go userConfigSystemDefaults（120/60/5/60/true/600/继续/30）
 //   - timeout_sec/max_concurrency/skip_dirs →
 //     chonkpilot-mcp-server/server/config.go DefaultConfig()（300/16/12 项跳过目录；与
 //     chonkpilot-mcp-tools/internal/fileops/fileops.go SkipDirs 同集）
@@ -121,7 +173,14 @@ const timeoutFields = computed(() => [
 const SYSTEM_DEFAULTS = Object.freeze({
   responseTimeout: '120',
   streamTimeout: '60',
-  retryCount: '2',
+  retryCount: '5',
+  retryBudgetSec: '60',
+  autoContinue: 'true',
+  autoContinueDelaySec: '600',
+  continueText: '继续',
+  nextRunMax: '30',
+  turnEventLog: 'outline',
+  turnEventLogRetentionDays: '7',
   timeout_sec: '300',
   max_concurrency: '16',
   skip_dirs: '.git, .svn, node_modules, .trae, .chonkpilot, __pycache__, .venv, venv, build, dist, .next, .nuxt',
@@ -136,7 +195,7 @@ const serviceFields = computed(() => [
 
 // 系统默认（只读展示，不落库）：逐项取自 SYSTEM_DEFAULTS（与后端常量同源镜像）
 const systemRows = computed(() => [
-  ...timeoutFields.value.map(f => ({ key: f.key, label: f.label, value: SYSTEM_DEFAULTS[f.key] })),
+  ...userFields.value.map(f => ({ key: f.key, label: f.label, value: SYSTEM_DEFAULTS[f.key] })),
   ...serviceFields.value.map(f => ({ key: f.key, label: f.label, value: SYSTEM_DEFAULTS[f.key] })),
 ])
 
@@ -162,14 +221,25 @@ function hasPrj(key) {
 // userOverridden：用户级「重置」可用性。usr 读取端会把缺失键补成系统默认（无法区分"未设"与
 // "设成默认值"），故按"当前有效值 ≠ 系统默认"判定是否确有覆盖；无覆盖 → 重置无意义（禁用）。
 function userOverridden(key) {
-  const v = Number(userValues.value[key])
-  return Number.isFinite(v) && v !== Number(SYSTEM_DEFAULTS[key])
+  const v = userValues.value[key]
+  const def = SYSTEM_DEFAULTS[key]
+  if (typeof v === 'boolean') return String(v) !== def
+  if (typeof v === 'string') return v !== def
+  return Number.isFinite(Number(v)) && Number(v) !== Number(def)
+}
+
+// defaultUserVal：系统默认值按字段类型还原（bool / string / number），用于加载与「重置」归位。
+function defaultUserVal(key) {
+  const raw = SYSTEM_DEFAULTS[key]
+  if (raw === 'true' || raw === 'false') return raw === 'true'
+  if (isNaN(Number(raw))) return raw
+  return Number(raw)
 }
 
 // refreshUserDirty / refreshPrjDirty：由「本地态 vs 已保存快照」重算 dirty（无 watch）；
 // 编辑 / 重置 / 保存后显式调用。
 function refreshUserDirty() {
-  const changed = timeoutFields.value.some(f =>
+  const changed = userFields.value.some(f =>
     String(userValues.value[f.key] ?? '') !== String(lastUserVals.value[f.key] ?? ''))
   changed ? markUserDirty() : markUserSaved()
 }
@@ -184,7 +254,12 @@ async function loadUser() {
     const res = await getUserConfig()
     const uc = res.config || res
     const m = {}
-    for (const f of timeoutFields.value) m[f.key] = uc[f.key] ?? 0
+    for (const f of userFields.value) {
+      const raw = uc[f.key]
+      if (f.type === 'bool') m[f.key] = raw === undefined ? defaultUserVal(f.key) : !!raw
+      else if (f.type === 'text' || f.type === 'select') m[f.key] = raw === undefined || raw === null ? defaultUserVal(f.key) : String(raw)
+      else m[f.key] = raw === undefined || raw === null ? defaultUserVal(f.key) : Number(raw)
+    }
     userValues.value = m
     lastUserVals.value = { ...m }
     userErrors.value = {}
@@ -245,7 +320,7 @@ async function saveUserTab() {
   try {
     const patch = {}
     const clears = []
-    for (const f of timeoutFields.value) {
+    for (const f of userFields.value) {
       const r = commitUser(f, patch, clears)
       if (r === 'queued') saved++
       else if (r === 'invalid') failed = true
@@ -256,7 +331,7 @@ async function saveUserTab() {
     }
     for (const k of clears) {
       await resetUserKey(k)
-      applyUserSaved({ [k]: Number(SYSTEM_DEFAULTS[k]) })
+      applyUserSaved({ [k]: defaultUserVal(k) })
     }
     // 单项非法已各自给出可见提示 → 仅在有实际写入且无失败时给一次成功反馈
     if (saved > 0 && !failed) message.success(savedText(t, APPLY_INSTANT))
@@ -282,6 +357,36 @@ function applyUserSaved(entries) {
 // 由 saveUserTab 汇总为一次批量写。
 function commitUser(f, patch, clears) {
   const key = f.key
+  // 布尔项：直接写 bool；与快照相同 = 无改动。
+  if (f.type === 'bool') {
+    const cur = !!userValues.value[key]
+    if (String(cur) === String(lastUserVals.value[key])) return 'unchanged'
+    patch[key] = cur
+    return 'queued'
+  }
+  // 下拉项（分级枚举）：非空枚举值，原样写；与快照相同 = 无改动。
+  if (f.type === 'select') {
+    const cur = String(userValues.value[key] ?? '')
+    if (cur === String(lastUserVals.value[key] ?? '')) return 'unchanged'
+    patch[key] = cur
+    return 'queued'
+  }
+  // 文本项：清空 = 删键回落默认；否则原样写。
+  if (f.type === 'text') {
+    const rawStr = String(userValues.value[key] ?? '')
+    if (rawStr.trim() === '') {
+      const def = defaultUserVal(key)
+      if (String(lastUserVals.value[key]) === String(def)) {
+        userValues.value = { ...userValues.value, [key]: def }
+        return 'unchanged'
+      }
+      clears.push(key)
+      return 'queued'
+    }
+    if (rawStr === String(lastUserVals.value[key] ?? '')) return 'unchanged'
+    patch[key] = rawStr
+    return 'queued'
+  }
   const rawStr = String(userValues.value[key] ?? '').trim()
   const def = Number(SYSTEM_DEFAULTS[key])
   if (rawStr === '') {
@@ -395,8 +500,8 @@ async function resetKey({ level, key }) {
   try {
     if (level === 'user') {
       await resetUserKey(key)
-      // 回落系统默认值（非 0：如 responseTimeout 默认 120s）
-      const def = Number(SYSTEM_DEFAULTS[key])
+      // 回落系统默认值（按字段类型还原：bool / string / number）
+      const def = defaultUserVal(key)
       userValues.value = { ...userValues.value, [key]: def }
       lastUserVals.value = { ...lastUserVals.value, [key]: def }
       userErrors.value = { ...userErrors.value, [key]: '' }

@@ -60,10 +60,16 @@ type webview struct {
 	autofocus  bool
 	hidden     bool
 	frameless  bool
-	maxsz      w32.Point
-	minsz      w32.Point
-	m          sync.Mutex
-	dispatchq  []func()
+	// owner 是 CreateWindowExW 的 hwndParent（PRODSIM-1）：非 0 时本窗口成为该窗口的
+	// owned window —— 随 owner 最小化/销毁、始终位于 owner 之上。
+	owner uintptr
+	// hideOnClose 为 true 时 WM_CLOSE 只隐藏窗口（不 DestroyWindow）—— 日志窗口用
+	// （关闭 = 收回托盘，进程继续运行）。
+	hideOnClose bool
+	maxsz       w32.Point
+	minsz       w32.Point
+	m           sync.Mutex
+	dispatchq   []func()
 }
 
 type WindowOptions struct {
@@ -101,6 +107,13 @@ type WebViewOptions struct {
 	// can render its own title bar (e.g. via -webkit-app-region: drag).
 	Frameless bool
 
+	// Owner 是窗口的 owner（hwndParent）。非 0 时本窗口随 owner 最小化/销毁，
+	// 并始终位于 owner 之上（主窗口/小窗口层级，PRODSIM-1）。
+	Owner uintptr
+
+	// HideOnClose 为 true 时，用户点关闭只隐藏窗口而不销毁（日志窗口：关闭 = 收回托盘）。
+	HideOnClose bool
+
 	// WindowOptions customizes the window that is created to embed the
 	// WebView2 widget.
 	WindowOptions WindowOptions
@@ -122,6 +135,8 @@ func NewWithOptions(options WebViewOptions) WebView {
 	w.autofocus = options.AutoFocus
 	w.hidden = options.Hidden
 	w.frameless = options.Frameless
+	w.owner = options.Owner
+	w.hideOnClose = options.HideOnClose
 
 	chromium := edge.NewChromium()
 	chromium.DataPath = options.DataPath
@@ -220,6 +235,11 @@ func wndproc(hwnd, msg, wp, lp uintptr) uintptr {
 				w.browser.Focus()
 			}
 		case w32.WMClose:
+			// HideOnClose（PRODSIM-1）：日志窗口关闭 = 收回托盘，**不销毁**（进程继续）。
+			if w.hideOnClose {
+				_, _, _ = w32.User32ShowWindow.Call(hwnd, w32.SWHide)
+				return 0
+			}
 			_, _, _ = w32.User32DestroyWindow.Call(hwnd)
 		case w32.WMDestroy:
 			// 窗口销毁：移除 windowContext 条目（D-28，避免多窗口反复开关时 *webview 永久泄漏），
@@ -337,7 +357,7 @@ func (w *webview) CreateWithOptions(opts WindowOptions) bool {
 		uintptr(posY),
 		uintptr(windowWidth),
 		uintptr(windowHeight),
-		0,
+		w.owner, // hwndParent：owner 窗口（PRODSIM-1 主窗口/小窗口层级）
 		0,
 		uintptr(hinstance),
 		uintptr(unsafe.Pointer(w)),
@@ -363,6 +383,14 @@ func (w *webview) CreateWithOptions(opts WindowOptions) bool {
 
 func (w *webview) Destroy() {
 	_, _, _ = w32.User32PostMessageW.Call(w.hwnd, w32.WMClose, 0, 0)
+}
+
+// DestroyForced 销毁窗口，**无视 HideOnClose**（程序收尾用：日志窗口的 HideOnClose 只拦截
+// 用户点关闭，不阻止进程退出）。DestroyWindow 必须在本窗口线程执行 → 经 Dispatch 投递。
+func (w *webview) DestroyForced() {
+	w.Dispatch(func() {
+		_, _, _ = w32.User32DestroyWindow.Call(w.hwnd)
+	})
 }
 
 func (w *webview) Run() {
@@ -532,12 +560,19 @@ func (w *webview) Show() {
 	}
 }
 
+// Hide hides the native window without destroying it (log window: close = back to tray).
+func (w *webview) Hide() {
+	_, _, _ = w32.User32ShowWindow.Call(w.hwnd, w32.SWHide)
+}
+
 // WebViewLifecycle exposes window visibility control to the caller.
 type WebViewLifecycle interface {
 	// SetNavigationCompletedCallback fires when a navigation completes.
 	SetNavigationCompletedCallback(cb func(sender *edge.ICoreWebView2, args *edge.ICoreWebView2NavigationCompletedEventArgs))
 	// Show makes the native window visible.
 	Show()
+	// Hide hides the native window without destroying it.
+	Hide()
 }
 
 // OpenDevToolsWindow opens the DevTools window for the current page.

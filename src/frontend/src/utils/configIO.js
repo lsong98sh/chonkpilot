@@ -34,7 +34,9 @@ export const EXPORT_SCOPE = 'usr'
 export const SNAPSHOT_SCALAR_KEYS = [
   'theme', 'locale',
   'chromePath', 'javaPath', 'pythonPath', 'nodePath', 'goPath', 'rustPath', 'cCompilerPath',
-  'responseTimeout', 'streamTimeout', 'retryCount',
+  'responseTimeout', 'streamTimeout', 'retryCount', 'retryBudgetSec',
+  'autoContinue', 'autoContinueDelaySec', 'continueText', 'nextRunMax',
+  'turnEventLog', 'turnEventLogRetentionDays',
   'defaultLLM', 'defaultScenario',
 ]
 

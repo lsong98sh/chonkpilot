@@ -1,5 +1,5 @@
 // T-21 capability 原语保存后热生效测试（21-llm-server / KB-007-S04）：
-// 用户/项目级 capability 根经 fsnotify 监听 + 60ms 去抖 → 复用既有 servers/unregister +
+// 用户/项目级 capability 根经 fswatcher 监听 + 60ms 去抖 → 复用既有 servers/unregister +
 // servers/register 重扫 dir 节点 → 工具面（tools/list）在数十毫秒级反映增删，无需重启。
 // 边界：不新增消息面主题；系统级 self 节点不在本链路（见 capwatch.go 说明）。
 package server
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
+	"github.com/sgtdi/fswatcher"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
@@ -19,7 +19,7 @@ import (
 // TestCapWatchIgnoresDirsOutsideRoots 回归：flash 全新 HOME 下 instance-register 首次 60s 超时。
 // 当 usr/prjusr capability 根尚未创建时，watcher 回落到最近已存在祖先监听（如 <usr> =
 // <HOME>/.chonkpilot）；该祖先内的无关目录——典型如 WebView2 profile 树 <usr>/webview2/**——
-// **不得**被递归纳入监听：否则被 fsnotify 全量接管（运行态大树、数万目录 + 高频变更），
+// **不得**被递归纳入监听：否则被 fswatcher 全量接管（运行态大树、数万目录 + 高频变更），
 // 持 cw.mu 期间阻塞并发的 watchInstance（→ instance-register 分派 60s 超时）。
 func TestCapWatchIgnoresDirsOutsideRoots(t *testing.T) {
 	cw, err := newCapWatcher(nil) // 手动喂事件驱动；本用例不触发 fire（s 不参与）
@@ -38,7 +38,7 @@ func TestCapWatchIgnoresDirsOutsideRoots(t *testing.T) {
 	cw.mu.Lock()
 	cw.want[normPath(root)] = true
 	cw.syncLocked() // 根不存在 → 回落到祖先 usrAnc 监听
-	_, watchingAnc := cw.watched[normPath(usrAnc)]
+	_, watchingAnc := cw.synced[normPath(usrAnc)]
 	cw.mu.Unlock()
 	if !watchingAnc {
 		t.Fatalf("根不存在时应回落到最近已存在祖先监听: %s", usrAnc)
@@ -49,12 +49,15 @@ func TestCapWatchIgnoresDirsOutsideRoots(t *testing.T) {
 	if err := os.MkdirAll(decoy, 0o755); err != nil {
 		t.Fatalf("mkdir decoy: %v", err)
 	}
-	// 等价 fsnotify 对 usrAnc 直属子项 webview2 的 Create 投递。
-	cw.handle(fsnotify.Event{Name: filepath.Join(usrAnc, "webview2"), Op: fsnotify.Create})
+	// 等价 fswatcher 对 usrAnc 直属子项 webview2 的 Create 投递。
+	cw.handle(fswatcher.WatchEvent{
+		Path:  filepath.Join(usrAnc, "webview2"),
+		Types: []fswatcher.EventType{fswatcher.EventCreate},
+	})
 
 	cw.mu.Lock()
-	_, watchedWv := cw.watched[normPath(filepath.Join(usrAnc, "webview2"))]
-	_, watchedDeep := cw.watched[normPath(decoy)]
+	_, watchedWv := cw.synced[normPath(filepath.Join(usrAnc, "webview2"))]
+	_, watchedDeep := cw.synced[normPath(decoy)]
 	cw.mu.Unlock()
 	if watchedWv || watchedDeep {
 		t.Fatalf("目标根之外的目录不得纳入递归监听（webview2=%v deep=%v）", watchedWv, watchedDeep)

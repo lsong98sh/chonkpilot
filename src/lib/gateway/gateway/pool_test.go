@@ -368,19 +368,52 @@ func TestRegisterSpecCarriesIsolate(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"a","mcp_server":{"runtime":"node","args":["a.js"],"isolate":false}}`), &on); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if on.MCPServer == nil || on.MCPServer.Isolate == nil || *on.MCPServer.Isolate {
-		t.Fatalf("mcp_server.isolate=false 应落到 *bool：%+v", on.MCPServer)
+	if on.ServerSpec == nil || on.ServerSpec.Isolate == nil || *on.ServerSpec.Isolate {
+		t.Fatalf("mcp_server.isolate=false 应落到 *bool：%+v", on.ServerSpec)
 	}
 	var legacy regMsg
 	if err := json.Unmarshal([]byte(`{"name":"a","mcp_server":{"runtime":"node","args":["a.js"]}}`), &legacy); err != nil {
 		t.Fatalf("unmarshal legacy: %v", err)
 	}
 	// 旧载荷（无 isolate 键）→ nil → 按 transport 推断（stdio → 隔离）
-	entry := ServerEntry{ID: "a", Runtime: "node", Args: []string{"a.js"}, Isolate: legacy.MCPServer.Isolate}
+	entry := ServerEntry{ID: "a", Runtime: "node", Args: []string{"a.js"}, Isolate: legacy.ServerSpec.Isolate}
 	if !entry.IsolateEnabled() {
 		t.Fatalf("旧载荷 stdio 应推断为隔离：%+v", entry)
 	}
-	t.Logf("register 载荷：isolate=false → %v；旧载荷（无键） stdio → IsolateEnabled=%v", *on.MCPServer.Isolate, entry.IsolateEnabled())
+	t.Logf("register 载荷：isolate=false → %v；旧载荷（无键） stdio → IsolateEnabled=%v", *on.ServerSpec.Isolate, entry.IsolateEnabled())
+}
+
+// ─── 补充：纯远程（proxied）取消 = 协作式 no-op（不重建共享连接）───
+
+// TestProxiedTerminateDoesNotRebuildSharedConn：纯远程（proxied，无自持子进程）的 Terminate
+// 不得走 Invalidate（断连 + initialize 握手）——取消已由执行池 ctx 送达（HTTP 请求中止 +
+// notifications/cancelled）。同步重建会阻塞 mq 同步派发线程，并发取消还会把共享槽置空
+// → 后续调用 "no transport connection"（2026-10-19 G-68 第二步 L4 回归实测）。
+func TestProxiedTerminateDoesNotRebuildSharedConn(t *testing.T) {
+	p, err := newProxyProvider(&ServerEntry{
+		ID: "remote", URL: "http://127.0.0.1:1/mcp", Transport: "http",
+	}, 5*time.Second, t.Logf, nil)
+	if err != nil {
+		t.Fatalf("newProxyProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	before := p.shared.Load()
+	start := time.Now()
+	rebuilt, err := p.Terminate(context.Background(), "ins-a", `E:\proj\wd`)
+	elapsed := time.Since(start)
+	if err != nil || !rebuilt {
+		t.Fatalf("proxied Terminate: rebuilt=%v err=%v", rebuilt, err)
+	}
+	if p.shared.Load() != before {
+		t.Fatal("proxied Terminate 重建了共享连接槽（应协作式 no-op）")
+	}
+	if p.shared.Load().conn == nil {
+		t.Fatal("proxied Terminate 后共享槽 conn 被清空（后续调用会报 no transport connection）")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("proxied Terminate 耗时 %v（取消路径不得同步重建/握手）", elapsed)
+	}
+	t.Logf("proxied Terminate：no-op，共享槽保持不变（%v）", elapsed)
 }
 
 // pidOf 从 "<pid>[:<ms>]" 取 pid 部分。

@@ -6,6 +6,7 @@ package server
 import (
 	"encoding/json"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
@@ -85,7 +86,7 @@ func (st *sessionStore) LatestTurnID(sessionID string) string {
 // 用于 assistant 增量落库（同段落库到同一行）。
 func (st *sessionStore) AppendFullKeyed(turnID string, m ChatMsg, key string) (string, error) {
 	var msg map[string]any
-	if b, err := json.Marshal(m); err == nil {
+	if b, err := json.Marshal(ChatMessageToData(m)); err == nil { // M2：chat 自持类型 → 快照 wire 形态
 		_ = json.Unmarshal(b, &msg)
 	}
 	return st.appendMsg(turnID, msg, key)
@@ -118,13 +119,13 @@ func (st *sessionStore) LoadMessages(turnID string) []ChatMsg {
 		logf("[chonkpilot-server] LoadMessages(%s): %v\n", turnID, err) // B-06：不吞错（返回值语义不变）
 		return nil
 	}
-	var msgs []ChatMsg
+	var rawMsgs []data.ChatMsg
 	if raw, ok := res["messages"].([]any); ok {
 		if b, err := json.Marshal(raw); err == nil {
-			_ = json.Unmarshal(b, &msgs)
+			_ = json.Unmarshal(b, &rawMsgs)
 		}
 	}
-	return msgs
+	return chatMessagesFromData(rawMsgs)
 }
 
 // LoadToolContent 按 tool_call_id 读该 tool 消息的 content **原文**（{call,result,async} JSON 字符串；
@@ -152,19 +153,19 @@ func (st *sessionStore) LoadToolContent(sessionID, toolCallID string) (string, b
 // （升序、排除 exclude_turn）。消费方（组装侧三段定位）据此**直接取预存 token**（免重复实时估算）；
 // 缺值/缺该键 → 返回 nil，调用方回退实时估算（见 data.ResolveStoredTokens）。
 func (st *sessionStore) BuildContextTokens(sessionID, excludeTurn string, includeSnapshot bool) ([]ChatMsg, []facade.TurnToken) {
-	data := map[string]any{"session_id": sessionID, "exclude_turn": excludeTurn}
+	reqData := map[string]any{"session_id": sessionID, "exclude_turn": excludeTurn}
 	if includeSnapshot {
-		data["include_snapshot"] = "true"
+		reqData["include_snapshot"] = "true"
 	}
-	res, err := st.req("context", data)
+	res, err := st.req("context", reqData)
 	if err != nil {
 		logf("[chonkpilot-server] BuildContextTokens(%s): %v\n", sessionID, err) // B-06：不吞错（返回值语义不变）
 		return nil, nil
 	}
-	var msgs []ChatMsg
+	var rawMsgs []data.ChatMsg
 	if raw, ok := res["messages"].([]any); ok {
 		if b, err := json.Marshal(raw); err == nil {
-			_ = json.Unmarshal(b, &msgs)
+			_ = json.Unmarshal(b, &rawMsgs)
 		}
 	}
 	var tokens []facade.TurnToken
@@ -173,7 +174,7 @@ func (st *sessionStore) BuildContextTokens(sessionID, excludeTurn string, includ
 			_ = json.Unmarshal(b, &tokens)
 		}
 	}
-	return msgs, tokens
+	return chatMessagesFromData(rawMsgs), tokens
 }
 
 // CompleteTurnTokens 结束轮次（写 status/finish_reason；保留原字段）并**预存该轮 token 数**
@@ -201,6 +202,16 @@ func (st *sessionStore) CleanupStaleTurns() error {
 	return err
 }
 
+// CleanupTurnEvents 清理终态 turn 的事件日志（MOD-1 M3；retentionDays=0 = 永久，<0 = 不清理）。
+// 仅删除终态且超过保留期的 turn；running 的事件永不按时间删。失败由调用方告警、不阻断。
+func (st *sessionStore) CleanupTurnEvents(retentionDays int) error {
+	_, err := dataRequest(st.bus, msgkeys.TopicDataTurnEventCleanup, map[string]any{
+		"instance_id": st.instanceID,
+		"data":        map[string]any{"retention_days": retentionDays},
+	})
+	return err
+}
+
 // SetSnapshot 写会话历史快照（data-snapshot-set，§3.2b；唯一终态 llm-complete 写，
 // snapshot_turn = 覆盖到最后一条 turn）。
 func (st *sessionStore) SetSnapshot(sessionID string, history []ChatMsg, snapshotTurn string) error {
@@ -208,7 +219,7 @@ func (st *sessionStore) SetSnapshot(sessionID string, history []ChatMsg, snapsho
 		"instance_id": st.instanceID,
 		"data": map[string]any{
 			"session_id": sessionID,
-			"snapshot":   map[string]any{"history": history, "snapshot_turn": snapshotTurn},
+			"snapshot":   map[string]any{"history": dataMessagesFromChat(history), "snapshot_turn": snapshotTurn},
 		},
 	})
 	return err

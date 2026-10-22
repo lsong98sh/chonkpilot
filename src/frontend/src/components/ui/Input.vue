@@ -7,6 +7,13 @@
     :value="modelValue"
     :placeholder="placeholder"
     :type="type"
+    :maxlength="maxlength"
+    :minlength="minlength"
+    :pattern="pattern"
+    :required="required"
+    :min="min"
+    :max="max"
+    :step="step"
     @input="$emit('update:modelValue', $event.target.value)"
     @focus="$emit('focus', $event)"
     @blur="$emit('blur', $event)"
@@ -20,7 +27,15 @@ defineProps({
   type: { type: String, default: 'text' },
   disabled: Boolean,
   readonly: Boolean,
-  error: Boolean
+  error: Boolean,
+  // INPUTVAL-1：原样透传原生约束（**不设全局默认上限**——长文本与短名称上限不同）。
+  maxlength: { type: [Number, String], default: undefined },
+  minlength: { type: [Number, String], default: undefined },
+  pattern: { type: String, default: undefined },
+  required: { type: Boolean, default: false },
+  min: { type: [Number, String], default: undefined },
+  max: { type: [Number, String], default: undefined },
+  step: { type: [Number, String], default: undefined }
 })
 defineEmits(['update:modelValue', 'focus', 'blur', 'change'])
 </script>

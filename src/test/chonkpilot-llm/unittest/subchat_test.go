@@ -172,15 +172,18 @@ func TestSubChatEndToEndBlackBox(t *testing.T) {
 		t.Fatalf("subchat-state 当前为广播退化路径（不带 instance_id）：%+v", ready)
 	}
 
-	// ⑥ 非主会话工具调用 async=never；主会话不带（mq 观测 mcp-tools-call 的 arguments）
+	// ⑥ INBOX（2026-10-18）：工具全量强制异步（原 A5「非主会话 async=never」已废止），但
+	// **进程内域工具**（subchat_open / subchat_finish）不注入 async 覆盖（同步编排、契约返回体不变）。
 	subCall := rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m, "session") == sid }, 5*time.Second)
-	if args, _ := subCall["arguments"].(map[string]any); args["async"] != "never" {
-		t.Fatalf("子聊天工具调用应附 async=never：%+v", subCall["arguments"])
+	if args, _ := subCall["arguments"].(map[string]any); args != nil {
+		if _, has := args["async"]; has {
+			t.Fatalf("进程内域工具（subchat_finish）不得附 async 覆盖：%+v", args)
+		}
 	}
 	mainCall := rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m, "session") == mainSession }, 5*time.Second)
 	if args, _ := mainCall["arguments"].(map[string]any); args != nil {
 		if _, has := args["async"]; has {
-			t.Fatalf("主会话工具调用不得附 async 覆盖：%+v", args)
+			t.Fatalf("进程内域工具（subchat_open）不得附 async 覆盖：%+v", args)
 		}
 	}
 

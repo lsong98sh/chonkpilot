@@ -107,7 +107,8 @@ test('① 发送链路守卫：注入点唯一且零契约变更（llm-start 不
   assert.doesNotMatch(payloadBlock[0], /prompt/, 'message payload 不得新增 prompt 字段（零契约变更）')
 
   const messageList = read('views/chat/MessageList.vue')
-  assert.match(messageList, /publishLLMStart\(\s*\n\s*sid,\s*\n\s*batch\.text,/, '文本经 batch.text 进 llm-start')
+  // Q6：发送统一先落 inbox（llm-inbox-add）；文本仍经 batch.text，零新增字段。
+  assert.match(messageList, /publishInboxAdd\(\s*\n\s*sid,\s*\n\s*batch\.text,/, '文本经 batch.text 进 llm-inbox-add')
 
   const chatApi = read('api/chat.js')
   assert.match(chatApi, /q: text,/, 'user 消息文本 = llm-start.q（既有字段）')

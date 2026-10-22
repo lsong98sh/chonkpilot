@@ -300,7 +300,7 @@
 
 > **启动分段计时日志（OP-15）：仅插桩量测，不改启动行为/顺序**。为定位「启动慢」真实原因，在启动路径按段打点。格式统一：**`[startup] <阶段> 耗时 <段>ms（累计 <总>ms）`**（段 = 距上次打点，总 = 距起点 `markStartupBegin`）。
 > - **宿主（gui，`slog`）**（`src/lib/gui/main.go`）：参数与目录解析 → prjusr 数据根解析（含 prj 库打开）→ 文件日志挂载 → MQ 总线初始化 → filesys 文件服务启动 → server 装配（capability 契约扫描 + gateway 构建）→ server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）→ 主窗口创建（bridge/WebView2 环境就绪）→ 启动流程就绪；**主窗口首屏渲染完成**在 `window.go` NavigationCompleted（roleMain）经 `logStartupStageOnce` 只记一次。
-> - **内嵌 server（`src/lib/llm/server/server.go`，统一出口 `logf`；同一 `Start` 亦为分离形态 `chonkpilot-server.exe` 入口 → 一处覆盖两形态）**：数据服务(persist)启动 → 任务层启动 → gateway 启动/下游连接 → capability fsnotify 监听 → 实例视图/心跳扫描启动 → 方法面/事件订阅 → 域工具注册 → 域 agent 注册 → 工具定义缓存预热(`gc.ListTools`) → 内嵌插件启动 → server 启动完成。
+> - **内嵌 server（`src/lib/llm/server/server.go`，统一出口 `logf`；同一 `Start` 亦为分离形态 `chonkpilot-server.exe` 入口 → 一处覆盖两形态）**：数据服务(persist)启动 → 任务层启动 → gateway 启动/下游连接 → capability fswatcher 监听 → 实例视图/心跳扫描启动 → 方法面/事件订阅 → 域工具注册 → 域 agent 注册 → 工具定义缓存预热(`gc.ListTools`) → 内嵌插件启动 → server 启动完成。
 > - **装配期（`src/lib/assembly/assemble.go`，经 `logf`）**：capability 契约扫描/注册（含 `AppToolNames` 全树 `WalkDir`）、gateway 构建。
 >
 > **采数**：桌面单体见 `<prjusr 数据根>/logs/gui.log`；分离形态 `chonkpilot-server.exe` 见 stdout。**候选耗时段**（供定位）：capability 契约扫描、gateway Start/下游连接、`gc.ListTools` 预热（15s 上限）、插件 Start、DB 迁移/seed；**优化项待采数后再定**。
@@ -613,9 +613,12 @@
 - `views/layout/MainLayout.vue` **双分支**：`freeMode`（**默认 `true`**；`?layout=legacy` 回退）→ `<ChonkLayout>` 渲染 `layout.free` 文档树（顶栏 / 状态栏为条目化 `ChonkTopBar` / `ChonkStatusBar`）；**旧硬编码分支保留、不删除**。
 - **18 类条目 + 默认文档**（`persist.js#defaultLayoutDoc`）：`topToolbar` / `statusbar` / `toolbars` / `drawers`；栏条目 `kind` = `button` / `menu` / `view`；**窗口控件（最小化/最大化/关闭）** 与品牌 / 拖拽区 = 容器外壳**固定件，不进配置**（§4.2）。
 - **命令模型**：`open-view{target}`（原 4 类作语法糖）+ **`publish-mq`**（第 5 类，ADR 裁决 1；配置形状 `{type:'publish-mq', topic, payload}` — `commands.js#commandToMq` + `COMMAND_TYPES` + `config.js#validateCommand` 校验「只要求既有主题」+ `LfCommandEditor` 增「MQ 主题 + 载荷(JSON)」）。机制层不认识宿主主题，故**不校验主题存在性**（由适配层保证「只用既有主题」）。
-- **栏视图（裁决 2）**：状态栏 / 顶栏的实时 / 条件 / 动态项做成 `kind:'view'` 的 **栏视图条目**（`layout/bar-views/` **10 个**：`SearchBoxView`·`RecentDirsView`·`ChromeWarnView`·`LogoutView`·`MemoryTokenView`·`QueueStatusView`（legacy 兼容）·`IndexBadgeView`·`MemoryStatusView`·`CompressStatusView`·`LangSwitcherView` + `WindowControls`）；**不新增 `valueExpr`/`badgeKey`/`when` 协议**（条件显示由组件自持 `v-if`）。**长任务详情页**（`status-memory` / `status-compress` / `status-index`，STB-1）以 `host:'layout'` 注册（可在布局区放置），默认通过状态栏条目的 `open-view` 在 preview 功能页打开。
+- **栏视图（裁决 2）**：状态栏 / 顶栏的实时 / 条件 / 动态项做成 `kind:'view'` 的 **栏视图条目**（`layout/bar-views/`：`SearchBoxView`·`RecentDirsView`·`ChromeWarnView`·`LogoutView`·`MemoryTokenView`·`QueueStatusView`（legacy 兼容）·`IndexBadgeView`·`MemoryStatusView`·`CompressStatusView`·`LangSwitcherView` + `WindowControls` + **`LayoutProfilesView`（布局档案下拉）**；新建对话框内容 = `LayoutNewDialog`）；**不新增 `valueExpr`/`badgeKey`/`when` 协议**（条件显示由组件自持 `v-if`）。**长任务详情页**（`status-memory` / `status-compress` / `status-index`，STB-1）以 `host:'layout'` 注册（可在布局区放置），默认通过状态栏条目的 `open-view` 在 preview 功能页打开。
 - **区块保活**：机制层「**全量渲染 + `v-show`**」——显隐 / 切页签**不卸载**组件（会话 / 页签 / 流式状态留在组件内）；仅配置**删除节点**才卸载。
-- **持久化（§3.9）**：只写 `prjusr` 的 **`layout.free`** 子键（`gui.ui.save {layout:{free}}`；退出兜底 `sendBeacon('/publish')`）；读取经 `gui.init-data` 的 `layout` 子对象。**旧 7 字段**只迁移**尺寸类 4 项**；`filetreeOpen`/`taskOpen`/`chatOpen` 三键随「三区常显」裁决**忽略、不迁移**。消息面**零增删**（[61](../60-reference/61-消息一览.md)）。
+- **区域显隐（WIN-025，2026-10-21 / UILAYOUT-2）**：节点 `visible`（缺省可见）+ `hideLocked`（不允许直接隐藏，祖先连带不受限）；叶子与容器同权，容器隐藏时子节点 `visible` 原样保留；隐藏用子区 `v-show` 保活，**不参与**尺寸分配与分割条渲染；`LfLayoutSplit` 的 `measure/commit` 只对可见子区计算，并在**隐藏瞬间**把当前占比写回 `sizes[i]`（显示时按快照先占份额）；`validate()` 要求至少一个「有效可见」叶子（自身与所有祖先可见），单例占用继续计入隐藏区域。编辑器入口 = 区域 / 容器设置开关 + 树眼睛 + 右键；运行态入口 = **用户可配置命令**（`publish-mq → lf-area-toggle-visible`，默认不预置按钮）。
+- **视图池（WIN-027，2026-10-21）**：运行时单例 view 由 `LfViewPool` **各挂载一次**；`LfViewHost` 运行态只渲染槽位并注册 DOM 目标，池用 `<Teleport :to>` 搬 DOM；切换布局 = 槽位变化（实例不销毁），新布局中不存在的 view 落池内「停车场」隐藏保活。切换时做 FLIP 位移 + 淡入（≈200ms，尊重 `prefers-reduced-motion`）。**设计态**：`LfViewHost` **一律渲染骨架**（图标 + 名称），不挂真实组件 —— 消除单例双开。
+- **布局档案（WIN-026，2026-10-21 / UILAYOUT-2）**：`layout.profiles`（JSON 字符串数组 `{id,name,doc,createdAt,updatedAt}`，上限 10 条、名称唯一）+ `layout.activeProfile`（当前档案 id），`layout.free` 仍为当前生效文档；均落 prjusr、经既有 `gui.ui.save` / `gui.init-data`。**种子两套** = `seed:dev`（开发）/ `seed:simple`（简洁，只有一个聊天框），初始化时写入 DB，之后与用户档案**同权**（可改名 / 编辑 / 删除）；「恢复初始布局」按保留 ID 覆盖名称与内容。顶栏 `layout-profiles` 下拉负责列出 / 切换 / 新建（复制自或空白）/ 编辑当前 / 重命名 / 删除 / 恢复初始布局。**保存 ≠ 应用**：编辑非当前档案只写档案，点列表项才切换；编辑当前档案保存即应用 + 更新当前档案。
+- **持久化（§3.9）**：只写 `prjusr` 的 **`layout.*`** 子键（`gui.ui.save`；退出兜底 `sendBeacon('/publish')`）；读取经 `gui.init-data` 的 `layout` 子对象。子键 = **`layout.free`**（当前生效文档）· **`layout.profiles`**（档案数组 JSON 字符串）· **`layout.activeProfile`**（当前档案 id）。**旧 7 字段迁移已随 UILAYOUT-2-A 删除**（`?layout=legacy` / 旧硬编码分支 / 旧尺寸键迁移一并移除，存量旧键不再读取）。消息面**零增删**（[61](../60-reference/61-消息一览.md)）。
 
 **尺寸口径（G-57）**：配置占比 `sizes`（持久化/权威）+ 运行态像素定尺（渲染）；拖拽只改像素、松手 `commit()` 写回占比；**配置 `sizes` 变化时**（重启回灌 / 编辑器保存）以配置为权威**幂等重量测**，用户拖拽产生的运行态**不被覆盖** —— 判据 = `LfLayoutSplit.vue#knownRatios`（[31 WIN-009/010 明细](../30-function-points/31-窗口与布局.md)）。禁止自触发渲染（[71 §7.3](../70-conventions/71-编程规范.md)）。
 
@@ -637,4 +640,17 @@
 **判据（与 61 §4.3 一致）**：`retryable=true && retry_wait_ms>0` = 中间态；终态 = `retryable=false` 或次数用尽（`retry_wait_ms=0`），仅发一次。
 **前端行为变更**：`MessageList.onLlmComplete` 的自动续写**仅**用于"回复未写完"（length/断链/中断）；`wasError`（含 `retryable=true`）**不再**静默续写 —— 否则重试仍不可见；终态错误给手动「继续」。
 **约束**：提示条按会话隔离（`session-changed` / 新发送即清空）；禁 `watch`，重试/终态均经既有 `mq.on` + 本地 `ref` 驱动。
+
+### 12.22 输入约束（INPUTVAL-1，🆕 2026-10-21）
+
+> 口径：**前端约束 = 体验，后端写侧校验 = 唯一可信边界**（[12 §4.4](../10-architecture/12-数据层.md) · [CFG-019](../30-function-points/36-配置.md)）。前端规则**同源**集中在 `src/frontend/src/utils/fieldRules.js`（常量 + 纯函数），i18n 文案 `locales/{zh-CN,en-US}/fieldRules.json`，接入点单测 `test/fieldRules.test.js`。
+
+| 面 | 约束 |
+|---|---|
+| 名称类（LLM / MCP / 场景 / 目录 / Agent / 原语标题） | `maxlength=64`（原语标题 128）+ 保存前必填 / 长度校验（`fieldRules.tooLong` 提示，不静默通过） |
+| 标题 / 正文类 | 会话标题 ≤128；`Textarea` 正文 / 提示词 ≤262144（256 KB 字符） |
+| URL / 路径 | baseUrl / MCP url ≤2048 且 `http(s)`；各类路径 ≤512 且要求绝对路径 |
+| 数值 | LLM `temperature` 0–2、token / 迭代次数按 min/max；会话参数非法值 **blur 时提示 `fieldRules.invalidNumber`**（不再静默回落） |
+| 聊天输入 | ≤16384 字符：超限显示 `.input-limit` 提示并在 `onEdit` 截断（粘贴同样经该路径）；附件**单文件 ≤20MB、单条 <10 个**，超限拦截并提示 |
+| 通用输入组件 | `components/ui/{Input,Textarea}.vue` 透传 `maxlength/minlength/pattern/required/min/max/step`（**无全局默认**，由各接入点显式声明） |
 

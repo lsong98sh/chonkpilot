@@ -563,7 +563,7 @@ def main():
     total = 0
     c.console(clear=True)
     clean_residue()
-    # 不 reset 工作目录：reset 会删除重建目录，破坏 fsnotify 根目录监听句柄。
+    # 不 reset 工作目录：reset 会删除重建目录，破坏 fswatcher 根目录监听句柄。
     # 初始状态由 IDE 启动前的 ws 准备脚本保证。
     wait_tree("a.txt", present=True)
     wait_tree("new.txt", present=False)

@@ -12,8 +12,26 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/agentbox"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/chonkpilot/chonkpilot-lib/sandbox"
+)
+
+// 池化档位与缺省值（L6 池化；JSON/键名与设计稿 §3.6 一致）。
+const (
+	// PoolKeyShared 按 (server, workdir) 复用连接槽（缺省；保留既有 poolKeyFor 语义）。
+	PoolKeyShared = "shared"
+	// PoolKeyCall 每次调用独占一条连接槽（池键含 call_id），调用结束即销毁。
+	PoolKeyCall = "call"
+
+	// KillPolicyCascadeReport 取消杀进程时**报告**同槽被连带打断的在飞调用（固定策略）。
+	KillPolicyCascadeReport = "cascade-report"
+
+	defaultPoolSize      = 1
+	defaultMaxConcurrent = 5
+	defaultGraceMs       = 2000
 )
 
 // Server 来源（Origin）：决定是否向该 server 注入内部调用上下文（`_meta["chonkpilot"]`）。
@@ -66,10 +84,60 @@ type ServerEntry struct {
 	// Sandbox = 把「可读 / 可写目录（递归）」策略下发到 spawn 出的上游进程。
 	// **仅 stdio 传输生效**（http/sse 不隔离，见 14-安全域-agentbox）。
 	Sandbox *bool `json:"sandbox,omitempty"`
-	// SandboxDirs 是该 server 的 agentbox 允许目录快照（prj `security-*` → {dir, writable}），
+	// SandboxDirs 是该 server 的安全目录快照（prj `security-*` → {dir, writable}），
 	// 由装配层注入；仅开关开启（tool_sandbox.mcps）+ 传输 stdio + 非空时随 spawn 环境变量下发。
-	SandboxDirs []agentbox.Rule `json:"sandbox_dirs,omitempty"`
+	SandboxDirs []sandbox.Rule `json:"sandbox_dirs,omitempty"`
+
+	// 池化配置（L6；键名与设计稿 §3.6 一致）。缺省值见 PoolKeyMode / PoolSizeOrDefault /
+	// MaxConcurrentOrDefault / GraceOrDefault / KillPolicyName。
+	PoolKey       string `json:"pool_key,omitempty"`       // shared（缺省）| call
+	PoolSize      int    `json:"pool_size,omitempty"`      // 每池键连接槽数（缺省 1；当前池实现按 1 消费，预留给多连接池）
+	MaxConcurrent int    `json:"max_concurrent,omitempty"` // 每 server 在途调用上限（缺省 5；超出排队）
+	GraceMs       int    `json:"grace_ms,omitempty"`       // 取消阶梯 L1 宽限期（毫秒，缺省 2000）
+	KillPolicy    string `json:"kill_policy,omitempty"`    // 固定 cascade-report（连带影响显式上报）
+
+	// Session 是**预连接的下游会话**（GATEWAY-2 L5 收口；非消息面字段，json:"-"）：
+	// 装配方（assembly）把进程内能力源经内存传输对连成标准 ClientSession 后随 ServerEntry
+	// 传入 → gateway 只把它当普通下游（ListTools/Call/prompts/resources 全走标准 client），
+	// **不持有能力源、不感知其实现**。非 nil 时忽略 Runtime/URL/Transport（buildConn 直接复用它）。
+	Session *mcp.ClientSession `json:"-"`
 }
+
+// PoolKeyMode 返回池键档位（`call` / `shared`；未知/空 → shared）。
+func (e ServerEntry) PoolKeyMode() string {
+	if strings.EqualFold(strings.TrimSpace(e.PoolKey), PoolKeyCall) {
+		return PoolKeyCall
+	}
+	return PoolKeyShared
+}
+
+// PoolSizeOrDefault 返回每池键连接槽数（<=0 → 1）。
+func (e ServerEntry) PoolSizeOrDefault() int {
+	if e.PoolSize > 0 {
+		return e.PoolSize
+	}
+	return defaultPoolSize
+}
+
+// MaxConcurrentOrDefault 返回每 server 在途调用上限（<=0 → 5）。
+func (e ServerEntry) MaxConcurrentOrDefault() int {
+	if e.MaxConcurrent > 0 {
+		return e.MaxConcurrent
+	}
+	return defaultMaxConcurrent
+}
+
+// GraceOrDefault 返回取消阶梯 L1 宽限期（<=0 → 2000ms）。
+func (e ServerEntry) GraceOrDefault() time.Duration {
+	ms := e.GraceMs
+	if ms <= 0 {
+		ms = defaultGraceMs
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// KillPolicyName 返回杀进程连带策略（固定 cascade-report；其他取值归一为该策略）。
+func (e ServerEntry) KillPolicyName() string { return KillPolicyCascadeReport }
 
 // IsBuiltin 是否本仓自有/内置来源——**唯一**决定是否注入内部上下文 `_meta["chonkpilot"]` 的条件；
 // 空/未知来源按 user 处理（安全默认：不注入）。
@@ -133,7 +201,7 @@ func (e ServerEntry) SandboxPolicyJSON(sandboxOn bool) string {
 	return string(b)
 }
 
-// defaultServersList 已移除（2026-09-07 收敛）：能力源 = 装配方 MCPServer 参数传入，
+// defaultServersList 已移除（2026-09-07 收敛）：能力面由装配方经 `Params.Servers` 传入，
 // 不再存在"对接本机 chonkpilot-mcp-server 的隐式默认"——内嵌形态（chonkpilot-server）
 // 与独立 exe（chonkpilot-gateway）都**无回退**；无源 = 空列表（不报错，工具面为空但不 fatal）。
 
@@ -223,6 +291,16 @@ func parseServersList(data []byte) ([]ServerEntry, error) {
 			e.CBDisabled = val == "disable"
 		case "origin":
 			e.Origin = normalizeOrigin(val)
+		case "pool_key":
+			e.PoolKey = val
+		case "pool_size":
+			fmt.Sscanf(val, "%d", &e.PoolSize)
+		case "max_concurrent":
+			fmt.Sscanf(val, "%d", &e.MaxConcurrent)
+		case "grace_ms":
+			fmt.Sscanf(val, "%d", &e.GraceMs)
+		case "kill_policy":
+			e.KillPolicy = val
 		}
 	}
 	return entries, nil

@@ -1,6 +1,6 @@
 # ui-config · UI 可配置化（自由布局容器）专题
 
-> 状态：🔵 设计稿（2026-10-16 立稿）｜**子决策已拍板**（[§4](#4-已拍板口径速查)）
+> 状态：✅ **已实施（P0–P4 + P6 已落，2026-10-17；P5 五项 = 不做）** ｜ 子决策已拍板（[§4](#4-已拍板口径速查)）；落地与未闭环见 [49 `UILAYOUT-1`](../spec/40-roadmap/49-待实现项.md) · [41 G-52/G-53/G-56/G-57/G-58](../spec/40-roadmap/41-未决项登记.md)
 > 关联：[20-gui](../spec/20-modules/20-gui.md) · [31-窗口与布局](../spec/30-function-points/31-窗口与布局.md) · [17-前端状态与MQ](../spec/10-architecture/17-前端状态与MQ.md) · [61-消息一览](../spec/60-reference/61-消息一览.md) · [2C-UI插件](../spec/20-modules/2C-UI插件.md)
 > 登记：[41 D-61](../spec/40-roadmap/41-未决项登记.md) ✅ 已拍板 · [42 §2.31](../spec/40-roadmap/42-决策记录.md) · [49 UILAYOUT-1](../spec/40-roadmap/49-待实现项.md) 🔵 待实施
 > **落点（已定，并入主工程）**：`src/frontend/src/layout-free/`（机制层子系统）· `src/frontend/src/layout/`（适配层）· `src/frontend/src/stores/selection.js`（跨 view 状态）

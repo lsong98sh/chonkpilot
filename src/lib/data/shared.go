@@ -17,8 +17,15 @@ type instBind struct {
 	DataDir string
 	// PrjUsrPath 是该 instance 首次经 PrjUsr() 打开时**实际解析到的 prjusr 库文件路径**
 	// （🆕 2026-10-09）。prjusr 为**常开**（引用不释放）→ 必须在 instance-exit 时按此路径
-	// **关闭其长连接**（释放 bbolt 文件锁），否则连接与锁会残留到进程退出（多实例服务端尤其明显）。
+	// **释放其连接引用**（归零才关闭、释放 bbolt 文件锁），否则连接与锁会残留到进程退出
+	// （多实例服务端尤其明显）。
 	PrjUsrPath string
+	// prjUsrDB / prjUsrRelease 是该 instance 持有的 prjusr 常开连接与其释放句柄
+	// （🆕 2026-10-21，PRODSIM-1 L1）。同一 instance 对同一路径只持有**一份**引用；
+	// 同 work_dir 的多个 instance 各持一份 → 任一实例退出只 refs--，归零才真正 Close，
+	// 不会关闭兄弟窗口仍在用的连接。
+	prjUsrDB      *DB
+	prjUsrRelease func()
 }
 
 // sharedDB 是按路径缓存的连接项（引用计数）。
@@ -56,8 +63,20 @@ func Register(instanceID, workDir, dataDir string) error {
 		return fmt.Errorf("data: 拒绝登记空 instanceID（work_dir=%q）", workDir)
 	}
 	storeMu.Lock()
-	defer storeMu.Unlock()
+	old, existed := instances[instanceID]
+	if existed && old.WorkDir == workDir && old.DataDir == dataDir {
+		// 幂等：同参数重复登记（bridge + claim 双注册）**保留**已持有的 prjusr 绑定 ——
+		// 整体覆盖会清空 PrjUsrPath / prjUsrRelease，导致 instance-exit 不释放连接
+		// （PRODSIM-1 L1 缺陷③：prjusr 常开句柄永不释放）。
+		storeMu.Unlock()
+		return nil
+	}
+	stale := old.prjUsrRelease
 	instances[instanceID] = instBind{WorkDir: workDir, DataDir: dataDir}
+	storeMu.Unlock()
+	if stale != nil {
+		stale() // 数据根变更：归还旧 prjusr 引用（解析路径可能已变）
+	}
 	return nil
 }
 
@@ -82,6 +101,30 @@ func InstancesByWorkDir(workDir string) []string {
 	return ids
 }
 
+// DataDirByWorkDir 返回同 work_dir 已登记实例的**非空** data_dir（ok=false = 无可复用数据根）。
+//
+// 用途：调用方只带 work_dir（filesys 变更入队 / 插件桥队列控制帧等）时补齐 data_dir ——
+// 否则会在 work_dir 下另建 prj 库，破坏 `--data-dir` 分离形态的「workdir 零污染」约束
+// （12-数据层 / 24 §3）。同 work_dir 多个非空绑定取字典序首个（幂等、稳定）。
+func DataDirByWorkDir(workDir string) (string, bool) {
+	if workDir == "" {
+		return "", false
+	}
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	ids := make([]string, 0, len(instances))
+	for id, b := range instances {
+		if b.WorkDir == workDir && b.DataDir != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return "", false
+	}
+	return instances[ids[0]].DataDir, true
+}
+
 // Unregister 移除 instance 绑定（instance-exit / 超时清理时调用）。
 // **并关闭该 instance 的 prjusr 常开连接**（🆕 2026-10-09）：prjusr 引用不释放 → 不解绑时
 // 其 bbolt 连接与文件锁会残留（D-45 同类问题：长持会锁死外部进程）。按首次打开的路径关闭缓存条目。
@@ -95,33 +138,14 @@ func Unregister(instanceID string) {
 	storeMu.Lock()
 	bind, ok := instances[instanceID]
 	delete(instances, instanceID)
-	stillHeld := false
-	if ok && bind.PrjUsrPath != "" {
-		for _, b := range instances {
-			if b.PrjUsrPath == bind.PrjUsrPath {
-				stillHeld = true
-				break
-			}
-		}
-	}
 	storeMu.Unlock()
-	if ok && bind.PrjUsrPath != "" && !stillHeld {
-		closeSharedPath(bind.PrjUsrPath)
+	if !ok || bind.prjUsrRelease == nil {
+		return
 	}
-}
-
-// closeSharedPath 关闭并移除某 db 路径的缓存连接（**调用方须先确认无其它持有者**）。
-//
-// 语义（🆕 2026-10-09）：仅用于**实例退出**场景 —— 此时该实例不应再发起请求，故直接关闭；
-// 若仍有在飞短开调用持有该连接，其后续操作会明确报错（可接受，且 instance-exit 后不应再有请求）。
-// 幂等：条目不存在 → 空操作。释放后再次访问会重新 Open（新连接）。
-func closeSharedPath(path string) {
-	storeMu.Lock()
-	defer storeMu.Unlock()
-	if s, ok := shared[path]; ok {
-		_ = s.db.Close()
-		delete(shared, path)
-	}
+	// 归还**本实例**持有的 prjusr 引用：refs 归零才真正 Close —— 同 work_dir 的兄弟窗口
+	// 仍持有时只减计数、不关闭（PRODSIM-1 L1 缺陷①：原实现无其它在册实例即强关，会让
+	// 兄弟窗口后续请求拿到已关闭连接）。
+	bind.prjUsrRelease()
 }
 
 // Reset 清空 instance 绑定与连接缓存（测试用；关闭全部缓存连接）。
@@ -183,44 +207,74 @@ func Prj(instanceID string) (*DB, func(), error) {
 // **常开语义（D-45 拍板）**：prjusr 层是会话/任务树运行态（高频写、独占本机数据根），
 // 保持进程内常开（连接缓存引用不释放）；仅 prj/usr 改短开。prj 短开取 project-id 后立即 release。
 func PrjUsr(instanceID string) (*DB, error) {
+	// 已在册持有 → 直接返回：避免每次调用都 refs++ 再归还的额外锁开销，也保证 refs
+	// 稳定等于「持有该连接的实例数」（原始实现每次调用 refs++ 且从不释放 → 计数无界增长）。
+	if db, ok := heldPrjUsr(instanceID); ok {
+		return db, nil
+	}
 	bind, err := bindOf(instanceID)
 	if err != nil {
 		return nil, err
 	}
+	var path string
 	if bind.DataDir != "" {
-		path := ProjectPath(bind.WorkDir, bind.DataDir)
-		db, _, err := OpenSharedLayer(path, LayerPrjUsr)
-		if err == nil {
-			recordPrjUsrPath(instanceID, path)
+		path = ProjectPath(bind.WorkDir, bind.DataDir)
+	} else {
+		prj, release, err := Prj(instanceID)
+		if err != nil {
+			return nil, err
 		}
-		return db, err
+		id, err := EnsureProjectID(prj)
+		release() // 短开：取 project-id 后立即释放（D-45）
+		if err != nil {
+			return nil, err
+		}
+		path = PrjUsrDBPath(id)
 	}
-	prj, release, err := Prj(instanceID)
+	db, release, err := OpenSharedLayer(path, LayerPrjUsr)
 	if err != nil {
 		return nil, err
 	}
-	defer release() // 短开：取 project-id 后立即释放（D-45）
-	id, err := EnsureProjectID(prj)
-	if err != nil {
-		return nil, err
-	}
-	path := PrjUsrDBPath(id)
-	db, _, err := OpenSharedLayer(path, LayerPrjUsr)
-	if err == nil {
-		recordPrjUsrPath(instanceID, path)
-	}
-	return db, err
+	bindPrjUsr(instanceID, path, db, release)
+	return db, nil
 }
 
-// recordPrjUsrPath 记录某 instance 的 prjusr 库文件路径（供 instance-exit 关闭常开连接；
-// 🆕 2026-10-09）。绑定已被解绑（实例已退出）→ 不记（避免把已注销实例重新塞回表）。
-func recordPrjUsrPath(instanceID, path string) {
+// heldPrjUsr 返回该 instance 已持有的 prjusr 连接（ok=false = 未持有）。
+func heldPrjUsr(instanceID string) (*DB, bool) {
 	storeMu.Lock()
-	if b, ok := instances[instanceID]; ok {
-		b.PrjUsrPath = path
-		instances[instanceID] = b
+	defer storeMu.Unlock()
+	b, ok := instances[instanceID]
+	if !ok || b.prjUsrDB == nil {
+		return nil, false
 	}
+	return b.prjUsrDB, true
+}
+
+// bindPrjUsr 把 prjusr 常开连接绑定到 instance —— **每 instance 每路径只持一份引用**。
+// 并发下另一协程已绑定同路径 → 归还本次多余引用；路径变更（如 project-id 被改）→ 归还旧引用
+// 后改绑新连接；实例已退出 → 直接归还（不把已注销实例塞回表）。
+func bindPrjUsr(instanceID, path string, db *DB, release func()) {
+	storeMu.Lock()
+	b, ok := instances[instanceID]
+	if !ok {
+		storeMu.Unlock()
+		release()
+		return
+	}
+	if b.prjUsrRelease != nil && b.PrjUsrPath == path {
+		storeMu.Unlock()
+		release() // 已持有同路径引用：归还本次多余引用
+		return
+	}
+	stale := b.prjUsrRelease // 可能为 nil（首次绑定）
+	b.PrjUsrPath = path
+	b.prjUsrDB = db
+	b.prjUsrRelease = release
+	instances[instanceID] = b
 	storeMu.Unlock()
+	if stale != nil {
+		stale() // 路径变更：归还旧路径引用
+	}
 }
 
 // Usr 返回 usr 层连接（全局单例：~/.chonkpilot/chonkpilot.db，跨项目）。
@@ -304,7 +358,12 @@ func releaseOnce(path string, s *sharedDB) func() {
 			s.refs--
 			if s.refs <= 0 {
 				_ = s.db.Close()
-				delete(shared, path)
+				// 只删「本代」条目：若该路径在此期间已被重新打开（新一代 s2 入缓存），
+				// 无条件 delete 会误删新一代 → 下次访问再次 Open 撞 bbolt 同进程互斥并泄漏句柄
+				// （PRODSIM-1 L1 缺陷②）。
+				if shared[path] == s {
+					delete(shared, path)
+				}
 				// 单飞锁条目由 OpenSharedLayer 内的 refs 计数自行回收（A-12），此处不删，
 				// 以免与在飞的打开动作错配出两把不同的锁。
 			}

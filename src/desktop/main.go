@@ -5,7 +5,7 @@
 // 本壳只做两件事 —— **嵌入前端 dist**（embed 落点 = `src/desktop/frontend/dist`，由
 // build-desktop.ps1 投放）与**声明形态** `gui.FormDesktop`；单体装配宿主（窗口/桥/内嵌
 // server→persist→filesys/gateway/插件装配）**唯一一份**在 `chonkpilot-gui/host`
-// （`src/lib/gui/host`，方案 B：零重复）。CLI 单体见 `cli/`。
+// （`src/lib/gui/host`，方案 B：零重复）。
 //
 // 形态不再由编译开关（`-tags split`）决定宿主分支：桌面单体 = 本壳（无 tag 构建），
 // GUI 客户端 = `src/gui`（`-tags split` 构建）。`-tags split` 对其它组件（instance 心跳 /

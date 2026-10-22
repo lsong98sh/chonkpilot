@@ -1,4 +1,4 @@
-import { cloneTree, createLeaf, findLeaf, findNode, isSplit, removeNode, splitNode } from '../utils/layout'
+import { cloneTree, collectLeaves, createLeaf, findLeaf, findNode, isSplit, removeNode, splitNode } from '../utils/layout'
 import { isTabsContainer, sortPinnedFirst } from '../utils/regions'
 import { STORAGE_KEY, readStorage } from '../config/config-normalize'
 import { saveLayoutDoc } from '../deps.js'
@@ -13,6 +13,18 @@ import { useRuntimeStore } from './runtime'
  * ⚠️ 这里是**逐字搬运**原有实现，不是重写：这些动作的边界处理（最后一个区域不可删、
  * `delete` 非响应式所以要重建对象、约束只落在一条轴上）都是踩过坑之后的结果。
  */
+/**
+ * 是否存在「有效可见」叶子：自身可见且所有祖先可见（UILAYOUT-2）。
+ * 容器隐藏 → 其子树一律不算可见（子节点 visible 原样保留，但不参与判定）。
+ */
+export function hasVisibleLeaf(node, ancestorVisible = true) {
+  if (!node) return false
+  const self = ancestorVisible && node.visible !== false
+  if (!self) return false
+  if (!isSplit(node)) return true
+  return (node.children ?? []).some((c) => hasVisibleLeaf(c, self))
+}
+
 export function createLayoutActions() {
   return {
     /* ---------------- 初始化 ---------------- */
@@ -112,6 +124,60 @@ export function createLayoutActions() {
       if (!leaf) return
       leaf.title = title || undefined
       this.markDirty()
+    },
+
+    /* ---------------- 区域显隐（WIN-025 / UILAYOUT-2） ----------------
+       语义：`visible === false` = 隐藏；缺省 / true = 可见。
+       - 叶子与容器同权（容器隐藏 = 整棵子树不显示，子节点 visible 原样保留）
+       - `hideLocked === true` → 禁止**直接**隐藏（祖先连带不受限）
+       - 至少保留一个「有效可见」叶子（自身与所有祖先都可见）
+       隐藏**不删除节点**（保活），只由渲染层 `v-show` + 尺寸过滤承担。 */
+
+    /** 设计态：改草稿（保存后生效）；叶子 / 容器均可 */
+    setLeafVisible(nodeId, visible) {
+      return this.setNodeVisible(nodeId, visible, 'draft')
+    },
+
+    /** 显隐通用入口（target: draft | live） */
+    setNodeVisible(nodeId, visible, target = 'draft') {
+      const root = target === 'live' ? this.live.layout : this.draft.layout
+      const node = findNode(root, nodeId)
+      if (!node) return false
+      if (visible === false && node.hideLocked === true) return false
+      const backup = node.visible
+      node.visible = visible ? undefined : false
+      if (!hasVisibleLeaf(root)) {
+        node.visible = backup
+        this.messages = ['至少需要保留一个可见区域（全部隐藏时无法保存）。']
+        return false
+      }
+      if (target === 'live') this.saveLiveLayout()
+      else this.markDirty()
+      return true
+    },
+
+    /** 运行态：直接改 live 并落盘 */
+    setLiveLeafVisible(nodeId, visible) {
+      return this.setNodeVisible(nodeId, visible, 'live')
+    },
+
+    /** 设计态：设置「不允许隐藏」标记（叶子 / 容器均可） */
+    setNodeHideLocked(nodeId, locked) {
+      const node = findNode(this.draft.layout, nodeId)
+      if (!node) return false
+      node.hideLocked = locked ? true : undefined
+      this.markDirty()
+      return true
+    },
+
+    /** 运行态按 viewKey 切换区域显隐（顶栏 area-toggles；不写死 nodeId） */
+    toggleLiveLeafByView(viewKey) {
+      if (!viewKey) return false
+      const leaf = collectLeaves(this.live.layout).find(
+        (l) => l.view?.viewKey === viewKey || (l.tabs ?? []).some((t) => t.viewKey === viewKey),
+      )
+      if (!leaf) return false
+      return this.setLiveLeafVisible(leaf.id, leaf.visible === false)
     },
 
     /* ---------------- 区域（三种类型） ---------------- */
@@ -286,6 +352,15 @@ export function createLayoutActions() {
         }
       }
       this.markDirty()
+    },
+
+    /** 尺寸两态（UILAYOUT-2）：`flex = true` → 吃掉剩余空间；否则按占比 + min/max */
+    setLeafFlex(nodeId, flex) {
+      const leaf = findLeaf(this.draft.layout, nodeId)
+      if (!leaf) return false
+      leaf.flex = flex ? 1 : undefined
+      this.markDirty()
+      return true
     },
 
     /** 与同级相邻兄弟交换位置（delta = -1 向前 / +1 向后） */

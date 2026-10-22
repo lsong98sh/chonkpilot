@@ -36,3 +36,15 @@ export function themeLocaleFromConfig(cfg) {
   const pick = (k) => (cfg && typeof cfg[k] === 'string' ? cfg[k] : '')
   return { theme: pick('theme'), locale: pick('locale') }
 }
+
+/**
+ * 合并一份 usr 配置增量（BRIDGE-2 T14：load 一次 + changed 增量）。
+ * 有则覆盖、无则新增；`null` / 非对象 → 原样返回（不误清空）。
+ * @param {object} prev 当前缓存
+ * @param {object} next 增量（changed 的 `{data:{…}}` 内层）
+ * @returns {object} 新对象（不原地修改，便于响应式）
+ */
+export function mergeUserConfig(prev, next) {
+  if (!next || typeof next !== 'object') return prev || {}
+  return { ...(prev || {}), ...next }
+}

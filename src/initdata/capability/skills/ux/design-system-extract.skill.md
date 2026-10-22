@@ -52,7 +52,7 @@ z-index 尺度、动画时长与缓动、断点、容器宽度。
 
 ## 阶段 3：产出 token 文件
 
-写一个 `tokens.css`——或匹配来源的格式与命名惯例（带类型导出的 `tokens.ts`、`tokens.json`、Tailwind 配置扩展）。按类别分组并用清晰名字（用 `filesys_run` 的 `INS` 落盘）：
+写一个 `tokens.css`——或匹配来源的格式与命名惯例（带类型导出的 `tokens.ts`、`tokens.json`、Tailwind 配置扩展）。按类别分组并用清晰名字（用 `file_write` 落盘）：
 
 ```css
 :root {

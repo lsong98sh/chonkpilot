@@ -77,6 +77,32 @@ class SendQueue {
     const item = b.items.shift()
     return { ...item.payload, type: item.type, llm: llm || item.payload?.llm || '' }
   }
+
+  // syncInbox 用服务端 `llm-inbox-list` 的 pending 项**整体重建**本地镜像（INBOX 2026-10-17）。
+  // 队列不再只存在内存：发送即落 prjusr inbox，重启/切换会话后由此拉回（设计 §5.3 / §6.2.3）。
+  // sessionId 由调用方补入（list 应答只含 item 字段）。
+  syncInbox(items = [], sessionId = '') {
+    const next = {}
+    for (const it of items) {
+      const llm = it.llm || ''
+      const b = next[llm] || (next[llm] = { items: [] })
+      b.items.push({
+        id: it.id,
+        type: 'message',
+        llm,
+        inboxType: it.type,
+        payload: {
+          sessionId,
+          text: it.content || '',
+          llm,
+          thinkFlag: it.think || 'on',
+          effortLevel: it.effort || 'high',
+          scenarioId: it.scenario_id || '',
+        },
+      })
+    }
+    this.buckets.value = next
+  }
 }
 
 // 队列项展示文本（popover 预览 / 撤回写回用）：message → payload.text 折叠空白。

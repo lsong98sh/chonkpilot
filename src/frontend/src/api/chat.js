@@ -45,6 +45,35 @@ export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, 
   return { turn, ack }
 }
 
+// ── INBOX（中途插话 / 等下一轮，2026-10-17）─────────────────────────────
+// 发送统一入口：落 prjusr inbox，由 llm-server 按当前相位分类 insert / next_turn。
+// 返回应答 promise：{ok, id, type}；type=insert 表示已立即插入，next_turn 表示等下一轮。
+export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, scenarioId) {
+  return mq.emit(EventNames.llmInboxAdd, {
+    session: sessionId,
+    llm: llmName || '',
+    content: text,
+    think: thinkEnabled || '',
+    effort: effort || '',
+    scenario_id: scenarioId || '',
+  }, { timeout: 10000 })
+}
+
+// 读回 inbox 项（status 缺省 = pending）：队列指示器 / 重启拉回。
+export function listInbox(sessionId, status = 'pending') {
+  return mq.emit(EventNames.llmInboxList, { session: sessionId, status }, { timeout: 10000 })
+}
+
+// 撤回 / 删除一条 inbox 项。
+export function discardInbox(id) {
+  return mq.emit(EventNames.llmInboxDiscard, { id }, { timeout: 10000 })
+}
+
+// 把 next_turn 提升为 insert（「立刻插入」）；无运行轮时 = 「继续」消费。
+export function promoteInbox(id) {
+  return mq.emit(EventNames.llmInboxPromote, { id }, { timeout: 10000 })
+}
+
 // 发布「同轮次继续」llm-start（continue=true）：复用既有 turn（不新开 uuid turn），
 // server 侧把注入的 user 消息标 Kind=continue（非新轮边界，拼接视为同一轮）。
 // turn 为空时由 server 按 session 取最近一轮（桥不再为 continue 分配 turn）。

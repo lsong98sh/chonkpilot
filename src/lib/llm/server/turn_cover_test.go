@@ -291,7 +291,12 @@ func TestTurnVisibleRetryEvents(t *testing.T) {
 		defer llm.Close()
 		s := newTestServer(t, llm)
 		registerTestInstance(t, s)
-		saveRetryConfig(t, s, 1)
+		// 预算需覆盖 Retry-After（2s），否则预算门槛会直接终态（RETRY-2 语义）。
+		if res := dataCall(t, s, "data-user-config-save", map[string]any{
+			"instance_id": "ins-test", "data": map[string]any{"retryCount": 1, "retryBudgetSec": 5},
+		}); res["ok"] != true {
+			t.Fatalf("save user-config failed: %+v", res)
+		}
 		startTurn(t, s, "s-vr4", "t-vr4")
 		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-vr4", "turn": "t-vr4",
@@ -426,12 +431,12 @@ func jsonDecode(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
-// saveRetryConfig 写 usr 配置 retryCount（次数）——退避经 router.RetryWait（1s/2s…），与
-// TestTurnRetryCountSemantics 同一路径（P0-A 存在性判定：显式值生效）。
+// saveRetryConfig 写 usr 配置 retryCount（次数）+ retryBudgetSec=1（小预算，测试快速）——
+// 退避由 router 按预算归一化（RETRY-2），与 TestTurnRetryCountSemantics 同一路径。
 func saveRetryConfig(t *testing.T, s *Server, count int) {
 	t.Helper()
 	if res := dataCall(t, s, "data-user-config-save", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"retryCount": count},
+		"instance_id": "ins-test", "data": map[string]any{"retryCount": count, "retryBudgetSec": 1},
 	}); res["ok"] != true {
 		t.Fatalf("save user-config failed: %+v", res)
 	}

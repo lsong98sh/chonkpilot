@@ -2,11 +2,12 @@
 """B · 语义/回环级推广 ⑧：**任务树 / 委派结果回读**（真实委派 → 层落库 → 数据面回读 → 逻辑删除闭合）。
 
 覆盖（**拒绝"存在级"：断言委派节点归属 / 展示名 / 终态回读 + 单源一致 + 逻辑删除闭合**）：
-  T1 委派落库回读（**DSL-3 口径**）：主会话发 `llm-start`（q 命中 mock 关键词 → `llm_run` 单次委派
+  T1 委派落库回读（**DSL-3 口径**）：主会话发 `llm-start`（q 命中 mock 关键词 → `dsl_run` 单次委派
      「后端开发」）→ `data-tasktree-list{top_session}` **按层权威表回读**：作业根节点
-     `kind=dsl_job` / `node_type=tool` / `session_id==主会话` / 无 `parent_node_id` / `title==委派`
-     （工具展示名）；**LLM 委派步骤不建树节点**（[34-任务 §DSL-3]），记录在根节点
-     `steps[]`：`purpose==委派展示名-自定义` / `session_id==job-*（子会话）` / `status=done`。
+     `kind=dsl_job` / `node_type=tool` / `session_id==主会话` / 无 `parent_node_id` /
+     `title=="DSL 作业"`（gateway `dslJobReporter` 作业根固定展示名）；**LLM 委派步骤不建树节点**
+     （[34-任务 §DSL-3]），记录在根节点
+     `steps[]`：`purpose==委派展示名-自定义` / `session_id==执行器派生子会话（非空）` / `status=done`。
   T2 终态 + 单源一致：`data-tasktree-tasks{top_session}` 同 **id** 行 `status/state==done`（终态
      回读）；list 与 tasks 两视图同 id（P2 单源：运行态与持久态同源）。
   T3 逻辑删除闭合：`data-tasktree-delete{node_id=作业根}` → **默认** `data-tasktree-list` 不再含该节点
@@ -117,17 +118,17 @@ def main():
                                 "q": "please call delegate-purpose", "llm": PROVIDER,
                                 "think": "", "effort": "", "scenario_id": ""})
         root = poll_find("tasks.started",
-                         lambda p: canon_tool(p) == "llm_run" and not p.get("parent_id")
+                         lambda p: canon_tool(p) == "dsl_run" and not p.get("parent_id")
                          and p.get("top_session") == SID, max_wait=90)
         if not root:
-            raise TestError("未建立 llm_run 作业根任务节点（tasks.started）")
+            raise TestError("未建立 dsl_run 作业根任务节点（tasks.started）")
         rid = root.get("task_id") or ""
         # DSL-3：委派步骤不建树节点 → 等作业根终态，`steps[]` 在 done 事件/层行里回读
         done = poll_find("tasks.done",
                          lambda p: p.get("task_id") == rid and p.get("state") == "done",
                          max_wait=120)
         if not done:
-            raise TestError("llm_run 作业根未达 done（tasks.done）：%r" % (root,))
+            raise TestError("dsl_run 作业根未达 done（tasks.done）：%r" % (root,))
         RES.update(root_id=rid)
 
         nodes = tree_nodes()
@@ -139,16 +140,16 @@ def main():
         if rn.get("session_id") != SID or rn.get("parent_node_id"):
             raise TestError("作业根归属不符：session_id=%r parent=%r"
                             % (rn.get("session_id"), rn.get("parent_node_id")))
-        if rn.get("title") != "委派":
-            raise TestError("作业根 title=%r（期望工具展示名 委派）" % (rn.get("title"),))
+        if rn.get("title") != "DSL 作业":
+            raise TestError("作业根 title=%r（期望 gateway 作业根展示名「DSL 作业」）" % (rn.get("title"),))
         steps = rn.get("steps") or []
         if len(steps) != 1:
             raise TestError("作业根 steps 数量=%d（期望 1；steps=%r）" % (len(steps), steps))
         st = steps[0]
         if st.get("purpose") != DEP_LABEL:
             raise TestError("步骤 purpose=%r（期望委派目的 %r）" % (st.get("purpose"), DEP_LABEL))
-        if not str(st.get("session_id") or "").startswith("job-"):
-            raise TestError("步骤 session_id=%r（期望 job-* 子会话）" % (st.get("session_id"),))
+        if not str(st.get("session_id") or ""):
+            raise TestError("步骤 session_id=%r（期望执行器派生的子会话）" % (st.get("session_id"),))
         if st.get("status") != "done":
             raise TestError("步骤 status=%r（期望 done）" % (st.get("status"),))
         RES.update(step_session=st.get("session_id") or "")

@@ -1,10 +1,9 @@
 // L1 白盒：入口装配器（RB-5 L5）——装配顺序约束 / 依赖注入连线 / 失败态 / 幂等性。
 //
-// 只断言本包 `Build` / `Scan` / `AppToolNames` 的**可观测**行为（以实际实现为准，不臆造）：
+// 只断言本包 `Build` / `AppToolNames` 的**可观测**行为（以实际实现为准，不臆造）：
 //   - 成功路径 = 能力源 + 执行配置 + 内嵌 gateway 三者齐备，契约根注入执行配置；
 //   - 失败态 = gateway 缺依赖（Bus=nil）→ 报错但**能力源/执行配置恒保留**（Stack 非 nil）；
 //   - 顺序约束 = 契约注册失败**不阻断** gateway（空能力面继续），执行配置 Root 先于 gateway 就位；
-//   - 依赖倒置 = Stack 实现 `mcpgateway.ContractScanner`，`Scan` 扫独立 dir 契约根建独立 server；
 //   - 幂等 / 重复装配 = 同参两次 `Build` 得**独立**实例，无共享全局态。
 package assembly
 
@@ -17,11 +16,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
 )
-
-// 编译期：Stack 必须满足 gateway 的 `ContractScanner` 契约（RB-2 依赖倒置注入点）。
-var _ mcpgateway.ContractScanner = (*Stack)(nil)
 
 // writeToolContract 在 dir 下写一个最小 `*.tool.md`（原语名 = 文件名去后缀；无 runtime 亦可
 // 注册 —— runtime 仅在 tools/call 时经 resolveRuntime 解析，见 mcp-server/server/contract.go）。
@@ -130,31 +125,6 @@ func TestBuildDefaultRoot(t *testing.T) {
 	}
 	if st.Config == nil || st.Config.Root != want {
 		t.Fatalf("缺省契约根 = %q，want %q", st.Config.Root, want)
-	}
-}
-
-// TestScanInjection：依赖倒置连线 —— `Scan` 扫**另一**契约根建**独立** server（dir 节点入口，
-// 与 self 不复用同一实例）；非法契约 → 明确报错（不静默）。
-func TestScanInjection(t *testing.T) {
-	st, err := Build(Options{Bus: newBus(t), Root: filepath.Join(t.TempDir(), "self")}) // self 根缺失 = 空能力面
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	dirRoot := t.TempDir()
-	writeToolContract(t, dirRoot, "beta")
-	srv, err := st.Scan(dirRoot)
-	if err != nil || srv == nil {
-		t.Fatalf("Scan(%s) = (%v, %v)，want 非 nil server", dirRoot, srv, err)
-	}
-	if srv == st.Server {
-		t.Fatal("dir 节点应建独立 server（不与 self 复用同一实例）")
-	}
-
-	badRoot := t.TempDir()
-	writeBadToolContract(t, badRoot)
-	if _, err := st.Scan(badRoot); err == nil {
-		t.Fatal("非法契约应报错（input schema 非 object）")
 	}
 }
 

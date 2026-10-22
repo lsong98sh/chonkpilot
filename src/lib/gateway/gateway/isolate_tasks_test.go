@@ -23,7 +23,7 @@ func newIsolateGW(t *testing.T, max int) (mq.Bus, *Gateway) {
 	if err != nil {
 		t.Fatalf("bus: %v", err)
 	}
-	g, err := New(Params{Bus: bus, CallTimeout: 5 * time.Second, MaxTasks: max, Logf: t.Logf})
+	g, err := New(Params{Transport: newTestTransport(bus), CallTimeout: 5 * time.Second, MaxTasks: max, Logf: t.Logf})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}

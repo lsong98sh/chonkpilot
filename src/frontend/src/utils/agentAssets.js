@@ -50,7 +50,7 @@ export async function loadToolGroups(kind, t) {
       if (kind && !toolAllowedForLevel(tl, kind)) continue // 越权项不出现（级别矩阵）
       const meta = tl._meta || {}
       const srv = meta.server || {}
-      const lvl = nodeLevel(srv.node)
+      const lvl = nodeLevel(srv.node) || nodeLevel(srv.alias) // core 接入的 app 级工具：node=core / alias=self
       const groupKey = srv.alias || srv.node || GLOBAL_GROUP
       if (!byServer.has(groupKey)) byServer.set(groupKey, { level: lvl, tools: [] })
       byServer.get(groupKey).tools.push({

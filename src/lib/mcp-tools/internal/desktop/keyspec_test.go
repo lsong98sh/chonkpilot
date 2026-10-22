@@ -2,8 +2,6 @@ package desktop
 
 import (
 	"testing"
-
-	"github.com/chonkpilot/chonkpilot-lib/dsl"
 )
 
 // TestParseKeySpec 组合键解析（不注入，纯解析）。
@@ -69,24 +67,5 @@ func TestImeArg(t *testing.T) {
 	}
 	if _, err := imeArg("jp"); err == nil {
 		t.Errorf("imeArg(jp) want err")
-	}
-}
-
-// TestDesktopScriptIMEAndCombo 脚本可解析（IME 动词 + 组合键 + 原有动词混排）。
-func TestDesktopScriptIMEAndCombo(t *testing.T) {
-	script := `
-WIN "记事本" max
-IME en
-INP "d:\test.txt"
-KPR ctrl+s
-KPR alt+f4
-SLP 200
-IME cn
-INP "你好"
-`
-	ctx := &runCtx{vars: map[string]float64{}}
-	actions := desktopActions(ctx)
-	if _, err := dsl.Parse(script, actions); err != nil {
-		t.Fatalf("解析失败: %v", err)
 	}
 }

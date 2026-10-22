@@ -615,27 +615,20 @@ func TestTaskTreeMainSessionTopLevel(t *testing.T) {
 }
 
 // TestTaskDisplayTitlePriority（I-38）：任务节点标题（name/purpose/simplified）取值优先级 ——
-// ① 调用参数注入的展示名 tool_call_display_name 最优先；② llm 型显式 title 更明确、覆盖注入值；
-// ③ 无注入回退工具契约名（调用方须传契约名；网关暴露名 self_<契约名> 由 turn.go 剥前缀）。
+// ① 调用参数注入的展示名 tool_call_display_name 最优先；② 无注入回退工具契约名。
+// （llm 型显式 title 分支已随 `llm_run` 工具下线移除；DSL 作业展示名由 gateway `dsl_run` 侧承担。）
 func TestTaskDisplayTitlePriority(t *testing.T) {
-	// ① 有注入（llm_run 委派工具节点）→ title = 注入值
-	name, purpose, simp := taskDisplay("llm_run", map[string]any{
-		"script": `LLM "worker" "p" "派活展示名"`, "tool_call_display_name": "派活说明",
+	// ① 有注入（普通工具节点）→ title = 注入值
+	name, purpose, simp := taskDisplay("tool_result", map[string]any{
+		"id": "x", "tool_call_display_name": "派活说明",
 	})
 	if name != "派活说明" || purpose != "派活说明" || simp != "派活说明" {
 		t.Fatalf("①注入优先失败: name=%q purpose=%q simplified=%q", name, purpose, simp)
 	}
-	// ② llm 型显式 title（比通用展示名更明确）→ 覆盖 ①
-	name, _, _ = taskDisplay("llm_run", map[string]any{
-		"tool_call_display_name": "委派", "title": "整理日志要点",
-	})
-	if name != "整理日志要点" {
-		t.Fatalf("②llm 显式 title 覆盖失败: name=%q", name)
-	}
-	// ③ 无注入 → 回退工具契约名（purpose 空）
-	name, purpose, simp = taskDisplay("llm_run", map[string]any{"script": "x"})
-	if name != "llm_run" || simp != "llm_run" || purpose != "" {
-		t.Fatalf("③回退契约名失败: name=%q purpose=%q simplified=%q", name, purpose, simp)
+	// ② 无注入 → 回退工具契约名（purpose 空）
+	name, purpose, simp = taskDisplay("tool_result", map[string]any{"id": "x"})
+	if name != "tool_result" || simp != "tool_result" || purpose != "" {
+		t.Fatalf("②回退契约名失败: name=%q purpose=%q simplified=%q", name, purpose, simp)
 	}
 	// 普通工具同优先级：注入优先 / 缺省回退契约名
 	if name, _, _ = taskDisplay("core_file_read", map[string]any{"tool_call_display_name": "读取配置"}); name != "读取配置" {

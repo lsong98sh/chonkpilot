@@ -40,6 +40,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/auth"
@@ -49,6 +50,32 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/osuser"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
 )
+
+// LiveWorkDirs 返回当前已登记实例的**去重 work_dir**（非空；供 resident indexer
+// 单实例多 workdir 发现，见 pluginbridge.Options.WorkDirs / plugin.index.workdirs）。
+// 实例表仅内存（进程重启即清）→ indexer 每轮轮询即可看到新开 / 已关项目。
+func (s *Server) LiveWorkDirs() []string {
+	if s == nil || s.im == nil {
+		return nil
+	}
+	list := s.im.List()
+	seen := make(map[string]struct{}, len(list))
+	out := make([]string, 0, len(list))
+	for _, in := range list {
+		wd := strings.TrimSpace(in.WorkDir)
+		if wd == "" {
+			continue
+		}
+		key := strings.ToLower(filepath.Clean(wd))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, filepath.Clean(wd))
+	}
+	sort.Strings(out)
+	return out
+}
 
 // SubjectInstanceClaim 是实例认领主题（相对主题；chonk. 前缀由总线注入，61 §4.1）。
 // 归属客户端方法面（前端 type `instance-claim` 经桥/httpapi 上行，见 frontMethodSubjects）。
@@ -92,13 +119,10 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 	}
 
 	// ② 入口绑定解析 work_dir/data_dir：本实例既有登记（入口启动期 instance-register 已登记）
-	//    优先，缺省回落**服务端启动参数**（--work-dir，缺省 cwd；--data-dir，缺省
-	//    <work_dir>/.chonkpilot）—— desktop 省略 payload 时即走后者（61 §4.1 ①）。
+	//    优先。**PRODSIM-1：work_dir 不再回落服务端启动参数**（单进程多项目后 opts.WorkDir
+	//    只是首个项目）；data_dir 仍回落启动参数（认证形态的用户数据根）。
 	rec, _ := s.im.Lookup(id)
 	boundWorkDir := rec.WorkDir
-	if boundWorkDir == "" {
-		boundWorkDir = s.opts.WorkDir
-	}
 	boundDataDir := rec.DataDir
 	if boundDataDir == "" {
 		boundDataDir = s.opts.DataDir
@@ -180,15 +204,19 @@ func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir, i
 		return wd, filepath.Join(wd, ".chonkpilot"), ""
 	}
 	if f := s.Form(); f == FormDesktop {
-		workDir, dataDir := boundWorkDir, boundDataDir
-		if strings.TrimSpace(workDir) == "" {
-			// 既无实例登记、又无启动参数 → 不静默绑定空目录（明确失败，且不引导登录）。
+		// PRODSIM-1（多项目主窗口）：work_dir 取**客户端提议**，缺省回落**实例登记**
+		// （`instWorkDir`），**不再回落服务端启动参数** —— 单进程多项目后 opts.WorkDir 只是
+		// 首个项目的路径，回落它会让其它项目静默绑到首个项目（或安装目录）。
+		// data_dir 保持空 → prjusr 按 project-id 落 `~/.chonkpilot/data/<id>/`（12-数据层 §3）。
+		wd := strings.TrimSpace(req.WorkDir)
+		if wd == "" {
+			wd = strings.TrimSpace(instWorkDir)
+		}
+		if wd == "" {
+			// 既无提议、又无实例登记 → 不静默绑定空目录（明确失败）。
 			return "", "", claimErrForbidden
 		}
-		if p := strings.TrimSpace(req.WorkDir); p != "" && !sameDir(p, workDir) {
-			return "", "", claimErrForbidden
-		}
-		return workDir, dataDir, ""
+		return filepath.Clean(wd), "", ""
 	}
 
 	// desktop / browser：身份以**连接层令牌**为准（前端自报的 user 只作提议交叉校验）。

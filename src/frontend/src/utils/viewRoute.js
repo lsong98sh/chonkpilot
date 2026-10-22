@@ -13,22 +13,29 @@
  * 本模块为**叶子模块**（无 import、无副作用）→ 可直跑单测，也可被 App.vue 安全引用。
  */
 
-/** 视图标识：`chat` = 纯对话窗口；`main` = 主窗口（完整布局）。 */
+/** 视图标识：`chat` = 纯对话窗口；`log` = 日志窗口；`main` = 主窗口（完整布局）。 */
 export const VIEW_CHAT = 'chat'
+export const VIEW_LOG = 'log'
 export const VIEW_MAIN = 'main'
 
 /** 对话窗口的 URL hash 标记（24 §1.1）。 */
 export const CHAT_HASH = '#chat'
 
+/** 日志窗口的 URL hash 标记（PRODSIM-1：宿主以 `<appOrigin>/#log` 打开，默认隐藏）。 */
+export const LOG_HASH = '#log'
+
 /**
  * 解析 URL（search + hash）→ 视图分派结果。
  * @param {string} search `location.search`（含前导 `?`，可缺省）
  * @param {string} hash `location.hash`（含前导 `#`，可缺省）
- * @returns {{view: 'chat'|'main', sessionId: string}} sessionId 仅在 view=chat 时非空
+ * @returns {{view: 'chat'|'log'|'main', sessionId: string}} sessionId 仅在 view=chat 时非空
  */
 export function parseViewRoute(search = '', hash = '') {
+  const h = String(hash || '')
+  // 日志窗口优先判定（无 session、不参与项目视图）。
+  if (h === LOG_HASH) return { view: VIEW_LOG, sessionId: '' }
   const params = new URLSearchParams(String(search || ''))
   const sessionId = params.get('session-id') || ''
-  const isChat = String(hash || '') === CHAT_HASH && sessionId !== ''
+  const isChat = h === CHAT_HASH && sessionId !== ''
   return { view: isChat ? VIEW_CHAT : VIEW_MAIN, sessionId: isChat ? sessionId : '' }
 }

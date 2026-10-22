@@ -12,12 +12,15 @@ core 分类工具总览（供 LLM 快速决定使用哪个工具）
 
 | 工具 | 用途 | 何时用 |
 |---|---|---|
-| filesys_run | 文件系统批量编排（新建/修改/删除/移动/复制 + 只读查询 READ/DIFF/FIND） | 批量改文件、建/删/移目录；读取文件、对比两文件、定位文件（原 file_read/file_find/file_diff 已归入本工具的 READ/DIFF/FIND 动作） |
+| file_read / file_write | 读取 / 写入文件 | 单文件或批量；统一 `{purpose, targets[]}`，支持区间读取、BOM 与编码控制 |
+| file_replace / file_patch | 精确文本替换 / 应用 unified diff | 改代码、打补丁；可带 `expectMd5` 防并发覆盖 |
+| file_diff | 比较两个文件 | 确认改动、生成补丁 |
+| file_delete / file_move / file_copy | 删除 / 移动改名 / 复制 | 批量整理文件（删目录须显式 `recursive`） |
+| file_find | 四合一查找（列目录 / glob / grep / 树形） | 找文件、找内容；`limit` 上限 2000，`meta=hash` 可算 md5 |
+| file_detect / file_iconv | 检测编码 / 转换编码 | 乱码排查、GBK↔UTF-8（低置信度会拒绝自动转，要求显式指定源编码） |
 | script_run | 执行脚本/命令（多 runtime） | 跑命令/脚本/构建/测试 |
-| dsl_run | DSL 统一编排（文件/浏览器/桌面/LLM 委派） | 循环/并行批处理 + 分支判断 + 结果落盘；文件查询动作经前缀化为 `FILE_READ`/`FILE_DIFF`/`FILE_FIND` |
 | web_fetch | HTTP 请求/下载 | 调 REST API、抓静态页、下载文件 |
-| browser_run | 浏览器自动化（网页 E2E，headless Chrome） | 操作网页、断言、截图、取 JS 渲染内容 |
-| desktop_run | 桌面 UI 自动化（窗口/鼠标/键盘/截图） | 操作桌面程序（非浏览器应用） |
 
-> 原 `file_read` / `file_find` / `file_diff` 三个独立工具已**收纳**：`filesys_run` 以裸动词 `READ`/`DIFF`/`FIND` 暴露，`dsl_run` 前缀化为 `FILE_READ`/`FILE_DIFF`/`FILE_FIND`。
-> 通用过滤参数（FIND）：`skip_dirs` 追加跳过目录、`ignore_files` 忽略文件 glob。
+> **浏览器 / 桌面自动化不再是工具**：在 `script_run`（python 等）里经 UDS 直连常驻插件 ——
+> `%LOCALAPPDATA%\chonkpilot\plugins\browser.sock` / `desktop.sock`，端点 `start` / `stop` / `operation`（一行一 JSON）。
+> 文件域工具**全部支持批量**：`{purpose, targets[]}`，单文件也写成 1 个元素的数组。

@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,10 +34,13 @@ type ExecTask struct {
 	Result        *mcp.CallToolResult `json:"result,omitempty"`
 	Error         string              `json:"error,omitempty"`
 	ToolCallID    string              `json:"tool_call_id,omitempty"` // 关联 LLM tool-call id（manual 解绑定位）
-	TopSession    string              `json:"top_session,omitempty"`  // 任务树归属主会话（I-90：随 mcp-tasks-report 回报）
-	Parent        string              `json:"parent,omitempty"`       // 已登记的 llm 侧节点 task_id（I-90：随回报下发）
-	ProviderKey   string              `json:"-"`                      // 归属 provider（取消 → 作废/重建）
-	cancel        context.CancelFunc
+	// CallID 是本次执行的**调用 id**（L6.3/L7/L8：per-call 池键 / 取消定位 / progressToken 路由
+	// 共用标识；不序列化到任何消息）。
+	CallID      string `json:"-"`
+	TopSession  string `json:"top_session,omitempty"` // 任务树归属主会话（I-90：随 mcp-tasks-report 回报）
+	Parent      string `json:"parent,omitempty"`      // 已登记的 llm 侧节点 task_id（I-90：随回报下发）
+	ProviderKey string `json:"-"`                     // 归属 provider（取消 → 作废/重建）
+	cancel      context.CancelFunc
 
 	// 任务化同步裁决内部状态（不序列化到任何消息）：
 	asyncReport bool          // 终态是否经 onDone 回报 mcp-tasks-report（always 恒 true；任务化解绑后 true）
@@ -262,6 +266,7 @@ type taskSpec struct {
 	topSession  string // 任务树归属主会话（I-90：随 mcp-tasks-report 回报；空 = 回报不带）
 	parent      string // 已登记的 llm 侧节点 task_id（I-90；空 = 回报不带）
 	providerKey string // 归属 provider（取消 → Invalidate 作废/重建）
+	callID      string // 本次调用的调用 id（per-call 池键 / CancelCall 定位 / progressToken）
 	asyncReport bool   // 终态是否经 onDone 回报 mcp-tasks-report
 	allowDetach bool   // 允许 detach（manual/auto）
 	allowWait   bool   // 允许 wait（never）
@@ -296,7 +301,7 @@ func (ep *execPool) spawn(ctx context.Context, spec taskSpec, run func(ctx conte
 		ID: id, Tool: spec.tool, State: "pending",
 		OwnerInstance: spec.instanceID, Session: spec.session, Turn: spec.turn, WorkDir: spec.workDir,
 		ToolCallID: spec.toolCallID, TopSession: spec.topSession, Parent: spec.parent,
-		ProviderKey: spec.providerKey, CreatedAt: time.Now(), cancel: cancel,
+		ProviderKey: spec.providerKey, CallID: spec.callID, CreatedAt: time.Now(), cancel: cancel,
 		asyncReport: spec.asyncReport, allowDetach: spec.allowDetach, allowWait: spec.allowWait,
 		doneCh:   make(chan struct{}),
 		detachCh: make(chan struct{}),
@@ -314,8 +319,14 @@ func (ep *execPool) spawn(ctx context.Context, spec taskSpec, run func(ctx conte
 		res, err := run(ctx2)
 		ep.mu.Lock()
 		if ctx2.Err() == context.Canceled && t.State != "done" {
-			t.State = "cancelled"
-			t.Error = "cancelled"
+			// 连带取消（L7 cancelCascade）已置 State=cancelled 且写入 slot_killed 错误 →
+			// 保留该终态与错误（不得改写成笼统的 "cancelled"，不假装干净）。
+			if t.State != "cancelled" {
+				t.State = "cancelled"
+			}
+			if t.Error == "" {
+				t.Error = "cancelled"
+			}
 		} else if err != nil {
 			t.State = "error"
 			t.Error = err.Error()
@@ -537,6 +548,62 @@ func (ep *execPool) cancelRef(instance, idOrCall string) error {
 		return fmt.Errorf("task %s not found", idOrCall)
 	}
 	return ep.cancel(instance, id)
+}
+
+// cancelCascade 把**同槽被连带打断**的执行（call_id 命中 callIDs）置为取消终态，错误摘要为
+// `slot_killed: aborted with cancelled call <cause> (affected call_id: …)`（L7 cascade-report：
+// 显式报告、不假装干净）。不触发 onCancel（避免对同一 provider 重复执行取消阶梯）；
+// 完成后由各自执行 goroutine 按既有路径回报终态（保留已写入的错误摘要）。
+func (ep *execPool) cancelCascade(cause string, callIDs []string) int {
+	if len(callIDs) == 0 {
+		return 0
+	}
+	// call_id 冲突时 provider 侧会加 `#n` 后缀（同一 tool_call_id 并发），任务侧按基名匹配。
+	baseID := func(id string) string {
+		if i := strings.LastIndex(id, "#"); i > 0 {
+			return id[:i]
+		}
+		return id
+	}
+	want := make(map[string]struct{}, len(callIDs))
+	for _, id := range callIDs {
+		want[baseID(id)] = struct{}{}
+	}
+	ep.mu.Lock()
+	var victims []*ExecTask
+	for _, bucket := range ep.execs {
+		for _, t := range bucket {
+			if t.CallID == "" {
+				continue
+			}
+			if _, hit := want[baseID(t.CallID)]; !hit {
+				continue
+			}
+			if t.State != "pending" && t.State != "running" {
+				continue
+			}
+			victims = append(victims, t)
+		}
+	}
+	msg := fmt.Sprintf("%s: aborted with cancelled call %s (affected call_id: %s)",
+		ErrKindSlotKilled, cause, strings.Join(callIDs, ", "))
+	for _, t := range victims {
+		t.State = "cancelled"
+		t.Error = msg
+		t.DoneAt = time.Now()
+		clearAwaiting(t)
+	}
+	for _, t := range victims {
+		ep.pruneTerminal(t.OwnerInstance)
+	}
+	ep.mu.Unlock()
+	for _, t := range victims {
+		if t.cancel != nil {
+			t.cancel()
+		}
+		t.markDone()
+	}
+	return len(victims)
 }
 
 func (ep *execPool) setState(t *ExecTask, s string) {

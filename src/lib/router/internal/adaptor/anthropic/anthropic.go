@@ -177,7 +177,7 @@ func (a *Adapter) Stream(ctx context.Context, spec canon.Spec, req canon.Request
 	// 断链判定：Anthropic 的正常收尾必有 `message_delta.stop_reason` 或 `message_stop`；
 	// 两者都没有 = 流被截断（EOF 落在事件边界上，SSE 层无法察觉）→ network（可重试）。
 	if !stopped && stopReason == "" {
-		return canon.NewError(canon.ErrorNetwork, "流在 message_stop 前结束（断链）")
+		return canon.NewError(canon.ErrorNetwork, "流在 message_stop 前结束（断链）").WithPhase(canon.PhaseStream)
 	}
 
 	// 终态（只投一次）：拼装完成的 tool_call → usage → done（含思考签名）。

@@ -111,8 +111,7 @@ type providerState struct {
 	status string // connected / connecting / failed / disabled / open / half-open
 	cb     *breaker
 	tools  []*toolRoute
-	scope  string  // 归属域："" = global；否则 = instance id（该 provider 工具仅归属 instance 可见）
-	ref    *dirRef // 非空 = 本提供方是 dir 共享节点的一次引用（RB-3 ①：工具按引用集即时展开，不物化 routes）
+	scope  string // 归属域："" = global；否则 = instance id（该 provider 工具仅归属 instance 可见）
 }
 
 // catalogAsset 是目录资产（tool/prompt/skill/resource；25 §5/T2：agent 已撤出资产面）条目：
@@ -161,50 +160,9 @@ func assetContentBytes(a *catalogAsset) ([]byte, error) {
 	return []byte(a.Content), nil
 }
 
-// ─── 共享能力节点（RB-3 ①：注册表按 node key 唯一，instance 只持引用集）───
+// ─── 目录资产（prompt/skill/resource 注册面）───
 
-// dirRef 是某归属域对共享能力节点的一次**引用**（RB-3 ①：「instance 只持引用集」）。
-// 暴露名 = 节点名前缀 + "_" + 工具原名（与既有 applyPrefix 规则逐字一致，对外零变更）。
-type dirRef struct {
-	nodeKey string // 共享节点 key（dir = 规范化根路径）
-	name    string // 节点名（暴露名前缀 = name + "_"）
-	scope   string // 归属域："" = global；否则 = instance id（uuid）
-	pk      string // 提供方 key = provKey("dir", scope, name)
-}
-
-// sharedNode 是**按 node key 唯一**的能力节点（RB-3 ①）：同根跨 instance 只扫描 / 只建一份
-// in-memory 会话与工具对象，各归属域经 refs 引用（不再按 instance 物理复制）。
-type sharedNode struct {
-	key    string
-	node   *memNode
-	tools  []*mcp.Tool // 原始工具（原名；按名排序）
-	byName map[string]*mcp.Tool
-	refs   []*dirRef // 引用集
-}
-
-// dirExposedName 计算公开暴露名（节点名前缀 + 原名；与 applyPrefix 同规则）。
-func dirExposedName(ref *dirRef, orig string) string { return ref.name + "_" + orig }
-
-// dirOriginalName 由暴露名反解工具原名（前缀不匹配 → ok=false）。
-func dirOriginalName(ref *dirRef, exposed string) (string, bool) {
-	p := ref.name + "_"
-	if !strings.HasPrefix(exposed, p) {
-		return "", false
-	}
-	return exposed[len(p):], true
-}
-
-// dirRoute 由共享节点 + 引用即时合成一条路由（**不物化**进 routes 表：RB-3 ②）。
-func dirRoute(ref *dirRef, t *mcp.Tool, exposed string) *toolRoute {
-	hot, _ := t.Meta["hot"].(bool) // 取 `_meta.hot` 真值（同 registerProvider 口径；nil map 读取安全）
-	return &toolRoute{
-		Name: exposed, Original: t.Name, Provider: ref.pk,
-		Tool: t, Hot: hot, Scope: ref.scope,
-	}
-}
-
-// toolWithName 返回「以 exposed 为名」的工具视图：名一致 → 原对象；否则浅拷贝改名
-// （dir 共享工具不改名，避免共享对象被按 instance 改写）。
+// toolWithName 返回「以 exposed 为名」的工具视图：名一致 → 原对象；否则浅拷贝改名。
 func toolWithName(rt *toolRoute) *mcp.Tool {
 	if rt == nil || rt.Tool == nil || rt.Tool.Name == rt.Name {
 		return rt.Tool
@@ -220,8 +178,6 @@ type registry struct {
 	providers map[string]*providerState
 	order     []string
 	assets    map[string]*catalogAsset // key = kind + ":" + name
-	shared    map[string]*sharedNode   // node key → 共享能力节点（RB-3 ①）
-	refs      map[string]*dirRef       // 提供方 key → dir 引用（反查/注销）
 }
 
 func newRegistry() *registry {
@@ -229,8 +185,6 @@ func newRegistry() *registry {
 		routes:    map[string]*toolRoute{},
 		providers: map[string]*providerState{},
 		assets:    map[string]*catalogAsset{},
-		shared:    map[string]*sharedNode{},
-		refs:      map[string]*dirRef{},
 	}
 }
 
@@ -259,6 +213,13 @@ func (r *registry) registerProvider(ps *providerState, proxyTools []*mcp.Tool, n
 	}
 
 	for _, t := range tools {
+		if t == nil {
+			continue
+		}
+		// 深拷贝再改写：registerProvider 会改写 Name/Meta/InputSchema，而提供方 ListTools
+		// 可能返回**缓存指针**（如 registeredProvider 返回注册时的同一 *mcp.Tool）——
+		// 原地改写会让每次 refresh 重复叠加前缀（GATEWAY-2 L5 实测：self_self_self_..._ask_user）。
+		t = cloneTool(t)
 		orig := t.Name
 		name := orig
 		if ps.entry != nil {
@@ -317,6 +278,20 @@ func (r *registry) registerFailed(ps *providerState) {
 	r.providers[ps.key] = ps
 }
 
+// cloneTool 返回工具深拷贝（JSON 往返）——供注册期改写 Name/Meta/InputSchema 而不污染
+// 提供方缓存的原始对象。拷贝失败时退回原对象（保持旧行为，不因序列化失败丢工具）。
+func cloneTool(t *mcp.Tool) *mcp.Tool {
+	raw, err := json.Marshal(t)
+	if err != nil {
+		return t
+	}
+	var out mcp.Tool
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return t
+	}
+	return &out
+}
+
 // applyPrefix 计算下游工具暴露名（namespace 覆盖默认 <id>_ 前缀）。
 func applyPrefix(name string, e *ServerEntry) string {
 	ns := e.Namespace
@@ -339,8 +314,7 @@ func entrySourcePrefix(e *ServerEntry) string {
 	return e.ID + "_"
 }
 
-// findFor 按 (instance, 暴露名) 查路由：先精确归属域（instance scoped 遮蔽），未命中回退 global；
-// 再按引用集解析 dir 共享节点暴露名（RB-3 ②：路由不物化 N×K）。
+// findFor 按 (instance, 暴露名) 查路由：先精确归属域（instance scoped 遮蔽），未命中回退 global。
 func (r *registry) findFor(name, instance string) (*toolRoute, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -352,44 +326,6 @@ func (r *registry) findFor(name, instance string) (*toolRoute, bool) {
 	if rt, ok := r.routes[routeKey(scopeGlobal, name)]; ok {
 		return rt, true
 	}
-	return r.findDirLocked(name, instance)
-}
-
-// findDirLocked 是 dir 暴露名解析（RB-3 ②）：**前缀 → instance+node+tool → 查 refs 校验 →
-// 命中共享 node**。持锁调用；scoped 引用遮蔽 global 引用（与 routes 表同规则）。
-//
-// 确定性：`shared` 为 map（迭代随机序），若不同节点产生相同暴露名（下划线歧义，如
-// name=a+tool=b_c 与 name=a_b+tool=c）则命中随迭代变化 → 此处**按 node key 排序**后遍历，
-// 结果稳定可复现（歧义冲突另由 addDirRef 唯一性判重显式拦截）。
-func (r *registry) findDirLocked(name, instance string) (*toolRoute, bool) {
-	scopes := []string{scopeGlobal}
-	if instance != scopeGlobal {
-		scopes = []string{instance, scopeGlobal}
-	}
-	keys := make([]string, 0, len(r.shared))
-	for k := range r.shared {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, scope := range scopes {
-		for _, k := range keys {
-			sn := r.shared[k]
-			for _, ref := range sn.refs {
-				if ref.scope != scope {
-					continue
-				}
-				orig, ok := dirOriginalName(ref, name)
-				if !ok {
-					continue
-				}
-				t, ok := sn.byName[orig]
-				if !ok {
-					continue
-				}
-				return dirRoute(ref, t, name), true
-			}
-		}
-	}
 	return nil, false
 }
 
@@ -397,8 +333,6 @@ func (r *registry) findDirLocked(name, instance string) (*toolRoute, bool) {
 func (r *registry) find(name string) (*toolRoute, bool) { return r.findFor(name, scopeGlobal) }
 
 // collectRoutes 汇总路由：all=true → 全量（UI 全量路径）；否则 global ∪ 归属 instance。
-// dir 共享节点按其**引用集即时展开**（不物化进 routes 表：RB-3 ②），输出与「按 instance
-// 物理复制」逐项等价（名/scope/来源节点均一致）。
 func (r *registry) collectRoutes(instance string, all bool) []*toolRoute {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -408,16 +342,6 @@ func (r *registry) collectRoutes(instance string, all bool) []*toolRoute {
 			continue
 		}
 		out = append(out, rt)
-	}
-	for _, sn := range r.shared {
-		for _, ref := range sn.refs {
-			if !all && ref.scope != scopeGlobal && ref.scope != instance {
-				continue
-			}
-			for _, t := range sn.tools {
-				out = append(out, dirRoute(ref, t, dirExposedName(ref, t.Name)))
-			}
-		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Scope+out[i].Name < out[j].Scope+out[j].Name })
 	return out
@@ -519,131 +443,7 @@ func (r *registry) removeProvider(key string) int {
 	return n
 }
 
-// ─── dir 共享节点 + 引用集（RB-3 ①②）───
-
-// sharedNodeOf 按 node key 取共享能力节点（未登记 → false）。
-func (r *registry) sharedNodeOf(key string) (*sharedNode, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	sn, ok := r.shared[key]
-	return sn, ok
-}
-
-// swapSharedNode 登记共享节点（并发竞态下保留先到者）：返回**实际生效**的节点
-// （调用方据此决定是否丢弃自己新建的节点）。
-func (r *registry) swapSharedNode(sn *sharedNode) *sharedNode {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ex := r.shared[sn.key]; ex != nil {
-		return ex
-	}
-	r.shared[sn.key] = sn
-	return sn
-}
-
-// addDirRef 给共享节点加一条归属引用，并登记该引用的提供方（视图/状态留在 providers；
-// 工具**不进 routes 表**）。同名「(scope, 暴露名)」冲突按既有语义报错（含与既有非 dir 路由判重）。
-//
-// 唯一性判重（dir）：dir 路由不物化，findDirLocked 按暴露名反解原名——若同 scope 下两条
-// 引用的**暴露名集合相交**（下划线歧义，如 name=a+tool=b_c 与 name=a_b+tool=c）则解析与
-// tools/list 不确定 → 此处显式报错拦截（避免静默不确定）。
-func (r *registry) addDirRef(sn *sharedNode, ref *dirRef, ps *providerState) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, dup := r.refs[ref.pk]; dup {
-		return fmt.Errorf("dir node %s already registered", ref.pk)
-	}
-	// 与同 scope 既有 dir 引用的暴露名集合判重（互不相同才算无歧义）。
-	for _, ex := range r.refs {
-		if ex.scope != ref.scope {
-			continue
-		}
-		esn := r.shared[ex.nodeKey]
-		if esn == nil {
-			continue
-		}
-		for _, t := range sn.tools {
-			exposed := dirExposedName(ref, t.Name)
-			for _, et := range esn.tools {
-				if exposed == dirExposedName(ex, et.Name) {
-					return fmt.Errorf("tool 名冲突 %q（%s 与 %s，scope=%q）：dir 节点暴露名歧义", exposed, ex.pk, ref.pk, ref.scope)
-				}
-			}
-		}
-	}
-	for _, t := range sn.tools {
-		exposed := dirExposedName(ref, t.Name)
-		if existing, dup := r.routes[routeKey(ref.scope, exposed)]; dup {
-			return fmt.Errorf("tool 名冲突 %q（%s 与 %s，scope=%q）", exposed, existing.Provider, ref.pk, ref.scope)
-		}
-	}
-	sn.refs = append(sn.refs, ref)
-	r.refs[ref.pk] = ref
-	if _, ok := r.providers[ref.pk]; !ok {
-		r.order = append(r.order, ref.pk)
-	}
-	r.providers[ref.pk] = ps
-	return nil
-}
-
-// removeDirRef 回收一条引用（RB-3 ①「注销回收引用」）：返回该引用侧暴露工具数 + 节点句柄 +
-// 是否已无引用（release=true → 调用方关闭并释放共享节点）。
-func (r *registry) removeDirRef(pk string) (n int, node *memNode, release bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ref, ok := r.refs[pk]
-	if !ok {
-		return 0, nil, false
-	}
-	delete(r.refs, pk)
-	sn := r.shared[ref.nodeKey]
-	if sn == nil {
-		return 0, nil, false
-	}
-	n = len(sn.tools)
-	for i, ex := range sn.refs {
-		if ex == ref {
-			sn.refs = append(sn.refs[:i], sn.refs[i+1:]...)
-			break
-		}
-	}
-	if len(sn.refs) > 0 {
-		return n, sn.node, false // 仍有其它引用 → 保留共享节点
-	}
-	delete(r.shared, ref.nodeKey)
-	return n, sn.node, true
-}
-
-// dropSharedIfUnused 释放在此刻**已无任何引用**的共享节点（引用添加失败的回滚路径）：
-// 返回被移除的节点句柄（nil = 未移除；调用方负责关闭）。
-func (r *registry) dropSharedIfUnused(key string) *memNode {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	sn := r.shared[key]
-	if sn == nil || len(sn.refs) > 0 {
-		return nil
-	}
-	delete(r.shared, key)
-	return sn.node
-}
-
-// refreshSharedNode 重拉共享节点的 tools/list（gateway/reload 对 dir 节点：不重建路由）。
-func (r *registry) refreshSharedNode(ref *dirRef, tools []*mcp.Tool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	sn := r.shared[ref.nodeKey]
-	if sn == nil {
-		return
-	}
-	byName := make(map[string]*mcp.Tool, len(tools))
-	for _, t := range tools {
-		byName[t.Name] = t
-	}
-	sn.tools = tools
-	sn.byName = byName
-}
-
-// ─── 目录资产（agent/prompt/skill/resource，供 mcp_find/mcp_load）───
+// ─── 目录资产（prompt/skill/resource，供 prompts/resources 原语面）───
 
 // putAsset 注册一个资产条目（(scope, kind, name) 内唯一；scope 空 = global）。
 func (r *registry) putAsset(a *catalogAsset) error {
@@ -689,15 +489,12 @@ func (r *registry) delAsset(kind, name string) {
 	delete(r.assets, assetKey(scopeGlobal, kind, name))
 }
 
-// assetsByKind 列出资产（kind 空 = 全部；按 kind+name 排序）。
-func (r *registry) assetsByKind(kind string) []*catalogAsset {
+// allAssets 列出全部注册资产（按 kind+name 排序）；调用点按 kind 分流。
+func (r *registry) allAssets() []*catalogAsset {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var out []*catalogAsset
+	out := make([]*catalogAsset, 0, len(r.assets))
 	for _, a := range r.assets {
-		if kind != "" && a.Kind != kind {
-			continue
-		}
 		out = append(out, a)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -777,18 +574,8 @@ func (r *registry) serverViews(filter string) []serverView {
 				v.Name = key
 			}
 		}
-		if ps.ref != nil {
-			// dir 共享节点（RB-3 ①）：工具按引用集即时展开（不物化 routes），按暴露名排序。
-			if sn := r.shared[ps.ref.nodeKey]; sn != nil {
-				for _, t := range sn.tools {
-					v.Tools = append(v.Tools, toolBrief{Name: dirExposedName(ps.ref, t.Name), Description: t.Description})
-				}
-				sort.Slice(v.Tools, func(i, j int) bool { return v.Tools[i].Name < v.Tools[j].Name })
-			}
-		} else {
-			for _, rt := range ps.tools {
-				v.Tools = append(v.Tools, toolBrief{Name: rt.Name, Description: rt.Tool.Description})
-			}
+		for _, rt := range ps.tools {
+			v.Tools = append(v.Tools, toolBrief{Name: rt.Name, Description: rt.Tool.Description})
 		}
 		out = append(out, v)
 	}

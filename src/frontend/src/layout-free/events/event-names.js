@@ -35,6 +35,18 @@ export const EventNames = {
   areaSetInstanceKey: 'lf-area-set-instance-key', // { nodeId, instanceKey }
   areaSetTabs: 'lf-area-set-tabs', // { nodeId, tabs } tab 容器的整体替换
   areaSetConstraint: 'lf-area-set-constraint', // { nodeId, direction, min, max } 尺寸约束
+  areaSetFlex: 'lf-area-set-flex', // { nodeId, flex } 数值 / 弹性两态（UILAYOUT-2）
+  areaSetVisible: 'lf-area-set-visible', // { nodeId, visible } 设计态：区域显示 / 隐藏（写草稿）
+  areaSetHideLocked: 'lf-area-set-hide-locked', // { nodeId, locked } 「不允许隐藏」标记（叶子 / 容器）
+  areaToggleVisible: 'lf-area-toggle-visible', // { viewKey?, nodeId? } 运行态：按 viewKey 或 nodeId 切换并落盘
+  /* ── 布局档案（UILAYOUT-2 / WIN-026；适配层订阅）── */
+  layoutProfileNew: 'lf-layout-profile-new', // {} 打开「新建布局」对话框
+  layoutProfileCreate: 'lf-layout-profile-create', // { name, from } from = 档案 id | 'blank'
+  layoutProfileSwitch: 'lf-layout-profile-switch', // { id }
+  layoutEdit: 'lf-layout-edit', // { id? } 编辑当前（缺省）或新建后的档案
+  layoutProfileRename: 'lf-layout-profile-rename', // { id, name }
+  layoutProfileDelete: 'lf-layout-profile-delete', // { id }
+  layoutProfileRestore: 'lf-layout-profile-restore', // { id? } 缺省 = 当前活动档案
   areaSwap: 'lf-area-swap', // { nodeId, delta } 与同级相邻兄弟交换位置
   areaSetToolbar: 'lf-area-set-toolbar', // { nodeId, toolbarId, position } 区域自定义工具栏
   drawerSetToolbar: 'lf-drawer-set-toolbar', // { drawerId, toolbarId, toolbarPosition }

@@ -99,6 +99,9 @@ type Vfts struct {
 	logf func(format string, args ...any)
 	exe  string // 引擎 exe 绝对路径（resolveExe 结果）
 	opt  Options
+	// toolExec（可选）：core-mcp-server 内部执行面。非 nil 时 vfts_query 委托 core（一工具一 exe），
+	// 本地引擎仅用于管理调用；管理结束即释放引擎（zvec 集合排他 LOCK，避免与查询执行器互斥）。
+	toolExec func() plugin.ToolExec
 
 	mu           sync.Mutex // 保护 insts / works / lastActiveAt（registered / regOwner 由 syncMu 保护——读写在 syncTools 单飞区内）
 	insts        map[string]*instRec
@@ -193,6 +196,7 @@ func (p *Vfts) Start(d plugin.Deps) error {
 		logf = func(string, ...any) {}
 	}
 	p.logf = logf
+	p.toolExec = d.ToolExec
 
 	exe, err := resolveExe(p.opt.Exe)
 	if err != nil {
@@ -748,6 +752,9 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 	defer r.cmu.Unlock()
 	r.busy = true
 	defer func() { r.busy = false }()
+	// 外部执行模式：管理结束立即释放本地引擎（查询由 core executor 直连索引，二者不能同时
+	// 持有 zvec 集合 LOCK）。defer LIFO → 先释放引擎，再清 busy、最后解锁（查询不会提前进来）。
+	defer p.releaseEngineAfterManagement()
 	ctx, cancel := context.WithTimeout(context.Background(), initTimeout)
 	defer cancel()
 
@@ -1154,6 +1161,22 @@ func (p *Vfts) sharedClient() *client {
 		p.client = newClient(p.exe)
 	}
 	return p.client
+}
+
+// releaseEngineAfterManagement 在外部执行模式下释放本地引擎子进程：查询由 core 的
+// 单工具 executor 直连 zvec 集合，本地常驻引擎会与它争抢同一份排他 LOCK。no-op：
+// 未启用外部执行（CLI 形态）或当前无 client。
+func (p *Vfts) releaseEngineAfterManagement() {
+	if p.toolExec == nil || p.toolExec() == nil {
+		return
+	}
+	p.clientMu.Lock()
+	c := p.client
+	p.client = nil
+	p.clientMu.Unlock()
+	if c != nil {
+		c.close()
+	}
 }
 
 // engineCall 调引擎工具（全局共享 client；client 内部串行，失败重连一次）。

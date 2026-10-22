@@ -172,15 +172,9 @@ func persistInterruptedTurn(t *testing.T, s *Server, turn, userText, toolCallID,
 	if _, err := st.AppendFullKeyed(turn, ChatMsg{Role: "user", Kind: "text", Content: userText}, ""); err != nil {
 		t.Fatal(err)
 	}
-	var assistant ChatMsg
-	if err := json.Unmarshal(jb(map[string]any{
-		"role": "assistant",
-		"tool_calls": []any{map[string]any{
-			"id": toolCallID, "type": "function",
-			"function": map[string]any{"name": tool, "arguments": argsJSON},
-		}},
-	}), &assistant); err != nil {
-		t.Fatal(err)
+	assistant := ChatMsg{
+		Role:      "assistant",
+		ToolCalls: []ToolCall{{ID: toolCallID, Name: tool, Arguments: argsJSON}},
 	}
 	if _, err := st.AppendFullKeyed(turn, assistant, ""); err != nil {
 		t.Fatal(err)

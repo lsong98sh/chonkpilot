@@ -31,12 +31,13 @@
 
 ## 3. 对外接口
 
-### 3.1 工具清单（11 = 3 管理 + 8 查询）
+### 3.1 工具清单（12 = 4 管理 + 8 查询）
 
 | 工具 | hot | 说明 |
 |------|:---:|------|
 | `codegraph_configure` | ✗ | 配置 workdir：`enabled` / `exts` / `skip_dirs`（用户排除规则，gitignore 语法）/ `stack_gitignore`（是否叠加 gitignore 体系，引擎仅记录，门控在插件）；`mode=clear` 清索引产物 |
 | `codegraph_initialize` | ✗ | 全量建索引（同步，落盘 `<workDir>/.chonkpilot/codegraph/`） |
+| `codegraph_index_paths` | ✗ | **按路径增量**（resident indexer 用）：`{workdir, files:[], remove:[]}` → `{ok,indexed,removed,skipped}`；不可索引/忽略/解析失败 → 从索引删除并计 skipped |
 | `codegraph_status` | ✗ | 状态：`disabled/未初始化/indexing/ready/error` + 进度 + 规模 |
 | `codegraph_symbol_search` | ✓ | 符号搜索（name 子串/前缀，kind/file 过滤，limit） |
 | `codegraph_get_symbol_info` | ✓ | 单符号详情（id 或 file+name）：kind/行号/复杂度/签名 |
@@ -48,6 +49,7 @@
 | `codegraph_get_module_summary` | ✓ | 目录/项目摘要（文件数/语言分布/符号数/最高复杂度） |
 
 - 查询工具必填 `workdir`；`readyGate` 未就绪 → 结构化应答（`pending/indexing/error/not_initialized`，**不算协议错误**）。
+- **完整性门（2026-10-19 P5）**：`readyGate` 先读 `<workDir>/.chonkpilot/codegraph/status.json`（`{state,pending,message,updated_at}`）：`error` → 结构化 error；`indexing`/`pending>0` → 5s 有界等待（100ms 轮询）→ `pending`；`ready && pending==0` 或文件不存在 → 回落 `EnsureReady`。
 - 注册到 gateway 时（插件侧）去掉 `workdir`（由 `context.instance_id` 注入），`handler_subject=codegraph-tool-call`，hot=true，category=codegraph。
 - **调用图语义与限制（重要，工具 description 同步声明）**：`calls` 存的是**调用点文本的最后一段名**（如 `a.b.Foo()` → `Foo`、`fmt.Println` → `Println`、`new Widget()` → `Widget`、`println!` → `println`），查询匹配 = 忽略大小写的**全等** 或 **后缀 `.name`**（故 `pkg.Foo` 与 `Foo` 视为同一目标）。这是**名字级启发式**：**无类型解析、无重载/接收者区分、无跨包唯一性判定**——`Callees` 的 `resolved=true` 仅表示该名在索引内**唯一命中**一个符号，非真实绑定；`Callers` 同理（同名不同定义会一并列出）。仅覆盖**已索引文件**内的**直接**调用；动态派发（`a["x"]()`、反射、`eval`）与未索引符号不参与。
 
@@ -69,7 +71,15 @@ Initialize：
   → 标 ready + LastIndexedAt → SaveIndex + saveMeta
 Reconcile：基线快检（数量 + mtime/size）→ 差异增删改 → 落盘（未初始化 → ErrNotInitialized）
 EnsureReady：单飞，返回 ready/indexing/not_initialized/error
+IndexPaths：按绝对路径增量（files 替换 / remove 删除 / 不可索引 → 删除并 skipped）；整体 rebuildIndex 避免符号重复
 ```
+
+**resident indexer（2026-10-19 P5；同日改单实例多 workdir + 托盘 + 并发口径）**：`chonkpilot-codegraph-indexer.exe`（源 `src/plugins/codegraph/cmd/indexer`）**每宿主进程仅一个实例**（GUI 子系统 + 托盘，启动隐藏、固定 960×600、每次弹出屏幕居中；单击托盘看执行输出）。**单实例判定 = 窗口类 + 同名窗口**（注册窗口类后 `FindWindowW` 命中同名顶层窗口 → 进程 code 0 退出；实测 `CS_GLOBALCLASS` 注册本身不跨进程冲突，故以窗口存在性为判据；`pluginhost.Spec.NoLock=true`，无文件单实例锁）；`pluginhost` 只负责崩溃退避监管。连插件桥后**等 `server-ready`**，再每轮经 `plugin.index.workdirs`（宿主活实例去重 work_dir）发现项目，**按 workdir 加锁**（`<workdir>/.chonkpilot/codegraph/indexer.lock`，项目之间互不阻塞）并**非阻塞派发给 5 个工作线程**（每线程独占一个引擎进程），消费 `index_queue`（`consumer=codegraph`）：
+- 每项目先查 `pending`（0 → 不拉起引擎）；`codegraph_status` → `enabled=false` 时 ack 并跳过；未初始化 → `codegraph_initialize` 全量；否则 `codegraph_index_paths`（队列同路径合并）。
+- 每批写 `<workDir>/.chonkpilot/codegraph/status.json`（`indexing/ready/error` + `pending`），查询门据此等待/报错。
+- 单批失败 ack `failed` 不退出（下轮重试）；同一项目同时只处理一个批次；`ctl plugin.shutdown` → 写 ready 退出。
+- **引擎生命周期（2026-10-19）**：工作线程空闲 5s / 本批失败后即 `close` 引擎子进程（下批懒重连）——引擎对索引库（bbolt `index.db`）保持打开，常驻不关会阻塞插件侧 `clear` / 全量重建（删库失败）。
+- env：`CHONKPILOT_PLUGIN_ADDR` / `CHONKPILOT_PLUGIN_ID`（缺省 `codegraph-indexer`）/ `CHONKPILOT_CODEGRAPH_ENGINE`（不再需要 `WORK_DIR` / `INDEX_DIR`）。
 
 **排除语义（完整 gitignore 语义，`server/index.go:excludeOptions` + `collectSourceFiles`）**：
 遍历走共享包 `github.com/chonkpilot/chonkpilot-ignore` 的 `ignore.WalkDir`（与 vfts 引擎、vfts 插件清单扫描**同一实现**），
@@ -139,6 +149,8 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 ### 4.5 插件侧（`plugin-codegraph`）
 
 见 [28-plugins §3.3](28-plugins.md)：订阅 `instance-*` + `data-prj-config-refresh` + `codegraph-tool-call`；`enable-codegraph` 门控；`syncTools` 单飞注册/注销；**每 workdir 独立引擎 client/子进程**（`p.clients[workdir]`，`clientFor(workdir)` 首调懒建；`engineCall` 按 `args["workdir"]` 取该 workdir 的 client；`onToolCall` 按 `r.workDir` 路由）（每 workdir 独立子进程，独立索引内存/独立串行、互不干扰）。
+
+**查询一工具一 exe（2026-10-19，G-68 第二步）**：8 个查询工具改为独立 executor（`chonkpilot-codegraph-<tool>-executor.exe`，源 `src/plugins/codegraph/cmd/exec-*` + 公共外壳 `execx`）；契约在 `src/initdata/capability/tools/codegraph/*.tool.md`，统一标记 `internal: true`（不进 core `tools/list`）并带 `runtime`。插件仍按启用状态经 gateway `tools/register` 暴露原工具名 `codegraph_*`；`onToolCall` **先委托 core**（`plugin.Deps.ToolExec → POST /internal/exec`，参数注入 `workdir`），core 不可用或失败且 ctx 未取消时回落本地引擎（`engineCall`）。查询 executor **直连 bbolt `index.db`**（每次操作即开即关、read-only 共享锁）→ 与插件/索引器并发读安全，不需要独占 LOCK。**LOCK 有界等待（2026-10-19）**：遇 bbolt 打开超时（另一进程排他持库）→ 约 **3s** 内重试，超时返回「正在索引，不可用…」；就绪门 `status=error` 保留原始错误文本（不吞锁错误）。**故障注入测试** = [lock_test.go](../../src/plugins/codegraph/execx/lock_test.go)：子进程排他持库，executor 实测 ≈3.2s 返回统一文本。
 
 **索引编排（进度 / 重试 / 空闲回收）**：
 

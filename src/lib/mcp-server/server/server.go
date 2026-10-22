@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -35,7 +37,16 @@ type CallContext struct {
 	// Purpose 是本次调用的运行目的（C1 2026-10-15）：= gateway 展示名参数 tool_call_display_name，
 	// 由 doCall 剥离前取出、随调用上下文透传 → spawn executor 时落 CHONKPILOT_PURPOSE。
 	Purpose string
-	Present bool
+	// 会话/轮次/调用 id（2026-10-19，core-mcp-server 域工具 executor）：meta/domain 控制面
+	// 执行器经 plugin/v1/* 恢复 turn（ask_user / tool_result / subchat_*）。落 CHONKPILOT_*。
+	SessionID  string
+	TurnID     string
+	ToolCallID string
+	// TopSession / Parent（2026-10-19，dsl_run 独立 executor）：任务树归属（主会话 / 父节点），
+	// 由 gateway 随 _meta 透传；spawn executor 时落 CHONKPILOT_TOP_SESSION / CHONKPILOT_PARENT。
+	TopSession string
+	Parent     string
+	Present    bool
 }
 
 // callContextFromMeta 从 tools/call 请求的 _meta 解析调用上下文（无命名空间 → Present=false）。
@@ -52,6 +63,11 @@ func callContextFromMeta(meta mcp.Meta) CallContext {
 	cx.WorkDir, _ = raw["work_dir"].(string)
 	cx.DataDir, _ = raw["data_dir"].(string)
 	cx.Purpose, _ = raw["purpose"].(string)
+	cx.SessionID, _ = raw["session"].(string)
+	cx.TurnID, _ = raw["turn"].(string)
+	cx.ToolCallID, _ = raw["tool_call_id"].(string)
+	cx.TopSession, _ = raw["top_session"].(string)
+	cx.Parent, _ = raw["parent"].(string)
 	return cx
 }
 
@@ -67,6 +83,12 @@ func (cx CallContext) err() error {
 // 供调用链上游（gateway）在 tools/call 时透传调用上下文；第三方 client 不应携带。
 // purpose（C1 2026-10-15）= 本次调用的运行目的，空串则不写该键（保持既有形态）。
 func CallContextMeta(instanceID, workDir, dataDir, purpose string) mcp.Meta {
+	return CallContextMetaFull(instanceID, workDir, dataDir, purpose, "", "", "")
+}
+
+// CallContextMetaFull 同 CallContextMeta，并携带会话/轮次/调用 id（域工具 executor 恢复 turn 用）。
+// 空串键不写出（保持既有形态）。
+func CallContextMetaFull(instanceID, workDir, dataDir, purpose, session, turn, toolCallID string) mcp.Meta {
 	ns := map[string]any{
 		"instance_id": instanceID,
 		"work_dir":    workDir,
@@ -75,7 +97,33 @@ func CallContextMeta(instanceID, workDir, dataDir, purpose string) mcp.Meta {
 	if purpose != "" {
 		ns["purpose"] = purpose
 	}
+	if session != "" {
+		ns["session"] = session
+	}
+	if turn != "" {
+		ns["turn"] = turn
+	}
+	if toolCallID != "" {
+		ns["tool_call_id"] = toolCallID
+	}
 	return mcp.Meta{metaNamespace: ns}
+}
+
+// CallContextMetaTree 同 CallContextMetaFull，并携带任务树归属（top_session / parent）。
+// dsl_run 等 executor 据此把作业节点挂到正确的主会话 / 父节点（空串键不写出）。
+func CallContextMetaTree(instanceID, workDir, dataDir, purpose, session, turn, toolCallID, topSession, parent string) mcp.Meta {
+	meta := CallContextMetaFull(instanceID, workDir, dataDir, purpose, session, turn, toolCallID)
+	ns, _ := meta[metaNamespace].(map[string]any)
+	if ns == nil {
+		return meta
+	}
+	if topSession != "" {
+		ns["top_session"] = topSession
+	}
+	if parent != "" {
+		ns["parent"] = parent
+	}
+	return meta
 }
 
 // RegisterContracts 扫描契约根 root（递归四后缀）并把原语注册进调用方传入的 go-sdk server：
@@ -84,53 +132,80 @@ func CallContextMeta(instanceID, workDir, dataDir, purpose string) mcp.Meta {
 //   - *.skill.md   → prompt（_meta.type=skill，与 prompt 同构注册以便 prompts/list 区分）
 //   - *.resource.md→ resource（URI 缺省补 file://<name>）
 //
-// 例外：category=server 的 *.tool.md（由 gateway/域自持节点提供的工具，如 dsl_run）**不注册**
-// （否则产出无 runtime 的占位工具 + 热重扫幽灵工具）；其定义经 ServerTools 单源提供。
+// 例外：category=server 且**无 runtime** 的 *.tool.md（当前无；`dsl_run` 已于 2026-10-19 外移为
+// runtime executor）**不注册**（否则产出无 runtime 的占位工具 + 热重扫幽灵工具）；其定义经 ServerTools 单源提供。
+// P6（2026-10-19）：cfg.SkipTools=true → **只注册资产**（prompts/skills/resources），跳过 tools
+// （系统级 app 根工具改由外部进程经插件桥注册/执行）。
 //
 // root 缺失或为空目录 → 空注册（no-op，返回 nil），调用方决定空能力面语义。
 // cfg 为执行配置（nil → DefaultConfig()）；ExecDir 已移除——exe 型 runtime 按契约文件
 // 所在目录相对解析（见 resolveRuntime），解释器走 PATH。
 func RegisterContracts(srv *mcp.Server, root string, cfg *Config) error {
+	return registerContracts(srv, root, cfg, false)
+}
+
+// RegisterContractsWithTools 与 RegisterContracts 相同，但**忽略 cfg.SkipTools**（强制注册工具）。
+// 用途（P6）：dir 节点扫描（用户/项目级 capability 根）仍由本进程执行工具，不受系统级 app 根
+// 「工具外移」影响 —— 二者共享同一 cfg（I-82），故不能直接改 cfg 字段。
+func RegisterContractsWithTools(srv *mcp.Server, root string, cfg *Config) error {
+	return registerContracts(srv, root, cfg, true)
+}
+
+// registerContracts 是 RegisterContracts / RegisterContractsWithTools 的共同实现。
+// forceTools=true → 忽略 cfg.SkipTools（dir 节点：不做 embed 兜底）。
+func registerContracts(srv *mcp.Server, root string, cfg *Config, forceTools bool) error {
 	if srv == nil {
 		return fmt.Errorf("RegisterContracts: server is required")
 	}
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
-	if _, err := os.Stat(root); err != nil {
-		if os.IsNotExist(err) {
-			return nil // 契约根缺失：空注册
-		}
+	sources := contractSources(root, forceTools)
+	if len(sources) == 0 {
+		return nil // 契约根缺失且无内置兜底：空注册
+	}
+	files, shadowed, err := ScanAll(sources)
+	if err != nil {
 		return err
 	}
+	for _, sh := range shadowed {
+		log.Printf("[mcp-server] contract shadowed: %s %q: %s(%s) overrides %s(%s)",
+			sh.Kind, sh.Name, sh.Winner, sh.WinnerRel, sh.Loser, sh.LoserRel)
+	}
+	// 内嵌来源无磁盘路径：executor 相对解析基准按**部署根同位目录**补（部署布局与 embed 同构）。
+	fillEmbeddedDirs(files, root)
 	lim := cfg.ensureLimiter() // 并发限流器（tools/call 内生效；上限可被 prj max_concurrency 运行期覆盖）
 
-	// tools
-	toolDocs, err := loadTools(root)
-	if err != nil {
-		return fmt.Errorf("load tools: %w", err)
-	}
-	nTools := 0
-	for _, td := range toolDocs {
-		// server 类别（category=server）= 由 gateway/域自持节点提供的工具（如 dsl_run）：
-		// 本包按其契约注册会产出**无 runtime 的不可用占位工具**，且 app 根热重扫时会在 self 节点
-		// 复现为幽灵工具 —— 故**不注册**；其定义经 ServerTools 单源提供给装配层/gateway。
-		if isServerTool(td) {
-			continue
-		}
-		t, err := buildTool(td, cfg)
+	// tools（P6：外部工具模式下由外部进程注册执行 → 跳过）
+	if forceTools || !cfg.SkipTools {
+		toolDocs, err := parseTools(files)
 		if err != nil {
-			return fmt.Errorf("build tool %s: %w", td.Name, err)
+			return fmt.Errorf("load tools: %w", err)
 		}
-		srv.AddTool(t, makeToolHandler(td, cfg, lim))
-		nTools++
-	}
-	if nTools > 0 {
-		log.Printf("[mcp-server] %s: %d tools", root, nTools)
+		nTools := 0
+		for _, td := range toolDocs {
+			// server 类别且无 runtime（当前无；`dsl_run` 已外移为 runtime executor）：
+			// 本包按其契约注册会产出**无 runtime 的不可用占位工具**，且 app 根热重扫时会在 self 节点
+			// 复现为幽灵工具 —— 故**不注册**；其定义经 ServerTools 单源提供给装配层。
+			// core-only（meta/domain/dsl_run）与 internal（插件查询工具）均不由进程内 mcp-server 注册：
+			// 前者只在 core 暴露，后者只经 core 的 /internal/exec 执行。
+			if isServerTool(td) || td.CoreOnly || td.Internal {
+				continue
+			}
+			t, err := buildTool(td, cfg)
+			if err != nil {
+				return fmt.Errorf("build tool %s: %w", td.Name, err)
+			}
+			srv.AddTool(t, makeToolHandler(td, cfg, lim))
+			nTools++
+		}
+		if nTools > 0 {
+			log.Printf("[mcp-server] %s: %d tools", root, nTools)
+		}
 	}
 
 	// prompts（*.prompt.md 注册为 prompt，_meta.type=prompt）
-	promptDocs, err := loadPrompts(root)
+	promptDocs, err := parsePrompts(files)
 	if err != nil {
 		return fmt.Errorf("load prompts: %w", err)
 	}
@@ -144,7 +219,7 @@ func RegisterContracts(srv *mcp.Server, root string, cfg *Config) error {
 	}
 
 	// skills（*.skill.md 注册为 prompt，_meta.type=skill）
-	skillDocs, err := loadSkills(root)
+	skillDocs, err := parseSkills(files)
 	if err != nil {
 		return fmt.Errorf("load skills: %w", err)
 	}
@@ -159,7 +234,7 @@ func RegisterContracts(srv *mcp.Server, root string, cfg *Config) error {
 	}
 
 	// resources（URI 缺省补 file://<name>）
-	resDocs, err := loadResources(root)
+	resDocs, err := parseResources(files)
 	if err != nil {
 		return fmt.Errorf("load resources: %w", err)
 	}
@@ -178,6 +253,42 @@ func RegisterContracts(srv *mcp.Server, root string, cfg *Config) error {
 		log.Printf("[mcp-server] %s: %d resources", root, len(resDocs))
 	}
 	return nil
+}
+
+// contractSources 决定本次注册的契约来源（GATEWAY-2 C）：
+//   - 磁盘契约根存在 → **磁盘单层**（部署产物 = 权威；与改前行为一致）；
+//   - 磁盘契约根缺失 → 内置 embed 层（`//go:embed all:contracts`，构建期同步副本）。
+//
+// dir 节点（user/project/prjusr capability 根）走 RegisterContractsWithTools（forceTools=true）
+// → **不带** embed：dir 根缺失 = 空能力面（用户/项目目录由用户自建，不能回落系统内置集）。
+func contractSources(root string, dirNode bool) []Source {
+	if strings.TrimSpace(root) != "" {
+		if _, err := os.Stat(root); err == nil {
+			return []Source{{Label: "app", Dir: root}}
+		}
+	}
+	if dirNode {
+		return nil
+	}
+	if fsys := builtinContractFS(); fsys != nil {
+		return []Source{{Label: "app-embed", FS: fsys}}
+	}
+	return nil
+}
+
+// fillEmbeddedDirs 给内嵌来源的契约补 executor 相对解析基准：
+// 按**部署根同位目录**（root + 相对路径目录）——部署产物的 capability 布局与 embed 副本同构，
+// 故内嵌契约里的相对 runtime（如 `../../executors/x.exe`）仍能落到部署目录。
+func fillEmbeddedDirs(files []*ContractFile, root string) {
+	if strings.TrimSpace(root) == "" {
+		return
+	}
+	for _, f := range files {
+		if f.Path != "" || f.Dir != "" {
+			continue
+		}
+		f.Dir = filepath.Join(root, filepath.FromSlash(path.Dir(f.Rel)))
+	}
 }
 
 // setPromptType 把类型标注写入 prompt 的 _meta（MCP 保留扩展字段，prompts/list 原样透出）。

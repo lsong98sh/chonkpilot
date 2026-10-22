@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/config"
 	"github.com/chonkpilot/chonkpilot-data/internal/filelist"
+	"github.com/chonkpilot/chonkpilot-data/internal/indexqueue"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/knowledge"
 	"github.com/chonkpilot/chonkpilot-data/internal/mcp"
@@ -87,6 +89,13 @@ var dataReqSubjects = []string{
 	msgkeys.TopicDataSessionGroupRoundTargetsLoad, msgkeys.TopicDataSessionGroupRoundTargetsSave,
 	// 会话快照域（A3 扩展；sessions 表 history/snapshot_turn 两字段读写）
 	msgkeys.TopicDataSnapshotGet, msgkeys.TopicDataSnapshotSet,
+	// INBOX 内部面（2026-10-17，中途插话 / 等下一轮；prjusr `inbox_items` 表）：
+	// 只由 llm-server 读写（客户端只经 llm-inbox-* 方法面）。
+	msgkeys.TopicDataInboxAppend, msgkeys.TopicDataInboxList, msgkeys.TopicDataInboxUpdate, msgkeys.TopicDataInboxCommit,
+	msgkeys.TopicDataAskPending,
+	// TURN EVENT 内部面（MOD-1 M3；prjusr `turn_events` 表）：TurnState 事件日志
+	// （只由 llm-server 读写；清理随既有 sweep 周期）。
+	msgkeys.TopicDataTurnEventAppend, msgkeys.TopicDataTurnEventCleanup,
 	// 任务树域（§3.4）
 	msgkeys.TopicDataTasktreeList, msgkeys.TopicDataTasktreeTasks, msgkeys.TopicDataTasktreeDelete,
 	// 任务树域 A3 运行时扩展（server taskManager.persist 节点落库）
@@ -126,7 +135,10 @@ type Service struct {
 	facade.ConfigAPI
 	facade.SessionAPI
 	facade.TurnAPI
+	facade.TurnEventAPI
+	facade.AskAPI
 	facade.MessageAPI
+	facade.InboxAPI
 	facade.TasktreeAPI
 	facade.KnowledgeAPI
 	facade.FileListAPI
@@ -135,6 +147,7 @@ type Service struct {
 	facade.McpAPI
 	facade.ProjectAPI
 	facade.GroupAPI
+	facade.IndexQueueAPI
 
 	mu      sync.Mutex
 	subs    []mq.Sub // 全部订阅句柄（Start 累计 / Stop 退订）
@@ -165,7 +178,10 @@ func New(bus mq.Bus, opts Options) *Service {
 		ConfigAPI:    config.New(base),
 		SessionAPI:   ses,
 		TurnAPI:      ses,
+		TurnEventAPI: ses,
+		AskAPI:       ses,
 		MessageAPI:   ses,
+		InboxAPI:     ses,
 		TasktreeAPI:  tasktree.New(base),
 		KnowledgeAPI: knowledge.New(base),
 		FileListAPI:  filelist.New(base),
@@ -175,6 +191,8 @@ func New(bus mq.Bus, opts Options) *Service {
 		ProjectAPI:   project.New(base),
 		// 群聊两表（参与者名单 / 大轮次投递对象）与会话同域同库（prjusr）→ 复用 session 实现。
 		GroupAPI: ses,
+		// resident indexer 待索引队列（prjusr `index_queue`；仅 in-process，无 MQ 绑定）。
+		IndexQueueAPI: indexqueue.New(base),
 	}
 	// refresh 广播附带的域列表（订阅面）由信封层提供 → 与各域 list 应答同源。
 	base.DomainList = s.domainList
@@ -257,7 +275,66 @@ func (s *Service) onInstanceRegister(_ string, payload []byte) {
 		DataDir    string `json:"data_dir,omitempty"`
 	}
 	_ = json.Unmarshal(payload, &req)
+	// INPUTVAL-1 P0-4：实例 / 项目路径写侧校验（instance_id 标识符、work_dir/data_dir 绝对路径、
+	// 长度上限、禁上级引用）。失败**不登记**（后续按未登记处置，不把脏路径写进数据根绑定）。
+	if err := validateInstanceRegister(req.InstanceID, req.WorkDir, req.DataDir); err != nil {
+		if s.Warnf != nil {
+			s.Warnf("persist: instance-register 拒绝（instance=%q）: %v", req.InstanceID, err)
+		}
+		return
+	}
 	s.View.Register(req.InstanceID, req.WorkDir, req.DataDir)
+}
+
+// 实例标识符上限（与 config 包 MaxNameChars 同源）与路径上限（MaxPathChars 同源）。
+const (
+	maxInstanceIDChars = 64
+	maxInstancePathLen = 512
+)
+
+// validateInstanceRegister 校验实例登记（INPUTVAL-1 BE-22）：instance_id 标识符；work_dir 必填
+// 绝对路径；data_dir 可选，非空须为绝对路径；均禁 `..` 段与超长。
+func validateInstanceRegister(instanceID, workDir, dataDir string) error {
+	id := strings.TrimSpace(instanceID)
+	if id == "" {
+		return fmt.Errorf("instance_id required")
+	}
+	if len(id) > maxInstanceIDChars {
+		return fmt.Errorf("instance_id 超长（上限 %d 字符）", maxInstanceIDChars)
+	}
+	for _, r := range id {
+		if r == '-' || r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			continue
+		}
+		return fmt.Errorf("instance_id 仅允许字母 / 数字 / - / _")
+	}
+	if err := validateInstancePath("work_dir", workDir, true); err != nil {
+		return err
+	}
+	return validateInstancePath("data_dir", dataDir, false)
+}
+
+// validateInstancePath 路径校验：必填开关 + 绝对路径 + 长度 + 禁 `..`。
+func validateInstancePath(field, path string, required bool) error {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		if required {
+			return fmt.Errorf("%s required", field)
+		}
+		return nil
+	}
+	if len(p) > maxInstancePathLen {
+		return fmt.Errorf("%s 超长（上限 %d 字符）", field, maxInstancePathLen)
+	}
+	if !filepath.IsAbs(p) {
+		return fmt.Errorf("%s 必须为绝对路径（%s）", field, p)
+	}
+	for _, seg := range strings.FieldsFunc(filepath.ToSlash(p), func(r rune) bool { return r == '/' }) {
+		if seg == ".." {
+			return fmt.Errorf("%s 不得包含上级目录引用（..）", field)
+		}
+	}
+	return nil
 }
 
 // onInstanceHeartbeat 心跳保活：刷新 LastBeat（仅分离形态的超时扫描消费；默认构建
@@ -293,7 +370,7 @@ func (s *Service) lookupInstance(instanceID string) (kernel.Info, bool) {
 // dataDomains 是 data-<domain> 消息面支持的域（61-消息一览 §3.1-§3.6）：配置五域 +
 // 会话/任务树/知识库/记忆库四域（B 类随迁补齐）；snapshot = A3 运行时扩展（会话快照 get/set）；
 // index = 2026-09-27 新增只读域（索引排除判定，index-ignored）；file-versions 归属 history.db 外部，不在本面。
-var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "mcp", "prompt", "session", "snapshot", "knowledge", "tasktree", "memory", "filelist", "index"}
+var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "mcp", "prompt", "session", "inbox", "turn-event", "ask", "snapshot", "knowledge", "tasktree", "memory", "filelist", "index"}
 
 // dataReq 是 data-<domain>-* 请求的通用载荷（§3.1）。ID 宽松接收 string / number。
 type dataReq struct {
@@ -355,6 +432,12 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 		s.handleMCP(op, req)
 	case "session":
 		s.handleSession(op, req, payload)
+	case "inbox":
+		s.handleInbox(op, req)
+	case "turn-event":
+		s.handleTurnEvent(op, req, payload)
+	case "ask":
+		s.handleAsk(op, req)
 	case "snapshot":
 		s.handleSnapshot(op, req)
 	case "knowledge":

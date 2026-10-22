@@ -39,6 +39,8 @@ func newTestServerClock(t *testing.T, llmSrv *httptest.Server, clock func() time
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// data 层共享连接关闭须在 s.Stop 之后、TempDir 清理之前（LIFO；Windows 库句柄）。
+	t.Cleanup(closeTestDataStore)
 	t.Cleanup(s.Stop)
 	return s
 }

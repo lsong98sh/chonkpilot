@@ -5,14 +5,14 @@
  *   - executors：内置 executor，key = executor **exe 基名**（chonkpilot-*-executor.exe）；
  *   - mcps：外部 MCP，key = MCP 条目名。
  * 形状 = `{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`。
- * 兼容**旧形状** `{"core":bool,"desktop":bool,"browser":bool}` → 读取时迁移（core → core + dsl 两 exe）。
+ * 兼容**旧形状** `{"core":bool,"desktop":bool,"browser":bool}` → 读取时迁移（core → tools）。
  */
 
 // 旧形状（executor 类别）→ 新形状（exe 基名）映射（与后端 mcp-server ParseToolSandbox 一致）。
+// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— `core` 只映射到 tools-executor；
+// desktop / browser 已改为插件，旧键被忽略（不产生单位）。
 const LEGACY_CATEGORY_UNITS = {
-  core: ['chonkpilot-core-executor.exe', 'chonkpilot-dsl-executor.exe'],
-  desktop: ['chonkpilot-desktop-executor.exe'],
-  browser: ['chonkpilot-browser-executor.exe'],
+  core: ['chonkpilot-tools-executor.exe'],
 }
 
 // isStdioServer：与 MCP 页 transportName 推断一致 —— 显式 transport 优先；缺省：有 url → http，否则 stdio。

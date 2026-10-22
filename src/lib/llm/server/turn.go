@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -60,18 +59,10 @@ type SendReq struct {
 // defaultMaxToolIterations 单轮工具循环上限的缺省值（provider 未显式配置时生效）。
 const defaultMaxToolIterations = 20
 
-// 异步看门狗（P2 watchdog）：pending（task_id 回执）与 inflight（ask_user / llm_run 子作业异步
-// 回喂）任一未回填时，续轮闸门（continueOpenLocked）永不开启 → 整轮永久挂起（回执丢失 / ask 过期 /
-// 子作业未回填）。loop 每 pendingSweepInterval 扫描一次，对超过 pendingTaskTimeout 仍未回填的
-// pending / inflight 按 failed 占位回填并摘除（复用 onAsyncDone / FeedToolResultStatus 同一路径）→
-// 闸门重开、续轮。
-// 取值保守（缺省 defaultPendingTaskTimeout=2h，可由项目级键 `pending_task_timeout_sec` 覆盖）：
-// 长时异步（构建 / 抓取 / 编译 / 子作业）仍可正常完成，只在**回执确实丢失**时才兜底。
-const (
-	pendingSweepInterval = 30 * time.Second
-	// defaultPendingTaskTimeout 看门狗超时缺省值（prj 键缺失 / 非正 → 回落此值）。
-	defaultPendingTaskTimeout = 2 * time.Hour
-)
+// defaultPendingTaskTimeout 是引擎轮内等待异步回执的超时缺省值：引擎 `PendingWait` 等待循环对超过
+// 该阈值仍未回填的调用合成 failed 占位续轮（阈值与 prj 键 `pending_task_timeout_sec` 同源）。
+// 取值保守（2h）：长时异步（构建 / 抓取 / 编译 / 子作业）仍可正常完成，只在**回执确实丢失**时兜底。
+const defaultPendingTaskTimeout = 2 * time.Hour
 
 // pendingTaskTimeoutKey 是项目级键「异步任务看门狗超时（秒）」（缺省 defaultPendingTaskTimeout）：
 // 覆盖 pending 回执与 inflight（ask / 子作业）两类在飞登记的兜底判定阈值。
@@ -88,12 +79,12 @@ func pendingTaskTimeoutOf(vals map[string]string) time.Duration {
 
 // S6 LLM 错误恢复参数（对齐 llm-error-handling.md §一）。
 // llmRetryCount 为**回落默认**：usr 配置 retryCount（T-27 接线）未配置时生效；
-// retryCount **显式 0 = 不重试**（P0-A，存在性判定），仅键缺失（persist 系统默认 2）才回落。
-// 退避（重发间隔）**不自持**：经 `router.RetryWait`（`Retry-After` 优先 + 1s·2s·4s… 封顶 30s）计算，
-// 见 retryWait；不再有 `retryDelay` 配置项（2026-10-05 定案，差异登记 41 I-156）。
+// retryCount **显式 0 = 不重试**（P0-A，存在性判定），仅键缺失（persist 系统默认 5）才回落。
+// 退避由 **router** 按 `retryBudgetSec` 预算归一化计算（RETRY-2，2026-10-20），llm 侧不再计算。
 const (
-	llmRetryCount   = 2 // 无内容失败重发次数（方式 A）
-	maxAutoContinue = 3 // length/断链自动续写上限（方式 B）
+	llmRetryCount   = 5                // 报文级重试次数（不含首次请求）
+	llmRetryBudget  = 60 * time.Second // 退避总预算缺省值（retryBudgetSec 未配置时）
+	maxAutoContinue = 3                // length/断链自动续写上限（方式 B）
 )
 
 // asyncDoneMsg 是异步任务完成消息（gateway 回执 task-report → 回填续轮）。
@@ -122,49 +113,52 @@ type turnCtx struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	in         chan ChatMsg // 输入队列
-	done       chan struct{}
-	once       sync.Once
-	hist       []ChatMsg // 会话历史（llm-start 组装：摘要 + 未压缩 turn，见 BuildHistory）
-	iterations int       // 工具循环计数（maxToolIterations 保护）
+	in   chan ChatMsg // 输入队列
+	done chan struct{}
+	once sync.Once
+	hist []ChatMsg // 会话历史（llm-start 组装：摘要 + 未压缩 turn，见 BuildHistory）
 	// kick 是「以**库内既有上下文**触发一次 LLM 循环」的内部触发（缓冲 1；子聊天首轮专用，
-	// SUBCHAT-2 阶段 B-2）：交接内容已由 subchat_open handler 同步落库 → 本触发只让 loop 跑一次
-	// chatOnce()（无新输入、不重复落库 → msgs() 从库带回交接消息）。loop 唯一消费点，保证
-	// chatOnce 恒在 loop goroutine 内执行（与异步回执 / 工具结果续轮同一串行口径）。
+	// SUBCHAT-2 阶段 B-2）：交接内容已由 subchat_open handler 同步落库 → 本触发只让 `engineFirstInput`
+	// 起引擎（无新输入、不重复落库 → msgs() 从库带回交接消息）。loop 唯一消费点。
 	kick chan struct{}
 
-	mu      sync.Mutex             // 保护 pending / inflight / stash / toolMsgKeys
+	mu      sync.Mutex             // 保护 pending / inflight / toolMsgKeys
 	pending map[string]pendingTool // task_id → 转异步发起信息（挂起登记）
-	// inflight 记录已派发、结果**异步回喂**的 ask_user / llm_run 子作业（tool_call_id →
-	// 派发时刻）：与 pending 共同构成续轮闸门（见 continueOpenLocked）——同一批 tool_calls
-	// 混有 ask/子作业 + 异步工具时，只有全部结果到齐才续轮（否则未决 tool_call 只有 running
-	// 占位行，assistant.tool_calls 与 tool 结果配对破坏）。结果经 `tc.in` 回喂时在
-	// deliverInput 摘除登记（**不在 feed 时摘除**，避免与 loop 消费时序竞态）。
-	// 派发时刻用于看门狗兜底（reapStalePending）：超时未回填 → 按 failed 占位回填并摘除。
+	// inflight 记录已派发、结果**异步回喂**的 ask_user / llm_run 子作业（tool_call_id → 派发时刻）：
+	// 与 pending 共同构成续轮闸门（见 frameOpenLocked）——同一批 tool_calls 混有 ask/子作业 +
+	// 异步工具时，只有全部结果到齐才续轮（否则未决 tool_call 只有 running 占位行，
+	// assistant.tool_calls 与 tool 结果配对破坏）。结果经 `tc.in` 回喂时由 `engineRouteInput` 摘除登记。
 	inflight     map[string]time.Time
-	stash        []ChatMsg               // 等待 pending 完成时合并提交的同步工具结果
 	toolMsgKeys  map[string]string       // tool_call_id → role=tool 行主键（发起即落 running；终态回填同一行）
 	toolCallMeta map[string]toolCallMeta // tool_call_id → 发起信息（B-05：终态回填免一次全量 LoadMessages）
-	// persistedResultOK 记录本 turn **成功**落库结果的 tool_call_id（I-25 去重的硬判据）：
-	// 成功 → 结果已由 msgs() 从库带回，本次输入不必重复叠加；失败 → 保留内存结果（避免丢结果）。
-	persistedResultOK map[string]bool
-	asyncDone         chan asyncDoneMsg // gateway 回执 task-report → loop 续轮
-	continues         int               // 自动续写计数（maxAutoContinue 保护，S6）
+	asyncDone    chan asyncDoneMsg       // gateway 回执 task-report → 引擎输入
+	continues    int                     // 自动续写计数（maxAutoContinue 保护，S6）
 	// retryAttempt = 本 turn **当前 LLM 调用**已执行的重试次数（RETRY-1，2026-10-17）：
 	// 每次失败重发前自增并随中间态 `session-retry`（前端 llm-retry）广播；终态
 	// `session-complete{status:error}` 携带该值（0 = 未重试）。仅在 loop goroutine 读写。
 	retryAttempt int
-	sessionLock       *sessionLock      // session 排他锁（onLLMStart 获取；Close 释放）
-	result            string            // 终态输出文本（子轮次递归时父侧读取；finish 写入）
-	turnErr           error             // 终态错误（子轮次递归时父侧读取；finish error 写入）
+	// engineInbox 是引擎的唯一输入口（A4-P4b：引擎整轮为唯一执行路径）：生产投递点
+	// （in / inboxCh / asyncDone）统一转 engineInbox，由引擎在轮内消费。
+	engineInbox *chatInbox
+	// isRecovery = 本 turn 由 recoverTurnCtx 重建（进程重启 / 死 turn 恢复）→ 引擎在 RunTurn
+	// 前补齐「assistant.tool_calls 缺 tool 行」的断链（engineSynthesizeDanglingToolResults）。
+	isRecovery bool
+	// autoContinueOff = 引擎接管时的**子轮次判定**（父链非空 / 子会话 / 干活子会话）：不做自动
+	// 续写（与生产 `activeSessionOK` 对子轮次恒不成立的实际语义一致；见 engineRuntimeConfig）。
+	autoContinueOff bool
+	sessionLock     *sessionLock // session 排他锁（onLLMStart 获取；Close 释放）
+	result          string       // 终态输出文本（子轮次递归时父侧读取；finish 写入）
+	turnErr         error        // 终态错误（子轮次递归时父侧读取；finish error 写入）
 	// finishOnce 是**原子终态标志**（E2-2）：正常完成路径与 onLLMCancel（取消）可能并发到达同一轮次
 	// （cancel 命中时正常路径的 complete 仍在飞）→ server.finish 经它保证终态仅落库/广播一次
 	// （不二次写 CompleteTurnTokens、不二次广播 llm-complete）。与 Close 的 once 相互独立。
 	finishOnce sync.Once
-	// answer 跨段累积答案：自动续写（finish==length）与断链续写（resumePartial）会把同一轮正文
-	// 分多段产出；每段被判定"保留"（续写前落库 / 终态）时 append，终态 `llm-complete.text` 与
-	// `tc.result` 取**累积全文**（单段场景与旧行为逐字节一致）。仅 loop goroutine 读写，无需加锁。
-	answer strings.Builder
+
+	// ── INBOX 帧栈（中途插话，见 docs/agent-chat/中途插话设计方案.md §2/§3）──
+	// inserts = LIFO 插入帧栈；空 = 当前帧是主帧。引擎的插入帧由引擎自持（Depth），此处仅保留
+	// 待异步回执的 pending/inflight 归属（ask / 转异步结果按帧摘除）。
+	inserts []*insertFrame
+	inboxCh chan facade.InboxItem // insert 消费入口（engineRouteInsert 转 engineInbox）
 
 	llmTemperature     *float64 // 来自 provider 配置的 LLM temperature（存在即生效，含 0；启动时加载一次）
 	llmMaxOutputToken  *int     // 来自 provider 配置的 LLM maxOutputToken（最大输出 token；存在即生效，含 0；口径 Z1）
@@ -179,15 +173,30 @@ type turnCtx struct {
 	llmModel  string
 	llmThink  string
 	llmEffort string
-	// 超时/重试（来自 usr 配置，启动时加载一次；T-27 接线）：
+	// 超时/重试（来自 usr 配置，启动时加载一次；T-27 接线 + RETRY-2）：
 	//   - responseTimeout/streamTimeout 传给 router `CallOptions`（首字节 / 流间隔超时）；
-	//   - retryCount 用于无内容失败重发（方式 A，S6）：显式 0 = 不重试；退避值不自持（见 retryWait）。
-	// 缺省 → 由 loadLLMRuntimeConfig 回落旧硬编码常量（120s/60s/2）；非正值仅超时两项回落。
+	//   - retryCount/retryBudget 传给 router `CallOptions`（报文级重试次数 + 退避预算）；
+	//     显式 retryCount=0 = 不重试；retryBudget < 0 = 关闭预算（固定指数）。
+	// 缺省 → 由 llmRuntimeConfigFrom 回落常量（120s/60s/5 次/60s 预算）；非正值仅超时两项回落。
 	responseTimeout time.Duration
 	streamTimeout   time.Duration
 	retryCount      int
-	// pendingTaskTimeout 异步看门狗超时（pending 回执 / inflight ask·子作业 未回填）——来自 prj 键
-	// `pending_task_timeout_sec`（缺省 defaultPendingTaskTimeout）；非正 → 兜底回落缺省（见 reapStalePending）。
+	retryBudget     time.Duration
+	// RETRY-2 语义级续写（usr 配置）：开关 / 中断后宽限期 / 续写文案；
+	// continueSeq 是「用户操作代次」——宽限期内任何用户输入（含插话/切会话）自增 → 定时器作废。
+	autoContinue      bool
+	autoContinueDelay time.Duration
+	continueText      string
+	continueSeq       atomic.Uint64
+	// NEXTRUN-1：连续自动接续上限（usr `nextRunMax`，默认 30；0 = 关闭 → 工具不下发 + 兜底拒绝）。
+	nextRunMax int
+	// nextRunItemID 是本 turn 已登记的 LLM 排队项 inbox id（only 本轮有效；last-wins 覆盖目标）。
+	// 仅引擎工具执行 goroutine 读写，nextRunMu 保护（防御并发工具派发）。
+	nextRunItemID string
+	nextRunMu     sync.Mutex
+	// pendingTaskTimeout 引擎轮内等待异步回执的超时（pending 回执 / ask·子作业 未回填）——来自 prj 键
+	// `pending_task_timeout_sec`（缺省 defaultPendingTaskTimeout）；非正 → 兜底回落缺省
+	// （见 engineRuntimeConfig 的 PendingWait）。
 	pendingTaskTimeout time.Duration
 	// maxToolIterations 单轮工具循环上限（来自 provider 定义；缺省 20）。
 	maxToolIterations int
@@ -237,6 +246,14 @@ type toolCallMeta struct {
 	args map[string]any
 }
 
+// insertFrame 是一次中途插入的 LLM 轮次及其工具等待集合（设计 §3.2）。
+// 主帧不建结构体：其状态即 turnCtx 上的 pending/inflight（nil 帧 = 主帧）。
+type insertFrame struct {
+	id       string
+	pending  map[string]pendingTool
+	inflight map[string]time.Time
+}
+
 // loadSessionInfo 懒加载本 turn 的会话行信息（**只读一次**，isSubsession / forceSyncTools 共用）：
 //   - 快路径：req.Parents 非空 → 必为子会话（runChildTurn 逐级追加父会话链，零查询）→
 //     按现行路径口径标 `sub_session`（dsl_run 的 LLM 步骤派生，单聊方案 D23）；
@@ -283,19 +300,65 @@ func (tc *turnCtx) forceSyncTools() bool {
 	return tc.sessionKind != ""
 }
 
-// gatewayArgs 返回本次工具调用**下发给 gateway 的参数**：非主会话强制同步时附**调用级 async
-// 覆盖**（`async=never`）——gateway `doCall` 读取后即剥离、不传下游，故不改 `mcp-tools-call`
-// 载荷形状与工具入参（主会话原样返回，零开销）。**落库 / 前端展示仍用原始 args**（调用方传原参）。
-func (tc *turnCtx) gatewayArgs(args map[string]any) map[string]any {
-	if !tc.forceSyncTools() {
-		return args
-	}
+// gatewayArgs 返回本次工具调用**下发给 gateway 的参数**：INBOX（2026-10-17）起**一律强制异步**
+// （`async=always`）——派发即返回 task_id，主循环立即让出，插话才可能被消费。
+// gateway `doCall` 读取后即剥离、不传下游，故不改 `mcp-tools-call` 载荷形状与工具入参。
+// **落库 / 前端展示仍用原始 args**（调用方传原参）。
+//
+// 例外：**本进程域工具**（ask_user / llm_run / subchat_* / tool_*）不注入——它们是 llm-server
+// 自己同步处理的编排工具（毫秒级、非阻塞），异步化会把返回体变成 `任务已转后台执行`、
+// 改变其契约语义（如 subchat_open 必须返回 {ok,session_id}），且对插话没有收益。
+//
+// 历史：原 A5「非主会话强制同步」（`async=never`）已按 INBOX 设计废止（§9 Q5）——否则子会话 /
+// 群聊的工具永远同步，插话不成立；「收口点亮 / 本轮屏障」改判 `pending` 清空 + turn 终态。
+// 例外 ②：**契约显式声明了超时裁决点**（`_meta.timeout > 0`）的工具保留原异步档位
+// （`never` / `manual` 的 `mcp-tools-timeout` 裁决 UI 仍可达）；这类工具的语义就是"等用户裁决"，
+// 强制异步会让该能力不可达。其余工具（绝大多数）全量强制异步。
+// 例外 ③：**调用级显式声明了 `async` / `_async`**（LLM 或测试夹具明确要求 never/manual）时
+// 尊重原值——超时裁决 `/ cancel_on_timeout` 链路依赖同步等待语义，覆盖会让既有能力不可达。
+func (tc *turnCtx) gatewayArgs(name string, args map[string]any) map[string]any {
 	out := make(map[string]any, len(args)+1)
 	for k, v := range args {
 		out[k] = v
 	}
-	out["async"] = "never"
+	if inProcessTool(name) || tc.arbitratedTool(name) {
+		return out
+	}
+	if _, has := out["async"]; has {
+		return out
+	}
+	if _, has := out["_async"]; has {
+		return out
+	}
+	out["async"] = "always"
 	return out
+}
+
+// arbitratedTool 判定工具契约是否显式声明了超时裁决点（`_meta.timeout > 0`）。
+func (tc *turnCtx) arbitratedTool(name string) bool {
+	if tc.server == nil || tc.server.gc == nil {
+		return false
+	}
+	meta := tc.server.gc.ToolMeta(name)
+	if meta == nil {
+		return false
+	}
+	switch v := meta["timeout"].(type) {
+	case float64:
+		return v > 0
+	case int:
+		return v > 0
+	}
+	return false
+}
+
+// inProcessTool 判定工具是否由 llm-server 进程内同步处理（见 gatewayArgs 例外说明）。
+func inProcessTool(name string) bool {
+	switch strings.TrimPrefix(name, "self_") {
+	case "ask_user", "subchat_open", "subchat_finish", "tool_stop", "tool_result":
+		return true
+	}
+	return false
 }
 
 // subsessionHint 为「子会话压缩关闭」时的上下文超限失败补一句可诊断说明（42 §2 (253) DSL-4 ⑤）：
@@ -390,7 +453,17 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	}
 	llmThink, llmEffort := resolveThinkEffort(pcfg, req)
 	// 加载 usr 超时/重试配置（T-27 接线）：缺省已回落旧硬编码常量（复用上面已读的 usrCfg）。
-	respTO, streamTO, retryCnt := llmRuntimeConfigFrom(usrCfg)
+	respTO, streamTO, retryBudget, retryCnt := llmRuntimeConfigFrom(usrCfg)
+	contEnabled, contDelay, contText := llmContinueConfigFrom(usrCfg)
+	// NEXTRUN-1：连续自动接续上限（0 = 关闭）。工具面收敛：非主会话 / 关闭时不向 LLM 下发
+	// `next_run`（denyTools 双拦：下发面 + 调用处），减少工具槽位占用。
+	nextRunMax := llmNextRunMaxFrom(usrCfg)
+	if nextRunMax <= 0 || len(req.Parents) > 0 || sc.kind != "" {
+		if denyTools == nil {
+			denyTools = map[string]struct{}{}
+		}
+		denyTools[nextRunTool] = struct{}{}
+	}
 	// 三段边界 3 键（keep_full_max_turns / keep_full_max_tokens / compress_token_threshold）
 	// 一次 ConfigKVGet 共用（B-37）：同域/同读序不变，避免逐键各自往返。
 	zoneVals := s.prjConfigValues(req.InstanceID, keepFullMaxTurnsKey, keepFullMaxTokensKey, briefBudgetKey, pendingTaskTimeoutKey)
@@ -403,6 +476,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		done:      make(chan struct{}),
 		hist:      hist,
 		kick:      make(chan struct{}, 1),
+		inboxCh:   make(chan facade.InboxItem, 16),
 		pending:   make(map[string]pendingTool),
 		asyncDone: make(chan asyncDoneMsg, 8),
 
@@ -416,6 +490,11 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		responseTimeout:    respTO,
 		streamTimeout:      streamTO,
 		retryCount:         retryCnt,
+		retryBudget:        retryBudget,
+		autoContinue:       contEnabled,
+		autoContinueDelay:  contDelay,
+		continueText:       contText,
+		nextRunMax:         nextRunMax,
 		pendingTaskTimeout: pendingTaskTimeoutOf(zoneVals),
 		maxToolIterations:  llmMaxIter,
 		allowedTools:       allowedTools,
@@ -424,9 +503,27 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		keepFullTokens:     keepFullTokensOf(zoneVals),
 		briefBudget:        briefBudgetOf(zoneVals),
 		turnTokens:         turnTokens,
+		engineInbox:        newChatInbox(),
 	}
+	// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写（见 engineRuntimeConfig）。
+	tc.autoContinueOff = subTurnNoAutoContinue(req, sc)
 	go tc.loop()
 	return tc
+}
+
+// subTurnNoAutoContinue 判定引擎接管时是否**强制关闭自动续写**（A4-P4a）：
+// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写 —— 与生产 `activeSessionOK`
+// （活动会话恒为主会话 / 群聊窗口）对子轮次恒不成立的实际语义一致，也不计入 AutoContinueMax。
+// 子聊天（`sub_chat`）保留 usr 配置（其窗口可成为活动会话，行为与生产一致）。
+func subTurnNoAutoContinue(req StartReq, sc turnScenario) bool {
+	if len(req.Parents) > 0 {
+		return true
+	}
+	switch sc.kind {
+	case facade.SessionKindSubSession, facade.SessionKindWorkSession:
+		return true
+	}
+	return false
 }
 
 // turnScenario 是「本轮场景 + agent」解析 + 系统提示词构造的产物（新建轮与恢复轮**共用同一构造**，
@@ -836,6 +933,14 @@ func (s *Server) taskNodeBase(tc *turnCtx) (topSession, parentID string) {
 	return topSession, parentID
 }
 
+// InstanceID / SessionID / TurnID 是 turnSession 的只读身份访问器（A4-P3a-0 接口抽象）；
+// 取值与 req.* 同源，不引入任何状态。
+func (tc *turnCtx) InstanceID() string { return tc.req.InstanceID }
+
+func (tc *turnCtx) SessionID() string { return tc.req.Session }
+
+func (tc *turnCtx) TurnID() string { return tc.req.Turn }
+
 // Close 终止轮次（幂等）：释放 session 锁 + 取消 + 关 done。
 // 快照由唯一终态路径（server.finish → llm-complete）写，此处不再写。
 func (tc *turnCtx) Close() {
@@ -923,9 +1028,9 @@ func (tc *turnCtx) feed(msg ChatMsg) {
 	}
 	// 不可丢类（tool 结果 / 「继续」/ 用户文本）：**不丢**。上方非阻塞尝试已失败（队列满）→
 	// **转后台 goroutine 阻塞投递**（对齐 onGatewayTaskDone 对 asyncDone 的改法）：既不丢弃，也不
-	// 阻塞调用方。关键：loop 自身也会投递（chatOnce 的自动续写「继续」、reapStalePending 的兜底
-	// 回填）——同步阻塞会自死锁（队列满时消费方恰是调用方自身）；非 loop 调用方则在总线同步派发
-	// 线程上阻塞（宿主 UI 线程冻结）。仅 done / ctx 取消才放弃投递。
+	// 阻塞调用方。关键：loop 自身也会投递（引擎的自动续写「继续」）——同步阻塞会自死锁（队列满时
+	// 消费方恰是调用方自身）；非 loop 调用方则在总线同步派发线程上阻塞（宿主 UI 线程冻结）。
+	// 仅 done / ctx 取消才放弃投递。
 	go func() {
 		select {
 		case tc.in <- msg:
@@ -935,7 +1040,9 @@ func (tc *turnCtx) feed(msg ChatMsg) {
 	}()
 }
 
-// loop 调度循环：取输入 → LLM 一轮 → 广播/工具/回喂 / gateway 回执续轮，直到 complete/error/close。
+// loop 调度循环 = 引擎唯一执行路径（A4-P4b）：一轮完整 turn（首个输入等待 → LLM step →
+// 工具循环 → 中途插话 → 异步回执续轮 → 自动续写 → 终态）由 `runEngineLoop` 执行；
+// 终态仍由 `server.finish` 唯一收口（引擎 `turn_complete` 有意不发，避免二次终态）。
 func (tc *turnCtx) loop() {
 	defer func() {
 		// 清理只作用于仍指向本 turnCtx 的登记：tool-retry 死 turn 恢复会沿用原 {session, turn}
@@ -961,101 +1068,7 @@ func (tc *turnCtx) loop() {
 		tc.server.mu.Unlock()
 		tc.Close()
 	}()
-	// pending 回执兜底（P2 watchdog）：周期扫描超时未回执的 pending，按 failed 占位续轮。
-	sweep := time.NewTicker(pendingSweepInterval)
-	defer sweep.Stop()
-	for {
-		select {
-		case <-tc.done:
-			return
-		case m := <-tc.asyncDone:
-			tc.onAsyncDone(m)
-		case <-sweep.C:
-			tc.reapStalePending()
-		case <-tc.kick:
-			// 以库内既有上下文跑一次 LLM 循环（子聊天首轮；无新输入、不重复落库，见 Kick）。
-			tc.chatOnce()
-		case msg := <-tc.in:
-			tc.deliverInput(msg)
-		}
-	}
-}
-
-// deliverInput 消费一条输入队列消息（loop goroutine 唯一调用点）：工具结果先摘除在飞登记，
-// 再按续轮闸门决定「续轮」或「暂存」——闸门未开（仍有异步 pending / ask / 子作业在飞）时
-// 不得续轮，否则未决 tool_call 只有 running 占位行，assistant.tool_calls 与 tool 结果配对破坏。
-// 非工具消息（用户文本 / 继续 / 通知）不受闸门约束，直接进入 chatOnce。
-func (tc *turnCtx) deliverInput(msg ChatMsg) {
-	if msg.Role != "tool" {
-		tc.chatOnce(msg)
-		return
-	}
-	tc.clearInflight(msg.ToolCallID)
-	tc.mu.Lock()
-	if !tc.continueOpenLocked() {
-		tc.stash = append(tc.stash, msg)
-		tc.mu.Unlock()
-		return
-	}
-	msgs := append(append([]ChatMsg{}, tc.stash...), msg)
-	tc.stash = nil
-	tc.mu.Unlock()
-	tc.chatOnce(msgs...)
-}
-
-// reapStalePending 扫描超时未回填的 pending（回执丢失 / 未登记）与 inflight（ask 过期 / 子作业
-// 未回填）——到点按 failed 占位回填并摘除，使续轮闸门重开：
-//   - pending：复用 onAsyncDone 同一落库 / 续轮路径（state="timeout" → 落 failed）；
-//   - inflight：经 FeedToolResultStatus 落 failed 结果 + 回喂（deliverInput 消费时摘除登记）。
-func (tc *turnCtx) reapStalePending() {
-	now := time.Now()
-	timeout := tc.pendingTaskTimeout
-	if timeout <= 0 {
-		timeout = defaultPendingTaskTimeout
-	}
-	var stale []asyncDoneMsg
-	var staleInflight []string
-	tc.mu.Lock()
-	for taskID, pt := range tc.pending {
-		t, err := time.Parse(time.RFC3339, pt.movedAt)
-		if err != nil {
-			continue
-		}
-		if now.Sub(t) >= timeout {
-			stale = append(stale, asyncDoneMsg{taskID: taskID, state: "timeout"})
-		}
-	}
-	for callID, at := range tc.inflight {
-		if now.Sub(at) >= timeout {
-			staleInflight = append(staleInflight, callID)
-			// 采集即**原子认领摘除**（对齐 pending 侧 onAsyncDone 的 delete）：否则同一 id 在兜底消息
-			// 被 loop 消费（deliverInput → clearInflight）之前若再命中一次 sweep，会被重复兜底
-			// （重复落库 / 多次续轮）。消费时的 clearInflight 对已摘除 id 幂等无操作。
-			delete(tc.inflight, callID)
-		}
-	}
-	tc.mu.Unlock()
-	for _, m := range stale {
-		logf("[chonkpilot-server] pending task %s 超时未回执（>%s）→ 按 failed 占位续轮\n", m.taskID, timeout)
-		tc.onAsyncDone(m)
-	}
-	for _, callID := range staleInflight {
-		logf("[chonkpilot-server] inflight %s 超时未回填（>%s）→ 按 failed 占位续轮\n", callID, timeout)
-		tc.reapInflight(callID, timeout)
-	}
-}
-
-// reapInflight 兜底回收一个超时未回填的 inflight（ask_user / llm_run 子作业）：
-// 结果按 failed 占位落库并回喂 → deliverInput 消费时 clearInflight 摘除登记 → 闸门重开、续轮。
-// 同时把该工具仍处于非终态的任务节点按 error 收口（ask 未应答 / 子作业未回填时节点悬挂）。
-// 幂等：结果行按 tool_call_id 回填同一行、任务节点 done 幂等；若真实结果随后仍回填，未决 tool
-// 结果经 unpersistedInputs 去重（不重复进上下文）。
-func (tc *turnCtx) reapInflight(toolCallID string, timeout time.Duration) {
-	if n := tc.server.tasks.findByToolCall(tc.req.InstanceID, toolCallID); n != nil && !terminalTaskState(n.State) {
-		tc.server.tasks.done(n.TaskID, TaskStateError, "", "超时未回填")
-	}
-	msg := fmt.Sprintf("错误: 工具调用 %s 在 %s 内未收到结果（回执丢失 / 询问已过期 / 子作业未回填），已按失败占位续轮", toolCallID, timeout)
-	tc.FeedToolResultStatus(toolCallID, msg, "failed")
+	tc.runEngineLoop()
 }
 
 // registerPending 登记「转异步挂起」（task_id → 发起信息）并同步 task_id → 本 turn 运行态索引
@@ -1064,7 +1077,7 @@ func (tc *turnCtx) reapInflight(toolCallID string, timeout time.Duration) {
 // → 不漏续轮。
 func (tc *turnCtx) registerPending(taskID, toolCallID string) {
 	tc.mu.Lock()
-	tc.pending[taskID] = pendingTool{toolCallID: toolCallID, movedAt: time.Now().UTC().Format(time.RFC3339)}
+	tc.pendingMapLocked()[taskID] = pendingTool{toolCallID: toolCallID, movedAt: time.Now().UTC().Format(time.RFC3339)}
 	tc.mu.Unlock()
 	tc.server.mu.Lock()
 	if tc.server.taskTurnIndex != nil {
@@ -1074,44 +1087,123 @@ func (tc *turnCtx) registerPending(taskID, toolCallID string) {
 }
 
 // markInflight 登记一个已派发、结果异步回喂的 tool_call（ask_user / llm_run 子作业），
-// 并记录派发时刻（看门狗超时回收用，见 reapStalePending）。
+// 并记录派发时刻（引擎 PendingWait 超时兜底语义的归属判定用）。
 func (tc *turnCtx) markInflight(toolCallID string) {
 	if toolCallID == "" {
 		return
 	}
 	tc.mu.Lock()
-	if tc.inflight == nil {
-		tc.inflight = map[string]time.Time{}
-	}
-	tc.inflight[toolCallID] = time.Now()
+	tc.inflightMapLocked()[toolCallID] = time.Now()
 	tc.mu.Unlock()
 }
 
 // clearInflight 摘除一个在飞 ask/子作业登记（工具结果被 loop 消费时调用；未知 id 幂等无操作）。
-func (tc *turnCtx) clearInflight(toolCallID string) {
+// 返回登记所属帧（nil = 主帧 or 未登记）。
+func (tc *turnCtx) clearInflight(toolCallID string) *insertFrame {
 	if toolCallID == "" {
-		return
+		return nil
 	}
 	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	for i := len(tc.inserts) - 1; i >= 0; i-- {
+		if _, ok := tc.inserts[i].inflight[toolCallID]; ok {
+			delete(tc.inserts[i].inflight, toolCallID)
+			return tc.inserts[i]
+		}
+	}
 	delete(tc.inflight, toolCallID)
-	tc.mu.Unlock()
+	return nil
 }
 
-// continueOpenLocked 报告续轮闸门是否已开：无在飞异步 pending、且无在飞 ask/子作业。
-// **须持 tc.mu**。
-func (tc *turnCtx) continueOpenLocked() bool {
-	return len(tc.pending) == 0 && len(tc.inflight) == 0
+// ── 帧栈访问器（nil 帧 = 主帧）────────────────────────────────────────────
+
+// curFrame 返回栈顶插入帧（nil = 主帧）。仅 loop goroutine 无锁读取（写侧见 push/pop）。
+func (tc *turnCtx) curFrame() *insertFrame {
+	if n := len(tc.inserts); n > 0 {
+		return tc.inserts[n-1]
+	}
+	return nil
 }
 
-// onAsyncDone 异步任务完成：落一条 role=tool 记录（call + async + result，一条记录承载
-// 三段）→ 合并暂存的同步结果 → 一次喂回续轮（S4 场景 5）。
+// framePendingLocked 返回某帧的 pending 表（懒初始化）。**须持 tc.mu**。
+func (tc *turnCtx) framePendingLocked(f *insertFrame) map[string]pendingTool {
+	if f == nil {
+		if tc.pending == nil {
+			tc.pending = map[string]pendingTool{}
+		}
+		return tc.pending
+	}
+	if f.pending == nil {
+		f.pending = map[string]pendingTool{}
+	}
+	return f.pending
+}
+
+// frameInflightLocked 返回某帧的 inflight 表（懒初始化）。**须持 tc.mu**。
+func (tc *turnCtx) frameInflightLocked(f *insertFrame) map[string]time.Time {
+	if f == nil {
+		if tc.inflight == nil {
+			tc.inflight = map[string]time.Time{}
+		}
+		return tc.inflight
+	}
+	if f.inflight == nil {
+		f.inflight = map[string]time.Time{}
+	}
+	return f.inflight
+}
+
+// frameOpenLocked 报告某帧是否无在飞项（续轮闸门）。**须持 tc.mu**。
+func (tc *turnCtx) frameOpenLocked(f *insertFrame) bool {
+	if f == nil {
+		return len(tc.pending) == 0 && len(tc.inflight) == 0
+	}
+	return len(f.pending) == 0 && len(f.inflight) == 0
+}
+
+// pendingMapLocked 返回当前帧的 pending 表。**须持 tc.mu**。
+func (tc *turnCtx) pendingMapLocked() map[string]pendingTool {
+	return tc.framePendingLocked(tc.curFrame())
+}
+
+// inflightMapLocked 返回当前帧的 inflight 表。**须持 tc.mu**。
+func (tc *turnCtx) inflightMapLocked() map[string]time.Time {
+	return tc.frameInflightLocked(tc.curFrame())
+}
+
+// insertable 报告当前帧是否处于可插入相位（`toolPending` / `awaitJoin`）：本帧有在飞工具。
+//
+// 流式输出期本帧 pending/inflight 恒为空（工具尚未派发）→ 不可插入（S2：消息入 inbox）。
+// 跨 goroutine 调用（llm-inbox-add 在总线派发线程），故经 tc.mu 读栈顶。
+func (tc *turnCtx) insertable() bool {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	return !tc.frameOpenLocked(tc.curFrame())
+}
+
+// pushInbox 非阻塞投递一条 insert 项给 loop（队列满 / 轮次已关 → false，调用方降级 next_turn）。
+func (tc *turnCtx) pushInbox(item facade.InboxItem) bool {
+	if tc.inboxCh == nil {
+		return false
+	}
+	select {
+	case tc.inboxCh <- item:
+		return true
+	case <-tc.done:
+		return false
+	default:
+		return false
+	}
+}
+
+// handleAsyncDone 处理异步任务完成：落一条 role=tool 记录（call + async + result，一条记录承载
+// 三段）→ 结果投递到 engineInbox（与 ask 回执同形），由引擎的 PendingWait 消费。
 // 2026-09-18（用户决定）：结果取自保留的通知面 mcp-tasks-report（`result_summary` = 结果全文，
 // 见 gateway reportTaskDone），**不再经 `tasks/result` 方法面**；落库后该记录即
 // tool_result / 后续查询的读取源（message 表）。
-func (tc *turnCtx) onAsyncDone(m asyncDoneMsg) {
+func (tc *turnCtx) handleAsyncDone(m asyncDoneMsg) {
 	tc.mu.Lock()
-	pt, ok := tc.pending[m.taskID]
-	delete(tc.pending, m.taskID)
+	pt, _, ok := tc.takePendingLocked(m.taskID)
 	tc.mu.Unlock()
 	// 消费回执 → 摘除 task_id 运行态索引（onGatewayTaskDone 定位用；仅当仍指向本 turn）。
 	tc.server.forgetPendingTaskIndex(tc.req.InstanceID, m.taskID, tc)
@@ -1138,22 +1230,24 @@ func (tc *turnCtx) onAsyncDone(m asyncDoneMsg) {
 	tc.persistToolResult(pt.toolCallID, resultText, status, &persist.ToolAsyncContent{
 		TaskID: m.taskID, MovedAt: pt.movedAt,
 	})
+	// 结果进入统一输入队列（与 ask 回执同形），由引擎轮内等待消费。
+	tc.engineInbox.Push(engineToolResultItem(pt.toolCallID, resultText, status != "completed"))
+}
 
-	// 本回执结果并入 stash（与在飞期间到达的同步结果一同暂存）；**仅当本 turn 已无在飞 pending**
-	// 时才冲刷 stash 并续轮 —— 否则「带部分 tool 结果提前续轮」，后续回执的 tool 结果会与已续轮
-	// 的 assistant.tool_calls 错配（工具结果未与 tool_calls 同批提交），破坏配对协议。
-	tc.mu.Lock()
-	tc.stash = append(tc.stash, ChatMsg{Role: "tool", ToolCallID: pt.toolCallID, Content: resultText})
-	// 闸门 = 无在飞 pending **且** 无在飞 ask/子作业（后者由 deliverInput 在结果消费时摘除）——
-	// 同一批混有 ask/llm_run 时，回执先到也不得提前续轮。
-	if !tc.continueOpenLocked() {
-		tc.mu.Unlock()
-		return
+// takePendingLocked 从各帧摘除一个 task_id 并返回其发起信息与所属帧（nil = 主帧）。
+// 查找顺序 = 栈顶向栈底（同一 task_id 只会登记在一帧）。**须持 tc.mu**。
+func (tc *turnCtx) takePendingLocked(taskID string) (pendingTool, *insertFrame, bool) {
+	for i := len(tc.inserts) - 1; i >= 0; i-- {
+		if pt, ok := tc.inserts[i].pending[taskID]; ok {
+			delete(tc.inserts[i].pending, taskID)
+			return pt, tc.inserts[i], true
+		}
 	}
-	msgs := append([]ChatMsg{}, tc.stash...)
-	tc.stash = nil
-	tc.mu.Unlock()
-	tc.chatOnce(msgs...)
+	if pt, ok := tc.pending[taskID]; ok {
+		delete(tc.pending, taskID)
+		return pt, nil, true
+	}
+	return pendingTool{}, nil, false
 }
 
 // llmTools 组装本轮回发给 LLM 的工具面（25 §4.3 白名单语义，T1 缺陷修正）：
@@ -1263,296 +1357,71 @@ func toolNodeLevel(t ToolDef) string {
 	return persist.LevelOfNode(node)
 }
 
-// chatOnce 执行一轮 LLM 调用并处理输出（reason/text/tool-call → gateway → 回喂）。
-// inputs 是本次进入会话的新消息（用户文本 / 聚合的工具结果）。
-func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
-	if tc.iterations >= tc.maxToolIterations {
-		tc.server.llmError(tc, "TOOL_LOOP_LIMIT", "工具调用次数超限")
-		tc.Close()
-		return
+// dispatchToolCall 复刻生产「单个工具调用」的完整处理（策略 → running 落库 → 任务节点 →
+// ask/异步/同步 → 结果落库 → 任务终态）。
+//
+// 引擎的 ToolInvoker 端口直连本函数——逐字搬迁自原内联块，
+// 文案 / 顺序 / 通知 / 任务节点字段 / `tasks.start|complete` / `taskTurnIndex` / `markInflight` /
+// `gatewayArgs` / task·dsl 特判一律未改。
+//
+// pending=true 表示结果将经回执异步到达（ask_user / 转异步工具），此时 toolMsg 为空、本次调用
+// 不参与聚合回喂。err 非 nil = 该次调用以失败结果回喂（toolMsg 已含落库的失败文本；引擎端口据此填 IsError）。
+func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending bool, err error) {
+	name := call.Name
+	args := parseArgs(call.Arguments)
+	// 该工具自身的 _meta（gateway tools/list 缓存，已预热；I-60）：随 tool-call 通知与
+	// role=tool 消息落库推前端，使前端无需依赖一次性 mcp-tools-timeout 事件即可本地判断
+	// 裁决项（manual→detach/cancel；never→wait/cancel）。
+	toolMeta := tc.server.gc.ToolMeta(name)
+	notifyPayload := map[string]any{
+		"tool_call_id": call.ID, "tool": name, "arguments": args,
 	}
-	tc.iterations++
-	for _, in := range inputs {
-		if in.Role == "user" {
-			if err := tc.persistMessage(in); err != nil {
-				tc.server.llmError(tc, "DB_ERROR", err.Error())
-				tc.Close()
-				return
-			}
-		}
+	if len(toolMeta) > 0 {
+		notifyPayload["_meta"] = toolMeta
 	}
-	base := tc.msgs()
-	msgs := append(base, tc.unpersistedInputs(inputs, base)...)
+	tc.server.notify(tc, NotifyTypeToolCall, notifyPayload)
 
-	// LLM 调用 + 无内容失败重发（方式 A，S6）：Chat 失败或流错误且无内容 → 重发同一份上下文
-	var out strings.Builder
-	var think strings.Builder // 思维链累积（reasoning_content 增量 → 落库 reasoning）
-	var calls []ToolCall
-	finish := ""
-	var streamErr error
-	attempt := 0
-	tc.retryAttempt = 0 // RETRY-1：重试计数按「本次 LLM 调用」重置（终态/中间态均取该值）
-	// assistant 增量落库（I-176）：流式过程中按「内容段」落库——段边界 = 思维链→正文→工具调用的
-	// 类型切换，以及流结束；每次写到**同一行**（asstKey 回填），非每 token。无可重放内容
-	//（正文 / 工具调用皆空）时不落，避免产生会被 applyReasoningRule 清空的空 assistant 行。
-	asstKey := ""
-	seg := ""
-	flushAssistant := func() {
-		if out.Len() == 0 && len(calls) == 0 {
-			return
-		}
-		key, _ := tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: out.String(), ToolCalls: calls, Reasoning: think.String()}, asstKey)
-		if key != "" {
-			asstKey = key
-		}
-	}
-	for {
-		out.Reset()
-		think.Reset()
-		calls = nil
-		finish = ""
-		streamErr = nil
-		events, err := tc.server.chat(tc.ctx, tc.llmSpec, msgs, tc.llmTools(), ChatOptions{
-			Model:           tc.llmModel,
-			Think:           tc.llmThink,
-			Effort:          tc.llmEffort,
-			Temperature:     tc.llmTemperature,
-			MaxTokens:       tc.llmMaxOutputToken,
-			ResponseTimeout: tc.responseTimeout,
-			StreamTimeout:   tc.streamTimeout,
-			// 图片（P2-8）：用户消息里的 `![名](dir/名)` 引用（相对数据根）→ 图片内容块（数据根受限读取）。
-			Images: ImageOptions{DataRoot: imageDataRoot(tc.req.DataDir, tc.req.WorkDir)},
-		})
-		if err != nil {
-			if tc.ctx.Err() != nil {
-				return // 取消静默（llm-cancel 已发 interrupted complete）
-			}
-			if attempt < tc.retryCount && retryableErr(err) && probeBeforeRetry(tc.llmSpec.BaseURL) {
-				attempt++
-				tc.emitRetry(err, attempt)
-				continue
-			}
-			// 真实分类（S21）：超时/网络/429/5xx → retryable=true（前端静默续写）；
-			// 协议/鉴权（401/403）等 → false（前端显示错误气泡 + 手动继续）。
-			// 子会话 + 「压缩子会话」关闭：上下文超限的可诊断提示（DSL-4，42 §2 (253) ⑤）。
-			retryable := retryableErr(err)
-			tc.server.llmErrorRetryable(tc, "LLM_REQUEST_FAILED", tc.server.subsessionHint(tc, err.Error(), retryable), retryable)
-			tc.Close()
-			return
-		}
-		for ev := range events {
-			if ev.Err != nil {
-				streamErr = ev.Err
-				// 显式排空：生产端（forwardRouterEvents）可能仍阻塞在 `out <-`；此处 break 后
-				// 不再读取会使其永久阻塞、defer close(out) 不执行（goroutine 泄漏）→ 读到通道关闭为止。
-				for range events {
-				}
-				break
-			}
-			if ev.Reasoning != "" {
-				if seg != "reason" { // 段切换 → 落已累积内容（I-176）
-					flushAssistant()
-					seg = "reason"
-				}
-				think.WriteString(ev.Reasoning)
-				tc.server.notify(tc, NotifyTypeReason, map[string]any{"text": ev.Reasoning})
-			}
-			if ev.Content != "" {
-				if seg != "content" {
-					flushAssistant()
-					seg = "content"
-				}
-				out.WriteString(ev.Content)
-				tc.server.notify(tc, NotifyTypeText, map[string]any{"text": ev.Content})
-			}
-			if len(ev.ToolCalls) > 0 {
-				if seg != "tool" {
-					flushAssistant()
-					seg = "tool"
-				}
-				calls = ev.ToolCalls
-			}
-			if ev.Done {
-				finish = ev.FinishReason
-			}
-		}
-		if streamErr != nil {
-			if tc.ctx.Err() != nil {
-				return
-			}
-			if out.Len() == 0 && attempt < tc.retryCount && retryableErr(streamErr) && probeBeforeRetry(tc.llmSpec.BaseURL) {
-				attempt++
-				tc.emitRetry(streamErr, attempt)
-				continue
-			}
-		}
-		break
+	// gateway 聚合后暴露名带能力源前缀（self_*，self 节点 entry.ID 前缀）；分类按契约名
+	// （剥前缀），gateway 调用仍用暴露名（route 以暴露名注册）——任务节点归属单源。
+	canon := strings.TrimPrefix(name, "self_")
+
+	// 白名单**调用处硬拒**（G-45 ③ / 42 §2 (165)）：下发面过滤（llmTools）挡不住模型幻觉
+	// 调用未列工具 —— 此处按本轮 agent 的 `tools` 白名单在**调用处分发前**拒绝，不落 gateway
+	// （不真正执行）；结果以失败文本回喂，使 LLM 改用白名单内工具。空白名单 = 不限制（AG-C4）。
+	if !tc.toolAllowed(name) {
+		errText := fmt.Sprintf("错误: 工具 %q 不在本轮 agent 的工具白名单内，已拒绝执行（可用工具见本轮 tools 参数；白名单 = 场景 agent 的「工具过滤」配置）", name)
+		tc.persistToolResult(call.ID, errText, "failed", nil)
+		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText}, false, errors.New(errText)
 	}
 
-	// 空回复（stop 但无内容）：不落库，报错误（EMPTY_REPLY，61-消息一览 错误随 llm-complete 携带）
-	if streamErr == nil && len(calls) == 0 && strings.TrimSpace(out.String()) == "" {
-		tc.server.llmError(tc, "EMPTY_REPLY", "LLM 返回空回复")
-		tc.Close()
-		return
-	}
-
-	// 断链恢复（S6/S8，方式 B 同 turn 变体）：已有部分内容 → resumePartial 落库半截 + 内部续写。
-	if streamErr != nil {
-		tc.resumePartial(asstKey, out.String(), think.String(), calls, streamErr)
-		return
-	}
-
-	// 落库 assistant 消息（含 tool_calls / reasoning；reasoning 落库供后续轮次按协议回传）。
-	// 流式过程中已按「段」落过（asstKey 非空）→ 就地回填同一行；否则此处首次落库（I-176）。
-	flushAssistant()
-
-	// 轮次完成：无工具请求（stop/length 等）才发 llm-complete；
-	// tool-call 的 eof（finish_reason=tool_calls / 解析出 tool_calls）不发 complete，进入工具循环。
-	if len(calls) == 0 {
-		// 自动续写（S6）：length 截断 → 落库 + 内部续写（Kind=continue，有上限）；耗尽 → incomplete
-		if finish == "length" && out.Len() > 0 && tc.continues < maxAutoContinue {
-			tc.answer.WriteString(out.String()) // 跨段累积本段正文（续写终态取全文）
-			tc.continues++
-			tc.feed(ChatMsg{Role: "user", Kind: assembleContinueKind, Content: assembleContinueText})
-			return
-		}
-		status := "complete"
-		if finish == "length" {
-			status = "incomplete"
-		}
-		tc.answer.WriteString(out.String()) // 累积本段（单段场景 = 旧行为；多段续写 = 全文）
-		// finish 内落库 + 写快照 + llm-compress；text 取**累积全文**（跨段续写不丢前段正文）。
-		tc.server.complete(tc, status, finish, tc.answer.String())
-		tc.Close()
-		return
-	}
-	// 工具调用：逐个调 gateway（上下文带 tool-call-id），结果**聚合后一次喂回**（OpenAI 协议要求
-	// tool 结果与 assistant.tool_calls 同批提交）；ask_user 结果经 ask-user-reply 异步回喂；
-	// llm 型（llm_run）→ server 开子会话执行（独立 goroutine）；
-	// 转异步（pending{task_id}）→ 登记挂起，turn 等 gateway 回执续轮（S4）。
-	// 任务编排（§6.6）：每工具建任务节点（kind=工具/llm/ask_user；parent_id 挂父节点，
-	// top_session 归属）→ 广播 tasks.started；同步工具短生命周期（started → done）。
-	var tools []ChatMsg
-	for _, call := range calls {
-		name := call.Function.Name
-		args := parseArgs(call.Function.Arguments)
-		// 该工具自身的 _meta（gateway tools/list 缓存，已预热；I-60）：随 tool-call 通知与
-		// role=tool 消息落库推前端，使前端无需依赖一次性 mcp-tools-timeout 事件即可本地判断
-		// 裁决项（manual→detach/cancel；never→wait/cancel）。
-		toolMeta := tc.server.gc.ToolMeta(name)
-		notifyPayload := map[string]any{
-			"tool_call_id": call.ID, "tool": name, "arguments": args,
-		}
-		if len(toolMeta) > 0 {
-			notifyPayload["_meta"] = toolMeta
-		}
-		tc.server.notify(tc, NotifyTypeToolCall, notifyPayload)
-
-		// gateway 聚合后暴露名带能力源前缀（self_*，self 节点 entry.ID 前缀）；分类按契约名
-		// （剥前缀），gateway 调用仍用暴露名（route 以暴露名注册）——任务节点归属单源。
-		canon := strings.TrimPrefix(name, "self_")
-
-		// 白名单**调用处硬拒**（G-45 ③ / 42 §2 (165)）：下发面过滤（llmTools）挡不住模型幻觉
-		// 调用未列工具 —— 此处按本轮 agent 的 `tools` 白名单在**调用处分发前**拒绝，不落 gateway
-		// （不真正执行）；结果以失败文本回喂，使 LLM 改用白名单内工具。空白名单 = 不限制（AG-C4）。
-		if !tc.toolAllowed(name) {
-			errText := fmt.Sprintf("错误: 工具 %q 不在本轮 agent 的工具白名单内，已拒绝执行（可用工具见本轮 tools 参数；白名单 = 场景 agent 的「工具过滤」配置）", name)
+	// 白名单**旁路加固**（项 5a，2026-09-25）：白名单是「调用面」过滤而非沙箱 —— 若
+	// mcp_invoke 本身在白名单内，LLM 可经它转调**任意**工具绕过白名单。故白名单非空时，
+	// mcp_invoke 的**目标工具**也必须落在同一白名单内；否则同样在分发前拒绝、不落 gateway
+	// （不真正调用）。判白口径 = 目标名（gateway 暴露名，与白名单 / toolAllowed 同一名字
+	// 空间，findFor 亦按该名路由）。目标名缺失/非法 → 不在此改写语义，交由 gateway 既有校验。
+	if isMetaInvokeTool(canon) && tc.allowedTools != nil {
+		if target := strings.TrimSpace(str(args["name"])); target != "" && !tc.toolAllowed(target) {
+			errText := fmt.Sprintf("错误: mcp_invoke 的目标工具 %q 不在本轮 agent 的工具白名单内，已拒绝执行（白名单 = 场景 agent 的「工具过滤」配置；白名单内工具可直接调用）", target)
 			tc.persistToolResult(call.ID, errText, "failed", nil)
-			tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText})
-			continue
+			return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText}, false, errors.New(errText)
 		}
+	}
 
-		// 白名单**旁路加固**（项 5a，2026-09-25）：白名单是「调用面」过滤而非沙箱 —— 若
-		// mcp_invoke 本身在白名单内，LLM 可经它转调**任意**工具绕过白名单。故白名单非空时，
-		// mcp_invoke 的**目标工具**也必须落在同一白名单内；否则同样在分发前拒绝、不落 gateway
-		// （不真正调用）。判白口径 = 目标名（gateway 暴露名，与白名单 / toolAllowed 同一名字
-		// 空间，findFor 亦按该名路由）。目标名缺失/非法 → 不在此改写语义，交由 gateway 既有校验。
-		if isMetaInvokeTool(canon) && tc.allowedTools != nil {
-			if target := strings.TrimSpace(str(args["name"])); target != "" && !tc.toolAllowed(target) {
-				errText := fmt.Sprintf("错误: mcp_invoke 的目标工具 %q 不在本轮 agent 的工具白名单内，已拒绝执行（白名单 = 场景 agent 的「工具过滤」配置；白名单内工具可直接调用）", target)
-				tc.persistToolResult(call.ID, errText, "failed", nil)
-				tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText})
-				continue
-			}
-		}
+	// 发起即落 running（I-176）：先落一条非终态 role=tool 行，终态由 persistToolResult
+	// 回填**同一行**——使进程重启后 cleanupStaleToolPairs 能把遗留 pair 标 interrupted
+	//（前端"已中断 + 可重试"生效），且同一调用恒只一行（不破坏 LLM 重放/前端卡片）。
+	// MOD-1 M6b：ask_user 的 ask_id 同落该行（messages.ask_id）→ 重启/过期后按 ask_id 回查。
+	askID := ""
+	if isAskTool(canon) {
+		askID = "ask-" + newID()
+	}
+	tc.persistToolRunning(call.ID, name, args, askID)
 
-		// 发起即落 running（I-176）：先落一条非终态 role=tool 行，终态由 persistToolResult
-		// 回填**同一行**——使进程重启后 cleanupStaleToolPairs 能把遗留 pair 标 interrupted
-		//（前端"已中断 + 可重试"生效），且同一调用恒只一行（不破坏 LLM 重放/前端卡片）。
-		tc.persistToolRunning(call.ID, name, args)
-
-		if isTaskTool(canon) {
-			// task 型域工具（tool_stop/tool_result）：经 gateway 唯一执行入口
-			// （21-llm-server）——内嵌 mcp-server 的域工具 handler 执行并返回文本，
-			// 任务节点由 handler 建/广播（对齐 21-llm-server 任务树）。结果同步喂回本 turn。
-			topSession, _ := tc.server.taskNodeBase(tc) // 树归属随调用上下文下发（I-90）
-			ctxMsg := mcpgateway.Context{
-				WorkDir:    tc.req.WorkDir,
-				DataDir:    tc.req.DataDir,
-				Session:    tc.req.Session,
-				Turn:       tc.req.Turn,
-				InstanceID: tc.req.InstanceID,
-				ToolCallID: call.ID,
-				TopSession: topSession,
-			}
-			// A5：非主会话强制同步（gatewayArgs 附调用级 async=never；主会话原样）。
-			res, _, err := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(args), ctxMsg)
-			if err != nil {
-				errText := "错误: " + err.Error()
-				tc.persistToolResult(call.ID, errText, "failed", nil)
-				tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText})
-				continue
-			}
-			text := resultTextFromMap(res)
-			tc.persistToolResult(call.ID, text, "completed", nil)
-			tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text})
-			continue
-		}
-
-		// 树归属：子会话内节点挂该子会话的 kind=llm 节点之下（top_session 归主会话聚合根）；
-		// 主会话节点仍为顶层（parent_id 空）。见 taskNodeBase。
-		topSession, parentID := tc.server.taskNodeBase(tc)
-		node := &TaskNode{
-			Tool:       name,
-			ToolCallID: call.ID,
-			ParentID:   parentID,
-			TopSession: topSession,
-			// kind 按**契约名**（canon，剥 self_ 前缀，与 domainNode 同源）判定：
-			// 暴露名 self_llm_run 不匹配 isLLMTool → 根节点会误落 tool（G-15）。
-			Kind:       taskKindOf(canon),
-			SessionID:  tc.req.Session,
-			TurnID:     tc.req.Turn,
-			InstanceID: tc.req.InstanceID,
-		}
-		// 标题取值用**契约名**（canon，剥 self_ 前缀，与 domainNode 同源）：注入展示名优先，
-		// 无注入回退契约工具名（I-38；避免回退成网关暴露名 self_<契约名>）。
-		node.Name, node.Purpose, node.Simplified = taskDisplay(canon, args)
-		node.args = args // 保存参数（tool-retry 重跑用）
-		if isAskTool(canon) {
-			node.Args = args // 展示用（I-50）：ask 追问内容/选项随 tasks.* 广播给前端任务详情
-		}
-		node, serr := tc.server.tasks.start(node) // 广播 tasks.started
-		if serr != nil {
-			errText := "错误: " + serr.Error()
-			tc.persistToolResult(call.ID, errText, "failed", nil)
-			tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText})
-			continue
-		}
-
-		if isAskTool(canon) {
-			// ask_user → server ask 通道（广播 ask-user → 等 ask-user-reply → 回填，§6.4）
-			// 登记在飞（结果经 ask-user-reply 异步回喂）→ 续轮闸门须计入（见 deliverInput）。
-			tc.markInflight(call.ID)
-			tc.server.ask(tc.req.Turn, call.ID, args, node.TaskID)
-			continue
-		}
-		if isLLMTool(canon) {
-			// llm 型（llm_run）→ server 开子 session/turn → 完成回填父轮次（节点 kind=llm）
-			// 登记在飞（结果经 runSubJob 异步回喂）→ 续轮闸门须计入。
-			tc.markInflight(call.ID)
-			go tc.server.runSubJob(tc, call.ID, node, args)
-			continue
-		}
+	if isTaskTool(canon) {
+		// task 型域工具（tool_stop/tool_result）：经 gateway 唯一执行入口
+		// （21-llm-server）——内嵌 mcp-server 的域工具 handler 执行并返回文本，
+		// 任务节点由 handler 建/广播（对齐 21-llm-server 任务树）。结果同步喂回本 turn。
+		topSession, _ := tc.server.taskNodeBase(tc) // 树归属随调用上下文下发（I-90）
 		ctxMsg := mcpgateway.Context{
 			WorkDir:    tc.req.WorkDir,
 			DataDir:    tc.req.DataDir,
@@ -1560,110 +1429,190 @@ func (tc *turnCtx) chatOnce(inputs ...ChatMsg) {
 			Turn:       tc.req.Turn,
 			InstanceID: tc.req.InstanceID,
 			ToolCallID: call.ID,
-			// I-90 增补：树归属随调用上下文下发 → gateway 随 mcp-tasks-report 回传 →
-			// 任务层在「未登记」时仍能为该执行**独立建节点**（parent = 本调用的 llm 侧节点，
-			// 由调用层给出；层不猜不重排 —— 21 §4-2）。
 			TopSession: topSession,
-			Parent:     node.TaskID,
 		}
-		// 主路径工具调用**不设硬 deadline**（评估结论，2026-10-11）：本调用沿 tc.ctx（仅 WithCancel，
-		// 无 deadline）出网，与 onToolRetry 的 15s 重试超时**口径不同、有意为止**——
-		//   - 异步工具（gateway 契约声明 async / 超阈值转后台）经 gwClient.Call 立即返回 pending +
-		//     task_id（见下方 taskID 分支），turn 挂起等回执，**不阻塞在单次 Call**，无需超时；
-		//   - 同步长时工具（read/build/… 无异步能力者）会真实阻塞在本 Call 直至 gateway 完成——
-		//     加硬上限会**误杀**长时工具（破坏功能），故不加；
-		//   - 收敛途径：用户停止（llm-cancel → tc.cancel）或实例退出（exitInstance → tc.Close →
-		//     cancel）会取消 tc.ctx，Call 随 ctx 取消返回；上游 gateway 自身的执行超时策略另行兜底。
-		// A5：非主会话强制同步（gatewayArgs 附调用级 async=never → 工具不得转后台；主会话原样）。
-		res, taskID, err := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(args), ctxMsg)
-		if err != nil {
-			errText := "错误: " + err.Error()
+		// A5：非主会话强制同步（gatewayArgs 附调用级 async=never；主会话原样）。
+		res, _, cerr := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(name, args), ctxMsg)
+		if cerr != nil {
+			errText := "错误: " + cerr.Error()
 			tc.persistToolResult(call.ID, errText, "failed", nil)
-			tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText})
-			tc.server.tasks.done(node.TaskID, TaskStateError, "", err.Error())
-			continue
-		}
-		if taskID != "" {
-			// 转异步：登记 task_id → 发起信息（tool-call-id + 转后台时间）；任务节点挂 gateway
-			// 任务，turn 挂起等回执；结果在 onAsyncDone 落一条 role=tool（含 async 段）。
-			// 同步登记 task_id → 本 turn 运行态索引（onGatewayTaskDone 免全表扫描定位）。
-			tc.registerPending(taskID, call.ID)
-			tc.server.tasks.setGwTask(node.TaskID, taskID)
-			tc.server.tasks.setState(node.TaskID, TaskStatePending)
-			continue
+			return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText}, false, cerr
 		}
 		text := resultTextFromMap(res)
-		if resultStatus(res) == "cancelled" {
-			// 超时裁决「取消」的同步返回（gateway 结构化标记）：任务节点落 cancelled（而非 done，
-			// I-62）；结果照常喂回续轮（LLM 需感知该工具已取消）。done 幂等：若回报路径已先落终态，
-			// 此处不重复广播、也不把 cancelled 覆盖成 done。
-			tc.persistToolResult(call.ID, text, "cancelled", nil)
-			tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text})
-			tc.server.tasks.done(node.TaskID, TaskStateCancelled, "", text)
-			continue
-		}
 		tc.persistToolResult(call.ID, text, "completed", nil)
-		tools = append(tools, ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text})
+		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text}, false, nil
+	}
+
+	// 树归属：子会话内节点挂该子会话的 kind=llm 节点之下（top_session 归主会话聚合根）；
+	// 主会话节点仍为顶层（parent_id 空）。见 taskNodeBase。
+	topSession, parentID := tc.server.taskNodeBase(tc)
+	// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 不再有 `dsl_run` 的 dsl_job 根，
+	// 所有工具调用都建自己的节点。
+	node := &TaskNode{
+		Tool:       name,
+		ToolCallID: call.ID,
+		ParentID:   parentID,
+		TopSession: topSession,
+		Kind:       taskKindOf(canon),
+		SessionID:  tc.req.Session,
+		TurnID:     tc.req.Turn,
+		InstanceID: tc.req.InstanceID,
+	}
+	// 标题取值用**契约名**（canon，剥 self_ 前缀，与 domainNode 同源）：注入展示名优先，
+	// 无注入回退契约工具名（I-38；避免回退成网关暴露名 self_<契约名>）。
+	node.Name, node.Purpose, node.Simplified = taskDisplay(canon, args)
+	node.args = args // 保存参数（tool-retry 重跑用）
+	if isAskTool(canon) {
+		node.Args = args // 展示用（I-50）：ask 追问内容/选项随 tasks.* 广播给前端任务详情
+	}
+	started, serr := tc.server.tasks.start(node) // 广播 tasks.started
+	if serr != nil {
+		errText := "错误: " + serr.Error()
+		tc.persistToolResult(call.ID, errText, "failed", nil)
+		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText}, false, serr
+	}
+	node = started
+
+	if isAskTool(canon) {
+		// ask_user → server ask 通道（广播 ask-user → 等 ask-user-reply → 回填，§6.4）
+		// 登记在飞（结果经 ask-user-reply 异步回喂）→ 续轮闸门须计入（见 frameOpenLocked）。
+		tc.markInflight(call.ID)
+		tc.server.askWithID(tc.req.Turn, call.ID, args, node.TaskID, askID)
+		return ChatMsg{}, true, nil
+	}
+	parentTask := parentID
+	if node != nil {
+		parentTask = node.TaskID
+	}
+	ctxMsg := mcpgateway.Context{
+		WorkDir:    tc.req.WorkDir,
+		DataDir:    tc.req.DataDir,
+		Session:    tc.req.Session,
+		Turn:       tc.req.Turn,
+		InstanceID: tc.req.InstanceID,
+		ToolCallID: call.ID,
+		// I-90 增补：树归属随调用上下文下发 → gateway 随 mcp-tasks-report 回传 →
+		// 任务层在「未登记」时仍能为该执行**独立建节点**（parent = 本调用的 llm 侧节点，
+		// 由调用层给出；层不猜不重排 —— 21 §4-2）。
+		TopSession: topSession,
+		Parent:     parentTask,
+	}
+	// 主路径工具调用**不设硬 deadline**（评估结论，2026-10-11）：本调用沿 tc.ctx（仅 WithCancel，
+	// 无 deadline）出网，与 onToolRetry 的 15s 重试超时**口径不同、有意为止**——
+	//   - 异步工具（gateway 契约声明 async / 超阈值转后台）经 gwClient.Call 立即返回 pending +
+	//     task_id（见下方 taskID 分支），turn 挂起等回执，**不阻塞在单次 Call**，无需超时；
+	//   - 同步长时工具（read/build/… 无异步能力者）会真实阻塞在本 Call 直至 gateway 完成——
+	//     加硬上限会**误杀**长时工具（破坏功能），故不加；
+	//   - 收敛途径：用户停止（llm-cancel → tc.cancel）或实例退出（exitInstance → tc.Close →
+	//     cancel）会取消 tc.ctx，Call 随 ctx 取消返回；上游 gateway 自身的执行超时策略另行兜底。
+	// A5：非主会话强制同步（gatewayArgs 附调用级 async=never → 工具不得转后台；主会话原样）。
+	res, taskID, cerr := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(name, args), ctxMsg)
+	if cerr != nil {
+		errText := "错误: " + cerr.Error()
+		tc.persistToolResult(call.ID, errText, "failed", nil)
+		if node != nil {
+			tc.server.tasks.done(node.TaskID, TaskStateError, "", cerr.Error())
+		}
+		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText}, false, cerr
+	}
+	if taskID != "" {
+		// 转异步：登记 task_id → 发起信息（tool-call-id + 转后台时间）；任务节点挂 gateway
+		// 任务，turn 挂起等回执；结果在 onAsyncDone 落一条 role=tool（含 async 段）。
+		// 同步登记 task_id → 本 turn 运行态索引（onGatewayTaskDone 免全表扫描定位）。
+		tc.registerPending(taskID, call.ID)
+		if node != nil {
+			tc.server.tasks.setGwTask(node.TaskID, taskID)
+			tc.server.tasks.setState(node.TaskID, TaskStatePending)
+		}
+		return ChatMsg{}, true, nil
+	}
+	text := resultTextFromMap(res)
+	if resultStatus(res) == "cancelled" {
+		// 超时裁决「取消」的同步返回（gateway 结构化标记）：任务节点落 cancelled（而非 done，
+		// I-62）；结果照常喂回续轮（LLM 需感知该工具已取消）。done 幂等：若回报路径已先落终态，
+		// 此处不重复广播、也不把 cancelled 覆盖成 done。
+		tc.persistToolResult(call.ID, text, "cancelled", nil)
+		if node != nil {
+			tc.server.tasks.done(node.TaskID, TaskStateCancelled, "", text)
+		}
+		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text}, false, nil
+	}
+	tc.persistToolResult(call.ID, text, "completed", nil)
+	if node != nil {
 		tc.server.tasks.done(node.TaskID, TaskStateDone, text, "")
 	}
-	// 续轮闸门（P2）：有在飞（异步 pending / ask / 子作业）→ 本批同步结果暂存，等最后一项
-	// 到齐时合并喂回（onAsyncDone / deliverInput）；闸门已开 → 同步递归续轮（结果一次性提交）。
-	tc.mu.Lock()
-	if !tc.continueOpenLocked() {
-		tc.stash = append(tc.stash, tools...)
-		tc.mu.Unlock()
-		return
-	}
-	tc.mu.Unlock()
-	if len(tools) > 0 {
-		tc.chatOnce(tools...)
-	}
+	return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text}, false, nil
 }
 
-// resumePartial 进程内断链续写（S6/S8，方式 B 的**同 turn 变体**）：一次 LLM 流读取被中断
-// （streamErr != nil）时的恢复动作。
-//   - 断开前**已收到部分内容**（content 非空）且未达自动续写上限（`maxAutoContinue`）→
-//     落库半截 assistant（含 tool_calls / reasoning）+ 注入「继续」（Kind=continue，非新 turn 边界）
-//     续写同一 turn —— 续写由 loop 的下一轮 chatOnce 承接；
-//   - 否则（无内容失败 / 续写已耗尽）→ 报 `LLM_STREAM_ERROR`（携带真实分类 retryable，超时/网络/
-//     429/5xx → true 由后端自动续写；协议/鉴权 → false 由前端手动「重试」）并终结本 turn。
+// raiseInterrupted 发布 `session-interrupted`（前端 `llm-interrupted`），并按需排程自动续写。
+// 返回 true = 已排程（调用方**不得**终结 turn；到期由定时器喂一条续写消息）；false = 由调用方终态。
 //
-// 断链发生在「工具调用已解析、尚未执行」时（`len(calls)>0`，ev.Err 紧随 tool_calls 到达）：这些
-// tool_calls 未执行、无对应 tool 结果 → **丢弃**（不随 assistant.tool_calls 落库，避免产生
-// 「assistant.tool_calls 无对应 tool 消息」的非法历史）且此情形**不注入「继续」**（工具已丢、
-// 续写无意义）——仅保留本次已收正文后按断链错误终结本 turn。
-//
-// 说明：**不重发**（已收内容重发会重复输出）；本函数与既有内联逻辑逐字等价，仅抽取命名。
-// asstKey 非空 = 流式过程中已按段落过该行 → 就地回填同一行（I-176）。
-func (tc *turnCtx) resumePartial(asstKey, content, reasoning string, calls []ToolCall, streamErr error) {
-	if len(calls) > 0 {
-		// 工具调用中间断：丢弃未完成的 tool_calls（不落库、不注入「继续」），仅保留已收正文后终结。
-		if content != "" {
-			tc.answer.WriteString(content)
-			_, _ = tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: content, Reasoning: reasoning}, asstKey)
-		}
-		retryable := retryableErr(streamErr)
-		tc.server.llmErrorRetryable(tc, "LLM_STREAM_ERROR", tc.server.subsessionHint(tc, streamErr.Error(), retryable), retryable)
-		tc.Close()
+// 排程条件：`allowContinue` && usr `autoContinue` && 同 turn 续写次数未达 `maxAutoContinue`。
+// 宽限期 = usr `autoContinueDelaySec`（0 = 立即）；期间任何用户输入 / 插话 / 切走会话 → 作废（见
+// `autoContinueAfter` 的代次校验）。提示条由前端在收到后续 `llm-receive` / `llm-complete` 时清除。
+func (tc *turnCtx) raiseInterrupted(code, message string, retryable, allowContinue bool) bool {
+	schedule := allowContinue && tc.autoContinue && tc.continues < maxAutoContinue
+	delay := time.Duration(0)
+	if schedule {
+		delay = tc.autoContinueDelay
+	}
+	tc.publishInterrupted(code, message, retryable, delay)
+	if !schedule {
+		return false
+	}
+	tc.continues++
+	seq := tc.continueSeq.Load()
+	go tc.autoContinueAfter(delay, seq)
+	return true
+}
+
+// publishInterrupted 发布 `session-interrupted`（前端 `llm-interrupted`）：载荷与
+// raiseInterrupted 逐字同形（引擎接管的宿主侧补发也走这里，避免两处漂移）。
+func (tc *turnCtx) publishInterrupted(code, message string, retryable bool, delay time.Duration) {
+	payload := map[string]any{
+		"instance_id": tc.req.InstanceID, "session": tc.req.Session, "turn": tc.req.Turn,
+		"code": code, "retryable": retryable,
+		"auto_continue_delay_ms": int(delay / time.Millisecond),
+	}
+	if message != "" {
+		payload["message"] = message
+	}
+	tc.server.publish("llm-interrupted", payload)
+}
+
+// autoContinueAfter 宽限期到期后：仍无用户操作且仍停在原会话 → 喂一条续写消息（同 turn）。
+// `seq` = 排程时的用户操作代次；任何用户输入/插话都会自增 → 本条作废（"自动"取消，手动入口保留）。
+func (tc *turnCtx) autoContinueAfter(delay time.Duration, seq uint64) {
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-tc.done:
+		return
+	case <-tc.ctx.Done():
 		return
 	}
-	if content != "" && tc.continues < maxAutoContinue {
-		tc.answer.WriteString(content) // 跨段累积本段正文（断链续写终态取全文）
-		tc.continues++
-		_, _ = tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: content, ToolCalls: calls, Reasoning: reasoning}, asstKey)
-		tc.feed(ChatMsg{Role: "user", Kind: assembleContinueKind, Content: assembleContinueText})
+	if tc.continueSeq.Load() != seq {
 		return
 	}
-	// 续写次数耗尽（continues >= maxAutoContinue）时末段正文尚未落库、也未计入 answer（B-36）：
-	// 补一次同口径落库（asstKey 口），否则与已落库前几段拼接后正文被截尾；终态取 answer，
-	// 故同步累积。仅当本段有内容（content != ""）才补——无内容失败无末段可丢。
-	if content != "" {
-		tc.answer.WriteString(content)
-		_, _ = tc.persistMessageKeyed(ChatMsg{Role: "assistant", Content: content, ToolCalls: calls, Reasoning: reasoning}, asstKey)
+	if !tc.activeSessionOK() {
+		return
 	}
-	retryable := retryableErr(streamErr)
-	tc.server.llmErrorRetryable(tc, "LLM_STREAM_ERROR", tc.server.subsessionHint(tc, streamErr.Error(), retryable), retryable)
-	tc.Close()
+	tc.feed(ChatMsg{Role: "user", Kind: assembleContinueKind, Content: tc.continueText})
+}
+
+// activeSessionOK 判定本 session 是否仍是实例的「当前活动会话」（切会话/关窗 → false）。
+// 读既有 `data-session-active-get`（零新增主题）；读取失败按"仍在"处理，避免误伤自动续写。
+func (tc *turnCtx) activeSessionOK() bool {
+	if tc.server == nil || tc.server.cfg == nil {
+		return true
+	}
+	resp, err := tc.server.cfg.SessionActiveGet(facade.SessionActiveGetRequest{InstanceID: tc.req.InstanceID})
+	if err != nil {
+		return true
+	}
+	// 空 = 尚未设置活动会话（如无窗口 / 测试）→ 视为仍在，避免误伤自动续写。
+	return resp.SessionID == "" || resp.SessionID == tc.req.Session
 }
 
 // msgs 返回当前轮次 LLM 上下文：会话历史（hist，含摘要）+ 当前 turn 已落消息（created_at 升序）。
@@ -1746,7 +1695,7 @@ func (tc *turnCtx) toolCallInfo(toolCallID string) (string, any) {
 		}
 		for _, c := range m.ToolCalls {
 			if c.ID == toolCallID {
-				return c.Function.Name, parseArgs(c.Function.Arguments)
+				return c.Name, parseArgs(c.Arguments)
 			}
 		}
 	}
@@ -1756,7 +1705,7 @@ func (tc *turnCtx) toolCallInfo(toolCallID string) (string, any) {
 // persistToolRunning 发起即落一条非终态（running）role=tool 行（I-176）：content 仅含 call 段，
 // 终态由 persistToolResult 回填**同一行**（主键登记于 tc.toolMsgKeys，供终态/重试回填复用）。
 // 落库失败静默（不阻断执行）：此时终态仍按新键落一条完整记录（退化为旧行为）。
-func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]any) {
+func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]any, askID string) {
 	content := persist.ToolContent{
 		Call: &persist.ToolCallContent{ToolCallID: toolCallID, Name: name, Arguments: args},
 	}
@@ -1766,6 +1715,10 @@ func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]a
 		"content":          string(b),
 		"tool_call_id":     toolCallID,
 		"tool_call_status": persist.ToolStatusRunning,
+	}
+	// MOD-1 M6b：ask 关联 id（仅 ask_user 行；普通工具行形状不变）→ 失效回执可回查会话。
+	if askID != "" {
+		msg["ask_id"] = askID
 	}
 	if meta := tc.server.gc.ToolMeta(name); len(meta) > 0 {
 		msg["_meta"] = meta
@@ -1834,73 +1787,7 @@ func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *p
 	// 重载/重启后上下文出现「助理发起 tool_call 但无 tool 结果」断链；返回值语义不变。
 	if _, err := newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key); err != nil {
 		logf("[chonkpilot-server] 工具结果落库失败（turn=%s key=%s）: %v\n", tc.req.Turn, key, err)
-	} else {
-		// 成功落库 → 登记硬判据（unpersistedInputs 据此剔除重复输入，见 I-25）。
-		tc.mu.Lock()
-		if tc.persistedResultOK == nil {
-			tc.persistedResultOK = map[string]bool{}
-		}
-		tc.persistedResultOK[toolCallID] = true
-		tc.mu.Unlock()
 	}
-}
-
-// unpersistedInputs 过滤本次进入会话、尚未由 msgs() 从库带回的新消息（I-25 去重）：
-//   - user 消息（含工具通知）：在 chatOnce 前置落库，msgs() 会从库带回，直接叠加会让同一条
-//     在请求里出现两次（只按"已落库即由库带回"这一事实判定，不按内容匹配，故不会误吞与新提问
-//     同文的历史消息）；
-//   - role=tool 结果：硬判据 = 「本 turn **成功落库**该 tool_call_id 的结果（tc.persistedResultOK，
-//     persistToolResult 成功时登记）**且** base（msgs() 从库带回）确实含该 id」——二者兼备 → 库已带回
-//     → 剔除；否则（落库失败 / 读库失败致 base 缺该 id）→ 保留内存结果，避免丢结果（B-33）。
-//     仅当本进程无该记录（如恢复轮次）时，退回
-//     「库中同 id 行正文**非空**且与本次一致」的保守判据（正文为空可能是 running 占位，
-//     不据此剔除，避免误吞真实空结果；正文一致时剔除，避免重复叠加）。
-func (tc *turnCtx) unpersistedInputs(inputs, base []ChatMsg) []ChatMsg {
-	need := false
-	for _, in := range inputs {
-		if in.Role == "tool" {
-			need = true
-			break
-		}
-	}
-	baseContent := map[string]string{}
-	if need {
-		for _, m := range base {
-			if m.Role == "tool" {
-				baseContent[m.ToolCallID] = m.Content
-			}
-		}
-	}
-	ok := map[string]bool{}
-	if need {
-		tc.mu.Lock()
-		for k, v := range tc.persistedResultOK {
-			ok[k] = v
-		}
-		tc.mu.Unlock()
-	}
-	out := make([]ChatMsg, 0, len(inputs))
-	for _, in := range inputs {
-		switch in.Role {
-		case "user":
-			// 已前置落库 → 由 msgs() 从库带回，不重复叠加
-		case "tool":
-			// 硬判据：本 turn 成功落库 **且** base（msgs() 从库带回）确实含该 tool_call_id ——
-			// 二者兼备才剔除（读库失败时 base 缺该 id，若只凭 ok 剔除会丢真实内存结果）。
-			if ok[in.ToolCallID] {
-				if _, has := baseContent[in.ToolCallID]; has {
-					continue // 本 turn 已成功落库 → 库已带回
-				}
-			}
-			if c, has := baseContent[in.ToolCallID]; has && c != "" && c == in.Content {
-				continue // 无本进程记录（恢复轮次）→ 保守：库中正文非空且一致 → 视作已呈现
-			}
-			out = append(out, in)
-		default:
-			out = append(out, in)
-		}
-	}
-	return out
 }
 
 // parseArgs 解析 tool-call arguments JSON（失败返回空 map）。
@@ -1920,12 +1807,6 @@ func isAskTool(name string) bool {
 	return name == "ask_user" || name == "user_ask" || strings.Contains(name, "ask_user")
 }
 
-// isLLMTool 判断工具是否为 llm 型：llm_run（唯一注册 llm 型，DSL 作业）——server 不转发
-// gateway，直接开子 session/turn 执行（§6.6 节点 kind=llm，runSubJob 执行 DSL）。
-func isLLMTool(name string) bool {
-	return name == "llm_run"
-}
-
 // isMetaInvokeTool 判断工具是否为 mcp_invoke（gateway 域 meta 工具，契约名口径 = canon）：
 // 该工具可转调**任意**工具 → 工具白名单必须对其「目标工具」二次判白（项 5a 旁路加固）。
 func isMetaInvokeTool(name string) bool {
@@ -1943,7 +1824,7 @@ func askQuestion(args map[string]any) string {
 	return "请回答"
 }
 
-// ─── S6 辅助：重试判定 / 退避取值 / 网络预检 / 取消感知等待 ─────────────
+// ─── S6/RETRY-2 辅助：重试判定 / 可见上报 / 取消感知等待 ─────────────
 
 // retryableErr 判断错误是否可自动重试（*LLMError.Retryable）。
 func retryableErr(err error) bool {
@@ -1954,52 +1835,22 @@ func retryableErr(err error) bool {
 	return false
 }
 
-// retryWait 取第 attempt 次可视重试前的等待时长（attempt 从 1 起计）——**退避值归 router**：
-// 经 `router.RetryWait` 计算（`Retry-After` 优先，否则 1s·2s·4s… 封顶 30s；不可重试 / nil → 0）。
-// llm 侧不再自持任何退避间隔（`retryDelay` 配置已移除，差异登记 41 I-156）；
-// 非 `*LLMError`（如 ctx 错误）→ 0，调用方据 `retryableErr` 已先行过滤，实际不会走到。
-func retryWait(err error, attempt int) time.Duration {
-	var le *LLMError
-	if !errors.As(err, &le) {
-		return 0
-	}
-	return router.RetryWait(&router.Error{Retryable: le.Retryable, RetryAfter: le.RetryAfter}, attempt)
-}
-
-// emitRetry 发布**可见重试中间态**（RETRY-1，2026-10-17）：`session-retry`
-//（前端 type = `llm-retry`）→ 前端提示条显示「正在重试 n/N（等待 s 秒）」；随后按
-// `router.RetryWait` 退避等待。**不落错误消息、不进聊天流**（与终态 session-complete 区分：
-// 中间态 retryable=true 且 retry_wait_ms>0；终态 retry_wait_ms=0）。
-func (tc *turnCtx) emitRetry(err error, attempt int) {
-	wait := retryWait(err, attempt)
-	tc.retryAttempt = attempt
+// OnRetry 实现 router.RetryObserver（RETRY-2）：router 在每次重发前同步回调 → 发布**可见重试
+// 中间态**（RETRY-1 的 `session-retry` / 前端 `llm-retry`），随后由 router 自身退避等待。
+// **不落错误消息、不进聊天流**（与终态 session-complete 区分：中间态 retry_wait_ms 由 router 给出）。
+func (tc *turnCtx) OnRetry(_ context.Context, rc router.RetryContext, wait time.Duration) {
+	tc.retryAttempt = rc.Attempt
 	tc.server.publish("llm-retry", map[string]any{
 		"instance_id": tc.req.InstanceID, "session": tc.req.Session, "turn": tc.req.Turn,
 		"retryable": true,
 		// retry_attempt = 即将执行的第几次重试（1 起）；retry_count = 允许的最大重试次数
-		"retry_attempt": attempt, "retry_count": tc.retryCount,
+		"retry_attempt": rc.Attempt, "retry_count": tc.retryCount,
 		"retry_wait_ms": int(wait / time.Millisecond),
 	})
-	sleepCtx(tc.ctx, wait)
 }
 
-// probeBeforeRetry 网络连接预检（对齐 llm-error-handling.md §一）：TCP 可达才重试，未连接不重试。
-func probeBeforeRetry(base string) bool {
-	u, err := url.Parse(base)
-	if err != nil {
-		return false
-	}
-	host := u.Host
-	if host == "" {
-		return false
-	}
-	conn, err := net.DialTimeout("tcp", host, 5*time.Second)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
+// OnExhausted 实现 router.RetryObserver：重试终止后由 turn 的常规错误路径统一上报终态，这里无需动作。
+func (tc *turnCtx) OnExhausted(context.Context, router.RetryContext, *router.Error) {}
 
 // sleepCtx 可取消的等待（重试间隔）。
 func sleepCtx(ctx context.Context, d time.Duration) {

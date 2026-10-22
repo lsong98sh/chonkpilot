@@ -9,7 +9,7 @@ category: core
 hot: true
 idempotent: false
 output: stdout
-runtime: ../../executors/chonkpilot-core-executor.exe
+runtime: ../../executors/chonkpilot-web-executor.exe
 timeout: 120
 ```
 
