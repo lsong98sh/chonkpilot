@@ -2,7 +2,7 @@
 
 > 状态：✅ 与代码一致（2026-10-21 GATEWAY-2 L5/L6/L7/L8 同步；见 §0 现状订正）
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [25-mcp-server](25-mcp-server.md) · [27-mcp-tools](27-mcp-tools.md)
-> 代码目录：**内核 = `chonkpilot-mcp-gateway/`**（独立目录，与主仓同级：`gateway/` + 子包 `sandbox/`、`winproc/`，零本仓依赖）；**适配胶水层 = `src/lib/gwadapter/`**（`mqadapter/` + `facadeapi/` + `internal/facade/`，经 `replace ../../../../chonkpilot-mcp-gateway` 引用内核）；**exe 外壳 = `src/others/mcp-gateway/`**（`main.go` + `gateway_service.go`；跨 module 经 `facadeapi` 转发 `internal/facade`，保持 internal 隔离）
+> 代码目录：**内核 = `chonkpilot-mcp-gateway/`**（独立目录，与主仓同级：`gateway/` + 子包 `sandbox/`、`winproc/`，零本仓依赖）；**适配胶水层 = `src/lib/gwadapter/`**（`mqadapter/` + `facadeapi/` + `internal/facade/`，经 `require github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0` 引用内核 —— 2026-10-22 起不再 `replace` 本地目录，见 [10 §3](../10-architecture/10-分层与依赖.md)）；**exe 外壳 = `src/others/mcp-gateway/`**（`main.go` + `gateway_service.go`；跨 module 经 `facadeapi` 转发 `internal/facade`，保持 internal 隔离）
 
 ---
 

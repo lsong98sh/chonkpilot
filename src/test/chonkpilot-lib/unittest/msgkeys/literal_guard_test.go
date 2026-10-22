@@ -113,7 +113,9 @@ var guardedFiles = []string{
 	"src/lib/filesys/watcher.go",
 	"src/lib/task/store.go",
 	"src/lib/task/layer.go",
-	"../chonkpilot-mcp-gateway/gateway/subjects.go", // 独立目录（与主仓同级）
+	// gateway 内核已不在主仓扫描面（2026-10-22 起为独立 module v0.1.0）：
+	// 内核不再发出任何 MQ 主题（出站通知经 Hooks，主题名归 gwadapter），
+	// 其边界由该仓自身 deps_test.go 断言，本守卫不再跨仓读文件。
 	"src/lib/gwadapter/internal/facade/facade.go",
 	"src/plugins/plugin-compress/compress.go",
 	"src/plugins/plugin-compress/summarize.go",
