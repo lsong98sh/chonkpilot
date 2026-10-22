@@ -1,7 +1,7 @@
 # 窗口布局专题（UILAYOUT-2）
 
-> 状态：**讨论已定稿；A–E 主体已实施，F（测试 / 构建）待终端恢复**
-> 范围：区域显隐、尺寸分配、布局档案、视图池（切换不重建）、删除 legacy 硬编码布局
+> 状态：**A–G 全部实施完成**（2026-10-21：前端 698/700，2 条与本专题无关；L4 28/28；release 构建 exit 0）
+> 范围：区域显隐、尺寸分配、布局档案、视图池（切换不重建）、删除 legacy 硬编码布局、死文件清理
 > 相关：`docs/ui-config/01-自由布局容器改造设计方案.md`、`docs/spec/20-modules/20-gui.md §12`、`docs/spec/30-function-points/31-窗口与布局.md`、`docs/spec/60-reference/61-消息一览.md`、`docs/spec/60-reference/64-配置项一览.md`
 
 ---
@@ -338,14 +338,16 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
 
 | 步骤 | 内容 | 验收 |
 |------|------|------|
-| UILAYOUT-2-A | 删除 `?layout=legacy`、旧分支、仅旧分支使用的组件、`migrateLegacyDoc` 与旧 7 字段迁移 | 源码无 legacy 引用；`?layout=legacy` 不改变形态；构建通过 |
-| UILAYOUT-2-B | 数据模型：`layout.profiles` / `layout.activeProfile`、种子、上限、重名、CRUD 纯逻辑 | 单测通过 |
-| UILAYOUT-2-C | 显隐 + 尺寸：`visible` / `hideLocked`、有效可见、占比快照、数值/flex 分配 | 单测 + L4 显隐用例 |
-| UILAYOUT-2-D | 视图池：池挂载、槽位注册、Teleport、停车场、抽屉池化、FLIP、设计态骨架 | L4 不重建用例 |
-| UILAYOUT-2-E | UI：布局下拉、新建对话框、编辑器开关/眼睛/右键、恢复初始布局、运行态命令 | L4 档案用例 |
-| UILAYOUT-2-F | 文档同步（20-gui / 31 / 41 / 42 / 61 / 64 / 49）、测试补齐、收尾构建 | 全绿 |
+| UILAYOUT-2-A | 删除 `?layout=legacy`、旧分支、`migrateLegacyDoc` 与旧 7 字段迁移 | 源码无 legacy 引用；`?layout=legacy` 不改变形态；构建通过 |
+| UILAYOUT-2-B | 死文件清理：删除 `views/toolbar/Toolbar.vue` / `views/statusbar/StatusBar.vue` / `utils/configMenu.js`，并把 23 处源码守卫断言迁到实际 owner（bar-views / persist / workdirActions） | 全仓零引用；守卫断言不降级；`npm test` 通过 |
+| UILAYOUT-2-C | 数据模型：`layout.profiles` / `layout.activeProfile`、种子、上限、重名、CRUD 纯逻辑 | 单测通过 |
+| UILAYOUT-2-D | 显隐 + 尺寸：`visible` / `hideLocked`、有效可见、占比快照、数值/flex 分配 | 单测 + L4 显隐用例 |
+| UILAYOUT-2-E | 视图池：池挂载、槽位注册、Teleport、停车场、抽屉池化、FLIP、设计态骨架 | L4 不重建用例 |
+| UILAYOUT-2-F | UI：布局下拉、新建对话框、编辑器开关/眼睛/右键、恢复初始布局、运行态命令 | L4 档案用例 |
+| UILAYOUT-2-G | 文档同步（20-gui / 31 / 41 / 42 / 61 / 64 / 49）、测试补齐、收尾构建 | 全绿 |
 
-> 实施状态（2026-10-21）：A ✅ · B ✅ · C ✅ · D ✅（沿用一期视图池 + 抽屉池化 / 对话框不池化）· E ✅ · F ⏳（文档已同步；L4 / `npm test` / 收尾构建因终端不可用未执行）。
+> 实施状态（2026-10-21）：A ✅ · B ✅（死文件 + `configMenu.js` 删除，23 处守卫断言迁移）· C ✅ · D ✅ · E ✅ · F ✅ · G ✅（L4 **28/28**、前端 `npm test` **698/700**、`.\build-desktop.ps1` release **exit 0**）。
+> 2 条失败与本专题无关：`configSurface ⑤`（DSL 退役后的旧形状迁移断言）、`uxBatch2Settings ②`（Go 注释文案）。
 
 ---
 

@@ -60,10 +60,9 @@ test('② mousedown → gui.window.resize{hit}（fire-and-forget，不 await）'
   assert.match(COMP, /function onHit\(hit\)/, '须由 onHit 统一发送')
 })
 
-test('③ 仅 GUI/桌面形态渲染（browser 无宿主）+ 命中条退出拖拽区', () => {
-  assert.match(COMP, /import \{ isBrowserForm \} from '\.\.\/\.\.\/utils\/runtimeForm'/)
-  assert.match(COMP, /const resizeEnabled = !isBrowserForm\(\)/)
-  assert.match(COMP, /v-if="resizeEnabled"/, 'browser 形态不得渲染命中层')
+test('③ 唯一形态（desktop）→ 命中层无条件渲染 + 命中条退出拖拽区', () => {
+  assert.doesNotMatch(COMP, /isBrowserForm|runtimeForm/, '形态判据已删（browser 形态不存在）')
+  assert.doesNotMatch(COMP, /v-if="resizeEnabled"/, '命中层不得再按形态条件渲染')
   assert.match(COMP, /-webkit-app-region: no-drag/, '命中条须 no-drag（否则被标题栏拖拽区吃掉）')
   assert.match(COMP, /z-index:\s*2147483000/, '命中层须高于布局容器/弹层')
   assert.match(COMP, /pointer-events:\s*none/, '命中层本体不得拦内容区交互')

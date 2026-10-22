@@ -182,7 +182,7 @@ test('A2 总结提示词：编辑改弹框 + 保存即关 + 内嵌优化（可�
 
 test('A4 记忆总 token 数：主入口在状态栏底部 → 分类列表 → 选中内容弹框（可编辑、可保存）', () => {
   // P1-1（2026-09-24 用户口径）：主入口迁至**窗口状态栏底部**；上下文管理页仅保留只读总量
-  const sb = read('views/statusbar/StatusBar.vue')
+  const sb = read('layout/bar-views/MemoryTokenView.vue')
   assert.match(sb, /class="sb-section sb-mem"/, '状态栏须有记忆总量入口')
   assert.match(sb, /@click="openCategoryList"/, '状态栏总量须可点击 → 分类列表')
   assert.match(sb, /\$t\('statusBar\.memoryTotalLabel'\)/, '须显示标签')
@@ -476,30 +476,27 @@ test('A8 fork：占位按钮 → 提示「敬请期待」（不实现真 fork）
 // B2 状态栏配置入口：**已整体移除**（用户口径 2026-09-24）
 // ═══════════════════════════════════════════════════════════════
 test('B2 状态栏配置入口已移除（无图标/无菜单/无死代码）', () => {
-  const sb = read('views/statusbar/StatusBar.vue')
+  const sb = read('layout/bar-views/MemoryTokenView.vue')
   assert.doesNotMatch(sb, /sb-menu|configMenuItems|Popover/, '状态栏不得再有配置菜单/弹层')
   assert.doesNotMatch(sb, /openGlobalConfig/, '不得再引用已移除的 i18n 键')
   for (const loc of LOCALES) {
     const j = readLocale(loc, 'statusBar.json')
     assert.equal(j.openGlobalConfig, undefined, `${loc} 应回收 statusBar.openGlobalConfig`)
   }
-  // 配置入口仍在工具栏「设置」下拉（共用清单 → utils/configMenu.js 保留）
-  const menu = read('utils/configMenu.js')
+  // 配置入口由默认顶栏「设置」菜单声明式提供（`layout/persist.js`；原 configMenu.js 已删）
+  const menu = read('layout/persist.js')
   for (const kind of ['settings-llm', 'settings-mcp', 'settings-tool-async', 'settings-tool-sandbox',
     'settings-paths', 'settings-params', 'settings-project']) {
     assert.match(menu, new RegExp("kind:\\s*'" + kind + "'"), `配置菜单缺 ${kind}`)
   }
-  assert.match(menu, /export function configMenuItems\(t\)/, '须导出 configMenuItems(t)')
-  assert.match(read('views/toolbar/Toolbar.vue'), /const settingsItems = computed\(\(\) => configMenuItems\(t\)\)/, '工具栏须复用同一清单')
 })
 
 // ═══════════════════════════════════════════════════════════════
 // B3 屏蔽 F12 + 调试图标打开 DevTools
 // ═══════════════════════════════════════════════════════════════
-test('B3 前端：底部调试图标 → gui.devtools.open', () => {
-  const sb = read('views/statusbar/StatusBar.vue')
-  assert.match(sb, /v-mq:\[EventNames\.guiDevToolsOpen\]\.click/, '调试图标须发 gui.devtools.open')
-  assert.match(sb, /\$t\('statusBar\.openDevTools'\)/, '须有 DevTools 提示文案')
+test('B3 前端：状态栏调试图标 → gui.devtools.open', () => {
+  const persist = read('layout/persist.js')
+  assert.match(persist, /sb_devtools[\s\S]{0,140}gui\.devtools\.open/, '默认状态栏须有 DevTools 入口（声明式条目）')
   const en = read('events/event-names.js')
   assert.match(en, /guiDevToolsOpen: 'gui\.devtools\.open'/, '事件名缺失')
   for (const loc of LOCALES) {

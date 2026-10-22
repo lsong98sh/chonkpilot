@@ -10,13 +10,10 @@
 /dist/
 
 # ── 2. 前端构建投放物（go:embed 入口，由 build 脚本生成）────────────────────
-# 源 = 仓库级 src/frontend；embed 入口 embed.html → 改名 index.html 投放下列目录
+# 源 = 仓库级 src/frontend；唯一产物 = src/desktop/frontend/dist（桌面壳 go:embed 落点）
 /src/frontend/dist/
 /src/frontend/dist-browser/
-/src/gui/frontend/dist/
 /src/desktop/frontend/dist/
-/src/server/frontend/dist/
-/src/flash/frontend/dist/
 /src/frontend/node_modules/
 node_modules/
 .vite/

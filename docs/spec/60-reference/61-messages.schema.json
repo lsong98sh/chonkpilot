@@ -1,6 +1,6 @@
 {
   "name": "chonkpilot-message-contract",
-  "version": "2026-10-16",
+  "version": "2026-10-22",
   "source": "docs/spec/60-reference/61-消息一览.md",
   "authority": "61-消息一览.md（消息面唯一准则）",
   "description": "机器可读消息面契约（B0 契约面试点）。逐主题从 61 抽取：payload = 请求/发送字段；result = publish promise 收集的应答字段；event = 下行事件载荷字段。字段名按 61 原样收录（含 §0.5 命名例外：MCP 协议 camelCase、useCase 等），不擅自改名。",
@@ -84,7 +84,7 @@
     "children": { "type": "array", "desc": "目录子项" },
     "choices": { "type": "object", "desc": "向导候选" },
     "chunks": { "type": "int", "desc": "分块数" },
-    "client_type": { "type": "string", "desc": "客户端形态" },
+    "client_type": { "type": "string", "desc": "客户端形态（PRODSIM-1 起唯一取值 desktop）" },
     "closed": { "type": "bool", "desc": "已关闭" },
     "code": { "type": "string", "desc": "错误码" },
     "codegraph": { "type": "object", "desc": "codegraph 引擎状态" },
@@ -416,7 +416,7 @@
         "maximized": { "type": "bool", "required": true },
         "minimized": { "type": "bool", "required": true }
       },
-      "notes": "command ∈ query|minimize|maximize|close；null/query = 仅查询。执行对象 = 调用来源窗口。"
+      "notes": "command ∈ query|minimize|maximize|close；null/query = 仅查询。执行对象 = 调用来源窗口。PRODSIM-1（2026-10-22）：close 语义按窗口角色 —— 项目主窗口 = 终止该项目（cancel 全部关联小窗口会话 + 销毁小窗口 + 销毁主窗口）；日志窗口 = hide 到托盘（不退出进程）；退出进程只走托盘菜单。"
     },
     {
       "topic": "gui.window.open-chat",
@@ -487,7 +487,8 @@
       "face": "gui",
       "direction": "client->gui",
       "payload": { "path": { "type": "string", "required": true } },
-      "result": { "ok": { "type": "bool", "required": true } }
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "PRODSIM-1（2026-10-22）：**同进程**打开/激活该项目主窗口 —— 已打开 → 置前（不新建、不报 workdir busy）；未打开 → 新建主窗口。当前窗口不做就地切换（多项目并存）。"
     },
     {
       "topic": "gui.recent.list",
@@ -2201,39 +2202,6 @@
         "llm": { "type": "string", "required": false }
       },
       "result": { "text": { "type": "string", "required": true } }
-    },
-    {
-      "topic": "login-register",
-      "face": "server",
-      "direction": "client->server",
-      "payload": {
-        "username": { "type": "string", "required": true },
-        "password": { "type": "string", "required": true }
-      },
-      "result": {
-        "ok": { "type": "bool", "required": true },
-        "user": { "type": "any", "required": true }
-      }
-    },
-    {
-      "topic": "login-in",
-      "face": "server",
-      "direction": "client->server",
-      "payload": {
-        "username": { "type": "string", "required": true },
-        "password": { "type": "string", "required": true }
-      },
-      "result": {
-        "ok": { "type": "bool", "required": true },
-        "user": { "type": "any", "required": true }
-      }
-    },
-    {
-      "topic": "login-out",
-      "face": "server",
-      "direction": "client->server",
-      "payload": {},
-      "result": { "ok": { "type": "bool", "required": true } }
     },
     {
       "topic": "session-receive",

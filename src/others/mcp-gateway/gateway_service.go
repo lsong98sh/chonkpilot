@@ -14,7 +14,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/winlog"
 	"github.com/chonkpilot/chonkpilot-lib/winsvc"
-	"github.com/chonkpilot/chonkpilot-mcp-gateway/facadeapi"
+	"github.com/chonkpilot/chonkpilot-gwadapter/facadeapi"
 )
 
 // httpLifecycle 封装 Streamable HTTP 服务的启停（Start 阻塞直到服务退出）。

@@ -21,10 +21,8 @@ import (
 // Server 是 gui 客户端窗口装配实际依赖的内嵌会话服务方法子集（**解耦 chonkpilot-llm/server**）：
 // 仅两个判定方法。host 装配包传入具体 `*server.Server`（满足本接口），gui 侧只按接口调用。
 type Server interface {
-	// RequireAuth 判定本形态是否要求认证（desktop=false / gui=true）。
+	// RequireAuth 判定本形态是否要求认证（PRODSIM-1：本地 auth 已删 → 恒 false）。
 	RequireAuth() bool
-	// Authenticated 判定令牌是否有效（首屏 `authed` 判定）。
-	Authenticated(token string) bool
 }
 
 // EnvConfig 是 host 装配包构造 Env 的参数（与 hostEnv 字段一一对应）。

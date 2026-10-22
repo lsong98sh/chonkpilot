@@ -25,9 +25,9 @@
   `dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
 运行：`python run_tool_sandbox.py`
 
-**PENDING 口径（不伪造、不放宽断言）**：产物未含新页面（工具栏设置菜单无「工具沙箱配置」）时
-打印 `[PENDING]` 并单独计入「待验证」，**不计入通过**（等待重建 build-desktop.ps1 后全量验证）。
-前置成立时全部断言按原样严格执行（任何不符即 FAIL）。
+**PENDING 口径（不伪造、不放宽断言）**：产物未含新页面（`preview-tab-open{kind:'settings-tool-sandbox'}`
+打不开 `.settings-page`）时打印 `[PENDING]` 并单独计入「待验证」，**不计入通过**（等待重建
+build-desktop.ps1 后全量验证）。前置成立时全部断言按原样严格执行（任何不符即 FAIL）。
 """
 import json
 import os
@@ -43,7 +43,6 @@ WS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws")
 CFG_KEY = "tool_sandbox"
 KIND = "settings-tool-sandbox"
 ROOT = ".settings-page"
-MENU_LABEL = "工具沙箱配置"
 CATEGORIES = ["core", "desktop", "browser"]
 
 c = _h.acquire_gui(PORT, work_dir=WS).client
@@ -154,26 +153,26 @@ SEL_PAGE = [None]
 
 
 def probe_page():
-    """产物是否已重建出新页面：工具栏设置下拉是否出现「工具沙箱配置」项。"""
+    """产物是否已重建出新页面：直接按契约命令打开配置页，看 `.settings-page` 是否渲染。
+
+    原实现发 `config-menu-toggle` 找工具栏下拉；该主题已随 UILAYOUT-2-B 删除、设置菜单改为
+    默认布局的声明式条目 → 改走**页面本身的打开命令**（与 require_page 同口径）。
+    """
     if SEL_PAGE[0] is not None:
         return SEL_PAGE[0]
     try:
-        c.mq_emit("config-menu-toggle")
-        time.sleep(0.7)
-        txt = ev("(function(){const e=[...document.querySelectorAll('.b-dropdown-popper')]"
-                 ".find(x=>x.getBoundingClientRect().width>0);return e?e.innerText:'';})()") or ""
-        c.mq_emit("config-menu-toggle")
-        time.sleep(0.3)
+        c.mq_emit("preview-tab-open", {"kind": KIND})
+        ok = wait_vis(ROOT)
     except Exception:
-        txt = ""
-    SEL_PAGE[0] = "有" if MENU_LABEL in txt else "无"
+        ok = False
+    SEL_PAGE[0] = "有" if ok else "无"
     return SEL_PAGE[0]
 
 
 def require_page():
     if probe_page() != "有":
-        raise Pending("产物未含新页面（工具栏设置菜单无「工具沙箱配置」）"
-                      "→ 等待主线统一重建 build-desktop.ps1 后全量验证")
+        raise Pending("产物未含新页面（preview-tab-open{%s} 打不开 %s）"
+                      "→ 等待主线统一重建 build-desktop.ps1 后全量验证" % (KIND, ROOT))
 
 
 # ── 页面操作 ───────────────────────────────────────────────

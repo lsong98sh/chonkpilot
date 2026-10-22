@@ -102,5 +102,6 @@ test('⑥ /dirs 死路径已删除：api/dirs.js 不再存在，前端无 fetchD
     'composables/useGuiShowDialog.js', 'utils/guiShowDialog.js', 'App.vue']) {
     assert.doesNotMatch(read(rel), /fetchDirs|'\/dirs'|GET \/dirs/, `${rel} 不得再引用 /dirs`)
   }
-  assert.equal(existsSync(join(feRoot, 'test', 'httpBridgeShim.test.js')), true, 'shim 测试仍在（SSE 下行载体不变）')
+  // PRODSIM-1：browser 形态删除 → 上行/下行 shim（ck_http_bridge.js）与其测试一并删除
+  assert.equal(existsSync(join(feRoot, 'test', 'httpBridgeShim.test.js')), false, 'browser shim 测试应已删除')
 })

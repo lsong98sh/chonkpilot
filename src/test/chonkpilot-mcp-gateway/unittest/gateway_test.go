@@ -23,10 +23,11 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	mcpgw "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
-	"github.com/chonkpilot/chonkpilot-mcp-gateway/mqadapter"
+	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
 )
 
 // mockSpec 描述测试用 mock 工具（handler 本地执行，经 self 能力源 server 注册）。
@@ -48,7 +49,8 @@ func startTestGW(t *testing.T, specs []mockSpec) (mq.Bus, *mcpgw.Gateway) {
 	if err != nil {
 		t.Fatalf("bus: %v", err)
 	}
-	gw, err := mcpgw.New(mcpgw.Params{Transport: mqadapter.New(bus), CallTimeout: 3 * time.Second, MaxTasks: 4, Logf: t.Logf})
+	adapter := mqadapter.New(bus)
+	gw, err := mcpgw.New(mcpgw.Params{Transport: adapter, Hooks: adapter.Hooks(), CallTimeout: 3 * time.Second, MaxTasks: 4, Logf: t.Logf})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
@@ -139,7 +141,7 @@ func textOf(t *testing.T, res map[string]any) string {
 func subReport(t *testing.T, bus mq.Bus) chan map[string]any {
 	t.Helper()
 	ch := make(chan map[string]any, 8)
-	sub, err := bus.On(mcpgw.SubjectTaskReport, 0, func(_ context.Context, _ string, v *mq.Value) error {
+	sub, err := bus.On(msgkeys.TopicMcpTasksReport, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var r map[string]any
 		if err := json.Unmarshal(v.Payload, &r); err == nil {
 			ch <- r
@@ -310,7 +312,7 @@ func TestBackgroundManualCompleted(t *testing.T) {
 		},
 	}})
 	reported := make(chan map[string]any, 1)
-	sub, err := bus.On(mcpgw.SubjectTaskReport, 0, func(_ context.Context, _ string, v *mq.Value) error {
+	sub, err := bus.On(msgkeys.TopicMcpTasksReport, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var r map[string]any
 		if err := json.Unmarshal(v.Payload, &r); err == nil {
 			reported <- r
@@ -395,7 +397,7 @@ func TestNeverTimeoutAwaitsDecision(t *testing.T) {
 		},
 	}})
 	evCh := make(chan map[string]any, 1)
-	sub, err := bus.On(mcpgw.SubjectToolsTimeout, 0, func(_ context.Context, _ string, v *mq.Value) error {
+	sub, err := bus.On(msgkeys.TopicMcpToolsTimeout, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var m map[string]any
 		if err := json.Unmarshal(v.Payload, &m); err == nil {
 			evCh <- m
@@ -519,7 +521,7 @@ func TestTaskReport(t *testing.T) {
 func TestMCPChangedCarriesInstanceID(t *testing.T) {
 	bus, _ := startTestGW(t, nil)
 	ch := make(chan map[string]any, 4)
-	sub, err := bus.On(mcpgw.SubjectMCPChanged, 0, func(_ context.Context, _ string, v *mq.Value) error {
+	sub, err := bus.On(msgkeys.TopicMcpGatewayChanged, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var r map[string]any
 		if err := json.Unmarshal(v.Payload, &r); err == nil {
 			ch <- r

@@ -123,8 +123,6 @@ export const EventNames = {
   agentWizardSkip: 'agent-wizard-skip', // 前端 → 后端：「关闭/稍后」本会话不再自动弹（payload {}）
   // 配置
   configOpen: 'config-open',
-  configMenuToggle: 'config-menu-toggle', // 工具栏「设置」下拉菜单开合
-  configMenuSelect: 'config-menu-select', // 下拉菜单选项（payload {kind}）→ preview 开页
   projectConfigOpen: 'project-config-open',
   configSave: 'config-save',
   configDialogClose: 'config-dialog-close',

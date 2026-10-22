@@ -173,8 +173,10 @@ func (s *Server) validateLLMTarget(rawURL string) error {
 	if host == "" {
 		return errors.New("baseUrl 缺少主机名")
 	}
-	if !s.RequireAuth() {
-		return nil // desktop：本机单用户，不限制内网目标
+	// PRODSIM-1：SSRF 判定**按形态**（不看 `RequireAuth`）—— desktop 单产物本机免鉴权，
+	// 但形态判定仍独立保留：非 desktop（理论上的远端入口）一律拒绝内网/元数据目标。
+	if s.Form() == FormDesktop {
+		return nil // desktop：本机单用户，不限制内网目标（如本机 Ollama）
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		if isBlockedTargetIP(ip) {

@@ -22,7 +22,7 @@
         <span>{{ $t('config.mcp.toolSandboxSummary', { n: toolSandboxOn }) }}</span>
         <Button text size="small" @click="gotoToolSandbox">{{ $t('config.mcp.gotoToolSandbox') }}</Button>
       </div>
-      <!-- D：server 级空信任目录语义说明（= 不施加隔离，非「全部拒绝」；与 executor 级全拒区分） -->
+      <!-- D：server 级空信任目录语义说明（= 不施加隔离，非「全部拒绝」；executor 级目录隔离待 L6） -->
       <div class="sandbox-note">{{ $t('config.mcp.sandboxEmptyHint') }}</div>
       <Table :columns="mcpColumns" :data="displayData" :empty-text="$t('config.mcp.empty')" size="small">
         <template #action="{ index }">

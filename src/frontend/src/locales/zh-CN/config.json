@@ -196,7 +196,7 @@
     "isolateAutoSuffix": "（自动）",
     "sandbox": "沙箱",
     "sandboxHint": "由 agentbox 按项目安全页的信任目录（可读/可写、递归）限制该 server 子进程的文件访问；仅 stdio&spawn 生效（http/sse 指向固定端口、非本仓 spawn，既无法隔离也无法施加沙箱）。沙箱不依赖隔离，不需要先开「按实例隔离」。未设置 = 不施加沙箱（默认）；允许目录为空时不下发策略（= 不施加，而非全拒）。",
-    "sandboxEmptyHint": "server 级沙箱：生效条件 = 开关开启 + stdio 传输 + 信任目录非空；未配置信任目录 = 不施加隔离（不是「全部拒绝」），且与「按实例隔离」无关、无需先开隔离；只有 executor 级沙箱的空信任目录才是全拒。",
+    "sandboxEmptyHint": "server 级沙箱：生效条件 = 开关开启 + stdio 传输 + 信任目录非空；未配置信任目录 = 不施加隔离（不是「全部拒绝」），且与「按实例隔离」无关、无需先开隔离；executor 级沙箱的目录隔离当前待 L6（尚未施加，空目录同样不限制）。",
     "sandboxStdioOnly": "仅 stdio&spawn 的 MCP server 可施加沙箱；http/sse 指向固定端口，无法隔离也无法施加沙箱",
     "toolSandboxSummary": "另有 {n} 个沙箱开关（内置 executor / 外部 MCP）",
     "gotoToolSandbox": "前往工具沙箱配置",
@@ -276,8 +276,8 @@
     "thirdPartyHint": "外部 MCP（仅 stdio&spawn 由本仓拉起子进程者）的沙箱也已收敛到本页：按 MCP 条目一行开关。http/sse 指向固定端口的既有进程（非本仓 spawn），既无法隔离、也无法施加沙箱。",
     "serverSummary": "外部 MCP 沙箱：已开启 {n} 个（仅 stdio）",
     "gotoMcp": "前往 MCP 配置",
-    "trustDirWarning": "已开启沙箱，但项目「信任目录」为空：agentbox 的空允许集 = 全拒 → 当前会导致已开启沙箱的执行体的**所有文件操作被拒绝**。请先配置「可读/可写目录」。",
-    "trustDirWarningRow": "信任目录为空 → 该执行体所有文件操作将被拒绝",
+    "trustDirWarning": "已开启沙箱，但项目「信任目录」为空：stdio 外部 MCP 不会被施加目录隔离（内建执行体的进程级沙箱待 L6）→ 请先配置「可读/可写目录」。",
+    "trustDirWarningRow": "信任目录为空 → 不会施加目录隔离",
     "gotoTrustDirs": "配置可读/可写目录"
   },
   "tech": {

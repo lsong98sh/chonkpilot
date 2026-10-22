@@ -12,6 +12,7 @@
             :params="refOf(key).params"
             :label="refOf(key).label"
             :design="false"
+            @vue:mounted="bump(splitKey(key).viewKey)"
           />
         </div>
       </Teleport>
@@ -20,8 +21,17 @@
 </template>
 
 <script setup>
+import { onBeforeUnmount } from 'vue'
 import { resolveViewComponent } from '../../deps.js'
-import { viewPool, targetOf, viewRefOf, splitKey, setAnimEl } from '../../stores/viewPool.js'
+import { viewPool, bumpViewMount, resetViewPool, targetOf, viewRefOf, splitKey, setAnimEl } from '../../stores/viewPool.js'
+
+// 池是应用级单例外壳：卸载（窗口关闭 / 测试卸载）时清空常驻 key，避免下一实例复用旧落点
+onBeforeUnmount(resetViewPool)
+
+/** 诊断计数：实例每次真正挂载 +1（L4「未重建」证据） */
+function bump(viewKey) {
+  bumpViewMount(viewKey)
+}
 
 function compOf(key) {
   return resolveViewComponent(splitKey(key).viewKey)

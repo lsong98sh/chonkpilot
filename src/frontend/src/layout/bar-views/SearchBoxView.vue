@@ -1,6 +1,6 @@
 <!--
-  栏视图条目 `search`（UILAYOUT-1 §3.4 / §7 P4①）：从 `views/toolbar/Toolbar.vue` 中段搜索箱
-  **抽出**成独立 view，注册为 `host:'bar'` 的栏内嵌条目。行为与抽出前一致：
+  栏视图条目 `search`（UILAYOUT-1 §3.4 / §7 P4①）：由原 legacy `Toolbar.vue` 中段搜索箱
+  **抽出**成独立 view（原文件已随 UILAYOUT-2-B 删除），注册为 `host:'bar'` 的栏内嵌条目。行为：
     `gui.search {query}` → 结果下拉 → 选中 = `file-open {temporary:true}` + `file-search {path}`；
     250ms 防抖 + 序号作废在途请求。
   保留 `.search-input-wrap` / `.search-result-item` 等既有类名（L4 选择器口径）。

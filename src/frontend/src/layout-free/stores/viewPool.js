@@ -23,7 +23,15 @@ export const viewPool = reactive({
   targets: {},
   /** 已请求挂载过的 key（顺序 = 首次请求顺序；池按此渲染） */
   keys: [],
+  /** key -> 实例挂载次数（诊断：切换布局前后不变 = 未重建） */
+  mounts: {},
 })
+
+/** 池内实例每次真正挂载时 +1（诊断计数；不参与业务） */
+export function bumpViewMount(viewKey) {
+  if (!viewKey) return
+  viewPool.mounts[viewKey] = (viewPool.mounts[viewKey] || 0) + 1
+}
 
 export function registerViewTarget(key, el, viewRef) {
   if (!key || !el) return
@@ -36,6 +44,14 @@ export function unregisterViewTarget(key, el) {
   if (!cur) return
   if (el && cur.el !== el) return
   delete viewPool.targets[key]
+}
+
+/** 应用退出 / 池卸载：清空全部落点与常驻 key（下次挂载按需重来） */
+export function resetViewPool() {
+  viewPool.targets = {}
+  viewPool.keys = []
+  viewPool.mounts = {}
+  animEls.clear()
 }
 
 export function targetOf(key) {
@@ -56,6 +72,21 @@ export function hasViewTarget(viewKey) {
 export function splitKey(key) {
   const i = String(key).indexOf('|')
   return i < 0 ? { viewKey: key, instanceKey: null } : { viewKey: key.slice(0, i), instanceKey: key.slice(i + 1) || null }
+}
+
+/* 只读诊断入口：L4 用「挂载次数切换前后不变」证明单例 view 未被重建 */
+if (typeof window !== 'undefined') {
+  window.__ckViewPool = {
+    get mounts() {
+      return { ...viewPool.mounts }
+    },
+    get targets() {
+      return Object.keys(viewPool.targets)
+    },
+    get parked() {
+      return viewPool.keys.filter((k) => !viewPool.targets[k])
+    },
+  }
 }
 
 /* ── 切换动画（FLIP）：位移 + 淡入，尊重 prefers-reduced-motion ── */

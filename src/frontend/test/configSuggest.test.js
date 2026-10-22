@@ -52,7 +52,7 @@ test('① msgkeys：genmsg 已生成 MsgTopics.configSuggest = config.suggest', 
   assert.ok(read('events/msgkeys.js').includes("configSuggest: 'config.suggest'"), 'msgkeys.js 缺 configSuggest')
 })
 
-test('① Go 后端：主题常量 + onConfigSuggest 订阅 + browser 白名单放行', () => {
+test('① Go 后端：主题常量 + onConfigSuggest 订阅', () => {
   const go = readGo('llm/server/configsuggest.go')
   assert.match(go, /SubjectConfigSuggest = msgkeys\.TopicConfigSuggest/, 'Go 服务端主题须用生成键常量')
   assert.match(go, /func \(s \*Server\) onConfigSuggest\(/, '缺 onConfigSuggest handler')
@@ -60,8 +60,7 @@ test('① Go 后端：主题常量 + onConfigSuggest 订阅 + browser 白名单�
   assert.match(go, /v\.Result = configSuggestFail\(/, '失败须恒走 result 信封（不抛总线错误）')
   const serverGo = readGo('llm/server/server.go')
   assert.match(serverGo, /\{SubjectConfigSuggest, s\.onConfigSuggest\}/, 'server.go Start 须订阅 config.suggest')
-  const publishGo = readGo('llm/httpapi/publish.go')
-  assert.match(publishGo, /msgkeys\.TopicConfigSuggest/, 'browser 上行白名单 allowedDottedPrefixes 须放行 config.suggest')
+  // PRODSIM-1：browser 形态（httpapi 上行白名单）已删 → 该白名单守卫随文件移除。
 })
 
 test('① 前端消费：api/config.js suggestConfig 用 MsgTopics.configSuggest（禁字面量）', () => {

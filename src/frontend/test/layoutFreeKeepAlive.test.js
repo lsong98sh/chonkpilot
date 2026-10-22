@@ -29,6 +29,7 @@ const { useRuntimeStore } = await import('../src/layout-free/stores/runtime.js')
 const LfFixedTabsView = (await import('../src/layout-free/views/LfFixedTabsView.vue')).default
 const LfFreeTabsView = (await import('../src/layout-free/views/LfFreeTabsView.vue')).default
 const LfLayoutLeaf = (await import('../src/layout-free/components/layout/LfLayoutLeaf.vue')).default
+const LfViewPool = (await import('../src/layout-free/components/layout/LfViewPool.vue')).default
 
 /** 探针组件：记录挂载 / 卸载，并持有"区块内部状态"（自增计数） */
 const probes = []
@@ -79,10 +80,18 @@ before(() => {
   probes.length = 0
 })
 
-/** 挂载一个组件到无 DOM 宿主树（返回 app 句柄） */
+/**
+ * 挂载一个组件到无 DOM 宿主树（返回 app 句柄）。
+ * WIN-027 起单例 view 由视图池统一持有 → 测试必须同时挂 `LfViewPool`，
+ * 槽位注册后由池经 Teleport 渲染真实组件（保活 = 池内实例不销毁）。
+ */
 function mount(component, props) {
   const renderer = createRenderer(hostOps)
-  const app = renderer.createApp(defineComponent({ setup: () => () => h(component, props) }))
+  const app = renderer.createApp(
+    defineComponent({
+      setup: () => () => h('div', [h(component, props), h(LfViewPool)]),
+    }),
+  )
   app.component('LfIcon', StubIcon)
   app.directive('mq', {})
   app.mount(createEl('root'))

@@ -38,7 +38,6 @@ import WindowControls from './bar-views/WindowControls.vue'
 import { EventNames } from '../events/event-names'
 import { GuiWindowResizeKeys } from '../events/msgkeys'
 import mq from '../utils/mq'
-import { isBrowserForm } from '../utils/runtimeForm'
 import { getLayoutEngine } from './index.js'
 import { installBarActions } from './barActions.js'
 
@@ -51,7 +50,7 @@ const engine = getLayoutEngine()
 const NO_DRAG = 'button, input, textarea, select, a, .bar-item-shell, .bar-view, .split-resizer'
 let dragState = null
 function onDragStart(e) {
-  if (e.button !== 0 || isBrowserForm()) return
+  if (e.button !== 0) return
   const t = e.target
   if (t && t.closest && t.closest(NO_DRAG)) return
   // 不立即进入移动循环：先等鼠标位移超过阈值（4px）再发起 → 保留单击/双击

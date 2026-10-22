@@ -5,8 +5,7 @@
  * （`utils/commands.js#commandToMq` 的 `publish-mq` 分支）；**由谁处理这些既有主题**属宿主侧策略
  * —— 本模块就是这份策略的落点，且**只引用既有宿主主题，零新增**。
  *
- * 与 legacy 分支的关系：`views/toolbar/Toolbar.vue` 自己订阅同一批主题；
- * 两种形态互斥（free ↔ legacy），同一时刻只有一份订阅在生效，故不会双执行。
+ * legacy 分支（`Toolbar.vue`）已随 UILAYOUT-2-B 删除；本模块是唯一订阅点，不会双执行。
  *
  * 由 free 形态的顶栏外壳（`layout/ChonkTopBar.vue`）在挂载时安装、卸载时回收。
  */

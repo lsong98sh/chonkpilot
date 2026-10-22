@@ -15,7 +15,7 @@ import (
 )
 
 // startBridge 起一个真实插件桥（帧前门恒开；withHTTP 时另开 HTTP 随机端口）。
-func startBridge(t *testing.T, withHTTP bool, token string) *pluginbridge.Server {
+func startBridge(t *testing.T) *pluginbridge.Server {
 	t.Helper()
 	bus, err := mq.New(mq.Options{})
 	if err != nil {
@@ -25,10 +25,6 @@ func startBridge(t *testing.T, withHTTP bool, token string) *pluginbridge.Server
 		Bus:     bus,
 		Addr:    filepath.Join(t.TempDir(), "plugin.sock"),
 		Version: "test",
-	}
-	if withHTTP {
-		opts.HTTPAddr = "127.0.0.1:0"
-		opts.HTTPToken = token
 	}
 	srv := pluginbridge.New(opts)
 	srv.Register("test.echo", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
@@ -136,7 +132,7 @@ func runClientContract(t *testing.T, cli pluginclient.Client, srv *pluginbridge.
 
 // TestFrameClient：帧传输 hello / call / subscribe / 事件 / ctl / Close。
 func TestFrameClient(t *testing.T) {
-	srv := startBridge(t, false, "")
+	srv := startBridge(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cli, err := pluginclient.Dial(ctx, pluginclient.Options{
@@ -151,67 +147,5 @@ func TestFrameClient(t *testing.T) {
 	runClientContract(t, cli, srv, "test.frame.bot")
 }
 
-// TestHTTPClient：HTTP 传输 hello / call / subscribe / 事件 / ctl / Close。
-func TestHTTPClient(t *testing.T) {
-	srv := startBridge(t, true, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cli, err := pluginclient.Dial(ctx, pluginclient.Options{
-		HTTPBase: "http://" + srv.HTTPAddr(),
-		PluginID: "test.http.bot",
-		Name:     "http-bot",
-		Version:  "1.0",
-	})
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	runClientContract(t, cli, srv, "test.http.bot")
-}
-
-// TestHTTPClientToken：token 错误 / 缺失 → Dial 返回错误；正确 → 成功。
-func TestHTTPClientToken(t *testing.T) {
-	srv := startBridge(t, true, "s3cret-token")
-	base := "http://" + srv.HTTPAddr()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if _, err := pluginclient.Dial(ctx, pluginclient.Options{HTTPBase: base, PluginID: "tok.bad", Token: "wrong"}); err == nil {
-		t.Fatal("错误 token 应 Dial 失败")
-	}
-	if _, err := pluginclient.Dial(ctx, pluginclient.Options{HTTPBase: base, PluginID: "tok.missing"}); err == nil {
-		t.Fatal("缺失 token 应 Dial 失败")
-	}
-
-	cli, err := pluginclient.Dial(ctx, pluginclient.Options{HTTPBase: base, PluginID: "tok.ok", Token: "s3cret-token"})
-	if err != nil {
-		t.Fatalf("正确 token dial: %v", err)
-	}
-	defer cli.Close()
-	raw, err := cli.Call(ctx, "test.echo", map[string]any{"text": "ok"})
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	assertEcho(t, raw, "ok")
-}
-
-// TestHTTPClientServerClose：服务端关闭后调用返回错误（SSE 重连退出）。
-func TestHTTPClientServerClose(t *testing.T) {
-	srv := startBridge(t, true, "")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cli, err := pluginclient.Dial(ctx, pluginclient.Options{
-		HTTPBase: "http://" + srv.HTTPAddr(),
-		PluginID: "test.http.close",
-	})
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer cli.Close()
-
-	_ = srv.Close()
-	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer callCancel()
-	if _, err := cli.Call(callCtx, "test.echo", map[string]any{"text": "x"}); err == nil {
-		t.Fatal("服务端关闭后调用应失败")
-	}
-}
+// PRODSIM-1：插件 HTTP 前门已删除（能力外溢统一走 UDS 帧传输），原 TestHTTPClient /
+// TestHTTPClientToken / TestHTTPClientServerClose 三个用例随之移除。

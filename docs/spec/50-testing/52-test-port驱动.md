@@ -19,7 +19,7 @@
 
 ## 2. 总体设计
 
-- **触发**：`chonkpilot.exe --test-port=2345`（仅 IDE 模式生效；executor 模式（`--prompt` 等）忽略该参数）。**🆕 2026-10-10**：`--test-port` 由 **build tag `debugport`** 门控 —— **仅 debug 构建存在**（`build-desktop.ps1 -Debug` / `build-gui.ps1 -Debug`，见 [03 §1.4](../00-overview/03-构建与部署.md)）；**release 构建不注册该参数**（传入即 unknown flag），也**不开任何监听**
+- **触发**：`chonkpilot.exe --test-port=2345`（仅 IDE 模式生效；executor 模式（`--prompt` 等）忽略该参数）。**🆕 2026-10-10**：`--test-port` 由 **build tag `debugport`** 门控 —— **仅 debug 构建存在**（`build-desktop.ps1 -Debug`，见 [03 §1.4](../00-overview/03-构建与部署.md)）；**release 构建不注册该参数**（传入即 unknown flag），也**不开任何监听**。**〔PRODSIM-1（2026-10-22）：`build-gui.ps1` 已删除，debug 构建只有 `build-desktop.ps1 -Debug`〕**
 - **监听**：`127.0.0.1:2345`，**不绑定 `0.0.0.0`**，杜绝局域网访问
 - **默认关闭**：不传 `--test-port` 则完全不启动，发布包行为不变
 - **生命周期**：与 IDE 同生共死 —— webview 创建成功后启动 `http.Server`，程序退出前 `Shutdown`

@@ -1,27 +1,17 @@
 /**
- * useInstanceClaim —— 实例认领 + 心跳续期（61 §4.1 ①②；阶段 2a 前端骨架，2b-2 接入登录/选目录）。
+ * useInstanceClaim —— 实例认领（61 §4.1 ①；PRODSIM-1 后唯一形态 desktop）。
  *
- * 流程（61 §4.6「流程」）：`登录 → 选目录 → instance-claim{user?, work_dir?} → 校验 →
- * claim 成功后服务端广播 instance-register → 前端起 heartbeat`。
- *   - **desktop**（`requireAuth=false`）：无登录/选目录 → App 启动即认领（不带参数；
- *     work_dir 取服务端启动参数）；
- *   - **gui / browser**（`requireAuth=true`）：由 `views/auth/AuthView.vue` 在登录成功后
- *     提交 `{user, work_dir}` 认领（本模块只负责发送与状态收敛）。
+ * 流程：`项目主窗口启动 → instance-claim{work_dir}（客户端提议）→ 命中实例登记即绑定 →
+ * 服务端广播 instance-register`。无登录、无心跳（`isSplitForm()` 恒 false → 不发布）。
  *
  * 契约（61 §4.1 表；**payload 零新增字段**）：
  *   - 请求 `instance-claim {user?, work_dir?}` —— 请求-响应：应答经 publish promise 回发起者；
  *   - 成功 `{instance_id, work_dir, data_dir}` → 存本地（`utils/instanceState.js`，业务 payload
- *     注入据它取值）+ 分离形态起 30s 心跳；
- *   - 失败 `{ok:false, error}`（61 §4.6）：`instance-unauthorized` → **回登录视图**；
- *     `instance-forbidden` → 提示无权访问该目录（**不跳登录**）；
- *   - 心跳 `instance-heartbeat {instance_id}`（30s；payload 由 mq 统一注入 instance_id）。
+ *     注入据它取值）；
+ *   - 失败 `{ok:false, error}`：`instance-forbidden` = 该 work_dir 未被实例登记；
+ *   - 心跳 `instance-heartbeat {instance_id}`：主题保留，唯一形态 desktop **不发布**。
  *
- * 心跳门控（**保留既有 `-tags split` 语义**，61 §4.1 ②）：**仅分离形态**（首屏注入
- * `__ck.form` = gui / browser）由**前端**发布心跳；desktop / **flash 薄壳**不自行发布。
- * **flash 薄壳**的存活改由 **UDS 前门按连接代发 `instance-heartbeat` 续期**：只要连接在，
- * 前门每 `heartbeat.Interval/2` 续一次，连接断开即停（= 实例退出；见 61 §4.1 · 62 §3A · 19 §8.11）。
- *
- * 模块级单例状态（App 启动/登录后认领一次；其它消费者可读同一份）。
+ * 模块级单例状态（App 启动后认领一次；其它消费者可读同一份）。
  */
 import { ref } from 'vue'
 import mq from '../utils/mq.js'

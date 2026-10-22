@@ -34,14 +34,12 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-assembly"
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-data/auth"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/lockfile"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-lib/sandbox"
 	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
 	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
@@ -172,29 +170,10 @@ type Options struct {
 	WorkDir string
 	DataDir string
 
-	// Form 是本宿主的**运行形态**（61 §4.6：三形态 = desktop / gui / browser）——
-	// 由**入口/宿主**按形态判定后注入（D-28：宿主壳经 `gui.Options.Form`，**非 UA、非客户端
-	// 自报**，22 §1）；空 = desktop（桌面单体默认构建口径）。
-	// 唯一消费点 = claim 鉴权分支：desktop 免鉴权（本机单用户）、gui/browser 要求令牌。
+	// Form 是本宿主的**运行形态**（61 §4.6）—— 由入口/宿主注入；空 = desktop。
+	// PRODSIM-1：单产物只有 desktop；本地认证域（AuthDBPath / UserDataRoot / AllowRegister /
+	// ProjectRoots）已整体删除（认证将来统一到 registry）。
 	Form string
-
-	// ── 认证域（61 §4.6；阶段 2b-1）─────────────────
-	// AuthDBPath 是 auth 库路径（bbolt 单文件，**与业务三级库分离**）；空 = `<exe 目录>/auth.db`
-	// （app-server 的 exe 旁，22 §6.4）。
-	AuthDBPath string
-	// UserDataRoot 是**用户数据根**（注册时建 `<UserDataRoot>/<uid>/`，业务数据每用户一套库）；
-	// 空 = `<exe 目录>/data`（2b-1 只做配置项 + 默认值；接系统认证后再议 OS home）。
-	UserDataRoot string
-	// AllowRegister 对应配置 `auth.allowRegister`（61 §4.6：默认 true；对外暴露必须关闭）。
-	// nil = 默认（true）；false = login-register 返回 `login-failed`。
-	// **例外（🆕 首启一次性初始化）**：用户库为空时首个注册**仍放行**并记 `role=admin`
-	// （否则「关闭注册 + 空库」= 无任何登录路径，锁死；判定与写入同事务，见 login.go register）。
-	AllowRegister *bool
-
-	// ProjectRoots 对应配置 `auth.projectRoots`（**允许根列表**，阶段 2b-2）：`instance-claim`
-	// 的 `work_dir` 落在某个允许根之下（且不在任何既有项目上）→ 视为**用户自建项目**（建
-	// projects 记录 + access 关联，见 claim.go）。空 = 缺省 `<用户数据根>`（<exe 目录>/data）。
-	ProjectRoots []string
 }
 
 // Server 是 LLM 会话服务（调度器）实例。
@@ -307,21 +286,6 @@ type Server struct {
 	// 上限 promptOptimiseMaxInflight；懒建，键 = instance_id）。
 	promptSemMu sync.Mutex
 	promptSem   map[string]chan struct{}
-
-	// ── 认证域（61 §4.6；阶段 2b-1）─────────────────
-	// auth 是认证**门面**（本期 = 本地 auth 库实现；将来可换 OS 账号 / LDAP / OIDC —— 只留装配位）；
-	// authTokens 是令牌签发/吊销面（同一实现）；authStop 关库；userDataRoot 是注册建目录的根。
-	// authMu/authErr 串行化**惰性打开**（ensureAuth）：打开失败缓存错误 → login-* 一律 login-failed。
-	// authOpenOnce 保证 auth 库**唯一一次**打开（bbolt 文件锁下重复打开会阻塞/超时）：打开在锁外
-	// 进行，避免持 authMu 做磁盘 IO 阻塞并发 Authenticated()/userDataRootPath()。
-	authMu       sync.Mutex
-	authOpenOnce sync.Once
-	authErr      error
-	auth         auth.Authenticator
-	authTokens   auth.TokenIssuer
-	authz        auth.ProjectAuthorizer // 项目登记 + 用户-项目关联（claim 归属校验用；同一实现）
-	authStop     func()
-	userDataRoot string
 }
 
 // askWaiter 是 ask-user 等待登记（ask-user-reply 到达后喂回 LLM + 广播 ask 任务节点 done）。
@@ -497,8 +461,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.sweepStop = s.startInstanceSweep()
 	logStartupStage("实例视图/心跳扫描启动")
-	// 认证域（61 §4.6；阶段 2b-1）：auth 库按需惰性打开（见 login.go `ensureAuth`）——
-	// 未使用的宿主不产生 auth 文件；打开失败只使 login-* 返回 login-failed，不阻断启动。
+	// PRODSIM-1：认证域（login-*）已整体移除（本地 auth 删；认证将来统一到 registry）。
 	// 域工具执行回调（gateway tools/register handler_subject → 本模块订阅执行，写回 v.Result）
 	for _, sub := range []struct {
 		subject string
@@ -507,9 +470,6 @@ func (s *Server) Start(ctx context.Context) error {
 		{SubjectDomainToolCall, s.onDomainToolCall},
 		{SubjectLLMSimple, s.onLLMSimple},
 		{SubjectInstanceClaim, s.onInstanceClaim},         // 实例认领（请求-响应；61 §4.1 ①，阶段 2a）
-		{SubjectLoginRegister, s.onLoginRegister},         // 认证域：注册（61 §4.6，阶段 2b-1）
-		{SubjectLoginIn, s.onLoginIn},                     // 认证域：登录
-		{SubjectLoginOut, s.onLoginOut},                   // 认证域：登出
 		{SubjectLLMTestConnection, s.onLLMTestConnection}, // 设置→LLM「测试连接」只读探活（点分主题直通总线）
 		{SubjectConfigSuggest, s.onConfigSuggest},         // 配置页/工具原语「AI 智能填充」（点分主题直通总线；AICFG-1）
 		{domainSubject(msgkeys.TopicLlmStart), s.onLLMStart},
@@ -549,8 +509,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}{
 		{instance.SubjectRegister, s.onInstanceRegister},              // 用户/项目级 capability 根动态注册（21-llm-server；T-29）
 		{SubjectExit, s.onExit},                                       // 退出 → 取消名下 running turn + 释放锁
-		{mcpgateway.SubjectTaskReport, s.onGatewayTaskDone},           // gateway 异步任务完成回报（mcp-tasks-report）→ 续轮/广播
-		{mcpgateway.SubjectMCPChanged, s.onMCPChanged},                // 目录/接入变化（mcp-gateway-changed）→ 刷新工具缓存
+		{msgkeys.TopicMcpTasksReport, s.onGatewayTaskDone},          // gateway 异步任务完成回报（mcp-tasks-report）→ 续轮/广播
+		{msgkeys.TopicMcpGatewayChanged, s.onMCPChanged},            // 目录/接入变化（mcp-gateway-changed）→ 刷新工具缓存
 		{msgkeys.TopicTaskDeleted, s.onTaskTreeDeleted},               // persist data-tasktree-delete 级联删除 → 内存同步（不复活）
 		{msgkeys.TopicDataMemoryRefresh, s.onMemoryRefresh},           // 记忆域 save/delete 后广播（既有主题）→ 失效类别清单缓存（I-68 ②）
 		{msgkeys.TopicDataUserConfigRefresh, s.onUserConfigRefresh},   // usr 配置 save/delete 后广播（既有主题）→ tool_async / llms 热生效
@@ -751,11 +711,6 @@ func (s *Server) Stop() {
 	}
 	if s.data != nil {
 		s.data.Stop()
-	}
-	// 认证域：关闭 auth 库（61 §4.6；nil = 库未打开，零开销）。
-	if s.authStop != nil {
-		s.authStop()
-		s.authStop = nil
 	}
 	// 锁内仅收集待关闭轮次，Close（含 session 锁释放 = 文件解锁 IO）在锁外逐个执行——
 	// 避免持 s.mu 做 IO 阻塞其他 s.mu 访问（stop 期仍需幂等：turnCtx.Close 自身 once 守卫）。
@@ -3072,7 +3027,7 @@ func (s *Server) applyToolSandbox(raw string) {
 // `{"dir","writable"}`；list 返回平铺 map（已剥 `security-` 前缀）。
 // 返回 (规则集, 读取是否成功)：读取失败 → ok=false（调用方保留现值，不误清空）；
 // 单条 value 解析失败 → 跳过该条并记日志（不影响其余条目）。
-func (s *Server) securityRules(instanceID string) ([]sandbox.Rule, bool) {
+func (s *Server) securityRules(instanceID string) ([]mcpgateway.SandboxRule, bool) {
 	res, err := s.cfg.ConfigKVList(facade.ConfigKVListRequest{
 		Domain: facade.DomainPrjSecurity, InstanceID: instanceID, Scope: s.cfgScope(instanceID),
 	})
@@ -3090,10 +3045,10 @@ func (s *Server) securityRules(instanceID string) ([]sandbox.Rule, bool) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	rules := make([]sandbox.Rule, 0, len(keys))
+	rules := make([]mcpgateway.SandboxRule, 0, len(keys))
 	for _, k := range keys {
 		raw := list[k]
-		var r sandbox.Rule
+		var r mcpgateway.SandboxRule
 		if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &r) != nil || strings.TrimSpace(r.Dir) == "" {
 			logf("[chonkpilot-server] securityRules: 条目 %s 解析失败（跳过）: %q\n", k, raw)
 			continue
@@ -3114,9 +3069,9 @@ func (s *Server) securityRules(instanceID string) ([]sandbox.Rule, bool) {
 //   - prjusr 数据根（data.PrjUsrDir；解析失败 → 跳过，不影响其余默认项）
 //   - 进程级系统 temp（os.TempDir()，一次）
 // 打 Low IL 标签由 gateway 在 stdio 槽位构建时按 SandboxDirs WritableRoots 执行（provider.go）。
-func (s *Server) gatewaySandboxRules() []sandbox.Rule {
+func (s *Server) gatewaySandboxRules() []mcpgateway.SandboxRule {
 	seen := map[string]bool{}
-	var out []sandbox.Rule
+	var out []mcpgateway.SandboxRule
 	add := func(dir string, writable bool) {
 		d := strings.TrimSpace(dir)
 		if d == "" {
@@ -3127,7 +3082,7 @@ func (s *Server) gatewaySandboxRules() []sandbox.Rule {
 			return
 		}
 		seen[key] = true
-		out = append(out, sandbox.Rule{Dir: d, Writable: writable})
+		out = append(out, mcpgateway.SandboxRule{Dir: d, Writable: writable})
 	}
 	for _, info := range s.im.List() {
 		rules, ok := s.securityRules(info.ID)

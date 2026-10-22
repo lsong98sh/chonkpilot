@@ -11,8 +11,8 @@
 #
 # 架构（单进程内嵌）：chonkpilot.exe = webview2 宿主（`src/desktop` → `src/lib/gui`.Main），内嵌
 #   server（会话/任务编排）→ persist（数据面）→ filesys + gateway(内嵌 mcp-server) + 插件，
-#   前端 dist 经 go:embed 进 exe（前端源码工程 = 仓库级 src/frontend，embed 入口 embed.html
-#   构建后改名 index.html 投放 src/gui/frontend/dist 并**镜像**到 src/desktop/frontend/dist）。
+#   前端 dist 经 go:embed 进 exe（前端源码工程 = 仓库级 src/frontend，vite 产物直投
+#   `src/desktop/frontend/dist`；PRODSIM-1 后不再有 gui/browser 的第二份投放目录）。
 #
 # 产物（仓库根 dist\desktop\，决策 [42 §2 (16)]）：
 #   ├── chonkpilot.exe                      # webview2 宿主
@@ -24,7 +24,7 @@
 #   │   ├── agents/                         # 智能体契约（*.agent.md，扁平；源 src/initdata/capability/agents）
 #   │   ├── system/                         # 非原语系统文档全量（summary.md/system-directory.md/memory/*.md；源 src/initdata/capability/system，OP-02）
 #   │   ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
-#   │   └── executors/chonkpilot-{core,desktop,browser,dsl}-executor.exe
+#   │   └── executors/chonkpilot-{core,browser,desktop}-executor.exe
 #   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
 #   │   ├── codebase/chonkpilot-codegraph-mcp-server.exe + chonkpilot-codegraph-indexer.exe
 #   │   ├── vfts/chonkpilot-vfts-mcp-server.exe + chonkpilot-vfts-indexer.exe + zvec_c_api.dll（必须与 vfts 引擎同目录）
@@ -62,10 +62,9 @@ $desktopTags = if ($Debug) { "debugport" } else { "" }
 # 宿主壳（GUI 单体，见 [41 D-28]）
 $desktop = Join-Path $root "src\desktop"
 # 前端源码工程已独立为仓库级目录 src/frontend（决策 [42 §2 (115)] / [19 §3.2]）；
-# embed 构建落点 = src/gui/frontend/dist（vite build:embed 的 outDir），随后**镜像**到
-# src/desktop/frontend/dist —— 桌面单体壳的 `//go:embed all:frontend/dist` 落点。
+# PRODSIM-1 后**单入口单产物**：vite 构建直投 `src/desktop/frontend/dist`（桌面壳的
+# `//go:embed all:frontend/dist` 落点），不再有 gui/browser 的第二份投放目录。
 $frontend = Join-Path $root "src\frontend"
-$embedOut = Join-Path $root "src\gui\frontend\dist"
 $embedDst = Join-Path $desktop "frontend\dist"
 $dist = Join-Path $root "dist\desktop"
 $outGuiExe = Join-Path $dist "chonkpilot.exe"
@@ -110,8 +109,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "genmsg failed" }
 } finally { Pop-Location }
 
-# -- 0) 结束运行中的旧实例（释放 exe 占用；两形态产物同列表） --
-foreach ($name in @("chonkpilot", "chonkpilot-gui-client", "chonkpilot-server")) {
+# -- 0) 结束运行中的旧实例（释放 exe 占用；唯一产物 = chonkpilot.exe） --
+foreach ($name in @("chonkpilot")) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
         Write-Host "==> kill [$name] PID=$($_.Id)"
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -150,8 +149,8 @@ foreach ($sub in @("tools", "prompts", "skills", "resources")) {
 }
 Write-Host "    ok: embed contracts -> $embedCap ($((Get-ChildItem $embedCap -Recurse -File | Measure-Object).Count) files)"
 
-# -- 1) 前端构建（工程 src/frontend；embed 入口 → 镜像到两个宿主壳的 embed 落点） --
-Write-Host "==> [1/9] build frontend (embed entry)"
+# -- 1) 前端构建（工程 src/frontend；产物直投桌面壳 embed 落点） --
+Write-Host "==> [1/9] build frontend"
 Push-Location $frontend
 try {
     if (-not (Test-Path "node_modules")) {
@@ -164,20 +163,11 @@ try {
     # 以 $LASTEXITCODE 为唯一判定。
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    npm run build:embed 2>&1 | Select-Object -Last 8
+    npm run build 2>&1 | Select-Object -Last 8
     $ErrorActionPreference = $prevEAP
-    if ($LASTEXITCODE -ne 0) { throw "npm run build:embed failed" }
+    if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
 } finally { Pop-Location }
-
-# embed.html → 复制改名 index.html（GUI/WebView2 入口；Go embed 路径与注入逻辑不变）
-$embedHtml = Join-Path $embedOut "embed.html"
-if (-not (Test-Path $embedHtml)) { throw "embed.html 未产出: $embedHtml" }
-Copy-Item $embedHtml (Join-Path $embedOut "index.html") -Force
-Remove-SafeItem -LiteralPath $embedHtml
-Write-Host "    ok: $embedOut (embed.html -> index.html)"
-# 镜像到桌面单体壳的 embed 落点（src/desktop/frontend/dist；go:embed all:frontend/dist）
-Remove-SafeItem -LiteralPath $embedDst -Recurse
-Copy-Item $embedOut $embedDst -Recurse -Force
+if (-not (Test-Path (Join-Path $embedDst "index.html"))) { throw "前端 dist 未产出: $embedDst" }
 Write-Host "    ok: $embedDst ($((Get-ChildItem $embedDst -Recurse -File | Measure-Object).Count) files)"
 
 # -- 2) GUI 单体编译（src/desktop；-H windowsgui：GUI 模式无控制台） --
@@ -316,7 +306,7 @@ if (Test-Path $mcpsSrc) {
 #    引擎与运行库已归位 mcps/{codebase,vfts}（zvec_c_api.dll 随 vfts 同目录），
 #    根下遗留的旧引擎 exe / 旧 dll / 已删除的 chonkpilot-cli.exe 属历史残留，必须清掉，否则会被 initial.zip 带入出厂包。
 Write-Host "==> clean stale root artifacts (root 仅允许 chonkpilot.exe)"
-$rootExeAllow = @("chonkpilot.exe", "chonkpilot-server-tools.exe")
+$rootExeAllow = @("chonkpilot.exe")
 Get-ChildItem -Path $dist -File -Force -ErrorAction SilentlyContinue |
     Where-Object { ($_.Extension -in @(".exe", ".dll")) -and ($rootExeAllow -notcontains $_.Name) } |
     ForEach-Object {

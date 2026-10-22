@@ -3,6 +3,7 @@ module github.com/chonkpilot/chonkpilot-test/chonkpilot-mcp-gateway/unittest
 go 1.26.0
 
 require (
+	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-mcp-gateway v0.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -21,7 +22,9 @@ require (
 
 replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
 
-replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../lib/gateway
+replace github.com/chonkpilot/chonkpilot-gwadapter => ../../../lib/gwadapter
+
+replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../../../chonkpilot-mcp-gateway
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../../../lib/mcp-server
 

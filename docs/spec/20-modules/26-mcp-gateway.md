@@ -2,7 +2,7 @@
 
 > 状态：✅ 与代码一致（2026-10-21 GATEWAY-2 L5/L6/L7/L8 同步；见 §0 现状订正）
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [25-mcp-server](25-mcp-server.md) · [27-mcp-tools](27-mcp-tools.md)
-> 代码目录：lib = `src/lib/gateway/`（`gateway/` + `internal/facade/` + `facadeapi/`）；**exe 外壳 = `src/others/mcp-gateway/`**（`main.go` + `gateway_service.go`；跨 module 经 `facadeapi` 转发 `internal/facade`，保持 internal 隔离）
+> 代码目录：**内核 = `chonkpilot-mcp-gateway/`**（独立目录，与主仓同级：`gateway/` + 子包 `sandbox/`、`winproc/`，零本仓依赖）；**适配胶水层 = `src/lib/gwadapter/`**（`mqadapter/` + `facadeapi/` + `internal/facade/`，经 `replace ../../../../chonkpilot-mcp-gateway` 引用内核）；**exe 外壳 = `src/others/mcp-gateway/`**（`main.go` + `gateway_service.go`；跨 module 经 `facadeapi` 转发 `internal/facade`，保持 internal 隔离）
 
 ---
 
@@ -22,7 +22,7 @@
 - **③ 池化（L6）**：`procSlot`（进程，仅 stdio）与 `connSlot`（连接，http/sse）**拆分**；池键 `pool_key = shared | call`、`pool_size`、`max_concurrent`（缺省 **5**）、`call_timeout`、`grace_ms`（缺省 **2000**）、`kill_policy`（固定 **cascade-report**）由 `ServerEntry` 下发；`inFlight` 升级为 **`call_id → inflight`** 注册表（可查询单次调用是否结束、连带影响范围）。**stdio 不跨 workdir 复用**（沙箱按 workdir 打标）。
 - **④ 取消阶梯（L7）**：`CancelCall`（`provider.go`）＝ **L0 协议取消 → L1 宽限 `grace_ms` → L2 关连接/会话 → L3 杀进程树**；远程（proxied）无进程可杀 → **L3 回退 L2 断连**；同槽在飞调用按 **`cascade-report`** 连带终止（`ErrKindSlotKilled` + `Cascaded []call_id`）。详见 [18 §3.9](../10-architecture/18-工具异步超时与取消.md)。
 - **⑤ 通知路由（L8）**：下游 `progress` / `elicitation` 按 **`progressToken`（= `call_id`）** 归位到具体调用（`Params.ProgressHandler` / `ElicitHandler`）；未注入 = progress 丢弃 + warn、elicitation 不注册 handler（客户端不声明该能力）。
-- **⑥ 沙箱（L7）**：仅 `stdio` 的 spawn 生效，`ServerEntry.Sandbox` / `SandboxDirs`（`prj security-*` 快照）→ `src/lib/core/sandbox`（Windows **Low IL + Job Object**，只限写，允许目录须 `EnsureLowIL` 打标）。
+- **⑥ 沙箱（L7）**：仅 `stdio` 的 spawn 生效，`ServerEntry.Sandbox` / `SandboxDirs`（`prj security-*` 快照，类型 = `[]SandboxRule`）→ **本仓 `sandbox` 子包**（`src/lib/gateway/sandbox`，2026-10-21 随 gateway 从 `core/sandbox` 迁入；Windows **Low IL + Job Object**，只限写，允许目录须 `EnsureLowIL` 打标）。`SandboxRule` 类型与 `WritableRoots` 归 gateway 包；**配置的读取与持有仍在宿主**（llm/server 解析 `security-*` 后填入）。
 
 ---
 
@@ -44,7 +44,9 @@
 | 端点 | http：`/mcp` 与 `/`；sse：`/sse` 与 `/`（facade 门面） |
 | 构建 | `build-mcp-gateway.ps1`（源 = `dist/mcp-server/capability`） |
 
-`Params`：`Transport`(必填；上游通道端口 = 出站 `Call`/`Publish` + 入站 `Subscribe`，mq 实现 = `mqadapter.New(bus)`，MOD-1 M0.5 起内核零 `mq`/`msgkeys` 依赖) · `MCPServer`(装配方传入的 self 能力源) · `MCPConfig` · `Servers` / `ServersFile` · `NsPrefix` · `CallTimeout`(60s) · `CBThreshold` / `CBCooldown`(30s) · `MaxTasks`(8) · `AsyncMode` · `ManageAddr` · `Logf`。
+`Params`：`Transport`(必填；上游通道端口 = 出站 `Call` + 入站 `Subscribe`，mq 实现 = `mqadapter.New(bus)`；MOD-1 M0.5 起内核零 `mq`/`msgkeys` 依赖) · **`Hooks`**（出站通知宿主回调 = `OnTaskReport` / `OnMCPChanged` / `OnToolsTimeout`；**主题名由宿主决定**，mq 实现 = `mqadapter.Hooks()`；`nil` = 该通知丢弃且 `Start` 打 Warn） · `MCPServer` · `MCPConfig` · `Servers` / `ServersFile` · `NsPrefix` · `CallTimeout`(60s) · `CBThreshold` / `CBCooldown`(30s) · `MaxTasks`(8) · `AsyncMode` · `ManageAddr` · `Logf`。
+
+> **通知面归属（2026-10-21）**：内核**不再持有任何消息主题名**。`mcp-tasks-report` / `mcp-gateway-changed` / `mcp-tools-timeout` 三个出站通知改由 `Hooks` 表达语义事件，「发到哪个主题」与序列化全部在宿主（`mqadapter.Hooks()`）；订阅侧（llm/server、facade）直接用 `msgkeys` 主题常量。`Dispatcher` 因此只保留 `Call`（`Publish` 已删除）。
 
 > **接入源三类**（gateway 无 DB，全部由装配方传入或按参数读取）：
 > ① **`MCPServer`（self）** = 装配方自建的 go-sdk server，能力来自 **capability 契约扫描**（含 mcp-tools，见 [21-llm-server §2.1](21-llm-server.md)、[25-mcp-server](25-mcp-server.md)）（装配链见 §4.0）；

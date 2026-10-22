@@ -38,12 +38,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-data/auth"
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
@@ -219,43 +217,9 @@ func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir, i
 		return filepath.Clean(wd), "", ""
 	}
 
-	// desktop / browser：身份以**连接层令牌**为准（前端自报的 user 只作提议交叉校验）。
-	u, err := s.userByToken(req.Token, "")
-	if err != nil {
-		return "", "", claimErrUnauthorized
-	}
-	if p := strings.TrimSpace(req.User); p != "" && !sameUser(p, u) {
-		logf("[chonkpilot-server] instance-claim: user 提议 %q 与连接层身份 %q 不一致\n", p, u.Username)
-		return "", "", claimErrUnauthorized
-	}
-	dataDir := s.userDataDir(u.UID)
-	if dataDir == "" {
-		dataDir = boundDataDir // 未配置用户数据根（异常装配）→ 回落既有绑定，不阻断认领
-	}
-	dir := strings.TrimSpace(req.WorkDir)
-	if dir == "" {
-		// 首次登录未选目录 → 自动落到该用户的默认工作目录 `<用户数据根>/workspace`；
-		// 由 allowWorkDir 按 projectRoots 校验（默认允许根 = 用户数据根 → 自动建项目）。
-		if dataDir == "" {
-			return "", "", claimErrForbidden
-		}
-		dir = filepath.Join(dataDir, "workspace")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			logf("[chonkpilot-server] instance-claim: 创建默认工作目录失败 %s: %v\n", dir, err)
-			return "", "", claimErrForbidden
-		}
-	}
-	// `auth.projectRoots` 允许根（缺省 = 用户数据根，见 authform 部分）。
-	ok, err := s.allowWorkDir(u.UID, dir)
-	if err != nil {
-		// auth 库不可用 / 项目登记读写失败 → 无法确认归属（**不放行**）：按「需重新登录」处理。
-		logf("[chonkpilot-server] instance-claim: work_dir 归属校验失败: %v\n", err)
-		return "", "", claimErrUnauthorized
-	}
-	if !ok {
-		return "", "", claimErrForbidden
-	}
-	return auth.NormalizeDir(dir), dataDir, ""
+	// PRODSIM-1：本地认证面已整体移除（认证将来统一到 registry）—— 仅保留
+	// Local（UDS 本机信任）与 desktop 两个分支；其余形态不存在。
+	return "", "", claimErrForbidden
 }
 
 // registerUserName 归一 `instance-register` 的 `user` 字段（🆕 2026-10-09；61 §4.1 ⑤ 该字段必填）：
@@ -265,83 +229,6 @@ func registerUserName(proposed string) string {
 		return u
 	}
 	return osuser.CurrentUser()
-}
-
-// allowWorkDir 判定用户对 work_dir 的访问权（61 §4.6「项目选择白名单」· 22 §6.7）：
-//
-//	① work_dir（规范化后）命中**既有项目**（`projects_by_path`）→ 要求该 user 在 `access`
-//	   中有该项目关联（有 → 通过；无 → 拒绝）；
-//	② 未登记为项目、但**落在某个允许根之下**（`auth.projectRoots`；缺省 = 用户数据根）→
-//	   **用户自建项目**：建 `projects` 记录（name = 目录名、created_by = uid）+ `access`
-//	   关联 → 通过（方案 A：自建项目已够本阶段闭环，不做管理员授权界面）；
-//	③ 其余（不在允许根下 / 项目存在但无关联）→ 拒绝 → `instance-forbidden`。
-//
-// 返回 (是否放行, 内部错误)；内部错误由调用方按「无法确认归属」处理（不放行）。
-func (s *Server) allowWorkDir(uid, dir string) (bool, error) {
-	dir = auth.NormalizeDir(dir)
-	if strings.TrimSpace(uid) == "" || dir == "" {
-		return false, nil
-	}
-	if err := s.ensureAuth(); err != nil {
-		return false, err
-	}
-	if proj, ok, err := s.authz.ProjectByPath(dir); err != nil {
-		return false, err
-	} else if ok {
-		return s.authz.HasAccess(uid, proj.ProjectID)
-	}
-	if !withinAnyRoot(s.projectRoots(), dir) {
-		return false, nil
-	}
-	_, err := s.authz.GrantProject(uid, dir)
-	return err == nil, err
-}
-
-// AllowedWorkRoots 返回**允许根列表**（`auth.projectRoots`；缺省 = 用户数据根）——
-// 供 HTTP 入口（browser 形态）**同源**取「允许目录清单根」：`gui.show-dialog` 的 options
-// 与 `gui.dir.open` 归属校验都以它为准（见 `httpapi.Options.AllowedRoots`）。单一来源 =
-// 本方法（`projectRoots()`），避免入口侧另起一份默认值解析。
-func (s *Server) AllowedWorkRoots() []string { return s.projectRoots() }
-
-// projectRoots 读配置 `auth.projectRoots`（**允许根列表**）：空 = 缺省 `<用户数据根>`。
-func (s *Server) projectRoots() []string {
-	if roots := s.opts.ProjectRoots; len(roots) > 0 {
-		return roots
-	}
-	if root := s.userDataRootPath(); strings.TrimSpace(root) != "" {
-		return []string{root}
-	}
-	return nil
-}
-
-// withinAnyRoot 判定 dir（规范化绝对路径）是否落在某个允许根之下（**含自身**）。
-// 比较用 `filepath.Rel`：Windows 下大小写不敏感、跨盘符返回错误 → 该根视为不匹配。
-func withinAnyRoot(roots []string, dir string) bool {
-	for _, r := range roots {
-		root := auth.NormalizeDir(r)
-		if root == "" {
-			continue
-		}
-		rel, err := filepath.Rel(root, dir)
-		if err != nil {
-			continue
-		}
-		if rel == "." {
-			return true
-		}
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-// sameUser 交叉校验 `user` 提议与连接层身份（61 §4.1 ①：身份**以连接层为准**）：
-// 命中用户名（Windows/大小写不敏感）或 uid → 一致。
-func sameUser(proposed string, u auth.User) bool {
-	proposed = strings.TrimSpace(proposed)
-	return strings.EqualFold(proposed, u.Username) || proposed == u.UID
 }
 
 // claimFail 写回认领失败（61 §4.6：复用既有 {ok,error} 信封，不新增字段）：

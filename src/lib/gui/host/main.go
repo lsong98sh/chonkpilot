@@ -1,23 +1,19 @@
 //go:build windows
 
-// Package host 是 ChonkPilot 的**单体装配宿主**（桌面单体 / GUI 客户端的启动装配）。
+// Package host 是 ChonkPilot 的**单体装配宿主**（唯一产物 `chonkpilot.exe` 的启动装配）。
 //
 // 拆包背景（2026-10-10）：原 `chonkpilot-gui` 包同时含 (a) 客户端/窗口能力与 (b) 单体装配
-// （内嵌 llm/server + filesys + 全部 plugin-* + gateway）。按包链接下，flash 薄壳
-// `import chonkpilot-gui` 会把上述重依赖全编进产物。现将**装配**下沉到本包 `host`：
+// （内嵌 llm/server + filesys + 全部 plugin-* + gateway）。现将**装配**下沉到本包 `host`：
 //
-//   - 依赖方向：`host` → `gui` **单向**；`gui` **不 import `host`**（故 flash 只链接 gui 时不再
-//     拖入 llm/server / filesys / plugin* / gateway）。
-//   - `gui` 保留客户端能力（窗口工厂 / 桥 / appHandler / registry / bridge / testserver / 远程
-//     薄壳 RunRemote / 日志 / 日志级别 / profile 清理等），并以导出 API（见 gui 的 hostapi.go）
-//     供本包单向调用。
+//   - 依赖方向：`host` → `gui` **单向**；`gui` **不 import `host`**。
+//   - `gui` 保留客户端能力（窗口工厂 / 桥 / appHandler / registry / bridge / testserver /
+//     日志 / 日志级别 / profile 清理等），并以导出 API（见 gui 的 hostapi.go）供本包单向调用。
 //
-// 本包入口 = Main（调用方 = 壳 `src/desktop` / `src/gui`）。
+// 本包入口 = Main（调用方 = 壳 `src/desktop`；PRODSIM-1 后唯一壳）。
 package host
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -33,10 +29,8 @@ import (
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-gui"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
-	"github.com/chonkpilot/chonkpilot-gui/flash"
 	"github.com/chonkpilot/chonkpilot-gui/models"
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/lockfile"
 	"github.com/chonkpilot/chonkpilot-lib/tray"
 	"github.com/chonkpilot/chonkpilot-llm/codegraphindexer"
 	"github.com/chonkpilot/chonkpilot-llm/coretools"
@@ -60,7 +54,7 @@ func Main(distFS fs.FS, opts gui.Options) {
 	// 通道读 prj logLevel 覆盖并订阅变更即时生效（见 gui 的 loglevel.go）。
 	gui.InitLogging()
 	// 主流程返回 error（**不再中途 os.Exit**，D-08）：保证已注册的收尾 defer 链按依赖序执行，
-	// 且失败经原生消息框可见（windowsgui 下 stderr 不可见，D-06，口径同 exitWorkDirBusy）。
+	// 且失败经原生消息框可见（windowsgui 下 stderr 不可见，D-06）。
 	if err := runMain(distFS, opts); err != nil {
 		slog.Error("gui main failed", "err", err)
 		gui.NativeAlert("ChonkPilot", err.Error())
@@ -107,32 +101,9 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		models.SetDataDir(models.ResolveDir(dataDir, workDir))
 	}
 	// 项目数据根（prj / prjusr 层所在：缺省 <workDir>/.chonkpilot；显式 --data-dir → 该目录）。
-	// ⚠️ 先于锁计算：models.DataDir 仅读包级变量（**不开库**），可安全早于任何库打开。
 	projectDataDir := models.DataDir(workDir)
-	// 项目单实例占用校验（prjusr 单例锁 `<prjusr>/chonkpilot.lock`；与 flash **同名文件** →
-	// 同项目互斥）：**先于任何库打开** —— 否则第二实例会被 prj 库的 bbolt 独占 flock 卡住
-	// （启动长时间无响应）。此处非阻塞取锁，占用即明确报错退出；锁随进程存活（defer 释放；
-	// 进程崩溃由 OS 回收）。锁设施自身故障（非占用）不阻断启动。
-	//
-	// 取舍：正式 prjusr 根在 desktop 缺省下 = `~/.chonkpilot/data/<prj-id>/`，须**读 prj 库取
-	// project-id** 才能算出，与「锁先于库打开」矛盾 → 以**项目数据根**（= flash 的 prjusr 约定
-	// `<workDir>/.chonkpilot`）作为锁目录：既满足「先于库打开」，又与 flash 的锁**同路径**
-	// （同项目互斥，见 62 §3A / 19 §8.11）。
-	//
-	// 锁目录**恒取** `<workDir>/.chonkpilot`（与 flash.AcquireProject 的 DataDirFor 同路径），
-	// **与 --data-dir 解耦**：若锁目录取 --data-dir（projectDataDir 在显式 --data-dir 时 = 该目录），
-	// 则同 work_dir 下 desktop(--data-dir=X) 与 flash（恒 `<work_dir>/.chonkpilot`）会各持一把锁，
-	// 互斥失效 → 同项目双实例。故锁路径统一为默认项目数据根（user-config 目录名）。
-	lockDir := filepath.Join(workDir, models.UserConfigDirName)
-	wdLock, wdErr := lockfile.AcquirePrjUsr(lockDir)
-	switch {
-	case wdErr == nil:
-		defer wdLock.Release()
-	case errors.Is(wdErr, lockfile.ErrBusy):
-		exitWorkDirBusy(workDir)
-	default:
-		slog.Warn("prjusr lock unavailable", "err", wdErr) // 仅告警：不因锁设施故障阻断启动
-	}
+	// PRODSIM-1（产物简化）：**项目级单实例锁已删除** —— 唯一进程由 `procsingleton` 保证，
+	// 同项目只能开一个主窗口由进程内 `work_dir → 主窗口` 映射表保证，无需跨进程文件锁。
 	// 传给 server / 桥的 data_dir（**数据层分支判据**；12-数据层 §3 · §5.3）：
 	//   - 显式 --data-dir 恒生效（prj 与 prjusr 同根，兼容既有脚本/L2 用例）；
 	//   - desktop 缺省（未给 --data-dir）**置空** → 数据层走 project-id 分支 → 个人运行态
@@ -207,7 +178,7 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		NoServer:       noServer,
 		Filesys:        true,
 		Pool:           appwire.DefaultPool(),
-		EnvKeys:        []string{"CHONK_PLUGIN_LISTEN", "CHONK_PLUGIN_HTTP_ADDR", "CHONK_PLUGIN_HTTP_TOKEN", "CHONK_LLM_BRIDGE_ADDR"},
+		EnvKeys:        []string{"CHONK_PLUGIN_LISTEN", "CHONK_LLM_BRIDGE_ADDR"},
 	}), appwire.BuildOptions{LogWriter: gui.LogFileSink()})
 	if err != nil {
 		return err
@@ -275,10 +246,7 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 				// 监听地址覆盖（测试 / 多实例隔离）：tcp://127.0.0.1:PORT 或 UDS 路径；
 				// 缺省 = pluginbridge.DefaultAddr()（UDS；`CHONK_PLUGIN_UDS` 可覆盖路径）。
 				Addr: os.Getenv("CHONK_PLUGIN_LISTEN"),
-				// HTTP 前门（P4b-2a，默认关闭）：env 为空 = 不监听（不改变默认行为）；
-				// 仅 loopback，token 非空时要求 Bearer。
-				HTTPAddr:  os.Getenv("CHONK_PLUGIN_HTTP_ADDR"),
-				HTTPToken: os.Getenv("CHONK_PLUGIN_HTTP_TOKEN"),
+				// PRODSIM-1：插件桥只保留 **UDS 免认证前门**（HTTP 前门已删除）。
 				// resident indexer 的待索引队列控制帧（plugin.index.*）→ data 门面直调
 				// （P4b-1；与 filesys 入队共用同一 inline 绑定）；WorkDirs = 活实例 work_dir
 				// （plugin.index.workdirs，单实例多 workdir 的项目发现）。
@@ -610,13 +578,13 @@ func codegraphIndexerExePath() string {
 }
 
 // defaultWorkDir 在未显式 --work-dir 时解析工作目录：
-// 最近项目（存在且未被占用）→ 默认工作目录（%APPDATA%\chonkpilot\workspace）→ 当前 cwd。
+// 最近项目（存在）→ 默认工作目录（%APPDATA%\chonkpilot\workspace）→ 当前 cwd。
 func defaultWorkDir() string {
-	for _, d := range flash.LoadRecents(flash.RecentsPath()) {
+	for _, d := range models.LoadRecents(models.RecentsPath()) {
 		if d == "" {
 			continue
 		}
-		if flash.DirExists(d) && flash.WorkDirFree(d) {
+		if models.DirExists(d) {
 			return d
 		}
 	}
@@ -629,13 +597,3 @@ func defaultWorkDir() string {
 	return ""
 }
 
-// exitWorkDirBusy 报告「该 work-dir 已被另一个实例打开」并退出（I-74）。
-// 启动期文件日志尚未挂载 → 原生消息框 + stderr 双通道（windowsgui 构建下 stderr 不可见，
-// 消息框是唯一可见提示）。
-func exitWorkDirBusy(workDir string) {
-	msg := "该工作目录已被另一个 ChonkPilot 实例打开：\n" + workDir +
-		"\n\n请先关闭对应窗口，或改用其它目录（--work-dir <目录>）。"
-	fmt.Fprintln(os.Stderr, msg)
-	gui.NativeAlert("ChonkPilot", msg)
-	os.Exit(1)
-}

@@ -15,7 +15,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 )
 
-replace github.com/chonkpilot/chonkpilot-chat => ../../../lib/chat
+replace github.com/chonkpilot/chonkpilot-chat => ../../../../../chonkpilot-chat
 
 replace github.com/chonkpilot/chonkpilot-data => ../../../lib/data
 
@@ -29,7 +29,9 @@ replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
 
 replace github.com/chonkpilot/chonkpilot-llm => ../../../lib/llm
 
-replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../lib/gateway
+replace github.com/chonkpilot/chonkpilot-gwadapter => ../../../lib/gwadapter
+
+replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../../../chonkpilot-mcp-gateway
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../../../lib/mcp-server
 

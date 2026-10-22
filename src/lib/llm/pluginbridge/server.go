@@ -3,8 +3,6 @@ package pluginbridge
 import (
 	"context"
 	"encoding/json"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,11 +49,6 @@ type Options struct {
 	// WorkDirs 返回宿主当前**活实例**的去重 work_dir（plugin.index.workdirs）。
 	// 单实例多 workdir 的 resident indexer 据此发现待消费项目；nil = 返回空列表（插件空转等待）。
 	WorkDirs func() []string
-	// HTTPAddr 是 HTTP 前门监听地址（空 = 关闭）。仅允许 loopback（127.0.0.1 / ::1 /
-	// localhost）；支持 `:0` 随机端口（裸端口 → 127.0.0.1:<port>）。
-	HTTPAddr string
-	// HTTPToken 非空 → 所有 HTTP 请求必须带 `Authorization: Bearer <token>`。
-	HTTPToken string
 	// Logf 诊断输出。
 	Logf func(format string, args ...any)
 }
@@ -84,12 +77,6 @@ type Server struct {
 
 	existingMu sync.RWMutex
 	existing   func() []string
-
-	// HTTP 前门（HTTPAddr != "" 时启用）；httpSessions 按 plugin_id 复用。
-	httpMu       sync.Mutex
-	httpSrv      *http.Server
-	httpLn       net.Listener
-	httpSessions map[string]*httpSession
 }
 
 // New 构造插件桥服务端（未监听）。
@@ -102,12 +89,11 @@ func New(o Options) *Server {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
-		opts:         o,
-		reg:          NewRegistry(),
-		ctx:          ctx,
-		cancel:       cancel,
-		sessions:     make(map[*Session]struct{}),
-		httpSessions: make(map[string]*httpSession),
+		opts:     o,
+		reg:      NewRegistry(),
+		ctx:      ctx,
+		cancel:   cancel,
+		sessions: make(map[*Session]struct{}),
 	}
 	registerMQCapabilities(s.reg, o.Bus)
 	registerGUICapabilities(s.reg, o.GUI)
@@ -170,13 +156,6 @@ func (s *Server) Start() error {
 		s.sub = sub
 	}
 	go s.acceptLoop()
-	if strings.TrimSpace(s.opts.HTTPAddr) != "" {
-		if err := s.startHTTP(); err != nil {
-			// HTTP 前门启动失败：关闭已启动的帧监听 / 总线订阅，避免半启动状态。
-			_ = s.Close()
-			return err
-		}
-	}
 	return nil
 }
 
@@ -190,16 +169,6 @@ func (s *Server) Addr() string {
 		return "tcp://" + addr
 	}
 	return addr
-}
-
-// HTTPAddr 返回 HTTP 前门实际监听地址（未启用返回空）。
-func (s *Server) HTTPAddr() string {
-	s.httpMu.Lock()
-	defer s.httpMu.Unlock()
-	if s.httpLn == nil {
-		return ""
-	}
-	return s.httpLn.Addr().String()
 }
 
 // Close 关闭前门与全部插件连接（幂等）。
@@ -216,14 +185,6 @@ func (s *Server) Close() error {
 	}
 	s.mu.Unlock()
 	s.cancel()
-	s.httpMu.Lock()
-	hsrv := s.httpSrv
-	s.httpSrv = nil
-	s.httpLn = nil
-	s.httpMu.Unlock()
-	if hsrv != nil {
-		_ = hsrv.Close()
-	}
 	if s.sub != nil {
 		_ = s.sub.Unsubscribe()
 	}
@@ -254,14 +215,6 @@ func (s *Server) removeSession(sess *Session) {
 	s.mu.Lock()
 	delete(s.sessions, sess)
 	s.mu.Unlock()
-	// HTTP 会话按 plugin_id 登记；会话关闭时一并注销，后续请求需重新 hello。
-	s.httpMu.Lock()
-	for id, hs := range s.httpSessions {
-		if hs.sess == sess {
-			delete(s.httpSessions, id)
-		}
-	}
-	s.httpMu.Unlock()
 }
 
 // MarkReady 标记宿主全部模块就绪，并向当前全部会话广播 `server-ready` 事件。

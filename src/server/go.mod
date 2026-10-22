@@ -7,7 +7,6 @@ require (
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-llm v0.0.0
 	github.com/chonkpilot/chonkpilot-mcp-gateway v0.0.0
-	github.com/chonkpilot/chonkpilot-plugin v0.0.0
 )
 
 require (
@@ -18,7 +17,6 @@ require (
 	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.etcd.io/bbolt v1.4.2 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
@@ -26,7 +24,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/chonkpilot/chonkpilot-chat => ../lib/chat
+replace github.com/chonkpilot/chonkpilot-chat => ../../../chonkpilot-chat
 
 replace github.com/chonkpilot/chonkpilot-data => ../lib/data
 
@@ -36,7 +34,9 @@ replace github.com/chonkpilot/chonkpilot-lib => ../lib/core
 
 replace github.com/chonkpilot/chonkpilot-llm => ../lib/llm
 
-replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../lib/gateway
+replace github.com/chonkpilot/chonkpilot-gwadapter => ../lib/gwadapter
+
+replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../chonkpilot-mcp-gateway
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../lib/mcp-server
 
@@ -54,7 +54,7 @@ replace github.com/chonkpilot/chonkpilot-ignore => ../lib/ignore
 
 replace github.com/chonkpilot/chonkpilot-plugin-vfts => ../plugins/plugin-vfts
 
-replace github.com/chonkpilot/chonkpilot-router => ../lib/router
+replace github.com/chonkpilot/chonkpilot-router => ../../../chonkpilot-router
 
 replace github.com/chonkpilot/chonkpilot-task => ../lib/task
 
@@ -62,9 +62,11 @@ require (
 	github.com/chonkpilot/chonkpilot-assembly v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-data v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-filesys v0.0.0 // indirect
+	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-ignore v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-mcp-tools v0.0.0 // indirect
+	github.com/chonkpilot/chonkpilot-plugin v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-codegraph v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-compress v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0 // indirect

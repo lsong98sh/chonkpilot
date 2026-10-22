@@ -44,22 +44,23 @@ test('① 三区常显：无显隐 ref / 无 visible 传参 / 无显隐订阅 / 
   assert.doesNotMatch(ml, /l\.(chatOpen|taskOpen|filetreeOpen)/, 'applyLayout 不得再读三显隐字段')
   assert.doesNotMatch(ml, /(chatOpen|taskOpen|filetreeOpen)\s*:/, '不得再读写三显隐字段（layout.<k>）')
   assert.doesNotMatch(ml, /(chatOpen|filetreeOpen|taskOpen)\.value/, '不得再持有三显隐状态')
-  // 三区 pane 仍在（始终渲染）；仅文件树保留窄屏自适应收起
-  assert.match(ml, /\{ id: 'chat', size: effChatWidth\.value, min: 280, max: 800 \}/, 'chat 区常显')
-  assert.match(ml, /\{ id: 'bottom', size: taskHeight\.value, min: 100, max: 1200 \}/, '任务区常显')
-  assert.match(ml, /id: 'filetree',[\s\S]{0,120}visible: !narrow\.value/, '文件树常显（仅窄屏自适应）')
+  // 旧硬编码布局已删除（UILAYOUT-2-A）：不再有 chat/task/filetree pane 定义
+  assert.doesNotMatch(ml, /\{ id: 'chat', size: effChatWidth\.value/, 'legacy chat pane 须已删除')
+  assert.doesNotMatch(ml, /\{ id: 'bottom', size: taskHeight\.value/, 'legacy task pane 须已删除')
+  assert.doesNotMatch(ml, /id: 'filetree',[\s\S]{0,120}visible: !narrow\.value/, 'legacy filetree pane 须已删除')
+  // 唯一容器形态
+  assert.match(ml, /<ChonkLayout \/>/, '只保留自由布局容器')
   assert.doesNotMatch(ml, /\bwatch(Effect)?\s*\(/, '不得使用 watch / watchEffect')
 })
 
 // ═══════════════════════════════════════════════════════════════
 // ② 工具栏三显隐开关已移除（MQ 主题定义保留）
 // ═══════════════════════════════════════════════════════════════
-test('② 工具栏无三区显隐入口（按钮/props 已删）；event-names 三主题保留（契约零增删改）', () => {
-  const tb = read('views/toolbar/Toolbar.vue')
-  for (const ev of ['tasksToggle', 'filetreeToggle', 'chatToggle']) {
-    assert.doesNotMatch(tb, new RegExp('EventNames\\.' + ev), `工具栏不得再有三区显隐入口（${ev}）`)
+test('② 默认顶栏无三区显隐入口；event-names 三主题保留（契约零增删改）', () => {
+  const tb = read('layout/persist.js')
+  for (const ev of ['tasks-toggle', 'filetree-toggle', 'chat-toggle']) {
+    assert.doesNotMatch(tb, new RegExp(ev), `默认顶栏不得再有三区显隐入口（${ev}）`)
   }
-  assert.doesNotMatch(tb, /(chatVisible|filetreeVisible|taskVisible)\s*:/, '三显隐 props 须已移除')
   // MQ 主题零增删改：定义保留（前端事件名 + 后端消息常量两侧都不动）
   const names = read('events/event-names.js')
   for (const [k, lit] of [['chatToggle', 'chat-toggle'], ['filetreeToggle', 'filetree-toggle'], ['tasksToggle', 'tasks-toggle']]) {

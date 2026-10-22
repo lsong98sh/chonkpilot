@@ -3,6 +3,7 @@ module github.com/chonkpilot/chonkpilot-assembly
 go 1.26.0
 
 require (
+	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-mcp-gateway v0.0.0
 	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0
@@ -26,7 +27,9 @@ require (
 
 replace github.com/chonkpilot/chonkpilot-lib => ../core
 
-replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../gateway
+replace github.com/chonkpilot/chonkpilot-gwadapter => ../gwadapter
+
+replace github.com/chonkpilot/chonkpilot-mcp-gateway => ../../../../chonkpilot-mcp-gateway
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../mcp-server
 

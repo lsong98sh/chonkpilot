@@ -122,7 +122,7 @@ test('parseViewRoute：`#chat` + session-id → 对话窗口；其余 → 主窗
 
 test('App.vue：仅按 URL 分派对话窗口 / 主布局（无 DSL 只读窗口分支）', () => {
   const app = read('App.vue')
-  assert.match(app, /<ChatOnlyView\s+v-else-if="ready && chatOnly"\s+:session-id="route\.sessionId"/)
+  assert.match(app, /<ChatOnlyView\s+v-if="ready && chatOnly"\s+:session-id="route\.sessionId"/)
   assert.match(app, /<MainLayout\s+v-else-if="ready"/)
   assert.doesNotMatch(app, /DslStepOnlyView|parseDslStepRoute|dsl-step/, 'DSL 新窗口改复用主 chat 多窗口，只读路由已移除')
 })

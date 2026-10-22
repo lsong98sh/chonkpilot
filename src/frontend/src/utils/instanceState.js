@@ -5,9 +5,7 @@
  * **首屏注入**（服务端/宿主侧判定，`injectBootstrap` / GUI serveStatic；**不使用 UA 判形态**
  * —— UA 可伪造，仅作日志诊断）：`window.__ck = {form, requireAuth, authed, instanceId}`：
  *   - `form` ∈ `desktop` | `gui` | `browser`（三形态；`desktop` = 桌面单体、`gui` = GUI 客户端
- *     + 独立 server）。
- *     缺失（旧构建）→ 回落：`window.__ckHttpBridge`（浏览器 shim 标记，见 utils/runtimeForm.js）
- *     存在 = browser，否则 = desktop；
+ *     + 独立 server）。PRODSIM-1（产物简化）后唯一产物 = desktop；其余取值仅作历史兼容读数。
  *   - `requireAuth` = **形态决定**（desktop=false；gui/browser=true）；
  *   - `authed` = **服务端读凭证判定**（browser 读 cookie / GUI 桥取持有令牌 → 有效 = true）；
  *     前端据此分派登录视图 / 主视图，**零额外往返**；

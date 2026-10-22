@@ -109,14 +109,10 @@ test('⑥ 接线守卫：useDirPicker 走两段式 gui.select-dir（openDirDialo
   assert.doesNotMatch(comp, /mq\.emit\(/, '不得直接发送 MQ 消息（统一经 utils/guiAsync.js）')
 })
 
-test('⑥ 形态判据 = shim 标记 __ckHttpBridge（GUI 只注入 instance id，不加载 shim）', () => {
-  const src = read('utils/runtimeForm.js')
-  const body = src.match(/export function isBrowserForm\s*\(\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(body, '未找到 isBrowserForm')
-  assert.match(body[0], /__ckHttpBridge === true/, 'browser 判据须为 __ckHttpBridge')
-  assert.doesNotMatch(body[0], /__chonkpilotInstanceId/, '不得用两种形态都注入的 instance id 作判据')
-  const shim = readFileSync(join(here, '..', '..', 'lib', 'llm', 'httpapi', 'ck_http_bridge.js'), 'utf8')
-  assert.match(shim, /window\.__ckHttpBridge = true/)
+test('⑥ browser 形态已删（PRODSIM-1）：无运行时形态判据、无 http shim', () => {
+  assert.throws(() => read('utils/runtimeForm.js'), 'utils/runtimeForm.js 应已删除')
+  assert.throws(() => readFileSync(join(here, '..', '..', 'lib', 'llm', 'httpapi', 'ck_http_bridge.js'), 'utf8'),
+    'browser 桥 shim 应已删除')
 })
 
 // ── I-74：同 work-dir 单实例占用 → 「选择即报错」（明确提示，不再静默）──────
@@ -134,23 +130,22 @@ test('⑦ I-74：占用拒绝串归类为人话键 + i18n 双语齐备', async (
 })
 
 test('⑦ I-74：两个「打开目录」入口（工具栏按钮 / 最近目录）占用拒绝时明确提示', () => {
-  const toolbar = read('views/toolbar/Toolbar.vue')
-  assert.match(toolbar, /path = await pickDir\(\)/, 'Open 须先走纯选择取路径')
-  assert.match(toolbar, /await openDir\(path\)/, '须经 gui.dir.open 打开目录（native 起新窗口 / browser 切换实例 work_dir）')
-  assert.match(toolbar, /await openDirAndRefresh\(path\)/, '工具栏按钮入口须走统一「打开目录」实现')
-  assert.match(toolbar, /await openDirAndRefresh\(dir\)/, '最近目录入口须走统一「打开目录」实现')
-  assert.match(toolbar, /classifyError\(/, '打开入口须归类错误（占用 / 越界）')
-  // browser：服务端切换 work_dir 成功后**就地刷新**（reinitProjectState：重挂主布局 + 重跑启动序列），
-  // **不得整页重载**（`window.location.reload()` 会卡死浏览器端交互，2026-10-10 去整页重载）。
-  assert.match(toolbar, /await reinitProjectState\(\)/, 'browser 打开须就地刷新到新项目（去整页重载）')
-  assert.doesNotMatch(toolbar, /window\.location\.reload/, '不得整页重载（会卡死浏览器端交互）')
-  assert.doesNotMatch(toolbar, /setPendingWorkDir|takePendingWorkDir/, '重载暂存机制已删除（就地刷新不再需要）')
-  assert.doesNotMatch(toolbar, /open_dir_browser_unsupported/, '已删除「browser 不支持」早退分支')
-  assert.doesNotMatch(toolbar, /openInBrowser/, '打开目录不再由前端自行 instance-claim（收敛到 gui.dir.open）')
-  assert.ok((toolbar.match(/message\.error\(/g) || []).length >= 1, '打开入口须明确提示（不静默，统一实现）')
+  const wd = read('layout/workdirActions.js')
+  assert.match(wd, /path = await pickDir\(\)/, 'Open 须先走纯选择取路径')
+  assert.match(wd, /await openDir\(path\)/, '须经 gui.dir.open 打开目录（native 起新窗口）')
+  assert.match(wd, /export async function openDirAndRefresh/, '须有统一「打开目录」实现')
+  assert.match(wd, /classifyError\(/, '打开入口须归类错误（占用 / 越界）')
+  const recent = read('layout/bar-views/RecentDirsView.vue')
+  assert.match(recent, /openDirAndRefresh\(dir\)/, '最近目录入口须走统一「打开目录」实现')
+  // PRODSIM-1：目标项目在**新窗口**呈现，本窗口不切换项目 → 不再就地刷新（reinitProjectState 已移出）。
+  assert.doesNotMatch(wd, /window\.location\.reload/, '不得整页重载')
+  assert.doesNotMatch(wd, /setPendingWorkDir|takePendingWorkDir/, '重载暂存机制已删除')
+  assert.doesNotMatch(wd, /open_dir_browser_unsupported/, '已删除「browser 不支持」早退分支')
+  assert.doesNotMatch(wd, /openInBrowser/, '打开目录不再由前端自行 instance-claim（收敛到 gui.dir.open）')
+  assert.ok((wd.match(/message\.error\(/g) || []).length >= 1, '打开入口须明确提示（不静默，统一实现）')
 })
 
-test('⑨ browser「打开目录」接线：gui.dir.open → 就地刷新（去整页重载）', () => {
+test('⑨ 「打开目录」接线：gui.dir.open{path}（开新项目窗口）+ App 项目重初始化序列', () => {
   // api：openDir → gui.dir.open{path}（契约主题不变）
   const api = read('api/config.js')
   assert.match(api, /export function openDir\(path\)\s*\{[\s\S]*?guiReq\('dir\.open',\s*\{\s*path\s*\}\)/,
@@ -166,15 +161,9 @@ test('⑨ browser「打开目录」接线：gui.dir.open → 就地刷新（去�
   // 去注释后再守（头注释里引用旧行为 `window.location.reload()`，不算真实调用）
   const reinit = reinitRaw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
   assert.doesNotMatch(reinit, /window\.location\.reload/, '不得整页重载（需真实调用；注释引用不算）')
-  // 重载暂存机制（setPendingWorkDir/takePendingWorkDir + AuthView 自动认领）已随重载一并删除。
+  // 重载暂存机制（setPendingWorkDir/takePendingWorkDir + 登录视图自动认领）已随重载一并删除。
   assert.doesNotMatch(read('utils/instanceState.js'), /setPendingWorkDir|takePendingWorkDir|pending-workdir/,
     '重载暂存机制已删除')
-  assert.doesNotMatch(read('views/auth/AuthView.vue'), /takePendingWorkDir|pendingWorkDir/,
-    'AuthView 的「重载后自动认领」已删除')
-  // 去注释后再守卫（头注释里引用 `window.go.*` / 术语，不算直调）
-  const auth = read('views/auth/AuthView.vue').replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
-  assert.doesNotMatch(auth, /\bwatch(Effect)?\s*\(/, '不得使用 watch/watchEffect')
-  assert.doesNotMatch(auth, /window\.go\./, '禁止直调 window.go.*')
 })
 
 test('⑧ 语义分离：选目录 = 纯选择（不开窗口）；开窗口只经 gui.dir.open', () => {
@@ -183,10 +172,11 @@ test('⑧ 语义分离：选目录 = 纯选择（不开窗口）；开窗口只�
   assert.ok(dlg.length > 0, '未找到 callOpenDirDialog')
   assert.doesNotMatch(dlg, /openNewWindow|recordRecentDir/, '纯选择入口不得开窗口 / 记最近目录')
   const openFn = local.slice(local.indexOf('func callOpenDir('), local.indexOf('// callOpenDirDialog'))
-  assert.match(openFn, /openNewWindow\(dir\)/, 'gui.dir.open 须以新进程打开')
+  assert.match(openFn, /b\.projectOpener\(dir\)/, 'gui.dir.open 须经宿主注入的 opener 同进程开/激活项目主窗口')
+  assert.doesNotMatch(openFn, /openNewWindow|exec\.Command/, 'PRODSIM-1：不再 spawn 新进程（唯一产物 = 同进程多窗口）')
 
-  // 消费方：信任目录 / 登录选工作目录只取路径，不得自行触发 gui.dir.open
-  for (const [name, rel] of [['SecurityConfig', 'views/settings/SecurityConfig.vue'], ['AuthView', 'views/auth/AuthView.vue']]) {
+  // 消费方：信任目录只取路径，不得自行触发 gui.dir.open
+  for (const [name, rel] of [['SecurityConfig', 'views/settings/SecurityConfig.vue']]) {
     assert.doesNotMatch(read(rel), /openDir\(/, `${name} 只应取路径，不得触发 gui.dir.open`)
   }
 })

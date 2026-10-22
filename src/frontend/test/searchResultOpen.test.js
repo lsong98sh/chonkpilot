@@ -26,7 +26,7 @@ function fnBody(src, name) {
 }
 
 test('顶部检索：选中命中项 → 预览区打开（file-open）+ 树内定位（file-search）', () => {
-  const src = read('views/toolbar/Toolbar.vue')
+  const src = read('layout/bar-views/SearchBoxView.vue')
 
   const sel = fnBody(src, 'handleSearchSelect')
   assert.match(sel, /EventNames\.fileOpen/, 'handleSearchSelect 必须发 file-open（否则预览区不显示）')

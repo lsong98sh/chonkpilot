@@ -96,10 +96,10 @@ test('App.vue 订阅一次 useUserConfigSync（每个窗口都应用：含无 To
   assert.match(app, /useUserConfigSync\(\)/)
 })
 
-test('Toolbar 主题勾选态取自同一 composable（事件 → 本窗口状态同步）', () => {
-  const tb = SRC('views/toolbar/Toolbar.vue')
-  assert.match(tb, /import \{ useUserConfigSync \} from '\.\.\/\.\.\/composables\/useUserConfigSync'/)
-  assert.match(tb, /const \{ theme: currentTheme \} = useUserConfigSync\(\)/)
+test('栏动作（主题勾选态）取自同一 composable（事件 → 本窗口状态同步）', () => {
+  const ba = SRC('layout/barActions.js')
+  assert.match(ba, /import \{ useUserConfigSync \} from '\.\.\/composables\/useUserConfigSync'/)
+  assert.match(ba, /const \{ theme \} = useUserConfigSync\(\)/)
 })
 
 test('composable：mq.on 订阅 + 应用 theme/locale；**不回写 DB**（防自激）', () => {

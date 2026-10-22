@@ -192,18 +192,17 @@ test('P1-8 contentH：token 口径（无 DOM 回退 44/24；有 DOM 读 :root to
   }
 })
 
-test('P1-8 接线守卫：MainLayout contentH / toolbar / statusbar 均走 token，无硬编码 44/24', () => {
+test('P1-8 接线守卫：MainLayout toolbar / statusbar 均走 token，无硬编码 44/24', () => {
   const ml = SRC('views/layout/MainLayout.vue')
-  assert.match(ml, /computeContentHeight\(vh\)/, 'contentH 须走 cssToken.computeContentHeight')
   assert.doesNotMatch(ml, /vh\s*-\s*44\s*-\s*24/, '不得再硬编码 vh - 44 - 24')
   assert.match(ml, /readRootPx\('--statusbar-height'/, 'statusbar 高须取 token')
   assert.match(ml, /const STATUSBAR_H = readRootPx\('--statusbar-height'/, 'STATUSBAR_H 取 token')
   assert.match(ml, /\{ id: 'statusbar', size: STATUSBAR_H, resizable: false \}/, 'statusbar pane 高走 token')
   assert.match(ml, /\{ id: 'toolbar', size: TOOLBAR_H, resizable: false \}/, 'toolbar pane 高走 token')
 
-  const sb = SRC('views/statusbar/StatusBar.vue')
-  assert.match(sb, /\.statusbar \{[\s\S]*?height:\s*var\(--statusbar-height\)/, 'StatusBar 高走 token')
-  assert.doesNotMatch(sb, /height:\s*24px/, 'StatusBar 不得再硬编码 24px')
+  const sb = SRC('layout/ChonkStatusBar.vue')
+  assert.match(sb, /\.ck-statusbar \{[\s\S]*?height:\s*var\(--statusbar-height\)/, '状态栏高走 token')
+  assert.doesNotMatch(sb, /height:\s*24px/, '状态栏不得再硬编码 24px')
 })
 
 test('P1-8 variables.css：新增 --statusbar-height；4 个零引用死 token 已删（全 src 零引用）', () => {
@@ -227,30 +226,19 @@ test('P1-8 variables.css：新增 --statusbar-height；4 个零引用死 token �
 
 // ── P0-3 首启预览区过窄 / P1-5 小屏断点 ────────────────────────────────
 
-test('P0-3/P1-5 MainLayout：默认尺寸收紧 + flex 最小保护 + 窄屏断点（无 watch）', () => {
+test('P0-3/P1-5 默认文档：尺寸收紧 + 弹性最小保护；MainLayout 无 watch', () => {
+  const p = SRC('layout/persist.js')
+  // 默认尺寸（语义命名，见 persist.js D 常量）
+  assert.match(p, /explorerWidth: 320/, '默认 explorer 320')
+  assert.match(p, /chatPaneWidth: 520/, '默认 chat 520')
+  assert.match(p, /previewMin: 280/, 'preview 最小宽 280')
+  assert.match(p, /sessionChatMin: 240/, 'session-chat 最小宽 240')
+  // 弹性：preview / session-chat / 左上容器
+  assert.match(p, /leaf\('leaf_preview', 'preview', \{ minWidth: D\.previewMin, flex: 1 \}\)/, 'preview 弹性')
+  assert.match(p, /leaf\('leaf_session_chat', 'session-chat', \{ minWidth: D\.sessionChatMin, flex: 1 \}\)/, 'session-chat 弹性')
+  assert.match(p, /leftTop\.flex = 1/, '左上容器弹性')
+
   const ml = SRC('views/layout/MainLayout.vue')
-  // P0-3 默认：filetree 320 / chat 520（1280×800 下 preview ≈ 428 ≥ 350）
-  assert.match(ml, /const filetreeWidth = ref\(320\)/, '默认 filetree 320')
-  assert.match(ml, /const chatWidth = ref\(520\)/, '默认 chat 520')
-  assert.match(ml, /Number\(l\.chatWidth\) \|\| 520/, '恢复缺省值同为 520')
-  assert.match(ml, /Number\(l\.filetreeWidth\) \|\| 320/, '恢复缺省值同为 320')
-
-  // P1-5 flex pane 最小尺寸保护
-  assert.match(ml, /const PREVIEW_MIN = 280/, 'preview 最小宽 280')
-  assert.match(ml, /const SESSION_CHAT_MIN = 240/, 'session-chat 最小宽 240')
-  assert.match(ml, /\{ id: 'preview', flex: true, min: PREVIEW_MIN \}/, 'preview 传 min')
-  assert.match(ml, /\{ id: 'session-chat', flex: true, min: SESSION_CHAT_MIN \}/, 'session-chat 传 min')
-
-  // P1-5 小屏断点：窄屏收起文件树（preview 槽位索引不位移 → CodeView 持续挂载）。
-  // 注（UILAYOUT-1 裁决 2，2026-10-16）：三区用户显隐开关已移除 → 文件树此处只剩**窄屏自适应**。
-  assert.match(ml, /const NARROW_MAX = 900/, '小屏断点 900')
-  assert.match(ml, /const narrow = computed\(\(\) => viewportW\.value <= NARROW_MAX\)/)
-  assert.match(ml, /visible: !narrow\.value/, '窄屏收起文件树（唯一保留的 visible 分支）')
-  // 响应式：窗口缩放 → 视口宽更新 → 有效尺寸重算
-  assert.match(ml, /viewportW\.value = window\.innerWidth/, 'resize 时更新视口宽')
-  assert.match(ml, /const effChatWidth = computed/, '有效 chat 宽按视口 clamp')
-  assert.match(ml, /const effFiletreeWidth = computed/, '有效 filetree 宽按视口 clamp')
-
   // 前端铁律：不得用 watch / watchEffect 监听
   assert.doesNotMatch(ml, /\bwatch(Effect)?\s*\(/, '不得使用 watch / watchEffect')
 })

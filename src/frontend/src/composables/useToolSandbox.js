@@ -87,7 +87,7 @@ export function useToolSandbox() {
   const savedMap = ref({ executors: {}, mcps: {} })
   // 外部 MCP 开关（mcps 子表）已开启数量 —— 供「两页状态互见」摘要。
   const serverSandboxOn = ref(0)
-  // 项目信任目录有效条目数（prj `security-*`）——供「空目录 = 全拒」内联预警。
+  // 项目信任目录有效条目数（prj `security-*`）——供「空目录 → 不施加隔离」内联预警。
   const trustDirCount = ref(0)
 
   // failLoad：记录任一路加载失败（置位 + 留因由供页面文案）。整体在 reload() 开头复位。
@@ -137,7 +137,8 @@ export function useToolSandbox() {
     return Object.values(wm.executors || {}).some((v) => v === true) ||
       Object.values(wm.mcps || {}).some((v) => v === true)
   })
-  // 已开启沙箱 且 信任目录为空 → 显著预警（空允许集 = 全拒）。
+  // 已开启沙箱 且 信任目录为空 → 显著预警（空允许目录 = **不施加目录隔离**；
+  // 内建 executor 的进程级沙箱待 L6，见 gateway/serverslist.go · llm/server/server.go）。
   // 目录变更经 loadTrustDirs（订阅 data-prj-security-refresh）即时重算 → 警告自动消失。
   const trustWarning = computed(() =>
     needsTrustDirsWarning({ sandboxOn: anySandboxOn.value, trustDirCount: trustDirCount.value })

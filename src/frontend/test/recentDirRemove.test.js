@@ -33,28 +33,25 @@ test('① 消息面/事件：gui.recent.remove + 前端内部事件 recent-dir-r
   assert.match(api, /guiReq\('recent\.remove',\s*\{\s*path\s*\}\s*\)/, 'api 须经 gui.recent.remove 删记录')
 })
 
-test('② Toolbar 删除入口：v-mq 触发 + .stop（不误触发打开项目）', () => {
-  const toolbar = read('views/toolbar/Toolbar.vue')
-  assert.match(toolbar, /class="recent-remove"/, '最近项须有删除按钮')
+test('② 最近目录删除入口：v-mq 触发 + .stop（不误触发打开项目）', () => {
+  const recent = read('layout/bar-views/RecentDirsView.vue')
+  assert.match(recent, /class="recent-remove"/, '最近项须有删除按钮')
+  assert.match(recent, /@click\.stop="remove\(dir\)"/, '删除入口须 .stop 阻止冒泡（否则同时触发打开项目）')
   assert.match(
-    toolbar,
-    /v-mq:\[EventNames\.recentDirRemove\]\.click\.stop="\{ dir: dir \}"/,
-    '删除入口须走 v-mq 且 .stop 阻止冒泡（否则同时触发打开项目）',
+    recent,
+    /import\s*\{[^}]*removeRecent[^}]*\}\s*from\s*'\.\.\/workdirActions'/,
+    'RecentDirsView 须引入 removeRecent',
   )
-  assert.match(
-    toolbar,
-    /import\s*\{[^}]*removeRecentDir[^}]*\}\s*from\s*'\.\.\/\.\.\/api\/config'/,
-    'Toolbar 须引入 removeRecentDir',
-  )
-  assert.match(toolbar, /mq\.on\(EventNames\.recentDirRemove/, 'Toolbar 须订阅 recent-dir-remove')
+  const wd = read('layout/workdirActions.js')
+  assert.match(wd, /removeRecentDir/, 'workdirActions 须调用 removeRecentDir')
 })
 
-test('③ 删除处理器：只删记录（removeRecentDir + loadRecentDirs），无打开/资产删除动作', () => {
-  const toolbar = read('views/toolbar/Toolbar.vue')
-  const body = toolbar.match(/async function handleRecentDirRemove\s*\(dir\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(body, '未找到 handleRecentDirRemove')
-  assert.match(body[0], /await removeRecentDir\(dir\)/, '须调用 removeRecentDir 删记录')
-  assert.match(body[0], /await loadRecentDirs\(\)/, '删除后须重读列表即时刷新下拉')
+test('③ 删除处理器：只删记录（removeRecent + refresh），无打开/资产删除动作', () => {
+  const recent = read('layout/bar-views/RecentDirsView.vue')
+  const body = recent.match(/async function remove\s*\(dir\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(body, '未找到 remove')
+  assert.match(body[0], /await removeRecent\(dir\)/, '须调用 removeRecent 删记录')
+  assert.match(body[0], /await refresh\(\)/, '删除后须重读列表即时刷新下拉')
   assert.doesNotMatch(
     body[0],
     /openDir\(|filesys\.remove|dataClient\.remove|removeFile|rmdir|unlink|RemoveAll/i,
@@ -78,6 +75,6 @@ test('④ i18n：删除入口文案 zh-CN / en-US 齐备', () => {
 })
 
 test('⑤ 无 watch / watchEffect（前端规则）', () => {
-  assert.doesNotMatch(read('views/toolbar/Toolbar.vue'), /\bwatch(Effect)?\s*\(/,
-    'Toolbar.vue 不得使用 watch/watchEffect')
+  assert.doesNotMatch(read('layout/bar-views/RecentDirsView.vue'), /\bwatch(Effect)?\s*\(/,
+    'RecentDirsView.vue 不得使用 watch/watchEffect')
 })

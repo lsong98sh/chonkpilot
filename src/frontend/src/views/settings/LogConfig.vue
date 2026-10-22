@@ -35,9 +35,6 @@
           <Button v-if="view.canOpen" size="small" @click="openDir">
             <Icon name="folder-opened" :size="13" /> {{ $t('projectConfig.log_dir_open') }}
           </Button>
-          <Button v-if="view.canCopy" size="small" @click="copyPath">
-            <Icon name="copy-document" :size="13" /> {{ $t('projectConfig.log_dir_copy') }}
-          </Button>
         </div>
         <div v-if="view.hintKey" class="log-hint">{{ $t(view.hintKey) }}</div>
       </div>
@@ -53,7 +50,6 @@ import Icon from '../../components/icon/Icon.vue'
 import { getAllConfig, setConfig } from '../../api/config'
 import { loadInitData, revealInExplorer } from '../../api/file'
 import { GuiInitDataKeys } from '../../events/msgkeys'
-import { isBrowserForm } from '../../utils/runtimeForm'
 import { logDirView } from '../../utils/logDirView'
 import { saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 
@@ -72,7 +68,7 @@ const levelOptions = computed(() => [
 ])
 
 // 视图模型：show/path/canOpen/canCopy/hintKey（见 utils/logDirView.js）
-const view = computed(() => logDirView({ logDir: logDir.value, isBrowser: isBrowserForm() }))
+const view = computed(() => logDirView({ logDir: logDir.value }))
 
 async function loadConfig() {
   try {
@@ -110,22 +106,12 @@ async function onLevelChange(v) {
   }
 }
 
-// GUI 形态：既有 native reveal 在资源管理器中定位目录。
+// 既有 native reveal 在资源管理器中定位目录。
 async function openDir() {
   try {
     await revealInExplorer(view.value.path)
   } catch (e) {
     message.error(t('projectConfig.log_dir_open_failed') + ': ' + (e.message || ''))
-  }
-}
-
-// browser 形态：native 不可用 → 复制路径。
-async function copyPath() {
-  try {
-    await navigator.clipboard.writeText(view.value.path)
-    message.success(t('projectConfig.log_dir_copied'))
-  } catch (e) {
-    message.error(t('projectConfig.save_failed') + ': ' + (e.message || ''))
   }
 }
 

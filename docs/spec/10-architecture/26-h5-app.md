@@ -1,5 +1,7 @@
 # 26 · H5 远程访问（chonkpilot-app）
 
+> **〔PRODSIM-1（2026-10-22，用户拍板）〕本专题保留，但接入前提已变**：H5 **不以浏览器形态运行**，将来做成**外部 WebView 壳 APP**；认证统一走 **registry（注册服务器）**，不依赖已删除的本地 auth / browser 形态。本篇中「挂 `chonkpilot-server.exe`」「`--http-addr` / `--web-root`」等描述为**历史方案**（该 exe 与 browser 入口已删除）；落地时按 registry + 单产物 `chonkpilot.exe` 重新设计接入面。
+
 > 状态：🚧 初稿（待评审）——**尚未实施**
 > 关联：[19-多租户服务端形态](19-多租户服务端形态.md) · [22-实例与会话标识](22-实例与会话标识.md) · [20-实例隔离与后端分离](20-实例隔离与后端分离.md) · [61-消息一览](../60-reference/61-消息一览.md) · [33-对话](../30-function-points/33-对话.md) · [34-任务](../30-function-points/34-任务.md) · [03-构建与部署](../00-overview/03-构建与部署.md)
 
@@ -21,11 +23,13 @@ H5 是 browser 形态的**第二个客户端**，不是一个独立工作区：�
 
 前端在 `src/frontend` 增加**独立 H5 入口**（第三个构建入口），只挂载「登录 / 对话 / 目录 / 任务树」四个面；PC 浏览器也可打开该入口（便于测试）。
 
+> **〔PRODSIM-1 注（2026-10-22）〕以下拓扑为**历史方案**（基于已删除的 `flash` / `gui-client` / 独立 `chonkpilot-server.exe` 与 browser HTTP 入口）。落地时按「唯一产物 `chonkpilot.exe` + 外部 WebView 壳 + registry 认证」重新设计接入面；`chonkpilot-server.exe` 不再产出、`--http-addr` / `--web-root` / `httpapi` 已删除、本地认证域已删。**
+
 ```text
-PC: chonkpilot-flash / chonkpilot-gui-client
+PC: chonkpilot-flash / chonkpilot-gui-client          ← 已删除（历史）
       │ UDS（本机信任）
       ▼
-chonkpilot-server.exe ── MQ 总线 ── llm-server / persist / filesys
+chonkpilot-server.exe ── MQ 总线 ── llm-server / persist / filesys   ← 不再产出（历史）
       │  ▲
       │  └── 出站长连接（注册 / 心跳 / relay 隧道）──► 注册中心
       │                                              账号 · 登录 · 目录 · relay
@@ -41,10 +45,12 @@ H5 通过**注册中心**接入：在注册中心登录 → 选择同账号的�
 
 ### 3.1 拓扑与作用域
 
+> **〔PRODSIM-1 注（2026-10-22）〕** 下表为**历史方案**：`PC（gui / flash）` 行与「UDS 本地前门」已无载体；将来重设计时 PC 侧 = 唯一产物 `chonkpilot.exe`（`form=desktop`、进程内 `instance`），H5 = 外部 WebView 壳经 registry relay 接入。
+
 | 客户端 | 入口 | 身份 | instance | data_dir |
 |---|---|---|---|---|
-| PC（gui / flash） | UDS 本地前门 | 本机信任 | PC 的 instance A | `<workdir>/.chonkpilot` |
-| H5（browser） | HTTP `/publish` + `/events` | cookie 会话令牌 | **绑定到 A**（影子连接） | **同 A**（`<workdir>/.chonkpilot`） |
+| ~~PC（gui / flash）~~ | ~~UDS 本地前门~~ | ~~本机信任~~ | ~~PC 的 instance A~~ | ~~`<workdir>/.chonkpilot`~~ |
+| H5（待做） | registry relay → `chonkpilot.exe` | registry 令牌 | **绑定到 PC 当前项目主窗口的 instance A** | **同 A** |
 | H5（工作区未在 PC 打开，用户确认后） | 同上 | 同上 | 新建 instance B | 仍为 `<workdir>/.chonkpilot` |
 
 **硬约束**：H5 与 PC 必须是**同一个 `instance_id`**（或至少同一运行态桶），否则：

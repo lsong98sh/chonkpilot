@@ -14,17 +14,19 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 
 ## 运行形态
 
+> **2026-10-22（PRODSIM-1 产物简化）**：**唯一产物 = `chonkpilot.exe`**（WebView2 宿主 + 常驻 server）。原「CLI 单体 / gui / browser」三形态与其 exe、`build-gui.ps1` / `build-browser.ps1` **已删除**；`src/gui`、`src/flash`、`src/desktop/cli`、`src/lib/cli` 源目录一并移除。
+
 | 形态 | 产物 | 说明 |
 |---|---|---|
-| **desktop（桌面单体，主力）** | `dist/desktop/chonkpilot.exe` | WebView2 宿主，内嵌 server→persist→filesys、gateway(内嵌 mcp-server) 与插件；前端 dist 经 go:embed |
-| **CLI 单体** | `dist/desktop/chonkpilot-cli.exe` | console 宿主、同 lib 集、无前端无 WebView2（`AsyncMode: never`）；由 `build-desktop.ps1` **第 3 步**一并产出 |
-| **gui（GUI 客户端 + 独立 server）** | `dist/gui/chonkpilot-gui-client.exe` · `dist/server/chonkpilot-server.exe` | 编译期 tag `-tags split`；server 可异地，支持多用户 |
-| **browser** | `dist/server/www/` + `chonkpilot-server.exe --web-root` | 仅前端产物，与 gui **共用**同一份 server exe |
+| **desktop（唯一）** | `dist/desktop/chonkpilot.exe` | WebView2 宿主，内嵌 server→persist→filesys、gateway(内嵌 mcp-server) 与插件；前端 dist 经 go:embed。**双击 = 启动常驻 Server**（日志窗口隐藏）→ 打开最近项目主窗口；托盘可显示日志 / 打开项目 / 退出 |
+| ~~CLI 单体~~ | ~~`chonkpilot-cli.exe`~~ | 已删除（2026-10-21） |
+| ~~gui（GUI 客户端 + 独立 server）~~ | ~~`chonkpilot-gui-client.exe` / `chonkpilot-server.exe`~~ | 已删除（2026-10-22） |
+| ~~flash 薄壳 / browser~~ | ~~`chonkpilot-flash.exe` / `dist/server/www/`~~ | 已删除（2026-10-22；H5 APP 将来以外部 WebView 壳接入，见 [26](docs/spec/10-architecture/26-h5-app.md)） |
 | **协议外壳** | `dist/other/chonkpilot-mcp-server.exe` · `chonkpilot-mcp-gateway.exe` | 独立 MCP 契约服务 / 网关聚合，两 exe 同目录共用 `capability/` |
 
-运行时形态标识：`window.__ck.form` = `desktop` / `gui` / `browser`（[61 §4.6](docs/spec/60-reference/61-消息一览.md)）。
+运行时形态标识：`window.__ck.form` = **`desktop`**（唯一取值；`gui` / `browser` 已删除，见 [61 §0 订正块](docs/spec/60-reference/61-消息一览.md)）。
 
-**多窗口**：一个进程内可开 **主窗口 + ≤5 个「纯对话窗口」**（URL 路由 `?session-id=…#chat`，原生标题栏）。每窗口独占线程 + STA + 独立 WebView2 DataPath，并拥有**独立 instance**；一个会话只允许一个窗口（[24-多窗口模型设计方案](docs/spec/10-architecture/24-多窗口模型设计方案.md)）。
+**多窗口（2026-10-22 起三层）**：**日志窗口**（进程唯一、创建即隐藏、关闭 = hide 到托盘、不注册 instance）+ **项目主窗口**（每 `work_dir` 一个，进程内映射表保证同项目唯一；含移动端窗口类型）+ **从属小窗口**（单聊 / 子聊 / 群聊，`?session-id=…#chat`，原生标题栏）。关主窗口 = 终止该项目全部小窗口并销毁；**退出只走托盘菜单**（[24](docs/spec/10-architecture/24-多窗口模型设计方案.md)）。
 
 ## 场景 / Agent / 能力分层
 
@@ -87,18 +89,16 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 **必须**通过构建脚本（**禁止**单独 `go build` / `wails build` / `npm run build`）：
 
 ```powershell
-.\build-desktop.ps1        # 主力：桌面单体 + CLI 单体 + 引擎 → dist/desktop\（含 capability/；scenarios/ 由 embed 内嵌、运行时物化）
-.\build-gui.ps1            # gui 形态：客户端 → dist/gui\；服务端 → dist/server\
-.\build-browser.ps1        # 仅前端：browser 入口 → dist/server/www\
+.\build-desktop.ps1        # 唯一构建脚本：chonkpilot.exe + 引擎 → dist/desktop\（含 capability/、出厂场景 scenarios/）
 .\build-mcp-server.ps1     # mcp-server 部署 → dist/other\
 .\build-mcp-gateway.ps1    # mcp-gateway 部署 → dist/other\（与 mcp-server 同目录）
 .\build-codegraph.ps1      # 引擎 → dist/plugins/codegraph\
 .\build-vfts.ps1           # 引擎 → dist/plugins/vfts\
 ```
 
-`build-desktop.ps1` 内部流程：kill 旧实例 → 在 `src/frontend` 内 `npm run build:embed` → `embed.html` 改名 `index.html` 投放 `src/gui/frontend/dist` 并镜像到 `src/desktop/frontend/dist` → 构建 GUI/CLI → 调 `build-mcp-server.ps1` / `build-codegraph.ps1` / `build-vfts.ps1`。
+`build-desktop.ps1` 内部流程：kill 旧实例 → 在 `src/frontend` 内 `npm run build`（单入口 `index.html`，产物**直投** `src/desktop/frontend/dist`）→ `go build` 宿主 → 调 `build-mcp-server.ps1` / `build-codegraph.ps1` / `build-vfts.ps1`。
 
-**产物清单**（`dist/desktop/`）：`chonkpilot.exe` · `chonkpilot-cli.exe` · 引擎 exe（codegraph / vfts）· `zvec_c_api.dll` · `capability/`（知识库契约 + executor）。（出厂场景「开发场景」`default/` 由 **embed** 内嵌，运行时 app 初始化物化到 `<exeDir>/scenarios/`，app 级**可编辑**。）
+**产物清单**（`dist/desktop/`）：`chonkpilot.exe`（唯一宿主/客户端产物）· 引擎 exe（codegraph / vfts）· `zvec_c_api.dll` · `capability/`（知识库契约 + executor + 出厂场景 `scenarios/`）。（出厂场景「开发场景」`default/` 由 **embed** 内嵌，运行时 app 初始化物化到 `<exeDir>/scenarios/`，app 级**可编辑**。）
 
 > 内置 MCP（codegraph / vfts）**默认不开启、不接入**——设置页开关开启后才拉起 / 注册。
 

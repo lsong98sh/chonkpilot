@@ -81,14 +81,8 @@ type Bridge struct {
 	eventWaiters   map[string]map[int64]chan map[string]any
 	eventWaiterSeq int64
 
-	// ── 认证域（61 §4.6；阶段 2b-1/2b-2）─────────────────
-	// authToken 是桥**持有**的免登录令牌（desktop 形态；由 login-in/login-register 应答
-	// 取走并落 `~/chonkpilot/remember-token`）——**不下发前端**，仅随上行请求注入（injectAuth）。
-	// authCheck 是宿主注入的**令牌有效性判定**（= llm server 的 Authenticated），供首屏注入
-	// `authed`（61 §4.6：读凭证判定）；两者都由 authMu 守护。
-	authMu    sync.Mutex
-	authToken string
-	authCheck func(token string) bool
+	// PRODSIM-1：认证域（login-*）已整体移除 —— 桥不再持有令牌 / 不做 authCheck
+	// （单产物 = 本机 UDS 免鉴权；认证将来统一到 registry）。
 
 	// cfg 是 data 门面（阶段 4 第二/三/四批，41 G-34 / G-35 / G-36）：宿主注入（inline 绑定，
 	// 同进程直调）后，**data 面各域**（config 类 · session 域 · tasktree / knowledge / filelist /
@@ -207,6 +201,10 @@ func (b *Bridge) SetWindowResizer(fn func(uintptr)) { b.startResize = fn }
 // 多窗口共享同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
 func (b *Bridge) SetInstanceExitSuppressed(v bool) { b.suppressExit = v }
 
+// injectAuth 历史：向请求注入**连接层令牌**。
+// PRODSIM-1（本地认证域删除）后为**空操作** —— 保留调用点，避免上行路径大面积改动。
+func (b *Bridge) injectAuth(payloadJSON string) string { return payloadJSON }
+
 // SetNoInstance 标记本窗口**不注册 instance**（PRODSIM-1 日志窗口；须在 Start 前调用）：
 // Start 不发 instance-register、CloseInstance 不发 instance-exit（不占实例额度）。
 func (b *Bridge) SetNoInstance() { b.noInstance = true }
@@ -274,9 +272,7 @@ type envelope struct {
 // 转发前端。数据/文件服务由 main 以同一总线先行启动（server 内嵌 persist + gateway、
 // chonkpilot-filesys 服务），桥本身不再直连存储。
 func (b *Bridge) Start() error {
-	// 恢复免登录令牌（61 §4.6；阶段 2b-1）：`~/chonkpilot/remember-token` 存在则持有入内存，
-	// 随后续上行请求注入（自证型 → 服务端重启后仍可解析）。
-	b.loadRememberToken()
+	// PRODSIM-1：免登录令牌（remember-token）随本地认证域一并移除，不再加载。
 	// instance 注册：无 req_id、无 reply（客户端自生成 uuid；相对主题 instance-register）。
 	// `user` **必填**（61 §4.1 ⑤，🆕 2026-10-09）：`instance-bring-to-top` 据它做跨用户判定
 	// （RDS 同 data_dir 顶层实例属其他用户 → 不置顶、`instance-forbidden`）；客户端自报本机 OS 用户名。
@@ -532,11 +528,6 @@ func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error
 	if strings.Contains(typ, ".") {
 		return b.publishV(typ, b.injectAuth(b.injectInstance(payloadJSON)))
 	}
-	// 认证域（61 §4.6；阶段 2b-1）：login-* 由**本入口承载令牌**（持有并注入 / 落文件），
-	// 应答里的内部 token 字段在此取走并剥除 → **令牌不进前端 payload**（见 login.go）。
-	if subject, ok := loginSubjects[typ]; ok {
-		return b.loginEvent(subject, typ, payloadJSON)
-	}
 	// 单字方法面 type → 域主题（显式映射；未知名 = 无订阅方，静默丢弃近似旧行为）。
 	subject, ok := frontMethodSubjects[typ]
 	if !ok {
@@ -555,8 +546,8 @@ func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error
 // → gateway 方法面 mcp-tools-list/mcp-prompts-list/mcp-resources-list（前端经桥直取
 // 运行时能力面；桥自动注入 instance_id，gateway 应答写回 v.Result 后原样返回前端）。
 //
-// 注：认证域 `login-register` / `login-in` / `login-out` **不在此表** —— 需桥承载令牌
-// （持有 + 落文件 + 注入）→ 走 `loginEvent` 专用分支（login.go，61 §4.6）。
+// 注：认证域 `login-register` / `login-in` / `login-out` 已删除（PRODSIM-1 产物简化：
+// 本地 auth 全删，认证将来统一由 registry 承担）→ 本表不含、桥无 login 专用分支。
 var frontMethodSubjects = map[string]string{
 	msgkeys.TopicLlmSend:        "session-send",
 	msgkeys.TopicLlmCancel:      "session-cancel",

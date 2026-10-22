@@ -103,8 +103,8 @@ export function defaultLayoutDoc() {
 }
 
 /* ── ChonkPilot 默认栏 / 抽屉（UILAYOUT-1 §7 P4①③）────────────────────────
-   条目化后 `views/toolbar/Toolbar.vue`（961 行）/ `views/statusbar/StatusBar.vue`（235 行）
-   的入口按 §3.4「栏条目化拆解」表逐项落成条目：
+   原 legacy 工具栏 / 状态栏（`Toolbar.vue` / `StatusBar.vue`）已随 UILAYOUT-2-B 删除，
+   其入口按 §3.4「栏条目化拆解」表逐项落成条目：
      · **配置按钮 / 菜单**：只引用**既有宿主主题**（裁决 1 的「发布 MQ 动作」`publish-mq`）；
      · **实时 / 条件 / 动态项**（搜索 / 最近项目 / Chrome 告警 / 登出 / 记忆 token / 队列 / 索引徽标 /
        语言切换）：做成 `kind:'view'` 的**栏视图条目**（裁决 2）——不新增 valueExpr/badgeKey 协议；
@@ -176,7 +176,6 @@ export function chonkTopToolbar() {
     // 布局档案下拉（UILAYOUT-2）：列表 / 切换 / 新建 / 编辑当前 / 恢复初始布局
     barView('tb_layouts', 'right', 'layout-profiles'),
     barView('tb_chrome', 'right', 'chrome-warn'),
-    barView('tb_logout', 'right', 'logout'),
   ])
 }
 

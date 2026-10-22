@@ -171,9 +171,6 @@ export const MsgTopics = {
   agentWizardGenerate: 'agent-wizard-generate',
   agentWizardSkip: 'agent-wizard-skip',
   llmSimple: 'llm-simple',
-  loginRegister: 'login-register',
-  loginIn: 'login-in',
-  loginOut: 'login-out',
   sessionReceive: 'session-receive',
   sessionComplete: 'session-complete',
   sessionRetry: 'session-retry',
@@ -391,7 +388,6 @@ export const FieldKeys = {
   parent_node_id: 'parent_node_id',
   parent_session_id: 'parent_session_id',
   parents: 'parents',
-  password: 'password',
   path: 'path',
   paths: 'paths',
   payload: 'payload',
@@ -488,7 +484,6 @@ export const FieldKeys = {
   user: 'user',
   user_dict: 'user_dict',
   user_dict_path: 'user_dict_path',
-  username: 'username',
   vfts: 'vfts',
   waiting: 'waiting',
   widget_id: 'widget_id',
@@ -2050,27 +2045,6 @@ export const LlmSimpleKeys = {
   prompt: 'prompt',
   system: 'system',
   text: 'text',
-}
-
-/** login-register 字段键（payload/result/event 合并去重）。 */
-export const LoginRegisterKeys = {
-  ok: 'ok',
-  password: 'password',
-  user: 'user',
-  username: 'username',
-}
-
-/** login-in 字段键（payload/result/event 合并去重）。 */
-export const LoginInKeys = {
-  ok: 'ok',
-  password: 'password',
-  user: 'user',
-  username: 'username',
-}
-
-/** login-out 字段键（payload/result/event 合并去重）。 */
-export const LoginOutKeys = {
-  ok: 'ok',
 }
 
 /** session-receive 字段键（payload/result/event 合并去重）。 */

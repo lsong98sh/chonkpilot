@@ -245,7 +245,7 @@ test('契约已收录 §4 服务端 / §5 网关面主题（B2）', () => {
     'session-receive', 'session-complete', 'session-compress', 'session-ask', 'session-turn-start', 'session-new',
     'task-started', 'task-updated', 'task-done', 'server-starting', 'prompt-optimised', 'tool-notify',
     'instance-claim', 'instance-register', 'instance-heartbeat', 'instance-exit',
-    'login-register', 'login-in', 'login-out',
+    // login-register / login-in / login-out 已删除（PRODSIM-1：本地 auth 全删，认证归 registry）
     'mcp-tools-list', 'mcp-tools-call', 'mcp-tools-wait', 'mcp-tools-register', 'mcp-tools-unregister',
     'mcp-prompts-list', 'mcp-prompts-get', 'mcp-resources-list', 'mcp-resources-read',
     'mcp-servers-list', 'mcp-servers-get', 'mcp-gateway-check', 'mcp-gateway-reload',
@@ -305,17 +305,18 @@ test('gui.* 消费（FileTree / Toolbar）读键 ⊆ 契约', () => {
     varName: 'r',
   })
 
-  // gui.window.status（Toolbar.vue syncMaximizeState；属性名读取 → 存在级）
-  const tb = read('views/toolbar/Toolbar.vue')
+  // gui.window.status（WindowControls.vue syncMaximizeState；属性名读取 → 存在级）
+  const tb = read('layout/bar-views/WindowControls.vue')
   assertConsumerSubset({
     topic: 'gui.window.status',
     text: windowAround(tb, /async function syncMaximizeState\(\)/, 0, 340),
     varName: 'r',
   })
-  // gui.search（Toolbar.vue searchFiles；常量下标）
+  // gui.search（SearchBoxView.vue searchFiles；常量下标）
+  const sbx = read('layout/bar-views/SearchBoxView.vue')
   assertConsumer({
     topic: 'gui.search',
-    text: windowAround(tb, /async function searchFiles\(q\)/, 0, 340),
+    text: windowAround(sbx, /async function searchFiles\(q\)/, 0, 340),
     varName: 'r',
   })
 })
@@ -349,13 +350,6 @@ test('gui.window.list / open-chat 消费（useChatWindows）读键 ⊆ 契约（
   const cw = read('composables/useChatWindows.js')
   assertConsumerSubset({ topic: 'gui.window.list', text: fnBody(cw, 'refreshWindows'), varName: 'r' })
   assertConsumerSubset({ topic: 'gui.window.open-chat', text: fnBody(cw, 'openChat'), varName: 'r' })
-})
-
-test('login-in / login-register 消费（useAuth.js callLogin）读键 ⊆ 契约', () => {
-  const auth = read('composables/useAuth.js')
-  const body = windowAround(auth, /async function callLogin\(topic, username, password\)/, 0, 900)
-  assertConsumer({ topic: 'login-in', text: body, varName: 'result' })
-  assertConsumer({ topic: 'login-register', text: body, varName: 'result' })
 })
 
 test('契约已收录 §6.1 前端本地事件（B4）', () => {

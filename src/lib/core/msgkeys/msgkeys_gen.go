@@ -173,9 +173,6 @@ const (
 	TopicAgentWizardGenerate              = "agent-wizard-generate"
 	TopicAgentWizardSkip                  = "agent-wizard-skip"
 	TopicLlmSimple                        = "llm-simple"
-	TopicLoginRegister                    = "login-register"
-	TopicLoginIn                          = "login-in"
-	TopicLoginOut                         = "login-out"
 	TopicSessionReceive                   = "session-receive"
 	TopicSessionComplete                  = "session-complete"
 	TopicSessionRetry                     = "session-retry"
@@ -1430,25 +1427,6 @@ const (
 	// llm-simple · result
 	LlmSimpleResultText = "text"
 
-	// login-register · payload
-	LoginRegisterPayloadPassword = "password"
-	LoginRegisterPayloadUsername = "username"
-
-	// login-register · result
-	LoginRegisterResultOk   = "ok"
-	LoginRegisterResultUser = "user"
-
-	// login-in · payload
-	LoginInPayloadPassword = "password"
-	LoginInPayloadUsername = "username"
-
-	// login-in · result
-	LoginInResultOk   = "ok"
-	LoginInResultUser = "user"
-
-	// login-out · result
-	LoginOutResultOk = "ok"
-
 	// session-receive · event
 	SessionReceiveEventInstanceId = "instance_id"
 	SessionReceiveEventPayload    = "payload"
@@ -2022,7 +2000,6 @@ const (
 	FieldParentNodeId        = "parent_node_id"
 	FieldParentSessionId     = "parent_session_id"
 	FieldParents             = "parents"
-	FieldPassword            = "password"
 	FieldPath                = "path"
 	FieldPaths               = "paths"
 	FieldPayload             = "payload"
@@ -2119,7 +2096,6 @@ const (
 	FieldUser                = "user"
 	FieldUserDict            = "user_dict"
 	FieldUserDictPath        = "user_dict_path"
-	FieldUsername            = "username"
 	FieldVfts                = "vfts"
 	FieldWaiting             = "waiting"
 	FieldWidgetId            = "widget_id"

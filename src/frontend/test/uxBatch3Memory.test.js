@@ -123,11 +123,11 @@ test('⑱A 回执：**投递即回**（queued）；失败路径可见（含原�
   assert.match(src, /const FLUSH_TIMEOUT = 15000/)
   assert.match(fn, /timeout: FLUSH_TIMEOUT/)
 
-  // 队列状态展示在 statusbar（I-128；既有通知面 tool-notify，零新增主题）
-  const sb = read('views/statusbar/StatusBar.vue')
+  // 队列状态展示在状态栏（I-128；既有通知面 tool-notify，零新增主题）
+  const sb = read('layout/bar-views/QueueStatusView.vue')
   assert.match(sb, /useQueueStatus\(\)/, 'statusbar 须消费队列状态 composable')
   assert.match(sb, /mq\.on\(EventNames\.toolNotify, handleQueueNotice\)/, 'statusbar 须订阅 tool-notify')
-  assert.match(sb, /queueText\('memory'|queueText\('compress'/, 'statusbar 须渲染记忆/压缩队列状态')
+  assert.match(sb, /queueText\(/, 'statusbar 须渲染记忆/压缩队列状态')
   const q = read('composables/useQueueStatus.js')
   for (const n of ['memory-queued', 'memory-start', 'memory-done', 'compress-queued', 'compress-start', 'compress-done']) {
     assert.match(q, new RegExp("'" + n + "'"), `useQueueStatus 须识别 notice=${n}`)

@@ -23,14 +23,6 @@ import (
 	"strings"
 )
 
-// Auth 是认证域启动输入（仅 server 形态消费；gui 桌面单体留零值 = 免鉴权）。
-type Auth struct {
-	DBPath        string
-	UserDataRoot  string
-	AllowRegister *bool
-	ProjectRoots  []string
-}
-
 // ServerSpec 是外部下游（servers.list 解析结果）的**无凭据快照**：只记标识与链路形态。
 type ServerSpec struct {
 	ID        string
@@ -69,19 +61,15 @@ type BootConfig struct {
 	NoServer bool // 不启动内嵌 llm server（UI 注入测试）
 	Filesys  bool // 启动 filesys 文件服务（gui 宿主；server 入口不启动）
 
-	// ── 认证域 / 外部下游 / 执行池 ──
-	Auth    Auth
+	// ── 外部下游 / 执行池（PRODSIM-1：认证域与 HTTP 入口字段已删除）──
 	Servers []ServerSpec
 	Pool    Pool
 
 	// ── 其余启动开关（各宿主 Phase 3 消费；集中登记便于审计）──
-	Tray           bool
-	AutoExit       bool
-	HTTPAddr       string
-	WebRoot        string
-	PluginAddr     string
-	PluginHTTPAddr string
-	LLMBridgeAddr  string
+	Tray          bool
+	AutoExit      bool
+	PluginAddr    string
+	LLMBridgeAddr string
 
 	// EnvKeys 只登记**注入的环境变量键名**（值可能含凭据/路径，不进入快照）。
 	EnvKeys []string
@@ -102,17 +90,12 @@ func Snapshot(in BootConfig) BootConfig {
 	cfg.CapabilityRoot = cleanPath(cfg.CapabilityRoot)
 	cfg.LLMBase = strings.TrimSpace(cfg.LLMBase)
 	cfg.LLMModel = strings.TrimSpace(cfg.LLMModel)
-	cfg.HTTPAddr = strings.TrimSpace(cfg.HTTPAddr)
-	cfg.WebRoot = cleanPath(cfg.WebRoot)
 	cfg.PluginAddr = strings.TrimSpace(cfg.PluginAddr)
-	cfg.PluginHTTPAddr = strings.TrimSpace(cfg.PluginHTTPAddr)
 	cfg.LLMBridgeAddr = strings.TrimSpace(cfg.LLMBridgeAddr)
 
 	if cfg.Pool.CallTimeoutSeconds == 0 && cfg.Pool.MaxTasks == 0 && cfg.Pool.AsyncMode == "" {
 		cfg.Pool = DefaultPool()
 	}
-	cfg.Auth.ProjectRoots = append([]string(nil), cfg.Auth.ProjectRoots...)
-	sort.Strings(cfg.Auth.ProjectRoots)
 	cfg.Servers = append([]ServerSpec(nil), cfg.Servers...)
 	sort.Slice(cfg.Servers, func(i, j int) bool { return cfg.Servers[i].ID < cfg.Servers[j].ID })
 	cfg.EnvKeys = append([]string(nil), cfg.EnvKeys...)
@@ -145,22 +128,15 @@ func (c BootConfig) Redacted() map[string]any {
 		"capabilityRoot":   c.CapabilityRoot,
 		"llmBase":          scrubURL(c.LLMBase),
 		"llmModel":         c.LLMModel,
-		"noServer":         c.NoServer,
-		"filesys":          c.Filesys,
-		"authDBPath":       c.Auth.DBPath,
-		"authUserDataRoot": c.Auth.UserDataRoot,
-		"authAllowReg":     c.Auth.AllowRegister,
-		"authProjectRoots": c.Auth.ProjectRoots,
-		"servers":          c.Servers,
-		"pool":             c.Pool,
-		"tray":             c.Tray,
-		"autoExit":         c.AutoExit,
-		"httpAddr":         c.HTTPAddr,
-		"webRoot":          c.WebRoot,
-		"pluginAddr":       c.PluginAddr,
-		"pluginHTTPAddr":   c.PluginHTTPAddr,
-		"llmBridgeAddr":    c.LLMBridgeAddr,
-		"envKeys":          c.EnvKeys,
+		"noServer":       c.NoServer,
+		"filesys":        c.Filesys,
+		"servers":        c.Servers,
+		"pool":           c.Pool,
+		"tray":           c.Tray,
+		"autoExit":       c.AutoExit,
+		"pluginAddr":     c.PluginAddr,
+		"llmBridgeAddr":  c.LLMBridgeAddr,
+		"envKeys":        c.EnvKeys,
 	}
 	return view
 }

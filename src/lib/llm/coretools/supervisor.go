@@ -48,8 +48,8 @@ type Options struct {
 	WorkDir, DataDir string
 	// ConfigPath 可选 config.json。
 	ConfigPath string
-	// PluginAddr / PluginToken 插件桥地址与 HTTP token（透传给 executor）。
-	PluginAddr, PluginToken string
+	// PluginAddr 插件桥地址（透传给 executor；PRODSIM-1：能力外溢统一走 UDS，免认证）。
+	PluginAddr string
 	// Output 子进程 stdout/stderr 落点（nil → os.Stderr）。
 	Output io.Writer
 	// Logf 监督日志（nil → 丢弃）。
@@ -287,9 +287,6 @@ func (s *Supervisor) spawn() (*exec.Cmd, error) {
 	}
 	if s.opts.PluginAddr != "" {
 		args = append(args, "--plugin-addr", s.opts.PluginAddr)
-	}
-	if s.opts.PluginToken != "" {
-		args = append(args, "--plugin-token", s.opts.PluginToken)
 	}
 	cmd := exec.Command(path, args...)
 	cmd.Stdout = out

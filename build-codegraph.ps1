@@ -6,7 +6,7 @@
 #
 # 源（D-28 src 结构）：`src/plugins/codegraph`（engine 本体；插件侧 = `src/plugins/plugin-codegraph`）。
 # 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop、
-#   dist/server）由 build-desktop.ps1 / build-gui.ps1 从本目录取件后置于**发行根**——
+#   dist/server）由 build-desktop.ps1 从本目录取件后置于**发行根**——
 #   插件按「宿主 exe 同目录」解析引擎 exe（codegraph.go 候选路径），故发行根必须有一份。
 #
 # 用法：.\build-codegraph.ps1

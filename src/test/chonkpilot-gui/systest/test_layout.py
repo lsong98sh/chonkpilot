@@ -76,7 +76,8 @@ def main():
   legacyResizer:document.querySelectorAll('.split-resizer').length,
   handles:document.querySelectorAll('.split-handle').length})})()""")
         fd = json.loads(f)
-        c.check("L0c 默认形态 = 自由布局容器（free）", fd["free"] and fd["handles"] >= 4,
+        c.check("L0c 默认形态 = 自由布局容器（free）",
+                fd["free"] and fd["handles"] >= 4,
                 repr(fd))
 
         # L1 布局六区：toolbar / filetree / preview / chat / task(tasktree+taskview) / statusbar
@@ -178,6 +179,43 @@ def main():
         c.check("L8b 拖拽中分隔条本体不加宽（恒 1px，无重排/抖动）",
                 isinstance(d.get("rw"), (int, float)) and abs(d.get("rw") - 1) < 0.6,
                 f"拖拽中 handle 宽={d.get('rw')}")
+
+        # L11 区域显隐（UILAYOUT-2 / WIN-025）：用户可配置命令 → lf-area-toggle-visible
+        def explorer_display():
+            return J(gui, "(()=>{const el=document.querySelector('.filetree-panel');"
+                          "const c=el&&el.closest('.split-child');"
+                          "return c?getComputedStyle(c).display:''})()")
+
+        gui.eval("window.mq.emit('lf-area-toggle-visible',{viewKey:'explorer'}); 'ok'")
+        time.sleep(0.6)
+        c.check("L11 隐藏文件树（v-show 保活）", explorer_display() == "none",
+                f"display={explorer_display()!r}")
+        gui.eval("window.mq.emit('lf-area-toggle-visible',{viewKey:'explorer'}); 'ok'")
+        time.sleep(0.6)
+        c.check("L11b 恢复显示文件树", explorer_display() not in ("none", ""),
+                f"display={explorer_display()!r}")
+
+        # L12 布局档案（UILAYOUT-2 / WIN-026）：切到「简洁」= 只剩 chat；单例 view 不重建
+        m0 = JD(gui, "JSON.stringify((window.__ckViewPool&&window.__ckViewPool.mounts)||{})") or {}
+        gui.eval("window.mq.emit('lf-layout-profile-switch',{id:'seed:simple'}); 'ok'")
+        time.sleep(0.9)
+        leaves = J(gui, "document.querySelectorAll('.layout-leaf').length")
+        c.check("L12 切换到「简洁」：只剩一个布局区域", leaves == 1, f"leaves={leaves}")
+        m1 = JD(gui, "JSON.stringify((window.__ckViewPool&&window.__ckViewPool.mounts)||{})") or {}
+        c.check("L12b 切换布局不重建单例 view（explorer 挂载次数不变）",
+                int(m1.get("explorer", 0)) == int(m0.get("explorer", 0)),
+                f"explorer {m0.get('explorer', 0)} -> {m1.get('explorer', 0)}")
+
+        # L13 重复打开单例 view → 拒绝（落点数量不变）
+        t0 = JD(gui, "JSON.stringify((window.__ckViewPool&&window.__ckViewPool.targets)||[])") or []
+        gui.eval("window.mq.emit('lf-tabs-open',{viewKey:'explorer'}); 'ok'")
+        time.sleep(0.5)
+        t1 = JD(gui, "JSON.stringify((window.__ckViewPool&&window.__ckViewPool.targets)||[])") or []
+        c.check("L13 重复打开单例 view 被拒绝（落点数不变）", len(t1) == len(t0),
+                f"targets {len(t0)} -> {len(t1)}")
+
+        gui.eval("window.mq.emit('lf-layout-profile-switch',{id:'seed:dev'}); 'ok'")
+        time.sleep(0.9)
 
         # L9a 保存布局（**free** 口径）：改 `split_body` 占比 → 落 `layout.free` → 重启回灌
         doc = JD(gui, "JSON.stringify((window.__ckLayout&&window.__ckLayout.engine)?window.__ckLayout.engine.state.config.live:null)")

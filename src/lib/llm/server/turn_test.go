@@ -339,11 +339,7 @@ func newTestServer(t *testing.T, llmSrv *httptest.Server) *Server {
 	// 真实内嵌 gateway（inprocess://）链路由专门的 mcp 集成测试覆盖。
 	// UsrPath：注入临时 usr 库（避免污染/占用 ~/.chonkpilot 用户库；persist 数据服务同路径）。
 	s := New(bus, Options{LLMBase: llmSrv.URL, LLMModel: "mock", DisableMCP: true,
-		UsrPath: t.TempDir() + "/usr.db",
-		// 认证域（61 §4.6；阶段 2b-1）：auth 库 / 用户数据根各用临时目录（默认在 exe 旁 →
-		// 会跨用例共享文件与用户表 → 必须隔离）。
-		AuthDBPath:   t.TempDir() + "/auth.db",
-		UserDataRoot: t.TempDir()})
+		UsrPath: t.TempDir() + "/usr.db"})
 	// 执行侧控制面注入（与生产装配同形：DisableMCP 时 gateway 不存在 → 由测试用记录器模拟执行池）。
 	// 取消 / 转后台经此 sink 直调（2026-09-18：mcp-tasks-cancel / mcp-tools-background 方法面已移除）。
 	s.execSink = testExecSink

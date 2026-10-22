@@ -43,6 +43,15 @@ export const useProfileStore = defineStore('layoutProfiles', {
     active(state) {
       return findProfile(state.list, state.activeId)
     },
+    /** 列表顺序（D17）：种子在前，用户档案按创建时间倒序 */
+    sorted(state) {
+      const seeds = state.list.filter((p) => isSeedId(p.id))
+      const users = state.list
+        .filter((p) => !isSeedId(p.id))
+        .slice()
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      return [...seeds, ...users]
+    },
     /** 当前活动档案是否为种子（决定「恢复初始布局」是否显示） */
     activeIsSeed(state) {
       return isSeedId(state.activeId)

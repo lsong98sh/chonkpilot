@@ -8,7 +8,7 @@
 
     <div v-if="open" class="lp-pop" @mousedown.stop>
       <button
-        v-for="p in store.list"
+        v-for="p in store.sorted"
         :key="p.id"
         type="button"
         class="lp-item"

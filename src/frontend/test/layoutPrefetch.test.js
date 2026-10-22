@@ -67,15 +67,15 @@ test('B2 消费一次性；无预取（gui/browser 形态）直接实时读取',
   assert.equal(n, 3, '预取消费一次 + 两次回退')
 })
 
-test('B2 接线守卫：App 桌面分支在 claim 之前同步发起预取（并行），且不 await', () => {
+test('B2 接线守卫：App 启动分支在 claim 之前同步发起预取（并行），且不 await', () => {
   const app = SRC('App.vue')
   assert.match(app, /import\s*\{[^}]*\bprefetchInitData\b[^}]*\}\s*from\s*'\.\/api\/file'/, 'App.vue 必须引入 prefetchInitData')
-  const m = app.match(/if\s*\(!requireAuth\(\)\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(m, '未找到桌面分支 if (!requireAuth())')
+  const m = app.match(/if\s*\(!logOnly\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(m, '未找到启动分支 if (!logOnly)')
   const branch = m[0]
   const iPref = branch.indexOf('prefetchInitData()')
-  const iClaim = branch.indexOf('claim()')
-  assert.ok(iPref >= 0, '桌面分支必须发起 init-data 预取')
+  const iClaim = branch.indexOf('claim(') // PRODSIM-1：主窗口带 `work_dir` 提议 → claim({...})
+  assert.ok(iPref >= 0, '启动分支必须发起 init-data 预取')
   assert.ok(iClaim > iPref, '预取必须先于 claim 发起（并行，而非串行在后）')
   assert.ok(!/await\s+prefetchInitData\(\)/.test(branch), '预取不得 await（否则与认领串行，抵消优化）')
 })
@@ -88,7 +88,8 @@ test('B2 接线守卫：MainLayout 在 onMounted 消费预取结果并 applyLayo
   const m = ml.match(/onMounted\s*\(\(\)\s*=>\s*\{[\s\S]*?\n\}\)/)
   assert.ok(m, '未找到 onMounted')
   assert.match(m[0], /loadInitDataPrefetched\(\)/, 'onMounted 必须消费预取')
-  assert.match(m[0], /applyLayout\(r\[GuiInitDataKeys\.layout\]/, '预取结果的 layout（常量下标）必须交给 applyLayout')
+  assert.match(m[0], /const layoutState = r\[GuiInitDataKeys\.layout\] \|\| null/, '预取结果的 layout（常量下标）必须先取出')
+  assert.match(m[0], /applyFreeLayout\(layoutState\)/, 'layout 文档交给 applyFreeLayout')
 })
 
 test('B2 接线守卫：api/file.js 的 prefetch/consume 委托同一状态机（单飞+一次性）', () => {

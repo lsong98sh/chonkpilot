@@ -98,11 +98,9 @@ test('新页签：页面用 composable + Switch，手动保存按钮，且不出
 })
 
 test('页签注册：设置菜单 + CodeView 组件/标题', () => {
-  // 设置菜单清单与状态栏配置入口共用（utils/configMenu.js）；Toolbar 经 configMenuItems 引用。
-  const menu = readSrc('utils/configMenu.js')
-  assert.match(menu, /kind:\s*'settings-tool-sandbox'/, '设置菜单缺 settings-tool-sandbox 项')
-  const toolbar = readSrc('views/toolbar/Toolbar.vue')
-  assert.match(toolbar, /configMenuItems\(t\)/, 'Toolbar 须引用共享设置菜单清单')
+  // 设置菜单由自由布局默认顶栏**声明式**定义（`layout/persist.js`）；原 `utils/configMenu.js` 已删除。
+  const persist = readSrc('layout/persist.js')
+  assert.match(persist, /'settings-tool-sandbox'/, '默认布局须有「工具沙箱」设置项')
   const codeview = readSrc('views/codeview/CodeView.vue')
   assert.match(codeview, /'settings-tool-sandbox':\s*defineAsyncComponent/, 'CodeView 缺页签组件注册')
   assert.match(codeview, /case 'settings-tool-sandbox':\s*return t\('config\.page\.toolSandbox'\)/, 'CodeView 缺标题映射')

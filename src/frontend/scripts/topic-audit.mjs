@@ -36,8 +36,12 @@ const HOST_EXEMPT = new Set(['dialogCloseTop'])
  * `keysSetValue`（`lf-keys-set-value`）= 编辑器「变量写值」通道。一期布局**全 singleton**、
  * 无多实例变量生产者（参考工程里由多实例预置视图产生）→ 机制层只有订阅、没有发布方；
  * 登记为「无源」合法状态，**不算孤儿**（不阻塞审计）。
+ *
+ * `areaToggleVisible`（`lf-area-toggle-visible`）= 运行态区域显隐的**用户可配置命令**入口
+ * （UILAYOUT-2 D2）：默认布局不预置按钮，发布方由用户配置的 `publish-mq` 条目承担 →
+ * 机制层只有订阅、没有源码内发布方，登记为「无源」合法状态。
  */
-const NO_SOURCE = new Set(['keysSetValue'])
+const NO_SOURCE = new Set(['keysSetValue', 'areaToggleVisible'])
 
 /**
  * 发布方**在 `mqCommands.js` 内**（审计默认排除该文件以避免把「订阅点」误判为发布方）——

@@ -7,7 +7,7 @@
 #
 # 源（D-28 src 结构）：`src/plugins/vfts`（engine 本体；插件侧 = `src/plugins/plugin-vfts`）。
 # 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop、
-#   dist/server）由 build-desktop.ps1 / build-gui.ps1 从本目录取件后置于**发行根**——
+#   dist/server）由 build-desktop.ps1 从本目录取件后置于**发行根**——
 #   插件按「宿主 exe 同目录」解析引擎 exe，且 zvec_c_api.dll **必须与 vfts 引擎 exe 同目录**。
 #
 # 说明（契约落点）：vfts 与 codegraph 同构——工具经官方 go-sdk AddTool 直挂、不落 .tool.md，

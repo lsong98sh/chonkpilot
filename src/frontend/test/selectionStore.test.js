@@ -193,7 +193,7 @@ test('注册落点：main.js 于 Pinia 安装后、mount 前注册跨 view 状�
   assert.match(main, /from '\.\/stores\/selectionSubscribers'/)
 })
 
-test('复位落点：项目就地切换（App 重初始化序列）与登出（Toolbar）都清共享状态', () => {
+test('复位落点：项目就地切换（App 重初始化序列）清共享状态', () => {
   // 项目切换：reset 须早于 nextTick（整树重挂），否则新项目首帧闪现旧项目状态
   const app = SRC('App.vue')
   const handler = app.match(/setProjectReinitHandler\(async \(\) => \{[\s\S]*?\n\}\)/)
@@ -201,12 +201,7 @@ test('复位落点：项目就地切换（App 重初始化序列）与登出（T
   const iReset = handler[0].indexOf('useSelectionStore().reset()')
   const iTick = handler[0].indexOf('await nextTick()')
   assert.ok(iReset >= 0 && iTick > iReset, 'reset 须在重挂（nextTick）之前')
-
-  const tb = SRC('views/toolbar/Toolbar.vue')
-  const logout = tb.match(/async function onLogout\(\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(logout, '未找到 onLogout')
-  assert.match(logout[0], /await signOut\(\)[\s\S]{0,80}resetClaim\(\)[\s\S]{0,200}useSelectionStore\(\)\.reset\(\)/,
-    '登出须复位跨 view 共享状态')
+  // 登出入口已随本地 auth 删除（PRODSIM-1）→ 身份边界复位只剩项目切换一处。
 })
 
 test('P2③ 双源已消除：相关 view / api 改为读 store，本地状态 ref 与模块变量已删', () => {

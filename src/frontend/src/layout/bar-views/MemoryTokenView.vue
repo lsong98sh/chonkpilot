@@ -1,6 +1,6 @@
 <!--
   栏视图条目 `memory-token`（UILAYOUT-1 §7 P4① / 裁决 2）：记忆总 token 数（A4 主入口）。
-  从 `views/statusbar/StatusBar.vue` 平移（实时值 → 栏视图条目；不新增 valueExpr/badgeKey 协议）。
+  由原 legacy `StatusBar.vue` 平移（该文件已随 UILAYOUT-2-B 删除；实时值 → 栏视图条目；不新增 valueExpr/badgeKey 协议）。
   保留 `.sb-section .sb-mem` / `.sb-mem-value` 既有类名。
 -->
 <template>

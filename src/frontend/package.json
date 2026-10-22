@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:embed": "vite build --mode embed",
     "preview": "vite preview",
     "test": "node --test test/*.test.js",
     "audit:topics": "node scripts/audit-topics.mjs"

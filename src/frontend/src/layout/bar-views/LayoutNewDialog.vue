@@ -16,7 +16,7 @@
       <span class="label">复制自</span>
       <select v-model="from" class="input">
         <option value="blank">空白布局</option>
-        <option v-for="p in store.list" :key="p.id" :value="p.id">{{ p.name }}</option>
+        <option v-for="p in store.sorted" :key="p.id" :value="p.id">{{ p.name }}</option>
       </select>
     </label>
 

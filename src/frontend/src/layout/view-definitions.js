@@ -122,17 +122,6 @@ export const VIEW_DEFINITIONS = [
     defaultHeight: 26,
   },
   {
-    key: 'logout',
-    labelKey: 'view.logout',
-    label: '登出',
-    icon: 'user',
-    mode: 'singleton',
-    host: 'bar',
-    designable: true,
-    defaultWidth: 26,
-    defaultHeight: 26,
-  },
-  {
     key: 'memory-token',
     labelKey: 'view.memoryToken',
     label: '记忆 token',

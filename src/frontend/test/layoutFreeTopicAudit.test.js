@@ -24,8 +24,8 @@ test('layout-free：主题审计 —— 每个主题都有发布方与订阅方'
   assert.deepEqual(result.noPub, [], `有订阅、无发布（组件绕开 mq 直连 store）：\n${result.noPub.join('\n')}`)
 })
 
-test('layout-free：主题命名 —— 统一 lf- 前缀（80 个，§3.8 / §4.1 ④）', () => {
-  assert.equal(result.total, 80, '主题总数应为 80（§3.8 实计）')
+test('layout-free：主题命名 —— 统一 lf- 前缀（91 个，§3.8 / §4.1 ④）', () => {
+  assert.equal(result.total, 91, '主题总数应为 91（80 + UILAYOUT-2 新增 11）')
   const unprefixed = result.topics.filter((t) => !t.startsWith('lf-'))
   assert.deepEqual(unprefixed, [], `未加 lf- 前缀：\n${unprefixed.join('\n')}`)
   const badKeys = result.keys.filter((k) => k.startsWith('lf'))

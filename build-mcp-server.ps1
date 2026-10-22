@@ -32,7 +32,7 @@ $env:GOTOOLCHAIN = "local"
 # 同目录 gateway 共用本 capability，故一并清理（对齐 build-dsl-executor/codegraph/vfts 写法）。
 # 2026-10-21（GATEWAY-2/L3）：meta/domain（含 ask-user / tool-result / tool-stop / next-run /
 #   subchat-open / subchat-finish）已进程内化，9 个 executor 不再产出，从清理列表移除。
-foreach ($name in @("chonkpilot-core-executor", "chonkpilot-filesys-executor", "chonkpilot-script-executor", "chonkpilot-web-executor", "chonkpilot-desktop-executor", "chonkpilot-browser-executor", "chonkpilot-mcp-server", "chonkpilot-core-mcp-server", "chonkpilot-mcp-gateway", "chonkpilot-self-tools", "chonkpilot-server-tools")) {
+foreach ($name in @("chonkpilot-core-executor", "chonkpilot-filesys-executor", "chonkpilot-script-executor", "chonkpilot-web-executor", "chonkpilot-desktop-executor", "chonkpilot-browser-executor", "chonkpilot-mcp-server", "chonkpilot-core-mcp-server", "chonkpilot-mcp-gateway", "chonkpilot-self-tools")) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 

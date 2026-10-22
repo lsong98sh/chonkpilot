@@ -1,6 +1,6 @@
 <!--
   栏视图条目 `queue-status`（UILAYOUT-1 §7 P4① / 裁决 2）：记忆沉淀 / 上下文压缩**队列状态**（I-128）。
-  从 `views/statusbar/StatusBar.vue` 平移（实时值 → 栏视图条目）；数据源 = 既有通知面 tool-notify。
+  由原 legacy `StatusBar.vue` 平移（该文件已随 UILAYOUT-2-B 删除）；数据源 = 既有通知面 tool-notify。
   空闲不渲染；完成态保持数秒后自动隐藏（`useQueueStatus` 内部定时）。
 -->
 <template>

@@ -432,8 +432,7 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	// PRODSIM-1：gui.dir.open 走同进程打开项目（宿主注入；nil → 桥回落 spawn 新进程）。
 	h.br.SetProjectOpener(env.projectOpener)
 	if env.srv != nil {
-		// 认证域（61 §4.6；阶段 2b-2）：首屏 authed 由服务端读桥持有的令牌判定。
-		h.br.SetAuthCheck(env.srv.Authenticated)
+		// PRODSIM-1：本地认证域已删除 —— 不再注入 authCheck（首屏 authed 恒 true / 免鉴权）。
 		// config 类 data-* 走数据门面（同进程直调）；未接线（-no-server）时回落总线转发。
 		h.br.SetFacade(inline.New(env.bus))
 	}
@@ -497,8 +496,8 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		destroy:     h.destroy,
 		form:        env.form,
 		requireAuth: env.srv != nil && env.srv.RequireAuth(),
-		authed:      h.br.Authed,
-		env:         env,
+		// PRODSIM-1：本地认证已删 → 首屏 `authed` 恒 true（不注入 authed 判定）。
+		env:   env,
 		proj:        spec.proj,
 		role:        spec.role,
 		windowID:    spec.windowID,

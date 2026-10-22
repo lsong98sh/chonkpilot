@@ -22,7 +22,7 @@
 | exe 命名 | `chonkpilot-server.exe`（GUI/CLI 以 lib 内嵌） |
 | service 形态 | ❌ 无（main.go 无 `--service`，未 import `winsvc`） |
 | 内嵌装配 | persist + gateway + mcp-server（`!DisableMCP`）+ 插件 compress→history→codegraph |
-| 参数 | `--work-dir` · `--servers-file` · `--manage-addr` · `--llm-base`（默认 `http://127.0.0.1:8901/v1`）· `--llm-model`（默认 `mock`） |
+| 参数 | `--work-dir` · `--servers-file` · ~~`--manage-addr`~~（**PRODSIM-1 2026-10-22 删除**：管理 REST 由 `plugin/v1/gateway.check` 承担）· `--llm-base`（默认 `http://127.0.0.1:8901/v1`）· `--llm-model`（默认 `mock`） |
 
 `Options` 要点：`LLMBase` / `LLMModel` / `UsrPath` / `DisableMCP` / `MCPServerRoot` / `GatewayServers(File)` / `GatewayManageAddr` / **`AsyncMode`**（CLI 传 `never`） / `Plugins`。
 

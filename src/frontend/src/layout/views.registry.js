@@ -31,7 +31,6 @@ import DslStepsSlot from './views/DslStepsSlot.vue'
 import SearchBoxView from './bar-views/SearchBoxView.vue'
 import RecentDirsView from './bar-views/RecentDirsView.vue'
 import ChromeWarnView from './bar-views/ChromeWarnView.vue'
-import LogoutView from './bar-views/LogoutView.vue'
 import MemoryTokenView from './bar-views/MemoryTokenView.vue'
 import QueueStatusView from './bar-views/QueueStatusView.vue'
 import IndexBadgeView from './bar-views/IndexBadgeView.vue'
@@ -67,7 +66,6 @@ export const VIEW_COMPONENTS = {
   search: SearchBoxView,
   'recent-dirs': RecentDirsView,
   'chrome-warn': ChromeWarnView,
-  logout: LogoutView,
   'memory-token': MemoryTokenView,
   'queue-status': QueueStatusView,
   'index-badge': IndexBadgeView,

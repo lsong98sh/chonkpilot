@@ -17,8 +17,8 @@ const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 
-test('MemoryTotal：状态栏显示总量入口（.sb-mem）并复用共享 composable', () => {
-  const statusbar = read('views/statusbar/StatusBar.vue')
+test('MemoryTotal：栏视图显示总量入口（.sb-mem）并复用共享 composable', () => {
+  const statusbar = read('layout/bar-views/MemoryTokenView.vue')
   assert.match(statusbar, /sb-section sb-mem/, '状态栏应有记忆总量入口（.sb-mem）')
   assert.match(statusbar, /useMemoryCategories/, '应复用共享 composable（与上下文管理页同源）')
   assert.match(statusbar, /openCategoryList/, '点击应打开记忆分类列表')
@@ -26,7 +26,7 @@ test('MemoryTotal：状态栏显示总量入口（.sb-mem）并复用共享 comp
 })
 
 test('MemoryTotal：B2「打开全部配置」图标与菜单已移除（无死代码）', () => {
-  const statusbar = read('views/statusbar/StatusBar.vue')
+  const statusbar = read('layout/bar-views/MemoryTokenView.vue')
   assert.doesNotMatch(statusbar, /configMenuItems|utils\/configMenu/, '状态栏不得再引用配置菜单清单')
   assert.doesNotMatch(statusbar, /sb-menu|Popover/, '状态栏不得再渲染配置菜单/弹层')
   assert.doesNotMatch(statusbar, /openGlobalConfig/, '不得再引用已移除的 i18n 键')
@@ -35,10 +35,6 @@ test('MemoryTotal：B2「打开全部配置」图标与菜单已移除（无死�
     assert.equal(sb.openGlobalConfig, undefined, loc + ' 应回收 openGlobalConfig 文案')
     assert.ok(sb.memoryTotal && sb.memoryTotalLabel, loc + ' 应有 memoryTotal / memoryTotalLabel 文案')
   }
-  // configMenu.js 仍被工具栏「设置」下拉复用 → 保留（不许删除后留下断链引用）
-  const toolbar = read('views/toolbar/Toolbar.vue')
-  assert.match(toolbar, /configMenuItems/, '工具栏仍复用配置菜单清单')
-  assert.ok(read('utils/configMenu.js').length > 0, 'utils/configMenu.js 仍在（工具栏在用）')
 })
 
 test('MemoryTotal：上下文管理页仅保留只读总量（不留重复入口）', () => {

@@ -28,7 +28,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
-	"github.com/chonkpilot/chonkpilot-mcp-gateway/mqadapter"
+	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 )
 
@@ -42,8 +42,6 @@ type Options struct {
 	Servers []mcpgateway.ServerEntry
 	// AsyncMode 工具异步模式（"" = 默认 auto；"never" = 强制同步，用于 CLI）。
 	AsyncMode string
-	// ManageAddr 管理 REST（空 = 禁用）。
-	ManageAddr string
 	// SkipTools（P6 2026-10-19）true = 系统级 app 根**只注册资产**（prompts/skills/resources），
 	// 工具改由外部进程（chonkpilot-core-mcp-server，经 `--stdio`/http 端点）注册/执行。
 	SkipTools bool
@@ -111,15 +109,19 @@ func Build(opts Options) (*Stack, error) {
 	tGW := time.Now()
 	// MOD-1 M0.5：gateway 内核只认 Transport 端口；mq 适配在宿主。
 	// Bus 缺省（nil）→ 不注入 Transport → gateway 构建按必填校验失败（与改前一致）。
+	// 出站通知（任务回报 / 接入变化 / 超时裁决）主题名归 mqadapter：这里只装配 Hooks。
 	var gwTransport mcpgateway.Transport
+	var gwHooks mcpgateway.Hooks
 	if opts.Bus != nil {
-		gwTransport = mqadapter.New(opts.Bus)
+		adapter := mqadapter.New(opts.Bus)
+		gwTransport = adapter
+		gwHooks = adapter.Hooks()
 	}
 	gw, err := mcpgateway.New(mcpgateway.Params{
 		Transport:   gwTransport,
+		Hooks:       gwHooks,
 		Servers:     servers,
 		AsyncMode:   opts.AsyncMode,
-		ManageAddr:  opts.ManageAddr,
 		CallTimeout: 60 * time.Second,
 		MaxTasks:    8,
 		ExecSink:    opts.ExecSink,

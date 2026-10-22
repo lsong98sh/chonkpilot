@@ -25,9 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-gui/flash"
 	"github.com/chonkpilot/chonkpilot-gui/internal/folder"
-	"github.com/chonkpilot/chonkpilot-lib/lockfile"
+	"github.com/chonkpilot/chonkpilot-gui/models"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-lib/paths"
@@ -341,9 +340,9 @@ func (b *Bridge) recordRecentDir(dir string) {
 	raw, _ := json.Marshal(kept)
 	body, _ := json.Marshal(map[string]any{"data": map[string]any{recentDirsKey: string(raw)}})
 	_, _ = b.dataCall(msgkeys.TopicDataUserConfigSave, body)
-	// 同步到 flash 的最近项目文件：桌面单体 / GUI / flash 共用同一份「最近项目」，
-	// 下次启动（含 flash 薄壳）可直接恢复，不需要先弹目录选择。
-	_ = flash.SaveRecent(flash.RecentsPath(), dir)
+	// 同步到「最近项目」文件（托盘项目列表在无 UI 时读它）：桌面单体唯一进程内共用同一份
+	// 「最近项目」，下次启动可直接恢复，不需要先弹目录选择。
+	_ = models.SaveRecent(models.RecentsPath(), dir)
 }
 
 // recentDirsList 读 usr config 自由键 recent_dirs（JSON 数组字符串）→ 最近目录快照；
@@ -411,20 +410,6 @@ func callRemoveRecentDir(b *Bridge, ctx context.Context, params []json.RawMessag
 	return json.Marshal(map[string]any{"ok": true})
 }
 
-// openNewWindow 以新进程打开目录（fire-and-forget）。
-func openNewWindow(dir string) error {
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("get executable path: %w", err)
-	}
-	cmd := exec.Command(exePath, "--work-dir="+dir)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("open new window: %w", err)
-	}
-	_ = cmd.Process.Release()
-	return nil
-}
-
 func callOpenDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	dir := ""
 	if len(params) > 0 {
@@ -433,35 +418,21 @@ func callOpenDir(b *Bridge, ctx context.Context, params []json.RawMessage) ([]by
 	if dir == "" {
 		return nil, fmt.Errorf("path required")
 	}
-	// 目录存在性预检：PrjUsrFree 会在 `<dir>/.chonkpilot/` 内创建锁探针（MkdirAll + O_CREATE），
-	// 若对不存在路径直接调用会**凭空创建该目录**（副作用，且不校验目录存在）。故先 stat 校验
-	// 目录真实存在，否则按「无效路径」直接拒绝（不建目录、不 spawn、不记最近目录）。
+	// 目录存在性预检：opener 打开项目时会解析项目数据根，对不存在路径须直接拒绝
+	// （不建目录、不开窗、不记最近目录）。
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return nil, fmt.Errorf("invalid directory: %s", dir)
 	}
-	// PRODSIM-1（单进程多项目）：宿主注入 opener 时**同进程**打开/激活该目录的主窗口 ——
-	// 已打开 → 前置（不再报 "workdir busy"）；未打开 → 新建主窗口。
-	if b.projectOpener != nil {
-		if err := b.projectOpener(dir); err != nil {
-			return nil, err
-		}
-		b.recordRecentDir(dir)
-		return json.Marshal(map[string]string{"code": "OK", "message": "Project opened", "path": dir})
+	// PRODSIM-1（单进程多项目）：打开/激活该目录的主窗口 ——
+	// 已打开 → 前置；未打开 → 新建。宿主任一时刻都注入 opener（`SetProjectOpener`）。
+	if b.projectOpener == nil {
+		return nil, fmt.Errorf("project opener unavailable")
 	}
-	// 旧路径（flash 等形态）：spawn 新进程 + prjusr 单例锁预检。
-	// 同 work-dir 单实例占用校验（I-74）：目标目录已被其它实例打开 → 明确报错（不 spawn、
-	// 不记最近目录），前端据 "workdir busy" 提示「该目录已被打开，请选择其它目录」。
-	// 口径统一到 **prjusr 单例锁**（`<work_dir>/.chonkpilot/chonkpilot.lock`）——桌面单体
-	// （host）与 flash 持有的是此锁（锁目录名 = lockfile.ProjectDataDirName 单一来源）；
-	// 原用 lockfile.WorkDirFree（workdir 锁，另一锁文件）→ 与持有者不同锁 → 预检永不命中。
-	if !lockfile.PrjUsrFree(filepath.Join(dir, lockfile.ProjectDataDirName)) {
-		return nil, fmt.Errorf("workdir busy: %s", dir)
-	}
-	if err := openNewWindow(dir); err != nil {
+	if err := b.projectOpener(dir); err != nil {
 		return nil, err
 	}
 	b.recordRecentDir(dir)
-	return json.Marshal(map[string]string{"code": "OK", "message": "New window opened", "path": dir})
+	return json.Marshal(map[string]string{"code": "OK", "message": "Project opened", "path": dir})
 }
 
 // callOpenDirDialog 纯目录选择：弹系统目录选择框并把所选路径原样返回（**无副作用** ——

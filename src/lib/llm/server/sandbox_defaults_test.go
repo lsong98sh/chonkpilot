@@ -13,7 +13,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/lockfile"
-	"github.com/chonkpilot/chonkpilot-lib/sandbox"
 )
 
 // registerG75Instance 注册一个绑定 testWorkDir 的测试实例。
@@ -113,10 +112,10 @@ func TestGatewaySandboxRulesUserEntryKept(t *testing.T) {
 	if dup != 0 {
 		t.Fatalf("规则集存在重复条目: %+v", rules)
 	}
-	// WritableRoots 视图含用户可写目录。
+	// 可写视图含用户可写目录（等价原 sandbox.WritableRoots 口径：只取 writable=true）。
 	found := false
-	for _, d := range sandbox.WritableRoots(rules) {
-		if strings.EqualFold(d, userRW) {
+	for _, r := range rules {
+		if r.Writable && strings.TrimSpace(r.Dir) != "" && strings.EqualFold(r.Dir, userRW) {
 			found = true
 		}
 	}

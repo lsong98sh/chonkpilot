@@ -234,7 +234,7 @@ agent **只"注入"不"注册"**：
 | **T3** | #3 + #5 | 系统提示词三层拼接 + `SystemPrompt` 语义重定义 |
 | **T4** | #1 + 重名校验（§6） | `scenarios/` 独立根 + `ScenarioSave` 跨级重名校验（无覆盖语义） |
 | **T5** | #9 | 前端（组合后提示词预览页签 · chat 选 prompt） |
-| **T6** | #8 | 两套内嵌统一为 app 级场景（含 `registeredAgentDef` 回落来源改口）**（✅ 已落地）**：落地 `src/initdata/capability/scenarios/`（`default/` = 出厂默认 1 主 + 8 子），`builtin-agents/` 已删除；撤 `//go:embed contracts/agents/*.agent.md` 与 `capfs.DefaultScenarioAgents`（`defaults.go` 删），list 物化（`materializeDefaultScenario`）撤；`registerDomainAgents` 改经数据层门面 `facade.ScenarioAPI.ScenarioList` 读 app 级场景（路径规则单源，仍扫描**全部** app 级场景，当前仅 1 个）；`registeredAgentDef` 回落 = app 级场景内同名 agent；投放「源唯一 = `src/initdata/capability/scenarios/`，build 脚本（`build-desktop.ps1` / `build-gui.ps1`）覆盖式同步到 `<exeDir>/scenarios/`」，不再 embed/物化。 |
+| **T6** | #8 | 两套内嵌统一为 app 级场景（含 `registeredAgentDef` 回落来源改口）**（✅ 已落地）**：落地 `src/initdata/capability/scenarios/`（`default/` = 出厂默认 1 主 + 8 子），`builtin-agents/` 已删除；撤 `//go:embed contracts/agents/*.agent.md` 与 `capfs.DefaultScenarioAgents`（`defaults.go` 删），list 物化（`materializeDefaultScenario`）撤；`registerDomainAgents` 改经数据层门面 `facade.ScenarioAPI.ScenarioList` 读 app 级场景（路径规则单源，仍扫描**全部** app 级场景，当前仅 1 个）；`registeredAgentDef` 回落 = app 级场景内同名 agent；投放「源唯一 = `src/initdata/capability/scenarios/`，build 脚本（`build-desktop.ps1`；**PRODSIM-1 后唯一构建脚本**，原 `build-gui.ps1` 已删除）覆盖式同步到 `<exeDir>/scenarios/`」，不再 embed/物化。 |
 
 > 顺序：**T1 → T2 → T3 → T4 → T5 → T6**（T1 独立最小、先修缺陷；T2 定义资产面边界；T3 承接提示词；T4 落存储；T5 前端跟随后端契约；T6 最后做内嵌统一）。
 

@@ -7,10 +7,10 @@
   hover 出 resize 光标，mousedown 发 gui.window.resize{hit} → 宿主 StartResize(HT*) 进入
   系统原生 resize 模态循环（设计见 `src/lib/go-webview2/FORK.md` P4）。
 
-  仅 GUI/桌面形态渲染；browser 形态无宿主（isBrowserForm() = true → 不渲染）。
+  宿主形态唯一（desktop）；对话窗口用原生标题栏、不挂载本组件。
 -->
 <template>
-  <div v-if="resizeEnabled" class="win-resize-layer" aria-hidden="true">
+  <div class="win-resize-layer" aria-hidden="true">
     <div
       v-for="hit in hits"
       :key="hit"
@@ -23,15 +23,11 @@
 
 <script setup>
 import mq from '../../utils/mq'
-import { isBrowserForm } from '../../utils/runtimeForm'
 import { EventNames } from '../../events/event-names'
 import { GuiWindowResizeKeys } from '../../events/msgkeys'
 
 // 8 个方位：4 边在前、4 角在后（同一层叠顺序下后者绘制在上，角落优先命中）。
 const hits = ['left', 'right', 'top', 'bottom', 'topleft', 'topright', 'bottomleft', 'bottomright']
-
-// 仅 GUI/桌面形态有宿主窗口；browser 形态无 resize 能力 → 不渲染。
-const resizeEnabled = !isBrowserForm()
 
 // fire-and-forget：61 §1 本主题「返回 = 无（本地事件）」，宿主随后进入系统原生 resize 模态循环。
 function onHit(hit) {

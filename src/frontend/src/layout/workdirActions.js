@@ -3,18 +3,16 @@
  *
  * 为什么抽出来：栏条目化后，【打开目录】是**配置按钮**（`publish-mq {topic:'workdir-open'}`），
  * 【最近项目】是**栏视图**（`RecentDirsView`）——两处都要「打开目录 + 就地刷新」这套逻辑，
- * 故收敛到本模块（原实现内联在 `views/toolbar/Toolbar.vue`，**不改动该文件**，legacy 分支继续自持）。
+ * 故收敛到本模块（原实现内联在 legacy `Toolbar.vue`，该文件已随 UILAYOUT-2-B 删除）。
  *
- * 行为与 `Toolbar.vue` 完全一致（见该文件 `openDirAndRefresh` 的注释）：
- *   native/GUI = 选目录（gui.select-dir）+ 以新进程打开（gui.dir.open，含占用校验 I-74）；
- *   browser    = 服务端把本实例 work_dir 切到目标目录，成功后**就地刷新**（不整页重载）。
+ * 行为：
+ *   选目录（gui.select-dir）+ 同进程打开该项目的主窗口（gui.dir.open，已开则置前；含占用校验 I-74）；
+ *   目标项目在**新窗口**上呈现，当前窗口保持不变 → 只需刷新「最近项目」清单。
  */
 import { getRecentDirs, removeRecentDir, openDir } from '../api/config'
 import { useDirPicker } from '../composables/useDirPicker'
 import { message } from '../components/ui'
 import { classifyError } from '../utils/errorMessage'
-import { isBrowserForm } from '../utils/runtimeForm'
-import { reinitProjectState } from '../utils/projectReinit'
 import { i18n } from '../plugins/i18n'
 
 /** 目录选择控件标识（两段式 select-dir/selected-dir 的关联键，须唯一） */
@@ -32,10 +30,6 @@ export async function openDirAndRefresh(path) {
   } catch (e) {
     const cls = classifyError(e && e.message ? e.message : String(e))
     message.error(t(cls.key, cls.params || {}))
-    return
-  }
-  if (isBrowserForm()) {
-    await reinitProjectState()
     return
   }
   await loadRecentDirs()

@@ -77,14 +77,14 @@ test('indexStatus：模型只返回 {tone, text}（不再产出 tip 明细）', 
   assert.deepEqual(Object.keys(m).sort(), ['text', 'tone'])
 })
 
-test('StatusBar：索引状态区读既有 4 键 + 既有广播刷新 + computed 派生', () => {
-  const sb = read('views/statusbar/StatusBar.vue')
+test('索引徽标：读既有 4 键 + 既有广播刷新 + computed 派生', () => {
+  const sb = read('layout/bar-views/IndexBadgeView.vue')
   for (const key of ['enable-codegraph', 'codegraph.status', 'enable-vfts', 'vfts.status']) {
     assert.ok(sb.includes(`'${key}'`), '状态栏应读 prj 键 ' + key)
   }
-  assert.match(sb, /useProjectConfig\(\)/, '应经项目配置 store（T14：load 一次 + refresh 增量）取数')
-  assert.match(sb, /subscribePrj/, '应订阅 store 的项目配置增量更新')
-  assert.doesNotMatch(sb, /getAllConfig/, '不应再自行 getAllConfig（统一走 store）')
+  assert.match(sb, /usePrjConfigSnapshot\(\)/, '应经项目配置快照 composable 取数（load 一次 + refresh 增量）')
+  assert.match(sb, /prjCfg/, '应消费 prj 配置快照')
+  assert.doesNotMatch(sb, /getAllConfig/, '不应再自行 getAllConfig（统一走 composable）')
   assert.match(sb, /computed\(/, '显示值应用 computed 派生')
   assert.match(sb, /sb-index/, '应有索引状态区容器')
   assert.match(sb, /data-engine="codegraph"/, '应有 codegraph 徽标')
@@ -92,8 +92,8 @@ test('StatusBar：索引状态区读既有 4 键 + 既有广播刷新 + computed
   assert.doesNotMatch(sb, /\bwatch\s*\(|\bwatchEffect\s*\(/, '不得使用 watch/watchEffect')
 })
 
-test('StatusBar：徽标 = [图标] + 状态文本，悬停原生 title（不再用 Tooltip/tip）', () => {
-  const sb = read('views/statusbar/StatusBar.vue')
+test('索引徽标：图标 + 状态文本，悬停原生 title（不再用 Tooltip/tip）', () => {
+  const sb = read('layout/bar-views/IndexBadgeView.vue')
   // 图标在左、状态文本紧贴其右：两枚徽标各含一个 Icon + 一个 .sb-idx-state
   const icons = sb.match(/<Icon\b/g) || []
   const states = sb.match(/class="sb-idx-state"/g) || []
@@ -109,21 +109,14 @@ test('StatusBar：徽标 = [图标] + 状态文本，悬停原生 title（不再
   assert.match(sb, /:title="\$t\('statusBar\.idx_open_vfts'\)"/, 'vfts 徽标应有原生 title')
 })
 
-test('StatusBar：点击 → 统一命令 open-view{status-index}（STB-1），零新增 MQ 主题', () => {
-  const sb = read('views/statusbar/StatusBar.vue')
+test('索引徽标：点击 → 统一命令 open-view{status-index}（STB-1），零新增 MQ 主题', () => {
+  const sb = read('layout/bar-views/IndexBadgeView.vue')
   assert.match(sb, /openStatusDetail/, '点击应走统一命令（layout/statusDetail.js → open-view）')
-  assert.match(sb, /openDetail\('index'\)/, '索引徽标点击应打开 status-index 详情')
-  // 允许的既有主题：调试入口（guiDevToolsOpen）+ 队列状态消费（toolNotify，I-128）——
-  // 均为**既有**主题；状态栏不新增 MQ 主题。
-  const used = [...sb.matchAll(/EventNames\.(\w+)/g)].map(m => m[1])
-  assert.deepEqual([...new Set(used)].sort(), ['guiDevToolsOpen', 'toolNotify'],
-    '状态栏只允许复用既有主题（guiDevToolsOpen / toolNotify）')
-  // 不得出现"裸"主题字面量（新增主题的典型形态）
+  assert.match(sb, /openStatusDetail\('index'\)/, '索引徽标点击应打开 status-index 详情')
+  // 栏视图徽标不自行发主题、不直接跳配置页
+  assert.doesNotMatch(sb, /EventNames\./, '栏视图徽标不得引用 MQ 主题')
   assert.doesNotMatch(sb, /mq\.emit\(\s*['"]/, '不得出现裸主题字面量')
-  // 栏视图条目（默认 free 形态）同样走 open-view
-  const badge = read('layout/bar-views/IndexBadgeView.vue')
-  assert.match(badge, /openStatusDetail\('index'\)/, '栏视图徽标点击应打开 status-index 详情')
-  assert.doesNotMatch(badge, /projectConfigOpen/, '栏视图徽标不再直接跳配置页（详情页内保留「去设置」）')
+  assert.doesNotMatch(sb, /projectConfigOpen/, '栏视图徽标不再直接跳配置页（详情页内保留「去设置」）')
   const names = read('events/event-names.js')
   assert.doesNotMatch(names, /idxIndex|indexStatus|statusbarIndex|index-status-badge|statusDetail/,
     'event-names 不得新增索引 / 长任务状态主题')

@@ -1,17 +1,17 @@
 <template>
   <!-- 日志窗口（PRODSIM-1）：`#log` → 只读日志尾部，不参与认证 / 认领 / 项目视图 -->
   <LogView v-if="logOnly" />
-  <!-- 认证形态（desktop / browser）未认证 → 登录/注册视图（61 §4.6：`authed` 由服务端判定） -->
-  <AuthView v-else-if="showAuth" :initial-step="showLogin ? 'creds' : 'dir'" @ready="onAuthReady" />
-  <!-- 视图分派（24 §6.1 / U-2 已决）：**以 URL 为准** —— `?session-id=…#chat` → 纯对话窗口；
-       其余 → 主窗口完整布局。宿主零视图判断（不注入 `__ck.view`）。 -->
-  <ChatOnlyView v-else-if="ready && chatOnly" :session-id="route.sessionId" />
-  <!-- 项目就地切换（browser「打开目录」）：`:key="projectEpoch"` 自增 → 主布局整树重挂载，
-       等价于整页重载后的组件重建（不整页重载）。见 utils/projectReinit.js。 -->
-  <MainLayout v-else-if="ready" :key="projectEpoch" />
-  <div v-else class="ck-startup">
-    <div class="ck-startup__box">{{ t(textKey) }}</div>
-  </div>
+  <template v-else>
+    <!-- 视图分派（24 §6.1 / U-2 已决）：**以 URL 为准** —— `?session-id=…#chat` → 纯对话窗口；
+         其余 → 主窗口完整布局。宿主零视图判断（不注入 `__ck.view`）。 -->
+    <ChatOnlyView v-if="ready && chatOnly" :session-id="route.sessionId" />
+    <!-- 项目就地切换（browser「打开目录」）：`:key="projectEpoch"` 自增 → 主布局整树重挂载，
+         等价于整页重载后的组件重建（不整页重载）。见 utils/projectReinit.js。 -->
+    <MainLayout v-else-if="ready" :key="projectEpoch" />
+    <div v-else class="ck-startup">
+      <div class="ck-startup__box">{{ t(textKey) }}</div>
+    </div>
+  </template>
 </template>
 
 <script setup>
@@ -23,13 +23,10 @@ import { getActiveSessionID } from './api/session'
 import MainLayout from './views/layout/MainLayout.vue'
 import ChatOnlyView from './views/chat/ChatOnlyView.vue'
 import LogView from './views/log/LogView.vue'
-import AuthView from './views/auth/AuthView.vue'
 import { useInstanceClaim, CLAIM_OK, CLAIM_UNANSWERED } from './composables/useInstanceClaim'
-import { useAuth } from './composables/useAuth'
 import { useUserConfigSync } from './composables/useUserConfigSync'
 import { useGuiShowDialog } from './composables/useGuiShowDialog'
 import { maybeShowUnfinishedSubChats } from './composables/useSubChats'
-import { requireAuth } from './utils/instanceState.js'
 import { parseViewRoute, VIEW_CHAT, VIEW_LOG } from './utils/viewRoute.js'
 import { prefetchInitData, invalidateInitDataCache } from './api/file'
 import { projectEpoch, setProjectReinitHandler } from './utils/projectReinit.js'
@@ -37,7 +34,6 @@ import { useSelectionStore } from './stores/selection'
 
 const { t } = useI18n()
 const { state, claim } = useInstanceClaim()
-const { signedIn } = useAuth()
 
 // usr 配置（theme / locale）跨窗口**即时同步**（61 §3.1 · 24 §6.5 · WIN-021）：本窗口订阅
 // data-user-config-changed 并各自应用 —— 主窗口（Toolbar）与纯对话窗口（无 Toolbar）都经此
@@ -56,15 +52,8 @@ const logOnly = route.view === VIEW_LOG
 // claim 时作为提议上送；缺失（对话窗口 / 旧链接）→ 服务端回落实例登记的 work_dir。
 const workDirParam = new URLSearchParams(window.location.search).get('work-dir') || ''
 
-// 认证形态（gui / browser：`__ck.requireAuth`）：需登录 / 选目录后才进主页。
-// 首屏 `authed`（服务端读凭证判定）→ 已认证者直接进「选目录」步（**不再要求凭证**）；
-// desktop（requireAuth=false）→ 无登录视图，启动即认领（见下方）。
-const needCreds = computed(() => requireAuth() && !signedIn.value)
-const needDir = computed(() => requireAuth() && signedIn.value && !ready.value)
-const showAuth = computed(() => needCreds.value || needDir.value)
-const showLogin = computed(() => !signedIn.value)
-
-// **认领成功**（或「无应答」降级态）才进主页 —— 未认证 / 无权访问一律停在前置视图
+// 认领：唯一形态 desktop（PRODSIM-1 产物简化，认证统一到 registry）→ 启动即认领。
+// **认领成功**（或「无应答」降级态）才进主页 —— 无应答/无权访问一律停在前置视图
 // （**不静默失败**，也不进半可用主页）。
 const ready = computed(() => state.value === CLAIM_OK || state.value === CLAIM_UNANSWERED)
 
@@ -96,12 +85,6 @@ async function init() {
   maybeShowUnfinishedSubChats()
 }
 
-// 登录 / 选目录 + 认领完成（AuthView 内部已 claim 成功）→ 等主页挂载（nextTick）→ 既有初始化。
-async function onAuthReady() {
-  await nextTick()
-  init()
-}
-
 // 项目**就地切换**（browser「打开目录」：`gui.dir.open` 服务端切本实例 work_dir）→
 // Toolbar 调 `reinitProjectState()` 触发本序列，**不整页重载**（见 utils/projectReinit.js）：
 //   ① 清 init-data 单飞缓存 → 重挂后的组件重新拉取新项目快照（workDir/布局/已打开文件）；
@@ -117,13 +100,13 @@ setProjectReinitHandler(async () => {
   await init()
 })
 
-// desktop（免鉴权）：启动即认领（不带 user/work_dir，服务端用启动参数）；
-// 认证形态：由 AuthView「登录 → 选目录」后认领（61 §4.6 流程），此处不预先发起。
-if (!requireAuth() && !logOnly) {
+// 日志窗口（PRODSIM-1）不参与认领 / 预取（只读 /api/log/tail）。
+if (!logOnly) {
   // 与认领**并行**预取 init-data：布局/UI 恢复（MainLayout.applyLayout）不再等主视图挂载
   // 才发起 → 首帧即按落盘布局渲染（消除默认布局闪现；见 api/file.js 预取说明）。
   // 对话窗口不预取：它不参与 layout/window 恢复（不写也不读几何，24 §3.3 C5）。
   if (!chatOnly) prefetchInitData()
+  // 主窗口 URL 携带本项目 work_dir（`?work-dir=`）→ 作为 claim 提议上送。
   claim(workDirParam ? { work_dir: workDirParam } : {}).then(async () => {
     await nextTick()
     init()

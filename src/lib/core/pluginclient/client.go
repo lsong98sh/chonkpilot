@@ -30,12 +30,9 @@ const DefaultTimeout = 15 * time.Second
 
 // Options 是 Dial 参数。
 type Options struct {
-	// Addr 是帧传输地址：UDS 路径或 `tcp://host:port`。
+	// Addr 是帧传输地址：UDS 路径或 `tcp://host:port`（PRODSIM-1：能力外溢统一走 UDS，
+	// 已移除 HTTP 前门传输）。
 	Addr string
-	// HTTPBase 是 HTTP 前门基地址（如 `http://127.0.0.1:5671`）。
-	HTTPBase string
-	// Token 是 HTTP 传输的 Bearer token（帧传输忽略）。
-	Token string
 	// PluginID 是插件自报 id（必填）。
 	PluginID string
 	// Name / Version / Features 随 plugin.hello 上报（可选）。
@@ -77,7 +74,7 @@ type Client interface {
 	Close() error
 }
 
-// Dial 建立插件连接（帧或 HTTP）。
+// Dial 建立插件连接（UDS / TCP 帧传输）。
 func Dial(ctx context.Context, opts Options) (Client, error) {
 	opts.PluginID = strings.TrimSpace(opts.PluginID)
 	if opts.PluginID == "" {
@@ -86,11 +83,8 @@ func Dial(ctx context.Context, opts Options) (Client, error) {
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultTimeout
 	}
-	if strings.TrimSpace(opts.HTTPBase) != "" {
-		return dialHTTP(ctx, opts)
-	}
 	if strings.TrimSpace(opts.Addr) == "" {
-		return nil, errors.New("pluginclient: Options.Addr 或 HTTPBase 必须二选一")
+		return nil, errors.New("pluginclient: Options.Addr 不能为空")
 	}
 	return dialFrame(ctx, opts)
 }

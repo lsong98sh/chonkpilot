@@ -37,7 +37,7 @@
 
 **PENDING 口径（不伪造、不放宽断言）**：用例前置不成立时打印 `[PENDING]` 并在最终行单独计入
 「待验证」，**不计入通过**：
-  ① 产物未重建（工具栏设置菜单无「工具配置」→ 前端 dist 未进 exe）→ 页面用例 PENDING；
+  ① 产物未重建（`preview-tab-open{kind:'settings-tool-async'}` 打不开 `.settings-page` → 前端 dist 未进 exe）→ 页面用例 PENDING；
   ② 后端未合并（`data-user-config-save{tool_async}` 写入后回读不到 → usr 未注册该键）→ 落库/效果用例 PENDING。
   两种前置**都成立**时全部断言按原样严格执行（任何不符即 FAIL）。
 """
@@ -55,7 +55,6 @@ WS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws")
 CFG_KEY = "tool_async"
 KIND = "settings-tool-async"
 ROOT = ".settings-page"
-MENU_LABEL = "工具配置"
 MODES = ["always", "never", "auto", "manual"]
 MODE_LABELS = ["仅异步", "仅同步", "自动异步", "手动异步"]
 # 契约值 → 界面本地化档名（zh-CN；「恢复默认」tooltip 用 modeLabel 渲染）
@@ -169,26 +168,26 @@ SEL_PAGE = [None]  # "有"/"无"：产物是否已含新页面
 
 
 def probe_page():
-    """产物是否已重建出新页面：工具栏设置下拉是否出现「工具配置」项。"""
+    """产物是否已重建出新页面：直接按契约命令打开配置页，看 `.settings-page` 是否渲染。
+
+    原实现发 `config-menu-toggle` 找工具栏下拉；该主题已随 UILAYOUT-2-B 删除、设置菜单改为
+    默认布局的声明式条目 → 改走**页面本身的打开命令**（与 require_page 同口径）。
+    """
     if SEL_PAGE[0] is not None:
         return SEL_PAGE[0]
     try:
-        c.mq_emit("config-menu-toggle")
-        time.sleep(0.7)
-        txt = ev("(function(){const e=[...document.querySelectorAll('.b-dropdown-popper')]"
-                 ".find(x=>x.getBoundingClientRect().width>0);return e?e.innerText:'';})()") or ""
-        c.mq_emit("config-menu-toggle")
-        time.sleep(0.3)
+        c.mq_emit("preview-tab-open", {"kind": KIND})
+        ok = wait_vis(ROOT)
     except Exception:
-        txt = ""
-    SEL_PAGE[0] = "有" if MENU_LABEL in txt else "无"
+        ok = False
+    SEL_PAGE[0] = "有" if ok else "无"
     return SEL_PAGE[0]
 
 
 def require_page():
     if probe_page() != "有":
-        raise Pending("产物未含新页面（工具栏设置菜单无「工具配置」）"
-                      "→ 等待主线统一重建 build-desktop.ps1 后全量验证")
+        raise Pending("产物未含新页面（preview-tab-open{%s} 打不开 %s）"
+                      "→ 等待主线统一重建 build-desktop.ps1 后全量验证" % (KIND, ROOT))
 
 
 BACKEND = [None]

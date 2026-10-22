@@ -55,8 +55,8 @@ test('② isChromeMissing：探测/配置任一非空即不告警', () => {
   assert.equal(isChromeMissing({ detectedPath: '  ', userChromePath: '  ' }), true, '空白视为未配置')
 })
 
-test('② Toolbar 按真实后端信号显示/隐藏告警并跳路径配置', () => {
-  const src = read('views/toolbar/Toolbar.vue')
+test('② 栏视图 chrome-warn 按真实后端信号显示/隐藏告警并跳路径配置', () => {
+  const src = read('layout/bar-views/ChromeWarnView.vue')
   assert.match(src, /detectToolchains\(\)/, '须读 gui.toolchain.detect 探测结果')
   assert.match(src, /getUserConfig\(\)/, '须读 usr 配置（chromePath 覆盖）')
   assert.match(src, /cfg\.chromePath/, '须用 chromePath 覆盖探测结果')
@@ -67,24 +67,17 @@ test('② Toolbar 按真实后端信号显示/隐藏告警并跳路径配置', (
 })
 
 // ── ③ 日志目录入口（logDir 存在/缺失）────────────────────
-test('③ logDirView：缺失不显示空路径；GUI 打开 / browser 复制', () => {
-  const missing = logDirView({ logDir: '', isBrowser: false })
+test('③ logDirView：缺失不显示空路径；有值 → native 打开', () => {
+  const missing = logDirView({ logDir: '' })
   assert.equal(missing.show, false)
   assert.equal(missing.path, '', '缺失时不得显示空路径')
   assert.equal(missing.hintKey, 'projectConfig.log_dir_unavailable')
 
-  const gui = logDirView({ logDir: 'E:/d/logs', isBrowser: false })
+  const gui = logDirView({ logDir: 'E:/d/logs' })
   assert.equal(gui.show, true)
   assert.equal(gui.path, 'E:/d/logs')
   assert.equal(gui.canOpen, true)
-  assert.equal(gui.canCopy, false)
   assert.equal(gui.hintKey, '')
-
-  const browser = logDirView({ logDir: 'E:/d/logs', isBrowser: true })
-  assert.equal(browser.show, true)
-  assert.equal(browser.canOpen, false, 'browser 形态 native 不可用')
-  assert.equal(browser.canCopy, true)
-  assert.equal(browser.hintKey, 'projectConfig.log_dir_browser_hint')
 })
 
 test('③ LogConfig 消费 init-data 的 logDir（无空路径）+ 无 watch', () => {
@@ -92,8 +85,7 @@ test('③ LogConfig 消费 init-data 的 logDir（无空路径）+ 无 watch', (
   assert.match(src, /loadInitData\(\)/, '须读 gui.init-data')
   assert.match(src, /r\.logDir|logDir/, '须取 logDir 字段')
   assert.match(src, /logDirView\(/, '须走 logDirView 视图模型')
-  assert.match(src, /revealInExplorer\(/, 'GUI 形态须用既有 native reveal 打开目录')
-  assert.match(src, /navigator\.clipboard\.writeText/, 'browser 形态须提供复制')
+  assert.match(src, /revealInExplorer\(/, '须用既有 native reveal 打开目录')
 })
 
 // ── ④ 引擎运行态（真实可得口径）──────────────────────────
@@ -128,8 +120,9 @@ test('⑤ 摘要计数：executors + mcps 计 true；旧形状读取时迁移', 
   assert.equal(countToolSandboxOn({ executors: { a: true, b: false }, mcps: { c: true } }), 2)
   assert.equal(countToolSandboxOn('{"executors":{"x":true}}'), 1, 'JSON 字符串形态须可解析')
   assert.equal(countToolSandboxOn(null), 0)
-  // 旧形状（executor 类别）→ 迁移：core → core + dsl 两 exe（均计）
-  assert.equal(countToolSandboxOn('{"core":true,"desktop":false}'), 2, '旧形状 core 迁移为两 exe')
+  // 旧形状（executor 类别）→ 迁移：`core` → 仅 `chonkpilot-tools-executor.exe`（单 exe）。
+  // 2026-10-21（GATEWAY-2/L1）：DSL 退役、desktop/browser 改为插件 → 旧键不再产生额外单位。
+  assert.equal(countToolSandboxOn('{"core":true,"desktop":false}'), 1, '旧形状 core 迁移为 tools-executor（单 exe）')
   assert.equal(countMCPsOn({ executors: { a: true }, mcps: { b: true, c: false } }), 1)
   assert.equal(countMCPsOn('{"core":true}'), 0, '旧形状不产生 mcps')
 })

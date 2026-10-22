@@ -60,10 +60,6 @@ func Build(cfg BootConfig, opts BuildOptions) (*App, error) {
 			WorkDir:        cfg.WorkDir,
 			DataDir:        cfg.DataDir,
 			Form:           cfg.Form,
-			AuthDBPath:     cfg.Auth.DBPath,
-			UserDataRoot:   cfg.Auth.UserDataRoot,
-			AllowRegister:  cfg.Auth.AllowRegister,
-			ProjectRoots:   cfg.Auth.ProjectRoots,
 			Plugins:        DefaultPlugins(app.Facade),
 		})
 	}

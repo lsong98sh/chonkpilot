@@ -45,9 +45,8 @@
         <Button text size="small" @click="gotoMcp">{{ $t('config.toolSandbox.gotoMcp') }}</Button>
       </div>
 
-      <!-- ② 显著内联预警（非 toast）：已开启沙箱但信任目录为空 → agentbox 空允许集 = 全拒，
-           已开启 executor 的**所有文件操作都会被拒绝**；按钮直达「可读/可写目录」配置。
-           目录配置后（data-prj-security-refresh）警告即时消失（见 onMounted 订阅）。 -->
+      <!-- ② 显著内联预警（非 toast）：已开启沙箱但信任目录为空 → 不会施加目录隔离（stdio 上游不下发策略；
+           executor 级进程沙箱待 L6），引导去配置信任目录；目录配置后（data-prj-security-refresh）警告即时消失。 -->
       <div v-if="trustWarning" class="trust-warn" role="alert">
         <span class="trust-warn-text">{{ $t('config.toolSandbox.trustDirWarning') }}</span>
         <Button size="small" type="primary" @click="gotoTrustDirs">{{ $t('config.toolSandbox.gotoTrustDirs') }}</Button>

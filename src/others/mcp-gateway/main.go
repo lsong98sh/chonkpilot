@@ -32,9 +32,9 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-mcp-gateway/facadeapi"
+	"github.com/chonkpilot/chonkpilot-gwadapter/facadeapi"
 	mcpgateway "github.com/chonkpilot/chonkpilot-mcp-gateway/gateway"
-	"github.com/chonkpilot/chonkpilot-mcp-gateway/mqadapter"
+	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
 )
 
 func usage() {
@@ -115,8 +115,11 @@ func main() {
 	}
 
 	// ── gateway lib（聚合 + 生命周期，上游 = 本进程 Bus；下游 = servers）──
+	// MOD-1 M0.5：gateway 内核只认端口，mq 适配在宿主；出站通知主题名归 mqadapter.Hooks()。
+	gwAdapter := mqadapter.New(bus)
 	gw, err := mcpgateway.New(mcpgateway.Params{
-		Transport:   mqadapter.New(bus), // MOD-1 M0.5：gateway 内核只认端口，mq 适配在宿主
+		Transport:   gwAdapter,
+		Hooks:       gwAdapter.Hooks(),
 		Servers:     servers,
 		CallTimeout: time.Duration(*callTimeout) * time.Second,
 		MaxTasks:    *maxTasks,

@@ -81,7 +81,7 @@ docs/spec/
 │   ├── 27-mcp-tools.md                工具层（executor，spawn-on-call with agentbox）
 │   ├── 28-plugins.md                  插件体系（compress / memory / history / codegraph / vfts）
 │   ├── 29-codegraph.md                codegraph（独立 mcp-server）
-│   ├── 2A-cli.md                      CLI 单体
+│   ├── 2A-cli.md                      （已删除 · CLI 单体规格稿，2026-10-21 随 CLI 移除）
 │   ├── 2B-vfts.md                     vfts（全文检索索引，独立 mcp-server）
 │   ├── 2C-UI插件.md                   UI 插件扩展设计（🔵 规划中 / 未实现，预留）
 │   ├── 2D-router.md                   LLM 出网协议适配（canonical / 多协议 / 降级 / 重试）

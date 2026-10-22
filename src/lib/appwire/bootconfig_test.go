@@ -7,12 +7,12 @@ import "testing"
 func TestSnapshotRevisionDeterministic(t *testing.T) {
 	a := Snapshot(BootConfig{
 		Form: "desktop", WorkDir: `E:\ws\a`, LLMBase: "http://127.0.0.1:8901/v1",
-		Auth:    Auth{ProjectRoots: []string{`E:\ws\b`, `E:\ws\a`}},
+		Servers: []ServerSpec{{ID: "b"}, {ID: "a"}},
 		EnvKeys: []string{"CHONK_PLUGIN_UDS", "CHONK_LLM_BRIDGE_ADDR"},
 	})
 	b := Snapshot(BootConfig{
 		Form: "desktop", WorkDir: `E:\ws\a`, LLMBase: "http://127.0.0.1:8901/v1",
-		Auth:    Auth{ProjectRoots: []string{`E:\ws\a`, `E:\ws\b`}},
+		Servers: []ServerSpec{{ID: "a"}, {ID: "b"}},
 		EnvKeys: []string{"CHONK_LLM_BRIDGE_ADDR", "CHONK_PLUGIN_UDS"},
 	})
 	if a.Revision == "" || a.Revision != b.Revision {

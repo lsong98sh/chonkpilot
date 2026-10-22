@@ -51,9 +51,9 @@ test('解析：非法项丢弃、对象/数组两种形态兼容', () => {
   const good = seedProfiles(1)
   assert.equal(parseProfiles(serializeProfiles(good)).length, 2)
   assert.equal(parseProfiles(good).length, 2)
-  assert.equal(parseProfiles('{bad json'), 0)
-  assert.equal(parseProfiles(''), 0)
-  assert.equal(parseProfiles(null), 0)
+  assert.equal(parseProfiles('{bad json').length, 0)
+  assert.equal(parseProfiles('').length, 0)
+  assert.equal(parseProfiles(null).length, 0)
   const mixed = parseProfiles([
     ...good,
     { id: '', name: 'x', doc: good[0].doc },

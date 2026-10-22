@@ -79,7 +79,6 @@ const BAR_VIEWS = [
   'search',
   'recent-dirs',
   'chrome-warn',
-  'logout',
   'memory-token',
   'queue-status',
   'index-badge',
@@ -444,7 +443,8 @@ test('⑤ MainLayout：唯一容器形态（legacy 分支已删除）', () => {
   assert.match(ml, /<LfDrawerHost \/>/, '容器运行期外壳：具名抽屉')
   assert.match(ml, /<LfContentSettingsDialog \/>/, '容器运行期外壳：内容设置编辑器')
   assert.match(ml, /<LfViewPool \/>/, '运行时视图池（WIN-027）')
-  assert.match(ml, /applyFreeLayout\(r\[GuiInitDataKeys\.layout\] \|\| null\)/, '启动恢复走 init-data')
+  assert.match(ml, /const layoutState = r\[GuiInitDataKeys\.layout\] \|\| null/, '启动恢复走 init-data')
+  assert.match(ml, /applyFreeLayout\(layoutState\)/, 'layout 文档交给 applyFreeLayout')
   // beacon 兜底投递 layout.free
   assert.match(ml, /\{ free: toFreeString\(/)
 })

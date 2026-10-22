@@ -103,7 +103,7 @@ test('① SettingsPathsPage：usr 保存反馈标注「需重启」+ 页内提�
 })
 
 // ═══════════════════════════════════════════════════════════════
-// ② 空信任目录 = 全拒（工具级沙箱）
+// ② 空信任目录 → 不施加目录隔离（工具级沙箱）
 // ═══════════════════════════════════════════════════════════════
 test('② needsTrustDirsWarning / countTrustDirs：判定与「配置后消失」联动', () => {
   assert.equal(countTrustDirs([{ dir: 'C:/a' }, { dir: ' ' }, {}, null]), 1, '仅目录名非空白计入')
@@ -119,12 +119,17 @@ test('② needsTrustDirsWarning / countTrustDirs：判定与「配置后消失�
   assert.equal(needsTrustDirsWarning(), false)
 })
 
-test('② 后端语义核实：工具级空允许集 = 全拒（严格语义）', () => {
-  const cfg = readRepo('lib/mcp-server/server/config.go')
-  assert.match(cfg, /空允许集 → 执行器侧全拒的严格语义/, 'config.go 须载明空集→全拒语义')
-  assert.match(cfg, /return "\[\]" \/\/ 无允许目录 → 空集（执行器侧解释为全拒）/, 'SecurityDirs 为 nil → 下发 "[]"')
-  const ab = readRepo('lib/core/agentbox/agentbox.go')
-  assert.match(ab, /空允许集 = 全拒/, 'agentbox 须载明空允许集=全拒')
+test('② 后端语义核实：空信任目录 → 不施加目录隔离（stdio 上游不下发策略；内建执行体待 L6）', () => {
+  // 2026-10-21（GATEWAY-2 L3/L5）重构后：应用层 `SecurityDirs` 全拒校验已删除。
+  // 现行事实：① 外部 MCP（stdio）空允许目录 → 不注入沙箱策略；② 内建 executor 的进程级沙箱
+  // 待 L6（当前 spawn 不注入 `CHONKPILOT_SANDBOX`）。
+  const gw = readRepo('lib/gateway/gateway/serverslist.go')
+  assert.match(gw, /空目录不注入/, 'serverslist.go 须载明空允许目录不下发策略')
+  assert.match(gw, /func \(e ServerEntry\) SandboxPolicyJSON/, '策略入口 = SandboxPolicyJSON')
+  const srv = readRepo('lib/llm/server/server.go')
+  assert.match(srv, /当前 spawn 不再注入 CHONKPILOT_SANDBOX/, 'server.go 须载明内建 executor 沙箱待 L6（当前不注入）')
+  const ab = readRepo('lib/core/sandbox/sandbox.go')
+  assert.match(ab, /WritableRoots 从规则集提取可写目录/, 'sandbox 须载明可写目录提取口径')
 })
 
 test('② useToolSandbox：派生预警 + 读信任目录 + 手动保存（无 watch，写库通道带 dirty 短路）', () => {
@@ -147,7 +152,7 @@ test('② SettingsToolSandboxPage：常驻内联预警 + 行内提示 + 直达�
   const vue = read('views/config/SettingsToolSandboxPage.vue')
   // 显著内联（非一闪而过的 toast）：role=alert 的常驻块
   assert.match(vue, /v-if="trustWarning"[\s\S]{0,200}role="alert"/, '页级须为常驻内联预警块')
-  assert.match(vue, /config\.toolSandbox\.trustDirWarning/, '页级警告文案（说明会被拒绝）')
+  assert.match(vue, /config\.toolSandbox\.trustDirWarning/, '页级警告文案（说明不施加隔离）')
   assert.match(vue, /v-if="trustWarning && row\.on"/, '对应 executor 行须内联提示')
   assert.match(vue, /config\.toolSandbox\.trustDirWarningRow/, '行内提示文案')
   // 直达「可读/可写目录」：既有 previewTabOpen（settings-project 默认落「安全」页签）
@@ -162,14 +167,14 @@ test('② SettingsToolSandboxPage：常驻内联预警 + 行内提示 + 直达�
   assert.match(vue, /:disabled="!dirty"/, '保存按钮须按 dirty 禁用')
 })
 
-test('② 空目录预警文案（zh/en）明确「该工具所有文件操作被拒绝」', () => {
+test('② 空目录预警文案（zh/en）明确「不施加目录隔离」', () => {
   const zh = readLocale('zh-CN', 'config.json')
-  assert.match(zh.toolSandbox.trustDirWarning, /拒绝/, 'zh 页级文案须说明被拒绝')
-  assert.match(zh.toolSandbox.trustDirWarningRow, /拒绝/, 'zh 行内文案须说明被拒绝')
+  assert.match(zh.toolSandbox.trustDirWarning, /隔离/, 'zh 页级文案须说明不施加隔离')
+  assert.match(zh.toolSandbox.trustDirWarningRow, /隔离/, 'zh 行内文案须说明不施加隔离')
   assert.match(zh.toolSandbox.gotoTrustDirs, /目录/, 'zh 入口可行动')
   const en = readLocale('en-US', 'config.json')
-  assert.match(en.toolSandbox.trustDirWarning, /rejected/i, 'en 页级文案须说明被拒绝')
-  assert.match(en.toolSandbox.trustDirWarningRow, /rejected/i, 'en 行内文案须说明被拒绝')
+  assert.match(en.toolSandbox.trustDirWarning, /isolation/i, 'en 页级文案须说明不施加隔离')
+  assert.match(en.toolSandbox.trustDirWarningRow, /isolation/i, 'en 行内文案须说明不施加隔离')
 })
 
 // ═══════════════════════════════════════════════════════════════
