@@ -99,12 +99,26 @@ func newSessionEnv(t *testing.T) (*Service, facade.Scope) {
 	return s, facade.Scope{WorkDir: wd, DataDir: dd}
 }
 
+// disableShard 把该实例置回旧布局（P3-4c 起缺省 on；旧布局断言类用例显式关闭）。
+func disableShard(t *testing.T, s *Service, inst string, scope facade.Scope) {
+	t.Helper()
+	prj, release, err := s.PrjFor(inst, scope)
+	if err != nil {
+		t.Fatalf("PrjFor: %v", err)
+	}
+	defer release()
+	if err := kernel.PrjConfigSetVal(prj, kernel.ConfigSessionShard, "off"); err != nil {
+		t.Fatalf("set shard=off: %v", err)
+	}
+}
+
 // TestSessionTitleUpdateInPreservesFields（A-23）：SessionTitle 读改写收进 UpdateIn 单事务——
 // 只改 title/updated_at，其余字段（history/snapshot_turn 等）保留；行不存在 → 报错且不建行；
 // updated_at 为纳秒口径（A-11）。
 func TestSessionTitleUpdateInPreservesFields(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	inst := "ins-title"
+	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
@@ -156,6 +170,7 @@ func TestSessionTitleUpdateInPreservesFields(t *testing.T) {
 func TestTurnSetSummaryCompleteNoOrphanRow(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	inst := "ins-turn"
+	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
@@ -225,6 +240,7 @@ func newSessionEnvBus(t *testing.T) (*Service, facade.Scope) {
 func TestSessionEnsureFixedParamsNonEmptyOnly(t *testing.T) {
 	s, scope := newSessionEnvBus(t)
 	inst := "ins-fixed"
+	disableShard(t, s, inst, scope)
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
@@ -292,6 +308,7 @@ func TestSessionEnsureFixedParamsNonEmptyOnly(t *testing.T) {
 func TestSessionSubChatsAndKindFallback(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	inst := "ins-subchats"
+	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
@@ -315,7 +332,7 @@ func TestSessionSubChatsAndKindFallback(t *testing.T) {
 	}
 	const t0 = "2026-01-01T00:00:00.000000000Z"
 	insert("s-top", "", "", "", t0)
-	insert("s-legacy", "s-top", "", "", "2026-01-01T00:00:01.000000000Z")                  // 历史子会话（无 kind）
+	insert("s-legacy", "s-top", "", "", "2026-01-01T00:00:01.000000000Z") // 历史子会话（无 kind）
 	insert("s-chat1", "s-top", facade.SessionKindSubChat, facade.SessionLifecycleChatting, "2026-01-01T00:00:02.000000000Z")
 	insert("s-chat2", "s-top", facade.SessionKindSubChat, facade.SessionLifecycleFinished, "2026-01-01T00:00:03.000000000Z")
 	insert("s-group", "s-top", facade.SessionKindGroupChat, facade.SessionLifecycleReady, "2026-01-01T00:00:04.000000000Z")
@@ -388,6 +405,7 @@ func TestSessionSubChatsAndKindFallback(t *testing.T) {
 func TestSessionLifecycleSet(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	inst := "ins-lifecycle"
+	disableShard(t, s, inst, scope)
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)

@@ -55,10 +55,28 @@ func newFacadeBridgeEnv(t *testing.T) (*Bridge, *persist.Service, mq.Bus, string
 	}
 	data.Register(instanceID, wd, "")
 	time.Sleep(20 * time.Millisecond) // 等 persist 自持实例视图登记
+	disableSessionShard(t, wd)        // 本用例集覆盖旧布局（shard 缺省 on 会要求 dialog_id）
 
 	br := New(instanceID, wd, "", nil, bus)
 	br.SetFacade(inline.New(bus))
 	return br, svc, bus, instanceID
+}
+
+// disableSessionShard 把该实例的 prj 库置 `session.db.shard=off`（本文件用例覆盖旧布局；
+// shard 缺省 on 时，会话类调用必须带 dialog_id —— 见 61 §0.6 / 2G §3.3）。
+func disableSessionShard(t *testing.T, workDir string) {
+	t.Helper()
+	db, err := data.OpenLayer(data.ProjectPath(workDir, ""), data.LayerPrj)
+	if err != nil {
+		t.Fatalf("打开 prj 库: %v", err)
+	}
+	if err := db.Table("config").Upsert("session.db.shard", data.Record{"v": "off"}); err != nil {
+		_ = db.Close()
+		t.Fatalf("置 session.db.shard=off: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("关闭 prj 库: %v", err)
+	}
 }
 
 // countSubjects 统计若干主题上的**请求**条数（应答带 ok 字段 → 排除）。

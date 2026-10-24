@@ -1,5 +1,7 @@
 // snapshot.Set 单事务 update-or-insert 单测（A-19 / A-15）：会话不存在 → 补建完整会话行；
-// 会话已存在 → 保留其余字段（title 等与快照字段同事务读改，不互覆）。
+// 会话已存在 → 保留其余字段（title 等与 updated_at 同事务读改，不互覆）。
+//
+// 2026-10-23 轻量分片后：快照数据落**会话库**（sdb），会话目录行仍在 prjusr（catalog）。
 package snapshot
 
 import (
@@ -9,9 +11,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 )
 
-func openSnapshotTestDB(t *testing.T) *data.DB {
+func openSnapshotTestDB(t *testing.T, name string) *data.DB {
 	t.Helper()
-	db, err := data.Open(filepath.Join(t.TempDir(), "prjusr.db"))
+	db, err := data.Open(filepath.Join(t.TempDir(), name))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -29,12 +31,13 @@ func testSnap() data.Snapshot {
 // TestSetCreatesCompleteSessionRow：会话不存在时 Set 补建完整会话行（口径同 SessionEnsure），
 // 且快照可读回——不产生「查得到却列不出」的幽灵会话。
 func TestSetCreatesCompleteSessionRow(t *testing.T) {
-	db := openSnapshotTestDB(t)
-	if err := Set(db, "s1", testSnap()); err != nil {
+	catalog := openSnapshotTestDB(t, "prjusr.db")
+	sdb := openSnapshotTestDB(t, "session.db")
+	if err := Set(catalog, sdb, "s1", testSnap()); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	var rec data.Record
-	if ok, err := db.Table("sessions").Get("s1", &rec); err != nil || !ok {
+	if ok, err := catalog.Table("sessions").Get("s1", &rec); err != nil || !ok {
 		t.Fatalf("get s1: ok=%v err=%v", ok, err)
 	}
 	if got, _ := rec["title"].(string); got != "s1" {
@@ -49,7 +52,7 @@ func TestSetCreatesCompleteSessionRow(t *testing.T) {
 	if got, _ := rec["updated_at"].(string); got == "" {
 		t.Fatal("补建行缺 updated_at")
 	}
-	snap, ok, err := Get(db, "s1")
+	snap, ok, err := Get(sdb, "s1")
 	if err != nil || !ok {
 		t.Fatalf("get snapshot: ok=%v err=%v", ok, err)
 	}
@@ -58,23 +61,24 @@ func TestSetCreatesCompleteSessionRow(t *testing.T) {
 	}
 }
 
-// TestSetPreservesExistingFields：会话已存在时 Set 只动快照字段 + updated_at，
+// TestSetPreservesExistingFields：会话已存在时 Set 只刷新 updated_at，
 // title / created_at 等其余字段保留（与 SessionTitle 并发不再互丢）。
 func TestSetPreservesExistingFields(t *testing.T) {
-	db := openSnapshotTestDB(t)
+	catalog := openSnapshotTestDB(t, "prjusr.db")
+	sdb := openSnapshotTestDB(t, "session.db")
 	const createdAt = "2020-01-01T00:00:00.000000000Z"
-	if err := db.Table("sessions").Upsert("s2", data.Record{
+	if err := catalog.Table("sessions").Upsert("s2", data.Record{
 		"session_id": "s2", "title": "自定义标题", "parent_id": "",
 		"created_at": createdAt, "updated_at": createdAt,
 	}); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
 
-	if err := Set(db, "s2", testSnap()); err != nil {
+	if err := Set(catalog, sdb, "s2", testSnap()); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	var rec data.Record
-	if ok, err := db.Table("sessions").Get("s2", &rec); err != nil || !ok {
+	if ok, err := catalog.Table("sessions").Get("s2", &rec); err != nil || !ok {
 		t.Fatalf("get s2: ok=%v err=%v", ok, err)
 	}
 	if got, _ := rec["title"].(string); got != "自定义标题" {
@@ -86,8 +90,36 @@ func TestSetPreservesExistingFields(t *testing.T) {
 	if got, _ := rec["updated_at"].(string); got == createdAt {
 		t.Fatalf("快照写应刷新 updated_at（原语义）：%q", got)
 	}
-	snap, ok, err := Get(db, "s2")
+	snap, ok, err := Get(sdb, "s2")
 	if err != nil || !ok || snap.SnapshotTurn != "t1" || len(snap.History) != 2 {
 		t.Fatalf("快照读回不符：ok=%v err=%v snap=%+v", ok, err, snap)
+	}
+}
+
+// TestMigrateFromCatalog：历史快照（内嵌 sessions 行）搬入会话库，幂等且不改目录行。
+func TestMigrateFromCatalog(t *testing.T) {
+	catalog := openSnapshotTestDB(t, "prjusr.db")
+	sdb := openSnapshotTestDB(t, "session.db")
+	if err := catalog.Table("sessions").Upsert("s3", data.Record{
+		"session_id": "s3", "title": "旧会话", "parent_id": "",
+		"history": `[{"role":"user","content":"legacy"}]`, "snapshot_turn": "t9",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for i := 0; i < 2; i++ { // 幂等
+		if err := MigrateFromCatalog(catalog, sdb, "s3"); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+	}
+	snap, ok, err := Get(sdb, "s3")
+	if err != nil || !ok || snap.SnapshotTurn != "t9" || len(snap.History) != 1 {
+		t.Fatalf("迁移结果不符：ok=%v err=%v snap=%+v", ok, err, snap)
+	}
+	var rec data.Record
+	if ok, _ := catalog.Table("sessions").Get("s3", &rec); !ok {
+		t.Fatal("迁移不应删除目录行")
+	}
+	if got, _ := rec["history"].(string); got == "" {
+		t.Fatal("迁移应为非破坏（目录行字段保留）")
 	}
 }

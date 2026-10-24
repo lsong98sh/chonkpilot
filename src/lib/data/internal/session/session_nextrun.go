@@ -28,8 +28,13 @@ func (s *Service) SessionNextRunCheckAndAdd(req facade.SessionNextRunCheckAndAdd
 	if err != nil {
 		return facade.SessionNextRunCheckAndAddResponse{}, err
 	}
+	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.SessionNextRunCheckAndAddResponse{}, err
+	}
+	defer release()
 	count, allowed, notFound := 0, false, false
-	if err := prj.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
+	if err := db.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
 		if len(rec) == 0 {
 			notFound = true
 			return nil
@@ -61,7 +66,12 @@ func (s *Service) SessionNextRunReset(req facade.SessionNextRunResetRequest) (fa
 	if err != nil {
 		return facade.SessionNextRunResetResponse{}, err
 	}
-	if err := prj.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
+	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.SessionNextRunResetResponse{}, err
+	}
+	defer release()
+	if err := db.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
 		if len(rec) == 0 {
 			return nil // 会话不存在 → 幂等成功（不建残行）
 		}
@@ -85,8 +95,13 @@ func (s *Service) SessionNextRunGet(req facade.SessionNextRunGetRequest) (facade
 	if err != nil {
 		return facade.SessionNextRunGetResponse{}, err
 	}
+	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.SessionNextRunGetResponse{}, err
+	}
+	defer release()
 	var rec data.Record
-	ok, err := prj.Table("sessions").Get(req.SessionID, &rec)
+	ok, err := db.Table("sessions").Get(req.SessionID, &rec)
 	if err != nil {
 		return facade.SessionNextRunGetResponse{}, err
 	}
@@ -105,8 +120,13 @@ func (s *Service) SessionNextRunDec(req facade.SessionNextRunDecRequest) (facade
 	if err != nil {
 		return facade.SessionNextRunDecResponse{}, err
 	}
+	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.SessionNextRunDecResponse{}, err
+	}
+	defer release()
 	count := 0
-	if err := prj.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
+	if err := db.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
 		if len(rec) == 0 {
 			return nil
 		}

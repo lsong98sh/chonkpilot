@@ -22,6 +22,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
+	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
@@ -49,10 +50,17 @@ func sortSessionsByActivity(list []facade.Session) {
 }
 
 // emitSessionNew 广播会话创建事件 session-new（会话行首次落库成功后发；幂等由 SessionEnsure
-// 的存在性检查保证）。payload = {instance_id, session_id}，子会话再带 {parent_session_id}
-// （snake_case，61-消息一览 §命名约定）；桥按未映射主题原名直通前端 type。
-func (s *Service) emitSessionNew(sessionID, parentSessionID, instanceID string) {
+// 的存在性检查保证）。payload = {instance_id, session_id[, dialog_id, parent_session_id]}
+// （snake_case，61-消息一览 §命名约定；`dialog_id` 仅在对话布局调用时出现 —— P3 过渡期，
+// 旧布局调用方尚未带该字段）。
+func (s *Service) emitSessionNew(sessionID, parentSessionID, instanceID, dialogID string) {
+	if s == nil || s.Bus == nil || sessionID == "" {
+		return // 无总线（测试/无订阅场景）：静默跳过
+	}
 	payload := map[string]any{"instance_id": instanceID, "session_id": sessionID}
+	if dialogID != "" {
+		payload["dialog_id"] = dialogID
+	}
 	if parentSessionID != "" {
 		payload["parent_session_id"] = parentSessionID
 	}
@@ -66,11 +74,15 @@ func (s *Service) emitSessionNew(sessionID, parentSessionID, instanceID string) 
 // （含**另一 instance 的对话窗口**，即本主题的用途；发起窗口重复应用幂等）。用途 = 主窗侧
 // 改会话标题 → 已开对话窗口标题跟随（G-48 ⑦ / #12）；与 data-<domain>-refresh 家族的区别
 // 正在于此（后者带 instance_id → 只到来源窗口）。
-func (s *Service) emitSessionTitleChanged(sessionID, title string) {
+func (s *Service) emitSessionTitleChanged(sessionID, title, dialogID string) {
 	if s == nil || s.Bus == nil || sessionID == "" {
 		return // 无总线（测试/无订阅场景）或空会话 id：无接收方/无内容，静默跳过
 	}
-	b, _ := json.Marshal(map[string]any{"session_id": sessionID, "title": title})
+	payload := map[string]any{"session_id": sessionID, "title": title}
+	if dialogID != "" {
+		payload["dialog_id"] = dialogID
+	}
+	b, _ := json.Marshal(payload)
 	_ = s.Bus.Emit(context.Background(), msgkeys.TopicDataSessionTitleChanged, b)
 }
 
@@ -81,6 +93,13 @@ func (s *Service) SessionList(req facade.SessionListRequest) (facade.SessionList
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SessionListResponse{}, err
+	}
+	// 一树一库（shard=on）：列表由 `dialogs` 目录派生（每对话一行，ID = 主会话 id）。
+	if s.shardOn(req.InstanceID, req.Scope) {
+		if list, err := s.sessionListDialogs(prj); err == nil {
+			return facade.SessionListResponse{List: list}, nil
+		}
+		// 派生失败回落旧布局（读列表不因新布局异常而中断）。
 	}
 	// 下推顶层维度：Where{parent_id:""} 命中 sessions_by_top 索引前缀 "\x00"（顶层会话恒写
 	// parent_id=""，见 SessionEnsure）。索引只负责过滤与初序；其后 sortSessionsByActivity 仍按
@@ -108,6 +127,12 @@ func (s *Service) SessionGet(req facade.SessionGetRequest) (facade.SessionGetRes
 	if err != nil {
 		return facade.SessionGetResponse{}, err
 	}
+	if req.DialogID != "" {
+		return s.sessionGetInDialog(prj, req)
+	}
+	if s.shardOn(req.InstanceID, req.Scope) { // P3-4d：一树一库生效 → 必带 dialog_id
+		return facade.SessionGetResponse{}, kernel.ErrDialogRequired
+	}
 	var rec data.Record
 	ok, err := prj.Table("sessions").Get(req.SessionID, &rec)
 	if err != nil {
@@ -125,6 +150,11 @@ func (s *Service) SessionLatest(req facade.SessionLatestRequest) (facade.Session
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SessionLatestResponse{}, err
+	}
+	if s.shardOn(req.InstanceID, req.Scope) {
+		if sid, dlg := s.latestDialogSession(prj); sid != "" {
+			return facade.SessionLatestResponse{SessionID: sid, DialogID: dlg}, nil
+		}
 	}
 	rec, err := kernel.LatestTopSession(prj)
 	if err != nil {
@@ -151,6 +181,12 @@ func (s *Service) SessionTitle(req facade.SessionTitleRequest) (facade.SessionTi
 	if err != nil {
 		return facade.SessionTitleResponse{}, err
 	}
+	if req.DialogID != "" {
+		return s.sessionTitleInDialog(prj, req)
+	}
+	if s.shardOn(req.InstanceID, req.Scope) { // P3-4d：一树一库生效 → 必带 dialog_id
+		return facade.SessionTitleResponse{}, kernel.ErrDialogRequired
+	}
 	// 读改写收进 UpdateIn 单事务（A-23）：Get→改→Update 跨两事务整行覆盖会与并发写
 	// （如 snapshot.Set 同事务 RMW，见 snapshot/store.go）互丢字段。行不存在 → 保持原
 	// not found 语义（fn 放弃写入，不建行）。
@@ -171,7 +207,7 @@ func (s *Service) SessionTitle(req facade.SessionTitleRequest) (facade.SessionTi
 	if notFound {
 		return facade.SessionTitleResponse{}, fmt.Errorf("session not found: %s", req.SessionID)
 	}
-	s.emitSessionTitleChanged(req.SessionID, req.Title)
+	s.emitSessionTitleChanged(req.SessionID, req.Title, "")
 	return facade.SessionTitleResponse{OK: true}, nil
 }
 
@@ -184,6 +220,12 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 	if err != nil {
 		return facade.SessionDeleteResponse{}, err
 	}
+	if req.DialogID != "" {
+		return s.sessionDeleteInDialog(prj, req)
+	}
+	if s.shardOn(req.InstanceID, req.Scope) { // P3-4d：一树一库生效 → 必带 dialog_id
+		return facade.SessionDeleteResponse{}, kernel.ErrDialogRequired
+	}
 	var check data.Record
 	ok, err := prj.Table("sessions").Get(req.SessionID, &check)
 	if err != nil {
@@ -193,6 +235,10 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 		// 会话不存在视为成功（幂等），但 **inbox 级联仍执行**：历史孤儿行（会话先被删/旧版本
 		// 遗留）在此收敛，避免 `session_id` 过滤下永不被消费的无主行长期占空间。
 		if err := deleteInboxBySession(prj, req.SessionID); err != nil {
+			return facade.SessionDeleteResponse{}, err
+		}
+		// 会话库（分片数据）可能残留于目录行缺失的历史场景：一并清理（幂等）。
+		if err := sessionstore.New(prj).Delete(req.SessionID); err != nil {
 			return facade.SessionDeleteResponse{}, err
 		}
 		return facade.SessionDeleteResponse{OK: true}, nil // 不存在视为成功（幂等）
@@ -259,6 +305,10 @@ func (s *Service) SessionDelete(req facade.SessionDeleteRequest) (facade.Session
 			return facade.SessionDeleteResponse{}, err
 		}
 	}
+	// 会话库与目录行同生命周期：snapshot / tasktree 等分片数据随会话删除清理。
+	if err := sessionstore.New(prj).Delete(req.SessionID); err != nil {
+		return facade.SessionDeleteResponse{}, err
+	}
 	return facade.SessionDeleteResponse{OK: true}, nil
 }
 
@@ -301,6 +351,9 @@ func (s *Service) SessionActiveGet(req facade.SessionActiveGetRequest) (facade.S
 			id = kernel.Sval(rec[data.KeyField])
 		}
 	}
+	if id == "" { // P3 过渡：旧布局无会话时回落最近更新的对话主 session
+		id = latestDialogMainSession(prj)
+	}
 	return facade.SessionActiveGetResponse{SessionID: id}, nil
 }
 
@@ -314,6 +367,18 @@ func (s *Service) SessionEnsure(req facade.SessionEnsureRequest) (facade.Session
 	if err != nil {
 		return facade.SessionEnsureResponse{}, err
 	}
+	if req.DialogID != "" {
+		return s.sessionEnsureInDialog(prj, req)
+	}
+	// P3-4（`session.db.shard=on`）：根会话缺 `dialog_id` → 确定性建对话并回带 id；
+	// 子会话必须由调用方带父会话的 dialog_id（P3-4d 起未带即明确失败）。
+	if s.shardOn(req.InstanceID, req.Scope) {
+		if req.ParentSessionID == "" {
+			return s.sessionEnsureProvisionDialog(prj, req)
+		}
+		// P3-4d：子会话必须由调用方带父会话的 dialog_id（唯一例外 = 根会话自举）。
+		return facade.SessionEnsureResponse{}, kernel.ErrDialogRequired
+	}
 	var rec data.Record
 	ok, err := prj.Table("sessions").Get(req.SessionID, &rec)
 	if err != nil {
@@ -323,6 +388,16 @@ func (s *Service) SessionEnsure(req facade.SessionEnsureRequest) (facade.Session
 		return facade.SessionEnsureResponse{OK: true}, nil
 	}
 	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
+	row := sessionRowFromEnsure(req, now)
+	if err := prj.Table("sessions").Upsert(req.SessionID, row); err != nil {
+		return facade.SessionEnsureResponse{}, err
+	}
+	s.emitSessionNew(req.SessionID, req.ParentSessionID, req.InstanceID, "")
+	return facade.SessionEnsureResponse{OK: true}, nil
+}
+
+// sessionRowFromEnsure 由 Ensure 请求构造会话行（新旧布局共用；空字段不写键形状不变）。
+func sessionRowFromEnsure(req facade.SessionEnsureRequest, now string) data.Record {
 	// parent_id 恒写：顶层 = ""（供 sessions_by_top 索引顶层前缀 "\x00" 等值过滤），子会话 = 父 id。
 	// 空串与会话行缺该键在读取侧等价（Sval/str 均得 ""），故返回形状/MQ payload 不变。
 	row := data.Record{
@@ -360,11 +435,7 @@ func (s *Service) SessionEnsure(req facade.SessionEnsureRequest) (facade.Session
 	if req.Convergence != "" {
 		row["convergence"] = req.Convergence
 	}
-	if err := prj.Table("sessions").Upsert(req.SessionID, row); err != nil {
-		return facade.SessionEnsureResponse{}, err
-	}
-	s.emitSessionNew(req.SessionID, req.ParentSessionID, req.InstanceID)
-	return facade.SessionEnsureResponse{OK: true}, nil
+	return row
 }
 
 // isSubChatKind 判定会话类型是否属「子聊天」体系（`sub_chat` / `group_chat`；单聊方案 §3.4.4）：
@@ -394,22 +465,56 @@ func (s *Service) SessionLifecycleSet(req facade.SessionLifecycleSetRequest) (fa
 	if err != nil {
 		return facade.SessionLifecycleSetResponse{}, err
 	}
-	notFound := false
-	if err := prj.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
-		if len(rec) == 0 {
-			notFound = true
-			return nil
+	// 一树一库（P3-4 残留回填）：会话行在对话库内 —— dialog_id 非空 → 只改该库；
+	// 空 + 开关生效 → 跨对话库定位（低频：子聊天状态机）。
+	var db *data.DB
+	if req.DialogID != "" {
+		sdb, release, err := data.OpenExistingDialog(prj.Path(), req.DialogID)
+		if err != nil {
+			return facade.SessionLifecycleSetResponse{}, err
 		}
-		rec["lifecycle"] = req.Lifecycle
-		rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
-		return rec
-	}); err != nil {
+		defer release()
+		db = sdb
+	} else if s.shardOn(req.InstanceID, req.Scope) {
+		updated, err := s.forEachDialogDB(prj, func(dlg string, sdb *data.DB) (bool, error) {
+			found, err := updateLifecycleIn(sdb, req.SessionID, req.Lifecycle)
+			return found, err
+		})
+		if err != nil {
+			return facade.SessionLifecycleSetResponse{}, err
+		}
+		if !updated {
+			return facade.SessionLifecycleSetResponse{}, fmt.Errorf("session not found: %s", req.SessionID)
+		}
+		return facade.SessionLifecycleSetResponse{OK: true}, nil
+	} else {
+		db = prj
+	}
+	found, err := updateLifecycleIn(db, req.SessionID, req.Lifecycle)
+	if err != nil {
 		return facade.SessionLifecycleSetResponse{}, err
 	}
-	if notFound {
+	if !found {
 		return facade.SessionLifecycleSetResponse{}, fmt.Errorf("session not found: %s", req.SessionID)
 	}
 	return facade.SessionLifecycleSetResponse{OK: true}, nil
+}
+
+// updateLifecycleIn 在单个库内改 lifecycle（行不存在 → found=false，不建残行）。
+func updateLifecycleIn(db *data.DB, sessionID, lifecycle string) (bool, error) {
+	found := false
+	if err := db.Table("sessions").UpdateIn(sessionID, func(rec data.Record) data.Record {
+		if len(rec) == 0 {
+			return nil
+		}
+		found = true
+		rec["lifecycle"] = lifecycle
+		rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
+		return rec
+	}); err != nil {
+		return false, err
+	}
+	return found, nil
 }
 
 // SessionSubChats 按父会话列举子聊天（单聊方案 §3.4.4 / §3.4.6；**含已结束**，交给消费方过滤）。
@@ -426,11 +531,51 @@ func (s *Service) SessionSubChats(req facade.SessionSubChatsRequest) (facade.Ses
 	if err != nil {
 		return facade.SessionSubChatsResponse{}, err
 	}
-	recs, _, err := prj.Table("sessions").Query(data.Query{
-		Where: data.Record{"parent_id": req.ParentSessionID}, OrderBy: "created_at",
-	})
+	// 一树一库（P3-4 残留回填）：会话行在对话库内 —— 有 dialog_id → 只查该库；
+	// 无 + 开关生效 → 跨对话库扫描（低频：子聊天清单）。
+	if req.DialogID != "" {
+		db, release, err := data.OpenExistingDialog(prj.Path(), req.DialogID)
+		if err != nil {
+			return facade.SessionSubChatsResponse{}, err
+		}
+		defer release()
+		list, err := subChatsIn(db, req.ParentSessionID)
+		if err != nil {
+			return facade.SessionSubChatsResponse{}, err
+		}
+		return facade.SessionSubChatsResponse{List: list}, nil
+	}
+	if s.shardOn(req.InstanceID, req.Scope) {
+		list := make([]facade.Session, 0, 4)
+		if _, err := s.forEachDialogDB(prj, func(_ string, db *data.DB) (bool, error) {
+			got, err := subChatsIn(db, req.ParentSessionID)
+			if err != nil {
+				return false, err
+			}
+			list = append(list, got...)
+			return false, nil
+		}); err != nil {
+			return facade.SessionSubChatsResponse{}, err
+		}
+		sortSubChatList(list)
+		return facade.SessionSubChatsResponse{List: list}, nil
+	}
+	list, err := subChatsIn(prj, req.ParentSessionID)
 	if err != nil {
-		return facade.SessionSubChatsResponse{}, fmt.Errorf("list subchats: %v", err)
+		return facade.SessionSubChatsResponse{}, err
+	}
+	return facade.SessionSubChatsResponse{List: list}, nil
+}
+
+// subChatsIn 在单个库内列举子聊天（`parentID == ""` = 不限父会话；只认 sub_chat / group_chat）。
+func subChatsIn(db *data.DB, parentID string) ([]facade.Session, error) {
+	query := data.Query{OrderBy: "created_at"}
+	if parentID != "" {
+		query.Where = data.Record{"parent_id": parentID}
+	}
+	recs, _, err := db.Table("sessions").Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("list subchats: %v", err)
 	}
 	list := make([]facade.Session, 0, len(recs))
 	for _, r := range recs {
@@ -440,7 +585,17 @@ func (s *Service) SessionSubChats(req facade.SessionSubChatsRequest) (facade.Ses
 		}
 		list = append(list, sess)
 	}
-	return facade.SessionSubChatsResponse{List: list}, nil
+	return list, nil
+}
+
+// sortSubChatList 按创建时间升序、session_id 次键（跨对话库聚合结果稳定）。
+func sortSubChatList(list []facade.Session) {
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i].CreatedAt != list[j].CreatedAt {
+			return list[i].CreatedAt < list[j].CreatedAt
+		}
+		return list[i].ID < list[j].ID
+	})
 }
 
 // SessionSubChatsAll 全局列举子聊天（单聊方案 §3.4.7 启动提醒：跨会话枚举；**含已结束**）。
@@ -453,17 +608,37 @@ func (s *Service) SessionSubChatsAll(req facade.SessionSubChatsAllRequest) (faca
 	if err != nil {
 		return facade.SessionSubChatsAllResponse{}, err
 	}
-	recs, _, err := prj.Table("sessions").Query(data.Query{OrderBy: "created_at"})
-	if err != nil {
-		return facade.SessionSubChatsAllResponse{}, fmt.Errorf("list all subchats: %v", err)
-	}
-	list := make([]facade.Session, 0, len(recs))
-	for _, r := range recs {
-		sess := wire.SessionFromWire(kernel.RecordView(r, "session_id"))
-		if !isSubChatKind(sess.Kind) {
-			continue // 子会话（sub_session）/ 顶层会话不进子聊天清单
+	// 一树一库（P3-4 残留回填）：全局列举 → 跨对话库聚合（启动提醒 / 状态条）。
+	if req.DialogID != "" {
+		db, release, err := data.OpenExistingDialog(prj.Path(), req.DialogID)
+		if err != nil {
+			return facade.SessionSubChatsAllResponse{}, err
 		}
-		list = append(list, sess)
+		defer release()
+		list, err := subChatsIn(db, "")
+		if err != nil {
+			return facade.SessionSubChatsAllResponse{}, err
+		}
+		return facade.SessionSubChatsAllResponse{List: list}, nil
+	}
+	if s.shardOn(req.InstanceID, req.Scope) {
+		list := make([]facade.Session, 0, 8)
+		if _, err := s.forEachDialogDB(prj, func(_ string, db *data.DB) (bool, error) {
+			got, err := subChatsIn(db, "")
+			if err != nil {
+				return false, err
+			}
+			list = append(list, got...)
+			return false, nil
+		}); err != nil {
+			return facade.SessionSubChatsAllResponse{}, err
+		}
+		sortSubChatList(list)
+		return facade.SessionSubChatsAllResponse{List: list}, nil
+	}
+	list, err := subChatsIn(prj, "")
+	if err != nil {
+		return facade.SessionSubChatsAllResponse{}, err
 	}
 	return facade.SessionSubChatsAllResponse{List: list}, nil
 }
@@ -488,7 +663,12 @@ func (s *Service) TurnHistory(req facade.TurnHistoryRequest) (facade.TurnHistory
 	if err != nil {
 		return facade.TurnHistoryResponse{}, err
 	}
-	turnRecs, _, err := prj.Table("turns").Query(data.Query{
+	db, releaseDB, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.TurnHistoryResponse{}, err
+	}
+	defer releaseDB()
+	turnRecs, _, err := db.Table("turns").Query(data.Query{
 		Where:   data.Record{"session_id": req.SessionID},
 		OrderBy: "created_at",
 	})
@@ -516,7 +696,7 @@ func (s *Service) TurnHistory(req facade.TurnHistoryRequest) (facade.TurnHistory
 		}
 		tid := kernel.TurnIDOf(t)
 		if _, loaded := byTurn[tid]; !loaded {
-			recs, err := queryTurnMessages(prj, tid)
+			recs, err := queryTurnMessages(db, tid)
 			if err != nil {
 				return facade.TurnHistoryResponse{}, fmt.Errorf("query messages: %v", err)
 			}
@@ -554,8 +734,13 @@ func (s *Service) TurnEnsure(req facade.TurnEnsureRequest) (facade.TurnEnsureRes
 	if err != nil {
 		return facade.TurnEnsureResponse{}, err
 	}
+	db, releaseDB, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.TurnEnsureResponse{}, err
+	}
+	defer releaseDB()
 	var rec data.Record
-	ok, err := prj.Table("turns").Get(req.TurnID, &rec)
+	ok, err := db.Table("turns").Get(req.TurnID, &rec)
 	if err != nil {
 		return facade.TurnEnsureResponse{}, err
 	}
@@ -563,7 +748,7 @@ func (s *Service) TurnEnsure(req facade.TurnEnsureRequest) (facade.TurnEnsureRes
 		return facade.TurnEnsureResponse{OK: true}, nil
 	}
 	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	if err := prj.Table("turns").Upsert(req.TurnID, data.Record{
+	if err := db.Table("turns").Upsert(req.TurnID, data.Record{
 		"turn_id": req.TurnID, "session_id": req.SessionID, "status": "running",
 		"created_at": now, "updated_at": now,
 	}); err != nil {
@@ -581,9 +766,14 @@ func (s *Service) TurnSetSummary(req facade.TurnSetSummaryRequest) (facade.TurnS
 	if err != nil {
 		return facade.TurnSetSummaryResponse{}, err
 	}
+	db, releaseDB, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.TurnSetSummaryResponse{}, err
+	}
+	defer releaseDB()
 	// 单事务 RMW（A-09）：读-改-写原子化，避免并发 lost update；updated_at 用纳秒（A-11）。
 	// 行不存在 → 放弃写入（fn 返回 nil，不建残行；A-34 与 SessionTitle 同判据）。
-	if err := prj.Table("turns").UpdateIn(req.TurnID, func(rec data.Record) data.Record {
+	if err := db.Table("turns").UpdateIn(req.TurnID, func(rec data.Record) data.Record {
 		if len(rec) == 0 {
 			return nil
 		}
@@ -612,9 +802,14 @@ func (s *Service) TurnComplete(req facade.TurnCompleteRequest) (facade.TurnCompl
 	if err != nil {
 		return facade.TurnCompleteResponse{}, err
 	}
+	db, releaseDB, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.TurnCompleteResponse{}, err
+	}
+	defer releaseDB()
 	// 单事务 RMW（A-09）：读-改-写原子化，避免并发 lost update；updated_at 用纳秒（A-11）。
 	// 行不存在 → 放弃写入（fn 返回 nil，不建残行；A-34 与 SessionTitle 同判据）。
-	if err := prj.Table("turns").UpdateIn(req.TurnID, func(rec data.Record) data.Record {
+	if err := db.Table("turns").UpdateIn(req.TurnID, func(rec data.Record) data.Record {
 		if len(rec) == 0 {
 			return nil
 		}
@@ -635,18 +830,51 @@ func (s *Service) TurnComplete(req facade.TurnCompleteRequest) (facade.TurnCompl
 }
 
 // TurnCleanupStale 启动/首次使用清理（`data-session-cleanup-stale` 触发点 = 启动/首次 llm-start）：
-//   - 遗留 running 的轮次标 interrupted（上限 500 条，返回处理条数）；
+//   - 遗留 running 的轮次标 interrupted（上限 500 条/库，返回处理条数）；
 //   - 一并执行 pair 级清理 cleanupStaleToolPairs（残留非终态 tool_pair → interrupted）。
 //
+// 一树一库（P3-4c）：开关生效时**同时扫 prjusr 旧布局与每个对话库**（新布局轮次/收件箱都在对话库）。
 // 两者共用同一启动触发点与同一消息（不新增消息主题/payload，返回仍为 {ok, count}，count = 轮次数）。
 func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.TurnCleanupStaleResponse, error) {
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.TurnCleanupStaleResponse{}, err
 	}
-	recs, _, err := prj.Table("turns").Query(data.Query{Where: data.Record{"status": "running"}, Limit: 500})
+	dbs := []*data.DB{prj}
+	var releases []func()
+	if s.shardOn(req.InstanceID, req.Scope) {
+		files, ferr := sessionstore.ListDialogFiles(prj.Path())
+		if ferr != nil && s.Warnf != nil {
+			s.Warnf("session: 枚举对话库失败（stale 清理仅覆盖 prjusr）: %v", ferr)
+		}
+		for _, f := range files {
+			dlgID, ok := data.DialogIDFromFile(f)
+			if !ok {
+				continue
+			}
+			ddb, release, oerr := data.OpenExistingDialog(prj.Path(), dlgID)
+			if oerr != nil {
+				continue // 半创建 / 打不开 → 跳过（不阻断其它库）
+			}
+			dbs = append(dbs, ddb)
+			releases = append(releases, release)
+		}
+	}
+	n := 0
+	for _, db := range dbs {
+		n += s.cleanupStaleIn(db)
+	}
+	for _, release := range releases {
+		release()
+	}
+	return facade.TurnCleanupStaleResponse{OK: true, Count: n}, nil
+}
+
+// cleanupStaleIn 在单个库内收敛遗留 running 轮次 + 非终态 tool_pair + 过期收件箱项。
+func (s *Service) cleanupStaleIn(db *data.DB) int {
+	recs, _, err := db.Table("turns").Query(data.Query{Where: data.Record{"status": "running"}, Limit: 500})
 	if err != nil {
-		return facade.TurnCleanupStaleResponse{}, err
+		return 0
 	}
 	n := 0
 	for _, r := range recs {
@@ -655,7 +883,7 @@ func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.T
 			continue
 		}
 		// 单事务 RMW（A-09）；updated_at 用纳秒（A-11）。
-		if err := prj.Table("turns").UpdateIn(id, func(rec data.Record) data.Record {
+		if err := db.Table("turns").UpdateIn(id, func(rec data.Record) data.Record {
 			rec["status"] = "interrupted"
 			rec["finish_reason"] = "interrupted"
 			rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
@@ -664,9 +892,9 @@ func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.T
 			n++
 		}
 	}
-	s.cleanupStaleToolPairs(prj)
-	s.cleanupInboxTTL(prj, time.Now().UTC())
-	return facade.TurnCleanupStaleResponse{OK: true, Count: n}, nil
+	s.cleanupStaleToolPairs(db)
+	s.cleanupInboxTTL(db, time.Now().UTC())
+	return n
 }
 
 // cleanupStaleToolPairs pair 级启动清理（35 §附录 S2/S3）：把消息表中遗留的**非终态** tool_pair
@@ -749,6 +977,11 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	if err != nil {
 		return facade.MessageAppendResponse{}, err
 	}
+	db, releaseDB, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.MessageAppendResponse{}, err
+	}
+	defer releaseDB()
 	m := data.MessageFromFacade(req.Message)
 	// INPUTVAL-1 P0-4：角色枚举 + 正文长度（写侧拒绝，不截断）。
 	if !messageRoleValid(m.Role) {
@@ -762,7 +995,7 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	sessionID := req.SessionID
 	if sessionID == "" {
 		var trec data.Record
-		ok, err := prj.Table("turns").Get(req.TurnID, &trec)
+		ok, err := db.Table("turns").Get(req.TurnID, &trec)
 		if err != nil {
 			return facade.MessageAppendResponse{}, err // A-41：回填 session_id 读失败须上报，不得落成空 session_id
 		}
@@ -778,12 +1011,12 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	// 否则生成新键。就地更新时保留原 created_at（消息在轮内的时间序位置不变）。
 	key := req.Key
 	if key == "" && m.Role == "tool" && m.ToolCallID != "" {
-		key = kernel.FindToolMessageKey(prj, req.TurnID, m.ToolCallID)
+		key = kernel.FindToolMessageKey(db, req.TurnID, m.ToolCallID)
 	}
 	createdAt := time.Now().UTC().Format(kernel.RFC3339FixedNano)
 	if key != "" { // 就地更新（显式 key / 复用同轮同 call 既有行）：保留原 created_at
 		var old data.Record
-		ok, err := prj.Table("messages").Get(key, &old)
+		ok, err := db.Table("messages").Get(key, &old)
 		if err != nil {
 			return facade.MessageAppendResponse{}, err // A-41：读既有行失败须上报，不得静默改用当前时刻
 		}
@@ -795,7 +1028,7 @@ func (s *Service) MessageAppend(req facade.MessageAppendRequest) (facade.Message
 	}
 
 	rec := buildMessageRecord(req.TurnID, sessionID, createdAt, m, req.ToolCallStatus, req.Brief, req.SenderAgent, req.AskID, req.Mentions)
-	tb := prj.Table("messages")
+	tb := db.Table("messages")
 	if key == "" {
 		// 新消息用 Insert（A-10）：NewMessageKey 仅 4 位随机，同微秒内仍可能碰撞，
 		// Upsert 会**静默覆盖**已存在消息（丢消息）；Insert 命中 ErrExists 时重生成 key 重试一次。
@@ -886,7 +1119,12 @@ func (s *Service) MessageLoad(req facade.MessageLoadRequest) (facade.MessageLoad
 	if err != nil {
 		return facade.MessageLoadResponse{}, err
 	}
-	recs, _, err := prj.Table("messages").Query(data.Query{
+	db, releaseDB, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.MessageLoadResponse{}, err
+	}
+	defer releaseDB()
+	recs, _, err := db.Table("messages").Query(data.Query{
 		Where: data.Record{"turn_id": req.TurnID}, OrderBy: "created_at", Limit: 500,
 	})
 	if err != nil {
@@ -947,7 +1185,12 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 	if err != nil {
 		return facade.MessageContextResponse{}, err
 	}
-	turnRecs, _, err := prj.Table("turns").Query(data.Query{
+	db, releaseDB, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.MessageContextResponse{}, err
+	}
+	defer releaseDB()
+	turnRecs, _, err := db.Table("turns").Query(data.Query{
 		Where: data.Record{"session_id": req.SessionID}, OrderBy: "created_at", Limit: 500,
 	})
 	if err != nil {
@@ -965,7 +1208,7 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 		if _, loaded := byTurn[id]; loaded {
 			continue
 		}
-		recs, err := queryTurnMessages(prj, id)
+		recs, err := queryTurnMessages(db, id)
 		if err != nil {
 			return facade.MessageContextResponse{}, fmt.Errorf("query messages: %v", err)
 		}
@@ -981,7 +1224,26 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 	// 快照分支：快照非空才走快照上下文，否则回退全量历史。
 	turnTokens := turnTokensOf(turnRecs, req.ExcludeTurn) // P3 伴随数组（只增；升序、排除 ExcludeTurn）
 	if req.IncludeSnapshot {
-		snap, ok, err := snapshot.Get(prj, req.SessionID)
+		// 对话布局：轮次/消息/快照同库（`db`），无需搬旧行；
+		// 旧布局：快照在会话库（2026-10-23 轻量分片），轮次/消息仍在 prjusr。
+		var sdb *data.DB
+		var releaseSdb func()
+		if req.DialogID != "" {
+			sdb, releaseSdb = db, func() {}
+		} else {
+			var sdbErr error
+			sdb, releaseSdb, sdbErr = s.SessionDBFor(req.InstanceID, req.Scope, req.SessionID)
+			if sdbErr != nil {
+				return facade.MessageContextResponse{}, fmt.Errorf("snapshot: %v", sdbErr)
+			}
+		}
+		defer releaseSdb()
+		if req.DialogID == "" {
+			if migErr := snapshot.MigrateFromCatalog(prj, sdb, req.SessionID); migErr != nil {
+				return facade.MessageContextResponse{}, fmt.Errorf("snapshot migrate: %v", migErr)
+			}
+		}
+		snap, ok, err := snapshot.Get(sdb, req.SessionID)
 		if err != nil {
 			return facade.MessageContextResponse{}, fmt.Errorf("snapshot: %v", err) // A-41：读快照失败须上报，不得退化为「无快照」
 		}
@@ -1085,7 +1347,12 @@ func (s *Service) MessageContent(req facade.MessageContentRequest) (facade.Messa
 	if err != nil {
 		return facade.MessageContentResponse{}, err
 	}
-	raw := kernel.MessageContentsByKey(prj, req.SessionID, req.Keys)
+	db, releaseDB, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.MessageContentResponse{}, err
+	}
+	defer releaseDB()
+	raw := kernel.MessageContentsByKey(db, req.SessionID, req.Keys)
 	out := make(map[string]string, len(raw))
 	for k, v := range raw {
 		out[k] = kernel.Sval(v)

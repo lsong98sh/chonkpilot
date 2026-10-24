@@ -13,17 +13,13 @@ import (
 	"strings"
 
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/chonkpilot/chonkpilot-session/store"
 )
 
-// Query 是通用查询条件（类 Criteria）。
-type Query struct {
-	Where     map[string]any // 等值过滤（支持点路径）
-	OrderBy   string         // 排序字段（点路径；唯一性由排序键+主键复合保证）
-	OrderDesc bool
-	Limit     int    // 0 = 不限
-	Offset    int    // 普通分页偏移（与 Cursor 互斥）
-	Cursor    string // 连续滚动游标（上页 next_cursor；优先于 Offset）
-}
+// Query 是通用查询条件（类 Criteria）。唯一定义在 `chonkpilot-session/store`，
+// 此处为别名（组件与数据面同一契约，主仓调用点零改动）。
+type Query = store.Query
 
 // Query 执行通用查询：过滤/排序/分页/游标 → (recs, next_cursor, err)。
 // 返回的记录带 _key 主键字段。

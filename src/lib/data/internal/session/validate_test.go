@@ -11,6 +11,7 @@ import (
 func TestSessionTitleValidation(t *testing.T) {
 	s, scope := newSessionEnvBus(t)
 	const inst, sid = "ins-val", "s-val"
+	disableShard(t, s, inst, scope)
 	if _, err := s.SessionEnsure(facade.SessionEnsureRequest{InstanceID: inst, SessionID: sid, Scope: scope}); err != nil {
 		t.Fatalf("SessionEnsure: %v", err)
 	}
@@ -34,6 +35,7 @@ func TestSessionTitleValidation(t *testing.T) {
 func TestTurnAndMessageValidation(t *testing.T) {
 	s, scope := newSessionEnvBus(t)
 	const inst = "ins-val2"
+	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
 	if _, err := s.TurnEnsure(facade.TurnEnsureRequest{InstanceID: inst, TurnID: "t-val", SessionID: "s-val2", Scope: scope}); err != nil {
 		t.Fatalf("TurnEnsure: %v", err)
 	}

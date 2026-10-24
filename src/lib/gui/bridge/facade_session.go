@@ -51,6 +51,7 @@ func (b *Bridge) sessionViaFacade(action, payloadJSON string) (any, []error, boo
 		}
 		return wire.RequestID(req)
 	}
+	dialogID := sval(req["dialog_id"])
 
 	switch action {
 	case "list":
@@ -62,7 +63,7 @@ func (b *Bridge) sessionViaFacade(action, payloadJSON string) (any, []error, boo
 		return wire.SessionListResult(resp.List), nil, true
 	case "get":
 		resp, err := b.cfg.SessionGet(facade.SessionGetRequest{
-			InstanceID: instanceID, SessionID: sessionID(), Scope: scope,
+			InstanceID: instanceID, SessionID: sessionID(), DialogID: dialogID, Scope: scope,
 		})
 		if err != nil {
 			res, errs := fail(err)
@@ -87,10 +88,10 @@ func (b *Bridge) sessionViaFacade(action, payloadJSON string) (any, []error, boo
 			res, errs := fail(err)
 			return res, errs, true
 		}
-		return wire.SessionIDResult(resp.SessionID), nil, true
+		return wire.SessionLatestResult(resp.SessionID, resp.DialogID), nil, true
 	case "title":
 		if _, err := b.cfg.SessionTitle(facade.SessionTitleRequest{
-			InstanceID: instanceID, SessionID: wire.RequestID(req), Title: sval(req["title"]), Scope: scope,
+			InstanceID: instanceID, SessionID: wire.RequestID(req), DialogID: dialogID, Title: sval(req["title"]), Scope: scope,
 		}); err != nil {
 			res, errs := fail(err)
 			return res, errs, true
@@ -98,15 +99,25 @@ func (b *Bridge) sessionViaFacade(action, payloadJSON string) (any, []error, boo
 		return wire.OKResult(), nil, true
 	case "delete":
 		if _, err := b.cfg.SessionDelete(facade.SessionDeleteRequest{
-			InstanceID: instanceID, SessionID: wire.RequestID(req), Scope: scope,
+			InstanceID: instanceID, SessionID: wire.RequestID(req), DialogID: dialogID, Scope: scope,
 		}); err != nil {
 			res, errs := fail(err)
 			return res, errs, true
 		}
 		return wire.OKResult(), nil, true
+	case "fork":
+		resp, err := b.cfg.SessionFork(facade.SessionForkRequest{
+			InstanceID: instanceID, DialogID: dialogID,
+			Mode: sval(req["mode"]), Title: sval(req["title"]), Scope: scope,
+		})
+		if err != nil {
+			res, errs := fail(err)
+			return res, errs, true
+		}
+		return map[string]any{"ok": resp.OK, "dialog_id": resp.DialogID, "session_id": resp.SessionID}, nil, true
 	case "active-set":
 		if _, err := b.cfg.SessionActiveSet(facade.SessionActiveSetRequest{
-			InstanceID: instanceID, SessionID: sessionID(), Scope: scope,
+			InstanceID: instanceID, SessionID: sessionID(), DialogID: dialogID, Scope: scope,
 		}); err != nil {
 			res, errs := fail(err)
 			return res, errs, true
@@ -132,17 +143,22 @@ func (b *Bridge) sessionViaFacade(action, payloadJSON string) (any, []error, boo
 		}
 		return wire.MessageContentResult(resp.Contents), nil, true
 	case "ensure-session":
-		if _, err := b.cfg.SessionEnsure(facade.SessionEnsureRequest{
-			InstanceID: instanceID, SessionID: sessionID(),
+		resp, err := b.cfg.SessionEnsure(facade.SessionEnsureRequest{
+			InstanceID: instanceID, SessionID: sessionID(), DialogID: dialogID,
 			ParentSessionID: sval(req["parent_session_id"]), Scope: scope,
-		}); err != nil {
+		})
+		if err != nil {
 			res, errs := fail(err)
 			return res, errs, true
 		}
-		return wire.OKResult(), nil, true
+		out := wire.OKResult()
+		if resp.DialogID != "" {
+			out["dialog_id"] = resp.DialogID
+		}
+		return out, nil, true
 	case "ensure-turn":
 		if _, err := b.cfg.TurnEnsure(facade.TurnEnsureRequest{
-			InstanceID: instanceID, TurnID: sval(req["turn_id"]), SessionID: sessionID(), Scope: scope,
+			InstanceID: instanceID, TurnID: sval(req["turn_id"]), SessionID: sessionID(), DialogID: dialogID, Scope: scope,
 		}); err != nil {
 			res, errs := fail(err)
 			return res, errs, true
@@ -158,7 +174,7 @@ func (b *Bridge) sessionViaFacade(action, payloadJSON string) (any, []error, boo
 		return wire.OKResult(), nil, true
 	case "set-summary":
 		if _, err := b.cfg.TurnSetSummary(facade.TurnSetSummaryRequest{
-			InstanceID: instanceID, TurnID: sval(req["turn_id"]), Summary: sval(req["summary"]), Scope: scope,
+			InstanceID: instanceID, TurnID: sval(req["turn_id"]), DialogID: dialogID, Summary: sval(req["summary"]), Scope: scope,
 		}); err != nil {
 			res, errs := fail(err)
 			return res, errs, true
@@ -166,7 +182,7 @@ func (b *Bridge) sessionViaFacade(action, payloadJSON string) (any, []error, boo
 		return wire.OKResult(), nil, true
 	case "complete-turn":
 		if _, err := b.cfg.TurnComplete(facade.TurnCompleteRequest{
-			InstanceID: instanceID, TurnID: sval(req["turn_id"]), Status: sval(req["status"]),
+			InstanceID: instanceID, TurnID: sval(req["turn_id"]), DialogID: dialogID, Status: sval(req["status"]),
 			FinishReason: sval(req["finish_reason"]), Scope: scope,
 		}); err != nil {
 			res, errs := fail(err)

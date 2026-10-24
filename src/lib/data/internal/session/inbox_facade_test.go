@@ -26,6 +26,7 @@ func mustInboxRow(t *testing.T, tb *data.Table, key string) (data.Record, bool) 
 // TestInboxCommit：同事务落消息 + 置 consumed；同 inbox_id 幂等（不重复落库）；discarded 拒绝。
 func TestInboxCommit(t *testing.T) {
 	s, scope := newSessionEnv(t)
+	disableShard(t, s, "ins-inbox-commit", scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
 	prj, err := s.PrjUsrFor("ins-inbox-commit", scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
@@ -115,7 +116,7 @@ func TestCleanupInboxTTL(t *testing.T) {
 
 	rows := map[string]data.Record{
 		// 超期终态 → 删除（updated_at 为终态落定时间）
-		"old-consumed": {"session_id": "s", "status": "consumed", "created_at": ts(-10 * 24 * time.Hour), "updated_at": ts(-8 * 24 * time.Hour)},
+		"old-consumed":  {"session_id": "s", "status": "consumed", "created_at": ts(-10 * 24 * time.Hour), "updated_at": ts(-8 * 24 * time.Hour)},
 		"old-discarded": {"session_id": "s", "status": "discarded", "created_at": ts(-10 * 24 * time.Hour), "updated_at": ts(-8 * 24 * time.Hour)},
 		// 无 updated_at → 回落 created_at（超期 → 删除）
 		"old-no-updated": {"session_id": "s", "status": "consumed", "created_at": ts(-9 * 24 * time.Hour)},
@@ -151,6 +152,7 @@ func TestCleanupInboxTTL(t *testing.T) {
 func TestSessionDeleteCascadeInbox(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	const inst = "ins-inbox-cascade"
+	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)

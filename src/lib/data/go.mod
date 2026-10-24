@@ -5,14 +5,16 @@ go 1.26.0
 require (
 	github.com/chonkpilot/chonkpilot-ignore v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
+	github.com/chonkpilot/chonkpilot-session v0.0.0
 	go.etcd.io/bbolt v1.4.2
 )
 
-require (
-	golang.org/x/crypto v0.55.0
-	golang.org/x/sys v0.47.0 // indirect
-)
+require github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
+
+require golang.org/x/sys v0.47.0 // indirect
 
 replace github.com/chonkpilot/chonkpilot-ignore => ../ignore
 
 replace github.com/chonkpilot/chonkpilot-lib => ../core
+
+replace github.com/chonkpilot/chonkpilot-session => ../../../../chonkpilot-session

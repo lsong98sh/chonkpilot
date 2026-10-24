@@ -183,21 +183,20 @@ def main():
                 int(dl) >= 1 and int(cards) == 1 and titles == ['Renamed One'],
                 f"dl={dl} n={cards} titles={repr(titles)}")
 
-        # SD5b fork 占位（A8）：第 3 个按钮 → 提示「敬请期待」，不改列表 / 不开弹窗
+        # SD5b fork（P4 已落地）：第 3 个按钮 → `data-session-fork`（full）→ 成功提示 + 列表新增 1 张卡
         # （2026-09-26 加固：判定改读**全部** message 文案再匹配 —— 前序「会话已删除」成功提示与
-        #  fork 提示在 3s 存活期内并存且先后到期，只读**首条**会落在「删除」提示上、并在两条交替的
-        #  窄窗内漏判（本用例原断言只读首条）。只改「读哪些」，断言与观测内容不变。）
+        #  fork 提示在 3s 存活期内并存且先后到期，只读**首条**会落在「删除」提示上。）
         wait_upto(gui, "!!document.querySelector('.sessions-pane .session-card .session-actions button:nth-child(3)')",
                   lambda v: v is True)
         forkHit = J(gui, "(()=>{const b=document.querySelector('.sessions-pane .session-card .session-actions button:nth-child(3)');if(!b)return false;b.click();return true})()")
         forkTexts = wait_upto(gui, "Array.from(document.querySelectorAll('#b-message-container .b-message-text')).map(n=>(n.textContent||'').trim())",
-                              lambda v: any((('敬请期待' in x) or ('Coming soon' in x)) for x in (v or [])))
+                              lambda v: any((('已派生对话' in x) or ('Dialog forked' in x)
+                                             or ('派生对话失败' in x) or ('Failed to fork' in x)) for x in (v or [])))
+        forkOk = any((('已派生对话' in x) or ('Dialog forked' in x)) for x in (forkTexts or []))
         forkNoDialog = J(gui, "!document.querySelector('.dialog-shell')")
-        forkCards = J(gui, "document.querySelectorAll('.sessions-pane .session-card').length")
-        c.check("SD5b fork 占位 → 提示「敬请期待」（不改列表 / 不开弹窗）",
-                bool(forkHit)
-                and any((('敬请期待' in x) or ('Coming soon' in x)) for x in (forkTexts or []))
-                and bool(forkNoDialog) and int(forkCards) == 1,
+        forkCards = wait_upto(gui, "document.querySelectorAll('.sessions-pane .session-card').length", lambda v: int(v or 0) == 2)
+        c.check("SD5b fork → 派生成功 + 列表新增 1（不开弹窗）",
+                bool(forkHit) and forkOk and bool(forkNoDialog) and int(forkCards) == 2,
                 f"hit={forkHit} texts={forkTexts} noDialog={forkNoDialog} n={forkCards}")
 
         # SD5c 复制对话（P3-C1 口径）：json-array + 不含 system + 全部对话（非压缩后的原文）

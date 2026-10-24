@@ -27,6 +27,20 @@ func newTasktreeEnv(t *testing.T) (*Service, facade.Scope) {
 	return s, facade.Scope{WorkDir: wd, DataDir: dd}
 }
 
+// disableShard 显式退回旧布局（P3-4d 起 shard 缺省 on，缺 dialog_id 会明确失败；
+// 本文件的用例断言 prjusr 旧布局行为）。
+func disableShard(t *testing.T, s *Service, inst string, scope facade.Scope) {
+	t.Helper()
+	prj, release, err := s.PrjFor(inst, scope)
+	if err != nil {
+		t.Fatalf("PrjFor: %v", err)
+	}
+	defer release()
+	if err := kernel.PrjConfigSetVal(prj, kernel.ConfigSessionShard, "off"); err != nil {
+		t.Fatalf("set shard=off: %v", err)
+	}
+}
+
 func upsertNode(t *testing.T, s *Service, inst string, scope facade.Scope, n facade.TaskNode) {
 	t.Helper()
 	if _, err := s.TasktreeUpsert(facade.TasktreeUpsertRequest{InstanceID: inst, Scope: scope, Node: n}); err != nil {
@@ -39,6 +53,7 @@ func upsertNode(t *testing.T, s *Service, inst string, scope facade.Scope, n fac
 func TestTasktreeUpsertKeepsClosedOnReplay(t *testing.T) {
 	s, scope := newTasktreeEnv(t)
 	inst := "ins-tt"
+	disableShard(t, s, inst, scope)
 
 	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "n1", Kind: "llm", TopSession: "top1", Status: "running"})
 	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: inst, Scope: scope, NodeID: "n1"}); err != nil {
@@ -82,6 +97,7 @@ func TestTasktreeUpsertKeepsClosedOnReplay(t *testing.T) {
 func TestTasktreeDeleteCascadesAndIdempotent(t *testing.T) {
 	s, scope := newTasktreeEnv(t)
 	inst := "ins-tt2"
+	disableShard(t, s, inst, scope)
 
 	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "p1", Kind: "tool", TopSession: "top1"})
 	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "c1", Kind: "tool", TopSession: "top1", ParentID: "p1"})
@@ -122,6 +138,7 @@ func TestTasktreeDeleteCascadesAndIdempotent(t *testing.T) {
 func TestTasktreeUpsertPreservesUncarriedOptionalColumns(t *testing.T) {
 	s, scope := newTasktreeEnv(t)
 	inst := "ins-tt3"
+	disableShard(t, s, inst, scope)
 
 	upsertNode(t, s, inst, scope, facade.TaskNode{
 		ID: "n1", Kind: "tool", TopSession: "top1", Status: "running",
@@ -170,6 +187,7 @@ func TestTasktreeUpsertPreservesUncarriedOptionalColumns(t *testing.T) {
 func TestTasktreeDeleteTimestampsNanoFormat(t *testing.T) {
 	s, scope := newTasktreeEnv(t)
 	inst := "ins-tt4"
+	disableShard(t, s, inst, scope)
 	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "d1", Kind: "tool", TopSession: "top1"})
 	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: inst, Scope: scope, NodeID: "d1"}); err != nil {
 		t.Fatalf("delete d1: %v", err)

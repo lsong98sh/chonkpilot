@@ -38,9 +38,9 @@ func TestGroupParticipantsReplaceAndLoad(t *testing.T) {
 	// 写名单：顺序 = 列表顺序；空 agent / 重复项被规整。
 	if err := groupParticipantsReplace(db, g1, []facade.GroupParticipant{
 		{Agent: "主 agent", Role: "发起者"},
-		{Agent: "  "},                      // 空 → 跳过
-		{Agent: "审查员", Role: "审 diff"},   // 顺序 2
-		{Agent: "审查员", Role: "重复项忽略"}, // 重复 → 按首现
+		{Agent: "  "},                  // 空 → 跳过
+		{Agent: "审查员", Role: "审 diff"}, // 顺序 2
+		{Agent: "审查员", Role: "重复项忽略"},  // 重复 → 按首现
 		{Agent: "测试员", Role: "回归"},
 	}); err != nil {
 		t.Fatalf("replace: %v", err)

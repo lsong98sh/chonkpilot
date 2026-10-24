@@ -6,9 +6,39 @@ import {
   DataSessionLoadMessagesKeys, DataSessionContentKeys,
 } from '../events/msgkeys.js'
 
+// 一树一库（P3-4b）：进程内备忘 `session→dialog` / `turn→session`，来源 = 应答里的 `dialog_id`
+// 与 history 轮次行。**非权威**（持久化真相在 persist）；未命中 → 不写键（旧布局兼容）。
+const dialogBySession = new Map()
+const sessionByTurn = new Map()
+
+function rememberDialog(sessionId, dialogId) {
+  if (sessionId && dialogId) dialogBySession.set(sessionId, dialogId)
+}
+
+function dialogOf(sessionId) {
+  return (sessionId && dialogBySession.get(sessionId)) || ''
+}
+
+function rememberTurns(turns) {
+  if (!Array.isArray(turns)) return
+  for (const t of turns) {
+    if (t && t.turn_id && t.session_id) sessionByTurn.set(t.turn_id, t.session_id)
+  }
+}
+
+// withDialog 给请求体补 `dialog_id`（显式带值优先；按 session_id / id / turn_id 反查）。
+function withDialog(body) {
+  if (!body || body.dialog_id) return body
+  const sid = body.session_id || body.id || (body.turn_id ? sessionByTurn.get(body.turn_id) : '')
+  const dlg = dialogOf(sid)
+  if (dlg) body.dialog_id = dlg
+  return body
+}
+
 // data-session-* 消息辅助：发送并等待回复（E-25：统一 30s 超时，对齐 fileRequest/guiReq 口径，
 // 后端卡死时 fetch abort → resolve(null) → 按 backend unreachable 报错，不永久挂起）。
 function sessionReq(action, body = {}) {
+  withDialog(body) // 一树一库：就地补 dialog_id（保持 emit 形状与既有守卫一致）
   return mq.emit(`data-session-${action}`, body, { timeout: 30000 }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-session-${action}: backend unreachable`)
@@ -24,11 +54,20 @@ function sessionReq(action, body = {}) {
 }
 
 export function listSessions() {
-  return sessionReq('list').then((r) => r[DataSessionListKeys.list] || [])
+  return sessionReq('list').then((r) => {
+    const list = r[DataSessionListKeys.list] || []
+    // shard=on 时列表项自带 dialog_id（每对话一行）；顺带预热备忘，后续请求免再查。
+    for (const row of list) rememberDialog(row.session_id || row.id, row.dialog_id)
+    return list
+  })
 }
 
 export function getSession(id) {
-  return sessionReq('get', { id }).then((r) => r[DataSessionGetKeys.data])
+  return sessionReq('get', { id }).then((r) => {
+    const d = r[DataSessionGetKeys.data]
+    if (d) rememberDialog(d.session_id || d.id || id, d.dialog_id)
+    return d
+  })
 }
 
 export function deleteSession(id) {
@@ -44,7 +83,10 @@ export function updateSessionTitle(id, title) {
 export function ensureSession(id, parentId) {
   const body = { [FieldKeys.session_id]: id }
   if (parentId) body[FieldKeys.parent_session_id] = parentId
-  return sessionReq('ensure-session', body).then(() => {})
+  return sessionReq('ensure-session', body).then((r) => {
+    // shard=on 时根会话自举会回带 dialog_id；记下供后续请求使用。
+    rememberDialog(id, r && r.dialog_id)
+  })
 }
 
 export function getTurnsPaginated(sessionId, beforeTurnId, targetMessages = 50, targetBytes = 200 * 1024) {
@@ -53,7 +95,11 @@ export function getTurnsPaginated(sessionId, beforeTurnId, targetMessages = 50, 
     [FieldKeys.before_turn_id]: beforeTurnId || '',
     [FieldKeys.target_messages]: targetMessages,
     [FieldKeys.target_bytes]: targetBytes,
-  }).then((r) => r[DataSessionHistoryKeys.messages] || { turns: [], messages: [], has_more: false })
+  }).then((r) => {
+    const page = r[DataSessionHistoryKeys.messages] || { turns: [], messages: [], has_more: false }
+    rememberTurns(page.turns) // turn→session 备忘（load-messages 仅带 turn_id）
+    return page
+  })
 }
 
 // listAllTurns 取会话**全部**轮次（升序）——供「复制会话对话」逐轮读原文。
@@ -72,6 +118,7 @@ export async function listAllTurns(sessionId) {
     })
     const page = (r && r[DataSessionHistoryKeys.messages]) || {}
     const turns = Array.isArray(page.turns) ? page.turns : []
+    rememberTurns(turns)
     out.unshift(...turns) // 服务端按「最新往回」取页 → 前插维持升序
     if (page.has_more !== true || turns.length === 0) break
     before = turns[0].turn_id
@@ -91,7 +138,28 @@ export function getMessageContent(sessionId, keys) {
 }
 
 export function getLatestSessionID() {
-  return sessionReq('latest').then((r) => r)
+  return sessionReq('latest').then((r) => {
+    if (r && r.session_id) rememberDialog(r.session_id, r.dialog_id)
+    return r
+  })
+}
+
+// sessionDialogOf 读进程内备忘的 dialog_id（未命中 → ''）。供 tasktree 等其它域拼请求用。
+export function sessionDialogOf(sessionId) {
+  return dialogOf(sessionId)
+}
+
+// forkSession 派生对话（data-session-fork，61 §3.2；SESSION-COMP-1 P4）：
+// `dialogId` = 源对话（一树一库，必填）；`mode` 缺省 full（整树拷贝 + id 重映射），
+// context = 只建主会话 + 继承源快照（不拷文件）。回带新 `{dialog_id, session_id}`。
+export function forkSession(dialogId, { mode = '', title = '' } = {}) {
+  const body = { dialog_id: dialogId }
+  if (mode) body.mode = mode
+  if (title) body.title = title
+  return sessionReq('fork', body).then((r) => {
+    rememberDialog(r.session_id, r.dialog_id)
+    return r
+  })
 }
 
 export function getActiveSessionID() {

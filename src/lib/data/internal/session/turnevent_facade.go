@@ -14,6 +14,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
+	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 )
 
 const turnEventTable = "turn_events"
@@ -97,23 +98,50 @@ func (s *Service) TurnEventCleanup(req facade.TurnEventCleanupRequest) (facade.T
 	cutoff := time.Now().UTC().Add(-time.Duration(req.RetentionDays) * 24 * time.Hour)
 
 	// ① 找出「终态 + 行更新时间早于 cutoff」的 turn。
+	//
+	// 一树一库（P3-4 残留回填）：`turns` 在对话库内 → 开关生效时逐库收集；prjusr 仍扫一遍
+	// （旧布局行保留一周期，清理对两者都生效）。`turn_events` 表本身仍在 prjusr。
 	oldTurns := map[string]bool{}
-	if err := prj.Table("turns").ForEach(func(k string, rec data.Record) error {
-		if !terminalTurnStatus(kernel.Sval(rec["status"])) {
+	collect := func(db *data.DB) error {
+		return db.Table("turns").ForEach(func(k string, rec data.Record) error {
+			if !terminalTurnStatus(kernel.Sval(rec["status"])) {
+				return nil
+			}
+			ts := kernel.Sval(rec["updated_at"])
+			if ts == "" {
+				ts = kernel.Sval(rec["created_at"])
+			}
+			t, err := time.Parse(time.RFC3339Nano, ts)
+			if err != nil || !t.Before(cutoff) {
+				return nil // 时间不可解析 → 保守保留
+			}
+			oldTurns[k] = true
 			return nil
-		}
-		ts := kernel.Sval(rec["updated_at"])
-		if ts == "" {
-			ts = kernel.Sval(rec["created_at"])
-		}
-		t, err := time.Parse(time.RFC3339Nano, ts)
-		if err != nil || !t.Before(cutoff) {
-			return nil // 时间不可解析 → 保守保留
-		}
-		oldTurns[k] = true
-		return nil
-	}); err != nil {
+		})
+	}
+	if err := collect(prj); err != nil {
 		return facade.TurnEventCleanupResponse{}, err
+	}
+	if s.ShardOn(req.InstanceID, req.Scope) {
+		files, err := sessionstore.ListDialogFiles(prj.Path())
+		if err != nil {
+			return facade.TurnEventCleanupResponse{}, err
+		}
+		for _, f := range files {
+			dialogID, ok := data.DialogIDFromFile(f)
+			if !ok {
+				continue
+			}
+			db, release, err := data.OpenExistingDialog(prj.Path(), dialogID)
+			if err != nil {
+				continue // 打不开（锁/损坏）→ 跳过，不阻断其它对话
+			}
+			err = collect(db)
+			release()
+			if err != nil {
+				return facade.TurnEventCleanupResponse{}, err
+			}
+		}
 	}
 	if len(oldTurns) == 0 {
 		return facade.TurnEventCleanupResponse{OK: true}, nil

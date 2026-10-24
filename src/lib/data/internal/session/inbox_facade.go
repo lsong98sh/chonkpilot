@@ -98,10 +98,15 @@ func (s *Service) InboxAppend(req facade.InboxAppendRequest) (facade.InboxAppend
 	if err != nil {
 		return facade.InboxAppendResponse{}, err
 	}
+	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.InboxAppendResponse{}, err
+	}
+	defer release()
 
 	// 幂等：同会话 + 同幂等键已存在 → 直接返回既有行（网络重试不产生重复）。
 	if req.IdempotencyKey != "" {
-		recs, _, err := prj.Table(inboxTable).Query(data.Query{
+		recs, _, err := db.Table(inboxTable).Query(data.Query{
 			Where: data.Record{"session_id": req.SessionID, "idempotency_key": req.IdempotencyKey},
 			Limit: 1,
 		})
@@ -114,7 +119,7 @@ func (s *Service) InboxAppend(req facade.InboxAppendRequest) (facade.InboxAppend
 	}
 
 	// 上限：只统计 pending（consumed / discarded 不占额度）。
-	pending, _, err := prj.Table(inboxTable).Query(data.Query{
+	pending, _, err := db.Table(inboxTable).Query(data.Query{
 		Where: data.Record{"session_id": req.SessionID, "status": "pending"},
 	})
 	if err != nil {
@@ -160,7 +165,7 @@ func (s *Service) InboxAppend(req facade.InboxAppendRequest) (facade.InboxAppend
 		}
 		rec["source"] = req.Source
 	}
-	if err := prj.Table(inboxTable).Insert(key, rec); err != nil {
+	if err := db.Table(inboxTable).Insert(key, rec); err != nil {
 		return facade.InboxAppendResponse{}, err
 	}
 	return facade.InboxAppendResponse{OK: true, ID: key}, nil
@@ -175,6 +180,11 @@ func (s *Service) InboxList(req facade.InboxListRequest) (facade.InboxListRespon
 	if err != nil {
 		return facade.InboxListResponse{}, err
 	}
+	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.InboxListResponse{}, err
+	}
+	defer release()
 	status := req.Status
 	if status == "" {
 		status = "pending"
@@ -183,7 +193,7 @@ func (s *Service) InboxList(req facade.InboxListRequest) (facade.InboxListRespon
 	if status != "all" {
 		where["status"] = status
 	}
-	recs, _, err := prj.Table(inboxTable).Query(data.Query{Where: where})
+	recs, _, err := db.Table(inboxTable).Query(data.Query{Where: where})
 	if err != nil {
 		return facade.InboxListResponse{}, err
 	}
@@ -228,6 +238,11 @@ func (s *Service) InboxCommit(req facade.InboxCommitRequest) (facade.InboxCommit
 	if err != nil {
 		return facade.InboxCommitResponse{}, err
 	}
+	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.InboxCommitResponse{}, err
+	}
+	defer release()
 	m := data.MessageFromFacade(req.Message)
 	// INPUTVAL-1 P0-4：与 MessageAppend 同口径（角色枚举 + 正文长度）。
 	if !messageRoleValid(m.Role) {
@@ -239,7 +254,7 @@ func (s *Service) InboxCommit(req facade.InboxCommitRequest) (facade.InboxCommit
 	key := kernel.InboxMessageKey(req.InboxID)
 	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
 	sessionID := req.SessionID
-	err = prj.Update(func(tx *data.Tx) error {
+	err = db.Update(func(tx *data.Tx) error {
 		var inbox data.Record
 		ok, err := tx.Get(inboxTable, req.InboxID, &inbox)
 		if err != nil {
@@ -294,6 +309,11 @@ func (s *Service) InboxUpdate(req facade.InboxUpdateRequest) (facade.InboxUpdate
 	if err != nil {
 		return facade.InboxUpdateResponse{}, err
 	}
+	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.InboxUpdateResponse{}, err
+	}
+	defer release()
 	// 枚举白名单（INPUTVAL-1 P0-4）：写坏值会污染消费侧相位判定（pending/consumed/discarded、
 	// insert/next_turn），故写侧拒绝而非静默落库。
 	if req.Status != "" && !inboxStatusValid(req.Status) {
@@ -302,7 +322,7 @@ func (s *Service) InboxUpdate(req facade.InboxUpdateRequest) (facade.InboxUpdate
 	if req.Type != "" && req.Type != "insert" && req.Type != "next_turn" {
 		return facade.InboxUpdateResponse{}, fmt.Errorf("inbox: invalid type %q", req.Type)
 	}
-	if err := prj.Table(inboxTable).UpdateIn(req.ID, func(cur data.Record) data.Record {
+	if err := db.Table(inboxTable).UpdateIn(req.ID, func(cur data.Record) data.Record {
 		if len(cur) == 0 {
 			return nil
 		}

@@ -8,28 +8,31 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/chonkpilot/chonkpilot-session/store"
 )
 
 // Record 是表行（bucket key → JSON value）。
-type Record map[string]any
-
-// ErrExists 插入已存在的主键。
-var ErrExists = errors.New("data: key already exists")
-
-// ErrNotFound 更新/删除不存在的主键。
-var ErrNotFound = errors.New("data: key not found")
+//
+// 2026-10-24（Persist Provider）：类型定义上移到 `chonkpilot-session/store`（组件与数据面共用
+// 同一契约类型），此处仅为**别名**，主仓调用点零改动。
+type Record = store.Record
 
 // ErrLayerUnavailable 目标层未挂载（Resolver 对该层读写失败）。
 var ErrLayerUnavailable = errors.New("data: layer unavailable")
 
-// KeyField 是 Query 返回记录时附加的桶主键字段名（游标续查也依赖它）。
-const KeyField = "_key"
+// ErrExists / ErrNotFound / KeyField / RFC3339FixedNano 的唯一定义在 store 包
+// （组件与数据面必须同一个哨兵 / 常量，errors.Is 才成立）。
+var (
+	ErrExists   = store.ErrExists
+	ErrNotFound = store.ErrNotFound
+)
 
-// RFC3339FixedNano 固定 9 位纳秒 RFC3339 时间格式（数据面统一时间戳口径）：同秒内
-// 字典序 = 时间序（秒级 RFC3339 / 裁剪尾零的 RFC3339Nano 均不满足）。
-// 单一定义在本包；kernel 再导出同名常量供 internal 各域使用（本包不可反向 import
-// internal/kernel——kernel 已 import 本包，会构成 import 环）。
-const RFC3339FixedNano = "2006-01-02T15:04:05.000000000Z07:00"
+// KeyField 是 Query 返回记录时附加的桶主键字段名（游标续查也依赖它）。
+const KeyField = store.KeyField
+
+// RFC3339FixedNano 固定 9 位纳秒 RFC3339 时间格式（数据面统一时间戳口径）。
+const RFC3339FixedNano = store.RFC3339FixedNano
 
 // Table 是表（桶）DAO。
 type Table struct {

@@ -13,6 +13,7 @@ import (
 func TestSessionNextRunCounter(t *testing.T) {
 	s, scope := newSessionEnvBus(t) // SessionEnsure 首次落库会广播 session-new（需总线）
 	const inst, sid = "ins-nextrun", "s-nextrun"
+	disableShard(t, s, inst, scope)
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)

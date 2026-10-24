@@ -1,7 +1,7 @@
 <template>
   <!-- 会话导航（P3-C1，2026-09-24）：原「会话抽屉」内容整体迁入左侧导航「会话」页签。
        两行布局（标题 / #id + 轮数，超出省略号）；hover → 操作图标显示在文本下方；
-       操作 = 重命名 · 删除 · fork（占位「敬请期待」）· 复制对话（json-array，不含 system）
+       操作 = 重命名 · 删除 · fork（派生对话，full 档）· 复制对话（json-array，不含 system）
               · 用新窗口打开（纯对话窗口，多窗口；T-3）。 -->
   <div ref="paneRef" class="sessions-pane">
     <!-- 第一行：新建会话 / 新建对话窗口（图标按钮） -->
@@ -110,13 +110,13 @@
           >
             <Icon name="delete" :size="13" />
           </Button>
-          <!-- fork（A8 占位）：真实分支会话功能未实现，点击仅提示「敬请期待」。
+          <!-- fork（P4）：派生当前对话（full 档 = 整树拷贝 + id 重映射，`data-session-fork`）。
                保持既有按钮序位（第 1=重命名 / 第 2=删除 / 第 3=fork），回归用例依赖。 -->
           <Button
             size="small"
             text
-            :title="$t('chat.fork_coming_soon')"
-            @click.stop="handleFork"
+            :title="$t('chat.fork_session')"
+            @click.stop="handleFork(session)"
           >
             <Icon name="fork" :size="13" />
           </Button>
@@ -372,9 +372,22 @@ async function handleDelete(session) {
   }
 }
 
-// fork 占位（A8）：真实分支会话功能未实现，仅提示「敬请期待」
-function handleFork() {
-  message.info(t('chat.fork_coming_soon'))
+// fork（P4 已落地）：派生当前对话（full 档 = 整树拷贝 + id 重映射），完成后刷新列表。
+async function handleFork(session) {
+  if (!session) return
+  const dlg = session.dialog_id || sessionApi.sessionDialogOf(session.session_id)
+  if (!dlg) {
+    message.warning(t('chat.fork_failed'))
+    return
+  }
+  try {
+    await sessionApi.forkSession(dlg)
+    message.success(t('chat.fork_done'))
+    await load()
+  } catch (e) {
+    console.error('[SessionsPane] fork FAILED:', e)
+    message.error(t('chat.fork_failed') + ' ' + (e.message || e))
+  }
 }
 
 // 复制对话（P3-C1 口径）：逐轮读**原始**消息（非压缩后的快照）→ 去 system → 线格式

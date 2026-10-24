@@ -30,6 +30,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
+	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
@@ -63,7 +64,12 @@ func (s *Service) TasktreeList(req facade.TasktreeListRequest) (facade.TasktreeL
 	if err != nil {
 		return facade.TasktreeListResponse{}, err
 	}
-	recs, _, err := prj.Table(tasktreeTableFor(req.Shadow)).Query(data.Query{
+	db, release, err := kernel.ContentDB(prj, req.DialogID, s.ShardOn(req.InstanceID, req.Scope))
+	if err != nil {
+		return facade.TasktreeListResponse{}, err
+	}
+	defer release()
+	recs, _, err := db.Table(tasktreeTableFor(req.Shadow)).Query(data.Query{
 		Where:   data.Record{"top_session": req.TopSession},
 		OrderBy: "created_at",
 	})
@@ -98,9 +104,49 @@ func (s *Service) TasktreeTasks(req facade.TasktreeTasksRequest) (facade.Tasktre
 	if err != nil {
 		return facade.TasktreeTasksResponse{}, err
 	}
-	recs, _, err := prj.Table(tasktreeTableFor(req.Shadow)).Query(data.Query{Where: where, OrderBy: "created_at"})
+	shardOn := s.ShardOn(req.InstanceID, req.Scope)
+	// 一树一库（P3-4 残留回填）：无 dialog_id 时为**全实例快照**（任务层启动恢复）→ 跨对话库聚合。
+	if req.DialogID == "" && shardOn {
+		files, err := sessionstore.ListDialogFiles(prj.Path())
+		if err != nil {
+			return facade.TasktreeTasksResponse{}, err
+		}
+		out := make([]facade.Task, 0, 16)
+		for _, f := range files {
+			dialogID, ok := data.DialogIDFromFile(f)
+			if !ok {
+				continue
+			}
+			db, release, err := data.OpenExistingDialog(prj.Path(), dialogID)
+			if err != nil {
+				continue // 打不开（锁/损坏）→ 跳过，不阻断其它对话
+			}
+			got, err := tasksIn(db, where, req)
+			release()
+			if err != nil {
+				return facade.TasktreeTasksResponse{}, err
+			}
+			out = append(out, got...)
+		}
+		return facade.TasktreeTasksResponse{List: out}, nil
+	}
+	db, release, err := kernel.ContentDB(prj, req.DialogID, shardOn)
 	if err != nil {
-		return facade.TasktreeTasksResponse{}, fmt.Errorf("task list: %v", err)
+		return facade.TasktreeTasksResponse{}, err
+	}
+	defer release()
+	out, err := tasksIn(db, where, req)
+	if err != nil {
+		return facade.TasktreeTasksResponse{}, err
+	}
+	return facade.TasktreeTasksResponse{List: out}, nil
+}
+
+// tasksIn 在单个库内读任务快照（调用方已限定 where）。
+func tasksIn(db *data.DB, where data.Record, req facade.TasktreeTasksRequest) ([]facade.Task, error) {
+	recs, _, err := db.Table(tasktreeTableFor(req.Shadow)).Query(data.Query{Where: where, OrderBy: "created_at"})
+	if err != nil {
+		return nil, fmt.Errorf("task list: %v", err)
 	}
 	out := make([]facade.Task, 0, len(recs))
 	for _, r := range recs {
@@ -143,7 +189,7 @@ func (s *Service) TasktreeTasks(req facade.TasktreeTasksRequest) (facade.Tasktre
 		}
 		out = append(out, item)
 	}
-	return facade.TasktreeTasksResponse{List: out}, nil
+	return out, nil
 }
 
 // TasktreeUpsert 节点幂等落库（同 id 覆盖；P2 起 = 任务层唯一写入路径）：
@@ -221,7 +267,12 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 	if err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
-	tb := prj.Table(tasktreeTableFor(req.Shadow))
+	db, release, err := kernel.ContentDB(prj, req.DialogID, s.ShardOn(req.InstanceID, req.Scope))
+	if err != nil {
+		return facade.TasktreeUpsertResponse{}, err
+	}
+	defer release()
+	tb := db.Table(tasktreeTableFor(req.Shadow))
 	// 状态列合并（A-03/A-24）+ 单事务 RMW（A-18）：Upsert 是**全量覆盖写**，未携带的列会随旧值
 	// 一起丢失（如 llm 再上报 running 把「已逻辑删除」的节点复活，或未上报的 exec_json/
 	// return_* / steps 被清空）。Get→改→Upsert 跨两事务在并发下仍会互覆，故收进 UpdateIn：合并
@@ -262,7 +313,12 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	if err != nil {
 		return facade.TasktreeDeleteResponse{}, err
 	}
-	t := prj.Table(tasktreeTableFor(req.Shadow))
+	db, release, err := kernel.ContentDB(prj, req.DialogID, s.ShardOn(req.InstanceID, req.Scope))
+	if err != nil {
+		return facade.TasktreeDeleteResponse{}, err
+	}
+	defer release()
+	t := db.Table(tasktreeTableFor(req.Shadow))
 	// 级联子树改走二级索引 <table>_by_parent（键 = 父 id + "\x00" + 子主键，无排序段）：
 	// 对每个待删节点按 ListPrefix("<id>\x00") 取直接子节点，BFS 下钻 → O(子树) 而非 O(全库)。
 	// 子节点集合口径与旧全表扫逐点一致：不排除逻辑删除行、不区分 top_session（索引对空值/删除行
@@ -284,7 +340,7 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	}); err != nil {
 		return facade.TasktreeDeleteResponse{}, err
 	}
-	parentIdx := prj.Table(t.Name() + "_by_parent")
+	parentIdx := db.Table(t.Name() + "_by_parent")
 	seen := map[string]bool{req.NodeID: true}
 	toDelete := []string{req.NodeID}
 	for i := 0; i < len(toDelete); i++ {

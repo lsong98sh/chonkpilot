@@ -13,6 +13,7 @@ import (
 // 无 ask_id 行不命中 / 未命中返回空。
 func TestAskPending(t *testing.T) {
 	s, scope := newSessionEnv(t)
+	disableShard(t, s, "ins-ask", scope) // 旧布局断言（P3-4d 起 shard 生效 → 跨对话库扫描）
 	prj, err := s.PrjUsrFor("ins-ask", scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
@@ -65,5 +66,36 @@ func TestAskPending(t *testing.T) {
 	resp, err = s.AskPending(facade.AskPendingRequest{InstanceID: "ins-ask", AskID: "ask-missing", Scope: scope})
 	if err != nil || len(resp.Items) != 0 {
 		t.Fatalf("未命中应空：%+v %v", resp.Items, err)
+	}
+}
+
+// TestAskPendingAcrossDialogs（P3-4 残留回填）：一树一库生效、调用方无 dialog_id →
+// 跨对话库扫描，并在结果项回带该 ask 所属 dialog_id。
+func TestAskPendingAcrossDialogs(t *testing.T) {
+	svc, instID, prjUsr, dlgID := setup(t) // shard 缺省 on；setup 已建主会话 m1 + 子会话 c1
+	db, release, err := data.OpenExistingDialog(prjUsr, dlgID)
+	if err != nil {
+		t.Fatalf("open dialog: %v", err)
+	}
+	if err := db.Table("messages").Insert("M-ask-d", data.Record{
+		"session_id": "c1", "turn_id": "t1", "role": "tool", "tool_call_id": "cd1",
+		"tool_call_status": "running", "ask_id": "ask-d",
+		"content":    `{"call":{"tool_call_id":"cd1","name":"ask_user","arguments":{"question":"继续？"}}}`,
+		"created_at": ts0,
+	}); err != nil {
+		release()
+		t.Fatalf("seed ask: %v", err)
+	}
+	release()
+
+	resp, err := svc.AskPending(facade.AskPendingRequest{InstanceID: instID, PendingOnly: true})
+	if err != nil {
+		t.Fatalf("AskPending: %v", err)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("应命中 1 条跨对话 ask，实际 %d", len(resp.Items))
+	}
+	if resp.Items[0].AskID != "ask-d" || resp.Items[0].DialogID != dlgID || resp.Items[0].SessionID != "c1" {
+		t.Fatalf("结果项应回带 dialog_id/session_id: %+v", resp.Items[0])
 	}
 }
