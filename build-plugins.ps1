@@ -20,8 +20,8 @@
 # （plugin.json 来自 src/initdata/capability/plugins/<id>/，exe 必须与之**同目录**，
 #  manifest 的 runtime.exe 是插件目录内相对路径）。
 # webui 的投放（PLUGIN-UI-1）：本脚本产出的插件**全部** `ui.selfServe: true` ——
-# webui 源随插件源码（进程外插件在 `chonkpilot-plugins/<id>/webui/`，memory/history 在
-# `src/plugins/<id>/webui/`），经 `//go:embed all:webui` 打进 exe，产物**不带** webui/。
+# webui 源随插件源码（`chonkpilot-plugins/<id>/webui/`；memory/history 目前无 webui），
+# 经 `//go:embed all:webui` 打进 exe，产物**不带** webui/。
 # 例外：demo-python 是 Python 样例（runtime.exe = python，product=false，不随产物投放），
 # 不支持 embed，其页面仍在 `src/initdata/capability/plugins/demo-python/webui/`。
 #

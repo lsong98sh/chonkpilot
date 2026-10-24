@@ -9,7 +9,6 @@ require (
 	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-compress v0.0.0
-	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0
 	github.com/chonkpilot/chonkpilot-task v0.0.0
 	github.com/lsong98sh/chonkpilot-chat v0.1.0
 	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0
@@ -59,8 +58,6 @@ replace github.com/chonkpilot/chonkpilot-plugin => ../../plugins/plugin
 replace github.com/chonkpilot/chonkpilot-plugin-codegraph => ../../plugins/plugin-codegraph
 
 replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../plugins/plugin-compress
-
-replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../../chonkpilot-plugins/history/lib
 
 replace github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 

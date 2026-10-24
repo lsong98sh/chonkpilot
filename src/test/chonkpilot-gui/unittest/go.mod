@@ -37,8 +37,6 @@ replace github.com/chonkpilot/chonkpilot-plugin => ../../../plugins/plugin
 
 replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../../plugins/plugin-compress
 
-replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../../../chonkpilot-plugins/history/lib
-
 replace github.com/chonkpilot/chonkpilot-task => ../../../lib/task
 
 replace github.com/jchv/go-webview2 => ../../../lib/go-webview2

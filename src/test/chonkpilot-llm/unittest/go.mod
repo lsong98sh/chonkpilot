@@ -46,8 +46,6 @@ replace github.com/chonkpilot/chonkpilot-plugin => ../../../plugins/plugin
 
 replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../../plugins/plugin-compress
 
-replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../../../chonkpilot-plugins/history/lib
-
 replace github.com/lsong98sh/chonkpilot-plugin-framework => ../../../../../chonkpilot-plugin-framework
 
 replace github.com/chonkpilot/chonkpilot-task => ../../../lib/task

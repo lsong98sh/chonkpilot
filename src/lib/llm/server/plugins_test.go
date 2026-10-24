@@ -16,7 +16,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin-compress"
-	"github.com/chonkpilot/chonkpilot-plugin-history"
 )
 
 // pluginEnv 与 newTestServer 相同，但装配 Options.Plugins（内嵌插件集成测试专用）。
@@ -50,13 +49,15 @@ func pluginEnv(t *testing.T, llmSrv *httptest.Server, plugins []plugin.Hook, pre
 	return s
 }
 
-// TestPluginsLoadedServerStarting：Options.Plugins 装配（compress + history）→ Start 全部
+// TestPluginsLoadedServerStarting：Options.Plugins 装配（compress）→ Start 全部
 // 成功后才广播 server-starting（插件加载完成 = 就绪信号）。
+// 注：history 自 PLUGIN-SPLIT-1 起为**进程外插件**（只依赖 plugin-framework），
+// 不再作为宿主编译期内嵌 Hook 装配。
 func TestPluginsLoadedServerStarting(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	started := make(chan map[string]any, 1)
-	pluginEnv(t, llm, []plugin.Hook{compress.New(compress.DefaultOptions(), inline.New(nil)), history.New()},
+	pluginEnv(t, llm, []plugin.Hook{compress.New(compress.DefaultOptions(), inline.New(nil))},
 		func(bus mq.Bus) {
 			_, _ = bus.On("server-starting", 0, func(_ context.Context, _ string, v *mq.Value) error {
 				var m map[string]any

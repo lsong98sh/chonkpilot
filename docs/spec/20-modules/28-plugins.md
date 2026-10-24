@@ -239,15 +239,19 @@ server.Start
   - `protocol/`：帧编解码（原 `src/lib/core/transport`）+ 子进程 `SysProcAttr`；
   - `contract/`：`*.tool.md` 契约解析（原 `pluginsdk/contract`）；
   - `sdk/`：进程外插件作者侧 SDK（原 `src/lib/plugin-sdk/pluginsdk`，含 `engineclient`）；
+  - `runtime/`（2026-10-25 新增，插件侧运行时）：`bus`（原 `core/mq`）· `topics`（插件引用的
+    主题常量）· `hook`（原 `src/plugins/plugin/plugins.go`：`Deps/Notice/Hook/Stopper`）·
+    `instance`（实例视图 + 心跳）· `dataclient`（data-* 请求-应答）· `bridgebus`（宿主主题子集
+    ↔ 插件桥）· `heartbeat` · `datafmt`（`ChatMsg/ToolCall` + token 估算 + `LLMRefName`）；
   - 依赖 = 标准库 + MCP go-sdk，**零主仓依赖**。
-- **`chonkpilot-plugins`**（独立仓）：`browser` / `codebase` / `desktop` / `file` / `task` / `mcp` / `websearch` / `memory` / `history`，**每个插件一个 module**，只依赖 framework；`memory` / `history` 的 Go 业务包在同仓 `<id>/lib`（独立 module）。业务共享库尚未独立发版的，暂以 `replace` 指向主仓：`codebase` → codegraph/vfts server 包、`file` → `mcp-tools/toolset`、`memory` → `data`、`history` → `winproc`/`dataclient`。
-- **主仓保留**：`src/plugins/{plugin, plugin-compress, plugin-codegraph, plugin-vfts}`、引擎 exe（`codegraph` / `vfts`）、`src/plugins/plugin/bridgebus`（原 `plugin-sdk/bridgebus`，依赖 `core/mq`，属宿主侧适配器，供 memory/history 业务包使用）。
+- **`chonkpilot-plugins`**（独立仓）：`browser` / `codebase` / `desktop` / `file` / `task` / `mcp` / `websearch` / `memory` / `history`，**每个插件一个 module**；`memory` / `history` 的 Go 业务包在同仓 `<id>/lib`（独立 module）——两者**只依赖 framework `runtime/*`**（2026-10-25 起不再 `replace` 主仓 `data` / `winproc` / `dataclient` / `mq` / `msgkeys` / `plugin`）。**仍暂以 `replace` 指向主仓业务库**的：`codebase` → codegraph/vfts server 包、`file` → `mcp-tools`/`task`/`data`/`ignore`（这些库尚未独立发版，见 [41 D-70](../40-roadmap/41-未决项登记.md)）。
+- **主仓保留**：`src/plugins/{plugin, plugin-compress, plugin-codegraph, plugin-vfts}`、引擎 exe（`codegraph` / `vfts`）。**`src/plugins/plugin/bridgebus` 已删除**（迁至 framework `runtime/bridgebus`，主仓无引用）。
 
 **依赖方向**：
 
-- 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk`（+ 上述业务库）。
-- `memory` / `history` 业务包（`chonkpilot-plugins/<id>/lib`）→ `src/plugins/plugin`（`instance` / `dataclient`）+ `src/lib/core`（memory 另需 `src/lib/data`）—— 这些是宿主运行时，待 framework `host` 端口化后回收。
-- `src/plugins/plugin`（Hook 接口 + 实例视图 + bridgebus）→ `src/lib/core`。
+- 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk` / `runtime/*`（`file` / `codebase` 另暂指主仓业务库）。
+- `memory` / `history` 业务包（`chonkpilot-plugins/<id>/lib`）→ **仅 framework `runtime/*`**（`hook` / `bus` / `topics` / `instance` / `dataclient` / `datafmt` / `heartbeat`）。
+- `src/plugins/plugin`（Hook 接口 + 实例视图 + dataclient，宿主侧兼容）→ `src/lib/core`。
 - `src/plugins/plugin-compress` → `src/lib/core` · `src/lib/data`（**纯算法库，仅单测**）。
 - `src/plugins/plugin-codegraph` / `plugin-vfts` → `src/lib/core` · `src/plugins/plugin`（兼容 Hook，默认关）。
 - 进程内 Hook 由 `src/lib/llm`（`appwire.DefaultPlugins` 装配）引用；进程外插件由 `pluginmgr` 按 manifest 拉起（gui / server 共用）。
