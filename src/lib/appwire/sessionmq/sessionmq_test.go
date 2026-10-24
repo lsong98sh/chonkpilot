@@ -9,7 +9,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-session/component"
+	"github.com/lsong98sh/chonkpilot-session/component"
 )
 
 type captured struct {

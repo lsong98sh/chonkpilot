@@ -54,14 +54,12 @@ require (
 	github.com/chonkpilot/chonkpilot-mcp-tools v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-codegraph v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-plugin-compress v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-plugin-memory v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-vfts v0.0.0 // indirect
 	github.com/jchv/go-webview2 v0.0.0 // indirect
 	github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
 	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0 // indirect
 	github.com/lsong98sh/chonkpilot-router v0.1.0 // indirect
+	github.com/lsong98sh/chonkpilot-session v0.1.0 // indirect
 	github.com/sgtdi/fswatcher v1.3.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )

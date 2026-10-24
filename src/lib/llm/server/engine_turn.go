@@ -23,9 +23,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-chat"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
+	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-chat"
 )
 
 // engineTurnCalls 记录 `runEngineLoop` 的调用次数（测试钩子：断言子会话 / 群聊零调用）。
@@ -333,17 +334,43 @@ type engineStepLLM struct {
 }
 
 func (l engineStepLLM) Step(ctx context.Context, req chat.StepRequest, opts chat.StepOptions) (<-chan chat.StepEvent, error) {
-	// 最终请求消息列表的思维链回传规则（生产在 tc.msgs() 内应用）：引擎自持 messages 时，
+	// 最终请求消息列表的思维链回传规则（生产在组装内应用）：引擎自持 messages 时，
 	// 追加进列表的 assistant 段仍带 reasoning → 在此按同一规则归一（幂等，不修改引擎状态）。
-	req.Messages = applyReasoningRule(req.Messages)
+	req.Messages = session.ApplyReasoningRule(req.Messages)
 	ch, err := l.inner.Step(ctx, req, opts)
 	if err != nil {
-		return nil, err
+		// 超窗兜底（SESSION-1 阶段一）：同一份 payload 立刻压缩 → 重新组装 → 重试一次。
+		if ch2, ok := l.afterOverflow(ctx, &req, opts, err); ok {
+			ch, err = ch2, nil
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	out := make(chan chat.StepEvent, 8)
 	go func() {
 		defer close(out)
+		first := true
 		for ev := range ch {
+			// 流内错误同样可能是超窗（厂商多把 400 放在响应体）：仅首个事件（尚无输出）时兜底重试。
+			if first {
+				first = false
+				if ev.Err != nil {
+					if ch2, ok := l.afterOverflow(ctx, &req, opts, ev.Err); ok {
+						for ev2 := range ch2 {
+							if ev2.Type == chat.StepEventReasoning && ev2.Text != "" {
+								l.tc.server.notify(l.tc, NotifyTypeReason, map[string]any{"text": ev2.Text})
+							}
+							select {
+							case out <- ev2:
+							case <-ctx.Done():
+								return
+							}
+						}
+						return
+					}
+				}
+			}
 			if ev.Type == chat.StepEventReasoning && ev.Text != "" {
 				l.tc.server.notify(l.tc, NotifyTypeReason, map[string]any{"text": ev.Text})
 			}
@@ -357,11 +384,39 @@ func (l engineStepLLM) Step(ctx context.Context, req chat.StepRequest, opts chat
 	return out, nil
 }
 
+// afterOverflow 是超窗兜底的一次性动作：判定超窗 → 用**同一份 payload** 同步压缩 →
+// 重新组装上下文 → 重试一次。返回 (新事件流, true) = 已重试；false = 不适用 / 压缩未生效 /
+// 重试仍失败（调用方按原样处理，主流程不受影响）。
+func (l engineStepLLM) afterOverflow(ctx context.Context, req *chat.StepRequest, opts chat.StepOptions, cause error) (<-chan chat.StepEvent, bool) {
+	if l.tc == nil || !isContextOverflow(cause) {
+		return nil, false
+	}
+	if !l.tc.compressOnOverflow(ctx, req.Messages) {
+		return nil, false
+	}
+	l.tc.refreshHistoryFromSnapshot() // 压缩已写入快照 → 重读已提交快照（否则仍用旧历史）
+	a := l.tc.buildAssembly()         // 重新组装得到更小的上下文
+	req.Messages = session.ApplyReasoningRule(a.Context.Messages)
+	ch, err := l.inner.Step(ctx, *req, opts)
+	if err != nil {
+		logf("[chonkpilot-server] compress: 超窗兜底重试仍失败（turn=%s）: %v\n", l.tc.req.Turn, err)
+		return nil, false
+	}
+	logf("[chonkpilot-server] compress: 上下文超窗 → 已压缩并重试一次（turn=%s）\n", l.tc.req.Turn)
+	return ch, true
+}
+
 // engineTurnContext 返回生产同一份逐字上下文（`tc.msgs()`：系统提示词 + 引导 + 本轮已落库消息）。
+//
+// SESSION-1 阶段一：组装结果改为 `Assembly`（Context / LastTurnID / Zones / Usage）——
+// 发给 LLM 的 `chat.Context` 与改动前逐字节一致（`Assembly.Context`）；另在同一位置
+// **异步**触发压缩（达阈值才触发，非阻塞、失败不影响本轮）。
 type engineTurnContext struct{ tc *turnCtx }
 
 func (c engineTurnContext) Build(context.Context, chat.ContextRequest) (chat.Context, error) {
-	return chat.Context{Messages: c.tc.msgs()}, nil
+	a := c.tc.buildAssembly()
+	c.tc.maybeStartCompress(a)
+	return a.Context, nil
 }
 
 // engineTurnStore 把引擎写侧接到生产落库：

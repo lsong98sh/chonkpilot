@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lsong98sh/chonkpilot-session"
 )
 
 // recordLLMServer 记录每次 LLM 请求的 messages 并固定回文本（同轮次继续拼接断言用）。
@@ -301,8 +303,8 @@ func TestContinueKindNotTurnBoundary(t *testing.T) {
 	}
 	// 单一 turn → 整轮原文（组装侧下限：最新轮恒全量）。若被误按新轮切开，前段会退化为结论
 	// "part"（输出变 1+2 条），故本条仍能证伪。
-	out := assembleTurns(seq, 0, 0, 0, nil, nil, false)
+	out, _ := session.Project(seq, 0, 0, 0, nil, nil, false)
 	if len(out) != len(seq) || out[0].Content != "q" || out[2].Content != assembleContinueText {
-		t.Fatalf("assembleTurns = %+v, want 单轮全量（同一轮，未切开）", out)
+		t.Fatalf("session.Project = %+v, want 单轮全量（同一轮，未切开）", out)
 	}
 }

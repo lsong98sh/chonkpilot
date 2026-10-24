@@ -14,6 +14,7 @@ require (
 	github.com/lsong98sh/chonkpilot-chat v0.1.0
 	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0
 	github.com/lsong98sh/chonkpilot-router v0.1.0
+	github.com/lsong98sh/chonkpilot-session v0.1.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/sgtdi/fswatcher v1.3.0
 	golang.org/x/sys v0.47.0

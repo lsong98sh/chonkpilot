@@ -15,6 +15,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
+	"github.com/lsong98sh/chonkpilot-session"
 	"github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	"github.com/lsong98sh/chonkpilot-router"
 )
@@ -237,6 +238,9 @@ type turnCtx struct {
 	guideOnce      sync.Once
 	memGuideText   string
 	assetGuideText string
+	// sysPromptText 是本轮系统提示词五层拼装结果（newTurnCtx / recoverTurnCtx 各写一次）：
+	// 组装结果 `Assembly.Usage.Fixed` 用它 + 两条指引 + 工具 schema 估算固定开销。
+	sysPromptText string
 }
 
 // toolCallMeta 记录一次工具发起的名称与参数（persistToolRunning 时登记，B-05），
@@ -273,7 +277,8 @@ func (tc *turnCtx) loadSessionInfo() {
 		}
 		resp, err := tc.server.cfg.SessionGet(facade.SessionGetRequest{
 			InstanceID: tc.req.InstanceID, SessionID: tc.req.Session,
-			Scope: tc.server.cfgScope(tc.req.InstanceID),
+			Scope:    tc.server.cfgScope(tc.req.InstanceID),
+			DialogID: tc.server.dialogOf(tc.req.InstanceID, tc.req.Session),
 		})
 		if err != nil {
 			return
@@ -504,6 +509,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		briefBudget:        briefBudgetOf(zoneVals),
 		turnTokens:         turnTokens,
 		engineInbox:        newChatInbox(),
+		sysPromptText:      sc.sysPrompt,
 	}
 	// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写（见 engineRuntimeConfig）。
 	tc.autoContinueOff = subTurnNoAutoContinue(req, sc)
@@ -870,6 +876,7 @@ func (s *Server) sessionRow(instanceID, sessionID string) facade.Session {
 	}
 	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{
 		InstanceID: instanceID, SessionID: sessionID, Scope: s.cfgScope(instanceID),
+		DialogID: s.dialogOf(instanceID, sessionID), // 一树一库：会话行在对话库内
 	})
 	if err != nil {
 		logf("[chonkpilot-server] sessionRow(%s): %v\n", sessionID, err)
@@ -1461,7 +1468,7 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 	// 标题取值用**契约名**（canon，剥 self_ 前缀，与 domainNode 同源）：注入展示名优先，
 	// 无注入回退契约工具名（I-38；避免回退成网关暴露名 self_<契约名>）。
 	node.Name, node.Purpose, node.Simplified = taskDisplay(canon, args)
-	node.args = args // 保存参数（tool-retry 重跑用）
+	node.SetToolArgs(args) // 保存参数（tool-retry 重跑用）
 	if isAskTool(canon) {
 		node.Args = args // 展示用（I-50）：ask 追问内容/选项随 tasks.* 广播给前端任务详情
 	}
@@ -1615,58 +1622,17 @@ func (tc *turnCtx) activeSessionOK() bool {
 	return resp.SessionID == "" || resp.SessionID == tc.req.Session
 }
 
-// msgs 返回当前轮次 LLM 上下文：会话历史（hist，含摘要）+ 当前 turn 已落消息（created_at 升序）。
-// 全量历史按 **三段结构**内置拼接（口径 X，2026-09-25）：完整区（受 `keep_full_max_turns` 轮数 +
-// `keep_full_max_tokens` 完整态 token + `compress_token_threshold` 简化区预算三条件约束，与压缩侧
-// 同一算法 `data.LocateZones`）整轮原文；简化区/摘要区残留 → **仅 text**（`data.BriefMessages`）；
-// 被重试/恢复的 turn 强制全量（tc.forceFull）。**预存 token 优先**（tc.turnTokens，尾部对齐，
-// 缺值回退实时估算）→ 生产判定真正读取预存值、不再对已预存轮重算。
-// 当前 turn 恒为最后一段 → 恒全量（工具循环续轮需要完整原文；简化投影只作用于更早的 turn）。
-// 快照（tc.hist）不动。
-// 最后按协议规则（applyReasoningRule）决定 reasoning 回传：仅"带 tool_calls 的 assistant"
-// 保留 reasoning（线格式 reasoning_content），其余清空。
-// 最前拼**记忆库带出指引**（42 §2 (27)，memoryGuide）：按当前场景到记忆目录按需读取相关记忆，
-// 不注入记忆全文；该指引只随本次 LLM 请求携带，不写入 hist / 快照（避免逐轮累积）。
+// msgs 返回当前轮次 LLM 上下文（= 组装结果 `Assembly.Context.Messages`；生产路径唯一入口）。
+//
+// 组装细节见 `buildAssembly`（SESSION-1 阶段一）：会话历史（hist，含摘要）+ 当前 turn 已落消息
+// （created_at 升序）→ **三段结构**投影（口径 X，2026-09-25：完整区原文 / 简化区仅 text /
+// 摘要区残留同简化；边界 = `data.LocateZones`，与历史判定同一算法）→ reasoning 协议规则 →
+// 首位拼**记忆 / 资产两条指引**（只随本次请求携带，不写入 hist / 快照）。
+//
+// 本函数保留为薄封装：调用方（引擎 ContextProvider）只取 Messages；边界 / 用量取
+// `assembly()` / `buildAssembly()`。
 func (tc *turnCtx) msgs() []ChatMsg {
-	cur := newSessionStore(tc.server.bus, tc.req.InstanceID).LoadMessages(tc.req.Turn)
-	all := append(append([]ChatMsg{}, tc.hist...), cur...)
-	storedFull, storedBrief := splitTurnTokens(tc.turnTokens)
-	msgs := assembleTurns(all, tc.keepFullTurns, tc.keepFullTokens, tc.briefBudget, storedFull, storedBrief, tc.forceFull)
-	msgs = applyReasoningRule(msgs)
-	// 指引只读一次（单轮内 memory/asset 两条指引不变）：msgs() 每轮工具迭代都会调用，缓存避免
-	// 重复读配置。拼接顺序与逐次读取逐字一致：先记忆后资产（先后 prepend → 最终 [资产, 记忆, ...]）。
-	tc.guideOnce.Do(func() {
-		tc.memGuideText = tc.server.memoryGuide(tc.req.InstanceID, tc.req.WorkDir)
-		tc.assetGuideText = tc.server.assetGuide(tc.req.InstanceID)
-	})
-	if tc.memGuideText != "" {
-		msgs = append([]ChatMsg{{Role: "system", Content: tc.memGuideText}}, msgs...)
-	}
-	// 知识库资产检索指引（RB-7，2026-09-21）：与记忆指引并列；门控见 assetGuide（知识库未接入 →
-	// 空串不注入）。两条路径的区别在指引正文里写明（记忆 = 文件按绝对路径读；资产 = mcp_find + mcp_load）。
-	if tc.assetGuideText != "" {
-		msgs = append([]ChatMsg{{Role: "system", Content: tc.assetGuideText}}, msgs...)
-	}
-	return msgs
-}
-
-// splitTurnTokens 把伴随数组 turn_tokens 拆成**升序**的完整态 / 简化态 token 两数组
-// （供组装侧三段定位尾部对齐取用；缺值位留 0 = 缺值 → 调用方回退实时估算）。
-func splitTurnTokens(tokens []facade.TurnToken) (full, brief []int) {
-	if len(tokens) == 0 {
-		return nil, nil
-	}
-	full = make([]int, len(tokens))
-	brief = make([]int, len(tokens))
-	for i, t := range tokens {
-		if t.Full != nil {
-			full[i] = *t.Full
-		}
-		if t.Brief != nil {
-			brief[i] = *t.Brief
-		}
-	}
-	return full, brief
+	return tc.assembly().Context.Messages
 }
 
 // persistMessage 落库 user/assistant 消息；走 AppendFullKeyed：完整保留 Kind / tool_calls /
@@ -1803,9 +1769,8 @@ func parseArgs(s string) map[string]any {
 }
 
 // isAskTool 判断工具是否为 ask_user 类（需要用户输入）。
-func isAskTool(name string) bool {
-	return name == "ask_user" || name == "user_ask" || strings.Contains(name, "ask_user")
-}
+// 实现唯一在组件（任务树展示映射共用同一判据，`session.IsAskTool`）。
+func isAskTool(name string) bool { return session.IsAskTool(name) }
 
 // isMetaInvokeTool 判断工具是否为 mcp_invoke（gateway 域 meta 工具，契约名口径 = canon）：
 // 该工具可转调**任意**工具 → 工具白名单必须对其「目标工具」二次判白（项 5a 旁路加固）。
@@ -1813,16 +1778,8 @@ func isMetaInvokeTool(name string) bool {
 	return name == "mcp_invoke"
 }
 
-// askQuestion 从 ask_user 参数取问题文本。
-func askQuestion(args map[string]any) string {
-	if q, ok := args["question"].(string); ok {
-		return q
-	}
-	if q, ok := args["prompt"].(string); ok {
-		return q
-	}
-	return "请回答"
-}
+// askQuestion 从 ask_user 参数取问题文本（实现唯一在组件 `session.AskQuestion`）。
+func askQuestion(args map[string]any) string { return session.AskQuestion(args) }
 
 // ─── S6/RETRY-2 辅助：重试判定 / 可见上报 / 取消感知等待 ─────────────
 

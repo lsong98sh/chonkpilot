@@ -10,7 +10,7 @@
 // 快照即消息数组（可直接发送），压缩 = 快照变换（摘要 + 保留段），恢复/组装零编辑。
 package data
 
-import "github.com/chonkpilot/chonkpilot-session/store"
+import "github.com/lsong98sh/chonkpilot-session/store"
 
 // ChatMsg 是 chat 消息（对齐 OpenAI 协议；快照格式）。
 type ChatMsg = store.ChatMsg

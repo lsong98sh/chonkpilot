@@ -99,6 +99,8 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 	saveCfg("memory.enabled", "true")
 	// 阈值极大：反证手动沉淀**不受** memory.min-turn-tokens 门控（自动沉淀同配置下必被挡）
 	saveCfg("memory.min-turn-tokens", "999999")
+	// 本用例按旧布局（会话行落 prj 库、调用不带 dialog_id）取证，显式关闭分库
+	saveCfg("session.db.shard", "off")
 
 	// 真实落库：会话 + 最近一轮 + 该轮消息
 	call(t, bus, "data-session-ensure-session", map[string]any{
@@ -181,7 +183,7 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 		t.Fatalf("预置类别文件不足 8 个：%+v", before)
 	}
 
-	// 真插件（Start 订阅 session-compress + memory.flush）
+	// 真插件（Start 订阅 session-complete + memory.flush）
 	p := New(DefaultOptions())
 	if err := p.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("plugin Start: %v", err)

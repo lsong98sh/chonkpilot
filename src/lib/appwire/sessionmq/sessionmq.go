@@ -21,7 +21,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-session/component"
+	"github.com/lsong98sh/chonkpilot-session/component"
 )
 
 // Sink 是 component.Sink 的 MQ 实现（每实例一个：`instance_id` 随事件载荷下发）。

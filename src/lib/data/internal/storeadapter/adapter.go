@@ -16,7 +16,7 @@ import (
 	"os"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-session/store"
+	"github.com/lsong98sh/chonkpilot-session/store"
 )
 
 // Store 是一树一库（bbolt）的端口实现。

@@ -14,7 +14,7 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"github.com/chonkpilot/chonkpilot-session/store"
+	"github.com/lsong98sh/chonkpilot-session/store"
 )
 
 // Query 是通用查询条件（类 Criteria）。唯一定义在 `chonkpilot-session/store`，

@@ -7,7 +7,7 @@ package data
 import (
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-session"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 )

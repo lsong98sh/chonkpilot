@@ -18,7 +18,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 	"github.com/chonkpilot/chonkpilot-data/internal/storeadapter"
-	"github.com/chonkpilot/chonkpilot-session/component"
+	"github.com/lsong98sh/chonkpilot-session/component"
 )
 
 // contentDB 选内容库（turns / messages / snapshot 所在层）：

@@ -9,11 +9,9 @@ require (
 	github.com/chonkpilot/chonkpilot-llm v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-codegraph v0.0.0
-	github.com/chonkpilot/chonkpilot-plugin-compress v0.0.0
-	github.com/chonkpilot/chonkpilot-plugin-history v0.0.0
-	github.com/chonkpilot/chonkpilot-plugin-memory v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-vfts v0.0.0
 	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0
+	github.com/lsong98sh/chonkpilot-session v0.1.0
 )
 
 require (

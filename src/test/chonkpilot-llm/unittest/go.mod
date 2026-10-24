@@ -52,16 +52,14 @@ replace github.com/chonkpilot/chonkpilot-plugin-sdk => ../../../lib/plugin-sdk
 
 replace github.com/chonkpilot/chonkpilot-task => ../../../lib/task
 
-replace github.com/chonkpilot/chonkpilot-session => ../../../../../chonkpilot-session
-
 require (
 	github.com/chonkpilot/chonkpilot-assembly v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-mcp-tools v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-session v0.0.0 // indirect
 	github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
 	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0 // indirect
 	github.com/lsong98sh/chonkpilot-router v0.1.0 // indirect
+	github.com/lsong98sh/chonkpilot-session v0.1.0 // indirect
 	github.com/sgtdi/fswatcher v1.3.0 // indirect
 )
 

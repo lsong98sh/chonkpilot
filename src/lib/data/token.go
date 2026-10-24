@@ -7,8 +7,8 @@ package data
 import (
 	"unicode/utf8"
 
-	"github.com/chonkpilot/chonkpilot-session"
-	"github.com/chonkpilot/chonkpilot-session/store"
+	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-session/store"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 )

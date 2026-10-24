@@ -11,6 +11,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-session"
 )
 
 // newBusHarness 建独立总线 + persist 数据服务 + 注册 ins-test 实例
@@ -35,6 +36,11 @@ func newBusHarness(t *testing.T) mq.Bus {
 	}))
 	time.Sleep(50 * time.Millisecond)
 	data.Register("ins-test", wd, "") // 直连同库（种子/断言）
+	// 本组用例断言 prjusr 旧布局（turns/messages 直读）；P3-4c 起开关缺省 on → 显式退回 off。
+	if prj, release, err := data.Prj("ins-test"); err == nil {
+		_ = prj.Table("config").Upsert("session.db.shard", data.Record{"v": "off"})
+		release()
+	}
 	return bus
 }
 
@@ -49,6 +55,60 @@ func appendFull(t *testing.T, st *sessionStore, turn string, m ChatMsg) {
 	t.Helper()
 	if _, err := st.AppendFullKeyed(turn, m, ""); err != nil {
 		t.Fatalf("AppendFullKeyed(%s): %v", turn, err)
+	}
+}
+
+// TestSessionStoreThreadsDialogID（P3-4b）：`session.db.shard=on` 时——
+// EnsureSession 自举回带 dialog_id → 记入进程内备忘；后续 turn/消息请求自动补 `dialog_id`
+// （另一实例的 sessionStore 也能读到，覆盖 assembly 临时 store 的场景）；
+// 数据落对话库、不落 prjusr。
+func TestSessionStoreThreadsDialogID(t *testing.T) {
+	bus := newBusHarness(t)
+	prj, release, err := data.Prj("ins-test")
+	if err != nil {
+		t.Fatalf("Prj: %v", err)
+	}
+	if err := prj.Table("config").Upsert("session.db.shard", data.Record{"v": "on"}); err != nil {
+		t.Fatalf("set shard: %v", err)
+	}
+	release()
+
+	st := newSessionStore(bus, "ins-test")
+	if err := st.EnsureSession("s-dlg"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	dlg := st.idx.dialogOf("s-dlg")
+	if dlg == "" {
+		t.Fatal("EnsureSession 后备忘缺 dialog_id")
+	}
+	if err := st.EnsureTurn("t-dlg", "s-dlg"); err != nil {
+		t.Fatalf("EnsureTurn: %v", err)
+	}
+	if _, err := st.AppendFullKeyed("t-dlg", ChatMsg{Role: "user", Content: "hi"}, ""); err != nil {
+		t.Fatalf("AppendFullKeyed: %v", err)
+	}
+
+	// 另一个 store（模拟 assembly / engine 按需新建）也应能按 turn 找回对话并读回消息。
+	other := newSessionStore(bus, "ins-test")
+	if msgs := other.LoadMessages("t-dlg"); len(msgs) != 1 || msgs[0].Content != "hi" {
+		t.Fatalf("LoadMessages 应读回 1 条: %+v", msgs)
+	}
+
+	prjUsr, err := data.PrjUsr("ins-test")
+	if err != nil {
+		t.Fatalf("PrjUsr: %v", err)
+	}
+	sdb, rel, err := data.OpenExistingDialog(prjUsr.Path(), dlg)
+	if err != nil {
+		t.Fatalf("open dialog: %v", err)
+	}
+	recs, _, err := sdb.Table("messages").Query(data.Query{Where: data.Record{"turn_id": "t-dlg"}})
+	rel()
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("对话库应有 1 条消息: len=%d err=%v", len(recs), err)
+	}
+	if recs, _, err := prjUsr.Table("messages").Query(data.Query{Where: data.Record{"turn_id": "t-dlg"}}); err != nil || len(recs) != 0 {
+		t.Fatalf("prjusr 不应有消息: len=%d err=%v", len(recs), err)
 	}
 }
 
@@ -147,7 +207,7 @@ func TestBuildContextTokensReadsPrestored(t *testing.T) {
 		t.Fatalf("t2 无预存值 → 字段缺省：%+v", tokens[1])
 	}
 	// 拆分（组装侧实际入参）：缺值位 = 0 → data.ResolveStoredTokens 回退实时估算。
-	sf, sb := splitTurnTokens(tokens)
+	sf, sb := session.SplitTurnTokens(sessionTurnTokens(tokens))
 	if len(sf) != 2 || sf[0] != 1234 || sf[1] != 0 || sb[0] != 56 || sb[1] != 0 {
 		t.Fatalf("splitTurnTokens=%v/%v", sf, sb)
 	}

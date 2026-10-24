@@ -20,6 +20,8 @@ github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0 h1:f/oJnb0ftUk2q2I7SDH0X4TfOi
 github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0/go.mod h1:VAUJe7oD4JjpLAtGriLGukF5zn2mbC8uf8a0KMXQgh4=
 github.com/lsong98sh/chonkpilot-router v0.1.0 h1:R8K6h5FAY6ijtwS/rIIHnytxqgl1D39pyqXJWVWe9wc=
 github.com/lsong98sh/chonkpilot-router v0.1.0/go.mod h1:l/aArs8nBJigWadgLR0PzYRsfHjtmtG+erXx6aWbkfA=
+github.com/lsong98sh/chonkpilot-session v0.1.0 h1:4IVehXrwcehlbCCB7zb96W8WL2+VepMaQ9qS/GK+BSo=
+github.com/lsong98sh/chonkpilot-session v0.1.0/go.mod h1:sjI8UFTrp+VA7PFs4VITbXo3KjxLo9bo0X3g0DENFOQ=
 github.com/modelcontextprotocol/go-sdk v1.7.0 h1:yqjY2dsbKAC0LSuWZVBMrHgiG8ukXv6NRo0JiALay44=
 github.com/modelcontextprotocol/go-sdk v1.7.0/go.mod h1:dL7u98E/zjJTGzEq+j30jQ8K2k1mb6LeAH4inEcSGts=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

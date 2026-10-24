@@ -5,14 +5,18 @@
 // 识别与执行：turn 内工具分发命中 isTaskTool → 经 gateway 唯一执行入口（域工具回调
 // domain-tool-call）→ execTaskTool 同步执行（tool_stop 级联取消 / tool_result 返回
 // 转后台结果）→ 结果同步喂回本 turn；任务节点由 domainNode 建/广播、调用方收尾。
+//
+// SESSION-1 阶段二·任务树：**入参校验与结果文案的语义映射**已下沉到纯 lib 组件
+// `chonkpilot-session`（`task_tools.go`）；本文件只剩宿主侧副作用——任务层读（状态 /
+// 执行句柄）、message 表读、取消级联（组件）与轮询等待。
 package server
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
+	"github.com/lsong98sh/chonkpilot-session"
 )
 
 // turnInstance 取轮次归属 instance（tc 为空 → ""）：旧调用方（无 turn 上下文的直接调用）不限定
@@ -52,48 +56,39 @@ func (s *Server) execTaskTool(parent *turnCtx, toolCallID string, node *TaskNode
 
 // ─── tool_stop：级联取消 ─────────────────────────────
 
-// runToolStop 停止任务（对齐 tool_stop.md）：task_id → taskManager 级联定位子树
+// runToolStop 停止任务（对齐 tool_stop.md）：task_id → 任务树级联定位子树
 // 标 cancelled + 广播 tasks.done；P2 起**状态判定以任务层为权威**、执行侧取消经层回调
 // （`cancelSubtree` → 层 `CancelSubtree` → `OnCancelExec` → 进程内 sink `CancelExec(gw_task_id)`
 // → gateway `tm.cancel` → provider.Invalidate，**真实打断在飞调用**，21 §9.2 交付物 ⑤）。
 //
 // 返回 (结果文本, isErr)；isErr=true 表示工具级失败（B-17：调用方据此落任务终态 error）。
-//
-// process_id 参数（B-01 安全）：**一律拒绝**。本 server 不持有任何子进程 PID 登记面——执行体
-// （executor / 引擎 / dsl-executor 等）均由 gateway 派生，其 OS PID 不经任何消息面回报到本包
-// （见 tasks.go `taskExecSink` / `tasklayer.Exec` 只带 gateway 侧任务 id GWTaskID，无 OS PID；
-// 本包自身不 spawn 长跑子进程）→ 无法验证 PID 归属，直接拒绝，杜绝 LLM 经任意 PID 击杀本机
-// 无关进程。终止任务请改用 task_id（级联取消，含转后台执行体）。
-//
-// 错误语义（2026-09-18）：已不可逆终态 / 执行池未注入（确有在飞执行）/ 任务不存在 → 明确文案。
+// 入参校验（process_id 一律拒绝 / task_id 必填）与结果文案的唯一实现在组件
+// （`session.ParseToolStopArgs` 等），本函数只做副作用与编排。
 func (s *Server) runToolStop(parent *turnCtx, node *TaskNode, args map[string]any) (string, bool) {
-	taskID, _ := args["task_id"].(string)
-	processID, _ := args["process_id"].(float64)
-	if processID > 0 {
-		return fmt.Sprintf("错误: 不支持按 process_id(%d) 终止进程（本服务不登记子进程 PID，无法校验归属）；请改用 task_id 级联取消", int(processID)), true
+	req, errText, isErr := session.ParseToolStopArgs(args)
+	if isErr {
+		return errText, true
 	}
-	if taskID == "" {
-		return "错误: task_id 必填（process_id 已不支持）", true
-	}
+	taskID := req.TaskID
 	// 层为权威（RB-5 L4：只经 `taskStateReader` 窄接口读层状态，不直调层的具体方法面）：
 	// 已不可逆终态 → 明确文案（不重复下发执行侧取消）。
 	layer := s.taskState()
 	if layer != nil {
 		if st, ok := layer.State(taskID); ok && terminalTaskState(st) {
-			return fmt.Sprintf("任务 %s 已结束（%s），无需停止", taskID, st), false
+			return session.ToolStopAlreadyDoneText(taskID, st), false
 		}
 	}
 	// 可打断性门控：层持 exec 句柄但执行池未注入 → 明确文案（不静默）。
 	if s.execSink == nil && layer != nil {
 		if exec, ok := layer.ExecOf(taskID); ok && exec.GWTaskID != "" {
-			return fmt.Sprintf("错误: 执行池不可用（未注入 sink），无法打断任务 %s", taskID), true
+			return session.ToolStopExecUnavailableText(taskID), true
 		}
 	}
 	cancelled := s.tasks.cancelSubtree(turnInstance(parent), taskID)
 	if cancelled == 0 {
-		return fmt.Sprintf("任务 %s 不存在或已结束", taskID), false
+		return session.ToolStopNotFoundText(taskID), false
 	}
-	return fmt.Sprintf("🛑 任务 %s 已级联停止（取消 %d 个节点）", taskID, cancelled), false
+	return session.ToolStopOKText(taskID, cancelled), false
 }
 
 // ─── tool_result：返回转后台结果 ─────────────────────────────
@@ -104,34 +99,29 @@ func (s *Server) runToolStop(parent *turnCtx, node *TaskNode, args map[string]an
 // 返回 (结果文本, isErr)；isErr=true = 工具级失败（参数缺失 / 未找到任务；B-17）。
 // execCtx = 工具执行 ctx（I-83 收尾）：gateway 取消回报 → cancel → 轮询及时退出
 // （不空耗到 timeout；被查询任务本身未受影响）。
+// 入参校验与文案构造的唯一实现在组件（`session.ParseToolResultArgs` 等）。
 func (s *Server) runToolResult(parent *turnCtx, node *TaskNode, args map[string]any, execCtx context.Context) (string, bool) {
-	id, _ := args["id"].(string)
-	if id == "" {
-		return "错误: id 必填", true
+	req, errText, isErr := session.ParseToolResultArgs(args)
+	if isErr {
+		return errText, true
 	}
-	timeout := 30.0
-	if v, ok := args["timeout"].(float64); ok {
-		timeout = v
-	}
-	if timeout <= 0 {
-		timeout = 0 // 0/负 → 立即查询一次
-	}
+	id, timeout := req.ID, req.TimeoutSec
 	deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
 	for {
 		if execCtx.Err() != nil {
-			return fmt.Sprintf("已取消: 任务 %s 查询中止（gateway 执行侧取消；被查询任务本身未受影响，可重新调用 tool_result）", id), false
+			return session.ToolResultCancelledText(id), false
 		}
 		if text, state, found := s.taskResult(parent, id); found {
 			if state == "running" {
 				if time.Now().After(deadline) {
-					return fmt.Sprintf("任务尚未结束：%s 仍在运行（已等待 %.0fs）。可再次调用 tool_result(id=%q, timeout=更长秒数) 继续等待", id, timeout, id), false
+					return session.ToolResultRunningText(id, timeout), false
 				}
 				sleepCtx(execCtx, 500*time.Millisecond)
 				continue
 			}
 			return text, false
 		}
-		return "错误: 未找到任务 " + id, true
+		return session.ToolResultNotFoundText(id), true
 	}
 }
 
@@ -162,17 +152,13 @@ func (s *Server) taskResult(parent *turnCtx, id string) (string, string, bool) {
 }
 
 // nodeTaskResult 由任务节点给出查询结果：
-//   - 节点终态（done/error/cancelled）→ 节点摘要（既有行为：终态摘要随 mcp-tasks-report 回填）；
+//   - 节点终态（done/error/cancelled）→ 节点摘要（既有行为：终态摘要随 mcp-tasks-report 回填；
+//     文案映射在组件 `session.TaskNodeResultText`）；
 //   - 非终态 → **层为权威**判定终态：层判终态但 message 表无结果行 → 明确文案
 //     「异步结果已不可用」（不静默返回空）；否则读 message 表（已落 result = 完成；仅 async.pending = 在飞）。
 func (s *Server) nodeTaskResult(parent *turnCtx, n *TaskNode) (string, string, bool) {
-	switch n.State {
-	case TaskStateDone:
-		return n.ResultSummary, "done", true
-	case TaskStateError:
-		return "任务失败: " + n.Error, "error", true
-	case TaskStateCancelled:
-		return "任务已取消: " + n.Error, "cancelled", true
+	if text, state, ok := session.TaskNodeResultText(n); ok {
+		return text, state, true
 	}
 	layerTerminal := false
 	if layer := s.taskState(); layer != nil { // RB-5 L4：经窄接口读层权威状态
@@ -189,7 +175,7 @@ func (s *Server) nodeTaskResult(parent *turnCtx, n *TaskNode) (string, string, b
 		}
 	}
 	if layerTerminal {
-		return "异步结果已不可用（任务已终态，但 message 表无该调用的结果行）", "error", true
+		return session.AsyncResultUnavailableText, "error", true
 	}
 	return "", "running", true
 }
