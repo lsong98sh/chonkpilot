@@ -46,8 +46,8 @@ $env:CGO_ENABLED = "1"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $srcPlugins = Join-Path $root "src\plugins"
-# 进程外插件源码仓库（2026-10-24 分离）：websearch/codebase/browser/desktop/file/task/mcp
-# 与主仓同级；memory/history 仍留主仓（复用主仓业务包，待后续抽公共库）。
+# 进程外插件源码仓库（2026-10-24 分离）：websearch/codebase/browser/desktop/file/task/mcp/memory/history
+# 均与主仓同级；memory/history 的 Go 业务包在同仓 `<id>/lib`。
 $pluginsRepo = Join-Path (Split-Path -Parent $root) "chonkpilot-plugins"
 $out = Join-Path $root "dist\plugin-apps"
 
@@ -136,11 +136,11 @@ Build-Plugin -Mod (Join-Path $pluginsRepo "task") -ID "task" -ExeName "chonkpilo
 Write-Host "==> [7/9] mcp（检索 / 加载 / 调用）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "mcp") -ID "mcp" -ExeName "chonkpilot-plugin-mcp.exe"
 
-Write-Host "==> [8/9] memory（记忆沉淀；复用 chonkpilot-plugin-memory 业务包）"
-Build-Plugin -Mod (Join-Path $srcPlugins "memory") -ID "memory" -ExeName "chonkpilot-memory.exe"
+Write-Host "==> [8/9] memory（记忆沉淀；业务包在 plugins 仓 memory/lib）"
+Build-Plugin -Mod (Join-Path $pluginsRepo "memory") -ID "memory" -ExeName "chonkpilot-memory.exe"
 
-Write-Host "==> [9/9] history（文件检查点链；复用 chonkpilot-plugin-history 业务包）"
-Build-Plugin -Mod (Join-Path $srcPlugins "history") -ID "history" -ExeName "chonkpilot-history.exe"
+Write-Host "==> [9/9] history（文件检查点链；业务包在 plugins 仓 history/lib）"
+Build-Plugin -Mod (Join-Path $pluginsRepo "history") -ID "history" -ExeName "chonkpilot-history.exe"
 
 # ── 部署到桌面单体产物（存在才部署）──
 $desktopPlugins = Join-Path $root "dist\desktop\capability\plugins"

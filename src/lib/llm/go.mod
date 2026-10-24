@@ -60,9 +60,7 @@ replace github.com/chonkpilot/chonkpilot-plugin-codegraph => ../../plugins/plugi
 
 replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../plugins/plugin-compress
 
-replace github.com/chonkpilot/chonkpilot-plugin-history => ../../plugins/plugin-history
-
-replace github.com/chonkpilot/chonkpilot-plugin-memory => ../../plugins/plugin-memory
+replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../../chonkpilot-plugins/history/lib
 
 replace github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 

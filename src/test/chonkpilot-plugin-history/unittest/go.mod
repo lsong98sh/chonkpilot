@@ -12,4 +12,4 @@ replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
 
 replace github.com/chonkpilot/chonkpilot-plugin => ../../../plugins/plugin
 
-replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../plugins/plugin-history
+replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../../../chonkpilot-plugins/history/lib

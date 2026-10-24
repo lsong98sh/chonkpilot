@@ -57,7 +57,7 @@
 
 > **语义**：打**独立 ref 的检查点链**，**绝不碰 `.git/index` 与 HEAD、不在用户分支产生任何提交**。消息面见 [61 §5.1.1/§5.4a/§8](../60-reference/61-消息一览.md)，配置键见 [64 §4](../60-reference/64-配置项一览.md)；设置页见 [20-gui §12.12](20-gui.md)。
 
-> **〔2026-10-24 变更：已迁为进程外插件〕** history **不再是内嵌 Hook**：现由 `src/plugins/history`（exe；`pluginsdk` + `bridgebus`）承载，业务实现**逐字复用** `chonkpilot-plugin-history` 包。宿主侧 MQ 主题经插件桥（`plugin/v1/*`）等价转发，下表订阅/口径/数据落点**不变**。
+> **〔2026-10-24 变更：已迁为进程外插件〕** history **不再是内嵌 Hook**：现由 `chonkpilot-plugins/history`（exe；`pluginsdk` + `bridgebus`）承载，业务实现**逐字复用**同仓 `history/lib`（module `chonkpilot-plugin-history`）。宿主侧 MQ 主题经插件桥（`plugin/v1/*`）等价转发，下表订阅/口径/数据落点**不变**。
 
 | 项 | 值 |
 |----|----|
@@ -123,7 +123,7 @@
 
 ### 3.5 memory（记忆沉淀）
 
-> **形态（2026-10-24）**：memory 已是**进程外插件** —— `src/plugins/memory`（exe；`pluginsdk` + `bridgebus`），业务实现**逐字复用** `chonkpilot-plugin-memory` 包；其 MQ 事件/方法面经插件桥（`plugin/v1/*`）等价转发。下表订阅 / 门控 / 落盘口径**不变**。
+> **形态（2026-10-24）**：memory 已是**进程外插件** —— `chonkpilot-plugins/memory`（exe；`pluginsdk` + `bridgebus`），业务实现**逐字复用**同仓 `memory/lib`（module `chonkpilot-plugin-memory`）；其 MQ 事件/方法面经插件桥（`plugin/v1/*`）等价转发。下表订阅 / 门控 / 落盘口径**不变**。
 
 | 项 | 值 |
 |----|----|
@@ -240,20 +240,18 @@ server.Start
   - `contract/`：`*.tool.md` 契约解析（原 `pluginsdk/contract`）；
   - `sdk/`：进程外插件作者侧 SDK（原 `src/lib/plugin-sdk/pluginsdk`，含 `engineclient`）；
   - 依赖 = 标准库 + MCP go-sdk，**零主仓依赖**。
-- **`chonkpilot-plugins`**（独立仓）：`browser` / `codebase` / `desktop` / `file` / `task` / `mcp` / `websearch`，**每个插件一个 module**，只依赖 framework（`codebase` 另需 codegraph/vfts server 包、`file` 另需 `mcp-tools/toolset` —— 这两个业务共享库尚未独立发版，暂以 `replace` 指向主仓）。
-- **主仓保留**：`src/plugins/{plugin, plugin-memory, plugin-history, plugin-compress, plugin-codegraph, plugin-vfts, memory, history}`、引擎 exe（`codegraph` / `vfts`）、`src/plugins/plugin/bridgebus`（原 `plugin-sdk/bridgebus`，依赖 `core/mq`，属宿主侧适配器）。
+- **`chonkpilot-plugins`**（独立仓）：`browser` / `codebase` / `desktop` / `file` / `task` / `mcp` / `websearch` / `memory` / `history`，**每个插件一个 module**，只依赖 framework；`memory` / `history` 的 Go 业务包在同仓 `<id>/lib`（独立 module）。业务共享库尚未独立发版的，暂以 `replace` 指向主仓：`codebase` → codegraph/vfts server 包、`file` → `mcp-tools/toolset`、`memory` → `data`、`history` → `winproc`/`dataclient`。
+- **主仓保留**：`src/plugins/{plugin, plugin-compress, plugin-codegraph, plugin-vfts}`、引擎 exe（`codegraph` / `vfts`）、`src/plugins/plugin/bridgebus`（原 `plugin-sdk/bridgebus`，依赖 `core/mq`，属宿主侧适配器，供 memory/history 业务包使用）。
 
 **依赖方向**：
 
-- 进程外插件（7 个，`chonkpilot-plugins/<id>`）→ framework `sdk`（+ 上述业务库）。
-- `memory` / `history` exe（仍在主仓）→ framework `sdk` + `chonkpilot-plugin/bridgebus`（业务库同仓，待后续抽公共库后随迁）。
+- 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk`（+ 上述业务库）。
+- `memory` / `history` 业务包（`chonkpilot-plugins/<id>/lib`）→ `src/plugins/plugin`（`instance` / `dataclient`）+ `src/lib/core`（memory 另需 `src/lib/data`）—— 这些是宿主运行时，待 framework `host` 端口化后回收。
 - `src/plugins/plugin`（Hook 接口 + 实例视图 + bridgebus）→ `src/lib/core`。
 - `src/plugins/plugin-compress` → `src/lib/core` · `src/lib/data`（**纯算法库，仅单测**）。
-- `src/plugins/plugin-memory` → `src/lib/core` · `src/lib/data` · `src/plugins/plugin`（**业务库**，供 memory exe 复用）。
-- `src/plugins/plugin-history` → `src/lib/core` · `src/plugins/plugin`（纯 git，无 DB；业务库）。
 - `src/plugins/plugin-codegraph` / `plugin-vfts` → `src/lib/core` · `src/plugins/plugin`（兼容 Hook，默认关）。
 - 进程内 Hook 由 `src/lib/llm`（`appwire.DefaultPlugins` 装配）引用；进程外插件由 `pluginmgr` 按 manifest 拉起（gui / server 共用）。
-- 构建：`build-plugins.ps1` 的 7 个进程外插件源码取自**同级** `chonkpilot-plugins`，`memory` / `history` 取自主仓 `src/plugins`。
+- 构建：`build-plugins.ps1` 的 9 个进程外插件源码**全部**取自同级 `chonkpilot-plugins`。
 
 ---
 

@@ -41,10 +41,6 @@ replace github.com/chonkpilot/chonkpilot-plugin-codegraph => ../plugins/plugin-c
 
 replace github.com/chonkpilot/chonkpilot-plugin-compress => ../plugins/plugin-compress
 
-replace github.com/chonkpilot/chonkpilot-plugin-history => ../plugins/plugin-history
-
-replace github.com/chonkpilot/chonkpilot-plugin-memory => ../plugins/plugin-memory
-
 replace github.com/chonkpilot/chonkpilot-ignore => ../lib/ignore
 
 replace github.com/chonkpilot/chonkpilot-plugin-vfts => ../plugins/plugin-vfts

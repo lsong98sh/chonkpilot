@@ -41,8 +41,6 @@ replace (
 	github.com/chonkpilot/chonkpilot-plugin => ../../plugins/plugin
 	github.com/chonkpilot/chonkpilot-plugin-codegraph => ../../plugins/plugin-codegraph
 	github.com/chonkpilot/chonkpilot-plugin-compress => ../../plugins/plugin-compress
-	github.com/chonkpilot/chonkpilot-plugin-history => ../../plugins/plugin-history
-	github.com/chonkpilot/chonkpilot-plugin-memory => ../../plugins/plugin-memory
 	github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vfts
 	github.com/chonkpilot/chonkpilot-task => ../task
 	github.com/jchv/go-webview2 => ../go-webview2

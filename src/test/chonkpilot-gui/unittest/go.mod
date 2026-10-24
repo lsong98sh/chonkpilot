@@ -37,7 +37,7 @@ replace github.com/chonkpilot/chonkpilot-plugin => ../../../plugins/plugin
 
 replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../../plugins/plugin-compress
 
-replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../plugins/plugin-history
+replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../../../chonkpilot-plugins/history/lib
 
 replace github.com/chonkpilot/chonkpilot-task => ../../../lib/task
 
