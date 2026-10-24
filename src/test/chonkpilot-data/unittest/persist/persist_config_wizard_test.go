@@ -14,8 +14,9 @@ import (
 )
 
 // TestConfigKVSetPrjConfigRefreshAndReadback：向导写入的 prj-config 辅助选项
-//（memory.enabled / memory.category.<类> / enable-codegraph / enable-vfts / history.enabled）
-// 批量落库 + 广播 1 条 data-prj-config-refresh + 键值可读回。
+//（memory.enabled / memory.category.<类> / plugins.codebase.codegraph.enabled /
+// plugins.codebase.vfts.enabled / history.enabled）批量落库 + 广播 1 条
+// data-prj-config-refresh + 键值可读回。
 func TestConfigKVSetPrjConfigRefreshAndReadback(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
@@ -24,8 +25,8 @@ func TestConfigKVSetPrjConfigRefreshAndReadback(t *testing.T) {
 	keys := []string{
 		"memory.enabled",
 		"memory.category.用户偏好",
-		"enable-codegraph",
-		"enable-vfts",
+		"plugins.codebase.codegraph.enabled",
+		"plugins.codebase.vfts.enabled",
 		"history.enabled",
 	}
 	entries := map[string]string{}
@@ -53,8 +54,8 @@ func TestConfigKVSetPrjConfigRefreshAndReadback(t *testing.T) {
 	if len(ids) != len(keys) {
 		t.Fatalf("批量刷新应带全部 %d 键 ids：%+v", len(keys), ev["ids"])
 	}
-	if ids[0] != "enable-codegraph" || ev["id"] != "enable-codegraph" {
-		t.Fatalf("批量刷新 id/ids[0] 应为字典序首键 enable-codegraph：id=%v ids=%v", ev["id"], ids)
+	if ids[0] != "history.enabled" || ev["id"] != "history.enabled" {
+		t.Fatalf("批量刷新 id/ids[0] 应为字典序首键 history.enabled：id=%v ids=%v", ev["id"], ids)
 	}
 
 	// 读回（按最差绑定设计的批量按键读）：写入的键全部可读回且值为 "true"。

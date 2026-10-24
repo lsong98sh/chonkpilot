@@ -13,6 +13,20 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
 
+// disableSessionShard 显式退回旧布局（本文件用例断言 prjusr `inbox_items` 行为；
+// P3-4d 起 shard 生效时缺 dialog_id 会明确失败）。写入 prj 层，跨重启仍有效。
+func disableSessionShard(t *testing.T, inst string) {
+	t.Helper()
+	prj, release, err := data.Prj(inst)
+	if err != nil {
+		t.Fatalf("data.Prj(%s): %v", inst, err)
+	}
+	defer release()
+	if err := prj.Table("config").Upsert("session.db.shard", data.Record{"v": "off"}); err != nil {
+		t.Fatalf("set shard=off: %v", err)
+	}
+}
+
 func inboxAppend(t *testing.T, bus mq.Bus, session, typ, content, idem string) map[string]any {
 	t.Helper()
 	data := map[string]any{"session": session, "type": typ, "content": content}
@@ -138,6 +152,7 @@ func TestInboxPersistsAcrossRestart(t *testing.T) {
 	}
 
 	bus1, svc1 := start()
+	disableSessionShard(t, "ins-test")
 	inboxAppend(t, bus1, "s1", "insert", "重启前的插话", "")
 	svc1.Stop()
 	_ = bus1.Close()

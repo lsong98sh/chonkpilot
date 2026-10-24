@@ -40,6 +40,8 @@ var errInstanceRequired = errors.New("task: 缺 instance_id（拒绝唯一实例
 type store struct {
 	bus     mq.Bus
 	timeout time.Duration
+	// dialogOf 解析（实例, 会话）→ dialog_id（一树一库 P3-4b；nil / 空 = 不写键）。
+	dialogOf func(instanceID, sessionID string) string
 }
 
 // request 发 data-<domain>-<op> 请求并等应答（应答发布到**同一主题**，载荷
@@ -104,9 +106,18 @@ func (s *store) upsert(rec *Record) error {
 
 // upsertRow 同步写一条**数据面行**（键 = task_id / node_id；persist 侧按已识别字段整条覆盖写）。
 // 供 Recover 回写「库中原行 + status=interrupted」用（保留未识别字段不需 —— 已识别字段全覆盖）。
+//
+// 一树一库（P3-4b）：已知该行所属会话的 dialog_id 时补上（显式值优先；未知不写键）。
 func (s *store) upsertRow(instanceID string, data map[string]any) error {
 	if instanceID == "" {
 		return errInstanceRequired
+	}
+	if s.dialogOf != nil && data != nil {
+		if _, has := data["dialog_id"]; !has {
+			if dlg := s.dialogOf(instanceID, sval(data["top_session"])); dlg != "" {
+				data["dialog_id"] = dlg
+			}
+		}
 	}
 	_, err := s.request(subjectTasktreeUpsert, map[string]any{
 		"instance_id": instanceID,
@@ -123,6 +134,11 @@ func (s *store) list(instanceID, topSession string, includeClosed bool) ([]map[s
 	payload := map[string]any{"top_session": topSession}
 	if includeClosed {
 		payload[includeClosedField] = true
+	}
+	if s.dialogOf != nil {
+		if dlg := s.dialogOf(instanceID, topSession); dlg != "" {
+			payload["dialog_id"] = dlg
+		}
 	}
 	res, err := s.request(subjectTasktreeList, map[string]any{
 		"instance_id": instanceID, "data": payload,
@@ -271,13 +287,13 @@ func rowToRecord(row map[string]any) *Record {
 		DoneAt:       sval(row["finished_at"]),
 		DeletedAt:    sval(row["deleted_at"]),
 
-		LoopCurrent:   ival(row["loop_current"]),
-		LoopTotal:     ival(row["loop_total"]),
-		Shadow:        bval(row["shadow"]),
-		ReturnKind:    sval(row["return_kind"]),
-		ReturnInline:  sval(row["return_inline"]),
-		ReturnFile:    sval(row["return_file"]),
-		ReturnSize:    ival(row["return_size"]),
+		LoopCurrent:  ival(row["loop_current"]),
+		LoopTotal:    ival(row["loop_total"]),
+		Shadow:       bval(row["shadow"]),
+		ReturnKind:   sval(row["return_kind"]),
+		ReturnInline: sval(row["return_inline"]),
+		ReturnFile:   sval(row["return_file"]),
+		ReturnSize:   ival(row["return_size"]),
 	}
 	if b, err := json.Marshal(row["steps"]); err == nil {
 		if s := string(b); s != "null" && s != "" {

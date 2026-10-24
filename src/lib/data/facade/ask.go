@@ -15,6 +15,8 @@ type AskAPI interface {
 // AskPendingRequest 回查入参。
 type AskPendingRequest struct {
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 只查该对话库；空 + 一树一库生效 → 跨对话库扫描）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// AskID 非空 = 按 ask 精确回查（忽略 PendingOnly）。
 	AskID string `json:"ask_id,omitempty"`
 	// PendingOnly true = 只回非终态（pending / running / provisional）。
@@ -24,7 +26,9 @@ type AskPendingRequest struct {
 
 // AskPendingItem 一条 ask 行（来源 = messages 行）。
 type AskPendingItem struct {
-	AskID      string `json:"ask_id"`
+	AskID string `json:"ask_id"`
+	// DialogID 该 ask 所在对话（一树一库时回带；旧布局不写键）。
+	DialogID   string `json:"dialog_id,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	TurnID     string `json:"turn_id,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`

@@ -269,8 +269,12 @@ func TestGroupChatEndToEndBlackBox(t *testing.T) {
 	}
 
 	// ③ 结论上屏（展示板：`sender_agent` / `mentions` 落库；「无关」不上屏）。
+	dlgID := dialogIDOf(rec, gid)
+	if dlgID == "" {
+		t.Fatalf("session-new 应带群聊会话的 dialog_id（一树一库）：gid=%s", gid)
+	}
 	histRes := dataReply(t, bus, "data-session-history", map[string]any{
-		"instance_id": "ins-bb", "session_id": gid,
+		"instance_id": "ins-bb", "session_id": gid, "dialog_id": dlgID,
 	})
 	msgsWrap, _ := histRes["messages"].(map[string]any)
 	rawMsgs, _ := msgsWrap["messages"].([]any)
@@ -370,7 +374,9 @@ func TestGroupChatEndToEndBlackBox(t *testing.T) {
 	rec.wait(t, "subchat-state", func(m map[string]any) bool {
 		return str(m, "session_id") == gid && str(m, "lifecycle") == "finished"
 	}, 5*time.Second)
-	got := dataReply(t, bus, "data-session-get", map[string]any{"instance_id": "ins-bb", "id": gid})
+	got := dataReply(t, bus, "data-session-get", map[string]any{
+		"instance_id": "ins-bb", "id": gid, "dialog_id": dlgID,
+	})
 	sess, _ := got["data"].(map[string]any)
 	if str(sess, "lifecycle") != "finished" {
 		t.Fatalf("会话行 lifecycle 应为 finished：%+v", got)

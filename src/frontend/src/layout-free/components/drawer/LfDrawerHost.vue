@@ -15,8 +15,8 @@
     :style="drawerStyle(item)"
   >
     <div class="drawer-head">
-      <LfIcon :name="item.def?.icon || 'panel-right'" :size="14" />
-      <span class="ttl">{{ item.def?.label ?? item.drawerId }}</span>
+      <LfIcon :name="item.def?.icon || item.icon || 'panel-right'" :size="14" />
+      <span class="ttl">{{ item.def?.label ?? (item.label || item.drawerId) }}</span>
       <span class="grow" />
       <button
         class="d-btn"

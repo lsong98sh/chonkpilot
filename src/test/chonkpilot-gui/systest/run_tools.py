@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""工具域补充测试（IDE 模式 · mock LLM）：script_run 的
+"""工具域补充测试（IDE 模式 · mock LLM）：task_run 的
 同步、异步、取结果（tool_result）覆盖（复用 run_llm 基础设施）。
 
 覆盖矩阵：
-  - script_run：同步（call py → echo py-ok）、异步（call py-async → 转后台 → tool_result）
+  - task_run：同步（call py → Write-Output py-ok）、异步（call py-async → 转后台 → tool_result）
 
 注意：事件经 test-port deferral 批量推送，同批事件会被一次 clear 全部清走；
 所有 llm-tool-call 断言采用"累积去重集合"，避免批次共享丢失（C16 同款教训）。
-工具名按**暴露名**路由（self_*），断言侧剥离 self_ 归一（_canon）。
+工具名按**暴露名**路由（2026-10-23：插件工具无 self_ 前缀），断言侧仍剥离 self_ 归一（_canon）。
 """
 
 import json
@@ -77,15 +77,15 @@ def _wait_pair_async(max_wait=30):
 
 
 def case_script_sync():
-    """script_run 同步：工具成功执行 + 结果含 stdout + 任务节点注册。"""
+    """task_run 同步：工具成功执行 + 结果含 stdout + 任务节点注册。"""
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
     c.mq_on_capture(EVENTS)
     sid = run_llm.create_session()
     run_llm.activate_session(sid)
     run_llm.start_turn(sid, "please call py")
     run_llm.confirm_turn(sid, max_wait=60)  # mq-only 轮次确权（llm-started 已无源）
-    _wait_tool("script_run")
-    _wait_result("script_run")
+    _wait_tool("task_run")
+    _wait_result("task_run")
     # 结果文本含 stdout（py-ok）
     deadline = time.time() + 10
     while time.time() < deadline:
@@ -93,18 +93,18 @@ def case_script_sync():
             break
         time.sleep(1)
     else:
-        raise TestError("script_run 结果缺 stdout（py-ok）")
-    # script_run 经任务编排注册节点（task-started，task_id=tk-*）
+        raise TestError("task_run 结果缺 stdout（py-ok）")
+    # task_run 经任务编排注册节点（task-started，task_id=tk-*）
     ts = run_llm.wait_event("task-started", max_wait=30)
     if not any((e["payload"] or {}).get("task_id", "").startswith("tk-")
-               and _canon((e["payload"] or {}).get("tool")) == "script_run" for e in ts):
-        raise TestError(f"script_run 未注册任务节点: "
+               and _canon((e["payload"] or {}).get("tool")) == "task_run" for e in ts):
+        raise TestError(f"task_run 未注册任务节点: "
                         f"{[(e['payload'] or {}).get('task_id') for e in ts]}")
     run_llm.wait_event("llm-complete", max_wait=60)
 
 
 def case_script_async():
-    """script_run 异步：转后台（tool-pair async）→ 终态 done + 结果回填。
+    """task_run 异步：转后台（tool-pair async）→ 终态 done + 结果回填。
 
     新架构异步 = turn 挂起等后台完成回报（不再由 LLM 主动 tool_result 轮询上下文），
     故以 tool-pair async + tool-result 终态（含 stdout）确权。
@@ -115,15 +115,15 @@ def case_script_async():
     run_llm.activate_session(sid)
     run_llm.start_turn(sid, "please call py-async")
     run_llm.confirm_turn(sid, max_wait=60)
-    _wait_tool("script_run")
+    _wait_tool("task_run")
     _wait_pair_async()
-    # script_run handler 自注册任务节点
+    # task_run handler 自注册任务节点
     run_llm.wait_event("task-started", max_wait=30)
     # 后台完成 → tool-result 终态（result 含 stdout py-slow）
-    seen = _wait_result("script_run", max_wait=90)
-    text = json.dumps(seen["script_run"], ensure_ascii=False)
+    seen = _wait_result("task_run", max_wait=90)
+    text = json.dumps(seen["task_run"], ensure_ascii=False)
     if "py-slow" not in text:
-        raise TestError(f"异步 script_run 终态缺 stdout: {text[:400]}")
+        raise TestError(f"异步 task_run 终态缺 stdout: {text[:400]}")
     # 最终回复纳入工具结果
     deadline = time.time() + 15
     while time.time() < deadline:
@@ -131,7 +131,7 @@ def case_script_async():
             break
         time.sleep(1)
     else:
-        raise TestError("异步 script_run 最终回复未含 py-slow")
+        raise TestError("异步 task_run 最终回复未含 py-slow")
     run_llm.wait_event("llm-complete", max_wait=60)
 
 
@@ -222,8 +222,8 @@ def main():
     ok = 0
     total = 0
     c.console(clear=True)
-    total += 1; ok += run_case("script_run 同步（stdout + 任务节点）", case_script_sync)
-    total += 1; ok += run_case("script_run 异步（转后台 + tool_result）", case_script_async)
+    total += 1; ok += run_case("task_run 同步（stdout + 任务节点）", case_script_sync)
+    total += 1; ok += run_case("task_run 异步（转后台 + tool_result）", case_script_async)
     total += 1; ok += run_case("ask_user 多选 + 推荐（顿号回填）", case_ask_user_multi)
     errs = c.console()
     for e in errs.get("entries", []):

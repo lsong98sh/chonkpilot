@@ -8,11 +8,31 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
+
+// ConfigSessionShard 是会话存储迁移开关（prj 级；`on` = 一树一库）。
+// 唯一定义点：persist 的搬运触发与 session 域的自举/列表派生共用。
+// **缺省 = on**（P3-4c，2026-10-24）；显式 `off` / `false` / `0` / `no` 可退回旧布局。
+const ConfigSessionShard = "session.db.shard"
+
+// SessionShardOn 判定一树一库开关是否生效（详见 ConfigSessionShard）。
+// 读配置失败 → false（保守：不做搬运 / 不自举，避免误伤旧布局）。
+func SessionShardOn(prj *data.DB) bool {
+	val, err := PrjConfigVal(prj, ConfigSessionShard)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "off", "false", "0", "no":
+		return false
+	}
+	return true
+}
 
 // ConfigGet 读 config 表 key 的 v 字段值（不存在 → ""，不报错）。
 func ConfigGet(db *data.DB, key string) string {

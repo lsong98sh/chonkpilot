@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-"""testplan.md 七.x 数据根归属测试（--data-dir 分离 + **数据层 B 方案**）。
+"""testplan.md 七.x 数据根归属测试（--data-dir 分离 + **数据根下沉（DATAROOT-1）**）。
 
 前置：chonkpilot.exe 可用（GUI 模式）。
 用例：
-  一.1 B 方案（**不传 --data-dir**，[24 §3] MW-7/MW-8）：prj 库恒留
-       `<workdir>/.chonkpilot/chonkpilot.db`；prjusr 库 + 日志 + 附件/截图落
-       `<home>/.chonkpilot/data/<project-id>/`（个人运行态不进项目目录）。对应 MW-T19/20/21。
+  一.1 缺省（**不传 --data-dir**）：prj 库恒留 `<workdir>/.chonkpilot/chonkpilot.db`；
+      prjusr 库 + 日志 + 附件/截图 + 备份落
+      `<workdir>/.chonkpilot/users/<OS 用户名>/`（个人运行态不再进 `~/.chonkpilot/data/<project-id>`，
+      `project-id` 已整体删除）。对应 MW-T19/20/21。
   一.2 分离模式（绝对）：--data-dir=<独立目录> → 数据根独立，workdir 零污染。
   一.3 分离模式（相对）：--data-dir=data → <workdir>/data。
   一.5 ~ 展开：--data-dir=~/ck-dd-home → <home>/ck-dd-home。
 
 显式 --data-dir 形态（一.2/一.3/一.5）数据根「内容」断言口径见 _assert_root_layout
-（2026-09-15 迁移：db 合法性 + gui.upload 落盘）；缺省（B 方案）形态见 _assert_b_layout。
+（2026-09-15 迁移：db 合法性 + gui.upload 落盘）；缺省形态见 _assert_default_layout。
 """
 
 import base64
@@ -148,30 +149,35 @@ def _show_fetch(cli, abs_path, max_wait=8.0):
     raise TestError(f"/show/ 取回超时（{max_wait}s）: {last!r}")
 
 
-def _assert_b_layout(cli, workdir, home):
-    """B 方案（缺省 --data-dir，[24 §3.2] MW-7/MW-8）落盘断言：
+def _assert_default_layout(cli, workdir, home):
+    """缺省 --data-dir（DATAROOT-1）落盘断言：
 
-      ① prj 库恒留项目内：`<workdir>/.chonkpilot/chonkpilot.db`（含 project-id）；
-      ② prjusr 库落 `<home>/.chonkpilot/data/<project-id>/chonkpilot.db`；
-      ③ 日志随数据根：`<prjusr 根>/logs/gui.log` 存在，且 `gui.init-data` 的 logDir 指向该处；
+      ① prj 库恒留项目内：`<workdir>/.chonkpilot/chonkpilot.db`，且 **config 不再有 `project-id`**；
+      ② prjusr 库落 `<workdir>/.chonkpilot/users/<OS 用户名>/chonkpilot.db`（与 prj 不同文件）；
+      ③ 日志随 prjusr 根：`<prjusr 根>/logs/gui.log` 存在，`gui.init-data` 的 logDir 指向该处；
       ④ 附件落 `<prjusr 根>/tmp/uploads`，且可经 `/show/` 取回（fileserver 白名单可达）；
-      ⑤ 项目数据根**不得**再出现会话/日志/附件/备份（个人运行态已迁走）；
+      ⑤ `<workdir>/.chonkpilot` 下**不得**平铺会话/日志/附件/备份（个人运行态在 `users/<用户名>/`）；
       ⑥ 配置自动备份（`gui.file.save` mode=backup）落 `<prjusr 根>/backup/`。
     """
-    # ① prj 库（项目内）+ project-id
+    # ① prj 库（项目内）+ project-id 已删除
     prj_db = os.path.join(workdir, ".chonkpilot", PROJ_DB)
     if not os.path.isfile(prj_db):
         raise TestError(f"prj 库应在项目内: {prj_db}")
     pid = (_h.prj_config_load(cli) or {}).get("project-id") or ""
-    if not pid:
-        raise TestError("prj 库 config 缺 project-id（prjusr 数据根无法绑定）")
+    if pid:
+        raise TestError(f"prj 库不应再有 project-id（DATAROOT-1 已删除）: {pid!r}")
 
-    # ② prjusr 数据根（= <home>/.chonkpilot/data/<project-id>）
-    root = os.path.join(home, ".chonkpilot", "data", pid)
-    if not os.path.isfile(os.path.join(root, PROJ_DB)):
-        raise TestError(f"prjusr 库应在 {root}/{PROJ_DB}")
+    # ② prjusr 数据根（= <workdir>/.chonkpilot/users/<OS 用户名>）
+    #    OS 用户名 = 应用进程 os.UserHomeDir() 的 basename；用例里 home 被隔离 → 取 basename(home)。
+    user_name = os.path.basename(os.path.normpath(home))
+    root = os.path.join(workdir, ".chonkpilot", "users", user_name)
+    prjusr_db = os.path.join(root, PROJ_DB)
+    if not os.path.isfile(prjusr_db):
+        raise TestError(f"prjusr 库应在 {prjusr_db}")
+    if os.path.normcase(os.path.normpath(prjusr_db)) == os.path.normcase(os.path.normpath(prj_db)):
+        raise TestError(f"prjusr 与 prj 不应同库: {prjusr_db}")
 
-    # ③ 日志跟随数据根（U-1 已决 2026-09-24）
+    # ③ 日志跟随 prjusr 根
     log_dir = os.path.join(root, "logs")
     if not os.path.isfile(os.path.join(log_dir, "gui.log")):
         raise TestError(f"日志应在 {log_dir}/gui.log")
@@ -181,9 +187,9 @@ def _assert_b_layout(cli, workdir, home):
         raise TestError(f"gui.init-data.logDir 应 = {log_dir}，实际 {got_log_dir!r}")
 
     # ④ 附件落 prjusr 根 tmp/uploads + /show/ 经**相对引用**可达（server 只回 name）
-    payload = b"ck-b-layout-probe\n"
+    payload = b"ck-default-layout-probe\n"
     res = cli.req("gui.upload", {
-        "name": "b_probe.txt",
+        "name": "dd_probe.txt",
         "data": base64.b64encode(payload).decode("ascii"),
         "kind": "file",
     })
@@ -201,14 +207,13 @@ def _assert_b_layout(cli, workdir, home):
     if status != 200 or body != payload.decode("ascii"):
         raise TestError(f"/show/ 应取回附件（白名单可达）：status={status} body={body!r}")
 
-    # ⑤ 项目数据根不得出现个人运行态落点
+    # ⑤ 项目数据根不得平铺个人运行态落点（应在 users/<用户名>/ 之下）
     for sub in ("tmp", "logs", "backup"):
         p = os.path.join(workdir, ".chonkpilot", sub)
         if os.path.exists(p):
-            raise TestError(f"项目数据根不应出现 {sub}/（B 方案后个人运行态落 prjusr 根）: {p}")
+            raise TestError(f"项目数据根不应平铺 {sub}/（个人运行态应落 users/<用户名>/）: {p}")
 
-    # ⑥ 配置自动备份随 prjusr 根（gui.file.save mode=backup；[24 §3.2] MW-8 · 41 G-43②(b)）：
-    # 导入 / 恢复出厂前的自动备份落 <prjusr 根>/backup/，不进项目数据根。
+    # ⑥ 配置自动备份随 prjusr 根（gui.file.save mode=backup；[24 §3.2] MW-8 · 41 G-43②(b)）
     res = cli.req("gui.file.save", {
         "name": "dd-backup-probe.json", "content": "{}", "mode": "backup",
     })
@@ -224,17 +229,17 @@ def _assert_b_layout(cli, workdir, home):
 
 
 def case_default_mode():
-    """一.1 B 方案（不传 --data-dir）：prj 留项目内；prjusr 库/日志/附件落 <home>/.chonkpilot/data/<prj-id>/。"""
+    """一.1 缺省（不传 --data-dir）：prj 留项目内；prjusr 库/日志/附件落 <workdir>/.chonkpilot/users/<用户名>/。"""
     base = os.path.join(tempfile.gettempdir(), "ck-dd-default")
     ws = os.path.join(base, "ws")
-    home = os.path.join(base, "home")  # 隔离 ~（USERPROFILE/HOME）→ prjusr 数据根可断言
+    home = os.path.join(base, "home")  # 隔离 ~（USERPROFILE/HOME）→ 用户名 = basename(home)
     os.makedirs(ws, exist_ok=True)
     os.makedirs(home, exist_ok=True)
     proc = None
     try:
         proc, cli = _spawn_ide(_h.free_port(), ws, home=home)
         time.sleep(1.0)
-        _assert_b_layout(cli, ws, home)
+        _assert_default_layout(cli, ws, home)
     finally:
         if proc:
             _kill_proc(proc)
@@ -299,7 +304,7 @@ def case_home_expand():
 def main():
     ok = 0
     total = 0
-    total += 1; ok += run_case("一.1 B 方案：prj 留项目内 + prjusr 库/日志/附件落 ~/.chonkpilot/data/<id>/", case_default_mode)
+    total += 1; ok += run_case("一.1 缺省：prj 留项目内 + prjusr 落 <workdir>/.chonkpilot/users/<用户名>/", case_default_mode)
     total += 1; ok += run_case("一.2 分离模式（绝对）：数据根平铺 + workdir 零污染", case_separate_absolute)
     total += 1; ok += run_case("一.3 分离模式（相对）：<workdir>/data 平铺", case_separate_relative)
     total += 1; ok += run_case("一.5 ~ 展开：--data-dir=~/ck-dd-home → <home>/ck-dd-home", case_home_expand)

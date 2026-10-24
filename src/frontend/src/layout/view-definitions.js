@@ -4,7 +4,7 @@
  * 从 `views.registry.js` 拆出来的原因（分层）：
  *   - 本文件**只含定义**（零 Vue / 零 `.vue` import）→ 适配层其它模块（`commands.js` 落点解析、
  *     单测）可以只依赖定义，不必把宿主区块组件拖进依赖图；
- *   - `views.registry.js` 负责「定义 + 组件映射」的组装（注入 `createLayoutEngine({ views })`）。
+ *   - 组件注册 / 解析只有一条路径：`view-registry.js`（UIREG-1；内置与插件视图共用 `registerViews`）。
  *
  * 定义字段：`key / labelKey / label / icon / mode / host / designable / params / default*`
  * （逐字段含义见 `views.registry.js` 文件头）。
@@ -231,9 +231,19 @@ export const VIEW_DEFINITIONS = [
   },
 ]
 
-/** 按 viewKey 取定义（纯数据表；机制层 `deps.viewDefinitions()` 注入的版本带已解析 label）。 */
+/**
+ * 动态 view 定义（插件平台 PLUGIN-1）：`plugin:<id>:<view>`。
+ * 由 `view-registry.js` 在插件注册/卸载时增删；`definitionOf` 同时查静态表与动态表。
+ */
+export const DYNAMIC_DEFINITIONS = []
+
+/** 按 viewKey 取定义（静态 + 动态插件 view）。 */
 export function definitionOf(viewKey) {
-  return VIEW_DEFINITIONS.find((v) => v.key === viewKey) || null
+  return (
+    VIEW_DEFINITIONS.find((v) => v.key === viewKey) ||
+    DYNAMIC_DEFINITIONS.find((v) => v.key === viewKey) ||
+    null
+  )
 }
 
 /** 该 view 允许被放的位置（layout | dialog | bar；未知 → null）。 */
@@ -241,25 +251,3 @@ export function hostOf(viewKey) {
   return definitionOf(viewKey)?.host || null
 }
 
-/**
- * 组装注册表对象（注入 `createLayoutEngine({ views })`）——**纯逻辑**（组件表由调用方给）。
- *
- * `definitions` 用 **getter**：每次读取按当前语言解析 `label` ——
- * 语言切换（`setLocale`）后编辑器下拉 / 标签页文案即时跟随（无需 watch，§4.2）。
- *
- * @param {(key: string) => string} [translate] 宿主 i18n 取值函数（`layout/i18n.js` 提供）
- * @param {Record<string, any>} [components] viewKey → 组件（`views.registry.js` 传真实组件表）
- */
-export function buildViewRegistry(translate, components = {}) {
-  const t = typeof translate === 'function' ? translate : (key) => key
-  return {
-    get definitions() {
-      return VIEW_DEFINITIONS.map((d) => ({ ...d, label: t(d.labelKey) }))
-    },
-    components,
-    /** 兼容 `deps` 的 resolve 形态（与 components 表等价） */
-    resolve(viewKey) {
-      return components[viewKey] || null
-    },
-  }
-}

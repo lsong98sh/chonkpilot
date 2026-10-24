@@ -2,7 +2,7 @@
 """B · 语义/回环级推广 ⑧：**任务树 / 委派结果回读**（真实委派 → 层落库 → 数据面回读 → 逻辑删除闭合）。
 
 覆盖（**拒绝"存在级"：断言任务节点归属 / 展示名 / 终态回读 + 单源一致 + 逻辑删除闭合**）：
-  T1 任务落库回读（**现行工具任务口径**）：主会话发 `llm-start`（q 命中 mock 关键词 → `self_script_run`
+  T1 任务落库回读（**现行工具任务口径**）：主会话发 `llm-start`（q 命中 mock 关键词 → `task_run`
      单次工具调用，展示名 `委派展示名-自定义`）→ `data-tasktree-list{top_session}` **按层权威表回读**：
      任务节点 `kind=tool` / `node_type=tool` / `session_id==主会话` / 无 `parent_node_id` /
      `title==tool_call_display_name` 展示名；~~原 DSL-3「作业根 `kind=dsl_job` + `steps[]` 委派步骤」~~
@@ -127,7 +127,7 @@ def main():
                                 "q": "please call delegate-purpose", "llm": PROVIDER,
                                 "think": "", "effort": "", "scenario_id": ""})
         root = poll_find("tasks.started",
-                         lambda p: canon_tool(p) == "script_run" and not p.get("parent_id")
+                         lambda p: canon_tool(p) == "task_run" and not p.get("parent_id")
                          and p.get("top_session") == SID, max_wait=90)
         if not root:
             raise TestError("未建立工具任务节点（tasks.started）")

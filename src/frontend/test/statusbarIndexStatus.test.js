@@ -77,9 +77,12 @@ test('indexStatus：模型只返回 {tone, text}（不再产出 tip 明细）', 
   assert.deepEqual(Object.keys(m).sort(), ['text', 'tone'])
 })
 
-test('索引徽标：读既有 4 键 + 既有广播刷新 + computed 派生', () => {
+test('索引徽标：读新命名空间开关 + 既有状态键 + 既有广播刷新 + computed 派生', () => {
   const sb = read('layout/bar-views/IndexBadgeView.vue')
-  for (const key of ['enable-codegraph', 'codegraph.status', 'enable-vfts', 'vfts.status']) {
+  for (const key of [
+    'plugins.codebase.codegraph.enabled', 'codegraph.status',
+    'plugins.codebase.vfts.enabled', 'vfts.status',
+  ]) {
     assert.ok(sb.includes(`'${key}'`), '状态栏应读 prj 键 ' + key)
   }
   assert.match(sb, /usePrjConfigSnapshot\(\)/, '应经项目配置快照 composable 取数（load 一次 + refresh 增量）')
@@ -90,6 +93,28 @@ test('索引徽标：读既有 4 键 + 既有广播刷新 + computed 派生', ()
   assert.match(sb, /data-engine="codegraph"/, '应有 codegraph 徽标')
   assert.match(sb, /data-engine="vfts"/, '应有 vfts 徽标')
   assert.doesNotMatch(sb, /\bwatch\s*\(|\bwatchEffect\s*\(/, '不得使用 watch/watchEffect')
+})
+
+test('codebase 配置键：详情页 / 场景向导读写新命名空间（旧键零引用）', () => {
+  const detail = read('views/status/IndexStatusDetail.vue')
+  assert.ok(detail.includes("'plugins.codebase.codegraph.enabled'"), '详情页应读 codegraph 新开关')
+  assert.ok(detail.includes("'plugins.codebase.vfts.enabled'"), '详情页应读 vfts 新开关')
+  assert.ok(detail.includes("'codegraph.status'") && detail.includes("'vfts.status'"),
+    '运行时状态键保持原名（不迁移）')
+
+  const wizard = read('views/scenario/ScenarioWizardDialog.vue')
+  assert.match(wizard, /'plugins\.codebase\.codegraph\.enabled': String\(aux\.codegraph\)/,
+    '场景向导应写 codegraph 新键')
+  assert.match(wizard, /'plugins\.codebase\.vfts\.enabled': String\(aux\.vfts\)/,
+    '场景向导应写 vfts 新键')
+
+  for (const rel of [
+    'views/status/IndexStatusDetail.vue',
+    'layout/bar-views/IndexBadgeView.vue',
+    'views/scenario/ScenarioWizardDialog.vue',
+  ]) {
+    assert.doesNotMatch(read(rel), /'(enable-codegraph|enable-vfts)'/, rel + ' 不得再读写旧键')
+  }
 })
 
 test('索引徽标：图标 + 状态文本，悬停原生 title（不再用 Tooltip/tip）', () => {
@@ -138,7 +163,9 @@ test('跳页签链：MainLayout 透传 tab → CodeView 落到功能页 → Proj
   const pc = read('views/preview/ProjectConfig.vue')
   assert.match(pc, /innerTab: \{ type: String, default: '' \}/, 'ProjectConfig 应声明可选 innerTab')
   assert.match(pc, /innerTabNonce: \{ type: Number, default: 0 \}/, 'ProjectConfig 应声明 innerTabNonce')
-  assert.match(pc, /TAB_NAMES\.value\.includes\(props\.innerTab\)/, '应校验 tab 合法（非法 → 不激活）')
+  assert.match(pc, /TAB_NAMES\.value\.includes\(requested\)/, '应校验 tab 合法（非法 → 不激活）')
+  // 〔UIREG-1〕codegraph / vfts 页签已合并为 codebase → 旧页签名兼容映射
+  assert.match(pc, /LEGACY_TAB_ALIAS = \{ codegraph: 'codebase', vfts: 'codebase' \}/, '旧页签名须兼容映射')
   assert.match(pc, /props\.innerTabNonce > appliedNonce\.value/, '仅新 nonce 请求生效（无需 watch）')
   assert.match(pc, /return selection\.value/, '缺省/非法 → 回落用户选择（默认页签）')
   assert.doesNotMatch(pc, /\bwatch\s*\(|\bwatchEffect\s*\(/, '不得使用 watch/watchEffect')

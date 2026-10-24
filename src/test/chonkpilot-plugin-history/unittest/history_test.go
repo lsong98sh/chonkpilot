@@ -12,11 +12,13 @@ package history_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -327,5 +329,36 @@ func TestHistoryDisabledWithoutGit(t *testing.T) {
 	defer bus.Close()
 	if err := history.New().Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("git 缺失时应禁用而非失败: %v", err)
+	}
+}
+
+// TestHistoryToolFaceSnapshot：`history_*` 工具面**逐字快照**（名称 / 描述 / schema 文本 /
+// owner / category / hot / handler_subject / pre_hook_subject）。
+//
+// 变更背景（2026-10-24）：history 从「宿主编译期内嵌 Hook」改为**独立 exe 插件**（外挂），
+// 工具面必须与改造前**逐字一致**（工具名 / schema 不得随部署形态变化）。快照值 = 内嵌实现
+// （2026-09-27 批次③）的注册载荷；若确需变更工具面，须同步更新本快照并在变更说明中声明。
+func TestHistoryToolFaceSnapshot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git 不可用")
+	}
+	wd := initRepo(t)
+	_, cap := startHistory(t, wd, "true")
+	if !waitFor(func() bool { return len(cap.regsList()) == 4 }, 3*time.Second) {
+		t.Fatalf("应注册 4 个工具，got %d", len(cap.regsList()))
+	}
+	lines := make([]string, 0, 4)
+	for _, p := range cap.regsList() {
+		lines = append(lines, fmt.Sprintf("%v|%v|%v|%v|%v|%v|%v|%v",
+			p["name"], p["description"], p["schema"], p["owner"],
+			p["category"], p["hot"], p["handler_subject"], p["pre_hook_subject"]))
+	}
+	sort.Strings(lines)
+	joined := strings.Join(lines, "\n")
+	sum := sha256.Sum256([]byte(joined))
+	got := fmt.Sprintf("%x", sum)
+	const want = "c47be87d17db4eb08d08e8eeaded941bce970ccc6f41cd06d25116407b95e6f7"
+	if got != want {
+		t.Fatalf("工具面已变化（必须逐字一致）：\n%s\n含入参字段集合的摘要 got=%s want=%s", joined, got, want)
 	}
 }

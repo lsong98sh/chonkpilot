@@ -116,15 +116,14 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 		id = idgen.NewUUID()
 	}
 
-	// ② 入口绑定解析 work_dir/data_dir：本实例既有登记（入口启动期 instance-register 已登记）
-	//    优先。**PRODSIM-1：work_dir 不再回落服务端启动参数**（单进程多项目后 opts.WorkDir
-	//    只是首个项目）；data_dir 仍回落启动参数（认证形态的用户数据根）。
+	// ② 入口绑定解析 work_dir/data_dir：本实例既有登记（入口启动期 instance-register 已登记）优先。
+	//    **PRODSIM-1：work_dir 不再回落服务端启动参数**（单进程多项目后 opts.WorkDir 只是首个项目）；
+	//    data_dir 同样只认**实例既有登记**（不回落启动参数）：desktop 缺省登记为空 → prjusr 走
+	//    project-id 分支；显式 `--data-dir` 场景登记非空 → 认领必须原样保留（否则会把 bridge 写入
+	//    的数据根覆盖为空，prjusr 在 <dataDir> 与 ~/.chonkpilot/data/<prj-id> 之间漂移）。
 	rec, _ := s.im.Lookup(id)
 	boundWorkDir := rec.WorkDir
 	boundDataDir := rec.DataDir
-	if boundDataDir == "" {
-		boundDataDir = s.opts.DataDir
-	}
 	clientType := rec.ClientType
 
 	// ③ 鉴权 + work_dir 归属校验（按**服务端判定的形态**分派；61 §4.6）。
@@ -205,7 +204,12 @@ func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir, i
 		// PRODSIM-1（多项目主窗口）：work_dir 取**客户端提议**，缺省回落**实例登记**
 		// （`instWorkDir`），**不再回落服务端启动参数** —— 单进程多项目后 opts.WorkDir 只是
 		// 首个项目的路径，回落它会让其它项目静默绑到首个项目（或安装目录）。
-		// data_dir 保持空 → prjusr 按 project-id 落 `~/.chonkpilot/data/<id>/`（12-数据层 §3）。
+		//
+		// data_dir：**保留实例既有绑定**（`boundDataDir` 已含 opts.DataDir 回落）。
+		// 2026-10-23 修正：此前恒返回空串，会把 bridge 已登记的显式 `--data-dir` 覆盖为空 →
+		// 同一实例的 prjusr 在「<dataDir>（prj 与 prjusr 同根，12-数据层 §3）」与
+		// 「~/.chonkpilot/data/<prj-id>」之间来回漂移（先写入一处、后读取另一处 →
+		// 会话列表 / 历史恒为空）。缺省（未给 --data-dir）仍为空 → 走 project-id 分支。
 		wd := strings.TrimSpace(req.WorkDir)
 		if wd == "" {
 			wd = strings.TrimSpace(instWorkDir)
@@ -214,7 +218,7 @@ func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir, i
 			// 既无提议、又无实例登记 → 不静默绑定空目录（明确失败）。
 			return "", "", claimErrForbidden
 		}
-		return filepath.Clean(wd), "", ""
+		return filepath.Clean(wd), strings.TrimSpace(boundDataDir), ""
 	}
 
 	// PRODSIM-1：本地认证面已整体移除（认证将来统一到 registry）—— 仅保留

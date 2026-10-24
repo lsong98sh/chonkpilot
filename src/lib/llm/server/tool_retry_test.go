@@ -152,8 +152,8 @@ func makeInterruptedNode(t *testing.T, s *Server, session, turn, toolCallID, too
 		SessionID:  session,
 		TurnID:     turn,
 		InstanceID: "ins-test",
-		args:       args,
 	}
+	node.SetToolArgs(args)
 	node.Name, node.Purpose, node.Simplified = taskDisplay(tool, args)
 	node.Simplified = node.Name
 	n, err := s.tasks.start(node)
@@ -358,16 +358,7 @@ func dropTurn(t *testing.T, s *Server, session, turn string) {
 // dropNode 模拟进程重启：内存任务节点移除（库记录保留；恢复路径应从库重新登记同 task_id）。
 func dropNode(t *testing.T, s *Server, taskID string) {
 	t.Helper()
-	s.tasks.mu.Lock()
-	delete(s.tasks.nodes, taskID)
-	delete(s.tasks.lastEmit, taskID)
-	for i, id := range s.tasks.order {
-		if id == taskID {
-			s.tasks.order = append(s.tasks.order[:i], s.tasks.order[i+1:]...)
-			break
-		}
-	}
-	s.tasks.mu.Unlock()
+	s.tasks.markDeleted(taskID)
 }
 
 // tasktreeRec 直连读 tasktree 库记录（A3 总线化：落库经 persist；断言同库直读）。

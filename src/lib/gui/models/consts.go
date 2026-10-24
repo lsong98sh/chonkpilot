@@ -28,7 +28,7 @@ func SetDataDir(dir string) {
 //
 // ⚠️ 本函数**不是** prjusr 数据根访问器（[24 §3] 实施注意）：prjusr（会话/任务树/快照等个人
 // 运行态）+ 其下非库文件（日志 logs/、附件/截图 `<dir>/`）的根一律走 `data.PrjUsrDir`
-// —— data_dir 为空时 = `~/.chonkpilot/data/<project-id>/`，须先读 prj 库取 project-id。
+// —— data_dir 为空时 = `<workDir>/.chonkpilot/users/<OS 用户名>/`（DATAROOT-1；不再读 project-id）。
 func DataDir(workDir string) string {
 	dataDirMu.RLock()
 	defer dataDirMu.RUnlock()

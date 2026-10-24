@@ -118,6 +118,10 @@ type hostEnv struct {
 	// projectOpener 是宿主注入的「同进程打开项目」回调（gui.dir.open 用）；
 	// nil = 未接线（flash 等形态）→ 桥回落 spawn 新进程。
 	projectOpener func(dir string) error
+	// pluginAssets 是 `/plugins/<id>/<path>`（插件自持 webui）的进程级处理器与短缓存。
+	pluginAssets *pluginAssetHandler
+	// pluginActions 是 `/plugins/<id>/api/<action>`（插件 UI 动作面）的进程级处理器。
+	pluginActions *pluginActionHandler
 }
 
 // projectKey 归一 work_dir 作为映射键（Windows 大小写不敏感）。
@@ -484,7 +488,7 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		fileHandler: &fileserver.FileShowHandler{
 			WorkDir: wd,
 			// 放行根（[24 §3.2] MW-8）：① 项目数据根（prj 库/旧附件等，`<workDir>/.chonkpilot`
-			// 或显式 --data-dir）② prjusr 数据根（迁走后的附件/截图 `~/.chonkpilot/data/<prj-id>`）。
+			// 或显式 --data-dir）② prjusr 数据根（迁走后的附件/截图 `<workDir>/.chonkpilot/users/<OS 用户名>`）。
 			// 两者同列，保证迁移前后资源均可经 `/show/` 取回（WorkDir 自身另由 WorkDir 字段放行）。
 			DataDirs: []string{pdd, pur},
 			// 相对引用解析根（🆕 2026-10-10）：消息内附件/截图引用为相对 prjusr 数据根的
@@ -497,12 +501,14 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		form:        env.form,
 		requireAuth: env.srv != nil && env.srv.RequireAuth(),
 		// PRODSIM-1：本地认证已删 → 首屏 `authed` 恒 true（不注入 authed 判定）。
-		env:   env,
-		proj:        spec.proj,
-		role:        spec.role,
-		windowID:    spec.windowID,
-		sessionID:   spec.sessionID,
-		logDir:      env.logDir, // 日志窗口 /api/log/tail（PRODSIM-1）
+		env:           env,
+		proj:          spec.proj,
+		role:          spec.role,
+		windowID:      spec.windowID,
+		sessionID:     spec.sessionID,
+		logDir:        env.logDir, // 日志窗口 /api/log/tail（PRODSIM-1）
+		pluginAssets:  env.pluginAssets,
+		pluginActions: env.pluginActions,
 	}
 	if spec.role == roleChat {
 		// gui.window.set-title：**仅独立对话窗口**（主窗口标题不变，61 §1）。

@@ -1,13 +1,13 @@
-// Package llmbridge 实现 **LLM 桥接入口**（BRIDGE-1）——一个「选 provider + 注入 key」的
-// **透明反向代理**：本机脚本（Python 等）用自选协议的 SDK 指向
-// `http://127.0.0.1:5669/llm/<name>/...`，即可**免 api-key** 调用本机已配置的 LLM。
+// Package llmbridge 实现 **LLM 桥接入口**（BRIDGE-3）——一个「选 provider + 注入 key」的
+// **透明反向代理**：本机脚本（Python 等）把 SDK 指向 UDS 上的
+// `http://<任意 host>/llm/<name>/...`，即可**免 api-key** 调用本机已配置的 LLM。
 //
 // 设计依据：docs/llm-bridge/LLM桥接端口设计方案.md（§2 总体方案 · §3 详细设计 · §4 规则 ·
-// §5 与既有机制的关系 · §6 边界）。要点：
+// §5 与既有机制的关系 · §6 边界）+ [49 BRIDGE-3]（TCP 入口**整体删除**）。
 //
-//   - **端口/开关**：`127.0.0.1:5669`，默认开（开关 = `--llm-bridge-addr`，见 `src/server/main.go`）；
-//     裸端口（如 `5669`）→ `127.0.0.1:5669`（与 httpapi 同规则）；
-//   - **仅 loopback**：非 loopback **拒启**（免鉴权 → fail-closed，比 httpapi 的 WARN 更严）；
+//   - **只监听 UDS**：`<LOCALAPPDATA>\chonkpilot\llm.sock`（可 `CHONK_LLM_UDS` / `--llm-bridge-uds`
+//     覆盖，`off` 关闭）；**不提供任何 TCP 监听**，需要 TCP 的调用方自建 loopback→UDS 字节代理；
+//   - **socket 权限**：目录 `0700` + socket `0600`（唯一边界 = 文件系统权限）；
 //   - **路由**：`/llm/<name>/<rest>`，路径段 `<name>` 选 provider（保留段 `default` = 系统默认 LLM）；
 //     剩余路径 `<rest>` **原样拼接**到 `provider.base_url`（含查询串）；
 //   - **鉴权覆盖**：出站按 `provider.protocol` **先删后设**鉴权头（openai/responses →
@@ -20,8 +20,8 @@
 //     gateway / MCP；**零新增 MQ 主题 / payload**（纯 HTTP 面）；
 //   - **密钥**：apiKey 只随请求内存流转，**不落日志**（本包不打任何含 key 的日志）。
 //
-// 已知威胁面（设计稿 §4/§6，如实登记）：免鉴权 + 仅 loopback = **本机任意进程可白嫖已配置 key**，
-// 系「脚本零配置可用」的取舍。
+// 已知威胁面（设计稿 §4/§6，如实登记）：免鉴权 + 同用户可连 = **本机同用户任意进程可白嫖已配置
+// key**，系「脚本零配置可用」的取舍；身份若需区分，只能在应用层显式声明（代理不传递身份）。
 package llmbridge
 
 import (
@@ -32,12 +32,14 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
-// DefaultAddr 是入口的推荐监听地址（仅本机；设计稿 §3.1/§4「端口 127.0.0.1:5669」）。
-const DefaultAddr = "127.0.0.1:5669"
+// DefaultSocketName 是入口 socket 的文件名（与 `plugin.sock` 同级、独立命名）。
+const DefaultSocketName = "llm.sock"
 
 // pathPrefix 是入口路由前缀：`/llm/<name>/<rest>`（设计稿 §3.2）。
 const pathPrefix = "/llm/"
@@ -63,60 +65,69 @@ type Resolver func(name string) (Target, bool)
 
 // Options 是入口构造参数。
 type Options struct {
-	// Addr 监听地址；空 = DefaultAddr；裸端口（如 "5669"）= 127.0.0.1:5669。
-	Addr string
+	// Path 是 UDS 路径；空 = DefaultPath()。
+	Path string
 	// Resolve 是 provider 解析回调（必填；nil → Start 报错）。
 	Resolve Resolver
 }
 
 // Server 是 LLM 桥接入口（无状态：每次请求独立解析 provider，天然并发安全）。
 type Server struct {
-	addr    string
+	path    string
 	resolve Resolver
 	ln      net.Listener
 	srv     *http.Server
 }
 
-// New 构造入口（未监听；Start 才监听）。地址归一（与 httpapi.New 同规则）：
-// 空 → DefaultAddr；裸端口 → 127.0.0.1:<port>；`localhost` → `127.0.0.1`（确定性 loopback）。
+// DefaultPath 返回缺省 UDS 路径：Windows = `%LOCALAPPDATA%\chonkpilot\llm.sock`；
+// 其它 = `~/.chonkpilot/llm.sock`。
+func DefaultPath() string {
+	if base := os.Getenv("LOCALAPPDATA"); base != "" {
+		return filepath.Join(base, "chonkpilot", DefaultSocketName)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	return filepath.Join(home, ".chonkpilot", DefaultSocketName)
+}
+
+// New 构造入口（未监听；Start 才监听）。
 func New(opts Options) *Server {
-	addr := strings.TrimSpace(opts.Addr)
-	if addr == "" {
-		addr = DefaultAddr
+	p := strings.TrimSpace(opts.Path)
+	if p == "" {
+		p = DefaultPath()
 	}
-	if !strings.Contains(addr, ":") {
-		addr = "127.0.0.1:" + addr // 裸端口 = 仅本机（默认安全绑定）
-	}
-	if host, port, err := net.SplitHostPort(addr); err == nil && strings.EqualFold(host, "localhost") {
-		addr = net.JoinHostPort("127.0.0.1", port) // 避免 localhost 解析漂移，确定性 loopback
-	}
-	return &Server{addr: addr, resolve: opts.Resolve}
+	return &Server{path: p, resolve: opts.Resolve}
 }
 
-// Addr 返回实际监听地址（Start 之后为真实地址）。
-func (s *Server) Addr() string {
-	if s.ln != nil {
-		return s.ln.Addr().String()
-	}
-	return s.addr
-}
+// Path 返回 UDS 路径（Start 之后即实际监听路径）。
+func (s *Server) Path() string { return s.path }
 
-// Start 校验 loopback（**非 loopback 拒启**，fail-closed）→ 监听。
+// Start 监听 UDS：目录 `0700`、socket `0600`；陈旧 socket（dial 不通）先清理，活实例占位则拒启。
 func (s *Server) Start() error {
 	if s.resolve == nil {
 		return fmt.Errorf("llmbridge: resolve callback required")
 	}
-	if !addrIsLoopback(s.addr) {
-		return fmt.Errorf("llmbridge: 拒绝启动：%s 非 loopback（免鉴权入口必须仅本机，设计稿 §3.1/§3.5）", s.addr)
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("llmbridge: mkdir %s: %w", dir, err)
 	}
-	ln, err := net.Listen("tcp", s.addr)
+	// 单例判定（按路径独立）：dial 得通 = 另一活实例 → 拒启；否则清掉陈旧文件。
+	if c, err := net.DialTimeout("unix", s.path, 300*time.Millisecond); err == nil {
+		_ = c.Close()
+		return fmt.Errorf("llmbridge: %s 已被占用（另一实例在监听）", s.path)
+	}
+	if _, err := os.Stat(s.path); err == nil {
+		_ = os.Remove(s.path)
+	}
+	ln, err := net.Listen("unix", s.path)
 	if err != nil {
-		return fmt.Errorf("llmbridge: listen %s: %w", s.addr, err)
+		return fmt.Errorf("llmbridge: listen %s: %w", s.path, err)
 	}
-	// 二道防线：实际监听地址仍非 loopback（如解析漂移）→ 关闭并拒启。
-	if !isLoopback(ln.Addr()) {
+	if err := os.Chmod(s.path, 0o600); err != nil {
 		_ = ln.Close()
-		return fmt.Errorf("llmbridge: 拒绝监听非 loopback 地址 %s", ln.Addr())
+		return fmt.Errorf("llmbridge: chmod %s: %w", s.path, err)
 	}
 	s.ln = ln
 	// 不设 WriteTimeout：SSE 流式长连接会被误断（同 httpapi）。
@@ -129,12 +140,14 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Shutdown 关闭监听（无其它资源；总线不涉及）。
+// Shutdown 关闭监听并清理 socket 文件。
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.srv == nil {
 		return nil
 	}
-	return s.srv.Shutdown(ctx)
+	err := s.srv.Shutdown(ctx)
+	_ = os.Remove(s.path)
+	return err
 }
 
 // Handler 返回路由：`/llm/<name>/...` 走桥接；其余 → 404 提示。
@@ -250,29 +263,4 @@ func joinURLPath(basePath, rest string) string {
 	default:
 		return b + "/" + r
 	}
-}
-
-// addrIsLoopback 判定监听地址字符串是否**仅绑定本机**（裸端口已由 New 归一）。
-// 无法解析 / 空 host / 显式全接口（`:5669`）→ 非 loopback（fail-closed，宁可多拦）。
-func addrIsLoopback(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil || host == "" {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.IsLoopback()
-	}
-	return false
-}
-
-// isLoopback 判定**实际监听地址**是否仅本机（Start 的二道防线）。
-func isLoopback(addr net.Addr) bool {
-	tcp, ok := addr.(*net.TCPAddr)
-	if !ok {
-		return false
-	}
-	return tcp.IP.IsLoopback()
 }

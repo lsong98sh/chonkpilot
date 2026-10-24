@@ -218,6 +218,14 @@ func readUserConfig(db *data.DB) map[string]any {
 			out[key] = v
 		}
 	}
+	// 插件自身配置（`plugins.<插件id>.<字段>`，2026-10-24「插件配置收回 data 层」）：存在即原样
+	// 回读（值恒为字符串）。读侧最小权限由插件桥收窄（`plugin/v1/config.user.*` 只回调用方自己的
+	// 键；见 llm/pluginbridge/configuser.go），数据层不区分调用方。
+	for key, v := range vals {
+		if IsPluginConfigKey(key) {
+			out[key] = v
+		}
+	}
 	// defaultLLM 缺省规则（仅**键缺失**时生效）：未显式配置 → 第一个可用 LLM 的**下标 0**（旧 int
 	// 形态，消费点按 llms[0] 解析）；无任何可用 LLM → -1（未配置）。显式配置（键存在）一律原样
 	// 回读：name 字符串（新）/ int 索引（旧记录）/ 空串（显式「系统默认（启动参数）」）。
@@ -249,6 +257,13 @@ func readUserConfig(db *data.DB) map[string]any {
 // userConfigList 域列表：有任一配置（标量 key 或集合非空）→ 单条整体对象；否则空列表。
 func (s *Service) userConfigList(db *data.DB) []map[string]any {
 	view := readUserConfig(db)
+	// 插件自身配置（`plugins.*`）不属于「用户配置」视图：本视图是设置页 / 导出备份的数据源
+	// （其 `explicit` 列决定导出内容），插件配置（含密钥）只应经插件桥按调用方身份读取。
+	for key := range view {
+		if IsPluginConfigKey(key) {
+			delete(view, key)
+		}
+	}
 	hasData := false
 	if arr, ok := view["llms"].([]map[string]any); ok && len(arr) > 0 {
 		hasData = true
@@ -329,6 +344,18 @@ func saveUserConfig(db *data.DB, payload map[string]any) error {
 		}
 		if userConfigFreeKeys[k] {
 			if err := data.SetConfig(db, k, scalarString(v, "")); err != nil {
+				return err
+			}
+			continue
+		}
+		// 插件自身配置（`plugins.<插件id>.<字段>`）：值归一为字符串后落 config 表（形态校验见
+		// ValidateUserConfigPayload；键前缀边界由插件桥强制）。
+		if IsPluginConfigKey(k) {
+			val, err := PluginConfigValue(k, v)
+			if err != nil {
+				return err
+			}
+			if err := data.SetConfig(db, k, val); err != nil {
 				return err
 			}
 		}

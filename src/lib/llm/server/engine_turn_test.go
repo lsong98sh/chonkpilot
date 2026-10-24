@@ -120,12 +120,7 @@ func engineTurnTaskDigest(te *taskEvents) []string {
 // `onGatewayTaskDone` 的节点同步被跳过（生产 task_id 唯一，不存在该情形）。
 func resetTaskManagerForEngineTest(t *testing.T, s *Server) {
 	t.Helper()
-	s.tasks.mu.Lock()
-	s.tasks.nodes = map[string]*TaskNode{}
-	s.tasks.order = nil
-	s.tasks.lastEmit = map[string]time.Time{}
-	s.tasks.subParents = map[string]string{}
-	s.tasks.mu.Unlock()
+	s.tasks.tree.Clear()
 }
 
 // runEngineTurnCase 跑一轮并返回口径快照。drive 负责发送首条输入与后续回执。

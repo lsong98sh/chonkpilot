@@ -22,9 +22,15 @@ import { eventBelongsToInstance } from '../utils/instanceScope'
 import { EventNames } from '../events/event-names'
 import { copyDslFields } from '../utils/dslView'
 import { resolvePublishError } from '../utils/publishError'
+import { sessionDialogOf } from '../api/session'
 
 // data-tasktree-* 辅助：发送并等待回复。
 function tasktreeReq(action, body = {}) {
+  // 一树一库（P3-4b）：已知该会话的 dialog_id 时补上（session_view 是子会话 → 回落 top_session）。
+  if (body && !body.dialog_id) {
+    const dlg = sessionDialogOf(body.session_id) || sessionDialogOf(body.top_session)
+    if (dlg) body.dialog_id = dlg
+  }
   return mq.emit(`data-tasktree-${action}`, body).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-tasktree-${action}: backend unreachable`)

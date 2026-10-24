@@ -24,11 +24,15 @@
 #   │   ├── agents/                         # 智能体契约（*.agent.md，扁平；源 src/initdata/capability/agents）
 #   │   ├── system/                         # 非原语系统文档全量（summary.md/system-directory.md/memory/*.md；源 src/initdata/capability/system，OP-02）
 #   │   ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
+#   │   ├── plugins/<id>/plugin.json + <exe>  # manifest 插件（manifest 源 src/initdata/capability/plugins，exe 由 build-plugins.ps1 产出）
+#   │   │                                   # ⚠️ `ui.selfServe: true` 的插件把 webui embed 进 exe（唯一源 = src/plugins/<id>/webui/），
+#   │   │                                   #    产物内**不带** <id>/webui/；demo-python 为样例（product=false，不随产物投放）
 #   │   └── executors/chonkpilot-{core,browser,desktop}-executor.exe
 #   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
 #   │   ├── codebase/chonkpilot-codegraph-mcp-server.exe + chonkpilot-codegraph-indexer.exe
 #   │   ├── vfts/chonkpilot-vfts-mcp-server.exe + chonkpilot-vfts-indexer.exe + zvec_c_api.dll（必须与 vfts 引擎同目录）
 #   │   └── markitdown/…（可选：文档转换，dist/other/mcps 兜底镜像；缺则告警、不中断）
+#   ├── themes/themes.css                   # 主题资产（源 src/initdata/themes，覆盖式同步；运行期可编辑）
 #   └── (无其它)                            # 根仅 chonkpilot.exe 一个 exe
 #
 # 另产**出厂数据包**到 dist\initdata\（不进 dist\desktop）：
@@ -38,7 +42,8 @@
 #
 # **出厂数据唯一源** = src/initdata/（capability/{prompts,tools,resources,skills,agents,scenarios,system}），不再 embed
 # （例外：system/ 另经 embed 落点编入 data 模块，供磁盘缺失兜底，见 [0.5/9]）。
-# 全量组件：内嵌 lib 插件（compress/history/memory/vfts/codegraph）随 exe 编译；
+# 全量组件：内嵌 lib 插件（history/memory/vfts/codegraph）随 exe 编译；压缩已内建在会话侧
+# （SESSION-1，2026-10-23：`src/lib/llm/server/compress.go`，无独立插件 / exe）；
 #   外置引擎 exe（codegraph/vfts）+ zvec_c_api.dll 置于 dist/desktop/mcps/{codebase,vfts}\——
 #   插件按「宿主 exe 同目录/mcps/<engine>/」解析引擎。
 # 用法：.\build-desktop.ps1 [-Debug]
@@ -149,6 +154,24 @@ foreach ($sub in @("tools", "prompts", "skills", "resources")) {
 }
 Write-Host "    ok: embed contracts -> $embedCap ($((Get-ChildItem $embedCap -Recurse -File | Measure-Object).Count) files)"
 
+# -- 0.7) 主题资产（THEME-1，2026-10-23）--
+#     唯一源 = src/initdata/themes/themes.css（单文件多主题块）；覆盖式同步到
+#     ① src/lib/gui/internal/themefs/embedded/：`//go:embed embedded/themes.css` 的内置兜底副本
+#        （⚠️ 与源逐字节一致，勿手改；磁盘 `themes/themes.css` 缺失 / 不可读时用它，永不 404）；
+#     ② dist/desktop/themes/：随产物投放的**可编辑**资产（运行期 `GET /themes.css` 优先读它）。
+Write-Host "==> [0.7/9] sync themes.css -> gui embed dir + dist/desktop/themes"
+$initThemes = Join-Path $root "src\initdata\themes"
+if (-not (Test-Path $initThemes)) { throw "themes not found: $initThemes" }
+$themeEmbed = Join-Path $root "src\lib\gui\internal\themefs\embedded"
+Remove-SafeItem -LiteralPath $themeEmbed -Recurse
+New-Item -ItemType Directory -Force -Path $themeEmbed | Out-Null
+Copy-Item (Join-Path $initThemes "*") $themeEmbed -Recurse -Force
+Write-Host "    ok: embed themes -> $themeEmbed ($((Get-ChildItem $themeEmbed -Recurse -File | Measure-Object).Count) files)"
+$themeDst = Join-Path $dist "themes"
+New-Item -ItemType Directory -Force -Path $themeDst | Out-Null
+Copy-Item (Join-Path $initThemes "*") $themeDst -Recurse -Force
+Write-Host "    ok: dist themes -> $themeDst ($((Get-ChildItem $themeDst -Recurse -File | Measure-Object).Count) files)"
+
 # -- 1) 前端构建（工程 src/frontend；产物直投桌面壳 embed 落点） --
 Write-Host "==> [1/9] build frontend"
 Push-Location $frontend
@@ -221,6 +244,53 @@ Write-Host "    ok: mcps/core-mcp/chonkpilot-core-mcp-server.exe ($mbCore MB)"
 
 # 2026-10-21（GATEWAY-2/L1）：DSL 已退役，chonkpilot-dsl-executor.exe 不再产出。
 # browser / desktop 改为常驻插件（capability/executors/chonkpilot-{browser,desktop}-plugin.exe，GUI 子系统 + 托盘）。
+
+# -- 4.5) manifest 插件（PLUGIN-1）：manifest 来自 src/initdata，exe 由 build-plugins.ps1 产出 --
+#   插件目录 = dist/desktop/capability/plugins/<id>/（plugin.json + exe 同目录；
+#   manifest 的 runtime.exe 是插件目录内相对路径）。
+#   ⚠️ PLUGIN-UI-1：`ui.selfServe: true` 的插件（本轮起 = browser/codebase/desktop/file/mcp/task/websearch）
+#   自持 webui —— 资源 embed 在插件 exe 内，webui 唯一源 = `src/plugins/<id>/webui/`，
+#   产物内**不得**出现 `<id>/webui/`（避免双源漂移；判定见下方通用规则）。
+Write-Host "==> [4.5/9] stage plugins (manifest + exe)"
+$initPlugins = Join-Path $root "src\initdata\capability\plugins"
+if (Test-Path $initPlugins) {
+    $plgDst = Join-Path $dist "capability\plugins"
+    Remove-SafeItem -LiteralPath $plgDst -Recurse
+    Copy-Item $initPlugins $plgDst -Recurse -Force
+    # 演示插件不随产物投放：demo-python 是「插件规范全功能演示」样例（manifest product=false），
+    # 其 mcp.origin=builtin 与 product=false 的组合会被加载器拒绝（每次启动告警跳过）。
+    # 需要演示时从 src/initdata 手工安装到用户级 capability 即可。
+    $demoPlg = Join-Path $plgDst "demo-python"
+    if (Test-Path $demoPlg) { Remove-SafeItem -LiteralPath $demoPlg -Recurse }
+    # 自持 webui（PLUGIN-UI-1）：manifest 声明 `ui.selfServe: true` 的插件，资源已 embed 在
+    # 插件 exe 内（唯一源 = `src/plugins/<id>/webui/`），产物内**不得**出现 `<id>/webui/`。
+    # 通用规则：遍历全部插件 manifest 判定，不按插件 id 逐个列举（新增 selfServe 插件自动覆盖）。
+    Get-ChildItem -Path $plgDst -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        $ckManifest = Join-Path $_.FullName "plugin.json"
+        if (-not (Test-Path -LiteralPath $ckManifest)) { return }
+        $ckManifestJSON = $null
+        try {
+            $ckManifestJSON = Get-Content -LiteralPath $ckManifest -Raw -Encoding UTF8 | ConvertFrom-Json
+        } catch {
+            Write-Host ("    [警告] manifest 解析失败（跳过 selfServe 判定）: " + $ckManifest)
+            return
+        }
+        # PSObject.Properties 取键（避免 StrictMode 下缺键取属性抛异常）。
+        $ckUIProp = $ckManifestJSON.PSObject.Properties['ui']
+        if (-not $ckUIProp -or -not $ckUIProp.Value) { return }
+        $ckSelfServeProp = $ckUIProp.Value.PSObject.Properties['selfServe']
+        if (-not $ckSelfServeProp -or ($ckSelfServeProp.Value -ne $true)) { return }
+        $ckSelfServeWebui = Join-Path $_.FullName "webui"
+        if (Test-Path -LiteralPath $ckSelfServeWebui) {
+            Remove-SafeItem -LiteralPath $ckSelfServeWebui -Recurse
+        }
+        Write-Host ("    selfServe: " + $_.Name + "（webui 由插件 exe 自持，产物不带 webui/）")
+    }
+    Invoke-ChildBuild "build-plugins.ps1"
+    Write-Host "    ok: capability/plugins/"
+} else {
+    Write-Host "    skip（src/initdata/capability/plugins 不存在）"
+}
 
 # -- 5) 出厂场景：src/initdata/capability/scenarios → dist/desktop/capability/scenarios（覆盖式同步，不删目录本身） --
 Write-Host "==> [5/9] stage scenarios/ (src/initdata/capability/scenarios)"

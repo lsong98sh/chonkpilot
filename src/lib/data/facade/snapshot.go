@@ -71,6 +71,9 @@ type SnapshotGetRequest struct {
 	InstanceID string `json:"instance_id"`
 	// SessionID 会话 id。
 	SessionID string `json:"session_id"`
+	// DialogID 对话 id（SESSION-COMP-1 P3：非空 → 读 `<prjusr>/dialogs/dialog-<hex>.db`；
+	// 空 → 旧布局 `sessions/<hex>/`，向后兼容）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// Scope 实例数据根（可选）：调用方从事件载荷（61 §4.1 的 work_dir/data_dir 事实）带入，
 	// 供本进程尚未登记该实例时自登记。空 = 仅按 InstanceID 解析。
 	Scope Scope `json:"scope,omitempty"`
@@ -88,6 +91,8 @@ type SnapshotGetResponse struct {
 type SnapshotSetRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 写对话库；空 → 旧布局，语义同 SnapshotGetRequest.DialogID）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// Snapshot 要写回的快照。
 	Snapshot Snapshot `json:"snapshot"`
 	// Scope 实例数据根（可选；语义同 SnapshotGetRequest.Scope）。

@@ -25,6 +25,7 @@ func pluginEnv(t *testing.T, llmSrv *httptest.Server, plugins []plugin.Hook, pre
 	data.Reset()
 	testWorkDir = t.TempDir()
 	t.Cleanup(func() { testWorkDir = "" })
+	disableSessionShardForTest(t, testWorkDir) // 本组用例直读旧布局（快照/会话）
 	bus, err := mq.New(mq.Options{Prefix: testBusPrefix})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)

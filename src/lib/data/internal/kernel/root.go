@@ -36,17 +36,9 @@ func OpenPrjLayer(workDir, dataDir string) (*data.DB, func(), error) {
 }
 
 // OpenPrjUsrLayer 打开实例的 prjusr 层（个人运行态）：dataDir 非空 → 与 prj 同库（临时形态）；
-// 否则 <usr 数据根>/data/<project-id>/chonkpilot.db（project-id 从 prj 库取，首次自动生成）。
-func OpenPrjUsrLayer(dataDir string, prj *data.DB) (*data.DB, func(), error) {
-	path := prj.Path()
-	if dataDir == "" {
-		id, err := data.EnsureProjectID(prj)
-		if err != nil {
-			return nil, nil, err
-		}
-		path = data.PrjUsrDBPath(id)
-	}
-	return data.OpenSharedLayer(path, data.LayerPrjUsr)
+// 否则 <workDir>/.chonkpilot/users/<OS 用户名>/chonkpilot.db（见 49 DATAROOT-1）。
+func OpenPrjUsrLayer(workDir, dataDir string) (*data.DB, func(), error) {
+	return data.OpenSharedLayer(data.PrjUsrDBPath(workDir, dataDir), data.LayerPrjUsr)
 }
 
 // UsrDB 打开 usr 层（用户全局配置；usrPath 为空回落 data.UserPath()）。
@@ -176,6 +168,21 @@ func (b *Base) PrjUsrFor(instanceID string, scope facade.Scope) (*data.DB, error
 	return nil, rerr
 }
 
+// SessionDBFor 定位**主会话库**（2026-10-23 轻量分片）：与 prjusr 同根、按会话分库，
+// 承载 messages / turns / snapshot / tasktree / inbox；prjusr 只留会话列表与项目级表。
+//
+// **短开语义**：返回 release，调用方配对释放（会话库不常开，避免按会话堆积 fd）。
+func (b *Base) SessionDBFor(instanceID string, scope facade.Scope, sessionID string) (*data.DB, func(), error) {
+	if sessionID == "" {
+		return nil, nil, errors.New("kernel: session_id required")
+	}
+	prjUsr, err := b.PrjUsrFor(instanceID, scope)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data.OpenSession(prjUsr.Path(), sessionID)
+}
+
 // PrjByInst 按实例绑定解析 prj 主库（绑定登记进 data 缓存）。**短开语义（D-45）**：返回
 // release，调用方配对释放（同 PrjFor）。
 func (b *Base) PrjByInst(instanceID string, info Info) (*data.DB, func(), error) {
@@ -203,7 +210,7 @@ func (b *Base) OpenLayerDBs(instanceID string, scope facade.Scope) (prj *data.DB
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	pudb, relPu, err := OpenPrjUsrLayer(dataDir, prj)
+	pudb, relPu, err := OpenPrjUsrLayer(workDir, dataDir)
 	if err != nil {
 		relPrj()
 		return nil, nil, nil, err

@@ -99,7 +99,8 @@ function handleOpenConfig() {
   mq.emit(EventNames.previewTabOpen, { kind: 'settings-llm' })
 }
 
-// project-config-open 可选 payload.tab（如 'codegraph' / 'vfts'）= 定位到的项目配置页签；
+// project-config-open 可选 payload.tab = 定位到的项目配置页签（如 'codebase' / 'history'；
+// 旧页签名 'codegraph' / 'vfts' 由 ProjectConfig 兼容映射到 'codebase'，见 UIREG-1）；
 // 缺省/非法 → 不携带 tab，落到项目配置默认页签（向后兼容旧发送方）。
 function handleOpenProjectConfig(event) {
   const tab = event && typeof event === 'object' ? event.tab : undefined

@@ -35,6 +35,7 @@ import (
 func SessionFromWire(row map[string]any) facade.Session {
 	s := facade.Session{
 		ID:           str(row["session_id"]),
+		DialogID:     str(row["dialog_id"]),
 		Title:        str(row["title"]),
 		ParentID:     str(row["parent_id"]),
 		CreatedAt:    str(row["created_at"]),
@@ -71,6 +72,7 @@ func SessionFromWire(row map[string]any) facade.Session {
 // 的行形状与既有逐字节一致**（单聊方案 §3.2「仅非空才写键」）。
 func SessionToWire(s facade.Session) map[string]any {
 	row := map[string]any{"session_id": s.ID}
+	put(row, "dialog_id", s.DialogID)
 	put(row, "title", s.Title)
 	put(row, "parent_id", s.ParentID)
 	put(row, "created_at", s.CreatedAt)
@@ -118,6 +120,15 @@ func SessionGetResult(found bool, s facade.Session) map[string]any {
 // SessionIDResult 组装 `{session_id: …}`（latest / active-get 共用）。
 func SessionIDResult(sessionID string) map[string]any {
 	return map[string]any{msgkeys.DataSessionLatestResultSessionId: sessionID}
+}
+
+// SessionLatestResult 组装 `data-session-latest` 结果（`dialog_id` 非空才写键 → 旧载荷不变）。
+func SessionLatestResult(sessionID, dialogID string) map[string]any {
+	out := map[string]any{msgkeys.DataSessionLatestResultSessionId: sessionID}
+	if dialogID != "" {
+		out["dialog_id"] = dialogID
+	}
+	return out
 }
 
 // ── 轮次（turn 域）────────────────────────────────────────────────
@@ -374,7 +385,7 @@ func GroupRoundTargetsResult(list []facade.GroupRoundTarget) map[string]any {
 // msg 内（嵌套）或载荷顶层（扁平）均可 —— 两者都是「消息自身的领域字段」，不进内核 ChatMsg
 // （LLM 请求不含它们），故直取后落到 MessageAppendRequest 同名入参。
 func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
-	req := facade.MessageAppendRequest{TurnID: str(m["turn_id"]), Key: str(m["key"])}
+	req := facade.MessageAppendRequest{TurnID: str(m["turn_id"]), Key: str(m["key"]), DialogID: str(m["dialog_id"])}
 	nested, _ := m["msg"].(map[string]any)
 	if len(nested) == 0 {
 		nested = m
@@ -414,30 +425,32 @@ func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
 	return req
 }
 
-// MessageLoadFromWire 解析 `{turn_id}` → 门面入参。
+// MessageLoadFromWire 解析 `{turn_id, dialog_id?}` → 门面入参。
 func MessageLoadFromWire(m map[string]any) facade.MessageLoadRequest {
-	return facade.MessageLoadRequest{TurnID: str(m["turn_id"])}
+	return facade.MessageLoadRequest{TurnID: str(m["turn_id"]), DialogID: str(m["dialog_id"])}
 }
 
-// MessageContextFromWire 解析 `{session_id, exclude_turn?, include_snapshot?}` → 门面入参
+// MessageContextFromWire 解析 `{session_id, dialog_id?, exclude_turn?, include_snapshot?}` → 门面入参
 // （include_snapshot 既接受 JSON 布尔，也接受字符串 "true"——既有 MQ 载荷两种都出现过）。
 func MessageContextFromWire(m map[string]any) facade.MessageContextRequest {
 	return facade.MessageContextRequest{
 		SessionID:       str(m["session_id"]),
+		DialogID:        str(m["dialog_id"]),
 		ExcludeTurn:     str(m["exclude_turn"]),
 		IncludeSnapshot: truthy(m["include_snapshot"]),
 	}
 }
 
-// MessageContentFromWire 解析 `{session_id, keys:[…]}` → 门面入参。
+// MessageContentFromWire 解析 `{session_id, dialog_id?, keys:[…]}` → 门面入参。
 func MessageContentFromWire(m map[string]any) facade.MessageContentRequest {
-	return facade.MessageContentRequest{SessionID: str(m["session_id"]), Keys: strList(m["keys"])}
+	return facade.MessageContentRequest{SessionID: str(m["session_id"]), DialogID: str(m["dialog_id"]), Keys: strList(m["keys"])}
 }
 
-// TurnHistoryFromWire 解析 `{session_id, before_turn_id?, target_messages?, target_bytes?}` → 门面入参。
+// TurnHistoryFromWire 解析 `{session_id, dialog_id?, before_turn_id?, target_messages?, target_bytes?}` → 门面入参。
 func TurnHistoryFromWire(m map[string]any) facade.TurnHistoryRequest {
 	return facade.TurnHistoryRequest{
 		SessionID:      str(m["session_id"]),
+		DialogID:       str(m["dialog_id"]),
 		BeforeTurnID:   str(m["before_turn_id"]),
 		TargetMessages: intOf(m["target_messages"]),
 		TargetBytes:    intOf(m["target_bytes"]),

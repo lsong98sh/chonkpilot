@@ -22,16 +22,18 @@
            写入效果：关闭 → 该类文件**不被改写**（保持夹具哨兵）且无 `data-memory-refresh(id=该类)`；
            开启 → 该类**被写入**（内容变化 + `data-memory-refresh(id=该类)`）；写入后同类一致性判据。
   A/B-4 `keep_full_max_turns` + `keep_full_max_tokens` + `compress_token_threshold`
-        A: 写 `"1"` / `"24000"` / `"999999"` → 回读；再写阈值 `"1"` → 回读。
+        A: 写 `"1"` / `"24000"` / `"999999"` → 回读；再写两键阈值 `"1"`/`"1"` → 回读。
         B: 阈值极大 → 快照**无** `[已压缩早前对话]` 且 mock 请求数 == 轮数（未发生摘要调用）；
            阈值极小 → 快照**出现** `[已压缩早前对话]`（压缩已回写快照）+ mock 收到**摘要请求**
-           （n_requests = 轮数+1，`/last` 的 system == 摘要提示词）。
+           （n_requests = 轮数+1，`/lastbody` 的末条 user == 摘要提示词）。
+           SESSION-1（2026-10-23）：压缩内建 = 组装后按 `Usage.History > keep_full_max_tokens +
+           compress_token_threshold` 异步触发（原「每轮终态都触发」已废止）。
   A/B-5 `capability/system/summary.md`（data-prompt-{save,load,delete}，key=summary_prompt）
         A: 写哨兵 → `data-prompt-load` 回读 == 哨兵 + 项目级文件落盘含哨兵；
-        B: 触发压缩 → 摘要请求 system **含哨兵**；
+        B: 触发压缩 → 摘要请求**末条 user** **含哨兵**（SESSION-1 起压缩要求走 user，不再走 system）；
         回落: 删除该键 → A 回读 == 内置默认（embed 内置 `data.SystemDoc("summary")`，
               = 出厂文件 `src/initdata/capability/system/summary.md`）；
-              B 再触发一次压缩 → 摘要请求 system == 内置默认（回落生效）。
+              B 再触发一次压缩 → 摘要请求末条 user == 内置默认（回落生效）。
   UI-6 `memory.category-max-tokens`
         **仅 UI 效果断言**（超阈值行标红 + 「建议细分记忆」提示文案）：该键后端**不消费**
         （plugin-memory / llm 侧均无该键；spec 61 §3.1 明示"仅前端标红提醒、不截断"）
@@ -140,6 +142,20 @@ def main():
                 return json.loads(r.read().decode("utf-8")) or {}
         except Exception:
             return {}
+
+    def last_user_text():
+        """mock 最近一次请求的**最后一条文本**（`GET /lastbody` 的 texts 末项）。
+
+        SESSION-1（2026-10-23）起压缩内建：摘要要求放在**末条 user**（不再走 system），
+        故摘要提示词断言改看这里（原断言看 `last().system`）。
+        """
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:%d/lastbody" % m.port, timeout=5) as r:
+                body = json.loads(r.read().decode("utf-8")) or {}
+        except Exception:
+            return ""
+        texts = body.get("texts") or []
+        return str(texts[-1]) if texts else ""
 
     def reset_mock():
         try:
@@ -620,9 +636,13 @@ def main():
                 raise TestError("阈值 999999 时 mock 请求数=%d，期望 2（2 轮，无摘要调用）" % n_no)
             _evi("compress-B-not-triggered", requests=n_no, snapshot_head=str(snapshot_msgs(sid_no)[:1])[:160])
             # A/B（极小阈值 → 真压缩）
+            # SESSION-1（2026-10-23）压缩内建：触发阈值 = keep_full_max_tokens + compress_token_threshold
+            # （原「每轮终态都触发」已废止）→ 两键都要压到极小才会真触发。
             prj_save("compress_token_threshold", "1")
-            if prj().get("compress_token_threshold") != "1":
-                raise TestError("A 落库确认失败：compress_token_threshold 回读 %r" % prj().get("compress_token_threshold"))
+            prj_save("keep_full_max_tokens", "1")
+            if prj().get("compress_token_threshold") != "1" or prj().get("keep_full_max_tokens") != "1":
+                raise TestError("A 落库确认失败：阈值回读 %r/%r"
+                                % (prj().get("compress_token_threshold"), prj().get("keep_full_max_tokens")))
             reset_mock()
             arm(("turn-start", "llm-complete", "llm-error"))
             sid_yes = new_session()
@@ -634,17 +654,22 @@ def main():
                 raise TestError("阈值 1 + keep_full_max_turns 1 未发生压缩（快照无 %s）" % COMPRESS_MARK)
             if n_yes != 3:
                 raise TestError("压缩后 mock 请求数=%d，期望 3（2 轮 + 1 次摘要 llm-simple）" % n_yes)
-            sys = last().get("system") or ""
-            if DEFAULT_SUMMARY not in sys:
-                raise TestError("最后一次（摘要）请求 system 非摘要提示词：%r" % sys[:200])
+            tail = last_user_text()
+            if DEFAULT_SUMMARY not in tail:
+                raise TestError("最后一次（摘要）请求末条 user 非摘要提示词：%r" % tail[:200])
             _evi("compress-B-triggered", requests=n_yes, snapshot_mark=mk[:200],
-                 summary_request_system=sys[:120])
+                 summary_request_text=tail[:120])
 
     def case_summary_prompt():
-        """A/B-5 capability/system/summary.md：A 保存/回读；B 压缩摘要请求 system 含哨兵；删除 → 回落默认。"""
+        """A/B-5 capability/system/summary.md：A 保存/回读；B 压缩摘要请求**末条 user** 含哨兵；删除 → 回落默认。
+
+        SESSION-1（2026-10-23）：压缩内建 → 摘要要求放在末条 user（原看请求 system），
+        且触发阈值 = keep_full_max_tokens + compress_token_threshold（两键都压到 1）。
+        """
         with _h.prj_config_guard(c, ["memory.enabled", "keep_full_max_turns", "keep_full_max_tokens", "compress_token_threshold"]):
             prj_save("memory.enabled", "false")
             prj_save("keep_full_max_turns", "1")
+            prj_save("keep_full_max_tokens", "1")
             prj_save("compress_token_threshold", "1")
             try:
                 # A：写哨兵 → 回读 + 落盘
@@ -656,19 +681,19 @@ def main():
                 if SENT not in disk:
                     raise TestError("项目级 capability/system/summary.md 未落盘哨兵：%r" % disk[:200])
                 _evi("summary-prompt-A", load=got, file=SUMMARY_FILE, file_len=len(disk))
-                # B：触发一次压缩 → 摘要请求 system == 哨兵
+                # B：触发一次压缩 → 摘要请求**末条 user** == 哨兵
                 reset_mock()
                 arm(("turn-start", "llm-complete", "llm-error"))
                 sid1 = new_session()
                 run_turn("总结提示词哨兵-第1轮", sid=sid1, idx=1)
                 run_turn("总结提示词哨兵-第2轮", sid=sid1, idx=2)
                 if not wait_compress(sid1, max_wait=25):
-                    raise TestError("哨兵用例未触发压缩（无法验证摘要请求 system）")
-                sys1 = last().get("system") or ""
-                if SENT not in sys1:
-                    raise TestError("摘要请求 system 不含哨兵：%r" % sys1[:200])
-                _evi("summary-prompt-B", requests=nreq(), system=sys1[:160])
-                # A/B（回落）：删除该键 → 回读默认；再压缩 → system == 默认
+                    raise TestError("哨兵用例未触发压缩（无法验证摘要请求）")
+                tail1 = last_user_text()
+                if SENT not in tail1:
+                    raise TestError("摘要请求末条 user 不含哨兵：%r" % tail1[:200])
+                _evi("summary-prompt-B", requests=nreq(), text=tail1[:160])
+                # A/B（回落）：删除该键 → 回读默认；再压缩 → 末条 user == 默认
                 c.req("data-prompt-delete", {"id": "summary_prompt"})
                 got2 = (c.req("data-prompt-load", {"id": "summary_prompt"}) or {}).get("data") or ""
                 if SENT in got2 or DEFAULT_SUMMARY not in got2:
@@ -682,11 +707,11 @@ def main():
                 run_turn("总结提示词回落-第1轮", sid=sid2, idx=1)
                 run_turn("总结提示词回落-第2轮", sid=sid2, idx=2)
                 if not wait_compress(sid2, max_wait=25):
-                    raise TestError("回落用例未触发压缩（无法验证摘要请求 system）")
-                sys2 = last().get("system") or ""
-                if DEFAULT_SUMMARY not in sys2 or SENT in sys2:
-                    raise TestError("删除后摘要请求 system 未回落内置默认：%r" % sys2[:200])
-                _evi("summary-prompt-B-fallback", requests=nreq(), system=sys2[:160])
+                    raise TestError("回落用例未触发压缩（无法验证摘要请求）")
+                tail2 = last_user_text()
+                if DEFAULT_SUMMARY not in tail2 or SENT in tail2:
+                    raise TestError("删除后摘要请求末条 user 未回落内置默认：%r" % tail2[:200])
+                _evi("summary-prompt-B-fallback", requests=nreq(), text=tail2[:160])
             finally:
                 # 清理项目级覆盖文件（落盘在隔离 work-dir 内，双保险）
                 try:

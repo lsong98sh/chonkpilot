@@ -25,7 +25,11 @@ import { createPinia, setActivePinia } from 'pinia'
 register('./support/vue-sfc-hooks.mjs', import.meta.url)
 await new Promise((r) => setTimeout(r, 0))
 
-import { VIEW_DEFINITIONS, buildViewRegistry, definitionOf, hostOf } from '../src/layout/view-definitions.js'
+import { VIEW_DEFINITIONS, definitionOf, hostOf } from '../src/layout/view-definitions.js'
+import {
+  createViewRegistry,
+  registerViews,
+} from '../src/layout/view-registry.js'
 import { setLayoutTranslator } from '../src/layout/i18n.js'
 import mq from '../src/utils/mq.js'
 import { EventNames } from '../src/events/event-names.js'
@@ -114,22 +118,23 @@ test('① 全部区块定义齐备，字段完整（key/labelKey/label/icon/mode
   for (const k of DETAIL_VIEWS) assert.equal(definitionOf(k).designable, false, `${k} designable 应为 false`)
 })
 
-test('① 组件映射：全部区块接真实组件（含栏视图条目 search 等，P4 抽取后接线）', () => {
+test('① 组件映射：全部区块经统一注册 API（registerViews）接线，无静态组件表', () => {
   const src = SRC('layout/views.registry.js')
-  for (const key of EXPECTED_VIEWS) {
-    assert.match(src, new RegExp(`(^|\\n)\\s+'?${key.replace('-', '\\-')}'?:\\s`, 'm'), `组件映射缺 ${key}`)
-  }
-  // P4①：search 组件映射已接线（P3 时刻意留空）
-  assert.match(src, /search:\s*SearchBoxView/, 'search 组件映射须已接线（P4 抽取）')
-  assert.match(src, /export function createViewRegistry\(translate\)/)
-  assert.match(src, /buildViewRegistry\(translate, VIEW_COMPONENTS\)/)
-  // 注册表对象行为（纯逻辑侧）：definitions 为 getter（label 经注入的 i18n 解析）
-  const fake = { chat: { name: 'FakeChat' } }
-  const reg = buildViewRegistry((k) => `T:${k}`, fake)
+  // UIREG-1：内置视图与插件视图共用一条注册 API → 不再有静态组件映射表
+  assert.doesNotMatch(CODE('layout/views.registry.js'), /VIEW_COMPONENTS/, '不得再有静态组件映射表')
+  assert.match(src, /registerViews\(\[/, '内置视图须经 registerViews 注册')
+  // 注册 key 集合 == 定义表 key 集合（逐条核对，防漏注册）
+  const block = src.slice(src.indexOf('registerViews(['), src.indexOf("], 'builtin')"))
+  const registered = [...block.matchAll(/\{\s*key:\s*'([^']+)'/g)].map((m) => m[1])
+  assert.deepEqual(registered, EXPECTED_VIEWS, '注册的 key 集合/顺序须与 view-definitions 一致')
+  // 注册表对象行为（纯逻辑侧，stub 组件）：definitions 为 getter（label 经注入 i18n 解析），resolve 只走注册表
+  registerViews(EXPECTED_VIEWS.map((key) => ({ key, component: { name: `Fake_${key}` } })), 'builtin')
+  const reg = createViewRegistry((k) => `T:${k}`)
   assert.equal(reg.definitions.find((d) => d.key === 'chat').label, 'T:view.chat')
   assert.equal(reg.componentKeys, undefined)
-  assert.equal(reg.resolve('chat'), fake.chat)
-  assert.equal(reg.resolve('search'), null)
+  assert.equal(reg.resolve('chat').name, 'Fake_chat')
+  assert.equal(reg.resolve('search').name, 'Fake_search', '栏视图条目同走一条解析路径')
+  assert.equal(reg.resolve('nope'), null)
 })
 
 /* ═══════════════ ② 命令模型与落点（§3.5 · P3②） ═══════════════ */
@@ -449,20 +454,21 @@ test('⑤ MainLayout：唯一容器形态（legacy 分支已删除）', () => {
   assert.match(ml, /\{ free: toFreeString\(/)
 })
 
-test('⑤ 主题映射与去重：--lf-* → 宿主 token；机制层不再声明宿主级全局规则', () => {
+test('⑤ 主题映射与去重：--lf-* → --ck-* 语义别名；机制层不再声明宿主级全局规则', () => {
   const theme = SRC('layout/theme.css')
   assert.match(theme, /@import '\.\.\/layout-free\/styles\/global\.css'/)
-  for (const [lf, host] of [
-    ['--lf-bg', '--bg-primary'],
-    ['--lf-panel', '--bg-secondary'],
-    ['--lf-border', '--border'],
-    ['--lf-text', '--text-primary'],
-    ['--lf-text-weak', '--text-muted'],
-    ['--lf-accent', '--accent'],
-    ['--lf-bar', '--toolbar-bg'],
-    ['--lf-tree-hover', '--bg-hover'],
+  // THEME-1（2026-10-23）：映射目标改为公共语义别名层（public/shared/ck-theme.css）
+  for (const [lf, alias] of [
+    ['--lf-bg', '--ck-bg'],
+    ['--lf-panel', '--ck-surface'],
+    ['--lf-border', '--ck-border'],
+    ['--lf-text', '--ck-text'],
+    ['--lf-text-weak', '--ck-text-muted'],
+    ['--lf-accent', '--ck-accent'],
+    ['--lf-bar', '--ck-toolbar'],
+    ['--lf-tree-hover', '--ck-hover'],
   ]) {
-    assert.match(theme, new RegExp(`${lf}:\\s*var\\(${host}\\)`), `${lf} 须映射到 ${host}`)
+    assert.match(theme, new RegExp(`${lf}:\\s*var\\(${alias}\\)`), `${lf} 须映射到 ${alias}`)
   }
   // 去重（§3.10）：宿主的全局外观（html/body/滚动条）不得被子系统样式覆盖
   const lfGlobal = CODE('layout-free/styles/global.css')
@@ -499,9 +505,10 @@ test('⑥ 集成：注册表 + 默认文档 → 引擎装配成功、渲染树�
   setActivePinia(createPinia())
   const { createLayoutEngine } = await import('../src/layout-free/engine.js')
   const fake = Object.fromEntries(EXPECTED_VIEWS.map((k) => [k, { name: `Fake_${k}` }]))
+  registerViews(EXPECTED_VIEWS.map((k) => ({ key: k, component: fake[k] })), 'builtin')
   const persisted = []
   const engine = createLayoutEngine({
-    views: buildViewRegistry((k) => k, fake),
+    views: createViewRegistry((k) => k),
     persist: createLayoutPersist({ save: async (s) => persisted.push(s) }),
     i18n: (key) => key,
   })

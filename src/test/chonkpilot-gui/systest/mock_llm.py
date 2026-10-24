@@ -9,39 +9,35 @@
       has_tool_result/n_requests）· GET /lastbody（请求体多模态摘要）。
 行为：把最后一个 user 消息回显为回复；根据文本关键词返回 tool_calls 以驱动
       testplan 相关场景（工具调用 / cancel）：
-        "call tool"   → self_file_read（{purpose, targets:[{path}]}；工具调用链路，testplan 五.3）
+        "call tool"   → file_read（{purpose, targets:[{path}]}；工具调用链路，testplan 五.3）
         "call retry-twice"   → 前两次 429（Retry-After: 2）→ 第三次正常回复（RETRY-1 重试后成功）
         "call retry-exhaust" → 每次 500（RETRY-1 重试耗尽 → 终态错误）
-        "call cancel" → self_script_run 长命令      （testplan 五.8）
-        "call slow-never" → self_script_run 慢命令（call-level async=never + timeout=1s；
+        "call cancel" → task_run 长命令（Start-Sleep；testplan 五.8）
+        "call slow-stream" → 慢速流式（~10s；流式期入队 → next_turn，取消后写回输入区；五.9）
+        "call slow-never" → task_run 慢命令（call-level async=never + timeout=1s；
                             run_tool_async.py 断言 mcp-tools-timeout options=[wait,cancel]）
-        "call find-skip"  → dsl_run FILE_FIND（grep=GATE_SKIP_SENTINEL；根路径由提示词携带
-                            `findskip=<绝对路径>`，可选跳过目录 `findsd=<csv>`；run_index_gate.py 断言）
-        "call interp-probe" → self_script_run（runtime 由提示词携带 `rt=<runtime>`；run_paths.py
-                            断言 CHONK_CHROME / CHONKPILOT_INTERPRETERS 子进程 env 注入
-                            与「被启动解释器 == 配置 *Path 值」）
-        "call java-real"   → self_script_run(runtime=java，打印哨兵 CK-JAVA-OK 的类；run_paths.py
-                            java 真机端到端，回归 I-80：临时脚本扩展名必须 .java）
+        "call loop-limit" → task_run 快命令（maxToolIterations 用例）
+        "call py" / "call py-async" / "call async-cmd" → task_run 快/异步命令（run_tools H/runtime 链）
       **任务/工具面（GATEWAY-2 L1 起）**：`dsl_run` 与 DSL 作业根 `kind=dsl_job` **已整体删除**，
       委派/批量/子会话改由「普通工具调用的任务节点」承载（run_llm.py 五.4/5/6/7 + C13/C18）：
-        "call delegate-plain"  → self_script_run（tools 展示名 = tool_call_display_name「单次委派回显」）
-        "call delegate-purpose"→ self_script_run（展示名「委派展示名-自定义」）
-        "call batch"           → **一次 assistant 消息内两条** self_script_run（批处理一/批处理二）
-        "call delegate-cancel" → self_script_run ping 20s（展示名「慢步子任务」，供 task-stop 取消）
-        "call delegate-slow"   → self_script_run ping 20s（长任务占位）
+        "call delegate-plain"  → task_run（tools 展示名 = tool_call_display_name「单次委派回显」）
+        "call delegate-purpose"→ task_run（展示名「委派展示名-自定义」）
+        "call batch"           → **一次 assistant 消息内两条** task_run（批处理一/批处理二）
+        "call delegate-cancel" → task_run 慢命令（展示名「慢步子任务」，供 task-stop 取消）
+        "call delegate-slow"   → task_run 慢命令（长任务占位）
       文件历史检查点链（run_hist_git.py，2026-09-27 批次③语义；参数由提示词携带）：
         "call hist-write"         + histabs=<绝对路径> histfrom=<旧> histval=<新>
-                                  → self_file_replace（精确替换真实改文件 → 置脏 → 打点）
-        "call hist-dirty-write"   → self_history_restore + 紧随 self_script_run 改文件
-                                  （H6「涉及文件变动」：script_run 是现行缺省「涉及」的内置工具）
+                                  → `file_replace`（file 插件工具，无 self_ 前缀；精确替换真实改文件 → 置脏 → 打点）
+        "call hist-dirty-write"   → `self_history_restore` + 紧随 `task_run` 改文件
+                                  （H6「涉及文件变动」：task_run 属插件工具，缺省即涉及）
         "call hist-restore"       + histrel=<workdir 相对路径> [histto=<负整数|commit id>]
                                   → self_history_restore（单文件回滚）
         "call hist-restore-nopath"→ self_history_restore{}（空 path，应被拒绝）
         "call hist-restore-dir"    + histrel=<相对目录>
                                   → self_history_restore（目录，应被拒绝）
-      **工具名一律用网关暴露名**：self 节点（entry.ID=self，namespace=`self_`）前缀 `self_`
-      （file_read/file_replace/script_run/user_ask/tool_result 均为 self_* 形态）。未带前缀的
-      裸名无法路由（I-20）。
+      **工具名一律用网关暴露名**（2026-10-23 口径）：插件工具 = manifest 原名（`file_*` /
+      `task_run` / `mcp_*` / `ask_user` / `desktop_run`，**无 `self_` 前缀**）；仅内嵌 self 节点
+      工具（`history_*`）仍为 `self_history_*`。未按暴露名调用无法路由（I-20）。
 工具结果回填后再次收到调用时文本不再含关键词 → 返回普通回复，避免循环。
 """
 
@@ -50,6 +46,7 @@ import os
 import re
 import socket
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -299,23 +296,23 @@ def route_tool_calls(text):
     # provider 配 maxToolIterations=1 → 第二轮 LLM 调用在 chatOnce 入口被截断
     #（turn.go:365 TOOL_LOOP_LIMIT，mock 收不到第 2 个请求）；配 2 → 第二轮正常发生并收尾。
     if "call loop-limit" in t:
-        return [("self_script_run", {"runtime": "cmd", "script": "echo loop-limit",
-                                     "tool_call_display_name": "测试"})]
+        return [("task_run", {"command": "Write-Output loop-limit",
+                              "tool_call_display_name": "测试"})]
     if "call close" in t:
         # 关闭链：desktop_run DSL `WIN "标题" focus` + `KPR alt+f4` → IDE 退出（C6 持久化测试用）。
         # 旧 `key_press` 工具已不存在（桌面 UI 自动化统一收敛到 desktop_run DSL）；
         # 窗口标题 = `chonkpilot-<workDir 名>`（gui.MainWindowTitle），WIN 标题为模糊匹配。
         title = "chonkpilot-%s" % os.path.basename(SCRIPTS_WS)
-        return [("self_desktop_run",
+        return [("desktop_run",
                  {"script": 'WIN "%s" focus\nSLP 200\nKPR alt+f4' % title,
                   "tool_call_display_name": "回归"})]
     # ── I-88：真实会话工具调用 → Task 层权威行（run_tool_async.py H）──
-    # 真实 script_run（cmd `ping -n 4`，约 3s）：给「层权威行 state=running（执行推进中）」留
+    # 真实 task_run（`Start-Sleep 6s`）：给「层权威行 state=running（执行推进中）」留
     # 可观测窗口，工具自然结束后落 done；用于断言 data-tasktree-tasks 出现权威行且 exec_json
-    # 含 gw_task_id（默认 async=manual，3s 远早于超时点 → 就地交付 done，不触发裁决）。
+    # 含 gw_task_id（默认 async=manual，6s 远早于超时点 → 就地交付 done，不触发裁决）。
     if "call task-layer" in t:
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 4 127.0.0.1",
-                                     "tool_call_display_name": "层落库"})]
+        return [("task_run", {"command": "Start-Sleep -Seconds 6",
+                              "tool_call_display_name": "层落库"})]
     # ── 统一异步模型 L4（run_tool_async.py）：超时交用户裁决 ──
     # 调用级 async=never + timeout=1s（gateway 执行前剥离）→ 慢工具到超时点发 mcp-tools-timeout
     # {reason:"timeout", options:["wait","cancel"]}；第三方软缺省 never 同理（本路由用 builtin 工具
@@ -325,13 +322,13 @@ def route_tool_calls(text):
     # DSL 退役后改 `self_script_run` + **调用级 `async=always`**（script_run 契约 timeout:300 属
     # 「有超时裁决点」，turn.gatewayArgs 不强制异步，但显式调用级 async 优先 → 派发即 pending）。
     if "call slow-insert" in t:
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 8 127.0.0.1",
-                                     "async": "always",
-                                     "tool_call_display_name": "插话慢工具"})]
+        return [("task_run", {"command": "Start-Sleep -Seconds 6",
+                              "async": "always",
+                              "tool_call_display_name": "插话慢工具"})]
     if "call slow-never" in t:
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 12 127.0.0.1",
-                                     "async": "never", "timeout": 1,
-                                     "tool_call_display_name": "超时裁决"})]
+        return [("task_run", {"command": "Start-Sleep -Seconds 11",
+                              "async": "never", "timeout": 1,
+                              "tool_call_display_name": "超时裁决"})]
     # 统一异步模型 L4-E（run_tool_async.py）：「转后台后再取消」——script_run 契约软缺省即
     # manual（core/script_run.tool.md:7 async=manual），显式给出 async=manual + timeout=1s，
     # 到超时点发 mcp-tools-timeout{options:[detach,cancel]}；20s 长命令给「转后台」与后续
@@ -341,9 +338,9 @@ def route_tool_calls(text):
     if "call slow-manual" in t:
         # 60s：manual 裁决/转后台/取消 与 G「刷新后待裁决恢复」需要稳定的在飞窗口
         # （原 20s 在批量负载下可能在刷新/读快照前就自行完成 → G 读到 done）。
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 60 127.0.0.1",
-                                     "async": "manual", "timeout": 1,
-                                     "tool_call_display_name": "转后台"})]
+        return [("task_run", {"command": "Start-Sleep -Seconds 59",
+                              "async": "manual", "timeout": 1,
+                              "tool_call_display_name": "转后台"})]
     # ── 第三方 spawned 夹具（slow3p，经四级文件化 MCP 注册后网关拉起；run_tool_async.py D）──
     # 快工具（回显 pid，供取消前后比对 respawn）；慢工具 call-level async=never + timeout=1
     #（夹具软缺省 never，等价；显式给出保证 1s 到超时点）。
@@ -364,9 +361,9 @@ def route_tool_calls(text):
     # （callTool 继承请求 ctx + exec.CommandContext）→ 无孤儿进程（`ping` 子进程随之被杀；
     # 用唯一地址 127.0.0.99 作进程命令行探针哨兵）。
     if "call cancel-on-timeout-self" in t:
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.99",
-                                     "async": "never", "timeout": 1,
-                                     "tool_call_display_name": "自动取消"})]
+        return [("task_run", {"command": "ping -n 20 127.0.0.99",
+                              "async": "never", "timeout": 1,
+                              "tool_call_display_name": "自动取消"})]
     # ── 任务/工具面（GATEWAY-2 L1：`dsl_run` + DSL 作业根已删除）──
     # 原 dsl_run 的 `LLM "<agent>" "<prompt>" "<目的>"` 委派步骤 / LOOP 批量 / 执行器子会话
     # 一并退役；现行等价能力 = **普通工具调用的任务节点**（kind=tool）：展示名取
@@ -374,86 +371,53 @@ def route_tool_calls(text):
     # 即「批量」。断言口径见 run_llm.py 五.4/5/6/7 + C13/C18。
     if "call delegate-plain" in t:
         # 单次调用 + 自定义展示名（原：第三参「目的」→ 步骤展示名）
-        return [("self_script_run", {"runtime": "cmd", "script": "echo delegate-plain",
-                                     "tool_call_display_name": "单次委派回显"})]
+        return [("task_run", {"command": "Write-Output delegate-plain",
+                              "tool_call_display_name": "单次委派回显"})]
     if "call delegate-purpose" in t:
         # 单次调用 + 自定义展示名（原：第三参=目的）
-        return [("self_script_run", {"runtime": "cmd", "script": "echo delegate-purpose",
-                                     "tool_call_display_name": "委派展示名-自定义"})]
+        return [("task_run", {"command": "Write-Output delegate-purpose",
+                              "tool_call_display_name": "委派展示名-自定义"})]
     if "call batch" in t:
         # 批量：**一次消息两条工具调用** → 两个任务节点（原：dsl_run LOOP + planner 清单）
         return [
-            ("self_script_run", {"runtime": "cmd", "script": "echo batch-one",
-                                 "tool_call_display_name": "批处理一"}),
-            ("self_script_run", {"runtime": "cmd", "script": "echo batch-two",
-                                 "tool_call_display_name": "批处理二"}),
+            ("task_run", {"command": "Write-Output batch-one",
+                          "tool_call_display_name": "批处理一"}),
+            ("task_run", {"command": "Write-Output batch-two",
+                          "tool_call_display_name": "批处理二"}),
         ]
     if "call delegate-cancel" in t:
-        # 取消：慢工具任务节点（ping 20s）→ 期间 task-stop 该节点；原为 dsl_run 首步委派 +
+        # 取消：慢工具任务节点（20s）→ 期间 task-stop 该节点；原为 dsl_run 首步委派 +
         # 「取消后置步」哨兵（DSL 终止语义），后者随 DSL 退役，改断言「取消后不得再达 done」。
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.1",
-                                     "tool_call_display_name": "慢步子任务"})]
+        return [("task_run", {"command": "Start-Sleep -Seconds 19",
+                              "tool_call_display_name": "慢步子任务"})]
     if "call delegate-slow" in t:
         # 长任务占位（子会话内慢命令的工具侧等价）
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.1",
-                                     "tool_call_display_name": "测试"})]
+        return [("task_run", {"command": "Start-Sleep -Seconds 19",
+                              "tool_call_display_name": "测试"})]
     # P5 元工具进程外验收（run_meta_tools.py）：DSL 已下线 llm_run；三个 gateway 元工具由
     # core-mcp-server（core-only 契约 + 独立 executor）承接 → 这里按关键词回真实元工具调用。
     # 位置：早于下面所有宽关键词分支（关键词互不包含）。
     if "call meta-find" in t:
-        return [("self_mcp_find", {"type": "tool", "query": "script",
-                                   "tool_call_display_name": "元工具检索"})]
+        return [("mcp_find", {"type": "tool", "query": "task",
+                              "tool_call_display_name": "元工具检索"})]
     if "call meta-load" in t:
-        return [("self_mcp_load", {"name": "self_script_run", "kind": "tool",
-                                   "tool_call_display_name": "元工具加载"})]
+        return [("mcp_load", {"name": "task_run", "kind": "tool",
+                              "tool_call_display_name": "元工具加载"})]
     if "call meta-invoke" in t:
-        return [("self_mcp_invoke", {
-            "name": "self_script_run",
-            "arguments": {"runtime": "cmd", "script": "echo META-INVOKE-OK"},
+        # 〔2026-10-23〕`plugin/v1/tools.call` 属**命令类**（无 request_id → 立即 ack，完成走事件），
+        # 故 mcp_invoke 只回 `{ok, tool, result:{accepted, topic}}`；「真实执行」改以**落盘副作用**
+        # 佐证（run_meta_tools M4：目标命令写哨兵文件）。
+        ok_file = os.path.join(SCRIPTS_WS, "meta_invoke_ok.txt").replace("\\", "/")
+        return [("mcp_invoke", {
+            "name": "task_run",
+            "arguments": {"command": "Set-Content -LiteralPath '%s' -Value 'META-INVOKE-OK'"
+                                     % ok_file},
             "tool_call_display_name": "元工具调用",
         })]
-    # P4 索引/执行参数批次（run_index_gate.py）：查询动作 FIND 走 skip_dirs 端到端。
-    # 搜索根路径由提示词携带（`findskip=<绝对路径>`，无空格）+ 可选跳过目录 `findsd=<csv>`
-    # ——mock 按关键词回一次 `dsl_run`（FILE_FIND），使「skip_dirs 生效 → 命中集合
-    # 不含被跳过目录」可在 GUI 侧断言。（原 prj skip_dirs 经 tools/call 顶层参数注入，随
-    # file_find 工具收纳为 FIND 动作而失效 → 改由调用方显式携带，见 run_index_gate.run_find_turn。）
-    # 位置：必须早于下面的 `call py`/`call cancel` 等宽关键词分支（本关键词互不包含，仍前置求稳）。
-    if "call find-skip" in t:
-        m = re.search(r"findskip=([^\s\"']+)", text)
-        root = m.group(1) if m else SCRIPTS_WS
-        sd = _prompt_arg(text, "findsd")  # 可选：FIND 的 skip_dirs=<a,b>
-        line = 'FILE_FIND #"%s" grep="GATE_SKIP_SENTINEL" output=file' % root.replace("\\", "/")
-        if sd:
-            line += ' skip_dirs="%s"' % sd
-        return [("dsl_run", {"script": line + " => $RETURN",
-                             "tool_call_display_name": "跳过目录验证"})]
-    # I-80 回归（run_paths.py）：java 真机单文件源码模式——runtime=java + 打印哨兵的类。
-    # 与 `call interp-probe rt=java`（夹具：假解释器回显 execPath）互补：本桩用**真机 java**
-    # 证明 java runtime 真能跑（临时脚本扩展名必须 .java；.jsh 会被当类名 → ClassNotFoundException）。
-    # 脚本含换行 → JSON 字符串转义为 \n，executor 原样写入临时 .java 文件。
-    if "call java-real" in t:
-        script = ("public class CkJavaE2E {\n"
-                  "  public static void main(String[] args) {\n"
-                  "    System.out.println(\"CK-JAVA-OK\");\n"
-                  "  }\n"
-                  "}\n")
-        return [("self_script_run", {"runtime": "java", "script": script,
-                                     "tool_call_display_name": "java 真机探针"})]
-    # P1 路径配置 B 效果确认（run_paths.py）：一次真实 script_run，runtime 由提示词携带
-    # `rt=<runtime>`（缺省 js）。非 cmd → 打印自身可执行文件路径（`process.execPath`）——
-    # 用于断言「被启动的解释器 == 配置的 *Path 值」；cmd → 环境变量探针（供断言
-    # CHONK_CHROME / CHONKPILOT_INTERPRETERS 的子进程 env 注入）。脚本无空格（避免 argv 引号歧义）。
-    # 位置：须早于下面 `call py` / `call cancel` 等宽关键词分支（"call interp-probe" 不含它们，
-    # 仍前置求稳）。
-    if "call interp-probe" in t:
-        m = re.search(r"rt=([a-z0-9]+)", text)
-        rt = m.group(1) if m else "js"
-        if rt == "cmd":
-            script = "echo CHROME=[%CHONK_CHROME%]&echo INTERPS=[%CHONKPILOT_INTERPRETERS%]"
-        else:
-            script = "console.log('INTERP='+process.execPath)"
-        return [("self_script_run", {"runtime": rt, "script": script,
-                                     "tool_call_display_name": "解释器探针"})]
+    # 〔2026-10-23 口径变更〕原 `call java-real` / `call interp-probe`（runtime=java/js 的
+    # `self_script_run` 探针）随 `script_run` 退役删除；路径配置当前**无执行侧消费面**
+    # （task_run 为普通 shell，不读 CHONKPILOT_INTERPRETERS；CHONK_CHROME 注入对象亦已退役）→
+    # 路由移除，run_paths.py 的 B 组改为「明示不可覆盖」，见 41 D-67。
     # ── 文件历史检查点链（run_hist_git.py；2026-09-27 批次③语义）──
     # ① 真实改文件（口径变更：`filesys_run` + RPL DSL 已删除 → 改用文件域 `self_file_replace`
     #    `{purpose, targets:[{path, find, replace}]}`，`histfrom=旧` → `histval=新`，
@@ -473,22 +437,23 @@ def route_tool_calls(text):
         rargs = {"path": rel, "tool_call_display_name": "历史回滚"}
         if to:
             rargs["to"] = int(to) if re.fullmatch(r"-?\d+", to) else to
-        # cmd 精确写盘（内容 = val + 行尾；与旧 RPL「保留行尾」的盘面口径一致）。
-        # 注：本机仅 cmd 解释器可用（powershell/js 的 interpreter 未配置 → script_run 直接失败），
-        # 故 H6 的「改文件工具」用 runtime=cmd。
-        script = "echo %s> %s" % (val, p)
+        # PowerShell 精确写盘（内容 = val + 行尾；与旧 RPL「保留行尾」的盘面口径一致）。
+        # 口径变更（2026-10-23）：`script_run` 已随 core 契约退役删除 → 改用任务插件 `task_run`
+        #（外部 MCP 工具，按 gateway 「第三方/插件工具缺省 = 涉及文件变动」规则同样触发前置打点）。
+        script = "'%s' | Set-Content -LiteralPath '%s'" % (val, p)
         return [
             ("self_history_restore", rargs),
-            ("self_script_run", {"runtime": "cmd", "script": script,
-                                 "tool_call_display_name": "历史打点"}),
+            ("task_run", {"command": script, "timeoutSec": 60, "async": "never",
+                          "tool_call_display_name": "历史打点"}),
         ]
     if "call hist-write" in t:
         p = _prompt_arg(text, "histabs")
         frm = _prompt_arg(text, "histfrom")
         to = _prompt_arg(text, "histval")
-        return [("self_file_replace", {"purpose": "历史打点（真实改文件）",
-                                       "targets": [{"path": p, "find": frm, "replace": to}],
-                                       "tool_call_display_name": "历史打点"})]
+        # 口径变更（2026-10-23）：file 域工具由 file 插件提供、暴露名**无 self_ 前缀**。
+        return [("file_replace", {"purpose": "历史打点（真实改文件）",
+                                  "targets": [{"path": p, "find": frm, "replace": to}],
+                                  "tool_call_display_name": "历史打点"})]
     if "call hist-restore-nopath" in t:
         return [("self_history_restore", {"tool_call_display_name": "历史回滚"})]
     if "call hist-restore-dir" in t:
@@ -508,35 +473,35 @@ def route_tool_calls(text):
     # 回填，供 mock 回显断言。
     if "call tool" in t and "without" not in t:
         a_abs = os.path.join(SCRIPTS_WS, "a.txt").replace("\\", "/")
-        return [("self_file_read", {"purpose": "读取 a.txt（工具调用链路）",
-                                    "targets": [{"path": a_abs}]})]
+        return [("file_read", {"purpose": "读取 a.txt（工具调用链路）",
+                               "targets": [{"path": a_abs}]})]
     if "call async-cmd" in t:
-        # C13/C18：子会话命令转后台（_async=true）→ 20s 长运行，使 batch 根任务保持运行中
-        #（验证 task-stop 级联 / 任务树实时状态；script_run = 产品命令执行工具）
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.1",
-                                "_async": True, "tool_call_display_name": "测试"})]
+        # C13/C18：子会话命令转后台（_async=true）→ 长运行，使 batch 根任务保持运行中
+        #（验证 task-stop 级联 / 任务树实时状态；task_run = 产品命令执行工具）
+        return [("task_run", {"command": "Start-Sleep -Seconds 19",
+                              "_async": True, "tool_call_display_name": "测试"})]
     if "call py-async" in t:
-        # script_run 异步（async=always 转后台）；结果回填 = turn 挂起等后台完成回报
+        # task_run 异步（async=always 转后台）；结果回填 = turn 挂起等后台完成回报
         # （run_tools.py 断言 tool-pair async + tool-result 终态，不再由 LLM 主动轮询取结果）
-        return [("self_script_run", {"runtime": "cmd", "script": "echo py-slow",
-                                "_async": True, "tool_call_display_name": "测试"})]
+        return [("task_run", {"command": "Write-Output py-slow",
+                              "_async": True, "tool_call_display_name": "测试"})]
     if "call py" in t:
-        # script_run（cmd）同步（快命令立即完成；真机 python 解释器未配置，改用 cmd 验证同链路）
-        return [("self_script_run", {"runtime": "cmd", "script": "echo py-ok",
-                                "tool_call_display_name": "测试"})]
+        # task_run（PowerShell）同步：快命令立即完成 → 验证 tool-result 回填链路
+        return [("task_run", {"command": "Write-Output py-ok",
+                              "tool_call_display_name": "测试"})]
     if "call cancel" in t:
-        # 长命令（script_run 同步执行，20s）：等待期间用户 cancel（C11/五.8）
-        return [("self_script_run", {"runtime": "cmd", "script": "ping -n 20 127.0.0.1",
-                                "tool_call_display_name": "测试"})]
+        # 长命令（task_run 同步执行）：等待期间用户 cancel（C11/五.8）
+        return [("task_run", {"command": "Start-Sleep -Seconds 19",
+                              "tool_call_display_name": "测试"})]
     if "call ask-multi" in t:
         # user_ask 多选 + 推荐（附录 A 扩展）：multi=true + recommended 标注推荐项
-        return [("self_ask_user", {"question": "测试多选：选择要执行的操作？",
+        return [("ask_user", {"question": "测试多选：选择要执行的操作？",
                               "options": ["构建", "测试", "部署"],
                               "multi": True, "recommended": ["测试"], "tool_call_display_name": "测试"})]
     if "call ask" in t:
         # user_ask 工具（testplan 六章 C14 双路由）：弹窗回答回填后不再含关键词 → 普通回复。
         # options=[] 让前端判定为自由文本（custom=true），弹窗显示 custom 输入框。
-        return [("self_ask_user", {"question": "测试问题：是否继续？", "options": []})]
+        return [("ask_user", {"question": "测试问题：是否继续？", "options": []})]
     if "call resume" in t:
         # 断链恢复（testplan 六章 C15）：中断请求由 executor 的 resumePartial 补发"继续"
         return None
@@ -689,6 +654,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_stream(tool_calls_chunks(calls))
             else:
                 self._send_json(tool_calls_message(calls))
+            return
+
+        # 五.9 队列写回（2026-10-23）：慢速流式。流式期 `insertable()=false` → 忙碌入队项分类为
+        # `next_turn`（真·待发队列）；取消后前端把仍 pending 的项写回输入区。每段 1.2s × 8 ≈ 10s，
+        # 给测试留出入队 + 取消窗口。
+        if "call slow-stream" in text:
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                for i in range(1, 9):
+                    chunk = {"choices": [{"delta": {"role": "assistant", "content": "SLOW-%d " % i},
+                                          "finish_reason": None}]}
+                    self.wfile.write(("data: %s\n\n" % json.dumps(chunk)).encode("utf-8"))
+                    self.wfile.flush()
+                    time.sleep(1.2)
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            else:
+                self._send_json({"choices": [{"message": {"role": "assistant",
+                                                          "content": "SLOW-DONE"},
+                                              "finish_reason": "stop"}]})
             return
 
         # 分页/截断数据（FP L125/127/128/149）：返回 ~80KB 文本——单条超后端 has_more

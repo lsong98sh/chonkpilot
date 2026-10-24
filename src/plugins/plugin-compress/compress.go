@@ -139,6 +139,8 @@ type compressEvent struct {
 	// 摘要目标基数）。未配置 / 为 0 → 兜底不启用。
 	MaxContextToken int `json:"max_context_token"`
 	MaxOutputToken  int `json:"max_output_token"`
+	// DialogID 一树一库（P3-4b，61 §0.6）：事件同级回带；空 = 旧布局（不写键）。
+	DialogID string `json:"dialog_id"`
 }
 
 // sessionKey 会话键（实例 + 会话；不同实例的同名会话互不干扰）。
@@ -396,7 +398,7 @@ func (c *Compressor) process(ev compressEvent) {
 	// 语义同原 prjUsrDB）。
 	scope := facade.Scope{WorkDir: ev.WorkDir, DataDir: ev.DataDir}
 	resp, err := c.api.SnapshotGet(facade.SnapshotGetRequest{
-		InstanceID: ev.InstanceID, SessionID: ev.Session, Scope: scope,
+		InstanceID: ev.InstanceID, SessionID: ev.Session, DialogID: ev.DialogID, Scope: scope,
 	})
 	if err != nil {
 		logf("compress: 快照读取失败（instance=%s session=%s）：%v", ev.InstanceID, ev.Session, err)
@@ -438,7 +440,7 @@ func (c *Compressor) process(ev compressEvent) {
 	}
 	newSnap.SessionID = ev.Session // 归属 = 触发事件的会话（同改前 SnapshotToFacade(ev.Session, …) 口径）
 	if _, err := c.api.SnapshotSet(facade.SnapshotSetRequest{
-		InstanceID: ev.InstanceID, Snapshot: newSnap, Scope: scope,
+		InstanceID: ev.InstanceID, DialogID: ev.DialogID, Snapshot: newSnap, Scope: scope,
 	}); err != nil {
 		logf("compress: set snapshot failed for %s: %v", ev.Session, err)
 		c.notify(ev.InstanceID, ev.Session, ev.SnapshotTurn, "save", err.Error())

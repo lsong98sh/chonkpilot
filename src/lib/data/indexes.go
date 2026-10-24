@@ -85,6 +85,11 @@ var (
 			Build: keyBuilder([]string{"session_id"}, "created_at")},
 		{Bucket: "messages_by_turn", Fields: []string{"turn_id"}, Order: "created_at",
 			Build: keyBuilder([]string{"turn_id"}, "created_at")},
+		// 幂等键（SESSION-COMP-1 P0）：`(session_id, client_msg_id)` 等值查询；无排序段。
+		// 声明在 by_session 之后 —— 仅 session_id 的查询前缀等长时取先声明者（行为不变）；
+		// 带 client_msg_id 的查询前缀更长 → 命中本索引。空 client_msg_id 的行仍唯一（键尾 = 主键）。
+		{Bucket: "messages_by_client_msg", Fields: []string{"session_id", "client_msg_id"},
+			Build: keyBuilder([]string{"session_id", "client_msg_id"}, "")},
 	}
 	indexesTurns = []Index{
 		{Bucket: "turns_by_session", Fields: []string{"session_id"}, Order: "created_at",

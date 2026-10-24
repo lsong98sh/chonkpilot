@@ -39,6 +39,8 @@ const props = defineProps({
   name: { type: String, required: true },
   /** 条目列表（含 zone 字段） */
   items: { type: Array, required: true },
+  /** 运行时附加条目（插件状态栏；不写入布局文档） */
+  extraItems: { type: Array, default: () => [] },
   emptyText: { type: String, default: '' },
   /** 整条栏背景色（'' = 跟随主题） */
   background: { type: String, default: '' },
@@ -80,7 +82,9 @@ const leftWidth = ref(saved?.left ?? (props.defaultLeftWidth > 0 ? props.default
 const rightWidth = ref(saved?.right ?? (props.defaultRightWidth > 0 ? props.defaultRightWidth : props.defaultSideWidth))
 
 function itemsOf(zone) {
-  return props.items.filter((i) => i.visible !== false && (i.zone ?? 'left') === zone)
+  return [...props.items, ...props.extraItems].filter(
+    (i) => i.visible !== false && (i.zone ?? 'left') === zone,
+  )
 }
 
 const panes = computed(() => [

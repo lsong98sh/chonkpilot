@@ -147,6 +147,8 @@ export function chonkTopToolbar() {
       menuLeaf('tb_set_paths', '路径配置', 'tool', pmq('preview-tab-open', { kind: 'settings-paths' })),
       menuLeaf('tb_set_params', '参数配置', 'clock', pmq('preview-tab-open', { kind: 'settings-params' })),
       menuLeaf('tb_set_project', '项目配置', 'setting', pmq('preview-tab-open', { kind: 'settings-project' })),
+      // 插件维护视图（每个插件一张卡片：启动命令 / 说明 / 启用开关 / 配置 + 插件注册的动作按钮）
+      menuLeaf('tb_set_plugins', '插件维护', 'tool', pmq('preview-tab-open', { kind: 'plugin-manager' })),
     ])
 
   const theme = barMenu('tb_theme', 'right', '主题', 'magic-stick', [
@@ -168,6 +170,7 @@ export function chonkTopToolbar() {
     barView('tb_search', 'center', 'search', { grow: true }),
     // 靠右区（条目顺序 = 从右到左的视觉顺序的反向：机制层靠右区右对齐）
     settings,
+    barButton('tb_plugins', 'right', '插件', 'tool', pmq('preview-tab-open', { kind: 'plugin-manager' })),
     barButton('tb_scenario', 'right', '场景', 'collection', pmq('scenario-open', {})),
     theme,
     lang,

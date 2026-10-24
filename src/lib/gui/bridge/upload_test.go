@@ -58,7 +58,7 @@ func assertUploadedTo(t *testing.T, out []byte, content []byte, wantDir string) 
 	}
 }
 
-// TestUploadLandsInPrjUsrRoot：注入 prjusr 数据根（B 方案：~/.chonkpilot/data/<prj-id>）后，
+// TestUploadLandsInPrjUsrRoot：注入 prjusr 数据根（`<workDir>/.chonkpilot/users/<OS 用户名>`）后，
 // 缺省 dir → 落 `<prjusr 根>/tmp/uploads`（不落项目目录）。
 func TestUploadLandsInPrjUsrRoot(t *testing.T) {
 	workDir := t.TempDir()

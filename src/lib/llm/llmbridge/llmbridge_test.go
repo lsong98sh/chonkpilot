@@ -9,8 +9,10 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,10 +46,10 @@ func newUpstream(t *testing.T, rec *recorder) *httptest.Server {
 	return srv
 }
 
-// newBridge 起一个桥入口（httptest 包装 Handler；不占端口）。
+// newBridge 起一个桥入口（httptest 包装 Handler；不经 socket）。
 func newBridge(t *testing.T, resolve Resolver) *httptest.Server {
 	t.Helper()
-	s := New(Options{Addr: "127.0.0.1:0", Resolve: resolve})
+	s := New(Options{Resolve: resolve})
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	return srv
@@ -243,45 +245,59 @@ func TestBridgeMissingProviderSegment(t *testing.T) {
 	}
 }
 
-// TestBridgeNonLoopbackRefused：非 loopback 绑定 → **拒启**（fail-closed）。
-func TestBridgeNonLoopbackRefused(t *testing.T) {
-	for _, addr := range []string{"0.0.0.0:5669", ":5669", "192.168.1.9:5669"} {
-		s := New(Options{Addr: addr, Resolve: func(string) (Target, bool) { return Target{}, false }})
-		if err := s.Start(); err == nil {
-			_ = s.Shutdown(context.Background())
-			t.Fatalf("addr=%s 非 loopback 应拒启，却启动成功", addr)
-		}
+// TestBridgeDefaultPath：空 Path → DefaultPath()（文件名恒为 llm.sock）；显式路径原样保留。
+func TestBridgeDefaultPath(t *testing.T) {
+	if got := New(Options{}).Path(); filepath.Base(got) != DefaultSocketName {
+		t.Fatalf("默认 Path=%q 应以 %q 结尾", got, DefaultSocketName)
+	}
+	p := filepath.Join(t.TempDir(), "custom.sock")
+	if got := New(Options{Path: p}).Path(); got != p {
+		t.Fatalf("Path()=%q want %q", got, p)
 	}
 }
 
-// TestBridgeBarePortNormalized：裸端口 → 127.0.0.1:<port>（与 httpapi 同规则）。
-func TestBridgeBarePortNormalized(t *testing.T) {
-	if got := New(Options{Addr: "5669"}).Addr(); got != "127.0.0.1:5669" {
-		t.Fatalf("Addr()=%q want 127.0.0.1:5669", got)
-	}
-	if got := New(Options{Addr: ""}).Addr(); got != DefaultAddr {
-		t.Fatalf("Addr()=%q want %q", got, DefaultAddr)
-	}
-}
-
-// TestBridgeLoopbackStartOK：loopback 绑定正常启动并可服务（含二道防线校验）。
-func TestBridgeLoopbackStartOK(t *testing.T) {
+// TestBridgeUDSStartOK：UDS 启动后可服务（socket 文件落到指定路径）。
+func TestBridgeUDSStartOK(t *testing.T) {
 	rec := &recorder{}
 	up := newUpstream(t, rec)
+	sock := filepath.Join(t.TempDir(), "llm.sock")
 	s := New(Options{
-		Addr:    "127.0.0.1:0",
+		Path:    sock,
 		Resolve: func(string) (Target, bool) { return Target{BaseURL: up.URL, Protocol: "responses"}, true },
 	})
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = s.Shutdown(context.Background()) }()
-	resp, err := http.Post("http://"+s.Addr()+"/llm/any/responses", "application/json", strings.NewReader(`{}`))
+
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sock)
+		},
+	}}
+	resp, err := client.Post("http://unix/llm/any/responses", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || rec.path != "/responses" {
 		t.Fatalf("status=%d path=%q want 200//responses", resp.StatusCode, rec.path)
+	}
+}
+
+// TestBridgeUDSDuplicateRefused：同路径已有活实例 → 第二个拒启（按路径独立的单例判定）。
+func TestBridgeUDSDuplicateRefused(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "llm.sock")
+	first := New(Options{Path: sock, Resolve: func(string) (Target, bool) { return Target{}, false }})
+	if err := first.Start(); err != nil {
+		t.Fatalf("Start(first): %v", err)
+	}
+	defer func() { _ = first.Shutdown(context.Background()) }()
+
+	second := New(Options{Path: sock, Resolve: func(string) (Target, bool) { return Target{}, false }})
+	if err := second.Start(); err == nil {
+		_ = second.Shutdown(context.Background())
+		t.Fatal("同路径已有活实例，第二个应拒启")
 	}
 }

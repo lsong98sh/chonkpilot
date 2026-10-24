@@ -96,18 +96,23 @@ func (s *Server) runSubChatOpen(tc *turnCtx, args map[string]any, purpose string
 	// + purpose（purpose 仅非空才写键；单聊方案 §3.2 / §5.4）。
 	if _, err := s.cfg.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: instanceID, Scope: scope,
+		DialogID:  s.dialogOf(instanceID, parentSession), // 子会话沿用父会话的对话（同一棵树）
 		SessionID: sessionID, ParentSessionID: parentSession,
 		Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleChatting,
 		Agent: agent, ScenarioID: scenarioID, LLM: llmRef, Purpose: purpose,
 	}); err != nil {
 		return subchatToolErr("建子聊天会话失败: " + err.Error()), true
 	}
+	// 一树一库：回填新子会话 → 对话映射（后续 turn / message 写入按其补 dialog_id）。
+	s.rememberDialog(instanceID, sessionID, s.dialogOf(instanceID, parentSession))
 	// 会话标题 = 子聊天名字（= purpose）：窗口标题栏 / 会话列表子节点据此显示（§3.9.2）。
 	// 失败仅留痕——标题非关键路径（回退 = 会话行初值 session_id）。
+	// 一树一库：新建子会话尚未进入本进程备忘 → 沿用**父会话**的 dialog_id。
 	title := sessionID
 	if purpose != "" {
 		if _, err := s.cfg.SessionTitle(facade.SessionTitleRequest{
 			InstanceID: instanceID, SessionID: sessionID, Title: purpose, Scope: scope,
+			DialogID: s.dialogOf(instanceID, parentSession),
 		}); err != nil {
 			logf("[chonkpilot-server] subchat_open: 设子聊天标题失败（session=%s）: %v\n", sessionID, err)
 		} else {
@@ -147,6 +152,7 @@ func (s *Server) runSubChatFinish(tc *turnCtx) (string, bool) {
 	}
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: tc.req.InstanceID, SessionID: sessionID,
+		DialogID:  s.dialogOf(tc.req.InstanceID, sessionID),
 		Lifecycle: facade.SessionLifecycleReady, Scope: s.cfgScope(tc.req.InstanceID),
 	}); err != nil {
 		return subchatToolErr("置 ready 失败: " + err.Error()), true
@@ -216,6 +222,7 @@ func (s *Server) emitSubchatState(instanceID, sessionID string) {
 	}
 	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{
 		InstanceID: instanceID, SessionID: sessionID, Scope: s.cfgScope(instanceID),
+		DialogID: s.dialogOf(instanceID, sessionID), // 一树一库：会话行在对话库内
 	})
 	if err != nil {
 		logf("[chonkpilot-server] emitSubchatState: SessionGet(%s): %v\n", sessionID, err)
@@ -255,6 +262,7 @@ func (s *Server) onSubchatList(_ context.Context, _ string, v *mq.Value) error {
 	if parentID != "" {
 		res, err := s.cfg.SessionSubChats(facade.SessionSubChatsRequest{
 			InstanceID: instanceID, ParentSessionID: parentID, Scope: scope,
+			DialogID: s.dialogOf(instanceID, parentID), // 子聊天与其父同库
 		})
 		if err != nil {
 			v.Result = map[string]any{"error": err.Error()}
@@ -283,7 +291,9 @@ func (s *Server) onSubchatList(_ context.Context, _ string, v *mq.Value) error {
 			return t
 		}
 		t := ""
-		if r, err := s.cfg.SessionGet(facade.SessionGetRequest{InstanceID: instanceID, SessionID: pid, Scope: scope}); err == nil && r.Found {
+		if r, err := s.cfg.SessionGet(facade.SessionGetRequest{
+			InstanceID: instanceID, SessionID: pid, Scope: scope, DialogID: s.dialogOf(instanceID, pid),
+		}); err == nil && r.Found {
 			t = r.Session.Title
 		}
 		parentTitles[pid] = t
@@ -327,6 +337,7 @@ func (s *Server) onSubchatFinish(_ context.Context, _ string, v *mq.Value) error
 	}
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: instanceID, SessionID: sessionID,
+		DialogID:  s.dialogOf(instanceID, sessionID),
 		Lifecycle: facade.SessionLifecycleFinished, Scope: s.cfgScope(instanceID),
 	}); err != nil {
 		v.Result = map[string]any{"error": err.Error()}
@@ -354,6 +365,7 @@ func (s *Server) reopenSubChatOnNewTurn(instanceID, sessionID string, sc turnSce
 	}
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: instanceID, SessionID: sessionID,
+		DialogID:  s.dialogOf(instanceID, sessionID),
 		Lifecycle: facade.SessionLifecycleChatting, Scope: s.cfgScope(instanceID),
 	}); err != nil {
 		logf("[chonkpilot-server] reopenSubChatOnNewTurn(%s): %v\n", sessionID, err)

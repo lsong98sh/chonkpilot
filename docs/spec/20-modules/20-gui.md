@@ -311,7 +311,7 @@
 
 > 暗色浮层配色修复的防回归约定。**主题载体 = `documentElement` 的 `data-theme` 属性，非 class** —— 页面不存在 `.dark` 之类的 class，故主题相关选择器**必须**写属性选择器（`[data-theme="dark"] …` / `[data-theme="nord"] …`）；写成 `.dark` / `:root.dark` / `xxx.dark` 属**失效选择器**（编译通过但永不命中）。
 
-- **主题集**：`light`（默认，`:root`）/ `dark` / `nord`（`src/frontend/src/assets/styles/variables.css`）。**无 `system`**（跟随系统未实现）；切换见 `Toolbar.vue setTheme()`。
+- **主题集**：`light`（默认，`:root`）/ `dark` / `nord`。**〔订正（2026-10-23；THEME-1）〕主题值已迁出编译资产** —— 唯一来源 = `src/initdata/themes/themes.css`（运行时优先读 `<exeDir>/themes/themes.css`、缺失回落 `go:embed` 副本，见 [themefs](../../../src/lib/gui/internal/themefs/themefs.go)）；`variables.css` **只保留几何 / 字体 / 尺寸 token**，不再有颜色声明。宿主导入一行 `<link rel="stylesheet" href="/themes.css">`（**零 `<style>` 注入**）。**无 `system`**（跟随系统未实现）；**切换唯一写点 = `src/frontend/src/composables/useTheme.js` 的 `applyTheme(id, {persist})`**（用户点选 `persist:true`；收广播 / 启动加载 `persist:false`，不写库以防自激）。首帧由 `index.html` head 的经典脚本 `public/shared/ck-theme.js` 读 `localStorage['chonkpilot-theme']` 立即落地（**禁止** `type=module` / `defer` / `async`）。
 - **浮层（dialog / tooltip / popup / dropdown / 右键菜单）必须用主题 token，禁止硬编码浅色**：不得写死 `#fff` / `#f5f7fa` 之类浅色底色，或只在 `:root` 定义、暗色主题不覆写的自造 token。浮层底色一律引 `var(--panel-bg)` / `var(--bg-secondary)` / `var(--bg-primary)`，文字引 `var(--text-primary)` / `var(--text-secondary)`，描边引 `var(--border)`，hover 引 `var(--bg-hover)`。
 - **浮层/强调/页签 token（`variables.css`，dark/nord 覆写）**：
   - `--tooltip-bg` / `--tooltip-color`：tooltip 底色/文字（light = 半透明黑 + 白字；dark/nord = `var(--bg-surface)` + `var(--text-primary)`），`Tooltip.vue` 的箭头用 `border-*-color: var(--tooltip-bg)` 同步。
@@ -324,7 +324,8 @@
 - **禁止引用未定义 token `--bg-elevated`**：全仓无定义 → 声明无效、回落透明/浅色，应为 `--bg-secondary`（`FileTree.vue` / `MessageList.vue` 等已归一）。新增代码不得再引该名。
 - **色值混用 `color-mix`**：半透明 hover/淡色底统一用 `color-mix(in srgb, var(--token) N%, transparent)`（如 `TabBar.vue .tb-more-close:hover` 用 `var(--text-primary) 8%`），以便随主题 token 自适应。
 - **DialogShell 覆写范式**（`components/dialog/DialogShell.vue`）：`.dialog-overlay` 与 `.dialog-shell` 是**兄弟节点**，需各自命中；暗色覆写以 `[data-theme="dark"] .dialog-shell, [data-theme="dark"] .dialog-overlay, [data-theme="nord"] …` 成组声明，内部只重绑 `--dialog-*` 变量到主题 token。
-- **token 定义口径（唯一权威）**：只有 `src/frontend/src/assets/styles/variables.css` 的 `:root`（= light 默认，兼公共 token）/ `[data-theme="dark"]` / `[data-theme="nord"]` 三块中**声明过**的 `--x` 才算"已定义 token"；其他位置自造名一律不算（组件级可选覆盖钩子见下方专条）。
+- **token 定义口径（唯一权威）**：**颜色 token** 只有 `src/initdata/themes/themes.css` 的 `:root`（= light 默认）/ `[data-theme="dark"]` / `[data-theme="nord"]` 三块中**声明过**的 `--x` 才算"已定义"（运行时 = `<exeDir>/themes/themes.css`，embed 兜底）；**几何 / 字体 token** 仍在 `src/frontend/src/assets/styles/variables.css`。`public/shared/ck-theme.css` 只做 **`--ck-*` 语义映射**（`--ck-bg: var(--bg-primary, 兜底)`），不写调色板——**其 `var()` 兜底是刻意保留的例外**（`/themes.css` 失效时不白屏，见下条）。其他位置自造名一律不算（组件级可选覆盖钩子见下方专条）。
+- **插件 webui 强制口径（2026-10-23；THEME-1）**：插件页面（`capability/plugins/*/webui/*.html`）必须 `<link href="/themes.css">` + `<link href="/shared/ck-theme.css">` + `<script src="/shared/ck-theme.js">`，**只用 `var(--ck-*)`**，禁止硬编码十六进制色、禁止自带 `prefers-color-scheme` 分支（仅 `ck-theme.js` 在宿主未连上时做首次兜底）。宿主经 `PluginPageHost` 在 iframe `load` 后推 `{ckPlugin:1,type:'theme',theme:{id,scheme,tokens}}`，插件不持有调色板、不做主题选择。
 - **禁止引用未定义 token、禁止 `var()` 兜底硬编码**：`var(--x, <字面值>)` 若 `--x` 全仓无定义 → 恒落字面值、主题失效，属误用（同 `--bg-elevated`）。**token 归一对照**（94 个前端文件做"使用 − 定义"差集，复核 0 残留）：
 
   | 原误用 token | 原兜底值 | 归一为 |
@@ -635,11 +636,11 @@
 | 面 | 组件/选择器 | 职责 |
 |----|------------|------|
 | **唯一错误面** | `ChatPanel.vue` → `.llm-fail-hint.llm-error-hint` | 终态错误（`llm-complete{status:error}`，空回复除外）：人话摘要（`utils/errorMessage.js#classifyError`）+ **「已重试 n/N 次」**（`chat.retry_count_label`，取真实 `retry_attempt`/`retry_count`）+ **「查看错误信息」**（`.llm-fail-detail-toggle` 展开 `.llm-fail-raw` 原始错误全文）+（需要时）「去配置 LLM」CTA |
-| **重试可见** | `ChatPanel.vue` → `.llm-fail-hint.llm-retry-hint` | 重试中间态（`session-retry` → 前端 `llm-retry`）：`chat.llm_retry`「正在重试 {attempt}/{max}（等待 {wait} 秒）」，等待秒数 = `retry_wait_ms` 四舍五入；**不落错误消息、不进聊天流**；成功/终态即消失 |
+| **重试可见** | `ChatPanel.vue` → `.llm-fail-hint.llm-retry-hint` | 重试中间态（`session-retry` → 前端 `llm-retry`）：`chat.llm_retry`「正在重试 {attempt}/{max}（等待 {wait} 秒）」，等待秒数 = `retry_wait_ms` 四舍五入；**2026-10-23 起前端本地逐秒倒计时**（1s 定时器从该值递减到 0；下一次 `session-retry` 重置、`llm-complete`/`session-interrupted`/新发送即停表收起），契约不变（不新增消息/payload）；**不落错误消息、不进聊天流**；成功/终态即消失 |
 | **聊天流** | `MessageItem.vue` | **不再渲染轮次错误气泡**（`type:'error'` 分支为空模板；头像/时间戳同 suppressed）。错误消息**仍保留在数据流**（复制/诊断/回放可用），仅不渲染。工具级 `.pair-error-hint`（工具结果失败）**保留**，不属本次目标 |
 
 **判据（与 61 §4.3 一致）**：`retryable=true && retry_wait_ms>0` = 中间态；终态 = `retryable=false` 或次数用尽（`retry_wait_ms=0`），仅发一次。
-**前端行为变更**：`MessageList.onLlmComplete` 的自动续写**仅**用于"回复未写完"（length/断链/中断）；`wasError`（含 `retryable=true`）**不再**静默续写 —— 否则重试仍不可见；终态错误给手动「继续」。
+**前端行为变更（RETRY-2，2026-10-20 再收口）**：`MessageList.onLlmComplete` **不再有任何静默自动续写** —— 续写统一由后端按宽限期承担（`autoContinueDelaySec` / `continueText`，见 [64 §8](../60-reference/64-配置项一览.md) · [21 §4](../20-modules/21-llm-server.md)）；前端仅在错误/截断终态评估并展示手动「继续」入口（`.continue-btn`），`wasError`（含 `retryable=true`）同样不续写 —— 否则重试仍不可见。`incomplete`（length 截断）终态下前端**不**显示「继续」，等后端宽限期续写。
 **约束**：提示条按会话隔离（`session-changed` / 新发送即清空）；禁 `watch`，重试/终态均经既有 `mq.on` + 本地 `ref` 驱动。
 
 ### 12.22 输入约束（INPUTVAL-1，🆕 2026-10-21）

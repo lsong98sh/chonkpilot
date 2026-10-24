@@ -40,7 +40,7 @@ func McpUserRoot(usrPath string) string { return McpsRoot(UserRoot(usrPath)) }
 func McpProjectRoot(workDir string) string { return McpsRoot(ProjectRoot(workDir)) }
 
 // McpPrjUsrRoot 项目私有级 MCP 配置根 = <prjusr 数据根>/capability/mcps。
-func McpPrjUsrRoot(projectID string) string { return McpsRoot(PrjUsrRoot(projectID)) }
+func McpPrjUsrRoot(workDir, dataDir string) string { return McpsRoot(PrjUsrRoot(workDir, dataDir)) }
 
 // McpRoots 返回四级 MCP 配置根（系统 → 用户 → 项目 → 项目私有；与 scenario 的 ScenarioRoots 同构）。
 // prjUsrCapRoot 为**项目私有 capability 根**（空串则不含该级，例如实例未登记）；workDir 空则不含项目级。

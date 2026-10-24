@@ -56,7 +56,7 @@ type Bridge struct {
 	logDir string
 	// prjUsrRoot 是 prjusr 数据根目录（个人运行态：附件/截图等非库文件的落盘根）。
 	// main 在启动期按 12-数据层 §3 解析后注入（`SetPrjUsrRoot`）：data_dir 空 →
-	// ~/.chonkpilot/data/<prj-id>（B 方案，[24 §3.2] MW-8）；显式 data_dir → 与 prj 同根。
+	// `<workDir>/.chonkpilot/users/<OS 用户名>`（DATAROOT-1，[24 §3.2] MW-8）；显式 data_dir → 与 prj 同根。
 	// 空 = 未注入 → 回落 <workDir>/.chonkpilot（兼容旧行为，见 uploadRoot）。
 	prjUsrRoot string
 	// openDevTools 由 main 注入（宿主程序化打开 DevTools；gui.devtools.open 用）。
@@ -523,6 +523,13 @@ func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error
 	// （dataCall 内部分派；前端消息面一字不变）。
 	if strings.HasPrefix(typ, "data-") {
 		return b.dataCall(typ, []byte(payloadJSON))
+	}
+	// plugin-* 插件管理面（61-消息一览 §7.2）：**直通总线**（订阅方 = pluginmgr）。
+	// 前端的 plugin-list / plugin-set-enabled / plugin-config-get|set / plugin-command
+	// 都是单字 type（无点号），若不在此显式放行会落到下方 frontMethodSubjects 白名单 →
+	// 「未知名 = 静默丢弃」→ 插件维护视图恒为空（2026-10-23 修复）。
+	if strings.HasPrefix(typ, "plugin-") {
+		return b.publishV(typ, b.injectAuth(b.injectInstance(payloadJSON)))
 	}
 	// 点分相对主题（filesys.* 等）→ 直通总线服务（处理方写回 Value.Result/Errors）。
 	if strings.Contains(typ, ".") {

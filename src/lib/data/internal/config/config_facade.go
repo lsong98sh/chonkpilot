@@ -46,7 +46,7 @@ func (s *Service) openKVDomain(domain, instanceID string, scope facade.Scope) (p
 	if domain != facade.DomainPrjConfig {
 		return prj, nil, relPrj, nil // 其余 kv 域不使用 prjusr
 	}
-	pudb, relPu, err := kernel.OpenPrjUsrLayer(dataDir, prj)
+	pudb, relPu, err := kernel.OpenPrjUsrLayer(workDir, dataDir)
 	if err != nil {
 		return prj, nil, relPrj, nil // prjusr 不可用 → 纯 prj 行为
 	}
@@ -355,6 +355,17 @@ func (s *Service) UserConfigDelete(req facade.UserConfigDeleteRequest) (facade.U
 			changed = append(changed, key)
 			continue
 		}
+		// 插件自身配置（`plugins.<插件id>.<字段>`）：删该键 = 插件「恢复默认」。
+		// 不广播 data-user-config-changed（插件配置无前端消费方，避免插件键随载荷扩散）。
+		if IsPluginConfigKey(key) {
+			if err := ValidatePluginConfigKey(key); err != nil {
+				return facade.UserConfigDeleteResponse{}, err
+			}
+			if err := data.DeleteConfig(db, key); err != nil {
+				return facade.UserConfigDeleteResponse{}, err
+			}
+			continue
+		}
 		if table, isCollection := collectionKeys[key]; isCollection {
 			if err := clearCollection(db, table); err != nil {
 				return facade.UserConfigDeleteResponse{}, err
@@ -383,6 +394,8 @@ func (s *Service) UserConfigDelete(req facade.UserConfigDeleteRequest) (facade.U
 
 // savedUserConfigKeys 取 save 载荷里**实际落库**的 usr 配置键（集合键 / 标量键 / 自由键；
 // 其余键被 saveUserConfig 静默丢弃 → 不列入）。顺序稳定（可断言）。
+// 注：插件自身配置（`plugins.*`）会落库但**不列入**——插件配置无前端消费方，且值可能含密钥，
+// 不随 data-user-config-changed 扩散。
 func savedUserConfigKeys(entries map[string]any) []string {
 	keys := make([]string, 0, len(entries))
 	for k := range entries {

@@ -170,8 +170,9 @@ func (s *Server) onAgentWizardGenerate(_ context.Context, _ string, v *mq.Value)
 		memorySaved = append(memorySaved, mem.Category)
 	}
 
-	// ③ 辅助选项：写 prj 配置（memory.enabled / memory.category.* / enable-codegraph / enable-vfts
-	// / history.enabled）。失败记 errors、继续（不阻断已成功的场景/记忆）；写成功由门面广播
+	// ③ 辅助选项：写 prj 配置（memory.enabled / memory.category.* /
+	// plugins.codebase.codegraph.enabled / plugins.codebase.vfts.enabled / history.enabled）。
+	// 失败记 errors、继续（不阻断已成功的场景/记忆）；写成功由门面广播
 	// data-prj-config-refresh（data-<domain>-refresh）热生效。
 	configSaved := []string{}
 	if len(req.Config) > 0 {

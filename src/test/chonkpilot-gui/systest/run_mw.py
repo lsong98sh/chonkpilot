@@ -369,9 +369,11 @@ def case_t02():
 
 
 def case_t03():
-    """MW-T03 主窗关闭 = 退出进程（半自动：观测 = 进程退出；广播侧随进程退出不可观测）。
+    """MW-T03 主窗关闭 = 终止该项目窗口；**进程按设计常驻**（PRODSIM-1：退出只走托盘/`/quit`）。
 
-    **必须是最后一个用例**（主窗关闭后测试通道随之关闭）。
+    口径变更（2026-10-23，[42 PRODSIM-1](../../../docs/spec/40-roadmap/42-决策记录.md)）：
+    关主窗不再退出进程（日志窗口 + 托盘常驻）；测试通道随主窗关闭失效 → 仅断言进程仍在。
+    **必须是最后一个用例**。
     """
     close_all_chats()
     s = sid("t03")
@@ -379,9 +381,9 @@ def case_t03():
     w = open_and_wait(s)
     cl(w).mq_on_capture(["gui.window.closed"])
     pub("", "gui.window.status", {"command": "close"}, 10000)  # 关主窗
-    poll(lambda: _g.proc.poll(), lambda v: v is not None, timeout=30.0, interval=0.5)
-    if _g.proc.poll() is None:
-        raise TestError("主窗关闭后进程未退出（pid=%s）" % _g.proc.pid)
+    time.sleep(3)
+    if _g.proc.poll() is not None:
+        raise TestError("主窗关闭后进程不应退出（PRODSIM-1：常驻托盘，退出只走托盘菜单 / `/quit`）")
 
 
 def case_t04():
@@ -1085,7 +1087,7 @@ CASES = [
     ("MW-T27 主题/语言跨窗口即时同步", case_t27),
     ("MW-T28「新建对话窗口」入口仅主窗口", case_t28),
     ("MW-T29 会话标题变更跨窗口广播（对话窗标题跟随）", case_t29),
-    ("MW-T03 主窗关闭 = 退出进程（必须最后跑）", case_t03),
+    ("MW-T03 主窗关闭 = 终止项目窗口、进程常驻托盘（必须最后跑）", case_t03),
 ]
 
 

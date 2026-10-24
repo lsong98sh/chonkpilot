@@ -14,10 +14,13 @@ const (
 	CodePluginUnauthorized = "plugin_unauthorized"
 	CodePluginDisabled     = "plugin_disabled"
 	CodeInstanceForbidden  = "instance_id_forbidden"
+	// CodeConfigKeyForbidden 是插件配置键越界（不在调用方 `plugins.<id>.` 前缀内）。
+	CodeConfigKeyForbidden = "config_key_forbidden"
 	CodeSubscriptionDenied = "subscription_denied"
 	CodeFilterDropped      = "filter_dropped"
 	CodeFilterFailed       = "filter_failed"
 	CodeFilterTimeout      = "filter_timeout"
+	CodePermissionDenied   = "permission_denied"
 	CodeInternal           = "internal"
 )
 

@@ -7,9 +7,10 @@
    常驻一个底座实例。
 2. **复用优先**：`acquire_*` 若发现目标端口已有就绪实例 → 直接复用（`owned=False`），
    **绝不回收**；端口空闲才自起（`owned=True`）。
-3. **结束即回收**：本模块自起的资源一律登记在册，三条路径都会 `taskkill /F /T` 杀整棵
-   进程树（含 WebView2 / 引擎子进程）：① 套件显式 `stop()`（`finally`）；② 进程正常退出
-   （`atexit`）；③ Ctrl+C / 关闭（SIGINT / SIGTERM / SIGBREAK 处理器）。
+3. **结束即回收**：本模块自起的资源一律登记在册，三条路径都会回收：① 套件显式 `stop()`
+   （`finally`）；② 进程正常退出（`atexit`）；③ Ctrl+C / 关闭（SIGINT / SIGTERM / SIGBREAK
+   处理器）。**GUI 实例优先优雅退出**（`POST /quit` → 宿主走托盘「退出」同路径），超时才
+   `taskkill /F /T` 兜底 —— 直接杀进程不会摘托盘图标（系统托盘残影堆积）。
 4. **隔离**：`free_port()` 取空闲端口；`tmp_dir()` / `tmp_home()` 给独立数据根与独立
    `USERPROFILE`（usr 主库不读不写机器 `~/.chonkpilot`）。
 5. **配置快照-还原**：写真实配置（usr 主库 / work-dir prj 库 / `gui.ui.save`）的用例一律
@@ -145,7 +146,7 @@ def ping_ready(port, timeout=3):
 def stable_ready(port, probes=3, gap=0.6, timeout=3):
     """连续 probes 次 `/ping ready`（间隔 gap）才算**稳定**就绪实例 → 排除「正在退出/被回收中」的实例。
 
-    起因（2026-09-16 实测复现）：上一套件/上一个脚本 `stop()` 发的是 `taskkill /F /T`，**端口释放
+    起因（2026-09-16 实测复现）：上一套件/上一个脚本 `stop()` 若以 `taskkill /F /T` 收尾，**端口释放
     与进程真正消失是异步的** → 紧随其后的套件 `ping_ready()` 仍可能成功（端口在监听、HTTP 还能答），
     于是 `acquire_gui` **复用一个即将消失的实例**（owned=False，永不回收）→ 实例在套件跑到一半时
     消失 → 该套件余下用例全线 `URLError 10061 目标计算机积极拒绝`（= 批内偶发红、单跑绿的真因之一；
@@ -792,7 +793,13 @@ def cleanup_all(verbose=True):
 
 
 class ProcResource:
-    """自起子进程资源：owned=True 才回收（复用的外部实例 owned=False 永不动）。"""
+    """自起子进程资源：owned=True 才回收（复用的外部实例 owned=False 永不动）。
+
+    `port` 非空且是 GUI 实例（`--test-port`）时，收尾**优先优雅退出**：`POST /quit` 让宿主走
+    与托盘「退出」完全相同的路径（关项目窗口 → 关日志窗口 → Shell_NotifyIcon 摘托盘图标 →
+    进程结束）。直接 `taskkill /F` 不摘托盘图标 → 每跑一个套件系统托盘就多一个残影
+    （2026-10-23 用户实测反馈）。优雅退出失败/超时才兜底 kill。
+    """
 
     kind = "proc"
 
@@ -808,17 +815,44 @@ class ProcResource:
     def pid(self):
         return self.proc.pid if self.proc is not None else None
 
+    def _quit_gracefully(self, timeout=15.0):
+        """请求 `POST /quit` 并等待进程退出；端口未开/未接线 → False（调用方兜底 kill）。"""
+        if not self.port:
+            return False
+        import urllib.request
+        try:
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d/quit" % int(self.port), data=b"{}",
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                resp.read()
+        except Exception:
+            return False
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self.alive():
+                return True
+            time.sleep(0.2)
+        return False
+
     def stop(self):
         if self.owned and self.alive():
-            print("[harness] 回收 %s (pid=%s)" % (self.name, self.pid()), flush=True)
-            kill_tree(self.pid())
-            try:
-                self.proc.wait(timeout=10)
-            except Exception:
+            print("[harness] 优雅退出 %s (pid=%s)" % (self.name, self.pid()), flush=True)
+            if self._quit_gracefully():
                 try:
-                    self.proc.kill()
+                    self.proc.wait(timeout=10)
                 except Exception:
                     pass
+            if self.alive():
+                print("[harness] 回收 %s (pid=%s)" % (self.name, self.pid()), flush=True)
+                kill_tree(self.pid())
+                try:
+                    self.proc.wait(timeout=10)
+                except Exception:
+                    try:
+                        self.proc.kill()
+                    except Exception:
+                        pass
         unregister(self)
 
     def __repr__(self):
@@ -950,11 +984,22 @@ def acquire_mock_llm(port=DEFAULT_MOCK_LLM_PORT, reuse=True):
 
 
 def popen_own(cmd, name="proc", cwd=None, **kw):
-    """通用自起子进程（夹具/引擎等），登记回收；返回 ProcResource。"""
+    """通用自起子进程（夹具/引擎等），登记回收；返回 ProcResource。
+
+    从命令行里的 `--test-port=NNNN` 自动识别 GUI 测试通道端口 → 收尾优先优雅退出（见
+    ProcResource.stop），避免 taskkill 留下托盘图标残影。
+    """
     if "creationflags" not in kw:
         kw["creationflags"] = CREATE_NO_WINDOW
+    port = None
+    for a in cmd:
+        if isinstance(a, str) and a.startswith("--test-port="):
+            try:
+                port = int(a.split("=", 1)[1])
+            except ValueError:
+                port = None
     proc = subprocess.Popen(cmd, cwd=cwd, **kw)
-    return register(ProcResource(proc=proc, name=name))
+    return register(ProcResource(proc=proc, name=name, port=port))
 
 
 # ── 三条兜底路径：atexit + 信号 ────────────────────────────

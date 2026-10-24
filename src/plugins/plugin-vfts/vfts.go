@@ -4,11 +4,11 @@
 //   - vfts 引擎 = 独立 exe（chonkpilot-vfts-mcp-server，console CGO + zvec），由本插件按
 //     workdir 以 stdio 子进程形态管理；引擎全部工具带 workdir 参数（含查询工具）。
 //   - 本插件对外（gateway）注册查询工具：与引擎同名、schema 去掉 workdir（由插件注入）。
-//     可见性门控（enable-vfts）与索引就绪编排全在插件内存（源 = prj-config）。
+//     可见性门控（plugins.codebase.vfts.enabled）与索引就绪编排全在插件内存（源 = prj-config）。
 //   - instance 生命周期驱动 workdir 引用计数与 gateway 工具注册/注销：register/exit 为变更源
 //     （heartbeat 记录时刻；合并单进程形态不发布心跳、不做心跳超时退出判定，分离形态
 //     `-tags split` 由 sweepInstances 判定超时 → instanceGone）；
-//     enable-vfts 开关经 data-prj-config-refresh 实时同步。
+//     plugins.codebase.vfts.enabled 开关经 data-prj-config-refresh 实时同步。
 //   - 引擎应答一律为 JSON 文本：查询未就绪（not_initialized/indexing/error 等）原样透传，
 //     插件不做隐式补 init（仅启用时后台自动 configure+index 一次，状态回写 vfts.status）。
 package vfts
@@ -45,15 +45,15 @@ const (
 	// 订阅者写回 v.Result，同一主题 promise——镜像 codegraph 插件模式）
 	toolCallSubject = msgkeys.TopicVftsToolCall
 
-	// prj-config 键
-	engineName        = "vfts"                 // 引擎标识（配置键前缀 = 引擎名；ignore.ConfigOptions 用）
-	enableKey         = "enable-vfts"          // "true"/"false"（UI 开关；缺省 = 关闭，对齐 42 §2 (17)）
-	extsKey           = "vfts.exts"            // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
-	skipDirsKey       = "vfts.skip-dirs"       // 用户排除规则（gitignore 语法，逗号/换行分隔；空 = 无用户规则）
-	stackGitignoreKey = "vfts.stack-gitignore" // "true"/"false"：是否让引擎/清单扫描叠加各级 .gitignore / info/exclude / 全局 ignore
-	docsKey           = "vfts.docs"            // "true"/"false"：是否索引文档类（Office/PDF，需文档转换服务）
-	docMaxMBKey       = "vfts.doc-max-mb"      // 文档类单文件上限（整数 MB；缺失 = 50）
-	statusKey         = "vfts.status"          // 引擎状态 JSON 文本（插件回写，UI 只读回显）
+	// prj-config 键（PLUGIN-UI-1 第三段：用户配置统一收口到 codebase 插件命名空间
+	// `plugins.codebase.*`；旧宿主键由 codebase 插件一次性迁移，本插件只读新键）。
+	enableKey         = "plugins.codebase.vfts.enabled"         // "true"/"false"（UI 开关；缺省 = 关闭，对齐 42 §2 (17)）
+	extsKey           = "plugins.codebase.vfts.exts"            // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
+	skipDirsKey       = "plugins.codebase.vfts.skip-dirs"       // 用户排除规则（gitignore 语法，逗号/换行分隔；空 = 无用户规则）
+	stackGitignoreKey = "plugins.codebase.vfts.stack-gitignore" // "true"/"false"：是否让引擎/清单扫描叠加各级 .gitignore / info/exclude / 全局 ignore
+	docsKey           = "plugins.codebase.vfts.docs"            // "true"/"false"：是否索引文档类（Office/PDF，需文档转换服务）
+	docMaxMBKey       = "plugins.codebase.vfts.doc-max-mb"      // 文档类单文件上限（整数 MB；缺失 = 50）
+	statusKey         = "vfts.status"                           // 引擎状态 JSON 文本（插件回写，UI 只读回显；非用户配置，不迁移）
 
 	// data 面（persist 订阅）
 	subjectPrjConfigRefresh = msgkeys.TopicDataPrjConfigRefresh
@@ -67,8 +67,8 @@ const (
 	callTimeout      = 60 * time.Second // 查询工具引擎调用超时
 	initTimeout      = 15 * time.Minute // 管理工具（configure/index/status）调用超时
 
-	// 索引配置去抖窗口：设置页一次保存会分别写 vfts.exts + vfts.skip-dirs 两键 →
-	// 两次 data-prj-config-refresh；短窗口内合并为一次强制重建（同一份配置不重建两轮）。
+	// 索引配置去抖窗口：一次保存会写多个索引配置键 →
+	// 多次 data-prj-config-refresh；短窗口内合并为一次强制重建（同一份配置不重建两轮）。
 	// 窗口外的单次键变更仍会（延迟 window 后）触发一次重建——不会出现"改了不重建"。
 	defaultRebuildDebounce = 400 * time.Millisecond
 
@@ -84,6 +84,9 @@ const (
 	phaseConfigure = "configure"
 	phaseIndex     = "index"
 )
+
+// ignoreKeys 是排除规则的配置键（与 codebase 插件命名空间同源；ignore.ConfigOptions 用）。
+var ignoreKeys = ignore.Keys{Enabled: enableKey, SkipDirs: skipDirsKey, StackGitignore: stackGitignoreKey}
 
 // Options 构造参数。
 type Options struct {
@@ -150,7 +153,7 @@ type instRec struct {
 type workRec struct {
 	workDir string
 	dataDir string // 首个实例自带 data_dir（预留）
-	enabled bool   // enable-vfts == "true"
+	enabled bool   // plugins.codebase.vfts.enabled == "true"
 	docs    bool   // vfts.docs == "true"（文档索引开关；服务可用性另行探测）
 	refs    int    // 活跃实例引用数（同 workdir 多实例去重）
 
@@ -229,7 +232,7 @@ func (p *Vfts) Start(d plugin.Deps) error {
 		}
 		p.subs = append(p.subs, sub)
 	}
-	// prj-config 变更广播（enable-vfts 开关；order 0）
+	// prj-config 变更广播（plugins.codebase.vfts.* 开关；order 0）
 	sh, err := d.Bus.On(subjectPrjConfigRefresh, 0, p.onPrjConfigRefresh)
 	if err != nil {
 		p.unsubscribeAll()
@@ -467,7 +470,7 @@ func (p *Vfts) onInstanceRegister(_ string, payload []byte) {
 	p.lastActiveAt = time.Now() // 活跃标记（空闲回收基准）
 	p.mu.Unlock()
 
-	// 异步回读一次 enable-vfts（慢请求不进总线派发路径）；读回后据开关触发
+	// 异步回读一次 plugins.codebase.vfts.enabled（慢请求不进总线派发路径）；读回后据开关触发
 	// 自动初始化并同步 gateway 工具注册。
 	p.safeGo(func() { p.readEnableAndEnsure(ev.InstanceID, wd) })
 }
@@ -528,7 +531,7 @@ func (p *Vfts) instanceGone(id string) {
 	p.syncTools()
 }
 
-// readEnableAndEnsure 注册后异步回读 enable-vfts 并据此收敛可见性。
+// readEnableAndEnsure 注册后异步回读 plugins.codebase.vfts.enabled 并据此收敛可见性。
 func (p *Vfts) readEnableAndEnsure(instanceID, wd string) {
 	val, err := dataclient.ReadKey(p.deps.Bus, instanceID, enableKey)
 	if err != nil {
@@ -554,8 +557,8 @@ func (p *Vfts) readEnableAndEnsure(instanceID, wd string) {
 
 // ─── prj-config 变更 ──────────────────────────────────────
 
-// onPrjConfigRefresh 处理 data-prj-config-refresh：关心 enable-vfts 与索引配置
-// （vfts.exts / vfts.skip-dirs / vfts.stack-gitignore）。
+// onPrjConfigRefresh 处理 data-prj-config-refresh：关心 plugins.codebase.vfts.enabled 与索引配置
+// （plugins.codebase.vfts.{exts,skip-dirs,stack-gitignore}）。
 // 广播载荷 {id, ids?, op, list}：**批量写**（61 §3.1）带 `ids`（全组键）→ 逐键展开处理
 // （= 与改前「逐键广播」等价）；缺省回落单键 `id`（向后兼容旧广播/旧发送方）。
 // 无 instance_id（persist refresh v1 不携实例过滤）——v1 限制：单宿主典型形态为单实例/单 workdir，
@@ -858,7 +861,8 @@ func (p *Vfts) ensureWorkspace(wd string, force bool) {
 	p.logf("vfts: %s 全量重建完成（%d 文件 / %d 块）", wd, res.Files, res.Chunks)
 }
 
-// readDocsConfig 读文档索引配置：vfts.docs（开关，缺省关）+ vfts.doc-max-mb（上限 MB，缺省 50）。
+// readDocsConfig 读文档索引配置：plugins.codebase.vfts.docs（开关，缺省关）+
+// plugins.codebase.vfts.doc-max-mb（上限 MB，缺省 50）。
 // 首次读取时播种「比较基线」（cfgDocs/cfgDocMaxMB）= 本次读到的原始值，使「重复保存同一份
 // 配置」不触发重建（F-14）；此后基线只由 onPrjConfigRefresh 更新。
 func (p *Vfts) readDocsConfig(wd string) (enabled bool, maxMB int) {
@@ -1075,7 +1079,7 @@ func (p *Vfts) instanceForWorkdir(wd string) string {
 	return inst
 }
 
-// readIndexConfig 读取项目级索引配置：vfts.exts / vfts.skip-dirs / vfts.stack-gitignore。
+// readIndexConfig 读取项目级索引配置：plugins.codebase.vfts.{exts,skip-dirs,stack-gitignore}。
 // 读取失败/未配置 → 返回空切片（下发空数组 = 引擎默认集，不写第二套默认）。
 // skip-dirs / stack-gitignore 的解析统一由 github.com/chonkpilot/chonkpilot-ignore 提供
 // （ignore.ConfigOptions = 规则拆分 + 叠加开关；匹配语义在引擎侧与本插件清单扫描共用同一实现）。
@@ -1107,7 +1111,7 @@ func (p *Vfts) readIndexConfig(wd string) (exts, rules []string, stack bool) {
 		}
 		return v, true
 	}
-	if opts, _, err := ignore.ConfigOptions(engineName, get, wd); err == nil && opts != nil {
+	if opts, _, err := ignore.ConfigOptions(ignoreKeys, get, wd); err == nil && opts != nil {
 		rules = opts.UserRules
 		stack = opts.StackGitignore
 	}
@@ -1142,7 +1146,7 @@ func splitList(s string) []string {
 	return out
 }
 
-// ─── 匹配语义落点（vfts.stack-gitignore）────────────────
+// ─── 匹配语义落点（plugins.codebase.vfts.stack-gitignore）────────────────
 //
 // .gitignore / 全局 ignore / .git/info/exclude 的读取与匹配由 github.com/chonkpilot/chonkpilot-ignore
 // 单一实现：引擎遍历（collectFiles）与本插件清单扫描（manifest.scanFiles）共用同一实现 +

@@ -258,8 +258,6 @@ test('④ 设置页加载/保存失败不再静默（逐文件清零旧 console 
         /\[ContextConfig\] getPrompt summary_prompt error/, /\[ContextConfig\] setConfig error/],
     },
     { file: 'views/settings/HistoryConfig.vue', bad: [/\[HistoryConfig\] loadConfig error/, /\[HistoryConfig\] Failed to save/] },
-    { file: 'views/settings/VftsConfig.vue', bad: [/\[VftsConfig\] loadConfig error/, /\[VftsConfig\] Failed to save/] },
-    { file: 'views/settings/CodegraphConfig.vue', bad: [/\[CodegraphConfig\] loadConfig error/, /\[CodegraphConfig\] Failed to save/] },
     { file: 'views/config/SettingsPathsPage.vue', bad: [/\[SettingsPaths\] load user failed/, /\[SettingsPaths\] load project failed/] },
     { file: 'views/config/SettingsParamsPage.vue', bad: [/\[SettingsParams\] load user failed/, /\[SettingsParams\] load project failed/] },
     { file: 'views/settings/SecurityConfig.vue', bad: [/catch \(_\) \{ entries\.value = \[\] \}/] },
@@ -273,21 +271,17 @@ test('④ 设置页加载/保存失败不再静默（逐文件清零旧 console 
   }
   // 成功路径不得被改成失败（成功提示仍在）
   assert.match(read('views/settings/ContextConfig.vue'), /message\.success\(/)
-  assert.match(read('views/settings/VftsConfig.vue'), /message\.success\(/)
-  assert.match(read('views/settings/CodegraphConfig.vue'), /message\.success\(/)
 })
 
 // ═══════════════════════════════════════════════════════════════
 // ⑤ 反馈统一 + dirty（保存时机不变）
 // ═══════════════════════════════════════════════════════════════
 test('⑤ 反馈统一：即时生效 / 需重启 标注 + 保存中防重', () => {
-  // 即时生效（prj 执行配置 / 引擎 / history 实时同步 / agentbox 目录）
+  // 即时生效（prj 执行配置 / history 实时同步 / agentbox 目录）
   for (const f of [
     'views/config/SettingsParamsPage.vue',
     'views/settings/HistoryConfig.vue',
     'views/settings/SecurityConfig.vue',
-    'views/settings/VftsConfig.vue',
-    'views/settings/CodegraphConfig.vue',
   ]) {
     assert.match(read(f), /savedText\(t, APPLY_INSTANT\)/, `${f} 须用统一即时生效反馈`)
   }
@@ -300,8 +294,6 @@ test('⑤ 反馈统一：即时生效 / 需重启 标注 + 保存中防重', () 
     'views/settings/ContextConfig.vue',
     'views/settings/HistoryConfig.vue',
     'views/settings/SecurityConfig.vue',
-    'views/settings/VftsConfig.vue',
-    'views/settings/CodegraphConfig.vue',
   ]) {
     assert.match(read(f), /saveFailedText\(/, `${f} 失败反馈须统一`)
   }
@@ -329,13 +321,6 @@ test('⑤ dirty 标记：显示用（无 watch、无离开拦截），保存时�
     assert.doesNotMatch(src, /beforeunload|onBeforeRouteLeave/, `${f} 不做离开拦截`)
   }
   // 按钮保存页：dirty 由 isPristine 派生（不引入 watch）
-  for (const f of ['views/settings/VftsConfig.vue', 'views/settings/CodegraphConfig.vue']) {
-    const src = read(f)
-    assert.match(src, /const unsaved = computed\(/, `${f} 须有未保存派生`)
-    assert.match(src, /v-if="unsaved"/, `${f} 须渲染 dirty 标记`)
-    assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, `${f} 不得用 watch`)
-    assert.doesNotMatch(src, /beforeunload|onBeforeRouteLeave/, `${f} 不做离开拦截`)
-  }
   const comp = read('composables/useUnsavedMark.js')
   assert.match(comp, /export function useUnsavedMark\(\)/, 'composable 导出形态')
   assert.doesNotMatch(comp, /\bwatch(Effect)?\s*\(/, 'composable 禁止 watch')
@@ -357,8 +342,6 @@ test('⑤ 保存时机（列表/对话框页即改即存；参数 / 路径页 20
   assert.match(sec, /:disabled="!dirty"/, '安全页无改动时保存按钮须禁用')
   assert.match(sec, /@click="save"/, '安全页点【保存】才落库')
   assert.doesNotMatch(sec, /@change="save"/, '安全页编辑不再即时落库（改手动保存）')
-  assert.match(read('views/settings/VftsConfig.vue'), /:loading="saving" @click="handleIndexSave"/, 'vfts 仍按钮保存')
-  assert.match(read('views/settings/CodegraphConfig.vue'), /:loading="saving" @click="handleIndexSave"/, 'codegraph 仍按钮保存')
   assert.match(read('views/settings/ContextConfig.vue'), /v-mq:\[EventNames\.contextSave\]\.click/, '上下文仍保存按钮')
 })
 

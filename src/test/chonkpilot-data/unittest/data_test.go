@@ -164,14 +164,15 @@ func TestPaths(t *testing.T) {
 		t.Fatalf("ProjectPath(dataDir) = %s", p)
 	}
 
-	// prjusr 数据根与主库路径 = <dataRoot>/<project-id>[/chonkpilot.db]
+	// prjusr 数据根与主库路径 = <dataRoot>/users/<OS 用户名>[/chonkpilot.db]（49 DATAROOT-1）
 	root := t.TempDir()
-	data.SetDataHome(filepath.Join(root, "chonkpilot.db"), filepath.Join(root, "data"))
+	dataRoot := filepath.Join(root, "data")
+	data.SetDataHome(filepath.Join(root, "chonkpilot.db"), dataRoot)
 	t.Cleanup(func() { data.SetDataHome("", "") })
-	if p := data.PrjUsrPath("pid-1"); p != filepath.Join(root, "data", "pid-1") {
+	if p := data.PrjUsrPath(wd, ""); p != filepath.Join(dataRoot, "users", data.UserDirName()) {
 		t.Fatalf("PrjUsrPath = %s", p)
 	}
-	if p := data.PrjUsrDBPath("pid-1"); p != filepath.Join(root, "data", "pid-1", "chonkpilot.db") {
+	if p := data.PrjUsrDBPath(wd, ""); p != filepath.Join(dataRoot, "users", data.UserDirName(), "chonkpilot.db") {
 		t.Fatalf("PrjUsrDBPath = %s", p)
 	}
 	if p := data.UserPath(); p != filepath.Join(root, "chonkpilot.db") {
@@ -179,10 +180,11 @@ func TestPaths(t *testing.T) {
 	}
 }
 
-// TestConfigOpen v6：三层全开 + prj 库自动生成 project-id + prjusr 落在 data/<id>。
+// TestConfigOpen：三层全开 + prjusr 落 <dataRoot>/users/<OS 用户名>（49 DATAROOT-1，无 project-id）。
 func TestConfigOpen(t *testing.T) {
 	root := t.TempDir()
-	data.SetDataHome(filepath.Join(root, "usr", "chonkpilot.db"), filepath.Join(root, "data"))
+	dataRoot := filepath.Join(root, "data")
+	data.SetDataHome(filepath.Join(root, "usr", "chonkpilot.db"), dataRoot)
 	t.Cleanup(func() {
 		data.Reset()
 		data.SetDataHome("", "")
@@ -201,23 +203,17 @@ func TestConfigOpen(t *testing.T) {
 	if _, err := cfg.PrjUsr().Table("sessions").ListKeys(); err != nil {
 		t.Fatalf("prjusr sessions bucket missing: %v", err)
 	}
-	// project-id 首次生成并写入 prj 库
-	id, ok := data.ReadProjectID(cfg.Prj())
-	if !ok || id == "" {
-		t.Fatal("project-id should be generated on first open")
+	prjUsrPath := filepath.Join(dataRoot, "users", data.UserDirName(), "chonkpilot.db")
+	if cfg.PrjUsr().Path() != prjUsrPath {
+		t.Fatalf("prjusr path = %s, want %s", cfg.PrjUsr().Path(), prjUsrPath)
 	}
-	if cfg.PrjUsr().Path() != data.PrjUsrDBPath(id) {
-		t.Fatalf("prjusr path = %s, want %s", cfg.PrjUsr().Path(), data.PrjUsrDBPath(id))
-	}
-	// 复用：再次打开同一 workdir → 同一 project-id
-	cfg.Close()
-	cfg2, err := data.OpenConfig(wd, "", nil)
-	if err != nil {
+	if cfg2, err := data.OpenConfig(wd, "", nil); err != nil {
 		t.Fatal(err)
-	}
-	defer cfg2.Close()
-	if id2, _ := data.ReadProjectID(cfg2.Prj()); id2 != id {
-		t.Fatalf("project-id should be stable: %s vs %s", id2, id)
+	} else {
+		if cfg2.PrjUsr().Path() != prjUsrPath {
+			t.Fatalf("prjusr path should be stable: %s vs %s", cfg2.PrjUsr().Path(), prjUsrPath)
+		}
+		cfg2.Close()
 	}
 }
 
@@ -235,8 +231,7 @@ func TestSetDataHomeConcurrent(t *testing.T) {
 	}()
 	for i := 0; i < 500; i++ {
 		_ = data.UserPath()
-		_ = data.DataRoot()
-		_ = data.PrjUsrPath("pid")
+		_ = data.PrjUsrPath("wd", "")
 	}
 	wg.Wait()
 }

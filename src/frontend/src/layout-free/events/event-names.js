@@ -93,7 +93,7 @@ export const EventNames = {
   dialogCloseTop: 'lf-layout-close-top-dialog',
   tabsOpen: 'lf-layout-open-tabs', // { targetLeafId, viewKey, instanceKey } 打开到自由 tab 容器
   tabsCloseActive: 'lf-layout-close-tabs-active', // { targetLeafId }
-  drawerOpen: 'lf-layout-open-drawer', // { drawerId, viewKey, instanceKey }
+  drawerOpen: 'lf-layout-open-drawer', // { drawerId, viewKey, instanceKey, label?, icon? }（label/icon 仅运行期未登记抽屉用）
   drawerClose: 'lf-layout-close-drawer', // { drawerId }
   drawerToggle: 'lf-layout-toggle-drawer', // { drawerId }
 

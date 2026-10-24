@@ -72,11 +72,11 @@ function mixSrgb(fgHex, bgHex, p) {
   }
   return out
 }
-/** 从 variables.css 抽取某主题块的 token（--name → 值） */
+/** 从 themes.css（THEME-1：颜色唯一源）抽取某主题块的 token（--name → 值） */
 function themeTokens(css, selector) {
   const re = new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}')
   const m = css.match(re)
-  assert.ok(m, 'variables.css 缺少 ' + selector + ' 块')
+  assert.ok(m, 'themes.css 缺少 ' + selector + ' 块')
   const tokens = {}
   for (const line of m[1].split('\n')) {
     const mm = line.match(/(--[\w-]+)\s*:\s*([^;]+);/)
@@ -84,7 +84,10 @@ function themeTokens(css, selector) {
   }
   return tokens
 }
-const varsCss = read('assets/styles/variables.css')
+/** 主题颜色资产（THEME-1，2026-10-23：已从 assets/styles/variables.css 迁到 src/initdata/themes） */
+const readThemes = () =>
+  readFileSync(join(here, '..', '..', 'initdata', 'themes', 'themes.css'), 'utf8')
+const varsCss = readThemes()
 const THEMES = {
   light: themeTokens(varsCss, ':root'),
   dark: themeTokens(varsCss, '[data-theme="dark"]'),

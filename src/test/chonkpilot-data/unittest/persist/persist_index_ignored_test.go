@@ -83,13 +83,13 @@ func TestDataIndexIgnored(t *testing.T) {
 		"sub/x.go":       "p",
 	})
 
-	// prj 配置：两引擎均启用 + 各自用户规则 + 叠加 gitignore。
-	prjSave(t, bus, "enable-codegraph", "true")
-	prjSave(t, bus, "codegraph.skip-dirs", "userdir/")
-	prjSave(t, bus, "codegraph.stack-gitignore", "true")
-	prjSave(t, bus, "enable-vfts", "true")
-	prjSave(t, bus, "vfts.skip-dirs", "vdir/")
-	prjSave(t, bus, "vfts.stack-gitignore", "true")
+	// prj 配置（codebase 插件命名空间）：两引擎均启用 + 各自用户规则 + 叠加 gitignore。
+	prjSave(t, bus, "plugins.codebase.codegraph.enabled", "true")
+	prjSave(t, bus, "plugins.codebase.codegraph.skip-dirs", "userdir/")
+	prjSave(t, bus, "plugins.codebase.codegraph.stack-gitignore", "true")
+	prjSave(t, bus, "plugins.codebase.vfts.enabled", "true")
+	prjSave(t, bus, "plugins.codebase.vfts.skip-dirs", "vdir/")
+	prjSave(t, bus, "plugins.codebase.vfts.stack-gitignore", "true")
 
 	paths := []any{
 		"main.go",                   // 不排除
@@ -126,7 +126,7 @@ func TestDataIndexIgnored(t *testing.T) {
 	}
 
 	// 关掉 vfts → enabled=false 且 ignored 为空（codegraph 不受影响）。
-	prjSave(t, bus, "enable-vfts", "false")
+	prjSave(t, bus, "plugins.codebase.vfts.enabled", "false")
 	res = indexIgnored(t, bus, "ins-test", paths)
 	if cgEnabled2, _ := engineOf(t, res, "codegraph"); !cgEnabled2 {
 		t.Fatal("vfts 关闭不应影响 codegraph.enabled")
@@ -161,10 +161,10 @@ func TestDataIndexIgnoredTruncated(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	wd := regInstance(t, bus)
 	writeTree(t, wd, map[string]string{".gitignore": "*.gen.go\n", "main.go": "p", "a.gen.go": "p"})
-	prjSave(t, bus, "enable-codegraph", "true")
-	prjSave(t, bus, "codegraph.stack-gitignore", "true")
-	prjSave(t, bus, "enable-vfts", "true")
-	prjSave(t, bus, "vfts.stack-gitignore", "true")
+	prjSave(t, bus, "plugins.codebase.codegraph.enabled", "true")
+	prjSave(t, bus, "plugins.codebase.codegraph.stack-gitignore", "true")
+	prjSave(t, bus, "plugins.codebase.vfts.enabled", "true")
+	prjSave(t, bus, "plugins.codebase.vfts.stack-gitignore", "true")
 
 	// 第 0 条命中（先证明判定生效）；第 20001 条（索引 20000）在窗口外 → 不得被判定。
 	paths := make([]any, 20001)

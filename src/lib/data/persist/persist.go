@@ -78,7 +78,7 @@ var dataReqSubjects = []string{
 	// 会话域（§3.2）
 	msgkeys.TopicDataSessionList, msgkeys.TopicDataSessionGet, msgkeys.TopicDataSessionHistory, msgkeys.TopicDataSessionLatest,
 	msgkeys.TopicDataSessionTitle, msgkeys.TopicDataSessionDelete, msgkeys.TopicDataSessionActiveSet, msgkeys.TopicDataSessionActiveGet,
-	msgkeys.TopicDataSessionContent,
+	msgkeys.TopicDataSessionContent, msgkeys.TopicDataSessionFork,
 	// 会话域 A3 运行时扩展（server sessionStore 总线化原语，语义对齐 chonkpilot-server/session.go）
 	msgkeys.TopicDataSessionEnsureSession, msgkeys.TopicDataSessionEnsureTurn, msgkeys.TopicDataSessionAppendMessage,
 	msgkeys.TopicDataSessionSetSummary, msgkeys.TopicDataSessionCompleteTurn, msgkeys.TopicDataSessionCleanupStale,
@@ -152,6 +152,9 @@ type Service struct {
 	mu      sync.Mutex
 	subs    []mq.Sub // 全部订阅句柄（Start 累计 / Stop 退订）
 	started bool
+	// shardDone 记录已完成「旧布局 → dialogs/ 一树一库」迁移的 prjusr 路径（SESSION-COMP-1 P0；
+	// 每路径一次，失败会移除以便下次重试）。
+	shardDone sync.Map
 	// sweepStop 心跳超时扫描停止函数（分离形态非空；默认构建 startStaleSweep 返回 nil，
 	// 见 sweep_split.go / sweep_inprocess.go——desktop 不判超时）。
 	sweepStop func()
@@ -284,6 +287,9 @@ func (s *Service) onInstanceRegister(_ string, payload []byte) {
 		return
 	}
 	s.View.Register(req.InstanceID, req.WorkDir, req.DataDir)
+	// SESSION-COMP-1 P0：`session.db.shard=on` 时把旧布局搬到 dialogs/（一树一库）。
+	// 异步执行：搬运可能涉及多库，不阻塞 instance-register 的应答。
+	go s.maybeShardDialogs(req.InstanceID)
 }
 
 // 实例标识符上限（与 config 包 MaxNameChars 同源）与路径上限（MaxPathChars 同源）。

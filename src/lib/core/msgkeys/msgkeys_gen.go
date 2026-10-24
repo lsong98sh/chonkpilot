@@ -108,6 +108,7 @@ const (
 	TopicDataSessionLatest                = "data-session-latest"
 	TopicDataSessionTitle                 = "data-session-title"
 	TopicDataSessionTitleChanged          = "data-session-title-changed"
+	TopicDataSessionFork                  = "data-session-fork"
 	TopicDataSessionDelete                = "data-session-delete"
 	TopicDataSessionActiveSet             = "data-session-active-set"
 	TopicDataSessionActiveGet             = "data-session-active-get"
@@ -840,13 +841,15 @@ const (
 	DataSessionListResultList = "list"
 
 	// data-session-get · payload
-	DataSessionGetPayloadId = "id"
+	DataSessionGetPayloadDialogId = "dialog_id"
+	DataSessionGetPayloadId       = "id"
 
 	// data-session-get · result
 	DataSessionGetResultData = "data"
 
 	// data-session-history · payload
 	DataSessionHistoryPayloadBeforeTurnId   = "before_turn_id"
+	DataSessionHistoryPayloadDialogId       = "dialog_id"
 	DataSessionHistoryPayloadSessionId      = "session_id"
 	DataSessionHistoryPayloadTargetBytes    = "target_bytes"
 	DataSessionHistoryPayloadTargetMessages = "target_messages"
@@ -855,6 +858,7 @@ const (
 	DataSessionHistoryResultMessages = "messages"
 
 	// data-session-content · payload
+	DataSessionContentPayloadDialogId  = "dialog_id"
 	DataSessionContentPayloadId        = "id"
 	DataSessionContentPayloadKeys      = "keys"
 	DataSessionContentPayloadSessionId = "session_id"
@@ -863,26 +867,42 @@ const (
 	DataSessionContentResultContents = "contents"
 
 	// data-session-latest · result
+	DataSessionLatestResultDialogId  = "dialog_id"
 	DataSessionLatestResultSessionId = "session_id"
 
 	// data-session-title · payload
-	DataSessionTitlePayloadId    = "id"
-	DataSessionTitlePayloadTitle = "title"
+	DataSessionTitlePayloadDialogId = "dialog_id"
+	DataSessionTitlePayloadId       = "id"
+	DataSessionTitlePayloadTitle    = "title"
 
 	// data-session-title · result
 	DataSessionTitleResultOk = "ok"
 
 	// data-session-title-changed · event
+	DataSessionTitleChangedEventDialogId  = "dialog_id"
 	DataSessionTitleChangedEventSessionId = "session_id"
 	DataSessionTitleChangedEventTitle     = "title"
 
+	// data-session-fork · payload
+	DataSessionForkPayloadDialogId   = "dialog_id"
+	DataSessionForkPayloadInstanceId = "instance_id"
+	DataSessionForkPayloadMode       = "mode"
+	DataSessionForkPayloadTitle      = "title"
+
+	// data-session-fork · result
+	DataSessionForkResultDialogId  = "dialog_id"
+	DataSessionForkResultOk        = "ok"
+	DataSessionForkResultSessionId = "session_id"
+
 	// data-session-delete · payload
-	DataSessionDeletePayloadId = "id"
+	DataSessionDeletePayloadDialogId = "dialog_id"
+	DataSessionDeletePayloadId       = "id"
 
 	// data-session-delete · result
 	DataSessionDeleteResultOk = "ok"
 
 	// data-session-active-set · payload
+	DataSessionActiveSetPayloadDialogId  = "dialog_id"
 	DataSessionActiveSetPayloadSessionId = "session_id"
 
 	// data-session-active-set · result
@@ -894,6 +914,7 @@ const (
 	// data-session-ensure-session · payload
 	DataSessionEnsureSessionPayloadAgent           = "agent"
 	DataSessionEnsureSessionPayloadConvergence     = "convergence"
+	DataSessionEnsureSessionPayloadDialogId        = "dialog_id"
 	DataSessionEnsureSessionPayloadGoal            = "goal"
 	DataSessionEnsureSessionPayloadKind            = "kind"
 	DataSessionEnsureSessionPayloadLifecycle       = "lifecycle"
@@ -905,9 +926,11 @@ const (
 	DataSessionEnsureSessionPayloadSessionId       = "session_id"
 
 	// data-session-ensure-session · result
-	DataSessionEnsureSessionResultOk = "ok"
+	DataSessionEnsureSessionResultDialogId = "dialog_id"
+	DataSessionEnsureSessionResultOk       = "ok"
 
 	// data-session-ensure-turn · payload
+	DataSessionEnsureTurnPayloadDialogId  = "dialog_id"
 	DataSessionEnsureTurnPayloadSessionId = "session_id"
 	DataSessionEnsureTurnPayloadTurnId    = "turn_id"
 
@@ -915,23 +938,26 @@ const (
 	DataSessionEnsureTurnResultOk = "ok"
 
 	// data-session-append-message · payload
-	DataSessionAppendMessagePayloadKey    = "key"
-	DataSessionAppendMessagePayloadMsg    = "msg"
-	DataSessionAppendMessagePayloadTurnId = "turn_id"
+	DataSessionAppendMessagePayloadDialogId = "dialog_id"
+	DataSessionAppendMessagePayloadKey      = "key"
+	DataSessionAppendMessagePayloadMsg      = "msg"
+	DataSessionAppendMessagePayloadTurnId   = "turn_id"
 
 	// data-session-append-message · result
 	DataSessionAppendMessageResultId = "id"
 	DataSessionAppendMessageResultOk = "ok"
 
 	// data-session-set-summary · payload
-	DataSessionSetSummaryPayloadSummary = "summary"
-	DataSessionSetSummaryPayloadTurnId  = "turn_id"
+	DataSessionSetSummaryPayloadDialogId = "dialog_id"
+	DataSessionSetSummaryPayloadSummary  = "summary"
+	DataSessionSetSummaryPayloadTurnId   = "turn_id"
 
 	// data-session-set-summary · result
 	DataSessionSetSummaryResultOk = "ok"
 
 	// data-session-complete-turn · payload
 	DataSessionCompleteTurnPayloadBriefTokens  = "brief_tokens"
+	DataSessionCompleteTurnPayloadDialogId     = "dialog_id"
 	DataSessionCompleteTurnPayloadFinishReason = "finish_reason"
 	DataSessionCompleteTurnPayloadFullTokens   = "full_tokens"
 	DataSessionCompleteTurnPayloadStatus       = "status"
@@ -996,6 +1022,7 @@ const (
 
 	// data-ask-pending · payload
 	DataAskPendingPayloadAskId       = "ask_id"
+	DataAskPendingPayloadDialogId    = "dialog_id"
 	DataAskPendingPayloadInstanceId  = "instance_id"
 	DataAskPendingPayloadPendingOnly = "pending_only"
 
@@ -1005,6 +1032,7 @@ const (
 
 	// data-turn-event-append · payload
 	DataTurnEventAppendPayloadAt         = "at"
+	DataTurnEventAppendPayloadDialogId   = "dialog_id"
 	DataTurnEventAppendPayloadInstanceId = "instance_id"
 	DataTurnEventAppendPayloadPayload    = "payload"
 	DataTurnEventAppendPayloadSeq        = "seq"
@@ -1024,12 +1052,14 @@ const (
 	DataTurnEventCleanupResultOk      = "ok"
 
 	// data-session-load-messages · payload
-	DataSessionLoadMessagesPayloadTurnId = "turn_id"
+	DataSessionLoadMessagesPayloadDialogId = "dialog_id"
+	DataSessionLoadMessagesPayloadTurnId   = "turn_id"
 
 	// data-session-load-messages · result
 	DataSessionLoadMessagesResultMessages = "messages"
 
 	// data-session-context · payload
+	DataSessionContextPayloadDialogId        = "dialog_id"
 	DataSessionContextPayloadExcludeTurn     = "exclude_turn"
 	DataSessionContextPayloadIncludeSnapshot = "include_snapshot"
 	DataSessionContextPayloadSessionId       = "session_id"
@@ -1436,6 +1466,8 @@ const (
 
 	// session-complete · event
 	SessionCompleteEventCode         = "code"
+	SessionCompleteEventDataDir      = "data_dir"
+	SessionCompleteEventDialogId     = "dialog_id"
 	SessionCompleteEventFinishReason = "finish_reason"
 	SessionCompleteEventInstanceId   = "instance_id"
 	SessionCompleteEventMessage      = "message"
@@ -1448,6 +1480,7 @@ const (
 	SessionCompleteEventStatus       = "status"
 	SessionCompleteEventText         = "text"
 	SessionCompleteEventTurn         = "turn"
+	SessionCompleteEventWorkDir      = "work_dir"
 
 	// session-retry · event
 	SessionRetryEventInstanceId   = "instance_id"
@@ -1468,6 +1501,7 @@ const (
 	SessionInterruptedEventTurn                = "turn"
 
 	// session-compress · event
+	SessionCompressEventDialogId        = "dialog_id"
 	SessionCompressEventInstanceId      = "instance_id"
 	SessionCompressEventLastTurn        = "last_turn"
 	SessionCompressEventMaxContextToken = "max_context_token"
@@ -1496,6 +1530,7 @@ const (
 	SessionTurnStartEventTurn       = "turn"
 
 	// session-new · event
+	SessionNewEventDialogId        = "dialog_id"
 	SessionNewEventInstanceId      = "instance_id"
 	SessionNewEventParentSessionId = "parent_session_id"
 	SessionNewEventSessionId       = "session_id"
@@ -1898,6 +1933,7 @@ const (
 	FieldDeletedAt           = "deleted_at"
 	FieldDescription         = "description"
 	FieldDestDir             = "dest_dir"
+	FieldDialogId            = "dialog_id"
 	FieldDictDir             = "dict_dir"
 	FieldDiffs               = "diffs"
 	FieldDir                 = "dir"

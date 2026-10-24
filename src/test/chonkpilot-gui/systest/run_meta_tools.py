@@ -6,10 +6,10 @@
 `ExecTool.Call` 执行；gateway 在 `CHONKPILOT_EXTERNAL_TOOLS=1`（桌面单体默认）时不再自注册。
 
 覆盖（mq 驱动 + mq 断言，50-测试体系 §1）：
-  M1 工具面：tools-list 含 `self_mcp_find` / `self_mcp_load` / `self_mcp_invoke`（外部注册可见）
-  M2 `mcp_find(query=script)` → 命中 `self_script_run`
-  M3 `mcp_load(name=self_script_run, kind=tool)` → 返回描述 + inputSchema
-  M4 `mcp_invoke(name=self_script_run, echo META-INVOKE-OK)` → 结果含哨兵（真实执行）
+  M1 工具面：tools-list 含 `mcp_find` / `mcp_load` / `mcp_invoke`（外部注册可见）
+  M2 `mcp_find(query=task)` → 命中 `task_run`
+  M3 `mcp_load(name=task_run, kind=tool)` → 返回描述 + inputSchema
+  M4 `mcp_invoke(name=task_run, Write-Output META-INVOKE-OK)` → 结果含哨兵（真实执行）
 
 隔离：自起 GUI（临时 work-dir/data-dir/独立 HOME）+ 自管 mock LLM；结束即回收。
 """
@@ -91,34 +91,60 @@ def main():
             res = json.loads(res)
         tools = res.get("tools") or []
         names = {((t or {}).get("name") or "") for t in tools}
-        for want in ("self_mcp_find", "self_mcp_load", "self_mcp_invoke"):
+        for want in ("mcp_find", "mcp_load", "mcp_invoke"):
             if want not in names:
                 raise TestError("工具面缺 %s（外部元工具注册未生效）：%s" % (want, sorted(names)))
         return "n=%d" % len(names)
 
     def case_m2_find():
         txt = run_turn("call meta-find", "mcp_find")
-        if "self_script_run" not in txt:
-            raise TestError("mcp_find 未命中 self_script_run：%r" % txt[:400])
+        if "task_run" not in txt:
+            raise TestError("mcp_find 未命中 task_run：%r" % txt[:400])
         return txt[:160]
 
     def case_m3_load():
         txt = run_turn("call meta-load", "mcp_load")
-        if "script_run" not in txt or "inputSchema" not in txt:
+        # 2026-10-23：bridge 归一后的字段名 = `input_schema`（snake_case）；兼容旧 camelCase。
+        if "task_run" not in txt or ("input_schema" not in txt and "inputSchema" not in txt):
             raise TestError("mcp_load 返回缺描述/schema：%r" % txt[:400])
         return txt[:160]
 
     def case_m4_invoke():
+        okf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws", "meta_invoke_ok.txt")
+        if os.path.exists(okf):
+            os.remove(okf)
         txt = run_turn("call meta-invoke", "mcp_invoke")
-        if "META-INVOKE-OK" not in txt:
-            raise TestError("mcp_invoke 未真实执行目标工具：%r" % txt[:400])
+        # `plugin/v1/tools.call` = 命令类（无 request_id → 立即 ack，完成走事件）→ mcp_invoke 回
+        # {ok, tool, result:{accepted, topic}}。「真实执行」以目标命令的**落盘副作用**佐证（D-51 例外）。
+        try:
+            o = json.loads(txt)
+        except Exception:
+            o = {}
+        inner = o.get("result") if isinstance(o, dict) else None
+        if not (isinstance(o, dict) and o.get("ok") is True and o.get("tool") == "task_run"
+                and isinstance(inner, dict) and inner.get("accepted") is True):
+            raise TestError("mcp_invoke 未按命令类契约受理目标工具：%r" % txt[:400])
+        deadline = time.time() + 30
+        content = ""
+        while time.time() < deadline:
+            if os.path.exists(okf):
+                try:
+                    with open(okf, encoding="utf-8") as f:
+                        content = f.read()
+                except Exception:
+                    content = ""
+                if "META-INVOKE-OK" in content:
+                    break
+            time.sleep(0.5)
+        if "META-INVOKE-OK" not in content:
+            raise TestError("mcp_invoke 目标工具未真实执行（哨兵文件缺失/无内容）：%r" % content[:200])
         return txt[:160]
 
     total = 0
     ok = 0
     cases = [
         ("M1 工具面：三个元工具经外部注册可见", case_m1_surface),
-        ("M2 mcp_find → 命中 self_script_run", case_m2_find),
+        ("M2 mcp_find → 命中 task_run", case_m2_find),
         ("M3 mcp_load → 描述 + inputSchema", case_m3_load),
         ("M4 mcp_invoke → 目标工具真实执行", case_m4_invoke),
     ]

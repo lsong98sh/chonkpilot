@@ -102,6 +102,30 @@ var migrations = []Migration{
 	{Version: 11, Name: "turn_events", Up: func(tx *bolt.Tx) error {
 		return ensureBucket(tx, "turn_events")
 	}},
+	// v12（SESSION-COMP-1 P0，2026-10-24）：会话 → 对话（一树一库）。
+	//   - `dialogs`：prjusr 侧的可重建目录（dialog_id/file/title/kind/updated_at）；
+	//   - `messages_by_client_msg`：幂等键索引 `(session_id, client_msg_id)`；
+	//   - 回填：既有 messages 行按新索引重建索引项（indexPut 幂等；空 client_msg_id 亦入索引，
+	//     键尾为主键 → 不冲突）。
+	// 会话库（`dialogs/dialog-<hex>.db`）由 `Internal/sessionstore.Migrate` 搬运，不在本迁移内。
+	{Version: 12, Name: "dialogs", Up: func(tx *bolt.Tx) error {
+		for _, b := range []string{"dialogs", "messages_by_client_msg"} {
+			if err := ensureBucket(tx, b); err != nil {
+				return err
+			}
+		}
+		b := tx.Bucket([]byte("messages"))
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			rec, ok := decodeRecord(v, string(k))
+			if !ok {
+				return nil // 坏行 → 跳过（与查询口径一致）
+			}
+			return indexPut(tx, "messages", string(k), rec)
+		})
+	}},
 }
 
 // readSchemaVersion 读 _meta.schema_version（默认 0）。

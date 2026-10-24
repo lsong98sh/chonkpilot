@@ -21,8 +21,8 @@ type Config struct {
 //
 //	usr    = ~/.chonkpilot/chonkpilot.db
 //	prj    = <workDir>/.chonkpilot/chonkpilot.db（dataDir 非空 → <dataDir>/chonkpilot.db）
-//	prjusr = ~/.chonkpilot/data/<project-id>/chonkpilot.db
-//	         （dataDir 非空 → 同 prj 库；project-id 取自 prj 库，首次自动生成）
+//	prjusr = <workDir>/.chonkpilot/users/<OS 用户名>/chonkpilot.db
+//	         （dataDir 非空 → 同 prj 库；见 49 DATAROOT-1）
 //
 // system 是系统级兜底取值函数（资源/常量），可为 nil。
 func OpenConfig(workDir, dataDir string, system SystemDefault) (*Config, error) {
@@ -36,16 +36,7 @@ func OpenConfig(workDir, dataDir string, system SystemDefault) (*Config, error) 
 		releaseUsr()
 		return nil, err
 	}
-	prjUsrPath := prjPath // CLI 临时形态：与 prj 同库
-	if dataDir == "" {
-		id, err := EnsureProjectID(prj)
-		if err != nil {
-			releasePrj()
-			releaseUsr()
-			return nil, err
-		}
-		prjUsrPath = PrjUsrDBPath(id)
-	}
+	prjUsrPath := PrjUsrDBPath(workDir, dataDir)
 	prjUsr, releasePrjUsr, err := OpenSharedLayer(prjUsrPath, LayerPrjUsr)
 	if err != nil {
 		releasePrj()

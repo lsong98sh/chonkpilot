@@ -9,8 +9,10 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -31,11 +33,109 @@ const (
 	MaxLLMIter    = 2000
 )
 
+// ── 插件自身配置（usr 层 `plugins.<插件id>.<字段>`）──────────────
+//
+// 口径（49-待实现项·订正 2026-10-24「插件配置不分级」）：插件配置**只有一层**，落 usr 配置库
+// 的 config 表，键名 = `plugins.<插件id>.<字段>`；密钥恒落同一层（存储位置，不是调用方选级）。
+// 键空间按插件 id 分段（id 内不允许 `.`），故不同插件的键互不重叠。
+const (
+	pluginConfigKeyPrefix = "plugins."
+	// maxPluginConfigKeyChars / maxPluginConfigValueChars 是插件配置键 / 值的长度上限
+	// （INPUTVAL-1 口径：超限**明确拒绝**，不静默截断）。
+	maxPluginConfigKeyChars   = 128
+	maxPluginConfigValueChars = 32768
+)
+
+// IsPluginConfigKey 判定键是否属于插件自身配置命名空间（`plugins.<插件id>.<字段>`）。
+func IsPluginConfigKey(key string) bool {
+	return strings.HasPrefix(key, pluginConfigKeyPrefix)
+}
+
+// ValidatePluginConfigKey 校验插件配置键名格式：`plugins.<id>.<字段>`
+//   - id：1–64 字符，只允许字母 / 数字 / `-` / `_`（**不含 `.`**，否则越界到别的插件）；
+//   - 字段：非空、不以 `.` 起止、不含 `..`；
+//   - 整键 ≤ 128 字符、只允许可见 ASCII（不含空白 / 控制字符）。
+func ValidatePluginConfigKey(key string) error {
+	if !IsPluginConfigKey(key) {
+		return fmt.Errorf("%s: 插件配置键必须以 %s 开头", key, pluginConfigKeyPrefix)
+	}
+	if len(key) > maxPluginConfigKeyChars {
+		return fmt.Errorf("%s: 键名超长（上限 %d 字符）", key, maxPluginConfigKeyChars)
+	}
+	for _, r := range key {
+		if r < 0x21 || r > 0x7e {
+			return fmt.Errorf("%s: 只允许可见 ASCII 字符（不含空白 / 控制字符）", key)
+		}
+	}
+	rest := strings.TrimPrefix(key, pluginConfigKeyPrefix)
+	dot := strings.Index(rest, ".")
+	if dot <= 0 || dot == len(rest)-1 {
+		return fmt.Errorf("%s: 须形如 plugins.<插件id>.<字段>", key)
+	}
+	id, field := rest[:dot], rest[dot+1:]
+	if len(id) > MaxNameChars {
+		return fmt.Errorf("%s: 插件 id 超长（上限 %d 字符）", key, MaxNameChars)
+	}
+	for _, r := range id {
+		ok := r == '-' || r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		if !ok {
+			return fmt.Errorf("%s: 插件 id 只允许字母 / 数字 / - / _", key)
+		}
+	}
+	if field == "" || strings.HasPrefix(field, ".") || strings.HasSuffix(field, ".") || strings.Contains(field, "..") {
+		return fmt.Errorf("%s: 字段名非法", key)
+	}
+	return nil
+}
+
+// PluginConfigValue 把插件配置值归一为字符串：只接受标量（字符串 / 数字 / 布尔），
+// 超长或非标量 → **明确错误**（不静默截断 / 不 JSON 序列化）。
+func PluginConfigValue(key string, v any) (string, error) {
+	var s string
+	switch t := v.(type) {
+	case string:
+		s = t
+	case bool:
+		s = strconv.FormatBool(t)
+	case int:
+		s = strconv.Itoa(t)
+	case int64:
+		s = strconv.FormatInt(t, 10)
+	case float64:
+		if t != math.Trunc(t) || math.IsInf(t, 0) || math.IsNaN(t) {
+			return "", fmt.Errorf("%s: 值必须是整数（收到 %v）", key, t)
+		}
+		s = strconv.FormatInt(int64(t), 10)
+	case json.Number:
+		s = t.String()
+	case nil:
+		return "", fmt.Errorf("%s: 值不能为 null", key)
+	default:
+		return "", fmt.Errorf("%s: 值必须是字符串 / 数字 / 布尔（收到 %T）", key, v)
+	}
+	if n := utf8.RuneCountInString(s); n > maxPluginConfigValueChars {
+		return "", fmt.Errorf("%s: 值超长（上限 %d 字符，收到 %d）", key, maxPluginConfigValueChars, n)
+	}
+	return s, nil
+}
+
 // ValidateUserConfigPayload 校验 usr 配置整批载荷（saveUserConfig 写库前调用）：
 // 标量已知键（数值/长度）与 `llms` 集合逐条四项。未知键沿用既有语义（白名单外静默忽略）。
 func ValidateUserConfigPayload(payload map[string]any) error {
 	for k, v := range payload {
 		if k == "id" || k == "llms" {
+			continue
+		}
+		// 插件自身配置（`plugins.<插件id>.<字段>`）：键名格式 + 值标量/长度（INPUTVAL-1 口径）。
+		// 前缀边界（只能写调用方自己）由插件桥 `plugin/v1/config.user.set` 强制；数据层只做
+		// 「确属插件命名空间 + 形态合法」。失败 → 整批拒绝（不产生部分写入）。
+		if IsPluginConfigKey(k) {
+			if err := ValidatePluginConfigKey(k); err != nil {
+				return err
+			}
+			if _, err := PluginConfigValue(k, v); err != nil {
+				return err
+			}
 			continue
 		}
 		kind, known := userConfigKeyKinds[k]

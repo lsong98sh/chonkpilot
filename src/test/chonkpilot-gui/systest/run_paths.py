@@ -11,20 +11,13 @@ A（落库确认）：
   * **重启后**再回读 → 7/7 仍一致（usr 主库持久，非内存态）。
 
 B（效果确认；一律真实链路可观测证据，无「保存成功即算过」）：
-  * `goPath` / `rustPath` / `cCompilerPath` → `{{toolchain.go|rust|c}}` 占位符（场景主 agent 提示词）
-    → mock LLM `/last` 的 **system 原文**（`chonkpilot-llm/server/toolchain.go:35 toolchainVars`
-    → `mcpms.ReplaceToolchain`）；
-  * `pythonPath` / `nodePath` / `javaPath` → `CHONKPILOT_INTERPRETERS`（executor 子进程 env，
-    `chonkpilot-mcp-server/server/config.go:218 executorEnv`）→ **`script_run` 真实执行**，
-    以「被启动进程回显自身可执行路径（`process.execPath`）」为解释器选型证据
-    （`chonkpilot-mcp-tools/internal/scriptrun/exec.go:191 resolveInterpreter`）；
-  * `chromePath` → `CHONK_CHROME`（同链路子进程 env，经 cmd 探针回显）；
-  * **java 真机（I-80 回归，套件末段追加一次）**：`javaPath` = 本机**真实** `java`
-    （`shutil.which("java")`；无 → 打印原因并跳过）→ 再重启一次（解释器 env 需重启才注入）→
-    `script_run(runtime=java, script=<打印哨兵 `CK-JAVA-OK` 的类>)` **真跑**，断言工具输出含哨兵。
-    夹具（假解释器）只证明「选型 = 配置值」，真机 java 证明**java runtime 真的能跑**
-    （临时脚本扩展名必须 `.java`：JDK 单文件源码模式 JEP 330；`.jsh` 会被当类名 →
-    ClassNotFoundException，见 `chonkpilot-mcp-tools/internal/scriptrun/exec.go:47 scriptExt`）。
+  * `goPath` / `rustPath` / `cCompilerPath` / `chromePath` → `{{toolchain.*}}` 占位符（场景主 agent
+    提示词）→ mock LLM `/last` 的 **system 原文**（`chonkpilot-llm/server/toolchain.go:35 toolchainVars`
+    → `mcpms.ReplaceToolchain`）；未配置键 → 空串。
+  * `pythonPath` / `nodePath` / `javaPath` → **B 不可覆盖（2026-10-23，41 D-67）**：原消费方
+    `script_run`（读 `CHONKPILOT_INTERPRETERS`）已随 core 契约退役删除；`CHONK_CHROME` 的注入对象
+    （executor 子进程）亦随之消失，现行 `task_run` 为普通 shell → 无稳定可观测面。本套件对这些
+    子项**显式打印 `[SKIP]`**（A 面仍完整断言），缺口登记见 41 D-67。
 
 **需重启才生效（本套件真实重启：基线后一次；java 真机段再一次）**：
   解释器 / 浏览器 env 与 capability 原语取值在 **instance-register** 时注入
@@ -198,15 +191,6 @@ def _norm(s):
     return s
 
 
-def _between(s, pre, post="]"):
-    i = s.find(pre)
-    if i < 0:
-        return ""
-    rest = s[i + len(pre):]
-    j = rest.find(post)
-    return rest[:j] if j >= 0 else rest
-
-
 def _line_with(s, prefix):
     """取首个（strip 后）以 prefix 开头的行（无 → ""）。"""
     for ln in (s or "").splitlines():
@@ -232,25 +216,6 @@ def run_turn(q, scenario=""):
     return sid, turn
 
 
-def wait_tool_result(turn, tool_suffix, max_wait=120):
-    """等该轮某工具的 tool-result（兼容事件 `tool-result`，61 §6；网关侧 200 字摘要）。"""
-    c = CUR[0]
-    deadline = time.time() + max_wait
-    payload = None
-    while time.time() < deadline:
-        for e in c.events_of("tool-result", clear=False):
-            p = deep(e.get("payload")) or {}
-            if isinstance(p, dict) and p.get("turn_id") == turn \
-                    and (p.get("tool") or "").endswith(tool_suffix):
-                payload = p
-        if payload is not None:
-            break
-        time.sleep(0.3)
-    if payload is None:
-        raise TestError("未收到 %s 的 tool-result（turn=%s）" % (tool_suffix, turn))
-    return payload
-
-
 def wait_turn_done(sid, max_wait=120):
     """等本会话该轮终态 llm-complete。"""
     c = CUR[0]
@@ -264,49 +229,8 @@ def wait_turn_done(sid, max_wait=120):
     raise TestError("轮次未收尾（session=%s）" % sid)
 
 
-def tool_output(turn):
-    """该轮工具结果原文（`data-session-load-messages`，61 §3.2；全文，无 200 字摘要截断）。
-
-    返回 (解包后的 output 文本, 归一化全文)。JS 探针正文与 CHROME/INTERPS 断言都取自前者
-    （escapes 正确，可直接 json.loads）。
-    """
-    r = deep(CUR[0].req("data-session-load-messages", {"turn_id": turn})) or {}
-    msgs = (r.get("messages") or []) if isinstance(r, dict) else []
-    contents = []
-    for m in msgs:
-        m = deep(m) or {}
-        if isinstance(m, dict) and m.get("role") == "tool" and m.get("content"):
-            contents.append(m["content"])
-    if not contents:
-        raise TestError("未取到该轮 tool 消息（turn=%s，messages=%d）" % (turn, len(msgs)))
-    txt = contents[-1]
-    try:
-        o = json.loads(txt)
-        if isinstance(o, dict) and isinstance(o.get("output"), str):
-            txt = o["output"]
-    except Exception:
-        pass
-    return txt, _norm("\n".join(contents))
-
-
-def probe(rt):
-    """发一轮探针 → 返回 (output 文本, 归一化全文, tool-result 摘要)。"""
-    sid, turn = run_turn("call interp-probe rt=%s" % rt)
-    p = wait_tool_result(turn, "script_run")
-    wait_turn_done(sid)
-    txt, norm = tool_output(turn)
-    print("[probe rt=%s] %s" % (rt, txt.replace("\n", " | ")[:300]), flush=True)
-    return txt, norm, (p.get("result") or "")
-
-
-def java_real_probe():
-    """真机 java 段：发一轮 `call java-real`（mock 桩路由）→ 返回 (output 文本, 归一化全文, tool-result 摘要)。"""
-    sid, turn = run_turn("call java-real")
-    p = wait_tool_result(turn, "script_run")
-    wait_turn_done(sid)
-    txt, norm = tool_output(turn)
-    print("[java-real] %s" % txt.replace("\n", " | ")[:300], flush=True)
-    return txt, norm, (p.get("result") or "")
+# 〔2026-10-23〕原 probe()/java_real_probe()（`script_run` runtime 探针）随 core 契约退役删除，
+# 见 41 D-67。
 
 
 # ── 场景（占位符载体）────────────────────────────────────
@@ -381,21 +305,14 @@ def case_a_paths_readback():
 
 
 def case_baseline_before_restart():
-    """重启前基线：执行配置 env **未**注入（instance-register 已过）；场景占位符**已**生效（每调用读）。"""
-    txt, norm, _ = probe("cmd")
-    chrome = _between(txt, "CHROME=[", "]")
-    interps = _between(txt, "INTERPS=[", "]")
+    """重启前基线：场景占位符**已**生效（每调用读 usr 配置，无需重启）。
+
+    〔2026-10-23〕原「执行配置 env 未注入」的 cmd 探针随 `script_run` 退役移除（41 D-67）。
+    """
     sys_txt = scenario_system()
     live_go = _line_with(sys_txt, "GO=")
-    evi("重启前基线", CHONK_CHROME=chrome, CHONKPILOT_INTERPRETERS=interps,
-        scenario_GO_line=live_go, scenario_live_substituted=(SENT["goPath"] in sys_txt))
-    # 未注入的直接证据 = cmd 原样回显变量名（变量不存在）或空值；环境自带非哨兵值时只提示不误判
-    for name, got in (("CHONK_CHROME", chrome), ("CHONKPILOT_INTERPRETERS", interps)):
-        if got not in ("", "%" + name + "%"):
-            print("  [note] 环境已有 %s=%r（非本次写入的哨兵值）" % (name, got[:60]), flush=True)
-    leaked = [k for k in ("chromePath", "pythonPath", "nodePath", "javaPath") if SENT[k] in norm]
-    if leaked:
-        raise TestError("重启前执行配置已注入（与 server.go:564 instance-register 注入不符）: %r" % leaked)
+    evi("重启前基线", scenario_GO_line=live_go,
+        scenario_live_substituted=(SENT["goPath"] in sys_txt))
     if SENT["goPath"] not in sys_txt:
         raise TestError("场景 {{toolchain.go}} 未替换（应为每调用读 usr 配置，无需重启）: %r" % live_go)
 
@@ -410,39 +327,18 @@ def case_a_after_restart():
 
 
 def case_b_env_injection():
-    """B：chromePath → 子进程 env `CHONK_CHROME`；pythonPath/nodePath/javaPath → `CHONKPILOT_INTERPRETERS`。"""
-    txt, norm, summary = probe("cmd")
-    chrome = _between(txt, "CHROME=[", "]")
-    raw = _between(txt, "INTERPS=[", "]")
-    m = None
-    try:
-        m = json.loads(raw)
-    except Exception:
-        m = None
-    if chrome != SENT["chromePath"]:
-        raise TestError("CHONK_CHROME=%r，期望 chromePath=%r" % (chrome, SENT["chromePath"]))
-    want = {"python": SENT["pythonPath"], "js": SENT["nodePath"], "java": SENT["javaPath"]}
-    if not isinstance(m, dict):
-        raise TestError("CHONKPILOT_INTERPRETERS 非法 JSON: %r" % raw)
-    diff = {k: m.get(k) for k, v in want.items() if (m.get(k) or "").lower() != v.lower()}
-    if diff:
-        raise TestError("CHONKPILOT_INTERPRETERS 映射不符: %r" % diff)
-    evi("B-env注入", CHONK_CHROME=chrome, CHONKPILOT_INTERPRETERS=m,
-        raw_interps_head=raw[:120], tool_result_summary=summary)
+    """B：**不可覆盖（2026-10-23 口径）** —— 子进程 env 探针随 `script_run` 退役删除。
+
+    `CHONK_CHROME` / `CHONKPILOT_INTERPRETERS` 的注入点在 mcp-server `executorEnv`（spawn executor
+    子进程），唯一可观测消费方 = 已删除的 `script_run`；现行 `task_run`（task 插件）为普通 shell，
+    不读这两项 → 无稳定可观测面。登记见 [41 D-67](../../../docs/spec/40-roadmap/41-未决项登记.md)。
+    """
+    print("    [SKIP] B-env注入：script_run 已删除，路径配置当前无执行侧消费面（41 D-67）", flush=True)
 
 
 def case_b_interpreters_launch():
-    """B：三个解释器键 → `script_run` 真实启动的解释器 == 配置值（被启动进程回显 process.execPath）。"""
-    got = {}
-    for rt, key in (("js", "nodePath"), ("python", "pythonPath"), ("java", "javaPath")):
-        txt, _, _ = probe(rt)
-        line = _line_with(txt, "INTERP=")
-        path = line.split("INTERP=", 1)[1].strip() if line else ""
-        got[key] = path
-        if path.lower() != SENT[key].lower():
-            raise TestError("runtime=%s 实际启动 %r，期望 %s=%r" % (rt, path, key, SENT[key]))
-    evi("B-解释器真实启动", observed=got,
-        note="js=真 node 副本；python/java=假解释器（node.exe 副本改名，真机 python 3.14 无法裸复制）")
+    """B：**不可覆盖（2026-10-23 口径）** —— 解释器选型探针随 `script_run` 退役删除（41 D-67）。"""
+    print("    [SKIP] B-解释器真实启动：task_run 不读 CHONKPILOT_INTERPRETERS（41 D-67）", flush=True)
 
 
 def case_b_toolchain_placeholders():
@@ -469,8 +365,8 @@ def case_b_toolchain_placeholders():
 def case_b_unconfigured_key_empty():
     """B：未配置键 → 替换为**空串**（删 chromePath → system 行变 `CHROME=`，且不留占位符）。
 
-    附：同轮复核「删除后 CHONK_CHROME 仍为旧值」——env 注入在 instance-register 定格（未重启），
-    与占位符的「每调用读」形成对照（证据打印，不作硬断言）。
+    〔2026-10-23〕原附加的「同轮复核 CHONK_CHROME 仍为旧值」随 `script_run` 退役移除（41 D-67）；
+    占位符替换面仍完整断言。
     """
     CUR[0].req("data-user-config-delete", {"id": "chromePath"})
     cfg = user_cfg()
@@ -482,28 +378,19 @@ def case_b_unconfigured_key_empty():
         raise TestError("未配置 key 占位符原样残留（应替换为空串）")
     if line != "CHROME=":
         raise TestError("未配置 key 应替换为空串：line=%r" % line)
-    env_txt, _, _ = probe("cmd")
-    stale = _between(env_txt, "CHROME=[", "]")
-    evi("B-未配置键空串", line=line, placeholder_left=False,
-        env_after_delete=stale, env_note="删键后未重启 → CHONK_CHROME 仍为实例级定格值")
+    evi("B-未配置键空串", line=line, placeholder_left=False)
 
 
 def case_b_java_real_interpreter():
-    """B（I-80 回归）：`javaPath` = 本机**真实** java → 重启后 `script_run(runtime=java)` 真跑。
+    """B（I-80 回归）：**B 不可覆盖**（`script_run(runtime=java)` 已随 core 契约删除，41 D-67）。
 
-    A：回读 javaPath == 真机 java 路径；
-    B：工具输出含哨兵 `CK-JAVA-OK` —— 临时脚本扩展名 `.java` 时 JDK 单文件源码模式可执行
-    （`.jsh` 会被当类名 → ClassNotFoundException）。
+    A（javaPath 回读）仍断言。
     """
     cfg = user_cfg()
     got = cfg.get("javaPath") or ""
     if got.lower() != JAVA_REAL.lower():
         raise TestError("A：javaPath 回读=%r，期望真机 java=%r" % (got, JAVA_REAL))
-    txt, norm, summary = java_real_probe()
-    if "CK-JAVA-OK" not in txt:
-        raise TestError("java 真机脚本未输出哨兵 CK-JAVA-OK（临时脚本扩展名应为 .java）: %r" % txt[:400])
-    evi("B-java真机端到端", javaPath=JAVA_REAL, sentinel_found="CK-JAVA-OK",
-        output=txt[:200], tool_result_summary=summary)
+    print("    [SKIP] B-java真机端到端：script_run(runtime=java) 已删除（41 D-67）；A 回读通过", flush=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -529,7 +416,7 @@ def main():
         scenario_save()
 
         total += 1; ok += run_case("A 7 键哨兵回读 + 无串写", case_a_paths_readback)
-        total += 1; ok += run_case("（重启前基线）env 未注入 / 占位符已生效", case_baseline_before_restart)
+        total += 1; ok += run_case("（重启前基线）占位符已生效", case_baseline_before_restart)
         for e in (CUR[0].console() or {}).get("entries", []):
             if e.get("level") == "error":
                 print("  [CONSOLE-ERROR] %s" % e.get("text"), flush=True)
@@ -548,23 +435,23 @@ def main():
               % (g2.port, g2.pid()), flush=True)
 
         total += 1; ok += run_case("A 重启后 7 键仍一致（usr 主库持久）", case_a_after_restart)
-        total += 1; ok += run_case("B 子进程 env 注入（CHONK_CHROME / CHONKPILOT_INTERPRETERS）",
+        total += 1; ok += run_case("B 子进程 env 注入（不可覆盖：script_run 已删除，41 D-67）",
                                    case_b_env_injection)
-        total += 1; ok += run_case("B 解释器真实启动（js / python / java == 配置值）",
+        total += 1; ok += run_case("B 解释器真实启动（不可覆盖：script_run 已删除，41 D-67）",
                                    case_b_interpreters_launch)
         total += 1; ok += run_case("B {{toolchain.*}} 占位符替换（送 LLM 的 system 原文）",
                                    case_b_toolchain_placeholders)
-        total += 1; ok += run_case("B 未配置键 → 空串（+ env 定格对照）", case_b_unconfigured_key_empty)
+        total += 1; ok += run_case("B 未配置键 → 空串", case_b_unconfigured_key_empty)
         for e in (CUR[0].console() or {}).get("entries", []):
             if e.get("level") == "error":
                 print("  [CONSOLE-ERROR] %s" % e.get("text"), flush=True)
 
-        # ── 阶段 3：真机 java 端到端（I-80 回归）：javaPath=真机 java → 再重启一次 ──
+        # ── 阶段 3：javaPath 回读（原真机端到端 B 面随 script_run 删除 → 41 D-67）──
         if not JAVA_REAL:
-            print("[skip] 本机无 java（shutil.which('java') 为空）→ 跳过 java 真机端到端用例", flush=True)
+            print("[skip] 本机无 java（shutil.which('java') 为空）→ 跳过 javaPath 段", flush=True)
         else:
             CUR[0].req("data-user-config-save", {"data": {"javaPath": JAVA_REAL}})
-            print("[java-real] javaPath=%s → 重启实例 #2（重注入 CHONKPILOT_INTERPRETERS）" % JAVA_REAL,
+            print("[java-path] javaPath=%s → 重启实例 #2（验证 usr 持久 + 占位符面）" % JAVA_REAL,
                   flush=True)
             port2 = g2.port
             g2.stop(); g2 = None
@@ -576,7 +463,7 @@ def main():
             PORTS.append(g3.port)
             CUR[0].console(clear=True)
             print("[java-real] 实例 #3 port=%d pid=%s" % (g3.port, g3.pid()), flush=True)
-            total += 1; ok += run_case("B java 真机端到端（script_run runtime=java → CK-JAVA-OK）",
+            total += 1; ok += run_case("A javaPath 回读（B 不可覆盖：script_run 已删除，41 D-67）",
                                        case_b_java_real_interpreter)
             for e in (CUR[0].console() or {}).get("entries", []):
                 if e.get("level") == "error":

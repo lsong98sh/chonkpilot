@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // mqMethod 是「对外方法 → 对内既有 MQ 主题」的映射。
@@ -42,16 +43,32 @@ var defaultMQMethods = []mqMethod{
 	{"plugin/v1/task.verify", "task-verify"},
 	{"plugin/v1/tool.retry", "tool-retry"},
 	{"plugin/v1/ask.reply", "ask-user-reply"},
-	// 配置 / 只读
-	{"plugin/v1/config.user.get", "data-user-config"},
-	{"plugin/v1/config.project.get", "data-prj-config"},
-	{"plugin/v1/config.filelist.list", "data-filelist"},
-	{"plugin/v1/config.memory.list", "data-memory"},
-	{"plugin/v1/config.mcp.list", "data-mcp"},
-	{"plugin/v1/config.scenario.list", "data-scenario"},
-	{"plugin/v1/config.prompt.get", "data-prompt"},
+	// 配置 / 只读（2026-10-22 订正：原映射的 data-user-config / data-prj-config /
+	// data-filelist / data-memory / data-prompt 均非真实主题，改为 *-load / *-list）
+	//
+	// 注：`plugin/v1/config.user.get|load` **不在此表** —— usr 配置读同样必须走「请求 + 同主题
+	// 应答」（raw Emit 的 v.Result 恒空 → 读不到结果），且读侧要按调用方身份收窄到自身键空间，
+	// 见 configuser.go 的 configUserMethods。
+	{"plugin/v1/config.project.get", "data-prj-config-load"},
+	{"plugin/v1/config.project.load", "data-prj-config-load"},
+	{"plugin/v1/config.project.set", "data-prj-config-save"},
+	{"plugin/v1/config.project.delete", "data-prj-config-delete"},
+	{"plugin/v1/config.filelist.list", "data-filelist-list"},
+	{"plugin/v1/config.memory.list", "data-memory-list"},
+	{"plugin/v1/config.mcp.list", "data-mcp-list"},
+	{"plugin/v1/config.scenario.list", "data-scenario-list"},
+	{"plugin/v1/config.prompt.get", "data-prompt-load"},
+	{"plugin/v1/config.prompt.load", "data-prompt-load"},
+	{"plugin/v1/config.prompt.set", "data-prompt-save"},
 	{"plugin/v1/knowledge.list", "data-knowledge-list"},
 	{"plugin/v1/knowledge.read", "data-knowledge-read"},
+	// 会话写（压缩插件）
+	{"plugin/v1/session.snapshot.set", "data-snapshot-set"},
+	{"plugin/v1/session.summary.set", "data-session-set-summary"},
+	{"plugin/v1/session.messages", "data-session-load-messages"},
+	{"plugin/v1/session.context", "data-session-context"},
+	// 通知
+	{"plugin/v1/tool.notify", "tool-notify"},
 	// 文件
 	{"plugin/v1/file.list", "filesys.list"},
 	{"plugin/v1/file.read", "filesys.content"},
@@ -115,11 +132,29 @@ var commandMethods = map[string]bool{
 	"plugin/v1/memory.flush":          true,
 	"plugin/v1/vfts.reindex":          true,
 	"plugin/v1/vfts.dict.set":         true,
+	"plugin/v1/session.snapshot.set":  true,
+	"plugin/v1/session.summary.set":   true,
+	"plugin/v1/config.project.set":    true,
+	"plugin/v1/config.project.delete": true,
+	"plugin/v1/config.prompt.set":     true,
+	"plugin/v1/tool.notify":           true,
 }
 
 // asyncEmitter 是 mq 内部总线的可选异步派发能力。
 type asyncEmitter interface {
 	EmitAsync(ctx context.Context, subject string, payload any)
+}
+
+// configProjectMethods 是 prj 配置读写能力（PLUGIN-UI-1 第三段：插件配置统一由 data 层管理）。
+//
+// 它们**必须**走「请求 + 同主题应答」面：persist 把应答重新发布到**请求同一主题**并按 req_id
+// 关联（见 data/persist envelope），raw Emit 的 v.Result 恒为空、命令类还会被当成 fire-and-forget
+// → 读写都拿不到结果。故单独注册为 EmitData 实现（与 plugin/v1/data.* 同一套收发）。
+var configProjectMethods = []mqMethod{
+	{"plugin/v1/config.project.get", msgkeys.TopicDataPrjConfigLoad},
+	{"plugin/v1/config.project.load", msgkeys.TopicDataPrjConfigLoad},
+	{"plugin/v1/config.project.set", msgkeys.TopicDataPrjConfigSave},
+	{"plugin/v1/config.project.delete", msgkeys.TopicDataPrjConfigDelete},
 }
 
 // registerMQCapabilities 把默认映射注册进 Registry。
@@ -147,6 +182,23 @@ func registerMQCapabilities(reg *Registry, bus mq.Bus) {
 			return v.Result, nil
 		})
 	}
+	for _, m := range configProjectMethods {
+		m := m
+		reg.Register(m.Method, func(ctx context.Context, _ *Session, args json.RawMessage) (any, error) {
+			payload := map[string]any{}
+			if len(args) > 0 {
+				if err := json.Unmarshal(args, &payload); err != nil {
+					return nil, &Error{Code: CodeArgsInvalid, Msg: "payload 解析失败: " + err.Error()}
+				}
+			}
+			res, err := EmitData(ctx, bus, m.Topic, payload)
+			if err != nil {
+				return nil, &Error{Code: CodeInternal, Msg: err.Error()}
+			}
+			return res, nil
+		})
+	}
+	registerUserConfigCapabilities(reg, bus)
 }
 
 func hasRequestID(args json.RawMessage) bool {

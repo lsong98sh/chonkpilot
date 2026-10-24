@@ -16,24 +16,18 @@ func initdataCapRoot() string {
 	return filepath.Join("..", "..", "..", "..", "src", "initdata", "capability")
 }
 
-// TestLoadExecToolsInitdata：加载系统 app 根的全部可执行工具；
+// TestLoadExecToolsInitdata：加载出厂契约根中的可执行工具；
 // 名称/描述/schema/_meta（hot/category/async/async-threshold）与契约一致。
-// 2026-10-19（G-68 第二步）：插件查询工具（internal）与 meta/domain（core-only）也走同一执行面。
-// 2026-10-19：dsl_run 改为独立 executor（runtime + core-only），不再是 gateway 自持节点。
+//
+// 2026-10-23（PLUGIN-1）：codegraph_* / vfts_query / script_run / web_* / mcp_* 契约已随各自
+// manifest 插件投放（`capability/plugins/<id>/tools/`），**不再位于 core capability 根**；
+// src/initdata/capability/tools 仅剩 file 系列（file 插件契约的唯一源）。
 func TestLoadExecToolsInitdata(t *testing.T) {
 	tools, err := LoadExecTools(initdataCapRoot(), nil)
 	if err != nil {
 		t.Fatalf("LoadExecTools: %v", err)
 	}
 	want := []string{
-		"codegraph_analyze_complexity",
-		"codegraph_callees",
-		"codegraph_callers",
-		"codegraph_find_circular_deps",
-		"codegraph_get_dependency_graph",
-		"codegraph_get_module_summary",
-		"codegraph_get_symbol_info",
-		"codegraph_symbol_search",
 		"file_copy",
 		"file_delete",
 		"file_detect",
@@ -45,12 +39,6 @@ func TestLoadExecToolsInitdata(t *testing.T) {
 		"file_read",
 		"file_replace",
 		"file_write",
-		"mcp_find",
-		"mcp_invoke",
-		"mcp_load",
-		"script_run",
-		"vfts_query",
-		"web_fetch",
 	}
 	if len(tools) != len(want) {
 		t.Fatalf("工具数 = %d，期望 %d：%v", len(tools), len(want), toolNames(tools))

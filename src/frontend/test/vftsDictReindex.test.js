@@ -1,7 +1,7 @@
 /**
  * vfts 分词器改 jieba（P2-10）前端面单测：
  *   ① composable useVftsDict 走 61 生成的三主题（vfts.dict.get / vfts.dict.set / vfts.reindex）；
- *   ② VftsConfig 配置页暴露「系统级词典」区块 + 「重新索引」按钮，且不使用 watch/watchEffect；
+ *   ② 〔UIREG-1〕配置页已并入 codebase 插件（前端页面删除）→ 该页组件级守卫移除；
  *   ③ 生成物 msgkeys.js 已含三主题（契约同步的机器可读证据）；
  *   ④ i18n 新增键 zh-CN / en-US 齐备。
  *
@@ -26,18 +26,6 @@ test('① useVftsDict 走 61 三主题且无 watch', () => {
   assert.match(src, /MsgTopics\.vftsReindex/, '须用生成的主题常量 vftsReindex')
   assert.match(src, /mq\.emit\(/, '须经 mq.emit 发布（无 RPC）')
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, 'composable 不得使用 watch/watchEffect')
-})
-
-test('② VftsConfig 暴露系统级词典区块 + 重新索引按钮', () => {
-  const src = read('views/settings/VftsConfig.vue')
-  assert.match(src, /useVftsDict\(/, '须使用 useVftsDict composable（状态逻辑外置）')
-  assert.match(src, /projectConfig\.index_reindex/, '缺「重新索引」按钮文案')
-  assert.match(src, /handleReindex/, '缺重新索引入口处理')
-  assert.match(src, /projectConfig\.dict_section/, '缺系统级词典区块')
-  assert.match(src, /projectConfig\.dict_save/, '缺自定义词保存按钮')
-  assert.match(src, /projectConfig\.dict_hint/, '缺词典口径提示（系统级/必须重建）')
-  assert.match(src, /v-model="userDict"/, '缺自定义词编辑输入')
-  assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, 'VftsConfig 不得使用 watch/watchEffect')
 })
 
 test('③ msgkeys.js 已生成 vfts 管理面三主题', () => {

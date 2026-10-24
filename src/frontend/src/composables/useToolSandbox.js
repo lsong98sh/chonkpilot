@@ -165,18 +165,18 @@ export function useToolSandbox() {
           // 展示用：网关为暴露名加的前缀（self_ 等）剥掉后显示（`name` 仍作完整暴露名 / title）
           server: srv || {},
         }
-        // 内置 executor 工具：按契约 category 归组（self 节点工具 category = core/desktop/browser；dsl = server）。
-        if (category === 'core' || category === 'desktop' || category === 'browser') {
-          byCat[category].push(item)
-          continue
-        }
-        if (category === 'server') { // dsl 执行器（dsl_run）
-          byCat['server'].push(item)
+        // 内置 executor 工具：按契约 category 归组。
+        // GATEWAY-2/L1 后契约类别 = file / core / meta / server（原 core/desktop/browser 已退役），
+        // 且 `_meta` 未透出 executor runtime → script_run / web_fetch 同为 core 无法精确归属；
+        // 目前只能确定 `file` → chonkpilot-tools-executor.exe，其余内置工具不投影到执行体行。
+        if (category === 'file') {
+          byCat.file.push(item)
           continue
         }
         if (category === 'dir') continue // dir 节点工具（第三方目录），非本页范围
-        // 外部 MCP 工具：按 `_meta.server.alias`（= MCP 条目名）归组。
-        if (alias && alias !== 'self') {
+        // 外部 MCP 工具：按 `_meta.server.alias`（= MCP 条目名）归组；
+        // 内置前门（core-mcp-server，alias 缺省 `core`）的工具不属外部 MCP → 跳过。
+        if (alias && alias !== 'self' && alias !== 'core') {
           if (!byServer[alias]) byServer[alias] = []
           byServer[alias].push(item)
         }

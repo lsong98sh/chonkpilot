@@ -1338,8 +1338,9 @@ function buildPayload() {
     config: {
       'memory.enabled': String(aux.memory),
       'memory.category.用户偏好': String(aux.userPref),
-      'enable-codegraph': String(aux.codegraph),
-      'enable-vfts': String(aux.vfts),
+      // codebase 插件命名空间（PLUGIN-UI-1 第三段：旧宿主开关已一次性迁移，此处只写新键）
+      'plugins.codebase.codegraph.enabled': String(aux.codegraph),
+      'plugins.codebase.vfts.enabled': String(aux.vfts),
       'history.enabled': String(aux.fileHistory),
     },
     // 仅「未检测到 git」且用户勾选时执行 git init

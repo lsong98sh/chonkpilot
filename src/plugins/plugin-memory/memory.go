@@ -3,8 +3,12 @@
 // 定位（42 §2 (27) / 41 D-16）：**每轮（turn 结束）异步**把本轮新信息沉淀进记忆库，
 // 与 capability 原语库（LLM 经 mcp_find 获取的"普通知识"）无关。
 //
-// 触发：订阅 server 每轮终态事件 `session-compress`（与压缩插件同源，**消息面零新增**；
-// 事件由 server.finish 在落库 + 写快照后发出）。**队列 + 合并（2026-10-06，用户拍板）**：
+// 触发：订阅 server 每轮终态事件 `session-complete`（**不新增消息面**；事件由 server.finish 在
+// 终态落库 + 写快照后发出）。2026-10-24 用户口径：压缩与记忆**毫不相干** —— 压缩服务于
+// 「发送前的上下文」，记忆沉淀发生在「轮次结束 / 会话恢复之后」，故**不得借用压缩的触发主题**
+// （原订阅 `session-compress` 已解除）。载荷取 `instance_id` / `work_dir` / `data_dir` /
+// `session` / `turn`（work_dir/data_dir 为 server 在 session-complete 上**只增**的字段）。
+// **队列 + 合并（2026-10-06，用户拍板）**：
 // 订阅回调只**置待处理标记**（key = (instance, session)，同一 key **覆盖合并**）并立即返回；
 // **每 instance 一个串行 worker** 取标记 → 串行处理（同会话/同实例不并发、不重入；
 // 进程退出时未完成任务允许丢弃，Hook 无 Stop）。处理流程：
@@ -59,8 +63,8 @@ import (
 
 // 订阅/请求主题（相对主题；chonk. 前缀在 mq 初始化注入一次）。
 const (
-	// turnEndSubject 每轮终态事件（server.finish 落库后发；同 compress 订阅源，不新增消息面）。
-	turnEndSubject = "session-compress"
+	// turnEndSubject 每轮终态事件（server.finish 终态落库后发；与压缩无关，不新增消息面）。
+	turnEndSubject = msgkeys.TopicSessionComplete
 	// flushSubject 手动触发一次沉淀（点分相对主题；桥/服务端「点分直通总线」分支受理 →
 	// 不属 data-* 数据面，故由本插件订阅应答）。payload `{instance_id, session}`
 	// （instance_id 由前端 mq / 桥统一注入）；作用域 = 当前 instance 的**指定会话**，
@@ -234,13 +238,18 @@ func (p *Plugin) notify(ev turnEvent, kind, reason string) {
 	})
 }
 
-// turnEvent 是 session-compress 事件载荷（server.finish 发出）。
+// turnEvent 是本轮沉淀需要的 session-complete 载荷字段（server.finish 发出）。
+//
+// JSON 键取**事件既有字段名** `turn`（= 本轮轮次 id）；Go 字段沿用 LastTurn（语义 = 本轮沉淀
+// 范围的最新轮）。work_dir / data_dir = server 在 session-complete 上**只增**的字段。
 type turnEvent struct {
 	InstanceID string `json:"instance_id"`
 	WorkDir    string `json:"work_dir"`
 	DataDir    string `json:"data_dir"`
 	Session    string `json:"session"`
-	LastTurn   string `json:"last_turn"`
+	LastTurn   string `json:"turn"`
+	// DialogID 一树一库（P3-4b，61 §0.6）：事件同级回带；空 = 旧布局（不写键）。
+	DialogID string `json:"dialog_id"`
 }
 
 // onTurnEnd 每轮终态 → 置待处理标记（不阻塞对话；由每 instance 串行 worker 异步处理）。
@@ -329,7 +338,7 @@ func (p *Plugin) worker(instanceID string) {
 		p.mu.Unlock()
 		// 本轮依赖**解析一次**（项目配置 + 会话父级），供子会话门控与 process 复用——消除
 		// 改前 skipSubsession + process 各自重复读配置/父级的 2+2 次多余消息往返。
-		deps := p.resolveTurnDeps(task.ev.InstanceID, task.ev.Session)
+		deps := p.resolveTurnDeps(task.ev.InstanceID, task.ev.Session, task.ev.DialogID)
 		// 子会话门控（DSL-4，42 §2 (253)）：在**广播进度前**判定 —— 子会话且「提取子会话记忆」未开
 		// → 跳过（不广播 `memory-*` 进度，子会话不入沉淀队列状态展示，见 I-128）。
 		if deps.skipSubsession() {
@@ -407,7 +416,7 @@ type turnDeps struct {
 
 // resolveTurnDeps 解析本轮依赖：先读项目配置；**仅当已启用**才读会话父级（与改前
 // process / skipSubsession 口径一致——未启用时二者都不读父级）。
-func (p *Plugin) resolveTurnDeps(instanceID, session string) turnDeps {
+func (p *Plugin) resolveTurnDeps(instanceID, session, dialogID string) turnDeps {
 	var d turnDeps
 	cfg, err := p.resolveConfig(instanceID)
 	if err != nil {
@@ -418,7 +427,7 @@ func (p *Plugin) resolveTurnDeps(instanceID, session string) turnDeps {
 	if !cfg.Enabled {
 		return d
 	}
-	parent, err := p.sessionParent(instanceID, session)
+	parent, err := p.sessionParent(instanceID, session, dialogID)
 	if err != nil {
 		d.parErr = err
 		return d
@@ -444,7 +453,7 @@ func (d turnDeps) skipSubsession() bool {
 // process 执行一次会话沉淀（可同步调用；手动沉淀与 extract 共用）：解析本轮依赖后转
 // processResolved（worker 复用已解析的 turnDeps，不重复解析）。
 func (p *Plugin) process(ev turnEvent, force bool) map[string]any {
-	return p.processResolved(ev, force, p.resolveTurnDeps(ev.InstanceID, ev.Session))
+	return p.processResolved(ev, force, p.resolveTurnDeps(ev.InstanceID, ev.Session, ev.DialogID))
 }
 
 // processResolved 执行一次会话沉淀（可同步调用；worker 与手动沉淀共用）：配置门控 → 主/子会话判定 →
@@ -500,7 +509,7 @@ func (p *Plugin) processResolved(ev turnEvent, force bool, d turnDeps) map[strin
 		return map[string]any{"ok": true, "session": ev.Session, "turn": "", "saved": []string{}, "failed": []map[string]string{}, "enabled": enabled}
 	}
 	// 跨轮范围/累计门控的基础：该会话全部轮（created_at 升序，含预存 full_tokens）。
-	turns, err := p.sessionTurns(ev.InstanceID, ev.Session)
+	turns, err := p.sessionTurns(ev.InstanceID, ev.Session, ev.DialogID)
 	if err != nil {
 		logf("memory: 读会话轮次失败（session=%s）：%v（跳过）", ev.Session, err)
 		p.notify(ev, "turns", err.Error())
@@ -531,7 +540,7 @@ func (p *Plugin) processResolved(ev turnEvent, force bool, d turnDeps) map[strin
 	if len(processable) == 0 {
 		return done()
 	}
-	cache := newTurnMsgCache(p, ev.InstanceID)
+	cache := newTurnMsgCache(p, ev.InstanceID, ev.DialogID)
 	// 累计门控（OP-05）：手动沉淀（force=true）跳过（显式动作即用户意图）。
 	if !force {
 		tokens, terr := p.rangeTokens(turnsAfter(turns, earliestAnchor(turns, processable)), cache)
@@ -575,10 +584,14 @@ type turnRef struct {
 }
 
 // sessionParent 经 data-session-get 读会话父 id（空 = 主会话/顶层；会话不存在 → 空，按主会话处置）。
-func (p *Plugin) sessionParent(instanceID, session string) (string, error) {
+func (p *Plugin) sessionParent(instanceID, session, dialogID string) (string, error) {
+	payload := map[string]any{"session_id": session}
+	if dialogID != "" {
+		payload["dialog_id"] = dialogID // 一树一库：按对话定位会话行
+	}
 	res, err := p.request(sessionGetSubject, map[string]any{
 		"instance_id": instanceID,
-		"data":        map[string]any{"session_id": session},
+		"data":        payload,
 	})
 	if err != nil {
 		return "", err
@@ -592,12 +605,16 @@ func (p *Plugin) sessionParent(instanceID, session string) (string, error) {
 
 // sessionTurns 经 data-session-history 读该会话**全部轮**（created_at 升序；含预存 full_tokens）。
 // target_messages/target_bytes 取足够大 → 全量返回（跨轮提取范围与累计门控的基础）。
-func (p *Plugin) sessionTurns(instanceID, session string) ([]turnRef, error) {
+func (p *Plugin) sessionTurns(instanceID, session, dialogID string) ([]turnRef, error) {
+	payload := map[string]any{
+		"session_id": session, "target_messages": allTurnsTarget, "target_bytes": allTurnsTarget,
+	}
+	if dialogID != "" {
+		payload["dialog_id"] = dialogID // 一树一库：轮次在对话库
+	}
 	res, err := p.request(sessionHistorySubject, map[string]any{
 		"instance_id": instanceID,
-		"data": map[string]any{
-			"session_id": session, "target_messages": allTurnsTarget, "target_bytes": allTurnsTarget,
-		},
+		"data":        payload,
 	})
 	if err != nil {
 		return nil, err
@@ -703,13 +720,14 @@ func turnsAfter(turns []turnRef, anchor string) []turnRef {
 type turnMsgCache struct {
 	p          *Plugin
 	instanceID string
+	dialogID   string // 一树一库：轮次消息在对话库（空 = 旧布局）
 	mu         sync.Mutex
 	m          map[string][]data.ChatMsg
 }
 
 // newTurnMsgCache 建本次提取的轮消息缓存。
-func newTurnMsgCache(p *Plugin, instanceID string) *turnMsgCache {
-	return &turnMsgCache{p: p, instanceID: instanceID, m: map[string][]data.ChatMsg{}}
+func newTurnMsgCache(p *Plugin, instanceID, dialogID string) *turnMsgCache {
+	return &turnMsgCache{p: p, instanceID: instanceID, dialogID: dialogID, m: map[string][]data.ChatMsg{}}
 }
 
 // load 取某轮全部消息（命中缓存直接返回）。
@@ -720,7 +738,7 @@ func (c *turnMsgCache) load(turnID string) ([]data.ChatMsg, error) {
 		return v, nil
 	}
 	c.mu.Unlock()
-	msgs, err := c.p.loadTurnMessages(c.instanceID, turnID)
+	msgs, err := c.p.loadTurnMessages(c.instanceID, c.dialogID, turnID)
 	if err != nil {
 		return nil, err
 	}
@@ -763,7 +781,7 @@ func (p *Plugin) rangeTokens(rng []turnRef, cache *turnMsgCache) (int, error) {
 // resolveWorkDir 解析锁键用的 work_dir：优先实例视图（instance id → work_dir；宿主登记），
 // 无登记/未注入实例视图时回落到事件载荷 ev.WorkDir。
 //
-// 目的：手动沉淀（memory.flush 载荷只带 instance_id/session）与自动沉淀（session-compress
+// 目的：手动沉淀（memory.flush 载荷只带 instance_id/session）与自动沉淀（session-complete
 // 载荷带 work_dir）须落在**同一把** per-(workdir, 类别) 锁上，否则同一 (项目, 类别) 的
 // 读-改-写并发执行会丢更新（OP-08）。
 func (p *Plugin) resolveWorkDir(ev turnEvent) string {
@@ -899,7 +917,7 @@ func rangeTokensOrZero(cache *turnMsgCache, rng []turnRef) int {
 
 // flush 手动触发一次沉淀（memory.flush 订阅者）：解析 payload → 置待处理标记（force=true）→
 // **立即回执**。与自动沉淀的差异：
-//   - 触发源 = 用户显式动作（不经 session-compress 轮末事件）；
+//   - 触发源 = 用户显式动作（不经 session-complete 轮末事件）；
 //   - **不受 `memory.min-turn-tokens` 门控**（force=true；显式动作即用户意图，短轮次也照沉淀）；
 //   - **投递即回**（I-128）：回执 `{ok, queued, session}`（不再同步等各类别 LLM 跑完），进度由
 //     既有通知面 tool-notify（`memory-queued`/`memory-start`/`memory-done`）推送。
@@ -1014,10 +1032,14 @@ func (p *Plugin) memoryCategories(instanceID string) ([]categoryInfo, error) {
 }
 
 // loadTurnMessages 经 data-session-load-messages 读本轮全部消息。
-func (p *Plugin) loadTurnMessages(instanceID, turnID string) ([]data.ChatMsg, error) {
+func (p *Plugin) loadTurnMessages(instanceID, dialogID, turnID string) ([]data.ChatMsg, error) {
+	payload := map[string]any{"turn_id": turnID}
+	if dialogID != "" {
+		payload["dialog_id"] = dialogID // 一树一库：消息在对话库
+	}
 	res, err := p.request(sessionLoadSubject, map[string]any{
 		"instance_id": instanceID,
-		"data":        map[string]any{"turn_id": turnID},
+		"data":        payload,
 	})
 	if err != nil {
 		return nil, err
@@ -1057,7 +1079,7 @@ func (p *Plugin) memorySave(instanceID, category, content string) error {
 }
 
 // rewrite 经无上下文单轮 LLM（llm-simple）重写类别全文：读旧全文 + 本轮新信息 → 新全文。
-// instanceID 为触发事件（session-compress）载荷中的实例 id，随请求透传（61-消息一览 §0
+// instanceID 为触发事件（session-complete）载荷中的实例 id，随请求透传（61-消息一览 §0
 // 实例字段必带）。
 // llm = 本子系统的默认 LLM（provider name，见 subsystemLLM）；空则**不带该字段**
 // （载荷与改前逐字节等价，server 回落 exe flags 默认）。

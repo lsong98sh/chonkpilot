@@ -23,6 +23,7 @@ func (s *Service) handleAsk(action string, req dataReq) {
 		pendingOnly, _ := d["pending_only"].(bool)
 		resp, err := s.AskPending(facade.AskPendingRequest{
 			InstanceID:  req.InstanceID,
+			DialogID:    Sval(d["dialog_id"]),
 			AskID:       askID,
 			PendingOnly: pendingOnly,
 		})

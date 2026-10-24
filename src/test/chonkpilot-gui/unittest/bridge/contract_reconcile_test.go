@@ -337,7 +337,8 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		rawPayload string
 	}{
 		{"session-receive", "llm-receive", `{"instance_id":"inst-test","session":"s","turn":"t","type":"text","payload":{"text":"hi"}}`},
-		{"session-complete", "llm-complete", `{"instance_id":"inst-test","session":"s","turn":"t","status":"complete","finish_reason":"stop","parents":[]}`},
+		// 2026-10-24：session-complete 只增 work_dir / data_dir（memory 每轮沉淀的轮末触发载荷）。
+		{"session-complete", "llm-complete", `{"instance_id":"inst-test","session":"s","turn":"t","status":"complete","finish_reason":"stop","parents":[],"work_dir":"/w","data_dir":"/d"}`},
 		{"session-compress", "llm-compress", `{"instance_id":"inst-test","session":"s","last_turn":"t","snapshot_turn":"u"}`},
 		{"session-ask", "ask-user", `{"instance_id":"inst-test","ask_id":"a","session":"s","turn":"t","expires_at":0,"question":"q"}`},
 		{"server-starting", "server-starting", `{"started_at":123}`},
@@ -528,6 +529,11 @@ func newContextParityEnv(t *testing.T) (*bridge.Bridge, *persist.Service, string
 		t.Fatalf("instance-register: %v", err)
 	}
 	data.Register(instanceID, wd, "")
+	// 本用例断言旧布局（prjusr 会话/轮次直读）；P3-4c 起开关缺省 on → 显式退回 off。
+	if prj, release, err := data.Prj(instanceID); err == nil {
+		_ = prj.Table("config").Upsert("session.db.shard", data.Record{"v": "off"})
+		release()
+	}
 	time.Sleep(20 * time.Millisecond) // 等 persist 自持实例视图登记
 	br := bridge.New(instanceID, wd, "", nil, bus)
 	br.SetFacade(inline.New(bus))

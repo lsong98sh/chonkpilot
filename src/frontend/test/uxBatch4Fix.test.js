@@ -294,11 +294,10 @@ test('A9 保存期间不被自身广播重载冲回（记忆库「开 → 关 �
 //   统一机制（零消息契约变更）：按键过滤 + 突发合并为 1 次重载（读最终快照）+ 保存期间（saving）跳过。
 //   （手动保存页均有 saving 态；「开关即存」路径 saving=false，仍照常重载。）
 // ═══════════════════════════════════════════════════════════════
-test('A9b 引擎/历史页：prj-config 广播重载须走统一机制（同 ContextConfig I-138 口径）', () => {
+test('A9b 设置页：prj-config 广播重载须走统一机制（同 ContextConfig I-138 口径）', () => {
+  // 〔UIREG-1〕codegraph / vfts 配置页已并入 codebase 插件（前端页面删除）→ 仅剩这两页
   for (const file of [
     'views/settings/ContextConfig.vue',
-    'views/settings/CodegraphConfig.vue',
-    'views/settings/VftsConfig.vue',
     'views/settings/HistoryConfig.vue',
   ]) {
     const src = read(file)
@@ -333,7 +332,8 @@ test('A5 弹框布局：bodyClass 命中全局去内距 + 组件 flex:1 撑满',
 // A6 非激活 Tab 配色：逐 scheme 定义 + 与激活态有差别
 // ═══════════════════════════════════════════════════════════════
 test('A6 非激活 Tab 文字：--tab-inactive-fg 转引语义次要色 --fg-secondary（三 scheme 齐备）', () => {
-  const vars = read('assets/styles/variables.css')
+  // THEME-1（2026-10-23）：颜色类 token 已迁到 src/initdata/themes/themes.css（唯一源）
+  const vars = readRepo('initdata/themes/themes.css')
   const hits = vars.match(/--tab-inactive-fg:/g) || []
   assert.ok(hits.length >= 3, `--tab-inactive-fg 须在 :root/dark/nord 各定义（实得 ${hits.length}）`)
   // 2026-09-27 用户口径：不再 color-mix 逐 scheme 调和，直接绑语义次要色（暖灰偏黄）

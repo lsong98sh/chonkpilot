@@ -49,6 +49,8 @@ type Options struct {
 	// WorkDirs 返回宿主当前**活实例**的去重 work_dir（plugin.index.workdirs）。
 	// 单实例多 workdir 的 resident indexer 据此发现待消费项目；nil = 返回空列表（插件空转等待）。
 	WorkDirs func() []string
+	// Plugins 是插件平台回调（MCP/UI/状态/数据权限）；nil = 对应能力不可用。
+	Plugins PluginHooks
 	// Logf 诊断输出。
 	Logf func(format string, args ...any)
 }
@@ -77,6 +79,9 @@ type Server struct {
 
 	existingMu sync.RWMutex
 	existing   func() []string
+
+	pluginsMu sync.Mutex
+	plugins   PluginHooks
 }
 
 // New 构造插件桥服务端（未监听）。
@@ -94,6 +99,7 @@ func New(o Options) *Server {
 		ctx:      ctx,
 		cancel:   cancel,
 		sessions: make(map[*Session]struct{}),
+		plugins:  o.Plugins,
 	}
 	registerMQCapabilities(s.reg, o.Bus)
 	registerGUICapabilities(s.reg, o.GUI)
@@ -331,6 +337,13 @@ var controlNames = []string{
 	"plugin.index.ack",
 	"plugin.index.pending",
 	"plugin.index.workdirs",
+	"plugin.mcp.register",
+	"plugin.mcp.unregister",
+	"plugin.ui.register",
+	"plugin.status.report",
+	"plugin.publish",
+	"plugin/v1/data.read",
+	"plugin/v1/data.write",
 }
 
 // controlHandlers 是控制帧 / 内置能力（不经业务注册表）。
@@ -354,6 +367,13 @@ var controlHandlers = map[string]func(ctx context.Context, s *Session, args json
 	"plugin.index.ack":         handleIndexAck,
 	"plugin.index.pending":     handleIndexPending,
 	"plugin.index.workdirs":    handleIndexWorkDirs,
+	"plugin.mcp.register":      handleMCPRegister,
+	"plugin.mcp.unregister":    handleMCPUnegister,
+	"plugin.ui.register":       handleUIRegister,
+	"plugin.status.report":     handleStatusReport,
+	"plugin.publish":           handlePublish,
+	"plugin/v1/data.read":      handleDataRead,
+	"plugin/v1/data.write":     handleDataWrite,
 }
 
 func decode(args json.RawMessage, out any) error {

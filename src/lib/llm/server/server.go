@@ -41,12 +41,12 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin/instance"
-	"github.com/lsong98sh/chonkpilot-router"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
+	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-router"
 )
 
 // 主题（相对 kebab 串；总线命名空间前缀 "chonk." 在 mq 初始化（Options.Prefix）注入一次，
@@ -286,6 +286,13 @@ type Server struct {
 	// 上限 promptOptimiseMaxInflight；懒建，键 = instance_id）。
 	promptSemMu sync.Mutex
 	promptSem   map[string]chan struct{}
+
+	// 压缩内建（SESSION-1 阶段一）：同会话**串行 + 覆盖合并队列**（键 = instKey(instance, session)）。
+	// 一个会话同一时刻只跑一个压缩任务；在飞期间的再次触发进 compressPending（只留最新），
+	// 由该会话 worker 依次消费；成功 / 失败均释放（失败不影响主流程）。
+	compressMu      sync.Mutex
+	compressRunning map[string]bool
+	compressPending map[string]compressJob
 }
 
 // askWaiter 是 ask-user 等待登记（ask-user-reply 到达后喂回 LLM + 广播 ask 任务节点 done）。
@@ -339,6 +346,8 @@ func New(bus mq.Bus, opts Options) *Server {
 		continuePending: make(map[string]bool),
 		taskTurnIndex:   make(map[string]*turnCtx),
 		inboxIndex:      make(map[string]facade.InboxItem),
+		compressRunning: make(map[string]bool),
+		compressPending: make(map[string]compressJob),
 	}
 	// instance.Manager 告警接入宿主日志（F-10）：GUI/分离形态下超限告警不再只落 stderr。
 	s.im.SetLogf(logf)
@@ -361,6 +370,7 @@ func New(bus mq.Bus, opts Options) *Server {
 	s.taskLayer = tasklayer.New(bus, tasklayer.Options{
 		Logf:         taskLayerLogf,
 		OnCancelExec: s.onTaskLayerCancelExec,
+		DialogOf:     s.dialogOf, // 一树一库（P3-4b）：任务树行随会话落对话库
 	})
 	if !opts.DisableMCP {
 		// 静态装配（RB-5 L5）：能力源（capability 契约）+ 执行配置 + 内嵌 gateway 由**入口
@@ -509,8 +519,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}{
 		{instance.SubjectRegister, s.onInstanceRegister},              // 用户/项目级 capability 根动态注册（21-llm-server；T-29）
 		{SubjectExit, s.onExit},                                       // 退出 → 取消名下 running turn + 释放锁
-		{msgkeys.TopicMcpTasksReport, s.onGatewayTaskDone},          // gateway 异步任务完成回报（mcp-tasks-report）→ 续轮/广播
-		{msgkeys.TopicMcpGatewayChanged, s.onMCPChanged},            // 目录/接入变化（mcp-gateway-changed）→ 刷新工具缓存
+		{msgkeys.TopicMcpTasksReport, s.onGatewayTaskDone},            // gateway 异步任务完成回报（mcp-tasks-report）→ 续轮/广播
+		{msgkeys.TopicMcpGatewayChanged, s.onMCPChanged},              // 目录/接入变化（mcp-gateway-changed）→ 刷新工具缓存
 		{msgkeys.TopicTaskDeleted, s.onTaskTreeDeleted},               // persist data-tasktree-delete 级联删除 → 内存同步（不复活）
 		{msgkeys.TopicDataMemoryRefresh, s.onMemoryRefresh},           // 记忆域 save/delete 后广播（既有主题）→ 失效类别清单缓存（I-68 ②）
 		{msgkeys.TopicDataUserConfigRefresh, s.onUserConfigRefresh},   // usr 配置 save/delete 后广播（既有主题）→ tool_async / llms 热生效
@@ -712,6 +722,7 @@ func (s *Server) Stop() {
 	if s.data != nil {
 		s.data.Stop()
 	}
+	flushSessionIndexes(s.bus) // 清本总线备忘（防总线指针复用导致跨宿主串味）
 	// 锁内仅收集待关闭轮次，Close（含 session 锁释放 = 文件解锁 IO）在锁外逐个执行——
 	// 避免持 s.mu 做 IO 阻塞其他 s.mu 访问（stop 期仍需幂等：turnCtx.Close 自身 once 守卫）。
 	s.mu.Lock()
@@ -1285,8 +1296,10 @@ func (s *Server) acceptLLMStart(ctx context.Context, _ string, v *mq.Value, rese
 	req.DataDir = rec.DataDir
 	// 用户发送即重置 next_run 计数（NEXTRUN-1 §3.3.3）：放在受理前 → 即使随后被 busy 拒绝，
 	// 也表达「用户已介入」；内部自动轮（resetNextRun=false）不重置。
+	// 一树一库：首轮自举前本进程尚不知 dialog_id（重置会返回 false）→ 建会话后再补一次。
+	nextRunReset := true
 	if resetNextRun {
-		s.resetNextRunCount(req.InstanceID, req.Session)
+		nextRunReset = s.resetNextRunCount(req.InstanceID, req.Session)
 	}
 
 	// 首次使用该 instance 时清理遗留（多 workdir 服务，启动时无从预知数据根）：
@@ -1363,6 +1376,10 @@ func (s *Server) acceptLLMStart(ctx context.Context, _ string, v *mq.Value, rese
 		lock.Release()
 		v.Result = map[string]any{"accepted": false, "error": "ensure session failed: " + err.Error()}
 		return nil
+	}
+	// 补一次 next_run 重置：首轮自举后 dialog_id 才可知（幂等；此前已成功则不重复）。
+	if resetNextRun && !nextRunReset {
+		s.resetNextRunCount(req.InstanceID, req.Session)
 	}
 	if err := store.EnsureTurn(req.Turn, req.Session); err != nil {
 		lock.Release()
@@ -1823,7 +1840,7 @@ func (s *Server) onToolRetry(_ context.Context, _ string, v *mq.Value) error {
 		ctxMsg.WorkDir = rec.WorkDir
 		ctxMsg.DataDir = rec.DataDir
 	}
-	args := node.args
+	args := node.ToolArgs()
 	if args == nil {
 		args = map[string]any{}
 	}
@@ -1947,8 +1964,8 @@ func (s *Server) retryRecover(req retryReq, known *TaskNode) (*TaskNode, *turnCt
 	if node.Tool == "" {
 		node.Tool = toolName
 	}
-	if node.args == nil {
-		node.args = args
+	if node.ToolArgs() == nil {
+		node.SetToolArgs(args)
 	}
 	if node.ToolCallID == "" {
 		node.ToolCallID = toolCallID
@@ -1964,8 +1981,12 @@ func (s *Server) retryRecover(req retryReq, known *TaskNode) (*TaskNode, *turnCt
 // dbRetryNode 从库 tasktree 定位 interrupted 目标节点（data-tasktree-list 按 top_session
 // 枚举；会话内取 tool_call_id 匹配优先，其次最近一条 interrupted；无 interrupted → 不重跑）。
 func (s *Server) dbRetryNode(instanceID string, req retryReq) (*TaskNode, error) {
+	payload := map[string]any{"top_session": req.Session}
+	if dlg := s.dialogOf(instanceID, req.Session); dlg != "" {
+		payload["dialog_id"] = dlg
+	}
 	res, err := dataRequest(s.bus, msgkeys.TopicDataTasktreeList, map[string]any{
-		"instance_id": instanceID, "data": map[string]any{"top_session": req.Session},
+		"instance_id": instanceID, "data": payload,
 	})
 	if err != nil {
 		return nil, errors.New("tool not found（tasktree 读取失败: " + err.Error() + "）")
@@ -2106,6 +2127,8 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 		// `engineSynthesizeDanglingToolResults` 在 RunTurn 前补齐）。
 		isRecovery:  true,
 		engineInbox: newChatInbox(),
+		// 系统提示词层（组装结果 Usage.Fixed 的固定开销来源；与 hist 首位同源）。
+		sysPromptText: sc.sysPrompt,
 	}
 	// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写（见 engineRuntimeConfig）。
 	tc.autoContinueOff = subTurnNoAutoContinue(req, sc)
@@ -2415,7 +2438,12 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		logf("[chonkpilot-server] CompleteTurnTokens 失败（session=%s turn=%s）: %v\n", tc.req.Session, tc.req.Turn, err)
 	}
 	// 写快照（唯一终态写）：snapshot_turn = 本轮（快照覆盖到最后一条 turn）
+	// 基 = 当前已提交快照（压缩内建可能在本轮期间回填过；详见 snapshotWriteBase）；
+	// 不衔接 / 无快照 / 同轮继续 → 回落改前口径（tc.hist + 本轮消息）。
 	msgs := append(append([]ChatMsg{}, tc.hist...), cur...)
+	if base, ok := s.snapshotWriteBase(tc); ok {
+		msgs = append(append([]ChatMsg{}, base...), cur...)
+	}
 	if err := st.SetSnapshot(tc.req.Session, msgs, tc.req.Turn); err != nil {
 		logf("[chonkpilot-server] SetSnapshot 失败（session=%s turn=%s）: %v\n", tc.req.Session, tc.req.Turn, err)
 	}
@@ -2424,9 +2452,17 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		"status": status, "finish_reason": finishReason,
 		// parents：主轮次空、子轮次（递归）为父链——history 插件据此只提交主 session 快照
 		"parents": tc.req.Parents,
+		// work_dir / data_dir（2026-10-24，**只增字段**）：轮末订阅方（memory 插件每轮沉淀）
+		// 需要实例绑定的目录；取值 = instance 绑定（onLLMStart 解析，见 server.go req.WorkDir）。
+		// 语义与既有字段不变，旧订阅方忽略即可（61-消息一览 §4.3 session-complete）。
+		"work_dir": tc.req.WorkDir, "data_dir": tc.req.DataDir,
 	}
 	if code != "" {
 		ev["code"] = code
+	}
+	// 一树一库（P3-4b，61 §0.6）：轮末订阅方（memory 等）需按对话定位会话库。
+	if dlg := s.dialogOf(tc.req.InstanceID, tc.req.Session); dlg != "" {
+		ev["dialog_id"] = dlg
 	}
 	if message != "" {
 		ev["message"] = message
@@ -2448,10 +2484,18 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		ev["retry_wait_ms"] = 0
 	}
 	s.publish("llm-complete", ev)
-	// 压缩扩展点事件：唯一终态落库后发出（处置由 chonkpilot-plugin-compress；无订阅者 = 不压缩）
+	// 轮末事件（`session-compress`，载荷形状不变）：唯一终态落库后发出。
+	// 压缩已内建（SESSION-1，2026-10-23；见 compress.go：组装后按 Usage 判阈值 → 后台压缩），
+	// 本事件**不是压缩触发源**，也**不再承担记忆沉淀触发**（2026-10-24 解耦：memory 改订阅
+	// `session-complete`，二者与压缩无关）。保留发送点是因为外部订阅者 / 前端「压缩记录」
+	// 刷新仍在消费它；无订阅者 = 无动作。
 	compressEv := map[string]any{
 		"instance_id": tc.req.InstanceID, "work_dir": tc.req.WorkDir, "data_dir": tc.req.DataDir,
 		"session": tc.req.Session, "last_turn": tc.req.Turn, "snapshot_turn": tc.req.Turn,
+	}
+	// 一树一库（P3-4b，61 §0.6）：订阅方按对话定位快照（旧布局不写键）。
+	if dlg := s.dialogOf(tc.req.InstanceID, tc.req.Session); dlg != "" {
+		compressEv["dialog_id"] = dlg
 	}
 	// P1（2026-09-25，口径 Z4）：对外载荷字段统一 snake_case —— **只增**可选字段 `max_context_token` /
 	// `max_output_token`——兜底归并的**真窗口**来源与**输出预留**（各自 = provider `maxContextToken` /
@@ -3068,6 +3112,7 @@ func (s *Server) securityRules(instanceID string) ([]mcpgateway.SandboxRule, boo
 //   - 项目数据根（instance data_dir 非空 → 该目录；空 → <work_dir>/.chonkpilot）
 //   - prjusr 数据根（data.PrjUsrDir；解析失败 → 跳过，不影响其余默认项）
 //   - 进程级系统 temp（os.TempDir()，一次）
+//
 // 打 Low IL 标签由 gateway 在 stdio 槽位构建时按 SandboxDirs WritableRoots 执行（provider.go）。
 func (s *Server) gatewaySandboxRules() []mcpgateway.SandboxRule {
 	seen := map[string]bool{}

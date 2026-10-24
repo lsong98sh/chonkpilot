@@ -58,11 +58,14 @@ func NewPluginGUIController(e *Env) pluginbridge.GUIController {
 }
 
 // List 返回当前窗口实例 id。
+//
+// PRODSIM-1 多项目：窗口注册表按项目隔离（`projectCtx.windows`），进程级 `e.windows` 不再承载
+// 主窗（`setMain` 落在项目表上）→ 这里必须**跨项目聚合**，否则插件 gui.list 恒空。
 func (c *pluginGUIController) List() []string {
 	if c == nil || c.e == nil {
 		return nil
 	}
-	return c.e.windows.instances()
+	return c.e.InstanceIDs()
 }
 
 // Apply 在目标窗口执行一条 GUI 命令（与前端 PublishEvent 同一白名单/校验）。
@@ -70,7 +73,7 @@ func (c *pluginGUIController) Apply(instanceID, action string, payload json.RawM
 	if c == nil || c.e == nil {
 		return nil, fmt.Errorf("GUI 通道未装配")
 	}
-	h := c.e.windows.findByInstance(instanceID)
+	h := c.e.findByInstance(instanceID)
 	if h == nil {
 		return nil, fmt.Errorf("实例 %q 不存在或已关闭", instanceID)
 	}
@@ -111,9 +114,63 @@ func (c *pluginGUIController) Apply(instanceID, action string, payload json.RawM
 }
 
 // InstanceIDs 返回本进程窗口实例 id（pluginbridge 的 ExistingInstanceIDs 注入）。
+//
+// PRODSIM-1：跨项目聚合（主窗登记在各项目 `windows` 表上；进程级 `e.windows` 不含主窗）。
 func (e *Env) InstanceIDs() []string {
 	if e == nil {
 		return nil
 	}
-	return e.windows.instances()
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(ids []string) {
+		for _, id := range ids {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	for _, p := range e.projectsSnapshot() {
+		if p == nil || p.windows == nil {
+			continue
+		}
+		add(p.windows.instances())
+	}
+	// --no-server / 无项目上下文（进程级窗口表）兜底
+	if e.windows != nil {
+		add(e.windows.instances())
+	}
+	return out
+}
+
+// findByInstance 跨项目按实例 id 查窗口（空 id = 默认项目的 main 窗）。
+func (e *Env) findByInstance(instanceID string) *windowHost {
+	if e == nil {
+		return nil
+	}
+	ps := e.projectsSnapshot()
+	if instanceID == "" {
+		for _, p := range ps {
+			if p != nil && p.windows != nil {
+				if h := p.windows.findByInstance(""); h != nil {
+					return h
+				}
+			}
+		}
+		return nil
+	}
+	for _, p := range ps {
+		if p == nil || p.windows == nil {
+			continue
+		}
+		if h := p.windows.findByInstance(instanceID); h != nil {
+			return h
+		}
+	}
+	// --no-server / 无项目上下文（进程级窗口表）兜底
+	if e.windows != nil {
+		return e.windows.findByInstance(instanceID)
+	}
+	return nil
 }

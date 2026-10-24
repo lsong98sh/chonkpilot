@@ -51,6 +51,18 @@ func newEvtRec(t *testing.T, bus mq.Bus) *evtRec {
 	return r
 }
 
+// dialogIDOf 从 `session-new` 事件取某会话的 `dialog_id`（一树一库：61 §0.6 同级必带）。
+func dialogIDOf(r *evtRec, sessionID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.evs["session-new"] {
+		if str(m, "session_id") == sessionID {
+			return str(m, "dialog_id")
+		}
+	}
+	return ""
+}
+
 // wait 轮询等待某主题的首条满足谓词的事件（超时 = 红）。
 func (r *evtRec) wait(t *testing.T, subject string, pred func(map[string]any) bool, timeout time.Duration) map[string]any {
 	t.Helper()

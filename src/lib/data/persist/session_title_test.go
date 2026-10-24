@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
 
@@ -34,6 +36,16 @@ func TestSessionTitleBroadcastMQ(t *testing.T) {
 		missing = "no-such-session"
 	)
 	s.onInstanceRegister(instanceRegister, instancePayload(inst, wd, ""))
+	// P3-4c 起缺省一树一库；本用例断言**旧布局**的改名广播 → 显式退回 off。
+	if prj, release, err := s.PrjFor(inst, facade.Scope{WorkDir: wd}); err == nil {
+		if err := kernel.PrjConfigSetVal(prj, kernel.ConfigSessionShard, "off"); err != nil {
+			release()
+			t.Fatalf("set shard=off: %v", err)
+		}
+		release()
+	} else {
+		t.Fatalf("PrjFor: %v", err)
+	}
 
 	got := make(chan map[string]any, 4)
 	sub, err := s.Bus.On("data-session-title-changed", 0, func(_ context.Context, _ string, v *mq.Value) error {

@@ -581,7 +581,7 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 
 | 服务 | 内容 |
 |------|------|
-| 配置 | `plugin-config-get/set`（UI 与插件共用）；非密落 `config.scope`，密钥恒 usr 级；原子写 + 广播 `plugin-config-changed` |
+| 配置 | `plugin-config-get/set`（UI 与插件共用，**只按 `{id}` 定位、无等级参数**）；非密 = 插件自身配置，密钥恒 usr 级；原子写 + 广播 `plugin-config-changed` |
 | 私有存储 | `storage.self`（§6.1）；路径 `<dataDir>/plugins/<id>/storage/` |
 | 索引队列 | `plugin.index.*`（既有）；codebase / vfts 消费 |
 | 日志 | 插件 stderr 由宿主捕获 → `<dataDir>/plugins/<id>/logs/plugin.log`（滚动 2MB×3）；插件也可 `plugin.log{level,msg}`（自动脱敏：拒绝含 `sk-` 的长串） |

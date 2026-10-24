@@ -201,6 +201,9 @@ func buildRow(data map[string]any) map[string]any {
 	if f := sval(data["finished_at"]); f != "" {
 		row["finished_at"] = f
 	}
+	if dlg := sval(data["dialog_id"]); dlg != "" {
+		row["dialog_id"] = dlg
+	}
 	if tc := sval(data["tool_call_id"]); tc != "" {
 		row["tool_call_id"] = tc
 	}

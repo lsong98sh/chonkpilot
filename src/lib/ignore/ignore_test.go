@@ -339,10 +339,15 @@ func mapGet(values map[string]string) func(string) (string, bool) {
 
 func TestConfigOptions(t *testing.T) {
 	root := t.TempDir()
-	opts, enabled, err := ConfigOptions("codegraph", mapGet(map[string]string{
-		"enable-codegraph":          "true",
-		"codegraph.skip-dirs":       "dist/, !dist/keep.txt\nlogs;  \n!logs/a,dist/",
-		"codegraph.stack-gitignore": "true",
+	keys := Keys{
+		Enabled:        "plugins.demo.codegraph.enabled",
+		SkipDirs:       "plugins.demo.codegraph.skip-dirs",
+		StackGitignore: "plugins.demo.codegraph.stack-gitignore",
+	}
+	opts, enabled, err := ConfigOptions(keys, mapGet(map[string]string{
+		keys.Enabled:        "true",
+		keys.SkipDirs:       "dist/, !dist/keep.txt\nlogs;  \n!logs/a,dist/",
+		keys.StackGitignore: "true",
 	}), root)
 	if err != nil {
 		t.Fatalf("ConfigOptions: %v", err)
@@ -356,26 +361,34 @@ func TestConfigOptions(t *testing.T) {
 	}
 
 	// 缺省键（get 未命中）→ enabled=false、无用户规则、stack=false
-	opts2, enabled2, _ := ConfigOptions("vfts", mapGet(nil), root)
+	opts2, enabled2, _ := ConfigOptions(keys, mapGet(nil), root)
 	if enabled2 || opts2.StackGitignore || len(opts2.UserRules) != 0 {
 		t.Fatalf("缺省应关闭：enabled=%v stack=%v rules=%v", enabled2, opts2.StackGitignore, opts2.UserRules)
 	}
 
+	// 空键名 = 该配置项不参与（全空 → 缺省）
+	opts4, enabled4b, _ := ConfigOptions(Keys{}, mapGet(map[string]string{
+		"some.other.key": "true",
+	}), root)
+	if enabled4b || opts4.StackGitignore {
+		t.Fatalf("空键名应按缺省：enabled=%v stack=%v", enabled4b, opts4.StackGitignore)
+	}
+
 	// 空串规则 → 无用户规则（非 nil 也可，长度必须为 0）
-	opts3, _, _ := ConfigOptions("vfts", mapGet(map[string]string{"vfts.skip-dirs": "  \n , ; "}), root)
+	opts3, _, _ := ConfigOptions(keys, mapGet(map[string]string{keys.SkipDirs: "  \n , ; "}), root)
 	if len(opts3.UserRules) != 0 {
 		t.Fatalf("全空白规则应无规则：%v", opts3.UserRules)
 	}
 
 	// 空 workdir → err（配置错误），enabled 仍按配置读出（调用方可降级）
-	_, enabled4, err4 := ConfigOptions("codegraph", mapGet(map[string]string{
-		"enable-codegraph": "true",
+	_, enabled4, err4 := ConfigOptions(keys, mapGet(map[string]string{
+		keys.Enabled: "true",
 	}), "")
 	if err4 == nil || !enabled4 {
 		t.Fatalf("空 workdir 应报错且 enabled 仍按配置：err=%v enabled=%v", err4, enabled4)
 	}
 	// workdir 不存在 → 不报错（逐级 .gitignore 读取静默容忍缺失，判定降级为「不排除」）
-	if _, _, err := ConfigOptions("codegraph", mapGet(nil), filepath.Join(root, "does-not-exist")); err != nil {
+	if _, _, err := ConfigOptions(keys, mapGet(nil), filepath.Join(root, "does-not-exist")); err != nil {
 		t.Fatalf("workdir 不存在不应报错：%v", err)
 	}
 }

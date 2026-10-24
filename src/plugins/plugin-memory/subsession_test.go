@@ -96,7 +96,7 @@ func TestSubsessionGateSkipsAutoDistill(t *testing.T) {
 	}
 }
 
-// TestWorkerSkipsSubsessionNotice：worker 路径（真订阅 `session-compress`）：子会话 + 开关未开 →
+// TestWorkerSkipsSubsessionNotice：worker 路径（真订阅 `session-complete`）：子会话 + 开关未开 →
 // **不广播 `memory-*` 进度**（子会话不入沉淀队列状态展示，见 I-128）、不写记忆。
 func TestWorkerSkipsSubsessionNotice(t *testing.T) {
 	bus := newTestBus(t)
@@ -119,7 +119,7 @@ func TestWorkerSkipsSubsessionNotice(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	body, _ := json.Marshal(map[string]any{
-		"instance_id": "ins", "work_dir": `C:\ws`, "session": "s-sub", "last_turn": "t1",
+		"instance_id": "ins", "work_dir": `C:\ws`, "session": "s-sub", "turn": "t1",
 	})
 	bus.Emit(context.Background(), turnEndSubject, body).Wait()
 

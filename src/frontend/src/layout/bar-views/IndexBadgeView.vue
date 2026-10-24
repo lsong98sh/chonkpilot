@@ -1,6 +1,7 @@
 <!--
   栏视图条目 `index-badge`（UILAYOUT-1 §7 P4① / 裁决 2；STB-1 改点击落点）：codegraph / vfts 索引状态徽标。
-  数据源 = prj 配置既有键（enable-codegraph / codegraph.status / enable-vfts / vfts.status）；
+  数据源 = prj 配置键（plugins.codebase.codegraph.enabled / codegraph.status /
+  plugins.codebase.vfts.enabled / vfts.status）；
   刷新 = 既有 `data-prj-config-refresh` 广播；点击 → 统一命令 `open-view{status-index}`
   （preview 详情页；详情页内保留「去设置」入口，配置仍可达）。**零新增 MQ 主题**。
 -->
@@ -41,12 +42,12 @@ const { t } = useI18n()
 const { prjCfg } = usePrjConfigSnapshot()
 
 const cgBadge = computed(() => indexBadge({
-  enabledRaw: prjCfg.value['enable-codegraph'],
+  enabledRaw: prjCfg.value['plugins.codebase.codegraph.enabled'],
   statusRaw: prjCfg.value['codegraph.status'],
   t,
 }))
 const vfBadge = computed(() => indexBadge({
-  enabledRaw: prjCfg.value['enable-vfts'],
+  enabledRaw: prjCfg.value['plugins.codebase.vfts.enabled'],
   statusRaw: prjCfg.value['vfts.status'],
   t,
 }))

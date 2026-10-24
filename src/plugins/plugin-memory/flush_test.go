@@ -200,7 +200,7 @@ func TestManualFlushQueuedThenDistills(t *testing.T) {
 		t.Fatalf("data-session-history 请求应恰一次且限定该会话：%+v", st.history)
 	}
 
-	// 反证：同一配置下自动沉淀（session-compress 路径）被阈值挡住 →「不受阈值门控」只属手动触发
+	// 反证：同一配置下自动沉淀（session-complete 路径）被阈值挡住 →「不受阈值门控」只属手动触发
 	before := atomic.LoadInt32(&st.llmCalls)
 	p.extract(turnEvent{InstanceID: "ins-1", WorkDir: `C:\ws`, Session: "s1", LastTurn: "t-2"})
 	if n := atomic.LoadInt32(&st.llmCalls); n != before {
@@ -273,7 +273,7 @@ func TestManualFlushDisabledMemoryNoWrites(t *testing.T) {
 }
 
 // TestManualFlushLocksOnInstanceWorkDir：手动沉淀（memory.flush）载荷**不含 work_dir**，
-// 但锁键须经实例视图解析回 work_dir，与自动沉淀（session-compress 带 work_dir）落在**同一把**
+// 但锁键须经实例视图解析回 work_dir，与自动沉淀（session-complete 带 work_dir）落在**同一把**
 // per-(workdir, 类别) 锁上（OP-08）——否则同一 (项目, 类别) 的读-改-写并发会丢更新。
 func TestManualFlushLocksOnInstanceWorkDir(t *testing.T) {
 	bus := newTestBus(t)

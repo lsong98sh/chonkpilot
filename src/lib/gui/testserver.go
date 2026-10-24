@@ -67,6 +67,8 @@ const consoleCaptureJS = `(() => {
 //	POST /publish       → {type, payload} 透传前端事件（桥发布 mq；窗口面消息由宿主侧处理）；
 //	                      响应信封 {ok, result, errors}（请求-响应消息面 data-*/gui.* 走这里）
 //	POST /wait-event    → {type, timeout} 阻塞等待指定 type 的事件到达；超时返回 error
+//	POST /quit          → 优雅退出（与托盘「退出」同一条收尾路径；供 systest 收尾，避免
+//	                      taskkill /F 造成托盘图标残影）
 //
 // 多窗口（24 §4.5）：请求体可带 `window_id`（取自 `gui.window.list`）把上述端点指向某个
 // **对话窗口**；缺省（不带）= 主窗口。对话窗口目标由窗口工厂经 RegisterChat 登记、关闭时注销。
@@ -76,6 +78,9 @@ type testServer struct {
 	br      *bridge.Bridge
 	hwnd    uintptr
 	destroy func()
+	// quit 是**优雅退出**回调（宿主接线：关项目窗口/日志窗口 → 结束进程，与托盘「退出」同路径）。
+	// 供 /quit 端点使用：systest 收尾走它而不是 taskkill /F（后者不摘托盘图标 → 残影堆积）。
+	quit func()
 	// handler 是**主窗口**的 appHandler（窗口面消息 open-chat/list/set-title 由宿主侧处理，
 	// 与 gui.window.status 同口径）。
 	handler *appHandler
@@ -184,6 +189,7 @@ func (s *testServer) Start(port int) error {
 	mux.HandleFunc("/screenshot", s.handleScreenshot)
 	mux.HandleFunc("/publish", s.handlePublish)
 	mux.HandleFunc("/wait-event", s.handleWaitEvent)
+	mux.HandleFunc("/quit", s.handleQuit)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return err
@@ -332,6 +338,27 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 
 func (s *testServer) handlePing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "app": "chonkpilot-gui", "ready": s.ready.Load()})
+}
+
+// SetQuit 挂上优雅退出回调（宿主在测试通道接线时调用；窗口线程之外读取，仅写一次）。
+func (s *testServer) SetQuit(fn func()) {
+	if s != nil {
+		s.quit = fn
+	}
+}
+
+// handleQuit 先应答再异步优雅退出：与托盘「退出」同路径（env.Shutdown → 关日志窗口 → requestExit），
+// 保证托盘图标由 Shell_NotifyIcon 正常摘除、server/插件/引擎按依赖序收尾。
+func (s *testServer) handleQuit(w http.ResponseWriter, r *http.Request) {
+	if s.quit == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "quit not wired"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	go func() {
+		time.Sleep(100 * time.Millisecond) // 让应答先写出
+		s.quit()
+	}()
 }
 
 func (s *testServer) handleEval(w http.ResponseWriter, r *http.Request) {

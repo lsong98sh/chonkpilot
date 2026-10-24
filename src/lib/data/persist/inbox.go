@@ -30,6 +30,7 @@ func (s *Service) handleInbox(action string, req dataReq) {
 	case "append":
 		resp, err := s.InboxAppend(facade.InboxAppendRequest{
 			InstanceID:     req.InstanceID,
+			DialogID:       str("dialog_id"),
 			SessionID:      str("session"),
 			TurnID:         str("turn_id"),
 			Type:           str("type"),
@@ -49,6 +50,7 @@ func (s *Service) handleInbox(action string, req dataReq) {
 	case "list":
 		resp, err := s.InboxList(facade.InboxListRequest{
 			InstanceID: req.InstanceID,
+			DialogID:   str("dialog_id"),
 			SessionID:  str("session"),
 			Status:     str("status"),
 		})
@@ -91,6 +93,7 @@ func (s *Service) handleInbox(action string, req dataReq) {
 		}
 		resp, err := s.InboxUpdate(facade.InboxUpdateRequest{
 			InstanceID: req.InstanceID,
+			DialogID:   str("dialog_id"),
 			ID:         id,
 			Status:     str("status"),
 			Type:       str("type"),
@@ -117,6 +120,7 @@ func (s *Service) handleInbox(action string, req dataReq) {
 		})
 		resp, err := s.InboxCommit(facade.InboxCommitRequest{
 			InstanceID:     req.InstanceID,
+			DialogID:       str("dialog_id"),
 			InboxID:        inboxID,
 			TurnID:         mr.TurnID,
 			SessionID:      mr.SessionID,

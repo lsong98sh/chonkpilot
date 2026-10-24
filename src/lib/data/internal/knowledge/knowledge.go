@@ -31,7 +31,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
@@ -546,24 +545,14 @@ func kbProjectRoot(workDir string) string {
 	return capfs.ProjectRoot(workDir)
 }
 
-// kbPrjUsrRoot 项目私有级知识库根（<prjusr 数据根>/capability = ~/.chonkpilot/data/<project-id>/capability）：
-// 先打开 prj 库 → EnsureProjectID → 解析根（4 级恒可用，不把"未初始化"当前提）。
-// 解析不出（实例未登记 / 打开 prj 失败 / project-id 缺失）→ 返回 ""（不阻断 app/user/project 三级）。
+// kbPrjUsrRoot 项目私有级知识库根（<prjusr 数据根>/capability =
+// <workDir>/.chonkpilot/users/<用户名>/capability）；实例未登记 / workDir 为空 → ""。
 func (s *Service) kbPrjUsrCapRoot(instanceID string, scope facade.Scope) string {
 	workDir, dataDir, err := s.CfgInstBind(instanceID, scope)
-	if err != nil {
+	if err != nil || workDir == "" {
 		return ""
 	}
-	prj, release, err := kernel.OpenPrjLayer(workDir, dataDir)
-	if err != nil {
-		return ""
-	}
-	defer release()
-	id, err := data.EnsureProjectID(prj)
-	if err != nil || id == "" {
-		return ""
-	}
-	return capfs.PrjUsrRoot(id)
+	return capfs.PrjUsrRoot(workDir, dataDir)
 }
 
 // kbRootOf 由路径推导知识库根：绝对路径按前缀归属 **项目私有 > 项目 > 用户 > 系统**（具体级优先），

@@ -73,8 +73,9 @@ func mergedContracts(t *testing.T, root *string) func() {
 		copyDir(t, filepath.Join(initCap, prim),
 			filepath.Join(tmp, prim))
 	}
-	copyDir(t, filepath.Join(initCap, "tools"),
-		filepath.Join(tmp, "tools"))
+	// tools/ 不复制：2026-10-23 起 file（11）/ meta（3）/ script_run / codegraph（8）/ vfts（1）
+	// 全部改为插件注册（build-mcp-server.ps1 同样把 tools/file 从 core capability 根剔除），
+	// core-mcp-server 只保留 prompt/skill/resource + 代码内注册的 domain 工具。
 	*root = tmp
 	return func() { _ = os.RemoveAll(tmp) }
 }
@@ -139,13 +140,9 @@ func TestListToolsContracts(t *testing.T) {
 			t.Errorf("tool %s: inputSchema nil", tl.Name)
 		}
 	}
-	// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 文件域为 11 个原子工具，browser/desktop 改为插件（不再是 MCP 工具）。
-	want := []string{
-		"file_copy", "file_delete", "file_detect", "file_diff", "file_find", "file_iconv",
-		"file_move", "file_patch", "file_read", "file_replace", "file_write",
-		"script_run", "web_fetch",
-	}
-	assertNameSet(t, names, want)
+	// 2026-10-23（PLUGIN-1）：工具全部插件化 —— core capability 根不再有 tools/*.tool.md，
+	// 文件/任务/MCP/代码索引工具由各插件注册；此处断言 core 契约面为**空集**（防止回归）。
+	assertNameSet(t, names, nil)
 }
 
 // TestPromptSkillMeta 验证 prompts/list 透出 _meta.type（prompt/skill 由后缀推导）。

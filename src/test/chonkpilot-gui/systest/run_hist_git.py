@@ -29,7 +29,7 @@
      `history.timeline.<目标>` = `[]`、`status.<目标>.checkpointCount` = 0；**其它会话的链与其回写保留**
      （I-136 —— 不再按仓库粒度清空全部 `refs/chonkpilot/*`）。
   H6 「涉及文件变动」（usr `tool_async.<工具>.touch_files`）：**同一轮内两次工具调用**
-     （`history_restore` 执行时同步置脏 → 紧随的改文件工具（现行 = `script_run`）前置钩子据此判定）——
+     （`history_restore` 执行时同步置脏 → 紧随的改文件工具（插件工具 `task_run`）前置钩子据此判定）——
      缺省（涉及）链路 +2（前置点 + 轮末补点）；显式 `false`（不涉及）→ 前置钩子**放行不打点**、只余
      轮末补点 → +1（含 usr 键保存/回读）。
   H5 非 git 仓库：另起独立实例（workdir 无 `.git`，`gui.vcs.info.git=false`）→ 即使
@@ -588,15 +588,16 @@ def case_h6_touch_files_flag():
          · 缺省（= 涉及）→ ②前置点（前置状态）+ 轮末补点（最终产像）→ 链 **+2**；
          · usr `tool_async.<工具>.touch_files=false` → 放行不打点 → 只余轮末补点 → 链 **+1**。
 
-    口径变更（GATEWAY-2 L1/L2）：`filesys_run` 已删除 → ② 改用 `script_run`（PowerShell 精确写盘）。
-    现行缺省「涉及文件变动」的 self 内置工具白名单 = `[filesys_run, script_run]`，其中仅
-    `script_run` 仍存在；`file_*` 文件域工具缺省**不涉及**，无法用于验证 +2/+1 差异。
+    口径变更（2026-10-23）：`script_run` 已随 core 契约退役删除 → ② 改用任务插件 `task_run`
+    （PowerShell 精确写盘）。gateway 缺省规则：self 内置工具（除已删除的 filesys_run/script_run）
+    **不涉及**；插件/第三方工具（task_run、file_* 之外的 dir 节点）**缺省涉及** → task_run 可验证
+    +2/+1 差异。
 
     并断言 usr 键**保存 → 回读**（新选项落库）。
     """
-    fs = [n for n in tools() if n.endswith("script_run")]
+    fs = [n for n in tools() if n.endswith("task_run")]
     if not fs:
-        raise TestError("工具面无 script_run（无法验证 touch_files 生效面）")
+        raise TestError("工具面无 task_run（无法验证 touch_files 生效面）")
     tool = fs[0]
     ref = CHAIN_PREFIX + SID
     abs_hist = fwd(os.path.join(WS, HIST_FILE))
@@ -623,7 +624,7 @@ def case_h6_touch_files_flag():
     if n1 - n0 != 2:
         raise TestError("缺省（涉及）应 +2（前置点 + 轮末补点），实际 +%d（n0=%d n1=%d）"
                         % (n1 - n0, n0, n1))
-    print("[H6] 缺省（涉及）：history_restore 置脏 → script_run 前置点 + 轮末补点 → 链 +%d" % (n1 - n0),
+    print("[H6] 缺省（涉及）：history_restore 置脏 → task_run 前置点 + 轮末补点 → 链 +%d" % (n1 - n0),
           flush=True)
 
     # ── 保存 usr 新选项：tool_async.<工具>.touch_files=false → 回读 ──

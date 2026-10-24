@@ -3,9 +3,9 @@
 
 覆盖（每条 = A 数据面回读 + B 真实效果；B 恒以可观测证据收口，不用"保存成功即算过"）：
 
-  G1 `enable-codegraph`  开 → 工具面出现 8 个 `self_codegraph_*`；关 → 消失。**保存即生效**
-                         （同一实例内先取基线 → 开 → 关，不作重启用例；见 G1 docstring）
-  G2 `enable-vfts`       开 → 工具面出现 `self_vfts_query`；关 → 消失。**保存即生效**
+  G1 `codebase` 插件启停 → 工具面出现/消失 codegraph 8 个 + `vfts_query`。**保存即生效**
+                         （2026-10-23 口径：索引工具已插件化，唯一门控 = 插件启用开关）
+  G2 `enable-codegraph` / `enable-vfts` → **历史 prj 键不再门控工具面**（防旧门控回归）
   G3 `codegraph.exts` / `codegraph.skip-dirs` → **索引范围终效**：
                          `codegraph.status.exts/skipDirs/indexedFiles` + 落盘 bbolt 索引库
                          （`index.db`）命中集合 → **夹具推导的显式期望集合字面全等**
@@ -14,8 +14,9 @@
   G4 `codegraph.action`  rebuild / retry → 状态流出现**进行中阶段**（`state=indexing` 且
                          `phase∈{configure,index}`）后回到 `ready`；clear → 回「未初始化」
                          （`state=""`、`indexedFiles=0`、`index.db` 被删除且落盘无命中）。
-  G5 prj `skip_dirs`     （**GUI 配置面**写入：设置 → 参数 → 项目标签页）+ mock LLM 真实
-                         `FILE_FIND`（经 `dsl_run`）调用 → 命中集合**不再含被跳过目录**（同目录内未跳过文件仍命中）。
+  G5 prj `skip_dirs`     （**GUI 配置面**写入：设置 → 参数 → 项目标签页）→ prj 回读 + 重开页面回显；
+                         B（终效）不可覆盖：find 已由 `file_find` 单工具承载，跳过目录为调用级
+                         `targets[].skipDirs`，prj `skip_dirs` 不再参与执行（依据见 G5 docstring）。
   G6 `timeout_sec` / `max_concurrency` → GUI 改后 **prj 回读一致**（含重开页面输入框回显）。
                          B 不可稳定观测的原因见 G6 docstring（附代码级依据）。
   G7 `codegraph.stack-gitignore` = **gitignore 语义端到端**（勾选「叠加 gitignore」）：
@@ -33,8 +34,8 @@
 
 观测手段（**零新增 MQ 主题**，全部取自 61-消息一览既有面）：
   * 工具面 = 客户端能力面 `tools-list`（61 §4.5：桥 → gateway `mcp-tools-list`；桥按当前实例
-    作用域过滤）→ `{tools:[{name}]}`。内置能力源暴露名带 `self_` 前缀（gateway applyPrefix，
-    self 节点 entry.ID）→ codegraph/vfts 插件注册的工具同样经 self 节点聚合。
+    作用域过滤）→ `{tools:[{name}]}`。**2026-10-23 口径**：P0a 去 `self_` 前缀后，
+    codebase 插件注册的工具名 = manifest `mcp.hot_tools` 原名（无前缀）。
   * 索引状态 = prj 键 `codegraph.status` / `vfts.status`（插件回写；prjusr 路由，--data-dir 下与
     prj 同库）→ `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
     （61 §3：persist 保存/删除后广播）捕获 → 不依赖轮询赛跑，不漏阶段。
@@ -43,12 +44,11 @@
   * codegraph 落盘索引 = **bbolt 单文件库** `<ws>/.chonkpilot/codegraph/index.db`（引擎侧
     store.go；不再有 index.json）→ 经引擎只读自检 `-dump <ws>` 打印 JSON `{count,files}` 读回
     命中文件集合（不重建、不写盘）。
-  * 端到端工具调用 = mock LLM 回 tool_call（`mock_llm.py` 专用路由 `call find-skip`，
-    路径由提示词携带 `findskip=<绝对路径>`）→ 走真实 server→gateway→executor 链路。
+  * 端到端工具调用已随 `dsl_run` 退役移除（G5 改为配置面回读，见 G5 docstring）。
 
 隔离与环境（51-FP与测试映射 §5/§6-8）：
   * **自起** GUI：动态端口 + 独立 work-dir（临时目录）+ 独立 `--data-dir` + 独立 `HOME`
-    （usr 主库全新 → enable-* 天然为「未启用」基线；prj 库全新 → 无历史覆盖）。
+    （usr 主库全新；prj 库全新 → 无历史覆盖；codebase 插件按默认启用态加载）。
   * 不碰共享 `systest/ws`（其 `codegraph/vfts` 索引是 K5/K6 夹具）——本套件**不清除**他套件索引。
   * 套件级配置快照-还原 = `_h.suite_config_guard(c)`（退出前自动回滚 usr+prj，含异常/中断路径）。
   * mock LLM 由 harness 自起自收；索引落盘（`<ws>/.chonkpilot/{codegraph,vfts}`）在临时
@@ -69,20 +69,20 @@ from chonk_client import TestError, run_case  # noqa: E402
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51 §6 测试资源规范）  # noqa: E402
 
 # ── 工具面（网关暴露名）──────────────────────────────────
-# codegraph 查询工具全集 = 8（`plugin-codegraph/callgate.go:36-104 queryTools`；
-# 含 `*_callers` / `*_callees`，同 `codegraph_test.go:19` 断言；2026-09-27 由 6 订正为 8，
-# 对齐产品现网工具面——原 6 项列表漏 callers/callees 使 G1 假红）。
+# 口径变更（2026-10-23）：P0a 去 `self_` 前缀后网关暴露名即插件清单 `mcp.hot_tools` 原名 →
+# 断言用无前缀名（此前 `self_*` 已不再出现）。
+# codegraph 查询工具全集 = 8（`plugin-codebase` hot_tools；含 `*_callers` / `*_callees`）。
 CG_TOOLS = [
-    "self_codegraph_symbol_search",
-    "self_codegraph_get_symbol_info",
-    "self_codegraph_callers",
-    "self_codegraph_callees",
-    "self_codegraph_get_dependency_graph",
-    "self_codegraph_find_circular_deps",
-    "self_codegraph_analyze_complexity",
-    "self_codegraph_get_module_summary",
+    "codegraph_symbol_search",
+    "codegraph_get_symbol_info",
+    "codegraph_callers",
+    "codegraph_callees",
+    "codegraph_get_dependency_graph",
+    "codegraph_find_circular_deps",
+    "codegraph_analyze_complexity",
+    "codegraph_get_module_summary",
 ]
-VF_TOOL = "self_vfts_query"
+VF_TOOL = "vfts_query"
 
 REFRESH = "data-prj-config-refresh"          # 既有广播（61 §3）
 STATUS_KEY = "codegraph.status"              # 插件回写的索引状态（61/64 §4.2）
@@ -106,14 +106,6 @@ with open(os.path.join(WS, "gate_src", "note.md"), "w", encoding="utf-8") as f:
 os.makedirs(os.path.join(WS, "gate_skip"), exist_ok=True)
 with open(os.path.join(WS, "gate_skip", "delta.go"), "w", encoding="utf-8") as f:
     f.write("package skip\n\nfunc Delta() int { return 2 }\n")
-
-# skip_dirs 端到端夹具（G5）：同目录下「未跳过」与「待跳过」文件内容同哨兵
-FIND_ROOT = os.path.join(WS, "gate_find")
-os.makedirs(os.path.join(FIND_ROOT, "_skipme"), exist_ok=True)
-with open(os.path.join(FIND_ROOT, "ok.txt"), "w", encoding="utf-8") as f:
-    f.write("GATE_SKIP_SENTINEL ok\n")
-with open(os.path.join(FIND_ROOT, "_skipme", "dep.txt"), "w", encoding="utf-8") as f:
-    f.write("GATE_SKIP_SENTINEL dep\n")
 
 # gitignore 语义端到端夹具（G7/G8/G9）：文件级排除 + '!' 反选 + 目录剪枝。
 # 每个 .go 写唯一哨兵字符串（便于在落盘产物 / 清单里定位）；.gitignore 故意把「子级 '!' 反选」
@@ -531,159 +523,82 @@ def set_param_input(label_sub, value):
     time.sleep(0.4)
 
 
-# ── mock LLM 驱动的一次真实 FIND（G5）────────────────
-
-def run_find_turn(skip_dirs=None):
-    """发一轮 llm-start（mock 按 `call find-skip` 回 dsl_run FILE_FIND）→ 返回（工具结果原文, 原始 payload）。
-
-    `file_find` 工具已收纳为 filesys_run/dsl_run 的 FIND 动作（skip_dirs 变为动作选项）：
-    `skip_dirs` 非空时经提示词 `findsd=<csv>` 传给 mock，由 mock 在 FILE_FIND 动作上显式携带
-    `skip_dirs=`。原 prj `skip_dirs` 经 mcp-server `defaultsMap` 注入 tools/call **顶层参数**的链路
-    随 file_find 移除而失效 → 本用例改由调用方显式携带，断言口径（命中集合不含被跳过目录）不变。
-    """
-    sid = "idxgate-%d" % int(time.time() * 1000)
-    turn = "t-" + sid
-    q = "call find-skip findskip=%s" % FIND_ROOT   # 根路径经提示词携带（无空格）
-    if skip_dirs:
-        q += " findsd=%s" % skip_dirs                # 可选：FIND 的 skip_dirs=<csv>
-    c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
-    c.mq_on_capture(["turn-start", "tool-result", "llm-complete"])
-    c.mq_emit("session-changed", {"session_id": sid})
-    c.mq_emit("llm-start", {
-        "session_id": sid, "turn": turn,
-        "q": q,
-        "llm": "mock", "think": "", "effort": "", "scenario_id": "",
-    })
-    deadline = time.time() + 90
-    payload = None
-    while time.time() < deadline:
-        for e in c.events_of("tool-result", clear=False):
-            p = e.get("payload") or {}
-            if isinstance(p, str):
-                try:
-                    p = json.loads(p)
-                except Exception:
-                    p = {}
-            if not isinstance(p, dict) or p.get("turn_id") != turn:
-                continue
-            if (p.get("tool") or "").endswith("dsl_run") and p.get("status") == "done":
-                payload = p
-        if payload is not None:
-            break
-        time.sleep(0.3)
-    if payload is None:
-        raise TestError("mock LLM 轮次未回 dsl_run tool-result（turn=%s）" % turn)
-    # 等该轮终态，避免下一轮与在飞轮次排队
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        done = [e for e in c.events_of("llm-complete", clear=False)
-                if isinstance(e.get("payload"), (dict, str))]
-        if any(turn in json.dumps((e.get("payload") or {}), ensure_ascii=False) for e in done):
-            break
-        time.sleep(0.3)
-    txt = payload.get("result") or ""
-    try:
-        o = json.loads(txt)
-        if isinstance(o, dict):
-            txt = o.get("output") or json.dumps(o, ensure_ascii=False)
-    except Exception:
-        pass
-    return txt, payload
-
-
 # ══════════════════════════════════════════════════════════
-# G1 enable-codegraph → 工具面对 LLM 的可见性
+# G1 codebase 插件启停 → 索引工具面（插件级门控）
 # ══════════════════════════════════════════════════════════
 
-def case_g1_enable_codegraph_surface():
-    """开 → 工具面出现 8 个 `self_codegraph_*`；关 → 消失（**保存即生效**，不作重启用例）。
+def _plugin_enabled(pid):
+    r = c.req("plugin-list", {}) or {}
+    for p in (r.get("plugins") or []):
+        if p.get("id") == pid:
+            return bool(p.get("enabled"))
+    raise TestError("plugin-list 中找不到插件 %s" % pid)
 
-    保存即生效依据：`CodegraphConfig.vue handleChange` → `setConfig('enable-codegraph', …)`
-    → `data-prj-config-save` → persist 广播 `data-prj-config-refresh` →
-    `plugin-codegraph onPrjConfigRefresh`（订阅该既有主题）→ `syncTools()` 即注册/注销 gateway
-    工具面（`codegraph.go:433-472`/`:980-1034`）。故断言：**同一实例**内开关后 `tools-list`
-    集合即时变化（实测 ≤0.3s），全程无重启。
+
+def case_g1_plugin_codebase_gate():
+    """codebase 插件启停 → codegraph/vfts 工具面即时出现/消失（**保存即生效**，不重启）。
+
+    口径变更（2026-10-23）：索引工具已迁入 `codebase` 插件（manifest `mcp.hot_tools`），
+    prj 键 `enable-codegraph` / `enable-vfts` **不再门控工具面**；唯一门控 = 插件启用开关
+    （`plugin-set-enabled`，与插件维护页「启用」开关同源）。故断言同一实例内：
+    停用插件 → 工具面移除 codegraph/vfts；重新启用 → 原样恢复。
     """
+    need = set(CG_TOOLS) | {VF_TOOL}
     base = set(tools())
-    stray = sorted(n for n in base if "codegraph" in n)
-    if stray:
-        raise TestError("基线工具面不应含 codegraph 工具（独立 work-dir 应为未启用）：%r" % stray)
-    print("[G1] 基线工具面 %d 项：%r" % (len(base), sorted(base)), flush=True)
+    miss = sorted(need - base)
+    if miss:
+        raise TestError("基线工具面应含 codebase 插件全部索引工具（插件默认启用），缺：%r" % miss)
+    if not _plugin_enabled("codebase"):
+        raise TestError("基线 codebase 插件应为启用态")
+    print("[G1] 基线工具面 %d 项（含 codegraph 8 + %s）" % (len(base), VF_TOOL), flush=True)
 
-    open_page("settings-project", ".project-config-panel")
-    click_tab(".project-config-panel", "CodeGraph 索引")
-    st = find_switch("CodeGraph 索引")
-    if not st:
-        raise TestError("未找到「CodeGraph 索引」开关")
-    if st["checked"]:
-        raise TestError("基线 enable-codegraph 应为关（独立 work-dir），实际开关为开")
+    c.req("plugin-set-enabled", {"id": "codebase", "enabled": False})
+    off = set(wait_tools(lambda s: not (need & s),
+                         "停用 codebase 插件后 codegraph/vfts 工具从工具面移除", max_wait=60))
+    if _plugin_enabled("codebase"):
+        raise TestError("停用后 plugin-list.enabled 仍为 true")
+    print("[G1] 停用 → 工具面 -%r（%d 项）" % (sorted(need & base), len(off)), flush=True)
 
-    if click_switch("CodeGraph 索引") != "ok":
-        raise TestError("点击 CodeGraph 开关失败")
-    got = prj().get("enable-codegraph")
-    if got != "true":
-        raise TestError("点击后 enable-codegraph=%r，期望 'true'（A：prj 回读）" % (got,))
-    on = set(wait_tools(lambda s: set(CG_TOOLS) <= s, "开启后 8 个 codegraph 工具注入工具面"))
-    extra = sorted(on - base)
-    if extra != sorted(CG_TOOLS):
-        raise TestError("开启后工具面增量应为 8 个 codegraph 工具，实际增量=%r" % (extra,))
-    print("[G1] 开 → 工具面 +%r（A: enable-codegraph=%r；B: 可见 8/8，未重启）"
-          % (extra, got), flush=True)
-
-    if click_switch("CodeGraph 索引") != "ok":
-        raise TestError("再次点击 CodeGraph 开关失败")
-    got2 = prj().get("enable-codegraph")
-    if got2 != "false":
-        raise TestError("关闭后 enable-codegraph=%r，期望 'false'" % (got2,))
-    off = set(wait_tools(lambda s: not any("codegraph" in n for n in s),
-                         "关闭后 codegraph 工具从工具面移除"))
-    if off != base:
-        raise TestError("关闭后工具面应回到基线，差异=%r" % (sorted(off ^ base),))
-    print("[G1] 关 → 工具面 -%r（A: enable-codegraph=%r；B: 8/8 消失，未重启）"
-          % (sorted(CG_TOOLS), got2), flush=True)
+    c.req("plugin-set-enabled", {"id": "codebase", "enabled": True})
+    on = set(wait_tools(lambda s: need <= s,
+                        "重新启用 codebase 插件后索引工具恢复工具面", max_wait=90))
+    if not _plugin_enabled("codebase"):
+        raise TestError("启用后 plugin-list.enabled 仍为 false")
+    extra = sorted(on - off)
+    if not (need & set(extra)) == need:
+        raise TestError("重新启用后工具面应恢复 codegraph 8 + %s，实际增量=%r" % (VF_TOOL, extra))
+    print("[G1] 启用 → 工具面 +%r（未重启）" % extra, flush=True)
 
 
 # ══════════════════════════════════════════════════════════
-# G2 enable-vfts → 工具面对 LLM 的可见性
+# G2 历史 prj 键 enable-codegraph / enable-vfts 不再门控工具面
 # ══════════════════════════════════════════════════════════
 
-def case_g2_enable_vfts_surface():
-    """开 → `self_vfts_query` 出现；关 → 消失（**保存即生效**）。
+def case_g2_legacy_enable_keys_inert():
+    """prj `enable-codegraph` / `enable-vfts` 仍可读写，但**不再**控制工具面（防旧门控回归）。
 
-    依据：`VftsConfig.vue` 开关 → `setConfig('enable-vfts', …)` → `data-prj-config-refresh`
-    → `plugin-vfts onPrjConfigRefresh`/`readEnableAndEnsure` → `syncTools()`（`vfts.go:383-423`/
-    `:790-844`）。断言同一实例内即时可见性变化。
+    口径变更（2026-10-23）：工具归属 `codebase` 插件（启用即注册全部 hot_tools）→ 旧实现
+    「关 → 8 个 codegraph 工具 / vfts_query 消失」已作废；唯一门控见 G1。故断言：写 false 后
+    工具面**不减少**（留出反应窗口排除异步摘除），且 prj 回读一致。
     """
-    base = set(tools())
-    if any("vfts" in n for n in base):
-        raise TestError("基线工具面不应含 vfts 工具：%r" % sorted(base))
-    open_page("settings-project", ".project-config-panel")
-    click_tab(".project-config-panel", "Vfts 全文索引")
-    st = find_switch("Vfts 全文索引")
-    if not st:
-        raise TestError("未找到「Vfts 全文索引」开关")
-    if st["checked"]:
-        raise TestError("基线 enable-vfts 应为关（独立 work-dir），实际开关为开")
-
-    if click_switch("Vfts 全文索引") != "ok":
-        raise TestError("点击 Vfts 开关失败")
-    got = prj().get("enable-vfts")
-    if got != "true":
-        raise TestError("点击后 enable-vfts=%r，期望 'true'（A：prj 回读）" % (got,))
-    on = set(wait_tools(lambda s: VF_TOOL in s, "开启后 vfts_query 注入工具面"))
-    if sorted(on - base) != [VF_TOOL]:
-        raise TestError("开启后工具面增量应为 %s，实际=%r" % (VF_TOOL, sorted(on - base)))
-    print("[G2] 开 → 工具面 +[%s]（A: enable-vfts=%r；B: 可见，未重启）" % (VF_TOOL, got), flush=True)
-
-    if click_switch("Vfts 全文索引") != "ok":
-        raise TestError("再次点击 Vfts 开关失败")
-    got2 = prj().get("enable-vfts")
-    if got2 != "false":
-        raise TestError("关闭后 enable-vfts=%r，期望 'false'" % (got2,))
-    off = set(wait_tools(lambda s: VF_TOOL not in s, "关闭后 vfts_query 从工具面移除"))
-    if off != base:
-        raise TestError("关闭后工具面应回到基线，差异=%r" % (sorted(off ^ base),))
-    print("[G2] 关 → 工具面 -[%s]（A: enable-vfts=%r；B: 消失，未重启）" % (VF_TOOL, got2), flush=True)
+    need = set(CG_TOOLS) | {VF_TOOL}
+    if not need <= set(tools()):
+        raise TestError("前置：工具面应含 codegraph/vfts 工具：%r" % sorted(need - set(tools())))
+    for key in ("enable-codegraph", "enable-vfts"):
+        prj_save(key, "false")
+        time.sleep(1.5)  # 反应窗口：旧实现会在 data-prj-config-refresh 后异步摘除工具
+        cur = set(tools())
+        loss = sorted(need - cur)
+        if loss:
+            raise TestError("%s=false 不应再门控工具面，实际消失=%r" % (key, loss))
+        got = prj().get(key)
+        if got != "false":
+            raise TestError("%s 回读=%r，期望 'false'" % (key, got))
+        prj_save(key, "true")
+        if prj().get(key) != "true":
+            raise TestError("%s 回写 true 失败（回读=%r）" % (key, prj().get(key)))
+    print("[G2] enable-codegraph / enable-vfts 写入 false 后工具面保持 %d 项（"
+          "历史键不再门控；已回写 true）" % len(need), flush=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -855,28 +770,21 @@ def case_g4_action_rebuild_retry_clear():
 
 
 # ══════════════════════════════════════════════════════════
-# G5 prj skip_dirs → FIND 命中集合
+# G5 prj skip_dirs（配置面回读）
 # ══════════════════════════════════════════════════════════
 
-def case_g5_prj_skip_dirs_end_to_end():
-    """prj `skip_dirs`（GUI「参数 → 项目」写入）→ 真实 `FILE_FIND`（经 dsl_run）不再返回被跳过目录下文件。
+def case_g5_prj_skip_dirs_config_face():
+    """prj `skip_dirs`：GUI「参数 → 项目」写入 → prj 回读一致（含重开页面输入框回显）。
 
-    链路：GUI 输入框失焦 → `setConfig('skip_dirs', '["_skipme"]')` → persist prj 键 →
-    `data-prj-config-refresh` → llm-server `loadExecConfig`（`server.go:1957-1995`）重跑 →
-    `mcp-server Config.SetRuntime` →（原经 `defaultsMap().skip_dirs` 注入 tools/call 顶层参数，
-    随 file_find 工具收纳失效）→ 现由调用方把跳过目录经提示词 `findsd=` 显式带入 FIND 动作
-    （`fileops.ParseWalkFilter` 并入跳过集）。
-    判据：同一轮提示词、同一目录，仅改 FIND 的 skip_dirs → 命中集合从 {_skipme/dep.txt, ok.txt}
-    收敛为 {ok.txt}（未跳过文件仍命中 = 工具确已执行，非"没跑"）。
+    B（终效）**不做**——依据（代码级）：
+      ① find 系列动作已由单工具 `file_find` 取代，跳过目录改为**调用级** `targets[].skipDirs`
+        （契约 `file_find.tool.md` §参数）；
+      ② 旧 `dsl_run`（FIND 动作入口）已随 DSL 退役删除 → prj `skip_dirs` 不再参与工具执行，
+        也无其它可观测消费面（mcp-server `defaultsMap` 注入链随 file_find 旧实现一并移除）。
+    故本条只覆盖配置面（写入 + 回读 + 重开页面回显），并如实标注 B 不可覆盖。
     """
     if prj().get("skip_dirs"):
         raise TestError("基线 prj skip_dirs 应为空（独立 work-dir），实际=%r" % prj().get("skip_dirs"))
-
-    txt1, p1 = run_find_turn()
-    if "ok.txt" not in txt1 or "_skipme" not in txt1:
-        raise TestError("基线 FILE_FIND 应同时命中 ok.txt 与 _skipme/dep.txt，实际=%r（payload=%r）"
-                        % (txt1, p1))
-    print("[G5] 基线 FILE_FIND（无 skip_dirs）→ tool=%s 命中=%r" % (p1.get("tool"), txt1), flush=True)
 
     open_params_project()
     set_param_input("跳过目录", "_skipme")
@@ -884,13 +792,15 @@ def case_g5_prj_skip_dirs_end_to_end():
     if got != '["_skipme"]':
         raise TestError("A：GUI 写后 prj skip_dirs=%r，期望 '[\"_skipme\"]'" % (got,))
 
-    txt2, p2 = run_find_turn(skip_dirs="_skipme")
-    if "ok.txt" not in txt2:
-        raise TestError("设置 skip_dirs 后仍应命中未跳过文件 ok.txt，实际=%r" % txt2)
-    if "_skipme" in txt2:
-        raise TestError("设置 skip_dirs=_skipme 后命中集合仍含被跳过目录：%r" % txt2)
-    print("[G5] skip_dirs=%r → tool=%s 命中=%r（A: prj 回读一致；B: 被跳过目录消失）"
-          % (got, p2.get("tool"), txt2), flush=True)
+    # 回读（重开页面 → 输入框回显 = 从 prj 库重新加载）
+    open_params_project()
+    rows = {r["label"]: r["value"] for r in (param_rows() or [])}
+    if rows.get("跳过目录") != "_skipme":
+        raise TestError("A：重开页面后回显不符：%r" % (rows,))
+    # 清理（后续用例不再依赖该键）
+    prj_save("skip_dirs", "")
+    print("[G5] skip_dirs=%r（prj 回读 + 重开页面回显一致；B 不可覆盖，依据见 docstring）"
+          % (got,), flush=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1165,16 +1075,16 @@ def main():
     total = 0
     ok = 0
     cases = [
-        ("G1 enable-codegraph → 工具面出现/消失 8 个 codegraph 工具（保存即生效）",
-         case_g1_enable_codegraph_surface),
-        ("G2 enable-vfts → 工具面出现/消失 vfts_query（保存即生效）",
-         case_g2_enable_vfts_surface),
+        ("G1 codebase 插件启停 → 工具面出现/消失 codegraph 8 + vfts_query（保存即生效）",
+         case_g1_plugin_codebase_gate),
+        ("G2 enable-codegraph/enable-vfts 历史键不再门控工具面",
+         case_g2_legacy_enable_keys_inert),
         ("G3 codegraph.exts/skip-dirs → 索引范围终效（status + bbolt 索引命中集合）",
          case_g3_index_scope),
         ("G4 codegraph.action rebuild/retry 进行中阶段→ready；clear→未初始化",
          case_g4_action_rebuild_retry_clear),
-        ("G5 prj skip_dirs → FIND 命中集合剔除被跳过目录（GUI 配置面）",
-         case_g5_prj_skip_dirs_end_to_end),
+        ("G5 prj skip_dirs → 配置面回读 + 重开页面回显（B 不可覆盖）",
+         case_g5_prj_skip_dirs_config_face),
         ("G6 timeout_sec/max_concurrency → prj 回读一致（B 不可稳定观测）",
          case_g6_exec_params_readback),
         ("G7 codegraph.stack-gitignore → .gitignore 生效 + 文件级排除 + '!' 反选 + 目录剪枝",

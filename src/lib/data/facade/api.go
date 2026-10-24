@@ -268,6 +268,9 @@ type SessionAPI interface {
 	// SessionDelete 删会话及其轮次/消息（会话不存在 → OK=true，幂等；活动会话一并清活动态）。
 	SessionDelete(req SessionDeleteRequest) (SessionDeleteResponse, error)
 
+	// SessionFork 派生对话（SESSION-COMP-1 P4）：full = 拷库 + id 重映射；context = 主会话 + 快照。
+	SessionFork(req SessionForkRequest) (SessionForkResponse, error)
+
 	// SessionActiveSet 写「当前活动会话」。
 	SessionActiveSet(req SessionActiveSetRequest) (SessionActiveSetResponse, error)
 

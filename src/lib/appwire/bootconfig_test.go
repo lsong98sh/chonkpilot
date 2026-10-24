@@ -8,12 +8,12 @@ func TestSnapshotRevisionDeterministic(t *testing.T) {
 	a := Snapshot(BootConfig{
 		Form: "desktop", WorkDir: `E:\ws\a`, LLMBase: "http://127.0.0.1:8901/v1",
 		Servers: []ServerSpec{{ID: "b"}, {ID: "a"}},
-		EnvKeys: []string{"CHONK_PLUGIN_UDS", "CHONK_LLM_BRIDGE_ADDR"},
+		EnvKeys: []string{"CHONK_PLUGIN_UDS", "CHONK_LLM_UDS"},
 	})
 	b := Snapshot(BootConfig{
 		Form: "desktop", WorkDir: `E:\ws\a`, LLMBase: "http://127.0.0.1:8901/v1",
 		Servers: []ServerSpec{{ID: "a"}, {ID: "b"}},
-		EnvKeys: []string{"CHONK_LLM_BRIDGE_ADDR", "CHONK_PLUGIN_UDS"},
+		EnvKeys: []string{"CHONK_LLM_UDS", "CHONK_PLUGIN_UDS"},
 	})
 	if a.Revision == "" || a.Revision != b.Revision {
 		t.Fatalf("revision not deterministic: %q vs %q", a.Revision, b.Revision)

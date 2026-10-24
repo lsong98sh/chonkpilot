@@ -2,7 +2,7 @@
 """B8 · 语义/回环级推广 ①：**工具执行结果渲染与回读**（真实工具执行 → 结果语义 → 历史回读）。
 
 覆盖（**拒绝"存在级"：断言工具**真实执行**产出的结果内容 + 渲染 + 经受持久层回读**）：
-  G1 执行语义：mock LLM 路由出 `self_script_run`（cmd `echo py-ok`）→ 真实执行 →
+  G1 执行语义：mock LLM 路由出 `task_run`（`Write-Output py-ok`）→ 真实执行 →
      `tool-result` 事件载荷**含 stdout 哨兵 `py-ok`**（工具结果内容级，非仅事件存在）。
   G2 渲染语义：展开对应 `tool_pair` 卡片（`.section-header` → `.more-link`）→ 卡片文本**含 `py-ok`**
      （结果落进 DOM，非仅容器存在）。
@@ -160,7 +160,7 @@ def case_g3_history_readback():
 def main():
     c.console(clear=True)
     print("依赖：--test-port GUI + mock LLM(8901)（harness 自起）+ 隔离 work-dir/data-dir/HOME；"
-          "驱动 = llm-start/message 面 + 真实 script_run 执行（既有主题）", flush=True)
+          "驱动 = llm-start/message 面 + 真实 task_run 执行（既有主题）", flush=True)
     ok = total = 0
     for name, fn in [
         ("G1 执行语义：tool-result 载荷含真实 stdout 哨兵", case_g1_execution_content),

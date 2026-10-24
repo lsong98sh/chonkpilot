@@ -394,6 +394,16 @@ def close_last_tab():
     })()""" % json.dumps(TABBAR)))
 
 
+def _win_maximize_title():
+    """窗口最大化按钮的 title（Maximize/最大化 = 可最大化；Restore/还原 = 已最大化）。"""
+    return (c.eval("document.querySelector('.win-maximize')?.getAttribute('title') || ''") or "").strip()
+
+
+def _click_maximize():
+    c.eval("document.querySelector('.win-maximize')?.click(); 'ok'")
+    time.sleep(1.0)
+
+
 def case_tabbar_more_toggle():
     """P9 可用宽变化 → 溢出按钮「出现 / 消失」与溢出判定一致 + 页签不被隐藏 + 恢复宽度回初始状态。
 
@@ -406,8 +416,19 @@ def case_tabbar_more_toggle():
     st0 = tabbar_overflow_state()
     if not st0:
         raise TestError("未取到页签栏几何")
+    # 用例前置：共享 ws 实例在 run_all 串行时会继承前序套件落盘的 `layout.*` 窄预览宽
+    # （实测最宽拖拽后 barW 仍只有 78px）→ 该可用宽下「刚好放得下 2 个页签」都不成立。
+    # 处置：用例内**临时最大化**窗口补足可用宽，结束还原最大化状态（不改变布局持久化语义）。
+    restore_win = False
+    if st0.get("barW", 0) < 320:
+        if _win_maximize_title() in ("Maximize", "最大化"):
+            _click_maximize()
+            restore_win = True
+            st0 = tabbar_overflow_state() or st0
     drag_filetree(-2000)  # 预览区放到最宽（filetree 到最小宽）
     wide = tabbar_overflow_state()
+    if wide["barW"] < st0.get("barW", 0):
+        raise TestError(f"向最宽方向拖拽后可用宽反而变小（{st0.get('barW')} → {wide['barW']}）：{wide}")
     # ① 自校准「最宽可用宽下刚好放得下」：关最后一个页签直到不溢出（容纳上限随窗口/页签名宽度自适应）
     for _ in range(30):
         if not wide["need"]:
@@ -451,6 +472,9 @@ def case_tabbar_more_toggle():
     # ⑤ 全程不留残留弹框
     if c.exists(".tb-more-pop").get("count", 0) > 0:
         raise TestError("可用宽变化后弹框残留")
+    # ⑥ 还原最大化状态（仅当本用例临时最大化过）
+    if restore_win and _win_maximize_title() in ("Restore", "还原"):
+        _click_maximize()
 
 
 def case_open_persist():

@@ -1,0 +1,136 @@
+/**
+ * ChonkPilot 主题资产（THEME-1，2026-10-23）——**唯一主题色源**。
+ *
+ * 单文件多主题块：light = `:root`（默认）/ dark = `[data-theme="dark"]` / nord = `[data-theme="nord"]`。
+ * 运行期由宿主经 `GET /themes.css` 读取 `<exeDir>/themes/themes.css`（缺失/不可读 → 内置 embed 副本），
+ * 宿主页面与插件页面都只用一行 `<link rel="stylesheet" href="/themes.css" />` 引入。
+ *
+ * 编辑口径：用户可直接改产物目录 `dist/desktop/themes/themes.css`（下次启动生效），
+ * 无需重新构建；`src/initdata/themes/themes.css` 是出厂源，构建脚本覆盖式同步到
+ * `src/lib/gui/internal/themefs/embedded/`（go:embed 兜底）与 `dist/desktop/themes/`。
+ *
+ * 注意：
+ *   - 主题 = **颜色**声明；几何 / 字体 / 尺寸 token 留在前端 `assets/styles/variables.css`。
+ *   - 本文件只管 `--bg-*` / `--fg-*` / `--accent*` / `--text-*` / `--border` / `--panel-bg` /
+ *     `--toolbar-bg` / `--input-bg` / `--tooltip-*` / `--warning-*` / `--success` / `--danger` /
+ *     `--tab-inactive-fg` 等**颜色类**变量；插件页面消费语义别名 `--ck-*`（见 `/shared/ck-theme.css`）。
+ */
+
+:root {
+  /* Colors - Light theme (default) */
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e9ecef;
+  --bg-surface: #dee2e6;
+  --bg-hover: #e9ecef;
+  --text-primary: #212529;
+  --text-secondary: #495057;
+  /* 弱化文字（11–12px 提示/占位）：原 #6c757d 在最亮底 #f8f9fa 上仅 4.45:1（<4.5）→
+     同色相压深至 #6b7280（4.59:1），见 20-gui §12.8 */
+  --text-muted: #6b7280;
+  /* 语义文字色（2026-09-27 用户口径）：主要 / 重要 / 次要 / 无效 / 可点击。
+     新增代码优先用这组语义名，不再直接写 --text-primary / --danger / --accent。
+     消费场景：--fg-secondary = 除 title/input 外的说明文字（字段 hint、页面描述、空态副文案）
+     与页签非激活文字（经下方 --tab-inactive-fg 转引）；实测对比度见 20-gui §12.8。 */
+  --fg-primary: var(--text-primary);
+  --fg-important: var(--danger);
+  --fg-secondary: #6f6a5a;   /* 暖灰偏黄；--bg-primary #f8f9fa 上 5.1:1（用户给 #7a7566 仅 4.04 → 压深） */
+  --fg-disabled: #adb5bd;
+  --fg-link: var(--accent);
+  --accent: #4361ee;
+  --accent-hover: #3a56d4;
+  --success: #2d9f4e;
+  --warning: #e8a317;
+  --danger: #dc3545;
+  --border: #dee2e6;
+  --panel-bg: #ffffff;
+  --toolbar-bg: #ffffff;
+  --input-bg: #ffffff;
+
+  /* 浮层与强调态（light 保持既有取值，暗色主题在下方覆写） */
+  --tooltip-bg: rgba(0, 0, 0, 0.8);
+  --tooltip-color: #ffffff;
+  --accent-bg: #ecf5ff;
+  /* 告警语义衍生：淡色底 + 描边（文字直接用 --warning） */
+  --warning-bg: #fdf6ec;
+  --warning-border: #e6a23c;
+
+  /* 页签：非激活文字色（A6，2026-09-24 用户口径）——由 --text-primary 向底色调和，
+     与激活页签（= --text-primary / --accent）始终有可见差别。
+     〔2026-09-27 用户口径〕不再用 color-mix 逐 scheme 调和，直接绑语义次要色
+     --fg-secondary（暖灰偏黄）；三主题取值见各自覆写。 */
+  --tab-inactive-fg: var(--fg-secondary);
+}
+
+/* Dark theme */
+[data-theme="dark"] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #181825;
+  --bg-tertiary: #11111b;
+  --bg-surface: #313244;
+  --bg-hover: #45475a;
+  --text-primary: #cdd6f4;
+  --text-secondary: #a6adc8;
+  /* 弱化文字：原 #6c7086 在 #1e1e2e 上仅 3.36:1（11–12px 提示不可读）→
+     向 #a6adc8 一带提亮（#1e1e2e 上 7.37:1，见 20-gui §12.8） */
+  --text-muted: #a6adc8;
+  /* 语义文字色覆写：仅覆写非别名项（--fg-primary/important/link 引 var(...) 自动跟随主题） */
+  --fg-secondary: #b8b2a0;   /* 暖灰偏黄（暗色提亮版）；--bg-secondary #181825 上 7.9:1 */
+  --fg-disabled: #6c7086;
+  --accent: #89b4fa;
+  --accent-hover: #74c7ec;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --danger: #f38ba8;
+  --border: #313244;
+  --panel-bg: #1e1e2e;
+  --toolbar-bg: #181825;
+  --input-bg: #313244;
+
+  /* 浮层：暗色下改用主题面/文字，避免纯黑 tooltip 与刺眼浅蓝 hover */
+  --tooltip-bg: var(--bg-surface);
+  --tooltip-color: var(--text-primary);
+  --accent-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+  /* 告警语义衍生：暗色下同法淡化，避免浅色底在暗色主题里刺眼 */
+  --warning-bg: color-mix(in srgb, var(--warning) 15%, transparent);
+  --warning-border: var(--warning);
+  /* 页签非激活文字：绑定语义次要色 --fg-secondary（2026-09-27 起，不再 color-mix） */
+  --tab-inactive-fg: var(--fg-secondary);
+}
+
+/* Nord theme */
+[data-theme="nord"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-tertiary: #434c5e;
+  --bg-surface: #4c566a;
+  --bg-hover: #434c5e;
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  /* 弱化文字：原 #81a1c1 在 #2e3440 上仅 4.64:1（11–12px 提示余量过小）→
+     同色相提亮至 #93a8c8（5.16:1，见 20-gui §12.8） */
+  --text-muted: #93a8c8;
+  /* 语义文字色覆写：仅覆写非别名项（--fg-primary/important/link 引 var(...) 自动跟随主题） */
+  --fg-secondary: #c9c3b2;   /* 暖灰偏黄（nord 提亮版）；--bg-secondary #3b4252 上 5.8:1 */
+  --fg-disabled: #7b8699;
+  --accent: #88c0d0;
+  --accent-hover: #8fbcbb;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  /* 危险色：nord 原 #bf616a 偏暗（底色 #2e3440 上文字/实心填充对比度仅 3.05、菜单面 #4c566a 上仅 1.80）
+     → 调亮为 #f0959e（同色相 354°，面板 5.65 / 工具面 4.55 / 实心填充 4.55；见 20-gui §12.8） */
+  --danger: #f0959e;
+  --border: #4c566a;
+  --panel-bg: #2e3440;
+  --toolbar-bg: #3b4252;
+  --input-bg: #434c5e;
+
+  /* 浮层：同 dark，用主题面/文字 */
+  --tooltip-bg: var(--bg-surface);
+  --tooltip-color: var(--text-primary);
+  --accent-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+  --warning-bg: color-mix(in srgb, var(--warning) 15%, transparent);
+  --warning-border: var(--warning);
+  /* 页签非激活文字：绑定语义次要色 --fg-secondary（2026-09-27 起，不再 color-mix） */
+  --tab-inactive-fg: var(--fg-secondary);
+}

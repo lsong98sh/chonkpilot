@@ -12,18 +12,18 @@
 import mq from '../utils/mq'
 import { EventNames } from '../events/event-names'
 import { setLocale } from '../plugins/i18n'
-import { saveUIState } from '../api/file'
-import { useUserConfigSync } from '../composables/useUserConfigSync'
+import { useTheme } from '../composables/useTheme'
 import { pickAndOpenDir } from './workdirActions'
 
-/** 主题选择（既有主题 `theme-select {themeId}`）：与 `Toolbar.setTheme` 同口径 */
+/**
+ * 主题选择（既有主题 `theme-select {themeId}`）。
+ *
+ * THEME-1（2026-10-23）：DOM / localStorage / usr 配置的写入**统一收口**到
+ * `composables/useTheme.js#applyTheme`（`persist:true` = 用户主动切换 → 回写 usr 配置）。
+ */
 function applyTheme(themeId) {
   if (!themeId) return
-  const { theme } = useUserConfigSync()
-  theme.value = themeId
-  document.documentElement.setAttribute('data-theme', themeId)
-  try { localStorage.setItem('chonkpilot-theme', themeId) } catch (_) { /* 忽略 */ }
-  saveUIState({ theme: themeId }).catch(() => {})
+  useTheme().applyTheme(themeId, { persist: true })
 }
 
 /** 安装宿主侧栏动作订阅；返回取消函数。 */

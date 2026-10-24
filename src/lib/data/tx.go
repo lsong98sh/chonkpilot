@@ -54,6 +54,40 @@ func (tx *Tx) Insert(table, key string, rec Record) error {
 	return putRecord(b, key, rec)
 }
 
+// Delete 删除一行并清理其索引（行不存在 → ErrNotFound，与 Table.Delete 一致）。
+func (tx *Tx) Delete(table, key string) error {
+	b := tx.tx.Bucket([]byte(table))
+	if b == nil {
+		return ErrNotFound
+	}
+	old, ok := decodeRecord(b.Get([]byte(key)), key)
+	if !ok {
+		return ErrNotFound
+	}
+	if err := indexDelete(tx.tx, table, key, old); err != nil {
+		return err
+	}
+	return b.Delete([]byte(key))
+}
+
+// ForEach 遍历表内全部行（键升序；rec 含 _key）。**勿在回调内改表**——需要改时先收集键。
+func (tx *Tx) ForEach(table string, fn func(key string, rec Record) error) error {
+	b := tx.tx.Bucket([]byte(table))
+	if b == nil {
+		return nil
+	}
+	return b.ForEach(func(k, v []byte) error {
+		if v == nil {
+			return nil // 嵌套桶
+		}
+		rec, ok := decodeRecord(v, string(k))
+		if !ok {
+			return nil
+		}
+		return fn(string(k), rec)
+	})
+}
+
 // Put 写入/覆盖（索引按新记录重建；既有行的旧索引项先删除）。
 func (tx *Tx) Put(table, key string, rec Record) error {
 	b, err := tx.tx.CreateBucketIfNotExists([]byte(table))

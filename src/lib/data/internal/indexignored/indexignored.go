@@ -14,11 +14,21 @@ import (
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
 )
 
-// 引擎标识（配置键前缀 = 引擎名；<engine>.skip-dirs / <engine>.stack-gitignore / enable-<engine>）。
+// 引擎标识（判定单元；配置键 = codebase 插件命名空间 `plugins.codebase.<引擎>.*`）。
 const (
 	EngineCodegraph = "codegraph"
 	EngineVfts      = "vfts"
 )
+
+// keysOf 返回单引擎在 prj 配置里的键名（PLUGIN-UI-1 第三段：统一命名空间）。
+func keysOf(engine string) ignore.Keys {
+	prefix := "plugins.codebase." + engine + "."
+	return ignore.Keys{
+		Enabled:        prefix + "enabled",
+		SkipDirs:       prefix + "skip-dirs",
+		StackGitignore: prefix + "stack-gitignore",
+	}
+}
 
 // MaxPaths 单次请求判定的路径数上限：超出只判定前 MaxPaths 条并置 Truncated=true。
 const MaxPaths = 20000
@@ -39,12 +49,15 @@ type Result struct {
 	Truncated bool
 }
 
-// ConfigKeys 返回本判定需要的 prj 配置键（两引擎的 enabled / skip-dirs / stack-gitignore）。
+// ConfigKeys 返回本判定需要的 prj 配置键（两引擎在 codebase 命名空间下的 enabled / skip-dirs /
+// stack-gitignore）。
 func ConfigKeys() []string {
-	return []string{
-		"enable-" + EngineCodegraph, EngineCodegraph + ".skip-dirs", EngineCodegraph + ".stack-gitignore",
-		"enable-" + EngineVfts, EngineVfts + ".skip-dirs", EngineVfts + ".stack-gitignore",
+	out := make([]string, 0, 6)
+	for _, engine := range []string{EngineCodegraph, EngineVfts} {
+		k := keysOf(engine)
+		out = append(out, k.Enabled, k.SkipDirs, k.StackGitignore)
 	}
+	return out
 }
 
 // Query 判定 paths（workdir 相对、'/' 分隔）是否被两引擎排除。
@@ -76,7 +89,7 @@ func Query(workdir string, paths []string, get func(key string) (string, bool), 
 // judge 单引擎判定：ConfigOptions 一次 → 逐路径 Ignored。
 // 引擎未启用（enabled=false）→ 不判排除（ignored 恒空，与前端「引擎关则不灰显」一致）。
 func judge(engine, workdir string, paths []string, get func(string) (string, bool), warnf func(string, ...any)) EngineResult {
-	opts, enabled, err := ignore.ConfigOptions(engine, get, workdir)
+	opts, enabled, err := ignore.ConfigOptions(keysOf(engine), get, workdir)
 	out := EngineResult{Enabled: enabled, Ignored: []string{}}
 	if err != nil {
 		warn(warnf, "data-index-ignored: %s 规则不可用（workdir=%q）：%v", engine, workdir, err)

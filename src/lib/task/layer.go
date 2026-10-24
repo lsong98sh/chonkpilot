@@ -53,6 +53,9 @@ type Options struct {
 	// onTaskCancel → provider.Invalidate）落地取消。空 = 不回调（层只做判定）。
 	// 回调在**层锁外**调用（执行侧可能同步回灌事件 → 避免自锁）。
 	OnCancelExec func(taskID string, exec Exec)
+	// DialogOf 解析「该实例下某会话所属对话 id」（一树一库 P3-4b；空 = 不写键 → 旧布局）。
+	// 由宿主（llm server）注入；层不自行反查（61 §0.6：不做全局反查）。
+	DialogOf func(instanceID, sessionID string) string
 }
 
 // Layer 是任务层实例：DB 为权威，层内 recs 仅作写路径热视图 + 控制面查询。
@@ -68,9 +71,9 @@ type Layer struct {
 	// 视图（短暂持 mu）。并发正确性：同一节点的相关事件在上游（llm turn / gateway 执行）本就
 	// **顺序**发出、跨节点互不冲突，故不以一把锁串行化整条写路径；DB 仍为权威（upsert 幂等，
 	// 同 task_id 覆盖）。
-	mu      sync.Mutex
-	recs    map[string]*Record // task_id → 记录（层内热视图；DB 仍为权威）
-	execs   map[string]Exec    // task_id → 执行句柄（层持有；取消时回调执行侧）
+	mu    sync.Mutex
+	recs  map[string]*Record // task_id → 记录（层内热视图；DB 仍为权威）
+	execs map[string]Exec    // task_id → 执行句柄（层持有；取消时回调执行侧）
 	// pendingExecs 暂存「早于节点登记到达」的 started 执行态（tool_call_id → 最近一次）；
 	// 节点随后登记时补绑（exec.go bindPendingExec）→ 否则长跑执行在完成前拿不到 exec 句柄，
 	// task-stop 无法下发执行侧取消（dsl_run 作业根即此形态）。
@@ -91,7 +94,7 @@ func New(bus mq.Bus, opts Options) *Layer {
 	}
 	return &Layer{
 		bus:          bus,
-		store:        &store{bus: bus, timeout: timeout},
+		store:        &store{bus: bus, timeout: timeout, dialogOf: opts.DialogOf},
 		logf:         logf,
 		onCancelExec: opts.OnCancelExec,
 		recs:         make(map[string]*Record),

@@ -34,6 +34,8 @@
 
 ### 3.1 compress（历史压缩）
 
+> **〔2026-10-23 变更：压缩已内建，本节仅保留「算法口径」为权威〕** compress 的 **exe 插件形态已删除**（`src/plugins/compress/` · `src/initdata/capability/plugins/compress/` · 构建与注册全部移除）。压缩执行归 **session 组件内建**（[49 SESSION-1](../40-roadmap/49-待实现项.md)）：**不再订阅 `session-compress`**，触发与载荷构造在 `src/lib/llm/server/compress.go` 内完成（复用刚发出的 payload、去全部 system、末条 user 换压缩要求、单飞/串行覆盖队列、CAS 回填）。下表**三段定位 / 兜底归并 / 摘要提示词 / 阈值来源 / token 估算 / 子会话门控**仍为权威口径；凡出现「订阅 `session-compress`」「插件进程」「插件读快照写回」的表述，**按内建语义理解**（数据面同为 `data-session-snapshot-*`）。进度通知仍走 `tool-notify`（`compress-queued/start/done`），发布方 = 内建压缩宿主。
+
 | 项 | 值 |
 |----|----|
 | 订阅 | `session-compress`（server 终态落库 + 写快照后发；载荷另有**可选** `max_context_token` / `max_output_token` 字段，见下） |
@@ -119,7 +121,7 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `session-compress`（每轮终态后触发，与 compress 同源，**消息面零新增**）· 点分 `memory.flush`（手动「立即沉淀」，见 [61 §1.1](../60-reference/61-消息一览.md)） |
+| 订阅 | **`session-complete`**（每轮唯一终态；🆕 2026-10-24 解耦：原 `session-compress` 不再承担记忆触发 —— 压缩与记忆无关，见 [61 §4.3](../60-reference/61-消息一览.md)）· 点分 `memory.flush`（手动「立即沉淀」，见 [61 §1.1](../60-reference/61-消息一览.md)）。`session-complete` 载荷为此**只增** `work_dir` / `data_dir`（定位数据根所需） |
 | 配置键 | `memory.enabled`（总开关，**默认 false**）· `memory.min-turn-tokens`（默认 200；**累计门控**，见「处理」）· `memory.category.<类别>`（类别开关，缺省启用）· `memory.category-max-tokens`（单类别 token **告警**阈值，默认 2000、缺失不限；**仅告警不截断**）。**类别沉淀提示词（OP-04）已文件化** = `capability/system/memory/<类别名>.md`（**由 memory 域按文件读序 项目→用户→系统→embed 内置解析、随 `data-memory-list` 下发**；**插件不再读 prj/usr 键载体**，旧 `memory.prompt.<类别名>` / `memory_prompts` 与代码常量 `defaultRewriteSystemPrompt` 均已删除） |
 | 提取范围（OP-05） | 按 (会话, 类别) 记录「**上次提取 turn**」进度（**专用表 prjusr `memory_extract`**，经 `data-memory-extract-{load,save,delete}`；记录 `{session_id, category, last_turn_id}`、主键 `<会话>\x00<类别>`，见 [61 §3.1](../60-reference/61-消息一览.md) · [12 §6.1](../10-architecture/12-数据层.md)）→ 提取范围 = 该类别**从上次提取轮到最新轮的全部轮**（`data-session-history` 取轮序 + 逐轮 `data-session-load-messages`），**含此前被阈值跳过的轮**；成功后**推进进度**到最后处理的轮（**仅在类别保存成功后**；无新轮 → 跳过） |
 | 队列/合并 | 订阅回调（`session-compress` / `memory.flush`）**只置待处理标记**（key = (instance, session)，同 key **覆盖合并**）并立即返回；**每 instance 一个串行 worker** 取标记串行处理（同实例不并发、不重入；裸 goroutine **兜 panic**）。处理 = 该会话各启用类别「进度 → 最新轮」**一次性提取**；**无新轮 → 跳过（不算失败）**。天然幂等：同一 key 多次事件合并成一次、已提取的轮因进度推进不重提 |
@@ -133,6 +135,69 @@
 | 失败策略 | 不阻塞对话：任一环节失败只记日志 + `Deps.Notify` 上报一次（宿主去重/限频，落 `<dataDir>/logs/gui.log`），跳过该类、不降级、不抛出 |
 
 ---
+
+## 3A. 插件 UI 与宿主对接（四通道；🆕 2026-10-24 定稿）
+
+> **前置**：插件 iframe 与宿主**同源**，且必须带 `allow-same-origin`（`sandbox="allow-scripts allow-forms allow-same-origin"`）——**等价于「插件代码视为可信代码」**（插件本就是本机 exe）。旧 `/plugin-ui/<id>/*`（宿主直读磁盘 `webui/`）**下线**，资源改由插件自己提供。
+>
+> **迁移状态（2026-10-24）**：资源通道 + 动作面骨架 + **全部内置插件自持 webui** 已落地 —— `browser` / `codebase` / `desktop` / `file` / `mcp` / `task` / `websearch` 均声明 `ui.selfServe: true`、webui 已搬入 `src/plugins/<id>/webui/` 并 `go:embed`、`src/initdata/capability/plugins/<id>/webui/` 已删除；前端按 `self_serve` 分流到 `/plugins/<id>/…`。**唯一例外 = `demo-python`**（纯 Python 样例、无 exe、不随产物投放 → 仍由宿主直读磁盘，已列入单源测试白名单）。旧 `/plugin-ui/` 路由**保留但已无内置使用者**（`_sdk/plugin.js` 端点仍需保留，下线时只下线磁盘直读分支）。**codebase 四通道已全部打通**（含配置迁入 `plugins.codebase.*`、动作面 `save/clear`、未就绪提示页 + 3 次自动重试）。**其余 6 个插件（browser / desktop / file / mcp / task / websearch）配置链路已收口**：页面 → `/plugins/<id>/api/{load,save,reset}` → 插件校验 → 私有配置存储（键名 `plugins.<id>.*`）；`plugin.json` 的 `config.fields` 已删（**关闭宿主 `plugin-config-set` 第二写入口**），旧键仅作一次性迁移源。⚠️ **口径差异（待补能力）**：宿主能力面**没有** `plugin/v1/config.user.set`，故这 6 个插件的 usr 级配置暂落插件私有文件 `<PLUGIN_DATA_DIR>/webui-config.json`（0600，原子替换），**未进 data 层**；补上 `config.user.set` + free key 注册（含 secret 0600）后只需替换插件内 `configStore` 实现即可迁入。旧 `/plugin-ui/` 磁盘直读分支**已下线**（仅保留 `_sdk/plugin.js`）；`demo-python` 已删 `ui.views/menus/statusbar`（无 exe，页面不随运行时提供）。待做：`plugin/v1/config.user.set`、旧路由/`PluginWebRoot` 残留引用清理、旧 L4 脚本重写。
+
+### 3A.1 四条通道
+
+| 通道 | 入口 | 走向 | 归属 |
+|---|---|---|---|
+| 静态资源 | `GET /plugins/<id>/<path>` | 宿主 → UDS `plugin/v1/ui.asset.get` → 插件 | 插件 embed，宿主不读磁盘 |
+| 动作 | `POST /plugins/<id>/api/<action>` | 宿主 → UDS → 插件 | 业务语义全归插件 |
+| 事件 | iframe ⇄ 主窗口 ⇄ server | **同一份 mq**（同源直接访问） | mq 现有语义 |
+| 配置 | 插件 → `plugin/v1/config.project.*` | UDS 能力 → data 层 | 统一管理（不落插件自有文件） |
+
+### 3A.2 资源
+
+- 路径限定在该插件 `webui` 根内的相对路径；`..` / `%2e` / 反斜杠 → `403`；未命中 → `404`。
+- `Content-Type` 由扩展名表决定；`Cache-Control: no-cache, no-store, must-revalidate`。
+- 宿主侧短缓存键 = `(plugin_id, path, plugin_version)`；**插件重启或版本变化即失效**。
+- **前置条件**：打开插件页前必须确保插件进程就绪；未就绪时只能展示「插件不可用」提示页（宿主**没有**副本可兜底）。
+- 单文件大小上限 + 超限明确报错（不静默截断）。
+
+### 3A.3 动作
+
+- 请求体/响应体**原样透传**，宿主**不解析业务**；仅做三件事：① 按 id 路由到插件；② 校验「发起 iframe 的 id == 目标 id」（防 A 插件页调 B 插件动作）；③ 超时与错误信封。
+- **业务校验、幂等、错误码、并发控制全部由插件自己负责**。
+- 该路径**只允许本应用 WebView 访问**；若实现上同时暴露在本机 HTTP 端口，则必须加令牌（否则任意本机网页可触发插件动作）。
+
+### 3A.4 事件
+
+- iframe 直接用宿主的 `mq`（同源可访问），外层薄壳负责**自动退订**（卸载时 + `beforeunload` 兜底），避免事件回调打到已销毁的 frame。
+- **自回显语义（必须写清）**：
+  - **本地**：`emit` 按 order 分发到同一 JS 上下文的所有订阅者 —— **发布者自己订阅同一主题也会收到**（mq 既有语义）；
+  - **跨进程**：后端/桥**不回显**（防环，见 [11-MQ与消息](../10-architecture/11-MQ与消息.md)）。
+  - 两者不可混为一谈；插件若不想收到自己的消息，自行在回调里按来源过滤。
+- topic 白名单在可信代码前提下是**约定**而非强制（壳可拦误用，拦不住恶意）。
+
+### 3A.5 配置
+
+- **统一由 data 层管理**：插件经 `plugin/v1/config.project.{get,load,set,delete}`（[capabilities.go](../../../src/lib/llm/pluginbridge/capabilities.go)）读写项目配置；**不落插件自有 `config.json`**（避免导出/备份/切项目三处失配）。
+- **键命名空间（公约，不强制）**：插件**应当**只写 **`plugins.<id>.<key>`**，不写宿主键、不写别人的前缀。**不做技术拦截** —— 单个 MQ / 配置面对调用方身份没有可靠区分，硬拦只会变成假安全；越界由评审与测试发现（与 topic 白名单同性质）。
+- **校验归插件**：所有请求都经插件，业务校验（取值范围、互斥、依赖）由插件自己做。
+- **兜底归插件**：插件不一定收到配置刷新广播，缺值时的默认与降级由插件自己提供。
+- **单源**：旧宿主键（`enable-vfts` / `vfts.exts` / `codegraph.exts` …）一次性迁入命名空间后**删除旧键**，不得双写。
+
+### 3A.6 对接检查清单（评审逐条要有答案）
+
+| # | 关注点 | 必须有答案 |
+|---|---|---|
+| 1 | 生命周期 | 插件未启动 / 崩溃 / 重启时，资源请求与动作请求分别怎么表现？页面是否自动重载？ |
+| 2 | 版本 | 插件升级后资源版本如何变化？旧页面还能不能调新动作？（API 版本协商） |
+| 3 | 鉴权 | 动作面是否只被本应用可达？iframe→插件的 id 绑定如何校验？ |
+| 4 | 并发 | 同插件多窗口 / 多 iframe / 动作并发时的串行化与幂等 |
+| 5 | 错误 | 统一错误信封（code / message / retriable）+ 超时；插件未实现该动作如何回 |
+| 6 | 资源上限 | 单文件大小、总响应大小、路径深度；超限行为 |
+| 7 | 缓存 | 短缓存键与失效时机；`no-store` 与缓存的边界 |
+| 8 | 订阅 | 退订时机（卸载 / 重载 / 插件重启）；事件量上限与背压 |
+| 9 | 配置 | 命名空间、迁移、删除旧键、并发写（CAS/冲突） |
+| 10 | 迁移 | `/plugin-ui/` 路径下线、旧键迁移、旧 `webui/` 目录清理 |
+| 11 | 可观测 | 资源/动作失败是否留日志、是否在 UI 可见（避免"白屏无提示"） |
+| 12 | 测试层级 | L1（组件/纯函数）· L2（mq 驱动 + 帧断言，按 [50](../50-testing/50-测试体系.md)）· L4（可见级）各覆盖哪些 |
 
 ## 4. 内部控制流
 

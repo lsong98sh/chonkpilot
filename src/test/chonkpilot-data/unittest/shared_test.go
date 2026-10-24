@@ -150,12 +150,13 @@ func TestPrjPathByDataDir(t *testing.T) {
 	}
 }
 
-// TestPrjUsrBinding v6：data_dir 为空 → prjusr 落 <dataRoot>/<project-id>/chonkpilot.db；
-// project-id 首次生成、二次复用（同一连接）。
+// TestPrjUsrBinding：data_dir 为空 → prjusr 落 <dataRoot>/users/<OS 用户名>/chonkpilot.db
+// （49 DATAROOT-1：数据随项目目录走、无 project-id）；同一实例复用同一连接。
 func TestPrjUsrBinding(t *testing.T) {
 	root := t.TempDir()
 	setupShared(t)
-	data.SetDataHome(filepath.Join(root, "usr", "chonkpilot.db"), filepath.Join(root, "data"))
+	dataRoot := filepath.Join(root, "data")
+	data.SetDataHome(filepath.Join(root, "usr", "chonkpilot.db"), dataRoot)
 	t.Cleanup(func() { data.SetDataHome("", "") })
 
 	wd := t.TempDir()
@@ -165,16 +166,7 @@ func TestPrjUsrBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrjUsr: %v", err)
 	}
-	prj, releasePrj, err := data.Prj("i1")
-	if err != nil {
-		t.Fatalf("Prj: %v", err)
-	}
-	defer releasePrj() // 短开（D-45）：用完即释
-	id, ok := data.ReadProjectID(prj)
-	if !ok || id == "" {
-		t.Fatal("project-id should be generated on first PrjUsr")
-	}
-	if want := data.PrjUsrDBPath(id); pu.Path() != want {
+	if want := filepath.Join(dataRoot, "users", data.UserDirName(), "chonkpilot.db"); pu.Path() != want {
 		t.Fatalf("PrjUsr path=%q, want %q", pu.Path(), want)
 	}
 	pu2, err := data.PrjUsr("i1")
@@ -208,13 +200,13 @@ func TestPrjUsrTempDataDir(t *testing.T) {
 	}
 }
 
-// TestPrjUsrDir v6：prjusr 数据根解析（MW-7/MW-8 的路径口径）——
-// data_dir 空 → ~/.chonkpilot/data/<project-id>（project-id 从 prj 库取，首次生成）；
-// data_dir 非空 → 该目录（prj 与 prjusr 同根）。prj 库恒在 <workDir>/.chonkpilot。
+// TestPrjUsrDir：prjusr 数据根解析（49 DATAROOT-1）——
+// data_dir 空 → <dataRoot>/users/<OS 用户名>；data_dir 非空 → 该目录（prj 与 prjusr 同根）。
 func TestPrjUsrDir(t *testing.T) {
 	root := t.TempDir()
 	setupShared(t)
-	data.SetDataHome(filepath.Join(root, "usr", "chonkpilot.db"), filepath.Join(root, "data"))
+	dataRoot := filepath.Join(root, "data")
+	data.SetDataHome(filepath.Join(root, "usr", "chonkpilot.db"), dataRoot)
 	t.Cleanup(func() { data.SetDataHome("", "") })
 
 	wd := t.TempDir()
@@ -222,20 +214,10 @@ func TestPrjUsrDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrjUsrDir: %v", err)
 	}
-	// prj 库（含 project-id）恒留项目内
-	prj, release, err := data.OpenShared(data.ProjectPath(wd, ""))
-	if err != nil {
-		t.Fatalf("open prj: %v", err)
-	}
-	id, ok := data.ReadProjectID(prj)
-	release()
-	if !ok || id == "" {
-		t.Fatal("project-id should be generated in prj db")
-	}
-	if want := data.PrjUsrPath(id); got != want {
+	if want := filepath.Join(dataRoot, "users", data.UserDirName()); got != want {
 		t.Fatalf("PrjUsrDir(no dataDir)=%q, want %q", got, want)
 	}
-	// 幂等：再次解析 → 同一 project-id → 同一数据根
+	// 幂等：无 project-id，解析结果稳定
 	again, err := data.PrjUsrDir(wd, "")
 	if err != nil {
 		t.Fatalf("PrjUsrDir#2: %v", err)
@@ -243,7 +225,7 @@ func TestPrjUsrDir(t *testing.T) {
 	if again != got {
 		t.Fatalf("PrjUsrDir should be stable: %q vs %q", again, got)
 	}
-	// 显式 data_dir → 与 prj 同根（不入 ~/.chonkpilot/data）
+	// 显式 data_dir → 与 prj 同根
 	dd := t.TempDir()
 	explicit, err := data.PrjUsrDir(wd, dd)
 	if err != nil {

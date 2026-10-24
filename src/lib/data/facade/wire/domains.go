@@ -230,13 +230,14 @@ func TasktreeTasksResult(list []facade.Task) map[string]any {
 	return map[string]any{msgkeys.DataTasktreeTasksResultList: out}
 }
 
-// TasktreeListFromWire 解析 `{top_session?, id?, mode?, include_closed?, shadow?}` → 门面入参。
+// TasktreeListFromWire 解析 `{top_session?, id?, mode?, include_closed?, shadow?, dialog_id?}` → 门面入参。
 func TasktreeListFromWire(m map[string]any) facade.TasktreeListRequest {
 	top := str(m["top_session"])
 	if top == "" {
 		top = RequestID(m)
 	}
 	return facade.TasktreeListRequest{
+		DialogID:      str(m["dialog_id"]),
 		TopSession:    top,
 		Mode:          str(m["mode"]),
 		IncludeClosed: truthy(m["include_closed"]),
@@ -244,9 +245,10 @@ func TasktreeListFromWire(m map[string]any) facade.TasktreeListRequest {
 	}
 }
 
-// TasktreeTasksFromWire 解析 `{session_id?, top_session?, include_closed?, shadow?}` → 门面入参。
+// TasktreeTasksFromWire 解析 `{session_id?, top_session?, include_closed?, shadow?, dialog_id?}` → 门面入参。
 func TasktreeTasksFromWire(m map[string]any) facade.TasktreeTasksRequest {
 	return facade.TasktreeTasksRequest{
+		DialogID:      str(m["dialog_id"]),
 		SessionID:     str(m["session_id"]),
 		TopSession:    str(m["top_session"]),
 		IncludeClosed: truthy(m["include_closed"]),
@@ -260,10 +262,10 @@ func TasktreeUpsertFromWire(m map[string]any) facade.TasktreeUpsertRequest {
 	if node.Title == "" {
 		node.Title = str(m["name"]) // 兼容旧形态：name 即标题
 	}
-	return facade.TasktreeUpsertRequest{Node: node, Shadow: truthy(m["shadow"])}
+	return facade.TasktreeUpsertRequest{DialogID: str(m["dialog_id"]), Node: node, Shadow: truthy(m["shadow"])}
 }
 
-// TasktreeDeleteFromWire 解析 `{node_id | id | filter.node_id, shadow?}` → 门面入参。
+// TasktreeDeleteFromWire 解析 `{node_id | id | filter.node_id, shadow?, dialog_id?}` → 门面入参。
 func TasktreeDeleteFromWire(m map[string]any) facade.TasktreeDeleteRequest {
 	id := str(m["node_id"])
 	if id == "" {
@@ -274,7 +276,7 @@ func TasktreeDeleteFromWire(m map[string]any) facade.TasktreeDeleteRequest {
 			id = str(f["node_id"])
 		}
 	}
-	return facade.TasktreeDeleteRequest{NodeID: id, Shadow: truthy(m["shadow"])}
+	return facade.TasktreeDeleteRequest{DialogID: str(m["dialog_id"]), NodeID: id, Shadow: truthy(m["shadow"])}
 }
 
 // ── 知识库（knowledge 域）────────────────────────────────────────

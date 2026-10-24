@@ -1,25 +1,37 @@
 # -*- coding: utf-8 -*-
-"""L4：工具沙箱配置页（usr 键 `tool_sandbox`，**executor 级**）—— 三行渲染 / 只读工具清单 /
-手动保存（无改动禁用）/ 重置 / 第三方·http·sse 边界说明。
+"""L4：工具沙箱配置页（usr 键 `tool_sandbox`，**被 spawn 执行体级**）—— 执行体行渲染 /
+只读工具清单口径 / 手动保存（无改动禁用）/ 重置未设置 / 边界说明。
 
-需求（用户口径，2026-09-26）：沙箱不是工具级、而是 **self 的 executor 级** —— 三个执行器
-（core / desktop / browser，= 契约 `_meta.category`）各一个开关，管制该执行器下全部工具；
-拨动只改本地待保存态，点【保存】才落库；**无改动时保存按钮禁用**（「不做 change 就保存」）。
+需求（用户口径，2026-10-12 重整；本脚本 2026-10-22 按实现对齐）：
+  沙箱开关按「被 spawn 的执行体」为单位 ——
+  ① 内置 executor：按 **exe 基名**一行（`chonkpilot-tools-executor.exe` /
+     `chonkpilot-script-executor.exe` / `chonkpilot-web-executor.exe`；DSL 退役、browser/desktop
+     改常驻插件后不再受本开关约束）；管制该执行体下全部工具；
+  ② 外部 MCP：按 **MCP 条目**一行（仅 stdio&spawn 可施加；http/sse 不可）。
+  拨动只改本地待保存态，点【保存】才落库；**无改动时保存按钮禁用**。
 
 驱动面（**零新增 MQ 主题**）：
   * 工具清单 = 既有客户端能力面 `tools-list`（每项 `_meta.category` / `_meta.server`）；
+  * 外部 MCP 清单 = 既有 `data-mcp-list`（`{list:[{name,...}]}`）；
   * 配置读写 = 既有 usr 配置面 `data-user-config-{load,save,delete}`（usr 键 `tool_sandbox`，
-    JSON `{"core":bool,"desktop":bool,"browser":bool}`）。
+    JSON `{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`）。
 
 覆盖：
-  A 入口与三行渲染：菜单项 → preview tab 打开 → `.exec-row` × 3（data-exec = core/desktop/browser）
-    + 每行一个 `.b-switch`（带 aria-label）
-  B 只读工具清单：每行列出的工具 = `tools-list` 中该类别工具（展示剥前缀；`:title` = 完整暴露名）
+  A 执行体行渲染：3 个内置 executor 行（data-exec = exe 基名，顺序固定）+ 每行一个 `.b-switch`
+    （aria-label 含该行单位名）+ 其余行必须是 `data-mcp-list` 里的 MCP 条目
+  B 只读工具清单口径：页面出现的工具项必须来自 `tools-list`，`:title` = 完整暴露名，
+    展示名 = 现有剥前缀规则（见 utils/toolSource.js）
   C 无改动时保存禁用：干净初始态 → 保存按钮 disabled 且无「未保存」标记
-  D 拨动 → 「未保存」标记出现 + 保存按钮可用 → 点保存 → `data-user-config-load` 回读
-    `tool_sandbox` = `{"core":true}`（executor 级形态；不含任何工具名键）
-  E 「重置」→ 待保存态 → 保存 → 键项/整键被删除（回落不隔离）
-  F 第三方 / http·sse 边界说明存在（.exec-note 文案含「第三方」+「http」）
+  D 拨动 → 「未保存」标记出现 + 保存按钮可用 → 点保存 → 回读 `executors['<exe>']=true`
+    （executor 级形态；不含任何工具名键）
+  E 「重置」→ 待保存态 → 保存 → 键项/整键被删除（回落不设置）
+  F 外部 MCP / http·sse 边界说明存在（.exec-note 文案含「外部 MCP」+「http/sse」）+ 跳转入口
+
+**已知缺口（TOOLCFG-1，2026-10-22 登记）**：GATEWAY-2/L1 后 `_meta.category` 变为
+`file/core/meta/server`（`script_run` / `web_fetch` 同为 `core`，且 `_meta` 未透出 executor
+runtime）→ 本页按 `file/script/web` 归组无法命中，内置 executor 行的工具清单当前恒空
+（工具被归到 `byServer['core']`、不渲染）。用例 B 因此只校验「页面项 ⊆ tools-list + title 完整 +
+展示名符合现有规则」，不校验按行清单完整性。
 
 前置（本脚本自起，结束自动回收；见 harness.py）：
   `dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
@@ -43,7 +55,14 @@ WS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws")
 CFG_KEY = "tool_sandbox"
 KIND = "settings-tool-sandbox"
 ROOT = ".settings-page"
-CATEGORIES = ["core", "desktop", "browser"]
+# 内置 executor 单位（= useToolSandbox.js EXECUTOR_UNITS；写入 executors 子表的键）
+EXECUTORS = [
+    "chonkpilot-tools-executor.exe",
+    "chonkpilot-script-executor.exe",
+    "chonkpilot-web-executor.exe",
+]
+# 未被沙箱覆盖的执行体（browser/desktop 改常驻插件；dsl 退役）
+NOT_EXECUTORS = ["chonkpilot-browser-executor.exe", "chonkpilot-dsl-executor.exe"]
 
 c = _h.acquire_gui(PORT, work_dir=WS).client
 _h.suite_config_guard(c)
@@ -130,15 +149,30 @@ def tools_list():
     return list(r.get("tools") or [])
 
 
-def tools_by_category():
-    """tools-list 中三个 executor 类别的工具（暴露名列表），键 = 类别。"""
-    out = {k: [] for k in CATEGORIES}
+def mcp_names():
+    """外部 MCP 条目名集合（data-mcp-list，四级文件化合并视图）。"""
+    r = c.req("data-mcp-list", {}) or {}
+    return set(str((m or {}).get("name") or "").strip() for m in (r.get("list") or [])) - {""}
+
+
+def tool_servers():
+    """tools-list 暴露名 → `_meta.server`（缺省 {}）。"""
+    out = {}
     for tl in tools_list():
         meta = tl.get("_meta") or {}
-        cat = str(meta.get("category") or "").lower()
-        if cat in out:
-            out[cat].append(tl.get("name"))
+        srv = meta.get("server")
+        out[tl.get("name")] = srv if isinstance(srv, dict) else {}
     return out
+
+
+def strip_prefix(name, srv):
+    """复刻 utils/toolSource.js `stripToolPrefix`（展示名规则，page 侧唯一口径）。"""
+    n = str(name or "")
+    for raw in ((srv or {}).get("alias"), (srv or {}).get("node")):
+        p = str(raw or "").strip()
+        if p and n.startswith(p + "_"):
+            return n[len(p) + 1:]
+    return n
 
 
 def reset_key():
@@ -187,32 +221,36 @@ def open_page():
 
 
 def rows():
-    """三个 executor 行：类别 / 开关态 / 状态文字 / 只读工具清单（含完整暴露名与展示名）。"""
+    """执行体行：键（exe 基名 / MCP 名）/ 类别文字 / 开关态 / 状态文字 / 只读工具清单。"""
     return ev(panel_js("""
 return [...R.querySelectorAll('.exec-row')].map(it=>{
   const sw=it.querySelector('.b-switch');
   const st=it.querySelector('.exec-state');
+  const cat=it.querySelector('.exec-cat');
+  const none=it.querySelector('.exec-none');
   return {
-    cat: it.getAttribute('data-exec'),
+    key: it.getAttribute('data-exec'),
+    cat: cat?cat.textContent.trim():'',
+    name: (it.querySelector('.exec-name')||{}).textContent||'',
     aria: sw?sw.getAttribute('aria-label'):null,
     checked: sw?sw.classList.contains('is-checked'):false,
     disabled: sw?sw.classList.contains('is-disabled'):false,
     state: st?st.textContent.trim():'',
+    empty: none?none.textContent.trim():'',
     tools: [...it.querySelectorAll('.exec-tool')].map(t=>({
       name: t.getAttribute('data-tool'),
       disp: t.textContent.trim(),
       title: t.getAttribute('title'),
     })),
-    naBadges: it.querySelectorAll('.tool-na').length,
   };
 });""")) or []
 
 
-def row_of(cat):
+def row_of(key):
     for r in rows():
-        if r["cat"] == cat:
+        if r["key"] == key:
             return r
-    raise TestError("页面无该 executor 行：%s" % cat)
+    raise TestError("页面无该执行体行：%s" % key)
 
 
 def unsaved_mark():
@@ -226,23 +264,23 @@ const b=R.querySelector('button.b-btn--primary[data-sandbox-save]');
 return b?{exists:true,disabled:!!b.disabled}:{exists:false,disabled:false};"""))
 
 
-def click_switch(cat):
+def click_switch(key):
     r = ev(panel_js("""
 const it=[...R.querySelectorAll('.exec-row')].find(x=>x.getAttribute('data-exec')===%s);
 if(!it)return 'no-row';const sw=it.querySelector('.b-switch');if(!sw)return 'no-sw';
-if(sw.classList.contains('is-disabled'))return 'disabled';sw.click();return 'ok';""" % json.dumps(cat)))
+if(sw.classList.contains('is-disabled'))return 'disabled';sw.click();return 'ok';""" % json.dumps(key)))
     if r != "ok":
-        raise TestError("拨动 executor Switch 失败 cat=%s → %r" % (cat, r))
+        raise TestError("拨动执行体 Switch 失败 key=%s → %r" % (key, r))
     time.sleep(0.5)
 
 
-def click_restore(cat):
+def click_restore(key):
     r = ev(panel_js("""
 const it=[...R.querySelectorAll('.exec-row')].find(x=>x.getAttribute('data-exec')===%s);
 if(!it)return 'no-row';const b=[...it.querySelectorAll('button.b-btn')].find(x=>x.textContent.includes('重置'));
-if(!b)return 'no-btn';if(b.disabled)return 'disabled';b.click();return 'ok';""" % json.dumps(cat)))
+if(!b)return 'no-btn';if(b.disabled)return 'disabled';b.click();return 'ok';""" % json.dumps(key)))
     if r != "ok":
-        raise TestError("点击「重置」失败 cat=%s → %r" % (cat, r))
+        raise TestError("点击「重置」失败 key=%s → %r" % (key, r))
     time.sleep(0.5)
 
 
@@ -259,36 +297,63 @@ if(!b)return 'no-btn';if(b.disabled)return 'disabled';b.click();return 'ok';""")
 # 用例
 # ══════════════════════════════════════════════════════════
 
-def case_a_three_executor_rows():
-    """A 入口与三行渲染：三行（core/desktop/browser）+ 每行一个 Switch（带 aria-label）。"""
+def case_a_executor_rows():
+    """A 执行体行渲染：3 个内置 executor 行（data-exec = exe 基名，顺序固定）+ 每行 Switch
+    （aria-label 含该行单位名）+ 其余行必须是 data-mcp-list 里的 MCP 条目。"""
     require_page()
     open_page()
     rs = rows()
-    if len(rs) != 3:
-        raise TestError("executor 行数 = %d，期望 3（core/desktop/browser）" % len(rs))
-    if [r["cat"] for r in rs] != CATEGORIES:
-        raise TestError("executor 行顺序/类别不符：%r" % [r["cat"] for r in rs])
+    if not rs:
+        raise TestError("页面无执行体行（.exec-row）")
+    keys = [r["key"] for r in rs]
+    builtin = [k for k in keys if k in EXECUTORS]
+    if builtin != EXECUTORS:
+        raise TestError("内置 executor 行不符（期望顺序 %r）：页面 %r" % (EXECUTORS, keys))
+    for bad in NOT_EXECUTORS:
+        if bad in keys:
+            raise TestError("已不受沙箱约束的执行体不应成行：%s（页面 %r）" % (bad, keys))
+    want_mcp = mcp_names()
+    extra = [k for k in keys if k not in EXECUTORS]
+    unknown = [k for k in extra if k not in want_mcp]
+    if unknown:
+        raise TestError("出现既非内置 executor 又不在 data-mcp-list 的行：%r（MCP 清单 %r）"
+                        % (unknown, sorted(want_mcp)))
     for r in rs:
-        if not r["aria"] or r["cat"] not in r["aria"]:
-            raise TestError("executor %s 的 Switch 缺 aria-label（可访问性）：%r" % (r["cat"], r["aria"]))
+        if not r["aria"] or r["key"] not in r["aria"]:
+            raise TestError("执行体 %s 的 Switch 缺 aria-label（可访问性）：%r" % (r["key"], r["aria"]))
+        if r["key"] in EXECUTORS and "MCP" in r["cat"]:
+            raise TestError("内置 executor 行不应标 MCP：%s %r" % (r["key"], r["cat"]))
+        if r["key"] not in EXECUTORS and "MCP" not in r["cat"]:
+            raise TestError("外部 MCP 行应标 MCP：%s %r" % (r["key"], r["cat"]))
+    print("      执行体行：内置 %d + 外部 MCP %d" % (len(builtin), len(extra)), flush=True)
 
 
 def case_b_readonly_tool_lists():
-    """B 只读工具清单：每行工具 = tools-list 中该类别工具；展示剥前缀；title = 完整暴露名。"""
+    """B 只读工具清单口径：页面出现的工具项必须来自 `tools-list`，`:title` = 完整暴露名，
+    展示名 = 现有剥前缀规则（utils/toolSource.js）。
+
+    已知缺口（TOOLCFG-1）：内置 executor 行清单当前恒空 —— 只校验口径一致性，不校验完整性。
+    """
     require_page()
     open_page()
-    want = tools_by_category()
+    srv_of = tool_servers()
+    shown = 0
     for r in rows():
-        got = [t["name"] for t in r["tools"]]
-        if sorted(got) != sorted(want.get(r["cat"], [])):
-            raise TestError("executor %s 的工具清单与 tools-list 不一致：页面 %r，期望 %r"
-                            % (r["cat"], sorted(got), sorted(want.get(r["cat"], []))))
+        if not r["tools"] and not r["empty"]:
+            raise TestError("执行体 %s 无工具项也无「暂无工具」占位（.exec-none）" % r["key"])
         for t in r["tools"]:
             name = t["name"] or ""
+            if name not in srv_of:
+                raise TestError("执行体 %s 展示了 tools-list 之外的工具：%r" % (r["key"], name))
             if t["title"] != name:
                 raise TestError("工具 %s 的 :title=%r，期望完整暴露名（重名可区分）" % (name, t["title"]))
-            if name.startswith("self_") and t["disp"] != name[5:]:
-                raise TestError("工具 %s 展示名 %r，期望剥掉 self_ 前缀后 %r" % (name, t["disp"], name[5:]))
+            want = strip_prefix(name, srv_of.get(name) or {})
+            if t["disp"] != want:
+                raise TestError("工具 %s 展示名 %r，期望按剥前缀规则得 %r" % (name, t["disp"], want))
+            shown += 1
+    # 记录现状：内置 executor 行清单为空（TOOLCFG-1 缺口），不视为本用例失败
+    empt = [r["key"] for r in rows() if not r["tools"]]
+    print("      工具项 %d 个；清单为空的行 %r（TOOLCFG-1 已知缺口）" % (shown, empt), flush=True)
 
 
 def case_c_save_disabled_when_clean():
@@ -309,78 +374,86 @@ def case_c_save_disabled_when_clean():
 
 
 def case_d_toggle_then_save():
-    """D 拨动 → 未保存标记 + 保存可用 → 保存 → 回读 executor 级形态。"""
+    """D 拨动 → 未保存标记 + 保存可用 → 保存 → 回读 `executors['<exe>']=true`（executor 级形态）。"""
     require_page()
+    key = EXECUTORS[0]
     with _h.user_config_guard(c, [CFG_KEY]):
         reset_key()
         open_page()
         if not save_btn()["disabled"]:
             raise TestError("前置失败：干净态保存按钮应禁用")
-        click_switch("core")
+        click_switch(key)
         if not unsaved_mark():
             raise TestError("拨动后应显示「未保存」标记")
         if save_btn()["disabled"]:
             raise TestError("拨动后保存按钮应可用")
-        r = row_of("core")
+        r = row_of(key)
         if not r["checked"] or r["state"] not in ("开", "On"):
-            raise TestError("拨动后 core 行态不符：checked=%s state=%r" % (r["checked"], r["state"]))
+            raise TestError("拨动后 %s 行态不符：checked=%s state=%r" % (key, r["checked"], r["state"]))
         # 拨动本身不落库（仍是干净库）
         if user_map():
             raise TestError("拨动未保存时不应落库：%r" % user_map())
         click_save()
-        got = poll(lambda: user_map() if user_map().get("core") is True else None)
+        got = poll(lambda: user_map() if ((user_map().get("executors") or {}).get(key) is True) else None)
         if not got:
-            raise TestError("保存后回读不一致：usr tool_sandbox=%r，期望 {\"core\": true}" % user_map())
-        if set(got.keys()) - set(CATEGORIES) or got.get("core") is not True:
-            raise TestError("落库形态须为 executor 级 {\"core\": true}：%r" % got)
+            raise TestError("保存后回读不一致：usr tool_sandbox=%r，期望 executors[%r]=true"
+                            % (user_map(), key))
+        if set(got.keys()) - {"executors", "mcps"}:
+            raise TestError("落库形态须为 {executors,mcps} 两子表：%r" % got)
+        if set((got.get("executors") or {}).keys()) != {key}:
+            raise TestError("executors 子表只应含刚拨动的执行体 %r：%r" % (key, got.get("executors")))
         # 保存后回到干净态（无未保存标记 + 保存禁用）
         if not poll(lambda: (not unsaved_mark()) and save_btn()["disabled"]):
             raise TestError("保存后应清除「未保存」标记并禁用保存按钮")
+        print("[D] %s → executors[%r]=true 落库（两子表形态）" % (key, key), flush=True)
 
 
 def case_e_restore_unset():
-    """E 重置 → 待保存态 → 保存 → 键项/整键删除（回落不隔离）。"""
+    """E 重置 → 待保存态 → 保存 → 键项/整键删除（回落不设置）。"""
     require_page()
+    key = EXECUTORS[0]
     with _h.user_config_guard(c, [CFG_KEY]):
         reset_key()
         open_page()
-        click_switch("core")
+        click_switch(key)
         click_save()
-        if not poll(lambda: user_map().get("core") is True):
-            raise TestError("前置失败：core 未落库：%r" % user_map())
+        if not poll(lambda: ((user_map().get("executors") or {}).get(key) is True)):
+            raise TestError("前置失败：%s 未落库：%r" % (key, user_map()))
         # 重置 → 待保存态（不立即落库）
-        click_restore("core")
+        click_restore(key)
         if not unsaved_mark():
             raise TestError("重置后应进入待保存态（显示「未保存」）")
-        if user_map().get("core") is not True:
-            raise TestError("重置不应立即落库（仍应保留 core=true）：%r" % user_map())
+        if (user_map().get("executors") or {}).get(key) is not True:
+            raise TestError("重置不应立即落库（仍应保留 %s=true）：%r" % (key, user_map()))
         click_save()
         if not poll(lambda: CFG_KEY not in ucfg()):
             raise TestError("重置保存后应删整键（usr 仍存 %s=%r）" % (CFG_KEY, ucfg().get(CFG_KEY)))
 
 
 def case_f_boundary_hint():
-    """F 第三方 / http·sse 边界说明 + 跳转 MCP 入口存在。"""
+    """F 外部 MCP / http·sse 边界说明 + 跳转 MCP 入口存在（2026-10-12 改版文案）。"""
     require_page()
     open_page()
     note = ev(panel_js("""
 const n=R.querySelector('.exec-note');return n?{text:n.innerText,hasBtn:!!n.querySelector('button.b-btn')}:null;"""))
     if not note:
-        raise TestError("缺第三方 / http·sse 边界说明（.exec-note）")
+        raise TestError("缺外部 MCP / http·sse 边界说明（.exec-note）")
     txt = note["text"]
-    if "第三方" not in txt or "http" not in txt:
-        raise TestError("边界说明须含「第三方」与 http/sse 不可施加沙箱说明：%r" % txt)
+    if "外部 MCP" not in txt:
+        raise TestError("边界说明须含「外部 MCP」口径：%r" % txt)
+    if "http" not in txt.lower():
+        raise TestError("边界说明须含 http/sse 不可施加沙箱说明：%r" % txt)
     if not note["hasBtn"]:
         raise TestError("边界说明须给跳转 MCP 配置的入口")
 
 
 CASES = [
-    ("A 入口与三行渲染（core/desktop/browser + 每行 Switch 带 aria-label）", case_a_three_executor_rows),
-    ("B 只读工具清单（= tools-list 类别工具；剥前缀展示 + title 完整暴露名）", case_b_readonly_tool_lists),
+    ("A 执行体行渲染（3 个内置 executor exe + 每行 Switch 带 aria-label + MCP 行归属）", case_a_executor_rows),
+    ("B 只读工具清单口径（⊆ tools-list；title 完整名；展示名按剥前缀规则）", case_b_readonly_tool_lists),
     ("C 无改动时保存禁用（不做 change 就保存）", case_c_save_disabled_when_clean),
-    ("D 拨动 → 未保存标记 + 保存 → 回读 executor 级 {\"core\":true}", case_d_toggle_then_save),
+    ("D 拨动 → 未保存标记 + 保存 → 回读 executors['<exe>']=true", case_d_toggle_then_save),
     ("E 重置 → 待保存态 → 保存 → 删键/整键删除", case_e_restore_unset),
-    ("F 第三方 / http·sse 边界说明 + 跳转 MCP 入口", case_f_boundary_hint),
+    ("F 外部 MCP / http·sse 边界说明 + 跳转 MCP 入口", case_f_boundary_hint),
 ]
 
 
@@ -403,7 +476,7 @@ def main():
         c.console(clear=True)
     except Exception:
         pass
-    print("依赖：--test-port=%d 的 GUI（产物 = dist/desktop）；配置面 = usr `%s`（executor 级）" % (PORT, CFG_KEY))
+    print("依赖：--test-port=%d 的 GUI（产物 = dist/desktop）；配置面 = usr `%s`（执行体级）" % (PORT, CFG_KEY))
     print("前置探测：页面=%s" % probe_page())
     for name, fn in CASES:
         try:

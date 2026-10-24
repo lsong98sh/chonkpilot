@@ -102,6 +102,13 @@ foreach ($sub in @("prompts", "tools", "resources", "skills", "agents", "system"
     Copy-Item $srcSub $cap -Recurse -Force
 }
 
+# file 系列（11 工具）已插件化（PLUGIN-1，2026-10-23）：契约随 file 插件投放
+# （build-plugins.ps1 拷到 capability/plugins/file/tools/file），**不再进入 core capability 根**，
+# 否则与插件注册的工具名冲突 → gateway 注册失败。embed 与部署两份都要剔除。
+foreach ($dst in @((Join-Path $embedCap "tools\file"), (Join-Path $cap "tools\file"))) {
+    if (Test-Path $dst) { [System.IO.Directory]::Delete($dst, $true) }
+}
+
 # 未发布草稿排除：skills/se/（用户 2026-10-10 裁决「暂不提交」，源留在 src/initdata）不随产物/出厂包投放。
 # 显式删除以保证产物可复现、不误发布。
 $seDraft = Join-Path $cap "skills\se"

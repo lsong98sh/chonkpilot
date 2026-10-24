@@ -3,7 +3,8 @@
  *
  * 数据源（零新增消息面）：
  *   - 记忆提取 / 上下文压缩：`useQueueStatus`（tool-notify 的 `{memory,compress}-*` + plugin-failure）；
- *   - 代码索引：prj 配置既有键 `enable-codegraph` / `codegraph.status`（见 utils/indexStatus.js）。
+ *   - 代码索引：prj 配置键 `plugins.codebase.codegraph.enabled` / `codegraph.status`
+ *     （见 utils/indexStatus.js）。
  *
  * 口径（用户）：空闲 / 未启用 → 中性色（条目仍可见 = 「每种任务都有一个状态 view」）；
  * 排队 / 进行中 → 次要色；完成 → 主文本色；失败 → 错误色（title 携带错误原文，点开看详情）。

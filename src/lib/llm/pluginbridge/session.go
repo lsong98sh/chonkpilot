@@ -133,13 +133,32 @@ func (s *Session) serve() {
 	}
 }
 
+// maxConcurrentRequests 是单个插件会话**在飞**请求上限（并发派发）。
+//
+// 2026-10-24（memory/history 外挂为独立 exe 插件）：本会话此前由**单个** worker 串行处理
+// 插件发来的每个请求 → 插件侧原本并行的多次调用（如 memory 按类别并行读记忆 + 重写）
+// 在宿主侧被串成一条线，后发调用会先耗尽自身 ctx 预算（llm-simple 60s）→ 与进程内语义不等价。
+// 这里改为**并发派发**（上限 32 = 与 reqQ 同量级，避免无界 goroutine）：
+// 每个请求独立执行、结果按帧 ID 各自回写；插件顺序调用（上一个 Call 返回后再发下一个）时
+// 行为与串行完全一致（并发只发生在插件**自己**并发发起的场景）。
+const maxConcurrentRequests = 32
+
 func (s *Session) worker() {
+	sem := make(chan struct{}, maxConcurrentRequests)
 	for {
 		select {
 		case <-s.done:
 			return
 		case f := <-s.reqQ:
-			s.handle(f)
+			select {
+			case sem <- struct{}{}:
+				go func(f transport.Frame) {
+					defer func() { <-sem }()
+					s.handle(f)
+				}(f)
+			case <-s.done:
+				return
+			}
 		}
 	}
 }

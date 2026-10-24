@@ -178,8 +178,8 @@ func ScenarioProjectRoot(workDir string) string {
 }
 
 // ScenarioPrjUsrRoot 项目私有级场景根 = <prjusr 数据根>/capability/scenarios。
-func ScenarioPrjUsrRoot(projectID string) string {
-	return ScenariosRoot(PrjUsrRoot(projectID))
+func ScenarioPrjUsrRoot(workDir, dataDir string) string {
+	return ScenariosRoot(PrjUsrRoot(workDir, dataDir))
 }
 
 // ScenarioRoots 返回四级场景根（系统 → 用户 → 项目 → 项目私有）。

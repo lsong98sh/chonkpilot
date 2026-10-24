@@ -75,10 +75,12 @@ BASE_PORT = 2345
 # G 用例（本波新改动：恢复默认 / 知识库右键菜单）使用的四级 capability 根
 APP_CAP = os.path.join(ROOT, "dist", "desktop", "capability")          # 系统级（只读）
 PROJ_CAP = os.path.join(WS, ".chonkpilot", "capability")               # 项目级
-PROJ_TOOL_DIR = os.path.join(PROJ_CAP, "tools", "core")
-# 口径变更（2026-10-22）：app 级夹具原语由 `filesys_run.tool.md`（已随 GATEWAY-2 L1/L2 删除）
-# 改为仍存在的 `script_run.tool.md`；断言面不变（同名上一级 → 「恢复默认」可回填）。
-PROJ_TOOL = os.path.join(PROJ_TOOL_DIR, "script_run.tool.md")           # 与 app 级同名 → 有上一级可回填
+PROJ_TOOL_DIR = os.path.join(PROJ_CAP, "tools", "server")
+# 口径变更（2026-10-23）：core 分类随工具迁入插件而消失，app 级 `capability/tools/` 只剩
+# `server/`（ask_user / subchat_* 等平台内置工具）→ 夹具原语改用 `ask_user.tool.md`；
+# 断言面不变（同名上一级 → 「恢复默认」可回填）。原 `script_run.tool.md`（2026-10-22 口径）
+# 同因 core 目录消失而不可用。
+PROJ_TOOL = os.path.join(PROJ_TOOL_DIR, "ask_user.tool.md")             # 与 app 级同名 → 有上一级可回填
 
 # 项目设置页签期望文字（zh-CN projectConfig.json + configIO.json）
 # 2026-09-20 批 3 · ⑯：末位新增「配置导入/导出」页签（usr 全局配置的导出/导入/恢复出厂）
@@ -1388,34 +1390,34 @@ def case_g_restore_default_and_ctxmenu():
     kb = _kb()
     made_tool = False
     try:
-        # 预置：项目级同名原语（与 app 级 script_run.tool.md 配对 → 有可回填的上一级）
+        # 预置：项目级同名原语（与 app 级 ask_user.tool.md 配对 → 有可回填的上一级）
         # 格式口径（2026-10-17）：当前契约 = **H1 分区 Markdown**（`# 基本信息/摘要/参数`）；
         # 旧 `[meta]` INI 夹具会被解析器拒（"未找到任何 H1 分区（需 基本信息）"）→ 原语面板
         # load 失败、pristine=null → 「恢复默认」后 dirty 永不出现。故以 app 级同名文件为模板
         # 复制并改写标题/摘要（保证可解析且与上一级内容不同）。
         os.makedirs(PROJ_TOOL_DIR, exist_ok=True)
         ts = int(time.time())
-        with open(os.path.join(APP_CAP, "tools", "core", "script_run.tool.md"), encoding="utf-8") as f:
+        with open(os.path.join(APP_CAP, "tools", "server", "ask_user.tool.md"), encoding="utf-8") as f:
             base = f.read()
         head, rest = base.split("# 摘要", 1)
         _, tail = rest.split("# 参数", 1)
-        probe_md = (head.replace("title: 执行脚本", "title: PROJECT-COPY-PROBE-%d" % ts, 1)
+        probe_md = (head.replace("title: ask_user", "title: PROJECT-COPY-PROBE-%d" % ts, 1)
                     + "# 摘要\nPROJECT-COPY-DESC-%d\n\n# 参数" % ts + tail)
         with open(PROJ_TOOL, "w", encoding="utf-8") as f:
             f.write(probe_md)
         made_tool = True
 
         # ── G1a：app 级原语 → 不显示「恢复默认」 ──
-        # 树口径（2026-10-17 对齐实现）：工具页签的根行下直接是**分类目录**
-        # （browser/core/desktop…，即 capability/tools/<cat>/），不再有中间 "tools" 层。
+        # 树口径（2026-10-23 对齐实现）：工具页签的根行下直接是**分类目录**
+        # （插件时代 app 级只剩 server，即 capability/tools/<cat>/），不再有中间 "tools" 层。
         _kb_level(kb, "app")
-        _kb_ensure_child(kb, _kb_root_parent(kb), "core")
-        _kb_ensure_child(kb, "core", "script_run.tool.md")
-        _close_bottom_tabs_by_name("script_run.tool.md")  # 关掉上一轮残留页签 → 组件重新挂载
-        if not kb.click_kb_file("script_run.tool.md"):
-            raise TestError("单击 app 级 script_run.tool.md 失败")
+        _kb_ensure_child(kb, _kb_root_parent(kb), "server")
+        _kb_ensure_child(kb, "server", "ask_user.tool.md")
+        _close_bottom_tabs_by_name("ask_user.tool.md")  # 关掉上一轮残留页签 → 组件重新挂载
+        if not kb.click_kb_file("ask_user.tool.md"):
+            raise TestError("单击 app 级 ask_user.tool.md 失败")
         if not kb.poll(lambda: kb.prim_panel_exists()
-                       and kb.prim_active_path().replace("\\", "/").endswith("script_run.tool.md"), 10):
+                       and kb.prim_active_path().replace("\\", "/").endswith("ask_user.tool.md"), 10):
             raise TestError("app 级原语面板未打开：%r" % kb.prim_active_path())
         time.sleep(2.0)  # 上一级探测（loadLevelRoots/resolveUpperSource）为异步：留出完成时间再断言
         btns = _prim_footer_btns(kb)
@@ -1428,13 +1430,13 @@ def case_g_restore_default_and_ctxmenu():
 
         # ── G1b：project 级原语 → 显示「恢复默认」且点击回填（dirty） ──
         _kb_level(kb, "project")
-        _kb_ensure_child(kb, _kb_root_parent(kb), "core")
-        _kb_ensure_child(kb, "core", "script_run.tool.md")
-        _close_bottom_tabs_by_name("script_run.tool.md")  # 同上：确保新开面板为全新实例（初始非 dirty）
-        if not kb.click_kb_file("script_run.tool.md"):
-            raise TestError("单击 project 级 script_run.tool.md 失败")
+        _kb_ensure_child(kb, _kb_root_parent(kb), "server")
+        _kb_ensure_child(kb, "server", "ask_user.tool.md")
+        _close_bottom_tabs_by_name("ask_user.tool.md")  # 同上：确保新开面板为全新实例（初始非 dirty）
+        if not kb.click_kb_file("ask_user.tool.md"):
+            raise TestError("单击 project 级 ask_user.tool.md 失败")
         if not kb.poll(lambda: kb.prim_panel_exists()
-                       and kb.prim_active_path().replace("\\", "/").endswith("script_run.tool.md"), 10):
+                       and kb.prim_active_path().replace("\\", "/").endswith("ask_user.tool.md"), 10):
             raise TestError("project 级原语面板未打开：%r" % kb.prim_active_path())
         if not _wait_prim_rd_enabled(kb, 10):
             raise TestError("project 级「恢复默认」未出现/不可点击（应可回填 app 级同名原语）：%r"
@@ -1447,7 +1449,7 @@ def case_g_restore_default_and_ctxmenu():
             raise TestError("点击「恢复默认」后未回填为未保存草稿（dirty 未出现）")
 
         # ── G2：工具文件右键菜单项 = 重命名/删除（无「复制到项目级」） ──
-        if not kb.rclick_kb_row("script_run.tool.md", False):
+        if not kb.rclick_kb_row("ask_user.tool.md", False):
             raise TestError("右键工具文件失败")
         if not kb.poll(lambda: len(kb.kb_menu_texts()) > 0, 6):
             raise TestError("工具文件右键菜单未弹出")
@@ -1536,12 +1538,49 @@ def _spawn_hist():
     cli = ChonkClient(base="http://127.0.0.1:%d" % HIST_PORT)
     try:
         cli.wait_ready(120)
+        # 2026-10-23：与 harness.start_gui 同口径补「UI 线程空闲」栏栅 —— 仅 test-port 就绪不代表
+        # 首屏挂载/文件树首扫结束；缺此栏栅时首个 /eval 会撞忙窗超时（实测 D 因此偶发红）。
+        ready = _h.wait_probe(cli, ["!!document.querySelector('.panel-inner')"], timeout=60.0)
+        idle = _h.wait_idle(cli, max_wait=60.0)
+        if not (ready and idle):
+            print("[run_config_ui] 独立实例 UI 就绪探测未通过（panel=%s idle=%s）" % (ready, idle), flush=True)
     except Exception:
         _kill_own(proc)
         raise
     _h.ensure_locale(cli)  # 语言确定性：D 用例页签文案按 zh-CN 断言（独立实例同样受 DB ui.locale 影响）
-    time.sleep(1.5)
+    time.sleep(1.0)
     return cli, proc
+
+
+def _hist_open_tab(cli, close_all=True, max_wait=60):
+    """独立实例打开「项目设置 → 文件历史」页签：**有界轮询**直至页签点击成功。
+
+    2026-10-23（run_all 稳定性）：独立实例刚起（首屏 + 插件审计）时 `/eval` 可能超时、面板挂载
+    也晚于固定 2s → 固定 sleep 会偶发 `'no'`（实测 run_config_ui D 由此红一次）。改为先发 open、
+    再轮询「面板可见 + 页签命中 + click ok」，超时才失败（判定不变，只把等待变为有界轮询）。
+    close_all=True → 先关全部预览页签再重挂载（D2 读最新 prj 口径）。
+    """
+    if close_all:
+        cli.mq_emit("preview-tab-close-all")
+        time.sleep(0.5)
+    cli.mq_emit("preview-tab-open", {"kind": "settings-project"})
+    time.sleep(1.2)
+    deadline = time.time() + max_wait
+    last = None
+    while time.time() < deadline:
+        try:
+            last = _loads(cli.eval(
+                "(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
+                ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no';"
+                "const t=[...R.querySelectorAll('.b-tabs-item')].find(x=>x.textContent.trim()==='文件历史');"
+                "if(!t)return 'no-tab';t.click();return 'ok';})()", 8000))
+        except Exception as e:  # noqa: BLE001  （新实例首屏 /eval 超时 → 继续轮询）
+            last = "eval:%s" % e
+        if last == "ok":
+            time.sleep(0.8)
+            return
+        time.sleep(0.6)
+    raise TestError("独立实例未打开「文件历史」页签：%r" % last)
 
 
 def _hist_switch(cli):
@@ -1562,14 +1601,7 @@ def case_d_history_restart():
     proc = None
     try:
         cli, proc = _spawn_hist()
-        cli.eval("window.mq.emit('preview-tab-open', {kind:'settings-project'})")
-        time.sleep(2.0)
-        r = cli.eval("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-                     ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no';"
-                     "const t=[...R.querySelectorAll('.b-tabs-item')].find(x=>x.textContent.trim()==='文件历史');"
-                     "if(!t)return 'no-tab';t.click();return 'ok';})()")
-        if _loads(r) != "ok":
-            raise TestError("独立实例未打开「文件历史」页签：%r" % _loads(r))
+        _hist_open_tab(cli, close_all=False)
         time.sleep(1.0)
         st = _loads(_hist_switch(cli))
         if not st:
@@ -1595,11 +1627,7 @@ def case_d_history_restart():
         # 重启 GUI（只终止本脚本启动的实例，按 PID 精确回收）
         _kill_own(proc)
         cli, proc = _spawn_hist()
-        cli.eval("window.mq.emit('preview-tab-open', {kind:'settings-project'})")
-        time.sleep(2.0)
-        cli.eval("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-                 ".find(e=>e.getBoundingClientRect().width>0);const t=[...R.querySelectorAll('.b-tabs-item')]"
-                 ".find(x=>x.textContent.trim()==='文件历史');if(t)t.click();})()")
+        _hist_open_tab(cli, close_all=False)
         time.sleep(1.0)
         st2 = _loads(_hist_switch(cli))
         if st2["checked"] != (not before):
@@ -1619,21 +1647,6 @@ def case_d_history_restart():
 #   * 只读时间轴：`[data-history-status]`（`.tl-status-key` / `.tl-status-val` 成对）+
 #     `[data-history-timeline]`（Table；空态 `td.b-table-empty` 文案区分未启用 / 已启用无数据）+
 #     `[data-history-clear]`（文案「清空历史」，`timeline.length===0` 时禁用）→ confirm → setConfig('history.clear')。
-
-def _hist_open_tab(cli):
-    """独立实例打开「项目设置 → 文件历史」页签（先关全部预览页签 → 重挂载 → 读最新 prj）。"""
-    cli.mq_emit("preview-tab-close-all")
-    time.sleep(0.5)
-    cli.mq_emit("preview-tab-open", {"kind": "settings-project"})
-    time.sleep(2.0)
-    r = cli.eval("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-                 ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no';"
-                 "const t=[...R.querySelectorAll('.b-tabs-item')].find(x=>x.textContent.trim()==='文件历史');"
-                 "if(!t)return 'no-tab';t.click();return 'ok';})()")
-    if _loads(r) != "ok":
-        raise TestError("未打开「文件历史」页签：%r" % _loads(r))
-    time.sleep(0.8)
-
 
 _HIST_DOM_JS = """(function(){
 const R=[...document.querySelectorAll('.history-root')].find(e=>e.getBoundingClientRect().width>0);

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
@@ -407,6 +408,15 @@ func TestFacadeSessionSelfRegistersFromScope(t *testing.T) {
 	const inst = "ins-session-scope"
 	wd := t.TempDir()
 	scope := facade.Scope{WorkDir: wd}
+	// P3-4c 起缺省一树一库；本用例断言**旧布局**自登记语义 → 前置 off。
+	data.Register(inst, wd, "")
+	if prj, release, err := data.Prj(inst); err == nil {
+		if err := data.SetConfig(prj, "session.db.shard", "off"); err != nil {
+			release()
+			t.Fatalf("set shard=off: %v", err)
+		}
+		release()
+	}
 
 	if _, err := api.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: inst, SessionID: "s-scope", Scope: scope,

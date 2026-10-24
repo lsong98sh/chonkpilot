@@ -5,8 +5,10 @@
 package data
 
 import (
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -24,9 +26,11 @@ const BoltOpenTimeout = 3 * time.Second
 type Layer string
 
 const (
-	LayerUsr    Layer = "usr"    // 用户（~/.chonkpilot）
-	LayerPrj    Layer = "prj"    // 项目（<workdir>/.chonkpilot，团队共享）
-	LayerPrjUsr Layer = "prjusr" // 项目用户（~/.chonkpilot/data/<prj-id>，本机本项目）
+	LayerUsr     Layer = "usr"     // 用户（~/.chonkpilot）
+	LayerPrj     Layer = "prj"     // 项目（<workdir>/.chonkpilot，团队共享）
+	LayerPrjUsr  Layer = "prjusr"  // 项目用户（<workDir>/.chonkpilot/users/<用户名>，本机本项目；保留会话列表等）
+	LayerSession Layer = "session" // 旧布局：主会话库（messages/turns/snapshot/tasktree/inbox；<prjusr>/sessions/<hex>/）
+	LayerDialog  Layer = "dialog"  // 新布局（SESSION-COMP-1 P0）：一树一库（<prjusr>/dialogs/dialog-<hex(dialog_id)>.db）
 )
 
 // DB 是一层 chonkpilot.db。
@@ -132,14 +136,66 @@ func DataRoot() string {
 	return filepath.Join(home, ".chonkpilot", "data")
 }
 
-// PrjUsrPath 返回某项目的 prjusr 数据根目录：~/.chonkpilot/data/<projectID>。
-func PrjUsrPath(projectID string) string {
-	return filepath.Join(DataRoot(), projectID)
+// UserDirName 返回当前 OS 用户目录名（`C:\Users\13661` → `13661`），用作 `users/<name>`。
+// 取 home 的 basename 而非 `USERNAME`（域账号 / 改名场景两者不一致）；非法名回落 `default`。
+func UserDirName() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "default"
+	}
+	name := filepath.Base(filepath.Clean(home))
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\:*?"<>|`) {
+		return "default"
+	}
+	return name
 }
 
-// PrjUsrDBPath 返回某项目的 prjusr 主库文件路径。
-func PrjUsrDBPath(projectID string) string {
-	return filepath.Join(PrjUsrPath(projectID), "chonkpilot.db")
+// PrjUsrPath 返回某工作目录的 prjusr **数据根目录**（非库文件所在目录）：
+//
+//	dataDir 非空 → <dataDir>（临时 / 覆盖形态，与 prj 同根）
+//	dataDir 为空 → <workDir>/.chonkpilot/users/<OS 用户名>
+//
+// 数据随项目目录走：复制工作目录即分叉全部用户历史（49 DATAROOT-1）。
+// `SetDataHome` 的 dataRoot 覆盖（测试隔离 / 便携部署）优先于 `<workDir>/.chonkpilot`。
+func PrjUsrPath(workDir, dataDir string) string {
+	if dataDir != "" {
+		return paths.ResolveDir(dataDir, workDir)
+	}
+	root := filepath.Join(workDir, ".chonkpilot")
+	if p := dataRootOverride.Load(); p != nil && *p != "" {
+		root = *p
+	}
+	return filepath.Join(root, "users", UserDirName())
+}
+
+// PrjUsrDBPath 返回某工作目录的 prjusr 主库文件路径：
+// dataDir 非空 → 与 prj 同库（`ProjectPath`）；否则 `<PrjUsrPath>/chonkpilot.db`。
+func PrjUsrDBPath(workDir, dataDir string) string {
+	if dataDir != "" {
+		return ProjectPath(workDir, dataDir)
+	}
+	return filepath.Join(PrjUsrPath(workDir, ""), "chonkpilot.db")
+}
+
+// SessionDBPath 返回某主会话的会话库路径（**旧布局**，与 prjusr 同根）：
+//
+//	<prjusr 目录>/sessions/<hex(session_id)>/chonkpilot.db
+//
+// 目录名用 hex 编码，避免任意 session_id 造成路径穿越 / 非法字符。
+// 新布局（SESSION-COMP-1 P0）见 [DialogDBPath]；本函数保留至 P3 路由切换完成。
+func SessionDBPath(prjUsrDBPath, sessionID string) string {
+	return filepath.Join(filepath.Dir(prjUsrDBPath), "sessions", hex.EncodeToString([]byte(sessionID)), "chonkpilot.db")
+}
+
+// DialogDBPath 返回某对话（**一树一库**，SESSION-COMP-1 P0）的库文件路径：
+//
+//	<prjusr 目录>/dialogs/dialog-<hex(dialog_id)>.db
+//
+// 与 [SessionDBPath] 的差异：文件名（非子目录）承载 hex(dialog_id)，一库装整棵会话树
+// （主 session + 全部子会话）；不含 prjusr 定位之外的分层。
+func DialogDBPath(prjUsrDBPath, dialogID string) string {
+	return filepath.Join(filepath.Dir(prjUsrDBPath), "dialogs", "dialog-"+hex.EncodeToString([]byte(dialogID))+".db")
 }
 
 // ProjectPath 返回 prj 主库路径（12-数据层）：
@@ -153,29 +209,12 @@ func ProjectPath(workDir, dataDir string) string {
 	return filepath.Join(workDir, ".chonkpilot", "chonkpilot.db")
 }
 
-// PrjUsrDir 返回某项目的 prjusr **数据根目录**（非库文件所在目录；12-数据层 §3）：
-//
-//	dataDir 非空 → 该目录（prj 与 prjusr 同根；显式覆盖 / CLI 临时形态）
-//	dataDir 为空 → ~/.chonkpilot/data/<project-id>（project-id 从 prj 库取，首次自动生成）
-//
-// 与库路径（PrjUsr / PrjUsrDBPath）**同一分支口径**：dataDir 判据只此一处差异，
-// 保证「prjusr 库」与「prjusr 数据根下的非库文件」永远同根。
+// PrjUsrDir 返回某项目的 prjusr **数据根目录**（非库文件所在目录；12-数据层 §3）。
+// 等价于 [PrjUsrPath]；保留 (string, error) 签名供既有调用方复用。
 //
 // 用途（[24 §3.2] MW-8）：个人运行态的**非库文件** —— 日志 `logs/`、附件/截图
 // `tmp/uploads/`、fileserver 白名单 —— 一律按本函数解析。**不可**用
 // `<workDir>/.chonkpilot`（那是 data-dir 访问器语义 = **prj** 数据根，见 24 §3 实施注意）。
 func PrjUsrDir(workDir, dataDir string) (string, error) {
-	if dataDir != "" {
-		return paths.ResolveDir(dataDir, workDir), nil
-	}
-	prj, release, err := OpenSharedLayer(ProjectPath(workDir, ""), LayerPrj)
-	if err != nil {
-		return "", err
-	}
-	defer release() // 连接缓存引用计数（他处若已持连接 → 不真正关闭）
-	id, err := EnsureProjectID(prj)
-	if err != nil {
-		return "", err
-	}
-	return PrjUsrPath(id), nil
+	return PrjUsrPath(workDir, dataDir), nil
 }

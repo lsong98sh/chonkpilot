@@ -28,6 +28,26 @@ _M = _h.acquire_mock_llm(_h.DEFAULT_MOCK_LLM_PORT)  # mock LLM 按需起（8901 
 c = _G.client
 _h.suite_config_guard(c)  # 套件级配置快照-还原（51 §6-8）：会话/任务落共享 work-dir 库 → 退出前回滚
 
+
+def _ensure_mock_llm():
+    """确保 usr `llms` 含指向 mock（8901）的 name="mock" 条目，并触发 router 对账。
+
+    2026-10-23：usr `llms` 需经 `data-user-config-refresh`（前端 `config-refresh`）才被 server
+    的 `reconcileLLMProviders` 采纳；否则 llm-start 的 provider name 解析不到 → 回落到默认
+    provider（无 mock 流式/工具行为），本套件大量用例会假红。原实现依赖"环境已有 mock 条目"。
+    """
+    cfg = (_h.user_config_load(c) or {})
+    llms = [e for e in (cfg.get("llms") or []) if isinstance(e, dict) and e.get("name") != "mock"]
+    llms.append({"name": "mock", "protocol": "openai", "model": "mock-model",
+                 "baseUrl": "http://127.0.0.1:%d/v1" % _h.DEFAULT_MOCK_LLM_PORT,
+                 "apiKey": "sk-test-key", "temperature": 0.7, "maxOutputToken": 4096})
+    c.req("data-user-config-save", {"data": {"llms": llms, "defaultLLM": len(llms) - 1}})
+    c.mq_emit("config-refresh")
+    time.sleep(0.8)
+
+
+_ensure_mock_llm()
+
 _SEQ = [0]
 
 
@@ -113,7 +133,7 @@ def confirm_turn(sid, max_wait=60):
 # `kind ∈ tool|llm|ask_user`、`name` = `tool_call_display_name` 优先）。故以下用例断言
 # 「工具任务节点的归属 / 展示名 / 终态 / 结果回填 / 取消」，不再断言 DSL 专有的作业根与 steps。
 
-def _tool_task_root(main_sid, tool="script_run", max_wait=90):
+def _tool_task_root(main_sid, tool="task_run", max_wait=90):
     """定位本轮**工具任务节点**（现行任务面最小单元；kind=tool、无 parent_id、归属主会话）。"""
     root = poll_find("tasks.started",
                      lambda p: _canon_tool(p) == tool and not p.get("parent_id")
@@ -237,7 +257,7 @@ def case_plain_chat():
 
 
 def case_tool_call():
-    """五.3 工具调用：q 含 'call tool' → mock 返回 tool_calls(self_file_read) → tool-pair/tool-result。
+    """五.3 工具调用：q 含 'call tool' → mock 返回 tool_calls(file_read) → tool-pair/tool-result。
 
     口径变更（GATEWAY-2 L2）：文件域已拆为 11 个独立工具（`{purpose, targets[]}` 统一形状），
     原 `dsl_run FILE_READ` 已随 DSL 删除 → 改为直接调 `file_read`。
@@ -320,8 +340,8 @@ def case_cancel():
     start_turn(sid, "please call cancel")
     confirm_turn(sid)
     tc = wait_event("llm-tool-call", max_wait=60)
-    if _canon_tool(tc[0]["payload"]) != "script_run":
-        raise TestError(f"llm-tool-call tool={tc[0]['payload'].get('tool')}，期望 script_run（可带 self_ 前缀）")
+    if _canon_tool(tc[0]["payload"]) != "task_run":
+        raise TestError(f"llm-tool-call tool={tc[0]['payload'].get('tool')}，期望 task_run")
     # 等待工具进入运行（命令 sleep 20s 阻塞中）
     wait_event("tool-pair", max_wait=30)
     time.sleep(2)
@@ -335,19 +355,26 @@ def case_cancel():
 
 
 def case_queue():
-    """五.9 Chat Message 入队与出队：忙碌时 message-queue 入队 → 队列指示器 → cancel 后文本写回 textarea。"""
+    """五.9 Chat Message 入队与出队：忙碌入队 → 队列指示器 → cancel 后文本写回 textarea。
+
+    2026-10-23（INBOX 化后口径）：忙碌期分两种相位——
+      - **工具在飞（toolPending/awaitJoin）**：`llm-inbox-add` 分类为 `insert`（中途插话），
+        由引擎立即落库并起插入帧 → 没有"待发送队列"，取消时无需写回；
+      - **流式输出期（本用例）**：`insertable()=false` → 分类为 `next_turn`（真·待发队列）→
+        取消（interrupted）时前端把仍 pending 的项**换行 join 写回输入区**（01-端到端数据流 §5.3）。
+    故本用例改用慢速流式（mock `call slow-stream`，~10s）制造流式忙碌窗口。
+    """
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
     c.mq_on_capture(EVENTS)
     sid = create_session()
     activate_session(sid)
     # 先选 LLM（队列按 LLM 分桶，badge 归属所选 LLM）
     c.mq_emit("chat-select-llm", {"name": "mock"})
-    # 启动一个忙碌 turn（command sleep 20s 阻塞）
-    start_turn(sid, "please call cancel")
+    # 启动一个忙碌 turn（慢速流式 ≈10s）
+    start_turn(sid, "please call slow-stream")
     confirm_turn(sid)
-    wait_event("llm-tool-call", max_wait=60)
-    wait_event("tool-pair", max_wait=30)
-    time.sleep(1.5)
+    # 等流式真正开始（首个 llm-token）→ 此时相位 = 流式（不可插入）
+    wait_event("llm-token", max_wait=60)
     # 忙碌中入队 3 条
     for i in range(1, 4):
         c.mq_emit("message-queue", {
@@ -366,19 +393,20 @@ def case_queue():
             break
         time.sleep(0.5)
     if "3" not in badge:
-        print(f"    队列指示器未显示 3（badge={badge!r}），继续验证写回")
+        raise TestError(f"队列指示器未显示 3（badge={badge!r}）")
     # 取消主 turn → 队列文本写回 textarea（textarea 的 value 不体现于 innerText，须读 .value）
     c.mq_emit("message-cancel")
     wait_event("llm-complete", max_wait=60)
     # 输入区是 contenteditable 富文本（无原生 textarea）：读编辑区文本
     deadline = time.time() + 15
+    v = ""
     while time.time() < deadline:
         v = c.eval("(() => { const t = document.querySelector('.b-textarea--autosize'); return t ? JSON.stringify(t.innerText || t.textContent || '') : ''; })()")
         v = _loads_deep(v) or ""
         if "queued msg" in v:
             return
         time.sleep(1)
-    raise TestError("cancel 后队列文本未写回输入区（queued msg 未见）")
+    raise TestError("cancel 后队列文本未写回输入区（queued msg 未见；编辑区=%r）" % v)
 
 
 def case_chat_display():
@@ -463,7 +491,7 @@ def case_session_switch_cancel():
     start_turn(sidA, "please call cancel")
     tsA = confirm_turn(sidA, max_wait=60)
     turnA = tsA.get("turn") or ""
-    # 长任务开始（script_run sleep 20s → tool-pair running）
+    # 长任务开始（task_run 长命令 → tool-pair running）
     wait_event("tool-pair", max_wait=60)
     # mq-only 取消（§4.2 llm-cancel {session, turn?}）：替代已移除的 window.go.app.App.CancelChat。
     # 注：llm-cancel 定位并终止**轮次**（tc.Close），网关在飞工具不随之级联取消
@@ -560,24 +588,36 @@ def case_notify_dedup():
 
 
 def case_resume_partial():
-    """C15 断链恢复（resumePartial）：mock 流中断（部分文本后 RST）→ runner 追加「继续」续写 → 最终回复 = 部分+续写。"""
-    c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
-    c.mq_on_capture(EVENTS)
-    sid = create_session()
-    activate_session(sid)
-    start_turn(sid, "please call break")
-    confirm_turn(sid, max_wait=60)
-    wait_event("llm-complete", max_wait=90)
-    # 断链恢复的「继续」提示（tool-notify notice=recover）为**已移除兼容事件**（61 §6：无源），
-    # 改以最终回复内容确权（部分文本 + 续写），不再依赖该事件。
-    # 最终回复 = 部分文本 + 续写（同段，无工具分发间隔）
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        txt = c.eval('document.body.innerText')
-        if "PARTIAL-TEXT-" in txt and "mock-reply: 继续" in txt:
-            return
-        time.sleep(1)
-    raise TestError("断链续写未完成（未见 PARTIAL-TEXT- 与 mock-reply: 继续）")
+    """C15 断链恢复（resumePartial）：mock 流中断（部分文本后断链）→ 宽限期后追加「继续」续写 →
+    最终回复 = 部分 + 续写。
+
+    2026-10-23（RETRY-2 引擎口径）：断链不再前端立即续写，而是 server 发 `session-interrupted`
+    （前端 `llm-interrupted` 提示条）+ **按 usr `autoContinueDelaySec` 宽限期**在同一 turn 内追加
+    「继续」。该键**产品默认 600s**（21 §3 / server.go）→ 用例必须自包含地把宽限期压到 1s，
+    退出即还原（`user_config_guard`），否则 90s 内不可能完成续写。
+    """
+    with _h.user_config_guard(c, ["autoContinue", "autoContinueDelaySec", "continueText"]):
+        c.req("data-user-config-save", {"data": {
+            "autoContinue": "true", "autoContinueDelaySec": 1, "continueText": "继续"}})
+        c.mq_emit("config-refresh")
+        time.sleep(0.8)
+        c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
+        c.mq_on_capture(EVENTS + ["session-interrupted"])
+        sid = create_session()
+        activate_session(sid)
+        start_turn(sid, "please call break")
+        confirm_turn(sid, max_wait=60)
+        wait_event("llm-complete", max_wait=90)
+        # 断链恢复的「继续」提示（tool-notify notice=recover）为**已移除兼容事件**（61 §6：无源），
+        # 改以最终回复内容确权（部分文本 + 续写），不再依赖该事件。
+        # 最终回复 = 部分文本 + 续写（同段，无工具分发间隔）
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            txt = c.eval('document.body.innerText')
+            if "PARTIAL-TEXT-" in txt and "mock-reply: 继续" in txt:
+                return
+            time.sleep(1)
+        raise TestError("断链续写未完成（未见 PARTIAL-TEXT- 与 mock-reply: 继续）")
 
 
 # ── 工具任务节点（原五.4/5/6/7 + C13/C18 的现行等价场景；GATEWAY-2 L1）──
@@ -639,7 +679,7 @@ def case_delegate_loop():
 
     def _roots():
         return [p for p in _payloads("tasks.started")
-                if _canon_tool(p) == "script_run" and not p.get("parent_id")
+                if _canon_tool(p) == "task_run" and not p.get("parent_id")
                 and p.get("top_session") == main_sid and p.get("name") in want]
 
     wait_until(lambda: {r.get("name") for r in _roots()} >= want,

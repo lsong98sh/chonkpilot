@@ -95,20 +95,21 @@ def _llms():
 
 
 def _ensure_mock_entry():
-    """确保用户配置 llms 含 mock 条目（server 每轮按所选名 loadLLMConfig 读取）。
+    """确保用户配置 llms 含指向本套件 mock 端口的 name="mock" 条目（server 每轮按名读取）。
 
-    DB 用户配置默认 llms 为空（GUI 的 LLM 下拉来自系统内置/挂载态），故测试显式写入
-    一条 mock 条目作为"所选 LLM 配置"，验证 server 每轮按名读取并注入请求。
+    2026-10-23：**始终覆盖**同名条目（其余套件可能遗留指向随机端口的 mock → 直接复用会连不通，
+    表现为 model=None / LLM_REQUEST_FAILED）；并触发 `data-user-config-refresh` 让 router 对账。
     """
-    llms = _llms()
-    for l in llms:
-        if l.get("name") == "mock":
-            return l
-    entry = {"name": "mock", "protocol": "openai", "apiKey": "mock-key",
-             "model": "mock-model", "baseUrl": "http://127.0.0.1:8901/v1",
+    llms = [l for l in _llms() if l.get("name") != "mock"]
+    entry = {"name": "mock", "protocol": "openai", "apiKey": "sk-test-key",
+             "model": "mock-model", "baseUrl": "http://127.0.0.1:%d/v1" % _h.DEFAULT_MOCK_LLM_PORT,
              "temperature": 0.7, "maxOutputToken": 4096}
     llms.append(entry)
     c.req("data-user-config-save", {"data": {"llms": llms}})
+    # 2026-10-23：usr `llms` 需经 `data-user-config-refresh` 触发 router 对账
+    #（reconcileLLMProviders）才可被 llm-start 的 provider name 命中；否则回落到 exe 默认 provider。
+    c.mq_emit("config-refresh")
+    time.sleep(0.5)
     return entry
 
 
@@ -131,6 +132,9 @@ def _set_mock_temperature(temp):
         if l.get("name") == "mock":
             l["temperature"] = temp
     c.req("data-user-config-save", {"data": {"llms": llms}})
+    # 热生效同样依赖 router 对账（见 _ensure_mock_entry 注释）
+    c.mq_emit("config-refresh")
+    time.sleep(0.5)
 
 
 def case_llm_active_verify():
@@ -140,8 +144,10 @@ def case_llm_active_verify():
         _ensure_mock_entry()
         entry = _mock_entry()
         sid = create_session()
-        run_turn(sid, "hello, please reply with mock-reply", llm="mock")
+        done = run_turn(sid, "hello, please reply with mock-reply", llm="mock")
         last = last_req()
+        print("[evidence] entry=%r last=%r llm-complete=%r retries=%d"
+              % (entry, last, done, len(c.events_of("llm-retry", clear=False))), flush=True)
         if last.get("model") != entry.get("model"):
             raise TestError(f"请求 model={last.get('model')!r}，期望 {entry.get('model')!r}"
                             "（P1-1 起 body.model = 所选条目的 model 配置，非 provider name）")

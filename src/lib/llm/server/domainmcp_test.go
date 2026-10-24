@@ -25,6 +25,7 @@ func newTestServerMCP(t *testing.T, llmSrv *httptest.Server) *Server {
 	data.Reset()
 	testWorkDir = t.TempDir()
 	t.Cleanup(func() { testWorkDir = "" })
+	disableSessionShardForTest(t, testWorkDir) // 本组用例直读旧布局（会话/消息断言）
 	bus, err := mq.New(mq.Options{Prefix: testBusPrefix})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
@@ -53,6 +54,7 @@ func newTestServerMCPAppRoot(t *testing.T, llmSrv *httptest.Server, appRoot stri
 	data.Reset()
 	testWorkDir = t.TempDir()
 	t.Cleanup(func() { testWorkDir = "" })
+	disableSessionShardForTest(t, testWorkDir) // 同上：旧布局断言
 	bus, err := mq.New(mq.Options{Prefix: testBusPrefix})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)

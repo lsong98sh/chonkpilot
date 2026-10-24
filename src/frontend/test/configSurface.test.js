@@ -102,19 +102,6 @@ test('④ hasEngineTools：按工具面注册名判定（含 self_ 前缀暴露�
   assert.equal(hasEngineTools(null, 'vfts'), false)
 })
 
-test('④ 引擎页补「工具面注册态」（真实可得，不伪造进程态）+ 无 watch', () => {
-  for (const { file, engine } of [
-    { file: 'views/settings/CodegraphConfig.vue', engine: 'codegraph' },
-    { file: 'views/settings/VftsConfig.vue', engine: 'vfts' },
-  ]) {
-    const src = read(file)
-    assert.match(src, /mq\.emit\(MsgClientTopics\.toolsList/, `${file} 须读工具面（tools-list）`)
-    assert.match(src, new RegExp(`hasEngineTools\\(tools, '${engine}'\\)`), `${file} 须判引擎注册态`)
-    assert.match(src, /projectConfig\.engine_tool_state/, `${file} 须回显引擎工具面状态`)
-    assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, `${file} 不得使用 watch/watchEffect`)
-  }
-})
-
 // ── ⑤ 沙箱两页状态互见 ───────────────────────────────────
 test('⑤ 摘要计数：executors + mcps 计 true；旧形状读取时迁移', () => {
   assert.equal(countToolSandboxOn({ executors: { a: true, b: false }, mcps: { c: true } }), 2)
@@ -276,40 +263,17 @@ test('⑦ 超时列占位「回落全局」+ 0/-1 = 无上限口径（cTimeout �
 })
 
 // ── ⑧ 索引页「叠加 gitignore」（2026-09-27）──────────────
-test('⑧ 索引页：label「排除的目录和文件」+「叠加 gitignore」勾选（勾选不禁用输入框）', () => {
+// 〔UIREG-1〕索引配置页已并入 codebase 插件（`src/plugins/codebase/webui/config.html`），
+// 前端只保留文案口径守卫（组件级断言随已删页面一并移除）。
+test('⑧ 索引页文案：排除项与「叠加 gitignore」的中文口径', () => {
   const zh = readLocale('zh-CN', 'projectConfig.json')
   assert.equal(zh.exclude_paths, '排除的目录和文件', 'zh label 须为「排除的目录和文件」')
   assert.equal(zh.stack_gitignore, '叠加 gitignore', 'zh 勾选文案须为「叠加 gitignore」')
-
-  const cases = [
-    { file: 'views/settings/CodegraphConfig.vue', key: 'codegraph.stack-gitignore', ref: 'cgStackGitignore' },
-    { file: 'views/settings/VftsConfig.vue', key: 'vfts.stack-gitignore', ref: 'vfStackGitignore' },
-  ]
-  for (const c of cases) {
-    const src = read(c.file)
-    // label 文案走 i18n，旧硬编码「排除目录」不得残留
-    assert.match(src, /projectConfig\.exclude_paths/, `${c.file} 须用 i18n「排除的目录和文件」label`)
-    assert.doesNotMatch(src, /排除目录/, `${c.file} 残留旧文案「排除目录」`)
-    assert.match(src, /projectConfig\.stack_gitignore/, `${c.file} 须用 i18n「叠加 gitignore」`)
-    assert.match(src, /projectConfig\.exclude_paths_hint/, `${c.file} 须有 i18n hint（含叠加语义）`)
-    // label 行右侧勾选（原生 checkbox + 既有 .b-checkbox 口径）
-    assert.match(src, /class="form-label-row"/, `${c.file} 须有 label 行容器`)
-    assert.match(src, /<input type="checkbox" v-model="[a-zA-Z]+" \/>/, `${c.file} 须有勾选框`)
-    // 勾选后输入框仍可编辑（禁止 disable/readonly 排除输入框）
-    assert.doesNotMatch(src, /:disabled="[^"]*[Ss]tack/, `${c.file} 勾选不得禁用输入框`)
-    assert.doesNotMatch(src, /:readonly/, `${c.file} 输入框不得 readonly`)
-    // 保存写该键（2026-09-28 批量 entries 形：对象字面量 'k': … 或 entries['k'] = …）
-    const kEsc = c.key.replace(/\./g, '\\.')
-    assert.match(src, new RegExp(`'${kEsc}'\\s*:|\\['${kEsc}'\\]`), `${c.file} 保存须写 ${c.key}`)
-    // dirty（unsaved）须含勾选状态；加载回填（缺省 false）
-    assert.match(src, new RegExp(`${c.ref}\\.value !== \\(origStackGitignore\\.value === 'true'\\)`), `${c.file} dirty 须含勾选状态`)
-    assert.match(src, new RegExp(`${c.ref}\\.value = rawStack === 'true'`), `${c.file} 加载须回填勾选`)
-    assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, `${c.file} 不得使用 watch/watchEffect`)
-  }
 })
 
 // ── ⑨ 索引页「文档索引（Office/PDF）」（2026-09-29）─────────
-test('⑨ 索引页：文档索引开关 + 体积上限 + 转换服务状态行 + MCP 注册指引', () => {
+// 〔UIREG-1〕同 ⑧：组件已删除，保留 i18n 口径守卫（插件配置页复用同一套文案键）。
+test('⑨ 文档索引文案：i18n 双语齐备（配置页由 codebase 插件承载）', () => {
   const zh = readLocale('zh-CN', 'projectConfig.json')
   const en = readLocale('en-US', 'projectConfig.json')
   for (const k of ['docs_section', 'docs_hint', 'docs_max_mb_label', 'docs_service_label',
@@ -318,24 +282,6 @@ test('⑨ 索引页：文档索引开关 + 体积上限 + 转换服务状态行 
     assert.ok(zh[k], `zh-CN projectConfig 缺 ${k}`)
     assert.ok(en[k], `en-US projectConfig 缺 ${k}`)
   }
-
-  const src = read('views/settings/VftsConfig.vue')
-  // 开关（默认关）+ 体积上限（默认 50MB 镜像）+ 两键保存
-  assert.match(src, /projectConfig\.docs_section/, '缺「文档索引」区块')
-  assert.match(src, /const vfDocs = ref\(false\)/, 'vfts.docs 开关须默认关')
-  assert.match(src, /'vfts\.docs'/, '保存须写 vfts.docs')
-  assert.match(src, /'vfts\.doc-max-mb'/, '保存须写 vfts.doc-max-mb')
-  assert.match(src, /displayDocMaxMB\(raw\) \{ return raw \|\| '50' \}/, '体积上限默认镜像须为 50')
-  // 状态行：转换服务 running/absent + 端口
-  assert.match(src, /status\.value\?\.docsService === 'running'/, '状态行须读 docsService')
-  assert.match(src, /status\.value\?\.docsPort/, '状态行须显示探测端口')
-  // MCP 注册指引 + 复制
-  assert.match(src, /projectConfig\.docs_register_text/, '缺注册指引文案')
-  assert.match(src, /navigator\.clipboard\.writeText\(docsRegisterText\.value\)/, '缺复制按钮实现')
-  // dirty 含文档开关
-  assert.match(src, /vfDocs\.value !== \(origDocs\.value === 'true'\)/, 'dirty 须含文档开关')
-  // 规矩：无 watch/watchEffect
-  assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, 'VftsConfig 不得使用 watch/watchEffect')
 })
 
 // ── 通用：i18n 双语齐备 ──────────────────────────────────

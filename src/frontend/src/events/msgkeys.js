@@ -106,6 +106,7 @@ export const MsgTopics = {
   dataSessionLatest: 'data-session-latest',
   dataSessionTitle: 'data-session-title',
   dataSessionTitleChanged: 'data-session-title-changed',
+  dataSessionFork: 'data-session-fork',
   dataSessionDelete: 'data-session-delete',
   dataSessionActiveSet: 'data-session-active-set',
   dataSessionActiveGet: 'data-session-active-get',
@@ -285,6 +286,7 @@ export const FieldKeys = {
   deleted_at: 'deleted_at',
   description: 'description',
   dest_dir: 'dest_dir',
+  dialog_id: 'dialog_id',
   dict_dir: 'dict_dir',
   diffs: 'diffs',
   dir: 'dir',
@@ -550,6 +552,7 @@ export const FieldDict = {
   deleted_at: 'deleted_at',
   description: 'description',
   dest_dir: 'dest_dir',
+  dialog_id: 'dialog_id',
   dict_dir: 'dict_dir',
   diffs: 'diffs',
   dir: 'dir',
@@ -1449,12 +1452,14 @@ export const DataSessionListKeys = {
 /** data-session-get 字段键（payload/result/event 合并去重）。 */
 export const DataSessionGetKeys = {
   data: 'data',
+  dialog_id: 'dialog_id',
   id: 'id',
 }
 
 /** data-session-history 字段键（payload/result/event 合并去重）。 */
 export const DataSessionHistoryKeys = {
   before_turn_id: 'before_turn_id',
+  dialog_id: 'dialog_id',
   messages: 'messages',
   session_id: 'session_id',
   target_bytes: 'target_bytes',
@@ -1464,6 +1469,7 @@ export const DataSessionHistoryKeys = {
 /** data-session-content 字段键（payload/result/event 合并去重）。 */
 export const DataSessionContentKeys = {
   contents: 'contents',
+  dialog_id: 'dialog_id',
   id: 'id',
   keys: 'keys',
   session_id: 'session_id',
@@ -1471,11 +1477,13 @@ export const DataSessionContentKeys = {
 
 /** data-session-latest 字段键（payload/result/event 合并去重）。 */
 export const DataSessionLatestKeys = {
+  dialog_id: 'dialog_id',
   session_id: 'session_id',
 }
 
 /** data-session-title 字段键（payload/result/event 合并去重）。 */
 export const DataSessionTitleKeys = {
+  dialog_id: 'dialog_id',
   id: 'id',
   ok: 'ok',
   title: 'title',
@@ -1483,18 +1491,31 @@ export const DataSessionTitleKeys = {
 
 /** data-session-title-changed 字段键（payload/result/event 合并去重）。 */
 export const DataSessionTitleChangedKeys = {
+  dialog_id: 'dialog_id',
+  session_id: 'session_id',
+  title: 'title',
+}
+
+/** data-session-fork 字段键（payload/result/event 合并去重）。 */
+export const DataSessionForkKeys = {
+  dialog_id: 'dialog_id',
+  instance_id: 'instance_id',
+  mode: 'mode',
+  ok: 'ok',
   session_id: 'session_id',
   title: 'title',
 }
 
 /** data-session-delete 字段键（payload/result/event 合并去重）。 */
 export const DataSessionDeleteKeys = {
+  dialog_id: 'dialog_id',
   id: 'id',
   ok: 'ok',
 }
 
 /** data-session-active-set 字段键（payload/result/event 合并去重）。 */
 export const DataSessionActiveSetKeys = {
+  dialog_id: 'dialog_id',
   ok: 'ok',
   session_id: 'session_id',
 }
@@ -1508,6 +1529,7 @@ export const DataSessionActiveGetKeys = {
 export const DataSessionEnsureSessionKeys = {
   agent: 'agent',
   convergence: 'convergence',
+  dialog_id: 'dialog_id',
   goal: 'goal',
   kind: 'kind',
   lifecycle: 'lifecycle',
@@ -1522,6 +1544,7 @@ export const DataSessionEnsureSessionKeys = {
 
 /** data-session-ensure-turn 字段键（payload/result/event 合并去重）。 */
 export const DataSessionEnsureTurnKeys = {
+  dialog_id: 'dialog_id',
   ok: 'ok',
   session_id: 'session_id',
   turn_id: 'turn_id',
@@ -1529,6 +1552,7 @@ export const DataSessionEnsureTurnKeys = {
 
 /** data-session-append-message 字段键（payload/result/event 合并去重）。 */
 export const DataSessionAppendMessageKeys = {
+  dialog_id: 'dialog_id',
   id: 'id',
   key: 'key',
   msg: 'msg',
@@ -1538,6 +1562,7 @@ export const DataSessionAppendMessageKeys = {
 
 /** data-session-set-summary 字段键（payload/result/event 合并去重）。 */
 export const DataSessionSetSummaryKeys = {
+  dialog_id: 'dialog_id',
   ok: 'ok',
   summary: 'summary',
   turn_id: 'turn_id',
@@ -1546,6 +1571,7 @@ export const DataSessionSetSummaryKeys = {
 /** data-session-complete-turn 字段键（payload/result/event 合并去重）。 */
 export const DataSessionCompleteTurnKeys = {
   brief_tokens: 'brief_tokens',
+  dialog_id: 'dialog_id',
   finish_reason: 'finish_reason',
   full_tokens: 'full_tokens',
   ok: 'ok',
@@ -1612,6 +1638,7 @@ export const DataInboxCommitKeys = {
 /** data-ask-pending 字段键（payload/result/event 合并去重）。 */
 export const DataAskPendingKeys = {
   ask_id: 'ask_id',
+  dialog_id: 'dialog_id',
   instance_id: 'instance_id',
   items: 'items',
   ok: 'ok',
@@ -1621,6 +1648,7 @@ export const DataAskPendingKeys = {
 /** data-turn-event-append 字段键（payload/result/event 合并去重）。 */
 export const DataTurnEventAppendKeys = {
   at: 'at',
+  dialog_id: 'dialog_id',
   instance_id: 'instance_id',
   ok: 'ok',
   payload: 'payload',
@@ -1640,12 +1668,14 @@ export const DataTurnEventCleanupKeys = {
 
 /** data-session-load-messages 字段键（payload/result/event 合并去重）。 */
 export const DataSessionLoadMessagesKeys = {
+  dialog_id: 'dialog_id',
   messages: 'messages',
   turn_id: 'turn_id',
 }
 
 /** data-session-context 字段键（payload/result/event 合并去重）。 */
 export const DataSessionContextKeys = {
+  dialog_id: 'dialog_id',
   exclude_turn: 'exclude_turn',
   include_snapshot: 'include_snapshot',
   messages: 'messages',
@@ -2059,6 +2089,8 @@ export const SessionReceiveKeys = {
 /** session-complete 字段键（payload/result/event 合并去重）。 */
 export const SessionCompleteKeys = {
   code: 'code',
+  data_dir: 'data_dir',
+  dialog_id: 'dialog_id',
   finish_reason: 'finish_reason',
   instance_id: 'instance_id',
   message: 'message',
@@ -2071,6 +2103,7 @@ export const SessionCompleteKeys = {
   status: 'status',
   text: 'text',
   turn: 'turn',
+  work_dir: 'work_dir',
 }
 
 /** session-retry 字段键（payload/result/event 合并去重）。 */
@@ -2097,6 +2130,7 @@ export const SessionInterruptedKeys = {
 
 /** session-compress 字段键（payload/result/event 合并去重）。 */
 export const SessionCompressKeys = {
+  dialog_id: 'dialog_id',
   instance_id: 'instance_id',
   last_turn: 'last_turn',
   max_context_token: 'max_context_token',
@@ -2131,6 +2165,7 @@ export const SessionTurnStartKeys = {
 
 /** session-new 字段键（payload/result/event 合并去重）。 */
 export const SessionNewKeys = {
+  dialog_id: 'dialog_id',
   instance_id: 'instance_id',
   parent_session_id: 'parent_session_id',
   session_id: 'session_id',

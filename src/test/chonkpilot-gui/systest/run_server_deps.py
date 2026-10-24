@@ -53,13 +53,14 @@ def ensure_mock_llm_entry():
     `pin_mock_llm`（前端内部事件）完成即可。套件级配置快照-还原在退出前回滚 usr → 不污染环境。
     """
     cfg = _h.user_config_load(c)
-    llms = list(cfg.get("llms") or [])
-    if any((l or {}).get("name") == MOCK_LLM_NAME for l in llms):
-        return
-    llms.append({"name": MOCK_LLM_NAME, "protocol": "openai", "apiKey": "mock-key",
+    llms = [l for l in (cfg.get("llms") or []) if (l or {}).get("name") != MOCK_LLM_NAME]
+    # 2026-10-23：**始终覆盖**同名条目（残留条目可能指向随机端口 → 回合连不通 → B6/B8 假红）。
+    llms.append({"name": MOCK_LLM_NAME, "protocol": "openai", "apiKey": "sk-test-key",
                  "model": "mock-model", "baseUrl": MOCK_LLM_BASE,
                  "temperature": 0.7, "maxOutputToken": 4096})
     c.req("data-user-config-save", {"data": {"llms": llms}})
+    c.mq_emit("config-refresh")
+    time.sleep(0.4)
 
 
 def pin_mock_llm():

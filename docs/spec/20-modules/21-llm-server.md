@@ -211,6 +211,7 @@ chatOnce：
 - **参数优先级 = 会话固定参数 > 请求参数**：先按 `sessionID` 读会话行的 `agent` / `scenario_id`（仅子聊天有；见 [22 §5](22-data-persist.md)），非空即覆盖入参；
 - **新轮与恢复轮同口径**：`recoverTurnCtx` 虽只有 `{instance, session}`（请求里无 scenario/agent），仍经同一构造从会话行取回 → **重启后人格与第五层不丢**（此前恢复轮退化为"仅全局层 + 目录层"）；
 - **第五层注入条件 = 会话行 `kind ∈ {sub_chat, group_chat}`**，文本代码内建常量 `subChatLayerText`。
+- **目录层内容** = `capability/system/system-directory.md`（四级同名定位，缺省回落 embed），含【目录与运行环境】/【第三方工具接入】/【用户交互】/【平台自身能力】四段；末段只放**一句指路**（按需加载），平台能力清单与红线的正文在 `capability/skills/core/platform-capability.skill.md`（2026-10-24 新增，避免常驻 system prompt 膨胀）。
 - **群聊扩展（SUBCHAT-3 阶段 F，2026-10-16）**：`kind ∈ {group_chat, work_session}` → 注入**群聊注入层**（`chatInjectionLayer` → `groupChatInjectionLayer`）：参与者名单 + 各自角色（读 `group_participants`）+ **本次目标 / 剧本 / 收敛与退出条件**（会话行可选列 `goal` / `playbook` / `convergence`）+ 推进规则（末行 `@` 决定下一个叫谁）+ 收口协议；`work_session` 取其**父群聊会话**的注入内容。文本代码内建（`groupChatProtocolText` / `groupChatReplyRules`）。
 
 **单聊（子聊天）域工具与方法面（SUBCHAT-2 阶段 B-2，2026-10-16 · `src/lib/llm/server/subchat.go`）**：

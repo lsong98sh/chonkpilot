@@ -2,8 +2,8 @@
  * 项目配置**批量写**（2026-09-28，[61-消息一览 §3.1]）前端守卫：
  *   - `api/config.js` 的 `setConfigs(entries)`：一次调用 = **1 条** `data-prj-config-save`
  *     （报文 `{data:{entries:{…}}}`）；`setConfig` 单键路径**不变**（`{data:{key,value}}`）；
- *   - 4 个设置页（Context / Codegraph / Vfts / History）保存路径改**一次批量写**
- *     （1 次保存请求 → 后端 1 条 refresh），不得再逐键 `setConfig`。
+ *   - 设置页（Context / History；〔UIREG-1〕codegraph / vfts 配置页已并入 codebase 插件）保存路径
+ *     改**一次批量写**（1 次保存请求 → 后端 1 条 refresh），不得再逐键 `setConfig`。
  *
  * 前端无组件级运行器（`npm test` = node:test 直跑）、且前端模块用无扩展名 import（node ESM 不可解析）
  * → 沿用本项目 `*.js`/`*.vue` **源码守卫**口径（与 historyCheckpoint / configSurface 同法）。
@@ -38,16 +38,15 @@ test('api/config.js：setConfigs 一次批量写（报文 {data:{entries}}）；
   assert.match(dc, /save: \(domain, data, opts\) => dataRequest\(domain, 'save', \{ data \}, opts\)/, 'save 须为单次请求')
 })
 
-// ── 4 个设置页：保存路径 = 一次批量写 ──────────────────────────────
-// keysFn = 承载批量键字面量的函数（vfts 把「改动的键」收集抽在 collectIndexChanges）。
+// ── 设置页：保存路径 = 一次批量写 ──────────────────────────────
+// keysFn = 承载批量键字面量的函数。
+// 〔UIREG-1〕codegraph / vfts 配置页已并入 codebase 插件（前端页面删除），此处只保留剩余设置页。
 const PAGES = [
   { file: 'views/settings/ContextConfig.vue', fn: 'handleSave', keysFn: 'handleSave', keys: ["'memory.enabled'"] },
-  { file: 'views/settings/CodegraphConfig.vue', fn: 'handleIndexSave', keysFn: 'handleIndexSave', keys: ["'codegraph.exts'", "'codegraph.skip-dirs'", "'codegraph.stack-gitignore'"] },
-  { file: 'views/settings/VftsConfig.vue', fn: 'handleIndexSave', keysFn: 'collectIndexChanges', keys: ["'vfts.exts'", "'vfts.skip-dirs'", "'vfts.stack-gitignore'"] },
   { file: 'views/settings/HistoryConfig.vue', fn: 'handleRetentionSave', keysFn: 'handleRetentionSave', keys: ["'history.checkpoint_keep'", "'history.checkpoint_ttl_days'"] },
 ]
 
-test('4 设置页：保存路径走一次批量写 setConfigs（1 次保存请求 → 1 条 refresh）', () => {
+test('设置页：保存路径走一次批量写 setConfigs（1 次保存请求 → 1 条 refresh）', () => {
   for (const { file, fn, keysFn, keys } of PAGES) {
     const src = read(file)
     assert.match(src, /import \{[^}]*\bsetConfigs\b[^}]*\} from '\.\.\/\.\.\/api\/config'/,
@@ -65,21 +64,9 @@ test('4 设置页：保存路径走一次批量写 setConfigs（1 次保存请�
   }
 })
 
-test('信号语义键仍单独写（codegraph.action / history.clear 不被并入批量）', () => {
+test('信号语义键仍单独写（history.clear 不被并入批量）', () => {
   // 动作信号键保持单键写 → 同值重复写仍各发 1 条 refresh（插件据此执行动作）
-  assert.match(read('views/settings/CodegraphConfig.vue'), /return setConfig\('codegraph\.action', action\)/,
-    'codegraph.action 仍单独写（信号键）')
   assert.match(read('views/settings/HistoryConfig.vue'),
     /setConfig\('history\.clear', JSON\.stringify\(\{ ts: new Date\(\)\.toISOString\(\), session: sessionSlug\.value \}\)\)/,
     'history.clear 仍单独写（信号键；值 = JSON {ts,session}，只清本会话链）')
-})
-
-test('VftsConfig：清空项仍走 delete（回落引擎默认语义不变）', () => {
-  const src = read('views/settings/VftsConfig.vue')
-  const body = fnBody(src, 'handleIndexSave')
-  assert.ok(body, '未找到 handleIndexSave')
-  assert.match(body, /deleteConfig\(k\)/, '清空项须走 deleteConfig（保留「清空 = 删键回落默认」语义）')
-  const collect = fnBody(src, 'collectIndexChanges')
-  assert.ok(collect, '未找到 collectIndexChanges')
-  assert.match(collect, /clears\.push\(it\.key\)/, '空串文本项须入 clears（删键）')
 })

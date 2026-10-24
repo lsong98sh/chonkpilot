@@ -37,8 +37,11 @@ test('索引徽标：改用 usePrjConfigSnapshot，不再自行 getAllConfig / �
 })
 
 test('merge 语义：refresh 增量有则覆盖、无则新增', () => {
-  assert.deepEqual(mergeUserConfig({ 'memory.enabled': 'false', 'enable-vfts': 'true' }, { 'memory.enabled': 'true' }), {
-    'memory.enabled': 'true',
-    'enable-vfts': 'true',
-  })
+  assert.deepEqual(
+    mergeUserConfig(
+      { 'memory.enabled': 'false', 'plugins.codebase.vfts.enabled': 'true' },
+      { 'memory.enabled': 'true' },
+    ),
+    { 'memory.enabled': 'true', 'plugins.codebase.vfts.enabled': 'true' },
+  )
 })

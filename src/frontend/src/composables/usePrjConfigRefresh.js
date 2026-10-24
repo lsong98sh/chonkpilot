@@ -1,8 +1,8 @@
 /**
  * 设置页统一订阅 `data-prj-config-refresh`（键过滤 + 突发合并 + 保存守卫）。
  *
- * 收敛机制与依据见 `utils/prjConfigRefresh.js`；4 个设置页
- * （ContextConfig / CodegraphConfig / VftsConfig / HistoryConfig）经本 composable
+ * 收敛机制与依据见 `utils/prjConfigRefresh.js`；设置页
+ * （ContextConfig / HistoryConfig 等）经本 composable
  * 走**同一机制**（[41 I-138] 收敛；批量写已使一次保存只发 1 条广播，见 61 §3.1）。
  *
  * @param {object} o

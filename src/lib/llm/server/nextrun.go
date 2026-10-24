@@ -65,6 +65,7 @@ func (s *Server) runNextRun(tc *turnCtx, args map[string]any) (string, bool) {
 	// ① 先计数（上限判定与自增原子完成）；拒绝时不 +1、不动已登记项。
 	res, err := s.cfg.SessionNextRunCheckAndAdd(facade.SessionNextRunCheckAndAddRequest{
 		InstanceID: tc.req.InstanceID, SessionID: tc.req.Session, Max: max,
+		DialogID: s.dialogOf(tc.req.InstanceID, tc.req.Session),
 	})
 	if err != nil {
 		return "错误: 登记下一轮失败（" + err.Error() + "）", true
@@ -114,6 +115,7 @@ func (s *Server) nextRunCompensate(instanceID, sessionID string) {
 	}
 	if _, err := s.cfg.SessionNextRunDec(facade.SessionNextRunDecRequest{
 		InstanceID: instanceID, SessionID: sessionID,
+		DialogID: s.dialogOf(instanceID, sessionID),
 	}); err != nil {
 		logf("[chonkpilot-server] next_run 计数补偿失败（session=%s）: %v\n", sessionID, err)
 	}
@@ -124,16 +126,21 @@ func (s *Server) nextRunCompensate(instanceID, sessionID string) {
 // 触发点：外部 `llm-start`（用户发新轮 / 点「继续」）· `llm-send{type:text-user}` ·
 // `llm-inbox-add` · `llm-inbox-promote`。**内部** `acceptStart`（consumeNextTurn 起自动轮）
 // 不重置（否则自动链永远只能接续 1 次）。
-func (s *Server) resetNextRunCount(instanceID, sessionID string) {
+//
+// 返回 false = 未落地（如首轮自举前 dialog_id 尚未知 → `dialog_required`）；调用方可在建会话后补一次。
+func (s *Server) resetNextRunCount(instanceID, sessionID string) bool {
 	if s.cfg == nil || instanceID == "" || sessionID == "" {
-		return
+		return true
 	}
 	if _, err := s.cfg.SessionNextRunReset(facade.SessionNextRunResetRequest{
 		InstanceID: instanceID, SessionID: sessionID,
+		DialogID: s.dialogOf(instanceID, sessionID),
 	}); err != nil {
 		// 重置失败不阻断用户发送（仅留痕；下次发送会再试）。
 		logf("[chonkpilot-server] next_run 计数重置失败（session=%s）: %v\n", sessionID, err)
+		return false
 	}
+	return true
 }
 
 // discardNextRunForTurn 终态收敛（NEXTRUN-1 §4）：本轮 error / interrupted / cancelled →

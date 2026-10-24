@@ -458,14 +458,6 @@ def case_root_dir_add_rebuild():
     wait_tree("rootnew", present=False)
 
 
-def _llm_create_session():
-    """生成 LLM 会话 id（mq-only；新架构无 window.go.CreateSession，llm-start 幂等落库）。"""
-    sid = "ft-sess-%d" % int(time.time() * 1000)
-    c.mq_emit("session-changed", {"session_id": sid})
-    time.sleep(0.3)
-    return sid
-
-
 def _wait_ide_down(max_wait=60):
     """等待 IDE 退出（test server 连接失败）。"""
     deadline = time.time() + max_wait
@@ -475,26 +467,27 @@ def _wait_ide_down(max_wait=60):
         except Exception:
             return
         time.sleep(1)
-    raise TestError("IDE 未在预期时间内退出（Alt+F4 未生效）")
+    raise TestError("IDE 未在预期时间内退出（/quit 未生效）")
 
 
-def _close_ide_winapi():
-    """WM_CLOSE 兜底：FindWindowW + PostMessage（等价 Alt+F4 的关闭路径，不受前台聚焦限制）。
+def _graceful_quit(port=2345, timeout=20):
+    """经测试通道 `POST /quit` 优雅退出（与托盘「退出」同路径）。
 
-    窗口标题 = `chonkpilot-<work_dir 名>`（gui.MainWindowTitle）。
+    口径变更（2026-10-23，42 PRODSIM-1）：**关主窗 ≠ 退出进程**（关闭只终止该项目的窗口，
+    进程按设计常驻托盘）；故持久化用例改用 `/quit`（无 taskkill → 不残留托盘图标）。
     """
-    import ctypes
-    u = ctypes.windll.user32
-    hwnd = u.FindWindowW(None, WIN_TITLE)
-    if hwnd:
-        u.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
-        return True
-    return False
+    import urllib.request
+    try:
+        req = urllib.request.Request("http://127.0.0.1:%d/quit" % port, data=b"{}", method="POST",
+                                     headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as e:
+        print("[quit] /quit 请求异常（继续等进程退出）: %s" % e, flush=True)
+    _wait_ide_down(timeout)
 
 
 def case_persistence_restart():
-    """C6 filetree 状态持久化：展开 a/b/c/d → 模拟 Alt+F4 关闭 → 脚本重启 → 展开状态恢复。"""
-    import subprocess
+    """C6 filetree 状态持久化：展开 a/b/c/d → 优雅退出（/quit）→ 脚本重启 → 展开状态恢复。"""
     # 1. 展开目录链（触发 filetree-data 快照写入 config 桶）
     expand_dir("a")
     expand_dir(os.path.join("a", "b"))
@@ -502,16 +495,8 @@ def case_persistence_restart():
     expand_dir(os.path.join("a", "b", "c", "d"))
     wait_tree(os.path.join("a", "b", "c", "d", "f1.txt"))
     time.sleep(3)  # 快照落库
-    # 2. mock 驱动 Alt+F4 关闭（key_press 带 window 参数自动聚焦；window = work_dir 名）
-    sid = _llm_create_session()
-    c.mq_emit("llm-start", {"session_id": sid, "q": "please call close",
-                            "llm": "mock", "think": "", "effort": "", "scenario_id": ""})
-    # 3. 等待 IDE 退出；Alt+F4 受 Windows 前台聚焦限制可能未生效 → WM_CLOSE 兜底
-    try:
-        _wait_ide_down(45)
-    except TestError:
-        _close_ide_winapi()
-        _wait_ide_down(30)
+    # 2. 优雅退出（测试通道 /quit；关主窗按 PRODSIM-1 只终止项目、进程常驻托盘）
+    _graceful_quit(2345, 30)
     # 3. 脚本重启 IDE（同一 workdir + test-port）；经 harness 自起 → 结束即回收
     # 夹具：预置工程规格文件 → 抑制场景向导启动自动弹出（本实例走 popen_own，不经 harness.start_gui）
     _h.ensure_project_spec(WS)
@@ -581,7 +566,7 @@ def main():
     total += 1; ok += run_case("C3 Write 事件刷新（filesys.changed）", case_write_refresh)
     total += 1; ok += run_case("C4 批量添加 60ms 合并去重", case_batch_merge)
     total += 1; ok += run_case("C5 根目录变更整树重建", case_root_dir_add_rebuild)
-    total += 1; ok += run_case("C6 展开状态持久化（Alt+F4 关闭 + 重启恢复）", case_persistence_restart)
+    total += 1; ok += run_case("C6 展开状态持久化（/quit 退出 + 重启恢复）", case_persistence_restart)
     errs = c.console()
     if errs.get("entries"):
         for e in errs["entries"]:

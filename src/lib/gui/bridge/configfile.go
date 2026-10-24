@@ -8,7 +8,7 @@
 //   - 内容可能含 API Key 等敏感信息（llms[].apiKey / mcps[].env、headers）→
 //     本文件**绝不记录 content**（无任何日志打印、不写错误详情），只回传落盘路径；
 //   - 文件名经 filepath.Base 净化（防路径穿越），空名拒绝；
-//   - 备份目录固定 `<prjusr 数据根>/backup/`（`uploadRoot()`：data_dir 空 → `<home>/.chonkpilot/data/<prj-id>/backup/`，
+//   - 备份目录固定 `<prjusr 数据根>/backup/`（`uploadRoot()`：data_dir 空 → `<workDir>/.chonkpilot/users/<OS 用户名>/backup/`，
 //     [24 §3.2] MW-8；未注入 prjusr 根 → 回落 `<workDir>/.chonkpilot/backup/`，与附件落盘同口径）。
 package bridge
 

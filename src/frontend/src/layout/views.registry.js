@@ -1,27 +1,16 @@
 /**
- * 区块注册表：本系统区块 → 自由布局容器的 view（UILAYOUT-1 §3.4 / §7 P3①）。
+ * 宿主侧视图装配点（UIREG-1）：内置视图与插件视图**共用同一条注册 API**（`registerViews`）。
  *
- * 分层（§2）：**机制层只按 viewKey 解析**（`deps.resolveViewComponent` / `deps.viewDefinitions`），
- * 区块 ↔ viewKey ↔ 组件 的映射**只在本文件**（适配层）。新增区块 = 定义表加一条（`view-definitions.js`）
- * + 这里加一个组件映射。
+ * 分层（UILAYOUT-1 §2）：
+ *   - 元数据（key / label / icon / host / designable …）在 `view-definitions.js`（纯数据）；
+ *   - 组件注册 / 解析的**唯一实现**在 `view-registry.js`（纯模块，`registerViews` → `resolve`）；
+ *   - 本文件只做**宿主装配**：把真实 `.vue` 组件按 key 交给注册表，并把插件视图
+ *     （`plugin:<id>:<view>`，iframe 承载）接到同一 API。**不再有静态组件映射表**。
  *
- * 定义字段（沿用参考工程 `config/views.js` 并扩展）：
- *   key          viewKey（配置文档里引用它）
- *   labelKey     i18n 键（`layoutFree.view.*`）→ label（经宿主 i18n 注入解析，语言切换即时生效）
- *   icon         图标名（宿主 `components/icon/icons.js` 的键）
- *   mode         singleton | multi —— **一期全部 singleton**（现有主题是全局广播、无实例过滤，§6）
- *   host         layout | dialog | bar —— 该 view 允许被放的位置
- *   designable   设计态是否挂载真实组件（§3.11 兜底：false → 设计态只渲染标题 + 骨架）
- *   params       需要从区域 `view.params` 取哪些字段（经 `layout/views/*Slot.vue` 转成组件 props）
- *
- * 〔一期 8 区块，逐条对齐 §3.4 表〕
- *   explorer · preview · chat · session-tree · session-chat · task-detail · dsl-steps · search
- *
- * ⚠️ `search` 的**组件映射**刻意留空：§3.4 表注明它「随栏条目化抽出独立组件后注册」，
- * 而栏条目化属 §7 P4 —— 一期先登记定义（编辑器下拉 / 单例占用登记需要它），
- * 组件抽取（把 `Toolbar.vue` 中段搜索箱抽成独立 view）与 P4 同批接线。
+ * 新增区块 = `view-definitions.js` 加一条元数据 + 这里 `registerViews` 加一条
+ * `{ key, component }`；新增插件视图 = 插件 `plugin.json` 的 `ui.views`（无需改本文件）。
  */
-import { defineAsyncComponent } from 'vue'
+import { defineAsyncComponent, defineComponent, h } from 'vue'
 import ExplorerPane from '../views/filetree/ExplorerPane.vue'
 import ChatPanel from '../views/chat/ChatPanel.vue'
 import SessionTree from '../views/tasks/SessionTree.vue'
@@ -41,50 +30,68 @@ import CompressStatusView from './bar-views/CompressStatusView.vue'
 import MemoryStatusDetail from '../views/status/MemoryStatusDetail.vue'
 import CompressStatusDetail from '../views/status/CompressStatusDetail.vue'
 import IndexStatusDetail from '../views/status/IndexStatusDetail.vue'
-import { buildViewRegistry } from './view-definitions.js'
+import PluginPageHost from '../components/plugin/PluginPageHost.vue'
+import {
+  createViewRegistry,
+  registerPluginViews as registerPluginViewsWith,
+  registerViews,
+  registeredViewKeys,
+  unregisterPluginViews,
+} from './view-registry.js'
 
 export { VIEW_DEFINITIONS, definitionOf, hostOf } from './view-definitions.js'
+export { createViewRegistry, registeredViewKeys, unregisterPluginViews }
 
 /** 预览区：与既有 `MainLayout.vue` 同口径（懒加载 CodeView，不改变既有分包）。 */
 const PreviewView = defineAsyncComponent(() => import('../views/codeview/CodeView.vue'))
 
-/**
- * 组件映射（viewKey → 组件）。
+/*
+ * 内置视图注册（与 `view-definitions.js` 的元数据 key 一一对应）。
  * 带 props 需求的区块经 `layout/views/*Slot.vue` 适配壳转发（容器的 `viewRef.params` → 组件 props）；
- * `search` 等**栏视图条目**（`host:'bar'`，UILAYOUT-1 §3.4 / §7 P4①）在 `layout/bar-views/` 下，
- * 由本表接线（P3 时刻意留空，P4 抽取后补齐）。
+ * 栏视图条目（`host:'bar'`，UILAYOUT-1 §3.4 / §7 P4①）在 `layout/bar-views/` 下。
  */
-export const VIEW_COMPONENTS = {
-  explorer: ExplorerPane,
-  preview: PreviewView,
-  chat: ChatPanel,
-  'session-tree': SessionTree,
-  'session-chat': SessionChat,
-  'task-detail': TaskDetailSlot,
-  'dsl-steps': DslStepsSlot,
+registerViews([
+  // ── 布局区块 ──
+  { key: 'explorer', component: ExplorerPane },
+  { key: 'preview', component: PreviewView },
+  { key: 'chat', component: ChatPanel },
+  { key: 'session-tree', component: SessionTree },
+  { key: 'session-chat', component: SessionChat },
+  { key: 'task-detail', component: TaskDetailSlot },
+  { key: 'dsl-steps', component: DslStepsSlot },
   // ── 栏视图条目（P4①）──
-  search: SearchBoxView,
-  'recent-dirs': RecentDirsView,
-  'chrome-warn': ChromeWarnView,
-  'memory-token': MemoryTokenView,
-  'queue-status': QueueStatusView,
-  'index-badge': IndexBadgeView,
-  'lang-switcher': LangSwitcherView,
-  'layout-profiles': LayoutProfilesView,
-  // ── 长任务状态条目 + 详情页（STB-1）──
-  'memory-status': MemoryStatusView,
-  'compress-status': CompressStatusView,
-  'status-memory': MemoryStatusDetail,
-  'status-compress': CompressStatusDetail,
-  'status-index': IndexStatusDetail,
+  { key: 'search', component: SearchBoxView },
+  { key: 'recent-dirs', component: RecentDirsView },
+  { key: 'chrome-warn', component: ChromeWarnView },
+  { key: 'memory-token', component: MemoryTokenView },
+  { key: 'queue-status', component: QueueStatusView },
+  { key: 'index-badge', component: IndexBadgeView },
+  { key: 'memory-status', component: MemoryStatusView },
+  { key: 'compress-status', component: CompressStatusView },
+  { key: 'lang-switcher', component: LangSwitcherView },
+  { key: 'layout-profiles', component: LayoutProfilesView },
+  // ── 长任务详情页（STB-1）──
+  { key: 'status-memory', component: MemoryStatusDetail },
+  { key: 'status-compress', component: CompressStatusDetail },
+  { key: 'status-index', component: IndexStatusDetail },
+], 'builtin')
+
+/** 插件 iframe view 的组件工厂（`PluginPageHost` 适配壳，与内置视图同一注册 API）。 */
+function pluginViewComponent({ plugin, view, entry }) {
+  return defineComponent({
+    name: `PluginView_${plugin.id}_${view.id}`,
+    render() {
+      return h(PluginPageHost, {
+        pluginId: plugin.id,
+        pageId: view.id,
+        entry,
+        title: view.title || '',
+      })
+    },
+  })
 }
 
-/**
- * 组装注册表对象（注入 `createLayoutEngine({ views })`）。
- * 组装逻辑在 `view-definitions.js`（纯逻辑，可直跑单测）；这里把**真实组件表**接上。
- *
- * @param {(key: string) => string} [translate] 宿主 i18n 取值函数（`layout/i18n.js` 提供）
- */
-export function createViewRegistry(translate) {
-  return buildViewRegistry(translate, VIEW_COMPONENTS)
+/** 注册/覆盖一个插件的全部 iframe view（`plugin:<id>:<view>`）。幂等：同 id 先卸载再注册。 */
+export function registerPluginViews(plugin) {
+  registerPluginViewsWith(plugin, pluginViewComponent)
 }

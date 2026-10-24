@@ -8,7 +8,7 @@
 //  1. 按 `group_participants.seq` 顺序依次投递（**不抢、串行**，D2/D3/D4）；
 //  2. 轮到者在自己 `work_session` 里跑一次 LLM（判定 + 执行同一次调用，D20）：
 //     - **有关** → 结论（内联文本，D24）→ **立即上屏**（追加群聊展示板消息，带 `sender_agent` /
-//       `mentions`）+ 入下一轮候选；
+//     `mentions`）+ 入下一轮候选；
 //     - **无关** → 落库（在它自己的 `work_session` 历史里）、**不上屏、不入下一轮**（D13/D21）；
 //  3. 本轮全部走完（**屏障只挡下一轮启动**，不挡上屏，D31）→ 由本轮发言的 `@` 名单算出
 //     下一轮的投递对象（D27/D32/D33）；**无人认领 → 主 agent 兜底**（D5）。
@@ -496,12 +496,15 @@ func (sc *groupSched) runWorkTurn(agent, input string) string {
 	if _, err := sc.s.cfg.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: driver, Scope: scope,
 		SessionID: workID, ParentSessionID: sc.groupID,
-		Kind: facade.SessionKindWorkSession, Agent: agent,
+		DialogID: sc.s.dialogOf(driver, sc.groupID),
+		Kind:     facade.SessionKindWorkSession, Agent: agent,
 		ScenarioID: sc.scenarioID, LLM: sc.llmRef,
 	}); err != nil {
 		logf("[chonkpilot-server] groupWorkTurn ensure(%s/%s): %v\n", sc.groupID, agent, err)
 		return ""
 	}
+	// 一树一库：回填工作会话 → 对话映射（后续 turn / message 写入按其补 dialog_id）。
+	sc.s.rememberDialog(driver, workID, sc.s.dialogOf(driver, sc.groupID))
 	req := StartReq{InstanceID: driver, Session: sc.groupID, ScenarioID: sc.scenarioID, LLMModel: sc.llmRef}
 	if rec, ok := sc.s.im.Lookup(driver); ok {
 		req.WorkDir, req.DataDir = rec.WorkDir, rec.DataDir
@@ -684,6 +687,7 @@ func (sc *groupSched) emitParticipantState(agent, state string) {
 func (sc *groupSched) lightReady() {
 	if _, err := sc.s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: sc.instanceID, SessionID: sc.groupID,
+		DialogID:  sc.s.dialogOf(sc.instanceID, sc.groupID),
 		Lifecycle: facade.SessionLifecycleReady, Scope: sc.scope,
 	}); err != nil {
 		logf("[chonkpilot-server] groupLightReady(%s): %v\n", sc.groupID, err)
@@ -709,6 +713,7 @@ func (sc *groupSched) finalReview() {
 	}
 	if _, err := sc.s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: sc.instanceID, SessionID: sc.groupID,
+		DialogID:  sc.s.dialogOf(sc.instanceID, sc.groupID),
 		Lifecycle: facade.SessionLifecycleFinished, Scope: sc.scope,
 	}); err != nil {
 		logf("[chonkpilot-server] groupFinalReview finish(%s): %v\n", sc.groupID, err)
@@ -909,16 +914,20 @@ func (s *Server) runGroupChatOpen(tc *turnCtx, mainAgent, scenarioID, llmRef, pr
 	if _, err := s.cfg.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: instanceID, Scope: scope,
 		SessionID: groupID, ParentSessionID: parentSession,
-		Kind: facade.SessionKindGroupChat, Lifecycle: facade.SessionLifecycleChatting,
+		DialogID: s.dialogOf(instanceID, parentSession),
+		Kind:     facade.SessionKindGroupChat, Lifecycle: facade.SessionLifecycleChatting,
 		Agent: mainAgent, ScenarioID: scenarioID, LLM: llmRef, Purpose: purpose,
 		Goal: goal, Playbook: playbook, Convergence: convergence,
 	}); err != nil {
 		return subchatToolErr("建群聊会话失败: " + err.Error()), true
 	}
+	// 一树一库：回填新群聊会话 → 对话映射（后续 turn / message 写入按其补 dialog_id）。
+	s.rememberDialog(instanceID, groupID, s.dialogOf(instanceID, parentSession))
 	title := groupID
 	if purpose != "" {
 		if _, err := s.cfg.SessionTitle(facade.SessionTitleRequest{
 			InstanceID: instanceID, SessionID: groupID, Title: purpose, Scope: scope,
+			DialogID: s.dialogOf(instanceID, parentSession),
 		}); err == nil {
 			title = purpose
 		}
@@ -978,6 +987,7 @@ func (s *Server) onSubchatContinue(_ context.Context, _ string, v *mq.Value) err
 	}
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: instanceID, SessionID: sessionID,
+		DialogID:  s.dialogOf(instanceID, sessionID),
 		Lifecycle: facade.SessionLifecycleChatting, Scope: s.cfgScope(instanceID),
 	}); err != nil {
 		v.Result = map[string]any{"error": err.Error()}

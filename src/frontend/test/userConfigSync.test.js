@@ -96,16 +96,17 @@ test('App.vue 订阅一次 useUserConfigSync（每个窗口都应用：含无 To
   assert.match(app, /useUserConfigSync\(\)/)
 })
 
-test('栏动作（主题勾选态）取自同一 composable（事件 → 本窗口状态同步）', () => {
+test('栏动作（主题切换）收口到 useTheme.applyTheme（persist:true 才回写 usr 配置）', () => {
   const ba = SRC('layout/barActions.js')
-  assert.match(ba, /import \{ useUserConfigSync \} from '\.\.\/composables\/useUserConfigSync'/)
-  assert.match(ba, /const \{ theme \} = useUserConfigSync\(\)/)
+  assert.match(ba, /import \{ useTheme \} from '\.\.\/composables\/useTheme'/)
+  assert.match(ba, /useTheme\(\)\.applyTheme\(themeId, \{ persist: true \}\)/)
 })
 
 test('composable：mq.on 订阅 + 应用 theme/locale；**不回写 DB**（防自激）', () => {
   const c = SRC('composables/useUserConfigSync.js')
   assert.match(c, /mq\.on\(EventNames\.userConfigChanged/)
-  assert.match(c, /data-theme/)
+  // THEME-1：主题应用走 useTheme（DOM/持久化唯一写点），事件驱动的应用一律 persist:false
+  assert.match(c, /applyTheme\(th, \{ persist: false \}\)/)
   assert.match(c, /applyLocale\(/)
   assert.ok(!/saveUIState|setLocale\(/.test(c), 'composable 不得回写 DB（save → changed → save 自激）')
 })

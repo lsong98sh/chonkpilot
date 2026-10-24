@@ -87,6 +87,7 @@
       "missingCommand": "This item has no command",
       "missingView": "No view selected for this command",
       "noDialogHost": "This view cannot be opened as a dialog (no dialog-host block in phase 1; use a preview tab)",
+      "noDrawerHost": "This view does not declare a drawer container",
       "drawerNeedId": "No drawer selected for this command",
       "barViewNotInTabs": "A bar-embedded view cannot be opened into a free-tab container",
       "unknownTarget": "Unresolvable command target (view is not registered)",
@@ -101,5 +102,30 @@
       "publishMq": "Publish MQ: {topic}",
       "publishMqEmpty": "Publish MQ (no topic)"
     }
+  },
+  "plugin": {
+    "title": "Plugins",
+    "manager": "Plugin Manager",
+    "empty": "No plugins discovered",
+    "status": "Status",
+    "version": "Version",
+    "enable": "Enable",
+    "disable": "Disable",
+    "config": "Configure",
+    "command": "Launch command",
+    "openView": "Open view",
+    "views": "Views",
+    "tools": "Tools",
+    "detail": "Details",
+    "refresh": "Refresh",
+    "pageMissing": "Plugin page unavailable ({id})",
+    "notReadyTitle": "Plugin not ready ({id})",
+    "notReadyStatusHint": "The plugin is still starting. The page will load automatically once it is ready.",
+    "notReadyAssetHint": "Plugin page assets are temporarily unavailable. Retrying automatically.",
+    "notReadyTimeoutHint": "The page took too long to load. The plugin may not be ready yet.",
+    "notReadyErrorHint": "The page failed to load. The plugin may not be ready yet.",
+    "notReadyStatus": "Status: {status}",
+    "autoRetryExhausted": "Automatic retry stopped after {n} attempts. Click Retry to try again.",
+    "retry": "Retry"
   }
 }

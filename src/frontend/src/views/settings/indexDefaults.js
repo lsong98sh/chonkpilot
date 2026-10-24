@@ -1,5 +1,6 @@
 /**
- * 设置页（CodegraphConfig / VftsConfig / FileTreeConfig）的**默认值**镜像。
+ * 设置页默认值镜像（FileTreeConfig 用；索引默认值镜像保留供插件/后续复用）。
+ * 〔UIREG-1〕codegraph / vfts 配置页已并入 codebase 插件，此处仅保留镜像常量。
  *
  * 来源 = 引擎/服务引用的共享实现（不落配置，配置为空时即用这些默认）：
  *   - 索引排除规则：`src/lib/ignore/ignore.go` builtinPatterns（内置强制，不可被 '!' 反选）

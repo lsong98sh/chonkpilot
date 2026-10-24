@@ -383,8 +383,8 @@ func sameToolAsync(a, b map[string]ToolAsyncOverride) bool {
 }
 
 // toolAsyncOverride 取某工具的有效覆盖（读锁保护）。
-// name = **契约名**（buildTool 的原语名 / ToolDoc.Name）；查找顺序：暴露名形态
-// （内嵌 self 节点 = self_<契约名>，即 UI 工具页写入的键）→ 契约名精确匹配。
+// name = **契约名**（buildTool 的原语名 / ToolDoc.Name）；查找顺序：
+// 历史暴露名 `<self_><契约名>`（P0a 前的 UI 存量键）→ 契约名精确匹配（P0a 后的现键）。
 // 未配置（含孤儿键/第三方工具键）→ ok=false（调用点维持契约现值）。
 func (c *Config) toolAsyncOverride(name string) (ToolAsyncOverride, bool) {
 	c.mu.RLock()

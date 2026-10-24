@@ -201,11 +201,10 @@ func Prj(instanceID string) (*DB, func(), error) {
 // PrjUsr 返回该 instance 的 prjusr 主库连接（会话/任务树/快照/个人运行态）。
 //
 //	dataDir 非空（CLI 临时形态）→ <dataDir>/chonkpilot.db（与 prj 同文件；会话写在临时目录，退出即弃）
-//	否则 → ~/.chonkpilot/data/<project-id>/chonkpilot.db
-//	       （project-id 取自 prj 库 config，首次自动生成，见 12-数据层）
+//	否则 → <workDir>/.chonkpilot/users/<OS 用户名>/chonkpilot.db（数据随项目目录走，见 49 DATAROOT-1）
 //
 // **常开语义（D-45 拍板）**：prjusr 层是会话/任务树运行态（高频写、独占本机数据根），
-// 保持进程内常开（连接缓存引用不释放）；仅 prj/usr 改短开。prj 短开取 project-id 后立即 release。
+// 保持进程内常开（连接缓存引用不释放）；仅 prj/usr 改短开。
 func PrjUsr(instanceID string) (*DB, error) {
 	// 已在册持有 → 直接返回：避免每次调用都 refs++ 再归还的额外锁开销，也保证 refs
 	// 稳定等于「持有该连接的实例数」（原始实现每次调用 refs++ 且从不释放 → 计数无界增长）。
@@ -216,21 +215,7 @@ func PrjUsr(instanceID string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	var path string
-	if bind.DataDir != "" {
-		path = ProjectPath(bind.WorkDir, bind.DataDir)
-	} else {
-		prj, release, err := Prj(instanceID)
-		if err != nil {
-			return nil, err
-		}
-		id, err := EnsureProjectID(prj)
-		release() // 短开：取 project-id 后立即释放（D-45）
-		if err != nil {
-			return nil, err
-		}
-		path = PrjUsrDBPath(id)
-	}
+	path := PrjUsrDBPath(bind.WorkDir, bind.DataDir)
 	db, release, err := OpenSharedLayer(path, LayerPrjUsr)
 	if err != nil {
 		return nil, err

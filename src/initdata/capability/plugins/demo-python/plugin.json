@@ -1,0 +1,48 @@
+{
+  "schema": "chonkpilot.plugin/v1",
+  "id": "demo-python",
+  "name": "Python 演示插件",
+  "version": "1.0.0",
+  "description": "插件规范全功能演示（Python 标准库实现）：通道 / MCP / 配置 / iframe RPC / 事件 / 私有数据 / 推送 / 状态 / 退出",
+  "icon": "terminal",
+  "publisher": "chonkpilot",
+  "product": false,
+  "runtime": {
+    "mode": "managed",
+    "exe": "python",
+    "args": ["-u", "plugin.py"],
+    "autostart": false,
+    "restart": { "backoff_ms": 1000, "max_backoff_ms": 20000, "max_fails": 2 },
+    "health": { "interval_ms": 15000, "timeout_ms": 3000, "fail_threshold": 3 },
+    "stop": { "grace_ms": 5000 }
+  },
+  "channel": { "transport": "uds", "addr": "" },
+  "mcp": {
+    "mode": "http",
+    "namespace": "-",
+    "hot_tools": ["demo_echo"],
+    "timeout_sec": 60,
+    "category": "demo",
+    "origin": "builtin"
+  },
+  "config": {
+    "scope": "plugin",
+    "fields": [
+      { "key": "greeting", "type": "string", "default": "hi from python", "label": "回显前缀" },
+      { "key": "echoLimit", "type": "integer", "default": 200, "min": 1, "max": 4000, "label": "回显最大字符数" },
+      { "key": "flaky", "type": "boolean", "default": false, "label": "故障演练（周期上报 degraded）" },
+      { "key": "secretToken", "type": "string", "secret": true, "label": "示例密钥（只掩码回显，演示 secret 字段）" }
+    ]
+  },
+  "ui": {
+    "rpc": ["echo", "stats", "llm", "bridge", "counter.reset"]
+  },
+  "permissions": {
+    "data": ["storage.self"],
+    "hooks": [],
+    "llm": {},
+    "session": [],
+    "ui": { "containers": ["preview", "tab", "drawer", "dialog", "statusbar"] },
+    "network": []
+  }
+}

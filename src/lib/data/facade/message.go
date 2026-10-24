@@ -88,6 +88,8 @@ type MessageView struct {
 type MessageAppendRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 写对话库；空 → 旧布局 prjusr）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// TurnID 归属轮次 id（必填）。
 	TurnID string `json:"turn_id"`
 	// Message 消息（领域形态；role=tool 的正文由实现侧规整为工具载荷）。
@@ -126,6 +128,8 @@ type MessageAppendResponse struct {
 type MessageLoadRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 读对话库）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// TurnID 轮次 id（必填）。
 	TurnID string `json:"turn_id"`
 	// Scope 实例数据根（可选；语义同上）。
@@ -142,6 +146,8 @@ type MessageLoadResponse struct {
 type MessageContextRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 轮次/消息/快照全部读对话库）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id（必填）。
 	SessionID string `json:"session_id"`
 	// ExcludeTurn 排除该轮次（空 = 不排除）。
@@ -166,6 +172,8 @@ type MessageContextResponse struct {
 type MessageContentRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 读对话库）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id（必填）。
 	SessionID string `json:"session_id"`
 	// Keys 取值键（`message:<消息id>` / `tool_call:<调用id>` / `tool_result:<调用id>`）。

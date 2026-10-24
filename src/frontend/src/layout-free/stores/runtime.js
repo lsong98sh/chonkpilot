@@ -175,6 +175,9 @@ export const useRuntimeStore = defineStore('runtime', {
       if (existing) {
         existing.viewKey = d.viewKey ?? existing.viewKey
         existing.instanceKey = d.instanceKey ?? existing.instanceKey
+        // 运行期抽屉（未在布局文档登记）允许命令自带标题/图标（插件动作按 view 标题打开抽屉）。
+        existing.label = d.label ?? existing.label
+        existing.icon = d.icon ?? existing.icon
         this.hint = `抽屉已激活：${d.drawerId}`
         return existing.drawerId
       }
@@ -182,6 +185,8 @@ export const useRuntimeStore = defineStore('runtime', {
         drawerId: d.drawerId,
         viewKey: d.viewKey ?? null,
         instanceKey: d.instanceKey ?? null,
+        label: d.label ?? '',
+        icon: d.icon ?? '',
       })
       this.hint = `抽屉已打开：${d.drawerId}`
       return d.drawerId

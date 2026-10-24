@@ -52,6 +52,8 @@ export const PREVIEW_TAB_TARGETS = [
   'status-memory',
   'status-compress',
   'status-index',
+  // 插件管理页（PLUGIN-1）：插件栏 → preview 功能页
+  'plugin-manager',
 ]
 
 /** 文件 / 会话逻辑目标（非注册表 view；供宿主侧命令使用，§3.5 表） */
@@ -108,6 +110,20 @@ export function normalizeCommand(cmd) {
 
 /** 自由页签区的落点（功能页类 → 预览区功能页；文件/会话 → 既有主题；注册表 layout 区块 → 机制层） */
 function tabsRoute(viewKey, instanceKey, targetLeafId) {
+  const def = definitionOf(viewKey)
+  // 插件 iframe view：若声明 preview 容器 → 预览区插件页（CodeView 自管页签）
+  if (def?.plugin && Array.isArray(def.containers) && def.containers.includes('preview')) {
+    return {
+      ok: true,
+      topic: EventNames.previewTabOpen,
+      payload: {
+        kind: 'plugin-page',
+        plugin: def.plugin.id,
+        page: def.plugin.view,
+        title: def.label,
+      },
+    }
+  }
   if (PREVIEW_TAB_TARGETS.includes(viewKey)) {
     return { ok: true, topic: EventNames.previewTabOpen, payload: { kind: viewKey } }
   }
@@ -147,9 +163,9 @@ export function resolveOpenView(cmd = {}, { hasDrawer } = {}) {
   const target = cmd.target || TARGET.AUTO
   const def = definitionOf(viewKey)
 
-  // ① 对话框目标：只接受 host:'dialog' 的注册区块（一期为空 → 拒绝并提示）
+  // ① 对话框目标：host:'dialog' 或动态 view 声明 containers 含 dialog
   if (target === TARGET.DIALOG) {
-    if (def && def.host === 'dialog') {
+    if (def && (def.host === 'dialog' || (Array.isArray(def.containers) && def.containers.includes('dialog')))) {
       return { ok: true, topic: LfEventNames.dialogOpen, payload: { viewKey, instanceKey, title: '' } }
     }
     return reject('noDialogHost')
@@ -160,6 +176,9 @@ export function resolveOpenView(cmd = {}, { hasDrawer } = {}) {
   if (isDrawerTarget) {
     const drawerId = cmd.drawerId || (target === TARGET.DRAWER ? '' : target)
     if (!drawerId) return reject('drawerNeedId')
+    if (def?.plugin && Array.isArray(def.containers) && !def.containers.includes('drawer')) {
+      return reject('noDrawerHost')
+    }
     return { ok: true, topic: LfEventNames.drawerOpen, payload: { drawerId, viewKey, instanceKey } }
   }
 

@@ -4,6 +4,8 @@
   "security": "Security",
   "context": "Context Management",
   "codeindex": "Code Index",
+  "codebase": "Codebase",
+  "codebase_unavailable": "The Codebase plugin is not enabled (or not ready): enable it on the Plugins page, then come back to configure it.",
   "codegraph": "CodeGraph Index",
   "vfts": "Vfts Full-Text Index",
   "history": "File History",

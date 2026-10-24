@@ -72,7 +72,7 @@ func TestQueueMergesSameSession(t *testing.T) {
 	}
 	emit := func() {
 		payload, _ := json.Marshal(map[string]any{
-			"instance_id": "ins-1", "work_dir": `C:\ws`, "session": "s1", "last_turn": "t1",
+			"instance_id": "ins-1", "work_dir": `C:\ws`, "session": "s1", "turn": "t1",
 		})
 		_ = bus.Emit(context.Background(), turnEndSubject, payload)
 	}

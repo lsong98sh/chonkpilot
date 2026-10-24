@@ -30,7 +30,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
@@ -64,23 +63,14 @@ func (s *Service) checkFactoryScenarios() {
 	}
 }
 
-// prjUsrCapRoot 解析实例的**项目私有级 capability 根**（打开 prj 库 → EnsureProjectID →
-// capfs.PrjUsrRoot）；解析不出（实例未登记 / prj 打不开 / project-id 缺失）→ 空串（不含该级）。
+// prjUsrCapRoot 解析实例的**项目私有级 capability 根**（<workDir>/.chonkpilot/users/<用户名>/capability）；
+// 实例未登记 / workDir 为空 → 空串（不含该级）。
 func (s *Service) prjUsrCapRoot(instanceID string, scope facade.Scope) string {
 	workDir, dataDir, ok := s.InstBindingFor(instanceID, scope)
-	if !ok {
+	if !ok || workDir == "" {
 		return ""
 	}
-	prj, release, err := kernel.OpenPrjLayer(workDir, dataDir)
-	if err != nil {
-		return ""
-	}
-	defer release()
-	id, err := data.EnsureProjectID(prj)
-	if err != nil || id == "" {
-		return ""
-	}
-	return capfs.PrjUsrRoot(id)
+	return capfs.PrjUsrRoot(workDir, dataDir)
 }
 
 // scenarioRootForWrite 解析写入目标级（app / user / project / prjusr 四级均可写）。

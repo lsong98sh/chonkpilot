@@ -11,31 +11,26 @@
  *   - 状态逻辑一律走 `useXxx` composable；**禁** `watch` / `watchEffect` 监听 props/store
  *     （本模块只有一条 `mq.on` 订阅，无隐式依赖）。
  *   - 订阅为**模块级单例**（每窗口一份 JS 上下文）：多处调用不重复注册。
- *   - 应用**不回写 DB** —— theme/locale 的持久化由用户操作（Toolbar / 设置页）承担；
+ *   - 应用**不回写 DB** —— theme/locale 的持久化由用户操作（栏动作 / 设置页）承担；
  *     事件驱动的回写会形成 save → changed → save 自激（见 `plugins/i18n.js` 的 `applyLocale`）。
+ *   - 主题的应用收口到 `composables/useTheme.js#applyTheme`（THEME-1，2026-10-23），
+ *     本模块只负责「事件 → 应用」，一律 `persist:false`。
  *
  * 纯逻辑（载荷解析/取值）在 `utils/userConfigApply.js`（可直跑单测）。
  */
-import { ref } from 'vue'
 import mq from '../utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { applyLocale } from '../plugins/i18n'
 import { configFromChangedEvent, themeLocaleFromConfig } from '../utils/userConfigApply.js'
 import { useUserConfig } from './useUserConfig.js'
-
-/** 本窗口当前生效主题（事件同步；Toolbar 的主题勾选态以此为准）。 */
-const theme = ref('light')
+import { applyTheme, useTheme } from './useTheme.js'
 
 let subscribed = false
 
 /** 应用一份 usr 配置到本窗口（幂等；仅动本窗口 DOM / i18n）。 */
 function applyConfig(cfg) {
   const { theme: th, locale: lc } = themeLocaleFromConfig(cfg)
-  if (th) {
-    theme.value = th
-    document.documentElement.setAttribute('data-theme', th)
-    try { localStorage.setItem('chonkpilot-theme', th) } catch (_) {}
-  }
+  if (th) applyTheme(th, { persist: false })
   if (lc) applyLocale(lc)
 }
 
@@ -53,9 +48,9 @@ function ensureSubscribed() {
 
 /**
  * 接线入口：确保本窗口已订阅 usr 配置下行广播。
- * @returns {{theme: import('vue').Ref<string>}} 本窗口生效主题（与事件同步）
+ * @returns {{theme: import('vue').Ref<string>}} 本窗口生效主题（与 useTheme 同源）
  */
 export function useUserConfigSync() {
   ensureSubscribed()
-  return { theme }
+  return { theme: useTheme().theme }
 }

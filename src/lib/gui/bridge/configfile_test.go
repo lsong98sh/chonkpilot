@@ -62,8 +62,8 @@ func TestSaveConfigFileBackupIntoDataDir(t *testing.T) {
 	}
 }
 
-// TestSaveConfigFileBackupIntoPrjUsrRoot B 方案（desktop 缺省 --data-dir）：prjusr 根 =
-// `~/.chonkpilot/data/<prj-id>/`（main 经 data.PrjUsrDir 解析后注入，≠ <workDir>/.chonkpilot）
+// TestSaveConfigFileBackupIntoPrjUsrRoot desktop 缺省 --data-dir：prjusr 根 =
+// `<workDir>/.chonkpilot/users/<OS 用户名>/`（main 经 data.PrjUsrDir 解析后注入，≠ <workDir>/.chonkpilot）
 // → 自动备份随 prjusr 根落 <prjusr 根>/backup/（个人数据不进项目目录，[24 §3.2] MW-8）。
 func TestSaveConfigFileBackupIntoPrjUsrRoot(t *testing.T) {
 	workDir := t.TempDir()

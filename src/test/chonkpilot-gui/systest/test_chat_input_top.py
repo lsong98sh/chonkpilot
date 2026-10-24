@@ -4,7 +4,7 @@
 - 任务进度条：toolProgress → "Running task x/y (n failed)"
 - 后台任务完成通知提示条（toolNotify → toast）
 - 会话忙碌期间通知暂存，turn 结束后统一弹出
-- 回复未完成（llm-complete incomplete）→ 自动续写（发送"继续"）
+- 回复未完成（llm-complete incomplete）→ 前端**不**静默续写（RETRY-2：续写归后端宽限期）
 """
 import json
 import os
@@ -93,17 +93,20 @@ def main():
         ts = toasts(gui)
         c.check("IT3 忙碌暂存 → turn 后弹出", bool(busyQueued) and any('忙碌期间的通知' in t for t in ts), repr(ts[:3]))
 
-        # IT4 回复未完成（incomplete）→ 自动续写（发"继续"）
+        # IT4 回复未完成（incomplete）→ 前端不再静默续写（RETRY-2，2026-10-17 口径）
+        # 自动续写改由后端按宽限期执行（llm-interrupted）；前端只在错误/截断终态保留手动入口，
+        # 不得自行发「继续」。故断言：最后一条 user 气泡仍是原消息（无静默续写）。
         J(gui, "window.mq.emit('message-send', {sessionId: %s, text: '写一篇长文'}); 'ok'" % json.dumps(sid))
         time.sleep(0.5)
         emit_remote(gui, 'llm-receive', {'type': 'text', 'text': '这是被截断的回复内容。', 'session': sid})
         time.sleep(0.3)
         emit_remote(gui, 'llm-complete', {'session': sid, 'status': 'incomplete'})
-        time.sleep(1.2)  # autoContinue 400ms + 渲染
+        time.sleep(1.2)  # 旧实现 autoContinue 400ms 会发「继续」；留足时间证明本次不再发生
         lastUser = J(gui, """(()=>{const ms=Array.from(document.querySelectorAll('.message-item.user .message-content'));const last=ms[ms.length-1];return last?last.textContent.trim():''})()""")
-        c.check("IT4 未完成自动续写（发送继续）", '继续' in lastUser or 'continue' in lastUser.lower(), repr(lastUser[:30]))
+        c.check("IT4 未完成不静默续写（末条 user 仍为原消息）",
+                lastUser == '写一篇长文', repr(lastUser[:40]))
 
-        # 清理：结束自动续写产生的 turn
+        # 清理：补终结态，避免残留 running turn 影响异常断言
         emit_remote(gui, 'llm-complete', {'session': sid, 'status': 'completed'})
         time.sleep(0.5)
 

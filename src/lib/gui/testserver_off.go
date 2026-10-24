@@ -46,3 +46,6 @@ func (s *testServer) UnregisterChat(windowID string) {}
 
 // InjectConsoleCapture 兜底空实现。
 func (s *testServer) InjectConsoleCapture(chromium interface{ Init(script string) }) {}
+
+// SetQuit 兜底空实现。
+func (s *testServer) SetQuit(fn func()) {}

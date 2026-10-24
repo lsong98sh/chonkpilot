@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-chat"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-chat"
 	"github.com/lsong98sh/chonkpilot-router"
 )
 
@@ -130,14 +130,18 @@ func (a *chatTurnStore) CommitInbox(_ context.Context, inboxID string, msg chat.
 	if b, err := json.Marshal(ChatMessageToData(msg)); err == nil {
 		_ = json.Unmarshal(b, &m)
 	}
+	payload := map[string]any{
+		"inbox_id":   inboxID,
+		"turn_id":    a.turnID,
+		"session_id": a.sessionID,
+		"msg":        m,
+	}
+	if dlg := a.s.dialogOf(a.instanceID, a.sessionID); dlg != "" {
+		payload["dialog_id"] = dlg
+	}
 	_, err := dataRequest(a.s.bus, msgkeys.TopicDataInboxCommit, map[string]any{
 		"instance_id": a.instanceID,
-		"data": map[string]any{
-			"inbox_id":   inboxID,
-			"turn_id":    a.turnID,
-			"session_id": a.sessionID,
-			"msg":        m,
-		},
+		"data":        payload,
 	})
 	return err
 }

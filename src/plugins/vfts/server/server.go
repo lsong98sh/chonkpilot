@@ -139,6 +139,16 @@ func RegisterTools(srv *mcp.Server) error {
 	return nil
 }
 
+// Call 进程内直调一个已登记工具（组合插件 / 插件配置页复用；不经过 MCP 传输）。
+func Call(ctx context.Context, name string, args map[string]any) (any, error) {
+	for _, spec := range toolSpecs {
+		if spec.Name == name {
+			return spec.Fn(ctx, args)
+		}
+	}
+	return nil, fmt.Errorf("unknown tool: %s", name)
+}
+
 // ToolNames 工具清单（自检/展示用）。
 func ToolNames() []string {
 	out := make([]string, 0, len(toolSpecs))

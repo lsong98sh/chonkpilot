@@ -45,6 +45,12 @@ export async function resolve(specifier, context, nextResolve) {
 }
 
 export async function load(url, context, nextLoad) {
+  // 组件链路里的 `import x from './y.json'`（如 `plugins/i18n.js`）：Node 要求 import 属性，
+  // 打包器不要求 → 这里把 JSON 编成 ESM 默认导出，保证 node:test 能直载真实组件。
+  if (url.endsWith('.json')) {
+    const raw = readFileSync(fileURLToPath(url), 'utf8').replace(/^\uFEFF/, '')
+    return { format: 'module', source: `export default ${raw}`, shortCircuit: true }
+  }
   if (!url.endsWith('.vue')) return nextLoad(url, context)
   if (cache.has(url)) return { format: 'module', source: cache.get(url), shortCircuit: true }
 

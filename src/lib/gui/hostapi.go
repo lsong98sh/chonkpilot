@@ -9,6 +9,7 @@
 package gui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -41,6 +42,14 @@ type EnvConfig struct {
 	// DataOffline = 本地无数据服务（--no-server UI 注入测试模式）：置位后桥 data-* 快速失败
 	// 返回空信封，不经总线等 3s 超时。远程薄壳（flash）**非**此处（其 data-* 经 UDS 转发）。
 	DataOffline bool
+	// PluginAsset 向**已就绪插件**请求其自持 webui 资源（`GET /plugins/<id>/<path>`，
+	// PLUGIN-UI-1）；nil = 未启用插件平台（该路由恒 404）。
+	PluginAsset func(ctx context.Context, id, path string) ([]byte, bool, error)
+	// PluginAssetVersion 返回插件资源缓存版本分量（版本 + 重启代次）；nil = 空（不失效）。
+	PluginAssetVersion func(id string) string
+	// PluginAction 把一条 UI 动作透传给**已就绪插件**（`POST /plugins/<id>/api/<action>`，
+	// PLUGIN-UI-1 第二段）；nil = 未启用插件平台（该路由恒 404）。
+	PluginAction func(ctx context.Context, id, action string, payload map[string]any) (any, error)
 }
 
 // Env 是窗口工厂的进程级装配上下文（host 经 NewEnv 构造后单向调用）。
@@ -62,6 +71,8 @@ func NewEnv(cfg EnvConfig) *Env {
 		dataOffline:    cfg.DataOffline,
 		windows:        newWindowRegistry(),
 		projects:       map[string]*projectCtx{},
+		pluginAssets:   newPluginAssetHandler(cfg.PluginAsset, cfg.PluginAssetVersion),
+		pluginActions:  newPluginActionHandler(cfg.PluginAction),
 	}
 }
 
@@ -231,6 +242,14 @@ func (e *Env) HasTestServer() bool { return e.testServer() != nil }
 
 // TestServer 是 --test-port 测试通道句柄（host 收尾时 Shutdown）。
 type TestServer struct{ *testServer }
+
+// SetQuit 挂上优雅退出回调（`POST /quit` 使用）：与托盘「退出」同路径收尾，
+// 供 systest 收尾替代 taskkill /F（后者不摘托盘图标 → 残影堆积）。
+func (t *TestServer) SetQuit(fn func()) {
+	if t != nil && t.testServer != nil {
+		t.testServer.SetQuit(fn)
+	}
+}
 
 // AttachTestServer 为主窗口接线 --test-port 测试通道（在 onWired 内、导航前调用）。
 // 逐条等价于改前 runMain 的主窗口 onWired：建通道 → 起步监听 → 绑定句柄/销毁回调/handler →

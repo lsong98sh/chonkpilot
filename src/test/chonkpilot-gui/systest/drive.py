@@ -49,7 +49,8 @@ class GUIClient:
 
     port=None → 每次取空闲端口（动态端口，避免与其它套件/机器上固定端口冲突）；
     start() 走 harness：自起即登记，`stop()` / 进程退出（atexit）/ Ctrl+C（信号）
-    三条路径都会 taskkill /F /T 整棵进程树，不留 WebView2 残留。
+    三条路径都会回收整棵进程树（GUI 实例优先 `POST /quit` 优雅退出，超时才 taskkill /F /T），
+    不留 WebView2 残留。
     """
 
     # wait_ready 与 harness.start_gui 的 ready_timeout 缺省（90s）对齐（G-61）：30s 在批跑/机器繁忙时

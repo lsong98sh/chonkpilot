@@ -16,7 +16,7 @@
   "path": {
     "exeDir": "Application install directory (directory of the executable)",
     "userDir": "User data root ~/.chonkpilot",
-    "dataDir": "Current project data directory ~/.chonkpilot/data/<project id>",
+    "dataDir": "Current project data directory <workDir>/.chonkpilot/users/<OS user>",
     "workDir": "Current project working directory"
   },
   "env": {

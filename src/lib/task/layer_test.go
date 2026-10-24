@@ -745,6 +745,33 @@ func TestParentCycleBFSNoHang(t *testing.T) {
 	}
 }
 
+// TestUpsertCarriesDialogID（P3-4b）：注入 DialogOf → upsert 载荷带 `dialog_id`；
+// 未注入 / 解析为空 → 不写键（旧布局载荷逐字节不变）。
+func TestUpsertCarriesDialogID(t *testing.T) {
+	l, fake := newLayerWith(t, Options{DialogOf: func(instanceID, sessionID string) string {
+		if instanceID == "ins-test" && sessionID == "top-1" {
+			return "dlg-1"
+		}
+		return ""
+	}})
+	if err := l.Apply(subjTaskStarted, nodePayload(nil)); err != nil {
+		t.Fatalf("Apply(started): %v", err)
+	}
+	if row := fake.row("tk-1"); sval(row["dialog_id"]) != "dlg-1" {
+		t.Fatalf("upsert 载荷缺 dialog_id: %+v", row)
+	}
+
+	l2, fake2 := newLayer(t)
+	if err := l2.Apply(subjTaskStarted, nodePayload(nil)); err != nil {
+		t.Fatalf("Apply(started) 无解析器: %v", err)
+	}
+	if row := fake2.row("tk-1"); row != nil {
+		if _, has := row["dialog_id"]; has {
+			t.Fatalf("未注入 DialogOf 不应写 dialog_id: %+v", row)
+		}
+	}
+}
+
 // TestBuildReportedNodeRejectsSelfParent：完成回报建节点时 parent == task_id 自环被拒绝
 // （按顶层节点处理，不建自引用行）。
 func TestBuildReportedNodeRejectsSelfParent(t *testing.T) {

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Python 演示插件</title>
+  <link rel="stylesheet" href="/shared/ck-theme.css" />
+  <link rel="stylesheet" href="/themes.css" />
+  <script src="/shared/ck-theme.js"></script>
+  <style>
+    body { margin: 0; padding: 16px 18px; font: 13px/1.5 var(--ck-font-sans); color: var(--ck-text); background: var(--ck-bg); }
+    h1 { font-size: 16px; margin: 0 0 4px; } h2 { font-size: 13px; margin: 0 0 10px; }
+    p.sub { margin: 0 0 16px; color: var(--ck-text-muted); font-size: 12px; }
+    .card { border: 1px solid var(--ck-border); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+    .row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    label { font-weight: 600; font-size: 12px; }
+    input[type=text], input[type=number] { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--ck-border); border-radius: 6px; font: inherit; background: transparent; color: inherit; }
+    .inline { display: flex; align-items: center; gap: 8px; }
+    .hint { color: var(--ck-text-muted); font-size: 11px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    button { padding: 6px 12px; border-radius: 6px; border: 1px solid var(--ck-border); background: var(--ck-surface); color: inherit; font: inherit; cursor: pointer; }
+    button.primary { background: var(--ck-accent); border-color: var(--ck-accent); color: var(--ck-accent-fg); }
+    pre { margin-top: 10px; padding: 10px; max-height: 240px; overflow: auto; border-radius: 6px; background: var(--ck-surface); font-size: 11px; }
+    .msg { font-size: 12px; white-space: pre-wrap; margin-top: 8px; }
+    .msg.err { color: var(--ck-danger); } .msg.ok { color: var(--ck-success); }
+  </style>
+</head>
+<body>
+  <h1>Python 演示插件</h1>
+  <p class="sub">
+    演示规范全链路：通道握手 / MCP 工具 / 配置与密钥掩码 / iframe RPC / 事件订阅 / 私有 KV / 反向推送 / 状态上报 / 优雅退出。
+    源码见 <code>capability/plugins/demo-python/plugin.py</code>。
+  </p>
+
+  <div class="card">
+    <h2>配置（secret 只显示掩码）</h2>
+    <div class="grid" id="form"></div>
+    <div class="actions" style="margin-top:6px">
+      <button class="primary" id="save">保存</button>
+      <button id="reset">恢复默认</button>
+      <button id="stats">读取统计</button>
+      <button id="resetCounter">清零计数</button>
+    </div>
+    <div class="hint" id="dims" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <h2>调用演示（iframe → 插件 RPC）</h2>
+    <div class="inline">
+      <input type="text" id="echoText" value="hello" autocomplete="off" />
+      <button id="echo">调用 echo</button>
+    </div>
+    <pre id="out" hidden></pre>
+  </div>
+
+  <div class="card">
+    <h2>LLM 桥（插件 → 宿主 plugin/v1/llm.step）</h2>
+    <div class="hint">插件不持有 apiKey：提示词经插件通道（UDS 或 TCP）转发给宿主 LLM。</div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="llmPrompt" value="用一句话解释什么是 MCP" autocomplete="off" />
+    </div>
+    <div class="actions">
+      <button id="llmRun">调用 LLM</button>
+      <button id="bridgeInfo">查看通道</button>
+    </div>
+    <pre id="llmOut" hidden></pre>
+  </div>
+
+  <div class="card">
+    <h2>插件推送（plugin.publish → iframe）</h2>
+    <div class="hint">事件独立到达，无需轮询；启动、改配置、会话结束都会推送。</div>
+    <pre id="events" style="max-height:180px"></pre>
+  </div>
+
+  <div id="msg" class="msg"></div>
+
+  <script src="/plugin-ui/_sdk/plugin.js"></script>
+  <script>
+    const form = document.getElementById('form');
+    const msg = document.getElementById('msg');
+    const out = document.getElementById('out');
+    const events = document.getElementById('events');
+    let fields = [];
+
+    function show(t, err) { msg.textContent = t || ''; msg.className = 'msg ' + (t ? (err ? 'err' : 'ok') : ''); }
+    function dump(v) { out.hidden = false; out.textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); }
+    async function rpc(method, params) {
+      const r = await ckPlugin.call('rpc', { method, params: params || {} });
+      return r && Object.prototype.hasOwnProperty.call(r, 'result') ? r.result : r;
+    }
+    function render(fs, values) {
+      fields = fs || []; form.innerHTML = '';
+      for (const f of fields) {
+        const wrap = document.createElement('div'); wrap.className = 'row';
+        const lab = document.createElement('label'); lab.textContent = f.label || f.key; wrap.appendChild(lab);
+        let input;
+        if (f.type === 'boolean') {
+          input = document.createElement('input'); input.type = 'checkbox'; input.checked = !!values[f.key];
+        } else {
+          input = document.createElement('input');
+          input.type = f.type === 'integer' ? 'number' : 'text';
+          input.value = values[f.key] == null ? '' : String(values[f.key]);
+          if (f.min != null) input.min = f.min;
+          if (f.max != null) input.max = f.max;
+          input.autocomplete = 'off';
+        }
+        input.id = 'f_' + f.key;
+        wrap.appendChild(input); form.appendChild(wrap);
+        if (f.secret) {
+          const h = document.createElement('div'); h.className = 'hint';
+          h.textContent = 'secret：保存时留空或保留掩码表示不修改';
+          wrap.appendChild(h);
+        }
+      }
+    }
+    function collect() {
+      const res = {};
+      for (const f of fields) {
+        const el = document.getElementById('f_' + f.key);
+        if (!el) continue;
+        if (f.type === 'boolean') res[f.key] = !!el.checked;
+        else if (f.type === 'integer') res[f.key] = Number(el.value || 0);
+        else res[f.key] = el.value;
+      }
+      return res;
+    }
+    async function refresh() {
+      const v = await rpc('stats');
+      const s = (v && v.stats) || {};
+      document.getElementById('dims').textContent =
+        '事件 ' + (s.events || 0) + ' · 工具调用 ' + (s.tools || 0) + ' · RPC ' + (s.rpc || 0) +
+        ' · counter.demo=' + ((s.counters || {}).demo || 0);
+      dump(v);
+    }
+    async function load() {
+      try {
+        const r = await ckPlugin.call('config.get');
+        render(r.fields, r.values);
+        await refresh();
+      } catch (e) { show('加载失败: ' + e.message, true); }
+    }
+    document.getElementById('save').onclick = async () => {
+      try { await ckPlugin.call('config.set', { values: collect() }); await load(); show('已保存（插件会收到 plugin.config.changed 并热重载）。'); }
+      catch (e) { show('保存失败: ' + e.message, true); }
+    };
+    document.getElementById('reset').onclick = async () => {
+      try { await ckPlugin.call('config.reset'); await load(); show('已恢复默认。'); }
+      catch (e) { show('恢复失败: ' + e.message, true); }
+    };
+    document.getElementById('stats').onclick = refresh;
+    document.getElementById('resetCounter').onclick = async () => {
+      try { dump(await rpc('counter.reset', { key: 'demo' })); await refresh(); show('已清零。'); }
+      catch (e) { show('清零失败: ' + e.message, true); }
+    };
+    document.getElementById('echo').onclick = async () => {
+      try {
+        const text = document.getElementById('echoText').value;
+        dump(await rpc('echo', { text })); show('RPC 成功。'); await refresh();
+      } catch (e) { show('RPC 失败: ' + e.message, true); }
+    };
+
+    document.getElementById('llmRun').onclick = async () => {
+      const prompt = document.getElementById('llmPrompt').value;
+      const box = document.getElementById('llmOut');
+      box.hidden = false; box.textContent = '调用中…';
+      try {
+        const v = await rpc('llm', { prompt });
+        box.textContent = (v && v.text) || JSON.stringify(v);
+        await refresh();
+      } catch (e) { box.textContent = '失败: ' + e.message; }
+    };
+    document.getElementById('bridgeInfo').onclick = async () => {
+      try {
+        const v = await rpc('bridge');
+        dump(v); show('当前通道：' + ((v && v.transport) || '-'));
+      } catch (e) { show('读取失败: ' + e.message, true); }
+    };
+
+    if (ckPlugin.onEvent) {
+      ckPlugin.onEvent('demo-event', (payload) => {
+        events.textContent = JSON.stringify(payload) + '\n' + events.textContent;
+      });
+    }
+    load();
+  </script>
+</body>
+</html>

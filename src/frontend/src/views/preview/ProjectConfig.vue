@@ -7,11 +7,17 @@
       <template #context>
         <ContextConfig />
       </template>
-      <template #codegraph>
-        <CodegraphConfig />
-      </template>
-      <template #vfts>
-        <VftsConfig />
+      <template #codebase>
+        <!-- 代码知识库（codegraph + vfts）配置页 = codebase 插件的 ui.views.config（iframe 承载）。
+             原两个重复设置页已删除（UIREG-1）；容器复用插件 view 机制。 -->
+        <PluginPageHost
+          v-if="codebaseView"
+          :plugin-id="CODEBASE_PLUGIN_ID"
+          :page-id="CODEBASE_CONFIG_VIEW_ID"
+          :entry="codebaseView.entry || ''"
+          :title="codebaseView.title || ''"
+        />
+        <div v-else class="plugin-missing">{{ t('projectConfig.codebase_unavailable') }}</div>
       </template>
       <template #history>
         <HistoryConfig />
@@ -36,10 +42,10 @@
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Tabs } from '../../components/ui'
+import PluginPageHost from '../../components/plugin/PluginPageHost.vue'
+import { usePlugins } from '../../composables/usePlugins'
 import SecurityConfig from '../settings/SecurityConfig.vue'
 import ContextConfig from '../settings/ContextConfig.vue'
-import CodegraphConfig from '../settings/CodegraphConfig.vue'
-import VftsConfig from '../settings/VftsConfig.vue'
 import HistoryConfig from '../settings/HistoryConfig.vue'
 import FileTreeConfig from '../settings/FileTreeConfig.vue'
 import GroupChatConfig from '../settings/GroupChatConfig.vue'
@@ -48,18 +54,27 @@ import ConfigIOPage from '../config/SettingsConfigIOPage.vue'
 
 const { t } = useI18n()
 
-// 外部页签定位（可选）：`innerTab` = 目标页签名（如 'codegraph' / 'vfts'）；
+// 代码库插件（codegraph/vfts 配置）承载：与「插件」页打开的是同一个 iframe view
+// （`plugin:<id>:<view>`），此处直接复用 `PluginPageHost`，不新造容器。
+const CODEBASE_PLUGIN_ID = 'codebase'
+const CODEBASE_CONFIG_VIEW_ID = 'config'
+const { pluginView } = usePlugins()
+const codebaseView = computed(() => pluginView(CODEBASE_PLUGIN_ID, CODEBASE_CONFIG_VIEW_ID))
+
+// 外部页签定位（可选）：`innerTab` = 目标页签名（如 'codebase' / 'history'）；
 // `innerTabNonce` 每次请求递增 → 只在「新请求」时生效（无需 watch），缺省/非法 → 落默认页签。
+// 旧页签名 'codegraph' / 'vfts' 已合并为 'codebase'（UIREG-1）→ 兼容映射，旧发送方不必改。
 const props = defineProps({
   innerTab: { type: String, default: '' },
   innerTabNonce: { type: Number, default: 0 },
 })
 
+const LEGACY_TAB_ALIAS = { codegraph: 'codebase', vfts: 'codebase' }
+
 const tabsConfig = computed(() => [
   { label: t('projectConfig.security'), name: 'security' },
   { label: t('projectConfig.context'), name: 'context' },
-  { label: t('projectConfig.codegraph'), name: 'codegraph' },
-  { label: t('projectConfig.vfts'), name: 'vfts' },
+  { label: t('projectConfig.codebase'), name: 'codebase' },
   { label: t('projectConfig.history'), name: 'history' },
   { label: t('projectConfig.filetree'), name: 'filetree' },
   // SUBCHAT-3 阶段 E：群聊最小配置项（最大轮次；群聊窗口 UI 属阶段 G）
@@ -78,8 +93,9 @@ const selection = ref('')
 const appliedNonce = ref(0)
 const activeTab = computed({
   get() {
-    if (props.innerTabNonce > appliedNonce.value && TAB_NAMES.value.includes(props.innerTab)) {
-      return props.innerTab
+    const requested = LEGACY_TAB_ALIAS[props.innerTab] || props.innerTab
+    if (props.innerTabNonce > appliedNonce.value && TAB_NAMES.value.includes(requested)) {
+      return requested
     }
     return selection.value
   },
@@ -113,5 +129,10 @@ const activeTab = computed({
 .project-config-panel :deep(.b-tag),
 .project-config-panel :deep(.b-checkbox) {
   font-size: 13px;
+}
+.plugin-missing {
+  padding: 16px 4px;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 </style>

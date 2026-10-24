@@ -87,6 +87,7 @@
       "missingCommand": "该条目未配置命令",
       "missingView": "命令未选择 view",
       "noDialogHost": "该 view 不支持以对话框方式打开（一期无对话框宿主区块，配置页请走功能页）",
+      "noDrawerHost": "该 view 未声明抽屉容器，不能打开到抽屉",
       "drawerNeedId": "命令未选择抽屉",
       "barViewNotInTabs": "栏内嵌 view 不能打开到自由 tab 容器",
       "unknownTarget": "命令目标无法解析（view 未在注册表中）",
@@ -101,5 +102,30 @@
       "publishMq": "发布 MQ：{topic}",
       "publishMqEmpty": "发布 MQ（未填写主题）"
     }
+  },
+  "plugin": {
+    "title": "插件",
+    "manager": "插件管理",
+    "empty": "尚未发现插件",
+    "status": "状态",
+    "version": "版本",
+    "enable": "启用",
+    "disable": "禁用",
+    "config": "配置",
+    "command": "启动命令",
+    "openView": "打开视图",
+    "views": "视图",
+    "tools": "工具",
+    "detail": "详情",
+    "refresh": "刷新",
+    "pageMissing": "插件页面不可用（{id}）",
+    "notReadyTitle": "插件未就绪（{id}）",
+    "notReadyStatusHint": "插件仍在启动中，就绪后会自动加载页面。",
+    "notReadyAssetHint": "插件页资源暂不可用，稍后会自动重试。",
+    "notReadyTimeoutHint": "页面加载超时，插件可能尚未就绪。",
+    "notReadyErrorHint": "页面加载失败，插件可能尚未就绪。",
+    "notReadyStatus": "当前状态：{status}",
+    "autoRetryExhausted": "自动重试已达 {n} 次，可点击「重试」手动再试。",
+    "retry": "重试"
   }
 }

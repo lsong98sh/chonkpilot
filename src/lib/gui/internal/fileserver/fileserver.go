@@ -180,6 +180,12 @@ func withinDir(target, root string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
+// MIMEByExtension 返回常见 Web 扩展名的 Content-Type（宿主统一 MIME 表）。
+//
+// 复用方：静态文件服务（`/show/`）与插件资源路由（`/plugins/<id>/<path>`，PLUGIN-UI-1）——
+// 插件**不决定** MIME，一律由宿主按扩展名推断。
+func MIMEByExtension(ext string) string { return mimeByExtension(ext) }
+
 // mimeByExtension returns a MIME type for common web file extensions.
 func mimeByExtension(ext string) string {
 	switch strings.ToLower(ext) {

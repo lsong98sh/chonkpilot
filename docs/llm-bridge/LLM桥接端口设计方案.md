@@ -1,6 +1,7 @@
 # LLM 桥接端口设计方案（独立稿）
 
-> 状态：✅ **已实施（步骤 1–8，2026-10-16 / 步骤 8 于 2026-10-19）**（见 §7）· **独立文档 · 未并入 `docs/spec` 架构**（spec 侧订正已按 §7 步骤 4/5/7/8 落）
+> ⚠️ **部分作废（🆕 2026-10-24；BRIDGE-3）**：本文以「固定 TCP 端口 `127.0.0.1:5669`」为核心入口的描述（§1 目标 1、§2 流程图、§3.1 监听、§7 步骤 8 的 `--llm-bridge-addr` / `CHONK_LLM_BRIDGE_ADDR`）**已废止** —— 桥入口现为 **UDS-only**（默认 `%LOCALAPPDATA%\chonkpilot\llm.sock`，socket `0600` / 父目录 `0700`；`--llm-bridge-uds` / `CHONK_LLM_UDS`，`off` / `-` 关闭），**不再监听任何 TCP 端口**；需要 TCP 的客户端自建 proxy（demo 见 `capability/plugins/demo-python/`）。**仍然有效**的部分：路由 `/llm/<name>/<rest>`、字节级透传、覆盖鉴权头、只读 `ResolveBridgeTarget`、零新增 MQ 主题。权威现状见 [62 §3](../spec/60-reference/62-命令行与参数.md) · [19 §8.7](../spec/10-architecture/19-多租户服务端形态.md) · [49 BRIDGE-3](../spec/40-roadmap/49-待实现项.md)。
+> 状态：✅ **已实施（步骤 1–8，2026-10-16 / 步骤 8 于 2026-10-19）**（见 §7）· **独立文档 · 未并入 `docs/spec` 架构**（spec 侧订正已按 §7 步骤 4/5/7/8 落）；🆕 **2026-10-24 入口由 TCP 改 UDS（BRIDGE-3）**
 > 日期：2026-10-16
 > 关联（**spec**）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md)（登记项 `BRIDGE-1`）· [21-llm-server](../spec/20-modules/21-llm-server.md) · [19-多租户服务端形态](../spec/10-architecture/19-多租户服务端形态.md) · [62-命令行与参数](../spec/60-reference/62-命令行与参数.md) · [2D-router](../spec/20-modules/2D-router.md) · [11-MQ与消息](../spec/10-architecture/11-MQ与消息.md) · [50-测试体系](../spec/50-testing/50-测试体系.md)
 > 代码目录（拟）：`src/lib/llm/llmbridge/`（**新增**）· `src/lib/llm/server/server.go`（导出只读查询）· `src/server/main.go`（装配）

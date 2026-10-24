@@ -365,7 +365,7 @@ func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]an
 	if node.Purpose == "" && purpose != "" {
 		node.Purpose = purpose // 注入通道兜底（args 内展示名已被剥离）；name/simplified 取值口径不变
 	}
-	node.args = args
+	node.SetToolArgs(args)
 	return s.tasks.start(node)
 }
 

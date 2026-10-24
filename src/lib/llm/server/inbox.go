@@ -50,20 +50,24 @@ type inboxListReq struct {
 
 // inboxAppend 写入一条待处理发送，返回 id。
 func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (string, error) {
+	payload := map[string]any{
+		"session":         req.SessionID,
+		"turn_id":         req.TurnID,
+		"type":            req.Type,
+		"llm":             req.LLM,
+		"content":         req.Content,
+		"think":           req.Think,
+		"effort":          req.Effort,
+		"scenario_id":     req.ScenarioID,
+		"idempotency_key": req.IdempotencyKey,
+		"source":          req.Source,
+	}
+	if dlg := s.dialogOf(instanceID, req.SessionID); dlg != "" {
+		payload["dialog_id"] = dlg
+	}
 	res, err := dataRequest(s.bus, "data-inbox-append", map[string]any{
 		"instance_id": instanceID,
-		"data": map[string]any{
-			"session":         req.SessionID,
-			"turn_id":         req.TurnID,
-			"type":            req.Type,
-			"llm":             req.LLM,
-			"content":         req.Content,
-			"think":           req.Think,
-			"effort":          req.Effort,
-			"scenario_id":     req.ScenarioID,
-			"idempotency_key": req.IdempotencyKey,
-			"source":          req.Source,
-		},
+		"data":        payload,
 	})
 	if err != nil {
 		return "", err
@@ -73,9 +77,13 @@ func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (
 
 // inboxList 读 inbox 项（status 缺省 = pending，按 created_at 升序）。
 func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.InboxItem, error) {
+	payload := map[string]any{"session": sessionID, "status": status}
+	if dlg := s.dialogOf(instanceID, sessionID); dlg != "" {
+		payload["dialog_id"] = dlg
+	}
 	res, err := dataRequest(s.bus, "data-inbox-list", map[string]any{
 		"instance_id": instanceID,
-		"data":        map[string]any{"session": sessionID, "status": status},
+		"data":        payload,
 	})
 	if err != nil {
 		return nil, err
@@ -108,9 +116,16 @@ func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.Inbox
 // inboxUpdate 更新 inbox 项（空字段 = 不改；content 非空 = 就地覆盖正文，
 // 供 NEXTRUN-1 §3.5「同轮多次调用只保留最后一条」）。
 func (s *Server) inboxUpdate(instanceID, id, status, typ, content string) error {
+	payload := map[string]any{"id": id, "status": status, "type": typ, "content": content}
+	// 一树一库：按内存索引回查该 inbox 项所属会话 → 补 dialog_id（未知则不写键）。
+	if item, ok := s.inboxLookup(id); ok {
+		if dlg := s.dialogOf(instanceID, item.SessionID); dlg != "" {
+			payload["dialog_id"] = dlg
+		}
+	}
 	_, err := dataRequest(s.bus, "data-inbox-update", map[string]any{
 		"instance_id": instanceID,
-		"data":        map[string]any{"id": id, "status": status, "type": typ, "content": content},
+		"data":        payload,
 	})
 	return err
 }

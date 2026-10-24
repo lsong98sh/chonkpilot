@@ -60,6 +60,7 @@ SCRIPTS = [
     "test_screenshot.py",
     "test_chat_input_top.py",
     "test_preview.py",
+    "test_plugin_manager.py",
     "test_tool_retry.py",
 ]
 

@@ -2,8 +2,9 @@
  * 自由布局容器 · 主题映射层（UILAYOUT-1 §3.10 · §7 P3④）。
  *
  * 机制层（`layout-free/`）自带一套 `--lf-*` 变量（standalone 期默认值，见
- * `layout-free/styles/global.css`）；并入主工程后由**本文件把它映射到宿主既有 token**
- * （`assets/styles/variables.css` 的 `--bg-primary` / `--accent` / `--border` …）——
+ * `layout-free/styles/global.css`）；并入主工程后由**本文件把它映射到宿主语义别名 `--ck-*`**
+ * （THEME-1，2026-10-23：`--ck-*` 由公共资产 `public/shared/ck-theme.css` 声明，指向
+ * `themes.css` 的 `--bg-primary` / `--accent` / `--border` …）——
  * 三主题（light / dark / nord）随宿主 `data-theme` **自动切换**，机制层零改样式。
  *
  * 载入顺序（`main.js`）：宿主 `assets/styles/global.css` → 本文件。
@@ -13,31 +14,35 @@
  * 〔去重/裁剪〕机制层的 `html/body/#app`、`body`、`::-webkit-scrollbar*` 等**全局规则已从
  * `layout-free/styles/global.css` 移除**（宿主 global.css 是这些规则的唯一主人）——
  * 否则 lf 的 10px 滚动条与 13px body 字号会覆盖宿主全局外观（§3.10 去重口径）。
+ *
+ * 〔THEME-1〕`--lf-*` 一律映射到 `--ck-*` 语义别名（不再直连 `--bg-*` / `--accent` 等主题色），
+ * 使宿主体与插件页面共享同一层别名；重复映射（同一目标多处声明）已删除。
  */
 
 @import '../layout-free/styles/global.css';
 
 :root {
   /* 面 / 线 / 字 */
-  --lf-bg: var(--bg-primary);
-  --lf-panel: var(--bg-secondary);
-  --lf-border: var(--border);
-  --lf-border-strong: var(--bg-surface);
-  --lf-text: var(--text-primary);
-  --lf-text-weak: var(--text-muted);
+  --lf-bg: var(--ck-bg);
+  --lf-panel: var(--ck-surface);
+  --lf-border: var(--ck-border);
+  --lf-border-strong: var(--ck-surface-strong);
+  --lf-text: var(--ck-text);
+  --lf-text-weak: var(--ck-text-muted);
 
-  /* 强调色：`--lf-accent-soft` 取宿主的**淡底** token（`--accent-bg`），
-     而非字面 `var(--accent)` —— soft 在机制层是**背景**角色（`.lf-btn:hover` / `.lf-tag` /
+  /* 强调色：`--lf-accent-soft` 取**淡底**别名 `--ck-accent-bg`，
+     而非字面 `var(--ck-accent)` —— soft 在机制层是**背景**角色（`.lf-btn:hover` / `.lf-tag` /
      设计态标记底色），用强调色本身当底色会让其上文字不可读。 */
-  --lf-accent: var(--accent);
-  --lf-accent-soft: var(--accent-bg);
-  --lf-select: var(--accent-bg);
-  --lf-select-border: var(--accent);
+  --lf-accent: var(--ck-accent);
+  --lf-accent-soft: var(--ck-accent-bg);
+  /* 设计态选中（机制层 18 处消费）：同样落到强调色淡底 / 强调色本体 */
+  --lf-select: var(--ck-accent-bg);
+  --lf-select-border: var(--ck-accent);
 
   /* 栏 / 悬停 / 圆角 / 字体 */
-  --lf-bar: var(--toolbar-bg);
-  --lf-tree-hover: var(--bg-hover);
-  --lf-radius: var(--border-radius);
+  --lf-bar: var(--ck-toolbar);
+  --lf-tree-hover: var(--ck-hover);
+  --lf-radius: var(--ck-radius);
   --lf-font: inherit;
 
   /* `--split-hairline` / `--split-hit`（分割条视觉/命中解耦口径）宿主与机制层取值一致

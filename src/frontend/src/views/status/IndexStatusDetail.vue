@@ -1,7 +1,8 @@
 <!--
   代码索引详情页（STB-1，preview 功能页 `status-index`）。
-  数据源 = prj 配置既有键（`enable-codegraph` / `codegraph.status` / `enable-vfts` / `vfts.status`；
-  刷新 = 既有 `data-prj-config-refresh`）。字段口径 = 引擎 Status + 插件回写 phase/message。
+  数据源 = prj 配置键（`plugins.codebase.codegraph.enabled` / `codegraph.status` /
+  `plugins.codebase.vfts.enabled` / `vfts.status`；刷新 = 既有 `data-prj-config-refresh`）。
+  字段口径 = 引擎 Status + 插件回写 phase/message。
   AST：引擎状态**未单独暴露 AST 阶段**（phase 仅 configure|index）→ 并入本页「索引阶段」说明，不编造。
 -->
 <template>
@@ -97,12 +98,12 @@ const { t } = useI18n()
 const { prjCfg } = usePrjConfigSnapshot()
 
 const cg = computed(() => indexDetail({
-  enabledRaw: prjCfg.value['enable-codegraph'],
+  enabledRaw: prjCfg.value['plugins.codebase.codegraph.enabled'],
   statusRaw: prjCfg.value['codegraph.status'],
   t,
 }))
 const vf = computed(() => indexDetail({
-  enabledRaw: prjCfg.value['enable-vfts'],
+  enabledRaw: prjCfg.value['plugins.codebase.vfts.enabled'],
   statusRaw: prjCfg.value['vfts.status'],
   t,
 }))

@@ -1,5 +1,7 @@
 # 22 · data-persist（src/lib/data 数据面：存储内核 + persist 服务）
 
+> **〔🆕 2026-10-24 · `DATAROOT-1` 已实施〕** `projectid.go` **已删除**（上行列出的 `projectid.go` 不再存在）；prjusr 根 = `<workDir>/.chonkpilot/users/<OS 用户名>/`；凡本文提及「`project-id` 生成/复用/删除」的测试与描述**一律作废**，改为「同一 workDir 的路径稳定性」。
+
 > 状态：✅ 与代码一致
 > 关联：[12-数据层](../10-architecture/12-数据层.md)（层级/fallback 规则）· [02-配置层级](../00-overview/02-配置层级.md)
 > 代码目录：`src/lib/data/`（内核：`db.go` `table.go` `query.go` `configkv.go` `shared.go` `migrate.go` `seed.go` `types.go` `config.go` `projectid.go` `resolve.go` 等；服务面：`persist/`）
@@ -97,6 +99,8 @@ usr 库：data.OpenSharedLayer(UserPath, LayerUsr)（UsrPath 可注入，测试�
 ### 4.3 打开与迁移（内核）
 
 `OpenLayer(path, layer)` → 建目录 `0700` → `bolt.Open(0600)` → 事务内：`readSchemaVersion` → 跑未应用 migration（记录 `_migrations`）→ `seedDefaults(tx, layer)`；失败 `Close` 并中止。
+
+> **v12（🆕 2026-10-24 · SESSION-COMP-1 P0）**：新增 `dialogs`（prjusr 对话目录）与索引 `messages_by_client_msg`（`(session_id, client_msg_id)`），并回填既有 `messages` 索引项（幂等）。对话库 = `<prjusr>/dialogs/dialog-<hex(dialog_id)>.db`（一树一库，`data.DialogDBPath` / `OpenDialog` / `DeleteDialog`）；旧布局 `<prjusr>/sessions/<hex(session_id)>/` 仍在用（**P3 才切读**）。搬运与启动对账 = `internal/sessionstore.Migrate` / `Reconcile`，由 prj 键 **`session.db.shard`（`on`/`off`，缺省 `off`）** 控制，在 `instance-register` 后异步执行一次（每 prjusr 路径去重，失败告警可重试）。详见 [2G §9](../20-modules/2G-会话组件.md) / [49 `SESSION-COMP-1`](../40-roadmap/49-待实现项.md)。
 
 ---
 

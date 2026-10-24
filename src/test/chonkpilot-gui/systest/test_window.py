@@ -23,6 +23,7 @@ PORT = free_port()
 
 # ── Win32 真实鼠标拖拽（W5；同 41-未决项登记 G-56 手法）────────────────────────
 _u32 = ctypes.windll.user32
+_k32 = ctypes.windll.kernel32
 _EnumWindowsProc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
 _MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -31,6 +32,9 @@ _SWP_NOSIZE = 0x0001
 _SWP_NOZORDER = 0x0004
 _SWP_NOACTIVATE = 0x0010
 _SPI_GETWORKAREA = 0x0030
+_SW_RESTORE = 9
+_HWND_TOPMOST = -1
+_HWND_NOTOPMOST = -2
 
 
 class _RECT(ctypes.Structure):
@@ -72,18 +76,41 @@ def _work_area():
     return [int(r.left), int(r.top), int(r.right), int(r.bottom)]
 
 
-def _drag(x0, y0, x1, y1, steps=14, hold=0.03):
-    """真实鼠标拖拽：移动到起点 → 左键按下 → 分步移动 → 抬起。
+def _drag(hwnd, x0, y0, x1, y1, steps=14, hold=0.03, engage_timeout=5.0):
+    """真实鼠标拖拽：定位起点 → 左键按下 → **等待模态循环进入** → 分步移到终点 → 抬起。
 
-    按下后**停顿 0.8s** 再移动：frameless resize 的模态循环由前端 mousedown →
-    gui.window.resize → 宿主 StartResize（跨 JS→HTTP→UI 线程）延迟进入；若按下即快速移动，
-    循环进入时鼠标已前进一段，该段位移不会计入窗口尺寸（满载下实测 140px 只得到 +50px）。
-    停顿让循环在鼠标仍位于起点时进入，测量的是「窗口跟随鼠标」的真实终态（断言仍 ±3px）。
+    frameless resize / caption 移动的模态循环由前端 mousedown → `gui.window.resize` → 宿主
+    `StartResize` 进入（跨 JS→HTTP→UI 线程）。原实现「按下后固定停 0.8s」：批跑负载下该延迟
+    可能超过停顿（实测 140px 只得到 +30px）——因为系统循环以**进入时刻的光标位置**为锚点。
+    现改为**自适应**：按下后每 6px 小步移动并观察窗口矩形，一旦矩形变化（= 循环已进入）立即
+    回到起点重新锚定，再按目标距离分步拖动 → 终态始终 = 起点 + 目标位移（断言仍 ±3px）。
     """
+    r0 = _wrect(hwnd)
     _u32.SetCursorPos(int(x0), int(y0))
     time.sleep(0.25)
     _u32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.80)
+    time.sleep(0.12)
+    dx = 6 if abs(x1 - x0) >= abs(y1 - y0) else 0
+    dy = 0 if dx else 6
+    deadline = time.time() + engage_timeout
+    engaged = False
+    while time.time() < deadline:
+        _u32.SetCursorPos(int(x0 + dx), int(y0 + dy))
+        time.sleep(0.12)
+        if _wrect(hwnd) != r0:
+            engaged = True
+            break
+    if engaged:
+        # 重新锚定：光标回起点（窗口回到原始尺寸/位置），再拖到目标 → 位移精确等于目标值。
+        _u32.SetCursorPos(int(x0), int(y0))
+        time.sleep(0.30)
+        # 2026-10-23（批跑稳定性）：负载下系统 resize 循环可能**尚未**把窗口收回到 r0，
+        # 残余偏移会被带入最终位移（实测 140px 只得到 +133px）→ 有界等回位，未回位则再挪一次
+        # 光标（幂等，只回起点）。断言不变（仍 ±3px）。
+        settle = time.time() + 1.0
+        while time.time() < settle and _wrect(hwnd) != r0:
+            _u32.SetCursorPos(int(x0), int(y0))
+            time.sleep(0.10)
     for i in range(1, steps + 1):
         _u32.SetCursorPos(int(x0 + (x1 - x0) * i / steps), int(y0 + (y1 - y0) * i / steps))
         time.sleep(hold)
@@ -92,24 +119,75 @@ def _drag(x0, y0, x1, y1, steps=14, hold=0.03):
     time.sleep(0.45)
 
 
-def _normalize_window(hwnd):
-    """把窗口挪到工作区内已知尺寸（保证四边都在屏内，末端拖动不出屏）。"""
+def _normalize_window(gui, hwnd):
+    """把窗口挪到工作区内已知尺寸，并确保它**真的**在前台可接收真实鼠标。
+
+    2026-10-23：原实现只 `SetForegroundWindow` + 点一下激活，实测在批跑/多窗口环境下会
+    失效（后台进程受前台锁限制 → SetForegroundWindow 失败；窗口又被其它窗口遮挡 →
+    真实 mousedown 落到别的窗口上），W5/W5b/W5c 全部 delta=0。现改为：
+    ① 最大化/最小化先还原（这两种状态本就不可 resize / 移动）；
+    ② `SetWindowPos(HWND_TOPMOST)` 置顶，避免被其它窗口遮挡；
+    ③ `AttachThreadInput` 附加到当前前台线程后再 `SetForegroundWindow`，绕过前台锁；
+    ④ **带校验的预热点击**：WebView2 内容区首个真实 mousedown 常被「激活/聚焦」吞掉，
+       故注入页面级 mousedown 计数，反复点到计数增长（最多 5 次）才继续。
+    断言本身不变（仍为 GetWindowRect 前后对比 ±3px）。
+    """
+    if _u32.IsIconic(hwnd) or _u32.IsZoomed(hwnd):
+        _u32.ShowWindow(hwnd, _SW_RESTORE)
+        time.sleep(0.6)
     wa = _work_area()
     w = max(640, min(900, (wa[2] - wa[0]) - 320))
     h = max(420, min(520, (wa[3] - wa[1]) - 280))
     x, y = wa[0] + 100, wa[1] + 80
-    _u32.SetWindowPos(hwnd, 0, x, y, w, h, _SWP_NOZORDER | _SWP_NOACTIVATE)
-    time.sleep(0.6)
-    _u32.SetForegroundWindow(hwnd)
+    _u32.SetWindowPos(ctypes.c_void_p(hwnd), ctypes.c_void_p(_HWND_TOPMOST), x, y, w, h, _SWP_NOACTIVATE)
+    time.sleep(0.4)
+    fg = _u32.GetForegroundWindow()
+    t_fg = _u32.GetWindowThreadProcessId(fg, None) if fg else 0
+    t_self = _k32.GetCurrentThreadId()
+    attached = False
+    if t_fg and t_fg != t_self:
+        attached = bool(_u32.AttachThreadInput(t_fg, t_self, True))
+    _u32.BringWindowToTop(ctypes.c_void_p(hwnd))
+    _u32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+    _u32.SetFocus(ctypes.c_void_p(hwnd))
+    if attached:
+        _u32.AttachThreadInput(t_fg, t_self, False)
     time.sleep(0.5)
-    # 客户区点一下激活焦点（避免拖拽被「非活动窗口」路径吞掉）
+    _prime_input(gui, hwnd)
+
+
+# 页面级真机输入计数（捕获阶段统计所有 mousedown）→ 校验「真实鼠标已到达页面」。
+_PRIME_JS = ("(()=>{window.__ckPrime=0;"
+             "document.addEventListener('mousedown',()=>{window.__ckPrime++},true);return 'ok'})()")
+
+
+def _prime_input(gui, hwnd, attempts=5):
+    """客户区真机点按直到页面侧 mousedown 计数增长（消除「首个点击被吞」的时序差异）。"""
+    try:
+        J(gui, _PRIME_JS)
+    except Exception:
+        pass
     r = _wrect(hwnd)
-    _u32.SetCursorPos(r[0] + 120, r[1] + 120)
-    time.sleep(0.2)
-    _u32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    time.sleep(0.05)
-    _u32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    time.sleep(0.5)
+    for _ in range(attempts):
+        _u32.SetCursorPos(r[0] + 120, r[1] + 120)
+        time.sleep(0.2)
+        _u32.mouse_event(_MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(0.05)
+        _u32.mouse_event(_MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.4)
+        try:
+            if int(J(gui, "String(window.__ckPrime||0)") or 0) > 0:
+                return True
+        except Exception:
+            return False
+    return False
+
+
+def _restore_zorder(hwnd, left, top):
+    """拖拽结束后撤销置顶（测试不得改变窗口的常态 Z 序）。"""
+    _u32.SetWindowPos(ctypes.c_void_p(hwnd), ctypes.c_void_p(_HWND_NOTOPMOST), left, top, 0, 0, _SWP_NOSIZE)
+    time.sleep(0.3)
+
 
 
 
@@ -174,11 +252,11 @@ def main():
                 f"hwnd={hwnd} title={wtitle!r} handles={handles}")
 
         if hwnd:
-            _normalize_window(hwnd)
+            _normalize_window(gui, hwnd)
             # ① 右边框（距边 3px）：向右拖 140px
             r0 = _wrect(hwnd)
             x, y = r0[2] - 3, r0[1] + (r0[3] - r0[1]) // 2
-            _drag(x, y, x + 140, y)
+            _drag(hwnd, x, y, x + 140, y)
             r1 = _wrect(hwnd)
             dw = (r1[2] - r1[0]) - (r0[2] - r0[0])
             c.check("W5 真机拖动右边框 → 宽度 +140px（±3px）", abs(dw - 140) <= 3,
@@ -187,7 +265,7 @@ def main():
             # ② 下边框（距边 3px）：向下拖 110px（窗口已归一到工作区内，末端不出屏）
             r2 = _wrect(hwnd)
             x, y = r2[0] + (r2[2] - r2[0]) // 2, r2[3] - 3
-            _drag(x, y, x, y + 110)
+            _drag(hwnd, x, y, x, y + 110)
             r3 = _wrect(hwnd)
             dh = (r3[3] - r3[1]) - (r2[3] - r2[1])
             c.check("W5b 真机拖动下边框 → 高度 +110px（±3px）", abs(dh - 110) <= 3,
@@ -197,13 +275,12 @@ def main():
             #    → 宿主 WM_NCLBUTTONDOWN(HTCAPTION) 系统移动循环（WebView2 app-region 不生效）。
             r4 = _wrect(hwnd)
             mx, my = r4[0] + 40, r4[1] + 20  # 品牌区（非交互）
-            _drag(mx, my, mx + 120, my + 80)
+            _drag(hwnd, mx, my, mx + 120, my + 80)
             r5 = _wrect(hwnd)
             dx, dy = r5[0] - r4[0], r5[1] - r4[1]
             c.check("W5c 真机拖动顶栏 → 窗口移动 (+120,+80)", abs(dx - 120) <= 3 and abs(dy - 80) <= 3,
                     f"before={r4} after={r5} moved=({dx},{dy}) drag=({mx},{my})->({mx + 120},{my + 80})")
-            _u32.SetWindowPos(hwnd, 0, r4[0], r4[1], 0, 0, _SWP_NOSIZE | _SWP_NOZORDER)
-            time.sleep(0.4)
+            _restore_zorder(hwnd, r4[0], r4[1])
         else:
             c.check("W5 真机拖动右边框 → 宽度 +140px（±3px）", False, "未找到主窗口 hwnd")
             c.check("W5b 真机拖动下边框 → 高度 +110px（±3px）", False, "未找到主窗口 hwnd")

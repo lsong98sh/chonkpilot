@@ -4,11 +4,11 @@
 覆盖：工具执行中（强制异步 pending）插入一段对话 → 插话在本轮结束前被处理（出流）；
 主轮不提前 complete；工具回执后主轮续轮。
 设计：docs/agent-chat/中途插话设计方案.md §3.1（S1）/ §7（INS-001）。
-驱动：`llm-start`（mock 关键词 "call slow-insert" → `self_script_run` + 调用级
-      `async=always` + `ping -n 8`：派发即 pending，工具执行中留出插话窗口）
+驱动：`llm-start`（mock 关键词 "call slow-insert" → `task_run` + 调用级
+      `async=always` + `Start-Sleep 6`：派发即 pending，工具执行中留出插话窗口）
       → `llm-inbox-add`；断言：`llm-receive`（插话回显）先于 `llm-complete`。
-      口径变更（GATEWAY-2 L1）：原用 `dsl_run`（契约 async:always、无 _meta.timeout）驱动
-      「强制异步 pending」；DSL 删除后改 `script_run` 显式 `async=always`（同一 pending 语义）。
+      口径变更（GATEWAY-2 L1 → 2026-10-23）：原用 `dsl_run`，DSL 删除后曾用 `script_run`；
+      `script_run` 亦随 core 契约退役 → 现行 `task_run` 显式 `async=always`（同一 pending 语义）。
 前置：usr llms 含 name="mock" 条目（套件级快照-还原；usr 主库不受 --data-dir 隔离）。
 """
 
@@ -33,6 +33,10 @@ _llms = [e for e in (_cfg0.get("llms") or []) if isinstance(e, dict) and e.get("
 _llms.append({"name": _LLM_NAME, "protocol": "openai", "model": "mock-model",
               "baseUrl": "http://127.0.0.1:%d/v1" % _h.DEFAULT_MOCK_LLM_PORT, "apiKey": ""})
 c.req("data-user-config-save", {"data": {"llms": _llms, "defaultLLM": len(_llms) - 1}})
+# 2026-10-23：usr `llms` 需经 `data-user-config-refresh` 触发 server 侧 router 对账
+#（reconcileLLMProviders）→ 否则 llm-start 的 provider name 解析不到、回落到默认 provider，
+# 工具派发即终态（INBOX-S1 假红）。
+c.mq_emit("config-refresh")
 try:
     c.eval("location.reload(); 'ok'")
 except Exception:

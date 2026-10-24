@@ -293,6 +293,38 @@ let llmSetupHintKey = ''          // 已提示过的失败标识（turn id）：
 // retryText = 重试中间态（RETRY-1，session-retry → 前端 llm-retry）；llmFail = 终态错误
 //（status=error 且非 EMPTY_REPLY；含人话分类 key/params、原始错误全文、真实 retry 计数）。
 const retryText = ref('')
+// 重试倒计时（2026-10-23，纯前端体验层）：session-retry 只给一次性 retry_wait_ms，
+// 前端按该值本地逐秒递减显示（1s 定时器，上限由 retry_wait_ms 决定；到 0 停在 0，
+// 等下一次 session-retry 重置或 llm-complete 终态收起）。契约不变（不新增消息/payload）。
+let retryCountdownTimer = null
+let retryAttempt = 0
+let retryMax = 0
+let retryWaitLeft = 0
+
+function renderRetryText() {
+  retryText.value = t('chat.llm_retry', { attempt: retryAttempt, max: retryMax, wait: retryWaitLeft })
+}
+
+function stopRetryCountdown() {
+  if (retryCountdownTimer) {
+    clearInterval(retryCountdownTimer)
+    retryCountdownTimer = null
+  }
+}
+
+function startRetryCountdown(attempt, maxRetries, waitSec) {
+  stopRetryCountdown()
+  retryAttempt = attempt
+  retryMax = maxRetries
+  retryWaitLeft = Math.max(0, Math.round(Number(waitSec) || 0))
+  renderRetryText()
+  if (retryWaitLeft <= 0) return
+  retryCountdownTimer = setInterval(() => {
+    retryWaitLeft = Math.max(0, retryWaitLeft - 1)
+    renderRetryText()
+    if (retryWaitLeft === 0) stopRetryCountdown()
+  }, 1000)
+}
 // interrupted = 语义级中断提示（RETRY-2，llm-interrupted）：{code, message, delayMs}；
 // 点击「继续」= 发一条 continueText 用户消息（正常发送路径 → 后端收到后取消自动续写）。
 const interrupted = ref(null)
@@ -305,6 +337,7 @@ useLLMSetup(() => { llmSetupFailed.value = false })
 
 // clearFailHint 收起本轮的可见重试 / 终态错误提示（新一次发送、会话切换、成功终态）。
 function clearFailHint() {
+  stopRetryCountdown()
   retryText.value = ''
   interrupted.value = null
   llmFail.value = null
@@ -320,6 +353,7 @@ function onLlmCompleteHint(d) {
   const sid = currentSessionId.value
   const es = d && (d.session || d.session_id)
   if (sid && es && es !== sid) return
+  stopRetryCountdown() // 终态到达：停止倒计时（避免已收起的提示条继续跑定时器）
   retryText.value = '' // 终态到达：重试中间态一律收起（成功也不残留）
   interrupted.value = null // 终态到达：中断提示一并收起（后续由 llm-complete 错误提示接管）
   if (!d || d.status !== 'error') {
@@ -914,8 +948,8 @@ onMounted(() => {
     const maxRetries = Number(data.retry_count) || 0
     if (attempt <= 0) return
     const waitSec = Math.round((Number(data.retry_wait_ms) || 0) / 1000)
-    // 重试文案走 i18n（chat.llm_retry；参数 attempt/max/wait）
-    retryText.value = t('chat.llm_retry', { attempt, max: maxRetries, wait: waitSec })
+    // 重试文案走 i18n（chat.llm_retry；参数 attempt/max/wait）→ 本地逐秒倒计时（wait 递减到 0）
+    startRetryCountdown(attempt, maxRetries, waitSec)
     // 进入重试 = 尚无终态错误（旧错误提示/详情收起）
     llmFail.value = null
     llmFailDetailOpen.value = false
@@ -928,6 +962,7 @@ onMounted(() => {
     const sid = currentSessionId.value
     const es = data && (data.session_id || data.session)
     if (sid && es && es !== sid) return
+    stopRetryCountdown()
     retryText.value = ''
     llmFail.value = null
     llmFailDetailOpen.value = false
@@ -1024,6 +1059,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopRetryCountdown()
   permanentUnsubs.forEach(fn => fn())
   permanentUnsubs.length = 0
 })

@@ -4,6 +4,8 @@
   "security": "安全",
   "context": "上下文管理",
   "codeindex": "代码索引",
+  "codebase": "代码知识库",
+  "codebase_unavailable": "代码知识库插件未启用（或未就绪）：请到「插件」页启用后回来查看配置。",
   "codegraph": "CodeGraph 索引",
   "vfts": "Vfts 全文索引",
   "history": "文件历史",

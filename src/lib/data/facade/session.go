@@ -49,6 +49,9 @@ const (
 type Session struct {
 	// ID 会话 id。
 	ID string `json:"id"`
+	// DialogID 所属对话 id（会话存储为一树一库；列表/详情带出，供后续调用回填）。
+	// **仅非空才写键** → 旧布局会话行载荷逐字节不变。
+	DialogID string `json:"dialog_id,omitempty"`
 	// Title 会话标题。
 	Title string `json:"title,omitempty"`
 	// ParentID 父会话 id（空 = 顶层会话；子会话仅顶层会话进列表/最新）。
@@ -107,6 +110,8 @@ type SessionListResponse struct {
 type SessionGetRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 读对话库；空 → 旧布局）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id。
 	SessionID string `json:"session_id"`
 	// Scope 实例数据根（可选；语义同上）。
@@ -133,12 +138,16 @@ type SessionLatestRequest struct {
 type SessionLatestResponse struct {
 	// SessionID 最近活动顶层会话 id（无 → 空串）。
 	SessionID string `json:"session_id"`
+	// DialogID 该会话所在对话 id（shard=on 时回带；旧布局为空 → 不写键）。
+	DialogID string `json:"dialog_id,omitempty"`
 }
 
 // SessionTitleRequest 是会话改名入参。
 type SessionTitleRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 改对话库；主 session 改名会同步 `dialogs.title`）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id。
 	SessionID string `json:"session_id"`
 	// Title 新标题。
@@ -157,6 +166,8 @@ type SessionTitleResponse struct {
 type SessionDeleteRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 删对话库内会话；**主 session → 整对话删除**）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id。
 	SessionID string `json:"session_id"`
 	// Scope 实例数据根（可选；语义同上）。
@@ -169,10 +180,36 @@ type SessionDeleteResponse struct {
 	OK bool `json:"ok"`
 }
 
+// SessionForkRequest 是对派生入参（SESSION-COMP-1 P4；`data-session-fork`）。
+type SessionForkRequest struct {
+	// InstanceID 实例 id。
+	InstanceID string `json:"instance_id"`
+	// DialogID 源对话 id（必填）。
+	DialogID string `json:"dialog_id"`
+	// Mode 派生档位："" → full；"context" = 只带主会话 + 快照。
+	Mode string `json:"mode,omitempty"`
+	// Title 新对话标题（空 → 源主会话标题）。
+	Title string `json:"title,omitempty"`
+	// Scope 实例数据根（可选；语义同上）。
+	Scope Scope `json:"scope,omitempty"`
+}
+
+// SessionForkResponse 是派生结果（新 dialog_id 与主 session_id 均由实现生成）。
+type SessionForkResponse struct {
+	// OK 是否成功。
+	OK bool `json:"ok"`
+	// DialogID 新对话 id。
+	DialogID string `json:"dialog_id"`
+	// SessionID 新主 session id。
+	SessionID string `json:"session_id"`
+}
+
 // SessionActiveSetRequest 是「当前活动会话」写入参。
 type SessionActiveSetRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（61 §0.6 契约位；活动态存 prj 配置，本方法不消费）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 活动会话 id。
 	SessionID string `json:"session_id"`
 	// Scope 实例数据根（可选；语义同上）。
@@ -203,6 +240,8 @@ type SessionActiveGetResponse struct {
 type SessionEnsureRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（SESSION-COMP-1 P3：非空 → 写对话库的 `sessions` 表；空 → 旧布局 prjusr）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id（必填）。
 	SessionID string `json:"session_id"`
 	// ParentSessionID 父会话 id（可选；非空 = 子会话）。
@@ -238,6 +277,9 @@ type SessionEnsureRequest struct {
 type SessionEnsureResponse struct {
 	// OK 是否成功（失败走 error）。
 	OK bool `json:"ok"`
+	// DialogID 会话所在对话 id（P3 过渡期：根会话缺 `dialog_id` 时由服务端确定性建对话并回带，
+	// 调用方据此回填后续调用的 `dialog_id`；旧布局调用不带该键 → 载荷逐字节不变）。
+	DialogID string `json:"dialog_id,omitempty"`
 }
 
 // SessionLifecycleSetRequest 是子聊天生命周期写入参（单聊方案 §3.4.4：`chatting` → `ready` →
@@ -245,6 +287,8 @@ type SessionEnsureResponse struct {
 type SessionLifecycleSetRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 写对话库；空 + 一树一库生效 → 跨对话库定位该会话）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id（必填）。
 	SessionID string `json:"session_id"`
 	// Lifecycle 目标生命周期（必填；取值见 SessionLifecycle* 常量，非法值报错）。
@@ -264,6 +308,8 @@ type SessionLifecycleSetResponse struct {
 type SessionSubChatsRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 只查该对话库；空 + 一树一库生效 → 跨对话库扫描）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// ParentSessionID 父会话 id（必填；返回挂在它下面的子聊天）。
 	ParentSessionID string `json:"parent_session_id"`
 	// Scope 实例数据根（可选；语义同上）。
@@ -281,6 +327,8 @@ type SessionSubChatsResponse struct {
 type SessionSubChatsAllRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 只查该对话库；空 + 一树一库生效 → 跨对话库扫描）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// Scope 实例数据根（可选；语义同上）。
 	Scope Scope `json:"scope,omitempty"`
 }

@@ -27,7 +27,9 @@ type InboxItem struct {
 
 // InboxAppendRequest 写入一条待处理发送。
 type InboxAppendRequest struct {
-	InstanceID     string `json:"instance_id"`
+	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	DialogID       string `json:"dialog_id,omitempty"`
 	SessionID      string `json:"session_id"`
 	TurnID         string `json:"turn_id,omitempty"`
 	Type           string `json:"type"`
@@ -51,9 +53,11 @@ type InboxAppendResponse struct {
 // InboxListRequest 按会话读 inbox 项（status 缺省 = pending，按 created_at 升序）。
 type InboxListRequest struct {
 	InstanceID string `json:"instance_id"`
-	SessionID  string `json:"session_id"`
-	Status     string `json:"status,omitempty"`
-	Scope      Scope  `json:"scope,omitempty"`
+	// DialogID 对话 id（P3 路由；非空 → 只读该对话库，空 → 旧布局 prjusr）。
+	DialogID  string `json:"dialog_id,omitempty"`
+	SessionID string `json:"session_id"`
+	Status    string `json:"status,omitempty"`
+	Scope     Scope  `json:"scope,omitempty"`
 }
 
 // InboxListResponse 返回 inbox 项集合。
@@ -65,10 +69,12 @@ type InboxListResponse struct {
 // InboxUpdateRequest 更新 inbox 项；空字段 = 不改。
 type InboxUpdateRequest struct {
 	InstanceID string `json:"instance_id"`
-	ID         string `json:"id"`
-	Status     string `json:"status,omitempty"`
-	Type       string `json:"type,omitempty"`
-	TurnID     string `json:"turn_id,omitempty"`
+	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	DialogID string `json:"dialog_id,omitempty"`
+	ID       string `json:"id"`
+	Status   string `json:"status,omitempty"`
+	Type     string `json:"type,omitempty"`
+	TurnID   string `json:"turn_id,omitempty"`
 	// Content 新正文（可选；NEXTRUN-1 §3.5「同轮多次调用只保留最后一条」的就地覆盖；
 	// 空 = 不改）。
 	Content string `json:"content,omitempty"`
@@ -84,8 +90,10 @@ type InboxUpdateResponse struct {
 // 幂等：同一 InboxID 重复提交 → 返回既有消息主键（不重复落库）。
 type InboxCommitRequest struct {
 	InstanceID string `json:"instance_id"`
-	InboxID    string `json:"inbox_id"`
-	TurnID     string `json:"turn_id"`
+	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	DialogID string `json:"dialog_id,omitempty"`
+	InboxID  string `json:"inbox_id"`
+	TurnID   string `json:"turn_id"`
 	// SessionID 可选；空 = 取 inbox 行的 session_id。
 	SessionID string `json:"session_id,omitempty"`
 	// Message 消息（领域形态；通常 role=user，Kind 标明来源如 insert / continue）。

@@ -3,7 +3,7 @@
 // core-mcp-server 由宿主在插件桥就绪后拉起（常驻），本文件只负责把它经既有方法面
 // `servers/register`（mcp-servers-register）登记为内置下游：
 //   - transport=http（MCP Streamable HTTP，端点 /mcp）；
-//   - namespace=self_ → 暴露名保持 self_<tool>（与既有工具面一致，61 不新增主题）；
+//   - namespace="-" → 工具名**原样**暴露（P0a 2026-10-23：不再加 `self_` 前缀）；
 //   - origin=builtin + Authorization: Bearer <token>；
 //   - 固定 URL/token（重启复用），故进程重启无需重新登记。
 package server
@@ -16,7 +16,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-plugin"
 )
 
-// CoreServerName 是 core-mcp-server 在 gateway 中的节点名（内置；namespace 固定 self_）。
+// CoreServerName 是 core-mcp-server 在 gateway 中的节点名（内置；namespace 固定 "-" 即原样）。
 const CoreServerName = "core"
 
 // SetCoreRuntimePusher 把 core-mcp-server 的运行期配置推送口接到本服务
@@ -59,7 +59,7 @@ func (s *Server) RegisterCoreServer(url, token string) error {
 	defer cancel()
 	_, err := s.emitGateway(ctx, "servers/register", map[string]any{
 		"name":      CoreServerName,
-		"namespace": "self_",
+		"namespace": "-",
 		"mcp_server": map[string]any{
 			"url":       url,
 			"transport": "http",

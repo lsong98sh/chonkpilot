@@ -16,7 +16,7 @@
   "path": {
     "exeDir": "应用安装目录（可执行文件所在目录）",
     "userDir": "用户数据根目录 ~/.chonkpilot",
-    "dataDir": "当前项目数据目录 ~/.chonkpilot/data/<项目 id>",
+    "dataDir": "当前项目数据目录 <workDir>/.chonkpilot/users/<OS 用户名>",
     "workDir": "当前项目工作目录"
   },
   "env": {

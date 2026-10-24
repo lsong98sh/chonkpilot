@@ -5,7 +5,7 @@
  *   - 插件内 `registered bool`（工具是否已注册到 gateway）与 `clients[workdir]`（引擎子进程）
  *     均为**内存态，未落盘、未随任何消息下发** → 前端**拿不到「引擎子进程运行中/未运行」信号**。
  *   - 前端可得的真实信号只有两条：
- *       ① 配置态：prj `enable-codegraph` / `enable-vfts` 开关；
+ *       ① 配置态：prj `plugins.codebase.codegraph.enabled` / `plugins.codebase.vfts.enabled` 开关；
  *       ② 运行时态：客户端能力面 `tools-list` 是否含该引擎注册的查询工具
  *          （插件 `syncTools` 在「存在启用中的 workdir」时经 `tools/register` 注册，
  *            停用/退出即 `tools/unregister`）—— 名称见 callgate.go 的 queryTools。

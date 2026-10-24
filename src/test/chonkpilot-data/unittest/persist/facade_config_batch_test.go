@@ -23,6 +23,12 @@ import (
 // regInstanceAs 发布 instance-register（id + work_dir 指定；B 用例需同/异 work_dir 多实例）。
 func regInstanceAs(t *testing.T, bus mq.Bus, id, wd string) {
 	t.Helper()
+	// P3-4c 起缺省一树一库；本套不断言会话布局，置 off 避免异步搬运干扰目录清理。
+	data.Register(id, wd, "")
+	if prj, release, err := data.Prj(id); err == nil {
+		_ = data.SetConfig(prj, "session.db.shard", "off")
+		release()
+	}
 	pubFire(bus, "instance-register", jb(map[string]any{
 		"instance_id": id, "client_type": "unittest", "work_dir": wd,
 	}))

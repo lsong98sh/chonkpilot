@@ -20,6 +20,8 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-gui/internal/fileserver"
+	"github.com/chonkpilot/chonkpilot-gui/internal/themefs"
+	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	webview2 "github.com/jchv/go-webview2"
 	"github.com/jchv/go-webview2/pkg/edge"
@@ -339,6 +341,10 @@ type appHandler struct {
 	authed      func() bool
 	// logDir 是 GUI 文件日志目录（PRODSIM-1 日志窗口经 `/api/log/tail` 读取；空 = 未挂 sink）。
 	logDir string
+	// pluginAssets 提供 `/plugins/<id>/<path>`（插件自持 webui，PLUGIN-UI-1）；nil = 404。
+	pluginAssets *pluginAssetHandler
+	// pluginActions 提供 `/plugins/<id>/api/<action>`（插件 UI 动作面，PLUGIN-UI-1）；nil = 404。
+	pluginActions *pluginActionHandler
 }
 
 // windows 返回本窗口所属项目的小窗口表（nil 项目 → 进程级表，flash / --no-server）。
@@ -356,12 +362,109 @@ func (h *appHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handlePublish(w, r)
 	case path == "/api/log/tail":
 		h.serveLogTail(w, r)
+	case path == "/themes.css":
+		h.serveThemes(w)
+	case strings.HasPrefix(path, "/plugin-ui/"):
+		h.servePluginUISDK(w, r)
+	case strings.HasPrefix(path, "/plugins/"):
+		// 插件 UI 动作面（PLUGIN-UI-1 第二段）：`POST /plugins/<id>/api/<action>` → 插件 UI RPC。
+		if matchesPluginAPIPath(path) {
+			if h.pluginActions == nil {
+				http.NotFound(w, r)
+				return
+			}
+			h.pluginActions.ServeHTTP(w, r)
+			return
+		}
+		// 插件自持 webui 资源（PLUGIN-UI-1）：宿主经 UDS 向插件拉取，不再读磁盘。
+		if h.pluginAssets == nil {
+			http.NotFound(w, r)
+			return
+		}
+		h.pluginAssets.ServeHTTP(w, r)
 	case strings.HasPrefix(path, "/show/"):
 		h.fileHandler.ServeHTTP(w, r)
 	default:
 		h.serveStatic(w, r, path)
 	}
 }
+
+// serveThemes 提供主题资产 `GET /themes.css`（THEME-1，2026-10-23）。
+//
+// 来源：`<exeDir>/themes/themes.css`（静态可编辑，重启生效）；缺失 / 不可读 → 内置 embed 副本
+// （`themefs.Load` **永不返回空**，故本端点不会 404）。响应头与 serveStatic 完全同口径
+// （no-store + nosniff），否则 WebView2 会持久缓存旧主题。
+func (h *appHandler) serveThemes(w http.ResponseWriter) {
+	data, err := themefs.Load(exeDir())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(data)
+}
+
+// exeDirCached 是进程级缓存的 exe 所在目录（主题资产等「随 exe 目录」资产按它定位）。
+var (
+	exeDirOnce   sync.Once
+	exeDirCached string
+)
+
+// exeDir 返回当前可执行文件所在目录（失败 → 空串，调用方按「无磁盘资产」处理）。
+func exeDir() string {
+	exeDirOnce.Do(func() {
+		if d, err := exedir.Dir(); err == nil {
+			exeDirCached = d
+		}
+	})
+	return exeDirCached
+}
+
+// servePluginUISDK 提供插件 iframe 的共享桥 SDK（`GET /plugin-ui/_sdk/plugin.js`）。
+//
+// 旧路由 `/plugin-ui/<id>/*`（宿主直读磁盘 `<插件目录>/webui`）**已下线** → 一律 404：
+// 内置插件全部 `ui.selfServe: true`，资源走 `/plugins/<id>/<path>`（`plugin/v1/ui.asset.get`）。
+// `_sdk/plugin.js` 仍被所有插件页面直接引用，必须继续提供，内容逐字节不变。
+func (h *appHandler) servePluginUISDK(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/plugin-ui/_sdk/plugin.js" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	_, _ = w.Write([]byte(pluginUIBridgeJS))
+}
+
+// pluginUIBridgeJS 是插件 iframe 的共享桥（宿主提供，插件只需 <script src="/plugin-ui/_sdk/plugin.js">）。
+const pluginUIBridgeJS = `(function(){
+  var pending = new Map(), seq = 0;
+  window.ckPlugin = {
+    call: function(method, params){
+      return new Promise(function(resolve, reject){
+        var id = 'r' + (++seq);
+        pending.set(id, {resolve: resolve, reject: reject});
+        parent.postMessage({ckPlugin:1, id:id, type:'call', method:method, params:params||{}}, '*');
+      });
+    },
+    onEvent: function(fn){
+      window.addEventListener('message', function(e){
+        var d = e.data;
+        if (d && d.ckPlugin === 1 && d.type === 'event') fn(d.topic, d.payload);
+      });
+    }
+  };
+  window.addEventListener('message', function(e){
+    var d = e.data;
+    if (!d || d.ckPlugin !== 1 || d.type !== 'result') return;
+    var p = pending.get(d.id);
+    if (!p) return;
+    pending.delete(d.id);
+    if (d.ok) p.resolve(d.result);
+    else p.reject(new Error((d.errors || []).join('; ') || ('plugin call failed: ' + d.id)));
+  });
+})();`
 
 // serveLogTail 返回 GUI 日志文件尾部（日志窗口只读通道，PRODSIM-1）。
 // 只读本进程日志目录下的 gui.log，不接受任意路径（避免变成越权文件读取面）。

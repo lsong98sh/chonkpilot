@@ -187,8 +187,11 @@ import { EventNames } from '../../events/event-names'
 import { GuiInitDataKeys } from '../../events/msgkeys'
 import { useSelectionStore } from '../../stores/selection'
 import { pickAndOpenDir } from '../../layout/workdirActions'
+import PluginPageHost from '../../components/plugin/PluginPageHost.vue'
+import { usePlugins } from '../../composables/usePlugins'
 
 const baseViewerOptions = { preset: [litePreset, officePreset], theme: 'light' }
+const { pluginView } = usePlugins()
 // 代码预览：隐藏全局工具栏（缩放/搜索/下载/打印/导出/主题）与 renderer 内部
 // 元信息栏（"EXT N lines"），直接显示代码
 const codeViewerOptions = {
@@ -286,21 +289,42 @@ const specialComponents = {
   'status-memory': defineAsyncComponent(() => import('../status/MemoryStatusDetail.vue')),
   'status-compress': defineAsyncComponent(() => import('../status/CompressStatusDetail.vue')),
   'status-index': defineAsyncComponent(() => import('../status/IndexStatusDetail.vue')),
+  // 插件管理页（PLUGIN-1）
+  'plugin-manager': defineAsyncComponent(() => import('../plugins/PluginManagerPage.vue')),
 }
-function specialComponent(kind) { return specialComponents[kind] || null }
+const PLUGIN_PAGE_PREFIX = 'plugin-page:'
+function pluginPageKeyOf(kind) {
+  if (!String(kind || '').startsWith(PLUGIN_PAGE_PREFIX)) return null
+  const rest = String(kind).slice(PLUGIN_PAGE_PREFIX.length)
+  const [id, page] = rest.split(':')
+  return id && page ? { id, page } : null
+}
+function specialComponent(kind) {
+  if (pluginPageKeyOf(kind)) return PluginPageHost
+  return specialComponents[kind] || null
+}
 
 // 功能页组件附加 props：项目配置页支持定位到具体页签（innerTab + innerTabNonce）；
-// 其它功能页不注入额外属性（避免无谓的透传属性落到根节点）。
+// 插件页传 pluginId/pageId/entry；其它功能页不注入额外属性（避免无谓的透传属性落到根节点）。
 function specialProps(tab) {
   if (tab.kind === 'settings-project') {
     return { innerTab: tab.innerTab || '', innerTabNonce: tab.innerTabNonce || 0 }
+  }
+  const pg = pluginPageKeyOf(tab.kind)
+  if (pg) {
+    const v = pluginView(pg.id, pg.page)
+    // PLUGIN-UI-1：插件页资源路由已统一 `/plugins/<id>/…`（不再按插件标志分流）。
+    return { pluginId: pg.id, pageId: pg.page, entry: v?.entry || '', title: v?.title || '' }
   }
   return {}
 }
 
 // 功能 tab 标题（i18n）
 function specialTitle(kind) {
+  const pg = pluginPageKeyOf(kind)
+  if (pg) return pluginView(pg.id, pg.page)?.title || `${pg.id} · ${pg.page}`
   switch (kind) {
+    case 'plugin-manager': return t('layoutFree.plugin.manager')
     case 'settings-llm': return t('config.page.llm')
     case 'settings-mcp': return t('config.page.mcp')
     case 'settings-tool-async': return t('config.page.toolAsync')
@@ -518,6 +542,11 @@ async function loadFileTab(tab) {
 function handleTabOpen(event) {
   const kind = event?.kind
   if (!kind) return
+  if (kind === 'plugin-page') {
+    if (!event.plugin || !event.page) return
+    openSpecialTab(`plugin-page:${event.plugin}:${event.page}`, event.title, null)
+    return
+  }
   openSpecialTab(kind, event.title, event.tab)
 }
 

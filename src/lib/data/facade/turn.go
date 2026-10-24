@@ -50,6 +50,8 @@ type TurnToken struct {
 type TurnHistoryRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 读对话库；空 → 旧布局 prjusr）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id。
 	SessionID string `json:"session_id"`
 	// BeforeTurnID 从此轮次**之前**继续向前翻页（空 = 从最新往回取）。
@@ -76,6 +78,8 @@ type TurnHistoryResponse struct {
 type TurnEnsureRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 写对话库；空 → 旧布局）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// TurnID 轮次 id（必填）。
 	TurnID string `json:"turn_id"`
 	// SessionID 归属会话 id。
@@ -94,6 +98,8 @@ type TurnEnsureResponse struct {
 type TurnSetSummaryRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 写对话库）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// TurnID 轮次 id（必填）。
 	TurnID string `json:"turn_id"`
 	// Summary 摘要全文。
@@ -112,6 +118,8 @@ type TurnSetSummaryResponse struct {
 type TurnCompleteRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// DialogID 对话 id（非空 → 写对话库）。
+	DialogID string `json:"dialog_id,omitempty"`
 	// TurnID 轮次 id（必填）。
 	TurnID string `json:"turn_id"`
 	// Status 终态（done / error / interrupted）。

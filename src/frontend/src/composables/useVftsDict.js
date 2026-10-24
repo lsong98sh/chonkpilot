@@ -1,5 +1,6 @@
 /**
- * useVftsDict：vfts **系统级**词典（jieba）与「重新索引」的状态逻辑（配置页 VftsConfig 用）。
+ * useVftsDict：vfts **系统级**词典（jieba）与「重新索引」的状态逻辑。
+ * 〔UIREG-1〕配置页改由 codebase 插件承载，本 composable 保留供页面/插件复用。
  *
  * 消息面（61：vfts.dict.get / vfts.dict.set / vfts.reindex，点分相对主题，前端 type 同名）：
  * 前端 `mq.emit(topic, payload)` → 后端 vfts 插件（同主题 promise 写回 v.result）→

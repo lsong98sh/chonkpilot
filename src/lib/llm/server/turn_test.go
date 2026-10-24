@@ -329,6 +329,7 @@ func newTestServer(t *testing.T, llmSrv *httptest.Server) *Server {
 	data.Reset()
 	testWorkDir = t.TempDir()
 	t.Cleanup(func() { testWorkDir = "" })
+	disableSessionShardForTest(t, testWorkDir)
 	bus, err := mq.New(mq.Options{Prefix: testBusPrefix})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
@@ -365,6 +366,26 @@ func closeTestDataStore() {
 	for i := 0; i < 5; i++ {
 		data.Reset()
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// disableSessionShardForTest 显式关「一树一库」（`session.db.shard=off`）。
+//
+// 本包单测多数**直接读 prjusr 旧布局**（`msgsOfTurn` / `toolRowsOf` 等），P3-4c 起开关缺省 on
+// → 内容落对话库、旧布局断言读不到。测试夹具因此显式退回旧布局；对话布局本身由
+// `session_test.go`（自带 persist 服务）与 data 模块用例覆盖。
+func disableSessionShardForTest(t *testing.T, workDir string) {
+	t.Helper()
+	db, err := data.OpenLayer(data.ProjectPath(workDir, ""), data.LayerPrj)
+	if err != nil {
+		t.Fatalf("打开 prj 库: %v", err)
+	}
+	if err := db.Table("config").Upsert("session.db.shard", data.Record{"v": "off"}); err != nil {
+		_ = db.Close()
+		t.Fatalf("置 session.db.shard=off: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("关闭 prj 库: %v", err)
 	}
 }
 

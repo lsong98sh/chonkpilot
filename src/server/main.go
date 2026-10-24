@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -61,12 +62,12 @@ func main() {
 		// PRODSIM-1（产物简化，2026-10-22）：**flash 专用子系统已删除** ——
 		// `--autoexit` / `--client-exe` / `--tray` 三个参数、托盘、spawn flash、实例视图与
 		// UDS 前门（原 flash 接入面）整体移除；server 只剩本机 LLM 能力面（插件桥 + LLM Bridge）。
-		// LLM 桥接入口（BRIDGE-1，2026-10-16）：独立固定端口 127.0.0.1:5669（**默认开、仅 loopback、
-		// 免 api-key**）的透明反向代理——本机脚本用自选协议的 SDK 指向 /llm/<name>/... 即调用本机已配置
-		// LLM。**仅 server 形态装配**（桌面单体是否同开 = 设计稿 §7 步骤 8 待定，本任务不实施）。
-		// 空 = 关闭；非 loopback 绑定 → 桥**拒启**（fail-closed，免鉴权）。
+		// LLM 桥接入口（BRIDGE-1，2026-10-16；BRIDGE-3，2026-10-24 改 **UDS-only**）：
+		// 透明反向代理，只监听 UDS（默认 %LOCALAPPDATA%\chonkpilot\llm.sock，socket 0600 / 目录 0700，
+		// 免 api-key）——本机脚本把 SDK 指向该 socket 的 /llm/<name>/... 即调用本机已配置 LLM。
+		// `off` / `-` = 关闭；**无任何 TCP 监听**（原 127.0.0.1:5669 已删除）。
 		// 见 docs/llm-bridge/LLM桥接端口设计方案.md。
-		llmBridgeAddr = flag.String("llm-bridge-addr", "127.0.0.1:5669", "LLM 桥接入口监听地址（默认开；裸端口如 5669 = 127.0.0.1:5669；**仅 loopback**，非 loopback 拒启；空 = 关闭）")
+		llmBridgeUDS = flag.String("llm-bridge-uds", "", "LLM 桥接入口 UDS 路径（默认 %LOCALAPPDATA%\\chonkpilot\\llm.sock；CHONK_LLM_UDS 覆盖；off = 关闭）")
 	)
 	flag.Parse()
 
@@ -222,17 +223,23 @@ func main() {
 
 	// ── PRODSIM-1：HTTP+SSE 跨进程入口（browser 形态）已删除 ──
 	// 单产物下 GUI 窗口与 server 同进程（进程内内存总线），无跨进程 HTTP 面；
-	// 对外能力只保留插件桥（UDS）与 LLM Bridge（127.0.0.1:5669）。
+	// 对外能力只保留插件桥（UDS）与 LLM Bridge（UDS）。
 
-	// ── LLM 桥接入口（BRIDGE-1，2026-10-16；**默认开**）──
-	// 独立固定端口（默认 127.0.0.1:5669）的透明反向代理：本机脚本免 api-key 调本机已配置 LLM。
-	// **仅 server 形态装配**（桌面单体是否同开 = 设计稿 §7 步骤 8 待定，未实施）。
-	// 免鉴权 → **仅 loopback**：非 loopback 绑定 → 桥自拒启（fail-closed，见 llmbridge.Start）。
-	// 与 --http-addr（5668，MQ 面）完全独立：端口 / 路由 / 中间件均不共用；零新增 MQ 主题。
+	// ── LLM 桥接入口（BRIDGE-3，2026-10-24：**只监听 UDS**）──
+	// 透明反向代理：本机脚本把 SDK 指向 UDS（`/llm/<name>/...`）即可免 api-key 调本机已配置 LLM。
+	// **无任何 TCP 监听**（5669 已删除）；需要 TCP 的调用方自建 loopback→UDS 字节代理。
+	// 唯一边界 = socket 文件权限（目录 0700 / socket 0600）。零新增 MQ 主题。
 	var bx *llmbridge.Server
-	if *llmBridgeAddr != "" {
+	udsPath := strings.TrimSpace(*llmBridgeUDS)
+	if udsPath == "" {
+		udsPath = strings.TrimSpace(os.Getenv("CHONK_LLM_UDS"))
+	}
+	if udsPath == "" {
+		udsPath = llmbridge.DefaultPath()
+	}
+	if udsPath != "off" && udsPath != "-" {
 		bx = llmbridge.New(llmbridge.Options{
-			Addr: *llmBridgeAddr,
+			Path: udsPath,
 			// provider 解析 = llm server 的只读查询（**不 Register / 不 Call / 不经 canon**；
 			// 只读 usr `llms` 配置：name → base_url / apiKey / protocol）。
 			Resolve: func(name string) (llmbridge.Target, bool) {
@@ -245,11 +252,10 @@ func main() {
 		})
 		if err := bx.Start(); err != nil {
 			// 可选子系统：启动失败不致命（记录 + 继续），与 HTTP 入口 / UDS 前门口径一致。
-			// 非 loopback 绑定 → 桥拒启（拒绝的是桥，不阻断核心服务）。
 			log.Printf("[server] LLM 桥接入口启动失败（可选子系统，继续运行）: %v", err)
 			bx = nil
 		} else {
-			log.Printf("[server] LLM bridge entry: http://%s (routes=/llm/<name>/...)", bx.Addr())
+			log.Printf("[server] LLM bridge entry: unix://%s (routes=/llm/<name>/...)", bx.Path())
 		}
 	}
 

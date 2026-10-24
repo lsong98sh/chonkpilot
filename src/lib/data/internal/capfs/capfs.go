@@ -7,7 +7,7 @@
 //	系统     <exeDir>/capability                        （随发布资源；注入 AppDir 可覆盖）
 //	用户     ~/.chonkpilot/capability                   （~ 由 usr 主库所在目录推导，测试可隔离）
 //	项目     <workDir>/.chonkpilot/capability
-//	项目私有 ~/.chonkpilot/data/<project-id>/capability（prjusr 数据根下；project-id 取自 prj 库）
+//	项目私有 <workDir>/.chonkpilot/users/<用户名>/capability（prjusr 数据根下）
 //
 // 每级下**6 个扁平子目录**（**删除**旧 `knowledge/**` 归并层）：
 //
@@ -116,9 +116,9 @@ func ProjectRoot(workDir string) string {
 }
 
 // PrjUsrRoot 项目私有级 capability 根（<prjusr 数据根>/capability =
-// ~/.chonkpilot/data/<project-id>/capability）。project-id 由调用方从 prj 库解析（EnsureProjectID）。
-func PrjUsrRoot(projectID string) string {
-	return filepath.Join(data.PrjUsrPath(projectID), "capability")
+// <workDir>/.chonkpilot/users/<OS 用户名>/capability；见 49 DATAROOT-1）。
+func PrjUsrRoot(workDir, dataDir string) string {
+	return filepath.Join(data.PrjUsrPath(workDir, dataDir), "capability")
 }
 
 // PromptsRoot 某级 capability 的 prompts 分类根（= <capRoot>/prompts）。

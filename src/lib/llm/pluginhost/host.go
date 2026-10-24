@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/lockfile"
+	"github.com/chonkpilot/chonkpilot-lib/winproc"
 )
 
 // DefaultMaxRestarts 是默认重启次数上限（超过 → plugin-failed，不再拉起）。
@@ -230,6 +231,8 @@ func (h *Host) supervise(ctx context.Context) {
 func (h *Host) runOnce(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, h.spec.Exe, h.spec.Args...)
 	cmd.Dir = h.spec.WorkDir
+	// 常驻引擎 exe（如 browser/desktop 引擎）可能为 console 子系统：隐藏控制台窗口。
+	cmd.SysProcAttr = winproc.SysProcAttr()
 	cmd.Env = append(os.Environ(), h.spec.Env...)
 	cmd.Env = append(cmd.Env,
 		"CHONKPILOT_PLUGIN_ID="+h.spec.ID,

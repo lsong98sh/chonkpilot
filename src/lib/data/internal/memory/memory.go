@@ -239,7 +239,7 @@ func (s *Service) memoryEnabledFor(instanceID string) bool {
 		return false
 	}
 	defer relPrj()
-	if pudb, relPu, err := kernel.OpenPrjUsrLayer(dataDir, prj); err == nil {
+	if pudb, relPu, err := kernel.OpenPrjUsrLayer(workDir, dataDir); err == nil {
 		defer relPu()
 		if v := kernel.ConfigGet(pudb, memoryEnabledKey); v != "" {
 			return v == "true"

@@ -67,26 +67,45 @@ type Options struct {
 	rs *ruleSet
 }
 
-// ConfigOptions 由「引擎配置读取器」构造遍历排除配置（配置键前缀 = 引擎名）：
+// Keys 是一次「配置 → 排除规则」读取所用的**显式键名**（由调用方给出）。
 //
-//	enable-<engine>            == "true" → enabled
-//	<engine>.skip-dirs                  → UserRules（逗号/分号/换行分隔，保序不去重，空串 = 无规则）
-//	<engine>.stack-gitignore   == "true" → StackGitignore（false → 不读任何 ignore 文件）
+// 语义（PLUGIN-UI-1 第三段起键命名不再由本库硬编码：插件配置已迁入
+// `plugins.<id>.*` 命名空间，本库只按调用方给的键取值）：
 //
-// get 返回 (值, 是否命中)；workdir 为规则根。仅当 workdir 为空（配置错误）→ 返回 err
+//	Enabled        == "true" → enabled
+//	SkipDirs                 → UserRules（逗号/分号/换行分隔，保序不去重，空串 = 无规则）
+//	StackGitignore == "true" → StackGitignore（false → 不读任何 ignore 文件）
+//
+// 空键名 = 该项按缺省（enabled=false / 无规则 / 不叠加）。
+type Keys struct {
+	Enabled        string
+	SkipDirs       string
+	StackGitignore string
+}
+
+// ConfigOptions 由「配置读取器」构造遍历排除配置（键名由 keys 指定）：
+//
+//	get 返回 (值, 是否命中)；workdir 为规则根。仅当 workdir 为空（配置错误）→ 返回 err
+//
 // （opts / enabled 仍按已读到的配置填充）；workdir 不存在不报错（逐级 .gitignore 读取本就
 // 静默容忍缺失，判定自然降级为「不排除」）。
-func ConfigOptions(engine string, get func(key string) (string, bool), workdir string) (*Options, bool, error) {
+func ConfigOptions(keys Keys, get func(key string) (string, bool), workdir string) (*Options, bool, error) {
 	enabled := false
-	if v, ok := get("enable-" + engine); ok {
-		enabled = v == "true"
+	if keys.Enabled != "" {
+		if v, ok := get(keys.Enabled); ok {
+			enabled = v == "true"
+		}
 	}
 	opts := &Options{Root: filepath.Clean(workdir)}
-	if v, ok := get(engine + ".skip-dirs"); ok {
-		opts.UserRules = splitRules(v)
+	if keys.SkipDirs != "" {
+		if v, ok := get(keys.SkipDirs); ok {
+			opts.UserRules = splitRules(v)
+		}
 	}
-	if v, ok := get(engine + ".stack-gitignore"); ok {
-		opts.StackGitignore = v == "true"
+	if keys.StackGitignore != "" {
+		if v, ok := get(keys.StackGitignore); ok {
+			opts.StackGitignore = v == "true"
+		}
 	}
 	if strings.TrimSpace(workdir) == "" {
 		return opts, enabled, errors.New("ignore: empty workdir")

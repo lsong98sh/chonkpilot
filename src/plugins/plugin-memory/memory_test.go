@@ -221,7 +221,7 @@ func TestExtractRewritesEnabledCategories(t *testing.T) {
 			InstanceID string `json:"instance_id"`
 		}
 		_ = json.Unmarshal(v.Payload, &req)
-		// 61-消息一览 §0：llm-simple 请求须带实例 id（透传触发事件 session-compress 的 instance_id）。
+		// 61-消息一览 §0：llm-simple 请求须带实例 id（透传触发事件 session-complete 的 instance_id）。
 		if req.InstanceID != "ins-1" {
 			t.Errorf("llm-simple 请求缺 instance_id：%q", req.InstanceID)
 		}

@@ -302,7 +302,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(wire.SessionListResult(resp.List))
 	case "get":
 		resp, err := s.SessionGet(facade.SessionGetRequest{
-			InstanceID: req.InstanceID, SessionID: sessionIDOf(req),
+			InstanceID: req.InstanceID, SessionID: sessionIDOf(req), DialogID: Sval(req.Data["dialog_id"]),
 		})
 		if err != nil {
 			failf("%v", err)
@@ -327,7 +327,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 			failf("%v", err)
 			return
 		}
-		okf(wire.SessionIDResult(resp.SessionID))
+		okf(wire.SessionLatestResult(resp.SessionID, resp.DialogID))
 	case "title":
 		id := idKey(req.ID)
 		if v, _ := req.Data[msgkeys.FieldId].(string); id == "" {
@@ -335,7 +335,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		}
 		title, _ := req.Data[msgkeys.FieldTitle].(string)
 		if _, err := s.SessionTitle(facade.SessionTitleRequest{
-			InstanceID: req.InstanceID, SessionID: id, Title: title,
+			InstanceID: req.InstanceID, SessionID: id, DialogID: Sval(req.Data["dialog_id"]), Title: title,
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -347,15 +347,27 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 			id = v
 		}
 		if _, err := s.SessionDelete(facade.SessionDeleteRequest{
-			InstanceID: req.InstanceID, SessionID: id,
+			InstanceID: req.InstanceID, SessionID: id, DialogID: Sval(req.Data["dialog_id"]),
 		}); err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.OKResult())
+	case "fork":
+		resp, err := s.SessionFork(facade.SessionForkRequest{
+			InstanceID: req.InstanceID,
+			DialogID:   Sval(req.Data["dialog_id"]),
+			Mode:       Sval(req.Data["mode"]),
+			Title:      Sval(req.Data["title"]),
+		})
+		if err != nil {
+			failf("%v", err)
+			return
+		}
+		okf(map[string]any{"ok": resp.OK, "dialog_id": resp.DialogID, "session_id": resp.SessionID})
 	case "active-set":
 		if _, err := s.SessionActiveSet(facade.SessionActiveSetRequest{
-			InstanceID: req.InstanceID, SessionID: sessionIDOf(req),
+			InstanceID: req.InstanceID, SessionID: sessionIDOf(req), DialogID: Sval(req.Data["dialog_id"]),
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -382,20 +394,27 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(wire.MessageContentResult(resp.Contents))
 	// A3 运行时扩展（server sessionStore 总线化原语；语义对齐 chonkpilot-server/session.go）
 	case "ensure-session":
-		if _, err := s.SessionEnsure(facade.SessionEnsureRequest{
+		resp, err := s.SessionEnsure(facade.SessionEnsureRequest{
 			InstanceID:      req.InstanceID,
 			SessionID:       sessionIDOf(req),
+			DialogID:        Sval(req.Data["dialog_id"]),
 			ParentSessionID: Sval(req.Data[msgkeys.FieldParentSessionId]),
-		}); err != nil {
+		})
+		if err != nil {
 			failf("%v", err)
 			return
 		}
-		okf(wire.OKResult())
+		res := wire.OKResult()
+		if resp.DialogID != "" {
+			res["dialog_id"] = resp.DialogID // P3 过渡期：根会话自举回带（旧布局不写键）
+		}
+		okf(res)
 	case "ensure-turn":
 		if _, err := s.TurnEnsure(facade.TurnEnsureRequest{
 			InstanceID: req.InstanceID,
 			TurnID:     Sval(req.Data[msgkeys.FieldTurnId]),
 			SessionID:  sessionIDOf(req),
+			DialogID:   Sval(req.Data["dialog_id"]),
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -414,6 +433,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{
 			InstanceID: req.InstanceID,
 			TurnID:     Sval(req.Data[msgkeys.FieldTurnId]),
+			DialogID:   Sval(req.Data["dialog_id"]),
 			Summary:    Sval(req.Data[msgkeys.FieldSummary]),
 		}); err != nil {
 			failf("%v", err)
@@ -435,6 +455,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		if _, err := s.TurnComplete(facade.TurnCompleteRequest{
 			InstanceID:   req.InstanceID,
 			TurnID:       Sval(req.Data[msgkeys.FieldTurnId]),
+			DialogID:     Sval(req.Data["dialog_id"]),
 			Status:       Sval(req.Data[msgkeys.FieldStatus]),
 			FinishReason: Sval(req.Data[msgkeys.FieldFinishReason]),
 			FullTokens:   tok.FullTokens,
@@ -553,7 +574,7 @@ func (s *Service) handleSnapshot(action string, req dataReq) {
 	method := "data-snapshot-" + action
 	okf := func(result map[string]any) { s.reply(method, req, result) }
 	failf := func(format string, args ...any) { s.fail(method, req, fmt.Errorf(format, args...)) }
-	prj, err := s.sessionDB(req)
+	catalog, err := s.sessionDB(req)
 	if err != nil {
 		s.fail(method, req, err)
 		return
@@ -563,9 +584,30 @@ func (s *Service) handleSnapshot(action string, req dataReq) {
 		failf("session_id required")
 		return
 	}
+	// 布局选择（P3 路由）：带 dialog_id → 对话库（快照与轮次/消息同库，缺失即报错）；
+	// 空 → 旧布局：快照落会话库（2026-10-23 轻量分片），prjusr 只留会话目录行。
+	dialogID := Sval(req.Data["dialog_id"])
+	var sidb *data.DB
+	var release func()
+	if dialogID != "" {
+		sidb, release, err = data.OpenExistingDialog(catalog.Path(), dialogID)
+	} else {
+		sidb, release, err = data.OpenSession(catalog.Path(), sessionID)
+	}
+	if err != nil {
+		failf("%v", err)
+		return
+	}
+	defer release()
+	if dialogID == "" {
+		if err := snapshot.MigrateFromCatalog(catalog, sidb, sessionID); err != nil {
+			failf("%v", err)
+			return
+		}
+	}
 	switch action {
 	case "get":
-		snap, ok, err := snapshot.Get(prj, sessionID)
+		snap, ok, err := snapshot.Get(sidb, sessionID)
 		if err != nil {
 			failf("%v", err)
 			return
@@ -589,7 +631,12 @@ func (s *Service) handleSnapshot(action string, req dataReq) {
 			failf("snapshot: %v", err)
 			return
 		}
-		if err := snapshot.Set(prj, sessionID, snap); err != nil {
+		if dialogID != "" {
+			if err := snapshot.SetInDialog(sidb, sessionID, snap); err != nil {
+				failf("%v", err)
+				return
+			}
+		} else if err := snapshot.Set(catalog, sidb, sessionID, snap); err != nil {
 			failf("%v", err)
 			return
 		}

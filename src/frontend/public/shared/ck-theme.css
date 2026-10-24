@@ -1,0 +1,52 @@
+/**
+ * ck-theme.css —— 公共前端资产 · 语义别名层（THEME-1，2026-10-23）
+ *
+ * 用途：宿主页面与插件 webui 页面**共用**的一层 `--ck-*` 语义别名，指向 `/themes.css`
+ * 提供的主题色 token。插件只需在 `<head>` 里三行：
+ *
+ *   <link rel="stylesheet" href="/shared/ck-theme.css" />
+ *   <link rel="stylesheet" href="/themes.css" />
+ *   <script src="/shared/ck-theme.js"></script>
+ *
+ * 每个别名都带 `var()` 兜底值（= light 主题的既有取值）——`/themes.css` 不可用时
+ * 页面仍按 light 正常显示（不白屏），这是**唯一**允许在此出现具体颜色的原因。
+ *
+ * 本文件**只放别名映射 + 极简 reset**，不放任何插件基础组件样式（那属于各插件自己的 webui）。
+ */
+
+:root {
+  /* ── 面 / 线 ─────────────────────────────────────────────── */
+  --ck-bg: var(--bg-primary, #f8f9fa);              /* 页面底色 */
+  --ck-surface: var(--bg-secondary, #ffffff);       /* 卡片 / 面板面 */
+  --ck-surface-strong: var(--bg-surface, #dee2e6);  /* 更强分隔面（--bg-surface） */
+  --ck-hover: var(--bg-hover, #e9ecef);             /* 悬停底 */
+  --ck-border: var(--border, #dee2e6);              /* 边框 / 分割线 */
+  --ck-toolbar: var(--toolbar-bg, #ffffff);         /* 栏面（工具栏） */
+
+  /* ── 文字 ────────────────────────────────────────────────── */
+  --ck-text: var(--text-primary, #212529);          /* 正文 / 标题 */
+  --ck-text-muted: var(--text-muted, #6b7280);      /* 次要 / 提示文字 */
+
+  /* ── 强调与语义色 ────────────────────────────────────────── */
+  --ck-accent: var(--accent, #4361ee);              /* 强调色（主按钮底 / 边框） */
+  --ck-accent-bg: var(--accent-bg, #ecf5ff);        /* 强调色淡底 */
+  --ck-success: var(--success, #2d9f4e);
+  --ck-warning: var(--warning, #e8a317);
+  --ck-danger: var(--danger, #dc3545);
+
+  /* 强调底上的前景色（主按钮文字）：取「面」色 —— light = 白、dark/nord = 深面，
+     保证三主题下与 --ck-accent 有足够对比度。 */
+  --ck-accent-fg: var(--bg-secondary, #ffffff);
+
+  /* ── 几何 / 字体（由宿主 variables.css 提供，插件页面缺失时用兜底）──── */
+  --ck-radius: var(--border-radius, 6px);
+  --ck-font-sans: var(--font-sans, 'Segoe UI', system-ui, -apple-system, sans-serif);
+  --ck-font-mono: var(--font-mono, 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace);
+}
+
+/* ── 极简 reset（宿主 global.css 已覆盖同名规则，此处不改变宿主外观）── */
+html,
+body {
+  margin: 0;
+  padding: 0;
+}

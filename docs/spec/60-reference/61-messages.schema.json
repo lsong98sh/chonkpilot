@@ -147,6 +147,7 @@
     "indexed_at": { "type": "string", "desc": "索引时间" },
     "init_git": { "type": "bool", "desc": "初始化 git" },
     "instance_id": { "type": "string", "desc": "实例 id（业务载荷一律必带）" },
+    "dialog_id": { "type": "string", "desc": "对话 id（一树一库：会话标识同级必带；旧布局可不带）" },
     "is_dir": { "type": "bool", "desc": "是否目录" },
     "items": { "type": "array", "desc": "条目集合（inbox 待处理项等）" },
     "key": { "type": "string", "desc": "键" },
@@ -340,12 +341,12 @@
     "deferred": [],
     "planned": [
       {
-        "family": "ui-plugin-*",
-        "topics": ["ui-plugin-list", "ui-plugin-register", "ui-plugin-unregister", "ui-plugin-activate", "ui-plugin-set-enabled", "ui-plugin-set-visible", "ui-plugin-status", "ui-plugin-activated", "ui-plugin-context-get", "ui-plugin-context-subscribe", "ui-plugin-context-unsubscribe", "ui-plugin-context-changed", "ui-plugin-call", "ui-plugin-fetch", "ui-plugin-component-register", "ui-plugin-component-unregister", "ui-plugin-message", "ui-plugin-close", "ui-plugin-deactivated"],
-        "source": "docs/spec/20-modules/2C-UI插件.md §4.2",
-        "refs": ["docs/spec/40-roadmap/49-待实现项.md T-13 / P2-1（未实现）", "docs/spec/40-roadmap/41-未决项登记.md"],
-        "status": "声明未实现（🔵 规划）",
-        "note": "B5 规划项契约面：该消息族在 2C 设计稿中声明、40-roadmap 记为未实现，**不进 61 准则**、不生成 msgkeys 常量、**不纳入对账硬约束**（无生产/消费代码可驱动）；落地时按 61 变更口径（topic 增删须用户授权）转 included。"
+        "family": "plugin-*",
+        "topics": ["plugin-list", "plugin-registered", "plugin-unregistered", "plugin-status", "plugin-set-enabled", "plugin-command", "plugin-config-get", "plugin-config-set", "plugin-config-changed", "plugin-call", "plugin-ui-event"],
+        "source": "docs/plugin-platform/插件与MCP统一设计方案.md §10.2 · docs/spec/40-roadmap/49-待实现项.md PLUGIN-1",
+        "refs": ["docs/spec/20-modules/28-plugins.md"],
+        "status": "已实现（PLUGIN-1，2026-10-23）",
+        "note": "插件平台宿主↔前端消息族（server = pluginmgr）。当前以字符串主题落地、**尚未并入 included**（不生成 msgkeys 常量、不纳入对账硬约束）；并入 included 属 61 契约变更，须用户确认后执行。原预留族 `ui-plugin-*`（2C §4.2，含 ui-plugin-list/register/status/call 等 19 条）由本族取代，详见设计稿 v2 附录。"
       }
     ]
   },
@@ -1345,7 +1346,10 @@
       "topic": "data-session-get",
       "face": "data",
       "direction": "client->data",
-      "payload": { "id": { "type": "string", "required": true } },
+      "payload": {
+        "id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false }
+      },
       "result": { "data": { "type": "any", "required": true } }
     },
     {
@@ -1354,6 +1358,7 @@
       "direction": "client->data",
       "payload": {
         "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "before_turn_id": { "type": "string", "required": false },
         "target_messages": { "type": "int", "required": false },
         "target_bytes": { "type": "int", "required": false }
@@ -1366,6 +1371,7 @@
       "direction": "client->data",
       "payload": {
         "session_id": { "type": "string", "required": false },
+        "dialog_id": { "type": "string", "required": false },
         "id": { "type": "string", "required": false },
         "keys": { "type": "array", "required": true }
       },
@@ -1376,7 +1382,11 @@
       "face": "data",
       "direction": "client->data",
       "payload": {},
-      "result": { "session_id": { "type": "string", "required": true } }
+      "result": {
+        "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false }
+      },
+      "notes": "P3-4c（2026-10-24）：一树一库缺省生效时回带 `dialog_id`（最近更新对话的主会话）；旧布局不写键。"
     },
     {
       "topic": "data-session-title",
@@ -1384,6 +1394,7 @@
       "direction": "client->data",
       "payload": {
         "id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "title": { "type": "string", "required": true }
       },
       "result": { "ok": { "type": "bool", "required": true } }
@@ -1394,22 +1405,46 @@
       "direction": "data->client",
       "event": {
         "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "title": { "type": "string", "required": true }
       },
-      "notes": "不带 instance_id → 全局；会话标题变更后广播"
+      "notes": "不带 instance_id → 全局；会话标题变更后广播（一树一库时回带 dialog_id，旧布局不写键）"
+    },
+    {
+      "topic": "data-session-fork",
+      "face": "data",
+      "direction": "client->data",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true },
+        "mode": { "type": "string", "required": false },
+        "title": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "dialog_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": true }
+      },
+      "notes": "派生对话（SESSION-COMP-1 P4）：mode 缺省 full（拷文件 + id 重映射）；context = 只带主会话 + 快照。新 dialog_id 与主 session_id 由实现生成。"
     },
     {
       "topic": "data-session-delete",
       "face": "data",
       "direction": "client->data",
-      "payload": { "id": { "type": "string", "required": true } },
+      "payload": {
+        "id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false }
+      },
       "result": { "ok": { "type": "bool", "required": true } }
     },
     {
       "topic": "data-session-active-set",
       "face": "data",
       "direction": "client->data",
-      "payload": { "session_id": { "type": "string", "required": true } },
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false }
+      },
       "result": { "ok": { "type": "bool", "required": true } }
     },
     {
@@ -1425,6 +1460,7 @@
       "direction": "client->data",
       "payload": {
         "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "parent_session_id": { "type": "string", "required": false },
         "kind": { "type": "string", "required": false },
         "lifecycle": { "type": "string", "required": false },
@@ -1436,8 +1472,11 @@
         "playbook": { "type": "string", "required": false },
         "convergence": { "type": "string", "required": false }
       },
-      "result": { "ok": { "type": "bool", "required": true } },
-      "notes": "幂等建会话（已存在不覆盖）。`kind`/`lifecycle`/`agent`/`scenario_id`/`llm`/`purpose`（单聊方案 §3.2/§5.4）与 `goal`/`playbook`/`convergence`（群聊方案 §18.2，SUBCHAT-3 阶段 F）均为**可选**：**仅非空才写键**（普通会话行形状零变化）。注：server 侧建子聊天/群聊经**进程内门面**直调（不经本消息），本处仅登记消息面 payload 形状。"
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "dialog_id": { "type": "string", "required": false }
+      },
+      "notes": "幂等建会话（已存在不覆盖）。`kind`/`lifecycle`/`agent`/`scenario_id`/`llm`/`purpose`（单聊方案 §3.2/§5.4）与 `goal`/`playbook`/`convergence`（群聊方案 §18.2，SUBCHAT-3 阶段 F）均为**可选**：**仅非空才写键**（普通会话行形状零变化）。注：server 侧建子聊天/群聊经**进程内门面**直调（不经本消息），本处仅登记消息面 payload 形状。P3-4c（2026-10-24）：一树一库生效时根会话可缺 `dialog_id` → 确定性建对话并**回带**；旧布局不写键。"
     },
     {
       "topic": "data-session-ensure-turn",
@@ -1445,7 +1484,8 @@
       "direction": "client->data",
       "payload": {
         "turn_id": { "type": "string", "required": true },
-        "session_id": { "type": "string", "required": true }
+        "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false }
       },
       "result": { "ok": { "type": "bool", "required": true } }
     },
@@ -1455,6 +1495,7 @@
       "direction": "client->data",
       "payload": {
         "turn_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "msg": { "type": "object", "required": true },
         "key": { "type": "string", "required": false }
       },
@@ -1469,6 +1510,7 @@
       "direction": "client->data",
       "payload": {
         "turn_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "summary": { "type": "string", "required": true }
       },
       "result": { "ok": { "type": "bool", "required": true } }
@@ -1479,6 +1521,7 @@
       "direction": "client->data",
       "payload": {
         "turn_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "status": { "type": "string", "required": true },
         "finish_reason": { "type": "string", "required": false },
         "full_tokens": { "type": "int", "required": false },
@@ -1570,13 +1613,15 @@
       "direction": "client->data",
       "payload": {
         "instance_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "ask_id": { "type": "string", "required": false },
         "pending_only": { "type": "bool", "required": false }
       },
       "result": {
         "ok": { "type": "bool", "required": true },
         "items": { "type": "array", "required": true }
-      }
+      },
+      "notes": "P3-4d：dialog_id 非空 → 只查该对话库；空 + 一树一库生效 → 跨对话库扫描（项内回带 dialog_id）"
     },
     {
       "topic": "data-turn-event-append",
@@ -1584,6 +1629,7 @@
       "direction": "client->data",
       "payload": {
         "instance_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "session_id": { "type": "string", "required": false },
         "turn_id": { "type": "string", "required": true },
         "seq": { "type": "number", "required": true },
@@ -1610,7 +1656,10 @@
       "topic": "data-session-load-messages",
       "face": "data",
       "direction": "client->data",
-      "payload": { "turn_id": { "type": "string", "required": true } },
+      "payload": {
+        "turn_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false }
+      },
       "result": { "messages": { "type": "array", "required": true } }
     },
     {
@@ -1619,6 +1668,7 @@
       "direction": "client->data",
       "payload": {
         "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "exclude_turn": { "type": "string", "required": false },
         "include_snapshot": { "type": "bool", "required": false }
       },
@@ -2226,13 +2276,16 @@
         "status": { "type": "string", "required": true },
         "finish_reason": { "type": "string", "required": true },
         "parents": { "type": "any", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "data_dir": { "type": "string", "required": true },
         "code": { "type": "string", "required": false },
         "message": { "type": "string", "required": false },
         "text": { "type": "string", "required": false },
         "retryable": { "type": "bool", "required": false },
         "retry_attempt": { "type": "int", "required": false },
         "retry_count": { "type": "int", "required": false },
-        "retry_wait_ms": { "type": "int", "required": false }
+        "retry_wait_ms": { "type": "int", "required": false },
+        "dialog_id": { "type": "string", "required": false }
       }
     },
     {
@@ -2272,6 +2325,7 @@
         "session": { "type": "string", "required": true },
         "last_turn": { "type": "string", "required": true },
         "snapshot_turn": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
         "max_context_token": { "type": "int", "required": false },
         "max_output_token": { "type": "int", "required": false }
       }
@@ -2313,7 +2367,8 @@
       "event": {
         "instance_id": { "type": "string", "required": true },
         "session_id": { "type": "string", "required": true },
-        "parent_session_id": { "type": "string", "required": false }
+        "parent_session_id": { "type": "string", "required": false },
+        "dialog_id": { "type": "string", "required": false }
       }
     },
     {

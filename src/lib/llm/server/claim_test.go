@@ -90,20 +90,21 @@ func TestInstanceClaimEntryBound(t *testing.T) {
 	if res["instance_id"] != id {
 		t.Fatalf("应答 instance_id = %v，期望 %s", res["instance_id"], id)
 	}
-	// PRODSIM-1：desktop 形态 data_dir 恒空（prjusr 按 project-id 落数据根），work_dir 取实例登记。
-	if res["work_dir"] != testWorkDir || res["data_dir"] != "" {
-		t.Fatalf("应答绑定 = %v/%v，期望 %s/空", res["work_dir"], res["data_dir"], testWorkDir)
+	// 2026-10-23：desktop 形态 data_dir **保留实例既有登记**（显式 --data-dir → prj 与 prjusr 同根，
+	// 12-数据层 §3）；未登记/登记为空时才为空（prjusr 按 project-id 落数据根）。work_dir 取实例登记。
+	if res["work_dir"] != testWorkDir || res["data_dir"] != dataDir {
+		t.Fatalf("应答绑定 = %v/%v，期望 %s/%s", res["work_dir"], res["data_dir"], testWorkDir, dataDir)
 	}
 
 	// claim 成功后照发 instance-register（主题与 payload 不改：data/filesys 据此登记，G-21）
 	m := drainClaimBroadcast(t, got)
-	if m["instance_id"] != id || m["work_dir"] != testWorkDir {
-		t.Fatalf("instance-register 广播 = %v，期望 instance_id=%s work_dir=%s", m, id, testWorkDir)
+	if m["instance_id"] != id || m["work_dir"] != testWorkDir || m["data_dir"] != dataDir {
+		t.Fatalf("instance-register 广播 = %v，期望 instance_id=%s work_dir=%s data_dir=%s", m, id, testWorkDir, dataDir)
 	}
 
-	// 内存实例表（{instance_id, work_dir, data_dir, lastBeat, client_type}）；PRODSIM-1：data_dir 空
+	// 内存实例表（{instance_id, work_dir, data_dir, lastBeat, client_type}）：data_dir 与登记一致。
 	rec, ok := s.im.Lookup(id)
-	if !ok || rec.WorkDir != testWorkDir || rec.DataDir != "" || rec.ClientType != "gui" {
+	if !ok || rec.WorkDir != testWorkDir || rec.DataDir != dataDir || rec.ClientType != "gui" {
 		t.Fatalf("内存实例表登记 = %+v (ok=%v)", rec, ok)
 	}
 	if rec.LastBeat.IsZero() {

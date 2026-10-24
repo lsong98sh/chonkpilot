@@ -256,7 +256,7 @@ func (p *Codegraph) onToolCall(ctx context.Context, _ string, v *mq.Value) error
 	enabled := r != nil && r.enabled
 	p.mu.Unlock()
 	if r == nil || !enabled {
-		return reply("codegraph: 该项目未启用（enable-codegraph=false）", true)
+		return reply("codegraph: 该项目未启用（plugins.codebase.codegraph.enabled=false）", true)
 	}
 
 	// 拷贝 args 并注入 workdir（不改 gateway 传入的原始 map）

@@ -39,13 +39,15 @@ func TestIsLoopbackReply(t *testing.T) {
 // TestHandleProcessesRequestWithTopLevelOK：经 MQ 发一条**顶层带 ok** 的业务请求，
 // 应正常处理并应答（修复前会被误判为应答丢弃 → 无回应答 → 调用方挂起）。
 func TestHandleProcessesRequestWithTopLevelOK(t *testing.T) {
+	wd := t.TempDir() // 先于 service 创建：清理 LIFO → data.Reset 先于目录删除
 	s := newSweepTestService(t)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(s.Stop)
 	const inst = "ins-okreq"
-	s.onInstanceRegister(instanceRegister, instancePayload(inst, t.TempDir(), ""))
+	s.onInstanceRegister(instanceRegister, instancePayload(inst, wd, ""))
+	waitShardSettled(t, s) // P3-4c 缺省 on：等异步搬运结束，避免清理竞态
 
 	ch := make(chan map[string]any, 4)
 	sub, err := s.Bus.On("data-user-config-list", 0, func(_ context.Context, _ string, v *mq.Value) error {
@@ -78,5 +80,26 @@ func TestHandleProcessesRequestWithTopLevelOK(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("顶层带 ok 的请求被误判为应答丢弃：未收到应答")
+	}
+}
+
+// waitShardSettled 等异步「旧布局 → dialogs/」搬运落地（P3-4c 缺省 on；最多 5s）。
+// 迁移无对话可搬时也会写入 shardDone 标记，故「标记出现」= 本轮结束。
+func waitShardSettled(t *testing.T, s *Service) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		settled := false
+		s.shardDone.Range(func(_, _ any) bool {
+			settled = true
+			return false
+		})
+		if settled {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("等待 shard 搬运超时")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

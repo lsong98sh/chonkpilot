@@ -66,10 +66,10 @@ type BootConfig struct {
 	Pool    Pool
 
 	// ── 其余启动开关（各宿主 Phase 3 消费；集中登记便于审计）──
-	Tray          bool
-	AutoExit      bool
-	PluginAddr    string
-	LLMBridgeAddr string
+	Tray       bool
+	AutoExit   bool
+	PluginAddr string
+	LLMUDS     string // LLM 桥接入口 UDS 路径（BRIDGE-3；原 LLMBridgeAddr/TCP 已删除）
 
 	// EnvKeys 只登记**注入的环境变量键名**（值可能含凭据/路径，不进入快照）。
 	EnvKeys []string
@@ -91,7 +91,7 @@ func Snapshot(in BootConfig) BootConfig {
 	cfg.LLMBase = strings.TrimSpace(cfg.LLMBase)
 	cfg.LLMModel = strings.TrimSpace(cfg.LLMModel)
 	cfg.PluginAddr = strings.TrimSpace(cfg.PluginAddr)
-	cfg.LLMBridgeAddr = strings.TrimSpace(cfg.LLMBridgeAddr)
+	cfg.LLMUDS = strings.TrimSpace(cfg.LLMUDS)
 
 	if cfg.Pool.CallTimeoutSeconds == 0 && cfg.Pool.MaxTasks == 0 && cfg.Pool.AsyncMode == "" {
 		cfg.Pool = DefaultPool()
@@ -135,7 +135,7 @@ func (c BootConfig) Redacted() map[string]any {
 		"tray":           c.Tray,
 		"autoExit":       c.AutoExit,
 		"pluginAddr":     c.PluginAddr,
-		"llmBridgeAddr":  c.LLMBridgeAddr,
+		"llmUDS":         c.LLMUDS,
 		"envKeys":        c.EnvKeys,
 	}
 	return view

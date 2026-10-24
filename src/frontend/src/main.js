@@ -10,6 +10,7 @@ import mq, { mqPlugin } from './utils/mq'
 import { dialog } from './components/dialog'
 import { registerSelectionSubscribers } from './stores/selectionSubscribers'
 import { setupLayoutEngine } from './layout'
+import { initPlugins } from './composables/usePlugins'
 
 // Go 端广播经 Eval 调用 window.mq.emitRemote(envelope)。
 window.mq = mq
@@ -26,6 +27,8 @@ app.use(mqPlugin)
 // 自由布局容器装配（UILAYOUT-1 §7 P3⑤）：须在 pinia 与 mqPlugin 之后 ——
 // 容器的 mq 订阅会取用 Pinia store，且 v-mq 指令复用宿主已注册的那一个。
 setupLayoutEngine(app)
+// 插件平台（PLUGIN-1）：快照 + 事件链 → 动态 view 注册 / 插件管理页
+initPlugins()
 app.mount('#app')
 
 // Pass main app context to DialogManager so dialog content
