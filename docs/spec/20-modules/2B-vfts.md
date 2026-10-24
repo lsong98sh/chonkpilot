@@ -8,7 +8,7 @@
 
 ## 1. 职责与边界
 
-- **一句话**：进程内 **zvec（C-API）FTS 全文索引**的**独立 console mcp-server**（引擎）+ server 内嵌插件（按 workdir 管理引擎子进程、编排增量/全量索引并向 gateway 注册查询工具）。
+- **一句话**：进程内 **zvec（C-API）FTS 全文索引**的**独立 console mcp-server**（引擎）+ 宿主侧插件（按 workdir 管理引擎子进程、编排增量/全量索引并向 gateway 注册查询工具）。**宿主侧主形态 = `codebase` exe 插件**（进程外，codegraph + vfts 合一，见 [28 §3.4](28-plugins.md)）；`plugin-vfts` 为兼容的进程内 Hook（默认关闭）。
 - **做**：纯文本（源码 + `.txt`/`.md` 等）与**文档类**（Office/PDF，经外部转换服务抽文本）的全文索引、按文件增量（文件清单驱动）、6 个引擎工具（5 管理 + 1 查询）+ 1 个查询工具注册、进度回写与空闲子进程回收、**jieba 分词（系统级词典）**。
 - **不做**：不做向量语义检索（阶段 2，HNSW 后置）；不启动文档转换服务（由用户手动注册/启动）；不落 `chonkpilot.db`（索引独立目录）；引擎侧不做可见性门控（门控在插件）；**不做项目级/用户级词典覆盖**（词典只有系统级一份）。
 - **与 codegraph 的定位差异**：vfts = **全文检索**（FTS，可命中自然语言/中文），codegraph = **代码语义索引**（符号/调用图）；两者引擎各自独立落盘、工具面互不重叠。
@@ -19,9 +19,9 @@
 
 | 项 | 引擎（vfts-mcp-server） | 插件（plugin-vfts） |
 |----|--------------------------|---------------------|
-| 形态 | 独立 exe（console，**CGO 允许**——链接 zvec C-API） | 内嵌 lib Hook（server 进程内） |
+| 形态 | 独立 exe（console，**CGO 允许**——链接 zvec C-API） | **`codebase` exe 插件内侧（进程外，主形态）**；`plugin-vfts` = 兼容的进程内 lib Hook（默认关闭） |
 | 运行 | `--http[=<addr>]`（默认 `127.0.0.1:5702`，端点 `/mcp`）· `--stdio` · `-probe <dir>`（自检：建索引打印汇总，可附 `-match`/`-query`/`-topk`/`-stack-gitignore`） | stdio 子进程管理（懒建 client） |
-| 构建 | `build-vfts.ps1`（`CGO_ENABLED=1`） | 随 server 内嵌（`build-desktop.ps1`） |
+| 构建 | `build-vfts.ps1`（`CGO_ENABLED=1`） | `build-plugins.ps1` 产出 `chonkpilot-plugin-codebase.exe`（主形态）；兼容 Hook 随 server 内嵌（`build-desktop.ps1`） |
 | 产物 | `dist/desktop/mcps/vfts/chonkpilot-vfts-mcp-server.exe` + `zvec_c_api.dll`（**同目录**，CGO 运行时必需） | — |
 | 引擎定位 | `Options.Exe` > 环境变量 `VFTS_EXE` > **`<exeDir>/mcps/vfts/chonkpilot-vfts-mcp-server.exe`**（`resolveExe`，**不做多路径猜测**，缺失即 `Start` 失败） | — |
 

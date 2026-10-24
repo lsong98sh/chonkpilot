@@ -8,7 +8,7 @@
 
 ## 1. 职责与边界
 
-- **一句话**：进程内 **tree-sitter** 索引的**独立 console mcp-server**（引擎）+ server 内嵌插件（按 workdir 管理引擎子进程并向 gateway 注册查询工具）。
+- **一句话**：进程内 **tree-sitter** 索引的**独立 console mcp-server**（引擎）+ 宿主侧插件（按 workdir 管理引擎子进程并向 gateway 注册查询工具）。**宿主侧插件形态以 `codebase` exe 为准**（进程外，codegraph + vfts 合一，见 [28 §3.3](28-plugins.md)）；`plugin-codegraph` 为兼容的进程内 Hook（默认关闭）。
 - **做**：多语言符号/依赖/复杂度/**调用图（caller/callee）**抽取、索引持久化与增量自愈、8 个查询工具 + 3 个管理工具。
 - **不做**：不落 chonkpilot.db（索引独立目录）；管理工具不发 LLM（hot=false）；引擎侧不做可见性门控（门控在插件）。
 
@@ -18,9 +18,9 @@
 
 | 项 | 引擎（codegraph-mcp-server） | 插件（plugin-codegraph） |
 |----|------------------------------|--------------------------|
-| 形态 | 独立 exe（console，**CGO 允许**） | 内嵌 lib Hook（server 进程内） |
+| 形态 | 独立 exe（console，**CGO 允许**） | **`codebase` exe 插件内侧（进程外，主形态）**；`plugin-codegraph` = 兼容的进程内 lib Hook（默认关闭） |
 | 运行 | `--http[=addr]`（默认 `127.0.0.1:5701`，端点 `/mcp`）· `--stdio` · `-probe <dir>` · `-dump <dir>`（只读自检：打印落盘命中文件集合 JSON） | stdio 子进程管理（懒建 client） |
-| 构建 | `build-codegraph.ps1`（`CGO_ENABLED=1`，PATH 前置 `msys64/ucrt64/bin`） | 随 server 内嵌（`build-desktop.ps1`） |
+| 构建 | `build-codegraph.ps1`（`CGO_ENABLED=1`，PATH 前置 `msys64/ucrt64/bin`） | `build-plugins.ps1` 产出 `chonkpilot-plugin-codebase.exe`（主形态）；兼容 Hook 随 server 内嵌（`build-desktop.ps1`） |
 | 产物 | `dist/plugins/codegraph/chonkpilot-codegraph-mcp-server.exe`；**发行落点 = `<exeDir>/mcps/codebase/`**（插件 `resolveExe` 定位，见下注） | — |
 
 > 插件 `resolveExe` 定位引擎：`Options.Exe` > 环境变量 `CODEGRAPH_EXE` > **`<exeDir>/mcps/codebase/chonkpilot-codegraph-mcp-server.exe`**（**不多路径猜测**，缺失即失败）。

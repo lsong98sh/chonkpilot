@@ -7,7 +7,7 @@ require (
 	github.com/chonkpilot/chonkpilot-ignore v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-llm v0.0.0
-	github.com/chonkpilot/chonkpilot-plugin-sdk v0.0.0
+	github.com/lsong98sh/chonkpilot-plugin-framework v0.0.0
 )
 
 require (
@@ -48,7 +48,7 @@ replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../../plugins/plu
 
 replace github.com/chonkpilot/chonkpilot-plugin-history => ../../../plugins/plugin-history
 
-replace github.com/chonkpilot/chonkpilot-plugin-sdk => ../../../lib/plugin-sdk
+replace github.com/lsong98sh/chonkpilot-plugin-framework => ../../../../../chonkpilot-plugin-framework
 
 replace github.com/chonkpilot/chonkpilot-task => ../../../lib/task
 

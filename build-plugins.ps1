@@ -20,8 +20,8 @@
 # （plugin.json 来自 src/initdata/capability/plugins/<id>/，exe 必须与之**同目录**，
 #  manifest 的 runtime.exe 是插件目录内相对路径）。
 # webui 的投放（PLUGIN-UI-1）：本脚本产出的插件**全部** `ui.selfServe: true` ——
-# webui 源在 `src/plugins/<id>/webui/`，经 `//go:embed all:webui` 打进 exe，
-# 产物**不带** webui/（构建后无需单独投放页面资源）。
+# webui 源随插件源码（进程外插件在 `chonkpilot-plugins/<id>/webui/`，memory/history 在
+# `src/plugins/<id>/webui/`），经 `//go:embed all:webui` 打进 exe，产物**不带** webui/。
 # 例外：demo-python 是 Python 样例（runtime.exe = python，product=false，不随产物投放），
 # 不支持 embed，其页面仍在 `src/initdata/capability/plugins/demo-python/webui/`。
 #
@@ -46,6 +46,9 @@ $env:CGO_ENABLED = "1"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $srcPlugins = Join-Path $root "src\plugins"
+# 进程外插件源码仓库（2026-10-24 分离）：websearch/codebase/browser/desktop/file/task/mcp
+# 与主仓同级；memory/history 仍留主仓（复用主仓业务包，待后续抽公共库）。
+$pluginsRepo = Join-Path (Split-Path -Parent $root) "chonkpilot-plugins"
 $out = Join-Path $root "dist\plugin-apps"
 
 $zvec = Join-Path $srcPlugins "vfts\third_party\zvec"
@@ -97,25 +100,25 @@ function Copy-Engine {
 }
 
 Write-Host "==> [1/9] websearch"
-Build-Plugin -Mod (Join-Path $srcPlugins "websearch") -ID "websearch" -ExeName "chonkpilot-websearch.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "websearch") -ID "websearch" -ExeName "chonkpilot-websearch.exe"
 
 Write-Host "==> [2/9] codebase (codegraph + vfts, CGO)"
-Build-Plugin -Mod (Join-Path $srcPlugins "codebase") -ID "codebase" -ExeName "chonkpilot-plugin-codebase.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "codebase") -ID "codebase" -ExeName "chonkpilot-plugin-codebase.exe"
 Copy-Item (Join-Path $zvecLib "zvec_c_api.dll") (Join-Path $out "codebase") -Force
 Write-Host "    ok: zvec_c_api.dll"
 
 Write-Host "==> [3/9] browser（桥接层 + 引擎）"
-Build-Plugin -Mod (Join-Path $srcPlugins "browser") -ID "browser" -ExeName "chonkpilot-plugin-browser.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "browser") -ID "browser" -ExeName "chonkpilot-plugin-browser.exe"
 Copy-Engine -ID "browser" -EngineName "chonkpilot-browser-plugin.exe"
 
 Write-Host "==> [4/9] desktop（桥接层 + 引擎）"
-Build-Plugin -Mod (Join-Path $srcPlugins "desktop") -ID "desktop" -ExeName "chonkpilot-plugin-desktop.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "desktop") -ID "desktop" -ExeName "chonkpilot-plugin-desktop.exe"
 Copy-Engine -ID "desktop" -EngineName "chonkpilot-desktop-plugin.exe"
 
 # file 插件的工具契约：唯一源仍是 src/initdata/capability/tools/file（本插件运行时解析），
 # 但**不再进入 core capability 根**（否则与插件重复注册 → gateway 冲突）。
 Write-Host "==> [5/9] file（文件系列 11 工具）"
-Build-Plugin -Mod (Join-Path $srcPlugins "file") -ID "file" -ExeName "chonkpilot-plugin-file.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "file") -ID "file" -ExeName "chonkpilot-plugin-file.exe"
 $fileContractsSrc = Join-Path $root "src\initdata\capability\tools\file"
 $fileContractsDst = Join-Path $out "file\tools\file"
 if (Test-Path $fileContractsSrc) {
@@ -128,10 +131,10 @@ if (Test-Path $fileContractsSrc) {
 }
 
 Write-Host "==> [6/9] task（执行 / LLM / 状态 / 终止）"
-Build-Plugin -Mod (Join-Path $srcPlugins "task") -ID "task" -ExeName "chonkpilot-plugin-task.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "task") -ID "task" -ExeName "chonkpilot-plugin-task.exe"
 
 Write-Host "==> [7/9] mcp（检索 / 加载 / 调用）"
-Build-Plugin -Mod (Join-Path $srcPlugins "mcp") -ID "mcp" -ExeName "chonkpilot-plugin-mcp.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "mcp") -ID "mcp" -ExeName "chonkpilot-plugin-mcp.exe"
 
 Write-Host "==> [8/9] memory（记忆沉淀；复用 chonkpilot-plugin-memory 业务包）"
 Build-Plugin -Mod (Join-Path $srcPlugins "memory") -ID "memory" -ExeName "chonkpilot-memory.exe"

@@ -30,9 +30,9 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-plugin"
+	"github.com/chonkpilot/chonkpilot-plugin/bridgebus"
 	memory "github.com/chonkpilot/chonkpilot-plugin-memory"
-	"github.com/chonkpilot/chonkpilot-plugin-sdk/bridgebus"
-	"github.com/chonkpilot/chonkpilot-plugin-sdk/pluginsdk"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/sdk"
 )
 
 const pluginVersion = "1.0.0"

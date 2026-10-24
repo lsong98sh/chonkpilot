@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
-	"github.com/chonkpilot/chonkpilot-plugin-sdk/pluginsdk"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/sdk"
 )
 
 // TestPluginSDKBindSubjectRoundTrip 是「插件订阅宿主主题（含请求-应答）」的 L2 用例：
