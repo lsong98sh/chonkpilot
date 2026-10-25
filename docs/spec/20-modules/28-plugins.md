@@ -20,7 +20,7 @@
 |----|----|
 | 形态 | ① **进程外 exe 插件（主形态）**：`pluginsdk` 连插件桥（UDS/TCP），工具经 MCP（streamable HTTP）暴露，实例由宿主 `pluginmgr` 按 manifest 拉起；② **进程内 lib Hook（兼容，默认关闭）**：`plugin.Hook`，仅 codegraph / vfts |
 | 接口 | `Hook{ Name() string; Start(Deps) error }`；`Deps{ Bus mq.Bus; Logf func(format, ...) }`（另含可选 `Notify func(Notice)`：失败上报，nil = 静默）；**可选** `Stopper{ Stop() }` —— 持可释放资源（后台 goroutine / 引擎子进程 / 订阅 / 实例视图）的插件实现 `Stop()`，宿主退出时按 `Start` **逆序**调用（语义见下） |
-| 启动 | **唯一入口 = 框架 `host/mgr`**（2026-10-25 定稿）：宿主启动时扫描 `<exeDir>/capability/plugins.conf`（**每行一个可执行命令行**，`#` 注释，**行序 = 启动顺序**），逐行 spawn；插件启动后自己连 UDS 并发 `plugin.hello` 自报名字，宿主按名字匹配 `capability/plugins/<name>/plugin.json`。进程内 Hook（兼容形态）仅 **codegraph → vfts**，清单单一来源 = `appwire.DefaultPlugins`（默认关闭） |
+| 启动 | **唯一入口 = 框架 `host/mgr`**（2026-10-25 定稿）：宿主**先起 server**，再扫描 `<exeDir>/plugin.ini`（每行一个可执行命令行，也可写在 `[bootstrap]` 段；`#` 注释，行序 = 启动顺序）逐行 spawn；插件启动后自己连 UDS 并 `plugin.hello` 自报名字、注册 view 与监听事件——**拉起后不注册的进程视为无效，宿主不报错**。进程内 Hook（兼容形态）仅 **codegraph → vfts**，清单单一来源 = `appwire.DefaultPlugins`（默认关闭） |
 | 数据访问 | 走 `src/lib/data`（`data.Prj(instanceID)` 或 payload 自带 work_dir/data_dir 自登记）；work_dir 解析走 `instance.Manager` |
 
 **实例视图**（`src/plugins/plugin/instance/manager.go`）：订阅 `instance-register` / `instance-heartbeat` / `instance-exit`，维护 `instance_id ↔ {ID, WorkDir, DataDir, ClientType, User, ParentInstance, LastBeat}`（`LastBeat` 仅记录最近心跳/注册时间；**`User`（🆕 2026-10-09）= 实例归属 OS 用户名**，`instance-register` 必填字段，供 `instance-bring-to-top` 的跨用户判定；**`ParentInstance`（🆕 2026-10-09）= 子窗口实例的宿主顶层实例 id** —— 由 `instance-register` 的 `parent_instance` 字段解析，非空即子实例，供托盘「列举实例」过滤，见 [61 §4.1](../60-reference/61-消息一览.md)）；提供 `Lookup/List/Count` 与 `ListTopLevel`（仅顶层）。
@@ -30,10 +30,12 @@
 
 **启动清单与「拉起只属于框架」（2026-10-25 定稿）**：
 
-1. **主仓不持有任何单插件拉起代码**。启动 = 框架 `host/mgr` 扫描 `plugins.conf` 后统一 spawn；重启/退避/单实例锁/健康检查/优雅关停全部复用 `host/mgr` 的 manifest 语义。
-2. **已判定删除的专用监管层**：`src/lib/llm/vftsindexer`、`src/lib/llm/codegraphindexer`、`src/lib/llm/pluginhost`（与 `host/mgr` 重复），以及 `gui/host`、`server/main` 各自两处 indexer exe 定位 + Ensure 组装。
-3. **能力自管（索引不独立成插件）**：插件启动后与宿主交换 manifest + `plugin.hello`，之后文件监听/补扫/全量重建都由插件自己做——订阅既有 `filesys.changed`（增量）、`session-complete`（补扫）、`vfts.reindex`（全量重建）。**索引回路 = `codebase` 插件进程内的后台任务，引擎以库形式内联在该进程**（工具与索引同进程，经 TCP/HTTP 暴露 MCP；**不 spawn stdio 引擎子进程、不另设 indexer 插件或 exe**）。每次索引前向宿主拉一次「当前活动项目 + 该项目 codebase/vfts 开关」。宿主**只对外提供能力**（活动项目/配置读取，**不推送**）。
-4. **宿主索引队列下线**：`filesys` 不再写待索引表；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧删除（`queuehooks` 一并删除）。消息面**零新增主题**（`filesys.changed` 见 [61 §2.4](../60-reference/61-消息一览.md)）。
+1. **主仓不持有任何单插件拉起代码**。`<exeDir>/plugin.ini` 每行一个可执行命令行（或写在 `[bootstrap]` 段；行序 = 启动顺序）；宿主**先起 server**，再由框架 `host/mgr` 统一 spawn。重启/退避/健康检查/优雅关停全部复用 `host/mgr` 的 manifest 语义。
+2. **注册制**：插件启动后自己连 UDS → `plugin.hello` 自报名字 → 注册 view / MCP 工具 / 监听事件；**拉起后不注册的进程视为无效**（不报错、不重试风暴）。manifest 仍用于 UI/配置/工具声明。
+3. **已判定删除的专用监管层**：`src/lib/llm/vftsindexer`、`src/lib/llm/codegraphindexer`、`src/lib/llm/pluginhost`（与 `host/mgr` 重复），以及 `gui/host`、`server/main` 各自两处 indexer exe 定位 + Ensure 组装。
+4. **事件面以 workdir 为单位**：server 把 `instance-register` / `instance-exit` 翻译为 **`workdir-opened` / `workdir-closed`**（[61 §2.5](../60-reference/61-消息一览.md)），插件只管理 workspace；启动时拉一次当前活动 workdir，之后用事件增量维护。
+5. **索引不独立成插件**：索引回路 + 引擎**库内联**在 `codebase` 插件进程，工具与索引同进程、经 **TCP/IP（MCP）** 暴露；`file`/`codebase` 这类简单能力**不再起子 exe**。重引擎（如 Chrome 进程）**允许由插件进程自己 spawn 子 exe**（agent-box 式，随插件进程生死），但不得再由主仓代管。
+6. **宿主索引队列下线**：`filesys` 不再写待索引表；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧删除（`queuehooks` 一并删除）。消息面新增仅 §2.5 两个 workdir 事件。
 
 ---
 
@@ -89,7 +91,7 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `instance-register`/`heartbeat`/`exit` · `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `codegraph-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：每次索引前向宿主拉「活动项目 + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
+| 订阅 | `workdir-opened`/`workdir-closed`（61 §2.5，替代 instance 视角）· `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `codegraph-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：每次索引前向宿主拉「活动 workdir + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
 | 配置键 | `enable-codegraph`（可见性门控）· `codegraph.exts` / `codegraph.skip-dirs` / `codegraph.stack-gitignore`（索引配置，变更即强制重建）· `codegraph.status`（状态回写）· `codegraph.action`（重建/清除/重试信号） |
 | 引擎 | **〔2026-10-25 定稿，待落地〕引擎以库形式编入 `codebase` 插件进程**（工具与索引同进程，经 TCP/HTTP 暴露）；不再 spawn `chonkpilot-codegraph-mcp-server.exe` 之类的 stdio 引擎子进程，也不再有独立 indexer exe。按 workdir 管理索引状态（每 workdir 独立串行） |
 | 叠加 gitignore 体系 | 插件把 `codegraph.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `codegraph.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源/优先级/匹配语义/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`，与 vfts 引擎/插件**同一实现**） |
@@ -106,7 +108,7 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `instance-register`/`heartbeat`/`exit` · `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `vfts-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：每次索引前向宿主拉「活动项目 + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
+| 订阅 | `workdir-opened`/`workdir-closed`（61 §2.5，替代 instance 视角）· `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `vfts-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：每次索引前向宿主拉「活动 workdir + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
 | 配置键 | `enable-vfts`（可见性门控）· `vfts.exts` / `vfts.skip-dirs` / `vfts.stack-gitignore` / `vfts.docs` / `vfts.doc-max-mb`（索引配置，变更即强制重建）· `vfts.status`（状态回写） |
 | 引擎 | **〔2026-10-25 定稿，待落地〕引擎以库形式编入 `codebase` 插件进程**（工具与索引同进程，经 TCP/HTTP 暴露）；不再 spawn stdio 引擎子进程，也不再有独立 indexer exe。索引状态按 workdir 隔离 |
 | 注册工具 | **1 个查询工具** `vfts_query`（同名同 schema 去 `workdir`，`handler_subject=vfts-tool-call`，hot=true，category=vfts）；管理工具 `vfts_configure/index/status` **不注册**（插件直接调引擎） |
