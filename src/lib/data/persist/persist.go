@@ -445,11 +445,11 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	case "session":
 		s.handleSession(op, payload)
 	case "inbox":
-		s.handleInbox(op, req)
+		s.handleInbox(op, payload)
 	case "turn-event":
-		s.handleTurnEvent(op, req, payload)
+		s.handleTurnEvent(op, payload)
 	case "ask":
-		s.handleAsk(op, req)
+		s.handleAsk(op, payload)
 	case "snapshot":
 		s.handleSnapshot(op, payload)
 	case "knowledge":

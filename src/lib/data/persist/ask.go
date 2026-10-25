@@ -4,33 +4,33 @@
 package persist
 
 import (
-	"fmt"
+	"encoding/json"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 )
 
 // handleAsk 分发 data-ask-<action>（当前仅 pending）。
-func (s *Service) handleAsk(action string, req dataReq) {
+func (s *Service) handleAsk(action string, payload []byte) {
 	method := "data-ask-" + action
-	failf := func(format string, args ...any) {
-		s.fail(method, req, fmt.Errorf(format, args...))
+	var p AskPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		s.failID(method, p.ReqID, err)
+		return
 	}
-	d := req.Data
+	f := p.fields()
 
 	switch action {
 	case "pending":
-		askID, _ := d["ask_id"].(string)
-		pendingOnly, _ := d["pending_only"].(bool)
 		resp, err := s.AskPending(facade.AskPendingRequest{
-			InstanceID:  req.InstanceID,
-			DialogID:    Sval(d["dialog_id"]),
-			AskID:       askID,
-			PendingOnly: pendingOnly,
+			InstanceID:  p.InstanceID,
+			DialogID:    string(f.DialogID),
+			AskID:       f.AskID,
+			PendingOnly: bool(f.PendingOnly),
 		})
 		if err != nil {
-			failf("%v", err)
+			s.failID(method, p.ReqID, err)
 			return
 		}
-		s.reply(method, req, map[string]any{"ok": resp.OK, "items": resp.Items})
+		s.replyID(method, p.ReqID, map[string]any{"ok": resp.OK, "items": resp.Items})
 	}
 }

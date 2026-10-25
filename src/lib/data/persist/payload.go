@@ -311,6 +311,103 @@ func mergeFlat[T any](flat T, raw json.RawMessage) T {
 	return merged
 }
 
+// ── inbox（INBOX 内部面：llm-server → persist；61 §3.2）──
+
+// InboxData 是 inbox 域的业务字段（append / list / update / commit 共用）。
+type InboxData struct {
+	ID             ID             `json:"id,omitempty"`
+	InboxID        string         `json:"inbox_id,omitempty"`
+	DialogID       string         `json:"dialog_id,omitempty"`
+	Session        string         `json:"session,omitempty"`
+	SessionID      string         `json:"session_id,omitempty"`
+	TurnID         string         `json:"turn_id,omitempty"`
+	Type           string         `json:"type,omitempty"`
+	LLM            string         `json:"llm,omitempty"`
+	Content        string         `json:"content,omitempty"`
+	Think          any            `json:"think,omitempty"`
+	Effort         any            `json:"effort,omitempty"`
+	ScenarioID     string         `json:"scenario_id,omitempty"`
+	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	Source         string         `json:"source,omitempty"`
+	Status         string         `json:"status,omitempty"`
+	Brief          string         `json:"brief,omitempty"`
+	ToolCallStatus string         `json:"tool_call_status,omitempty"`
+	// Msg 是 commit 的消息体（ChatMsg 形态，多态字段 → 原样 JSON，由调用侧解码）。
+	Msg json.RawMessage `json:"msg,omitempty"`
+}
+
+// InboxPayload 是 data-inbox-* 的载荷（内嵌顶层业务字段 + 原样 data）。
+type InboxPayload struct {
+	Header
+	ID ID `json:"id,omitempty"`
+	InboxData
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// fields 合并两形载荷（`data` 优先；顶层 id 例外优先）。
+func (p InboxPayload) fields() InboxData {
+	f := mergeFlat(p.InboxData, p.Data)
+	if p.ID != "" {
+		f.ID = p.ID
+	}
+	return f
+}
+
+// ── turn-event（TURN EVENT 内部面；61 §3.2）──
+
+// TurnEventData 是 turn-event 域的业务字段（append / cleanup 共用）。
+type TurnEventData struct {
+	SessionID     string          `json:"session_id,omitempty"`
+	TurnID        string          `json:"turn_id,omitempty"`
+	Seq           IntValue        `json:"seq,omitempty"`
+	Type          string          `json:"type,omitempty"`
+	At            string          `json:"at,omitempty"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
+	RetentionDays IntValue        `json:"retention_days,omitempty"`
+}
+
+// TurnEventPayload 是 data-turn-event-* 的载荷（内嵌顶层业务字段 + 原样 data）。
+type TurnEventPayload struct {
+	Header
+	TurnEventData
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// fields 合并两形载荷（`data` 优先、顶层补缺）。
+func (p TurnEventPayload) fields() TurnEventData {
+	return mergeFlat(p.TurnEventData, p.Data)
+}
+
+// ── ask（未答 / 失效回查；61 §3.2）──
+
+// AskData 是 ask 域的业务字段（当前仅 pending）。
+type AskData struct {
+	DialogID    ID        `json:"dialog_id,omitempty"`
+	AskID       string    `json:"ask_id,omitempty"`
+	PendingOnly BoolValue `json:"pending_only,omitempty"`
+}
+
+// AskPayload 是 data-ask-* 的载荷（内嵌顶层业务字段 + 原样 data）。
+type AskPayload struct {
+	Header
+	AskData
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// fields 合并两形载荷（`data` 优先、顶层补缺）。
+func (p AskPayload) fields() AskData {
+	return mergeFlat(p.AskData, p.Data)
+}
+
+// nonNullRaw 把缺省 / `null` 的原始 JSON 归一为 nil（对齐旧 map 取值的「无该键」语义）。
+func nonNullRaw(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return raw
+}
+
 // configEntries 把 save 的 data 归一为键值批：`entries` 非空优先（id = 字典序首键），
 // 否则回落单键 `key`/`value`；无键 → ok=false（61 §3.1 语义，与旧 wire.ConfigSaveEntries 一致）。
 func configEntries(d ConfigSaveData) (entries map[string]string, id string, ok bool) {
