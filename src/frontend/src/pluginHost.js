@@ -15,7 +15,7 @@ import Icon from './components/icon/Icon.vue'
 import { Button, Switch } from './components/ui'
 import { registerPluginViews, unregisterPluginViews } from './layout/views.registry.js'
 import { subscribeTheme, themeSnapshot } from './composables/useTheme.js'
-import { configurePluginUI } from '../../packages/plugin-ui/src/index.js'
+import { configurePluginUI } from '../packages/plugin-ui/src/index.js'
 
 let injected = false
 
@@ -39,4 +39,4 @@ export function initPluginUIHost() {
   })
 }
 
-export * from '../../packages/plugin-ui/src/index.js'
+export * from '../packages/plugin-ui/src/index.js'
