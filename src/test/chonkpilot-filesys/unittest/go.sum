@@ -1,7 +1,7 @@
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1 h1:wNqBpm1/RBbtUhoMelM0dLn+OhhwRJ+/8X2ESRI7Kyo=
-github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1/go.mod h1:mp5Cwe1xAJB1UyGvRNpIHxgMrz23kTD872C1fksFvwA=
+github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2 h1:oOgg1/CTtUN4eJYh2qShOsmB5YdsCghrbXD158v5uTE=
+github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2/go.mod h1:mp5Cwe1xAJB1UyGvRNpIHxgMrz23kTD872C1fksFvwA=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/sgtdi/fswatcher v1.3.0 h1:2tFEnBml5EipRF4TvUP0x+T4ty2OSYlmvcnQ6dSTp04=

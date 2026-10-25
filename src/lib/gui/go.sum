@@ -16,8 +16,8 @@ github.com/lsong98sh/chonkpilot-chat v0.1.0 h1:/DTYH7/YuzxldoyE97aLsk+DjMrVSch/7
 github.com/lsong98sh/chonkpilot-chat v0.1.0/go.mod h1:F46a8V4Bp3+g9/T1JS7+rWBRpJNqLu9iVgGn8XzU/ok=
 github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0 h1:f/oJnb0ftUk2q2I7SDH0X4TfOiEfb/bATeqdxz7wLGY=
 github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0/go.mod h1:VAUJe7oD4JjpLAtGriLGukF5zn2mbC8uf8a0KMXQgh4=
-github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1 h1:wNqBpm1/RBbtUhoMelM0dLn+OhhwRJ+/8X2ESRI7Kyo=
-github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1/go.mod h1:mp5Cwe1xAJB1UyGvRNpIHxgMrz23kTD872C1fksFvwA=
+github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2 h1:oOgg1/CTtUN4eJYh2qShOsmB5YdsCghrbXD158v5uTE=
+github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2/go.mod h1:mp5Cwe1xAJB1UyGvRNpIHxgMrz23kTD872C1fksFvwA=
 github.com/lsong98sh/chonkpilot-router v0.1.0 h1:R8K6h5FAY6ijtwS/rIIHnytxqgl1D39pyqXJWVWe9wc=
 github.com/lsong98sh/chonkpilot-router v0.1.0/go.mod h1:l/aArs8nBJigWadgLR0PzYRsfHjtmtG+erXx6aWbkfA=
 github.com/lsong98sh/chonkpilot-session v0.1.0 h1:4IVehXrwcehlbCCB7zb96W8WL2+VepMaQ9qS/GK+BSo=

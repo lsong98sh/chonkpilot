@@ -24,4 +24,4 @@ replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
 
 replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../../plugins/plugin-compress
 
-require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1
+require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2

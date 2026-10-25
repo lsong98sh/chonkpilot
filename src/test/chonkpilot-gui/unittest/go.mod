@@ -42,4 +42,4 @@ replace github.com/chonkpilot/chonkpilot-assembly => ../../../lib/assembly
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools
 
-require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1
+require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2

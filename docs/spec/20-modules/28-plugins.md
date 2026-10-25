@@ -182,7 +182,7 @@
 
 ### 3A.5 配置
 
-- **统一由 data 层管理**：插件经 `plugin/v1/config.project.{get,load,set,delete}`（[capabilities.go](../../../src/lib/llm/pluginbridge/capabilities.go)）读写项目配置；**不落插件自有 `config.json`**（避免导出/备份/切项目三处失配）。
+- **统一由 data 层管理**：插件经 `plugin/v1/config.project.{get,load,set,delete}`（框架仓 `host/bridge/capabilities.go`）读写项目配置；**不落插件自有 `config.json`**（避免导出/备份/切项目三处失配）。
 - **键命名空间（公约，不强制）**：插件**应当**只写 **`plugins.<id>.<key>`**，不写宿主键、不写别人的前缀。**不做技术拦截** —— 单个 MQ / 配置面对调用方身份没有可靠区分，硬拦只会变成假安全；越界由评审与测试发现（与 topic 白名单同性质）。
 - **校验归插件**：所有请求都经插件，业务校验（取值范围、互斥、依赖）由插件自己做。
 - **兜底归插件**：插件不一定收到配置刷新广播，缺值时的默认与降级由插件自己提供。
@@ -243,25 +243,30 @@ server.Start
     主题常量）· `hook`（原 `src/plugins/plugin/plugins.go`：`Deps/Notice/Hook/Stopper`）·
     `instance`（实例视图 + 心跳）· `dataclient`（data-* 请求-应答）· `bridgebus`（宿主主题子集
     ↔ 插件桥）· `heartbeat` · `datafmt`（`ChatMsg/ToolCall` + token 估算 + `LLMRefName`）；
-  - **已发布 `v0.1.1`**（含 `runtime/*` + `contract.Meta`）；主仓与 plugins 仓均按**版本依赖**引用（无本地 `replace`）。
-  - **宿主已改用框架契约（2026-10-25）**：`src/plugins/plugin`（Hook/instance/dataclient）**已删除**，
+  - `host/`（2026-10-25 新增，**宿主侧**）：`bridge`（插件前门：帧传输/会话/能力面/过滤链/索引队列/GUI 反向通道，
+    原 `src/lib/llm/pluginbridge`）· `mgr`（插件发现/进程守护/配置/UI 资产，原 `src/lib/llm/pluginmgr`）；
+    **端口化** = Bus（`runtime/bus`）· ConfigStore（`mgr.ConfigStore`，宿主注入 `chonkpilot.db` 适配器）·
+    Process（`protocol.SysProcAttr` + `os/exec`）· Assets（插件 `plugin/v1/ui.asset.get` RPC）；
+  - **已发布 `v0.1.2`**（含 `host/*`）；主仓与 plugins 仓均按**版本依赖**引用（无本地 `replace`）。
+  - **宿主已改用框架契约（2026-10-25）**：`src/plugins/plugin`（Hook/instance/dataclient）与
+    `src/lib/llm/{pluginbridge,pluginmgr}` **均已删除**，
     主仓 `src/lib/{appwire,llm,gui}`、`src/{server,desktop}`、`plugin-{compress,codegraph,vfts}` 全部改用
     `framework/runtime/{hook,instance,dataclient}`；`src/lib/core/mq` 收敛为 `runtime/bus` 的**类型别名**
-    （总线实现唯一在框架）。
+    （总线实现唯一在框架）；插件桥 / 管理器改用 `framework/host/{bridge,mgr}`（import 别名保持旧名）。
   - 依赖 = 标准库 + MCP go-sdk，**零主仓依赖**。
 - **`chonkpilot-plugins`**（独立仓）：`browser` / `codebase` / `desktop` / `file` / `task` / `mcp` / `websearch` / `memory` / `history`，**每个插件一个 module**；`memory` / `history` 的 Go 业务包在同仓 `<id>/lib`；`browser` / `desktop` 的**引擎**在同仓 `<id>/engine`；`codebase` 的**引擎**在同仓 `codebase/engines/{codegraph,vfts}`；`shared/` 是插件侧共享工具（`pluginhost` / `pluginproto` / `trayconsole` / `indexkind` / `lockfile` / `pluginclient` / `winproc` / `ignore` 的副本）。
-  - **2026-10-25（能力随插件）**：browser / desktop 引擎、codegraph / vfts 引擎、**file 域 11 工具实现与契约**的**源码已全部迁出主仓**（原 `src/lib/mcp-tools/{plugins/*,internal/*,toolset}`、`src/plugins/{codegraph,vfts}`、`src/initdata/capability/tools/file/`）——主仓只保留 gateway / mcp-server / pluginmgr / data / config 等平台能力；`file_*` 由 gateway 调插件 MCP server 执行（主仓 builtin 无 file 分派，`chonkpilot-tools-executor.exe` 已删除）。
+  - **2026-10-25（能力随插件）**：browser / desktop 引擎、codegraph / vfts 引擎、**file 域 11 工具实现与契约**的**源码已全部迁出主仓**（原 `src/lib/mcp-tools/{plugins/*,internal/*,toolset}`、`src/plugins/{codegraph,vfts}`、`src/initdata/capability/tools/file/`）——主仓只保留 gateway / mcp-server / data / config 等平台能力（**插件宿主 bridge/mgr 在框架 `host/`**）；`file_*` 由 gateway 调插件 MCP server 执行（主仓 builtin 无 file 分派，`chonkpilot-tools-executor.exe` 已删除）。
   - `browser/engine` 的 WebView2 绑定 = 主仓 fork 的副本（`third_party/go-webview2`，上游无 `EvalWithResult`/`Screenshot`）；待该 fork 独立发版后改按版本引用。
-- **主仓保留**：`src/plugins/{plugin, plugin-compress, plugin-codegraph, plugin-vfts}`（两个 Hook 仅 spawn engines exe，不含引擎代码）、`build-codegraph.ps1` / `build-vfts.ps1`（源码取自 plugins 仓）。**`src/plugins/plugin/bridgebus` 已删除**（迁至 framework `runtime/bridgebus`，主仓无引用）。
+- **主仓保留**：`src/plugins/{plugin-compress, plugin-codegraph, plugin-vfts}`（两个 Hook 仅 spawn engines exe，不含引擎代码）、`build-codegraph.ps1` / `build-vfts.ps1`（源码取自 plugins 仓）。**`src/plugins/plugin` 整目录已删除**（Hook/instance/dataclient → framework `runtime/*`，`bridgebus` → `runtime/bridgebus`）。
 
 **依赖方向**：
 
 - 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk` / `runtime/*` + 同仓 `<id>/lib` · `<id>/engine` · `shared/*` · `codebase/engines/*`（**2026-10-25 起零主仓 `replace`**）。
 - `memory` / `history` 业务包（`chonkpilot-plugins/<id>/lib`）→ **仅 framework `runtime/*`**（`hook` / `bus` / `topics` / `instance` / `dataclient` / `datafmt` / `heartbeat`）。
-- `src/plugins/plugin`（Hook 接口 + 实例视图 + dataclient，宿主侧兼容）→ `src/lib/core`。
+- 进程内 Hook 接口 / 实例视图 / dataclient（宿主侧）→ **framework `runtime/{hook,instance,dataclient}`**（主仓以版本依赖引用）。
 - `src/plugins/plugin-compress` → `src/lib/core` · `src/lib/data`（**纯算法库，仅单测**）。
-- `src/plugins/plugin-codegraph` / `plugin-vfts` → `src/lib/core` · `src/plugins/plugin`（兼容 Hook，默认关）。
-- 进程内 Hook 由 `src/lib/llm`（`appwire.DefaultPlugins` 装配）引用；进程外插件由 `pluginmgr` 按 manifest 拉起（gui / server 共用）。
+- `src/plugins/plugin-codegraph` / `plugin-vfts` → `src/lib/core` · framework `runtime/hook`（兼容 Hook，默认关）。
+- 进程内 Hook 由 `src/lib/llm`（`appwire.DefaultPlugins` 装配）引用；进程外插件由框架 `host/mgr` 按 manifest 拉起（gui / server 共用）。
 - 构建：`build-plugins.ps1` 的 9 个进程外插件源码**全部**取自同级 `chonkpilot-plugins`。
 
 ---

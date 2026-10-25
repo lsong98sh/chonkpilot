@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/transport"
-	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
+	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
 )
 
 // TestPluginBridgeEndToEnd 是 BRIDGE-2 的 L2 集成用例：

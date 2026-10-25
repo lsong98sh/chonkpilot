@@ -59,4 +59,4 @@ replace github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vft
 
 replace github.com/chonkpilot/chonkpilot-task => ../task
 
-require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1
+require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2

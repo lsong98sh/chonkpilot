@@ -37,11 +37,11 @@ import (
 	"github.com/chonkpilot/chonkpilot-llm/codegraphindexer"
 	"github.com/chonkpilot/chonkpilot-llm/coretools"
 	"github.com/chonkpilot/chonkpilot-llm/llmbridge"
-	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
-	"github.com/chonkpilot/chonkpilot-llm/pluginmgr"
 	"github.com/chonkpilot/chonkpilot-llm/queuehooks"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-llm/vftsindexer"
+	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
+	pluginmgr "github.com/lsong98sh/chonkpilot-plugin-framework/host/mgr"
 )
 
 // Main 是单体装配宿主入口（webview2 宿主 + 内嵌 server/persist/filesys + 插件装配 + 桥接线）。
@@ -346,6 +346,7 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 			Bus:            bus,
 			DataDir:        pluginDataDir,
 			Roots:          roots,
+			ConfigStore:    openPluginConfigStore,
 			RegisterMCP:    srv.RegisterPluginServer,
 			UnregisterMCP:  srv.UnregisterPluginServer,
 			ShutdownPlugin: pb.ShutdownPlugin,
