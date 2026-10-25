@@ -20,7 +20,7 @@
 |----|----|
 | 形态 | ① **进程外 exe 插件（主形态）**：`pluginsdk` 连插件桥（UDS/TCP），工具经 MCP（streamable HTTP）暴露，实例由宿主 `pluginmgr` 按 manifest 拉起；② **进程内 lib Hook（兼容，默认关闭）**：`plugin.Hook`，仅 codegraph / vfts |
 | 接口 | `Hook{ Name() string; Start(Deps) error }`；`Deps{ Bus mq.Bus; Logf func(format, ...) }`（另含可选 `Notify func(Notice)`：失败上报，nil = 静默）；**可选** `Stopper{ Stop() }` —— 持可释放资源（后台 goroutine / 引擎子进程 / 订阅 / 实例视图）的插件实现 `Stop()`，宿主退出时按 `Start` **逆序**调用（语义见下） |
-| 启动 | **唯一入口 = 框架 `host/mgr`**（2026-10-25 定稿）：宿主启动时扫描 `<exeDir>/capability/plugins.conf`（每行 `<plugin-id> [args...]`，`#` 注释，**行序 = 启动顺序**），逐行拉起；manifest 仍取 `capability/plugins/<id>/plugin.json`（`runtime / health / restart`）。清单存在时以清单为准，缺省回落 `enabled.json`。进程内 Hook（兼容形态）仅 **codegraph → vfts**，清单单一来源 = `appwire.DefaultPlugins`（默认关闭） |
+| 启动 | **唯一入口 = 框架 `host/mgr`**（2026-10-25 定稿）：宿主启动时扫描 `<exeDir>/capability/plugins.conf`（**每行一个可执行命令行**，`#` 注释，**行序 = 启动顺序**），逐行 spawn；插件启动后自己连 UDS 并发 `plugin.hello` 自报名字，宿主按名字匹配 `capability/plugins/<name>/plugin.json`。进程内 Hook（兼容形态）仅 **codegraph → vfts**，清单单一来源 = `appwire.DefaultPlugins`（默认关闭） |
 | 数据访问 | 走 `src/lib/data`（`data.Prj(instanceID)` 或 payload 自带 work_dir/data_dir 自登记）；work_dir 解析走 `instance.Manager` |
 
 **实例视图**（`src/plugins/plugin/instance/manager.go`）：订阅 `instance-register` / `instance-heartbeat` / `instance-exit`，维护 `instance_id ↔ {ID, WorkDir, DataDir, ClientType, User, ParentInstance, LastBeat}`（`LastBeat` 仅记录最近心跳/注册时间；**`User`（🆕 2026-10-09）= 实例归属 OS 用户名**，`instance-register` 必填字段，供 `instance-bring-to-top` 的跨用户判定；**`ParentInstance`（🆕 2026-10-09）= 子窗口实例的宿主顶层实例 id** —— 由 `instance-register` 的 `parent_instance` 字段解析，非空即子实例，供托盘「列举实例」过滤，见 [61 §4.1](../60-reference/61-消息一览.md)）；提供 `Lookup/List/Count` 与 `ListTopLevel`（仅顶层）。
@@ -32,7 +32,7 @@
 
 1. **主仓不持有任何单插件拉起代码**。启动 = 框架 `host/mgr` 扫描 `plugins.conf` 后统一 spawn；重启/退避/单实例锁/健康检查/优雅关停全部复用 `host/mgr` 的 manifest 语义。
 2. **已判定删除的专用监管层**：`src/lib/llm/vftsindexer`、`src/lib/llm/codegraphindexer`、`src/lib/llm/pluginhost`（与 `host/mgr` 重复），以及 `gui/host`、`server/main` 各自两处 indexer exe 定位 + Ensure 组装。
-3. **能力自管（索引不独立成插件）**：插件启动后与宿主交换 manifest + `plugin.hello`，之后文件监听/补扫/全量重建都由插件自己做——订阅既有 `filesys.changed`（增量）、`session-complete`（补扫）、`vfts.reindex`（全量重建）。**索引回路 = `codebase` 插件进程内的后台任务**（调用它自己的引擎 exe），**不另设 `vfts-indexer` / `codegraph-indexer` 插件或独立 exe**。宿主**只对外提供能力**：`plugin/v1/projects.live`（拉取当前活项目/workdir，由实例视图 + 项目记录回答，**不推送**）。
+3. **能力自管（索引不独立成插件）**：插件启动后与宿主交换 manifest + `plugin.hello`，之后文件监听/补扫/全量重建都由插件自己做——订阅既有 `filesys.changed`（增量）、`session-complete`（补扫）、`vfts.reindex`（全量重建）。**索引回路 = `codebase` 插件进程内的后台任务，引擎以库形式内联在该进程**（工具与索引同进程，经 TCP/HTTP 暴露 MCP；**不 spawn stdio 引擎子进程、不另设 indexer 插件或 exe**）。每次索引前向宿主拉一次「当前活动项目 + 该项目 codebase/vfts 开关」。宿主**只对外提供能力**（活动项目/配置读取，**不推送**）。
 4. **宿主索引队列下线**：`filesys` 不再写待索引表；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧删除（`queuehooks` 一并删除）。消息面**零新增主题**（`filesys.changed` 见 [61 §2.4](../60-reference/61-消息一览.md)）。
 
 ---
@@ -89,9 +89,9 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `instance-register`/`heartbeat`/`exit` · `data-prj-config-refresh` · 工具回调 `codegraph-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：`filesys.changed`（增量）+ `session-complete`（补扫）+ `vfts.reindex`（全量），启动时经宿主能力 `plugin/v1/projects.live` 拉活项目做一次对账；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
+| 订阅 | `instance-register`/`heartbeat`/`exit` · `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `codegraph-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：每次索引前向宿主拉「活动项目 + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
 | 配置键 | `enable-codegraph`（可见性门控）· `codegraph.exts` / `codegraph.skip-dirs` / `codegraph.stack-gitignore`（索引配置，变更即强制重建）· `codegraph.status`（状态回写）· `codegraph.action`（重建/清除/重试信号） |
-| 引擎 | 独立 exe `src/plugins/codegraph`（stdio 子进程），按 workdir 管理；**每 workdir 独立 client/子进程**（`p.clients[workdir]`、独立索引内存/独立串行） |
+| 引擎 | **〔2026-10-25 定稿，待落地〕引擎以库形式编入 `codebase` 插件进程**（工具与索引同进程，经 TCP/HTTP 暴露）；不再 spawn `chonkpilot-codegraph-mcp-server.exe` 之类的 stdio 引擎子进程，也不再有独立 indexer exe。按 workdir 管理索引状态（每 workdir 独立串行） |
 | 叠加 gitignore 体系 | 插件把 `codegraph.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `codegraph.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源/优先级/匹配语义/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`，与 vfts 引擎/插件**同一实现**） |
 | 注册工具 | **6 个查询工具**（`codegraph_symbol_search` / `_get_symbol_info` / `_get_dependency_graph` / `_find_circular_deps` / `_analyze_complexity` / `_get_module_summary`），同名同 schema（去掉 workdir），`handler_subject=codegraph-tool-call`，hot=true，category=codegraph |
 | 周期/超时 | sweep 15s · heartbeat 90s（**仅 `-tags split` 编入时判超时 → 既有 `instanceGone`；阈值 = `instance.HeartbeatTimeout`（与 llm-server `Manager.Sweep`、persist `staleTimeout` 同口径，见 §2 实例视图）；默认构建不判超时**）· data 5s · call 60s · init 15min；**`childIdle 5min` 已接线**（`sweepIdleClient` 于 15s 扫描中**逐 workdir**回收无引用且空闲超阈值的引擎子进程，下次 `clientFor(workdir)` 懒重建） |
@@ -106,9 +106,9 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `instance-register`/`heartbeat`/`exit` · `data-prj-config-refresh` · 工具回调 `vfts-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：`filesys.changed`（增量）+ `session-complete`（补扫）+ `vfts.reindex`（全量），启动时经宿主能力 `plugin/v1/projects.live` 拉活项目做一次对账；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
+| 订阅 | `instance-register`/`heartbeat`/`exit` · `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `vfts-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：每次索引前向宿主拉「活动项目 + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
 | 配置键 | `enable-vfts`（可见性门控）· `vfts.exts` / `vfts.skip-dirs` / `vfts.stack-gitignore` / `vfts.docs` / `vfts.doc-max-mb`（索引配置，变更即强制重建）· `vfts.status`（状态回写） |
-| 引擎 | 独立 exe `src/plugins/vfts`（stdio 子进程，CGO + zvec），**全局共享 client**（一对多，按工具参数 `workdir` 路由） |
+| 引擎 | **〔2026-10-25 定稿，待落地〕引擎以库形式编入 `codebase` 插件进程**（工具与索引同进程，经 TCP/HTTP 暴露）；不再 spawn stdio 引擎子进程，也不再有独立 indexer exe。索引状态按 workdir 隔离 |
 | 注册工具 | **1 个查询工具** `vfts_query`（同名同 schema 去 `workdir`，`handler_subject=vfts-tool-call`，hot=true，category=vfts）；管理工具 `vfts_configure/index/status` **不注册**（插件直接调引擎） |
 | 索引配置变更 | **去抖合并**：一次保存写 `vfts.exts` + `vfts.skip-dirs`(+`vfts.stack-gitignore`) 多键 = 多次 `data-prj-config-refresh` → 经 **400ms 去抖窗口**合并为**一轮**强制重建（窗口外单键变更仍触发，不会漏重建）；**仅 dirty（值确有变化）才写库** |
 | 叠加 gitignore 体系 | 插件把 `vfts.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `vfts.stack-gitignore`（布尔）**原样下发**引擎（`vfts_configure` / `vfts_index` 的 `skip_dirs` + `stack_gitignore`）与**插件侧清单扫描**（`manifest.go scanFiles`）——**插件不再读/解析 `.gitignore`**。规则来源与优先级（低→高）：内置强制（`.git/`·`.svn/`·`.hg/`·`.chonkpilot/`，不可被 `!` 反选）→ 默认排除（`node_modules/`·`dist/`·`build/` 等，可被 `!` 反选）→ 全局 ignore（`$XDG_CONFIG_HOME/git/ignore` 或 `~/.config/git/ignore`）→ `.git/info/exclude` → 各级 `.gitignore`（目录越深优先级越高）→ 用户输入（最高优先级）；不勾选 = 只应用「内置强制 + 默认 + 用户输入」。**目录命中忽略 = 不下降；文件命中即跳过 → 支持文件级排除**。规则语法/匹配/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`） |
