@@ -159,7 +159,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		return
 	}
 	f := p.fields()
-	okf := func(result map[string]any) { s.replyID(method, p.ReqID, result) }
+	okf := func(result any) { s.replyID(method, p.ReqID, result) }
 	failf := func(format string, args ...any) { s.failID(method, p.ReqID, fmt.Errorf(format, args...)) }
 	// sid：data.session_id → 顶层 id（与旧 sessionIDOf 同口径）。
 	sid := f.SessionID
@@ -265,9 +265,9 @@ func (s *Service) handleSession(action string, payload []byte) {
 			failf("%v", err)
 			return
 		}
-		res := wire.OKResult()
+		res := wire.OKPayload{OK: true}
 		if resp.DialogID != "" {
-			res["dialog_id"] = resp.DialogID // P3 过渡期：根会话自举回带（旧布局不写键）
+			res.DialogID = resp.DialogID // P3 过渡期：根会话自举回带（旧布局不写键）
 		}
 		okf(res)
 	case "ensure-turn":

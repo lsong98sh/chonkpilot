@@ -44,6 +44,7 @@
 
 - 回复：同主题 `publish` `{ok, result}` / `{ok, error}`（**无 `.reply` 后缀**）；桥内部另有 `req_id` 关联字段用于请求-响应配对，**不属对外契约 payload**（见 [61-消息一览](../60-reference/61-消息一览.md) §0.1）。
 - **载荷定死**（2026-10-25）：每个主题由一份 Go struct（`persist/payload.go`）解析，字段名/类型按 61 声明，内嵌 `Header{req_id,instance_id}`；兼容 `{data:{…}}` 与顶层扁平两形（`data` 优先、顶层补缺）。原通用宽松 `map` 解析（`dataReq`/`parseDataReq`）已删除。
+- **出参定死**（2026-10-25）：应答 `result` 同样由具名 struct 组装（`facade/wire/{wire.go,domains.go}` 的 `XxxPayload`，json tag = 61 契约字段名；「非空才写键」语义用 `omitempty` 承接），不再是 `map[string]any`。门面路径与 MQ 路径共用同一组构造函数，两路径应答逐字一致由测试（`eqWire`）守。
 - 防环：`handle` 先跳过已含 `ok` 字段的应答消息（请求与应答同主题）。
 - 广播：`save`/`delete` 后发 `data-<domain>-refresh`（**只发布不订阅**）。
 

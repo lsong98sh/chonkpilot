@@ -23,7 +23,6 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // ── 任务树（tasktree 域）──────────────────────────────────────────
@@ -215,60 +214,93 @@ func TaskToWire(t facade.Task) map[string]any {
 	return row
 }
 
+// TasktreeListPayload 是 `data-tasktree-list` 结果 DTO。
+type TasktreeListPayload struct {
+	Nodes []any `json:"nodes"`
+}
+
 // TasktreeListResult 组装 `data-tasktree-list` 结果载荷 `{nodes:[节点行…]}`。
-func TasktreeListResult(nodes []facade.TaskNode) map[string]any {
+func TasktreeListResult(nodes []facade.TaskNode) TasktreeListPayload {
 	out := make([]any, 0, len(nodes))
 	for _, n := range nodes {
 		out = append(out, TaskNodeToWire(n))
 	}
-	return map[string]any{msgkeys.DataTasktreeListResultNodes: out}
+	return TasktreeListPayload{Nodes: out}
+}
+
+// TasktreeTasksPayload 是 `data-tasktree-tasks` 结果 DTO。
+type TasktreeTasksPayload struct {
+	List []any `json:"list"`
 }
 
 // TasktreeTasksResult 组装 `data-tasktree-tasks` 结果载荷 `{list:[任务行…]}`。
-func TasktreeTasksResult(list []facade.Task) map[string]any {
+func TasktreeTasksResult(list []facade.Task) TasktreeTasksPayload {
 	out := make([]any, 0, len(list))
 	for _, t := range list {
 		out = append(out, TaskToWire(t))
 	}
-	return map[string]any{msgkeys.DataTasktreeTasksResultList: out}
+	return TasktreeTasksPayload{List: out}
 }
 
 // ── 知识库（knowledge 域）────────────────────────────────────────
 
+// KnowledgeRootPayload 是 `data-knowledge-root` 结果 DTO。
+type KnowledgeRootPayload struct {
+	Root string `json:"root"`
+	Kind string `json:"kind"`
+}
+
 // KnowledgeRootResult 组装 `data-knowledge-root` 结果载荷 `{root, kind}`。
-func KnowledgeRootResult(resp facade.KnowledgeRootResponse) map[string]any {
-	return map[string]any{
-		msgkeys.DataKnowledgeRootResultRoot: resp.Root,
-		msgkeys.DataKnowledgeRootResultKind: resp.Kind,
-	}
+func KnowledgeRootResult(resp facade.KnowledgeRootResponse) KnowledgeRootPayload {
+	return KnowledgeRootPayload{Root: resp.Root, Kind: resp.Kind}
+}
+
+// KnowledgeDirRow / KnowledgeFileRow 是知识库列表行 DTO。
+type KnowledgeDirRow struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type KnowledgeFileRow struct {
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Modified    string `json:"modified"`
+}
+
+// KnowledgeListPayload 是 `data-knowledge-list` 结果 DTO。
+type KnowledgeListPayload struct {
+	Dir   string             `json:"dir"`
+	Dirs  []KnowledgeDirRow  `json:"dirs"`
+	Files []KnowledgeFileRow `json:"files"`
 }
 
 // KnowledgeListResult 组装 `data-knowledge-list` 结果载荷 `{dir, dirs:[{name,path}], files:[…]}`。
-func KnowledgeListResult(resp facade.KnowledgeListResponse) map[string]any {
-	var dirs []any
+func KnowledgeListResult(resp facade.KnowledgeListResponse) KnowledgeListPayload {
+	var dirs []KnowledgeDirRow
 	for _, d := range resp.Dirs {
-		dirs = append(dirs, map[string]any{"name": d.Name, "path": d.Path})
+		dirs = append(dirs, KnowledgeDirRow{Name: d.Name, Path: d.Path})
 	}
-	var files []any
+	var files []KnowledgeFileRow
 	for _, f := range resp.Files {
-		files = append(files, map[string]any{
-			"name": f.Name, "path": f.Path, "type": f.Type,
-			"description": f.Description, "modified": f.Modified,
+		files = append(files, KnowledgeFileRow{
+			Name: f.Name, Path: f.Path, Type: f.Type,
+			Description: f.Description, Modified: f.Modified,
 		})
 	}
-	return map[string]any{
-		msgkeys.DataKnowledgeListResultDir:   resp.Dir,
-		msgkeys.DataKnowledgeListResultDirs:  dirs,
-		msgkeys.DataKnowledgeListResultFiles: files,
-	}
+	return KnowledgeListPayload{Dir: resp.Dir, Dirs: dirs, Files: files}
+}
+
+// KnowledgeReadPayload 是 `data-knowledge-read` 结果 DTO。
+type KnowledgeReadPayload struct {
+	Source string             `json:"source"`
+	Doc    facade.KnowledgeDoc `json:"doc"`
 }
 
 // KnowledgeReadResult 组装 `data-knowledge-read` 结果载荷 `{source, doc}`。
-func KnowledgeReadResult(resp facade.KnowledgeReadResponse) map[string]any {
-	return map[string]any{
-		msgkeys.DataKnowledgeReadResultSource: resp.Source,
-		msgkeys.DataKnowledgeReadResultDoc:    resp.Doc,
-	}
+func KnowledgeReadResult(resp facade.KnowledgeReadResponse) KnowledgeReadPayload {
+	return KnowledgeReadPayload{Source: resp.Source, Doc: resp.Doc}
 }
 
 // ── 场景（scenario 域）───────────────────────────────────────────
@@ -343,23 +375,41 @@ func ScenarioFromWire(m map[string]any) facade.Scenario {
 	return sc
 }
 
+// ScenarioListPayload 是 `data-scenario-list` 结果 DTO。
+type ScenarioListPayload struct {
+	OK   bool  `json:"ok"`
+	List []any `json:"list"`
+}
+
 // ScenarioListResult 组装 `data-scenario-list` 结果载荷 `{ok:true, list:[…]}`。
-func ScenarioListResult(list []facade.Scenario) map[string]any {
+func ScenarioListResult(list []facade.Scenario) ScenarioListPayload {
 	out := make([]any, 0, len(list))
 	for _, sc := range list {
 		out = append(out, ScenarioToWire(sc))
 	}
-	return map[string]any{"ok": true, msgkeys.DataScenarioListResultList: out}
+	return ScenarioListPayload{OK: true, List: out}
+}
+
+// ScenarioGetPayload 是 `data-scenario-load` 结果 DTO。
+type ScenarioGetPayload struct {
+	OK   bool `json:"ok"`
+	Data any  `json:"data"`
 }
 
 // ScenarioGetResult 组装 `data-scenario-load` 结果载荷 `{ok:true, data: 场景}`。
-func ScenarioGetResult(sc facade.Scenario) map[string]any {
-	return map[string]any{"ok": true, msgkeys.DataScenarioLoadResultData: ScenarioToWire(sc)}
+func ScenarioGetResult(sc facade.Scenario) ScenarioGetPayload {
+	return ScenarioGetPayload{OK: true, Data: ScenarioToWire(sc)}
+}
+
+// ScenarioIDPayload 是场景 save 结果 DTO。
+type ScenarioIDPayload struct {
+	OK bool   `json:"ok"`
+	ID string `json:"id"`
 }
 
 // ScenarioIDResult 组装 `{ok:true, id:<场景 id>}`（save）。
-func ScenarioIDResult(id string) map[string]any {
-	return map[string]any{"ok": true, msgkeys.DataScenarioSaveResultId: id}
+func ScenarioIDResult(id string) ScenarioIDPayload {
+	return ScenarioIDPayload{OK: true, ID: id}
 }
 
 // ── MCP 配置（mcp 域）────────────────────────────────────────────
@@ -399,23 +449,39 @@ func McpServerToWire(s facade.McpServer) map[string]any {
 	return out
 }
 
+// McpListPayload 是 `data-mcp-list` 结果 DTO。
+type McpListPayload struct {
+	List []any `json:"list"`
+}
+
 // McpListResult 组装 `data-mcp-list` 结果载荷 `{list:[…]}`。
-func McpListResult(list []facade.McpServer) map[string]any {
+func McpListResult(list []facade.McpServer) McpListPayload {
 	out := make([]any, 0, len(list))
 	for _, s := range list {
 		out = append(out, McpServerToWire(s))
 	}
-	return map[string]any{msgkeys.DataMcpListResultList: out}
+	return McpListPayload{List: out}
+}
+
+// McpGetPayload 是 `data-mcp-load` 结果 DTO。
+type McpGetPayload struct {
+	Data any `json:"data"`
 }
 
 // McpGetResult 组装 `data-mcp-load` 结果载荷 `{data: 定义}`。
-func McpGetResult(s facade.McpServer) map[string]any {
-	return map[string]any{msgkeys.DataMcpLoadResultData: McpServerToWire(s)}
+func McpGetResult(s facade.McpServer) McpGetPayload {
+	return McpGetPayload{Data: McpServerToWire(s)}
+}
+
+// McpNamePayload 是 MCP save 结果 DTO。
+type McpNamePayload struct {
+	OK   bool   `json:"ok"`
+	Name string `json:"name"`
 }
 
 // McpNameResult 组装 `{ok:true, name:<server 名>}`（save 应答）。
-func McpNameResult(name string) map[string]any {
-	return map[string]any{"ok": true, msgkeys.DataMcpSaveResultName: name}
+func McpNameResult(name string) McpNamePayload {
+	return McpNamePayload{OK: true, Name: name}
 }
 
 // strSliceAny 把 []string 转 []any（缺省 nil → 空数组，保证 JSON 恒为数组）。
@@ -468,43 +534,88 @@ func strListJSON(v any) []string {
 
 // ── 记忆库（memory 域）───────────────────────────────────────────
 
+// MemoryCategoryRow / MemoryDocRow / MemoryExtractRow 是记忆域行 DTO。
+type MemoryCategoryRow struct {
+	Category       string `json:"category"`
+	Level          string `json:"level"`
+	Path           string `json:"path"`
+	Tokens         int    `json:"tokens"`
+	Prompt         string `json:"prompt"`
+	PromptOverride bool   `json:"prompt_override"`
+}
+
+type MemoryDocRow struct {
+	Category string `json:"category"`
+	Level    string `json:"level"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Tokens   int    `json:"tokens"`
+}
+
+type MemoryExtractRow struct {
+	SessionID  string `json:"session_id"`
+	Category   string `json:"category"`
+	LastTurnID string `json:"last_turn_id"`
+}
+
+// MemoryListPayload 是 `data-memory-list` 结果 DTO。
+type MemoryListPayload struct {
+	List []MemoryCategoryRow `json:"list"`
+}
+
+// MemoryGetPayload 是 `data-memory-read` 结果 DTO。
+type MemoryGetPayload struct {
+	Data MemoryDocRow `json:"data"`
+}
+
+// MemoryIDPayload 是记忆 save / delete 结果 DTO。
+type MemoryIDPayload struct {
+	OK bool   `json:"ok"`
+	ID string `json:"id"`
+}
+
+// MemoryExtractListPayload 是 `data-memory-extract-load` 结果 DTO。
+type MemoryExtractListPayload struct {
+	List []MemoryExtractRow `json:"list"`
+}
+
 // MemoryListResult 组装 `data-memory-list` 结果载荷
 // `{list:[{category,level,path,tokens,prompt,prompt_override}]}`（prompt / prompt_override = OP-04
 // 类别沉淀提示词有效值与覆盖标记，由后端文件读序解析后下发）。
-func MemoryListResult(list []facade.MemoryCategory) map[string]any {
-	out := make([]any, 0, len(list))
+func MemoryListResult(list []facade.MemoryCategory) MemoryListPayload {
+	out := make([]MemoryCategoryRow, 0, len(list))
 	for _, c := range list {
-		out = append(out, map[string]any{
-			"category": c.Category, "level": c.Level, "path": c.Path, "tokens": c.Tokens,
-			"prompt": c.Prompt, "prompt_override": c.PromptOverride,
+		out = append(out, MemoryCategoryRow{
+			Category: c.Category, Level: c.Level, Path: c.Path, Tokens: c.Tokens,
+			Prompt: c.Prompt, PromptOverride: c.PromptOverride,
 		})
 	}
-	return map[string]any{msgkeys.DataMemoryListResultList: out}
+	return MemoryListPayload{List: out}
 }
 
 // MemoryGetResult 组装 `data-memory-read` 结果载荷 `{data:{…全文…}}`。
-func MemoryGetResult(doc facade.MemoryDoc) map[string]any {
-	return map[string]any{msgkeys.DataMemoryReadResultData: map[string]any{
-		"category": doc.Category, "level": doc.Level, "path": doc.Path,
-		"content": doc.Content, "tokens": doc.Tokens,
+func MemoryGetResult(doc facade.MemoryDoc) MemoryGetPayload {
+	return MemoryGetPayload{Data: MemoryDocRow{
+		Category: doc.Category, Level: doc.Level, Path: doc.Path,
+		Content: doc.Content, Tokens: doc.Tokens,
 	}}
 }
 
 // MemoryIDResult 组装 `{ok:true, id:<类别>}`（save / delete）。
-func MemoryIDResult(id string) map[string]any {
-	return map[string]any{"ok": true, msgkeys.DataMemorySaveResultId: id}
+func MemoryIDResult(id string) MemoryIDPayload {
+	return MemoryIDPayload{OK: true, ID: id}
 }
 
 // ── 记忆提取进度（data-memory-extract-*；OP-05/06，2026-10-06）──────────
 
 // MemoryExtractListResult 组装 `data-memory-extract-load` 结果载荷
 // `{list:[{session_id,category,last_turn_id}]}`（嵌套行字段，口径同 MemoryListResult）。
-func MemoryExtractListResult(list []facade.MemoryExtractRecord) map[string]any {
-	out := make([]any, 0, len(list))
+func MemoryExtractListResult(list []facade.MemoryExtractRecord) MemoryExtractListPayload {
+	out := make([]MemoryExtractRow, 0, len(list))
 	for _, r := range list {
-		out = append(out, map[string]any{
-			"session_id": r.SessionID, "category": r.Category, "last_turn_id": r.LastTurnID,
+		out = append(out, MemoryExtractRow{
+			SessionID: r.SessionID, Category: r.Category, LastTurnID: r.LastTurnID,
 		})
 	}
-	return map[string]any{msgkeys.FieldList: out}
+	return MemoryExtractListPayload{List: out}
 }

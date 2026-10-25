@@ -91,7 +91,7 @@ func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	if len(list.List) != 2 || list.List[0].Title != "会话B" {
 		t.Fatalf("门面 list 内容不符（应 2 条、最近活动在前）：%+v", list.List)
 	}
-	if got := wire.SessionListResult(list.List); !reflect.DeepEqual(got, mqCall(t, bus, "list", map[string]any{})) {
+	if got := normJSON(t, wire.SessionListResult(list.List)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "list", map[string]any{}))) {
 		t.Fatalf("两路径 list 应答不一致：\n门面=%+v\nMQ  =%+v", got, mqCall(t, bus, "list", map[string]any{}))
 	}
 
@@ -100,7 +100,7 @@ func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	if err != nil || !get.Found {
 		t.Fatalf("facade SessionGet(s1): found=%v err=%v", get.Found, err)
 	}
-	if got := wire.SessionGetResult(get.Found, get.Session); !reflect.DeepEqual(got, mqCall(t, bus, "get", map[string]any{"id": "s1"})) {
+	if got := normJSON(t, wire.SessionGetResult(get.Found, get.Session)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "get", map[string]any{"id": "s1"}))) {
 		t.Fatalf("两路径 get 应答不一致：\n门面=%+v\nMQ  =%+v", got, mqCall(t, bus, "get", map[string]any{"id": "s1"}))
 	}
 	ghost, err := api.SessionGet(facade.SessionGetRequest{InstanceID: facadeInstance, SessionID: "ghost"})
@@ -117,8 +117,8 @@ func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	if err != nil || len(hist.Turns) != 2 || len(hist.Messages) != 3 || hist.HasMore {
 		t.Fatalf("facade TurnHistory 内容不符：%+v err=%v", hist, err)
 	}
-	histWire := wire.TurnHistoryResult(hist)
-	if !reflect.DeepEqual(histWire, mqCall(t, bus, "history", map[string]any{"session_id": "s1"})) {
+	histWire := normJSON(t, wire.TurnHistoryResult(hist))
+	if !reflect.DeepEqual(histWire, normJSON(t, mqCall(t, bus, "history", map[string]any{"session_id": "s1"}))) {
 		t.Fatalf("两路径 history 应答不一致：\n门面=%+v\nMQ  =%+v", histWire, mqCall(t, bus, "history", map[string]any{"session_id": "s1"}))
 	}
 
@@ -127,14 +127,14 @@ func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	if err != nil || latest.SessionID != "s2" {
 		t.Fatalf("facade SessionLatest=%q err=%v", latest.SessionID, err)
 	}
-	if got := wire.SessionIDResult(latest.SessionID); !reflect.DeepEqual(got, mqCall(t, bus, "latest", map[string]any{})) {
+	if got := normJSON(t, wire.SessionIDResult(latest.SessionID)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "latest", map[string]any{}))) {
 		t.Fatalf("两路径 latest 应答不一致：%+v", got)
 	}
 	act, err := api.SessionActiveGet(facade.SessionActiveGetRequest{InstanceID: facadeInstance})
 	if err != nil || act.SessionID != "s2" {
 		t.Fatalf("facade SessionActiveGet=%q err=%v", act.SessionID, err)
 	}
-	if got := wire.SessionIDResult(act.SessionID); !reflect.DeepEqual(got, mqCall(t, bus, "active-get", map[string]any{})) {
+	if got := normJSON(t, wire.SessionIDResult(act.SessionID)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "active-get", map[string]any{}))) {
 		t.Fatalf("两路径 active-get 应答不一致：%+v", got)
 	}
 
@@ -146,10 +146,10 @@ func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	if err != nil || content.Contents["message:m1"] != "hello" || content.Contents["tool_call:tc1"] != `{"x":1}` {
 		t.Fatalf("facade MessageContent 内容不符：%+v err=%v", content.Contents, err)
 	}
-	contentWire := wire.MessageContentResult(content.Contents)
-	if !reflect.DeepEqual(contentWire, mqCall(t, bus, "content", map[string]any{
+	contentWire := normJSON(t, wire.MessageContentResult(content.Contents))
+	if !reflect.DeepEqual(contentWire, normJSON(t, mqCall(t, bus, "content", map[string]any{
 		"session_id": "s1", "keys": []any{"message:m1", "tool_call:tc1", "tool_result:missing"},
-	})) {
+	}))) {
 		t.Fatalf("两路径 content 应答不一致：%+v", contentWire)
 	}
 }
@@ -251,7 +251,7 @@ func TestFacadeSessionWritesCrossReadable(t *testing.T) {
 		t.Fatalf("门面 history 应读回 MQ 写的 summary/finish_reason：%+v", hist.Turns)
 	}
 	// 两路径 history 应答逐字一致（含 summary 指针保真的"有键"语义）
-	if got := wire.TurnHistoryResult(hist); !reflect.DeepEqual(got, mqCall(t, bus, "history", map[string]any{"session_id": "s-fac"})) {
+	if got := normJSON(t, wire.TurnHistoryResult(hist)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "history", map[string]any{"session_id": "s-fac"}))) {
 		t.Fatalf("两路径 history 应答不一致：%+v", got)
 	}
 

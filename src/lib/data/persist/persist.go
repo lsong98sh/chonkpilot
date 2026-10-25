@@ -435,8 +435,8 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	}
 }
 
-// replyID 按 req_id 回复成功结果（各域 handler 统一用本方法）。
-func (s *Service) replyID(method, reqID string, result map[string]any) {
+// replyID 按 req_id 回复成功结果（各域 handler 统一用本方法；result = wire 结果 DTO 或 DB 行 DTO）。
+func (s *Service) replyID(method, reqID string, result any) {
 	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": true, "result": result})
 	_ = s.Bus.Emit(context.Background(), method, b)
 }
@@ -506,13 +506,13 @@ func (s *Service) domainList(domain, instanceID string, scope facade.Scope) any 
 		if err != nil {
 			return nil
 		}
-		return wire.ScenarioListResult(resp.List)["list"]
+		return wire.ScenarioListResult(resp.List).List
 	case "mcp":
 		resp, err := s.McpList(facade.McpListRequest{InstanceID: instanceID, Scope: scope})
 		if err != nil {
 			return nil
 		}
-		return wire.McpListResult(resp.List)["list"]
+		return wire.McpListResult(resp.List).List
 	case "prj-config", "prompt", "prj-security":
 		resp, err := s.ConfigKVList(facade.ConfigKVListRequest{
 			Domain: domain, InstanceID: instanceID, Scope: scope,
@@ -526,7 +526,7 @@ func (s *Service) domainList(domain, instanceID string, scope facade.Scope) any 
 		if err != nil {
 			return nil
 		}
-		return wire.MemoryListResult(resp.List)["list"]
+		return wire.MemoryListResult(resp.List).List
 	}
 	return nil
 }

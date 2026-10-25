@@ -21,7 +21,6 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // ── 会话（session 域）──────────────────────────────────────────────
@@ -100,35 +99,52 @@ func SessionToWire(s facade.Session) map[string]any {
 	return row
 }
 
+// SessionListPayload 是 `data-session-list` 的**结果 DTO**（61 绑定形状，字段不可增删改）。
+type SessionListPayload struct {
+	List []any `json:"list"`
+}
+
 // SessionListResult 组装 `data-session-list` 结果载荷 `{list:[会话行…]}`。
-func SessionListResult(list []facade.Session) map[string]any {
+func SessionListResult(list []facade.Session) SessionListPayload {
 	out := make([]any, 0, len(list))
 	for _, s := range list {
 		out = append(out, SessionToWire(s))
 	}
-	return map[string]any{msgkeys.DataSessionListResultList: out}
+	return SessionListPayload{List: out}
+}
+
+// SessionGetPayload 是 `data-session-get` 的结果 DTO（`data` = 会话行 | null）。
+type SessionGetPayload struct {
+	Data any `json:"data"`
 }
 
 // SessionGetResult 组装 `data-session-get` 结果载荷 `{data: 会话行|null}`（不存在 = null）。
-func SessionGetResult(found bool, s facade.Session) map[string]any {
+func SessionGetResult(found bool, s facade.Session) SessionGetPayload {
 	if !found {
-		return map[string]any{msgkeys.DataSessionGetResultData: nil}
+		return SessionGetPayload{Data: nil}
 	}
-	return map[string]any{msgkeys.DataSessionGetResultData: SessionToWire(s)}
+	return SessionGetPayload{Data: SessionToWire(s)}
+}
+
+// SessionIDPayload 是 `{session_id}` 结果 DTO（latest / active-get 共用）。
+type SessionIDPayload struct {
+	SessionID string `json:"session_id"`
 }
 
 // SessionIDResult 组装 `{session_id: …}`（latest / active-get 共用）。
-func SessionIDResult(sessionID string) map[string]any {
-	return map[string]any{msgkeys.DataSessionLatestResultSessionId: sessionID}
+func SessionIDResult(sessionID string) SessionIDPayload {
+	return SessionIDPayload{SessionID: sessionID}
+}
+
+// SessionLatestPayload 是 `data-session-latest` 结果 DTO（`dialog_id` 非空才写键）。
+type SessionLatestPayload struct {
+	SessionID string `json:"session_id"`
+	DialogID  string `json:"dialog_id,omitempty"`
 }
 
 // SessionLatestResult 组装 `data-session-latest` 结果（`dialog_id` 非空才写键 → 旧载荷不变）。
-func SessionLatestResult(sessionID, dialogID string) map[string]any {
-	out := map[string]any{msgkeys.DataSessionLatestResultSessionId: sessionID}
-	if dialogID != "" {
-		out["dialog_id"] = dialogID
-	}
-	return out
+func SessionLatestResult(sessionID, dialogID string) SessionLatestPayload {
+	return SessionLatestPayload{SessionID: sessionID, DialogID: dialogID}
 }
 
 // ── 轮次（turn 域）────────────────────────────────────────────────
@@ -184,9 +200,21 @@ func TurnToWire(t facade.Turn) map[string]any {
 	return row
 }
 
+// TurnHistoryBody 是 `data-session-history` 的 `messages` 内层 DTO。
+type TurnHistoryBody struct {
+	Turns    []any `json:"turns"`
+	Messages []any `json:"messages"`
+	HasMore  bool  `json:"has_more"`
+}
+
+// TurnHistoryPayload 是 `data-session-history` 的结果 DTO。
+type TurnHistoryPayload struct {
+	Messages TurnHistoryBody `json:"messages"`
+}
+
 // TurnHistoryResult 组装 `data-session-history` 结果载荷
 // `{messages:{turns:[…], messages:[…], has_more:bool}}`（既有外形，逐字不变）。
-func TurnHistoryResult(resp facade.TurnHistoryResponse) map[string]any {
+func TurnHistoryResult(resp facade.TurnHistoryResponse) TurnHistoryPayload {
 	turns := make([]any, 0, len(resp.Turns))
 	for _, t := range resp.Turns {
 		turns = append(turns, TurnToWire(t))
@@ -195,8 +223,8 @@ func TurnHistoryResult(resp facade.TurnHistoryResponse) map[string]any {
 	for _, m := range resp.Messages {
 		msgs = append(msgs, MessageViewToWire(m))
 	}
-	return map[string]any{msgkeys.DataSessionHistoryResultMessages: map[string]any{
-		"turns": turns, "messages": msgs, "has_more": resp.HasMore,
+	return TurnHistoryPayload{Messages: TurnHistoryBody{
+		Turns: turns, Messages: msgs, HasMore: resp.HasMore,
 	}}
 }
 
@@ -277,14 +305,19 @@ func messagesToolCalls(calls []facade.ToolCall) []data.ToolCall {
 	return out
 }
 
+// MessagesPayload 是 `{messages:[…]}` 结果 DTO（load-messages / context 共用）。
+type MessagesPayload struct {
+	Messages []data.ChatMsg `json:"messages"`
+}
+
 // MessageLoadResult 组装 `{messages:[消息…]}`（load-messages / context 共用；
 // 消息面形状 = 内核 ChatMsg 的 JSON：`tool_calls[].function{name,arguments}` 嵌套 + `_meta`）。
-func MessageLoadResult(msgs []facade.Message) map[string]any {
+func MessageLoadResult(msgs []facade.Message) MessagesPayload {
 	out := make([]data.ChatMsg, 0, len(msgs))
 	for _, m := range msgs {
 		out = append(out, data.MessageFromFacade(m))
 	}
-	return map[string]any{msgkeys.DataSessionLoadMessagesResultMessages: out}
+	return MessagesPayload{Messages: out}
 }
 
 // TurnTokenToWire 把轮次 token 伴随项转回消息面行（键 turn_id/full/brief；缺值省略键，
@@ -300,10 +333,17 @@ func TurnTokenToWire(t facade.TurnToken) map[string]any {
 	return row
 }
 
+// ContextPayload 是 `data-session-context` 结果 DTO（`turn_tokens` 只增伴随数组，空则不写键）。
+type ContextPayload struct {
+	Messages   []data.ChatMsg `json:"messages"`
+	TurnTokens []any          `json:"turn_tokens,omitempty"`
+}
+
 // ContextResult 组装 `data-session-context` 结果载荷：`{messages:[…], turn_tokens:[…]}`。
 // turn_tokens 为**只增**伴随数组（P3，2026-09-25）；为空时**不写该键**（与旧载荷逐字节等价）。
-func ContextResult(msgs []facade.Message, tokens []facade.TurnToken) map[string]any {
-	res := MessageLoadResult(msgs)
+func ContextResult(msgs []facade.Message, tokens []facade.TurnToken) ContextPayload {
+	base := MessageLoadResult(msgs)
+	res := ContextPayload{Messages: base.Messages}
 	if len(tokens) == 0 {
 		return res
 	}
@@ -311,17 +351,22 @@ func ContextResult(msgs []facade.Message, tokens []facade.TurnToken) map[string]
 	for _, t := range tokens {
 		arr = append(arr, TurnTokenToWire(t))
 	}
-	res[msgkeys.DataSessionContextResultTurnTokens] = arr
+	res.TurnTokens = arr
 	return res
 }
 
+// MessageContentPayload 是 `{contents:{键: 正文}}` 结果 DTO（未命中的键不出现）。
+type MessageContentPayload struct {
+	Contents map[string]string `json:"contents"`
+}
+
 // MessageContentResult 组装 `{contents:{键: 正文}}`（未命中的键省略）。
-func MessageContentResult(contents map[string]string) map[string]any {
-	out := make(map[string]any, len(contents))
+func MessageContentResult(contents map[string]string) MessageContentPayload {
+	out := make(map[string]string, len(contents))
 	for k, v := range contents {
 		out[k] = v
 	}
-	return map[string]any{msgkeys.DataSessionContentResultContents: out}
+	return MessageContentPayload{Contents: out}
 }
 
 // ── 群聊两表（group 域：参与者名单 / 大轮次投递对象；data-session-group-*）──────
@@ -329,28 +374,53 @@ func MessageContentResult(contents map[string]string) map[string]any {
 // SUBCHAT-3 阶段 E（2026-10-16）。落库形状 = prjusr 两桶（`group_participants` /
 // `group_round_targets`，见 internal/session/group.go）；本处只做「行 ↔ 领域 DTO」字段搬运。
 
+// GroupParticipantRow 是参与者名单行 DTO。
+type GroupParticipantRow struct {
+	SessionID string `json:"session_id"`
+	Agent     string `json:"agent"`
+	Role      string `json:"role"`
+	Seq       int    `json:"seq"`
+}
+
+// GroupParticipantsPayload 是 `data-session-group-participants-load` 结果 DTO。
+type GroupParticipantsPayload struct {
+	List []GroupParticipantRow `json:"list"`
+}
+
 // GroupParticipantsResult 组装 `data-session-group-participants-load` 结果载荷
 // `{list:[{session_id, agent, role, seq}]}`（按名单固定顺序升序）。
-func GroupParticipantsResult(list []facade.GroupParticipant) map[string]any {
-	out := make([]any, 0, len(list))
+func GroupParticipantsResult(list []facade.GroupParticipant) GroupParticipantsPayload {
+	out := make([]GroupParticipantRow, 0, len(list))
 	for _, p := range list {
-		out = append(out, map[string]any{
-			"session_id": p.SessionID, "agent": p.Agent, "role": p.Role, "seq": p.Seq,
+		out = append(out, GroupParticipantRow{
+			SessionID: p.SessionID, Agent: p.Agent, Role: p.Role, Seq: p.Seq,
 		})
 	}
-	return map[string]any{msgkeys.DataSessionGroupParticipantsLoadResultList: out}
+	return GroupParticipantsPayload{List: out}
+}
+
+// GroupRoundTargetRow 是大轮次投递对象行 DTO。
+type GroupRoundTargetRow struct {
+	SessionID string   `json:"session_id"`
+	Round     int      `json:"round"`
+	Agents    []string `json:"agents"`
+}
+
+// GroupRoundTargetsPayload 是 `data-session-group-round-targets-load` 结果 DTO。
+type GroupRoundTargetsPayload struct {
+	List []GroupRoundTargetRow `json:"list"`
 }
 
 // GroupRoundTargetsResult 组装 `data-session-group-round-targets-load` 结果载荷
 // `{list:[{session_id, round, agents:[…]}]}`（按轮次升序）。
-func GroupRoundTargetsResult(list []facade.GroupRoundTarget) map[string]any {
-	out := make([]any, 0, len(list))
+func GroupRoundTargetsResult(list []facade.GroupRoundTarget) GroupRoundTargetsPayload {
+	out := make([]GroupRoundTargetRow, 0, len(list))
 	for _, t := range list {
-		out = append(out, map[string]any{
-			"session_id": t.SessionID, "round": t.Round, "agents": strSliceAny(t.Agents),
+		out = append(out, GroupRoundTargetRow{
+			SessionID: t.SessionID, Round: t.Round, Agents: t.Agents,
 		})
 	}
-	return map[string]any{msgkeys.DataSessionGroupRoundTargetsLoadResultList: out}
+	return GroupRoundTargetsPayload{List: out}
 }
 
 // MessageAppendFromWire 解析 `data-session-append-message` 载荷 → 门面入参。
@@ -403,12 +473,24 @@ func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
 
 // ── 通用回复 ─────────────────────────────────────────────────────
 
+// OKPayload 是 `{ok:true}` 结果 DTO（写类动作共用；`dialog_id` 仅 ensure-session 自举回带时写）。
+type OKPayload struct {
+	OK       bool   `json:"ok"`
+	DialogID string `json:"dialog_id,omitempty"`
+}
+
 // OKResult 组装 `{ok:true}`（写类动作共用）。
-func OKResult() map[string]any { return map[string]any{"ok": true} }
+func OKResult() OKPayload { return OKPayload{OK: true} }
+
+// CleanupPayload 是 `{ok:true, count:n}` 结果 DTO（cleanup-stale）。
+type CleanupPayload struct {
+	OK    bool `json:"ok"`
+	Count int  `json:"count"`
+}
 
 // CleanupResult 组装 `{ok:true, count:n}`（cleanup-stale）。
-func CleanupResult(count int) map[string]any {
-	return map[string]any{"ok": true, msgkeys.DataSessionCleanupStaleResultCount: count}
+func CleanupResult(count int) CleanupPayload {
+	return CleanupPayload{OK: true, Count: count}
 }
 
 // ── 请求载荷归一（入口/信封共用）────────────────────────────────────

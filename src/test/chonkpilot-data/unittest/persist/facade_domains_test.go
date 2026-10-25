@@ -104,7 +104,7 @@ func mqResult(t *testing.T, bus mq.Bus, subject string, payload map[string]any) 
 
 // eqWire 断言门面侧组装结果与 MQ 回应答**逐字一致**（经 JSON 归一：门面侧是 Go 值、
 // MQ 侧是序列化往返后的形状）。
-func eqWire(t *testing.T, got map[string]any, want map[string]any, what string) {
+func eqWire(t *testing.T, got any, want any, what string) {
 	t.Helper()
 	if !reflect.DeepEqual(normJSON(t, got), normJSON(t, want)) {
 		t.Fatalf("%s 应答不一致：\n门面=%+v\nMQ  =%+v", what, normJSON(t, got), normJSON(t, want))
