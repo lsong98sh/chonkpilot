@@ -61,6 +61,8 @@
 ### 3.3 门面域（`facade.API`，inline 绑定）
 
 > `src/lib/data/facade/` 是 data 层门面的**唯一定义**（接口 + DTO，单一真相）；宿主装配期选绑定（本期唯一落地 = **inline 同进程直调**，见 [23 §7](../10-architecture/23-工程与部署拓扑.md)）。门面只放**领域字段**、不交路径规则；写入广播由实现侧在其后发出（不在请求-响应签名内）。
+>
+> **〔2026-10-25 双绑定删除〕** GUI 桥（`src/lib/gui/bridge`）**不再** inline 直调门面：`data-<domain>-*` 一律走总线由 `persist` 服务处理（`dataViaPersist` 为唯一入口，原 `facade_domains.go` / `facade_session.go` / `SetFacade` 已删）。inline 绑定现仅服务**进程内后端调用方**（llm server 的 `s.cfg`、插件桥宿主侧等）。
 
 | 门面面 | 域 | 消息面（若有） |
 |--------|----|--------------|

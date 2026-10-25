@@ -32,7 +32,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
@@ -83,14 +82,6 @@ type Bridge struct {
 
 	// PRODSIM-1：认证域（login-*）已整体移除 —— 桥不再持有令牌 / 不做 authCheck
 	// （单产物 = 本机 UDS 免鉴权；认证将来统一到 registry）。
-
-	// cfg 是 data 门面（阶段 4 第二/三/四批，41 G-34 / G-35 / G-36）：宿主注入（inline 绑定，
-	// 同进程直调）后，**data 面各域**（config 类 · session 域 · tasktree / knowledge / filelist /
-	// scenario / memory）data-<domain>-* 由桥**识别后走门面**做数据操作，不再"再发一条 MQ 给
-	// persist"（data.go: dataViaFacade）。**前端消息面一字不变**（主题名 / payload / 应答键名与
-	// MQ 路径逐字一致）；nil = 未接线（如 -no-server 薄客户端/分离形态）→ 回落总线转发
-	// （dataViaPersist），行为同改前。
-	cfg facade.API
 
 	// dataOffline = 「本地无数据服务」（--no-server UI 注入测试模式；宿主经 SetDataOffline
 	// 置位）。置位后 dataCall 直接快速失败返回空信封，不经总线等待 3s 超时。
@@ -175,12 +166,6 @@ func (b *Bridge) uploadRoot() string {
 	}
 	return filepath.Join(b.workDir, ".chonkpilot")
 }
-
-// SetFacade 由宿主注入 data 门面绑定（阶段 4 第二/三批，41 G-34；装配处 = `src/gui/main.go`：
-// 内嵌 server 形态注入 inline 绑定，同进程直调）。
-// 注入后 **config 类 + session 域**（data-session-*）data-* 由桥走门面（dataViaFacade）；
-// 未注入（nil，如 -no-server 薄客户端）→ 保留既有总线转发路径（行为不变）。
-func (b *Bridge) SetFacade(cfg facade.API) { b.cfg = cfg }
 
 // SetDataOffline 置位「本地无数据服务」（--no-server UI 注入测试模式）：此后 dataCall 直接
 // 快速失败返回空信封，不再经总线等待 3s 超时（首屏 init-data 会累积多个 dataCall → 数秒）。

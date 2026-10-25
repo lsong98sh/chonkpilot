@@ -1,17 +1,12 @@
-// 数据桥（v2.2，2026-09-21 阶段 4 第四批 / 41 G-36：data 面各域均走门面）：
-//   - dataCall：data-<domain>-<action> 统一入口 —— **config 类**（prj-config / prompt /
-//     prj-security / user-config）· **session 域**（data-session-*：session / turn / message
-//     三域面）· **tasktree / knowledge / filelist / scenario / memory** 经 data 门面（inline
-//     绑定，同进程直调，dataViaFacade → facade_session.go / facade_domains.go）；
-//     其余与未接线时经总线 persist 数据服务（dataViaPersist）。两条路径的应答载荷键名与
-//     形态逐字一致（61 §3），**前端消息面一字未变**。
-//   - dataViaPersist：data-* 请求-响应客户端（请求注入 req_id + instance_id；应答按
-//     req_id 匹配；无应答保护 = `b.dataOffline` 快失败（no-server 薄客户端）+ 3s 超时兜底）
+// 数据桥（v3，2026-10-25 单一入口）：data-<domain>-<op> 统一由 **persist 数据服务**处理。
+//   - dataCall：唯一入口 → dataViaPersist（请求注入 req_id + instance_id；应答按 req_id 匹配；
+//     无应答保护 = `b.dataOffline` 快失败（no-server）+ 3s 超时兜底）。
+//     **双绑定已删除**：桥内不再 inline 直调 data 门面（原 facade_domains.go / facade_session.go
+//     已删），desktop / gui / 插件一律走同一条 MQ 入口 —— 一份翻译、一份测试。
 //   - prjConfigSave/Load/List：gui.* 状态（layout/window/ui/opened-files/filetree-*）
 //     落 prj config 表键值面（61-消息一览 §3.1；记录形态 {"v":"<json>"}）
 //   - readUserConfig：用户配置（usr config 表 user_config 整体对象；无记录回落默认）
-//   - sval / asAnyMap / asAnySlice：值归一化（compat/local 等桥内通用；门面 inline 绑定给出
-//     领域形态 map[string]string / []map[string]any，序列化绑定给出 map[string]any / []any）
+//   - sval / asAnyMap / asAnySlice：值归一化（compat/local 等桥内通用）
 package bridge
 
 import (
@@ -23,8 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
@@ -35,9 +28,7 @@ import (
 // `b.dataOffline` 快失败，其余无应答一律走本超时兜底返回失败信封。
 const dataReqTimeout = 3 * time.Second
 
-// dataCall 发一条 data-<domain>-<action> 请求：**config 类与 session 域走 data 门面**
-// （同进程直调，阶段 4 第二/三批 / 41 G-34），其余域与未注入门面时经总线（dataViaPersist，
-// 行为同改前）。两条路径的应答载荷键名/形态逐字一致，调用方（前端 promise / gui.* 本地实现）无感。
+// dataCall 发一条 data-<domain>-<action> 请求（唯一路径 = 总线 → persist 数据服务）。
 func (b *Bridge) dataCall(subject string, payload []byte) (result any, errs []error) {
 	// --no-server（本地无数据服务）：直接快速失败返回空信封，不经总线等待 3s 超时
 	// （首屏 init-data 会串起多个 dataCall → 数秒累积）。调用方（prjConfigList /
@@ -45,9 +36,6 @@ func (b *Bridge) dataCall(subject string, payload []byte) (result any, errs []er
 	if b.dataOffline {
 		err := fmt.Errorf("%s: data service offline (no server)", subject)
 		return map[string]any{"ok": false, "error": err.Error()}, []error{err}
-	}
-	if res, errs, ok := b.dataViaFacade(subject, string(payload)); ok {
-		return res, errs
 	}
 	return b.dataViaPersist(subject, payload)
 }
@@ -119,191 +107,9 @@ func (b *Bridge) dataViaPersist(subject string, payload []byte) (result any, err
 	}
 }
 
-// ── config 类 data-*：经 data 门面（阶段 4 第二批，41 G-34）──────────────
-
-// configFacadeDomains 是**由 data 门面承载**的 config 类域（61 §3.1 配置五域中的 kv / 用户
-// 配置域；scenario = 文件化 capability 域、memory = 文档域，由第四批承载，见 facade_domains.go）。
-var configFacadeDomains = []string{"prj-config", "prompt", "prj-security", "user-config"}
-
-// dataViaFacade 处理**已进门面**的 data-<domain>-<op>：**走 data 门面**（inline 绑定，同进程
-// 直调），不再"再发一条 MQ 给 persist"（A6 收敛态的下一站：23 §7「一律经门面」）：
-//   - config 类（prj-config / prompt / prj-security / user-config）→ 第二批（61 §3.1）
-//   - session 域（data-session-*，含 turn / message 两域面）→ 第三批（61 §3.2 / §3.2a），
-//     见 facade_session.go
-//   - tasktree / knowledge / filelist / scenario / memory → 第四批（61 §3.3 / §3.4 及其余），
-//     见 facade_domains.go
-//
-// **前端消息面一字不变**：主题名与请求 payload 不变（本函数只解析既有字段），应答 payload 的
-// 键名与取值形态由 `facade/wire` 生成（MQ 信封层用同一份翻译）→ 两路径逐字一致。
-// 写入后的变更广播（data-<domain>-refresh、user-config 另带 config-refresh、session-new、
-// task-deleted、scenario/memory 刷新）由门面实现侧发出（同一份实现 → 与 MQ 路径同源），
-// 故订阅方（前端 / 插件 / llm server）照旧收到。
-//
-// handled=false = 非门面域 / 未注入门面绑定（-no-server 薄客户端）→ 交回总线转发。
-func (b *Bridge) dataViaFacade(subject, payloadJSON string) (result any, errs []error, handled bool) {
-	if b.cfg == nil {
-		return nil, nil, false
-	}
-	if isSessionSubject(subject) {
-		return b.sessionViaFacade(strings.TrimPrefix(subject, sessionSubjectPrefix), payloadJSON)
-	}
-	if res, errs, ok := b.domainViaFacade(subject, payloadJSON); ok {
-		return res, errs, true
-	}
-	domain, op, ok := splitConfigSubject(subject)
-	if !ok {
-		return nil, nil, false
-	}
-	var req map[string]any
-	if json.Unmarshal([]byte(payloadJSON), &req) != nil || req == nil {
-		req = map[string]any{}
-	}
-	instanceID, _ := req["instance_id"].(string)
-	if instanceID == "" {
-		instanceID = b.instanceID // 与 dataViaPersist 同口径：入口绑定兜底
-	}
-	scope := facade.Scope{WorkDir: b.workDir, DataDir: b.dataDir}
-	fail := func(err error) (any, []error) {
-		return map[string]any{"ok": false, "error": err.Error()}, []error{err}
-	}
-	if domain == "user-config" {
-		return b.userConfigViaFacade(op, req, instanceID, fail)
-	}
-	return b.kvViaFacade(domain, op, req, instanceID, scope, fail)
-}
-
-// kvViaFacade 处理 kv 域（prj-config / prompt / prj-security）的四个动作。
-func (b *Bridge) kvViaFacade(domain, op string, req map[string]any, instanceID string,
-	scope facade.Scope, fail func(error) (any, []error)) (any, []error, bool) {
-	kvReq := facade.ConfigKVGetRequest{Domain: domain, InstanceID: instanceID, Scope: scope}
-	switch op {
-	case "list":
-		resp, err := b.cfg.ConfigKVList(facade.ConfigKVListRequest{
-			Domain: domain, InstanceID: instanceID, Scope: scope,
-		})
-		if err != nil {
-			res, errs := fail(err)
-			return res, errs, true
-		}
-		return map[string]any{"list": resp.List}, nil, true
-	case "load":
-		kvReq.Keys = []string{reqID(req)}
-		resp, err := b.cfg.ConfigKVGet(kvReq)
-		if err != nil {
-			res, errs := fail(err)
-			return res, errs, true
-		}
-		return map[string]any{"data": resp.Values[reqID(req)]}, nil, true
-	case "save":
-		// 报文语义同 persist（61 §3.1）：兼容批量 `data:{entries:{…}}` 与既有单键
-		// `data:{key,value}`（entries 优先；翻译见 wire.ConfigSaveEntries —— 前端不变时行为不变）。
-		entries, id, ok := wire.ConfigSaveEntries(asAnyMap(req["data"]))
-		if !ok {
-			res, errs := fail(errors.New("key required"))
-			return res, errs, true
-		}
-		if _, err := b.cfg.ConfigKVSet(facade.ConfigKVSetRequest{
-			Domain: domain, InstanceID: instanceID, Entries: entries, Scope: scope,
-		}); err != nil {
-			res, errs := fail(err)
-			return res, errs, true
-		}
-		return map[string]any{"ok": true, "id": id}, nil, true
-	case "delete":
-		if _, err := b.cfg.ConfigKVDelete(facade.ConfigKVDeleteRequest{
-			Domain: domain, InstanceID: instanceID, Keys: []string{reqID(req)}, Scope: scope,
-		}); err != nil {
-			res, errs := fail(err)
-			return res, errs, true
-		}
-		return map[string]any{"ok": true}, nil, true
-	}
-	return nil, nil, false // 未知动作 → 交回总线（不静默丢弃）
-}
-
-// userConfigViaFacade 处理用户配置域的四个动作（应答键名与 MQ 路径逐字一致）。
-func (b *Bridge) userConfigViaFacade(op string, req map[string]any, instanceID string,
-	fail func(error) (any, []error)) (any, []error, bool) {
-	switch op {
-	case "list":
-		resp, err := b.cfg.UserConfigView(facade.UserConfigViewRequest{})
-		if err != nil {
-			res, errs := fail(err)
-			return res, errs, true
-		}
-		return map[string]any{"list": resp.List}, nil, true
-	case "load":
-		resp, err := b.cfg.UserConfigGet(facade.UserConfigGetRequest{
-			InstanceID: instanceID, Scope: facade.Scope{WorkDir: b.workDir, DataDir: b.dataDir},
-		})
-		if err != nil {
-			res, errs := fail(err)
-			return res, errs, true
-		}
-		return map[string]any{"data": resp.Config}, nil, true
-	case "save":
-		entries, _ := req["data"].(map[string]any)
-		resp, err := b.cfg.UserConfigSet(facade.UserConfigSetRequest{
-			Entries: entries, InstanceID: instanceID,
-		})
-		if err != nil {
-			res, errs := fail(err)
-			return res, errs, true
-		}
-		return map[string]any{"ok": true, "id": resp.ID}, nil, true
-	case "delete":
-		key := reqID(req)
-		keys := []string{}
-		if key != "" {
-			keys = append(keys, key)
-		}
-		if _, err := b.cfg.UserConfigDelete(facade.UserConfigDeleteRequest{
-			Keys: keys, InstanceID: instanceID,
-		}); err != nil {
-			res, errs := fail(err)
-			return res, errs, true
-		}
-		if key != "" && key != "user_config" { // user_config = legacy 整块键（清空整份，应答无 id）
-			return map[string]any{"ok": true, "id": key}, nil, true
-		}
-		return map[string]any{"ok": true}, nil, true
-	}
-	return nil, nil, false
-}
-
-// splitConfigSubject 把 data-<domain>-<op> 解析为（config 类域名, 动作）；非 config 类 → false。
-func splitConfigSubject(subject string) (domain, op string, ok bool) {
-	rest := strings.TrimPrefix(subject, "data-")
-	for _, d := range configFacadeDomains {
-		if strings.HasPrefix(rest, d+"-") {
-			return d, strings.TrimPrefix(rest, d+"-"), true
-		}
-	}
-	return "", "", false
-}
-
-// reqID 取请求 id：顶层 id → data.id → data.key（与 persist reqKey 同口径，统一转字符串）。
-func reqID(req map[string]any) string {
-	if id := sval(req["id"]); id != "" {
-		return id
-	}
-	data, _ := req["data"].(map[string]any)
-	if data == nil {
-		return ""
-	}
-	if id := sval(data["id"]); id != "" {
-		return id
-	}
-	if k, _ := data["key"].(string); k != "" {
-		return k
-	}
-	return ""
-}
-
 // ── prj-config 键值面（gui.* 状态落库；20-gui / 61-消息一览 §3.1）──
 
 // prjConfigSave 保存 prj config 键（save 载荷 {data:{key,value}}，value = 值字符串）。
-// 数据面 = dataCall（config 类 → 门面 inline；未接线 → 总线 persist，见 data.go 头）。
 // 失败返回 error（调用方按需静默丢弃，不阻塞 UI）。
 func (b *Bridge) prjConfigSave(key, value string) error {
 	raw, _ := json.Marshal(map[string]any{"data": map[string]any{"key": key, "value": value}})
@@ -315,8 +121,7 @@ func (b *Bridge) prjConfigSave(key, value string) error {
 }
 
 // prjConfigSaveBatch 批量保存 prj config 键（save 载荷 {data:{entries:{<key>:<value>,…}}}，
-// 61 §3.1 批量 entries 面；门面 ConfigKVSet 整批一次落库 + **仅 1 条**刷新广播，N 键不再 N 次往返，
-// 见 config_facade.go）。空 entries → 直接返回（不产生空请求）。
+// 61 §3.1 批量 entries 面；persist 整批一次落库 + **仅 1 条**刷新广播）。空 entries → 直接返回。
 func (b *Bridge) prjConfigSaveBatch(entries map[string]string) error {
 	if len(entries) == 0 {
 		return nil
@@ -397,9 +202,8 @@ func readUserConfig(b *Bridge) (map[string]any, error) {
 	return defaultUserConfig(), nil
 }
 
-// asAnyMap 归一化「平铺 键→值」取值：门面 inline 绑定（同进程直调）给出领域形态
-// map[string]string（配置值恒为字符串），序列化绑定（MQ / http）给出 map[string]any。
-// 两者都认 —— 调用方只认"平铺键值表"这一领域事实。
+// asAnyMap 归一化「平铺 键→值」取值：MQ 序列化往返给出 map[string]any；直接构造处也可能给
+// map[string]string。两者都认 —— 调用方只认"平铺键值表"这一领域事实。
 func asAnyMap(v any) map[string]any {
 	switch t := v.(type) {
 	case map[string]any:
@@ -414,8 +218,7 @@ func asAnyMap(v any) map[string]any {
 	return nil
 }
 
-// asAnySlice 归一化「领域对象数组」取值：inline 绑定给出 []map[string]any，序列化绑定给出
-// []any。两者都认。
+// asAnySlice 归一化「领域对象数组」取值（[]any 与 []map[string]any 两种形态都认）。
 func asAnySlice(v any) []any {
 	switch t := v.(type) {
 	case []any:
@@ -434,9 +237,8 @@ func asAnySlice(v any) []any {
 //
 // 用途 = **群聊窗口单独额度**判定（群聊方案 §9 D28/D30 · 阶段 G G3）：宿主在 `open-chat` 建窗前
 // 需知道目标会话是不是群聊，而 `gui.window.list` / `open-chat` 的**载荷不变**（零新增字段）→
-// 不能由前端传，只能宿主自取。取数经既有**只读**消息 `data-session-get`（门面直调 / 总线二选一，
-// 见 dataCall）。
-// **取不到**（未注入门面且总线不可用 / 会话不存在 / 超时 / --no-server）→ 空串 →
+// 不能由前端传，只能宿主自取。取数经既有**只读**消息 `data-session-get`。
+// **取不到**（总线不可用 / 会话不存在 / 超时 / --no-server）→ 空串 →
 // 调用方按**普通会话**处理 → 普通对话窗口的既有额度与行为逐字不变。
 func (b *Bridge) SessionKind(sessionID string) string {
 	if sessionID == "" {
@@ -454,7 +256,7 @@ func (b *Bridge) SessionKind(sessionID string) string {
 	if !ok {
 		return ""
 	}
-	// 应答形态 = `{data: 会话行|null}`（wire.SessionGetResult；门面与总线两条路径逐字一致）。
+	// 应答形态 = `{data: 会话行|null}`（wire.SessionGetResult）。
 	data, ok := m["data"].(map[string]any)
 	if !ok {
 		return ""

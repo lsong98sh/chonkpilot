@@ -10,6 +10,8 @@ require (
 
 require (
 	github.com/chonkpilot/chonkpilot-ignore v0.0.0 // indirect
+	github.com/jchv/go-webview2 v0.0.0 // indirect
+	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
 	github.com/lsong98sh/chonkpilot-session v0.1.0 // indirect
 	go.etcd.io/bbolt v1.4.2 // indirect

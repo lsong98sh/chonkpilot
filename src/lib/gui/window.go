@@ -26,7 +26,6 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-gui/internal/fileserver"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
@@ -437,8 +436,6 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 	h.br.SetProjectOpener(env.projectOpener)
 	if env.srv != nil {
 		// PRODSIM-1：本地认证域已删除 —— 不再注入 authCheck（首屏 authed 恒 true / 免鉴权）。
-		// config 类 data-* 走数据门面（同进程直调）；未接线（-no-server）时回落总线转发。
-		h.br.SetFacade(inline.New(env.bus))
 	}
 	// --no-server（本地无数据服务）：data-* 快速失败，不经总线等 3s 超时（首屏提速）。
 	// flash 远程薄壳（srv=nil 但有 UDS server）**不**置位。

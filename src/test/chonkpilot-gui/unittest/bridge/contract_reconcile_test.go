@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"sort"
 	"testing"
@@ -28,7 +27,6 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
@@ -536,7 +534,6 @@ func newContextParityEnv(t *testing.T) (*bridge.Bridge, *persist.Service, string
 	}
 	time.Sleep(20 * time.Millisecond) // 等 persist 自持实例视图登记
 	br := bridge.New(instanceID, wd, "", nil, bus)
-	br.SetFacade(inline.New(bus))
 	return br, svc, instanceID, wd
 }
 
@@ -549,11 +546,14 @@ func keySetOf(m map[string]any) map[string]bool {
 	return out
 }
 
-// TestSessionContextTwoPathsKeyParity 断言 data-session-context 两条产者路径键集一致。
+// TestSessionContextTwoPathsKeyParity 断言 data-session-context 应答键集符合 61 §3.2a。
+//
+// 2026-10-25：桥的 inline 双绑定已删除（唯一入口 = MQ），故本用例由「两路径对账」收敛为
+// 单路径键集断言（消息面契约本身不变）。
 func TestSessionContextTwoPathsKeyParity(t *testing.T) {
 	br, svc, instanceID, wd := newContextParityEnv(t)
 
-	// 造会话 + 轮次（经桥门面写库）。
+	// 造会话 + 轮次（经桥写库）。
 	for _, req := range []struct{ typ, payload string }{
 		{"data-session-ensure-session", `{"session_id":"s-ctx"}`},
 		{"data-session-ensure-turn", `{"turn_id":"t-ctx","session_id":"s-ctx"}`},
@@ -571,26 +571,14 @@ func TestSessionContextTwoPathsKeyParity(t *testing.T) {
 		t.Fatalf("TurnComplete: %v", err)
 	}
 
-	// 路径①：桥 inline 门面（同进程直调）。
-	resInline, errs := br.PublishEvent("data-session-context", `{"session_id":"s-ctx"}`)
+	res, errs := br.PublishEvent("data-session-context", `{"session_id":"s-ctx"}`)
 	if len(errs) > 0 {
-		t.Fatalf("inline context errs=%v", errs)
+		t.Fatalf("context errs=%v", errs)
 	}
-	keysInline := keySetOf(toMap(t, resInline))
+	keys := keySetOf(toMap(t, res))
 
-	// 路径②：MQ 信封（未注入门面 → 回落总线 persist 数据服务）。
-	br.SetFacade(nil)
-	resMQ, errs := br.PublishEvent("data-session-context", `{"session_id":"s-ctx"}`)
-	if len(errs) > 0 {
-		t.Fatalf("MQ context errs=%v", errs)
-	}
-	keysMQ := keySetOf(toMap(t, resMQ))
-
-	// 对账：两路径键集一致，且都含 61 §3.2a 声明的 messages + 可选伴随数组 turn_tokens。
-	if !reflect.DeepEqual(keysInline, keysMQ) {
-		t.Fatalf("data-session-context 两路径键集不一致（I-145 再分叉）：inline=%v MQ=%v", keysInline, keysMQ)
-	}
-	if !keysInline["messages"] || !keysInline["turn_tokens"] {
-		t.Fatalf("两路径应答应含 {messages, turn_tokens}：%v", keysInline)
+	// 键集须含 61 §3.2a 声明的 messages + 可选伴随数组 turn_tokens。
+	if !keys["messages"] || !keys["turn_tokens"] {
+		t.Fatalf("应答应含 {messages, turn_tokens}：%v", keys)
 	}
 }
