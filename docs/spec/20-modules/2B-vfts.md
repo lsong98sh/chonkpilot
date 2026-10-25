@@ -2,7 +2,7 @@
 
 > 状态：✅ 与代码一致
 > 关联：[28-plugins §3.4](28-plugins.md) · [29-codegraph](29-codegraph.md)（同构对照） · [2F-ignore](2F-ignore.md) · [38-检索与索引](../30-function-points/38-检索与索引.md)
-> 代码目录：`src/plugins/vfts/`（引擎 exe，含 `server/`）· `src/plugins/plugin-vfts/`（宿主插件）
+> 代码目录：`chonkpilot-plugins/codebase/engines/vfts/`（引擎 exe，含 `server/`；2026-10-25 迁出主仓）· `src/plugins/plugin-vfts/`（宿主内置 Hook，兼容，默认关）
 
 ---
 
@@ -234,7 +234,7 @@ ensureWorkspace(force)：
 ```powershell
 $env:GOROOT="e:\GoDev\go1.26"; $env:Path="e:\GoDev\go1.26\bin;"+$env:Path
 $env:GOPROXY="https://goproxy.cn,direct"
-cd src/plugins/vfts          ; go test ./server/ -v -count=1
+cd ../chonkpilot-plugins/codebase/engines/vfts ; go test ./server/ -v -count=1
 cd src/plugins/plugin-vfts   ; go test -v -count=1
 ```
 

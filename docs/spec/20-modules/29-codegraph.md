@@ -2,7 +2,7 @@
 
 > 状态：✅ 与代码一致（引擎已实现；插件多 workdir 已落地，工具面差异注册留待 v2，见 §9）
 > 关联：[28-plugins](28-plugins.md) · [12-数据层](../10-architecture/12-数据层.md)
-> 代码目录：`src/plugins/codegraph/`（引擎 exe）· `src/plugins/plugin-codegraph/`（宿主插件）
+> 代码目录：`chonkpilot-plugins/codebase/engines/codegraph/`（引擎 exe，2026-10-25 迁出主仓）· `src/plugins/plugin-codegraph/`（宿主内置 Hook，兼容，默认关）
 
 ---
 
@@ -248,7 +248,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 $env:GOROOT="e:\GoDev\go1.26"; $env:Path = "e:\GoDev\go1.26\bin;" + $env:Path
 $env:GOPROXY="https://goproxy.cn,direct"
 $env:Path = "e:\GoDev\msys64\ucrt64\bin;" + $env:Path   # gcc
-cd src/plugins/codegraph ; go test ./server/ -v -count=1
+cd ../chonkpilot-plugins/codebase/engines/codegraph ; go test ./server/ -v -count=1
 cd src/plugins/plugin-codegraph      ; go test -v -count=1
 ```
 

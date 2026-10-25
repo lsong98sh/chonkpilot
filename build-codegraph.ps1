@@ -4,7 +4,7 @@
 #   ├── chonkpilot-codegraph-mcp-server.exe   # 进程内 tree-sitter 索引 MCP server（console，CGO）
 #   └── chonkpilot-codegraph-indexer.exe      # 常驻增量索引器（P5，GUI 子系统 + 托盘，CGO；单实例多 workdir）
 #
-# 源（D-28 src 结构）：`src/plugins/codegraph`（engine 本体；插件侧 = `src/plugins/plugin-codegraph`）。
+# 源（PLUGIN-SPLIT-1）：`chonkpilot-plugins/codebase/engines/codegraph`（engine 本体；插件侧 = `chonkpilot-plugins/codebase`）。
 # 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop、
 #   dist/server）由 build-desktop.ps1 从本目录取件后置于**发行根**——
 #   插件按「宿主 exe 同目录」解析引擎 exe（codegraph.go 候选路径），故发行根必须有一份。
@@ -24,7 +24,9 @@ $env:GOTOOLCHAIN = "local"
 $env:CGO_ENABLED = "1"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$mod = Join-Path $root "src\plugins\codegraph"
+# 引擎源码随插件（PLUGIN-SPLIT-1）：codegraph 引擎在 plugins 仓 codebase/engines/codegraph。
+$pluginsRepo = Join-Path (Split-Path -Parent $root) "chonkpilot-plugins"
+$mod = Join-Path $pluginsRepo "codebase\engines\codegraph"
 $dist = Join-Path $root "dist\plugins\codegraph"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 

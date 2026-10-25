@@ -5,7 +5,7 @@
 #   ├── chonkpilot-vfts-indexer.exe      # 常驻增量索引器（宿主按 work_dir 拉起；CGO，与引擎同目录）
 #   └── zvec_c_api.dll                   # zvec C-API 原生动态库（必须与 exe 同目录，运行时加载）
 #
-# 源（D-28 src 结构）：`src/plugins/vfts`（engine 本体；插件侧 = `src/plugins/plugin-vfts`）。
+# 源（PLUGIN-SPLIT-1）：`chonkpilot-plugins/codebase/engines/vfts`（engine 本体；插件侧 = `chonkpilot-plugins/codebase`）。
 # 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop、
 #   dist/server）由 build-desktop.ps1 从本目录取件后置于**发行根**——
 #   插件按「宿主 exe 同目录」解析引擎 exe，且 zvec_c_api.dll **必须与 vfts 引擎 exe 同目录**。
@@ -27,7 +27,9 @@ $env:GOTOOLCHAIN = "local"
 $env:CGO_ENABLED = "1"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$mod = Join-Path $root "src\plugins\vfts"
+# 引擎源码随插件（PLUGIN-SPLIT-1）：vfts 引擎在 plugins 仓 codebase/engines/vfts。
+$pluginsRepo = Join-Path (Split-Path -Parent $root) "chonkpilot-plugins"
+$mod = Join-Path $pluginsRepo "codebase\engines\vfts"
 $dist = Join-Path $root "dist\plugins\vfts"
 $zvec = Join-Path $mod "third_party\zvec"
 $zvecLib = Join-Path $zvec "windows_amd64"

@@ -148,20 +148,8 @@ Write-Host "==> verify executors (--help 从磁盘读契约：<exeDir>/capabilit
 & (Join-Path $execDir "chonkpilot-tools-executor.exe") --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "tools executor --help failed" }
 
-# browser / desktop 常驻插件（GATEWAY-2 / L9-L10）：GUI 子系统 + 托盘，走 UDS 服务，不是 executor。
-# 与 executor 的区别：常驻、多会话池、不接 gateway（脚本直连）。
-Write-Host "==> build plugins (browser / desktop, -H windowsgui) -> capability/executors/"
-Push-Location $tools
-try {
-    foreach ($pair in @(
-            @("plugins/browser", "chonkpilot-browser-plugin.exe"),
-            @("plugins/desktop", "chonkpilot-desktop-plugin.exe"))) {
-        $cat, $exeName = $pair
-        & go build -ldflags "-H windowsgui" -o (Join-Path $execDir $exeName) "./$cat"
-        if ($LASTEXITCODE -ne 0) { throw "build $exeName failed" }
-        Write-Host "    ok: $exeName (plugin)"
-    }
-} finally { Pop-Location }
+# 注（PLUGIN-SPLIT-1）：browser / desktop 常驻引擎已随插件迁入 chonkpilot-plugins
+# （<id>/engine），由 build-plugins.ps1 直接构建，本脚本不再产出。
 
 # 首次生成 config.json（已有则不覆盖，保留用户配置）
 $cfgPath = Join-Path $dist "config.json"

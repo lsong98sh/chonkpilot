@@ -51,7 +51,7 @@ $srcPlugins = Join-Path $root "src\plugins"
 $pluginsRepo = Join-Path (Split-Path -Parent $root) "chonkpilot-plugins"
 $out = Join-Path $root "dist\plugin-apps"
 
-$zvec = Join-Path $srcPlugins "vfts\third_party\zvec"
+$zvec = Join-Path $pluginsRepo "codebase\engines\vfts\third_party\zvec"
 $zvecLib = Join-Path $zvec "windows_amd64"
 $env:CGO_CFLAGS = "-I$($zvec.Replace('\','/'))/include"
 $env:CGO_LDFLAGS = "-L$($zvecLib.Replace('\','/')) -lzvec_c_api"
@@ -86,17 +86,22 @@ function Build-Plugin {
     Write-Host ("    ok: {0} ({1} MB)" -f $exe.Name, [math]::Round($exe.Length / 1MB, 1))
 }
 
-# 引擎 exe 由 build-mcp-server.ps1 产出（capability/executors/），拷进插件目录（与桥接层同目录）。
-function Copy-Engine {
-    param([string]$ID, [string]$EngineName)
-    $candidates = @(
-        (Join-Path $root "dist\other\capability\executors\$EngineName"),
-        (Join-Path $root "dist\desktop\capability\executors\$EngineName")
+# 引擎源码随插件（PLUGIN-SPLIT-1）：直接从 plugins 仓构建（GUI 子系统常驻 + 托盘）。
+function Build-Engine {
+    param(
+        [string]$Mod,        # 引擎源码目录（绝对路径）
+        [string]$ID,         # 插件 id（产物落到 <out>/<ID>/）
+        [string]$ExeName     # 产物 exe 名
     )
-    $src = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $src) { throw "引擎产物缺失：$EngineName（先跑 .\build-mcp-server.ps1）" }
-    Copy-Item $src (Join-Path $out $ID) -Force
-    Write-Host "    ok: $EngineName (engine)"
+    $dst = Join-Path $out $ID
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Push-Location $Mod
+    try {
+        go build -ldflags "-H windowsgui" -o (Join-Path $dst $ExeName) .
+        if ($LASTEXITCODE -ne 0) { throw "build engine failed: $Mod -> $ExeName" }
+    } finally { Pop-Location }
+    $exe = Get-Item (Join-Path $dst $ExeName)
+    Write-Host ("    ok: {0} ({1} MB)" -f $exe.Name, [math]::Round($exe.Length / 1MB, 1))
 }
 
 Write-Host "==> [1/9] websearch"
@@ -107,13 +112,13 @@ Build-Plugin -Mod (Join-Path $pluginsRepo "codebase") -ID "codebase" -ExeName "c
 Copy-Item (Join-Path $zvecLib "zvec_c_api.dll") (Join-Path $out "codebase") -Force
 Write-Host "    ok: zvec_c_api.dll"
 
-Write-Host "==> [3/9] browser（桥接层 + 引擎）"
+Write-Host "==> [3/9] browser（桥接层 + 引擎：源码在 plugins 仓 browser/engine）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "browser") -ID "browser" -ExeName "chonkpilot-plugin-browser.exe"
-Copy-Engine -ID "browser" -EngineName "chonkpilot-browser-plugin.exe"
+Build-Engine -Mod (Join-Path $pluginsRepo "browser\engine") -ID "browser" -ExeName "chonkpilot-browser-plugin.exe"
 
-Write-Host "==> [4/9] desktop（桥接层 + 引擎）"
+Write-Host "==> [4/9] desktop（桥接层 + 引擎：源码在 plugins 仓 desktop/engine）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "desktop") -ID "desktop" -ExeName "chonkpilot-plugin-desktop.exe"
-Copy-Engine -ID "desktop" -EngineName "chonkpilot-desktop-plugin.exe"
+Build-Engine -Mod (Join-Path $pluginsRepo "desktop\engine") -ID "desktop" -ExeName "chonkpilot-desktop-plugin.exe"
 
 # file 插件的工具契约：唯一源仍是 src/initdata/capability/tools/file（本插件运行时解析），
 # 但**不再进入 core capability 根**（否则与插件重复注册 → gateway 冲突）。
