@@ -57,9 +57,9 @@
   * 真实产物 = 夹具仓库 `git log` / `git for-each-ref` / `git show` / `.git/index` 字节 / 文件内容。
 
 隔离（51-FP与测试映射 §5/§6-8「天然隔离例外」）：本套件**自起**GUI（动态端口 + 临时 work-dir +
-独立 `--data-dir` + 独立 `HOME` → usr 主库/prj 库全新，天然隔离，故**不接**套件级配置 guard）；
+独立临时 work-dir + 独立 `HOME` → usr 主库/prj 库全新，天然隔离，故**不接**套件级配置 guard）；
 夹具 `git init` + 初始提交都在**临时目录**内，**不碰共享 `systest/ws`**；H5 另起第二个实例
-（独立 work-dir/data-dir/HOME）。全部临时目录登记 `harness.tmp_dir` → 结束即回收。
+（独立 work-dir/HOME）。全部临时目录登记 `harness.tmp_dir` → 结束即回收。
 夹具仓库**使用 git 默认配置**（不覆盖 `core.autocrlf`）：restore 的一致性校验已改为**交给 git 判定**
 （`git diff --quiet <链头> -- <path>`，chain.go:547-570：退出码 0 = 工作区与链头一致），行尾归一
 由 git 处理，故 Git for Windows 默认 `core.autocrlf=true` 下亦成立（原先按原始字节比较导致恒拒绝的

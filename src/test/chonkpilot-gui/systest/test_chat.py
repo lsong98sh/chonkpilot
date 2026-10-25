@@ -45,8 +45,8 @@ def main():
 
     gui = GUIClient(port=PORT, data_dir=DATA_DIR)
     c = Checker()
-    # 套件级配置快照-还原（51 §6-8）：prj 走本套件独立 --data-dir，但 **usr 主库（~/.chonkpilot）
-    # 不受 --data-dir 隔离**（theme/locale/llms 等仍写机器库）→ 跑前快照、finally 还原。
+    # 套件级配置快照-还原（51 §6-8）：prj 随本套件独立临时 work-dir，但 **usr 主库（~/.chonkpilot）
+    # 不受 work-dir 隔离**（theme/locale/llms 等仍写机器库）→ 跑前快照、finally 还原。
     snap = None
     try:
         gui.start()

@@ -5,7 +5,7 @@
 
 非破坏性做法：**不直接打开共享库**（GUI 启动/退出会隐式落盘 `window.*` 等），而是
 把库文件复制到临时目录后离线读取：
-  - prj：`<work-dir>/.chonkpilot/chonkpilot.db` → 复制为 `--data-dir/<tmp>/chonkpilot.db`
+  - prj：`<work-dir>/.chonkpilot/chonkpilot.db` → 复制为 `<tmp>/chonkpilot.db`（离线读）
   - usr：`%USERPROFILE%/.chonkpilot/chonkpilot.db` → 复制到临时 HOME 下
   - work-dir：只复制普通文件（忽略 `.chonkpilot`），避免回落干扰
 

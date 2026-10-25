@@ -96,7 +96,7 @@ def main():
         time.sleep(0.5)
 
         # 忙碌夹具：usr（用户级全局库）llms 追加挂起 provider 并选中，finally 还原
-        # 快照-还原（51 §6-8）：usr 主库 ~/.chonkpilot 不受 --data-dir 隔离。
+        # 快照-还原（51 §6-8）：usr 主库 ~/.chonkpilot 不受 work-dir 隔离。
         # 夹具幂等（2026-09-23，[42 §2 (148)]）：同名条目**先去重再加** —— 服务端按名解析取**首个命中**
         # （`src/lib/llm/server/server.go` `userLLMProvider`），若本机 usr 残留同名条目（既往被中断的
         # 批跑未还原），请求会打到**旧端口死端点** → llm-error → 前端自动续写 → 多出 turn/圈 → TN1/TN4/TN5b 失真。

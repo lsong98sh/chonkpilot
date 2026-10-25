@@ -22,7 +22,7 @@ type FileShowHandler struct {
 	// WorkDir is the only directory whose files may be served.
 	// Requests resolving outside it are rejected (path traversal guard).
 	WorkDir string
-	// DataDirs 是额外放行根（如 --data-dir 项目数据根）：请求可从中服务文件
+	// DataDirs 是额外放行根（如项目数据根 / prjusr 数据根）：请求可从中服务文件
 	//（ide.db 预览等 /show/），路径越界防护与 WorkDir 一致。
 	DataDirs []string
 	// UploadRoot 是**相对路径引用的解析根**（🆕 2026-10-10）：附件/截图经 gui.upload 落

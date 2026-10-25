@@ -6,7 +6,7 @@
 → 点开 ChatPanel 场景 popover 断言新场景出现。
 
 隔离（51-FP与测试映射 §5/§6-8）：
-  * 自起 GUI：动态端口 + 独立 work-dir + 独立 `--data-dir` + **独立 HOME**
+  * 自起 GUI：动态端口 + 独立 work-dir + **独立 HOME**
     （app 级出厂场景 = 发行目录磁盘目录 `dist/desktop/capability/scenarios/`；**不读机器 `~/.chonkpilot`**）。
   * 确定性：三级场景（app / user / project）自 2026-09-26 起**均可编辑**；出厂场景 = app 级
     （`capability/scenarios/default/`，出厂内容 = 磁盘目录（源 `src/initdata/capability/scenarios/`，由构建脚本投放），25 §6）。

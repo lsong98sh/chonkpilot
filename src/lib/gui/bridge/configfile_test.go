@@ -31,12 +31,12 @@ func callFileSave(t *testing.T, b *Bridge, payload string) map[string]any {
 	return m
 }
 
-// TestSaveConfigFileBackupIntoDataDir 显式 --data-dir：prjusr 根 = 数据根（main 注入同值）
+// TestSaveConfigFileBackupIntoDataDir prjusr 根 = 数据根（装配注入同值）
 // → 备份落 <数据根>/backup/ 且内容原样。
 func TestSaveConfigFileBackupIntoDataDir(t *testing.T) {
 	dataDir := t.TempDir()
 	b := New("ins-1", t.TempDir(), dataDir, func(string) {}, nil)
-	b.SetPrjUsrRoot(dataDir) // main 装配：显式 --data-dir → prjusr 根与 prj 同根
+	b.SetPrjUsrRoot(dataDir) // 装配：prjusr 根与数据根同值（非 desktop 形态）
 	const content = `{"app":"chonkpilot","data":{"theme":"dark"}}`
 
 	payload, _ := json.Marshal(map[string]any{
@@ -62,7 +62,7 @@ func TestSaveConfigFileBackupIntoDataDir(t *testing.T) {
 	}
 }
 
-// TestSaveConfigFileBackupIntoPrjUsrRoot desktop 缺省 --data-dir：prjusr 根 =
+// TestSaveConfigFileBackupIntoPrjUsrRoot desktop 形态：prjusr 根 =
 // `<workDir>/.chonkpilot/users/<OS 用户名>/`（main 经 data.PrjUsrDir 解析后注入，≠ <workDir>/.chonkpilot）
 // → 自动备份随 prjusr 根落 <prjusr 根>/backup/（个人数据不进项目目录，[24 §3.2] MW-8）。
 func TestSaveConfigFileBackupIntoPrjUsrRoot(t *testing.T) {

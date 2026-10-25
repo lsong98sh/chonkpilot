@@ -43,7 +43,7 @@ const (
 
 // Options 是壳传给宿主的静态启动参数。
 //
-// 注：其余启动参数（`--work-dir` / `--data-dir` / `--bridge-url` / `--test-port` /
+// 注：其余启动参数（`--work-dir` / `--bridge-url` / `--test-port` /
 // `--llm-base` / `--llm-model` / `--no-server`）仍由 host 包在 Main 内解析命令行 —— 两个壳
 // （`src/desktop` / `src/gui`）只差**形态**一项，故只有 Form 经 Options 传入。
 type Options struct {

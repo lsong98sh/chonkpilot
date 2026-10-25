@@ -36,7 +36,7 @@
   前端内部既有事件：preview-tab-open(kind=scenario) / preview-tab-close-all
 
 隔离（51-FP与测试映射 §5/§6-8）：
-  * 自起 GUI：动态端口 + 独立 work-dir + 独立 `--data-dir` + 独立 `HOME`
+  * 自起 GUI：动态端口 + 独立 work-dir + 独立 `HOME`
     （app 级场景 = 发行目录磁盘目录 `dist/desktop/capability/scenarios/`；user 级自建落在临时 HOME 内并即时清理，绝不碰机器 ~/.chonkpilot）。
   * 套件级快照-还原 `_h.suite_config_guard(c)`（usr+prj；含异常/中断路径）。
   * 项目级场景落在临时 work-dir 内 → 结束随 `harness.tmp_dir` 删除 → **零残留**；

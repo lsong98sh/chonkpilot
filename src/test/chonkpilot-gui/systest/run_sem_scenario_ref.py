@@ -8,7 +8,7 @@
   S4 场景里的 `ref` **保持不变**（编辑不移动引用；场景记录 ref 与文件一致）。
 
 隔离（51-FP与测试映射 §5/§6-8）：
-  * 自起 GUI：动态端口 + 独立临时 work-dir / `--data-dir` / **独立 HOME**（不读机器 `~/.chonkpilot`）。
+  * 自起 GUI：动态端口 + 独立临时 work-dir / **独立 HOME**（不读机器 `~/.chonkpilot`）。
   * 夹具（场景 + agent 文件）全落在临时 work-dir，随 `harness.tmp_dir` 删除 → 零残留。
   * 套件级快照-还原 `_h.suite_config_guard(c)`（usr+prj；含异常/中断路径）。
 

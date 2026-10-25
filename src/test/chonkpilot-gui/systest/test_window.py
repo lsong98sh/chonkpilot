@@ -203,7 +203,7 @@ def J(gui, js):
 def main():
     gui = GUIClient(port=PORT, wait_ready=90)
     c = Checker()
-    # 套件级配置快照-还原（51 §6-8）：本套件用**共享** work-dir（ws/.chonkpilot 库，无 --data-dir），
+    # 套件级配置快照-还原（51 §6-8）：本套件用**共享** work-dir（ws/.chonkpilot 库），
     # 最大化/还原窗口会把 prj 的 `window.*`（x/y/width/height/maximized）写实；usr 库亦为机器主库
     # → 跑前快照、finally 还原（原本缺省的键 → 删除）。
     snap = None

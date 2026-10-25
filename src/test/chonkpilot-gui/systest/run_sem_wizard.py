@@ -51,7 +51,7 @@ def _spawn():
     env["USERPROFILE"] = HOME
     env["HOME"] = HOME
     proc = _h.popen_own(
-        [EXE, "--test-port=%d" % port, "--work-dir=" + WS, "--data-dir=" + DD],
+        [EXE, "--test-port=%d" % port, "--work-dir=" + WS],
         name="gui:semwiz:%d" % port, cwd=os.path.dirname(EXE), env=env,
         creationflags=_h.CREATE_NO_WINDOW | _h.ABOVE_NORMAL_PRIORITY_CLASS)
     cli = ChonkClient(base="http://127.0.0.1:%d" % port, timeout=20)

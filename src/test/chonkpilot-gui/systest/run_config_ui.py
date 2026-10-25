@@ -1528,12 +1528,10 @@ def _spawn_hist():
         os.makedirs(os.path.join(HIST_WS, ".git"), exist_ok=True)
     # 夹具：预置工程规格文件 → 抑制场景向导自动弹出（本实例走 popen_own，不经 harness.start_gui）
     _h.ensure_project_spec(HIST_WS)
-    os.makedirs(HIST_DATA, exist_ok=True)
     # 起第二实例前先清掉**上次残留**占用 2347 的进程（保护底座 2345）
     _kill_port(HIST_PORT, protect_ports=(BASE_PORT,))
     # 经 harness 自起 → 登记回收（本用例 finally / 进程退出 / 信号三条路径都会清）
-    proc = _h.popen_own([EXE, "--test-port=%d" % HIST_PORT, "--work-dir=" + ws,
-                         "--data-dir=" + HIST_DATA],
+    proc = _h.popen_own([EXE, "--test-port=%d" % HIST_PORT, "--work-dir=" + ws],
                         name="gui:hist", cwd=os.path.dirname(EXE))
     cli = ChonkClient(base="http://127.0.0.1:%d" % HIST_PORT)
     try:

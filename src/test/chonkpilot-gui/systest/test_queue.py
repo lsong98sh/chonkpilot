@@ -9,7 +9,7 @@
 忙碌夹具：usr `llms` 追加一条挂起 provider（本地 HTTP 只收不回），选中它并发一轮 →
 该轮无 llm-complete → turn 持续 busy（否则默认 LLM 轮次失败即 llm-complete
 → drainQueue 清空待发队列，撤回后徽章数不稳定）。
-**usr 配置是用户级全局库（~/.chonkpilot，不受 --data-dir 隔离）** → 按 51 §6-8
+**usr 配置是用户级全局库（~/.chonkpilot，不受 work-dir 隔离）** → 按 51 §6-8
 「配置快照-还原」：跑前 `harness.snapshot_user_config` 快照，finally `restore_user_config` 还原
 （原本为空/缺省 → 清空集合）。
 """
@@ -87,7 +87,7 @@ def main():
         time.sleep(0.5)
 
         # 忙碌夹具：usr llms 追加挂起 provider 并选中（队列按 LLM 分桶 → 徽章归属所选 LLM）
-        # 快照-还原（51 §6-8）：usr 主库 ~/.chonkpilot 不受 --data-dir 隔离 → 跑前快照、finally 还原。
+        # 快照-还原（51 §6-8）：usr 主库 ~/.chonkpilot 不受 work-dir 隔离 → 跑前快照、finally 还原。
         # 夹具幂等（2026-09-23，[42 §2 (148)]）：同名条目**先去重再加** —— 服务端按名解析取**首个命中**
         # （`src/lib/llm/server/server.go` `userLLMProvider`），同名残留会把请求打到旧端口死端点。
         snap = snapshot_user_config(gui, ['llms'])

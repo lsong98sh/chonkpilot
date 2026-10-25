@@ -54,7 +54,7 @@ def main():
 
     gui = GUIClient(port=PORT, data_dir=DATA_DIR)
     c = Checker()
-    # 套件级配置快照-还原（51 §6-8）：prj 走独立 --data-dir，usr 主库不受其隔离（重试参数等会写
+    # 套件级配置快照-还原（51 §6-8）：prj 随独立临时 work-dir，usr 主库不受其隔离（重试参数等会写
     # usr 库）→ 跑前快照、finally 还原。
     snap = None
     try:

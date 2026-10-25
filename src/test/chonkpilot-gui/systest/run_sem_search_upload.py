@@ -35,8 +35,8 @@ if not os.path.isfile(EXE):
 
 TS = str(int(time.time()))[-6:]
 WS = _h.tmp_dir("ck-semsearch-ws-")
-DD = _h.tmp_dir("ck-semsearch-dd-")
 HOME = _h.tmp_home()
+DD = _h.prjusr_root(WS, HOME)   # prjusr 数据根（固定规则；无 --data-dir 参数）
 
 UP_NAME = "sem-upload-%s.png" % TS
 UP_BYTES = ("SEM-UPLOAD-BYTES-%s" % TS).encode("utf-8")

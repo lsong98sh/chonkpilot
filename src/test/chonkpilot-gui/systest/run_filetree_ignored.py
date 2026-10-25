@@ -22,7 +22,7 @@
   * 展开目录 = 既有 `filesys.watch`（= 文件树展开动作，`FileTree.onToggle` 同款），无需 mock。
 
 隔离与环境（51-FP与测试映射 §5/§6-8）：
-  * **自起** GUI：动态端口 + 独立 work-dir（临时目录，含 `.gitignore` 夹具）+ 独立 `--data-dir`
+  * **自起** GUI：动态端口 + 独立 work-dir（临时目录，含 `.gitignore` 夹具）
     + 独立 `HOME`（usr 主库全新；prj 库全新 → 无历史键）。
   * 不碰共享 `systest/ws`；夹具与索引落盘（`<ws>/.chonkpilot/...`）在临时 work-dir 内 →
     随 `harness.tmp_dir` 一并删除 → **零残留**。

@@ -2,16 +2,16 @@
 """FP L88 保存打开文件重启恢复：打开文件 → 重启 gui → preview tab 自动恢复。
 
 流程：
-  1. 以**独立临时 work-dir + 独立 --data-dir** 启动 GUI → emit file-open 打开 a.txt / b.txt
+  1. 以**独立临时 work-dir** 启动 GUI → emit file-open 打开 a.txt / b.txt
      （CodeView 保存 openedFiles 到 prj 库）
   2. 断言两个 tab 出现（`.tb-bar.tb-bottom .tb-tab .tb-name`）
-  3. 强杀 GUI → 以同 work-dir / 同 data-dir 重启
+  3. 强杀 GUI → 以同 work-dir 重启
   4. 断言 preview tab 自动恢复（同一文件名 tab 存在）
 
 迁移（2026-09-15）：
   - 页签栏 = 公共 TabBar（`.tb-bar.tb-bottom .tb-tab` / `.tb-name`）；旧 `.preview-tab-name` 已移除。
   - 隔离：旧版直接用共用 `systest/ws`（与主测试实例**同 work-dir**）→ 双实例 DB 锁冲突。
-    现改用 tempfile 独立 work-dir + 独立 `--data-dir`（用完清理），与任何在跑实例互不干扰。
+    现改用 tempfile 独立 work-dir（用完清理），与任何在跑实例互不干扰。
   - file-open 路径改用**绝对路径**（与 FileTree/run_filetree 同口径）。
 
 前置：mock_llm（8901）非必需（本用例不涉及 LLM 回合）。
@@ -87,7 +87,7 @@ def prj_opened_files(c):
 
     A 口径：`codeview/SaveOpenedFiles` → 桥 `gui.ui.save{opened_files}` →
     `bridge/local.go:245-256 callSaveOpenedFiles` → `prjConfigSave("opened-files", <JSON 数组>)`；
-    `--data-dir` 非空时 prjusr == prj（persist.go:400-408）→ 同一库可经 `data-prj-config-list` 回读。
+    `opened-files` 落 **prj 层** → 经 `data-prj-config-list` 回读（与 prjusr 是否同根无关）。
     """
     lst = (c.req("data-prj-config-list", {}) or {}).get("list") or {}
     raw = lst.get("opened-files")

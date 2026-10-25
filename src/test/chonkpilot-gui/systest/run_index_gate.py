@@ -36,8 +36,7 @@
   * 工具面 = 客户端能力面 `tools-list`（61 §4.5：桥 → gateway `mcp-tools-list`；桥按当前实例
     作用域过滤）→ `{tools:[{name}]}`。**2026-10-23 口径**：P0a 去 `self_` 前缀后，
     codegraph 插件注册的工具名 = manifest `mcp.hot_tools` 原名（无前缀）。
-  * 索引状态 = prj 键 `codegraph.status` / `vfts.status`（插件回写；prjusr 路由，--data-dir 下与
-    prj 同库）→ `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
+  * 索引状态 = prj 键 `codegraph.status` / `vfts.status`（插件回写；prjusr 路由）→ `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
     （61 §3：persist 保存/删除后广播）捕获 → 不依赖轮询赛跑，不漏阶段。
   * vfts 文件清单 = 既有 `data-filelist-list`（61 §3.1：项目级 prj 库 `file_list` 表读面，
     每行含 `path` 绝对路径）→ 逐文件命中集合（与落盘 codegraph 索引同判据口径）。
@@ -47,7 +46,7 @@
   * 端到端工具调用已随 `dsl_run` 退役移除（G5 改为配置面回读，见 G5 docstring）。
 
 隔离与环境（51-FP与测试映射 §5/§6-8）：
-  * **自起** GUI：动态端口 + 独立 work-dir（临时目录）+ 独立 `--data-dir` + 独立 `HOME`
+  * **自起** GUI：动态端口 + 独立 work-dir（临时目录）+ 独立 `HOME`
     （usr 主库全新；prj 库全新 → 无历史覆盖；codegraph 插件按默认启用态加载）。
   * 不碰共享 `systest/ws`（其 `codegraph/vfts` 索引是 K5/K6 夹具）——本套件**不清除**他套件索引。
   * 套件级配置快照-还原 = `_h.suite_config_guard(c)`（退出前自动回滚 usr+prj，含异常/中断路径）。

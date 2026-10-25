@@ -52,7 +52,7 @@ func (b *Base) UsrDB() (*data.DB, func(), error) {
 
 // scopeWithDataDir 补齐「只带 work_dir」的调用方 Scope 的 data_dir（filesys 变更入队 /
 // 插件桥队列控制帧等）：复用同 work_dir 已登记实例的非空 data_dir，避免在 work_dir 下
-// 另建 prj 库（`--data-dir` 分离形态的 workdir 零污染、12-数据层 / 24 §3）。
+// 另建 prj 库（data_dir 非空分离形态的 workdir 零污染、12-数据层 / 24 §3）。
 // 无可复用绑定（未登记 / 全部 data_dir 为空）→ 原样返回（既有缺省语义不变）。
 func scopeWithDataDir(scope facade.Scope) facade.Scope {
 	if scope.Empty() || scope.WorkDir == "" || scope.DataDir != "" {

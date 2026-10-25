@@ -20,7 +20,7 @@
         → 固定端口 2345 在不同套件间「起-停」交替，不并存（`run_config_ui` 另起独立实例 2347/临时目录，
         并在清理时显式保护 2345，绝不波及底座）。
       - 自起型（`run_hist_git` / `run_index_gate` / `run_filetree_ignored` / `run_docs_gate`）：动态端口 +
-        独立 `--data-dir`/临时 work-dir/独立 HOME（`run_hist_git` 另起自管 mock LLM；`run_docs_gate`
+        独立临时 work-dir/独立 HOME（`run_hist_git` 另起自管 mock LLM；`run_docs_gate`
         另自拉/自停真转换器，产物缺失时 preflight SKIP）→ 与共享底座完全隔离，退出即回收。
       - **语义/回环级型**（`run_sem_*.py`，20 个）：自起 GUI（动态端口 + 独立临时 work-dir/data-dir/HOME），
         断言「语义内容 / 写-读回环」而非「元素存在」；夹具全落临时目录、结束即弃；产物缺失时自报 SKIP。

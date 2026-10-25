@@ -22,7 +22,7 @@
   前端内部既有事件：sessions-open / session-select（v-mq 绑定，见 SessionDrawer.vue）
 
 隔离（51-FP与测试映射 §5/§6-8）：
-  * 自起 GUI：动态端口 + 独立 work-dir + 独立 `--data-dir` + 独立 `HOME`（usr 主库全新）。
+  * 自起 GUI：动态端口 + 独立 work-dir + 独立 `HOME`（usr 主库全新）。
     套件级快照-还原用 `suite_config_guard(lambda: c)`（传 callable：中途重启换 client 后仍生效）。
   * 会话/活动位全落在临时数据根内 → 结束随 `harness.tmp_dir` 删除 → **零残留**。
 
@@ -133,7 +133,7 @@ def click_card(sid):
 
 
 def restart(tag):
-    """重启本套件自起实例（同端口 / 同 work-dir / 同 --data-dir / 同 HOME）→ 同一数据根。"""
+    """重启本套件自起实例（同端口 / 同 work-dir / 同 HOME）→ 同一数据根。"""
     global _g, c
     if not getattr(_g, "owned", False):
         raise TestError("GUI 非自起（owned=False）→ 不自动重启")

@@ -59,7 +59,7 @@ def main():
     open(os.path.join(DATA_DIR, "chonkpilot.db"), "w").close()  # 防 ProjectPath 回落旧库
     gui = GUIClient(port=PORT, data_dir=DATA_DIR)
     c = Checker()
-    # 套件级配置快照-还原（51 §6-8）：prj 走独立 --data-dir，usr 主库不受其隔离 → 跑前快照、finally 还原。
+    # 套件级配置快照-还原（51 §6-8）：prj 随独立临时 work-dir，usr 主库不受其隔离 → 跑前快照、finally 还原。
     snap = None
     try:
         gui.start()

@@ -487,8 +487,8 @@ func createWindow(env *hostEnv, spec windowSpec) (*windowHost, error) {
 		distFS: env.distFS,
 		fileHandler: &fileserver.FileShowHandler{
 			WorkDir: wd,
-			// 放行根（[24 §3.2] MW-8）：① 项目数据根（prj 库/旧附件等，`<workDir>/.chonkpilot`
-			// 或显式 --data-dir）② prjusr 数据根（迁走后的附件/截图 `<workDir>/.chonkpilot/users/<OS 用户名>`）。
+			// 放行根（[24 §3.2] MW-8）：① 项目数据根（prj 库/旧附件等，`<workDir>/.chonkpilot`）
+			// ② prjusr 数据根（附件/截图 `<workDir>/.chonkpilot/users/<OS 用户名>`）。
 			// 两者同列，保证迁移前后资源均可经 `/show/` 取回（WorkDir 自身另由 WorkDir 字段放行）。
 			DataDirs: []string{pdd, pur},
 			// 相对引用解析根（🆕 2026-10-10）：消息内附件/截图引用为相对 prjusr 数据根的

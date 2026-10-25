@@ -294,16 +294,16 @@ def case_project_config_open():
 
 # ── 六章 6.2 配置补充（C8-C10）───────────────────────────
 
-def _spawn_ide(port, workdir, data_dir=None, home=None):
-    """经 harness 自起子进程 IDE（独立 test-port/work-dir/data-dir[/home]），返回 (handle, ChonkClient)。
+def _spawn_ide(port, workdir, home=None):
+    """经 harness 自起子进程 IDE（独立 test-port/work-dir[/home]），返回 (handle, ChonkClient)。
 
     home 非空 → 子进程以独立用户主目录启动（**USERPROFILE** 指临时目录）：usr 主库路径 =
     `os.UserHomeDir()/.chonkpilot/chonkpilot.db`（`chonkpilot-data/db.go:104 UserPath`，无 CLI 开关；
-    `--data-dir` 仅重定位 prj/prjusr 层，见 `chonkpilot-data/db.go:136 ProjectPath`）→ 该实例
+    prj/prjusr 随 workdir，见 `chonkpilot-data/db.go:136 ProjectPath`）→ 该实例
     usr 库/偏好**全新**，既读不到也不写入机器 `~/.chonkpilot`。
     自起实例已登记 harness：本用例 finally 的 _kill_proc 与进程退出/信号兜底都会回收。
     """
-    h = _h.start_gui(port=port, work_dir=workdir, data_dir=data_dir, home=home, ready_timeout=60)
+    h = _h.start_gui(port=port, work_dir=workdir, home=home, ready_timeout=60)
     return h, h.client
 
 
@@ -330,11 +330,10 @@ def case_c8_missing_fields_defaults():
     # 会静默失败 → `%TEMP%\ck-c8-*` 残留（实测 2026-09-17）。
     tmp_home = _h.tmp_dir("ck-c8-home-")
     tmp_ws = _h.tmp_dir("ck-c8-ws-")
-    tmp_dd = _h.tmp_dir("ck-c8-data-")
     before = dict(_user_cfg())  # 机器 usr 配置快照（底座实例 = ~/.chonkpilot）
     proc = None
     try:
-        proc, c2 = _spawn_ide(_h.free_port(), tmp_ws, tmp_dd, home=tmp_home)
+        proc, c2 = _spawn_ide(_h.free_port(), tmp_ws, home=tmp_home)
         res = c2.req("data-user-config-load", {})
         cfg = (res.get("data") or {}) if isinstance(res, dict) else {}
         # ① 独立 usr 库证据：全新库无任何 llms 集合（未读到机器偏好）
@@ -363,10 +362,9 @@ def case_c10_scenario_lock():
     """C10 场景并发访问：主 IDE 与子进程并发查询场景列表均成功（数据未损坏）。"""
     main_list = c.req("data-scenario-list", {})
     tmp_ws = _h.tmp_dir("ck-c10-ws-")
-    tmp_dd = _h.tmp_dir("ck-c10-data-")
     proc = None
     try:
-        proc, c2 = _spawn_ide(_h.free_port(), tmp_ws, tmp_dd)
+        proc, c2 = _spawn_ide(_h.free_port(), tmp_ws)
         res2 = c2.req("data-scenario-list", {})
         if not isinstance(res2, dict) or "list" not in res2:
             raise TestError(f"子进程 data-scenario-list 返回异常: {res2!r}")

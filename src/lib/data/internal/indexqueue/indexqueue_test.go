@@ -46,7 +46,7 @@ func getRow(t *testing.T, s *Store, scope facade.Scope, id string) (data.Record,
 
 // TestWorkDirOnlyScopeReusesRegisteredDataDir：调用方只带 work_dir（filesys 变更入队 /
 // 插件桥队列控制帧）时，复用同 work_dir 已登记实例的非空 data_dir —— 不得在 work_dir 下
-// 另建 prj 库（`--data-dir` 分离形态的 workdir 零污染；run_data_dir 一.5 回归）。
+// 另建 prj 库（data_dir 非空分离形态的 workdir 零污染）。
 func TestWorkDirOnlyScopeReusesRegisteredDataDir(t *testing.T) {
 	s, scope := newEnv(t)
 	// 模拟 instance-register：同 work_dir 已有带 data_dir 的实例登记
@@ -60,7 +60,7 @@ func TestWorkDirOnlyScopeReusesRegisteredDataDir(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(scope.WorkDir, ".chonkpilot", "chonkpilot.db")); !os.IsNotExist(err) {
-		t.Fatalf("work_dir 下不应创建 prj 库（--data-dir 已分离）：err=%v", err)
+		t.Fatalf("work_dir 下不应创建 prj 库（data_dir 已分离）：err=%v", err)
 	}
 	if _, err := os.Stat(filepath.Join(scope.DataDir, "chonkpilot.db")); err != nil {
 		t.Fatalf("数据根应生成 prj 库：%v", err)

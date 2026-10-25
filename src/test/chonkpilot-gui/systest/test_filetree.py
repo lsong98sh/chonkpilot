@@ -26,7 +26,7 @@ def J(gui, js):
 def main():
     gui = GUIClient(port=PORT)
     c = Checker()
-    # 套件级配置快照-还原（51 §6-8）：本套件用**共享** work-dir（无 --data-dir）→ F3 点配置图标
+    # 套件级配置快照-还原（51 §6-8）：本套件用**共享** work-dir → F3 点配置图标
     # 打开项目配置页签会隐式把 prj 的 `opened-files`（文件页签）写实；usr 主库亦为机器主库
     # → 跑前快照、finally 还原（原本缺省的键 → 删除）。
     snap = None

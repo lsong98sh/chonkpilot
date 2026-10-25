@@ -19,9 +19,9 @@ C5 切「描述」页签编辑 → dirty → 恢复还原 & 磁盘字节不变�
   C9 项目级知识库（`<workDir>/.chonkpilot/capability`）tools/core/demo.tool.md → PrimitivePanel；
      右键 typed 目录菜单含新建目录/新建工具
   C13 项目级知识库 新建工具 → 编辑保存 → 删除（项目级完整写链路）
-  C14 项目私有级（prjusr）端到端：预置落盘 `<data-dir>/<project-id>/capability/tools/*.tool.md`
+  C14 项目私有级（prjusr）端到端：预置落盘 `<work-dir>/.chonkpilot/users/<OS 用户名>/capability/tools/*.tool.md`
       → 扩展页-工具-【项目私有】树行**可见**；切【系统级】展开 app tools（server 为对照）→
-      该资产**不可见**（按级隔离 / 不越权）。独立 `--data-dir` 临时目录 → prjusr 零残留。
+      该资产**不可见**（按级隔离 / 不越权）。prjusr 随临时 work-dir → 零残留。
 
 迁移口径（2026-09-15）：
   - 扩展页根行 = "<子tab文案> -<级别>"（如系统级「知识 -系统」/「工具 -系统」）；旧根行名 "capability" 已移除。
@@ -52,10 +52,8 @@ GUI_EXE = os.path.join(ROOT, r"dist\desktop\chonkpilot.exe")
 CAP_DIR = os.path.join(ROOT, r"dist\desktop\capability")
 BASE_WS = os.path.join(ROOT, r"src\test\chonkpilot-gui\systest\ws")
 WORK_DIR = os.path.join(ROOT, r"src\test\chonkpilot-gui\systest\ws_kb")
-# 独立 --data-dir（临时目录）：desktop 缺省不带 --data-dir 时 prjusr 落 **机器 ~/.chonkpilot/data**，
-# 会污染真实用户数据；显式指向临时目录后 prj/prjusr 同根 → 项目私有级（prjusr）capability 根落在该
-# 临时目录下（<DD>/<project-id>/capability），随 tmp_dir 回收 → 零残留 + 天然隔离（C14）。
-DATA_DIR = _h.tmp_dir("ck-kb-dd-")
+# prjusr 随 work-dir（固定规则）：项目私有级（prjusr）capability 根落在
+# `<WORK_DIR>/.chonkpilot/users/<OS 用户名>/capability`，随 tmp_dir 回收 → 零残留 + 天然隔离（C14）。
 PORT = _h.free_port()  # 动态端口：不与他套件/机器上的固定端口实例争用
 TOOLS_DIR = os.path.join(CAP_DIR, "tools")
 SMOKE_FILE = os.path.join(TOOLS_DIR, "smoke_it.tool.md")
@@ -554,7 +552,7 @@ def main():
     cleanup_fixtures()
     app_contract_before = snapshot_app_contract()
     # 按需自起 + 登记回收（finally / 进程退出 / 信号三条路径都会清）
-    h = _h.start_gui(port=PORT, work_dir=WORK_DIR, data_dir=DATA_DIR, ready_timeout=120)
+    h = _h.start_gui(port=PORT, work_dir=WORK_DIR, ready_timeout=120)
     passed = failed = 0
     c = None
     cfg_snap = None
@@ -1028,7 +1026,7 @@ def main():
         def c14():
             """项目私有级（prjusr = 四级能力面最具体一级）端到端 L4：
 
-              预置：查询 prjusr 能力根（`<data-dir>/<project-id>/capability`，见模块头 DATA_DIR 说明），
+              预置：查询 prjusr 能力根（`<work-dir>/.chonkpilot/users/<OS 用户名>/capability`），
                     直接落盘 1 个工具契约（`tools/prjusr_smoke.tool.md`）——不要求走 UI 新建；
               正例：扩展页「工具」子 tab → 级别【项目私有】→ 该资产在树行**可见**；
               反证：切回【系统级】→ 展开 app 的 tools（有 app 内容作对照）→ 该资产**不可见**

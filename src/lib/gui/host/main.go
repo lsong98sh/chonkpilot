@@ -50,8 +50,8 @@ import (
 // `//go:embed all:frontend/dist` 拿到前端 dist，并以 `opts.Form` 声明形态；装配实现唯一一份。
 //
 // distFS 必须是含 `frontend/dist` 前缀的嵌入文件系统（壳的 `//go:embed all:frontend/dist`），
-// 内部 `fs.Sub(distFS, "frontend/dist")` 取 dist 根。启动参数（--work-dir/--data-dir/
-// --bridge-url/--test-port/--llm-base/--llm-model/--no-server）仍在本函数内解析。
+// 内部 `fs.Sub(distFS, "frontend/dist")` 取 dist 根。启动参数（--work-dir/
+// --bridge-url/--test-port/--llm-base/--llm-model/--no-server/--ui-assets-addr）仍在本函数内解析。
 func Main(distFS fs.FS, opts gui.Options) {
 	// 日志级别：先以缺省级别装好 logger（早于配置可用无妨），待桥/数据面就绪后经既有配置
 	// 通道读 prj logLevel 覆盖并订阅变更即时生效（见 gui 的 loglevel.go）。
@@ -69,14 +69,13 @@ func Main(distFS fs.FS, opts gui.Options) {
 func runMain(distFS fs.FS, opts gui.Options) error {
 	gui.MarkStartupBegin()
 
-	var workDir, dataDir, bridgeURL string
+	var workDir, bridgeURL string
 	var legacyNatsURL string
 	var testPort int
 	var llmBase, llmModel string
 	var noServer bool
 	var uiAssetsAddr string
 	flag.StringVar(&workDir, "work-dir", "", "工作目录（前端文件树根）")
-	flag.StringVar(&dataDir, "data-dir", "", "数据根（prj 与 users/ 的共同根；默认 <workDir>/.chonkpilot；显式给出时 prj/prjusr 同根）")
 	flag.StringVar(&bridgeURL, "bridge-url", "", "分离形态（-tags split 编译）下 bridge 对端地址（HTTP）；合并单进程形态（默认构建）忽略")
 	// 兼容旧名（已废弃，勿在新脚本中使用）：nats-url 语义已演进为 bridge-url，
 	// 仅在未显式给出 --bridge-url 时生效，避免既有脚本/参数失效。
@@ -111,28 +110,23 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		}
 	}
 	workDir = models.ResolveDir(workDir, "")
-	if dataDir != "" {
-		models.SetDataDir(models.ResolveDir(dataDir, workDir))
-	}
-	// 项目数据根（prj / prjusr 层所在：缺省 <workDir>/.chonkpilot；显式 --data-dir → 该目录）。
-	projectDataDir := models.DataDir(workDir)
+	// 项目数据根（prj 层所在目录）= `<workDir>/.chonkpilot`（固定规则；无启动参数可改）。
+	projectDataDir := models.ProjectDataDir(workDir)
 	// PRODSIM-1（产物简化）：**项目级单实例锁已删除** —— 唯一进程由 `procsingleton` 保证，
 	// 同项目只能开一个主窗口由进程内 `work_dir → 主窗口` 映射表保证，无需跨进程文件锁。
 	// 传给 server / 桥的 data_dir（**数据层分支判据**；12-数据层 §3 · §5.3）：
-	//   - 显式 --data-dir 恒生效（prj 与 prjusr 同根，兼容既有脚本/L2 用例）；
-	//   - desktop 缺省（未给 --data-dir）**置空** → 数据层走 users/ 分支 → 个人运行态
-	//     （会话/任务树/快照）落 `<workDir>/.chonkpilot/users/<OS 用户名>/`（DATAROOT-1）。
-	//     ⚠️ 不可再传 `models.DataDir(workDir)`：该访问器**恒非空**（缺省 = 项目数据根），
-	//     会让 prjusr 与 prj 同库（个人运行态落进项目目录）。
-	//   - gui 形态缺省：保持项目数据根（客户端薄壳；服务端另按用户数据根落库，本轨不改）。
+	//   - desktop（唯一发行形态）**恒为空** → 数据层走 users/ 分支 → 个人运行态
+	//     （会话/任务树/快照）落 `<workDir>/.chonkpilot/users/<OS 用户名>/`（DATAROOT-1）；
+	//     ⚠️ 不可传 `projectDataDir`：那会让 prjusr 与 prj 同库（个人运行态落进项目目录）。
+	//   - 历史分离形态（gui）：保持项目数据根（prj/prjusr 同库；该形态已无产物）。
 	dataDirArg := projectDataDir
-	if dataDir == "" && opts.Form == gui.FormDesktop {
+	if opts.Form == gui.FormDesktop {
 		dataDirArg = ""
 	}
 	gui.LogStartupStage("参数与目录解析")
 	// prjusr 数据根（个人运行态非库文件的落盘根：日志 logs/、附件/截图 tmp/uploads/、
 	// fileserver 白名单；[24 §3.2] MW-8）。DATAROOT-1 后由 `<workDir>/.chonkpilot/users/<OS 用户名>/`
-	// 直接算出（无需再读 prj 库取 project-id；也不可拿 models.DataDir(workDir) 当 prjusr 根）。
+	// 直接算出（无需再读 prj 库取 project-id；也不可拿项目数据根当 prjusr 根）。
 	prjUsrRoot, err := data.PrjUsrDir(workDir, dataDirArg)
 	if err != nil {
 		// 数据根初始化失败：返回 error 由 Main 弹原生消息框（windowsgui 下 stderr 不可见，D-06）。

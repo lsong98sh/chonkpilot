@@ -21,7 +21,7 @@
 用法：
     from harness import acquire_gui, acquire_mock_llm, free_port, tmp_dir, user_config_guard
 
-    g = acquire_gui(free_port(), work_dir=tmp_dir("ck-ws-"), data_dir=tmp_dir("ck-dd-"))
+    g = acquire_gui(free_port(), work_dir=tmp_dir("ck-ws-"))
     g.client.req("data-session-list", {})
     with user_config_guard(g.client, ["theme", "locale"]):   # 写真实配置 → 退出即还原
         g.client.req("gui.ui.save", {"ui": {"locale": "en-US"}})
@@ -539,7 +539,7 @@ def ensure_llm_configured(client, name="mock-llm", model="mock-model", base_url=
         except Exception:
             pass
         time.sleep(0.5)
-    # 选中本函数保证可用的条目：usr 主库不受 --data-dir 隔离，他套件遗留的默认 LLM
+    # 选中本函数保证可用的条目：usr 主库不受 work-dir 隔离，他套件遗留的默认 LLM
     # （如 8901 的 mock）可能已死 → 不显式选中会让 llm-start 静默失败（无忙碌态 / 断言串扰）。
     # 需要特定 LLM 的套件在 ensure 之后自行 `chat-select-llm` 覆盖（run_llm / test_queue 等）。
     try:
@@ -860,7 +860,11 @@ class ProcResource:
 
 
 class GUIHandle(ProcResource):
-    """GUI 实例句柄：`.client` 是 ChonkClient，`.port`/`.work_dir`/`.data_dir` 供套件复用。"""
+    """GUI 实例句柄：`.client` 是 ChonkClient，`.port`/`.work_dir`/`.data_dir` 供套件复用。
+
+    `.data_dir` = **prjusr 数据根**（DATAROOT-1 固定规则：`<work_dir>/.chonkpilot/users/<OS 用户名>`）；
+    2026-10-25 起 GUI 无 `--data-dir` 启动参数，该值由 harness 按同一规则算出（供套件做落盘断言）。
+    """
 
     kind = "gui"
 
@@ -897,9 +901,23 @@ def ensure_project_spec(work_dir):
         open(spec, "w", encoding="utf-8").close()
 
 
+def prjusr_root(work_dir, home=None):
+    """prjusr 数据根（DATAROOT-1 固定规则）= `<work_dir>/.chonkpilot/users/<OS 用户名>`。
+
+    `<OS 用户名>` = home 目录 basename（Go `os.UserHomeDir()` 在 Windows 取 `USERPROFILE`）；
+    harness 自起实例时 home 经 env 注入，故此处与 GUI 侧解析口径一致。
+    """
+    h = home or os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    user = os.path.basename(os.path.normpath(h)) or "default"
+    return os.path.join(work_dir, ".chonkpilot", "users", user)
+
+
 def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
               ready_timeout=90, extra_args=(), no_window=True, plugin_addr=None):
     """自起 GUI（未给 port 则取空闲端口）；登记为结束时回收。
+
+    `data_dir` 参数**已废弃**（GUI 无 `--data-dir` 启动参数，2026-10-25 删除）：传了也忽略，
+    句柄上的 `.data_dir` 恒为按 DATAROOT-1 规则算出的 prjusr 数据根。
 
     显式给 port 时先**等该端口真正空闲**（上一实例 taskkill 后的异步释放窗口），避免新实例与
     残留实例抢端口（I-74：同 work-dir/同端口双实例 → test-port 不就绪）。
@@ -913,9 +931,6 @@ def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
     # 非向导套件应模拟「已初始化项目」）。向导自动弹出另由专用套件覆盖。
     ensure_project_spec(work_dir)
     cmd = [exe or resolve_gui_exe(), "--test-port=%d" % port, "--work-dir=%s" % work_dir]
-    if data_dir:
-        os.makedirs(data_dir, exist_ok=True)
-        cmd.append("--data-dir=%s" % data_dir)
     cmd.extend(extra_args)
     # 插件桥地址一实例一份（BRIDGE-2 测试隔离）：`CHONK_PLUGIN_UDS` 覆盖 UDS 路径；
     # 显式给 plugin_addr（如 tcp://127.0.0.1:PORT）→ `CHONK_PLUGIN_LISTEN`，用于 Python
@@ -937,7 +952,7 @@ def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
     res = ProcResource(proc=proc, name="gui:%d" % port, port=port)
     register(res)
     try:
-        h = GUIHandle(proc, port, work_dir, data_dir, owned=True,
+        h = GUIHandle(proc, port, work_dir, prjusr_root(work_dir, home), owned=True,
                       ready_timeout=ready_timeout, plugin_uds=plugin_uds)
     except Exception:
         res.stop()
@@ -957,7 +972,8 @@ def acquire_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
     """
     if port and reuse and stable_ready(port):
         print("[harness] 复用既有 GUI 实例 127.0.0.1:%d（不回收）" % int(port), flush=True)
-        h = GUIHandle(None, int(port), work_dir or DEFAULT_WS, data_dir, owned=False)
+        h = GUIHandle(None, int(port), work_dir or DEFAULT_WS,
+                      prjusr_root(work_dir or DEFAULT_WS, home), owned=False)
         return h
     return start_gui(port, work_dir, data_dir, home, exe, ready_timeout, extra_args)
 

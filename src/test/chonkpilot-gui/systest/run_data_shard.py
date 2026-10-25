@@ -8,7 +8,7 @@
   S3 重启 → 对话文件数不变（迁移幂等；缺省 on 不重复建库）。
 
 前置：`chonkpilot.exe -Debug` 产物（需 `--test-port`）。
-隔离：独立 work-dir / data-dir / HOME（`--data-dir` 非空 → prjusr = data 根）。
+隔离：独立临时 work-dir（prj/prjusr 均在其中）/ HOME。
 
 运行：python run_data_shard.py
 """
@@ -23,8 +23,8 @@ from chonk_client import TestError, run_case  # noqa: E402
 import harness as _h  # noqa: E402
 
 WS = _h.tmp_dir("ck-shard-ws-")
-DD = _h.tmp_dir("ck-shard-dd-")
 HOME = _h.tmp_home()
+DD = _h.prjusr_root(WS, HOME)   # prjusr 数据根（固定规则；无 --data-dir 参数）
 SID = "shard-legacy-1"
 
 print("[env] ws=%s data=%s home=%s（临时目录，结束即删）" % (WS, DD, HOME), flush=True)

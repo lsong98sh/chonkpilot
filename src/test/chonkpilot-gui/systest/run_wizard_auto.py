@@ -19,7 +19,7 @@
   看板夹具判据（`project_spec.md` 文件存在性）。
 
 隔离与环境（51-FP与测试映射 §5/§6-8）：
-  * **自起** GUI：动态端口 + 独立临时 work-dir / `--data-dir` / `HOME`（usr 主库全新）。
+  * **自起** GUI：动态端口 + 独立临时 work-dir / `HOME`（usr 主库全新）。
   * **本套件刻意不经 `harness.start_gui`/`ensure_project_spec`**：被验证的正是「无
     `project_spec.md`」场景，`start_gui` 会在启动前预置该文件 → 改用 `harness.popen_own`
     直起（其余套件统一经 `ensure_project_spec` 抑制向导，见 `harness.py`）。
@@ -88,7 +88,7 @@ def _spawn():
     env["USERPROFILE"] = HOME   # Go os.UserHomeDir() 在 Windows 取 USERPROFILE
     env["HOME"] = HOME
     proc = _h.popen_own(
-        [EXE, "--test-port=%d" % port, "--work-dir=" + WS, "--data-dir=" + DD],
+        [EXE, "--test-port=%d" % port, "--work-dir=" + WS],
         name="gui:wizard:%d" % port, cwd=os.path.dirname(EXE), env=env,
         creationflags=_h.CREATE_NO_WINDOW | _h.ABOVE_NORMAL_PRIORITY_CLASS)
     cli = ChonkClient(base="http://127.0.0.1:%d" % port)

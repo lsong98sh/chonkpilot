@@ -104,7 +104,7 @@ func InstancesByWorkDir(workDir string) []string {
 // DataDirByWorkDir 返回同 work_dir 已登记实例的**非空** data_dir（ok=false = 无可复用数据根）。
 //
 // 用途：调用方只带 work_dir（filesys 变更入队 / 插件桥队列控制帧等）时补齐 data_dir ——
-// 否则会在 work_dir 下另建 prj 库，破坏 `--data-dir` 分离形态的「workdir 零污染」约束
+// 否则会在 work_dir 下另建 prj 库，破坏 data_dir 非空（历史分离形态 / 编程选项）的「workdir 零污染」约束
 // （12-数据层 / 24 §3）。同 work_dir 多个非空绑定取字典序首个（幂等、稳定）。
 func DataDirByWorkDir(workDir string) (string, bool) {
 	if workDir == "" {

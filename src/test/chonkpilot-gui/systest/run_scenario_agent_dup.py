@@ -13,7 +13,7 @@
   §3.1 `data-scenario-{save,load,list,delete}` + 变更广播 `data-scenario-refresh`（§3.1）
 
 隔离（51-FP与测试映射 §5）：
-  * 自起 GUI：动态端口 + 独立 work-dir + 独立 `--data-dir` + **独立 HOME**
+  * 自起 GUI：动态端口 + 独立 work-dir + **独立 HOME**
     （越级场景写进临时 work-dir 的 `.chonkpilot/capability/scenarios/`，随 `harness.tmp_dir` 删除 → 零残留）。
   * 套件级快照-还原 `_h.suite_config_guard(c)`（usr+prj；含异常/中断路径）。
 
