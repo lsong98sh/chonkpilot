@@ -34,8 +34,9 @@
 2. **注册制**：插件启动后自己连 UDS → `plugin.hello` 自报名字 → 注册 view / MCP 工具 / 监听事件；**拉起后不注册的进程视为无效**（不报错、不重试风暴）。manifest 仍用于 UI/配置/工具声明。
 3. **已判定删除的专用监管层**：`src/lib/llm/vftsindexer`、`src/lib/llm/codegraphindexer`、`src/lib/llm/pluginhost`（与 `host/mgr` 重复），以及 `gui/host`、`server/main` 各自两处 indexer exe 定位 + Ensure 组装。
 4. **事件面以 workdir 为单位**：server 把 `instance-register` / `instance-exit` 翻译为 **`workdir-opened` / `workdir-closed`**（[61 §2.5](../60-reference/61-消息一览.md)），插件只管理 workspace；启动时拉一次当前活动 workdir，之后用事件增量维护。
-5. **索引不独立成插件**：索引回路 + 引擎**库内联**在 `codebase` 插件进程，工具与索引同进程、经 **TCP/IP（MCP）** 暴露；`file`/`codebase` 这类简单能力**不再起子 exe**。重引擎（如 Chrome 进程）**允许由插件进程自己 spawn 子 exe**（agent-box 式，随插件进程生死），但不得再由主仓代管。
-6. **宿主索引队列下线**：`filesys` 不再写待索引表；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧删除（`queuehooks` 一并删除）。消息面新增仅 §2.5 两个 workdir 事件。
+5. **索引不独立成插件**：索引回路 + 引擎**库内联**在 `codebase` 插件进程，工具与索引同进程、经 **TCP/IP（MCP）** 暴露；`file`/`codebase` 这类简单能力**不再起子 exe**。
+6. **子进程与安全上下文（以 crontab 类定时任务插件为例）**：插件可以自己 spawn 子 exe / Python 来执行任务。**可写目录等安全信息由宿主在 TCP 握手协议头中下发**，插件**必须自己处理**（据此约束自己拉起的子进程）；是否对子任务强制沙箱 = 该插件**配置页里的选项**，由插件自己读取并执行（例如定时任务默认沙箱运行，可在配置页关闭）。
+7. **宿主索引队列下线**：`filesys` 不再写待索引表；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧删除（`queuehooks` 一并删除）。消息面新增仅 §2.5 两个 workdir 事件。
 
 ---
 
