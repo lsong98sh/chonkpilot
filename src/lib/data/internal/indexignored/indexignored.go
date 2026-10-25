@@ -14,7 +14,7 @@ import (
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
 )
 
-// 引擎标识（判定单元；配置键 = codebase 插件命名空间 `plugins.codebase.<引擎>.*`）。
+// 引擎标识（判定单元；配置键 = codegraph 插件命名空间 `plugins.codegraph.<引擎>.*`，codegraph 引擎为扁平 `plugins.codegraph.*`）。
 const (
 	EngineCodegraph = "codegraph"
 	EngineVfts      = "vfts"
@@ -22,7 +22,10 @@ const (
 
 // keysOf 返回单引擎在 prj 配置里的键名（PLUGIN-UI-1 第三段：统一命名空间）。
 func keysOf(engine string) ignore.Keys {
-	prefix := "plugins.codebase." + engine + "."
+	prefix := "plugins.codegraph."
+	if engine == EngineVfts {
+		prefix += "vfts."
+	}
 	return ignore.Keys{
 		Enabled:        prefix + "enabled",
 		SkipDirs:       prefix + "skip-dirs",
@@ -49,7 +52,7 @@ type Result struct {
 	Truncated bool
 }
 
-// ConfigKeys 返回本判定需要的 prj 配置键（两引擎在 codebase 命名空间下的 enabled / skip-dirs /
+// ConfigKeys 返回本判定需要的 prj 配置键（两引擎在 codegraph 命名空间下的 enabled / skip-dirs /
 // stack-gitignore）。
 func ConfigKeys() []string {
 	out := make([]string, 0, 6)

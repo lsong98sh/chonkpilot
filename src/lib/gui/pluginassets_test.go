@@ -35,7 +35,7 @@ func TestPluginAssetHit(t *testing.T) {
 	calls := 0
 	h := newPluginAssetHandler(func(_ context.Context, id, p string) ([]byte, bool, error) {
 		calls++
-		if id != "codebase" {
+		if id != "codegraph" {
 			return nil, false, nil
 		}
 		b, ok := files[p]
@@ -43,8 +43,8 @@ func TestPluginAssetHit(t *testing.T) {
 	}, func(string) string { return "1.0.0#1" })
 
 	cases := []struct{ path, ctype string }{
-		{"/plugins/codebase/config.html", "text/html; charset=utf-8"},
-		{"/plugins/codebase/style.css", "text/css; charset=utf-8"},
+		{"/plugins/codegraph/config.html", "text/html; charset=utf-8"},
+		{"/plugins/codegraph/style.css", "text/css; charset=utf-8"},
 	}
 	for _, c := range cases {
 		rec := doAsset(h, http.MethodGet, c.path)
@@ -60,7 +60,7 @@ func TestPluginAssetHit(t *testing.T) {
 		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 			t.Fatalf("%s X-Content-Type-Options=%q", c.path, got)
 		}
-		want := files[strings.TrimPrefix(c.path, "/plugins/codebase/")]
+		want := files[strings.TrimPrefix(c.path, "/plugins/codegraph/")]
 		if rec.Body.String() != string(want) {
 			t.Fatalf("%s body=%q want %q", c.path, rec.Body.String(), string(want))
 		}
@@ -78,7 +78,7 @@ func TestPluginAssetCacheHit(t *testing.T) {
 		return []byte("x"), true, nil
 	}, func(string) string { return "1.0.0#1" })
 	for i := 0; i < 3; i++ {
-		if rec := doAsset(h, http.MethodGet, "/plugins/codebase/a.html"); rec.Code != http.StatusOK {
+		if rec := doAsset(h, http.MethodGet, "/plugins/codegraph/a.html"); rec.Code != http.StatusOK {
 			t.Fatalf("第 %d 次 status=%d", i+1, rec.Code)
 		}
 	}
@@ -97,11 +97,11 @@ func TestPluginAssetCacheVersionBump(t *testing.T) {
 		return []byte(body), true, nil
 	}, func(string) string { return version })
 
-	if rec := doAsset(h, http.MethodGet, "/plugins/codebase/a.html"); rec.Body.String() != "old" {
+	if rec := doAsset(h, http.MethodGet, "/plugins/codegraph/a.html"); rec.Body.String() != "old" {
 		t.Fatalf("首取 body=%q", rec.Body.String())
 	}
 	version, body = "1.0.0#2", "new"
-	rec := doAsset(h, http.MethodGet, "/plugins/codebase/a.html")
+	rec := doAsset(h, http.MethodGet, "/plugins/codegraph/a.html")
 	if rec.Body.String() != "new" {
 		t.Fatalf("版本变化后 body=%q want new", rec.Body.String())
 	}
@@ -114,17 +114,17 @@ func TestPluginAssetCacheVersionBump(t *testing.T) {
 func TestPluginAssetNotFound(t *testing.T) {
 	h := newPluginAssetHandler(func(_ context.Context, _, p string) ([]byte, bool, error) {
 		if p == "boom.html" {
-			return nil, false, errors.New("插件未就绪: codebase(starting)")
+			return nil, false, errors.New("插件未就绪: codegraph(starting)")
 		}
 		return nil, false, nil
 	}, func(string) string { return "v#1" })
-	for _, p := range []string{"/plugins/codebase/nope.html", "/plugins/codebase/boom.html"} {
+	for _, p := range []string{"/plugins/codegraph/nope.html", "/plugins/codegraph/boom.html"} {
 		if rec := doAsset(h, http.MethodGet, p); rec.Code != http.StatusNotFound {
 			t.Fatalf("%s status=%d want 404", p, rec.Code)
 		}
 	}
 	// 缺 id / 缺 path → 404。
-	for _, p := range []string{"/plugins/", "/plugins/codebase", "/plugins/codebase/"} {
+	for _, p := range []string{"/plugins/", "/plugins/codegraph", "/plugins/codegraph/"} {
 		if rec := doAsset(h, http.MethodGet, p); rec.Code != http.StatusNotFound {
 			t.Fatalf("%s status=%d want 404", p, rec.Code)
 		}
@@ -137,12 +137,12 @@ func TestPluginAssetTraversalForbidden(t *testing.T) {
 		return []byte("secret"), true, nil
 	}, func(string) string { return "v#1" })
 	for _, p := range []string{
-		"/plugins/codebase/../plugin.json",
-		"/plugins/codebase/..%2fplugin.json",
-		"/plugins/codebase/%2e%2e/plugin.json",
-		"/plugins/codebase/%2E%2E/plugin.json",
-		"/plugins/codebase/a%5Cb.html",
-		"/plugins/codebase//abs.html",
+		"/plugins/codegraph/../plugin.json",
+		"/plugins/codegraph/..%2fplugin.json",
+		"/plugins/codegraph/%2e%2e/plugin.json",
+		"/plugins/codegraph/%2E%2E/plugin.json",
+		"/plugins/codegraph/a%5Cb.html",
+		"/plugins/codegraph//abs.html",
 	} {
 		if rec := doAsset(h, http.MethodGet, p); rec.Code != http.StatusForbidden {
 			t.Fatalf("%s status=%d want 403", p, rec.Code)
@@ -159,7 +159,7 @@ func TestPluginRoutesInAppHandler(t *testing.T) {
 		pluginAssets: newPluginAssetHandler(func(_ context.Context, id, p string) ([]byte, bool, error) {
 			// 与真实插件同口径：接受 manifest 的 `webui/` 前缀形态。
 			p = strings.TrimPrefix(p, "webui/")
-			if id == "codebase" && p == "config.html" {
+			if id == "codegraph" && p == "config.html" {
 				return []byte("<html>embedded</html>"), true, nil
 			}
 			return nil, false, nil
@@ -167,15 +167,15 @@ func TestPluginRoutesInAppHandler(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plugins/codebase/config.html", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plugins/codegraph/config.html", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "<html>embedded</html>" {
 		t.Fatalf("新路由 status=%d body=%q", rec.Code, rec.Body.String())
 	}
 
 	// 旧路由已下线：任何 `/plugin-ui/<id>/…`（含默认 index.html 形态）→ 404。
 	for _, p := range []string{
-		"/plugin-ui/codebase/config.html",
-		"/plugin-ui/codebase/",
+		"/plugin-ui/codegraph/config.html",
+		"/plugin-ui/codegraph/",
 		"/plugin-ui/_sdk/other.js",
 		"/plugin-ui/_sdk/",
 	} {
@@ -204,7 +204,7 @@ func TestPluginRoutesInAppHandler(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	// 新路由同时接受 manifest 的 `webui/` 前缀形态（ui.views[].entry）。
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plugins/codebase/webui/config.html", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/plugins/codegraph/webui/config.html", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "<html>embedded</html>" {
 		t.Fatalf("webui/ 前缀形态 status=%d body=%q", rec.Code, rec.Body.String())
 	}
@@ -213,14 +213,14 @@ func TestPluginRoutesInAppHandler(t *testing.T) {
 // TestPluginAssetDisabled / Method：未装配插件平台 → 404；非 GET/HEAD → 405 + Allow。
 func TestPluginAssetDisabledAndMethod(t *testing.T) {
 	h := newPluginAssetHandler(nil, nil)
-	if rec := doAsset(h, http.MethodGet, "/plugins/codebase/a.html"); rec.Code != http.StatusNotFound {
+	if rec := doAsset(h, http.MethodGet, "/plugins/codegraph/a.html"); rec.Code != http.StatusNotFound {
 		t.Fatalf("未装配 status=%d want 404", rec.Code)
 	}
 
 	h2 := newPluginAssetHandler(func(_ context.Context, _, _ string) ([]byte, bool, error) {
 		return []byte("x"), true, nil
 	}, nil)
-	rec := doAsset(h2, http.MethodPost, "/plugins/codebase/a.html")
+	rec := doAsset(h2, http.MethodPost, "/plugins/codegraph/a.html")
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status=%d want 405", rec.Code)
 	}
@@ -228,7 +228,7 @@ func TestPluginAssetDisabledAndMethod(t *testing.T) {
 		t.Fatalf("Allow=%q", got)
 	}
 	// HEAD → 200 无 body。
-	rec = doAsset(h2, http.MethodHead, "/plugins/codebase/a.html")
+	rec = doAsset(h2, http.MethodHead, "/plugins/codegraph/a.html")
 	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
 		t.Fatalf("HEAD status=%d body=%q", rec.Code, rec.Body.String())
 	}

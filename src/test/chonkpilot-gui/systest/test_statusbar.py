@@ -1,6 +1,6 @@
 """回归测试：statusbar 组（51-FP与测试映射「statusbar」）。
 
-对齐 2026-09-04 /call 清理：codebase 索引进度 / DB 查看器 / 外部工具图标 /
+对齐 2026-09-04 /call 清理：codegraph 索引进度 / DB 查看器 / 外部工具图标 /
 知识库占位入口 UI 已删除（T5，61-消息一览 §8），对应断言移除；
 保留 statusbar 存在性、语言切换（LangSwitcher）。
 
@@ -10,7 +10,7 @@ SB2 断言入口已移除；A4「记忆总 token 数」入口由上下文管理�
 SB2b 断言启用记忆库后入口出现、数值为数字且点击可弹出记忆分类列表 → 选中 → 内容编辑弹框（可编辑）。
 新增调试图标（SB5：gui.devtools.open 可用；用户 F12 入口已在宿主层屏蔽）。
 
-2026-09-27（索引 / codebase 状态区）：状态栏新增 `codegraph` / `vfts` 两枚徽标（恒显示），
+2026-09-27（索引 / codegraph 状态区）：状态栏新增 `codegraph` / `vfts` 两枚徽标（恒显示），
 数据源 = 既有 prj 键（`enable-codegraph` / `codegraph.status` / `enable-vfts` / `vfts.status`），
 刷新 = 既有 `data-prj-config-refresh` 广播，点击走既有 `project-config-open`（**零新增消息面**）
 → SB2 计入该区；SB6 覆盖「未启用 / 索引中 N/total / 完成 / 失败 + 原生 title + 点击开项目配置并定位页签」。
@@ -220,7 +220,7 @@ def main():
         gui.req('data-prj-config-save', {'data': {'key': 'memory.enabled', 'value': 'false'}})
         time.sleep(0.5)
 
-        # ── SB6 索引 / codebase 状态区（2026-09-27）─────────────────────────────
+        # ── SB6 索引 / codegraph 状态区（2026-09-27）─────────────────────────────
         # 数据源 = 既有 prj 键 + 既有 data-prj-config-refresh 广播（零新增消息面）。
         # ① 基线（独立 data-dir，无键）→ 两枚徽标均「未启用」
         base = idx_states(gui)

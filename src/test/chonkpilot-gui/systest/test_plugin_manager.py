@@ -6,7 +6,7 @@
 - PM1 入口：`preview-tab-open{kind:'plugin-manager'}` → 卡片数 == `plugin-list` 返回的插件数（>0）
 - PM2 卡片要素：名称 / 启动命令（`command`）非空；注册了配置视图（`config_view`）的卡片有「配置」按钮
 - PM3 动作按钮：卡片上的动作按钮集合 == manifest `ui.actions[]`（名称 + 数量）；
-  codebase 的「索引进度」（内联 SVG 图标）存在
+  codegraph 的「索引进度」（内联 SVG 图标）存在
 - PM4 动作打开位置（container=drawer）：点击「索引进度」→ 抽屉出现，标题 = 视图标题，内含插件页 iframe
 - PM5 配置按钮：点击「配置」→ 预览区出现插件页 iframe（插件自持 webui，
   一律走 `/plugins/<id>/webui/config.html`；旧前缀 `/plugin-ui/<id>/…` 已下线 → 404）
@@ -114,10 +114,10 @@ def main():
             missing = [l for l in labels if l not in hit[0]["btns"]]
             if missing:
                 bad.append((p["id"], missing))
-        cb = by_id.get("codebase") or {}
+        cb = by_id.get("codegraph") or {}
         cb_labels = [a.get("label") for a in (cb.get("actions") or [])]
-        c.check("PM3 动作按钮与 manifest 注册一致（codebase 含索引进度）",
-                not bad and "索引进度" in cb_labels, f"bad={bad[:3]} codebase={cb_labels}")
+        c.check("PM3 动作按钮与 manifest 注册一致（codegraph 含索引进度）",
+                not bad and "索引进度" in cb_labels, f"bad={bad[:3]} codegraph={cb_labels}")
 
         # ── PM6 启用开关：关 → 卡片 is-off；开 → 恢复（真实落库 + 进程收停）──
         # 放在 PM4/PM5 之前：切页签/开抽屉会改变预览区挂载态，把开关用例留在此刻最稳。
@@ -165,19 +165,19 @@ def main():
                     view_title = v.get("title") or ""
             c.check("PM4 索引进度 → 抽屉（标题=视图标题 + 插件页 iframe）",
                     bool(dr) and dr.get("title") == view_title
-                    and "/plugins/codebase/" in (dr.get("src") or ""),
+                    and "/plugins/codegraph/" in (dr.get("src") or ""),
                     repr(dr))
             J(gui, "document.querySelector('.drawer .d-btn')?.click(); 'ok'")
             _h.wait_probe(gui, ["!document.querySelector('.drawer')"], timeout=15.0)
         else:
-            c.check("PM4 索引进度 → 抽屉", False, "codebase 未注册 view 型动作")
+            c.check("PM4 索引进度 → 抽屉", False, "codegraph 未注册 view 型动作")
 
         # ── PM5 配置按钮 → 预览区插件页 iframe ──
         J(gui, "(()=>{const c=%s;const b=[...c.querySelectorAll('.pm-btn')]"
                ".find(x=>(x.textContent||'').indexOf('配置')>=0);b&&b.click();return 'ok'})()"
           % find_card(gui, "代码知识库"))
         ok5 = _h.wait_probe(gui, ["(()=>{const f=[...document.querySelectorAll('iframe.pph-frame')];"
-                                  "return f.some(x=>(x.getAttribute('src')||'').indexOf('/plugins/codebase/webui/config.html')>=0)})()"],
+                                  "return f.some(x=>(x.getAttribute('src')||'').indexOf('/plugins/codegraph/webui/config.html')>=0)})()"],
                             timeout=20.0)
         c.check("PM5 配置按钮 → 预览区打开插件配置页", bool(ok5), "")
 

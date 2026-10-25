@@ -282,5 +282,5 @@ export const EventNames = {
   filetreeModeSelect: 'filetree-mode-select', // payload {mode:'project'|'sessions'|'memory'|'extensions'[, ext]}
   //   扩展页（mode='extensions'）下 ext = 子 tab（'resource'|'skill'|'tool'|'prompt'|'agent'）；仅扩展页受理 ext。
   filetreeModeRefresh: 'filetree-mode-refresh', // 扩展页 / 记忆列表手动刷新
-  codebaseIndexStatusOpen: 'codebase-index-status-open',
+  codegraphIndexStatusOpen: 'codegraph-index-status-open',
 }

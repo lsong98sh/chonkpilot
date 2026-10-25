@@ -5,9 +5,9 @@
  *   ① 路由统一：`/plugins/<id>/<entry>`，helper 不再按 `self_serve` 分流；
  *   ② `PluginPageHost` sandbox 放开 same-origin（同源 iframe 才能拿到 ckMq），且不再接收分流属性；
  *   ③ ckMq 只暴露 on/off/emit，且订阅在 frame 重载 / 卸载 / beforeunload 时全部退订；
- *   ④ 内置插件（browser/codebase/desktop/file/mcp/task/websearch）为 selfServe 单源
+ *   ④ 内置插件（browser/codegraph/desktop/file/mcp/task/websearch）为 selfServe 单源
  *      （`src/initdata/.../<id>/webui` 已删除，唯一源 = `src/plugins/<id>/webui`）；
- *   ⑤~⑥ action 面 / codebase 单源；
+ *   ⑤~⑥ action 面 / codegraph 单源；
  *   ⑦ 全量单源 + demo-python 无 `ui.views`（旧路由下线后不得留死入口）；
  *   ⑧ 源码守卫：不再存在 `/plugin-ui/` 的资源拼接用法（仅允许 `_sdk/plugin.js` 字面量）。
  */
@@ -39,8 +39,8 @@ function walkFiles(dir) {
 test('① 路由统一：一律 /plugins/<id>/<entry>（entry 原样保留，不再按 self_serve 分流）', () => {
   assert.equal(PLUGIN_UI_PREFIX, '/plugins/')
   assert.equal(
-    pluginUIPageURL('codebase', 'webui/config.html'),
-    '/plugins/codebase/webui/config.html',
+    pluginUIPageURL('codegraph', 'webui/config.html'),
+    '/plugins/codegraph/webui/config.html',
   )
   assert.equal(
     pluginUIPageURL('browser', 'webui/config.html'),
@@ -104,11 +104,11 @@ test('⑤ pluginAction：注入 X-CK-Plugin-Id，成功取 result / 失败抛错
       calls.push({ url, opts })
       return { ok: true, status: 200, json: async () => ({ v: 1 }) }
     }
-    const res = await pluginAction('codebase', 'ui.ping', { a: 1 })
+    const res = await pluginAction('codegraph', 'ui.ping', { a: 1 })
     assert.deepEqual(res, { v: 1 })
-    assert.equal(calls[0].url, '/plugins/codebase/api/ui.ping')
+    assert.equal(calls[0].url, '/plugins/codegraph/api/ui.ping')
     assert.equal(calls[0].opts.method, 'POST')
-    assert.equal(calls[0].opts.headers['X-CK-Plugin-Id'], 'codebase', '须注入来源插件 id')
+    assert.equal(calls[0].opts.headers['X-CK-Plugin-Id'], 'codegraph', '须注入来源插件 id')
     assert.deepEqual(JSON.parse(calls[0].opts.body), { a: 1 })
 
     globalThis.fetch = async () => ({
@@ -116,20 +116,20 @@ test('⑤ pluginAction：注入 X-CK-Plugin-Id，成功取 result / 失败抛错
       status: 403,
       json: async () => ({ ok: false, errors: ['plugin id mismatch'] }),
     })
-    await assert.rejects(() => pluginAction('codebase', 'ui.ping'), /plugin id mismatch/)
+    await assert.rejects(() => pluginAction('codegraph', 'ui.ping'), /plugin id mismatch/)
   } finally {
     globalThis.fetch = origFetch
   }
 })
 
-test('⑥ codebase 单源：manifest 声明 selfServe，initdata 不再携带 webui', () => {
-  const manifestPath = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codebase', 'plugin.json')
+test('⑥ codegraph 单源：manifest 声明 selfServe，initdata 不再携带 webui', () => {
+  const manifestPath = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codegraph', 'plugin.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-  assert.equal(manifest.ui?.selfServe, true, 'codebase plugin.json 须声明 ui.selfServe: true')
-  const legacyWebui = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codebase', 'webui')
-  assert.equal(existsSync(legacyWebui), false, 'initdata codebase webui 目录须已删除（唯一源 = chonkpilot-plugins/codebase/webui）')
-  const srcWebui = join(repoDir, '..', 'chonkpilot-plugins', 'codebase', 'webui', 'config.html')
-  assert.equal(existsSync(srcWebui), true, 'chonkpilot-plugins/codebase/webui/config.html 须存在（页面随插件仓）')
+  assert.equal(manifest.ui?.selfServe, true, 'codegraph plugin.json 须声明 ui.selfServe: true')
+  const legacyWebui = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codegraph', 'webui')
+  assert.equal(existsSync(legacyWebui), false, 'initdata codegraph webui 目录须已删除（唯一源 = chonkpilot-plugins/codegraph/webui）')
+  const srcWebui = join(repoDir, '..', 'chonkpilot-plugins', 'codegraph', 'webui', 'config.html')
+  assert.equal(existsSync(srcWebui), true, 'chonkpilot-plugins/codegraph/webui/config.html 须存在（页面随插件仓）')
 })
 
 /**
@@ -160,7 +160,7 @@ test('⑦ 全量单源：initdata 仅 demo-python 保留 webui 样例，且其 m
   assert.equal(demo.ui?.menus, undefined, 'demo-python 不得声明引用页面的菜单')
   assert.equal(demo.ui?.statusbar, undefined, 'demo-python 不得声明引用页面的状态栏入口')
 
-  for (const id of ['browser', 'codebase', 'desktop', 'file', 'mcp', 'task', 'websearch']) {
+  for (const id of ['browser', 'codegraph', 'desktop', 'file', 'mcp', 'task', 'websearch']) {
     const manifest = JSON.parse(readFileSync(join(initPluginsDir, id, 'plugin.json'), 'utf8'))
     assert.equal(manifest.ui?.selfServe, true, `${id} plugin.json 须声明 ui.selfServe: true`)
     for (const view of manifest.ui.views ?? []) {

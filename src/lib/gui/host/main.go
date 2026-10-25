@@ -690,7 +690,7 @@ func vftsIndexerExePath() string {
 }
 
 // codegraphIndexerExePath 定位 resident codegraph indexer：优先宿主 exe 同目录，
-// 其次发行布局 `mcps/codebase/`（build-desktop / build-gui 的投放位置）。
+// 其次发行布局 `mcps/codegraph/`（build-desktop / build-gui 的投放位置）。
 func codegraphIndexerExePath() string {
 	const name = "chonkpilot-codegraph-indexer.exe"
 	exe, err := os.Executable()
@@ -702,7 +702,7 @@ func codegraphIndexerExePath() string {
 	if _, err := os.Stat(primary); err == nil {
 		return primary
 	}
-	return filepath.Join(dir, "mcps", "codebase", name)
+	return filepath.Join(dir, "mcps", "codegraph", name)
 }
 
 // flagSet 报告命令行是否**显式**给出过该 flag（用于「env 覆盖缺省值但不压过显式参数」）。

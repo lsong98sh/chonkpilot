@@ -19,7 +19,7 @@
 | 1 | 插件是 server 启动后被 spawn 的 exe | §3.3 / §3.4：`PluginManager` 在 server 就绪、插件桥就绪之后按 manifest `runtime` spawn；退避重启；禁用即停 |
 | 2 | MCP 按配置在 server 启动后注入 gateway | §5.7：沿用 `servers/register`（`mcp-servers-register`）注入；用户手写 `capability/mcps/*.json` 继续走既有对账 |
 | 3 | 同一 exe 可含 MCP server；插件经 server 能力登记 MCP；**捆绑后不支持 stdio** | §5.7：`mcp.mode=http`（插件内 Streamable HTTP，回环 + Bearer）或 `mode=tools`（经通道直挂）；**显式禁 stdio**，理由见 §5.7.1 |
-| 4 | vfts / codebase 可合二为一 | §9.1：`codebase` 单插件 = 单 exe（内嵌索引器 + MCP server + 9 工具） |
+| 4 | vfts / codegraph 可合二为一 | §9.1：`codegraph` 单插件 = 单 exe（内嵌索引器 + MCP server + 9 工具） |
 | 5-1 | 插件可注册配置页面 | §4.2 `ui.views[]` + §7.3 预览区 iframe 页 |
 | 5-2 | server 维护「插件」一栏，view 展示插件；点配置 → preview 区 iframe | §7.4 插件管理页（`plugin-manager`）+ `preview-tab-open` 打开插件页 |
 | 5-3 | 插件状态页经 statusbar 按钮 / 命令显示 | §7.5 状态栏条目注入（`ui.statusbar[]`） |
@@ -31,7 +31,7 @@
 | 9 | server 提供：业务数据读写 / hook / LLM / 会话 | §6.1–§6.4（全部落到既有 MQ / 门面能力，不新开物理面） |
 | 10 | 产品插件 Go；用户插件任意语言；UDS/TCP 为主 | §5.1（语言无关的行分隔 JSON 帧）/ §3.5（SDK 分层） |
 | 11 | websearch 样板：Key + 检索参数 + 注入 MCP | §8 |
-| 12 | compress / vfts / codebase 改插件，配置各自 iframe 页（含数据读写） | §9（含 `codebase` 与 `compress`） |
+| 12 | compress / vfts / codegraph 改插件，配置各自 iframe 页（含数据读写） | §9（含 `codegraph` 与 `compress`） |
 
 ***
 
@@ -174,7 +174,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | 层 | 内容 | 面向 |
 |----|------|------|
 | 协议（唯一契约） | §5 的帧 + 方法名 + payload（行分隔 JSON，UTF-8） | 所有语言 |
-| Go SDK（产品插件） | `chonkpilot-plugin-sdk/go`：通道客户端、订阅、MCP HTTP 骨架、配置读取、日志 | 产品插件（websearch / codebase / compress） |
+| Go SDK（产品插件） | `chonkpilot-plugin-sdk/go`：通道客户端、订阅、MCP HTTP 骨架、配置读取、日志 | 产品插件（websearch / codegraph / compress） |
 | 其他语言 SDK（后续） | Python / Node / Rust 薄封装（只包 §5，不引入新语义） | 用户插件 |
 
 > 协议**不依赖** protobuf / gRPC：复用现有 `transport` 帧（一行一 JSON），任何语言 30 行可接入。UDS 在 Windows 由 Go 侧抽象（现有 `transport` 已同时支持 `uds://` 与 `tcp://`）。
@@ -195,7 +195,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 
 | 级别 | 路径 | 用途 |
 |------|------|------|
-| app | `<exeDir>/capability/plugins/<id>/` | 出厂插件（websearch / codebase / compress） |
+| app | `<exeDir>/capability/plugins/<id>/` | 出厂插件（websearch / codegraph / compress） |
 | user | `~/.chonkpilot/capability/plugins/<id>/` | 用户安装 |
 | project | `<workDir>/.chonkpilot/capability/plugins/<id>/` | 项目自带（团队共享） |
 | prjusr | `<prjusr 数据根>/capability/plugins/<id>/` | 本机覆盖 + 密钥 + 运行快照（不入库） |
@@ -357,7 +357,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | 订阅 | `plugin.subscribe` / `plugin.unsubscribe` | 既有 |
 | 工具绑定 | `plugin.tool.bind` / `plugin.tool.unbind` | 既有（`tools` 模式必需） |
 | 过滤器 | `plugin.filter.register` | 既有 |
-| 索引队列 | `plugin.index.take|ack|pending|workdirs` | 既有（codebase / vfts 用） |
+| 索引队列 | `plugin.index.take|ack|pending|workdirs` | 既有（codegraph / vfts 用） |
 | 实例 | `plugin/v1/instance.claim|list` | 既有 |
 | 会话 | `plugin/v1/session.start|send|cancel|list|get|history|content|snapshot|rename|delete|active` | 既有 |
 | 插话 | `plugin/v1/session.inbox.add|list|discard|promote` | 既有 |
@@ -368,7 +368,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | 数据 ★ | `plugin/v1/data.read` / `plugin/v1/data.write` | 新增统一业务数据面（§6.1） |
 | 文件 | `plugin/v1/file.list|read|write|mkdir|remove|rename|copy` | 既有（限 `work_dir`） |
 | 工具 | `plugin/v1/tools.list|call|wait|timeout` | 既有 |
-| 执行器 ★ | `plugin/v1/tools.exec` | 新增：宿主转发 core `/internal/exec`（单工具 executor，供 codebase 复用既有查询执行器） |
+| 执行器 ★ | `plugin/v1/tools.exec` | 新增：宿主转发 core `/internal/exec`（单工具 executor，供 codegraph 复用既有查询执行器） |
 | MCP ★ | `plugin.mcp.register` / `plugin.mcp.unregister` | 新增（§5.7，替代插件直调 `servers.register`） |
 | UI ★ | `plugin.ui.register` / `plugin.status.report` | 新增（§5.8 / §3.3） |
 | 事件上报 ★ | `plugin.publish{topic,payload}` | 新增：仅允许 `plugin-ui-event`（推给自己的 iframe），**不开放任意 MQ 发布** |
@@ -402,7 +402,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | `llm.before_simple` | 同上 | `llm-simple` 前 |
 | `tool.before_call` | 同上 + 工具 `pre_hook_subject` | 工具执行前；失败 = 拒绝本次调用（fail-closed） |
 | `session-compress` | 事件订阅（异步） | 轮末压缩触发（compress 插件） |
-| `filesys.changed` | 事件订阅 | 文件变化（codebase 增量索引） |
+| `filesys.changed` | 事件订阅 | 文件变化（codegraph 增量索引） |
 
 > Hook 的**唯一实现载体**仍是既有 filter chain / `pre_hook_subject`，本设计不新增第二种钩子机制。
 
@@ -456,7 +456,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 
 - 端口由 OS 分配（`:0`），插件把实际 `url` 与 token 报给宿主；**不写配置文件**、不固定端口。
 - token 每进程随机生成，只在内存与 `plugin.mcp.register` 帧中出现；host 不打日志。
-- `origin:"builtin"` 时 gateway 在 `tools/call` 注入 `_meta.chonkpilot`（实例 / workdir / 会话 / turn / tool_call_id），**插件据此路由多项目**（codebase 必需）。
+- `origin:"builtin"` 时 gateway 在 `tools/call` 注入 `_meta.chonkpilot`（实例 / workdir / 会话 / turn / tool_call_id），**插件据此路由多项目**（codegraph 必需）。
 - `origin:"user"` 时不注入，且工具名强制来源前缀；第三方插件用此默认值。
 - 调用取消：gateway 断连/取消 → HTTP 请求 ctx 取消；插件应在 handler 里尊重 `ctx`。
 
@@ -583,7 +583,7 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 |------|------|
 | 配置 | `plugin-config-get/set`（UI 与插件共用，**只按 `{id}` 定位、无等级参数**）；非密 = 插件自身配置，密钥恒 usr 级；原子写 + 广播 `plugin-config-changed` |
 | 私有存储 | `storage.self`（§6.1）；路径 `<dataDir>/plugins/<id>/storage/` |
-| 索引队列 | `plugin.index.*`（既有）；codebase / vfts 消费 |
+| 索引队列 | `plugin.index.*`（既有）；codegraph / vfts 消费 |
 | 日志 | 插件 stderr 由宿主捕获 → `<dataDir>/plugins/<id>/logs/plugin.log`（滚动 2MB×3）；插件也可 `plugin.log{level,msg}`（自动脱敏：拒绝含 `sk-` 的长串） |
 | 实例视图 | `plugin/v1/instance.claim|list`；多项目 workdir 由插件自管 |
 
@@ -799,17 +799,17 @@ src/initdata/capability/plugins/websearch/
 
 ## 9. 存量能力改造
 
-### 9.1 `codebase`（codegraph + vfts 合二为一）
+### 9.1 `codegraph`（codegraph + vfts 合二为一）
 
 **目标形态**
 
 | 现状 | 数量 | 目标 |
 |------|:--:|------|
-| `chonkpilot-codegraph-mcp-server.exe` + `chonkpilot-vfts-mcp-server.exe` | 2 | **1** 个 `chonkpilot-codebase.exe` 内的 MCP server（HTTP，9 工具） |
+| `chonkpilot-codegraph-mcp-server.exe` + `chonkpilot-vfts-mcp-server.exe` | 2 | **1** 个 `chonkpilot-plugin-codegraph.exe` 内的 MCP server（HTTP，9 工具） |
 | `chonkpilot-codegraph-indexer.exe` + `chonkpilot-vfts-indexer.exe` | 2 | 同进程内 2 个索引协程（消费既有 `plugin.index.*` 队列） |
 | 内嵌 hook `plugin-codegraph` + `plugin-vfts`（配置/注册/状态/去抖/文档探测） | 2 | 迁入插件；宿主不再编译这两个 hook |
-| 9 个 executor exe | 9 | **迁移期保留**：codebase 可经新增 `plugin/v1/tools.exec`（宿主转发 core `/internal/exec`）复用「一工具一 executor」；或由内嵌引擎直接回答（二选一，见下） |
-| 配置页 `CodegraphConfig.vue` + `VftsConfig.vue`（项目配置内两页签） | 2 | 1 个 `codebase` iframe 配置页（内部两区：代码语义 / 全文检索） |
+| 9 个 executor exe | 9 | **迁移期保留**：codegraph 可经新增 `plugin/v1/tools.exec`（宿主转发 core `/internal/exec`）复用「一工具一 executor」；或由内嵌引擎直接回答（二选一，见下） |
+| 配置页 `CodegraphConfig.vue` + `VftsConfig.vue`（项目配置内两页签） | 2 | 1 个 `codegraph` iframe 配置页（内部两区：代码语义 / 全文检索） |
 
 **工具面不变**：`codegraph_symbol_search / get_symbol_info / callers / callees / get_dependency_graph / find_circular_deps / analyze_complexity / get_module_summary / vfts_query` 的**参数与返回**逐字保留；LLM 可见名保持 `self_codegraph_*` / `self_vfts_query`（`mcp.namespace:"self_"`）。
 
@@ -823,15 +823,15 @@ src/initdata/capability/plugins/websearch/
 - **索引**：插件消费 `plugin.index.take/ack/pending/workdirs`（既有），不再需要独立 indexer 进程与 `pluginhost` 监管。
 - **zvec 单写锁**：合并为单进程后天然消解跨进程竞争；索引结束即释放写句柄（沿用现状）。
 - **状态回写**：继续写既有 `codegraph.status` / `vfts.status` 键（前端 `IndexBadgeView` 等零改动）。
-- **CGO 构建**：新 `build-plugins.ps1` 统一产出 `dist/desktop/capability/plugins/codebase/`（含 `zvec_c_api.dll`）。
+- **CGO 构建**：新 `build-plugins.ps1` 统一产出 `dist/desktop/capability/plugins/codegraph/`（含 `zvec_c_api.dll`）。
 
 **迁移阶段（每步可回退）**
 
 | 阶段 | 内容 | 回退 |
 |------|------|------|
-| C1 | 加 `codebase` manifest + iframe 配置页；进程仍两套（菜单/页面聚合） | 删 manifest |
+| C1 | 加 `codegraph` manifest + iframe 配置页；进程仍两套（菜单/页面聚合） | 删 manifest |
 | C2 | 工具注册迁到插件（`mcp.mode="http"`），hook 只留配置/索引/状态 | 恢复 hook 注册 |
-| C3 | 合进程：一个 `chonkpilot-codebase.exe`（MCP server + 双索引协程），删两个 indexer | `-legacy` 构建开关保留一个版本周期 |
+| C3 | 合进程：一个 `chonkpilot-plugin-codegraph.exe`（MCP server + 双索引协程），删两个 indexer | `-legacy` 构建开关保留一个版本周期 |
 | C4 | 删 `plugin-codegraph` / `plugin-vfts` hook 与两个引擎 exe | 随 C3 legacy 一起保留 |
 
 ### 9.2 `compress`
@@ -846,7 +846,7 @@ src/initdata/capability/plugins/websearch/
 | 配置页 | `webui/config.html`：`keep_full_max_turns` / `keep_full_max_tokens` / `compress_token_threshold` / `compress.subsession` + 摘要提示词编辑（读写 `capability/system/summary.md`）+ 队列状态 |
 | 失败 | 摘要失败 = 不压缩（不降级）；上报 `tool-notify` 一次；行为与现状一致 |
 
-> 迁移顺序建议放在 `codebase` 之后：compress 是每轮热路径，先让插件平台在 codebase（非热路径）上稳定。
+> 迁移顺序建议放在 `codegraph` 之后：compress 是每轮热路径，先让插件平台在 codegraph（非热路径）上稳定。
 
 ### 9.3 构建与产物
 
@@ -901,7 +901,7 @@ src/initdata/capability/plugins/websearch/
 | [61-消息一览](../spec/60-reference/61-消息一览.md) | 删除 `ui-plugin-*` 预留族；`plugin-*` 入正式表；`preview-tab-open` 增 `plugin`/`page`；`plugin-list` 等 payload 明细 |
 | `61-messages.schema.json` + genmsg | 新主题与字段字典（`plugin_id` / `enabled` / `status`） |
 | [2C-UI插件](../spec/20-modules/2C-UI插件.md) | 收敛为「本期实现 = iframe view + 预览页 + 管理页 + 状态栏」；bundle / JSON 装配移出 |
-| [28-plugins](../spec/20-modules/28-plugins.md) | 新增「插件平台」章；内嵌 Hook 与 manifest 插件的关系；compress/codebase 迁移状态 |
+| [28-plugins](../spec/20-modules/28-plugins.md) | 新增「插件平台」章；内嵌 Hook 与 manifest 插件的关系；compress/codegraph 迁移状态 |
 | [25/26/27](../spec/20-modules/25-mcp-server.md) | 插件 MCP 注册（`plugin.mcp.register`）、`origin` 与 `_meta` 注入口径 |
 | [31-窗口与布局](../spec/30-function-points/31-窗口与布局.md) | 动态 view / `containers` / 插件页签（WIN-0xx） |
 | [64-配置项一览](../spec/60-reference/64-配置项一览.md) | `plugin.<id>.*` 配置键、`plugins.enabled` |
@@ -948,7 +948,7 @@ src/initdata/capability/plugins/websearch/
 | P1 | 通道扩展：`plugin.mcp.register` / `plugin.ui.register` / `plugin.status.report` / `plugin.ui.rpc` / `plugin.command` / `plugin/data.*` / 配置读写 | `src/lib/llm/pluginbridge` · `src/lib/llm/server` |
 | P2 | UI：`plugin-*` 消息 + `usePlugins` + 动态 view 注册 + `PluginPageHost` + 插件管理页 + 状态栏注入 + `/plugin-ui/` 静态路由 | `src/frontend/src/{composables,layout,views/codeview,views/plugins}` · `src/lib/gui` |
 | P3 | websearch 样板（插件 + webui + MCP HTTP + 测试动作） | `src/initdata/capability/plugins/websearch` · `src/plugins/websearch` |
-| P4 | `codebase` 迁移 C1–C4（含构建脚本 + 9 工具名快照比对） | `src/plugins/codebase` · `build-plugins.ps1` |
+| P4 | `codegraph` 迁移 C1–C4（含构建脚本 + 9 工具名快照比对） | `src/plugins/codegraph` · `build-plugins.ps1` |
 | P5 | `compress` 迁移（含 iframe 配置页 + 摘要提示词编辑） | `src/plugins/compress` |
 | P6 | 文档收口 + 内嵌 Hook 只读展示（可选） | `docs/spec/*` |
 
@@ -960,7 +960,7 @@ src/initdata/capability/plugins/websearch/
 4. `plugin-config-set` → 落盘 → 重启后生效；密钥回显为掩码（L2）。
 5. 崩溃 → 退避重启 → 工具面恢复（L2，含重启恢复用例）。
 6. iframe 桥：非法方法被拒、`config.get` 掩码、`rpc` 白名单（前端单测 + L4）。
-7. codebase：合并前后 9 个工具名与 schema **逐字一致**（L1 快照比对）。
+7. codegraph：合并前后 9 个工具名与 schema **逐字一致**（L1 快照比对）。
 8. websearch：stub DeepSeek 200/401/402/429 → 文案与重试次数（L1/L2）。
 9. 动态 view：注册后 `viewKey` 可被 `open-view{tabs|drawer|dialog}` 打开（前端单测 + L4）。
 10. 重启恢复：宿主重启后 UI 快照立即可用、`external` 插件标 `degraded`、重连后恢复（L2）。
@@ -973,15 +973,15 @@ src/initdata/capability/plugins/websearch/
 
 ### 13.1 与「组件独立化」的顺序（2026-10-22 定）
 
-**结论：不先独立 `codegraph` / `vfts`。** §9.1 会把两者合并为**单个 `codebase` 插件**（形态由「MCP server module」变为「插件 exe + 插件协议」），先拆会导致**两次搬迁**且依赖边界全变。顺序如下：
+**结论：不先独立 `codegraph` / `vfts`。** §9.1 会把两者合并为**单个 `codegraph` 插件**（形态由「MCP server module」变为「插件 exe + 插件协议」），先拆会导致**两次搬迁**且依赖边界全变。顺序如下：
 
 | 序 | 动作 | 说明 |
 |---|---|---|
-| **S0**（可并行） | 发布 `chonkpilot-ignore`（零依赖，codebase 后续复用）· 清理空目录 `src/lib/cli` · 建 **9 工具名 / schema 快照基线** | 与本平台无冲突，先立「LLM 可见面」护栏 |
+| **S0**（可并行） | 发布 `chonkpilot-ignore`（零依赖，codegraph 后续复用）· 清理空目录 `src/lib/cli` · 建 **9 工具名 / schema 快照基线** | 与本平台无冲突，先立「LLM 可见面」护栏 |
 | **S1** | P0 → P3 | 平台 + 通道 + UI + `websearch` 样板；**末尾协议冻结** |
-| **S2** | P4（`codebase` C1–C4） | 合并前后 9 工具名与 schema **逐字一致** |
-| **S3** | 先发 **`chonkpilot-plugin`（SDK + 协议）v0.1.0**，再把 `codebase` 抽为独立仓（`require` SDK） | **此时才谈独立化**；避免 SDK 未定稿反复打 tag |
-| **S4** | P5（`compress` 插件化）→ 再评估是否独立 | 方案建议放 codebase 之后 |
+| **S2** | P4（`codegraph` C1–C4） | 合并前后 9 工具名与 schema **逐字一致** |
+| **S3** | 先发 **`chonkpilot-plugin`（SDK + 协议）v0.1.0**，再把 `codegraph` 抽为独立仓（`require` SDK） | **此时才谈独立化**；避免 SDK 未定稿反复打 tag |
+| **S4** | P5（`compress` 插件化）→ 再评估是否独立 | 方案建议放 codegraph 之后 |
 | **S5** | 工具面（`mcp-tools` + `mcp-server`）独立化再评估 | 动契约需单独设计 |
 
 > 前置门槛：**主仓全量测试（L1/L2/L3 + e2e L4）全绿之后才开工 S1**（用户 2026-10-22 要求）。
@@ -998,7 +998,7 @@ src/initdata/capability/plugins/websearch/
 | 2 | 插件捆绑 MCP 的默认方式 | `http`（回环 + Bearer，端口 0） | `tools`（无端口，但工具名固定 `self_`） |
 | 3 | 产品插件工具名前缀 | `self_`（与现有 `self_*` 一致；契约名不带前缀） | `-`（原样，工具面出现裸名） |
 | 4 | 插件配置页承载 | 预览区 iframe（主）+ 同页可注册为抽屉/对话框 view | 仅预览区 |
-| 5 | compress 迁移时机 | codebase 稳定后（P5） | 与 codebase 并行 |
+| 5 | compress 迁移时机 | codegraph 稳定后（P5） | 与 codegraph 并行 |
 | 6 | 插件 UI 静态资源 | 宿主 `/plugin-ui/<id>/` 只读提供 | 插件自带 HTTP（多端口，不推荐） |
 
 ***

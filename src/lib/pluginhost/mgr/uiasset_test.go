@@ -16,7 +16,7 @@ func TestUIAssetHit(t *testing.T) {
 	const body = "<html>config</html>"
 	var gotMethod, gotPath string
 	m := New(Options{RequestPlugin: func(_ context.Context, id, method string, payload any) (any, error) {
-		if id != "codebase" {
+		if id != "codegraph" {
 			t.Fatalf("id=%s", id)
 		}
 		gotMethod = method
@@ -26,9 +26,9 @@ func TestUIAssetHit(t *testing.T) {
 		// 与真实桥一致：返回经 JSON 编码的载荷（[]byte → base64 字符串）。
 		return map[string]any{"data": []byte(body), "size": len(body)}, nil
 	}})
-	m.plugins["codebase"] = runningPlugin("codebase", "1.0.0")
+	m.plugins["codegraph"] = runningPlugin("codegraph", "1.0.0")
 
-	data, found, err := m.UIAsset(context.Background(), "codebase", "config.html")
+	data, found, err := m.UIAsset(context.Background(), "codegraph", "config.html")
 	if err != nil || !found {
 		t.Fatalf("UIAsset: found=%v err=%v", found, err)
 	}
@@ -48,12 +48,12 @@ func TestUIAssetNotReady(t *testing.T) {
 	if _, found, err := m.UIAsset(context.Background(), "ghost", "a.html"); found || err == nil {
 		t.Fatalf("未登记插件应 found=false 且有 err")
 	}
-	m.plugins["codebase"] = &Plugin{ID: "codebase", Manifest: &Manifest{Version: "1.0.0"}, status: StatusStarting}
-	if _, found, err := m.UIAsset(context.Background(), "codebase", "a.html"); found || err == nil {
+	m.plugins["codegraph"] = &Plugin{ID: "codegraph", Manifest: &Manifest{Version: "1.0.0"}, status: StatusStarting}
+	if _, found, err := m.UIAsset(context.Background(), "codegraph", "a.html"); found || err == nil {
 		t.Fatalf("未就绪插件应 found=false 且有 err")
 	}
-	m.plugins["codebase"].status = StatusRunning
-	if _, found, err := m.UIAsset(context.Background(), "codebase", "nope.html"); found || err == nil {
+	m.plugins["codegraph"].status = StatusRunning
+	if _, found, err := m.UIAsset(context.Background(), "codegraph", "nope.html"); found || err == nil {
 		t.Fatalf("插件报错应 found=false 且有 err")
 	}
 }
@@ -64,15 +64,15 @@ func TestUIAssetVersion(t *testing.T) {
 	if got := m.UIAssetVersion("ghost"); got != "" {
 		t.Fatalf("未登记插件 version=%q want 空", got)
 	}
-	p := runningPlugin("codebase", "1.0.0")
-	m.plugins["codebase"] = p
-	if got := m.UIAssetVersion("codebase"); got != "1.0.0#0" {
+	p := runningPlugin("codegraph", "1.0.0")
+	m.plugins["codegraph"] = p
+	if got := m.UIAssetVersion("codegraph"); got != "1.0.0#0" {
 		t.Fatalf("初版 version=%q want 1.0.0#0", got)
 	}
 	p.mu.Lock()
 	p.gen++
 	p.mu.Unlock()
-	if got := m.UIAssetVersion("codebase"); got != "1.0.0#1" {
+	if got := m.UIAssetVersion("codegraph"); got != "1.0.0#1" {
 		t.Fatalf("重启后 version=%q want 1.0.0#1", got)
 	}
 }

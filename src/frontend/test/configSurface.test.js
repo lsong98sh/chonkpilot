@@ -263,7 +263,7 @@ test('⑦ 超时列占位「回落全局」+ 0/-1 = 无上限口径（cTimeout �
 })
 
 // ── ⑧ 索引页「叠加 gitignore」（2026-09-27）──────────────
-// 〔UIREG-1〕索引配置页已并入 codebase 插件（`src/plugins/codebase/webui/config.html`），
+// 〔UIREG-1〕索引配置页已并入 codegraph 插件（`src/plugins/codegraph/webui/config.html`），
 // 前端只保留文案口径守卫（组件级断言随已删页面一并移除）。
 test('⑧ 索引页文案：排除项与「叠加 gitignore」的中文口径', () => {
   const zh = readLocale('zh-CN', 'projectConfig.json')
@@ -273,7 +273,7 @@ test('⑧ 索引页文案：排除项与「叠加 gitignore」的中文口径', 
 
 // ── ⑨ 索引页「文档索引（Office/PDF）」（2026-09-29）─────────
 // 〔UIREG-1〕同 ⑧：组件已删除，保留 i18n 口径守卫（插件配置页复用同一套文案键）。
-test('⑨ 文档索引文案：i18n 双语齐备（配置页由 codebase 插件承载）', () => {
+test('⑨ 文档索引文案：i18n 双语齐备（配置页由 codegraph 插件承载）', () => {
   const zh = readLocale('zh-CN', 'projectConfig.json')
   const en = readLocale('en-US', 'projectConfig.json')
   for (const k of ['docs_section', 'docs_hint', 'docs_max_mb_label', 'docs_service_label',

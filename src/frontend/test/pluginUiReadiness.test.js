@@ -143,13 +143,13 @@ function mount(props) {
 }
 
 const PROPS = {
-  pluginId: 'codebase',
+  pluginId: 'codegraph',
   pageId: 'config',
   entry: 'webui/config.html',
 }
 
 test('① 未就绪（status=starting）→ 占位、不渲染 iframe、不探活', async () => {
-  resetPlugins([{ id: 'codebase', status: 'starting', detail: '等待外部进程连接' }])
+  resetPlugins([{ id: 'codegraph', status: 'starting', detail: '等待外部进程连接' }])
   probeCalls.length = 0
   const { app, root } = mount({ ...PROPS })
   await nextTick()
@@ -167,7 +167,7 @@ test('① 未就绪（status=starting）→ 占位、不渲染 iframe、不探�
 })
 
 test('② 就绪（running + 探活 200）→ 渲染 iframe、无占位', async () => {
-  resetPlugins([{ id: 'codebase', status: 'running', detail: '' }])
+  resetPlugins([{ id: 'codegraph', status: 'running', detail: '' }])
   probeOk = true
   probeCalls.length = 0
   const { app, root } = mount({ ...PROPS })
@@ -180,7 +180,7 @@ test('② 就绪（running + 探活 200）→ 渲染 iframe、无占位', async 
   assert.equal(probeCalls[0].method, 'HEAD', '探活用 HEAD（不重复下载页面）')
   assert.equal(
     frame.props.src,
-    '/plugins/codebase/webui/config.html?p=config',
+    '/plugins/codegraph/webui/config.html?p=config',
     '首帧 src 与既有格式一致（无重试代次）',
   )
 
@@ -194,7 +194,7 @@ test('② 就绪（running + 探活 200）→ 渲染 iframe、无占位', async 
 })
 
 test('③ 状态转 running 自动重试上限 3 次；超限后仅手动重试可用', async () => {
-  resetPlugins([{ id: 'codebase', status: 'starting', detail: '' }])
+  resetPlugins([{ id: 'codegraph', status: 'starting', detail: '' }])
   probeOk = false
   probeCalls.length = 0
   const { app, root } = mount({ ...PROPS })
@@ -204,7 +204,7 @@ test('③ 状态转 running 自动重试上限 3 次；超限后仅手动重试�
 
   // 每次 status→running 触发一次自动重试（探活仍 404 → 继续占位）
   for (let i = 0; i < AUTO_RETRY_LIMIT; i += 1) {
-    statusEvent('codebase', 'running')
+    statusEvent('codegraph', 'running')
     await flush()
   }
   assert.equal(probeCalls.length, AUTO_RETRY_LIMIT, `自动重试须恰好 ${AUTO_RETRY_LIMIT} 次`)
@@ -212,7 +212,7 @@ test('③ 状态转 running 自动重试上限 3 次；超限后仅手动重试�
   assert.equal(allByClass(root, 'pph-frame').length, 0)
 
   // 超限：再来一次 running 不再自动重试
-  statusEvent('codebase', 'running')
+  statusEvent('codegraph', 'running')
   await flush()
   assert.equal(probeCalls.length, AUTO_RETRY_LIMIT, '超过上限后不得继续自动重试')
   assert.match(textOf(root), /layoutFree\.plugin\.autoRetryExhausted/, '须提示自动重试已停止')

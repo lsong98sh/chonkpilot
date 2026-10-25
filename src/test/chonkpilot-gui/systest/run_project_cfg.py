@@ -17,7 +17,7 @@
   - 「通用能力（提示词）」页签**已按 spec CFG-009 (D2) 摘除**（项目配置提示词仅余摘要提示词，
     见 36-配置配置 CFG-008/009）→ K4 改断言存活的「总结提示词自动加载 + 来源标注」（同强度）。
   - 「代码索引」页签已拆为 CodeGraph / Vfts 两个页签（CFG-010/012）→ K5 断言 CodeGraph 页。
-  - 「索引进度对话框」（`codebase-config-preview` + `codebase-index-status-open`）随数据库查看器
+  - 「索引进度对话框」（`codegraph-config-preview` + `codegraph-index-status-open`）随数据库查看器
     一并移除（全仓无消费者）→ K6 改断言 **Vfts 页签的索引状态/统计呈现**（同强度：状态可观测）。
 
 前置：chonkpilot.exe --test-port=2345 已启动（workDir 有已建 vfts 索引 → K6 统计明细）。
@@ -257,7 +257,7 @@ def case_codegraph():
 def case_vfts_status():
     """K6（原「索引进度对话框」迁移）：Vfts 全文索引页的状态/统计呈现。
 
-    旧链路 `codebase-index-status-open` + `.codebase-config-preview`（状态栏图标 → 索引进度对话框）
+    旧链路 `codegraph-index-status-open` + `.codegraph-config-preview`（状态栏图标 → 索引进度对话框）
     已整体移除（全仓无消费者，statusbar 仅保留设置入口）→ 改为断言现行「索引进度/状态」的
     可见承载：Vfts 页签状态文案 + 就绪态下的统计明细（已索引文件/分块数/分词器/生效扩展名）。
     """

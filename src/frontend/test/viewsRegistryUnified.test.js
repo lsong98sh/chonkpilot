@@ -6,7 +6,7 @@
  *      （逐条核对，防漏注册）；`views.registry.js` 不再有静态组件映射表；
  *   ② 内置 + 插件合并后 key 集合无缺失 / 无重复；组件解析只有一条路径（注册表 `resolve`）；
  *   ③ 跨来源重复 key → 显式告警且不互相覆盖；
- *   ④ 重复设置页已删除且 `src/` 内零残留引用；设置入口改为嵌入 codebase 插件配置页（复用
+ *   ④ 重复设置页已删除且 `src/` 内零残留引用；设置入口改为嵌入 codegraph 插件配置页（复用
  *      `PluginPageHost`，不自造 iframe；旧页签名经兼容映射仍可定位）。
  *
  * 前端无组件级运行器（`npm test` = node:test 直跑）→ 纯逻辑 import + 源码守卫（同 configSurface）。
@@ -68,7 +68,7 @@ test('② 内置 + 插件合并注册：key 无缺失、无重复，解析只有
   )
   registerPluginViews(
     {
-      id: 'codebase',
+      id: 'codegraph',
       name: '代码知识库',
       icon: 'code',
       views: [
@@ -79,7 +79,7 @@ test('② 内置 + 插件合并注册：key 无缺失、无重复，解析只有
     ({ plugin, view }) => ({ name: `P_${plugin.id}_${view.id}` }),
   )
 
-  const pluginKeys = ['plugin:codebase:config', 'plugin:codebase:status']
+  const pluginKeys = ['plugin:codegraph:config', 'plugin:codegraph:status']
   const keys = registeredViewKeys()
   assert.deepEqual(keys, [...BUNDLED_VIEW_KEYS, ...pluginKeys], '合并后 key 集合须完整（无缺失）')
   assert.equal(new Set(keys).size, keys.length, '合并后 key 不得重复')
@@ -94,14 +94,14 @@ test('② 内置 + 插件合并注册：key 无缺失、无重复，解析只有
   assert.equal(reg.components, undefined, '不再暴露组件表（避免第二条解析路径）')
   assert.equal(reg.resolve('chat').name, 'B_chat')
   assert.equal(reg.resolve('search').name, 'B_search', '栏视图条目同走一条解析路径')
-  assert.equal(reg.resolve(pluginKeys[0]).name, 'P_codebase_config', '插件 view 同走一条解析路径')
+  assert.equal(reg.resolve(pluginKeys[0]).name, 'P_codegraph_config', '插件 view 同走一条解析路径')
   assert.equal(reg.resolve('nope'), null)
   // definitions getter：内置走 i18n，插件用插件标题
   assert.equal(reg.definitions.find((d) => d.key === 'chat').label, 'T:view.chat')
   assert.equal(reg.definitions.find((d) => d.key === pluginKeys[0]).label, '代码知识库')
 
   // 幂等卸载：插件 view 连同定义一起移除，内置不受影响
-  unregisterPluginViews('codebase')
+  unregisterPluginViews('codegraph')
   assert.deepEqual(registeredViewKeys(), BUNDLED_VIEW_KEYS, '插件卸载须只移除自己的 key')
   assert.equal(definitionOf(pluginKeys[0]), null, '插件 view 定义须随卸载移除')
 })
@@ -135,17 +135,17 @@ test('④ 重复设置页已删除，src 内无残留引用', () => {
   assert.deepEqual(offenders, [], `仍有残留引用：\n${offenders.join('\n')}`)
 })
 
-test('④ 设置入口嵌入 codebase 插件配置页（复用 PluginPageHost，不自造 iframe）', () => {
+test('④ 设置入口嵌入 codegraph 插件配置页（复用 PluginPageHost，不自造 iframe）', () => {
   const pc = read('views/preview/ProjectConfig.vue')
   // 复用既有插件 view 机制：PluginPageHost + 插件元数据（plugin:<id>:<view>）
   assert.match(pc, /import PluginPageHost from '\.\.\/\.\.\/\.\.\/packages\/plugin-ui\/src\/PluginPageHost\.vue'/, '须复用 PluginPageHost')
-  assert.match(pc, /pluginView\(CODEBASE_PLUGIN_ID, CODEBASE_CONFIG_VIEW_ID\)/, '须按插件 view 元数据取 entry')
-  assert.match(pc, /const CODEBASE_PLUGIN_ID = 'codebase'/)
-  assert.match(pc, /const CODEBASE_CONFIG_VIEW_ID = 'config'/)
+  assert.match(pc, /pluginView\(CODEGRAPH_PLUGIN_ID, CODEGRAPH_CONFIG_VIEW_ID\)/, '须按插件 view 元数据取 entry')
+  assert.match(pc, /const CODEGRAPH_PLUGIN_ID = 'codegraph'/)
+  assert.match(pc, /const CODEGRAPH_CONFIG_VIEW_ID = 'config'/)
   assert.doesNotMatch(pc, /<iframe/, '不得自造 iframe 容器')
-  // 页签：codegraph / vfts 合并为 codebase（旧页签名兼容映射，旧发送方不必改）
-  assert.match(pc, /\{ label: t\('projectConfig\.codebase'\), name: 'codebase' \}/, '缺「代码知识库」页签')
-  assert.match(pc, /LEGACY_TAB_ALIAS = \{ codegraph: 'codebase', vfts: 'codebase' \}/, '旧页签名须兼容映射')
+  // 页签：codegraph / vfts 合并为 codegraph（仅旧页签名 vfts 经兼容映射，旧发送方不必改）
+  assert.match(pc, /\{ label: t\('projectConfig\.codegraph'\), name: 'codegraph' \}/, '缺「代码知识库」页签')
+  assert.match(pc, /LEGACY_TAB_ALIAS = \{ vfts: 'codegraph' \}/, '旧页签名须兼容映射')
   // 其余设置页保留
   for (const name of ['security', 'context', 'history', 'filetree', 'groupchat', 'log', 'configIO']) {
     assert.match(pc, new RegExp(`name: '${name}'`), `设置页签 ${name} 不得删除`)
@@ -153,7 +153,7 @@ test('④ 设置入口嵌入 codebase 插件配置页（复用 PluginPageHost，
   // i18n 双语齐备
   for (const loc of ['zh-CN', 'en-US']) {
     const pcLoc = JSON.parse(readFileSync(join(srcDir, 'locales', loc, 'projectConfig.json'), 'utf8'))
-    assert.ok(pcLoc.codebase, `${loc} projectConfig 缺 codebase`)
-    assert.ok(pcLoc.codebase_unavailable, `${loc} projectConfig 缺 codebase_unavailable`)
+    assert.ok(pcLoc.codegraph, `${loc} projectConfig 缺 codegraph`)
+    assert.ok(pcLoc.codegraph_unavailable, `${loc} projectConfig 缺 codegraph_unavailable`)
   }
 })

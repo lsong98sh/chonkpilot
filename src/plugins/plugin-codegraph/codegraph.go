@@ -6,11 +6,11 @@
 //   - 多 workdir（T-12/P2-4）：**每个 workdir 一个独立引擎子进程**（p.clients[workdir]，
 //     独立索引内存/独立串行），互不干扰；空闲按 workdir 独立回收（childIdleTimeout）。
 //   - 本插件对外（gateway）注册 8 个查询工具：与引擎同名、schema 去掉 workdir（由插件注入）。
-//     可见性门控（plugins.codebase.codegraph.enabled）与索引就绪编排全在插件内存（源 = prj-config）。
+//     可见性门控（plugins.codegraph.enabled）与索引就绪编排全在插件内存（源 = prj-config）。
 //   - instance 生命周期驱动 workdir 引用计数与 gateway 工具注册/注销：register/exit 为变更源
 //     （heartbeat 记录时刻；合并单进程形态不发布心跳、不做心跳超时退出判定，分离形态
 //     `-tags split` 由 sweepInstances 判定超时 → instanceGone）；
-//     plugins.codebase.codegraph.enabled 开关经 data-prj-config-refresh 实时同步。
+//     plugins.codegraph.enabled 开关经 data-prj-config-refresh 实时同步。
 //   - 引擎应答一律为 JSON 文本：查询未就绪（not_initialized/indexing/error 等）原样透传，
 //     插件不做隐式补 init（仅启用时后台自动 configure+initialize 一次，状态回写 codegraph.status）。
 package codegraph
@@ -46,14 +46,14 @@ const (
 	// 订阅者写回 v.Result，同一主题 promise——镜像 llm domain-tool-call 模式）
 	toolCallSubject = msgkeys.TopicCodegraphToolCall
 
-	// prj-config 键（PLUGIN-UI-1 第三段：用户配置统一收口到 codebase 插件命名空间
-	// `plugins.codebase.*`；旧宿主键由 codebase 插件一次性迁移，本插件只读新键）。
-	enableKey         = "plugins.codebase.codegraph.enabled"         // "true"/"false"（UI 开关）
-	extsKey           = "plugins.codebase.codegraph.exts"            // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
-	skipDirsKey       = "plugins.codebase.codegraph.skip-dirs"       // 用户排除规则（gitignore 语法，逗号/换行分隔；空 = 无用户规则）
-	stackGitignoreKey = "plugins.codebase.codegraph.stack-gitignore" // "true"/"false"：是否让引擎叠加各级 .gitignore / info/exclude / 全局 ignore
-	actionKey         = "codegraph.action"                           // 动作信号键：值 = rebuild|clear|retry（UI 按钮写入一次 → 插件执行；非用户配置，不迁移）
-	statusKey         = "codegraph.status"                           // 引擎状态 JSON 文本（插件回写，UI 只读回显；非用户配置，不迁移）
+	// prj-config 键（PLUGIN-UI-1 第三段：用户配置统一收口到 codegraph 插件命名空间
+	// `plugins.codegraph.*`；旧宿主键由 codegraph 插件一次性迁移，本插件只读新键）。
+	enableKey         = "plugins.codegraph.enabled"         // "true"/"false"（UI 开关）
+	extsKey           = "plugins.codegraph.exts"            // 参与索引的扩展名（逗号/换行分隔；空 = 引擎默认集）
+	skipDirsKey       = "plugins.codegraph.skip-dirs"       // 用户排除规则（gitignore 语法，逗号/换行分隔；空 = 无用户规则）
+	stackGitignoreKey = "plugins.codegraph.stack-gitignore" // "true"/"false"：是否让引擎叠加各级 .gitignore / info/exclude / 全局 ignore
+	actionKey         = "codegraph.action"                  // 动作信号键：值 = rebuild|clear|retry（UI 按钮写入一次 → 插件执行；非用户配置，不迁移）
+	statusKey         = "codegraph.status"                  // 引擎状态 JSON 文本（插件回写，UI 只读回显；非用户配置，不迁移）
 
 	// codegraph.action 取值（前端按钮 → 一次 prj-config 变更信号；复用既有
 	// data-prj-config-refresh 面 = 零新增消息主题）
@@ -92,7 +92,7 @@ const (
 	phaseIndex     = "index"
 )
 
-// ignoreKeys 是排除规则的配置键（与 codebase 插件命名空间同源；ignore.ConfigOptions 用）。
+// ignoreKeys 是排除规则的配置键（与 codegraph 插件命名空间同源；ignore.ConfigOptions 用）。
 var ignoreKeys = ignore.Keys{Enabled: enableKey, SkipDirs: skipDirsKey, StackGitignore: stackGitignoreKey}
 
 // Options 构造参数。
@@ -155,7 +155,7 @@ type instRec struct {
 type workRec struct {
 	workDir string
 	dataDir string // 首个实例自带 data_dir（预留）
-	enabled bool   // plugins.codebase.codegraph.enabled == "true"
+	enabled bool   // plugins.codegraph.enabled == "true"
 	refs    int    // 活跃实例引用数（同 workdir 多实例去重）
 
 	cmu  sync.Mutex
@@ -165,7 +165,7 @@ type workRec struct {
 	ensuring bool
 	state    string // 最近一次 codegraph_status 原始 JSON 文本（= codegraph.status 同源）
 
-	// 索引配置比较基线（由 p.mu 保护）：最近一次已知的 plugins.codebase.codegraph.{exts,skip-dirs,
+	// 索引配置比较基线（由 p.mu 保护）：最近一次已知的 plugins.codegraph.{exts,skip-dirs,
 	// stack-gitignore} 原始值。保存幂等依据——新旧值相同（重复保存同一份配置）不排重建；
 	// cfgSeen 标记基线是否已建立（首次读 prj-config 时播种，此后只由 refresh 处理更新，
 	// 避免覆盖用户刚保存的值）。
@@ -245,7 +245,7 @@ func (p *Codegraph) Start(d hook.Deps) error {
 		}
 		p.subs = append(p.subs, sub)
 	}
-	// prj-config 变更广播（plugins.codebase.codegraph.* 开关；order 0）
+	// prj-config 变更广播（plugins.codegraph.* 开关；order 0）
 	sh, err := d.Bus.On(subjectPrjConfigRefresh, 0, p.onPrjConfigRefresh)
 	if err != nil {
 		p.unsubscribeAll()
@@ -437,7 +437,7 @@ func (p *Codegraph) onInstanceRegister(_ string, payload []byte) {
 	}
 	p.mu.Unlock()
 
-	// 异步回读一次 plugins.codebase.codegraph.enabled（慢请求不进总线派发路径）；读回后据开关触发
+	// 异步回读一次 plugins.codegraph.enabled（慢请求不进总线派发路径）；读回后据开关触发
 	// 自动初始化并同步 gateway 工具注册。
 	p.safeGo(func() { p.readEnableAndEnsure(ev.InstanceID, wd) })
 }
@@ -497,7 +497,7 @@ func (p *Codegraph) instanceGone(id string) {
 	p.syncTools()
 }
 
-// readEnableAndEnsure 注册后异步回读 plugins.codebase.codegraph.enabled 并据此收敛可见性。
+// readEnableAndEnsure 注册后异步回读 plugins.codegraph.enabled 并据此收敛可见性。
 func (p *Codegraph) readEnableAndEnsure(instanceID, wd string) {
 	val, err := dataclient.ReadKey(p.deps.Bus, instanceID, enableKey)
 	if err != nil {
@@ -523,8 +523,8 @@ func (p *Codegraph) readEnableAndEnsure(instanceID, wd string) {
 
 // ─── prj-config 变更 ──────────────────────────────────────
 
-// onPrjConfigRefresh 处理 data-prj-config-refresh：关心 plugins.codebase.codegraph.enabled 与索引配置
-// （plugins.codebase.codegraph.{exts,skip-dirs,stack-gitignore}）+ 动作信号（codegraph.action）。
+// onPrjConfigRefresh 处理 data-prj-config-refresh：关心 plugins.codegraph.enabled 与索引配置
+// （plugins.codegraph.{exts,skip-dirs,stack-gitignore}）+ 动作信号（codegraph.action）。
 // 广播载荷 {id, ids?, op, list}：**批量写**（61 §3.1）带 `ids`（全组键）→ 逐键展开处理
 // （= 与改前「逐键广播」等价）；缺省回落单键 `id`（向后兼容旧广播/旧发送方）。
 // 无 instance_id（persist refresh v1 不携实例过滤）——v1 限制：单宿主典型形态为单实例/单 workdir，
@@ -885,7 +885,7 @@ func (p *Codegraph) instanceForWorkdir(wd string) string {
 	return inst
 }
 
-// readIndexConfig 读取项目级索引配置：plugins.codebase.codegraph.{exts,skip-dirs,stack-gitignore}。
+// readIndexConfig 读取项目级索引配置：plugins.codegraph.{exts,skip-dirs,stack-gitignore}。
 // 读取失败/未配置 → 返回空切片（下发空数组 = 引擎默认集，不写第二套默认）。
 // skip-dirs / stack-gitignore 的解析统一由 github.com/chonkpilot/chonkpilot-ignore 提供
 // （ignore.ConfigOptions = 规则拆分 + 叠加开关；匹配语义在引擎侧单点实现，本插件不读 .gitignore）。
@@ -1252,7 +1252,7 @@ func (p *Codegraph) syncTools() {
 // ─── exe 路径解析 ────────────────────────────────────────
 
 // resolveExe 定位引擎可执行文件：Options.Exe > 环境变量 CODEGRAPH_EXE > 运行 exe 同目录
-// 下的 `mcps/codebase/`（发行布局：`<exeDir>/mcps/codebase/chonkpilot-codegraph-mcp-server.exe`）。
+// 下的 `mcps/codegraph/`（发行布局：`<exeDir>/mcps/codegraph/chonkpilot-codegraph-mcp-server.exe`）。
 // 找不到返回 error（Start 失败）—— 不做多路径猜测。
 func resolveExe(explicit string) (string, error) {
 	abs := func(p string) (string, error) {
@@ -1274,11 +1274,11 @@ func resolveExe(explicit string) (string, error) {
 	}
 	dir := filepath.Dir(self)
 	const exeName = "chonkpilot-codegraph-mcp-server.exe"
-	c := filepath.Join(dir, "mcps", "codebase", exeName) // <exeDir>/mcps/codebase/
+	c := filepath.Join(dir, "mcps", "codegraph", exeName) // <exeDir>/mcps/codegraph/
 	if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
 		return abs(c)
 	}
-	return "", fmt.Errorf("codegraph: 引擎未找到——请设置 Options.Exe / 环境变量 CODEGRAPH_EXE，或将 %s 置于 <exeDir>/mcps/codebase/", exeName)
+	return "", fmt.Errorf("codegraph: 引擎未找到——请设置 Options.Exe / 环境变量 CODEGRAPH_EXE，或将 %s 置于 <exeDir>/mcps/codegraph/", exeName)
 }
 
 // data-* 请求-响应 / prj-config 单键读写（strval / newReqID / dataEmit / prjConfigReadKey /

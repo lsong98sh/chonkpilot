@@ -582,12 +582,12 @@ dist/desktop/capability/plugins/<id>/
   plugin.json          # 源：src/initdata/capability/plugins/<id>/plugin.json
   chonkpilot-<id>.exe  # 源：dist/plugin-apps/<id>/（build-plugins.ps1 产出）
   webui/               # 源：src/initdata/capability/plugins/<id>/webui/
-  zvec_c_api.dll       # 仅 codebase：必须与 exe 同目录（vfts 引擎运行时加载）
+  zvec_c_api.dll       # 仅 codegraph：必须与 exe 同目录（vfts 引擎运行时加载）
 ```
 
 - `build-plugins.ps1` → staging `dist/plugin-apps/<id>/`；`build-desktop.ps1` 步骤 4.5 先复制
   manifest/webui 到 `dist/desktop/capability/plugins/<id>/`，再调 `build-plugins.ps1` 把 exe 覆盖进去。
-- codebase 合并 codegraph + vfts（CGO：tree-sitter + zvec），构建脚本已注入 zvec 头/库路径。
+- codegraph 插件 = codegraph 引擎 + vfts 引擎合并（CGO：tree-sitter + zvec），构建脚本已注入 zvec 头/库路径。
 - 禁止把插件私有数据 / 密钥写入产物目录。
 
 ---
@@ -612,7 +612,7 @@ dist/desktop/capability/plugins/<id>/
 | 插件 | 说明 |
 |------|------|
 | `src/plugins/websearch` | 三个 web 工具共用一个配置页：`web_search` / `web_fetch`（HTML→文本）/ `web_download`（目录/上限/白名单） |
-| `src/plugins/codebase` | codegraph + vfts 合一（`OnMCPServer` 复用引擎 `RegisterTools`；配置页经 `tool.call` 直调） |
+| `src/plugins/codegraph` | codegraph + vfts 合一（`OnMCPServer` 复用引擎 `RegisterTools`；配置页经 `tool.call` 直调） |
 | `src/plugins/compress` | 数据面读写（`session.snapshot.get/set`）+ `llm.step` 摘要 + `DoCompress` |
 | `src/plugins/browser` | `browser_run`：桥接层 + 同目录引擎 exe（WebView2，UDS `start/stop/operation`），按实例复用 context |
 | `src/plugins/desktop` | `desktop_run`：同构（Win32/UIA 引擎） |
@@ -654,7 +654,7 @@ dist/desktop/capability/plugins/<id>/
 |----|--------|------|
 | L1 纯函数 | manifest 校验 / 配置合并与掩码 / `DataTopic` 闭集 | 表驱动，无进程 |
 | L2 进程内 | 桩插件（`pluginsdk` 连同一个进程内桥）→ 注册 → MCP 登记 | `plugin-list` 出现 `running`；`tools/list` 含工具；禁用后工具消失 |
-| L3 进程外 | 真 exe（websearch / codebase / compress） | 崩溃退避重启；配置落盘后重启仍生效；`_meta.chonkpilot` 透传 |
+| L3 进程外 | 真 exe（websearch / codegraph / compress） | 崩溃退避重启；配置落盘后重启仍生效；`_meta.chonkpilot` 透传 |
 | L4 UI | iframe 打开 / `config.get/set` / `rpc` / 未授权方法 | postMessage 应答 `ok`；拒绝项返回错误文案 |
 
 本地手工验收（无自动化时）：
@@ -662,7 +662,7 @@ dist/desktop/capability/plugins/<id>/
 ```powershell
 # 1) 构建
 .\build-plugins.ps1 ; .\build-desktop.ps1
-# 2) 启动后：插件页应出现 websearch / codebase / compress / file / task / mcp / browser / desktop
+# 2) 启动后：插件页应出现 websearch / codegraph / compress / file / task / mcp / browser / desktop
 # 3) 关掉某个插件 exe（任务管理器）→ 观察 status 从 running → starting → running
 # 4) 改配置（密钥只显示掩码）→ 重启 → 值保留；插件日志见 <dataDir>/plugins/<id>/logs/plugin.log
 ```
@@ -706,5 +706,5 @@ p.Run(context.Background())
 | `task` | `p.LLM` + `DataWrite` + helpers | 命令执行与输出限流（约 100 行） |
 | `mcp` | `tools.list` / `tools.call` + helpers | 检索/加载/调用编排（约 150 行） |
 | `websearch` | `p.Config` + helpers | DeepSeek 检索 / HTML→文本 / 下载限额（业务） |
-| `codebase` | `OnMCPServer` + 引擎 `RegisterTools` | 引擎装配（约 40 行） |
+| `codegraph` | `OnMCPServer` + 引擎 `RegisterTools` | 引擎装配（约 40 行） |
 | `compress` | `p.LLM` + `DoCompress` | DTO 映射（业务） |

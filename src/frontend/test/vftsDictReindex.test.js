@@ -1,7 +1,7 @@
 /**
  * vfts 分词器改 jieba（P2-10）前端面单测：
  *   ① composable useVftsDict 走 61 生成的三主题（vfts.dict.get / vfts.dict.set / vfts.reindex）；
- *   ② 〔UIREG-1〕配置页已并入 codebase 插件（前端页面删除）→ 该页组件级守卫移除；
+ *   ② 〔UIREG-1〕配置页已并入 codegraph 插件（前端页面删除）→ 该页组件级守卫移除；
  *   ③ 生成物 msgkeys.js 已含三主题（契约同步的机器可读证据）；
  *   ④ i18n 新增键 zh-CN / en-US 齐备。
  *

@@ -341,7 +341,7 @@ def case_codeindex_refresh():
     if not before.strip():
         raise TestError("CodeGraph 状态文案为空")
     # 注入 data-prj-config-refresh → 组件订阅自动重载（无异常即通过）
-    c.eval('window.mq.emitRemote({type: "data-prj-config-refresh", payload: JSON.stringify({id: "codebase", op: "save"}), src: "data"})')
+    c.eval('window.mq.emitRemote({type: "data-prj-config-refresh", payload: JSON.stringify({id: "codegraph", op: "save"}), src: "data"})')
     time.sleep(0.8)
     after = _loads_deep(c.eval("(document.querySelector('.cg-state-text')||{}).textContent")) or ""
     if not after.strip():

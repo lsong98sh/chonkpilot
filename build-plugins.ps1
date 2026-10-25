@@ -2,7 +2,7 @@
 #
 # 产物（staging）：dist/plugin-apps/<id>/<exe>
 #   ├── websearch/ chonkpilot-websearch.exe                  # web_search / web_fetch / web_download
-#   ├── codebase/  chonkpilot-plugin-codebase.exe + zvec_c_api.dll
+#   ├── codegraph/  chonkpilot-plugin-codegraph.exe + zvec_c_api.dll
 #   ├── browser/   chonkpilot-plugin-browser.exe + chonkpilot-browser-plugin.exe（引擎）
 #   ├── desktop/   chonkpilot-plugin-desktop.exe + chonkpilot-desktop-plugin.exe（引擎）
 #   ├── file/      chonkpilot-plugin-file.exe + tools/file/*.tool.md（11 契约）
@@ -25,8 +25,8 @@
 # 例外：demo-python 是 Python 样例（runtime.exe = python，product=false，不随产物投放），
 # 不支持 embed，其页面仍在 `src/initdata/capability/plugins/demo-python/webui/`。
 #
-# 说明：codebase 合并 codegraph + vfts 两个引擎（CGO：tree-sitter + zvec），
-# 故本脚本对 codebase 复用 build-vfts.ps1 的 zvec 头/库路径。
+# 说明：codegraph 合并 codegraph + vfts 两个引擎（CGO：tree-sitter + zvec），
+# 故本脚本对 codegraph 复用 build-vfts.ps1 的 zvec 头/库路径。
 #
 # 用法：.\build-plugins.ps1 [-SkipTidy]
 param(
@@ -46,12 +46,12 @@ $env:CGO_ENABLED = "1"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $srcPlugins = Join-Path $root "src\plugins"
-# 进程外插件源码仓库（2026-10-24 分离）：websearch/codebase/browser/desktop/file/task/mcp/memory/history
+# 进程外插件源码仓库（2026-10-24 分离）：websearch/codegraph/browser/desktop/file/task/mcp/memory/history
 # 均与主仓同级；memory/history 的 Go 业务包在同仓 `<id>/lib`。
 $pluginsRepo = Join-Path (Split-Path -Parent $root) "chonkpilot-plugins"
 $out = Join-Path $root "dist\plugin-apps"
 
-$zvec = Join-Path $pluginsRepo "codebase\engines\vfts\third_party\zvec"
+$zvec = Join-Path $pluginsRepo "codegraph\engines\vfts\third_party\zvec"
 $zvecLib = Join-Path $zvec "windows_amd64"
 $env:CGO_CFLAGS = "-I$($zvec.Replace('\','/'))/include"
 $env:CGO_LDFLAGS = "-L$($zvecLib.Replace('\','/')) -lzvec_c_api"
@@ -63,7 +63,7 @@ if (-not (Test-Path (Join-Path $zvecLib "zvec_c_api.dll"))) {
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 # 旧实例占用 exe/dll → 先停（插件由宿主拉起，构建前应已关闭宿主）
-Get-Process -Name "chonkpilot-websearch", "chonkpilot-plugin-codebase", "chonkpilot-memory", "chonkpilot-history" -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name "chonkpilot-websearch", "chonkpilot-plugin-codegraph", "chonkpilot-memory", "chonkpilot-history" -ErrorAction SilentlyContinue | Stop-Process -Force
 
 function Build-Plugin {
     param(
@@ -107,9 +107,9 @@ function Build-Engine {
 Write-Host "==> [1/9] websearch"
 Build-Plugin -Mod (Join-Path $pluginsRepo "websearch") -ID "websearch" -ExeName "chonkpilot-websearch.exe"
 
-Write-Host "==> [2/9] codebase (codegraph + vfts, CGO)"
-Build-Plugin -Mod (Join-Path $pluginsRepo "codebase") -ID "codebase" -ExeName "chonkpilot-plugin-codebase.exe"
-Copy-Item (Join-Path $zvecLib "zvec_c_api.dll") (Join-Path $out "codebase") -Force
+Write-Host "==> [2/9] codegraph (codegraph + vfts, CGO)"
+Build-Plugin -Mod (Join-Path $pluginsRepo "codegraph") -ID "codegraph" -ExeName "chonkpilot-plugin-codegraph.exe"
+Copy-Item (Join-Path $zvecLib "zvec_c_api.dll") (Join-Path $out "codegraph") -Force
 Write-Host "    ok: zvec_c_api.dll"
 
 Write-Host "==> [3/9] browser（桥接层 + 引擎：源码在 plugins 仓 browser/engine）"
@@ -152,7 +152,7 @@ Build-Plugin -Mod (Join-Path $pluginsRepo "history") -ID "history" -ExeName "cho
 $desktopPlugins = Join-Path $root "dist\desktop\capability\plugins"
 if (Test-Path $desktopPlugins) {
     Write-Host "==> deploy -> $desktopPlugins"
-    foreach ($id in @("websearch", "codebase", "browser", "desktop", "file", "task", "mcp", "memory", "history")) {
+    foreach ($id in @("websearch", "codegraph", "browser", "desktop", "file", "task", "mcp", "memory", "history")) {
         $srcDir = Join-Path $out $id
         $dstDir = Join-Path $desktopPlugins $id
         if (-not (Test-Path $dstDir)) {

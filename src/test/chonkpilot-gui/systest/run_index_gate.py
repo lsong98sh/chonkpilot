@@ -3,7 +3,7 @@
 
 覆盖（每条 = A 数据面回读 + B 真实效果；B 恒以可观测证据收口，不用"保存成功即算过"）：
 
-  G1 `codebase` 插件启停 → 工具面出现/消失 codegraph 8 个 + `vfts_query`。**保存即生效**
+  G1 `codegraph` 插件启停 → 工具面出现/消失 codegraph 8 个 + `vfts_query`。**保存即生效**
                          （2026-10-23 口径：索引工具已插件化，唯一门控 = 插件启用开关）
   G2 `enable-codegraph` / `enable-vfts` → **历史 prj 键不再门控工具面**（防旧门控回归）
   G3 `codegraph.exts` / `codegraph.skip-dirs` → **索引范围终效**：
@@ -35,7 +35,7 @@
 观测手段（**零新增 MQ 主题**，全部取自 61-消息一览既有面）：
   * 工具面 = 客户端能力面 `tools-list`（61 §4.5：桥 → gateway `mcp-tools-list`；桥按当前实例
     作用域过滤）→ `{tools:[{name}]}`。**2026-10-23 口径**：P0a 去 `self_` 前缀后，
-    codebase 插件注册的工具名 = manifest `mcp.hot_tools` 原名（无前缀）。
+    codegraph 插件注册的工具名 = manifest `mcp.hot_tools` 原名（无前缀）。
   * 索引状态 = prj 键 `codegraph.status` / `vfts.status`（插件回写；prjusr 路由，--data-dir 下与
     prj 同库）→ `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
     （61 §3：persist 保存/删除后广播）捕获 → 不依赖轮询赛跑，不漏阶段。
@@ -48,7 +48,7 @@
 
 隔离与环境（51-FP与测试映射 §5/§6-8）：
   * **自起** GUI：动态端口 + 独立 work-dir（临时目录）+ 独立 `--data-dir` + 独立 `HOME`
-    （usr 主库全新；prj 库全新 → 无历史覆盖；codebase 插件按默认启用态加载）。
+    （usr 主库全新；prj 库全新 → 无历史覆盖；codegraph 插件按默认启用态加载）。
   * 不碰共享 `systest/ws`（其 `codegraph/vfts` 索引是 K5/K6 夹具）——本套件**不清除**他套件索引。
   * 套件级配置快照-还原 = `_h.suite_config_guard(c)`（退出前自动回滚 usr+prj，含异常/中断路径）。
   * mock LLM 由 harness 自起自收；索引落盘（`<ws>/.chonkpilot/{codegraph,vfts}`）在临时
@@ -71,7 +71,7 @@ import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51 §6
 # ── 工具面（网关暴露名）──────────────────────────────────
 # 口径变更（2026-10-23）：P0a 去 `self_` 前缀后网关暴露名即插件清单 `mcp.hot_tools` 原名 →
 # 断言用无前缀名（此前 `self_*` 已不再出现）。
-# codegraph 查询工具全集 = 8（`plugin-codebase` hot_tools；含 `*_callers` / `*_callees`）。
+# codegraph 查询工具全集 = 8（`plugin-codegraph` hot_tools；含 `*_callers` / `*_callees`）。
 CG_TOOLS = [
     "codegraph_symbol_search",
     "codegraph_get_symbol_info",
@@ -524,7 +524,7 @@ def set_param_input(label_sub, value):
 
 
 # ══════════════════════════════════════════════════════════
-# G1 codebase 插件启停 → 索引工具面（插件级门控）
+# G1 codegraph 插件启停 → 索引工具面（插件级门控）
 # ══════════════════════════════════════════════════════════
 
 def _plugin_enabled(pid):
@@ -535,10 +535,10 @@ def _plugin_enabled(pid):
     raise TestError("plugin-list 中找不到插件 %s" % pid)
 
 
-def case_g1_plugin_codebase_gate():
-    """codebase 插件启停 → codegraph/vfts 工具面即时出现/消失（**保存即生效**，不重启）。
+def case_g1_plugin_codegraph_gate():
+    """codegraph 插件启停 → codegraph/vfts 工具面即时出现/消失（**保存即生效**，不重启）。
 
-    口径变更（2026-10-23）：索引工具已迁入 `codebase` 插件（manifest `mcp.hot_tools`），
+    口径变更（2026-10-23）：索引工具已迁入 `codegraph` 插件（manifest `mcp.hot_tools`），
     prj 键 `enable-codegraph` / `enable-vfts` **不再门控工具面**；唯一门控 = 插件启用开关
     （`plugin-set-enabled`，与插件维护页「启用」开关同源）。故断言同一实例内：
     停用插件 → 工具面移除 codegraph/vfts；重新启用 → 原样恢复。
@@ -547,22 +547,22 @@ def case_g1_plugin_codebase_gate():
     base = set(tools())
     miss = sorted(need - base)
     if miss:
-        raise TestError("基线工具面应含 codebase 插件全部索引工具（插件默认启用），缺：%r" % miss)
-    if not _plugin_enabled("codebase"):
-        raise TestError("基线 codebase 插件应为启用态")
+        raise TestError("基线工具面应含 codegraph 插件全部索引工具（插件默认启用），缺：%r" % miss)
+    if not _plugin_enabled("codegraph"):
+        raise TestError("基线 codegraph 插件应为启用态")
     print("[G1] 基线工具面 %d 项（含 codegraph 8 + %s）" % (len(base), VF_TOOL), flush=True)
 
-    c.req("plugin-set-enabled", {"id": "codebase", "enabled": False})
+    c.req("plugin-set-enabled", {"id": "codegraph", "enabled": False})
     off = set(wait_tools(lambda s: not (need & s),
-                         "停用 codebase 插件后 codegraph/vfts 工具从工具面移除", max_wait=60))
-    if _plugin_enabled("codebase"):
+                         "停用 codegraph 插件后 codegraph/vfts 工具从工具面移除", max_wait=60))
+    if _plugin_enabled("codegraph"):
         raise TestError("停用后 plugin-list.enabled 仍为 true")
     print("[G1] 停用 → 工具面 -%r（%d 项）" % (sorted(need & base), len(off)), flush=True)
 
-    c.req("plugin-set-enabled", {"id": "codebase", "enabled": True})
+    c.req("plugin-set-enabled", {"id": "codegraph", "enabled": True})
     on = set(wait_tools(lambda s: need <= s,
-                        "重新启用 codebase 插件后索引工具恢复工具面", max_wait=90))
-    if not _plugin_enabled("codebase"):
+                        "重新启用 codegraph 插件后索引工具恢复工具面", max_wait=90))
+    if not _plugin_enabled("codegraph"):
         raise TestError("启用后 plugin-list.enabled 仍为 false")
     extra = sorted(on - off)
     if not (need & set(extra)) == need:
@@ -577,7 +577,7 @@ def case_g1_plugin_codebase_gate():
 def case_g2_legacy_enable_keys_inert():
     """prj `enable-codegraph` / `enable-vfts` 仍可读写，但**不再**控制工具面（防旧门控回归）。
 
-    口径变更（2026-10-23）：工具归属 `codebase` 插件（启用即注册全部 hot_tools）→ 旧实现
+    口径变更（2026-10-23）：工具归属 `codegraph` 插件（启用即注册全部 hot_tools）→ 旧实现
     「关 → 8 个 codegraph 工具 / vfts_query 消失」已作废；唯一门控见 G1。故断言：写 false 后
     工具面**不减少**（留出反应窗口排除异步摘除），且 prj 回读一致。
     """
@@ -609,9 +609,9 @@ IDX_DB = os.path.join(WS, ".chonkpilot", "codegraph", "index.db")
 
 
 def _engine_exe():
-    """codegraph 引擎 exe 路径（发行根 `<exeDir>/mcps/codebase/`——插件按「宿主 exe 同目录/mcps/codebase」解析）。"""
+    """codegraph 引擎 exe 路径（发行根 `<exeDir>/mcps/codegraph/`——插件按「宿主 exe 同目录/mcps/codegraph」解析）。"""
     return os.path.join(os.path.dirname(_h.resolve_gui_exe()),
-                        "mcps", "codebase", "chonkpilot-codegraph-mcp-server.exe")
+                        "mcps", "codegraph", "chonkpilot-codegraph-mcp-server.exe")
 
 
 def _idx_files():
@@ -1075,8 +1075,8 @@ def main():
     total = 0
     ok = 0
     cases = [
-        ("G1 codebase 插件启停 → 工具面出现/消失 codegraph 8 + vfts_query（保存即生效）",
-         case_g1_plugin_codebase_gate),
+        ("G1 codegraph 插件启停 → 工具面出现/消失 codegraph 8 + vfts_query（保存即生效）",
+         case_g1_plugin_codegraph_gate),
         ("G2 enable-codegraph/enable-vfts 历史键不再门控工具面",
          case_g2_legacy_enable_keys_inert),
         ("G3 codegraph.exts/skip-dirs → 索引范围终效（status + bbolt 索引命中集合）",

@@ -2,13 +2,13 @@
 
 > 状态：✅ 与代码一致
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [21-llm-server](21-llm-server.md) · [29-codegraph](29-codegraph.md)
-> 代码目录：**进程外 exe 插件（主形态）** `src/plugins/{codebase,browser,desktop,file,task,mcp,websearch,memory,history}/`（SDK = `src/lib/plugin-sdk/`）· **进程内 lib Hook（兼容，默认关闭）** `src/plugins/plugin-codegraph/` · `src/plugins/plugin-vfts/` · `src/plugins/plugin/`（Hook 接口 + 实例视图）· **业务库（供 exe 复用）** `src/plugins/plugin-memory/` · `src/plugins/plugin-history/` · `src/plugins/plugin-compress/`（**纯算法库，仅单测**）
+> 代码目录：**进程外 exe 插件（主形态）** `src/plugins/{codegraph,browser,desktop,file,task,mcp,websearch,memory,history}/`（SDK = `src/lib/plugin-sdk/`）· **进程内 lib Hook（兼容，默认关闭）** `src/plugins/plugin-codegraph/` · `src/plugins/plugin-vfts/` · `src/plugins/plugin/`（Hook 接口 + 实例视图）· **业务库（供 exe 复用）** `src/plugins/plugin-memory/` · `src/plugins/plugin-history/` · `src/plugins/plugin-compress/`（**纯算法库，仅单测**）
 
 ---
 
 ## 1. 职责与边界
 
-- **一句话**：**双形态** —— ① **主形态 = 进程外 exe 插件**（`pluginsdk` + 插件桥 `plugin/v1`；codebase / browser / desktop / file / task / mcp / websearch / memory / history）；② **兼容形态 = 进程内 lib Hook**（`plugin.Hook`，当前仅 **codegraph / vfts**，默认关闭）。压缩**已不是插件**：内建在会话侧（`chonkpilot-session` 压缩内核）+ `llm/server` 编排，详见 §3.1。
+- **一句话**：**双形态** —— ① **主形态 = 进程外 exe 插件**（`pluginsdk` + 插件桥 `plugin/v1`；codegraph / browser / desktop / file / task / mcp / websearch / memory / history）；② **兼容形态 = 进程内 lib Hook**（`plugin.Hook`，当前仅 **codegraph / vfts**，默认关闭）。压缩**已不是插件**：内建在会话侧（`chonkpilot-session` 压缩内核）+ `llm/server` 编排，详见 §3.1。
 - **做**：事件订阅、按 instance/workdir 自持数据（经数据面消息）、向 gateway 注册/注销工具；进程外插件另含进程生命周期（拉起 / 健康 / 退避 / 停止）。
 - **不做**：插件不直接依赖宿主 Go 包（进程外走插件桥 / MCP；进程内 Hook 走 MQ 方法面）；`plugin-compress` 不含运行时形态，仅保留纯算法。
 
@@ -26,7 +26,7 @@
 **实例视图**（`src/plugins/plugin/instance/manager.go`）：订阅 `instance-register` / `instance-heartbeat` / `instance-exit`，维护 `instance_id ↔ {ID, WorkDir, DataDir, ClientType, User, ParentInstance, LastBeat}`（`LastBeat` 仅记录最近心跳/注册时间；**`User`（🆕 2026-10-09）= 实例归属 OS 用户名**，`instance-register` 必填字段，供 `instance-bring-to-top` 的跨用户判定；**`ParentInstance`（🆕 2026-10-09）= 子窗口实例的宿主顶层实例 id** —— 由 `instance-register` 的 `parent_instance` 字段解析，非空即子实例，供托盘「列举实例」过滤，见 [61 §4.1](../60-reference/61-消息一览.md)）；提供 `Lookup/List/Count` 与 `ListTopLevel`（仅顶层）。
 > ⚠️ **心跳超时退出判定 = 编译开关**：心跳发布与超时判定**仅在分离形态（`-tags split`）编入**；合并单进程形态（默认构建）为空实现（`heartbeat_inprocess.go`：不发布、不判超时），实例失效以**显式 `instance-exit`** 清理（`instance-heartbeat` 订阅保留）。分离形态下：`StartHeartbeat`（注册后起 30s 周期发布 `instance-heartbeat{instance_id}`）与 `Manager.Sweep(timeout)`（**90s = 3× 周期**的实例视同退出）的生产调用方 = 判定侧消费方两处 —— **llm-server** `startInstanceSweep`（`src/lib/llm/server/sweep_split.go`：30s ticker → `Manager.Sweep(90s)` → 逐个走既有 `exitInstance`：取消 running turn + 释放 `busy` 锁 + 注销 capability dir 节点）、**persist** `startStaleSweep`（`src/lib/data/persist/sweep_split.go`：30s 扫描 → `LastBeat` ≥90s → 既有 `instanceGone`：移除 `insts` 绑定 + `data.Unregister`）；插件 codegraph/vfts 的 `sweepInstances` 走各自 `instanceGone`（解绑 + 递减 workdir 引用）**均存在**（`src/plugins/plugin/instance/heartbeat_split.go`）。阈值单一来源 = `src/lib/heartbeat`：`persist` 的 `staleTimeout = heartbeat.Timeout`（90s）、llm-server 的 `sweepInterval = heartbeat.Interval`（30s）、`plugin/instance` 的 `HeartbeatInterval`/`HeartbeatTimeout` 亦为同名常量别名。**🆕 2026-10-09**：**flash 客户端不发布心跳**（其存活由 **UDS 连接断开**判定，见 [19 §8.11](../10-architecture/19-多租户服务端形态.md)），心跳链路的消费方仅剩 **HTTP 客户端（gui/browser）**。见 [24-lib §2/§6](24-lib.md) · [61 §4.1](../60-reference/61-消息一览.md)。
 
-> **Stop 语义（🆕 2026-10-11；`plugin.Stopper` 可选接口）**：实现 `Stopper` 的**进程内 Hook**（当前 = codegraph / vfts）在宿主退出时按 `Start` **逆序** `Stop()`，**幂等**（`stopOnce`）；进程外插件（memory / history / codebase 等）的停止由 `pluginmgr` 按 manifest `runtime.stop.grace_ms` 负责。codegraph / vfts 的 `Stop` 顺序 = ① **置停止态**（`stopped`，阻止去抖回调与 `clientFor`/`sharedClient` **重新 spawn 引擎子进程**）→ ② **停去抖定时器**（`rebuild.stopAll`；已 fire 的回调经 stopped 门控**不再 spawn**）→ ③ 退订全部订阅 → ④ 关闭引擎子进程（codegraph 逐个 workdir / vfts 共享 client）。**`Stop` 后不再拉起任何引擎子进程**。见 `src/plugins/plugin/plugins.go` `Stopper`。
+> **Stop 语义（🆕 2026-10-11；`plugin.Stopper` 可选接口）**：实现 `Stopper` 的**进程内 Hook**（当前 = codegraph / vfts）在宿主退出时按 `Start` **逆序** `Stop()`，**幂等**（`stopOnce`）；进程外插件（memory / history / codegraph 等）的停止由 `pluginmgr` 按 manifest `runtime.stop.grace_ms` 负责。codegraph / vfts 的 `Stop` 顺序 = ① **置停止态**（`stopped`，阻止去抖回调与 `clientFor`/`sharedClient` **重新 spawn 引擎子进程**）→ ② **停去抖定时器**（`rebuild.stopAll`；已 fire 的回调经 stopped 门控**不再 spawn**）→ ③ 退订全部订阅 → ④ 关闭引擎子进程（codegraph 逐个 workdir / vfts 共享 client）。**`Stop` 后不再拉起任何引擎子进程**。见 `src/plugins/plugin/plugins.go` `Stopper`。
 
 **启动清单与「拉起只属于框架」（2026-10-25 定稿）**：
 
@@ -34,7 +34,7 @@
 2. **注册制**：插件启动后自己连 UDS → `plugin.hello` 自报名字 + **上报 manifest（embed/写死在插件 exe 内）** → 注册 view / MCP 工具 / 监听事件；**拉起后不注册的进程视为无效**（不报错、不重试风暴）。宿主只维护「已注册插件」的内存视图，**不扫描插件目录、不读 `plugin.json`**。
 3. **已判定删除的专用监管层**：`src/lib/llm/vftsindexer`、`src/lib/llm/codegraphindexer`、`src/lib/llm/pluginhost`（与 `host/mgr` 重复），以及 `gui/host`、`server/main` 各自两处 indexer exe 定位 + Ensure 组装。
 4. **事件面以 workdir 为单位**：server 把 `instance-register` / `instance-exit` 翻译为 **`workdir-opened` / `workdir-closed`**（[61 §2.5](../60-reference/61-消息一览.md)），插件只管理 workspace；启动时拉一次当前活动 workdir，之后用事件增量维护。
-5. **索引不独立成插件**：索引回路 + 引擎**库内联**在 `codebase` 插件进程，工具与索引同进程、经 **TCP/IP（MCP）** 暴露；`file`/`codebase` 这类简单能力**不再起子 exe**。
+5. **索引不独立成插件**：索引回路 + 引擎**库内联**在 `codegraph` 插件进程，工具与索引同进程、经 **TCP/IP（MCP）** 暴露；`file`/`codegraph` 这类简单能力**不再起子 exe**。
 6. **子进程与安全上下文（以 crontab 类定时任务插件为例）**：插件可以自己 spawn 子 exe / Python 来执行任务。**可写目录等安全信息由宿主在 TCP 握手协议头中下发**，插件**必须自己处理**（据此约束自己拉起的子进程）；是否对子任务强制沙箱 = 该插件**配置页里的选项**，由插件自己读取并执行（例如定时任务默认沙箱运行，可在配置页关闭）。
 7. **宿主索引队列下线**：`filesys` 不再写待索引表；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧删除（`queuehooks` 一并删除）。消息面新增仅 §2.5 两个 workdir 事件。
 
@@ -88,13 +88,13 @@
 
 ### 3.3 codegraph（代码语义索引，插件侧）
 
-> **形态（2026-10-24 口径）**：**用户可见插件 = `codebase`**（进程外 exe，`chonkpilot-plugins/codebase`；codegraph + vfts 合一的代码知识库，`autostart=true`，工具清单见 `src/initdata/capability/plugins/codebase/plugin.json`）。本节描述**引擎与工具口径**；`src/plugins/plugin-codegraph` 是**兼容形态的进程内 Hook（默认关闭）**，与 `pluginmgr` 拉起路径二选一，不并存启用。
+> **形态（2026-10-24 口径）**：**用户可见插件 = `codegraph`**（进程外 exe，`chonkpilot-plugins/codegraph`；codegraph + vfts 合一的代码知识库，`autostart=true`，工具清单见 `src/initdata/capability/plugins/codegraph/plugin.json`）。本节描述**引擎与工具口径**；`src/plugins/plugin-codegraph` 是**兼容形态的进程内 Hook（默认关闭）**，与 `pluginmgr` 拉起路径二选一，不并存启用。
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `workdir-opened`/`workdir-closed`（61 §2.5，替代 instance 视角）· `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `codegraph-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：每次索引前向宿主拉「活动 workdir + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
+| 订阅 | `workdir-opened`/`workdir-closed`（61 §2.5，替代 instance 视角）· `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `codegraph-tool-call`；**索引回路（2026-10-25 定稿）在 `codegraph` 插件内**（不独立成插件）：每次索引前向宿主拉「活动 workdir + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
 | 配置键 | `enable-codegraph`（可见性门控）· `codegraph.exts` / `codegraph.skip-dirs` / `codegraph.stack-gitignore`（索引配置，变更即强制重建）· `codegraph.status`（状态回写）· `codegraph.action`（重建/清除/重试信号） |
-| 引擎 | **〔2026-10-25 定稿，待落地〕引擎以库形式编入 `codebase` 插件进程**（工具与索引同进程，经 TCP/HTTP 暴露）；不再 spawn `chonkpilot-codegraph-mcp-server.exe` 之类的 stdio 引擎子进程，也不再有独立 indexer exe。按 workdir 管理索引状态（每 workdir 独立串行） |
+| 引擎 | **〔2026-10-25 定稿，待落地〕引擎以库形式编入 `codegraph` 插件进程**（工具与索引同进程，经 TCP/HTTP 暴露）；不再 spawn `chonkpilot-codegraph-mcp-server.exe` 之类的 stdio 引擎子进程，也不再有独立 indexer exe。按 workdir 管理索引状态（每 workdir 独立串行） |
 | 叠加 gitignore 体系 | 插件把 `codegraph.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `codegraph.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源/优先级/匹配语义/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`，与 vfts 引擎/插件**同一实现**） |
 | 注册工具 | **6 个查询工具**（`codegraph_symbol_search` / `_get_symbol_info` / `_get_dependency_graph` / `_find_circular_deps` / `_analyze_complexity` / `_get_module_summary`），同名同 schema（去掉 workdir），`handler_subject=codegraph-tool-call`，hot=true，category=codegraph |
 | 周期/超时 | sweep 15s · heartbeat 90s（**仅 `-tags split` 编入时判超时 → 既有 `instanceGone`；阈值 = `instance.HeartbeatTimeout`（与 llm-server `Manager.Sweep`、persist `staleTimeout` 同口径，见 §2 实例视图）；默认构建不判超时**）· data 5s · call 60s · init 15min；**`childIdle 5min` 已接线**（`sweepIdleClient` 于 15s 扫描中**逐 workdir**回收无引用且空闲超阈值的引擎子进程，下次 `clientFor(workdir)` 懒重建） |
@@ -105,13 +105,13 @@
 
 ### 3.4 vfts（全文检索索引，插件侧）
 
-> **形态（2026-10-24 口径）**：vfts 与 codegraph 同属 **`codebase` 进程外插件**的工具面（`vfts_query` 见其 `hot_tools`）；`src/plugins/plugin-vfts` 为**兼容形态的进程内 Hook（默认关闭）**，默认路径 = `codebase` exe。
+> **形态（2026-10-24 口径）**：vfts 与 codegraph 同属 **`codegraph` 进程外插件**的工具面（`vfts_query` 见其 `hot_tools`）；`src/plugins/plugin-vfts` 为**兼容形态的进程内 Hook（默认关闭）**，默认路径 = `codegraph` exe。
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `workdir-opened`/`workdir-closed`（61 §2.5，替代 instance 视角）· `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `vfts-tool-call`；**索引回路（2026-10-25 定稿）在 `codebase` 插件内**（不独立成插件）：每次索引前向宿主拉「活动 workdir + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
+| 订阅 | `workdir-opened`/`workdir-closed`（61 §2.5，替代 instance 视角）· `filesys.changed` · `session-complete` · `vfts.reindex` · 工具回调 `vfts-tool-call`；**索引回路（2026-10-25 定稿）在 `codegraph` 插件内**（不独立成插件）：每次索引前向宿主拉「活动 workdir + 该项目开关」；**不再有宿主待索引队列 / `plugin.index.*` / 独立 indexer exe** |
 | 配置键 | `enable-vfts`（可见性门控）· `vfts.exts` / `vfts.skip-dirs` / `vfts.stack-gitignore` / `vfts.docs` / `vfts.doc-max-mb`（索引配置，变更即强制重建）· `vfts.status`（状态回写） |
-| 引擎 | **〔2026-10-25 定稿，待落地〕引擎以库形式编入 `codebase` 插件进程**（工具与索引同进程，经 TCP/HTTP 暴露）；不再 spawn stdio 引擎子进程，也不再有独立 indexer exe。索引状态按 workdir 隔离 |
+| 引擎 | **〔2026-10-25 定稿，待落地〕引擎以库形式编入 `codegraph` 插件进程**（工具与索引同进程，经 TCP/HTTP 暴露）；不再 spawn stdio 引擎子进程，也不再有独立 indexer exe。索引状态按 workdir 隔离 |
 | 注册工具 | **1 个查询工具** `vfts_query`（同名同 schema 去 `workdir`，`handler_subject=vfts-tool-call`，hot=true，category=vfts）；管理工具 `vfts_configure/index/status` **不注册**（插件直接调引擎） |
 | 索引配置变更 | **去抖合并**：一次保存写 `vfts.exts` + `vfts.skip-dirs`(+`vfts.stack-gitignore`) 多键 = 多次 `data-prj-config-refresh` → 经 **400ms 去抖窗口**合并为**一轮**强制重建（窗口外单键变更仍触发，不会漏重建）；**仅 dirty（值确有变化）才写库** |
 | 叠加 gitignore 体系 | 插件把 `vfts.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `vfts.stack-gitignore`（布尔）**原样下发**引擎（`vfts_configure` / `vfts_index` 的 `skip_dirs` + `stack_gitignore`）与**插件侧清单扫描**（`manifest.go scanFiles`）——**插件不再读/解析 `.gitignore`**。规则来源与优先级（低→高）：内置强制（`.git/`·`.svn/`·`.hg/`·`.chonkpilot/`，不可被 `!` 反选）→ 默认排除（`node_modules/`·`dist/`·`build/` 等，可被 `!` 反选）→ 全局 ignore（`$XDG_CONFIG_HOME/git/ignore` 或 `~/.config/git/ignore`）→ `.git/info/exclude` → 各级 `.gitignore`（目录越深优先级越高）→ 用户输入（最高优先级）；不勾选 = 只应用「内置强制 + 默认 + 用户输入」。**目录命中忽略 = 不下降；文件命中即跳过 → 支持文件级排除**。规则语法/匹配/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`） |
@@ -125,7 +125,7 @@
 > 与 codegraph（§3.3）同构：引擎外置 exe + 按 workdir 引用计数收敛工具注册；差异 = vfts **仍为全局共享 client**（一对多、按工具参数 `workdir` 路由），而 codegraph **已按 workdir 独立 client/子进程**；另差异 = vfts 仅 1 个查询工具、索引由本插件增量/全量编排（`vfts.exts` 变更强制重建）。
 
 > **引擎 exe 路径解析（发行布局）**：两插件的 `resolveExe` 定位引擎 exe 的**发行位置** =
-> `codegraph` → **`<exeDir>/mcps/codebase/chonkpilot-codegraph-mcp-server.exe`**、`vfts` → **`<exeDir>/mcps/vfts/chonkpilot-vfts-mcp-server.exe`**
+> `codegraph` → **`<exeDir>/mcps/codegraph/chonkpilot-codegraph-mcp-server.exe`**、`vfts` → **`<exeDir>/mcps/vfts/chonkpilot-vfts-mcp-server.exe`**
 > （`vfts` 的 `zvec_c_api.dll` 须与引擎 exe 同目录）。**不再多路径猜测**；
 > 仍保留配置覆盖：`Options.Exe` > 环境变量 `CODEGRAPH_EXE` / `VFTS_EXE` > 上述发行位置。
 
@@ -156,7 +156,7 @@
 
 > **前置**：插件 iframe 与宿主**同源**，且必须带 `allow-same-origin`（`sandbox="allow-scripts allow-forms allow-same-origin"`）——**等价于「插件代码视为可信代码」**（插件本就是本机 exe）。旧 `/plugin-ui/<id>/*`（宿主直读磁盘 `webui/`）**下线**，资源改由插件自己提供。
 >
-> **迁移状态（2026-10-24）**：资源通道 + 动作面骨架 + **全部内置插件自持 webui** 已落地 —— `browser` / `codebase` / `desktop` / `file` / `mcp` / `task` / `websearch` 均声明 `ui.selfServe: true`、webui 已搬入 `src/plugins/<id>/webui/` 并 `go:embed`、`src/initdata/capability/plugins/<id>/webui/` 已删除；前端按 `self_serve` 分流到 `/plugins/<id>/…`。**唯一例外 = `demo-python`**（纯 Python 样例、无 exe、不随产物投放 → 仍由宿主直读磁盘，已列入单源测试白名单）。旧 `/plugin-ui/` 路由**保留但已无内置使用者**（`_sdk/plugin.js` 端点仍需保留，下线时只下线磁盘直读分支）。**codebase 四通道已全部打通**（含配置迁入 `plugins.codebase.*`、动作面 `save/clear`、未就绪提示页 + 3 次自动重试）。**其余 6 个插件（browser / desktop / file / mcp / task / websearch）配置链路已收口**：页面 → `/plugins/<id>/api/{load,save,reset}` → 插件校验 → 私有配置存储（键名 `plugins.<id>.*`）；`plugin.json` 的 `config.fields` 已删（**关闭宿主 `plugin-config-set` 第二写入口**），旧键仅作一次性迁移源。⚠️ **口径差异（待补能力）**：宿主能力面**没有** `plugin/v1/config.user.set`，故这 6 个插件的 usr 级配置暂落插件私有文件 `<PLUGIN_DATA_DIR>/webui-config.json`（0600，原子替换），**未进 data 层**；补上 `config.user.set` + free key 注册（含 secret 0600）后只需替换插件内 `configStore` 实现即可迁入。旧 `/plugin-ui/` 磁盘直读分支**已下线**（仅保留 `_sdk/plugin.js`）；`demo-python` 已删 `ui.views/menus/statusbar`（无 exe，页面不随运行时提供）。待做：`plugin/v1/config.user.set`、旧路由/`PluginWebRoot` 残留引用清理、旧 L4 脚本重写。
+> **迁移状态（2026-10-24）**：资源通道 + 动作面骨架 + **全部内置插件自持 webui** 已落地 —— `browser` / `codegraph` / `desktop` / `file` / `mcp` / `task` / `websearch` 均声明 `ui.selfServe: true`、webui 已搬入 `src/plugins/<id>/webui/` 并 `go:embed`、`src/initdata/capability/plugins/<id>/webui/` 已删除；前端按 `self_serve` 分流到 `/plugins/<id>/…`。**唯一例外 = `demo-python`**（纯 Python 样例、无 exe、不随产物投放 → 仍由宿主直读磁盘，已列入单源测试白名单）。旧 `/plugin-ui/` 路由**保留但已无内置使用者**（`_sdk/plugin.js` 端点仍需保留，下线时只下线磁盘直读分支）。**codegraph 四通道已全部打通**（含配置迁入 `plugins.codegraph.*`、动作面 `save/clear`、未就绪提示页 + 3 次自动重试）。**其余 6 个插件（browser / desktop / file / mcp / task / websearch）配置链路已收口**：页面 → `/plugins/<id>/api/{load,save,reset}` → 插件校验 → 私有配置存储（键名 `plugins.<id>.*`）；`plugin.json` 的 `config.fields` 已删（**关闭宿主 `plugin-config-set` 第二写入口**），旧键仅作一次性迁移源。⚠️ **口径差异（待补能力）**：宿主能力面**没有** `plugin/v1/config.user.set`，故这 6 个插件的 usr 级配置暂落插件私有文件 `<PLUGIN_DATA_DIR>/webui-config.json`（0600，原子替换），**未进 data 层**；补上 `config.user.set` + free key 注册（含 secret 0600）后只需替换插件内 `configStore` 实现即可迁入。旧 `/plugin-ui/` 磁盘直读分支**已下线**（仅保留 `_sdk/plugin.js`）；`demo-python` 已删 `ui.views/menus/statusbar`（无 exe，页面不随运行时提供）。待做：`plugin/v1/config.user.set`、旧路由/`PluginWebRoot` 残留引用清理、旧 L4 脚本重写。
 
 ### 3A.1 四条通道
 
@@ -264,14 +264,14 @@ server.Start
     `framework/runtime/{hook,instance,dataclient}`；`src/lib/core/mq` 收敛为 `runtime/bus` 的**类型别名**
     （总线实现唯一在框架）；插件桥 / 管理器改用 `framework/host/{bridge,mgr}`（import 别名保持旧名）。
   - 依赖 = 标准库 + MCP go-sdk，**零主仓依赖**。
-- **`chonkpilot-plugins`**（独立仓）：`browser` / `codebase` / `desktop` / `file` / `task` / `mcp` / `websearch` / `memory` / `history`，**每个插件一个 module**；`memory` / `history` 的 Go 业务包在同仓 `<id>/lib`；`browser` / `desktop` 的**引擎**在同仓 `<id>/engine`；`codebase` 的**引擎**在同仓 `codebase/engines/{codegraph,vfts}`；`shared/` 是插件侧共享工具（`pluginhost` / `pluginproto` / `trayconsole` / `indexkind` / `lockfile` / `pluginclient` / `winproc` / `ignore` 的副本）。
+- **`chonkpilot-plugins`**（独立仓）：`browser` / `codegraph` / `desktop` / `file` / `task` / `mcp` / `websearch` / `memory` / `history`，**每个插件一个 module**；`memory` / `history` 的 Go 业务包在同仓 `<id>/lib`；`browser` / `desktop` 的**引擎**在同仓 `<id>/engine`；`codegraph` 的**引擎**在同仓 `codegraph/engines/{codegraph,vfts}`；`shared/` 是插件侧共享工具（`pluginhost` / `pluginproto` / `trayconsole` / `indexkind` / `lockfile` / `pluginclient` / `winproc` / `ignore` 的副本）。
   - **2026-10-25（能力随插件）**：browser / desktop 引擎、codegraph / vfts 引擎、**file 域 11 工具实现与契约**的**源码已全部迁出主仓**（原 `src/lib/mcp-tools/{plugins/*,internal/*,toolset}`、`src/plugins/{codegraph,vfts}`、`src/initdata/capability/tools/file/`）——主仓只保留 gateway / mcp-server / data / config 等平台能力（**插件宿主 bridge/mgr 在框架 `host/`**）；`file_*` 由 gateway 调插件 MCP server 执行（主仓 builtin 无 file 分派，`chonkpilot-tools-executor.exe` 已删除）。
   - `browser/engine` 的 WebView2 绑定 = 主仓 fork 的副本（`third_party/go-webview2`，上游无 `EvalWithResult`/`Screenshot`）；**2026-10-25**：去除标题栏 / move / resize 已封装进 fork（`WebViewOptions.Frameless` + `WindowResizer.StartResize` + `HitCode(hit)`，宿主不再持 Win32 命中码表）；待独立仓 `chonkpilot-webview2` 发布后改按版本引用。
 - **主仓保留**：`src/plugins/{plugin-compress, plugin-codegraph, plugin-vfts}`（两个 Hook 仅 spawn engines exe，不含引擎代码）、`build-codegraph.ps1` / `build-vfts.ps1`（源码取自 plugins 仓）。**`src/plugins/plugin` 整目录已删除**（Hook/instance/dataclient → framework `runtime/*`，`bridgebus` → `runtime/bridgebus`）。
 
 **依赖方向**：
 
-- 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk` / `runtime/*` + 同仓 `<id>/lib` · `<id>/engine` · `shared/*` · `codebase/engines/*`（**2026-10-25 起零主仓 `replace`**）。
+- 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk` / `runtime/*` + 同仓 `<id>/lib` · `<id>/engine` · `shared/*` · `codegraph/engines/*`（**2026-10-25 起零主仓 `replace`**）。
 - `memory` / `history` 业务包（`chonkpilot-plugins/<id>/lib`）→ **仅 framework `runtime/*`**（`hook` / `bus` / `topics` / `instance` / `dataclient` / `datafmt` / `heartbeat`）。
 - 进程内 Hook 接口 / 实例视图 / dataclient（宿主侧）→ **framework `runtime/{hook,instance,dataclient}`**（主仓以版本依赖引用）。
 - `src/plugins/plugin-compress` → `src/lib/core` · `src/lib/data`（**纯算法库，仅单测**）。

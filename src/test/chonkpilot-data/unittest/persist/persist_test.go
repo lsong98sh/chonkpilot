@@ -613,7 +613,7 @@ func TestDataSecuritySaveListLoadDelete(t *testing.T) {
 
 // TestDataSecurityEntryKeyRoundTrip：**前端契约往返**（一条信任目录 = 一个 persist key，key = 前端生成的
 // 不透明 id，value = `{"dir","writable"}` JSON 字符串）：增 → 改（同 key 换 value）→ 删，并断言
-// security- 前缀与其它 prj 域键（plugins.codebase.codegraph.enabled / history.enabled）互不串域。
+// security- 前缀与其它 prj 域键（plugins.codegraph.enabled / history.enabled）互不串域。
 func TestDataSecurityEntryKeyRoundTrip(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
@@ -636,7 +636,7 @@ func TestDataSecurityEntryKeyRoundTrip(t *testing.T) {
 	}
 
 	// 同库其它域键（无前缀，全程不应被 security 增删改影响）
-	for i, k := range []string{"plugins.codebase.codegraph.enabled", "history.enabled"} {
+	for i, k := range []string{"plugins.codegraph.enabled", "history.enabled"} {
 		res := dataResult(t, dataCall(t, bus, "data-prj-config-save", map[string]any{
 			"req_id": "c0", "instance_id": "ins-test",
 			"data": map[string]any{"key": k, "value": "true"},
@@ -693,7 +693,7 @@ func TestDataSecurityEntryKeyRoundTrip(t *testing.T) {
 		"req_id": "c2", "instance_id": "ins-test",
 	}))
 	prjKV, _ := prjRes["list"].(map[string]any)
-	if prjKV["plugins.codebase.codegraph.enabled"] != "true" || prjKV["history.enabled"] != "true" {
+	if prjKV["plugins.codegraph.enabled"] != "true" || prjKV["history.enabled"] != "true" {
 		t.Fatalf("prj-config keys affected by security ops: %+v", prjKV)
 	}
 	// security 域 list 只含本域条目（不带 security- 前缀回显）

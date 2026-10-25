@@ -29,7 +29,7 @@
 #   │   │                                   #    产物内**不带** <id>/webui/；demo-python 为样例（product=false，不随产物投放）
 #   │   └── executors/chonkpilot-{core,browser,desktop}-executor.exe
 #   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
-#   │   ├── codebase/chonkpilot-codegraph-mcp-server.exe + chonkpilot-codegraph-indexer.exe
+#   │   ├── codegraph/chonkpilot-codegraph-mcp-server.exe + chonkpilot-codegraph-indexer.exe
 #   │   ├── vfts/chonkpilot-vfts-mcp-server.exe + chonkpilot-vfts-indexer.exe + zvec_c_api.dll（必须与 vfts 引擎同目录）
 #   │   └── markitdown/…（可选：文档转换，dist/other/mcps 兜底镜像；缺则告警、不中断）
 #   ├── themes/themes.css                   # 主题资产（源 src/initdata/themes，覆盖式同步；运行期可编辑）
@@ -44,7 +44,7 @@
 # （例外：system/ 另经 embed 落点编入 data 模块，供磁盘缺失兜底，见 [0.5/9]）。
 # 全量组件：内嵌 lib 插件（history/memory/vfts/codegraph）随 exe 编译；压缩已内建在会话侧
 # （SESSION-1，2026-10-23：`src/lib/llm/server/compress.go`，无独立插件 / exe）；
-#   外置引擎 exe（codegraph/vfts）+ zvec_c_api.dll 置于 dist/desktop/mcps/{codebase,vfts}\——
+#   外置引擎 exe（codegraph/vfts）+ zvec_c_api.dll 置于 dist/desktop/mcps/{codegraph,vfts}\——
 #   插件按「宿主 exe 同目录/mcps/<engine>/」解析引擎。
 # 用法：.\build-desktop.ps1 [-Debug]
 #
@@ -248,7 +248,7 @@ Write-Host "    ok: mcps/core-mcp/chonkpilot-core-mcp-server.exe ($mbCore MB)"
 # -- 4.5) manifest 插件（PLUGIN-1）：manifest 来自 src/initdata，exe 由 build-plugins.ps1 产出 --
 #   插件目录 = dist/desktop/capability/plugins/<id>/（plugin.json + exe 同目录；
 #   manifest 的 runtime.exe 是插件目录内相对路径）。
-#   ⚠️ PLUGIN-UI-1：`ui.selfServe: true` 的插件（本轮起 = browser/codebase/desktop/file/mcp/task/websearch）
+#   ⚠️ PLUGIN-UI-1：`ui.selfServe: true` 的插件（本轮起 = browser/codegraph/desktop/file/mcp/task/websearch）
 #   自持 webui —— 资源 embed 在插件 exe 内，webui 唯一源 = `src/plugins/<id>/webui/`，
 #   产物内**不得**出现 `<id>/webui/`（避免双源漂移；判定见下方通用规则）。
 Write-Host "==> [4.5/9] stage plugins (manifest + exe)"
@@ -306,19 +306,19 @@ Copy-Item (Join-Path $initScenarios "*") $scnDst -Recurse -Force
 $scnCount = (Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count
 Write-Host "    ok: capability/scenarios/ ($scnCount files)"
 
-# -- 6) codegraph 引擎构建并置于 dist/desktop/mcps/codebase/（出厂内置 MCP；默认不接入，见 42 §2 (17)） --
-Write-Host "==> [6/9] build codegraph engine -> mcps/codebase"
+# -- 6) codegraph 引擎构建并置于 dist/desktop/mcps/codegraph/（出厂内置 MCP；默认不接入，见 42 §2 (17)） --
+Write-Host "==> [6/9] build codegraph engine -> mcps/codegraph"
 Invoke-ChildBuild "build-codegraph.ps1"
 $cgExe = "chonkpilot-codegraph-mcp-server.exe"
 $cgIdxExe = "chonkpilot-codegraph-indexer.exe"
-$cgDir = Join-Path $dist "mcps\codebase"
+$cgDir = Join-Path $dist "mcps\codegraph"
 New-Item -ItemType Directory -Force -Path $cgDir | Out-Null
 Copy-Item (Join-Path $root "dist\plugins\codegraph\$cgExe") $cgDir -Force
 Copy-Item (Join-Path $root "dist\plugins\codegraph\$cgIdxExe") $cgDir -Force
 $mbCg = [Math]::Round((Get-Item (Join-Path $cgDir $cgExe)).Length / 1MB, 1)
 $mbCgIdx = [Math]::Round((Get-Item (Join-Path $cgDir $cgIdxExe)).Length / 1MB, 1)
-Write-Host "    ok: mcps/codebase/$cgExe ($mbCg MB) + $cgIdxExe ($mbCgIdx MB)"
-# 查询工具一工具一 exe（契约 runtime 指向 ../../../mcps/codebase/<tool>-executor.exe）
+Write-Host "    ok: mcps/codegraph/$cgExe ($mbCg MB) + $cgIdxExe ($mbCgIdx MB)"
+# 查询工具一工具一 exe（契约 runtime 指向 ../../../mcps/codegraph/<tool>-executor.exe）
 $cgExecNames = @(
     "chonkpilot-codegraph-symbol-search-executor.exe",
     "chonkpilot-codegraph-symbol-info-executor.exe",
@@ -331,7 +331,7 @@ $cgExecNames = @(
 foreach ($e in $cgExecNames) {
     Copy-Item (Join-Path $root "dist\plugins\codegraph\$e") $cgDir -Force
 }
-Write-Host "    ok: mcps/codebase/ codegraph query executors ($($cgExecNames.Count))"
+Write-Host "    ok: mcps/codegraph/ codegraph query executors ($($cgExecNames.Count))"
 
 # -- 7) vfts 引擎 + zvec 运行库置于 dist/desktop/mcps/vfts/（zvec_c_api.dll 必须与引擎 exe 同目录） --
 Write-Host "==> [7/9] build vfts engine -> mcps/vfts"
@@ -352,7 +352,7 @@ $mbDll = [Math]::Round((Get-Item (Join-Path $vfDir "zvec_c_api.dll")).Length / 1
 Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + $vfIdxExe ($mbVfIdx MB) + chonkpilot-vfts-query-executor.exe + zvec_c_api.dll ($mbDll MB)"
 
 # -- 8) mcps 转换器兜底并入 dist/desktop/mcps/（dist\other\mcps → dist\desktop\mcps；可选，**幂等**）--
-#    兜底语义：源存在 → 覆盖镜像（**仅覆盖子项，保留 codebase/vfts 引擎目录**）；源不存在但目标已存在
+#    兜底语义：源存在 → 覆盖镜像（**仅覆盖子项，保留 codegraph/vfts 引擎目录**）；源不存在但目标已存在
 #    → 保留并提示；两处都无 → 醒目告警（**不中断构建**）。转换器（文档索引 vfts.docs）为可选组件，
 #    产物由 .\src\mcps\markitdown\build-mcps.ps1 独立冻结（不打入本脚本必经路径，见该脚本头注）。
 Write-Host "==> [8/9] stage mcps/ doc converter (optional)"
@@ -373,7 +373,7 @@ if (Test-Path $mcpsSrc) {
 }
 
 # -- 8.5) 根目录陈旧产物清理（不占步号）：运行根**只允许** chonkpilot.exe
-#    引擎与运行库已归位 mcps/{codebase,vfts}（zvec_c_api.dll 随 vfts 同目录），
+#    引擎与运行库已归位 mcps/{codegraph,vfts}（zvec_c_api.dll 随 vfts 同目录），
 #    根下遗留的旧引擎 exe / 旧 dll / 已删除的 chonkpilot-cli.exe 属历史残留，必须清掉，否则会被 initial.zip 带入出厂包。
 Write-Host "==> clean stale root artifacts (root 仅允许 chonkpilot.exe)"
 $rootExeAllow = @("chonkpilot.exe")
@@ -423,7 +423,7 @@ Write-Host "==> done: $dist"
 Write-Host "    chonkpilot.exe                      $mbGui MB"
 Write-Host "    capability/                         $capCount files (prompts/tools/resources/skills/agents/system/scenarios/executors)"
 Write-Host "    capability/scenarios/               $scnCount files"
-Write-Host "    mcps/codebase/                      $cgExe ($mbCg MB)"
+Write-Host "    mcps/codegraph/                      $cgExe ($mbCg MB)"
 Write-Host "    mcps/vfts/                          $vfExe ($mbVf MB) + $vfIdxExe ($mbVfIdx MB) + zvec_c_api.dll ($mbDll MB)"
 Write-Host "    mcps/                               $mcpsCount files (可选：文档转换)"
 Write-Host "    run: cd $dist ; .\chonkpilot.exe"

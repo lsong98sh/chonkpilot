@@ -13,7 +13,7 @@ func TestUIActionPassThrough(t *testing.T) {
 	var gotMethod, gotAction string
 	var gotParams map[string]any
 	m := New(Options{RequestPlugin: func(_ context.Context, id, method string, payload any) (any, error) {
-		if id != "codebase" {
+		if id != "codegraph" {
 			t.Fatalf("id=%s", id)
 		}
 		gotMethod = method
@@ -23,9 +23,9 @@ func TestUIActionPassThrough(t *testing.T) {
 		}
 		return map[string]any{"ok": true}, nil
 	}})
-	m.plugins["codebase"] = runningPlugin("codebase", "1.0.0")
+	m.plugins["codegraph"] = runningPlugin("codegraph", "1.0.0")
 
-	res, err := m.UIAction(context.Background(), "codebase", "ui.ping", map[string]any{"a": 1})
+	res, err := m.UIAction(context.Background(), "codegraph", "ui.ping", map[string]any{"a": 1})
 	if err != nil {
 		t.Fatalf("UIAction: %v", err)
 	}
@@ -45,26 +45,26 @@ func TestUIActionErrors(t *testing.T) {
 	m := New(Options{RequestPlugin: func(context.Context, string, string, any) (any, error) {
 		return nil, errors.New("boom")
 	}})
-	if _, err := m.UIAction(context.Background(), "codebase", "  ", nil); err == nil {
+	if _, err := m.UIAction(context.Background(), "codegraph", "  ", nil); err == nil {
 		t.Fatal("空 action 应报错")
 	}
 	if _, err := m.UIAction(context.Background(), "ghost", "ui.ping", nil); err == nil {
 		t.Fatal("未登记插件应报错")
 	}
 
-	m.plugins["codebase"] = &Plugin{ID: "codebase", Manifest: &Manifest{Version: "1.0.0"}, status: StatusStarting}
-	if _, err := m.UIAction(context.Background(), "codebase", "ui.ping", nil); err == nil {
+	m.plugins["codegraph"] = &Plugin{ID: "codegraph", Manifest: &Manifest{Version: "1.0.0"}, status: StatusStarting}
+	if _, err := m.UIAction(context.Background(), "codegraph", "ui.ping", nil); err == nil {
 		t.Fatal("未就绪插件应报错")
 	}
 
-	m.plugins["codebase"].status = StatusRunning
-	if _, err := m.UIAction(context.Background(), "codebase", "ui.ping", nil); err == nil {
+	m.plugins["codegraph"].status = StatusRunning
+	if _, err := m.UIAction(context.Background(), "codegraph", "ui.ping", nil); err == nil {
 		t.Fatal("插件返回错误应透传 err")
 	}
 
 	noChannel := New(Options{})
-	noChannel.plugins["codebase"] = runningPlugin("codebase", "1.0.0")
-	if _, err := noChannel.UIAction(context.Background(), "codebase", "ui.ping", nil); err == nil {
+	noChannel.plugins["codegraph"] = runningPlugin("codegraph", "1.0.0")
+	if _, err := noChannel.UIAction(context.Background(), "codegraph", "ui.ping", nil); err == nil {
 		t.Fatal("通道未装配应报错")
 	}
 }
@@ -74,7 +74,7 @@ func TestManifestSelfServe(t *testing.T) {
 	var m Manifest
 	m.UI.SelfServe = true
 	m.UI.Views = []View{{ID: "config", Entry: "webui/config.html"}}
-	p := &Plugin{ID: "codebase", Manifest: &m, status: StatusRunning}
+	p := &Plugin{ID: "codegraph", Manifest: &m, status: StatusRunning}
 
 	v := (&Manager{}).view(p)
 	if !v.SelfServe {

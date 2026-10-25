@@ -5,7 +5,7 @@
  *   - E-30 SettingsLLMPage：增/改/删先按快照改本地 `llms`，落库失败即回滚本地数组且**不关框**
  *     （成功才关框）→ 列表与后端不再不一致；
  *   - E-31 设置页启用开关 `handleChange` 落库失败回滚开关本地态（〔UIREG-1〕索引配置页并入
- *     codebase 插件后仅剩 HistoryConfig 口径：`historyEnabled.value = prev`）；
+ *     codegraph 插件后仅剩 HistoryConfig 口径：`historyEnabled.value = prev`）；
  *   - E-32 useToolSandbox：四路加载任一失败置 `loadFailed`（页面给可见提示），且失败态**禁止保存**
  *     （避免空态整键覆盖 `tool_sandbox` 丢失既有配置）；
  *   - E-33 SettingsPathsPage / SettingsParamsPage：usr 保存收成**一次** `saveUserConfig(patch)`
@@ -66,7 +66,7 @@ test('E-30 SettingsLLMPage：增改删落库失败回滚本地 llms、成功才�
 
 // ── E-31 ──────────────────────────────────────────────────────────────
 test('E-31 设置页开关：落库失败回滚本地态（HistoryConfig 口径保留）', () => {
-  // 〔UIREG-1〕codegraph / vfts 配置页已并入 codebase 插件（前端页面删除）→ 仅剩 HistoryConfig
+  // 〔UIREG-1〕codegraph / vfts 配置页已并入 codegraph 插件（前端页面删除）→ 仅剩 HistoryConfig
   assert.match(readSrc('views/settings/HistoryConfig.vue'), /const prev = !val/, '须记录前值')
   assert.match(readSrc('views/settings/HistoryConfig.vue'), /historyEnabled\.value = prev/)
 })

@@ -2,7 +2,7 @@
  * 项目配置**批量写**（2026-09-28，[61-消息一览 §3.1]）前端守卫：
  *   - `api/config.js` 的 `setConfigs(entries)`：一次调用 = **1 条** `data-prj-config-save`
  *     （报文 `{data:{entries:{…}}}`）；`setConfig` 单键路径**不变**（`{data:{key,value}}`）；
- *   - 设置页（Context / History；〔UIREG-1〕codegraph / vfts 配置页已并入 codebase 插件）保存路径
+ *   - 设置页（Context / History；〔UIREG-1〕codegraph / vfts 配置页已并入 codegraph 插件）保存路径
  *     改**一次批量写**（1 次保存请求 → 后端 1 条 refresh），不得再逐键 `setConfig`。
  *
  * 前端无组件级运行器（`npm test` = node:test 直跑）、且前端模块用无扩展名 import（node ESM 不可解析）
@@ -40,7 +40,7 @@ test('api/config.js：setConfigs 一次批量写（报文 {data:{entries}}）；
 
 // ── 设置页：保存路径 = 一次批量写 ──────────────────────────────
 // keysFn = 承载批量键字面量的函数。
-// 〔UIREG-1〕codegraph / vfts 配置页已并入 codebase 插件（前端页面删除），此处只保留剩余设置页。
+// 〔UIREG-1〕codegraph / vfts 配置页已并入 codegraph 插件（前端页面删除），此处只保留剩余设置页。
 const PAGES = [
   { file: 'views/settings/ContextConfig.vue', fn: 'handleSave', keysFn: 'handleSave', keys: ["'memory.enabled'"] },
   { file: 'views/settings/HistoryConfig.vue', fn: 'handleRetentionSave', keysFn: 'handleRetentionSave', keys: ["'history.checkpoint_keep'", "'history.checkpoint_ttl_days'"] },

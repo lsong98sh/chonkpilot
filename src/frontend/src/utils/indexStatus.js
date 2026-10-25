@@ -1,9 +1,9 @@
 /**
- * 索引 / codebase 状态 → 状态栏徽标模型（纯函数，便于单测）。
+ * 索引 / codegraph 状态 → 状态栏徽标模型（纯函数，便于单测）。
  *
- * 数据源 = prj 配置键（零新增消息面；开关键已迁入 codebase 插件命名空间）：
- *   - codegraph：`plugins.codebase.codegraph.enabled`（"true"/"false"）+ `codegraph.status`
- *   - vfts     ：`plugins.codebase.vfts.enabled` + `vfts.status`
+ * 数据源 = prj 配置键（零新增消息面；开关键已迁入 codegraph 插件命名空间）：
+ *   - codegraph：`plugins.codegraph.enabled`（"true"/"false"）+ `codegraph.status`
+ *   - vfts     ：`plugins.codegraph.vfts.enabled` + `vfts.status`
  * 状态 JSON 文本的键（两引擎同源口径）：
  *   - 引擎 `Status`（`src/plugins/codegraph/server/index.go` / `src/plugins/vfts/server/workspace.go`）：
  *     `state`（"" 未初始化 | not_initialized | indexing | ready | error）· `progressDone` · `progressTotal`

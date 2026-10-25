@@ -295,7 +295,7 @@ test('A9 保存期间不被自身广播重载冲回（记忆库「开 → 关 �
 //   （手动保存页均有 saving 态；「开关即存」路径 saving=false，仍照常重载。）
 // ═══════════════════════════════════════════════════════════════
 test('A9b 设置页：prj-config 广播重载须走统一机制（同 ContextConfig I-138 口径）', () => {
-  // 〔UIREG-1〕codegraph / vfts 配置页已并入 codebase 插件（前端页面删除）→ 仅剩这两页
+  // 〔UIREG-1〕codegraph / vfts 配置页已并入 codegraph 插件（前端页面删除）→ 仅剩这两页
   for (const file of [
     'views/settings/ContextConfig.vue',
     'views/settings/HistoryConfig.vue',

@@ -224,28 +224,28 @@ const (
 	MsgContextRestorePrompt  = "context-restore-prompt"
 
 	// 状态栏 / 工具栏
-	MsgDBViewerOpen        = "db-viewer-open"
-	MsgContainerClick      = "container-click"
+	MsgDBViewerOpen   = "db-viewer-open"
+	MsgContainerClick = "container-click"
 
 	// 工具栏 / 布局
-	MsgWorkdirOpen             = "workdir-open"
-	MsgRecentDirsToggle        = "recent-dirs-toggle"
-	MsgRecentDirSelect         = "recent-dir-select"
-	MsgRecentDirRemove         = "recent-dir-remove"
-	MsgThemeToggle             = "theme-toggle"
-	MsgThemeSelect             = "theme-select"
-	MsgLangToggle              = "lang-toggle"
-	MsgLangSelect              = "lang-select"
-	MsgWindowToggle            = "window-toggle"
-	MsgGUIWindowStatus         = msgkeys.TopicGuiWindowStatus        // 统一窗口控制/查询：payload {command: null|'minimize'|'maximize'|'close'}
-	MsgWindowMaximizedChanged  = msgkeys.TopicWindowMaximizedChanged // 后端执行最大化后广播，同步按钮图标
-	MsgSessionsOpen            = "sessions-open"
-	MsgAnalyzeOpen             = "analyze-open"
-	MsgChatToggle              = "chat-toggle"
-	MsgFiletreeToggle          = "filetree-toggle"
-	MsgTasksToggle             = "tasks-toggle"
-	MsgFiletreeModeToggle      = "filetree-mode-toggle"
-	MsgFiletreeModeSelect      = "filetree-mode-select"
-	MsgFiletreeModeRefresh     = "filetree-mode-refresh"
-	MsgCodebaseIndexStatusOpen = "codebase-index-status-open"
+	MsgWorkdirOpen              = "workdir-open"
+	MsgRecentDirsToggle         = "recent-dirs-toggle"
+	MsgRecentDirSelect          = "recent-dir-select"
+	MsgRecentDirRemove          = "recent-dir-remove"
+	MsgThemeToggle              = "theme-toggle"
+	MsgThemeSelect              = "theme-select"
+	MsgLangToggle               = "lang-toggle"
+	MsgLangSelect               = "lang-select"
+	MsgWindowToggle             = "window-toggle"
+	MsgGUIWindowStatus          = msgkeys.TopicGuiWindowStatus        // 统一窗口控制/查询：payload {command: null|'minimize'|'maximize'|'close'}
+	MsgWindowMaximizedChanged   = msgkeys.TopicWindowMaximizedChanged // 后端执行最大化后广播，同步按钮图标
+	MsgSessionsOpen             = "sessions-open"
+	MsgAnalyzeOpen              = "analyze-open"
+	MsgChatToggle               = "chat-toggle"
+	MsgFiletreeToggle           = "filetree-toggle"
+	MsgTasksToggle              = "tasks-toggle"
+	MsgFiletreeModeToggle       = "filetree-mode-toggle"
+	MsgFiletreeModeSelect       = "filetree-mode-select"
+	MsgFiletreeModeRefresh      = "filetree-mode-refresh"
+	MsgCodegraphIndexStatusOpen = "codegraph-index-status-open"
 )

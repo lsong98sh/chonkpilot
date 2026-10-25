@@ -14,8 +14,8 @@ import (
 )
 
 // TestConfigKVSetPrjConfigRefreshAndReadback：向导写入的 prj-config 辅助选项
-//（memory.enabled / memory.category.<类> / plugins.codebase.codegraph.enabled /
-// plugins.codebase.vfts.enabled / history.enabled）批量落库 + 广播 1 条
+//（memory.enabled / memory.category.<类> / plugins.codegraph.enabled /
+// plugins.codegraph.vfts.enabled / history.enabled）批量落库 + 广播 1 条
 // data-prj-config-refresh + 键值可读回。
 func TestConfigKVSetPrjConfigRefreshAndReadback(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
@@ -25,8 +25,8 @@ func TestConfigKVSetPrjConfigRefreshAndReadback(t *testing.T) {
 	keys := []string{
 		"memory.enabled",
 		"memory.category.用户偏好",
-		"plugins.codebase.codegraph.enabled",
-		"plugins.codebase.vfts.enabled",
+		"plugins.codegraph.enabled",
+		"plugins.codegraph.vfts.enabled",
 		"history.enabled",
 	}
 	entries := map[string]string{}

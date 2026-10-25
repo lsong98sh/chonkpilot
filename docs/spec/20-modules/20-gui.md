@@ -424,7 +424,7 @@
 
 ### 12.10 状态栏（`views/statusbar/StatusBar.vue` / 默认 `layout/bar-views/*`）
 
-> 用户口径：「statusbar 可否显示 当前索引和 codebase 的状态？未启用，完成，N/total」。
+> 用户口径：「statusbar 可否显示 当前索引和 codegraph 的状态？未启用，完成，N/total」。
 > 状态栏自左向右 = 记忆总 token 数（仅记忆库启用时显示）· **索引状态区**（恒显示）· DevTools 图标 · 撑开 · 语言切换（`LangSwitcher`）。
 > **STB-1（2026-10-17）**：记忆提取 / 上下文压缩 / 代码索引（含 AST）**各一个长任务状态 view**，点击 → preview 详情页；长任务**不再用 toast**。
 
