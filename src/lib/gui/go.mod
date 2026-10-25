@@ -20,12 +20,10 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
-	github.com/sergi/go-diff v1.3.2-0.20230802210424-5b0b94c5c0d3 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.etcd.io/bbolt v1.4.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
@@ -38,7 +36,6 @@ replace (
 	github.com/chonkpilot/chonkpilot-lib => ../core
 	github.com/chonkpilot/chonkpilot-llm => ../llm
 	github.com/chonkpilot/chonkpilot-mcp-server => ../mcp-server
-	github.com/chonkpilot/chonkpilot-plugin => ../../plugins/plugin
 	github.com/chonkpilot/chonkpilot-plugin-codegraph => ../../plugins/plugin-codegraph
 	github.com/chonkpilot/chonkpilot-plugin-compress => ../../plugins/plugin-compress
 	github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vfts
@@ -50,8 +47,6 @@ require (
 	github.com/chonkpilot/chonkpilot-assembly v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-ignore v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-mcp-tools v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-plugin v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-codegraph v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-plugin-vfts v0.0.0 // indirect
 	github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
@@ -66,3 +61,5 @@ replace github.com/chonkpilot/chonkpilot-appwire => ../appwire
 replace github.com/chonkpilot/chonkpilot-assembly => ../assembly
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../mcp-tools
+
+require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1 // indirect

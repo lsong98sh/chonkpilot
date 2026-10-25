@@ -14,7 +14,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin/instance"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
 // newTestServerClock 同 newTestServerMCP，但实例视图时钟在 Start **之前**注入

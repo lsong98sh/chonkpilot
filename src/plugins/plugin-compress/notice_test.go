@@ -11,7 +11,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // TestCompressProgressNotices：一次 session-compress → 收到 compress-start 与 compress-done
@@ -42,7 +42,7 @@ func TestCompressProgressNotices(t *testing.T) {
 	}
 
 	c := New(DefaultOptions(), inline.New(bus))
-	if err := c.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+	if err := c.Start(hook.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	body, _ := json.Marshal(map[string]any{

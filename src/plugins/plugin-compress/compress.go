@@ -51,7 +51,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // 订阅主题（相对主题 session-compress，对齐 61-消息一览 §4.3 压缩扩展点事件；
@@ -115,7 +115,7 @@ func DefaultOptions() Options {
 // Compressor 内嵌压缩处理器（server 插件钩子实现）。
 type Compressor struct {
 	opts Options
-	deps plugin.Deps
+	deps hook.Deps
 	api  facade.API // data 门面（绑定由宿主装配处注入，见 New）
 	sub  mq.Sub
 
@@ -206,7 +206,7 @@ func (c *Compressor) summarize(instanceID, system, llm, content string) (string,
 }
 
 // Start 订阅 llm-compress（server 全部插件加载完成后由宿主调用）。
-func (c *Compressor) Start(d plugin.Deps) error {
+func (c *Compressor) Start(d hook.Deps) error {
 	c.deps = d
 	if c.api == nil && d.Logf != nil {
 		d.Logf("compress: data facade not injected (snapshot read/write disabled)")
@@ -226,7 +226,7 @@ func (c *Compressor) Start(d plugin.Deps) error {
 	return nil
 }
 
-// Stop 释放插件资源（plugin.Stopper；宿主退出时按 Start 逆序调用）：退订订阅。
+// Stop 释放插件资源（hook.Stopper；宿主退出时按 Start 逆序调用）：退订订阅。
 // 压缩 worker 为 per-session fire-and-forget（进程退出允许直接丢弃，不 Join/不阻塞退出）。幂等。
 func (c *Compressor) Stop() {
 	if c.sub != nil {
@@ -456,7 +456,7 @@ func (c *Compressor) notify(instanceID, session, turn, kind, reason string) {
 	if c.deps.Notify == nil {
 		return
 	}
-	c.deps.Notify(plugin.Notice{
+	c.deps.Notify(hook.Notice{
 		Plugin: "compress", Kind: kind,
 		InstanceID: instanceID, Session: session, Turn: turn,
 		Reason: reason,

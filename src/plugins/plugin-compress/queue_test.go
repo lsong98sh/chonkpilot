@@ -18,7 +18,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // countingAPI 包装 data 门面以统计 SnapshotGet 次数（每次 process = 1 次读快照）。
@@ -116,7 +116,7 @@ func TestCompressorNonBlockingAndCoalesce(t *testing.T) {
 	}
 
 	c := New(Options{RetainTurns: 1, TokenMax: 50}, api)
-	if err := c.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+	if err := c.Start(hook.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	body, _ := json.Marshal(map[string]any{

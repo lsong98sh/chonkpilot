@@ -21,8 +21,8 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin-compress"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // seed 生成 n 轮（每轮 user + assistant 一对）历史；content 长度可调（影响估算 token）。
@@ -387,7 +387,7 @@ func TestCompressorStartSubscribes(t *testing.T) {
 	}
 	defer bus.Close()
 	c := compress.New(compress.Options{}, inline.New(bus))
-	if err := c.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+	if err := c.Start(hook.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if c.Name() != "compress" {
@@ -438,13 +438,13 @@ func TestCompressorNotifyOnSummarizeFailure(t *testing.T) {
 		t.Fatalf("stub llm-simple: %v", err)
 	}
 
-	notices := make(chan plugin.Notice, 4)
+	notices := make(chan hook.Notice, 4)
 	var logged []string
 	c := compress.New(compress.Options{RetainTurns: 1, TokenMax: 50}, inline.New(bus))
-	if err := c.Start(plugin.Deps{
+	if err := c.Start(hook.Deps{
 		Bus:    bus,
 		Logf:   func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-		Notify: func(n plugin.Notice) { notices <- n },
+		Notify: func(n hook.Notice) { notices <- n },
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestCompressedSummaryPersistedInSnapshot(t *testing.T) {
 	}
 
 	c := compress.New(compress.Options{RetainTurns: 1, TokenMax: 50}, inline.New(bus))
-	if err := c.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+	if err := c.Start(hook.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	body, _ := json.Marshal(map[string]any{

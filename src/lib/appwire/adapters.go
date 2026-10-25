@@ -4,9 +4,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-lib/indexkind"
-	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin-codegraph"
 	"github.com/chonkpilot/chonkpilot-plugin-vfts"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // DefaultPlugins 返回内嵌插件的**统一清单**（gui / server 两个入口共用一份，避免漂移）：
@@ -14,7 +14,7 @@ import (
 //
 // memory（每轮异步沉淀记忆）与 history（文件检查点链）**不再是内嵌插件**（2026-10-24）：
 // 两者改为独立 exe 插件（`src/plugins/memory`、`src/plugins/history`，manifest 见
-// `src/initdata/capability/plugins/<id>/plugin.json`），业务代码仍复用
+// `src/initdata/capability/plugins/<id>/hook.json`），业务代码仍复用
 // `chonkpilot-plugin-memory` / `chonkpilot-plugin-history` 包，行为/数据口径/消息面不变。
 //
 // 压缩不再作为内嵌插件：SESSION-1（2026-10-23）起**压缩内建**在会话侧
@@ -22,8 +22,8 @@ import (
 // → CAS 回填快照）；`chonkpilot-plugin-compress` 包仅作为纯算法库保留（单测在用）。
 //
 // 门面绑定的选择在**装配处**（23 §7）：此处 = inline（同进程直调，bus = 宿主实际总线）。
-func DefaultPlugins(f facade.API) []plugin.Hook {
-	return []plugin.Hook{
+func DefaultPlugins(f facade.API) []hook.Hook {
+	return []hook.Hook{
 		codegraph.New(codegraph.Options{}),
 		vfts.New(vfts.Options{}),
 	}

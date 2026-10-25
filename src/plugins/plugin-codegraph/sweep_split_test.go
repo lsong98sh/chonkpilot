@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-plugin/instance"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
 // TestHeartbeatTimeoutUnregisters（分离形态）：实例心跳超 instance.HeartbeatTimeout →

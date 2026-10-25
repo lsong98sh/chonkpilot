@@ -30,9 +30,9 @@ import (
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-plugin"
-	"github.com/chonkpilot/chonkpilot-plugin/dataclient"
-	"github.com/chonkpilot/chonkpilot-plugin/instance"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/dataclient"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
 // 相对主题与 prj-config 键（chonk. 前缀由总线初始化时注入，业务层只写相对名；
@@ -96,15 +96,15 @@ type Options struct {
 	RebuildDebounce time.Duration
 }
 
-// Vfts 是 vfts 插件（plugin.Hook 实现）。
+// Vfts 是 vfts 插件（hook.Hook 实现）。
 type Vfts struct {
-	deps plugin.Deps
+	deps hook.Deps
 	logf func(format string, args ...any)
 	exe  string // 引擎 exe 绝对路径（resolveExe 结果）
 	opt  Options
 	// toolExec（可选）：core-mcp-server 内部执行面。非 nil 时 vfts_query 委托 core（一工具一 exe），
 	// 本地引擎仅用于管理调用；管理结束即释放引擎（zvec 集合排他 LOCK，避免与查询执行器互斥）。
-	toolExec func() plugin.ToolExec
+	toolExec func() hook.ToolExec
 
 	mu           sync.Mutex // 保护 insts / works / lastActiveAt（registered / regOwner 由 syncMu 保护——读写在 syncTools 单飞区内）
 	insts        map[string]*instRec
@@ -192,7 +192,7 @@ func New(opts Options) *Vfts {
 func (p *Vfts) Name() string { return "vfts" }
 
 // Start 解析引擎路径、订阅生命周期/配置/工具回调并启动后台清扫（宿主在全部插件前序就绪后调用）。
-func (p *Vfts) Start(d plugin.Deps) error {
+func (p *Vfts) Start(d hook.Deps) error {
 	p.deps = d
 	logf := d.Logf
 	if logf == nil {
@@ -299,7 +299,7 @@ func (p *Vfts) loop() {
 	}
 }
 
-// Stop 释放插件资源（plugin.Stopper；宿主退出时按 Start 逆序调用）：停后台清扫、退订全部订阅、
+// Stop 释放插件资源（hook.Stopper；宿主退出时按 Start 逆序调用）：停后台清扫、退订全部订阅、
 // 关闭共享引擎子进程。幂等。
 func (p *Vfts) Stop() {
 	p.stopped.Store(true) // 停止态：阻止去抖回调/sharedClient 重新 spawn 引擎

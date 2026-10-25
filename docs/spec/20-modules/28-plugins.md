@@ -239,10 +239,15 @@ server.Start
   - `protocol/`：帧编解码（原 `src/lib/core/transport`）+ 子进程 `SysProcAttr`；
   - `contract/`：`*.tool.md` 契约解析（原 `pluginsdk/contract`）；
   - `sdk/`：进程外插件作者侧 SDK（原 `src/lib/plugin-sdk/pluginsdk`，含 `engineclient`）；
-  - `runtime/`（2026-10-25 新增，插件侧运行时）：`bus`（原 `core/mq`）· `topics`（插件引用的
+  - `runtime/`（2026-10-25 新增，插件侧运行时）：`bus`（原 `core/mq`，**唯一总线实现**）· `topics`（插件引用的
     主题常量）· `hook`（原 `src/plugins/plugin/plugins.go`：`Deps/Notice/Hook/Stopper`）·
     `instance`（实例视图 + 心跳）· `dataclient`（data-* 请求-应答）· `bridgebus`（宿主主题子集
     ↔ 插件桥）· `heartbeat` · `datafmt`（`ChatMsg/ToolCall` + token 估算 + `LLMRefName`）；
+  - **已发布 `v0.1.1`**（含 `runtime/*` + `contract.Meta`）；主仓与 plugins 仓均按**版本依赖**引用（无本地 `replace`）。
+  - **宿主已改用框架契约（2026-10-25）**：`src/plugins/plugin`（Hook/instance/dataclient）**已删除**，
+    主仓 `src/lib/{appwire,llm,gui}`、`src/{server,desktop}`、`plugin-{compress,codegraph,vfts}` 全部改用
+    `framework/runtime/{hook,instance,dataclient}`；`src/lib/core/mq` 收敛为 `runtime/bus` 的**类型别名**
+    （总线实现唯一在框架）。
   - 依赖 = 标准库 + MCP go-sdk，**零主仓依赖**。
 - **`chonkpilot-plugins`**（独立仓）：`browser` / `codebase` / `desktop` / `file` / `task` / `mcp` / `websearch` / `memory` / `history`，**每个插件一个 module**；`memory` / `history` 的 Go 业务包在同仓 `<id>/lib`；`browser` / `desktop` 的**引擎**在同仓 `<id>/engine`；`codebase` 的**引擎**在同仓 `codebase/engines/{codegraph,vfts}`；`shared/` 是插件侧共享工具（`pluginhost` / `pluginproto` / `trayconsole` / `indexkind` / `lockfile` / `pluginclient` / `winproc` / `ignore` 的副本）。
   - **2026-10-25（能力随插件）**：browser / desktop 引擎、codegraph / vfts 引擎、**file 域 11 工具实现与契约**的**源码已全部迁出主仓**（原 `src/lib/mcp-tools/{plugins/*,internal/*,toolset}`、`src/plugins/{codegraph,vfts}`、`src/initdata/capability/tools/file/`）——主仓只保留 gateway / mcp-server / pluginmgr / data / config 等平台能力；`file_*` 由 gateway 调插件 MCP server 执行（主仓 builtin 无 file 分派，`chonkpilot-tools-executor.exe` 已删除）。

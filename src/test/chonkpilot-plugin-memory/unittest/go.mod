@@ -6,7 +6,7 @@ require (
 	github.com/chonkpilot/chonkpilot-data v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
 	github.com/chonkpilot/chonkpilot-plugin-memory v0.0.0
-	github.com/lsong98sh/chonkpilot-plugin-framework v0.0.0
+	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1
 )
 
 require (
@@ -24,5 +24,3 @@ replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core
 replace github.com/chonkpilot/chonkpilot-ignore => ../../../lib/ignore
 
 replace github.com/chonkpilot/chonkpilot-plugin-memory => ../../../../../chonkpilot-plugins/memory/lib
-
-replace github.com/lsong98sh/chonkpilot-plugin-framework => ../../../../../chonkpilot-plugin-framework

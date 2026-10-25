@@ -14,12 +14,12 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin"
 	"github.com/chonkpilot/chonkpilot-plugin-compress"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // pluginEnv 与 newTestServer 相同，但装配 Options.Plugins（内嵌插件集成测试专用）。
-func pluginEnv(t *testing.T, llmSrv *httptest.Server, plugins []plugin.Hook, preStart func(mq.Bus)) *Server {
+func pluginEnv(t *testing.T, llmSrv *httptest.Server, plugins []hook.Hook, preStart func(mq.Bus)) *Server {
 	t.Helper()
 	data.Reset()
 	testWorkDir = t.TempDir()
@@ -57,7 +57,7 @@ func TestPluginsLoadedServerStarting(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	started := make(chan map[string]any, 1)
-	pluginEnv(t, llm, []plugin.Hook{compress.New(compress.DefaultOptions(), inline.New(nil))},
+	pluginEnv(t, llm, []hook.Hook{compress.New(compress.DefaultOptions(), inline.New(nil))},
 		func(bus mq.Bus) {
 			_, _ = bus.On("server-starting", 0, func(_ context.Context, _ string, v *mq.Value) error {
 				var m map[string]any
@@ -86,7 +86,7 @@ func TestPluginsLoadedServerStarting(t *testing.T) {
 func TestCompressPluginEndToEnd(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
-	s := pluginEnv(t, llm, []plugin.Hook{compress.New(compress.Options{RetainTurns: 1, TokenMax: 1}, inline.New(nil))}, nil)
+	s := pluginEnv(t, llm, []hook.Hook{compress.New(compress.Options{RetainTurns: 1, TokenMax: 1}, inline.New(nil))}, nil)
 	// 第一轮：仅 1 轮 → **无简化区**（保留段=全量）→ 不压缩
 	startTurn(t, s, "s-plg", "t1")
 	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{

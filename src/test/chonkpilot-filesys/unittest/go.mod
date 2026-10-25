@@ -8,6 +8,7 @@ require (
 )
 
 require (
+	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1 // indirect
 	github.com/sgtdi/fswatcher v1.3.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )

@@ -14,10 +14,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
-// ExecClient 实现 plugin.ToolExec（结构化接口，无需显式声明）。
+// ExecClient 实现 hook.ToolExec（结构化接口，无需显式声明）。
 type ExecClient struct {
 	base  string // http://127.0.0.1:<port>（不含 /mcp）
 	token string
@@ -55,7 +55,7 @@ type execResp struct {
 }
 
 // Exec 执行一次工具（ctx 取消 → core 取消并杀本次 executor）。
-func (c *ExecClient) Exec(ctx context.Context, tool string, args map[string]any, cx plugin.ExecContext) (string, bool, error) {
+func (c *ExecClient) Exec(ctx context.Context, tool string, args map[string]any, cx hook.ExecContext) (string, bool, error) {
 	if c == nil || c.base == "" {
 		return "", false, fmt.Errorf("core exec: 未配置")
 	}

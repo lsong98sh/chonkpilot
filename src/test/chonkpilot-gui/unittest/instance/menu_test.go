@@ -12,7 +12,7 @@ package instance_test
 import (
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-plugin/instance"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
 // hasID 判定结果是否含指定 id（保持顺序无关的断言辅助）。

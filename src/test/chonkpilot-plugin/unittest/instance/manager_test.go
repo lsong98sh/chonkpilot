@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin/instance"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
 // newTestManager 建内存 MQ（带命名空间前缀，与生产一致：业务只写相对主题）+ Manager（已 Start）。
@@ -312,10 +312,10 @@ func regPayloadSession(id, sessionID string) []byte {
 // 会话 → 无命中；会话字段可随注册刷新。
 func TestInstanceForSession(t *testing.T) {
 	m, _ := newTestManager(t)
-	m.HandleRegister(regPayload("main", "w", "d"))               // 主窗口（不带 session_id）
-	m.HandleRegister(regPayloadSession("ins-sub", "subchat-1"))  // 单聊窗口
-	m.HandleRegister(regPayloadSession("ins-group", "group-1"))  // 群聊窗口
-	m.HandleRegister(regPayloadSession("ghost-holder", ""))      // session_id 空 → 不构成承载
+	m.HandleRegister(regPayload("main", "w", "d"))              // 主窗口（不带 session_id）
+	m.HandleRegister(regPayloadSession("ins-sub", "subchat-1")) // 单聊窗口
+	m.HandleRegister(regPayloadSession("ins-group", "group-1")) // 群聊窗口
+	m.HandleRegister(regPayloadSession("ghost-holder", ""))     // session_id 空 → 不构成承载
 
 	if ins, ok := m.InstanceForSession("subchat-1"); !ok || ins != "ins-sub" {
 		t.Fatalf("InstanceForSession(subchat-1)=(%q,%v)，want (ins-sub,true)", ins, ok)

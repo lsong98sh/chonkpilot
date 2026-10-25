@@ -28,7 +28,7 @@ import (
 
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-plugin/dataclient"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/dataclient"
 )
 
 // data 面（文件清单，persist 订阅；域 filelist）。

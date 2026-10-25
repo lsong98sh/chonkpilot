@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // noticeCollector 收集 tool-notify 事件载荷（总线同步派发 → 调用返回后已收敛）。
@@ -64,7 +64,7 @@ func TestPluginNotifyOncePerTurn(t *testing.T) {
 	col := collectNotices(t, bus)
 	s := &Server{bus: bus, noticeSeen: newNoticeDedup()}
 
-	n := plugin.Notice{
+	n := hook.Notice{
 		Plugin: "memory", Kind: "save", InstanceID: "ins-1", Session: "s1", Turn: "t1",
 		Reason: "开发规范：data-memory-save 应答超时",
 	}
@@ -112,7 +112,7 @@ func TestPluginNotifySkipsWithoutInstance(t *testing.T) {
 	bus := newTestBusForNotice(t)
 	col := collectNotices(t, bus)
 	s := &Server{bus: bus, noticeSeen: newNoticeDedup()}
-	s.pluginNotify(plugin.Notice{Plugin: "memory", Kind: "save", Reason: "x"})
+	s.pluginNotify(hook.Notice{Plugin: "memory", Kind: "save", Reason: "x"})
 	if got := len(col.snapshot()); got != 0 {
 		t.Fatalf("缺 instance_id 不应广播，实际 %d 次", got)
 	}
@@ -143,7 +143,7 @@ func TestPluginDepsNotifyWiredToHost(t *testing.T) {
 	defer llm.Close()
 	stub := &depsProbe{}
 	var col *noticeCollector
-	pluginEnv(t, llm, []plugin.Hook{stub}, func(bus mq.Bus) { col = collectNotices(t, bus) })
+	pluginEnv(t, llm, []hook.Hook{stub}, func(bus mq.Bus) { col = collectNotices(t, bus) })
 
 	if stub.deps.Notify == nil {
 		t.Fatal("插件 Deps.Notify 未接线（宿主应注入 pluginNotify）")
@@ -151,7 +151,7 @@ func TestPluginDepsNotifyWiredToHost(t *testing.T) {
 	if stub.deps.Logf == nil {
 		t.Fatal("插件 Deps.Logf 未接线")
 	}
-	stub.deps.Notify(plugin.Notice{
+	stub.deps.Notify(hook.Notice{
 		Plugin: "compress", Kind: "llm", InstanceID: "ins-1", Session: "s1", Turn: "t1", Reason: "boom",
 	})
 	evs := col.snapshot()
@@ -164,8 +164,8 @@ func TestPluginDepsNotifyWiredToHost(t *testing.T) {
 }
 
 // depsProbe 是仅用于取回 Deps 的 stub 插件（不订阅任何主题）。
-type depsProbe struct{ deps plugin.Deps }
+type depsProbe struct{ deps hook.Deps }
 
 func (p *depsProbe) Name() string { return "deps-probe" }
 
-func (p *depsProbe) Start(d plugin.Deps) error { p.deps = d; return nil }
+func (p *depsProbe) Start(d hook.Deps) error { p.deps = d; return nil }

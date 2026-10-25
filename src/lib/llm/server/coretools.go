@@ -13,7 +13,7 @@ import (
 	"time"
 
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // CoreServerName 是 core-mcp-server 在 gateway 中的节点名（内置；namespace 固定 "-" 即原样）。
@@ -31,7 +31,7 @@ func (s *Server) SetCoreRuntimePusher(push func(any) error) {
 
 // SetToolExec 注入 core-mcp-server 的内部执行面（插件工具委托执行）。
 // nil = 断开（插件回落本地引擎）。宿主在 core 就绪后调用。
-func (s *Server) SetToolExec(te plugin.ToolExec) {
+func (s *Server) SetToolExec(te hook.ToolExec) {
 	if s == nil {
 		return
 	}
@@ -41,7 +41,7 @@ func (s *Server) SetToolExec(te plugin.ToolExec) {
 }
 
 // coreToolExec 返回当前内部执行面（插件经 Deps.ToolExec 每次调用时读取，支持晚绑定）。
-func (s *Server) coreToolExec() plugin.ToolExec {
+func (s *Server) coreToolExec() hook.ToolExec {
 	if s == nil {
 		return nil
 	}

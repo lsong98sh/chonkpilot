@@ -5,7 +5,7 @@ package codegraph
 import (
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-plugin/instance"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
 // heartbeatJudged 形态标识：分离形态（`-tags split`）启用**心跳超时退出判定**

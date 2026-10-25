@@ -6,7 +6,6 @@ require (
 	github.com/chonkpilot/chonkpilot-data v0.0.0
 	github.com/chonkpilot/chonkpilot-gui v0.0.0
 	github.com/chonkpilot/chonkpilot-lib v0.0.0
-	github.com/chonkpilot/chonkpilot-plugin v0.0.0
 )
 
 require (
@@ -33,8 +32,6 @@ replace github.com/chonkpilot/chonkpilot-gwadapter => ../../../lib/gwadapter
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../../../lib/mcp-server
 
-replace github.com/chonkpilot/chonkpilot-plugin => ../../../plugins/plugin
-
 replace github.com/chonkpilot/chonkpilot-plugin-compress => ../../../plugins/plugin-compress
 
 replace github.com/chonkpilot/chonkpilot-task => ../../../lib/task
@@ -44,3 +41,5 @@ replace github.com/jchv/go-webview2 => ../../../lib/go-webview2
 replace github.com/chonkpilot/chonkpilot-assembly => ../../../lib/assembly
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools
+
+require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1

@@ -39,9 +39,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-plugin"
-	"github.com/lsong98sh/chonkpilot-session"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 	"github.com/lsong98sh/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-session"
 )
 
 const (
@@ -130,7 +130,7 @@ func (s *Server) compressWorker(key string, job compressJob) {
 			logf("[chonkpilot-server] compress: 失败（session=%s turn=%s）: %v\n", job.SessionID, job.TurnID, err)
 			// 失败的用户可见面：沿用既有 `plugin-failure`（plugin=compress，61 §4.3），前端据此落
 			// 错误态；随后仍发 `compress-done`（前端「失败优先」→ done 不覆盖错误态）。
-			s.pluginNotify(plugin.Notice{
+			s.pluginNotify(hook.Notice{
 				Plugin: "compress", Kind: "compress", Reason: err.Error(),
 				InstanceID: job.InstanceID, Session: job.SessionID, Turn: job.TurnID,
 			})

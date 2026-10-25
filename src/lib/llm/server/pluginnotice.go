@@ -4,7 +4,7 @@
 // 即返回 —— **既不报用户、也不落日志文件**；用户只看到"记忆没有沉淀/上下文没有压缩"，
 // 无从诊断，也没有任何可核提示。
 //
-// 修法（**不新增 MQ 主题**）：插件经 `plugin.Deps.Notify` 上报一次失败 → 宿主在此
+// 修法（**不新增 MQ 主题**）：插件经 `hook.Deps.Notify` 上报一次失败 → 宿主在此
 //   - **去重/限频**：同一 (实例, 会话, 轮次, 插件, 失败类别) **只提示一次**（同一轮多类别/
 //     多失败点不刷屏；轮次或类别变化才再提示）；
 //   - **呈现**：经**既有通知面** `tool-notify`（61-消息一览 §4.3，2026-09-20 增补
@@ -21,7 +21,7 @@ import (
 	"sync"
 
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // pluginNoticeWhat 把插件名映射为用户可读措辞（宿主提示文案用；未登记 → 原样展示插件名）。
@@ -62,9 +62,9 @@ func (d *noticeDedup) mark(key string) bool {
 	return true
 }
 
-// pluginNotify 是插件失败上报入口（`plugin.Deps.Notify` 的实现）：判重后经既有
+// pluginNotify 是插件失败上报入口（`hook.Deps.Notify` 的实现）：判重后经既有
 // tool-notify 通知面投递一条用户可见提示（不新增主题、不阻塞、不抛出）。
-func (s *Server) pluginNotify(n plugin.Notice) {
+func (s *Server) pluginNotify(n hook.Notice) {
 	if s == nil || s.bus == nil || n.Plugin == "" || n.InstanceID == "" {
 		return // 实例字段必带（61 §0）：缺失 → 不广播（与既有通知同口径）
 	}

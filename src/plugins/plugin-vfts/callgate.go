@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // 索引库被另一进程占用（跨进程排他 LOCK）时的有界等待与失败文本
@@ -236,7 +236,7 @@ func (p *Vfts) onToolCall(ctx context.Context, _ string, v *mq.Value) error {
 			if msg.Ctx != nil {
 				session, turn, callID, purpose = msg.Ctx.Session, msg.Ctx.Turn, msg.Ctx.ToolCallID, msg.Ctx.Purpose
 			}
-			text, isErr, terr := te.Exec(ctx, msg.Tool, args, plugin.ExecContext{
+			text, isErr, terr := te.Exec(ctx, msg.Tool, args, hook.ExecContext{
 				InstanceID: inst,
 				Session:    session,
 				Turn:       turn,

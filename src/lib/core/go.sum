@@ -1,2 +1,4 @@
+github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1 h1:wNqBpm1/RBbtUhoMelM0dLn+OhhwRJ+/8X2ESRI7Kyo=
+github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1/go.mod h1:mp5Cwe1xAJB1UyGvRNpIHxgMrz23kTD872C1fksFvwA=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
 golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=

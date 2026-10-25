@@ -42,10 +42,10 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 	"github.com/chonkpilot/chonkpilot-llm/pluginbridge"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
-	"github.com/chonkpilot/chonkpilot-plugin"
-	"github.com/chonkpilot/chonkpilot-plugin/instance"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 	"github.com/lsong98sh/chonkpilot-router"
 )
 
@@ -155,7 +155,7 @@ type Options struct {
 	// Plugins 内嵌插件（chonkpilot-plugin-compress / chonkpilot-plugin-history 等，
 	// 由宿主在 New 时传入）。server.Start 在 gateway/路由/实例视图就绪后按序
 	// Start 插件（全部成功才广播 server-starting；插件失败 = 启动失败）。
-	Plugins []plugin.Hook
+	Plugins []hook.Hook
 
 	// LogWriter 额外日志 sink（可选；**nil = 仅 stdout，即改前行为**）。
 	// 2026-09-20 增补：本包既有诊断输出一律 stdout，而 GUI 单体为 `-H windowsgui`（stdout
@@ -210,7 +210,7 @@ type Server struct {
 	// toolExecMu / toolExec（2026-10-19）：core-mcp-server 内部执行面（插件委托执行）。
 	// 由宿主在 core 就绪后注入；nil = 插件用本地引擎（CLI / core 不可用）。
 	toolExecMu sync.RWMutex
-	toolExec   plugin.ToolExec
+	toolExec   hook.ToolExec
 
 	mu       sync.Mutex
 	filterMu sync.RWMutex
@@ -267,7 +267,7 @@ type Server struct {
 	// → 控制路径返回明确错误、不动作（主路径不受影响）。
 	execSink mcpgateway.ExecSink
 	subs     []mq.Sub
-	plugins  []plugin.Hook // 内嵌插件（Options.Plugins 拷贝；Start 时按序 Start）
+	plugins  []hook.Hook // 内嵌插件（Options.Plugins 拷贝；Start 时按序 Start）
 	// sweepStop 心跳超时扫描停止函数（分离形态非空；默认构建 startInstanceSweep 返回 nil
 	// = 零 ticker，见 sweep_split.go / sweep_inprocess.go）。
 	sweepStop func()
@@ -354,7 +354,7 @@ func New(bus mq.Bus, opts Options) *Server {
 	s.memCache = newMemoryCategoryCache(memoryCategoryTTL)
 	s.noticeSeen = newNoticeDedup()
 	s.tasks = newTaskManager(s)
-	s.plugins = append([]plugin.Hook{}, opts.Plugins...)
+	s.plugins = append([]hook.Hook{}, opts.Plugins...)
 	// 内嵌 persist 数据服务（同一总线应答 data-* 面；usrPath 测试可注入）
 	// Warnf（MW-11）：数据的「唯一实例回退 / 缺 instance_id」告警经本服务日志出口暴露。
 	// AppDir = 系统级 capability 根（与 assembly 的 `Root` 同源，opts.MCPServerRoot）→ 数据层场景
@@ -562,7 +562,7 @@ func (s *Server) Start(ctx context.Context) error {
 	logStartupStage("工具定义缓存预热(gc.ListTools)")
 
 	// 内嵌插件加载（gateway/路由/实例视图就绪后按序 Start；全部成功才广播就绪）
-	deps := plugin.Deps{Bus: s.bus, Logf: s.pluginLogf, Notify: s.pluginNotify, ToolExec: s.coreToolExec}
+	deps := hook.Deps{Bus: s.bus, Logf: s.pluginLogf, Notify: s.pluginNotify, ToolExec: s.coreToolExec}
 	for _, p := range s.plugins {
 		if err := p.Start(deps); err != nil {
 			return fmt.Errorf("plugin %s start: %w", p.Name(), err)
@@ -686,10 +686,10 @@ func (s *Server) llmOnceSpec(spec router.Spec, system, prompt string) (string, e
 
 // Stop 退订 + 取消全部 running turn。
 func (s *Server) Stop() {
-	// 内嵌插件 teardown（按 Start 的逆序；仅实现 plugin.Stopper 的插件有资源可关——
+	// 内嵌插件 teardown（按 Start 的逆序；仅实现 hook.Stopper 的插件有资源可关——
 	// 停后台循环/关引擎子进程/退订订阅/停实例视图）。
 	for i := len(s.plugins) - 1; i >= 0; i-- {
-		if st, ok := s.plugins[i].(plugin.Stopper); ok {
+		if st, ok := s.plugins[i].(hook.Stopper); ok {
 			st.Stop()
 		}
 	}

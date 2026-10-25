@@ -4,6 +4,9 @@ go 1.26.0
 
 require github.com/chonkpilot/chonkpilot-lib v0.0.0
 
-require golang.org/x/sys v0.47.0 // indirect
+require (
+	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.1 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+)
 
 replace github.com/chonkpilot/chonkpilot-lib => ../../../lib/core

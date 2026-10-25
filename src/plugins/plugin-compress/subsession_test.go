@@ -12,7 +12,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // gateAPI 仅实现门控与 process 首步所需门面方法（其余经嵌入 nil 门面占位，不应被调用）。
@@ -76,7 +76,7 @@ func TestWorkerSkipsSubsessionCompress(t *testing.T) {
 		defer bus.Close()
 		api := &gateAPI{found: true, parent: parent, cfg: cfg}
 		c := New(Options{RetainTurns: 1, TokenMax: 50}, api)
-		if err := c.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
+		if err := c.Start(hook.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
 		body, _ := json.Marshal(map[string]any{

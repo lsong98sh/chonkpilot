@@ -12,7 +12,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 // newUserConfigAPI 起一个绑定临时 usr 库的 data 门面（隔离用户配置；用例结束关库再删目录）。
@@ -48,7 +48,7 @@ func TestSummarizeCarriesInstanceID(t *testing.T) {
 	}
 
 	c := New(DefaultOptions(), inline.New(bus))
-	c.deps = plugin.Deps{Bus: bus}
+	c.deps = hook.Deps{Bus: bus}
 	if _, err := c.summarize("ins-1", "sys-prompt", "", "hello"); err != nil {
 		t.Fatalf("summarize: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestResolveSubsystemLLMAndPayload(t *testing.T) {
 	}
 
 	c := New(DefaultOptions(), api)
-	c.deps = plugin.Deps{Bus: bus}
+	c.deps = hook.Deps{Bus: bus}
 	if llm := c.resolveSubsystemLLM("ins-1", "", ""); llm != "prov-b" {
 		t.Fatalf("resolveSubsystemLLM = %q, want prov-b（usr llm.compress）", llm)
 	}
@@ -142,7 +142,7 @@ func TestSummarizePayloadByteEquivalentWithoutSubsystemLLM(t *testing.T) {
 	}
 
 	c := New(DefaultOptions(), api)
-	c.deps = plugin.Deps{Bus: bus}
+	c.deps = hook.Deps{Bus: bus}
 	llm := c.resolveSubsystemLLM("ins-1", "", "")
 	if llm != "" {
 		t.Fatalf("无可用 LLM 应不指定：%q", llm)
