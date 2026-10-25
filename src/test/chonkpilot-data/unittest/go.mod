@@ -11,7 +11,7 @@ require github.com/chonkpilot/chonkpilot-lib v0.0.0
 
 require (
 	github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
-	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2 // indirect
+	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3 // indirect
 	github.com/lsong98sh/chonkpilot-session v0.1.0 // indirect
 	go.etcd.io/bbolt v1.4.2 // indirect
 	golang.org/x/sys v0.47.0 // indirect

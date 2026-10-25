@@ -322,46 +322,52 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		}
 
 		// ── 插件平台（PLUGIN-1）：manifest 插件发现 / 拉起 / 守护 / MCP+UI 注册 ──
-	// 依赖插件桥（UDS）与 core 工具面；启动失败不致命（平台降级，核心功能不受影响）。
-	if pb != nil && srv != nil {
-		pluginDataDir := strings.TrimSpace(dataDirArg)
-		if pluginDataDir == "" {
-			base := os.Getenv("LOCALAPPDATA")
-			if base == "" {
-				base = os.TempDir()
+		// 依赖插件桥（UDS）与 core 工具面；启动失败不致命（平台降级，核心功能不受影响）。
+		if pb != nil && srv != nil {
+			pluginDataDir := strings.TrimSpace(dataDirArg)
+			if pluginDataDir == "" {
+				base := os.Getenv("LOCALAPPDATA")
+				if base == "" {
+					base = os.TempDir()
+				}
+				pluginDataDir = filepath.Join(base, "chonkpilot")
 			}
-			pluginDataDir = filepath.Join(base, "chonkpilot")
+			userCap := ""
+			if home, err := os.UserHomeDir(); err == nil {
+				userCap = filepath.Join(home, ".chonkpilot", "capability")
+			}
+			roots := []string{
+				filepath.Join(prjUsrRoot, "capability"),
+				filepath.Join(workDir, ".chonkpilot", "capability"),
+				userCap,
+				capRoot,
+			}
+			// D-71：插件启动清单固定在 exe 同目录的 plugin.ini；缺失时回落 enabled.json。
+			bootFile := ""
+			if exePath, err := os.Executable(); err == nil {
+				bootFile = filepath.Join(filepath.Dir(exePath), "plugin.ini")
+			}
+			plugins = pluginmgr.New(pluginmgr.Options{
+				Bus:            bus,
+				DataDir:        pluginDataDir,
+				Roots:          roots,
+				BootstrapFile:  bootFile,
+				ConfigStore:    openPluginConfigStore,
+				RegisterMCP:    srv.RegisterPluginServer,
+				UnregisterMCP:  srv.UnregisterPluginServer,
+				ShutdownPlugin: pb.ShutdownPlugin,
+				RequestPlugin:  pb.RequestPlugin,
+				Logf:           func(format string, args ...any) { slog.Warn(fmt.Sprintf(format, args...)) },
+			})
+			pb.SetPluginHooks(plugins.Hooks())
+			if err := plugins.Start(context.Background()); err != nil {
+				slog.Warn("插件平台启动失败", "err", err)
+			} else {
+				slog.Info("插件平台已启动", "data", pluginDataDir)
+			}
 		}
-		userCap := ""
-		if home, err := os.UserHomeDir(); err == nil {
-			userCap = filepath.Join(home, ".chonkpilot", "capability")
-		}
-		roots := []string{
-			filepath.Join(prjUsrRoot, "capability"),
-			filepath.Join(workDir, ".chonkpilot", "capability"),
-			userCap,
-			capRoot,
-		}
-		plugins = pluginmgr.New(pluginmgr.Options{
-			Bus:            bus,
-			DataDir:        pluginDataDir,
-			Roots:          roots,
-			ConfigStore:    openPluginConfigStore,
-			RegisterMCP:    srv.RegisterPluginServer,
-			UnregisterMCP:  srv.UnregisterPluginServer,
-			ShutdownPlugin: pb.ShutdownPlugin,
-			RequestPlugin:  pb.RequestPlugin,
-			Logf:           func(format string, args ...any) { slog.Warn(fmt.Sprintf(format, args...)) },
-		})
-		pb.SetPluginHooks(plugins.Hooks())
-		if err := plugins.Start(context.Background()); err != nil {
-			slog.Warn("插件平台启动失败", "err", err)
-		} else {
-			slog.Info("插件平台已启动", "data", pluginDataDir)
-		}
-	}
 
-	// ── LLM 桥接入口（BRIDGE-3，2026-10-24）：桌面单体同开，**只监听 UDS** ──
+		// ── LLM 桥接入口（BRIDGE-3，2026-10-24）：桌面单体同开，**只监听 UDS** ──
 		// UDS 路径：`CHONK_LLM_UDS` 覆盖，缺省 `%LOCALAPPDATA%\chonkpilot\llm.sock`，`off`/`-` 关闭。
 		// 透明反向代理：本机脚本把 SDK 指向 UDS（route `/llm/<name>/...`）即可免 api-key 调用。
 		// 唯一边界 = socket 文件权限（目录 0700 / socket 0600）。启动失败不致命。
@@ -729,4 +735,3 @@ func defaultWorkDir() string {
 	}
 	return ""
 }
-

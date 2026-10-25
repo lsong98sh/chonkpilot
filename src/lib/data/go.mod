@@ -12,7 +12,7 @@ require (
 require github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
 
 require (
-	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.2 // indirect
+	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
 
