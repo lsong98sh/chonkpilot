@@ -311,43 +311,6 @@ func FileListEntryFromWire(m map[string]any) facade.FileListEntry {
 	}
 }
 
-// FileListListFromWire 解析 `{prefix?, offset?, limit?}` → 门面入参。
-func FileListListFromWire(m map[string]any) facade.FileListListRequest {
-	return facade.FileListListRequest{
-		Prefix: str(m["prefix"]), Offset: intOf(m["offset"]), Limit: intOf(m["limit"]),
-	}
-}
-
-// FileListPutFromWire 解析清单条目（数据内平铺字段）→ 门面入参；key 空回落请求 id。
-// 兼容批量：`{entries:[条目…]}`（批量 upsert）优先；否则按单条平铺字段解析。
-func FileListPutFromWire(m map[string]any) facade.FileListPutRequest {
-	if raw, ok := m["entries"].([]any); ok && len(raw) > 0 {
-		entries := make([]facade.FileListEntry, 0, len(raw))
-		for _, x := range raw {
-			obj, _ := x.(map[string]any)
-			if obj == nil {
-				continue
-			}
-			entries = append(entries, FileListEntryFromWire(obj))
-		}
-		return facade.FileListPutRequest{Entries: entries}
-	}
-	e := FileListEntryFromWire(m)
-	if e.Key == "" {
-		e.Key = RequestID(m)
-	}
-	return facade.FileListPutRequest{Entry: e}
-}
-
-// FileListDeleteFromWire 解析 `{keys:[…]}`（兼容顶端单键）→ 门面入参。
-func FileListDeleteFromWire(m map[string]any) facade.FileListDeleteRequest {
-	keys := strList(m["keys"])
-	if id := RequestID(m); id != "" {
-		keys = append(keys, id)
-	}
-	return facade.FileListDeleteRequest{Keys: keys}
-}
-
 // FileListIDResult 组装 `{ok:true, id:<键>}`（put）。
 func FileListIDResult(id string) map[string]any {
 	return map[string]any{"ok": true, msgkeys.DataFilelistPutResultId: id}

@@ -206,6 +206,33 @@ func (x *IntValue) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// StrList 是字符串数组：非字符串元素跳过、非数组 / null → nil（不报错；= 旧 stringSlice 口径，
+// 供只读查询面（data-index-ignored）保持「非法载荷也降级应答」）。
+type StrList []string
+
+// UnmarshalJSON 宽容解析（不因载荷形状非法而让整条请求失败）。
+func (x *StrList) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" || b[0] != '[' {
+		*x = nil
+		return nil
+	}
+	var arr []json.RawMessage
+	if json.Unmarshal(b, &arr) != nil {
+		*x = nil
+		return nil
+	}
+	out := make(StrList, 0, len(arr))
+	for _, e := range arr {
+		var s string
+		if json.Unmarshal(e, &s) == nil {
+			out = append(out, s)
+		}
+	}
+	*x = out
+	return nil
+}
+
 // BoolValue 是布尔标量：接受 JSON 布尔与字符串 "true"/"false"（见 61 §3.2 context）。
 type BoolValue bool
 
@@ -764,6 +791,87 @@ func scenarioOf(p ScenarioPayload) facade.Scenario {
 		})
 	}
 	return sc
+}
+
+// ── filelist（文件清单域；61 §3.5）──
+
+// FileListEntryPayload 是清单条目（消息面表列名口径；`key` 空 = 实现侧按路径推导）。
+type FileListEntryPayload struct {
+	Key       ID       `json:"key,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Size      IntValue `json:"size,omitempty"`
+	MTime     string   `json:"mtime,omitempty"`
+	MD5       string   `json:"md5,omitempty"`
+	DocIDs    []string `json:"doc_ids,omitempty"`
+	Chunks    IntValue `json:"chunks,omitempty"`
+	IndexedAt string   `json:"indexed_at,omitempty"`
+}
+
+// FileListPayload 是 data-filelist-* 的载荷（条目字段平铺；list/put/del 共用）。
+type FileListPayload struct {
+	Header
+	ID ID `json:"id,omitempty"`
+	FileListEntryPayload
+	Prefix  string                 `json:"prefix,omitempty"`
+	Offset  IntValue               `json:"offset,omitempty"`
+	Limit   IntValue               `json:"limit,omitempty"`
+	Keys    []string               `json:"keys,omitempty"`
+	Entries []FileListEntryPayload `json:"entries,omitempty"`
+	Data    json.RawMessage        `json:"data,omitempty"`
+}
+
+// merged 合并两形载荷（`data` 优先、顶层补缺）。
+func (p FileListPayload) merged() FileListPayload {
+	q := p
+	q.Data = nil // 只把顶层业务字段作为「补缺」来源，避免 data 自嵌套
+	return mergeFlat(q, p.Data)
+}
+
+// entry 把载荷转门面条目（`key` 空回落信封 id —— 与旧 RequestID 口径一致）。
+func (p FileListPayload) entry() facade.FileListEntry {
+	e := fileListEntryOf(p.FileListEntryPayload)
+	if e.Key == "" {
+		e.Key = p.target()
+	}
+	return e
+}
+
+// target 取请求目标键：顶层 id → data.id → data.key（= 旧 RequestID 口径）。
+func (p FileListPayload) target() string {
+	if p.ID != "" {
+		return string(p.ID)
+	}
+	return string(p.Key)
+}
+
+// fileListEntryOf 把清单条目转门面 DTO。
+func fileListEntryOf(e FileListEntryPayload) facade.FileListEntry {
+	return facade.FileListEntry{
+		Key:       string(e.Key),
+		Path:      e.Path,
+		Size:      int64(e.Size),
+		MTime:     e.MTime,
+		MD5:       e.MD5,
+		DocIDs:    e.DocIDs,
+		Chunks:    int(e.Chunks),
+		IndexedAt: e.IndexedAt,
+	}
+}
+
+// ── index（索引排除判定，只读；61 §3.6）──
+
+// IndexPayload 是 data-index-* 的载荷（当前仅 ignored：待判定的一组 workdir 相对路径）。
+type IndexPayload struct {
+	Header
+	Paths StrList         `json:"paths,omitempty"`
+	Data  json.RawMessage `json:"data,omitempty"`
+}
+
+// fields 合并两形载荷（`data` 优先、顶层补缺）。
+func (p IndexPayload) fields() IndexPayload {
+	q := p
+	q.Data = nil
+	return mergeFlat(q, p.Data)
 }
 
 // configEntries 把 save 的 data 归一为键值批：`entries` 非空优先（id = 字典序首键），

@@ -4,17 +4,12 @@
 // 任何域逻辑）——故 MQ 绑定与门面 inline 绑定是**同一份实现**（行为等价有测试）。应答走
 // persist 统一格式 {req_id, ok, result:{...}}（§3 头：publish + Promise 收集 result）。
 //
-// 各域信封来源（下沉前位置 → 现位置）：
+// 各域信封位置（2026-10-25：按域拆分，本文件只留 config / session / snapshot）：
 //
-//	config 四域（prj-config/prompt/prj-security/user-config）：prj-config/persist.go:handleConfigKV
-//	  · persist_userconfig.go:handleUserConfig
-//	scenario：persist.go:handleScenario
-//	session 全域：persist_session.go:handleSession
-//	snapshot：persist_snapshot.go:handleSnapshot
-//	tasktree：persist_tasktree.go:handleTasktree
-//	knowledge：persist_knowledge.go:handleKnowledge
-//	memory：persist_memory.go:handleMemory
-//	filelist：persist_filelist.go:handleFileList
+//	本文件：config 四域（prj-config/prompt/prj-security/user-config）+ session 全域 + snapshot
+//	scenario.go / mcp.go / tasktree.go / knowledge.go / memory.go / filelist.go / index.go
+//	inbox.go / turnevent.go / ask.go（内部面）
+//	载荷定死结构：payload.go（`{data:{…}}` 与顶层扁平两形都接受，`data` 优先、顶层补缺）
 package persist
 
 import (
@@ -26,7 +21,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/config"
-	"github.com/chonkpilot/chonkpilot-data/internal/indexignored"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
 	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
@@ -147,23 +141,6 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 // ─── scenario / mcp ──────────────────────────────────────────────
 //
 // 两域 handler 已按域拆分为独立文件（scenario.go / mcp.go）。
-
-// flatReqMap 把 MQ 请求载荷归一为「平铺领域字段」视图（data 内字段 + 顶层 id/filter），
-// 供门面入参解析复用（与入口侧 `wire.FlatPayload` 同口径的一份翻译；`parseDataReq` 已把
-// 顶层业务字段并入 Data，此处只补它不承接的 id / filter）。
-func flatReqMap(req dataReq) map[string]any {
-	m := make(map[string]any, len(req.Data)+2)
-	for k, v := range req.Data {
-		m[k] = v
-	}
-	if _, ok := m[msgkeys.FieldId]; !ok && req.ID != nil {
-		m[msgkeys.FieldId] = req.ID
-	}
-	if _, ok := m[msgkeys.FieldFilter]; !ok && req.Filter != nil {
-		m[msgkeys.FieldFilter] = req.Filter
-	}
-	return m
-}
 
 // ─── session 全域 ────────────────────────────────────────────────
 
@@ -532,119 +509,6 @@ func (s *Service) handleSnapshot(action string, payload []byte) {
 //
 // 三域 handler 已按域拆分为独立文件（tasktree.go / knowledge.go / memory.go）。
 
-// ─── filelist ────────────────────────────────────────────────────
-
-// handleFileList 处理 data-filelist-{list,put,del}（项目级 prj 库 file_list 表）。
-// 阶段 4 第四批（41 G-36）：逻辑已下沉 internal/filelist（FileListAPI）。
-func (s *Service) handleFileList(op string, req dataReq) {
-	method := "data-filelist-" + op
-	okf := func(result map[string]any) { s.reply(method, req, result) }
-	failf := func(err error) { s.fail(method, req, err) }
-	m := flatReqMap(req)
-
-	switch op {
-	case "list":
-		r := wire.FileListListFromWire(m)
-		r.InstanceID = req.InstanceID
-		resp, err := s.FileListList(r)
-		if err != nil {
-			failf(err)
-			return
-		}
-		okf(wire.FileListListResult(resp))
-	case "put":
-		r := wire.FileListPutFromWire(m)
-		r.InstanceID = req.InstanceID
-		resp, err := s.FileListPut(r)
-		if err != nil {
-			failf(err)
-			return
-		}
-		okf(wire.FileListIDResult(resp.ID))
-	case "del":
-		r := wire.FileListDeleteFromWire(m)
-		r.InstanceID = req.InstanceID
-		resp, err := s.FileListDelete(r)
-		if err != nil {
-			failf(err)
-			return
-		}
-		okf(wire.FileListDeletedResult(resp.Deleted))
-	default:
-		failf(errors.New("unsupported filelist action: " + op))
-	}
-}
-
-// ─── index（索引排除判定，只读；2026-09-27 新增）────────────────────
-
-// handleIndex 处理 data-index-<op>（当前仅 ignored）——**只读查询**：判定一组 workdir 相对路径
-// 是否被 codegraph / vfts 的「索引排除规则」排除（供前端文件树灰显被排除条目）。
+// ─── filelist / index ────────────────────────────────────────────
 //
-// 逻辑在 internal/indexignored（复用 github.com/chonkpilot/chonkpilot-ignore 单一实现，
-// 判定口径与引擎实际索引范围一致）；本 handler 只做信封：解析 paths → 解析实例 workdir +
-// 单批读 prj 配置 → 判定 → 回载荷（61 §3.6）。**零副作用**：不写配置/状态、不触发索引；
-// workdir 无效 / 配置不可读 → 降级（enabled 按配置、ignored 为空），不抛错。
-func (s *Service) handleIndex(op string, req dataReq) {
-	if op != "ignored" {
-		return // 未知动作忽略不回复（与其余域一致）
-	}
-	method := "data-index-" + op
-	workdir, _, _ := s.InstBindingFor(req.InstanceID, facade.Scope{})
-	values := s.indexConfigValues(req.InstanceID)
-	get := func(key string) (string, bool) {
-		v, ok := values[key]
-		return v, ok
-	}
-	res := indexignored.Query(workdir, stringSlice(req.Data[msgkeys.FieldPaths]), get, s.Warnf)
-	result := map[string]any{
-		msgkeys.FieldCodegraph: engineIgnoredResult(res.Codegraph),
-		msgkeys.FieldVfts:      engineIgnoredResult(res.Vfts),
-	}
-	if res.Truncated {
-		result[msgkeys.FieldTruncated] = true // 超限才带（缺省不出现；见 61 §3.6）
-	}
-	s.reply(method, req, result)
-}
-
-// indexConfigValues 单批读取本判定需要的 prj 配置键（一次 ConfigKVGet）；
-// 失败 → nil（get 全部未命中 = 各键按缺省），并写日志。
-func (s *Service) indexConfigValues(instanceID string) map[string]string {
-	resp, err := s.ConfigKVGet(facade.ConfigKVGetRequest{
-		Domain: facade.DomainPrjConfig, InstanceID: instanceID, Keys: indexignored.ConfigKeys(),
-	})
-	if err != nil {
-		if s.Warnf != nil {
-			s.Warnf("data-index-ignored: 读 prj 配置失败（instance=%q）：%v", instanceID, err)
-		}
-		return nil
-	}
-	return resp.Values
-}
-
-// engineIgnoredResult 组装单引擎结果载荷（ignored 恒为数组，不用 null）。
-func engineIgnoredResult(e indexignored.EngineResult) map[string]any {
-	ignored := make([]any, 0, len(e.Ignored))
-	for _, p := range e.Ignored {
-		ignored = append(ignored, p)
-	}
-	// "enabled"/"ignored" 为嵌套数组键（非契约顶层字段，保留字面量）。
-	return map[string]any{"enabled": e.Enabled, "ignored": ignored}
-}
-
-// stringSlice 从消息面载荷取字符串数组（缺省 / 非字符串元素跳过；非法 → nil）。
-func stringSlice(v any) []string {
-	arr, ok := v.([]any)
-	if !ok {
-		if ss, ok := v.([]string); ok {
-			return ss
-		}
-		return nil
-	}
-	out := make([]string, 0, len(arr))
-	for _, e := range arr {
-		if s, ok := e.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
-}
+// 两域 handler 已按域拆分为独立文件（filelist.go / index.go）。

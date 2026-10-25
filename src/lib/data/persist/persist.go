@@ -459,9 +459,9 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	case "memory":
 		s.handleMemory(op, payload)
 	case "filelist":
-		s.handleFileList(op, req)
+		s.handleFileList(op, payload)
 	case "index":
-		s.handleIndex(op, req)
+		s.handleIndex(op, payload)
 	}
 }
 
