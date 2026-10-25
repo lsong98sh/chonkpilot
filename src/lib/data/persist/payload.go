@@ -1,4 +1,4 @@
-// data-* 请求的**定死结构**（61 §3；2026-10-25 起逐域替换 `dataReq` 的宽松 map 解析）。
+// data-* 请求的**定死结构**（61 §3；2026-10-25 逐域替换完成，通用宽松 map 解析 `dataReq` 已删除）。
 //
 // 约定：每个 payload struct 内嵌 `Header`（req_id + instance_id），其余字段名/类型按 61 声明，
 // 不新增包装层（JSON 仍是扁平键）→ 前端 / 插件 / 61 契约零变更。
@@ -273,7 +273,7 @@ type SessionPayload struct {
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
-// fields 合并两形载荷（`data` 优先；顶层只补 `data` 未给的键 —— 与旧 parseDataReq 同口径）。
+// fields 合并两形载荷（`data` 优先；顶层只补 `data` 未给的键）。
 // id 例外：顶层 `id` 优先于 `data.id`（旧 reqKey/标题、删除用的就是顶层 id 优先）。
 func (p SessionPayload) fields() SessionData {
 	f := mergeFlat(p.SessionData, p.Data)
@@ -284,7 +284,7 @@ func (p SessionPayload) fields() SessionData {
 }
 
 // mergeFlat 把内嵌结构（载荷顶层业务字段）与被 `data` 包裹的同构结构合并：
-// **`data` 优先，顶层只补缺**（= 旧 parseDataReq「顶层字段仅在 data 未提供时并入」）。
+// **`data` 优先，顶层只补缺**（与各域 handler 的 `fields()` 合并口径一致）。
 func mergeFlat[T any](flat T, raw json.RawMessage) T {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {

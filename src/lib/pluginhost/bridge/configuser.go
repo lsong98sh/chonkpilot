@@ -169,7 +169,7 @@ func configCallerID(sess *Session) (string, error) {
 	return id, nil
 }
 
-// configArgs 解析入参并返回「平铺视图」（顶层字段 + `data` 内字段，与 data 层 parseDataReq 同口径）。
+// configArgs 解析入参并返回「平铺视图」（顶层字段 + `data` 内字段，与 data 层非 struct 校验口径一致）。
 // payload 原样交给 EmitData（`data` 包装由数据面自己解）。
 func configArgs(args json.RawMessage) (payload, view map[string]any, err error) {
 	payload = map[string]any{}

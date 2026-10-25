@@ -414,7 +414,7 @@ func CleanupResult(count int) map[string]any {
 // ── 请求载荷归一（入口/信封共用）────────────────────────────────────
 
 // FlatPayload 归一入口收到的**请求载荷**：`{data:{…}}` 里的业务字段并入顶层视图
-// （**不覆盖**已有顶层键，与 persist `parseDataReq` 同口径）。返回原 map（就地补键）。
+// （**不覆盖**已有顶层键，与 persist 各 handler 的 `mergeFlat` 合并口径一致）。返回原 map（就地补键）。
 func FlatPayload(m map[string]any) map[string]any {
 	if m == nil {
 		return map[string]any{}

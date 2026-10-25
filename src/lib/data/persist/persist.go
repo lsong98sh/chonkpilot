@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -370,15 +369,6 @@ func (s *Service) lookupInstance(instanceID string) (kernel.Info, bool) {
 // file-versions 归属 history.db 外部，不在本面。
 var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "mcp", "prompt", "session", "inbox", "turn-event", "ask", "snapshot", "knowledge", "tasktree", "memory"}
 
-// dataReq 是 data-<domain>-* 请求的通用载荷（§3.1）。ID 宽松接收 string / number。
-type dataReq struct {
-	ReqID      string         `json:"req_id"`
-	InstanceID string         `json:"instance_id,omitempty"`
-	ID         any            `json:"id,omitempty"`
-	Filter     map[string]any `json:"filter,omitempty"`
-	Data       map[string]any `json:"data,omitempty"`
-}
-
 // route 分发 data-<domain>-<op>（subject = 精确订阅的相对主题，A2 正名后直通，无前缀可剥）。
 func (s *Service) route(subject string, payload []byte) {
 	rest := strings.TrimPrefix(subject, "data-")
@@ -413,16 +403,12 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	if isLoopbackReply(payload) {
 		return
 	}
-	req := parseDataReq(payload)
 	// 入站契约校验（G-41-c）：白名单外的 data 请求必须显式携带 instance_id。
-	instanceID := req.InstanceID
-	if instanceID == "" {
-		var hdr Header
-		_ = json.Unmarshal(payload, &hdr)
-		instanceID = hdr.InstanceID
-	}
-	if instanceID == "" && !instanceFreeDomains[domain] {
-		s.failID(subject, req.ReqID, errInstanceIDRequired)
+	// 载荷已按域定死 struct 解析（payload.go），handler 各自取 Header；此处只需公共头。
+	var hdr Header
+	_ = json.Unmarshal(payload, &hdr)
+	if hdr.InstanceID == "" && !instanceFreeDomains[domain] {
+		s.failID(subject, hdr.ReqID, errInstanceIDRequired)
 		return
 	}
 	switch domain {
@@ -453,20 +439,10 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	}
 }
 
-// reply 统一回复：直接 publish 结果到请求同一主题（相对主题 data-<method>，无 .reply 后缀）。
-func (s *Service) reply(method string, req dataReq, result map[string]any) {
-	s.replyID(method, req.ReqID, result)
-}
-
-// replyID 按 req_id 回复成功结果（payload struct 化后的 handler 直接用本方法）。
+// replyID 按 req_id 回复成功结果（各域 handler 统一用本方法）。
 func (s *Service) replyID(method, reqID string, result map[string]any) {
 	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": true, "result": result})
 	_ = s.Bus.Emit(context.Background(), method, b)
-}
-
-// fail 统一错误回复。
-func (s *Service) fail(method string, req dataReq, err error) {
-	s.failID(method, req.ReqID, err)
 }
 
 // failID 按 req_id 回复错误。
@@ -507,16 +483,8 @@ func (s *Service) prjUsrDB(instanceID string) (*data.DB, error) {
 	return s.PrjUsrByInst(instanceID, info)
 }
 
-// sessionDB 按实例定位**会话数据层 = prjusr 库**（12-数据层：会话/任务树/快照属"项目用户级"）；
-// 供同层域（snapshot / tasktree）沿用既有 MQ 路径定位（门面侧用 PrjUsrFor，见 internal/kernel）。
-// 注：`handle` 入站已按白名单校验（G-41-c）——非全局级域缺 instance_id 在**更早处**即失败，
-// 故此处 `Resolve` 的"唯一实例回退"对 MQ 请求不再被触发（仅门面/inline 路径沿用）。
-// 信封 handler 中的局部变量 `prj` 即本返回值。
-func (s *Service) sessionDB(req dataReq) (*data.DB, error) {
-	return s.sessionDBBy(req.InstanceID)
-}
-
-// sessionDBBy 按实例 id 解析 prjusr 主库（payload struct 化后的 handler 用）。
+// sessionDBBy 按实例 id 解析 prjusr 主库（信封 handler 用；`handle` 已按白名单校验
+// G-41-c，非全局级域缺 instance_id 在更早处即失败）。
 func (s *Service) sessionDBBy(instanceID string) (*data.DB, error) {
 	instID, info, err := s.View.Resolve(instanceID)
 	if err != nil {
@@ -565,62 +533,4 @@ func (s *Service) domainList(domain, instanceID string, scope facade.Scope) any 
 		return wire.MemoryListResult(resp.List)["list"]
 	}
 	return nil
-}
-
-// ─── 辅助 ────────────────────────────────────────
-
-func parseDataReq(payload []byte) dataReq {
-	var req dataReq
-	_ = json.Unmarshal(payload, &req)
-	// 收集顶层非 struct 字段到 Data（兼容 frontend → dataViaPersist 直通形态：
-	// dataViaPersist 把 payload 平铺在 JSON 顶层，dataReq 仅识别 req_id/instance_id/
-	// id/filter/data 五个字段；session_id/keys/before_turn_id 等业务字段需落入 Data 才
-	// 能被各 handler 读取。双向兼容：以 struct 层为准，raw 层补充 struct 未捕获的字段）。
-	if req.Data == nil {
-		req.Data = make(map[string]any)
-	}
-	var raw map[string]any
-	if json.Unmarshal(payload, &raw) == nil {
-		for k, v := range raw {
-			switch k {
-			case "req_id", "instance_id", "id", "filter", "data", "_key":
-				continue // 已由 struct 处理或内部字段
-			}
-			if _, exists := req.Data[k]; !exists {
-				req.Data[k] = v
-			}
-		}
-	}
-	return req
-}
-
-// idKey 把消息面 id（string / number）统一转成桶 key 字符串。
-func idKey(v any) string {
-	switch n := v.(type) {
-	case string:
-		return n
-	case float64:
-		return strconv.FormatInt(int64(n), 10)
-	case int:
-		return strconv.Itoa(n)
-	case int64:
-		return strconv.FormatInt(n, 10)
-	}
-	return ""
-}
-
-// toInt64 兼容 json 数字解码（float64）的 int64 提取。
-func toInt64(v any) (int64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int64(n), true
-	case int:
-		return int64(n), true
-	case int64:
-		return n, true
-	case json.Number:
-		i, err := n.Int64()
-		return i, err == nil
-	}
-	return 0, false
 }
