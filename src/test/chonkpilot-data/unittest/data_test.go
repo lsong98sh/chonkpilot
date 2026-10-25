@@ -21,14 +21,27 @@ func openLayer(t *testing.T, layer data.Layer) *data.DB {
 	return db
 }
 
-// TestMigrationBuckets v13：三层（usr/prj/prjusr）同构——每层都有同一套桶。
-// 零读写死桶 `mcps` / `meta` 的「不再建」断言见 data 包内 migrate_test.go（需包内访问 tx）。
+// TestMigrationBuckets v14：按层建桶（不再三层同构）——各层只建自己实际使用的桶。
 func TestMigrationBuckets(t *testing.T) {
-	for _, layer := range []data.Layer{data.LayerUsr, data.LayerPrj, data.LayerPrjUsr} {
-		db := openLayer(t, layer)
-		for _, bucket := range []string{"config", "llms", "sessions", "tasktree", "inbox_items", "dialogs"} {
+	cases := []struct {
+		layer   data.Layer
+		has     []string
+		missing []string
+	}{
+		{data.LayerUsr, []string{"config", "llms"}, []string{"sessions", "file_list", "inbox_items"}},
+		{data.LayerPrj, []string{"config", "file_list"}, []string{"llms", "sessions", "inbox_items"}},
+		{data.LayerPrjUsr, []string{"config", "sessions", "tasktree", "inbox_items", "dialogs"}, []string{"file_list"}},
+	}
+	for _, c := range cases {
+		db := openLayer(t, c.layer)
+		for _, bucket := range c.has {
 			if _, err := db.Table(bucket).ListKeys(); err != nil {
-				t.Fatalf("%s should have %s bucket: %v", layer, bucket, err)
+				t.Fatalf("%s should have %s bucket: %v", c.layer, bucket, err)
+			}
+		}
+		for _, bucket := range c.missing {
+			if db.HasBucket(bucket) {
+				t.Fatalf("%s 不应有 %s 桶（按层建桶）", c.layer, bucket)
 			}
 		}
 	}

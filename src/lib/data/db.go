@@ -45,7 +45,7 @@ func Open(path string) (*DB, error) {
 	return OpenLayer(path, "")
 }
 
-// OpenLayer 指定层打开（层标识仅作元信息；v6 起三层同构，迁移不再按层分支）。
+// OpenLayer 指定层打开（层标识决定**按层建桶**；空层 = 并集，见 bucketsFor）。
 func OpenLayer(path string, layer Layer) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -59,7 +59,11 @@ func OpenLayer(path string, layer Layer) (*DB, error) {
 		version := readSchemaVersion(tx)
 		for _, m := range migrations {
 			if m.Version > version {
-				if err := m.Up(tx); err != nil {
+				if m.UpLayer != nil {
+					if err := m.UpLayer(tx, layer); err != nil {
+						return err
+					}
+				} else if err := m.Up(tx); err != nil {
 					return err
 				}
 				recordMigration(tx, m)
@@ -77,6 +81,16 @@ func OpenLayer(path string, layer Layer) (*DB, error) {
 // Table 返回表（桶）句柄。
 func (db *DB) Table(name string) *Table {
 	return &Table{db: db, name: name}
+}
+
+// HasBucket 报告桶是否已存在（只读；诊断与测试用）。
+func (db *DB) HasBucket(name string) bool {
+	found := false
+	_ = db.b.View(func(tx *bolt.Tx) error {
+		found = tx.Bucket([]byte(name)) != nil
+		return nil
+	})
+	return found
 }
 
 // Layer 返回层标识。
