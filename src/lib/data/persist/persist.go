@@ -439,9 +439,9 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	case "prj-config", "prompt", "prj-security":
 		s.handleConfigKV(domain, op, payload)
 	case "scenario":
-		s.handleScenario(op, req)
+		s.handleScenario(op, payload)
 	case "mcp":
-		s.handleMCP(op, req)
+		s.handleMCP(op, payload)
 	case "session":
 		s.handleSession(op, payload)
 	case "inbox":

@@ -1,6 +1,7 @@
-// scenario 域 wire 往返白盒（req10，2026-10-15）：agent 的 skills / resources 名单在
-// 「消息面载荷 ↔ 门面 DTO」间往返——前端载荷（数组）与 capfs 读盘结果（JSON 数组文本）两种形态
-// 均可解析；写回（ScenarioToWire）输出数组，供 capfs.agentToDoc 的 refListOf 消费。
+// scenario 域 wire 白盒（req10，2026-10-15）：agent 的 skills / resources 名单在
+// 「场景行（读盘）/ 消息面载荷 → 门面 DTO」与「门面 DTO → 消息面应答」间往返——前端载荷（数组）与
+// capfs 读盘结果（JSON 数组文本）两种形态均可解析；写回（ScenarioToWire）输出数组，供
+// capfs.agentToDoc 的 refListOf 消费。
 package wire
 
 import (
@@ -9,9 +10,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 )
 
-// TestScenarioAgentSkillsResourcesFromWire 解析两种形态：前端数组载荷 + capfs JSON 数组文本。
+// TestScenarioAgentSkillsResourcesFromWire 解析两种形态：数组载荷 + capfs JSON 数组文本。
 func TestScenarioAgentSkillsResourcesFromWire(t *testing.T) {
-	// 前端载荷形态（数组）
+	// 数组形态
 	sc := ScenarioFromWire(map[string]any{
 		"id": "s1", "level": "user",
 		"agents": []any{

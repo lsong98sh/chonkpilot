@@ -1,13 +1,16 @@
-// 本文件是 **tasktree / knowledge / filelist / scenario / memory 五域**的
-// 「消息面载荷（61 绑定）↔ 门面领域 DTO」翻译层（续 `wire.go` 的 session / turn / message 三域）。
+// 本文件是 **tasktree / knowledge / filelist / scenario / memory** 等域的
+// 「门面领域 DTO → 消息面应答载荷」组装层（续 `wire.go` 的 session / turn / message 三域）。
 //
-// 为什么单独一层（G-33：wire 形状与门面 DTO 是两件事，不合并）：
+// 2026-10-25（payload struct 化）：**MQ 入参解析**已由 persist 各域的定死 struct（`persist/payload.go`）
+// 承担，逐域 `*FromWire` 随迁删除；本包只剩**出参组装**、filelist 单条 ↔ DTO 转换，以及
+// `ScenarioFromWire`（场景**读盘行** → DTO，供 internal/scenario 列举/定位）。
+//
+// 为什么保留出参组装（G-33：wire 形状与门面 DTO 是两件事，不合并）：
 //   - 门面 DTO 用**领域字段**（任务节点的 `ID` / `ParentID`、知识库的文档领域形态、清单条目的
 //     `DocIDs`、场景的 `Agents`、记忆条目的 `Category/Content`）；消息面用**绑定形状**
-//     （表列名 `node_id` / `doc_ids` / `systemPrompt`、契约分区文本、`{id,key}` 双写等）；
-//   - 三处消费方都讲同一套 wire：① persist 的 `data-<domain>-*` MQ handler（信封层）
-//     ② gui 桥 `dataCall`（同进程门面优先）③ browser 入口 `dataViaPersist`（同构）。
-//     把翻译收在本包 = **一份翻译**，三条路径的应答载荷因此**逐字一致**（零分叉）。
+//     （表列名 `node_id` / `doc_ids`、`{id,key}` 双写、可选键「非空才带」等）；
+//   - 应答载荷在 MQ（persist）与 browser 入口（`dataViaPersist`）两条路径共用同一份组装 →
+//     外形逐字一致（零分叉）。
 //
 // 归属：本包在 data 组件内（`chonkpilot-data/facade/wire`）——即 23 §7「翻译留在门面实现侧」
 // 的实现侧；门面定义包（`facade`）本身不引入任何 wire 知识。
@@ -389,7 +392,7 @@ func ScenarioToWire(sc facade.Scenario) map[string]any {
 	return out
 }
 
-// ScenarioFromWire 把消息面场景对象 / 保存载荷转成门面 DTO。
+// ScenarioFromWire 把场景行（`scenario.json` 读盘结果）转成门面 DTO（internal/scenario 列举/定位用）。
 func ScenarioFromWire(m map[string]any) facade.Scenario {
 	id := str(m["id"])
 	if id == "" {
@@ -446,21 +449,6 @@ func ScenarioIDResult(id string) map[string]any {
 	return map[string]any{"ok": true, msgkeys.DataScenarioSaveResultId: id}
 }
 
-// ScenarioGetFromWire 解析 `{id | data.id, level?}` → 门面入参。
-func ScenarioGetFromWire(m map[string]any) facade.ScenarioGetRequest {
-	return facade.ScenarioGetRequest{ScenarioID: RequestID(m), Level: str(m["level"])}
-}
-
-// ScenarioSaveFromWire 解析保存载荷（场景字段 + level）→ 门面入参。
-func ScenarioSaveFromWire(m map[string]any) facade.ScenarioSaveRequest {
-	return facade.ScenarioSaveRequest{Scenario: ScenarioFromWire(m)}
-}
-
-// ScenarioDeleteFromWire 解析 `{id, level?}` → 门面入参。
-func ScenarioDeleteFromWire(m map[string]any) facade.ScenarioDeleteRequest {
-	return facade.ScenarioDeleteRequest{ScenarioID: RequestID(m), Level: str(m["level"])}
-}
-
 // ── MCP 配置（mcp 域）────────────────────────────────────────────
 
 // McpServerToWire 把门面 MCP 定义转回消息面对象（字段名 = servers.list / 前端表单 / gateway
@@ -498,17 +486,6 @@ func McpServerToWire(s facade.McpServer) map[string]any {
 	return out
 }
 
-// McpServerFromWire 把消息面 MCP 对象 / 保存载荷转成门面 DTO（未知键忽略；三态指针按存在性还原）。
-func McpServerFromWire(m map[string]any) facade.McpServer {
-	var s facade.McpServer
-	b, err := json.Marshal(m)
-	if err != nil {
-		return s
-	}
-	_ = json.Unmarshal(b, &s)
-	return s
-}
-
 // McpListResult 组装 `data-mcp-list` 结果载荷 `{list:[…]}`。
 func McpListResult(list []facade.McpServer) map[string]any {
 	out := make([]any, 0, len(list))
@@ -521,33 +498,6 @@ func McpListResult(list []facade.McpServer) map[string]any {
 // McpGetResult 组装 `data-mcp-load` 结果载荷 `{data: 定义}`。
 func McpGetResult(s facade.McpServer) map[string]any {
 	return map[string]any{msgkeys.DataMcpLoadResultData: McpServerToWire(s)}
-}
-
-// McpGetFromWire 解析 `{name | id, level?}` → 门面入参。
-func McpGetFromWire(m map[string]any) facade.McpGetRequest {
-	name := str(m["name"])
-	if name == "" {
-		name = RequestID(m)
-	}
-	return facade.McpGetRequest{Name: name, Level: str(m["level"])}
-}
-
-// McpSaveFromWire 解析保存载荷 → 门面入参（`data` 平铺；name/level/old_name/old_level + 字段）。
-func McpSaveFromWire(m map[string]any) facade.McpSaveRequest {
-	return facade.McpSaveRequest{
-		Server:   McpServerFromWire(m),
-		OldName:  str(m["old_name"]),
-		OldLevel: str(m["old_level"]),
-	}
-}
-
-// McpDeleteFromWire 解析 `{name | id, level?}` → 门面入参。
-func McpDeleteFromWire(m map[string]any) facade.McpDeleteRequest {
-	name := str(m["name"])
-	if name == "" {
-		name = RequestID(m)
-	}
-	return facade.McpDeleteRequest{Name: name, Level: str(m["level"])}
 }
 
 // McpNameResult 组装 `{ok:true, name:<server 名>}`（save 应答）。
@@ -568,7 +518,7 @@ func strSliceAny(ss []string) []any {
 }
 
 // strListJSON 解析场景 agent 的**引用名单**（skills / resources）：兼容
-//   - 数组形态（[]any / []string）—— 前端载荷（61 §3.4 agents[] 元素）；
+//   - 数组形态（[]any / []string）—— 消息面 / 前端载荷（61 §3.4 agents[] 元素）；
 //   - JSON 数组文本（string）—— capfs 读盘结果（agentFromDoc 把契约 refs 序列化为 JSON 数组文本）；
 //   - 非 JSON 单值字符串 → 单元素名单。
 //

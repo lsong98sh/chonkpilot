@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/chonkpilot/chonkpilot-data/facade"
 )
 
 // Header 是所有 data-* 请求的公共头。
@@ -594,6 +596,174 @@ func nonNullRaw(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return raw
+}
+
+// rawText 把原始 JSON 标量/对象转存储字符串（字符串去引号、其余原文 —— 对齐旧 wire.str 口径）。
+func rawText(raw json.RawMessage) string {
+	raw = nonNullRaw(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return s
+		}
+	}
+	return string(raw)
+}
+
+// rawStrList 解析引用名单：JSON 数组文本 / 数组（两种形态都接受），空元素剔除（= 旧 strListJSON）。
+func rawStrList(raw json.RawMessage) []string {
+	raw = nonNullRaw(raw)
+	if len(raw) == 0 {
+		return nil
+	}
+	if raw[0] == '"' { // JSON 数组文本（capfs 读盘形态）
+		var text string
+		if json.Unmarshal(raw, &text) != nil {
+			return nil
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return nil
+		}
+		var arr []string
+		if json.Unmarshal([]byte(text), &arr) != nil {
+			return []string{text}
+		}
+		return cleanStrList(arr)
+	}
+	var arr []string
+	if json.Unmarshal(raw, &arr) != nil {
+		return nil
+	}
+	return cleanStrList(arr)
+}
+
+// cleanStrList 去空白元素（全空 → nil）。
+func cleanStrList(arr []string) []string {
+	out := make([]string, 0, len(arr))
+	for _, s := range arr {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ── mcp（MCP 配置域；61 §3.1）──
+
+// McpPayload 是 data-mcp-* 的载荷（server 字段与门面 DTO 同形 → 直接内嵌复用）。
+type McpPayload struct {
+	Header
+	ID  ID `json:"id,omitempty"`
+	Key ID `json:"key,omitempty"`
+	// OldName / OldLevel 改名前的定位（save）。
+	OldName  string `json:"old_name,omitempty"`
+	OldLevel string `json:"old_level,omitempty"`
+	facade.McpServer
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// merged 合并两形载荷（`data` 优先、顶层补缺）。
+func (p McpPayload) merged() McpPayload {
+	q := p
+	q.Data = nil // 只把顶层业务字段作为「补缺」来源，避免 data 自嵌套
+	return mergeFlat(q, p.Data)
+}
+
+// target 取请求目标名：`name` → 顶层 id → data.id → data.key（= 旧 RequestID 口径）。
+func (p McpPayload) target() string {
+	if p.Name != "" {
+		return p.Name
+	}
+	if p.ID != "" {
+		return string(p.ID)
+	}
+	return string(p.Key)
+}
+
+// ── scenario（场景域；61 §3.4）──
+
+// ScenarioPayload 是 data-scenario-* 的载荷（场景字段平铺 + `{data:{…}}` 两形）。
+type ScenarioPayload struct {
+	Header
+	ID  ID `json:"id,omitempty"`
+	Key ID `json:"key,omitempty"`
+	ScenarioData
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// ScenarioData 是场景的业务字段（agent 列表见 ScenarioAgentPayload）。
+type ScenarioData struct {
+	Name        string                 `json:"name,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Level       string                 `json:"level,omitempty"`
+	Agents      []ScenarioAgentPayload `json:"agents,omitempty"`
+	CreatedAt   string                 `json:"createdAt,omitempty"`
+	UpdatedAt   string                 `json:"updatedAt,omitempty"`
+}
+
+// ScenarioAgentPayload 是场景内单个 agent（`skills` / `resources` 兼容数组与 JSON 数组文本）。
+type ScenarioAgentPayload struct {
+	Name         string          `json:"name,omitempty"`
+	Description  string          `json:"description,omitempty"`
+	RoleTag      string          `json:"roleTag,omitempty"`
+	IsMain       BoolValue       `json:"isMain,omitempty"`
+	Prompt       string          `json:"prompt,omitempty"`
+	Tools        json.RawMessage `json:"tools,omitempty"`
+	Skills       json.RawMessage `json:"skills,omitempty"`
+	Resources    json.RawMessage `json:"resources,omitempty"`
+	LLMRef       string          `json:"llmRef,omitempty"`
+	DelegateCond string          `json:"delegateCond,omitempty"`
+	Ref          string          `json:"ref,omitempty"`
+}
+
+// merged 合并两形载荷（`data` 优先、顶层补缺）。
+func (p ScenarioPayload) merged() ScenarioPayload {
+	q := p
+	q.Data = nil // 只把顶层业务字段作为「补缺」来源，避免 data 自嵌套
+	return mergeFlat(q, p.Data)
+}
+
+// target 取场景 id：`id` → `key`（= 旧 RequestID 口径）。
+func (p ScenarioPayload) target() string {
+	if p.ID != "" {
+		return string(p.ID)
+	}
+	return string(p.Key)
+}
+
+// scenarioOf 把载荷转门面场景 DTO（id 必填；agents 逐项转领域字段）。
+func scenarioOf(p ScenarioPayload) facade.Scenario {
+	sc := facade.Scenario{
+		ID:          p.target(),
+		Name:        p.Name,
+		Description: p.Description,
+		Level:       p.Level,
+		CreatedAt:   p.CreatedAt,
+		UpdatedAt:   p.UpdatedAt,
+	}
+	for _, a := range p.Agents {
+		sc.Agents = append(sc.Agents, facade.ScenarioAgent{
+			Name:         a.Name,
+			Description:  a.Description,
+			RoleTag:      a.RoleTag,
+			IsMain:       bool(a.IsMain),
+			Prompt:       a.Prompt,
+			Tools:        rawText(a.Tools),
+			Skills:       rawStrList(a.Skills),
+			Resources:    rawStrList(a.Resources),
+			LLMRef:       a.LLMRef,
+			DelegateCond: a.DelegateCond,
+			Ref:          a.Ref,
+		})
+	}
+	return sc
 }
 
 // configEntries 把 save 的 data 归一为键值批：`entries` 非空优先（id = 字典序首键），
