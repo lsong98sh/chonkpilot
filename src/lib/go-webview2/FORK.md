@@ -40,7 +40,7 @@
 | P1 | 生命周期 | `webview.go`（`windowContext` / `delWindowContext` / `wndproc` WM_DESTROY） | 窗口销毁（WM_DESTROY）清理 `windowContext` 条目，避免多窗口反复开关时 `*webview` 永久泄漏（**D-28**）；WM_NCCREATE 期间登记 `*webview`（使首个 WM_NCCALCSIZE 即按 frameless 处理）。 |
 | P2 | 窗口样式 | `webview.go`（`WebViewOptions.Frameless` / `wndproc` WM_NCCALCSIZE / `CreateWithOptions`） | 无边框窗口支持：WM_NCCALCSIZE 返回 0 隐藏原生标题栏/边框；保留 `WS_OVERLAPPEDWINDOW` 使原生 resize/最大化/贴靠保持；最大化时把客户区钳到监视器工作区。 |
 | P3 | 窗口样式 | `webview.go`（`WebViewOptions.Hidden` / `Show` / `WebViewLifecycle`） | 建窗后可先隐藏，导航完成后 `Show()`，避免首屏白闪；`WebViewLifecycle.SetNavigationCompletedCallback` 供宿主挂导航完成回调。 |
-| P4 | 窗口样式 | `webview.go`（`WindowResizer` / `StartResize`） | 前端命中方位后调用 `StartResize(HT*)` 进入系统原生 **resize** 模态循环；同一入口传 `HTCAPTION(2)` 即进入系统**移动**循环（frameless 主窗口顶栏拖拽，G-63）。 |
+| P4 | 窗口样式 | `webview.go`（`WindowResizer` / `StartResize` / `HitCode` + `Hit*` 常量） | 前端命中方位后调用 `StartResize(HT*)` 进入系统原生 **resize** 模态循环；同一入口传 `HTCAPTION(2)` 即进入系统**移动**循环（frameless 主窗口顶栏拖拽，G-63）。**2026-10-25 封装**：命中方位名 → HT* 编码的映射收进本包（`HitCode("left"/…/"caption")`），宿主不再持有 Win32 命中码表。 |
 | P5 | DevTools | `webview.go`（`WebViewOptions.DevToolsDisabled` / `DevTools` / `OpenDevToolsWindow`） | 屏蔽用户 F12/右键菜单开 DevTools，同时保留宿主机**程序化**打开能力（`DevTools.OpenDevToolsWindow`）。 |
 | P6 | 加速键 | `webview.go`（`Accelerator` / `SetAcceleratorKeyCallback`） | 拦截加速键（如 F12），返回 true 表示吞掉、false 交 WebView2 处理。 |
 | P7 | 脚本 | `webview.go`（`ScriptEval` / `EvalWithResult`） | 同步执行 JS 并取回 JSON 结果（阻塞至完成回调或超时）；**不可在 UI 线程调用**（会死锁）。 |

@@ -5,8 +5,15 @@
  * 零轮询、零 watch（项目规则：状态用 composable 封装，组件只读派生值）。
  */
 import { reactive } from 'vue'
-import mq from '../utils/mq'
-import { registerPluginViews, unregisterPluginViews } from '../layout/views.registry.js'
+import { pluginHost } from './host.js'
+
+// 宿主端口适配（保持包内调用形态不变）：mq / 视图注册表均由宿主注入。
+const mq = {
+  on: (...args) => pluginHost().mq.on(...args),
+  emit: (...args) => pluginHost().mq.emit(...args),
+}
+const registerPluginViews = (plugin) => pluginHost().views.register(plugin)
+const unregisterPluginViews = (id) => pluginHost().views.unregister(id)
 
 const state = reactive({
   plugins: [],

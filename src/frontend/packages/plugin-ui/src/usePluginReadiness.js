@@ -18,7 +18,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { pluginById, subscribePluginChange } from './usePlugins'
-import { pluginUIPageURL } from '../components/plugin/pluginUiRoute.js'
+import { pluginUIPageURL } from './pluginUiRoute.js'
 
 /** 首次加载超时（毫秒）：超时即视为未就绪（iframe 常因 404 空文档而**不**触发 load 之外的可观测信号）。 */
 export const LOAD_TIMEOUT_MS = 3000

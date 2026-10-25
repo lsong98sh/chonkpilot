@@ -138,7 +138,7 @@ test('④ 重复设置页已删除，src 内无残留引用', () => {
 test('④ 设置入口嵌入 codebase 插件配置页（复用 PluginPageHost，不自造 iframe）', () => {
   const pc = read('views/preview/ProjectConfig.vue')
   // 复用既有插件 view 机制：PluginPageHost + 插件元数据（plugin:<id>:<view>）
-  assert.match(pc, /import PluginPageHost from '\.\.\/\.\.\/components\/plugin\/PluginPageHost\.vue'/, '须复用 PluginPageHost')
+  assert.match(pc, /import PluginPageHost from '\.\.\/\.\.\/\.\.\/packages\/plugin-ui\/src\/PluginPageHost\.vue'/, '须复用 PluginPageHost')
   assert.match(pc, /pluginView\(CODEBASE_PLUGIN_ID, CODEBASE_CONFIG_VIEW_ID\)/, '须按插件 view 元数据取 entry')
   assert.match(pc, /const CODEBASE_PLUGIN_ID = 'codebase'/)
   assert.match(pc, /const CODEBASE_CONFIG_VIEW_ID = 'config'/)

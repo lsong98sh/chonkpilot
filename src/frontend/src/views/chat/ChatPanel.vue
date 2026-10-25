@@ -242,7 +242,7 @@ import { useUserConfig } from '../../composables/useUserConfig'
 import { useCompressStatus } from '../../composables/useCompressStatus'
 import { useQueueStatus } from '../../composables/useQueueStatus'
 import { needsLLMConfigHint } from '../../utils/llmSetup'
-import { pluginFailureText } from '../../utils/pluginNotice'
+import { pluginFailureText } from '../../../packages/plugin-ui/src/pluginNotice.js'
 import { classifyError } from '../../utils/errorMessage'
 import { useSelectionStore } from '../../stores/selection'
 

@@ -21,7 +21,7 @@
 import { computed } from 'vue'
 import LfBarZones from '../layout-free/components/bar/LfBarZones.vue'
 import { getLayoutEngine } from './index.js'
-import { pluginBarItems } from './pluginBar.js'
+import { pluginBarItems } from '../../packages/plugin-ui/src/pluginBar.js'
 
 const engine = getLayoutEngine()
 

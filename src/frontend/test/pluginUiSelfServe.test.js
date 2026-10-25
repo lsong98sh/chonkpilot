@@ -16,12 +16,14 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
-import { PLUGIN_UI_PREFIX, pluginUIPageURL } from '../src/components/plugin/pluginUiRoute.js'
+import { PLUGIN_UI_PREFIX, pluginUIPageURL } from '../packages/plugin-ui/src/pluginUiRoute.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const repoDir = join(here, '..', '..', '..')
 const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const pkgDir = join(here, '..', 'packages', 'plugin-ui', 'src')
+const readPkg = (rel) => readFileSync(join(pkgDir, rel), 'utf8')
 
 /** 递归列出目录下的全部文件（绝对路径）。 */
 function walkFiles(dir) {
@@ -44,7 +46,7 @@ test('① 路由统一：一律 /plugins/<id>/<entry>（entry 原样保留，不
     pluginUIPageURL('browser', 'webui/config.html'),
     '/plugins/browser/webui/config.html',
   )
-  const route = read('components/plugin/pluginUiRoute.js')
+  const route = readPkg('pluginUiRoute.js')
   assert.doesNotMatch(route, /pluginUIPrefix/, '前缀分流函数已删除')
   assert.doesNotMatch(
     route,
@@ -54,11 +56,11 @@ test('① 路由统一：一律 /plugins/<id>/<entry>（entry 原样保留，不
 })
 
 test('② PluginPageHost：sandbox 含 allow-same-origin；不再接收 selfServe 分流属性', () => {
-  const host = read('components/plugin/PluginPageHost.vue')
+  const host = readPkg('PluginPageHost.vue')
   assert.match(host, /sandbox="allow-scripts allow-forms allow-same-origin"/, 'sandbox 须放开 same-origin')
   assert.doesNotMatch(host, /selfServe/, '宿主页壳不再按 self_serve 分流')
   // PLUGIN-UI-1 就绪态收口：src 的拼接移入 usePluginReadiness（统一前缀）
-  const readiness = read('composables/usePluginReadiness.js')
+  const readiness = readPkg('usePluginReadiness.js')
   assert.match(readiness, /pluginUIPageURL\(props\.pluginId, props\.entry\)/, '前缀须统一（无 selfServe 参数）')
   assert.doesNotMatch(readiness, /selfServe/, '就绪态不再按 self_serve 分流')
   assert.doesNotMatch(host, /`\/plugin-ui\/\$\{/, '不得内联旧前缀硬编码（统一走 pluginUiRoute）')
@@ -66,7 +68,7 @@ test('② PluginPageHost：sandbox 含 allow-same-origin；不再接收 selfServ
 })
 
 test('③ ckMq 受控入口：只有 on/off/emit；frame 重载 / 卸载 / beforeunload 全部退订', () => {
-  const host = read('components/plugin/PluginPageHost.vue')
+  const host = readPkg('PluginPageHost.vue')
   assert.match(host, /__ckMqBind/, '须支持 ck-mq.js 注入点（补投注入前排队调用）')
   assert.match(host, /win\.ckMq = api/, '未引入 ck-mq.js 时须直接挂 contentWindow.ckMq')
   for (const m of ['on(topic, cb)', 'off(topic, cb)', 'emit(topic, payload)']) {
@@ -94,7 +96,7 @@ test('④ 注册面 / 设置页 / 预览页签不再透传 self_serve（路由�
 })
 
 test('⑤ pluginAction：注入 X-CK-Plugin-Id，成功取 result / 失败抛错误信封', async () => {
-  const { pluginAction } = await import('../src/utils/pluginAction.js')
+  const { pluginAction } = await import('../packages/plugin-ui/src/pluginAction.js')
   const calls = []
   const origFetch = globalThis.fetch
   try {
@@ -180,6 +182,8 @@ test('⑧ 源码守卫：无 /plugin-ui/ 资源拼接（仅允许 _sdk/plugin.js
     const code = readFileSync(file, 'utf8')
     for (const m of code.matchAll(/\/plugin-ui\/[^\s"'`)]*/g)) {
       if (m[0] === '/plugin-ui/_sdk/plugin.js') continue
+      // 2026-10-25（D-70 ②）：`packages/plugin-ui/**` 是同仓 npm 包的真实导入路径，不是旧资源前缀。
+      if (code.slice(Math.max(0, m.index - 'packages'.length), m.index) === 'packages') continue
       offenders.push(`${relative(srcDir, file)}: ${m[0]}`)
     }
   }

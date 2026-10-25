@@ -24,12 +24,26 @@ await new Promise((r) => setTimeout(r, 0))
 const { PluginPageHost, usePlugins, mq, AUTO_RETRY_LIMIT } = await loadModules()
 
 async function loadModules() {
-  const [host, plugins, mqMod, readiness] = await Promise.all([
-    import('../src/components/plugin/PluginPageHost.vue'),
-    import('../src/composables/usePlugins.js'),
+  const [host, plugins, mqMod, readiness, pkg] = await Promise.all([
+    import('../packages/plugin-ui/src/PluginPageHost.vue'),
+    import('../packages/plugin-ui/src/usePlugins.js'),
     import('../src/utils/mq.js'),
-    import('../src/composables/usePluginReadiness.js'),
+    import('../packages/plugin-ui/src/usePluginReadiness.js'),
+    import('../packages/plugin-ui/src/index.js'),
   ])
+  // 插件 UI 包宿主端口（D-70 ②）：测试用宿主 mq + 极简组件/主题桩。
+  pkg.configurePluginUI({
+    host: {
+      mq: { on: (...a) => mqMod.default.on(...a), emit: (...a) => mqMod.default.emit(...a) },
+      views: { register: () => {}, unregister: () => {} },
+    },
+    theme: { subscribe: () => () => {}, snapshot: () => ({}) },
+    components: {
+      Icon: { name: 'Icon', render: () => null },
+      Button: { name: 'Button', render: () => null },
+      Switch: { name: 'Switch', render: () => null },
+    },
+  })
   return {
     PluginPageHost: host.default,
     usePlugins: plugins.usePlugins,
@@ -41,6 +55,8 @@ async function loadModules() {
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const pkgDir = join(here, '..', 'packages', 'plugin-ui', 'src')
+const readPkg = (rel) => readFileSync(join(pkgDir, rel), 'utf8')
 
 const restoreDom = installDomStubs()
 after(restoreDom)
@@ -60,7 +76,7 @@ before(async () => {
   }
   // 只装一次事件链（幂等）：让 `plugin-status` 能经 usePlugins 推到订阅者
   usePlugins()
-  const { initPlugins } = await import('../src/composables/usePlugins.js')
+  const { initPlugins } = await import('../packages/plugin-ui/src/usePlugins.js')
   initPlugins()
   await flush()
 })
@@ -224,8 +240,8 @@ test('③ 状态转 running 自动重试上限 3 次；超限后仅手动重试�
 })
 
 test('④ 源码守卫：零 watch / 零 watchEffect；iframe 有 error 回调；zh/en 文案齐备', () => {
-  const readiness = read('composables/usePluginReadiness.js')
-  const host = read('components/plugin/PluginPageHost.vue')
+  const readiness = readPkg('usePluginReadiness.js')
+  const host = readPkg('PluginPageHost.vue')
 
   for (const [name, code] of [['usePluginReadiness', readiness], ['PluginPageHost', host]]) {
     assert.doesNotMatch(code, /\bwatch\s*\(/, `${name} 不得使用 watch`)

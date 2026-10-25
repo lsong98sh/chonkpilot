@@ -4,7 +4,7 @@
  * 规则：不写入布局文档（插件禁用即消失）；`command.target=host` 打开插件视图，
  * `command.target=plugin` 转发 `plugin-command`。
  */
-import { usePlugins } from '../composables/usePlugins'
+import { usePlugins } from './usePlugins.js'
 
 function normalizeCommand(plugin, cmd) {
   if (!cmd) {

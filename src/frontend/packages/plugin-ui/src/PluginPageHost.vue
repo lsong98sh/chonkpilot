@@ -38,11 +38,18 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import mq from '../../utils/mq'
-import Icon from '../../components/icon/Icon.vue'
-import { subscribeTheme, themeSnapshot } from '../../composables/useTheme.js'
-import { usePluginReadiness } from '../../composables/usePluginReadiness.js'
-import { pluginAction } from '../../utils/pluginAction.js'
+import { pluginHost } from './host.js'
+import { pluginUIComponents } from './components.js'
+import { subscribePluginTheme as subscribeTheme, pluginThemeSnapshot as themeSnapshot } from './theme.js'
+import { usePluginReadiness } from './usePluginReadiness.js'
+import { pluginAction } from './pluginAction.js'
+
+// 宿主端口适配：mq 由依赖注入，设计系统组件由宿主注册。
+const mq = {
+  on: (...args) => pluginHost().mq.on(...args),
+  emit: (...args) => pluginHost().mq.emit(...args),
+}
+const { Icon } = pluginUIComponents()
 
 const props = defineProps({
   pluginId: { type: String, required: true },

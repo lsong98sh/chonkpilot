@@ -20,7 +20,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { needsLLMConfigHint } from '../src/utils/llmSetup.js'
-import { pluginFailureText } from '../src/utils/pluginNotice.js'
+import { pluginFailureText } from '../packages/plugin-ui/src/pluginNotice.js'
 import { refreshUserConfig } from '../src/utils/llmConfigRefresh.js'
 import { fileOpErrorText } from '../src/utils/fileOpError.js'
 
@@ -536,7 +536,7 @@ test('⑤ C · 接线：i18n 注册 pluginFailure；ChatPanel 按 key 映射并�
   assert.match(src, /pluginFailureText\(data, t, te\)/, '须传 i18n 的 t/te（te 用于回落判定）')
   assert.match(src, /data\.message \|\| data\.text/, '非插件失败通知仍走既有 message/text')
 
-  const util = read('utils/pluginNotice.js')
+  const util = readFileSync(join(here, '..', 'packages', 'plugin-ui', 'src', 'pluginNotice.js'), 'utf8')
   assert.match(util, /te\(NS \+ '\.what\.' \+ plugin\)/, '未登记插件须以 te 判定并回落')
   assert.match(util, /return fallback/, '映射缺失须回落宿主原文')
 })

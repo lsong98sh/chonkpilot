@@ -78,7 +78,7 @@ test('③ 设置导航：插件维护卡片按 config_view 打开 plugin:<id>:co
   const persist = read('layout/persist.js')
   assert.match(persist, /tb_set_plugins[\s\S]*plugin-manager/, '设置菜单缺「插件维护」入口')
   // 卡片：config_view → openView → plugin:<id>:<view>
-  const page = read('views/plugins/PluginManagerPage.vue')
+  const page = readFileSync(join(here, '..', 'packages', 'plugin-ui', 'src', 'PluginManagerPage.vue'), 'utf8')
   assert.match(page, /p\.config_view/, '插件维护卡片须按 config_view 显示配置按钮')
   assert.match(page, /const viewKey = `plugin:\$\{p\.id\}:\$\{viewId\}`/, '配置按钮须打开 plugin:<id>:<view>')
   // 注册面：manifest 的 views → 可解析 key（命令落点不落空）

@@ -81,10 +81,16 @@
 
 <script setup>
 import { reactive } from 'vue'
-import { Button, Switch } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
-import mq from '../../utils/mq'
-import { usePlugins } from '../../composables/usePlugins'
+import { pluginHost } from './host.js'
+import { pluginUIComponents } from './components.js'
+import { usePlugins } from './usePlugins.js'
+
+// 宿主端口适配：mq 由依赖注入，设计系统组件由宿主注册。
+const mq = {
+  on: (...args) => pluginHost().mq.on(...args),
+  emit: (...args) => pluginHost().mq.emit(...args),
+}
+const { Button, Switch, Icon } = pluginUIComponents()
 
 const { state, refresh } = usePlugins()
 const pending = reactive({})

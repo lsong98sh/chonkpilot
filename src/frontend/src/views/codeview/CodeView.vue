@@ -187,8 +187,8 @@ import { EventNames } from '../../events/event-names'
 import { GuiInitDataKeys } from '../../events/msgkeys'
 import { useSelectionStore } from '../../stores/selection'
 import { pickAndOpenDir } from '../../layout/workdirActions'
-import PluginPageHost from '../../components/plugin/PluginPageHost.vue'
-import { usePlugins } from '../../composables/usePlugins'
+import PluginPageHost from '../../../packages/plugin-ui/src/PluginPageHost.vue'
+import { usePlugins } from '../../../packages/plugin-ui/src/usePlugins.js'
 
 const baseViewerOptions = { preset: [litePreset, officePreset], theme: 'light' }
 const { pluginView } = usePlugins()
@@ -290,7 +290,7 @@ const specialComponents = {
   'status-compress': defineAsyncComponent(() => import('../status/CompressStatusDetail.vue')),
   'status-index': defineAsyncComponent(() => import('../status/IndexStatusDetail.vue')),
   // 插件管理页（PLUGIN-1）
-  'plugin-manager': defineAsyncComponent(() => import('../plugins/PluginManagerPage.vue')),
+  'plugin-manager': defineAsyncComponent(() => import('../../../packages/plugin-ui/src/PluginManagerPage.vue')),
 }
 const PLUGIN_PAGE_PREFIX = 'plugin-page:'
 function pluginPageKeyOf(kind) {

@@ -30,7 +30,7 @@ import CompressStatusView from './bar-views/CompressStatusView.vue'
 import MemoryStatusDetail from '../views/status/MemoryStatusDetail.vue'
 import CompressStatusDetail from '../views/status/CompressStatusDetail.vue'
 import IndexStatusDetail from '../views/status/IndexStatusDetail.vue'
-import PluginPageHost from '../components/plugin/PluginPageHost.vue'
+import PluginPageHost from '../../packages/plugin-ui/src/PluginPageHost.vue'
 import {
   createViewRegistry,
   registerPluginViews as registerPluginViewsWith,
