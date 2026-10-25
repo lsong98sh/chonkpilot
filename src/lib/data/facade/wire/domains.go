@@ -230,55 +230,6 @@ func TasktreeTasksResult(list []facade.Task) map[string]any {
 	return map[string]any{msgkeys.DataTasktreeTasksResultList: out}
 }
 
-// TasktreeListFromWire 解析 `{top_session?, id?, mode?, include_closed?, shadow?, dialog_id?}` → 门面入参。
-func TasktreeListFromWire(m map[string]any) facade.TasktreeListRequest {
-	top := str(m["top_session"])
-	if top == "" {
-		top = RequestID(m)
-	}
-	return facade.TasktreeListRequest{
-		DialogID:      str(m["dialog_id"]),
-		TopSession:    top,
-		Mode:          str(m["mode"]),
-		IncludeClosed: truthy(m["include_closed"]),
-		Shadow:        truthy(m["shadow"]),
-	}
-}
-
-// TasktreeTasksFromWire 解析 `{session_id?, top_session?, include_closed?, shadow?, dialog_id?}` → 门面入参。
-func TasktreeTasksFromWire(m map[string]any) facade.TasktreeTasksRequest {
-	return facade.TasktreeTasksRequest{
-		DialogID:      str(m["dialog_id"]),
-		SessionID:     str(m["session_id"]),
-		TopSession:    str(m["top_session"]),
-		IncludeClosed: truthy(m["include_closed"]),
-		Shadow:        truthy(m["shadow"]),
-	}
-}
-
-// TasktreeUpsertFromWire 解析 `data-tasktree-upsert` 载荷 → 门面入参（节点字段 = 领域字段）。
-func TasktreeUpsertFromWire(m map[string]any) facade.TasktreeUpsertRequest {
-	node := TaskNodeFromWire(m)
-	if node.Title == "" {
-		node.Title = str(m["name"]) // 兼容旧形态：name 即标题
-	}
-	return facade.TasktreeUpsertRequest{DialogID: str(m["dialog_id"]), Node: node, Shadow: truthy(m["shadow"])}
-}
-
-// TasktreeDeleteFromWire 解析 `{node_id | id | filter.node_id, shadow?, dialog_id?}` → 门面入参。
-func TasktreeDeleteFromWire(m map[string]any) facade.TasktreeDeleteRequest {
-	id := str(m["node_id"])
-	if id == "" {
-		id = RequestID(m)
-	}
-	if id == "" {
-		if f, ok := m["filter"].(map[string]any); ok {
-			id = str(f["node_id"])
-		}
-	}
-	return facade.TasktreeDeleteRequest{DialogID: str(m["dialog_id"]), NodeID: id, Shadow: truthy(m["shadow"])}
-}
-
 // ── 知识库（knowledge 域）────────────────────────────────────────
 
 // KnowledgeRootResult 组装 `data-knowledge-root` 结果载荷 `{root, kind}`。
@@ -315,88 +266,6 @@ func KnowledgeReadResult(resp facade.KnowledgeReadResponse) map[string]any {
 		msgkeys.DataKnowledgeReadResultSource: resp.Source,
 		msgkeys.DataKnowledgeReadResultDoc:    resp.Doc,
 	}
-}
-
-// KnowledgeDocFromWire 解析载荷里的 `doc` 对象 → 门面文档领域形态。
-func KnowledgeDocFromWire(m map[string]any) facade.KnowledgeDoc {
-	var doc facade.KnowledgeDoc
-	b, err := json.Marshal(m)
-	if err != nil {
-		return doc
-	}
-	_ = json.Unmarshal(b, &doc)
-	return doc
-}
-
-// KnowledgeRootFromWire 解析 `{kind?}` → 门面入参。
-func KnowledgeRootFromWire(m map[string]any) facade.KnowledgeRootRequest {
-	return facade.KnowledgeRootRequest{Kind: str(m["kind"])}
-}
-
-// KnowledgeListFromWire 解析 `{dir?}` → 门面入参。
-func KnowledgeListFromWire(m map[string]any) facade.KnowledgeListRequest {
-	return facade.KnowledgeListRequest{Dir: str(m["dir"])}
-}
-
-// KnowledgeReadFromWire 解析 `{path}` → 门面入参。
-func KnowledgeReadFromWire(m map[string]any) facade.KnowledgeReadRequest {
-	return facade.KnowledgeReadRequest{Path: str(m["path"])}
-}
-
-// KnowledgeSaveFromWire 解析 `{path, doc}` → 门面入参。
-func KnowledgeSaveFromWire(m map[string]any) facade.KnowledgeSaveRequest {
-	doc, _ := m["doc"].(map[string]any)
-	return facade.KnowledgeSaveRequest{Path: str(m["path"]), Doc: KnowledgeDocFromWire(doc)}
-}
-
-// KnowledgeCreateFromWire 解析 `{dir?, type, name}` → 门面入参。
-func KnowledgeCreateFromWire(m map[string]any) facade.KnowledgeCreateRequest {
-	return facade.KnowledgeCreateRequest{Dir: str(m["dir"]), Type: str(m["type"]), Name: str(m["name"])}
-}
-
-// KnowledgeDeleteFromWire 解析 `{path}` → 门面入参。
-func KnowledgeDeleteFromWire(m map[string]any) facade.KnowledgeDeleteRequest {
-	return facade.KnowledgeDeleteRequest{Path: str(m["path"])}
-}
-
-// KnowledgeRenameFromWire 解析 `{path, new_name}` → 门面入参。
-func KnowledgeRenameFromWire(m map[string]any) facade.KnowledgeRenameRequest {
-	return facade.KnowledgeRenameRequest{Path: str(m["path"]), NewName: str(m["new_name"])}
-}
-
-// KnowledgeMkdirFromWire 解析 `{parent?, name}` → 门面入参。
-func KnowledgeMkdirFromWire(m map[string]any) facade.KnowledgeMkdirRequest {
-	return facade.KnowledgeMkdirRequest{Parent: str(m["parent"]), Name: str(m["name"])}
-}
-
-// KnowledgeRmdirFromWire 解析 `{path}` → 门面入参。
-func KnowledgeRmdirFromWire(m map[string]any) facade.KnowledgeRmdirRequest {
-	return facade.KnowledgeRmdirRequest{Path: str(m["path"])}
-}
-
-// KnowledgeRenameDirFromWire 解析 `{path, new_name}` → 门面入参。
-func KnowledgeRenameDirFromWire(m map[string]any) facade.KnowledgeRenameDirRequest {
-	return facade.KnowledgeRenameDirRequest{Path: str(m["path"]), NewName: str(m["new_name"])}
-}
-
-// KnowledgeImportFromWire 解析 `{dir?, files:[{name, content}]}` → 门面入参（61 §3.3
-// `data-knowledge-import`；`content` = base64 文件字节，缺省 = 空文件）。非对象元素跳过。
-func KnowledgeImportFromWire(m map[string]any) facade.KnowledgeImportRequest {
-	req := facade.KnowledgeImportRequest{Dir: str(m["dir"])}
-	raw, ok := m["files"].([]any)
-	if !ok {
-		return req
-	}
-	for _, e := range raw {
-		fm, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		req.Files = append(req.Files, facade.KnowledgeImportFile{
-			Name: str(fm["name"]), Content: str(fm["content"]),
-		})
-	}
-	return req
 }
 
 // ── 文件清单（filelist 域）────────────────────────────────────────
@@ -763,21 +632,6 @@ func MemoryIDResult(id string) map[string]any {
 	return map[string]any{"ok": true, msgkeys.DataMemorySaveResultId: id}
 }
 
-// MemoryGetFromWire 解析 `{category}` → 门面入参（读单类全文）。
-func MemoryGetFromWire(m map[string]any) facade.MemoryGetRequest {
-	return facade.MemoryGetRequest{Category: str(m["category"])}
-}
-
-// MemorySaveFromWire 解析 `{category, content}` → 门面入参。
-func MemorySaveFromWire(m map[string]any) facade.MemorySaveRequest {
-	return facade.MemorySaveRequest{Category: str(m["category"]), Content: str(m["content"])}
-}
-
-// MemoryDeleteFromWire 解析 `{category}` → 门面入参（删自定义类别）。
-func MemoryDeleteFromWire(m map[string]any) facade.MemoryDeleteRequest {
-	return facade.MemoryDeleteRequest{Category: str(m["category"])}
-}
-
 // ── 记忆提取进度（data-memory-extract-*；OP-05/06，2026-10-06）──────────
 
 // MemoryExtractListResult 组装 `data-memory-extract-load` 结果载荷
@@ -790,29 +644,4 @@ func MemoryExtractListResult(list []facade.MemoryExtractRecord) map[string]any {
 		})
 	}
 	return map[string]any{msgkeys.FieldList: out}
-}
-
-// MemoryExtractLoadFromWire 解析 `{session_id, category?}` → 门面入参（读进度，Category 空 = 全部类别）。
-func MemoryExtractLoadFromWire(m map[string]any) facade.MemoryExtractLoadRequest {
-	return facade.MemoryExtractLoadRequest{
-		SessionID: str(m["session_id"]),
-		Category:  str(m["category"]),
-	}
-}
-
-// MemoryExtractSaveFromWire 解析 `{session_id, category, last_turn_id}` → 门面入参（写进度）。
-func MemoryExtractSaveFromWire(m map[string]any) facade.MemoryExtractSaveRequest {
-	return facade.MemoryExtractSaveRequest{
-		SessionID:  str(m["session_id"]),
-		Category:   str(m["category"]),
-		LastTurnID: str(m["last_turn_id"]),
-	}
-}
-
-// MemoryExtractDeleteFromWire 解析 `{session_id, category?}` → 门面入参（删进度，Category 空 = 整会话）。
-func MemoryExtractDeleteFromWire(m map[string]any) facade.MemoryExtractDeleteRequest {
-	return facade.MemoryExtractDeleteRequest{
-		SessionID: str(m["session_id"]),
-		Category:  str(m["category"]),
-	}
 }

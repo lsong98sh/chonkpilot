@@ -453,11 +453,11 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	case "snapshot":
 		s.handleSnapshot(op, payload)
 	case "knowledge":
-		s.handleKnowledge(op, req, payload)
+		s.handleKnowledge(op, payload)
 	case "tasktree":
-		s.handleTasktree(op, req, payload)
+		s.handleTasktree(op, payload)
 	case "memory":
-		s.handleMemory(op, req)
+		s.handleMemory(op, payload)
 	case "filelist":
 		s.handleFileList(op, req)
 	case "index":

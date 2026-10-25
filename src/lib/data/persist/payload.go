@@ -315,23 +315,23 @@ func mergeFlat[T any](flat T, raw json.RawMessage) T {
 
 // InboxData 是 inbox 域的业务字段（append / list / update / commit 共用）。
 type InboxData struct {
-	ID             ID             `json:"id,omitempty"`
-	InboxID        string         `json:"inbox_id,omitempty"`
-	DialogID       string         `json:"dialog_id,omitempty"`
-	Session        string         `json:"session,omitempty"`
-	SessionID      string         `json:"session_id,omitempty"`
-	TurnID         string         `json:"turn_id,omitempty"`
-	Type           string         `json:"type,omitempty"`
-	LLM            string         `json:"llm,omitempty"`
-	Content        string         `json:"content,omitempty"`
-	Think          any            `json:"think,omitempty"`
-	Effort         any            `json:"effort,omitempty"`
-	ScenarioID     string         `json:"scenario_id,omitempty"`
-	IdempotencyKey string         `json:"idempotency_key,omitempty"`
-	Source         string         `json:"source,omitempty"`
-	Status         string         `json:"status,omitempty"`
-	Brief          string         `json:"brief,omitempty"`
-	ToolCallStatus string         `json:"tool_call_status,omitempty"`
+	ID             ID     `json:"id,omitempty"`
+	InboxID        string `json:"inbox_id,omitempty"`
+	DialogID       string `json:"dialog_id,omitempty"`
+	Session        string `json:"session,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	TurnID         string `json:"turn_id,omitempty"`
+	Type           string `json:"type,omitempty"`
+	LLM            string `json:"llm,omitempty"`
+	Content        string `json:"content,omitempty"`
+	Think          any    `json:"think,omitempty"`
+	Effort         any    `json:"effort,omitempty"`
+	ScenarioID     string `json:"scenario_id,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	Source         string `json:"source,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Brief          string `json:"brief,omitempty"`
+	ToolCallStatus string `json:"tool_call_status,omitempty"`
 	// Msg 是 commit 的消息体（ChatMsg 形态，多态字段 → 原样 JSON，由调用侧解码）。
 	Msg json.RawMessage `json:"msg,omitempty"`
 }
@@ -397,6 +397,194 @@ type AskPayload struct {
 // fields 合并两形载荷（`data` 优先、顶层补缺）。
 func (p AskPayload) fields() AskData {
 	return mergeFlat(p.AskData, p.Data)
+}
+
+// ── tasktree（任务树域；61 §3.4）──
+
+// TaskNodePayload 是节点行（消息面**表列名口径**：node_id / parent_node_id / task_id 别名）。
+type TaskNodePayload struct {
+	NodeID       ID     `json:"node_id,omitempty"`
+	TaskID       ID     `json:"task_id,omitempty"`
+	NodeType     string `json:"node_type,omitempty"`
+	TopSession   string `json:"top_session,omitempty"`
+	SessionID    string `json:"session_id,omitempty"`
+	ParentNodeID string `json:"parent_node_id,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	Title        string `json:"title,omitempty"`
+	Name         string `json:"name,omitempty"`
+	Status       string `json:"status,omitempty"`
+	ToolCallID   string `json:"tool_call_id,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	UpdatedAt    string `json:"updated_at,omitempty"`
+	FinishedAt   string `json:"finished_at,omitempty"`
+	State        string `json:"state,omitempty"`
+	InstanceID   string `json:"instance_id,omitempty"`
+	WorkDir      string `json:"work_dir,omitempty"`
+	ArgsDigest   string `json:"args_digest,omitempty"`
+	ResultDigest string `json:"result_digest,omitempty"`
+	ExecJSON     string `json:"exec_json,omitempty"`
+	StartedAt    string `json:"started_at,omitempty"`
+	DoneAt       string `json:"done_at,omitempty"`
+	DeletedAt    string `json:"deleted_at,omitempty"`
+	// Closed 逻辑删除标记（nil = 载荷未带该键，与 false 语义不同）。
+	Closed      *BoolValue       `json:"closed,omitempty"`
+	LoopCurrent IntValue         `json:"loop_current,omitempty"`
+	LoopTotal   IntValue         `json:"loop_total,omitempty"`
+	Steps       []DslStepPayload `json:"steps,omitempty"`
+	Shadow      BoolValue        `json:"shadow,omitempty"`
+	ReturnKind  string           `json:"return_kind,omitempty"`
+	// ReturnInline inline 全文 / ReturnFile 文件名 / ReturnSize 字节数（DSL-3 展示字段）。
+	ReturnInline string   `json:"return_inline,omitempty"`
+	ReturnFile   string   `json:"return_file,omitempty"`
+	ReturnSize   IntValue `json:"return_size,omitempty"`
+}
+
+// DslStepPayload 是 `steps[]` 单行（DSL 作业的一次 LLM 步骤执行记录）。
+type DslStepPayload struct {
+	No          IntValue `json:"no,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	Purpose     string   `json:"purpose,omitempty"`
+	ElapsedMs   IntValue `json:"elapsed_ms,omitempty"`
+	CreatedAt   string   `json:"created_at,omitempty"`
+	SessionID   string   `json:"session_id,omitempty"`
+	StatementID string   `json:"statement_id,omitempty"`
+}
+
+// TasktreeListPayload 是 data-tasktree-list 的载荷。
+type TasktreeListPayload struct {
+	Header
+	ID  ID `json:"id,omitempty"`
+	Key ID `json:"key,omitempty"`
+	TasktreeQuery
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// TasktreeTasksPayload 是 data-tasktree-tasks 的载荷。
+type TasktreeTasksPayload struct {
+	Header
+	TasktreeQuery
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// TasktreeQuery 是任务树查询过滤键（list / tasks 共用）。
+type TasktreeQuery struct {
+	DialogID      string    `json:"dialog_id,omitempty"`
+	TopSession    string    `json:"top_session,omitempty"`
+	SessionID     string    `json:"session_id,omitempty"`
+	Mode          string    `json:"mode,omitempty"`
+	IncludeClosed BoolValue `json:"include_closed,omitempty"`
+	Shadow        BoolValue `json:"shadow,omitempty"`
+}
+
+// merged 合并两形载荷（`data` 优先、顶层补缺）。
+func (p TasktreeListPayload) merged() TasktreeListPayload {
+	q := p
+	q.Data = nil // 只把顶层业务字段作为「补缺」来源，避免 data 自嵌套
+	return mergeFlat(q, p.Data)
+}
+
+// fields 合并两形载荷（`data` 优先、顶层补缺）。
+func (p TasktreeTasksPayload) fields() TasktreeQuery {
+	return mergeFlat(p.TasktreeQuery, p.Data)
+}
+
+// TasktreeUpsertPayload 是 data-tasktree-upsert 的载荷（节点字段平铺）。
+//
+// 不内嵌 Header：节点行本身也有 `instance_id`，二者同深度会歧义 → 头部字段显式声明（顶层优先）。
+type TasktreeUpsertPayload struct {
+	ReqID      string `json:"req_id,omitempty"`
+	InstanceID string `json:"instance_id,omitempty"`
+	TaskNodePayload
+	DialogID string          `json:"dialog_id,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
+}
+
+// merged 合并两形载荷（`data` 优先、顶层补缺）；节点字段与 dialog_id 同层。
+func (p TasktreeUpsertPayload) merged() (TaskNodePayload, string) {
+	q := p
+	q.Data = nil // 只把顶层业务字段作为「补缺」来源，避免 data 自嵌套
+	m := mergeFlat(q, p.Data)
+	return m.TaskNodePayload, m.DialogID
+}
+
+// TasktreeDeletePayload 是 data-tasktree-delete 的载荷（`node_id` / `id` / `filter.node_id` 三形）。
+type TasktreeDeletePayload struct {
+	Header
+	ID       ID        `json:"id,omitempty"`
+	Key      ID        `json:"key,omitempty"`
+	NodeID   string    `json:"node_id,omitempty"`
+	DialogID string    `json:"dialog_id,omitempty"`
+	Shadow   BoolValue `json:"shadow,omitempty"`
+	// Filter 兼容 `{filter:{node_id}}` 定位。
+	Filter struct {
+		NodeID string `json:"node_id,omitempty"`
+	} `json:"filter,omitempty"`
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// merged 合并两形载荷（`data` 优先、顶层补缺）。
+func (p TasktreeDeletePayload) merged() TasktreeDeletePayload {
+	q := p
+	q.Data = nil // 只把顶层业务字段作为「补缺」来源，避免 data 自嵌套
+	return mergeFlat(q, p.Data)
+}
+
+// ── knowledge（知识库域；61 §3.3）──
+
+// KnowledgePayload 是 data-knowledge-* 的载荷（11 个动作共用一套键）。
+type KnowledgePayload struct {
+	Header
+	KnowledgeData
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// KnowledgeData 是知识库动作的业务字段。
+type KnowledgeData struct {
+	Kind    string `json:"kind,omitempty"`
+	Dir     string `json:"dir,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Parent  string `json:"parent,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Name    string `json:"name,omitempty"`
+	NewName string `json:"new_name,omitempty"`
+	// Doc 文档领域形态（save；原样 JSON 对象）。
+	Doc json.RawMessage `json:"doc,omitempty"`
+	// Files 导入清单（import；content = base64 文件字节）。
+	Files []KnowledgeImportItem `json:"files,omitempty"`
+}
+
+// KnowledgeImportItem 是导入单文件。
+type KnowledgeImportItem struct {
+	Name    string `json:"name,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
+// fields 合并两形载荷（`data` 优先、顶层补缺）。
+func (p KnowledgePayload) fields() KnowledgeData {
+	return mergeFlat(p.KnowledgeData, p.Data)
+}
+
+// ── memory（记忆库 + 提取进度；61 §3.3）──
+
+// MemoryPayload 是 data-memory-* 的载荷（list/read/save/delete + extract-*）。
+type MemoryPayload struct {
+	Header
+	MemoryData
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// MemoryData 是记忆库动作的业务字段。
+type MemoryData struct {
+	Category string `json:"category,omitempty"`
+	Content  string `json:"content,omitempty"`
+	// SessionID / LastTurnID 仅提取进度（extract-*）使用。
+	SessionID  string `json:"session_id,omitempty"`
+	LastTurnID string `json:"last_turn_id,omitempty"`
+}
+
+// fields 合并两形载荷（`data` 优先、顶层补缺）。
+func (p MemoryPayload) fields() MemoryData {
+	return mergeFlat(p.MemoryData, p.Data)
 }
 
 // nonNullRaw 把缺省 / `null` 的原始 JSON 归一为 nil（对齐旧 map 取值的「无该键」语义）。
