@@ -20,13 +20,20 @@
 |----|----|
 | 形态 | ① **进程外 exe 插件（主形态）**：`pluginsdk` 连插件桥（UDS/TCP），工具经 MCP（streamable HTTP）暴露，实例由宿主 `pluginmgr` 按 manifest 拉起；② **进程内 lib Hook（兼容，默认关闭）**：`plugin.Hook`，仅 codegraph / vfts |
 | 接口 | `Hook{ Name() string; Start(Deps) error }`；`Deps{ Bus mq.Bus; Logf func(format, ...) }`（另含可选 `Notify func(Notice)`：失败上报，nil = 静默）；**可选** `Stopper{ Stop() }` —— 持可释放资源（后台 goroutine / 引擎子进程 / 订阅 / 实例视图）的插件实现 `Stop()`，宿主退出时按 `Start` **逆序**调用（语义见下） |
-| 启动 | 进程内 Hook 仅 **codegraph → vfts**（清单单一来源 = `appwire.DefaultPlugins`，`src/lib/appwire/adapters.go`；两者默认关闭）；进程外插件由 `pluginmgr` 依 `src/initdata/capability/plugins/<id>/plugin.json` 的 `runtime / health / restart` 拉起（`codebase` autostart） |
+| 启动 | **唯一入口 = 框架 `host/mgr`**（2026-10-25 定稿）：宿主启动时扫描 `<exeDir>/capability/plugins.conf`（每行 `<plugin-id> [args...]`，`#` 注释，**行序 = 启动顺序**），逐行拉起；manifest 仍取 `capability/plugins/<id>/plugin.json`（`runtime / health / restart`）。清单存在时以清单为准，缺省回落 `enabled.json`。进程内 Hook（兼容形态）仅 **codegraph → vfts**，清单单一来源 = `appwire.DefaultPlugins`（默认关闭） |
 | 数据访问 | 走 `src/lib/data`（`data.Prj(instanceID)` 或 payload 自带 work_dir/data_dir 自登记）；work_dir 解析走 `instance.Manager` |
 
 **实例视图**（`src/plugins/plugin/instance/manager.go`）：订阅 `instance-register` / `instance-heartbeat` / `instance-exit`，维护 `instance_id ↔ {ID, WorkDir, DataDir, ClientType, User, ParentInstance, LastBeat}`（`LastBeat` 仅记录最近心跳/注册时间；**`User`（🆕 2026-10-09）= 实例归属 OS 用户名**，`instance-register` 必填字段，供 `instance-bring-to-top` 的跨用户判定；**`ParentInstance`（🆕 2026-10-09）= 子窗口实例的宿主顶层实例 id** —— 由 `instance-register` 的 `parent_instance` 字段解析，非空即子实例，供托盘「列举实例」过滤，见 [61 §4.1](../60-reference/61-消息一览.md)）；提供 `Lookup/List/Count` 与 `ListTopLevel`（仅顶层）。
 > ⚠️ **心跳超时退出判定 = 编译开关**：心跳发布与超时判定**仅在分离形态（`-tags split`）编入**；合并单进程形态（默认构建）为空实现（`heartbeat_inprocess.go`：不发布、不判超时），实例失效以**显式 `instance-exit`** 清理（`instance-heartbeat` 订阅保留）。分离形态下：`StartHeartbeat`（注册后起 30s 周期发布 `instance-heartbeat{instance_id}`）与 `Manager.Sweep(timeout)`（**90s = 3× 周期**的实例视同退出）的生产调用方 = 判定侧消费方两处 —— **llm-server** `startInstanceSweep`（`src/lib/llm/server/sweep_split.go`：30s ticker → `Manager.Sweep(90s)` → 逐个走既有 `exitInstance`：取消 running turn + 释放 `busy` 锁 + 注销 capability dir 节点）、**persist** `startStaleSweep`（`src/lib/data/persist/sweep_split.go`：30s 扫描 → `LastBeat` ≥90s → 既有 `instanceGone`：移除 `insts` 绑定 + `data.Unregister`）；插件 codegraph/vfts 的 `sweepInstances` 走各自 `instanceGone`（解绑 + 递减 workdir 引用）**均存在**（`src/plugins/plugin/instance/heartbeat_split.go`）。阈值单一来源 = `src/lib/heartbeat`：`persist` 的 `staleTimeout = heartbeat.Timeout`（90s）、llm-server 的 `sweepInterval = heartbeat.Interval`（30s）、`plugin/instance` 的 `HeartbeatInterval`/`HeartbeatTimeout` 亦为同名常量别名。**🆕 2026-10-09**：**flash 客户端不发布心跳**（其存活由 **UDS 连接断开**判定，见 [19 §8.11](../10-architecture/19-多租户服务端形态.md)），心跳链路的消费方仅剩 **HTTP 客户端（gui/browser）**。见 [24-lib §2/§6](24-lib.md) · [61 §4.1](../60-reference/61-消息一览.md)。
 
 > **Stop 语义（🆕 2026-10-11；`plugin.Stopper` 可选接口）**：实现 `Stopper` 的**进程内 Hook**（当前 = codegraph / vfts）在宿主退出时按 `Start` **逆序** `Stop()`，**幂等**（`stopOnce`）；进程外插件（memory / history / codebase 等）的停止由 `pluginmgr` 按 manifest `runtime.stop.grace_ms` 负责。codegraph / vfts 的 `Stop` 顺序 = ① **置停止态**（`stopped`，阻止去抖回调与 `clientFor`/`sharedClient` **重新 spawn 引擎子进程**）→ ② **停去抖定时器**（`rebuild.stopAll`；已 fire 的回调经 stopped 门控**不再 spawn**）→ ③ 退订全部订阅 → ④ 关闭引擎子进程（codegraph 逐个 workdir / vfts 共享 client）。**`Stop` 后不再拉起任何引擎子进程**。见 `src/plugins/plugin/plugins.go` `Stopper`。
+
+**启动清单与「拉起只属于框架」（2026-10-25 定稿）**：
+
+1. **主仓不持有任何单插件拉起代码**。启动 = 框架 `host/mgr` 扫描 `plugins.conf` 后统一 spawn；重启/退避/单实例锁/健康检查/优雅关停全部复用 `host/mgr` 的 manifest 语义。
+2. **已判定删除的专用监管层**：`src/lib/llm/vftsindexer`、`src/lib/llm/codegraphindexer`、`src/lib/llm/pluginhost`（与 `host/mgr` 重复），以及 `gui/host`、`server/main` 各自两处 indexer exe 定位 + Ensure 组装。
+3. **能力自管**：插件启动后与宿主交换 manifest + `plugin.hello`，之后文件监听/补扫/全量重建都由插件自己做——订阅既有 `filesys.changed`（增量）、`session-complete`（补扫）、`vfts.reindex`（全量重建）；宿主**只对外提供能力**：`plugin/v1/projects.live`（拉取当前活项目/workdir，由实例视图 + 项目记录回答，**不推送**）。
+4. **宿主索引队列下线**：`filesys` 不再写待索引表；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧删除（`queuehooks` 一并删除）。消息面**零新增主题**（`filesys.changed` 见 [61 §2.4](../60-reference/61-消息一览.md)）。
 
 ---
 
@@ -82,7 +89,7 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `instance-register`/`heartbeat`/`exit` · `data-prj-config-refresh` · 工具回调 `codegraph-tool-call` |
+| 订阅 | `instance-register`/`heartbeat`/`exit` · `data-prj-config-refresh` · 工具回调 `codegraph-tool-call`；**resident indexer（2026-10-25 定稿）自管**：`filesys.changed`（增量）+ `session-complete`（补扫）+ `vfts.reindex`（全量），启动时经宿主能力 `plugin/v1/projects.live` 拉活项目做一次对账；**不再有宿主待索引队列 / `plugin.index.*`** |
 | 配置键 | `enable-codegraph`（可见性门控）· `codegraph.exts` / `codegraph.skip-dirs` / `codegraph.stack-gitignore`（索引配置，变更即强制重建）· `codegraph.status`（状态回写）· `codegraph.action`（重建/清除/重试信号） |
 | 引擎 | 独立 exe `src/plugins/codegraph`（stdio 子进程），按 workdir 管理；**每 workdir 独立 client/子进程**（`p.clients[workdir]`、独立索引内存/独立串行） |
 | 叠加 gitignore 体系 | 插件把 `codegraph.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `codegraph.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源/优先级/匹配语义/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 共享包 `github.com/chonkpilot/chonkpilot-ignore`，与 vfts 引擎/插件**同一实现**） |
@@ -99,7 +106,7 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `instance-register`/`heartbeat`/`exit` · `data-prj-config-refresh` · 工具回调 `vfts-tool-call` |
+| 订阅 | `instance-register`/`heartbeat`/`exit` · `data-prj-config-refresh` · 工具回调 `vfts-tool-call`；**resident indexer（2026-10-25 定稿）自管**：`filesys.changed`（增量）+ `session-complete`（补扫）+ `vfts.reindex`（全量），启动时经宿主能力 `plugin/v1/projects.live` 拉活项目做一次对账；**不再有宿主待索引队列 / `plugin.index.*`** |
 | 配置键 | `enable-vfts`（可见性门控）· `vfts.exts` / `vfts.skip-dirs` / `vfts.stack-gitignore` / `vfts.docs` / `vfts.doc-max-mb`（索引配置，变更即强制重建）· `vfts.status`（状态回写） |
 | 引擎 | 独立 exe `src/plugins/vfts`（stdio 子进程，CGO + zvec），**全局共享 client**（一对多，按工具参数 `workdir` 路由） |
 | 注册工具 | **1 个查询工具** `vfts_query`（同名同 schema 去 `workdir`，`handler_subject=vfts-tool-call`，hot=true，category=vfts）；管理工具 `vfts_configure/index/status` **不注册**（插件直接调引擎） |
