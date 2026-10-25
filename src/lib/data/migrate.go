@@ -23,9 +23,10 @@ type Migration struct {
 	Up      func(tx *bolt.Tx) error
 }
 
-// migrations 内置迁移：**已压平为单条最新版**（未发布期无旧库，不留增量史）。
-// 一条即建出当前全量桶；ensureBucket 幂等，故既有库（schema_version < 8）跑一次即对齐，
-// 且**不主动删除**旧库中已存在的历史桶（如 scenarios / permission 残留，其已无任何读写）。
+// migrations 内置迁移：v8 为**压平后的全量 schema**（未发布期无旧库，不再保留 v1~v7 增量史），
+// 其后按功能增量追加：v9 inbox_items / v10 index_queue / v11 turn_events / v12 dialogs /
+// v13 drop_dead_buckets。ensureBucket 幂等，既有库跑未应用版本即对齐；
+// 除 v13 显式清理**空**死桶外，其余迁移**不主动删除**旧库中已存在的历史桶。
 //
 // 注（2026-10-08 a）：原 `sessions_by_created`/`turns_by_session`/`messages_by_turn`/
 // `tool_pair_by_turn`/`tool_pair_by_task` 五个索引桶**建而不用**（全仓零读写，仅残留于本清单），
@@ -50,8 +51,8 @@ var migrations = []Migration{
 	{Version: 8, Name: "schema", Up: func(tx *bolt.Tx) error {
 		for _, b := range []string{
 			bucketMeta, bucketMigrations, "config",
-			"llms", "mcps",
-			"sessions", "turns", "messages", "tasktree", "meta",
+			"llms",
+			"sessions", "turns", "messages", "tasktree",
 			"file_list",
 			"sessions_by_top",
 			"turns_by_session",
@@ -125,6 +126,23 @@ var migrations = []Migration{
 			}
 			return indexPut(tx, "messages", string(k), rec)
 		})
+	}},
+	// v13（2026-10-25 · schema 债务清理）：删除两个**零读写**死桶——
+	//   - `mcps`：旧 usr `mcpServers` 集合（MCP 定义已改四级文件化 `capability/mcps/*.json`）；
+	//   - `meta`：预留桶，自建桶起从无写入。
+	// 仅当桶**为空**时删（历史残留数据保留可查，不静默丢数据）；新建库（v8 已不含这两桶）
+	// 不受影响。
+	{Version: 13, Name: "drop_dead_buckets", Up: func(tx *bolt.Tx) error {
+		for _, name := range []string{"mcps", "meta"} {
+			b := tx.Bucket([]byte(name))
+			if b == nil || b.Stats().KeyN > 0 {
+				continue
+			}
+			if err := tx.DeleteBucket([]byte(name)); err != nil {
+				return err
+			}
+		}
+		return nil
 	}},
 }
 

@@ -21,11 +21,12 @@ func openLayer(t *testing.T, layer data.Layer) *data.DB {
 	return db
 }
 
-// TestMigrationBuckets v6：三层（usr/prj/prjusr）同构——每层都有同一套桶。
+// TestMigrationBuckets v13：三层（usr/prj/prjusr）同构——每层都有同一套桶。
+// 零读写死桶 `mcps` / `meta` 的「不再建」断言见 data 包内 migrate_test.go（需包内访问 tx）。
 func TestMigrationBuckets(t *testing.T) {
 	for _, layer := range []data.Layer{data.LayerUsr, data.LayerPrj, data.LayerPrjUsr} {
 		db := openLayer(t, layer)
-		for _, bucket := range []string{"config", "llms", "mcps", "sessions", "tasktree"} {
+		for _, bucket := range []string{"config", "llms", "sessions", "tasktree", "inbox_items", "dialogs"} {
 			if _, err := db.Table(bucket).ListKeys(); err != nil {
 				t.Fatalf("%s should have %s bucket: %v", layer, bucket, err)
 			}
