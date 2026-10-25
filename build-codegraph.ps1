@@ -2,7 +2,10 @@
 #
 # 产物布局（dist/plugins/codegraph/，见 [41 D-28]）：
 #   ├── chonkpilot-codegraph-mcp-server.exe   # 进程内 tree-sitter 索引 MCP server（console，CGO）
-#   └── chonkpilot-codegraph-indexer.exe      # 常驻增量索引器（P5，GUI 子系统 + 托盘，CGO；单实例多 workdir）
+#   └── chonkpilot-codegraph-*-executor.exe   # 查询工具「一工具一 exe」（8 个）
+#
+# 注（D-71，2026-10-25）：resident `chonkpilot-codegraph-indexer.exe` 已退场 —— 索引回路
+# 由 codegraph 插件进程内自管（订阅 filesys.changed → codegraph_index_paths 增量），本脚本不再产出该 exe。
 #
 # 源（PLUGIN-SPLIT-1）：`chonkpilot-plugins/codegraph/engines/treesitter`（engine 本体；插件侧 = `chonkpilot-plugins/codegraph`）。
 # 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop、
@@ -32,7 +35,6 @@ New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 # kill 运行中的旧实例，避免 exe 被占用
 Get-Process -Name "chonkpilot-codegraph-mcp-server" -ErrorAction SilentlyContinue | Stop-Process -Force
-Get-Process -Name "chonkpilot-codegraph-indexer" -ErrorAction SilentlyContinue | Stop-Process -Force
 foreach ($n in @("chonkpilot-codegraph-symbol-search-executor", "chonkpilot-codegraph-symbol-info-executor",
         "chonkpilot-codegraph-callers-executor", "chonkpilot-codegraph-callees-executor",
         "chonkpilot-codegraph-dependency-graph-executor", "chonkpilot-codegraph-circular-deps-executor",
@@ -47,15 +49,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "build failed" }
     $exe = Get-Item (Join-Path $dist "chonkpilot-codegraph-mcp-server.exe")
     Write-Host "    ok: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB)"
-} finally { Pop-Location }
-
-Write-Host "==> build codegraph resident indexer (P5；GUI/tray exe：启动隐藏 + 托盘输出窗口)"
-Push-Location $mod
-try {
-    go build -ldflags "-H windowsgui" -o (Join-Path $dist "chonkpilot-codegraph-indexer.exe") ./cmd/indexer
-    if ($LASTEXITCODE -ne 0) { throw "indexer build failed" }
-    $idxExe = Get-Item (Join-Path $dist "chonkpilot-codegraph-indexer.exe")
-    Write-Host "    ok: $($idxExe.Name) ($([math]::Round($idxExe.Length/1MB,1)) MB)"
 } finally { Pop-Location }
 
 # 查询工具「一工具一 exe」（G-68 第二步）：由 core-mcp-server 按契约 spawn；直接读落盘

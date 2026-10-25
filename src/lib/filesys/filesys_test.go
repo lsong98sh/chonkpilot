@@ -62,7 +62,7 @@ func TestWatchNewDirBroadcastsParentBatch(t *testing.T) {
 	defer bus.Close()
 
 	wd := t.TempDir()
-	m := newWatchManager(bus, nil)
+	m := newWatchManager(bus)
 	defer m.Close()
 
 	ch := make(chan map[string]any, 64)
@@ -168,7 +168,7 @@ func TestWatchContinuousWritesNotStarved(t *testing.T) {
 	}
 	defer bus.Close()
 	wd := t.TempDir()
-	m := newWatchManager(bus, nil)
+	m := newWatchManager(bus)
 	defer m.Close()
 	ch := make(chan struct{}, 64)
 	if _, err := bus.On("filesys.changed", 0, func(_ context.Context, _ string, _ *mq.Value) error {
@@ -228,7 +228,7 @@ func TestWatchRecursiveFlag(t *testing.T) {
 		if err := os.Mkdir(sub, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		m := newWatchManager(bus, nil)
+		m := newWatchManager(bus)
 		defer m.Close()
 		ch := newChangedCh(t, bus)
 		if err := m.watch(wd, wd, true, "ins-rec"); err != nil {
@@ -254,7 +254,7 @@ func TestWatchRecursiveFlag(t *testing.T) {
 		if err := os.Mkdir(sub, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		m := newWatchManager(bus, nil)
+		m := newWatchManager(bus)
 		defer m.Close()
 		ch := newChangedCh(t, bus)
 		if err := m.watch(wd, wd, false, "ins-norec"); err != nil {
@@ -361,7 +361,7 @@ func TestRemoveTreeClearsSubtree(t *testing.T) {
 	if err := os.Mkdir(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	m := newWatchManager(bus, nil)
+	m := newWatchManager(bus)
 	defer m.Close()
 	if err := m.watch(wd, wd, true, "ins-rm"); err != nil {
 		t.Fatal(err)
@@ -403,7 +403,7 @@ func TestProcessBatchRemoveDirClearsPaths(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(target, "classes"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	m := newWatchManager(bus, nil)
+	m := newWatchManager(bus)
 	defer m.Close()
 	if err := m.watch(wd, wd, true, "ins-rm2"); err != nil {
 		t.Fatal(err)
@@ -502,7 +502,7 @@ func TestWatchSkipsHiddenDirEvents(t *testing.T) {
 	if err := os.Mkdir(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	m := newWatchManager(bus, nil)
+	m := newWatchManager(bus)
 	defer m.Close()
 	m.applyHidden(wd, []string{"target"}) // 装载清单（无 watcher 时仅记缓存）
 	ch := newChangedCh(t, bus)
@@ -543,7 +543,7 @@ func TestRefilterAppliesHiddenChange(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(wd, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	m := newWatchManager(bus, nil)
+	m := newWatchManager(bus)
 	defer m.Close()
 	ch := newChangedCh(t, bus)
 	if err := m.watch(wd, wd, true, "ins-refilter"); err != nil {

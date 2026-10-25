@@ -32,7 +32,6 @@ const readyTimeout = 5 * time.Second
 // watchManager 按 work_dir 组织 fswatcher watcher。
 type watchManager struct {
 	bus      mq.Bus
-	queue    IndexQueue // 待索引队列写入口（nil = 不入队）
 	mu       sync.Mutex
 	watchers map[string]*dirWatcher // key = work_dir（绝对）
 
@@ -42,10 +41,9 @@ type watchManager struct {
 	loading map[string]bool     // work_dir → 已发起一次性异步加载（去重）
 }
 
-func newWatchManager(bus mq.Bus, queue IndexQueue) *watchManager {
+func newWatchManager(bus mq.Bus) *watchManager {
 	return &watchManager{
 		bus:      bus,
-		queue:    queue,
 		watchers: make(map[string]*dirWatcher),
 		hidden:   make(map[string][]string),
 		loading:  make(map[string]bool),
@@ -69,7 +67,7 @@ func (m *watchManager) watch(workDir, abs string, recursive bool, instanceID str
 	dw, ok := m.watchers[workDir]
 	if !ok {
 		var err error
-		dw, err = newDirWatcher(workDir, m.bus, hidden, m.queue)
+		dw, err = newDirWatcher(workDir, m.bus, hidden)
 		if err != nil {
 			m.mu.Unlock()
 			return err
@@ -216,9 +214,6 @@ type pendingEvent struct {
 type dirWatcher struct {
 	workDir string
 	bus     mq.Bus
-	// indexQueue 是待索引队列写入口（P2；nil = 不入队）；每事件入队一次，不按声明者复制。
-	// （命名避开本结构既有的去抖批次表 queue map[string]pendingEvent。）
-	indexQueue IndexQueue
 	w          fswatcher.Watcher
 	cancel     context.CancelFunc
 	ready      <-chan struct{}
@@ -249,7 +244,7 @@ type dirWatcher struct {
 	done        chan struct{}
 }
 
-func newDirWatcher(workDir string, bus mq.Bus, hidden []string, queue IndexQueue) (*dirWatcher, error) {
+func newDirWatcher(workDir string, bus mq.Bus, hidden []string) (*dirWatcher, error) {
 	workDir = filepath.Clean(workDir)
 	ready := make(chan struct{})
 	// 初始路径 = work_dir 顶层（保证 watcher 可启动）；显式声明的递归根由 add → AddPath 升级。
@@ -266,7 +261,6 @@ func newDirWatcher(workDir string, bus mq.Bus, hidden []string, queue IndexQueue
 	dw := &dirWatcher{
 		workDir:    workDir,
 		bus:        bus,
-		indexQueue: queue,
 		w:          w,
 		cancel:     cancel,
 		ready:      ready,
@@ -570,7 +564,7 @@ func (dw *dirWatcher) processBatch() {
 		}
 	}
 	for path, ev := range batch {
-		// 「不显示的目录」内事件：既不广播也不入队（层2 同源）
+		// 「不显示的目录」内事件：不广播（层2 同源）
 		if dw.hiddenPath(path) {
 			continue
 		}
@@ -581,12 +575,6 @@ func (dw *dirWatcher) processBatch() {
 		dw.pubChanged(path, op, inWorkDir)
 		fi, statErr := os.Lstat(path)
 		isDir := statErr == nil && fi.IsDir()
-		// 待索引入队（P2）：每事件一次（不按声明者复制）；写失败只留痕，不影响批次与文件树事件。
-		// 目录自身的 write（子项变动导致的 mtime 元数据事件）不入队：目录内容不变、索引无意义，
-		// 否则启动期目录元数据噪声会拉起 indexer 引擎（长期持有索引库 LOCK）。
-		if inWorkDir && !(isDir && op == "write") {
-			dw.enqueueIndex(path, op)
-		}
 
 		// 目录删除 / 重命名（D-39 层1）→ 摘除该路径及其子孙的声明条目（过期声明泄漏）。
 		// 文件事件无对应声明条目 → removeTree 为无操作；递归子树由 fswatcher 随根自动收敛。
@@ -673,22 +661,6 @@ func (dw *dirWatcher) pubChanged(abs, op string, inWorkDir bool) {
 		"path":      filepath.ToSlash(abs),
 		"operation": op,
 	})
-}
-
-// enqueueIndex 把一条变更写入待索引队列（P2）。队列为 nil → 跳过；写失败只留痕，
-// **绝不影响批次处理与 filesys.changed 广播**（文件树可见性优先于索引）。
-func (dw *dirWatcher) enqueueIndex(abs, op string) {
-	if dw.indexQueue == nil {
-		return
-	}
-	if err := dw.indexQueue.Append(IndexChange{
-		WorkDir:   dw.workDir,
-		Path:      filepath.ToSlash(abs),
-		Operation: op,
-	}); err != nil {
-		slog.Warn("filesys index queue append failed",
-			"work_dir", dw.workDir, "path", abs, "operation", op, "err", err)
-	}
 }
 
 func (dw *dirWatcher) pubDirChanged(dir, dirReal, baseReal string) {

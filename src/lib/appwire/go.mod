@@ -15,6 +15,7 @@ require (
 
 require (
 	github.com/chonkpilot/chonkpilot-mcp-server v0.0.0 // indirect
+	github.com/chonkpilot/chonkpilot-lib/pluginhost v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-task v0.0.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -35,6 +36,7 @@ replace (
 	github.com/chonkpilot/chonkpilot-gwadapter => ../gwadapter
 	github.com/chonkpilot/chonkpilot-ignore => ../../lib/ignore
 	github.com/chonkpilot/chonkpilot-lib => ../core
+	github.com/chonkpilot/chonkpilot-lib/pluginhost => ../pluginhost
 	github.com/chonkpilot/chonkpilot-llm => ../llm
 	github.com/chonkpilot/chonkpilot-mcp-server => ../mcp-server
 	github.com/chonkpilot/chonkpilot-plugin-codegraph => ../../plugins/plugin-codegraph

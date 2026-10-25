@@ -23,12 +23,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/paths"
 	"github.com/chonkpilot/chonkpilot-lib/procsingleton"
 	"github.com/chonkpilot/chonkpilot-lib/winlog"
-	"github.com/chonkpilot/chonkpilot-llm/codegraphindexer"
 	"github.com/chonkpilot/chonkpilot-llm/coretools"
 	"github.com/chonkpilot/chonkpilot-llm/llmbridge"
-	"github.com/chonkpilot/chonkpilot-llm/queuehooks"
 	"github.com/chonkpilot/chonkpilot-llm/server"
-	"github.com/chonkpilot/chonkpilot-llm/vftsindexer"
 	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
 )
@@ -163,21 +160,13 @@ func main() {
 	// 与 pluginbridge 的另一个入口并列：连接 = 一个插件身份；能力经 pluginbridge Registry 叠加。
 	var pb *pluginbridge.Server
 	var coreTools *coretools.Supervisor
-	var vftsIdx *vftsindexer.Manager
-	var cgIdx *codegraphindexer.Manager
 	if *pluginAddr != "" {
-		// data 门面（inline 同进程直调）：resident indexer 的待索引队列控制帧（P4b-1）
-		// 经 queuehooks 适配器桥接到门面；与 filesys 入队同源（共用 appwire 装配的同一绑定）。
 		pb = pluginbridge.New(pluginbridge.Options{
 			Bus:     bus,
 			Addr:    *pluginAddr,
 			Version: "server",
 			Form:    string(form),
-			// plugin.index.take / ack / pending → data 门面待索引队列；
-			// WorkDirs = 活实例 work_dir（plugin.index.workdirs，单实例多 workdir 项目发现）。
-			IndexQueue: queuehooks.New(app.Facade),
-			WorkDirs:   srv.LiveWorkDirs,
-			Logf:       log.Printf,
+			Logf:    log.Printf,
 		})
 		if err := pb.Start(); err != nil {
 			log.Printf("[server] 插件入口启动失败（可选子系统，继续运行）: %v", err)
@@ -263,48 +252,10 @@ func main() {
 	// 拉起 flash / 实例视图 / UDS 前门）**已整体删除** —— flash 薄壳与独立 server 产物均不再存在；
 	// 唯一产物 `chonkpilot.exe` 自带窗口/托盘/多项目实例（`src/lib/gui/host`）。
 
-	// 全部模块就绪 → 插件桥广播 server-ready（常驻索引器据此开始消费队列；P3）。
+	// 全部模块就绪 → 插件桥广播 server-ready（插件据此开始自管索引；D-71）。
 	// 载荷为插件传输帧（非 MQ 主题），见 pluginbridge.MarkReady；pb 未启用时跳过。
 	if pb != nil {
 		pb.MarkReady(map[string]any{"form": "server", "at": time.Now().UTC().Format(time.RFC3339)})
-	}
-
-	// resident indexer（vfts P4b-2b / codegraph P5）：**每宿主进程每插件单实例**
-	// （单实例多 workdir，2026-10-19）。项目发现由宿主实例表提供
-	// （plugin.index.workdirs → srv.LiveWorkDirs），indexer 进程内含托盘输出窗口。
-	// 不设 enable 门控（MVP 始终启动）；exe 缺失 → 静默跳过并只记一次日志。
-	if pb != nil {
-		logf := func(format string, args ...any) { log.Printf(format, args...) }
-		vftsExe := vftsIndexerExePath()
-		if st, err := os.Stat(vftsExe); err == nil && !st.IsDir() {
-			vftsIdx = vftsindexer.New(logf)
-			if err := vftsIdx.Ensure(context.Background(), vftsindexer.Options{
-				DataRoot:   dd,
-				PluginAddr: pb.Addr(),
-				IndexerExe: vftsExe,
-				Logf:       logf,
-				Shutdown:   pb.ShutdownPlugin,
-			}); err != nil {
-				log.Printf("[server] vfts indexer 启动失败: %v", err)
-			}
-		} else {
-			log.Printf("[server] vfts indexer 未安装（跳过）: %s", vftsExe)
-		}
-		cgExe := codegraphIndexerExePath()
-		if st, err := os.Stat(cgExe); err == nil && !st.IsDir() {
-			cgIdx = codegraphindexer.New(logf)
-			if err := cgIdx.Ensure(context.Background(), codegraphindexer.Options{
-				DataRoot:   dd,
-				PluginAddr: pb.Addr(),
-				IndexerExe: cgExe,
-				Logf:       logf,
-				Shutdown:   pb.ShutdownPlugin,
-			}); err != nil {
-				log.Printf("[server] codegraph indexer 启动失败: %v", err)
-			}
-		} else {
-			log.Printf("[server] codegraph indexer 未安装（跳过）: %s", cgExe)
-		}
 	}
 
 	<-ctx.Done()
@@ -315,14 +266,6 @@ func main() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = bx.Shutdown(shutCtx)
 		cancel()
-	}
-	// resident indexer（vfts / codegraph）：优雅停止（StopAll 经 plugin.shutdown 通知
-	// indexer，依赖 pb 仍在线），插件桥由 deferred Close 稍后关闭。
-	if vftsIdx != nil {
-		vftsIdx.StopAll()
-	}
-	if cgIdx != nil {
-		cgIdx.StopAll()
 	}
 	srv.Stop()
 }
@@ -385,36 +328,4 @@ func fallbackLogPath() string {
 		return ""
 	}
 	return filepath.Join(base, "chonkpilot", "logs", "server.log")
-}
-
-// vftsIndexerExePath 定位 resident indexer：优先 server exe 同目录，
-// 其次发行布局 `mcps/vfts/`（build-desktop / build-gui 的投放位置）。
-func vftsIndexerExePath() string {
-	const name = "chonkpilot-vfts-indexer.exe"
-	exe, err := os.Executable()
-	if err != nil {
-		return name
-	}
-	dir := filepath.Dir(exe)
-	primary := filepath.Join(dir, name)
-	if _, err := os.Stat(primary); err == nil {
-		return primary
-	}
-	return filepath.Join(dir, "mcps", "vfts", name)
-}
-
-// codegraphIndexerExePath 定位 resident codegraph indexer：优先 server exe 同目录，
-// 其次发行布局 `mcps/codegraph/`（build-desktop / build-gui 的投放位置）。
-func codegraphIndexerExePath() string {
-	const name = "chonkpilot-codegraph-indexer.exe"
-	exe, err := os.Executable()
-	if err != nil {
-		return name
-	}
-	dir := filepath.Dir(exe)
-	primary := filepath.Join(dir, name)
-	if _, err := os.Stat(primary); err == nil {
-		return primary
-	}
-	return filepath.Join(dir, "mcps", "codegraph", name)
 }

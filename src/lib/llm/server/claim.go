@@ -39,7 +39,6 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-lib/idgen"
@@ -48,32 +47,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/osuser"
 	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
-
-// LiveWorkDirs 返回当前已登记实例的**去重 work_dir**（非空；供 resident indexer
-// 单实例多 workdir 发现，见 pluginbridge.Options.WorkDirs / plugin.index.workdirs）。
-// 实例表仅内存（进程重启即清）→ indexer 每轮轮询即可看到新开 / 已关项目。
-func (s *Server) LiveWorkDirs() []string {
-	if s == nil || s.im == nil {
-		return nil
-	}
-	list := s.im.List()
-	seen := make(map[string]struct{}, len(list))
-	out := make([]string, 0, len(list))
-	for _, in := range list {
-		wd := strings.TrimSpace(in.WorkDir)
-		if wd == "" {
-			continue
-		}
-		key := strings.ToLower(filepath.Clean(wd))
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, filepath.Clean(wd))
-	}
-	sort.Strings(out)
-	return out
-}
 
 // SubjectInstanceClaim 是实例认领主题（相对主题；chonk. 前缀由总线注入，61 §4.1）。
 // 归属客户端方法面（前端 type `instance-claim` 经桥/httpapi 上行，见 frontMethodSubjects）。

@@ -21,17 +21,18 @@ func openLayer(t *testing.T, layer data.Layer) *data.DB {
 	return db
 }
 
-// TestMigrationBuckets v14/v15：按层建桶（不再三层同构）——各层只建自己实际使用的桶；
-// prj 层不再有 file_list（v15 退场，vfts 清单插件自持）。
+// TestMigrationBuckets v14/v15/v16：按层建桶（不再三层同构）——各层只建自己实际使用的桶；
+// prj 层不再有 file_list（v15 退场，vfts 清单插件自持）；prjusr 不再有 index_queue
+// （v16 退场，索引由 vfts/codegraph 插件订阅 filesys.changed 自管）。
 func TestMigrationBuckets(t *testing.T) {
 	cases := []struct {
 		layer   data.Layer
 		has     []string
 		missing []string
 	}{
-		{data.LayerUsr, []string{"config", "llms"}, []string{"sessions", "file_list", "inbox_items"}},
-		{data.LayerPrj, []string{"config"}, []string{"llms", "sessions", "inbox_items", "file_list"}},
-		{data.LayerPrjUsr, []string{"config", "sessions", "tasktree", "inbox_items", "dialogs"}, []string{"file_list"}},
+		{data.LayerUsr, []string{"config", "llms"}, []string{"sessions", "file_list", "inbox_items", "index_queue"}},
+		{data.LayerPrj, []string{"config"}, []string{"llms", "sessions", "inbox_items", "file_list", "index_queue"}},
+		{data.LayerPrjUsr, []string{"config", "sessions", "tasktree", "inbox_items", "dialogs"}, []string{"file_list", "index_queue"}},
 	}
 	for _, c := range cases {
 		db := openLayer(t, c.layer)

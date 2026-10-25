@@ -75,9 +75,9 @@ watchManager：按 work_dir 组织 map[string]*dirWatcher（+ 每 work_dir 的�
   新目录 Create → 递归监听由 fswatcher 自动覆盖；**同时刷新其父目录 children 批次**；处理中新事件 → 自动再调度一轮
 ```
 
-- **重命名归一（2026-10-19，fswatcher）**：Windows 后端对 `RENAMED_OLD_NAME` / `RENAMED_NEW_NAME` **都**发 `EventRename`（不发 Create），且同一 60ms 窗口内同路径的事件类型会合并（如 `[Mod, Rename]` / `[Create, Remove]`）→ `operation(path, types)` **以处理时对象是否存在为准**：存在 → `create`（含改名新路径）/ `write`（仅修改）；不存在 → `rename`（改名旧路径）/ `remove`（含同窗口内创建后又删除）；其他 `Lstat` 错误（如权限不足）按 `write` 兜底，不误删索引。下游语义不变——文件树按 `create` 插入新节点，待索引队列把 `rename`/`remove` 当旧路径删除；两个父目录均刷新 `children`。
+- **重命名归一（2026-10-19，fswatcher）**：Windows 后端对 `RENAMED_OLD_NAME` / `RENAMED_NEW_NAME` **都**发 `EventRename`（不发 Create），且同一 60ms 窗口内同路径的事件类型会合并（如 `[Mod, Rename]` / `[Create, Remove]`）→ `operation(path, types)` **以处理时对象是否存在为准**：存在 → `create`（含改名新路径）/ `write`（仅修改）；不存在 → `rename`（改名旧路径）/ `remove`（含同窗口内创建后又删除）；其他 `Lstat` 错误（如权限不足）按 `write` 兜底，不误删索引。下游语义不变——文件树按 `create` 插入新节点，订阅方（vfts / codegraph 插件）把 `rename`/`remove` 当旧路径删除索引项；两个父目录均刷新 `children`。
 - **库切换（2026-10-19）**：`github.com/sgtdi/fswatcher v1.3.0`（Windows = `ReadDirectoryChangesW`，**单句柄递归**；Linux inotify / macOS FSEvents 或 kqueue；内置去抖/过滤）。本模块用 `WithCooldown(0)` + 自管 60ms 去抖（保留 D-37 的 `maxWait` 封顶）。
-- **待索引入队（2026-10-19，resident indexer P2）**：`processBatch` 对每条 `inWorkDir` 事件（create/write/remove/rename）在 `pubChanged` 后调用注入的 `IndexQueue.Append(IndexChange{WorkDir, Path(ToSlash), Operation})`。入队**每事件一次**（不在按声明者复制事件的 `emit` 里）；队列为 nil 跳过；写失败仅 `slog.Warn("filesys index queue append failed", ...)`，**不影响** `filesys.changed` 与文件树。**目录自身的 `write` 不入队**（子项变动引起的目录 mtime/元数据事件——目录内容未变、索引无意义；否则启动期目录元数据噪声会拉起 indexer 引擎并长期持有索引库 LOCK）。队列实现 = data 层 prjusr `index_queue` 表（[12 §6.1](../10-architecture/12-数据层.md)），宿主用 `filesys.IndexQueueFunc` 闭包经 inline 门面写入，**不新增 MQ 主题**。
+- ~~**待索引入队（2026-10-19，resident indexer P2）**：…（省略原文）~~ **〔2026-10-25 退场，D-71〕**：filesys **不再写任何待索引队列** —— `Options.IndexQueue` / `IndexQueue` / `IndexQueueFunc` 与 `enqueueIndex` 已删除，`filesys.changed` 成为唯一变更信号；vfts / codegraph 插件各自订阅该主题并在进程内去抖增量（vfts 走清单 diff，codegraph 走 `codegraph_index_paths`）。下游语义不变：`rename`/`remove` 仍由订阅方按旧路径删除索引项。
 
 - 去抖常量：`debounce = 60ms`；`maxWait = 10×debounce`（D-37：批次广播不被持续事件无限推后）。
 - `recursive` 语义：`onWatch` **消费**载荷 `recursive` 并透传 `wm.watch(wd, p, req.Recursive, instanceID)`；`recursive=true` → `AddPath(p, WithDepth(WatchNested))`，`false` → `WatchTopLevel`（缺省 false = 仅监听本目录；白盒 `TestWatchRecursiveFlag`）。
@@ -94,7 +94,7 @@ watchManager：按 work_dir 组织 map[string]*dirWatcher（+ 每 work_dir 的�
 
 ## 5. 数据结构与存储
 
-- 无**自有**持久化存储（纯运行态）；变更事件额外写入 data 层 prjusr `index_queue`（经注入的窄接口 `IndexQueue`，本模块不直连 data）。
+- 无**自有**持久化存储（纯运行态）；变更事件只发 `filesys.changed`（2026-10-25 起**不再**写入任何待索引队列，见 §4）。
 - 读内容上限 `maxTextBytes = 512KB`（超出 `truncated=true`）；**R8-C-2**：截断**按 UTF-8 边界收尾**——丢弃末尾不完整的 UTF-8 多字节序列（`trimIncompleteUTF8`），多字节字符（中文等）不被切断产生乱码；读取用 `io.ReadFull` 处理短读。
 - `listDirNodes(dir, hiddenDirs)` 浅层列子项（跳过隐藏/临时条目），路径统一 `/`，附 `size`/`mtime`：
   - **目录** → `shouldHideDirName(name, hiddenDirs)`：`.` 开头恒隐藏 + 命中「不显示的目录」清单（`filetree.hide-dirs`）；与 watcher 递归**同源**（层2，见 §4.2）。

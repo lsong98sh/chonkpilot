@@ -44,11 +44,6 @@ type Options struct {
 	ExistingInstanceIDs func() []string
 	// GUI 是宿主注入的 GUI 反向通道（desktop/gui 有；纯 server 为 nil）。
 	GUI GUIController
-	// IndexQueue 是待索引队列宿主桥接（nil = 未装配，控制帧返回明确错误）。
-	IndexQueue IndexQueueHooks
-	// WorkDirs 返回宿主当前**活实例**的去重 work_dir（plugin.index.workdirs）。
-	// 单实例多 workdir 的 resident indexer 据此发现待消费项目；nil = 返回空列表（插件空转等待）。
-	WorkDirs func() []string
 	// Plugins 是插件平台回调（MCP/UI/状态/数据权限）；nil = 对应能力不可用。
 	Plugins PluginHooks
 	// Logf 诊断输出。
@@ -333,10 +328,6 @@ var controlNames = []string{
 	"plugin.tool.unbind",
 	"plugin/v1/instance.claim",
 	"plugin/v1/instance.list",
-	"plugin.index.take",
-	"plugin.index.ack",
-	"plugin.index.pending",
-	"plugin.index.workdirs",
 	"plugin.mcp.register",
 	"plugin.mcp.unregister",
 	"plugin.ui.register",
@@ -363,10 +354,6 @@ var controlHandlers = map[string]func(ctx context.Context, s *Session, args json
 	"plugin.tool.unbind":       handleToolUnbind,
 	"plugin/v1/instance.claim": handleInstanceClaim,
 	"plugin/v1/instance.list":  handleInstanceList,
-	"plugin.index.take":        handleIndexTake,
-	"plugin.index.ack":         handleIndexAck,
-	"plugin.index.pending":     handleIndexPending,
-	"plugin.index.workdirs":    handleIndexWorkDirs,
 	"plugin.mcp.register":      handleMCPRegister,
 	"plugin.mcp.unregister":    handleMCPUnegister,
 	"plugin.ui.register":       handleUIRegister,

@@ -39,7 +39,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/config"
-	"github.com/chonkpilot/chonkpilot-data/internal/indexqueue"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/knowledge"
 	"github.com/chonkpilot/chonkpilot-data/internal/mcp"
@@ -139,7 +138,6 @@ type Service struct {
 	facade.McpAPI
 	facade.ProjectAPI
 	facade.GroupAPI
-	facade.IndexQueueAPI
 
 	mu      sync.Mutex
 	subs    []mq.Sub // 全部订阅句柄（Start 累计 / Stop 退订）
@@ -185,8 +183,6 @@ func New(bus mq.Bus, opts Options) *Service {
 		ProjectAPI:   project.New(base),
 		// 群聊两表（参与者名单 / 大轮次投递对象）与会话同域同库（prjusr）→ 复用 session 实现。
 		GroupAPI: ses,
-		// resident indexer 待索引队列（prjusr `index_queue`；仅 in-process，无 MQ 绑定）。
-		IndexQueueAPI: indexqueue.New(base),
 	}
 	// refresh 广播附带的域列表（订阅面）由信封层提供 → 与各域 list 应答同源。
 	base.DomainList = s.domainList

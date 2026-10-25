@@ -82,6 +82,10 @@ const (
 	// 窗口外的单次键变更仍会（延迟 window 后）触发一次重建——不会出现"改了不重建"。
 	defaultRebuildDebounce = 400 * time.Millisecond
 
+	// 文件变更去抖窗口（D-71：索引自管，订阅 filesys.changed 驱动 codegraph_index_paths）。
+	// 比配置窗口长：编辑器/构建一次落盘常产生成批事件，合并成一次按路径增量。
+	fsSyncDebounce = 2 * time.Second
+
 	// 索引进度：轮询引擎落盘 meta.json（引擎 Initialize 期间按批写入，见引擎 index.go）的间隔；
 	// 读到的 done/total 变化即回写 codegraph.status（复用既有状态面，不新增消息主题）。
 	progressPollInterval = 500 * time.Millisecond
@@ -126,6 +130,9 @@ type Codegraph struct {
 	clientMu   sync.Mutex            // 每 workdir 引擎子进程（懒建/回收）保护
 	clients    map[string]*clientRec // key = workdir；每 workdir 一独立引擎子进程（独立索引互不干扰）
 	rebuild    *rebuildDebouncer     // 索引配置变更去抖（一次保存两键 → 只重建一次）
+	fsSync     *rebuildDebouncer     // filesys.changed → 增量索引去抖（按 workdir 合并成批事件）
+	fsMu       sync.Mutex
+	fsBatch    map[string]*fsPending // key = workdir；待增量处理的路径批（flush 后清空）
 
 	// engineMissing 引擎缺失态（Start 时 resolveExe 失败 → true）：插件以**未就绪**态运行——
 	// 保留事件订阅（配置/生命周期/回调）但不启用（工具面不注册、不 spawn 引擎），
@@ -183,6 +190,12 @@ type clientRec struct {
 	lastUsed time.Time
 }
 
+// fsPending 是某 workdir 待增量处理的路径批（去抖窗口内累积；flush 时整体取走）。
+type fsPending struct {
+	files   map[string]struct{} // 重新索引（create/write）
+	removes map[string]struct{} // 从索引删除（remove/rename 旧路径）
+}
+
 // New 构建 codegraph 插件。
 func New(opts Options) *Codegraph {
 	if opts.RetryAttempts <= 0 {
@@ -197,6 +210,8 @@ func New(opts Options) *Codegraph {
 		works:   make(map[string]*workRec),
 		clients: make(map[string]*clientRec),
 		rebuild: newRebuildDebouncer(opts.RebuildDebounce),
+		fsSync:  newRebuildDebouncer(fsSyncDebounce),
+		fsBatch: make(map[string]*fsPending),
 		stopCh:  make(chan struct{}),
 	}
 }
@@ -252,6 +267,13 @@ func (p *Codegraph) Start(d hook.Deps) error {
 		return err
 	}
 	p.subs = append(p.subs, sh)
+	// 文件变更（D-71：插件自管索引，取代宿主待索引队列；按 workdir 去抖增量）
+	sh, err = d.Bus.On(msgkeys.TopicFilesysChanged, 0, p.onFilesysChanged)
+	if err != nil {
+		p.unsubscribeAll()
+		return err
+	}
+	p.subs = append(p.subs, sh)
 	// gateway 工具执行回调（regProv 向本主题发请求，写回 v.Result）
 	sh, err = d.Bus.On(toolCallSubject, 0, p.onToolCall)
 	if err != nil {
@@ -300,6 +322,7 @@ func (p *Codegraph) Stop() {
 	p.stopped.Store(true) // 停止态：阻止去抖回调/clientFor 重新 spawn 引擎
 	p.stopOnce.Do(func() { close(p.stopCh) })
 	p.rebuild.stopAll() // 停去抖定时器（已 fire 的回调经 stopped 门控不再 spawn）
+	p.fsSync.stopAll()  // 同上（文件变更增量去抖）
 	p.unsubscribeAll()
 	p.clientMu.Lock()
 	clients := make([]engineClient, 0, len(p.clients))
@@ -519,6 +542,133 @@ func (p *Codegraph) readEnableAndEnsure(instanceID, wd string) {
 		p.maybeEnsure(wd)
 	}
 	p.syncTools()
+}
+
+// ─── filesys.changed 增量（D-71：索引自管）──────────────────
+
+// onFilesysChanged 文件变更 → 累积路径批并按 workdir 去抖，随后走 codegraph_index_paths 增量。
+// 事件只作触发信号：同一批内的 create/write 归 files、remove/rename 归 remove（末次为准）；
+// 去抖窗口内的事件合并成一次引擎调用；索引未就绪时由 ensureWorkspace 全量兜底。
+func (p *Codegraph) onFilesysChanged(_ context.Context, _ string, v *mq.Value) error {
+	if p.stopped.Load() || p.engineMissing {
+		return nil
+	}
+	var ev struct {
+		WorkDir   string `json:"work_dir"`
+		Path      string `json:"path"`
+		Operation string `json:"operation"`
+	}
+	if json.Unmarshal(v.Payload, &ev) != nil || ev.WorkDir == "" || ev.Path == "" {
+		return nil
+	}
+	p.mu.Lock()
+	r := p.works[ev.WorkDir] // key 已是 Clean 后绝对路径（与 filesys 载荷同源）
+	active := r != nil && r.refs > 0 && r.enabled
+	p.mu.Unlock()
+	if !active {
+		return nil
+	}
+	wd := ev.WorkDir
+	p.fsMu.Lock()
+	b := p.fsBatch[wd]
+	if b == nil {
+		b = &fsPending{files: map[string]struct{}{}, removes: map[string]struct{}{}}
+		p.fsBatch[wd] = b
+	}
+	if ev.Operation == "remove" || ev.Operation == "rename" {
+		b.removes[ev.Path] = struct{}{}
+		delete(b.files, ev.Path)
+	} else {
+		b.files[ev.Path] = struct{}{}
+		delete(b.removes, ev.Path)
+	}
+	p.fsMu.Unlock()
+	p.fsSync.schedule(wd, p.safeFunc(func() { p.flushFSChanges(wd) }))
+	return nil
+}
+
+// takeFSBatch 取走该 workdir 的路径批（排序后返回，便于日志与引擎稳定输入）。
+func (p *Codegraph) takeFSBatch(wd string) (files, removes []string) {
+	p.fsMu.Lock()
+	defer p.fsMu.Unlock()
+	b := p.fsBatch[wd]
+	if b == nil {
+		return nil, nil
+	}
+	delete(p.fsBatch, wd)
+	for f := range b.files {
+		files = append(files, f)
+	}
+	for f := range b.removes {
+		removes = append(removes, f)
+	}
+	sort.Strings(files)
+	sort.Strings(removes)
+	return files, removes
+}
+
+// restoreFSBatch 把未消费的路径批并回（索引未就绪/正在重建时延后处理）。
+func (p *Codegraph) restoreFSBatch(wd string, files, removes []string) {
+	p.fsMu.Lock()
+	defer p.fsMu.Unlock()
+	b := p.fsBatch[wd]
+	if b == nil {
+		b = &fsPending{files: map[string]struct{}{}, removes: map[string]struct{}{}}
+		p.fsBatch[wd] = b
+	}
+	for _, f := range files {
+		b.files[f] = struct{}{}
+	}
+	for _, f := range removes {
+		b.removes[f] = struct{}{}
+	}
+}
+
+// flushFSChanges 执行一批按路径增量。索引未就绪或在途重建 → 批次并回并延后重试
+// （首次全量 / 配置重建会把变更整体纳入，故不丢）。
+func (p *Codegraph) flushFSChanges(wd string) {
+	if p.stopped.Load() || p.engineMissing {
+		return
+	}
+	files, removes := p.takeFSBatch(wd)
+	if len(files)+len(removes) == 0 {
+		return
+	}
+	p.mu.Lock()
+	r := p.works[wd]
+	active := r != nil && r.refs > 0 && r.enabled
+	p.mu.Unlock()
+	if !active {
+		return // 已停用/无实例：批次作废（重新启用时会全量/增量自愈）
+	}
+	r.cmu.Lock()
+	if r.busy || !r.ready() {
+		r.cmu.Unlock()
+		p.restoreFSBatch(wd, files, removes)
+		p.fsSync.schedule(wd, p.safeFunc(func() { p.flushFSChanges(wd) }))
+		return
+	}
+	r.busy = true
+	r.cmu.Unlock()
+	defer func() {
+		r.cmu.Lock()
+		r.busy = false
+		r.cmu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), initTimeout)
+	defer cancel()
+	if _, err := p.callWithRetry(ctx, "codegraph_index_paths", map[string]any{
+		"workdir": wd, "files": files, "remove": removes,
+	}); err != nil {
+		p.logf("codegraph: %s 文件变更增量失败（files=%d remove=%d）：%v", wd, len(files), len(removes), err)
+		return
+	}
+	r.cmu.Lock()
+	if err := p.refreshStatus(r, ctx); err != nil {
+		p.logf("codegraph: %s 增量完成但状态回读失败：%v", wd, err)
+	}
+	r.cmu.Unlock()
+	p.logf("codegraph: %s 文件变更增量完成（files=%d remove=%d）", wd, len(files), len(removes))
 }
 
 // ─── prj-config 变更 ──────────────────────────────────────

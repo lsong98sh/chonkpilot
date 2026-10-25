@@ -20,7 +20,7 @@ const (
 var personalBuckets = []string{
 	"sessions", "turns", "messages", "tasktree", "task_shadow",
 	"memory_extract", "group_participants", "group_round_targets",
-	"inbox_items", "index_queue", "turn_events", "dialogs",
+	"inbox_items", "turn_events", "dialogs",
 	"sessions_by_top", "turns_by_session",
 	"messages_by_session", "messages_by_turn", "messages_by_client_msg",
 	"tasktree_by_parent", "tasktree_by_top", "tasktree_by_session",
@@ -88,8 +88,9 @@ type Migration struct {
 
 // migrations 内置迁移：v8 为**压平后的全量 schema**（未发布期无旧库，不再保留 v1~v7 增量史），
 // 其后按功能增量追加：v9 inbox_items / v10 index_queue / v11 turn_events / v12 dialogs /
-// v13 drop_dead_buckets / v14 drop_unused_buckets / v15 drop_file_list。ensureBucket 幂等，
-// 既有库跑未应用版本即对齐；v13/v14 只清**空**桶（不静默丢数据），v15 删的是**派生缓存**表。
+// v13 drop_dead_buckets / v14 drop_unused_buckets / v15 drop_file_list / v16 drop_index_queue。
+// ensureBucket 幂等，既有库跑未应用版本即对齐；v13/v14 只清**空**桶（不静默丢数据），
+// v15/v16 删的是**派生缓存 / 派发队列**表。
 //
 // 注（2026-10-08 a）：原 `sessions_by_created`/`turns_by_session`/`messages_by_turn`/
 // `tool_pair_by_turn`/`tool_pair_by_task` 五个索引桶**建而不用**（全仓零读写，仅残留于本清单），
@@ -147,10 +148,10 @@ var migrations = []Migration{
 		}
 		return ensureBucket(tx, "inbox_items")
 	}},
-	// v10（resident indexer，P1）：持久化待索引队列（prjusr 级 `index_queue` 表）。
-	// 写入方 = filesys（create/write/remove/rename），消费方 = resident indexer（取一批 → 索引 →
-	// 回执）。查询模式 = 按 `work_dir` + `state` 过滤、`created_at` 升序；队列量小，
-	// **不建二级索引**（全桶过滤后内存排序即可）。
+	// v10（resident indexer，P1；**v16 已删除该队列**）：持久化待索引队列（prjusr 级
+	// `index_queue` 表）。写入方 = filesys，消费方 = resident indexer。D-71 后索引状态由
+	// vfts / codegraph 插件自管（订阅 filesys.changed），本桶不再出现在 bucketsFor 中，
+	// v16 负责把存量库的残留桶（含数据）删除。
 	{Version: 10, Name: "index_queue", UpLayer: func(tx *bolt.Tx, layer Layer) error {
 		if !hasBucket(layer, "index_queue") {
 			return nil
@@ -250,6 +251,16 @@ var migrations = []Migration{
 			return nil
 		}
 		return tx.DeleteBucket([]byte("file_list"))
+	}},
+	// v16（D-71，2026-10-25）：resident indexer 退场 → 待索引队列 `index_queue` 删除。
+	// 索引改由 vfts / codegraph 插件各自**订阅 filesys.changed** 自管（清单/状态插件自持），
+	// 该队列是宿主侧派生产物（内容 = 未消费的文件变更通知，插件重新扫描即可自愈），
+	// 故**含数据**一并删除。
+	{Version: 16, Name: "drop_index_queue", Up: func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte("index_queue")) == nil {
+			return nil
+		}
+		return tx.DeleteBucket([]byte("index_queue"))
 	}},
 }
 

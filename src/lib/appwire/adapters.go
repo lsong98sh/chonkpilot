@@ -2,8 +2,6 @@ package appwire
 
 import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-filesys"
-	"github.com/chonkpilot/chonkpilot-lib/indexkind"
 	"github.com/chonkpilot/chonkpilot-plugin-codegraph"
 	"github.com/chonkpilot/chonkpilot-plugin-vfts"
 	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
@@ -27,19 +25,4 @@ func DefaultPlugins(f facade.API) []hook.Hook {
 		codegraph.New(codegraph.Options{}),
 		vfts.New(vfts.Options{}),
 	}
-}
-
-// indexQueue 把 filesys 的变更事件写入 data 门面待索引队列（P2），
-// 与 resident indexer 的消费端（queuehooks）共用同一门面绑定。
-func indexQueue(api facade.API) filesys.IndexQueue {
-	return filesys.IndexQueueFunc(func(c filesys.IndexChange) error {
-		_, err := api.IndexQueueAppend(facade.IndexQueueAppendRequest{
-			WorkDir:   c.WorkDir,
-			Path:      c.Path,
-			Operation: c.Operation,
-			Consumers: indexkind.All,
-			Scope:     facade.Scope{WorkDir: c.WorkDir},
-		})
-		return err
-	})
 }

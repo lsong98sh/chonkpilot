@@ -37,7 +37,6 @@ type API interface {
 	McpAPI
 	ProjectAPI
 	GroupAPI
-	IndexQueueAPI
 }
 
 // GroupAPI 是 group 域（**群聊落库两表**：参与者名单 + 大轮次投递对象）门面面。

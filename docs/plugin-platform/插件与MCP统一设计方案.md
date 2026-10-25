@@ -79,7 +79,7 @@
 | 反向 RPC | 宿主 → 插件：`plugin.tool.call` / `plugin.filter.run` / `plugin.tool.cancel`；工具主题经 `plugin.tool.bind` 绑定后转 RPC | [tools.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/tools.go#L29-L102) |
 | Filter / 前置钩子 | 4 个 stage（已接 `llm.before_start` / `llm.before_send` / `llm.before_simple` / `tool.before_call`），`pass/replace/drop`，fail-closed；工具 `pre_hook_subject` | [filter.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/filter.go#L10-L58) |
 | 进程监管 | `pluginhost.Host/Manager`：单实例锁、env 注入、`1s→30s` 退避、最多 3 次 | [host.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginhost/host.go#L189-L228) |
-| 索引队列 | `plugin.index.take/ack/pending/workdirs` → data 门面待索引队列；vfts/codegraph indexer 已在用 | [server.go](file:///e:/BizWorks/chonkpilot/src/server/main.go#L266-L299) |
+| 索引队列 | ~~`plugin.index.take/ack/pending/workdirs` → data 门面待索引队列；vfts/codegraph indexer 已在用~~ **〔2026-10-25 退场，D-71〕**：四帧 + `queuehooks` + `index_queue` + 两个 indexer exe 已删除，插件改为订阅 `filesys.changed` 自管索引 | — |
 | gateway 注册 | `servers/register`（`mcp-servers-register`）支持 `stdio` / `http`(=Streamable HTTP) / `sse`、`namespace`、`hot_tools`、`headers`、`origin`、`timeout`、`isolate` | [gateway_servers.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/server/gateway_servers.go#L194-L227) |
 | 调用上下文注入 | 仅 `origin=builtin` 的下游收到 `_meta.chonkpilot{instance_id,work_dir,data_dir,session,turn,tool_call_id,top_session,parent,purpose}` | gateway 内核 `provider.go` / `contextmeta.go` |
 | 工具名规则 | 暴露名 = `namespace` 覆盖 > `<id>_`；`"-"` = 禁前缀；`origin=user` 且无前缀时强制来源前缀；**冲突 = 注册失败** | gateway 内核 `registry.go` |

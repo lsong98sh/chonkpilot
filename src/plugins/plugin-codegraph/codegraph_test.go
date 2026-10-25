@@ -1078,3 +1078,40 @@ func TestReadIndexConfig(t *testing.T) {
 		t.Fatalf("缺省配置应回落空切片 + stack=false，实际 exts=%v rules=%v stack=%v", exts2, rules2, stack2)
 	}
 }
+
+// TestFilesysChangedBatchesPaths：filesys.changed → 按 workdir 累积路径批（D-71 索引自管）——
+// create/write 归 files，remove/rename 归 removes，同路径末次事件为准；未启用/无实例的 workdir 忽略。
+func TestFilesysChangedBatchesPaths(t *testing.T) {
+	p := New(Options{})
+	defer p.Stop()
+	p.works["/wd"] = &workRec{workDir: "/wd", refs: 1, enabled: true}
+	p.works["/off"] = &workRec{workDir: "/off", refs: 1, enabled: false}
+	send := func(wd, path, op string) {
+		t.Helper()
+		b, _ := json.Marshal(map[string]string{"work_dir": wd, "path": path, "operation": op})
+		if err := p.onFilesysChanged(context.Background(), "", &mq.Value{Payload: b}); err != nil {
+			t.Fatalf("onFilesysChanged(%s %s %s): %v", wd, path, op, err)
+		}
+	}
+	send("/wd", "/wd/a.go", "create")
+	send("/wd", "/wd/b.go", "write")
+	send("/wd", "/wd/c.go", "remove")
+	send("/wd", "/wd/d.go", "rename")
+	send("/wd", "/wd/a.go", "remove") // 同路径后到的 remove 覆盖先前的 create
+	send("/off", "/off/x.go", "create")
+	send("/nope", "/nope/y.go", "create") // 未登记 workdir
+
+	files, removes := p.takeFSBatch("/wd")
+	if strings.Join(files, ",") != "/wd/b.go" {
+		t.Fatalf("files = %v，期望 [/wd/b.go]", files)
+	}
+	if strings.Join(removes, ",") != "/wd/a.go,/wd/c.go,/wd/d.go" {
+		t.Fatalf("removes = %v，期望 [/wd/a.go /wd/c.go /wd/d.go]", removes)
+	}
+	if f, r := p.takeFSBatch("/off"); len(f)+len(r) != 0 {
+		t.Fatalf("未启用 workdir 不应累积路径批，实际 files=%v removes=%v", f, r)
+	}
+	if f, r := p.takeFSBatch("/nope"); len(f)+len(r) != 0 {
+		t.Fatalf("未登记 workdir 不应累积路径批，实际 files=%v removes=%v", f, r)
+	}
+}

@@ -29,8 +29,8 @@
 #   │   │                                   #    产物内**不带** <id>/webui/；demo-python 为样例（product=false，不随产物投放）
 #   │   └── executors/chonkpilot-{core,browser,desktop}-executor.exe
 #   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
-#   │   ├── codegraph/chonkpilot-codegraph-mcp-server.exe + chonkpilot-codegraph-indexer.exe
-#   │   ├── vfts/chonkpilot-vfts-mcp-server.exe + chonkpilot-vfts-indexer.exe + zvec_c_api.dll（必须与 vfts 引擎同目录）
+#   │   ├── codegraph/chonkpilot-codegraph-mcp-server.exe
+#   │   ├── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll（必须与 vfts 引擎同目录）
 #   │   └── markitdown/…（可选：文档转换，dist/other/mcps 兜底镜像；缺则告警、不中断）
 #   ├── themes/themes.css                   # 主题资产（源 src/initdata/themes，覆盖式同步；运行期可编辑）
 #   └── (无其它)                            # 根仅 chonkpilot.exe 一个 exe
@@ -310,14 +310,11 @@ Write-Host "    ok: capability/scenarios/ ($scnCount files)"
 Write-Host "==> [6/9] build codegraph engine -> mcps/codegraph"
 Invoke-ChildBuild "build-codegraph.ps1"
 $cgExe = "chonkpilot-codegraph-mcp-server.exe"
-$cgIdxExe = "chonkpilot-codegraph-indexer.exe"
 $cgDir = Join-Path $dist "mcps\codegraph"
 New-Item -ItemType Directory -Force -Path $cgDir | Out-Null
 Copy-Item (Join-Path $root "dist\plugins\codegraph\$cgExe") $cgDir -Force
-Copy-Item (Join-Path $root "dist\plugins\codegraph\$cgIdxExe") $cgDir -Force
 $mbCg = [Math]::Round((Get-Item (Join-Path $cgDir $cgExe)).Length / 1MB, 1)
-$mbCgIdx = [Math]::Round((Get-Item (Join-Path $cgDir $cgIdxExe)).Length / 1MB, 1)
-Write-Host "    ok: mcps/codegraph/$cgExe ($mbCg MB) + $cgIdxExe ($mbCgIdx MB)"
+Write-Host "    ok: mcps/codegraph/$cgExe ($mbCg MB)"
 # 查询工具一工具一 exe（契约 runtime 指向 ../../../mcps/codegraph/<tool>-executor.exe）
 $cgExecNames = @(
     "chonkpilot-codegraph-symbol-search-executor.exe",
@@ -337,19 +334,16 @@ Write-Host "    ok: mcps/codegraph/ codegraph query executors ($($cgExecNames.Co
 Write-Host "==> [7/9] build vfts engine -> mcps/vfts"
 Invoke-ChildBuild "build-vfts.ps1"
 $vfExe = "chonkpilot-vfts-mcp-server.exe"
-$vfIdxExe = "chonkpilot-vfts-indexer.exe"
 $vftsDist = Join-Path $root "dist\plugins\vfts"
 $vfDir = Join-Path $dist "mcps\vfts"
 New-Item -ItemType Directory -Force -Path $vfDir | Out-Null
 Copy-Item (Join-Path $vftsDist $vfExe) $vfDir -Force
-Copy-Item (Join-Path $vftsDist $vfIdxExe) $vfDir -Force
 # vfts_query 一工具一 exe（契约 runtime 指向 ../../../mcps/vfts/chonkpilot-vfts-query-executor.exe）
 Copy-Item (Join-Path $vftsDist "chonkpilot-vfts-query-executor.exe") $vfDir -Force
 Copy-Item (Join-Path $vftsDist "zvec_c_api.dll") $vfDir -Force
 $mbVf = [Math]::Round((Get-Item (Join-Path $vfDir $vfExe)).Length / 1MB, 1)
-$mbVfIdx = [Math]::Round((Get-Item (Join-Path $vfDir $vfIdxExe)).Length / 1MB, 1)
 $mbDll = [Math]::Round((Get-Item (Join-Path $vfDir "zvec_c_api.dll")).Length / 1MB, 1)
-Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + $vfIdxExe ($mbVfIdx MB) + chonkpilot-vfts-query-executor.exe + zvec_c_api.dll ($mbDll MB)"
+Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + chonkpilot-vfts-query-executor.exe + zvec_c_api.dll ($mbDll MB)"
 
 # -- 8) mcps 转换器兜底并入 dist/desktop/mcps/（dist\other\mcps → dist\desktop\mcps；可选，**幂等**）--
 #    兜底语义：源存在 → 覆盖镜像（**仅覆盖子项，保留 codegraph/vfts 引擎目录**）；源不存在但目标已存在

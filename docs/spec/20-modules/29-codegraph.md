@@ -74,12 +74,14 @@ EnsureReady：单飞，返回 ready/indexing/not_initialized/error
 IndexPaths：按绝对路径增量（files 替换 / remove 删除 / 不可索引 → 删除并 skipped）；整体 rebuildIndex 避免符号重复
 ```
 
-**resident indexer（2026-10-19 P5；同日改单实例多 workdir + 托盘 + 并发口径）**：`chonkpilot-codegraph-indexer.exe`（源 `src/plugins/codegraph/cmd/indexer`）**每宿主进程仅一个实例**（GUI 子系统 + 托盘，启动隐藏、固定 960×600、每次弹出屏幕居中；单击托盘看执行输出）。**单实例判定 = 窗口类 + 同名窗口**（注册窗口类后 `FindWindowW` 命中同名顶层窗口 → 进程 code 0 退出；实测 `CS_GLOBALCLASS` 注册本身不跨进程冲突，故以窗口存在性为判据；`pluginhost.Spec.NoLock=true`，无文件单实例锁）；`pluginhost` 只负责崩溃退避监管。连插件桥后**等 `server-ready`**，再每轮经 `plugin.index.workdirs`（宿主活实例去重 work_dir）发现项目，**按 workdir 加锁**（`<workdir>/.chonkpilot/codegraph/indexer.lock`，项目之间互不阻塞）并**非阻塞派发给 5 个工作线程**（每线程独占一个引擎进程），消费 `index_queue`（`consumer=codegraph`）：
-- 每项目先查 `pending`（0 → 不拉起引擎）；`codegraph_status` → `enabled=false` 时 ack 并跳过；未初始化 → `codegraph_initialize` 全量；否则 `codegraph_index_paths`（队列同路径合并）。
-- 每批写 `<workDir>/.chonkpilot/codegraph/status.json`（`indexing/ready/error` + `pending`），查询门据此等待/报错。
-- 单批失败 ack `failed` 不退出（下轮重试）；同一项目同时只处理一个批次；`ctl plugin.shutdown` → 写 ready 退出。
-- **引擎生命周期（2026-10-19）**：工作线程空闲 5s / 本批失败后即 `close` 引擎子进程（下批懒重连）——引擎对索引库（bbolt `index.db`）保持打开，常驻不关会阻塞插件侧 `clear` / 全量重建（删库失败）。
-- env：`CHONKPILOT_PLUGIN_ADDR` / `CHONKPILOT_PLUGIN_ID`（缺省 `codegraph-indexer`）/ `CHONKPILOT_CODEGRAPH_ENGINE`（不再需要 `WORK_DIR` / `INDEX_DIR`）。
+~~**resident indexer（2026-10-19 P5；同日改单实例多 workdir + 托盘 + 并发口径）**：`chonkpilot-codegraph-indexer.exe`（源 `src/plugins/codegraph/cmd/indexer`）**每宿主进程仅一个实例**（GUI 子系统 + 托盘，启动隐藏、固定 960×600、每次弹出屏幕居中；单击托盘看执行输出）。**单实例判定 = 窗口类 + 同名窗口**（注册窗口类后 `FindWindowW` 命中同名顶层窗口 → 进程 code 0 退出；实测 `CS_GLOBALCLASS` 注册本身不跨进程冲突，故以窗口存在性为判据；`pluginhost.Spec.NoLock=true`，无文件单实例锁）；`pluginhost` 只负责崩溃退避监管。连插件桥后**等 `server-ready`**，再每轮经 `plugin.index.workdirs`（宿主活实例去重 work_dir）发现项目，**按 workdir 加锁**（`<workdir>/.chonkpilot/codegraph/indexer.lock`，项目之间互不阻塞）并**非阻塞派发给 5 个工作线程**（每线程独占一个引擎进程），消费 `index_queue`（`consumer=codegraph`）：~~
+- ~~每项目先查 `pending`（0 → 不拉起引擎）；`codegraph_status` → `enabled=false` 时 ack 并跳过；未初始化 → `codegraph_initialize` 全量；否则 `codegraph_index_paths`（队列同路径合并）。~~
+- ~~每批写 `<workDir>/.chonkpilot/codegraph/status.json`（`indexing/ready/error` + `pending`），查询门据此等待/报错。~~
+- ~~单批失败 ack `failed` 不退出（下轮重试）；同一项目同时只处理一个批次；`ctl plugin.shutdown` → 写 ready 退出。~~
+- ~~**引擎生命周期（2026-10-19）**：工作线程空闲 5s / 本批失败后即 `close` 引擎子进程（下批懒重连）——引擎对索引库（bbolt `index.db`）保持打开，常驻不关会阻塞插件侧 `clear` / 全量重建（删库失败）。~~
+- ~~env：`CHONKPILOT_PLUGIN_ADDR` / `CHONKPILOT_PLUGIN_ID`（缺省 `codegraph-indexer`）/ `CHONKPILOT_CODEGRAPH_ENGINE`（不再需要 `WORK_DIR` / `INDEX_DIR`）。~~
+>
+- **〔2026-10-25 退场，D-71〕**：`codegraph-indexer.exe`、`src/lib/llm/codegraphindexer`、`queuehooks`、`plugin.index.*` 四帧与宿主 `index_queue` **全部删除**。索引改由 **codegraph 插件进程内自管**：订阅 `filesys.changed` → 按 workdir 累积路径批（去抖 2s）→ `codegraph_index_paths{workdir, files, remove}` 增量 → `codegraph_status` 回写 `codegraph.status`；未就绪/在途重建时批次并回延后重试，由 `codegraph_initialize` 全量兜底。
 
 **排除语义（完整 gitignore 语义，`server/index.go:excludeOptions` + `collectSourceFiles`）**：
 遍历走共享包 `github.com/chonkpilot/chonkpilot-ignore` 的 `ignore.WalkDir`（与 vfts 引擎、vfts 插件清单扫描**同一实现**），

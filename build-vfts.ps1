@@ -2,8 +2,11 @@
 #
 # 产物布局（dist/plugins/vfts/，见 [41 D-28]）：
 #   ├── chonkpilot-vfts-mcp-server.exe   # 进程内 zvec FTS 全文索引 MCP server（console，CGO）
-#   ├── chonkpilot-vfts-indexer.exe      # 常驻增量索引器（宿主按 work_dir 拉起；CGO，与引擎同目录）
+#   ├── chonkpilot-vfts-query-executor.exe # vfts_query 一工具一 exe（读落盘索引执行检索）
 #   └── zvec_c_api.dll                   # zvec C-API 原生动态库（必须与 exe 同目录，运行时加载）
+#
+# 注（D-71，2026-10-25）：resident `chonkpilot-vfts-indexer.exe` 已退场 —— 索引回路与清单
+# 由 vfts 插件进程内自管（订阅 filesys.changed 驱动增量），本脚本不再产出该 exe。
 #
 # 源（PLUGIN-SPLIT-1）：`chonkpilot-plugins/codegraph/engines/vfts`（engine 本体；插件侧 = `chonkpilot-plugins/codegraph`）。
 # 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop、
@@ -49,7 +52,7 @@ if (-not (Test-Path (Join-Path $zvecLib "zvec_c_api.lib"))) {
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 # kill 运行中的旧实例，避免 exe/dll 被占用
-Get-Process -Name "chonkpilot-vfts-mcp-server", "chonkpilot-vfts-indexer", "chonkpilot-vfts-query-executor" -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name "chonkpilot-vfts-mcp-server", "chonkpilot-vfts-query-executor" -ErrorAction SilentlyContinue | Stop-Process -Force
 
 Write-Host "==> build vfts mcp-server (CGO console exe)"
 Push-Location $mod
@@ -58,12 +61,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "build failed（检查 gcc 与 zvec 头/库路径：$zvec）" }
     $exe = Get-Item (Join-Path $dist "chonkpilot-vfts-mcp-server.exe")
     Write-Host "    ok: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB)"
-
-    Write-Host "==> build vfts indexer (CGO GUI/tray exe; 启动隐藏 + 托盘输出窗口)"
-    go build -ldflags "-H windowsgui" -o (Join-Path $dist "chonkpilot-vfts-indexer.exe") ./cmd/indexer
-    if ($LASTEXITCODE -ne 0) { throw "build failed: ./cmd/indexer（检查 gcc 与 zvec 头/库路径：$zvec）" }
-    $idxExe = Get-Item (Join-Path $dist "chonkpilot-vfts-indexer.exe")
-    Write-Host "    ok: $($idxExe.Name) ($([math]::Round($idxExe.Length/1MB,1)) MB)"
 } finally { Pop-Location }
 
 # vfts_query「一工具一 exe」（G-68 第二步）：由 core-mcp-server 按契约 spawn；直接读落盘
@@ -85,5 +82,3 @@ Write-Host "==> done. run (必须显式指定运行形态):"
 Write-Host "    HTTP 前台:   cd $dist ; .\chonkpilot-vfts-mcp-server.exe --http          # 默认 127.0.0.1:5702，端点 /mcp"
 Write-Host "    stdio(IDE):  .\chonkpilot-vfts-mcp-server.exe --stdio                   # Trae 等 spawn"
 Write-Host "    自检:        .\chonkpilot-vfts-mcp-server.exe -probe <dir>              # 索引目录打印汇总（可附 -match/-query）"
-Write-Host "    indexer:     单实例多 workdir（GUI 子系统 + 托盘，启动隐藏；单击托盘查看输出）；由宿主拉起"
-Write-Host "                 （pluginhost 注入 CHONKPILOT_PLUGIN_ADDR / CHONKPILOT_PLUGIN_ID），一般无需手工运行"

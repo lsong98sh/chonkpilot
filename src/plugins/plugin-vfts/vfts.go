@@ -72,6 +72,10 @@ const (
 	// 窗口外的单次键变更仍会（延迟 window 后）触发一次重建——不会出现"改了不重建"。
 	defaultRebuildDebounce = 400 * time.Millisecond
 
+	// 文件变更去抖窗口（D-71：索引自管，订阅 filesys.changed 驱动增量同步）。
+	// 比配置窗口长：编辑器/构建一次落盘常产生成批事件，合并成一轮**增量**扫描。
+	fsSyncDebounce = 2 * time.Second
+
 	// defaultDocMaxMB 文档类单文件上限默认值（MB；与引擎 defaultDocMaxBytes=50MiB 同口径）。
 	defaultDocMaxMB = 50
 
@@ -116,6 +120,7 @@ type Vfts struct {
 	clientMu     sync.Mutex          // 共享引擎子进程懒建/回收保护
 	client       *client             // 全局共享引擎子进程客户端（一对多；无活跃实例超 childIdleTimeout 后回收）
 	rebuild      *rebuildDebouncer   // 索引配置变更去抖（一次保存两键 → 只重建一次）
+	fsSync       *rebuildDebouncer   // filesys.changed → 增量同步去抖（按 workdir 合并成批事件）
 
 	// 文档转换服务探测状态（TTL 缓存；token 仅内存、不落日志）
 	probeMu    sync.Mutex
@@ -184,6 +189,7 @@ func New(opts Options) *Vfts {
 		insts:   make(map[string]*instRec),
 		works:   make(map[string]*workRec),
 		rebuild: newRebuildDebouncer(opts.RebuildDebounce),
+		fsSync:  newRebuildDebouncer(fsSyncDebounce),
 		stopCh:  make(chan struct{}),
 	}
 }
@@ -234,6 +240,13 @@ func (p *Vfts) Start(d hook.Deps) error {
 	}
 	// prj-config 变更广播（plugins.codegraph.vfts.* 开关；order 0）
 	sh, err := d.Bus.On(subjectPrjConfigRefresh, 0, p.onPrjConfigRefresh)
+	if err != nil {
+		p.unsubscribeAll()
+		return err
+	}
+	p.subs = append(p.subs, sh)
+	// 文件变更（D-71：插件自管索引，取代宿主待索引队列；按 workdir 去抖增量）
+	sh, err = d.Bus.On(msgkeys.TopicFilesysChanged, 0, p.onFilesysChanged)
 	if err != nil {
 		p.unsubscribeAll()
 		return err
@@ -305,6 +318,7 @@ func (p *Vfts) Stop() {
 	p.stopped.Store(true) // 停止态：阻止去抖回调/sharedClient 重新 spawn 引擎
 	p.stopOnce.Do(func() { close(p.stopCh) })
 	p.rebuild.stopAll() // 停去抖定时器（已 fire 的回调经 stopped 门控不再 spawn）
+	p.fsSync.stopAll()  // 同上（文件变更增量去抖）
 	p.unsubscribeAll()
 	p.clientMu.Lock()
 	c := p.client
@@ -580,6 +594,34 @@ func (p *Vfts) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) erro
 	for _, key := range keys {
 		p.applyPrjConfig(key, ev.Op, ev.List)
 	}
+	return nil
+}
+
+// onFilesysChanged 文件变更 → 去抖**增量**同步（D-71：插件自管索引，不再依赖宿主待索引队列）。
+// 只关心「引用中且已启用」的 workdir；事件只作触发信号（增量内容由清单 diff 决定，
+// 因此重复事件/丢失单条事件都不影响最终一致）。rename 的新旧路径由目录扫描自然覆盖。
+func (p *Vfts) onFilesysChanged(_ context.Context, _ string, v *mq.Value) error {
+	if p.stopped.Load() || p.engineMissing {
+		return nil
+	}
+	var ev struct {
+		WorkDir string `json:"work_dir"`
+	}
+	if json.Unmarshal(v.Payload, &ev) != nil || ev.WorkDir == "" {
+		return nil
+	}
+	p.mu.Lock()
+	r := p.works[ev.WorkDir] // key 已是 Clean 后绝对路径（与 filesys 载荷同源）
+	active := r != nil && r.refs > 0 && r.enabled
+	p.mu.Unlock()
+	if !active {
+		return nil
+	}
+	wd := ev.WorkDir
+	p.fsSync.schedule(wd, p.safeFunc(func() {
+		p.logf("vfts: %s → workdir %s 文件变更增量同步", "filesys.changed", wd)
+		p.ensureWorkspace(wd, false)
+	}))
 	return nil
 }
 

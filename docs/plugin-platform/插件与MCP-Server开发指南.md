@@ -237,7 +237,7 @@ plugin.ready    {}                                 → {ok}        # 可选：�
 | `plugin.sys.ping` / `plugin.sys.info` | 健康 / 方法面 |
 | `plugin.filter.register` / `plugin.tool.bind` / `plugin.tool.unbind` | 同步钩子 / 工具绑定 |
 | `plugin/v1/instance.claim` / `instance.list` | 实例 |
-| `plugin.index.take|ack|pending|workdirs` | 待索引队列（resident indexer） |
+| ~~`plugin.index.take|ack|pending|workdirs`~~ | **2026-10-25 退场（D-71）**：待索引队列已删除；插件订阅 `filesys.changed` 自管索引 |
 | `plugin.mcp.register` / `plugin.mcp.unregister` | 登记 MCP（§5） |
 | `plugin.ui.register` | 登记视图/菜单/状态栏（§7） |
 | `plugin.status.report` | `{state,detail}`（`running`/`degraded`/`error`） |

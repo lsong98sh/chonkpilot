@@ -42,7 +42,6 @@ type binding struct {
 	facade.McpAPI
 	facade.ProjectAPI
 	facade.GroupAPI
-	facade.IndexQueueAPI
 }
 
 // 编译期断言：合成结果 = 完整门面。
@@ -77,6 +76,5 @@ func NewWithOptions(bus mq.Bus, opts persist.Options) facade.API {
 		McpAPI:        svc,
 		ProjectAPI:    svc,
 		GroupAPI:      svc,
-		IndexQueueAPI: svc,
 	}
 }

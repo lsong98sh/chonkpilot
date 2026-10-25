@@ -34,12 +34,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-gui/models"
 	"github.com/chonkpilot/chonkpilot-lib/exedir"
 	"github.com/chonkpilot/chonkpilot-lib/tray"
-	"github.com/chonkpilot/chonkpilot-llm/codegraphindexer"
 	"github.com/chonkpilot/chonkpilot-llm/coretools"
 	"github.com/chonkpilot/chonkpilot-llm/llmbridge"
-	"github.com/chonkpilot/chonkpilot-llm/queuehooks"
 	"github.com/chonkpilot/chonkpilot-llm/server"
-	"github.com/chonkpilot/chonkpilot-llm/vftsindexer"
 	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
 	pluginmgr "github.com/chonkpilot/chonkpilot-lib/pluginhost/mgr"
 )
@@ -162,8 +159,6 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	var plugins *pluginmgr.Manager
 	var bx *llmbridge.Server
 	var coreTools *coretools.Supervisor
-	var vftsIdx *vftsindexer.Manager
-	var cgIdx *codegraphindexer.Manager
 	var assetSrv *assetserver.Server
 
 	// ── 共用脊柱（appwire，GATEWAY-2 L12）：总线 → data 门面 → filesys → llm server + 默认插件 ──
@@ -196,7 +191,6 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	bus := app.Bus
 	fsys = app.Filesys
 	srv = app.Server
-	dataFacade := app.Facade
 	defer func() {
 		// core-mcp-server 依赖插件桥与 server：先停（断连即退出），再按依赖序收尾。
 		coreTools.Stop()
@@ -222,14 +216,6 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		}
 		if fsys != nil {
 			fsys.Stop()
-		}
-		// resident indexer（vfts / codegraph）：优雅停止（StopAll 经 plugin.shutdown 通知
-		// indexer，依赖 pb 仍在线），最后才关插件桥。
-		if vftsIdx != nil {
-			vftsIdx.StopAll()
-		}
-		if cgIdx != nil {
-			cgIdx.StopAll()
 		}
 		// 插件平台：先停插件（依赖插件桥在线发 shutdown），再关插件桥。
 		if plugins != nil {
@@ -267,16 +253,6 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 				// 缺省 = pluginbridge.DefaultAddr()（UDS；`CHONK_PLUGIN_UDS` 可覆盖路径）。
 				Addr: os.Getenv("CHONK_PLUGIN_LISTEN"),
 				// PRODSIM-1：插件桥只保留 **UDS 免认证前门**（HTTP 前门已删除）。
-				// resident indexer 的待索引队列控制帧（plugin.index.*）→ data 门面直调
-				// （P4b-1；与 filesys 入队共用同一 inline 绑定）；WorkDirs = 活实例 work_dir
-				// （plugin.index.workdirs，单实例多 workdir 的项目发现）。
-				IndexQueue: queuehooks.New(dataFacade),
-				WorkDirs: func() []string {
-					if srv == nil {
-						return nil
-					}
-					return srv.LiveWorkDirs()
-				},
 				Logf: func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) },
 			})
 			if err := pb.Start(); err != nil {
@@ -562,48 +538,10 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	gui.WatchLogLevel(bus)
 	gui.LogStartupStage("启动流程就绪（进入窗口事件循环，首屏于导航完成后另记）")
 
-	// 全部模块就绪 → 插件桥广播 server-ready（常驻索引器据此开始消费队列；P3）。
+	// 全部模块就绪 → 插件桥广播 server-ready（插件据此开始自管索引；D-71）。
 	// payload 为插件传输帧（非 MQ 主题），见 pluginbridge.MarkReady。
 	if pb != nil {
 		pb.MarkReady(map[string]any{"form": string(opts.Form), "at": time.Now().UTC().Format(time.RFC3339)})
-	}
-
-	// resident indexer（vfts P4b-2b / codegraph P5）：**每宿主进程每插件单实例**
-	// （单实例多 workdir，2026-10-19）。项目发现由宿主实例表提供
-	// （plugin.index.workdirs → srv.LiveWorkDirs），indexer 进程内含托盘输出窗口。
-	// 不设 enable 门控（MVP 始终启动）；exe 缺失 → 静默跳过并只记一次日志。
-	if pb != nil {
-		logf := func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) }
-		vftsExe := vftsIndexerExePath()
-		if st, err := os.Stat(vftsExe); err == nil && !st.IsDir() {
-			vftsIdx = vftsindexer.New(logf)
-			if err := vftsIdx.Ensure(context.Background(), vftsindexer.Options{
-				DataRoot:   prjUsrRoot,
-				PluginAddr: pb.Addr(),
-				IndexerExe: vftsExe,
-				Logf:       logf,
-				Shutdown:   pb.ShutdownPlugin,
-			}); err != nil {
-				slog.Warn("vfts indexer 启动失败", "err", err)
-			}
-		} else {
-			slog.Info("vfts indexer 未安装（跳过）", "exe", vftsExe)
-		}
-		cgExe := codegraphIndexerExePath()
-		if st, err := os.Stat(cgExe); err == nil && !st.IsDir() {
-			cgIdx = codegraphindexer.New(logf)
-			if err := cgIdx.Ensure(context.Background(), codegraphindexer.Options{
-				DataRoot:   prjUsrRoot,
-				PluginAddr: pb.Addr(),
-				IndexerExe: cgExe,
-				Logf:       logf,
-				Shutdown:   pb.ShutdownPlugin,
-			}); err != nil {
-				slog.Warn("codegraph indexer 启动失败", "err", err)
-			}
-		} else {
-			slog.Info("codegraph indexer 未安装（跳过）", "exe", cgExe)
-		}
 	}
 
 	// ── 托盘（PRODSIM-1）：常驻入口 —— 显示日志 / 打开项目 / 项目列表 / 退出 ──
@@ -665,38 +603,6 @@ func waitAllProjectsClosed(env *gui.Env, exitCh <-chan struct{}) {
 			}
 		}
 	}
-}
-
-// vftsIndexerExePath 定位 resident indexer：优先宿主 exe 同目录，
-// 其次发行布局 `mcps/vfts/`（build-desktop / build-gui 的投放位置）。
-func vftsIndexerExePath() string {
-	const name = "chonkpilot-vfts-indexer.exe"
-	exe, err := os.Executable()
-	if err != nil {
-		return name
-	}
-	dir := filepath.Dir(exe)
-	primary := filepath.Join(dir, name)
-	if _, err := os.Stat(primary); err == nil {
-		return primary
-	}
-	return filepath.Join(dir, "mcps", "vfts", name)
-}
-
-// codegraphIndexerExePath 定位 resident codegraph indexer：优先宿主 exe 同目录，
-// 其次发行布局 `mcps/codegraph/`（build-desktop / build-gui 的投放位置）。
-func codegraphIndexerExePath() string {
-	const name = "chonkpilot-codegraph-indexer.exe"
-	exe, err := os.Executable()
-	if err != nil {
-		return name
-	}
-	dir := filepath.Dir(exe)
-	primary := filepath.Join(dir, name)
-	if _, err := os.Stat(primary); err == nil {
-		return primary
-	}
-	return filepath.Join(dir, "mcps", "codegraph", name)
 }
 
 // flagSet 报告命令行是否**显式**给出过该 flag（用于「env 覆盖缺省值但不压过显式参数」）。

@@ -43,7 +43,7 @@ func Build(cfg BootConfig, opts BuildOptions) (*App, error) {
 	app := &App{Cfg: cfg, Bus: bus, Facade: inline.New(bus)}
 
 	if cfg.Filesys {
-		fsys := filesys.NewWithOptions(bus, filesys.Options{IndexQueue: indexQueue(app.Facade)})
+		fsys := filesys.New(bus)
 		if err := fsys.Start(); err != nil {
 			_ = bus.Close()
 			return nil, fmt.Errorf("filesys start: %w", err)
