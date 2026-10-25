@@ -61,4 +61,9 @@ replace github.com/chonkpilot/chonkpilot-assembly => ../lib/assembly
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../lib/mcp-tools
 
-require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3 // indirect
+require (
+	github.com/chonkpilot/chonkpilot-lib/pluginhost v0.0.0
+	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3 // indirect
+)
+
+replace github.com/chonkpilot/chonkpilot-lib/pluginhost => ../lib/pluginhost
