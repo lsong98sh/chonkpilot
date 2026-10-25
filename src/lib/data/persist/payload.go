@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // Header 是所有 data-* 请求的公共头。
@@ -136,6 +138,177 @@ func (p SnapshotPayload) snapshotObject() (json.RawMessage, bool) {
 		return nil, false
 	}
 	return raw, true
+}
+
+// ── 宽容标量（消息面历史载荷出现过「字符串/数字」两种形；定死结构但仍兼容）──
+
+// ID 是 id 标量：接受 JSON 字符串或数字（统一存字符串）。
+type ID string
+
+// UnmarshalJSON 兼容 `"s-1"` 与 `123` 两种写法（null/缺省 → 空串）。
+func (x *ID) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*x = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*x = ID(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	*x = ID(n.String())
+	return nil
+}
+
+// IntValue 是整数标量：接受数字或数字字符串（历史载荷两种都出现过）。
+type IntValue int
+
+// UnmarshalJSON 兼容 `12` 与 `"12"`。
+func (x *IntValue) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*x = 0
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			*x = 0
+			return nil
+		}
+		*x = IntValue(n)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	i, err := n.Int64()
+	if err != nil {
+		f, _ := n.Float64()
+		i = int64(f)
+	}
+	*x = IntValue(i)
+	return nil
+}
+
+// BoolValue 是布尔标量：接受 JSON 布尔与字符串 "true"/"false"（见 61 §3.2 context）。
+type BoolValue bool
+
+// UnmarshalJSON 兼容 `true` / `"true"`（其余非空字符串按 false）。
+func (x *BoolValue) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*x = false
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*x = BoolValue(strings.EqualFold(strings.TrimSpace(s), "true"))
+		return nil
+	}
+	var v bool
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*x = BoolValue(v)
+	return nil
+}
+
+// SessionData 是 session 域的业务字段（顶层扁平与 `data` 内两形都接受）。
+type SessionData struct {
+	ID              ID        `json:"id,omitempty"`
+	SessionID       string    `json:"session_id,omitempty"`
+	DialogID        string    `json:"dialog_id,omitempty"`
+	TurnID          string    `json:"turn_id,omitempty"`
+	BeforeTurnID    string    `json:"before_turn_id,omitempty"`
+	ExcludeTurn     string    `json:"exclude_turn,omitempty"`
+	IncludeSnapshot BoolValue `json:"include_snapshot,omitempty"`
+	Title           string    `json:"title,omitempty"`
+	Status          string    `json:"status,omitempty"`
+	FinishReason    string    `json:"finish_reason,omitempty"`
+	Summary         string    `json:"summary,omitempty"`
+	Mode            string    `json:"mode,omitempty"`
+	ParentSessionID string    `json:"parent_session_id,omitempty"`
+	Keys            []string  `json:"keys,omitempty"`
+	Mentions        []string  `json:"mentions,omitempty"`
+	Agents          []string  `json:"agents,omitempty"`
+	Round           IntValue  `json:"round,omitempty"`
+	TargetMessages  IntValue  `json:"target_messages,omitempty"`
+	TargetBytes     IntValue  `json:"target_bytes,omitempty"`
+	FullTokens      *int      `json:"full_tokens,omitempty"`
+	BriefTokens     *int      `json:"brief_tokens,omitempty"`
+	// GroupParticipants = 群聊名册 save 载荷的 `list:[{agent, role?}]`。
+	GroupParticipants []GroupParticipantItem `json:"list,omitempty"`
+}
+
+// GroupParticipantItem 是名册 save 的单行（session_id 由外层载荷统一提供）。
+type GroupParticipantItem struct {
+	Agent string `json:"agent,omitempty"`
+	Role  string `json:"role,omitempty"`
+}
+
+// SessionPayload 是 data-session-* 的载荷（内嵌顶层业务字段 + 原样 data）。
+type SessionPayload struct {
+	Header
+	ID ID `json:"id,omitempty"`
+	SessionData
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// fields 合并两形载荷（`data` 优先；顶层只补 `data` 未给的键 —— 与旧 parseDataReq 同口径）。
+// id 例外：顶层 `id` 优先于 `data.id`（旧 reqKey/标题、删除用的就是顶层 id 优先）。
+func (p SessionPayload) fields() SessionData {
+	f := mergeFlat(p.SessionData, p.Data)
+	if p.ID != "" {
+		f.ID = p.ID
+	}
+	return f
+}
+
+// mergeFlat 把内嵌结构（载荷顶层业务字段）与被 `data` 包裹的同构结构合并：
+// **`data` 优先，顶层只补缺**（= 旧 parseDataReq「顶层字段仅在 data 未提供时并入」）。
+func mergeFlat[T any](flat T, raw json.RawMessage) T {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return flat
+	}
+	var d T
+	if json.Unmarshal(raw, &d) != nil {
+		return flat
+	}
+	b1, err1 := json.Marshal(flat)
+	b2, err2 := json.Marshal(d)
+	if err1 != nil || err2 != nil {
+		return flat
+	}
+	m1, m2 := map[string]json.RawMessage{}, map[string]json.RawMessage{}
+	_ = json.Unmarshal(b1, &m1)
+	_ = json.Unmarshal(b2, &m2)
+	for k, v := range m1 {
+		if _, ok := m2[k]; !ok {
+			m2[k] = v
+		}
+	}
+	out, _ := json.Marshal(m2)
+	var merged T
+	_ = json.Unmarshal(out, &merged)
+	return merged
 }
 
 // configEntries 把 save 的 data 归一为键值批：`entries` 非空优先（id = 字典序首键），

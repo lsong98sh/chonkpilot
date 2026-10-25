@@ -443,7 +443,7 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	case "mcp":
 		s.handleMCP(op, req)
 	case "session":
-		s.handleSession(op, req, payload)
+		s.handleSession(op, payload)
 	case "inbox":
 		s.handleInbox(op, req)
 	case "turn-event":

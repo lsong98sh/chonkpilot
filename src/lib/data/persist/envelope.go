@@ -21,8 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -144,23 +142,6 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 		}
 		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true})
 	}
-}
-
-// reqKey 取请求 id：顶层 id → data.id → data.key（统一转字符串）。
-func reqKey(req dataReq) string {
-	if id := idKey(req.ID); id != "" {
-		return id
-	}
-	if req.Data == nil {
-		return ""
-	}
-	if id := idKey(req.Data[msgkeys.FieldId]); id != "" {
-		return id
-	}
-	if k, _ := req.Data[msgkeys.FieldKey].(string); k != "" {
-		return k
-	}
-	return ""
 }
 
 // ─── scenario ────────────────────────────────────────────────────
@@ -288,17 +269,30 @@ func flatReqMap(req dataReq) map[string]any {
 
 // handleSession 分发 data-session-<action>（信封层：解析 → 门面 → 回载荷）；
 // 未知 action（含 -refresh 误入）忽略不回复。
-func (s *Service) handleSession(action string, req dataReq, payload []byte) {
+//
+// 2026-10-25（payload struct 化第三批）：载荷按 `SessionPayload` 定死解析（`{data:{…}}` 与顶层
+// 扁平两形都接受，`data` 优先、顶层补缺）；标量用 ID/IntValue/BoolValue 兼容历史「字符串与数字」两形。
+// 例外：`append-message`（`msg` 为多态嵌套对象）仍按 map 归一（翻译收在 wire.MessageAppendFromWire），
+// 待 append 面后续批次收口。
+func (s *Service) handleSession(action string, payload []byte) {
 	method := "data-session-" + action
-	okf := func(result map[string]any) { s.reply(method, req, result) }
-	failf := func(format string, args ...any) {
-		s.fail(method, req, fmt.Errorf(format, args...))
+	var p SessionPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		s.failID(method, p.ReqID, fmt.Errorf("payload: %w", err))
+		return
 	}
-	wireReq := req.Data
+	f := p.fields()
+	okf := func(result map[string]any) { s.replyID(method, p.ReqID, result) }
+	failf := func(format string, args ...any) { s.failID(method, p.ReqID, fmt.Errorf(format, args...)) }
+	// sid：data.session_id → 顶层 id（与旧 sessionIDOf 同口径）。
+	sid := f.SessionID
+	if sid == "" {
+		sid = string(f.ID)
+	}
 
 	switch action {
 	case "list":
-		resp, err := s.SessionList(facade.SessionListRequest{InstanceID: req.InstanceID})
+		resp, err := s.SessionList(facade.SessionListRequest{InstanceID: p.InstanceID})
 		if err != nil {
 			failf("%v", err)
 			return
@@ -306,7 +300,7 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(wire.SessionListResult(resp.List))
 	case "get":
 		resp, err := s.SessionGet(facade.SessionGetRequest{
-			InstanceID: req.InstanceID, SessionID: sessionIDOf(req), DialogID: Sval(req.Data["dialog_id"]),
+			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -314,44 +308,33 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		}
 		okf(wire.SessionGetResult(resp.Found, resp.Session))
 	case "history":
-		r := wire.TurnHistoryFromWire(wireReq)
-		r.InstanceID = req.InstanceID
-		if r.SessionID == "" {
-			r.SessionID = sessionIDOf(req)
-		}
-		resp, err := s.TurnHistory(r)
+		resp, err := s.TurnHistory(facade.TurnHistoryRequest{
+			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID,
+			BeforeTurnID: f.BeforeTurnID, TargetMessages: int(f.TargetMessages), TargetBytes: int(f.TargetBytes),
+		})
 		if err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.TurnHistoryResult(resp))
 	case "latest":
-		resp, err := s.SessionLatest(facade.SessionLatestRequest{InstanceID: req.InstanceID})
+		resp, err := s.SessionLatest(facade.SessionLatestRequest{InstanceID: p.InstanceID})
 		if err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.SessionLatestResult(resp.SessionID, resp.DialogID))
 	case "title":
-		id := idKey(req.ID)
-		if v, _ := req.Data[msgkeys.FieldId].(string); id == "" {
-			id = v
-		}
-		title, _ := req.Data[msgkeys.FieldTitle].(string)
 		if _, err := s.SessionTitle(facade.SessionTitleRequest{
-			InstanceID: req.InstanceID, SessionID: id, DialogID: Sval(req.Data["dialog_id"]), Title: title,
+			InstanceID: p.InstanceID, SessionID: string(f.ID), DialogID: f.DialogID, Title: f.Title,
 		}); err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.OKResult())
 	case "delete":
-		id := idKey(req.ID)
-		if v, _ := req.Data[msgkeys.FieldId].(string); id == "" {
-			id = v
-		}
 		if _, err := s.SessionDelete(facade.SessionDeleteRequest{
-			InstanceID: req.InstanceID, SessionID: id, DialogID: Sval(req.Data["dialog_id"]),
+			InstanceID: p.InstanceID, SessionID: string(f.ID), DialogID: f.DialogID,
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -359,10 +342,10 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(wire.OKResult())
 	case "fork":
 		resp, err := s.SessionFork(facade.SessionForkRequest{
-			InstanceID: req.InstanceID,
-			DialogID:   Sval(req.Data["dialog_id"]),
-			Mode:       Sval(req.Data["mode"]),
-			Title:      Sval(req.Data["title"]),
+			InstanceID: p.InstanceID,
+			DialogID:   f.DialogID,
+			Mode:       f.Mode,
+			Title:      f.Title,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -371,26 +354,23 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(map[string]any{"ok": resp.OK, "dialog_id": resp.DialogID, "session_id": resp.SessionID})
 	case "active-set":
 		if _, err := s.SessionActiveSet(facade.SessionActiveSetRequest{
-			InstanceID: req.InstanceID, SessionID: sessionIDOf(req), DialogID: Sval(req.Data["dialog_id"]),
+			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID,
 		}); err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.OKResult())
 	case "active-get":
-		resp, err := s.SessionActiveGet(facade.SessionActiveGetRequest{InstanceID: req.InstanceID})
+		resp, err := s.SessionActiveGet(facade.SessionActiveGetRequest{InstanceID: p.InstanceID})
 		if err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.SessionIDResult(resp.SessionID))
 	case "content":
-		r := wire.MessageContentFromWire(wireReq)
-		r.InstanceID = req.InstanceID
-		if r.SessionID == "" {
-			r.SessionID = idKey(req.ID)
-		}
-		resp, err := s.MessageContent(r)
+		resp, err := s.MessageContent(facade.MessageContentRequest{
+			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID, Keys: f.Keys,
+		})
 		if err != nil {
 			failf("%v", err)
 			return
@@ -399,10 +379,10 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 	// A3 运行时扩展（server sessionStore 总线化原语；语义对齐 chonkpilot-server/session.go）
 	case "ensure-session":
 		resp, err := s.SessionEnsure(facade.SessionEnsureRequest{
-			InstanceID:      req.InstanceID,
-			SessionID:       sessionIDOf(req),
-			DialogID:        Sval(req.Data["dialog_id"]),
-			ParentSessionID: Sval(req.Data[msgkeys.FieldParentSessionId]),
+			InstanceID:      p.InstanceID,
+			SessionID:       sid,
+			DialogID:        f.DialogID,
+			ParentSessionID: f.ParentSessionID,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -415,18 +395,42 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(res)
 	case "ensure-turn":
 		if _, err := s.TurnEnsure(facade.TurnEnsureRequest{
-			InstanceID: req.InstanceID,
-			TurnID:     Sval(req.Data[msgkeys.FieldTurnId]),
-			SessionID:  sessionIDOf(req),
-			DialogID:   Sval(req.Data["dialog_id"]),
+			InstanceID: p.InstanceID,
+			TurnID:     f.TurnID,
+			SessionID:  sid,
+			DialogID:   f.DialogID,
 		}); err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.OKResult())
 	case "append-message":
-		r := wire.MessageAppendFromWire(wireReq)
-		r.InstanceID = req.InstanceID
+		// `msg` = 多态嵌套对象（ChatMsg + 若干领域字段），且允许「消息字段直接平铺在载荷顶层」；
+		// 该形暂按 map 归一（见函数头注释），翻译仍收在 wire.MessageAppendFromWire。
+		var raw map[string]any
+		if err := json.Unmarshal(payload, &raw); err != nil {
+			failf("payload: %v", err)
+			return
+		}
+		m := map[string]any{}
+		if d, ok := raw["data"].(map[string]any); ok {
+			for k, v := range d {
+				m[k] = v
+			}
+		}
+		for k, v := range raw {
+			if k == "data" {
+				continue
+			}
+			if _, ok := m[k]; !ok {
+				m[k] = v
+			}
+		}
+		r := wire.MessageAppendFromWire(m)
+		r.InstanceID = p.InstanceID
+		if r.SessionID == "" {
+			r.SessionID = sid
+		}
 		resp, err := s.MessageAppend(r)
 		if err != nil {
 			failf("%v", err)
@@ -435,10 +439,10 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: resp.ID})
 	case "set-summary":
 		if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{
-			InstanceID: req.InstanceID,
-			TurnID:     Sval(req.Data[msgkeys.FieldTurnId]),
-			DialogID:   Sval(req.Data["dialog_id"]),
-			Summary:    Sval(req.Data[msgkeys.FieldSummary]),
+			InstanceID: p.InstanceID,
+			TurnID:     f.TurnID,
+			DialogID:   f.DialogID,
+			Summary:    f.Summary,
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -447,51 +451,43 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 	case "complete-turn":
 		// P3（2026-09-25）：payload 只增字段 full_tokens/brief_tokens（可选；缺省 = 不写该键，
 		// 向后兼容——ReopenTurn 等不携带即保持原行为）。
-		var tok struct {
-			FullTokens  *int `json:"full_tokens"`
-			BriefTokens *int `json:"brief_tokens"`
-		}
-		if req.Data != nil {
-			if raw, err := json.Marshal(req.Data); err == nil {
-				_ = json.Unmarshal(raw, &tok)
-			}
-		}
 		if _, err := s.TurnComplete(facade.TurnCompleteRequest{
-			InstanceID:   req.InstanceID,
-			TurnID:       Sval(req.Data[msgkeys.FieldTurnId]),
-			DialogID:     Sval(req.Data["dialog_id"]),
-			Status:       Sval(req.Data[msgkeys.FieldStatus]),
-			FinishReason: Sval(req.Data[msgkeys.FieldFinishReason]),
-			FullTokens:   tok.FullTokens,
-			BriefTokens:  tok.BriefTokens,
+			InstanceID:   p.InstanceID,
+			TurnID:       f.TurnID,
+			DialogID:     f.DialogID,
+			Status:       f.Status,
+			FinishReason: f.FinishReason,
+			FullTokens:   f.FullTokens,
+			BriefTokens:  f.BriefTokens,
 		}); err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.OKResult())
 	case "cleanup-stale":
-		resp, err := s.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: req.InstanceID})
+		resp, err := s.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: p.InstanceID})
 		if err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.CleanupResult(resp.Count))
 	case "load-messages":
-		r := wire.MessageLoadFromWire(wireReq)
-		r.InstanceID = req.InstanceID
-		resp, err := s.MessageLoad(r)
+		resp, err := s.MessageLoad(facade.MessageLoadRequest{
+			InstanceID: p.InstanceID, TurnID: f.TurnID, DialogID: f.DialogID,
+		})
 		if err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.MessageLoadResult(resp.Messages))
 	case "context":
-		r := wire.MessageContextFromWire(wireReq)
-		r.InstanceID = req.InstanceID
-		if r.SessionID == "" {
-			r.SessionID = sessionIDOf(req)
-		}
-		resp, err := s.MessageContext(r)
+		resp, err := s.MessageContext(facade.MessageContextRequest{
+			InstanceID:      p.InstanceID,
+			SessionID:       sid,
+			DialogID:        f.DialogID,
+			ExcludeTurn:     f.ExcludeTurn,
+			IncludeSnapshot: bool(f.IncludeSnapshot),
+		})
 		if err != nil {
 			failf("%v", err)
 			return
@@ -501,15 +497,11 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		okf(wire.ContextResult(resp.Messages, resp.TurnTokens))
 	// ── 群聊两表（SUBCHAT-3 阶段 E，2026-10-16；prjusr：group_participants /
 	// group_round_targets）──
-	// 载荷接受扁平与 `{data:{…}}` 两形（parseDataReq 已把顶层业务字段并入 Data，见其注释）。
-	// **不广播 -refresh**（名册/进度类表；读方 = 群聊调度器，按其节奏读）。
+	// 载荷接受扁平与 `{data:{…}}` 两形（fields() 已合并）。**不广播 -refresh**（名册/进度类表；
+	// 读方 = 群聊调度器，按其节奏读）。
 	case "group-participants-load":
-		sid := Sval(wireReq[msgkeys.FieldSessionId])
-		if sid == "" {
-			sid = sessionIDOf(req)
-		}
 		resp, err := s.GroupParticipantsLoad(facade.GroupParticipantsLoadRequest{
-			InstanceID: req.InstanceID, SessionID: sid,
+			InstanceID: p.InstanceID, SessionID: sid,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -517,25 +509,23 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		}
 		okf(wire.GroupParticipantsResult(resp.List))
 	case "group-participants-save":
-		sid := Sval(wireReq[msgkeys.FieldSessionId])
-		if sid == "" {
-			sid = sessionIDOf(req)
+		list := make([]facade.GroupParticipant, 0, len(f.GroupParticipants))
+		for _, it := range f.GroupParticipants {
+			if it.Agent == "" {
+				continue
+			}
+			list = append(list, facade.GroupParticipant{SessionID: sid, Agent: it.Agent, Role: it.Role})
 		}
 		if _, err := s.GroupParticipantsSave(facade.GroupParticipantsSaveRequest{
-			InstanceID: req.InstanceID, SessionID: sid,
-			List: wire.GroupParticipantsFromWire(sid, wireReq),
+			InstanceID: p.InstanceID, SessionID: sid, List: list,
 		}); err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.OKResult())
 	case "group-round-targets-load":
-		sid := Sval(wireReq[msgkeys.FieldSessionId])
-		if sid == "" {
-			sid = sessionIDOf(req)
-		}
 		resp, err := s.GroupRoundTargetsLoad(facade.GroupRoundTargetsLoadRequest{
-			InstanceID: req.InstanceID, SessionID: sid, Round: intVal(wireReq["round"]),
+			InstanceID: p.InstanceID, SessionID: sid, Round: int(f.Round),
 		})
 		if err != nil {
 			failf("%v", err)
@@ -543,28 +533,16 @@ func (s *Service) handleSession(action string, req dataReq, payload []byte) {
 		}
 		okf(wire.GroupRoundTargetsResult(resp.List))
 	case "group-round-targets-save":
-		sid := Sval(wireReq[msgkeys.FieldSessionId])
-		if sid == "" {
-			sid = sessionIDOf(req)
-		}
 		if _, err := s.GroupRoundTargetsSave(facade.GroupRoundTargetsSaveRequest{
-			InstanceID: req.InstanceID, SessionID: sid,
-			Round:  intVal(wireReq["round"]),
-			Agents: stringSlice(wireReq["agents"]),
+			InstanceID: p.InstanceID, SessionID: sid,
+			Round:  int(f.Round),
+			Agents: f.Agents,
 		}); err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.OKResult())
 	}
-}
-
-// sessionIDOf 会话 id：优先 data.session_id，回落 envelope id。
-func sessionIDOf(req dataReq) string {
-	if v, _ := req.Data[msgkeys.FieldSessionId].(string); v != "" {
-		return v
-	}
-	return idKey(req.ID)
 }
 
 // ─── snapshot ────────────────────────────────────────────────────
@@ -1023,26 +1001,4 @@ func stringSlice(v any) []string {
 		}
 	}
 	return out
-}
-
-// intVal 从消息面载荷取整数值（JSON 数字 / 字符串十进制；缺省 / 非法 → 0）。
-// 供群聊两表（SUBCHAT-3 阶段 E：`round` 等）的信封层取值。
-func intVal(v any) int {
-	switch t := v.(type) {
-	case float64:
-		return int(t)
-	case int:
-		return t
-	case int64:
-		return int(t)
-	case json.Number:
-		if n, err := t.Int64(); err == nil {
-			return int(n)
-		}
-	case string:
-		if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
-			return n
-		}
-	}
-	return 0
 }

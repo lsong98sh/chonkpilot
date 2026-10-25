@@ -341,30 +341,6 @@ func GroupParticipantsResult(list []facade.GroupParticipant) map[string]any {
 	return map[string]any{msgkeys.DataSessionGroupParticipantsLoadResultList: out}
 }
 
-// GroupParticipantsFromWire 解析 save 载荷的 `list:[{agent, role?}]` → 门面名单
-// （`session_id` 由外层载荷提供；空 agent / 非对象元素跳过；顺序保留 = 固定顺序）。
-func GroupParticipantsFromWire(sessionID string, m map[string]any) []facade.GroupParticipant {
-	raw, ok := m["list"].([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]facade.GroupParticipant, 0, len(raw))
-	for _, e := range raw {
-		obj, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		agent := str(obj["agent"])
-		if agent == "" {
-			continue
-		}
-		out = append(out, facade.GroupParticipant{
-			SessionID: sessionID, Agent: agent, Role: str(obj["role"]),
-		})
-	}
-	return out
-}
-
 // GroupRoundTargetsResult 组装 `data-session-group-round-targets-load` 结果载荷
 // `{list:[{session_id, round, agents:[…]}]}`（按轮次升序）。
 func GroupRoundTargetsResult(list []facade.GroupRoundTarget) map[string]any {
@@ -423,38 +399,6 @@ func MessageAppendFromWire(m map[string]any) facade.MessageAppendRequest {
 		req.Mentions = strList(m["mentions"])
 	}
 	return req
-}
-
-// MessageLoadFromWire 解析 `{turn_id, dialog_id?}` → 门面入参。
-func MessageLoadFromWire(m map[string]any) facade.MessageLoadRequest {
-	return facade.MessageLoadRequest{TurnID: str(m["turn_id"]), DialogID: str(m["dialog_id"])}
-}
-
-// MessageContextFromWire 解析 `{session_id, dialog_id?, exclude_turn?, include_snapshot?}` → 门面入参
-// （include_snapshot 既接受 JSON 布尔，也接受字符串 "true"——既有 MQ 载荷两种都出现过）。
-func MessageContextFromWire(m map[string]any) facade.MessageContextRequest {
-	return facade.MessageContextRequest{
-		SessionID:       str(m["session_id"]),
-		DialogID:        str(m["dialog_id"]),
-		ExcludeTurn:     str(m["exclude_turn"]),
-		IncludeSnapshot: truthy(m["include_snapshot"]),
-	}
-}
-
-// MessageContentFromWire 解析 `{session_id, dialog_id?, keys:[…]}` → 门面入参。
-func MessageContentFromWire(m map[string]any) facade.MessageContentRequest {
-	return facade.MessageContentRequest{SessionID: str(m["session_id"]), DialogID: str(m["dialog_id"]), Keys: strList(m["keys"])}
-}
-
-// TurnHistoryFromWire 解析 `{session_id, dialog_id?, before_turn_id?, target_messages?, target_bytes?}` → 门面入参。
-func TurnHistoryFromWire(m map[string]any) facade.TurnHistoryRequest {
-	return facade.TurnHistoryRequest{
-		SessionID:      str(m["session_id"]),
-		DialogID:       str(m["dialog_id"]),
-		BeforeTurnID:   str(m["before_turn_id"]),
-		TargetMessages: intOf(m["target_messages"]),
-		TargetBytes:    intOf(m["target_bytes"]),
-	}
 }
 
 // ── 通用回复 ─────────────────────────────────────────────────────
