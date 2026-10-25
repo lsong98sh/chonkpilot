@@ -423,15 +423,21 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	}
 	req := parseDataReq(payload)
 	// 入站契约校验（G-41-c）：白名单外的 data 请求必须显式携带 instance_id。
-	if req.InstanceID == "" && !instanceFreeDomains[domain] {
-		s.fail(subject, req, errInstanceIDRequired)
+	instanceID := req.InstanceID
+	if instanceID == "" {
+		var hdr Header
+		_ = json.Unmarshal(payload, &hdr)
+		instanceID = hdr.InstanceID
+	}
+	if instanceID == "" && !instanceFreeDomains[domain] {
+		s.failID(subject, req.ReqID, errInstanceIDRequired)
 		return
 	}
 	switch domain {
 	case "user-config":
-		s.handleUserConfig(op, req)
+		s.handleUserConfig(op, payload)
 	case "prj-config", "prompt", "prj-security":
-		s.handleConfigKV(domain, op, req)
+		s.handleConfigKV(domain, op, payload)
 	case "scenario":
 		s.handleScenario(op, req)
 	case "mcp":
@@ -445,7 +451,7 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	case "ask":
 		s.handleAsk(op, req)
 	case "snapshot":
-		s.handleSnapshot(op, req)
+		s.handleSnapshot(op, payload)
 	case "knowledge":
 		s.handleKnowledge(op, req, payload)
 	case "tasktree":
@@ -461,13 +467,23 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 
 // reply 统一回复：直接 publish 结果到请求同一主题（相对主题 data-<method>，无 .reply 后缀）。
 func (s *Service) reply(method string, req dataReq, result map[string]any) {
-	b, _ := json.Marshal(map[string]any{"req_id": req.ReqID, "ok": true, "result": result})
+	s.replyID(method, req.ReqID, result)
+}
+
+// replyID 按 req_id 回复成功结果（payload struct 化后的 handler 直接用本方法）。
+func (s *Service) replyID(method, reqID string, result map[string]any) {
+	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": true, "result": result})
 	_ = s.Bus.Emit(context.Background(), method, b)
 }
 
 // fail 统一错误回复。
 func (s *Service) fail(method string, req dataReq, err error) {
-	b, _ := json.Marshal(map[string]any{"req_id": req.ReqID, "ok": false, "error": err.Error()})
+	s.failID(method, req.ReqID, err)
+}
+
+// failID 按 req_id 回复错误。
+func (s *Service) failID(method, reqID string, err error) {
+	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": false, "error": err.Error()})
 	_ = s.Bus.Emit(context.Background(), method, b)
 }
 
@@ -509,7 +525,12 @@ func (s *Service) prjUsrDB(instanceID string) (*data.DB, error) {
 // 故此处 `Resolve` 的"唯一实例回退"对 MQ 请求不再被触发（仅门面/inline 路径沿用）。
 // 信封 handler 中的局部变量 `prj` 即本返回值。
 func (s *Service) sessionDB(req dataReq) (*data.DB, error) {
-	instID, info, err := s.View.Resolve(req.InstanceID)
+	return s.sessionDBBy(req.InstanceID)
+}
+
+// sessionDBBy 按实例 id 解析 prjusr 主库（payload struct 化后的 handler 用）。
+func (s *Service) sessionDBBy(instanceID string) (*data.DB, error) {
+	instID, info, err := s.View.Resolve(instanceID)
 	if err != nil {
 		return nil, err
 	}

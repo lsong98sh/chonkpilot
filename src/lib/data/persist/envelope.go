@@ -37,93 +37,97 @@ import (
 
 // handleConfigKV 处理 data-prj-config-* / data-prompt-* / data-prj-security-*（配置 kv 域 MQ 面）。
 //
-// 阶段 4 第二批（41 G-34）：**逻辑已下沉到 config 域门面实现**（internal/config 的
-// ConfigKV* 方法），本 handler 只做 MQ 信封（reply/fail，61 §3.1 应答形状不变）——
-// 故 MQ 绑定与门面 inline 绑定是**同一份实现**（行为等价有测试），写入后的变更广播
-// （data-<domain>-refresh）也由实现侧发出（订阅方两路径同源收到）。
-func (s *Service) handleConfigKV(domain, op string, req dataReq) {
+// 2026-10-25（payload struct 化第一批）：载荷按 `ConfigPayload` **定死解析**（不再 map 宽松取值）；
+// 逻辑仍在 internal/config（门面实现），本 handler 只做信封（reply/fail，61 §3.1 应答形状不变）。
+func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 	method := "data-" + domain + "-" + op
+	var req ConfigPayload
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.failID(method, req.ReqID, fmt.Errorf("payload: %w", err))
+		return
+	}
 	switch op {
 	case "list":
 		resp, err := s.ConfigKVList(facade.ConfigKVListRequest{Domain: domain, InstanceID: req.InstanceID})
 		if err != nil {
-			s.fail(method, req, err)
+			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.reply(method, req, map[string]any{msgkeys.FieldList: resp.List})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldList: resp.List})
 	case "load":
-		id := reqKey(req)
+		id := req.key()
 		resp, err := s.ConfigKVGet(facade.ConfigKVGetRequest{
 			Domain: domain, InstanceID: req.InstanceID, Keys: []string{id},
 		})
 		if err != nil {
-			s.fail(method, req, err)
+			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.reply(method, req, map[string]any{msgkeys.FieldData: resp.Values[id]})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldData: resp.Values[id]})
 	case "save":
-		// 报文 `data` 兼容两形（61 §3.1）：批量 `{entries:{…}}` 优先，回落既有单键
-		// `{key,value}`（entries 为非空 map 时忽略 key/value）。翻译见 wire.ConfigSaveEntries。
-		entries, id, ok := wire.ConfigSaveEntries(req.Data)
+		entries, id, ok := configEntries(req.Data)
 		if !ok {
-			s.fail(method, req, errors.New("key required"))
+			s.failID(method, req.ReqID, errors.New("key required"))
 			return
 		}
 		if _, err := s.ConfigKVSet(facade.ConfigKVSetRequest{
 			Domain: domain, InstanceID: req.InstanceID, Entries: entries,
 		}); err != nil {
-			s.fail(method, req, err)
+			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.reply(method, req, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: id})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: id})
 	case "delete":
-		id := reqKey(req)
+		id := req.key()
 		if _, err := s.ConfigKVDelete(facade.ConfigKVDeleteRequest{
 			Domain: domain, InstanceID: req.InstanceID, Keys: []string{id},
 		}); err != nil {
-			s.fail(method, req, err)
+			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.reply(method, req, map[string]any{msgkeys.FieldOk: true})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true})
 	}
 }
 
 // handleUserConfig 处理 data-user-config-{list,load,save,delete}（存储 = 逐 key + 专用表）。
 //
-// 阶段 4 第二批（41 G-34）：**逻辑已下沉到 config 域门面实现**（internal/config 的
-// UserConfig* 方法），本 handler 只做 MQ 信封（reply/fail，61 §3.1 应答形状不变）——
-// MQ 绑定与门面 inline 绑定同一份实现；写入后的变更广播由实现侧发出。
-func (s *Service) handleUserConfig(op string, req dataReq) {
+// 2026-10-25（payload struct 化第一批）：载荷按 `UserConfigPayload` 定死解析。
+func (s *Service) handleUserConfig(op string, payload []byte) {
 	method := "data-user-config-" + op
+	var req UserConfigPayload
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.failID(method, req.ReqID, fmt.Errorf("payload: %w", err))
+		return
+	}
 	switch op {
 	case "list":
 		resp, err := s.UserConfigView(facade.UserConfigViewRequest{})
 		if err != nil {
-			s.fail(method, req, err)
+			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.reply(method, req, map[string]any{msgkeys.FieldList: resp.List})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldList: resp.List})
 	case "load":
 		// load 返回**合并后**的有效值：usr 基线 + 项目层（prjusr → prj）覆盖可继承键
 		// （defaultLLM/defaultScenario）。list 仍为 usr 主库视图（"usr 是否已有配置"语义）。
 		resp, err := s.UserConfigGet(facade.UserConfigGetRequest{InstanceID: req.InstanceID})
 		if err != nil {
-			s.fail(method, req, err)
+			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.reply(method, req, map[string]any{msgkeys.FieldData: resp.Config})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldData: resp.Config})
 	case "save":
 		if _, err := s.UserConfigSet(facade.UserConfigSetRequest{
 			Entries: req.Data, InstanceID: req.InstanceID,
 		}); err != nil {
-			s.fail(method, req, err)
+			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.reply(method, req, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: config.UserConfigID})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: config.UserConfigID})
 	case "delete":
 		// 带 key/id = 删除该项（继承控件「重置继承」→ 回落上级）；无 key = 清空整份用户配置；
 		// 未知键由实现侧**明确报错**（P0：未知键曾把 theme/locale/llms/超时一并清掉），不兜底清空。
-		key := reqKey(req)
+		key := req.key()
 		keys := []string{}
 		if key != "" {
 			keys = append(keys, key)
@@ -131,14 +135,14 @@ func (s *Service) handleUserConfig(op string, req dataReq) {
 		if _, err := s.UserConfigDelete(facade.UserConfigDeleteRequest{
 			Keys: keys, InstanceID: req.InstanceID,
 		}); err != nil {
-			s.fail(method, req, err)
+			s.failID(method, req.ReqID, err)
 			return
 		}
 		if key != "" {
-			s.reply(method, req, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: key})
+			s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: key})
 			return
 		}
-		s.reply(method, req, map[string]any{msgkeys.FieldOk: true})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true})
 	}
 }
 
@@ -567,26 +571,29 @@ func sessionIDOf(req dataReq) string {
 
 // handleSnapshot 分发 data-snapshot-<action>（get/set）。未知 action 忽略不回复。
 //
-// 阶段 4 试点：表访问器已下沉 `chonkpilot-data/internal/snapshot`（原 persist.GetSnapshot /
-// SetSnapshot 的带 `*data.DB` 导出面收窄为 internal，模块外不再可达）；本 MQ 面只做
-// 信封与实例解析，落库经该实现（与门面 inline 绑定**同源**，见 facade/inline）。
-func (s *Service) handleSnapshot(action string, req dataReq) {
+// 2026-10-25（payload struct 化第二批）：载荷按 `SnapshotPayload` 定死解析（不再 map 宽松取值）；
+// 落库仍经 internal/snapshot（与门面 inline 绑定同源）。
+func (s *Service) handleSnapshot(action string, payload []byte) {
 	method := "data-snapshot-" + action
-	okf := func(result map[string]any) { s.reply(method, req, result) }
-	failf := func(format string, args ...any) { s.fail(method, req, fmt.Errorf(format, args...)) }
-	catalog, err := s.sessionDB(req)
-	if err != nil {
-		s.fail(method, req, err)
+	var req SnapshotPayload
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.failID(method, req.ReqID, fmt.Errorf("payload: %w", err))
 		return
 	}
-	sessionID := sessionIDOf(req)
+	failf := func(format string, args ...any) { s.failID(method, req.ReqID, fmt.Errorf(format, args...)) }
+	catalog, err := s.sessionDBBy(req.InstanceID)
+	if err != nil {
+		s.failID(method, req.ReqID, err)
+		return
+	}
+	sessionID := req.sessionID()
 	if sessionID == "" {
 		failf("session_id required")
 		return
 	}
 	// 布局选择（P3 路由）：带 dialog_id → 对话库（快照与轮次/消息同库，缺失即报错）；
 	// 空 → 旧布局：快照落会话库（2026-10-23 轻量分片），prjusr 只留会话目录行。
-	dialogID := Sval(req.Data["dialog_id"])
+	dialogID := req.Data.DialogID
 	var sidb *data.DB
 	var release func()
 	if dialogID != "" {
@@ -613,21 +620,20 @@ func (s *Service) handleSnapshot(action string, req dataReq) {
 			return
 		}
 		if !ok {
-			okf(map[string]any{msgkeys.FieldSnapshot: nil}) // 无快照/无记录 → snapshot=null（调用方回退 BuildHistory）
+			s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldSnapshot: nil}) // 无快照/无记录 → snapshot=null（调用方回退 BuildHistory）
 			return
 		}
-		okf(map[string]any{msgkeys.FieldSnapshot: snap})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldSnapshot: snap})
 	case "set":
 		// 缺 `snapshot` 字段（或空对象）→ 明确失败：否则会写入零值快照并可能补建会话行
 		// （与门面 SnapshotSet 的入参校验对齐：不得静默落零值）。
-		raw, has := req.Data[msgkeys.FieldSnapshot].(map[string]any)
-		if !has || len(raw) == 0 {
+		raw, has := req.snapshotObject()
+		if !has {
 			failf("snapshot required")
 			return
 		}
 		var snap data.Snapshot
-		b, _ := json.Marshal(raw)
-		if err := json.Unmarshal(b, &snap); err != nil {
+		if err := json.Unmarshal(raw, &snap); err != nil {
 			failf("snapshot: %v", err)
 			return
 		}
@@ -640,7 +646,7 @@ func (s *Service) handleSnapshot(action string, req dataReq) {
 			failf("%v", err)
 			return
 		}
-		okf(map[string]any{msgkeys.FieldOk: true})
+		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true})
 	}
 }
 
