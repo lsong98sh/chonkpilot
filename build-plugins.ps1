@@ -120,11 +120,12 @@ Write-Host "==> [4/9] desktop（桥接层 + 引擎：源码在 plugins 仓 deskt
 Build-Plugin -Mod (Join-Path $pluginsRepo "desktop") -ID "desktop" -ExeName "chonkpilot-plugin-desktop.exe"
 Build-Engine -Mod (Join-Path $pluginsRepo "desktop\engine") -ID "desktop" -ExeName "chonkpilot-desktop-plugin.exe"
 
-# file 插件的工具契约：唯一源仍是 src/initdata/capability/tools/file（本插件运行时解析），
-# 但**不再进入 core capability 根**（否则与插件重复注册 → gateway 冲突）。
+# file 插件的工具契约：唯一源已随插件迁至 `chonkpilot-plugins/file/tools/file`（2026-10-25），
+# 运行时由插件从 `<pluginRoot>/tools/file/` 解析；主仓 capability 根不再含 file 契约
+# （否则与插件重复注册 → gateway 冲突）。
 Write-Host "==> [5/9] file（文件系列 11 工具）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "file") -ID "file" -ExeName "chonkpilot-plugin-file.exe"
-$fileContractsSrc = Join-Path $root "src\initdata\capability\tools\file"
+$fileContractsSrc = Join-Path $pluginsRepo "file\tools\file"
 $fileContractsDst = Join-Path $out "file\tools\file"
 if (Test-Path $fileContractsSrc) {
     Remove-Item -LiteralPath $fileContractsDst -Recurse -Force -ErrorAction SilentlyContinue

@@ -1,13 +1,13 @@
-// 进程级黑盒：文件操作参数路径强约束（决策 R-11）。
+// 进程级黑盒：脚本 / 网络工具的路径强约束（决策 R-11）。
 //
 // 断言真实调用形态：<exe> <tool> --input=<json> 的退出码与 stdout（错误消息）。
 // 相对路径 → 非 0 退出码 + 错误消息含原值；绝对路径 → 正常（退出码 0）。
-// 调用上下文（instance/workdir/datadir）经 **子进程环境变量 CHONKPILOT_*** 注入（R-11 二次升级；
-// 不再经 args 的 _instance/_workdir）。
-// 与 find_test.go 同属进程级黑盒；被测 exe 缺失时整体 Skip（须先构建）。
+// 调用上下文（instance/workdir/datadir）经 **子进程环境变量 CHONKPILOT_*** 注入（R-11 二次升级）。
 //
-// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— `filesys_run` 拆为 file 域 11 个原子工具
-// （由 `chonkpilot-tools-executor.exe` 承载）；`script_run` / `web_fetch` 各有一工具一 exe。
+// 2026-10-25（PLUGIN-SPLIT-1）：**file 域 11 工具已随 file 插件迁出主仓**
+// （`chonkpilot-plugins/file`，执行体 = 插件自身 MCP server，`chonkpilot-tools-executor.exe` 已删除）；
+// 其路径约束回归改为进程内用例：`chonkpilot-plugins/file/lib/toolset/path_constraint_test.go`。
+// 本文件只保留 script_run / web_fetch（仍在主仓 executor）。
 package chonkpilotmcptools
 
 import (
@@ -15,9 +15,38 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// distExe 定位 dist/other/capability/executors 下的 executor（相对本测试源文件路径，不依赖 cwd）。
+//
+// 产物缺失默认 Skip；设环境变量 CHONK_REQUIRE_DIST=1 时改为**强制失败**（防"假绿"）。
+func distExe(t *testing.T, name string) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
+	p := filepath.Join(root, "dist", "other", "capability", "executors", name)
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	requireDistOrSkip(t, "executor 未构建（先跑 build-mcp-server.ps1）", p)
+	return ""
+}
+
+// requireDistOrSkip：产物缺失时默认 Skip；设 CHONK_REQUIRE_DIST=1 则强制失败（门禁防假绿）。
+func requireDistOrSkip(t *testing.T, reason, path string) {
+	t.Helper()
+	if os.Getenv("CHONK_REQUIRE_DIST") == "1" {
+		t.Fatalf("[CHONK_REQUIRE_DIST=1] 产物缺失，强制失败（防假绿）：%s（%s）", reason, path)
+	}
+	t.Logf("⚠️ 跳过（产物缺失 → 假绿风险）：%s（%s）；设 CHONK_REQUIRE_DIST=1 可强制失败", reason, path)
+	t.Skipf("%s", reason)
+}
 
 // baseEnv 内部 executor 的调用上下文（宿主 spawn executor 时注入的 CHONKPILOT_*）。
 func baseEnv() map[string]string {
@@ -27,12 +56,10 @@ func baseEnv() map[string]string {
 // exeForTool 按工具所属执行体返回 exe（一工具/一域一 exe）。
 func exeForTool(t *testing.T, tool string) string {
 	t.Helper()
-	switch {
-	case strings.HasPrefix(tool, "file_"):
-		return toolsExe(t)
-	case tool == "script_run":
+	switch tool {
+	case "script_run":
 		return distExe(t, "chonkpilot-script-executor.exe")
-	case tool == "web_fetch":
+	case "web_fetch":
 		return distExe(t, "chonkpilot-web-executor.exe")
 	default:
 		t.Fatalf("未知工具：%s", tool)
@@ -83,52 +110,7 @@ func stripChonkEnv(base []string) []string {
 	return out
 }
 
-func writeTmp(t *testing.T, name, content string) string {
-	t.Helper()
-	p := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", name, err)
-	}
-	return p
-}
-
-// fileArgs 构造 file 域工具的入参 {purpose, targets:[target]}。
-func fileArgs(target map[string]any) map[string]any {
-	return map[string]any{"purpose": "路径约束测试", "targets": []any{target}}
-}
-
-// execResult 是 file 域工具单个 target 的结果（只取断言所需字段）。
-type execResult struct {
-	Status string `json:"status"`
-	Error  string `json:"error"`
-	Reason string `json:"reason"`
-}
-
-// execSummary 是 file 域工具输出的汇总计数。
-type execSummary struct {
-	Total   int `json:"total"`
-	OK      int `json:"ok"`
-	Failed  int `json:"failed"`
-	Skipped int `json:"skipped"`
-}
-
-// execEnvelope 是 file 域工具的统一输出信封。
-type execEnvelope struct {
-	Results []execResult `json:"results"`
-	Summary execSummary  `json:"summary"`
-}
-
-// parseEnvelope 解析 stdout 的结果 JSON。
-func parseEnvelope(t *testing.T, out string) execEnvelope {
-	t.Helper()
-	var env execEnvelope
-	if err := json.Unmarshal([]byte(out), &env); err != nil {
-		t.Fatalf("stdout 不是结果 JSON：%v；out=%q", err, out)
-	}
-	return env
-}
-
-// TestPathConstraintRejectsRelative 各工具的相对路径入参 → 非 0 退出码 + 消息含原值。
+// TestPathConstraintRejectsRelative 脚本 / 网络工具的相对路径入参 → 非 0 退出码 + 消息含原值。
 func TestPathConstraintRejectsRelative(t *testing.T) {
 	cases := []struct {
 		name string
@@ -136,16 +118,6 @@ func TestPathConstraintRejectsRelative(t *testing.T) {
 		args map[string]any
 		want string // 错误消息须含的原值
 	}{
-		{"file_read.path相对", "file_read",
-			fileArgs(map[string]any{"path": "a.txt"}), "a.txt"},
-		{"file_find.root相对", "file_find",
-			fileArgs(map[string]any{"root": "src"}), "src"},
-		{"file_diff.left相对", "file_diff",
-			fileArgs(map[string]any{"left": "a.txt", "right": "b.txt"}), "a.txt"},
-		{"file_replace.path相对", "file_replace",
-			fileArgs(map[string]any{"path": "src/main.py", "find": "a", "replace": "b"}), "src/main.py"},
-		{"file_move.to相对", "file_move",
-			fileArgs(map[string]any{"from": writeTmp(t, "x.txt", "x"), "to": "relative/path.txt"}), "relative/path.txt"},
 		{"script_run.file", "script_run",
 			map[string]any{"runtime": "python", "file": "s.py"}, "s.py"},
 		{"script_run.workdir", "script_run",
@@ -173,108 +145,5 @@ func TestPathConstraintRejectsRelative(t *testing.T) {
 				t.Fatalf("错误消息应含路径约束说明，got out=%q", out)
 			}
 		})
-	}
-}
-
-// TestPathConstraintAcceptsAbsolute 绝对路径入参 → 正常（退出码 0）。
-func TestPathConstraintAcceptsAbsolute(t *testing.T) {
-	exe := toolsExe(t)
-	f := writeTmp(t, "ok.txt", "hello\n")
-	dir := filepath.Dir(f)
-
-	t.Run("file_read", func(t *testing.T) {
-		code, out := runTool(t, exe, "file_read", fileArgs(map[string]any{"path": f}), baseEnv())
-		if code != 0 {
-			t.Fatalf("绝对路径应成功，code=%d out=%q", code, out)
-		}
-	})
-	t.Run("file_find", func(t *testing.T) {
-		code, out := runTool(t, exe, "file_find", fileArgs(map[string]any{"root": dir}), baseEnv())
-		if code != 0 {
-			t.Fatalf("绝对路径应成功，code=%d out=%q", code, out)
-		}
-	})
-	t.Run("file_diff", func(t *testing.T) {
-		f2 := writeTmp(t, "ok2.txt", "world\n")
-		code, out := runTool(t, exe, "file_diff", fileArgs(map[string]any{"left": f, "right": f2}), baseEnv())
-		if code != 0 {
-			t.Fatalf("绝对路径应成功，code=%d out=%q", code, out)
-		}
-	})
-}
-
-// TestPathConstraintAcceptsTempPrefix !/ 前缀映射到 <系统 temp>/chonkpilot/<instance>/（R-11 二次升级）：
-// instance 经子进程环境变量 CHONKPILOT_INSTANCE 注入。
-func TestPathConstraintAcceptsTempPrefix(t *testing.T) {
-	exe := toolsExe(t)
-	root := filepath.Join(os.TempDir(), "chonkpilot", "l2instance")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "l2.txt"), []byte("temp-prefix-ok\n"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	env := map[string]string{"CHONKPILOT_INSTANCE": "l2instance"}
-
-	// 写：!/ 前缀落盘到 <temp>/chonkpilot/<instance>/
-	code, out := runTool(t, exe, "file_write", fileArgs(map[string]any{
-		"path": "!/l2-out.txt", "content": "temp-prefix-ok\n",
-	}), env)
-	if code != 0 {
-		t.Fatalf("!/ 前缀写应成功，code=%d out=%q", code, out)
-	}
-	data, rerr := os.ReadFile(filepath.Join(root, "l2-out.txt"))
-	if rerr != nil {
-		t.Fatalf("读取落盘结果失败：%v（out=%q）", rerr, out)
-	}
-	if !strings.Contains(string(data), "temp-prefix-ok") {
-		t.Fatalf("临时目录文件内容不符，got %q", string(data))
-	}
-
-	// 读：!/ 前缀解析到同一 instance 目录
-	code, out = runTool(t, exe, "file_read", fileArgs(map[string]any{"path": "!/l2.txt"}), env)
-	if code != 0 {
-		t.Fatalf("!/ 前缀读应成功，code=%d out=%q", code, out)
-	}
-	if !strings.Contains(out, "temp-prefix-ok") {
-		t.Fatalf("应读到临时目录文件内容，got out=%q", out)
-	}
-}
-
-// TestPathConstraintTempPrefixRequiresInstance 缺 CHONKPILOT_INSTANCE 时 !/ 解析 → 失败（缺 instance）。
-func TestPathConstraintTempPrefixRequiresInstance(t *testing.T) {
-	exe := toolsExe(t)
-	code, out := runTool(t, exe, "file_read", fileArgs(map[string]any{"path": "!/l2.txt"}),
-		map[string]string{"CHONKPILOT_INSTANCE": ""})
-	if code == 0 {
-		t.Fatalf("缺 instance 时 !/ 应失败，got code=0 out=%q", out)
-	}
-	if !strings.Contains(out, "缺少 instance") {
-		t.Fatalf("错误消息应含「缺少 instance」，got out=%q", out)
-	}
-}
-
-// TestPathConstraintMD5MismatchSkips 运行时冲突（expectMd5 不一致）→ 整体成功（退出码 0）且该项 skipped、不写盘。
-func TestPathConstraintMD5MismatchSkips(t *testing.T) {
-	exe := toolsExe(t)
-	f := writeTmp(t, "m.txt", "original")
-	code, out := runTool(t, exe, "file_replace", fileArgs(map[string]any{
-		"path": f, "find": "original", "replace": "changed", "expectMd5": "deadbeef",
-	}), baseEnv())
-	if code != 0 {
-		t.Fatalf("md5 不一致应整体成功，code=%d out=%q", code, out)
-	}
-	env := parseEnvelope(t, out)
-	if len(env.Results) != 1 || env.Results[0].Status != "skipped" {
-		t.Fatalf("md5 不一致应记 skipped，got=%+v out=%q", env.Results, out)
-	}
-	if !strings.Contains(env.Results[0].Reason, "md5") {
-		t.Fatalf("skip 原因应含 md5，got=%q", env.Results[0].Reason)
-	}
-	if env.Summary.Failed != 0 || env.Summary.Skipped != 1 {
-		t.Fatalf("summary 不符：%+v", env.Summary)
-	}
-	if b, _ := os.ReadFile(f); string(b) != "original" {
-		t.Fatalf("md5 不一致不应写盘，got %q", string(b))
 	}
 }

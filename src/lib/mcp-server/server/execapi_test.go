@@ -4,61 +4,46 @@ package server
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// initdataCapRoot 返回仓库出厂 capability 根（测试从 server 包目录回溯 4 级到仓库根）。
-func initdataCapRoot() string {
-	return filepath.Join("..", "..", "..", "..", "src", "initdata", "capability")
-}
-
-// TestLoadExecToolsInitdata：加载出厂契约根中的可执行工具；
+// TestLoadExecToolsFromCapRoot：加载契约根中的可执行工具；
 // 名称/描述/schema/_meta（hot/category/async/async-threshold）与契约一致。
 //
 // 2026-10-23（PLUGIN-1）：codegraph_* / vfts_query / script_run / web_* / mcp_* 契约已随各自
-// manifest 插件投放（`capability/plugins/<id>/tools/`），**不再位于 core capability 根**；
-// src/initdata/capability/tools 仅剩 file 系列（file 插件契约的唯一源）。
-func TestLoadExecToolsInitdata(t *testing.T) {
-	tools, err := LoadExecTools(initdataCapRoot(), nil)
+// manifest 插件投放（`capability/plugins/<id>/tools/`），**不再位于 core capability 根**。
+// 2026-10-25（PLUGIN-SPLIT-1）：file 系列 11 工具契约随 file 插件迁至
+// `chonkpilot-plugins/file/tools/file`——主仓 capability 根已无 file 契约，故本用例改为
+// **自建临时契约根**（不再依赖 `src/initdata/capability` 的内容）。
+func TestLoadExecToolsFromCapRoot(t *testing.T) {
+	root := t.TempDir()
+	writeToolDocForTest(t, root, "file_read", "category=file\nruntime=builtin\nhot=true\nasync=never\ntimeout=120")
+	writeToolDocForTest(t, root, "file_write", "category=file\nruntime=builtin\nhot=true\nasync=never\ntimeout=120")
+
+	tools, err := LoadExecTools(root, nil)
 	if err != nil {
 		t.Fatalf("LoadExecTools: %v", err)
 	}
-	want := []string{
-		"file_copy",
-		"file_delete",
-		"file_detect",
-		"file_diff",
-		"file_find",
-		"file_iconv",
-		"file_move",
-		"file_patch",
-		"file_read",
-		"file_replace",
-		"file_write",
+	if len(tools) != 2 {
+		t.Fatalf("工具数 = %d，期望 2：%v", len(tools), toolNames(tools))
 	}
-	if len(tools) != len(want) {
-		t.Fatalf("工具数 = %d，期望 %d：%v", len(tools), len(want), toolNames(tools))
-	}
-	for i, name := range want {
-		if tools[i].Name != name {
-			t.Fatalf("tools[%d] = %q，期望 %q（全量 %v）", i, tools[i].Name, name, toolNames(tools))
+	for _, name := range []string{"file_read", "file_write"} {
+		if findExecTool(tools, name) == nil {
+			t.Fatalf("缺少 %s（全量 %v）", name, toolNames(tools))
 		}
 	}
-	// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— dsl_run / filesys_run / browser_run / desktop_run 均已删除；
-	// 文件域改为 11 个原子工具（file_*），统一由 chonkpilot-tools-executor 承载。
-	// 2026-10-21（GATEWAY-2/L3）：file/meta/domain 契约 runtime 改为 builtin（进程内执行）。
 	for _, et := range tools {
-		if strings.HasPrefix(et.Name, "file_") {
-			if !strings.EqualFold(strings.TrimSpace(et.Doc.Runtime), "builtin") {
-				t.Fatalf("%s runtime = %q（应为 builtin）", et.Name, et.Doc.Runtime)
-			}
-			if et.Doc.Category != "file" {
-				t.Fatalf("%s category = %q（应为 file）", et.Name, et.Doc.Category)
-			}
+		if !strings.HasPrefix(et.Name, "file_") {
+			t.Fatalf("%s: 前缀应为 file_", et.Name)
+		}
+		if !strings.EqualFold(strings.TrimSpace(et.Doc.Runtime), "builtin") {
+			t.Fatalf("%s runtime = %q（应为 builtin）", et.Name, et.Doc.Runtime)
+		}
+		if et.Doc.Category != "file" {
+			t.Fatalf("%s category = %q（应为 file）", et.Name, et.Doc.Category)
 		}
 		if et.Tool == nil || et.Doc == nil || et.Call == nil {
 			t.Fatalf("%s: Tool/Doc/Call 不得为空", et.Name)
@@ -73,9 +58,6 @@ func TestLoadExecToolsInitdata(t *testing.T) {
 		if schema == nil || schema["type"] != "object" {
 			t.Fatalf("%s: InputSchema 非法: %#v", et.Name, et.Tool.InputSchema)
 		}
-		if et.Doc.Category == "" {
-			t.Fatalf("%s: category 缺失", et.Name)
-		}
 		if et.Doc.Async == "" {
 			t.Fatalf("%s: async 缺失", et.Name)
 		}
@@ -88,9 +70,6 @@ func TestLoadExecToolsInitdata(t *testing.T) {
 	}
 	// file_read 契约显式 async: never / timeout: 120 → buildTool 透出 _meta。
 	fr := findExecTool(tools, "file_read")
-	if fr == nil {
-		t.Fatal("缺少 file_read")
-	}
 	if fr.Tool.Meta["async"] != "never" {
 		t.Fatalf("file_read _meta.async = %v，期望 never", fr.Tool.Meta["async"])
 	}

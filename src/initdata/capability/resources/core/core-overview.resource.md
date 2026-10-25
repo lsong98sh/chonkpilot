@@ -5,10 +5,13 @@ title: core-tools-overview
 ```
 
 # 摘要
-core 分类工具总览（供 LLM 快速决定使用哪个工具）
+工具面总览（供 LLM 快速决定使用哪个工具）。file 系列由 `file` 插件提供，`script_run` / `web_fetch` 由 core-mcp-server 提供。
 
 # 正文
-# core 分类工具
+# 工具总览
+
+> **归属（2026-10-25，PLUGIN-SPLIT-1）**：`file_*` 11 个工具由 **`file` 插件**（独立 MCP server）提供，
+> 经 gateway 调用；`script_run` / `web_fetch` 由 **core-mcp-server** 提供。对 LLM 而言二者用法一致。
 
 | 工具 | 用途 | 何时用 |
 |---|---|---|

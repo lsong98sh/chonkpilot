@@ -285,17 +285,12 @@ def suite_core(core, work):
     """core 工具面 + 四原语（prompts/resources）+ 能力声明 + 调用上下文。
 
     工具名 = 契约文件名（spec 25-mcp-server §3.1「原语名 = 文件名去后缀」）。现行工具面
-    （2026-10-22 实测）= **core 2**（`script_run` / `web_fetch`）+ **file 域 11**
-    （`file_read/write/replace/patch/copy/move/delete/find/diff/detect/iconv`，`runtime: builtin`
-    进程内 handler）。`desktop_run` / `browser_run` 已随 GATEWAY-2 L9/L10 改为插件形态
-    （UDS 自持 exe，**不注册 MCP 工具**），故不在本 `tools_list` 面。
+    （2026-10-25）= **core 2**（`script_run` / `web_fetch`）。`desktop_run` / `browser_run`
+    已随 GATEWAY-2 L9/L10 改为插件形态；**file 域 11 工具已随 file 插件迁出主仓**
+    （PLUGIN-SPLIT-1，执行体 = 插件 MCP server），故均不在本 `tools_list` 面。
     """
     names = {t["name"] for t in core.tools_list()}
-    expect = {
-        "script_run", "web_fetch",
-        "file_read", "file_write", "file_replace", "file_patch", "file_copy", "file_move",
-        "file_delete", "file_find", "file_diff", "file_detect", "file_iconv",
-    }
+    expect = {"script_run", "web_fetch"}
     # 平铺单实例：单根扫描 → 全部工具在同一端点（多 category 不构成路由，spec 25 §7）
     assert names == expect, f"tools 集合不符：多 {names - expect} / 缺 {expect - names}"
     ctx = call_context(work)
@@ -343,41 +338,15 @@ def suite_core(core, work):
         assert "error" in bad, bad
 
     def t_dir_list():
-        # 列目录 = `file_find` 的 dir 模式（GATEWAY-2 L2：原 filesys_run FIND 动作 → 独立工具；
-        # 统一参数 `{purpose, targets[]}`，单目标也写成数组）。
-        res = core.tool_call("file_find", {
-            "purpose": "列目录",
-            "targets": [{"root": _fwd(work), "depth": 1, "output": "tree"}],
-        }, context=ctx)
-        assert not res.get("isError"), res
-        txt = res["content"][0]["text"]
-        assert "seed.txt" in txt, txt
+        # 2026-10-25（PLUGIN-SPLIT-1）：file 域 11 工具随 file 插件迁出主仓，主仓 core-mcp-server
+        # 不再有 file 分派 → 本用例改由插件侧覆盖（chonkpilot-plugins/file）。
+        raise SkipTest("file 域已随插件迁出主仓（D-70）")
 
     def t_write_read():
-        # 写 → `file_write`；读 → `file_read`（两者均 `{purpose, targets[]}`，runtime=builtin）。
-        target = _fwd(os.path.join(work, "a.txt"))
-        res = core.tool_call("file_write", {
-            "purpose": "写夹具",
-            "targets": [{"path": target, "content": "hello 中文\nworld\n"}],
-        }, context=ctx)
-        assert not res.get("isError"), res
-        res = core.tool_call("file_read", {
-            "purpose": "读回夹具",
-            "targets": [{"path": target}],
-        }, context=ctx)
-        assert not res.get("isError"), res
-        txt = res["content"][0]["text"]
-        assert "hello 中文" in txt, txt
+        raise SkipTest("file 域已随插件迁出主仓（D-70）")
 
     def t_grep():
-        # 内容检索 = `file_find` 的 grep 模式（返回命中行号与行内容）
-        res = core.tool_call("file_find", {
-            "purpose": "内容检索",
-            "targets": [{"root": _fwd(work), "grep": "world"}],
-        }, context=ctx)
-        assert not res.get("isError"), res
-        txt = res["content"][0]["text"]
-        assert "seed.txt" in txt, txt
+        raise SkipTest("file 域已随插件迁出主仓（D-70）")
 
     def t_script_shell():
         res = core.tool_call("script_run", {"runtime": "shell", "script": "echo mcp-ok"})
@@ -468,8 +437,9 @@ def suite_desktop(desk, work):
     """desktop / browser 分类（2026-10-22 起）：**不再注册 MCP 工具**。
 
     GATEWAY-2 L9/L10 把浏览器 / 桌面自动化改为常驻插件（UDS `browser.sock` / `desktop.sock`，
-    端点 `start` / `stop` / `operation`），工具面只剩 core 2 + file 11 →
-    本套件改为**正向断言"未注册"**（原 `desktop_run` 断言已随契约删除）。
+    端点 `start` / `stop` / `operation`）；2026-10-25（PLUGIN-SPLIT-1）file 域亦随插件迁出 →
+    本 server 的工具面只剩 core 2（`script_run` / `web_fetch`）；本套件改为**正向断言"未注册"**
+    （原 `desktop_run` 断言已随契约删除）。
     """
 
     def t_tool_face_excludes_desktop_browser():
@@ -483,13 +453,12 @@ def suite_desktop(desk, work):
 
 
 def suite_defaults_injection(defaults_core, work):
-    """自定义 `--config`（`defaults.skip_dirs=["vendor"]`）装载 + 文件域工具可用。
+    """自定义 `--config` 装载（`defaults.skip_dirs=["vendor"]`）。
 
     2026-10-22 口径变更：`skip_dirs` 原为 `filesys_run` 的 FIND **脚本选项**；GATEWAY-2 L2 把
-    文件域拆成独立工具后，`file_find` 契约**没有 skip_dirs 参数**（统一 `{purpose, targets[]}`，
-    `additionalProperties:false`）→ 「跳过 vendor」语义已随 DSL 退役移除。
-    因此本套件只验证**自定义 config 能被装载且文件域工具照常工作**；跳过语义等新契约（若恢复）
-    再补断言，不在此处硬编码现状。
+    文件域拆成独立工具后，`file_find` 契约**没有 skip_dirs 参数**。
+    2026-10-25（PLUGIN-SPLIT-1）：file 域随插件事出主仓 → 本套件只验证**自定义 config 能被
+    装载**（用 `script_run` 作探针），文件域断言改由插件侧覆盖。
     """
     os.makedirs(os.path.join(work, "vendor"), exist_ok=True)
     with open(os.path.join(work, "vendor", "dep.txt"), "w", encoding="utf-8") as f:
@@ -497,16 +466,12 @@ def suite_defaults_injection(defaults_core, work):
     with open(os.path.join(work, "ok.txt"), "w", encoding="utf-8") as f:
         f.write("SENTINEL_DEFAULT\n")
 
-    def t_custom_config_and_file_find():
-        res = defaults_core.tool_call("file_find", {
-            "purpose": "自定义 config 下查找",
-            "targets": [{"root": _fwd(work), "grep": "SENTINEL_DEFAULT"}],
-        }, context=call_context(work))
-        assert not res.get("isError"), res
+    def t_custom_config_probe():
+        res = defaults_core.tool_call("script_run", {"runtime": "shell", "script": "echo cfg-ok"})
         txt = res["content"][0]["text"]
-        assert "ok.txt" in txt, txt
+        assert "cfg-ok" in txt, txt
 
-    for fn in [t_custom_config_and_file_find]:
+    for fn in [t_custom_config_probe]:
         check(f"[defaults] {fn.__name__[2:]}", fn)
 
 

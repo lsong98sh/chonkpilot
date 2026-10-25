@@ -11,9 +11,9 @@
 
 > 本节为准，**与下文冲突时以本节为准**；下文未删除的旧描述（self / dir 节点、`dsl_run`、`agentbox`、一工具一 exe）均为历史口径。
 
-- **① DSL 已退役（L1）**：`dsl_run` 契约、`src/lib/dsl`、`build-dsl-executor.ps1` 与 `filesys_run` / `browser_run` / `desktop_run` 三个容器工具**全部删除**；执行器集合 = `chonkpilot-tools-executor.exe`（file 域）+ `chonkpilot-script-executor.exe`（`script_run`）+ `chonkpilot-web-executor.exe`（`web_fetch`）；browser / desktop 改为**常驻插件**（UDS，非 executor、不接 gateway）。
+- **① DSL 已退役（L1）**：`dsl_run` 契约、`src/lib/dsl`、`build-dsl-executor.ps1` 与 `filesys_run` / `browser_run` / `desktop_run` 三个容器工具**全部删除**；执行器集合 = `chonkpilot-script-executor.exe`（`script_run`）+ `chonkpilot-web-executor.exe`（`web_fetch`）；browser / desktop 改为**常驻插件**（UDS，非 executor、不接 gateway）。**2026-10-25（PLUGIN-SPLIT-1）**：file 域 11 工具随 `file` 插件迁出主仓（执行体 = 插件 MCP server），`chonkpilot-tools-executor.exe` 已删除，主仓 builtin 只剩 meta / server 域组。
 - **② 内置 server = 单进程 `core-mcp-server`（L3）**：`chonkpilot-core-mcp-server.exe`（`cmd/core-mcp-server`）是**唯一内置 MCP server**，由宿主经 `coretools.Supervisor` 拉起；工具**不再一工具一 exe**：
-  - `runtime: builtin` 的契约（**file 组 11 个** + **meta 组 3 个** + 其他 `category` 的 builtin 契约）由 `dispatchBuiltin` 在 **core 进程内**执行（`server/builtin.go`）：文件域走 `mcp-tools/toolset`，`meta` 组走 `toolmeta.Run(GroupMeta)`，`server`（domain）组走 `toolmeta.Run(GroupDomain)`；每 handler 外层 `recover()` → panic 转 `isError`，绝不冒泡到主循环。
+  - `runtime: builtin` 的契约（**meta 组 3 个** + 其他 `category` 的 builtin 契约）由 `dispatchBuiltin` 在 **core 进程内**执行（`server/builtin.go`）：`meta` 组走 `toolmeta.Run(GroupMeta)`，`server`（domain）组走 `toolmeta.Run(GroupDomain)`；每 handler 外层 `recover()` → panic 转 `isError`，绝不冒泡到主循环。**file 域已不在主仓**（2026-10-25：随 `file` 插件迁出，由插件 MCP server 执行）。
   - `runtime: ../../executors/<x>.exe` 的契约仍 **spawn 单个 executor**（`executor.go`，`exec.CommandContext` + `winproc` 隐藏窗口 + ctx 取消 → 杀该次进程树）。
   - `internal: true`（codegraph 8 / vfts 1）只经 `POST /internal/exec` 执行，不进任何 MCP 工具面。
 - **③ 契约来源三层 + embed（C）**：`server/contractsource.go` 的 `Source{Dir|FS}` 支持多层合并，**同名（同类型+同原语名）后者覆盖前者**并输出 `Shadowed` 审计。现行装配：**磁盘契约根存在 → 磁盘单层**；**缺失 → 内置 `//go:embed all:contracts`**（构建期从 `src/initdata/capability` 覆盖同步）。更高层（user / project / prjusr capability 根）由各自 dir 下游经 gateway 前缀接入，不在本函数合并。

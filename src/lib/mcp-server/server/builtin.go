@@ -2,10 +2,12 @@
 // **进程内**执行，不再 spawn executor exe。
 //
 // 分派判据（同口径、无魔法）：
-//   - 工具名已登记在文件域 toolset（file 组 11 个）→ toolset.Dispatch；
-//   - 否则按契约 category：meta → toolmeta.Run(GroupMeta)；
+//   - 按契约 category：meta → toolmeta.Run(GroupMeta)；
 //     server（domain 组）→ toolmeta.Run(GroupDomain)；
 //   - 其余 category 的 builtin 契约 = 契约错误（明确失败，不静默 spawn）。
+//
+// 注：文件域 11 个工具（category `file`）已随 file 插件迁出主仓（PLUGIN-SPLIT-1），
+// 由插件自身的 MCP server 执行；主仓 builtin 不再有 file 分派。
 //
 // 故障域补偿（设计 §3.3）：每个 handler 外层 recover() → panic 转 isError 结果，绝不冒泡
 // 到 server 主循环；超时/取消由 callBuiltin 派生的 ctx 控制，只影响本次调用。
@@ -16,9 +18,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-lib/paths"
 	"github.com/chonkpilot/chonkpilot-mcp-server/toolmeta"
-	"github.com/chonkpilot/chonkpilot-mcp-tools/toolset"
 )
 
 // builtinRuntime 是「进程内执行」的契约 runtime 取值。
@@ -44,15 +44,8 @@ func dispatchBuiltin(ctx context.Context, cfg *Config, td *ToolDoc, args map[str
 		}
 	}()
 
-	// `!/` 路径前缀的落地根由调用上下文 instance 决定（对齐 cmd/tools-exec 的 CHONKPILOT_INSTANCE 处理）。
-	if inst := strings.TrimSpace(cx.InstanceID); inst != "" {
-		_, _ = paths.SetTempRoot(inst)
-	}
-
-	// 文件域：toolset 登记表命中即进程内执行（未登记返回 ok=false，落到类别分派）。
-	if r, ok := toolset.Dispatch(ctx, td.Name, args); ok {
-		return &builtinResult{Text: r.Text, IsError: r.IsError}
-	}
+	// 文件域（file_*）已随插件迁出主仓（PLUGIN-SPLIT-1，2026-10-25）：
+	// 由 file 插件的 MCP server 执行，主仓 builtin 不再持有其实现。
 
 	var group toolmeta.Group
 	switch strings.ToLower(strings.TrimSpace(td.Category)) {

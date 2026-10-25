@@ -403,9 +403,9 @@ func (c *Config) toolAsyncOverride(name string) (ToolAsyncOverride, bool) {
 
 // 内置 executor 产物名（= 开关在 `executors` 下的单位键；与 src/mcp-tools 产物一致）。
 // 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 删 core / desktop / browser / dsl 四个 executor；
-// 文件域 11 个原子工具统一由 tools-executor 承载；desktop/browser 改为常驻插件（非 executor，不在本表）。
+// desktop/browser 改为常驻插件（非 executor，不在本表）。
+// 2026-10-25（PLUGIN-SPLIT-1）：file 域 11 工具随 file 插件迁出主仓 → 删 tools-executor。
 const (
-	ExecutorExeTools  = "chonkpilot-tools-executor.exe"
 	ExecutorExeScript = "chonkpilot-script-executor.exe"
 	ExecutorExeWeb    = "chonkpilot-web-executor.exe"
 )
@@ -422,11 +422,10 @@ type ToolSandboxConfig struct {
 
 // legacySandboxCategoryMap 把**旧形状**（按 executor 类别 core/desktop/browser，2026-09-26 形态）
 // 迁移到**新形状**的单位键（exe 基名）。2026-10-21（GATEWAY-2/L1）DSL 退役后：
-// `core` → tools（文件域 11 工具）；`desktop` / `browser` 已改为插件（非 executor），迁移为空
-// （旧配置里这两项被忽略，插件自身不接 gateway、不受 agentbox 开关约束）。
-var legacySandboxCategoryMap = map[string][]string{
-	"core": {ExecutorExeTools},
-}
+// `desktop` / `browser` 已改为插件（非 executor），迁移为空；
+// 2026-10-25（PLUGIN-SPLIT-1）`core`（= file 域）随 file 插件迁出主仓 → 亦迁移为空
+// （旧配置里这些项被忽略，插件自身不接 gateway、不受 agentbox 开关约束）。
+var legacySandboxCategoryMap = map[string][]string{}
 
 // ParseToolSandbox 解析 usr `tool_sandbox` 值（JSON 对象字符串），**兼容新旧两种形状**：
 //   - 新形状：`{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`；

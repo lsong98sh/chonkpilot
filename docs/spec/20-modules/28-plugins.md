@@ -245,14 +245,13 @@ server.Start
     ↔ 插件桥）· `heartbeat` · `datafmt`（`ChatMsg/ToolCall` + token 估算 + `LLMRefName`）；
   - 依赖 = 标准库 + MCP go-sdk，**零主仓依赖**。
 - **`chonkpilot-plugins`**（独立仓）：`browser` / `codebase` / `desktop` / `file` / `task` / `mcp` / `websearch` / `memory` / `history`，**每个插件一个 module**；`memory` / `history` 的 Go 业务包在同仓 `<id>/lib`；`browser` / `desktop` 的**引擎**在同仓 `<id>/engine`；`codebase` 的**引擎**在同仓 `codebase/engines/{codegraph,vfts}`；`shared/` 是插件侧共享工具（`pluginhost` / `pluginproto` / `trayconsole` / `indexkind` / `lockfile` / `pluginclient` / `winproc` / `ignore` 的副本）。
-  - **2026-10-25（能力随插件）**：browser / desktop 引擎、codegraph / vfts 引擎的**源码已全部迁出主仓**（原 `src/lib/mcp-tools/{plugins/*,internal/{pluginhost,browserplugin,desktopplugin,desktop}}`、`src/plugins/{codegraph,vfts}`）——主仓只保留 gateway / mcp-server / pluginmgr / data / config 等平台能力。
-  - **仍暂以 `replace` 指向主仓业务库**的仅剩：`file` → `mcp-tools/toolset`（下一条目标，见 [41 D-70](../40-roadmap/41-未决项登记.md)）。
+  - **2026-10-25（能力随插件）**：browser / desktop 引擎、codegraph / vfts 引擎、**file 域 11 工具实现与契约**的**源码已全部迁出主仓**（原 `src/lib/mcp-tools/{plugins/*,internal/*,toolset}`、`src/plugins/{codegraph,vfts}`、`src/initdata/capability/tools/file/`）——主仓只保留 gateway / mcp-server / pluginmgr / data / config 等平台能力；`file_*` 由 gateway 调插件 MCP server 执行（主仓 builtin 无 file 分派，`chonkpilot-tools-executor.exe` 已删除）。
   - `browser/engine` 的 WebView2 绑定 = 主仓 fork 的副本（`third_party/go-webview2`，上游无 `EvalWithResult`/`Screenshot`）；待该 fork 独立发版后改按版本引用。
 - **主仓保留**：`src/plugins/{plugin, plugin-compress, plugin-codegraph, plugin-vfts}`（两个 Hook 仅 spawn engines exe，不含引擎代码）、`build-codegraph.ps1` / `build-vfts.ps1`（源码取自 plugins 仓）。**`src/plugins/plugin/bridgebus` 已删除**（迁至 framework `runtime/bridgebus`，主仓无引用）。
 
 **依赖方向**：
 
-- 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk` / `runtime/*` + 同仓 `<id>/lib` · `<id>/engine` · `shared/*` · `codebase/engines/*`（仅 `file` 暂指主仓 `mcp-tools`）。
+- 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk` / `runtime/*` + 同仓 `<id>/lib` · `<id>/engine` · `shared/*` · `codebase/engines/*`（**2026-10-25 起零主仓 `replace`**）。
 - `memory` / `history` 业务包（`chonkpilot-plugins/<id>/lib`）→ **仅 framework `runtime/*`**（`hook` / `bus` / `topics` / `instance` / `dataclient` / `datafmt` / `heartbeat`）。
 - `src/plugins/plugin`（Hook 接口 + 实例视图 + dataclient，宿主侧兼容）→ `src/lib/core`。
 - `src/plugins/plugin-compress` → `src/lib/core` · `src/lib/data`（**纯算法库，仅单测**）。

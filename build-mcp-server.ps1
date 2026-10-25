@@ -130,10 +130,10 @@ New-Item -ItemType Directory -Force -Path $execDir | Out-Null
 Push-Location $tools
 try {
     # 内置执行器统一落 capability/executors/；契约 *.tool.md 的 runtime 相对 md 写 ../../executors/<cat>.exe
-    # 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 删 filesys / browser / desktop / core 四个 executor；
-    #   file 域并入 tools-exec；browser/desktop 改为常驻插件（见下方 plugins 段）。
+    # 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 删 filesys / browser / desktop / core 四个 executor。
+    # 2026-10-25（PLUGIN-SPLIT-1）：file 域 11 工具随 file 插件迁出主仓 → 删 tools-exec
+    #   （执行体 = 插件的 MCP server；契约随插件投放到 <pluginRoot>/tools/file/）。
     foreach ($pair in @(
-            @("cmd/tools-exec", "chonkpilot-tools-executor.exe"),
             @("cmd/script-exec", "chonkpilot-script-executor.exe"),
             @("cmd/web-exec", "chonkpilot-web-executor.exe"))) {
         $cat = $pair[0]
@@ -145,8 +145,8 @@ try {
 } finally { Pop-Location }
 
 Write-Host "==> verify executors (--help 从磁盘读契约：<exeDir>/capability/tools/<cat>/)"
-& (Join-Path $execDir "chonkpilot-tools-executor.exe") --help | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "tools executor --help failed" }
+& (Join-Path $execDir "chonkpilot-script-executor.exe") --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "script executor --help failed" }
 
 # 注（PLUGIN-SPLIT-1）：browser / desktop 常驻引擎已随插件迁入 chonkpilot-plugins
 # （<id>/engine），由 build-plugins.ps1 直接构建，本脚本不再产出。
