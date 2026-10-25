@@ -95,9 +95,6 @@ export const MsgTopics = {
   dataMemoryExtractLoad: 'data-memory-extract-load',
   dataMemoryExtractSave: 'data-memory-extract-save',
   dataMemoryExtractDelete: 'data-memory-extract-delete',
-  dataFilelistList: 'data-filelist-list',
-  dataFilelistPut: 'data-filelist-put',
-  dataFilelistDel: 'data-filelist-del',
   configRefresh: 'config-refresh',
   dataSessionList: 'data-session-list',
   dataSessionGet: 'data-session-get',
@@ -147,7 +144,6 @@ export const MsgTopics = {
   dataTasktreeDelete: 'data-tasktree-delete',
   dataTasktreeUpsert: 'data-tasktree-upsert',
   taskDeleted: 'task-deleted',
-  dataIndexIgnored: 'data-index-ignored',
   instanceClaim: 'instance-claim',
   instanceRegister: 'instance-register',
   instanceHeartbeat: 'instance-heartbeat',
@@ -262,11 +258,9 @@ export const FieldKeys = {
   category: 'category',
   children: 'children',
   choices: 'choices',
-  chunks: 'chunks',
   client_type: 'client_type',
   closed: 'closed',
   code: 'code',
-  codegraph: 'codegraph',
   command: 'command',
   config: 'config',
   config_saved: 'config_saved',
@@ -292,10 +286,8 @@ export const FieldKeys = {
   dir: 'dir',
   dirs: 'dirs',
   doc: 'doc',
-  doc_ids: 'doc_ids',
   done_at: 'done_at',
   effort: 'effort',
-  entries: 'entries',
   error: 'error',
   errors: 'errors',
   exclude_turn: 'exclude_turn',
@@ -324,7 +316,6 @@ export const FieldKeys = {
   inbox_id: 'inbox_id',
   include_closed: 'include_closed',
   include_snapshot: 'include_snapshot',
-  indexed_at: 'indexed_at',
   init_git: 'init_git',
   instance_id: 'instance_id',
   isError: 'isError',
@@ -348,7 +339,6 @@ export const FieldKeys = {
   maximized: 'maximized',
   mcpServers: 'mcpServers',
   mcp_server: 'mcp_server',
-  md5: 'md5',
   memory: 'memory',
   memory_saved: 'memory_saved',
   message: 'message',
@@ -360,7 +350,6 @@ export const FieldKeys = {
   model: 'model',
   model_echo: 'model_echo',
   msg: 'msg',
-  mtime: 'mtime',
   multi: 'multi',
   name: 'name',
   namespace: 'namespace',
@@ -369,7 +358,6 @@ export const FieldKeys = {
   nodes: 'nodes',
   notes: 'notes',
   notice: 'notice',
-  offset: 'offset',
   ok: 'ok',
   old_level: 'old_level',
   old_name: 'old_name',
@@ -397,7 +385,6 @@ export const FieldKeys = {
   playbook: 'playbook',
   plugin: 'plugin',
   pre_hook_subject: 'pre_hook_subject',
-  prefix: 'prefix',
   probe: 'probe',
   project_spec: 'project_spec',
   prompt: 'prompt',
@@ -439,7 +426,6 @@ export const FieldKeys = {
   session: 'session',
   session_id: 'session_id',
   shadow: 'shadow',
-  size: 'size',
   snapshot: 'snapshot',
   snapshot_turn: 'snapshot_turn',
   source: 'source',
@@ -468,7 +454,6 @@ export const FieldKeys = {
   tool_call_status: 'tool_call_status',
   tools: 'tools',
   top_session: 'top_session',
-  total: 'total',
   touch_files: 'touch_files',
   transport: 'transport',
   treeData: 'treeData',
@@ -486,7 +471,6 @@ export const FieldKeys = {
   user: 'user',
   user_dict: 'user_dict',
   user_dict_path: 'user_dict_path',
-  vfts: 'vfts',
   waiting: 'waiting',
   widget_id: 'widget_id',
   window: 'window',
@@ -1404,37 +1388,6 @@ export const DataMemoryExtractDeleteKeys = {
   ok: 'ok',
 }
 
-/** data-filelist-list 字段键（payload/result/event 合并去重）。 */
-export const DataFilelistListKeys = {
-  limit: 'limit',
-  list: 'list',
-  offset: 'offset',
-  prefix: 'prefix',
-  total: 'total',
-}
-
-/** data-filelist-put 字段键（payload/result/event 合并去重）。 */
-export const DataFilelistPutKeys = {
-  chunks: 'chunks',
-  doc_ids: 'doc_ids',
-  entries: 'entries',
-  id: 'id',
-  indexed_at: 'indexed_at',
-  key: 'key',
-  md5: 'md5',
-  mtime: 'mtime',
-  ok: 'ok',
-  path: 'path',
-  size: 'size',
-}
-
-/** data-filelist-del 字段键（payload/result/event 合并去重）。 */
-export const DataFilelistDelKeys = {
-  deleted: 'deleted',
-  keys: 'keys',
-  ok: 'ok',
-}
-
 /** config-refresh 字段键（payload/result/event 合并去重）。 */
 export const ConfigRefreshKeys = {
   id: 'id',
@@ -1856,14 +1809,6 @@ export const DataTasktreeUpsertKeys = {
 export const TaskDeletedKeys = {
   instance_id: 'instance_id',
   node_id: 'node_id',
-}
-
-/** data-index-ignored 字段键（payload/result/event 合并去重）。 */
-export const DataIndexIgnoredKeys = {
-  codegraph: 'codegraph',
-  paths: 'paths',
-  truncated: 'truncated',
-  vfts: 'vfts',
 }
 
 /** instance-claim 字段键（payload/result/event 合并去重）。 */

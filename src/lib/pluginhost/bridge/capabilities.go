@@ -44,7 +44,7 @@ var defaultMQMethods = []mqMethod{
 	{"plugin/v1/tool.retry", "tool-retry"},
 	{"plugin/v1/ask.reply", "ask-user-reply"},
 	// 配置 / 只读（2026-10-22 订正：原映射的 data-user-config / data-prj-config /
-	// data-filelist / data-memory / data-prompt 均非真实主题，改为 *-load / *-list）
+	// data-memory / data-prompt 均非真实主题，改为 *-load / *-list）
 	//
 	// 注：`plugin/v1/config.user.get|load` **不在此表** —— usr 配置读同样必须走「请求 + 同主题
 	// 应答」（raw Emit 的 v.Result 恒空 → 读不到结果），且读侧要按调用方身份收窄到自身键空间，
@@ -53,7 +53,6 @@ var defaultMQMethods = []mqMethod{
 	{"plugin/v1/config.project.load", "data-prj-config-load"},
 	{"plugin/v1/config.project.set", "data-prj-config-save"},
 	{"plugin/v1/config.project.delete", "data-prj-config-delete"},
-	{"plugin/v1/config.filelist.list", "data-filelist-list"},
 	{"plugin/v1/config.memory.list", "data-memory-list"},
 	{"plugin/v1/config.mcp.list", "data-mcp-list"},
 	{"plugin/v1/config.scenario.list", "data-scenario-list"},

@@ -63,7 +63,7 @@
 ### 3.3 插件订阅/发布的消息面（[61-消息一览](../60-reference/61-消息一览.md)）
 
 - 订阅：`instance-register` / `instance-heartbeat` / `instance-exit` · `data-prj-config-refresh` · 工具回调 `vfts-tool-call` · **管理面 `vfts.dict.get` / `vfts.dict.set` / `vfts.reindex`**（UI ↔ 插件，点分相对主题、同主题 promise 写回 `v.Result`；插件分别直调引擎 `vfts_dict_get`/`vfts_dict_set` 与调度强制重建）。
-- 发布：`mcp-tools-register` / `mcp-tools-unregister`（gateway 方法面）· `data-prj-config-load`/`save`（读写配置键）· `data-filelist-list`/`put`/`del`（文件清单）· 回写 `vfts.status`（prj-config 键，非主题）。
+- 发布：`mcp-tools-register` / `mcp-tools-unregister`（gateway 方法面）· `data-prj-config-load`/`save`（读写配置键）· 回写 `vfts.status`（prj-config 键，非主题）。**文件清单不经消息面**（2026-10-25：插件自持 `<workdir>/.chonkpilot/vfts/file_list.json`，D-71；原 `data-filelist-*` 三主题已退场）。
 
 ### 3.4 配置键（prj 库）
 
@@ -137,16 +137,16 @@ ensureWorkspace(force)：
   1) vfts_configure（enabled/exts/skip_dirs/stack_gitignore + docs 字段**恒下发**；服务不可用 = 空 endpoint/token）
   2) vfts_status 快检 → ready？
      - 解析器版本变化 → 清文档缓存 + 强制全量
-  3) ready 且非强制 → incrementalSync（扫描 → file_list diff → 按文件增量 → 回写清单）
+  3) ready 且非强制 → incrementalSync（扫描 → 清单 diff → 按文件增量 → 回写清单）
   4) 否则全量：pushStatusPhase(index) + startProgressPoll（500ms 轮询引擎 meta.json）+ vfts_index → 重建清单
   末了 mergeSyncStatus 回写 vfts.status（added/updated/removed/skipped + docsPort）
 ```
 
-- **文件清单驱动增量（`manifest.go`）**：清单 `file_list`（项目级 prj 库，经 persist 读写）记录每个文件的 `key(sha1(绝对路径)前8字节)`/`size`/`mtime`/`md5`/`doc_ids`/`chunks`/`indexed_at`。diff 判定（纯函数 `diffManifest`）：
-  - ① 新文件（表里无 key）→ 待索引；
+- **文件清单驱动增量（`manifest.go`）**：清单 = **插件自持本地文件** `<workDir>/.chonkpilot/vfts/file_list.json`（与 `meta.json` / 文档缓存同目录；原子写 temp+rename；2026-10-25 D-71 起不再落 prj 库、不经 `data-filelist-*`）记录每个文件的 `key(sha1(绝对路径)前8字节)`/`size`/`mtime`/`md5`/`doc_ids`/`chunks`/`indexed_at`。清单是**派生缓存**（缺失/损坏 → 空 → 一次全量重建）。diff 判定（纯函数 `diffManifest`）：
+  - ① 新文件（清单无 key）→ 待索引；
   - ② `size`+`mtime` 未变 → 跳过（不算 md5，省 IO）；
-  - ③ 变化 → 算 md5：与表一致 → 仅更新 mtime；不一致 → 待索引（先按旧 `doc_ids` 删块）；
-  - ④ 表里有、本次扫描没有 → 待删除（按 `doc_ids` 删块）。
+  - ③ 变化 → 算 md5：与清单一致 → 仅更新 mtime；不一致 → 待索引（先按旧 `doc_ids` 删块）；
+  - ④ 清单有、本次扫描没有 → 待删除（按 `doc_ids` 删块）。
   - **文档类行 md5 携带解析器版本**（`<md5hex>@<parserVersion>`，复用 md5 口径）：版本变化 → 该行失效重建 + 插件清缓存目录。
 - **去抖（`rebuildDebouncer`，400ms）**：设置页一次保存写 `vfts.exts`+`vfts.skip-dirs`(+`vfts.stack-gitignore`) 多键 = 多次 `data-prj-config-refresh` → 逐键展开后经去抖合并为**一轮**重建；窗口外单键变更仍触发（不漏重建）。
 - **进度推送（零新增主题）**：索引期间 `startProgressPoll` 每 500ms 读引擎落盘 `meta.json` 的 `done/total`，变化即回写 `vfts.status`（`{state:"indexing", phase:"configure"\|"index", progressDone, progressTotal}`）；收口写 `ready`/`error`。UI 只读回显该键。
@@ -164,7 +164,7 @@ ensureWorkspace(force)：
 | 全文索引集合（zvec：字段 `path`/`line`/`content`(FTS)/`loc`） | `<workDir>/.chonkpilot/vfts/collection/`（zvec C-API 目录） |
 | 工作区元信息（`Meta`：enabled/state/进度/err/lastIndexedAt/skipDirs/stackGitignore/exts/fileCount/chunkCount/tokenizer/**nextPK**/docs） | `<workDir>/.chonkpilot/vfts/meta.json`（跨进程读取，进度推送/就绪门控用；**不含 token**） |
 | 文档转换缓存（文本 + locs） | `<workDir>/.chonkpilot/vfts/doc_text/<sha1>.json`（`.chonkpilot` 强制排除） |
-| 文件清单 `file_list`（key/size/mtime/md5/doc_ids/chunks/indexed_at） | **prj 库**（persist，`data-filelist-*` 面；插件读写） |
+| 文件清单 `file_list.json`（key/size/mtime/md5/doc_ids/chunks/indexed_at） | **插件自持本地文件** `<workDir>/.chonkpilot/vfts/file_list.json`（原子写；2026-10-25 起不再落 prj 库、不经消息面） |
 | 启用开关 / 索引配置 / 状态 | `enable-vfts`·`vfts.exts`·`vfts.skip-dirs`·`vfts.stack-gitignore`·`vfts.docs`·`vfts.doc-max-mb`·`vfts.status` → **prj 库 config**（团队共享；插件读写） |
 | 转换服务 token | **仅内存**（`Workspace.docsToken`，绝不落盘/落日志） |
 | **系统级 jieba 词典**（基础词典 + 自定义词） | `<系统缓存根>/chonkpilot/vfts/jieba/`（`os.UserCacheDir()` → Windows `%LocalAppData%`；**全机/全工作区共用一份**，非项目/用户级覆盖；基础词典内嵌物化、只读） |
@@ -177,7 +177,7 @@ ensureWorkspace(force)：
 ## 6. 依赖
 
 - 引擎：官方 `go-sdk` + **`github.com/zvec-ai/zvec-go` v0.7.0**（C-API，需 `zvec_c_api.dll`）+ 共享包 `github.com/chonkpilot/chonkpilot-ignore`。**CGO 来自 zvec**（见 §2 注）。
-- 插件：`src/lib/core`（`msgkeys`/`mq`/`winproc`）· `src/plugins/plugin`（`plugin`/`instance`）· `chonkpilot-ignore`；由 server 内嵌。**不依赖** mcp-tools / gateway / data（清单经 persist 消息面间接）。
+- 插件：`src/lib/core`（`msgkeys`/`mq`/`winproc`）· `src/plugins/plugin`（`plugin`/`instance`）· `chonkpilot-ignore`；由 server 内嵌。**不依赖** mcp-tools / gateway / data（配置键经 persist 消息面读写；清单为本地文件）。
 - 转换服务：`src/mcps/markitdown`（Python，**外部**，不在编译依赖内；插件只探测其状态文件 + 探活）。
 
 ---
@@ -214,7 +214,7 @@ ensureWorkspace(force)：
 ## 9. 现状与待办
 
 - ✅ **全文索引（FTS）已落地**：6 工具（5 管理 + 1 查询）+ gateway 注册 1 查询工具。
-- ✅ **按文件增量（清单驱动）已落地**：`file_list` diff（新/跳过/mtime-only/内容变/删除）+ 主键单调递增；全量重建后重建清单。
+- ✅ **按文件增量（清单驱动）已落地**：清单 diff（新/跳过/mtime-only/内容变/删除）+ 主键单调递增；全量重建后重建清单。**清单自持**（`<workDir>/.chonkpilot/vfts/file_list.json`，2026-10-25 D-71）。
 - ✅ **文档类转换接入**：`docs`/`doc-max-mb` 配置 + 服务探测（pid 校验 + 探活，30s TTL）+ 转换缓存（键含 mtime/parser_version）+ 降级 + 后启动自动接上（去抖**增量同步 `force=false`**）。
 - ✅ **进度推送 + 空闲回收已落地**：500ms 轮询引擎 `meta.json` → 回写 `vfts.status`（零新增主题）；`sweepIdleClient` 5min 回收共享子进程。
 - ✅ **叠加 gitignore**：`vfts.skip-dirs`/`vfts.stack-gitignore` 原样下发引擎与插件清单扫描，共用 `chonkpilot-ignore` 单一实现。

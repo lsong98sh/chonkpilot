@@ -1,10 +1,10 @@
-// tasktree / knowledge / filelist / scenario / memory 五域门面（inline 绑定）与既有 MQ 面
+// tasktree / knowledge / scenario / memory 四域门面（inline 绑定）与既有 MQ 面
 // （`data-<domain>-*`）的**行为等价**单测（阶段 4 第四批验收 / 41 G-36：一份定义 → 两种绑定，
 // 同一落点、同一语义、同一应答形状）。
 //
 // 两条路径（同一实例、同一数据根）：
 //   - 门面 = inline 直调（`chonkpilot-data/facade/inline`；同进程函数调用，不经 MQ，见 23 §7）
-//   - MQ   = persist 的 `data-tasktree-*` / `data-knowledge-*` / `data-filelist-*` /
+//   - MQ   = persist 的 `data-tasktree-*` / `data-knowledge-*` /
 //     `data-scenario-*` / `data-memory-*`（消息面，61 §3；既有驱动方式）
 //
 // 覆盖：门面写→MQ 读 / MQ 写→门面读 / 应答形状**逐字一致**（同域两路径经同一份 facade/wire
@@ -33,13 +33,12 @@ import (
 	"github.com/chonkpilot/chonkpilot-lib/mq"
 )
 
-// domainFourSubjects 是第四批五域的全部请求主题（零请求断言用）。
+// domainFourSubjects 是第四批四域的全部请求主题（零请求断言用）。
 var domainFourSubjects = []string{
 	"data-tasktree-list", "data-tasktree-tasks", "data-tasktree-upsert", "data-tasktree-delete",
 	"data-knowledge-root", "data-knowledge-list", "data-knowledge-read", "data-knowledge-save",
 	"data-knowledge-create", "data-knowledge-delete", "data-knowledge-rename",
 	"data-knowledge-mkdir", "data-knowledge-rmdir", "data-knowledge-rename-dir",
-	"data-filelist-list", "data-filelist-put", "data-filelist-del",
 	"data-scenario-list", "data-scenario-load", "data-scenario-save",
 	"data-scenario-delete",
 	"data-memory-list", "data-memory-read", "data-memory-save", "data-memory-delete",
@@ -355,87 +354,6 @@ func errString(t *testing.T, fn func() error) string {
 	return ""
 }
 
-// ── filelist ─────────────────────────────────────────────────────
-
-// TestFacadeFileListInlineEqualsMQPath：文件清单域两路径等价（put / list（前缀 + 分页）/ del）
-// + 应答逐字一致 + 未登记实例同报错。
-func TestFacadeFileListInlineEqualsMQPath(t *testing.T) {
-	bus, _, _ := newTestPersist(t)
-	regInstance(t, bus)
-	api := inline.New(bus)
-
-	// ① 门面 put（两条）→ MQ list 读到；两路径 list 逐字一致
-	for _, e := range []facade.FileListEntry{
-		{Key: "k1", Path: "C:/ws/a.txt", Size: 12, MTime: "2026-09-12T10:00:00Z",
-			MD5: "md5-a", DocIDs: []string{"1", "2"}, Chunks: 2, IndexedAt: "2026-09-12T10:00:01Z"},
-		{Key: "k2", Path: "C:/ws/sub/b.go", Size: 34, MTime: "2026-09-12T11:00:00Z",
-			MD5: "md5-b", DocIDs: []string{"3"}, Chunks: 1, IndexedAt: "2026-09-12T11:00:01Z"},
-	} {
-		if _, err := api.FileListPut(facade.FileListPutRequest{
-			InstanceID: facadeInstance, Entry: e,
-		}); err != nil {
-			t.Fatalf("facade FileListPut(%s): %v", e.Key, err)
-		}
-	}
-	lr, err := api.FileListList(facade.FileListListRequest{InstanceID: facadeInstance})
-	if err != nil || len(lr.List) != 2 || lr.Total != 2 {
-		t.Fatalf("facade FileListList=%+v err=%v", lr, err)
-	}
-	eqWire(t, wire.FileListListResult(lr),
-		mqResult(t, bus, "data-filelist-list", map[string]any{}), "list")
-	// 前缀过滤 + 分页两路径一致
-	pr, err := api.FileListList(facade.FileListListRequest{InstanceID: facadeInstance, Prefix: "C:/ws/sub/"})
-	if err != nil || len(pr.List) != 1 || pr.Total != 1 {
-		t.Fatalf("facade 前缀过滤 list=%+v err=%v", pr, err)
-	}
-	eqWire(t, wire.FileListListResult(pr),
-		mqResult(t, bus, "data-filelist-list", map[string]any{"data": map[string]any{"prefix": "C:/ws/sub/"}}),
-		"前缀过滤 list")
-	pg, err := api.FileListList(facade.FileListListRequest{InstanceID: facadeInstance, Offset: 1, Limit: 1})
-	if err != nil || len(pg.List) != 1 || pg.List[0].Key != "k2" || pg.Total != 2 {
-		t.Fatalf("facade 分页 list=%+v err=%v", pg, err)
-	}
-	eqWire(t, wire.FileListListResult(pg),
-		mqResult(t, bus, "data-filelist-list", map[string]any{"data": map[string]any{"offset": 1, "limit": 1}}),
-		"分页 list")
-
-	// ② MQ put（同 key 覆盖）→ 门面 list 读到新 md5；put 应答 {ok,id} 形状不变
-	if got := mqResult(t, bus, "data-filelist-put", map[string]any{"data": map[string]any{
-		"key": "k1", "path": "C:/ws/a.txt", "size": 20, "mtime": "2026-09-12T12:00:00Z",
-		"md5": "md5-a2", "doc_ids": []any{"7"}, "chunks": 1, "indexed_at": "2026-09-12T12:00:01Z",
-	}}); got["ok"] != true || got["id"] != "k1" {
-		t.Fatalf("MQ put 应答形状变化：%+v", got)
-	}
-	after, err := api.FileListList(facade.FileListListRequest{InstanceID: facadeInstance, Prefix: "C:/ws/a"})
-	if err != nil || len(after.List) != 1 || after.List[0].MD5 != "md5-a2" {
-		t.Fatalf("门面未读到 MQ 覆盖：%+v err=%v", after, err)
-	}
-
-	// ③ 门面 del（含不存在的键 → 不计入）→ MQ list 读空；MQ del 应答形状 {ok,deleted}
-	dr, err := api.FileListDelete(facade.FileListDeleteRequest{
-		InstanceID: facadeInstance, Keys: []string{"k1", "k2", "k-ghost"},
-	})
-	if err != nil || dr.Deleted != 2 {
-		t.Fatalf("facade FileListDelete=%+v err=%v", dr, err)
-	}
-	if got := mqResult(t, bus, "data-filelist-list", map[string]any{}); len(dataList(got)) != 0 {
-		t.Fatalf("门面删除后 MQ 仍读到：%+v", got)
-	}
-	if got := mqResult(t, bus, "data-filelist-del", map[string]any{
-		"data": map[string]any{"keys": []any{"k-ghost"}},
-	}); got["ok"] != true || got["deleted"].(float64) != 0 {
-		t.Fatalf("MQ del 应答形状变化：%+v", got)
-	}
-
-	// ④ 未登记实例：两路径同报错（不静默）
-	if _, err := api.FileListList(facade.FileListListRequest{InstanceID: "ins-ghost"}); err == nil {
-		t.Fatal("未登记实例应报错")
-	}
-	if ok, _ := dataCall(t, bus, "data-filelist-list", map[string]any{"instance_id": "ins-ghost"})["ok"].(bool); ok {
-		t.Fatal("MQ 未登记实例应失败")
-	}
-}
-
 // ── scenario ─────────────────────────────────────────────────────
 
 // TestFacadeScenarioInlineEqualsMQPath：场景域两路径等价（list（命中 app 级出厂默认）/ load / save /
@@ -679,19 +597,6 @@ func TestFacadeDomainsFourZeroBusRequests(t *testing.T) {
 	}
 	if _, err := api.KnowledgeRmdir(facade.KnowledgeRmdirRequest{
 		InstanceID: facadeInstance, Path: filepath.ToSlash(filepath.Join(appRoot, "zd2")),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// filelist
-	if _, err := api.FileListPut(facade.FileListPutRequest{InstanceID: facadeInstance,
-		Entry: facade.FileListEntry{Key: "kz", Path: "C:/ws/z.txt"}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := api.FileListList(facade.FileListListRequest{InstanceID: facadeInstance}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := api.FileListDelete(facade.FileListDeleteRequest{
-		InstanceID: facadeInstance, Keys: []string{"kz"},
 	}); err != nil {
 		t.Fatal(err)
 	}

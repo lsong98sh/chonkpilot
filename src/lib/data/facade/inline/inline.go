@@ -37,7 +37,6 @@ type binding struct {
 	facade.InboxAPI
 	facade.TasktreeAPI
 	facade.KnowledgeAPI
-	facade.FileListAPI
 	facade.ScenarioAPI
 	facade.MemoryAPI
 	facade.McpAPI
@@ -73,7 +72,6 @@ func NewWithOptions(bus mq.Bus, opts persist.Options) facade.API {
 		InboxAPI:      svc,
 		TasktreeAPI:   svc,
 		KnowledgeAPI:  svc,
-		FileListAPI:   svc,
 		ScenarioAPI:   svc,
 		MemoryAPI:     svc,
 		McpAPI:        svc,

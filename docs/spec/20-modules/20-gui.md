@@ -466,16 +466,9 @@
 - **异常兜底**：状态 JSON 解析失败/缺键 → 视为「未启用 / 未初始化」，静默（不抛错、不 `console.error`）。
 - **关联测试**：前端守卫 `test/statusbarIndexStatus.test.js`（映射全状态 + 4 键 + 既有广播 + 徽标 = 图标+文本/无 Tooltip + 原生 title + **点击走 open-view 详情** + 零新增主题 + i18n 齐备）· `test/statusTasks.test.js`（长任务条目状态映射 / 点击 open-view / 详情页注册与「去设置」/ 去 toast / 详情字段）· `test/layoutAdapter.test.js`（注册表新增 `memory-status` / `compress-status` / `status-*`）；L4 `test_statusbar.py::SB6/SB7/SB8`（真机：索引中 N-total / 完成 / 失败 → 点击开**索引详情**（错误 + 进度 + 去设置 → CodeGraph/Vfts 页签）；记忆/压缩条目（未启用/空闲基线 → 进行中 → 点击开详情 → 失败错误文本 → 失败优先于 done → 完成）；截图存 `E:\TEMP\ck-l4-visual\stb\`）。
 
-### 12.11 文件树：被索引排除条目灰显
+### 12.11 文件树：被索引排除条目灰显（**2026-10-25 功能下线**）
 
-> 用户口径：「如果设置了 gitignored，目录树显示时，判断是否是排除项目。如果是，则文本颜色变成灰色。」方案 = **后端判定**（只读面 `data-index-ignored`）、位置 = 文件树（目录树）。功能点见 [32 §FT-016](../30-function-points/32-文件树与文件操作.md)。
-
-- **判据来源** = 只读数据面 `data-index-ignored`（[61 §3.6](../60-reference/61-消息一览.md)）：入参 = 当前**已加载节点**的 **workdir 相对路径**（`/` 分隔，一次批量、去重）；应答 = `{codegraph:{enabled,ignored}, vfts:{enabled,ignored}, truncated?}`。判定口径与引擎实际索引范围一致（祖先目录剪枝 / `!` 同层反选 / 内置强制排除）。前端封装 = `src/frontend/src/utils/indexIgnored.js`（纯逻辑 `toWorkdirRelPath` / `ignoredSetFromResult` + 批量请求 `fetchIndexIgnored`；`emit` 可注入便于单测）。
-- **灰显规则**：仅统计 `enabled=true` 的引擎，两引擎 `ignored` 取**并集**（被任一已启用引擎排除即灰显）；引擎未启用 → 其 `ignored` 恒空 → **不灰**。
-- **样式 token**：命中节点在 `TreeNode.vue` 的 `.tree-row` 上加语义类 **`is-ignored`**，**仅文本颜色** = `var(--fg-disabled)`（`--fg-disabled` 定义见 §12.8）。**只改颜色**——点击 / 双击 / 右键 / 拖拽等交互与布局均不变；另加原生 `title`（i18n `fileTree.index_ignored`：zh「已排除：不会参与索引」/ en「Excluded: not indexed」）。
-- **判定时机**：树数据到手 / 每层目录加载（`loadDirChildren`）/ `filesys.changed` 合并后（新增节点补判）。**刷新** = 既有广播 `onDataRefresh('prj-config', …)`（排除规则 / 引擎开关变化）→ 清缓存**重判已加载节点**（已灰的可恢复不灰）。**禁 `watch` / `watchEffect`**。
-- **请求克制与降级**：同一批路径只请求一次（单飞 + 已判定缓存）；`truncated=true` 时未判定节点不灰显、不缓存、不报错；请求失败 / 主题不可用 / 应答异常 → **静默降级为不灰显**。**零新增 MQ 主题**（只新增 `data-index-ignored` 一个只读面，见 [61 §3.6](../60-reference/61-消息一览.md)）。
-- **关联测试**：前端守卫 `test/fileTreeIndexIgnored.test.js`（纯逻辑 + 请求/降级/topic/去重 + FileTree 判定时机/刷新/禁 watch + TreeNode `is-ignored`/`--fg-disabled`/title/交互保留 + 零新增主题 + i18n）；L4 `run_filetree_ignored.py`（真机：`.gitignore` 命中条目灰显（含子项祖先剪枝）+ 反选/无命中不灰 + 引擎未启用全不灰对照组）。
+> ~~用户口径：「如果设置了 gitignored，目录树显示时，判断是否是排除项目。如果是，则文本颜色变成灰色。」方案 = 后端判定（只读面 `data-index-ignored`）~~ —— **该功能已移除**（用户 2026-10-25 决定）：`data-index-ignored` 主题、`internal/indexignored`、`utils/indexIgnored.js`、`TreeNode.is-ignored` 样式与 i18n 键、前端守卫测试与 L4 `run_filetree_ignored.py` 一并删除。**文件树不再灰显被排除条目**；排除口径仍由 `src/lib/ignore` 单一实现供 codegraph / vfts 引擎与插件清单扫描使用（见 [2F-ignore](2F-ignore.md)）。功能点 FT-016 同步标记下线（[32 §FT-016](../30-function-points/32-文件树与文件操作.md)）。
 
 ### 12.12 项目配置「文件历史」页签（`views/settings/HistoryConfig.vue`）
 

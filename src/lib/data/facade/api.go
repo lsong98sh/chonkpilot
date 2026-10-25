@@ -17,8 +17,8 @@ package facade
 // API 是 data 门面（= 各域面的组合；域面见下方子接口）。
 //
 // 覆盖域（阶段 4）：snapshot（试点，41 G-32）· config（第二批）· session / turn / message
-// （第三批：会话 CRUD/活动态 + 轮次 + 消息）· tasktree / knowledge / filelist / scenario /
-// memory（第四批，本批：任务树 + 知识库文件树 + 全文索引清单 + 场景 + 记忆库）· mcp（第五批：
+// （第三批：会话 CRUD/活动态 + 轮次 + 消息）· tasktree / knowledge / scenario /
+// memory（第四批：任务树 + 知识库文件树 + 场景 + 记忆库）· mcp（第五批：
 // MCP server 三级/四级文件化配置）。
 // **至此 data 面各域均有域面**（`data-<domain>-*` 全量动作）。
 type API interface {
@@ -32,7 +32,6 @@ type API interface {
 	InboxAPI
 	TasktreeAPI
 	KnowledgeAPI
-	FileListAPI
 	ScenarioAPI
 	MemoryAPI
 	McpAPI
@@ -120,21 +119,6 @@ type KnowledgeAPI interface {
 	// （①空内容 ②命中原语后缀且可解析契约 ③.md/.txt 文本转 resource 契约 ④其余原样）、
 	// 逐文件尽力而为（部分失败不中止）；写前越界复验同其余写入口（A-32）。
 	KnowledgeImport(req KnowledgeImportRequest) (KnowledgeImportResponse, error)
-}
-
-// FileListAPI 是 filelist 域（全文索引的文件清单：增量清单读写）门面面。
-//
-// 本域无订阅面（清单消费者只有索引插件自身，不广播 -refresh）。
-type FileListAPI interface {
-	// FileListList 读清单（可选按路径前缀过滤 + 分页）。
-	FileListList(req FileListListRequest) (FileListListResponse, error)
-
-	// FileListPut 清单写入：Entries 非空 = 批量 upsert（逐条按 Key）；否则单条 upsert
-	// （按 Key；Key 空 = 实现侧按路径推导）。
-	FileListPut(req FileListPutRequest) (FileListPutResponse, error)
-
-	// FileListDelete 按 Key 批量删除（返回实际删除条数）。
-	FileListDelete(req FileListDeleteRequest) (FileListDeleteResponse, error)
 }
 
 // ScenarioAPI 是 scenario 域（场景：列举 / 定位 / 保存 / 删除）门面面。

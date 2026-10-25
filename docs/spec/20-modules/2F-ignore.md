@@ -125,15 +125,15 @@ Rule.match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 - **上游依赖**：仅标准库。
 - **下游消费者**：
   - `src/plugins/codegraph/server`（索引遍历排除）· `src/plugins/plugin-codegraph`（`skip-dirs` / `stack-gitignore` 解析）；
-  - `src/plugins/vfts/server`（索引遍历排除）· `src/plugins/plugin-vfts`（`vfts.go` / `manifest.go` 清单扫描）；
-  - `src/lib/data/internal/indexignored`（数据面判定，服务 `data-index-ignored` 主题 §3.6 —— 前端文件树灰显被排除条目）。
-- **边界**：**排除判定单一实现** —— 引擎 `WalkDir` 与插件 `file_list` 清单、数据面 `Ignored` 三处共用同一 `ruleSet`，故 `Ignored(p) ⇔ WalkDir 会跳过 p`（与 git 的已知差异见 §1）。
+  - `src/plugins/vfts/server`（索引遍历排除）· `src/plugins/plugin-vfts`（`vfts.go` / `manifest.go` 清单扫描）。
+  - ~~`src/lib/data/internal/indexignored`~~（2026-10-25 随 `data-index-ignored` 主题下线删除）。
+- **边界**：**排除判定单一实现** —— 引擎 `WalkDir` 与插件 `file_list.json` 清单两处共用同一 `ruleSet`，故 `Ignored(p) ⇔ WalkDir 会跳过 p`（与 git 的已知差异见 §1）。
 
 ---
 
 ## 7. 现状与待办
 
-- ✅ 已实施：gitignore 语义匹配单一实现；`ConfigOptions` / `Options.Ignored` 服务 `data-index-ignored`（§3.6）。
+- ✅ 已实施：gitignore 语义匹配单一实现；`ConfigOptions` / `Options.Ignored` 供引擎遍历与插件清单扫描（~~数据面 `data-index-ignored`~~ 已于 2026-10-25 下线）。
 - 已知与 git 的差异（刻意，见 §1）：不查 git 索引；不解析 `core.excludesFile`；不要求 workdir 是 git 仓库。
 - 遗留 / 规划：无。
 
@@ -146,4 +146,4 @@ Rule.match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 - 解析与匹配：`TestParseSkipsCommentsAndBlanks` · `TestParseEscapes` · `TestGlobStarNotCrossSlash` · `TestDoubleStarPositions` · `TestCharClass` · `TestDirOnly` · `TestAnchoredVsNonAnchored` · `TestOrderedLastMatchWins` · `TestBuiltinForcedNotNegatable`。
 - 遍历：`TestWalkDirStackGitignore` · `TestWalkDirNoStack` · `TestWalkDirParentIgnoredChildNegationUseless` · `TestWalkDirGitInfoExcludeAndGlobal` · `TestWalkDirUserRulesHighestPriority` · `TestWalkDirUserRuleFileLevel`。
 - 配置与单路径判定：`TestConfigOptions` · `TestIgnoredStackGitignore` · `TestIgnoredNoStackReadsNoIgnoreFiles` · `TestIgnoredUserRulesAndBuiltinForced` · `TestIgnoredMatchesWalkDir`（`Ignored` ⇔ `WalkDir`）。
-- **间接**：`src/lib/data/internal/indexignored` 的服务经 L2 `persist_index_ignored_test.go`；引擎侧经 `codegraph/server` / `vfts/server` 白盒与 L4 `run_index_gate` / `run_project_cfg`。
+- **间接**：引擎侧经 `codegraph/server` / `vfts/server` 白盒与 L4 `run_index_gate` / `run_project_cfg`；vfts 插件清单扫描经 `run_docs_gate`（`persist_index_ignored_test.go` 已于 2026-10-25 随 `data-index-ignored` 删除）。

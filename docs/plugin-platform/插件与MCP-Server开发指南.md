@@ -252,7 +252,7 @@ plugin.ready    {}                                 → {ok}        # 可选：�
 | 会话 | `session.start/send/cancel/list/get/history/content/snapshot/rename/delete/active` · 写：`session.snapshot.set` / `session.summary.set` / `session.messages` / `session.context` |
 | 插话 | `session.inbox.add/list/discard/promote` |
 | 任务 | `task.tree/tasks/stop/background/verify` · `tool.retry` · `ask.reply` |
-| 配置 | `config.user.get/load` · `config.project.get/load/set/delete` · `config.filelist.list` · `config.memory.list` · `config.mcp.list` · `config.scenario.list` · `config.prompt.get/load/set` |
+| 配置 | `config.user.get/load` · `config.project.get/load/set/delete` · ~~`config.filelist.list`~~（2026-10-25 退场：清单改插件自持本地文件） · `config.memory.list` · `config.mcp.list` · `config.scenario.list` · `config.prompt.get/load/set` |
 | 知识 | `knowledge.list/read` |
 | 文件 | `file.list/read/write/mkdir/remove/rename/copy`（限 workdir） |
 | 工具 | `tools.list/call/wait/timeout/register/unregister` · `tool.notify` |
@@ -379,7 +379,7 @@ p.MCPHot("codegraph_symbol_search", "vfts_query")
 | `config` | `prj.get` / `prj.set` / `prj.delete` | 读/写 | 项目配置 |
 | `config` | `usr.get` | 读 | 密钥字段恒掩码 |
 | `prompt` | `get` / `set` | 读/写 | `summary_prompt` 等 |
-| `filelist` | `list` / `put` / `del` | 读/写 | 索引文件清单 |
+| ~~`filelist`~~ | ~~`list` / `put` / `del`~~ | — | **2026-10-25 退场**：索引清单改插件自持本地文件 `<workdir>/.chonkpilot/vfts/file_list.json`（不再经能力面） |
 | `memory` | `list` / `read` / `write` | 读/写 | 记忆 |
 | `knowledge` | `list` / `read` | 读 | 只读 |
 | `filesys` | `list` / `read` / `write` / `mkdir` / `remove` / `rename` / `copy` | 读/写 | 限 workdir |

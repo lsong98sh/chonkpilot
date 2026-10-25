@@ -1,14 +1,17 @@
-// manifest.go：vfts 增量的清单编排——扫描候选文件 → 读 file_list → diff 判定 →
-// 调引擎按文件增量 → 回写 file_list 与状态。
+// manifest.go：vfts 增量的清单编排——扫描候选文件 → 读清单 → diff 判定 →
+// 调引擎按文件增量 → 回写清单与状态。
 //
-// 分层：清单（file_list，项目级 prj 库）由本插件经 persist 读写；引擎只接收
-// 「要索引 / 要删除的文件清单」。增量判定（用户拍板）：
+// 分层（D-71：索引状态归插件自持）：清单是**插件本地文件**
+// `<workdir>/.chonkpilot/vfts/file_list.json`（与引擎 meta.json / 文档转换缓存同目录，
+// 该目录已强制不入索引/git）；引擎只接收「要索引 / 要删除的文件清单」。增量判定（用户拍板）：
 //
-//	① 新文件（表里无 key）        → 待索引
+//	① 新文件（清单无 key）        → 待索引
 //	② size+mtime 未变             → 跳过（不算 md5，省 IO）
-//	③ 变化 → 算 md5：与表一致     → 仅更新 mtime（不重建索引）
-//	                  与表不一致   → 待索引（先按旧 doc_ids 删块）
-//	④ 表里有、本次扫描没有         → 待删除（按 doc_ids 删块）
+//	③ 变化 → 算 md5：与清单一致   → 仅更新 mtime（不重建索引）
+//	                  与清单不一致 → 待索引（先按旧 doc_ids 删块）
+//	④ 清单有、本次扫描没有         → 待删除（按 doc_ids 删块）
+//
+// 清单是**派生缓存**：文件缺失/损坏 → 空清单 → 一次全量重建，无数据损失（原子写：temp + rename）。
 package vfts
 
 import (
@@ -27,15 +30,6 @@ import (
 	"time"
 
 	ignore "github.com/chonkpilot/chonkpilot-ignore"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/dataclient"
-)
-
-// data 面（文件清单，persist 订阅；域 filelist）。
-const (
-	subjectFileListList = msgkeys.TopicDataFilelistList
-	subjectFileListPut  = msgkeys.TopicDataFilelistPut
-	subjectFileListDel  = msgkeys.TopicDataFilelistDel
 )
 
 // maxFileBytes 单文件上限（与引擎 maxFileBytes / codegraph 同口径）。
@@ -281,70 +275,55 @@ func scanFiles(workDir string, exts, rules []string, stackGitignore bool, doc do
 	return out, err
 }
 
-// ─── persist 面（file_list 读写）─────────────────────────
+// ─── 清单（插件自持：<workdir>/.chonkpilot/vfts/file_list.json）──────────
 
-// fileListAll 读该实例的 file_list 全量（按 key 索引）。
-func (p *Vfts) fileListAll(inst string) (map[string]fileRec, error) {
-	res, err := dataclient.Emit(p.deps.Bus, subjectFileListList, map[string]any{"instance_id": inst})
-	if err != nil {
-		return nil, err
-	}
-	raw, _ := res["list"].([]any)
-	out := make(map[string]fileRec, len(raw))
-	for _, x := range raw {
-		b, _ := json.Marshal(x)
-		var rec fileRec
-		if json.Unmarshal(b, &rec) == nil && rec.Key != "" {
-			out[rec.Key] = rec
-		}
-	}
-	return out, nil
+// manifestRel 清单文件相对 workdir 的路径（与引擎 meta.json、doc_text 缓存同目录）。
+const manifestRel = ".chonkpilot/vfts/file_list.json"
+
+// manifestPath 清单文件绝对路径。
+func manifestPath(workDir string) string {
+	return filepath.Join(workDir, filepath.FromSlash(manifestRel))
 }
 
-// fileListPut 单条 upsert（按 key）。
-func (p *Vfts) fileListPut(inst string, rec fileRec) error {
-	b, _ := json.Marshal(rec)
-	data := map[string]any{}
-	if err := json.Unmarshal(b, &data); err != nil {
+// loadManifest 读清单（按 key 索引）；文件缺失 / 解析失败 → 空清单（不报错，走一次全量重建）。
+func loadManifest(workDir string) map[string]fileRec {
+	b, err := os.ReadFile(manifestPath(workDir))
+	if err != nil {
+		return map[string]fileRec{}
+	}
+	var rows []fileRec
+	if json.Unmarshal(b, &rows) != nil {
+		return map[string]fileRec{}
+	}
+	out := make(map[string]fileRec, len(rows))
+	for _, r := range rows {
+		if r.Key != "" {
+			out[r.Key] = r
+		}
+	}
+	return out
+}
+
+// saveManifest 原子写清单（稳定序便于比对；先写同一目录的临时文件再 rename）。
+func saveManifest(workDir string, recs map[string]fileRec) error {
+	rows := make([]fileRec, 0, len(recs))
+	for _, r := range recs {
+		rows = append(rows, r)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Key < rows[j].Key })
+	b, err := json.Marshal(rows)
+	if err != nil {
 		return err
 	}
-	_, err := dataclient.Emit(p.deps.Bus, subjectFileListPut, map[string]any{"instance_id": inst, "data": data})
-	return err
-}
-
-// fileListDel 按 key 批量删除。
-func (p *Vfts) fileListDel(inst string, keys []string) error {
-	if len(keys) == 0 {
-		return nil
+	path := manifestPath(workDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	arr := make([]any, 0, len(keys))
-	for _, k := range keys {
-		arr = append(arr, k)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
 	}
-	_, err := dataclient.Emit(p.deps.Bus, subjectFileListDel, map[string]any{
-		"instance_id": inst, "data": map[string]any{"keys": arr},
-	})
-	return err
-}
-
-// fileListPutBatch 批量 upsert（一次总线往返，对齐 fileListDel 的批量形态）；空集合 → 零动作。
-func (p *Vfts) fileListPutBatch(inst string, recs []fileRec) error {
-	if len(recs) == 0 {
-		return nil
-	}
-	entries := make([]any, 0, len(recs))
-	for _, rec := range recs {
-		b, _ := json.Marshal(rec)
-		var data map[string]any
-		if json.Unmarshal(b, &data) != nil {
-			continue
-		}
-		entries = append(entries, data)
-	}
-	_, err := dataclient.Emit(p.deps.Bus, subjectFileListPut, map[string]any{
-		"instance_id": inst, "data": map[string]any{"entries": entries},
-	})
-	return err
+	return os.Rename(tmp, path)
 }
 
 // ─── 编排 ────────────────────────────────────────────────
@@ -352,18 +331,11 @@ func (p *Vfts) fileListPutBatch(inst string, recs []fileRec) error {
 // incrementalSync 增量同步该 workdir：扫描 → 读清单 → diff → 引擎增量 → 回写清单。
 // doc = 文档类扫描上下文（开关/上限/解析器版本）；须持 r.cmu。
 func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []string, stackGitignore bool, doc docScanCtx) (*syncStats, error) {
-	inst := p.instanceForWorkdir(r.workDir)
-	if inst == "" {
-		return nil, errors.New("无活跃实例，无法读写 file_list")
-	}
 	scanned, err := scanFiles(r.workDir, exts, rules, stackGitignore, doc)
 	if err != nil {
 		return nil, err
 	}
-	prior, err := p.fileListAll(inst)
-	if err != nil {
-		return nil, err
-	}
+	prior := loadManifest(r.workDir)
 	diff := diffManifest(scanned, prior, md5File, doc)
 
 	st := &syncStats{Skipped: diff.skipped + len(diff.toTouch), Removed: len(diff.toRemove)}
@@ -414,7 +386,7 @@ func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []st
 		}
 	}
 
-	// 回写清单：索引结果 → put；仅 mtime 变 → put；待删除 → del。批量一次总线往返。
+	// 回写清单（本地，一次原子写）：索引结果 → 更新；仅 mtime 变 → 更新；待删除 → 移除。
 	now := time.Now().UTC().Format(time.RFC3339)
 	touched := make([]fileRec, 0, len(diff.toIndex)+len(diff.toTouch))
 	for _, t := range diff.toIndex {
@@ -433,44 +405,36 @@ func (p *Vfts) incrementalSync(r *workRec, ctx context.Context, exts, rules []st
 		})
 	}
 	touched = append(touched, diff.toTouch...)
-	if err := p.fileListPutBatch(inst, touched); err != nil {
-		return nil, err
+	if len(touched) == 0 && len(diff.toRemove) == 0 {
+		return st, nil
 	}
-	delKeys := make([]string, 0, len(diff.toRemove))
+	for _, rec := range touched {
+		prior[rec.Key] = rec
+	}
 	for _, rec := range diff.toRemove {
-		delKeys = append(delKeys, rec.Key)
+		delete(prior, rec.Key)
 	}
-	if err := p.fileListDel(inst, delKeys); err != nil {
+	if err := saveManifest(r.workDir, prior); err != nil {
 		return nil, err
 	}
 	return st, nil
 }
 
 // rebuildManifest 全量重建后重建清单：引擎应答的 indexed 已含 doc_ids；
-// 本插件补 size/mtime/md5，并清掉本次未覆盖的旧行。须持 r.cmu。
+// 本插件补 size/mtime/md5，并清掉本次未覆盖的旧行（整表重写，= 保留集以引擎实际 Indexed 为准）。
 func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []string, stackGitignore bool, doc docScanCtx) error {
-	inst := p.instanceForWorkdir(r.workDir)
-	if inst == "" {
-		return errors.New("无活跃实例，无法读写 file_list")
-	}
 	scanned, err := scanFiles(r.workDir, exts, rules, stackGitignore, doc)
 	if err != nil {
 		return err
 	}
-	prior, err := p.fileListAll(inst)
-	if err != nil {
-		return err
-	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	keep := map[string]bool{}
-	recs := make([]fileRec, 0, len(res.Indexed))
+	recs := make(map[string]fileRec, len(res.Indexed))
 	for _, f := range res.Indexed {
 		abs := absOf(r.workDir, f.Path)
 		if abs == "" {
 			continue
 		}
 		key := keyOf(abs)
-		keep[key] = true
 		e, ok := scanned[key]
 		if !ok { // 引擎扫到但插件扫描过滤掉（极端口径差）：仍按磁盘 stat 记录
 			info, serr := os.Stat(filepath.FromSlash(abs))
@@ -483,22 +447,12 @@ func (p *Vfts) rebuildManifest(r *workRec, res engineIndexResult, exts, rules []
 		if isDocPath(e.path) {
 			m = tagMD5(m, doc.parserVersion)
 		}
-		recs = append(recs, fileRec{
+		recs[key] = fileRec{
 			Key: key, Path: e.path, Size: e.size, MTime: mtimeStr(e.mtime),
 			MD5: m, DocIDs: f.DocIDs, Chunks: f.Chunks, IndexedAt: now,
-		})
-	}
-	if err := p.fileListPutBatch(inst, recs); err != nil {
-		return err
-	}
-	var stale []string
-	for key := range prior {
-		if !keep[key] {
-			stale = append(stale, key)
 		}
 	}
-	sort.Strings(stale)
-	return p.fileListDel(inst, stale)
+	return saveManifest(r.workDir, recs)
 }
 
 // mergeSyncStatus 把增量计数并入引擎状态 JSON 并回写 vfts.status（保留 state 等原字段）。

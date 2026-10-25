@@ -3,8 +3,9 @@
 
 覆盖（每条 = A 数据面回读 + B 可观测效果；B 恒以可观测证据收口）
   D1 开 `vfts.docs` + 真转换器在跑 → `vfts.status`（`docsEnabled`/`docsService=running`/`docsPort`）
-     + `data-filelist-list` 含文档类；**检索命中正文**（`self_vfts_query` 经既有 `chonk.mcp-tools-call`）。
-  D2 `data-filelist-list` 文件集合与「非文档 exts ∪ 文档类」**字面全等**（一个不多一个不少）。
+     + 插件清单（`<workdir>/.chonkpilot/vfts/file_list.json`）含文档类；**检索命中正文**（`self_vfts_query`
+     经既有 `chonk.mcp-tools-call`）。
+  D2 插件清单文件集合与「非文档 exts ∪ 文档类」**字面全等**（一个不多一个不少）。
   D3 **二次（强制）重建走缓存**：缓存文件集合与 mtime 不变（未重转）→ 证明命中缓存不调 HTTP。
   D4 **停掉转换服务**后强制重建 → 文档类被跳过（清单不再含文档类、`vfts.status.docsService=absent`、
      正文检索不再命中）；**不报错、不中断整库索引**。
@@ -320,10 +321,16 @@ def vstatus():
 
 
 def filelist_rels():
-    r = c.req("data-filelist-list", {}) or {}
+    """vfts 增量清单（插件自持文件 `<workdir>/.chonkpilot/vfts/file_list.json`）→ workdir 相对路径集。"""
+    path = os.path.join(WS, ".chonkpilot", "vfts", "file_list.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        return set()
     out = set()
-    for e in (r.get("list") or []):
-        p = str(e.get("path") or "")
+    for e in (rows or []):
+        p = str((e or {}).get("path") or "")
         if p == "":
             continue
         try:

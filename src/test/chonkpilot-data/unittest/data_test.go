@@ -21,7 +21,8 @@ func openLayer(t *testing.T, layer data.Layer) *data.DB {
 	return db
 }
 
-// TestMigrationBuckets v14：按层建桶（不再三层同构）——各层只建自己实际使用的桶。
+// TestMigrationBuckets v14/v15：按层建桶（不再三层同构）——各层只建自己实际使用的桶；
+// prj 层不再有 file_list（v15 退场，vfts 清单插件自持）。
 func TestMigrationBuckets(t *testing.T) {
 	cases := []struct {
 		layer   data.Layer
@@ -29,7 +30,7 @@ func TestMigrationBuckets(t *testing.T) {
 		missing []string
 	}{
 		{data.LayerUsr, []string{"config", "llms"}, []string{"sessions", "file_list", "inbox_items"}},
-		{data.LayerPrj, []string{"config", "file_list"}, []string{"llms", "sessions", "inbox_items"}},
+		{data.LayerPrj, []string{"config"}, []string{"llms", "sessions", "inbox_items", "file_list"}},
 		{data.LayerPrjUsr, []string{"config", "sessions", "tasktree", "inbox_items", "dialogs"}, []string{"file_list"}},
 	}
 	for _, c := range cases {

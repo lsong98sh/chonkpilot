@@ -40,7 +40,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/config"
-	"github.com/chonkpilot/chonkpilot-data/internal/filelist"
 	"github.com/chonkpilot/chonkpilot-data/internal/indexqueue"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/knowledge"
@@ -109,11 +108,6 @@ var dataReqSubjects = []string{
 	// 记忆提取进度专用表（OP-05/06，2026-10-06）：(会话, 类别) → 最后已成功提取的 turn（prjusr 表 memory_extract）：
 	// 不广播 -refresh（进度只由 memory 插件读写）。
 	msgkeys.TopicDataMemoryExtractLoad, msgkeys.TopicDataMemoryExtractSave, msgkeys.TopicDataMemoryExtractDelete,
-	// 文件清单域（vfts 增量清单；项目级 prj 库 file_list 表；不广播 -refresh）
-	msgkeys.TopicDataFilelistList, msgkeys.TopicDataFilelistPut, msgkeys.TopicDataFilelistDel,
-	// 索引排除判定域（2026-09-27 新增只读面）：判定一组 workdir 相对路径是否被索引排除规则排除
-	// （供前端文件树灰显被排除条目；不写库、不广播 -refresh）。
-	msgkeys.TopicDataIndexIgnored,
 }
 
 // Options 是 persist 服务构造参数（= internal/kernel.Options 的转发别名；字段含义见 kernel）。
@@ -141,7 +135,6 @@ type Service struct {
 	facade.InboxAPI
 	facade.TasktreeAPI
 	facade.KnowledgeAPI
-	facade.FileListAPI
 	facade.ScenarioAPI
 	facade.MemoryAPI
 	facade.McpAPI
@@ -187,7 +180,6 @@ func New(bus mq.Bus, opts Options) *Service {
 		InboxAPI:     ses,
 		TasktreeAPI:  tasktree.New(base),
 		KnowledgeAPI: knowledge.New(base),
-		FileListAPI:  filelist.New(base),
 		ScenarioAPI:  scenario.New(base),
 		MemoryAPI:    memory.New(base),
 		McpAPI:       mcp.New(base),
@@ -373,10 +365,10 @@ func (s *Service) lookupInstance(instanceID string) (kernel.Info, bool) {
 
 // ─── 路由与分发 ──────────────────────────────────
 
-// dataDomains 是 data-<domain> 消息面支持的域（61-消息一览 §3.1-§3.6）：配置五域 +
-// 会话/任务树/知识库/记忆库四域（B 类随迁补齐）；snapshot = A3 运行时扩展（会话快照 get/set）；
-// index = 2026-09-27 新增只读域（索引排除判定，index-ignored）；file-versions 归属 history.db 外部，不在本面。
-var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "mcp", "prompt", "session", "inbox", "turn-event", "ask", "snapshot", "knowledge", "tasktree", "memory", "filelist", "index"}
+// dataDomains 是 data-<domain> 消息面支持的域（61-消息一览 §3.1-§3.5）：配置五域 +
+// 会话/任务树/知识库/记忆库四域（B 类随迁补齐）；snapshot = A3 运行时扩展（会话快照 get/set）。
+// file-versions 归属 history.db 外部，不在本面。
+var dataDomains = []string{"user-config", "prj-config", "prj-security", "scenario", "mcp", "prompt", "session", "inbox", "turn-event", "ask", "snapshot", "knowledge", "tasktree", "memory"}
 
 // dataReq 是 data-<domain>-* 请求的通用载荷（§3.1）。ID 宽松接收 string / number。
 type dataReq struct {
@@ -458,10 +450,6 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 		s.handleTasktree(op, payload)
 	case "memory":
 		s.handleMemory(op, payload)
-	case "filelist":
-		s.handleFileList(op, payload)
-	case "index":
-		s.handleIndex(op, payload)
 	}
 }
 

@@ -6,14 +6,13 @@
 // event 键 ⊆ 契约声明**（多出的键 = 红）。
 //
 // 覆盖：
-//   - §3.1 配置域（user-config / prj-config / prompt / prj-security / scenario / mcp / memory / filelist）
+//   - §3.1 配置域（user-config / prj-config / prompt / prj-security / scenario / mcp / memory）
 //   - §3.2 会话域（list/get/history/content/latest/title/delete/active-set/active-get）
 //   - §3.2a 会话运行时原语（ensure-session/ensure-turn/append-message/set-summary/complete-turn/
 //     cleanup-stale/load-messages/context）
 //   - §3.2b 会话快照域（snapshot get/set）
 //   - §3.3 知识库域（root/list/read/save/create/delete/rename/mkdir/rmdir/rename-dir）
 //   - §3.4 任务树域（list/tasks/delete/upsert）
-//   - §3.6 索引排除判定域（index-ignored）
 //   - 下行广播：data-<domain>-refresh 家族 · config-refresh · data-user-config-changed ·
 //     data-session-title-changed · task-deleted · session-new
 //
@@ -320,31 +319,6 @@ func TestDataProducerKeysSubsetOfContract(t *testing.T) {
 		assertDataResult(t, c, bus, "data-memory-extract-delete", map[string]any{
 			"req_id": "r7", "instance_id": "ins-test",
 			"data": map[string]any{"session_id": "smoke-s"},
-		})
-	})
-
-	t.Run("filelist", func(t *testing.T) {
-		bus, _, _ := newTestPersist(t)
-		regInstance(t, bus)
-		assertDataResult(t, c, bus, "data-filelist-put", map[string]any{
-			"req_id": "r1", "instance_id": "ins-test",
-			"data": map[string]any{
-				"key": "flk1", "path": "/w/a.go", "size": 1, "mtime": "2026-01-01T00:00:00Z",
-				"md5": "x", "doc_ids": []any{}, "chunks": 0, "indexed_at": "2026-01-01T00:00:00Z",
-			},
-		})
-		assertDataResult(t, c, bus, "data-filelist-list", map[string]any{"req_id": "r2", "instance_id": "ins-test"})
-		assertDataResult(t, c, bus, "data-filelist-del", map[string]any{
-			"req_id": "r3", "instance_id": "ins-test", "data": map[string]any{"keys": []any{"flk1"}},
-		})
-	})
-
-	t.Run("index", func(t *testing.T) {
-		bus, _, _ := newTestPersist(t)
-		regInstance(t, bus)
-		assertDataResult(t, c, bus, "data-index-ignored", map[string]any{
-			"req_id": "r1", "instance_id": "ins-test",
-			"data": map[string]any{"paths": []any{"a.go", "node_modules/x.js"}},
 		})
 	})
 }

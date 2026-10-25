@@ -27,8 +27,8 @@
   G8 用户规则（输入框「排除的目录和文件」）**最高优先级** + 文件级排除 + `!` 反选：
                          `codegraph.skip-dirs` 原样透传（不折名、保留 `!`/glob/顺序）；
                          对照「叠加 gitignore」+ 用户规则 `!gate_ign/sub/` 压过 .gitignore 目录排除。
-  G9 vfts 侧同语义：`vfts.stack-gitignore` + exts/排除规则 → **既有清单面
-                         `data-filelist-list`（61 §3.1 file_list 表）**的文件集合（**夹具 + 配置推导的
+  G9 vfts 侧同语义：`vfts.stack-gitignore` + exts/排除规则 → **插件自持清单
+                         `<workdir>/.chonkpilot/vfts/file_list.json`** 的文件集合（**夹具 + 配置推导的
                          显式期望集合字面全等**，同 G3/G4/G7/G8 体例）+ `vfts.status`
                          （vfts 引擎遍历与 codegraph 共用 `src/lib/ignore` 匹配器 → 行为一致）。
 
@@ -38,8 +38,8 @@
     codegraph 插件注册的工具名 = manifest `mcp.hot_tools` 原名（无前缀）。
   * 索引状态 = prj 键 `codegraph.status` / `vfts.status`（插件回写；prjusr 路由）→ `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
     （61 §3：persist 保存/删除后广播）捕获 → 不依赖轮询赛跑，不漏阶段。
-  * vfts 文件清单 = 既有 `data-filelist-list`（61 §3.1：项目级 prj 库 `file_list` 表读面，
-    每行含 `path` 绝对路径）→ 逐文件命中集合（与落盘 codegraph 索引同判据口径）。
+  * vfts 文件清单 = 插件自持文件 `<workdir>/.chonkpilot/vfts/file_list.json`（每行含 `path`
+    绝对路径）→ 逐文件命中集合（与落盘 codegraph 索引同判据口径）。
   * codegraph 落盘索引 = **bbolt 单文件库** `<ws>/.chonkpilot/codegraph/index.db`（引擎侧
     store.go；不再有 index.json）→ 经引擎只读自检 `-dump <ws>` 打印 JSON `{count,files}` 读回
     命中文件集合（不重建、不写盘）。
@@ -339,9 +339,14 @@ def wait_status(pred, desc, max_wait=120, key=STATUS_KEY):
 
 
 def filelist_paths():
-    """读 vfts 增量清单（既有 `data-filelist-list`，61 §3.1）→ 文件绝对路径列表（'/' 分隔）。"""
-    r = c.req("data-filelist-list", {}) or {}
-    return [str(e.get("path") or "") for e in (r.get("list") or [])]
+    """读 vfts 增量清单（插件自持文件 `<workdir>/.chonkpilot/vfts/file_list.json`）→ 文件绝对路径列表（'/' 分隔）。"""
+    path = os.path.join(WS, ".chonkpilot", "vfts", "file_list.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [str((e or {}).get("path") or "") for e in (rows or [])]
 
 
 def _ws_rel(p):
@@ -353,7 +358,7 @@ def _ws_rel(p):
 
 
 def _want_filelist(expected, desc, max_wait=120):
-    """断言 vfts 清单（既有 `data-filelist-list`，61 §3.1）文件集合与期望**字面全等**
+    """断言 vfts 清单（插件自持 `<workdir>/.chonkpilot/vfts/file_list.json`）文件集合与期望**字面全等**
     （一个不多一个不少）；差集打印在失败信息里（与 `_want_idx` 同体例）。
 
     清单由插件在引擎索引后**异步重建**（`plugin-vfts/manifest.go rebuildManifest`，晚于
@@ -991,19 +996,18 @@ def case_g8_user_rules_priority():
 def case_g9_vfts_gitignore_semantics():
     """vfts 侧同语义：引擎遍历 + 清单扫描共用 `src/lib/ignore` → 与 codegraph 行为一致。
 
-    证据选择（**清单面**，非计数退化）：vfts 的文件清单落 **项目级 prj 库 `file_list` 表**
-    （`src/lib/ignore` 消费方之一 = `plugin-vfts/manifest.go:182-213 scanFiles` 走 `ignore.WalkDir`），
-    经**既有** `data-filelist-list`（61 §3.1）逐文件读回 `path` —— 可逐文件断言「谁该在 / 谁不该在」，
-    比 `vfts.status.indexedFiles` 计数强。清单**不落盘为独立文件**（引擎落盘只有 `meta.json` 计数 +
-    zvec `collection/` 目录，无 `manifest.json`）→ 故读其唯一产品读面 `data-filelist-list`。
+    证据选择（**清单面**，非计数退化）：vfts 的文件清单是**插件自持文件**
+    `<workdir>/.chonkpilot/vfts/file_list.json`（`src/lib/ignore` 消费方之一 =
+    `plugin-vfts/manifest.go scanFiles` 走 `ignore.WalkDir`），逐文件读回 `path` ——
+    可逐文件断言「谁该在 / 谁不该在」，比 `vfts.status.indexedFiles` 计数强。
 
     链路同 G7：GUI Vfts 页写入 exts/排除规则/勾选 → `data-prj-config-refresh` → 插件
-    `ensureWorkspace`（`vfts.go:479-555`）→ 引擎 `vfts_index`（`server/index.go:91-118 collectFiles`
-    走 `ignore.WalkDir`）+ 插件 `rebuildManifest`（`manifest.go:360-406` 走同一 `ignore.WalkDir`）。
+    `ensureWorkspace`（`vfts.go`）→ 引擎 `vfts_index`（`server/index.go collectFiles`
+    走 `ignore.WalkDir`）+ 插件 `rebuildManifest`（`manifest.go` 走同一 `ignore.WalkDir`）。
 
     判据 A：`prj['vfts.exts']==".go"`、`prj['vfts.stack-gitignore']=="true"`、`prj['vfts.skip-dirs']` 空；
             `vfts.status.stackGitignore==True`。
-    判据 B：`data-filelist-list` 文件集合与**夹具 + 配置推导的显式期望集合**（上方 `_G9` 常量）
+    判据 B：`file_list.json` 文件集合与**夹具 + 配置推导的显式期望集合**（上方 `_G9` 常量）
             **字面全等**（一个不多一个不少；多出/缺少/实际三行差集打印在失败信息里）：
             4 个 .go = gate_src/alpha.go + gate_skip/delta.go + gate_ign/keep.go +
             gate_ign/special.gen.go；不含 gate_ign/gen.gen.go（`*.gen.go` 文件级排除）与

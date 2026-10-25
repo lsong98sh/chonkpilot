@@ -96,7 +96,7 @@
 4. **无 iframe view**：机制层 `LfViewHost` 只按 viewKey 解析 Vue 组件，无 URL 分支；预览区 iframe 只服务文件 `/show/`（`rawUrl`）。
 5. **无插件管理页**：前端只有 MCP 设置页 / 项目配置子页，无插件列表。
 6. **状态栏 / 顶栏条目来自布局文档**，无运行时注入通道。
-7. **插件能力面缺口**：数据写（快照、摘要、file_list、prj 配置）多数不在 `plugin/v1` 白名单；无 UI RPC / 无插件配置读写 / 无插件状态上报。
+7. **插件能力面缺口**：数据写（快照、摘要、~~file_list~~〔2026-10-25 已退场：清单改插件自持本地文件〕、prj 配置）多数不在 `plugin/v1` 白名单；无 UI RPC / 无插件配置读写 / 无插件状态上报。
 
 ***
 
@@ -363,7 +363,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | 插话 | `plugin/v1/session.inbox.add|list|discard|promote` | 既有 |
 | 会话写 ★ | `plugin/v1/session.snapshot.set` / `session.summary.set` / `session.messages` / `session.context` | 新增（compress 需要） |
 | 任务 | `plugin/v1/task.tree|tasks|stop|background|verify` / `tool.retry` / `ask.reply` | 既有 |
-| 配置读 | `plugin/v1/config.user.get|project.get|filelist.list|memory.list|mcp.list|scenario.list|prompt.get` | 既有 |
+| 配置读 | `plugin/v1/config.user.get|project.get|memory.list|mcp.list|scenario.list|prompt.get`（~~`filelist.list`~~ 2026-10-25 退场） | 既有 |
 | 配置写 ★ | `plugin/v1/config.project.set` / `config.project.delete` / `prompt.set` | 新增（按 `permissions.data` 的前缀/键校验） |
 | 数据 ★ | `plugin/v1/data.read` / `plugin/v1/data.write` | 新增统一业务数据面（§6.1） |
 | 文件 | `plugin/v1/file.list|read|write|mkdir|remove|rename|copy` | 既有（限 `work_dir`） |
@@ -523,7 +523,7 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 | `config.prj.read:<prefix>` | `data-prj-config` | 只返回声明前缀内的键 |
 | `config.prj.write:<prefix>` | `data-prj-config-save/delete` | 只允许声明前缀；值长度/类型按 64 号表校验；禁写 `window.*` / `layout.*` / `security.*` |
 | `prompt.read:<key>` / `.write:<key>` | `data-prompt-*` | 键白名单（如 `summary_prompt`） |
-| `filelist.read` / `.write` | `data-filelist` | 写仅 `put/del`；路径必须是该 workdir 绝对路径 |
+| ~~`filelist.read` / `.write`~~ | ~~`data-filelist`~~ | **2026-10-25 退场**（清单改插件自持本地文件 `<workdir>/.chonkpilot/vfts/file_list.json`，不再经能力面） |
 | `memory.read` / `.write` | `data-memory-*` | 写仅自定义类别；预置类别拒绝（既有语义） |
 | `knowledge.read` | `data-knowledge-*` | 只读 |
 | `filesys.read` / `.write` | `filesys.*` | 限 `work_dir`；拒绝 `.chonkpilot/` 内部路径（除 `plugins/<id>/`） |
@@ -936,7 +936,7 @@ src/initdata/capability/plugins/websearch/
 2. **是否受理即持久化**：配置保存**先原子落盘再应用**；启用/禁用先落启用表再执行；插件注册（视图/MCP）属于**运行态**，重启后由 manifest 重建（无需持久化）。
 3. **非终态谁收口**：运行态不持久化 → 宿主启动后每个插件状态一律从 `starting` 重建（不存在「上次残留 running」）；每个 `starting` 受 `health.interval_ms × fail_threshold` 上限约束，超时 → `error`（可手点重试）；**不出现永久 `starting`**。
 4. **重启后重建还是收敛**：`managed` 插件 **重建**（重新 spawn → hello/register → MCP 注册）；`external` 插件 **重连**，连不上则 `degraded`，UI 用快照保留入口；工具面只注册已连通的插件。
-5. **副作用语义**：注册/注销幂等；配置写入幂等（同值不写）；工具调用默认**不自动重试**，仅 `idempotent:true`（如 `web_search`）允许自动重试；索引任务由 `plugin.index.*` 队列保证「至少一次」，插件按 `file_list` 幂等重算。
+5. **副作用语义**：注册/注销幂等；配置写入幂等（同值不写）；工具调用默认**不自动重试**，仅 `idempotent:true`（如 `web_search`）允许自动重试；索引任务由 `plugin.index.*` 队列保证「至少一次」，插件按自身清单（`<workdir>/.chonkpilot/vfts/file_list.json`）幂等重算〔2026-10-25：`plugin.index.*` 队列与该清单均改插件自持/已下线，见 D-71〕。
 
 ***
 

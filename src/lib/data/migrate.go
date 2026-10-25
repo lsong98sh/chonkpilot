@@ -45,14 +45,14 @@ func bucketsFor(layer Layer) []string {
 	case LayerUsr:
 		return append(base, "llms")
 	case LayerPrj:
-		return append(base, "file_list")
+		return base // 项目级只剩 config（file_list 已随 vfts 插件自持退场，v15 清桶）
 	case LayerPrjUsr:
 		return append(base, personalBuckets...)
 	case LayerSession, LayerDialog:
 		return append(base, shardBuckets...)
 	}
 	out := append([]string{}, base...)
-	out = append(out, "llms", "file_list")
+	out = append(out, "llms")
 	out = append(out, personalBuckets...)
 	seen := make(map[string]bool, len(out))
 	uniq := out[:0]
@@ -88,8 +88,8 @@ type Migration struct {
 
 // migrations 内置迁移：v8 为**压平后的全量 schema**（未发布期无旧库，不再保留 v1~v7 增量史），
 // 其后按功能增量追加：v9 inbox_items / v10 index_queue / v11 turn_events / v12 dialogs /
-// v13 drop_dead_buckets / v14 drop_unused_buckets。ensureBucket 幂等，既有库跑未应用版本即对齐；
-// v13/v14 只清**空**桶（不静默丢数据）。
+// v13 drop_dead_buckets / v14 drop_unused_buckets / v15 drop_file_list。ensureBucket 幂等，
+// 既有库跑未应用版本即对齐；v13/v14 只清**空**桶（不静默丢数据），v15 删的是**派生缓存**表。
 //
 // 注（2026-10-08 a）：原 `sessions_by_created`/`turns_by_session`/`messages_by_turn`/
 // `tool_pair_by_turn`/`tool_pair_by_task` 五个索引桶**建而不用**（全仓零读写，仅残留于本清单），
@@ -214,7 +214,7 @@ var migrations = []Migration{
 		return nil
 	}},
 	// v14（2026-10-25 · 按层建桶）：三层不再同构 —— 删除本层**不使用**的空桶
-	// （usr 只剩 config/llms；prj 只剩 config/file_list；prjusr 与一树一库各按实际表集）。
+	// （usr 只剩 config/llms；prj 只剩 config；prjusr 与一树一库各按实际表集）。
 	// 只删空桶：非空残留保留可查；后续若该层真写入，Table/索引会 CreateBucketIfNotExists 自建。
 	{Version: 14, Name: "drop_unused_buckets", UpLayer: func(tx *bolt.Tx, layer Layer) error {
 		keep := make(map[string]bool, len(bucketsFor(layer)))
@@ -240,6 +240,16 @@ var migrations = []Migration{
 			}
 		}
 		return nil
+	}},
+	// v15（2026-10-25 · file_list 退场）：vfts 增量清单改由**插件自持**本地文件
+	// （`<workdir>/.chonkpilot/vfts/file_list.json`，D-71）→ prj 库不再有 `file_list` 表。
+	// 该表是**派生缓存**（删除后插件首轮同步按全量重建，无数据损失），故这里**含数据**一并删除
+	// （v14 只清空桶，非空残留会留下来）。
+	{Version: 15, Name: "drop_file_list", Up: func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte("file_list")) == nil {
+			return nil
+		}
+		return tx.DeleteBucket([]byte("file_list"))
 	}},
 }
 

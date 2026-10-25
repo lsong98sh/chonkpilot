@@ -19,7 +19,7 @@
         统一 `_h.acquire_gui(2345, ...)`：**复用优先**，无实例才自起并在退出时回收；串行执行
         → 固定端口 2345 在不同套件间「起-停」交替，不并存（`run_config_ui` 另起独立实例 2347/临时目录，
         并在清理时显式保护 2345，绝不波及底座）。
-      - 自起型（`run_hist_git` / `run_index_gate` / `run_filetree_ignored` / `run_docs_gate`）：动态端口 +
+      - 自起型（`run_hist_git` / `run_index_gate` / `run_docs_gate`）：动态端口 +
         独立临时 work-dir/独立 HOME（`run_hist_git` 另起自管 mock LLM；`run_docs_gate`
         另自拉/自停真转换器，产物缺失时 preflight SKIP）→ 与共享底座完全隔离，退出即回收。
       - **语义/回环级型**（`run_sem_*.py`，20 个）：自起 GUI（动态端口 + 独立临时 work-dir/data-dir/HOME），
@@ -85,7 +85,6 @@ RUN_SCRIPTS_KNOWN = [
     "run_tool_async_config.py",   # 共享底座 2345（工具配置页：usr `tool_async` 读/写/效果）
     "run_index_gate.py",          # 自起（动态端口 + 临时 work-dir/data-dir/HOME）
     "run_docs_gate.py",           # 自起（动态端口 + 临时 work-dir/data-dir/HOME；真转换器自拉/自停；产物缺失则 SKIP）
-    "run_filetree_ignored.py",    # 自起（动态端口 + 临时 work-dir/data-dir/HOME）
     "run_wizard_auto.py",         # 自起（动态端口 + 临时 work-dir/data-dir/HOME；**刻意不预置** project_spec → 验向导自动弹出）
     "run_explore_kb.py",          # 自起（临时 work-dir/data-dir；扩展页四级 5 子 tab + C14 项目私有端到端）
     "run_hist_git.py",            # 自起（动态端口 + 临时目录 + 自管 mock LLM；无 git 则 SKIP）

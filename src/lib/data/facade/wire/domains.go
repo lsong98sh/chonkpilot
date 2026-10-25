@@ -1,9 +1,9 @@
-// 本文件是 **tasktree / knowledge / filelist / scenario / memory** 等域的
+// 本文件是 **tasktree / knowledge / scenario / memory** 等域的
 // 「门面领域 DTO → 消息面应答载荷」组装层（续 `wire.go` 的 session / turn / message 三域）。
 //
 // 2026-10-25（payload struct 化）：**MQ 入参解析**已由 persist 各域的定死 struct（`persist/payload.go`）
-// 承担，逐域 `*FromWire` 随迁删除；本包只剩**出参组装**、filelist 单条 ↔ DTO 转换，以及
-// `ScenarioFromWire`（场景**读盘行** → DTO，供 internal/scenario 列举/定位）。
+// 承担，逐域 `*FromWire` 随迁删除；本包只剩**出参组装**与 `ScenarioFromWire`（场景**读盘行** → DTO，
+// 供 internal/scenario 列举/定位）。
 //
 // 为什么保留出参组装（G-33：wire 形状与门面 DTO 是两件事，不合并）：
 //   - 门面 DTO 用**领域字段**（任务节点的 `ID` / `ParentID`、知识库的文档领域形态、清单条目的
@@ -269,56 +269,6 @@ func KnowledgeReadResult(resp facade.KnowledgeReadResponse) map[string]any {
 		msgkeys.DataKnowledgeReadResultSource: resp.Source,
 		msgkeys.DataKnowledgeReadResultDoc:    resp.Doc,
 	}
-}
-
-// ── 文件清单（filelist 域）────────────────────────────────────────
-
-// FileListListResult 组装 `data-filelist-list` 结果载荷 `{list:[条目…], total}`。
-func FileListListResult(resp facade.FileListListResponse) map[string]any {
-	out := make([]any, 0, len(resp.List))
-	for _, e := range resp.List {
-		out = append(out, FileListEntryToWire(e))
-	}
-	return map[string]any{
-		msgkeys.DataFilelistListResultList:  out,
-		msgkeys.DataFilelistListResultTotal: resp.Total,
-	}
-}
-
-// FileListEntryToWire 把门面清单条目转回消息面条目（字段集 = 清单规范字段）。
-func FileListEntryToWire(e facade.FileListEntry) map[string]any {
-	docIDs := make([]any, 0, len(e.DocIDs))
-	for _, d := range e.DocIDs {
-		docIDs = append(docIDs, d)
-	}
-	return map[string]any{
-		"key": e.Key, "path": e.Path, "size": e.Size, "mtime": e.MTime, "md5": e.MD5,
-		"doc_ids": docIDs, "chunks": e.Chunks, "indexed_at": e.IndexedAt,
-	}
-}
-
-// FileListEntryFromWire 解析清单条目对象 → 门面 DTO。
-func FileListEntryFromWire(m map[string]any) facade.FileListEntry {
-	return facade.FileListEntry{
-		Key:       str(m["key"]),
-		Path:      str(m["path"]),
-		Size:      int64(intOf(m["size"])),
-		MTime:     str(m["mtime"]),
-		MD5:       str(m["md5"]),
-		DocIDs:    strList(m["doc_ids"]),
-		Chunks:    intOf(m["chunks"]),
-		IndexedAt: str(m["indexed_at"]),
-	}
-}
-
-// FileListIDResult 组装 `{ok:true, id:<键>}`（put）。
-func FileListIDResult(id string) map[string]any {
-	return map[string]any{"ok": true, msgkeys.DataFilelistPutResultId: id}
-}
-
-// FileListDeletedResult 组装 `{ok:true, deleted:<条数>}`（del）。
-func FileListDeletedResult(n int) map[string]any {
-	return map[string]any{"ok": true, msgkeys.DataFilelistDelResultDeleted: n}
 }
 
 // ── 场景（scenario 域）───────────────────────────────────────────

@@ -86,6 +86,5 @@
   "type_skill": "技能",
   "type_prompt": "提示词",
   "type_resource": "资源",
-  "type_agent": "智能体",
-  "index_ignored": "已排除：不会参与索引"
+  "type_agent": "智能体"
 }

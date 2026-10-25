@@ -115,7 +115,7 @@
     "done_at": { "type": "string", "desc": "完成时间" },
     "effort": { "type": "any", "desc": "推理强度" },
     "enabled": { "type": "int", "desc": "启用数" },
-    "entries": { "type": "any", "desc": "批量条目集合（数组=条目列表，如 data-filelist-put；对象=键值对，如 data-prj-config save）" },
+    "entries": { "type": "any", "desc": "批量条目集合（键值对，如 data-prj-config save）" },
     "error": { "type": "any", "desc": "错误（对象/字符串）" },
     "errors": { "type": "array", "desc": "错误集合" },
     "exclude_turn": { "type": "string", "desc": "排除轮次" },
@@ -1280,50 +1280,6 @@
       "result": { "ok": { "type": "bool", "required": true } }
     },
     {
-      "topic": "data-filelist-list",
-      "face": "data",
-      "direction": "client->data",
-      "payload": {
-        "prefix": { "type": "string", "required": false },
-        "offset": { "type": "int", "required": false },
-        "limit": { "type": "int", "required": false }
-      },
-      "result": {
-        "list": { "type": "array", "required": true },
-        "total": { "type": "int", "required": true }
-      }
-    },
-    {
-      "topic": "data-filelist-put",
-      "face": "data",
-      "direction": "client->data",
-      "payload": {
-        "key": { "type": "string", "required": false },
-        "path": { "type": "string", "required": false },
-        "size": { "type": "int", "required": false },
-        "mtime": { "type": "string", "required": false },
-        "md5": { "type": "string", "required": false },
-        "doc_ids": { "type": "array", "required": false },
-        "chunks": { "type": "int", "required": false },
-        "indexed_at": { "type": "string", "required": false },
-        "entries": { "type": "array", "required": false }
-      },
-      "result": {
-        "ok": { "type": "bool", "required": true },
-        "id": { "type": "string", "required": false }
-      }
-    },
-    {
-      "topic": "data-filelist-del",
-      "face": "data",
-      "direction": "client->data",
-      "payload": { "keys": { "type": "array", "required": true } },
-      "result": {
-        "ok": { "type": "bool", "required": true },
-        "deleted": { "type": "int", "required": true }
-      }
-    },
-    {
       "topic": "config-refresh",
       "face": "data",
       "direction": "data->client",
@@ -1921,17 +1877,6 @@
         "node_id": { "type": "string", "required": true }
       },
       "notes": "任务树关闭（逻辑删除）后广播，同步 server 内存；shadow 模式不广播"
-    },
-    {
-      "topic": "data-index-ignored",
-      "face": "data",
-      "direction": "client->data",
-      "payload": { "paths": { "type": "array", "required": true } },
-      "result": {
-        "codegraph": { "type": "object", "required": true },
-        "vfts": { "type": "object", "required": true },
-        "truncated": { "type": "bool", "required": false }
-      }
     },
     {
       "topic": "instance-claim",

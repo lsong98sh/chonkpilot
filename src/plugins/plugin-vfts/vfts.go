@@ -917,15 +917,7 @@ func (p *Vfts) docParserVersionChanged(wd, version string) bool {
 	if version == "" {
 		return false
 	}
-	inst := p.instanceForWorkdir(wd)
-	if inst == "" {
-		return false
-	}
-	prior, err := p.fileListAll(inst)
-	if err != nil {
-		return false
-	}
-	for _, rec := range prior {
+	for _, rec := range loadManifest(wd) {
 		if !isDocPath(rec.Path) {
 			continue
 		}

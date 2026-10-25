@@ -97,9 +97,6 @@ const (
 	TopicDataMemoryExtractLoad            = "data-memory-extract-load"
 	TopicDataMemoryExtractSave            = "data-memory-extract-save"
 	TopicDataMemoryExtractDelete          = "data-memory-extract-delete"
-	TopicDataFilelistList                 = "data-filelist-list"
-	TopicDataFilelistPut                  = "data-filelist-put"
-	TopicDataFilelistDel                  = "data-filelist-del"
 	TopicConfigRefresh                    = "config-refresh"
 	TopicDataSessionList                  = "data-session-list"
 	TopicDataSessionGet                   = "data-session-get"
@@ -149,7 +146,6 @@ const (
 	TopicDataTasktreeDelete               = "data-tasktree-delete"
 	TopicDataTasktreeUpsert               = "data-tasktree-upsert"
 	TopicTaskDeleted                      = "task-deleted"
-	TopicDataIndexIgnored                 = "data-index-ignored"
 	TopicInstanceClaim                    = "instance-claim"
 	TopicInstanceRegister                 = "instance-register"
 	TopicInstanceHeartbeat                = "instance-heartbeat"
@@ -797,37 +793,6 @@ const (
 	// data-memory-extract-delete · result
 	DataMemoryExtractDeleteResultOk = "ok"
 
-	// data-filelist-list · payload
-	DataFilelistListPayloadLimit  = "limit"
-	DataFilelistListPayloadOffset = "offset"
-	DataFilelistListPayloadPrefix = "prefix"
-
-	// data-filelist-list · result
-	DataFilelistListResultList  = "list"
-	DataFilelistListResultTotal = "total"
-
-	// data-filelist-put · payload
-	DataFilelistPutPayloadChunks    = "chunks"
-	DataFilelistPutPayloadDocIds    = "doc_ids"
-	DataFilelistPutPayloadEntries   = "entries"
-	DataFilelistPutPayloadIndexedAt = "indexed_at"
-	DataFilelistPutPayloadKey       = "key"
-	DataFilelistPutPayloadMd5       = "md5"
-	DataFilelistPutPayloadMtime     = "mtime"
-	DataFilelistPutPayloadPath      = "path"
-	DataFilelistPutPayloadSize      = "size"
-
-	// data-filelist-put · result
-	DataFilelistPutResultId = "id"
-	DataFilelistPutResultOk = "ok"
-
-	// data-filelist-del · payload
-	DataFilelistDelPayloadKeys = "keys"
-
-	// data-filelist-del · result
-	DataFilelistDelResultDeleted = "deleted"
-	DataFilelistDelResultOk      = "ok"
-
 	// config-refresh · event
 	ConfigRefreshEventId         = "id"
 	ConfigRefreshEventInstanceId = "instance_id"
@@ -1242,14 +1207,6 @@ const (
 	// task-deleted · event
 	TaskDeletedEventInstanceId = "instance_id"
 	TaskDeletedEventNodeId     = "node_id"
-
-	// data-index-ignored · payload
-	DataIndexIgnoredPayloadPaths = "paths"
-
-	// data-index-ignored · result
-	DataIndexIgnoredResultCodegraph = "codegraph"
-	DataIndexIgnoredResultTruncated = "truncated"
-	DataIndexIgnoredResultVfts      = "vfts"
 
 	// instance-claim · payload
 	InstanceClaimPayloadUser    = "user"
@@ -1909,11 +1866,9 @@ const (
 	FieldCategory            = "category"
 	FieldChildren            = "children"
 	FieldChoices             = "choices"
-	FieldChunks              = "chunks"
 	FieldClientType          = "client_type"
 	FieldClosed              = "closed"
 	FieldCode                = "code"
-	FieldCodegraph           = "codegraph"
 	FieldCommand             = "command"
 	FieldConfig              = "config"
 	FieldConfigSaved         = "config_saved"
@@ -1939,10 +1894,8 @@ const (
 	FieldDir                 = "dir"
 	FieldDirs                = "dirs"
 	FieldDoc                 = "doc"
-	FieldDocIds              = "doc_ids"
 	FieldDoneAt              = "done_at"
 	FieldEffort              = "effort"
-	FieldEntries             = "entries"
 	FieldError               = "error"
 	FieldErrors              = "errors"
 	FieldExcludeTurn         = "exclude_turn"
@@ -1971,7 +1924,6 @@ const (
 	FieldInboxId             = "inbox_id"
 	FieldIncludeClosed       = "include_closed"
 	FieldIncludeSnapshot     = "include_snapshot"
-	FieldIndexedAt           = "indexed_at"
 	FieldInitGit             = "init_git"
 	FieldInstanceId          = "instance_id"
 	FieldIsDir               = "is_dir"
@@ -1995,7 +1947,6 @@ const (
 	FieldMaximized           = "maximized"
 	FieldMcpServer           = "mcp_server"
 	FieldMcpServers          = "mcpServers"
-	FieldMd5                 = "md5"
 	FieldMemory              = "memory"
 	FieldMemorySaved         = "memory_saved"
 	FieldMessage             = "message"
@@ -2007,7 +1958,6 @@ const (
 	FieldModel               = "model"
 	FieldModelEcho           = "model_echo"
 	FieldMsg                 = "msg"
-	FieldMtime               = "mtime"
 	FieldMulti               = "multi"
 	FieldName                = "name"
 	FieldNamespace           = "namespace"
@@ -2016,7 +1966,6 @@ const (
 	FieldNodes               = "nodes"
 	FieldNotes               = "notes"
 	FieldNotice              = "notice"
-	FieldOffset              = "offset"
 	FieldOk                  = "ok"
 	FieldOldLevel            = "old_level"
 	FieldOldName             = "old_name"
@@ -2043,7 +1992,6 @@ const (
 	FieldPlaybook            = "playbook"
 	FieldPlugin              = "plugin"
 	FieldPreHookSubject      = "pre_hook_subject"
-	FieldPrefix              = "prefix"
 	FieldProbe               = "probe"
 	FieldProjectSpec         = "project_spec"
 	FieldPrompt              = "prompt"
@@ -2085,7 +2033,6 @@ const (
 	FieldSession             = "session"
 	FieldSessionId           = "session_id"
 	FieldShadow              = "shadow"
-	FieldSize                = "size"
 	FieldSnapshot            = "snapshot"
 	FieldSnapshotTurn        = "snapshot_turn"
 	FieldSource              = "source"
@@ -2114,7 +2061,6 @@ const (
 	FieldToolCallStatus      = "tool_call_status"
 	FieldTools               = "tools"
 	FieldTopSession          = "top_session"
-	FieldTotal               = "total"
 	FieldTouchFiles          = "touch_files"
 	FieldTransport           = "transport"
 	FieldTreeData            = "treeData"
@@ -2132,7 +2078,6 @@ const (
 	FieldUser                = "user"
 	FieldUserDict            = "user_dict"
 	FieldUserDictPath        = "user_dict_path"
-	FieldVfts                = "vfts"
 	FieldWaiting             = "waiting"
 	FieldWidgetId            = "widget_id"
 	FieldWindow              = "window"
