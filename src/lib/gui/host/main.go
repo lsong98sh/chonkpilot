@@ -40,8 +40,8 @@ import (
 	"github.com/chonkpilot/chonkpilot-llm/queuehooks"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-llm/vftsindexer"
-	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
-	pluginmgr "github.com/lsong98sh/chonkpilot-plugin-framework/host/mgr"
+	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
+	pluginmgr "github.com/chonkpilot/chonkpilot-lib/pluginhost/mgr"
 )
 
 // Main 是单体装配宿主入口（webview2 宿主 + 内嵌 server/persist/filesys + 插件装配 + 桥接线）。

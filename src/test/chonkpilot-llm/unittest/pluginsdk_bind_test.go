@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
+	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
 	"github.com/lsong98sh/chonkpilot-plugin-framework/sdk"
 )
 

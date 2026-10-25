@@ -30,7 +30,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-llm/vftsindexer"
 	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
-	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
+	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
 )
 
 // exitDuplicate 是「检测到已有 server 在运行 → 本进程为第二实例」的退出码（约定：非 0）。

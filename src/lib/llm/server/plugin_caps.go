@@ -10,7 +10,7 @@ import (
 	"context"
 	"encoding/json"
 
-	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
+	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
 )
 
 // SetPluginRegistry 把 server 原子能力注册到插件桥（在插件桥 Start 之后调用）。

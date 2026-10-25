@@ -43,7 +43,7 @@ import (
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
-	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
+	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
 	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 	"github.com/lsong98sh/chonkpilot-router"

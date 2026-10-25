@@ -59,4 +59,9 @@ replace github.com/chonkpilot/chonkpilot-plugin-vfts => ../../plugins/plugin-vft
 
 replace github.com/chonkpilot/chonkpilot-task => ../task
 
-require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3
+require (
+	github.com/chonkpilot/chonkpilot-lib/pluginhost v0.0.0
+	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3
+)
+
+replace github.com/chonkpilot/chonkpilot-lib/pluginhost => ../pluginhost

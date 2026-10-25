@@ -46,6 +46,7 @@ replace github.com/chonkpilot/chonkpilot-task => ../../../lib/task
 require (
 	github.com/chonkpilot/chonkpilot-assembly v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0 // indirect
+	github.com/chonkpilot/chonkpilot-lib/pluginhost v0.0.0
 	github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
 	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0 // indirect
 	github.com/lsong98sh/chonkpilot-router v0.1.0 // indirect
@@ -56,3 +57,5 @@ require (
 replace github.com/chonkpilot/chonkpilot-assembly => ../../../lib/assembly
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools
+
+replace github.com/chonkpilot/chonkpilot-lib/pluginhost => ../../../lib/pluginhost

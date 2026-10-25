@@ -9,7 +9,7 @@ import (
 	"errors"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
+	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
 )
 
 // errNotConfigured 是宿主未注入门面时的明确错误（插件侧最终表现为 `index queue ... failed`）。

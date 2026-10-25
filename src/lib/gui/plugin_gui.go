@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/host/bridge"
+	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
 )
 
 // guiEventActions 是「纯前端事件」动作白名单（设计稿 §6 第 5 批：页面 / 抽屉 / 主题语言场景切换）。

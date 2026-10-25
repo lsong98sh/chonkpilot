@@ -8,7 +8,7 @@ package host
 
 import (
 	"github.com/chonkpilot/chonkpilot-data"
-	pluginmgr "github.com/lsong98sh/chonkpilot-plugin-framework/host/mgr"
+	pluginmgr "github.com/chonkpilot/chonkpilot-lib/pluginhost/mgr"
 )
 
 // dataConfigStore 把 usr 层共享库适配为插件配置端口。
