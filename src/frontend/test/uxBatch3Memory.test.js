@@ -86,7 +86,7 @@ test('⑱A 主题：点分相对主题 memory.flush，前端字面量 = Go 插�
   assert.match(src, /mq\.emit\(FLUSH_TOPIC, \{ session: sessionID \}/, '须经统一 mq.emit 发送（禁直调 window.go.*）')
   assert.doesNotMatch(stripComments(src), /window\.go\.|gui\./, '不得绕过 mq 直调宿主')
 
-  const go = readRepo('plugins/plugin-memory/memory.go')
+  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'lib', 'memory.go'), 'utf8')
   assert.match(go, /flushSubject = "memory\.flush"/, 'Go 插件主题字面量须与前端一致')
   assert.match(go, /d\.Bus\.On\(flushSubject, 0/, '插件须在 Start 订阅该主题')
   assert.match(go, /func \(p \*Plugin\) flush\(/, '插件须有 flush 实现')
@@ -94,7 +94,7 @@ test('⑱A 主题：点分相对主题 memory.flush，前端字面量 = Go 插�
 })
 
 test('⑱A 作用域与内容：显式动作取「当前会话」；不受 min-turn-tokens 门控', () => {
-  const go = readRepo('plugins/plugin-memory/memory.go')
+  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'lib', 'memory.go'), 'utf8')
   // 作用域 = payload 的 instance + session（不跨实例/会话）
   assert.match(go, /InstanceID string `json:"instance_id"`[\s\S]{0,80}Session    string `json:"session"`/,
     'payload 须为 {instance_id, session}（实例字段必带）')

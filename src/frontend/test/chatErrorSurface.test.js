@@ -59,7 +59,14 @@ test('RETRY-1③：订阅重试中间态并区分终态（llm-retry / llm-comple
   assert.match(sub[0], /data\.retry_count/, '中间态须读 retry_count')
   assert.match(sub[0], /data\.retry_wait_ms/, '等待值须取 retry_wait_ms（不再用 wait_seconds）')
   assert.match(sub[0], /chat\.llm_retry/, '须使用既有 chat.llm_retry 文案（含等待秒数）')
-  assert.match(sub[0], /retryText\.value =/, '中间态写入提示条（不落聊天流）')
+  assert.match(sub[0], /startRetryCountdown\(attempt, maxRetries, waitSec\)/, '中间态写入提示条（经倒计时函数，不落聊天流）')
+  // 提示条写入点：renderRetryText 内以 chat.llm_retry 渲染（attempt/max/wait），倒计时逐秒调用它
+  const renderFn = src.match(/function renderRetryText\(\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(renderFn, '未找到 renderRetryText')
+  assert.match(renderFn[0], /retryText\.value = t\('chat\.llm_retry'/, '提示条文案须经 chat.llm_retry 渲染（不落聊天流）')
+  const countdownFn = src.match(/function startRetryCountdown\([\s\S]*?\n\}/)
+  assert.ok(countdownFn, '未找到 startRetryCountdown')
+  assert.match(countdownFn[0], /renderRetryText\(\)/, '倒计时须逐秒刷新提示条')
   // 终态：llm-complete 清进度（成功不残留）+ error 才置错误条
   const done = src.match(/function onLlmCompleteHint\(d\)\s*\{[\s\S]*?\n\}/)
   assert.ok(done, '未找到 onLlmCompleteHint')

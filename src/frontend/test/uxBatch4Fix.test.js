@@ -139,7 +139,7 @@ test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）
       assert.ok(doc.includes(s), `出厂提示词文件 ${cat}.md 缺段（与内置默认不一致）：` + s)
     }
   }
-  const go = readRepo('plugins/plugin-memory/memory.go')
+  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'lib', 'memory.go'), 'utf8')
   // 仅扫**代码**（`//` 注释内允许留「旧键已删除」的说明文字）
   const goCode = go.replace(/^\s*\/\/.*$/gm, '')
   assert.doesNotMatch(goCode, /defaultRewriteSystemPrompt/, 'Go 侧须已删除内置默认提示词常量（不留代码内副本）')
@@ -455,21 +455,25 @@ test('A7 显示条件：会话进行中不显示；正常回复完成即收起�
 // ═══════════════════════════════════════════════════════════════
 // A8 会话导航（P3-C1 起为左侧「会话」页签）fork 占位
 // ═══════════════════════════════════════════════════════════════
-test('A8 fork：占位按钮 → 提示「敬请期待」（不实现真 fork）', () => {
+test('A8 fork：真 fork（P4 落地：派生对话 + 刷新列表）', () => {
   const src = read('views/sessions/SessionsPane.vue')
-  assert.match(src, /@click\.stop="handleFork"/, '须有 fork 按钮（阻止冒泡到选中）')
+  assert.match(src, /@click\.stop="handleFork\(session\)"/, '须有 fork 按钮（阻止冒泡到选中）')
   assert.match(src, /<Icon name="fork" :size="13" \/>/, 'fork 按钮须用 fork 图标')
   const fn = fnBody(src, 'handleFork')
   assert.ok(fn, '未找到 handleFork')
-  assert.match(fn, /message\.info\(t\('chat\.fork_coming_soon'\)\)/, '点击须提示「敬请期待」')
-  assert.doesNotMatch(src, /forkSession|createFork|session_fork/, '不得实现真 fork（本轮仅占位）')
+  assert.match(fn, /sessionApi\.sessionDialogOf\(/, '须解析会话所属对话（dialog）')
+  assert.match(fn, /await sessionApi\.forkSession\(dlg\)/, '须走真 fork 链路（P4：整树拷贝 + id 重映射）')
+  assert.match(fn, /message\.success\(t\('chat\.fork_done'\)\)/, '成功须提示已派生')
+  assert.match(fn, /await load\(\)/, '完成后须刷新列表')
+  assert.doesNotMatch(fn, /fork_coming_soon/, '占位提示须已删除（P4 已落地）')
   // 图标 + i18n
   assert.match(read('components/icon/icons.js'), /'fork':\s*'<svg/, 'icons.js 缺 fork 图标')
   for (const loc of LOCALES) {
     const j = readLocale(loc, 'chat.json')
-    assert.ok(typeof j.fork_coming_soon === 'string' && j.fork_coming_soon.trim().length > 0, `${loc} 缺 chat.fork_coming_soon`)
+    for (const k of ['fork_done', 'fork_failed']) {
+      assert.ok(typeof j[k] === 'string' && j[k].trim().length > 0, `${loc} 缺 chat.${k}`)
+    }
   }
-  assert.equal(readLocale('zh-CN', 'chat.json').fork_coming_soon, '敬请期待', 'zh 文案须为「敬请期待」')
 })
 
 // ═══════════════════════════════════════════════════════════════

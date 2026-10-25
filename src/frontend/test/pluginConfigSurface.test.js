@@ -25,7 +25,8 @@ const PLUGINS = ['browser', 'desktop', 'file', 'mcp', 'task', 'websearch']
 const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
 const manifestOf = (id) =>
   JSON.parse(readFileSync(join(repoDir, 'src', 'initdata', 'capability', 'plugins', id, 'plugin.json'), 'utf8'))
-const pageOf = (id) => readFileSync(join(repoDir, 'src', 'plugins', id, 'webui', 'config.html'), 'utf8')
+const pluginsDir = join(repoDir, '..', 'chonkpilot-plugins')
+const pageOf = (id) => readFileSync(join(pluginsDir, id, 'webui', 'config.html'), 'utf8')
 
 /** 递归列出目录下全部文件（不存在 → []）。 */
 function walk(dir) {

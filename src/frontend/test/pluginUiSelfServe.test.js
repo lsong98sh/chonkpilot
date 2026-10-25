@@ -127,9 +127,9 @@ test('⑥ codebase 单源：manifest 声明 selfServe，initdata 不再携带 we
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
   assert.equal(manifest.ui?.selfServe, true, 'codebase plugin.json 须声明 ui.selfServe: true')
   const legacyWebui = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codebase', 'webui')
-  assert.equal(existsSync(legacyWebui), false, 'initdata codebase webui 目录须已删除（唯一源 = src/plugins/codebase/webui）')
-  const srcWebui = join(repoDir, 'src', 'plugins', 'codebase', 'webui', 'config.html')
-  assert.equal(existsSync(srcWebui), true, 'src/plugins/codebase/webui/config.html 须存在')
+  assert.equal(existsSync(legacyWebui), false, 'initdata codebase webui 目录须已删除（唯一源 = chonkpilot-plugins/codebase/webui）')
+  const srcWebui = join(repoDir, '..', 'chonkpilot-plugins', 'codebase', 'webui', 'config.html')
+  assert.equal(existsSync(srcWebui), true, 'chonkpilot-plugins/codebase/webui/config.html 须存在（页面随插件仓）')
 })
 
 /**
@@ -164,8 +164,8 @@ test('⑦ 全量单源：initdata 仅 demo-python 保留 webui 样例，且其 m
     const manifest = JSON.parse(readFileSync(join(initPluginsDir, id, 'plugin.json'), 'utf8'))
     assert.equal(manifest.ui?.selfServe, true, `${id} plugin.json 须声明 ui.selfServe: true`)
     for (const view of manifest.ui.views ?? []) {
-      const asset = join(repoDir, 'src', 'plugins', id, view.entry)
-      assert.equal(existsSync(asset), true, `${id} 缺页面资源 ${view.entry}（唯一源应在 src/plugins/${id}/）`)
+      const asset = join(repoDir, '..', 'chonkpilot-plugins', id, view.entry)
+      assert.equal(existsSync(asset), true, `${id} 缺页面资源 ${view.entry}（唯一源应在 chonkpilot-plugins/${id}/）`)
     }
   }
 })

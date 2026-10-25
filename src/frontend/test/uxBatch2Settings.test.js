@@ -123,13 +123,14 @@ test('② 后端语义核实：空信任目录 → 不施加目录隔离（stdio
   // 2026-10-21（GATEWAY-2 L3/L5）重构后：应用层 `SecurityDirs` 全拒校验已删除。
   // 现行事实：① 外部 MCP（stdio）空允许目录 → 不注入沙箱策略；② 内建 executor 的进程级沙箱
   // 待 L6（当前 spawn 不注入 `CHONKPILOT_SANDBOX`）。
-  const gw = readRepo('lib/gateway/gateway/serverslist.go')
+  const gw = readFileSync(join(repoRoot, '..', '..', 'chonkpilot-mcp-gateway', 'gateway', 'serverslist.go'), 'utf8')
   assert.match(gw, /空目录不注入/, 'serverslist.go 须载明空允许目录不下发策略')
   assert.match(gw, /func \(e ServerEntry\) SandboxPolicyJSON/, '策略入口 = SandboxPolicyJSON')
   const srv = readRepo('lib/llm/server/server.go')
   assert.match(srv, /当前 spawn 不再注入 CHONKPILOT_SANDBOX/, 'server.go 须载明内建 executor 沙箱待 L6（当前不注入）')
-  const ab = readRepo('lib/core/sandbox/sandbox.go')
-  assert.match(ab, /WritableRoots 从规则集提取可写目录/, 'sandbox 须载明可写目录提取口径')
+  // 可写目录提取口径（GATEWAY-2 重构后随 gateway 仓）：WritableRoots 仅取 r.Writable 的规则
+  assert.match(gw, /func WritableRoots\(rules \[\]SandboxRule\) \[\]string/, '可写目录提取 = WritableRoots（按规则集）')
+  assert.match(gw, /if !r\.Writable \{\s*\n\s*continue/, '仅取 r.Writable 的目录')
 })
 
 test('② useToolSandbox：派生预警 + 读信任目录 + 手动保存（无 watch，写库通道带 dirty 短路）', () => {

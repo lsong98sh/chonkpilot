@@ -89,7 +89,7 @@ test('① i18n：closed_label / closed_readonly_hint 双语齐备', () => {
 // ── ② history 默认不开启 ─────────────────────────────────────────
 
 test('② 后端判定：只有显式 "true" 才开启（缺失/非法/读失败 = 关闭）', () => {
-  const go = readRepo('plugins/plugin-history/history.go')
+  const go = readFileSync(join(repoRoot, '..', '..', 'chonkpilot-plugins', 'history', 'lib', 'history.go'), 'utf8')
   assert.match(go, /func gateFromValue\(val string\) bool \{\s*\n\s*return val == "true"/,
     '仅显式 "true" 为开启')
   assert.match(go, /return ok && enabled/, '未回读（gate 缺失）默认关闭')

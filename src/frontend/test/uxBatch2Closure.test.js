@@ -59,7 +59,7 @@ test('A·ChatPanel：三处进度/重试文案改用既有 i18n 键，且无裸�
     '运行任务文案须走 chat.task_running（参数 done/total）')
   assert.match(src, /t\('chat\.task_failed_suffix', \{ failed: data\.failed \}\)/,
     '失败后缀须走 chat.task_failed_suffix（参数 failed）')
-  assert.match(src, /t\('chat\.llm_retry', \{ attempt, max: maxRetries, wait: waitSec \}\)/,
+  assert.match(src, /t\('chat\.llm_retry', \{ attempt: retryAttempt, max: retryMax, wait: retryWaitLeft \}\)/,
     '重试文案须走 chat.llm_retry（参数 attempt/max/wait）')
   // 旧裸英文模板串不得残留
   assert.doesNotMatch(src, /`Running task \$\{/, '不得残留 `Running task ${…}`')
