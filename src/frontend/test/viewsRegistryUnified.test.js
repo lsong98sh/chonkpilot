@@ -24,10 +24,11 @@ import {
   registeredViewKeys,
   unregisterPluginViews,
 } from '../src/layout/view-registry.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const BUNDLED_VIEW_KEYS = VIEW_DEFINITIONS.map((d) => d.key)
 
 /** 递归列出 `src/` 下全部文本源文件（.js / .vue / .json）。 */

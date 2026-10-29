@@ -119,16 +119,16 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Tabs, Input, Button, message } from '../../components/ui'
+import { Tabs, Input, Button, message } from '@ckfw/components/ui/index.js'
 // INPUTVAL-1：路径 ≤512 字符、绝对路径（空 = 未配置，允许）。
 import { MAX_PATH, isAbsolutePath, trimStr } from '../../utils/fieldRules'
-import Icon from '../../components/icon/Icon.vue'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import {
   getUserConfig, saveUserConfig, resetUserKey,
   getAllConfig, setConfig, deleteConfig,
   detectToolchains, pickExecutable,
 } from '../../api/config'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { guideFor, versionBadge, openGuidePage, copyGuideCommand } from '../../utils/toolchainGuide'
 import { EventNames } from '../../events/event-names'
 import { APPLY_INSTANT, APPLY_RESTART, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'

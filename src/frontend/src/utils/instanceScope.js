@@ -10,7 +10,7 @@
  *   - 载荷无 `instance_id`（data-\* 与 filesys.\* 等按 workdir 管理的事件、server 级广播）→ 放行；
  *   - 本实例未标识（无注入）→ 放行（引入过滤前的旧行为）。
  */
-import { currentInstanceId } from './mq.js'
+import { currentInstanceId } from '@ckfw/utils/mq.js'
 
 /** 事件是否属本实例（缺口 8）。instanceId 缺省 = 当前注入的实例 id。 */
 export function eventBelongsToInstance(payload, instanceId = currentInstanceId()) {

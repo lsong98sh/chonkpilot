@@ -18,7 +18,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button } from '../../components/ui'
+import { Button } from '@ckfw/components/ui/index.js'
 import { EventNames } from '../../events/event-names'
 import { SUPPORTED_LANGUAGES } from '../../plugins/i18n'
 

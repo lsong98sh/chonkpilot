@@ -18,17 +18,18 @@ import {
   resolveDragTarget,
   paneMin,
   paneMax,
-} from '../src/components/split/splitLayout.js'
+} from '../../../../chonkpilot-framework/host/web/src/components/split/splitLayout.js'
 import {
   FALLBACK_TOOLBAR_HEIGHT,
   FALLBACK_STATUSBAR_HEIGHT,
   parseCssPx,
   computeContentHeight,
 } from '../src/utils/cssToken.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = join(HERE, '..', 'src')
-const SRC = (p) => readFileSync(join(SRC_DIR, p), 'utf8')
+const SRC = (p) => readSrc(p)
 
 function listSrcFiles(dir) {
   const out = []

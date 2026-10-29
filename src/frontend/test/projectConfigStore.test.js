@@ -9,9 +9,10 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { mergeUserConfig } from '../src/utils/userConfigApply.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SRC = (p) => readFileSync(join(HERE, '..', 'src', p), 'utf8')
+const SRC = (p) => readSrc(p)
 
 test('store：首次 getAllConfig 一次 + 订阅 data-prj-config-refresh 增量', () => {
   const src = SRC('composables/useProjectConfig.js')

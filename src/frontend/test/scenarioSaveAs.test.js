@@ -10,10 +10,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 const DIALOG = 'views/scenario/ScenarioEditDialog.vue'
 
@@ -33,7 +34,7 @@ test('另存为按钮：仅编辑模式显示（v-if="!isNew"），位于「取�
 
 test('另存为：走 promptInput 输入新目录名 + 复用既有目录名校验', () => {
   const d = read(DIALOG)
-  assert.match(d, /import \{ message, confirm, promptInput \} from '\.\.\/\.\.\/components\/ui'/,
+  assert.match(d, /import \{ message, confirm, promptInput \} from '(?:\.\.\/\.\.\/components\/ui|@ckfw\/components\/ui\/index\.js)'/,
     '须引入 promptInput')
   assert.match(d, /await promptInput\(t\('scenario\.save_as_prompt'\)/,
     '另存为须走 promptInput 且用 i18n 提示文案')

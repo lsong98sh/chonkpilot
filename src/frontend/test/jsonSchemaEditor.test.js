@@ -17,10 +17,11 @@ import {
   addEnumValue, removeEnumValue, setEnumValues, addKeyword, removeKeyword, setKeywordValue,
   keywordTooltipText, removeNode, defaultKeywordValue,
 } from '../src/utils/jsonSchema.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 // ── 解析 ──────────────────────────────────────────────────────────
 
@@ -221,7 +222,7 @@ test('JsonSchema：chip 只显关键字名、值一律走 tooltip（enum 多行 
 test('JsonSchema：知识库编辑页 = 顶部标题 / 分区页签 Tabs / 底部 保存·恢复', () => {
   const panel = read('views/knowledge/PrimitivePanel.vue')
   assert.match(panel, /prim-head/, '顶部标题区')
-  assert.match(panel, /from '\.\.\/\.\.\/components\/ui\/Tabs\.vue'/, '中间用 Tabs 撑满')
+  assert.match(panel, /from '(?:\.\.\/\.\.\/components\/ui|@ckfw\/components\/ui)\/Tabs\.vue'/, '中间用 Tabs 撑满')
   // v2：页签 = 契约分区（预览默认 / 基本信息 / 摘要 / 参数 / 参考 / 委托 / 正文）
   for (const [name, key] of [['preview', 'tab_preview'], ['basic', 'tab_basic'], ['summary', 'tab_summary'], ['content', 'tab_content']]) {
     assert.match(panel, new RegExp("name: '" + name + "'"), '页签 ' + name)

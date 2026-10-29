@@ -1,8 +1,8 @@
 import { h } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { dialog } from '../components/dialog'
+import { dialog } from '@ckfw/components/dialog/index.js'
 import DirPickerDialog from '../views/common/DirPickerDialog.vue'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { MsgTopics } from '../events/msgkeys.js'
 import { parseShowDialog, selectedDirEvent } from '../utils/guiShowDialog.js'
 

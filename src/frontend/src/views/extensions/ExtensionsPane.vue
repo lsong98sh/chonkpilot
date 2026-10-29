@@ -50,8 +50,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import KnowledgeTree from '../filetree/KnowledgeTree.vue'
-import { Popover } from '../../components/ui'
-import mq from '../../utils/mq'
+import { Popover } from '@ckfw/components/ui/index.js'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 
 defineOptions({ name: 'ExtensionsPane' })

@@ -26,10 +26,10 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ChatPanel from './ChatPanel.vue'
 import GroupChatBoard from './GroupChatBoard.vue'
 import AskUserDialog from './AskUserDialog.vue'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { getSession } from '../../api/session'
-import { claimedInstance } from '../../utils/instanceState'
+import { claimedInstance } from '@ckfw/utils/instanceState.js'
 import { isGroupChatKind } from '../../utils/groupchat.js'
 
 const props = defineProps({

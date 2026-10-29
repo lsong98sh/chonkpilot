@@ -1,4 +1,4 @@
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { resolvePublishError } from '../utils/publishError.js'
 import {
   FieldKeys,

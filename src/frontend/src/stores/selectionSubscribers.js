@@ -24,7 +24,7 @@
  *   - 注册 = `main.js` 引导期（`app.use(createPinia())` 之后、`mount` 之前）调 `registerSelectionSubscribers()`；
  *   - 注销 = 返回的 `unregisterSelectionSubscribers()`（应用生命周期内常驻；测试用例用其收尾）。
  */
-import mq from '../utils/mq.js'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names.js'
 import { useSelectionStore } from './selection.js'
 

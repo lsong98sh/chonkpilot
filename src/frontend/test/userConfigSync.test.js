@@ -22,9 +22,10 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { configFromChangedEvent, themeLocaleFromConfig, mergeUserConfig } from '../src/utils/userConfigApply.js'
 import { EventNames } from '../src/events/event-names.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SRC = (p) => readFileSync(join(HERE, '..', 'src', p), 'utf8')
+const SRC = (p) => readSrc(p)
 
 // ── 1) 事件载荷解析（61 §3.1：payload `{data:{…}}`）──────────────────
 

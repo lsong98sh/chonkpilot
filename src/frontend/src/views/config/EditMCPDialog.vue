@@ -190,14 +190,14 @@
 <script setup>
 import { reactive, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Input, Textarea, Select, Switch, Tabs, Tooltip, KeyValueEditor, message } from '../../components/ui'
+import { Button, Input, Textarea, Select, Switch, Tabs, Tooltip, KeyValueEditor, message } from '@ckfw/components/ui/index.js'
 // INPUTVAL-1：字段基线（与后端 validate.go 同源口径）。
 import { MAX_NAME, MAX_URL, MAX_PATH, isHttpUrl, isAbsolutePath, tooLong, trimStr } from '../../utils/fieldRules'
-import Icon from '../../components/icon/Icon.vue'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { stripToolPrefix } from '../../utils/toolSource'
 import { classifyError } from '../../utils/errorMessage'
 import { suggestConfig } from '../../api/config'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { MsgClientTopics } from '../../events/msgkeys.js'
 

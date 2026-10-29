@@ -9,7 +9,7 @@
  * computed 中调用 isManualTool 会读取该 ref → 加载完成后自动刷新（无需 watch）。
  */
 import { ref } from 'vue'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { MsgClientTopics } from '../events/msgkeys.js'
 
 // manualTools：async=manual 的工具名集合（加载前为空 → 按钮不显示；server 侧另有硬门控兜底）

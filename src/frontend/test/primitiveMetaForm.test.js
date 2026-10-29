@@ -14,10 +14,11 @@ import { dirname, join } from 'node:path'
 import {
   META_FIELDS, metaFieldsOf, isSchemaKey, fieldValueOf, fieldToMetaOf,
 } from '../src/utils/metaForm.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 const scalar = (tok) => metaFieldsOf(tok).map((f) => f.key)
 
@@ -116,7 +117,7 @@ test('metaForm：isSchemaKey = 表单已覆盖的键（含 name）→ 自定义�
 
 test('PrimitivePanel：基本信息 tab = 按类型表单（Select/Switch/number Input），name 只读', () => {
   const panel = read('views/knowledge/PrimitivePanel.vue')
-  assert.match(panel, /import \{ Input, Textarea, Button, Tag, Select, Switch, message, confirm \} from '\.\.\/\.\.\/components\/ui'/,
+  assert.match(panel, /import \{ Input, Textarea, Button, Tag, Select, Switch, message, confirm \} from '(?:\.\.\/\.\.\/components\/ui|@ckfw\/components\/ui\/index\.js)'/,
     '表单控件来自共通 ui 组件库')
   assert.match(panel, /import \{ metaFieldsOf, isSchemaKey, fieldValueOf, fieldToMetaOf \} from '\.\.\/\.\.\/utils\/metaForm'/,
     '字段定义走 utils/metaForm 纯模块')

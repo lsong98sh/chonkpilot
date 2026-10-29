@@ -26,8 +26,8 @@
 </template>
 
 <script setup>
-import { Icon } from '../../components/icon'
-import { Button } from '../../components/ui'
+import { Icon } from '@ckfw/components/icon/index.js'
+import { Button } from '@ckfw/components/ui/index.js'
 import { EventNames } from '../../events/event-names'
 
 defineProps({

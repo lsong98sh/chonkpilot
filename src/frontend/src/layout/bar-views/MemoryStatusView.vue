@@ -20,13 +20,13 @@
 <script setup>
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import Icon from '../../components/icon/Icon.vue'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { useQueueStatus } from '../../composables/useQueueStatus'
 import { usePrjConfigSnapshot } from '../../composables/usePrjConfigSnapshot'
 import { taskEntry } from '../../utils/taskStatus'
 import { openStatusDetail } from '../statusDetail.js'
 import { EventNames } from '../../events/event-names'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 
 const { t } = useI18n()
 const { memoryTask, handleNotice } = useQueueStatus()

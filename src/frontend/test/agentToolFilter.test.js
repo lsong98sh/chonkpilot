@@ -17,10 +17,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { filterToolsTogglePatch, filterToolsLoadPatch, normalizeTools } from '../src/utils/agentToolFilter.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 // ① 关闭过滤开关 → tools 被清空（空数组 = 后端「不限制」语义）
 test('① 关闭过滤开关 → tools 清空为空数组', () => {

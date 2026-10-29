@@ -20,14 +20,14 @@
 <script setup>
 import { h, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { message, confirm } from '../../components/ui'
-import { Button, Table } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
-import { dialog } from '../../components/dialog'
+import { message, confirm } from '@ckfw/components/ui/index.js'
+import { Button, Table } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
+import { dialog } from '@ckfw/components/dialog/index.js'
 import ScenarioEditDialog from './ScenarioEditDialog.vue'
 import { getScenarioList, deleteScenario } from '../../api/scenario'
 import { onDataRefresh } from '../../utils/dataClient'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 
 const { t } = useI18n()

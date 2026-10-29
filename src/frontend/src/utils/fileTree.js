@@ -1,4 +1,4 @@
-import mq from './mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 
 /**

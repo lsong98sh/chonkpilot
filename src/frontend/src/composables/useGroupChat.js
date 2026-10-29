@@ -13,7 +13,7 @@
  *
  * 模型/纯逻辑（work_session id 推导、左右对齐等）见 `utils/groupchat.js`（叶子模块）。
  */
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import {
   MsgTopics,
   FieldKeys,

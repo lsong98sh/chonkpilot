@@ -19,10 +19,11 @@ import { dirname, join } from 'node:path'
 import {
   AGENT_LEVEL_MATRIX, allowedLevels, levelAllowed, nodeLevel, toolLevelOf, toolAllowedForLevel,
 } from '../src/utils/agentLevelMatrix.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 // 后端矩阵单源（仓库 src/lib/data/internal/capfs/capfs.go）；frontend/test → ../../lib
 const capfsSrc = readFileSync(join(here, '..', '..', 'lib', 'data', 'internal', 'capfs', 'capfs.go'), 'utf8')
 

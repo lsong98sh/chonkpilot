@@ -18,7 +18,7 @@
  *
  * 纯逻辑（载荷解析/取值）在 `utils/userConfigApply.js`（可直跑单测）。
  */
-import mq from '../utils/mq.js'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { applyLocale } from '../plugins/i18n'
 import { configFromChangedEvent, themeLocaleFromConfig } from '../utils/userConfigApply.js'

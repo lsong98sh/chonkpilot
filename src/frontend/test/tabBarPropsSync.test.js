@@ -13,9 +13,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const read = (rel) => readFileSync(join(here, '..', 'src', rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 test('TabBar：不得 watch props（硬规则），改由 onUpdated 驱动同步', () => {
   const src = read('components/tabs/TabBar.vue')

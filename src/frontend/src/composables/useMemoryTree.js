@@ -10,9 +10,9 @@
 //   - 记忆写回广播 `data-memory-refresh` → 调用方订阅后自动刷新。
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { message } from '../components/ui'
+import { message } from '@ckfw/components/ui/index.js'
 import { getAllConfig } from '../api/config'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { useMemoryCategories } from './useMemoryCategories'
 import { loadFailedText } from '../utils/settingsFeedback'

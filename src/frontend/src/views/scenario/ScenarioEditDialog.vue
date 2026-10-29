@@ -144,8 +144,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { message, confirm, promptInput } from '../../components/ui'
-import { Input, Button, Select, Tabs } from '../../components/ui'
+import { message, confirm, promptInput } from '@ckfw/components/ui/index.js'
+import { Input, Button, Select, Tabs } from '@ckfw/components/ui/index.js'
 import AgentEditor from './AgentEditor.vue'
 import CombinedPromptPreview from './CombinedPromptPreview.vue'
 import { openScenarioWizard } from './scenarioWizard'
@@ -156,7 +156,7 @@ import { filterToolsLoadPatch, normalizeTools } from '../../utils/agentToolFilte
 import { resolveAgentRefAbs, agentModelFromDoc, agentDocOf } from '../../utils/agentRef'
 import { loadLlmOptions, loadToolGroups as loadToolGroupsShared, loadSkillOptions as loadSkillOptionsShared, loadResourceOptions as loadResourceOptionsShared, loadMcpResources as loadMcpResourcesShared } from '../../utils/agentAssets'
 import { allowedLevels } from '../../utils/agentLevelMatrix'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 // INPUTVAL-1：场景名 / 目录名 1–64 字符。
 import { MAX_NAME, tooLong } from '../../utils/fieldRules'

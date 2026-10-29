@@ -16,10 +16,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createPrjConfigCoalescer, makePrjKeysMatcher } from '../src/utils/prjConfigRefresh.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 /** 受控时钟：手动收集/触发调度任务（确定性断言，不依赖真实定时器）。 */
 function makeClock() {

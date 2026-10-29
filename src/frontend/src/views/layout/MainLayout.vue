@@ -30,28 +30,28 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted } from 'vue'
-import { SplitPanel } from '../../components/split'
-import WindowResizeHandles from '../../components/shell/WindowResizeHandles.vue'
+import { SplitPanel } from '@ckfw/components/split/index.js'
+import WindowResizeHandles from '@ckfw/components/shell/WindowResizeHandles.vue'
 import { loadInitDataPrefetched } from '../../api/file'
 import { GuiInitDataKeys } from '../../events/msgkeys'
 import { readRootPx, FALLBACK_TOOLBAR_HEIGHT, FALLBACK_STATUSBAR_HEIGHT } from '../../utils/cssToken'
 import AskUserDialog from '../chat/AskUserDialog.vue'
 import { setLocale } from '../../plugins/i18n'
 import { maybeAutoOpenWizard } from '../scenario/scenarioWizard'
-import mq, { currentInstanceId } from '../../utils/mq'
+import mq, { currentInstanceId } from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 // ── 自由布局容器（UILAYOUT-1 §7 P3⑤ / P4⑤）──────────────────────
 // 宿主唯一装配点 = `layout/index.js`（main.js 在 pinia/mqPlugin 之后调用）；
 // `ChonkLayout` = 容器渲染点；抽屉 / 内容设置编辑器 / 视图池为容器的运行期外壳。
 import ChonkLayout from '../../layout/ChonkLayout.vue'
-import ChonkTopBar from '../../layout/ChonkTopBar.vue'
+import ChonkTopBar from '@ckfw/layout/ChonkTopBar.vue'
 import ChonkStatusBar from '../../layout/ChonkStatusBar.vue'
-import LfDrawerHost from '../../layout-free/components/drawer/LfDrawerHost.vue'
-import LfContentSettingsDialog from '../../layout-free/components/settings/LfContentSettingsDialog.vue'
-import LfViewPool from '../../layout-free/components/layout/LfViewPool.vue'
-import { getLayoutEngine, getLayoutPersist } from '../../layout'
-import { useProfileStore } from '../../layout/profiles.js'
-import { extractFreeDoc, toFreeString } from '../../layout/persist.js'
+import LfDrawerHost from '@ckfw/layout-free/components/drawer/LfDrawerHost.vue'
+import LfContentSettingsDialog from '@ckfw/layout-free/components/settings/LfContentSettingsDialog.vue'
+import LfViewPool from '@ckfw/layout-free/components/layout/LfViewPool.vue'
+import { getLayoutEngine, getLayoutPersist } from '@ckfw/layout/index.js'
+import { useProfileStore } from '@ckfw/layout/profiles.js'
+import { extractFreeDoc, toFreeString } from '@ckfw/layout/persist.js'
 
 // ── 外壳尺寸（顶栏 / 状态栏固定高）────────────────────────────
 const TOOLBAR_H = readRootPx('--toolbar-height', FALLBACK_TOOLBAR_HEIGHT)

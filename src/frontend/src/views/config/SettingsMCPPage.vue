@@ -40,15 +40,15 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, h, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Table, Button, Select, message, confirm } from '../../components/ui'
-import { dialog } from '../../components/dialog'
-import Icon from '../../components/icon/Icon.vue'
+import { Table, Button, Select, message, confirm } from '@ckfw/components/ui/index.js'
+import { dialog } from '@ckfw/components/dialog/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { getUserConfig, getSystemBuiltins, listMcpServers, saveMcpServer, deleteMcpServer } from '../../api/config'
 import { onDataRefresh } from '../../utils/dataClient'
 import { DEFAULT_MCP } from '../../config/defaults'
 import { countToolSandboxOn } from '../../utils/sandboxSummary'
 import { loadFailedText } from '../../utils/settingsFeedback'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 
 const EditMCPDialog = defineAsyncComponent(() => import('./EditMCPDialog.vue'))

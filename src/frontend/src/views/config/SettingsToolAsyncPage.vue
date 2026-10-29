@@ -199,13 +199,13 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Input, Button, Select, Switch, Table, Tooltip, message } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
+import { Input, Button, Select, Switch, Table, Tooltip, message } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { getUserConfig, saveUserConfig, resetUserKey } from '../../api/config'
 import { isDirNode, stripToolPrefix } from '../../utils/toolSource'
 import { defaultTouchFiles, effectiveTouchFiles, touchFilesOverride } from '../../utils/toolTouchFiles'
 import { loadFailedText, saveFailedText } from '../../utils/settingsFeedback'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { MsgClientTopics } from '../../events/msgkeys.js'
 
 const { t } = useI18n()

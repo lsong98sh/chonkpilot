@@ -46,8 +46,8 @@
 
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
-import { Button } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
+import { Button } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { buildDirLevels, parentOf } from '../../utils/dirPicker'
 
 // 目录选择器（🆕 2026-10-10：数据源改为 props.options —— 由 gui.show-dialog 下发的服务端允许目录清单

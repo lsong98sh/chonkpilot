@@ -9,7 +9,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeScreenCenteredPosition, workAreaInClient } from '../src/utils/dialogPosition.js'
+import { computeScreenCenteredPosition, workAreaInClient } from '../../../../chonkpilot-framework/host/web/src/utils/dialogPosition.js'
 
 // 典型单屏：1920×1080，任务栏 40px（工作区高 1040）；主窗口 1200×900 在 (0,0)，
 // 标题栏 40px → 视口 1200×860，视口起点 = (0, 40)。

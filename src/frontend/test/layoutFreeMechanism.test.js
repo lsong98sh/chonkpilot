@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, relative, resolve } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const ROOT = join(HERE, '..', 'src', 'layout-free')
+const ROOT = join(HERE, '..', '..', '..', '..', 'chonkpilot-framework', 'host', 'web', 'src', 'layout-free')
 
 function walk(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {

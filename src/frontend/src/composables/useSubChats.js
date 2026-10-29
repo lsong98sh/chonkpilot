@@ -17,9 +17,9 @@
  */
 import { h } from 'vue'
 import { useI18n } from 'vue-i18n'
-import mq from '../utils/mq'
-import { dialog } from '../components/dialog'
-import { message } from '../components/ui'
+import mq from '@ckfw/utils/mq.js'
+import { dialog } from '@ckfw/components/dialog/index.js'
+import { message } from '@ckfw/components/ui/index.js'
 import {
   MsgTopics,
   FieldKeys,

@@ -11,9 +11,9 @@
  * **防二次点击**由调用方负责（等待态期间禁用控件）；本模块只保证同一 `widget_id` 的
  * 结果唯一收口（首个匹配结果即解除监听）。
  */
-import mq from './mq'
+import mq from '@ckfw/utils/mq.js'
 import { resolvePublishError } from './publishError.js'
-import { currentInstanceId } from './instanceState.js'
+import { currentInstanceId } from '@ckfw/utils/instanceState.js'
 import {
   MsgTopics,
   GuiSelectedDirKeys,

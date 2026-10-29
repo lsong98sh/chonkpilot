@@ -53,11 +53,11 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics, FieldKeys } from '../../events/msgkeys.js'
-import { message } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
+import { message } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import {
   SUBCHAT_MAX_VISIBLE,
   SUBCHAT_READY,

@@ -20,6 +20,7 @@ import { parseNotice, reduceTask } from '../src/composables/useQueueStatus.js'
 import { taskEntry, taskTone } from '../src/utils/taskStatus.js'
 import { EventNames } from '../src/events/event-names.js'
 import { VIEW_DEFINITIONS } from '../src/layout/view-definitions.js'
+import { readSrc } from './support/feSource.mjs'
 
 // `layout/commands.js` 依赖链含**无扩展名**相对导入（打包器口径）→ 先挂 SFC/补全钩子再动态 import
 // （同 layoutAdapter.test.js 口径；静态 import 会在钩子注册前解析）。
@@ -30,7 +31,7 @@ const { PREVIEW_TAB_TARGETS } = await import('../src/layout/commands.js')
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 

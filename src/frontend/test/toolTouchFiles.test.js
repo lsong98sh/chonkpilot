@@ -19,10 +19,11 @@ import {
   SELF_NODE_ID, DEFAULT_TOUCH_TOOLS,
   defaultTouchFiles, effectiveTouchFiles, checkpointEnabled, touchFilesOverride,
 } from '../src/utils/toolTouchFiles.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 
@@ -86,7 +87,7 @@ test('① touchFilesOverride：与缺省一致 → undefined（不写库）；�
 // ═══════════════════════════════════════════════════════════════
 test('② 页面：新增「涉及文件变动」列（表头 ? 说明 + 开关 + 派生打点标记）', () => {
   const src = read(PAGE)
-  assert.match(src, /import \{[^}]*\bSwitch\b[^}]*\} from '\.\.\/\.\.\/components\/ui'/,
+  assert.match(src, /import \{[^}]*\bSwitch\b[^}]*\} from '(?:\.\.\/\.\.\/components\/ui|@ckfw\/components\/ui\/index\.js)'/,
     '须引入 Switch 组件')
   assert.match(src, /import \{[^}]*defaultTouchFiles[^}]*\} from '\.\.\/\.\.\/utils\/toolTouchFiles'/,
     '须引用 utils/toolTouchFiles')

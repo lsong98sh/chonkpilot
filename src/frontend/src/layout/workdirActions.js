@@ -11,7 +11,7 @@
  */
 import { getRecentDirs, removeRecentDir, openDir } from '../api/config'
 import { useDirPicker } from '../composables/useDirPicker'
-import { message } from '../components/ui'
+import { message } from '@ckfw/components/ui/index.js'
 import { classifyError } from '../utils/errorMessage'
 import { i18n } from '../plugins/i18n'
 

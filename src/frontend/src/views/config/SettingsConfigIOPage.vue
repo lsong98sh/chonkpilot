@@ -90,7 +90,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Switch, Textarea, message, confirm } from '../../components/ui'
+import { Button, Switch, Textarea, message, confirm } from '@ckfw/components/ui/index.js'
 import { getUserConfigMain, clearUserConfig, saveConfigFile, saveUserConfig } from '../../api/config'
 import { onDataRefresh } from '../../utils/dataClient'
 import { classifyError } from '../../utils/errorMessage'

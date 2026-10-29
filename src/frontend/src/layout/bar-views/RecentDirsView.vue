@@ -39,7 +39,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Icon } from '../../components/icon'
+import { Icon } from '@ckfw/components/icon/index.js'
 import { loadRecentDirs, removeRecent, openDirAndRefresh } from '../workdirActions'
 
 const triggerRef = ref(null)

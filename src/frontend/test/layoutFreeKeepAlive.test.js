@@ -24,12 +24,12 @@ register('./support/vue-sfc-hooks.mjs', import.meta.url)
 //    才能 import（静态 import 会在本文件执行前解析，那时钩子还没挂上）。
 await new Promise((r) => setTimeout(r, 0))
 
-const { setLayoutDeps } = await import('../src/layout-free/deps.js')
-const { useRuntimeStore } = await import('../src/layout-free/stores/runtime.js')
-const LfFixedTabsView = (await import('../src/layout-free/views/LfFixedTabsView.vue')).default
-const LfFreeTabsView = (await import('../src/layout-free/views/LfFreeTabsView.vue')).default
-const LfLayoutLeaf = (await import('../src/layout-free/components/layout/LfLayoutLeaf.vue')).default
-const LfViewPool = (await import('../src/layout-free/components/layout/LfViewPool.vue')).default
+const { setLayoutDeps } = await import('../../../../chonkpilot-framework/host/web/src/layout-free/deps.js')
+const { useRuntimeStore } = await import('../../../../chonkpilot-framework/host/web/src/layout-free/stores/runtime.js')
+const LfFixedTabsView = (await import('../../../../chonkpilot-framework/host/web/src/layout-free/views/LfFixedTabsView.vue')).default
+const LfFreeTabsView = (await import('../../../../chonkpilot-framework/host/web/src/layout-free/views/LfFreeTabsView.vue')).default
+const LfLayoutLeaf = (await import('../../../../chonkpilot-framework/host/web/src/layout-free/components/layout/LfLayoutLeaf.vue')).default
+const LfViewPool = (await import('../../../../chonkpilot-framework/host/web/src/layout-free/components/layout/LfViewPool.vue')).default
 
 /** 探针组件：记录挂载 / 卸载，并持有"区块内部状态"（自增计数） */
 const probes = []

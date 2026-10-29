@@ -18,11 +18,11 @@
 
 <script setup>
 import { onMounted, onUnmounted, ref } from 'vue'
-import { Icon } from '../../components/icon'
+import { Icon } from '@ckfw/components/icon/index.js'
 import { detectToolchains, getUserConfig } from '../../api/config'
 import { isChromeMissing } from '../../utils/chromeStatus'
 import { onDataRefresh } from '../../utils/dataClient'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 
 const chromeMissing = ref(false)

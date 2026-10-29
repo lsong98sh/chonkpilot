@@ -16,9 +16,10 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 import { DSL_FIELDS, copyDslFields } from '../src/utils/dslView.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const read = (rel) => readFileSync(join(here, '..', 'src', rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 const EXPECTED_FIELDS = [
   'loop_current', 'loop_total', 'steps', 'shadow',

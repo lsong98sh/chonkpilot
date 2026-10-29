@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const localesDir = join(here, '..', 'src', 'locales')
@@ -43,7 +44,7 @@ test('optimizeError：带参错误含对应占位符', () => {
 })
 
 test('config.js：resolveOptimizeError 按 code 译、message 兜底', () => {
-  const src = readFileSync(join(here, '..', 'src', 'api', 'config.js'), 'utf8')
+  const src = readSrc('api/config.js')
   assert.match(src, /export function resolveOptimizeError/, '须导出 resolveOptimizeError')
   assert.match(src, /'optimizeError\.' \+ code/, '须以 optimizeError.<code> 为 i18n 键')
   assert.match(src, /i18n\.global\.te\(/, '须先判 code 是否有译文')

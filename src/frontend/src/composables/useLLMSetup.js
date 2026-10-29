@@ -2,7 +2,7 @@ import { onMounted, onUnmounted } from 'vue'
 import { getUserConfig } from '../api/config'
 import { onDataRefresh } from '../utils/dataClient'
 import { refreshUserConfig } from '../utils/llmConfigRefresh'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 
 /**

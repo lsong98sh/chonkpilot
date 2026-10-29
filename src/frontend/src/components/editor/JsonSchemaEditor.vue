@@ -105,7 +105,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Input, Textarea, Button, Tooltip, promptInput, promptList } from '../../components/ui'
+import { Input, Textarea, Button, Tooltip, promptInput, promptList } from '@ckfw/components/ui/index.js'
 import {
   SCHEMA_TYPES, keywordSuggestions, inferType, parseSchemaText, serializeSchema, validateSchema,
   removeNode, addProperty, renameProperty, setNodeType, toggleRequired,

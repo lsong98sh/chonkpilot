@@ -29,7 +29,7 @@ import { ref, computed } from 'vue'
 import { getUserConfig, saveUserConfig, resetUserKey, getProjectSecurity, listMcpServers } from '../api/config'
 import { countMCPsOn, isStdioServer, parseToolSandboxMap } from '../utils/sandboxSummary'
 import { countTrustDirs, needsTrustDirsWarning } from '../utils/sandboxTrust'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { MsgClientTopics } from '../events/msgkeys.js'
 
 // usr 配置键（自由键通道）：值与 tool_async 同形态 = JSON 对象文本。

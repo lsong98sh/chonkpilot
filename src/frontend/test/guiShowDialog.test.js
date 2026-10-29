@@ -15,11 +15,12 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { parseShowDialog, selectedDirEvent, SHOW_DIALOG_KIND_SELECT_DIR } from '../src/utils/guiShowDialog.js'
 import { MsgTopics, GuiShowDialogKeys, GuiSelectedDirKeys } from '../src/events/msgkeys.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const feRoot = join(here, '..')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 const ROOT = 'E:/proj/wd'
 

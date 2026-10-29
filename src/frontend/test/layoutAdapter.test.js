@@ -30,9 +30,10 @@ import {
   createViewRegistry,
   registerViews,
 } from '../src/layout/view-registry.js'
-import { setLayoutTranslator } from '../src/layout/i18n.js'
-import mq from '../src/utils/mq.js'
+import { setLayoutTranslator } from '../../../../chonkpilot-framework/host/web/src/layout/i18n.js'
+import mq from '../../../../chonkpilot-framework/host/web/src/utils/mq.js'
 import { EventNames } from '../src/events/event-names.js'
+import { readSrc } from './support/feSource.mjs'
 
 const {
   FILE_TARGET,
@@ -52,11 +53,11 @@ const {
   extractFreeDoc,
   parseFreeDoc,
   toFreeString,
-} = await import('../src/layout/persist.js')
-const { EventNames: LfEventNames } = await import('../src/layout-free/events/event-names.js')
+} = await import('../../../../chonkpilot-framework/host/web/src/layout/persist.js')
+const { EventNames: LfEventNames } = await import('../../../../chonkpilot-framework/host/web/src/layout-free/events/event-names.js')
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SRC = (rel) => readFileSync(join(HERE, '..', 'src', rel), 'utf8')
+const SRC = (rel) => readSrc(rel)
 /** 去掉注释后再断言（注释里会**引述**已移除/不再使用的字段名，如 §3.9 更正注） */
 const stripComments = (src) =>
   src
@@ -251,8 +252,8 @@ test('② 拒绝原因走注入的 i18n（`layoutFree.command.reject.*`）；摘
 test('② 零新增主题：commands.js 只用既有 EventNames（无裸 kebab 主题字面量）', () => {
   const src = SRC('layout/commands.js')
   assert.doesNotMatch(src, /emit\(\s*'/, '不得用裸主题字面量（须走 EventNames / LfEventNames）')
-  assert.match(src, /from '\.\.\/events\/event-names'/, '宿主落点用宿主 EventNames')
-  assert.match(src, /from '\.\.\/layout-free\/events\/event-names'/, '机制层落点用机制层 EventNames')
+  assert.match(src, /from '(?:\.\.\/events\/event-names|@ckfw\/events\/event-names\.js)'/, '宿主落点用宿主 EventNames')
+  assert.match(src, /from '@ckfw\/layout-free\/events\/event-names(?:\.js)?'/, '机制层落点用机制层 EventNames')
   // 不 import `deps`/`stores`（适配层只做映射，执行经注入的 mq）
   assert.doesNotMatch(src, /from '\.\.\/layout-free\/(stores|config)\//, '标注为不依赖机制层状态')
 })
@@ -429,7 +430,7 @@ test('④ legacy 已删除：mode.js 不存在、`?layout` 不再影响形态', 
 test('⑤ main.js：theme.css 在宿主 global.css 之后；引擎装配在 pinia/mqPlugin 之后、mount 之前', () => {
   const main = SRC('main.js')
   const iGlobal = main.indexOf("import './assets/styles/global.css'")
-  const iTheme = main.indexOf("import './layout/theme.css'")
+  const iTheme = main.indexOf("import '@ckfw/layout/theme.css'")
   const iPinia = main.indexOf('app.use(createPinia())')
   const iMq = main.indexOf('app.use(mqPlugin)')
   const iEngine = main.indexOf('setupLayoutEngine(app)')
@@ -438,7 +439,7 @@ test('⑤ main.js：theme.css 在宿主 global.css 之后；引擎装配在 pini
   assert.ok(iPinia >= 0 && iMq > iPinia, 'mqPlugin 在 pinia 之后（既有顺序不变）')
   assert.ok(iEngine > iMq, '引擎装配须在 mqPlugin 之后（v-mq 复用 + store 可用）')
   assert.ok(iMount > iEngine, '引擎装配须在 mount 之前')
-  assert.match(main, /import \{ setupLayoutEngine \} from '\.\/layout'/)
+  assert.match(main, /import \{ setupLayoutEngine \} from '@ckfw\/layout\/index\.js'/)
 })
 
 test('⑤ MainLayout：唯一容器形态（legacy 分支已删除）', () => {
@@ -481,17 +482,22 @@ test('⑤ 装配入口：layout/index.js 只注入宿主实现（mq/views/persis
   const idx = SRC('layout/index.js')
   for (const token of [
     'createLayoutEngine',
-    'createViewRegistry',
     'createLayoutTranslator',
     'createLayoutPersist',
-    'loadInitData',
-    'saveLayoutState',
-    "from '../components/dialog'",
-    "from '../components/icon'",
-    "from '../components/split'",
+    'getHostDeps',
+    'deps.views',
+    'deps.layoutApi',
+    "from '../host-deps.js'",
+    "from '../components/dialog/index.js'",
+    "from '../components/icon/index.js'",
+    "from '../components/split/index.js'",
     'engine.install(app)',
   ]) {
     assert.ok(idx.includes(token), `layout/index.js 缺：${token}`)
+  }
+  // 依赖方向铁律（TOPO-1 §2.22.2）：framework 不得 import 主仓业务模块
+  for (const bad of ['api/file', 'plugins/i18n', 'views.registry.js', 'layout/commands.js']) {
+    assert.ok(!idx.includes(bad), `layout/index.js 不得 import 业务模块：${bad}`)
   }
   // ChonkLayout：只传数据（layout / preview / selectedId），交互全走 mq（§3.2）
   const chonk = SRC('layout/ChonkLayout.vue')
@@ -504,7 +510,7 @@ test('⑤ 装配入口：layout/index.js 只注入宿主实现（mq/views/persis
 
 test('⑥ 集成：注册表 + 默认文档 → 引擎装配成功、渲染树可用、保存前校验零错误', async () => {
   setActivePinia(createPinia())
-  const { createLayoutEngine } = await import('../src/layout-free/engine.js')
+  const { createLayoutEngine } = await import('../../../../chonkpilot-framework/host/web/src/layout-free/engine.js')
   const fake = Object.fromEntries(EXPECTED_VIEWS.map((k) => [k, { name: `Fake_${k}` }]))
   registerViews(EXPECTED_VIEWS.map((k) => ({ key: k, component: fake[k] })), 'builtin')
   const persisted = []

@@ -21,10 +21,11 @@ import { isChromeMissing } from '../src/utils/chromeStatus.js'
 import { logDirView } from '../src/utils/logDirView.js'
 import { countMCPsOn, countToolSandboxOn } from '../src/utils/sandboxSummary.js'
 import { isDirNode, isThirdPartyProvider, isBuiltinRuntimeProvider } from '../src/utils/toolSource.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const readLocale = (loc, name) =>
   JSON.parse(readFileSync(join(srcDir, 'locales', loc, name), 'utf8'))
 

@@ -10,7 +10,7 @@
  * 词典 / 自定义词变更后**必须重新索引**才生效（分词结果落在索引里）。
  */
 import { ref } from 'vue'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { MsgTopics } from '../events/msgkeys.js'
 
 export function useVftsDict() {

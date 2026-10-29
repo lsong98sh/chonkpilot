@@ -20,8 +20,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { message } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
+import { message } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { dataRequest } from '../../utils/dataClient'
 import { loadFailedText } from '../../utils/settingsFeedback'
 

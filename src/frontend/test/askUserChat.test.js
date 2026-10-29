@@ -19,10 +19,11 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { EventNames } from '../src/events/event-names.js'
 import { SessionAskKeys, AskUserReplyKeys, FieldKeys } from '../src/events/msgkeys.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = join(HERE, '..', 'src')
-const read = (rel) => readFileSync(join(SRC, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 const CONTENT = read('views/chat/AskUserContent.vue')
 const DIALOG = read('views/chat/AskUserDialog.vue')

@@ -18,10 +18,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { resolveSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const readSrc = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const readSrc = (rel) => readFileSync(resolveSrc(rel), 'utf8')
 
 test('MCP 编辑弹窗：运行信息页签 sandbox Switch + 三态 + 保存写 mcps[].sandbox', () => {
   const vue = readSrc('views/config/EditMCPDialog.vue')

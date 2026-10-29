@@ -12,9 +12,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const read = (p) => readFileSync(join(HERE, '..', 'src', p), 'utf8')
+const read = (p) => readSrc(p)
 
 function fnBody(src, name) {
   const s = src.replace(/\r\n/g, '\n') // 源码可能为 CRLF，统一后再定位

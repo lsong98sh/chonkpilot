@@ -24,10 +24,13 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+// 前端源码分两处（应用侧 + 平台基座），契约扫描必须两边都覆盖
+import { FW_SRC, readSrc } from './support/feSource.mjs'
+
 const here = dirname(fileURLToPath(import.meta.url))
 const feSrc = join(here, '..', 'src')
 const contractPath = join(here, '..', '..', '..', 'docs', 'spec', '60-reference', '61-messages.schema.json')
-const read = (rel) => readFileSync(join(feSrc, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 const contract = JSON.parse(readFileSync(contractPath, 'utf8'))
 const byTopic = new Map(contract.topics.map((t) => [t.topic, t]))
@@ -38,7 +41,7 @@ const clientTopics = new Set(contract.topics.map((t) => t.clientTopic).filter(Bo
 
 // msgkeys.js（genmsg 生成）导出的常量对象：<ConstObj>.<prop> -> 字段名字符串。
 // 用于把「常量下标访问」r[GuiInitDataKeys.workDir] 映射回契约字段名 workDir。
-const msgkeysSrc = readFileSync(join(feSrc, 'events', 'msgkeys.js'), 'utf8')
+const msgkeysSrc = readSrc('events/msgkeys.js')
 const constMaps = new Map()
 for (const m of msgkeysSrc.matchAll(/export const (\w+) = \{([\s\S]*?)\n\}/g)) {
   const map = new Map()
@@ -401,7 +404,7 @@ function stripComments(src) {
 }
 
 test('前端 mq 的契约主题/客户端topic 不得用字符串字面量（须 MsgTopics/MsgClientTopics 常量）', () => {
-  const files = listSrcFiles(feSrc).filter(
+  const files = [...listSrcFiles(feSrc), ...listSrcFiles(FW_SRC)].filter(
     (f) => !/[\\/]events[\\/](msgkeys|event-names)\.js$/.test(f),
   )
   assert.ok(files.length > 0, '未扫描到前端源文件')
@@ -410,7 +413,8 @@ test('前端 mq 的契约主题/客户端topic 不得用字符串字面量（须
     const text = stripComments(readFileSync(f, 'utf8'))
     for (const m of text.matchAll(/mq\.(?:on|emit)\(\s*'([^']+)'/g)) {
       if (byTopic.has(m[1]) || clientTopics.has(m[1])) {
-        offenders.push(`${f.slice(feSrc.length + 1)}: ${m[1]}`)
+        const rel = f.startsWith(feSrc) ? f.slice(feSrc.length + 1) : 'framework/host/web/src/' + f.slice(FW_SRC.length + 1)
+        offenders.push(`${rel}: ${m[1]}`)
       }
     }
   }

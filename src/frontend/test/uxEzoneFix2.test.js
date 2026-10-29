@@ -18,10 +18,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { resolveSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const readSrc = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const readSrc = (rel) => readFileSync(resolveSrc(rel), 'utf8')
 
 /** 按 header 定位函数体（花括号配平），与 uxEzoneFix.test.js 同法。 */
 function fnBody(src, header) {

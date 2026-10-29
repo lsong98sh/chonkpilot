@@ -22,11 +22,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const repoDir = join(here, '..', '..')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const readRepo = (rel) => readFileSync(join(repoDir, rel), 'utf8')
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']

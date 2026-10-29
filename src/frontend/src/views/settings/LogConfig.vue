@@ -45,8 +45,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Select, Button, message } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
+import { Select, Button, message } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { getAllConfig, setConfig } from '../../api/config'
 import { loadInitData, revealInExplorer } from '../../api/file'
 import { GuiInitDataKeys } from '../../events/msgkeys'

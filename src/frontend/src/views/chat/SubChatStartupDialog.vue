@@ -24,7 +24,7 @@
 
 <script setup>
 import { FieldKeys } from '../../events/msgkeys.js'
-import Icon from '../../components/icon/Icon.vue'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { SUBCHAT_READY, subChatName, subChatStateKey } from '../../utils/subchat.js'
 import { isGroupChatKind } from '../../utils/groupchat.js'
 

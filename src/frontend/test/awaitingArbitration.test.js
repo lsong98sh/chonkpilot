@@ -18,11 +18,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { resolveSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const repoRoot = join(here, '..', '..')
-const readSrc = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const readSrc = (rel) => readFileSync(resolveSrc(rel), 'utf8')
 
 test('视图契约：data-tasktree-tasks 增补 awaiting{options,timeout_s}（persist 侧）', () => {
   // 阶段 4 门面化第四批（41 G-36）：视图构造在 tasktree 域实现，

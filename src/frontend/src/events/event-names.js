@@ -5,9 +5,15 @@
 //   - Go 所有消息经 pkg/eventbus 发出，Source != "web" 时统一广播到唯一通道 channelMsg；
 //     前端 mq.js 只订阅 channelMsg，按 envelope.type 分发给各消费者（envelope.payload 即原 payload）。
 //   - 前端消息经 fetch POST /publish 进入 bus（Source="web"），不回显前端（src 防环）。
+//
+// 拆分（TOPO-1 §2.22.3）：**平台自用键**（唯一通道名 / 窗口 chrome / 对话框关闭 / 通用页签右键菜单）
+// 的唯一源 = `framework/host/web/src/events/event-names.js`（`FrameworkEventNames`）；本文件只保留
+// **业务键**，再合成对外唯一的 `EventNames` —— 字面量值逐字不变，全仓引用零改动。
+// 漂移由 `test/frameworkShardParity.test.js` 断言。
+import { FrameworkEventNames } from '@ckfw/events/event-names.js'
+
 export const EventNames = {
-  // 唯一通道名
-  channelMsg: 'msg',
+  ...FrameworkEventNames,
 
   // ── Executor 事件（executor → IDE → 前端）──
   llmToken: 'llm-token', // LLM 回复文本 token 增量（原 message-chunk type=text）
@@ -235,20 +241,15 @@ export const EventNames = {
   dbViewerOpen: 'db-viewer-open',
   // 纯 DOM 行为：弹层/菜单容器点击仅停止冒泡（无业务动作，仅使交互可观测）
   containerClick: 'container-click',
-  // ── Dialog 对话框操作（DialogShell 组件内部）──
-  // 定向关闭通道：emit payload 支持 {dialogId?} —— 有 dialogId 关该弹窗、无则关最上层（唯一）弹窗。
-  // （toggleCollapse/minimize/maximize/restore 原为全局广播、无收发方，已删除。）
-  dialogClose: 'dialog-close',
+  // ── Dialog 对话框操作 ──
+  // `dialogClose`（定向关闭；payload 支持 {dialogId?}）随 DialogShell 迁入 framework 分片。
 
   // ── TabBar 页签操作（TabBar 组件内部）──
   tabSelect: 'tab-select',
   tabClose: 'tab-close',
   tabPin: 'tab-pin',
   tabMoreToggle: 'tab-more-toggle',
-  tabCtxThis: 'tab-ctx-this',
-  tabCtxRight: 'tab-ctx-right',
-  tabCtxOthers: 'tab-ctx-others',
-  tabCtxAll: 'tab-ctx-all',
+  // tabCtxThis / tabCtxRight / tabCtxOthers / tabCtxAll（页签右键菜单）随 TabBar 迁入 framework 分片。
 
   // ── Chat 操作 ──
   chatCopySessionId: 'chat-copy-session-id',
@@ -265,15 +266,13 @@ export const EventNames = {
   themeSelect: 'theme-select',
   langToggle: 'lang-toggle',
   langSelect: 'lang-select',
-  windowToggle: 'window-toggle',
-  guiWindowStatus: 'gui.window.status', // 统一窗口控制/查询：payload {command: null|'minimize'|'maximize'|'close'}
+  // windowToggle / guiWindowStatus / guiWindowResize / windowMaximizedChanged
+  // （窗口 chrome：顶栏移动 / 边缘 resize / 最大化同步）随窗口组件迁入 framework 分片。
   guiWindowOpenChat: 'gui.window.open-chat', // 打开/激活纯对话窗口（多窗口；幂等）：payload {session_id}
   guiWindowList: 'gui.window.list', // 查已开**对话窗口**（仅 chat；主窗口不入注册表）：payload {}
   guiWindowClosed: 'gui.window.closed', // 宿主 → 前端：对话窗口关闭广播 {window_id, session_id}（解除入口占用）
   guiWindowSetTitle: 'gui.window.set-title', // **仅独立对话窗口**：标题随会话摘要变化更新：payload {title}
   guiDevToolsOpen: 'gui.devtools.open', // 状态栏调试图标 → 宿主程序化打开 DevTools（61 §1）
-  guiWindowResize: 'gui.window.resize', // frameless 主窗口边缘命中 → 宿主 StartResize(HT*)（61 §1；WIN-1 / G-59）
-  windowMaximizedChanged: 'window-maximized-changed', // 后端执行最大化后广播，同步按钮图标
   sessionsOpen: 'sessions-open',
   analyzeOpen: 'analyze-open',
   chatToggle: 'chat-toggle',

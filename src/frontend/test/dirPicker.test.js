@@ -22,10 +22,11 @@ import {
   normPath,
   baseName,
 } from '../src/utils/dirPicker.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const readLocale = (loc, name) =>
   JSON.parse(readFileSync(join(srcDir, 'locales', loc, name), 'utf8'))
 

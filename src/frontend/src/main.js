@@ -3,22 +3,37 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import './assets/styles/global.css'
 // 自由布局容器主题映射（UILAYOUT-1 §3.10 / P3④）：`--lf-*` → 宿主既有 token（三主题自动跟随）
-import './layout/theme.css'
+import '@ckfw/layout/theme.css'
 import { i18n } from './plugins/i18n'
 import { logError } from './api/log'
-import mq, { mqPlugin } from './utils/mq'
-import { dialog } from './components/dialog'
+import mq, { mqPlugin } from '@ckfw/utils/mq.js'
+import { dialog } from '@ckfw/components/dialog/index.js'
+import { setHostDeps } from '@ckfw/host-deps.js'
 import { registerSelectionSubscribers } from './stores/selectionSubscribers'
-import { setupLayoutEngine } from './layout'
+import { setupLayoutEngine } from '@ckfw/layout/index.js'
+// 业务清单（TOPO-1 §2.22.2「机制在基座、清单在应用」）：视图注册表 / 布局落库 / 新建布局对话框 / 顶栏动作
+import { createViewRegistry } from './layout/views.registry.js'
+import { loadInitData, saveLayoutState } from './api/file'
+import LayoutNewDialog from './layout/bar-views/LayoutNewDialog.vue'
+import { installBarActions } from './layout/barActions.js'
 import { initPluginUIHost, initPlugins } from './pluginHost'
 
 // Go 端广播经 Eval 调用 window.mq.emitRemote(envelope)。
 window.mq = mq
 
+// framework 宿主端口注入（唯一外部耦合点）：framework 不 import 主仓任何业务模块
+setHostDeps({
+  i18n,
+  views: (translate) => createViewRegistry(translate),
+  layoutApi: { load: loadInitData, save: saveLayoutState },
+  layoutNewDialog: LayoutNewDialog,
+  barActions: { install: installBarActions },
+})
+
 const app = createApp(App)
 app.use(i18n)
 // Pinia（UILAYOUT-1 §3.7 / §4.1 ②）：唯一新增运行时依赖；跨 view 共享状态层（P2）与
-// 自由布局子系统（src/layout-free）的布局域 store 都挂在它上面。
+// 自由布局子系统（平台基座 `chonkpilot-framework/host/web/src/layout-free`）的布局域 store 都挂在它上面。
 app.use(createPinia())
 // 跨 view 共享状态的唯一写入点（UILAYOUT-1 §7 P2②）：订阅既有主题 → 写 selection store。
 // 注册时机 = Pinia 安装后、mount 前（早于任何组件挂载，保证组件首帧即可读到已收敛的状态）。

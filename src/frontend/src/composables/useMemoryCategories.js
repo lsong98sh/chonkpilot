@@ -4,8 +4,8 @@
 // 避免两处各写一份（数据源 = 既有 data-memory-list / data-memory-read / data-memory-save）。
 import { ref, computed, h } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { message } from '../components/ui'
-import { dialog } from '../components/dialog'
+import { message } from '@ckfw/components/ui/index.js'
+import { dialog } from '@ckfw/components/dialog/index.js'
 import TextEditDialog from '../components/common/TextEditDialog.vue'
 import MemoryCategoryListDialog from '../views/settings/MemoryCategoryListDialog.vue'
 import dataClient, { dataRequest } from '../utils/dataClient'

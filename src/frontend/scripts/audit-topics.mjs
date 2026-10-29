@@ -3,7 +3,8 @@
  * mq topic 审计 CLI（仓库级）：
  *   node scripts/audit-topics.mjs      （或 npm run audit:topics）
  *
- * 审计对象 = 自由布局子系统 `src/layout-free`（UILAYOUT-1 §3.8 的 80 个 `lf-*` 前台主题）。
+ * 审计对象 = 自由布局子系统（TOPO-1 后位于平台基座仓
+ * `chonkpilot-framework/host/web/src/layout-free`；UILAYOUT-1 §3.8 的 80 个 `lf-*` 前台主题）。
  * 同一断言亦随 `npm test` 跑（test/layoutFreeTopicAudit.test.js）——见 §3.13「纳入前端测试」。
  */
 import { fileURLToPath } from 'node:url'
@@ -11,7 +12,7 @@ import { dirname, join } from 'node:path'
 import { findOrphanTopics } from './topic-audit.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const root = join(here, '..', 'src', 'layout-free')
+const root = join(here, '..', '..', '..', '..', 'chonkpilot-framework', 'host', 'web', 'src', 'layout-free')
 
 const r = findOrphanTopics(root)
 console.log(`topic 总数: ${r.total}`)

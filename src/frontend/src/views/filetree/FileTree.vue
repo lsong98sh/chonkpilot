@@ -65,15 +65,15 @@
 <script setup>
 import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import Icon from '../../components/icon/Icon.vue'
-import { confirm, message, promptInput } from '../../components/ui'
+import Icon from '@ckfw/components/icon/Icon.vue'
+import { confirm, message, promptInput } from '@ckfw/components/ui/index.js'
 import { getFileTree, getFileTreeChildren, createFileInDir, createDirInDir, renameFile, moveFile, copyFileTo, deleteFilePath, revealInExplorer, openWithDefault, openWithDialog, loadInitData, saveFileTreeState, saveWindowState, setWorkDir, invalidateInitDataCache } from '../../api/file'
 import { createPrimitive } from '../../api/knowledge'
 import { nearestTypeToken } from '../../utils/primitive'
 import { onFileChanged, onFileChangedEvent } from '../../utils/fileTree'
 import { fileOpErrorText } from '../../utils/fileOpError'
 import { resolvePublishError } from '../../utils/publishError'
-import mq, { currentInstanceId } from '../../utils/mq'
+import mq, { currentInstanceId } from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics, FieldKeys, GuiVcsInfoKeys } from '../../events/msgkeys'
 

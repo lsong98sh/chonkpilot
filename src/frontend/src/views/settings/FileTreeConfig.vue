@@ -24,7 +24,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Textarea, Button, message } from '../../components/ui'
+import { Textarea, Button, message } from '@ckfw/components/ui/index.js'
 import { getAllConfig, setConfig, deleteConfig } from '../../api/config'
 import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'
 import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'

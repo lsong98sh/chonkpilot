@@ -18,7 +18,7 @@
  * 调用方把主窗当前会话作为 `mainSessionId` 传入 `entryStateFor`。
  */
 import { computed, ref } from 'vue'
-import mq from '../utils/mq.js'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { newSessionId } from '../api/chat'
 import { ensureSession } from '../api/session'

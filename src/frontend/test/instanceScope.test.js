@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { eventBelongsToInstance } from '../src/utils/instanceScope.js'
+import { readSrc } from './support/feSource.mjs'
 
 test('缺口 8：他 instance 的 tasks.* / mcp-* 事件不属本实例，本实例的与无归属的放行', () => {
   const mine = 'ins-a'
@@ -31,7 +32,7 @@ test('缺口 8：本实例未标识（无注入）→ 过滤条件恒真（单 i
 
 test('缺口 8 接线守卫：useTaskView 的 tasks.* / llm-complete 入口调用 instance 过滤', () => {
   const here = dirname(fileURLToPath(import.meta.url))
-  const src = readFileSync(join(here, '..', 'src', 'composables', 'useTaskView.js'), 'utf8')
+  const src = readSrc('composables/useTaskView.js')
   assert.match(src, /import\s*\{\s*eventBelongsToInstance\s*\}\s*from\s*'\.\.\/utils\/instanceScope'/,
     'useTaskView 必须引入 instance 过滤')
   const onTask = src.match(/function onTaskEvent\s*\(payload\)\s*\{[\s\S]*?\n\}/)

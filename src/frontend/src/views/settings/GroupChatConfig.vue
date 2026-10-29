@@ -32,7 +32,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Select, message } from '../../components/ui'
+import { Select, message } from '@ckfw/components/ui/index.js'
 import { getAllConfig, setConfig, deleteConfig } from '../../api/config'
 import { saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 

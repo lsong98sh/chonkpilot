@@ -41,9 +41,9 @@
 <script setup>
 import { computed, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Icon } from '../../components/icon'
-import { Input, Tag } from '../../components/ui'
-import mq from '../../utils/mq'
+import { Icon } from '@ckfw/components/icon/index.js'
+import { Input, Tag } from '@ckfw/components/ui/index.js'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics, FieldKeys, GuiSearchKeys } from '../../events/msgkeys'
 

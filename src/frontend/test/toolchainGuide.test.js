@@ -13,10 +13,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { TOOLCHAIN_GUIDES, guideFor, normalizeVersion, belowMinVersion, versionBadge } from '../src/utils/toolchainGuide.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 // ── A. 版本规范化 / 低于判定（纯函数）────────────────────────────────
 test('normalizeVersion：真实探测输出样本 → 规范化点分版本；解析不出 → 原样（trim）', () => {

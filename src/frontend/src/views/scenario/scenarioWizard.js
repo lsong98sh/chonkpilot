@@ -4,7 +4,7 @@
 // 模块级 flag 防重复打开（同窗口内同一时刻仅一个向导对话框）；对话框卸载时（任意关闭路径，
 // 含右上角 ✕）经 onClosed 复位，保证下次仍可打开。
 import { h, defineAsyncComponent } from 'vue'
-import { dialog } from '../../components/dialog'
+import { dialog } from '@ckfw/components/dialog/index.js'
 
 // 懒加载：仅在打开向导时加载（与 MainLayout 懒加载 ScenarioDialogContent 同口径）
 const ScenarioWizardDialog = defineAsyncComponent(() => import('./ScenarioWizardDialog.vue'))

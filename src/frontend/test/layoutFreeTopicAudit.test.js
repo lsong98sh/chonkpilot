@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path'
 import { findOrphanTopics } from '../scripts/topic-audit.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const ROOT = join(HERE, '..', 'src', 'layout-free')
+const ROOT = join(HERE, '..', '..', '..', '..', 'chonkpilot-framework', 'host', 'web', 'src', 'layout-free')
 const result = findOrphanTopics(ROOT)
 
 test('layout-free：主题审计 —— 每个主题都有发布方与订阅方', () => {

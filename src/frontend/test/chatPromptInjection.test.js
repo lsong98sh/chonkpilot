@@ -24,10 +24,11 @@ import {
   composeUserText,
 } from '../src/utils/chatPrompt.js'
 import { useChatPrompts } from '../src/composables/useChatPrompts.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 // ── 知识库列举桩（三级根；某一级 getKnowledgeRoot 抛错 = 该级不存在）──
 function fakeApi(byDir, roots) {

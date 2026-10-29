@@ -157,12 +157,12 @@
 <script setup>
 import { reactive, ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Input, Textarea, Select, Switch, Tooltip, message } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
+import { Button, Input, Textarea, Select, Switch, Tooltip, message } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { DEFAULT_LLM_PROTOCOL, RESPONSES_LLM_PROTOCOL } from '../../config/defaults'
 import { classifyError } from '../../utils/errorMessage'
 import { suggestConfig } from '../../api/config'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 // INPUTVAL-1：字段基线（与后端 validate.go 同源口径）。
 import {

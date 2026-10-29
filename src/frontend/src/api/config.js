@@ -1,5 +1,5 @@
 import { dataClient } from '../utils/dataClient'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { selectDir } from '../utils/guiAsync'
 import { resolvePublishError } from '../utils/publishError.js'
 import { i18n } from '../plugins/i18n'

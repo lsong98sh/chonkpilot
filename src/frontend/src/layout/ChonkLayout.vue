@@ -13,8 +13,8 @@
 
 <script setup>
 import { computed } from 'vue'
-import LfFreeLayoutContainer from '../layout-free/components/layout/LfFreeLayoutContainer.vue'
-import { getLayoutEngine } from './index.js'
+import LfFreeLayoutContainer from '@ckfw/layout-free/components/layout/LfFreeLayoutContainer.vue'
+import { getLayoutEngine } from '@ckfw/layout/index.js'
 
 const engine = getLayoutEngine()
 

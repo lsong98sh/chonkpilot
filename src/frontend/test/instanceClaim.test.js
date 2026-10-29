@@ -19,8 +19,8 @@ function setupEnv({ ck = null, bridge = false, backend = { ok: true, result: nul
 }
 
 const { runtimeForm, isSplitForm, injectedInstanceId, currentInstanceId, setClaimedInstance, claimedInstanceId } =
-  await import('../src/utils/instanceState.js')
-const mq = (await import('../src/utils/mq.js')).default
+  await import('../../../../chonkpilot-framework/host/web/src/utils/instanceState.js')
+const mq = (await import('../../../../chonkpilot-framework/host/web/src/utils/mq.js')).default
 const { claim, useInstanceClaim, HEARTBEAT_INTERVAL_MS, CLAIM_OK, CLAIM_UNAUTHORIZED, CLAIM_FORBIDDEN } =
   await import('../src/composables/useInstanceClaim.js')
 

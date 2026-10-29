@@ -105,9 +105,9 @@
 
 <script setup>
 import { computed } from 'vue'
-import Icon from '../../components/icon/Icon.vue'
-import FileIcon from '../../components/icon/FileIcon.vue'
-import { Tag, Input } from '../../components/ui'
+import Icon from '@ckfw/components/icon/Icon.vue'
+import FileIcon from '@ckfw/components/icon/FileIcon.vue'
+import { Tag, Input } from '@ckfw/components/ui/index.js'
 
 defineOptions({ name: 'TreeNode' })
 

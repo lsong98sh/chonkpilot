@@ -1,4 +1,4 @@
-import mq, { currentInstanceId } from '../utils/mq.js'
+import mq, { currentInstanceId } from '@ckfw/utils/mq.js'
 import { resolvePublishError } from '../utils/publishError.js'
 import { createInitDataPrefetch } from '../utils/initDataPrefetch.js'
 import { FieldKeys, GuiUiSaveKeys, FilesysListKeys, FilesysContentKeys } from '../events/msgkeys.js'

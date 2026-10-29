@@ -14,7 +14,7 @@
  * 状态以 `ref` 暴露 → computed 中读取即自动响应，**不用 watch / watchEffect**。
  */
 import { ref } from 'vue'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { FieldKeys } from '../events/msgkeys.js'
 

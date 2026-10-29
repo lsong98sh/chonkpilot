@@ -14,9 +14,9 @@
  * 模块级单例状态（App 启动后认领一次；其它消费者可读同一份）。
  */
 import { ref } from 'vue'
-import mq from '../utils/mq.js'
+import mq from '@ckfw/utils/mq.js'
 import { MsgTopics } from '../events/msgkeys.js'
-import { isSplitForm, setClaimedInstance } from '../utils/instanceState.js'
+import { isSplitForm, setClaimedInstance } from '@ckfw/utils/instanceState.js'
 
 /** 心跳周期 30s（61 §4.1 ②；服务端 90s 未收即回收 —— 取值单一来源 = chonkpilot-lib/heartbeat）。 */
 export const HEARTBEAT_INTERVAL_MS = 30000

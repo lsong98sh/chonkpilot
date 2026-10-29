@@ -15,10 +15,11 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { MsgTopics, FieldKeys, GuiWindowResizeKeys } from '../src/events/msgkeys.js'
 import { EventNames } from '../src/events/event-names.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = join(HERE, '..', 'src')
-const read = (rel) => readFileSync(join(SRC_DIR, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 const COMP = read('components/shell/WindowResizeHandles.vue')
 const LAYOUT = read('views/layout/MainLayout.vue')
@@ -70,7 +71,7 @@ test('③ 唯一形态（desktop）→ 命中层无条件渲染 + 命中条退�
 })
 
 test('④ 挂载点：MainLayout 唯一挂载（不散落各 view）', () => {
-  assert.match(LAYOUT, /import WindowResizeHandles from '\.\.\/\.\.\/components\/shell\/WindowResizeHandles\.vue'/)
+  assert.match(LAYOUT, /import WindowResizeHandles from '@ckfw\/components\/shell\/WindowResizeHandles\.vue'/)
   const mounts = LAYOUT.match(/<WindowResizeHandles \/>/g) || []
   assert.equal(mounts.length, 1, 'MainLayout 须且仅须挂载一次')
 })

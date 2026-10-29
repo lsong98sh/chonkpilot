@@ -35,9 +35,10 @@ import {
   countGroupChatWindows,
   countNormalChatWindows,
 } from '../src/utils/chatWindows.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SRC = (p) => readFileSync(join(HERE, '..', 'src', p), 'utf8')
+const SRC = (p) => readSrc(p)
 const ROOT = (p) => readFileSync(join(HERE, '..', '..', '..', p), 'utf8')
 // TOPO-1（2026-10-29）：窗口层（window.go / registry.go）已迁至 framework/host。
 const FW = (p) => readFileSync(join(HERE, '..', '..', '..', '..', 'chonkpilot-framework', 'host', 'src', p), 'utf8')

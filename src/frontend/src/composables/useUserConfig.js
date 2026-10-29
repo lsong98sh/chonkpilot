@@ -9,7 +9,7 @@
  * 纪律：状态逻辑走 useXxx composable；不 watch props/store。
  */
 import { ref, readonly } from 'vue'
-import mq from '../utils/mq.js'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { getUserConfig } from '../api/config.js'
 import { configFromChangedEvent, mergeUserConfig } from '../utils/userConfigApply.js'

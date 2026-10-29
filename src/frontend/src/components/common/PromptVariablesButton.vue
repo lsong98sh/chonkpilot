@@ -21,8 +21,8 @@
 
 <script setup>
 import { computed, onMounted } from 'vue'
-import { Button, Tooltip, Popover } from '../ui'
-import Icon from '../icon/Icon.vue'
+import { Button, Tooltip, Popover } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { usePromptVariables } from '../../composables/usePromptVariables'
 
 const props = defineProps({

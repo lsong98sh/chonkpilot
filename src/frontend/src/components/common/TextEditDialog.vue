@@ -50,7 +50,7 @@
 <script setup>
 import { ref, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Textarea, message } from '../ui'
+import { Button, Textarea, message } from '@ckfw/components/ui/index.js'
 import { optimizeAgentPrompt } from '../../api/config'
 import PromptVariablesButton from './PromptVariablesButton.vue'
 import { useVariableInsert } from '../../composables/usePromptVariables'

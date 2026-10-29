@@ -17,11 +17,13 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
-import { icons } from '../src/components/icon/icons.js'
+import { icons } from '../../../../chonkpilot-framework/host/web/src/components/icon/icons.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 const SRC = join(ROOT, 'src')
+// 平台基座源码（图标注册表 / 布局引擎 / 通用控件已迁出主仓，TOPO-1 §2.22.2）
+const FW_SRC = join(HERE, '..', '..', '..', '..', 'chonkpilot-framework', 'host', 'web', 'src')
 
 function walk(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -32,7 +34,7 @@ function walk(dir, out = []) {
   return out
 }
 
-const SOURCES = walk(SRC).filter((f) => /\.(vue|js|mjs)$/.test(f))
+const SOURCES = [...walk(SRC), ...walk(FW_SRC)].filter((f) => /\.(vue|js|mjs)$/.test(f))
 const read = (f) => readFileSync(f, 'utf8')
 const rel = (f) => relative(ROOT, f).split('\\').join('/')
 
@@ -62,7 +64,7 @@ function collectStaticNames() {
   }
 
   // LfBarEditor 的候选图标清单（纯数组，不在上面任何模式内）
-  const presetFile = join(SRC, 'layout-free/components/settings/LfBarEditor.vue')
+  const presetFile = join(FW_SRC, 'layout-free/components/settings/LfBarEditor.vue')
   const presetText = read(presetFile)
   const block = presetText.match(/const iconPresets\s*=\s*\[([\s\S]*?)\]/)
   assert.ok(block, 'LfBarEditor.vue 里找不到 iconPresets 清单')
@@ -84,7 +86,7 @@ test('图标注册表：每个值都是完整 <svg>…</svg> 且 viewBox 合法'
 })
 
 test('图标注册表：无重复键（同名后写覆盖前写）', () => {
-  const text = read(join(SRC, 'components/icon/icons.js'))
+  const text = read(join(FW_SRC, 'components/icon/icons.js'))
   const keys = [...text.matchAll(/^\s{2}'([a-z0-9-]+)':/gm)].map((m) => m[1])
   const dup = keys.filter((k, i) => keys.indexOf(k) !== i)
   assert.deepEqual(dup, [], `重复的图标键：${dup.join(', ')}`)

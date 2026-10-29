@@ -10,9 +10,9 @@
  *
  * 启动顺序：`initPluginUIHost()` 必须早于 `initPlugins()` 与任何插件视图挂载。
  */
-import mq, { currentInstanceId } from './utils/mq'
-import Icon from './components/icon/Icon.vue'
-import { Button, Switch } from './components/ui'
+import mq, { currentInstanceId } from '@ckfw/utils/mq.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
+import { Button, Switch } from '@ckfw/components/ui/index.js'
 import { registerPluginViews, unregisterPluginViews } from './layout/views.registry.js'
 import { subscribeTheme, themeSnapshot } from './composables/useTheme.js'
 import { configurePluginUI } from '../packages/plugin-ui/src/index.js'

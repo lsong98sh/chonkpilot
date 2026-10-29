@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createRenderer, defineComponent, h, nextTick } from 'vue'
 import { createEl, hostOps, installDomStubs } from './support/headless.js'
+import { readSrc } from './support/feSource.mjs'
 
 register('./support/vue-sfc-hooks.mjs', import.meta.url)
 await new Promise((r) => setTimeout(r, 0))
@@ -27,7 +28,7 @@ async function loadModules() {
   const [host, plugins, mqMod, readiness, pkg] = await Promise.all([
     import('../packages/plugin-ui/src/PluginPageHost.vue'),
     import('../packages/plugin-ui/src/usePlugins.js'),
-    import('../src/utils/mq.js'),
+    import('../../../../chonkpilot-framework/host/web/src/utils/mq.js'),
     import('../packages/plugin-ui/src/usePluginReadiness.js'),
     import('../packages/plugin-ui/src/index.js'),
   ])
@@ -56,7 +57,7 @@ async function loadModules() {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const pkgDir = join(here, '..', 'packages', 'plugin-ui', 'src')
 const readPkg = (rel) => readFileSync(join(pkgDir, rel), 'utf8')
 

@@ -15,7 +15,7 @@ import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { EventNames } from '../../events/event-names'
 import { useQueueStatus } from '../../composables/useQueueStatus'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 
 const { t } = useI18n()
 const { memoryQueue, compressQueue, handleNotice: handleQueueNotice } = useQueueStatus()

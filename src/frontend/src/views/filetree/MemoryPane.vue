@@ -40,8 +40,8 @@
 <script setup>
 import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import FileIcon from '../../components/icon/FileIcon.vue'
-import { Button } from '../../components/ui'
+import FileIcon from '@ckfw/components/icon/FileIcon.vue'
+import { Button } from '@ckfw/components/ui/index.js'
 import { onDataRefresh } from '../../utils/dataClient'
 import { EventNames } from '../../events/event-names'
 import { useMemoryTree } from '../../composables/useMemoryTree'

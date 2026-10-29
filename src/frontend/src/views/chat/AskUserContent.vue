@@ -56,8 +56,8 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { Button } from '../../components/ui'
-import mq from '../../utils/mq'
+import { Button } from '@ckfw/components/ui/index.js'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 
 const props = defineProps({

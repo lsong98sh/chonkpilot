@@ -15,7 +15,7 @@
  * 域清单：user-config / prj-config / prj-security / scenario /
  * knowledge / prompt。
  */
-import mq from './mq'
+import mq from '@ckfw/utils/mq.js'
 import { resolvePublishError } from './publishError.js'
 
 /**

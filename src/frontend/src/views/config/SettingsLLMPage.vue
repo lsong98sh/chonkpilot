@@ -73,14 +73,14 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, h, defineAsyncComponent } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Table, Button, Tag, Select, Tabs, message, confirm } from '../../components/ui'
-import { dialog } from '../../components/dialog'
-import Icon from '../../components/icon/Icon.vue'
+import { Table, Button, Tag, Select, Tabs, message, confirm } from '@ckfw/components/ui/index.js'
+import { dialog } from '@ckfw/components/dialog/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
 import { getUserConfig, saveUserConfig } from '../../api/config'
 import { DEFAULT_LLM } from '../../config/defaults'
 import { loadFailedText, savedText, saveFailedText, APPLY_INSTANT } from '../../utils/settingsFeedback'
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 
 const EditLLMDialog = defineAsyncComponent(() => import('./EditLLMDialog.vue'))

@@ -6,7 +6,7 @@
 <script setup>
 import { onMounted, onUnmounted } from 'vue'
 import { askUserManager } from '../../utils/askUserManager'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 
 let unsubAskUser = null

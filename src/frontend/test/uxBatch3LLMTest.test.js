@@ -15,11 +15,12 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { classifyError } from '../src/utils/errorMessage.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const repoDir = join(here, '..', '..')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 // server 包已按职责拆分（2026-10-25）：源码守卫读整包（server.go 只剩 277 行）。
 const readServerPkg = () => readdirSync(join(repoDir, 'lib', 'llm', 'server'))
   .filter((f) => f.endsWith('.go') && !f.endsWith('_test.go'))

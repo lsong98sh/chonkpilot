@@ -15,11 +15,12 @@ import { dirname, join } from 'node:path'
 import { createPinia, setActivePinia } from 'pinia'
 import { useSelectionStore, EXPLORER_MODES, DEFAULT_EXPLORER_MODE } from '../src/stores/selection.js'
 import { registerSelectionSubscribers, unregisterSelectionSubscribers } from '../src/stores/selectionSubscribers.js'
-import mq from '../src/utils/mq.js'
+import mq from '../../../../chonkpilot-framework/host/web/src/utils/mq.js'
 import { EventNames } from '../src/events/event-names.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SRC = (rel) => readFileSync(join(HERE, '..', 'src', rel), 'utf8')
+const SRC = (rel) => readSrc(rel)
 
 // `mq.emit` 会经 `/publish` 发后端（Node 下无同源服务）→ 统一桩掉 fetch（结果信封形状同桥）。
 const realFetch = globalThis.fetch

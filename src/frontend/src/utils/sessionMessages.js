@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { message } from '../components/ui'
+import { message } from '@ckfw/components/ui/index.js'
 import { i18n } from '../plugins/i18n'
 import { classifyError } from './errorMessage'
 

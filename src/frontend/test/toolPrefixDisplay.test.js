@@ -15,10 +15,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { stripToolPrefix } from '../src/utils/toolSource.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 // ① 剥前缀显示原名（self / dir 节点恒加前缀）
 test('① stripToolPrefix：self_ / <节点名>_ 前缀剥离为原名', () => {

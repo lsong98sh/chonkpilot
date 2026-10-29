@@ -15,10 +15,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { DEFAULT_MCP } from '../src/config/defaults.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const readLocale = (loc, name) => JSON.parse(readFileSync(join(srcDir, 'locales', loc, name), 'utf8'))
 const LOCALES = ['zh-CN', 'en-US']
 

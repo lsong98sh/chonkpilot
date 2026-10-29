@@ -95,12 +95,12 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Tabs, Input, Button, Switch, Select, message } from '../../components/ui'
+import { Tabs, Input, Button, Switch, Select, message } from '@ckfw/components/ui/index.js'
 import {
   getUserConfig, saveUserConfig, resetUserKey,
   getAllConfig, setConfig, deleteConfig,
 } from '../../api/config'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { APPLY_INSTANT, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import { validatePositiveInt, positiveIntErrorText, validateNonNegativeInt, nonNegativeIntErrorText } from '../../utils/settingsValidation'

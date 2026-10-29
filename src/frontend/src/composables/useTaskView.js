@@ -17,7 +17,7 @@
  * 本 composable 是**模块级单例**：多个入口共享同一份快照与事件订阅。
  */
 import { reactive } from 'vue'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { eventBelongsToInstance } from '../utils/instanceScope'
 import { EventNames } from '../events/event-names'
 import { copyDslFields } from '../utils/dslView'

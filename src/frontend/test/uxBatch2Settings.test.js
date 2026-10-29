@@ -21,11 +21,12 @@ import {
 } from '../src/utils/settingsFeedback.js'
 import { validatePositiveInt, positiveIntErrorText } from '../src/utils/settingsValidation.js'
 import { countTrustDirs, needsTrustDirsWarning } from '../src/utils/sandboxTrust.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const repoRoot = join(here, '..', '..')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const readRepo = (rel) => readFileSync(join(repoRoot, rel), 'utf8')
 // server 包已按职责拆分（2026-10-25）：源码守卫读整包（server.go 只剩 277 行）。
 const readServerPkg = () => readdirSync(join(repoRoot, 'lib', 'llm', 'server'))

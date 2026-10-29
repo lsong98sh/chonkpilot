@@ -94,8 +94,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import Icon from '../../components/icon/Icon.vue'
-import { Button, Table, Tag } from '../../components/ui'
+import Icon from '@ckfw/components/icon/Icon.vue'
+import { Button, Table, Tag } from '@ckfw/components/ui/index.js'
 import MessageList from '../chat/MessageList.vue'
 import { useTaskView } from '../../composables/useTaskView'
 import { useTaskStatus } from '../../composables/useTaskStatus'

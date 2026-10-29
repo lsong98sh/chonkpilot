@@ -55,9 +55,9 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useProfileStore } from '../profiles.js'
-import { EventNames } from '../../layout-free/events/event-names.js'
-import mq from '../../utils/mq'
+import { useProfileStore } from '@ckfw/layout/profiles.js'
+import { EventNames } from '@ckfw/layout-free/events/event-names.js'
+import mq from '@ckfw/utils/mq.js'
 
 const store = useProfileStore()
 const root = ref(null)

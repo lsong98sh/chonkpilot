@@ -29,9 +29,10 @@ import {
   mergeOpenedWindow,
   removeClosedWindow,
 } from '../src/utils/chatWindows.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SRC = (p) => readFileSync(join(HERE, '..', 'src', p), 'utf8')
+const SRC = (p) => readSrc(p)
 
 // ── 1) URL 视图分派（24 §6.1 / U-2：以 URL 为准）──────────────────
 

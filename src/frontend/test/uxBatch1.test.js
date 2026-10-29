@@ -23,10 +23,11 @@ import { needsLLMConfigHint } from '../src/utils/llmSetup.js'
 import { pluginFailureText } from '../packages/plugin-ui/src/pluginNotice.js'
 import { refreshUserConfig } from '../src/utils/llmConfigRefresh.js'
 import { fileOpErrorText } from '../src/utils/fileOpError.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 

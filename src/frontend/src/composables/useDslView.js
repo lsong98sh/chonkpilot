@@ -15,7 +15,7 @@
  * 本 composable 复用 `useTaskView`（模块级单例）→ 无独立状态、无 watch（组件间仍走事件）。
  */
 import { useTaskView } from './useTaskView'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { stepsFromNodes, returnInfo, isDslJob } from '../utils/dslView'
 

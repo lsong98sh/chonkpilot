@@ -11,7 +11,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-const mq = (await import('../src/utils/mq.js')).default
+const mq = (await import('../../../../chonkpilot-framework/host/web/src/utils/mq.js')).default
 
 /** 装一把定时器桩：记录 setTimeout 的句柄/时长与 clearTimeout 的入参。 */
 function withTimerSpy() {

@@ -17,11 +17,12 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
 import { PLUGIN_UI_PREFIX, pluginUIPageURL } from '../packages/plugin-ui/src/pluginUiRoute.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const repoDir = join(here, '..', '..', '..')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 const pkgDir = join(here, '..', 'packages', 'plugin-ui', 'src')
 const readPkg = (rel) => readFileSync(join(pkgDir, rel), 'utf8')
 

@@ -99,7 +99,7 @@
 import { ref, computed, onMounted, onUpdated, nextTick, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import MessageItem from './MessageItem.vue'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { resolvePublishError } from '../../utils/publishError'
 import { EventNames } from '../../events/event-names'
 import { createSessionMessages } from '../../utils/sessionMessages'

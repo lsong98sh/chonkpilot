@@ -31,10 +31,10 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { useProfileStore } from '../profiles.js'
-import { nextDefaultName, validateName } from '../profiles-core.js'
-import { EventNames } from '../../layout-free/events/event-names.js'
-import mq from '../../utils/mq'
+import { useProfileStore } from '@ckfw/layout/profiles.js'
+import { nextDefaultName, validateName } from '@ckfw/layout/profiles-core.js'
+import { EventNames } from '@ckfw/layout-free/events/event-names.js'
+import mq from '@ckfw/utils/mq.js'
 
 const props = defineProps({
   /** 关闭对话框（由调用方注入） */

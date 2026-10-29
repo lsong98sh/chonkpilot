@@ -30,7 +30,7 @@ const {
   updateProfileDoc,
   restoreSeed,
   isValidProfile,
-} = await import('../src/layout/profiles-core.js')
+} = await import('../../../../chonkpilot-framework/host/web/src/layout/profiles-core.js')
 
 test('种子：两套固定 ID，名称与文档可解析', () => {
   const seeds = seedProfiles(1000)

@@ -88,7 +88,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import TreeNode from './TreeNode.vue'
-import { confirm, message, promptInput, Input, Button } from '../../components/ui'
+import { confirm, message, promptInput, Input, Button } from '@ckfw/components/ui/index.js'
 import {
   getKnowledgeRoot, listPrimitives,
   createPrimitiveDir, renamePrimitiveDir, deletePrimitiveDir,
@@ -97,7 +97,7 @@ import {
 } from '../../api/knowledge'
 import { revealInExplorer, openWithDefault, openWithDialog } from '../../api/file'
 import { nearestTypeToken, TYPE_DIR_REL } from '../../utils/primitive'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 
 defineOptions({ name: 'KnowledgeTree' })

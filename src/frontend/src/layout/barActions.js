@@ -9,7 +9,7 @@
  *
  * 由 free 形态的顶栏外壳（`layout/ChonkTopBar.vue`）在挂载时安装、卸载时回收。
  */
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
 import { setLocale } from '../plugins/i18n'
 import { useTheme } from '../composables/useTheme'

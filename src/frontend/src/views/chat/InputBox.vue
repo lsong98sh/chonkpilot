@@ -151,9 +151,9 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Popover, Tag, message as uiMessage } from '../../components/ui'
-import Icon from '../../components/icon/Icon.vue'
-import mq from '../../utils/mq'
+import { Button, Popover, Tag, message as uiMessage } from '@ckfw/components/ui/index.js'
+import Icon from '@ckfw/components/icon/Icon.vue'
+import mq from '@ckfw/utils/mq.js'
 import { MsgTopics, GuiUploadKeys } from '../../events/msgkeys'
 import { getFileUrl } from '../../api/file'
 import { EventNames } from '../../events/event-names'

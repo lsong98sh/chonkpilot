@@ -612,12 +612,12 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Input, Textarea, Switch, Tooltip, Tabs, message, promptInput } from '../../components/ui'
+import { Button, Input, Textarea, Switch, Tooltip, Tabs, message, promptInput } from '@ckfw/components/ui/index.js'
 import CombinedPromptPreview from './CombinedPromptPreview.vue'
 import PromptVariablesButton from '../../components/common/PromptVariablesButton.vue'
 import { useVariableInsert } from '../../composables/usePromptVariables'
 import { optimizeAgentPrompt } from '../../api/config'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics } from '../../events/msgkeys'
 

@@ -1,5 +1,5 @@
 import { EventNames } from '../events/event-names'
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 
 // 域化改造（阶段三，20-gui）：send/队列出队不再走 SendChatMessage /
 // SendNoticeTurn RPC，改为发布 llm-start 事件。turn 由前端自分配 uuid（客户端分配

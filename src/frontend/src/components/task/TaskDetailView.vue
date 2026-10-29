@@ -57,11 +57,11 @@
 <script setup>
 import { computed, ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import Icon from '../icon/Icon.vue'
-import { Button } from '../ui'
+import Icon from '@ckfw/components/icon/Icon.vue'
+import { Button } from '@ckfw/components/ui/index.js'
 import { EventNames } from '../../events/event-names'
 import { useTaskView } from '../../composables/useTaskView'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 
 defineOptions({ name: 'TaskDetailView' })
 

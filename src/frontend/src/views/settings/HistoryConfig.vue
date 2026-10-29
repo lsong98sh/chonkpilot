@@ -134,8 +134,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Switch, Input, Button, Table } from '../../components/ui'
-import { message, confirm } from '../../components/ui'
+import { Switch, Input, Button, Table } from '@ckfw/components/ui/index.js'
+import { message, confirm } from '@ckfw/components/ui/index.js'
 import { getAllConfig, setConfig, setConfigs, getVCSInfo } from '../../api/config'
 import { getActiveSessionID } from '../../api/session'
 import { usePrjConfigRefresh } from '../../composables/usePrjConfigRefresh'

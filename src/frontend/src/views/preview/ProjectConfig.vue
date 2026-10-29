@@ -41,7 +41,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Tabs } from '../../components/ui'
+import { Tabs } from '@ckfw/components/ui/index.js'
 import PluginPageHost from '../../../packages/plugin-ui/src/PluginPageHost.vue'
 import { usePlugins } from '../../../packages/plugin-ui/src/usePlugins.js'
 import SecurityConfig from '../settings/SecurityConfig.vue'

@@ -3,7 +3,7 @@
 // （P4，2026-10-01：智能体编辑界面 = 场景编辑里的 agent 编辑部分，复用同一份装载逻辑）。
 //
 // 级别矩阵（纯逻辑单源）= utils/agentLevelMatrix.js（与本文件分离以便 node 测试直跑）。
-import mq from './mq'
+import mq from '@ckfw/utils/mq.js'
 import { MsgClientTopics } from '../events/msgkeys.js'
 import { getUserConfig } from '../api/config'
 import { getKnowledgeRoot, listPrimitives, readPrimitive } from '../api/knowledge'

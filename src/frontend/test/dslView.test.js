@@ -11,6 +11,8 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+import { readSrc } from './support/feSource.mjs'
+
 import {
   DSL_JOB_KIND, DSL_LOOP_KIND, DSL_PARALLEL_KIND, DSL_STEP_KIND,
   isDslContainer, isDslJob, containerIcon, containerProgress,
@@ -23,8 +25,7 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const feSrc = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(feSrc, rel), 'utf8')
-
+const read = (rel) => readSrc(rel)
 // ── ① dslView：折叠容器 / 进度徽标 ────────────────────────────────
 
 test('容器判定：仅 LOOP / PARALLEL 为折叠容器；dsl_job 为作业根', () => {

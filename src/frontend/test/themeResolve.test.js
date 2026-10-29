@@ -21,10 +21,11 @@ import {
   schemeOf,
   themes,
 } from '../src/utils/themeResolve.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
-const SRC = (p) => readFileSync(join(ROOT, 'src', p), 'utf8')
+const SRC = (p) => readSrc(p)
 const PUB = (p) => readFileSync(join(ROOT, 'public', p), 'utf8')
 const REPO = (p) => readFileSync(join(ROOT, '..', p), 'utf8')
 

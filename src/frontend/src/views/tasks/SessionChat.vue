@@ -26,10 +26,10 @@
 <script setup>
 import { computed, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import mq from '../../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
-import Icon from '../../components/icon/Icon.vue'
-import { Tag } from '../../components/ui'
+import Icon from '@ckfw/components/icon/Icon.vue'
+import { Tag } from '@ckfw/components/ui/index.js'
 import MessageList from '../chat/MessageList.vue'
 import TaskDetailView from '../../components/task/TaskDetailView.vue'
 import DslStepsPanel from '../dsl/DslStepsPanel.vue'

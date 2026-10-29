@@ -14,10 +14,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { composeScenarioMembers, composeScenarioLayer, buildPromptLayers } from '../src/utils/promptLayers.js'
+import { readRepo, readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 const AGENTS = [
   { name: '主脑', roleTag: 'main', description: '统筹全局', isMain: true, prompt: 'MAIN PROMPT' },
@@ -71,7 +72,7 @@ test('④ 成员段拼装：名字 + roleTag + 描述（缺项降级、空项过
 
 // 格式一致性守卫：前端预览复刻后端拼接格式（后端 = 唯一注入实现，25 §8.1 #3）
 test('格式一致性：场景层格式与后端 turn.go（scenarioLayer / membersSegment）同款', () => {
-  const go = readFileSync(join(here, '..', '..', '..', 'src', 'lib', 'llm', 'server', 'turn.go'), 'utf8')
+  const go = readRepo('src/lib/llm/server/turn.go')
   assert.match(go, /"【场景】"/, '后端场景层前缀须为「【场景】」（前端预览同款）')
   assert.match(go, /"【团队成员】\\n"/, '后端成员段前缀须为「【团队成员】\\n」（前端预览同款）')
   assert.match(go, /line := "- " \+ name/, '成员行须以 "- " + 名字 起（前端预览同款）')

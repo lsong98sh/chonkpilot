@@ -15,10 +15,11 @@ import {
   charLen, tooLong, isHttpUrl, isAbsolutePath, isIdentifier, isDirId,
   hasControlChar, intInRange, attachmentTooLarge, attachmentCountExceeded,
 } from '../src/utils/fieldRules.js'
+import { readSrc } from './support/feSource.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
-const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+const read = (rel) => readSrc(rel)
 
 test('① 基线：与专题 §3 的长度 / 数值 / 附件口径一致', () => {
   assert.equal(MAX_NAME, 64)

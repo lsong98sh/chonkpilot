@@ -28,11 +28,11 @@
  *
  * 本模块依赖：机制层 `EventNames`（纯常量）+ 宿主 `EventNames` + 定义表 → 可在 node:test 直跑。
  */
-import mq from '../utils/mq'
+import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../events/event-names'
-import { EventNames as LfEventNames } from '../layout-free/events/event-names'
+import { EventNames as LfEventNames } from '@ckfw/layout-free/events/event-names'
 import { definitionOf, hostOf } from './view-definitions.js'
-import { lfT } from './i18n.js'
+import { lfT } from '@ckfw/layout/i18n.js'
 
 /** `open-view` 的 target 取值（`<leafId>` / `<drawerId>` 由调用方直接传入字符串） */
 export const TARGET = { AUTO: 'auto', DIALOG: 'dialog', TABS: 'tabs', DRAWER: 'drawer' }

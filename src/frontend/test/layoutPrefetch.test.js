@@ -24,9 +24,10 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { createInitDataPrefetch } from '../src/utils/initDataPrefetch.js'
+import { readSrc } from './support/feSource.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const SRC = (p) => readFileSync(join(HERE, '..', 'src', p), 'utf8')
+const SRC = (p) => readSrc(p)
 
 test('B2 预取成功 → 消费取同一结果且不重复往返（并行预取不改变语义）', async () => {
   let n = 0
