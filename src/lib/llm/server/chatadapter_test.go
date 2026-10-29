@@ -14,10 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsong98sh/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-data/facade"
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // jsonKeys 返回结构体按 JSON tag 展开后的键集合（排序）。
@@ -93,18 +92,6 @@ func TestContractEnvNames(t *testing.T) {
 	}
 }
 
-// TestContractChatContextRoundTrip：gateway.Context ↔ chat.CallContext 全字段互转。
-func TestContractChatContextRoundTrip(t *testing.T) {
-	want := mcpgateway.Context{
-		WorkDir: "w", DataDir: "d", Session: "s", Turn: "t", InstanceID: "i",
-		ToolCallID: "c", TopSession: "ts", Parent: "p", Purpose: "pu",
-	}
-	got := ChatCallContextToGateway(ChatCallContextFromGateway(want))
-	if got != want {
-		t.Fatalf("上下文往返不一致：\n got  = %+v\n want = %+v", got, want)
-	}
-}
-
 // TestContractDBMessageKeys：DB 通道（messages 行 / 快照）字段名 + chat 往返。
 func TestContractDBMessageKeys(t *testing.T) {
 	msg := data.ChatMsg{
@@ -125,26 +112,6 @@ func TestContractDBMessageKeys(t *testing.T) {
 	}
 }
 
-// TestContractDBInboxKeys：DB 通道（inbox_items 行）字段名 + chat 往返。
-func TestContractDBInboxKeys(t *testing.T) {
-	item := facade.InboxItem{
-		ID: "i", SessionID: "s", TurnID: "t", Type: "insert", LLM: "l",
-		Content: "c", Think: map[string]any{"k": "v"}, Effort: "high",
-		ScenarioID: "sc", Status: "pending", IdempotencyKey: "ik", CreatedAt: "2026-10-20",
-	}
-	want := []string{
-		"content", "created_at", "effort", "id", "idempotency_key", "llm",
-		"scenario_id", "session_id", "status", "think", "turn_id", "type",
-	}
-	assertKeys(t, "facade.InboxItem", jsonKeys(t, item), want)
-	assertKeys(t, "chat.InboxItem", jsonKeys(t, ChatInboxFromFacade(item)), want)
-
-	back := ChatInboxToFacade(ChatInboxFromFacade(item))
-	if !reflect.DeepEqual(back, item) {
-		t.Fatalf("Inbox 往返不一致：\n got  = %+v\n want = %+v", back, item)
-	}
-}
-
 // TestContractToolCallsRoundTrip：ToolCall 快照形态（type=function）往返。
 func TestContractToolCallsRoundTrip(t *testing.T) {
 	calls := []data.ToolCall{}
@@ -155,27 +122,6 @@ func TestContractToolCallsRoundTrip(t *testing.T) {
 	back := ChatToolCallsToData(ChatToolCallsFromData(calls))
 	if !reflect.DeepEqual(back, calls) {
 		t.Fatalf("ToolCall 往返不一致：\n got  = %+v\n want = %+v", back, calls)
-	}
-}
-
-// TestContractRouterMessageRoundTrip：chat.Message → data → router canonical → data，
-// 仅按既有口径丢弃 `_meta`（不参与 LLM 请求）。
-func TestContractRouterMessageRoundTrip(t *testing.T) {
-	msg := chat.Message{
-		Role: "assistant", Content: "hi", Reasoning: "r", ToolCallID: "c0",
-		ToolCalls: []chat.ToolCall{{ID: "c1", Name: "f", Arguments: `{}`}},
-	}
-	dataMsg := ChatMessageToData(msg)
-	back := FromRouterMessage(ToRouterMessage(ChatMessageFromData(dataMsg)))
-	if back.Role != msg.Role || back.Content != msg.Content || back.Reasoning != msg.Reasoning ||
-		back.ToolCallID != msg.ToolCallID {
-		t.Fatalf("router 往返字段丢失：got %+v want %+v", back, msg)
-	}
-	if len(back.ToolCalls) != 1 || back.ToolCalls[0].Name != "f" || back.ToolCalls[0].Arguments != `{}` {
-		t.Fatalf("router 往返 ToolCalls 不一致：%+v", back.ToolCalls)
-	}
-	if len(back.Meta) != 0 {
-		t.Fatalf("Meta 不应进入 router 往返：%+v", back.Meta)
 	}
 }
 
@@ -211,26 +157,5 @@ func TestContractChatMessagePersistWireEquivalence(t *testing.T) {
 	back := ChatMessageFromData(want)
 	if !reflect.DeepEqual(back, chatMsg) {
 		t.Fatalf("读回不一致：\n got  = %+v\n want = %+v", back, chatMsg)
-	}
-}
-
-// TestContractCatalogViews：gateway tools/list · servers/list 视图 → chat 自有类型。
-func TestContractCatalogViews(t *testing.T) {
-	spec := ChatToolSpecFromView(map[string]any{
-		"name": "read_file", "description": "读取", "node": "self",
-		"inputSchema": map[string]any{"type": "object"},
-		"_meta":       map[string]any{"server": map[string]any{"alias": "core"}},
-	})
-	if spec.Name != "read_file" || spec.Server != "core" || len(spec.InputSchema) == 0 || spec.Meta == nil {
-		t.Fatalf("ToolSpec 转换异常：%+v", spec)
-	}
-
-	info := ChatServerInfoFromView(map[string]any{
-		"name": "core", "type": "proxied", "status": "connected", "category": "core",
-		"tools": []any{map[string]any{"name": "a"}, map[string]any{"name": "b"}},
-	})
-	if info.ID != "core" || info.Transport != "proxied" || info.Status != "connected" ||
-		info.Category != "core" || info.ToolCount != 2 {
-		t.Fatalf("ServerInfo 转换异常：%+v", info)
 	}
 }

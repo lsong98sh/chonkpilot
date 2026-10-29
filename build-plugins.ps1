@@ -1,4 +1,4 @@
-# build-plugins.ps1：构建「manifest 插件」（PLUGIN-1）。
+﻿# build-plugins.ps1：构建「manifest 插件」（PLUGIN-1）。
 #
 # 产物（staging）：dist/plugin-apps/<id>/<exe>
 #   ├── websearch/ chonkpilot-websearch.exe                  # web_search / web_fetch / web_download
@@ -20,10 +20,13 @@
 # （plugin.json 来自 src/initdata/capability/plugins/<id>/，exe 必须与之**同目录**，
 #  manifest 的 runtime.exe 是插件目录内相对路径）。
 # webui 的投放（PLUGIN-UI-1）：本脚本产出的插件**全部** `ui.selfServe: true` ——
-# webui 源随插件源码（`chonkpilot-plugins/<id>/webui/`；memory/history 目前无 webui），
+# webui 源随插件源码（`chonkpilot-plugins/<id>/src/webui/`；memory/history 目前无 webui），
 # 经 `//go:embed all:webui` 打进 exe，产物**不带** webui/。
 # 例外：demo-python 是 Python 样例（runtime.exe = python，product=false，不随产物投放），
 # 不支持 embed，其页面仍在 `src/initdata/capability/plugins/demo-python/webui/`。
+#
+# 目录口径（TOPO-1，2026-10-29）：插件仓 `<id>/src`（Go 源码 + webui/engines）+ `<id>/doc`；
+# 本脚本的 `-Mod` 一律指向 `<id>\src`（staging 与运行时路径不变）。
 #
 # 说明：codegraph 合并 codegraph + vfts 两个引擎（CGO：tree-sitter + zvec），
 # 故本脚本对 codegraph 复用 build-vfts.ps1 的 zvec 头/库路径。
@@ -45,13 +48,12 @@ $env:GOTOOLCHAIN = "local"
 $env:CGO_ENABLED = "1"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$srcPlugins = Join-Path $root "src\plugins"
 # 进程外插件源码仓库（2026-10-24 分离）：websearch/codegraph/browser/desktop/file/task/mcp/memory/history
 # 均与主仓同级；memory/history 的 Go 业务包在同仓 `<id>/lib`。
 $pluginsRepo = Join-Path (Split-Path -Parent $root) "chonkpilot-plugins"
 $out = Join-Path $root "dist\plugin-apps"
 
-$zvec = Join-Path $pluginsRepo "codegraph\engines\vfts\third_party\zvec"
+$zvec = Join-Path $pluginsRepo "codegraph\src\engines\vfts\third_party\zvec"
 $zvecLib = Join-Path $zvec "windows_amd64"
 $env:CGO_CFLAGS = "-I$($zvec.Replace('\','/'))/include"
 $env:CGO_LDFLAGS = "-L$($zvecLib.Replace('\','/')) -lzvec_c_api"
@@ -105,28 +107,28 @@ function Build-Engine {
 }
 
 Write-Host "==> [1/9] websearch"
-Build-Plugin -Mod (Join-Path $pluginsRepo "websearch") -ID "websearch" -ExeName "chonkpilot-websearch.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "websearch\src") -ID "websearch" -ExeName "chonkpilot-websearch.exe"
 
 Write-Host "==> [2/9] codegraph (codegraph + vfts, CGO)"
-Build-Plugin -Mod (Join-Path $pluginsRepo "codegraph") -ID "codegraph" -ExeName "chonkpilot-plugin-codegraph.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "codegraph\src") -ID "codegraph" -ExeName "chonkpilot-plugin-codegraph.exe"
 Copy-Item (Join-Path $zvecLib "zvec_c_api.dll") (Join-Path $out "codegraph") -Force
 Write-Host "    ok: zvec_c_api.dll"
 
 Write-Host "==> [3/9] browser（桥接层 + 引擎：源码在 plugins 仓 browser/engine）"
-Build-Plugin -Mod (Join-Path $pluginsRepo "browser") -ID "browser" -ExeName "chonkpilot-plugin-browser.exe"
-Build-Engine -Mod (Join-Path $pluginsRepo "browser\engine") -ID "browser" -ExeName "chonkpilot-browser-plugin.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "browser\src") -ID "browser" -ExeName "chonkpilot-plugin-browser.exe"
+Build-Engine -Mod (Join-Path $pluginsRepo "browser\src\engine") -ID "browser" -ExeName "chonkpilot-browser-plugin.exe"
 
 Write-Host "==> [4/9] desktop（桥接层 + 引擎：源码在 plugins 仓 desktop/engine）"
-Build-Plugin -Mod (Join-Path $pluginsRepo "desktop") -ID "desktop" -ExeName "chonkpilot-plugin-desktop.exe"
-Build-Engine -Mod (Join-Path $pluginsRepo "desktop\engine") -ID "desktop" -ExeName "chonkpilot-desktop-plugin.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "desktop\src") -ID "desktop" -ExeName "chonkpilot-plugin-desktop.exe"
+Build-Engine -Mod (Join-Path $pluginsRepo "desktop\src\engine") -ID "desktop" -ExeName "chonkpilot-desktop-plugin.exe"
 
 # file 插件的工具契约：唯一源已随插件迁至 `chonkpilot-plugins/file/tools/file`（2026-10-25），
 # 运行时由插件从 `<pluginRoot>/tools/file/` 解析；主仓 capability 根不再含 file 契约
 # （否则与插件重复注册 → gateway 冲突）。
 Write-Host "==> [5/9] file（文件系列 11 工具）"
-Build-Plugin -Mod (Join-Path $pluginsRepo "file") -ID "file" -ExeName "chonkpilot-plugin-file.exe"
-$fileContractsSrc = Join-Path $pluginsRepo "file\tools\file"
-$fileContractsDst = Join-Path $out "file\tools\file"
+Build-Plugin -Mod (Join-Path $pluginsRepo "file\src") -ID "file" -ExeName "chonkpilot-plugin-file.exe"
+$fileContractsSrc = Join-Path $pluginsRepo "file\src\tools\file"
+$fileContractsDst = Join-Path $out "file\src\tools\file"
 if (Test-Path $fileContractsSrc) {
     Remove-Item -LiteralPath $fileContractsDst -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $fileContractsDst | Out-Null
@@ -137,16 +139,16 @@ if (Test-Path $fileContractsSrc) {
 }
 
 Write-Host "==> [6/9] task（执行 / LLM / 状态 / 终止）"
-Build-Plugin -Mod (Join-Path $pluginsRepo "task") -ID "task" -ExeName "chonkpilot-plugin-task.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "task\src") -ID "task" -ExeName "chonkpilot-plugin-task.exe"
 
 Write-Host "==> [7/9] mcp（检索 / 加载 / 调用）"
-Build-Plugin -Mod (Join-Path $pluginsRepo "mcp") -ID "mcp" -ExeName "chonkpilot-plugin-mcp.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "mcp\src") -ID "mcp" -ExeName "chonkpilot-plugin-mcp.exe"
 
 Write-Host "==> [8/9] memory（记忆沉淀；业务包在 plugins 仓 memory/lib）"
-Build-Plugin -Mod (Join-Path $pluginsRepo "memory") -ID "memory" -ExeName "chonkpilot-memory.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "memory\src") -ID "memory" -ExeName "chonkpilot-memory.exe"
 
 Write-Host "==> [9/9] history（文件检查点链；业务包在 plugins 仓 history/lib）"
-Build-Plugin -Mod (Join-Path $pluginsRepo "history") -ID "history" -ExeName "chonkpilot-history.exe"
+Build-Plugin -Mod (Join-Path $pluginsRepo "history\src") -ID "history" -ExeName "chonkpilot-history.exe"
 
 # ── 部署到桌面单体产物（存在才部署）──
 $desktopPlugins = Join-Path $root "dist\desktop\capability\plugins"

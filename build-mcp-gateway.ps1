@@ -1,4 +1,4 @@
-# build-mcp-gateway.ps1：一键构建独立 MCP gateway 部署目录
+﻿# build-mcp-gateway.ps1：一键构建独立 MCP gateway 部署目录
 #
 # 产物布局（dist/other/ —— 与 chonkpilot-mcp-server.exe **同目录共用** capability，见 [41 D-28]）：
 #   ├── chonkpilot-mcp-gateway.exe  # gateway exe（官方 SDK 门面，对外 stdio/http/sse；
@@ -11,7 +11,7 @@
 # 来源 = dist/other（共享资产由 build-mcp-server.ps1 铺好）：gateway exe 内嵌
 #   chonkpilot-mcp-server lib（进程内扫描 capability 契约根 + spawn 其中 executor），
 #   不依赖独立 chonkpilot-mcp-server.exe —— 两 exe 同目录**共用同一份 capability**，不再另建副本。
-# 源（D-28 src 结构）：exe 外壳 = src/others/mcp-gateway（lib = src/lib/gateway）。
+# 源（D-28 src 结构）：exe 外壳 = src/others/mcp-gateway（内核 = 独立仓 chonkpilot-mcp-gateway，主仓适配面 = src/lib/gwadapter）。
 #
 # 用法：.\build-mcp-gateway.ps1
 $ErrorActionPreference = "Stop"

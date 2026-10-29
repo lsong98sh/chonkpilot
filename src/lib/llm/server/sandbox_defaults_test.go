@@ -12,7 +12,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/lockfile"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/lockfile"
 )
 
 // registerG75Instance 注册一个绑定 testWorkDir 的测试实例。

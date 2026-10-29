@@ -19,6 +19,12 @@ function dialogOf(sessionId) {
   return (sessionId && dialogBySession.get(sessionId)) || ''
 }
 
+// dialogIdFor 取进程内备忘记下的 session→dialog（**非权威**；未命中返回空串）。
+// 供需要显式带 `dialog_id` 的跨域载荷使用（61 §0.6；如 memory.flush）。
+export function dialogIdFor(sessionId) {
+  return dialogOf(sessionId)
+}
+
 function rememberTurns(turns) {
   if (!Array.isArray(turns)) return
   for (const t of turns) {
@@ -37,8 +43,7 @@ function withDialog(body) {
 
 // data-session-* 消息辅助：发送并等待回复（E-25：统一 30s 超时，对齐 fileRequest/guiReq 口径，
 // 后端卡死时 fetch abort → resolve(null) → 按 backend unreachable 报错，不永久挂起）。
-function sessionReq(action, body = {}) {
-  withDialog(body) // 一树一库：就地补 dialog_id（保持 emit 形状与既有守卫一致）
+function sessionReqOnce(action, body) {
   return mq.emit(`data-session-${action}`, body, { timeout: 30000 }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-session-${action}: backend unreachable`)
@@ -51,6 +56,37 @@ function sessionReq(action, body = {}) {
     }
     return p
   })
+}
+
+// sessionReq = 请求 + **dialog_id 自愈**：一树一库默认生效，但前端备忘（dialogBySession）可能
+// 尚未预热（页面刚打开 / 会话行由外部夹具直接落库 / 进程重启）。此时 persist 明确回
+// `dialog_required` —— 这里先拉一次会话列表补备忘；若会话行本就不存在（外部事件直接切到
+// 新 session_id），对**只读**动作再幂等 `ensure-session` 一次（自举对话库），然后原样重试。
+// 不新增任何 MQ 主题；delete/title 等写动作**不**走 ensure（避免把已删会话复活）。
+const READ_ACTIONS = new Set(['history', 'load-messages', 'content', 'get'])
+
+async function sessionReq(action, body = {}) {
+  withDialog(body)
+  try {
+    return await sessionReqOnce(action, body)
+  } catch (e) {
+    const msg = String((e && e.message) || '')
+    if (action === 'list' || body.dialog_id || !msg.includes('dialog_required')) throw e
+    let sid = body.session_id || body.id || (body.turn_id ? sessionByTurn.get(body.turn_id) : '')
+    const list = await sessionReqOnce('list', {}).then((r) => r[DataSessionListKeys.list] || []).catch(() => [])
+    for (const row of list) {
+      rememberDialog(row.session_id || row.id, row.dialog_id)
+      if (!sid) sid = row.session_id || row.id
+    }
+    withDialog(body)
+    if (!body.dialog_id && sid && READ_ACTIONS.has(action)) {
+      const r = await sessionReqOnce('ensure-session', { [FieldKeys.session_id]: sid }).catch(() => null)
+      rememberDialog(sid, r && r.dialog_id)
+      withDialog(body)
+    }
+    if (!body.dialog_id) throw e
+    return sessionReqOnce(action, body)
+  }
 }
 
 export function listSessions() {
@@ -89,13 +125,19 @@ export function ensureSession(id, parentId) {
   })
 }
 
-export function getTurnsPaginated(sessionId, beforeTurnId, targetMessages = 50, targetBytes = 200 * 1024) {
-  return sessionReq('history', {
+// dialogId（可选，一树一库）：子会话（任务详情 viewer）不在一树一库的顶层目录里
+// （`data-session-list` 只列主会话）→ 调用方须显式带**所属主会话的 dialog_id**，
+// 否则 `sessionReq` 自愈会为子会话 id 自举出一个空对话库（读不到既有消息）。
+export function getTurnsPaginated(sessionId, beforeTurnId, targetMessages = 50, targetBytes = 200 * 1024,
+                                   dialogId = '') {
+  const body = {
     [FieldKeys.session_id]: sessionId,
     [FieldKeys.before_turn_id]: beforeTurnId || '',
     [FieldKeys.target_messages]: targetMessages,
     [FieldKeys.target_bytes]: targetBytes,
-  }).then((r) => {
+  }
+  if (dialogId) body.dialog_id = dialogId
+  return sessionReq('history', body).then((r) => {
     const page = r[DataSessionHistoryKeys.messages] || { turns: [], messages: [], has_more: false }
     rememberTurns(page.turns) // turn→session 备忘（load-messages 仅带 turn_id）
     return page

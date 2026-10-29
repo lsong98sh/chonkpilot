@@ -31,7 +31,7 @@ import (
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // ── 契约结构（与 61-messages.schema.json 对齐）─────────────────────────────
@@ -333,67 +333,76 @@ func TestDataSessionKeysSubsetOfContract(t *testing.T) {
 	titleChanged := collectTopic(t, bus, "data-session-title-changed")
 
 	// §3.2a 运行时原语（先建会话/轮次/消息，后续查询才有内容）
-	assertDataResult(t, c, bus, "data-session-ensure-session", map[string]any{
+	// 一树一库：根会话自举（缺 dialog_id → 确定性建对话并回带），后续一律带 dialog_id。
+	ens := assertDataResult(t, c, bus, "data-session-ensure-session", map[string]any{
 		"req_id": "r1", "instance_id": "ins-test", "session_id": "smoke-s1",
 	})
+	dlg, _ := ens["dialog_id"].(string)
+	if dlg == "" {
+		t.Fatalf("根会话自举应回带 dialog_id: %+v", ens)
+	}
 	assertDataEvent(t, c, "session-new", waitEvent(t, sessionNew, "session-new"))
 
 	assertDataResult(t, c, bus, "data-session-ensure-turn", map[string]any{
-		"req_id": "r2", "instance_id": "ins-test", "turn_id": "smoke-t1", "session_id": "smoke-s1",
+		"req_id": "r2", "instance_id": "ins-test", "turn_id": "smoke-t1", "session_id": "smoke-s1", "dialog_id": dlg,
 	})
 	assertDataResult(t, c, bus, "data-session-append-message", map[string]any{
 		"req_id": "r3", "instance_id": "ins-test",
-		"turn_id": "smoke-t1",
-		"msg":     map[string]any{"role": "user", "content": "hi", "session_id": "smoke-s1"},
+		"turn_id":    "smoke-t1",
+		"dialog_id":  dlg,
+		"msg":        map[string]any{"role": "user", "content": "hi", "session_id": "smoke-s1"},
 	})
 	assertDataResult(t, c, bus, "data-session-set-summary", map[string]any{
-		"req_id": "r4", "instance_id": "ins-test", "turn_id": "smoke-t1", "summary": "摘要",
+		"req_id": "r4", "instance_id": "ins-test", "turn_id": "smoke-t1", "dialog_id": dlg, "summary": "摘要",
 	})
 	assertDataResult(t, c, bus, "data-session-complete-turn", map[string]any{
-		"req_id": "r5", "instance_id": "ins-test", "turn_id": "smoke-t1", "status": "done",
+		"req_id": "r5", "instance_id": "ins-test", "turn_id": "smoke-t1", "dialog_id": dlg, "status": "done",
 	})
 	assertDataResult(t, c, bus, "data-session-cleanup-stale", map[string]any{"req_id": "r6", "instance_id": "ins-test"})
 	assertDataResult(t, c, bus, "data-session-load-messages", map[string]any{
-		"req_id": "r7", "instance_id": "ins-test", "turn_id": "smoke-t1",
+		"req_id": "r7", "instance_id": "ins-test", "turn_id": "smoke-t1", "dialog_id": dlg,
 	})
 	assertDataResult(t, c, bus, "data-session-context", map[string]any{
-		"req_id": "r8", "instance_id": "ins-test", "session_id": "smoke-s1",
+		"req_id": "r8", "instance_id": "ins-test", "session_id": "smoke-s1", "dialog_id": dlg,
 	})
 
 	// §3.2 会话域查询/动作
 	assertDataResult(t, c, bus, "data-session-list", map[string]any{"req_id": "r9", "instance_id": "ins-test"})
 	assertDataResult(t, c, bus, "data-session-get", map[string]any{
-		"req_id": "r10", "instance_id": "ins-test", "id": "smoke-s1",
+		"req_id": "r10", "instance_id": "ins-test", "id": "smoke-s1", "dialog_id": dlg,
 	})
 	assertDataResult(t, c, bus, "data-session-history", map[string]any{
-		"req_id": "r11", "instance_id": "ins-test", "session_id": "smoke-s1",
+		"req_id": "r11", "instance_id": "ins-test", "session_id": "smoke-s1", "dialog_id": dlg,
 	})
 	assertDataResult(t, c, bus, "data-session-content", map[string]any{
 		"req_id": "r12", "instance_id": "ins-test",
-		"data": map[string]any{"session_id": "smoke-s1", "keys": []any{"message:none"}},
+		"data": map[string]any{"session_id": "smoke-s1", "dialog_id": dlg, "keys": []any{"message:none"}},
 	})
 	assertDataResult(t, c, bus, "data-session-latest", map[string]any{"req_id": "r13", "instance_id": "ins-test"})
 	assertDataResult(t, c, bus, "data-session-active-set", map[string]any{
-		"req_id": "r14", "instance_id": "ins-test", "data": map[string]any{"session_id": "smoke-s1"},
+		"req_id": "r14", "instance_id": "ins-test", "data": map[string]any{"session_id": "smoke-s1", "dialog_id": dlg},
 	})
 	assertDataResult(t, c, bus, "data-session-active-get", map[string]any{"req_id": "r15", "instance_id": "ins-test"})
 	assertDataResult(t, c, bus, "data-session-title", map[string]any{
-		"req_id": "r16", "instance_id": "ins-test", "data": map[string]any{"id": "smoke-s1", "title": "冒烟标题"},
+		"req_id": "r16", "instance_id": "ins-test",
+		"data":   map[string]any{"id": "smoke-s1", "title": "冒烟标题", "dialog_id": dlg},
 	})
 	assertDataEvent(t, c, "data-session-title-changed", waitEvent(t, titleChanged, "data-session-title-changed"))
 
 	// §3.2b 快照域
 	assertDataResult(t, c, bus, "data-snapshot-set", map[string]any{
 		"req_id": "r17", "instance_id": "ins-test",
-		"data": map[string]any{"session_id": "smoke-s1", "snapshot": map[string]any{"history": []any{}, "snapshot_turn": ""}},
+		"data": map[string]any{"session_id": "smoke-s1", "dialog_id": dlg,
+			"snapshot": map[string]any{"history": []any{}, "snapshot_turn": ""}},
 	})
 	assertDataResult(t, c, bus, "data-snapshot-get", map[string]any{
-		"req_id": "r18", "instance_id": "ins-test", "data": map[string]any{"session_id": "smoke-s1"},
+		"req_id": "r18", "instance_id": "ins-test",
+		"data": map[string]any{"session_id": "smoke-s1", "dialog_id": dlg},
 	})
 
 	// 删除会话（末步）
 	assertDataResult(t, c, bus, "data-session-delete", map[string]any{
-		"req_id": "r19", "instance_id": "ins-test", "id": "smoke-s1",
+		"req_id": "r19", "instance_id": "ins-test", "id": "smoke-s1", "dialog_id": dlg,
 	})
 }
 
@@ -402,6 +411,7 @@ func TestDataTasktreeKeysSubsetOfContract(t *testing.T) {
 	c := contractLoad(t)
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "smoke-top")
 	deleted := collectTopic(t, bus, "task-deleted")
 
 	assertDataResult(t, c, bus, "data-tasktree-upsert", map[string]any{
@@ -409,16 +419,20 @@ func TestDataTasktreeKeysSubsetOfContract(t *testing.T) {
 		"data": map[string]any{
 			"task_id": "smoke-n1", "top_session": "smoke-top", "session_id": "smoke-top",
 			"kind": "tool", "title": "节点", "status": "pending", "created_at": "2026-01-01T00:00:00Z",
+			"dialog_id": d1,
 		},
 	})
 	assertDataResult(t, c, bus, "data-tasktree-list", map[string]any{
-		"req_id": "r2", "instance_id": "ins-test", "data": map[string]any{"top_session": "smoke-top"},
+		"req_id": "r2", "instance_id": "ins-test",
+		"data":   map[string]any{"top_session": "smoke-top", "dialog_id": d1},
 	})
 	assertDataResult(t, c, bus, "data-tasktree-tasks", map[string]any{
-		"req_id": "r3", "instance_id": "ins-test", "data": map[string]any{"session_id": "smoke-top"},
+		"req_id": "r3", "instance_id": "ins-test",
+		"data":   map[string]any{"session_id": "smoke-top", "dialog_id": d1},
 	})
 	assertDataResult(t, c, bus, "data-tasktree-delete", map[string]any{
-		"req_id": "r4", "instance_id": "ins-test", "data": map[string]any{"node_id": "smoke-n1"},
+		"req_id": "r4", "instance_id": "ins-test",
+		"data":   map[string]any{"node_id": "smoke-n1", "dialog_id": d1},
 	})
 	assertDataEvent(t, c, "task-deleted", waitEvent(t, deleted, "task-deleted"))
 }

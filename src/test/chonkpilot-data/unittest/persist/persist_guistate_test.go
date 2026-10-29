@@ -28,7 +28,7 @@ func TestPrjConfigGuiStateRouting(t *testing.T) {
 	// 个人运行态键 → prjusr；团队配置键 → prj
 	save(t, "layout", `{"filetreeWidth":300}`)
 	save(t, "opened-files", `["a.txt"]`)
-	save(t, "codegraph.status", `{"state":"ready"}`)
+	save(t, "filetree-expanded-key", `["E:/proj"]`)
 	save(t, "history.enabled", "true")
 
 	prj, releasePrj, err := data.Prj("ins-test")
@@ -47,11 +47,11 @@ func TestPrjConfigGuiStateRouting(t *testing.T) {
 	if _, ok := data.GetConfig(prj, "layout"); ok {
 		t.Fatal("layout must NOT leak into team-shared prj db")
 	}
-	if _, ok := data.GetConfig(pudb, "codegraph.status"); !ok {
-		t.Fatal("codegraph.status should be in prjusr")
+	if _, ok := data.GetConfig(pudb, "filetree-expanded-key"); !ok {
+		t.Fatal("filetree-expanded-key should be in prjusr")
 	}
-	if _, ok := data.GetConfig(prj, "codegraph.status"); ok {
-		t.Fatal("codegraph.status must NOT leak into team-shared prj db")
+	if _, ok := data.GetConfig(prj, "filetree-expanded-key"); ok {
+		t.Fatal("filetree-expanded-key must NOT leak into team-shared prj db")
 	}
 	if v, ok := data.GetConfig(prj, "history.enabled"); !ok || v != "true" {
 		t.Fatalf("history.enabled should stay in prj, got %q ok=%v", v, ok)

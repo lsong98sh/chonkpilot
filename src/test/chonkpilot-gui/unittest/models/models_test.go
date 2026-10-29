@@ -3,7 +3,7 @@ package models_test
 import (
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-gui/models"
+	"github.com/lsong98sh/chonkpilot-framework/host/models"
 )
 
 func TestNewTask(t *testing.T) {

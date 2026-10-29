@@ -15,7 +15,6 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // handleMemory 分发 data-memory-<op>（含 extract-*）。
@@ -23,7 +22,7 @@ func (s *Service) handleMemory(op string, payload []byte) {
 	method := "data-memory-" + op
 	var p MemoryPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		s.failID(method, p.ReqID, err)
+		s.failDecode(method, payload, err)
 		return
 	}
 	d := p.fields()
@@ -78,7 +77,7 @@ func (s *Service) handleMemory(op string, payload []byte) {
 			s.failID(method, p.ReqID, err)
 			return
 		}
-		s.replyID(method, p.ReqID, map[string]any{msgkeys.FieldOk: resp.OK, msgkeys.FieldId: resp.ID})
+		s.replyID(method, p.ReqID, wire.OKIDPayload{OK: resp.OK, ID: resp.ID})
 	case "extract-delete":
 		if _, err := s.MemoryExtractDelete(facade.MemoryExtractDeleteRequest{
 			InstanceID: p.InstanceID, SessionID: d.SessionID, Category: d.Category,

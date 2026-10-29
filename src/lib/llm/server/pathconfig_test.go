@@ -1,7 +1,9 @@
 // 执行层路径键**分层读取**（prj > usr > 默认 ""，2026-09-19 接线）白盒：
 //   - 纯函数 layeredPathValues 的优先级/空值口径；
-//   - 端到端：prj 路径键写入 → 执行层（mcp-server 解释器注入 / {{toolchain.*}}）实际取到 prj 值，
-//     删 prj 键 → 回落 usr（既有读法）。
+//   - 端到端：prj 路径键写入 → {{toolchain.*}} 实际取到 prj 值，删 prj 键 → 回落 usr（既有读法）。
+//
+// 注（2026-10-28 P2-3）：解释器映射不再下发给执行层（脚本执行随 task 插件），
+// 故本节只断言占位符取值（原 mcpCfg.Interpreters 断言已删除）。
 package server
 
 import "testing"
@@ -46,8 +48,8 @@ func TestLayeredPathValuesPrecedence(t *testing.T) {
 	}
 }
 
-// TestPrjPathOverridesUsrAtExecutionLayer：真机链路 —— prj 路径键写入后执行层取 prj 值，
-// 删 prj 键回落 usr（含 mcp-server 解释器注入与 toolchain 占位符同源）。
+// TestPrjPathOverridesUsrAtExecutionLayer：真机链路 —— prj 路径键写入后 {{toolchain.*}} 取 prj 值，
+// 删 prj 键回落 usr（占位符同源读法）。
 func TestPrjPathOverridesUsrAtExecutionLayer(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -57,20 +59,17 @@ func TestPrjPathOverridesUsrAtExecutionLayer(t *testing.T) {
 	const usrPy, prjPy = `C:\usr\python.exe`, `C:\prj\python.exe`
 	saveTestUserConfig(t, s, map[string]any{"pythonPath": usrPy})
 
-	// ① 仅 usr → 执行层取 usr（既有行为不变）
+	// ① 仅 usr → 占位符取 usr
 	s.loadExecConfig("ins-test")
-	if got := s.mcpCfg.Interpreters["python"]; got != usrPy {
-		t.Fatalf("仅 usr 时解释器应取 usr: %q，want %q", got, usrPy)
+	if got := s.toolchainVars("ins-test")["python"]; got != usrPy {
+		t.Fatalf("仅 usr 时 {{toolchain.python}} 应取 usr: %q，want %q", got, usrPy)
 	}
 
-	// ② 写 prj → 执行层取 prj（prj > usr）
+	// ② 写 prj → 占位符取 prj（prj > usr）
 	saveTestPrjConfig(t, s, "pythonPath", prjPy)
 	s.loadExecConfig("ins-test")
-	if got := s.mcpCfg.Interpreters["python"]; got != prjPy {
-		t.Fatalf("prj 应覆盖 usr: 解释器 = %q，want %q", got, prjPy)
-	}
 	if got := s.toolchainVars("ins-test")["python"]; got != prjPy {
-		t.Fatalf("{{toolchain.python}} 应与执行层同源取 prj: %q，want %q", got, prjPy)
+		t.Fatalf("prj 应覆盖 usr: {{toolchain.python}} = %q，want %q", got, prjPy)
 	}
 
 	// ③ 删 prj 键 → 回落 usr
@@ -82,7 +81,7 @@ func TestPrjPathOverridesUsrAtExecutionLayer(t *testing.T) {
 		t.Fatalf("删 prj 键失败: %+v", res)
 	}
 	s.loadExecConfig("ins-test")
-	if got := s.mcpCfg.Interpreters["python"]; got != usrPy {
-		t.Fatalf("删 prj 后应回落 usr: 解释器 = %q，want %q", got, usrPy)
+	if got := s.toolchainVars("ins-test")["python"]; got != usrPy {
+		t.Fatalf("删 prj 后应回落 usr: {{toolchain.python}} = %q，want %q", got, usrPy)
 	}
 }

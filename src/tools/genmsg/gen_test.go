@@ -49,7 +49,7 @@ func TestGeneratedFilesUpToDate(t *testing.T) {
 		path string
 		want string
 	}{
-		{"Go 键常量", filepath.Join(root, "src", "lib", "core", "msgkeys", "msgkeys_gen.go"), out.Go},
+		{"Go 键常量", filepath.Join(root, "..", "chonkpilot-framework", "host", "src", "core", "msgkeys", "msgkeys_gen.go"), out.Go},
 		{"JS 键常量", filepath.Join(root, "src", "frontend", "src", "events", "msgkeys.js"), out.JS},
 	}
 	for _, tc := range cases {

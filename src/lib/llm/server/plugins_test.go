@@ -1,22 +1,39 @@
 package server
 
-// 内嵌插件集成测试（28-plugins：Options.Plugins 在 Start 全部就绪后广播
-// server-starting；compress 走 llm-complete → 写快照 → llm-compress → 压缩回写的全链路）。
+// 内嵌插件装配测试（28-plugins：Options.Plugins 在 Start 全部就绪后广播
+// server-starting）。
+//
+// 2026-10-27（旧路径退场）：`src/plugins/plugin-compress`（原内嵌 Hook 实现，exe/别名期产物）
+// 已删除 —— 压缩自 SESSION-1 起内建在会话侧（`compress.go` + `chonkpilot-session` 压缩内核），
+// 其全链路由 `compress_test.go` / `compress_notice_test.go` 覆盖。本文件只保留**装配机制**断言，
+// 用本地 fake hook 代替原 compress 插件。
 
 import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-data/facade/inline"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-plugin-compress"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
+
+// fakeHook 是最小内嵌插件（只用于验证「全部 Start 成功后才广播 server-starting」）。
+type fakeHook struct {
+	name    string
+	started *bool
+}
+
+func (h fakeHook) Name() string { return h.name }
+
+func (h fakeHook) Start(hook.Deps) error {
+	if h.started != nil {
+		*h.started = true
+	}
+	return nil
+}
 
 // pluginEnv 与 newTestServer 相同，但装配 Options.Plugins（内嵌插件集成测试专用）。
 func pluginEnv(t *testing.T, llmSrv *httptest.Server, plugins []hook.Hook, preStart func(mq.Bus)) *Server {
@@ -24,7 +41,6 @@ func pluginEnv(t *testing.T, llmSrv *httptest.Server, plugins []hook.Hook, preSt
 	data.Reset()
 	testWorkDir = t.TempDir()
 	t.Cleanup(func() { testWorkDir = "" })
-	disableSessionShardForTest(t, testWorkDir) // 本组用例直读旧布局（快照/会话）
 	bus, err := mq.New(mq.Options{Prefix: testBusPrefix})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
@@ -34,7 +50,6 @@ func pluginEnv(t *testing.T, llmSrv *httptest.Server, plugins []hook.Hook, preSt
 	s := New(bus, Options{LLMBase: llmSrv.URL, LLMModel: "mock", DisableMCP: true,
 		UsrPath: t.TempDir() + "/usr.db", Plugins: plugins})
 	fakeGateway(bus, s, 150*time.Millisecond)
-	s.locksDir = t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	if preStart != nil {
@@ -49,15 +64,16 @@ func pluginEnv(t *testing.T, llmSrv *httptest.Server, plugins []hook.Hook, preSt
 	return s
 }
 
-// TestPluginsLoadedServerStarting：Options.Plugins 装配（compress）→ Start 全部
+// TestPluginsLoadedServerStarting：Options.Plugins 装配（fake hook）→ Start 全部
 // 成功后才广播 server-starting（插件加载完成 = 就绪信号）。
-// 注：history 自 PLUGIN-SPLIT-1 起为**进程外插件**（只依赖 plugin-framework），
-// 不再作为宿主编译期内嵌 Hook 装配。
+// 注：history / codegraph / vfts 自 PLUGIN-SPLIT-1 起为**进程外插件**，
+// 不再是宿主编译期内嵌 Hook。
 func TestPluginsLoadedServerStarting(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	started := make(chan map[string]any, 1)
-	pluginEnv(t, llm, []hook.Hook{compress.New(compress.DefaultOptions(), inline.New(nil))},
+	hookStarted := false
+	pluginEnv(t, llm, []hook.Hook{fakeHook{name: "fake", started: &hookStarted}},
 		func(bus mq.Bus) {
 			_, _ = bus.On("server-starting", 0, func(_ context.Context, _ string, v *mq.Value) error {
 				var m map[string]any
@@ -74,85 +90,7 @@ func TestPluginsLoadedServerStarting(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("插件装配后未广播 server-starting")
 	}
-}
-
-// TestCompressPluginEndToEnd：llm-complete → 写快照 → llm-compress → compress 插件
-// 判定（有简化区 + 简化区 token 达 T）→ 注入 Summarize（server 当前 LLM）→ 回写快照
-// （system 摘要 + 保留段；snapshot_turn 不变）。验证 compress 插件全链路生效。
-//
-// 需求同步（2026-09-24 A）：`compress_token_threshold` 改为**简化区**阈值（原「全快照门控」作废）
-// —— 保留最后 1 轮（N=1）时简化区 = 首轮（回显短文本 ~11 token），故 T 取 1 才能触发；
-// 首轮单独完成时**无简化区**（保留段=全量）→ 不压缩。
-func TestCompressPluginEndToEnd(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := pluginEnv(t, llm, []hook.Hook{compress.New(compress.Options{RetainTurns: 1, TokenMax: 1}, inline.New(nil))}, nil)
-	// 第一轮：仅 1 轮 → **无简化区**（保留段=全量）→ 不压缩
-	startTurn(t, s, "s-plg", "t1")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
-		"instance_id": "ins-test", "session": "s-plg", "turn": "t1",
-		"type": "text-user", "content": "first round",
-	}))
-	evs := collectTurn(t, s.bus, "t1", 10*time.Second)
-	if lastComplete(evs) == nil {
-		t.Fatalf("turn1 no complete: %+v", evs)
-	}
-	waitTurnGone(t, s, "t1")
-	time.Sleep(200 * time.Millisecond) // 等 turn1 的 llm-compress 处理完（无变更跳过）
-
-	// 第二轮：2 轮 → 保留最后 1 轮，简化区 = 首轮（token ≥ T=1）→ 压缩首轮
-	big := strings.Repeat("Z", 400)
-	startTurn(t, s, "s-plg", "t2")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
-		"instance_id": "ins-test", "session": "s-plg", "turn": "t2",
-		"type": "text-user", "content": big,
-	}))
-	evs = collectTurn(t, s.bus, "t2", 10*time.Second)
-	if lastComplete(evs) == nil {
-		t.Fatalf("turn2 no complete: %+v", evs)
-	}
-	waitTurnGone(t, s, "t2")
-
-	// compress 插件**异步**处理（2026-10-06，OP-03）：轮询快照直到首条变为**压缩摘要**
-	// （role=system 且含压缩标记；注意未压缩快照的首条也可能是 system=系统提示词，故须校验标记）。
-	deadline := time.Now().Add(5 * time.Second)
-	var snap map[string]any
-	for time.Now().Before(deadline) {
-		cur := snapshotOf(t, s, "s-plg")
-		if cur != nil {
-			if hist, ok := cur["history"].([]any); ok && len(hist) > 0 {
-				if m0, ok := hist[0].(map[string]any); ok && str(m0["role"]) == "system" &&
-					strings.Contains(str(m0["content"]), "[已压缩早前对话]") {
-					snap = cur
-					break
-				}
-			}
-		}
-		time.Sleep(30 * time.Millisecond)
-	}
-	if snap == nil {
-		t.Fatal("compress 插件未回写 system 摘要快照")
-	}
-	hist, _ := snap["history"].([]any)
-	if len(hist) == 0 {
-		t.Fatal("compress 插件快照为空")
-	}
-	m0 := hist[0].(map[string]any)
-	if str(m0["role"]) != "system" {
-		t.Fatalf("compress 插件未回写 system 摘要快照: %+v", snap)
-	}
-	if !strings.Contains(str(m0["content"]), "[已压缩早前对话]") {
-		t.Fatalf("摘要消息格式不符: %q", str(m0["content"]))
-	}
-	if str(snap["snapshot_turn"]) != "t2" {
-		t.Fatalf("压缩后 snapshot_turn 应保持 t2: %+v", snap)
-	}
-	// 保留段 = 第二轮完整 turn（user big + assistant 回显）→ 共 3 条
-	if len(hist) != 3 {
-		t.Fatalf("保留段不符: %+v", snap)
-	}
-	m1 := hist[1].(map[string]any)
-	if str(m1["role"]) != "user" || str(m1["content"]) != big {
-		t.Fatalf("保留段不符: %+v", snap)
+	if !hookStarted {
+		t.Fatal("内嵌插件 Start 未被调用")
 	}
 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestIsLoopbackReply：仅「顶层 ok + 应答专属信封键 result/error」判为回环；含顶层 ok
@@ -47,7 +47,7 @@ func TestHandleProcessesRequestWithTopLevelOK(t *testing.T) {
 	t.Cleanup(s.Stop)
 	const inst = "ins-okreq"
 	s.onInstanceRegister(instanceRegister, instancePayload(inst, wd, ""))
-	waitShardSettled(t, s) // P3-4c 缺省 on：等异步搬运结束，避免清理竞态
+	waitReconcileSettled(t, s) // 等异步目录对账结束，避免清理竞态
 
 	ch := make(chan map[string]any, 4)
 	sub, err := s.Bus.On("data-user-config-list", 0, func(_ context.Context, _ string, v *mq.Value) error {
@@ -83,14 +83,14 @@ func TestHandleProcessesRequestWithTopLevelOK(t *testing.T) {
 	}
 }
 
-// waitShardSettled 等异步「旧布局 → dialogs/」搬运落地（P3-4c 缺省 on；最多 5s）。
-// 迁移无对话可搬时也会写入 shardDone 标记，故「标记出现」= 本轮结束。
-func waitShardSettled(t *testing.T, s *Service) {
+// waitReconcileSettled 等异步 `dialogs/` 目录对账落地（最多 5s）。
+// 无对话可对账时也会写入 reconciled 标记，故「标记出现」= 本轮结束。
+func waitReconcileSettled(t *testing.T, s *Service) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		settled := false
-		s.shardDone.Range(func(_, _ any) bool {
+		s.reconciled.Range(func(_, _ any) bool {
 			settled = true
 			return false
 		})
@@ -98,7 +98,7 @@ func waitShardSettled(t *testing.T, s *Service) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("等待 shard 搬运超时")
+			t.Fatal("等待 dialogs 目录对账超时")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -24,6 +24,7 @@ export const EventNames = {
   complete: 'complete', // 轮次完成
   toolPair: 'tool-pair', // 工具调用完整信息（后端 → 前端：开始/转异步/终态全量广播；气泡终态已由 tasks.* 驱动，保留兼容）
   toolTimeout: 'mcp-tools-timeout', // 后端 → 前端：调用超时待裁决（{instance_id, tool_call_id, task_id, tool, reason:'timeout', timeout_s, options:[detach,cancel]|[wait,cancel]}）
+  mcpToolsProgress: 'mcp-tools-progress', // 后端 → 前端：工具完成进度（{instance_id, tool_call_id, progress, total?}；total 缺省 = 不显示百分比；GATEWAY-2 L8）
   toolsWait: 'mcp-tools-wait', // 前端 → 后端：等待完成 / 撤销超时（{instance_id, tool_call_id|task_id}）
   sessionNew: 'session-new', // 会话创建（主/子统一主题；子会话 payload 带 parent_session_id）
   // 任务编排事件（server 编排广播，21-llm-server；task 结构字段：task_id/tool/kind/state/…）
@@ -110,6 +111,7 @@ export const EventNames = {
   askUserSubmit: 'ask-user-submit',
   askUserSkip: 'ask-user-skip', // 跳过当前提问（不回答，放到队列尾部稍后重问）
   askUserCancel: 'ask-user-cancel', // 取消当前提问（以"终止任务待讨论"文案作为回答提交）
+  askUserChat: 'ask-user-chat', // 「聊一聊」出口（仅主窗口；AskUser S1-1/S1-2：切会话 + defer 回填 + 问题引用入输入框）
   // 场景
   scenarioSelect: 'scenario-select',
   scenarioOpen: 'scenario-open',
@@ -282,5 +284,4 @@ export const EventNames = {
   filetreeModeSelect: 'filetree-mode-select', // payload {mode:'project'|'sessions'|'memory'|'extensions'[, ext]}
   //   扩展页（mode='extensions'）下 ext = 子 tab（'resource'|'skill'|'tool'|'prompt'|'agent'）；仅扩展页受理 ext。
   filetreeModeRefresh: 'filetree-mode-refresh', // 扩展页 / 记忆列表手动刷新
-  codegraphIndexStatusOpen: 'codegraph-index-status-open',
 }

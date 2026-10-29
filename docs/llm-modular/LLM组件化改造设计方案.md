@@ -4,7 +4,7 @@
 > 日期：2026-10-19（定案）· 2026-10-20（开工）· 2026-10-21（收口）
 > 关联（spec）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md)（登记项 `MOD-1`）· [2D-router](../spec/20-modules/2D-router.md) · [21-llm-server](../spec/20-modules/21-llm-server.md) · [61-消息一览](../spec/60-reference/61-消息一览.md) · [71-编程规范 §3.3](../spec/70-conventions/71-编程规范.md)
 > 前置：**`RETRY-2` 先落**（重试归属决定 `LLMClient` 端口形状与 turn 循环结构）
-> 代码目录：`src/lib/llm/server/`（端口化 + 状态可序列化）· `src/lib/router/`（保持纯 lib）· 新增 `src/lib/llm/chat/`（独立 module，暂定名 `chonkpilot-chat`）
+> 代码目录（2026-10-27 订正）：`src/lib/llm/server/`（端口化 + 状态可序列化）· 同级仓 `chonkpilot-router/`（纯 lib）· 同级仓 `chonkpilot-chat/`（独立 module）· 同级仓 `chonkpilot-mcp-gateway/`（内核）
 >
 > **本档不修改 `docs/spec/` 任何现有文档**（spec 同步列入 §7 落地清单）。
 
@@ -83,7 +83,7 @@
 | 组件 | 现状 | 判定 |
 |------|------|------|
 | `chonkpilot-router` | 纯 lib：只 import 标准库 + `internal/*`，无 facade / MQ / DB；配置经 `Register`，事件经 channel | ✅ **已经是目标形态，不改内核** |
-| `chonkpilot-mcp-gateway` | **内核 `gateway/` 依赖 `mq.Bus` 作为上游通道**（[mcpgateway.go](../../src/lib/gateway/gateway/mcpgateway.go)：`Bus` 必填、注释写明"上游通道 = 进程内内存 Bus，唯一通道"）；`meta_tools.go` / `subjects.go` 还 import `msgkeys`；`internal/facade` 为对外 MCP 外壳（依赖 mq） | ❌ **需 MQ 端口化** |
+| `chonkpilot-mcp-gateway` | **内核 `gateway/` 依赖 `mq.Bus` 作为上游通道**（同级仓 `chonkpilot-mcp-gateway` 的 `gateway/mcpgateway.go`：`Bus` 必填、注释写明"上游通道 = 进程内内存 Bus，唯一通道"）；`meta_tools.go` / `subjects.go` 还 import `msgkeys`；`internal/facade` 为对外 MCP 外壳（依赖 mq） | ❌ **需 MQ 端口化** |
 | `llm-server`（chat） | 直连 `mq.Bus`（`s.publish`）· 直连 `data-*`（`dataRequest`）· 内嵌 `data.ChatMsg` / `facade.InboxItem` 别名 · **直接 import `mcpgateway` 具体类型** | ❌ 宿主耦合 + 跨组件类型耦合 |
 | turn 状态 | `pending` / `inflight` / `inserts` / `stash` / `resumeNote` 全在内存且就地修改（[turn.go](../../src/lib/llm/server/turn.go) `turnCtx`） | ❌ 不可序列化、不可重放、崩溃即丢 |
 | ask 登记 | `askWaiter` 纯内存 map（[server.go](../../src/lib/llm/server/server.go)）；重启后回答被静默丢弃 | ❌ 数据丢失风险 |
@@ -206,16 +206,16 @@ type Error struct {
 
 | 组件 / 层 | 目录 | module | 本次动作 |
 |---|---|---|---|
-| router | `src/lib/router/` | `chonkpilot-router` | **内核不改**（仅按 `RETRY-2` 扩展重试） |
-| gateway | `src/lib/gateway/` | `chonkpilot-mcp-gateway` | 内核 `Bus` → `Dispatcher` 端口、去 `msgkeys`；`internal/facade` 仍为宿主适配外壳 |
-| **chat（新）** | **`src/lib/chat/`** | **`chonkpilot-chat`（新建独立 module）** | 从 `src/lib/llm/server` 抽出的组件内核：`TurnState` / 帧栈 / 工具循环 / 4 组端口 / `chatest` |
+| router | 同级仓 `chonkpilot-router/`（主仓 `src/lib/router/` 已删除） | `chonkpilot-router` | **内核不改**（仅按 `RETRY-2` 扩展重试） |
+| gateway | 同级仓 `chonkpilot-mcp-gateway/`（主仓 `src/lib/gateway/` 已删除，仅留 `src/lib/gwadapter/`） | `chonkpilot-mcp-gateway` | 内核 `Bus` → `Dispatcher` 端口、去 `msgkeys`；`gwadapter/internal/facade` 为宿主适配外壳 |
+| **chat（新）** | **同级仓 `chonkpilot-chat/`**（2026-10 起独立建仓，主仓不再有 `src/lib/chat/`） | **`chonkpilot-chat`（独立 module）** | 从 `src/lib/llm/server` 抽出的组件内核：`TurnState` / 帧栈 / 工具循环 / 4 组端口 / `chatest` |
 | 宿主装配 | `src/lib/llm/server/`（**保留原名**） | `chonkpilot-llm` | 退化为装配层：实现端口 adapter → 拼装 router / gateway / chat；**`New` 与全部既有对外 API 不变**（gui / server / cli 入口零改动） |
 | 类型互转 adapter | `src/lib/llm/server/`（沿用 `routerconv.go`） | `chonkpilot-llm` | gateway / router ↔ chat 的类型互转**统一在此**（`chonkpilot-assembly` 只管 gateway / mcp-server 装配，**不放 chat adapter**，避免两处实现） |
 
 **约束**：
 
 1. `chonkpilot-chat` 的 `go.mod` 只允许自身依赖 + 标准库（`go list -deps` 断言）；
-2. `llm/server` 保留**包路径与导出符号**（`New` / 既有方法），确保 `src/desktop` / `src/server` / `src/lib/gui` 等消费方不改调用点；
+2. `llm/server` 保留**包路径与导出符号**（`New` / 既有方法），确保 `src/desktop` / `src/lib/gui` 等消费方不改调用点；
 3. `src/lib/llm/server` 内**不得**再出现 `turnCtx` 级状态机实现——同一逻辑只存在于 `chonkpilot-chat`。
 
 ---

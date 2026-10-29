@@ -15,10 +15,11 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-agent/gateway"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
-	"github.com/lsong98sh/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-agent/router"
+	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 )
 
@@ -329,7 +330,6 @@ func newTestServer(t *testing.T, llmSrv *httptest.Server) *Server {
 	data.Reset()
 	testWorkDir = t.TempDir()
 	t.Cleanup(func() { testWorkDir = "" })
-	disableSessionShardForTest(t, testWorkDir)
 	bus, err := mq.New(mq.Options{Prefix: testBusPrefix})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
@@ -345,7 +345,6 @@ func newTestServer(t *testing.T, llmSrv *httptest.Server) *Server {
 	// 取消 / 转后台经此 sink 直调（2026-09-18：mcp-tasks-cancel / mcp-tools-background 方法面已移除）。
 	s.execSink = testExecSink
 	fakeGateway(bus, s, 150*time.Millisecond)
-	s.locksDir = t.TempDir() // session 锁根注入临时目录（不污染 ~/.chonkpilot/locks）
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	if err := s.Start(ctx); err != nil {
@@ -369,26 +368,6 @@ func closeTestDataStore() {
 	}
 }
 
-// disableSessionShardForTest 显式关「一树一库」（`session.db.shard=off`）。
-//
-// 本包单测多数**直接读 prjusr 旧布局**（`msgsOfTurn` / `toolRowsOf` 等），P3-4c 起开关缺省 on
-// → 内容落对话库、旧布局断言读不到。测试夹具因此显式退回旧布局；对话布局本身由
-// `session_test.go`（自带 persist 服务）与 data 模块用例覆盖。
-func disableSessionShardForTest(t *testing.T, workDir string) {
-	t.Helper()
-	db, err := data.OpenLayer(data.ProjectPath(workDir, ""), data.LayerPrj)
-	if err != nil {
-		t.Fatalf("打开 prj 库: %v", err)
-	}
-	if err := db.Table("config").Upsert("session.db.shard", data.Record{"v": "off"}); err != nil {
-		_ = db.Close()
-		t.Fatalf("置 session.db.shard=off: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("关闭 prj 库: %v", err)
-	}
-}
-
 // startTurn 注册 instance + 发 llm-start 并等 ack（使用 Emit + Wait，2026-09-04 移除 reply 过渡期机制）。
 func startTurn(t *testing.T, s *Server, session, turn string) {
 	t.Helper()
@@ -397,6 +376,11 @@ func startTurn(t *testing.T, s *Server, session, turn string) {
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	time.Sleep(50 * time.Millisecond)
+	// 一树一库：会话类调用必须能定位 dialog —— 生产由 GUI 先建会话，测试在此幂等补建
+	// （`data-session-ensure-session` 自举并回带 dialog_id，落进程内备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession(session); err != nil {
+		t.Fatalf("EnsureSession(%s): %v", session, err)
+	}
 	f := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
 		"req_id": "r-" + turn, "instance_id": "ins-test", "session": session, "turn": turn,
 	}))
@@ -772,16 +756,9 @@ func TestTurnSyncToolPersisted(t *testing.T) {
 	collectTurn(t, s.bus, "t-pers", 15*time.Second)
 
 	// 库：恰好一条 role=tool；content 解析为 {call,result}，call 段带工具名/参数。
-	prj, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	recs, _, err := prj.Table("messages").Query(data.Query{
+	recs := queryAllDialogs(t, "messages", data.Query{
 		Where: data.Record{"turn_id": "t-pers"}, OrderBy: "created_at",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	n := 0
 	for _, rec := range recs {
 		if persist.Sval(rec["role"]) != "tool" {
@@ -844,16 +821,9 @@ func TestTurnToolMetaPersisted(t *testing.T) {
 	}))
 	collectTurn(t, s.bus, "t-meta", 15*time.Second)
 
-	prj, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	recs, _, err := prj.Table("messages").Query(data.Query{
+	recs := queryAllDialogs(t, "messages", data.Query{
 		Where: data.Record{"turn_id": "t-meta"}, OrderBy: "created_at",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	n := 0
 	for _, rec := range recs {
 		if persist.Sval(rec["role"]) != "tool" {
@@ -887,8 +857,12 @@ func snapshotOf(t *testing.T, s *Server, session string) map[string]any {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
+		data := map[string]any{"session_id": session}
+		if dlg := s.dialogOf("ins-test", session); dlg != "" {
+			data["dialog_id"] = dlg // 一树一库：快照在对话库内
+		}
 		res, err := dataRequest(s.bus, "data-snapshot-get", map[string]any{
-			"instance_id": "ins-test", "data": map[string]any{"session_id": session},
+			"instance_id": "ins-test", "data": data,
 		})
 		if err == nil {
 			snap, ok := res["snapshot"].(map[string]any)
@@ -995,9 +969,9 @@ func startedNodeNamed(te *taskEvents, tool, name string) bool {
 	return false
 }
 
-// TestTaskNodeTitleFromInjectedDisplayName（I-38，端到端）：主会话工具节点（网关暴露名带 self_ 前缀）的
-// title/name 取「调用参数注入的展示名 tool_call_display_name」（委派就是工具调用）；无注入时回退
-// 「工具契约名」（剥 self_ 前缀，非暴露名）。
+// TestTaskNodeTitleFromInjectedDisplayName（I-38，端到端）：主会话工具节点（历史暴露名 `self_*` 兼容）
+// 的 title/name 取「调用参数注入的展示名 tool_call_display_name」（委派就是工具调用）；无注入时回退
+// 「工具契约名」（剥历史 `self_` 前缀；P0a 2026-10-29 起暴露名 = 原名，剥前缀仅为存量兼容）。
 func TestTaskNodeTitleFromInjectedDisplayName(t *testing.T) {
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -1376,7 +1350,7 @@ func TestFinishTerminalOnce(t *testing.T) {
 func TestFeedNonDroppableNotBlocking(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	tc := &turnCtx{ctx: ctx, done: make(chan struct{}), in: make(chan ChatMsg, 1)}
+	tc := &turnCtx{ctx: ctx, life: sessionrunner.NewLifecycle(nil), in: make(chan ChatMsg, 1)}
 	tc.in <- ChatMsg{Role: "user", Kind: "text", Content: "占位"} // 队列填满（容量 1）
 
 	done := make(chan struct{})
@@ -1403,12 +1377,48 @@ func TestFeedNonDroppableNotBlocking(t *testing.T) {
 // ── SUBCHAT-2 阶段 A：会话注入层 / 会话固定参数 / 非主会话强制同步 ──────
 
 // ensureTestSession 经数据门面幂等建会话（测试用；Scope 显式传入以免依赖实例自登记）。
+//
+// 一树一库：主会话缺 `dialog_id` 走根会话自举（回带 id）；子会话沿用父会话的对话。
+// 应答回带的 `dialog_id` 记入进程内备忘（等价生产路径 `rememberDialog`），供后续
+// turn / message 写入按时补 `dialog_id`。
 func ensureTestSession(t *testing.T, s *Server, id string, req facade.SessionEnsureRequest) {
 	t.Helper()
-	req.InstanceID, req.SessionID, req.Scope = "ins-test", id, s.cfgScope("ins-test")
-	if _, err := s.cfg.SessionEnsure(req); err != nil {
+	ensureTestSessionReq(t, s, id, req)
+}
+
+// ensureTestSessionReq 同 ensureTestSession，但保留调用方给定的其余请求字段
+// （Kind / Lifecycle / Agent / Purpose / Goal …）。
+func ensureTestSessionReq(t *testing.T, s *Server, id string, req facade.SessionEnsureRequest) {
+	t.Helper()
+	req.InstanceID, req.SessionID = "ins-test", id
+	if req.Scope == (facade.Scope{}) {
+		req.Scope = s.cfgScope(req.InstanceID)
+	}
+	if req.DialogID == "" && req.ParentSessionID != "" {
+		req.DialogID = s.dialogOf(req.InstanceID, req.ParentSessionID)
+	}
+	resp, err := s.cfg.SessionEnsure(req)
+	if err != nil {
 		t.Fatalf("SessionEnsure(%s): %v", id, err)
 	}
+	s.rememberDialog(req.InstanceID, id, resp.DialogID)
+}
+
+// withDialog 给直发的会话类 data-* 请求补 `dialog_id`（一树一库；取进程内会话备忘）。
+// 仅测试使用：生产路径由 sessionStore / dialogOf 统一补齐。
+func withDialog(s *Server, session string, payload map[string]any) map[string]any {
+	if payload == nil {
+		return payload
+	}
+	inner, _ := payload["data"].(map[string]any)
+	if inner == nil {
+		inner = map[string]any{}
+		payload["data"] = inner
+	}
+	if _, has := inner["dialog_id"]; !has {
+		inner["dialog_id"] = s.dialogOf("ins-test", session)
+	}
+	return payload
 }
 
 // TestResolveTurnScenarioSubChatInjectionLayer（A3 / SUBCHAT-2 阶段 A · 单聊 §3.3 / D37）：

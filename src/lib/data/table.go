@@ -9,7 +9,7 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"github.com/lsong98sh/chonkpilot-session/store"
+	"github.com/lsong98sh/chonkpilot-agent/session/store"
 )
 
 // Record 是表行（bucket key → JSON value）。
@@ -45,46 +45,15 @@ func (t *Table) Name() string { return t.name }
 
 // Insert 插入（已存在 → ErrExists）；同事务维护索引。
 func (t *Table) Insert(key string, rec Record) error {
-	if rec == nil {
-		rec = Record{}
-	}
 	return t.db.b.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte(t.name))
-		if err != nil {
-			return err
-		}
-		if b.Get([]byte(key)) != nil {
-			return ErrExists
-		}
-		if err := indexPut(tx, t.name, key, rec); err != nil {
-			return err
-		}
-		return putRecord(b, key, rec)
+		return writeRow(tx, t.name, key, rec, writeInsert)
 	})
 }
 
 // Update 覆盖更新（不存在 → ErrNotFound）；同事务迁移索引（删旧键、插新键）。
 func (t *Table) Update(key string, rec Record) error {
-	if rec == nil {
-		rec = Record{}
-	}
 	return t.db.b.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte(t.name))
-		if err != nil {
-			return err
-		}
-		if b.Get([]byte(key)) == nil {
-			return ErrNotFound
-		}
-		if old, ok := decodeRecord(b.Get([]byte(key)), key); ok {
-			if err := indexDelete(tx, t.name, key, old); err != nil {
-				return err
-			}
-		}
-		if err := indexPut(tx, t.name, key, rec); err != nil {
-			return err
-		}
-		return putRecord(b, key, rec)
+		return writeRow(tx, t.name, key, rec, writeUpdate)
 	})
 }
 
@@ -107,20 +76,7 @@ func (t *Table) Upsert(key string, rec Record) error {
 		rec = cp
 	}
 	return t.db.b.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte(t.name))
-		if err != nil {
-			return err
-		}
-		// 先删旧索引键（键可能因列值变更而迁移），再写主行与新索引键。
-		if old, ok := decodeRecord(b.Get([]byte(key)), key); ok {
-			if err := indexDelete(tx, t.name, key, old); err != nil {
-				return err
-			}
-		}
-		if err := indexPut(tx, t.name, key, rec); err != nil {
-			return err
-		}
-		return putRecord(b, key, rec)
+		return writeRow(tx, t.name, key, rec, writeUpsert)
 	})
 }
 
@@ -198,20 +154,7 @@ func (t *Table) Get(key string, out *Record) (bool, error) {
 // Delete 删除（不存在 → ErrNotFound）；同事务清理索引键。
 func (t *Table) Delete(key string) error {
 	return t.db.b.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(t.name))
-		raw := []byte(nil)
-		if b != nil {
-			raw = b.Get([]byte(key))
-		}
-		if raw == nil {
-			return ErrNotFound
-		}
-		if old, ok := decodeRecord(raw, key); ok {
-			if err := indexDelete(tx, t.name, key, old); err != nil {
-				return err
-			}
-		}
-		return b.Delete([]byte(key))
+		return delRow(tx, t.name, key)
 	})
 }
 
@@ -257,20 +200,7 @@ func (t *Table) ListPrefix(prefix string) ([]string, error) {
 // 非一致性快照，A-20）收敛为单事务扫描。
 func (t *Table) ForEach(fn func(key string, rec Record) error) error {
 	return t.db.b.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(t.name))
-		if b == nil {
-			return nil
-		}
-		return b.ForEach(func(k, v []byte) error {
-			if k == nil {
-				return nil
-			}
-			rec, ok := decodeRecord(v, string(k))
-			if !ok {
-				return nil
-			}
-			return fn(string(k), rec)
-		})
+		return scanBucket(tx, t.name, "", fn)
 	})
 }
 
@@ -279,23 +209,8 @@ func (t *Table) ForEach(fn func(key string, rec Record) error) error {
 // 用于把「ListPrefix + 逐键 Get」（每键一个独立 View 事务，A-33）收敛为单事务前缀扫描，
 // 既不增加事务数也不劣化扫描量（仅扫本前缀，非全桶）。
 func (t *Table) ForEachPrefix(prefix string, fn func(key string, rec Record) error) error {
-	p := []byte(prefix)
 	return t.db.b.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(t.name))
-		if b == nil {
-			return nil
-		}
-		c := b.Cursor()
-		for k, v := c.Seek(p); k != nil && bytes.HasPrefix(k, p); k, v = c.Next() {
-			rec, ok := decodeRecord(v, string(k))
-			if !ok {
-				continue
-			}
-			if err := fn(string(k), rec); err != nil {
-				return err
-			}
-		}
-		return nil
+		return scanBucket(tx, t.name, prefix, fn)
 	})
 }
 
@@ -345,6 +260,105 @@ func (t *Table) ReplaceAll(recs map[string]Record) error {
 		}
 		return nil
 	})
+}
+
+// ─── 写 / 扫 的唯一实现（Table 与 Tx 共用；S-3 · DATA-OPT-1 P3）────────────
+
+// writeMode 是 writeRow 的存在性语义（Insert / Update / Upsert 三档）。
+type writeMode int
+
+const (
+	writeInsert writeMode = iota // 已存在 → ErrExists
+	writeUpdate                  // 不存在 → ErrNotFound
+	writeUpsert                  // 不存在即插入，存在即覆盖
+)
+
+// writeRow 是**写路径唯一实现**（`Table.Insert/Update/Upsert` 与 `Tx.Insert/Put` 共用）：
+// 建桶 → 存在性判定 → 旧索引键清理 → 新索引键写入 → 主行落库。
+//
+// 口径与拆分前逐字节一致（三种模式的差异只在存在性判定与「是否先清理旧索引」）：
+//   - writeInsert：已存在即失败，无旧索引可清；
+//   - writeUpdate：不存在即失败，存在才清旧索引；
+//   - writeUpsert：存在则清旧索引后覆盖（含索引列变更的键迁移），不存在则插入。
+func writeRow(tx *bolt.Tx, table, key string, rec Record, mode writeMode) error {
+	b, err := tx.CreateBucketIfNotExists([]byte(table))
+	if err != nil {
+		return err
+	}
+	existing := b.Get([]byte(key))
+	switch {
+	case mode == writeInsert && existing != nil:
+		return ErrExists
+	case mode == writeUpdate && existing == nil:
+		return ErrNotFound
+	}
+	if rec == nil {
+		rec = Record{}
+	}
+	if existing != nil {
+		if old, ok := decodeRecord(existing, key); ok {
+			if err := indexDelete(tx, table, key, old); err != nil {
+				return err
+			}
+		}
+	}
+	if err := indexPut(tx, table, key, rec); err != nil {
+		return err
+	}
+	return putRecord(b, key, rec)
+}
+
+// delRow 是**删行唯一实现**（`Table.Delete` 与 `Tx.Delete` 共用）：行不存在 → ErrNotFound；
+// 存在则先清索引键再删主行。
+func delRow(tx *bolt.Tx, table, key string) error {
+	b := tx.Bucket([]byte(table))
+	raw := []byte(nil)
+	if b != nil {
+		raw = b.Get([]byte(key))
+	}
+	if raw == nil {
+		return ErrNotFound
+	}
+	if old, ok := decodeRecord(raw, key); ok {
+		if err := indexDelete(tx, table, key, old); err != nil {
+			return err
+		}
+	}
+	return b.Delete([]byte(key))
+}
+
+// scanBucket 是**扫桶唯一实现**（`Table.ForEach/ForEachPrefix` 与 `Tx.ForEach/ForEachPrefix` 共用）：
+// 键序扫描 `table`，`prefix` 为空 = 全表，非空 = 只扫该前缀区段（Seek 起扫，遇非前缀即止）。
+// 桶不存在 → 不调用 fn；嵌套桶 / 坏行（JSON 解析失败）跳过；fn 返回错误即中止并透传。
+func scanBucket(tx *bolt.Tx, table, prefix string, fn func(key string, rec Record) error) error {
+	b := tx.Bucket([]byte(table))
+	if b == nil {
+		return nil
+	}
+	c := b.Cursor()
+	p := []byte(prefix)
+	var k, v []byte
+	if len(p) == 0 {
+		k, v = c.First()
+	} else {
+		k, v = c.Seek(p)
+	}
+	for ; k != nil; k, v = c.Next() {
+		if len(p) > 0 && !bytes.HasPrefix(k, p) {
+			break
+		}
+		if v == nil {
+			continue // 嵌套桶（非行）
+		}
+		rec, ok := decodeRecord(v, string(k))
+		if !ok {
+			continue
+		}
+		if err := fn(string(k), rec); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // putRecord 序列化并写入桶。

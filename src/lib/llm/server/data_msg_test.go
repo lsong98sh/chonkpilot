@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // registerTestInstance 注册测试实例（im 订阅 instance-register → s.im.Lookup；persist

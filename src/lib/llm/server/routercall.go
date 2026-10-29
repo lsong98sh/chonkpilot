@@ -28,7 +28,7 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/lsong98sh/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-agent/router"
 )
 
 // exeDefaultSpecName 是**exe flags 隐含默认**（`-llm-base`/`-llm-model`）在 router 中的保留 provider 名。
@@ -113,6 +113,8 @@ func (s *Server) reconcileLLMProviders() {
 			}
 		}
 	}
+	// LLM-P4：同批重建桥接入口的 provider → 目标快照（同一份 usr `llms`，不再每请求读库）。
+	s.storeBridgeTargets(res.Config)
 	if _, err := s.rt.Reconcile(specs); err != nil {
 		logf("[chonkpilot-server] reconcileLLMProviders: %v\n", err)
 	}
@@ -239,14 +241,18 @@ func routerMessages(msgs []ChatMsg, imgs []messageImages) []router.Message {
 	return out
 }
 
-// routerToolDefs 折算工具定义（`Parameters` 原样透传为 schema JSON）。
+// routerToolDefs 折算工具定义（schema JSON 原样透传）：
+// 优先用 `ToolDef.ParamJSON`（tools/list 刷新时预序列化，LLM-P4），未预序列化才按 Parameters 现算。
 func routerToolDefs(tools []ToolDef) []router.ToolDef {
 	if len(tools) == 0 {
 		return nil
 	}
 	out := make([]router.ToolDef, 0, len(tools))
 	for _, t := range tools {
-		params, _ := json.Marshal(t.Parameters)
+		params := t.ParamJSON
+		if params == nil {
+			params, _ = json.Marshal(t.Parameters)
+		}
 		out = append(out, router.ToolDef{Name: t.Name, Description: t.Description, Parameters: params})
 	}
 	return out

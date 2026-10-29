@@ -18,7 +18,7 @@ import (
 	"syscall"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 func main() {

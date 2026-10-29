@@ -26,7 +26,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
-// gatewayToolName 按后缀定位 gateway 工具面中的**暴露名**（如 tool_stop → self_tool_stop）。
+// gatewayToolName 按后缀定位 gateway 工具面中的**暴露名**（如 tool_stop → tool_stop；P0a 起无前缀）。
 func gatewayToolName(t *testing.T, s *Server, suffix string) string {
 	t.Helper()
 	for _, d := range s.gc.Tools() {
@@ -55,7 +55,7 @@ func toolResultText(t *testing.T, s *Server, session, toolCallID string) string 
 // TestToolWhitelistHardReject（③）：白名单外工具在**调用处**被拒（不落 gateway、不建任务节点）；
 // 白名单内放行；`[]` 与主 agent（未配 tools）= 不限制。
 func TestToolWhitelistHardReject(t *testing.T) {
-	// mock LLM：首回合发 `self_tool_result` 工具调用（预建节点 id）；拿到 tool 结果后收尾。
+	// mock LLM：首回合发 `tool_result` 工具调用（预建节点 id；P0a 起暴露名 = 原名）；拿到 tool 结果后收尾。
 	var preNodeID string
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -74,7 +74,7 @@ func TestToolWhitelistHardReject(t *testing.T) {
 				sseChunk(map[string]any{"content": ""}, ""),
 				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-wl", "type": "function",
-					"function": map[string]any{"name": "self_tool_result", "arguments": string(args)},
+					"function": map[string]any{"name": "tool_result", "arguments": string(args)},
 				}}}, "tool_calls"),
 			})
 			return
@@ -101,11 +101,17 @@ func TestToolWhitelistHardReject(t *testing.T) {
 
 	agSaveScenario(t, s, "ag-wl", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
+		// 白名单两种写法都认（P0a 2026-10-29：暴露名 = 原名；历史 `self_<原名>` 存量配置兼容）：
+		// sub-deny 用历史写法（本工具不在白名单 → 拒绝），sub-allow 亦用历史写法（放行 = 兼容生效）。
 		agSubAgent("sub-deny", "子", map[string]any{"tools": []string{"self_tool_stop"}}),
 		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{"self_tool_result"}}),
 		agSubAgent("sub-free", "子", map[string]any{"tools": []string{}}), // `[]` = 不限制
 	})
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-wl", Turn: "t-wl", ScenarioID: "ag-wl"}
+	// 一树一库：子会话沿用父会话的对话 → 先幂等建父会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-wl"); err != nil {
+		t.Fatalf("EnsureSession(s-wl): %v", err)
+	}
 
 	// ① 白名单非空且不含被调工具 → 拒绝执行：结果 = 拒绝文案，且**未建任务节点**（未落 gateway）
 	agRunChild(t, s, parentReq, "s-wl-deny", "do", "sub-deny")
@@ -155,7 +161,7 @@ func TestToolWhitelistIncludesNonHotTool(t *testing.T) {
 	s := newTestServerMCP(t, srv)
 	registerTestInstance(t, s)
 
-	// 注册**非 hot** 工具（hot 缺省 false）→ gateway self 节点暴露名 = self_<name>
+	// 注册**非 hot** 工具（hot 缺省 false）→ gateway self 节点暴露名 = 原名（P0a 2026-10-29）
 	if _, err := s.emitGateway(context.Background(), "tools/register", map[string]any{
 		"name": "probe_nonhot", "description": "非 hot 探针工具",
 		"handler_subject": SubjectDomainToolCall, "owner": "server",
@@ -171,6 +177,10 @@ func TestToolWhitelistIncludesNonHotTool(t *testing.T) {
 		agSubAgent("sub-free", "子", map[string]any{"tools": []string{}}), // `[]` = 不限制
 	})
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-wl2", Turn: "t-wl2", ScenarioID: "ag-wl2"}
+	// 一树一库：子会话沿用父会话的对话 → 先幂等建父会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-wl2"); err != nil {
+		t.Fatalf("EnsureSession(s-wl2): %v", err)
+	}
 
 	// ① 白名单含非 hot 工具 → 出现在下发 tools（T1 缺陷修正的正面证据）
 	agRunChild(t, s, parentReq, "s-wl2-wl", "do", "sub-wl")
@@ -194,7 +204,7 @@ func TestToolWhitelistIncludesNonHotTool(t *testing.T) {
 // 过滤（filterWhitelistByLevel）——同级/更高级保留、越权剔除、不存在剔除、场景级别不可判定则
 // 原样返回（行为不变）、空白名单（nil）语义不变。
 //
-// 工具面就绪：app（tools/register → self_<name>）+ user / project / prjusr（hot 契约 + dir 节点）
+// 工具面就绪：app（tools/register → 原名）+ user / project / prjusr（hot 契约 + dir 节点）
 // 四级各注册一个；断言直接读 filterWhitelistByLevel 返回值（与 llmTools / toolAllowed 同一输入集）。
 func TestToolWhitelistLevelMatrix(t *testing.T) {
 	llm := mockLLMServer()
@@ -202,7 +212,7 @@ func TestToolWhitelistLevelMatrix(t *testing.T) {
 	s := newTestServerMCP(t, llm)
 	registerTestInstance(t, s)
 
-	// app 级：注册 self（系统）域工具 → 暴露名 self_<name>
+	// app 级：注册 self（系统）域工具 → 暴露名 = 原名（P0a 2026-10-29）
 	if _, err := s.emitGateway(context.Background(), "tools/register", map[string]any{
 		"name": "lv_app", "description": "app 级探针", "handler_subject": SubjectDomainToolCall, "owner": "server",
 	}); err != nil {

@@ -30,8 +30,8 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // registerDomainAgents 读 **app 级场景**（`<exeDir>/scenarios/<场景>/`，与 `<exeDir>/capability/`
@@ -600,7 +600,29 @@ func (s *Server) resolveAgentLLMName(instanceID, agentRef, subKey, inherit strin
 		logf("[chonkpilot-server] resolveAgentLLMName: UserConfigGet failed: %v\n", err)
 		return inherit
 	}
-	cfg := res.Config
+	return resolveAgentLLMNameOf(res.Config, subKey, inherit)
+}
+
+// resolveAgentLLMNameFrom 同 resolveAgentLLMName，但用**本轮回已读**的 usr 配置（LLM-P4：单轮不再
+// 为此多读一次 usr 配置）。`usrCfg == nil`（读失败）→ 与改前一致地回落 inherit。
+func (s *Server) resolveAgentLLMNameFrom(usrCfg map[string]any, agentRef, subKey, inherit string) string {
+	if ref := strings.TrimSpace(agentRef); ref != "" {
+		return ref
+	}
+	if subKey == "" && inherit != "" {
+		return inherit
+	}
+	if usrCfg == nil {
+		return inherit
+	}
+	return resolveAgentLLMNameOf(usrCfg, subKey, inherit)
+}
+
+// resolveAgentLLMNameOf 是裁决纯函数（回落链 ②–⑤，见 resolveAgentLLMName 注释）。
+func resolveAgentLLMNameOf(cfg map[string]any, subKey, inherit string) string {
+	if cfg == nil {
+		return inherit
+	}
 	if subKey != "" {
 		// 键缺失 / 空串已由数据层读侧回落 defaultLLM（SL-1）。
 		if name := data.LLMRefName(cfg[subKey], cfg["llms"]); name != "" {

@@ -38,10 +38,20 @@ export const SNAPSHOT_SCALAR_KEYS = [
   'autoContinue', 'autoContinueDelaySec', 'continueText', 'nextRunMax',
   'turnEventLog', 'turnEventLogRetentionDays',
   'defaultLLM', 'defaultScenario',
+  // 子系统默认 LLM（llmref；2026-10-25 仅 3 键，analysis/decision 已移除）
+  'llm.promptOptimise', 'llm.memory', 'llm.compress',
 ]
 
-/** 自由键（persist `userConfigFreeKeys`）：无类型无默认，值以字符串形态存取 */
-export const SNAPSHOT_FREE_KEYS = ['recent_dirs', 'tool_async', 'tool_sandbox']
+/**
+ * 自由键（persist `userConfigFreeKeys`）：无类型无默认，值以字符串形态存取。
+ * `toolchain.<runtime>.minVersion` = 工具链可选最小版本（P2-3 ③；空 = 不校验；只做 UI 提示）。
+ */
+export const SNAPSHOT_FREE_KEYS = [
+  'recent_dirs', 'tool_async', 'tool_sandbox',
+  'toolchain.java.minVersion', 'toolchain.python.minVersion', 'toolchain.node.minVersion',
+  'toolchain.go.minVersion', 'toolchain.rust.minVersion', 'toolchain.c.minVersion',
+  'toolchain.chrome.minVersion',
+]
 
 /** 集合键（persist `collectionKeys` → usr 专用表 llms） */
 export const SNAPSHOT_COLLECTION_KEYS = ['llms']

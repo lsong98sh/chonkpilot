@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/chonkpilot/chonkpilot-lib/winlog"
-	"github.com/chonkpilot/chonkpilot-lib/winsvc"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winlog"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winsvc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

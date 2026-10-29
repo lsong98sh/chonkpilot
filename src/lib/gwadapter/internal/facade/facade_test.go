@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // spyBus 包装真实 Bus，记录 mcp-gateway-changed 订阅的退订次数（验证 Stop 退订）。

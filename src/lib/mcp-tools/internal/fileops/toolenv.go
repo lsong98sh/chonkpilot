@@ -5,7 +5,7 @@
 // executor 据此：
 //  1. paths.SetTempRoot(CHONKPILOT_INSTANCE) 初始化 !/ 前缀的落地根（<temp>/chonkpilot/<instance>/）；
 //  2. 构造 DSL 只读变量表 env（Options.Vars），供脚本以 {{env.CHONKPILOT_WORKDIR}} 等显式拼绝对路径；
-//  3. 同名变量另注入 script_run 子进程环境（用户显式 env 优先）。
+//  3. 同名变量另注入子进程环境（用户显式 env 优先）。
 //
 // CHONKPILOT_* 仅在本仓 spawn 的内部 executor 进程内可见（第三方 MCP server 不经我们 spawn，
 // 拿不到这些变量）。
@@ -15,20 +15,22 @@ import (
 	"os"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/paths"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/paths"
 )
 
 // 宿主注入 env 的变量名（对齐 16-路径解析规范 §8；仅内部 executor 进程可见）。
+//
+// 2026-10-28（P2-3）：`CHONKPILOT_INTERPRETERS` 已随 `script_run` → `task_run` 迁出主仓
+// （解释器配置归 task 插件），本包不再持有该常量。
 const (
-	EnvInstance     = "CHONKPILOT_INSTANCE"     // 运行实例 id
-	EnvWorkDir      = "CHONKPILOT_WORKDIR"      // 项目工作目录（宿主 _meta.work_dir）
-	EnvDataDir      = "CHONKPILOT_DATADIR"      // 数据目录（宿主 _meta.data_dir）
-	EnvPurpose      = "CHONKPILOT_PURPOSE"      // 本次调用的运行目的（宿主 _meta.purpose；C1 2026-10-15）
-	EnvTempDir      = "CHONKPILOT_TEMPDIR"      // 临时目录根（= <temp>/chonkpilot/<instance>/）
-	EnvExeDir       = "CHONKPILOT_EXEDIR"       // 当前可执行文件所在目录
-	EnvProject      = "CHONKPILOT_PROJECT"      // 项目目录（与 CHONKPILOT_WORKDIR 同值）
-	EnvInterpreters = "CHONKPILOT_INTERPRETERS" // runtime → 解释器绝对路径（JSON 对象；script_run 读）
+	EnvInstance = "CHONKPILOT_INSTANCE" // 运行实例 id
+	EnvWorkDir  = "CHONKPILOT_WORKDIR"  // 项目工作目录（宿主 _meta.work_dir）
+	EnvDataDir  = "CHONKPILOT_DATADIR"  // 数据目录（宿主 _meta.data_dir）
+	EnvPurpose  = "CHONKPILOT_PURPOSE"  // 本次调用的运行目的（宿主 _meta.purpose；C1 2026-10-15）
+	EnvTempDir  = "CHONKPILOT_TEMPDIR"  // 临时目录根（= <temp>/chonkpilot/<instance>/）
+	EnvExeDir   = "CHONKPILOT_EXEDIR"   // 当前可执行文件所在目录
+	EnvProject  = "CHONKPILOT_PROJECT"  // 项目目录（与 CHONKPILOT_WORKDIR 同值）
 )
 
 // ToolEnv 是宿主注入环境的两视图：Vars 供 DSL 插值，Env 供子进程环境注入。

@@ -88,7 +88,7 @@ type MessageView struct {
 type MessageAppendRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（非空 → 写对话库；空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// TurnID 归属轮次 id（必填）。
 	TurnID string `json:"turn_id"`

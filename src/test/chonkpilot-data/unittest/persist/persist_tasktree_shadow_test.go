@@ -15,7 +15,7 @@ import (
 // TestDataTasktreeShadowPath：影子路径读写 + 索引维护 + 隔离（不动 tasktree）。
 func TestDataTasktreeShadowPath(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
-	prj := seedTasktree(t, bus) // tasktree: n1(llm/running) → n2(tool/done)
+	dialogID, sdb := seedTasktree(t, bus) // tasktree: n1(llm/running) → n2(tool/done)
 
 	// 影子 upsert（同一方法面 + shadow:true；带影子扩展字段）
 	r := dataCall(t, bus, "data-tasktree-upsert", map[string]any{
@@ -25,7 +25,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 			"kind": "tool", "parent_node_id": "n1", "title": "影子工具",
 			"status": "running", "state": "running", "created_at": "2026-09-18T00:00:00Z",
 			"tool_call_id": "tc-3", "instance_id": "ins-test", "work_dir": "E:/ws",
-			"shadow": true,
+			"shadow": true, "dialog_id": dialogID,
 		},
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
@@ -34,14 +34,14 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 
 	// 影子行落 task_shadow（含扩展字段），tasktree 无 n3
 	var rec data.Record
-	if ok, _ := prj.Table("task_shadow").Get("n3", &rec); !ok {
+	if ok, _ := sdb.Table("task_shadow").Get("n3", &rec); !ok {
 		t.Fatal("影子行未写入 task_shadow")
 	}
 	if rec["status"] != "running" || rec["node_type"] != "tool" || rec["work_dir"] != "E:/ws" ||
 		rec["parent_node_id"] != "n1" {
 		t.Fatalf("影子行字段错: %+v", rec)
 	}
-	if ok, _ := prj.Table("tasktree").Get("n3", &data.Record{}); ok {
+	if ok, _ := sdb.Table("tasktree").Get("n3", &data.Record{}); ok {
 		t.Fatal("影子写不得落到 tasktree")
 	}
 
@@ -51,7 +51,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 		{"task_shadow_by_session", "s1\x00"},
 		{"task_shadow_by_parent", "n1\x00"},
 	} {
-		keys, err := prj.Table(tc.bucket).ListPrefix(tc.prefix)
+		keys, err := sdb.Table(tc.bucket).ListPrefix(tc.prefix)
 		if err != nil || len(keys) != 1 {
 			t.Fatalf("影子索引缺失: %s prefix=%q keys=%v err=%v", tc.bucket, tc.prefix, keys, err)
 		}
@@ -60,7 +60,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 	// 读：shadow:true → 仅影子（1 条）；默认 → 仍 2 条（既有行）
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
 		"req_id": "r2", "instance_id": "ins-test",
-		"data": map[string]any{"top_session": "top1", "shadow": true},
+		"data": map[string]any{"top_session": "top1", "shadow": true, "dialog_id": dialogID},
 	})
 	nodes, _ := dataResult(t, r)["nodes"].([]any)
 	if len(nodes) != 1 {
@@ -71,7 +71,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 	}
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
 		"req_id": "r3", "instance_id": "ins-test",
-		"data": map[string]any{"top_session": "top1"},
+		"data": map[string]any{"top_session": "top1", "dialog_id": dialogID},
 	})
 	nodes, _ = dataResult(t, r)["nodes"].([]any)
 	if len(nodes) != 2 {
@@ -81,7 +81,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 	// tasks（影子）
 	r = dataCall(t, bus, "data-tasktree-tasks", map[string]any{
 		"req_id": "r4", "instance_id": "ins-test",
-		"data": map[string]any{"session_id": "s1", "shadow": true},
+		"data": map[string]any{"session_id": "s1", "shadow": true, "dialog_id": dialogID},
 	})
 	list, _ := dataResult(t, r)["list"].([]any)
 	if len(list) != 1 {
@@ -105,16 +105,16 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	r = dataCall(t, bus, "data-tasktree-delete", map[string]any{
-		"req_id": "r5", "instance_id": "ins-test",
+		"req_id": "r5", "instance_id": "ins-test", "dialog_id": dialogID,
 		"data": map[string]any{"node_id": "n3", "shadow": true},
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("shadow delete failed: %+v", r)
 	}
-	if ok, _ := prj.Table("task_shadow").Get("n3", &data.Record{}); ok {
+	if ok, _ := sdb.Table("task_shadow").Get("n3", &data.Record{}); ok {
 		t.Fatal("影子行未删除")
 	}
-	if keys, _ := prj.Table("task_shadow_by_top").ListPrefix("top1\x00"); len(keys) != 0 {
+	if keys, _ := sdb.Table("task_shadow_by_top").ListPrefix("top1\x00"); len(keys) != 0 {
 		t.Fatalf("影子索引未清理（物理删除应同事务清索引）: %v", keys)
 	}
 	select {
@@ -123,7 +123,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 	// tasktree 完好
-	if keys, _ := prj.Table("tasktree").ListKeys(); len(keys) != 2 {
+	if keys, _ := sdb.Table("tasktree").ListKeys(); len(keys) != 2 {
 		t.Fatalf("tasktree 行数=%v want 2", keys)
 	}
 }
@@ -132,7 +132,7 @@ func TestDataTasktreeShadowPath(t *testing.T) {
 // 且与影子桶互不影响。
 func TestDataTasktreeDefaultPathUnchanged(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
-	prj := seedTasktree(t, bus)
+	dialogID, sdb := seedTasktree(t, bus)
 
 	// 默认 upsert（不传 shadow）→ 落 tasktree，不落影子
 	r := dataCall(t, bus, "data-tasktree-upsert", map[string]any{
@@ -140,20 +140,20 @@ func TestDataTasktreeDefaultPathUnchanged(t *testing.T) {
 		"data": map[string]any{
 			"task_id": "n9", "top_session": "top1", "session_id": "s1", "kind": "llm",
 			"parent_node_id": "", "title": "默认节点", "status": "running",
-			"created_at": "2026-09-18T00:00:00Z",
+			"created_at": "2026-09-18T00:00:00Z", "dialog_id": dialogID,
 		},
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("默认 upsert failed: %+v", r)
 	}
 	var rec data.Record
-	if ok, _ := prj.Table("tasktree").Get("n9", &rec); !ok {
+	if ok, _ := sdb.Table("tasktree").Get("n9", &rec); !ok {
 		t.Fatal("默认路径应落 tasktree")
 	}
 	if rec["node_type"] != "session" { // kind=llm → node_type=session（既有语义）
 		t.Fatalf("默认路径 node_type=%v want session", rec["node_type"])
 	}
-	if ok, _ := prj.Table("task_shadow").Get("n9", &data.Record{}); ok {
+	if ok, _ := sdb.Table("task_shadow").Get("n9", &data.Record{}); ok {
 		t.Fatal("默认路径不得污染影子桶")
 	}
 
@@ -163,29 +163,30 @@ func TestDataTasktreeDefaultPathUnchanged(t *testing.T) {
 		"data": map[string]any{
 			"task_id": "n10", "top_session": "top1", "kind": "tool", "title": "显式非影子",
 			"status": "done", "created_at": "2026-09-18T00:00:00Z", "shadow": false,
+			"dialog_id": dialogID,
 		},
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("shadow:false upsert failed: %+v", r)
 	}
-	if ok, _ := prj.Table("tasktree").Get("n10", &data.Record{}); !ok {
+	if ok, _ := sdb.Table("tasktree").Get("n10", &data.Record{}); !ok {
 		t.Fatal("shadow:false 应落 tasktree")
 	}
-	if ok, _ := prj.Table("task_shadow").Get("n10", &data.Record{}); ok {
+	if ok, _ := sdb.Table("task_shadow").Get("n10", &data.Record{}); ok {
 		t.Fatal("shadow:false 不得落影子桶")
 	}
 
 	// 默认 list/tasks 只见 tasktree（4 条 = n1/n2/n9/n10），影子桶为空 → 影子 list 0 条
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
 		"req_id": "r3", "instance_id": "ins-test",
-		"data": map[string]any{"top_session": "top1"},
+		"data": map[string]any{"top_session": "top1", "dialog_id": dialogID},
 	})
 	if nodes, _ := dataResult(t, r)["nodes"].([]any); len(nodes) != 4 {
 		t.Fatalf("默认 list=%d want 4", len(nodes))
 	}
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
 		"req_id": "r4", "instance_id": "ins-test",
-		"data": map[string]any{"top_session": "top1", "shadow": true},
+		"data": map[string]any{"top_session": "top1", "shadow": true, "dialog_id": dialogID},
 	})
 	if nodes, _ := dataResult(t, r)["nodes"].([]any); len(nodes) != 0 {
 		t.Fatalf("影子 list 应空: %+v", nodes)
@@ -205,7 +206,7 @@ func TestDataTasktreeDefaultPathUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	r = dataCall(t, bus, "data-tasktree-delete", map[string]any{
-		"req_id": "r5", "instance_id": "ins-test", "id": "n1",
+		"req_id": "r5", "instance_id": "ins-test", "id": "n1", "dialog_id": dialogID,
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("默认 delete failed: %+v", r)

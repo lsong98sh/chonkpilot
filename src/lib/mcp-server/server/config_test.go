@@ -8,19 +8,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// TestApplyInterpretersChromePath 验证 Apply 解析新增的 interpreters / chrome_path（含非空才生效语义）。
-func TestApplyInterpretersChromePath(t *testing.T) {
+// TestApplyChromePath 验证 Apply 解析 chrome_path（含非空才生效语义）。
+// 注（2026-10-28 P2-3）：`interpreters` 字段已随 script_run 迁出删除，此处只断言 chrome_path。
+func TestApplyChromePath(t *testing.T) {
 	cfg := DefaultConfig()
 	raw := []byte(`{
-		"interpreters": {"python": "C:\\Python\\python.exe", "js": "C:\\node\\node.exe"},
 		"chrome_path": "C:\\Chrome\\chrome.exe"
 	}`)
 	if err := cfg.Apply(raw); err != nil {
 		t.Fatalf("Apply: %v", err)
-	}
-	want := map[string]string{"python": `C:\Python\python.exe`, "js": `C:\node\node.exe`}
-	if !reflect.DeepEqual(cfg.Interpreters, want) {
-		t.Fatalf("Interpreters = %v, want %v", cfg.Interpreters, want)
 	}
 	if cfg.ChromePath != `C:\Chrome\chrome.exe` {
 		t.Fatalf("ChromePath = %q", cfg.ChromePath)
@@ -34,13 +30,13 @@ func TestApplyInterpretersChromePath(t *testing.T) {
 	}
 }
 
-// TestDefaultsMapNoContextArgs 验证 defaultsMap 不再注入 _interpreters/_workdir/_datadir/_instance
-// （R-11 二次升级：上下文经调用上下文 _meta 传递，解释器经子进程环境注入）。
+// TestDefaultsMapNoContextArgs 验证 defaultsMap 不再注入 _workdir/_datadir/_instance
+// （R-11 二次升级：上下文经调用上下文 _meta 传递）。
 func TestDefaultsMapNoContextArgs(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.SetRuntime(0, 0, map[string]string{"python": "C:\\Python\\python.exe"}, `C:\Chrome\chrome.exe`, nil)
+	cfg.SetRuntime(0, 0, `C:\Chrome\chrome.exe`, nil)
 	m := cfg.defaultsMap()
-	for _, k := range []string{"_interpreters", "_workdir", "_datadir", "_instance"} {
+	for _, k := range []string{"_workdir", "_datadir", "_instance"} {
 		if _, ok := m[k]; ok {
 			t.Fatalf("%s 不应注入 args（改用 _meta / 子进程 env）: %#v", k, m)
 		}
@@ -114,7 +110,7 @@ func TestCallContextMetaTreeRoundTrip(t *testing.T) {
 // TestExecutorEnv 验证 executor 子进程环境注入 CHONKPILOT_*（含剥离残留）+ CHONK_CHROME。
 func TestExecutorEnv(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.SetRuntime(0, 0, map[string]string{"python": "C:\\Python\\python.exe"}, `C:\Chrome\chrome.exe`, nil)
+	cfg.SetRuntime(0, 0, `C:\Chrome\chrome.exe`, nil)
 	t.Setenv("CHONKPILOT_INSTANCE", "stale-should-be-stripped")
 	t.Setenv("CHONKPILOT_SANDBOX", `[{"dir":"C:\\stale","writable":true}]`) // 残留策略也须被剥离
 	env := cfg.executorEnv(CallContext{InstanceID: "ins-1", WorkDir: `C:\w`, DataDir: `C:\d`, Purpose: "审查这次改动",
@@ -126,8 +122,8 @@ func TestExecutorEnv(t *testing.T) {
 	if got["CHONKPILOT_INSTANCE"] == "stale-should-be-stripped" {
 		t.Fatal("残留 CHONKPILOT_INSTANCE 应被剥离")
 	}
-	if !strings.Contains(got["CHONKPILOT_INTERPRETERS"], "python") {
-		t.Fatalf("应注入 CHONKPILOT_INTERPRETERS，got %q", got["CHONKPILOT_INTERPRETERS"])
+	if got["CHONKPILOT_INTERPRETERS"] != "" {
+		t.Fatalf("CHONKPILOT_INTERPRETERS 不应再注入（解释器配置归 task 插件），got %q", got["CHONKPILOT_INTERPRETERS"])
 	}
 	if got["CHONK_CHROME"] != `C:\Chrome\chrome.exe` {
 		t.Fatalf("应注入 CHONK_CHROME，got %q", got["CHONK_CHROME"])
@@ -158,7 +154,7 @@ func envMap(env []string) map[string]string {
 func TestSetRuntimeOverrides(t *testing.T) {
 	cfg := DefaultConfig()
 	lim := cfg.ensureLimiter()
-	cfg.SetRuntime(120, 4, nil, "/usr/bin/chrome", []string{"node_modules", ".git"})
+	cfg.SetRuntime(120, 4, "/usr/bin/chrome", []string{"node_modules", ".git"})
 	if cfg.TimeoutSec != 120 {
 		t.Fatalf("TimeoutSec = %d, want 120", cfg.TimeoutSec)
 	}
@@ -178,7 +174,7 @@ func TestSetRuntimeOverrides(t *testing.T) {
 		t.Fatalf("limiter.limit = %d, want 4", limit)
 	}
 	// 零值/空值不覆盖
-	cfg.SetRuntime(0, 0, nil, "", nil)
+	cfg.SetRuntime(0, 0, "", nil)
 	if cfg.TimeoutSec != 120 || cfg.MaxConcurrency != 4 || cfg.ChromePath != "/usr/bin/chrome" {
 		t.Fatalf("零值发生了覆盖: %+v", cfg)
 	}

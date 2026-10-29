@@ -110,12 +110,9 @@ func validMemoryCategoryName(name string) bool {
 }
 
 // memoryPathWithin 归一后判断 path 是否落在 dir 目录内（防目录穿越；越界即拒绝）。
+// 判定单源 = capfs.PathWithinOrSelf（S-5 · DATA-OPT-1 P3）。
 func memoryPathWithin(dir, path string) bool {
-	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	return capfs.PathWithinOrSelf(dir, path)
 }
 
 // memoryWriteRoot 返回写越界复验的**信任锚**：项目级 = 解析（可信）workDir 的符号链接后拼
@@ -141,11 +138,7 @@ func (s *Service) memoryWriteRoot(workDir, level string) string {
 // symlink 会被 os.WriteFile / os.MkdirAll 跟随越界写。此处解析 path 的真实落点（不存在则解析
 // 最近存在的祖先后回拼，见 capfs.RealPathOrAncestor）后复判仍在 root 内；越界 / 不可解析 → false。
 func memoryPathWithinReal(root, path string) bool {
-	real, ok := capfs.RealPathOrAncestor(path)
-	if !ok {
-		return false
-	}
-	return memoryPathWithin(root, real)
+	return capfs.RealPathWithinOrSelf(root, path)
 }
 
 // memoryProjectDir 项目级记忆目录（<workdir>/.chonkpilot/memory）。

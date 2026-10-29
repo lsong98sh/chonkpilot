@@ -9,7 +9,7 @@ package facadeapi
 
 import (
 	"github.com/chonkpilot/chonkpilot-gwadapter/internal/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // Adapter 是 internal/facade.Adapter 的类型别名（同一类型，非包装类型）。

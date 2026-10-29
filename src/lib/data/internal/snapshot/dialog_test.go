@@ -3,6 +3,7 @@ package snapshot
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -106,26 +107,18 @@ func TestSnapshotDialogErrors(t *testing.T) {
 	_ = sdb
 }
 
-// TestSnapshotLegacyStillWorks 兼容：不带 dialog_id → 旧布局照旧（含目录行补建）。
-func TestSnapshotLegacyStillWorks(t *testing.T) {
-	instID, prjUsr := setupInst(t)
+// TestSnapshotDialogRequired 缺 dialog_id → 明确失败（旧布局已退场，61 §0.6）。
+func TestSnapshotDialogRequired(t *testing.T) {
+	instID, _ := setupInst(t)
 	svc := New()
 	if _, err := svc.SnapshotSet(facade.SnapshotSetRequest{
 		InstanceID: instID,
-		Snapshot:   facade.Snapshot{SessionID: "old-1", Turn: "t9", Messages: []facade.Message{{Role: "user", Content: "旧"}}},
-	}); err != nil {
-		t.Fatalf("SnapshotSet(legacy): %v", err)
+		Snapshot:   facade.Snapshot{SessionID: "s1", Turn: "t1"},
+	}); err == nil || !strings.Contains(err.Error(), "dialog_required") {
+		t.Fatalf("SnapshotSet 缺 dialog_id 应报 dialog_required：err=%v", err)
 	}
-	got, err := svc.SnapshotGet(facade.SnapshotGetRequest{InstanceID: instID, SessionID: "old-1"})
-	if err != nil || !got.Found || got.Snapshot.Turn != "t9" {
-		t.Fatalf("旧布局快照往返不符: %+v err=%v", got, err)
-	}
-	cat, _ := data.PrjUsr(instID)
-	var rec data.Record
-	if ok, _ := cat.Table("sessions").Get("old-1", &rec); !ok {
-		t.Fatal("旧布局应补建 prjusr 会话目录行")
-	}
-	if _, err := os.Stat(data.SessionDBPath(prjUsr, "old-1")); err != nil {
-		t.Fatalf("旧布局会话库缺失: %v", err)
+	if _, err := svc.SnapshotGet(facade.SnapshotGetRequest{InstanceID: instID, SessionID: "s1"}); err == nil ||
+		!strings.Contains(err.Error(), "dialog_required") {
+		t.Fatalf("SnapshotGet 缺 dialog_id 应报 dialog_required：err=%v", err)
 	}
 }

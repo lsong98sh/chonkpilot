@@ -35,7 +35,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // optimizeLLM 命中的提示词优化 LLM（`llm.promptOptimise` 指向的 usr llms 记录）的快照

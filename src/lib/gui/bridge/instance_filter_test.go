@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // newFilterTestBridge 建桥并订阅总线（捕获 eval 到前端的脚本）。

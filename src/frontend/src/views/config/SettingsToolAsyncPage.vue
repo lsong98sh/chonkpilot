@@ -266,6 +266,19 @@ function isThresholdMode(row) {
   return row.mode === 'auto' || row.mode === 'manual'
 }
 
+// 配置键（P0a 2026-10-29）：网关暴露名 = 原名（内置 self 节点不再加 `self_` 前缀）；
+// 存量 usr 配置可能仍是历史 `self_<原名>` 键 → 两写法都认（先精确匹配，未命中再试历史键），
+// 读写都落在命中的那个键上（不改写用户既有键）。
+function cfgKeyOf(name) {
+  const n = String(name || '')
+  if (!n) return n
+  const has = (m, k) => !!m && Object.prototype.hasOwnProperty.call(m, k)
+  if (has(workMap.value, n) || has(savedMap.value, n)) return n
+  const legacy = 'self_' + n
+  if (has(workMap.value, legacy) || has(savedMap.value, legacy)) return legacy
+  return n
+}
+
 function defaultThreshold(row) {
   return row.cThreshold !== '' ? row.cThreshold : (row.cTimeout !== '' ? row.cTimeout : FALLBACK_THRESHOLD)
 }
@@ -331,7 +344,8 @@ function buildEntry(row) {
 
 // 待保存态 → 行显示值（workMap 优先，其次已落库态，最后契约现值）
 function resetRowFromMaps(row) {
-  const u = workMap.value[row.name] || savedMap.value[row.name]
+  row.cfgKey = cfgKeyOf(row.name) // 配置键：原名优先，存量历史 `self_<原名>` 兼容
+  const u = workMap.value[row.cfgKey] || savedMap.value[row.cfgKey]
   if (u && typeof u === 'object') {
     row.mode = MODES.includes(u.mode) ? u.mode : row.cMode
     row.threshold = u.threshold !== undefined && u.threshold !== null ? String(u.threshold) : String(defaultThreshold(row))
@@ -357,13 +371,13 @@ function applyRows() {
 function syncRow(row) {
   const next = { ...workMap.value }
   const e = buildEntry(row)
-  if (sameAsContract(row, e)) delete next[row.name]
-  else next[row.name] = e
+  if (sameAsContract(row, e)) delete next[row.cfgKey || row.name]
+  else next[row.cfgKey || row.name] = e
   workMap.value = next
 }
 
 function isUserSet(row) {
-  return Object.prototype.hasOwnProperty.call(workMap.value, row.name)
+  return Object.prototype.hasOwnProperty.call(workMap.value, row.cfgKey || row.name)
 }
 
 // 待保存态是否与已落库态不同（无改动 → 保存按钮禁用）
@@ -524,7 +538,7 @@ function onNumberBlur(row, field) {
       field: t(field === 'threshold' ? 'config.toolAsync.threshold' : 'config.toolAsync.hardTimeout'),
       min: -1, max: '-',
     }))
-    const u = savedMap.value[row.name]
+    const u = savedMap.value[row.cfgKey || row.name]
     if (field === 'threshold') {
       row.threshold = u && u.threshold != null ? String(u.threshold) : String(defaultThreshold(row))
     } else {
@@ -538,7 +552,7 @@ function onNumberBlur(row, field) {
 // 行显示明确回落契约现值（不读 savedMap，否则会显示「已落库的旧值」而非契约默认）。
 function restoreDefault(row) {
   const next = { ...workMap.value }
-  delete next[row.name]
+  delete next[row.cfgKey || row.name]
   workMap.value = next
   row.mode = row.cMode
   row.threshold = String(defaultThreshold(row))

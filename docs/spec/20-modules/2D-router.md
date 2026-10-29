@@ -1,8 +1,8 @@
-# 2D · src/lib/router（LLM 出网协议适配）
+# 2D · chonkpilot-router（LLM 出网协议适配）
 
 > 状态：✅ 与代码一致
 > 关联：[21-llm-server](21-llm-server.md) · [10-分层与依赖](../10-architecture/10-分层与依赖.md) · [23-工程与部署拓扑](../10-architecture/23-工程与部署拓扑.md) · [40-演进计划 §LR](../40-roadmap/40-演进计划.md)
-> 代码目录：`src/lib/router/`（根包 + `internal/canon/` + `internal/adaptor/{openai,anthropic,echo}/`）
+> 代码目录：**独立仓 `chonkpilot-router/`**（根包 + `internal/canon/` + `internal/adaptor/{openai,anthropic,echo}/`）；2026-10-27 起主仓 `src/lib/router/` 已删除，主仓经 `github.com/lsong98sh/chonkpilot-router` **按版本依赖**（v0.1.0；2026-10-22 起**不使用** `replace`）。
 > 设计出处（决策过程不在本文重复）：见 [40-演进计划 §LR](../40-roadmap/40-演进计划.md)。
 
 ---
@@ -171,7 +171,7 @@ Stream(ctx, spec, req, out)
 | TopP | `Options.TopP` 非空 | 软：清零 |
 | MaxTokensRequired | `Options.MaxTokens` 空 | caps=true → 适配器补缺省 |
 
-> 〔订正（2026-10-08）：原「Reasoning / ReasoningEffort」合一行「软：清零」**不准确、已拆分** —— `!caps.ReasoningEffort` 时**只清档位、保留 `Reasoning`**（原先误清整个思考请求），`!caps.Reasoning` 才整体清零；与 `src/lib/router/internal/adaptor/degrade.go` 注释表一致。〕
+> 〔订正（2026-10-08）：原「Reasoning / ReasoningEffort」合一行「软：清零」**不准确、已拆分** —— `!caps.ReasoningEffort` 时**只清档位、保留 `Reasoning`**（原先误清整个思考请求），`!caps.Reasoning` 才整体清零；与 `chonkpilot-router/internal/adaptor/degrade.go` 注释表一致。〕
 
 ### 5.4 内置兜底 `echo`
 
@@ -193,7 +193,7 @@ Stream(ctx, spec, req, out)
 - **职责只有报文级**：协议编解码 / SSE 流解析 / 连接与双超时 / 错误分类 / **报文级重试**（次数 · 预算 · 退避 · `Emitted==0` 判据）——即「同一份报文能不能原样再发一次」。
 - **可见重试事件归宿主**：router 只经非阻塞 `CallOptions.Observer.OnRetry` 上报（`RetryContext` / `wait`）；宿主适配器 `src/lib/llm/server/chatshadow.go` 的 `chatLLMClient` 把 `StepOptions.OnRetry` 折成引擎事件 `EventLLMRetry` → `chatEventSink` 发既有 `llm-retry`（前端 `session-retry`），**payload 与现状一致**。router 不决定是否让用户可见、不决定续写。
 - **不感知 chat / gateway / MQ**：router 零 turn/session 概念、零工具执行、零 MQ 主题；chat 的 `LLMClient.Step` 端口与 router 的 `Call` 之间的类型互转只在宿主（`routerconv.go` / `chatshadow.go`）。
-- **边界断言**：`src/lib/router/deps_test.go`（`TestDepsPureLib`）以 `go list -deps` 断言 router 依赖图不含 `chonkpilot-lib/mq` · `msgkeys` · `chonkpilot-mcp-gateway/gateway` · `chonkpilot-llm`；模块内两两无 import 由此固化。
+- **边界断言**：`chonkpilot-router/deps_test.go`（`TestDepsPureLib`）以 `go list -deps` 断言 router 依赖图不含 `chonkpilot-lib/mq` · `msgkeys` · `chonkpilot-mcp-gateway/gateway` · `chonkpilot-llm`；模块内两两无 import 由此固化。
 
 ---
 
@@ -207,7 +207,7 @@ Stream(ctx, spec, req, out)
 
 ## 8. 关联测试（测试落点）
 
-**L1 白盒（`src/lib/router/**`，仅此层，无 L2/L3/L4 专门套件）**：
+**L1 白盒（`chonkpilot-router/**`，仅此层，无 L2/L3/L4 专门套件）**：
 
 - 根包：`router_test.go`（注册/分派/`Call` 契约/能力/内置 echo 回落/透明重试 5 例/并发）· `retry_config_test.go`（RETRY-2：429 重试+预算权重、Emitted>0 不重发、stream 硬帽、dial 次数、显式 0、Observer panic 隔离、预算门槛、auth 不重试、DefaultPolicy 权重）· `reconcile_test.go` · `error_test.go`（Kind↔Retryable / 状态码映射 / `ToError` / `RetryWait`）· `alias_test.go`。
 - `internal/adaptor`：`sse_test.go`（多行/注释心跳/空白/CRLF/半包/截断）· `exchange_test.go`（SSE 泵与单发 JSON）· `errors_test.go`（状态码/Retry-After/传输错误/流内 error）· `toolcall_test.go` · `usage_test.go` · `degrade_test.go` · `fixture_test.go`（`testdata/*.sse.json` 金样本）。

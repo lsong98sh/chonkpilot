@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // suggestRec 记录 mock LLM 端点收到的请求消息（断言指令内容用）。

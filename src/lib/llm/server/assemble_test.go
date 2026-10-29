@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/lsong98sh/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-agent/router"
 )
 
 // TestRouterMessagesReasoning：canonical 折算保留 reasoning（→ router 适配器再映射为

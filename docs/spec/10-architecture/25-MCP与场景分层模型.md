@@ -2,7 +2,7 @@
 
 > 状态：✅ 已落地（T1–T6 + #7 均已实现；§10 #12 主题已定为 `data-session-title-changed` 并落地）
 > 关联：[21-llm-server](../20-modules/21-llm-server.md) · [26-mcp-gateway](../20-modules/26-mcp-gateway.md) · [12-数据层](12-数据层.md) · [37-场景](../30-function-points/37-场景.md) · [39-知识库与原语](../30-function-points/39-知识库与原语.md) · [61-消息一览](../60-reference/61-消息一览.md)
-> 代码目录（D-28）：`src/lib/llm/server/`（提示词 / 工具面 / 资产注册）· `src/lib/gateway/`（meta 工具 + 目录资产）· `src/lib/data/internal/`（capfs 场景根）· `src/frontend/src/views/`（场景编辑器 / chat 输入框）
+> 代码目录（D-28）：`src/lib/llm/server/`（提示词 / 工具面 / 资产注册）· 独立仓 `chonkpilot-mcp-gateway/`（meta 工具 + 目录资产；主仓适配面 = `src/lib/gwadapter/`）· `src/lib/data/internal/`（capfs 场景根）· `src/frontend/src/views/`（场景编辑器 / chat 输入框）
 > 本篇为**自包含**规格：能力面 / 场景面 / chat 面的职责切分、系统提示词拼接、工具面语义、资产面变更、存储命名与落地分解。**以本篇为准**；与之冲突的既有表述按 §8 逐处订正。
 
 ---
@@ -171,7 +171,7 @@ agent **只"注入"不"注册"**：
 
 ## 6. 存储与命名
 
-> **场景根移入 capability** —— 原「独立根 `scenarios/`（与 `capability/` **平级**）」**作废**；现场景根 = **`<级别根>/capability/scenarios/`**。级别由**三级**扩为**四级**：**app（系统级）/ user / project / project-private（prjusr = `~/.chonkpilot/data/<prj-id>/capability/scenarios/`）**。capability 每级下 6 个**扁平**子目录（`prompts/tools/resources/skills/agents/scenarios`，旧 `knowledge/**` 归并层删除）；**四级均可读写**；同名定位/覆盖优先序 = **prjusr > project > user > app**（`capfs.LevelPriority`）。
+> **场景根移入 capability** —— 原「独立根 `scenarios/`（与 `capability/` **平级**）」**作废**；现场景根 = **`<级别根>/capability/scenarios/`**。级别由**三级**扩为**四级**：**app（系统级）/ user / project / project-private（prjusr = `<workDir>/.chonkpilot/users/<OS 用户名>/capability/scenarios/`）**。capability 每级下 6 个**扁平**子目录（`prompts/tools/resources/skills/agents/scenarios`，旧 `knowledge/**` 归并层删除）；**四级均可读写**；同名定位/覆盖优先序 = **prjusr > project > user > app**（`capfs.LevelPriority`）。
 
 - 不允许同名场景（场景 id **全局唯一**，跨级亦然）→ **四级**"覆盖"语义**整体不存在**：
   - `list` 无需去重；`load` 直接按 id 命中；
@@ -189,10 +189,10 @@ agent **只"注入"不"注册"**：
 | **agent** | **可重名** | **加场景前缀**：注册键 = **`<场景id>/<agent名>`**（同名 agent 在不同场景下允许存在，以场景前缀消歧） |
 | **场景** | **不许重名** | 场景 id **全局唯一**、跨级亦然（见 §6；`ScenarioSave` 跨级重名校验） |
 | **skill / resource / tool** | **不许重名** | 同名即拒绝（不得跨来源并存）；键 = `(scope, kind, name)`（资产）/ `(scope, 暴露名)`（tool） |
-| **第三方** | **一律加别名** | 第三方（下游 server，`Origin=user`）条目一律带**来源别名前缀** `<server名>_`（`entrySourcePrefix`），与内置 `self_*`、知识库条目区分 |
+| **第三方** | **一律加别名** | 第三方（下游 server，`Origin=user`）条目一律带**来源别名前缀** `<server名>_`（`entrySourcePrefix`），与内置（**P0a 2026-10-29 起暴露名 = 原名**）、知识库条目区分 |
 
 - **格式约定**：
-  - **agent 场景前缀** = **`<场景id>/<agent名>`**（分隔符 `/`；场景 id = 场景目录名，本模块 §6）——**注入面**（§3 团队成员段）、**`dsl_run` 委派**、**`agentDelegable`**、**子轮次 system 读取**（`registeredAgentDef` / `resolveAgentDef`）**同一口径**；引用可带前缀（精确命中）或裸名（注册表内**唯一**同名才命中；跨场景重名须带前缀；裸名歧义 → 不解析）。
+  - **agent 场景前缀** = **`<场景id>/<agent名>`**（分隔符 `/`；场景 id = 场景目录名，本模块 §6）——**注入面**（§3 团队成员段）、**`subchat` 委派**、**`agentDelegable`**、**子轮次 system 读取**（`registeredAgentDef` / `resolveAgentDef`）**同一口径**；引用可带前缀（精确命中）或裸名（注册表内**唯一**同名才命中；跨场景重名须带前缀；裸名歧义 → 不解析）。
   - **第三方别名（来源前缀）** = **`<server名>_`**（沿用既有 `applyPrefix` 缺省形态，非新分隔符；`namespace "-"` 对第三方**不生效** → 强制回落该前缀）；名字往返一致（`mcp_find` / `mcp_load` 返回名 = 可直接 `tools/call` / `mcp_invoke` 的名）。
   - **唯一性拒绝策略** = 同类同名注册**拒绝并返回含来源的明确错误**（**不静默覆盖**）；gateway 落点见 [26 §4.3.1](../20-modules/26-mcp-gateway.md)。
 - **张力闭环**：④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）：④ 随 `data-scenario-restore` 消息删除而消失（app 级改为**可直接编辑**）；⑥ 由「app 级可编辑 + 场景 id 全局唯一」承载。
@@ -234,7 +234,7 @@ agent **只"注入"不"注册"**：
 | **T3** | #3 + #5 | 系统提示词三层拼接 + `SystemPrompt` 语义重定义 |
 | **T4** | #1 + 重名校验（§6） | `scenarios/` 独立根 + `ScenarioSave` 跨级重名校验（无覆盖语义） |
 | **T5** | #9 | 前端（组合后提示词预览页签 · chat 选 prompt） |
-| **T6** | #8 | 两套内嵌统一为 app 级场景（含 `registeredAgentDef` 回落来源改口）**（✅ 已落地）**：落地 `src/initdata/capability/scenarios/`（`default/` = 出厂默认 1 主 + 8 子），`builtin-agents/` 已删除；撤 `//go:embed contracts/agents/*.agent.md` 与 `capfs.DefaultScenarioAgents`（`defaults.go` 删），list 物化（`materializeDefaultScenario`）撤；`registerDomainAgents` 改经数据层门面 `facade.ScenarioAPI.ScenarioList` 读 app 级场景（路径规则单源，仍扫描**全部** app 级场景，当前仅 1 个）；`registeredAgentDef` 回落 = app 级场景内同名 agent；投放「源唯一 = `src/initdata/capability/scenarios/`，build 脚本（`build-desktop.ps1`；**PRODSIM-1 后唯一构建脚本**，原 `build-gui.ps1` 已删除）覆盖式同步到 `<exeDir>/scenarios/`」，不再 embed/物化。 |
+| **T6** | #8 | 两套内嵌统一为 app 级场景（含 `registeredAgentDef` 回落来源改口）**（✅ 已落地）**：落地 `src/initdata/capability/scenarios/`（`default/` = 出厂默认 1 主 + 8 子），`builtin-agents/` 已删除；撤 `//go:embed contracts/agents/*.agent.md` 与 `capfs.DefaultScenarioAgents`（`defaults.go` 删），list 物化（`materializeDefaultScenario`）撤；`registerDomainAgents` 改经数据层门面 `facade.ScenarioAPI.ScenarioList` 读 app 级场景（路径规则单源，仍扫描**全部** app 级场景，当前仅 1 个）；`registeredAgentDef` 回落 = app 级场景内同名 agent；投放「源唯一 = `src/initdata/capability/scenarios/`，`build-desktop.ps1` 覆盖式同步到 `<exeDir>/scenarios/`」，不再 embed/物化。 |
 
 > 顺序：**T1 → T2 → T3 → T4 → T5 → T6**（T1 独立最小、先修缺陷；T2 定义资产面边界；T3 承接提示词；T4 落存储；T5 前端跟随后端契约；T6 最后做内嵌统一）。
 

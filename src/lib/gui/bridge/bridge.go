@@ -24,7 +24,6 @@ package bridge
 import (
 	"context"
 	"encoding/json"
-	"hash/fnv"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -32,10 +31,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/idgen"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-lib/osuser"
+	"github.com/chonkpilot/chonkpilot-gui/mqpolicy"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/idgen"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/osuser"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/dispatch"
 )
 
 // Eval 是后端 → 前端脚本执行器（WebView2 w.Eval）。
@@ -67,11 +68,11 @@ type Bridge struct {
 	// projectOpener 由宿主注入（PRODSIM-1 单进程多项目）：`gui.dir.open` 走它**同进程**
 	// 打开/激活项目主窗口。nil → 旧行为（spawn 新进程；flash 等形态）。
 	projectOpener func(dir string) error
-	// published 记录本实例近期发布的事件指纹（subject → {载荷指纹, 时间}；src 防环：
-	// 桥订阅了 ">"（相对全通配），本实例 /publish 的事件会被自己转发回前端造成二次 dispatch，
-	// 需跳过）。指纹口径（D-11）避免「同主题不同载荷」被误吞。
-	publishedMu sync.Mutex
-	published   map[string]pubStamp
+	// hub 是本桥所在总线的分发出口（framework 分发器 + 主仓 WorkDirPolicy，49 §2.22.7 S1）：
+	// 同一进程的**所有窗口共享一个 ">" 订阅**，本桥只作为其中一个 window sink 注册（见 Start）。
+	// 发布账本（自发布防环）也移到了共享策略里（markPublished → hub.Policy.Mark）。
+	// nil = 无总线（`New(..., nil)`，纯本地桥：compatEmit 等直接用 eval 的场景）。
+	hub *mqpolicy.Hub
 
 	// eventWaiters 供测试脚本阻塞等待特定事件（--test-port /wait-event 端点）。
 	// 按 type → (waiter id → chan) 组织：超时时**按 id 精确自摘**，不误删并发等待同类型的
@@ -88,13 +89,12 @@ type Bridge struct {
 	// **flash 远程薄壳不置位**（data-* 经 UDS 转发到常驻 server）。
 	dataOffline bool
 
-	// unsub 是 Start() 注册的总线 ">" 订阅句柄（D-23：CloseInstance 退订用；nil = 未订阅）。
-	// 句柄为本桥私有，退订只移除本桥转发订阅，不影响共享总线与其它窗口的桥。
-	// fwdMu 守护 unsub + stopRequested，退订幂等（句柄置 nil 后重复调用为空操作）；
+	// unsub 是 Start() 注册的转发 sink 句柄（D-23：CloseInstance 注销用）。
+	// fwdMu 守护 forwarding + stopRequested，注销幂等（forwarding 置 false 后重复调用为空操作）；
 	// stopRequested 为 D-32 补位：stopForward 先于 Start 被请求（CloseInstance 与 Start
-	// 并发）时置位，Start 保存句柄后须立即退订，否则该句柄永不退订、订阅泄漏至总线关闭。
+	// 并发）时置位，Start 便不再注册 sink，否则该 sink 永不注销、事件泄漏到已关闭窗口。
 	fwdMu         sync.Mutex
-	unsub         mq.Sub
+	forwarding    bool
 	stopRequested bool
 
 	// suppressExit = 关闭本桥实例时**不**发 `instance-exit`（flash 远程薄壳：多窗口共享
@@ -125,7 +125,7 @@ func New(instanceID, workDir, dataDir string, eval Eval, bus mq.Bus) *Bridge {
 		workDir:      workDir,
 		dataDir:      dataDir,
 		eval:         eval,
-		published:    make(map[string]pubStamp),
+		hub:          mqpolicy.HubFor(bus),
 		eventWaiters: make(map[string]map[int64]chan map[string]any),
 	}
 }
@@ -205,45 +205,13 @@ func (b *Bridge) SetParentInstance(id string) { b.parentInstance = id }
 // （`session-ask`）投到**该会话所在窗口**（群聊 / 单聊窗口）。
 func (b *Bridge) SetSessionID(id string) { b.sessionID = id }
 
-// markPublished 记录一次本实例发布（发布前调用）；标记值 = subject + 载荷指纹（D-11）。
+// markPublished 记录一次本实例发布（**发布前**调用；49 §2.22.7 S1：账本已移到共享策略，
+// 同一总线多窗口共用一份，按「发布方实例 id + 主题」记 subject + 载荷指纹（D-11））。
 func (b *Bridge) markPublished(subject string, payload []byte) {
-	b.publishedMu.Lock()
-	defer b.publishedMu.Unlock()
-	b.published[subject] = pubStamp{fp: pubFingerprint(subject, payload), at: time.Now()}
-}
-
-// pubStamp 是本实例近期发布事件的指纹 + 时间戳。
-type pubStamp struct {
-	fp uint64
-	at time.Time
-}
-
-// pubFingerprint 计算「主题 + 载荷」的指纹（与 llm/httpapi 的 eventFingerprint 同口径）。
-func pubFingerprint(subject string, payload []byte) uint64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(subject))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write(payload)
-	return h.Sum64()
-}
-
-// isSelfPublished 判定该事件是否为本实例刚发布（防环）。
-//
-// 2026-10-08（D-11）：标记值由「主题」改为 **subject + 载荷指纹**（与 llm/httpapi 的 B-21 同口径）。
-// 主题口径会「误吞」——同主题下本实例刚发布过、随后**他源/测试**注入的真事件（载荷不同）也会被
-// 当作自环丢弃；指纹口径只吞「逐字节相同」的那一条回环。1s 窗口内不消耗（随下次发布覆盖）。
-func (b *Bridge) isSelfPublished(subject string, payload []byte) bool {
-	b.publishedMu.Lock()
-	defer b.publishedMu.Unlock()
-	st, ok := b.published[subject]
-	if !ok {
-		return false
+	if b.hub == nil {
+		return
 	}
-	if time.Since(st.at) >= time.Second {
-		delete(b.published, subject) // 过期：清理，不再视为自环
-		return false
-	}
-	return st.fp == pubFingerprint(subject, payload)
+	b.hub.Policy.Mark(b.instanceID, subject, payload)
 }
 
 // 事件信封（对齐前端 mq.js emitRemote：payload 为 JSON 字符串）。
@@ -253,9 +221,9 @@ type envelope struct {
 	Source  string `json:"src"`
 }
 
-// Start 注册 instance（persist/server 经 instance-register 绑定数据根）并订阅总线事件
-// 转发前端。数据/文件服务由 main 以同一总线先行启动（server 内嵌 persist + gateway、
-// chonkpilot-filesys 服务），桥本身不再直连存储。
+// Start 注册 instance（persist/server 经 instance-register 绑定数据根），并把本窗口注册为
+// 总线分发出口上的一个 window sink（事件 → 前端）。数据/文件服务由 main 以同一总线先行启动
+// （server 内嵌 persist + gateway、chonkpilot-filesys 服务），桥本身不再直连存储。
 func (b *Bridge) Start() error {
 	// PRODSIM-1：免登录令牌（remember-token）随本地认证域一并移除，不再加载。
 	// instance 注册：无 req_id、无 reply（客户端自生成 uuid；相对主题 instance-register）。
@@ -281,97 +249,43 @@ func (b *Bridge) Start() error {
 	if !b.noInstance {
 		b.publish(msgkeys.TopicInstanceRegister, reg)
 	}
-	// 订阅总线生态事件 → 前端（相对主题全通配 ">"：总线补 chonk. 前缀后命中全部
-	// 业务事件；handler 收到去前缀后的相对主题，见 mq Options.Prefix 语义）。
-	sub, err := b.bus.On(">", 0, func(_ context.Context, subj string, v *mq.Value) error {
-		b.forwardEvent(subj, v.Payload)
-		return nil
-	})
-	if err != nil {
-		return err
+	// 转发出口 = 共享分发器（49 §2.22.7 S1）：同一总线**只订阅一次 ">"**（framework
+	// runtime/dispatch），本窗口注册为一个 window sink；四条过滤（自发布 / data-* 应答 /
+	// instance 归属 / 无归属放行）已整体搬到主仓 mqpolicy.WorkDirPolicy，逐字等价。
+	if b.hub != nil {
+		if err := b.hub.Dispatch.Start(); err != nil {
+			return err
+		}
+		b.fwdMu.Lock()
+		if !b.stopRequested { // D-32：stopForward 先于本 Start 被请求 → 不注册（不泄漏已关闭窗口）
+			b.hub.Dispatch.RegisterSink(b.sink(), b.forwardEvent)
+			b.forwarding = true
+		}
+		b.fwdMu.Unlock()
 	}
-	// D-23：保存订阅句柄供 CloseInstance 退订（原实现丢弃句柄 → 窗口关闭后僵尸桥
-	// 永久残留 ">" 订阅，高频事件仍对其做完整 JSON 解析）。
-	b.fwdMu.Lock()
-	b.unsub = sub
-	if b.stopRequested { // D-32：stopForward 先于本 Start 被请求 → 立即退订（不依赖 Once）
-		b.unsubForwardLocked()
-	}
-	b.fwdMu.Unlock()
 	return nil
 }
 
-// forwardEvent 把 mq 主题事件转换为前端 type 并转发（2026-09-03 域化后按显式映射输出
-// **稳定前端字符串**：session-receive → llm-receive、task-started → tasks.started 等，
-// 见 mqTypeMap；未映射主题原名直通——data-*/filesys.* 等点分/连字符相对主题本就不裁剪）。
-// 本实例刚发布的事件（src 防环）跳过，避免前端二次 dispatch。
+// sink 返回本窗口在分发器里的 sink 描述（ID = 本窗口实例 id；workDir 供 S2 的
+// 「只投同 workdir」使用，S1 阶段策略不读）。
+func (b *Bridge) sink() dispatch.Sink {
+	return dispatch.Sink{ID: b.instanceID, WorkDir: b.workDir, Kind: dispatch.SinkWindow}
+}
+
+// forwardEvent 是**本窗口 sink 的投递函数**：把分发器选中的事件转换为前端 type 并转发
+// （2026-09-03 域化后按显式映射输出**稳定前端字符串**：session-receive → llm-receive、
+// task-started → tasks.started 等，见 mqTypeMap；未映射主题原名直通——data-*/filesys.* 等
+// 点分/连字符相对主题本就不裁剪）。
 //
-// 2026-09-19（实例隔离第二批，缺口 8）：转发前按 **instance 归属过滤** —— 事件载荷带
-// 非空 `instance_id` 且不等于本实例 → 丢弃（split/browser 下同进程多 instance 时 A 的
-// `tasks.*` / `mcp-*` 事件不投给 B 的前端）。载荷无 `instance_id`（data-*/filesys.* 等
-// 按 workdir 管理的事件、server 级广播）或本实例未标识（instanceID 空）→ 放行（单 instance
-// 行为与引入过滤前逐字节等价，过滤条件恒真）。
-// 转发后按旧 chonkpilot 协议事件面兼发兼容事件（compat.go：server 定稿协议不变，gui 对齐旧生态）。
+// 2026-10-29（49 §2.22.7 S1）：**过滤已前置到 mqpolicy.WorkDirPolicy**（自发布防环 /
+// persist 应答 / instance 归属），本函数只做「已是本窗口该收的」之后的转换与投递；
+// 转发后按旧 chonkpilot 协议事件面兼发兼容事件（compat.go），并通知测试 waiter。
 func (b *Bridge) forwardEvent(subject string, payload []byte) {
-	if b.isSelfPublished(subject, payload) {
-		return
-	}
-	// persist 的同主题应答（`data-*` 主题 + `{req_id, ok}` 载荷）不回投前端：dataViaPersist
-	// 请求与 persist 应答走同一主题（persist.reply/fail 直发），请求由 isSelfPublished 拦截，
-	// 应答（他源发出、带 req_id + ok）须由此跳过——前端 onData* 订阅只认变更广播，不应收到应答。
-	if isDataReply(subject, payload) {
-		return
-	}
-	if !b.acceptEventInstance(eventInstanceID(payload)) {
-		return
-	}
 	typ := b.eventType(subject)
 	b.evalEmit(typ, string(payload), "mq")
 	b.compatEmit(typ, payload)
 	// 通知等待该事件的测试 waiter（非阻塞）
 	b.notifyEventWaiters(typ, payload)
-}
-
-// isDataReply 判定「persist 同主题应答」信封：`data-*` 主题 + 带 `req_id` 与非空 `ok`，且含
-// 应答专属信封键 `result` 或 `error` 的载荷（persist 应答恒含 req_id + ok + result|error，见
-// persist.isLoopbackReply；变更广播/业务事件不带 req_id）→ forwardEvent 据此跳过回投。
-//
-// 与 persist.isLoopbackReply（`ok + (result||error)`）对齐补上 `result||error` 判定：仅「req_id + ok」
-// 时曾把「恰好带 req_id+ok、无 result/error 的广播」误判为应答而静默丢弃（且不 notifyEventWaiters）。
-func isDataReply(subject string, payload []byte) bool {
-	if !strings.HasPrefix(subject, "data-") {
-		return false
-	}
-	var probe struct {
-		ReqID  string          `json:"req_id"`
-		OK     *bool           `json:"ok"`
-		Result json.RawMessage `json:"result"`
-		Err    json.RawMessage `json:"error"`
-	}
-	if json.Unmarshal(payload, &probe) != nil {
-		return false
-	}
-	return probe.ReqID != "" && probe.OK != nil && (probe.Result != nil || probe.Err != nil)
-}
-
-// acceptEventInstance 判定事件归属是否属本实例（缺口 8）：载荷 instance 为空（无归属字段）
-// 或本实例未标识（桥无 instanceID）→ 放行（兼容旧行为）；否则要求**完全相等**。
-func (b *Bridge) acceptEventInstance(evInstance string) bool {
-	if b.instanceID == "" || evInstance == "" {
-		return true
-	}
-	return evInstance == b.instanceID
-}
-
-// eventInstanceID 从事件 payload 提取 `instance_id`（无字段 / 空串 / 非 JSON 对象 → ""，即无归属）。
-func eventInstanceID(payload []byte) string {
-	var probe struct {
-		InstanceID string `json:"instance_id"`
-	}
-	if err := json.Unmarshal(payload, &probe); err != nil {
-		return ""
-	}
-	return probe.InstanceID
 }
 
 // WaitForEvent 阻塞等待指定 type 的事件到达（超时 = ctx deadline）。
@@ -541,18 +455,18 @@ func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error
 // 注：认证域 `login-register` / `login-in` / `login-out` 已删除（PRODSIM-1 产物简化：
 // 本地 auth 全删，认证将来统一由 registry 承担）→ 本表不含、桥无 login 专用分支。
 var frontMethodSubjects = map[string]string{
-	msgkeys.TopicLlmSend:        "session-send",
-	msgkeys.TopicLlmCancel:      "session-cancel",
+	msgkeys.TopicLlmSend:   "session-send",
+	msgkeys.TopicLlmCancel: "session-cancel",
 	// INBOX（2026-10-18，中途插话 / 等下一轮）：客户端四条方法面 → llm-server 同名处理器。
 	msgkeys.TopicLlmInboxAdd:     "inbox-add",
 	msgkeys.TopicLlmInboxList:    "inbox-list",
 	msgkeys.TopicLlmInboxDiscard: "inbox-discard",
 	msgkeys.TopicLlmInboxPromote: "inbox-promote",
-	msgkeys.TopicAskUserReply:   "session-ask-reply",
-	msgkeys.TopicTaskStop:       msgkeys.TopicTaskStop,
-	msgkeys.TopicTaskBackground: msgkeys.TopicTaskBackground,
-	msgkeys.TopicToolRetry:      msgkeys.TopicToolRetry,
-	msgkeys.TopicPromptOptimise: msgkeys.TopicPromptOptimise,
+	msgkeys.TopicAskUserReply:    "session-ask-reply",
+	msgkeys.TopicTaskStop:        msgkeys.TopicTaskStop,
+	msgkeys.TopicTaskBackground:  msgkeys.TopicTaskBackground,
+	msgkeys.TopicToolRetry:       msgkeys.TopicToolRetry,
+	msgkeys.TopicPromptOptimise:  msgkeys.TopicPromptOptimise,
 	// 实例消息（61 §4.1，阶段 2a）：instance-claim = 前端启动认领（请求-响应，桥按
 	// publishV 把 server 写回的 v.Result 作为 /publish 响应回发起者 → 多客户端不串号）；
 	// instance-heartbeat = **发布方改为前端 SPA**（客户端续期 30s；-tags split 门控语义不变：
@@ -780,24 +694,18 @@ func (b *Bridge) publishWithTimeout(subject string, payload interface{}, d time.
 	}
 }
 
-// stopForward 退订本桥的总线 ">" 订阅（D-23，幂等）：窗口关闭后该桥不再收到任何事件，
-// 避免僵尸桥对高频事件（llm-receive 逐 token）仍执行 eventInstanceID/compatEmit 的完整
-// JSON 解析与转发。句柄为本桥私有，不影响主桥/共享订阅；未 Start（unsub == nil）时为空操作。
+// stopForward 注销本窗口的转发 sink（D-23，幂等）：窗口关闭后该桥不再收到任何事件，
+// 避免僵尸桥对高频事件（llm-receive 逐 token）仍执行 JSON 解析与前端 eval。
+// 共享分发器的 ">" 订阅不受影响（其它窗口仍在用），仅移除本窗口这一个 sink；
+// 未 Start（forwarding == false）时为空操作。
 func (b *Bridge) stopForward() {
 	b.fwdMu.Lock()
 	defer b.fwdMu.Unlock()
-	b.stopRequested = true // D-32：置位，令晚到的 Start 保存句柄后立即退订
-	b.unsubForwardLocked()
-}
-
-// unsubForwardLocked 退订并清空 ">" 订阅句柄（须持 fwdMu）：句柄置 nil 后重复调用为空操作，
-// 保证退订恰好一次、幂等（Close/CloseInstance 重复调用不 panic、不重复退订）。
-func (b *Bridge) unsubForwardLocked() {
-	if b.unsub == nil {
-		return
+	b.stopRequested = true // D-32：置位，令晚到的 Start 不再注册 sink
+	if b.forwarding && b.hub != nil {
+		b.hub.Dispatch.UnregisterSink(b.instanceID)
+		b.forwarding = false
 	}
-	_ = b.unsub.Unsubscribe()
-	b.unsub = nil
 }
 
 // CloseInstance 注销本实例（发 instance-exit；persist 移除实例绑定 + server 取消名下
@@ -806,7 +714,7 @@ func (b *Bridge) unsubForwardLocked() {
 // 多窗口（24 §4.1）下每窗口一个桥、共享同一条**进程级**总线：任一路径关闭总线都会打断
 // 其它窗口，故窗口关闭只注销本实例；总线由宿主进程收尾时统一 Close。
 func (b *Bridge) CloseInstance() {
-	// D-23：先退订本桥 ">" 订阅再注销实例（窗口关闭后不再有事件派发进本桥）。
+	// D-23：先注销本窗口的转发 sink 再注销实例（窗口关闭后不再有事件派发进本桥）。
 	b.stopForward()
 	// noInstance（日志窗口）：从未注册 → 不注销。
 	if b.noInstance {

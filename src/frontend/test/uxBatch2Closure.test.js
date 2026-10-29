@@ -11,7 +11,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
@@ -25,6 +25,11 @@ const srcDir = join(here, '..', 'src')
 const repoRoot = join(here, '..', '..')
 const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
 const readRepo = (rel) => readFileSync(join(repoRoot, rel), 'utf8')
+// server 包已按职责拆分（2026-10-25）：源码守卫读整包（server.go 只剩 277 行）。
+const readServerPkg = () => readdirSync(join(repoRoot, 'lib', 'llm', 'server'))
+  .filter((f) => f.endsWith('.go') && !f.endsWith('_test.go'))
+  .map((f) => readFileSync(join(repoRoot, 'lib', 'llm', 'server', f), 'utf8'))
+  .join('\n')
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 
@@ -134,7 +139,7 @@ test('B·可见提示文案：指明哪一项 + 原因摘要；item 标签 i18n 
 // C usr 四项前置校验
 // ═══════════════════════════════════════════════════════════════
 test('C·后端语义核实：retryCount 用 n>=0（0 合法），其余三项用 n>0', () => {
-  const go = readRepo('lib/llm/server/server.go')
+  const go = readServerPkg()
   // B-37：校验逻辑由 loadLLMRuntimeConfig 抽入纯函数 llmRuntimeConfigFrom（配置一次读取后分发）。
   const fn = go.match(/func llmRuntimeConfigFrom\(d map\[string\]any\)[\s\S]*?\n\}/)
   assert.ok(fn, '未找到 llmRuntimeConfigFrom')

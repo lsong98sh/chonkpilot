@@ -10,14 +10,43 @@
               <Icon name="refresh" :size="13" /> {{ $t('config.page.redetect') }}
             </Button>
           </div>
-          <div v-for="it in systemRows" :key="it.id" class="path-row">
-            <label class="path-label">{{ it.name }}</label>
-            <div class="path-value">
-              <template v-if="it.path">
-                <span class="mono">{{ it.path }}</span>
-                <span v-if="it.version" class="version">{{ it.version }}</span>
-              </template>
-              <span v-else class="muted">{{ $t('config.page.notDetected') }}</span>
+          <div v-for="it in systemRows" :key="it.id" class="path-item">
+            <div class="path-row">
+              <label class="path-label">{{ it.name }}</label>
+              <div class="path-value">
+                <template v-if="it.path">
+                  <span class="mono">{{ it.path }}</span>
+                  <!-- 版本：显示**规范化**串（前端本地计算），原始探测串放 title 回显 -->
+                  <span v-if="it.versionNorm" class="version" :title="it.rawVersion">{{ it.versionNorm }}</span>
+                  <!-- 低于 usr 配置的最小版本 → 只提示（不阻断，前端本地判定） -->
+                  <span v-if="it.belowMin" class="version-warn" :title="versionHint(it)">
+                    <Icon name="warning-filled" :size="12" />
+                  </span>
+                </template>
+                <span v-else class="muted">{{ $t('config.page.notDetected') }}</span>
+                <!-- 安装引导入口（P2-3 ④）：只给下载页 / winget 命令，不下载不安装 -->
+                <Button v-if="it.guide" size="small" data-install-guide @click="toggleGuide(it.id)">
+                  {{ $t('config.page.installGuide') }}
+                </Button>
+              </div>
+            </div>
+            <div v-if="it.guide && guideOpenId === it.id" class="guide-panel">
+              <div class="guide-row">
+                <span class="guide-label">{{ $t('config.page.downloadPage') }}</span>
+                <span class="mono guide-url">{{ it.guide.downloadUrl }}</span>
+                <Button size="small" data-guide-open @click="openGuide(it.guide.downloadUrl)">
+                  {{ $t('config.page.openDownloadPage') }}
+                </Button>
+              </div>
+              <div v-if="it.guide.winget" class="guide-row">
+                <span class="guide-label">{{ $t('config.page.wingetCommand') }}</span>
+                <code class="mono guide-cmd">{{ it.guide.winget }}</code>
+                <Button size="small" data-guide-copy @click="copyWinget(it.guide.winget)">
+                  {{ $t('common.copy') }}
+                </Button>
+              </div>
+              <div v-else class="guide-row muted">{{ $t('config.page.wingetUnavailable') }}</div>
+              <div class="guide-row muted">{{ $t('config.page.installGuideHint') }}</div>
             </div>
           </div>
         </div>
@@ -100,6 +129,7 @@ import {
   detectToolchains, pickExecutable,
 } from '../../api/config'
 import mq from '../../utils/mq'
+import { guideFor, versionBadge, openGuidePage, copyGuideCommand } from '../../utils/toolchainGuide'
 import { EventNames } from '../../events/event-names'
 import { APPLY_INSTANT, APPLY_RESTART, savedText, saveFailedText, loadFailedText } from '../../utils/settingsFeedback'
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
@@ -133,6 +163,7 @@ const tabs = computed(() => [
 
 const detecting = ref(false)
 const detected = ref({}) // id → {path, version}
+const userCfg = ref({}) // usr 配置快照（完整视图：路径键 + toolchain.<id>.minVersion）
 const userValues = ref({}) // key → value（usr）
 const prjValues = ref({}) // key → value（prj）
 // 各层「上次落库值」快照：用于「未保存」判定（本地态 ≠ 快照 → 有改动 → 保存按钮可用）
@@ -152,13 +183,47 @@ function refreshPrjDirty() {
   changed ? markPrjDirty() : markPrjSaved()
 }
 
-// 系统页签：探测结果只读
+// 系统页签：探测结果只读（版本显示规范化串；低于最小版本只提示；每项带安装引导入口）。
+// 规范化 / 下限判定**全在前端**（`toolchainGuide.versionBadge`）：探测载荷只有
+// `{id, name, path, version}`（61 §1 原样），最小版本取 usr 配置快照的自由键。
 const systemRows = computed(() =>
   PATH_ITEMS.filter(it => it.levels.includes('system')).map(it => {
     const d = detected.value[it.id] || {}
-    return { id: it.id, name: it.name, path: d.path || '', version: d.version || '' }
+    const raw = typeof d.version === 'string' ? d.version : ''
+    const minVersion = userCfg.value['toolchain.' + it.id + '.minVersion'] || ''
+    const badge = versionBadge(raw, minVersion)
+    return {
+      id: it.id,
+      name: it.name,
+      path: d.path || '',
+      versionNorm: d.path ? badge.norm : '',
+      rawVersion: raw,
+      minVersion,
+      belowMin: badge.belowMin,
+      guide: guideFor(it.id),
+    }
   })
 )
+
+// 安装引导（P2-3 ④）：同一时刻只展开一项；只给下载页 / winget 命令，**不下载不安装**
+const guideOpenId = ref('')
+function toggleGuide(id) {
+  guideOpenId.value = guideOpenId.value === id ? '' : id
+}
+function versionHint(it) {
+  return t('config.page.versionBelowMin', { min: it.minVersion, cur: it.versionNorm })
+}
+function openGuide(url) {
+  openGuidePage(url)
+}
+async function copyWinget(cmd) {
+  try {
+    await copyGuideCommand(cmd)
+    message.success(t('config.page.wingetCopied'))
+  } catch (e) {
+    message.error(t('config.page.wingetCopyFailed'))
+  }
+}
 
 // 用户页签：可编辑（含 chrome）
 const userRows = computed(() =>
@@ -188,6 +253,7 @@ async function loadUser() {
   try {
     const res = await getUserConfig()
     const uc = res.config || res
+    userCfg.value = uc || {}
     const m = {}
     for (const it of PATH_ITEMS) m[it.key] = uc[it.key] || ''
     userValues.value = m
@@ -216,7 +282,8 @@ async function detect() {
   try {
     const tools = await detectToolchains()
     const m = {}
-    for (const tool of tools) m[tool.id] = { path: tool.path || '', version: tool.version || '' }
+    // 探测项 = {id, name, path, version}（61 §1 原样）；版本规范化 / 下限判定由本页本地算
+    for (const tool of tools) if (tool && tool.id) m[tool.id] = tool
     detected.value = m
   } catch (e) {
     message.error(loadFailedText(t, t('config.page.systemTab'), e))
@@ -365,7 +432,25 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
 .path-value { flex: 1; display: flex; align-items: baseline; gap: 10px; padding-top: 6px; }
 .mono { font-family: var(--font-mono, Consolas, monospace); font-size: 12px; color: var(--text-primary); word-break: break-all; }
 .version { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+/* 低于最小版本：只提示（不阻断） */
+.version-warn { display: inline-flex; align-items: center; color: var(--warning, #e6a23c); cursor: help; }
 .muted { font-size: 12px; color: var(--text-muted); }
+/* 安装引导（P2-3 ④）：静态信息 + 复制命令 / 打开官方下载页，无下载/安装动作 */
+.path-item { display: flex; flex-direction: column; gap: 4px; }
+.guide-panel {
+  margin-left: 160px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-hover, #fafafa);
+}
+.guide-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.guide-label { color: var(--text-muted); flex-shrink: 0; width: 96px; }
+.guide-url { word-break: break-all; }
+.guide-cmd { background: var(--bg-code, #f5f5f5); padding: 1px 6px; border-radius: 3px; }
 .badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; align-self: flex-start; }
 .badge-own { background: var(--accent, #409eff); color: #fff; }
 .badge-prj { background: var(--warning, #e6a23c); color: #fff; }

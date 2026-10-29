@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // registerProviderInstance 注册测试实例并登记数据层连接清理

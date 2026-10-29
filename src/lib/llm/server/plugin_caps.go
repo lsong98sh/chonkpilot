@@ -10,8 +10,18 @@ import (
 	"context"
 	"encoding/json"
 
-	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
+	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/bridge"
 )
+
+// InstanceManager 返回**活动实例视图**（framework `instance.Manager`，本服务唯一内存表；
+// 登记/退出由 `s.im` 的 MQ 订阅维护）。
+//
+// 用途：宿主把它注入插件桥（`pluginbridge.Options.Instances`）——插件的
+// `MainInstanceForWorkDir` / `plugin/v1/tools.call` 判据 3 / 晚连接插件补发都查**同一份**视图，
+// 桥不再自持实例登记副本（2026-10-29 内存单源化）。
+func (s *Server) InstanceManager() pluginbridge.InstanceView {
+	return s.im
+}
 
 // SetPluginRegistry 把 server 原子能力注册到插件桥（在插件桥 Start 之后调用）。
 func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {

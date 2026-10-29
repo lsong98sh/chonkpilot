@@ -16,7 +16,7 @@ import (
 func main() {
 	var (
 		schemaPath = flag.String("schema", "", "schema 路径（默认 <repo>/docs/spec/60-reference/61-messages.schema.json）")
-		goOut      = flag.String("go", "", "Go 产物路径（默认 <repo>/src/lib/core/msgkeys/msgkeys_gen.go）")
+		goOut      = flag.String("go", "", "Go 产物路径（默认 <repo>/../chonkpilot-framework/host/src/core/msgkeys/msgkeys_gen.go）")
 		jsOut      = flag.String("js", "", "JS 产物路径（默认 <repo>/src/frontend/src/events/msgkeys.js）")
 		check      = flag.Bool("check", false, "仅校验生成物是否为最新（不写入）")
 	)
@@ -30,7 +30,7 @@ func main() {
 		*schemaPath = filepath.Join(root, "docs", "spec", "60-reference", "61-messages.schema.json")
 	}
 	if *goOut == "" {
-		*goOut = filepath.Join(root, "src", "lib", "core", "msgkeys", "msgkeys_gen.go")
+		*goOut = filepath.Join(root, "..", "chonkpilot-framework", "host", "src", "core", "msgkeys", "msgkeys_gen.go")
 	}
 	if *jsOut == "" {
 		*jsOut = filepath.Join(root, "src", "frontend", "src", "events", "msgkeys.js")

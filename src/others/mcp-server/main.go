@@ -21,8 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/winsvc"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winsvc"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

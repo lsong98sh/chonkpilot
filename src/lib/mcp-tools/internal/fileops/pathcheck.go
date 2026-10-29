@@ -10,7 +10,7 @@ package fileops
 import (
 	"errors"
 
-	"github.com/chonkpilot/chonkpilot-lib/paths"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/paths"
 )
 
 // ValidateFilePath 强校验文件操作参数路径（R-11）：转发 paths.ResolvePath(raw, "")。

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 )
 
 // handleTurnEvent 分发 data-turn-event-<action>（append / cleanup）。
@@ -14,7 +15,7 @@ func (s *Service) handleTurnEvent(action string, payload []byte) {
 	method := "data-turn-event-" + action
 	var p TurnEventPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		s.failID(method, p.ReqID, err)
+		s.failDecode(method, payload, err)
 		return
 	}
 	f := p.fields()
@@ -34,7 +35,7 @@ func (s *Service) handleTurnEvent(action string, payload []byte) {
 			s.failID(method, p.ReqID, err)
 			return
 		}
-		s.replyID(method, p.ReqID, map[string]any{"ok": resp.OK})
+		s.replyID(method, p.ReqID, wire.OKPayload{OK: resp.OK})
 	case "cleanup":
 		resp, err := s.TurnEventCleanup(facade.TurnEventCleanupRequest{
 			InstanceID:    p.InstanceID,
@@ -44,6 +45,6 @@ func (s *Service) handleTurnEvent(action string, payload []byte) {
 			s.failID(method, p.ReqID, err)
 			return
 		}
-		s.replyID(method, p.ReqID, map[string]any{"ok": resp.OK, "deleted": resp.Deleted})
+		s.replyID(method, p.ReqID, wire.OKDeletedPayload{OK: resp.OK, Deleted: resp.Deleted})
 	}
 }

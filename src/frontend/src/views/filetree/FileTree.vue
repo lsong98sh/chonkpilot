@@ -1151,6 +1151,21 @@ onMounted(() => {
       window.innerWidth >= sw - 4 && window.innerHeight >= sh - 4
   }
 
+  // 窗口几何落盘单位 = **物理像素**（2026-10-26）：`innerWidth/screenX` 是 CSS px，
+  // 而后端启动恢复 `applyWindowPlacement` → `SetWindowPlacement` 直接按物理 px 套用。
+  // 不做换算会在 125% 缩放屏上每次启动缩水 20%（实测共享 work-dir 由 1280x800 逐次缩到
+  // 最小 400x300 → CSS 320x240，几何类断言随之失效）。故落盘前统一乘 devicePixelRatio。
+  const winGeom = () => {
+    const dpr = window.devicePixelRatio || 1
+    return {
+      width: Math.round(window.innerWidth * dpr),
+      height: Math.round(window.innerHeight * dpr),
+      x: Math.round(window.screenX * dpr),
+      y: Math.round(window.screenY * dpr),
+      maximized: isMaximizedNow(),
+    }
+  }
+
   const onWindowResize = () => {
     clearTimeout(resizeTimer)
     resizeTimer = setTimeout(() => {
@@ -1158,13 +1173,7 @@ onMounted(() => {
       // 隐藏坐标（-25600 等），保存后下次启动会把窗口恢复到屏幕外（taskbar
       // 有图标但窗口不可见）。隐藏态跳过保存，待窗口显示后由真实 resize 覆盖。
       if (window.screenX < -1000 || window.screenY < -1000) return
-      saveWindowState({
-        width: window.innerWidth,
-        height: window.innerHeight,
-        x: window.screenX,
-        y: window.screenY,
-        maximized: isMaximizedNow(),
-      }).catch(e => console.warn('[FileTree] saveWindowState error:', e))
+      saveWindowState(winGeom()).catch(e => console.warn('[FileTree] saveWindowState error:', e))
     }, 1000)
   }
   window.addEventListener('resize', onWindowResize)
@@ -1177,13 +1186,7 @@ onMounted(() => {
   const beaconSaveWindow = () => {
     try {
       if (window.screenX < -1000 || window.screenY < -1000) return
-      const payload = JSON.stringify({ window: {
-        width: window.innerWidth,
-        height: window.innerHeight,
-        x: window.screenX,
-        y: window.screenY,
-        maximized: isMaximizedNow(),
-      }, instance_id: currentInstanceId() })
+      const payload = JSON.stringify({ window: winGeom(), instance_id: currentInstanceId() })
       const body = JSON.stringify({ type: 'gui.ui.save', payload })
       navigator.sendBeacon('/publish', new Blob([body], { type: 'application/json' }))
     } catch (_) { /* noop */ }

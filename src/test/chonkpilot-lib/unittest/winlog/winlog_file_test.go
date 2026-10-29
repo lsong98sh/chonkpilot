@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/winlog"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winlog"
 )
 
 // TestNewFileWriterCreatesParentDir：父目录不存在时自动创建，文件可用。

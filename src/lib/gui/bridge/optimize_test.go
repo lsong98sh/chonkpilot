@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // TestResolveLLMRefIndex：name 命中 / 旧 int 索引兼容（int 内核形态与 float64 JSON 形态都认）/

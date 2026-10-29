@@ -11,7 +11,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestCleanupStaleToolPairs 覆盖三种非终态（pending/running/provisional）→ interrupted，
@@ -99,17 +99,24 @@ func newSessionEnv(t *testing.T) (*Service, facade.Scope) {
 	return s, facade.Scope{WorkDir: wd, DataDir: dd}
 }
 
-// disableShard 把该实例置回旧布局（P3-4c 起缺省 on；旧布局断言类用例显式关闭）。
-func disableShard(t *testing.T, s *Service, inst string, scope facade.Scope) {
+// openEnvDialog 建一个对话库（不含会话行），返回 dialog_id 与库句柄（测试直读写用）。
+// 一树一库：会话内容只落对话库，故用例先建对话并一律带 `dialog_id`。
+func openEnvDialog(t *testing.T, s *Service, inst string, scope facade.Scope) (string, *data.DB) {
 	t.Helper()
-	prj, release, err := s.PrjFor(inst, scope)
+	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
-		t.Fatalf("PrjFor: %v", err)
+		t.Fatalf("prjusr: %v", err)
 	}
-	defer release()
-	if err := kernel.PrjConfigSetVal(prj, kernel.ConfigSessionShard, "off"); err != nil {
-		t.Fatalf("set shard=off: %v", err)
+	dialogID, err := data.NewDialogID()
+	if err != nil {
+		t.Fatalf("NewDialogID: %v", err)
 	}
+	db, release, err := data.OpenDialog(prj.Path(), dialogID)
+	if err != nil {
+		t.Fatalf("OpenDialog: %v", err)
+	}
+	t.Cleanup(release)
+	return dialogID, db
 }
 
 // TestSessionTitleUpdateInPreservesFields（A-23）：SessionTitle 读改写收进 UpdateIn 单事务——
@@ -118,12 +125,8 @@ func disableShard(t *testing.T, s *Service, inst string, scope facade.Scope) {
 func TestSessionTitleUpdateInPreservesFields(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	inst := "ins-title"
-	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
-	prj, err := s.PrjUsrFor(inst, scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
-	tb := prj.Table("sessions")
+	dialogID, sdb := openEnvDialog(t, s, inst, scope)
+	tb := sdb.Table("sessions")
 	const created = "2026-01-01T00:00:00.000000000Z"
 	if err := tb.Insert("s1", data.Record{
 		"session_id": "s1", "parent_id": "", "title": "old",
@@ -133,7 +136,9 @@ func TestSessionTitleUpdateInPreservesFields(t *testing.T) {
 		t.Fatalf("insert s1: %v", err)
 	}
 
-	resp, err := s.SessionTitle(facade.SessionTitleRequest{InstanceID: inst, Scope: scope, SessionID: "s1", Title: "new"})
+	resp, err := s.SessionTitle(facade.SessionTitleRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "s1", Title: "new",
+	})
 	if err != nil || !resp.OK {
 		t.Fatalf("SessionTitle: err=%v resp=%+v", err, resp)
 	}
@@ -155,7 +160,9 @@ func TestSessionTitleUpdateInPreservesFields(t *testing.T) {
 	}
 
 	// 行不存在 → 保持原 not found 语义（报错、不建行）
-	if _, err := s.SessionTitle(facade.SessionTitleRequest{InstanceID: inst, Scope: scope, SessionID: "ghost", Title: "x"}); err == nil {
+	if _, err := s.SessionTitle(facade.SessionTitleRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "ghost", Title: "x",
+	}); err == nil {
 		t.Fatal("会话不存在应报错")
 	}
 	var ghost data.Record
@@ -170,18 +177,18 @@ func TestSessionTitleUpdateInPreservesFields(t *testing.T) {
 func TestTurnSetSummaryCompleteNoOrphanRow(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	inst := "ins-turn"
-	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
-	prj, err := s.PrjUsrFor(inst, scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
-	tb := prj.Table("turns")
+	dialogID, sdb := openEnvDialog(t, s, inst, scope)
+	tb := sdb.Table("turns")
 
 	// 行不存在：两个写面都不得建残行
-	if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{InstanceID: inst, Scope: scope, TurnID: "ghost", Summary: "s"}); err != nil {
+	if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, TurnID: "ghost", Summary: "s",
+	}); err != nil {
 		t.Fatalf("TurnSetSummary(ghost): %v", err)
 	}
-	if _, err := s.TurnComplete(facade.TurnCompleteRequest{InstanceID: inst, Scope: scope, TurnID: "ghost2", Status: "done"}); err != nil {
+	if _, err := s.TurnComplete(facade.TurnCompleteRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, TurnID: "ghost2", Status: "done",
+	}); err != nil {
 		t.Fatalf("TurnComplete(ghost2): %v", err)
 	}
 	var rec data.Record
@@ -199,11 +206,15 @@ func TestTurnSetSummaryCompleteNoOrphanRow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert t1: %v", err)
 	}
-	if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{InstanceID: inst, Scope: scope, TurnID: "t1", Summary: "summary"}); err != nil {
+	if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, TurnID: "t1", Summary: "summary",
+	}); err != nil {
 		t.Fatalf("TurnSetSummary(t1): %v", err)
 	}
 	done := 7
-	if _, err := s.TurnComplete(facade.TurnCompleteRequest{InstanceID: inst, Scope: scope, TurnID: "t1", Status: "done", FullTokens: &done}); err != nil {
+	if _, err := s.TurnComplete(facade.TurnCompleteRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, TurnID: "t1", Status: "done", FullTokens: &done,
+	}); err != nil {
 		t.Fatalf("TurnComplete(t1): %v", err)
 	}
 	if ok, err := tb.Get("t1", &rec); err != nil || !ok {
@@ -240,17 +251,26 @@ func newSessionEnvBus(t *testing.T) (*Service, facade.Scope) {
 func TestSessionEnsureFixedParamsNonEmptyOnly(t *testing.T) {
 	s, scope := newSessionEnvBus(t)
 	inst := "ins-fixed"
-	disableShard(t, s, inst, scope)
+
+	// ① 普通顶层会话：走根会话自举（缺 dialog_id → 服务端确定性建对话）→ 行形状不得出现固定参数键
+	root, err := s.SessionEnsure(facade.SessionEnsureRequest{InstanceID: inst, Scope: scope, SessionID: "s-plain"})
+	if err != nil {
+		t.Fatalf("ensure plain: %v", err)
+	}
+	dialogID := root.DialogID
+	if dialogID == "" {
+		t.Fatal("自举应回带 dialog_id")
+	}
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
 	}
-	tb := prj.Table("sessions")
-
-	// ① 普通顶层会话：不得出现任何固定参数键（行形状不变）
-	if _, err := s.SessionEnsure(facade.SessionEnsureRequest{InstanceID: inst, Scope: scope, SessionID: "s-plain"}); err != nil {
-		t.Fatalf("ensure plain: %v", err)
+	sdb, release, err := data.OpenExistingDialog(prj.Path(), dialogID)
+	if err != nil {
+		t.Fatalf("open dialog: %v", err)
 	}
+	defer release()
+	tb := sdb.Table("sessions")
 	var rec data.Record
 	if ok, err := tb.Get("s-plain", &rec); err != nil || !ok {
 		t.Fatalf("get s-plain: ok=%v err=%v", ok, err)
@@ -266,7 +286,7 @@ func TestSessionEnsureFixedParamsNonEmptyOnly(t *testing.T) {
 
 	// ② 子聊天：固定参数一次性写入（kind + lifecycle + agent/scenario_id/llm + purpose）
 	if _, err := s.SessionEnsure(facade.SessionEnsureRequest{
-		InstanceID: inst, Scope: scope, SessionID: "s-chat", ParentSessionID: "s-plain",
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "s-chat", ParentSessionID: "s-plain",
 		Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleChatting,
 		Agent: "agent-x", ScenarioID: "scn-x", LLM: "llm-x", Purpose: "整理当日要点",
 	}); err != nil {
@@ -287,7 +307,7 @@ func TestSessionEnsureFixedParamsNonEmptyOnly(t *testing.T) {
 
 	// ③ 幂等：二次 ensure 不覆盖既有行（lifecycle/agent 等保持首次值）
 	if _, err := s.SessionEnsure(facade.SessionEnsureRequest{
-		InstanceID: inst, Scope: scope, SessionID: "s-chat", ParentSessionID: "s-plain",
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "s-chat", ParentSessionID: "s-plain",
 		Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleFinished, Agent: "other",
 	}); err != nil {
 		t.Fatalf("ensure subchat 2nd: %v", err)
@@ -308,12 +328,12 @@ func TestSessionEnsureFixedParamsNonEmptyOnly(t *testing.T) {
 func TestSessionSubChatsAndKindFallback(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	inst := "ins-subchats"
-	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
+	dialogID, sdb := openEnvDialog(t, s, inst, scope)
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
 	}
-	tb := prj.Table("sessions")
+	tb := sdb.Table("sessions")
 	insert := func(id, parent, kind, lifecycle, created string) {
 		t.Helper()
 		r := data.Record{
@@ -339,19 +359,25 @@ func TestSessionSubChatsAndKindFallback(t *testing.T) {
 	insert("s-other", "s-other-parent", facade.SessionKindSubChat, facade.SessionLifecycleChatting, "2026-01-01T00:00:05.000000000Z")
 
 	// ① 读侧回退：历史子会话行（无 kind）视为 sub_session
-	got, err := s.SessionGet(facade.SessionGetRequest{InstanceID: inst, Scope: scope, SessionID: "s-legacy"})
+	got, err := s.SessionGet(facade.SessionGetRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "s-legacy",
+	})
 	if err != nil || !got.Found {
 		t.Fatalf("SessionGet(s-legacy): found=%v err=%v", got.Found, err)
 	}
 	if got.Session.Kind != facade.SessionKindSubSession {
 		t.Fatalf("历史子会话应回退为 sub_session：%q", got.Session.Kind)
 	}
-	if top, err := s.SessionGet(facade.SessionGetRequest{InstanceID: inst, Scope: scope, SessionID: "s-top"}); err != nil || top.Session.Kind != "" {
+	if top, err := s.SessionGet(facade.SessionGetRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "s-top",
+	}); err != nil || top.Session.Kind != "" {
 		t.Fatalf("顶层会话 kind 应为空：%+v err=%v", top.Session, err)
 	}
 
 	// ② 子聊天列举：只 sub_chat / group_chat（含 finished），按创建时间升序，只按父过滤
-	sub, err := s.SessionSubChats(facade.SessionSubChatsRequest{InstanceID: inst, Scope: scope, ParentSessionID: "s-top"})
+	sub, err := s.SessionSubChats(facade.SessionSubChatsRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, ParentSessionID: "s-top",
+	})
 	if err != nil {
 		t.Fatalf("SessionSubChats: %v", err)
 	}
@@ -366,7 +392,13 @@ func TestSessionSubChatsAndKindFallback(t *testing.T) {
 		t.Fatalf("finished 子聊天应照常列出（回看入口）：%+v", sub.List[1])
 	}
 
-	// ③ data-session-list 语义不变：仍只返回顶层会话
+	// ③ data-session-list 语义不变：仍只返回顶层会话（目录派生，ID = 主会话 id）
+	if err := prj.Table("dialogs").Upsert(dialogID, data.Record{
+		"dialog_id": dialogID, "file": data.DialogFileName(dialogID), "title": "s-top",
+		"kind": "main", "main_session_id": "s-top", "updated_at": t0,
+	}); err != nil {
+		t.Fatalf("put dialog row: %v", err)
+	}
 	list, err := s.SessionList(facade.SessionListRequest{InstanceID: inst, Scope: scope})
 	if err != nil {
 		t.Fatalf("SessionList: %v", err)
@@ -374,6 +406,9 @@ func TestSessionSubChatsAndKindFallback(t *testing.T) {
 	for _, x := range list.List {
 		if x.ParentID != "" {
 			t.Fatalf("顶层会话列表混入子会话：%+v", x)
+		}
+		if x.ID != "s-top" || x.DialogID != dialogID {
+			t.Fatalf("列表应由 dialogs 目录派生（主会话 id + dialog_id）：%+v", x)
 		}
 	}
 
@@ -405,12 +440,8 @@ func TestSessionSubChatsAndKindFallback(t *testing.T) {
 func TestSessionLifecycleSet(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	inst := "ins-lifecycle"
-	disableShard(t, s, inst, scope)
-	prj, err := s.PrjUsrFor(inst, scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
-	tb := prj.Table("sessions")
+	dialogID, sdb := openEnvDialog(t, s, inst, scope)
+	tb := sdb.Table("sessions")
 	const created = "2026-01-01T00:00:00.000000000Z"
 	if err := tb.Insert("s1", data.Record{
 		"session_id": "s1", "title": "子聊天", "parent_id": "s-top",
@@ -424,7 +455,7 @@ func TestSessionLifecycleSet(t *testing.T) {
 	set := func(lifecycle string) error {
 		t.Helper()
 		_, err := s.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
-			InstanceID: inst, Scope: scope, SessionID: "s1", Lifecycle: lifecycle,
+			InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "s1", Lifecycle: lifecycle,
 		})
 		return err
 	}
@@ -463,7 +494,7 @@ func TestSessionLifecycleSet(t *testing.T) {
 
 	// 行不存在 → 报错且不建残行
 	if _, err := s.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
-		InstanceID: inst, Scope: scope, SessionID: "ghost", Lifecycle: facade.SessionLifecycleFinished,
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "ghost", Lifecycle: facade.SessionLifecycleFinished,
 	}); err == nil {
 		t.Fatal("会话不存在应报错")
 	}

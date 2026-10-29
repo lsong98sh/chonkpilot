@@ -28,16 +28,16 @@
       文件历史检查点链（run_hist_git.py，2026-09-27 批次③语义；参数由提示词携带）：
         "call hist-write"         + histabs=<绝对路径> histfrom=<旧> histval=<新>
                                   → `file_replace`（file 插件工具，无 self_ 前缀；精确替换真实改文件 → 置脏 → 打点）
-        "call hist-dirty-write"   → `self_history_restore` + 紧随 `task_run` 改文件
+        "call hist-dirty-write"   → `history_restore` + 紧随 `task_run` 改文件
                                   （H6「涉及文件变动」：task_run 属插件工具，缺省即涉及）
         "call hist-restore"       + histrel=<workdir 相对路径> [histto=<负整数|commit id>]
-                                  → self_history_restore（单文件回滚）
-        "call hist-restore-nopath"→ self_history_restore{}（空 path，应被拒绝）
+                                  → history_restore（单文件回滚）
+        "call hist-restore-nopath"→ history_restore{}（空 path，应被拒绝）
         "call hist-restore-dir"    + histrel=<相对目录>
-                                  → self_history_restore（目录，应被拒绝）
-      **工具名一律用网关暴露名**（2026-10-23 口径）：插件工具 = manifest 原名（`file_*` /
-      `task_run` / `mcp_*` / `ask_user` / `desktop_run`，**无 `self_` 前缀**）；仅内嵌 self 节点
-      工具（`history_*`）仍为 `self_history_*`。未按暴露名调用无法路由（I-20）。
+                                  → history_restore（目录，应被拒绝）
+      **工具名一律用网关暴露名**（P0a 2026-10-29 口径）：插件工具 = manifest 原名（`file_*` /
+      `task_run` / `mcp_*` / `ask_user` / `desktop_run`），内置 self 节点工具（`history_*`）同样
+      **无 `self_` 前缀**。未按暴露名调用无法路由（I-20）。
 工具结果回填后再次收到调用时文本不再含关键词 → 返回普通回复，避免循环。
 """
 
@@ -318,9 +318,9 @@ def route_tool_calls(text):
     # {reason:"timeout", options:["wait","cancel"]}；第三方软缺省 never 同理（本路由用 builtin 工具
     # 复现 never 分支，使 GUI 端可断言超时事件与 options）。
     # INBOX（2026-10-18 · run_inbox.py）：慢工具须**立即 pending**，为「工具执行中插话」留出
-    # 窗口。口径变更（GATEWAY-2 L1）：原用 `dsl_run`（契约 async:always、无 _meta.timeout），
-    # DSL 退役后改 `self_script_run` + **调用级 `async=always`**（script_run 契约 timeout:300 属
-    # 「有超时裁决点」，turn.gatewayArgs 不强制异步，但显式调用级 async 优先 → 派发即 pending）。
+    # 口径变更（GATEWAY-2 L1）：原用 `dsl_run`（契约 async:always、无 _meta.timeout），
+    # DSL 退役后改 `task_run`（任务插件工具，无 `self_` 前缀）+ **调用级 `async=always`**
+    # （turn.gatewayArgs 显式调用级 async 优先 → 派发即 pending）。
     if "call slow-insert" in t:
         return [("task_run", {"command": "Start-Sleep -Seconds 6",
                               "async": "always",
@@ -356,8 +356,8 @@ def route_tool_calls(text):
     if "call cancel-on-timeout-3p" in t:
         return [("slow3p_slow_sleep", {"seconds": 5, "async": "never", "timeout": 1,
                                        "tool_call_display_name": "自动取消夹具"})]
-    # 内置执行器（self_script_run）：async=never + timeout=1s，配合 usr
-    # `tool_async.self_script_run.cancel_on_timeout` → 到 1s 自动取消 → 执行体侧真停
+    # 内置执行体（`task_run`）：async=never + timeout=1s，配合 usr
+    # `tool_async.task_run.cancel_on_timeout` → 到 1s 自动取消 → 执行体侧真停
     # （callTool 继承请求 ctx + exec.CommandContext）→ 无孤儿进程（`ping` 子进程随之被杀；
     # 用唯一地址 127.0.0.99 作进程命令行探针哨兵）。
     if "call cancel-on-timeout-self" in t:
@@ -415,11 +415,11 @@ def route_tool_calls(text):
             "tool_call_display_name": "元工具调用",
         })]
     # 〔2026-10-23 口径变更〕原 `call java-real` / `call interp-probe`（runtime=java/js 的
-    # `self_script_run` 探针）随 `script_run` 退役删除；路径配置当前**无执行侧消费面**
+    # `script_run` 探针）随 `script_run` 退役删除；路径配置当前**无执行侧消费面**
     # （task_run 为普通 shell，不读 CHONKPILOT_INTERPRETERS；CHONK_CHROME 注入对象亦已退役）→
     # 路由移除，run_paths.py 的 B 组改为「明示不可覆盖」，见 41 D-67。
     # ── 文件历史检查点链（run_hist_git.py；2026-09-27 批次③语义）──
-    # ① 真实改文件（口径变更：`filesys_run` + RPL DSL 已删除 → 改用文件域 `self_file_replace`
+    # ① 真实改文件（口径变更：`filesys_run` + RPL DSL 已删除 → 改用文件插件 `file_replace`
     #    `{purpose, targets:[{path, find, replace}]}`，`histfrom=旧` → `histval=新`，
     #    `histabs=<绝对路径>`）→ 触发 filesys.changed → 插件置脏 → 前置钩子 / 轮末补点打点。
     # ② history_restore 单文件回滚：`histrel=<workdir 相对路径>` + 可选 `histto=<负整数|commit id>`。
@@ -427,8 +427,8 @@ def route_tool_calls(text):
     # ⑤ 「涉及文件变动」端到端（run_hist_git H6）：**同一轮内两次工具调用**——
     #    ① history_restore（执行时**同步置脏**，确定性，不依赖 fswatcher 去抖）
     #    → ② 改文件工具的**前置钩子**读脏位 → 该工具的 touch_files 决定是否打点。
-    #    口径变更：改文件工具改用 `self_script_run`（现行缺省「涉及文件变动」的内置工具 =
-    #    script_run；`file_*` 文件域工具缺省不涉及，故不能用来验证 +2/+1 差异）。
+    #    口径变更：改文件工具改用 `task_run`（插件工具，按 gateway「插件工具缺省 = 涉及文件
+    #    变动」规则触发前置打点；`file_*` 文件域工具缺省不涉及，故不能用来验证 +2/+1 差异）。
     if "call hist-dirty-write" in t:
         rel = _prompt_arg(text, "histrel")
         to = _prompt_arg(text, "histto")
@@ -442,7 +442,7 @@ def route_tool_calls(text):
         #（外部 MCP 工具，按 gateway 「第三方/插件工具缺省 = 涉及文件变动」规则同样触发前置打点）。
         script = "'%s' | Set-Content -LiteralPath '%s'" % (val, p)
         return [
-            ("self_history_restore", rargs),
+            ("history_restore", rargs),
             ("task_run", {"command": script, "timeoutSec": 60, "async": "never",
                           "tool_call_display_name": "历史打点"}),
         ]
@@ -455,22 +455,22 @@ def route_tool_calls(text):
                                   "targets": [{"path": p, "find": frm, "replace": to}],
                                   "tool_call_display_name": "历史打点"})]
     if "call hist-restore-nopath" in t:
-        return [("self_history_restore", {"tool_call_display_name": "历史回滚"})]
+        return [("history_restore", {"tool_call_display_name": "历史回滚"})]
     if "call hist-restore-dir" in t:
-        return [("self_history_restore", {"path": _prompt_arg(text, "histrel"),
-                                          "tool_call_display_name": "历史回滚"})]
+        return [("history_restore", {"path": _prompt_arg(text, "histrel"),
+                                     "tool_call_display_name": "历史回滚"})]
     if "call hist-restore" in t:
         args = {"path": _prompt_arg(text, "histrel"), "tool_call_display_name": "历史回滚"}
         to = _prompt_arg(text, "histto")
         if to:
             args["to"] = int(to) if re.fullmatch(r"-?\d+", to) else to
-        return [("self_history_restore", args)]
+        return [("history_restore", args)]
     # 普通工具场景
     # R-11：文件操作参数须为绝对路径或以 ~/ 开头（相对路径会被执行器拒绝），
     # 故用 ws 绝对路径（与 run_llm.py 期望的 "hello from a.txt" 对应）。
     # 口径变更（GATEWAY-2 L2）：文件域已拆为 11 个独立工具，统一参数 `{purpose, targets[]}`
-    # （单文件也写成 1 元素数组）→ 直接调 `self_file_read`，读取结果（含 content）随工具结果
-    # 回填，供 mock 回显断言。
+    # （单文件也写成 1 元素数组）→ 直接调 `file_read`（file 插件工具，无 `self_` 前缀），
+    # 读取结果（含 content）随工具结果回填，供 mock 回显断言。
     if "call tool" in t and "without" not in t:
         a_abs = os.path.join(SCRIPTS_WS, "a.txt").replace("\\", "/")
         return [("file_read", {"purpose": "读取 a.txt（工具调用链路）",

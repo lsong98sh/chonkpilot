@@ -9,7 +9,7 @@ package memory_test
 import (
 	"context"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/bus"
 )
 

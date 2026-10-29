@@ -1,6 +1,8 @@
 // tasktree 域单测（A-18）：节点落库的状态列合并收进 UpdateIn 单事务 RMW 后——同 id 重放
 // 不复活已逻辑删除节点（closed/deleted_at 保留）、显式携带 closed 以请求为准；逻辑删除
 // （级联子树标记）与「节点不存在 → 幂等 OK」行为不变。
+//
+// 一树一库：任务树节点落**对话库**，故用例先建对话并一律带 `dialog_id`。
 package tasktree
 
 import (
@@ -27,23 +29,36 @@ func newTasktreeEnv(t *testing.T) (*Service, facade.Scope) {
 	return s, facade.Scope{WorkDir: wd, DataDir: dd}
 }
 
-// disableShard 显式退回旧布局（P3-4d 起 shard 缺省 on，缺 dialog_id 会明确失败；
-// 本文件的用例断言 prjusr 旧布局行为）。
-func disableShard(t *testing.T, s *Service, inst string, scope facade.Scope) {
+// openDialog 建一个对话库（含主会话行），返回 dialog_id 与该库句柄（测试直读用）。
+func openDialog(t *testing.T, s *Service, inst string, scope facade.Scope) (string, *data.DB) {
 	t.Helper()
-	prj, release, err := s.PrjFor(inst, scope)
+	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
-		t.Fatalf("PrjFor: %v", err)
+		t.Fatalf("prjusr: %v", err)
 	}
-	defer release()
-	if err := kernel.PrjConfigSetVal(prj, kernel.ConfigSessionShard, "off"); err != nil {
-		t.Fatalf("set shard=off: %v", err)
+	dialogID, err := data.NewDialogID()
+	if err != nil {
+		t.Fatalf("NewDialogID: %v", err)
 	}
+	db, release, err := data.OpenDialog(prj.Path(), dialogID)
+	if err != nil {
+		t.Fatalf("OpenDialog: %v", err)
+	}
+	t.Cleanup(release)
+	const now = "2026-01-01T00:00:00.000000000Z"
+	if err := db.Table("sessions").Insert("main", data.Record{
+		"session_id": "main", "title": "main", "parent_id": "", "created_at": now, "updated_at": now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return dialogID, db
 }
 
-func upsertNode(t *testing.T, s *Service, inst string, scope facade.Scope, n facade.TaskNode) {
+func upsertNode(t *testing.T, s *Service, inst, dialogID string, scope facade.Scope, n facade.TaskNode) {
 	t.Helper()
-	if _, err := s.TasktreeUpsert(facade.TasktreeUpsertRequest{InstanceID: inst, Scope: scope, Node: n}); err != nil {
+	if _, err := s.TasktreeUpsert(facade.TasktreeUpsertRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, Node: n,
+	}); err != nil {
 		t.Fatalf("upsert %s: %v", n.ID, err)
 	}
 }
@@ -53,22 +68,20 @@ func upsertNode(t *testing.T, s *Service, inst string, scope facade.Scope, n fac
 func TestTasktreeUpsertKeepsClosedOnReplay(t *testing.T) {
 	s, scope := newTasktreeEnv(t)
 	inst := "ins-tt"
-	disableShard(t, s, inst, scope)
+	dialogID, db := openDialog(t, s, inst, scope)
 
-	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "n1", Kind: "llm", TopSession: "top1", Status: "running"})
-	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: inst, Scope: scope, NodeID: "n1"}); err != nil {
+	upsertNode(t, s, inst, dialogID, scope, facade.TaskNode{ID: "n1", Kind: "llm", TopSession: "top1", Status: "running"})
+	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, NodeID: "n1",
+	}); err != nil {
 		t.Fatalf("delete n1: %v", err)
 	}
 
 	// 同 id 重放 running（Closed=nil = 请求未携带）
-	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "n1", Kind: "llm", TopSession: "top1", Status: "running"})
+	upsertNode(t, s, inst, dialogID, scope, facade.TaskNode{ID: "n1", Kind: "llm", TopSession: "top1", Status: "running"})
 
-	prj, err := s.PrjUsrFor(inst, scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
 	var rec data.Record
-	if ok, err := prj.Table("tasktree").Get("n1", &rec); err != nil || !ok {
+	if ok, err := db.Table("tasktree").Get("n1", &rec); err != nil || !ok {
 		t.Fatalf("get n1: ok=%v err=%v", ok, err)
 	}
 	if v, _ := rec["closed"].(bool); !v {
@@ -83,8 +96,8 @@ func TestTasktreeUpsertKeepsClosedOnReplay(t *testing.T) {
 
 	// 显式携带 closed=false → 以请求为准（解闭场景）
 	f := false
-	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "n1", Kind: "llm", TopSession: "top1", Status: "running", Closed: &f})
-	if ok, err := prj.Table("tasktree").Get("n1", &rec); err != nil || !ok {
+	upsertNode(t, s, inst, dialogID, scope, facade.TaskNode{ID: "n1", Kind: "llm", TopSession: "top1", Status: "running", Closed: &f})
+	if ok, err := db.Table("tasktree").Get("n1", &rec); err != nil || !ok {
 		t.Fatalf("get n1: ok=%v err=%v", ok, err)
 	}
 	if v, _ := rec["closed"].(bool); v {
@@ -97,21 +110,19 @@ func TestTasktreeUpsertKeepsClosedOnReplay(t *testing.T) {
 func TestTasktreeDeleteCascadesAndIdempotent(t *testing.T) {
 	s, scope := newTasktreeEnv(t)
 	inst := "ins-tt2"
-	disableShard(t, s, inst, scope)
+	dialogID, db := openDialog(t, s, inst, scope)
 
-	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "p1", Kind: "tool", TopSession: "top1"})
-	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "c1", Kind: "tool", TopSession: "top1", ParentID: "p1"})
-	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: inst, Scope: scope, NodeID: "p1"}); err != nil {
+	upsertNode(t, s, inst, dialogID, scope, facade.TaskNode{ID: "p1", Kind: "tool", TopSession: "top1"})
+	upsertNode(t, s, inst, dialogID, scope, facade.TaskNode{ID: "c1", Kind: "tool", TopSession: "top1", ParentID: "p1"})
+	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, NodeID: "p1",
+	}); err != nil {
 		t.Fatalf("delete p1: %v", err)
 	}
 
-	prj, err := s.PrjUsrFor(inst, scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
 	for _, id := range []string{"p1", "c1"} {
 		var rec data.Record
-		if ok, err := prj.Table("tasktree").Get(id, &rec); err != nil || !ok {
+		if ok, err := db.Table("tasktree").Get(id, &rec); err != nil || !ok {
 			t.Fatalf("get %s: ok=%v err=%v（逻辑删除应保留行）", id, ok, err)
 		}
 		if v, _ := rec["closed"].(bool); !v {
@@ -121,13 +132,15 @@ func TestTasktreeDeleteCascadesAndIdempotent(t *testing.T) {
 
 	// 重复删 + 删不存在节点 → 幂等 OK；不存在的节点不得建空行
 	for _, id := range []string{"p1", "ghost"} {
-		resp, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: inst, Scope: scope, NodeID: id})
+		resp, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{
+			InstanceID: inst, Scope: scope, DialogID: dialogID, NodeID: id,
+		})
 		if err != nil || !resp.OK {
 			t.Fatalf("delete %s 应幂等成功：err=%v resp=%+v", id, err, resp)
 		}
 	}
 	var rec data.Record
-	if ok, _ := prj.Table("tasktree").Get("ghost", &rec); ok {
+	if ok, _ := db.Table("tasktree").Get("ghost", &rec); ok {
 		t.Fatal("不存在节点不应被建行")
 	}
 }
@@ -138,23 +151,19 @@ func TestTasktreeDeleteCascadesAndIdempotent(t *testing.T) {
 func TestTasktreeUpsertPreservesUncarriedOptionalColumns(t *testing.T) {
 	s, scope := newTasktreeEnv(t)
 	inst := "ins-tt3"
-	disableShard(t, s, inst, scope)
+	dialogID, db := openDialog(t, s, inst, scope)
 
-	upsertNode(t, s, inst, scope, facade.TaskNode{
+	upsertNode(t, s, inst, dialogID, scope, facade.TaskNode{
 		ID: "n1", Kind: "tool", TopSession: "top1", Status: "running",
 		State: "running", ExecJSON: `{"p":1}`, ToolCallID: "tc1",
 		ReturnKind: "inline", ReturnInline: "hello", ReturnSize: 5,
 		LoopCurrent: 2, LoopTotal: 3,
 	})
 	// 第二次上报不带上述可选列 → 应保留旧值
-	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "n1", Kind: "tool", TopSession: "top1", Status: "done"})
+	upsertNode(t, s, inst, dialogID, scope, facade.TaskNode{ID: "n1", Kind: "tool", TopSession: "top1", Status: "done"})
 
-	prj, err := s.PrjUsrFor(inst, scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
 	var rec data.Record
-	if ok, err := prj.Table("tasktree").Get("n1", &rec); err != nil || !ok {
+	if ok, err := db.Table("tasktree").Get("n1", &rec); err != nil || !ok {
 		t.Fatalf("get n1: ok=%v err=%v", ok, err)
 	}
 	if got := kernel.Sval(rec["status"]); got != "done" {
@@ -187,17 +196,15 @@ func TestTasktreeUpsertPreservesUncarriedOptionalColumns(t *testing.T) {
 func TestTasktreeDeleteTimestampsNanoFormat(t *testing.T) {
 	s, scope := newTasktreeEnv(t)
 	inst := "ins-tt4"
-	disableShard(t, s, inst, scope)
-	upsertNode(t, s, inst, scope, facade.TaskNode{ID: "d1", Kind: "tool", TopSession: "top1"})
-	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: inst, Scope: scope, NodeID: "d1"}); err != nil {
+	dialogID, db := openDialog(t, s, inst, scope)
+	upsertNode(t, s, inst, dialogID, scope, facade.TaskNode{ID: "d1", Kind: "tool", TopSession: "top1"})
+	if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, NodeID: "d1",
+	}); err != nil {
 		t.Fatalf("delete d1: %v", err)
 	}
-	prj, err := s.PrjUsrFor(inst, scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
 	var rec data.Record
-	if ok, err := prj.Table("tasktree").Get("d1", &rec); err != nil || !ok {
+	if ok, err := db.Table("tasktree").Get("d1", &rec); err != nil || !ok {
 		t.Fatalf("get d1: ok=%v err=%v", ok, err)
 	}
 	for _, col := range []string{"deleted_at", "updated_at"} {

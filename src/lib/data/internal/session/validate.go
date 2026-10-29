@@ -6,7 +6,6 @@ package session
 
 import (
 	"fmt"
-	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -54,20 +53,6 @@ func messageRoleValid(role string) bool {
 func validateMessageContent(role, content string) error {
 	if utf8.RuneCountInString(content) > maxMessageChars {
 		return fmt.Errorf("session: message content 超长（上限 %d 字符）", maxMessageChars)
-	}
-	return nil
-}
-
-// validateTurnID 轮次 / 会话 id：非空且不含空白（防手填脏 id 破坏索引键）。
-func validateTurnID(id string) error {
-	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("session: turn_id required")
-	}
-	if strings.ContainsAny(id, " \t\r\n") {
-		return fmt.Errorf("session: turn_id 不得包含空白")
-	}
-	if utf8.RuneCountInString(id) > 128 {
-		return fmt.Errorf("session: turn_id 超长（上限 128 字符）")
 	}
 	return nil
 }

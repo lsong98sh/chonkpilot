@@ -48,8 +48,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/session"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
 	"github.com/chonkpilot/chonkpilot-data/internal/tasktree"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-util/strx"
 )
 
 // 订阅主题（相对；总线命名空间前缀 chonk. 在 mq 初始化注入一次）。
@@ -142,9 +143,9 @@ type Service struct {
 	mu      sync.Mutex
 	subs    []mq.Sub // 全部订阅句柄（Start 累计 / Stop 退订）
 	started bool
-	// shardDone 记录已完成「旧布局 → dialogs/ 一树一库」迁移的 prjusr 路径（SESSION-COMP-1 P0；
-	// 每路径一次，失败会移除以便下次重试）。
-	shardDone sync.Map
+	// reconciled 记录已完成 `dialogs/` 目录对账的 prjusr 路径（每路径一次，失败会移除以便下次重试；
+	// 见 reconcile.go）。
+	reconciled sync.Map
 	// sweepStop 心跳超时扫描停止函数（分离形态非空；默认构建 startStaleSweep 返回 nil，
 	// 见 sweep_split.go / sweep_inprocess.go——desktop 不判超时）。
 	sweepStop func()
@@ -274,9 +275,9 @@ func (s *Service) onInstanceRegister(_ string, payload []byte) {
 		return
 	}
 	s.View.Register(req.InstanceID, req.WorkDir, req.DataDir)
-	// SESSION-COMP-1 P0：`session.db.shard=on` 时把旧布局搬到 dialogs/（一树一库）。
-	// 异步执行：搬运可能涉及多库，不阻塞 instance-register 的应答。
-	go s.maybeShardDialogs(req.InstanceID)
+	// SESSION-COMP-1 §8：`dialogs/` 目录对账（补齐半完成态的目录行 / 清失效行）。
+	// 异步执行：可能涉及多库，不阻塞 instance-register 的应答。
+	go s.reconcileDialogs(req.InstanceID)
 }
 
 // 实例标识符上限（与 config 包 MaxNameChars 同源）与路径上限（MaxPathChars 同源）。
@@ -287,6 +288,9 @@ const (
 
 // validateInstanceRegister 校验实例登记（INPUTVAL-1 BE-22）：instance_id 标识符；work_dir 必填
 // 绝对路径；data_dir 可选，非空须为绝对路径；均禁 `..` 段与超长。
+//
+// 判定单源 = `capfs.ValidIdent` / `capfs.ValidateAbsPath`（S-5 · DATA-OPT-1 P3）；错误文案保持
+// 既有逐字不变。
 func validateInstanceRegister(instanceID, workDir, dataDir string) error {
 	id := strings.TrimSpace(instanceID)
 	if id == "" {
@@ -295,10 +299,7 @@ func validateInstanceRegister(instanceID, workDir, dataDir string) error {
 	if len(id) > maxInstanceIDChars {
 		return fmt.Errorf("instance_id 超长（上限 %d 字符）", maxInstanceIDChars)
 	}
-	for _, r := range id {
-		if r == '-' || r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			continue
-		}
+	if !capfs.ValidIdent(id) {
 		return fmt.Errorf("instance_id 仅允许字母 / 数字 / - / _")
 	}
 	if err := validateInstancePath("work_dir", workDir, true); err != nil {
@@ -316,16 +317,13 @@ func validateInstancePath(field, path string, required bool) error {
 		}
 		return nil
 	}
-	if len(p) > maxInstancePathLen {
+	switch capfs.ValidateAbsPath(p, maxInstancePathLen) {
+	case capfs.PathTooLong:
 		return fmt.Errorf("%s 超长（上限 %d 字符）", field, maxInstancePathLen)
-	}
-	if !filepath.IsAbs(p) {
+	case capfs.PathNotAbs:
 		return fmt.Errorf("%s 必须为绝对路径（%s）", field, p)
-	}
-	for _, seg := range strings.FieldsFunc(filepath.ToSlash(p), func(r rune) bool { return r == '/' }) {
-		if seg == ".." {
-			return fmt.Errorf("%s 不得包含上级目录引用（..）", field)
-		}
+	case capfs.PathDotDot:
+		return fmt.Errorf("%s 不得包含上级目录引用（..）", field)
 	}
 	return nil
 }
@@ -445,6 +443,28 @@ func (s *Service) replyID(method, reqID string, result any) {
 func (s *Service) failID(method, reqID string, err error) {
 	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": false, "error": err.Error()})
 	_ = s.Bus.Emit(context.Background(), method, b)
+}
+
+// failDecode 载荷解析失败时的失败回执：先从原始载荷尽力取回 req_id（顶层或 data 内），
+// 再回带 error。此前各 handler 用未解析的 p.ReqID（恒空）→ 调用方只能等 3s 超时。
+func (s *Service) failDecode(method string, payload []byte, err error) {
+	var env struct {
+		Header
+		Data Header `json:"data"`
+	}
+	reqID := ""
+	if json.Unmarshal(payload, &env) == nil {
+		reqID = env.ReqID
+		if reqID == "" {
+			reqID = env.Data.ReqID
+		}
+	}
+	s.failID(method, reqID, err)
+}
+
+// firstNonEmpty 返回首个非空字符串（同一语义字段在载荷顶层与 msg 内各声明一份时的回落取值）。
+func firstNonEmpty(vals ...string) string {
+	return strx.FirstNonEmpty(vals...)
 }
 
 // isLoopbackReply 判定入站载荷是否为 persist 自身应答（reply/fail）的回环。

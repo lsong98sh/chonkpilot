@@ -1,7 +1,7 @@
 /**
- * SL-5 · 用户配置 · LLM 页「子系统默认模型」5 个下拉（2026-09-25）：
- *   口径来源 = `docs/spec/40-roadmap/40-演进计划.md` §SL（SL-C3/C4/C5/C6/C9）
- *            + `docs/spec/60-reference/64-配置项一览.md` §3（5 键 usr 表）
+ * SL-5 · 用户配置 · LLM 页「子系统默认模型」3 个下拉（2026-09-25；2026-10-25 移除备用两键）：
+ *   口径来源 = `docs/spec/40-roadmap/40-演进计划.md` §SL（SL-C3/C4/C5/C9）
+ *            + `docs/spec/60-reference/64-配置项一览.md` §3（usr 表）
  *            + `docs/spec/00-overview/02-配置层级.md` §5（仅 usr 层级）。
  *
  * 前端无组件级测试运行器（`npm test` = node:test 直跑）→ `*.vue` 源码守卫 + 词条实键校验
@@ -21,16 +21,14 @@ const LOCALES = ['zh-CN', 'en-US']
 const PAGE = 'views/config/SettingsLLMPage.vue'
 const SELECT = 'components/ui/Select.vue'
 
-// 5 键 = 子系统默认 LLM（键名/标签口径，64 §3）：
+// 3 键 = 子系统默认 LLM（键名/标签口径，64 §3）：
 //   llm.promptOptimise 提示词优化 · llm.memory 记忆系统 · llm.compress 压缩上下文
-//   llm.analysis 分析系统（备用） · llm.decision 决策系统（备用）
-const KEYS = ['llm.promptOptimise', 'llm.memory', 'llm.compress', 'llm.analysis', 'llm.decision']
-const STANDBY_KEYS = ['llm.analysis', 'llm.decision']
+const KEYS = ['llm.promptOptimise', 'llm.memory', 'llm.compress']
 
 // ═══════════════════════════════════════════════════════════════
-// ① 5 个下拉齐备 + 分组标题
+// ① 3 个下拉齐备 + 分组标题
 // ═══════════════════════════════════════════════════════════════
-test('① LLM 页含「默认模型」分组与 5 个键（键名 + i18n 标签键）', () => {
+test('① LLM 页含「默认模型」分组与 3 个键（键名 + i18n 标签键）', () => {
   const src = read(PAGE)
   assert.match(src, /config\.llm\.defaultsTitle/, '须有分组标题 config.llm.defaultsTitle')
   for (const k of KEYS) {
@@ -40,8 +38,8 @@ test('① LLM 页含「默认模型」分组与 5 个键（键名 + i18n 标签�
       `须含 ${k} 的 i18n 标签键`,
     )
   }
-  // 5 个下拉 = 由同一 subsystems 列表 v-for 渲染（不重复手写）。
-  assert.match(src, /v-for="s in subsystems"/, '5 个下拉须由 subsystems 列表渲染')
+  // 3 个下拉 = 由同一 subsystems 列表 v-for 渲染（不重复手写）。
+  assert.match(src, /v-for="s in subsystems"/, '3 个下拉须由 subsystems 列表渲染')
   assert.match(src, /const subsystems = \[/, '须有 subsystems 常量表')
 })
 
@@ -81,21 +79,18 @@ test('② 读侧展示：等于默认 provider 时显示「跟随默认」（数
 })
 
 // ═══════════════════════════════════════════════════════════════
-// ③ 分析 / 决策 = 预留位：标「备用」，仍可配置（不加禁用）
+// ③ 预留键已移除：页面不再出现 analysis / decision / standby
 // ═══════════════════════════════════════════════════════════════
-test('③ 分析 / 决策标「备用」且保持可配置（不新增禁用逻辑）', () => {
+test('③ analysis / decision 预留键与 standby 标记已移除', () => {
   const src = read(PAGE)
-  const standbyCount = (src.match(/standby: true/g) || []).length
-  assert.equal(standbyCount, 2, 'analysis / decision 须各标 standby: true（恰 2 处）')
-  for (const k of STANDBY_KEYS) {
-    assert.ok(src.includes(`{ key: '${k}', labelKey: 'config.llm.${k.slice(4)}', standby: true }`), `${k} 须标 standby`)
+  assert.equal((src.match(/standby: true/g) || []).length, 0, '不得再有 standby 标记')
+  for (const k of ['llm.analysis', 'llm.decision']) {
+    assert.ok(!src.includes(`'${k}'`), `${k} 键须已移除（后端零消费方）`)
   }
-  assert.match(src, /config\.llm\.standby\b/, '备用标签须用 config.llm.standby 文案')
-  assert.match(src, /config\.llm\.standbyHint/, '备用须有说明（尚未实现/预留位）')
-  // 预留位仍可配置：子系统下拉本身不加 disabled（保存按钮的 :disabled 不在此列）。
+  // 其余 3 个子系统下拉不加 disabled（保存按钮的 :disabled 不在此列）。
   const subSelect = src.match(/<Select[\s\S]*?subsysDisplay[\s\S]*?\/>/)
   assert.ok(subSelect, '未找到子系统 Select')
-  assert.doesNotMatch(subSelect[0], /:disabled/, '子系统下拉不得加禁用（可配、暂无消费方）')
+  assert.doesNotMatch(subSelect[0], /:disabled/, '子系统下拉不得加禁用')
 })
 
 // ═══════════════════════════════════════════════════════════════

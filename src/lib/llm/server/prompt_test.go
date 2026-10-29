@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // newPromptTestServer 建 prompt-optimise 测试环境：s.llm 指向 llmSrv（usr config 缺失时回落），

@@ -29,6 +29,9 @@ onMounted(() => {
       turnId: data.turn || data.turn_id || '',
       subSessionId: data.sub_session_id || '',
       sessionId: data.session || data.session_id || data.sub_session_id || '',
+      // 会话标识（61 §4.3 session-ask.dialog_id，§0.6 必带；AskUser S1-3/S1-4）：
+      // 作答时原样回带（ask-user-reply.dialog_id）。
+      dialogId: data.dialog_id || '',
       deadline: data.expires_at && Number(data.expires_at) > 0 ? Number(data.expires_at) : 0,
       scenarioId: data.scenario_id,
       scenarioName: data.scenario_name,

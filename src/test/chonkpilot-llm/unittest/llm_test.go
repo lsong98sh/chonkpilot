@@ -4,7 +4,7 @@
 //   - 一轮纯文本会话：session-start ack → session-receive(type=text) 增量 → session-complete(status/text)
 //   - 无上下文单轮 LLM 方法面：llm-simple 请求 {prompt} → {text}
 //   - 运行中取消：session-cancel → session-complete{status:interrupted}
-//   - 域工具源目录：mcp-tools-list 含 self_ask_user 等（name/description/inputSchema/scope）、
+//   - 域工具源目录：mcp-tools-list 含 ask_user 等（name/description/inputSchema/scope）、
 //     mcp-prompts-list **不含** agent（25 §5/T2：agent 已撤出资产面）
 package llmtest
 
@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 
 	llmserver "github.com/chonkpilot/chonkpilot-llm/server"
 )
@@ -393,7 +393,7 @@ func TestDomainToolsListFields(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	// 轮询 mcp-tools-list 直到域工具（self_ask_user）注入完成
+	// 轮询 mcp-tools-list 直到域工具（ask_user）注入完成
 	var tools []any
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -402,7 +402,7 @@ func TestDomainToolsListFields(t *testing.T) {
 			if res, ok := v.Result.(map[string]any); ok {
 				tools, _ = res["tools"].([]any)
 				for _, it := range tools {
-					if m, ok := it.(map[string]any); ok && str(m, "name") == "self_ask_user" {
+					if m, ok := it.(map[string]any); ok && str(m, "name") == "ask_user" {
 						goto found
 					}
 				}
@@ -410,10 +410,10 @@ func TestDomainToolsListFields(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("self_ask_user not in tools list within 10s (tools=%+v)", tools)
+	t.Fatalf("ask_user not in tools list within 10s (tools=%+v)", tools)
 found:
 	// 条目 payload 字段断言
-	for _, name := range []string{"self_ask_user", "self_tool_result", "self_tool_stop", "self_subchat_open", "self_subchat_finish"} {
+	for _, name := range []string{"ask_user", "tool_result", "tool_stop", "subchat_open", "subchat_finish"} {
 		foundTool := false
 		for _, it := range tools {
 			m, _ := it.(map[string]any)

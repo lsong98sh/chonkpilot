@@ -1,10 +1,12 @@
 // turn_persist_test.go — I-176「消息增量落库」：assistant 分段落库（同段落同一行）与 tool 发起即落
-// running、终态回填同一行。经内嵌 persist 数据服务落库后直连 prjusr 库断言（少而准）。
+// running、终态回填同一行。经内嵌 persist 数据服务落库后直连**对话库**断言（少而准）。
 package server
 
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,20 +15,60 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
-// msgsOfTurn 直连 prjusr 库读某轮全部消息行（created_at 升序；落库断言用）。
-func msgsOfTurn(t *testing.T, turn string) []data.Record {
+// allDialogDBs 逐个短开该实例的全部对话库（一树一库：会话正文只在这些库内；release 随用例结束）。
+func allDialogDBs(t *testing.T) []*data.DB {
 	t.Helper()
-	db, err := data.PrjUsr("ins-test")
+	prjUsr, err := data.PrjUsr("ins-test")
 	if err != nil {
 		t.Fatalf("PrjUsr: %v", err)
 	}
-	recs, _, err := db.Table("messages").Query(data.Query{
+	dir := filepath.Dir(data.DialogDBPath(prjUsr.Path(), "x"))
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("读 dialogs 目录: %v", err)
+	}
+	out := make([]*data.DB, 0, len(ents))
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		dialogID, ok := data.DialogIDFromFile(e.Name())
+		if !ok {
+			continue
+		}
+		db, release, err := data.OpenExistingDialog(prjUsr.Path(), dialogID)
+		if err != nil {
+			continue // 半创建 / 打不开 → 跳过
+		}
+		t.Cleanup(release)
+		out = append(out, db)
+	}
+	return out
+}
+
+// queryAllDialogs 在全部对话库上执行同一查询并拼接结果（跨对话断言用）。
+func queryAllDialogs(t *testing.T, table string, q data.Query) []data.Record {
+	t.Helper()
+	var out []data.Record
+	for _, db := range allDialogDBs(t) {
+		recs, _, err := db.Table(table).Query(q)
+		if err != nil {
+			t.Fatalf("query %s: %v", table, err)
+		}
+		out = append(out, recs...)
+	}
+	return out
+}
+
+// msgsOfTurn 读某轮全部消息行（created_at 升序；落库断言用）。
+func msgsOfTurn(t *testing.T, turn string) []data.Record {
+	t.Helper()
+	return queryAllDialogs(t, "messages", data.Query{
 		Where: data.Record{"turn_id": turn}, OrderBy: "created_at",
 	})
-	if err != nil {
-		t.Fatalf("query messages: %v", err)
-	}
-	return recs
 }
 
 // toolRowsOf 取某轮的 role=tool 行。

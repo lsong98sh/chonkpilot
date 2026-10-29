@@ -1,26 +1,25 @@
 # -*- coding: utf-8 -*-
-"""项目配置页签 + 索引进度状态回归（FP 203-242 / 281-285 可自动化项）。
+"""项目配置页签 + 代码知识库（插件页）回归（FP 203-242 / 281-285 可自动化项）。
 
 覆盖：
-  K1 项目配置：5 页签（安全 / 上下文管理 / CodeGraph 索引 / Vfts 全文索引 / 文件历史）
+  K1 项目配置：8 页签（安全 / 上下文管理 / 代码知识库 / 文件历史 / 文件树 / 群聊 / 日志 / 配置导入导出）
   K2 安全页签：信任目录列表 + 添加按钮 + 添加出现行
   K3 上下文管理：说明文案 + 保留轮数/token 阈值输入 + 快速阈值/保存按钮
   K4 上下文管理-总结提示词：自动加载（继承值非空）+ 来源标注 + 重置入口
-  K5 CodeGraph 索引：状态文案 + 重建/重试/清除/保存 + 扩展名/排除的目录和文件输入
-  K6 Vfts 全文索引：索引状态/统计呈现（旧「索引进度对话框」已移除 → 见下）
-  L205 系统目录对话框（无法自动化）；全文索引 L238-242（无独立页签 → 已并入 Vfts 页签）
+  K5 代码知识库（codegraph 段）：插件页 iframe 渲染 + 控件/状态入口齐备 + workdir 回填
+  K6 代码知识库（vfts 段）：插件页 iframe 渲染 + 控件/引擎状态入口齐备
+  L205 系统目录对话框（无法自动化）
 
-迁移口径（2026-09-15）：
-  - 页签名 = zh-CN i18n（ProjectConfig.vue + locales/zh-CN/projectConfig.json）：
-    安全 / 上下文管理 / CodeGraph 索引 / Vfts 全文索引 / 文件历史；
-    旧英文名 Security/Context/Prompt/Code Index 已不匹配。
+迁移口径：
+  - 2026-09-15：页签名 = zh-CN i18n（ProjectConfig.vue + locales/zh-CN/projectConfig.json）。
   - 「通用能力（提示词）」页签**已按 spec CFG-009 (D2) 摘除**（项目配置提示词仅余摘要提示词，
     见 36-配置配置 CFG-008/009）→ K4 改断言存活的「总结提示词自动加载 + 来源标注」（同强度）。
-  - 「代码索引」页签已拆为 CodeGraph / Vfts 两个页签（CFG-010/012）→ K5 断言 CodeGraph 页。
-  - 「索引进度对话框」（`codegraph-config-preview` + `codegraph-index-status-open`）随数据库查看器
-    一并移除（全仓无消费者）→ K6 改断言 **Vfts 页签的索引状态/统计呈现**（同强度：状态可观测）。
+  - 2026-10-26（D-71）：主仓 CodegraphConfig.vue / VftsConfig.vue 下线，两页签**合并为
+    「代码知识库」**，内容 = codegraph 插件自持页面（`/plugins/codegraph/webui/config.html`，
+    同源 iframe）→ K5/K6 改为在该 iframe 内断言（控件/文案/workdir 回填 + 状态与索引入口）。
+    **索引终效与状态真值**（indexedFiles / 文件清单 / 清除）由 `run_index_gate` G3/G4/G7/G8/G9 覆盖。
 
-前置：chonkpilot.exe --test-port=2345 已启动（workDir 有已建 vfts 索引 → K6 统计明细）。
+前置：chonkpilot.exe --test-port=2345 已启动（harness 复用或自起）。
 """
 import json
 import os
@@ -39,12 +38,12 @@ c = _G.client
 _h.suite_config_guard(c)
 _h.ensure_locale(c)  # 语言确定性：页签/状态文案按 zh-CN 断言（DB ui.locale 可能被他套件写成 en-US）
 
-# 7 个页签（zh-CN 标签，英文为旧名兼容备选）
+# 8 个页签（zh-CN 标签，英文为旧名兼容备选）
 TAB_FAMILIES = [
     ("安全 / Security", r"^(安全|Security)$"),
     ("上下文 / Context", r"^(上下文管理|上下文|Context)$"),
-    ("CodeGraph 索引", r".*CodeGraph.*"),
-    ("Vfts 全文索引", r".*Vfts.*"),
+    # 2026-10-26（D-71）：CodeGraph + Vfts 两页签合并为「代码知识库」（插件自持 iframe 页面）
+    ("代码知识库 / Code KB", r"^(代码知识库|Code KB)$"),
     ("文件历史 / History", r"^(文件历史|历史|History)$"),
     # 2026-10-16（UILAYOUT-1 批）新增两页签：文件树 / 群聊（位于「文件历史」之后、「日志」之前）
     ("文件树 / File Tree", r"^(文件树|File Tree|Filetree)$"),
@@ -52,9 +51,6 @@ TAB_FAMILIES = [
     ("日志 / Log", r"^(日志|Log)$"),
     ("配置导入/导出 / Config IO", r".*(配置导入/导出|Config IO|Import).*"),
 ]
-
-INDEX_STATE_WORDS = ("已停用", "未初始化", "索引构建中", "就绪", "出错",
-                     "disabled", "uninitialized", "indexing", "ready", "error")
 
 
 def deep_loads(v):
@@ -125,6 +121,43 @@ def switch_tab(*patterns):
     r = eval_js(js)
     time.sleep(0.9)
     return r
+
+
+def iframe_scope(inner):
+    """在「项目配置 → 代码知识库」插件 iframe 内执行 inner（变量 d = iframe document）。
+
+    2026-10-26（D-71）：codegraph/vfts 两页合并为「代码知识库」，内容 = codegraph 插件自持页面
+    `webui/config.html`（同源 → 可直接访问 contentDocument）。
+    """
+    return eval_js("""(() => {
+      const ps = [...document.querySelectorAll('.project-config-panel')].filter(e => e.getBoundingClientRect().width > 0);
+      const P = ps[ps.length - 1];
+      if (!P) return 'no-panel';
+      const f = P.querySelector('iframe');
+      if (!f) return 'no-frame';
+      const d = f.contentDocument;
+      if (!d) return 'no-doc';
+      %s
+    })()""" % inner)
+
+
+def open_code_kb_tab(max_wait=30):
+    """打开「项目设置 → 代码知识库」并等 iframe 就绪（`load` 动作回填 workdir）；返回 workdir。"""
+    open_project_cfg()
+    if switch_tab(r"^(代码知识库|Code KB)$") != "ok":
+        raise TestError("未找到「代码知识库」页签")
+    deadline = time.time() + max_wait
+    last = None
+    while time.time() < deadline:
+        try:
+            last = iframe_scope("return (d.getElementById('workdir')||{}).value||'';")
+        except Exception as e:  # noqa: BLE001  （iframe 重挂载期 eval 可能瞬断 → 继续轮询）
+            last = "eval:%s" % e
+        if isinstance(last, str) and last:
+            time.sleep(0.5)
+            return last
+        time.sleep(0.5)
+    raise TestError("「代码知识库」iframe 未就绪（workdir 未回填：%r）" % (last,))
 
 
 def case_tabs():
@@ -233,50 +266,67 @@ def case_summary_prompt_load():
 
 
 def case_codegraph():
-    """K5（原「代码索引」页签迁移）：CodeGraph 索引页控件 + 状态文案。"""
-    open_project_cfg()
-    if switch_tab(r".*CodeGraph.*") != "ok":
-        raise TestError("未找到 CodeGraph 索引页签")
-    if not wait_el(".cg-state-text"):
-        raise TestError("CodeGraph 页未渲染状态文案")
-    state = (eval_js("(document.querySelector('.cg-state-text')||{}).textContent") or "").strip()
-    if not state:
-        raise TestError("CodeGraph 状态文案为空")
-    if not any(w in state for w in INDEX_STATE_WORDS):
-        raise TestError(f"CodeGraph 状态文案异常: {state!r}")
-    btns = panel_scope("return P ? [...P.querySelectorAll('.b-btn')].map(b => b.textContent.trim()) : []") or []
-    joined = " | ".join(btns)
-    for k in ("重建索引", "重试失败", "清除索引", "保存"):
-        if k not in joined:
-            raise TestError(f"CodeGraph 缺按钮 {k}: {joined}")
-    for label in ("参与索引的扩展名", "排除的目录和文件"):
-        if label not in (panel_scope("return P ? P.textContent : ''") or ""):
-            raise TestError(f"CodeGraph 缺字段 {label}")
+    """K5 代码知识库（codegraph 段）：插件页 iframe 渲染 + 控件/状态入口齐备 + workdir 回填。
+
+    2026-10-26（D-71）改口径：主仓 CodegraphConfig.vue 已下线，页签内容 = codegraph 插件
+    `webui/config.html`（同源 iframe）。原 `.cg-state-text` 状态文案与主仓「重建索引/重试失败/
+    清除索引/保存」按钮组随该页移除 → 等价强度断言改为「状态可观测 + 维护入口齐备」：
+      ① 页内文案：符号图谱（codegraph）/ 索引扩展名 / 排除目录 / 叠加 .gitignore；
+      ② 控件齐备：cgEnabled / cgExts / cgSkip / cgGitignore / 【保存并应用】/【清除索引】；
+      ③ 状态与索引入口：【读取状态】（codegraph_status + vfts_status）/【立即索引】；
+      ④ workdir 自动回填（插件实例解析成功）。
+    （索引终效与状态真值由 `run_index_gate` G3/G4/G7/G8 覆盖，此处不重复。）
+    """
+    wd = open_code_kb_tab()
+    if not re.match(r"^[A-Za-z]:[\\/]", wd):
+        raise TestError("workdir 疑似未回填（应为绝对路径）：%r" % (wd,))
+    txt = iframe_scope("return d.body.textContent||'';") or ""
+    for want in ("符号图谱（codegraph）", "索引扩展名", "排除目录", "叠加 .gitignore"):
+        if want not in txt:
+            raise TestError("代码知识库 codegraph 段缺文案 %r（workdir=%r）" % (want, wd))
+    ctrl = iframe_scope("""return JSON.stringify({
+      enabled: !!d.getElementById('cgEnabled'), exts: !!d.getElementById('cgExts'),
+      skip: !!d.getElementById('cgSkip'), gitignore: !!d.getElementById('cgGitignore'),
+      save: ((d.getElementById('cgSave')||{}).textContent||'').trim(),
+      clear: ((d.getElementById('cgClear')||{}).textContent||'').trim(),
+      status: ((d.getElementById('loadStatus')||{}).textContent||'').trim(),
+      index: ((d.getElementById('indexNow')||{}).textContent||'').trim()});""")
+    if not isinstance(ctrl, dict):
+        raise TestError("codegraph 控件探测失败：%r" % (ctrl,))
+    miss = [k for k in ("enabled", "exts", "skip", "gitignore") if not ctrl.get(k)]
+    if miss:
+        raise TestError("codegraph 缺控件 %r：%r" % (miss, ctrl))
+    for k, want in (("save", "保存并应用"), ("clear", "清除索引"),
+                    ("status", "读取状态"), ("index", "立即索引")):
+        if ctrl.get(k) != want:
+            raise TestError("codegraph 按钮 %s 文案=%r，期望 %r" % (k, ctrl.get(k), want))
 
 
 def case_vfts_status():
-    """K6（原「索引进度对话框」迁移）：Vfts 全文索引页的状态/统计呈现。
+    """K6 代码知识库（vfts 段）：插件页 iframe 渲染 + 控件/引擎状态入口齐备。
 
-    旧链路 `codegraph-index-status-open` + `.codegraph-config-preview`（状态栏图标 → 索引进度对话框）
-    已整体移除（全仓无消费者，statusbar 仅保留设置入口）→ 改为断言现行「索引进度/状态」的
-    可见承载：Vfts 页签状态文案 + 就绪态下的统计明细（已索引文件/分块数/分词器/生效扩展名）。
+    同 K5 口径（D-71 合并页签）。原主仓 `.vf-state-text` 状态文案 + `.vf-stat` 统计明细已随
+    VftsConfig.vue 下线 → 等价断言“状态可观测”：`vfStatus`（引擎状态）与 `loadStatus`
+    （读取状态，含 vfts_status）入口齐备；统计真值由 `run_index_gate` G9 覆盖。
     """
-    open_project_cfg()
-    if switch_tab(r".*Vfts.*") != "ok":
-        raise TestError("未找到 Vfts 全文索引页签")
-    if not wait_el(".vf-state-text"):
-        raise TestError("Vfts 页未渲染状态文案")
-    state = (eval_js("(document.querySelector('.vf-state-text')||{}).textContent") or "").strip()
-    if not state:
-        raise TestError("Vfts 状态文案为空")
-    if not any(w in state for w in INDEX_STATE_WORDS):
-        raise TestError(f"Vfts 状态文案异常: {state!r}")
-    if "就绪" in state or "ready" in state.lower():
-        stats = eval_js("JSON.stringify([...document.querySelectorAll('.vf-stat')].map(e => e.textContent.trim()))") or []
-        joined = " | ".join(stats if isinstance(stats, list) else [str(stats)])
-        for k in ("已索引文件", "分块数", "分词器", "生效扩展名"):
-            if k not in joined:
-                raise TestError(f"Vfts 就绪态缺统计项 {k}: {joined[:200]!r}")
+    wd = open_code_kb_tab()
+    txt = iframe_scope("return d.body.textContent||'';") or ""
+    for want in ("全文检索（vfts）", "启用 vfts", "索引 Office / PDF", "文档单文件上限（MB）"):
+        if want not in txt:
+            raise TestError("代码知识库 vfts 段缺文案 %r（workdir=%r）" % (want, wd))
+    ctrl = iframe_scope("""return JSON.stringify({
+      enabled: !!d.getElementById('vfEnabled'), exts: !!d.getElementById('vfExts'),
+      skip: !!d.getElementById('vfSkip'), gitignore: !!d.getElementById('vfGitignore'),
+      docs: !!d.getElementById('vfDocs'), docmax: !!d.getElementById('vfDocMaxMB'),
+      save: ((d.getElementById('vfSave')||{}).textContent||'').trim(),
+      status: ((d.getElementById('vfStatus')||{}).textContent||'').trim()});""")
+    if not isinstance(ctrl, dict):
+        raise TestError("vfts 控件探测失败：%r" % (ctrl,))
+    miss = [k for k in ("enabled", "exts", "skip", "gitignore", "docs", "docmax") if not ctrl.get(k)]
+    if miss:
+        raise TestError("vfts 缺控件 %r：%r" % (miss, ctrl))
+    if ctrl.get("save") != "保存并应用" or ctrl.get("status") != "引擎状态":
+        raise TestError("vfts 按钮文案不符（save=%r status=%r）" % (ctrl.get("save"), ctrl.get("status")))
 
 
 def main():
@@ -284,12 +334,12 @@ def main():
     c.console(clear=True)
     total = 0
     ok = 0
-    total += 1; ok += run_case("K1 项目配置 9 页签（安全/上下文管理/CodeGraph/Vfts/文件历史/文件树/群聊/日志/配置导入导出）", case_tabs)
+    total += 1; ok += run_case("K1 项目配置 8 页签（安全/上下文管理/代码知识库/文件历史/文件树/群聊/日志/配置导入导出）", case_tabs)
     total += 1; ok += run_case("K2 安全页签：添加信任目录", case_security)
     total += 1; ok += run_case("K3 上下文管理：输入 + 快速阈值 + 保存", case_context)
     total += 1; ok += run_case("K4 总结提示词自动加载 + 来源标注 + 重置", case_summary_prompt_load)
-    total += 1; ok += run_case("K5 CodeGraph 索引：状态 + 控件", case_codegraph)
-    total += 1; ok += run_case("K6 Vfts 索引状态/统计呈现", case_vfts_status)
+    total += 1; ok += run_case("K5 代码知识库（codegraph）：插件页文案/控件/状态入口 + workdir 回填", case_codegraph)
+    total += 1; ok += run_case("K6 代码知识库（vfts）：插件页文案/控件/引擎状态入口", case_vfts_status)
     # 与其它套件统一口径：计数汇总 + 退出码（0=全过）——见 51-FP与测试映射 §1
     print("\n项目配置断言：%d/%d 通过, %d 失败" % (ok, total, total - ok), flush=True)
     print("RESULT:", ok == total)

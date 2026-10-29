@@ -1,8 +1,12 @@
 import { ref, computed, h, defineAsyncComponent } from 'vue'
 import { dialog } from '../components/dialog'
+import { message } from '../components/ui'
 import { i18n } from '../plugins/i18n'
 import mq from './mq'
 import { EventNames } from '../events/event-names'
+import { parseViewRoute, VIEW_MAIN } from './viewRoute.js'
+import { windowForSession } from './chatWindows.js'
+import { getSession, setActiveSessionID } from '../api/session'
 
 // 懒加载：仅在出现 AskUser 问题弹窗时加载
 const AskUserContent = defineAsyncComponent(() => import('../views/chat/AskUserContent.vue'))
@@ -38,6 +42,16 @@ class AskUserManager {
 
   active = computed(() => this.current.value !== null || this.busy.size > 0)
   pending = computed(() => this.queue.value.length)
+
+  /**
+   * 本窗口是否主窗口（AskUser S1-1）：判据复用既有「视图分派」叶子模块
+   * （`utils/viewRoute.js` → URL 唯一判据；`#chat` + `session-id` = 对话窗口）。
+   * 取不到 location（非浏览器环境）→ 按非主窗口处理（不渲染「聊一聊」）。
+   */
+  get canChat() {
+    if (typeof window === 'undefined' || !window.location) return false
+    return parseViewRoute(window.location.search, window.location.hash).view === VIEW_MAIN
+  }
 
   enqueue(data) {
     // 新批次开始（无 current / 无 busy / 队列空 / 无 pending timer）：
@@ -77,6 +91,10 @@ class AskUserManager {
       recommended: Array.isArray(data.recommended) ? data.recommended : [],
       subSessionId: data.subSessionId || data.sub_session_id || '',
       sessionId: data.sessionId || data.session_id || data.subSessionId || data.sub_session_id || '',
+      // 会话标识（61 §4.3 session-ask.dialog_id，§0.6 必带；AskUser S1-3/S1-4）：
+      // 提问下发时的 `dialog_id`，作答时**原样回带**（`ask-user-reply.dialog_id`），
+      // 「聊一聊」也用它定位 (dialog_id, session)。
+      dialogId: data.dialogId || data.dialog_id || '',
       // deadline 仅用于 UI 提示（超时后弹窗提示"回复将作为新消息发送"），不做路由判断。
       deadline: data.deadline && data.deadline > 0 ? data.deadline : 0,
       scenarioId: data.scenarioId || data.scenario_id || '',
@@ -118,9 +136,16 @@ class AskUserManager {
       subSessionId: item.subSessionId,
       sessionId: item.sessionId,
       deadline: item.deadline,
+      // 「聊一聊」出口（AskUser S1-1/§4.3）：**仅主窗口**提供 —— 该动作要在本窗口切到
+      // 发起会话、把问题引用放进本窗口输入框；对话窗口（URL `#chat`，会话由 URL 固定绑定，
+      // 24 §6.2）不提供。判定复用既有「视图分派」叶子模块（URL 唯一判据，不新造窗口判定）。
+      canChat: this.canChat,
       onAnswer: (answer) => {
         this.submitAnswer(item, answer)
         this.closeAndAdvance(item)
+      },
+      onChat: () => {
+        this.chatAbout(item)
       },
       onSkip: () => {
         // 跳过：不回答（不返回）。分两种场景（两难兼顾）：
@@ -172,6 +197,9 @@ class AskUserManager {
       // 例外：问题数不定（1..N），保持内容自适应高度，不套用弹窗默认高度
       height: 'auto',
       width: 480,
+      // ask 弹窗居中于**屏幕工作区**（AskUser S1-6 / 设计 §4.6）：非窗口内居中、
+      // 不记忆上次拖拽位置、每次弹出重新居中（纯计算见 utils/dialogPosition.js）。
+      centerOnScreen: true,
     })
     this.currentHandle.value = handle
   }
@@ -200,7 +228,7 @@ class AskUserManager {
     }
   }
 
-  // 提交路径（20-gui）：发 ask-user-reply 事件（{ask_id, answer, custom}），
+  // 提交路径（20-gui）：发 ask-user-reply 事件（{ask_id, answer, custom, dialog_id}），
   // server 按 ask 状态权威路由——活跃回填当前 turn；已超时关闭则转为普通 user 消息（新 turn）。
   // 前端不再判断 deadline、不再 sendQueue 兜底、不再发 askUserQueued。
   submitAnswer(item, answer) {
@@ -210,7 +238,92 @@ class AskUserManager {
       ask_id: item.askId,
       answer: answer,
       custom: custom,
+      // 会话标识（61 §4.2 ask-user-reply.dialog_id，§0.6 必带；AskUser S1-4）：
+      // **原样回带** `session-ask` 下发的同一值（不重算、不编造）。
+      dialog_id: item.dialogId || '',
     })
+  }
+
+  /**
+   * 「聊一聊」出口（AskUser S1-2 / 设计 §4.3 · §4.4 ②）：**仅主窗口**。
+   *
+   * 语义 =「先讨论，不直接作答」：
+   *   ① 按 ask 的 `(dialog_id, session)` 定位发起会话；
+   *   ② 当前窗口不是该会话 → 先切过去（复用既有链路：该会话已由独立对话窗口承载 →
+   *      `gui.window.open-chat` 幂等激活该窗口（24 §1.1 I-1 归属语义）；否则主窗口切会话
+   *      = `data-session-active-set` + `session-changed`，与 SessionsPane / ChatPanel 同一条）；
+   *   ③ 以 **defer 语义**回填该 ask（文案 `chat.ask_user_chat_defer_answer`）：不把答案当最终
+   *      作答，而是让本轮结束、把问题交回用户继续对话。**不改 `ask-user-reply` 字段**——
+   *      设计 §8 未决项未经确认不得新增字段，defer 语义由 `answer` 文案表达；
+   *   ④ 把**问题引用**放进输入框（`chat-insert-text`，可编辑；**不自动发送**）。
+   *
+   * 边界：会话已不存在 / 已被删除 → 不炸，可见提示并保留弹窗；重复点击幂等（`item.chatting`）。
+   */
+  async chatAbout(item) {
+    if (!item || !this.canChat) return
+    if (item.chatting) return
+    item.chatting = true
+    const t = (k, p) => i18n.global.t(k, p)
+    try {
+      const sid = item.sessionId || ''
+      if (!sid) {
+        message.error(t('chat.ask_user_chat_no_session'))
+        return
+      }
+      let exists = false
+      try {
+        exists = !!(await getSession(sid))
+      } catch (e) {
+        console.warn('[askUserManager] 聊一聊：会话查询失败:', e)
+        exists = false
+      }
+      if (!exists) {
+        // 会话已不存在 / 已被删除：可见提示，弹窗保留（用户仍可选择其它出口）。
+        message.error(t('chat.ask_user_chat_session_missing', { id: sid.slice(0, 8) }))
+        return
+      }
+      // ② 切到发起会话（含对话窗口归属语义）
+      await this.revealSession(sid)
+      // ③ defer 语义回填（本轮结束，问题交回用户）
+      this.submitAnswer(item, t('chat.ask_user_chat_defer_answer'))
+      this.closeAndAdvance(item)
+      // ④ 问题引用入输入框（不自动发送）
+      mq.emit(EventNames.chatInsertText, {
+        text: t('chat.ask_user_chat_quote', { question: item.question || '' }) + '\n',
+      })
+    } finally {
+      item.chatting = false
+    }
+  }
+
+  /**
+   * 切到某会话（「聊一聊」第 ② 步）：已由独立对话窗口承载 → 激活该窗口（不抢主窗口，
+   * I-1 ②）；否则在主窗口切换（`data-session-active-set` + `session-changed`，广播驱动
+   * 会话树/任务区刷新）。任一步失败 → 仅告警，不阻断后续回填（用户仍能看到输入框）。
+   */
+  async revealSession(sessionId) {
+    let windows = []
+    try {
+      const env = await mq.emit(EventNames.guiWindowList, {})
+      const r = env && env.backend && env.backend.result
+      windows = r && Array.isArray(r.windows) ? r.windows : []
+    } catch (e) {
+      console.warn('[askUserManager] 聊一聊：gui.window.list 失败（按主窗口切换）:', e)
+    }
+    if (windowForSession(windows, sessionId)) {
+      try {
+        await mq.emit(EventNames.guiWindowOpenChat, { session_id: sessionId })
+        return
+      } catch (e) {
+        console.warn('[askUserManager] 聊一聊：激活对话窗口失败（回落主窗口切换）:', e)
+      }
+    }
+    try {
+      await setActiveSessionID(sessionId)
+    } catch (e) {
+      console.warn('[askUserManager] 聊一聊：data-session-active-set 失败:', e)
+    }
+    mq.emit(EventNames.sessionChanged, { session_id: sessionId })
   }
 
   cancelAll() {

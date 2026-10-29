@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-chat"
-	"github.com/lsong98sh/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
+	"github.com/lsong98sh/chonkpilot-agent/router"
 )
 
 // 超时分级（对齐 llm-error-handling.md §一）：首字节 ResponseTimeout / chunk 间隔 StreamTimeout。
@@ -27,7 +27,7 @@ const (
 // `chonkpilot-chat` 的 `Message` / `ToolCall`；与 data.ChatMsg（快照 / 落库行）的互转
 // 只在 chatadapter.go（`ChatMessageFromData` / `ChatMessageToData`）。
 // data.ChatMsg 含 Kind 标记（user 消息 text=用户提问 / notify=工具完成通知），
-// 压缩模块（chonkpilot-plugin-compress）据此在快照内定位保留段、排除工具通知。
+// 压缩（内建，原 chonkpilot-plugin-compress 已删除）据此在快照内定位保留段、排除工具通知。
 type ChatMsg = chat.Message
 type ToolCall = chat.ToolCall
 

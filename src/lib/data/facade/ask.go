@@ -27,7 +27,7 @@ type AskPendingRequest struct {
 // AskPendingItem 一条 ask 行（来源 = messages 行）。
 type AskPendingItem struct {
 	AskID string `json:"ask_id"`
-	// DialogID 该 ask 所在对话（一树一库时回带；旧布局不写键）。
+	// DialogID 该 ask 所在对话（一树一库：恒带出）。
 	DialogID   string `json:"dialog_id,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	TurnID     string `json:"turn_id,omitempty"`

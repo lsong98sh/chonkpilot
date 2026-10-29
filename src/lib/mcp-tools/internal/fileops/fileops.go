@@ -19,6 +19,8 @@ import (
 	"golang.org/x/text/encoding/traditionalchinese"
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
+
+	"github.com/lsong98sh/chonkpilot-util/textx"
 )
 
 // ResolvePath 解析并强校验文件操作参数路径（R-11，file_read/file_find/file_diff/filesys_run
@@ -89,24 +91,12 @@ func (f *WalkFilter) IgnoreFile(name string) bool {
 
 // HasUTF16BOM reports whether data starts with a UTF-16 LE/BE BOM.
 func HasUTF16BOM(data []byte) bool {
-	return len(data) >= 2 && ((data[0] == 0xFF && data[1] == 0xFE) || (data[0] == 0xFE && data[1] == 0xFF))
+	return textx.HasUTF16BOM(data)
 }
 
 // IsBinaryBytes 判定二进制：含 0x00 即二进制，但 UTF-16（BOM）是文本。
 func IsBinaryBytes(data []byte) bool {
-	if HasUTF16BOM(data) {
-		return false
-	}
-	checkLen := len(data)
-	if checkLen > 8192 {
-		checkLen = 8192
-	}
-	for _, b := range data[:checkLen] {
-		if b == 0 {
-			return true
-		}
-	}
-	return false
+	return textx.IsBinary(data)
 }
 
 // DecodeText 按 BOM/UTF-8 自动解码文本；UTF-16 BOM 优先，其次 UTF-8 校验，

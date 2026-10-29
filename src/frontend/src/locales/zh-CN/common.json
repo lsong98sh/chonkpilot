@@ -158,6 +158,7 @@
   "dir_picker_up": "上一级",
   "dir_picker_empty": "该目录下没有可选的子目录",
   "instance_claiming": "正在初始化（认领实例）…",
+  "plugins_initializing": "插件初始化中…",
   "instance_unauthorized": "未登录或会话已失效，请重新登录。",
   "instance_forbidden": "无权访问该工作目录：请改用有权限的目录后重试。",
   "instance_failed": "实例认领失败：请查看日志后重试。",

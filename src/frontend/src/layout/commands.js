@@ -49,9 +49,9 @@ export const PREVIEW_TAB_TARGETS = [
   'scenario',
   'memory-user-pref',
   // 长任务详情页（STB-1）：状态栏条目 → preview 功能页（零新增消息主题）
+  // 注：索引进度详情已归插件（PLUGIN-UI-2），`status-index` 不再存在。
   'status-memory',
   'status-compress',
-  'status-index',
   // 插件管理页（PLUGIN-1）：插件栏 → preview 功能页
   'plugin-manager',
 ]

@@ -1,6 +1,6 @@
 # 63 · DSL语法（ChonkPilot DSL 核心规范）
 
-> ⛔ **本篇整体作废（2026-10-21，GATEWAY-2 L1「DSL 退役」）** —— `src/lib/dsl`、`build-dsl-executor.ps1`、`chonkpilot-dsl-executor.exe`、`dsl_run` 以及 `filesys_run` / `desktop_run` / `browser_run` 三个容器工具**已全部从仓库删除**；`plugin/v1/dsl.*` 一并移除。**本文件仅作历史存档**（保留供追溯语法演进），**不得**再作为实现依据。现行工具面见 [27-mcp-tools](../20-modules/27-mcp-tools.md) · [3A-工具与编排](../30-function-points/3A-工具与编排.md)；文件域能力 = 11 个 `file_*` 工具，脚本 / 网络 = `script_run` / `web_fetch`。
+> ⛔ **本篇整体作废（2026-10-21，GATEWAY-2 L1「DSL 退役」）** —— `src/lib/dsl`、`build-dsl-executor.ps1`、`chonkpilot-dsl-executor.exe`、`dsl_run` 以及 `filesys_run` / `desktop_run` / `browser_run` 三个容器工具**已全部从仓库删除**；`plugin/v1/dsl.*` 一并移除。**本文件仅作历史存档**（保留供追溯语法演进），**不得**再作为实现依据。现行工具面见 [27-mcp-tools](../20-modules/27-mcp-tools.md) · [3A-工具与编排](../30-function-points/3A-工具与编排.md)；文件域能力 = 11 个 `file_*` 工具，脚本 / 网络 = `task_run`（task 插件，2026-10-28 起；原 `script_run`）/ `web_fetch`。
 >
 > 状态：🗑️ **已作废（历史存档）**
 > 关联：[24-lib](../20-modules/24-lib.md)（`dsl` 包）· [72-工具开发规范](../70-conventions/72-工具开发规范.md) · [27-mcp-tools](../20-modules/27-mcp-tools.md) · [3A-工具与编排](../30-function-points/3A-工具与编排.md)

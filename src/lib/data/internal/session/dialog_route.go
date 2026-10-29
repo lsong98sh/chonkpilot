@@ -1,8 +1,8 @@
 // dialog_route.go —— session 域按 `dialog_id` 路由（SESSION-COMP-1 P3-1b）。
 //
 // 口径（61 §0.6 / 2G §3.3）：
-//   - `dialog_id` 非空 → 只操作对话库（一树一库）；库缺失 → 报错（不静默建空库、不回退 prjusr）。
-//   - `dialog_id` 空 → 旧布局（prjusr `sessions` + `sessions/<hex>/`），行为逐字不变（过渡期兼容）。
+//   - 会话类调用**一律**带 `dialog_id`，只操作对话库（一树一库）；库缺失 → 报错
+//     （不静默建空库、不回退 prjusr）。旧布局已整体退场（DATA-OPT-1 ②），无过渡分支。
 //   - **主 session 即对话**：删主 session = 删整个对话（目录行 + 库文件）；子会话删除只级联自身数据。
 package session
 
@@ -18,16 +18,28 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 	"github.com/chonkpilot/chonkpilot-data/internal/storeadapter"
-	"github.com/lsong98sh/chonkpilot-session/component"
+	"github.com/lsong98sh/chonkpilot-agent/session/component"
 )
 
 // contentDB 选内容库（turns / messages / snapshot 所在层）：
-// `dialog_id` 非空 → 对话库（缺失即报错）；空 → prjusr（旧布局，无释放）。
-//
-// P3-4d：`session.db.shard` 生效时缺 `dialog_id` → `dialog_required` 明确失败
-// （开关层级 = prj 库，故由 Service 按实例解析后传入）。
-func (s *Service) contentDB(prj *data.DB, dialogID, instanceID string, scope facade.Scope) (*data.DB, func(), error) {
-	return kernel.ContentDB(prj, dialogID, s.ShardOn(instanceID, scope))
+// `dialog_id` 非空 → 对话库（缺失即报错）；空 → `dialog_required` 明确失败。
+func (s *Service) contentDB(prj *data.DB, dialogID string) (*data.DB, func(), error) {
+	return kernel.ContentDB(prj, dialogID)
+}
+
+// openContentDB 是「解析实例 → 打开内容（对话）库」的**唯一实现**（S-2 · DATA-OPT-1 P3）：
+// 返回 prjusr 库（部分域还要读 `dialogs` / 快照）与对话库 + 释放句柄，调用方 `defer release()`。
+// 任一步失败原样上抛（错误文案不变）。
+func (s *Service) openContentDB(instanceID string, scope facade.Scope, dialogID string) (prj, db *data.DB, release func(), err error) {
+	prj, err = s.PrjUsrFor(instanceID, scope)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	db, release, err = s.contentDB(prj, dialogID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return prj, db, release, nil
 }
 
 // sessionEnsureInDialog 幂等建会话（写对话库 `sessions` 表；已存在不覆盖、不重复广播）。
@@ -120,9 +132,13 @@ func (s *Service) sessionTitleInDialog(prj *data.DB, req facade.SessionTitleRequ
 func (s *Service) sessionDeleteInDialog(prj *data.DB, req facade.SessionDeleteRequest) (facade.SessionDeleteResponse, error) {
 	sdb, release, err := data.OpenExistingDialog(prj.Path(), req.DialogID)
 	if err != nil {
-		// 库已不存在 = 已被删除（幂等），但配置里的活动态仍需清理。
-		if clearActiveIfMatches(prj, req.SessionID); err != nil {
-			return facade.SessionDeleteResponse{}, err
+		// 库已不存在 = 已被删除（幂等）→ 只做**补偿**（清活动位）后返回成功。
+		// 两库无跨库事务：删除（对话库）与清活动位（宿主库）分两次提交，此处是补偿点。
+		// 判错必须用 `clearActiveIfMatches` 自己的返回值，**不得**复用上面的 open err
+		// （2026-10-28 修复：原写法 `if clearActiveIfMatches(...); err != nil` 复用了 open err
+		//  → 该幂等分支恒返回「对话库不存在」，补偿清空永不执行）。
+		if cerr := clearActiveIfMatches(prj, req.SessionID); cerr != nil {
+			return facade.SessionDeleteResponse{}, cerr
 		}
 		return facade.SessionDeleteResponse{OK: true}, nil
 	}
@@ -133,6 +149,12 @@ func (s *Service) sessionDeleteInDialog(prj *data.DB, req facade.SessionDeleteRe
 		return facade.SessionDeleteResponse{}, err
 	}
 	if !ok {
+		// 会话不存在视为成功（幂等），但 **inbox 级联仍执行**：历史孤儿行（会话先被删/旧版本
+		// 遗留）在此收敛，避免 `session_id` 过滤下永不被消费的无主行长期占空间。
+		if err := deleteBySessionIn(sdb, "inbox_items", req.SessionID); err != nil {
+			release()
+			return facade.SessionDeleteResponse{}, err
+		}
 		release()
 		if err := clearActiveIfMatches(prj, req.SessionID); err != nil {
 			return facade.SessionDeleteResponse{}, err
@@ -232,20 +254,28 @@ func (s *Service) SessionFork(req facade.SessionForkRequest) (facade.SessionFork
 	return facade.SessionForkResponse{OK: true, DialogID: res.DialogID, SessionID: res.SessionID}, nil
 }
 
-// deleteBySessionIn 按 session_id 删某表的行（对话库内；量级小，全扫可接受）。
+// deleteBySessionIn 按 session_id 删某表的行（对话库内；量级小，全桶过滤）。
+//
+// F-4（DATA-OPT-1 P4）：原实现逐行 `Delete`（每行一个写事务）→ **单事务批删**（读在同一写事务
+// 内一次流式完成；键先收集再删）。删除集合与顺序无关，结果集逐项不变；任一行失败整体回滚。
 func deleteBySessionIn(db *data.DB, table, sessionID string) error {
-	recs, _, err := db.Table(table).Query(data.Query{Where: data.Record{"session_id": sessionID}})
-	if err != nil {
-		return fmt.Errorf("query %s: %w", table, err)
-	}
-	var errs []error
-	for _, r := range recs {
-		k := kernel.Sval(r[data.KeyField])
-		if err := db.Table(table).Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
-			errs = append(errs, fmt.Errorf("delete %s/%s: %w", table, k, err))
+	return db.Update(func(tx *data.Tx) error {
+		var keys []string
+		if err := tx.ForEach(table, func(k string, rec data.Record) error {
+			if kernel.Sval(rec["session_id"]) == sessionID {
+				keys = append(keys, k)
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("query %s: %w", table, err)
 		}
-	}
-	return errors.Join(errs...)
+		for _, k := range keys {
+			if err := tx.Delete(table, k); err != nil && !errors.Is(err, data.ErrNotFound) {
+				return fmt.Errorf("delete %s/%s: %w", table, k, err)
+			}
+		}
+		return nil
+	})
 }
 
 // clearActiveIfMatches 若活动会话指向被删会话则清空（活动态存 prj 配置）。

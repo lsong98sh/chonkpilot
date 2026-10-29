@@ -141,6 +141,7 @@ function topDialogId() {
 import { ref, computed, reactive, onMounted, onUnmounted } from 'vue'
 import { Button } from '../ui'
 import { DefaultDialogOptions } from '../../types/dialog'
+import { computeScreenCenteredPosition } from '../../utils/dialogPosition.js'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 
@@ -177,7 +178,42 @@ const headerRef = ref(null)
 const bodyRef = ref(null)
 
 // Initialize position
+//
+// 居中口径两选一（AskUser S1-6，`docs/ask-user/AskUser专题设计方案.md` §4.6）：
+//   - 缺省（`centerOnScreen=false`）= **窗口内居中**（既有行为，零变化）；
+//   - `centerOnScreen=true` = **屏幕工作区居中**（整个桌面去掉任务栏的可用区正中）：
+//     取 `window.screen.avail*` + `window.screenX/screenY` 换算到视口坐标，再在视口内 clamp。
+//     **不记忆上次拖拽位置**（无 localStorage / 无持久化），每次弹出都重新居中。
+// 纯计算在 `utils/dialogPosition.js`（叶子模块，可直跑单测）。
+function screenSnapshot() {
+  const s = (typeof window !== 'undefined' && window.screen) || {}
+  return {
+    availLeft: s.availLeft,
+    availTop: s.availTop,
+    availWidth: s.availWidth,
+    availHeight: s.availHeight,
+    screenX: typeof window !== 'undefined' ? window.screenX : undefined,
+    screenY: typeof window !== 'undefined' ? window.screenY : undefined,
+    outerWidth: typeof window !== 'undefined' ? window.outerWidth : undefined,
+    outerHeight: typeof window !== 'undefined' ? window.outerHeight : undefined,
+  }
+}
+
+function viewportSize() {
+  return { innerWidth: window.innerWidth, innerHeight: window.innerHeight }
+}
+
 function initPosition() {
+  if (resolvedOptions.value.centerOnScreen) {
+    // 初始按**声明尺寸**估算（height='auto' 时用 400 兜底）；真实尺寸在 onMounted /
+    // ResizeObserver 里由 centerByMeasuredSize 按实测值再居中一次（同一次弹出内收敛）。
+    const w = typeof size.width === 'number' ? size.width : 640
+    const h = typeof size.height === 'number' ? size.height : 400
+    const p = computeScreenCenteredPosition({ width: w, height: h, viewport: viewportSize(), screen: screenSnapshot() })
+    position.x = p.left
+    position.y = p.top
+    return
+  }
   if (resolvedOptions.value.position) {
     position.x = resolvedOptions.value.position.x
     position.y = resolvedOptions.value.position.y
@@ -196,7 +232,7 @@ initPosition()
 // 视口内自动居中：initPosition 只能按声明尺寸估算（height 常为 auto/默认 400），
 // 实测（含 maxHeight clamp 后）的真实高度后重新居中，确保 rect.bottom ≤ 视口高、rect.top ≥ 0。
 // 用户一旦拖拽即停止自动校正（避免与其位置操作打架）。
-let autoCentered = !resolvedOptions.value.position
+let autoCentered = resolvedOptions.value.centerOnScreen || !resolvedOptions.value.position
 
 function centerByMeasuredSize() {
   if (!autoCentered) return
@@ -207,6 +243,13 @@ function centerByMeasuredSize() {
   const h = el.offsetHeight
   if (!w || !h) return
   const margin = 20
+  if (resolvedOptions.value.centerOnScreen) {
+    // 屏幕工作区居中（实测尺寸）——同样在视口内 clamp 兜底。
+    const p = computeScreenCenteredPosition({ width: w, height: h, viewport: viewportSize(), screen: screenSnapshot() })
+    position.x = p.left
+    position.y = p.top
+    return
+  }
   position.x = Math.max(0, Math.round((window.innerWidth - w) / 2))
   // clamp：top 不小于安全边距，且保证下缘不越界
   const centeredY = Math.round((window.innerHeight - h) / 2)

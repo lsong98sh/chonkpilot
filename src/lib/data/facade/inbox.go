@@ -28,7 +28,7 @@ type InboxItem struct {
 // InboxAppendRequest 写入一条待处理发送。
 type InboxAppendRequest struct {
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID       string `json:"dialog_id,omitempty"`
 	SessionID      string `json:"session_id"`
 	TurnID         string `json:"turn_id,omitempty"`
@@ -53,7 +53,7 @@ type InboxAppendResponse struct {
 // InboxListRequest 按会话读 inbox 项（status 缺省 = pending，按 created_at 升序）。
 type InboxListRequest struct {
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（P3 路由；非空 → 只读该对话库，空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID  string `json:"dialog_id,omitempty"`
 	SessionID string `json:"session_id"`
 	Status    string `json:"status,omitempty"`
@@ -69,7 +69,7 @@ type InboxListResponse struct {
 // InboxUpdateRequest 更新 inbox 项；空字段 = 不改。
 type InboxUpdateRequest struct {
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	ID       string `json:"id"`
 	Status   string `json:"status,omitempty"`
@@ -90,7 +90,7 @@ type InboxUpdateResponse struct {
 // 幂等：同一 InboxID 重复提交 → 返回既有消息主键（不重复落库）。
 type InboxCommitRequest struct {
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	InboxID  string `json:"inbox_id"`
 	TurnID   string `json:"turn_id"`

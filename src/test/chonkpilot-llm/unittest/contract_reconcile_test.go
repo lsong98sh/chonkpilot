@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // ── 契约结构（与 61-messages.schema.json 对齐）─────────────────────────────

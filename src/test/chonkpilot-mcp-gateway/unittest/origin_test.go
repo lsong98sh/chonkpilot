@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	mcpgw "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgw "github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
 )
 

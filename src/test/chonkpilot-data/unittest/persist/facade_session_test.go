@@ -24,7 +24,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // countSessionReqs 统计 session 域全部请求主题上的**请求**条数（应答带 ok 字段 → 排除）。
@@ -80,7 +80,7 @@ func mqCall(t *testing.T, bus mq.Bus, action string, payload map[string]any) map
 // list / get（含不存在）/ history / latest / active-get / content。
 func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
-	seedSessions(t, bus)
+	d1, _, _ := seedSessions(t, bus)
 	api := inline.New(bus)
 
 	// ① list：门面 DTO → wire 结果 == MQ 应答 result（同一份翻译 ⇒ 逐字一致）
@@ -96,30 +96,30 @@ func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	}
 
 	// ② get：命中 + 不存在（Found=false ↔ data:null）
-	get, err := api.SessionGet(facade.SessionGetRequest{InstanceID: facadeInstance, SessionID: "s1"})
+	get, err := api.SessionGet(facade.SessionGetRequest{InstanceID: facadeInstance, SessionID: "s1", DialogID: d1})
 	if err != nil || !get.Found {
 		t.Fatalf("facade SessionGet(s1): found=%v err=%v", get.Found, err)
 	}
-	if got := normJSON(t, wire.SessionGetResult(get.Found, get.Session)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "get", map[string]any{"id": "s1"}))) {
-		t.Fatalf("两路径 get 应答不一致：\n门面=%+v\nMQ  =%+v", got, mqCall(t, bus, "get", map[string]any{"id": "s1"}))
+	if got := normJSON(t, wire.SessionGetResult(get.Found, get.Session)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "get", map[string]any{"id": "s1", "dialog_id": d1}))) {
+		t.Fatalf("两路径 get 应答不一致：\n门面=%+v\nMQ  =%+v", got, mqCall(t, bus, "get", map[string]any{"id": "s1", "dialog_id": d1}))
 	}
-	ghost, err := api.SessionGet(facade.SessionGetRequest{InstanceID: facadeInstance, SessionID: "ghost"})
+	ghost, err := api.SessionGet(facade.SessionGetRequest{InstanceID: facadeInstance, SessionID: "ghost", DialogID: d1})
 	if err != nil || ghost.Found {
 		t.Fatalf("不存在会话应 Found=false：%+v err=%v", ghost, err)
 	}
-	mqGhost := mqCall(t, bus, "get", map[string]any{"id": "ghost"})
+	mqGhost := mqCall(t, bus, "get", map[string]any{"id": "ghost", "dialog_id": d1})
 	if v, ok := mqGhost["data"]; !ok || v != nil {
 		t.Fatalf("MQ 不存在会话应 {data:null}：%+v", mqGhost)
 	}
 
 	// ③ history：turns/messages/has_more
-	hist, err := api.TurnHistory(facade.TurnHistoryRequest{InstanceID: facadeInstance, SessionID: "s1"})
+	hist, err := api.TurnHistory(facade.TurnHistoryRequest{InstanceID: facadeInstance, SessionID: "s1", DialogID: d1})
 	if err != nil || len(hist.Turns) != 2 || len(hist.Messages) != 3 || hist.HasMore {
 		t.Fatalf("facade TurnHistory 内容不符：%+v err=%v", hist, err)
 	}
 	histWire := normJSON(t, wire.TurnHistoryResult(hist))
-	if !reflect.DeepEqual(histWire, normJSON(t, mqCall(t, bus, "history", map[string]any{"session_id": "s1"}))) {
-		t.Fatalf("两路径 history 应答不一致：\n门面=%+v\nMQ  =%+v", histWire, mqCall(t, bus, "history", map[string]any{"session_id": "s1"}))
+	if !reflect.DeepEqual(histWire, normJSON(t, mqCall(t, bus, "history", map[string]any{"session_id": "s1", "dialog_id": d1}))) {
+		t.Fatalf("两路径 history 应答不一致：\n门面=%+v\nMQ  =%+v", histWire, mqCall(t, bus, "history", map[string]any{"session_id": "s1", "dialog_id": d1}))
 	}
 
 	// ④ latest / active-get（未设置 → 回落最近活动顶层会话 s2）
@@ -127,7 +127,7 @@ func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	if err != nil || latest.SessionID != "s2" {
 		t.Fatalf("facade SessionLatest=%q err=%v", latest.SessionID, err)
 	}
-	if got := normJSON(t, wire.SessionIDResult(latest.SessionID)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "latest", map[string]any{}))) {
+	if got := normJSON(t, wire.SessionLatestResult(latest.SessionID, latest.DialogID)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "latest", map[string]any{}))) {
 		t.Fatalf("两路径 latest 应答不一致：%+v", got)
 	}
 	act, err := api.SessionActiveGet(facade.SessionActiveGetRequest{InstanceID: facadeInstance})
@@ -141,14 +141,14 @@ func TestFacadeSessionReadPathsEqualWire(t *testing.T) {
 	// ⑤ content：三 key 形态（message:/tool_call:/tool_result:）两路径一致
 	keys := []string{"message:m1", "tool_call:tc1", "tool_result:missing"}
 	content, err := api.MessageContent(facade.MessageContentRequest{
-		InstanceID: facadeInstance, SessionID: "s1", Keys: keys,
+		InstanceID: facadeInstance, SessionID: "s1", DialogID: d1, Keys: keys,
 	})
 	if err != nil || content.Contents["message:m1"] != "hello" || content.Contents["tool_call:tc1"] != `{"x":1}` {
 		t.Fatalf("facade MessageContent 内容不符：%+v err=%v", content.Contents, err)
 	}
 	contentWire := normJSON(t, wire.MessageContentResult(content.Contents))
 	if !reflect.DeepEqual(contentWire, normJSON(t, mqCall(t, bus, "content", map[string]any{
-		"session_id": "s1", "keys": []any{"message:m1", "tool_call:tc1", "tool_result:missing"},
+		"session_id": "s1", "dialog_id": d1, "keys": []any{"message:m1", "tool_call:tc1", "tool_result:missing"},
 	}))) {
 		t.Fatalf("两路径 content 应答不一致：%+v", contentWire)
 	}
@@ -162,25 +162,32 @@ func TestFacadeSessionWritesCrossReadable(t *testing.T) {
 	regInstance(t, bus)
 	api := inline.New(bus)
 
-	// ① 门面写会话/轮次/消息 → MQ 读（history/load-messages/content）
-	if _, err := api.SessionEnsure(facade.SessionEnsureRequest{
+	// 根会话自举：不带 dialog_id → 确定性建对话并回带 id（后续调用一律带它）。
+	ens, err := api.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: facadeInstance, SessionID: "s-fac",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("facade SessionEnsure: %v", err)
 	}
+	d1 := ens.DialogID
+	if d1 == "" {
+		t.Fatal("根会话自举应回带 dialog_id")
+	}
+
+	// ① 门面写会话/轮次/消息 → MQ 读（history/load-messages/content）
 	if _, err := api.TurnEnsure(facade.TurnEnsureRequest{
-		InstanceID: facadeInstance, TurnID: "t-fac", SessionID: "s-fac",
+		InstanceID: facadeInstance, TurnID: "t-fac", SessionID: "s-fac", DialogID: d1,
 	}); err != nil {
 		t.Fatalf("facade TurnEnsure: %v", err)
 	}
 	if _, err := api.MessageAppend(facade.MessageAppendRequest{
-		InstanceID: facadeInstance, TurnID: "t-fac", SessionID: "s-fac",
+		InstanceID: facadeInstance, TurnID: "t-fac", SessionID: "s-fac", DialogID: d1,
 		Message: facade.Message{Role: "user", Kind: "text", Content: "门面提问"},
 	}); err != nil {
 		t.Fatalf("facade MessageAppend: %v", err)
 	}
 	if _, err := api.MessageAppend(facade.MessageAppendRequest{
-		InstanceID: facadeInstance, TurnID: "t-fac", SessionID: "s-fac",
+		InstanceID: facadeInstance, TurnID: "t-fac", SessionID: "s-fac", DialogID: d1,
 		Message: facade.Message{
 			Role: "assistant", Content: "回答",
 			ToolCalls: []facade.ToolCall{{ID: "c1", Type: "function", Name: "tool_x", Arguments: "{}"}},
@@ -188,7 +195,7 @@ func TestFacadeSessionWritesCrossReadable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("facade MessageAppend(assistant): %v", err)
 	}
-	lm := mqCall(t, bus, "load-messages", map[string]any{"turn_id": "t-fac"})
+	lm := mqCall(t, bus, "load-messages", map[string]any{"turn_id": "t-fac", "dialog_id": d1})
 	msgs, _ := lm["messages"].([]any)
 	if len(msgs) != 2 {
 		t.Fatalf("MQ load-messages 应读到门面写入的 2 条：%+v", lm)
@@ -209,32 +216,32 @@ func TestFacadeSessionWritesCrossReadable(t *testing.T) {
 		t.Fatalf("tool_call function 形状变化（应为嵌套 name/arguments）：%+v", tcs[0])
 	}
 	if got := mqCall(t, bus, "content", map[string]any{
-		"session_id": "s-fac", "keys": []any{"message:m1"},
+		"session_id": "s-fac", "dialog_id": d1, "keys": []any{"message:m1"},
 	}); got["contents"] == nil {
 		t.Fatalf("MQ content 应可读门面写入消息：%+v", got)
 	}
 
 	// ② MQ 写（ensure-turn + append-message + set-summary + complete-turn）→ 门面读
-	mqCall(t, bus, "ensure-turn", map[string]any{"turn_id": "t-mq", "session_id": "s-fac"})
-	mqCall(t, bus, "append-message", map[string]any{"turn_id": "t-mq", "msg": map[string]any{
+	mqCall(t, bus, "ensure-turn", map[string]any{"turn_id": "t-mq", "session_id": "s-fac", "dialog_id": d1})
+	mqCall(t, bus, "append-message", map[string]any{"turn_id": "t-mq", "dialog_id": d1, "msg": map[string]any{
 		"role": "assistant", "content": "MQ 回答", "reasoning": "先想一下",
 	}})
-	if got := mqCall(t, bus, "set-summary", map[string]any{"turn_id": "t-mq", "summary": "MQ 摘要"}); got["ok"] != true {
+	if got := mqCall(t, bus, "set-summary", map[string]any{"turn_id": "t-mq", "dialog_id": d1, "summary": "MQ 摘要"}); got["ok"] != true {
 		t.Fatalf("MQ set-summary 应答形状变化：%+v", got)
 	}
 	if got := mqCall(t, bus, "complete-turn", map[string]any{
-		"turn_id": "t-mq", "status": "done", "finish_reason": "stop",
+		"turn_id": "t-mq", "dialog_id": d1, "status": "done", "finish_reason": "stop",
 	}); got["ok"] != true {
 		t.Fatalf("MQ complete-turn 应答形状变化：%+v", got)
 	}
-	loaded, err := api.MessageLoad(facade.MessageLoadRequest{InstanceID: facadeInstance, TurnID: "t-mq"})
+	loaded, err := api.MessageLoad(facade.MessageLoadRequest{InstanceID: facadeInstance, TurnID: "t-mq", DialogID: d1})
 	if err != nil || len(loaded.Messages) != 1 {
 		t.Fatalf("门面 MessageLoad 应读到 MQ 写入：%+v err=%v", loaded, err)
 	}
 	if loaded.Messages[0].Content != "MQ 回答" || loaded.Messages[0].Reasoning != "先想一下" {
 		t.Fatalf("门面读回内容不符（reasoning 应过面）：%+v", loaded.Messages[0])
 	}
-	hist, err := api.TurnHistory(facade.TurnHistoryRequest{InstanceID: facadeInstance, SessionID: "s-fac"})
+	hist, err := api.TurnHistory(facade.TurnHistoryRequest{InstanceID: facadeInstance, SessionID: "s-fac", DialogID: d1})
 	if err != nil {
 		t.Fatalf("facade TurnHistory: %v", err)
 	}
@@ -251,19 +258,19 @@ func TestFacadeSessionWritesCrossReadable(t *testing.T) {
 		t.Fatalf("门面 history 应读回 MQ 写的 summary/finish_reason：%+v", hist.Turns)
 	}
 	// 两路径 history 应答逐字一致（含 summary 指针保真的"有键"语义）
-	if got := normJSON(t, wire.TurnHistoryResult(hist)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "history", map[string]any{"session_id": "s-fac"}))) {
+	if got := normJSON(t, wire.TurnHistoryResult(hist)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "history", map[string]any{"session_id": "s-fac", "dialog_id": d1}))) {
 		t.Fatalf("两路径 history 应答不一致：%+v", got)
 	}
 
 	// ③ context（include_snapshot=false）两路径一致（P3：**只增**伴随数组 turn_tokens 亦须一致）
 	ctxResp, err := api.MessageContext(facade.MessageContextRequest{
-		InstanceID: facadeInstance, SessionID: "s-fac",
+		InstanceID: facadeInstance, SessionID: "s-fac", DialogID: d1,
 	})
 	if err != nil {
 		t.Fatalf("facade MessageContext: %v", err)
 	}
-	if got := normJSON(t, wire.ContextResult(ctxResp.Messages, ctxResp.TurnTokens)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "context", map[string]any{"session_id": "s-fac"}))) {
-		t.Fatalf("两路径 context 应答不一致：\n门面=%+v\nMQ  =%+v", got, mqCall(t, bus, "context", map[string]any{"session_id": "s-fac"}))
+	if got := normJSON(t, wire.ContextResult(ctxResp.Messages, ctxResp.TurnTokens)); !reflect.DeepEqual(got, normJSON(t, mqCall(t, bus, "context", map[string]any{"session_id": "s-fac", "dialog_id": d1}))) {
+		t.Fatalf("两路径 context 应答不一致：\n门面=%+v\nMQ  =%+v", got, mqCall(t, bus, "context", map[string]any{"session_id": "s-fac", "dialog_id": d1}))
 	}
 }
 
@@ -271,33 +278,33 @@ func TestFacadeSessionWritesCrossReadable(t *testing.T) {
 // 遗留轮次清理：两路径语义一致（门面写 → MQ 读，MQ 写 → 门面读）。
 func TestFacadeSessionTitleDeleteActiveAndCleanup(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
-	seedSessions(t, bus)
+	d1, _, _ := seedSessions(t, bus)
 	api := inline.New(bus)
 
 	// ① 门面改名 → MQ get 读到；MQ 改名 → 门面 get 读到
 	if _, err := api.SessionTitle(facade.SessionTitleRequest{
-		InstanceID: facadeInstance, SessionID: "s1", Title: "门面改名",
+		InstanceID: facadeInstance, SessionID: "s1", DialogID: d1, Title: "门面改名",
 	}); err != nil {
 		t.Fatalf("facade SessionTitle: %v", err)
 	}
-	if d, _ := mqCall(t, bus, "get", map[string]any{"id": "s1"})["data"].(map[string]any); d["title"] != "门面改名" {
+	if d, _ := mqCall(t, bus, "get", map[string]any{"id": "s1", "dialog_id": d1})["data"].(map[string]any); d["title"] != "门面改名" {
 		t.Fatalf("MQ 未读到门面改名：%+v", d)
 	}
-	if got := mqCall(t, bus, "title", map[string]any{"data": map[string]any{"id": "s1", "title": "MQ 改名"}}); got["ok"] != true {
+	if got := mqCall(t, bus, "title", map[string]any{"data": map[string]any{"id": "s1", "title": "MQ 改名", "dialog_id": d1}}); got["ok"] != true {
 		t.Fatalf("MQ title 应答形状变化：%+v", got)
 	}
-	g, err := api.SessionGet(facade.SessionGetRequest{InstanceID: facadeInstance, SessionID: "s1"})
+	g, err := api.SessionGet(facade.SessionGetRequest{InstanceID: facadeInstance, SessionID: "s1", DialogID: d1})
 	if err != nil || g.Session.Title != "MQ 改名" {
 		t.Fatalf("门面未读到 MQ 改名：%+v err=%v", g.Session, err)
 	}
 	// 不存在会话改名 → 两路径同报错
 	if _, err := api.SessionTitle(facade.SessionTitleRequest{
-		InstanceID: facadeInstance, SessionID: "ghost", Title: "x",
+		InstanceID: facadeInstance, SessionID: "ghost", DialogID: d1, Title: "x",
 	}); err == nil {
 		t.Fatal("不存在会话改名应报错")
 	}
 	if ok, _ := dataCall(t, bus, "data-session-title", map[string]any{
-		"instance_id": facadeInstance, "id": "ghost", "title": "x",
+		"instance_id": facadeInstance, "id": "ghost", "dialog_id": d1, "title": "x",
 	})["ok"].(bool); ok {
 		t.Fatal("MQ 不存在会话改名应失败")
 	}
@@ -320,7 +327,7 @@ func TestFacadeSessionTitleDeleteActiveAndCleanup(t *testing.T) {
 	}
 
 	// ③ 遗留 running 轮次清理：门面调用 → count 与 MQ 语义同（幂等：再调为 0）
-	if got := mqCall(t, bus, "ensure-turn", map[string]any{"turn_id": "t-stale", "session_id": "s1"}); got["ok"] != true {
+	if got := mqCall(t, bus, "ensure-turn", map[string]any{"turn_id": "t-stale", "session_id": "s1", "dialog_id": d1}); got["ok"] != true {
 		t.Fatalf("MQ ensure-turn 应答形状变化：%+v", got)
 	}
 	clean, err := api.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: facadeInstance})
@@ -331,20 +338,20 @@ func TestFacadeSessionTitleDeleteActiveAndCleanup(t *testing.T) {
 		t.Fatalf("MQ cleanup-stale 应为 0（已清理）：%+v", got)
 	}
 
-	// ④ 删除：门面删 → MQ 读不到（幂等 ok）
+	// ④ 删除：门面删主会话 = 整对话删除（目录行 + 库文件）→ 列表只剩 s2；再删幂等 ok
 	if _, err := api.SessionDelete(facade.SessionDeleteRequest{
-		InstanceID: facadeInstance, SessionID: "s1",
+		InstanceID: facadeInstance, SessionID: "s1", DialogID: d1,
 	}); err != nil {
 		t.Fatalf("facade SessionDelete: %v", err)
 	}
-	if v, ok := mqCall(t, bus, "get", map[string]any{"id": "s1"})["data"]; !ok || v != nil {
-		t.Fatalf("门面删除后 MQ 仍读到：%+v", v)
+	if got := mqCall(t, bus, "list", map[string]any{}); len(dataList(got)) != 1 {
+		t.Fatalf("门面删除后 MQ list 应只剩 s2：%+v", got)
 	}
-	if got := mqCall(t, bus, "delete", map[string]any{"id": "s1"}); got["ok"] != true {
+	if got := mqCall(t, bus, "delete", map[string]any{"id": "s1", "dialog_id": d1}); got["ok"] != true {
 		t.Fatalf("MQ 幂等删除应答形状变化：%+v", got)
 	}
 	if _, err := api.SessionDelete(facade.SessionDeleteRequest{
-		InstanceID: facadeInstance, SessionID: "s-none",
+		InstanceID: facadeInstance, SessionID: "s-none", DialogID: d1,
 	}); err != nil {
 		t.Fatalf("门面幂等删除: %v", err)
 	}
@@ -356,6 +363,7 @@ func TestFacadeSessionTitleDeleteActiveAndCleanup(t *testing.T) {
 func TestFacadeSessionEnsureBroadcastsSessionNew(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "s-top")
 	api := inline.New(bus)
 
 	ch := make(chan map[string]any, 4)
@@ -372,7 +380,7 @@ func TestFacadeSessionEnsureBroadcastsSessionNew(t *testing.T) {
 	}
 
 	if _, err := api.SessionEnsure(facade.SessionEnsureRequest{
-		InstanceID: facadeInstance, SessionID: "s-new", ParentSessionID: "s-top",
+		InstanceID: facadeInstance, SessionID: "s-new", DialogID: d1, ParentSessionID: "s-top",
 	}); err != nil {
 		t.Fatalf("facade SessionEnsure: %v", err)
 	}
@@ -386,7 +394,7 @@ func TestFacadeSessionEnsureBroadcastsSessionNew(t *testing.T) {
 	}
 	// 幂等：二次 ensure 不再广播
 	if _, err := api.SessionEnsure(facade.SessionEnsureRequest{
-		InstanceID: facadeInstance, SessionID: "s-new", ParentSessionID: "s-top",
+		InstanceID: facadeInstance, SessionID: "s-new", DialogID: d1, ParentSessionID: "s-top",
 	}); err != nil {
 		t.Fatalf("facade SessionEnsure(二次): %v", err)
 	}
@@ -408,29 +416,25 @@ func TestFacadeSessionSelfRegistersFromScope(t *testing.T) {
 	const inst = "ins-session-scope"
 	wd := t.TempDir()
 	scope := facade.Scope{WorkDir: wd}
-	// P3-4c 起缺省一树一库；本用例断言**旧布局**自登记语义 → 前置 off。
 	data.Register(inst, wd, "")
-	if prj, release, err := data.Prj(inst); err == nil {
-		if err := data.SetConfig(prj, "session.db.shard", "off"); err != nil {
-			release()
-			t.Fatalf("set shard=off: %v", err)
-		}
-		release()
-	}
 
-	if _, err := api.SessionEnsure(facade.SessionEnsureRequest{
+	ens, err := api.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: inst, SessionID: "s-scope", Scope: scope,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("SessionEnsure（自登记）: %v", err)
 	}
+	if ens.DialogID == "" {
+		t.Fatal("根会话自举应回带 dialog_id")
+	}
 	// 自登记后：不带 Scope 也能读
-	got, err := api.SessionGet(facade.SessionGetRequest{InstanceID: inst, SessionID: "s-scope"})
+	got, err := api.SessionGet(facade.SessionGetRequest{InstanceID: inst, SessionID: "s-scope", DialogID: ens.DialogID})
 	if err != nil || !got.Found {
 		t.Fatalf("SessionGet（自登记后）：found=%v err=%v", got.Found, err)
 	}
 	// 未登记且无 Scope → 明确报错（不静默）
 	if _, err := api.SessionGet(facade.SessionGetRequest{
-		InstanceID: "ins-ghost-session", SessionID: "s-x",
+		InstanceID: "ins-ghost-session", SessionID: "s-x", DialogID: ens.DialogID,
 	}); err == nil {
 		t.Fatal("未登记实例且无 Scope 应报错")
 	}
@@ -448,29 +452,30 @@ func TestFacadeSessionDomainZeroBusRequests(t *testing.T) {
 	if _, err := api.SessionList(facade.SessionListRequest{InstanceID: facadeInstance}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.SessionEnsure(facade.SessionEnsureRequest{InstanceID: facadeInstance, SessionID: "s-zero"}); err != nil {
+	ens, err := api.SessionEnsure(facade.SessionEnsureRequest{InstanceID: facadeInstance, SessionID: "s-zero"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.TurnEnsure(facade.TurnEnsureRequest{InstanceID: facadeInstance, TurnID: "t-zero", SessionID: "s-zero"}); err != nil {
+	if _, err := api.TurnEnsure(facade.TurnEnsureRequest{InstanceID: facadeInstance, TurnID: "t-zero", SessionID: "s-zero", DialogID: ens.DialogID}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := api.MessageAppend(facade.MessageAppendRequest{
-		InstanceID: facadeInstance, TurnID: "t-zero",
+		InstanceID: facadeInstance, TurnID: "t-zero", DialogID: ens.DialogID,
 		Message: facade.Message{Role: "user", Content: "x"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.MessageLoad(facade.MessageLoadRequest{InstanceID: facadeInstance, TurnID: "t-zero"}); err != nil {
+	if _, err := api.MessageLoad(facade.MessageLoadRequest{InstanceID: facadeInstance, TurnID: "t-zero", DialogID: ens.DialogID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.TurnHistory(facade.TurnHistoryRequest{InstanceID: facadeInstance, SessionID: "s-zero"}); err != nil {
+	if _, err := api.TurnHistory(facade.TurnHistoryRequest{InstanceID: facadeInstance, SessionID: "s-zero", DialogID: ens.DialogID}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := api.SessionActiveSet(facade.SessionActiveSetRequest{InstanceID: facadeInstance, SessionID: "s-zero"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := api.MessageContent(facade.MessageContentRequest{
-		InstanceID: facadeInstance, SessionID: "s-zero", Keys: []string{"message:x"},
+		InstanceID: facadeInstance, SessionID: "s-zero", DialogID: ens.DialogID, Keys: []string{"message:x"},
 	}); err != nil {
 		t.Fatal(err)
 	}

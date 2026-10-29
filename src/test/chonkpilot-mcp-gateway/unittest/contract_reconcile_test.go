@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -139,7 +139,7 @@ func TestGatewayResultKeysSubsetOfContract(t *testing.T) {
 		payload map[string]any
 	}{
 		{"mcp-tools-list", "tools/list", map[string]any{}},
-		{"mcp-tools-call", "tools/call", map[string]any{"name": "self_tool_cr"}},
+		{"mcp-tools-call", "tools/call", map[string]any{"name": "tool_cr"}},
 		{"mcp-tools-register", "tools/register", map[string]any{"name": "cr_reg_tool", "description": "d"}},
 		{"mcp-tools-unregister", "tools/unregister", map[string]any{"name": "cr_reg_tool"}},
 		{"mcp-prompts-list", "prompts/list", map[string]any{}},
@@ -178,7 +178,7 @@ func TestGatewayTaskReportEventSubsetOfContract(t *testing.T) {
 		handle: func(_ context.Context) (*mcp.CallToolResult, error) { return mockResult("cr-async-ok"), nil },
 	}})
 	ch := subReport(t, bus)
-	res := callMethod(t, bus, "tools/call", map[string]any{"name": "self_tool_cr_async"})
+	res := callMethod(t, bus, "tools/call", map[string]any{"name": "tool_cr_async"})
 	taskID := pendingTaskID(t, res)
 	rep := awaitReport(t, ch, taskID)
 	crAssertKeys(t, "mcp-tasks-report", "event", ts.Event, rep)
@@ -259,7 +259,7 @@ func TestRegistrantCallbackPayloadSubsetOfContract(t *testing.T) {
 				"name": "cr_cb_tool", "description": "d", "handler_subject": topic,
 			})
 			callMethod(t, bus, "tools/call", map[string]any{
-				"name": "self_cr_cb_tool", "arguments": map[string]any{},
+				"name": "cr_cb_tool", "arguments": map[string]any{},
 				// turn 上下文（tools/call 顶层嵌入 Context）→ 回调载荷应带 context。
 				"session": "s1", "turn": "t1", "instance_id": "ins1", "tool_call_id": "tc1",
 			})
@@ -305,6 +305,7 @@ func TestGatewayNotDrivenRegistry(t *testing.T) {
 		{"mcp-prompts-get", "须先注册带内容的 prompt 资产（register 后按 name 取）；结果 {name,description,content?,type?,arguments?} 可由 register/list 路径间接覆盖"},
 		{"mcp-resources-read", "须先注册 resource 资产（uri/content）"},
 		{"mcp-tools-timeout", "须控件进入 manual/never 超时裁决态（依赖超时与执行池时序），留待专测"},
+		{"mcp-tools-progress", "下行进度事件（GATEWAY-2 L8）：须一个会上报 notifications/progress 的假下游 + 时序；载荷形状（字段对齐 / total 缺省不写键）由 gwadapter/mqadapter 的 TestProgressHandlerEmitsContractTopic 断言"},
 		{"mcp-tools-wait", "阻塞等待异步工具终态（依赖执行池 + 超时/取消时序），单测级最小驱动成本高；由 async 专测与 gateway 单测覆盖"},
 		{"history-pre-tool-hook", "前置钩子主题由注册方（plugin-history）声明 handler_subject/pre_hook_subject 后触发；gateway 侧仅转发，留待插件侧对账"},
 		{"codegraph-tool-call", "**结果侧**未驱动：codegraph 插件 onToolCall 需引擎子进程/实例装配；回执形状 {resultType,content,isError} 由插件单测 TestToolReply 断言。**载荷侧**已由 TestRegistrantCallbackPayloadSubsetOfContract 驱动"},

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // dataReqTimeout 对齐 bridge/data.go 的私有超时常量（黑盒测试无法引用私有 const；

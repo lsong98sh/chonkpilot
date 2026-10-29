@@ -103,6 +103,7 @@ import mq from '../../utils/mq'
 import { resolvePublishError } from '../../utils/publishError'
 import { EventNames } from '../../events/event-names'
 import { createSessionMessages } from '../../utils/sessionMessages'
+import { sessionDialogOf } from '../../api/session'
 import {
   publishLLMContinue,
   publishInboxAdd, listInbox, discardInbox, promoteInbox,
@@ -116,6 +117,12 @@ import {
 
 const props = defineProps({
   sessionId: { type: String, default: null },
+  // 一树一库：会话所属对话 id（可选）。子会话 viewer（任务详情）必须由父组件给
+  // **主会话的 dialog_id**——`data-session-list` 只列主会话，缺它会读不到历史。
+  dialogId: { type: String, default: '' },
+  // 一树一库：所属**主会话** id（viewer 用）。父组件只需给主会话 id，dialog_id 在
+  // 加载时经 `sessionDialogOf` 现取（备忘可能晚于 vue 渲染填充，避免拿到过期空值）。
+  topSessionId: { type: String, default: '' },
   // 只读查看模式（子会话详情面板）：挂载即常驻订阅流事件，按 session_id 过滤。
   // 主聊天（ChatPanel）不传此标志，仅在发消息后订阅流事件。
   viewer: { type: Boolean, default: false },
@@ -743,6 +750,13 @@ function retryText() {
   return t('common.continue')
 }
 
+// 一树一库：解析「加载历史」应带的 dialog_id（显式 prop 优先；否则按所属主会话现查备忘）。
+function resolveDialogId() {
+  if (props.dialogId) return props.dialogId
+  const top = props.topSessionId || ''
+  return top ? sessionDialogOf(top) : ''
+}
+
 // ── Session change handling (event-driven, no watch on props) ──
 async function onSessionChanged({ session_id }) {
   const newId = session_id || null
@@ -774,7 +788,7 @@ async function onSessionChanged({ session_id }) {
   scrollTopVal.value = 0
 
   if (newId) {
-    await loadMessages(newId)
+    await loadMessages(newId, resolveDialogId())
     pruneItemHeights() // 整体重载后淘汰旧 msg.id 高度缓存条目
     await refreshInbox() // 切会话：拉回该会话 pending inbox（重启/切换后队列可见）
     // 切换期间已收到当前会话终态 → 事件结论优先，不用历史覆盖（见 terminalSeq 注释）
@@ -1400,7 +1414,7 @@ onMounted(async () => {
   if (props.sessionId) {
     activeSessionId.value = props.sessionId
     mq.emit(EventNames.dataSessionActiveSet, { session_id: props.sessionId })
-    await loadMessages(props.sessionId)
+    await loadMessages(props.sessionId, resolveDialogId())
     pruneItemHeights() // 整体重载后淘汰旧 msg.id 高度缓存条目
     await refreshInbox() // 重启拉回：pending inbox（默认不自动发送，仅显示队列）
     await assessContinueState()

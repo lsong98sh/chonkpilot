@@ -43,8 +43,12 @@ type BridgeTarget struct {
 //   - 命中 usr `llms[].name` → 该记录（baseURL 空 → 回落 exe flag `--llm-base`；protocol 原值）；
 //   - 未命中 → ok=false（桥侧按 §3.5 返回 404，不静默回落）。
 //
-// 读法 = 全局 usr 配置（`UserConfigGet{}`，与 `reconcileLLMProviders` 同源；provider 名单属 usr
-// 基线、无 instance 维度）；**不写、不缓存、不落日志**。**apiKey 不落任何日志**。
+// 读法 = 全局 usr 配置（provider 名单属 usr 基线、无 instance 维度）。
+//
+// LLM-P4：provider → 目标快照由 `reconcileLLMProviders`（启动 + `data-user-config-refresh`）
+// **一次构建**，本函数先读快照（原实现每个桥接请求都 `UserConfigGet` 一次）；快照未命中
+// （对账前 / 快照过期）→ 回落直读并顺带重建快照 —— 命中语义与改前逐字一致（不会因快照陈旧把
+// 有效 provider 误判为 404）。**apiKey 不落任何日志**。
 func (s *Server) ResolveBridgeTarget(name string) (BridgeTarget, bool) {
 	name = strings.TrimSpace(name)
 	if name == "" || name == bridgeDefaultName {
@@ -54,12 +58,23 @@ func (s *Server) ResolveBridgeTarget(name string) (BridgeTarget, bool) {
 	if s.cfg == nil {
 		return BridgeTarget{}, false
 	}
+	if t, ok := s.cachedBridgeTarget(name); ok {
+		return t, true
+	}
 	res, err := s.cfg.UserConfigGet(facade.UserConfigGetRequest{})
 	if err != nil {
 		logf("[chonkpilot-server] ResolveBridgeTarget: UserConfigGet failed: %v\n", err)
 		return BridgeTarget{}, false
 	}
-	for _, item := range asAnySlice(res.Config["llms"]) {
+	s.storeBridgeTargets(res.Config) // 自愈：把快照刷新到本次读到的配置
+	t, ok := bridgeTargetFromConfig(res.Config, name, s.opts.LLMBase)
+	return t, ok
+}
+
+// bridgeTargetFromConfig 在 usr 配置对象里按 name 取转发目标（**首条**命中，与逐条查找同序）。
+// baseURL 空 → 回落 exe flag `--llm-base`（与该 provider 出网口径一致）。
+func bridgeTargetFromConfig(cfg map[string]any, name, baseURL string) (BridgeTarget, bool) {
+	for _, item := range asAnySlice(cfg["llms"]) {
 		llm, _ := item.(map[string]any)
 		if llm == nil {
 			continue
@@ -68,10 +83,44 @@ func (s *Server) ResolveBridgeTarget(name string) (BridgeTarget, bool) {
 			continue
 		}
 		return BridgeTarget{
-			BaseURL:  orDefault(strings.TrimSpace(str(llm["baseUrl"])), s.opts.LLMBase),
+			BaseURL:  orDefault(strings.TrimSpace(str(llm["baseUrl"])), baseURL),
 			APIKey:   strings.TrimSpace(str(llm["apiKey"])),
 			Protocol: strings.TrimSpace(str(llm["protocol"])),
 		}, true
 	}
 	return BridgeTarget{}, false
+}
+
+// storeBridgeTargets 由 usr 配置对象重建桥接目标快照（`reconcileLLMProviders` 调用；同批不读第二次库）。
+func (s *Server) storeBridgeTargets(cfg map[string]any) {
+	targets := map[string]BridgeTarget{}
+	for _, item := range asAnySlice(cfg["llms"]) {
+		llm, _ := item.(map[string]any)
+		if llm == nil {
+			continue
+		}
+		name := strings.TrimSpace(str(llm["name"]))
+		if name == "" {
+			continue
+		}
+		if _, dup := targets[name]; dup {
+			continue // 重名 → 保留首条（与逐条查找口径一致）
+		}
+		targets[name] = BridgeTarget{
+			BaseURL:  orDefault(strings.TrimSpace(str(llm["baseUrl"])), s.opts.LLMBase),
+			APIKey:   strings.TrimSpace(str(llm["apiKey"])),
+			Protocol: strings.TrimSpace(str(llm["protocol"])),
+		}
+	}
+	s.bridgeMu.Lock()
+	s.bridgeTargets = targets
+	s.bridgeMu.Unlock()
+}
+
+// cachedBridgeTarget 读快照（未建快照 / 未命中 → ok=false，调用方回落直读）。
+func (s *Server) cachedBridgeTarget(name string) (BridgeTarget, bool) {
+	s.bridgeMu.RLock()
+	defer s.bridgeMu.RUnlock()
+	t, ok := s.bridgeTargets[name]
+	return t, ok
 }

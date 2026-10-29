@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // composeCapRoot 造 app 级 capability 根，含 `agents/<名>.agent.md`（内容 = content 段正文）。

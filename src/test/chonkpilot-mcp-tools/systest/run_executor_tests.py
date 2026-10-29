@@ -7,8 +7,8 @@
     <exe> <tool> --input=<参数 JSON 文件>   # 结果输出到 stdout（JSON 或文本）
     退出码：0 = 成功；1 = 失败（失败详情在 stdout）；2 = 用法错误（成功路径不出现）
 
-现行工具面（契约源 src/initdata/capability/tools/**/*.tool.md）共 5 个：
-    core    : filesys_run / script_run / web_fetch
+现行工具面（契约源 src/initdata/capability/tools/**/*.tool.md）：
+    core    : filesys_run / web_fetch（`script_run` 已于 2026-10-28 迁为 task 插件 `task_run`）
     browser : browser_run
     desktop : desktop_run
 （原 file_read/file_find/file_diff 三工具已收纳为 filesys_run 的只读动作 READ/DIFF/FIND
@@ -517,119 +517,12 @@ def suite_filesys_run(work):
         check(f"[filesys_run] {fn.__name__[2:]}", fn)
 
 
-# ─────────────────────────── script_run ───────────────────────────
-
-def suite_script_run(work):
-    interp = sys.executable  # 绝对路径（R-11）
-
-    def t_python_print():
-        rc, out, err = run(CORE_EXE, "script_run",
-                           {"runtime": "python", "script": "print('hello 中文')",
-                            "interpreter": interp})
-        assert_ok(rc, out, err, "script_run python")
-        assert "hello 中文" in out, out
-
-    def t_shell_echo():
-        rc, out, err = run(CORE_EXE, "script_run",
-                           {"runtime": "shell", "script": "echo hello-shell"})
-        assert_ok(rc, out, err, "script_run shell")
-        assert "hello-shell" in out, out
-
-    def t_both_script_and_file():
-        f = os.path.join(work, "sr", "s.py")
-        write_text(f, "print(1)\n")
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "script": "print(1)", "file": f,
-                          "interpreter": interp})
-        assert rc != 0 and "仅有一个" in out, out
-
-    def t_neither():
-        rc, out, _ = run(CORE_EXE, "script_run", {"runtime": "python", "interpreter": interp})
-        assert rc != 0 and "仅有一个" in out, out
-
-    def t_unconfigured_runtime():
-        rc, out, _ = run(CORE_EXE, "script_run", {"runtime": "java", "script": "x"})
-        assert rc != 0 and "未配置" in out, out
-
-    def t_invalid_runtime():
-        rc, out, _ = run(CORE_EXE, "script_run", {"runtime": "haskell", "script": "x"})
-        assert rc != 0 and "不支持" in out, out
-
-    def t_env():
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python",
-                          "script": "import os; print(os.environ['CK_TEST_ENV'])",
-                          "env": {"CK_TEST_ENV": "env-ok"}, "interpreter": interp})
-        assert rc == 0 and "env-ok" in out, out
-
-    def t_args():
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "script": "import sys; print(sys.argv[1])",
-                          "args": ["arg-ok"], "interpreter": interp})
-        assert rc == 0 and "arg-ok" in out, out
-
-    def t_workdir():
-        sub = os.path.join(work, "sr", "sub")
-        os.makedirs(sub, exist_ok=True)
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "script": "import os; print(os.getcwd())",
-                          "workdir": sub, "interpreter": interp})
-        assert rc == 0 and "sub" in out, out
-
-    def t_file_mode():
-        f = os.path.join(work, "sr", "f.py")
-        write_text(f, "print('file-mode')\n")
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "file": f, "interpreter": interp})
-        assert rc == 0 and "file-mode" in out, out
-
-    def t_exit_code():
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "script": "import sys; sys.exit(3)",
-                          "interpreter": interp})
-        assert rc != 0 and "exit 3" in out, out
-
-    def t_filter():
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python",
-                          "script": "print('alpha')\nprint('beta-1')\nprint('gamma')\n",
-                          "filter": "beta", "interpreter": interp})
-        assert rc == 0 and "beta-1" in out, out
-        assert "alpha" not in out and "gamma" not in out, out
-
-    def t_filter_invalid():
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "script": "print(1)", "filter": "([",
-                          "interpreter": interp})
-        assert rc != 0 and "regex" in out, out
-
-    def t_overflow_redirects_to_temp():
-        # 超限纯文本：executor 统一层写系统 temp 临时文件并给出提示（exit 0）
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "script": "print('y' * 250000)\n",
-                          "interpreter": interp})
-        assert rc == 0, f"超限不应失败: {out!r}"
-        assert "已保存至" in out, out
-        m = re.search(r"已保存至 (.+?)（", out)
-        assert m and os.path.exists(m.group(1).strip()), f"临时文件不存在: {out!r}"
-
-    def t_relative_workdir_rejected():
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "script": "print(1)", "workdir": "sub",
-                          "interpreter": interp})
-        assert_reject(rc, out, "绝对路径")
-
-    def t_relative_interpreter_rejected():
-        rc, out, _ = run(CORE_EXE, "script_run",
-                         {"runtime": "python", "script": "print(1)", "interpreter": "python"})
-        assert_reject(rc, out, "绝对路径")
-
-    for fn in [t_python_print, t_shell_echo, t_both_script_and_file, t_neither,
-               t_unconfigured_runtime, t_invalid_runtime, t_env, t_args, t_workdir,
-               t_file_mode, t_exit_code, t_filter, t_filter_invalid,
-               t_overflow_redirects_to_temp, t_relative_workdir_rejected,
-               t_relative_interpreter_rejected]:
-        check(f"[script_run] {fn.__name__[2:]}", fn)
+# ─────────────────────────── script_run（已退役）───────────────────────────
+#
+# 2026-10-28（P2-3）：`script_run` 已迁为 task 插件的 `task_run`（`chonkpilot-script-executor.exe`
+# 不再产出），相关执行器层用例删除；迁移后的回归在插件侧
+# `chonkpilot-plugins/task/lib/scriptrun/exec_test.go`（runtime 白名单 / file-command 二选一 /
+# 相对路径拒绝 / 超时杀进程树 / Windows shell=PowerShell 的 argv 断言）。
 
 
 # ─────────────────────────── web_fetch（本机回环，无外网依赖） ───────────────────────────
@@ -766,7 +659,6 @@ def main():
         suite_file_find(work)
         suite_file_diff(work)
         suite_filesys_run(work)
-        suite_script_run(work)
         suite_web_fetch(work)
 
     print("== browser / desktop（可选） ==")

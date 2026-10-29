@@ -17,7 +17,7 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-llm/contracts"
-	"github.com/chonkpilot/chonkpilot-lib/contractmd"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/contractmd"
 )
 
 // AgentDef 是 app 级场景内的 agent 定义（来自 `<exeDir>/scenarios/*/` 内的 agent 文件：

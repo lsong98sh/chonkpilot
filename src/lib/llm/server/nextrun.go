@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	sessioninbox "github.com/lsong98sh/chonkpilot-agent/session/inbox"
 )
 
 const (
@@ -146,7 +147,7 @@ func (s *Server) resetNextRunCount(instanceID, sessionID string) bool {
 // discardNextRunForTurn 终态收敛（NEXTRUN-1 §4）：本轮 error / interrupted / cancelled →
 // 丢弃**本 turn** 的 LLM 排队项，防止用户结束本轮后"僵尸提示词"自动触发。
 func (s *Server) discardNextRunForTurn(instanceID, sessionID, turnID string) {
-	items, err := s.inboxList(instanceID, sessionID, "pending")
+	items, err := s.inboxList(instanceID, sessionID, sessioninbox.StatusPending)
 	if err != nil {
 		logf("[chonkpilot-server] next_run 终态收敛读取失败（session=%s）: %v\n", sessionID, err)
 		return
@@ -155,10 +156,10 @@ func (s *Server) discardNextRunForTurn(instanceID, sessionID, turnID string) {
 		if it.Source != nextRunSourceLLM || it.TurnID != turnID {
 			continue
 		}
-		if err := s.inboxUpdate(instanceID, it.ID, "discarded", "", ""); err != nil {
+		if err := s.inboxUpdate(instanceID, it.ID, sessioninbox.StatusDiscarded, "", ""); err != nil {
 			logf("[chonkpilot-server] next_run 终态丢弃失败（id=%s）: %v\n", it.ID, err)
 			continue
 		}
-		s.inboxSetStatus(it.ID, "discarded")
+		s.inboxSetStatus(it.ID, sessioninbox.StatusDiscarded)
 	}
 }

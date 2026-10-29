@@ -18,7 +18,7 @@
         :title="it.path || it.category"
         @click="openItem(it)"
       >
-        <Icon name="document" :size="14" class="mem-row-icon" />
+        <FileIcon name="md" :size="14" class="mem-row-icon" />
         <span class="mem-row-name">{{ it.category }}</span>
         <span class="mem-row-level">{{ levelText(it.level) }}</span>
         <span class="mem-row-tokens">{{ it.tokens }}</span>
@@ -40,7 +40,7 @@
 <script setup>
 import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import Icon from '../../components/icon/Icon.vue'
+import FileIcon from '../../components/icon/FileIcon.vue'
 import { Button } from '../../components/ui'
 import { onDataRefresh } from '../../utils/dataClient'
 import { EventNames } from '../../events/event-names'
@@ -103,7 +103,6 @@ defineExpose({ refresh })
 }
 .mem-row-icon {
   flex-shrink: 0;
-  color: var(--text-secondary, #888);
   margin: 0 2px;
 }
 .mem-row-name {
@@ -125,7 +124,7 @@ defineExpose({ refresh })
   font-size: 12px;
   color: var(--text-secondary);
 }
-.mem-row.is-user .mem-row-icon {
+.mem-row.is-user .mem-row-name {
   color: var(--accent, #409eff);
 }
 .mem-empty {

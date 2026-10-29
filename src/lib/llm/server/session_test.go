@@ -10,8 +10,8 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 // newBusHarness 建独立总线 + persist 数据服务 + 注册 ins-test 实例
@@ -36,12 +36,26 @@ func newBusHarness(t *testing.T) mq.Bus {
 	}))
 	time.Sleep(50 * time.Millisecond)
 	data.Register("ins-test", wd, "") // 直连同库（种子/断言）
-	// 本组用例断言 prjusr 旧布局（turns/messages 直读）；P3-4c 起开关缺省 on → 显式退回 off。
-	if prj, release, err := data.Prj("ins-test"); err == nil {
-		_ = prj.Table("config").Upsert("session.db.shard", data.Record{"v": "off"})
-		release()
-	}
 	return bus
+}
+
+// openSessionDialog 打开某会话所在对话库（一树一库：会话内容只在该库内），返回句柄与 release。
+func openSessionDialog(t *testing.T, st *sessionStore, sessionID string) (*data.DB, func()) {
+	t.Helper()
+	dlg := st.idx.dialogOf(sessionID)
+	if dlg == "" {
+		t.Fatalf("会话 %s 缺 dialog_id（尚未 ensure？）", sessionID)
+	}
+	prjUsr, err := data.PrjUsr("ins-test")
+	if err != nil {
+		t.Fatalf("PrjUsr: %v", err)
+	}
+	db, release, err := data.OpenExistingDialog(prjUsr.Path(), dlg)
+	if err != nil {
+		t.Fatalf("open dialog %s: %v", dlg, err)
+	}
+	t.Cleanup(release)
+	return db, release
 }
 
 // appendMsg 落一条 user/assistant 消息（测试便捷形态；生产落库统一经 AppendFullKeyed）。
@@ -58,21 +72,12 @@ func appendFull(t *testing.T, st *sessionStore, turn string, m ChatMsg) {
 	}
 }
 
-// TestSessionStoreThreadsDialogID（P3-4b）：`session.db.shard=on` 时——
+// TestSessionStoreThreadsDialogID（P3-4b）：一树一库——
 // EnsureSession 自举回带 dialog_id → 记入进程内备忘；后续 turn/消息请求自动补 `dialog_id`
 // （另一实例的 sessionStore 也能读到，覆盖 assembly 临时 store 的场景）；
 // 数据落对话库、不落 prjusr。
 func TestSessionStoreThreadsDialogID(t *testing.T) {
 	bus := newBusHarness(t)
-	prj, release, err := data.Prj("ins-test")
-	if err != nil {
-		t.Fatalf("Prj: %v", err)
-	}
-	if err := prj.Table("config").Upsert("session.db.shard", data.Record{"v": "on"}); err != nil {
-		t.Fatalf("set shard: %v", err)
-	}
-	release()
-
 	st := newSessionStore(bus, "ins-test")
 	if err := st.EnsureSession("s-dlg"); err != nil {
 		t.Fatalf("EnsureSession: %v", err)
@@ -264,13 +269,13 @@ func TestCleanupStaleTurns(t *testing.T) {
 	if err := st.CleanupStaleTurns(); err != nil {
 		t.Fatalf("CleanupStaleTurns: %v", err)
 	}
-	prj, _ := data.PrjUsr("ins-test") // 会话/轮次落 prjusr（12-数据层），断言同库直读
+	sdb, _ := openSessionDialog(t, st, "s1") // 一树一库：轮次在对话库内
 	var rec data.Record
-	ok, _ := prj.Table("turns").Get("t-running", &rec)
+	ok, _ := sdb.Table("turns").Get("t-running", &rec)
 	if !ok || rec["status"] != "interrupted" {
 		t.Fatalf("t-running should be interrupted: %+v", rec)
 	}
-	ok, _ = prj.Table("turns").Get("t-done", &rec)
+	ok, _ = sdb.Table("turns").Get("t-done", &rec)
 	if !ok || rec["status"] != "complete" {
 		t.Fatalf("t-done should stay complete: %+v", rec)
 	}

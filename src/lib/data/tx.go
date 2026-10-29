@@ -3,7 +3,9 @@
 // 故新增本事务句柄（只暴露提交路径需要的 Get / Exists / Insert / Put）。
 package data
 
-import bolt "go.etcd.io/bbolt"
+import (
+	bolt "go.etcd.io/bbolt"
+)
 
 // Tx 是单次写事务句柄（由 DB.Update 提供；fn 返回 error → 整体回滚）。
 type Tx struct{ tx *bolt.Tx }
@@ -38,72 +40,28 @@ func (tx *Tx) Exists(table, key string) (bool, error) {
 
 // Insert 插入（已存在 → ErrExists）；同事务维护索引。
 func (tx *Tx) Insert(table, key string, rec Record) error {
-	b, err := tx.tx.CreateBucketIfNotExists([]byte(table))
-	if err != nil {
-		return err
-	}
-	if b.Get([]byte(key)) != nil {
-		return ErrExists
-	}
-	if rec == nil {
-		rec = Record{}
-	}
-	if err := indexPut(tx.tx, table, key, rec); err != nil {
-		return err
-	}
-	return putRecord(b, key, rec)
+	return writeRow(tx.tx, table, key, rec, writeInsert)
 }
 
 // Delete 删除一行并清理其索引（行不存在 → ErrNotFound，与 Table.Delete 一致）。
 func (tx *Tx) Delete(table, key string) error {
-	b := tx.tx.Bucket([]byte(table))
-	if b == nil {
-		return ErrNotFound
-	}
-	old, ok := decodeRecord(b.Get([]byte(key)), key)
-	if !ok {
-		return ErrNotFound
-	}
-	if err := indexDelete(tx.tx, table, key, old); err != nil {
-		return err
-	}
-	return b.Delete([]byte(key))
+	return delRow(tx.tx, table, key)
 }
 
 // ForEach 遍历表内全部行（键升序；rec 含 _key）。**勿在回调内改表**——需要改时先收集键。
 func (tx *Tx) ForEach(table string, fn func(key string, rec Record) error) error {
-	b := tx.tx.Bucket([]byte(table))
-	if b == nil {
-		return nil
-	}
-	return b.ForEach(func(k, v []byte) error {
-		if v == nil {
-			return nil // 嵌套桶
-		}
-		rec, ok := decodeRecord(v, string(k))
-		if !ok {
-			return nil
-		}
-		return fn(string(k), rec)
-	})
+	return scanBucket(tx.tx, table, "", fn)
+}
+
+// ForEachPrefix 遍历主键以 prefix 开头的行（键升序；rec 含 _key）。**勿在回调内改表**——需要改时
+// 先收集键。口径与 Table.ForEachPrefix 一致（桶缺失 → 不调用 fn；坏行跳过）。
+//
+// 供「单事务批量清理」只扫本前缀区段（不再全表扫），与 Table.ForEach 同为写事务内的读原语。
+func (tx *Tx) ForEachPrefix(table, prefix string, fn func(key string, rec Record) error) error {
+	return scanBucket(tx.tx, table, prefix, fn)
 }
 
 // Put 写入/覆盖（索引按新记录重建；既有行的旧索引项先删除）。
 func (tx *Tx) Put(table, key string, rec Record) error {
-	b, err := tx.tx.CreateBucketIfNotExists([]byte(table))
-	if err != nil {
-		return err
-	}
-	if old, ok := decodeRecord(b.Get([]byte(key)), key); ok {
-		if err := indexDelete(tx.tx, table, key, old); err != nil {
-			return err
-		}
-	}
-	if rec == nil {
-		rec = Record{}
-	}
-	if err := indexPut(tx.tx, table, key, rec); err != nil {
-		return err
-	}
-	return putRecord(b, key, rec)
+	return writeRow(tx.tx, table, key, rec, writeUpsert)
 }

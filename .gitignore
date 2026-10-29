@@ -5,15 +5,16 @@
 # ============================================================================
 
 # ── 1. 构建产物（仓库根，由 build-*.ps1 产出）──────────────────────────────
-# dist/{desktop,server,gui,other,plugins}：exe / 引擎 / zvec_c_api.dll /
+# dist/{desktop,other,plugins}：exe / 引擎 / zvec_c_api.dll /
 # capability / scenarios / config.json —— 全部由构建脚本投放
 /dist/
 
 # ── 2. 前端构建投放物（go:embed 入口，由 build 脚本生成）────────────────────
 # 源 = 仓库级 src/frontend；唯一产物 = src/desktop/frontend/dist（桌面壳 go:embed 落点）
 /src/frontend/dist/
-/src/frontend/dist-browser/
 /src/desktop/frontend/dist/
+# 历史残留（browser 形态已删除、脚本不再产出；本地可能仍有旧目录 → 继续忽略防误提交）
+/src/frontend/dist-browser/
 /src/frontend/node_modules/
 node_modules/
 .vite/
@@ -21,13 +22,8 @@ node_modules/
 # ── 3. 二进制 / 原生库（源码树内一律不入库；发行物只出现在 dist/）───────────
 *.exe
 *.dll
-# 例外：vfts 引擎构建/运行必需的原生库 zvec C-API（CGO 链接 + 运行期加载，须与引擎 exe 同目录）。
-# 同目录 zvec_c_api.lib 本就不在忽略列表；该 dll 的父目录未被整体忽略，负模式可直接生效。
-!src/plugins/vfts/third_party/zvec/windows_amd64/zvec_c_api.dll
-# 例外：go-webview2 内嵌 fork 的 WebView2Loader.dll（x64/x86/arm64 三份，go:embed 编译期必需）。
-# 三份 DLL 随源码入库（否则 clean clone 因 //go:embed 找不到文件而**编译失败**，D-38）；
-# 父目录未被整体忽略，负模式可直接生效（仅针对该 sdk 目录开例外，不放宽 *.dll 通用忽略）。
-!src/lib/go-webview2/webviewloader/sdk/*/WebView2Loader.dll
+# 注（2026-10-27）：vfts/codegraph 引擎源码与 zvec 原生库已随插件迁至 `chonkpilot-plugins` 仓
+# （`codegraph/engines/vfts/third_party/zvec`），主仓不再持有 dll，原负模式例外随之删除。
 *.so
 *.dylib
 *.test

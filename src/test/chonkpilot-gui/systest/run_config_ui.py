@@ -20,7 +20,8 @@
   B. 用户设置页（preview tab settings-llm / settings-mcp / settings-paths）
      B1 LLM 配置：2 页签（**一览** / **默认模型**）——
         一览 = provider 清单（添加/编辑/删除，**无只读行、无「设为默认」**）；
-        默认模型 = **主对话** + 5 个子系统下拉（提示词优化/记忆/压缩/分析/决策）
+        默认模型 = **主对话** + 3 个子系统下拉（提示词优化/记忆/压缩；2026-10-25 移除
+        analysis/decision 预留键，后端零消费方）
         （2026-09-26 用户口径：原「只读内置行 + 设为默认」已移除；`gui.system.builtins` 不再下发
          `builtinLLMs`，聊天输入框选择器只列 usr providers）
         + 添加弹窗字段文字 + 弹窗在视口内（位置）+ 表单**一行两列**（位置）→ 填表保存 →
@@ -57,7 +58,8 @@ from chonk_client import ChonkClient, TestError, run_case
 import run_explore_kb as kbmod   # 复用知识库树/原语面板操作助手（G 用例：恢复默认 / 右键菜单）
 
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
-c = _h.acquire_gui(2345, work_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws")).client
+_GUI = _h.acquire_gui(2345, work_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws"))
+c = _GUI.client
 _h.suite_config_guard(c)  # 套件级配置快照-还原（51 §6-8）：含 usr（llms/mcps/locale）→ 退出前回滚
 _h.ensure_locale(c)  # 语言确定性：本套件按 zh-CN 文案断言（DB ui.locale 可能被他套件写成 en-US）
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -84,7 +86,8 @@ PROJ_TOOL = os.path.join(PROJ_TOOL_DIR, "ask_user.tool.md")             # 与 ap
 
 # 项目设置页签期望文字（zh-CN projectConfig.json + configIO.json）
 # 2026-09-20 批 3 · ⑯：末位新增「配置导入/导出」页签（usr 全局配置的导出/导入/恢复出厂）
-PROJ_TABS = ["安全", "上下文管理", "CodeGraph 索引", "Vfts 全文索引", "文件历史", "文件树", "群聊", "日志", "配置导入/导出"]
+# 2026-10-26（D-71）：codegraph + vfts 两个页签合并为「代码知识库」（插件自持 iframe 页面）。
+PROJ_TABS = ["安全", "上下文管理", "代码知识库", "文件历史", "文件树", "群聊", "日志", "配置导入/导出"]
 
 
 # ── 通用工具 ────────────────────────────────────────────────
@@ -463,101 +466,142 @@ return {dis_inp:[...R.querySelectorAll('input.b-input.is-disabled')].filter(e=>e
                 raise TestError("上下文管理保存后 %s=%r，期望正整数字符串" % (k, p.get(k)))
 
 
-def case_a3_index_codegraph():
-    """A3 CodeGraph 索引：默认值回显（文字）+ 启用开关点击保存并回读 + 保存按钮落库 exts
-    + 「排除的目录和文件」label 右侧「叠加 gitignore」勾选（勾选后输入框仍可编辑）落库。"""
-    with prj_guard(["enable-codegraph", "codegraph.exts", "codegraph.skip-dirs",
-                    "codegraph.stack-gitignore"]):
-        open_page("settings-project", ".project-config-panel")
-        click_tab("CodeGraph 索引", ".project-config-panel")
-        shot("a3-codegraph.png")
-        txt = panel_text(".project-config-panel")
-        if ("参与索引的扩展名" not in txt or "排除的目录和文件" not in txt
-                or "叠加 gitignore" not in txt):
-            raise TestError("CodeGraph 索引缺「参与索引的扩展名 / 排除的目录和文件 / 叠加 gitignore」文案")
-        tas = panel_textareas(".project-config-panel")
-        if len(tas) < 2:
-            raise TestError("CodeGraph 索引缺两个文本框：%r" % tas)
-        if ".go" not in tas[0] or ".py" not in tas[0]:
-            raise TestError("扩展名默认值未回显：%r" % tas[0][:120])
-        if "node_modules" not in tas[1] or ".chonkpilot" not in tas[1]:
-            raise TestError("排除目录默认值未回显：%r" % tas[1][:120])
-        # 启用开关点击 → 保存并回读
-        st = find_switch_by_label(".project-config-panel", "CodeGraph 索引")
-        if not st:
-            raise TestError("未找到 CodeGraph 启用开关")
-        want = "false" if st["checked"] else "true"
-        if click_switch_by_label(".project-config-panel", "CodeGraph 索引") != "ok":
-            raise TestError("点击 CodeGraph 启用开关失败")
-        if prj().get("enable-codegraph") != want:
-            raise TestError("点击后 enable-codegraph=%r，期望 %r" % (prj().get("enable-codegraph"), want))
-        # 保存按钮 → codegraph.exts 落库并回读
-        if click_primary(".project-config-panel", "保存") != "ok":
-            raise TestError("点击 CodeGraph 保存按钮失败")
-        got = prj().get("codegraph.exts")
-        if got != tas[0]:
-            raise TestError("保存后 codegraph.exts 未按文本框值落库：%r" % (got,))
-        # 叠加 gitignore：勾选 → 断言输入框仍可编辑 → 保存 → 落 codegraph.stack-gitignore=true
-        st = ev(panel_js(".project-config-panel", """
-const row=[...R.querySelectorAll('.form-label-row')].find(x=>{const l=x.querySelector('.form-label');return l&&l.textContent.trim()==='排除的目录和文件';});
-if(!row)return 'no-row';const cb=row.querySelector('input[type=checkbox]');if(!cb)return 'no-cb';
-if(!cb.checked)cb.click();
-const ta=row.parentElement?row.parentElement.querySelector('textarea'):null;if(!ta)return 'no-ta';
-return (cb.checked?'checked':'unchecked')+'|'+(ta.disabled||ta.readOnly?'readonly':'editable');"""))
-        if st != "checked|editable":
-            raise TestError("叠加 gitignore 勾选后应为「选中 + 输入框可编辑」，实际 %r" % (st,))
-        if click_primary(".project-config-panel", "保存") != "ok":
-            raise TestError("勾选后点击 CodeGraph 保存按钮失败")
+# ── 「代码知识库」页签 = 插件自持 iframe（webui/config.html）────────────────
+# 2026-10-26（D-71）：主仓 CodegraphConfig.vue / VftsConfig.vue 已下线；页签内容由 codegraph
+# 插件提供（`/plugins/codegraph/webui/config.html`，同源 → 可直接访问 contentDocument）。
+# 控件 id 见 `chonkpilot-plugins/codegraph/webui/config.html`（cgExts/cgSkip/cgGitignore/cgSave…）。
+
+def iframe_js(inner):
+    """在可见「项目配置」面板 → 代码知识库 iframe 内执行 inner（d = iframe document）。"""
+    return ev("""(()=>{const R=[...document.querySelectorAll('.project-config-panel')]
+      .find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no-panel';
+      const f=R.querySelector('iframe');if(!f)return 'no-frame';
+      const d=f.contentDocument;if(!d)return 'no-doc';%s})()""" % inner)
+
+
+def iframe_ready(max_wait=25):
+    """等 iframe 就绪：`load` 动作回填 workdir（空 = 插件未加载/实例未解析）。"""
+    deadline = time.time() + max_wait
+    last = None
+    while time.time() < deadline:
+        last = iframe_js("return (d.getElementById('workdir')||{}).value||'';")
+        if isinstance(last, str) and last:
+            return last
         time.sleep(0.5)
-        if prj().get("codegraph.stack-gitignore") != "true":
-            raise TestError("保存后 codegraph.stack-gitignore=%r，期望 'true'"
-                            % (prj().get("codegraph.stack-gitignore"),))
+    raise TestError("代码知识库 iframe 未就绪（workdir 未回填：%r）" % (last,))
+
+
+def iframe_set(id_, value):
+    return iframe_js("""
+const w=d.defaultView;const el=d.getElementById(%s);if(!el)return 'no-el';
+const set=Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype,'value').set;
+set.call(el,%s);el.dispatchEvent(new w.Event('input',{bubbles:true}));return el.value;"""
+                      % (json.dumps(id_), json.dumps(value)))
+
+
+def iframe_toggle(id_, checked):
+    return iframe_js("""
+const el=d.getElementById(%s);if(!el)return 'no-el';if(el.checked!==%s)el.click();
+return el.checked?'on':'off';""" % (json.dumps(id_), "true" if checked else "false"))
+
+
+def iframe_click(id_):
+    return iframe_js("const b=d.getElementById(%s);if(!b)return 'no-btn';b.click();return 'ok';" % json.dumps(id_))
+
+
+def open_codegraph_tab():
+    open_page("settings-project", ".project-config-panel")
+    click_tab("代码知识库", ".project-config-panel")
+    return iframe_ready()
+
+
+def case_a3_index_codegraph():
+    """A3 代码知识库（codegraph 段）：插件页 iframe 渲染 + 默认值/文案 + 保存落 `plugins.codegraph.*`。
+
+    2026-10-26（D-71）改口径：主仓 Vue 页已下线 → 断言改为
+      ① 页签「代码知识库」→ iframe 加载（workdir 自动回填）；
+      ② 文案与默认值：启用 codegraph / 索引扩展名 / 排除目录 / 叠加 .gitignore（空 = 引擎默认集）；
+      ③ 改 ext/skip + 勾选叠加 gitignore → 「保存并应用」→ prj 回读 `plugins.codegraph.{exts,skip-dirs,stack-gitignore}`。
+    （终效 = 索引命中集合，已由 run_index_gate G3/G7/G8 覆盖，此处不重复。）
+    """
+    with prj_guard(["plugins.codegraph.enabled", "plugins.codegraph.exts",
+                    "plugins.codegraph.skip-dirs", "plugins.codegraph.stack-gitignore"]):
+        wd = open_codegraph_tab()
+        shot("a3-codegraph.png")
+        txt = iframe_js("return d.body.textContent||'';") or ""
+        for want in ("启用 codegraph", "索引扩展名", "排除目录", "叠加 .gitignore"):
+            if want not in txt:
+                raise TestError("代码知识库页缺文案 %r（workdir=%r）" % (want, wd))
+        if ".git" not in wd and ":" not in wd:
+            raise TestError("workdir 疑似未回填：%r" % (wd,))
+        # 启用 + 写 ext/skip + 勾选叠加 gitignore → 保存并应用
+        if iframe_toggle("cgEnabled", True) != "on":
+            raise TestError("启用 codegraph 勾选失败")
+        if iframe_set("cgExts", ".go,.py") != ".go,.py":
+            raise TestError("写「索引扩展名」失败")
+        if iframe_set("cgSkip", "node_modules,.chonkpilot") != "node_modules,.chonkpilot":
+            raise TestError("写「排除目录」失败")
+        if iframe_toggle("cgGitignore", True) != "on":
+            raise TestError("勾选「叠加 .gitignore」失败")
+        if iframe_click("cgSave") != "ok":
+            raise TestError("点击「保存并应用」失败")
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            got = prj()
+            if (got.get("plugins.codegraph.exts") == ".go,.py"
+                    and got.get("plugins.codegraph.skip-dirs") == "node_modules,.chonkpilot"
+                    and got.get("plugins.codegraph.stack-gitignore") == "true"
+                    and got.get("plugins.codegraph.enabled") == "true"):
+                break
+            time.sleep(0.5)
+        got = prj()
+        want = {"plugins.codegraph.enabled": "true",
+                "plugins.codegraph.exts": ".go,.py",
+                "plugins.codegraph.skip-dirs": "node_modules,.chonkpilot",
+                "plugins.codegraph.stack-gitignore": "true"}
+        bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
+        if bad:
+            raise TestError("保存后 prj 回读不符（实际, 期望）：%r" % (bad,))
 
 
 def case_a4_index_vfts():
-    """A4 Vfts 全文索引：默认值回显 + 启用开关点击保存并回读 + 编辑后保存落库。
+    """A4 代码知识库（vfts 段）：插件页 iframe 渲染 + 保存落 `plugins.codegraph.vfts.*`。
 
-    2026-09-15 产品改动：VftsConfig.handleIndexSave 改为「仅写入实际改动的键」
-    （未改动 → message「无改动（未写入配置）」，不写项目级键，避免把默认集固化为显式配置）；
-    故先写哨兵值（模拟真实编辑）再点保存，覆盖「保存落库」路径（不放宽断言）。
+    2026-10-26（D-71）改口径：同 A3（页签合并 + 插件 iframe）。断言：
+      启用 vfts + 改扩展名/排除目录 → 「保存并应用」→ prj 回读
+      `plugins.codegraph.vfts.{enabled,exts,skip-dirs}`。
+    （清单终效由 run_index_gate G9 覆盖。）
     """
-    with prj_guard(["enable-vfts", "vfts.exts", "vfts.skip-dirs"]):
-        open_page("settings-project", ".project-config-panel")
-        click_tab("Vfts 全文索引", ".project-config-panel")
-        tas = panel_textareas(".project-config-panel")
-        if len(tas) < 2:
-            raise TestError("Vfts 索引缺两个文本框：%r" % tas)
-        if ".md" not in tas[0]:
-            raise TestError("Vfts 扩展名默认值未回显：%r" % tas[0][:120])
-        if "node_modules" not in tas[1]:
-            raise TestError("Vfts 排除目录默认值未回显：%r" % tas[1][:120])
-        st = find_switch_by_label(".project-config-panel", "Vfts 全文索引")
-        if not st:
-            raise TestError("未找到 Vfts 启用开关")
-        want = "false" if st["checked"] else "true"
-        if click_switch_by_label(".project-config-panel", "Vfts 全文索引") != "ok":
-            raise TestError("点击 Vfts 启用开关失败")
-        if prj().get("enable-vfts") != want:
-            raise TestError("点击后 enable-vfts=%r，期望 %r" % (prj().get("enable-vfts"), want))
-        # 编辑扩展名文本框（哨兵值）→ 保存 → 按键值落库
-        sentinel = ".md\n.txt\n.probe-a4"
-        set_panel_textarea(".project-config-panel", 0, sentinel)
-        if click_primary(".project-config-panel", "保存") != "ok":
-            raise TestError("点击 Vfts 保存按钮失败")
-        time.sleep(0.8)
-        if prj().get("vfts.exts") != sentinel:
-            raise TestError("保存后 vfts.exts 未按文本框值落库：%r" % (prj().get("vfts.exts"),))
-        # 「重置」：清项目级键并回填默认镜像（本波新增按钮/能力）
-        r = ev(panel_js(".project-config-panel",
-                        "const b=[...R.querySelectorAll('button')].filter(x=>x.getBoundingClientRect().width>0)"
-                        ".find(x=>x.textContent.trim()==='重置');if(!b)return 'no-btn';b.click();return 'ok';"))
-        if r != "ok":
-            raise TestError("Vfts「重置」按钮缺失/点击失败：%s" % r)
-        time.sleep(0.8)
-        if prj().get("vfts.exts") not in (None, ""):
-            raise TestError("「重置」后 vfts.exts 未清除：%r" % (prj().get("vfts.exts"),))
-        if ".md" not in (panel_textareas(".project-config-panel") or [""])[0]:
-            raise TestError("「重置」后文本框未回填默认镜像")
+    with prj_guard(["plugins.codegraph.vfts.enabled", "plugins.codegraph.vfts.exts",
+                    "plugins.codegraph.vfts.skip-dirs"]):
+        open_codegraph_tab()
+        txt = iframe_js("return d.body.textContent||'';") or ""
+        for want in ("启用 vfts", "索引扩展名", "排除目录"):
+            if want not in txt:
+                raise TestError("代码知识库页 vfts 段缺文案 %r" % (want,))
+        if iframe_toggle("vfEnabled", True) != "on":
+            raise TestError("启用 vfts 勾选失败")
+        if iframe_set("vfExts", ".md,.txt") != ".md,.txt":
+            raise TestError("写 vfts「索引扩展名」失败")
+        if iframe_set("vfSkip", "node_modules") != "node_modules":
+            raise TestError("写 vfts「排除目录」失败")
+        if iframe_click("vfSave") != "ok":
+            raise TestError("点击 vfts「保存并应用」失败")
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            got = prj()
+            if (got.get("plugins.codegraph.vfts.enabled") == "true"
+                    and got.get("plugins.codegraph.vfts.exts") == ".md,.txt"
+                    and got.get("plugins.codegraph.vfts.skip-dirs") == "node_modules"):
+                break
+            time.sleep(0.5)
+        got = prj()
+        want = {"plugins.codegraph.vfts.enabled": "true",
+                "plugins.codegraph.vfts.exts": ".md,.txt",
+                "plugins.codegraph.vfts.skip-dirs": "node_modules"}
+        bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
+        if bad:
+            raise TestError("vfts 保存后 prj 回读不符（实际, 期望）：%r" % (bad,))
 
 
 # ══════════════════════════════════════════════════════════
@@ -592,12 +636,18 @@ def case_b1_llm_list_params():
         for r in llm_rows():
             if set(r["btns"]) - {"编辑", "删除"}:
                 raise TestError("一览行操作应仅编辑/删除：%r" % r)
-        # ③ 默认模型页签：主对话 + 5 子系统
+        # ③ 默认模型页签：主对话 + 3 个子系统
+        # （2026-10-25 口径：`llm.analysis` / `llm.decision` 预留键移除——后端零消费方，
+        # 见 SettingsLLMPage.vue subsystems；故不再断言「分析系统」「决策系统」。）
         click_tab("默认模型", ".settings-page")
         dtxt = panel_text(".settings-page")
-        for want in ("主对话", "提示词优化", "记忆系统", "压缩上下文", "分析系统", "决策系统"):
+        for want in ("主对话", "提示词优化", "记忆系统", "压缩上下文"):
             if want not in dtxt:
                 raise TestError("默认模型页缺 %r（实际 %r）" % (want, dtxt))
+        for gone in ("分析系统", "决策系统"):
+            if gone in dtxt:
+                raise TestError("默认模型页不应再有已移除子系统 %r（2026-10-25 预留键已删）：%r"
+                                % (gone, dtxt))
         # 回到一览，继续弹窗/保存断言
         click_tab("一览", ".settings-page")
         # 添加弹窗
@@ -1884,13 +1934,32 @@ def main():
             ("E4 记忆类别提示词编辑（出厂默认回填/来源提示/保存落 capability 文件/重置回落；OP-04）", case_e4_memory_prompt_edit),
             ("F 设置页无「MCPServerConfig」死项", case_f_no_mcp_server_config_dead),
             ("G 恢复默认（原语 app 无/project 有+回填）+ 知识库右键无「复制到项目级」", case_g_restore_default_and_ctxmenu),
-            ("D「文件历史」开关点击保存 → 重启 GUI 回读", case_d_history_restart),
-            ("D2 文件历史 UI 细节：保留策略落库+重启回读 · 只读时间轴/空态分流 · 清空历史(取消/确定)",
-             case_d2_history_ui_details),
         ]:
             total += 1
             ok += run_case(name, fn)
-    errs = c.console()
+    # D / D2 在**套件级快照还原之后**跑（上面 with 已退出 → 底座配置已回滚）。
+    # 「独立实例 + 重启回读」体例先停底座实例（本脚本 2345）：2026-10-26 实测两个 GUI 进程
+    # 同时在场时，第二个实例 WebView2 首帧被显著拖慢（12.5s 建环境 + 26s 首帧；套件负载下
+    # >120s）→ 测试通道就绪超时（D/D2 假红）。这两个用例只用自己起的实例。
+    # 底座即将停止 → 必须先在有 client 时完成套件级（usr+prj）还原，否则退出期 atexit 还原
+    # 撞上已关闭的实例（WinError 10061）；同时**先取一次控制台错误**（停实例后测试通道不可用）。
+    _h.flush_config_guards()
+    try:
+        errs = c.console()
+    except Exception:
+        errs = {"entries": []}
+    try:
+        _GUI.stop()
+    except Exception:
+        pass
+    time.sleep(1.0)
+    for name, fn in [
+        ("D「文件历史」开关点击保存 → 重启 GUI 回读", case_d_history_restart),
+        ("D2 文件历史 UI 细节：保留策略落库+重启回读 · 只读时间轴/空态分流 · 清空历史(取消/确定)",
+         case_d2_history_ui_details),
+    ]:
+        total += 1
+        ok += run_case(name, fn)
     for e in (errs.get("entries") or []):
         if e.get("level") in ("error",):
             print("  [CONSOLE-ERROR] %s" % e.get("text"))

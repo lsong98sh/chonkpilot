@@ -1,35 +1,22 @@
 // INBOX 持久化（data-inbox-* 内部面）用例：写入 / 列表 / 状态更新 / 幂等 / 上限 / 重启保留。
 //
+// 一树一库：inbox 行落**对话库**（`dialogs/dialog-<hex>.db`），故请求一律带 `dialog_id`。
+//
 // 设计：docs/agent-chat/中途插话设计方案.md §6.2.3。
 package persist_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
-// disableSessionShard 显式退回旧布局（本文件用例断言 prjusr `inbox_items` 行为；
-// P3-4d 起 shard 生效时缺 dialog_id 会明确失败）。写入 prj 层，跨重启仍有效。
-func disableSessionShard(t *testing.T, inst string) {
+func inboxAppend(t *testing.T, bus mq.Bus, dialogID, session, typ, content, idem string) map[string]any {
 	t.Helper()
-	prj, release, err := data.Prj(inst)
-	if err != nil {
-		t.Fatalf("data.Prj(%s): %v", inst, err)
-	}
-	defer release()
-	if err := prj.Table("config").Upsert("session.db.shard", data.Record{"v": "off"}); err != nil {
-		t.Fatalf("set shard=off: %v", err)
-	}
-}
-
-func inboxAppend(t *testing.T, bus mq.Bus, session, typ, content, idem string) map[string]any {
-	t.Helper()
-	data := map[string]any{"session": session, "type": typ, "content": content}
+	data := map[string]any{"session": session, "type": typ, "content": content, "dialog_id": dialogID}
 	if idem != "" {
 		data["idempotency_key"] = idem
 	}
@@ -44,10 +31,10 @@ func respResult(res map[string]any) map[string]any {
 	return r
 }
 
-func inboxList(t *testing.T, bus mq.Bus, session, status string) []any {
+func inboxList(t *testing.T, bus mq.Bus, dialogID, session, status string) []any {
 	t.Helper()
 	payload := map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session": session},
+		"instance_id": "ins-test", "data": map[string]any{"session": session, "dialog_id": dialogID},
 	}
 	if status != "" {
 		payload["data"].(map[string]any)["status"] = status
@@ -60,13 +47,14 @@ func inboxList(t *testing.T, bus mq.Bus, session, status string) []any {
 func TestInboxAppendListUpdate(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	dialogID, _ := newDialog(t, "ins-test", "s1")
 
-	a := inboxAppend(t, bus, "s1", "next_turn", "第一条", "")
-	b := inboxAppend(t, bus, "s1", "insert", "第二条", "")
+	a := inboxAppend(t, bus, dialogID, "s1", "next_turn", "第一条", "")
+	b := inboxAppend(t, bus, dialogID, "s1", "insert", "第二条", "")
 	if strOf(a["id"]) == "" || strOf(b["id"]) == "" {
 		t.Fatalf("append 应返回 id：%+v / %+v", a, b)
 	}
-	items := inboxList(t, bus, "s1", "")
+	items := inboxList(t, bus, dialogID, "s1", "")
 	if len(items) != 2 {
 		t.Fatalf("pending 应 2 条（got %d）", len(items))
 	}
@@ -77,20 +65,22 @@ func TestInboxAppendListUpdate(t *testing.T) {
 
 	// 消费第一条 → pending 只剩 1
 	dataCall(t, bus, "data-inbox-update", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"id": strOf(a["id"]), "status": "consumed"},
+		"instance_id": "ins-test",
+		"data":        map[string]any{"id": strOf(a["id"]), "status": "consumed", "dialog_id": dialogID},
 	})
-	if items := inboxList(t, bus, "s1", ""); len(items) != 1 {
+	if items := inboxList(t, bus, dialogID, "s1", ""); len(items) != 1 {
 		t.Fatalf("消费后 pending 应 1 条（got %d）", len(items))
 	}
-	if items := inboxList(t, bus, "s1", "consumed"); len(items) != 1 {
+	if items := inboxList(t, bus, dialogID, "s1", "consumed"); len(items) != 1 {
 		t.Fatalf("consumed 应 1 条（got %d）", len(items))
 	}
 
 	// 类型互转（next_turn → insert）
 	dataCall(t, bus, "data-inbox-update", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"id": strOf(b["id"]), "type": "insert"},
+		"instance_id": "ins-test",
+		"data":        map[string]any{"id": strOf(b["id"]), "type": "insert", "dialog_id": dialogID},
 	})
-	items = inboxList(t, bus, "s1", "")
+	items = inboxList(t, bus, dialogID, "s1", "")
 	if len(items) != 1 || strOf(items[0].(map[string]any)["type"]) != "insert" {
 		t.Fatalf("类型互转未生效：%+v", items)
 	}
@@ -99,13 +89,14 @@ func TestInboxAppendListUpdate(t *testing.T) {
 func TestInboxIdempotencyKey(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	dialogID, _ := newDialog(t, "ins-test", "s1")
 
-	a := inboxAppend(t, bus, "s1", "next_turn", "去重", "k-1")
-	b := inboxAppend(t, bus, "s1", "next_turn", "去重", "k-1")
+	a := inboxAppend(t, bus, dialogID, "s1", "next_turn", "去重", "k-1")
+	b := inboxAppend(t, bus, dialogID, "s1", "next_turn", "去重", "k-1")
 	if strOf(a["id"]) != strOf(b["id"]) {
 		t.Fatalf("同幂等键应返回同一 id：%v vs %v", a["id"], b["id"])
 	}
-	if items := inboxList(t, bus, "s1", ""); len(items) != 1 {
+	if items := inboxList(t, bus, dialogID, "s1", ""); len(items) != 1 {
 		t.Fatalf("幂等不得重复入库（got %d）", len(items))
 	}
 }
@@ -113,17 +104,18 @@ func TestInboxIdempotencyKey(t *testing.T) {
 func TestInboxLimit50(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	dialogID, _ := newDialog(t, "ins-test", "s1")
 
 	for i := 0; i < 50; i++ {
-		if res := inboxAppend(t, bus, "s1", "next_turn", "m", ""); strOf(res["id"]) == "" {
+		if res := inboxAppend(t, bus, dialogID, "s1", "next_turn", "m", ""); strOf(res["id"]) == "" {
 			t.Fatalf("第 %d 条应成功：%+v", i+1, res)
 		}
 	}
-	res := inboxAppend(t, bus, "s1", "next_turn", "m51", "")
+	res := inboxAppend(t, bus, dialogID, "s1", "next_turn", "m51", "")
 	if ok, _ := res["ok"].(bool); ok {
 		t.Fatalf("第 51 条应被拒绝：%+v", res)
 	}
-	if items := inboxList(t, bus, "s1", ""); len(items) != 50 {
+	if items := inboxList(t, bus, dialogID, "s1", ""); len(items) != 50 {
 		t.Fatalf("上限后应仍为 50（got %d）", len(items))
 	}
 }
@@ -152,19 +144,30 @@ func TestInboxPersistsAcrossRestart(t *testing.T) {
 	}
 
 	bus1, svc1 := start()
-	disableSessionShard(t, "ins-test")
-	inboxAppend(t, bus1, "s1", "insert", "重启前的插话", "")
+	pudb, err := data.PrjUsr("ins-test")
+	if err != nil {
+		t.Fatalf("PrjUsr: %v", err)
+	}
+	dialogID, err := data.NewDialogID()
+	if err != nil {
+		t.Fatalf("NewDialogID: %v", err)
+	}
+	_, release, err := data.OpenDialog(pudb.Path(), dialogID)
+	if err != nil {
+		t.Fatalf("OpenDialog: %v", err)
+	}
+	inboxAppend(t, bus1, dialogID, "s1", "insert", "重启前的插话", "")
 	svc1.Stop()
 	_ = bus1.Close()
+	release()
 	data.Reset()
 
 	bus2, svc2 := start()
 	defer func() { svc2.Stop(); _ = bus2.Close(); data.Reset() }()
-	items := inboxList(t, bus2, "s1", "")
+	items := inboxList(t, bus2, dialogID, "s1", "")
 	if len(items) != 1 || strOf(items[0].(map[string]any)["content"]) != "重启前的插话" {
 		t.Fatalf("重启后 pending 应保留：%+v", items)
 	}
-	_ = context.Background()
 }
 
 // TestInboxSessionDeleteCascade：`data-session-delete` 级联删除该会话 inbox（含 pending），
@@ -172,30 +175,34 @@ func TestInboxPersistsAcrossRestart(t *testing.T) {
 func TestInboxSessionDeleteCascade(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	dialogID, _ := newDialog(t, "ins-test", "s1")
+	dialog2, _ := newDialog(t, "ins-test", "s2-gee") // 另一个对话：删主会话 = 删整对话，故隔离
 
 	// ensure-turn 会建会话行（走主路径：会话存在 → 级联）。
-	if got := mqCall(t, bus, "ensure-turn", map[string]any{"turn_id": "t1", "session_id": "s1"}); got["ok"] != true {
+	if got := mqCall(t, bus, "ensure-turn", map[string]any{
+		"turn_id": "t1", "session_id": "s1", "dialog_id": dialogID,
+	}); got["ok"] != true {
 		t.Fatalf("ensure-turn: %+v", got)
 	}
-	inboxAppend(t, bus, "s1", "next_turn", "随会话删除", "")
-	inboxAppend(t, bus, "s2", "next_turn", "其他会话保留", "")
+	inboxAppend(t, bus, dialogID, "s1", "next_turn", "随会话删除", "")
+	inboxAppend(t, bus, dialog2, "s2", "next_turn", "其他会话保留", "")
 
-	if got := mqCall(t, bus, "delete", map[string]any{"id": "s1"}); got["ok"] != true {
+	if got := mqCall(t, bus, "delete", map[string]any{"id": "s1", "dialog_id": dialogID}); got["ok"] != true {
 		t.Fatalf("data-session-delete: %+v", got)
 	}
-	if items := inboxList(t, bus, "s1", "all"); len(items) != 0 {
+	if items := inboxList(t, bus, dialogID, "s1", "all"); len(items) != 0 {
 		t.Fatalf("会话删除应级联清空 inbox（got %d）", len(items))
 	}
-	if items := inboxList(t, bus, "s2", "all"); len(items) != 1 {
+	if items := inboxList(t, bus, dialog2, "s2", "all"); len(items) != 1 {
 		t.Fatalf("其他会话 inbox 不应被波及（got %d）", len(items))
 	}
 
 	// 幂等删除不存在的会话 → 仍收敛其孤儿行。
-	inboxAppend(t, bus, "s9", "next_turn", "孤儿行", "")
-	if got := mqCall(t, bus, "delete", map[string]any{"id": "s9"}); got["ok"] != true {
+	inboxAppend(t, bus, dialog2, "s9", "next_turn", "孤儿行", "")
+	if got := mqCall(t, bus, "delete", map[string]any{"id": "s9", "dialog_id": dialog2}); got["ok"] != true {
 		t.Fatalf("幂等删除: %+v", got)
 	}
-	if items := inboxList(t, bus, "s9", "all"); len(items) != 0 {
+	if items := inboxList(t, bus, dialog2, "s9", "all"); len(items) != 0 {
 		t.Fatalf("删除不存在会话也应清理孤儿 inbox 行（got %d）", len(items))
 	}
 }

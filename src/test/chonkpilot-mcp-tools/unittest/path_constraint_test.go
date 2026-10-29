@@ -7,7 +7,9 @@
 // 2026-10-25（PLUGIN-SPLIT-1）：**file 域 11 工具已随 file 插件迁出主仓**
 // （`chonkpilot-plugins/file`，执行体 = 插件自身 MCP server，`chonkpilot-tools-executor.exe` 已删除）；
 // 其路径约束回归改为进程内用例：`chonkpilot-plugins/file/lib/toolset/path_constraint_test.go`。
-// 本文件只保留 script_run / web_fetch（仍在主仓 executor）。
+// 2026-10-28（P2-3）：`script_run` 已迁为 task 插件的 `task_run`（`chonkpilot-script-executor.exe` 已删除），
+// 其路径约束回归改为插件内用例：`chonkpilot-plugins/task/lib/scriptrun/exec_test.go`。
+// 本文件只保留 web_fetch（仍在主仓 executor）。
 package chonkpilotmcptools
 
 import (
@@ -57,8 +59,6 @@ func baseEnv() map[string]string {
 func exeForTool(t *testing.T, tool string) string {
 	t.Helper()
 	switch tool {
-	case "script_run":
-		return distExe(t, "chonkpilot-script-executor.exe")
 	case "web_fetch":
 		return distExe(t, "chonkpilot-web-executor.exe")
 	default:
@@ -118,12 +118,6 @@ func TestPathConstraintRejectsRelative(t *testing.T) {
 		args map[string]any
 		want string // 错误消息须含的原值
 	}{
-		{"script_run.file", "script_run",
-			map[string]any{"runtime": "python", "file": "s.py"}, "s.py"},
-		{"script_run.workdir", "script_run",
-			map[string]any{"runtime": "cmd", "script": "echo hi", "workdir": "sub"}, "sub"},
-		{"script_run.interpreter", "script_run",
-			map[string]any{"runtime": "python", "script": "print(1)", "interpreter": "python"}, "python"},
 		{"web_fetch.save_as", "web_fetch",
 			map[string]any{"url": "http://127.0.0.1:1/never", "save_as": "out.bin"}, "out.bin"},
 		{"web_fetch.form_files[].path", "web_fetch",

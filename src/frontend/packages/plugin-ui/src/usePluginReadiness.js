@@ -19,6 +19,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { pluginById, subscribePluginChange } from './usePlugins'
 import { pluginUIPageURL } from './pluginUiRoute.js'
+import { pluginHost, pluginHostReady } from './host.js'
 
 /** 首次加载超时（毫秒）：超时即视为未就绪（iframe 常因 404 空文档而**不**触发 load 之外的可观测信号）。 */
 export const LOAD_TIMEOUT_MS = 3000
@@ -29,6 +30,17 @@ export const AUTO_RETRY_DELAY_MS = 800
 
 /** 宿主只在该状态下经 UDS 提供资源（`pluginmgr.UIAsset` 的唯一放行值）。 */
 const READY_STATUS = 'running'
+
+/**
+ * 当前承载插件页的窗口实例 id（PLUGIN-INSTANCE-1；宿主端口未注入 / 未提供该能力 → 空串）。
+ * 只读一次、不缓存：窗口实例在会话内不变。
+ */
+function hostInstanceId() {
+  if (!pluginHostReady()) return ''
+  const inst = pluginHost().instance
+  if (!inst || typeof inst.currentId !== 'function') return ''
+  return inst.currentId() || ''
+}
 
 /**
  * @param {{pluginId: string, pageId: string, entry: string}} props 组件 props
@@ -57,8 +69,13 @@ export function usePluginReadiness(props) {
   const src = computed(() => {
     if (!props.entry) return 'about:blank'
     const base = pluginUIPageURL(props.pluginId, props.entry)
-    const query = `p=${encodeURIComponent(props.pageId)}` + (seq.value ? `&t=${seq.value}` : '')
-    return `${base}?${query}`
+    const query = [`p=${encodeURIComponent(props.pageId)}`]
+    // PLUGIN-INSTANCE-1：插件页归属 = **承载它的窗口实例**（宿主端口注入；未注入 → 不带该键，
+    // 与旧格式逐字节等价）。插件进程自己的 instance 是另一命名空间，禁止混用。
+    const iid = hostInstanceId()
+    if (iid) query.push(`instance_id=${encodeURIComponent(iid)}`)
+    if (seq.value) query.push(`t=${seq.value}`)
+    return `${base}?${query.join('&')}`
   })
 
   const showFrame = computed(() => stage.value === 'loading' || stage.value === 'ready')
@@ -105,6 +122,11 @@ export function usePluginReadiness(props) {
       loadTimer = null
       if (stage.value !== 'loading') return
       fail('timeout')
+      // 超时也要能自愈：首帧慢（WebView2 首次建 frame / 机器繁忙 / 插件刚拉起）不应让插件页
+      // **永久**停在占位——此前只有「探活失败」才排自动重试，一旦首帧超过 LOAD_TIMEOUT_MS，
+      // iframe 被卸掉、`load` 永不再来，状态栏 badge 就永远显示「页面加载超时」。
+      // 与探活失败共用同一自动重试预算（AUTO_RETRY_LIMIT）；非 running 时仍由 plugin-status 驱动。
+      scheduleAutoRetry()
     }, LOAD_TIMEOUT_MS)
   }
 

@@ -11,18 +11,17 @@
 #
 # 部署副本（D-28 产物分区，见 [41 D-28]）：
 #   other   = dist/other/capability    （mcp-server / mcp-gateway 共用，权威副本）
-#   desktop = dist/desktop/capability  （桌面单体发行根）
-#   server  = dist/server/capability   （gui/browser 共用服务端发行根）
+#   desktop = dist/desktop/capability  （桌面单体发行根；唯一形态，无 dist/server）
 #
 # 用法：
 #   .\sync-contracts.ps1                        # 默认：dist/other + dist/desktop 都同步
-#   .\sync-contracts.ps1 -Dist desktop          # 只同步 dist/desktop（也接受 other / server）
+#   .\sync-contracts.ps1 -Dist desktop          # 只同步 dist/desktop（也接受 other）
 #   .\sync-contracts.ps1 -Check                 # 只报漂移，不写盘（有漂移时退出码 1）
 #
 # 幂等：重复执行无副作用；只写 4 类契约 md（*.tool.md/*.skill.md/*.prompt.md/*.resource.md），
 # 不触碰 capability/ 下的 executor exe。
 param(
-    [ValidateSet("other", "desktop", "server", "dist-other", "dist-desktop", "dist-server")]
+    [ValidateSet("other", "desktop", "dist-other", "dist-desktop")]
     [string[]]$Dist = @("other", "desktop"),
     [switch]$Check
 )
@@ -34,7 +33,6 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $allTargets = [ordered]@{
     "other" = Join-Path $root "dist\other\capability"
     "desktop" = Join-Path $root "dist\desktop\capability"
-    "server" = Join-Path $root "dist\server\capability"
 }
 $targetNames = @()
 foreach ($d in $Dist) {

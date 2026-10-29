@@ -9,6 +9,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
 
 // Service 是 snapshot 域门面实现（inline 绑定直接持有本类型）。
@@ -24,28 +25,19 @@ func New() *Service { return &Service{} }
 
 // SnapshotGet 读会话快照（无快照 → Found=false，不是错误）。
 //
-// 布局选择（P3）：`DialogID` 非空 → 对话库（一树一库，**不创建**、无旧行迁移）；
-// 空 → 旧布局（`sessions/<hex>/`，保留 `MigrateFromCatalog` 幂等搬运）。
+// 一树一库：`DialogID` 必填 → **会话组件**（读不建库）；缺 → `dialog_required`。
 func (s *Service) SnapshotGet(req facade.SnapshotGetRequest) (facade.SnapshotGetResponse, error) {
 	if req.SessionID == "" {
 		return facade.SnapshotGetResponse{}, errors.New("snapshot: session_id required")
+	}
+	if req.DialogID == "" {
+		return facade.SnapshotGetResponse{}, kernel.ErrDialogRequired
 	}
 	catalog, err := resolvePrjUsr(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SnapshotGetResponse{}, err
 	}
-	sdb, release, err := openSnapshotDB(catalog, req.DialogID, req.SessionID)
-	if err != nil {
-		return facade.SnapshotGetResponse{}, err
-	}
-	defer release()
-	if req.DialogID == "" {
-		// 旧布局：历史快照（内嵌在 prjusr.sessions 行）→ 会话库（幂等、非破坏）。
-		if err := MigrateFromCatalog(catalog, sdb, req.SessionID); err != nil {
-			return facade.SnapshotGetResponse{}, err
-		}
-	}
-	snap, ok, err := Get(sdb, req.SessionID)
+	snap, ok, err := GetInDialog(catalog.Path(), req.DialogID, req.SessionID)
 	if err != nil {
 		return facade.SnapshotGetResponse{}, err
 	}
@@ -55,36 +47,22 @@ func (s *Service) SnapshotGet(req facade.SnapshotGetRequest) (facade.SnapshotGet
 	return facade.SnapshotGetResponse{Found: true, Snapshot: data.SnapshotToFacade(req.SessionID, snap)}, nil
 }
 
-// SnapshotSet 写回会话快照（会话由 Snapshot.SessionID 指定；布局选择同 SnapshotGet）。
+// SnapshotSet 写回会话快照（会话由 Snapshot.SessionID 指定；布局口径同 SnapshotGet）。
 func (s *Service) SnapshotSet(req facade.SnapshotSetRequest) (facade.SnapshotSetResponse, error) {
 	if req.Snapshot.SessionID == "" {
 		return facade.SnapshotSetResponse{}, errors.New("snapshot: session_id required")
+	}
+	if req.DialogID == "" {
+		return facade.SnapshotSetResponse{}, kernel.ErrDialogRequired
 	}
 	catalog, err := resolvePrjUsr(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SnapshotSetResponse{}, err
 	}
-	sdb, release, err := openSnapshotDB(catalog, req.DialogID, req.Snapshot.SessionID)
-	if err != nil {
-		return facade.SnapshotSetResponse{}, err
-	}
-	defer release()
-	if req.DialogID != "" {
-		if err := SetInDialog(sdb, req.Snapshot.SessionID, data.SnapshotFromFacade(req.Snapshot)); err != nil {
-			return facade.SnapshotSetResponse{}, err
-		}
-	} else if err := Set(catalog, sdb, req.Snapshot.SessionID, data.SnapshotFromFacade(req.Snapshot)); err != nil {
+	if err := SetInDialog(catalog.Path(), req.DialogID, req.Snapshot.SessionID, data.SnapshotFromFacade(req.Snapshot)); err != nil {
 		return facade.SnapshotSetResponse{}, err
 	}
 	return facade.SnapshotSetResponse{OK: true}, nil
-}
-
-// openSnapshotDB 按 dialog_id 是否给出来选库（P3 路由；2G §3.3 不回退）。
-func openSnapshotDB(catalog *data.DB, dialogID, sessionID string) (*data.DB, func(), error) {
-	if dialogID != "" {
-		return data.OpenExistingDialog(catalog.Path(), dialogID)
-	}
-	return data.OpenSession(catalog.Path(), sessionID)
 }
 
 // resolvePrjUsr 定位实例的 prjusr 主库（会话/快照所在层，12-数据层）：按数据组件的

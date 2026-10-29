@@ -1,5 +1,11 @@
 <template>
-  <span class="b-icon" :class="{ 'is-loading': name === 'loading' }" :style="{ fontSize: size + 'px', color: color }" v-html="iconSvg" />
+  <span
+    class="b-icon"
+    :class="{ 'is-loading': isSpinning, 'is-missing': isMissing }"
+    :style="style"
+    :title="isMissing ? `未定义图标：${name}` : undefined"
+    v-html="content"
+  />
 </template>
 
 <script setup>
@@ -7,12 +13,29 @@ import { computed } from 'vue'
 import { icons } from './icons'
 
 const props = defineProps({
-  name: { type: String, required: true },
+  name: { type: String, default: '' },
   size: { type: [Number, String], default: 16 },
-  color: { type: String, default: 'currentColor' }
+  color: { type: String, default: 'currentColor' },
+  /** 未定义图标名的兜底字符；传 '' 则什么都不渲染 */
+  fallback: { type: String, default: '·' }
 })
 
-const iconSvg = computed(() => icons[props.name] || '')
+const warned = new Set()
+
+const iconSvg = computed(() => {
+  if (!props.name) return ''
+  const hit = icons[props.name]
+  if (!hit && !warned.has(props.name)) {
+    warned.add(props.name)
+    console.warn(`[Icon] 未定义的图标名：${props.name}（请补到 components/icon/icons.js）`)
+  }
+  return hit || ''
+})
+
+const isMissing = computed(() => !!props.name && !iconSvg.value)
+const content = computed(() => iconSvg.value || (isMissing.value ? props.fallback : ''))
+const isSpinning = computed(() => props.name === 'loading')
+const style = computed(() => ({ fontSize: props.size + 'px', color: props.color }))
 </script>
 
 <style scoped>
@@ -29,6 +52,10 @@ const iconSvg = computed(() => icons[props.name] || '')
 }
 .b-icon.is-loading :deep(svg) {
   animation: b-icon-spin 0.7s linear infinite;
+}
+.b-icon.is-missing {
+  line-height: 1;
+  opacity: 0.45;
 }
 @keyframes b-icon-spin {
   from { transform: rotate(0deg); }

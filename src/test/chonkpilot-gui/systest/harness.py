@@ -370,6 +370,43 @@ def ensure_locale(client, locale="zh-CN", timeout=60):
     return False
 
 
+def reload_and_settle(client, max_wait=120):
+    """刷新页面并等**新文档**渲染线程可用（返回 True/False）。
+
+    **必要性（2026-10-27 全量批跑定位）**：共享工作区的 prjusr 会随套件累积（数百对话库 /
+    会话列表），`location.reload()` 后首屏重建可让 WebView2 渲染线程**连续阻塞数十秒** ——
+    期间宿主管线仍正常（`/ping` 2ms），但 `/eval` 一律 `ExecuteScript timed out`，导致
+    紧随其后的断言整条误红（run_inbox INBOX-S1 · run_llm_errors RETRY-1 · run_tool_async F/G）。
+    做法：先埋 `window.__ckReloadMark`，重载后等标记消失（= 新文档）+ 输入框出现 + **连续两次**
+    评估成功（排除"旧文档尚可应答"的假就绪）。
+
+    调用方无需再自行 sleep；超时返回 False（由调用方决定是否失败）。
+    """
+    try:
+        client.eval("window.__ckReloadMark = '1'; location.reload(); 'ok'")
+    except Exception:
+        pass
+    deadline = time.time() + max_wait
+    stable = 0
+    while time.time() < deadline:
+        try:
+            raw = client.eval(
+                "JSON.stringify({m: typeof window.__ckReloadMark,"
+                " i: document.querySelectorAll('[contenteditable=\"true\"]').length || 0})", 8000)
+            st = json.loads(_plain(raw)) if isinstance(_plain(raw), str) else _plain(raw)
+        except Exception:
+            stable = 0
+            continue
+        if isinstance(st, dict) and st.get("m") == "undefined" and int(st.get("i") or 0) >= 1:
+            stable += 1
+            if stable >= 2:
+                return True
+        else:
+            stable = 0
+        time.sleep(0.5)
+    return False
+
+
 def tmp_home(prefix="ck-home-"):
     """独立 HOME：子实例 USERPROFILE/HOME 指向该目录 → usr 主库全新，不碰机器 ~/.chonkpilot。"""
     return tmp_dir(prefix)
@@ -527,18 +564,16 @@ def ensure_llm_configured(client, name="mock-llm", model="mock-model", base_url=
         client.req("data-user-config-save", {"data": patch})
     # ChatPanel 在**挂载时**一次性读 usr llms；本函数在 start() 之后调用 → 必须重载页面
     # 才能让新配置生效（否则 llmOptions 仍为空、发送仍被 S25 拦截）。
+    # 2026-10-27（42 (290)）：重载会按 `active_session_id` 恢复上一活动会话——共享 work-dir 下
+    # 可能是个 MB 级大历史，WebView2 渲染线程被首屏占满数十秒（`/eval` 超时 → 后续用例假红）。
+    # 故先**建**一个空会话并把活动位指向它，再用 `reload_and_settle` 等「新文档 + 渲染线程真正可应答」。
+    # （`active-set` 指向不存在的会话会被 `active-get` 判失效并回落「最近会话」，故必须先 ensure-session。）
     try:
-        client.eval("location.reload(); 'ok'")
+        client.req("data-session-ensure-session", {"data": {"session_id": "llmcfg-bootstrap"}}, timeout=8000)
+        client.req("data-session-active-set", {"session_id": "llmcfg-bootstrap"}, timeout=8000)
     except Exception:
         pass
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        try:
-            if _plain(client.eval("!!document.querySelector('[contenteditable][data-drop-target=\"chat-input\"]')")) in (True, 'true'):
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
+    reload_and_settle(client)
     # 选中本函数保证可用的条目：usr 主库不受 work-dir 隔离，他套件遗留的默认 LLM
     # （如 8901 的 mock）可能已死 → 不显式选中会让 llm-start 静默失败（无忙碌态 / 断言串扰）。
     # 需要特定 LLM 的套件在 ensure 之后自行 `chat-select-llm` 覆盖（run_llm / test_queue 等）。
@@ -729,6 +764,16 @@ def suite_config_guard(client, keys=None):
     snap = snapshot_config(cl)
     _CONFIG_GUARDS.append((client, snap))
     return snap
+
+
+def flush_config_guards():
+    """**立即**执行已登记的套件级还原（供「中途要停掉 client 所属实例」的套件在 stop 前调用）。
+
+    背景：`suite_config_guard` 的还原挂在 `atexit`（先于 GUI 回收，client 仍可用）。但若套件在
+    退出前**主动 `stop()` 了底座实例**（如本套件的 D/D2 走独立实例体例），退出期还原已无连接
+    （`WinError 10061`）→ 必须先在有 client 时还原，再停实例。
+    """
+    _restore_config_guards()
 
 
 def _restore_config_guards():

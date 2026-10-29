@@ -75,7 +75,8 @@ def main():
     open(os.path.join(DATA_DIR, "chonkpilot.db"), "w").close()
 
     hang_srv = start_hang_llm()
-    gui = GUIClient(port=PORT, data_dir=DATA_DIR)
+    # 2026-10-26：独立 work-dir（inbox 落 prjusr；共享 ws → 队列徽章基数被其它套件污染）。
+    gui = GUIClient(port=PORT, data_dir=DATA_DIR, work_dir=os.path.join(DATA_DIR, "ws"))
     c = Checker()
     snap = None
     try:

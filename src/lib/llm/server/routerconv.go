@@ -18,9 +18,7 @@
 package server
 
 import (
-	"strings"
-
-	"github.com/lsong98sh/chonkpilot-router"
+	"github.com/lsong98sh/chonkpilot-agent/router"
 )
 
 // ToRouterMessage 转换单条 chat 消息：纯文本 → 单个 text 块（Content 为空 → 无内容块）。
@@ -36,18 +34,6 @@ func ToRouterMessage(m ChatMsg) router.Message {
 		msg.Content = []router.Part{{Type: router.PartText, Text: m.Content}}
 	}
 	return msg
-}
-
-// FromRouterMessage 把 canonical 消息转回 chat 消息（文本块拼接；Meta 恒为空，见文件头）。
-func FromRouterMessage(m router.Message) ChatMsg {
-	return ChatMsg{
-		Role:       string(m.Role),
-		Kind:       m.Kind,
-		Content:    textFromParts(m.Content),
-		ToolCallID: m.ToolCallID,
-		ToolCalls:  FromRouterToolCalls(m.ToolCalls),
-		Reasoning:  m.Reasoning,
-	}
 }
 
 // ToRouterToolCalls 把 chat 工具调用转换为 canonical（Index = 位置序）。
@@ -77,21 +63,4 @@ func FromRouterToolCalls(calls []router.ToolCall) []ToolCall {
 		out = append(out, ToolCall{ID: c.ID, Name: c.Name, Arguments: c.Arguments})
 	}
 	return out
-}
-
-// textFromParts 拼接文本块（canonical → 快照；图片块不入快照，见文件头）。
-func textFromParts(parts []router.Part) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	if len(parts) == 1 && parts[0].Type == router.PartText {
-		return parts[0].Text
-	}
-	var sb strings.Builder
-	for _, p := range parts {
-		if p.Type == router.PartText {
-			sb.WriteString(p.Text)
-		}
-	}
-	return sb.String()
 }

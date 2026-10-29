@@ -189,7 +189,8 @@ export function chonkStatusbar() {
     // 长任务状态条目：记忆提取 / 上下文压缩（数据源 = tool-notify；点击 → preview 详情页）
     barView('sb_memory_status', 'left', 'memory-status'),
     barView('sb_compress_status', 'left', 'compress-status'),
-    barView('sb_index', 'left', 'index-badge'),
+    // 索引进度徽标已归插件（PLUGIN-UI-2）：由 codegraph 插件的 `ui.statusbar[].view=badge`
+    // 动态提供（`pluginBarItems`），**不写入布局文档**（插件禁用即消失）。
     barButton('sb_devtools', 'right', 'DevTools', 'terminal', pmq('gui.devtools.open', {}), { style: 'icon' }),
     barView('sb_lang', 'right', 'lang-switcher'),
   ])

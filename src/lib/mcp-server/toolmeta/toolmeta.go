@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/transport"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/transport"
 )
 
 // pluginID 是插件桥身份（与既有 server-tools 一致：能力面审计/归属不变）。
@@ -43,6 +43,9 @@ type Context struct {
 	Turn       string
 	ToolCallID string
 	Purpose    string
+	// WorkDir 是承载窗口的会话工作目录（宿主准入 49 §2.19：插件调工具必须带，
+	// 否则会被判 not_a_chonkpilot_project）。
+	WorkDir string
 }
 
 // Bridge 是插件桥连接参数（core-mcp-server 的 Config.BridgeAddr / BridgeToken）。
@@ -387,6 +390,7 @@ func metaInvoke(ctx context.Context, cli transport.Conn, in call) (string, bool)
 	}
 	out, err := callPlugin(ctx, cli, "plugin/v1/tools.call", map[string]any{
 		"name": name, "arguments": args,
+		"work_dir":     in.cx.WorkDir, // 宿主准入（49 §2.19）：缺它会被判 not_a_chonkpilot_project
 		"instance_id":  in.cx.InstanceID,
 		"session":      in.cx.Session,
 		"turn":         in.cx.Turn,

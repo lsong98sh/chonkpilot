@@ -8,7 +8,7 @@ import (
 
 	data "github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // newFacadeBridgeEnv 建「桥 + 同总线 persist」测试环境。

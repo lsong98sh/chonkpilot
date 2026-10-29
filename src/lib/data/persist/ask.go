@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 )
 
 // handleAsk 分发 data-ask-<action>（当前仅 pending）。
@@ -14,7 +15,7 @@ func (s *Service) handleAsk(action string, payload []byte) {
 	method := "data-ask-" + action
 	var p AskPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		s.failID(method, p.ReqID, err)
+		s.failDecode(method, payload, err)
 		return
 	}
 	f := p.fields()
@@ -31,6 +32,6 @@ func (s *Service) handleAsk(action string, payload []byte) {
 			s.failID(method, p.ReqID, err)
 			return
 		}
-		s.replyID(method, p.ReqID, map[string]any{"ok": resp.OK, "items": resp.Items})
+		s.replyID(method, p.ReqID, wire.InboxItemsPayload{OK: resp.OK, Items: resp.Items})
 	}
 }

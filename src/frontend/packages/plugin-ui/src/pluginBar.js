@@ -45,6 +45,24 @@ export function pluginBarItems(zone) {
     if (!p || p.enabled === false) continue
     for (const s of p.statusbar || []) {
       if ((s.zone || 'right') !== zone) continue
+      // PLUGIN-UI-2：条目指定 `view` → 栏内**内嵌插件视图**（`plugin:<id>:<view>` iframe），
+      // 内容与尺寸由插件自持（`ui.views[].default_size`）；宿主不再读插件业务状态键。
+      if (s.view) {
+        const view = (p.views || []).find((v) => v.id === s.view)
+        const size = (view && (view.default_size || view.defaultSize)) || {}
+        out.push({
+          id: `plugin_${p.id}_${s.id}`,
+          kind: 'view',
+          zone,
+          viewKey: `plugin:${p.id}:${s.view}`,
+          instanceKey: null,
+          width: Number(size.width) || 0,
+          height: Number(size.height) || 0,
+          label: s.tooltip || p.name,
+          tooltip: s.tooltip || p.name,
+        })
+        continue
+      }
       const command = normalizeCommand(p, s.command)
       if (!command) continue
       out.push({

@@ -5,7 +5,7 @@
   T1  L315 任务不存在提示（.td-empty）
   T3  L137 取消/撤回后待发内容写回输入框（含附件 → chip 回显）
   T4  L222 项目配置-总结提示词「重置」（原「通用能力/提示词」页签已按 CFG-009 摘除 → 迁移）
-  T5  L232 索引状态实时更新（CodeGraph 页签 + data-prj-config-refresh 订阅）
+  T5  L232 索引状态可观测（「代码知识库」插件页 iframe → 【读取状态】输出引擎 state）
   T6a L257 场景智能体基本信息字段（名称/角色/LLM/描述；委托条件随子智能体引用化移入「扩展·智能体」）
   T6b L259 场景智能体工具过滤（按来源分组勾选）
   T6c L260 子智能体 = agents/ 引用（「选择智能体」选择器 + 无添加/复制按钮）
@@ -328,28 +328,94 @@ def case_prompt_reset():
     return True
 
 
-# ── T5 索引状态实时更新（L232；原「代码索引」页签 → 现 CodeGraph 索引页） ──
+# ── T5 索引状态可观测（L232；D-71 后 = 「代码知识库」插件页 iframe） ──
+
+def _kb_iframe(inner):
+    """在「项目设置 → 代码知识库」插件 iframe 内执行 inner（变量 d = iframe document）。"""
+    return _loads_deep(c.eval("""(() => {
+      const ps = [...document.querySelectorAll('.project-config-panel')].filter(e => e.getBoundingClientRect().width > 0);
+      const P = ps[ps.length - 1];
+      if (!P) return 'no-panel';
+      const f = P.querySelector('iframe');
+      if (!f) return 'no-frame';
+      const d = f.contentDocument;
+      if (!d) return 'no-doc';
+      %s
+    })()""" % inner, 8000))
+
+
+def _open_code_kb():
+    """打开「项目设置 → 代码知识库」并等 iframe 就绪（`load` 回填 workdir）。"""
+    open_project_cfg_panel()
+    if switch_cfg_tab(r"^(代码知识库|Code KB)$") != "ok":
+        raise TestError("未找到「代码知识库」页签")
+    end = time.time() + 30
+    last = None
+    while time.time() < end:
+        last = _kb_iframe("return (d.getElementById('workdir')||{}).value||'';")
+        if isinstance(last, str) and last:
+            time.sleep(0.5)
+            return last
+        time.sleep(0.5)
+    raise TestError("「代码知识库」iframe 未就绪（workdir 未回填：%r）" % (last,))
+
+
+def _as_text(v):
+    """把 eval 结果归一为文本（`#out` 内容若本身是合法 JSON，会被 `_loads_deep` 解析成 dict）。"""
+    if isinstance(v, str):
+        return v
+    try:
+        return json.dumps(v, ensure_ascii=False)
+    except Exception:
+        return str(v)
+
+
+def _kb_read_status():
+    """点【读取状态】（codegraph_status + vfts_status）并等 `#out` 出现引擎状态字段。
+
+    `#out` 每次 `dump` 覆盖：`loadStatus` 先 codegraph_status 后 vfts_status → 末次内容为
+    vfts 状态（`indexedFiles` / `chunkCount` / `enabled`…）；codegraph 侧含 `state`。
+    判据 = 输出含任一状态字段（证明插件动作面 `tool.call` 真答）。
+    """
+    r = _kb_iframe("const b=d.getElementById('loadStatus');if(!b)return 'no-btn';b.click();return 'ok';")
+    if r != "ok":
+        raise TestError("代码知识库缺【读取状态】按钮：%r" % (r,))
+    end = time.time() + 60
+    txt = ""
+    marks = ("state", "indexedFiles", "chunkCount", "enabled")
+    while time.time() < end:
+        txt = _as_text(_kb_iframe("return (d.getElementById('out')||{}).textContent||'';") or "")
+        if any(m in txt for m in marks):
+            return txt
+        time.sleep(0.6)
+    raise TestError("【读取状态】未输出引擎状态字段（末次输出=%r）" % (txt[:200],))
+
 
 def case_codeindex_refresh():
-    """L232 索引状态实时更新：CodeGraph 页状态文案 + data-prj-config-refresh 订阅重载无异常。"""
-    open_project_cfg_panel()
-    if switch_cfg_tab(r".*CodeGraph.*") != "ok":
-        raise TestError("未找到 CodeGraph 索引页签")
-    if not wait_el(".cg-state-text"):
-        raise TestError("CodeGraph 状态文案未渲染")
-    before = _loads_deep(c.eval("(document.querySelector('.cg-state-text')||{}).textContent")) or ""
-    if not before.strip():
-        raise TestError("CodeGraph 状态文案为空")
-    # 注入 data-prj-config-refresh → 组件订阅自动重载（无异常即通过）
+    """L232 索引状态可观测（2026-10-26 D-71 改口径）。
+
+    主仓 CodegraphConfig.vue 已下线（原 `.cg-state-text` 状态文案随页移除）→ 索引状态改由
+    codegraph 插件页（「项目设置 → 代码知识库」同源 iframe，`webui/config.html`）承载。断言：
+      ① 点【读取状态】→ 插件动作面 `tool.call`（codegraph_status + vfts_status）→ `#out`
+         输出含引擎状态字段（`state` / `indexedFiles` / `chunkCount`…；**状态可观测**，
+         等价原状态文案）；
+      ② 注入 `data-prj-config-refresh`（配置保存广播）后再点【读取状态】仍能读到状态
+         （刷新链路不打断插件页/引擎），且无相关控制台错误。
+    （索引终效与状态真值由 `run_index_gate` G3/G7/G8/G9 覆盖，此处不重复。）
+    """
+    _open_code_kb()
+    before = _kb_read_status()
+    # 注入 data-prj-config-refresh → 插件页/宿主无异常，状态仍可读
     c.eval('window.mq.emitRemote({type: "data-prj-config-refresh", payload: JSON.stringify({id: "codegraph", op: "save"}), src: "data"})')
-    time.sleep(0.8)
-    after = _loads_deep(c.eval("(document.querySelector('.cg-state-text')||{}).textContent")) or ""
+    time.sleep(1.0)
+    after = _kb_read_status()
     if not after.strip():
-        raise TestError("刷新后 CodeGraph 状态文案为空（订阅重载异常）")
+        raise TestError("刷新后【读取状态】无输出（链路中断）")
     console = c.console(True)
     for e in console.get("entries", []):
         if e.get("level") in ("error", "warning") and "code" in (e.get("text") or "").lower():
-            raise TestError(f"代码索引刷新出现控制台错误: {e.get('text')}")
+            raise TestError(f"代码知识库刷新出现控制台错误: {e.get('text')}")
+    print("    [T5] 状态输出片段: %s" % (before[:80].replace("\n", " "),), flush=True)
     return True
 
 
@@ -683,7 +749,7 @@ def main():
         total += 1; ok += run_case("T1 任务不存在提示（L315）", case_task_not_found)
         total += 1; ok += run_case("T3 排队消息写回输入框（L137）", case_queue_restore)
         total += 1; ok += run_case("T4 总结提示词重置（L222）", case_prompt_reset)
-        total += 1; ok += run_case("T5 索引状态实时更新（L232）", case_codeindex_refresh)
+        total += 1; ok += run_case("T5 索引状态可观测（L232）", case_codeindex_refresh)
         total += 1; ok += run_case("T6a 智能体基本信息字段（L257）", case_agent_basic_fields)
         total += 1; ok += run_case("T6b 智能体工具过滤（L259）", case_agent_tools_filter)
         total += 1; ok += run_case("T6c 子智能体 = agents/ 引用（选择器 + 无添加/复制按钮，L260）", case_agent_copy)

@@ -64,7 +64,7 @@ func TestToolAsyncOverrideUserConfigHotReload(t *testing.T) {
 	writeAsyncToolContract(t, appRoot, "ta_tool", []string{"async=auto", "async-threshold=30", "timeout=60"})
 	s := newTestServerMCPAppRoot(t, llm, appRoot)
 
-	const tool = "self_ta_tool" // 暴露名 = self 节点前缀 + 契约名（gateway applyPrefix）
+	const tool = "ta_tool" // P0a 2026-10-29：暴露名 = 契约名（self 节点不再加前缀）
 	// ① 未配置 → 契约现值（async 不显式透出；autothreshold/timeout 按契约）
 	base := toolMetaOf(t, s, tool)
 	if base == nil {
@@ -78,6 +78,7 @@ func TestToolAsyncOverrideUserConfigHotReload(t *testing.T) {
 	}
 
 	// ② 保存 usr tool_async（mode=always / threshold=5 / hard_timeout=7）
+	// 键故意用**历史暴露名 `self_ta_tool`**（P0a 前的存量配置形态）→ 断言两写法都认（兼容）。
 	raw := `{"self_ta_tool":{"mode":"always","threshold":5,"hard_timeout":7}}`
 	saveTestUserConfig(t, s, map[string]any{toolAsyncUserConfigKey: raw})
 

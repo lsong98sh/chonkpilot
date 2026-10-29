@@ -99,10 +99,27 @@ func mcpFromMap(name, level string, obj map[string]any) facade.McpServer {
 }
 
 // mcpToMap 把门面 DTO 转文件字段 map（name/level 由文件名与所在级承载，capfs.WriteMcpFile 会剔除）。
-func mcpToMap(s facade.McpServer) map[string]any {
-	b, _ := json.Marshal(s)
+//
+// 未知字段保留（round-trip）：`srv.Extra`（DTO 未声明的字段，来源 = 载荷 `data` 中 DTO 不认识的键）
+// **并入落盘 map 的顶层**；与已知字段同名 → **已知字段优先**，未知侧丢弃并留痕（日志出口 Warnf）。
+// `Extra` 为空时输出与改前逐字节一致（纯已知字段的落盘内容不变）。
+func (s *Service) mcpToMap(srv facade.McpServer) map[string]any {
+	b, _ := json.Marshal(srv)
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
+	if len(srv.Extra) == 0 {
+		return m
+	}
+	known := facade.McpServerFields()
+	for k, v := range srv.Extra {
+		if known[k] {
+			if s.Warnf != nil {
+				s.Warnf("mcp: 未知字段 %q 与已知字段同名，已丢弃（已知字段优先）", k)
+			}
+			continue
+		}
+		m[k] = v
+	}
 	return m
 }
 
@@ -132,27 +149,50 @@ func (s *Service) McpList(req facade.McpListRequest) (facade.McpListResponse, er
 	return facade.McpListResponse{List: list}, nil
 }
 
-// McpGet 按名定位（Level 空 = 具体级优先 prjusr → project → user → app）。
-func (s *Service) McpGet(req facade.McpGetRequest) (facade.McpGetResponse, error) {
-	if req.Name == "" {
-		return facade.McpGetResponse{}, errors.New("name required")
-	}
-	levels := s.mcpLevelsFor(req.InstanceID, req.Scope)
+// lookupMcpFile 按名定位磁盘定义（Level 空 = 具体级优先 prjusr → project → user → app），
+// 返回**文件原始字段 map** + 命中级别。未命中 → ok=false。
+func (s *Service) lookupMcpFile(instanceID, name, level string, scope facade.Scope) (map[string]any, string, bool) {
+	levels := s.mcpLevelsFor(instanceID, scope)
 	order := capfs.PriorityOrder()
-	if req.Level != "" {
-		order = []string{req.Level}
+	if level != "" {
+		order = []string{level}
 	}
 	for _, want := range order {
 		for _, lv := range levels {
 			if lv.Kind != want {
 				continue
 			}
-			if obj, ok := capfs.ReadMcpFile(lv.Root, req.Name); ok {
-				return facade.McpGetResponse{Server: mcpFromMap(req.Name, lv.Kind, obj)}, nil
+			if obj, ok := capfs.ReadMcpFile(lv.Root, name); ok {
+				return obj, lv.Kind, true
 			}
 		}
 	}
-	return facade.McpGetResponse{}, errors.New("mcp server not found: " + req.Name)
+	return nil, "", false
+}
+
+// McpGet 按名定位（Level 空 = 具体级优先 prjusr → project → user → app）。
+func (s *Service) McpGet(req facade.McpGetRequest) (facade.McpGetResponse, error) {
+	if req.Name == "" {
+		return facade.McpGetResponse{}, errors.New("name required")
+	}
+	obj, kind, ok := s.lookupMcpFile(req.InstanceID, req.Name, req.Level, req.Scope)
+	if !ok {
+		return facade.McpGetResponse{}, errors.New("mcp server not found: " + req.Name)
+	}
+	return facade.McpGetResponse{Server: mcpFromMap(req.Name, kind, obj)}, nil
+}
+
+// McpGetRaw 按名定位并返回**文件原始字段 map**（含 DTO 未声明字段；只读）。
+// 读侧 DTO（Get / List）照旧忽略未知字段 —— 需要 round-trip 原样字段的调用方走本方法。
+func (s *Service) McpGetRaw(req facade.McpGetRequest) (facade.McpGetRawResponse, error) {
+	if req.Name == "" {
+		return facade.McpGetRawResponse{}, errors.New("name required")
+	}
+	obj, _, ok := s.lookupMcpFile(req.InstanceID, req.Name, req.Level, req.Scope)
+	if !ok {
+		return facade.McpGetRawResponse{}, errors.New("mcp server not found: " + req.Name)
+	}
+	return facade.McpGetRawResponse{Raw: obj}, nil
 }
 
 // McpSave 保存 MCP server（按 Server.Level 落对应级 `<名>.json`；Level 空 = 用户级）。
@@ -175,7 +215,7 @@ func (s *Service) McpSave(req facade.McpSaveRequest) (facade.McpSaveResponse, er
 			}
 		}
 	}
-	if err := capfs.WriteMcpFile(root, srv.Name, mcpToMap(srv)); err != nil {
+	if err := capfs.WriteMcpFile(root, srv.Name, s.mcpToMap(srv)); err != nil {
 		return facade.McpSaveResponse{}, err
 	}
 	s.RefreshScoped("mcp", req.InstanceID, srv.Name, "save", req.Scope)

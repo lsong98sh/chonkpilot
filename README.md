@@ -6,7 +6,7 @@ Windows 桌面 AI 助手 / IDE 工具。**Go + Vue3**（自研 go-webview2 宿�
 chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实现 = src/lib/gui）
    └─ server 编排（src/lib/llm/server）→ persist 数据面（src/lib/data）→ filesys（src/lib/filesys）
       ＋ MCP 能力面（src/lib/mcp-server 内嵌 / src/lib/gateway 聚合）
-      ＋ executor 执行层（src/lib/mcp-tools，spawn-on-call）＋ 插件（src/plugins/plugin-*）
+      ＋ executor 执行层（src/lib/mcp-tools，spawn-on-call）＋ 进程外插件（同级仓 chonkpilot-plugins）
 ```
 
 > **测试唯一准则**：消息与 payload 以 [61-消息一览](docs/spec/60-reference/61-消息一览.md) 为基准，**禁止增 / 改 / 删**（见 [.trae/rules/测试准则.md](.trae/rules/测试准则.md)）。
@@ -57,26 +57,26 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 
 ## 目录布局
 
-> src / dist 结构重整已落地（[41 D-28](docs/spec/40-roadmap/41-未决项登记.md)）：壳 → `src/{desktop,gui,server,others}`，lib → `src/lib/*`，插件与引擎 → `src/plugins/*`。
+> src / dist 结构重整已落地（[41 D-28](docs/spec/40-roadmap/41-未决项登记.md)）：壳 → `src/desktop`，lib → `src/lib/*`，插件与引擎 → 同级仓 `chonkpilot-plugins`。
 
 | 类别 | 位置 | 说明 |
 |---|---|---|
-| 外壳 · 宿主 | `src/desktop/` | **桌面单体**壳（`main.go` = 嵌前端 dist + `gui.FormDesktop`）；`cli/` = CLI 单体 |
-| | `src/gui/` | **GUI 客户端**壳（`-tags split`）；`frontend/dist/` = 客户端 embed 落点 |
-| | `src/server/` | 独立 server 壳（gui 与 browser **共用**同一份 exe） |
-| | `src/others/` | 协议外壳：`mcp-server/` + `mcp-gateway/` |
-| 库 | `src/lib/gui/` | 宿主实现（**唯一一份** `Main(distFS, Options{Form})`）+ `bridge/` + `models/`（两壳共用） |
-| | `src/lib/core/` | 公共底座：`mq` / `dsl` / `paths` / `winlog` / `winsvc` / `exedir` / `agentbox` / `heartbeat` |
-| | `src/lib/llm/` | 会话 / LLM server 编排（`server/` + `httpapi/`） |
-| | `src/lib/router/` | LLM 路由（provider 选择 / 重试 / 用量） |
+| 外壳 · 宿主 | `src/desktop/` | **桌面单体唯一壳**（`main.go` = 嵌前端 dist + `gui.FormDesktop`） |
+| | `src/others/` | 协议外壳：`mcp-server/` + `mcp-gateway/` 两个 exe（`build-mcp-*.ps1` 产出） |
+| 库 | `src/lib/gui/` | 业务侧：`host/`（单体装配 `Main`）+ `bridge/`（业务 MQ 桥）+ `mqpolicy/`；窗口层 / models / 单例 = 同级仓 `chonkpilot-framework/host` |
+| | `chonkpilot-framework/host`（同级仓） | 平台基座：`core/`（`mq` / `msgkeys` / `paths` / `winlog` / `winsvc` / `exedir` / `heartbeat` / `uds` / `pluginclient` / `transport` / `tray` …）+ `gui/`（窗口层）+ `singleinstance` |
+| | `src/lib/llm/` | 会话 / LLM server 编排（`server/` + `coretools/` + `contracts/`） |
 | | `src/lib/data/` | persist 数据面（`data-*` 应答）+ bbolt 存储内核 + `facade/` |
 | | `src/lib/filesys/` | 文件树 / 变更跟踪 / 内容提供 |
-| | `src/lib/mcp-server/` · `src/lib/gateway/` | MCP 契约服务（四原语）/ 网关聚合（servers / tasks / 熔断） |
-| | `src/lib/mcp-tools/` | executor 执行层（`core` / `desktop` / `browser`）+ `*.tool.md` 契约 |
-| | `src/lib/task/` · `src/lib/assembly/` | 任务层 / 装配层 |
-| | `src/lib/go-webview2/` | 自研 WebView2 宿主 fork（vendored） |
-| 前端 | `src/frontend/` | 前端源码工程（Vue3，仓库级）：`index.html` = browser 入口（→ `dist/server/www/`）· `embed.html` = GUI/embed 入口（构建后改名 `index.html` 投放 `src/{gui,desktop,server}/frontend/dist`） |
-| 插件 / 引擎 | `src/plugins/` | `plugin`（接口）+ `plugin-{compress,history,memory,vfts,codegraph}` + `codegraph` / `vfts` 引擎本体 |
+| | `src/lib/mcp-server/` | MCP 契约服务（四原语）+ core-mcp-server |
+| | `src/lib/gwadapter/` | 同级仓 `chonkpilot-agent/gateway` 的宿主侧适配面 |
+| | `src/lib/mcp-tools/` | executor 执行层（`fetch` / `fileops` / `scriptrun`）+ `*.tool.md` 契约 |
+| | `src/lib/task/` · `src/lib/assembly/` · `src/lib/appwire/` | 任务层 / 装配层 / 宿主装配 |
+| | `chonkpilot-framework/plugin`（同级仓） | 插件对接面：`sdk/` `protocol/` `runtime/` `contract/` + `bridge/` + `mgr/`（按 `plugin.ini` 拉起进程外插件） |
+| | ~~`src/lib/go-webview2/`~~ | 已剥离为独立仓 `chonkpilot-webview2`（本地克隆与主仓同级，`replace` 指向） |
+| 前端 | `src/frontend/` | 前端源码工程（Vue3，仓库级）；vite 产物直投 `src/desktop/frontend/dist`（go:embed） |
+| 插件 / 引擎 | `chonkpilot-plugins/`（同级仓） | 9 个进程外插件 + codegraph/vfts 引擎；主仓 `src/plugins/` **已删除**（2026-10-27） |
+| 契约类型 / 会话 / 路由 / gateway | 同级仓 `chonkpilot-agent` | 单 module 子包 `chat/ router/ session/ gateway/ sandbox/ winproc/ types/`；开发期主仓以本地 `replace` 指向 |
 | 测试代码 | `src/test/` | 每模块 `unittest/`（Go 回归）+ `systest/`（Python 端到端，`--test-port` 驱动）；映射见 [51-FP与测试映射](docs/spec/50-testing/51-FP与测试映射.md) |
 | 文档 | `docs/spec/` | **正式规格唯一入口** = [docs/spec/README.md](docs/spec/README.md)（spec 自洽，不引用本目录以外文档） |
 | 配置 / 规则 | `.trae/rules/` · `.trae/skills/` | 项目规则与变更交付技能 |

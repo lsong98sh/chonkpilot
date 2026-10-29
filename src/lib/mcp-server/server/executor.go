@@ -19,7 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/chonkpilot/chonkpilot-lib/winproc"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winproc"
 )
 
 // fileThreshold 是 output=file 模式的内容直接返回阈值（超过返回路径提示）。

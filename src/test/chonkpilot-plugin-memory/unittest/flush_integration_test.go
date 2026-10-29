@@ -26,7 +26,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	memory "github.com/chonkpilot/chonkpilot-plugin-memory"
 	plugin "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
@@ -122,18 +122,23 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 	saveCfg("memory.enabled", "true")
 	// 阈值极大：反证手动沉淀**不受** memory.min-turn-tokens 门控（自动沉淀同配置下必被挡）
 	saveCfg("memory.min-turn-tokens", "999999")
-	// 本用例按旧布局（会话行落 prj 库、调用不带 dialog_id）取证，显式关闭分库
-	saveCfg("session.db.shard", "off")
 
-	// 真实落库：会话 + 最近一轮 + 该轮消息
-	call(t, bus, "data-session-ensure-session", map[string]any{
+	// 真实落库：会话 + 最近一轮 + 该轮消息（一树一库：根会话自举拿 dialog_id，后续调用带上它）
+	ens := call(t, bus, "data-session-ensure-session", map[string]any{
 		"instance_id": "ins-int", "data": map[string]any{"session_id": "s-int"},
 	})
+	ensRes, _ := ens["result"].(map[string]any)
+	dialogID, _ := ensRes["dialog_id"].(string)
+	if dialogID == "" {
+		t.Fatalf("根会话自举应回带 dialog_id：%+v", ens)
+	}
 	call(t, bus, "data-session-ensure-turn", map[string]any{
-		"instance_id": "ins-int", "data": map[string]any{"turn_id": "t-1", "session_id": "s-int"},
+		"instance_id": "ins-int",
+		"data":        map[string]any{"turn_id": "t-1", "session_id": "s-int", "dialog_id": dialogID},
 	})
 	call(t, bus, "data-session-ensure-turn", map[string]any{
-		"instance_id": "ins-int", "data": map[string]any{"turn_id": "t-2", "session_id": "s-int"},
+		"instance_id": "ins-int",
+		"data":        map[string]any{"turn_id": "t-2", "session_id": "s-int", "dialog_id": dialogID},
 	})
 	for _, m := range []map[string]any{
 		{"role": "user", "content": "决定采用 bbolt 做本地存储"},
@@ -141,7 +146,7 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 	} {
 		r := call(t, bus, "data-session-append-message", map[string]any{
 			"instance_id": "ins-int",
-			"data":        map[string]any{"turn_id": "t-2", "msg": m},
+			"data":        map[string]any{"turn_id": "t-2", "dialog_id": dialogID, "msg": m},
 		})
 		if ok, _ := r["ok"].(bool); !ok {
 			t.Fatalf("append-message failed: %+v", r)
@@ -229,9 +234,10 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 		t.Fatalf("sub tool-notify: %v", err)
 	}
 
-	// 触发手动沉淀（payload 与前端 mq.emit 一致：{instance_id, session}）——**投递即回**（I-128）
+	// 触发手动沉淀（payload 与前端 mq.emit 一致：{instance_id, session, dialog_id}；61 §0.6 恒必填）
+	// ——**投递即回**（I-128）
 	v := bus.Emit(context.Background(), "memory.flush", map[string]any{
-		"instance_id": "ins-int", "session": "s-int",
+		"instance_id": "ins-int", "session": "s-int", "dialog_id": dialogID,
 	}).Wait()
 	if err := v.Err(); err != nil {
 		t.Fatalf("memory.flush 派发错误：%v", err)

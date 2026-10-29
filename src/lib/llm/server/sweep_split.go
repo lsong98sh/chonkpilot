@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/heartbeat"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/heartbeat"
 )
 
 // sweepInterval 是实际扫描周期（可注入：测试置短周期；产品路径恒 = heartbeat.Interval，

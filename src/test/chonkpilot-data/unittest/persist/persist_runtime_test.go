@@ -1,6 +1,7 @@
 // A3 运行时扩展面测试：data-session-* 写/读原语（ensure-session/ensure-turn/append-message/
 // set-summary/complete-turn/cleanup-stale/load-messages）+ data-snapshot-*（get/set）+
-// data-tasktree-upsert。总线直驱 persist，落库断言经直连 prj 库（regInstance 已 data.Register）。
+// data-tasktree-upsert。总线直驱 persist，落库断言经**对话库**句柄（一树一库：请求一律带
+// `dialog_id`）。
 // 外部模块黑盒（package persist_test）：经 persist.New/Start/Stop + 总线 data-* 主题驱动；
 // Record 值转字符串用导出等价 persist.Sval（原白盒 svalOf/Sval）。
 package persist_test
@@ -16,7 +17,9 @@ import (
 func TestSessionRuntimePrimitives(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, sdb := newDialog(t, "ins-test", "s1")
 	sess := func(action string, data map[string]any) map[string]any {
+		data["dialog_id"] = d1
 		return dataCall(t, bus, "data-session-"+action, map[string]any{"instance_id": "ins-test", "data": data})
 	}
 
@@ -67,9 +70,8 @@ func TestSessionRuntimePrimitives(t *testing.T) {
 	// set-summary + complete-turn → turns 表直连断言
 	dataResult(t, sess("set-summary", map[string]any{"turn_id": "t1", "summary": "摘要"}))
 	dataResult(t, sess("complete-turn", map[string]any{"turn_id": "t1", "status": "done", "finish_reason": "stop"}))
-	prj, _ := data.PrjUsr("ins-test")
 	var rec data.Record
-	if ok, _ := prj.Table("turns").Get("t1", &rec); !ok {
+	if ok, _ := sdb.Table("turns").Get("t1", &rec); !ok {
 		t.Fatal("turn t1 missing")
 	}
 	if persist.Sval(rec["status"]) != "done" || persist.Sval(rec["finish_reason"]) != "stop" {
@@ -89,7 +91,9 @@ func TestSessionRuntimePrimitives(t *testing.T) {
 func TestSessionCompleteTurnTokens(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, sdb := newDialog(t, "ins-test", "s-tok")
 	sess := func(action string, data map[string]any) map[string]any {
+		data["dialog_id"] = d1
 		return dataResult(t, dataCall(t, bus, "data-session-"+action,
 			map[string]any{"instance_id": "ins-test", "data": data}))
 	}
@@ -99,17 +103,15 @@ func TestSessionCompleteTurnTokens(t *testing.T) {
 		"turn_id": "t-tok", "status": "done", "finish_reason": "stop",
 		"full_tokens": 1234, "brief_tokens": 56,
 	})
-	prj, _ := data.PrjUsr("ins-test")
 	var rec data.Record
-	if ok, _ := prj.Table("turns").Get("t-tok", &rec); !ok {
+	if ok, _ := sdb.Table("turns").Get("t-tok", &rec); !ok {
 		t.Fatal("turn t-tok missing")
 	}
 	if persist.Sval(rec["full_tokens"]) != "1234" || persist.Sval(rec["brief_tokens"]) != "56" {
 		t.Fatalf("预存 token 落库不符：%+v", rec)
 	}
 	// data-session-history 回读（门面 Turn 透出预存值）
-	h := dataResult(t, dataCall(t, bus, "data-session-history",
-		map[string]any{"instance_id": "ins-test", "data": map[string]any{"session_id": "s-tok"}}))
+	h := sess("history", map[string]any{"session_id": "s-tok"})
 	messages, _ := h["messages"].(map[string]any)
 	turns, _ := messages["turns"].([]any)
 	if len(turns) != 1 {
@@ -126,7 +128,7 @@ func TestSessionCompleteTurnTokens(t *testing.T) {
 	sess("ensure-turn", map[string]any{"turn_id": "t-reopen", "session_id": "s-tok"})
 	sess("complete-turn", map[string]any{"turn_id": "t-reopen", "status": "running", "finish_reason": ""})
 	var rec2 data.Record
-	if ok, _ := prj.Table("turns").Get("t-reopen", &rec2); !ok {
+	if ok, _ := sdb.Table("turns").Get("t-reopen", &rec2); !ok {
 		t.Fatal("turn t-reopen missing")
 	}
 	if _, exists := rec2["full_tokens"]; exists {
@@ -140,7 +142,9 @@ func TestSessionCompleteTurnTokens(t *testing.T) {
 func TestSessionContextTurnTokens(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "s-ctx")
 	sess := func(action string, data map[string]any) map[string]any {
+		data["dialog_id"] = d1
 		return dataResult(t, dataCall(t, bus, "data-session-"+action,
 			map[string]any{"instance_id": "ins-test", "data": data}))
 	}
@@ -199,9 +203,9 @@ func TestSessionContextTurnTokens(t *testing.T) {
 func TestSessionCleanupStale(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
-	// 直连种子写 running turn
-	prj, _ := data.PrjUsr("ins-test")
-	tb := prj.Table("turns")
+	// 直连种子写 running turn（落对话库）
+	_, sdb := newDialog(t, "ins-test", "s-stale")
+	tb := sdb.Table("turns")
 	if err := tb.Upsert("t-stale", data.Record{
 		"turn_id": "t-stale", "session_id": "s-stale", "status": "running",
 	}); err != nil {
@@ -225,6 +229,7 @@ func TestSessionCleanupStale(t *testing.T) {
 func TestSnapshotGetSet(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "s-snap")
 	snap := map[string]any{
 		"history": []any{
 			map[string]any{"role": "system", "content": "[已压缩早前对话] sum"},
@@ -233,10 +238,11 @@ func TestSnapshotGetSet(t *testing.T) {
 		"snapshot_turn": "t9",
 	}
 	dataCall(t, bus, "data-snapshot-set", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-snap", "snapshot": snap},
+		"instance_id": "ins-test",
+		"data":        map[string]any{"session_id": "s-snap", "dialog_id": d1, "snapshot": snap},
 	})
 	g := dataResult(t, dataCall(t, bus, "data-snapshot-get", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-snap"},
+		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-snap", "dialog_id": d1},
 	}))
 	got, _ := g["snapshot"].(map[string]any)
 	if got == nil || persist.Sval(got["snapshot_turn"]) != "t9" {
@@ -248,7 +254,7 @@ func TestSnapshotGetSet(t *testing.T) {
 	}
 	// 无快照会话 → snapshot=null
 	g2 := dataResult(t, dataCall(t, bus, "data-snapshot-get", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": "no-snap"},
+		"instance_id": "ins-test", "data": map[string]any{"session_id": "no-snap", "dialog_id": d1},
 	}))
 	if v, ok := g2["snapshot"]; !ok || v != nil {
 		t.Fatalf("no-snapshot want null, got %+v", g2)
@@ -259,8 +265,10 @@ func TestSnapshotGetSet(t *testing.T) {
 func TestTasktreeUpsert(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, sdb := newDialog(t, "ins-test", "s-top1")
 	upsert := func(data map[string]any) {
 		t.Helper()
+		data["dialog_id"] = d1
 		dataCall(t, bus, "data-tasktree-upsert", map[string]any{
 			"instance_id": "ins-test", "data": data,
 		})
@@ -286,9 +294,8 @@ func TestTasktreeUpsert(t *testing.T) {
 		"task_id": "n-llm-done", "top_session": "top1", "session_id": "s-top1",
 		"kind": "llm", "title": "已完成会话节点", "status": "done", "created_at": "2026-01-01T00:00:03Z",
 	})
-	prj, _ := data.PrjUsr("ins-test")
 	var rec data.Record
-	if ok, _ := prj.Table("tasktree").Get("n-llm", &rec); !ok {
+	if ok, _ := sdb.Table("tasktree").Get("n-llm", &rec); !ok {
 		t.Fatal("n-llm missing")
 	}
 	if persist.Sval(rec["node_type"]) != "session" {
@@ -297,14 +304,15 @@ func TestTasktreeUpsert(t *testing.T) {
 	if persist.Sval(rec["status"]) != "running" {
 		t.Fatalf("n-llm status mismatch: %+v", rec)
 	}
-	if ok, _ := prj.Table("tasktree").Get("n-tool", &rec); !ok {
+	if ok, _ := sdb.Table("tasktree").Get("n-tool", &rec); !ok {
 		t.Fatal("n-tool missing")
 	}
 	if persist.Sval(rec["node_type"]) != "tool" || persist.Sval(rec["tool_call_id"]) != "tc-1" {
 		t.Fatalf("n-tool mismatch: %+v", rec)
 	}
 	r := dataResult(t, dataCall(t, bus, "data-tasktree-list", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"top_session": "top1", "mode": "init"},
+		"instance_id": "ins-test",
+		"data":        map[string]any{"top_session": "top1", "mode": "init", "dialog_id": d1},
 	}))
 	nodes, _ := r["nodes"].([]any)
 	// mode=init 仅保留 kind=dsl_job（作业根）或 status=running 的存活节点：

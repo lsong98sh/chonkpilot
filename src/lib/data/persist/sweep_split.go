@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/heartbeat"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/heartbeat"
 )
 
 // staleTimeout 是**缺省**实例心跳超时阈值 = chonkpilot-lib/heartbeat.Timeout（90s = 3× 周期）

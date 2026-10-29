@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	mcpgw "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgw "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // TestSandboxRuleParseAndWritableRoots：`security-*` 的 value 形状 [{dir, writable}] 可解析，

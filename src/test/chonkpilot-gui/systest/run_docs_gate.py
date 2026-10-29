@@ -2,9 +2,9 @@
 """L4 套件：vfts「文档索引（Office/PDF）」端到端（SRCH-007-S04~S07）。
 
 覆盖（每条 = A 数据面回读 + B 可观测效果；B 恒以可观测证据收口）
-  D1 开 `vfts.docs` + 真转换器在跑 → `vfts.status`（`docsEnabled`/`docsService=running`/`docsPort`）
-     + 插件清单（`<workdir>/.chonkpilot/vfts/file_list.json`）含文档类；**检索命中正文**（`self_vfts_query`
-     经既有 `chonk.mcp-tools-call`）。
+  D1 开 `plugins.codegraph.vfts.docs` + 真转换器在跑 → `vfts.status`（`docsEnabled`/`docsService=running`/`docsPort`）
+     + 插件清单（`<workdir>/.chonkpilot/vfts/file_list.json`）含文档类；**检索命中正文**（`vfts_query`
+     经既有 `chonk.mcp-tools-call`；P0a 去 `self_` 前缀后网关暴露名 = 插件清单原名）。
   D2 插件清单文件集合与「非文档 exts ∪ 文档类」**字面全等**（一个不多一个不少）。
   D3 **二次（强制）重建走缓存**：缓存文件集合与 mtime 不变（未重转）→ 证明命中缓存不调 HTTP。
   D4 **停掉转换服务**后强制重建 → 文档类被跳过（清单不再含文档类、`vfts.status.docsService=absent`、
@@ -44,7 +44,7 @@ CONV_EXE = os.path.join(CONV_DIR, "markitdown-mcp.exe")
 CONV_STATE = os.path.join(CONV_DIR, "state.json")
 
 VSTATUS_KEY = "vfts.status"
-VTOOL = "self_vfts_query"
+VTOOL = "vfts_query"
 
 DOC_NAME = "中文文档.docx"
 TXT_NAME = "note.txt"
@@ -312,12 +312,56 @@ def prj_save(k, v):
     return c.req("data-prj-config-save", {"data": {"key": k, "value": v}})
 
 
+def _deep(v, n=4):
+    """循环解包 JSON 字符串（test-port eval 可能把 JSON.stringify 结果再包一层）。"""
+    for _ in range(n):
+        if not isinstance(v, str):
+            return v
+        try:
+            v = json.loads(v)
+        except Exception:
+            return v
+    return v
+
+
+def plugin_api(action, payload=None, timeout=180):
+    """调 codegraph 插件动作面（`POST /plugins/codegraph/api/<action>`，与配置页同一入口）。"""
+    body = json.dumps(json.dumps(payload or {}))
+    c.eval("window.__ckApiRes=null;fetch('/plugins/codegraph/api/%s',{method:'POST',"
+           "headers:{'Content-Type':'application/json','X-CK-Plugin-Id':'codegraph'},body:%s})"
+           ".then(async r=>{window.__ckApiRes={status:r.status,body:await r.text()}})"
+           ".catch(e=>{window.__ckApiRes={status:0,body:String(e)}});'ok'" % (action, body))
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = _deep(c.eval("window.__ckApiRes ? JSON.stringify(window.__ckApiRes) : null"))
+        if isinstance(r, dict):
+            code = r.get("status")
+            raw = r.get("body") or ""
+            try:
+                val = json.loads(raw) if raw else None
+            except Exception:
+                val = raw
+            if code != 200:
+                raise TestError("插件动作 %s 失败（HTTP %s）：%s" % (action, code, str(val)[:300]))
+            return val
+        time.sleep(0.2)
+    raise TestError("插件动作 %s 超时（%ss）" % (action, timeout))
+
+
 def vstatus():
-    raw = prj().get(VSTATUS_KEY) or ""
+    """vfts 状态（**插件自持**，PLUGIN-UI-2）：经插件动作面 `engine-status` 现取。
+
+    2026-10-28 起插件不再回写 prj 键 `vfts.status`（宿主零引用）→ 本门禁改问插件
+    （与配置页 / 状态栏徽标同一数据源）。
+    """
     try:
-        return json.loads(raw)
-    except Exception:
+        r = plugin_api("engine-status", {"workdir": WS, "engine": "vfts"})
+    except TestError:
         return {}
+    if not isinstance(r, dict):
+        return {}
+    v = r.get("vfts")
+    return v if isinstance(v, dict) else {}
 
 
 def filelist_rels():
@@ -384,14 +428,18 @@ def cache_snapshot():
 
 
 def _bootstrap_ready():
-    """写索引配置（enable-vfts + vfts.exts + vfts.docs）并等首个 ready。
+    """写索引配置（vfts 启用 + exts + docs）并等首个 ready。
+
+    配置源（2026-10-26，D-71）：唯一源 = prj 键 `plugins.codegraph.vfts.*`（旧宿主键
+    `enable-vfts` / `vfts.*` 仅由插件一次性迁移使用，写入不再生效）。写 prj → 宿主广播
+    `data-prj-config-refresh` → 插件热下发 `vfts_configure`（含 docs / doc_max_bytes / 缓存目录）。
 
     返回 True = 引擎支持 docs 且就绪；False = 引擎为旧构建（status 无 docsEnabled）→ 上层 SKIP。
     """
-    prj_save("vfts.exts", ".txt")
-    prj_save("vfts.doc-max-mb", "50")
-    prj_save("enable-vfts", "true")
-    prj_save("vfts.docs", "true")
+    prj_save("plugins.codegraph.vfts.exts", ".txt")
+    prj_save("plugins.codegraph.vfts.doc-max-mb", "50")
+    prj_save("plugins.codegraph.vfts.enabled", "true")
+    prj_save("plugins.codegraph.vfts.docs", "true")
 
     def _ready():
         s = vstatus()
@@ -427,8 +475,8 @@ def case_d1_docs_indexed():
         raise TestError("docsPort 应有端口：%r" % s)
     wait_pred(lambda: DOC_NAME in filelist_rels(), "清单含 %s" % DOC_NAME, 60)
 
-    hit_cn = gw_call(VTOOL, {"match": DOC_CN})
-    hit_sent = gw_call(VTOOL, {"match": DOC_SENT})
+    hit_cn = gw_call(VTOOL, {"workdir": WS, "match": DOC_CN})
+    hit_sent = gw_call(VTOOL, {"workdir": WS, "match": DOC_SENT})
     print("[D1] docsService=%s docsPort=%s；命中(中文)=%d 命中(哨兵)=%d"
           % (s.get("docsService"), s.get("docsPort"),
              len(hit_cn.get("hits") or []), len(hit_sent.get("hits") or [])), flush=True)
@@ -457,7 +505,7 @@ def case_d3_cache():
     before = cache_snapshot()
     if not before:
         raise TestError("缓存目录为空：%s（首次索引应写缓存）" % doc_cache_dir())
-    _force_rebuild_via("vfts.doc-max-mb", "51")
+    _force_rebuild_via("plugins.codegraph.vfts.doc-max-mb", "51")
     after = cache_snapshot()
     if set(after) != set(before):
         raise TestError("缓存文件集合变化（应复用同名键）：before=%r after=%r" % (before, after))
@@ -471,7 +519,7 @@ def case_d4_service_down():
     """D4：停掉转换服务 → 强制重建 → 文档类被跳过（清单不含 docx）+ docsService=absent。"""
     stop_converter()
     time.sleep(1)
-    _force_rebuild_via("vfts.doc-max-mb", "52")
+    _force_rebuild_via("plugins.codegraph.vfts.doc-max-mb", "52")
     got = wait_pred(lambda: filelist_rels() if DOC_NAME not in filelist_rels() else None,
                     "清单不再含文档类（服务不可用 → 整批跳过）", 90)
     if TXT_NAME not in got:
@@ -479,7 +527,7 @@ def case_d4_service_down():
     s = vstatus()
     if s.get("docsService") != "absent":
         raise TestError("docsService 应为 absent：%r" % s)
-    sent = gw_call(VTOOL, {"match": DOC_SENT})
+    sent = gw_call(VTOOL, {"workdir": WS, "match": DOC_SENT})
     if sent.get("hits"):
         raise TestError("服务停止后文档正文不应再命中：%r" % sent)
     print("[D4] docsService=absent；file_list=%r；正文命中=%d（已跳过）"

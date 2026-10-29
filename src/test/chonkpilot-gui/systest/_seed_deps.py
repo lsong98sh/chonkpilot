@@ -18,7 +18,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from chonk_client import ChonkClient  # noqa: E402
+from chonk_client import ChonkClient, TestError, dialog_id_for  # noqa: E402
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 2346
 import harness as _h  # 按需加载 + 结束即回收
@@ -38,41 +38,67 @@ OTHER_PAIRS = 3
 SUB_PAIRS = 2
 
 
-def history_count(sid):
-    """当前会话已落库消息数（data-session-history 全量拉取）。"""
-    res = c.req("data-session-history", {
-        "session_id": sid, "target_messages": 1000000, "target_bytes": 1 << 30,
-    })
+def history_count(sid, dlg=""):
+    """当前会话已落库消息数（data-session-history 全量拉取）。
+
+    会话尚不存在时该读主题会因一树一库缺 `dialog_id` 报 `dialog_required`
+    （驱动自愈查不到会话 → 不自举）→ 视为 0 条，交由 ensure 走建库路径。
+
+    `dlg`：显式对话库（子会话与父会话同库；驱动自愈只能按根会话推导，子会话必须由调用方给）。
+    """
+    payload = {"session_id": sid, "target_messages": 1000000, "target_bytes": 1 << 30}
+    if dlg:
+        payload["dialog_id"] = dlg
+    try:
+        res = c.req("data-session-history", payload)
+    except TestError:
+        return 0
     msgs = ((res or {}).get("messages") or {}).get("messages") or []
     return len(msgs)
 
 
-def seed_session(sid, pairs, assistant_fmt, parent_id=""):
+def _with_dlg(payload, dlg):
+    """载荷显式带 `dialog_id`（子会话写路径不经驱动自愈）。"""
+    if dlg:
+        payload = dict(payload)
+        payload["dialog_id"] = dlg
+    return payload
+
+
+def seed_session(sid, pairs, assistant_fmt, parent_id="", dlg=""):
     """建会话 + pairs 轮（每轮 user + assistant 两条，落终态）。"""
-    c.req("data-session-ensure-session", {"session_id": sid, "parent_session_id": parent_id})
+    c.req("data-session-ensure-session", _with_dlg(
+        {"session_id": sid, "parent_session_id": parent_id}, dlg))
     for i in range(pairs):
         turn_id = "%s-t%04d" % (sid, i)
-        c.req("data-session-ensure-turn", {"turn_id": turn_id, "session_id": sid})
-        c.req("data-session-append-message", {
+        c.req("data-session-ensure-turn", _with_dlg({"turn_id": turn_id, "session_id": sid}, dlg))
+        c.req("data-session-append-message", _with_dlg({
             "turn_id": turn_id,
             "msg": {"role": "user", "kind": "text-user", "content": "user-%s-%03d" % (sid, i)},
-        })
-        c.req("data-session-append-message", {
+        }, dlg))
+        c.req("data-session-append-message", _with_dlg({
             "turn_id": turn_id,
             "msg": {"role": "assistant", "content": assistant_fmt % i},
-        })
-        c.req("data-session-complete-turn", {
+        }, dlg))
+        c.req("data-session-complete-turn", _with_dlg({
             "turn_id": turn_id, "status": "done", "finish_reason": "stop",
-        })
+        }, dlg))
 
 
-def ensure(sid, pairs, assistant_fmt, parent_id=""):
-    if history_count(sid) >= pairs * 2:
+def ensure(sid, pairs, assistant_fmt, parent_id="", dlg=""):
+    if history_count(sid, dlg) >= pairs * 2:
         print("  [skip] %s 已有足量消息" % sid)
         return
-    c.req("data-session-delete", {"id": sid})  # 级联清理旧数据（幂等）
-    seed_session(sid, pairs, assistant_fmt, parent_id)
-    print("  [seed] %s -> %d 条" % (sid, history_count(sid)))
+    try:
+        c.req("data-session-delete", _with_dlg({"id": sid}, dlg))  # 级联清理旧数据（幂等）
+    except TestError:
+        pass  # 会话不存在（一树一库缺 dialog_id）→ 无需删除
+    # 删除会级联删对话库 → 驱动缓存的 dialog_id 已失效；显式 dlg 的调用不受影响，
+    # 无 dlg 时清掉缓存，避免后续写路径继续注入已删除的库（"对话库不存在"）。
+    if not dlg:
+        c._dlg_cache.pop(sid, None)
+    seed_session(sid, pairs, assistant_fmt, parent_id, dlg)
+    print("  [seed] %s -> %d 条" % (sid, history_count(sid, dlg)))
 
 
 def main():
@@ -83,7 +109,9 @@ def main():
     # other 会话：末条须含 "other text"（B4 断言最新内容）
     ensure(SID_OTHER, OTHER_PAIRS, "other text %d")
     # 子会话（带 parent，非顶层）：B9 只读跟随 viewer
-    ensure(SUB_ID, SUB_PAIRS, "sub text %d", parent_id=SID_MAIN)
+    # 一树一库口径（42 (284)）：子会话行与**父会话同库** → 显式给父会话的 dialog_id；
+    # 不给的话驱动会按子会话 id 推一个独立库（前端经父会话反推 → 读不到该子会话）。
+    ensure(SUB_ID, SUB_PAIRS, "sub text %d", parent_id=SID_MAIN, dlg=dialog_id_for(SID_MAIN))
     print("造数完成。")
 
 

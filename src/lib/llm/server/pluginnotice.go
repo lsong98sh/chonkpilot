@@ -20,7 +20,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 

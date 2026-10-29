@@ -11,15 +11,13 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // askRecord 是 data-ask-pending 回查项（宿主侧视图，字段与 data 面一致）。
 type askRecord struct {
-	AskID string `json:"ask_id"`
-	// DialogID 该 ask 所在对话（一树一库时回带；调用方据此续期到该对话）。
-	DialogID   string `json:"dialog_id"`
+	AskID      string `json:"ask_id"`
 	SessionID  string `json:"session_id"`
 	TurnID     string `json:"turn_id"`
 	ToolCallID string `json:"tool_call_id"`

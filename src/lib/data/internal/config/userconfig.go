@@ -55,13 +55,11 @@ var userConfigKeyKinds = map[string]string{
 	// 子系统默认 LLM（SL-1，2026-09-24 · 40-演进计划 §SL）：值 = llmref（同 defaultLLM），
 	// **仅 usr**（SL-C1 —— 不入 inheritableConfigKeys）；语义 = 该子系统自己的默认模型，
 	// **空串 / 键缺失 → 回落全局 defaultLLM**（SL-C3/C4，回落点见 readUserConfig）；读侧同样
-	// 兼容旧 int 索引。键名与消费方见 64-配置项一览 §3；分析 / 决策为**备用**（消费方未实现，
-	// 仅登记预留位 —— SL-C6）。
+	// 兼容旧 int 索引。键名与消费方见 64-配置项一览 §3。
+	// 2026-10-25：`llm.analysis` / `llm.decision` 移除（后端零消费方）。
 	"llm.promptOptimise": "llmref",
 	"llm.memory":         "llmref",
 	"llm.compress":       "llmref",
-	"llm.analysis":       "llmref",
-	"llm.decision":       "llmref",
 }
 
 // 多记录集合：usr 专用表。
@@ -98,6 +96,18 @@ var userConfigFreeKeys = map[string]bool{
 	// 注（OP-04，2026-10-06）：原 `memory_prompts`（用户级记忆类别沉淀提示词）自由键**已移除**
 	// —— 记忆类别提示词改**文件化**（`capability/system/memory/<类别名>.md`，走 prompt 域
 	// `memory_prompt.<类别名>` 键；读序 项目→用户→系统→embed），键载体不再存在。
+	//
+	// toolchain.<runtime>.minVersion（P2-3 ③，2026-10-28）：**可选**最小版本要求（点分数字版本
+	// 文本，空 = 不校验 = 默认）。runtime 键与工具链探测 id 对齐（java/python/node/go/rust/c/chrome）。
+	// 消费方 = **前端** `src/frontend/src/utils/toolchainGuide.js`（路径配置 → 系统页签读 usr
+	// 视图后本地判定并提示；`gui.toolchain.detect` 载荷不变）。**只提示、不阻断任何工具调用/命令执行**。
+	"toolchain.java.minVersion":   true,
+	"toolchain.python.minVersion": true,
+	"toolchain.node.minVersion":   true,
+	"toolchain.go.minVersion":     true,
+	"toolchain.rust.minVersion":   true,
+	"toolchain.c.minVersion":      true,
+	"toolchain.chrome.minVersion": true,
 }
 
 // UserConfigID 是 user-config 域的整体记录 id（`data-user-config-save` 应答键 `id` 与
@@ -194,6 +204,15 @@ func readUserConfig(db *data.DB) map[string]any {
 					out[key] = n
 					continue
 				}
+			case "bool":
+				// RETRY-2 autoContinue：存储恒为字符串（"true"/"false"），读回必须还原 bool
+				// （此前缺该分支 → 同一字段时而 bool 时而 string，前端与消费方判定不一致）。
+				if b, err := strconv.ParseBool(v); err == nil {
+					out[key] = b
+					continue
+				}
+				out[key] = false
+				continue
 			case "llmref":
 				// LLM 选择（2026-09-15）：能解析为整数 → **旧记录 int 索引**（兼容，原样回读为 int）；
 				// 否则按 name 字符串回读（含空串 = 显式「系统默认（启动参数）」，与键缺失可区分）。

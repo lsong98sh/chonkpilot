@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 

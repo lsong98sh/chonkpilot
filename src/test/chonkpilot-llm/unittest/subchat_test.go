@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // evtRec 订阅全通配（相对主题）并按主题归集事件（mq 监听断言；对齐白盒 busRecorder）。
@@ -127,7 +127,7 @@ func TestSubChatEndToEndBlackBox(t *testing.T) {
 				{"content": ""},
 				{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-bb-open", "type": "function",
-					"function": map[string]any{"name": "self_subchat_open", "arguments": string(args)},
+					"function": map[string]any{"name": "subchat_open", "arguments": string(args)},
 				}}},
 			}, "tool_calls")
 		case wantFinish && !hasTool:
@@ -136,7 +136,7 @@ func TestSubChatEndToEndBlackBox(t *testing.T) {
 				{"content": ""},
 				{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-bb-finish", "type": "function",
-					"function": map[string]any{"name": "self_subchat_finish", "arguments": string(args)},
+					"function": map[string]any{"name": "subchat_finish", "arguments": string(args)},
 				}}},
 			}, "tool_calls")
 		default:

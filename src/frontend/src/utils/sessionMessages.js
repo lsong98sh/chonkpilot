@@ -85,6 +85,7 @@ export function createSessionMessages() {
   let loadGen = 0                   // 加载代次：切换会话/teardown 递增；await 后校验以丢弃过期批次
   let msgIdSeq = 0                  // 消息 id 自增后缀：Date.now() 同毫秒会撞 → 追加序号保证唯一
   let autoPreloadTimer = null       // 自动预取（后台补一批更早消息）定时器句柄（loadMessages/teardown 清理）
+  let currentDialogId = ''          // 当前会话所属对话（一树一库；子会话 viewer 由父组件显式给）
 
   // ── 「加载中」占位（发送后立即显示 LLM 处理进度）──
   // 独立状态，**不在 messages 数组内**：loadMessages 整体替换 messages（历史回填）
@@ -245,10 +246,12 @@ export function createSessionMessages() {
    * 注：「加载中」占位是**独立状态**（pending/pendingStatus，不在 messages 内）→
    * 本函数的整体替换不会影响它（T5 方案 B）。
    */
-  async function loadMessages(sessionId) {
+  async function loadMessages(sessionId, dialogId = '') {
     if (!sessionId) return
     sessionId = sessionId.trim()
     if (!sessionId) return
+    // 一树一库：子会话（任务详情 viewer）须带所属主会话的 dialog_id（顶层目录只列主会话）。
+    currentDialogId = dialogId || ''
 
     // 代次守卫：切换会话/teardown 推进 loadGen → 本批 await 返回时 gen 已不符即丢弃，
     // 避免慢速返回把上一个会话的消息写进当前视图、或把新一代的 loading 标志置回。
@@ -269,7 +272,7 @@ export function createSessionMessages() {
       const { getTurnsPaginated } = await import('../api/session')
       // 目标消息数/字节数放大：普通对话 turn 单 turn 可达数十条消息，
       // 50 条/200KB 的旧参数会让每批只返回 2~10 个 turn，滚顶加载体验极差。
-      const res = await getTurnsPaginated(sessionId, '', 300, 4 * 1024 * 1024)
+      const res = await getTurnsPaginated(sessionId, '', 300, 4 * 1024 * 1024, currentDialogId)
       if (gen !== loadGen) return // 代次已变：丢弃本批，不写任何状态
       if (res && res.messages) {
         messages.value = res.messages.map(dbMsgToView)
@@ -321,7 +324,7 @@ export function createSessionMessages() {
       const beforeTurnId = turns.value.length > 0 ? (turns.value[0].turn_id || '') : ''
 
       const { getTurnsPaginated } = await import('../api/session')
-      const res = await getTurnsPaginated(currentSessionId, beforeTurnId, 300, 4 * 1024 * 1024)
+      const res = await getTurnsPaginated(currentSessionId, beforeTurnId, 300, 4 * 1024 * 1024, currentDialogId)
 
       if (gen !== loadGen) return // 代次已变：丢弃本批，不写任何状态
       if (res && res.messages && res.messages.length > 0) {

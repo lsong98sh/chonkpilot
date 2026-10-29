@@ -52,8 +52,8 @@
           <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
         </svg>
       </span>
-      <!-- Regular file icon -->
-      <Icon v-else name="document" :size="14" :color="getIconColor(node)" class="node-icon" />
+      <!-- Regular file icon（按扩展名取 file-icon-vectors 图标，未知类型回退通用文件图标） -->
+      <FileIcon v-else :name="node.label" :size="14" class="node-icon" />
 
       <span v-if="editingPath !== node.path" class="node-label">{{ node.label }}</span>
       <Input
@@ -106,6 +106,7 @@
 <script setup>
 import { computed } from 'vue'
 import Icon from '../../components/icon/Icon.vue'
+import FileIcon from '../../components/icon/FileIcon.vue'
 import { Tag, Input } from '../../components/ui'
 
 defineOptions({ name: 'TreeNode' })
@@ -170,43 +171,9 @@ function hasMatchingDescendant(node, q) {
   return false
 }
 
+// 仅目录 / DB 节点用 Icon（currentColor）着色；普通文件图标由 FileIcon 按类型自带配色
 function getIconColor(node) {
-  if (node.is_dir) return undefined
-  if (isDBConfig(node)) return '#409eff'
-  return getFileIconColor(getFileExt(node))
-}
-
-function getFileExt(node) {
-  if (!node.label) return ''
-  const dot = node.label.lastIndexOf('.')
-  if (dot < 0) return ''
-  return node.label.substring(dot).toLowerCase()
-}
-
-function getFileIconColor(ext) {
-  const colors = {
-    '.docx': '#2B579A', '.doc': '#2B579A',
-    '.pptx': '#D04526', '.ppt': '#D04526',
-    '.xlsx': '#217346', '.xls': '#217346', '.csv': '#217346',
-    '.md': '#083FA1', '.markdown': '#083FA1',
-    '.c': '#00599C', '.h': '#A42E2B',
-    '.cpp': '#00599C', '.cxx': '#00599C', '.cc': '#00599C', '.hpp': '#A42E2B',
-    '.go': '#00ADD8',
-    '.java': '#ED8B00', '.class': '#ED8B00',
-    '.py': '#3776AB', '.pyw': '#3776AB',
-    '.js': '#F7DF1E', '.jsx': '#F7DF1E', '.mjs': '#F7DF1E',
-    '.ts': '#3178C6', '.tsx': '#3178C6',
-    '.json': '#292929',
-    '.html': '#E34F26', '.htm': '#E34F26',
-    '.css': '#1572B6', '.scss': '#1572B6', '.less': '#1572B6',
-    '.vue': '#4FC08D',
-    '.yml': '#CB171E', '.yaml': '#CB171E',
-    '.xml': '#0060AC', '.svg': '#FFB13B',
-    '.sh': '#4EAA25', '.bash': '#4EAA25', '.zsh': '#4EAA25',
-    '.toml': '#9C4121',
-    '.rs': '#DEA584',
-  }
-  return colors[ext] || '#888'
+  return isDBConfig(node) ? '#409eff' : undefined
 }
 
 const visibleChildren = computed(() => {

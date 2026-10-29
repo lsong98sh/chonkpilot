@@ -421,6 +421,17 @@ def case_h1_chain_and_user_branch_untouched():
     if tl[0].get("n") != -1:
         raise TestError("timeline 最新在前、相对编号应从 -1 起，实际 n=%r" % tl[0].get("n"))
     head_ref = git(WS, "rev-parse", want_ref).stdout.strip()
+    # 回写是**异步**的（每次打点后插件经 data 面写 status/timeline）：前置点与轮末补点会各触发一次，
+    # 读到「前置点那一次回写」时 ref 可能已前进到轮末补点 → 必须有界等待两者收敛再判定。
+    def _tl_synced():
+        cur = prj_json(timeline_key(SID))
+        if not isinstance(cur, list) or not cur:
+            return None
+        head = git(WS, "rev-parse", want_ref).stdout.strip()
+        return cur if (head and cur[0].get("id") == head) else None
+
+    tl = wait_until(_tl_synced, "history.timeline[0].id 收敛到 ref 链头（回写异步）", 40) or tl
+    head_ref = git(WS, "rev-parse", want_ref).stdout.strip()
     if tl[0].get("id") != head_ref:
         raise TestError("ref 应只指向链头：ref=%s timeline[0].id=%s" % (head_ref, tl[0].get("id")))
     print("[H1] refs=%r 链长=%d · HEAD %s 未动（log 逐行不变）· .git/index %d 字节不变\n"
@@ -616,14 +627,22 @@ def case_h6_touch_files_flag():
     cur = disk().strip()          # 当前盘面内容（不含换行）
     nxt = "h6b"
     n0 = chain_count(ref)
-    run_turn("call hist-dirty-write histrel=%s histto=-1 histabs=%s histfrom=%s histval=%s"
-             % (HIST_FILE, abs_hist, cur, nxt))
+    tr = run_turn("call hist-dirty-write histrel=%s histto=-1 histabs=%s histfrom=%s histval=%s"
+                  % (HIST_FILE, abs_hist, cur, nxt))
     if disk() != nxt + "\n":
         raise TestError("同轮两次工具调用未全部执行（盘面应 %s\\n，实际 %r）" % (nxt, disk()))
+    # 轮末补点由 `session-complete` 异步触发（晚于本轮 `llm-complete`/`tool-result`）→ 有界等待链长到位
+    wait_until(lambda: (lambda n: n if n - n0 >= 2 else None)(chain_count(ref)),
+               "缺省（涉及）链长 +2（前置点 + 轮末补点；补点为异步）", 20)
     n1 = chain_count(ref)
     if n1 - n0 != 2:
-        raise TestError("缺省（涉及）应 +2（前置点 + 轮末补点），实际 +%d（n0=%d n1=%d）"
-                        % (n1 - n0, n0, n1))
+        raise TestError("缺省（涉及）应 +2（前置点 + 轮末补点），实际 +%d（n0=%d n1=%d）\n"
+                        "  本轮工具回执=%r\n  链（新→旧）=%r\n  timeline=%r"
+                        % (n1 - n0, n0, n1,
+                           [str((x or {}).get("result") or "")[:80] for x in tr],
+                           [(s[:8], (blob_at(s, HIST_FILE) or "").strip()) for s in chain_shas(ref)],
+                           [(e.get("n"), str(e.get("id"))[:8], e.get("tool"), e.get("session"))
+                            for e in (prj_json(timeline_key(SID)) or [])[:4]]))
     print("[H6] 缺省（涉及）：history_restore 置脏 → task_run 前置点 + 轮末补点 → 链 +%d" % (n1 - n0),
           flush=True)
 
@@ -654,6 +673,8 @@ def case_h6_touch_files_flag():
              % (HIST_FILE, abs_hist, cur2, nxt2))
     if disk() != nxt2 + "\n":
         raise TestError("同轮两次工具调用未全部执行（盘面应 %s\\n，实际 %r）" % (nxt2, disk()))
+    wait_until(lambda: (lambda n: n if n - n2 >= 1 else None)(chain_count(ref)),
+               "touch_files=false 链长 +1（仅轮末补点；补点为异步）", 20)
     n3 = chain_count(ref)
     if n3 - n2 != 1:
         raise TestError("touch_files=false（不涉及）应只余轮末补点 +1，实际 +%d（n2=%d n3=%d）"

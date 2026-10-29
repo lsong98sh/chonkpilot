@@ -2,9 +2,10 @@
  * 长任务状态栏条目 / 详情页的**展示模型**（纯函数，便于单测；STB-1）。
  *
  * 数据源（零新增消息面）：
- *   - 记忆提取 / 上下文压缩：`useQueueStatus`（tool-notify 的 `{memory,compress}-*` + plugin-failure）；
- *   - 代码索引：prj 配置键 `plugins.codegraph.enabled` / `codegraph.status`
- *     （见 utils/indexStatus.js）。
+ *   - 记忆提取 / 上下文压缩：`useQueueStatus`（tool-notify 的 `{memory,compress}-*` + plugin-failure）。
+ *
+ * 注：**代码索引不在本文件**（PLUGIN-UI-2）——索引进度由 codegraph 插件自带 `badge` / `status`
+ * 视图承担，宿主不读 `codegraph.status` / `vfts.status`。
  *
  * 口径（用户）：空闲 / 未启用 → 中性色（条目仍可见 = 「每种任务都有一个状态 view」）；
  * 排队 / 进行中 → 次要色；完成 → 主文本色；失败 → 错误色（title 携带错误原文，点开看详情）。

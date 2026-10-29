@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestStaleSweepReleasesBinding（分离形态）：实例心跳超 staleTimeout（且无 instance-exit）→

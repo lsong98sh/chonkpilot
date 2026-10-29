@@ -196,6 +196,47 @@ func TestActiveGetFallsBackToDialog(t *testing.T) {
 	}
 }
 
+// TestActiveGetHostPushedValue：活动位是**宿主推送的 UI 运行态**（SESSION-DB-2）——
+// active-get 只回读写入值，**不跨 owner** 去对话库校验它是否仍存在（两库无跨库事务）。
+func TestActiveGetHostPushedValue(t *testing.T) {
+	svc, instID, _, dlgID := setup(t)
+	if _, err := svc.SessionActiveSet(facade.SessionActiveSetRequest{
+		InstanceID: instID, DialogID: dlgID, SessionID: "not-in-any-db",
+	}); err != nil {
+		t.Fatalf("ActiveSet: %v", err)
+	}
+	got, err := svc.SessionActiveGet(facade.SessionActiveGetRequest{InstanceID: instID})
+	if err != nil {
+		t.Fatalf("SessionActiveGet: %v", err)
+	}
+	if got.SessionID != "not-in-any-db" {
+		t.Fatalf("活动位应原样回读（不做跨库校验），实际 %q", got.SessionID)
+	}
+}
+
+// TestDeleteMissingDialogClearsActive：跨库操作**无事务**——删会话（对话库）与清活动位
+// （宿主库）分两次提交；对话库已缺失（崩溃/半删）时删除仍须幂等成功并**补偿清空**活动位。
+func TestDeleteMissingDialogClearsActive(t *testing.T) {
+	svc, instID, prjUsr, dlgID := setup(t)
+	if _, err := svc.SessionActiveSet(facade.SessionActiveSetRequest{
+		InstanceID: instID, DialogID: dlgID, SessionID: "c1",
+	}); err != nil {
+		t.Fatalf("ActiveSet: %v", err)
+	}
+	if err := data.DeleteDialog(prjUsr, dlgID); err != nil {
+		t.Fatalf("DeleteDialog: %v", err)
+	}
+	if _, err := svc.SessionDelete(facade.SessionDeleteRequest{
+		InstanceID: instID, DialogID: dlgID, SessionID: "c1",
+	}); err != nil {
+		t.Fatalf("对话库缺失时删除应幂等成功: %v", err)
+	}
+	prj, _ := data.PrjUsr(instID)
+	if v, _ := kernel.PrjConfigVal(prj, "active_session_id"); v != "" {
+		t.Fatalf("活动位应被补偿清空: %q", v)
+	}
+}
+
 // TestMissingDialogErrors：库缺失 → 全部报错（不静默建库）。
 func TestMissingDialogErrors(t *testing.T) {
 	svc, instID, _, _ := setup(t)

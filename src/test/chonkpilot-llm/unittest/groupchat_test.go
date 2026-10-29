@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // sysAgentRefBB 从 system 消息文本里解析「子会话 agent」名（生产侧 `childAgentSystem` 的第 0 行）。
@@ -192,7 +192,7 @@ func TestGroupChatEndToEndBlackBox(t *testing.T) {
 				{"content": ""},
 				{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-gc-open", "type": "function",
-					"function": map[string]any{"name": "self_subchat_open", "arguments": string(args)},
+					"function": map[string]any{"name": "subchat_open", "arguments": string(args)},
 				}}},
 			}, "tool_calls")
 			return

@@ -6,12 +6,15 @@
  */
 import { defineStore } from 'pinia'
 import { h, nextTick } from 'vue'
+// PROFILE_LIMIT 与档案读写同源（profiles-core.js）——此前漏 import →
+// 生产包运行期 `ReferenceError: PROFILE_LIMIT is not defined`（getter canCreate 使用）。
 import {
   createProfile,
   deleteProfile,
   findProfile,
   isSeedId,
   parseProfiles,
+  PROFILE_LIMIT,
   renameProfile,
   restoreSeed,
   seedProfiles,

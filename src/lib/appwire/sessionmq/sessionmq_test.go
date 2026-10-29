@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/lsong98sh/chonkpilot-session/component"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-agent/session/component"
 )
 
 type captured struct {

@@ -16,7 +16,7 @@ type SessionNextRunCheckAndAddRequest struct {
 	SessionID string `json:"session_id"`
 	// Max 连续自动接续上限（<= 0 = 关闭；此处恒按拒绝处理，不增）。
 	Max int `json:"max"`
-	// DialogID 对话 id（一树一库：会话行在对话库内；空 + shard 生效 → dialog_required）。
+	// DialogID 对话 id（一树一库：会话行在对话库内；必填，缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// Scope 实例数据根（可选；语义同其它 Session 请求）。
 	Scope Scope `json:"scope,omitempty"`

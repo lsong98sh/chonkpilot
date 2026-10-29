@@ -288,7 +288,7 @@ const specialComponents = {
   // 长任务详情页（STB-1）：状态栏条目 → open-view{status-*} → 预览区功能页
   'status-memory': defineAsyncComponent(() => import('../status/MemoryStatusDetail.vue')),
   'status-compress': defineAsyncComponent(() => import('../status/CompressStatusDetail.vue')),
-  'status-index': defineAsyncComponent(() => import('../status/IndexStatusDetail.vue')),
+  // 注：索引进度详情页已归插件（PLUGIN-UI-2）→ `status-index` 不再存在。
   // 插件管理页（PLUGIN-1）
   'plugin-manager': defineAsyncComponent(() => import('../../../packages/plugin-ui/src/PluginManagerPage.vue')),
 }
@@ -336,7 +336,6 @@ function specialTitle(kind) {
     case 'memory-user-pref': return t('projectConfig.memory_user_pref')
     case 'status-memory': return t('statusBar.detail.memoryTitle')
     case 'status-compress': return t('statusBar.detail.compressTitle')
-    case 'status-index': return t('statusBar.detail.indexTitle')
     default: return kind
   }
 }

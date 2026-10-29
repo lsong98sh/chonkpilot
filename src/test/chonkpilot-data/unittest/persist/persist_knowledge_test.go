@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // newKnowledgeEnv 建带 app 知识库根（临时 capability 目录）的环境 + 实例。

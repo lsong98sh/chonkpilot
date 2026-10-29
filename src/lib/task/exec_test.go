@@ -215,7 +215,7 @@ func TestOnExecStateBuildsNodeAndSkips(t *testing.T) {
 
 	// ① started 未命中已登记节点 → 跳过建行
 	l.OnExecState(ExecState{
-		GWTaskID: "tk-1001", InstanceID: "ins-test", TopSession: "top-1", Tool: "script_run",
+		GWTaskID: "tk-1001", InstanceID: "ins-test", TopSession: "top-1", Tool: "task_run",
 		ToolCallID: "tc-x", Phase: ExecPhaseStarted, State: "running",
 	})
 	if fake.row("tk-1001") != nil || fake.rowCount() != 0 {
@@ -227,7 +227,7 @@ func TestOnExecStateBuildsNodeAndSkips(t *testing.T) {
 
 	// ② 未命中 + 有 top_session + detached → 建行（tool_call_id 无匹配 → 顶层）
 	l.OnExecState(ExecState{
-		GWTaskID: "tk-1002", InstanceID: "ins-test", TopSession: "top-1", Tool: "script_run",
+		GWTaskID: "tk-1002", InstanceID: "ins-test", TopSession: "top-1", Tool: "task_run",
 		ToolCallID: "tc-y", WorkDir: "E:/ws", Phase: ExecPhaseDetached, State: "running",
 		Detail: map[string]any{"trigger": "manual"},
 	})
@@ -303,7 +303,7 @@ func TestOnExecStateFrontVisibleStatusUnchanged(t *testing.T) {
 
 	// ② 未命中建行路径（tool_call_id 无匹配）同样门控
 	l.OnExecState(ExecState{
-		GWTaskID: "tk-0002", InstanceID: "ins-test", TopSession: "top-1", Tool: "script_run",
+		GWTaskID: "tk-0002", InstanceID: "ins-test", TopSession: "top-1", Tool: "task_run",
 		ToolCallID: "tc-none", Phase: ExecPhaseAwaiting, State: "running",
 	})
 	if rec := l.Record("tk-0002"); rec == nil || rec.State != StateAwaiting {

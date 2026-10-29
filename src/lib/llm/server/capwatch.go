@@ -27,13 +27,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
-// capNodeRef 是已登记的 capability dir 节点归属（T-21 重扫定位：实例 + 节点名 + 契约根）。
-type capNodeRef struct {
-	InstanceID string
-	Name       string
-	Root       string
-}
-
 // capWatchDebounce 变更合并去抖：一次保存常触发多个 fswatcher 事件（create/mod/chmod），
 // 合并为单次重扫，避免重复重注册（"一次保存 → 一次 reconcile"）。
 const capWatchDebounce = 60 * time.Millisecond
@@ -42,9 +35,16 @@ const capWatchDebounce = 60 * time.Millisecond
 const capWatchReadyTimeout = 5 * time.Second
 
 // capWatcher 监听 app + 用户/项目级 capability 根，变更去抖后触发对应重扫。
+//
+// 锁纪律（LLM-P4「capwatch 锁内 IO」）：`mu` **只保护内存态**（极短临界区，禁止在其中做文件
+// 系统 IO / 就绪等待）；`syncMu` 串行化「监听收敛」整段（持锁跨 stat / AddPath / DropPath，
+// 与原实现一致），因此 IO 期间不再阻塞事件回调 / 实例登记对内存态的读写。
 type capWatcher struct {
 	s *Server
 	w fswatcher.Watcher
+
+	// syncMu 串行化监听收敛（旧实现由 mu 一并承担）。
+	syncMu sync.Mutex
 
 	mu        sync.Mutex
 	want      map[string]bool                 // 目标 capability 根（绝对、斜杠化）
@@ -123,8 +123,8 @@ func (cw *capWatcher) runWatcher(ctx context.Context) {
 }
 
 // waitReadyLocked 等待 fswatcher 初始路径就绪（AddPath/DropPath 仅运行中可用）；超时/停止则放弃。
-// 调用方须持 cw.mu。
-func (cw *capWatcher) waitReadyLocked() {
+// **不持 mu**（LLM-P4：原实现在 mu 内等待最长 5s，阻塞事件回调与实例登记）。
+func (cw *capWatcher) waitReady() {
 	timer := time.NewTimer(capWatchReadyTimeout)
 	defer timer.Stop()
 	select {
@@ -140,12 +140,12 @@ func (cw *capWatcher) watchApp(root string) {
 	if cw == nil || root == "" {
 		return
 	}
-	cw.mu.Lock()
-	defer cw.mu.Unlock()
 	r := normPath(root)
+	cw.mu.Lock()
 	cw.want[r] = true
 	cw.appWant[r] = true
-	cw.syncLocked()
+	cw.mu.Unlock()
+	cw.sync()
 }
 
 // watchInstance 登记并监听某实例可见的用户级 + 项目级 + 项目私有级 capability 根（幂等）。
@@ -154,8 +154,6 @@ func (cw *capWatcher) watchInstance(instanceID, workDir string) {
 	if cw == nil {
 		return
 	}
-	cw.mu.Lock()
-	defer cw.mu.Unlock()
 	var roots []string
 	roots = append(roots, normPath(persist.CapUserRoot(cw.s.opts.UsrPath)))
 	if workDir != "" {
@@ -164,6 +162,7 @@ func (cw *capWatcher) watchInstance(instanceID, workDir string) {
 	if root := cw.s.prjUsrCapRoot(instanceID); root != "" {
 		roots = append(roots, normPath(root)) // P4：项目私有级根（prjusr）纳入热生效
 	}
+	cw.mu.Lock()
 	set := cw.instRoots[instanceID]
 	if set == nil {
 		set = map[string]bool{}
@@ -177,7 +176,8 @@ func (cw *capWatcher) watchInstance(instanceID, workDir string) {
 		cw.refs[r]++
 		cw.want[r] = true
 	}
-	cw.syncLocked()
+	cw.mu.Unlock()
+	cw.sync()
 }
 
 // unwatchInstance 实例退出 → 回收该实例派生的 capability 根监听（B-38：want/synced 只增不减
@@ -187,10 +187,11 @@ func (cw *capWatcher) unwatchInstance(instanceID string) {
 	if cw == nil || instanceID == "" {
 		return
 	}
+	// 先从内存态摘除（短临界区），IO 部分交给 sync 统一收敛（根已不在 want → 由 sync 摘句柄）。
 	cw.mu.Lock()
-	defer cw.mu.Unlock()
 	set := cw.instRoots[instanceID]
 	if set == nil {
+		cw.mu.Unlock()
 		return
 	}
 	delete(cw.instRoots, instanceID)
@@ -201,12 +202,33 @@ func (cw *capWatcher) unwatchInstance(instanceID string) {
 		}
 		delete(cw.refs, r)
 		delete(cw.want, r)
-		// 引用归零 → 摘除该根及其祖先补位条目的监听（递归句柄随根一并收敛）
-		for p := range cw.synced {
-			if under(p, r) {
-				cw.dropLocked(p)
+	}
+	cw.mu.Unlock()
+	cw.sync()
+	cw.pruneSynced()
+}
+
+// pruneSynced 摘除已不在任何目标根下的监听句柄（unwatchInstance 归零后调用；IO 在 mu 外）。
+func (cw *capWatcher) pruneSynced() {
+	cw.syncMu.Lock()
+	defer cw.syncMu.Unlock()
+	cw.mu.Lock()
+	var stale []string
+	for p := range cw.synced {
+		keep := false
+		for r := range cw.want {
+			if under(p, r) || under(r, p) {
+				keep = true
+				break
 			}
 		}
+		if !keep {
+			stale = append(stale, p)
+		}
+	}
+	cw.mu.Unlock()
+	for _, p := range stale {
+		cw.drop(p)
 	}
 }
 
@@ -252,15 +274,19 @@ func (cw *capWatcher) loop() {
 // handle 处理单个事件：Create/Remove/Rename 后补齐监听（fswatcher 递归自动覆盖新增子树）；
 // 目标根内变更置脏并调度去抖重扫。祖先目录（根尚未创建时的监听点）内的无关文件
 // （如 usr db / WebView2 profile）变动只做监听补齐，不触发重扫。
+//
+// LLM-P4：监听补齐（sync）全程在 mu **外**执行（stat / AddPath 是 IO），脏标记与定时器只在
+// 短临界区内维护。
 func (cw *capWatcher) handle(ev fswatcher.WatchEvent) {
 	p := normPath(ev.Path)
+	needSync := hasEventType(ev.Types, fswatcher.EventCreate) ||
+		hasEventType(ev.Types, fswatcher.EventRemove) ||
+		hasEventType(ev.Types, fswatcher.EventRename)
+	if needSync {
+		cw.sync() // 目标根可能刚被创建/删除（此前监听其祖先）→ 收敛监听
+	}
 	cw.mu.Lock()
 	defer cw.mu.Unlock()
-	if hasEventType(ev.Types, fswatcher.EventCreate) ||
-		hasEventType(ev.Types, fswatcher.EventRemove) ||
-		hasEventType(ev.Types, fswatcher.EventRename) {
-		cw.syncLocked() // 目标根可能刚被创建/删除（此前监听其祖先）→ 收敛监听
-	}
 	if !cw.inWantLocked(p) {
 		return
 	}
@@ -294,55 +320,83 @@ func (cw *capWatcher) fire() {
 	}
 }
 
-// syncLocked 保证每个目标根都有监听：根存在 → 递归监听（WatchNested）；不存在 → 监听最近的
+// sync 保证每个目标根都有监听：根存在 → 递归监听（WatchNested）；不存在 → 监听最近的
 // 已存在祖先（WatchTopLevel，根随后被创建时由 handle 捕获并收敛为递归监听）。
 // 递归子树由 fswatcher 自动接管，不再逐目录展开（大 capability 树下无全树 ReadDir）。
-func (cw *capWatcher) syncLocked() {
-	for root := range cw.want {
+//
+// 并发口径（LLM-P4）：整段由 syncMu 串行（与旧实现「mu 串行化一切」等价），但 mu 只在
+// 读写内存态时短暂持有 —— IO 不再阻塞事件回调 / 实例登记。
+func (cw *capWatcher) sync() {
+	if cw == nil {
+		return
+	}
+	cw.syncMu.Lock()
+	defer cw.syncMu.Unlock()
+	cw.mu.Lock()
+	roots := make([]string, 0, len(cw.want))
+	for r := range cw.want {
+		roots = append(roots, r)
+	}
+	cw.mu.Unlock()
+	for _, root := range roots {
 		if dirExists(root) {
-			cw.ensureWatchLocked(root, fswatcher.WatchNested)
+			cw.ensureWatch(root, fswatcher.WatchNested)
 			continue
 		}
 		// 根尚不存在 / 已被删除 → 摘除该根监听（避免目录重建后按陈旧句柄短路），改监听最近祖先。
-		if _, ok := cw.synced[root]; ok {
-			cw.dropLocked(root)
+		cw.mu.Lock()
+		_, watched := cw.synced[root]
+		cw.mu.Unlock()
+		if watched {
+			cw.drop(root)
 		}
 		if anc := nearestExistingDir(root); anc != "" {
-			cw.ensureWatchLocked(anc, fswatcher.WatchTopLevel)
+			cw.ensureWatch(anc, fswatcher.WatchTopLevel)
 		}
 	}
 }
 
-// ensureWatchLocked 保证 path 以至少 depth 的深度被监听（幂等）。fswatcher 不允许重复
+// ensureWatch 保证 path 以至少 depth 的深度被监听（幂等）。fswatcher 不允许重复
 // AddPath，故 TopLevel → Nested 升级须先 DropPath 再 AddPath。
-func (cw *capWatcher) ensureWatchLocked(path string, depth fswatcher.WatchDepth) {
+// 调用方须持 syncMu（IO 不持 mu）。
+func (cw *capWatcher) ensureWatch(path string, depth fswatcher.WatchDepth) {
 	path = normPath(path)
-	if cur, ok := cw.synced[path]; ok {
+	cw.mu.Lock()
+	cur, ok := cw.synced[path]
+	cw.mu.Unlock()
+	if ok {
 		if depth != fswatcher.WatchNested || cur == fswatcher.WatchNested {
 			return
 		}
-		cw.dropLocked(path)
+		cw.drop(path)
 	}
-	cw.waitReadyLocked()
+	cw.waitReady()
 	if err := cw.w.AddPath(path, fswatcher.WithDepth(depth)); err != nil {
 		// 已由初始路径/其它根监听（synced 未覆盖的竞态）→ 登记深度，避免反复失败。
 		if strings.Contains(err.Error(), "already being watched") {
+			cw.mu.Lock()
 			cw.synced[path] = depth
+			cw.mu.Unlock()
 			return
 		}
 		slog.Debug("capability watch add failed", "path", path, "err", err)
 		return
 	}
+	cw.mu.Lock()
 	cw.synced[path] = depth
+	cw.mu.Unlock()
 }
 
-// dropLocked 摘除对 path 的监听并清理 synced 记录（未监听/未运行仅留痕）。
-func (cw *capWatcher) dropLocked(path string) {
-	cw.waitReadyLocked()
+// drop 摘除对 path 的监听并清理 synced 记录（未监听/未运行仅留痕）。
+// 调用方须持 syncMu（IO 不持 mu）。
+func (cw *capWatcher) drop(path string) {
+	cw.waitReady()
 	if err := cw.w.DropPath(path); err != nil {
 		slog.Debug("capability watch drop failed", "path", path, "err", err)
 	}
+	cw.mu.Lock()
 	delete(cw.synced, path)
+	cw.mu.Unlock()
 }
 
 // inWantLocked 判定路径是否位于任一目标根内（含根自身）。

@@ -2,7 +2,7 @@
 
 > 状态：✅ 与代码一致
 > 关联：[13-生命周期](../10-architecture/13-生命周期.md) · [01-端到端数据流](../00-overview/01-端到端数据流.md) · [12-数据层](../10-architecture/12-数据层.md) · [26-mcp-gateway](26-mcp-gateway.md)
-> 代码目录：`src/lib/llm/`（`server/` 包 + `httpapi/`）；**服务端 exe 外壳 = `src/server/`**（`chonkpilot-server.exe`，gui 与 browser 共用）
+> 代码目录：`src/lib/llm/`（`server/` 包）；由唯一宿主 `src/desktop` 内嵌装配
 
 ---
 
@@ -18,19 +18,17 @@
 
 | 项 | 值 |
 |----|----|
-| 编译形态 | lib + exe（console 常驻） |
-| exe 命名 | `chonkpilot-server.exe`（GUI/CLI 以 lib 内嵌） |
-| service 形态 | ❌ 无（main.go 无 `--service`，未 import `winsvc`） |
+| 编译形态 | lib（内嵌于 `src/desktop`） |
 | 内嵌装配 | persist + gateway + mcp-server（`!DisableMCP`）+ 插件 compress→history→codegraph |
-| 参数 | `--work-dir` · `--servers-file` · ~~`--manage-addr`~~（**PRODSIM-1 2026-10-22 删除**：管理 REST 由 `plugin/v1/gateway.check` 承担）· `--llm-base`（默认 `http://127.0.0.1:8901/v1`）· `--llm-model`（默认 `mock`） |
+| 参数 | `--work-dir` · `--servers-file` · `--llm-base`（默认 `http://127.0.0.1:8901/v1`）· `--llm-model`（默认 `mock`） |
 
-`Options` 要点：`LLMBase` / `LLMModel` / `UsrPath` / `DisableMCP` / `MCPServerRoot` / `GatewayServers(File)` / `GatewayManageAddr` / **`AsyncMode`**（CLI 传 `never`） / `Plugins`。
+`Options` 要点：`LLMBase` / `LLMModel` / `UsrPath` / `DisableMCP` / `MCPServerRoot` / `GatewayServers(File)` / `GatewayManageAddr` / **`AsyncMode`** / `Plugins`。
 
 ### 2.1 用户维护 MCP 的启动注册
 
 > **目标**：用户在「MCP 配置页」维护的 server 定义（**四级文件化** `<级别>/capability/mcps/<名>.json`）在 **LLM 启动时**注入内嵌 gateway。
 >
-> **单体（src/lib/gui / src/desktop/cli 内嵌本 llm server）的 MCP 配置一律取自四级文件化视图，不读 exe 同目录 `config.json`**；exe 同目录 `config.json` 的 `mcpServers` 段属 mcp-server / mcp-gateway **独立 exe** 自身行为（见 [25-mcp-server](25-mcp-server.md) / [26-mcp-gateway](26-mcp-gateway.md)）。
+> **桌面单体（`src/desktop` → `src/lib/gui/host` 内嵌本 llm server）的 MCP 配置一律取自四级文件化视图，不读 exe 同目录 `config.json`**；exe 同目录 `config.json` 的 `mcpServers` 段属 mcp-server / mcp-gateway **独立 exe** 自身行为（见 [25-mcp-server](25-mcp-server.md) / [26-mcp-gateway](26-mcp-gateway.md)）。
 >
 > **配置来源 = 四级文件化视图（唯一来源）**：MCP server 定义**载体** = **`<级别>/capability/mcps/<名>.json`**（四级 app/user/project/prjusr）。装配读点 `gateway_servers.go`：
 > ① `loadMcpFileEntries` 经 data 门面 **`McpAPI.McpList`**（`s.cfg`）读**四级合并生效视图**（同名**最具体级优先、整条覆盖** `prjusr > project > user > app`）；
@@ -86,7 +84,7 @@
 | `domain-tool-call` | `onDomainToolCall` | 域工具远程回调 |
 | `llm-simple` | `onLLMSimple` | 单次无上下文 LLM（插件/摘要用） |
 | `llm.test-connection` | `onLLMTestConnection` | 设置 → LLM「测试连接」的**只读探活**方法面（**点分相对主题**，不经 `frontMethodSubjects` 单字白名单 —— 走桥 / 服务端上行入口的「点分直通总线」分支）。实现 `server/llm_testconn.go`：**复用主路径同一条出网链路**（= router `Call`：同一 Authorization / 协议分派 / 超时 / 错误分类）发一次最小请求（单条 `hi` + `max_tokens=1`、不下发工具），**首个非错误事件即判连通**并立即 cancel（`latency_ms` = 首包延迟），超时 = 15s 常量 `llmTestTimeout`。**只读、不落库**：用一次性 provider（唯一名 `__probe__*` 登记 → 探测后**注销**，**不改 usr `llms`、不影响运行中 provider**），**不写会话/轮次/消息/历史表**。载荷 `{instance_id, baseUrl, model, apiKey?, protocol?}`（`baseUrl`/`model` 必填，缺 → `error.kind=invalid`）→ 结果信封 `{ok, latency_ms, model_echo?, error{kind, message}}`（`kind` ∈ `network\|timeout\|rate_limit\|server\|auth\|protocol\|invalid`；handler 恒 `return nil`，结果走 `v.Result`）。**安全（硬要求）**：应答与日志一律经 `maskLLMSecrets` 脱敏（先整串替换本次 `apiKey`、再按通用密钥形态兜底）→ 上游回显的 Key 不外泄；payload/返回明细见 [61 §1.1](../60-reference/61-消息一览.md) |
-| `config.suggest` | `onConfigSuggest` | **配置建议**方法面（AICFG-1，2026-10-16；**点分相对主题**，同走「点分直通总线」分支）。实现 `server/configsuggest.go`：受理由配置页（LLM / MCP）/ 工具原语编辑页发起的「AI 智能填充 / AI 生成」—— 用户自然语言 → LLM 产出**结构化字段建议** → 只回填表单**待保存态**（不落库，落库仍由既有【保存】触发）。载荷 `{instance_id?, kind, text, current?}`（`kind ∈ llm\|mcp\|tool` 决定白名单与指令；`kind` 未知 / `text` 空 → `error.kind=invalid`）。**provider 口径统一**：与 `prompt-optimise` 一致**现读 `llm.promptOptimise`**（缺失/空串由数据层回落 `defaultLLM`；**热生效**，不缓存到进程级）→ **一次性、非流式**（`llmOnceSpec`，自带 60s 超时）→ **严格 `json.Unmarshal`** + **服务端硬过滤白名单** `configSuggestWhitelist`（三套：llm/mcp/tool）→ 结果信封 `{ok, fields, notes?, error?{kind, message}}`（handler 恒 `return nil`，结果走 `v.Result`）。**白名单（硬要求）**：`fields` **只含该 kind 白名单字段**——**`apiKey` / `level` / `enabled` / `isolate` / `sandbox` / `hot_tools` 等禁填字段即便模型输出也丢弃**（`current` 上送时同样剔除，不外送禁填项）。**错误码**：`invalid`（入参不合法）· `parse_failed`（非 JSON / 无可填字段）· 及复用 LLM 出网分类 `timeout\|network\|rate_limit\|server\|auth\|protocol`（**不新增错误码体系**）。**安全（硬要求）**：应答与日志经 `maskLLMSecrets` 脱敏（无 key）。browser 形态上行白名单 `allowedDottedPrefixes` 已放行；payload/返回明细见 [61 §1.1](../60-reference/61-消息一览.md)，FP 见 [36 `CFG-018`](../30-function-points/36-配置.md) |
+| `config.suggest` | `onConfigSuggest` | **配置建议**方法面（AICFG-1，2026-10-16；**点分相对主题**，同走「点分直通总线」分支）。实现 `server/configsuggest.go`：受理由配置页（LLM / MCP）/ 工具原语编辑页发起的「AI 智能填充 / AI 生成」—— 用户自然语言 → LLM 产出**结构化字段建议** → 只回填表单**待保存态**（不落库，落库仍由既有【保存】触发）。载荷 `{instance_id?, kind, text, current?}`（`kind ∈ llm\|mcp\|tool` 决定白名单与指令；`kind` 未知 / `text` 空 → `error.kind=invalid`）。**provider 口径统一**：与 `prompt-optimise` 一致**现读 `llm.promptOptimise`**（缺失/空串由数据层回落 `defaultLLM`；**热生效**，不缓存到进程级）→ **一次性、非流式**（`llmOnceSpec`，自带 60s 超时）→ **严格 `json.Unmarshal`** + **服务端硬过滤白名单** `configSuggestWhitelist`（三套：llm/mcp/tool）→ 结果信封 `{ok, fields, notes?, error?{kind, message}}`（handler 恒 `return nil`，结果走 `v.Result`）。**白名单（硬要求）**：`fields` **只含该 kind 白名单字段**——**`apiKey` / `level` / `enabled` / `isolate` / `sandbox` / `hot_tools` 等禁填字段即便模型输出也丢弃**（`current` 上送时同样剔除，不外送禁填项）。**错误码**：`invalid`（入参不合法）· `parse_failed`（非 JSON / 无可填字段）· 及复用 LLM 出网分类 `timeout\|network\|rate_limit\|server\|auth\|protocol`（**不新增错误码体系**）。**安全（硬要求）**：应答与日志经 `maskLLMSecrets` 脱敏（无 key）。payload/返回明细见 [61 §1.1](../60-reference/61-消息一览.md)，FP 见 [36 `CFG-018`](../30-function-points/36-配置.md) |
 
 ### 3.2 订阅的事件面（`Subscribe`）
 
@@ -100,14 +98,12 @@
 
 - **tools（6）**：`ask_user`（hot, async=never）· `subchat_open`（hot, async=never）· `subchat_finish`（hot, async=never）· `tool_stop`（hot, async=never）· `tool_result`（async=never）· `next_run`（hot, async=never；**NEXTRUN-1**，见 §4.10）。
   - **`next_run`（NEXTRUN-1）**：模型主动登记**下一轮提示词**（inbox `next_turn`、`source=llm`），本轮正常结束后由 `finish → consumeNextTurn` 自动起新 turn；**仅主会话**（子聊天 / 群聊 / 子会话 / DSL 子轮次经 `denyTools` 不下发且调用处拒绝）；会话级计数 `sessions.next_run_count` + usr `nextRunMax`（默认 30，`0` = 关闭）——用户发送（`llm-start` / `llm-send{type:text-user}` / `llm-inbox-add` / `llm-inbox-promote`）重置 0，每次成功受理 +1，达上限返回固定文案且不登记；同轮多次调用 last-wins，本轮 `error`/`interrupted`/`cancelled` 终态丢弃本 turn 的 LLM 排队项；**零新增 MQ 主题**。
-  - **DSL 编排入口已统一为 `dsl_run`**：2026-10-19 起由 **core-mcp-server 的独立 executor**承接，**执行体即 `chonkpilot-dsl-executor.exe`**（源 `src/lib/mcp-tools/dslexec`、`async=always`；2026-10-20 合并，作业与 DSL 引擎同进程）；LLM 步骤与展示上报经插件桥调用本模块原子能力 `plugin/v1/dsl.llm`（子轮次）/ `plugin/v1/dsl.report`（→ `task-*`）。**不存在 `llm_run` 域工具**（契约/注册/dispatch 均已删除）；gateway 不再自持 DSL 节点。
+  - **DSL 编排入口已删除**（2026-10-21 GATEWAY-2 L1）：`dsl_run` / `llm_run` / `chonkpilot-dsl-executor.exe` / `plugin/v1/dsl.*` 全部退役；LLM 子轮次能力由 `subchat_open` / `subchat_finish` 承担。**不存在 `llm_run` / `dsl_run` 域工具**（契约/注册/dispatch 均已删除）；gateway 不再自持 DSL 节点。
   - **工具异步档位**：域工具按执行线拆分并冻结模式 —— `tool_stop`/`tool_result`（仅同步）· `ask_user`/`subchat_open`/`subchat_finish`（仅同步 + 无超时裁决点，不纳入「⑤ 超时自动取消」）。契约「基本信息」yaml 键：`category=server`/`async=never`/**`timeout=0`**/`hot=true`。**域工具执行硬上限统一 `timeout=0`**（系统工具 `category=server` 不单独设执行硬上限 → **`timeout=0` = 无上限**：`_meta.timeout=0` **显式透出**，gateway `limit<=0` **不设裁决点**、executor `noLimit` **不设执行硬上限**，永远等待、用户可取消；`tool_result` 的 `timeout` **入参**是轮询等待秒数、非执行硬上限）。「基本信息」已解析并透出：`loadDomainTools` 解析 `category`/`async`/`async-threshold`/`timeout` → `tools/register` 载荷携带 → gateway `registerTool` 写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**），故这些工具的 `_meta.async` 可在 `tools/list` 见到。上述工具的**提供方归属不变**（均由本模块经 `tools/register` 注册 = `registeredProvider`），仅**处理档位**按执行线归并；`ask_user` 的「不纳入 ⑤」为**我方建议，待用户确认**。详见 [18 §3.1/§4](../10-architecture/18-工具异步超时与取消.md) · [18 §3.8](../10-architecture/18-工具异步超时与取消.md)。
 - `ask_user` **实现现状 + 目标态**：**入参 = 扁平单问**（`question`/`options`/`multi`/`custom`/`recommended`；一次工具调用 = 一问，N 问由前端 300ms 合并窗口聚合成「第几个/共几个」批次展示），答复经 `ask-user-reply`（`{ask_id, answer, custom?}`）回填该 turn 的 tool_result。**目标态（未落地）**：`questions[]` 一表 N 问 / 答复增量写穿（ask 节点 `content`，落点方案 A）/ 全部题答齐才回一个 tool_result / turn 等待态 `awaiting` 支持重启续答（详见 [34 §7](../30-function-points/34-任务.md)）。**2026-10-11** 由 [61 §4.3](../60-reference/61-消息一览.md) 口径收敛（扁平单问与实现一致）。
 - **agents（7）**：`coder` / `executor` / `planner` / `reader` / `reviewer` / `worker` / `writer` —— **agent 退出资产面**（不注册进 gateway 资产目录、不落 `syncScenarioAgents`）：`mcp_find` 的 `type` 收敛为 **`tool|skill|resource|all`**（**去 `prompt`/`agent`**）、`mcp_load` 的 `kind` 为 **`tool|skill|resource`**、**`prompts/list` 不得再列 agent**；LLM 改由**注入的团队列表**（场景层）知道可委派谁。见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。🔵 待实施。
 - 加载：`//go:embed tools/*.tool.md`（`src/lib/llm/contracts/embed.go` 的 `contracts.FS`；**agent 不再 embed**）→ `domainmd.go` 分段解析（v2 H1 分区：`# 摘要`/`# 参数`/**`# 基本信息`** —— 基本信息 yaml 现**解析并携带** `category`/`async`/`async-threshold`/`timeout`）→ `domainmcp.go` 经 `tools/register` 注入 gateway：**载荷现携 `category`/`async`/`async_threshold`/`timeout`**（`hot` 保留），gateway `registerTool` 据此写入工具 `_meta`（`async` 为 `auto`/空不显式透出；**`async-threshold` 仅 `>0` 透出**；**`timeout` 键显式声明即透出，含 `0`/`-1` = 无上限**，见 [18 §3.8](../10-architecture/18-工具异步超时与取消.md)）。该 embed 为**唯一副本**（`build-mcp-server.ps1` 另覆盖式同步到 `capability/tools/server/`，供 core 按 `core-only` 契约注册与 executor 执行；不再各存手工副本）。
-- **BRIDGE-2 T7（2026-10-18）—— 域工具进程外实现**：桌面单体 / server 形态下，`ask_user` / `tool_stop` / `tool_result` / `subchat_open` / `subchat_finish` 由 **`chonkpilot-server-tools.exe`** 经 `plugin/v1/tools.register`（`handler_subject=domain-tool-call-ext`）注册——**server 零域工具**（进程内 `registerDomainTools` 在 `CHONKPILOT_EXTERNAL_TOOLS=1` 时跳过）。server 只保留**原子能力**（`plugin/v1/turn.context` · `task.node.start|done` · `task.result` · `tool.stop` · `ask.user` · `subchat.open|finish`，实现见 `plugin_caps.go`），任务树唯一写者仍是 server。单测 / CLI 不设开关 → 保持原进程内全量注册。两条回调主题分离（进程内 `domain-tool-call` 与外部 `domain-tool-call-ext`），避免同主题双订阅导致重复执行 / 结果双写。外移进程由宿主持有生命周期（`src/lib/llm/servertools`，spawn / Kill），失败不阻断核心服务（工具面降级）。
-- **BRIDGE-2 T7 增补（2026-10-19）—— 元工具进程外实现**：`mcp_find` / `mcp_load` / `mcp_invoke` 同样外移：契约 = `src/lib/llm/cmd/server-tools/contracts/meta/*.tool.md`，实现 = `cmd/server-tools/meta.go`，由 server-tools 以 `handler_subject=meta-tool-call-ext` 注册；取数走插件桥能力面（`plugin/v1/tools.list|call`、`prompts.list|get`、`resources.list|read`、`llm.step`）。`CHONKPILOT_EXTERNAL_TOOLS=1` 时 gateway `registerMetaTools` 直接跳过（进程内模式仍用于单测 / CLI）。**契约「基本信息」**：`category=meta` / `async=never` / `hot=true` / `timeout=0`（无执行硬上限）。跨进程取消经 `plugin.tool.cancel{call_id}` 传播；`timeout=0/-1` → 调用载荷 `no_timeout:true`（pluginbridge 不套 11 分钟兜底）。验收 L4 `run_meta_tools.py` 4/4。
-- **一工具一 exe（2026-10-19，G-68 第二步，取代上两条的 server-tools）**：`chonkpilot-server-tools.exe` 已删除 —— domain 6（`ask_user`/`tool_result`/`tool_stop`/`subchat_open`/`subchat_finish`/`next_run`）/ meta 3 各为独立 executor（`src/lib/llm/cmd/*-exec`，公共外壳 `execmain`），契约标 `core-only: true` + `runtime`（domain 契约源仍为本模块 `contracts/tools/`，构建同步到 `capability/tools/server/`；meta 契约源 `src/initdata/capability/tools/meta/`），由 core-mcp-server 注册并经 `ExecTool.Call` 执行。`CHONKPILOT_EXTERNAL_TOOLS=1` 的语义 = 由 core 接管（server 零域工具）；原子能力面（`plugin_caps.go`）不变。`next_run` 的跨进程路径 = 该 executor → `plugin/v1/next.run`。验收 L4 `run_meta_tools.py` 4/4 · `run_sem_tool_result.py` 3/3 · `run_tool_async.py` 11/11。
+- **一工具一 exe（2026-10-19，G-68 第二步）**：domain 6（`ask_user`/`tool_result`/`tool_stop`/`subchat_open`/`subchat_finish`/`next_run`）/ meta 3 各为独立 executor（`src/lib/llm/cmd/*-exec`，公共外壳 `execmain`），契约标 `core-only: true` + `runtime`（domain 契约源仍为本模块 `contracts/tools/`，构建同步到 `capability/tools/server/`；meta 契约源 `src/initdata/capability/tools/meta/`），由 core-mcp-server 注册并经 `ExecTool.Call` 执行。`CHONKPILOT_EXTERNAL_TOOLS=1` 的语义 = 由 core 接管（server 零域工具）；原子能力面（`plugin_caps.go`）不变。`next_run` 的跨进程路径 = 该 executor → `plugin/v1/next.run`。验收 L4 `run_meta_tools.py` 4/4 · `run_sem_tool_result.py` 3/3 · `run_tool_async.py` 11/11。
 
 ---
 
@@ -122,7 +118,7 @@ chatOnce：
   迭代上限 maxToolIterations=20
   → LLM 流式（reason/text/tool-call 广播）→ 空回复 EMPTY_REPLY / 断链有内容内部"继续"（≤maxAutoContinue=3）
   → finish_reason=length 且未超限 → 续写；否则 complete
-  → 工具循环：逐 tool-call → 剥 self_ 前缀 → ask/llm/task/普通工具分派
+  → 工具循环：逐 tool-call → 剥 self_ 前缀（P0a 2026-10-29 起暴露名 = 原名，剥前缀仅兼容存量）→ ask/llm/task/普通工具分派
        普通工具 gc.Call（异步 → pending + setGwTask；同步 → 喂回）
   → 有 pending 则 stash；否则递归续轮
 ```
@@ -161,14 +157,13 @@ chatOnce：
 
 ### 4.4 子会话与 DSL（`dsl_caps.go` / `plugin_caps.go`）
 
-- **DSL 编排不在本模块的工具面**：`llm_run` 已下线；`dsl_run` 已于 2026-10-19 外移为 core-mcp-server 的独立 executor（见 §3.4）。本模块保留其**原子能力**（`dslLLM` / `dslReport`）：`plugin/v1/dsl.llm` 执行 LLM 子轮次（`session-start`/`session-send`/`session-complete`），`plugin/v1/dsl.report` 把 tree/step/result 交给 `server/dsl_report.go` 的 `dslJobReporter` → `task-*`（**任务层唯一写者仍是 server**）。本模块不再有 `isLLMTool` / `runSubJob` 分支，也不建 `dsl_job` 节点。`agent_list` 已下线（`registerDomainTools` 现仅注入 5 个域工具契约）；**子 agent 发现改由注入的团队列表（场景层）承担**（`mcp_find(type=agent)` 不再成立 —— `type` 收敛为 `tool|skill|resource|all`）。🔵 待实施，见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。
+- **DSL 编排不在本模块的工具面**：`llm_run` / `dsl_run` 及 `plugin/v1/dsl.llm` / `plugin/v1/dsl.report` **均已随 DSL 退役删除**（2026-10-21）；本模块不再有 `isLLMTool` / `runSubJob` 分支，也不建 `dsl_job` 节点。子轮次由 `subchat_*` 承担。`agent_list` 已下线（`registerDomainTools` 现注入 server 域工具契约）；**子 agent 发现改由注入的团队列表（场景层）承担**（`mcp_find(type=agent)` 不再成立 —— `type` 收敛为 `tool|skill|resource|all`）。见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。
 - **子轮次 agent 定义接线**：`agents` 由 `map[string]struct{}` 改存 **agent 定义**（`domainmcp.go`：`loadScenario`/`scenarioAgentOf`/`mainScenarioAgent`/`childAgentSystem`/`resolveAgentLLMName`/`parseToolWhitelist`）；**四项生效** —— `prompt`/`delegateCond` → 子轮 system（`childAgentSystem`）；`tools` → 工具下发面（`turnCtx.allowedTools` + `llmTools()` 过滤）；`llmRef` → provider（子轮 = 被委派 agent，顶层 = 主 agent）。**`llmRef` 逐级回落**：`agent.llmRef` →（空）→ `llm.<子系统>` →（空）→ 继承通道（顶层 `llm-start.llm` / 子轮父轮 provider）→（空）→ `defaultLLM` →（空）→ 系统默认（经 `data.LLMRefName` 折算 int 索引）；**热生效** = `newTurnCtx` **每轮解析一次**、无进程级缓存。**空值 = 不限制/不干预**（`tools` 空/`[]` = 不限制）。删除已无调用方的 `loadScenarioSystemPrompt`（主 agent = `mainScenarioAgent`）。内置 agent 集**不是代码内嵌契约**（不 `//go:embed contracts/agents/*.agent.md`）—— 统一为 **app 级场景**（`<exeDir>/scenarios/*/`；出厂内容由 **embed** 提供、app 初始化（首次 list）缺失即物化，**app 级可编辑**，25 §6），`registerDomainAgents` 经数据层门面 `facade.ScenarioAPI.ScenarioList` 读取（路径/三级根规则单源在数据层，本层不拼路径）；`registeredAgentDef` 回落来源 = 「app 级场景内的同名 agent」（全量链路见 §4.4 上方注）。`builtin-agents/` 已删除 —— 发布 `scenarios/` 仅 `default/`（「开发场景」）；「通用」= 无场景的通用模式（无目录）；`registerDomainAgents` 扫描全部 app 级场景（当前仅 1 个）。
 - **场景子 agent 白名单硬拒**：`turn.go` 在工具调用**分发前**按 `turnCtx.toolAllowed(name)` **硬拒**白名单外工具（**不落 gateway**、不建任务节点，以失败文本落 role=tool 回喂；名字口径 = LLM 工具面**暴露名**，与 `llmTools()` 同一名字空间）。agent 只注入 context、不注册资产（`mcp_find(type=agent)` / `prompts/list` 不再列 agent）；`mcp_invoke` 旁路加固同保留。🔵 待实施。见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。
 - **子作业/子轮次 panic 兜底**：入口 `recover` **不仅回收 goroutine** —— panic 路径亦**落任务失败终态（`TaskStateError`）并回填父轮**（`parent.FeedToolResultStatus(toolCallID, …, "failed")`），否则子作业节点悬挂、父轮永久等待该 tool_call（无终态、无回执）；用「已终态则跳过」守卫避免与正常收尾重复回填（`tasks.done` 幂等；父轮 `FeedToolResultStatus` 非幂等）。
 - `runChildTurn`：子轮**复用同一 turnCtx 状态机**，`Parents=父链+父session`，业务同主轮。
-- **DSL 语法与执行**：`dsl_run` 接受 `dsl.Parse` 脚本（`LLM "agent" "prompt" "目的" [=> 目标]` 三参必填：agent/提示词/目的 = 步骤展示名，软约束 10–20 字）；执行体 = `chonkpilot-dsl-executor.exe`（一工具一 exe，一作业一进程，引擎与编排同进程）；LLM 步骤经插件桥 `plugin/v1/dsl.llm` → 本模块起子轮次并等 `session-complete`。见 [3A §TOOL-009](../30-function-points/3A-工具与编排.md) · [63-DSL语法](../60-reference/63-DSL语法.md) · 契约 [dsl_run.tool.md](../../../src/initdata/capability/tools/core/dsl_run.tool.md)。
-- **路径收紧 + 只读 env（R-11 二次升级）**：`dsl_run` 的 `file` 由 **executor（`dslexec.execTool`）** 严格 `paths.ResolvePathFor(instance, file, "")` 校验后在本进程读取；DSL 内 `#"path"` 句柄由引擎在运行时按同一严格口径解析（相对路径即该步失败）。解释器注入**只读** `env`（`dslexec.envVars`）：`CHONKPILOT_WORKDIR` / `DATADIR` / `TEMPDIR`（按 instance 分目录）/ `EXEDIR` / `PROJECT`；LLM 用 `{{env.CHONKPILOT_WORKDIR}}` 显式拼项目内绝对路径（不再依赖隐式 workDir 兜底）。见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。
-- **工具执行全进程外（P6，2026-10-19）**：`CHONKPILOT_EXTERNAL_TOOLS=1`（桌面单体 / server 默认）时，系统级 app 根只注册 **prompts / skills / resources 资产**（`Config.SkipTools=true`），5 个可执行工具（`filesys_run` / `script_run` / `web_fetch` / `browser_run` / `desktop_run`）改由 `chonkpilot-self-tools.exe` 经插件桥 `plugin/v1/tools.register` 注册（`handler_subject=self-tool-call-ext`），gateway 注入 self 节点后仍以 `self_<name>` 暴露；执行 = 外部进程 spawn executor。app 根工具契约热变更由 self-tools 自身 fswatcher 重扫（unregister→register）。非外部模式（单测 / CLI）保持进程内 `RegisterContracts`。
+- **DSL 已退役**（GATEWAY-2 L1）：`dsl_run`、`chonkpilot-dsl-executor.exe` 与对应契约均已删除；LLM 子轮次能力由 `subchat` 工具承担。
+- **工具执行全进程外（P6，2026-10-19）**：`CHONKPILOT_EXTERNAL_TOOLS=1`（桌面单体默认）时，系统级 app 根只注册 **prompts / skills / resources 资产**（`Config.SkipTools=true`），可执行工具改由 `chonkpilot-self-tools.exe` 经插件桥 `plugin/v1/tools.register` 注册（`handler_subject=self-tool-call-ext`），gateway 注入 self 节点后**以原名暴露**（P0a 2026-10-29 起不再加 `self_`）；执行 = 外部进程 spawn executor。app 根工具契约热变更由 self-tools 自身 fswatcher 重扫（unregister→register）。非外部模式（单测）保持进程内 `RegisterContracts`。
 - **实例上下文改由调用上下文（`_meta`）承载（R-11 二次升级修订）**：`loadExecConfig(instanceID)` 仅注入 usr/prj 执行配置（解释器/chrome/超时/并发/skip_dirs）；实例上下文**不再经 `mcpCfg.SetContext` 注入 tool arguments**，改由每次工具调用经 `mcpgateway.Context`（`mcp-tools-call` payload）→ gateway → mcp-server `params._meta` 透传。`llm-start` 的 `InstanceID` 为空 → 顶层错误（`accepted:false`，不进 turn）；`gwClient.Call` 的调用上下文 `InstanceID` 为空 → 直接返回错误（不下发）。`llm_start` 的 `work_dir`/`data_dir` 随 `instance-register` 绑定，`gwClient.call` 现随 payload 携带 `data_dir`。
 
 ### 4.5 LLM 出网（`src/lib/router` 统一入口）
@@ -283,7 +278,7 @@ chatOnce：
 
 | 项 | 规格 |
 |----|------|
-| key | `exeDir`（`<exeDir>`；app 根 = `<exeDir>/capability`）· `userDir`（`~/.chonkpilot`；user 根 = `<userDir>/capability`）· `dataDir`（`~/.chonkpilot/data/<project-id>`；prjusr 根 = `<dataDir>/capability`）· `workDir`（`<workDir>`；project 根 = `<workDir>/.chonkpilot/capability`） |
+| key | `exeDir`（`<exeDir>`；app 根 = `<exeDir>/capability`）· `userDir`（`~/.chonkpilot`；user 根 = `<userDir>/capability`）· `dataDir`（`<workDir>/.chonkpilot/users/<OS 用户名>`；prjusr 根 = `<dataDir>/capability`）· `workDir`（`<workDir>`；project 根 = `<workDir>/.chonkpilot/capability`） |
 | 取值 | `exeDir` = `exedir.Dir()`；`userDir` = `filepath.Dir(persist.CapUserRoot(opts.UsrPath))`；`workDir` = 实例绑定 `scope.WorkDir`；`dataDir` = 门面 `KnowledgeRoot(kind=prjusr)` 的父目录（`src/lib/llm/server/toolchain.go pathVars`） |
 | 替换语义 | 同 `{{toolchain.*}}`：已知 key 解析不出 → **空串**；**未知 key → 原样保留**；文本无占位符 → **零成本直返**（不发门面请求） |
 | 落点 | **系统提示词分层拼接后整段**（`turn.go newTurnCtx`：`replaceToolchain` 之后调 `replacePaths`；覆盖任一层，含目录层） |
@@ -364,8 +359,8 @@ chatOnce：
 
 ## 6. 依赖
 
-- **上游**：`src/lib/core`(mq) · `src/lib/data`(persist) · `src/lib/gateway` · `src/lib/mcp-server` · `src/plugins/plugin` + `-compress`/`-history`/`-codegraph`。
-- **下游**：GUI（内嵌）、CLI（内嵌）、gateway（方法面调用）。
+- **上游**：`src/lib/core`(mq) · `src/lib/data`(persist) · `src/lib/gwadapter`（→ 独立仓 `chonkpilot-mcp-gateway`） · `src/lib/mcp-server` · `chonkpilot-plugin-framework/runtime/hook`（内嵌 Hook 已退场，`DefaultPlugins=nil`）。
+- **下游**：GUI（内嵌）、gateway（方法面调用）。
 
 ---
 
@@ -377,7 +372,6 @@ chatOnce：
 | tool_pair 归会话层 | gateway 不感知 | 回合产物，创建/回填/续轮在此 |
 | `finish` 单点终态 | 正常/错误/取消都收敛 `llm-complete` | 消除 `llm-error` 多通道 |
 | 子轮复用 turnCtx | `runChildTurn` 用同一状态机 | 行为一致、代码合一 |
-| `AsyncMode` 透传 gateway | CLI 传 `never` 强制同步 | CLI 无后台消费方 |
 | 首次使用清理 stale | 多 workdir 服务无法启动时预知数据根 | 改为首个 `llm-start` 触发 |
 
 ---
@@ -414,21 +408,21 @@ chatOnce：
 
 ## 11. chat 引擎与端口（MOD-1，2026-10-20）
 
-> 组件内核 = **`src/lib/chat/`**（独立 module `chonkpilot-chat`，`go.mod` 仅标准库）；宿主适配器 = `src/lib/llm/server/chatshadow{,_tool,_context}.go` + 接管装配 `engine_turn.go`。
+> 组件内核 = **同级仓 `chonkpilot-chat/`**（module `chonkpilot-chat`，端口化内核）；宿主适配器 = `src/lib/llm/server/engine_turn.go`（四个端口实现 `engineTurnContext / engineTurnStore / engineTurnSink / engineTurnTools`）+ 输入适配 `chatshadow_inbox.go` / `chatshadow.go`（`chatLLMClient`）/ `chatshadow_tool.go`（`chatToolCatalog`）。
 > **生产唯一执行路径 = 引擎（A4-P4b，2026-10-21）**：所有轮次（主会话 / 子聊天 / 子会话 / 干活子会话 / DSL 子轮次 / 恢复轮）一律由 `runEngineLoop`（`loop()` 唯一执行体）执行；**无回滚开关**（不读任何环境变量），旧 `chatOnce` / P3a 单步接管 / 旧输入等待路径已删除。终态仍由 `Server.finish` 唯一收口。本节不改任何消息契约。
 
 ### 11.1 端口（消费方 = chat 定义，实现方 = 宿主）
 
 | 端口 | 定义 | 宿主实现 | 语义要点 |
 |------|------|----------|----------|
-| `ContextProvider` | `Build(ctx, ContextRequest) (Context, error)` | `chatshadow_context.go`（`BuildContextTokens` + `chatTurnUserInputs` + `resolveTurnScenario`） | 读库 / 压缩 / 五层 system prompt 拼装全归宿主；**每轮只调一次**；`SystemPrompt` 不重复塞进 `Messages`；**`Build` 含本轮已落库用户输入**（A4-P2：历史 `exclude_turn` 排除当前轮 + 本轮 `role=user`（kind `""/text/insert/continue`）按 created_at 顺序追加；本轮 assistant / tool 由引擎重新生成，不进上下文） |
-| `TurnStore` | `SaveMessage` · `CommitInbox` · `AppendEvent` | `chatshadow.go`（`AppendFullKeyed` · `data-inbox-commit` · `data-turn-event-append`） | `CommitInbox` = **同一事务**落消息 + 置 `consumed`（`M-INBOX-<inbox_id>` 确定性主键幂等） |
-| `EventSink` | `Emit(ctx, Event)` | `chatshadow.go` 的 `chatEventSink` | **必须非阻塞**；`llm_delta`→`llm-receive` · `llm_retry`→`llm-retry` · `turn_complete`→`llm-complete`（**零新增主题**） |
-| `ToolInvoker` | `Dispatch` / `Cancel` / `Detach` | `chatshadow_tool.go` | `Dispatch` = 策略硬拒 → `ask_user` 走宿主 ask 通道 → `mcp-tools-call` → 同步结果 / `status=pending` 挂起（`OpID` = gateway task_id）；工具级错误编码为 `ToolResult.IsError` |
-| `ToolCatalog` | `Servers` / `Tools` | `chatshadow_tool.go` | `Tools` = 宿主**已过滤**的下发面（`[]ToolDef` → `ToolSpec`，`_meta` 透传）；`Servers` 恒空（服务目录属管理面） |
-| `Clock` | `Now` / `After` | `chatadapter.go`（系统时钟） | 续写宽限期 / 轮询 / 超时；测试可注入假时钟 |
-| `LLMClient` | `Step(ctx, StepRequest, StepOptions)` | `chatLLMClient`（`chatshadow.go`） | chat 与 router 的唯一接触面；协议 / 流解析 / **报文级重试**归 router |
-| `Inbox` | `Poll(ctx) (InboxItem, bool, error)`（**非阻塞**） | 宿主队列（`llm-inbox-*` / 工具回执） | `insert` → 同事务消费 + 插入帧；`tool_result` → 仅轮内等待中消费；其余类型引擎忽略（宿主保留/丢弃） |
+| `ContextProvider` | `Build(ctx, ContextRequest) (Context, error)` | `engine_turn.go: engineTurnContext` → `tc.buildAssembly()`（`assembly.go`） | 读库 / 压缩 / 五层 system prompt 拼装全归宿主；**每轮只调一次**；`SystemPrompt` 不重复塞进 `Messages`；**`Build` 含本轮已落库用户输入**（历史 `exclude_turn` 排除当前轮 + 本轮 `role=user` 按 created_at 顺序追加；本轮 assistant / tool 由引擎重新生成，不进上下文） |
+| `TurnStore` | `SaveMessage` · `CommitInbox` · `AppendEvent` | `engine_turn.go: engineTurnStore` | `SaveMessage` → `tc.persistMessage`（role=tool 跳过，结果由派发路径落库）；`CommitInbox` = **`data-inbox-commit` 同一事务**落消息 + 置 `consumed`（`M-INBOX-<inbox_id>` 确定性主键幂等）；`AppendEvent` = no-op（生产不写 `turn_events`） |
+| `EventSink` | `Emit(ctx, Event)` | `engine_turn.go: engineTurnSink` | **必须非阻塞**；`llm_delta`→`llm-receive` · `llm_retry`→`llm-retry` · `session_interrupted`→`llm-interrupted`；`turn_complete` / `tool_result` / `tool_progress` / `ask_user` **有意忽略**（终态由 `Server.finish` 唯一收口） |
+| `ToolInvoker` | `Dispatch` / `Cancel` / `Detach` | `engine_turn.go: engineTurnTools` → `tc.dispatchToolCall` | `Dispatch` = 策略硬拒 → `ask_user` 走宿主 ask 通道 → `mcp-tools-call` → 同步结果 / `status=pending` 挂起（`OpID` = gateway task_id）；工具级错误编码为 `ToolResult.IsError` |
+| `ToolCatalog` | `Servers` / `Tools` | `chatshadow_tool.go: chatToolCatalog` | `Tools` = 宿主**已过滤**的下发面（`[]ToolDef` → `ToolSpec`，`_meta` 透传）；`Servers` 恒空（服务目录属管理面） |
+| `Clock` | `Now` / `After` | 引擎默认时钟（宿主不再提供适配器） | 续写宽限期 / 轮询 / 超时 |
+| `LLMClient` | `Step(ctx, StepRequest, StepOptions)` | `chatshadow.go: chatLLMClient` | chat 与 router 的唯一接触面；协议 / 流解析 / **报文级重试**归 router；`RetryObserver` 折 `llm-retry` |
+| `Inbox` | `Poll(ctx) (InboxItem, bool, error)`（**非阻塞**） | `chatshadow_inbox.go: chatInbox`（宿主队列 `llm-inbox-*` / 工具回执） | `insert` → 同事务消费 + 插入帧；`tool_result` → 仅轮内等待中消费；其余类型引擎忽略（宿主保留/丢弃） |
 
 ### 11.2 执行路径
 
@@ -455,13 +449,36 @@ RunTurn(ctx, turnID)  /  RunSubTurn(ctx, req)        // engine.go
 - 分级 `turnEventLog`（`none` / `minimal` / `outline` / `verbose`，默认 `outline`）；`none` / `minimal` **不可重放**。
 - 保留期 `turnEventLogRetentionDays`（默认 7，`0` = 永久）；`running` 永不按时间删。
 
-### 11.4 影子与旧路径删除（如实口径）
+### 11.4 旧路径与影子脚手架清理（2026-10-25 收口）
 
-- 已落：`chat/trace.go` 的 `Recorder` / `ShadowTurnStore` / `Trace` / `Diff` / `Verify` —— 同一事件序列 + 同一 LLM 桩下，`StepRequest` 序列与写入序列**逐项相等**（`TestChatShadowParity` / `TestChatToolLoopThroughAdapters`）。
-- **旧路径已删除（A4-P4b，2026-10-21）**：`chatOnce`（旧 LLM+工具循环）· `deliverInput` · `consumeInbox` · `reapStalePending` / `reapInflight`（旧看门狗）· `maybeResumeTop` / `finishInsertFrame` / `abortCurrentFrame` / `setResumeNote` / `takeResumeNote`（旧插入帧续接）· `resumePartial` / `unpersistedInputs` · P3a 单步接管（`engine_step.go`：`engineTextEligible` / `runEngineStep`）；`turnCtx` 的 `engineMode` / `iterations` / `answer` / `stash` / `resumeNote` / `persistedResultOK` 字段一并删除。
-- **保留（引擎依赖）**：`turnCtx` 结构 / `newTurnCtx` / `msgs` / `persistMessage` / `dispatchToolCall` / `finish` / `complete` / `Close` / `finishOnce` / `llmTools` / `gatewayArgs` / `toolAllowed` / `markInflight` / `registerPending` / 任务树 / ask / `raiseInterrupted` / `publishInterrupted` / `runEngineLoop` / `enginePump` / `engineFirstInput` / `engineRouteInput` / `engineRouteInsert` / `engineFinish`。
-- **无回滚开关**：`chatEngineEnabled` / `engineTurnSelectable` 与相关环境变量判定已删除 → 引擎是唯一执行路径。
-- 跨进程恢复（进程崩溃 → 宿主收敛 / 重建实例继续）语义不变：收敛到终态 + 保留已落库消息；恢复轮由引擎从历史继续。
+- **旧路径删除（A4-P4b，2026-10-21）**：`chatOnce` / `deliverInput` / `consumeInbox` / `reapStalePending` / `reapInflight` / `maybeResumeTop` / `finishInsertFrame` / `abortCurrentFrame` / `setResumeNote` / `takeResumeNote` / `resumePartial` / `unpersistedInputs` / P3a 单步接管（`engine_step.go`）；`turnCtx` 的 `engineMode` / `iterations` / `answer` / `stash` / `resumeNote` / `persistedResultOK` 字段一并删除。
+- **影子重放整套删除（2026-10-25）**：`chatshadow_replay.go` / `chatshadow_context.go` / `chatshadow_tool_prod.go` 与 `CHONKPILOT_CHAT_SHADOW` 环境变量整体移除；`chatshadow.go` 的 `chatTurnStore` / `chatEventSink`、`chatshadow_tool.go` 的 `chatToolInvoker`、`chatadapter.go` 的 7 个零调用转换一并删除。**保留**（生产端口）：`chatLLMClient`、`retryObserverFunc`、`chatToolCatalog`、`chatInbox`、`ChatMessageFromData/ToData`。
+- **其他死码删除（同批）**：`llm/udsapi`（整包）、`llm/selftools`（整包，self-tools 不再由宿主拉起；与 `coretools/supervisor.go` 的同构守护仅保留后者）、`turn.go` 的 `raiseInterrupted` / `autoContinueAfter` / `activeSessionOK` / `msgs()` / `OnRetry` / `OnExhausted` / `forceSyncTools`、`Options.WorkDir/DataDir`（本包零读取）、`Server.capNodeMeta`（只写不读）。
+- **保留（引擎依赖）**：`turnCtx` 结构 / `newTurnCtx` / `persistMessage` / `dispatchToolCall` / `finish` / `complete` / `Close` / `finishOnce` / `llmTools` / `gatewayArgs` / `toolAllowed` / `markInflight` / `registerPending` / 任务树 / ask / `publishInterrupted` / `runEngineLoop` / `enginePump` / `engineFirstInput` / `engineRouteInput` / `engineRouteInsert` / `engineFinish`。
+- **无回滚开关**：不读任何 `CHONKPILOT_*` 引擎开关（仅保留部署用 `CHONKPILOT_EXTERNAL_TOOLS` / `CHONKPILOT_CORE_MCP`）。
+
+### 11.4a server 包文件结构（2026-10-25 拆分）
+
+`server.go` 由 3.3k 行拆为职责文件（同 package、零语义改动）：
+
+| 文件 | 职责 |
+|---|---|
+| `server.go`（≈277 行） | 注入面、实例维生（注册/退出）、事件小件、工具面、`turnSession` |
+| `topics.go` / `server_types.go` | 主题常量与 `domainTopics`；`Options` / `Server` / `askWaiter` |
+| `boot.go` / `subscribe.go` | `New` / `Start` / `Stop`；35 条订阅表（`subscribeAll`） |
+| `handler_session.go` / `handler_ask.go` / `handler_task.go` | `llm-*` 方法面、ask、任务停止/回报 |
+| `retry.go` | tool-retry 全链 + 重启恢复（`recoverTurnCtx`） |
+| `capnodes.go` | capability dir 节点生命周期 |
+| `finish.go` | 终态唯一收口 + `llm-complete` / `llm-compress` |
+| `llmconfig.go` / `execconfig.go` / `refresh.go` | provider/运行时配置、执行配置与沙箱、prj 刷新 |
+| `sink_log.go` | 日志出口与任务层取消回调 |
+
+### 11.4b 重启恢复（本轮补齐）
+
+- **session→dialog 备忘预热**：进程重启后 `sessionIndexes` 为空。实例注册后后台执行 `sessionStore.Prewarm()`（`data-session-list` 回带 `dialog_id`，零新增主题）；`Server.ensureDialogIndex` 在缓存缺失时就地再预热一次。修复重启后群聊「继续/结束」、子聊天完成、主会话判定拿不到 `dialog_id` 的链式失效。
+- **inbox 原子消费**：`engineTurnStore.CommitInbox` 改走 `data-inbox-commit`（同事务落消息 + 置 `consumed`，主键由 `inbox_id` 确定性推出）→ 崩溃窗口不再重复消费输入。
+- **停机**：`Stop` 除关闭 `turns` 外，显式 `stopAllGroupRuns()` 取消全部群聊调度 ctx；`instance-exit` 回收该实例的 `sessionIndexes` 条目。
+- **群聊展示板读**：`boardView` 必须带 `dialog_id`（此前裸发请求 → 恒 `dialog_required`〔2026-10-28 起 `dialog_id` 恒必填，不再有开关分支〕且被静默转 nil → 「继续」重复重跑已产结论的参与者）。
 
 ### 11.5 生产执行：整轮引擎（唯一路径；A4-P4b 收口 2026-10-21）
 

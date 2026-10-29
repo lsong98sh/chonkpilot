@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 // recordLLMServer 记录每次 LLM 请求的 messages 并固定回文本（同轮次继续拼接断言用）。
@@ -66,9 +66,9 @@ func waitTurnIdle(t *testing.T, s *Server, session string) {
 // sessionTurnRecords 取会话全部 turn 行（data-session-history，created_at 升序）。
 func sessionTurnRecords(t *testing.T, s *Server, session string) []map[string]any {
 	t.Helper()
-	res, err := dataRequest(s.bus, "data-session-history", map[string]any{
+	res, err := dataRequest(s.bus, "data-session-history", withDialog(s, session, map[string]any{
 		"instance_id": "ins-test", "data": map[string]any{"session_id": session},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("data-session-history: %v", err)
 	}

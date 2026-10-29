@@ -26,17 +26,14 @@ func mustInboxRow(t *testing.T, tb *data.Table, key string) (data.Record, bool) 
 // TestInboxCommit：同事务落消息 + 置 consumed；同 inbox_id 幂等（不重复落库）；discarded 拒绝。
 func TestInboxCommit(t *testing.T) {
 	s, scope := newSessionEnv(t)
-	disableShard(t, s, "ins-inbox-commit", scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
-	prj, err := s.PrjUsrFor("ins-inbox-commit", scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
+	const inst = "ins-inbox-commit"
+	dialogID, db := openEnvDialog(t, s, inst, scope)
 	inboxKey, err := kernel.NewInboxKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	if err := prj.Table(inboxTable).Insert(inboxKey, data.Record{
+	if err := db.Table(inboxTable).Insert(inboxKey, data.Record{
 		"session_id": "s-commit", "type": "insert", "content": "hi",
 		"status": "pending", "created_at": now,
 	}); err != nil {
@@ -44,7 +41,7 @@ func TestInboxCommit(t *testing.T) {
 	}
 
 	req := facade.InboxCommitRequest{
-		InstanceID: "ins-inbox-commit", InboxID: inboxKey, TurnID: "t-commit",
+		InstanceID: inst, DialogID: dialogID, InboxID: inboxKey, TurnID: "t-commit",
 		Message: facade.Message{Role: "user", Content: "hi", Kind: "insert"},
 		Scope:   scope,
 	}
@@ -56,20 +53,20 @@ func TestInboxCommit(t *testing.T) {
 		t.Fatalf("消息主键应为确定性键：%q", resp.ID)
 	}
 	var row data.Record
-	if ok, err := prj.Table("messages").Get(resp.ID, &row); err != nil || !ok {
+	if ok, err := db.Table("messages").Get(resp.ID, &row); err != nil || !ok {
 		t.Fatalf("消息未落库：ok=%v err=%v", ok, err)
 	}
 	if row["content"] != "hi" || row["inbox_id"] != inboxKey || row["session_id"] != "s-commit" {
 		t.Fatalf("消息行错：%+v", row)
 	}
 	// 索引同事务维护：按 turn 索引可查到该行。
-	recs, _, err := prj.Table("messages").Query(data.Query{
+	recs, _, err := db.Table("messages").Query(data.Query{
 		Where: data.Record{"turn_id": "t-commit"}, OrderBy: "created_at",
 	})
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("turn 索引未命中：%d %v", len(recs), err)
 	}
-	inbox, ok := mustInboxRow(t, prj.Table(inboxTable), inboxKey)
+	inbox, ok := mustInboxRow(t, db.Table(inboxTable), inboxKey)
 	if !ok || inbox["status"] != "consumed" {
 		t.Fatalf("inbox 未置 consumed：%+v", inbox)
 	}
@@ -79,7 +76,7 @@ func TestInboxCommit(t *testing.T) {
 	if err != nil || resp2.ID != resp.ID {
 		t.Fatalf("重试应幂等：%+v %v", resp2, err)
 	}
-	recs, _, err = prj.Table("messages").Query(data.Query{
+	recs, _, err = db.Table("messages").Query(data.Query{
 		Where: data.Record{"turn_id": "t-commit"}, OrderBy: "created_at",
 	})
 	if err != nil || len(recs) != 1 {
@@ -88,14 +85,14 @@ func TestInboxCommit(t *testing.T) {
 
 	// discarded → 拒绝消费。
 	discarded, _ := kernel.NewInboxKey()
-	if err := prj.Table(inboxTable).Insert(discarded, data.Record{
+	if err := db.Table(inboxTable).Insert(discarded, data.Record{
 		"session_id": "s-commit", "type": "insert", "content": "x",
 		"status": "discarded", "created_at": now,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.InboxCommit(facade.InboxCommitRequest{
-		InstanceID: "ins-inbox-commit", InboxID: discarded, TurnID: "t-commit",
+		InstanceID: inst, DialogID: dialogID, InboxID: discarded, TurnID: "t-commit",
 		Message: facade.Message{Role: "user", Content: "x"}, Scope: scope,
 	}); err == nil {
 		t.Fatal("discarded 的 inbox 不应被消费")
@@ -152,18 +149,16 @@ func TestCleanupInboxTTL(t *testing.T) {
 func TestSessionDeleteCascadeInbox(t *testing.T) {
 	s, scope := newSessionEnv(t)
 	const inst = "ins-inbox-cascade"
-	disableShard(t, s, inst, scope) // 旧布局断言（P3-4d 起 shard 生效即要求 dialog_id）
-	prj, err := s.PrjUsrFor(inst, scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
+	dialogID, db := openEnvDialog(t, s, inst, scope)
 	created := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	if err := prj.Table("sessions").Insert("s1", data.Record{
-		"session_id": "s1", "parent_id": "", "title": "t", "created_at": created, "updated_at": created,
-	}); err != nil {
-		t.Fatalf("insert session: %v", err)
+	for id, parent := range map[string]string{"m": "", "s1": "m", "s2": "m"} {
+		if err := db.Table("sessions").Insert(id, data.Record{
+			"session_id": id, "parent_id": parent, "title": id, "created_at": created, "updated_at": created,
+		}); err != nil {
+			t.Fatalf("insert session %s: %v", id, err)
+		}
 	}
-	tb := prj.Table(inboxTable)
+	tb := db.Table(inboxTable)
 	for k, r := range map[string]data.Record{
 		"a1": {"session_id": "s1", "status": "pending", "type": "next_turn", "content": "a1", "created_at": created},
 		"a2": {"session_id": "s1", "status": "consumed", "type": "insert", "content": "a2", "created_at": created},
@@ -174,7 +169,10 @@ func TestSessionDeleteCascadeInbox(t *testing.T) {
 		}
 	}
 
-	if _, err := s.SessionDelete(facade.SessionDeleteRequest{InstanceID: inst, Scope: scope, SessionID: "s1"}); err != nil {
+	// 删子会话 → 只级联自身 inbox；其他会话不受影响。
+	if _, err := s.SessionDelete(facade.SessionDeleteRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "s1",
+	}); err != nil {
 		t.Fatalf("SessionDelete: %v", err)
 	}
 	for _, k := range []string{"a1", "a2"} {
@@ -192,7 +190,9 @@ func TestSessionDeleteCascadeInbox(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert orphan: %v", err)
 	}
-	if _, err := s.SessionDelete(facade.SessionDeleteRequest{InstanceID: inst, Scope: scope, SessionID: "s9"}); err != nil {
+	if _, err := s.SessionDelete(facade.SessionDeleteRequest{
+		InstanceID: inst, Scope: scope, DialogID: dialogID, SessionID: "s9",
+	}); err != nil {
 		t.Fatalf("SessionDelete(not exists): %v", err)
 	}
 	if _, ok := mustInboxRow(t, tb, "orphan"); ok {

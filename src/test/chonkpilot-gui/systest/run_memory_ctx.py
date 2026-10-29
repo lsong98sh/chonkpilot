@@ -157,6 +157,15 @@ def main():
         texts = body.get("texts") or []
         return str(texts[-1]) if texts else ""
 
+    def last_request_text():
+        """mock 最近一次请求的「system + 末条文本」合并串。
+
+        摘要提示词在产品侧走 `llm-simple{system: summary.md 内容}`（
+        `plugin-compress/summarize.go`）→ 提示词出现在请求 **system**；
+        旧口径（SESSION-1 前）看末条 user。两者都纳入，避免实现位置变化导致误判。
+        """
+        return (str(last().get("system") or "") + "\n" + last_user_text()).strip()
+
     def reset_mock():
         try:
             urllib.request.urlopen("http://127.0.0.1:%d/reset" % m.port, timeout=5).read()
@@ -367,6 +376,30 @@ def main():
                 return mk
             time.sleep(0.6)
         return ""
+
+    def compress_and_capture(sid, first_q, second_q, marker, wait_first=20, wait_second=25):
+        """跑轮次直到「压缩摘要请求」出现，返回 (压缩快照标记, 摘要请求末条 user, 实际轮数)。
+
+        压缩在**每轮终态**按阈值异步触发（`keep_full_max_tokens` + `compress_token_threshold`
+        压到 1 时通常第 1 轮即触发），且快照回写滞后于请求 → **以 mock 侧为准**：
+        摘要请求 = 最近一次请求的末条 user 含 `marker`（摘要提示词），不再假设它是「最后一次请求」。
+        """
+        def wait_summary(max_wait):
+            end = time.time() + max_wait
+            while time.time() < end:
+                t = last_request_text()
+                if marker in t:
+                    return t
+                time.sleep(0.6)
+            return ""
+
+        run_turn(first_q, sid=sid, idx=1)
+        t = wait_summary(wait_first)
+        if t:
+            return wait_compress(sid, max_wait=10), t, 1
+        run_turn(second_q, sid=sid, idx=2)
+        t = wait_summary(wait_second)
+        return wait_compress(sid, max_wait=10), t, 2
 
     # ── 前端 DOM 助手（仅 UI-6 用例）────────────────────────────
 
@@ -592,8 +625,17 @@ def main():
                 raise TestError("%s=true 后该类未被写入（文件内容未变）：nreq=%d→%d diag=%r"
                                 % (CAT_A, n1, nreq(), diag_heads()))
             aft = read_all_mem()
-            ids_on = sorted({(e.get("payload") or {}).get("id")
-                             for e in c.events_of("data-memory-refresh", clear=False)} - {None})
+            # 有界等待 refresh 广播（2026-10-26 批跑定位）：文件落盘与 `data-memory-refresh`
+            # 广播是两个动作，负载高时广播可能晚于「文件内容已变」的读取点 → 固定即时读取
+            # 会把「尚未广播」误判为「未广播」。断言条件不变，只给读一个有界下界。
+            ids_on = []
+            deadline_on = time.time() + 15
+            while time.time() < deadline_on:
+                ids_on = sorted({(e.get("payload") or {}).get("id")
+                                 for e in c.events_of("data-memory-refresh", clear=False)} - {None})
+                if CAT_A in ids_on:
+                    break
+                time.sleep(0.4)
             if CAT_A not in ids_on:
                 raise TestError("%s=true 写回后未收到 data-memory-refresh(id=%s)" % (CAT_A, CAT_A))
             bad_o, rewritten_o, untouched_o, identical_o = check_cat_consistency(aft, mid)
@@ -646,18 +688,17 @@ def main():
             reset_mock()
             arm(("turn-start", "llm-complete", "llm-error"))
             sid_yes = new_session()
-            run_turn("压缩阈值-极小-第1轮", sid=sid_yes, idx=1)
-            run_turn("压缩阈值-极小-第2轮", sid=sid_yes, idx=2)
-            mk = wait_compress(sid_yes, max_wait=25)
+            mk, tail, turns = compress_and_capture(sid_yes, "压缩阈值-极小-第1轮", "压缩阈值-极小-第2轮",
+                                                   DEFAULT_SUMMARY)
             n_yes = nreq()
             if not mk:
                 raise TestError("阈值 1 + keep_full_max_turns 1 未发生压缩（快照无 %s）" % COMPRESS_MARK)
-            if n_yes != 3:
-                raise TestError("压缩后 mock 请求数=%d，期望 3（2 轮 + 1 次摘要 llm-simple）" % n_yes)
-            tail = last_user_text()
+            if n_yes != turns + 1:
+                raise TestError("压缩后 mock 请求数=%d，期望 %d（%d 轮 + 1 次摘要 llm-simple）"
+                                % (n_yes, turns + 1, turns))
             if DEFAULT_SUMMARY not in tail:
-                raise TestError("最后一次（摘要）请求末条 user 非摘要提示词：%r" % tail[:200])
-            _evi("compress-B-triggered", requests=n_yes, snapshot_mark=mk[:200],
+                raise TestError("摘要请求（system/末条 user）未含摘要提示词：%r" % tail[:200])
+            _evi("compress-B-triggered", requests=n_yes, turns=turns, snapshot_mark=mk[:200],
                  summary_request_text=tail[:120])
 
     def case_summary_prompt():
@@ -685,14 +726,18 @@ def main():
                 reset_mock()
                 arm(("turn-start", "llm-complete", "llm-error"))
                 sid1 = new_session()
-                run_turn("总结提示词哨兵-第1轮", sid=sid1, idx=1)
-                run_turn("总结提示词哨兵-第2轮", sid=sid1, idx=2)
-                if not wait_compress(sid1, max_wait=25):
+                mk1, tail1, turns1 = compress_and_capture(sid1, "总结提示词哨兵-第1轮", "总结提示词哨兵-第2轮", SENT)
+                if not mk1:
                     raise TestError("哨兵用例未触发压缩（无法验证摘要请求）")
-                tail1 = last_user_text()
                 if SENT not in tail1:
-                    raise TestError("摘要请求末条 user 不含哨兵：%r" % tail1[:200])
-                _evi("summary-prompt-B", requests=nreq(), text=tail1[:160])
+                    raise TestError("摘要请求（system/末条 user）不含哨兵：%r diag=%s"
+                                    % (tail1[:200], json.dumps({
+                                        "last": {k: last().get(k) for k in
+                                                 ("path", "system", "n_requests")},
+                                        "mark": compress_mark(sid1)[:120],
+                                        "file": os.path.exists(SUMMARY_FILE),
+                                    }, ensure_ascii=False)[:600]))
+                _evi("summary-prompt-B", requests=nreq(), turns=turns1, text=tail1[:160])
                 # A/B（回落）：删除该键 → 回读默认；再压缩 → 末条 user == 默认
                 c.req("data-prompt-delete", {"id": "summary_prompt"})
                 got2 = (c.req("data-prompt-load", {"id": "summary_prompt"}) or {}).get("data") or ""
@@ -704,14 +749,13 @@ def main():
                 reset_mock()
                 arm(("turn-start", "llm-complete", "llm-error"))
                 sid2 = new_session()
-                run_turn("总结提示词回落-第1轮", sid=sid2, idx=1)
-                run_turn("总结提示词回落-第2轮", sid=sid2, idx=2)
-                if not wait_compress(sid2, max_wait=25):
+                mk2, tail2, turns2 = compress_and_capture(sid2, "总结提示词回落-第1轮", "总结提示词回落-第2轮",
+                                                          DEFAULT_SUMMARY)
+                if not mk2:
                     raise TestError("回落用例未触发压缩（无法验证摘要请求）")
-                tail2 = last_user_text()
                 if DEFAULT_SUMMARY not in tail2 or SENT in tail2:
                     raise TestError("删除后摘要请求末条 user 未回落内置默认：%r" % tail2[:200])
-                _evi("summary-prompt-B-fallback", requests=nreq(), text=tail2[:160])
+                _evi("summary-prompt-B-fallback", requests=nreq(), turns=turns2, text=tail2[:160])
             finally:
                 # 清理项目级覆盖文件（落盘在隔离 work-dir 内，双保险）
                 try:

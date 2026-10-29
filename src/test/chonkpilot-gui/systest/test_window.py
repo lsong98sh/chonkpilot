@@ -211,6 +211,14 @@ def main():
         gui.start()
         snap = snapshot_config(gui)
 
+        # 前置归一（2026-10-26）：`window.maximized` 是**会持久化**的用户状态（上次跑批/last 退出
+        # 可能留下 true）→ 若不先还原，W2 断言会以「初始即最大化」为起点而误判（W2b/W2c 整体反转）。
+        # 这里先确保窗口处于**非最大化**（点击切换按钮一次），再进入 W2。
+        t0 = J(gui, "document.querySelector('.win-maximize')?.getAttribute('title') || ''")
+        if t0 in ('Restore', '还原'):
+            J(gui, "document.querySelector('.win-maximize')?.click(); 'ok'")
+            time.sleep(1.0)
+
         # W1 没有原生标题：自绘标题栏（toolbar 拖拽区 + 自绘窗口按钮）；
         # frameless 生效判据：客户区高度 ≈ 窗口高度（WM_NCCALCSIZE=0，无标题栏/边框）
         w1 = J(gui, "(()=>{const d=window.outerHeight-window.innerHeight;return {d:d, t:!!document.querySelector('.toolbar'), wc:!!document.querySelector('.win-controls')}})()")
@@ -253,31 +261,67 @@ def main():
 
         if hwnd:
             _normalize_window(gui, hwnd)
-            # ① 右边框（距边 3px）：向右拖 140px
-            r0 = _wrect(hwnd)
-            x, y = r0[2] - 3, r0[1] + (r0[3] - r0[1]) // 2
-            _drag(hwnd, x, y, x + 140, y)
-            r1 = _wrect(hwnd)
-            dw = (r1[2] - r1[0]) - (r0[2] - r0[0])
+            # ① 右边框（距边 3px）：向右拖 140px。
+            # 2026-10-26/27：首个真实拖拽偶发被「窗口刚还原/激活」吞掉（实测 delta=0 或仅数 px，
+            # 系统循环未进入）→ 位移**不在容差内**即重试（最多 3 次；判据仍为 ±3px，
+            # 真实回归重试后仍不达标 → 如实失败）。
+            def _drag_right(tries=3):
+                rb = ra = None
+                dx = 0
+                px = py = 0
+                for _ in range(tries):
+                    rb = _wrect(hwnd)
+                    px, py = rb[2] - 3, rb[1] + (rb[3] - rb[1]) // 2
+                    _drag(hwnd, px, py, px + 140, py)
+                    ra = _wrect(hwnd)
+                    dx = (ra[2] - ra[0]) - (rb[2] - rb[0])
+                    if abs(dx - 140) <= 3:
+                        break
+                    _normalize_window(gui, hwnd)
+                return rb, ra, dx, px, py
+
+            r0, r1, dw, x, y = _drag_right()
             c.check("W5 真机拖动右边框 → 宽度 +140px（±3px）", abs(dw - 140) <= 3,
                     f"before={r0} after={r1} delta_w={dw} drag=({x},{y})->({x + 140},{y})")
 
             # ② 下边框（距边 3px）：向下拖 110px（窗口已归一到工作区内，末端不出屏）
-            r2 = _wrect(hwnd)
-            x, y = r2[0] + (r2[2] - r2[0]) // 2, r2[3] - 3
-            _drag(hwnd, x, y, x, y + 110)
-            r3 = _wrect(hwnd)
-            dh = (r3[3] - r3[1]) - (r2[3] - r2[1])
+            def _drag_bottom(tries=3):
+                rb = ra = None
+                dh = 0
+                px = py = 0
+                for _ in range(tries):
+                    rb = _wrect(hwnd)
+                    px, py = rb[0] + (rb[2] - rb[0]) // 2, rb[3] - 3
+                    _drag(hwnd, px, py, px, py + 110)
+                    ra = _wrect(hwnd)
+                    dh = (ra[3] - ra[1]) - (rb[3] - rb[1])
+                    if abs(dh - 110) <= 3:
+                        break
+                    _normalize_window(gui, hwnd)
+                return rb, ra, dh, px, py
+
+            r2, r3, dh, x, y = _drag_bottom()
             c.check("W5b 真机拖动下边框 → 高度 +110px（±3px）", abs(dh - 110) <= 3,
                     f"before={r2} after={r3} delta_h={dh} drag=({x},{y})->({x},{y + 110})")
 
             # ③ 顶栏拖动 → 窗口整体移动：非交互区 mousedown → gui.window.resize{hit=caption}
             #    → 宿主 WM_NCLBUTTONDOWN(HTCAPTION) 系统移动循环（WebView2 app-region 不生效）。
-            r4 = _wrect(hwnd)
-            mx, my = r4[0] + 40, r4[1] + 20  # 品牌区（非交互）
-            _drag(hwnd, mx, my, mx + 120, my + 80)
-            r5 = _wrect(hwnd)
-            dx, dy = r5[0] - r4[0], r5[1] - r4[1]
+            def _drag_caption(tries=3):
+                rb = ra = None
+                dx = dy = 0
+                mx = my = 0
+                for _ in range(tries):
+                    rb = _wrect(hwnd)
+                    mx, my = rb[0] + 40, rb[1] + 20  # 品牌区（非交互）
+                    _drag(hwnd, mx, my, mx + 120, my + 80)
+                    ra = _wrect(hwnd)
+                    dx, dy = ra[0] - rb[0], ra[1] - rb[1]
+                    if abs(dx - 120) <= 3 and abs(dy - 80) <= 3:
+                        break
+                    _normalize_window(gui, hwnd)
+                return rb, ra, dx, dy, mx, my
+
+            r4, r5, dx, dy, mx, my = _drag_caption()
             c.check("W5c 真机拖动顶栏 → 窗口移动 (+120,+80)", abs(dx - 120) <= 3 and abs(dy - 80) <= 3,
                     f"before={r4} after={r5} moved=({dx},{dy}) drag=({mx},{my})->({mx + 120},{my + 80})")
             _restore_zorder(hwnd, r4[0], r4[1])

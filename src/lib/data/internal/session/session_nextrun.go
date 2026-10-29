@@ -28,7 +28,7 @@ func (s *Service) SessionNextRunCheckAndAdd(req facade.SessionNextRunCheckAndAdd
 	if err != nil {
 		return facade.SessionNextRunCheckAndAddResponse{}, err
 	}
-	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	db, release, err := s.contentDB(prj, req.DialogID)
 	if err != nil {
 		return facade.SessionNextRunCheckAndAddResponse{}, err
 	}
@@ -66,7 +66,7 @@ func (s *Service) SessionNextRunReset(req facade.SessionNextRunResetRequest) (fa
 	if err != nil {
 		return facade.SessionNextRunResetResponse{}, err
 	}
-	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	db, release, err := s.contentDB(prj, req.DialogID)
 	if err != nil {
 		return facade.SessionNextRunResetResponse{}, err
 	}
@@ -95,7 +95,7 @@ func (s *Service) SessionNextRunGet(req facade.SessionNextRunGetRequest) (facade
 	if err != nil {
 		return facade.SessionNextRunGetResponse{}, err
 	}
-	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	db, release, err := s.contentDB(prj, req.DialogID)
 	if err != nil {
 		return facade.SessionNextRunGetResponse{}, err
 	}
@@ -120,7 +120,7 @@ func (s *Service) SessionNextRunDec(req facade.SessionNextRunDecRequest) (facade
 	if err != nil {
 		return facade.SessionNextRunDecResponse{}, err
 	}
-	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	db, release, err := s.contentDB(prj, req.DialogID)
 	if err != nil {
 		return facade.SessionNextRunDecResponse{}, err
 	}

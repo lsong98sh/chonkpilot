@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // TestInstanceRegisterSessionIDContract 断言 `instance-register.session_id` 键常量 / schema / 61 文档三处一致。

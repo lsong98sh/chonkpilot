@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // callZpromptSummarize 立即返回（摘要在后台 goroutine 生成并经 zprompt-summarized 推送）。

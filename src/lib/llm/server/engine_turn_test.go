@@ -45,15 +45,6 @@ func engineReceiveText(evs []map[string]any) string {
 	return b.String()
 }
 
-// engineMessageDigest 取落库消息的比对口径（复用影子重放的投影：忽略 id / created_at / kind）。
-func engineMessageDigest(msgs []ChatMsg) []string {
-	out := make([]string, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, shadowMessageJSON(m))
-	}
-	return out
-}
-
 // engineCompleteView 取 `llm-complete` 的比对口径（status / finish_reason / text / code / message）。
 func engineCompleteView(c map[string]any) string {
 	if c == nil {
@@ -435,14 +426,13 @@ func TestEngineTurnSubChat(t *testing.T) {
 	registerTestInstance(t, s)
 	ensure := func(session string) {
 		t.Helper()
-		if _, err := s.cfg.SessionEnsure(facade.SessionEnsureRequest{
-			InstanceID: "ins-test", Scope: s.cfgScope("ins-test"), SessionID: session,
+		ensureTestSession(t, s, session, facade.SessionEnsureRequest{
 			ParentSessionID: "s-et-top", Kind: facade.SessionKindSubChat,
 			Lifecycle: facade.SessionLifecycleChatting, Agent: "sub",
-		}); err != nil {
-			t.Fatalf("SessionEnsure(%s): %v", session, err)
-		}
+		})
 	}
+	// 一树一库：子会话沿用父会话的对话 → 先建父会话（主会话，自举回带 dialog_id）。
+	ensureTestSession(t, s, "s-et-top", facade.SessionEnsureRequest{})
 	ensure("s-et-sub")
 	drive := func(session, turn string, _ *eventLog) { engineTextTurn(s, session, turn, "hello") }
 
@@ -466,6 +456,10 @@ func TestEngineTurnRecoveryAlwaysEngine(t *testing.T) {
 
 	// ① 只有 user 消息 → 引擎（等首输入，不产生终态；Close 收尾）。
 	st := newSessionStore(s.bus, "ins-test")
+	// 一树一库：先幂等建会话（自举拿 dialog_id），轮次/消息才能按对话落库。
+	if err := st.EnsureSession("s-rec-user"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
 	if err := st.EnsureTurn("t-rec-user", "s-rec-user"); err != nil {
 		t.Fatalf("EnsureTurn: %v", err)
 	}
@@ -490,6 +484,9 @@ func TestEngineTurnRecoveryAlwaysEngine(t *testing.T) {
 	tc.Close()
 
 	// ② 已有 assistant（半途中断）→ 恢复轮**仍由引擎执行**。
+	if err := st.EnsureSession("s-rec-asst"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
 	if err := st.EnsureTurn("t-rec-asst", "s-rec-asst"); err != nil {
 		t.Fatalf("EnsureTurn: %v", err)
 	}
@@ -542,6 +539,10 @@ func appendRecoveryToolRow(t *testing.T, st *sessionStore, turn, toolCallID, too
 func appendRecoveryMidTurnHistory(t *testing.T, st *sessionStore, turn, userText, toolCallID string,
 	giveResult bool) {
 	t.Helper()
+	// 一树一库：先幂等建会话（自举拿 dialog_id），轮次/消息才能按对话落库。
+	if err := st.EnsureSession("s-" + turn); err != nil {
+		t.Fatalf("EnsureSession(s-%s): %v", turn, err)
+	}
 	if err := st.EnsureTurn(turn, "s-"+turn); err != nil {
 		t.Fatalf("EnsureTurn(%s): %v", turn, err)
 	}

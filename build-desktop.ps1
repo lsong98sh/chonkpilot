@@ -1,4 +1,4 @@
-# build-desktop.ps1：ChonkPilot 桌面单体（GUI）构建（无参数）
+﻿# build-desktop.ps1：ChonkPilot 桌面单体（GUI）构建（无参数）
 #
 # 命名（2026-09-21，D-27 形态命名重整）：本脚本原名 `build-standalone-gui.ps1`；
 #   形态名 `standalone` → **`desktop`（桌面单体）**，产物目录 `dist/standalone/` → `dist/desktop/`。
@@ -25,7 +25,7 @@
 #   │   ├── system/                         # 非原语系统文档全量（summary.md/system-directory.md/memory/*.md；源 src/initdata/capability/system，OP-02）
 #   │   ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
 #   │   ├── plugins/<id>/plugin.json + <exe>  # manifest 插件（manifest 源 src/initdata/capability/plugins，exe 由 build-plugins.ps1 产出）
-#   │   │                                   # ⚠️ `ui.selfServe: true` 的插件把 webui embed 进 exe（唯一源 = src/plugins/<id>/webui/），
+#   │   │                                   # ⚠️ `ui.selfServe: true` 的插件把 webui embed 进 exe（唯一源 = chonkpilot-plugins/<id>/webui/），
 #   │   │                                   #    产物内**不带** <id>/webui/；demo-python 为样例（product=false，不随产物投放）
 #   │   └── executors/chonkpilot-{core,browser,desktop}-executor.exe
 #   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
@@ -42,10 +42,10 @@
 #
 # **出厂数据唯一源** = src/initdata/（capability/{prompts,tools,resources,skills,agents,scenarios,system}），不再 embed
 # （例外：system/ 另经 embed 落点编入 data 模块，供磁盘缺失兜底，见 [0.5/9]）。
-# 全量组件：内嵌 lib 插件（history/memory/vfts/codegraph）随 exe 编译；压缩已内建在会话侧
-# （SESSION-1，2026-10-23：`src/lib/llm/server/compress.go`，无独立插件 / exe）；
+# 全量组件：业务能力**全部进程外**（`capability/plugins/<id>/`，由 build-plugins.ps1 产出）；
+#   压缩已内建在会话侧（SESSION-1，2026-10-23：`src/lib/llm/server/compress.go`，无独立插件 / exe）；
 #   外置引擎 exe（codegraph/vfts）+ zvec_c_api.dll 置于 dist/desktop/mcps/{codegraph,vfts}\——
-#   插件按「宿主 exe 同目录/mcps/<engine>/」解析引擎。
+#   codegraph 插件按「宿主 exe 同目录/mcps/<engine>/」解析引擎（L4 门禁 `-dump` 自检亦读该产物）。
 # 用法：.\build-desktop.ps1 [-Debug]
 #
 # -Debug：调试构建（附带 `-tags debugport`），使 GUI 单体壳编入 `--test-port` 测试通道
@@ -105,7 +105,8 @@ function Invoke-ChildBuild {
 }
 
 # -- 0) 生成消息面键常量（契约唯一源 = docs/spec/60-reference/61-messages.schema.json） --
-# genmsg → src/lib/core/msgkeys/msgkeys_gen.go + src/frontend/src/events/msgkeys.js（**勿手改**）。
+# genmsg → 框架仓 host/core/msgkeys/msgkeys_gen.go（framework 自用键）+ 主仓 msgkeys_gen.go
+#       （业务键）+ src/frontend/src/events/msgkeys.js（**勿手改**）——TOPO-1 §2.22 msgkeys 双输出。
 # 先跑生成再编译，保证键常量与契约一致；漂移另有 src/tools/genmsg/gen_test.go 兜底。
 Write-Host "==> [0/9] genmsg (message key constants)"
 Push-Location (Join-Path $root "src\tools\genmsg")
@@ -162,8 +163,10 @@ Write-Host "    ok: embed contracts -> $embedCap ($((Get-ChildItem $embedCap -Re
 Write-Host "==> [0.7/9] sync themes.css -> gui embed dir + dist/desktop/themes"
 $initThemes = Join-Path $root "src\initdata\themes"
 if (-not (Test-Path $initThemes)) { throw "themes not found: $initThemes" }
-$themeEmbed = Join-Path $root "src\lib\gui\internal\themefs\embedded"
-Remove-SafeItem -LiteralPath $themeEmbed -Recurse
+$themeEmbed = [System.IO.Path]::GetFullPath((Join-Path $root "..\chonkpilot-framework\host\src\themefs\embedded"))
+# 该落点在同级仓（framework），不在本仓白名单内 → 显式校验目标尾部，避免误删。
+if ($themeEmbed -notlike "*\chonkpilot-framework\host\src\themefs\embedded") { throw "拒绝删除意外路径: $themeEmbed" }
+if (Test-Path -LiteralPath $themeEmbed) { Remove-Item -LiteralPath $themeEmbed -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $themeEmbed | Out-Null
 Copy-Item (Join-Path $initThemes "*") $themeEmbed -Recurse -Force
 Write-Host "    ok: embed themes -> $themeEmbed ($((Get-ChildItem $themeEmbed -Recurse -File | Measure-Object).Count) files)"
@@ -249,7 +252,7 @@ Write-Host "    ok: mcps/core-mcp/chonkpilot-core-mcp-server.exe ($mbCore MB)"
 #   插件目录 = dist/desktop/capability/plugins/<id>/（plugin.json + exe 同目录；
 #   manifest 的 runtime.exe 是插件目录内相对路径）。
 #   ⚠️ PLUGIN-UI-1：`ui.selfServe: true` 的插件（本轮起 = browser/codegraph/desktop/file/mcp/task/websearch）
-#   自持 webui —— 资源 embed 在插件 exe 内，webui 唯一源 = `src/plugins/<id>/webui/`，
+#   自持 webui —— 资源 embed 在插件 exe 内，webui 唯一源 = `chonkpilot-plugins/<id>/webui/`，
 #   产物内**不得**出现 `<id>/webui/`（避免双源漂移；判定见下方通用规则）。
 Write-Host "==> [4.5/9] stage plugins (manifest + exe)"
 $initPlugins = Join-Path $root "src\initdata\capability\plugins"
@@ -263,7 +266,7 @@ if (Test-Path $initPlugins) {
     $demoPlg = Join-Path $plgDst "demo-python"
     if (Test-Path $demoPlg) { Remove-SafeItem -LiteralPath $demoPlg -Recurse }
     # 自持 webui（PLUGIN-UI-1）：manifest 声明 `ui.selfServe: true` 的插件，资源已 embed 在
-    # 插件 exe 内（唯一源 = `src/plugins/<id>/webui/`），产物内**不得**出现 `<id>/webui/`。
+    # 插件 exe 内（唯一源 = `chonkpilot-plugins/<id>/webui/`），产物内**不得**出现 `<id>/webui/`。
     # 通用规则：遍历全部插件 manifest 判定，不按插件 id 逐个列举（新增 selfServe 插件自动覆盖）。
     Get-ChildItem -Path $plgDst -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
         $ckManifest = Join-Path $_.FullName "plugin.json"
@@ -315,20 +318,8 @@ New-Item -ItemType Directory -Force -Path $cgDir | Out-Null
 Copy-Item (Join-Path $root "dist\plugins\codegraph\$cgExe") $cgDir -Force
 $mbCg = [Math]::Round((Get-Item (Join-Path $cgDir $cgExe)).Length / 1MB, 1)
 Write-Host "    ok: mcps/codegraph/$cgExe ($mbCg MB)"
-# 查询工具一工具一 exe（契约 runtime 指向 ../../../mcps/codegraph/<tool>-executor.exe）
-$cgExecNames = @(
-    "chonkpilot-codegraph-symbol-search-executor.exe",
-    "chonkpilot-codegraph-symbol-info-executor.exe",
-    "chonkpilot-codegraph-callers-executor.exe",
-    "chonkpilot-codegraph-callees-executor.exe",
-    "chonkpilot-codegraph-dependency-graph-executor.exe",
-    "chonkpilot-codegraph-circular-deps-executor.exe",
-    "chonkpilot-codegraph-complexity-executor.exe",
-    "chonkpilot-codegraph-module-summary-executor.exe")
-foreach ($e in $cgExecNames) {
-    Copy-Item (Join-Path $root "dist\plugins\codegraph\$e") $cgDir -Force
-}
-Write-Host "    ok: mcps/codegraph/ codegraph query executors ($($cgExecNames.Count))"
+# 注（PLUGIN-EDGE-1，2026-10-28）：codegraph 查询工具「一工具一 exe」已无消费方（插件进程内直挂），
+# 不再随产物投放；引擎 exe 保留 = 插件/L4 `-dump` 自检的落盘索引读取。
 
 # -- 7) vfts 引擎 + zvec 运行库置于 dist/desktop/mcps/vfts/（zvec_c_api.dll 必须与引擎 exe 同目录） --
 Write-Host "==> [7/9] build vfts engine -> mcps/vfts"
@@ -338,12 +329,10 @@ $vftsDist = Join-Path $root "dist\plugins\vfts"
 $vfDir = Join-Path $dist "mcps\vfts"
 New-Item -ItemType Directory -Force -Path $vfDir | Out-Null
 Copy-Item (Join-Path $vftsDist $vfExe) $vfDir -Force
-# vfts_query 一工具一 exe（契约 runtime 指向 ../../../mcps/vfts/chonkpilot-vfts-query-executor.exe）
-Copy-Item (Join-Path $vftsDist "chonkpilot-vfts-query-executor.exe") $vfDir -Force
 Copy-Item (Join-Path $vftsDist "zvec_c_api.dll") $vfDir -Force
 $mbVf = [Math]::Round((Get-Item (Join-Path $vfDir $vfExe)).Length / 1MB, 1)
 $mbDll = [Math]::Round((Get-Item (Join-Path $vfDir "zvec_c_api.dll")).Length / 1MB, 1)
-Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + chonkpilot-vfts-query-executor.exe + zvec_c_api.dll ($mbDll MB)"
+Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
 
 # -- 8) mcps 转换器兜底并入 dist/desktop/mcps/（dist\other\mcps → dist\desktop\mcps；可选，**幂等**）--
 #    兜底语义：源存在 → 覆盖镜像（**仅覆盖子项，保留 codegraph/vfts 引擎目录**）；源不存在但目标已存在
@@ -418,7 +407,7 @@ Write-Host "    chonkpilot.exe                      $mbGui MB"
 Write-Host "    capability/                         $capCount files (prompts/tools/resources/skills/agents/system/scenarios/executors)"
 Write-Host "    capability/scenarios/               $scnCount files"
 Write-Host "    mcps/codegraph/                      $cgExe ($mbCg MB)"
-Write-Host "    mcps/vfts/                          $vfExe ($mbVf MB) + $vfIdxExe ($mbVfIdx MB) + zvec_c_api.dll ($mbDll MB)"
+Write-Host "    mcps/vfts/                          $vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
 Write-Host "    mcps/                               $mcpsCount files (可选：文档转换)"
 Write-Host "    run: cd $dist ; .\chonkpilot.exe"
 Write-Host "    packs: $initdataDist (*.zip, ver=$ver)"

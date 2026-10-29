@@ -325,7 +325,7 @@ func ValidateScenarioAgents(scenarioID string, sc map[string]any) error {
 		if !ok {
 			continue
 		}
-		name := strings.TrimSpace(kernel.SvalOf(am["name"]))
+		name := strings.TrimSpace(kernel.Sval(am["name"]))
 		fileName := agentFileName(am)
 		key := strings.ToLower(fileName)
 		if prev, dup := seen[key]; dup {
@@ -371,10 +371,10 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots)
 		if isMainAgent(am) {
 			continue // 主 agent 内联写 main.agent.md（下方统一落盘）
 		}
-		ref := strings.TrimSpace(kernel.SvalOf(am["ref"]))
+		ref := strings.TrimSpace(kernel.Sval(am["ref"]))
 		if ref == "" {
 			return fmt.Errorf("场景 %q 的 agent %q 缺少引用（ref）：子 agent 必须以引用形式保存",
-				dir, kernel.SvalOf(am["name"]))
+				dir, kernel.Sval(am["name"]))
 		}
 		// 绝对路径（前端可能直接给绝对路径）→ 归一为变量前缀形态
 		if filepath.IsAbs(filepath.FromSlash(ref)) {
@@ -385,7 +385,7 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots)
 		// 写侧越界复验（A-36）：引用命中某变量前缀但展开越界 → 拒绝落盘，避免把越界引用
 		// 固化进 scenario.json（读侧 ExpandAgentRef 同样复验，此处提前拒绝）。
 		if _, matched, ok := resolveAgentRef(ref, roots); matched && !ok {
-			return fmt.Errorf("场景 %q 的 agent %q 引用越界：%s", dir, kernel.SvalOf(am["name"]), ref)
+			return fmt.Errorf("场景 %q 的 agent %q 引用越界：%s", dir, kernel.Sval(am["name"]), ref)
 		}
 		refs = append(refs, ref) // 引用形态：只记引用路径
 	}
@@ -409,13 +409,13 @@ func WriteScenarioDir(kind, root, dir string, sc map[string]any, roots RefRoots)
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	createdAt := kernel.SvalOf(sc["createdAt"])
+	createdAt := kernel.Sval(sc["createdAt"])
 	if createdAt == "" {
 		createdAt = now
 	}
 	meta := scenarioMeta{
-		Name:        kernel.SvalOf(sc["name"]),
-		Description: kernel.SvalOf(sc["description"]),
+		Name:        kernel.Sval(sc["name"]),
+		Description: kernel.Sval(sc["description"]),
 		CreatedAt:   createdAt,
 		UpdatedAt:   now,
 		Agents:      refs,
@@ -454,7 +454,7 @@ func agentFileName(a map[string]any) string {
 	if isMainAgent(a) {
 		return scenarioMainFile
 	}
-	name := SanitizeName(kernel.SvalOf(a["name"]))
+	name := SanitizeName(kernel.Sval(a["name"]))
 	if name == "" {
 		name = "agent"
 	}
@@ -474,19 +474,19 @@ func isMainAgent(a map[string]any) bool {
 
 // agentToDoc agent 字段 → 契约文档（v2：基本信息 name/title + 类型键 + 摘要 + 参考 + 正文）。
 func agentToDoc(a map[string]any) Doc {
-	name := kernel.SvalOf(a["name"])
+	name := kernel.Sval(a["name"])
 	doc := Doc{Name: name, Title: name, Meta: map[string]string{}}
-	if rt := kernel.SvalOf(a["roleTag"]); rt != "" {
+	if rt := kernel.Sval(a["roleTag"]); rt != "" {
 		doc.Meta["roletag"] = rt
 	}
 	if isMainAgent(a) {
 		doc.Meta["ismain"] = "true"
 	}
-	if llm := kernel.SvalOf(a["llmRef"]); llm != "" {
+	if llm := kernel.Sval(a["llmRef"]); llm != "" {
 		doc.Meta["llm"] = llm
 	}
 	// 委托：委派条件入「# 委托」分区（v2，2026-10-14；不再落「基本信息」meta）。
-	if dc := kernel.SvalOf(a["delegateCond"]); dc != "" {
+	if dc := kernel.Sval(a["delegateCond"]); dc != "" {
 		doc.Delegate = dc
 	}
 	// 参考（skills / tools / resources）：名单类引用入「# 参考」分区（v2，2026-10-14）——
@@ -500,8 +500,8 @@ func agentToDoc(a map[string]any) Doc {
 	if len(refs) > 0 {
 		doc.Refs = refs
 	}
-	doc.Description = kernel.SvalOf(a["description"])
-	doc.Content = kernel.SvalOf(a["prompt"])
+	doc.Description = kernel.Sval(a["description"])
+	doc.Content = kernel.Sval(a["prompt"])
 	return doc
 }
 

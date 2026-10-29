@@ -17,7 +17,6 @@ package wire
 
 import (
 	"encoding/json"
-	"sort"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -399,28 +398,20 @@ func GroupParticipantsResult(list []facade.GroupParticipant) GroupParticipantsPa
 	return GroupParticipantsPayload{List: out}
 }
 
-// GroupRoundTargetRow 是大轮次投递对象行 DTO。
-type GroupRoundTargetRow struct {
-	SessionID string   `json:"session_id"`
-	Round     int      `json:"round"`
-	Agents    []string `json:"agents"`
-}
-
 // GroupRoundTargetsPayload 是 `data-session-group-round-targets-load` 结果 DTO。
+//
+// S-7（DATA-OPT-1 P3）：行直接复用门面类型 `facade.GroupRoundTarget`（字段与 json tag 逐字一致）。
 type GroupRoundTargetsPayload struct {
-	List []GroupRoundTargetRow `json:"list"`
+	List []facade.GroupRoundTarget `json:"list"`
 }
 
 // GroupRoundTargetsResult 组装 `data-session-group-round-targets-load` 结果载荷
 // `{list:[{session_id, round, agents:[…]}]}`（按轮次升序）。
 func GroupRoundTargetsResult(list []facade.GroupRoundTarget) GroupRoundTargetsPayload {
-	out := make([]GroupRoundTargetRow, 0, len(list))
-	for _, t := range list {
-		out = append(out, GroupRoundTargetRow{
-			SessionID: t.SessionID, Round: t.Round, Agents: t.Agents,
-		})
+	if list == nil {
+		list = []facade.GroupRoundTarget{}
 	}
-	return GroupRoundTargetsPayload{List: out}
+	return GroupRoundTargetsPayload{List: list}
 }
 
 // MessageAppendFromWire 解析 `data-session-append-message` 载荷 → 门面入参。
@@ -493,61 +484,59 @@ func CleanupResult(count int) CleanupPayload {
 	return CleanupPayload{OK: true, Count: count}
 }
 
-// ── 请求载荷归一（入口/信封共用）────────────────────────────────────
-
-// FlatPayload 归一入口收到的**请求载荷**：`{data:{…}}` 里的业务字段并入顶层视图
-// （**不覆盖**已有顶层键，与 persist 各 handler 的 `mergeFlat` 合并口径一致）。返回原 map（就地补键）。
-func FlatPayload(m map[string]any) map[string]any {
-	if m == nil {
-		return map[string]any{}
-	}
-	data, _ := m["data"].(map[string]any)
-	for k, v := range data {
-		if _, exists := m[k]; !exists {
-			m[k] = v
-		}
-	}
-	return m
+// OKIDPayload 是 `{ok, id}` 结果 DTO（config kv save / inbox append·commit /
+// session append-message / memory extract-save 共用；`id` **恒在**，不省略）。
+type OKIDPayload struct {
+	OK bool   `json:"ok"`
+	ID string `json:"id"`
 }
 
-// RequestID 取请求目标 id：顶层 `id` → `data.id` → `data.key`（与 persist `reqKey` 同口径）。
-func RequestID(m map[string]any) string {
-	if id := str(m["id"]); id != "" {
-		return id
-	}
-	data, _ := m["data"].(map[string]any)
-	if id := str(data["id"]); id != "" {
-		return id
-	}
-	return str(data["key"])
+// OKDeletedPayload 是 `{ok, deleted:n}` 结果 DTO（data-turn-event-cleanup）。
+type OKDeletedPayload struct {
+	OK      bool `json:"ok"`
+	Deleted int  `json:"deleted"`
 }
 
-// ConfigSaveEntries 解析 kv 域 save 载荷为**批量键值对**（61 §3.1）：向后兼容既有单键
-// `{key, value}` 与新式 `{entries:{<key>:<value>, …}}`。
-//
-// 取舍：`entries` 非空 → **entries 优先**（忽略同现的 key/value，不再报错——两种形状同现属
-// 非法调用，取信息量更大的 entries）。否则回落单键 `{key, value}`（key 为空 → ok=false，
-// 调用方按既有口径报 "key required"）。
-//
-// 值归一为字符串（非字符串按 str：数字/bool 转字面量、对象 JSON 序列化）——与既有「value 恒为
-// 字符串」口径一致。返回 entries、稳定序首键（单键 = 该键；批量 = 字典序最小键，供应答 id 用）、
-// 是否合法。
-func ConfigSaveEntries(data map[string]any) (entries map[string]string, id string, ok bool) {
-	if raw, isMap := data["entries"].(map[string]any); isMap && len(raw) > 0 {
-		entries = make(map[string]string, len(raw))
-		keys := make([]string, 0, len(raw))
-		for k, v := range raw {
-			entries[k] = str(v)
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		return entries, keys[0], true
-	}
-	key := str(data["key"])
-	if key == "" {
-		return nil, "", false
-	}
-	return map[string]string{key: str(data["value"])}, key, true
+// ListPayload 是 `{list:[…]}` 结果 DTO（config kv list / user-config list 共用）。
+type ListPayload struct {
+	List any `json:"list"`
+}
+
+// DataPayload 是 `{data: …}` 结果 DTO（config kv load / user-config load 共用；缺值 = null）。
+type DataPayload struct {
+	Data any `json:"data"`
+}
+
+// PathPayload 是 `{ok, path}` 结果 DTO（data-knowledge-create / -mkdir）。
+type PathPayload struct {
+	OK   bool   `json:"ok"`
+	Path string `json:"path"`
+}
+
+// SnapshotPayload 是 `{snapshot: …}` 结果 DTO（data-snapshot-get）。
+// **不得 omitempty**：无快照时必须仍输出 `"snapshot": null`（调用方据此回退 BuildHistory）。
+type SnapshotPayload struct {
+	Snapshot any `json:"snapshot"`
+}
+
+// InboxItemsPayload 是 `{ok, items:[…]}` 结果 DTO（data-inbox-list；items = 行 map 数组）。
+type InboxItemsPayload struct {
+	OK    bool `json:"ok"`
+	Items any  `json:"items"`
+}
+
+// SessionForkPayload 是 `data-session-fork` 结果 DTO（`ok` + 派生出的会话 / 对话 id，三键恒在）。
+type SessionForkPayload struct {
+	OK        bool   `json:"ok"`
+	DialogID  string `json:"dialog_id"`
+	SessionID string `json:"session_id"`
+}
+
+// KnowledgeImportPayload 是 `data-knowledge-import` 结果 DTO（`errors` 非空才写键）。
+type KnowledgeImportPayload struct {
+	OK     bool  `json:"ok"`
+	Paths  []any `json:"paths"`
+	Errors []any `json:"errors,omitempty"`
 }
 
 // ── 小工具 ───────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -25,8 +26,11 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-session"
-	"github.com/lsong98sh/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-agent/session"
+	sessioninbox "github.com/lsong98sh/chonkpilot-agent/session/inbox"
+	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
 )
 
 // engineTurnCalls 记录 `runEngineLoop` 的调用次数（测试钩子：断言子会话 / 群聊零调用）。
@@ -80,10 +84,12 @@ func (tc *turnCtx) runEngineLoop() {
 	answer := &engineTurnAnswer{}
 	lifecycle := chat.NewLifecycle(nil)
 	lifecycle.Register(answer, 0, chat.FailOpen)
-	eng := chat.New(chat.Deps{
-		InstanceID: tc.req.InstanceID,
-		SessionID:  tc.req.Session,
-		Context:    engineTurnContext{tc: tc},
+	// TURNRUN-1 批次 6：chat Engine 为进程级单例（Server.engine），每轮只传端口快照 ——
+	// 轮内状态（TurnState / 帧栈 / held* / resumeNotes）全部局部化在引擎内部。
+	res, err := tc.server.engine.RunTurnParamsWith(tc.ctx, chat.TurnParams{
+		InstanceID: tc.req.InstanceID, SessionID: tc.req.Session, TurnID: tc.req.Turn,
+	}, chat.Deps{
+		Context: engineTurnContext{tc: tc},
 		Store:      store,
 		Sink:       engineTurnSink{tc: tc},
 		Tools:      engineTurnTools{tc: tc},
@@ -105,7 +111,6 @@ func (tc *turnCtx) runEngineLoop() {
 		Config: tc.engineRuntimeConfig(),
 		Inbox:  tc.engineInbox,
 	})
-	res, err := eng.RunTurn(tc.ctx, tc.req.Turn)
 	tc.engineFinish(res, err, answer.text())
 }
 
@@ -146,11 +151,15 @@ func (tc *turnCtx) engineSynthesizeDanglingToolResults() {
 	}
 }
 
-// engineAutoContinue 是本轮**实际生效**的自动续写开关：usr 配置 && 非子轮次
-// （子轮次强制关闭，见 `turnCtx.autoContinueOff`）。
-func (tc *turnCtx) engineAutoContinue() bool {
-	return tc.autoContinue && !tc.autoContinueOff
+// autoContinueParams 返回本轮**实际生效**的自动续写参数（usr 配置 && 非子轮次）。
+// 推导归 `session/runner.DeriveAutoContinue`（TURNRUN-1 批次 5）；此处只是快照适配。
+func (tc *turnCtx) autoContinueParams() sessionrunner.AutoContinue {
+	return sessionrunner.DeriveAutoContinue(tc.contCfg, tc.autoContinueOff)
 }
+
+// engineAutoContinue 是本轮**实际生效**的自动续写开关：
+// usr 配置 && 非子轮次（子轮次强制关闭，见 `turnCtx.autoContinueOff`）。
+func (tc *turnCtx) engineAutoContinue() bool { return tc.autoContinueParams().Enabled }
 
 // engineRuntimeConfig 把生产运行参数原样折成引擎配置（缺省值与生产同源）。
 func (tc *turnCtx) engineRuntimeConfig() chat.RuntimeConfig {
@@ -163,14 +172,10 @@ func (tc *turnCtx) engineRuntimeConfig() chat.RuntimeConfig {
 		pendingWait = defaultPendingTaskTimeout
 	}
 	retryCount := tc.retryCount
-	// 生产语义：`autoContinueDelaySec=0` = 立即续写；引擎的零值表示「未设」→ 回落 600s，
-	// 故显式折成正的最小正时长（`llm-interrupted.auto_continue_delay_ms` 仍为 0，与生产同形）。
-	autoContinueDelay := tc.autoContinueDelay
-	if autoContinueDelay <= 0 {
-		autoContinueDelay = time.Nanosecond
-	}
-	// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写（见 autoContinueOff）。
-	autoContinue := tc.engineAutoContinue()
+	// 自动续写参数（开关 / 宽限期 / 文案 / 次数上限）由 runner 推导：
+	// 生产语义 `autoContinueDelaySec=0` = 立即续写；引擎的零值表示「未设」→ Delay 折成正的
+	// 最小正时长（`llm-interrupted.auto_continue_delay_ms` 仍为 0，与生产同形）。
+	cont := tc.autoContinueParams()
 	return chat.RuntimeConfig{
 		MaxSteps:      maxSteps,
 		EventLogLevel: chat.TurnEventLogNone, // 生产不写 turn_events
@@ -181,10 +186,10 @@ func (tc *turnCtx) engineRuntimeConfig() chat.RuntimeConfig {
 		PendingWait:        pendingWait,
 		PendingPlaceholder: enginePendingPlaceholder,
 		PollInterval:       50 * time.Millisecond,
-		AutoContinue:       autoContinue,
-		AutoContinueDelay:  autoContinueDelay,
-		AutoContinueText:   tc.continueText,
-		AutoContinueMax:    maxAutoContinue,
+		AutoContinue:       cont.Enabled,
+		AutoContinueDelay:  cont.EngineDelay(),
+		AutoContinueText:   cont.Text,
+		AutoContinueMax:    cont.Max,
 	}
 }
 
@@ -195,7 +200,7 @@ func (tc *turnCtx) engineRuntimeConfig() chat.RuntimeConfig {
 func (tc *turnCtx) engineFirstInput() (ChatMsg, bool) {
 	for {
 		select {
-		case <-tc.done:
+		case <-tc.Done():
 			return ChatMsg{}, false
 		case m := <-tc.in:
 			return m, true
@@ -218,7 +223,7 @@ func (tc *turnCtx) enginePump(stop <-chan struct{}) {
 		select {
 		case <-stop:
 			return
-		case <-tc.done:
+		case <-tc.Done():
 			return
 		case m := <-tc.in:
 			tc.engineRouteInput(m)
@@ -253,73 +258,58 @@ func (tc *turnCtx) engineRouteInput(msg ChatMsg) {
 // 已撤回 → 不消费；非可插入相位（无在飞工具）→ 降级 next_turn；否则投递给引擎建插入帧。
 func (tc *turnCtx) engineRouteInsert(item facade.InboxItem) {
 	if strings.TrimSpace(item.Content) == "" {
-		_ = tc.server.inboxUpdate(tc.req.InstanceID, item.ID, "discarded", "", "")
-		tc.server.inboxSetStatus(item.ID, "discarded")
+		_ = tc.server.inboxUpdate(tc.req.InstanceID, item.ID, sessioninbox.StatusDiscarded, "", "")
+		tc.server.inboxSetStatus(item.ID, sessioninbox.StatusDiscarded)
 		return
 	}
 	// 删除优先：用户可能已在入队后撤回（discard）→ 不得再落 message。
-	if cur, ok := tc.server.inboxLookup(item.ID); ok && cur.Status != "pending" {
+	if cur, ok := tc.server.inboxLookup(item.ID); ok && !sessioninbox.Consumable(cur.Status) {
 		return
 	}
 	if !tc.insertable() {
-		_ = tc.server.inboxUpdate(tc.req.InstanceID, item.ID, "", "next_turn", "")
-		item.Type = "next_turn"
+		_ = tc.server.inboxUpdate(tc.req.InstanceID, item.ID, "", string(sessioninbox.Degrade(sessioninbox.Insert)), "")
+		item.Type = string(sessioninbox.NextTurn)
 		tc.server.inboxRemember(item)
 		return
 	}
 	tc.engineInbox.Push(chat.InboxItem{ID: item.ID, Type: chat.InboxTypeInsert, Content: item.Content})
 }
 
-// engineFinish 按引擎结果收口（**只能有一次终态**：`Server.finish` 的 finishOnce 保证）。
-// 映射与生产同口径：length → incomplete（+ 未开启续写时补发中断提示）、取消 → 静默（取消路径
-// 已发 interrupted）、错误 → error（code / retryable 同生产）。
+// engineFinish 按引擎结果收口（**只能有一次终态**：`Server.finish` 的 `Lifecycle.BeginFinish` 保证）。
+// 终态判定本身已下沉 `session/runner.DecideTerminal`（TURNRUN-1 批次 5），此处只做
+// 「判定 → 发事件 / 关轮」的适配：错误分类（超步数 / 可重试）在此判定后填平给 runner。
 func (tc *turnCtx) engineFinish(res chat.TurnResult, err error, text string) {
-	switch {
-	case err != nil:
-		if tc.ctx.Err() != nil {
-			return // 取消静默（llm-cancel 已发 interrupted complete）
+	d := sessionrunner.DecideTerminal(sessionrunner.TerminalInput{
+		Failed:       err != nil,
+		Canceled:     tc.ctx.Err() != nil,
+		MaxSteps:     err != nil && errors.Is(err, chat.ErrMaxSteps),
+		Retryable:    err != nil && retryableErr(err),
+		Finish:       res.Finish,
+		Text:         text,
+		AutoContinue: tc.engineAutoContinue(),
+	})
+	switch d.Action {
+	case sessionrunner.TerminalSilent:
+		return // 取消 / 已由取消路径发终态
+	case sessionrunner.TerminalError:
+		msg := d.Message
+		if msg == "" && err != nil {
+			msg = tc.server.subsessionHint(tc, err.Error(), d.Retryable)
 		}
-		if errors.Is(err, chat.ErrMaxSteps) {
-			tc.server.llmError(tc, "TOOL_LOOP_LIMIT", "工具调用次数超限")
-			tc.Close()
-			return
-		}
-		retryable := retryableErr(err)
-		tc.server.llmErrorRetryable(tc, "LLM_REQUEST_FAILED",
-			tc.server.subsessionHint(tc, err.Error(), retryable), retryable)
+		tc.server.llmErrorRetryable(tc, d.Code, msg, d.Retryable)
 		tc.Close()
 		return
-	}
-	if tc.ctx.Err() != nil {
-		return // 取消（同上）
-	}
-	finish := res.Finish
-	if finish == "" {
-		finish = "stop"
-	}
-	if finish == "canceled" {
-		return // 等待 / 续写期间取消 → 终态已由取消路径发出
-	}
-	// 空回复（stop 但无内容）：与生产同口径（不落库、EMPTY_REPLY 错误终态）。
-	if strings.TrimSpace(text) == "" && finish != "length" {
-		tc.server.llmError(tc, "EMPTY_REPLY", "LLM 返回空回复")
-		tc.Close()
-		return
-	}
-	if finish == "length" {
+	case sessionrunner.TerminalIncomplete:
 		// 引擎在 AutoContinue 关闭时不发 `session_interrupted`（其设计为续写专用事件）；
 		// 生产该分支会发中断提示（delay=0、不带 message）→ 由宿主补发同形载荷。
-		// 子轮次强制关闭续写（autoContinueOff）→ 同样由宿主补发。
-		if !tc.engineAutoContinue() && text != "" {
+		if d.NotifyInterrupted {
 			tc.publishInterrupted("LLM_INCOMPLETE", "", true, 0)
 		}
-		tc.server.complete(tc, "incomplete", finish, text)
-		tc.shadowReplayIfEnabled()
+		tc.server.complete(tc, d.Status, d.Finish, text)
 		tc.Close()
 		return
 	}
-	tc.server.complete(tc, "complete", finish, text)
-	tc.shadowReplayIfEnabled()
+	tc.server.complete(tc, d.Status, d.Finish, text)
 	tc.Close()
 }
 
@@ -416,7 +406,9 @@ type engineTurnContext struct{ tc *turnCtx }
 func (c engineTurnContext) Build(context.Context, chat.ContextRequest) (chat.Context, error) {
 	a := c.tc.buildAssembly()
 	c.tc.maybeStartCompress(a)
-	return a.Context, nil
+	// TURNRUN-1 批次 2：`Assembly.Context` 是 session 自持类型（2H §2 决策 1），
+	// 边界转换在宿主做；两结构字段一一对应（SystemPrompt + Messages），纯搬运零语义变更。
+	return chat.Context{SystemPrompt: a.Context.SystemPrompt, Messages: a.Context.Messages}, nil
 }
 
 // engineTurnStore 把引擎写侧接到生产落库：
@@ -437,13 +429,36 @@ func (s *engineTurnStore) SaveMessage(_ context.Context, msg chat.Message) error
 
 func (*engineTurnStore) AppendEvent(context.Context, chat.TurnEvent) error { return nil }
 
+// CommitInbox 原子消费一条 inbox 输入：`data-inbox-commit` 在同一事务内落消息 + 置 consumed
+// （消息主键由 inbox_id 确定性推出 → 崩溃重放幂等）。此前是「先落消息、再置 consumed」两步，
+// 中间崩溃会重复消费同一条输入。
 func (s *engineTurnStore) CommitInbox(_ context.Context, inboxID string, msg chat.Message) error {
-	if err := s.tc.persistMessage(msg); err != nil {
+	tc := s.tc
+	dm := ChatMessageToData(msg)
+	raw, err := json.Marshal(dm)
+	if err != nil {
 		return err
 	}
-	_ = s.tc.server.inboxUpdate(s.tc.req.InstanceID, inboxID, "consumed", "", "")
+	var mm map[string]any
+	if err := json.Unmarshal(raw, &mm); err != nil {
+		return err
+	}
+	body := map[string]any{
+		"inbox_id":   inboxID,
+		"turn_id":    tc.req.Turn,
+		"session_id": tc.req.Session,
+		"msg":        mm,
+	}
+	if dlg := tc.server.dialogOf(tc.req.InstanceID, tc.req.Session); dlg != "" {
+		body["dialog_id"] = dlg
+	}
+	if _, err := dataRequest(tc.server.bus, msgkeys.TopicDataInboxCommit, map[string]any{
+		"instance_id": tc.req.InstanceID, "data": body,
+	}); err != nil {
+		return err
+	}
 	if inboxID != "" {
-		s.tc.server.inboxSetStatus(inboxID, "consumed")
+		tc.server.inboxSetStatus(inboxID, "consumed")
 	}
 	return nil
 }

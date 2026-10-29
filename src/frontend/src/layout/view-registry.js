@@ -14,6 +14,33 @@ import { DYNAMIC_DEFINITIONS, VIEW_DEFINITIONS } from './view-definitions.js'
 /** key → { key, component, source }（Map 保序：内置先注册，插件后追加）。 */
 const views = new Map()
 
+/** 插件 id → 最近一次注册的**结构签名**（view 集合 / entry / 标题 / 版本），用于幂等跳过重建。 */
+const pluginSigs = new Map()
+
+/**
+ * 插件视图结构签名：只要它不变，就复用既有组件对象。
+ *
+ * 为什么必须幂等（PLUGIN-UI-2 回归）：宿主每次 `publishRegistered`（spawn / MCP 注册 / UI 注册 /
+ * 状态上报 `running`）都会广播 `plugin-registered`，前端 `upsert` 再调本函数。若每次重建组件
+ * 对象，视图池里 `<component :is>` 的类型就变 → **卸载重建宿主页面组件**（`PluginPageHost`），
+ * iframe 的导航被反复取消/重来；首帧 3s 内不 load 即判「加载超时」→ 状态栏 badge 永久停在占位
+ * （L4 全量里稳定复现）。
+ */
+function pluginViewSig(plugin) {
+  return JSON.stringify({
+    v: plugin.version || '',
+    n: plugin.name || '',
+    i: plugin.icon || '',
+    views: (plugin.views || []).map((v) => ({
+      id: (v && v.id) || '',
+      entry: (v && v.entry) || '',
+      title: (v && v.title) || '',
+      icon: (v && v.icon) || '',
+      containers: (v && Array.isArray(v.containers)) ? v.containers : [],
+    })),
+  })
+}
+
 /** 允许 `[{ key, component }]` 或 `{ key: component }` 两种入参形态。 */
 function normalizeEntries(entries) {
   if (!entries) return []
@@ -66,7 +93,9 @@ export function registeredViewKeys() {
 
 /**
  * 注册/覆盖一个插件的全部 iframe view（`plugin:<id>:<view>`）。
- * 幂等：同 id 先卸载再注册（插件重连 / 配置变更）。
+ * **幂等**：结构签名（view 集合 / entry / 标题 / 图标 / 版本）未变 → 保留既有组件对象（不重建，
+ * 避免视图池里的插件 iframe 被反复重挂）；结构确有变化（插件升级 / 配置变更）或插件重连 → 先卸载
+ * 再注册。
  *
  * @param {object} plugin 插件描述（`plugin-registered` 事件 / `plugin-list` 快照）
  * @param {(ctx: {plugin: object, view: object, entry: string}) => any} makeComponent
@@ -74,7 +103,10 @@ export function registeredViewKeys() {
  */
 export function registerPluginViews(plugin, makeComponent) {
   if (!plugin || !plugin.id || !Array.isArray(plugin.views) || !plugin.views.length) return
+  const sig = pluginViewSig(plugin)
+  if (pluginSigs.get(plugin.id) === sig) return
   unregisterPluginViews(plugin.id)
+  pluginSigs.set(plugin.id, sig)
   const entries = []
   for (const v of plugin.views) {
     if (!v || !v.id) continue
@@ -105,6 +137,7 @@ export function registerPluginViews(plugin, makeComponent) {
 /** 卸载插件全部动态 view（插件禁用 / 卸载）。 */
 export function unregisterPluginViews(id) {
   if (!id) return
+  pluginSigs.delete(id)
   for (let i = DYNAMIC_DEFINITIONS.length - 1; i >= 0; i--) {
     if (DYNAMIC_DEFINITIONS[i]?.plugin?.id === id) DYNAMIC_DEFINITIONS.splice(i, 1)
   }

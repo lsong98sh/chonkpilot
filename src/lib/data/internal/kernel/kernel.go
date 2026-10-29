@@ -19,7 +19,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // Options 是数据服务的构造参数（原 `persist.Options` 逐字下移；persist 保留同名别名转发）。
@@ -68,7 +68,7 @@ type Info struct {
 	WorkDir string
 	DataDir string
 	// LastBeat 最近注册/心跳时刻（仅分离形态的超时扫描消费；默认构建只记录不判定，
-	// 与 plugin-codegraph/vfts 的 ir.last 同口径）。
+	// 与插件自管索引的 ir.last 同口径）。
 	LastBeat time.Time
 }
 

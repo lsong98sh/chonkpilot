@@ -19,7 +19,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 var (

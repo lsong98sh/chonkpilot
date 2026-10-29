@@ -13,7 +13,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { MsgTopics } from '../src/events/msgkeys.js'
@@ -25,6 +25,11 @@ const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const readGo = (rel) => readFileSync(join(repoDir, 'lib', rel), 'utf8')
 const readRepo = (rel) => readFileSync(join(repoDir, rel), 'utf8')
+// server 包已按职责拆分（2026-10-25，server.go 3.3k→277 行）：源码守卫读**整包**，不锚定单文件。
+const readServerPkg = () => readdirSync(join(repoDir, 'lib', 'llm', 'server'))
+  .filter((f) => f.endsWith('.go') && !f.endsWith('_test.go'))
+  .map((f) => readFileSync(join(repoDir, 'lib', 'llm', 'server', f), 'utf8'))
+  .join('\n')
 const LOCALES = ['zh-CN', 'en-US']
 
 const contract = JSON.parse(readRepo(join('..', 'docs', 'spec', '60-reference', '61-messages.schema.json')))
@@ -58,8 +63,8 @@ test('① Go 后端：主题常量 + onConfigSuggest 订阅', () => {
   assert.match(go, /func \(s \*Server\) onConfigSuggest\(/, '缺 onConfigSuggest handler')
   assert.match(go, /s\.promptOptimiseSpec\(/, 'provider 须现读 llm.promptOptimise（与 prompt-optimise 同口径）')
   assert.match(go, /v\.Result = configSuggestFail\(/, '失败须恒走 result 信封（不抛总线错误）')
-  const serverGo = readGo('llm/server/server.go')
-  assert.match(serverGo, /\{SubjectConfigSuggest, s\.onConfigSuggest\}/, 'server.go Start 须订阅 config.suggest')
+  const serverGo = readServerPkg()
+  assert.match(serverGo, /\{SubjectConfigSuggest, s\.onConfigSuggest\}/, 'server 包须订阅 config.suggest')
   // PRODSIM-1：browser 形态（httpapi 上行白名单）已删 → 该白名单守卫随文件移除。
 })
 

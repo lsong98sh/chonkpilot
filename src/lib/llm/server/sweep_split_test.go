@@ -13,7 +13,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
@@ -33,7 +33,6 @@ func newTestServerClock(t *testing.T, llmSrv *httptest.Server, clock func() time
 	s := New(bus, Options{LLMBase: llmSrv.URL, LLMModel: "mock",
 		MCPServerRoot: t.TempDir(), UsrPath: t.TempDir() + "/usr.db"})
 	s.im.SetClock(clock)
-	s.locksDir = t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	if err := s.Start(ctx); err != nil {
@@ -62,18 +61,12 @@ func fixedClock() (func() time.Time, func(time.Duration)) {
 	return clock, advance
 }
 
-// dirNodesOf / capWorkDirOf 持锁读 server 内部注册态（扫描 goroutine 会并发写这两张表）。
+// dirNodesOf 持锁读 server 内部注册态（扫描 goroutine 会并发写该表）。
+// 实例 → work_dir 的权威映射只有一份（共通实例视图 `s.im`），故本文件直接读 Manager。
 func dirNodesOf(s *Server, instanceID string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.dirNodes[instanceID]...)
-}
-
-func capWorkDirOf(s *Server, instanceID string) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	wd, ok := s.capWorkDirs[instanceID]
-	return wd, ok
 }
 
 // TestStaleInstanceSweptViaExitPath（分离形态）：实例心跳超 instance.HeartbeatTimeout →
@@ -186,11 +179,12 @@ func TestHeartbeatFreshNotSwept(t *testing.T) {
 	advance(instance.HeartbeatTimeout - time.Second)                    // 距最后心跳 < 超时
 	s.sweepStaleInstances()
 
-	if _, ok := s.im.Lookup("ins-live"); !ok {
+	info, ok := s.im.Lookup("ins-live")
+	if !ok {
 		t.Fatal("心跳新鲜不应判退出（实例视图被移除）")
 	}
-	if _, ok := capWorkDirOf(s, "ins-live"); !ok {
-		t.Fatal("心跳新鲜不应触发退出清理（注册态被清除）")
+	if info.WorkDir != testWorkDir {
+		t.Fatalf("心跳新鲜不应触发退出清理（Manager 里的 instance → work_dir 登记被清除），got %q", info.WorkDir)
 	}
 }
 
@@ -211,7 +205,16 @@ func TestInstanceSweepTickerWired(t *testing.T) {
 		t.Fatal("分离形态 Start 应起心跳超时扫描 goroutine")
 	}
 
-	s.im.HandleRegister(jb(map[string]any{"instance_id": "ins-tick", "work_dir": testWorkDir}))
+	writeHotToolContract(t, persist.CapUserRoot(s.opts.UsrPath), "user_demo")
+	writeHotToolContract(t, persist.CapProjectRoot(testWorkDir), "prj_demo")
+
+	payload := jb(map[string]any{"instance_id": "ins-tick", "work_dir": testWorkDir})
+	s.im.HandleRegister(payload)
+	s.onInstanceRegister("instance-register", payload)
+	if n := len(dirNodesOf(s, "ins-tick")); n != 2 {
+		t.Fatalf("前置：应接入 2 个 dir 节点，got %d", n)
+	}
+
 	advance(instance.HeartbeatTimeout + time.Second)
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -224,8 +227,14 @@ func TestInstanceSweepTickerWired(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if _, ok := capWorkDirOf(s, "ins-tick"); ok {
-		t.Fatal("ticker 清理未走既有退出清理（capWorkDirs 未清）")
+	// Sweep 移除实例视图后，同一次扫描内紧接走既有的 exitInstance（注销 capability dir 节点）；
+	// 给一个短等待窗口断言「登记被清除」。
+	deadline = time.Now().Add(2 * time.Second)
+	for len(dirNodesOf(s, "ins-tick")) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("ticker 清理未走既有退出清理（capability dir 节点未注销）")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

@@ -21,8 +21,8 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/config"
+	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
 )
 
 // ─── config 四域（prj-config / prompt / prj-security）───────────────
@@ -45,7 +45,7 @@ func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldList: resp.List})
+		s.replyID(method, req.ReqID, wire.ListPayload{List: resp.List})
 	case "load":
 		id := req.key()
 		resp, err := s.ConfigKVGet(facade.ConfigKVGetRequest{
@@ -55,7 +55,7 @@ func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldData: resp.Values[id]})
+		s.replyID(method, req.ReqID, wire.DataPayload{Data: resp.Values[id]})
 	case "save":
 		entries, id, ok := configEntries(req.Data)
 		if !ok {
@@ -68,7 +68,7 @@ func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: id})
+		s.replyID(method, req.ReqID, wire.OKIDPayload{OK: true, ID: id})
 	case "delete":
 		id := req.key()
 		if _, err := s.ConfigKVDelete(facade.ConfigKVDeleteRequest{
@@ -77,7 +77,7 @@ func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true})
+		s.replyID(method, req.ReqID, wire.OKResult())
 	}
 }
 
@@ -98,7 +98,7 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldList: resp.List})
+		s.replyID(method, req.ReqID, wire.ListPayload{List: resp.List})
 	case "load":
 		// load 返回**合并后**的有效值：usr 基线 + 项目层（prjusr → prj）覆盖可继承键
 		// （defaultLLM/defaultScenario）。list 仍为 usr 主库视图（"usr 是否已有配置"语义）。
@@ -107,7 +107,7 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldData: resp.Config})
+		s.replyID(method, req.ReqID, wire.DataPayload{Data: resp.Config})
 	case "save":
 		if _, err := s.UserConfigSet(facade.UserConfigSetRequest{
 			Entries: req.Data, InstanceID: req.InstanceID,
@@ -115,7 +115,7 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 			s.failID(method, req.ReqID, err)
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: config.UserConfigID})
+		s.replyID(method, req.ReqID, wire.OKIDPayload{OK: true, ID: config.UserConfigID})
 	case "delete":
 		// 带 key/id = 删除该项（继承控件「重置继承」→ 回落上级）；无 key = 清空整份用户配置；
 		// 未知键由实现侧**明确报错**（P0：未知键曾把 theme/locale/llms/超时一并清掉），不兜底清空。
@@ -131,10 +131,10 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 			return
 		}
 		if key != "" {
-			s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: key})
+			s.replyID(method, req.ReqID, wire.OKIDPayload{OK: true, ID: key})
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true})
+		s.replyID(method, req.ReqID, wire.OKResult())
 	}
 }
 
@@ -155,7 +155,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 	method := "data-session-" + action
 	var p SessionPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		s.failID(method, p.ReqID, fmt.Errorf("payload: %w", err))
+		s.failDecode(method, payload, fmt.Errorf("payload: %w", err))
 		return
 	}
 	f := p.fields()
@@ -228,7 +228,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 			failf("%v", err)
 			return
 		}
-		okf(map[string]any{"ok": resp.OK, "dialog_id": resp.DialogID, "session_id": resp.SessionID})
+		okf(wire.SessionForkPayload{OK: resp.OK, DialogID: resp.DialogID, SessionID: resp.SessionID})
 	case "active-set":
 		if _, err := s.SessionActiveSet(facade.SessionActiveSetRequest{
 			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID,
@@ -267,7 +267,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		}
 		res := wire.OKPayload{OK: true}
 		if resp.DialogID != "" {
-			res.DialogID = resp.DialogID // P3 过渡期：根会话自举回带（旧布局不写键）
+			res.DialogID = resp.DialogID // 根会话自举回带新对话的 dialog_id
 		}
 		okf(res)
 	case "ensure-turn":
@@ -313,7 +313,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 			failf("%v", err)
 			return
 		}
-		okf(map[string]any{msgkeys.FieldOk: true, msgkeys.FieldId: resp.ID})
+		okf(wire.OKIDPayload{OK: true, ID: resp.ID})
 	case "set-summary":
 		if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{
 			InstanceID: p.InstanceID,
@@ -446,39 +446,24 @@ func (s *Service) handleSnapshot(action string, payload []byte) {
 		failf("session_id required")
 		return
 	}
-	// 布局选择（P3 路由）：带 dialog_id → 对话库（快照与轮次/消息同库，缺失即报错）；
-	// 空 → 旧布局：快照落会话库（2026-10-23 轻量分片），prjusr 只留会话目录行。
+	// 一树一库：`dialog_id` 必填 → 快照与轮次/消息同库（缺失即报错，旧布局已退场）。
 	dialogID := req.Data.DialogID
-	var sidb *data.DB
-	var release func()
-	if dialogID != "" {
-		sidb, release, err = data.OpenExistingDialog(catalog.Path(), dialogID)
-	} else {
-		sidb, release, err = data.OpenSession(catalog.Path(), sessionID)
-	}
-	if err != nil {
-		failf("%v", err)
-		return
-	}
-	defer release()
 	if dialogID == "" {
-		if err := snapshot.MigrateFromCatalog(catalog, sidb, sessionID); err != nil {
-			failf("%v", err)
-			return
-		}
+		failf("%v", kernel.ErrDialogRequired)
+		return
 	}
 	switch action {
 	case "get":
-		snap, ok, err := snapshot.Get(sidb, sessionID)
+		snap, ok, err := snapshot.GetInDialog(catalog.Path(), dialogID, sessionID)
 		if err != nil {
 			failf("%v", err)
 			return
 		}
 		if !ok {
-			s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldSnapshot: nil}) // 无快照/无记录 → snapshot=null（调用方回退 BuildHistory）
+			s.replyID(method, req.ReqID, wire.SnapshotPayload{Snapshot: nil}) // 无快照/无记录 → snapshot=null（调用方回退 BuildHistory）
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldSnapshot: snap})
+		s.replyID(method, req.ReqID, wire.SnapshotPayload{Snapshot: snap})
 	case "set":
 		// 缺 `snapshot` 字段（或空对象）→ 明确失败：否则会写入零值快照并可能补建会话行
 		// （与门面 SnapshotSet 的入参校验对齐：不得静默落零值）。
@@ -492,16 +477,11 @@ func (s *Service) handleSnapshot(action string, payload []byte) {
 			failf("snapshot: %v", err)
 			return
 		}
-		if dialogID != "" {
-			if err := snapshot.SetInDialog(sidb, sessionID, snap); err != nil {
-				failf("%v", err)
-				return
-			}
-		} else if err := snapshot.Set(catalog, sidb, sessionID, snap); err != nil {
+		if err := snapshot.SetInDialog(catalog.Path(), dialogID, sessionID, snap); err != nil {
 			failf("%v", err)
 			return
 		}
-		s.replyID(method, req.ReqID, map[string]any{msgkeys.FieldOk: true})
+		s.replyID(method, req.ReqID, wire.OKResult())
 	}
 }
 

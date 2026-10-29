@@ -746,7 +746,7 @@ func TestParentCycleBFSNoHang(t *testing.T) {
 }
 
 // TestUpsertCarriesDialogID（P3-4b）：注入 DialogOf → upsert 载荷带 `dialog_id`；
-// 未注入 / 解析为空 → 不写键（旧布局载荷逐字节不变）。
+// 未注入 / 解析为空 → 不写键（由数据面判 `dialog_required`；旧布局已退场）。
 func TestUpsertCarriesDialogID(t *testing.T) {
 	l, fake := newLayerWith(t, Options{DialogOf: func(instanceID, sessionID string) string {
 		if instanceID == "ins-test" && sessionID == "top-1" {

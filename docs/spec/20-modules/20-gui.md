@@ -1,9 +1,9 @@
 # 20 · src/lib/gui（宿主实现）+ src/desktop（唯一宿主壳）
 
-> **〔PRODSIM-1（2026-10-22）〕** `src/gui`（GUI 客户端壳）与 `src/flash`（`gui.RunRemote` 远程总线薄壳）**已删除**；唯一壳 = `src/desktop`（`FormDesktop`），embed 落点 = `src/desktop/frontend/dist`。宿主新增：**日志窗口**（隐藏、`HideOnClose`、不注册 instance）+ **项目主窗口映射表**（`OpenProject` / `Projects` / `ActivateProject`）+ 托盘（`src/lib/core/tray`）+ `/api/log/tail`。本文档下方凡提「GUI 客户端 / flash / RunRemote / 两个宿主壳」均为历史。
+> **唯一宿主 = `src/desktop`（`FormDesktop`）**，embed 落点 = `src/desktop/frontend/dist`。宿主含：**日志窗口**（隐藏、`HideOnClose`、不注册 instance）+ **项目主窗口映射表**（`OpenProject` / `Projects` / `ActivateProject`）+ 托盘（`src/lib/core/tray`）+ `/api/log/tail`。
 > 状态：✅ 与代码一致
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [11-MQ与消息](../10-architecture/11-MQ与消息.md) · [23-filesys](23-filesys.md)
-> 代码目录（结构重整 + 🆕 2026-10-10 拆包）：**客户端能力** = `src/lib/gui/`（窗口工厂 / `bridge/` / registry / testserver / 远程薄壳 `RunRemote` / 日志 + `internal/` + `models/`）；**单体装配宿主** = `src/lib/gui/host/`（内嵌 server→persist→filesys / 插件 / 桥接线；入口 `host.Main(distFS, Options{Form})`，依赖方向 `host → gui` **单向**）。**壳**（只嵌前端 dist + 传形态 + 调 `host.Main`）= `src/desktop/`（桌面单体，`FormDesktop`）· `src/gui/`（gui 形态客户端，`FormGui`，`-tags split`），各自 `frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。**flash 薄壳** = `src/flash/`（`gui.RunRemote` 远程总线，**不链 `host`、不 embed 前端**，dist 由构建投放 `<exeDir>/frontend/dist`，以 `os.DirFS` 加载），见下方分体常驻版注。
+> 代码目录：**客户端能力** = `src/lib/gui/`（窗口工厂 / `bridge/` / registry / testserver / 日志 + `internal/` + `models/`）；**单体装配宿主** = `src/lib/gui/host/`（内嵌 server→persist→filesys / 插件 / 桥接线；入口 `host.Main(distFS, Options{Form})`，依赖方向 `host → gui` **单向**）。**壳** = `src/desktop/`（只嵌前端 dist + 传形态 + 调 `host.Main`），`frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。
 
 ---
 
@@ -20,15 +20,14 @@
 | 项 | 值 |
 |----|----|
 | 编译形态 | windowsgui exe（`-H windowsgui`），`//go:build windows` |
-| 前端 | Vue3 + Vite，`//go:embed all:frontend/dist`（**flash 薄壳例外**：dist 由 `<exeDir>/frontend/dist` 以 `os.DirFS` 加载，**不 embed**） |
+| 前端 | Vue3 + Vite，`//go:embed all:frontend/dist` |
 | 资源服务 | **无 HTTP server**：WebView2 `WebResourceRequested` 拦截虚拟源 `https://app.localhost` |
-| 构建 | `build-desktop.ps1`（原名 `build-standalone-gui.ps1`；内含 `npm run build`） |
+| 构建 | `build-desktop.ps1`（内含 `npm run build`） |
 | 产物 | `dist/desktop/chonkpilot.exe` + 引擎 exe（codegraph/vfts）+ `zvec_c_api.dll` + `capability/` |
 
-**命令行参数**（`main.go`）：`--work-dir`（缺省 cwd）· `--data-dir`（缺省 `<workDir>/.chonkpilot`）· `--test-port`（>0 开测试通道；**仅 `-tags debugport` 构建存在**，release 不含）· `--llm-base` · `--llm-model` · `--no-server`（UI 注入测试）· ~~`--bridge-url`~~（分离形态 `-tags split` 的跨进程 bridge 对端；**PRODSIM-1 后无对端，保留仅为历史参数**）。
+**命令行参数**（`main.go`）：`--work-dir` · `--llm-base` · `--llm-model` · `--no-server`（UI 注入测试）· `--ui-assets-addr` · `--test-port`（**仅 `-tags debugport` 构建存在**）。
 
-> **〔PRODSIM-1（2026-10-22）〕原「desktop 分体常驻版」已废止**：flash 薄壳（`chonkpilot-flash.exe` / `-cli`）、`gui.RunRemote` 远程总线、`src/lib/gui/flash`（打开语义 / 最近项目 / prjusr 文件锁）、独立 `chonkpilot-server.exe` 与 UDS 前门**全部删除**；**项目级文件锁亦删除**（单进程 + `procsingleton`，同项目唯一性由 `work_dir → 主窗口` 映射表保证）。recents 辅助迁入 `models/recents.go`（托盘项目列表用）。**现为单进程单产物**：唯一宿主 = `src/desktop` → `host.Main`（日志窗口隐藏 + 托盘 + 每 `work_dir` 一个项目主窗口）。
-> **原文（历史 2026-10-10/10-11）**：flash 不内嵌 server/persist/filesys，业务消息经 UDS（`%LOCALAPPDATA%\chonkpilot\server.sock`）转发常驻 `chonkpilot-server.exe`；免鉴权由前门决定；flash 不发布 `instance-heartbeat`（存活 = 连接断开）；前端 dist 不 embed、落 `<exeDir>/frontend/dist`；项目单例改 prjusr 文件锁 `chonkpilot.lock`。
+> **单进程单产物**：唯一宿主 = `src/desktop` → `host.Main`（日志窗口隐藏 + 托盘 + 每 `work_dir` 一个项目主窗口）；同项目唯一性由 `work_dir → 主窗口` 映射表保证。
 
 ---
 
@@ -57,11 +56,11 @@
 | 含 `.` 的点分主题 | 直通总线（`publishV`） |
 | 单字方法 | `frontMethodSubjects` → 域主题 |
 
-`gui.*` 本地动作：`init-data` · `ui.save` · `recent.list` · **`recent.remove`（删除最近项目记录，仅删记录不删资产）** · **`select-dir` / `selected-dir`（目录选择两段式，🆕 2026-10-09 由 `dir.open-dialog` 拆分；`show-dialog` 为 browser 请 UI 弹框）** · `pick-executable` · **`file.save`** · `dir.open` · `console.open` · `vcs.info` · `reveal` · `open-with` · `search` · **`capture` / `captured`（截图两段式：`captured` 只回 `b64`、**不落盘**，🆕 2026-10-09 / 2026-10-10 收敛）** · **`upload`（server 落盘 `<data_dir>/<dir>/<name>`、只回 `{name}`，🆕 2026-10-10）** · `prompt-optimise` · `toolchain.detect`（6 工具链 + Chrome 探测） · `system.builtins`（exe 同目录 `config.json` 的内置 MCP 只读项，不含 `llms` 段）。
+`gui.*` 本地动作：`init-data` · `ui.save` · `recent.list` · **`recent.remove`（删除最近项目记录，仅删记录不删资产）** · **`select-dir` / `selected-dir`（目录选择两段式，🆕 2026-10-09 由 `dir.open-dialog` 拆分）** · `pick-executable` · **`file.save`** · `dir.open` · `console.open` · `vcs.info` · `reveal` · `open-with` · `search` · **`capture` / `captured`（截图两段式：`captured` 只回 `b64`、**不落盘**，🆕 2026-10-09 / 2026-10-10 收敛）** · **`upload`（server 落盘 `<data_dir>/<dir>/<name>`、只回 `{name}`，🆕 2026-10-10）** · `prompt-optimise` · `toolchain.detect`（6 工具链 + Chrome 探测） · `system.builtins`（exe 同目录 `config.json` 的内置 MCP 只读项，不含 `llms` 段）。
 
-> **目录选择两段式（`gui.select-dir` / `gui.selected-dir` / `gui.show-dialog`，🆕 2026-10-09 / 2026-10-10；[61 §1](../60-reference/61-消息一览.md)）**：请求 `gui.select-dir{widget_id}`（结果事件 `gui.selected-dir{widget_id,status,path?}`）由**调用侧适配**包成 Promise（`src/frontend/src/utils/guiAsync.js::selectDir`，按 `widget_id` 关联；`api/config.js::openDirDialog` 委托）。**处理方二分**：① **GUI/WebView2** → 桥 `guimsg.go` 弹**系统原生目录框**后 `EmitFrontend(gui.selected-dir)`；② **browser/服务端** → 无原生框 → 服务端 `publish.go:guiDo` 的 `select-dir` 分支**下发 `gui.show-dialog{widget_id, kind:"select-dir", options}`**（请 UI 自行弹框，**不阻塞**）。**前端消费 `gui.show-dialog`**：`src/frontend/src/composables/useGuiShowDialog.js`（`App.vue` setup 全局订阅一次，`mq.on` 非 `watch`）→ 自研 `DialogShell` 承载 `views/common/DirPickerDialog.vue`（数据源 = 事件 `options`，**options 驱动**，按层浏览/返回上级/确认）→ 用户选定/取消/关闭发 `gui.selected-dir`（`utils/guiShowDialog.js` 纯逻辑构造载荷）。`options` 口径 = **该用户允许根**（`allowedDirs()` 根 = `auth.projectRoots`；缺省用户数据根）**及其子目录**（深≤3 / ≤200 / 跳隐藏与重型目录；原非 MQ 路由 `GET /dirs` 已删除）→ 同一用户下多个项目（如 `proj-a/b/c`）皆可选。「以新进程打开目录」是另一条动作 `gui.dir.open`：**native / GUI** = 起新进程打开；**browser（🆕 2026-10-10，`publish.go:guiDirOpen`）** = 服务端把**本实例** `work_dir` 切换到目标目录（复用既有 `instance-claim` 做归属校验 + `instance-register` 重绑定 → 入口 `applyInstanceBind` 就地更新作用域），前端选后**就地刷新**（`Toolbar.vue` → `openDir(path)` → `reinitProjectState()`：重挂主布局 + 重跑启动序列，**不整页重载**）。见 [19 §8.8 §C](../10-architecture/19-多租户服务端形态.md) · [42 §2.23](../40-roadmap/42-决策记录.md) · [42 §2.25](../40-roadmap/42-决策记录.md)。
+> **目录选择两段式（`gui.select-dir` / `gui.selected-dir` / `gui.show-dialog`，🆕 2026-10-09 / 2026-10-10；[61 §1](../60-reference/61-消息一览.md)）**：请求 `gui.select-dir{widget_id}`（结果事件 `gui.selected-dir{widget_id,status,path?}`）由**调用侧适配**包成 Promise（`src/frontend/src/utils/guiAsync.js::selectDir`，按 `widget_id` 关联；`api/config.js::openDirDialog` 委托）。**处理方**：桥 `guimsg.go` 弹**系统原生目录框**后 `EmitFrontend(gui.selected-dir)`。**前端消费 `gui.show-dialog`**：`src/frontend/src/composables/useGuiShowDialog.js`（`App.vue` setup 全局订阅一次，`mq.on` 非 `watch`）→ 自研 `DialogShell` 承载 `views/common/DirPickerDialog.vue`（数据源 = 事件 `options`，**options 驱动**，按层浏览/返回上级/确认）→ 用户选定/取消/关闭发 `gui.selected-dir`（`utils/guiShowDialog.js` 纯逻辑构造载荷）。`options` 口径 = **该用户允许根**（`allowedDirs()` 根 = `auth.projectRoots`；缺省用户数据根）**及其子目录**（深≤3 / ≤200 / 跳隐藏与重型目录；原非 MQ 路由 `GET /dirs` 已删除）→ 同一用户下多个项目（如 `proj-a/b/c`）皆可选。「以新进程打开目录」= `gui.dir.open`：起新进程打开目标目录。
 
-> **`gui.file.save`（native 能力；[61 §1](../60-reference/61-消息一览.md)）**：`guimsg.go` 分派 → `bridge/configfile.go`（+ `savefile_windows.go` 的 `GetSaveFileNameW`）。payload `{name, content, mode?}` → `{path?}`（用户取消 = `""`）：`mode` 缺省 / `"dialog"` = 系统「另存为」；`mode:"backup"` = **不弹框**，直接落 `<dataDir>/backup/<name>`（`dataDir` 未配置 → `<workDir>/.chonkpilot/backup/`）。**安全**：`content` **可能含 API Key**（`llms[].apiKey` / `mcps[].env`、`headers`）→ 本能力**绝不记录 `content`**（无日志打印、错误详情不含内容），只回传落盘路径；`name` 经 `filepath.Base` 净化（防路径穿越）、空名拒绝。**browser 形态 = 明确不支持**（`src/lib/llm/httpapi/publish.go` 的 `browserUnsupported`；见 §9）。
+> **`gui.file.save`（native 能力；[61 §1](../60-reference/61-消息一览.md)）**：`guimsg.go` 分派 → `bridge/configfile.go`（+ `savefile_windows.go` 的 `GetSaveFileNameW`）。payload `{name, content, mode?}` → `{path?}`（用户取消 = `""`）：`mode` 缺省 / `"dialog"` = 系统「另存为」；`mode:"backup"` = **不弹框**，直接落 `<dataDir>/backup/<name>`（`dataDir` 未配置 → `<workDir>/.chonkpilot/backup/`）。**安全**：`content` **可能含 API Key**（`llms[].apiKey` / `mcps[].env`、`headers`）→ 本能力**绝不记录 `content`**（无日志打印、错误详情不含内容），只回传落盘路径；`name` 经 `filepath.Base` 净化（防路径穿越）、空名拒绝。
 
 > **场景向导启动触发（`agent-wizard`）**：GUI 桥在 `gui.init-data` 分支（`guimsg.go`）stat `<workDir>/.chonkpilot/project_spec.md` —— **缺失** → 应答补**只增布尔字段 `wizard_required: true`**（[61 §1](../60-reference/61-消息一览.md)），并向本窗口下发 **`agent-wizard`** 事件（`EmitFrontend`，payload `{reason:"missing_spec", work_dir, spec_path}`）；**存在** → `wizard_required: false`、不发事件。**检测落点在 GUI 桥本身（非插件）** —— 设计稿设想的 `plugin-wizard` **未落地**（[37 SCEN-012](../30-function-points/37-场景.md)）。前端消费：`MainLayout.vue` 订阅 `EventNames.agentWizard` → `openScenarioWizard`（`src/frontend/src/views/scenario/ScenarioWizardDialog.vue`，复用 `DialogShell`；向导另可经**场景编辑对话框底部【向导】按钮**手动拉起，同入口）。向导 Step1 探测经 `agent-wizard-probe`、提示词合成经 `agent-wizard-compose`（按项目特点把出厂 archetype 合成为定制化提示词，纯字符串组装；合成文本末以 `{{path.*}}` 四根路径占位符给出技能位置，**组装系统提示词时**渲染，指示 LLM 用文件工具自读，不用 `mcp_load`）、Step5 生成经 `agent-wizard-generate`（server 处理：非主 agent 合成提示词经门面 `ProjectAgentWrite` 落项目级 capability agent 文件 + 以**引用**入场景，主 agent 内联；数据访问经 data 门面 inline 直调，**不新增 `data-*` 主题**）、【关闭/稍后】经 `agent-wizard-skip`；消息面明细见 [61 §4.2](../60-reference/61-消息一览.md)。
 
@@ -95,9 +94,9 @@
 | `data.go` | `data-*` 经总线 persist；prj-config 键值面；usr 配置（标量逐 key + 专用表 `llms`） |
 | `local.go` | 初始化数据、布局/窗口/UI/文件树/打开态保存（prjusr）、最近目录（list/remove）、打开目录、VCS、检索 |
 | `builtins.go` | `gui.system.builtins`：读 exe 同目录 `config.json` 的只读内置 MCP 项（`mcpServers` 段） |
-| `toolchain.go` | `gui.toolchain.detect`：探测 6 语言工具链 + Chrome 路径/版本（系统级候选不落库）；探测顺序 = PATH → 注册表 `App Paths`（HKCU→HKLM）→ 环境变量目录（JAVA_HOME/GOROOT 等）→ 常见安装目录；候选环境变量支持 `%VAR%`/`$VAR`；**Chrome 版本来自其目录 `Application\<ver>\` 的最高版本号目录**（不执行 `chrome.exe --version`） |
+| `toolchain.go` | `gui.toolchain.detect`：探测 6 语言工具链 + Chrome 路径/版本（系统级候选不落库）；探测顺序 = PATH → 注册表 `App Paths`（HKCU→HKLM）→ 环境变量目录（JAVA_HOME/GOROOT 等）→ 常见安装目录；候选环境变量支持 `%VAR%`/`$VAR`；**Chrome 版本来自其目录 `Application\<ver>\` 的最高版本号目录**（不执行 `chrome.exe --version`）。**result 载荷 = `{tools:[{id, name, path, version}]}`（61 §1 逐字一致，2026-10-28 回退：不再带任何附加字段）**。版本展示（P2-3 ②③④）**全在前端**：规范化（`normalizeVersion`）+ 最小版本判定（`belowMinVersion`）在 `src/frontend/src/utils/toolchainGuide.js`（`minVersion` 取 usr 自由键 `toolchain.<id>.minVersion`，经既有 `data-user-config-load` 读，**零新增消息**）；下载页/winget 静态引导表同文件，宿主不下载、不安装。**只读展示 + UI 提示，不阻断执行** |
 | `capture.go` | 截图：隐藏本窗 → GDI 全屏 BitBlt → **只回截图字节 base64 `{b64}`**（**不落盘**；落盘由 server 决定，见 [61 §1](../60-reference/61-消息一览.md) gui.capture/gui.captured；纯 syscall，无 CGO）。**R7-D**：收尾**先选回旧位图再 `DeleteObject`**（位图被选入 DC 时 `DeleteObject` 会失败、不回收）→ 修每次截图泄漏 1 个 DIB |
-| `upload.go` | 附件上传：base64 → **prjusr 数据根** `<dir>/`（`bridge.uploadRoot()`；`dir` 缺省 `tmp/uploads`、截图 `screenshot`；`--data-dir` 显式时 = 该数据根）→ **只回 `{name}`**（真实落盘名，不暴露服务器路径）。**R7-B-4**：落盘后按 `uploadfs.KeepCap`（2 GiB，**按目录**、mtime **最旧优先**）做**容量兜底** —— 兜底**下沉到 lib core `uploadfs.Save`**（GUI 桥与 browser `guiUpload` **同源**），不再仅 GUI 启动期一次 |
+| `upload.go` | 附件上传：base64 → **prjusr 数据根** `<dir>/`（`bridge.uploadRoot()`；`dir` 缺省 `tmp/uploads`、截图 `screenshot`）→ **只回 `{name}`**（真实落盘名，不暴露服务器路径）。**R7-B-4**：落盘后按 `uploadfs.KeepCap`（2 GiB，**按目录**、mtime **最旧优先**）做**容量兜底** —— 兜底**下沉到 lib core `uploadfs.Save`**（GUI 桥与 browser `guiUpload` **同源**），不再仅 GUI 启动期一次 |
 | `optimize.go` | 提示词 AI 优化：SSE 流式，事件 `optimize-token/done/error` |
 | `compat.go` | 旧协议事件名兼发（旧回归脚本用） |
 
@@ -182,8 +181,8 @@
 
 ## 7. 依赖
 
-- **上游**：`src/lib/core`(mq/paths) · `src/lib/llm`(server) · `src/lib/filesys` · `src/plugins/plugin*` · `jchv/go-webview2`（本地 `src/lib/go-webview2`）。
-- **indirect**：`src/lib/data` · `src/lib/gateway` · `src/lib/mcp-server`。
+- **上游**：`src/lib/core`(mq/paths) · `src/lib/llm`(server) · `src/lib/filesys` · `chonkpilot-plugin-framework`（宿主运行时 `host/*`）· `jchv/go-webview2`（本地 `src/lib/go-webview2`）。
+- **indirect**：`src/lib/data` · `chonkpilot-mcp-gateway`（独立仓） · `src/lib/mcp-server`。
 - **下游**：无（终端应用）。
 
 ---
@@ -195,7 +194,7 @@
 | 无 HTTP server | WebView2 `WebResourceRequested` 虚拟源拦截 | 免端口、免监听、资源不落盘 |
 | 前端资源 no-cache | 强制 `no-cache, no-store, must-revalidate` | WebView2 会持久缓存旧页面 |
 | Frameless 保留 WS_THICKFRAME | 无原生标题栏；`WS_THICKFRAME` **只保留最大化 / 贴靠等原生行为** | frameless 下 WebView2 子窗铺满客户区 → `WM_NCHITTEST` 恒 `HTCLIENT`，**系统层无边缘 resize 命中区**（WIN-1 / G-59） |
-| 窗口 resize（frameless 主窗口） | 前端边缘命中 → `gui.window.resize{hit}` → 宿主 `StartResize(HT*)` 进入系统原生 resize 模态循环 | 系统无命中区，只能由前端补命中：`components/shell/WindowResizeHandles.vue` 渲染 8 条透明命中条（4 边 6px / 4 角 12px，`-webkit-app-region: no-drag`），`mousedown` 发消息；`guiDo` 把方位映射为 `HTLEFT(10)…HTBOTTOMRIGHT(17)` 后调 `webview2.WindowResizer.StartResize`（`src/lib/gui/bridge/guimsg.go` / `window.go`；设计见 [go-webview2/FORK.md](../../../src/lib/go-webview2/FORK.md) P4）。**仅 frameless 装配**；对话窗口（原生标题栏/边框）不装配 → 明确失败。 |
+| 窗口 resize（frameless 主窗口） | 前端边缘命中 → `gui.window.resize{hit}` → 宿主 `StartResize(HT*)` 进入系统原生 resize 模态循环 | 系统无命中区，只能由前端补命中：`components/shell/WindowResizeHandles.vue` 渲染 8 条透明命中条（4 边 6px / 4 角 12px，`-webkit-app-region: no-drag`），`mousedown` 发消息；`guiDo` 把方位映射为 `HTLEFT(10)…HTBOTTOMRIGHT(17)` 后调 `webview2.WindowResizer.StartResize`（`src/lib/gui/bridge/guimsg.go` / `window.go`；设计见同级仓 `chonkpilot-webview2` 的 `FORK.md` P4）。**仅 frameless 装配**；对话窗口（原生标题栏/边框）不装配 → 明确失败。 |
 | 窗口移动（frameless 主窗口） | 顶栏非交互区 `mousedown` → 位移 >4px 后发 `gui.window.resize{hit:'caption'}` → 宿主 `WM_NCLBUTTONDOWN(HTCAPTION)` 进入系统移动模态循环 | **WebView2 `app-region` 在本项目自绘 frameless 窗口上实测不触发**（`ICoreWebView2Settings9.IsNonClientRegionSupportEnabled=true` 已生效仍无拖拽区）→ 与 resize 同链路显式进入系统循环（`ChonkTopBar.vue` 阈值判定保留单击/双击；`guimsg.go` 的 `caption → 2(HTCAPTION)`）。CSS 仍保留 `app-region: drag/no-drag` 仅作语义标记。**2026-10-17 修** |
 | `--test-port` 仅 127.0.0.1 | 外部脚本驱动端点 | 测试专用，见 [52-test-port驱动](../50-testing/52-test-port驱动.md) |
 
@@ -209,7 +208,6 @@
 - **防环**：本实例刚发布的主题（1s 窗口）不再回发前端。
 - **多窗口（🔵 待实施）**：窗口 ↔ `instance` **1:1**（窗 = 视口，instance = 运行态+消息归属+数据根绑定）；**`instance` 不做业务隔离**（同 `work_dir` 多 instance 共用同一 prjusr 库 → 会话列表/历史**共享**）。**关闭语义**：关任一窗口仅销毁该窗口 + 发该实例 `instance-exit`；**主窗口关闭 = 退出本进程**（其余窗口一并关闭）。**几何**：主窗口 `window.*`/`layout.*`（prjusr）；**对话窗口不持久化几何**（每次默认位置）。**不变量**：进程内 instance 数 = 窗口数（非「1 进程 1 instance」），见 [20-实例隔离与后端分离](../10-architecture/20-实例隔离与后端分离.md)。
 - **退出**：`instance-exit` → persist 移除绑定 + server 取消 running turn + 释放锁；`beaconSaveLayout`（`sendBeacon`）兜底保存布局。
-- **browser 形态的 native 能力边界**：`gui.file.save`（「另存为」对话框，native）**明确不支持** —— 入 `src/lib/llm/httpapi/publish.go` 的 `browserUnsupported`（返回 `{ok:false, error}` + errors，**不静默失败**，前端降级为页面下载 / 剪贴板）；browser 形态点分主题上行另有白名单 `allowedDottedPrefixes`（现含 `filesys.` / `vfts.` / `llm.test-connection` / `config.suggest` / `memory.flush`）。GUI 形态无此限制（桥本地实现 + 「点分直通」分支）。见 [61 §1/§1.1/§8](../60-reference/61-消息一览.md)。
 
 ---
 
@@ -295,16 +293,15 @@
 - 若需排查运行时问题，优先用结构化字段而非拼串。
 
 > **日志落盘：统一到 `<prjusr 数据根>/logs/gui.log`**
-> ① **宿主（gui）**：`src/lib/gui/logfile.go` 的 `dualWriter`（stderr 并存）+ `rotateWriter`（2MiB 滚动、保留 5 份）把 **slog 默认 logger** 同时写 stderr 与 `<prjusr 数据根>/logs/gui.log`；日志目录经 `gui.init-data` 只增字段 `logDir` 下发（[61 §1](../60-reference/61-消息一览.md)）。日志目录 = **`data.PrjUsrDir`（prjusr 数据根）** + `/logs`（`src/lib/gui/main.go` 传入 `attachFileLog`）：desktop 缺省（`data_dir == ""`）→ **`~/.chonkpilot/data/<prj-id>/logs/gui.log`**（跟随数据根）；**显式 `--data-dir`** → `<该数据根>/logs/gui.log`；`gui.init-data.logDir` 指向该处。
-> ② **后端（`src/lib/llm/server` + 内嵌插件）**：本包输出收敛到单一出口 **`logf`**（`src/lib/llm/server/log.go`）—— **`logf` 始终写 stdout（行为不变，`--test-port` 捕获口径不变）**；装配方经 **`server.Options.LogWriter`（`io.Writer`，nil = 仅 stdout）** 注入额外 sink 时**同写 sink**，GUI 注入的即宿主那一个 `<prjusr 数据根>/logs/gui.log` 文件 sink（`src/gui/main.go` 传 `logWriter.fileSink()`）。插件仍走 `plugin.Deps.Logf`（= `Server.pluginLogf`）→ 经**同一出口**落文件。库侧只收 `io.Writer`，**不依赖 gui 包**。
-> ③ **未覆盖（如实标注）**：`src/lib/llm/httpapi` 与 `src/lib/llm/main.go` 的 `log.Printf`（stderr；属独立入口 / browser 形态）未接入该 sink。
+> ① **宿主（gui）**：`src/lib/gui/logfile.go` 的 `dualWriter`（stderr 并存）+ `rotateWriter`（2MiB 滚动、保留 5 份）把 **slog 默认 logger** 同时写 stderr 与 `<prjusr 数据根>/logs/gui.log`；日志目录经 `gui.init-data` 只增字段 `logDir` 下发（[61 §1](../60-reference/61-消息一览.md)）。日志目录 = **`data.PrjUsrDir`（prjusr 数据根）** + `/logs`（`src/lib/gui/main.go` 传入 `attachFileLog`）：固定 **`<workDir>/.chonkpilot/users/<OS 用户名>/logs/gui.log`**（数据根为固定规则，`--data-dir` 已删除）；`gui.init-data.logDir` 指向该处。
+> ② **后端（`src/lib/llm/server` + 内嵌插件）**：本包输出收敛到单一出口 **`logf`**（`src/lib/llm/server/log.go`）—— **`logf` 始终写 stdout（行为不变，`--test-port` 捕获口径不变）**；装配方经 **`server.Options.LogWriter`（`io.Writer`，nil = 仅 stdout）** 注入额外 sink 时**同写 sink**，GUI 注入的即宿主那一个 `<prjusr 数据根>/logs/gui.log` 文件 sink。
 
 > **启动分段计时日志（OP-15）：仅插桩量测，不改启动行为/顺序**。为定位「启动慢」真实原因，在启动路径按段打点。格式统一：**`[startup] <阶段> 耗时 <段>ms（累计 <总>ms）`**（段 = 距上次打点，总 = 距起点 `markStartupBegin`）。
 > - **宿主（gui，`slog`）**（`src/lib/gui/main.go`）：参数与目录解析 → prjusr 数据根解析（含 prj 库打开）→ 文件日志挂载 → MQ 总线初始化 → filesys 文件服务启动 → server 装配（capability 契约扫描 + gateway 构建）→ server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）→ 主窗口创建（bridge/WebView2 环境就绪）→ 启动流程就绪；**主窗口首屏渲染完成**在 `window.go` NavigationCompleted（roleMain）经 `logStartupStageOnce` 只记一次。
-> - **内嵌 server（`src/lib/llm/server/server.go`，统一出口 `logf`；同一 `Start` 亦为分离形态 `chonkpilot-server.exe` 入口 → 一处覆盖两形态）**：数据服务(persist)启动 → 任务层启动 → gateway 启动/下游连接 → capability fswatcher 监听 → 实例视图/心跳扫描启动 → 方法面/事件订阅 → 域工具注册 → 域 agent 注册 → 工具定义缓存预热(`gc.ListTools`) → 内嵌插件启动 → server 启动完成。
+> - **内嵌 server（`src/lib/llm/server/server.go`，统一出口 `logf`）**：数据服务(persist)启动 → 任务层启动 → gateway 启动/下游连接 → capability fswatcher 监听 → 实例视图/心跳扫描启动 → 方法面/事件订阅 → 域工具注册 → 域 agent 注册 → 工具定义缓存预热(`gc.ListTools`) → 内嵌插件启动 → server 启动完成。
 > - **装配期（`src/lib/assembly/assemble.go`，经 `logf`）**：capability 契约扫描/注册（含 `AppToolNames` 全树 `WalkDir`）、gateway 构建。
 >
-> **采数**：桌面单体见 `<prjusr 数据根>/logs/gui.log`；分离形态 `chonkpilot-server.exe` 见 stdout。**候选耗时段**（供定位）：capability 契约扫描、gateway Start/下游连接、`gc.ListTools` 预热（15s 上限）、插件 Start、DB 迁移/seed；**优化项待采数后再定**。
+> **采数**：桌面单体见 `<prjusr 数据根>/logs/gui.log`。**候选耗时段**（供定位）：capability 契约扫描、gateway Start/下游连接、`gc.ListTools` 预热（15s 上限）、插件 Start、DB 迁移/seed；**优化项待采数后再定**。
 
 
 ### 12.8 主题与浮层样式（token 约定）
@@ -434,7 +431,7 @@
 |---|---|---|---|---|---|
 | `memory-status`（记忆提取） | 既有通知面 `tool-notify`：`memory-{queued,start,done}` + `plugin-failure{plugin:memory}`；`memory.enabled` 仅用于「未启用」文案 | `记忆 · 未启用`（记忆库关闭）/ `记忆 · 空闲` | `记忆沉淀排队中` / `记忆沉淀中…`（进行中色） | `记忆沉淀完成` / `记忆 · 失败`（错误色，title = 错误原文） | `open-view{status-memory}` → preview「记忆提取详情」 |
 | `compress-status`（上下文压缩） | 同上：`compress-{queued,start,done}` + `plugin-failure{plugin:compress}` | `压缩 · 空闲` | `压缩排队中` / `压缩中…`（进行中色） | `压缩完成` / `压缩 · 失败`（错误色） | `open-view{status-compress}` → preview「上下文压缩详情」 |
-| `index-badge`（代码索引；codegraph + vfts 两枚徽标同一详情页） | prj 既有键 `enable-codegraph` / `codegraph.status` / `enable-vfts` / `vfts.status` | `未启用` / `未初始化` | `索引中 N/total`（`progressTotal>0`） | `完成` / `失败`（错误色） | `open-view{status-index}` → preview「代码索引详情」 |
+| `index-badge`（代码索引；codegraph + vfts 两枚徽标同一详情页） | prj 既有键 `plugins.codegraph.enabled` / `codegraph.status` / `plugins.codegraph.vfts.enabled` / `vfts.status` | `未启用` / `未初始化` | `索引中 N/total`（`progressTotal>0`） | `完成` / `失败`（错误色） | `open-view{status-index}` → preview「代码索引详情」 |
 
 - **条目恒可见**（「每种任务都有一个状态 view」）：空闲 / 未启用也渲染（中性色 `--fg-disabled`），不因空闲而消失。
 - **失败不静默**：`plugin-failure`（既有 notice）落到条目错误色 + 详情页错误文本；**worker 失败后仍会补发 `*-done` → 前端「失败优先」**（`reduceTask`：error 态忽略后续 done），避免失败被「完成」洗掉。
@@ -449,7 +446,7 @@
 - **三页均注册进** `layout/view-definitions.js`（`status-*`，`designable:false`）+ `layout/views.registry.js`（组件映射）+ `CodeView.specialComponents`（功能页页签 / 标题 i18n `statusBar.detail.*`）。
 
 **索引状态区（`.sb-section.sb-index`）**：内含 **两枚徽标**（`.sb-idx[data-engine="codegraph"|"vfts"]`，**图标 + 状态文本**），紧凑单行，**恒显示**。图标取自既有图标集（codegraph = `collection`，vfts = `search`）。
-- **数据源**（全部**既有** prj-config 键，**零新增消息面**）：`enable-codegraph` + `codegraph.status`；`enable-vfts` + `vfts.status`。取数 = `getAllConfig()`（`data-prj-config-list`）；刷新 = 既有广播 `onDataRefresh('prj-config', reload)`；显示值用 `computed` 派生（**禁 watch/watchEffect**）。
+- **数据源**（全部**既有** prj-config 键，**零新增消息面**）：`plugins.codegraph.enabled` + `codegraph.status`；`plugins.codegraph.vfts.enabled` + `vfts.status`。取数 = `getAllConfig()`（`data-prj-config-list`）；刷新 = 既有广播 `onDataRefresh('prj-config', reload)`；显示值用 `computed` 派生（**禁 watch/watchEffect**）。
 - **状态映射**（纯函数 `src/frontend/src/utils/indexStatus.js`）：
 
   | 条件 | 文案 | 字色 token |
@@ -648,4 +645,19 @@
 | 数值 | LLM `temperature` 0–2、token / 迭代次数按 min/max；会话参数非法值 **blur 时提示 `fieldRules.invalidNumber`**（不再静默回落） |
 | 聊天输入 | ≤16384 字符：超限显示 `.input-limit` 提示并在 `onEdit` 截断（粘贴同样经该路径）；附件**单文件 ≤20MB、单条 <10 个**，超限拦截并提示 |
 | 通用输入组件 | `components/ui/{Input,Textarea}.vue` 透传 `maxlength/minlength/pattern/required/min/max/step`（**无全局默认**，由各接入点显式声明） |
+
+### 12.23 图标体系（ICON-1，🆕 2026-10-28）
+
+> 口径：**唯一图标源 = `src/frontend/src/components/icon/icons.js`（name → 内联 SVG 字符串）**；渲染器 = `components/icon/Icon.vue`。`layout-free` 的 `LfIcon` 是同一个组件（`layout/index.js` 注入 `components: { Icon }`，`layout-free/engine.js` 注册为 `LfIcon`），**不存在第二套通用图标实现**。
+
+| 面 | 约定 |
+|---|---|
+| 文件类型图标 | 独立第二套：`assets/file-icons/vivid/*.svg`（file-icon-vectors **Vivid**，MIT，99 个），经 `FileIcon.vue` 用 CSS `background-image` 渲染，**不并入** `icons.js` |
+| 通用 UI 命名 | 统一 **Lucide 命名**（`settings` / `eye` / `eye-closed` / `trash-2` / `x` / `chevron-down` / `panel-right` / `grid` …）；`layout` / `layout-free` / 默认布局文档（`layout/persist.js`、`layout/view-definitions.js`、`layout-free/config/defaultConfig.js`、`layout-free/utils/regions.js`）里的 `icon` 值**直接就是 Lucide 名** |
+| 图形来源 | Lucide **v0.544.0**（ISC）；**只提取 `<svg>` 内部图形**，套统一外壳 `viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap/linejoin="round"`；**不引入任何运行时依赖**（禁 `lucide-vue-next` / `lucide-static` 包） |
+| 历史别名 | `sunny→sun`、`moon-night→moon-star`、`split-square-*→square-split-*`、`unlock→lock-open`、`coin→coins`、`paste→clipboard-paste`、`grid→grid-3x3`、`filter→funnel`；**键名保留调用点既有写法**，图形一一对应 |
+| 业务专有图标 | 保留 1024×1024 `fill=currentColor`：`folder` / `folder-opened` / `document` / `think` / `effort` / `icon-llm` / `icon-other-tool` / `recent-dir` / `folder-tree` |
+| 未定义兜底 | `Icon.vue` 对未注册 name 渲染 `fallback`（默认 `·`，`opacity .45`，`title="未定义图标：<name>"`）并在 dev 下 `console.warn` 一次 —— **禁止**静默渲染为空白 |
+| 回归防线 | `src/frontend/test/iconRegistry.test.js`：静态扫描全仓 `<Icon\|LfIcon name="…">`、`icon: '…'`、`:name="'…'"`、`LfBarEditor.iconPresets`，任一名字不在 `icons.js` 即失败；并校验无重复键 / `viewBox` 合法 / 继承 `currentColor` |
+| 图标选择器 | `layout-free/components/icon/LfIconPicker.vue` = popup 面板 + 搜索，**每行固定 8 个**（单元格 30px），点击即选并收起；候选清单 = `Object.keys(icons)`（宿主经 `deps.iconNames` 注入），**不得**再内联 `icon-set.js` |
 

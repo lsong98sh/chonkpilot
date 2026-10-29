@@ -151,7 +151,7 @@ type Task struct {
 type TasktreeListRequest struct {
 	// InstanceID 实例 id（数据根由门面按它解析，调用方不构造路径，见 23 §7）。
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// TopSession 主会话 id（必填；空 → 由实现侧按请求 id 兜底）。
 	TopSession string `json:"top_session,omitempty"`
@@ -175,7 +175,7 @@ type TasktreeListResponse struct {
 type TasktreeTasksRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	// DialogID 对话 id（可选；空 = 跨对话库聚合全实例快照，61 §0.6 例外）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id（可选）。
 	SessionID string `json:"session_id,omitempty"`
@@ -199,7 +199,7 @@ type TasktreeTasksResponse struct {
 type TasktreeUpsertRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// Node 节点领域字段（ID 必填；NodeType 由实现侧按 Kind 推导，调用方无需自报）。
 	Node TaskNode `json:"node"`
@@ -219,7 +219,7 @@ type TasktreeUpsertResponse struct {
 type TasktreeDeleteRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（P3 路由；非空 → 只读写该对话库，空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// NodeID 要关闭的节点 id（必填）。
 	NodeID string `json:"node_id"`

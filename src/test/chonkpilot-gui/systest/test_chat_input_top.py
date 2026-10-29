@@ -60,6 +60,9 @@ def main():
         time.sleep(0.5)
 
         sid = 'input-top-1'
+        # 一树一库（默认 shard=on）：会话类读必须有 dialog_id → 先落会话行（根会话自举对话库），
+        # 否则 history 回 dialog_required（前端会弹「加载消息失败」且历史回填为空）。
+        gui.publish('data-session-ensure-session', {'data': {'session_id': sid}})
         install_session_history_spy(gui)  # 必须先装：记录本次切会话触发的 data-session-history 应答
         J(gui, "window.mq.emit('session-changed', {session_id: %s}); 'ok'" % json.dumps(sid))
         wait_session_history(gui, sid)  # 等历史回填落地再发（发送与历史回填交错会让气泡落点不可预期）

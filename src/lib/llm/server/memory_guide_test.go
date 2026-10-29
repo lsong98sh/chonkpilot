@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestMemoryGuideDynamicCategories：建自定义类别（data-memory-save）→ memoryGuide
@@ -133,7 +133,7 @@ func TestMemoryCategoryNamesFallback(t *testing.T) {
 	defer llm.Close()
 	s := newTestServer(t, llm)
 
-	got := s.memoryCategoryNames("ins-不存在")
+	got := s.memoryCategoryNames("ins-不存在", "")
 	want := persist.MemoryCategoryNames()
 	if len(got) != len(want) {
 		t.Fatalf("回落预置清单 = %v，want %v", got, want)
@@ -190,6 +190,34 @@ func TestMemoryGuideCategoryCache(t *testing.T) {
 	}
 }
 
+// TestMemoryGuideCacheProjectScoped（SCOPE-1）：类别清单是**项目级**事实 → 同一项目的两个窗口
+// 共用一份缓存（只取数一次）；不同项目各自一份（键 = 归一化 work_dir，不是 instance_id）。
+func TestMemoryGuideCacheProjectScoped(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+	// 第二个窗口：同一 work_dir（项目相同、实例不同）
+	_ = s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+		"instance_id": "ins-test-2", "client_type": "unittest", "work_dir": testWorkDir,
+	}))
+	time.Sleep(30 * time.Millisecond)
+	enableTestMemory(t, s)
+	count := countDataMemoryList(t, s)
+
+	s.memoryGuide("ins-test", testWorkDir)
+	s.memoryGuide("ins-test-2", testWorkDir) // 另一窗口、同一项目 → 命中同一缓存项
+	if got := count(); got != 1 {
+		t.Fatalf("同项目两窗口应共用缓存（请求次数 = %d，want 1）", got)
+	}
+
+	other := t.TempDir() // 另一项目 → 另一份缓存
+	s.memoryGuide("ins-test", other)
+	if got := count(); got != 2 {
+		t.Fatalf("不同项目应各取一次（请求次数 = %d，want 2）", got)
+	}
+}
+
 // TestMemoryGuideCacheInvalidation：收到 data-memory-refresh（既有主题）→ 缓存失效重新取数；
 // 超 TTL → 重新取数。
 func TestMemoryGuideCacheInvalidation(t *testing.T) {
@@ -216,10 +244,11 @@ func TestMemoryGuideCacheInvalidation(t *testing.T) {
 	}
 
 	// TTL 过期：把缓存项过期时刻拨到过去（等价 TTL 到期）→ 重新取数
+	key := projectKey(testWorkDir)
 	s.memCache.mu.Lock()
-	e := s.memCache.entries["ins-test"]
+	e := s.memCache.entries[key]
 	e.expires = time.Now().Add(-time.Second)
-	s.memCache.entries["ins-test"] = e
+	s.memCache.entries[key] = e
 	s.memCache.mu.Unlock()
 	s.memoryGuide("ins-test", testWorkDir)
 	if got := count(); got != 3 {

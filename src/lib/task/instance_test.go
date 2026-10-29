@@ -17,7 +17,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // scopedData 是**实例分库**的数据面桩（MW-T23）：行按 instance_id 分区；请求空 instance_id

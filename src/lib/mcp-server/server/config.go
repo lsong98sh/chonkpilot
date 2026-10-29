@@ -131,11 +131,13 @@ type Defaults struct {
 // Config 是 mcp-server 执行配置。
 // 注意：不承载执行器目录——契约 runtime（exe 型）按契约文件所在目录相对解析（resolveRuntime），
 // 解释器走 PATH；契约根由 RegisterContracts 的 root 参数指定（调用方/启动参数决定）。
+//
+// 2026-10-28（P2-3）：`Interpreters` 字段与 `CHONKPILOT_INTERPRETERS` 注入链已删除 ——
+// 脚本执行（`task_run`）随 task 插件，解释器配置归插件（`plugins.task.interpreter-*`）。
 type Config struct {
 	Root           string            `json:"root"`            // 契约扫描根
 	TimeoutSec     int               `json:"timeout_sec"`     // tools/call 执行超时（秒）
 	MaxConcurrency int               `json:"max_concurrency"` // 并发执行上限
-	Interpreters   map[string]string `json:"interpreters"`    // runtime → 解释器绝对路径（spawn executor 时注入 CHONKPILOT_INTERPRETERS，供 script_run 解析）
 	ChromePath     string            `json:"chrome_path"`     // 浏览器可执行文件路径（spawn 子进程注入环境变量 CHONK_CHROME）
 	// Toolchain 是能力原语 prompt/skill 文本里 {{toolchain.<key>}} 的取值表（key 见
 	// ToolchainKeys；装配层 instance-register 后由 usr 配置注入，见 chonkpilot-server
@@ -144,8 +146,9 @@ type Config struct {
 	Defaults  Defaults          `json:"defaults"`
 	// ToolAsync 是**工具级异步配置覆盖**（usr 键 `tool_async`，装配层读后注入；见
 	// chonkpilot-llm/server/server.go loadExecConfig）：key = tools/list 暴露名
-	// （内嵌 self 节点 = self_<契约名>；独立 exe = 契约名），value = 四档 mode + 可选
-	// threshold / hard_timeout。空表 = 全部按契约现值（默认行为不变）。
+	// （P0a 2026-10-29 起内置 self 节点 = 契约名，历史 `self_<契约名>` 键仍兼容；
+	// `servers/register` 下游且 namespace "-" = 契约名，如 core / 各插件 server），value = 四档
+	// mode + 可选 threshold / hard_timeout。空表 = 全部按契约现值（默认行为不变）。
 	ToolAsync map[string]ToolAsyncOverride `json:"-"`
 
 	// SkipTools（P6 2026-10-19）为 true 时 RegisterContracts 只注册资产（prompts/skills/resources），
@@ -192,7 +195,6 @@ func (c *Config) Apply(raw []byte) error {
 		Root           *string           `json:"root"`
 		TimeoutSec     *int              `json:"timeout_sec"`
 		MaxConcurrency *int              `json:"max_concurrency"`
-		Interpreters   map[string]string `json:"interpreters"`
 		ChromePath     *string           `json:"chrome_path"`
 		Toolchain      map[string]string `json:"toolchain"`
 		Defaults       *Defaults         `json:"defaults"`
@@ -213,9 +215,6 @@ func (c *Config) Apply(raw []byte) error {
 		if c.limiter != nil {
 			c.limiter.setLimit(*patch.MaxConcurrency)
 		}
-	}
-	if patch.Interpreters != nil {
-		c.Interpreters = patch.Interpreters
 	}
 	if patch.ChromePath != nil && *patch.ChromePath != "" {
 		c.ChromePath = *patch.ChromePath
@@ -240,7 +239,9 @@ func (c *Config) Apply(raw []byte) error {
 // SetRuntime 运行期覆盖执行配置（装配层在 instance-register 后注入 usr/prj 配置；
 // 见 36-配置 §3.1）：仅 >0 / 非空项生效，其余保留原值。
 // 加写锁，避免与 tools/call 的读取（defaultsMap/execTimeout/executorEnv）构成 data race。
-func (c *Config) SetRuntime(timeoutSec, maxConcurrency int, interpreters map[string]string, chromePath string, skipDirs []string) {
+//
+// 2026-10-28（P2-3）：解释器映射参数已删除（随 `script_run` → task 插件迁出）。
+func (c *Config) SetRuntime(timeoutSec, maxConcurrency int, chromePath string, skipDirs []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if timeoutSec > 0 {
@@ -251,9 +252,6 @@ func (c *Config) SetRuntime(timeoutSec, maxConcurrency int, interpreters map[str
 		if c.limiter != nil {
 			c.limiter.setLimit(maxConcurrency)
 		}
-	}
-	if len(interpreters) > 0 {
-		c.Interpreters = interpreters
 	}
 	if chromePath != "" {
 		c.ChromePath = chromePath
@@ -405,9 +403,9 @@ func (c *Config) toolAsyncOverride(name string) (ToolAsyncOverride, bool) {
 // 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 删 core / desktop / browser / dsl 四个 executor；
 // desktop/browser 改为常驻插件（非 executor，不在本表）。
 // 2026-10-25（PLUGIN-SPLIT-1）：file 域 11 工具随 file 插件迁出主仓 → 删 tools-executor。
+// 2026-10-28（P2-3）：脚本执行随 task 插件迁出主仓 → 删 script-executor。
 const (
-	ExecutorExeScript = "chonkpilot-script-executor.exe"
-	ExecutorExeWeb    = "chonkpilot-web-executor.exe"
+	ExecutorExeWeb = "chonkpilot-web-executor.exe"
 )
 
 // ToolSandboxConfig 是 agentbox 沙箱开关（usr 键 `tool_sandbox`，**管理单位 = 被 spawn 的执行体**）：
@@ -543,23 +541,9 @@ func (c *Config) chromeEnv() string {
 	return c.ChromePath
 }
 
-// interpretersJSON 返回 runtime → 解释器绝对路径的 JSON 串（空 = 不注入 CHONKPILOT_INTERPRETERS）。
-func (c *Config) interpretersJSON() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if len(c.Interpreters) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(c.Interpreters)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
 // defaultsMap 把默认配置转为注入 tools/call 的参数 map（仅非空）。
-// 说明（R-11 二次升级）：不再注入 _workdir/_datadir/_instance/_interpreters——实例上下文经
-// 调用上下文（协议 _meta）传递，解释器经 spawn executor 的子进程环境 CHONKPILOT_INTERPRETERS 传递。
+// 说明（R-11 二次升级）：不再注入 _workdir/_datadir/_instance——实例上下文经
+// 调用上下文（协议 _meta）传递。
 func (c *Config) defaultsMap() map[string]any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -578,12 +562,13 @@ func (c *Config) defaultsMap() map[string]any {
 
 // executorEnv 组装 spawn executor 的子进程环境：继承宿主环境（剔除残留的 CHONKPILOT_* 上下文与
 // 宿主 CHONK_CHROME，避免泄漏第三方/上层上下文或与本次注入形成重复键）→ 注入本次调用的
-// CHONKPILOT_INSTANCE/WORKDIR/DATADIR + 配置型 CHONKPILOT_INTERPRETERS / CHONK_CHROME。
+// CHONKPILOT_INSTANCE/WORKDIR/DATADIR + 配置型 CHONK_CHROME。
 // **仅内部 executor 进程可见**（第三方 MCP server 不经我们 spawn，拿不到）。
 //
 // 2026-10-21（L3）：meta/domain 控制面工具已进程内执行（toolmeta），其会话/轮次/call id /
-// purpose / 任务树 / 插件桥地址令牌不再需要注入子进程，故只保留 script/web 两个 executor
-// 所需内容（instance/workdir/datadir/解释器/chrome）。
+// purpose / 任务树 / 插件桥地址令牌不再需要注入子进程，故只保留 web executor 所需内容
+// （instance/workdir/datadir/chrome）。2026-10-28（P2-3）：脚本执行（`task_run`）随 task 插件，
+// `CHONKPILOT_INTERPRETERS` 注入链删除（解释器配置归插件）。
 func (c *Config) executorEnv(cx CallContext) []string {
 	base := os.Environ()
 	out := make([]string, 0, len(base)+8)
@@ -614,7 +599,6 @@ func (c *Config) executorEnv(cx CallContext) []string {
 	add("CHONKPILOT_INSTANCE", cx.InstanceID)
 	add("CHONKPILOT_WORKDIR", cx.WorkDir)
 	add("CHONKPILOT_DATADIR", cx.DataDir)
-	add("CHONKPILOT_INTERPRETERS", c.interpretersJSON())
 	add("CHONK_CHROME", chrome)
 	return out
 }
@@ -638,7 +622,6 @@ func (c *Config) SetBridge(addr, token string) {
 type RuntimeConfig struct {
 	TimeoutSec     int                          `json:"timeout_sec"`
 	MaxConcurrency int                          `json:"max_concurrency"`
-	Interpreters   map[string]string            `json:"interpreters,omitempty"`
 	ChromePath     string                       `json:"chrome_path,omitempty"`
 	SkipDirs       []string                     `json:"skip_dirs,omitempty"`
 	ToolAsync      map[string]ToolAsyncOverride `json:"tool_async,omitempty"`
@@ -657,9 +640,6 @@ func (c *Config) ApplyRuntime(rc RuntimeConfig) {
 		if c.limiter != nil {
 			c.limiter.setLimit(rc.MaxConcurrency)
 		}
-	}
-	if rc.Interpreters != nil {
-		c.Interpreters = rc.Interpreters
 	}
 	if rc.ChromePath != "" {
 		c.ChromePath = rc.ChromePath
@@ -680,7 +660,6 @@ func (c *Config) RuntimeSnapshot() RuntimeConfig {
 	return RuntimeConfig{
 		TimeoutSec:     c.TimeoutSec,
 		MaxConcurrency: c.MaxConcurrency,
-		Interpreters:   c.Interpreters,
 		ChromePath:     c.ChromePath,
 		SkipDirs:       c.Defaults.SkipDirs,
 		ToolAsync:      c.ToolAsync,

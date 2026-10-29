@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // probeRec 记录探活 stub 收到的请求（body / Authorization / path）。

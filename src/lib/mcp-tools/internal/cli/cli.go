@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/contractmd"
-	"github.com/chonkpilot/chonkpilot-lib/paths"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/contractmd"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/paths"
 )
 
 // maxOutputBytes content 模式输出上限（超限写临时文件）。

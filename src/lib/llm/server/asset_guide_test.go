@@ -42,7 +42,7 @@ func TestAssetGuideGatedByKnowledgeBase(t *testing.T) {
 	tc := &turnCtx{server: s}
 	tc.req.InstanceID = "ins-kb"
 	tc.req.Turn = "t-rb7"
-	msgs := tc.msgs()
+	msgs := tc.assembly().Context.Messages
 	found := false
 	for _, m := range msgs {
 		if m.Role == "system" && strings.Contains(m.Content, "知识库资产") {

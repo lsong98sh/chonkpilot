@@ -1,22 +1,16 @@
 // 【简化态原文】构造（口径 X ②，2026-09-25）。
 //
-// 2026-10-24（Persist Provider）：内核版 `BriefMessages` 的唯一实现已内化到
-// `chonkpilot-session`（组件与数据面同源），本文件转发内核版 + 保留门面 DTO 版。
+// 2026-10-24（Persist Provider）：内核 `ChatMsg` 版的唯一实现已内化到
+// `chonkpilot-session`（组件侧直接调用），本文件只保留门面 DTO 版。
 package data
 
 import (
 	"strings"
 
-	"github.com/lsong98sh/chonkpilot-session"
-
 	"github.com/chonkpilot/chonkpilot-data/facade"
 )
 
-// BriefMessages 构造一段消息的【简化态原文】（内核 `ChatMsg`；组装侧用）。
-// 只返回新切片（不修改入参元素），保证历史 / 快照不被污染。
-func BriefMessages(msgs []ChatMsg) []ChatMsg { return session.BriefMessages(msgs) }
-
-// BriefFacadeMessages 同 BriefMessages（门面 DTO；压缩侧用）——**同一构造规则**。
+// BriefFacadeMessages 构造门面 DTO 消息的【简化态原文】（压缩侧用）；与内核版同一构造规则。
 // 只返回新切片（不修改入参元素）。
 func BriefFacadeMessages(msgs []facade.Message) []facade.Message {
 	out := make([]facade.Message, 0, len(msgs))

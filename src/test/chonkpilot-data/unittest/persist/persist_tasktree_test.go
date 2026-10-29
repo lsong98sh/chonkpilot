@@ -1,6 +1,6 @@
 // data-tasktree-* 消息面测试（B 类随迁）：list/tasks/delete（级联 + 索引桶清理 + task-deleted 事件）。
 // 外部模块黑盒（package persist_test）：经 persist.New/Start/Stop + 总线 data-* 主题驱动；
-// 种子落库经 data.Prj 直连（regInstance 已 data.Register）。
+// **一树一库**：种子落对话库，请求一律带 `dialog_id`，断言直读同一对话库句柄。
 package persist_test
 
 import (
@@ -9,40 +9,38 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
-// seedTasktree 造任务树：n1(llm/running, top1) → n2(tool/done)。
-func seedTasktree(t *testing.T, bus mq.Bus) *data.DB {
+// seedTasktree 造任务树：n1(llm/running, top1) → n2(tool/done)；返回 dialog_id 与库句柄。
+func seedTasktree(t *testing.T, bus mq.Bus) (string, *data.DB) {
 	t.Helper()
 	regInstance(t, bus)
-	prj, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	dialogID, db := newDialog(t, "ins-test", "s1")
 	now := time.Now().UTC().Format(time.RFC3339)
-	_ = prj.Table("tasktree").Upsert("n1", data.Record{
+	_ = db.Table("tasktree").Upsert("n1", data.Record{
 		"node_id": "n1", "session_id": "s1", "top_session": "top1",
 		"parent_node_id": "", "kind": "llm", "status": "running",
 		"title": "根任务", "created_at": now,
 	})
-	_ = prj.Table("tasktree").Upsert("n2", data.Record{
+	_ = db.Table("tasktree").Upsert("n2", data.Record{
 		"node_id": "n2", "session_id": "s1", "top_session": "top1",
 		"parent_node_id": "n1", "kind": "tool", "status": "done",
 		"title": "子工具", "created_at": now,
 		"tool_call_id": "tc-n2", // I-97：tasks 视图须带 tool_call_id（供按 tool_call_id 定位/取消）
 	})
 	// 索引桶由 Table 写入口同事务维护（indexes.go），无需手工播种。
-	return prj
+	return dialogID, db
 }
 
 // TestDataTasktreeListTasks：list（含 mode=init 存活过滤）与 tasks（快照数组）。
 func TestDataTasktreeListTasks(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
-	seedTasktree(t, bus)
+	dialogID, _ := seedTasktree(t, bus)
 
 	r := dataCall(t, bus, "data-tasktree-list", map[string]any{
-		"req_id": "r1", "instance_id": "ins-test", "data": map[string]any{"top_session": "top1"},
+		"req_id": "r1", "instance_id": "ins-test",
+		"data": map[string]any{"top_session": "top1", "dialog_id": dialogID},
 	})
 	nodes, _ := dataResult(t, r)["nodes"].([]any)
 	if len(nodes) != 2 {
@@ -51,7 +49,8 @@ func TestDataTasktreeListTasks(t *testing.T) {
 
 	// init：仅 llm + running
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
-		"req_id": "r2", "instance_id": "ins-test", "data": map[string]any{"top_session": "top1", "mode": "init"},
+		"req_id": "r2", "instance_id": "ins-test",
+		"data": map[string]any{"top_session": "top1", "mode": "init", "dialog_id": dialogID},
 	})
 	nodes, _ = dataResult(t, r)["nodes"].([]any)
 	if len(nodes) != 1 {
@@ -63,7 +62,8 @@ func TestDataTasktreeListTasks(t *testing.T) {
 
 	// tasks：session 过滤 → 快照
 	r = dataCall(t, bus, "data-tasktree-tasks", map[string]any{
-		"req_id": "r3", "instance_id": "ins-test", "data": map[string]any{"session_id": "s1"},
+		"req_id": "r3", "instance_id": "ins-test",
+		"data": map[string]any{"session_id": "s1", "dialog_id": dialogID},
 	})
 	list, _ := dataResult(t, r)["list"].([]any)
 	if len(list) != 2 {
@@ -82,13 +82,10 @@ func TestDataTasktreeListTasks(t *testing.T) {
 func TestDataTasktreeTasksAwaiting(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
-	prj, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	dialogID, db := newDialog(t, "ins-test", "s-aw")
 	now := time.Now().UTC().Format(time.RFC3339)
 	// aw1：待裁决（state=awaiting + exec_json.detail 含 timeout_s/options）→ 须输出 awaiting
-	_ = prj.Table("tasktree").Upsert("aw1", data.Record{
+	_ = db.Table("tasktree").Upsert("aw1", data.Record{
 		"node_id": "aw1", "session_id": "s-aw", "top_session": "top-aw", "kind": "tool",
 		"status": "running", "state": "awaiting", "title": "慢工具", "created_at": now,
 		"tool_call_id": "tc-aw",
@@ -96,21 +93,22 @@ func TestDataTasktreeTasksAwaiting(t *testing.T) {
 			`"detail":{"mode":"manual","timeout_s":30,"options":["detach","cancel"]}}`,
 	})
 	// run1：非 awaiting（state=running）+ exec_json 有明细 → 不得输出 awaiting
-	_ = prj.Table("tasktree").Upsert("run1", data.Record{
+	_ = db.Table("tasktree").Upsert("run1", data.Record{
 		"node_id": "run1", "session_id": "s-aw", "top_session": "top-aw", "kind": "tool",
 		"status": "running", "state": "running", "title": "在飞工具", "created_at": now,
 		"tool_call_id": "tc-run",
 		"exec_json":    `{"phase":"started","detail":{"timeout_s":30,"options":["wait","cancel"]}}`,
 	})
 	// det1：awaiting 但 exec_json 无 options → 不输出（存在即带）
-	_ = prj.Table("tasktree").Upsert("det1", data.Record{
+	_ = db.Table("tasktree").Upsert("det1", data.Record{
 		"node_id": "det1", "session_id": "s-aw", "top_session": "top-aw", "kind": "tool",
 		"status": "running", "state": "awaiting", "title": "无选项", "created_at": now,
 		"exec_json": `{"phase":"awaiting","detail":{"timeout_s":9}}`,
 	})
 
 	r := dataCall(t, bus, "data-tasktree-tasks", map[string]any{
-		"req_id": "r1", "instance_id": "ins-test", "data": map[string]any{"session_id": "s-aw"},
+		"req_id": "r1", "instance_id": "ins-test",
+		"data": map[string]any{"session_id": "s-aw", "dialog_id": dialogID},
 	})
 	list, _ := dataResult(t, r)["list"].([]any)
 	if len(list) != 3 {
@@ -149,7 +147,7 @@ func TestDataTasktreeTasksAwaiting(t *testing.T) {
 // list/tasks 默认过滤 closed，带 include_closed 时可见。
 func TestDataTasktreeDelete(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
-	seedTasktree(t, bus)
+	dialogID, db := seedTasktree(t, bus)
 
 	// 订阅 task-deleted（persist 逻辑删除后广播；server onTaskTreeDeleted 同款监听）
 	ev := make(chan map[string]any, 1)
@@ -167,7 +165,7 @@ func TestDataTasktreeDelete(t *testing.T) {
 	}
 
 	r := dataCall(t, bus, "data-tasktree-delete", map[string]any{
-		"req_id": "r1", "instance_id": "ins-test", "id": "n1",
+		"req_id": "r1", "instance_id": "ins-test", "id": "n1", "dialog_id": dialogID,
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("delete failed: %+v", r)
@@ -187,10 +185,9 @@ func TestDataTasktreeDelete(t *testing.T) {
 	}
 
 	// 逻辑删除：行仍在库 + closed/deleted_at 标记（级联子树 n1 → n2 同样标记）
-	prj, _ := data.PrjUsr("ins-test")
 	for _, id := range []string{"n1", "n2"} {
 		var rec data.Record
-		ok, _ := prj.Table("tasktree").Get(id, &rec)
+		ok, _ := db.Table("tasktree").Get(id, &rec)
 		if !ok {
 			t.Fatalf("node %s 被物理删除（应逻辑删除保留历史）", id)
 		}
@@ -202,25 +199,27 @@ func TestDataTasktreeDelete(t *testing.T) {
 		}
 	}
 	// 索引随主行维护：逻辑删除保留行 → 索引键仍在（by_parent 键 = "<父>\x00<子>"）
-	if keys, _ := prj.Table("tasktree_by_parent").ListPrefix("n1\x00"); len(keys) != 1 {
+	if keys, _ := db.Table("tasktree_by_parent").ListPrefix("n1\x00"); len(keys) != 1 {
 		t.Fatalf("逻辑删除保留行 → 索引键应保留: %v", keys)
 	}
 	// 视图过滤 closed：默认 list/tasks 不再返回；include_closed=true → 可见（历史可查）
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
-		"req_id": "r2", "instance_id": "ins-test", "data": map[string]any{"top_session": "top1"},
+		"req_id": "r2", "instance_id": "ins-test",
+		"data": map[string]any{"top_session": "top1", "dialog_id": dialogID},
 	})
 	if nodes, _ := dataResult(t, r)["nodes"].([]any); len(nodes) != 0 {
 		t.Fatalf("关闭后 list 应过滤 closed: %+v", nodes)
 	}
 	r = dataCall(t, bus, "data-tasktree-tasks", map[string]any{
-		"req_id": "r3", "instance_id": "ins-test", "data": map[string]any{"top_session": "top1"},
+		"req_id": "r3", "instance_id": "ins-test",
+		"data": map[string]any{"top_session": "top1", "dialog_id": dialogID},
 	})
 	if list, _ := dataResult(t, r)["list"].([]any); len(list) != 0 {
 		t.Fatalf("关闭后 tasks 应过滤 closed: %+v", list)
 	}
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
 		"req_id": "r4", "instance_id": "ins-test",
-		"data": map[string]any{"top_session": "top1", "include_closed": true},
+		"data": map[string]any{"top_session": "top1", "include_closed": true, "dialog_id": dialogID},
 	})
 	nodes, _ := dataResult(t, r)["nodes"].([]any)
 	if len(nodes) != 2 {
@@ -234,13 +233,10 @@ func TestDataTasktreeDelete(t *testing.T) {
 func TestDataTasktreeDeleteMultiLevelCascade(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
-	prj, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	dialogID, db := newDialog(t, "ins-test", "s1")
 	now := time.Now().UTC().Format(time.RFC3339)
 	put := func(id, parent, top string) {
-		_ = prj.Table("tasktree").Upsert(id, data.Record{
+		_ = db.Table("tasktree").Upsert(id, data.Record{
 			"node_id": id, "session_id": "s-" + top, "top_session": top,
 			"parent_node_id": parent, "kind": "tool", "status": "done", "created_at": now,
 		})
@@ -256,14 +252,14 @@ func TestDataTasktreeDeleteMultiLevelCascade(t *testing.T) {
 	put("o2", "o1", "top1")
 
 	r := dataCall(t, bus, "data-tasktree-delete", map[string]any{
-		"req_id": "r1", "instance_id": "ins-test", "node_id": "r1",
+		"req_id": "r1", "instance_id": "ins-test", "node_id": "r1", "dialog_id": dialogID,
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("delete failed: %+v", r)
 	}
 	closedOf := func(id string) bool {
 		var rec data.Record
-		ok, _ := prj.Table("tasktree").Get(id, &rec)
+		ok, _ := db.Table("tasktree").Get(id, &rec)
 		if !ok {
 			t.Fatalf("节点 %s 被物理删除（应逻辑删除保留行）", id)
 		}
@@ -282,7 +278,8 @@ func TestDataTasktreeDeleteMultiLevelCascade(t *testing.T) {
 	}
 	// 跨 top_session 后代已关闭 → list(top2) 默认过滤后为空
 	r = dataCall(t, bus, "data-tasktree-list", map[string]any{
-		"req_id": "r2", "instance_id": "ins-test", "data": map[string]any{"top_session": "top2"},
+		"req_id": "r2", "instance_id": "ins-test",
+		"data": map[string]any{"top_session": "top2", "dialog_id": dialogID},
 	})
 	if nodes, _ := dataResult(t, r)["nodes"].([]any); len(nodes) != 0 {
 		t.Fatalf("跨 top_session 后代应已关闭并被过滤: %+v", nodes)
@@ -295,13 +292,10 @@ func TestDataTasktreeDeleteMultiLevelCascade(t *testing.T) {
 func TestDataTasktreeDeleteCycleGuard(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
-	prj, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	dialogID, db := newDialog(t, "ins-test", "s1")
 	now := time.Now().UTC().Format(time.RFC3339)
 	put := func(id, parent string) {
-		_ = prj.Table("tasktree").Upsert(id, data.Record{
+		_ = db.Table("tasktree").Upsert(id, data.Record{
 			"node_id": id, "session_id": "s1", "top_session": "top1",
 			"parent_node_id": parent, "kind": "tool", "status": "done", "created_at": now,
 		})
@@ -312,14 +306,14 @@ func TestDataTasktreeDeleteCycleGuard(t *testing.T) {
 
 	// 环删除：若不终止，dataCall 会 3s 超时失败
 	r := dataCall(t, bus, "data-tasktree-delete", map[string]any{
-		"req_id": "r1", "instance_id": "ins-test", "node_id": "c1",
+		"req_id": "r1", "instance_id": "ins-test", "node_id": "c1", "dialog_id": dialogID,
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("环删除 failed: %+v", r)
 	}
 	for _, id := range []string{"c1", "c2"} {
 		var rec data.Record
-		if ok, _ := prj.Table("tasktree").Get(id, &rec); !ok {
+		if ok, _ := db.Table("tasktree").Get(id, &rec); !ok {
 			t.Fatalf("环节点 %s 被物理删除", id)
 		}
 		if c, _ := rec["closed"].(bool); !c {
@@ -328,13 +322,13 @@ func TestDataTasktreeDeleteCycleGuard(t *testing.T) {
 	}
 	// 自环删除：同样须终止
 	r = dataCall(t, bus, "data-tasktree-delete", map[string]any{
-		"req_id": "r2", "instance_id": "ins-test", "node_id": "s1",
+		"req_id": "r2", "instance_id": "ins-test", "node_id": "s1", "dialog_id": dialogID,
 	})
 	if ok, _ := dataResult(t, r)["ok"].(bool); !ok {
 		t.Fatalf("自环删除 failed: %+v", r)
 	}
 	var rec data.Record
-	if ok, _ := prj.Table("tasktree").Get("s1", &rec); !ok || rec["closed"] != true {
+	if ok, _ := db.Table("tasktree").Get("s1", &rec); !ok || rec["closed"] != true {
 		t.Fatalf("自环节点 s1 未被关闭: %+v", rec)
 	}
 }

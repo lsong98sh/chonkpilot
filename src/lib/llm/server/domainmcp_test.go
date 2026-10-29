@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // newTestServerMCP 建真实内嵌 MCP 栈的测试环境（无 fakeGateway；MCPServerRoot 注入临时空目录
@@ -25,7 +25,6 @@ func newTestServerMCP(t *testing.T, llmSrv *httptest.Server) *Server {
 	data.Reset()
 	testWorkDir = t.TempDir()
 	t.Cleanup(func() { testWorkDir = "" })
-	disableSessionShardForTest(t, testWorkDir) // 本组用例直读旧布局（会话/消息断言）
 	bus, err := mq.New(mq.Options{Prefix: testBusPrefix})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
@@ -34,7 +33,6 @@ func newTestServerMCP(t *testing.T, llmSrv *httptest.Server) *Server {
 
 	s := New(bus, Options{LLMBase: llmSrv.URL, LLMModel: "mock",
 		MCPServerRoot: t.TempDir(), UsrPath: t.TempDir() + "/usr.db"}) // DisableMCP=false → 内嵌
-	s.locksDir = t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	if err := s.Start(ctx); err != nil {
@@ -54,7 +52,6 @@ func newTestServerMCPAppRoot(t *testing.T, llmSrv *httptest.Server, appRoot stri
 	data.Reset()
 	testWorkDir = t.TempDir()
 	t.Cleanup(func() { testWorkDir = "" })
-	disableSessionShardForTest(t, testWorkDir) // 同上：旧布局断言
 	bus, err := mq.New(mq.Options{Prefix: testBusPrefix})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
@@ -63,7 +60,6 @@ func newTestServerMCPAppRoot(t *testing.T, llmSrv *httptest.Server, appRoot stri
 
 	s := New(bus, Options{LLMBase: llmSrv.URL, LLMModel: "mock",
 		MCPServerRoot: appRoot, UsrPath: t.TempDir() + "/usr.db"})
-	s.locksDir = t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	if err := s.Start(ctx); err != nil {
@@ -88,8 +84,8 @@ func TestEmbeddedGatewayDomainToolsHot(t *testing.T) {
 	want := map[string]bool{}
 	for _, d := range defs {
 		if d.Hot {
-			// 2026-09-07 list 全量后暴露名带能力源前缀（self_*，gateway self 节点 entry.ID 前缀）；
-			// 断言按原始契约名归一（ask_user/... = self_ 前缀剥离）。
+			// P0a 2026-10-29：暴露名 = 原名（内置 self 节点不再加前缀）；TrimPrefix 仅为兼容
+			// 存量历史名（本轮已不再产生 self_*）。
 			want[strings.TrimPrefix(d.Name, "self_")] = true
 		}
 	}
@@ -159,8 +155,8 @@ func keysOf(m map[string]ToolDef) []string {
 func TestEmbeddedGatewayTaskToolTurn(t *testing.T) {
 	// 预建一个已 done 的 server 任务节点（tool_result 按其 id 取结果文本）。
 	var taskID string
-	// 自建 responder：第一回合 tool_call 用内嵌 gateway 暴露名（self_tool_result，
-	// 2026-09-07 self 节点 entry.ID 前缀；LLM 只见提交 defs 的暴露名）；
+	// 自建 responder：第一回合 tool_call 用内嵌 gateway 暴露名（tool_result，P0a 2026-10-29 起 =
+	// 契约名；LLM 只见提交 defs 的暴露名）；
 	// 第二回合（含工具结果）返回含节点结果摘要的文本（complete 文本断言）。
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -179,7 +175,7 @@ func TestEmbeddedGatewayTaskToolTurn(t *testing.T) {
 				sseChunk(map[string]any{"content": ""}, ""),
 				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-tr", "type": "function",
-					"function": map[string]any{"name": "self_tool_result", "arguments": string(args)},
+					"function": map[string]any{"name": "tool_result", "arguments": string(args)},
 				}}}, "tool_calls"),
 			})
 			return

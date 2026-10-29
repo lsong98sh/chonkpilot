@@ -105,15 +105,13 @@ const tabs = computed(() => [
   { label: t('config.llm.tabDefaults'), name: 'defaults' },
 ])
 
-// 子系统默认模型（SL-5，40-演进计划 §SL · 64-配置项一览 §3）：5 个 usr 键，值类型 llmref
+// 子系统默认模型（SL-5，40-演进计划 §SL · 64-配置项一览 §3）：3 个 usr 键，值类型 llmref
 // （provider name；'' = 回落 defaultLLM，数据层读侧已补）。
-// analysis / decision = **预留位**（后端未实现、暂无消费方）→ 标「备用」，仍保持可配置（不加禁用）。
+// 2026-10-25：analysis / decision 预留键移除（后端零消费方）。
 const subsystems = [
   { key: 'llm.promptOptimise', labelKey: 'config.llm.promptOptimise' },
   { key: 'llm.memory', labelKey: 'config.llm.memory' },
   { key: 'llm.compress', labelKey: 'config.llm.compress' },
-  { key: 'llm.analysis', labelKey: 'config.llm.analysis', standby: true },
-  { key: 'llm.decision', labelKey: 'config.llm.decision', standby: true },
 ]
 
 const llmColumns = computed(() => [

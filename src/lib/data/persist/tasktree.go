@@ -18,7 +18,7 @@ func (s *Service) handleTasktree(action string, payload []byte) {
 	case "list":
 		var p TasktreeListPayload
 		if err := json.Unmarshal(payload, &p); err != nil {
-			s.failID(method, p.ReqID, err)
+			s.failDecode(method, payload, err)
 			return
 		}
 		m := p.merged()
@@ -42,7 +42,7 @@ func (s *Service) handleTasktree(action string, payload []byte) {
 	case "tasks":
 		var p TasktreeTasksPayload
 		if err := json.Unmarshal(payload, &p); err != nil {
-			s.failID(method, p.ReqID, err)
+			s.failDecode(method, payload, err)
 			return
 		}
 		q := p.fields()
@@ -62,7 +62,7 @@ func (s *Service) handleTasktree(action string, payload []byte) {
 	case "upsert": // A3 运行时扩展（P2 起 = 任务层唯一写入路径）
 		var p TasktreeUpsertPayload
 		if err := json.Unmarshal(payload, &p); err != nil {
-			s.failID(method, p.ReqID, err)
+			s.failDecode(method, payload, err)
 			return
 		}
 		node, dialogID := p.merged()
@@ -82,7 +82,7 @@ func (s *Service) handleTasktree(action string, payload []byte) {
 	case "delete":
 		var p TasktreeDeletePayload
 		if err := json.Unmarshal(payload, &p); err != nil {
-			s.failID(method, p.ReqID, err)
+			s.failDecode(method, payload, err)
 			return
 		}
 		f := p.merged()

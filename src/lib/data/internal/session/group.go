@@ -115,11 +115,11 @@ func groupParticipantsLoad(db *data.DB, sessionID string) ([]facade.GroupPartici
 // 出现者写入）。Seq 按 list 顺序重新赋值（1 基）—— 名单顺序 = 入参顺序（D3 固定顺序，
 // 权威且无歧义；入参携带的 Seq 被忽略）。重复 Agent 按首现保留。
 //
-// 事务口径（与 prj `security-*` 的「逐条 upsert + 删除已移除条目」同口径）：逐个键 Upsert/Delete
-// 各自独立事务（Bolt 单文件写事务串行）；本操作**幂等**，中途失败重跑即收敛，无"半个名单"可观测
-// 语义（读方每次读到的是某一时刻的名单快照，而非跨事务的中间态拼装）。
+// 事务口径（F-5，DATA-OPT-1 P4）：原实现「逐键 Delete + 逐键 Get + 逐键 Upsert」= O(3N) 次
+// **独立写事务**；现收敛为**单个写事务**（前缀读 + 批删 + 批量写全在 tx 内）。成功路径结果
+// 逐项不变（仅删本会话不再出现的项 / 已存在行保留原 created_at / Seq = 列表位置 + 1），
+// 且不再是「逐行可观测的中间态」——失败整体回滚。
 func groupParticipantsReplace(db *data.DB, sessionID string, list []facade.GroupParticipant) error {
-	t := db.Table(groupParticipantsBucket)
 	seen := make(map[string]bool, len(list))
 	roles := make(map[string]string, len(list))
 	order := make([]string, 0, len(list))
@@ -132,43 +132,46 @@ func groupParticipantsReplace(db *data.DB, sessionID string, list []facade.Group
 		roles[agent] = p.Role
 		order = append(order, agent)
 	}
-	// 先删不再出现的旧项（按前缀 Seek 只扫本会话）。
 	prefix := sessionID + groupKeySep
-	keys, err := t.ListPrefix(prefix)
-	if err != nil {
-		return err
-	}
 	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	for _, k := range keys {
-		if seen[strings.TrimPrefix(k, prefix)] {
-			continue
-		}
-		if err := t.Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
+	return db.Update(func(tx *data.Tx) error {
+		// 先读本会话既有行（前缀 Seek，只扫本会话区段）：保留 still-present 项的 created_at，
+		// 其余键待删。
+		existing := make(map[string]string, len(order))
+		var toDelete []string
+		if err := tx.ForEachPrefix(groupParticipantsBucket, prefix, func(k string, rec data.Record) error {
+			agent := strings.TrimPrefix(k, prefix)
+			if seen[agent] {
+				existing[agent] = kernel.Sval(rec["created_at"])
+				return nil
+			}
+			toDelete = append(toDelete, k)
+			return nil
+		}); err != nil {
 			return err
 		}
-	}
-	// 再写入目标名单（Seq = 列表位置 + 1）。
-	for i, agent := range order {
-		key := groupParticipantKey(sessionID, agent)
-		createdAt := now
-		// 已存在的行保留原 created_at（名册项「首次加入时间」不为重写所动）。
-		var old data.Record
-		if ok, err := t.Get(key, &old); err != nil {
-			return err
-		} else if ok {
-			if v := kernel.Sval(old["created_at"]); v != "" {
-				createdAt = v
+		for _, k := range toDelete {
+			if err := tx.Delete(groupParticipantsBucket, k); err != nil && !errors.Is(err, data.ErrNotFound) {
+				return err
 			}
 		}
-		rec := data.Record{
-			"session_id": sessionID, "agent": agent, "role": roles[agent],
-			"seq": i + 1, "created_at": createdAt,
+		// 再写入目标名单（Seq = 列表位置 + 1；created_at 沿用既有行，updated_at 恒为本次写入时刻）。
+		for i, agent := range order {
+			key := groupParticipantKey(sessionID, agent)
+			createdAt := existing[agent]
+			if createdAt == "" {
+				createdAt = now
+			}
+			rec := data.Record{
+				"session_id": sessionID, "agent": agent, "role": roles[agent],
+				"seq": i + 1, "created_at": createdAt, "updated_at": now,
+			}
+			if err := tx.Put(groupParticipantsBucket, key, rec); err != nil {
+				return err
+			}
 		}
-		if err := t.Upsert(key, rec); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // ── ② 每大轮次的投递对象 ─────────────────────────────────────────────

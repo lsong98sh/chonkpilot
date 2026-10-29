@@ -1,7 +1,7 @@
 # ChonkPilot 规格文档集（docs/spec）
 
 > 状态：✅ **正式规格唯一入口**（全目录收敛、补缺口）
-> 规模：`00-overview/`(4) · `10-architecture/`(17) · `20-modules/`(16) · `30-function-points/`(11, 146 FP) · `40-roadmap/`(4) · `50-testing/`(4) · `60-reference/`(5) · `70-conventions/`(3) · `_templates/`(3)
+> 规模：`00-overview/`(4) · `10-architecture/`(17) · `20-modules/`(16) · `30-function-points/`(11, 146 FP) · `40-roadmap/`(4) · `50-testing/`(4) · `60-reference/`(5) · `70-conventions/`(4) · `_templates/`(3)
 > 收敛：原 `docs/` 下全部草稿与专题**已整体废弃移除**；消息面唯一准则 = [61-消息一览](60-reference/61-消息一览.md)（原「消息面参考」稿已并入）。
 > **硬性规则**：**本目录不得引用 `docs/spec/` 以外的任何文档**（含历史稿与 IDE 侧规则；链接/路径/文件名均不得出现）。**引用源码 / 脚本 / 配置路径不受限**——那是定位，不是文档依赖。需要的外部内容必须先迁入本目录对应篇章，再做目录内互链。决策与迁移台账见 [42-决策记录](40-roadmap/42-决策记录.md) §3/§4。
 >
@@ -11,12 +11,10 @@
 > |---|---|
 > | `src/lib`（dsl / mq / paths / winlog / winsvc；module `chonkpilot-lib`） | `src/lib/core` |
 > | `src/data` · `src/filesys` · `src/llm` · `src/gateway` · `src/mcp-server` · `src/mcp-tools` · `src/task` | `src/lib/{data,filesys,llm,gateway,mcp-server,mcp-tools,task}` |
-> | `src/gui/lib/go-webview2` | `src/lib/go-webview2` |
-> | `src/plugin-<name>`（含 `plugin/instance`） | `src/plugins/plugin-<name>` |
-> | `src/codegraph`（引擎 exe） | `src/plugins/codegraph` |
-> | `src/vfts`（引擎 exe） | `src/plugins/vfts` |
-> | `src/cli` | `src/desktop/cli` |
-> | `src/standalone`（桌面单体宿主） | `src/desktop`（壳） + `src/lib/gui`（实现） |
+> | `src/lib/go-webview2` | **独立仓 `chonkpilot-webview2`**（2026-10-25 剥离；本地克隆与主仓同级，`replace` 指向） |
+> | `src/plugin-<name>`（含 `plugin/instance`） | `src/plugins/plugin-<name>`（**历史**：`src/plugins/` 已整体迁出 → 同级仓 `chonkpilot-plugins/<name>/`） |
+> | `src/codegraph`（引擎 exe） | `src/plugins/codegraph`（**历史** → `chonkpilot-plugins/codegraph`） |
+> | `src/vfts`（引擎 exe） | `src/plugins/vfts`（**历史** → `chonkpilot-plugins/codegraph/engines/vfts`） |
 >
 > **可直接执行**的路径（测试/构建命令、脚本与用例文件）已**就地订正**，见 [50 §5.1–§5.3](50-testing/50-测试体系.md) · [51](50-testing/51-FP与测试映射.md) · [52](50-testing/52-test-port驱动.md) · [29 §10](20-modules/29-codegraph.md) · [28](20-modules/28-plugins.md) · [71 §1.3/§5.2](70-conventions/71-编程规范.md) · [64](60-reference/64-配置项一览.md)；[42](40-roadmap/42-决策记录.md) §2 / [41](40-roadmap/41-未决项登记.md) §2–§3 属**历史行**，按上表阅读。
 
@@ -57,15 +55,15 @@ docs/spec/
 │   ├── 11-MQ与消息.md
 │   ├── 12-数据层.md
 │   ├── 13-生命周期.md                 进程启动/关闭、会话/turn 生命周期
-│   ├── 14-安全域-agentbox.md          信任目录 / 沙箱 / 路径约束（🔵 规划）
+│   ├── 14-安全域-agentbox.md          信任目录 / 沙箱 / 路径约束（正文历史；现行 Low IL）
 │   ├── 15-国际化.md                   i18n 机制与命名空间
 │   ├── 16-路径解析规范.md             目录字符串解析的唯一规范
 │   ├── 17-前端状态与MQ.md             前端状态管理（composable / 事件链）规范
 │   ├── 18-工具异步超时与取消.md        工具异步 / 超时 / 取消的控制面统一方案（🔵 待拍板）
-│   ├── 19-多租户服务端形态.md          多租户服务端形态 `-browser`（🔵 待拍板）
-│   ├── 20-实例隔离与后端分离.md        按 instance 管理执行池（`execPool`）+ 后端分离方向 / 隔离缺口清单（9 项）（🔵 待拍板 / 未实施）
+│   ├── 19-单进程形态与实例隔离.md          单进程形态与实例隔离（✅ 现行）
+│   ├── 20-实例隔离与后端分离.md        实例隔离：按 instance 管理执行池（`execPool`）与隔离边界（✅ 现行）
 │   ├── 21-任务层设计方案.md            Task 层独立化：与 LLM/Data/Filesys 平级 · task_id 由调用层分配 · 全同步落库 · 表结构自由（**✅ P1/P2 已实施；P3/P4 未排期**）
-│   ├── 22-实例与会话标识.md            实例/会话标识与三形态口径
+│   ├── 22-实例与会话标识.md            实例/会话标识口径
 │   ├── 23-工程与部署拓扑.md            工程拓扑 / 装配 / 部署形态
 │   ├── 24-多窗口模型设计方案.md         主窗口 + 纯对话窗口（多窗口模型 / 路由 / 数据 / 任务分解 MW）（🔵 设计定稿，待实施）
 │   ├── 25-MCP与场景分层模型.md          MCP / Agent / 场景 三层职责（能力面 · 场景面 · chat 面；提示词三层拼接 · 工具面语义 · agent 退出资产面 · 场景独立根）（🔵 设计定稿，待实施）
@@ -78,12 +76,11 @@ docs/spec/
 │   ├── 24-lib.md                      mq / dsl / paths / winlog / winsvc
 │   ├── 25-mcp-server.md               MCP 契约服务（四原语）
 │   ├── 26-mcp-gateway.md              MCP 网关聚合
-│   ├── 27-mcp-tools.md                工具层（executor，spawn-on-call with agentbox）
-│   ├── 28-plugins.md                  插件体系（compress / memory / history / codegraph / vfts）
+│   ├── 27-mcp-tools.md                工具层（executor，spawn-on-call）
+│   ├── 28-plugins.md                  插件体系（file / browser / desktop / task / mcp / websearch / memory / history / codegraph）
 │   ├── 29-codegraph.md                codegraph（独立 mcp-server）
-│   ├── 2A-cli.md                      （已删除 · CLI 单体规格稿，2026-10-21 随 CLI 移除）
 │   ├── 2B-vfts.md                     vfts（全文检索索引，独立 mcp-server）
-│   ├── 2C-UI插件.md                   UI 插件扩展设计（🔵 规划中 / 未实现，预留）
+│   ├── 2C-UI插件.md                   插件 UI 扩展（iframe view / 预览页 / 管理页 / 状态栏；✅ 已落地）
 │   ├── 2D-router.md                   LLM 出网协议适配（canonical / 多协议 / 降级 / 重试）
 │   ├── 2E-assembly.md                 入口装配器（能力源 + 执行配置 + 内嵌 gateway）
 │   └── 2F-ignore.md                   gitignore 语义匹配（排除判定单一实现）
@@ -100,7 +97,7 @@ docs/spec/
 │   ├── 39-知识库与原语.md
 │   └── 3A-工具与编排.md
 ├── 40-roadmap/
-│   ├── 40-演进计划.md                 未来演进（非单体 / browser / 跨进程 / 多实例）
+│   ├── 40-演进计划.md                 未来演进（非单体 / 跨进程 / 多实例）
 │   ├── 41-未决项登记.md               待确认（待拍板 / 待设计）事项集中登记
 │   ├── 42-决策记录.md                 **决策记录**（长期规则 + 时间线 + 迁移台账）
 │   └── 49-待实现项.md                 已确认、待实现事项集中登记
@@ -118,7 +115,8 @@ docs/spec/
 ├── 70-conventions/                    ← 工程规范
 │   ├── 71-编程规范.md                 代码组织 / 命名 / 日志 / 错误处理 / 开发环境等
 │   ├── 72-工具开发规范.md              工具契约、meta 字段、Output/RawResult 设计
-│   └── 73-重构方法.md                 MVP→工程级重构流程与检查框架（方法论）
+│   ├── 73-重构方法.md                 MVP→工程级重构流程与检查框架（方法论）
+│   └── 75-utility.md                  全仓无状态 utility（chonkpilot-util）复用规范与守卫
 └── _templates/                        ← 写作模板（新增文档前先读）
     ├── 模块设计模板.md
     ├── 功能点清单模板.md

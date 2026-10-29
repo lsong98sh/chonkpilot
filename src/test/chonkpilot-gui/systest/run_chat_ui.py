@@ -26,7 +26,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chonk_client import ChonkClient, TestError, run_case
 
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
-_G = _h.acquire_gui(2345)  # 复用优先（owned=False 不回收）；无实例则自起并在结束时回收
+# 2026-10-27（42 (290)）：独立临时 work-dir（本套件只用注入事件验证 UI，不依赖共享 ws 既有数据）
+# ——共享 ws 的累积会话/任务会让渲染线程长时间忙，`/eval` 连续 ExecuteScript 超时。
+_G = _h.acquire_gui(2345, work_dir=_h.tmp_dir("ck-chatui-ws-"))  # 复用优先（owned=False 不回收）；无实例则自起并在结束时回收
 c = _G.client
 # 套件级配置快照-还原（51 §6-8）：会话/消息落共享 work-dir 库（`active_session_id` 等）→ 退出前回滚
 _h.suite_config_guard(c)
@@ -216,7 +218,7 @@ def case_tool_call():
     send_turn(sid, "工具测试")
     # 口径变更（2026-10-22）：`filesys_run` + READ DSL 已删除 → 用现行文件域工具 `file_read`
     # 的暴露名/参数形状（`{purpose, targets:[{path}]}`）作为 tool-call 事件载荷。
-    llm(sid, "tool-call", {"tool_call_id": "tc-e2e-1", "tool": "self_file_read",
+    llm(sid, "tool-call", {"tool_call_id": "tc-e2e-1", "tool": "file_read",
                            "arguments": "{\"purpose\":\"读取\",\"targets\":[{\"path\":\"C:/work/proj/a.txt\"}]}",
                            "simplified": "file_read"})
     # handleToken 把 tool-call 渲染为 tool_pair 消息

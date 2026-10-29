@@ -78,22 +78,23 @@ after(() => {
 
 /** 布局区块（区域 / 抽屉内容）*/
 const LAYOUT_VIEWS = ['explorer', 'preview', 'chat', 'session-tree', 'session-chat', 'task-detail', 'dsl-steps']
-/** 栏视图条目（UILAYOUT-1 §7 P4① / 裁决 2：实时 / 条件 / 动态项）*/
+/** 栏视图条目（UILAYOUT-1 §7 P4① / 裁决 2：实时 / 条件 / 动态项）
+ *  注：`index-badge` 已随 PLUGIN-UI-2 归插件（codegraph 的 `ui.statusbar[].view=badge`），不再是内置 view。*/
 const BAR_VIEWS = [
   'search',
   'recent-dirs',
   'chrome-warn',
   'memory-token',
   'queue-status',
-  'index-badge',
   // STB-1：每类长任务一个状态栏条目
   'memory-status',
   'compress-status',
   'lang-switcher',
   'layout-profiles',
 ]
-/** 长任务详情 view（STB-1：preview 功能页；登记进注册表供 open-view 解析） */
-const DETAIL_VIEWS = ['status-memory', 'status-compress', 'status-index']
+/** 长任务详情 view（STB-1：preview 功能页；登记进注册表供 open-view 解析）
+ *  注：`status-index` 已随 PLUGIN-UI-2 归插件（插件自带 `status` 页）。*/
+const DETAIL_VIEWS = ['status-memory', 'status-compress']
 const EXPECTED_VIEWS = [...LAYOUT_VIEWS, ...BAR_VIEWS, ...DETAIL_VIEWS]
 
 test('① 全部区块定义齐备，字段完整（key/labelKey/label/icon/mode/host/designable）', () => {

@@ -30,7 +30,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // domainFourSubjects 是第四批四域的全部请求主题（零请求断言用）。
@@ -118,12 +118,13 @@ func eqWire(t *testing.T, got any, want any, what string) {
 func TestFacadeTasktreeInlineEqualsMQPath(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "s1")
 	api := inline.New(bus)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// ① 门面 upsert（llm 节点）→ MQ list 读到（node_type 由实现侧按 kind 推）
 	if _, err := api.TasktreeUpsert(facade.TasktreeUpsertRequest{
-		InstanceID: facadeInstance,
+		InstanceID: facadeInstance, DialogID: d1,
 		Node: facade.TaskNode{
 			ID: "n1", TopSession: "top1", SessionID: "s1", Kind: "llm",
 			Title: "根任务", Status: "running", CreatedAt: now, WorkDir: "C:/ws", State: "running",
@@ -131,12 +132,12 @@ func TestFacadeTasktreeInlineEqualsMQPath(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("facade TasktreeUpsert: %v", err)
 	}
-	lr, err := api.TasktreeList(facade.TasktreeListRequest{InstanceID: facadeInstance, TopSession: "top1"})
+	lr, err := api.TasktreeList(facade.TasktreeListRequest{InstanceID: facadeInstance, DialogID: d1, TopSession: "top1"})
 	if err != nil || len(lr.Nodes) != 1 || lr.Nodes[0].NodeType != "session" {
 		t.Fatalf("facade TasktreeList=%+v err=%v", lr, err)
 	}
 	eqWire(t, wire.TasktreeListResult(lr.Nodes),
-		mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1"}), "list")
+		mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1", "dialog_id": d1}), "list")
 
 	// ② MQ upsert（tool 子节点，含 tool_call_id + exec_json 待裁决明细 + closed=false）→ 门面读
 	closedFalse := false
@@ -145,8 +146,9 @@ func TestFacadeTasktreeInlineEqualsMQPath(t *testing.T) {
 		"kind": "tool", "title": "子工具", "status": "running", "created_at": now,
 		"tool_call_id": "tc-n2", "state": "awaiting", "closed": closedFalse,
 		"exec_json": `{"phase":"awaiting","detail":{"timeout_s":30,"options":["detach","cancel"]}}`,
+		"dialog_id": d1,
 	}})
-	tr, err := api.TasktreeTasks(facade.TasktreeTasksRequest{InstanceID: facadeInstance, SessionID: "s1"})
+	tr, err := api.TasktreeTasks(facade.TasktreeTasksRequest{InstanceID: facadeInstance, DialogID: d1, SessionID: "s1"})
 	if err != nil || len(tr.List) != 2 {
 		t.Fatalf("facade TasktreeTasks=%+v err=%v", tr, err)
 	}
@@ -154,21 +156,21 @@ func TestFacadeTasktreeInlineEqualsMQPath(t *testing.T) {
 		t.Fatalf("门面 tasks 未读到 MQ 写入：%+v", tr.List[1])
 	}
 	eqWire(t, wire.TasktreeTasksResult(tr.List),
-		mqResult(t, bus, "data-tasktree-tasks", map[string]any{"session_id": "s1"}), "tasks")
+		mqResult(t, bus, "data-tasktree-tasks", map[string]any{"session_id": "s1", "dialog_id": d1}), "tasks")
 	// init 视图（仅 llm / 运行中存活节点——两个节点都满足）两路径一致
 	ir, err := api.TasktreeList(facade.TasktreeListRequest{
-		InstanceID: facadeInstance, TopSession: "top1", Mode: "init",
+		InstanceID: facadeInstance, DialogID: d1, TopSession: "top1", Mode: "init",
 	})
 	if err != nil || len(ir.Nodes) != 2 {
 		t.Fatalf("facade init list=%+v err=%v", ir, err)
 	}
 	eqWire(t, wire.TasktreeListResult(ir.Nodes),
-		mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1", "mode": "init"}), "init list")
+		mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1", "mode": "init", "dialog_id": d1}), "init list")
 
 	// ③ 关闭 = 逻辑删除：门面 delete → MQ 视图过滤 + task-deleted 广播（61 §3.4 载荷）
 	ev := collectTopic(t, bus, "task-deleted")
 	if _, err := api.TasktreeDelete(facade.TasktreeDeleteRequest{
-		InstanceID: facadeInstance, NodeID: "n1",
+		InstanceID: facadeInstance, DialogID: d1, NodeID: "n1",
 	}); err != nil {
 		t.Fatalf("facade TasktreeDelete: %v", err)
 	}
@@ -176,26 +178,26 @@ func TestFacadeTasktreeInlineEqualsMQPath(t *testing.T) {
 	if del["instance_id"] != facadeInstance || del["node_id"] != "n1" {
 		t.Fatalf("task-deleted 载荷不符：%+v", del)
 	}
-	if list := dataList(mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1"})); len(list) != 0 {
+	if list := dataList(mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1", "dialog_id": d1})); len(list) != 0 {
 		t.Fatalf("关闭后 MQ list 应过滤 closed：%+v", list)
 	}
 	// include_closed=true → 两路径都返回历史行（级联子树同样标记）
 	ar, err := api.TasktreeList(facade.TasktreeListRequest{
-		InstanceID: facadeInstance, TopSession: "top1", IncludeClosed: true,
+		InstanceID: facadeInstance, DialogID: d1, TopSession: "top1", IncludeClosed: true,
 	})
 	if err != nil || len(ar.Nodes) != 2 {
 		t.Fatalf("门面 include_closed list=%+v err=%v", ar, err)
 	}
 	eqWire(t, wire.TasktreeListResult(ar.Nodes),
-		mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1", "include_closed": true}),
+		mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1", "include_closed": true, "dialog_id": d1}),
 		"include_closed list")
 
 	// ④ MQ 关闭（幂等）→ 应答形状不变；门面关闭不存在的节点亦幂等成功
-	if ok, _ := mqResult(t, bus, "data-tasktree-delete", map[string]any{"node_id": "n1"})["ok"].(bool); !ok {
+	if ok, _ := mqResult(t, bus, "data-tasktree-delete", map[string]any{"node_id": "n1", "dialog_id": d1})["ok"].(bool); !ok {
 		t.Fatal("MQ 幂等关闭应答形状变化")
 	}
 	if _, err := api.TasktreeDelete(facade.TasktreeDeleteRequest{
-		InstanceID: facadeInstance, NodeID: "n-ghost",
+		InstanceID: facadeInstance, DialogID: d1, NodeID: "n-ghost",
 	}); err != nil {
 		t.Fatalf("门面关闭不存在节点应幂等成功：%v", err)
 	}
@@ -547,17 +549,18 @@ func TestFacadeDomainsFourZeroBusRequests(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// tasktree
-	if _, err := api.TasktreeUpsert(facade.TasktreeUpsertRequest{InstanceID: facadeInstance,
+	d1, _ := newDialog(t, "ins-test", "s1")
+	if _, err := api.TasktreeUpsert(facade.TasktreeUpsertRequest{InstanceID: facadeInstance, DialogID: d1,
 		Node: facade.TaskNode{ID: "n1", TopSession: "top1", Kind: "tool", Status: "running", CreatedAt: now}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.TasktreeList(facade.TasktreeListRequest{InstanceID: facadeInstance, TopSession: "top1"}); err != nil {
+	if _, err := api.TasktreeList(facade.TasktreeListRequest{InstanceID: facadeInstance, DialogID: d1, TopSession: "top1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.TasktreeTasks(facade.TasktreeTasksRequest{InstanceID: facadeInstance, TopSession: "top1"}); err != nil {
+	if _, err := api.TasktreeTasks(facade.TasktreeTasksRequest{InstanceID: facadeInstance, DialogID: d1, TopSession: "top1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: facadeInstance, NodeID: "n1"}); err != nil {
+	if _, err := api.TasktreeDelete(facade.TasktreeDeleteRequest{InstanceID: facadeInstance, DialogID: d1, NodeID: "n1"}); err != nil {
 		t.Fatal(err)
 	}
 	// knowledge

@@ -158,6 +158,7 @@
   "dir_picker_up": "Up",
   "dir_picker_empty": "No sub-directory available here",
   "instance_claiming": "Initializing (claiming instance)…",
+  "plugins_initializing": "Initializing plugins…",
   "instance_unauthorized": "Not signed in or the session has expired. Please sign in again.",
   "instance_forbidden": "No access to this working directory. Please use a directory you are allowed to access.",
   "instance_failed": "Instance claim failed. Please check the log and retry.",

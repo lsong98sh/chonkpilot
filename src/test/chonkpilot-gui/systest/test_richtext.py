@@ -126,6 +126,10 @@ def main():
         # `pending`（不再把 src 换成 `/show/…`，见 InputBox.vue upload 回执分支）。
         # 故断言 = chip 出现 + dataURL 缩略图 + **回执已到**（`.attach-chip.pending` 消失，
         # 即上传完成、可发送）；落盘证据仍由 R6（tmp/uploads 文件）覆盖。
+        # 2026-10-26：GUI 无 `--data-dir`；附件落盘根 = harness.GUIHandle.data_dir（DATAROOT-1），
+        # 不再是旧的 DATA_DIR。先记存量 → R6 断言「本次新增」而不是「目录里恰好有文件」。
+        upload_root = os.path.join(gui._handle.data_dir, "tmp", "uploads")
+        before_uploads = set(os.listdir(upload_root)) if os.path.isdir(upload_root) else set()
         paste_image(gui)
         stamp = wait_upto(gui, """(()=>{const c=document.querySelector('.attach-chip.attach-image .attach-thumb');
           const chip=c?c.closest('.attach-chip'):null;return {n:document.querySelectorAll('.attach-chip.attach-image').length,
@@ -156,9 +160,9 @@ def main():
                              lambda v: isinstance(v, (int, float)) and int(v) == 0, max_wait=10.0)
         c.check("R5b 附件可删除", int(fileGone) == 0, f"chips={fileGone}")
 
-        # R6 上传落盘（数据根 tmp/uploads/ 有上传文件）
-        uploads = [f for f in os.listdir(os.path.join(DATA_DIR, "tmp", "uploads")) if not f.startswith('.')] if os.path.isdir(os.path.join(DATA_DIR, "tmp", "uploads")) else []
-        c.check("R6 附件 api 上传落盘（tmp/uploads）", len(uploads) >= 1, repr(uploads[:3]))
+        # R6 上传落盘（**prjusr 数据根** tmp/uploads/ 有本次上传新增的文件）
+        new_uploads = sorted(f for f in (set(os.listdir(upload_root)) - before_uploads) if not f.startswith('.')) if os.path.isdir(upload_root) else []
+        c.check("R6 附件 api 上传落盘（tmp/uploads）", len(new_uploads) >= 1, repr(new_uploads[:3]))
 
         # R7 序列化发送：图片附件 + 文本 → 点 Send → message-send 载荷 = 附件在前（![名](路径)）+ 文本在后
         #（原「无 LLM 配置 → 拦截写回」前置已不成立：全新库自带可用默认 LLM，发送直接放行；
@@ -177,9 +181,9 @@ def main():
                 f"n={len(spy) if isinstance(spy, list) else spy} text={repr(tx7[:60])}")
 
         # R8 写回 md 含图片标记 → 解析恢复为附件缩略图 + 文本无标记
-        uploads = [f for f in os.listdir(os.path.join(DATA_DIR, "tmp", "uploads")) if f.endswith('.png')] if os.path.isdir(os.path.join(DATA_DIR, "tmp", "uploads")) else []
+        uploads = [f for f in os.listdir(upload_root) if f.endswith('.png')] if os.path.isdir(upload_root) else []
         assert uploads, "缺少上传图片（R8 前置）"
-        pngPath = os.path.join(DATA_DIR, "tmp", "uploads", uploads[0]).replace("\\", "/")
+        pngPath = os.path.join(upload_root, uploads[0]).replace("\\", "/")
         J(gui, "window.mq.emit(%s, {text: %s}); 'ok'" % (
             json.dumps("chat-queue-restore"),
             json.dumps("![截图](%s)\\n附件回显测试" % pngPath)))

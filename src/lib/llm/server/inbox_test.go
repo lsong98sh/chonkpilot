@@ -18,7 +18,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // ── 事件录制（session-* + mcp-tools-call）────────────────────────────────
@@ -449,12 +449,12 @@ func TestInboxPromoteNextTurn(t *testing.T) {
 	rec := newInboxRec(t, s.bus)
 
 	// 先造一条 next_turn（无运行轮 → 服务端会立即消费；因此用 data 面直接落库模拟流式期写入）
-	dres, err := dataRequest(s.bus, "data-inbox-append", map[string]any{
+	dres, err := dataRequest(s.bus, "data-inbox-append", withDialog(s, "s-ins18", map[string]any{
 		"instance_id": "ins-test",
 		"data": map[string]any{
 			"session": "s-ins18", "type": "next_turn", "content": "【INS-018】插话M", "llm": "mock",
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("data-inbox-append: %v", err)
 	}
@@ -574,13 +574,13 @@ func TestInboxLimit(t *testing.T) {
 	startTurn(t, s, "s-ins24", "t-ins24")
 
 	append1 := func(i int) map[string]any {
-		res, err := dataRequest(s.bus, "data-inbox-append", map[string]any{
+		res, err := dataRequest(s.bus, "data-inbox-append", withDialog(s, "s-ins24", map[string]any{
 			"instance_id": "ins-test",
 			"data": map[string]any{
 				"session": "s-ins24", "type": "next_turn",
 				"content": fmt.Sprintf("【INS-024】M%d", i),
 			},
-		})
+		}))
 		if err != nil {
 			return map[string]any{"error": err.Error()}
 		}
@@ -671,14 +671,18 @@ func TestInboxNextTurnBatchSkipsDiscarded(t *testing.T) {
 	}))
 	t.Cleanup(data.Reset)
 	time.Sleep(50 * time.Millisecond)
+	// 一树一库：inbox 行落对话库 → 先幂等建会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-batch"); err != nil {
+		t.Fatalf("EnsureSession(s-batch): %v", err)
+	}
 
 	appendItem := func(content string) string {
-		res, err := dataRequest(s.bus, "data-inbox-append", map[string]any{
+		res, err := dataRequest(s.bus, "data-inbox-append", withDialog(s, "s-batch", map[string]any{
 			"instance_id": "ins-test",
 			"data": map[string]any{
 				"session": "s-batch", "type": "next_turn", "content": content, "llm": "mock",
 			},
-		})
+		}))
 		if err != nil {
 			t.Fatalf("append %q: %v", content, err)
 		}

@@ -191,6 +191,10 @@ func TestScenarioAgentPromptAndDelegateCondInChildTurn(t *testing.T) {
 	})
 
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-ag-1", Turn: "t-ag-1", ScenarioID: "ag-sc"}
+	// 一树一库：子会话沿用父会话的对话 → 先幂等建父会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-ag-1"); err != nil {
+		t.Fatalf("EnsureSession(s-ag-1): %v", err)
+	}
 	agRunChild(t, s, parentReq, "s-ag-1-sub1", "do work", "sub1")
 
 	body, _, _ := rec.first(t, 0)
@@ -238,6 +242,10 @@ func TestScenarioAgentLLMRefSelectsChildProvider(t *testing.T) {
 	parentReq := StartReq{
 		InstanceID: "ins-test", Session: "s-ag-llm", Turn: "t-ag-llm",
 		ScenarioID: "ag-llm", LLMModel: "prov-parent",
+	}
+	// 一树一库：子会话沿用父会话的对话 → 先幂等建父会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-ag-llm"); err != nil {
+		t.Fatalf("EnsureSession(s-ag-llm): %v", err)
 	}
 	agRunChild(t, s, parentReq, "s-ag-llm-sub", "do work", "sub-llm")
 
@@ -400,6 +408,10 @@ func TestScenarioAgentToolsWhitelist(t *testing.T) {
 	}
 
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-ag-tools", Turn: "t-ag-tools", ScenarioID: "ag-tools"}
+	// 一树一库：子会话沿用父会话的对话 → 先幂等建父会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-ag-tools"); err != nil {
+		t.Fatalf("EnsureSession(s-ag-tools): %v", err)
+	}
 	agRunChild(t, s, parentReq, "s-ag-tools-allow", "do", "sub-allow")
 	allowBody, _, _ := rec.first(t, 0)
 	names := agToolNames(allowBody)
@@ -412,7 +424,7 @@ func TestScenarioAgentToolsWhitelist(t *testing.T) {
 	// NEXTRUN-1：子轮次不下发 `next_run`（工具面收敛，denyTools），全量期望需剔除。
 	wantAll := make([]string, 0, len(visible))
 	for _, n := range visible {
-		if n != "self_"+nextRunTool {
+		if n != nextRunTool {
 			wantAll = append(wantAll, n)
 		}
 	}
@@ -498,6 +510,10 @@ func TestChildAgentPromptFallsBackToRegisteredDef(t *testing.T) {
 	s.mu.Unlock()
 
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-ag-reg", Turn: "t-ag-reg"}
+	// 一树一库：子会话沿用父会话的对话 → 先幂等建父会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-ag-reg"); err != nil {
+		t.Fatalf("EnsureSession(s-ag-reg): %v", err)
+	}
 	agRunChild(t, s, parentReq, "s-ag-reg-coder", "do", "coder")
 	sysText := strings.Join(agSystemTexts(mustBody(t, rec, 0)), "\n")
 	if !strings.Contains(sysText, "app 级场景 agent 提示词") {
@@ -522,6 +538,10 @@ func TestRegisteredAgentDefFallsBackToAppScenario(t *testing.T) {
 	}
 
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-app-ag", Turn: "t-app-ag"}
+	// 一树一库：子会话沿用父会话的对话 → 先幂等建父会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-app-ag"); err != nil {
+		t.Fatalf("EnsureSession(s-app-ag): %v", err)
+	}
 	agRunChild(t, s, parentReq, "s-app-ag-1", "do", "app-agent")
 	sysText := strings.Join(agSystemTexts(mustBody(t, rec, 0)), "\n")
 	if !strings.Contains(sysText, "app 级场景内提示词XYZ") {
@@ -554,6 +574,10 @@ func TestAgentDelegableSameNameInstanceFirst(t *testing.T) {
 
 	// ① 委派同名 "coder" → 子轮次 system 取 **instance 级**定义（不落 global 级）
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-same", Turn: "t-same", ScenarioID: "ag-same"}
+	// 一树一库：子会话沿用父会话的对话 → 先幂等建父会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-same"); err != nil {
+		t.Fatalf("EnsureSession(s-same): %v", err)
+	}
 	agRunChild(t, s, parentReq, "s-same-coder", "do", "coder")
 	sysText := strings.Join(agSystemTexts(mustBody(t, rec, 0)), "\n")
 	if !strings.Contains(sysText, "场景内 instance 级提示词") {

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 )
 
@@ -32,10 +32,10 @@ func TestTaskLayerSingleWriter(t *testing.T) {
 	}
 
 	// ① 权威表（默认路径 = 不传 shadow）：任务层写入的节点 + workdir 非空
-	res, err := dataRequest(s.bus, "data-tasktree-list", map[string]any{
+	res, err := dataRequest(s.bus, "data-tasktree-list", withDialog(s, "s-layer", map[string]any{
 		"instance_id": "ins-test",
 		"data":        map[string]any{"top_session": "s-layer"},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("读权威表: %v", err)
 	}
@@ -73,24 +73,24 @@ func TestTaskLayerSingleWriter(t *testing.T) {
 	if nodeID == "" {
 		t.Fatalf("节点缺 node_id: %+v", toolNode)
 	}
-	if _, err := dataRequest(s.bus, "data-tasktree-delete", map[string]any{
+	if _, err := dataRequest(s.bus, "data-tasktree-delete", withDialog(s, "s-layer", map[string]any{
 		"instance_id": "ins-test", "data": map[string]any{"node_id": nodeID},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("关闭任务: %v", err)
 	}
-	res, err = dataRequest(s.bus, "data-tasktree-list", map[string]any{
+	res, err = dataRequest(s.bus, "data-tasktree-list", withDialog(s, "s-layer", map[string]any{
 		"instance_id": "ins-test", "data": map[string]any{"top_session": "s-layer"},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("关闭后读视图: %v", err)
 	}
 	if nodes, _ := res["nodes"].([]any); len(nodes) != 0 {
 		t.Fatalf("关闭后视图应不再显示该节点: %+v", nodes)
 	}
-	res, err = dataRequest(s.bus, "data-tasktree-list", map[string]any{
+	res, err = dataRequest(s.bus, "data-tasktree-list", withDialog(s, "s-layer", map[string]any{
 		"instance_id": "ins-test",
 		"data":        map[string]any{"top_session": "s-layer", "include_closed": true},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("读历史（include_closed）: %v", err)
 	}
@@ -258,9 +258,9 @@ func TestTaskStopDuringAwaiting(t *testing.T) {
 // tasksViewItem 读 `data-tasktree-tasks`（前端任务区数据源）该 task_id 的条目（缺 → 空 map）。
 func tasksViewItem(t *testing.T, s *Server, topSession, taskID string) map[string]any {
 	t.Helper()
-	res, err := dataRequest(s.bus, "data-tasktree-tasks", map[string]any{
+	res, err := dataRequest(s.bus, "data-tasktree-tasks", withDialog(s, topSession, map[string]any{
 		"instance_id": "ins-test", "data": map[string]any{"top_session": topSession},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("读任务快照: %v", err)
 	}
@@ -282,16 +282,16 @@ func TestTaskLayerRecoverOnFirstStart(t *testing.T) {
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-rec", "t-rec") // 注册 instance（首个 llm-start 触发清理）
 
-	// 造一条遗留 running 行（模拟上次进程崩溃前执行中）
+	// 造一条遗留 running 行（模拟上次进程崩溃前执行中；树归属 = 已建会话 s-rec）
 	inst := "ins-test"
-	if _, err := dataRequest(s.bus, "data-tasktree-upsert", map[string]any{
+	if _, err := dataRequest(s.bus, "data-tasktree-upsert", withDialog(s, "s-rec", map[string]any{
 		"instance_id": inst,
 		"data": map[string]any{
-			"task_id": "tk-stale", "top_session": "s-stale", "session_id": "s-stale",
+			"task_id": "tk-stale", "top_session": "s-rec", "session_id": "s-rec",
 			"kind": "tool", "title": "遗留任务", "status": TaskStateRunning,
 			"created_at": "2026-09-18T00:00:00Z", "instance_id": inst,
 		},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("造遗留行: %v", err)
 	}
 	// 新 instance → 再触发一次清理（recoverStaleTasktree 只在首个 llm-start / 未清理过的实例执行）
@@ -299,9 +299,9 @@ func TestTaskLayerRecoverOnFirstStart(t *testing.T) {
 	if n < 1 {
 		t.Fatalf("启动恢复标注数=%d want ≥1", n)
 	}
-	res, err := dataRequest(s.bus, "data-tasktree-list", map[string]any{
-		"instance_id": inst, "data": map[string]any{"top_session": "s-stale"},
-	})
+	res, err := dataRequest(s.bus, "data-tasktree-list", withDialog(s, "s-rec", map[string]any{
+		"instance_id": inst, "data": map[string]any{"top_session": "s-rec"},
+	}))
 	if err != nil {
 		t.Fatalf("读库: %v", err)
 	}
@@ -346,10 +346,10 @@ func runSyncToolTurn(t *testing.T, s *Server, session, turn string) map[string]a
 	if lastComplete(collectTurn(t, s.bus, turn, 15*time.Second)) == nil {
 		t.Fatal("轮次未完成")
 	}
-	res, err := dataRequest(s.bus, "data-tasktree-list", map[string]any{
+	res, err := dataRequest(s.bus, "data-tasktree-list", withDialog(s, session, map[string]any{
 		"instance_id": "ins-test",
 		"data":        map[string]any{"top_session": session},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("读权威表: %v", err)
 	}
@@ -421,9 +421,9 @@ func TestTaskVerifyMethod(t *testing.T) {
 		row[k] = v
 	}
 	row["status"] = "error"
-	if _, err := dataRequest(s.bus, "data-tasktree-upsert", map[string]any{
+	if _, err := dataRequest(s.bus, "data-tasktree-upsert", withDialog(s, "s-verify", map[string]any{
 		"instance_id": "ins-test", "data": row,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("改写权威行: %v", err)
 	}
 	res, err = verifyCall(t, s, "s-verify")
@@ -501,9 +501,9 @@ func TestTaskExecSinkExecDetailReadable(t *testing.T) {
 	}
 
 	// ② 前端任务区读（data-tasktree-tasks）→ 单行 + exec_json 明细
-	res, err := dataRequest(s.bus, "data-tasktree-tasks", map[string]any{
+	res, err := dataRequest(s.bus, "data-tasktree-tasks", withDialog(s, "s-p3", map[string]any{
 		"instance_id": "ins-test", "data": map[string]any{"top_session": "s-p3"},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("读任务列表: %v", err)
 	}
@@ -569,9 +569,9 @@ func TestTaskExecPhaseFrontVisibleUnchanged(t *testing.T) {
 		})
 
 		// ① 前端任务区（data-tasktree-tasks）：status 仍 running；相位在 state / exec_json
-		res, err := dataRequest(s.bus, "data-tasktree-tasks", map[string]any{
+		res, err := dataRequest(s.bus, "data-tasktree-tasks", withDialog(s, "s-p3v", map[string]any{
 			"instance_id": "ins-test", "data": map[string]any{"top_session": "s-p3v"},
-		})
+		}))
 		if err != nil {
 			t.Fatalf("读任务列表: %v", err)
 		}
@@ -595,9 +595,9 @@ func TestTaskExecPhaseFrontVisibleUnchanged(t *testing.T) {
 		}
 
 		// ② 前端任务树（data-tasktree-list）：同一行、同一口径
-		res, err = dataRequest(s.bus, "data-tasktree-list", map[string]any{
+		res, err = dataRequest(s.bus, "data-tasktree-list", withDialog(s, "s-p3v", map[string]any{
 			"instance_id": "ins-test", "data": map[string]any{"top_session": "s-p3v"},
-		})
+		}))
 		if err != nil {
 			t.Fatalf("读任务树: %v", err)
 		}
@@ -638,10 +638,10 @@ func waitTaskRow(t *testing.T, s *Server, topSession, taskID string, cond func(m
 // taskRowOf 读权威表该 task_id 行（读失败 / 不存在 → nil）。
 func taskRowOf(t *testing.T, s *Server, topSession, taskID string) map[string]any {
 	t.Helper()
-	res, err := dataRequest(s.bus, "data-tasktree-list", map[string]any{
+	res, err := dataRequest(s.bus, "data-tasktree-list", withDialog(s, topSession, map[string]any{
 		"instance_id": "ins-test",
 		"data":        map[string]any{"top_session": topSession, "include_closed": true},
-	})
+	}))
 	if err != nil {
 		return nil
 	}

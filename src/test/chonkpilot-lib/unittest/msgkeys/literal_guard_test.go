@@ -40,11 +40,12 @@ var guardedFiles = []string{
 	"src/lib/gui/bridge/configfile.go",
 	"src/lib/gui/bridge/toolchain.go",
 	"src/lib/gui/bridge/upload.go",
-	"src/lib/gui/internal/messages/messages.go",
-	"src/lib/gui/registry.go",
-	"src/lib/gui/main.go",
-	"src/lib/gui/testserver.go",
-	"src/lib/gui/loglevel.go",
+	// TOPO-1（2026-10-29）：窗口层 / 渲染宿主已迁至 framework/host（同级仓）。
+	"../chonkpilot-framework/host/src/messages/messages.go",
+	"../chonkpilot-framework/host/src/gui/registry.go",
+	"../chonkpilot-framework/host/src/gui/main.go",
+	"../chonkpilot-framework/host/src/gui/testserver.go",
+	"../chonkpilot-framework/host/src/gui/loglevel.go",
 	"src/lib/data/persist/envelope.go",
 	"src/lib/data/persist/persist.go",
 	"src/lib/data/persist/compat.go",
@@ -112,14 +113,9 @@ var guardedFiles = []string{
 	// 内核不再发出任何 MQ 主题（出站通知经 Hooks，主题名归 gwadapter），
 	// 其边界由该仓自身 deps_test.go 断言，本守卫不再跨仓读文件。
 	"src/lib/gwadapter/internal/facade/facade.go",
-	"src/plugins/plugin-compress/compress.go",
-	"src/plugins/plugin-compress/summarize.go",
-	"src/plugins/plugin-compress/locate.go",
-	"src/plugins/plugin-codegraph/codegraph.go",
-	"src/plugins/plugin-codegraph/callgate.go",
-	"src/plugins/plugin-vfts/vfts.go",
-	"src/plugins/plugin-vfts/manifest.go",
-	"src/plugins/plugin-vfts/callgate.go",
+	// 2026-10-27：`src/plugins/plugin-{compress,codegraph,vfts}` 已移出主仓
+	// （compress 自 SESSION-1 内建到会话侧；codegraph/vfts 为 chonkpilot-plugins 仓的进程外插件），
+	// 其 MQ 字面量边界由各自仓内测试断言，本守卫不再列这些路径。
 }
 
 // findRepoRoot 从本测试源文件向上查找到含契约文件的仓库根。

@@ -39,6 +39,8 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = (p) => readFileSync(join(HERE, '..', 'src', p), 'utf8')
 const ROOT = (p) => readFileSync(join(HERE, '..', '..', '..', p), 'utf8')
+// TOPO-1（2026-10-29）：窗口层（window.go / registry.go）已迁至 framework/host。
+const FW = (p) => readFileSync(join(HERE, '..', '..', '..', '..', 'chonkpilot-framework', 'host', 'src', p), 'utf8')
 
 // ── 1) 群聊纯逻辑 ────────────────────────────────────────────────
 
@@ -184,11 +186,11 @@ test('GroupChatBoard：只读展示板（无输入框）+ 三类动作消息字�
 })
 
 test('宿主侧：群聊窗口单独额度落点（registry.go / window.go / bridge.SessionKind）', () => {
-  const reg = ROOT('src/lib/gui/registry.go')
+  const reg = FW('gui/registry.go')
   assert.match(reg, /maxGroupChatWindows/, '群聊窗口独立上限取自 window.go 常量')
   assert.match(reg, /groupSessions/, '按会话类别登记 → 分类计数（普通窗口计数口径不变）')
   assert.match(reg, /br\.SessionKind\(sessionID\)\s*==\s*groupChatKind/, '建窗前经只读 data-session-get 判 kind')
-  const win = ROOT('src/lib/gui/window.go')
+  const win = FW('gui/window.go')
   assert.match(win, /const maxChatWindows = 5/, '普通对话窗口上限不变（≤5）')
   assert.match(win, /const maxGroupChatWindows = 5/, '群聊窗口单独上限 = 5')
   const data = ROOT('src/lib/gui/bridge/data.go')

@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 )
 

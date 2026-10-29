@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 

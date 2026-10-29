@@ -4,12 +4,14 @@
 // 已下沉 `chonkpilot-data/internal/snapshot`（模块外不可达），本文件改为**经 MQ 驱动**
 // 覆盖同一批语义（字段保真 / 保留记录其他字段 / 覆盖写）；门面（inline 绑定）与 MQ 面的
 // 等价性见同目录 facade_snapshot_test.go。
+//
+// 一树一库：快照落**对话库**（与轮次/消息同库），故请求一律带 `dialog_id`。
 package persist_test
 
 import (
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestSnapshotMQFieldFidelity：快照往返保真——kind / tool_calls（含 function.name+arguments）/
@@ -17,6 +19,7 @@ import (
 func TestSnapshotMQFieldFidelity(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "s-fid")
 
 	snap := map[string]any{
 		"snapshot_turn": "t3",
@@ -34,10 +37,11 @@ func TestSnapshotMQFieldFidelity(t *testing.T) {
 		},
 	}
 	dataCall(t, bus, "data-snapshot-set", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-fid", "snapshot": snap},
+		"instance_id": "ins-test",
+		"data":        map[string]any{"session_id": "s-fid", "dialog_id": d1, "snapshot": snap},
 	})
 	res := dataResult(t, dataCall(t, bus, "data-snapshot-get", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-fid"},
+		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-fid", "dialog_id": d1},
 	}))
 	got, _ := res["snapshot"].(map[string]any)
 	if got == nil {
@@ -81,23 +85,25 @@ func TestSnapshotMQFieldFidelity(t *testing.T) {
 func TestSnapshotMQKeepsSessionFields(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "s-keep")
 
 	dataCall(t, bus, "data-session-ensure-session", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-keep"},
+		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-keep", "dialog_id": d1},
 	})
-	before := snapshotSessionRecord(t, bus, "s-keep")
+	before := snapshotSessionRecord(t, bus, d1, "s-keep")
 	if before == nil || before["title"] == nil || before["created_at"] == nil {
 		t.Fatalf("ensure-session 未落 title/created_at: %+v", before)
 	}
 
 	dataCall(t, bus, "data-snapshot-set", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-keep", "snapshot": map[string]any{
+		"instance_id": "ins-test",
+		"data": map[string]any{"session_id": "s-keep", "dialog_id": d1, "snapshot": map[string]any{
 			"snapshot_turn": "t1",
 			"history":       []any{map[string]any{"role": "user", "content": "hi"}},
 		}},
 	})
 
-	after := snapshotSessionRecord(t, bus, "s-keep")
+	after := snapshotSessionRecord(t, bus, d1, "s-keep")
 	if after == nil {
 		t.Fatal("快照写回后会话记录丢失")
 	}
@@ -112,11 +118,13 @@ func TestSnapshotMQKeepsSessionFields(t *testing.T) {
 func TestSnapshotMQOverwrite(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "s-ow")
 
 	set := func(turn, content string) {
 		t.Helper()
 		dataCall(t, bus, "data-snapshot-set", map[string]any{
-			"instance_id": "ins-test", "data": map[string]any{"session_id": "s-ow", "snapshot": map[string]any{
+			"instance_id": "ins-test",
+			"data": map[string]any{"session_id": "s-ow", "dialog_id": d1, "snapshot": map[string]any{
 				"snapshot_turn": turn,
 				"history":       []any{map[string]any{"role": "user", "content": content}},
 			}},
@@ -126,7 +134,7 @@ func TestSnapshotMQOverwrite(t *testing.T) {
 	set("t2", "b")
 
 	res := dataResult(t, dataCall(t, bus, "data-snapshot-get", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-ow"},
+		"instance_id": "ins-test", "data": map[string]any{"session_id": "s-ow", "dialog_id": d1},
 	}))
 	got, _ := res["snapshot"].(map[string]any)
 	if got == nil || got["snapshot_turn"] != "t2" {
@@ -142,10 +150,10 @@ func TestSnapshotMQOverwrite(t *testing.T) {
 }
 
 // snapshotSessionRecord 经 data-session-get 读会话记录（result.data 视图；不存在 → nil）。
-func snapshotSessionRecord(t *testing.T, bus mq.Bus, id string) map[string]any {
+func snapshotSessionRecord(t *testing.T, bus mq.Bus, dialogID, id string) map[string]any {
 	t.Helper()
 	res := dataResult(t, dataCall(t, bus, "data-session-get", map[string]any{
-		"instance_id": "ins-test", "data": map[string]any{"session_id": id},
+		"instance_id": "ins-test", "data": map[string]any{"session_id": id, "dialog_id": dialogID},
 	}))
 	rec, _ := res["data"].(map[string]any)
 	return rec

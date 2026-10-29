@@ -68,7 +68,7 @@
       </div>
     </div>
 
-    <div v-else-if="message.type === 'tool_pair'" class="collapsible-section toolpair-section">
+    <div v-else-if="message.type === 'tool_pair'" class="collapsible-section toolpair-section" :title="progressTitle || null">
       <div class="section-header" v-mq:[EventNames.msgToggleCollapse].click="{ id: message.id }">
         <Icon :name="collapsed ? 'arrow-right' : 'arrow-down'" :size="12" />
         <span class="section-label tool-name-label" :title="toolPairTitle">{{ toolPairTitle }}</span>
@@ -215,6 +215,7 @@ import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics, FieldKeys } from '../../events/msgkeys'
 import { useToolAsyncMode } from '../../composables/useToolAsyncMode'
+import { useToolProgress } from '../../composables/useToolProgress'
 import { useTaskView } from '../../composables/useTaskView'
 import { getFileUrl } from '../../api/file'
 import { classifyError } from '../../utils/errorMessage'
@@ -343,6 +344,11 @@ const toolPairTitle = computed(() => {
   const tool = props.message.tool || 'tool'
   return p ? t('chat.tool_pair_title', { purpose: p, tool }) : tool
 })
+
+// 工具进度 title（GATEWAY-2 L8）：下行事件 `mcp-tools-progress` → `进度 N%`。
+// 无事件 / 无 `total` → 空串（模板按 `progressTitle || null` 绑定 → **不渲染 title**，不显示 0%）。
+const { toolProgressTitle } = useToolProgress()
+const progressTitle = computed(() => toolProgressTitle(props.message.tool_call_id))
 
 const moreLabel = computed(() => {
   const bytes = props.message.content_size

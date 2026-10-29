@@ -1,24 +1,26 @@
-# build-mcp-server.ps1：一键构建并组装独立 MCP server 部署目录
+﻿# build-mcp-server.ps1：一键构建并组装独立 MCP server 部署目录
 #
 # 产物布局（dist/other/ —— 与 mcp-gateway 同目录共用，见 [41 D-28]）：
 #   ├── chonkpilot-mcp-server.exe    # MCP server（独立 exe，Streamable HTTP，默认 127.0.0.1:5700/mcp）
 #   ├── chonkpilot-mcp-gateway.exe   # gateway exe（由 build-mcp-gateway.ps1 产出到同一目录）
+#   ├── chonkpilot-core-mcp-server.exe / chonkpilot-self-tools.exe  # 工具前门 + app 根工具外部注册（宿主取件）
 #   ├── config.json                  # 运行配置（首次生成，已有不覆盖；两 exe 同款自动探测）
 #   └── capability/                  # 能力目录（mcp-server 默认 root = exe 目录/capability）
-#       ├── tools/<cat>/     # 工具契约（*.tool.md；runtime 相对 md 写 ../../executors/<cat>.exe）
-#       │   ├── core/          #   file_find/file_read/... .tool.md
-#       │   ├── desktop/       #   desktop_run.tool.md
-#       │   └── browser/       #   browser_run.tool.md
+#       ├── tools/<cat>/     # 工具契约（*.tool.md；file 域 11 工具随 file 插件投放，不在此）
+#       │   └── server/        #   域工具（ask_user/tool_result/tool_stop/subchat_*/next_run）
 #       ├── skills/      # 技能契约（*.skill.md；按 core|ux 分级嵌套，se/ 为未发布草稿，见下不投放）
 #       ├── prompts/     # 提示词契约（*.prompt.md；分级嵌套）
 #       ├── resources/   # 资源契约（*.resource.md；按 core|go|ui 分级嵌套）
 #       ├── agents/      # 智能体契约（*.agent.md；扁平）
 #       ├── system/      # 非原语系统文档（如 summary.md；OP-01/OP-02，2026-10-06）
-#       └── executors/   # 执行器（chonkpilot-{core,desktop,browser,dsl}-executor.exe；dsl 由 build-dsl-executor.ps1 产出）
+#       └── executors/   # 执行器（仅 chonkpilot-web-executor.exe；其余能力随插件投放）
 #
 # 源（出厂数据唯一源 = src/initdata）：契约 = src/initdata/capability/{prompts,tools,resources,skills,agents,system}
 #   （2026-10-01 P2 扁平化：删除旧 knowledge/ 归并层）；
 #   exe 外壳 = src/others/mcp-server（lib = src/lib/mcp-server）+ executor = src/lib/mcp-tools。
+#
+# 注（2026-10-28 P2-3）：脚本执行（`script_run` → `task_run`）已随 task 插件迁出主仓，
+#   `chonkpilot-script-executor.exe` 不再产出。
 #
 # 用法：.\build-mcp-server.ps1
 $ErrorActionPreference = "Stop"
@@ -28,8 +30,8 @@ $env:Path = "e:\GoDev\go1.26\bin;" + $env:Path
 $env:GOPROXY = "https://goproxy.cn,direct"
 $env:GOTOOLCHAIN = "local"
 
-# 结束运行中的旧实例（编译前清理，释放 exe 占用）：本脚本重建 mcp-server 与 3 个 executor，
-# 同目录 gateway 共用本 capability，故一并清理（对齐 build-dsl-executor/codegraph/vfts 写法）。
+# 结束运行中的旧实例（编译前清理，释放 exe 占用）：本脚本重建 mcp-server / core-mcp-server /
+# self-tools 与 2 个 executor，同目录 gateway 共用本 capability，故一并清理。
 # 2026-10-21（GATEWAY-2/L3）：meta/domain（含 ask-user / tool-result / tool-stop / next-run /
 #   subchat-open / subchat-finish）已进程内化，9 个 executor 不再产出，从清理列表移除。
 foreach ($name in @("chonkpilot-core-executor", "chonkpilot-filesys-executor", "chonkpilot-script-executor", "chonkpilot-web-executor", "chonkpilot-desktop-executor", "chonkpilot-browser-executor", "chonkpilot-mcp-server", "chonkpilot-core-mcp-server", "chonkpilot-mcp-gateway", "chonkpilot-self-tools")) {
@@ -133,20 +135,19 @@ try {
     # 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 删 filesys / browser / desktop / core 四个 executor。
     # 2026-10-25（PLUGIN-SPLIT-1）：file 域 11 工具随 file 插件迁出主仓 → 删 tools-exec
     #   （执行体 = 插件的 MCP server；契约随插件投放到 <pluginRoot>/tools/file/）。
-    foreach ($pair in @(
-            @("cmd/script-exec", "chonkpilot-script-executor.exe"),
-            @("cmd/web-exec", "chonkpilot-web-executor.exe"))) {
-        $cat = $pair[0]
-        $exeName = $pair[1]
-        go build -o (Join-Path $execDir $exeName) "./$cat"
-        if ($LASTEXITCODE -ne 0) { throw "build $exeName failed" }
-        Write-Host "    ok: $exeName (executors)"
-    }
+    # 2026-10-28（P2-3）：脚本执行（script_run → task_run）随 task 插件迁出主仓 → 删 script-exec
+    #   （执行体 = task 插件的 MCP server；契约 go:embed 在插件内）。
+    # 只剩一个执行器 → 直接构建（不再用 `foreach (@(@(a,b)))`：PowerShell 会把单元素嵌套数组拍平，
+    # 导致 $pair 拿到两个字符串、$pair[0] 变成 'c'）。
+    $exeName = "chonkpilot-web-executor.exe"
+    go build -o (Join-Path $execDir $exeName) "./cmd/web-exec"
+    if ($LASTEXITCODE -ne 0) { throw "build $exeName failed" }
+    Write-Host "    ok: $exeName (executors)"
 } finally { Pop-Location }
 
 Write-Host "==> verify executors (--help 从磁盘读契约：<exeDir>/capability/tools/<cat>/)"
-& (Join-Path $execDir "chonkpilot-script-executor.exe") --help | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "script executor --help failed" }
+& (Join-Path $execDir "chonkpilot-web-executor.exe") --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "web executor --help failed" }
 
 # 注（PLUGIN-SPLIT-1）：browser / desktop 常驻引擎已随插件迁入 chonkpilot-plugins
 # （<id>/engine），由 build-plugins.ps1 直接构建，本脚本不再产出。

@@ -14,8 +14,8 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-lib/uploadfs"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/uploadfs"
 )
 
 type uploadAttachmentReq struct {

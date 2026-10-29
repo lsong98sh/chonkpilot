@@ -11,7 +11,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-lib/contractmd"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/contractmd"
+	"github.com/lsong98sh/chonkpilot-util/convx"
+	"github.com/lsong98sh/chonkpilot-util/strx"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"gopkg.in/yaml.v3"
 )
@@ -27,7 +29,7 @@ const (
 
 // ─── 解析（委托 contractmd 单一实现） ─────────────────────────
 // v2 起分区解析（H1 分区 + yaml/json 代码块）统一由
-// github.com/chonkpilot/chonkpilot-lib/contractmd 提供；本包不再自持 splitSections/parseMeta/firstHeading。
+// github.com/lsong98sh/chonkpilot-framework/host/core/contractmd 提供；本包不再自持 splitSections/parseMeta/firstHeading。
 
 // parseSchemaJSON 解析参数段（v2 为 JSON 文本；容错回落 YAML，便于手写契约）。
 func parseSchemaJSON(s string) (map[string]any, error) {
@@ -501,32 +503,13 @@ func parseResources(files []*ContractFile) ([]*ResourceDoc, error) {
 
 // isTruthy 判定 meta 布尔值（true/1/yes）。
 func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+	return strx.FirstNonEmpty(vals...)
 }
 
 func atoiSafe(s string) int {
-	if s == "" {
-		return 0
-	}
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			break
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
+	return convx.IntLoose(s)
 }
 
 func isTruthy(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "true", "1", "yes", "y":
-		return true
-	}
-	return false
+	return convx.Truthy(s)
 }

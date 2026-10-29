@@ -29,13 +29,6 @@ test('store：refresh 带 list 时直接合并（不再发一次 list 请求）'
   assert.match(src, /apply\(list\)/)
 })
 
-test('索引徽标：改用 usePrjConfigSnapshot，不再自行 getAllConfig / 直接订阅 prj refresh', () => {
-  const src = SRC('layout/bar-views/IndexBadgeView.vue')
-  assert.match(src, /usePrjConfigSnapshot\(\)/)
-  assert.doesNotMatch(src, /getAllConfig/)
-  assert.doesNotMatch(src, /onDataRefresh\('prj-config'/)
-})
-
 test('merge 语义：refresh 增量有则覆盖、无则新增', () => {
   assert.deepEqual(
     mergeUserConfig(

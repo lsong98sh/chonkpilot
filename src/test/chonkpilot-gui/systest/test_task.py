@@ -104,7 +104,8 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     open(os.path.join(DATA_DIR, "chonkpilot.db"), "w").close()
 
-    gui = GUIClient(port=PORT, data_dir=DATA_DIR)
+    # 2026-10-26：独立 work-dir（tasktree 落 prjusr；共享 ws → 读到其它套件残留节点）。
+    gui = GUIClient(port=PORT, data_dir=DATA_DIR, work_dir=os.path.join(DATA_DIR, "ws"))
     c = Checker()
     # 套件级配置快照-还原（51 §6-8）：prj 随独立临时 work-dir，usr 主库不受其隔离 → 跑前快照、finally 还原。
     snap = None
@@ -137,7 +138,12 @@ def main():
         except RuntimeError as e:
             c.check("T3 data-tasktree-list 缺 top_session 报错", 'top_session' in str(e), str(e)[:80])
 
-        r = gui.req('data-tasktree-list', {'data': {'top_session': 'top-empty'}})
+        # 一树一库（旧布局已退场）：list/delete 属会话类 → 需具体 dialog_id。
+        # 先幂等建锚点会话取 dialog（ensure-session 根自举允许缺 dialog_id）。
+        anchor = gui.req('data-session-ensure-session', {'data': {'session_id': 'task-anchor'}}) or {}
+        dlg = anchor.get('dialog_id', '')
+
+        r = gui.req('data-tasktree-list', {'data': {'top_session': 'top-empty', 'dialog_id': dlg}})
         c.check("T4 data-tasktree-list 空 top 返回空 nodes", r.get('nodes') == [], repr(r)[:80])
 
         try:
@@ -147,7 +153,7 @@ def main():
             c.check("T5 data-tasktree-delete 缺 node_id 报错", 'node_id' in str(e), str(e)[:80])
 
         try:
-            gui.req('data-tasktree-delete', {'data': {'node_id': 'no-such-node'}})
+            gui.req('data-tasktree-delete', {'data': {'node_id': 'no-such-node', 'dialog_id': dlg}})
             c.check("T6 data-tasktree-delete 未知节点幂等成功", True)
         except RuntimeError as e:
             c.check("T6 data-tasktree-delete 未知节点幂等成功", False, str(e)[:80])

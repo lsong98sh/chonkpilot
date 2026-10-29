@@ -28,11 +28,11 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
-// 单聊域工具名（契约名；gateway 暴露名 = `self_<契约名>`，回调经 `route.Original` 还原为契约名）。
+// 单聊域工具名（契约名；P0a 2026-10-29 起 gateway 暴露名 = 契约名，回调经 `route.Original` 还原）。
 const (
 	subchatOpenTool   = "subchat_open"
 	subchatFinishTool = "subchat_finish"

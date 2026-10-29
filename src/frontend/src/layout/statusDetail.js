@@ -2,8 +2,11 @@
  * 长任务状态栏条目 → preview 详情页（STB-1）。
  *
  * 复用 UILAYOUT-1 的**统一命令模型** `open-view{viewKey,target}`（`layout/commands.js`）：
- * viewKey = 详情 view（`status-memory` / `status-compress` / `status-index`，见 `view-definitions.js`），
+ * viewKey = 详情 view（`status-memory` / `status-compress`，见 `view-definitions.js`），
  * 落点 = 既有 `preview-tab-open{kind}`（CodeView 功能页页签）——**零新增 MQ 主题**。
+ *
+ * 注：**索引进度不在此列**（PLUGIN-UI-2）——codegraph 插件自带 `badge`（状态栏紧凑视图）与
+ * `status`（完整页），宿主不再持有插件业务详情页。
  */
 import { executeCommand } from './commands.js'
 
@@ -11,12 +14,11 @@ import { executeCommand } from './commands.js'
 export const STATUS_DETAIL_VIEWS = {
   memory: 'status-memory',
   compress: 'status-compress',
-  index: 'status-index',
 }
 
 /**
  * 打开某类长任务的详情页。
- * @param {'memory'|'compress'|'index'} kind
+ * @param {'memory'|'compress'} kind
  * @param {{bus?: object}} [opts] 注入 mq（单测用；缺省 = 宿主 mq）
  * @returns {{ok:boolean, topic?:string, payload?:object, reasonKey?:string}}
  */

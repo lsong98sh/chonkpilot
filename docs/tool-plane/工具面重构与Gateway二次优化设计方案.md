@@ -1,6 +1,6 @@
 # 工具面重构与 Gateway 二次优化设计方案
 
-> 状态：🔵 设计定稿（待实施）
+> 状态：🟡 **实施中（2026-10-27 订正）** —— L1 / L2 / L9 / L10 已完成；L3–L8 / L11–L13 待实施。**进度以 [49 GATEWAY-2](../spec/40-roadmap/49-待实现项.md) 为准**（本文 §7 旧状态位可能滞后）。
 > 关联：[MOD-1 LLM 组件化](../llm-modular/LLM组件化改造设计方案.md)（前置：Gateway 依赖纯净）· [插件桥接端口设计方案](../bridge-plugin/插件桥接端口设计方案.md)（能力外溢 · T14 配置快照）· [63-DSL语法](../spec/60-reference/63-DSL语法.md)（退役对象）· [25-mcp-server](../spec/20-modules/25-mcp-server.md) · [26-mcp-gateway](../spec/20-modules/26-mcp-gateway.md) · [02-配置层级](../spec/00-overview/02-配置层级.md) · [18-工具异步超时与取消](../spec/10-architecture/18-工具异步超时与取消.md)
 
 ---
@@ -278,6 +278,8 @@ gateway {
 6. gateway 包内无 `mcp.NewServer(` 调用
 
 ### 3.6 池化：进程池与连接池
+
+> **〔2026-10-28 订正 · 已实施〕L6 改为「动态池 · 不保留 free 池」**（见 §5 L6 行 + [26 §9](../../spec/20-modules/26-mcp-gateway.md)）：本节下面的 `poolKey` 两档 / `poolSize` 预建 / free 队列 + 空闲 TTL **均不实施**；实际实现 = 键 `(workdir, exe)` 的动态实例池（实例数按需 0..`maxConcurrent`、每键等待队列、调用结束 1s 交接、清理三条）。以下 `poolKey`/`poolSize` 段落仅作**历史设计记录**。
 
 **按 transport 分模型**：
 
@@ -568,7 +570,7 @@ src/lib/appwire/
   adapters.go     端口适配（原 chatshadow*.go 纯函数搬移）
 ```
 
-`gui/host/main.go` 与 `src/server/main.go` 调**同一个** `wire.Build`，差异只剩 Phase 3（窗口 vs HTTP 入口）。
+唯一装配点 `gui/host/main.go` 调 `wire.Build`，Phase 3 只做窗口接线（单形态 desktop）。
 
 **wire 内的连线**（端口版，非回调赋值）：
 
@@ -614,11 +616,11 @@ gateway 结果                → chat.Inbox
 | **61-消息一览** | **业务消息面零变更**（`instance-claim` / `server-ready` 均不动）；本专题不新增 MQ 主题——池化与取消全在 gateway 内部 |
 | **62-命令行与参数** | 删除 `chonkpilot-dsl-executor.exe` 相关条目；新增 browser / desktop 两个插件 exe |
 | **63-DSL语法** | **整篇作废**（标记 🗄 历史），删除时一并移出 spec 目录或标注废弃 |
-| **25-mcp-server** | core-mcp-server **升级为唯一内置 server**：承载全部工具（file/asset/meta/llm 四组），handler 进程内；删除全部一工具一 exe 的 `*-exec` |
+| **25-mcp-server** | core-mcp-server **升级为唯一内置 server**：承载 **meta / server 组**（handler 进程内）；**file 域 11 工具已随 `file` 插件迁出主仓（2026-10-25 PLUGIN-SPLIT-1）**；删除全部一工具一 exe 的 `*-exec` |
 | **26-mcp-gateway** | 按 §3.5 重写职责边界 |
 | **02-配置层级** | 配置分级不变；新增「启动快照」读取方式 |
 | **18-工具异步超时与取消** | 取消阶梯按 §3.7 扩写，原两档作废 |
-| **构建脚本** | 删 `build-dsl-executor.ps1`；browser / desktop 两个插件 exe 纳入 `build-desktop.ps1` / `build-gui.ps1` 产物（Python 库暂不发） |
+| **构建脚本** | 删 `build-dsl-executor.ps1`；browser / desktop / file 等外挂插件 exe 由 `build-plugins.ps1`（`build-desktop.ps1` 调用）产出（Python 库暂不发） |
 
 ---
 
@@ -666,11 +668,11 @@ gateway 结果                → chat.Inbox
 | # | 步骤 | 内容 | 状态 | 关联 |
 |---|------|------|:---:|------|
 | L1 | DSL 退役 | ✅ 已完成（2026-10-21）：删 `dsl_run` / `filesys_run` / `browser_run` / `desktop_run` 四契约；删 `core/dsl`（15 文件）/ `dslexec` / `dslfs` / `internal/browser` / `internal/browser-exec` / `internal/desktop-exec` / `core-exec` 入口；删 fileops 的 5 个 DSL 文件；删 `build-dsl-executor.ps1` 及构建引用；同步 `llm/server`（`dsl_caps` / `dsl_report` / `dslTurns` / 任务树 DSL 分支）与 3 个契约文案、`main.agent.md`、`core-overview`、12 个 skill 文案、前端沙箱单位表；`go test` 全绿（mcp-tools / mcp-server / llm / gateway / L2 单测 / 前端 30 例） | ✅ | §3.1 |
-| L2 | 文件域 11 工具 | ✅ 已完成（2026-10-21）：11 契约 + `internal/filetool` 实现 + `cmd/tools-exec` 统一执行器（**一个 exe 多工具**）；复用 `fileops` 非 DSL 部分（Diff/Patch/Glob 导出包装）；`go test ./internal/filetool` 全绿 | ✅ | §3.2 |
-| L3 | 工具集成 | 9 个 `*-exec` + filesys/browser/desktop executor 合并为 **1 个内置 mcp-server**（file/asset/meta/llm 四组 handler 进程内，不再一工具一 exe）；每 handler `recover()` + 单工具超时 + `llm` 组配额 | 🔵 | §3.3 |
+| L2 | 文件域 11 工具 | ✅ 已完成（2026-10-21）：11 契约 + `internal/filetool` 实现 + `cmd/tools-exec` 统一执行器（**一个 exe 多工具**）；复用 `fileops` 非 DSL 部分（Diff/Patch/Glob 导出包装）；`go test ./internal/filetool` 全绿。**〔2026-10-25 PLUGIN-SPLIT-1〕** file 域随 `file` 插件迁出主仓，执行体改插件自带 MCP server，`cmd/tools-exec` 已删除 | ✅ | §3.2 |
+| L3 | 工具集成 | 9 个 `*-exec` + filesys/browser/desktop executor 合并为 **1 个内置 mcp-server**（file/asset/meta/llm 四组 handler 进程内，不再一工具一 exe）；每 handler `recover()` + 单工具超时 + `llm` 组配额。**〔2026-10-28 用户拍板〕「进程收敛」到此为止**：capability 目录节点**保持每节点一个 `core-mcp-server --stdio --root <folder>` 子进程**，不做「单进程多根」；L3 不再作为待办（见 [26 §9](../spec/20-modules/26-mcp-gateway.md)） | ✅ 收敛目标已完成 | §3.3 |
 | L4 | MCP 协议 v1 | 执行体改 MCP server 身份；`_meta` / progress / elicitation / cancelled | 🔵 | §3.4 |
 | L5 | Gateway 纯化 | 删 self 节点 / 契约扫描 / 资产 / `llmToolPick`；6 条 CI 检查 | 🔵 | §3.5 |
-| L6 | 池化 | 拆 `procSlot`/`connSlot`；`poolKey`/`poolSize`/`maxConcurrent` | 🔵 | §3.6 |
+| L6 | 池化 | 拆 `procSlot`/`connSlot`；`poolKey`/`poolSize`/`maxConcurrent`。**〔2026-10-28 用户拍板（订正）〕改为「动态池 · 不保留 free 池」**：不做 `poolSize` 预建、不做 free 队列与空闲 TTL；实例数按需从 0 涨到 `maxConcurrent`；**等待队列按 `(workdir, exe)` 分键**（不同项目互不排队）；一次调用结束 → **等最多 1s**，期间取到该键等待队列里的同键任务**直接移交实例**，1s 内没等到 → **销毁**。清理仅三条：1s 内无同键等待即销毁 / 进程自退即移出 / workdir 关闭或宿主退出整键清（Job Object 兜底）。`isolate` 保留，`poolKey`、`per-call` 档**不做** | ✅ 已完成（2026-10-28 实施：`chonkpilot-mcp-gateway/gateway/pool.go` 动态池 + `pool_test.go` 白盒用例；清理三条 / 1s 交接 / 按键等待队列均已落地） | §3.6 |
 | L7 | 取消阶梯 | L0–L3 + 远程回退 L2 + `cascade-report` | 🔵 | §3.7 |
 | L8 | 通知路由 | `call_id → inflight` 映射 | 🔵 | §3.8 |
 | L9 | browser 插件 | ✅ 已完成（2026-10-21）：`internal/pluginhost`（会话池 + 三端点 + 10min 空闲回收）+ `internal/browserplugin`（WebView2 引擎：navigate/eval/click/fill/text/html/wait/screenshot/console_dump）+ `plugins/browser`（`-H windowsgui` + 托盘 + UDS）；`go test ./internal/pluginhost` 全绿 | ✅ | §3.9 |

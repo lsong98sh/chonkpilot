@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/lsong98sh/chonkpilot-session"
-	chat "github.com/lsong98sh/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-agent/session"
+	chat "github.com/lsong98sh/chonkpilot-agent/chat"
 )
 
 // TestIsContextOverflow：超窗错误识别（厂商文案差异大，按关键词）。
@@ -122,14 +122,15 @@ func TestCompressCommitSingleFlightAndCAS(t *testing.T) {
 
 	// ③ CAS：基准不符（t9）→ 丢弃，快照不变。
 	before := snapshotOf(t, s, "s-cmp")
-	ok, err := s.commitCompressed(context.Background(), session.CompressionJob{
+	casJob := session.CompressionJob{
 		InstanceID: "ins-test", SessionID: "s-cmp", Anchor: "t9",
 		Retain: []ChatMsg{{Role: "user", Kind: "text", Content: "should-not-appear"}},
-	}, "新摘要")
-	if err != nil {
-		t.Fatalf("commitCompressed: %v", err)
 	}
-	if ok {
+	res, err := session.Commit(context.Background(), s.snapshotStore(casJob), casJob, "新摘要")
+	if err != nil {
+		t.Fatalf("session.Commit: %v", err)
+	}
+	if res.Written {
 		t.Fatal("CAS 基准不符 → 应丢弃")
 	}
 	after := snapshotOf(t, s, "s-cmp")

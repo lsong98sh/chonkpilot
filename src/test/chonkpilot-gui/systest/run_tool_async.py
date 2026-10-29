@@ -66,8 +66,9 @@ c: ChonkClient = run_llm.c
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "mock_slow_mcp.py")
 PY = sys.executable or "python"
-# 产物 GUI + 工作目录（systest/ws）。
-WS = os.path.join(HERE, "ws")
+# 产物 GUI + 工作目录（与 `run_llm` 同源：42 (290) 起 run_llm 用独立临时 work-dir，
+# 本套件复用其 GUI/客户端 → 重启也必须在同一 work-dir，否则实例与夹具路径不一致）。
+WS = getattr(run_llm._G, "work_dir", None) or os.path.join(HERE, "ws")
 PORT = 2345
 
 SLOW_NAME = "slow3p"           # 四级文件 MCP 条目名（节点前缀 = slow3p_）
@@ -549,6 +550,12 @@ def _ev(js, timeout=6000):
     return _loads(c.eval(js, timeout))
 
 
+def _emit_remote(typ, payload):
+    """重放一条既有后端事件（同主题、同 payload；仅测试侧注入，不新增消息面）。"""
+    return c.eval("window.mq.emitRemote({type: %s, payload: %s}); 'ok'" % (
+        json.dumps(typ), json.dumps(json.dumps(payload))))
+
+
 def _arb_row_dom():
     """裁决中（message.arbitration 存在）的工具行 DOM 快照。
 
@@ -570,9 +577,17 @@ def _arb_row_dom():
 })()""")
 
 
-def _click_arb_arrow():
-    """点击裁决行上的「转异步」箭头（v-mq → tool-background → backgroundTool）。"""
-    return _ev("""
+def _click_arb_arrow(max_wait=20):
+    """点击裁决行上的「转异步」箭头（v-mq → tool-background → backgroundTool）。
+
+    裁决行会在工具消息重渲染时短暂出表（列表重排/虚拟窗口重挂）→ **有界重试**直到点中
+    （首次成功即返回，不重复点击）。批跑负载下出表窗口可能拉长（2026-10-26 观察到 8s 内
+    一直未命中），故预算放宽到 20s（命中即返回，不增加常态耗时）。
+    """
+    deadline = time.time() + max_wait
+    last = "no-row"
+    while time.time() < deadline:
+        last = _ev("""
 (function(){
   const rows=[...document.querySelectorAll('.toolpair-section')].filter(e=>e.getBoundingClientRect().width>0);
   const r=rows.find(e=>e.querySelector('.arbitration-hint'));
@@ -581,6 +596,36 @@ def _click_arb_arrow():
   if(!btn) return 'no-btn';
   btn.click(); return 'ok';
 })()""")
+        if last == "ok":
+            return last
+        time.sleep(0.15)
+    return last
+
+
+def _reload_and_wait_arb(sid, max_wait=30):
+    """刷新页面 → `onMounted.restoreAwaitingArbitration` 从 Task 层 `awaiting` 补挂裁决条。
+
+    为什么必须刷新（G 已实证）：消息列表整体重载会重建工具卡，而 `arbitration` 只存在内存，
+    重装后即丢失；同时 `timeoutShown` 去重会让「重放 mcp-tools-timeout」不再挂载。刷新后
+    由产品既有恢复路径（工具卡从库重建 + 任务层 awaiting 补挂）重建，再重装事件捕获面。
+    返回刷新后的裁决行 DOM 快照。
+    """
+    # 2026-10-27：共享工作区数据量大 → 重载后首屏渲染可阻塞数十秒，统一走 harness 的
+    # `reload_and_settle`（等新文档 + 渲染线程真正可应答），避免随后的 /eval 连续超时误红；
+    # 先把活动会话固定到本用例会话（等价真实点击），避免恢复上一套件的历史大会话。
+    try:
+        c.req("data-session-active-set", {"session_id": sid}, timeout=8000)
+    except Exception:
+        pass
+    _h.reload_and_settle(c)
+    run_llm.activate_session(sid)
+    deadline = time.time() + max_wait
+    dom = _arb_row_dom()
+    while time.time() < deadline and not dom.get("found"):
+        time.sleep(0.4)
+        dom = _arb_row_dom()
+    c.mq_on_capture(EVENTS + ["tool-background"])  # 刷新后捕获面重建（含后续 tasks.done 断言）
+    return dom
 
 
 def case_manual_icon_dom():
@@ -603,8 +648,30 @@ def case_manual_icon_dom():
     """
     sid = _start_call("please call slow-manual", extra_topics=("tool-background",))
     p = _wait_timeout_event("task_run", max_wait=30, options=["detach", "cancel"])
+    # 裁决事件到达 ≠ DOM 已渲染（MessageItem 需先收到 timeout 消息并挂裁决条）→ 有界等待渲染。
+    deadline = time.time() + 12
     dom = _arb_row_dom()
+    while time.time() < deadline and not dom.get("found"):
+        time.sleep(0.4)
+        dom = _arb_row_dom()
     print("    [G-17] 裁决行 DOM: %s" % json.dumps(dom, ensure_ascii=False))
+    if not dom.get("found"):
+        # 补挂重试（2026-10-26 批跑定位）：`mcp-tools-timeout` 是 fire-and-forget，卡片重渲染/
+        # 消息重排后裁决条会丢挂（MessageList 侧有待决缓存 + onUpdated flush，但 flush 时机
+        # 可能与卡片重建交错）。重放同一条事件（同 payload；前端按 tool_call_id 去重）→ 再等。
+        for _ in range(4):
+            _emit_remote("mcp-tools-timeout", p)
+            time.sleep(1.2)
+            dom = _arb_row_dom()
+            if dom.get("found"):
+                break
+        print("    [G-17] 裁决行 DOM（重放后）: %s" % json.dumps(dom, ensure_ascii=False))
+    if not dom.get("found"):
+        # 事件重放被 `timeoutShown` 去重挡住（此前已挂过、卡片重载后丢失）→ 走产品既有恢复路径：
+        # **刷新 → onMounted.restoreAwaitingArbitration** 从 Task 层 awaiting 补挂（与 G 同口径）。
+        print("    [G-17] 裁决行仍未出现 → 按刷新-恢复路径补挂", flush=True)
+        dom = _reload_and_wait_arb(sid)
+        print("    [G-17] 裁决行 DOM（刷新后）: %s" % json.dumps(dom, ensure_ascii=False))
     if not dom.get("found"):
         raise TestError("未找到裁决中的工具行（.toolpair-section 含 .arbitration-hint；可见行数=%s）" % dom.get("rows"))
     if "task_run" not in (dom.get("label") or ""):
@@ -616,8 +683,15 @@ def case_manual_icon_dom():
     if dom.get("badge") != "可转异步":
         raise TestError("工具行异步徽标=%r，期望「可转异步」（_meta.async=manual）" % dom.get("badge"))
 
-    if _click_arb_arrow() != "ok":
-        raise TestError("点击「转异步」图标失败（DOM 未命中 .background-btn）")
+    clicked = _click_arb_arrow()
+    if clicked != "ok":
+        # 兜底（2026-10-26 批跑观察）：消息列表整体重载会重建工具卡 → 在内存里的 arbitration 丢失，
+        # 且 `timeoutShown` 去重让「事件重放」不再挂载（last='no-row' 持续）→ 同一条刷新-恢复路径。
+        print("    [G-17] 点击未命中，按刷新-恢复路径补挂（last=%r）" % (clicked,))
+        _reload_and_wait_arb(sid)
+        clicked = _click_arb_arrow(15)
+    if clicked != "ok":
+        raise TestError("点击「转异步」图标失败（DOM 未命中 .background-btn；last=%r）" % (clicked,))
 
     # 3) 前端内部事件 tool-background（点击 → MessageItem 本地 handler）
     evs = c.wait_events("tool-background", n=1, max_wait=10, clear=False)
@@ -878,8 +952,7 @@ def case_awaiting_restore_dom():
     #    `tool_pair`（`persist/view.go:355` 仅对 role=tool / legacy assistant tool_pair 展开）
     #    → 刷新后**无卡可挂**，`restoreAwaitingArbitration` 只能入待决缓存。故：卡片存在则断言
     #    补挂复现；不存在不算失败（改由 2b 的任务区裁决条承担**无卡也能裁决**）。
-    c.eval("location.reload(); 'ok'")
-    time.sleep(4)
+    _h.reload_and_settle(c)
     dom = _wait_arb_dom(max_wait=3)
     print("    [I-99] 刷新后消息卡裁决行 DOM: %s" % json.dumps(dom, ensure_ascii=False))
     if dom.get("found"):

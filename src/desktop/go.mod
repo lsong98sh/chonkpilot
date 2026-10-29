@@ -26,15 +26,10 @@ replace (
 	github.com/chonkpilot/chonkpilot-filesys => ../lib/filesys
 	github.com/chonkpilot/chonkpilot-gui => ../lib/gui
 	github.com/chonkpilot/chonkpilot-gwadapter => ../lib/gwadapter
-	github.com/chonkpilot/chonkpilot-ignore => ../lib/ignore
-	github.com/chonkpilot/chonkpilot-lib => ../lib/core
 	github.com/chonkpilot/chonkpilot-llm => ../lib/llm
 	github.com/chonkpilot/chonkpilot-mcp-server => ../lib/mcp-server
-	github.com/chonkpilot/chonkpilot-plugin-codegraph => ../plugins/plugin-codegraph
-	github.com/chonkpilot/chonkpilot-plugin-compress => ../plugins/plugin-compress
-	github.com/chonkpilot/chonkpilot-plugin-vfts => ../plugins/plugin-vfts
 	github.com/chonkpilot/chonkpilot-task => ../lib/task
-	github.com/jchv/go-webview2 => ../lib/go-webview2
+	github.com/jchv/go-webview2 => ../../../chonkpilot-webview2
 )
 
 require (
@@ -43,16 +38,8 @@ require (
 	github.com/chonkpilot/chonkpilot-data v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-filesys v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-ignore v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-lib v0.0.0 // indirect
 	github.com/chonkpilot/chonkpilot-llm v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-plugin-codegraph v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-plugin-vfts v0.0.0 // indirect
 	github.com/jchv/go-webview2 v0.0.0 // indirect
-	github.com/lsong98sh/chonkpilot-chat v0.1.0 // indirect
-	github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0 // indirect
-	github.com/lsong98sh/chonkpilot-router v0.1.0 // indirect
-	github.com/lsong98sh/chonkpilot-session v0.1.0 // indirect
 	github.com/sgtdi/fswatcher v1.3.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )
@@ -62,8 +49,28 @@ replace github.com/chonkpilot/chonkpilot-assembly => ../lib/assembly
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../lib/mcp-tools
 
 require (
-	github.com/chonkpilot/chonkpilot-lib/pluginhost v0.0.0
+	github.com/chonkpilot/chonkpilot-workspace v0.0.0 // indirect
 	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3 // indirect
+	github.com/lsong98sh/chonkpilot-util v0.0.0 // indirect
 )
 
-replace github.com/chonkpilot/chonkpilot-lib/pluginhost => ../lib/pluginhost
+// TURNRUN-1 批次 2：契约类型仓 + 两个独立仓（本地克隆与主仓同级，E:\BizWorks\chonkpilot-*）
+// —— 开发期本地 replace，与 go-webview2 同口径；三仓发布新版本后删除本节。
+// L6 动态池（2026-10-28）：gateway 内核同款本地 replace（发布新版本后删除该行）。
+
+// 开发期依赖策略（2026-10-29）：同机跨仓依赖一律本地 replace；正式发版时统一切回版本号并删除本节。
+replace (
+	github.com/lsong98sh/chonkpilot-plugin-framework => ../../../chonkpilot-framework/plugin/src
+	github.com/lsong98sh/chonkpilot-util => ../../../chonkpilot-util
+)
+
+// TOPO-1锛?026-10-29锛夛細骞冲彴鍩哄骇锛坈ore + 绐楀彛灞傦級宸茶縼鑷?framework/host銆俙r
+replace github.com/lsong98sh/chonkpilot-framework/host => ../../../chonkpilot-framework/host/src
+
+replace github.com/chonkpilot/chonkpilot-workspace => ../lib/workspace
+
+require github.com/lsong98sh/chonkpilot-framework/host v0.0.0
+
+replace github.com/lsong98sh/chonkpilot-agent => ../../../chonkpilot-agent
+
+require github.com/lsong98sh/chonkpilot-agent v0.0.0

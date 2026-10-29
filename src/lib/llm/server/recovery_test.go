@@ -9,14 +9,12 @@
 package server
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-chat"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // TestAskRecoveryAfterRestart：模拟进程重启后的 ask 收敛与失效应答。
@@ -106,10 +104,16 @@ func TestInboxCommitCrashRetryOnce(t *testing.T) {
 	s := newTestServer(t, httptest.NewServer(http.NotFoundHandler()))
 	registerTestInstance(t, s)
 
-	res, err := dataRequest(s.bus, msgkeys.TopicDataInboxAppend, map[string]any{
+	// 一树一库：先幂等建会话（自举回带 dialog_id 并落备忘），后续 inbox / commit 按它补 dialog_id。
+	st := newSessionStore(s.bus, "ins-test")
+	if err := st.EnsureSession("s-inbox-crash"); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := dataRequest(s.bus, msgkeys.TopicDataInboxAppend, withDialog(s, "s-inbox-crash", map[string]any{
 		"instance_id": "ins-test",
 		"data":        map[string]any{"session": "s-inbox-crash", "type": "insert", "content": "hi"},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("inbox append: %v", err)
 	}
@@ -118,25 +122,32 @@ func TestInboxCommitCrashRetryOnce(t *testing.T) {
 		t.Fatalf("inbox append 未返回 id：%+v", res)
 	}
 
-	st := newSessionStore(s.bus, "ins-test")
-	if err := st.EnsureSession("s-inbox-crash"); err != nil {
-		t.Fatal(err)
-	}
 	if err := st.EnsureTurn("t-inbox-crash", "s-inbox-crash"); err != nil {
 		t.Fatal(err)
 	}
-	store := newChatTurnStore(s, "ins-test", "s-inbox-crash", "t-inbox-crash")
+	commit := func() error {
+		_, err := dataRequest(s.bus, msgkeys.TopicDataInboxCommit, withDialog(s, "s-inbox-crash", map[string]any{
+			"instance_id": "ins-test",
+			"data": map[string]any{
+				"inbox_id":   inboxID,
+				"turn_id":    "t-inbox-crash",
+				"session_id": "s-inbox-crash",
+				"msg":        map[string]any{"role": "user", "content": "hi"},
+			},
+		}))
+		return err
+	}
 
-	msg := chat.Message{Role: "user", Content: "hi"}
-	if err := store.CommitInbox(context.Background(), inboxID, msg); err != nil {
+	msg := "hi"
+	if err := commit(); err != nil {
 		t.Fatalf("CommitInbox: %v", err)
 	}
-	if msgs := st.LoadMessages("t-inbox-crash"); len(msgs) != 1 || msgs[0].Content != "hi" {
+	if msgs := st.LoadMessages("t-inbox-crash"); len(msgs) != 1 || msgs[0].Content != msg {
 		t.Fatalf("首次提交落库错：%+v", msgs)
 	}
 
 	// 重试（模拟重启后重放同一次提交）：不报错、不重复落库。
-	if err := store.CommitInbox(context.Background(), inboxID, msg); err != nil {
+	if err := commit(); err != nil {
 		t.Fatalf("CommitInbox 重试应幂等：%v", err)
 	}
 	if msgs := st.LoadMessages("t-inbox-crash"); len(msgs) != 1 {
@@ -144,10 +155,10 @@ func TestInboxCommitCrashRetryOnce(t *testing.T) {
 	}
 
 	// inbox 已 consumed（唯一一条，且就是本次提交的 inbox 项）。
-	res, err = dataRequest(s.bus, msgkeys.TopicDataInboxList, map[string]any{
+	res, err = dataRequest(s.bus, msgkeys.TopicDataInboxList, withDialog(s, "s-inbox-crash", map[string]any{
 		"instance_id": "ins-test",
 		"data":        map[string]any{"session": "s-inbox-crash", "status": "consumed"},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("inbox list: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // handleKnowledge 分发 data-knowledge-<action>；未知 action（含 -refresh 误入）忽略不回复。
@@ -17,7 +17,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 	method := "data-knowledge-" + action
 	var p KnowledgePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		s.failID(method, p.ReqID, err)
+		s.failDecode(method, payload, err)
 		return
 	}
 	d := p.fields()
@@ -60,7 +60,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 			s.failID(method, p.ReqID, err)
 			return
 		}
-		s.replyID(method, p.ReqID, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldPath: resp.Path})
+		s.replyID(method, p.ReqID, wire.PathPayload{OK: true, Path: resp.Path})
 	case "delete":
 		if _, err := s.KnowledgeDelete(facade.KnowledgeDeleteRequest{
 			InstanceID: p.InstanceID, Path: d.Path,
@@ -85,7 +85,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 			s.failID(method, p.ReqID, err)
 			return
 		}
-		s.replyID(method, p.ReqID, map[string]any{msgkeys.FieldOk: true, msgkeys.FieldPath: resp.Path})
+		s.replyID(method, p.ReqID, wire.PathPayload{OK: true, Path: resp.Path})
 	case "rmdir":
 		if _, err := s.KnowledgeRmdir(facade.KnowledgeRmdirRequest{
 			InstanceID: p.InstanceID, Path: d.Path,
@@ -114,16 +114,13 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		for _, path := range resp.Paths {
 			paths = append(paths, path)
 		}
-		result := map[string]any{
-			msgkeys.DataKnowledgeImportResultOk:    resp.OK,
-			msgkeys.DataKnowledgeImportResultPaths: paths,
-		}
+		result := wire.KnowledgeImportPayload{OK: resp.OK, Paths: paths}
 		if len(resp.Errors) > 0 {
 			errs := make([]any, 0, len(resp.Errors))
 			for _, e := range resp.Errors {
 				errs = append(errs, map[string]any{msgkeys.FieldName: e.Name, msgkeys.FieldError: e.Error})
 			}
-			result[msgkeys.DataKnowledgeImportResultErrors] = errs
+			result.Errors = errs
 		}
 		s.replyID(method, p.ReqID, result)
 	}

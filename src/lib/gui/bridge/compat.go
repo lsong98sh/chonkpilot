@@ -18,7 +18,7 @@ package bridge
 import (
 	"encoding/json"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // compatEmit 根据 server 事件（typ = 前端 type，如 llm-receive）兼发旧协议事件。

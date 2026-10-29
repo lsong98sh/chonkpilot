@@ -32,7 +32,9 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     open(os.path.join(DATA_DIR, "chonkpilot.db"), "w").close()
 
-    gui = GUIClient(port=PORT, data_dir=DATA_DIR)
+    # 2026-10-26：套件用**独立 work-dir**（会话/轮次/插话落 prjusr，共享 ws 会带来跨套件污染：
+    # `data-session-latest` 会读到别的套件留下的活动会话）。
+    gui = GUIClient(port=PORT, data_dir=DATA_DIR, work_dir=os.path.join(DATA_DIR, "ws"))
     c = Checker()
     # 套件级配置快照-还原（51 §6-8）：prj 随独立临时 work-dir，usr 主库不受其隔离 → 跑前快照、finally 还原。
     snap = None
@@ -60,31 +62,36 @@ def main():
         r = gui.req('data-session-active-get')
         c.check("S3 data-session-active-get 回落（无记录→空）", r.get('session_id', 'x') == '', repr(r)[:80])
 
+        # S8 data-session-list 空 → {list: []}（须在锚点会话创建**之前**断言）
+        r = gui.req('data-session-list')
+        c.check("S8 data-session-list 空库空列表", r.get('list', ['x']) == [], repr(r)[:80])
+
+        # 一树一库（默认 shard=on）：后续 get/title/delete/content 需要具体对话库 →
+        # 先幂等建一个锚点会话，取其 dialog_id（不存在语义在**该库内**验证）。
+        anchor = gui.req('data-session-ensure-session', {'data': {'session_id': 'bridge-anchor'}}) or {}
+        dlg = anchor.get('dialog_id', '')
+
         # S4 data-session-get 不存在 → {data: null}
-        r = gui.req('data-session-get', {'id': 'no-such-session'})
+        r = gui.req('data-session-get', {'id': 'no-such-session', 'dialog_id': dlg})
         c.check("S4 data-session-get 不存在返回 null", r.get('data') is None, repr(r)[:80])
 
         # S5 data-session-title 不存在 → error
         try:
-            gui.req('data-session-title', {'data': {'id': 'no-such-session', 'title': '新标题'}})
+            gui.req('data-session-title', {'data': {'id': 'no-such-session', 'title': '新标题', 'dialog_id': dlg}})
             c.check("S5 data-session-title 不存在报错", False, "未抛错")
         except RuntimeError as e:
             c.check("S5 data-session-title 不存在报错", 'not found' in str(e), str(e)[:80])
 
         # S6 data-session-delete 不存在 → 成功（幂等）
         try:
-            gui.req('data-session-delete', {'id': 'no-such-session'})
+            gui.req('data-session-delete', {'id': 'no-such-session', 'dialog_id': dlg})
             c.check("S6 data-session-delete 不存在幂等成功", True)
         except RuntimeError as e:
             c.check("S6 data-session-delete 不存在幂等成功", False, str(e))
 
         # S7 data-session-content → contents 空字典
-        r = gui.req('data-session-content', {'data': {'session_id': 'sess-bridge-1', 'keys': ['message:abc']}})
+        r = gui.req('data-session-content', {'data': {'session_id': 'bridge-anchor', 'keys': ['message:abc'], 'dialog_id': dlg}})
         c.check("S7 data-session-content 空库返回空 contents", r.get('contents') == {}, repr(r)[:80])
-
-        # S8 data-session-list 空 → {list: []}
-        r = gui.req('data-session-list')
-        c.check("S8 data-session-list 空库空列表", r.get('list', ['x']) == [], repr(r)[:80])
 
         # S9 data-session-history 无 session_id → error
         try:

@@ -33,6 +33,11 @@
 
     <div class="footer">
       <Button
+        v-if="canChat"
+        class="chat-btn"
+        v-mq:[EventNames.askUserChat].click="{ uid }"
+      >{{ $t('chat.ask_user_chat') }}</Button>
+      <Button
         class="skip-btn"
         v-mq:[EventNames.askUserSkip].click="{ uid }"
       >{{ $t('chat.ask_user_skip') }}</Button>
@@ -65,9 +70,13 @@ const props = defineProps({
   subSessionId: { type: String, default: '' },
   sessionId: { type: String, default: '' },
   deadline: { type: Number, default: 0 },
+  // 「聊一聊」出口（AskUser S1-1，docs/ask-user/AskUser专题设计方案.md §4.3/§4.4）：
+  // **仅主窗口**渲染（对话窗口不提供）；判定在 askUserManager（会话切换只在主窗口成立），
+  // 本组件只按 props 渲染，保持纯展示。
+  canChat: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['answer', 'busy'])
+const emit = defineEmits(['answer', 'busy', 'skip', 'cancel', 'chat'])
 
 const selectedOption = ref(null)
 const selectedOptions = ref([]) // 多选：已勾选选项集合
@@ -95,6 +104,9 @@ onMounted(() => {
   }))
   unsubs.push(mq.on(EventNames.askUserCancel, ({ uid: u }) => {
     if (u === props.uid) emit('cancel')
+  }))
+  unsubs.push(mq.on(EventNames.askUserChat, ({ uid: u }) => {
+    if (u === props.uid) emit('chat')
   }))
   // 超时基准：无任何鼠标键盘操作开始计时（前端计时，与工具超时无关）
   const deadlineMs = props.deadline > 0 ? props.deadline : Date.now() + FALLBACK_TIMEOUT_MS
@@ -293,6 +305,22 @@ function submitAnswer() {
 .skip-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* 「聊一聊」（仅主窗口）：弱化描边按钮，与「跳过 / 取消 / 发送」同排；靠左单独一组 */
+.chat-btn {
+  margin-right: auto;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 14px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.chat-btn:hover {
+  border-color: var(--accent);
 }
 
 .cancel-btn {

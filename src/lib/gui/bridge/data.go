@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/idgen"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/idgen"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // dataReqTimeout data-* 请求超时（persist 应答同步：合并形态微秒级；给分离形态留裕量）。
@@ -241,27 +241,98 @@ func asAnySlice(v any) []any {
 // **取不到**（总线不可用 / 会话不存在 / 超时 / --no-server）→ 空串 →
 // 调用方按**普通会话**处理 → 普通对话窗口的既有额度与行为逐字不变。
 func (b *Bridge) SessionKind(sessionID string) string {
+	return sval(b.sessionRow(sessionID)["kind"])
+}
+
+// SessionDialogID 读某会话的对话 id（`sessions.dialog_id`；一树一库：会话内容在
+// `dialogs/dialog-<hex>.db` 里，InboxHasPending / TaskActive 需要它定位对话库）。
+//
+// 取不到（会话不存在 / 数据面不可用（--no-server / 超时））→ 空串（调用方按「无对话库」处理：
+// 会话类请求缺 `dialog_id` 会被数据面判 `dialog_required`）。
+func (b *Bridge) SessionDialogID(sessionID string) string {
+	return sval(b.sessionRow(sessionID)["dialog_id"])
+}
+
+// sessionRow 读会话行（`data-session-get` 的 `data` 对象；取不到 → nil）。
+// 同一份只读应答供 SessionKind / SessionDialogID 共用（一处取数、一处错误口径）。
+func (b *Bridge) sessionRow(sessionID string) map[string]any {
 	if sessionID == "" {
-		return ""
+		return nil
 	}
 	payload, err := json.Marshal(map[string]any{"id": sessionID})
 	if err != nil {
-		return ""
+		return nil
 	}
 	res, errs := b.dataCall(msgkeys.TopicDataSessionGet, payload)
 	if len(errs) > 0 {
-		return ""
+		return nil
 	}
 	m, ok := res.(map[string]any)
 	if !ok {
-		return ""
+		return nil
 	}
 	// 应答形态 = `{data: 会话行|null}`（wire.SessionGetResult）。
-	data, ok := m["data"].(map[string]any)
-	if !ok {
-		return ""
+	data, _ := m["data"].(map[string]any)
+	return data
+}
+
+// InboxHasPending 报告该会话是否有待处理（`status=pending`）的 inbox 项。
+//
+// 用途 = 运行态归属的空闲复核（SCOPE-1 释放条件之「inbox 无 pending」；见 gui/owner.go）。
+// 读失败 / 超时 / 无数据服务 → false（调用方按「无活动」处理，**宁放不挡**）。
+func (b *Bridge) InboxHasPending(sessionID, dialogID string) bool {
+	if sessionID == "" {
+		return false
 	}
-	return sval(data["kind"])
+	data := map[string]any{"session": sessionID, "status": "pending"}
+	if dialogID != "" {
+		data["dialog_id"] = dialogID
+	}
+	raw, _ := json.Marshal(map[string]any{"data": data})
+	res, errs := b.dataCall(msgkeys.TopicDataInboxList, raw)
+	if len(errs) > 0 {
+		return false
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		return false
+	}
+	return len(asAnySlice(m["items"])) > 0
+}
+
+// TaskActive 报告该会话是否有**非终态**（pending / running）任务树节点。
+//
+// 用途 = 运行态归属的空闲复核（SCOPE-1 释放条件之「无 async task」；见 gui/owner.go）。
+// `interrupted` 是进程重启遗留标注（已不再执行）→ 不算活动。
+// 读失败 / 超时 / 无数据服务 → false（宁放不挡）。
+func (b *Bridge) TaskActive(sessionID, dialogID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	data := map[string]any{"top_session": sessionID}
+	if dialogID != "" {
+		data["dialog_id"] = dialogID
+	}
+	raw, _ := json.Marshal(map[string]any{"data": data})
+	res, errs := b.dataCall(msgkeys.TopicDataTasktreeList, raw)
+	if len(errs) > 0 {
+		return false
+	}
+	m, ok := res.(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, it := range asAnySlice(m["nodes"]) {
+		node, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch sval(node["status"]) {
+		case "pending", "running":
+			return true
+		}
+	}
+	return false
 }
 
 // sval 把 Record/载荷值转字符串（string 原样；数字/bool 等 fmt 兜底；nil → ""）。

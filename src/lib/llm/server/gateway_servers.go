@@ -25,34 +25,8 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
-
-// mcpEntry 是单条 MCP 定义（字段名对齐 servers.list 规范 / 前端表单 / 四级 MCP 配置文件的字段）。
-// runtime 与 url 至少其一：有 runtime → spawned（网关拉起），仅 url → proxied（连接已运行 server）。
-// runtime = 可执行/解释器（单个 token），args = 启动参数（逐个 exec 参数，不做 shell/引号解析）。
-type mcpEntry struct {
-	Name        string            `json:"name"`
-	Runtime     string            `json:"runtime"`
-	Args        []string          `json:"args"`
-	URL         string            `json:"url"`
-	Enabled     bool              `json:"enabled"`
-	Description string            `json:"description"`
-	Transport   string            `json:"transport"`
-	Category    string            `json:"category"`
-	Namespace   string            `json:"namespace"`
-	Env         []string          `json:"env"`
-	Headers     map[string]string `json:"headers"`
-	Cwd         string            `json:"cwd"`
-	HotTools    []string          `json:"hot_tools"`
-	TimeoutSec  int               `json:"timeout"`
-	// Isolate 按 workdir 隔离连接（nil = 未设置 → gateway 按 transport 推断：stdio→true / http|sse→false）；
-	// 三态用指针表达，使「显式 false」与「未配置」可区分（旧配置缺该键 = 未设置，行为不变）。
-	Isolate *bool `json:"isolate,omitempty"`
-	// Sandbox 是 agentbox 沙箱开关（**仅 stdio** 的 spawn 生效；nil/未设置 = 不隔离 = 默认兼容）。
-	// 与 Isolate 独立：Isolate 管连接池隔离，Sandbox 管「可读 / 可写目录（递归）」策略下发。
-	Sandbox *bool `json:"sandbox,omitempty"`
-}
 
 // loadGatewayServers 装配下游 server 列表（启动期 / 实例注册 / 配置刷新均经此）：**四级文件化
 // MCP 配置**（`<级别>/capability/mcps/<名>.json`；同名最具体级优先、整条覆盖，由数据层 McpList
@@ -71,7 +45,10 @@ func (s *Server) loadGatewayServers(instanceID string) []mcpgateway.ServerEntry 
 // loadMcpFileEntries 读四级文件化 MCP 配置（经 data 门面 McpList；同名最具体级优先、整条覆盖）
 // → 定义数组。instanceID 透传给数据层作实例级根解析（空 = 启动期无实例）。门面不可用 / 读取
 // 失败 → 空（不阻断启动）。
-func (s *Server) loadMcpFileEntries(instanceID string) []mcpEntry {
+//
+// D-6（DATA-OPT-1 P3）：定义**直接取门面 DTO**（`facade.McpServer`）——原实现先另立同名 `mcpEntry`
+// 再经两次 JSON 往返转换（同一语义两套映射），已删除。
+func (s *Server) loadMcpFileEntries(instanceID string) []facade.McpServer {
 	if s.cfg == nil {
 		return nil
 	}
@@ -80,22 +57,7 @@ func (s *Server) loadMcpFileEntries(instanceID string) []mcpEntry {
 		logf("[chonkpilot-server] mcp 四级配置读取失败：%v\n", err)
 		return nil
 	}
-	out := make([]mcpEntry, 0, len(resp.List))
-	for _, srv := range resp.List {
-		b, err := json.Marshal(srv)
-		if err != nil {
-			continue
-		}
-		var e mcpEntry
-		if json.Unmarshal(b, &e) != nil {
-			continue
-		}
-		if e.Name == "" {
-			e.Name = srv.Name
-		}
-		out = append(out, e)
-	}
-	return out
+	return resp.List
 }
 
 // mergeGatewayServers 合并（可选）基底/文件定义并映射为 ServerEntry（纯函数，便于单测）：
@@ -108,11 +70,11 @@ func (s *Server) loadMcpFileEntries(instanceID string) []mcpEntry {
 //     Scope 留空 = global；
 //   - **来源（Origin）**：system 基底 = builtin（仅供单测覆盖；生产不传）；
 //     文件化 MCP 条目 = user（用户定义）；覆盖同名时来源随之为 user（安全默认）。
-func mergeGatewayServers(system, entries []mcpEntry) []mcpgateway.ServerEntry {
-	byName := map[string]mcpEntry{}
+func mergeGatewayServers(system, entries []facade.McpServer) []mcpgateway.ServerEntry {
+	byName := map[string]facade.McpServer{}
 	originByName := map[string]string{}
 	order := make([]string, 0, len(system)+len(entries))
-	put := func(e mcpEntry, origin string) {
+	put := func(e facade.McpServer, origin string) {
 		name := strings.TrimSpace(e.Name)
 		if name == "" {
 			return
@@ -163,7 +125,7 @@ func mergeGatewayServers(system, entries []mcpEntry) []mcpgateway.ServerEntry {
 			URL:         url,     // 非空 → proxied（连接已运行 server）
 			Transport:   transport,
 			Enabled:     true, // 已按 enabled 过滤，此处恒为 true
-			TimeoutSec:  e.TimeoutSec,
+			TimeoutSec:  e.Timeout,
 			Namespace:   e.Namespace,
 			Env:         e.Env,
 			Headers:     e.Headers,

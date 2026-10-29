@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // call 发一次 data 请求并等应答（同主题回包，按 req_id 匹配）。

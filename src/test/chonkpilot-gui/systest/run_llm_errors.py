@@ -45,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chonk_client import ChonkClient, TestError, run_case
 
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
-_G = _h.acquire_gui(2345)  # 复用优先；无实例则自起并在结束时回收
+_G = _h.acquire_gui(2345, work_dir=_h.tmp_dir("ck-llmerr-ws-"))  # 独立临时 work-dir（42 (290)：共享 ws 累积状态会让渲染线程长时间忙 → /eval 超时）
 _M = _h.acquire_mock_llm(_h.DEFAULT_MOCK_LLM_PORT)  # mock LLM 按需起（8901），结束回收
 c = _G.client
 _h.suite_config_guard(c)  # 套件级配置快照-还原（51 §6-8）：usr（llms/retryCount 等）退出前回滚
@@ -64,6 +64,25 @@ def _loads_deep(v):
         except Exception:
             return v
     return v
+
+
+def _wait_ready_input(max_wait=90):
+    """等输入区就绪（有界）。
+
+    刷新后渲染线程可能仍在恢复上一个会话（历史大 → 数十秒 /eval 不可应答），
+    `harness.reload_and_settle` 只保证「新文档 + 两次连续成功」，此处再确认
+    `.richtext-input` 真实存在，超时仅告警不中断（后续断言自行报错）。
+    """
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        try:
+            n = _loads_deep(c.eval("document.querySelectorAll('.richtext-input').length || 0"))
+            if int(str(n).strip().strip('"') or 0) >= 1:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
 
 
 def read_cfg():
@@ -268,19 +287,17 @@ def case_send_blocked_no_llm():
         time.sleep(1.5)
         # `llms` 置空时 config-refresh **不会**清空前端 llmList（既有语义：编辑期间不闪空）→
         # 本用例需「空 llms」生效，故重载一次让 llmList 按新配置重新初始化（仅本用例；跑前快照已存）。
+        # 2026-10-27：共享工作区数据量大 → 重载后首屏渲染可阻塞数十秒，统一走 harness 的
+        # `reload_and_settle`（等新文档 + 渲染线程真正可应答），避免 /eval 连续超时误红；
+        # 重置前先把活动会话指向空会话（历史大的会话恢复会显著拖慢首屏）。
         try:
-            c.eval("location.reload(); 'ok'")
+            c.req("data-session-active-set", {"session_id": "llmerr-reload-bootstrap"})
         except Exception:
             pass
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            try:
-                if _loads_deep(c.eval("!!document.querySelector('.panel-inner')")) is True:
-                    break
-            except Exception:
-                pass
-            time.sleep(0.5)
-        time.sleep(1.0)
+        _h.reload_and_settle(c)
+        time.sleep(0.5)
+        # 刷新后渲染线程可能仍在恢复上一个会话（历史大 → 数十秒不可应答）→ 有界等待输入区就绪。
+        _wait_ready_input()
         # 输入文本（输入区为 contenteditable 富文本：写 innerHTML + input 事件 → onEdit 同步 text）
         r = _loads_deep(c.eval("""(() => {
           const el = document.querySelector('.richtext-input');
@@ -368,23 +385,48 @@ def _prep_mock_cfg(retry_count):
     return snap
 
 
+def _install_retry_recorder():
+    """在页面内埋 MutationObserver 记录 `.llm-retry-hint` 文案。
+
+    2026-10-27：重试等待仅 2s（Retry-After: 2），而 `/eval` 在高负载下可耗时数秒
+    （ExecuteScript 超时重试）→ 纯轮询会整段错过提示条窗口。改为页面内观察者
+    逐帧记录（提示条一进 DOM 即登记），断言仍要求文案真实渲染过、含逐秒倒计时。
+    """
+    c.eval("""(() => {
+      window.__ckRetryTexts = [];
+      window.__ckRetryShot = '';
+      if (window.__ckRetryObs) { window.__ckRetryObs.disconnect(); }
+      const pick = () => {
+        const e = document.querySelector('.llm-retry-hint');
+        const t = e ? e.textContent.trim() : '';
+        if (t && window.__ckRetryTexts.indexOf(t) < 0) window.__ckRetryTexts.push(t);
+      };
+      window.__ckRetryObs = new MutationObserver(pick);
+      window.__ckRetryObs.observe(document.body, {subtree: true, childList: true, characterData: true});
+      pick();
+      return 'ok';
+    })()""")
+
+
 def _watch_retry_dom(max_wait=40):
-    """轮询可见重试提示条，收集不同文案 + 首帧截图；llm-complete 到达即停。"""
-    texts, shot = [], ""
+    """等 llm-complete 到达（或超时），读回观察者记录的重试提示文案 + 首帧截图。"""
+    shot = ""
     end = time.time() + max_wait
     while time.time() < end:
         try:
-            t = _dom("(()=>{const e=document.querySelector('.llm-retry-hint');"
-                     "return e?e.textContent.trim():''})()")
-        except Exception:
-            t = ""
-        if t and t not in texts:
-            texts.append(t)
-            if not shot:
+            if c.events_of("llm-complete", clear=False):
+                break
+            if not shot and _dom("document.querySelectorAll('.llm-retry-hint').length || 0") >= 1:
                 shot = _save_shot("retry-in-progress.png")
-        if c.events_of("llm-complete", clear=False):
-            break
-        time.sleep(0.2)
+        except Exception:
+            pass
+        time.sleep(0.3)
+    try:
+        texts = _loads_deep(c.eval("window.__ckRetryTexts || []")) or []
+    except Exception:
+        texts = []
+    if not isinstance(texts, list):
+        texts = []
     return texts, shot
 
 
@@ -399,6 +441,7 @@ def case_visible_retry_then_success():
         sid = create_session()
         activate_session(sid)
         time.sleep(1.5)
+        _install_retry_recorder()
         start_turn(sid, "please call retry-twice", llm="mock")
         confirm_turn(sid, max_wait=60)
         texts, shot = _watch_retry_dom(max_wait=40)
@@ -454,6 +497,7 @@ def case_retry_exhaust_terminal_hint():
         sid = create_session()
         activate_session(sid)
         time.sleep(1.5)
+        _install_retry_recorder()
         start_turn(sid, "please call retry-exhaust", llm="mock")
         confirm_turn(sid, max_wait=60)
         texts, shot = _watch_retry_dom(max_wait=40)

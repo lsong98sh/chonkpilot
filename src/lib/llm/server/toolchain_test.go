@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // toolchainTestJavaPath 测试用 java 路径（usr 配置 javaPath）。

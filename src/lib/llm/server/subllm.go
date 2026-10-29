@@ -57,13 +57,13 @@ func (s *Server) runChildTurn(parentCtx context.Context, parentReq StartReq, sub
 		parentCtx = context.Background()
 	}
 	select {
-	case <-tc.done:
+	case <-tc.Done():
 	case <-parentCtx.Done():
 	}
 	// 父侧取消分支：不再等子步跑满（子轮次已随 ctx 终止，其 LLM 请求被中止）。
 	// 竞态守卫：若此刻子轮次恰好也已收尾（done 已关），按完成结果返回。
 	select {
-	case <-tc.done:
+	case <-tc.Done():
 		if tc.turnErr != nil {
 			return "", subTurn, tc.turnErr
 		}

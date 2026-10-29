@@ -255,46 +255,31 @@ func KnowledgeRootResult(resp facade.KnowledgeRootResponse) KnowledgeRootPayload
 	return KnowledgeRootPayload{Root: resp.Root, Kind: resp.Kind}
 }
 
-// KnowledgeDirRow / KnowledgeFileRow 是知识库列表行 DTO。
-type KnowledgeDirRow struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-}
-
-type KnowledgeFileRow struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	Type        string `json:"type"`
-	Description string `json:"description"`
-	Modified    string `json:"modified"`
-}
-
 // KnowledgeListPayload 是 `data-knowledge-list` 结果 DTO。
+//
+// S-7（DATA-OPT-1 P3）：目录 / 文件行**直接复用门面类型**（`facade.KnowledgeDir` /
+// `facade.KnowledgeFile` —— 字段与 json tag 与既有行 DTO 逐字一致），不再另立同名 Row。
 type KnowledgeListPayload struct {
-	Dir   string             `json:"dir"`
-	Dirs  []KnowledgeDirRow  `json:"dirs"`
-	Files []KnowledgeFileRow `json:"files"`
+	Dir   string                 `json:"dir"`
+	Dirs  []facade.KnowledgeDir  `json:"dirs"`
+	Files []facade.KnowledgeFile `json:"files"`
 }
 
 // KnowledgeListResult 组装 `data-knowledge-list` 结果载荷 `{dir, dirs:[{name,path}], files:[…]}`。
+// 空集合归一为 `nil`（JSON `null`）——与拆分前「逐项 append 到 nil 切片」的载荷逐字节一致。
 func KnowledgeListResult(resp facade.KnowledgeListResponse) KnowledgeListPayload {
-	var dirs []KnowledgeDirRow
-	for _, d := range resp.Dirs {
-		dirs = append(dirs, KnowledgeDirRow{Name: d.Name, Path: d.Path})
+	if len(resp.Dirs) == 0 {
+		resp.Dirs = nil
 	}
-	var files []KnowledgeFileRow
-	for _, f := range resp.Files {
-		files = append(files, KnowledgeFileRow{
-			Name: f.Name, Path: f.Path, Type: f.Type,
-			Description: f.Description, Modified: f.Modified,
-		})
+	if len(resp.Files) == 0 {
+		resp.Files = nil
 	}
-	return KnowledgeListPayload{Dir: resp.Dir, Dirs: dirs, Files: files}
+	return KnowledgeListPayload{Dir: resp.Dir, Dirs: resp.Dirs, Files: resp.Files}
 }
 
 // KnowledgeReadPayload 是 `data-knowledge-read` 结果 DTO。
 type KnowledgeReadPayload struct {
-	Source string             `json:"source"`
+	Source string              `json:"source"`
 	Doc    facade.KnowledgeDoc `json:"doc"`
 }
 
@@ -534,38 +519,17 @@ func strListJSON(v any) []string {
 
 // ── 记忆库（memory 域）───────────────────────────────────────────
 
-// MemoryCategoryRow / MemoryDocRow / MemoryExtractRow 是记忆域行 DTO。
-type MemoryCategoryRow struct {
-	Category       string `json:"category"`
-	Level          string `json:"level"`
-	Path           string `json:"path"`
-	Tokens         int    `json:"tokens"`
-	Prompt         string `json:"prompt"`
-	PromptOverride bool   `json:"prompt_override"`
-}
-
-type MemoryDocRow struct {
-	Category string `json:"category"`
-	Level    string `json:"level"`
-	Path     string `json:"path"`
-	Content  string `json:"content"`
-	Tokens   int    `json:"tokens"`
-}
-
-type MemoryExtractRow struct {
-	SessionID  string `json:"session_id"`
-	Category   string `json:"category"`
-	LastTurnID string `json:"last_turn_id"`
-}
-
 // MemoryListPayload 是 `data-memory-list` 结果 DTO。
+//
+// S-7（DATA-OPT-1 P3）：行**直接复用门面类型**（`facade.MemoryCategory` / `facade.MemoryDoc` /
+// `facade.MemoryExtractRecord` —— 字段与 json tag 与既有行 DTO 逐字一致），不再另立同名 Row。
 type MemoryListPayload struct {
-	List []MemoryCategoryRow `json:"list"`
+	List []facade.MemoryCategory `json:"list"`
 }
 
 // MemoryGetPayload 是 `data-memory-read` 结果 DTO。
 type MemoryGetPayload struct {
-	Data MemoryDocRow `json:"data"`
+	Data facade.MemoryDoc `json:"data"`
 }
 
 // MemoryIDPayload 是记忆 save / delete 结果 DTO。
@@ -576,29 +540,22 @@ type MemoryIDPayload struct {
 
 // MemoryExtractListPayload 是 `data-memory-extract-load` 结果 DTO。
 type MemoryExtractListPayload struct {
-	List []MemoryExtractRow `json:"list"`
+	List []facade.MemoryExtractRecord `json:"list"`
 }
 
 // MemoryListResult 组装 `data-memory-list` 结果载荷
 // `{list:[{category,level,path,tokens,prompt,prompt_override}]}`（prompt / prompt_override = OP-04
 // 类别沉淀提示词有效值与覆盖标记，由后端文件读序解析后下发）。
 func MemoryListResult(list []facade.MemoryCategory) MemoryListPayload {
-	out := make([]MemoryCategoryRow, 0, len(list))
-	for _, c := range list {
-		out = append(out, MemoryCategoryRow{
-			Category: c.Category, Level: c.Level, Path: c.Path, Tokens: c.Tokens,
-			Prompt: c.Prompt, PromptOverride: c.PromptOverride,
-		})
+	if list == nil {
+		list = []facade.MemoryCategory{}
 	}
-	return MemoryListPayload{List: out}
+	return MemoryListPayload{List: list}
 }
 
 // MemoryGetResult 组装 `data-memory-read` 结果载荷 `{data:{…全文…}}`。
 func MemoryGetResult(doc facade.MemoryDoc) MemoryGetPayload {
-	return MemoryGetPayload{Data: MemoryDocRow{
-		Category: doc.Category, Level: doc.Level, Path: doc.Path,
-		Content: doc.Content, Tokens: doc.Tokens,
-	}}
+	return MemoryGetPayload{Data: doc}
 }
 
 // MemoryIDResult 组装 `{ok:true, id:<类别>}`（save / delete）。
@@ -611,11 +568,8 @@ func MemoryIDResult(id string) MemoryIDPayload {
 // MemoryExtractListResult 组装 `data-memory-extract-load` 结果载荷
 // `{list:[{session_id,category,last_turn_id}]}`（嵌套行字段，口径同 MemoryListResult）。
 func MemoryExtractListResult(list []facade.MemoryExtractRecord) MemoryExtractListPayload {
-	out := make([]MemoryExtractRow, 0, len(list))
-	for _, r := range list {
-		out = append(out, MemoryExtractRow{
-			SessionID: r.SessionID, Category: r.Category, LastTurnID: r.LastTurnID,
-		})
+	if list == nil {
+		list = []facade.MemoryExtractRecord{}
 	}
-	return MemoryExtractListPayload{List: out}
+	return MemoryExtractListPayload{List: list}
 }

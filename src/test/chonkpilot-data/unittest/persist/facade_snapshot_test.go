@@ -8,6 +8,8 @@
 // 覆盖：写入落点相同 / 读回值逐项相同 / 无快照语义相同 / 读改写无损（DTO 覆盖全部字段）/
 // 自登记路径（Scope 提示）/ MQ 应答 payload 形状**不变**（61 零变更：history + snapshot_turn）。
 //
+// 一树一库：快照落**对话库**，故请求一律带 `dialog_id`（旧布局已退场）。
+//
 // 文件放在 persist 测试目录内，以便与 MQ 面复用同一套宿主 helper
 // （newTestPersist / regInstance / dataCall / dataResult）。
 package persist_test
@@ -21,7 +23,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 const facadeInstance = "ins-test"
@@ -64,29 +66,31 @@ func snapshotMQPayload(t *testing.T, snap data.Snapshot) map[string]any {
 }
 
 // mqSetSnapshot 经 MQ 写快照（data-snapshot-set）。
-func mqSetSnapshot(t *testing.T, bus mq.Bus, session string, snap data.Snapshot) {
+func mqSetSnapshot(t *testing.T, bus mq.Bus, dialogID, session string, snap data.Snapshot) {
 	t.Helper()
 	dataCall(t, bus, "data-snapshot-set", map[string]any{
 		"instance_id": facadeInstance,
-		"data":        map[string]any{"session_id": session, "snapshot": snapshotMQPayload(t, snap)},
+		"data": map[string]any{"session_id": session, "dialog_id": dialogID,
+			"snapshot": snapshotMQPayload(t, snap)},
 	})
 }
 
 // mqGetSnapshot 经 MQ 读快照（data-snapshot-get；result.snapshot 原文，无快照 → nil）。
-func mqGetSnapshot(t *testing.T, bus mq.Bus, session string) map[string]any {
+func mqGetSnapshot(t *testing.T, bus mq.Bus, dialogID, session string) map[string]any {
 	t.Helper()
 	res := dataResult(t, dataCall(t, bus, "data-snapshot-get", map[string]any{
-		"instance_id": facadeInstance, "data": map[string]any{"session_id": session},
+		"instance_id": facadeInstance,
+		"data":        map[string]any{"session_id": session, "dialog_id": dialogID},
 	}))
 	got, _ := res["snapshot"].(map[string]any)
 	return got
 }
 
 // facadeGetKernel 经门面（inline）读快照并翻回内核形态（便于与 MQ 面逐字段比较）。
-func facadeGetKernel(t *testing.T, api facade.API, session string) data.Snapshot {
+func facadeGetKernel(t *testing.T, api facade.API, dialogID, session string) data.Snapshot {
 	t.Helper()
 	resp, err := api.SnapshotGet(facade.SnapshotGetRequest{
-		InstanceID: facadeInstance, SessionID: session,
+		InstanceID: facadeInstance, SessionID: session, DialogID: dialogID,
 	})
 	if err != nil {
 		t.Fatalf("facade SnapshotGet: %v", err)
@@ -98,10 +102,11 @@ func facadeGetKernel(t *testing.T, api facade.API, session string) data.Snapshot
 }
 
 // facadeSetKernel 经门面（inline）写内核快照（经 DTO 翻译）。
-func facadeSetKernel(t *testing.T, api facade.API, session string, snap data.Snapshot) {
+func facadeSetKernel(t *testing.T, api facade.API, dialogID, session string, snap data.Snapshot) {
 	t.Helper()
 	if _, err := api.SnapshotSet(facade.SnapshotSetRequest{
-		InstanceID: facadeInstance, Snapshot: data.SnapshotToFacade(session, snap),
+		InstanceID: facadeInstance, DialogID: dialogID,
+		Snapshot: data.SnapshotToFacade(session, snap),
 	}); err != nil {
 		t.Fatalf("facade SnapshotSet: %v", err)
 	}
@@ -113,13 +118,15 @@ func TestFacadeInlineEqualsMQPath(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
 	api := inline.New(bus)
+	dFac, _ := newDialog(t, "ins-test", "s-fac")
+	dMQ, _ := newDialog(t, "ins-test", "s-mq")
 
 	// 门面写 s-fac；MQ 写 s-mq（同一份内核快照）
-	facadeSetKernel(t, api, "s-fac", seedSnapshot("t7"))
-	mqSetSnapshot(t, bus, "s-mq", seedSnapshot("t7"))
+	facadeSetKernel(t, api, dFac, "s-fac", seedSnapshot("t7"))
+	mqSetSnapshot(t, bus, dMQ, "s-mq", seedSnapshot("t7"))
 
 	// ① 门面读两条会话 → 内容一致（写入门面 → 读回；写入 MQ → 门面也读得到 = 同一落点）
-	viaFacade, viaMQ := facadeGetKernel(t, api, "s-fac"), facadeGetKernel(t, api, "s-mq")
+	viaFacade, viaMQ := facadeGetKernel(t, api, dFac, "s-fac"), facadeGetKernel(t, api, dMQ, "s-mq")
 	if !reflect.DeepEqual(viaFacade, viaMQ) {
 		t.Fatalf("门面读回内容不一致：\n门面写=%+v\nMQ 写=%+v", viaFacade, viaMQ)
 	}
@@ -128,7 +135,7 @@ func TestFacadeInlineEqualsMQPath(t *testing.T) {
 	}
 
 	// ② MQ 读两条会话 → 报文逐项一致（门面写的内容 MQ 面读到同一份）
-	mqFacade, mqMQ := mqGetSnapshot(t, bus, "s-fac"), mqGetSnapshot(t, bus, "s-mq")
+	mqFacade, mqMQ := mqGetSnapshot(t, bus, dFac, "s-fac"), mqGetSnapshot(t, bus, dMQ, "s-mq")
 	if !reflect.DeepEqual(mqFacade, mqMQ) {
 		t.Fatalf("MQ 读回内容不一致：\n门面写=%+v\nMQ 写=%+v", mqFacade, mqMQ)
 	}
@@ -150,14 +157,15 @@ func TestFacadeInlineReadModifyWriteIsLossless(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
 	api := inline.New(bus)
+	d1, _ := newDialog(t, "ins-test", "s-rt")
 
-	mqSetSnapshot(t, bus, "s-rt", seedSnapshot("t9"))
-	before := mqGetSnapshot(t, bus, "s-rt")
+	mqSetSnapshot(t, bus, d1, "s-rt", seedSnapshot("t9"))
+	before := mqGetSnapshot(t, bus, d1, "s-rt")
 
-	read := facadeGetKernel(t, api, "s-rt") // 门面读（经 DTO）
-	facadeSetKernel(t, api, "s-rt", read)   // 原样写回
+	read := facadeGetKernel(t, api, d1, "s-rt") // 门面读（经 DTO）
+	facadeSetKernel(t, api, d1, "s-rt", read)   // 原样写回
 
-	after := mqGetSnapshot(t, bus, "s-rt")
+	after := mqGetSnapshot(t, bus, d1, "s-rt")
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("门面读改写丢失/改动了字段：\nbefore=%+v\nafter =%+v", before, after)
 	}
@@ -169,9 +177,10 @@ func TestFacadeInlineMissingSession(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
 	api := inline.New(bus)
+	d1, _ := newDialog(t, "ins-test", "s-other")
 
 	resp, err := api.SnapshotGet(facade.SnapshotGetRequest{
-		InstanceID: facadeInstance, SessionID: "s-none",
+		InstanceID: facadeInstance, SessionID: "s-none", DialogID: d1,
 	})
 	if err != nil {
 		t.Fatalf("facade SnapshotGet: %v", err)
@@ -182,7 +191,7 @@ func TestFacadeInlineMissingSession(t *testing.T) {
 	if resp.Snapshot.SessionID != "" || len(resp.Snapshot.Messages) != 0 || resp.Snapshot.Turn != "" {
 		t.Fatalf("无快照应返回零值：%+v", resp.Snapshot)
 	}
-	if got := mqGetSnapshot(t, bus, "s-none"); got != nil {
+	if got := mqGetSnapshot(t, bus, d1, "s-none"); got != nil {
 		t.Fatalf("MQ 面无快照应 snapshot=null：%+v", got)
 	}
 }
@@ -200,13 +209,19 @@ func TestFacadeInlineSelfRegistersFromScope(t *testing.T) {
 	scope := facade.Scope{WorkDir: wd, DataDir: filepath.Join(wd, ".chonkpilot")}
 	snap := seedSnapshot("t1")
 
+	// 对话库需先存在（一树一库：快照随对话落库；快照写入要求会话行已在对话库内）。
+	data.Register(inst, wd, "")
+	dialogID, _ := newDialog(t, inst, "s-scope")
+
 	if _, err := api.SnapshotSet(facade.SnapshotSetRequest{
-		InstanceID: inst, Snapshot: data.SnapshotToFacade("s-scope", snap), Scope: scope,
+		InstanceID: inst, DialogID: dialogID, Snapshot: data.SnapshotToFacade("s-scope", snap), Scope: scope,
 	}); err != nil {
 		t.Fatalf("SnapshotSet（自登记）: %v", err)
 	}
 	// 自登记后：不带 Scope 也能读（实例绑定表已有该实例）
-	resp, err := api.SnapshotGet(facade.SnapshotGetRequest{InstanceID: inst, SessionID: "s-scope"})
+	resp, err := api.SnapshotGet(facade.SnapshotGetRequest{
+		InstanceID: inst, SessionID: "s-scope", DialogID: dialogID,
+	})
 	if err != nil || !resp.Found {
 		t.Fatalf("SnapshotGet: found=%v err=%v", resp.Found, err)
 	}

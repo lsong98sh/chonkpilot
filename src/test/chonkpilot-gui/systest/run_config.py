@@ -130,12 +130,15 @@ def case_llm_list_display():
     为使预置条目生效，先 reload 前端再打开（列表从 data-user-config-load 读取）。
     """
     _close_dialogs()
+    # 2026-10-27（42 (290)）：重载会按 `active_session_id` 恢复上一活动会话——共享 work-dir 下
+    # 可能是大历史会话，WebView2 渲染线程会被首屏占满（后续 `/eval` 连续 ExecuteScript 超时）。
+    # 先建空会话并把活动位指向它，再做稳定重载（`reload_and_settle` 等新文档 + 渲染线程可应答）。
     try:
-        c.eval("location.reload()", 3000)
+        c.req("data-session-ensure-session", {"data": {"session_id": "cfg-bootstrap"}}, 8000)
+        c.req("data-session-active-set", {"session_id": "cfg-bootstrap"}, 8000)
     except Exception:
         pass
-    time.sleep(6)
-    c.wait_ready(90)
+    _h.reload_and_settle(c)
     _open("settings-llm")
     deadline = time.time() + 8
     body = ""

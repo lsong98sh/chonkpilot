@@ -1,5 +1,5 @@
 <template>
-  <LfDropdown :name="`icon-${nameKey}`" :min-width="316" :max-height="380" align="left">
+  <LfDropdown :name="`icon-${nameKey}`" :min-width="300" :max-height="420" align="left">
     <template #trigger>
       <button
         class="icon-picker-trigger"
@@ -11,7 +11,7 @@
       </button>
     </template>
 
-    <div class="icon-picker">
+    <div class="icon-popup">
       <div class="ip-head">
         <input
           type="text"
@@ -20,29 +20,23 @@
           :value="query"
           @input="query = $event.target.value"
         />
+        <span class="ip-count">{{ filtered.length }}</span>
         <button class="ip-clear" title="清除图标" v-mq:[EventNames.containerClick].click="() => pick('')">✕</button>
       </div>
 
-      <div v-for="g in filteredGroups" :key="g.group" class="ip-group">
-        <div class="ip-group-title">{{ g.group }}</div>
-        <div class="ip-grid">
-          <button
-            v-for="n in g.icons"
-            :key="n"
-            class="ip-cell"
-            :class="{ active: n === value }"
-            :title="n"
-            v-mq:[EventNames.containerClick].click="() => pick(n)"
-          >
-            <LfIcon :name="n" :size="17" />
-          </button>
-        </div>
+      <div class="ip-grid">
+        <button
+          v-for="n in filtered"
+          :key="n"
+          class="ip-cell"
+          :class="{ active: n === value }"
+          :title="n"
+          v-mq:[EventNames.containerClick].click="() => pick(n)"
+        >
+          <LfIcon :name="n" :size="16" fallback="·" />
+        </button>
       </div>
-      <div v-if="!filteredGroups.length" class="ip-empty">没有匹配的图标</div>
-
-      <div class="ip-foot">
-        <span class="ip-hint">也可直接填 emoji / 图片地址 / &lt;svg&gt; 串</span>
-      </div>
+      <div v-if="!filtered.length" class="ip-empty">没有匹配的图标</div>
     </div>
   </LfDropdown>
 </template>
@@ -54,8 +48,8 @@ import { getLayoutDeps } from '../../deps.js'
 import { useEditStore } from '../../stores/edit'
 import { EventNames } from '../../events/event-names'
 
-const props = defineProps({
-  /** 当前图标值（名称 / svg / 图片地址 / emoji） */
+defineProps({
+  /** 当前图标值（图标名） */
   value: { type: String, default: '' },
   /** 下拉唯一 key 后缀（一般传条目 id，保证多个选择器互不干扰） */
   nameKey: { type: String, required: true },
@@ -66,15 +60,11 @@ const emit = defineEmits(['pick'])
 const edit = useEditStore()
 const query = ref('')
 
-const filteredGroups = computed(() => {
-  // 图标名清单由宿主注入（去重：不再内联 icon-set.js）
+/** 可选图标名清单由宿主注入（components/icon/icons.js，去重：不再内联 icon-set.js） */
+const filtered = computed(() => {
   const names = getLayoutDeps().iconNames ?? []
-  const groups = [{ group: '图标', icons: names }]
   const q = query.value.trim().toLowerCase()
-  if (!q) return groups
-  return groups.map((g) => ({ ...g, icons: g.icons.filter((n) => n.includes(q)) })).filter(
-    (g) => g.icons.length,
-  )
+  return q ? names.filter((n) => n.includes(q)) : names
 })
 
 function pick(name) {
@@ -111,11 +101,11 @@ function pick(name) {
   opacity: 0.7;
 }
 
-.icon-picker {
+.icon-popup {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-height: 340px;
+  gap: 6px;
+  max-height: 380px;
   overflow: auto;
 }
 
@@ -139,6 +129,13 @@ function pick(name) {
   font-size: 12px;
 }
 
+.ip-count {
+  font-size: 11px;
+  color: var(--lf-text-weak);
+  min-width: 22px;
+  text-align: right;
+}
+
 .ip-clear {
   width: 24px;
   height: 24px;
@@ -154,25 +151,18 @@ function pick(name) {
   color: #d33;
 }
 
-.ip-group-title {
-  font-size: 11px;
-  color: var(--lf-text-weak);
-  margin: 4px 0 2px;
-  font-weight: 600;
-}
-
+/* 每行固定 8 个，点击即选 */
 .ip-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(28px, 1fr));
-  gap: 3px;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
 }
 
 .ip-cell {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  height: 30px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
@@ -196,18 +186,5 @@ function pick(name) {
   color: var(--lf-text-weak);
   padding: 8px;
   text-align: center;
-}
-
-.ip-foot {
-  border-top: 1px solid var(--lf-border);
-  padding-top: 4px;
-  position: sticky;
-  bottom: 0;
-  background: #fff;
-}
-
-.ip-hint {
-  font-size: 11px;
-  color: var(--lf-text-weak);
 }
 </style>

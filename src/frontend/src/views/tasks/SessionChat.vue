@@ -17,7 +17,7 @@
       </div>
       <template v-else>
         <!-- 子会话只读对话：turn 导航按 CHAT-013-S06 / TASK-011-S03 置于**下侧**（组件 direction='bottom'；主 chat = 右） -->
-        <MessageList :session-id="sessionId" :viewer="true" direction="bottom" />
+        <MessageList :session-id="sessionId" :top-session-id="topSessionId" :viewer="true" direction="bottom" />
       </template>
     </div>
   </div>
@@ -42,9 +42,14 @@ import { useSelectionStore } from '../../stores/selection'
 // 本组件只读（storeToRefs 派生）——原组件内 sessionId / taskId 两个 ref 已删（双源已消除）；
 // 写入 = 既有订阅者（stores/selectionSubscribers.js）。
 const selection = useSelectionStore()
-const { activeTask } = storeToRefs(selection)
+const { activeTask, activeSession } = storeToRefs(selection)
 const sessionId = computed(() => activeTask.value.sessionId || null)
 const taskId = computed(() => activeTask.value.taskId || null)
+
+// 一树一库：任务详情 viewer 读的是**当前主会话的对话库**（子会话行与主会话同库）。
+// `data-session-list` 只列主会话 → 子会话的 dialog_id 无从查得；这里只给主会话 id，
+// dialog_id 由 MessageList 在加载时经 `sessionDialogOf` 现取（备忘可能在渲染后才就绪）。
+const topSessionId = computed(() => activeSession.value.sessionId || '')
 
 // DSL 作业：任务是 DSL 作业根 → 右侧改渲染步骤表格（DslStepsPanel）
 const { isJobNode } = useDslView()

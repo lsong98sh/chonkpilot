@@ -43,7 +43,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 )
 
@@ -382,6 +382,8 @@ func headerTruthy(v string) bool {
 	return false
 }
 
+// firstNonEmpty 取首个非空白串，否则回落 fallback。
+// utilguard:allow: 需要 TrimSpace 判空（strx.FirstNonEmpty 只判空串），语义不同。
 func firstNonEmpty(v, fallback string) string {
 	if strings.TrimSpace(v) != "" {
 		return v

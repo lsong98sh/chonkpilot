@@ -3,7 +3,7 @@
 // 读 `docs/spec/60-reference/61-messages.schema.json`（= 61-消息一览 的机器可读抽取），
 // 生成两侧键/主题常量，消除"同一事实写三遍"（Go 字面量 / JS 读取 / 文档）：
 //
-//   - Go：src/lib/core/msgkeys/msgkeys_gen.go（package msgkeys）
+//   - Go：../chonkpilot-framework/host/src/core/msgkeys/msgkeys_gen.go（package msgkeys；TOPO-1 起）
 //   - JS：src/frontend/src/events/msgkeys.js
 //
 // 生成物带"由 genmsg 生成，勿手改"头注释；漂移由 gen_test.go 逐字比对兜底。

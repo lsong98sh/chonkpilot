@@ -8,14 +8,18 @@
     <!-- 项目就地切换（browser「打开目录」）：`:key="projectEpoch"` 自增 → 主布局整树重挂载，
          等价于整页重载后的组件重建（不整页重载）。见 utils/projectReinit.js。 -->
     <MainLayout v-else-if="ready" :key="projectEpoch" />
-    <div v-else class="ck-startup">
+    <div v-if="ready && !chatOnly && !logOnly && !pluginsReady" class="ck-plugin-boot">
+      <span class="ck-plugin-boot__dot" />
+      {{ t('common.plugins_initializing') }}
+    </div>
+    <div v-else-if="!ready" class="ck-startup">
       <div class="ck-startup__box">{{ t(textKey) }}</div>
     </div>
   </template>
 </template>
 
 <script setup>
-import { computed, nextTick } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import mq from './utils/mq'
 import { EventNames } from './events/event-names'
@@ -100,6 +104,28 @@ setProjectReinitHandler(async () => {
   await init()
 })
 
+// 插件平台就绪提示（2026-10-26）：宿主已改为「主窗口先出、插件后起」→ 主视图立即可用，
+// 但工具/插件视图尚未注册。这里轮询既有方法面 `plugin-list`（不新增 MQ 主题）：
+// 首次成功应答（即使 0 个插件）即视为平台就绪；20s 超时兜底，绝不阻塞使用。
+const pluginsReady = ref(false)
+async function waitPluginsReady() {
+  const deadline = Date.now() + 20000
+  while (Date.now() < deadline) {
+    try {
+      const res = await mq.emit('plugin-list', {})
+      if (res && !(res.errors && res.errors.length)) {
+        pluginsReady.value = true
+        return
+      }
+    } catch {
+      // 插件平台尚未启动：忽略并重试
+    }
+    await new Promise((r) => setTimeout(r, 400))
+  }
+  pluginsReady.value = true
+}
+if (!chatOnly && !logOnly) waitPluginsReady()
+
 // 日志窗口（PRODSIM-1）不参与认领 / 预取（只读 /api/log/tail）。
 if (!logOnly) {
   // 与认领**并行**预取 init-data：布局/UI 恢复（MainLayout.applyLayout）不再等主视图挂载
@@ -131,5 +157,33 @@ if (!logOnly) {
   font-size: 13px;
   line-height: 1.6;
   text-align: center;
+}
+/* 插件初始化提示：主视图已出，右下角轻提示（不遮挡操作）。 */
+.ck-plugin-boot {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #3c3c3c);
+  border-radius: 999px;
+  background: var(--bg-secondary, #252526);
+  color: var(--text-secondary, #bbb);
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.ck-plugin-boot__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent, #4f9cf9);
+  animation: ck-plugin-pulse 1s ease-in-out infinite;
+}
+@keyframes ck-plugin-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
 }
 </style>

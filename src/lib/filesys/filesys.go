@@ -18,11 +18,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/chonkpilot/chonkpilot-workspace"
+	"github.com/lsong98sh/chonkpilot-util/pathx"
 )
 
 const maxTextBytes = 512 * 1024
@@ -33,16 +34,15 @@ type Filesys struct {
 	subs []mq.Sub
 	wm   *watchManager
 
-	// insts 是自持的实例视图：instance_id → work_dir（自 instance-register 登记，
-	// 与 persist 同构）。请求的 work_dir **一律由本表解析**，不采信请求载荷（G-21）：
-	// payload 里的 work_dir 只作契约字段保留，越权方无法借它把操作基目录指到绑外目录。
-	mu    sync.Mutex
-	insts map[string]string
+	// pm 是工作区管理（唯一权威）：实例 → work_dir 的解析、工作区开闭事件、
+	// 路径边界校验一律走它。本包**不再自持 instance → work_dir 绑定**（G-21 不变：
+	// 请求载荷里的 work_dir 只作契约字段保留，绝不采信）。
+	pm *workspace.Manager
 }
 
-// New 构建文件服务（未启动，调用 Start 后开始订阅）。
-func New(bus mq.Bus) *Filesys {
-	return &Filesys{bus: bus, wm: newWatchManager(bus), insts: map[string]string{}}
+// New 构建文件服务（未启动，调用 Start 后开始订阅）。pm = 工作区管理（必填）。
+func New(bus mq.Bus, pm *workspace.Manager) *Filesys {
+	return &Filesys{bus: bus, wm: newWatchManager(bus, pm), pm: pm}
 }
 
 // Start 订阅全部 filesys.* 主题并开始处理请求。
@@ -60,12 +60,10 @@ func (f *Filesys) Start() error {
 		{msgkeys.TopicFilesysCopy, f.onCopy},
 		{msgkeys.TopicFilesysWatch, f.onWatch},
 		{msgkeys.TopicFilesysUnwatch, f.onUnwatch},
-		// instance 生命周期（与 persist 同构）：自持「instance → work_dir」绑定，见 insts。
-		// 只订阅 register/exit —— filesys 与发布方（GUI 桥 / httpapi / CLI）恒同进程同总线，
-		// 绑定生命周期 = 进程生命周期，无分离形态心跳超时回收的需求（persist 的 sweep 是为了
-		// 释放失效的库连接；filesys 无此资源）→ 心跳（instance-heartbeat）无消费方，不订阅。
-		{msgkeys.TopicInstanceRegister, f.onInstanceRegister},
-		{msgkeys.TopicInstanceExit, f.onInstanceExit},
+		// 工作区生命周期（PM，61 §2.5）：open → 对工作区根建立**一次**监听（子树由
+		// fswatcher 递归接管）；close → 撤销。监听范围不再由前端的展开/折叠驱动。
+		{msgkeys.TopicWorkdirOpened, f.onWorkdirOpened},
+		{msgkeys.TopicWorkdirClosed, f.onWorkdirClosed},
 		// 「不显示的目录」（filetree.hide-dirs）变更广播（D-39 层2）：复用既有 data-prj-config-refresh，
 		// 零新增消息 → 本实例 work_dir 的 watcher 即时重新过滤（见 onPrjConfigRefresh）。
 		{msgkeys.TopicDataPrjConfigRefresh, f.onPrjConfigRefresh},
@@ -91,42 +89,35 @@ func (f *Filesys) Stop() {
 	}
 }
 
-// ─── 实例绑定（自持；G-21 信任边界）─────────────────────
+// ─── 工作区生命周期（PM 驱动；G-21 信任边界不变）─────────
 
-// onInstanceRegister 登记实例工作目录绑定（61-消息一览 §4.1；与 persist 同构）。
-// 发布方 = 入口可信代码（GUI 桥 / httpapi / CLI）；客户端上行**不能**注入本主题
-// （两个入口的分派表都不含它 → 白名单外丢弃），故绑定值不可由客户端伪造。
-func (f *Filesys) onInstanceRegister(_ context.Context, _ string, v *mq.Value) error {
-	var req struct {
-		InstanceID string `json:"instance_id"`
-		WorkDir    string `json:"work_dir"`
-	}
-	_ = json.Unmarshal(v.Payload, &req)
-	if req.InstanceID == "" || req.WorkDir == "" {
-		return nil
-	}
-	f.mu.Lock()
-	f.insts[req.InstanceID] = req.WorkDir
-	f.mu.Unlock()
-	return nil
-}
-
-// onInstanceExit 释放实例绑定（幂等：重复调用无副作用）：除删除实例绑定外，还反登记该实例
-// 在 watcher 上的声明者（D-39）——声明者集只增不删会让已退出实例永久收到事件、watcher 无法回收。
-func (f *Filesys) onInstanceExit(_ context.Context, _ string, v *mq.Value) error {
+// onWorkdirOpened 工作区可用：对工作区根建立**一次**监听（子树由 fswatcher 递归接管）。
+// 监听范围 = 整个工作区，不再依赖前端的展开/折叠（索引/历史同样消费 filesys.changed）。
+func (f *Filesys) onWorkdirOpened(_ context.Context, _ string, v *mq.Value) error {
 	var msg struct {
+		WorkDir    string `json:"work_dir"`
 		InstanceID string `json:"instance_id"`
 	}
 	_ = json.Unmarshal(v.Payload, &msg)
-	if msg.InstanceID == "" {
+	if msg.WorkDir == "" {
 		return nil
 	}
-	f.mu.Lock()
-	wd := f.insts[msg.InstanceID]
-	delete(f.insts, msg.InstanceID)
-	f.mu.Unlock()
-	// 反登记 watcher 声明者（须在删除绑定前取到 work_dir）。
-	f.wm.unwatchInstance(wd, msg.InstanceID)
+	if err := f.wm.open(msg.WorkDir, msg.InstanceID); err != nil {
+		slog.Warn("filesys workdir watch failed", "work_dir", msg.WorkDir, "err", err)
+	}
+	return nil
+}
+
+// onWorkdirClosed 工作区关闭：撤销监听并释放 watcher（**不删盘、不清索引**）。
+func (f *Filesys) onWorkdirClosed(_ context.Context, _ string, v *mq.Value) error {
+	var msg struct {
+		WorkDir string `json:"work_dir"`
+	}
+	_ = json.Unmarshal(v.Payload, &msg)
+	if msg.WorkDir == "" {
+		return nil
+	}
+	f.wm.close(msg.WorkDir)
 	return nil
 }
 
@@ -150,17 +141,16 @@ func (f *Filesys) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) e
 	return nil
 }
 
-// workDir 解析请求所属实例绑定的工作目录：未登记 / 未绑定 → ok=false（调用方一律拒绝）。
+// workDir 解析请求所属实例绑定的工作目录（唯一来源 = PM）：未登记 / 未绑定 → ok=false。
 // **不回落请求载荷的 work_dir** —— 回落会把刚关上的越权口子重新打开。
 func (f *Filesys) workDir(instanceID string) (string, bool) {
-	if instanceID == "" {
+	sp, ok := f.pm.Resolve(instanceID)
+	if !ok || sp.WorkDir == "" {
 		return "", false
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	wd, ok := f.insts[instanceID]
-	return wd, ok && wd != ""
+	return sp.WorkDir, true
 }
+
 
 // ─── 请求处理 ────────────────────────────────────────────
 
@@ -483,144 +473,35 @@ func (f *Filesys) onCopy(_ context.Context, _ string, v *mq.Value) error {
 	return nil
 }
 
-// onWatch 处理 filesys.watch：声明关注目录（recursive=true 时递归子目录；fire-and-forget，无 result）。
-// instance_id 为声明者实例（桥注入），记入 watcher 供 filesys.changed/watch-error 广播携带。
-func (f *Filesys) onWatch(_ context.Context, _ string, v *mq.Value) error {
-	var req struct {
-		WorkDir    string `json:"work_dir"`
-		InstanceID string `json:"instance_id"`
-		Path       string `json:"path"`
-		Recursive  bool   `json:"recursive"`
-	}
-	if err := json.Unmarshal(v.Payload, &req); err != nil {
-		return nil
-	}
-	wd, ok := f.workDir(req.InstanceID)
-	if !ok {
-		return nil
-	}
-	p, ok := absPath(wd, req.Path)
-	if !ok {
-		return nil
-	}
-	// 首次 watch 为该 work_dir 发起一次异步加载「不显示的目录」清单（非阻塞）；
-	// 加载完成后由 applyHidden → refilter 补齐（新清单与缺省不同时即时重过滤）。
-	f.wm.ensureLoaded(wd, req.InstanceID)
-	if err := f.wm.watch(wd, p, req.Recursive, req.InstanceID); err != nil {
-		// 留痕（D-40）：watch 契约无返回（fire-and-forget），失败会致文件树静默停止刷新，
-		// 至少日志留痕以便定位。
-		slog.Warn("filesys.watch failed", "work_dir", wd, "path", p, "instance_id", req.InstanceID, "err", err)
-	}
-	return nil
-}
+// onWatch 处理 filesys.watch：**兼容保留，无副作用**。
+//
+// 监听范围已由工作区生命周期驱动（workdir-opened → 整个工作区一次监听），前端展开/折叠
+// 不再影响监听。契约字段（含 recursive）保留，见 61 §2.3。
+func (f *Filesys) onWatch(_ context.Context, _ string, _ *mq.Value) error { return nil }
 
-// onUnwatch 处理 filesys.unwatch：取消关注目录（fire-and-forget，无 result）。
-func (f *Filesys) onUnwatch(_ context.Context, _ string, v *mq.Value) error {
-	var req struct {
-		WorkDir    string `json:"work_dir"`
-		InstanceID string `json:"instance_id"`
-		Path       string `json:"path"`
-	}
-	if err := json.Unmarshal(v.Payload, &req); err != nil {
-		return nil
-	}
-	wd, ok := f.workDir(req.InstanceID)
-	if !ok {
-		return nil
-	}
-	p, ok := absPath(wd, req.Path)
-	if !ok {
-		return nil
-	}
-	f.wm.unwatch(wd, p)
-	return nil
-}
+// onUnwatch 处理 filesys.unwatch：**兼容保留，无副作用**（折叠目录不得停止监听）。
+func (f *Filesys) onUnwatch(_ context.Context, _ string, _ *mq.Value) error { return nil }
+
 
 // ─── 工具函数 ────────────────────────────────────────────
 
-// absPath 把 path 转换为绝对路径（相对 workDir 则 join），并校验在 workDir 内
-// （词法前缀 + 解析符号链接 / Windows 目录联接后的真实前缀，见 withinWorkDirReal）。
+// absPath 把 path 转为绝对路径（相对 workDir 则 join），并校验在 workDir 内。
+// 实现唯一来源 = workspace（词法 + 符号链接/目录联接后的真实路径双重复检）。
 // 返回的仍是词法绝对路径（不替换为真实路径，保持对外 path 形状不变）。
 func absPath(wd, p string) (string, bool) {
-	if p == "" {
-		return wd, true
-	}
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(wd, p)
-	}
-	if !withinWorkDirReal(wd, p) {
-		return "", false
-	}
-	return p, true
+	return workspace.AbsWithin(wd, p)
 }
 
-// withinWorkDir 校验 path 在 base 内（**词法**边界；base/path 均为绝对路径）。
-func withinWorkDir(base, path string) bool {
-	rel, err := filepath.Rel(base, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
-}
+// withinWorkDirReal / resolveRealPath 是既有调用点的转发（唯一实现 = workspace）。
+func withinWorkDirReal(base, path string) bool { return workspace.Within(base, path) }
 
-// withinWorkDirReal 在词法校验（withinWorkDir）之外，**解析符号链接 / Windows 目录联接**后再校验一次：
-// 取 base 与 path 各自的真实路径（见 resolveRealPath），对真实路径再做前缀校验。
-// 拦住「work_dir 内的符号链接 / 目录联接指向 work_dir 外」的越权——纯词法校验看不出来。
-func withinWorkDirReal(base, path string) bool {
-	if !withinWorkDir(base, path) {
-		return false
-	}
-	return withinWorkDir(resolveRealPath(base), resolveRealPath(path))
-}
-
-// resolveRealPath 返回 p 解析符号链接 / Windows 目录联接后的真实路径。
-// 采用逐段 os.Readlink 解析：**filepath.EvalSymlinks 不解析 Windows 目录联接（mount point）**，
-// 而 os.Readlink 对符号链接与目录联接均返回目标，故自行逐段解析；无法解析的段原样拼回。
-// 链接自环 / 过深（>64 次替换）→ 返回空串（fail-closed：withinWorkDir 判为不在 base 内）。
-func resolveRealPath(p string) string {
-	if p == "" || !filepath.IsAbs(p) {
-		return p
-	}
-	cur := p
-	for i := 0; i < 64; i++ {
-		next, changed := resolveLinksOnce(cur)
-		if !changed {
-			return next
-		}
-		cur = next
-	}
-	return ""
-}
-
-// resolveLinksOnce 对 p 逐段前进，遇到可 Readlink 的组件（符号链接 / 目录联接）即用其目标替换
-// （相对目标按链接所在目录解析），返回解析后路径与是否发生过替换。
-func resolveLinksOnce(p string) (string, bool) {
-	vol := filepath.VolumeName(p)
-	cur := vol + string(filepath.Separator)
-	parts := strings.Split(strings.TrimPrefix(p, vol), string(filepath.Separator))
-	changed := false
-	for _, seg := range parts {
-		if seg == "" {
-			continue
-		}
-		next := filepath.Join(cur, seg)
-		if tgt, err := os.Readlink(next); err == nil {
-			if !filepath.IsAbs(tgt) {
-				tgt = filepath.Join(cur, tgt)
-			}
-			cur = filepath.Clean(tgt)
-			changed = true
-			continue
-		}
-		cur = next
-	}
-	return cur, changed
-}
+func resolveRealPath(p string) string { return workspace.Real(p) }
 
 // samePath 判定两个路径是否指向同一目录 / 文件：词法 Clean 后（大小写不敏感，兼容 Windows）相同，
 // 或解析符号链接 / 目录联接后的真实路径相同。
+// utilguard:allow: 已用 pathx.Same 做词法比较，第二条 realpath 比较无法由纯函数替代。
 func samePath(a, b string) bool {
-	if strings.EqualFold(filepath.Clean(a), filepath.Clean(b)) {
+	if pathx.Same(a, b) {
 		return true
 	}
 	return strings.EqualFold(resolveRealPath(a), resolveRealPath(b))
@@ -628,6 +509,8 @@ func samePath(a, b string) bool {
 
 // isWithinDir 报告 child 是否严格位于 parent 目录内部（Clean 后按分隔符前缀判定，
 // 大小写不敏感以兼容 Windows；R7-C-5 复制嵌套防护用）。
+// utilguard:allow: 这是「包含」判定（pathx.Within 用 filepath.Rel，Windows 大小写语义不同），
+// 且额外要求严格子路径，不能直接替换。
 func isWithinDir(child, parent string) bool {
 	cp := filepath.Clean(parent)
 	cc := filepath.Clean(child)

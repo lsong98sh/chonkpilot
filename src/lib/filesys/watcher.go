@@ -12,10 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/chonkpilot/chonkpilot-workspace"
 	"github.com/sgtdi/fswatcher"
 )
 
@@ -29,10 +31,11 @@ const maxWait = 10 * debounce
 // readyTimeout = 等待 fswatcher 初始路径就绪（WithReadyChannel）的兜底上限。
 const readyTimeout = 5 * time.Second
 
-// watchManager 按 work_dir 组织 fswatcher watcher。
+// watchManager 按 work_dir 组织 fswatcher watcher：工作区打开时建立**一次**，关闭时撤销。
 type watchManager struct {
-	bus      mq.Bus
-	mu       sync.Mutex
+	bus mq.Bus
+	pm  *workspace.Manager
+	mu  sync.Mutex
 	watchers map[string]*dirWatcher // key = work_dir（绝对）
 
 	// cfgMu 保护「不显示的目录」清单缓存（与 m.mu 无嵌套：先 cfgMu 后 m.mu 或反之均不互相持有）。
@@ -41,9 +44,10 @@ type watchManager struct {
 	loading map[string]bool     // work_dir → 已发起一次性异步加载（去重）
 }
 
-func newWatchManager(bus mq.Bus) *watchManager {
+func newWatchManager(bus mq.Bus, pm *workspace.Manager) *watchManager {
 	return &watchManager{
 		bus:      bus,
+		pm:       pm,
 		watchers: make(map[string]*dirWatcher),
 		hidden:   make(map[string][]string),
 		loading:  make(map[string]bool),
@@ -59,69 +63,41 @@ func (m *watchManager) Close() {
 	m.watchers = make(map[string]*dirWatcher)
 }
 
-// watch 声明关注范围：work_dir 下 watch abs 路径（recursive 时递归子目录）。
-// instanceID = 声明者实例（桥注入）；记入 dirWatcher，广播 filesys.changed/watch-error 时携带。
-func (m *watchManager) watch(workDir, abs string, recursive bool, instanceID string) error {
+// open 工作区可用：为该 work_dir 建立**一次**监听。
+//
+// 监听根 = 工作区根，子树由 fswatcher 递归接管（不再按前端展开逐目录声明）。
+// instanceID 仅用于异步加载「不显示的目录」配置（按实例解析 prj 层）。
+func (m *watchManager) open(workDir, instanceID string) error {
 	hidden := m.hiddenDirsOf(workDir)
 	m.mu.Lock()
 	dw, ok := m.watchers[workDir]
 	if !ok {
 		var err error
-		dw, err = newDirWatcher(workDir, m.bus, hidden)
+		dw, err = newDirWatcher(workDir, m.bus, hidden, m.pm)
 		if err != nil {
 			m.mu.Unlock()
 			return err
 		}
 		m.watchers[workDir] = dw
 	}
-	// 「新建/取得 watcher」与「登记声明者」同处 m.mu 临界区：与 unwatchInstance 的
-	// 「反登记（declarersMu）→ 无声明者则 delete(m.watchers)+stop」互斥，避免声明登记
-	// 落到**已停止**的 dw（该实例漏刷文件树）。锁序恒为 m.mu → declarersMu，无反向嵌套。
-	dw.addDeclarer(instanceID)
 	m.mu.Unlock()
-	// 顶层解析一次真实路径（work_dir 基路径 + abs 本路径）后透传进 add，避免 refilter 等
-	// 在册路径重复「逐段 Readlink」重解析 work_dir 基路径（见 add 注释）。
-	return dw.add(abs, resolveRealPath(abs), resolveRealPath(dw.workDir), recursive)
+	m.ensureLoaded(workDir, instanceID)
+	return dw.addRoot()
 }
 
-// unwatch 取消对 abs 的 watch。
-func (m *watchManager) unwatch(workDir, abs string) {
+// close 工作区关闭：停止并移出 watcher（**不删盘、不清索引**），同步清理隐藏目录缓存。
+func (m *watchManager) close(workDir string) {
 	m.mu.Lock()
-	dw, ok := m.watchers[workDir]
+	dw := m.watchers[workDir]
+	delete(m.watchers, workDir)
 	m.mu.Unlock()
-	if !ok {
-		return
+	if dw != nil {
+		dw.stop()
 	}
-	dw.remove(abs)
-}
-
-// unwatchInstance 实例退出（instance-exit）时反登记其声明者（D-39）：声明者集只增不删会让
-// 已退出实例**永远**收到后续事件，且 watcher 无法随实例回收。若本 work_dir 再无声明者，
-// 则停止并移出该 watcher（避免空转 + 泄漏）。路径级 unwatch（unwatch）的既有取舍不变——
-// 它只移出路径、不反登记声明者，以免误删仍关注其它路径的声明者（见 addDeclarer 注释）。
-func (m *watchManager) unwatchInstance(workDir, instanceID string) {
-	if workDir == "" || instanceID == "" {
-		return
-	}
-	m.mu.Lock()
-	dw, ok := m.watchers[workDir]
-	if !ok {
-		m.mu.Unlock()
-		return
-	}
-	empty := dw.removeDeclarer(instanceID)
-	if empty {
-		delete(m.watchers, workDir)
-	}
-	m.mu.Unlock()
-	if empty {
-		dw.stop() // 无声明者 → 停 watcher（在解锁后调用，避免持 m.mu 关闭）
-		// 无 watcher 时同步清理该 work_dir 的「不显示的目录」缓存（D-39 层2）：否则 hidden 随
-		// 出现过的 work_dir 只增不删 → 无界增长（下次 watch/list 经 ensureLoaded 重新加载）。
-		m.cfgMu.Lock()
-		delete(m.hidden, workDir)
-		m.cfgMu.Unlock()
-	}
+	m.cfgMu.Lock()
+	delete(m.hidden, workDir)
+	delete(m.loading, workDir)
+	m.cfgMu.Unlock()
 }
 
 // ─── 「不显示的目录」清单（层2：显示与监听同源）─────────────────────────
@@ -218,22 +194,19 @@ type dirWatcher struct {
 	cancel     context.CancelFunc
 	ready      <-chan struct{}
 
-	// paths = 显式声明的监听根（work_dir 初始根 + filesys.watch 声明的路径）；子目录由
-	// fswatcher 递归接管，不再逐目录登记。depth 记录各根的监听深度（TopLevel → Nested 升级）。
-	paths   map[string]bool
-	depth   map[string]fswatcher.WatchDepth
-	pathsMu sync.Mutex
+	// rootAdded 标记工作区根是否已登记递归监听（AddPath 幂等，但仍避免重复升级）。
+	rootMu    sync.Mutex
+	rootAdded bool
+	// pm 取工作区当前活动实例（事件定向投递用；实例集合由 PM 唯一持有）。
+	pm *workspace.Manager
 
-	// hidden = 当前生效的「不显示的目录」清单（目录名匹配）；事件过滤用（processBatch），
+	// hidden = 当前生效的「不显示的目录」清单（目录名匹配）；事件过滤用（入队前 + processBatch 兜底），
 	// 与文件树显示过滤（filesys.go shouldHideDirName）**同一判据**（层2 同源）。
 	hidden   []string
 	hiddenMu sync.RWMutex
 
-	// declarers = 声明者 instance_id 集合（filesys.watch 请求携带，桥注入）。业务 payload
-	// 一律必带 instance_id（61-消息一览 §0.1）；同一 work_dir 被多实例声明时按声明者
-	// 逐个各发一份事件（各自带上自己的 id），保持"所有订阅者仍能收到"的既有可见行为。
-	declarers   map[string]bool
-	declarersMu sync.Mutex
+	// droppedHidden 统计「入队前被丢弃」的隐藏目录事件数（G-86 ① 回归断言用）。
+	droppedHidden atomic.Int64
 
 	queue   map[string]pendingEvent
 	queueMu sync.Mutex
@@ -244,10 +217,10 @@ type dirWatcher struct {
 	done        chan struct{}
 }
 
-func newDirWatcher(workDir string, bus mq.Bus, hidden []string) (*dirWatcher, error) {
+func newDirWatcher(workDir string, bus mq.Bus, hidden []string, pm *workspace.Manager) (*dirWatcher, error) {
 	workDir = filepath.Clean(workDir)
 	ready := make(chan struct{})
-	// 初始路径 = work_dir 顶层（保证 watcher 可启动）；显式声明的递归根由 add → AddPath 升级。
+	// 初始路径 = work_dir 顶层（保证 watcher 可启动）；递归由 addRoot → AddPath 升级。
 	w, err := fswatcher.New(
 		fswatcher.WithPath(workDir, fswatcher.WithDepth(fswatcher.WatchTopLevel)),
 		fswatcher.WithCooldown(0), // 去抖由本结构自管（60ms + maxWait，D-37）
@@ -259,17 +232,15 @@ func newDirWatcher(workDir string, bus mq.Bus, hidden []string) (*dirWatcher, er
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	dw := &dirWatcher{
-		workDir:    workDir,
-		bus:        bus,
-		w:          w,
-		cancel:     cancel,
-		ready:      ready,
-		paths:      map[string]bool{workDir: true},
-		depth:      map[string]fswatcher.WatchDepth{workDir: fswatcher.WatchTopLevel},
-		hidden:     hidden,
-		declarers:  make(map[string]bool),
-		queue:      make(map[string]pendingEvent),
-		done:       make(chan struct{}),
+		workDir: workDir,
+		bus:     bus,
+		pm:      pm,
+		w:       w,
+		cancel:  cancel,
+		ready:   ready,
+		hidden:  hidden,
+		queue:   make(map[string]pendingEvent),
+		done:    make(chan struct{}),
 	}
 	go dw.runWatcher(ctx)
 	go dw.loop()
@@ -294,29 +265,24 @@ func (dw *dirWatcher) waitReady() {
 	}
 }
 
-// addDeclarer 登记声明者 instance_id（同一 work_dir 可被多实例声明，各自的 watch 请求都登记）。
-// 取舍：**路径级** unwatch 不反登记声明者 —— 避免因某路径 unwatch 而误删仍关注其它路径的
-// 声明者，保持既有可见行为。**实例退出**（instance-exit）则须反登记，见 unwatchInstance（D-39）。
-func (dw *dirWatcher) addDeclarer(instanceID string) {
-	if instanceID == "" {
-		return
+// addRoot 把工作区根登记为**递归**监听（整棵子树由 fswatcher 接管）。
+// 幂等：已登记则直接返回。
+func (dw *dirWatcher) addRoot() error {
+	dw.waitReady()
+	dw.rootMu.Lock()
+	defer dw.rootMu.Unlock()
+	if dw.rootAdded {
+		return nil
 	}
-	dw.declarersMu.Lock()
-	dw.declarers[instanceID] = true
-	dw.declarersMu.Unlock()
-}
-
-// removeDeclarer 反登记声明者 instance_id（实例退出用，D-39）；返回反登记后是否已无声明者
-// （true → 调用方可停止 watcher）。空 id 视为无操作（返回 false）。
-func (dw *dirWatcher) removeDeclarer(instanceID string) bool {
-	if instanceID == "" {
-		return false
+	// 顶层 → 递归升级：fswatcher 不允许重复 AddPath，须先摘除再按递归重新加入。
+	if err := dw.w.DropPath(dw.workDir); err != nil {
+		slog.Debug("filesys watch drop for upgrade failed", "work_dir", dw.workDir, "err", err)
 	}
-	dw.declarersMu.Lock()
-	delete(dw.declarers, instanceID)
-	empty := len(dw.declarers) == 0
-	dw.declarersMu.Unlock()
-	return empty
+	if err := dw.w.AddPath(dw.workDir, fswatcher.WithDepth(fswatcher.WatchNested)); err != nil {
+		return err
+	}
+	dw.rootAdded = true
+	return nil
 }
 
 // hiddenDirs 当前生效的隐藏目录清单（快照，调用方只读）。
@@ -326,15 +292,13 @@ func (dw *dirWatcher) hiddenDirs() []string {
 	return dw.hidden
 }
 
-// emit 广播变更事件：按声明者逐个各发一份（各自 payload 带自己的 instance_id）。
-// 无声明者（桥未注入 instance_id，如旧脚本/测试直发）时退化为单发、不带 instance_id。
+// emit 广播变更事件：按工作区当前活动实例逐个各发一份（各自 payload 带自己的 instance_id）。
+// 无活动实例（如测试直驱）时退化为单发、不带 instance_id。
 func (dw *dirWatcher) emit(subject string, payload map[string]any) {
-	dw.declarersMu.Lock()
-	ids := make([]string, 0, len(dw.declarers))
-	for id := range dw.declarers {
-		ids = append(ids, id)
+	var ids []string
+	if dw.pm != nil {
+		ids = dw.pm.InstanceIDs(dw.workDir)
 	}
-	dw.declarersMu.Unlock()
 	if len(ids) == 0 {
 		raw, _ := json.Marshal(payload)
 		_ = dw.bus.Emit(context.Background(), subject, raw)
@@ -351,90 +315,8 @@ func (dw *dirWatcher) emit(subject string, payload map[string]any) {
 	}
 }
 
-// add 添加一个路径（目录）；recursive 时递归监听子目录。
-// baseReal = work_dir 的真实路径、absReal = abs 的真实路径，均由**调用方解析一次后透传**
-// （processBatch 复用已解析值），避免逐次重解析 work_dir 基路径。
-// fswatcher 递归接管子树：不再 walkAdd 逐子目录登记，paths 只记录显式声明的根。
-func (dw *dirWatcher) add(abs, absReal, baseReal string, recursive bool) error {
-	abs = filepath.Clean(abs)
-	desired := fswatcher.WatchDepth(fswatcher.WatchTopLevel)
-	if recursive {
-		desired = fswatcher.WatchNested
-	}
-	dw.waitReady()
-	// 「进表」与 AddPath 在同一临界区内完成：与 removeTree 的「出表 + DropPath」
-	// 原子配对，避免二者交错留下「fswatcher 在监听、paths 无记录」的悬挂（层1 并发要求）。
-	dw.pathsMu.Lock()
-	defer dw.pathsMu.Unlock()
-	// 真实路径复检**置于 `paths[abs]` 短路之后**（已入表路径直接返回，不再付复检代价）：指向 root 外的
-	// 符号链接 / 目录联接（真实路径解析后越界）**不进表、不监听**——否则 fswatcher 会跟踪根外目标并
-	// 广播其子目录清单（越权监听）。
-	if cur, known := dw.depth[abs]; known && dw.paths[abs] {
-		if !recursive || cur == fswatcher.WatchNested {
-			return nil
-		}
-		// 顶层 → 递归升级：fswatcher 不允许重复 AddPath，须先摘除再按递归重新加入。
-		if err := dw.w.DropPath(abs); err != nil {
-			slog.Debug("filesys watch drop for upgrade failed", "work_dir", dw.workDir, "path", abs, "err", err)
-		}
-		delete(dw.paths, abs)
-		delete(dw.depth, abs)
-	}
-	if !withinWorkDir(dw.workDir, abs) || !withinWorkDir(baseReal, absReal) {
-		return nil
-	}
-	if err := dw.w.AddPath(abs, fswatcher.WithDepth(desired)); err != nil {
-		return err
-	}
-	dw.paths[abs] = true
-	dw.depth[abs] = desired
-	return nil
-}
-
-func (dw *dirWatcher) remove(abs string) {
-	abs = filepath.Clean(abs)
-	dw.waitReady()
-	dw.pathsMu.Lock()
-	if !dw.paths[abs] {
-		dw.pathsMu.Unlock()
-		return
-	}
-	delete(dw.paths, abs)
-	delete(dw.depth, abs)
-	dw.pathsMu.Unlock()
-	dw.dropPath(abs)
-}
-
-// removeTree 摘除 abs 自身及其**所有子孙**的声明条目（D-39 层1）。
-// fswatcher 的递归句柄随根删除自动收敛，无需逐子目录 Remove；此处只需清理显式声明集合
-// （过期声明会让目录重建后仍按陈旧根登记，且泄漏）。
-func (dw *dirWatcher) removeTree(abs string) {
-	abs = filepath.Clean(abs)
-	prefix := abs + string(filepath.Separator)
-	dw.pathsMu.Lock()
-	var drops []string
-	for p := range dw.paths {
-		if p == abs || strings.HasPrefix(p, prefix) {
-			drops = append(drops, p)
-			delete(dw.paths, p)
-			delete(dw.depth, p)
-		}
-	}
-	dw.pathsMu.Unlock()
-	for _, p := range drops {
-		dw.dropPath(p)
-	}
-}
-
-// dropPath 调用 fswatcher.DropPath；未监听/未运行仅留痕（不改可见行为）。
-func (dw *dirWatcher) dropPath(abs string) {
-	if err := dw.w.DropPath(abs); err != nil {
-		slog.Debug("filesys watch drop failed", "work_dir", dw.workDir, "path", abs, "err", err)
-	}
-}
-
 // refilter 应用新的隐藏目录清单（配置变更生效，层2）：fswatcher 递归监听保持不变，
-// 事件过滤在 processBatch 按新清单逐事件判定（现已隐藏 → 不广播；由隐藏转可见 → 恢复广播）。
+// 事件在**入队前**按新清单逐事件丢弃（现已隐藏 → 不进队列；由隐藏转可见 → 恢复入队/广播）。
 func (dw *dirWatcher) refilter(hidden []string) {
 	dw.hiddenMu.Lock()
 	dw.hidden = hidden
@@ -469,6 +351,14 @@ func (dw *dirWatcher) loop() {
 		case ev, ok := <-events:
 			if !ok {
 				return
+			}
+			// 「不显示的目录」内事件：**入队前**即丢弃（G-86 ①）——不进 60ms 队列、不做
+			// 归一/真实路径解析/JSON 序列化，隐藏子树的事件成本只剩一次段名匹配。
+			// 注：Windows RDCW 是「单句柄 + 子树」模型，库层无法让内核不上报；此处消除的是
+			// **进程内**开销（队列/批处理/广播），内核通知本身需逐目录句柄才能完全避免。
+			if dw.hiddenPath(ev.Path) {
+				dw.droppedHidden.Add(1)
+				continue
 			}
 			dw.enqueue(ev)
 		case ev, ok := <-dropped:
@@ -556,7 +446,7 @@ func (dw *dirWatcher) processBatch() {
 	}
 	// 一次解析 work_dir 真实路径，本批复用（避免逐事件/逐目录重复「逐段 Readlink」）；
 	// dirs 携带各刷新目录的**真实路径**（解析一次），pubDirChanged 直接复用不再二次解析。
-	baseReal := resolveRealPath(dw.workDir)
+	baseReal := workspace.Real(dw.workDir)
 	dirs := make(map[string]string)
 	putDir := func(dir, dirReal string) {
 		if _, ok := dirs[dir]; !ok {
@@ -570,17 +460,11 @@ func (dw *dirWatcher) processBatch() {
 		}
 		op := operation(path, ev.types)
 		// 事件路径真实路径本事件内解析一次复用（越界复检 + pubChanged + 目录刷新 3 处旧调用合一）。
-		pathReal := resolveRealPath(path)
-		inWorkDir := withinWorkDir(dw.workDir, path) && withinWorkDir(baseReal, pathReal)
+		pathReal := workspace.Real(path)
+		inWorkDir := workspace.WithinLexical(dw.workDir, path) && workspace.WithinLexical(baseReal, pathReal)
 		dw.pubChanged(path, op, inWorkDir)
 		fi, statErr := os.Lstat(path)
 		isDir := statErr == nil && fi.IsDir()
-
-		// 目录删除 / 重命名（D-39 层1）→ 摘除该路径及其子孙的声明条目（过期声明泄漏）。
-		// 文件事件无对应声明条目 → removeTree 为无操作；递归子树由 fswatcher 随根自动收敛。
-		if hasEventType(ev.types, fswatcher.EventRemove) || hasEventType(ev.types, fswatcher.EventRename) {
-			dw.removeTree(path)
-		}
 
 		// 刷新目录 = 事件对象父目录；事件对象本身是**真实目录**（Lstat，不跟随软链）时刷新自身
 		// （复用本事件已解析的真实路径，不再二次解析）。目录创建不再需要增删监听（fswatcher 递归接管）。
@@ -590,12 +474,12 @@ func (dw *dirWatcher) processBatch() {
 			// fswatcher 把重命名新旧名均映射为 EventRename（无 Create）→ 同样需刷新父目录。
 			if hasEventType(ev.types, fswatcher.EventCreate) || hasEventType(ev.types, fswatcher.EventRename) {
 				parent := filepath.Dir(path)
-				putDir(parent, resolveRealPath(parent))
+				putDir(parent, workspace.Real(parent))
 			}
 			putDir(path, pathReal)
 		} else {
 			parent := filepath.Dir(path)
-			putDir(parent, resolveRealPath(parent))
+			putDir(parent, workspace.Real(parent))
 		}
 	}
 	for dir, dirReal := range dirs {
@@ -666,7 +550,7 @@ func (dw *dirWatcher) pubChanged(abs, op string, inWorkDir bool) {
 func (dw *dirWatcher) pubDirChanged(dir, dirReal, baseReal string) {
 	// 复验：目录真实路径须仍在 work_dir 内（防经符号链接 / 目录联接广播根外目录的 children 清单）。
 	// dirReal / baseReal 由调用方预先解析复用（见 processBatch），避免逐目录重复「逐段 Readlink」。
-	if !withinWorkDir(dw.workDir, dir) || !withinWorkDir(baseReal, dirReal) {
+	if !workspace.WithinLexical(dw.workDir, dir) || !workspace.WithinLexical(baseReal, dirReal) {
 		return
 	}
 	children := listDirNodes(dir, dw.hiddenDirs())

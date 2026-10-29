@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // contractField 是 schema 字段声明（与 61-messages.schema.json 对齐）。

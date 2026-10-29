@@ -6,7 +6,7 @@
 // `subchat-state` 事件 + `data-session-*`（会话行）+ 首轮消息。消息面形状只依据
 // `docs/spec/60-reference/61-消息一览.md`（唯一准则）。
 //
-// 单聊工具的两条路径都覆盖：① 经真实内嵌 gateway（`newTestServerMCP`，`self_subchat_open`
+// 单聊工具的两条路径都覆盖：① 经真实内嵌 gateway（`newTestServerMCP`，`subchat_open`
 // 暴露名 → gateway `route.Original` → 域回调）；② 经域工具回调主题直驱（`domain-tool-call`）。
 package server
 
@@ -22,8 +22,8 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // busRecorder 订阅全通配（相对主题）并按主题归集事件（mq 监听断言）。
@@ -83,7 +83,10 @@ func (r *busRecorder) snapshot(subject string) []map[string]any {
 // sessionOf 读会话行（断言 kind / lifecycle / 固定参数 / purpose）。
 func sessionOf(t *testing.T, s *Server, id string) facade.Session {
 	t.Helper()
-	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{InstanceID: "ins-test", SessionID: id, Scope: s.cfgScope("ins-test")})
+	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{
+		InstanceID: "ins-test", SessionID: id, Scope: s.cfgScope("ins-test"),
+		DialogID: s.dialogOf("ins-test", id),
+	})
 	if err != nil || !resp.Found {
 		t.Fatalf("SessionGet(%s): found=%v err=%v", id, resp.Found, err)
 	}
@@ -385,8 +388,8 @@ func TestSubChatReadyToChattingOnNewTurn(t *testing.T) {
 	}
 }
 
-// TestSubChatOpenViaGateway（B2-2 端到端 · 真实内嵌 gateway）：LLM 调 `self_subchat_open`
-// （暴露名）→ gateway `route.Original` → 域回调 → handler 建会话 + 发 `subchat-opened`；
+// TestSubChatOpenViaGateway（B2-2 端到端 · 真实内嵌 gateway）：LLM 调 `subchat_open`
+// （P0a 2026-10-29 起暴露名 = 契约名）→ gateway `route.Original` → 域回调 → handler 建会话 + 发 `subchat-opened`；
 // 主轮**不挂起**（工具结果同步回喂、本轮照常 complete）。
 func TestSubChatOpenViaGateway(t *testing.T) {
 	// 仅对主会话的首条提问发起一次 subchat_open 工具调用；其余（子聊天首轮 / 回填后的收尾）
@@ -414,7 +417,7 @@ func TestSubChatOpenViaGateway(t *testing.T) {
 				sseChunk(map[string]any{"content": ""}, ""),
 				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-so-gw", "type": "function",
-					"function": map[string]any{"name": "self_subchat_open", "arguments": string(args)},
+					"function": map[string]any{"name": "subchat_open", "arguments": string(args)},
 				}}}, "tool_calls"),
 			})
 			return

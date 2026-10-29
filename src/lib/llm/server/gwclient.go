@@ -8,10 +8,11 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // ToolDef 是 LLM 工具定义（对齐 21-llm-server FetchTools 映射）。
@@ -23,6 +24,10 @@ type ToolDef struct {
 	Async       string         `json:"-"` // async 模式（gateway tools/list _meta.async；缺省 auto；G-17 转后台门控用）
 	Scope       string         `json:"-"` // 归属域（""=global / instance id；list 全量含 instance，toolsForLLM 按此过滤）
 	Meta        map[string]any `json:"-"` // 工具自身 _meta 原文（tools/list 透出；I-60 随 tool-call 消息落库，不发 LLM）
+	// ParamJSON 是 `Parameters` 的**已序列化 JSON 原文**（LLM-P4：tools/list 缓存时一次算出）。
+	// 下游下发链（ToolCatalog → Step → router.ToolDef）直接用本字段，避免每 step 的
+	// 「map → JSON → map → JSON」往返；空 = 未预序列化（按 Parameters 现算）。
+	ParamJSON []byte `json:"-"`
 	// 域工具契约 [meta]（loadDomainTools 填充；registerDomainTools 经 tools/register 透出为 gateway `_meta`）
 	Category   string `json:"-"` // 契约 meta.category（如 server）
 	AsyncTh    int    `json:"-"` // 契约 meta.async-threshold（秒；0 = 未声明）
@@ -178,6 +183,12 @@ func (g *gwClient) ListTools(ctx context.Context) ([]ToolDef, error) {
 					Scope:       str(m["scope"]),
 					Meta:        metaMap(m),
 				}
+				// LLM-P4：InputSchema 原文在**刷新时算一次**（后续每 step 的下发链直接复用）。
+				if v, has := m["inputSchema"]; has {
+					if b, err := json.Marshal(v); err == nil {
+						def.ParamJSON = b
+					}
+				}
 				defs = append(defs, def)
 				buckets[def.Scope] = append(buckets[def.Scope], def)
 			}
@@ -271,17 +282,6 @@ func (g *gwClient) AsyncMode(name string) string {
 	return ""
 }
 
-// gatewayCall 对 gateway 任意方法做一次 Emit+await 调用（servers/list、tools/register 等透传）。
-// 方法名为组/动作（tools/register），主题 = mcp-tools-register；载荷按方法直传。
-// reqID 参数为兼容旧调用面保留（promise 化后无 req_id，忽略）。
-// 注：调用方须确保 gwClient 场景（s.gw 已装配）下使用；此处直接 emit，实例上下文由 ctx 承载。
-func (s *Server) gatewayCall(ctx context.Context, method string, args map[string]any, _ string) (map[string]any, error) {
-	if args == nil {
-		args = map[string]any{}
-	}
-	return s.emitGateway(ctx, method, args)
-}
-
 // instanceCtxKey 携带 instance_id 的 context key（归属隔离注入用；
 // 用 ctx 而非可变字段，避免并发多实例下串号）。
 type instanceCtxKey struct{}
@@ -332,11 +332,19 @@ func str(v any) string {
 }
 
 // resultJSON 把 v.Result 归一为 JSON 形态纯 map（与旧 -reply 载荷 JSON 编解码等价）。
+//
+// LLM-P4：`res` 已完全落在 encoding/json 原生类型域（nil / bool / string / float64 / []any /
+// map[string]any，且字符串为合法 UTF-8）时，直接做**等值深拷贝**（不 marshal + unmarshal）——
+// 输出与编解码路径逐字节一致，省两次全量序列化；非纯类型（int / struct / 非法 UTF-8 等）
+// 仍走原编解码路径（类型口径完全不变）。
 func resultJSON(res any) map[string]any {
 	if res == nil {
 		return nil
 	}
 	if m, ok := res.(map[string]any); ok {
+		if jsonPureValue(m) {
+			return cloneJSONMap(m)
+		}
 		b, _ := json.Marshal(m)
 		var out map[string]any
 		if err := json.Unmarshal(b, &out); err != nil {
@@ -348,4 +356,53 @@ func resultJSON(res any) map[string]any {
 	var out map[string]any
 	_ = json.Unmarshal(b, &out)
 	return out
+}
+
+// jsonPureValue 判定值是否已完全落在 encoding/json 的原生类型域（深拷贝安全性前提：
+// 这些类型经 marshal→unmarshal 往返后**逐字节等价**）。
+func jsonPureValue(v any) bool {
+	switch t := v.(type) {
+	case nil, bool, float64:
+		return true
+	case string:
+		return utf8.ValidString(t) // 非法 UTF-8 会被 marshal 替换为 U+FFFD → 走旧路径
+	case []any:
+		for _, e := range t {
+			if !jsonPureValue(e) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		for k, e := range t {
+			if !utf8.ValidString(k) || !jsonPureValue(e) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// cloneJSONMap 深拷贝 JSON 纯 map（切片/子 map 一律新分配；标量值不可变 → 直接共享）。
+func cloneJSONMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = cloneJSONValue(v)
+	}
+	return out
+}
+
+func cloneJSONValue(v any) any {
+	switch t := v.(type) {
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = cloneJSONValue(e)
+		}
+		return out
+	case map[string]any:
+		return cloneJSONMap(t)
+	}
+	return v
 }

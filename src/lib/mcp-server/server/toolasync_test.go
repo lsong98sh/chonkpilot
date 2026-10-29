@@ -304,7 +304,7 @@ func TestResolveExecTimeoutPriority(t *testing.T) {
 	if got, nl := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 60)); got != 60 || nl {
 		t.Fatalf("契约 timeout 优先于 cfg.execTimeout，got (%d,%v) want (60,false)", got, nl)
 	}
-	cfg.SetRuntime(120, 0, nil, "", nil) // prj timeout_sec=120
+	cfg.SetRuntime(120, 0, "", nil) // prj timeout_sec=120
 	if got, _ := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 0)); got != 120 {
 		t.Fatalf("prj timeout_sec 对未声明 timeout 的契约生效，got %d want 120", got)
 	}

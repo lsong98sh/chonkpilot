@@ -55,7 +55,9 @@ func TestTurnEventCleanupRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
 	}
-	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	// 基准时间取「当前」：实现按 `time.Now()-RetentionDays` 计算 cutoff，
+	// 硬编码日期会随真实日期推移让「未超期」样本变成超期（2026-10-27 复现 deleted=6 want 4）。
+	now := time.Now().UTC()
 	ts := func(d time.Duration) string { return now.Add(d).Format(kernel.RFC3339FixedNano) }
 
 	turns := map[string]data.Record{

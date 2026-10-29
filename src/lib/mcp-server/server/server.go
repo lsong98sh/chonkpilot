@@ -19,8 +19,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/chonkpilot/chonkpilot-lib/contractmd"
-	"github.com/chonkpilot/chonkpilot-lib/paths"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/contractmd"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/paths"
 )
 
 // metaNamespace 是调用上下文在协议 _meta 下的命名空间（键：instance_id/work_dir/data_dir）。
@@ -306,8 +306,22 @@ func setPromptType(p *mcp.Prompt, t string) {
 
 // makeToolHandler 构造工具 handler：并发限流 → 调用上下文（_meta）→ 参数 → 契约驱动执行 →
 // 统一 JSON 结果文本（executor 子进程环境注入 CHONKPILOT_*）。
+//
+// 故障域补偿（GATEWAY-2 L3 / 设计 §3.3 第 1 条）：handler 外层 recover() —— 进程内出现 panic
+// 时转成 isError 结果返回，绝不冒泡到 server 主循环（内置 server 进程承载全部工具，单工具
+// panic 不得拖垮同进程的其他调用）。进程内 builtin 执行另有 dispatchBuiltin 的 recover 兜底；
+// 本层覆盖 spawn 路径与 handler 自身的逻辑。
 func makeToolHandler(td *ToolDoc, cfg *Config, lim *limiter) mcp.ToolHandler {
-	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (res *mcp.CallToolResult, herr error) {
+		defer func() {
+			if r := recover(); r != nil {
+				res = &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: wrapFail(fmt.Sprintf("tool %s panic: %v", td.Name, r))}},
+					IsError: true,
+				}
+				herr = nil
+			}
+		}()
 		// 并发限流：达上限排队；请求 ctx 取消/超时 → 明确失败、不执行工具（B3）。
 		if err := lim.acquire(ctx); err != nil {
 			return &mcp.CallToolResult{

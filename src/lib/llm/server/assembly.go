@@ -9,7 +9,7 @@ import (
 	"context"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 // 组装结果类型（定义在组件包；别名保持调用点不变）。
@@ -22,7 +22,7 @@ type (
 	TokenUsage = session.TokenUsage
 )
 
-// buildAssembly 组装本轮上下文（生产路径 `msgs()` 的唯一实现）。
+// buildAssembly 组装本轮上下文（引擎 ContextProvider 的唯一取数实现）。
 //
 // 顺序与改动前逐字一致（实现见 `chonkpilot-session.Composer`）：
 //  1. 当前轮已落库消息（`LoadMessages(turn)`）+ `tc.hist`（快照前缀 + 未压缩轮）；
@@ -119,10 +119,6 @@ func toolSchemas(defs []ToolDef) []session.ToolSchema {
 	}
 	return out
 }
-
-// toolsTokenEstimate 估算工具 schema 的 token 量（组件 `ToolsTokenEstimate` 的宿主适配；
-// 组装侧用量计算与白盒断言共用同一口径）。
-func toolsTokenEstimate(tools []ToolDef) int { return session.ToolsTokenEstimate(toolSchemas(tools)) }
 
 // ─── 快照 DTO 互转（压缩回写 / 读已提交快照用）─────────────────────
 

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-gui/models"
+	"github.com/lsong98sh/chonkpilot-framework/host/models"
 )
 
 func TestExpandHome(t *testing.T) {

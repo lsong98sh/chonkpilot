@@ -1,8 +1,10 @@
-// 项目配置**批量写**（2026-09-28，[61-消息一览 §3.1]）契约单测：
+// 项目配置**批量**（2026-09-28 批量写 / 2026-10-29 批量删，[61-消息一览 §3.1]）契约单测：
 //   - 一次批量写 N 键 → **恰好 1 条** data-prj-config-refresh（载荷带 `ids` 全组键 + `id` = 首键）；
 //   - N 键全部落库；MQ 路径（`data-prj-config-save` 报文 `{data:{entries}}`）与门面路径等价；
 //   - 单键路径**行为不变**（仍 1 条、`id` 正确、**不写 `ids`**）；
-//   - `delete` 路径不变（逐键广播、载荷不写 `ids`）；同值重复写**仍各发 1 条**（信号语义不丢）；
+//   - **批量删 N 键 → 恰好 1 条** data-prj-config-refresh（`op=delete`、`ids` 全组键、`id` = 首键）；
+//     单键删载荷与改前逐字一致（不写 `ids`）；空键集**不发**广播；
+//     同值重复写**仍各发 1 条**（信号语义不丢）；
 //   - 实例隔离：不同实例的批量写各带各自 `instance_id`，值互不可见。
 //
 // 复用本包既有宿主 helper（newTestPersist / regInstance / dataCall / dataResult /
@@ -17,18 +19,13 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // regInstanceAs 发布 instance-register（id + work_dir 指定；B 用例需同/异 work_dir 多实例）。
 func regInstanceAs(t *testing.T, bus mq.Bus, id, wd string) {
 	t.Helper()
-	// P3-4c 起缺省一树一库；本套不断言会话布局，置 off 避免异步搬运干扰目录清理。
 	data.Register(id, wd, "")
-	if prj, release, err := data.Prj(id); err == nil {
-		_ = data.SetConfig(prj, "session.db.shard", "off")
-		release()
-	}
 	pubFire(bus, "instance-register", jb(map[string]any{
 		"instance_id": id, "client_type": "unittest", "work_dir": wd,
 	}))
@@ -122,31 +119,71 @@ func TestConfigKVSetBatchSingleRefresh(t *testing.T) {
 	expectNoMoreRefresh(t, ch3, 200*time.Millisecond)
 }
 
-// TestConfigKVDeletePathUnchanged：delete 仍逐键广播（1 键 1 条、载荷不写 ids、id = 键）。
-func TestConfigKVDeletePathUnchanged(t *testing.T) {
+// TestConfigKVDeleteBatchSingleRefresh：批量删 N 键 = 恰好 1 条 refresh（`ids` 全组键、`id` = 首键、
+// `op=delete`）；单键删载荷与改前逐字一致（1 条、不写 `ids`）；空键集不发广播。
+func TestConfigKVDeleteBatchSingleRefresh(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
 	api := inline.New(bus)
 
 	if _, err := api.ConfigKVSet(facade.ConfigKVSetRequest{
-		Domain: facade.DomainPrjConfig, InstanceID: facadeInstance, Entries: map[string]string{"d.key": "v"},
+		Domain: facade.DomainPrjConfig, InstanceID: facadeInstance,
+		Entries: map[string]string{"d1": "v", "d2": "v", "d3": "v", "d4": "v"},
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	// ① 批量删 3 键 → 恰好 1 条（ids 字典序 d1/d2/d3，id = 首键 d1）
 	ch := collectRefresh(t, bus, "prj-config")
 	if _, err := api.ConfigKVDelete(facade.ConfigKVDeleteRequest{
-		Domain: facade.DomainPrjConfig, InstanceID: facadeInstance, Keys: []string{"d.key"},
+		Domain: facade.DomainPrjConfig, InstanceID: facadeInstance, Keys: []string{"d3", "d1", "d2"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	ev := waitRefresh(t, ch, "prj-config")
-	if ev["id"] != "d.key" || ev["op"] != "delete" {
-		t.Fatalf("delete refresh 字段不符：%+v", ev)
+	if ev["id"] != "d1" || ev["op"] != "delete" {
+		t.Fatalf("批量删 refresh 字段不符：%+v", ev)
 	}
-	if _, has := ev["ids"]; has {
-		t.Fatalf("delete refresh 不应写 ids（载荷不变）：%+v", ev)
+	if ids := idsOf(ev); len(ids) != 3 || ids[0] != "d1" || ids[1] != "d2" || ids[2] != "d3" {
+		t.Fatalf("批量删 refresh 应带字典序全组 ids：%+v", ev["ids"])
 	}
 	expectNoMoreRefresh(t, ch, 200*time.Millisecond)
+	// 3 键已删（未配置 → 空串），未列入的键保持原值
+	got, err := api.ConfigKVGet(facade.ConfigKVGetRequest{
+		Domain: facade.DomainPrjConfig, InstanceID: facadeInstance,
+		Keys: []string{"d1", "d2", "d3", "d4"},
+	})
+	if err != nil || got.Values["d1"] != "" || got.Values["d2"] != "" || got.Values["d3"] != "" {
+		t.Fatalf("批量删未生效：%+v err=%v", got.Values, err)
+	}
+	if got.Values["d4"] != "v" {
+		t.Fatalf("未列入批量删的键不应被删：%q", got.Values["d4"])
+	}
+
+	// ② 单键删：仍 1 条、id 正确、**不写 ids**（载荷与改前逐字等价）
+	ch2 := collectRefresh(t, bus, "prj-config")
+	if _, err := api.ConfigKVDelete(facade.ConfigKVDeleteRequest{
+		Domain: facade.DomainPrjConfig, InstanceID: facadeInstance, Keys: []string{"d4"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ev2 := waitRefresh(t, ch2, "prj-config")
+	if ev2["id"] != "d4" || ev2["op"] != "delete" {
+		t.Fatalf("单键删 refresh 字段不符：%+v", ev2)
+	}
+	if _, has := ev2["ids"]; has {
+		t.Fatalf("单键删 refresh 不应写 ids（载荷须与改前等价）：%+v", ev2)
+	}
+	expectNoMoreRefresh(t, ch2, 200*time.Millisecond)
+
+	// ③ 空键集：不发广播
+	ch3 := collectRefresh(t, bus, "prj-config")
+	if _, err := api.ConfigKVDelete(facade.ConfigKVDeleteRequest{
+		Domain: facade.DomainPrjConfig, InstanceID: facadeInstance,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expectNoMoreRefresh(t, ch3, 200*time.Millisecond)
 }
 
 // TestConfigKVSetSameValueStillRefreshes：同值重复写仍**各发 1 条**刷新

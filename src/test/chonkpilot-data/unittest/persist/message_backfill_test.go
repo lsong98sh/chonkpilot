@@ -2,7 +2,7 @@
 //   - key 非空 → 按该主键就地更新（running → 终态），保留原 created_at；
 //   - role=tool 带 tool_call_id 且无 key → 复用同轮同 call 的既有行（重启后重试路径不产生重复）；
 //   - assistant 分段落库（带 key）写同一行。
-// 经总线驱动 persist（黑盒），落库断言经直连 prjusr 库（regInstance 已 data.Register）。
+// 经总线驱动 persist（黑盒），落库断言经**对话库**句柄（一树一库：请求一律带 `dialog_id`）。
 package persist_test
 
 import (
@@ -12,13 +12,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
-// msgRowsOfTurn 直连 prjusr 库读某轮全部消息行（created_at 升序）。
-func msgRowsOfTurn(t *testing.T, turn string) []data.Record {
+// msgRowsOfTurn 读对话库某轮全部消息行（created_at 升序）。
+func msgRowsOfTurn(t *testing.T, db *data.DB, turn string) []data.Record {
 	t.Helper()
-	db, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatalf("PrjUsr: %v", err)
-	}
 	recs, _, err := db.Table("messages").Query(data.Query{
 		Where: data.Record{"turn_id": turn}, OrderBy: "created_at",
 	})
@@ -33,7 +29,9 @@ func msgRowsOfTurn(t *testing.T, turn string) []data.Record {
 func TestAppendMessageToolKeyedBackfill(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, sdb := newDialog(t, "ins-test", "s1")
 	sess := func(action string, data map[string]any) map[string]any {
+		data["dialog_id"] = d1
 		return dataCall(t, bus, "data-session-"+action, map[string]any{"instance_id": "ins-test", "data": data})
 	}
 	dataResult(t, sess("ensure-session", map[string]any{"session_id": "s1"}))
@@ -51,7 +49,7 @@ func TestAppendMessageToolKeyedBackfill(t *testing.T) {
 	if key == "" {
 		t.Fatalf("append-message 应回 id：%+v", r1)
 	}
-	rows := msgRowsOfTurn(t, "t1")
+	rows := msgRowsOfTurn(t, sdb, "t1")
 	if len(rows) != 1 || persist.Sval(rows[0]["tool_call_status"]) != "running" {
 		t.Fatalf("发起后应有 1 行 running: %+v", rows)
 	}
@@ -68,7 +66,7 @@ func TestAppendMessageToolKeyedBackfill(t *testing.T) {
 	if got := persist.Sval(r2["id"]); got != key {
 		t.Fatalf("回填应回同一主键 %q，得 %q", key, got)
 	}
-	rows = msgRowsOfTurn(t, "t1")
+	rows = msgRowsOfTurn(t, sdb, "t1")
 	if len(rows) != 1 {
 		t.Fatalf("回填后应仍为 1 行（不得新增）：%+v", rows)
 	}
@@ -85,7 +83,9 @@ func TestAppendMessageToolKeyedBackfill(t *testing.T) {
 func TestAppendMessageToolReuseWithoutKey(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, sdb := newDialog(t, "ins-test", "s1")
 	sess := func(action string, data map[string]any) map[string]any {
+		data["dialog_id"] = d1
 		return dataCall(t, bus, "data-session-"+action, map[string]any{"instance_id": "ins-test", "data": data})
 	}
 	dataResult(t, sess("ensure-session", map[string]any{"session_id": "s1"}))
@@ -106,7 +106,7 @@ func TestAppendMessageToolReuseWithoutKey(t *testing.T) {
 			"content": `{"call":{"tool_call_id":"c2","name":"t_y"},"result":{"content":"boom","status":"failed"}}`,
 		},
 	}))
-	rows := msgRowsOfTurn(t, "t1")
+	rows := msgRowsOfTurn(t, sdb, "t1")
 	if len(rows) != 1 {
 		t.Fatalf("无 key 回填应复用同一行（恒 1 行）：%+v", rows)
 	}
@@ -119,7 +119,9 @@ func TestAppendMessageToolReuseWithoutKey(t *testing.T) {
 func TestAppendMessageAssistantKeyedUpsert(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, sdb := newDialog(t, "ins-test", "s1")
 	sess := func(action string, data map[string]any) map[string]any {
+		data["dialog_id"] = d1
 		return dataCall(t, bus, "data-session-"+action, map[string]any{"instance_id": "ins-test", "data": data})
 	}
 	dataResult(t, sess("ensure-session", map[string]any{"session_id": "s1"}))
@@ -139,7 +141,7 @@ func TestAppendMessageAssistantKeyedUpsert(t *testing.T) {
 	}))
 
 	var assistants []data.Record
-	for _, r := range msgRowsOfTurn(t, "t1") {
+	for _, r := range msgRowsOfTurn(t, sdb, "t1") {
 		if persist.Sval(r["role"]) == "assistant" {
 			assistants = append(assistants, r)
 		}

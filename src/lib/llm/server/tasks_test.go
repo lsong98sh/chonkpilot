@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // taskEvents 收集 tasks.started / tasks.updated / tasks.done（按 task_id 分组）。

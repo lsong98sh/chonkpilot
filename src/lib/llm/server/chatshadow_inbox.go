@@ -1,15 +1,14 @@
 // chat Inbox 宿主适配器（MOD-1 A4-P1）：per-turn 内存 FIFO。
 //
 // **本文件不改生产路径**：生产 `turnCtx` 的中途输入仍走 `inboxCh` / `facade.InboxItem`；
-// `chatInbox` 供引擎驱动时使用，生产投递点（`FeedInsert` / `FeedToolResult`）在 P3 切换时接入。
-// 数据面行的转换复用 `chatadapter.go` 的 `ChatInboxFromFacade`（字段对齐，`Think`/`Effort` 原样 JSON）。
+// `chatInbox` 供引擎驱动时使用（生产投递点 = `engineRouteInput` / `engineRouteInsert`）。
 package server
 
 import (
 	"context"
 	"sync"
 
-	"github.com/lsong98sh/chonkpilot-chat"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
 )
 
 // chatInbox 是 chat.Inbox 的宿主实现：per-turn 内存 FIFO（生产投递点在 P3 切换时接入）。

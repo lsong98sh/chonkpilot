@@ -6,11 +6,14 @@
 //	  dialogs {dialog_id(PK), file, title, kind, updated_at}   ← 可重建索引（列表展示用）
 //	dialogs/dialog-<hex(dialog_id)>.db   ← 一库 = 一棵会话树（sessions/messages/turns/tasktree/inbox/snapshot）
 //
-// 职责边界（P0）：本文件只提供**存储原语**；会话域门面仍读旧布局（`sessions` 表 +
-// `sessions/<hex>/`），读路径切换见 P3。旧布局原语保留在 store.go（`Store`），P3 完成后删除。
+// 职责边界：本文件只提供**存储原语** + 目录对账（`Reconcile`）。旧布局
+// （`sessions` 表 + `sessions/<hex>/`）与其搬运实现已随 DATA-OPT-1 ② 整体退场。
 package sessionstore
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +21,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
+	"github.com/lsong98sh/chonkpilot-util/strx"
 )
 
 // DialogTable 是 prjusr 内的对话目录表名。
@@ -62,9 +66,6 @@ func rowFromRecord(dialogID string, rec data.Record) DialogRow {
 	}
 }
 
-// NewDialogID 生成新的对话 id（委托 data.NewDialogID；命名规则单一定义在 data）。
-func NewDialogID() (string, error) { return data.NewDialogID() }
-
 // DialogFileName 返回 dialog_id 对应的库文件名（委托 data.DialogFileName）。
 func DialogFileName(dialogID string) string { return data.DialogFileName(dialogID) }
 
@@ -77,21 +78,6 @@ func OpenDialog(catalog *data.DB, dialogID string) (*data.DB, func(), error) {
 		return nil, nil, fmt.Errorf("sessionstore: catalog is nil")
 	}
 	return data.OpenDialog(catalog.Path(), dialogID)
-}
-
-// DeleteDialog 删除对话库文件 + 目录行（幂等：两者都不存在也算成功）。
-func DeleteDialog(catalog *data.DB, dialogID string) error {
-	if catalog == nil {
-		return fmt.Errorf("sessionstore: catalog is nil")
-	}
-	if dialogID == "" {
-		return nil
-	}
-	// 行先删（spec §8「删除中途失败」：行先删，文件删除幂等可重试）。
-	if err := catalog.Table(DialogTable).Delete(dialogID); err != nil && err != data.ErrNotFound {
-		return err
-	}
-	return data.DeleteDialog(catalog.Path(), dialogID)
 }
 
 // GetDialog 读目录行（ok=false = 不存在）。
@@ -171,10 +157,137 @@ func nowNano() string {
 
 // firstNonEmpty 返回第一个非空串。
 func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
+	return strx.FirstNonEmpty(vals...)
+}
+
+// sval 把 Record 值转字符串（nil → ""）。
+func sval(v any) string {
+	if v == nil {
+		return ""
 	}
-	return ""
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
+}
+
+// MigratedDialogID 返回根会话自举使用的对话 id（确定性：同一根 session_id 恒同一 id）。
+//
+// 仅根会话自举（`data-session-ensure-session` 缺 `dialog_id`）使用；`CreateDialog` 等新建
+// 路径用随机 [data.NewDialogID]。确定性保证重入幂等，且 dialog_id ≠ session_id
+// （取 sha256 前 16 字节并置 UUID v5 版本位）。
+func MigratedDialogID(rootSessionID string) string {
+	sum := sha256.Sum256([]byte("chonkpilot-dialog:" + rootSessionID))
+	var b [16]byte
+	copy(b[:], sum[:16])
+	b[6] = (b[6] & 0x0f) | 0x50 // version 5（名字派生）
+	b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
+	h := hex.EncodeToString(b[:])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// ReconcileResult 汇总一次目录对账的修正量。
+type ReconcileResult struct {
+	Added   int // 文件在、目录行缺失 → 补行
+	Updated int // 文件在、行内 title/kind/updated_at 漂移 → 回填
+	Removed int // 行在、文件缺失 → 删行
+}
+
+// Reconcile 启动对账（spec §8）：扫 dialogs/ 补目录行、删失效行、回填 title/kind/updated_at。
+//
+// 口径：文件在、行缺失 → 补行；行在、文件缺失 → **删行**（与「标记 broken」二选一，此处取删行，
+// 因为 `dialogs` 是可重建索引，删除后可由文件重新补齐，不留不可达状态）；title/kind 以库内
+// 主 session 为准（主 session 改名后尽力双写失败时由本函数收敛）。
+func Reconcile(catalog *data.DB) (ReconcileResult, error) {
+	var res ReconcileResult
+	if catalog == nil {
+		return res, errors.New("sessionstore: catalog is nil")
+	}
+	files, err := ListDialogFiles(catalog.Path())
+	if err != nil {
+		return res, err
+	}
+	seen := map[string]bool{}
+	for _, name := range files {
+		dialogID, ok := DialogIDFromFile(name)
+		if !ok {
+			continue
+		}
+		seen[dialogID] = true
+		sdb, release, err := OpenDialog(catalog, dialogID)
+		if err != nil {
+			return res, err
+		}
+		title, kind, updated, mainID, ok, err := mainSessionMeta(sdb)
+		release()
+		if err != nil {
+			return res, err
+		}
+		if !ok {
+			continue // 库内无主 session（半创建 / 损坏）→ 保留文件，交由 EnsureDialog 收敛
+		}
+		cur, exists, err := GetDialog(catalog, dialogID)
+		if err != nil {
+			return res, err
+		}
+		want := DialogRow{DialogID: dialogID, File: name, Title: title, Kind: kind, MainSessionID: mainID, UpdatedAt: updated}
+		if !exists {
+			if err := PutDialog(catalog, want); err != nil {
+				return res, err
+			}
+			res.Added++
+			continue
+		}
+		if cur.File == want.File && cur.Title == want.Title && cur.Kind == want.Kind &&
+			cur.MainSessionID == want.MainSessionID && cur.UpdatedAt == want.UpdatedAt {
+			continue
+		}
+		if err := PutDialog(catalog, want); err != nil {
+			return res, err
+		}
+		res.Updated++
+	}
+
+	rows, err := ListDialogs(catalog)
+	if err != nil {
+		return res, err
+	}
+	for _, row := range rows {
+		if seen[row.DialogID] {
+			continue
+		}
+		if _, statErr := os.Stat(data.DialogDBPath(catalog.Path(), row.DialogID)); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return res, statErr
+		}
+		if err := catalog.Table(DialogTable).Delete(row.DialogID); err != nil && err != data.ErrNotFound {
+			return res, err
+		}
+		res.Removed++
+	}
+	return res, nil
+}
+
+// mainSessionMeta 读库内主 session（parent_id=""）的展示字段；无主 session → ok=false。
+func mainSessionMeta(sdb *data.DB) (title, kind, updated, mainID string, ok bool, err error) {
+	var best data.Record
+	bestUpdated := ""
+	if err = sdb.Table("sessions").ForEach(func(_ string, rec data.Record) error {
+		if sval(rec["parent_id"]) != "" {
+			return nil
+		}
+		u := sval(rec["updated_at"])
+		if best == nil || u > bestUpdated {
+			best, bestUpdated = rec, u
+		}
+		return nil
+	}); err != nil {
+		return "", "", "", "", false, err
+	}
+	if best == nil {
+		return "", "", "", "", false, nil
+	}
+	return firstNonEmpty(sval(best["title"]), sval(best["session_id"])),
+		firstNonEmpty(sval(best["kind"]), "main"), bestUpdated, sval(best["session_id"]), true, nil
 }

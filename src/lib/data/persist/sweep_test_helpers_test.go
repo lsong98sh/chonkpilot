@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // newSweepTestService 建一个实例绑定/超时清理测试服务（进程内总线；UsrPath/AppDir 走临时目录，

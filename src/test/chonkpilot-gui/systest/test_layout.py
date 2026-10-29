@@ -59,11 +59,16 @@ def main():
     try:
         gui.start()
 
-        # L0 窗口几何基线（产品默认 1280x800；占比推导的前提）
+        # L0 窗口几何基线（产品默认 1280x800 **物理像素**；占比推导的前提）
+        # 2026-10-26（DPI 感知）：exe 已声明 Per-Monitor V2（42 §2 (274)）→ `window.innerWidth/Height`
+        # 是 **CSS px**，在 125% 缩放下 1280x800 物理 = 1024x640 CSS。故按 `devicePixelRatio` 折算回
+        # 物理像素再比对产品默认值（否则该断言会随缩放比例假红）。
         VW = J(gui, "window.innerWidth || 0")
         VH = J(gui, "window.innerHeight || 0")
-        c.check("L0 窗口几何基线 = 产品默认 1280x800",
-                VW == 1280 and 700 <= VH <= 820, f"innerWidth={VW} innerHeight={VH}")
+        DPR = J(gui, "window.devicePixelRatio || 1") or 1
+        c.check("L0 窗口几何基线 = 产品默认 1280x800（物理像素；DPI=%.2f）" % DPR,
+                abs(VW * DPR - 1280) <= 8 and 760 <= VH * DPR <= 840,
+                f"innerWidth={VW} innerHeight={VH} dpr={DPR} → 物理 {VW * DPR:.0f}x{VH * DPR:.0f}")
 
         # L0b 任务区常显（裁决 2）
         shown = J(gui, "!!document.querySelector('.session-chat')")
@@ -139,8 +144,10 @@ def main():
             return J(gui, f"(document.querySelector('{sel}')?.getBoundingClientRect().height||0)")
 
         # L2 filetree 宽度：默认文档占比（左列内 320 : previewMin 280）→ 容差区间（非 legacy 固定 320）
+        # 2026-10-26：绝对像素区间在 DPI 缩放下失效（1024 CSS 宽时左列按占比缩小）→ 改按视口占比。
         fw = pane_w(".filetree-panel")
-        c.check("L2 filetree 宽度（默认占比推导）落在合理区间", 300 <= fw <= 560, f"actual={fw}px vw={VW}")
+        c.check("L2 filetree 宽度（默认占比推导）落在合理区间",
+                0.22 * VW <= fw <= 0.45 * VW, f"actual={fw}px vw={VW}")
 
         # L3 旧尺寸键仍可写（free 形态不读；只验证既有消息面可用，不回灌）
         try:
@@ -149,9 +156,10 @@ def main():
         except Exception as e:
             c.check("L3 旧尺寸键写入（gui.ui.save layout）仍可用", False, str(e))
 
-        # L4 chat 宽度：默认占比（body 640 : 520）→ 容差区间
+        # L4 chat 宽度：默认占比（body 640 : 520）→ 容差区间（按视口占比，DPI 无关）
         cw = pane_w(".chat-panel")
-        c.check("L4 chat 宽度（默认占比推导）落在合理区间", 480 <= cw <= 660,
+        c.check("L4 chat 宽度（默认占比推导）落在合理区间",
+                0.38 * VW <= cw <= 0.55 * VW,
                 f"actual={cw}px（vw={VW}）")
 
         # L5 同上（消息面可用性）

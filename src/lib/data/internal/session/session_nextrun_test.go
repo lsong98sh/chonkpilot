@@ -1,6 +1,7 @@
 // `next_run` 计数器（`sessions.next_run_count`）门面单测（NEXTRUN-1 §3.3.2）。
 //
 // 口径：上限判定 + 自增单事务原子；0 = 关闭（不增）；重置 / 补偿 -1；仅 > 0 才写键。
+// 一树一库：会话行在对话库内，故先经根会话自举拿 `dialog_id`，后续调用一律带它。
 package session
 
 import (
@@ -13,21 +14,30 @@ import (
 func TestSessionNextRunCounter(t *testing.T) {
 	s, scope := newSessionEnvBus(t) // SessionEnsure 首次落库会广播 session-new（需总线）
 	const inst, sid = "ins-nextrun", "s-nextrun"
-	disableShard(t, s, inst, scope)
+	root, err := s.SessionEnsure(facade.SessionEnsureRequest{
+		InstanceID: inst, SessionID: sid, Scope: scope,
+	})
+	if err != nil {
+		t.Fatalf("SessionEnsure: %v", err)
+	}
+	dialogID := root.DialogID
+	if dialogID == "" {
+		t.Fatal("自举应回带 dialog_id")
+	}
 	prj, err := s.PrjUsrFor(inst, scope)
 	if err != nil {
 		t.Fatalf("prjusr: %v", err)
 	}
-	if _, err := s.SessionEnsure(facade.SessionEnsureRequest{
-		InstanceID: inst, SessionID: sid, Scope: scope,
-	}); err != nil {
-		t.Fatalf("SessionEnsure: %v", err)
+	sdb, release, err := data.OpenExistingDialog(prj.Path(), dialogID)
+	if err != nil {
+		t.Fatalf("open dialog: %v", err)
 	}
+	t.Cleanup(release)
 
 	add := func(max int) facade.SessionNextRunCheckAndAddResponse {
 		t.Helper()
 		res, err := s.SessionNextRunCheckAndAdd(facade.SessionNextRunCheckAndAddRequest{
-			InstanceID: inst, SessionID: sid, Max: max, Scope: scope,
+			InstanceID: inst, DialogID: dialogID, SessionID: sid, Max: max, Scope: scope,
 		})
 		if err != nil {
 			t.Fatalf("CheckAndAdd(max=%d): %v", max, err)
@@ -37,7 +47,7 @@ func TestSessionNextRunCounter(t *testing.T) {
 	get := func() int {
 		t.Helper()
 		res, err := s.SessionNextRunGet(facade.SessionNextRunGetRequest{
-			InstanceID: inst, SessionID: sid, Scope: scope,
+			InstanceID: inst, DialogID: dialogID, SessionID: sid, Scope: scope,
 		})
 		if err != nil {
 			t.Fatalf("Get: %v", err)
@@ -65,7 +75,7 @@ func TestSessionNextRunCounter(t *testing.T) {
 
 	// 用户发送重置 → 0，随后可再次用满额度。
 	if _, err := s.SessionNextRunReset(facade.SessionNextRunResetRequest{
-		InstanceID: inst, SessionID: sid, Scope: scope,
+		InstanceID: inst, DialogID: dialogID, SessionID: sid, Scope: scope,
 	}); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
@@ -73,7 +83,7 @@ func TestSessionNextRunCounter(t *testing.T) {
 		t.Fatalf("重置后应为 0：got=%d", got)
 	}
 	var row data.Record
-	if ok, err := prj.Table("sessions").Get(sid, &row); err != nil || !ok {
+	if ok, err := sdb.Table("sessions").Get(sid, &row); err != nil || !ok {
 		t.Fatalf("读会话行：ok=%v err=%v", ok, err)
 	}
 	if _, exists := row[nextRunCountKey]; exists {
@@ -84,30 +94,30 @@ func TestSessionNextRunCounter(t *testing.T) {
 	add(2)
 	add(2)
 	dec, err := s.SessionNextRunDec(facade.SessionNextRunDecRequest{
-		InstanceID: inst, SessionID: sid, Scope: scope,
+		InstanceID: inst, DialogID: dialogID, SessionID: sid, Scope: scope,
 	})
 	if err != nil || dec.Count != 1 {
 		t.Fatalf("Dec 应为 1：%+v err=%v", dec, err)
 	}
 	if dec, err = s.SessionNextRunDec(facade.SessionNextRunDecRequest{
-		InstanceID: inst, SessionID: sid, Scope: scope,
+		InstanceID: inst, DialogID: dialogID, SessionID: sid, Scope: scope,
 	}); err != nil || dec.Count != 0 {
 		t.Fatalf("Dec 到 0：%+v err=%v", dec, err)
 	}
 	if dec, err = s.SessionNextRunDec(facade.SessionNextRunDecRequest{
-		InstanceID: inst, SessionID: sid, Scope: scope,
+		InstanceID: inst, DialogID: dialogID, SessionID: sid, Scope: scope,
 	}); err != nil || dec.Count != 0 {
 		t.Fatalf("Dec 不应小于 0：%+v err=%v", dec, err)
 	}
 
 	// 会话不存在 → CheckAndAdd 报错；Reset 幂等成功；Get 回落 0。
 	if _, err := s.SessionNextRunCheckAndAdd(facade.SessionNextRunCheckAndAddRequest{
-		InstanceID: inst, SessionID: "no-such", Max: 5, Scope: scope,
+		InstanceID: inst, DialogID: dialogID, SessionID: "no-such", Max: 5, Scope: scope,
 	}); err == nil {
 		t.Fatalf("会话不存在应报错")
 	}
 	if _, err := s.SessionNextRunReset(facade.SessionNextRunResetRequest{
-		InstanceID: inst, SessionID: "no-such", Scope: scope,
+		InstanceID: inst, DialogID: dialogID, SessionID: "no-such", Scope: scope,
 	}); err != nil {
 		t.Fatalf("不存在会话的 Reset 应幂等成功: %v", err)
 	}

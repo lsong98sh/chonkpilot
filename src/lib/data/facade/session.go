@@ -50,7 +50,7 @@ type Session struct {
 	// ID 会话 id。
 	ID string `json:"id"`
 	// DialogID 所属对话 id（会话存储为一树一库；列表/详情带出，供后续调用回填）。
-	// **仅非空才写键** → 旧布局会话行载荷逐字节不变。
+	// **仅非空才写键**（带出时恒有值）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// Title 会话标题。
 	Title string `json:"title,omitempty"`
@@ -110,7 +110,7 @@ type SessionListResponse struct {
 type SessionGetRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（非空 → 读对话库；空 → 旧布局）。
+	// DialogID 对话 id（一树一库：读对话库；必填，缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id。
 	SessionID string `json:"session_id"`
@@ -138,7 +138,7 @@ type SessionLatestRequest struct {
 type SessionLatestResponse struct {
 	// SessionID 最近活动顶层会话 id（无 → 空串）。
 	SessionID string `json:"session_id"`
-	// DialogID 该会话所在对话 id（shard=on 时回带；旧布局为空 → 不写键）。
+	// DialogID 该会话所在对话 id（一树一库：恒带出；空 = 无会话）。
 	DialogID string `json:"dialog_id,omitempty"`
 }
 
@@ -240,7 +240,8 @@ type SessionActiveGetResponse struct {
 type SessionEnsureRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
-	// DialogID 对话 id（SESSION-COMP-1 P3：非空 → 写对话库的 `sessions` 表；空 → 旧布局 prjusr）。
+	// DialogID 对话 id（一树一库：写对话库的 `sessions` 表）。**根会话可缺**（服务端确定性自举并回带）；
+	// 其它会话缺 → dialog_required。
 	DialogID string `json:"dialog_id,omitempty"`
 	// SessionID 会话 id（必填）。
 	SessionID string `json:"session_id"`
@@ -277,8 +278,8 @@ type SessionEnsureRequest struct {
 type SessionEnsureResponse struct {
 	// OK 是否成功（失败走 error）。
 	OK bool `json:"ok"`
-	// DialogID 会话所在对话 id（P3 过渡期：根会话缺 `dialog_id` 时由服务端确定性建对话并回带，
-	// 调用方据此回填后续调用的 `dialog_id`；旧布局调用不带该键 → 载荷逐字节不变）。
+	// DialogID 会话所在对话 id（根会话缺 `dialog_id` 时由服务端确定性建对话并回带，
+	// 调用方据此回填后续调用；带 `dialog_id` 建会话时原样回带）。
 	DialogID string `json:"dialog_id,omitempty"`
 }
 

@@ -11,8 +11,8 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // sessionStore 封装会话数据读写（总线 persist 面）。
@@ -68,6 +68,64 @@ func flushSessionIndexes(bus mq.Bus) {
 	})
 }
 
+// flushInstanceIndex 清掉某实例的备忘（`instance-exit` 调用）：长驻服务端下按实例回收，
+// 避免 session/turn 映射随实例累积（B-38 同类泄漏）。
+func flushInstanceIndex(bus mq.Bus, instanceID string) {
+	if bus == nil || instanceID == "" {
+		return
+	}
+	sessionIndexes.Delete(fmt.Sprintf("%p|%s", bus, instanceID))
+}
+
+// Prewarm 从 `data-session-list` 回填该实例的 session→dialog 备忘。
+//
+// 进程重启后备忘为空（见 sessionIndex 注释），而群聊「继续/结束」、子聊天完成、主会话判定
+// 都不会经过 `llm-start` 的 EnsureSession → 索引长期缺失 → 这些入口拿不到 dialog_id。
+// 实例注册后后台预热一次（61 会话列表已回带 dialog_id，零新增主题）。
+func (st *sessionStore) Prewarm() {
+	res, err := dataRequest(st.bus, msgkeys.TopicDataSessionList, map[string]any{
+		"instance_id": st.instanceID, "data": map[string]any{},
+	})
+	if err != nil {
+		return
+	}
+	list, _ := res["list"].([]any)
+	for _, e := range list {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		st.idx.setDialog(str(m["id"]), str(m["dialog_id"]))
+	}
+}
+
+// ensureDialogIndex 返回会话所属 dialog_id；备忘缺失时用一次会话列表回填（重启后自愈）。
+func (s *Server) ensureDialogIndex(instanceID, sessionID string) string {
+	if dlg := s.dialogOf(instanceID, sessionID); dlg != "" {
+		return dlg
+	}
+	if s == nil || s.bus == nil || sessionID == "" {
+		return ""
+	}
+	newSessionStore(s.bus, instanceID).Prewarm()
+	return s.dialogOf(instanceID, sessionID)
+}
+
+// dialogForWrite 返回会话 dialog_id；备忘缺失且会话行不存在时，幂等 ensure-session 自举对话库
+// 后重取。用于「发送 / 落消息」这类**写**入口（读入口缺 dialog 应按空处理，不建行）。
+func (s *Server) dialogForWrite(instanceID, sessionID string) string {
+	if dlg := s.ensureDialogIndex(instanceID, sessionID); dlg != "" {
+		return dlg
+	}
+	if s == nil || s.bus == nil || sessionID == "" {
+		return ""
+	}
+	if err := newSessionStore(s.bus, instanceID).EnsureSession(sessionID); err != nil {
+		return ""
+	}
+	return s.ensureDialogIndex(instanceID, sessionID)
+}
+
 func (x *sessionIndex) setDialog(sessionID, dialogID string) {
 	if sessionID == "" || dialogID == "" {
 		return
@@ -113,7 +171,7 @@ func (st *sessionStore) req(action string, data map[string]any) (map[string]any,
 	})
 }
 
-// injectDialog 按 session_id / turn_id 补 `dialog_id`（两者都缺 / 未知 → 不写键，旧布局）。
+// injectDialog 按 session_id / turn_id 补 `dialog_id`（两者都缺 / 未知 → 不写键；一树一库下由调用方显式带或走自举）。
 func (st *sessionStore) injectDialog(data map[string]any) {
 	if data == nil || st.idx == nil {
 		return
@@ -151,7 +209,7 @@ func (st *sessionStore) EnsureSessionWithParent(sessionID, parentSessionID strin
 	res, err := st.req("ensure-session", data)
 	if err != nil {
 		// 失配自愈：备忘里的对话已被删除 / 属另一份数据根（测试串味、用户删对话）→
-		// 丢掉旧映射后**重试一次**（不带 dialog_id，走自举 / 旧布局），避免永久失败。
+		// 丢掉旧映射后**重试一次**（不带 dialog_id：根会话走自举；子会话因对话已删 → `dialog_required`）。
 		if strings.Contains(err.Error(), "对话库不存在") {
 			st.idx.forget(sessionID)
 			delete(data, "dialog_id")
@@ -196,7 +254,30 @@ func (s *Server) dialogOf(instanceID, sessionID string) string {
 	if s == nil || s.bus == nil || sessionID == "" {
 		return ""
 	}
-	return sharedIndex(s.bus, instanceID).dialogOf(sessionID)
+	if dlg := sharedIndex(s.bus, instanceID).dialogOf(sessionID); dlg != "" {
+		return dlg
+	}
+	// 跨实例回落：群聊 / 子聊天的后续写入可能以**驱动窗口**（另一 instance）发起，而
+	// session→dialog 映射只登记在**建会话那个实例**的备忘里（dialog_id 全局唯一，按 id 复用安全）。
+	return lookupDialogAnyInstance(s.bus, sessionID)
+}
+
+// lookupDialogAnyInstance 跨实例查 session→dialog 备忘（同一总线；dialog_id 全实例唯一）。
+func lookupDialogAnyInstance(bus mq.Bus, sessionID string) string {
+	prefix := fmt.Sprintf("%p|", bus)
+	found := ""
+	sessionIndexes.Range(func(k, v any) bool {
+		key, ok := k.(string)
+		if !ok || !strings.HasPrefix(key, prefix) {
+			return true
+		}
+		if dlg := v.(*sessionIndex).dialogOf(sessionID); dlg != "" {
+			found = dlg
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // rememberDialog 记录「会话 → 对话」映射。
@@ -208,15 +289,6 @@ func (s *Server) rememberDialog(instanceID, sessionID, dialogID string) {
 		return
 	}
 	sharedIndex(s.bus, instanceID).setDialog(sessionID, dialogID)
-}
-
-// turnDialogOf 返回某轮次所属会话的 dialog_id（进程内备忘；未知 → ""）。
-func (s *Server) turnDialogOf(instanceID, turnID string) string {
-	if s == nil || s.bus == nil || turnID == "" {
-		return ""
-	}
-	idx := sharedIndex(s.bus, instanceID)
-	return idx.dialogOf(idx.sessionOfTurn(turnID))
 }
 
 // EnsureTurn 幂等建轮次（已存在复用）。

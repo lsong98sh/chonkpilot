@@ -243,7 +243,8 @@ test('D · 键白名单与 config 域实现 userconfig.go 逐键一致', () => {
     const start = goSrc.indexOf('{', i)
     const end = goSrc.indexOf('\n}', start)
     assert.ok(start >= 0 && end > start, `${marker} 字面量解析失败`)
-    return [...goSrc.slice(start, end).matchAll(/"([A-Za-z_][A-Za-z0-9_]*)":/g)].map((m) => m[1])
+    // 键名可含 `.`（子系统默认 LLM：`llm.promptOptimise` 等）。
+    return [...goSrc.slice(start, end).matchAll(/"([A-Za-z_][A-Za-z0-9_.]*)":/g)].map((m) => m[1])
   }
 
   assert.deepEqual([...SNAPSHOT_SCALAR_KEYS].sort(),

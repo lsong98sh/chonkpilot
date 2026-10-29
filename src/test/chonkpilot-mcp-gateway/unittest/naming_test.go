@@ -2,7 +2,7 @@
 //
 //	① 同类同名注册 → **报错**（拒绝，**不静默覆盖**）：tool / skill / resource 三面各验一次；
 //	③ 第三方（Origin=user）条目**一律带来源别名（前缀）**——即使显式 namespace "-" 也不得去前缀，
-//	   与内置（self_*）同名工具经别名区分（暴露名各自唯一、无裸名）。
+//	   与内置（原名）同名工具经别名区分（暴露名各自唯一）。
 //
 // 驱动：内存总线 + 工具经公开方法面 `tools/register` 接入 + httptest 承载的 streamable HTTP
 // 下游（第三方）。GATEWAY-2 L5：meta 工具（mcp_find/mcp_load/mcp_invoke）已迁出 gateway
@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -101,13 +101,13 @@ func TestNamingDuplicateRejected(t *testing.T) {
 }
 
 // TestThirdPartyAliasUnique ③ 第三方条目一律带来源别名 → 与内置同名工具经别名区分后
-// 暴露名各自唯一（无裸名）。
+// 暴露名各自唯一（内置 = 原名，第三方 = <来源>_<原名>）。
 func TestThirdPartyAliasUnique(t *testing.T) {
 	// 先起下游（cleanup 逆序：gateway.Stop 先于 ts.Close，关闭 SSE 长连再收 httptest，避免 Close 阻塞）
 	probe := startProbeServer(t)
 	bus, _ := startTestGW(t, nil)
 
-	// 内置自注册工具（暴露名 self_dup_probe）
+	// 内置自注册工具（P0a 2026-10-29 起暴露名 = 原名 dup_probe）
 	if err := callMethodErr(t, bus, "tools/register", map[string]any{
 		"name": "dup_probe", "description": "内置同名工具", "hot": true,
 	}); err != nil {
@@ -119,13 +119,10 @@ func TestThirdPartyAliasUnique(t *testing.T) {
 	})
 
 	names := toolsListNames(t, bus)
-	if !names["self_dup_probe"] {
-		t.Fatalf("内置工具暴露名应含 self_dup_probe，got %v", names)
+	if !names["dup_probe"] {
+		t.Fatalf("内置工具暴露名应为原名 dup_probe，got %v", names)
 	}
 	if !names["probe_dup_probe"] {
 		t.Fatalf("第三方工具应带来源别名 probe_dup_probe（namespace \"-\" 不得去前缀），got %v", names)
-	}
-	if names["dup_probe"] {
-		t.Fatalf("不应出现裸名 dup_probe（第三方未加别名 = 撞名风险），got %v", names)
 	}
 }

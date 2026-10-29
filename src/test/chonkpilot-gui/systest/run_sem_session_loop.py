@@ -10,7 +10,8 @@
   SL3 活动会话切换回环：`data-session-active-set{session_id}` → `data-session-active-get` == 该 id
       （选择会话落库、再回读）。
   SL4 删除闭合回环：`data-session-delete{id}` → `data-session-list` **不含**该 id
-      + `data-session-get{id}` 返回 `data` 为 null（§3.2 不存在 → `{data:null}`）。
+      + `data-session-get{id}` 闭合（§3.2 不存在 → `{data:null}`；一树一库下根对话库随之删除
+        → 等价闭合信号「对话库不存在」）。
   SL5 跨重启回环：同参重启 → `data-session-list` 仍含保留会话且标题不变
       + `data-session-active-get` 仍 == SL3 选中的会话（持久化跨进程存活）。
 
@@ -79,6 +80,20 @@ def sess_list():
 def sess_get(sid):
     r = c.req("data-session-get", {"id": sid}) or {}
     return r.get("data")
+
+
+def sess_get_closed(sid):
+    """删除后 get 的闭合判定：`{data:null}` 或「对话库不存在」（一树一库下根对话库已删除）。
+
+    返回 (data, err)：data 为 None 即视为闭合；err 记录闭合方式（「对话库不存在」或 None=空数据）。
+    """
+    try:
+        v = sess_get(sid)
+    except TestError as e:
+        if "对话库不存在" in str(e):
+            return None, str(e)
+        raise
+    return v, None
 
 
 def active_get():
@@ -156,16 +171,16 @@ def case_sl3_active_switch_loop():
 
 
 def case_sl4_delete_closed():
-    """SL4：删除 A（非活动）→ 列表不含 + get 返回 data 为 null。"""
+    """SL4：删除 A（非活动）→ 列表不含 + get 闭合（`data:null` 或「对话库不存在」）。"""
     c.req("data-session-delete", {"id": A})
     lst = wait_for(lambda: sess_list() if A not in {x.get("session_id") for x in sess_list()} else None,
                    "删除后 data-session-list 仍含 A")
-    g = wait_for(lambda: True if sess_get(A) is None else None, "删除后 data-session-get 未返回 null")
     if A in {x.get("session_id") for x in lst}:
         raise TestError("删除闭合失败：列表仍含 %r" % A)
-    if sess_get(A) is not None:
-        raise TestError("删除闭合失败：get 仍返回 %r" % (sess_get(A),))
-    evi("SL4 删除闭合回环", remaining=sorted(x.get("session_id") for x in lst), get_after=g)
+    g, gerr = wait_for(lambda: (lambda r: r if r[0] is None else None)(sess_get_closed(A)),
+                       "删除后 data-session-get 未闭合（仍返回数据）")
+    evi("SL4 删除闭合回环", remaining=sorted(x.get("session_id") for x in lst),
+        get_after=g, closed_by=(gerr or "data:null"))
 
 
 def case_sl5_restart_loop():

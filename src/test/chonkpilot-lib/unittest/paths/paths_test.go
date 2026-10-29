@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/paths"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/paths"
 )
 
 // TestNoInstanceErrors 缺 instance（宿主未注入调用上下文）→ 错误语义（决策 R-11 二次升级）：

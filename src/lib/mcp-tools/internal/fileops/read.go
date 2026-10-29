@@ -10,6 +10,8 @@ import (
 
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
+
+	"github.com/lsong98sh/chonkpilot-util/textx"
 )
 
 // maxReadBytes 是 file_read 单文件读入内存的硬上限（32MB，与 fetch 响应体上限同口径）：
@@ -140,15 +142,7 @@ func infoMap(path, errMsg string) map[string]interface{} {
 // **一个**尾换行，结尾的多个空行仍各计一行）。旧实现用 TrimRight 去掉**所有**尾换行，导致
 // 以多个空行结尾的文件中 countLines 与 countFileLines/readContent 互相矛盾。
 func countLines(data []byte) int {
-	if len(data) == 0 {
-		return 0
-	}
-	s := string(data)
-	nl := strings.Count(s, "\n")
-	if strings.HasSuffix(s, "\n") {
-		return nl // 去一个尾空行："a\nb\n"→2；"\n"→1；"\n\n"→2
-	}
-	return nl + 1
+	return textx.CountLines(data)
 }
 
 // countFileLines 流式统计文件总行数（O(1) 内存，不整读大文件），行分割与 readContent/readFileTail

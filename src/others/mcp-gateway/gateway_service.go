@@ -12,8 +12,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/chonkpilot/chonkpilot-lib/winlog"
-	"github.com/chonkpilot/chonkpilot-lib/winsvc"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winlog"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winsvc"
 	"github.com/chonkpilot/chonkpilot-gwadapter/facadeapi"
 )
 

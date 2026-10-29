@@ -34,7 +34,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
-	"github.com/chonkpilot/chonkpilot-lib/contractmd"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/contractmd"
 )
 
 // Service 是 knowledge 域门面实现（inline 绑定与 MQ 信封层共用）。
@@ -614,8 +614,7 @@ func (s *Service) kbWriteTrustRoot(root, workDir string) string {
 // path 的真实落点后复判仍在信任根内（含根自身，如列举时 MkdirAll 根）；越界 / 不可解析 → 拒绝。
 func (s *Service) kbGuardWritePath(root, workDir, path string) error {
 	trust := s.kbWriteTrustRoot(root, workDir)
-	real, ok := capfs.RealPathOrAncestor(path)
-	if !ok || !(filepath.Clean(real) == filepath.Clean(trust) || capfs.StrictlyWithin(trust, real)) {
+	if !capfs.RealPathWithinOrSelf(trust, path) { // 含根自身（列举时 MkdirAll 根）
 		return fmt.Errorf("path %q escapes knowledge root", filepath.ToSlash(path))
 	}
 	return nil

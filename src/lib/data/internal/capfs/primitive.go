@@ -1,7 +1,7 @@
 // capfs 的文件系统辅助（路径/文件名/尺寸上限/越界校验）+ 契约解析的**薄委托**。
 //
 // v2（2026-10-14）：契约解析/序列化**唯一实现**已收敛到
-// github.com/chonkpilot/chonkpilot-lib/contractmd（H1 分区 + yaml/json 代码块）。
+// github.com/lsong98sh/chonkpilot-framework/host/core/contractmd（H1 分区 + yaml/json 代码块）。
 // 本包不再自持分区解析（旧 `[meta]`/`[description]`/… 方括号分区**已废除**），
 // 仅别名复用其类型/清单并保留 data 层所需文件系统工具。
 //
@@ -19,7 +19,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/chonkpilot/chonkpilot-lib/contractmd"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/contractmd"
 )
 
 // Type 一类能力面条目（= contractmd.Type）。
@@ -215,6 +215,7 @@ func truncatePreview(s string) string {
 }
 
 // textPreviewLine 从文件头部字节取首个文本行：含 NUL 或该行非合法 UTF-8 → 视二进制返回空串。
+// utilguard:allow: 需检查整个头部字节（不限前 8KB）且不把 UTF-16 BOM 视为文本，与 textx.IsBinary 语义不同。
 func textPreviewLine(raw []byte) string {
 	if bytes.IndexByte(raw, 0) >= 0 {
 		return ""
@@ -296,6 +297,25 @@ func realTrustRoot(root string) string {
 		return r
 	}
 	return root
+}
+
+// PathWithinOrSelf 词法判定 path 是否落在 dir 内（**含 dir 自身**）：先 Rel 归一，再看是否逃逸
+// （`..` 开头 / 绝对路径）。用于「根自身也要放行」的写前复验（如列举时 MkdirAll 根）。
+func PathWithinOrSelf(dir, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// RealPathWithinOrSelf 同 RealPathWithin，但**含 root 自身**（口径 = PathWithinOrSelf）。
+func RealPathWithinOrSelf(root, path string) bool {
+	real, ok := RealPathOrAncestor(path)
+	if !ok {
+		return false
+	}
+	return PathWithinOrSelf(root, real)
 }
 
 // RealPathInside 写/删前越界复验（A-36/A-38）：与 RealPathWithin 同法，但**先解析 root 自身**的

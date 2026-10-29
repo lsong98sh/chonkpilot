@@ -178,6 +178,45 @@ func TestWriteCollectionReplace(t *testing.T) {
 	}
 }
 
+// ── P2-3 ③：工具链最小版本（usr 自由键 `toolchain.<runtime>.minVersion`）────────
+
+// TestToolchainMinVersionFreeKeys 落库/回读 + 写侧校验：空 = 不校验（允许）；
+// 非法版本号整批拒绝；未配置 → 视图里没有该键（= 不校验，默认关闭）。
+func TestToolchainMinVersionFreeKeys(t *testing.T) {
+	db := openTestDB(t)
+
+	if _, ok := readUserConfig(db)["toolchain.python.minVersion"]; ok {
+		t.Fatal("未配置时不应回读 minVersion 键（默认 = 不校验）")
+	}
+
+	if err := saveUserConfig(db, map[string]any{
+		"toolchain.python.minVersion": "3.12.10",
+		"toolchain.go.minVersion":     "",
+	}); err != nil {
+		t.Fatalf("save minVersion: %v", err)
+	}
+	view := readUserConfig(db)
+	if got := view["toolchain.python.minVersion"]; got != "3.12.10" {
+		t.Fatalf("回读不一致：%v", got)
+	}
+	if got, ok := view["toolchain.go.minVersion"]; !ok || got != "" {
+		t.Fatalf("空值应落库并原样回读（空 = 不校验）：%v ok=%v", got, ok)
+	}
+
+	// 写侧校验：空串 / 合法版本（含 v 前缀）→ 通过
+	for _, ok := range []string{"", "3.12.10", "v1.26.0", "21"} {
+		if err := ValidateUserConfigPayload(map[string]any{"toolchain.node.minVersion": ok}); err != nil {
+			t.Fatalf("合法值 %q 不应被拒：%v", ok, err)
+		}
+	}
+	// 非法 → 整批拒绝
+	for _, bad := range []string{"latest", "1..2", "1.2rc", strings.Repeat("1", 40)} {
+		if err := ValidateUserConfigPayload(map[string]any{"toolchain.node.minVersion": bad}); err == nil {
+			t.Fatalf("非法 minVersion %q 应被拒绝", bad)
+		}
+	}
+}
+
 // ── 记忆类别沉淀提示词：usr 自由键载体已删（OP-04，2026-10-06）──────────────
 
 // TestMemoryPromptsFreeKeyRemoved：`memory_prompts`（原用户级记忆类别沉淀提示词自由键）已随
@@ -195,16 +234,14 @@ func TestMemoryPromptsFreeKeyRemoved(t *testing.T) {
 	}
 }
 
-// ── SL-1：子系统默认 LLM 5 键（llm.<子系统>，2026-09-24）──────────────
+// ── SL-1：子系统默认 LLM 3 键（llm.<子系统>，2026-09-24；2026-10-25 移除备用两键）──
 
-// llmSubsystemKeys 是「子系统默认 LLM」5 键（40-演进计划 §SL SL-C2）——测试内独立硬编码，
+// llmSubsystemKeys 是「子系统默认 LLM」键（40-演进计划 §SL SL-C2）——测试内独立硬编码，
 // 兼作键名钉死（生产侧注册表见 userConfigKeyKinds）。
 var llmSubsystemKeys = []string{
 	"llm.promptOptimise",
 	"llm.memory",
 	"llm.compress",
-	"llm.analysis",
-	"llm.decision",
 }
 
 // TestSaveLLMSubsystemKeysRoundTrip ① 5 键已注册为 llmref + 写库/回读一致（显式配置不回落到 defaultLLM）。
@@ -222,8 +259,6 @@ func TestSaveLLMSubsystemKeysRoundTrip(t *testing.T) {
 		"llm.promptOptimise": "p-opt",
 		"llm.memory":         "p-mem",
 		"llm.compress":       "p-cmp",
-		"llm.analysis":       "p-ana",
-		"llm.decision":       "p-dec",
 	}
 	payload := map[string]any{}
 	for k, v := range want {
@@ -304,20 +339,20 @@ func TestLLMSubsystemKeysLegacyIntCompat(t *testing.T) {
 		t.Fatalf("int 形态未按整数格式化落库：got=%q", raw)
 	}
 	// 旧记录形态：库里直接是整数文本
-	if err := data.SetConfig(db, "llm.analysis", "1"); err != nil {
-		t.Fatalf("写 llm.analysis(int 文本) 失败：%v", err)
+	if err := data.SetConfig(db, "llm.compress", "1"); err != nil {
+		t.Fatalf("写 llm.compress(int 文本) 失败：%v", err)
 	}
 
 	view := readUserConfig(db)
 	if got := view["llm.memory"]; got != 2 {
 		t.Fatalf("llm.memory 旧 int 索引未原样回读：got=%v", got)
 	}
-	if got := view["llm.analysis"]; got != 1 {
-		t.Fatalf("llm.analysis 旧 int 索引未原样回读：got=%v", got)
+	if got := view["llm.compress"]; got != 1 {
+		t.Fatalf("llm.compress 旧 int 索引未原样回读：got=%v", got)
 	}
 	// 同批未配置键仍回落 defaultLLM（互不影响）
-	if got := view["llm.compress"]; got != "deepseek-flash" {
-		t.Fatalf("未配置的 llm.compress 未回落 defaultLLM：got=%v", got)
+	if got := view["llm.promptOptimise"]; got != "deepseek-flash" {
+		t.Fatalf("未配置的 llm.promptOptimise 未回落 defaultLLM：got=%v", got)
 	}
 }
 

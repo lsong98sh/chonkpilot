@@ -14,7 +14,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
-	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 )
 
 const turnEventTable = "turn_events"
@@ -99,8 +98,8 @@ func (s *Service) TurnEventCleanup(req facade.TurnEventCleanupRequest) (facade.T
 
 	// ① 找出「终态 + 行更新时间早于 cutoff」的 turn。
 	//
-	// 一树一库（P3-4 残留回填）：`turns` 在对话库内 → 开关生效时逐库收集；prjusr 仍扫一遍
-	// （旧布局行保留一周期，清理对两者都生效）。`turn_events` 表本身仍在 prjusr。
+	// 一树一库（P3-4 残留回填）：`turns` 在对话库内 → 逐库收集；prjusr 仍扫一遍
+	// （存量库遗留行一并收敛）。`turn_events` 表本身仍在 prjusr。
 	oldTurns := map[string]bool{}
 	collect := func(db *data.DB) error {
 		return db.Table("turns").ForEach(func(k string, rec data.Record) error {
@@ -122,26 +121,11 @@ func (s *Service) TurnEventCleanup(req facade.TurnEventCleanupRequest) (facade.T
 	if err := collect(prj); err != nil {
 		return facade.TurnEventCleanupResponse{}, err
 	}
-	if s.ShardOn(req.InstanceID, req.Scope) {
-		files, err := sessionstore.ListDialogFiles(prj.Path())
-		if err != nil {
-			return facade.TurnEventCleanupResponse{}, err
-		}
-		for _, f := range files {
-			dialogID, ok := data.DialogIDFromFile(f)
-			if !ok {
-				continue
-			}
-			db, release, err := data.OpenExistingDialog(prj.Path(), dialogID)
-			if err != nil {
-				continue // 打不开（锁/损坏）→ 跳过，不阻断其它对话
-			}
-			err = collect(db)
-			release()
-			if err != nil {
-				return facade.TurnEventCleanupResponse{}, err
-			}
-		}
+	// S-2（DATA-OPT-1 P3）：跨对话库枚举复用 forEachDialogDB（打不开的库跳过、错误上抛口径不变）。
+	if _, err := s.forEachDialogDB(prj, func(_ string, db *data.DB) (bool, error) {
+		return false, collect(db)
+	}); err != nil {
+		return facade.TurnEventCleanupResponse{}, err
 	}
 	if len(oldTurns) == 0 {
 		return facade.TurnEventCleanupResponse{OK: true}, nil
@@ -157,12 +141,21 @@ func (s *Service) TurnEventCleanup(req facade.TurnEventCleanupRequest) (facade.T
 	}); err != nil {
 		return facade.TurnEventCleanupResponse{}, err
 	}
+	// F-4（DATA-OPT-1 P4）：原实现逐行 `Delete`（每行一个写事务）→ **单事务批删**；键先收集再删
+	// （勿在 bbolt 遍历回调内改表）。失败整体回滚 → `deleted` 回 0（原实现返回已删条数，但那些行
+	// 已在库中删除；现语义 = 「要么全删、要么一条不删」）。
 	deleted := 0
-	for _, k := range keys {
-		if err := prj.Table(turnEventTable).Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
-			return facade.TurnEventCleanupResponse{OK: false, Deleted: deleted}, err
+	err = prj.Update(func(tx *data.Tx) error {
+		for _, k := range keys {
+			if err := tx.Delete(turnEventTable, k); err != nil && !errors.Is(err, data.ErrNotFound) {
+				return err
+			}
+			deleted++
 		}
-		deleted++
+		return nil
+	})
+	if err != nil {
+		return facade.TurnEventCleanupResponse{OK: false}, err
 	}
 	return facade.TurnEventCleanupResponse{OK: true, Deleted: deleted}, nil
 }

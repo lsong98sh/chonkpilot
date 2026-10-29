@@ -10,7 +10,7 @@
  *
  * 启动顺序：`initPluginUIHost()` 必须早于 `initPlugins()` 与任何插件视图挂载。
  */
-import mq from './utils/mq'
+import mq, { currentInstanceId } from './utils/mq'
 import Icon from './components/icon/Icon.vue'
 import { Button, Switch } from './components/ui'
 import { registerPluginViews, unregisterPluginViews } from './layout/views.registry.js'
@@ -33,6 +33,8 @@ export function initPluginUIHost() {
         register: registerPluginViews,
         unregister: unregisterPluginViews,
       },
+      // PLUGIN-INSTANCE-1：插件页归属 = 承载它的窗口实例（拼进 iframe URL 的 `instance_id`）。
+      instance: { currentId: () => currentInstanceId() },
     },
     theme: { subscribe: subscribeTheme, snapshot: themeSnapshot },
     components: { Icon, Button, Switch },

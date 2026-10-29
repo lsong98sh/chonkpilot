@@ -52,17 +52,16 @@ def main():
         time.sleep(0.5)
 
         # ── 项目配置（ide.db → ProjectConfig） ──
-        # 页签集 = security/context/codegraph/vfts/history/filetree/groupchat/log + configIO 共 9 个
-        # （ProjectConfig.vue tabsConfig；2026-09-19 新增「日志」、2026-09-20 新增「配置导入/导出」，
-        #  2026-10-16 新增「文件树」「群聊」→ 7 → 9；下表索引同步后移 2）。
+        # 页签集 = security/context/codegraph/history/filetree/groupchat/log + configIO 共 8 个
+        # （ProjectConfig.vue tabsConfig；vfts 页签已并入 codegraph，LEGACY_TAB_ALIAS 只做别名兼容）。
         J(gui, "window.mq.emit('project-config-open'); 'ok'")
         time.sleep(1.0)
         pc = J(gui, "!!document.querySelector('.project-config-panel')")
         tabs = J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item').length")
-        c.check("C1 项目配置页打开 + 9 页签", bool(pc) and int(tabs) == 9, f"pc={pc} tabs={tabs}")
+        c.check("C1 项目配置页打开 + 8 页签", bool(pc) and int(tabs) == 8, f"pc={pc} tabs={tabs}")
 
-        # C1b 日志页签（索引 7）→ 日志级别选择 + 日志目录入口（有路径 或 明确提示）
-        J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[7]?.click(); 'ok'")
+        # C1b 日志页签（索引 6）→ 日志级别选择 + 日志目录入口（有路径 或 明确提示）
+        J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[6]?.click(); 'ok'")
         time.sleep(0.9)
         logPage = J(gui, "!!document.querySelector('.project-config-panel .log-root')")
         logSel = J(gui, "document.querySelectorAll('.project-config-panel .log-root .b-select').length")
@@ -132,9 +131,9 @@ def main():
                 and 'SetActiveSessionID' not in (e.get('text') or '')]
         c.check("无前端错误（config 组）", len(errs) == 0, repr(errs[:3]))
 
-        # ── 批 3 · ⑯ 配置 导入/导出 + 恢复出厂（页签索引 8；usr 全局配置） ──
+        # ── 批 3 · ⑯ 配置 导入/导出 + 恢复出厂（页签索引 7；usr 全局配置） ──
         # C20 页签与三区：导出（密钥警示 + 排除密钥默认关）/ 导入（粘贴框）/ 恢复厂（范围文案）
-        J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[8]?.click(); 'ok'")
+        J(gui, "document.querySelectorAll('.project-config-panel .b-tabs-item')[7]?.click(); 'ok'")
         time.sleep(1.0)
         io_root = J(gui, "!!document.querySelector('.config-io-root')")
         io_export = J(gui, "!!document.querySelector('.config-io-root .io-export')")
@@ -198,8 +197,10 @@ def main():
         no_result = J(gui, "!!document.querySelector('.config-io-root .io-import-result')")
         c.check("C21b 取消导入 → 不写入、无结果提示", not no_result, f"result={no_result}")
 
-        # C22 恢复出厂：二次确认 + 清空前自动备份（<data-dir>/backup/ 落快照文件）
-        backup_dir = os.path.join(DATA_DIR, "backup")
+        # C22 恢复出厂：二次确认 + 清空前自动备份（<prjusr 数据根>/backup/ 落快照文件）
+        # 2026-10-26：GUI 已无 `--data-dir`；prjusr 根 = `<work_dir>/.chonkpilot/users/<OS 用户名>`
+        # （DATAROOT-1，harness.GUIHandle.data_dir 即该值），不再等于旧的 DATA_DIR。
+        backup_dir = os.path.join(gui._handle.data_dir, "backup")
         before_files = set(os.listdir(backup_dir)) if os.path.isdir(backup_dir) else set()
         J(gui, "(()=>{const b=document.querySelector('.config-io-root .io-reset button');if(b)b.click();return !!b})()")
         time.sleep(0.8)

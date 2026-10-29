@@ -14,8 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-util/strlist"
 )
 
 // hiddenDirsKey 是「不显示的目录」配置键（prj-config 域，团队共享；登记见 64-配置项一览）。
@@ -36,16 +37,11 @@ var cfgReqSeq atomic.Uint64
 // 去重；空串 → 缺省清单（配置为空 = 回落默认）。
 func parseHiddenDirs(s string) []string {
 	out := make([]string, 0, 4)
-	seen := map[string]bool{}
-	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r'
-	}) {
-		part = strings.TrimRight(strings.TrimSpace(part), "/\\")
-		if part == "" || seen[part] {
-			continue
+	for _, part := range strlist.SplitDedup(s) {
+		part = strings.TrimRight(part, "/\\")
+		if part != "" {
+			out = append(out, part)
 		}
-		seen[part] = true
-		out = append(out, part)
 	}
 	if len(out) == 0 {
 		return defaultHiddenDirs

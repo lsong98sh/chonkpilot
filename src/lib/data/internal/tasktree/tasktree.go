@@ -31,7 +31,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // Service 是 tasktree 域门面实现（inline 绑定与 MQ 信封层共用）。
@@ -64,7 +64,7 @@ func (s *Service) TasktreeList(req facade.TasktreeListRequest) (facade.TasktreeL
 	if err != nil {
 		return facade.TasktreeListResponse{}, err
 	}
-	db, release, err := kernel.ContentDB(prj, req.DialogID, s.ShardOn(req.InstanceID, req.Scope))
+	db, release, err := kernel.ContentDB(prj, req.DialogID)
 	if err != nil {
 		return facade.TasktreeListResponse{}, err
 	}
@@ -104,9 +104,8 @@ func (s *Service) TasktreeTasks(req facade.TasktreeTasksRequest) (facade.Tasktre
 	if err != nil {
 		return facade.TasktreeTasksResponse{}, err
 	}
-	shardOn := s.ShardOn(req.InstanceID, req.Scope)
-	// 一树一库（P3-4 残留回填）：无 dialog_id 时为**全实例快照**（任务层启动恢复）→ 跨对话库聚合。
-	if req.DialogID == "" && shardOn {
+	// 一树一库：无 dialog_id 时为**全实例快照**（任务层启动恢复）→ 跨对话库聚合（61 §0.6 例外）。
+	if req.DialogID == "" {
 		files, err := sessionstore.ListDialogFiles(prj.Path())
 		if err != nil {
 			return facade.TasktreeTasksResponse{}, err
@@ -130,7 +129,7 @@ func (s *Service) TasktreeTasks(req facade.TasktreeTasksRequest) (facade.Tasktre
 		}
 		return facade.TasktreeTasksResponse{List: out}, nil
 	}
-	db, release, err := kernel.ContentDB(prj, req.DialogID, shardOn)
+	db, release, err := kernel.ContentDB(prj, req.DialogID)
 	if err != nil {
 		return facade.TasktreeTasksResponse{}, err
 	}
@@ -267,7 +266,7 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 	if err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
-	db, release, err := kernel.ContentDB(prj, req.DialogID, s.ShardOn(req.InstanceID, req.Scope))
+	db, release, err := kernel.ContentDB(prj, req.DialogID)
 	if err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
@@ -313,7 +312,7 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	if err != nil {
 		return facade.TasktreeDeleteResponse{}, err
 	}
-	db, release, err := kernel.ContentDB(prj, req.DialogID, s.ShardOn(req.InstanceID, req.Scope))
+	db, release, err := kernel.ContentDB(prj, req.DialogID)
 	if err != nil {
 		return facade.TasktreeDeleteResponse{}, err
 	}
@@ -329,18 +328,48 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	// 故仍需映射而非直接取索引键；BFS 全程不变更行 → 映射结果与逐点回表逐字等价。
 	nodeIDs := map[string]string{} // 主键 → node_id
 	nodePKs := map[string]string{} // node_id → 主键（级联删除/更新按**真实主键**操作，行主键可能 ≠ node_id）
-	if err := t.ForEach(func(k string, rec data.Record) error {
-		id := kernel.Sval(rec["node_id"])
-		if id == "" {
-			id = k
-		}
-		nodeIDs[k] = id
-		nodePKs[id] = k
-		return nil
-	}); err != nil {
-		return facade.TasktreeDeleteResponse{}, err
+	// 全表映射（原实现无条件建）：仅在「有子节点」或「本节点行不存在（可能是旧行主键 ≠ node_id）」
+	// 时才需要（见下）。
+	buildMaps := func() error {
+		return t.ForEach(func(k string, rec data.Record) error {
+			id := kernel.Sval(rec["node_id"])
+			if id == "" {
+				id = k
+			}
+			nodeIDs[k] = id
+			nodePKs[id] = k
+			return nil
+		})
 	}
 	parentIdx := db.Table(t.Name() + "_by_parent")
+	// F-6（DATA-OPT-1 P4）：先探**直接子节点**（<table>_by_parent 前缀 Seek，O(子节点)）。
+	// 关闭单个**叶子**节点时无需为「主键 ⇄ node_id 映射」全表 ForEach（原实现恒 O(全库)）。
+	// 子节点集合本就只经该索引枚举，故叶子判定与级联结果同源（索引未就绪时同样无子）。
+	childKeys, err := parentIdx.ListPrefix(req.NodeID + "\x00")
+	if err != nil {
+		return facade.TasktreeDeleteResponse{}, err
+	}
+	if len(childKeys) == 0 {
+		var rec data.Record
+		ok, err := t.Get(req.NodeID, &rec)
+		if err != nil {
+			return facade.TasktreeDeleteResponse{}, err
+		}
+		if ok {
+			// 现行写路径 key == node_id → 只需本行的映射；行缺失（幂等删除）/ 旧行主键 ≠ node_id
+			// → 回落全表映射（与改前逐字一致）。
+			id := kernel.Sval(rec["node_id"])
+			if id == "" {
+				id = req.NodeID
+			}
+			nodeIDs[req.NodeID] = id
+			nodePKs[id] = req.NodeID
+		} else if err := buildMaps(); err != nil {
+			return facade.TasktreeDeleteResponse{}, err
+		}
+	} else if err := buildMaps(); err != nil {
+		return facade.TasktreeDeleteResponse{}, err
+	}
 	seen := map[string]bool{req.NodeID: true}
 	toDelete := []string{req.NodeID}
 	for i := 0; i < len(toDelete); i++ {

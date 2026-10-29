@@ -21,10 +21,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // 任务节点类型 / 状态 / DSL 展示类型（定义在组件包；别名保持调用点与载荷口径不变）。
@@ -130,9 +130,6 @@ func (tm *taskManager) get(taskID string) *TaskNode { return tm.tree.Get(taskID)
 // setState 状态变更（如 async 转后台 pending）：始终广播 tasks.updated。
 func (tm *taskManager) setState(taskID, state string) { tm.tree.SetState(taskID, state) }
 
-// update 就地更新节点字段并广播 tasks.updated。
-func (tm *taskManager) update(taskID string, fn func(*TaskNode)) { tm.tree.Update(taskID, fn) }
-
 // setGwTask 登记 gateway 异步任务 id 并**绑定到任务层的执行句柄**（21 §9.2 交付物 ⑤：
 // 层持 exec → 取消时回调执行侧）。
 func (tm *taskManager) setGwTask(taskID, gwTaskID string) {
@@ -162,18 +159,16 @@ func (tm *taskManager) findByToolCall(instanceID, toolCallID string) *TaskNode {
 // find 按 task_id 找节点（tool-retry 直取定位；未登记 → nil）。
 func (tm *taskManager) find(taskID string) *TaskNode { return tm.tree.Find(taskID) }
 
+// activeBySession 报告该会话是否仍有活动任务节点（running / pending）——运行态归属的空闲判定用
+// （SCOPE-1 释放条件之「无 async task」；实现 = 组件内存视图，零 IO）。
+func (tm *taskManager) activeBySession(sessionID string) bool {
+	return tm.tree.ActiveBySession(sessionID)
+}
+
 // latestLLMSessionNode 按（top_session, session）定位子会话对应的父任务节点。
 func (tm *taskManager) latestLLMSessionNode(instanceID, topSession, session string) *TaskNode {
 	return tm.tree.LatestLLMSessionNode(instanceID, topSession, session)
 }
-
-// bindSubSession 登记 DSL-3 步骤子会话 → 静态父节点 id。
-func (tm *taskManager) bindSubSession(session, parentID string) {
-	tm.tree.BindSubSession(session, parentID)
-}
-
-// unbindSubSessions 清理某作业的全部子会话映射（作业结束时调用；防 map 无界增长）。
-func (tm *taskManager) unbindSubSessions(sessions []string) { tm.tree.UnbindSubSessions(sessions) }
 
 // findRetryTarget 定位 tool-retry 目标节点（msg-ref §4.2；未命中 → nil）。
 func (tm *taskManager) findRetryTarget(instanceID, session, turn, toolCallID string) *TaskNode {
@@ -183,22 +178,9 @@ func (tm *taskManager) findRetryTarget(instanceID, session, turn, toolCallID str
 // restoreStale tool-retry 重启恢复：把从库还原的节点登记回内存任务表（沿用原 task_id）。
 func (tm *taskManager) restoreStale(n *TaskNode) { tm.tree.RestoreStale(n) }
 
-// retryReset 把 interrupted 节点重置为 running（tool-retry 重跑；复用原任务节点）。
-func (tm *taskManager) retryReset(taskID string) bool { return tm.tree.RetryReset(taskID) }
-
-// progress 进度/输出更新：节流广播 tasks.updated（≤250ms）。
-func (tm *taskManager) progress(taskID string, progress float64, output string) {
-	tm.tree.Progress(taskID, progress, output)
-}
-
 // done 终态（done/error/cancelled）：广播 tasks.done（完整结构）；已终态不重复广播。
 func (tm *taskManager) done(taskID, state, summary, errMsg string) {
 	tm.tree.Done(taskID, state, summary, errMsg)
-}
-
-// subtree 返回该节点及全部后代（级联定位：沿 parent_id 遍历）。
-func (tm *taskManager) subtree(instanceID, rootID string) []*TaskNode {
-	return tm.tree.Subtree(instanceID, rootID)
 }
 
 // cancelSubtree 用户取消（task-stop）：状态判定以层为权威；返回取消节点数。

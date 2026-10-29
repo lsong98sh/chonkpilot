@@ -11,7 +11,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { classifyError } from '../src/utils/errorMessage.js'
@@ -20,6 +20,11 @@ const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const repoDir = join(here, '..', '..')
 const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
+// server 包已按职责拆分（2026-10-25）：源码守卫读整包（server.go 只剩 277 行）。
+const readServerPkg = () => readdirSync(join(repoDir, 'lib', 'llm', 'server'))
+  .filter((f) => f.endsWith('.go') && !f.endsWith('_test.go'))
+  .map((f) => readFileSync(join(repoDir, 'lib', 'llm', 'server', f), 'utf8'))
+  .join('\n')
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 const DIALOG = 'views/config/EditLLMDialog.vue'
@@ -78,7 +83,7 @@ test('⑮ 主题：点分相对主题 llm.test-connection，前端字面量 = Go
   // Go 侧已改引生成键常量（msgkeys）；值由 genmsg 从契约（61 schema）生成 → 常量引用 + 生成值双一致。
   assert.match(go, /SubjectLLMTestConnection = msgkeys\.TopicLlmTestConnection/, 'Go 服务端主题须用生成键常量')
   assert.ok(read('events/msgkeys.js').includes("llmTestConnection: 'llm.test-connection'"), '契约主题名由 genmsg 生成')
-  const goServer = readFileSync(join(repoDir, 'lib', 'llm', 'server', 'server.go'), 'utf8')
+  const goServer = readServerPkg()
   assert.match(goServer, /\{SubjectLLMTestConnection, s\.onLLMTestConnection\}/, '服务端须在 Start 订阅该主题')
   // 只读探测：一次性 provider（LR-11 起 = 唯一名登记 → 探测后注销；不入 usr 配置、不触碰运行中 provider）
   assert.match(go, /router\.Spec\{[\s\S]*?BaseURL:\s+req\.BaseURL[\s\S]*?APIKey:\s+req\.APIKey[\s\S]*?DefaultModel:\s+req\.Model/, '须用给定配置构造一次性 provider（router.Spec）')

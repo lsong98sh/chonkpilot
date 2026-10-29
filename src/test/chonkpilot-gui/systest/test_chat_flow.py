@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
 from harness import free_port, snapshot_config, restore_config, ensure_llm_configured  # noqa: E402  动态端口；套件级配置快照-还原；LLM 前置
+from harness import reload_and_settle  # noqa: E402  共享 work-dir 大会话恢复会长时间占满渲染线程
 from harness import install_session_history_spy, wait_session_history  # noqa: E402  切会话→发送竞态（历史回填覆盖）
 
 PORT = free_port()
@@ -70,6 +71,32 @@ def wait_upto(gui, js, ok, max_wait=10.0, interval=0.2):
     return v
 
 
+def switch_session(gui, sid, max_wait=25.0, stable=1.5):
+    """把主会话切到 sid 并确认**稳定生效**（返回是否稳定）。
+
+    首屏/配置重载后 `App.init` 会**异步** emit 一次 `session-changed`（读活动会话）——
+    可能与测试注入的切换交错并把它覆盖回去（表现为 CF1 气泡/Cancel 丢失、`message-send`
+    因 props 不匹配被静默丢弃）。故重发切换直到 `.chat-session-tag` 连续 `stable` 秒保持 sid。
+    """
+    end = time.time() + max_wait
+    since, last_emit = None, 0.0
+    while time.time() < end:
+        tag = J(gui, "(()=>{const t=document.querySelector('.chat-session-tag');return t?t.getAttribute('title'):null})()")
+        now = time.time()
+        if tag == sid:
+            if since is None:
+                since = now
+            elif now - since >= stable:
+                return True
+        else:
+            since = None
+            if now - last_emit >= 1.0:
+                J(gui, "window.mq.emit('session-changed', {session_id: %s}); 'ok'" % json.dumps(sid))
+                last_emit = now
+        time.sleep(0.3)
+    return False
+
+
 def wait_session_active(gui, sid, max_wait=15.0):
     """有界等待「会话身份已生效」（`.chat-session-tag` title == sid）。
 
@@ -87,12 +114,26 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     open(os.path.join(DATA_DIR, "chonkpilot.db"), "w").close()
 
-    gui = GUIClient(port=PORT, data_dir=DATA_DIR)
+    # 独立 work-dir（与 test_queue / test_task / test_session_drawer 同口径）：共享 ws 会继承
+    # 他套件遗留的「运行中轮次 / 大历史会话」→ `llm-inbox-add` 恒 pending（无 turn-start，CF1 假红）。
+    gui = GUIClient(port=PORT, data_dir=DATA_DIR, work_dir=os.path.join(DATA_DIR, "ws"))
     c = Checker()
     # 套件级配置快照-还原（51 §6-8）：prj 随独立临时 work-dir，usr 主库不受其隔离 → 跑前快照、finally 还原。
     snap = None
     try:
         gui.start()
+        # 共享 work-dir 的活动会话可能已被其他套件写成大历史（MB 级 HTML）：首屏与
+        # `ensure_llm_configured` 内部 reload 都会按 `active_session_id` 恢复它 →
+        # WebView2 渲染线程长时间占满、`/eval` 超时、`message-send` 被静默丢弃
+        # （CF1/CF1b 假红的根因，见 42 (290)）。先建一个空会话并把活动位指向它，
+        # 再稳定重载一次（`active-set` 指向不存在的会话会被 active-get 判失效并回落「最近会话」，
+        # 故必须先 ensure-session 建行）。
+        try:
+            gui.req("data-session-ensure-session", {"data": {"session_id": "flow-bootstrap"}}, timeout=8000)
+            gui.req("data-session-active-set", {"session_id": "flow-bootstrap"}, timeout=8000)
+        except Exception:
+            pass
+        reload_and_settle(gui)
         snap = snapshot_config(gui)
         ensure_llm_configured(gui)  # S25 前置：无 LLM 选项 → 发送被拦截（CF1 断言发送）
         for _ in range(30):
@@ -101,11 +142,12 @@ def main():
             time.sleep(0.5)
         time.sleep(0.5)
 
-        sid = 'flow-sess-1'
+        # 会话 id 每次运行唯一：共享 work-dir 下固定 id 会继承上一轮遗留的「运行中轮次」
+        # → `llm-inbox-add` 被判 insert/排队（无 turn-start、无忙碌态，CF1 假红）。
+        sid = 'flow-sess-%d' % int(time.time() * 1000)
         install_session_history_spy(gui)  # 必须先装：记录本次切会话触发的 data-session-history 应答
-        J(gui, "window.mq.emit('session-changed', {session_id: %s}); 'ok'" % json.dumps(sid))
+        switch_session(gui, sid)          # 切到测试会话并等其**稳定**生效（防 App.init 异步回填覆盖）
         wait_session_history(gui, sid)  # 等历史回填落地再发（发送与历史回填交错会让气泡落点不可预期）
-        wait_session_active(gui, sid)   # 有界等待会话身份生效（否则 message-send 被静默丢弃）
 
         # CF1 发送 → user 气泡（右侧）+ 忙碌（Cancel 按钮出现）
         #（T5 方案 B：user 气泡不再乐观插入 —— 以「落库回执」（llm-start /publish 应答）为渲染时点，
@@ -170,9 +212,17 @@ def main():
         # ERRUX-1 口径（2026-10-17）：错误**只在下方提示条**显示（聊天流内不再渲染错误气泡）；
         # 提示条 = 人话摘要 + retry 次数 +「查看错误信息」（展开原始错误）。
         send_msg(gui, sid, '触发 401')
-        emit_remote(gui, 'llm-error', {'retryable': False, 'message': 'invalid api key'})
-        complete_turn(gui, sid, status='error', message='invalid api key',
-                      retry_attempt=0, retry_count=0, retry_wait_ms=0)
+        # 批跑时序加固（2026-10-26）：本用例注入的 llm-error/llm-complete(error) 与
+        # **真实 turn 的终态**可能交错——真实 turn 后到的 completed/EMPTY_REPLY 会按产品
+        # 口径清掉错误提示条（`onLlmCompleteHint` 成功/空回复分支）→ 读到 human=''。
+        # 故**同一场景重放**（同 payload、既有事件面）直到提示条稳定出现，断言不变。
+        for _ in range(5):
+            if J(gui, "!!document.querySelector('.llm-fail-hint.llm-error-hint .llm-fail-text')"):
+                break
+            emit_remote(gui, 'llm-error', {'retryable': False, 'message': 'invalid api key'})
+            complete_turn(gui, sid, status='error', message='invalid api key',
+                          retry_attempt=0, retry_count=0, retry_wait_ms=0)
+            time.sleep(0.8)
         human = wait_upto(gui, "document.querySelector('.llm-fail-hint.llm-error-hint .llm-fail-text')?.textContent?.trim() || ''",
                           lambda v: bool(v))
         detailBtn = wait_upto(gui, "!!document.querySelector('.llm-fail-detail-toggle')",

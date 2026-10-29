@@ -26,18 +26,21 @@ func historyMessages(t *testing.T, res map[string]any) []any {
 func TestGroupMessageSenderAgentAndMentions(t *testing.T) {
 	bus, _, _ := newTestPersist(t)
 	regInstance(t, bus)
+	d1, _ := newDialog(t, "ins-test", "smoke-top")
 
 	const sess, turn = "smoke-grp-chat", "smoke-grp-t1"
 	pubFire(bus, "data-session-ensure-session", jb(map[string]any{
 		"req_id": "g1", "instance_id": "ins-test", "session_id": sess, "parent_session_id": "smoke-top",
+		"dialog_id": d1,
 	}))
 	pubFire(bus, "data-session-ensure-turn", jb(map[string]any{
 		"req_id": "g2", "instance_id": "ins-test", "turn_id": turn, "session_id": sess,
+		"dialog_id": d1,
 	}))
 
 	// ① 群聊发言：带发言人与 @ 名单。
 	dataCall(t, bus, "data-session-append-message", map[string]any{
-		"req_id": "g3", "instance_id": "ins-test", "turn_id": turn,
+		"req_id": "g3", "instance_id": "ins-test", "turn_id": turn, "dialog_id": d1,
 		"msg": map[string]any{
 			"role": "assistant", "content": "审完，两处问题。@程序员, @审查员",
 			"sender_agent": "审查员", "mentions": []any{"程序员", "审查员"},
@@ -45,12 +48,12 @@ func TestGroupMessageSenderAgentAndMentions(t *testing.T) {
 	})
 	// ② 普通消息（不带群聊标识）：视图不应出现这两键。
 	dataCall(t, bus, "data-session-append-message", map[string]any{
-		"req_id": "g4", "instance_id": "ins-test", "turn_id": turn,
+		"req_id": "g4", "instance_id": "ins-test", "turn_id": turn, "dialog_id": d1,
 		"msg": map[string]any{"role": "user", "kind": "text", "content": "hi"},
 	})
 
 	res := dataResult(t, dataCall(t, bus, "data-session-history", map[string]any{
-		"req_id": "g5", "instance_id": "ins-test", "session_id": sess,
+		"req_id": "g5", "instance_id": "ins-test", "session_id": sess, "dialog_id": d1,
 	}))
 	msgs := historyMessages(t, res)
 	if len(msgs) != 2 {

@@ -1,16 +1,17 @@
-# build-vfts.ps1：构建并组装 chonkpilot-vfts-mcp-server 独立部署目录
+﻿# build-vfts.ps1：构建 vfts 引擎（MCP server）到 dist/plugins/vfts/
 #
 # 产物布局（dist/plugins/vfts/，见 [41 D-28]）：
 #   ├── chonkpilot-vfts-mcp-server.exe   # 进程内 zvec FTS 全文索引 MCP server（console，CGO）
-#   ├── chonkpilot-vfts-query-executor.exe # vfts_query 一工具一 exe（读落盘索引执行检索）
 #   └── zvec_c_api.dll                   # zvec C-API 原生动态库（必须与 exe 同目录，运行时加载）
 #
 # 注（D-71，2026-10-25）：resident `chonkpilot-vfts-indexer.exe` 已退场 —— 索引回路与清单
-# 由 vfts 插件进程内自管（订阅 filesys.changed 驱动增量），本脚本不再产出该 exe。
+# 由 vfts 插件进程内自管（引擎库内联，不 spawn stdio 子进程），本脚本不产出该 exe。
+# 注（PLUGIN-EDGE-1，2026-10-28）：`vfts_query` 的「一工具一 exe」已无消费方（插件进程内
+# 直挂工具、主仓无对应 tool 契约）→ `*-query-executor.exe` 不再构建。
 #
 # 源（PLUGIN-SPLIT-1）：`chonkpilot-plugins/codegraph/engines/vfts`（engine 本体；插件侧 = `chonkpilot-plugins/codegraph`）。
-# 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop、
-#   dist/server）由 build-desktop.ps1 从本目录取件后置于**发行根**——
+# 就位：本脚本只产出**插件/引擎构建区**（dist/plugins/*）；宿主发行目录（dist/desktop）
+#   由 build-desktop.ps1 从本目录取件后置于**发行根**——
 #   插件按「宿主 exe 同目录」解析引擎 exe，且 zvec_c_api.dll **必须与 vfts 引擎 exe 同目录**。
 #
 # 说明（契约落点）：vfts 与 codegraph 同构——工具经官方 go-sdk AddTool 直挂、不落 .tool.md，
@@ -32,7 +33,7 @@ $env:CGO_ENABLED = "1"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 # 引擎源码随插件（PLUGIN-SPLIT-1）：vfts 引擎在 plugins 仓 codegraph/engines/vfts。
 $pluginsRepo = Join-Path (Split-Path -Parent $root) "chonkpilot-plugins"
-$mod = Join-Path $pluginsRepo "codegraph\engines\vfts"
+$mod = Join-Path $pluginsRepo "codegraph\src\engines\vfts"
 $dist = Join-Path $root "dist\plugins\vfts"
 $zvec = Join-Path $mod "third_party\zvec"
 $zvecLib = Join-Path $zvec "windows_amd64"
@@ -43,7 +44,7 @@ $env:CGO_CFLAGS = "-I$($zvec.Replace('\','/'))/include"
 $env:CGO_LDFLAGS = "-L$($zvecLib.Replace('\','/')) -lzvec_c_api"
 
 if (-not (Test-Path (Join-Path $zvecLib "zvec_c_api.dll"))) {
-    throw "zvec 运行库缺失：$zvecLib\zvec_c_api.dll（该运行库随源码入库；缺失多为检出/清理不完整，请检查 src/plugins/vfts/third_party/zvec/windows_amd64/）"
+    throw "zvec 运行库缺失：$zvecLib\zvec_c_api.dll（该运行库随源码入库；缺失多为检出/清理不完整，请检查 chonkpilot-plugins/codegraph/engines/vfts/third_party/zvec/windows_amd64/）"
 }
 if (-not (Test-Path (Join-Path $zvecLib "zvec_c_api.lib"))) {
     throw "zvec 链接库缺失：$zvecLib\zvec_c_api.lib（CGO 链接需 -lzvec_c_api）"
@@ -52,7 +53,7 @@ if (-not (Test-Path (Join-Path $zvecLib "zvec_c_api.lib"))) {
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
 # kill 运行中的旧实例，避免 exe/dll 被占用
-Get-Process -Name "chonkpilot-vfts-mcp-server", "chonkpilot-vfts-query-executor" -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name "chonkpilot-vfts-mcp-server" -ErrorAction SilentlyContinue | Stop-Process -Force
 
 Write-Host "==> build vfts mcp-server (CGO console exe)"
 Push-Location $mod
@@ -61,16 +62,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "build failed（检查 gcc 与 zvec 头/库路径：$zvec）" }
     $exe = Get-Item (Join-Path $dist "chonkpilot-vfts-mcp-server.exe")
     Write-Host "    ok: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB)"
-} finally { Pop-Location }
-
-# vfts_query「一工具一 exe」（G-68 第二步）：由 core-mcp-server 按契约 spawn；直接读落盘
-# zvec 集合执行检索（zvec_c_api.dll 与本 exe 同目录）。
-Write-Host "==> build vfts query executor (一工具一 exe)"
-Push-Location $mod
-try {
-    go build -o (Join-Path $dist "chonkpilot-vfts-query-executor.exe") .\cmd\exec-query
-    if ($LASTEXITCODE -ne 0) { throw "build failed: ./cmd/exec-query" }
-    Write-Host "    ok: chonkpilot-vfts-query-executor.exe"
 } finally { Pop-Location }
 
 Write-Host "==> deploy zvec_c_api.dll -> dist/plugins/vfts (必须与 exe 同目录)"

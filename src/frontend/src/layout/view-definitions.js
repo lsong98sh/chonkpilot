@@ -143,17 +143,6 @@ export const VIEW_DEFINITIONS = [
     defaultWidth: 140,
     defaultHeight: 20,
   },
-  {
-    key: 'index-badge',
-    labelKey: 'view.indexBadge',
-    label: '索引徽标',
-    icon: 'collection',
-    mode: 'singleton',
-    host: 'bar',
-    designable: true,
-    defaultWidth: 200,
-    defaultHeight: 20,
-  },
   /* 长任务状态条目（STB-1）：记忆提取 / 上下文压缩各一枚（数据源 = tool-notify） */
   {
     key: 'memory-status',
@@ -216,15 +205,6 @@ export const VIEW_DEFINITIONS = [
     labelKey: 'view.statusCompress',
     label: '上下文压缩详情',
     icon: 'document',
-    mode: 'singleton',
-    host: 'layout',
-    designable: false,
-  },
-  {
-    key: 'status-index',
-    labelKey: 'view.statusIndex',
-    label: '代码索引详情',
-    icon: 'search',
     mode: 'singleton',
     host: 'layout',
     designable: false,

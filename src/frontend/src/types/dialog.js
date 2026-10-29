@@ -15,4 +15,8 @@ export const DefaultDialogOptions = {
   minHeight: 300,
   maxWidth: '90vw',
   maxHeight: '80vh',
+  // 居中口径（AskUser S1-6，2026-10-29）：缺省 = **窗口内居中**（既有行为，零变化）；
+  // true = **屏幕工作区居中**（整个桌面去掉任务栏的可用区正中；每次弹出重新居中，
+  // 不记忆上次拖拽位置）。仅 ask 弹窗开启，见 docs/ask-user/AskUser专题设计方案.md §4.6。
+  centerOnScreen: false,
 }

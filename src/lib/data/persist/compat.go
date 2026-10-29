@@ -11,7 +11,7 @@
 //
 // 转发清单（下沉前 → 现实现）：
 //
-//	Sval / SvalOf                 → internal/kernel.Sval
+//	Sval                          → internal/kernel.Sval
 //	ToolContent 家族 / ParseToolContent → internal/kernel（role=tool content 契约）
 //	ToolStatus*（生命周期常量）    → internal/kernel
 //	CapUserRoot / CapProjectRoot  → internal/capfs（四级 capability 根规则；系统级/项目私有级由数据层内部解析）

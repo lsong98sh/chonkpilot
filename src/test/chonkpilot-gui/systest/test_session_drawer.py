@@ -62,6 +62,15 @@ def pane_visible(gui):
                   "return !!p && p.getBoundingClientRect().width>0})()")
 
 
+def dialog_of(gui, sid):
+    """按主会话 id 从 data-session-list 取 dialog_id（一树一库缺省 on，会话类调用必带）。"""
+    r = gui.req('data-session-list') or {}
+    for it in (r.get('list') or []):
+        if isinstance(it, dict) and it.get('session_id') == sid and it.get('dialog_id'):
+            return it['dialog_id']
+    return ''
+
+
 def seed_session(gui, sid, title, turn=''):
     """建测试会话（替代旧 /call CreateSession；61-消息一览 §4.2 llm-start → 域主题 session-start）：
     GUI 内嵌 inprocess server，实例启动已 instance-register（GUI 自动）。发布带命名空间前缀的完整
@@ -72,17 +81,21 @@ def seed_session(gui, sid, title, turn=''):
     r = gui.req('chonk.session-start', {'session': sid, 'turn': turn or ('t-' + sid + '-1'), 'llm': 'mock'})
     if not isinstance(r, dict) or r.get('accepted') is not True:
         raise RuntimeError('seed session-start rejected: ' + repr(r)[:120])
-    gui.req('data-session-title', {'data': {'id': sid, 'title': title}})
-    return {'session_id': sid}
+    dlg = dialog_of(gui, sid)
+    if not dlg:
+        raise RuntimeError('seed session-start 后未取到 dialog_id: ' + repr(sid))
+    gui.req('data-session-title', {'data': {'id': sid, 'title': title, 'dialog_id': dlg}})
+    return {'session_id': sid, 'dialog_id': dlg, 'turn_id': r.get('turn') or ''}
 
 
-def append_msg(gui, turn_id, role, content):
+def append_msg(gui, turn_id, role, content, dialog_id):
     """逐轮补消息（data-session-append-message，61 §3.2 既有面；载荷 = {turn_id, msg:{role,content}}）：
     构造「含 system 与压缩标记」的原始对话，用于验证复制口径（不含 system / 非压缩后）。
     """
     gui.req('data-session-append-message', {'data': {
         'turn_id': turn_id,
         'msg': {'role': role, 'content': content},
+        'dialog_id': dialog_id,
     }})
 
 
@@ -104,7 +117,8 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     open(os.path.join(DATA_DIR, "chonkpilot.db"), "w").close()
 
-    gui = GUIClient(port=PORT, data_dir=DATA_DIR)
+    # 2026-10-26：独立 work-dir（会话落 prjusr；共享 ws → 空态断言被其它套件遗留会话打破）。
+    gui = GUIClient(port=PORT, data_dir=DATA_DIR, work_dir=os.path.join(DATA_DIR, "ws"))
     c = Checker()
     # 套件级配置快照-还原（51 §6-8）：prj 随独立临时 work-dir，usr 主库不受其隔离 → 跑前快照、finally 还原。
     snap = None
@@ -205,15 +219,20 @@ def main():
         #     注：不再对同会话追加第 2 轮 —— seed 不跟 session-send，首轮在本进程内恒「运行中」，
         #     同会话再 session-start 会被拒 `session busy`（server 侧按会话判忙）。复制口径在本轮内
         #     已完整覆盖：多消息 / 含 system / 非压缩原文 / 轮内顺序保持。
-        sid = gui.req('data-session-active-get').get('session_id')
-        c.check("SD5c-pre0 取到保留会话 id（供复制取数）", bool(sid), f"sid={sid!r}")
-        append_msg(gui, 't-%s-1' % sid, 'system', '[已压缩早前对话] 旧摘要（不应出现在复制结果）')
-        append_msg(gui, 't-%s-1' % sid, 'user', 'hello-1')
-        append_msg(gui, 't-%s-1' % sid, 'assistant', 'reply-1')
-        append_msg(gui, 't-%s-1' % sid, 'user', 'hello-2')
+        #     保留会话 = SD2 的第二个种子（sess-drawer-2，SD4 已重命名）；其轮次 id 直接取
+        #     session-start 应答（`turn`），不再按 active-get 反推（fork 后 active 会指向派生会话）。
+        sid = s2.get('session_id') or ''
+        turn = s2.get('turn_id') or ('t-%s-1' % sid)
+        c.check("SD5c-pre0 取到保留会话 id/turn（供复制取数）", bool(sid) and bool(turn),
+                f"sid={sid!r} turn={turn!r}")
+        dlg = dialog_of(gui, sid)
+        append_msg(gui, turn, 'system', '[已压缩早前对话] 旧摘要（不应出现在复制结果）', dlg)
+        append_msg(gui, turn, 'user', 'hello-1', dlg)
+        append_msg(gui, turn, 'assistant', 'reply-1', dlg)
+        append_msg(gui, turn, 'user', 'hello-2', dlg)
         time.sleep(0.4)
         # 前置：源数据（data-session-load-messages）确实含 system 行 → 「不含 system」才是有意义的过滤
-        raw1 = (gui.req('data-session-load-messages', {'data': {'turn_id': 't-%s-1' % sid}}) or {}).get('messages') or []
+        raw1 = (gui.req('data-session-load-messages', {'data': {'turn_id': turn, 'dialog_id': dlg}}) or {}).get('messages') or []
         raw_roles = [m.get('role') for m in raw1 if isinstance(m, dict)]
         c.check("SD5c-pre 复制源含 system 行（过滤判定有效）", raw_roles == ['system', 'user', 'assistant', 'user'],
                 f"raw_roles={raw_roles}")
@@ -222,7 +241,9 @@ def main():
                       "{configurable:true,value:{writeText:(t)=>{window.__ckCopy=String(t);return Promise.resolve()}}});"
                       "return 'ok'}catch(e){return 'no-clip:'+e.message}})()")
         c.check("SD5c-pre1 剪贴板桩可用（否则复制断言不成立）", stub == 'ok', f"stub={stub!r}")
-        clicked = J(gui, "(()=>{const b=document.querySelector('.sessions-pane .session-card .session-actions button:nth-child(4)');if(b)b.click();return !!b})()")
+        clicked = J(gui, """(()=>{const tag='#%s';const card=Array.from(document.querySelectorAll('.sessions-pane .session-card'))
+          .find(x=>(x.querySelector('.session-id')?.textContent||'').trim()===tag);if(!card)return false;
+          const b=card.querySelector('.session-actions button:nth-child(4)');if(b)b.click();return !!b})()""" % sid[:8])
         copied = wait_upto(gui, "window.__ckCopy", lambda v: nonempty_str(v), max_wait=15.0)
         toast = J(gui, "document.querySelector('#b-message-container .b-message-text')?.textContent?.trim() || ''")
         parsed, roles, texts = None, [], []

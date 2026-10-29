@@ -7,26 +7,17 @@ package data
 import (
 	"unicode/utf8"
 
-	"github.com/lsong98sh/chonkpilot-session"
-	"github.com/lsong98sh/chonkpilot-session/store"
+	"github.com/lsong98sh/chonkpilot-agent/session"
+	"github.com/lsong98sh/chonkpilot-agent/session/store"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 )
 
-// TokenDivisor 是估算口径除数：token 数 ≈ 字符数 / TokenDivisor。
-const TokenDivisor = session.TokenDivisor
-
-// Zones 是三段上下文的轮数划分（唯一定义在 store 包）。
-type Zones = store.Zones
-
 // EstimateTokens 粗略估算文本 token 数（字符数 / TokenDivisor，非精确计数）。
 func EstimateTokens(text string) int { return session.EstimateTokens(text) }
 
-// EstimateTokensOfMessages 估算会话消息 token 总量（正文 + 工具调用名与参数）。
-func EstimateTokensOfMessages(msgs []ChatMsg) int { return session.EstimateTokensOfMessages(msgs) }
-
 // EstimateTokensOfFacadeMessages 估算门面 DTO 消息（`facade.Message`）的 token 总量——
-// **与 EstimateTokensOfMessages 同一口径**（正文 + 工具调用名与参数，÷ TokenDivisor）。
+// **与 session.EstimateTokensOfMessages 同一口径**（正文 + 工具调用名与参数，÷ TokenDivisor）。
 func EstimateTokensOfFacadeMessages(msgs []facade.Message) int {
 	n := 0
 	for _, m := range msgs {
@@ -36,7 +27,7 @@ func EstimateTokensOfFacadeMessages(msgs []facade.Message) int {
 			n += utf8.RuneCountInString(tc.Arguments)
 		}
 	}
-	return n / TokenDivisor
+	return n / session.TokenDivisor
 }
 
 // LocateFullTurnCount 计算「保留完整」的轮数（压缩侧与组装侧共用的唯一边界算法）。
@@ -50,6 +41,6 @@ func ResolveStoredTokens(stored, estimated []int) []int {
 }
 
 // LocateZones 计算三段边界（压缩侧与组装侧共用的唯一三段定位算法）。
-func LocateZones(fullTokens, briefTokens []int, maxTurns, maxTokens, briefBudget int) Zones {
+func LocateZones(fullTokens, briefTokens []int, maxTurns, maxTokens, briefBudget int) store.Zones {
 	return session.LocateZones(fullTokens, briefTokens, maxTurns, maxTokens, briefBudget)
 }

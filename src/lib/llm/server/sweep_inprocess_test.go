@@ -29,10 +29,11 @@ func TestNoInstanceSweepInMergedForm(t *testing.T) {
 	}))
 	time.Sleep(200 * time.Millisecond) // 无扫描 → 陈旧/新鲜判定都不存在
 
-	if _, ok := s.im.Lookup("ins-merged"); !ok {
+	info, ok := s.im.Lookup("ins-merged")
+	if !ok {
 		t.Fatal("合并单进程形态不应超时清理实例")
 	}
-	if _, ok := s.capWorkDirs["ins-merged"]; !ok {
-		t.Fatal("合并单进程形态实例注册态应保持（无超时清理）")
+	if info.WorkDir != testWorkDir {
+		t.Fatalf("实例注册态应保持（Manager 里的 instance → work_dir 登记未被清除），got %q", info.WorkDir)
 	}
 }

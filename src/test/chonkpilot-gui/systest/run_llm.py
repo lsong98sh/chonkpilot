@@ -23,7 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chonk_client import ChonkClient, TestError, run_case
 
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
-_G = _h.acquire_gui(2345)  # 复用优先（owned=False 不回收）；无实例则自起并在结束时回收
+# 2026-10-27（42 (290)）：本套件自建会话/任务，不依赖共享工作区既有状态；改**独立临时 work-dir**
+# ——共享 ws 会累积他套件的会话/任务树（首屏恢复与任务面板重渲染让渲染线程长时间忙，
+# 后续 `/eval` 连续 ExecuteScript 超时，工具/任务类用例整片假红）。
+_G = _h.acquire_gui(2345, work_dir=_h.tmp_dir("ck-llm-ws-"))  # 复用优先（owned=False 不回收）；无实例则自起并在结束时回收
 _M = _h.acquire_mock_llm(_h.DEFAULT_MOCK_LLM_PORT)  # mock LLM 按需起（8901 与 usr 库 llms[0] 对齐），结束回收
 c = _G.client
 _h.suite_config_guard(c)  # 套件级配置快照-还原（51 §6-8）：会话/任务落共享 work-dir 库 → 退出前回滚
@@ -562,20 +565,23 @@ def case_ask_user_duplex():
 
 
 def case_notify_dedup():
-    """C17 通知消息按 message_id 去重：同一完成通知重复推送不产生重复气泡。"""
+    """C17 通知消息按 message_id 去重：同一完成通知重复推送不产生重复气泡。
+
+    会话切换会让 MessageList 以 DB 历史**整体替换**消息列表（`resetMessages` →
+    `loadMessages`）；若通知落在重载窗口内会被一并丢弃（非去重逻辑问题）。故按
+    **同一 message_id 周期重推**（幂等：这正是去重语义），出现气泡后断言恰好 1 个。
+    """
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
     c.mq_on_capture(EVENTS)
     sid = create_session()
     activate_session(sid)
-    # 前端同 message_id 的完成通知重复推送
     ntf = {"notice": "completion", "message_id": "msg-notify-c17-dedup",
            "message": "🔔 C17 去重测试消息", "session_id": sid, "task_id": "op-c17"}
-    c.mq_emit("tool-notify", ntf)
-    time.sleep(0.5)
-    c.mq_emit("tool-notify", ntf)
-    time.sleep(0.5)
-    deadline = time.time() + 8
+    deadline = time.time() + 10
+    n = "0"
     while time.time() < deadline:
+        c.mq_emit("tool-notify", ntf)
+        time.sleep(0.5)
         n = c.eval("""(() => {
           const els = [...document.querySelectorAll('.chat-panel .message-item')]
             .filter(el => el.textContent.includes('C17 去重测试消息'));
@@ -583,8 +589,20 @@ def case_notify_dedup():
         })()""")
         if n.strip('"') == "1":
             return
-        time.sleep(0.5)
-    raise TestError(f"同 message_id 通知产生了重复气泡（count={n}）")
+    raise TestError(f"同 message_id 通知产生了重复气泡（count={n}）diag={_notify_diag()}")
+
+
+def _notify_diag():
+    """C17 失败诊断：当前激活会话标记 / chat-panel 与气泡计数 / 正文尾部。"""
+    try:
+        return c.eval("""(() => JSON.stringify({
+          panels: document.querySelectorAll('.chat-panel').length,
+          items: document.querySelectorAll('.chat-panel .message-item').length,
+          tags: [...document.querySelectorAll('.chat-session-tag')].map(e => e.textContent.trim()),
+          body: (document.body.innerText || '').slice(-300),
+        }))()""")
+    except Exception as e:  # noqa: BLE001
+        return "diag-failed:%r" % (e,)
 
 
 def case_resume_partial():

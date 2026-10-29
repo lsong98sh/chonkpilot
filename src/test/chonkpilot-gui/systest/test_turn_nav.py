@@ -67,11 +67,50 @@ def emit_remote(gui, typ, payload):
         json.dumps(typ), json.dumps(json.dumps(payload))))
 
 
+def user_msg_count(gui):
+    return int(J(gui, "document.querySelectorAll('.message-item.user').length") or 0)
+
+
+def wait_user_msgs(gui, n, max_wait=25.0):
+    """有界等待「第 n 条用户消息已渲染」。
+
+    **必要性（2026-10-26 批跑定位）**：user 气泡不是乐观插入，而是 `llm-inbox-add` 回执 +
+    服务端起轮（`turn-start`）后才渲染；批跑负载下回执可能明显晚于固定 sleep（0.4s），
+    首条还可能因 `props.sessionId` 尚未跟上被静默丢弃（`onMessageSend` 的会话过滤）。
+    固定 sleep 会把「尚未渲染」读成「轮次丢失」→ 圈数断言失真（TN1 dots=0 / TN4 disabled=4）。
+    """
+    deadline = time.time() + max_wait
+    v = user_msg_count(gui)
+    while v < n and time.time() < deadline:
+        time.sleep(0.25)
+        v = user_msg_count(gui)
+    return v
+
+
+def wait_session_active(gui, sid, max_wait=15.0):
+    """有界等待会话身份生效（`.chat-session-tag` title == sid）。
+
+    `MessageList.onMessageSend` 首行 `data.sessionId !== props.sessionId` 即**静默丢弃**；
+    该值由 ChatPanel 同一次渲染刷新供应，`.chat-session-tag` 是其 DOM 投影。
+    """
+    deadline = time.time() + max_wait
+    v = J(gui, "(()=>{const t=document.querySelector('.chat-session-tag');return t?t.getAttribute('title'):null})()")
+    while v != sid and time.time() < deadline:
+        time.sleep(0.25)
+        v = J(gui, "(()=>{const t=document.querySelector('.chat-session-tag');return t?t.getAttribute('title'):null})()")
+    return v
+
+
 def run_turn(gui, sid, n):
-    """驱动一轮对话：user 消息 + assistant 回复 + 轮次结束。"""
+    """驱动一轮对话：user 消息 + assistant 回复 + 轮次结束（每步有界等待）。"""
+    before = user_msg_count(gui)
     J(gui, "window.mq.emit('message-send', {sessionId: %s, text: 'Q%d what is the plan?'}); 'ok'" % (
         json.dumps(sid), n))
-    time.sleep(0.4)
+    if wait_user_msgs(gui, before + 1) < before + 1:
+        # 仍未渲染：再发一次（首条唯一可能被 props.sessionId 竞态丢弃；已渲染则不重发）
+        J(gui, "window.mq.emit('message-send', {sessionId: %s, text: 'Q%d what is the plan?'}); 'ok'" % (
+            json.dumps(sid), n))
+        wait_user_msgs(gui, before + 1)
     emit_remote(gui, 'llm-receive', {'type': 'text', 'text': 'A%d this is a reply body for turn %d.' % (n, n), 'session': sid})
     time.sleep(0.3)
     emit_remote(gui, 'llm-complete', {'session': sid, 'status': 'completed'})
@@ -108,10 +147,13 @@ def main():
         }]}})
         J(gui, "window.mq.emit('chat-select-llm', {name: %s}); 'ok'" % json.dumps(HANG_LLM))
 
-        sid = 'turn-sess-1'
+        # 会话 id 必须**每轮唯一**（DATAROOT-1 后数据根 = `<workdir>/.chonkpilot/users/<用户名>`，
+        # 固定 id 会累积历史批跑的 turn → 首断言 dots 直接是 10）。
+        sid = 'turn-sess-%d' % int(time.time())
         install_session_history_spy(gui)  # 必须先装：记录本次切会话触发的 data-session-history 应答
         J(gui, "window.mq.emit('session-changed', {session_id: %s}); 'ok'" % json.dumps(sid))
         wait_session_history(gui, sid)  # 等历史回填落地再发（发送与历史回填交错会让气泡落点不可预期）
+        wait_session_active(gui, sid)   # 会话身份生效（否则 message-send 被静默丢弃）
 
         # 3 轮 → 3 圈（turn ≤10 每圈 1 轮）
         for n in range(3):

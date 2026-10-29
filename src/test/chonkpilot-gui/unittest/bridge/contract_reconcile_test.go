@@ -18,10 +18,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +31,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // ── 契约结构（与 61-messages.schema.json 对齐）─────────────────────────────
@@ -338,7 +340,8 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		// 2026-10-24：session-complete 只增 work_dir / data_dir（memory 每轮沉淀的轮末触发载荷）。
 		{"session-complete", "llm-complete", `{"instance_id":"inst-test","session":"s","turn":"t","status":"complete","finish_reason":"stop","parents":[],"work_dir":"/w","data_dir":"/d"}`},
 		{"session-compress", "llm-compress", `{"instance_id":"inst-test","session":"s","last_turn":"t","snapshot_turn":"u"}`},
-		{"session-ask", "ask-user", `{"instance_id":"inst-test","ask_id":"a","session":"s","turn":"t","expires_at":0,"question":"q"}`},
+		// AskUser S1-3（2026-10-29）：session-ask 补齐 §0.6 必带的 dialog_id。
+		{"session-ask", "ask-user", `{"instance_id":"inst-test","ask_id":"a","dialog_id":"dlg-1","session":"s","turn":"t","expires_at":0,"question":"q"}`},
 		{"server-starting", "server-starting", `{"started_at":123}`},
 		{"prompt-optimised", "prompt-optimised", `{"instance_id":"inst-test","type":"t","content":"c"}`},
 		{"tool-notify", "tool-notify", `{"instance_id":"inst-test","session_id":"s","turn_id":"t","notice":"completion","message":"m","message_id":"mid"}`},
@@ -346,6 +349,9 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		{"task-done", "tasks.done", `{"task_id":"tk","tool":"x","kind":"tool","state":"done","session":"s","turn":"t","work_dir":"/w"}`},
 		{"mcp-tasks-report", "mcp-tasks-report", `{"task_id":"tk","tool":"x","state":"done","result_summary":"ok","instance_id":"inst-test"}`},
 		{"mcp-tools-timeout", "mcp-tools-timeout", `{"instance_id":"inst-test","tool_call_id":"tc","task_id":"tk","tool":"x","reason":"timeout","timeout_s":5,"options":["detach","cancel"]}`},
+		// GATEWAY-2 L8（2026-10-28）：工具进度下行事件——原名直通（eventType 兜底），
+		// 载荷键 ⊆ 契约 event 声明（total 可选：缺省 = 前端不显示百分比）。
+		{"mcp-tools-progress", "mcp-tools-progress", `{"instance_id":"inst-test","tool_call_id":"tc","progress":20,"total":100}`},
 		{"mcp-gateway-changed", "mcp-gateway-changed", `{"instance_id":"inst-test","kind":"tool"}`},
 		{"filesys.changed", "filesys.changed", `{"instance_id":"inst-test","work_dir":"/w","path":"/w/a","operation":"write"}`},
 		{"session-new", "session-new", `{"instance_id":"inst-test","session_id":"s"}`},
@@ -377,7 +383,15 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 			if err := br.Start(); err != nil {
 				t.Fatalf("Start: %v", err)
 			}
-			pubFire(bus, tc.subject, []byte(tc.rawPayload))
+			raw := tc.rawPayload
+			if tc.subject == "filesys.changed" {
+				// S2（49 §2.22.7）：workdir 级主题按 `work_dir` 收口 —— 载荷须指向**本桥的**
+				// work_dir（契约键位不变；否则 `/w` ≠ 桥的临时 work_dir 会被策略正确丢弃）。
+				wd := strings.ReplaceAll(br.WorkDir(), `\`, "/")
+				raw = fmt.Sprintf(`{"instance_id":"inst-test","work_dir":%q,"path":%q,"operation":"write"}`,
+					wd, wd+"/a")
+			}
+			pubFire(bus, tc.subject, []byte(raw))
 			env := recvEnvelopeTyp(t, evals, tc.frontType, time.Second)
 			var p map[string]any
 			if err := json.Unmarshal([]byte(env.Payload), &p); err != nil {
@@ -527,11 +541,6 @@ func newContextParityEnv(t *testing.T) (*bridge.Bridge, *persist.Service, string
 		t.Fatalf("instance-register: %v", err)
 	}
 	data.Register(instanceID, wd, "")
-	// 本用例断言旧布局（prjusr 会话/轮次直读）；P3-4c 起开关缺省 on → 显式退回 off。
-	if prj, release, err := data.Prj(instanceID); err == nil {
-		_ = prj.Table("config").Upsert("session.db.shard", data.Record{"v": "off"})
-		release()
-	}
 	time.Sleep(20 * time.Millisecond) // 等 persist 自持实例视图登记
 	br := bridge.New(instanceID, wd, "", nil, bus)
 	return br, svc, instanceID, wd
@@ -553,25 +562,32 @@ func keySetOf(m map[string]any) map[string]bool {
 func TestSessionContextTwoPathsKeyParity(t *testing.T) {
 	br, svc, instanceID, wd := newContextParityEnv(t)
 
-	// 造会话 + 轮次（经桥写库）。
-	for _, req := range []struct{ typ, payload string }{
-		{"data-session-ensure-session", `{"session_id":"s-ctx"}`},
-		{"data-session-ensure-turn", `{"turn_id":"t-ctx","session_id":"s-ctx"}`},
-	} {
-		if _, errs := br.PublishEvent(req.typ, req.payload); len(errs) > 0 {
-			t.Fatalf("%s errs=%v", req.typ, errs)
-		}
+	// 造会话 + 轮次（经桥写库）。一树一库：根会话自举回带 dialog_id，后续调用带上它。
+	res, errs := br.PublishEvent("data-session-ensure-session", `{"session_id":"s-ctx"}`)
+	if len(errs) > 0 {
+		t.Fatalf("ensure-session errs=%v", errs)
+	}
+	dialogID, _ := toMap(t, res)["dialog_id"].(string)
+	if dialogID == "" {
+		t.Fatalf("根会话自举应回带 dialog_id：%+v", toMap(t, res))
+	}
+	turnPayload, _ := json.Marshal(map[string]any{
+		"turn_id": "t-ctx", "session_id": "s-ctx", "dialog_id": dialogID,
+	})
+	if _, errs := br.PublishEvent("data-session-ensure-turn", string(turnPayload)); len(errs) > 0 {
+		t.Fatalf("ensure-turn errs=%v", errs)
 	}
 	// 预存该轮 token —— 「非空 turn_tokens」的触发条件（nil = 不写键）。
 	full, brief := 123, 45
 	if _, err := svc.TurnComplete(facade.TurnCompleteRequest{
-		InstanceID: instanceID, TurnID: "t-ctx", Status: "done",
+		InstanceID: instanceID, TurnID: "t-ctx", Status: "done", DialogID: dialogID,
 		FullTokens: &full, BriefTokens: &brief, Scope: facade.Scope{WorkDir: wd},
 	}); err != nil {
 		t.Fatalf("TurnComplete: %v", err)
 	}
 
-	res, errs := br.PublishEvent("data-session-context", `{"session_id":"s-ctx"}`)
+	ctxPayload, _ := json.Marshal(map[string]any{"session_id": "s-ctx", "dialog_id": dialogID})
+	res, errs = br.PublishEvent("data-session-context", string(ctxPayload))
 	if len(errs) > 0 {
 		t.Fatalf("context errs=%v", errs)
 	}

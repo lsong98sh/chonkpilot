@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // dataTimeout 数据面请求超时（persist 应答同步：同进程合并形态微秒级；给分离形态留裕量）。

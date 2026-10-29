@@ -11,14 +11,14 @@ package config
 import "strings"
 
 // localRuntimeKeys 是落 prjusr 的个人运行态 key（精确名）。
+// 注：插件业务运行态（如 `codegraph.status` / `vfts.status`）**不在**本白名单——PLUGIN-UI-2
+// 起插件不再回写这些键，状态一律由插件自己的 UI（`badge` / `engine-status`）现取。
 var localRuntimeKeys = map[string]bool{
 	"layout":                 true,
 	"window":                 true,
 	"filetree-expanded-key":  true,
 	"filetree-selected-path": true,
 	"opened-files":           true,
-	"codegraph.status":       true, // 引擎索引运行状态（本机可重建的派生物）
-	"vfts.status":            true, // vfts 全文索引运行状态（本机可重建的派生物）
 }
 
 // localRuntimeKeyPrefixes 是落 prjusr 的个人运行态 key 前缀（键名带后缀，见下）。

@@ -26,7 +26,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // memoryCategoryTTL 类别清单缓存存活时长（I-68 ②）：清单请求含目录扫描与 token 估算，
@@ -35,14 +35,16 @@ import (
 const memoryCategoryTTL = 60 * time.Second
 
 // memoryCategoryCache 是记忆类别清单的短时 TTL 缓存（I-68 ②，并发安全）。
-// 键 = instanceID：实例↔workDir 一一绑定，等价于按工作区分桶，多实例/多工作区不串味。
+// 键 = **项目键**（归一化 work_dir，SCOPE-1）：记忆类别清单是**项目级**事实
+// （`<workdir>/.chonkpilot/memory/`），同一项目的多个窗口共用一份，不同项目互不串味。
+// work_dir 未知（未登记实例）→ 不缓存（不以窗口冒充项目）。
 type memoryCategoryCache struct {
 	mu      sync.Mutex
 	ttl     time.Duration
 	entries map[string]memoryCategoryEntry
 }
 
-// memoryCategoryEntry 是单个实例的缓存项（清单 + 过期时刻）。
+// memoryCategoryEntry 是单个项目的缓存项（清单 + 过期时刻）。
 type memoryCategoryEntry struct {
 	names   []string
 	expires time.Time
@@ -80,19 +82,19 @@ func (c *memoryCategoryCache) put(key string, names []string) {
 	c.entries[key] = memoryCategoryEntry{names: names, expires: time.Now().Add(c.ttl)}
 }
 
-// invalidate 失效缓存：instanceID 空 → 全清（refresh 未带归属时的保守处置），否则只清该实例。
+// invalidate 失效缓存：key 空 → 全清（refresh 未带归属 / 实例未登记时的保守处置），否则只清该项目。
 // nil 接收者安全。
-func (c *memoryCategoryCache) invalidate(instanceID string) {
+func (c *memoryCategoryCache) invalidate(key string) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if instanceID == "" {
+	if key == "" {
 		c.entries = make(map[string]memoryCategoryEntry)
 		return
 	}
-	delete(c.entries, instanceID)
+	delete(c.entries, key)
 }
 
 // memoryGuide 生成记忆库带出指引（工作目录未知 → 空串，不注入）。
@@ -114,7 +116,7 @@ func (s *Server) memoryGuide(instanceID, workDir string) string {
 	projectDir := filepath.Join(workDir, ".chonkpilot", "memory")
 	userFile := filepath.Join(filepath.Dir(data.UserPath()), persist.MemoryUserCategory+".md")
 	cats := make([]string, 0)
-	for _, name := range s.memoryCategoryNames(instanceID) {
+	for _, name := range s.memoryCategoryNames(instanceID, workDir) {
 		if memoryCategoryOn(cfg, name) {
 			cats = append(cats, name)
 		}
@@ -214,9 +216,15 @@ func memoryCategoryOn(cfg map[string]any, category string) bool {
 // 取「预置 ∪ 自定义」清单，仅保留 level=project（用户偏好恒单列、不入类别文件列举）。
 // 命中 TTL 缓存 → 直接复用（不发 data-memory-list）；未命中才取数。取数失败 / 空清单 →
 // 回落静态预置清单 persist.MemoryCategoryNames()（指引不缺失；失败/空不缓存，下次重试）。
-func (s *Server) memoryCategoryNames(instanceID string) []string {
-	if names, ok := s.memCache.get(instanceID); ok {
-		return names
+//
+// 缓存键 = 项目键（SCOPE-1）：清单是项目级事实，**按 work_dir 而非 instance_id** 分桶；
+// work_dir 未知 → 不读不写缓存（每次取数，宁多一次请求也不以窗口冒充项目）。
+func (s *Server) memoryCategoryNames(instanceID, workDir string) []string {
+	key := projectKey(workDir)
+	if key != "" {
+		if names, ok := s.memCache.get(key); ok {
+			return names
+		}
 	}
 	res, err := dataRequest(s.bus, msgkeys.TopicDataMemoryList, map[string]any{"instance_id": instanceID})
 	if err != nil {
@@ -236,6 +244,8 @@ func (s *Server) memoryCategoryNames(instanceID string) []string {
 	if len(out) == 0 {
 		return persist.MemoryCategoryNames()
 	}
-	s.memCache.put(instanceID, out)
+	if key != "" {
+		s.memCache.put(key, out)
+	}
 	return out
 }

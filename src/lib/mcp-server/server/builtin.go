@@ -67,6 +67,7 @@ func dispatchBuiltin(ctx context.Context, cfg *Config, td *ToolDoc, args map[str
 		Turn:       cx.TurnID,
 		ToolCallID: cx.ToolCallID,
 		Purpose:    cx.Purpose,
+		WorkDir:    cx.WorkDir,
 	}, toolmeta.Bridge{Addr: addr, Token: token})
 	return &builtinResult{Text: r.Text, IsError: r.IsError}
 }

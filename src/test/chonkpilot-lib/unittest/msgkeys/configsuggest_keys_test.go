@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // TestConfigSuggestMessageContract 断言键常量 / schema 契约两处一致（点分直通主题 = 相对主题同名）。

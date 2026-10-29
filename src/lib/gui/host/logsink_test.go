@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-gui"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/gui"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 )
 

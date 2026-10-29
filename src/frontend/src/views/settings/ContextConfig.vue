@@ -210,7 +210,7 @@ import { dialog } from '../../components/dialog'
 import TextEditDialog from '../../components/common/TextEditDialog.vue'
 import { getAllConfig, setConfigs, getPrompt, setPrompt } from '../../api/config'
 import { readPrimitive } from '../../api/knowledge'
-import { getActiveSessionID } from '../../api/session'
+import { getActiveSessionID, getSession, dialogIdFor } from '../../api/session'
 import dataClient, { onDataRefresh, dataRequest } from '../../utils/dataClient'
 import mq from '../../utils/mq'
 import { EventNames } from '../../events/event-names'
@@ -637,7 +637,22 @@ async function flushMemory() {
       message.warning(t('memoryIO.flush_no_session'))
       return
     }
-    const env = await mq.emit(FLUSH_TOPIC, { session: sessionID }, { timeout: FLUSH_TIMEOUT })
+    // 61 §0.6：会话类载荷必须同级带 dialog_id（旧布局退场后缺它一律 dialog_required）。
+    // 先查进程内备忘，未命中则用一次只读 data-session-get 解析（顺带回填备忘）。
+    let dialogID = dialogIdFor(sessionID)
+    if (!dialogID) {
+      try {
+        const s = await getSession(sessionID)
+        dialogID = (s && s.dialog_id) || ''
+      } catch (e) {
+        dialogID = ''
+      }
+    }
+    if (!dialogID) {
+      message.error(t('memoryIO.flush_fail', { error: 'dialog_id unresolved' }))
+      return
+    }
+    const env = await mq.emit(FLUSH_TOPIC, { session: sessionID, dialog_id: dialogID }, { timeout: FLUSH_TIMEOUT })
     const backend = env && env.backend
     const res = (backend && backend.result) || null
     const reason = resolvePublishError(backend) || (backend && backend.errors && backend.errors[0]) || (res && res.reason) || ''

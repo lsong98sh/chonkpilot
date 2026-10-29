@@ -5,7 +5,6 @@
  *   ① prj `logLevel` 写入与反馈（LogConfig.vue + ProjectConfig「日志」页签）
  *   ② Chrome 未检测告警（Toolbar；真实信号 = gui.toolchain.detect ∪ usr chromePath）
  *   ③ 日志目录入口 logDir 存在/缺失两种表现（utils/logDirView.js）
- *   ④ 引擎运行态真实可得口径（utils/engineStatus.js；注册态，非伪造进程态）
  *   ⑤ 沙箱两页状态互见摘要与跳转（utils/sandboxSummary.js + 两页）
  *   ⑥ I-82/I-109 不适用标注（utils/toolSource.js；含「无法判定则不标」）
  *   + 通用守卫：i18n 双语齐备、无 watch/watchEffect。
@@ -20,7 +19,6 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { isChromeMissing } from '../src/utils/chromeStatus.js'
 import { logDirView } from '../src/utils/logDirView.js'
-import { hasEngineTools } from '../src/utils/engineStatus.js'
 import { countMCPsOn, countToolSandboxOn } from '../src/utils/sandboxSummary.js'
 import { isDirNode, isThirdPartyProvider, isBuiltinRuntimeProvider } from '../src/utils/toolSource.js'
 
@@ -86,20 +84,6 @@ test('③ LogConfig 消费 init-data 的 logDir（无空路径）+ 无 watch', (
   assert.match(src, /r\.logDir|logDir/, '须取 logDir 字段')
   assert.match(src, /logDirView\(/, '须走 logDirView 视图模型')
   assert.match(src, /revealInExplorer\(/, '须用既有 native reveal 打开目录')
-})
-
-// ── ④ 引擎运行态（真实可得口径）──────────────────────────
-test('④ hasEngineTools：按工具面注册名判定（含 self_ 前缀暴露名）', () => {
-  // 实测暴露名带 self_ 前缀（gateway applyPrefix；L4 run_index_gate.py 断言）
-  assert.equal(hasEngineTools([{ name: 'self_codegraph_symbol_search' }], 'codegraph'), true)
-  assert.equal(hasEngineTools([{ name: 'self_vfts_query' }], 'vfts'), true)
-  // 裸名亦接受（前缀口径变化时仍可用）
-  assert.equal(hasEngineTools([{ name: 'codegraph_symbol_search' }], 'codegraph'), true)
-  assert.equal(hasEngineTools([{ name: 'vfts_query' }], 'vfts'), true)
-  assert.equal(hasEngineTools([{ name: 'self_vfts_query' }], 'codegraph'), false)
-  assert.equal(hasEngineTools([{ name: 'self_vfts_query' }], 'vfts'), true)
-  assert.equal(hasEngineTools([], 'codegraph'), false)
-  assert.equal(hasEngineTools(null, 'vfts'), false)
 })
 
 // ── ⑤ 沙箱两页状态互见 ───────────────────────────────────

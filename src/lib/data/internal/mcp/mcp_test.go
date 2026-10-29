@@ -170,6 +170,64 @@ func TestMcpSaveRenameRemovesOldFile(t *testing.T) {
 	}
 }
 
+// TestMcpSaveUnknownFieldsRoundTrip（2026-10-29，未知字段保留）：DTO 未声明字段经 `Extra`
+// 原样并入落盘文件顶层（round-trip 不丢）；同名冲突 → **已知字段优先**；`Extra` 为空时落盘
+// 与改前逐字节一致；`McpGetRaw` = 原始 map 读取路径（含未知字段），DTO 读侧形状不变。
+func TestMcpSaveUnknownFieldsRoundTrip(t *testing.T) {
+	s, _, usrPath := testService(t)
+	root := capfs.McpUserRoot(usrPath)
+
+	// ① 带未知字段 + 同名冲突（url）→ 未知字段落盘、已知字段优先
+	if _, err := s.McpSave(facade.McpSaveRequest{Server: facade.McpServer{
+		Name: "extra", URL: "http://real", Enabled: true, Level: capfs.KindUser,
+		Extra: map[string]any{
+			"vendor_field": "kept",
+			"x_note":       map[string]any{"a": float64(1)},
+			"url":          "http://evil", // 与已知字段同名 → 丢弃
+		},
+	}}); err != nil {
+		t.Fatalf("McpSave(extra): %v", err)
+	}
+	obj, ok := capfs.ReadMcpFile(root, "extra")
+	if !ok {
+		t.Fatal("带未知字段的定义未落盘")
+	}
+	if obj["vendor_field"] != "kept" {
+		t.Fatalf("未知字段应原样保留：%+v", obj)
+	}
+	if nested, _ := obj["x_note"].(map[string]any); nested == nil || nested["a"] != float64(1) {
+		t.Fatalf("未知字段（嵌套对象）应原样保留：%+v", obj)
+	}
+	if obj["url"] != "http://real" {
+		t.Fatalf("同名冲突须已知字段优先：%+v", obj)
+	}
+	// 原始 map 读取路径含未知字段
+	raw, err := s.McpGetRaw(facade.McpGetRequest{Name: "extra"})
+	if err != nil || raw.Raw["vendor_field"] != "kept" {
+		t.Fatalf("McpGetRaw 应含未知字段：%+v err=%v", raw.Raw, err)
+	}
+	// DTO 读侧形状不变（未知字段不出现）
+	g, err := s.McpGet(facade.McpGetRequest{Name: "extra"})
+	if err != nil || g.Server.URL != "http://real" || g.Server.Level != capfs.KindUser {
+		t.Fatalf("McpGet 形状/字段异常：%+v err=%v", g.Server, err)
+	}
+
+	// ② 纯已知字段 → 落盘与改前逐字节一致（Extra 为空不改动输出）
+	if _, err := s.McpSave(facade.McpSaveRequest{Server: facade.McpServer{
+		Name: "plain", URL: "http://u", Enabled: true, Level: capfs.KindUser,
+	}}); err != nil {
+		t.Fatalf("McpSave(plain): %v", err)
+	}
+	got, err := os.ReadFile(mcpFilePath(root, "plain"))
+	if err != nil {
+		t.Fatalf("读 plain 文件: %v", err)
+	}
+	want := "{\n  \"enabled\": true,\n  \"url\": \"http://u\"\n}\n"
+	if string(got) != want {
+		t.Fatalf("纯已知字段落盘内容与改前不一致：\n got=%q\nwant=%q", string(got), want)
+	}
+}
+
 // TestMcpSaveRejectsInvalidName 非法名（数字开头 / 含路径分隔符 / 空）→ 拒绝且不落盘。
 func TestMcpSaveRejectsInvalidName(t *testing.T) {
 	s, _, usrPath := testService(t)

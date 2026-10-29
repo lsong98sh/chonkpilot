@@ -22,7 +22,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 )
 
@@ -103,6 +103,17 @@ func (s *Server) resolvePathValues(instanceID string) (map[string]string, bool) 
 // 已知 key 恒出现（未配置 → ""，即"未配置替换为空串"）；两层皆读失败 → 全空表（等价全未配置）。
 func (s *Server) toolchainVars(instanceID string) map[string]string {
 	values, _ := s.resolvePathValues(instanceID)
+	return toolchainVarsOf(values)
+}
+
+// toolchainVarsFrom 由**已读**配置（usr 对象 + prj 平铺表）组装占位符取值表（纯函数，不再读配置）。
+// 取值合成与 `toolchainVars` 同源（layeredPathValues：prj > usr）。
+func toolchainVarsFrom(usr map[string]any, prj map[string]string) map[string]string {
+	return toolchainVarsOf(layeredPathValues(usr, prj))
+}
+
+// toolchainVarsOf 把分层路径取值折算成占位符取值表（key → 值；未配置 → 空串）。
+func toolchainVarsOf(values map[string]string) map[string]string {
 	vars := make(map[string]string, len(mcpms.ToolchainKeys))
 	for _, k := range mcpms.ToolchainKeys {
 		vars[k] = values[toolchainUserConfigKeys[k]]
@@ -117,6 +128,15 @@ func (s *Server) replaceToolchain(instanceID, text string) string {
 		return text
 	}
 	return mcpms.ReplaceToolchain(text, s.toolchainVars(instanceID))
+}
+
+// replaceToolchainFrom 同 replaceToolchain，但用**本轮已读**的配置（LLM-P4：单轮不再重复读配置）。
+// 文本不含占位符时同样零成本直返。
+func replaceToolchainFrom(usr map[string]any, prj map[string]string, text string) string {
+	if text == "" || !strings.Contains(text, mcpms.ToolchainPlaceholder) {
+		return text
+	}
+	return mcpms.ReplaceToolchain(text, toolchainVarsFrom(usr, prj))
 }
 
 // ── prompt 占位符 {{path.<key>}}（四种根路径，2026-10-04）────────────────────

@@ -32,8 +32,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // SubjectConfigSuggest 配置建议方法面的相对主题。**点分形态**：GUI 桥与服务端上行入口按

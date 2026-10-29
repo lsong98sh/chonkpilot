@@ -18,6 +18,7 @@ package assembly
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,11 +26,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // Options 是装配参数（缺省口径与改前 `llm/server.New` 内联装配一致）。
@@ -94,7 +95,8 @@ func Build(opts Options) (*Stack, error) {
 	// 能力源接入（GATEWAY-2 L5 收口）：把进程内 mcp.Server 经内存传输连成一个**标准 MCP
 	// ClientSession**，作为普通下游 ServerEntry（ID=self）交给 gateway —— gateway 只走
 	// 标准 client（ListTools/Call/prompts/resources），不持有能力源/契约扫描；
-	// 暴露名仍 = self_<原名>（对外零变更），app 根热重扫（reloadAppContracts + gateway/reload）
+	// 暴露名 = 原名（P0a 2026-10-29：内置 self 节点不再加 `self_` 前缀），app 根热重扫
+	// （reloadAppContracts + gateway/reload）
 	// 经同一会话重拉 list 即可生效。
 	servers := append([]mcpgateway.ServerEntry{}, opts.Servers...)
 	if ss, closeSelf := connectSelf(ms, logf); ss != nil {
@@ -112,20 +114,25 @@ func Build(opts Options) (*Stack, error) {
 	// 出站通知（任务回报 / 接入变化 / 超时裁决）主题名归 mqadapter：这里只装配 Hooks。
 	var gwTransport mcpgateway.Transport
 	var gwHooks mcpgateway.Hooks
+	var gwProgress func(mcpgateway.ProgressEvent)
 	if opts.Bus != nil {
 		adapter := mqadapter.New(opts.Bus)
 		gwTransport = adapter
 		gwHooks = adapter.Hooks()
+		// GATEWAY-2 L8（2026-10-28）：下游 progress → 下行事件 mcp-tools-progress。
+		// elicitation 不注入（ElicitHandler 保持 nil：客户端不声明该能力，提问由 ask_user 承担）。
+		gwProgress = adapter.ProgressHandler()
 	}
 	gw, err := mcpgateway.New(mcpgateway.Params{
-		Transport:   gwTransport,
-		Hooks:       gwHooks,
-		Servers:     servers,
-		AsyncMode:   opts.AsyncMode,
-		CallTimeout: 60 * time.Second,
-		MaxTasks:    8,
-		ExecSink:    opts.ExecSink,
-		Logf:        opts.Logf, // C-53：透传日志出口，否则 gateway 回落 log.Printf，desktop(windowsgui) 下诊断日志丢失
+		Transport:       gwTransport,
+		Hooks:           gwHooks,
+		Servers:         servers,
+		AsyncMode:       opts.AsyncMode,
+		CallTimeout:     60 * time.Second,
+		MaxTasks:        8,
+		ExecSink:        opts.ExecSink,
+		ProgressHandler: gwProgress,
+		Logf:            opts.Logf, // C-53：透传日志出口，否则 gateway 回落 log.Printf，desktop(windowsgui) 下诊断日志丢失
 	})
 	if err != nil {
 		return st, err
@@ -165,6 +172,10 @@ func connectSelf(ms *mcp.Server, logf func(format string, args ...any)) (*mcp.Cl
 // AppToolNames 递归收集 app capability 根下全部 `*.tool.md` 的原语名（T-21② 运行期重扫时回收
 // 删除/改名者用；口径与 `chonkpilot-mcp-server/server/contract.go` 一致：原语名 = 文件名去后缀）。
 // 根缺失 / 不可读 → 空集。
+//
+// 2026-10-26（PLUGIN-SPLIT-1 / D-71）：**跳过 `<root>/plugins/` 子树** —— 插件自带工具由插件
+// 进程内的 MCP server 注册/执行，内核契约扫描亦已跳过该子树（见 `mcp-server/server/contractsource.go`
+// 的 pluginsDirName），两处口径必须一致，否则重扫回收清单会与「内核实际注册集」错位。
 func AppToolNames(root string) map[string]bool {
 	names := map[string]bool{}
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -172,6 +183,12 @@ func AppToolNames(root string) map[string]bool {
 			return nil
 		}
 		if d.IsDir() {
+			if rel, rerr := filepath.Rel(root, path); rerr == nil {
+				rel = filepath.ToSlash(rel)
+				if rel == "plugins" || strings.HasPrefix(rel, "plugins/") {
+					return fs.SkipDir
+				}
+			}
 			return nil
 		}
 		if name := strings.TrimSuffix(d.Name(), ".tool.md"); name != d.Name() {

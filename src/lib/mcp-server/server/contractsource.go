@@ -28,6 +28,14 @@ const (
 	kindResource = "resource"
 )
 
+// pluginsDirName 是「插件自带能力」在 capability 根下的固定目录名。
+//
+// PLUGIN-SPLIT-1 / D-71（2026-10-26）：插件工具/资产投放在 `<capability>/plugins/<id>/`，
+// 由**插件进程内的 MCP server** 注册与执行（宿主 `RegisterPluginServer` 接入 gateway）。
+// 内核契约扫描必须**跳过**该子树，否则同名工具会以契约里的 `runtime=builtin` 走内核分派
+// （file 组已无进程内实现 → “category "file" 无进程内实现”），并抢走插件服务的路由。
+const pluginsDirName = "plugins"
+
 // Source 是一层契约来源：
 //   - `Dir` 非空 → **磁盘**契约根（递归扫描；`Dir` = executor 相对解析基准，路径原样保留）；
 //   - 否则 `FS` 非空 → **内嵌**契约根（扫描根 = "."；`Path`/`Dir` 为空，由调用方按部署根补）；
@@ -152,7 +160,7 @@ func scanSource(src Source) ([]*ContractFile, error) {
 	return nil, nil
 }
 
-// scanDiskSource 递归扫描磁盘契约根。
+// scanDiskSource 递归扫描磁盘契约根（跳过 `<root>/plugins/<id>/` 插件自带能力，见 pluginsDirName）。
 func scanDiskSource(src Source) ([]*ContractFile, error) {
 	root := src.Dir
 	var out []*ContractFile
@@ -160,7 +168,13 @@ func scanDiskSource(src Source) ([]*ContractFile, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.IsDir() || contractKind(d.Name()) == "" {
+		if d.IsDir() {
+			if isPluginsSubdir(root, p) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if contractKind(d.Name()) == "" {
 			return nil
 		}
 		data, err := os.ReadFile(p)
@@ -184,14 +198,30 @@ func scanDiskSource(src Source) ([]*ContractFile, error) {
 	return out, err
 }
 
-// scanFSSource 递归扫描内嵌契约根（路径为 `/` 分隔的相对路径）。
+// isPluginsSubdir 判定 p 是否位于 `<root>/plugins/` 子树内（含 plugins 目录本身）。
+func isPluginsSubdir(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	return rel == pluginsDirName || strings.HasPrefix(rel, pluginsDirName+"/")
+}
+
+// scanFSSource 递归扫描内嵌契约根（路径为 `/` 分隔的相对路径；同样跳过 `plugins/` 子树）。
 func scanFSSource(src Source) ([]*ContractFile, error) {
 	var out []*ContractFile
 	err := fs.WalkDir(src.FS, ".", func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.IsDir() || contractKind(d.Name()) == "" {
+		if d.IsDir() {
+			if p == pluginsDirName || strings.HasPrefix(p, pluginsDirName+"/") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if contractKind(d.Name()) == "" {
 			return nil
 		}
 		data, err := fs.ReadFile(src.FS, p)

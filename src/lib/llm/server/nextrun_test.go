@@ -15,10 +15,10 @@ import (
 // nextRunItems 读会话 inbox 项（status="all"）。
 func nextRunItems(t *testing.T, s *Server, session string) []map[string]any {
 	t.Helper()
-	res, err := dataRequest(s.bus, "data-inbox-list", map[string]any{
+	res, err := dataRequest(s.bus, "data-inbox-list", withDialog(s, session, map[string]any{
 		"instance_id": "ins-test",
 		"data":        map[string]any{"session": session, "status": "all"},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("data-inbox-list: %v", err)
 	}
@@ -35,7 +35,7 @@ func nextRunItems(t *testing.T, s *Server, session string) []map[string]any {
 func nextRunCount(t *testing.T, s *Server, session string) int {
 	t.Helper()
 	res, err := s.cfg.SessionNextRunGet(facade.SessionNextRunGetRequest{
-		InstanceID: "ins-test", SessionID: session,
+		InstanceID: "ins-test", SessionID: session, DialogID: s.dialogOf("ins-test", session),
 	})
 	if err != nil {
 		t.Fatalf("SessionNextRunGet: %v", err)
@@ -142,6 +142,10 @@ func TestNextRunRejectsNonMainAndDisabled(t *testing.T) {
 	llm, _ := newInboxLLM(t)
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s) // data-inbox-list 需实例已登记
+	// 一树一库：inbox 读也要 dialog_id → 先幂等建会话（自举回带 dialog_id 并落备忘）。
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-nr3"); err != nil {
+		t.Fatalf("EnsureSession(s-nr3): %v", err)
+	}
 	base := StartReq{InstanceID: "ins-test", Session: "s-nr3", Turn: "t-nr3"}
 
 	nonMain := &turnCtx{server: s, req: base, nextRunMax: 30}

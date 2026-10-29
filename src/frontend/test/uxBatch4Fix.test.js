@@ -17,7 +17,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -26,6 +26,13 @@ const srcDir = join(here, '..', 'src')
 const repoDir = join(here, '..', '..')
 const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
 const readRepo = (rel) => readFileSync(join(repoDir, rel), 'utf8')
+// TOPO-1（2026-10-29）：窗口层迁至 framework/host（同级仓）。
+const readFw = (rel) => readFileSync(join(repoDir, '..', '..', 'chonkpilot-framework', 'host', 'src', rel), 'utf8')
+// WebView2 fork 已剥离为独立仓（与主仓同级克隆）；未克隆时返回空串 → 跳过 fork 侧断言。
+const readFork = (rel) => {
+  const p = join(repoDir, '..', 'chonkpilot-webview2', rel)
+  return existsSync(p) ? readFileSync(p, 'utf8') : ''
+}
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 const PAGE = 'views/settings/ContextConfig.vue'
@@ -139,7 +146,7 @@ test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）
       assert.ok(doc.includes(s), `出厂提示词文件 ${cat}.md 缺段（与内置默认不一致）：` + s)
     }
   }
-  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'lib', 'memory.go'), 'utf8')
+  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'lib', 'memory.go'), 'utf8')
   // 仅扫**代码**（`//` 注释内允许留「旧键已删除」的说明文字）
   const goCode = go.replace(/^\s*\/\/.*$/gm, '')
   assert.doesNotMatch(goCode, /defaultRewriteSystemPrompt/, 'Go 侧须已删除内置默认提示词常量（不留代码内副本）')
@@ -511,12 +518,15 @@ test('B3 前端：状态栏调试图标 → gui.devtools.open', () => {
 
 test('B3 宿主：屏蔽用户 DevTools 入口 + 桥接 gui.devtools.open', () => {
   // WebView2 选项：DevTools 用户入口关闭（不影响宿主程序化打开）
-  const wv = readRepo('lib/go-webview2/webview.go')
-  assert.match(wv, /DevToolsDisabled bool/, 'go-webview2 须有 DevToolsDisabled 选项')
-  assert.match(wv, /PutAreDevToolsEnabled\(options\.Debug && !options\.DevToolsDisabled\)/, '须按选项关闭用户 DevTools')
+  // fork 已剥离为独立仓 `chonkpilot-webview2`（同级克隆）；未克隆时跳过 fork 侧断言。
+  const wv = readFork('webview.go')
+  if (wv) {
+    assert.match(wv, /DevToolsDisabled bool/, 'go-webview2 须有 DevToolsDisabled 选项')
+    assert.match(wv, /PutAreDevToolsEnabled\(options\.Debug && !options\.DevToolsDisabled\)/, '须按选项关闭用户 DevTools')
+  }
   // 宿主传参 + 注入打开能力（2026-09-25 订正：多窗口改造把窗口创建/WebView2 选项从
   // main.go 迁至 window.go —— 逐窗口一份 → 断言对两处取并集，避免绑定文件位置）
-  const host = readRepo('lib/gui/main.go') + readRepo('lib/gui/window.go')
+  const host = readFw('gui/main.go') + readFw('gui/window.go')
   assert.match(host, /DevToolsDisabled: true/, '宿主须屏蔽用户 DevTools 入口')
   assert.match(host, /br\.SetDevToolsOpener\(/, '宿主须注入程序化打开能力')
   assert.match(host, /w\.Dispatch\(func\(\) \{ dt\.OpenDevToolsWindow\(\) \}\)/, '打开须派发到 WebView2 UI 线程')

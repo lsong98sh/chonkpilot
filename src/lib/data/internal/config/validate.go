@@ -11,11 +11,12 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
 )
 
 // 字段基线（v1 · 2026-10-21 已拍板；专题 §3）。
@@ -76,11 +77,8 @@ func ValidatePluginConfigKey(key string) error {
 	if len(id) > MaxNameChars {
 		return fmt.Errorf("%s: 插件 id 超长（上限 %d 字符）", key, MaxNameChars)
 	}
-	for _, r := range id {
-		ok := r == '-' || r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		if !ok {
-			return fmt.Errorf("%s: 插件 id 只允许字母 / 数字 / - / _", key)
-		}
+	if !capfs.ValidIdent(id) {
+		return fmt.Errorf("%s: 插件 id 只允许字母 / 数字 / - / _", key)
 	}
 	if field == "" || strings.HasPrefix(field, ".") || strings.HasSuffix(field, ".") || strings.Contains(field, "..") {
 		return fmt.Errorf("%s: 字段名非法", key)
@@ -138,6 +136,14 @@ func ValidateUserConfigPayload(payload map[string]any) error {
 			}
 			continue
 		}
+		// 工具链最小版本（P2-3 ③，usr 自由键 `toolchain.<runtime>.minVersion`）：
+		// 空串 = 不校验（默认）；非空必须是点分数字版本（可带前缀 v）。非法 → 整批拒绝。
+		if IsToolchainMinVersionKey(k) {
+			if err := validateMinVersionValue(k, v); err != nil {
+				return err
+			}
+			continue
+		}
 		kind, known := userConfigKeyKinds[k]
 		if !known {
 			continue
@@ -150,6 +156,54 @@ func ValidateUserConfigPayload(payload map[string]any) error {
 		items, _ := raw.([]any)
 		if err := validateLLMItems(items); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// ── 工具链最小版本（usr 自由键 `toolchain.<runtime>.minVersion`，P2-3 ③）──────────
+
+// toolchainMinVersionPrefix / Suffix 拼出「工具链最小版本」键空间（形如
+// `toolchain.python.minVersion`；runtime 与工具链探测 id 对齐）。
+const (
+	toolchainMinVersionPrefix = "toolchain."
+	toolchainMinVersionSuffix = ".minVersion"
+	// maxMinVersionChars 最小版本文本长度上限（点分数字，正常 < 20 字符）。
+	maxMinVersionChars = 32
+)
+
+// IsToolchainMinVersionKey 判定键是否属于「工具链最小版本」键空间。
+func IsToolchainMinVersionKey(key string) bool {
+	return strings.HasPrefix(key, toolchainMinVersionPrefix) && strings.HasSuffix(key, toolchainMinVersionSuffix)
+}
+
+// validateMinVersionValue 校验最小版本取值：空/空白 = 不校验（默认，允许）；
+// 非空必须是点分数字版本（可带前缀 `v`）且 ≤ maxMinVersionChars（非法 → 明确拒绝，不静默截断）。
+func validateMinVersionValue(key string, v any) error {
+	s, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("%s: 值必须为字符串（版本号文本，如 3.12.0）", key)
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if len(s) > maxMinVersionChars {
+		return fmt.Errorf("%s: 超长（上限 %d 字符）", key, maxMinVersionChars)
+	}
+	body := strings.TrimPrefix(s, "v")
+	segments := strings.Split(body, ".")
+	if body == "" || len(segments) == 0 {
+		return fmt.Errorf("%s: 非法版本号 %q（须为点分数字，如 3.12.0）", key, s)
+	}
+	for _, seg := range segments {
+		if seg == "" {
+			return fmt.Errorf("%s: 非法版本号 %q（须为点分数字，如 3.12.0）", key, s)
+		}
+		for i := 0; i < len(seg); i++ {
+			if seg[i] < '0' || seg[i] > '9' {
+				return fmt.Errorf("%s: 非法版本号 %q（须为点分数字，如 3.12.0）", key, s)
+			}
 		}
 	}
 	return nil
@@ -196,7 +250,6 @@ func validateScalarKey(key, kind string, v any) error {
 			return validateAbsPath(key, s)
 		}
 	}
-	_ = kind
 	return nil
 }
 
@@ -373,23 +426,21 @@ func validateAPIKey(field, val string) error {
 	return nil
 }
 
-// validateAbsPath 路径类：长度 + 绝对路径 + 不含 ".." 段。
+// validateAbsPath 路径类：长度 + 绝对路径 + 不含 ".." 段（判定单源 = capfs.ValidateAbsPath；
+// 错误文案保持既有逐字不变）。
 func validateAbsPath(field, val string) error {
-	if len(val) > MaxPathChars {
+	switch capfs.ValidateAbsPath(val, MaxPathChars) {
+	case capfs.PathTooLong:
 		return fmt.Errorf("%s: 超长（上限 %d 字符）", field, MaxPathChars)
-	}
-	if !filepath.IsAbs(val) {
+	case capfs.PathNotAbs:
 		return fmt.Errorf("%s: 必须为绝对路径（%s）", field, val)
-	}
-	for _, seg := range strings.FieldsFunc(filepath.ToSlash(val), func(r rune) bool { return r == '/' }) {
-		if seg == ".." {
-			return fmt.Errorf("%s: 不得包含上级目录引用（..）", field)
-		}
+	case capfs.PathDotDot:
+		return fmt.Errorf("%s: 不得包含上级目录引用（..）", field)
 	}
 	return nil
 }
 
-// validateProjectID 项目 id：uuid 或 `[A-Za-z0-9_-]` 标识（长度 8–64）。
+// validateProjectID 项目 id：uuid 或 `[A-Za-z0-9_-]` 标识（长度 8–64；字符集单源 = capfs.ValidIdent）。
 func validateProjectID(val string) error {
 	v := strings.TrimSpace(val)
 	if v == "" {
@@ -398,10 +449,7 @@ func validateProjectID(val string) error {
 	if len(v) < 8 || len(v) > MaxNameChars {
 		return fmt.Errorf("project-id: 长度须为 8–%d", MaxNameChars)
 	}
-	for _, r := range v {
-		if r == '-' || r == '_' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			continue
-		}
+	if !capfs.ValidIdent(v) {
 		return fmt.Errorf("project-id: 仅允许字母 / 数字 / - / _")
 	}
 	return nil

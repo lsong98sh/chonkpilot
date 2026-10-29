@@ -37,11 +37,11 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
-	"github.com/lsong98sh/chonkpilot-router"
-	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-agent/router"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 const (
@@ -208,18 +208,6 @@ func (s *Server) compressOnce(ctx context.Context, job compressJob) (bool, error
 	}
 	res, err := session.CompressOnce(ctx, s.snapshotStore(job),
 		compressSummarizer{s: s, instanceID: job.InstanceID}, job, requirement)
-	if err != nil {
-		return false, err
-	}
-	return logCompressCommit(job, res), nil
-}
-
-// commitCompressed 把摘要写回会话快照（**单事务**：摘要 + snapshot_turn 同一条记录）。
-//
-// CAS：仅当当前快照的 `snapshot_turn` 仍等于压缩基准（`Assembly.LastTurnID`）时才写；
-// 已推进（别的压缩 / 新一轮 finish 写了快照）→ 丢弃本次结果（不反查"该写到哪个 turn"）。
-func (s *Server) commitCompressed(ctx context.Context, job compressJob, summary string) (bool, error) {
-	res, err := session.Commit(ctx, s.snapshotStore(job), job, summary)
 	if err != nil {
 		return false, err
 	}

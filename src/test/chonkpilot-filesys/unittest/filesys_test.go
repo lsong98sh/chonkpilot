@@ -16,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/chonkpilot/chonkpilot-workspace"
 
 	"github.com/chonkpilot/chonkpilot-filesys"
 )
@@ -37,7 +38,12 @@ func newTestFilesys(t *testing.T) (mq.Bus, *filesys.Filesys, string) {
 		t.Fatalf("mq.New: %v", err)
 	}
 	t.Cleanup(func() { _ = bus.Close() })
-	svc := filesys.New(bus)
+	pm := workspace.New(bus, workspace.Options{})
+	if err := pm.Start(context.Background()); err != nil {
+		t.Fatalf("workspace.Start: %v", err)
+	}
+	t.Cleanup(pm.Stop)
+	svc := filesys.New(bus, pm)
 	if err := svc.Start(); err != nil {
 		t.Fatalf("filesys.Start: %v", err)
 	}
@@ -400,17 +406,24 @@ func changedMatches(m map[string]any, target string) bool {
 // waitChanged 在 timeout 内轮询 ch，命中 target 即返回；超时才 fail（最多等 timeout）。
 func waitChanged(t *testing.T, ch chan map[string]any, target string, timeout time.Duration) {
 	t.Helper()
+	if !waitChangedOK(ch, target, timeout) {
+		t.Fatalf("超时 %v 未收到 %s 的 filesys.changed", timeout, target)
+	}
+}
+
+// waitChangedOK 是 waitChanged 的非致命版：命中返回 true，超时返回 false。
+func waitChangedOK(ch chan map[string]any, target string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		select {
 		case m := <-ch:
 			if changedMatches(m, target) {
-				return
+				return true
 			}
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
-	t.Fatalf("超时 %v 未收到 %s 的 filesys.changed", timeout, target)
+	return false
 }
 
 // drainIdle 排空 ch，直到 idle 时长内无新消息（丢弃与断言无关的残留广播）。
@@ -424,9 +437,10 @@ func drainIdle(ch chan map[string]any, idle time.Duration) {
 	}
 }
 
-// TestWatchChangedAndUnwatch：watch work_dir → 真实建文件触发 filesys.changed（1s 窗口）；
-// unwatch 后再建文件不再收到该路径广播（600ms 观察窗）。
-func TestWatchChangedAndUnwatch(t *testing.T) {
+// TestWorkdirOpenWatchesAndUnwatchIsNoop：工作区打开（instance-register → workdir-opened）即
+// 建立工作区级监听 —— 真实建文件触发 filesys.changed；`filesys.unwatch`（前端折叠）**不再停止监听**
+// （否则折叠目录即让索引/历史失明）。
+func TestWorkdirOpenWatchesAndUnwatchIsNoop(t *testing.T) {
 	bus, _, wd := newTestFilesys(t)
 
 	ch := make(chan map[string]any, 128)
@@ -445,19 +459,25 @@ func TestWatchChangedAndUnwatch(t *testing.T) {
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
-	// watch 声明（fire-and-forget）：Wait 返回后 watcher 已建立、无错误
-	if v := call(bus, "filesys.watch", map[string]any{"work_dir": wd, "path": wd}); len(v.Errors) != 0 {
-		t.Fatalf("watch errors=%v", v.Errors)
-	}
-
-	// 真实创建文件 → 1s 内必须收到 filesys.changed（fswatcher + 60ms 去抖）
+	// 工作区监听由 PM 的 workdir-opened 驱动（newTestFilesys 已注册实例）。
+	// watcher 建立是异步的 → 轮询写探针文件，直到收到 changed（最多 5s）。
 	nf := filepath.Join(wd, "watch-new.txt")
-	if err := os.WriteFile(nf, []byte("hi"), 0o644); err != nil {
-		t.Fatal(err)
+	ready := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := os.WriteFile(nf, []byte("hi"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if waitChangedOK(ch, filepath.ToSlash(nf), 150*time.Millisecond) {
+			ready = true
+			break
+		}
 	}
-	waitChanged(t, ch, filepath.ToSlash(nf), time.Second)
+	if !ready {
+		t.Fatal("工作区打开后未建立监听（未收到 filesys.changed）")
+	}
 
-	// unwatch → 排空残留事件 → 再建文件 → 观察窗内不得再收到该路径广播
+	// unwatch（折叠）= 兼容保留、无副作用 → 再建文件仍应收到广播。
 	if v := call(bus, "filesys.unwatch", map[string]any{"work_dir": wd, "path": wd}); len(v.Errors) != 0 {
 		t.Fatalf("unwatch errors=%v", v.Errors)
 	}
@@ -466,16 +486,7 @@ func TestWatchChangedAndUnwatch(t *testing.T) {
 	if err := os.WriteFile(nf2, []byte("hi2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(600 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		select {
-		case m := <-ch:
-			if changedMatches(m, filepath.ToSlash(nf2)) {
-				t.Fatalf("unwatch 后仍收到 %s 的 changed: %#v", nf2, m)
-			}
-		case <-time.After(30 * time.Millisecond):
-		}
-	}
+	waitChanged(t, ch, filepath.ToSlash(nf2), 3*time.Second)
 }
 
 // TestRemoveRefusesWorkDir：remove 空 path / 等价于 work_dir 的 path 一律拒绝（forbidden）——

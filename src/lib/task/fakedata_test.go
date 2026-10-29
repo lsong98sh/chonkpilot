@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // fakeData 是 data 面（persist）最小桩：rows = 权威表行（键 = task_id，与 persist 同主键）。

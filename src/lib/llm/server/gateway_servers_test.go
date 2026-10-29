@@ -14,19 +14,19 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // TestMergeGatewayServers 覆盖合并/映射/过滤规则（纯函数）。
 func TestMergeGatewayServers(t *testing.T) {
-	system := []mcpEntry{
+	system := []facade.McpServer{
 		{Name: "sys1", URL: "http://sys1", Enabled: true, Description: "s", Transport: "sse"},
 		{Name: "shared", URL: "http://sys-shared", Enabled: true},
 		{Name: "sysdisabled", URL: "http://sd", Enabled: false},
 		{Name: "sysnourl", URL: "", Enabled: true},
 	}
-	usr := []mcpEntry{
+	usr := []facade.McpServer{
 		{Name: "usr1", URL: "http://usr1", Enabled: true, Description: "u", Transport: "direct"},
 		{Name: "shared", URL: "http://usr-shared", Enabled: true, Description: "override"},
 		{Name: "usrdisabled", URL: "http://ud", Enabled: false},
@@ -83,7 +83,7 @@ func TestMergeGatewayServersEmpty(t *testing.T) {
 // 仅 runtime → spawned（Runtime 有值、URL 空）；仅 url → proxied（传统行为不变）；
 // 两者皆空 → 跳过。
 func TestMergeGatewayServersSpawned(t *testing.T) {
-	usr := []mcpEntry{
+	usr := []facade.McpServer{
 		{Name: "spawned1", Runtime: "npx", Args: []string{"-y", "foo-mcp"}, Enabled: true}, // 仅 runtime
 		{Name: "proxied1", URL: "http://p", Enabled: true},                                 // 仅 url
 		{Name: "both", Runtime: "run-mcp", URL: "http://b", Enabled: true},                 // 两者皆有
@@ -109,13 +109,14 @@ func TestMergeGatewayServersSpawned(t *testing.T) {
 	}
 }
 
-// boolPtr 返回布尔字面量指针（mcpEntry.Isolate 三态：nil = 未设置 → 由 gateway 按 transport 推断）。
+// boolPtr 返回布尔字面量指针（facade.McpServer.Isolate 三态：nil = 未设置 → 由 gateway 按
+// transport 推断）。
 func boolPtr(b bool) *bool { return &b }
 
 // TestMergeGatewayServersFieldPassthrough 规范字段全透传（含 runtime/args + env/headers/cwd/
 // timeout/category/namespace/hot_tools/description）。
 func TestMergeGatewayServersFieldPassthrough(t *testing.T) {
-	usr := []mcpEntry{{
+	usr := []facade.McpServer{{
 		Name:        "full",
 		Runtime:     "node",
 		Args:        []string{"server.js", "--port", "1"},
@@ -128,7 +129,7 @@ func TestMergeGatewayServersFieldPassthrough(t *testing.T) {
 		Headers:     map[string]string{"X-K": "v"},
 		Cwd:         "e:/work",
 		HotTools:    []string{"t1", "t2"},
-		TimeoutSec:  42,
+		Timeout:     42,
 		Transport:   "stdio",
 		Isolate:     boolPtr(false), // 显式「不隔离」须透传（三态：nil = 未设置）
 	}}
@@ -141,7 +142,7 @@ func TestMergeGatewayServersFieldPassthrough(t *testing.T) {
 		t.Fatalf("isolate=false 未透传：%+v", e)
 	}
 	// 未设置（nil）→ 按 transport 推断（stdio → 隔离）
-	none := mergeGatewayServers(nil, []mcpEntry{{Name: "n", Runtime: "node", Enabled: true}})
+	none := mergeGatewayServers(nil, []facade.McpServer{{Name: "n", Runtime: "node", Enabled: true}})
 	if len(none) != 1 || none[0].Isolate != nil || !none[0].IsolateEnabled() {
 		t.Fatalf("缺 isolate 应保持未设置并按 transport 推断：%+v", none)
 	}
@@ -189,7 +190,7 @@ func TestLoadMcpFileEntries(t *testing.T) {
 	if len(entries) != 4 {
 		t.Fatalf("want 4 raw entries, got %d: %+v", len(entries), entries)
 	}
-	byName := map[string]mcpEntry{}
+	byName := map[string]facade.McpServer{}
 	for _, e := range entries {
 		byName[e.Name] = e
 	}
@@ -206,7 +207,7 @@ func TestLoadMcpFileEntries(t *testing.T) {
 	if e := byName["d"]; e.Runtime != "node" || e.URL != "" ||
 		len(e.Args) != 1 || e.Args[0] != "d.js" ||
 		len(e.Env) != 1 || e.Env[0] != "K=V" ||
-		e.Category != "cat" || e.TimeoutSec != 9 {
+		e.Category != "cat" || e.Timeout != 9 {
 		t.Fatalf("entry d (runtime) mismatch: %+v", e)
 	}
 

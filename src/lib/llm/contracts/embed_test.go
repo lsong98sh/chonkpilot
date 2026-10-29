@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/contractmd"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/contractmd"
 )
 
 // TestDomainToolContracts 守卫域工具契约集合与可解析性。

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-gui/models"
+	"github.com/lsong98sh/chonkpilot-framework/host/models"
 )
 
 func TestLLMProvider_JSONRoundTrip(t *testing.T) {

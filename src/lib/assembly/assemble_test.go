@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // writeToolContract 在 dir 下写一个最小 `*.tool.md`（原语名 = 文件名去后缀；无 runtime 亦可

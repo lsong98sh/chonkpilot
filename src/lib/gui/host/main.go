@@ -28,17 +28,20 @@ import (
 	"github.com/chonkpilot/chonkpilot-appwire"
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-filesys"
-	"github.com/chonkpilot/chonkpilot-gui"
+	"github.com/lsong98sh/chonkpilot-framework/host/gui"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
-	"github.com/chonkpilot/chonkpilot-gui/internal/assetserver"
-	"github.com/chonkpilot/chonkpilot-gui/models"
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/tray"
+	"github.com/lsong98sh/chonkpilot-framework/host/assetserver"
+	"github.com/lsong98sh/chonkpilot-framework/host/models"
+	"github.com/chonkpilot/chonkpilot-gui/mqpolicy"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/bridge"
+	pluginmgr "github.com/lsong98sh/chonkpilot-plugin-framework/mgr"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/tray"
 	"github.com/chonkpilot/chonkpilot-llm/coretools"
 	"github.com/chonkpilot/chonkpilot-llm/llmbridge"
 	"github.com/chonkpilot/chonkpilot-llm/server"
-	pluginbridge "github.com/chonkpilot/chonkpilot-lib/pluginhost/bridge"
-	pluginmgr "github.com/chonkpilot/chonkpilot-lib/pluginhost/mgr"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/dispatch"
 )
 
 // Main 是单体装配宿主入口（webview2 宿主 + 内嵌 server/persist/filesys + 插件装配 + 桥接线）。
@@ -50,6 +53,11 @@ import (
 // 内部 `fs.Sub(distFS, "frontend/dist")` 取 dist 根。启动参数（--work-dir/
 // --bridge-url/--test-port/--llm-base/--llm-model/--no-server/--ui-assets-addr）仍在本函数内解析。
 func Main(distFS fs.FS, opts gui.Options) {
+	// TOPO-1（2026-10-29）：窗口桥实现由业务仓注入 —— framework/host/gui 只声明端口
+	// （gui.Bridge），具体实现（依赖 data / persist 的 chonkpilot-gui/bridge）留在主仓。
+	gui.SetBridgeFactory(func(id, wd, dd string, eval func(script string), bus mq.Bus) gui.Bridge {
+		return bridge.New(id, wd, dd, bridge.Eval(eval), bus)
+	})
 	// 日志级别：先以缺省级别装好 logger（早于配置可用无妨），待桥/数据面就绪后经既有配置
 	// 通道读 prj logLevel 覆盖并订阅变更即时生效（见 gui 的 loglevel.go）。
 	gui.InitLogging()
@@ -156,9 +164,21 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	var srv *server.Server
 	var ts *gui.TestServer
 	var pb *pluginbridge.Server
+	// mqHub = 本进程总线的**分发出口**（单订阅 ">" 的分发器 + WorkDirPolicy）；窗口桥与插件桥
+	// 共用同一个实例（49 §2.22.7 S3：插件订阅也走同一分发器与同一份策略）。
+	var mqHub *mqpolicy.Hub
 	var plugins *pluginmgr.Manager
 	var bx *llmbridge.Server
 	var coreTools *coretools.Supervisor
+	// 可选子系统在**后台 goroutine** 启动（主 goroutine 必须尽快进入窗口消息循环，否则
+	// WebView2 事件被阻塞 → /eval 超时）。三个句柄的读写统一用 optMu 保护。
+	var optMu sync.Mutex
+	getPlugins := func() *pluginmgr.Manager { optMu.Lock(); defer optMu.Unlock(); return plugins }
+	setPlugins := func(v *pluginmgr.Manager) { optMu.Lock(); plugins = v; optMu.Unlock() }
+	getBridge := func() *llmbridge.Server { optMu.Lock(); defer optMu.Unlock(); return bx }
+	setBridge := func(v *llmbridge.Server) { optMu.Lock(); bx = v; optMu.Unlock() }
+	getCoreTools := func() *coretools.Supervisor { optMu.Lock(); defer optMu.Unlock(); return coreTools }
+	setCoreTools := func(v *coretools.Supervisor) { optMu.Lock(); coreTools = v; optMu.Unlock() }
 	var assetSrv *assetserver.Server
 
 	// ── 共用脊柱（appwire，GATEWAY-2 L12）：总线 → data 门面 → filesys → llm server + 默认插件 ──
@@ -193,7 +213,9 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	srv = app.Server
 	defer func() {
 		// core-mcp-server 依赖插件桥与 server：先停（断连即退出），再按依赖序收尾。
-		coreTools.Stop()
+		if v := getCoreTools(); v != nil {
+			v.Stop()
+		}
 		// 只读静态资产端口（UIBRIDGE-1）：独立子系统（无总线 / 无数据依赖），直接关监听。
 		if assetSrv != nil {
 			shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -206,9 +228,9 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 			cancel()
 		}
 		// LLM 桥接入口（BRIDGE-1 步骤 8）：依赖 srv 的只读 provider 解析 → 先于 srv 停止。
-		if bx != nil {
+		if v := getBridge(); v != nil {
 			shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_ = bx.Shutdown(shutCtx)
+			_ = v.Shutdown(shutCtx)
 			cancel()
 		}
 		if srv != nil {
@@ -218,8 +240,8 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 			fsys.Stop()
 		}
 		// 插件平台：先停插件（依赖插件桥在线发 shutdown），再关插件桥。
-		if plugins != nil {
-			plugins.Stop()
+		if v := getPlugins(); v != nil {
+			v.Stop()
 		}
 		if pb != nil {
 			_ = pb.Close()
@@ -243,12 +265,40 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		}
 		gui.LogStartupStage("server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）")
 
+		// MQ 分发出口策略 S2（49 §2.22.7）：workdir 级主题只投同 workdir 的窗口 —— 事件 workdir
+		// 取值顺序 = 载荷 `work_dir` → 否则按 `instance_id` 反查。反查视图 = framework
+		// instance.Manager（由 server 持有并维护；**不自建第二份登记表**）。窗口 sink 的 workdir
+		// 由桥注册时自带（`dispatch.Sink.WorkDir`），策略侧不需要再查表。
+		mqHub = mqpolicy.HubFor(bus)
+		if mqHub != nil {
+			im := srv.InstanceManager()
+			mqHub.Policy.SetInstanceWorkDir(func(id string) (string, bool) {
+				for _, in := range im.List() {
+					if in.ID == id && in.WorkDir != "" {
+						return in.WorkDir, true
+					}
+				}
+				return "", false
+			})
+		}
+
 		// 插件桥接入口（BRIDGE-2）：桌面单体默认开启；gui 客户端不在此进程监听（由 server 提供）。
 		if opts.Form == gui.FormDesktop {
 			pb = pluginbridge.New(pluginbridge.Options{
 				Bus:     bus,
 				Version: "desktop",
 				Form:    string(opts.Form),
+				// 活动实例视图唯一来源 = framework instance.Manager（由 server 持有并维护）；
+				// 桥不再自持登记副本（2026-10-29 内存单源化）。
+				Instances: srv.InstanceManager(),
+				// 插件 sink 接入**同一个**分发器与同一份策略（49 §2.22.7 S3）：桥不再自订阅 ">"，
+				// 每个插件会话在 `plugin.hello` 后注册 sink，workdir 级事件由宿主强制隔离。
+				Dispatch: func() *dispatch.Dispatcher {
+					if mqHub == nil {
+						return nil // 无总线（-no-server 等）→ 桥回落自有 fanout
+					}
+					return mqHub.Dispatch
+				}(),
 				// 监听地址覆盖（测试 / 多实例隔离）：tcp://127.0.0.1:PORT 或 UDS 路径；
 				// 缺省 = pluginbridge.DefaultAddr()（UDS；`CHONK_PLUGIN_UDS` 可覆盖路径）。
 				Addr: os.Getenv("CHONK_PLUGIN_LISTEN"),
@@ -262,111 +312,14 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 				srv.SetFilters(pb.Filters())
 				srv.SetPluginRegistry(pb.Registry())
 				slog.Info("plugin bridge started", "addr", pb.Addr())
-				// 2026-10-19（G-68 第二步）：meta/domain 控制面工具已并入 core-mcp-server 的
-				// 一工具一 exe 执行面（不再启动 chonkpilot-server-tools.exe）。
-				// 2026-10-19：core-mcp-server = 工具唯一前门（一工具一 executor），由宿主拉起并监管；
-				// gateway 以内置 HTTP 下游接入（namespace=self_ → 暴露名不变）。取代 self-tools 的
-				// tools.register/tools.call 路径。启动失败不致命：工具面降级，核心功能不受影响。
-				if sup, err := coretools.Start(coretools.Options{
-					Root:       capRoot,
-					WorkDir:    workDir,
-					DataDir:    dataDirArg,
-					PluginAddr: pb.Addr(),
-					Output:     gui.LogFileSink(),
-					Logf:       func(format string, args ...any) { slog.Warn(fmt.Sprintf(format, args...)) },
-				}); err != nil {
-					slog.Warn("core-mcp-server 启动失败", "err", err)
-				} else {
-					coreTools = sup
-					// usr/prj 执行配置热生效 → 推送给 core（timeout/并发/解释器/Chrome/沙箱等）。
-					srv.SetCoreRuntimePusher(sup.PushRuntime)
-					// 插件查询工具（codegraph_* / vfts_query）执行委托 core：一工具一 exe，单次取消。
-					srv.SetToolExec(coretools.NewExecClient(sup.URL(), sup.Token()))
-					if rerr := srv.RegisterCoreServer(sup.URL(), sup.Token()); rerr != nil {
-						slog.Warn("core-mcp-server 注册失败", "err", rerr)
-					} else {
-						slog.Info("core-mcp-server started", "url", sup.URL(), "root", capRoot)
-					}
-				}
-			}
-		}
-
-		// ── 插件平台（PLUGIN-1）：manifest 插件发现 / 拉起 / 守护 / MCP+UI 注册 ──
-		// 依赖插件桥（UDS）与 core 工具面；启动失败不致命（平台降级，核心功能不受影响）。
-		if pb != nil && srv != nil {
-			pluginDataDir := strings.TrimSpace(dataDirArg)
-			if pluginDataDir == "" {
-				base := os.Getenv("LOCALAPPDATA")
-				if base == "" {
-					base = os.TempDir()
-				}
-				pluginDataDir = filepath.Join(base, "chonkpilot")
-			}
-			userCap := ""
-			if home, err := os.UserHomeDir(); err == nil {
-				userCap = filepath.Join(home, ".chonkpilot", "capability")
-			}
-			roots := []string{
-				filepath.Join(prjUsrRoot, "capability"),
-				filepath.Join(workDir, ".chonkpilot", "capability"),
-				userCap,
-				capRoot,
-			}
-			// D-71：插件启动清单固定在 exe 同目录的 plugin.ini；缺失时回落 enabled.json。
-			bootFile := ""
-			if exePath, err := os.Executable(); err == nil {
-				bootFile = filepath.Join(filepath.Dir(exePath), "plugin.ini")
-			}
-			plugins = pluginmgr.New(pluginmgr.Options{
-				Bus:            bus,
-				DataDir:        pluginDataDir,
-				Roots:          roots,
-				BootstrapFile:  bootFile,
-				ConfigStore:    openPluginConfigStore,
-				RegisterMCP:    srv.RegisterPluginServer,
-				UnregisterMCP:  srv.UnregisterPluginServer,
-				ShutdownPlugin: pb.ShutdownPlugin,
-				RequestPlugin:  pb.RequestPlugin,
-				Logf:           func(format string, args ...any) { slog.Warn(fmt.Sprintf(format, args...)) },
-			})
-			pb.SetPluginHooks(plugins.Hooks())
-			if err := plugins.Start(context.Background()); err != nil {
-				slog.Warn("插件平台启动失败", "err", err)
-			} else {
-				slog.Info("插件平台已启动", "data", pluginDataDir)
-			}
-		}
-
-		// ── LLM 桥接入口（BRIDGE-3，2026-10-24）：桌面单体同开，**只监听 UDS** ──
-		// UDS 路径：`CHONK_LLM_UDS` 覆盖，缺省 `%LOCALAPPDATA%\chonkpilot\llm.sock`，`off`/`-` 关闭。
-		// 透明反向代理：本机脚本把 SDK 指向 UDS（route `/llm/<name>/...`）即可免 api-key 调用。
-		// 唯一边界 = socket 文件权限（目录 0700 / socket 0600）。启动失败不致命。
-		if opts.Form == gui.FormDesktop {
-			udsPath := strings.TrimSpace(os.Getenv("CHONK_LLM_UDS"))
-			if udsPath == "" {
-				udsPath = llmbridge.DefaultPath()
-			}
-			if udsPath != "off" && udsPath != "-" {
-				bx = llmbridge.New(llmbridge.Options{
-					Path: udsPath,
-					// provider 解析 = llm server 只读查询（不 Register / 不 Call / 不经 canon）。
-					Resolve: func(name string) (llmbridge.Target, bool) {
-						t, ok := srv.ResolveBridgeTarget(name)
-						if !ok {
-							return llmbridge.Target{}, false
-						}
-						return llmbridge.Target{BaseURL: t.BaseURL, APIKey: t.APIKey, Protocol: t.Protocol}, true
-					},
-				})
-				if err := bx.Start(); err != nil {
-					slog.Warn("LLM 桥接入口启动失败（可选子系统，继续运行）", "err", err)
-					bx = nil
-				} else {
-					slog.Info("LLM bridge started", "uds", bx.Path())
-				}
 			}
 		}
 	}
+
+	// ── 可选子系统（core-mcp-server / 插件平台 / LLM 桥）延后到主窗口首帧之后 ──
+	// 动机（2026-10-26 实测）：插件 spawn+注册 ~2.4s，若排在主窗口之前，用户看到的是
+	// 「什么都不出现」。现改为：主窗口先出（前端显示「插件初始化中」），随后再起插件；
+	// 工具面在数秒内收敛，核心 UI 不受影响。启动失败仍全部降级不致命。
 
 	// WebView2 用户数据目录必须**一实例一份**：fork 默认 DataPath = %AppData%\<exe名>，
 	// 会让同一 exe 的多窗口共享同一 profile → 共享同一个浏览器进程（msedgewebview2.exe），
@@ -426,24 +379,26 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		// 插件自持 webui（PLUGIN-UI-1）：`GET /plugins/<id>/<path>` → UDS
 		// `plugin/v1/ui.asset.get` → 插件 embed 资源；缓存按「版本 + 重启代次」失效。
 		PluginAsset: func(ctx context.Context, id, path string) ([]byte, bool, error) {
-			if plugins == nil {
+			m := getPlugins()
+			if m == nil {
 				return nil, false, errors.New("插件平台未启动")
 			}
-			return plugins.UIAsset(ctx, id, path)
+			return m.UIAsset(ctx, id, path)
 		},
 		PluginAssetVersion: func(id string) string {
-			if plugins == nil {
-				return ""
+			if m := getPlugins(); m != nil {
+				return m.UIAssetVersion(id)
 			}
-			return plugins.UIAssetVersion(id)
+			return ""
 		},
 		// 插件 UI 动作面（PLUGIN-UI-1 第二段）：`POST /plugins/<id>/api/<action>`
 		// → 复用通用 RPC（`plugin.ui.rpc`）透传给已就绪插件。
 		PluginAction: func(ctx context.Context, id, action string, payload map[string]any) (any, error) {
-			if plugins == nil {
+			m := getPlugins()
+			if m == nil {
 				return nil, errors.New("插件平台未启动")
 			}
-			return plugins.UIAction(ctx, id, action, payload)
+			return m.UIAction(ctx, id, action, payload)
 		},
 	})
 
@@ -504,15 +459,7 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	// 回调必须先于**任何窗口创建**注入（createWindow 会把它转给桥的 gui.dir.open）。
 	env.SetProjectOpener(openProject)
 
-	// ── 日志窗口（PRODSIM-1）：进程级唯一、创建后**默认隐藏** ──
-	// 它是 server 进程的窗口载体：所有项目主窗口关闭后，进程仍靠它 + 托盘常驻；
-	// 关闭 = 收起回托盘（HideOnClose），托盘「显示日志」唤出。
-	if _, logErr := env.StartLogWindow(gui.LogWindowSpec{Title: "chonkpilot 日志"}); logErr != nil {
-		slog.Warn("log window create failed（继续，无日志窗口）", "err", logErr)
-	}
-	gui.LogStartupStage("日志窗口创建（隐藏）")
-
-	// 首个项目主窗口。
+	// 首个项目主窗口（**先于日志窗口与插件平台**：用户先看到主视图，插件随后收敛）。
 	if _, _, err := env.OpenProject(gui.ProjectConfig{
 		WorkDir:        workDir,
 		DataDir:        dataDirArg,
@@ -524,6 +471,125 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 		return fmt.Errorf("main window create: %w", err)
 	}
 	gui.LogStartupStage("主窗口创建（bridge/WebView2 环境就绪）")
+
+	// ── 日志窗口（PRODSIM-1）：进程级唯一、创建后**默认隐藏** ──
+	// 2026-10-26：**移到主窗口之后**创建 —— 首次 WebView2 环境初始化 ~1–3s，若放在主窗口前，
+	// 用户看到的是长时间空屏。这里主窗口已出，日志窗口随后补建（仍隐藏，托盘可唤出）。
+	// 它是 server 进程的窗口载体：所有项目主窗口关闭后，进程仍靠它 + 托盘常驻；
+	// 关闭 = 收起回托盘（HideOnClose），托盘「显示日志」唤出。
+	if _, logErr := env.StartLogWindow(gui.LogWindowSpec{Title: "chonkpilot 日志"}); logErr != nil {
+		slog.Warn("log window create failed（继续，无日志窗口）", "err", logErr)
+	}
+	gui.LogStartupStage("日志窗口创建（隐藏）")
+
+	// 后台启动可选子系统：主 goroutine 继续进入窗口消息循环（否则 WebView2 事件被阻塞）。
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("可选子系统启动 panic（已恢复）", "panic", r)
+			}
+		}()
+		// ── 可选子系统（core-mcp-server / 插件平台 / LLM 桥）：主窗口已出后才启动 ──
+		// 2026-10-26 实测：插件 spawn+注册 ~2.4s。此前排在主窗口之前 → 用户长时间看不到窗口；
+		// 现改为后置（主视图先出，前端显示「插件初始化中」），工具面在数秒内收敛。
+		if srv != nil && pb != nil {
+			// core-mcp-server = 工具唯一前门（一工具一 executor），由宿主拉起并监管；
+			// gateway 以内置 HTTP 下游接入（namespace="-" → 暴露名原样，P0a 2026-10-23）。失败不致命。
+			if sup, err := coretools.Start(coretools.Options{
+				Root:       capRoot,
+				WorkDir:    workDir,
+				DataDir:    dataDirArg,
+				PluginAddr: pb.Addr(),
+				Output:     gui.LogFileSink(),
+				Logf:       func(format string, args ...any) { slog.Warn(fmt.Sprintf(format, args...)) },
+			}); err != nil {
+				slog.Warn("core-mcp-server 启动失败", "err", err)
+			} else {
+				setCoreTools(sup)
+				srv.SetCoreRuntimePusher(sup.PushRuntime)
+				srv.SetToolExec(coretools.NewExecClient(sup.URL(), sup.Token()))
+				if rerr := srv.RegisterCoreServer(sup.URL(), sup.Token()); rerr != nil {
+					slog.Warn("core-mcp-server 注册失败", "err", rerr)
+				} else {
+					slog.Info("core-mcp-server started", "url", sup.URL(), "root", capRoot)
+				}
+			}
+
+			// ── 插件平台（PLUGIN-1）：manifest 发现 / 拉起 / 守护 / MCP+UI 注册 ──
+			pluginDataDir := strings.TrimSpace(dataDirArg)
+			if pluginDataDir == "" {
+				base := os.Getenv("LOCALAPPDATA")
+				if base == "" {
+					base = os.TempDir()
+				}
+				pluginDataDir = filepath.Join(base, "chonkpilot")
+			}
+			userCap := ""
+			if home, err := os.UserHomeDir(); err == nil {
+				userCap = filepath.Join(home, ".chonkpilot", "capability")
+			}
+			roots := []string{
+				filepath.Join(prjUsrRoot, "capability"),
+				filepath.Join(workDir, ".chonkpilot", "capability"),
+				userCap,
+				capRoot,
+			}
+			// D-71：插件启动清单固定在 exe 同目录的 plugin.ini；缺失时回落 enabled.json。
+			bootFile := ""
+			if exePath, err := os.Executable(); err == nil {
+				bootFile = filepath.Join(filepath.Dir(exePath), "plugin.ini")
+			}
+			mgr := pluginmgr.New(pluginmgr.Options{
+				Bus:            bus,
+				DataDir:        pluginDataDir,
+				Roots:          roots,
+				BootstrapFile:  bootFile,
+				ConfigStore:    openPluginConfigStore,
+				RegisterMCP:    srv.RegisterPluginServer,
+				UnregisterMCP:  srv.UnregisterPluginServer,
+				ShutdownPlugin: pb.ShutdownPlugin,
+				RequestPlugin:  pb.RequestPlugin,
+				Logf:           func(format string, args ...any) { slog.Warn(fmt.Sprintf(format, args...)) },
+			})
+			setPlugins(mgr)
+			pb.SetPluginHooks(mgr.Hooks())
+			if err := mgr.Start(context.Background()); err != nil {
+				slog.Warn("插件平台启动失败", "err", err)
+			} else {
+				slog.Info("插件平台已启动", "data", pluginDataDir)
+			}
+
+			// ── LLM 桥接入口（BRIDGE-3）：桌面单体同开，**只监听 UDS** ──
+			if opts.Form == gui.FormDesktop {
+				udsPath := strings.TrimSpace(os.Getenv("CHONK_LLM_UDS"))
+				if udsPath == "" {
+					udsPath = llmbridge.DefaultPath()
+				}
+				if udsPath != "off" && udsPath != "-" {
+					b := llmbridge.New(llmbridge.Options{
+						Path: udsPath,
+						Resolve: func(name string) (llmbridge.Target, bool) {
+							t, ok := srv.ResolveBridgeTarget(name)
+							if !ok {
+								return llmbridge.Target{}, false
+							}
+							return llmbridge.Target{BaseURL: t.BaseURL, APIKey: t.APIKey, Protocol: t.Protocol}, true
+						},
+					})
+					if err := b.Start(); err != nil {
+						slog.Warn("LLM 桥接入口启动失败（可选子系统，继续运行）", "err", err)
+					} else {
+						setBridge(b)
+						slog.Info("LLM bridge started", "uds", b.Path())
+					}
+				}
+			}
+			gui.LogStartupStage("可选子系统（core 工具面 / 插件平台 / LLM 桥）")
+
+			// 全部模块就绪 → 插件桥广播 server-ready（插件据此开始自管索引；D-71）。
+			pb.MarkReady(map[string]any{"form": string(opts.Form), "at": time.Now().UTC().Format(time.RFC3339)})
+		}
+	}()
 	// 进程级收尾改由总线下注册的**单一收尾 defer**（依赖序 ts→srv→fsys→bus）统一完成，
 	// 不再各自 defer（原 defer LIFO 会使 bus.Close 早于 srv.Stop/fsys.Stop，D-05）。
 
@@ -537,12 +603,6 @@ func runMain(distFS fs.FS, opts gui.Options) error {
 	// data-prj-config-refresh（**进程级一次**）→ prj 配置一变更即应用、无需重启。
 	gui.WatchLogLevel(bus)
 	gui.LogStartupStage("启动流程就绪（进入窗口事件循环，首屏于导航完成后另记）")
-
-	// 全部模块就绪 → 插件桥广播 server-ready（插件据此开始自管索引；D-71）。
-	// payload 为插件传输帧（非 MQ 主题），见 pluginbridge.MarkReady。
-	if pb != nil {
-		pb.MarkReady(map[string]any{"form": string(opts.Form), "at": time.Now().UTC().Format(time.RFC3339)})
-	}
 
 	// ── 托盘（PRODSIM-1）：常驻入口 —— 显示日志 / 打开项目 / 项目列表 / 退出 ──
 	// 托盘不可用（启动失败）→ 退回旧行为：所有项目主窗口关闭即退出。
@@ -614,6 +674,51 @@ func flagSet(name string) bool {
 		}
 	})
 	return set
+}
+
+// DesktopDataRoot 返回本进程的**项目数据根**（`<work-dir>/.chonkpilot`），与 runMain 的
+// projectDataDir 同口径。供壳（`src/desktop`）在获取进程单例互斥体**之前**使用：单例作用域 =
+// 数据根（同一数据根只允许一份进程，保护 bbolt 库不被双开；不同数据根可并存）。
+//
+// 此刻 flag.Parse 尚未执行（互斥体必须早于任何库/目录副作用），故自行读 `--work-dir`；
+// 未显式给出时与 runMain 同口径回落 defaultWorkDir()。无法确定工作目录 → 返回 ""，
+// 调用方退回全局单例名（保住「整机一份」的旧行为）。
+func DesktopDataRoot() string {
+	wd := scanWorkDirArg(os.Args[1:])
+	if wd == "" {
+		wd = defaultWorkDir()
+	}
+	if wd == "" {
+		return ""
+	}
+	wd = models.ResolveDir(wd, "")
+	if wd == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(wd); err == nil {
+		wd = abs
+	}
+	return models.ProjectDataDir(wd)
+}
+
+// scanWorkDirArg 从命令行读取 `--work-dir`（不注册 flag）：兼容 `--work-dir=<值>` 与
+// `--work-dir <值>` 两种形态（Go flag 两种都接受），`-work-dir` 单横线同义。
+func scanWorkDirArg(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		for _, name := range []string{"--work-dir", "-work-dir"} {
+			if a == name {
+				if i+1 < len(args) {
+					return args[i+1]
+				}
+				return ""
+			}
+			if strings.HasPrefix(a, name+"=") {
+				return strings.TrimPrefix(a, name+"=")
+			}
+		}
+	}
+	return ""
 }
 
 // defaultWorkDir 在未显式 --work-dir 时解析工作目录：

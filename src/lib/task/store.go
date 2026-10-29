@@ -17,8 +17,8 @@ import (
 	"errors"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // 数据面主题（相对主题；总线注入 chonk. 前缀）。全部为**既有**主题，不新增。

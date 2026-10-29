@@ -7,60 +7,35 @@ package kernel
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
-// ConfigSessionShard 是会话存储迁移开关（prj 级；`on` = 一树一库）。
-// 唯一定义点：persist 的搬运触发与 session 域的自举/列表派生共用。
-// **缺省 = on**（P3-4c，2026-10-24）；显式 `off` / `false` / `0` / `no` 可退回旧布局。
-const ConfigSessionShard = "session.db.shard"
-
-// SessionShardOn 判定一树一库开关是否生效（详见 ConfigSessionShard）。
-// 读配置失败 → false（保守：不做搬运 / 不自举，避免误伤旧布局）。
-func SessionShardOn(prj *data.DB) bool {
-	val, err := PrjConfigVal(prj, ConfigSessionShard)
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(val)) {
-	case "off", "false", "0", "no":
-		return false
-	}
-	return true
-}
-
-// ConfigGet 读 config 表 key 的 v 字段值（不存在 → ""，不报错）。
+// ConfigGet 读 config 表 key 的 v 字段值（不存在 / 读失败 → ""，不报错）。
+//
+// S-6（DATA-OPT-1 P3）：单值读**唯一实现** = PrjConfigVal（下方），本函数只是丢弃错误的薄封装。
 func ConfigGet(db *data.DB, key string) string {
-	var rec data.Record
-	ok, err := db.Table("config").Get(key, &rec)
-	if err != nil || !ok {
-		return ""
-	}
-	return Sval(rec["v"])
+	v, _ := PrjConfigVal(db, key)
+	return v
 }
 
-// ConfigSet 写 config 表 key：记录整体为 {"v": val}。
+// ConfigSet 写 config 表 key：记录整体为 {"v": val}（底层 = data.SetConfig）。
 func ConfigSet(db *data.DB, key, val string) error {
-	return db.Table("config").Upsert(key, data.Record{"v": val})
+	return data.SetConfig(db, key, val)
 }
 
-// ConfigDelete 删 config 表 key（不存在视为成功）。
+// ConfigDelete 删 config 表 key（不存在视为成功；底层 = data.DeleteConfig）。
 //
 // **不再吞错（A-xx）**：原实现 `_ = ...Delete` 忽略删除失败 → 调用方无法感知失败仍继续广播
 // refresh（失败却报成功）。此处返回错误（不存在仍视为成功=幂等）。
 func ConfigDelete(db *data.DB, key string) error {
-	if err := db.Table("config").Delete(key); err != nil && !errors.Is(err, data.ErrNotFound) {
-		return err
-	}
-	return nil
+	return data.DeleteConfig(db, key)
 }
 
 // PrjConfigVal 读单值 config 键（active_session_id 等；对齐桥 configSet {v:...} 记录）。
+// 缺失（键不存在）→ ("", nil)；读失败 → ("", err)。
 func PrjConfigVal(db *data.DB, key string) (string, error) {
 	var rec data.Record
 	ok, err := db.Table("config").Get(key, &rec)
@@ -70,9 +45,9 @@ func PrjConfigVal(db *data.DB, key string) (string, error) {
 	return Sval(rec["v"]), nil
 }
 
-// PrjConfigSetVal 写单值 config 键。
+// PrjConfigSetVal 写单值 config 键（底层 = data.SetConfig）。
 func PrjConfigSetVal(db *data.DB, key, val string) error {
-	return db.Table("config").Upsert(key, data.Record{"v": val})
+	return data.SetConfig(db, key, val)
 }
 
 // Refresh save/delete 后广播 data-<domain>-refresh：{instance_id, id, op} + 最新 {list}
@@ -103,7 +78,7 @@ func (b *Base) RefreshScoped(domain, instanceID, id, op string, scope facade.Sco
 	b.RefreshScopedKeys(domain, instanceID, []string{id}, op, scope)
 }
 
-// RefreshScopedKeys 同 RefreshScoped，但**一次广播覆盖一组键**（批量写：N 键只发 1 条，
+// RefreshScopedKeys 同 RefreshScoped，但**一次广播覆盖一组键**（批量写 / 批量删：N 键只发 1 条，
 // 61 §3.1）——载荷在既有 `{instance_id, id, op, list?}` 上**新增可选 `ids`（全组键，稳定序）**，
 // `id` = 首键（向后兼容既有单键订阅方）。单键（len(ids)==1）**不写 `ids`** → 载荷与改前
 // 逐字节等价（零影响既有订阅方）。

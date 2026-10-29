@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/winproc"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winproc"
 )
 
 // 重启退避参数（var：单测可缩短）。

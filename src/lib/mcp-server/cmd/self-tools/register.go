@@ -25,7 +25,7 @@ type registerPayload struct {
 }
 
 // buildRegisterPayload 把 ExecTool 的契约定义编译为注册载荷：
-// name = 契约名（不带 self_ 前缀；暴露名由 gateway self 节点派生为 self_<name>）。
+// name = 契约名（暴露名同 = 契约名；P0a 2026-10-29 起 gateway self 节点不再加 `self_` 前缀）。
 func buildRegisterPayload(et *mcpms.ExecTool) map[string]any {
 	if et == nil || et.Tool == nil {
 		return map[string]any{}

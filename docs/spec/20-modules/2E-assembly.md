@@ -41,7 +41,7 @@
 | `Bus mq.Bus` | 上游总线（必填；内嵌 gateway 与调用方共用同一进程内总线） |
 | `Root string` | 契约根（空 → `<exe 目录>/capability`，经 `lib/exedir`） |
 | `Servers []mcpgateway.ServerEntry` | 额外下游（外部 proxied / usr mcps，与 self 并存） |
-| `AsyncMode string` | 工具异步模式（"" = 默认 auto；"never" = 强制同步，用于 CLI） |
+| `AsyncMode string` | 工具异步模式（"" = 默认 auto；"never" = 强制同步，用于内置同步执行体） |
 | `ManageAddr string` | 管理 REST（空 = 禁用） |
 | `ExecSink mcpgateway.ExecSink` | 任务层执行池接入（nil = 层未注入 → gateway 侧 no-op） |
 | `Logf func(...)` | 日志（nil → `fmt.Printf`） |

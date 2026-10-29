@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // llmRecorder 记录 /chat/completions 每次请求收到的 messages，并以固定文本回复
@@ -361,34 +361,38 @@ func dropNode(t *testing.T, s *Server, taskID string) {
 	s.tasks.markDeleted(taskID)
 }
 
-// tasktreeRec 直连读 tasktree 库记录（A3 总线化：落库经 persist；断言同库直读）。
+// tasktreeRec 读 tasktree 库记录（A3 总线化：落库经 persist；断言直读对话库）。
 func tasktreeRec(t *testing.T, taskID string) data.Record {
 	t.Helper()
-	prj, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatal(err)
+	for _, db := range allDialogDBs(t) {
+		var rec data.Record
+		ok, err := db.Table("tasktree").Get(taskID, &rec)
+		if err != nil {
+			t.Fatalf("tasktree get %s: %v", taskID, err)
+		}
+		if ok {
+			return rec
+		}
 	}
-	var rec data.Record
-	ok, err := prj.Table("tasktree").Get(taskID, &rec)
-	if err != nil || !ok {
-		t.Fatalf("tasktree get %s: ok=%v err=%v", taskID, ok, err)
-	}
-	return rec
+	t.Fatalf("tasktree get %s: 未在任何对话库命中", taskID)
+	return nil
 }
 
-// turnRec 直连读 turns 库记录。
+// turnRec 读 turns 库记录（对话库内）。
 func turnRec(t *testing.T, turnID string) data.Record {
 	t.Helper()
-	prj, err := data.PrjUsr("ins-test")
-	if err != nil {
-		t.Fatal(err)
+	for _, db := range allDialogDBs(t) {
+		var rec data.Record
+		ok, err := db.Table("turns").Get(turnID, &rec)
+		if err != nil {
+			t.Fatalf("turns get %s: %v", turnID, err)
+		}
+		if ok {
+			return rec
+		}
 	}
-	var rec data.Record
-	ok, err := prj.Table("turns").Get(turnID, &rec)
-	if err != nil || !ok {
-		t.Fatalf("turns get %s: ok=%v err=%v", turnID, ok, err)
-	}
-	return rec
+	t.Fatalf("turns get %s: 未在任何对话库命中", turnID)
+	return nil
 }
 
 // simulateRestartField 构造"进程被 kill → 重启清扫后"的库现场：

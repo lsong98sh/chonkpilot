@@ -32,8 +32,6 @@ func TestClaimDesktopSkipsAuth(t *testing.T) {
 	if s.Form() != FormDesktop {
 		t.Fatalf("默认形态应为 desktop，got %s", s.Form())
 	}
-	s.opts.WorkDir = testWorkDir
-	s.opts.DataDir = filepath.Join(testWorkDir, ".chonkpilot")
 	got := claimBroadcasts(t, s)
 
 	// ① 无令牌、带 work_dir 提议 → 成功（work_dir = 提议）

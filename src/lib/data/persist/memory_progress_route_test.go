@@ -12,7 +12,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // memExtractCall 发一次 data-memory-extract-* 请求并等应答（收集带 ok 的载荷）。

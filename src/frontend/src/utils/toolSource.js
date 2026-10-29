@@ -51,10 +51,11 @@ export function isThirdPartyProvider(meta) {
 /**
  * stripToolPrefix 剥离网关为工具暴露名加的前缀（**仅展示用**）——不改配置键 / `data-tool`。
  *
- * 生成规则（gateway `registry.go:288 applyPrefix`）= `ns + <原名>`，`ns` 默认 = `<节点 ID> + "_"`
- * （self 节点 ID="self" → `self_<契约名>`；dir 节点 → `<节点名>_<原名>`；`ns="-"` 才无前缀）。
+ * 生成规则（gateway `registry.go applyPrefix`）= `ns + <原名>`，`ns` 默认 = `<节点 ID> + "_"`
+ * （P0a 2026-10-29：内置 self 节点**暴露名 = 原名**，不再加 `self_`；dir 节点 → `<节点名>_<原名>`；
+ * `ns="-"` 才无前缀 / 或节点显式配置 namespace）。
  * `tools-list` 每项 `_meta.server.alias` / `node` = 节点 ID（`registry.serverInfoOf`）
- * → 反解 = 名字以 `<alias>_` 或 `<node>_` 开头则剥掉该前缀。
+ * → 反解 = 名字以 `<alias>_` 或 `<node>_` 开头则剥掉该前缀（原名无前缀 → 原样返回）。
  *
  * 边界（宁缺勿错）：**无 `_meta.server`（或缺 alias/node）→ 原样返回**（不猜、不误剥）；
  * 网关 `Namespace` 被自定义（`_meta` 未透出）时前缀名不匹配 → 同样原样返回。

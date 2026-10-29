@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 )
 
 func TestDir(t *testing.T) {

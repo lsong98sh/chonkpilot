@@ -22,14 +22,12 @@ import RecentDirsView from './bar-views/RecentDirsView.vue'
 import ChromeWarnView from './bar-views/ChromeWarnView.vue'
 import MemoryTokenView from './bar-views/MemoryTokenView.vue'
 import QueueStatusView from './bar-views/QueueStatusView.vue'
-import IndexBadgeView from './bar-views/IndexBadgeView.vue'
 import LangSwitcherView from './bar-views/LangSwitcherView.vue'
 import LayoutProfilesView from './bar-views/LayoutProfilesView.vue'
 import MemoryStatusView from './bar-views/MemoryStatusView.vue'
 import CompressStatusView from './bar-views/CompressStatusView.vue'
 import MemoryStatusDetail from '../views/status/MemoryStatusDetail.vue'
 import CompressStatusDetail from '../views/status/CompressStatusDetail.vue'
-import IndexStatusDetail from '../views/status/IndexStatusDetail.vue'
 import PluginPageHost from '../../packages/plugin-ui/src/PluginPageHost.vue'
 import {
   createViewRegistry,
@@ -65,15 +63,13 @@ registerViews([
   { key: 'chrome-warn', component: ChromeWarnView },
   { key: 'memory-token', component: MemoryTokenView },
   { key: 'queue-status', component: QueueStatusView },
-  { key: 'index-badge', component: IndexBadgeView },
   { key: 'memory-status', component: MemoryStatusView },
   { key: 'compress-status', component: CompressStatusView },
   { key: 'lang-switcher', component: LangSwitcherView },
   { key: 'layout-profiles', component: LayoutProfilesView },
-  // ── 长任务详情页（STB-1）──
+  // ── 长任务详情页（STB-1；索引进度已归插件 codegraph，见 PLUGIN-UI-2）──
   { key: 'status-memory', component: MemoryStatusDetail },
   { key: 'status-compress', component: CompressStatusDetail },
-  { key: 'status-index', component: IndexStatusDetail },
 ], 'builtin')
 
 /** 插件 iframe view 的组件工厂（`PluginPageHost` 适配壳，与内置视图同一注册 API）。 */

@@ -19,7 +19,7 @@ func (s *Service) handleScenario(op string, payload []byte) {
 	method := "data-scenario-" + op
 	var p ScenarioPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
-		s.failID(method, p.ReqID, err)
+		s.failDecode(method, payload, err)
 		return
 	}
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""MW-12：多窗口测试矩阵（24-多窗口模型设计方案 §9 MW-T01…MW-T28 + MW-T29）。
+"""MW-12：多窗口测试矩阵（24-多窗口模型设计方案 §9 MW-T01…MW-T28 + MW-T29 + MW-T30）。
 
 唯一准则 = `docs/spec/60-reference/61-消息一览.md`：全部用例经 **发送 mq 消息** 驱动、
 经 **监听 mq 消息** 断言（50-测试体系 §1）；必要时辅以 DOM/OS 观测（24 §9 标注「半自动」
@@ -9,7 +9,8 @@
 （`gui.window.list` 的 window_id；缺省 = 主窗口）——见 `src/lib/gui/testserver.go`。
 
 用例对账（24 §9）：MW-T01…MW-T28 逐条一条一函数、函数名带 MW-Txx；MW-T29 为 2026-09-26
-新增（会话标题变更跨窗口广播，61 §3.2 · G-48 ⑦ / #12）。
+新增（会话标题变更跨窗口广播，61 §3.2 · G-48 ⑦ / #12）；MW-T30 为 2026-10-28 新增
+（插件实例事件定向投递，61 §7.2 `plugin-ui-event.instance_id` · 49 §2.8）。
 运行：python src\\test\\chonkpilot-gui\\systest\\run_mw.py（自起自收：独立 work-dir + 独立 HOME）
 """
 
@@ -110,7 +111,12 @@ def sid(tag):
 
 
 def ensure_session(s):
-    return req("", "data-session-ensure-session", {"session_id": s})
+    """建会话（幂等）→ 返回该会话的 dialog_id。
+
+    一树一库（旧布局已退场）：根会话 `ensure-session` 自举对话并**回带**
+    `dialog_id`；本套件的低层 `pub`/`req` 不经驱动自愈，故会话类读/写载荷须显式带上它。
+    """
+    return (req("", "data-session-ensure-session", {"session_id": s}) or {}).get("dialog_id") or ""
 
 
 def open_chat(s, wid=""):
@@ -513,25 +519,72 @@ def case_t07():
     close_all_chats()
 
 
-def case_t08():
-    """MW-T08 I-1 ① 主窗当前会话的开窗判定（**61 §1 口径**）。
+def _ensure_hang_llm():
+    """确保 usr 配置里有一个指向**挂起端点**的 LLM（`turn 起来但不自动完成`），返回其 name。
 
-    61-消息一览 §1 `gui.window.open-chat` 明载：「主窗口当前活动会话不得开新窗口」的判定
-    **在前端**（宿主不追踪主窗会话），原「拒开①」**已删除** → 宿主侧应**接受**（ok=true），
-    置灰由前端负责（见 MW-T14）。24 §9 原文记的 `{ok:false}` 与 61 冲突（已在报告中列出）。
+    与 `harness.ensure_llm_configured` 同源（`hang_llm_base()`），但**不刷新页面**：本用例经 mq
+    直接驱动 `llm-start`，前端无需感知该 provider（后端每轮从 usr 配置取 spec）。
+    调用方负责 `user_config_guard` 快照-还原。
+    """
+    name = "mw-hang-llm"
+    cfg = _h.user_config_load(_m) or {}
+    llms = cfg.get("llms") if isinstance(cfg.get("llms"), list) else []
+    if any(isinstance(e, dict) and e.get("name") == name for e in llms):
+        return name
+    rec = {"name": name, "protocol": "openai", "baseUrl": _h.hang_llm_base(),
+           "model": "mw", "apiKey": ""}
+    _m.req("data-user-config-save", {"data": {
+        "llms": list(llms) + [rec], "defaultLLM": len(llms)}})
+    return name
+
+
+def case_t08():
+    """MW-T08 I-1 ① 主窗持有该 dialog 的运行态 → open-chat **激活主窗、不建新窗**。
+
+    [2026-10-28 改写] 原断言「宿主不拒、照建新窗」已被 SCOPE-1 决策推翻（
+    `docs/spec/40-roadmap/49-待实现项.md` §2.4 订正块第 4 条 / 24 §4.3）：判定**不再是「显示」**
+    而是**运行态归属** —— 某 session 在某窗口实例上有活动运行态（turn 未结束 / inbox 有 pending /
+    有 async task）时该实例是 owner，`open-chat` 必须激活它并回 `{ok:true, window_id:<既有>,
+    activated:true}`（主窗口 `window_id` = 空串，与 `--test-port` 既有约定一致）。
+
+    本用例：主窗受理 `llm-start`（挂起 LLM → 轮次不自行完成）→ 主窗成为该 session 的 owner →
+    `open-chat` 回 `window_id=""` + `activated=true` 且**不新增**对话窗口。
     """
     close_all_chats()
     s = sid("t08")
     ensure_session(s)
-    req("", "data-session-active-set", {"session_id": s})  # 主窗当前会话 = s
-    before = len(wins())
-    r = open_chat(s)
-    if not r.get("ok"):
-        raise TestError("宿主不应拒开（61 §1：拒开①已删除、判定在前端）: %s" % r)
-    lst = poll(wins, lambda v: len(v) == before + 1, timeout=20.0)
-    if len(lst) != before + 1:
-        raise TestError("应新增 1 个对话窗口: %s → %s" % (before, lst))
-    close_all_chats()
+    req("", "data-session-active-set", {"session_id": s})  # 主窗当前会话 = s（与真实操作同形）
+    turn = "mw-t08-turn-%d" % int(time.time() * 1000)
+    try:
+        with _h.user_config_guard(_m, ["llms", "defaultLLM"]):
+            name = _ensure_hang_llm()
+            # 监听既有事件 `session-turn-start`（前端 type = turn-start）作为「轮次已起来」的判据。
+            _m.mq_on_capture(["turn-start"])
+            pub("", "llm-start", {"session": s, "turn": turn, "llm": name,
+                                  "content": "mw-t08 持有运行态"})
+            if not poll(lambda: len(_m.events_of("turn-start", clear=False)) > 0,
+                        lambda v: v, timeout=30.0):
+                raise TestError("主窗的 llm-start 未产生 turn-start（轮次未起来）")
+            before = len(wins())
+            r = open_chat_result(s)
+            if not r.get("ok"):
+                raise TestError("主窗持有时 open-chat 应 ok=true（激活主窗）: %s" % r)
+            if r.get("activated") is not True:
+                raise TestError("主窗持有时应 activated=true（激活既有窗口）: %s" % r)
+            if (r.get("window_id") or "") != "":
+                raise TestError("主窗口的 window_id 应为空串: %s" % r)
+            time.sleep(1.5)  # 有界等：若仍新建窗口，此处即可观测
+            lst = wins()
+            if len(lst) != before:
+                raise TestError("主窗持有时**不得**新建对话窗口: %s → %s" % (before, lst))
+    finally:
+        # 收尾：取消该轮（释放主窗归属，避免影响后续用例）
+        try:
+            pub("", "llm-cancel", {"session": s, "turn": turn})
+        except Exception:
+            pass
+        poll(wins, lambda v: not v, timeout=20.0)
+        close_all_chats()
 
 
 def case_t09():
@@ -686,7 +739,10 @@ def case_t16():
     s = sid("t16")
     ensure_session(s)
     w = open_and_wait(s)
-    dom = eval_js(w, """(()=>{
+    # 对话窗首屏是异步挂载的（`open_and_wait` 只等窗口登记）→ 有界等待「仅 chat 视图 + chat 面板」
+    # 都渲染出来再断言（负向断言在同一个已挂载快照上做，语义不变）。
+    def _t16_dom():
+        v = eval_js(w, """(()=>{
   const q=s=>!!document.querySelector(s);
   return JSON.stringify({
     only: q('.chat-only-view'), toolbar: q('.toolbar'), filetree: q('.filetree-panel'),
@@ -694,7 +750,13 @@ def case_t16():
     chat: q('.panel-inner'), url_search: location.search, url_hash: location.hash
   });
 })()""")
-    dom = json.loads(dom) if isinstance(dom, str) else dom
+        return json.loads(v) if isinstance(v, str) else v
+
+    dom = poll(_t16_dom,
+               lambda v: isinstance(v, dict) and v.get("only") and v.get("chat"),
+               timeout=30.0)
+    if not isinstance(dom, dict):
+        dom = {}
     if not dom.get("only") or not dom.get("chat"):
         raise TestError("对话窗口应渲染 ChatOnlyView + chat 面板: %s" % dom)
     for k in ("toolbar", "filetree", "preview", "statusbar"):
@@ -832,16 +894,27 @@ def case_t27():
 
     # ① 主窗改主题 → 对话窗即时收到广播（payload 形态按 61 §3.1）
     req("", "data-user-config-save", {"data": {"theme": "dark"}})
+
+    def _payload(e):
+        pl = e.get("payload") if isinstance(e, dict) else None
+        if isinstance(pl, str):
+            try:
+                pl = json.loads(pl)
+            except Exception:
+                pl = None
+        return pl
+
+    def _is_dark(e):
+        pl = _payload(e)
+        return isinstance(pl, dict) and (pl.get("data") or {}).get("theme") == "dark"
+
+    # 只认「本次 theme=dark」那条：对话窗在此之前可能已收到上一用例还原时的 theme=light 广播
+    #（批跑负载下更明显）→ 取 evs[0] 会读到旧载荷，误判为「跨窗同步未生效」（2026-10-26 定位）。
     evs = poll(lambda: cw.events_of("data-user-config-changed", clear=False),
-               lambda v: bool(v), timeout=12.0)
+               lambda v: any(_is_dark(e) for e in (v or [])), timeout=12.0)
     if not evs:
         raise TestError("对话窗未即时收到 usr 配置变更广播（跨窗口 theme/locale 同步未生效）")
-    pl = evs[0].get("payload") if isinstance(evs[0], dict) else None
-    if isinstance(pl, str):
-        try:
-            pl = json.loads(pl)
-        except Exception:
-            pl = None
+    pl = next((_payload(e) for e in evs if _is_dark(e)), None)
     if not isinstance(pl, dict):
         raise TestError("data-user-config-changed 载荷形态异常: %r" % (evs[0],))
     if "instance_id" in pl:
@@ -892,14 +965,14 @@ def case_t29():
     """
     close_all_chats()
     s = sid("t29")
-    ensure_session(s)
+    dlg = ensure_session(s)
     w = open_and_wait(s)
     cw = cl(w)
     cw.mq_on_capture(["data-session-title-changed"])
 
     # ① 主窗侧改标题 → 对话窗即时收到下行广播（载荷形态按 61 §3.2）
     title = "MW-T29-标题跟随"
-    req("", "data-session-title", {"id": s, "title": title})
+    req("", "data-session-title", {"id": s, "title": title, "dialog_id": dlg})
     evs = poll(lambda: cw.events_of("data-session-title-changed", clear=False),
                lambda v: bool(v), timeout=12.0)
     if not evs:
@@ -925,9 +998,9 @@ def case_t29():
     # ③ 未在本窗打开的会话改名 → 本窗标题**不变**（无副作用）。事件仍按全局投递到达本窗，
     #    但前端按 session_id 过滤 → **不应用**（否则标题会跳到其它会话的标题）。
     s2 = sid("t29-other")
-    ensure_session(s2)
+    dlg2 = ensure_session(s2)
     cw.events_of("data-session-title-changed", clear=True)  # 清空前一轮，便于观察下一轮到达
-    req("", "data-session-title", {"id": s2, "title": "MW-T29-其它会话"})
+    req("", "data-session-title", {"id": s2, "title": "MW-T29-其它会话", "dialog_id": dlg2})
     poll(lambda: cw.events_of("data-session-title-changed", clear=False),
          lambda v: bool(v), timeout=12.0)  # 事件确已到达（全局可见）
     time.sleep(1.0)  # 给前端应用窗口（若误应用则本窗标题会变）
@@ -939,15 +1012,129 @@ def case_t29():
     close_all_chats()
 
 
+def case_t30():
+    """MW-T30 插件实例事件**只投给该实例所在窗口**（定向投递 · 49 §2.8 欠账）。
+
+    **替代口径（写明于 49 §2.8）**：本仓「双主窗」= 两个 GUI 进程 = **两条进程内 MQ 总线**
+    （去 NATS 后事件不可跨进程）→ 定向投递只能在**同进程多窗口**内验证。故以
+    「主窗 + 两个对话窗」（三个各自独立的 instance id、各自独立测试通道）替代双主窗，
+    断言同为 MQ 级：各窗口 `mq.on('plugin-ui-event')` 的到达集合。
+
+    驱动 = 既有主题 `plugin-ui-event`（61 §7.2：载荷**只增**可选 `instance_id`；插件桥
+    `mgr.publishUIEvent` 把 `instance_id` 提升到广播**顶层** → 宿主桥
+    `acceptEventInstance` 按 instance_id **精确相等**过滤）。**不新增主题/字段。**
+    载荷与插件桥产出**同形**：`{id, instance_id?, topic, payload}`。
+    """
+    close_all_chats()
+    s1, s2 = sid("t30a"), sid("t30b")
+    ensure_session(s1)
+    ensure_session(s2)
+    w1 = open_and_wait(s1)
+    w2 = open_and_wait(s2)
+    i1, i2 = inst(w1), inst(w2)
+    if not (i1 and i2 and i1 != i2):
+        raise TestError("两个对话窗应有各自独立的实例 id: %r / %r" % (i1, i2))
+    cm, c1, c2 = cl(""), cl(w1), cl(w2)
+    for cc in (cm, c1, c2):
+        cc.mq_on_capture(["plugin-ui-event"])
+
+    # ① 定向给 w1 的实例 → 只有 w1 收到
+    pub("", "plugin-ui-event", {"id": "mw-t30-probe", "instance_id": i1,
+                                "topic": "mw-t30", "payload": {"seq": "to-w1"}})
+    ev1 = poll(lambda: c1.events_of("plugin-ui-event", clear=False),
+               lambda v: bool(v), timeout=15.0)
+    if not ev1:
+        raise TestError("目标实例 %s 所在窗口未收到 plugin-ui-event" % i1)
+    pl = ev1[0].get("payload") if isinstance(ev1[0], dict) else None
+    if isinstance(pl, str):
+        try:
+            pl = json.loads(pl)
+        except Exception:
+            pl = None
+    if not isinstance(pl, dict) or pl.get("instance_id") != i1 or pl.get("id") != "mw-t30-probe":
+        raise TestError("定向事件载荷异常: %r" % (ev1[0],))
+    time.sleep(1.2)  # 给「若误广播」足够到达其它窗口
+    ev2 = c2.events_of("plugin-ui-event", clear=False)
+    if ev2:
+        raise TestError("非目标窗口（实例 %s）不应收到定向事件: %s" % (i2, ev2))
+    evm = cm.events_of("plugin-ui-event", clear=False)
+    if evm:
+        raise TestError("主窗（实例 %s）不应收到定向给 %s 的事件: %s" % (inst(""), i1, evm))
+
+    # ② 反向对照：定向给 w2 → 只有 w2 收到（证明是按 instance_id 过滤，非「只到第一个窗口」）
+    for cc in (cm, c1, c2):
+        cc.events_of("plugin-ui-event", clear=True)
+    pub("", "plugin-ui-event", {"id": "mw-t30-probe", "instance_id": i2,
+                                "topic": "mw-t30", "payload": {"seq": "to-w2"}})
+    if not poll(lambda: c2.events_of("plugin-ui-event", clear=False),
+                lambda v: bool(v), timeout=15.0):
+        raise TestError("目标实例 %s 所在窗口未收到 plugin-ui-event（反向对照）" % i2)
+    time.sleep(1.2)
+    back = c1.events_of("plugin-ui-event", clear=False)
+    if back:
+        raise TestError("反向对照：非目标窗口（实例 %s）不应收到定向事件: %s" % (i1, back))
+    close_all_chats()
+
+
+# ══════════════════════════════════════════════════════════════════
+# 9.3b AskUser Step 1（AskUser S1-1，2026-10-29）
+# ══════════════════════════════════════════════════════════════════
+
+def case_t31():
+    """MW-T31 AskUser「聊一聊」**仅主窗口**（AskUser S1-1 · 设计 §4.3 / §4.4 ①）。
+
+    驱动 = 既有前端本地事件 `ask-user`（61 §4.3 `session-ask` 的桥映射 type），在各窗口内
+    `mq.emit` 注入；断言 = 同一张卡片在**主窗**有「聊一聊」按钮、在**对话窗**没有
+    （对话窗会话由 URL 固定绑定，不能切会话 → `canChat=false`）。
+    """
+    close_all_chats()
+    s = sid("t31")
+    dlg = ensure_session(s)
+    w = open_and_wait(s)
+    ask = {"ask_id": "mw-t31-ask", "question": "MW-T31 提问", "options": ["A", "B"],
+           "session": s, "dialog_id": dlg}
+    # ① 对话窗口：卡片出现，但**无**「聊一聊」（其余出口保留）
+    cl(w).mq_emit("ask-user", ask)
+    ok = poll(lambda: eval_obj(w, "JSON.stringify({n: document.querySelectorAll('.ask-user-content').length})"),
+              lambda v: isinstance(v, dict) and v.get("n", 0) > 0, timeout=15.0)
+    if not ok:
+        raise TestError("对话窗口未弹出 ask 卡片")
+    m = eval_obj(w, "JSON.stringify({"
+                    "chat: document.querySelectorAll('.ask-user-content .chat-btn').length,"
+                    "skip: document.querySelectorAll('.ask-user-content .skip-btn').length,"
+                    "cancel: document.querySelectorAll('.ask-user-content .cancel-btn').length"
+                    "})")
+    if m.get("chat") != 0:
+        raise TestError("对话窗口不应渲染「聊一聊」: %r" % (m,))
+    if m.get("skip") != 1 or m.get("cancel") != 1:
+        raise TestError("对话窗口应保留「跳过 / 取消」出口: %r" % (m,))
+    # ② 主窗口：同一张卡片（重新注入）有「聊一聊」
+    _m.mq_emit("ask-user", dict(ask, ask_id="mw-t31-ask-main"))
+    ok = poll(lambda: eval_obj("", "JSON.stringify({n: document.querySelectorAll('.ask-user-content').length})"),
+              lambda v: isinstance(v, dict) and v.get("n", 0) > 0, timeout=15.0)
+    if not ok:
+        raise TestError("主窗口未弹出 ask 卡片")
+    mm = eval_obj("", "JSON.stringify({chat: document.querySelectorAll('.ask-user-content .chat-btn').length})")
+    if mm.get("chat") != 1:
+        raise TestError("主窗口应渲染「聊一聊」: %r" % (mm,))
+    # 收尾：关掉主窗卡片（取消）与对话窗（不提交，避免触发后端无登记 ask 的错误）
+    _m.eval("(() => { const b = [...document.querySelectorAll('.ask-user-content .cancel-btn')].pop();"
+            " if (b) b.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 'ok'; })()", 5000)
+    time.sleep(0.8)
+    close_all_chats()
+
+
 # ══════════════════════════════════════════════════════════════════
 # 9.4 数据层 B 方案与隔离
 # ══════════════════════════════════════════════════════════════════
 
 def _b_root():
-    pid = (prj_cfg() or {}).get("project-id") or ""
-    if not pid:
-        raise TestError("prj 库缺 project-id（prjusr 数据根无法绑定）")
-    return os.path.join(HOME, ".chonkpilot", "data", pid)
+    """prjusr 数据根（DATAROOT-1，2026-10-25 缺省）：`<workDir>/.chonkpilot/users/<OS 用户名>`。
+
+    原口径「prj `project-id` → `<HOME>/.chonkpilot/data/<prj-id>`」已随 DATAROOT-1 作废
+    （`project-id` 已删除，项目身份 = 归一化 workdir；数据根不可经参数覆盖）。
+    """
+    return _h.prjusr_root(WS, HOME)
 
 
 def case_t19():
@@ -1031,14 +1218,14 @@ def case_t23():
     """MW-T23 Resolve 审计（MW-11）：多实例下核心数据场景 → 无 ErrInstanceIDRequired。"""
     close_all_chats()
     s = sid("t23")
-    ensure_session(s)
+    dlg = ensure_session(s)
     w = open_and_wait(s)  # 此时进程内 ≥2 个实例（主窗 + 对话窗）
     ops = [
         ("data-session-list", {}),
         ("data-session-ensure-session", {"session_id": s + "-b"}),
-        ("data-session-history", {"session_id": s}),
-        ("data-tasktree-list", {"top_session": s}),
-        ("data-tasktree-tasks", {"session_id": s}),
+        ("data-session-history", {"session_id": s, "dialog_id": dlg}),
+        ("data-tasktree-list", {"top_session": s, "dialog_id": dlg}),
+        ("data-tasktree-tasks", {"session_id": s, "dialog_id": dlg}),
         ("data-prj-config-list", {}),
         ("data-user-config-load", {}),
         ("data-scenario-list", {}),
@@ -1066,7 +1253,7 @@ CASES = [
     ("MW-T05 前端 → 前端不互通", case_t05),
     ("MW-T06 后端 → 各前端（每窗各得本实例事件）", case_t06),
     ("MW-T07 I-1② 重复开同 session = 激活（幂等）", case_t07),
-    ("MW-T08 I-1① 主窗当前会话开窗（61 §1 口径：宿主不拒、前端置灰）", case_t08),
+    ("MW-T08 I-1① 主窗持有时 open-chat → 激活主窗、不建新窗（SCOPE-1 不变式）", case_t08),
     ("MW-T09 T-4 点击已开 session = 激活（主窗不切换）", case_t09),
     ("MW-T10 I-1 推论 主窗禁切到已绑定 session", case_t10),
     ("MW-T11 窗口关闭解除占用（可重建）", case_t11),
@@ -1087,6 +1274,8 @@ CASES = [
     ("MW-T27 主题/语言跨窗口即时同步", case_t27),
     ("MW-T28「新建对话窗口」入口仅主窗口", case_t28),
     ("MW-T29 会话标题变更跨窗口广播（对话窗标题跟随）", case_t29),
+    ("MW-T30 插件实例事件定向投递（只到该 instance 所在窗口）", case_t30),
+    ("MW-T31 AskUser「聊一聊」仅主窗口（对话窗只保留选项）", case_t31),
     ("MW-T03 主窗关闭 = 终止项目窗口、进程常驻托盘（必须最后跑）", case_t03),
 ]
 

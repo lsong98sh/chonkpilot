@@ -26,8 +26,8 @@ export function levelAllowed(kind, level) {
 }
 
 // nodeLevel capability 节点名 → 级别：
-//   "self" / "core" → app（2026-10-19 一工具一 exe：内置 app 级工具由 core-mcp-server 以
-//     namespace=self_ 接入，`_meta.server.node = "core"`；语义仍为系统级内置能力源）；
+//   "self" / "core" → app（2026-10-19 一工具一 exe：内置 app 级工具由 core-mcp-server 接入，
+//     `_meta.server.node = "core"`；P0a 2026-10-29 起暴露名 = 原名，语义仍为系统级内置能力源）；
 //   "<instanceID>-user" / "-project" / "-prjusr" → 对应级；
 //   无法判定（第三方节点 / 裸名）→ ''（调用方放行，不误剔除）。
 export function nodeLevel(node) {

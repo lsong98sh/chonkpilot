@@ -105,8 +105,24 @@ def activate(sid):
     time.sleep(0.8)
 
 
+def _eval_patient(js, max_wait=180):
+    """渲染线程饥饿（`ExecuteScript timed out`）时重复尝试，直到可应答。
+
+    批跑后段实测 UI 线程可能被长任务占满 >1min（驱动 4 次重试 ≈57s 仍不够）→ 本助手只吸收
+    **传输层瞬时时无应答**，断言语义不变（页面状态不符仍立即失败）。
+    """
+    deadline = time.time() + max_wait
+    while True:
+        try:
+            return c.eval(js)
+        except TestError:
+            if time.time() >= deadline:
+                raise
+            time.sleep(2.0)
+
+
 def msg_count():
-    return deep_loads(c.eval("document.querySelectorAll('.message-list .message-item').length"))
+    return deep_loads(_eval_patient("document.querySelectorAll('.message-list .message-item').length"))
 
 
 def msg_total():
@@ -115,7 +131,7 @@ def msg_total():
     窗口化分支的 MessageItem 带 `data-idx`（原始下标）→ max(data-idx)+1；
     小会话走全量渲染（无 data-idx）→ 回落 DOM 条数。
     """
-    return deep_loads(c.eval("""(() => {
+    return deep_loads(_eval_patient("""(() => {
       const els = [...document.querySelectorAll('.message-list .message-item')];
       let max = -1;
       for (const e of els) {
@@ -127,7 +143,7 @@ def msg_total():
 
 
 def scroll_to_top():
-    c.eval("""(() => {
+    _eval_patient("""(() => {
       const el = document.querySelector('.message-list');
       if (el) el.scrollTop = 0;
       return 'ok';
@@ -135,7 +151,7 @@ def scroll_to_top():
 
 
 def scroll_to_bottom():
-    c.eval("""(() => {
+    _eval_patient("""(() => {
       const el = document.querySelector('.message-list');
       if (el) el.scrollTop = el.scrollHeight;
       return 'ok';
@@ -155,7 +171,9 @@ def wait_msg_count_gt(n, max_wait=15):
 
 def case_top_indicator():
     activate(SID_MAIN)
-    if msg_count() == 0:
+    # 切会话后历史回填是异步的（批跑负载下 >0.8s）；有界等待再判定「无消息」。
+    n0 = wait_msg_total(lambda n: n >= 2, 20)
+    if n0 < 2:
         raise TestError("会话无消息（种子数据缺失？）")
     # 反复滚顶：每次滚顶触发 loadMore（hasMore 时），加载完成后位置保持；
     # 数据全部加载后（hasMore=false）滚顶即停在顶部 → 顶部指示器出现。
@@ -163,6 +181,11 @@ def case_top_indicator():
     # （旧期望 "已到最早/reached/no more/开始" 已不匹配）；加载中仍以 .load-more-spinner 判定。
     deadline = time.time() + 60
     while time.time() < deadline:
+        # 先沉底再滚顶：`onScroll` 只在**离开顶部区域**时复位 toppedOut（MessageList:541），
+        # loadMore 一次未成功（在飞/失败）后再次置 0 不产生 scroll 事件 → 永远不再补拉，
+        # hasMore 恒 true → 指示器长时间只有空文本（2026-10-26 批跑 B1 定位）。
+        scroll_to_bottom()
+        time.sleep(0.3)
         scroll_to_top()
         time.sleep(0.8)
         if c.exists(".top-indicator").get("count", 0) > 0:
@@ -185,7 +208,7 @@ def case_load_more_keep_position():
     if n0 < 2:
         raise TestError(f"消息过少无法测加载: {n0}")
     # 记录当前顶部附近某元素位置：滚动到中间，记录 scrollTop + 首条可见消息
-    pos = deep_loads(c.eval("""(() => {
+    pos = deep_loads(_eval_patient("""(() => {
       const el = document.querySelector('.message-list');
       if (!el) return null;
       el.scrollTop = Math.floor(el.scrollHeight * 0.4);
@@ -212,8 +235,8 @@ def case_load_more_keep_position():
         raise TestError(f"滚顶未加载到更早消息: before={before} after={msg_total()}")
     # 加载后阅读位置保持：当前 scrollTop 相对新增内容偏移正确（scrollHeight 增长且 scrollTop 增长）
     time.sleep(1.0)
-    st_after = deep_loads(c.eval("(() => { const el = document.querySelector('.message-list'); return el ? el.scrollTop : -1; })()"))
-    sh_after = deep_loads(c.eval("(() => { const el = document.querySelector('.message-list'); return el ? el.scrollHeight : -1; })()"))
+    st_after = deep_loads(_eval_patient("(() => { const el = document.querySelector('.message-list'); return el ? el.scrollTop : -1; })()"))
+    sh_after = deep_loads(_eval_patient("(() => { const el = document.querySelector('.message-list'); return el ? el.scrollHeight : -1; })()"))
     if st_after < 0 or sh_after < pos["sh"]:
         raise TestError(f"加载后位置异常: st={st_after} sh_after={sh_after} sh_before={pos['sh']}")
     return True
@@ -249,16 +272,30 @@ def case_autoscroll_pause_resume():
 
 # ── B4 L140/141 切会话持久化 ────────────────────────
 
+def wait_msg_total(pred, max_wait=40):
+    """有界等待消息总数满足 pred（批跑负载下 300 条历史回填可能远超固定 sleep）。"""
+    deadline = time.time() + max_wait
+    n = -1
+    while time.time() < deadline:
+        try:
+            n = msg_total()
+        except Exception:
+            time.sleep(0.3)
+            continue
+        if pred(n):
+            return n
+        time.sleep(0.3)
+    return n
+
+
 def case_session_persistence():
     activate(SID_MAIN)
-    time.sleep(1.0)
-    n_main = msg_total()
+    n_main = wait_msg_total(lambda n: n >= 2, 20)
     if n_main < 2:
         raise TestError(f"主会话消息异常: {n_main}")
     # 切到 other（3 轮 6 条）
     activate(SID_OTHER)
-    time.sleep(1.0)
-    n_other = msg_total()
+    n_other = wait_msg_total(lambda n: n == 6, 20)
     if n_other != 6:
         raise TestError(f"other 会话消息数异常（应为 6）: {n_other}")
     txt = deep_loads(c.eval("""(() => {
@@ -269,8 +306,7 @@ def case_session_persistence():
         raise TestError(f"other 会话最新内容异常: {txt[:80]!r}")
     # 切回 main → 消息恢复（分页：最近批次 300 + auto-preload 300；更早批次滚顶加载）
     activate(SID_MAIN)
-    time.sleep(1.5)
-    n_back = msg_total()
+    n_back = wait_msg_total(lambda n: n >= 300, 60)
     if n_back < 300:
         raise TestError(f"切回主会话消息未恢复: {n_back}")
     last = deep_loads(c.eval("""(() => {
@@ -348,12 +384,24 @@ def case_ask_task_content():
       ② 详情口径：断言内置工具说明（「无流式输出」）或参数区存在——二者至少其一。
     """
     # 全新随机会话：避免历史残留干扰
-    sid = "b6-" + str(int(time.time() * 1000)) + "-sess"
-    activate_ready(sid)  # 切会话 + 有界等待就绪（发早于会话传导 → 消息被静默丢弃，见 activate_ready）
-    pin_mock_llm()  # 本回合固定走 mock_llm（否则节点展示名随环境真实 LLM 变化 → 断言不稳）
-    # 实时发起 ask → 弹窗 → 回答 → ask 任务节点终态
-    c.mq_emit("message-send", {"sessionId": sid, "text": "call ask"})
-    ask_ev = c.wait_events("ask-user", n=1, max_wait=30)
+    # B6 在批跑里是**第一个**真实回合（gateway/mock 预热期），实测偶发「ask-user 30s 零事件」
+    # （单跑全绿）→ 未收到事件时**换会话重发一次**（断言条件与强度不变，仅消除预热竞态）。
+    ask_ev = []
+    for attempt in (1, 2):
+        sid = "b6-" + str(int(time.time() * 1000)) + "-%d-sess" % attempt
+        activate_ready(sid)  # 切会话 + 有界等待就绪（发早于会话传导 → 消息被静默丢弃，见 activate_ready）
+        pin_mock_llm()  # 本回合固定走 mock_llm（否则节点展示名随环境真实 LLM 变化 → 断言不稳）
+        # 实时发起 ask → 弹窗 → 回答 → ask 任务节点终态
+        c.mq_emit("message-send", {"sessionId": sid, "text": "call ask"})
+        try:
+            ask_ev = c.wait_events("ask-user", n=1, max_wait=30)
+        except TestError:
+            ask_ev = []
+        if ask_ev:
+            break
+        print("  [retry] B6 未收到 ask-user（预热期）→ 换会话重发一次", flush=True)
+    if not ask_ev:
+        raise TestError("等待事件 ask-user 超时（30s），当前 0 条")
     p0 = ask_ev[-1]["payload"]
     q = p0.get("question", "")
     if not q:
@@ -475,10 +523,26 @@ def case_subsession_viewer():
     # 子会话 viewer（只读跟随）：注入 subsession-changed → SessionChat 加载该会话消息。
     # 子会话 sub-7897f487ae9dd2cc 来自 seed（委派子会话完成态，sessions 表有历史）。
     sub_id = "sub-7897f487ae9dd2cc"
-    c.mq_emit("subsession-changed", {"session_id": sub_id})
-    time.sleep(2.0)
+    # 前置：主会话为当前会话（子会话行与主会话同属一个对话库；viewer 经主会话反推 dialog_id）
+    activate(SID_MAIN)
+    time.sleep(1.0)
+    # 有界重发：任务/会话快照刷新（refreshTasks / task-detail 状态收敛）可能把刚刚写入的
+    # 子会话选中态清回空态 → 与定局观察竞争。持续重发直到 viewer 标识出现（≤20s）。
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        c.mq_emit("subsession-changed", {"session_id": sub_id})
+        if wait_el(".session-id-tag", max_wait=1.0):
+            break
+        time.sleep(0.3)
     if not wait_el(".session-id-tag"):
-        raise TestError("子会话 viewer 未显示会话标识（L318）")
+        diag = deep_loads(c.eval("""(() => JSON.stringify({
+          tag: document.querySelectorAll('.session-id-tag').length,
+          chat: document.querySelectorAll('.session-chat').length,
+          empty: document.querySelectorAll('.empty-prompt').length,
+          panels: document.querySelectorAll('.panel-inner').length,
+          body: (document.body.innerText || '').slice(-200),
+        }))()"""))
+        raise TestError("子会话 viewer 未显示会话标识（L318）diag=%r" % (diag,))
     tag = visible_text(".session-id-tag")
     if "sub-7897" not in tag:
         raise TestError(f"子会话标识异常: {tag!r}")
@@ -539,6 +603,13 @@ def case_long_content_more():
 
 def main():
     c.wait_ready()
+    # 自造前置数据（套件自包含；幂等：目标会话消息数已达标则跳过）。
+    # 原流程依赖手工先跑 `python _seed_deps.py 2346`，全量 run_all 下会因缺数据整片红。
+    try:
+        import _seed_deps  # noqa: PLC0415
+        _seed_deps.main()
+    except Exception as e:  # noqa: BLE001
+        print("  [seed] 自动造数失败（依赖数据的用例可能失败）：%r" % (e,), flush=True)
     # 任务面板默认收起（2026-09-27 首屏减负：MainLayout taskOpen 默认 false）→
     # 本套件含任务树联动 / 节点点击用例 → 先经既有 tasks-toggle 展开。
     _h.ensure_task_panel_open(c)

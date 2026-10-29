@@ -249,7 +249,7 @@ test('契约已收录 §4 服务端 / §5 网关面主题（B2）', () => {
     'mcp-tools-list', 'mcp-tools-call', 'mcp-tools-wait', 'mcp-tools-register', 'mcp-tools-unregister',
     'mcp-prompts-list', 'mcp-prompts-get', 'mcp-resources-list', 'mcp-resources-read',
     'mcp-servers-list', 'mcp-servers-get', 'mcp-gateway-check', 'mcp-gateway-reload',
-    'mcp-tasks-report', 'mcp-tools-timeout', 'mcp-gateway-changed',
+    'mcp-tasks-report', 'mcp-tools-timeout', 'mcp-tools-progress', 'mcp-gateway-changed',
   ]) {
     assert.ok(byTopic.has(topic), `契约缺 §4/§5 主题 ${topic}`)
   }
@@ -261,7 +261,7 @@ test('契约已收录 §4 服务端 / §5 网关面主题（B2）', () => {
 
 // ── §5.4 检索/引擎面（codegraph/vfts 工具回调）对账（B3）────────────────────
 // 该面主题的**生产者 = gateway、注册方 = codegraph/vfts 插件**（Go 侧），非前端消费；
-// 前端仅经 prj 配置键 `codegraph.status`/`vfts.status` 面（data-prj-config-load）间接消费。
+// 前端只碰插件自己的 UI（`/plugins/codegraph/*`，PLUGIN-UI-2 起不再读 `codegraph.status` / `vfts.status`）。
 // 此处断言契约已收录两回调主题 + genmsg 已生成 MsgTopics 常量（供守卫/未来消费）。
 
 test('契约已收录检索/引擎面（B3）回调主题 + msgkeys 常量', () => {
@@ -271,6 +271,23 @@ test('契约已收录检索/引擎面（B3）回调主题 + msgkeys 常量', () 
   for (const [key, val] of Object.entries({ codegraphToolCall: 'codegraph-tool-call', vftsToolCall: 'vfts-tool-call' })) {
     assert.match(msgkeysSrc, new RegExp(`export const MsgTopics = \\{[\\s\\S]*\\b${key}: '${val}'`), `msgkeys.js 缺 MsgTopics.${key}`)
   }
+})
+
+test('mcp-tools-progress 消费（useToolProgress）读键 ⊆ 契约（GATEWAY-2 L8）', () => {
+  const tp = read('composables/useToolProgress.js')
+  // 事件载荷读取点 = mq.on(EventNames.mcpToolsProgress) 回调体（键须走 FieldKeys 常量下标）。
+  assertConsumer({
+    topic: 'mcp-tools-progress',
+    kind: 'event',
+    text: windowAround(tp, /mq\.on\(EventNames\.mcpToolsProgress/, 0, 800),
+    varName: 'payload',
+  })
+  // 生成物常量存在（前端订阅必须用 MsgTopics/EventNames 常量，禁字面量）。
+  assert.match(
+    msgkeysSrc,
+    /export const MsgTopics = \{[\s\S]*\bmcpToolsProgress: 'mcp-tools-progress'/,
+    'msgkeys.js 缺 MsgTopics.mcpToolsProgress',
+  )
 })
 
 test('agent-wizard-generate 消费（ScenarioWizardDialog）读键 ⊆ 契约', () => {

@@ -24,7 +24,7 @@
 | 面 | 现状 | 是否有强制拦截 |
 |----|------|:---:|
 | 文件服务 `src/lib/filesys` | `absPath` + `withinWorkDir` 把路径限制在 `work_dir` 内，越界返回 `errForbidden("path outside work dir")` | ✅ |
-| 工具执行层 `src/lib/mcp-tools` | 路径一律全路径，**R-11 形式强校验**；并**经 `agentbox.Check` 执行层强制拦截**（`file`/`fetch`/`filesys_run`/`ScriptFS` 句柄等，见 §7.1 #3） | ✅（R-11 + agentbox） |
+| 工具执行层 `src/lib/mcp-tools` | 路径一律全路径，**R-11 形式强校验**（历史：曾由 `agentbox.Check` 强制拦截，`agentbox` 已于 2026-10-21 删除，改由 gateway Low IL 沙箱承担） | ✅（R-11） |
 | 信任目录配置 `security-*` | 存储 + 前端 UI；**消费方 = agentbox**（`securityRules` → executor `SetSecurityDirs` + gateway `applyGatewaySandboxDirs`） | ✅（见 §7.1 #2/#5） |
 
 ---
@@ -45,7 +45,7 @@
 - `internal/browser/{handle,run}.go` / `internal/desktop/run.go`：`file`、`chrome_path`（browser）与 DSL 内**所有**文件句柄——落盘（browser：`SHT`/`DOM`/`DBG`/`UPF`、`dom_file`/`console_file`/`fail_shot`；desktop：`SHT`/`WIN … SHT`）、行尾 `=> #"file"` 目标、**核心语句数据源读取/访问器/`IF exist`**——受 **R-11** 强校验
 - `internal/fileops/scriptfs.go`：`filesys_run` 核心语句 `#"path"` 句柄（LOOP/SET 数据源、访问器、`=> 目标`）的校验型文件系统（`ScriptFS`）
 
-且 CLI 入口**根本不注入工作目录**（`internal/cli/cli.go:96-100`：`workDir := ""`，"工作目录概念已移除"）。**注意**：相对路径不注入 workDir 后本会相对进程 cwd（不可控），故对工具参数改由 **R-11 直接拒绝相对路径**（见 [16-路径解析规范](16-路径解析规范.md) §8）——**包括** `workdir` 等目录参数同样受约束；`paths.ResolveDir` 仅服务 CLI 命令行目录参数（`--work-dir`/`--data-dir`）。
+且执行体入口**根本不注入工作目录**（`internal/cli/cli.go:96-100`：`workDir := ""`，"工作目录概念已移除"）。**注意**：相对路径不注入 workDir 后本会相对进程 cwd（不可控），故对工具参数改由 **R-11 直接拒绝相对路径**（见 [16-路径解析规范](16-路径解析规范.md) §8）——**包括** `workdir` 等目录参数同样受约束；`paths.ResolveDir` 仅服务 GUI 命令行目录参数（`--work-dir`/`--data-dir`）。
 
 ### 2.3 信任目录 `security-*`（有存储无执行）
 
@@ -56,7 +56,7 @@
 ### 2.4 路径解析规范
 
 `src/lib/paths`：`ExpandHome` + `ResolveDir(raw, base)`（`~` 展开 → 绝对原样 `Clean` → 否则 `Clean(Join(base, raw))`）。
-- `ResolveDir` **明确允许 `../` 跳出 base**（见 [16-路径解析规范](16-路径解析规范.md) §7「属有意行为，不做强制钳制」）。使用点：CLI/GUI 的**命令行目录参数**（`--work-dir`/`--data-dir`）、`src/lib/data`（ProjectPath）、mcp-tools 的 `fileops.ValidateFilePath`（仅复用其**绝对路径归一化**，`base` 恒为空、不接受相对兜底；R-11）。**不再有工具直接用 `ResolveDir` 解析用户目录参数**。
+- `ResolveDir` **明确允许 `../` 跳出 base**（见 [16-路径解析规范](16-路径解析规范.md) §7「属有意行为，不做强制钳制」）。使用点：GUI 的**命令行目录参数**（`--work-dir`）、`src/lib/data`（ProjectPath）、mcp-tools 的 `fileops.ValidateFilePath`（仅复用其**绝对路径归一化**，`base` 恒为空、不接受相对兜底；R-11）。**不再有工具直接用 `ResolveDir` 解析用户目录参数**。
 
 ---
 
@@ -74,7 +74,7 @@
 | 维度 | 目标行为 |
 |------|---------|
 | 文件访问 | 越界（`work_dir` 外）由沙箱拦截；不再做路径字符串白名单（`SanitizePath` 已弃） |
-| 命令执行 | **不做命令白名单**（`script_run` 任意脚本） |
+| 命令执行 | **不做命令白名单**（`task_run` 任意脚本；2026-10-28 起替代 `script_run`） |
 | 上下文注入 | 上下文（work-dir/data-dir）注入系统提示词，约束 LLM 使用全路径 |
 | 名称隔离 | 工具/资源名按 instance 隔离（`scope`：global ∪ 归属 instance） |
 | 写操作确认 | 🔵 规划：只读工具自动执行，**修改性工具**（`write`/`remove`/`rename` 等）需用户确认；当前**未实现**（全仓无 permission 判定消费方） |
@@ -148,13 +148,13 @@
 | 5 | **gateway 上游 spawn 下发（仅 stdio）** | `ServerEntry.SandboxDirs` 快照 + `SandboxPolicyJSON()` → `buildConn` 的 **stdio** 分支注入；**开关来源 = usr `tool_sandbox.mcps[<mcp 名>]`**（`sandboxOnEntry` 按 `entry.SandboxName()` 查）；旧 `ServerEntry.Sandbox`（usr `mcps[].sandbox`）**仅读取时迁移并入 `tool_sandbox.mcps`，不再作开关来源** | http/sse **不施加**；**上游是否遵守取决于其是否实现 agentbox 消费方**——第三方进程**仅透传，不构成强制** |
 | 6 | **配置键** | usr `tool_sandbox`（**新形状 `{"executors":{"<exe名>":bool},"mcps":{"<mcp名>":bool}}`**，管理单位 = 被 spawn 的执行体；**旧形状 `{"core":bool,"desktop":bool,"browser":bool}` 读取时自动迁移** —— `core` → `chonkpilot-core-executor.exe` **且** `chonkpilot-dsl-executor.exe`，desktop/browser 各映射自身 exe；persist 自由键已注册）· usr `mcps[].sandbox`（**🗑 已废弃为开关来源**，读写收敛到 `tool_sandbox.mcps`；旧值读取时迁移）· register `mcp_server.sandbox`/`sandbox_dirs`（可选字段，`sandbox` 亦仅读取时迁移） | 均登记 [64 §3/§4](../60-reference/64-配置项一览.md)；**与既有 `isolate`（连接池隔离）语义独立、互不替代** |
 | 7 | **保存即生效** | llm server 订阅**既有主题** `data-prj-security-refresh` → 重跑 `loadExecConfig` + `reconcileUserMCPs` | 零新增 MQ 主题；executor 侧**下次 spawn** 生效（每次调用重读 Config） |
-| 8 | **验证** | 6 模块 × {默认, `-tags split`} build/vet/test 全绿；L2 新增 4 组（含**经 mcp-server spawn 真实 executor 的端到端**）；L3 基线 23/0/1 + 57/0/2；真实 executor 开/关两态真机 | |
+| 8 | **验证** | 6 模块 build/vet/test 全绿；L2 新增 4 组（含**经 mcp-server spawn 真实 executor 的端到端**）；L3 基线 23/0/1 + 57/0/2；真实 executor 开/关两态真机 | |
 
 ### 7.2 未实现（如实标注，不编造）
 
 | # | 事项 | 说明 |
 |---|------|------|
-| 1 | **`script_run` 脚本体内的文件读写** | 脚本在**任意子进程**内执行，执行器**无法拦截**其文件操作（仅约束 `file` 参数为可读）。**隔离开启时 `script_run` 仍是绕过通道**（登记为未决项） |
+| 1 | **`task_run` 脚本体内的文件读写**（2026-10-28 起替代 `script_run`） | 脚本在**任意子进程**内执行，执行器**无法拦截**其文件操作（仅约束 `file` 参数为可读）。**隔离开启时 `task_run` 仍是绕过通道**（登记为未决项） |
 | 2 | ~~**`browser_run` / `desktop_run` 的落盘句柄**~~ | **〔订正（2026-10-08）：已修复〕** 原「`SHT`/`DOM`/`DBG`/`UPF` 等落盘未接线」已不再成立——浏览器域落盘统一收口到 `internal/browser/run.go` 的 `writeFileChecked`（`savePNG`/`stepDOM`/`stepDBG`/`domToFile`/`flushConsole` 全走它），桌面域 `internal/desktop/run.go` 的 `encodePNG`（`saveWindowShot`/`saveScreenShot`）起手 `agentbox.Check(file,true)`；三域引擎句柄实现统一为 **`src/lib/mcp-tools/internal/dslfs`**（读 `Check(...,false)` / 写 `Check(...,true)` 双校验）；`dsl_run` 的脚本读盘已**下移执行器**（`dslexec`，受沙箱）。依据 [42 §2 (255)](../40-roadmap/42-决策记录.md)。 |
 | 3 | **审计落 DataDir** | 14 §5 规划项；当前仅 stderr 一行（由宿主捕获落日志），**不写文件** |
 | 4 | ~~**符号链接解析**~~ | **〔订正（2026-10-11）：已实现〕** agentbox 判定前对**允许目录与目标路径两侧统一**逐段 `os.Readlink` 解析真实路径（**兼容 Windows 目录联接 junction**；`filepath.EvalSymlinks` 在 Windows **不解析 junction** 故未采用），**不存在的路径段原样拼回**（= 解析最近存在祖先 + 拼接剩余分量），落点 = `src/lib/core/agentbox/agentbox.go`（`resolveRealPath`/`resolveLinksOnce`）。**两侧统一**避免了旧实现的不对称。原「**不追软链**（`EvalSymlinks` 未用）」**已不成立**。**链接自环 / 过深（>64 次替换）→ `resolveRealPath` 返回 `("", false)` 并 fail-closed**（允许目录规则被丢弃 / 目标路径被拒，**不回退字面路径**——避免「64+ 段软链链终点指向沙箱外」被 fail-open 放行）。**filesys 侧**另自行逐段解析（`withinWorkDirReal`/`resolveLinksOnce`，含 Windows 目录联接）—— 见 [23-filesys](../20-modules/23-filesys.md) |

@@ -16,10 +16,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // Transport 是基于进程内 mq 的 gateway 通道端口实现。
@@ -54,6 +54,27 @@ func (t *Transport) Hooks() mcpgateway.Hooks {
 		OnTaskReport:   func(payload map[string]any) { t.emit(msgkeys.TopicMcpTasksReport, payload) },
 		OnMCPChanged:   func(payload map[string]any) { t.emit(msgkeys.TopicMcpGatewayChanged, payload) },
 		OnToolsTimeout: func(payload map[string]any) { t.emit(msgkeys.TopicMcpToolsTimeout, payload) },
+	}
+}
+
+// ProgressHandler 返回下游 `notifications/progress` 的 mq 实现（GATEWAY-2 L8，2026-10-28）：
+// gateway 已按 `progressToken`（= `call_id`）把通知归位到具体调用，本函数把它转成下行事件
+// `mcp-tools-progress`（61 §5.3；广播，桥按 `instance_id` 精确过滤）。
+//
+// `total` 缺省语义：未上报（0）→ **不带该键**（前端只知已处理量、不显示百分比）。
+//
+// 装配方把它填进 Params.ProgressHandler；未装配 → gateway 丢弃 progress + warn。
+func (t *Transport) ProgressHandler() func(mcpgateway.ProgressEvent) {
+	return func(ev mcpgateway.ProgressEvent) {
+		payload := map[string]any{
+			msgkeys.McpToolsProgressEventInstanceId: ev.InstanceID,
+			msgkeys.McpToolsProgressEventToolCallId: ev.CallID,
+			msgkeys.McpToolsProgressEventProgress:   ev.Progress,
+		}
+		if ev.Total > 0 {
+			payload[msgkeys.McpToolsProgressEventTotal] = int64(ev.Total)
+		}
+		t.emit(msgkeys.TopicMcpToolsProgress, payload)
 	}
 }
 

@@ -64,23 +64,81 @@ func scopeWithDataDir(scope facade.Scope) facade.Scope {
 	return scope
 }
 
-// CfgInstBind 解析实例数据根：① 本进程实例视图（instance_id 显式命中）② 调用方带入 Scope
-// （自登记进 data 绑定表后返回）③ data 绑定表（同源另一视图）。解析不出 → 报"未登记"。
-func (b *Base) CfgInstBind(instanceID string, scope facade.Scope) (workDir, dataDir string, err error) {
-	if instanceID != "" {
-		if info, ok := b.View.Lookup(instanceID); ok {
-			return info.WorkDir, info.DataDir, nil
+// bindMode 是实例绑定解析阶梯的**取视图方式**（三种既有解析口径，语义逐条不变）：
+// bindByID = 仅显式 instance_id 命中 Lookup（无唯一实例回退）；bindQuiet = 唯一实例回退可用但不
+// 告警（容错探测）；bindStrict = 回退可用且告警（严格路径，暴露遗漏）。
+type bindMode int
+
+const (
+	bindByID bindMode = iota
+	bindQuiet
+	bindStrict
+)
+
+// bindSource 标记绑定命中的阶梯级别（决定调用方是否需自登记进 data 绑定表）：
+// ① 本进程实例视图（无需登记）/ ② 调用方带入 Scope / ③ data 组件绑定表。
+type bindSource int
+
+const (
+	bindFromView  bindSource = iota
+	bindFromScope
+	bindFromTable
+)
+
+// binding 是解析出的实例数据根绑定。ID = 解析出的实例 id（strict/quiet 模式下 = 唯一实例回退
+// 命中的 id；其余 = 入参 instance_id）。
+type binding struct {
+	ID      string
+	WorkDir string
+	DataDir string
+	Source  bindSource
+}
+
+// resolveBinding 是实例绑定解析的**唯一阶梯**（S-1 · DATA-OPT-1 P3）：① 本进程实例视图（按 mode
+// 取 Lookup / ResolveQuiet / Resolve）② 调用方带入 Scope ③ data 组件绑定表。
+// 解析不出 → bindStrict 透传视图错误，其余返回"未登记"。
+func (b *Base) resolveBinding(mode bindMode, instanceID string, scope facade.Scope) (binding, error) {
+	viewErr := ErrInstanceNotRegistered
+	switch mode {
+	case bindByID:
+		if instanceID != "" {
+			if info, ok := b.View.Lookup(instanceID); ok {
+				return binding{ID: instanceID, WorkDir: info.WorkDir, DataDir: info.DataDir, Source: bindFromView}, nil
+			}
+		}
+	default:
+		var id string
+		var info Info
+		if mode == bindQuiet {
+			id, info, viewErr = b.View.ResolveQuiet(instanceID)
+		} else {
+			id, info, viewErr = b.View.Resolve(instanceID)
+		}
+		if viewErr == nil {
+			return binding{ID: id, WorkDir: info.WorkDir, DataDir: info.DataDir, Source: bindFromView}, nil
 		}
 	}
 	if !scope.Empty() {
 		scope = scopeWithDataDir(scope)
-		data.Register(instanceID, scope.WorkDir, scope.DataDir)
-		return scope.WorkDir, scope.DataDir, nil
+		return binding{ID: instanceID, WorkDir: scope.WorkDir, DataDir: scope.DataDir, Source: bindFromScope}, nil
 	}
 	if wd, dd, ok := data.BindOf(instanceID); ok {
-		return wd, dd, nil
+		return binding{ID: instanceID, WorkDir: wd, DataDir: dd, Source: bindFromTable}, nil
 	}
-	return "", "", ErrInstanceNotRegistered
+	return binding{}, viewErr
+}
+
+// CfgInstBind 解析实例数据根：① 本进程实例视图（instance_id 显式命中）② 调用方带入 Scope
+// （自登记进 data 绑定表后返回）③ data 绑定表（同源另一视图）。解析不出 → 报"未登记"。
+func (b *Base) CfgInstBind(instanceID string, scope facade.Scope) (workDir, dataDir string, err error) {
+	bnd, err := b.resolveBinding(bindByID, instanceID, scope)
+	if err != nil {
+		return "", "", ErrInstanceNotRegistered
+	}
+	if bnd.Source == bindFromScope {
+		data.Register(bnd.ID, bnd.WorkDir, bnd.DataDir)
+	}
+	return bnd.WorkDir, bnd.DataDir, nil
 }
 
 // InstBindingFor 返回实例的 {work_dir, data_dir} 绑定（层序见文件头）；解析不出 → ok=false。
@@ -90,19 +148,14 @@ func (b *Base) CfgInstBind(instanceID string, scope facade.Scope) (workDir, data
 // mcp / scenario 域等"设计允许缺实例"的正常探测刷告警噪音。严格路径（要暴露遗漏）见
 // WorkDirFor 的最终 Resolve、PrjUsrFor。
 func (b *Base) InstBindingFor(instanceID string, scope facade.Scope) (string, string, bool) {
-	if _, info, err := b.View.ResolveQuiet(instanceID); err == nil {
-		return info.WorkDir, info.DataDir, true
+	bnd, err := b.resolveBinding(bindQuiet, instanceID, scope)
+	if err != nil {
+		return "", "", false
 	}
-	if !scope.Empty() {
-		scope = scopeWithDataDir(scope)
-		data.Register(instanceID, scope.WorkDir, scope.DataDir)
-		return scope.WorkDir, scope.DataDir, true
+	if bnd.Source != bindFromView {
+		data.Register(bnd.ID, bnd.WorkDir, bnd.DataDir)
 	}
-	if wd, dd, ok := data.BindOf(instanceID); ok {
-		data.Register(instanceID, wd, dd)
-		return wd, dd, true
-	}
-	return "", "", false
+	return bnd.WorkDir, bnd.DataDir, true
 }
 
 // WorkDirFor 解析实例工作目录（**严格**：解析不出即报错）。knowledge / memory 两文件域用——
@@ -131,56 +184,24 @@ func (b *Base) WorkDirLoose(instanceID string, scope facade.Scope) string {
 // **短开语义（D-45）**：prj 层连接返回 release，调用方用完即释（bbolt 单文件排他锁——
 // 短开使 GUI 与 CLI 可并发打开同一项目 prj 库）；高频读由 config 门面值缓存吸收（12-数据层 §5.4）。
 func (b *Base) PrjFor(instanceID string, scope facade.Scope) (*data.DB, func(), error) {
-	if instanceID != "" {
-		if info, ok := b.View.Lookup(instanceID); ok {
-			return b.PrjByInst(instanceID, info)
-		}
+	bnd, err := b.resolveBinding(bindByID, instanceID, scope)
+	if err != nil {
+		return nil, nil, err
 	}
-	if !scope.Empty() {
-		scope = scopeWithDataDir(scope)
-		data.Register(instanceID, scope.WorkDir, scope.DataDir)
-		return data.Prj(instanceID)
-	}
-	if wd, dd, ok := data.BindOf(instanceID); ok {
-		data.Register(instanceID, wd, dd)
-		return data.Prj(instanceID)
-	}
-	return nil, nil, ErrInstanceNotRegistered
+	data.Register(bnd.ID, bnd.WorkDir, bnd.DataDir)
+	return data.Prj(bnd.ID)
 }
 
 // PrjUsrFor 定位实例的 **prjusr 主库**（会话/轮次/消息/任务树/快照所在层，12-数据层）：
 // ① 本进程实例视图（含"唯一实例回退"）② 调用方带入 Scope（独立形态 → 自登记）
 // ③ data 组件绑定表（同源另一视图）。
 func (b *Base) PrjUsrFor(instanceID string, scope facade.Scope) (*data.DB, error) {
-	id, info, rerr := b.View.Resolve(instanceID)
-	if rerr == nil {
-		return b.PrjUsrByInst(id, info)
-	}
-	if !scope.Empty() {
-		scope = scopeWithDataDir(scope)
-		data.Register(instanceID, scope.WorkDir, scope.DataDir)
-		return data.PrjUsr(instanceID)
-	}
-	if wd, dd, ok := data.BindOf(instanceID); ok {
-		data.Register(instanceID, wd, dd)
-		return data.PrjUsr(instanceID)
-	}
-	return nil, rerr
-}
-
-// SessionDBFor 定位**主会话库**（2026-10-23 轻量分片）：与 prjusr 同根、按会话分库，
-// 承载 messages / turns / snapshot / tasktree / inbox；prjusr 只留会话列表与项目级表。
-//
-// **短开语义**：返回 release，调用方配对释放（会话库不常开，避免按会话堆积 fd）。
-func (b *Base) SessionDBFor(instanceID string, scope facade.Scope, sessionID string) (*data.DB, func(), error) {
-	if sessionID == "" {
-		return nil, nil, errors.New("kernel: session_id required")
-	}
-	prjUsr, err := b.PrjUsrFor(instanceID, scope)
+	bnd, err := b.resolveBinding(bindStrict, instanceID, scope)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return data.OpenSession(prjUsr.Path(), sessionID)
+	data.Register(bnd.ID, bnd.WorkDir, bnd.DataDir)
+	return data.PrjUsr(bnd.ID)
 }
 
 // PrjByInst 按实例绑定解析 prj 主库（绑定登记进 data 缓存）。**短开语义（D-45）**：返回

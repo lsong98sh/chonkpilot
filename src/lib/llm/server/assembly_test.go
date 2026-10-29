@@ -3,12 +3,11 @@ package server
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 // histThree 三轮历史（每轮 = user + assistant；用于三段定位）。
@@ -118,7 +117,7 @@ func TestAssemblyUsageFixed(t *testing.T) {
 	a := tc.assembly()
 	wantFixed := data.EstimateTokens(tc.sysPromptText) +
 		data.EstimateTokens(tc.memGuideText) + data.EstimateTokens(tc.assetGuideText) +
-		toolsTokenEstimate(tc.llmTools())
+		session.ToolsTokenEstimate(toolSchemas(tc.llmTools()))
 	if a.Usage.Fixed != wantFixed {
 		t.Fatalf("Usage.Fixed = %d, want %d（system + 两条指引 + 工具 schema）", a.Usage.Fixed, wantFixed)
 	}
@@ -131,27 +130,5 @@ func TestAssemblyUsageFixed(t *testing.T) {
 	}
 	if msgs[1].Role != "system" || msgs[1].Content != tc.memGuideText {
 		t.Fatalf("Messages 次位应为记忆指引: %+v", msgs[:min(2, len(msgs))])
-	}
-}
-
-// TestToolsTokenEstimate：工具 schema（名 + 描述 + 参数 JSON）计入固定开销。
-func TestToolsTokenEstimate(t *testing.T) {
-	if got := toolsTokenEstimate(nil); got != 0 {
-		t.Fatalf("无工具 → 0，got %d", got)
-	}
-	one := toolsTokenEstimate([]ToolDef{{
-		Name:        "core_file_read",
-		Description: "读取文件内容（按路径）",
-		Parameters:  map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}},
-	}})
-	if one <= 0 {
-		t.Fatalf("单个工具 schema 估算应 > 0，got %d", one)
-	}
-	two := toolsTokenEstimate([]ToolDef{
-		{Name: "a", Description: strings.Repeat("描", 40)},
-		{Name: "b", Description: strings.Repeat("述", 40)},
-	})
-	if two <= one {
-		t.Fatalf("两个工具估算应大于一个: one=%d two=%d", one, two)
 	}
 }

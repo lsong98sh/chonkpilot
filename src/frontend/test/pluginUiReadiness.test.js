@@ -32,10 +32,12 @@ async function loadModules() {
     import('../packages/plugin-ui/src/index.js'),
   ])
   // 插件 UI 包宿主端口（D-70 ②）：测试用宿主 mq + 极简组件/主题桩。
+  // `instance.currentId` = PLUGIN-INSTANCE-1 的窗口实例（拼进 iframe URL）。
   pkg.configurePluginUI({
     host: {
       mq: { on: (...a) => mqMod.default.on(...a), emit: (...a) => mqMod.default.emit(...a) },
       views: { register: () => {}, unregister: () => {} },
+      instance: { currentId: () => 'win-1' },
     },
     theme: { subscribe: () => () => {}, snapshot: () => ({}) },
     components: {
@@ -180,8 +182,8 @@ test('② 就绪（running + 探活 200）→ 渲染 iframe、无占位', async 
   assert.equal(probeCalls[0].method, 'HEAD', '探活用 HEAD（不重复下载页面）')
   assert.equal(
     frame.props.src,
-    '/plugins/codegraph/webui/config.html?p=config',
-    '首帧 src 与既有格式一致（无重试代次）',
+    '/plugins/codegraph/webui/config.html?p=config&instance_id=win-1',
+    '首帧 src = p + instance_id（PLUGIN-INSTANCE-1），且无重试代次',
   )
 
   // iframe load → 进入 ready（占位 / loading 都退场）
@@ -251,6 +253,9 @@ test('④ 源码守卫：零 watch / 零 watchEffect；iframe 有 error 回调�
   assert.match(readiness, /export const AUTO_RETRY_LIMIT = 3/, '自动重试上限须为 3')
   assert.match(readiness, /subscribePluginChange\(onPluginChange\)/, '就绪态须由插件变更事件驱动')
   assert.match(readiness, /import \{ pluginById, subscribePluginChange \} from '\.\/usePlugins'/, '状态取自既有 usePlugins')
+  // PLUGIN-INSTANCE-1：插件页归属 = 承载它的窗口实例（唯一 URL 构造点）
+  assert.match(readiness, /instance_id=\$\{encodeURIComponent\(iid\)\}/, 'URL 须带可选 instance_id（PLUGIN-INSTANCE-1）')
+  assert.match(readiness, /inst\.currentId\(\)/, '实例 id 取自宿主端口（不直连宿主 mq / 全局）')
 
   assert.match(host, /v-if="showFrame"/, 'iframe 须按就绪态条件挂载')
   assert.match(host, /@error="onFrameError"/, 'iframe 须接 error')

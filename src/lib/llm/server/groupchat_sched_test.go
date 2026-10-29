@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
 )
 
 // ── 可控 LLM 夹具 ────────────────────────────────────────────────────
@@ -169,7 +170,7 @@ func groupRoundTargets(t *testing.T, s *Server, gid string) []facade.GroupRoundT
 func boardMessages(t *testing.T, s *Server, gid string) []map[string]any {
 	t.Helper()
 	res := dataResult(t, dataCall(t, s, "data-session-history", map[string]any{
-		"instance_id": "ins-test", "session_id": gid,
+		"instance_id": "ins-test", "session_id": gid, "dialog_id": s.dialogOf("ins-test", gid),
 	}))
 	msgs, _ := res["messages"].(map[string]any)
 	if msgs == nil {
@@ -566,15 +567,14 @@ func regInstance(s *Server, id, sessionID string) {
 }
 
 // putRunningTurn 直接放一条运行 turn（仅 `turnSession` 读 req.Session；不启 LLM 循环）。
-// 构造须带 ctx/cancel/done —— `s.Stop` 会 Close 全部登记 turn（nil cancel 会 panic）。
+// 构造须带 ctx/life —— `s.Stop` 会 Close 全部登记 turn（生命周期闸门须可关闭）。
 func putRunningTurn(s *Server, turnID, session string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	s.turns[instKey("ins-test", turnID)] = &turnCtx{
-		req:    StartReq{InstanceID: "ins-test", Session: session, Turn: turnID},
-		ctx:    ctx,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		req:  StartReq{InstanceID: "ins-test", Session: session, Turn: turnID},
+		ctx:  ctx,
+		life: sessionrunner.NewLifecycle(cancel),
 	}
 	s.mu.Unlock()
 }
@@ -596,9 +596,7 @@ func TestAskTargetInstanceReverseLookup(t *testing.T) {
 	scope := s.cfgScope("ins-test")
 	mustEnsure := func(req facade.SessionEnsureRequest) {
 		t.Helper()
-		if _, err := s.cfg.SessionEnsure(req); err != nil {
-			t.Fatalf("SessionEnsure(%s): %v", req.SessionID, err)
-		}
+		ensureTestSessionReq(t, s, req.SessionID, req)
 	}
 	mustEnsure(facade.SessionEnsureRequest{InstanceID: "ins-test", Scope: scope, SessionID: "g-1",
 		Kind: facade.SessionKindGroupChat, Lifecycle: facade.SessionLifecycleChatting, Agent: "main"})
@@ -635,12 +633,9 @@ func TestGroupResumePlanBreakpoint(t *testing.T) {
 
 	gid := "group-plan"
 	scope := s.cfgScope("ins-test")
-	if _, err := s.cfg.SessionEnsure(facade.SessionEnsureRequest{
-		InstanceID: "ins-test", Scope: scope, SessionID: gid,
+	ensureTestSession(t, s, gid, facade.SessionEnsureRequest{
 		Kind: facade.SessionKindGroupChat, Lifecycle: facade.SessionLifecycleChatting, Agent: "a",
-	}); err != nil {
-		t.Fatalf("ensure group: %v", err)
-	}
+	})
 	if _, err := s.cfg.GroupParticipantsSave(facade.GroupParticipantsSaveRequest{
 		InstanceID: "ins-test", SessionID: gid, Scope: scope,
 		List: []facade.GroupParticipant{{Agent: "a"}, {Agent: "b"}},
@@ -865,9 +860,7 @@ func TestWorkSessionToolFaceExcludesSubchatFinish(t *testing.T) {
 		{InstanceID: "ins-test", Scope: scope, SessionID: "sc-ws", Kind: facade.SessionKindSubChat,
 			Lifecycle: facade.SessionLifecycleChatting, Agent: "sub"},
 	} {
-		if _, err := s.cfg.SessionEnsure(req); err != nil {
-			t.Fatalf("ensure %s: %v", req.SessionID, err)
-		}
+		ensureTestSessionReq(t, s, req.SessionID, req)
 	}
 
 	// work_session：硬拒 subchat_finish（剥 self_ 前缀两种口径均拦），下发面亦不含。

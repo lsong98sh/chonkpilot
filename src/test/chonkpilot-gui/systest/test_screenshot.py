@@ -32,14 +32,14 @@ def J(gui, js):
         return r
 
 
-def uploads_dir(sub="tmp/uploads"):
-    """列出 `<data-root>/<sub>` 下的落盘文件（2026-10-10 口径：[61 §1](gui.upload)）。
+def uploads_dir(root, sub="tmp/uploads"):
+    """列出 `<prjusr 数据根>/<sub>` 下的落盘文件（2026-10-10 口径：[61 §1](gui.upload)）。
 
-    落盘 = `<data_root>/<dir>/<uuid><ext>`：`dir` 缺省 `tmp/uploads`（普通附件），**截图传
-    `screenshot`** —— 故截图用例须查 `<data-root>/screenshot/`（原硬编码 `tmp/uploads` 为
-    变更前的旧落点，已过期）。
+    落盘 = `<prjusr root>/<dir>/<uuid><ext>`：`dir` 缺省 `tmp/uploads`（普通附件），**截图传
+    `screenshot`**。2026-10-26：GUI 已无 `--data-dir`，prjusr 根 = `harness.GUIHandle.data_dir`
+    （DATAROOT-1：`<work_dir>/.chonkpilot/users/<OS 用户名>`），不再等于旧的 DATA_DIR。
     """
-    d = os.path.join(DATA_DIR, *sub.split("/"))
+    d = os.path.join(root, *sub.split("/"))
     return [f for f in os.listdir(d) if not f.startswith('.')] if os.path.isdir(d) else []
 
 
@@ -119,6 +119,8 @@ def main():
 
         # S2 点击 → 截图预览 overlay（隐藏窗口全屏截取后显示）；有界轮询等 overlay 出现
         # （满载下 GDI 截取 + UI 线程争用可能远超 6s；wait_probe 同时容忍瞬时 /eval 超时）
+        shot_root = gui._handle.data_dir
+        shot_before = set(uploads_dir(shot_root, "screenshot"))
         click_screenshot(gui)
         ovSeen = wait_probe(gui, ["!!document.querySelector('.screenshot-overlay')"], timeout=20.0)
         warns = [e.get('text', '')[:150] for e in (gui.console() or {}).get('entries', []) if e.get('level') == 'warning']
@@ -137,8 +139,9 @@ def main():
         chips = J(gui, "document.querySelectorAll('.attach-chip.attach-image').length")
         chipName = J(gui, "document.querySelector('.attach-chip.attach-image .attach-name')?.textContent?.trim() || ''")
         overlayGone = J(gui, "!document.querySelector('.screenshot-overlay')")
-        # 截图落点 = `<data-root>/screenshot/`（`dir:"screenshot"`，2026-10-10 口径）
-        hasPng = any(f.endswith('.png') for f in uploads_dir("screenshot"))
+        # 截图落点 = `<prjusr 数据根>/screenshot/`（`dir:"screenshot"`，2026-10-10 口径）；
+        # 断言**本次新增**（同目录可能留有其它套件/历史截图）。
+        hasPng = any(f.endswith('.png') for f in (set(uploads_dir(shot_root, "screenshot")) - shot_before))
         # chip 展示名 = 前端本地化标签 `t('chat.screenshot')`（ChatPanel.onScreenshotDone 写入
         # `name: t('chat.screenshot')` + `ref: 'screenshot/<name>'`）——**不是**落盘文件名；
         # 与截图按钮 title 同源（同一 i18n 文案）→ 用它作 locale 无关的强断言。

@@ -15,7 +15,7 @@
  *   - getter 为**纯派生**：禁发 mq / 禁异步 / 禁写 state（[17] §3）。
  *
  * 不入本 store（§3.7 判据：已是模块级单例 / 服务对象，迁入只增耦合）：
- *   `useTaskView`（任务树/节点数据）· `useQueueStatus` / `indexStatus` · `askUserManager` ·
+ *   `useTaskView`（任务树/节点数据）· `useQueueStatus` · `askUserManager` ·
  *   `DialogManager` · `useUserConfigSync`（theme/locale 跨窗口共享 ref）· 区块显隐（属布局域）。
  */
 import { defineStore } from 'pinia'

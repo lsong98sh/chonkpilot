@@ -3,7 +3,7 @@
 > 适用：ChonkPilot `PLUGIN-1` 插件平台。**本文是插件开发与实现的唯一操作手册**；设计背景见
 > [插件与MCP统一设计方案](插件与MCP统一设计方案.md)。
 > 状态：🟡 随实现同步（2026-10-22 起；2026-10-23 对齐实际 SDK / pluginmgr / 数据面并补 §14/§15）。
-> 示例与代码以本仓库 `src/plugins/*` 为准。
+> 示例与代码以**同级仓 `chonkpilot-plugins/*`** 为准（2026-10-24 起主仓 `src/plugins/` 已整体迁出；SDK/宿主运行时 = `chonkpilot-plugin-framework`）。
 
 ---
 
@@ -611,16 +611,16 @@ dist/desktop/capability/plugins/<id>/
 
 | 插件 | 说明 |
 |------|------|
-| `src/plugins/websearch` | 三个 web 工具共用一个配置页：`web_search` / `web_fetch`（HTML→文本）/ `web_download`（目录/上限/白名单） |
-| `src/plugins/codegraph` | codegraph + vfts 合一（`OnMCPServer` 复用引擎 `RegisterTools`；配置页经 `tool.call` 直调） |
-| `src/plugins/compress` | 数据面读写（`session.snapshot.get/set`）+ `llm.step` 摘要 + `DoCompress` |
-| `src/plugins/browser` | `browser_run`：桥接层 + 同目录引擎 exe（WebView2，UDS `start/stop/operation`），按实例复用 context |
-| `src/plugins/desktop` | `desktop_run`：同构（Win32/UIA 引擎） |
-| `src/plugins/file` | 文件系列 11 工具：解析 `tools/file/*.tool.md` 契约 → 注册 MCP 工具 → 进程内 `toolset.Dispatch`；默认参数（purpose/encoding/targets 上限）可配 |
-| `src/plugins/task` | 任务系列：`task_run` 执行 / `task_llm` 单次 LLM / `task_status` 任务树 / `task_stop` 终止 |
-| `src/plugins/mcp` | MCP 系列：`mcp_find` / `mcp_load` / `mcp_invoke`（全部经宿主能力面，不直连 gateway 内部） |
+| `chonkpilot-plugins/websearch` | 三个 web 工具共用一个配置页：`web_search` / `web_fetch`（HTML→文本）/ `web_download`（目录/上限/白名单） |
+| `chonkpilot-plugins/codegraph` | codegraph + vfts 合一（`OnMCPServer` 复用引擎 `RegisterTools`；配置页经 `tool.call` 直调） |
+| ~~`chonkpilot-plugins/compress`~~ | **压缩已内建（非插件）**：会话侧压缩内核（`chonkpilot-session`）+ `llm/server` 编排；无插件运行时形态 |
+| `chonkpilot-plugins/browser` | 浏览器插件：桥接层 + 同目录引擎 exe（WebView2，UDS `start/stop/operation`），按实例复用 context；**不注册 MCP 工具**（原 `browser_run` 已删除） |
+| `chonkpilot-plugins/desktop` | 桌面插件：同构（Win32/UIA 引擎）；**不注册 MCP 工具**（原 `desktop_run` 已删除） |
+| `chonkpilot-plugins/file` | 文件系列 11 工具：解析 `tools/file/*.tool.md` 契约 → 注册 MCP 工具 → 进程内 `toolset.Dispatch`；默认参数（purpose/encoding/targets 上限）可配 |
+| `chonkpilot-plugins/task` | 任务系列：`task_run` 执行 / `task_llm` 单次 LLM / `task_status` 任务树 / `task_stop` 终止 |
+| `chonkpilot-plugins/mcp` | MCP 系列：`mcp_find` / `mcp_load` / `mcp_invoke`（全部经宿主能力面，不直连 gateway 内部） |
 | `src/initdata/capability/plugins/demo-python` | **Python 插件 + MCP 演示项目**（仅标准库，覆盖本文全部章节；见该目录 `README.md`） |
-| `src/lib/mcp-tools/plugins/browser` · `desktop` | 上述两个插件的**引擎**本体（仍只讲自有 UDS，由桥接层分别拉起/转发） |
+| `chonkpilot-plugins/{browser,desktop}/engine` | 上述两个插件的**引擎**本体（仍只讲自有 UDS，由桥接层分别拉起/转发） |
 
 > **工具归属变更（2026-10-23）**：`file_*`（11）、`mcp_*`（3）、`script_run`、`codegraph_*`（8）、`vfts_query`
 > 的契约已从 `capability/tools/` 移除（`file` 仍保留源文件供 file 插件解析，但不再进入 core capability 根），

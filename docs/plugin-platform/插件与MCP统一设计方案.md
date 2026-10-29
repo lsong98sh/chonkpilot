@@ -4,7 +4,7 @@
 > 本稿**整体替代** v1（2026-10 上旬）——v1 的 `managed-stdio` / JSON-Schema 表单 / `inproc` 插件三处方向已作废，原因见 §1.2。
 > 前置事实：**PRODSIM-1 主体已完成（L1–L4，2026-10-22）** —— 唯一产物 `chonkpilot.exe`（WebView2 宿主 + 常驻 server），`gui` / `flash` / `browser` 形态与 `--plugin-http-*` 已删除，插件桥只保留 **UDS** 免认证前门（`transport` 仍支持显式 `tcp://`）。
 > 关联：[28-plugins](../spec/20-modules/28-plugins.md) · [2C-UI插件](../spec/20-modules/2C-UI插件.md) · [25-mcp-server](../spec/20-modules/25-mcp-server.md) · [26-mcp-gateway](../spec/20-modules/26-mcp-gateway.md) · [27-mcp-tools](../spec/20-modules/27-mcp-tools.md) · [29-codegraph](../spec/20-modules/29-codegraph.md) · [2B-vfts](../spec/20-modules/2B-vfts.md) · [31-窗口与布局](../spec/30-function-points/31-窗口与布局.md) · [61-消息一览](../spec/60-reference/61-消息一览.md) · [71-编程规范 §3.3](../spec/70-conventions/71-编程规范.md)
-> 代码面：`src/lib/llm/pluginbridge`（插件前门）· `src/lib/core/{transport,pluginclient}`（帧/UDS）· `src/lib/llm/pluginhost`（进程监管）· `src/lib/llm/server`（gateway 客户端/能力面）· `src/lib/gwadapter` + gateway 内核（`chonkpilot-mcp-gateway@v0.1.0`）· `src/frontend/src/{layout,layout-free,views/codeview}` · `src/lib/gui/{main.go,plugin_gui.go}` · `src/initdata/capability`
+> 代码面（2026-10-27 订正）：`chonkpilot-plugin-framework/host/bridge`（插件前门；原 `src/lib/llm/pluginbridge` 已并入框架）· `chonkpilot-plugin-framework/{transport,pluginclient}`（帧/UDS）· `chonkpilot-plugin-framework/host/mgr`（进程监管）· 主仓 `src/lib/pluginhost`（薄适配）· `src/lib/llm/server`（gateway 客户端/能力面）· `src/lib/gwadapter` + gateway 内核（`chonkpilot-mcp-gateway@v0.1.0`）· `src/frontend/src/{layout,layout-free,views/codeview}` · `src/lib/gui/{main.go,plugin_gui.go}` · `src/initdata/capability`
 
 ***
 
@@ -73,12 +73,12 @@
 
 | 能力 | 事实 | 落点 |
 |------|------|------|
-| 插件 UDS 前门 | `pluginbridge`：帧 `{k,id,name,payload,ok,result,errors}`、UDS 默认 `%LOCALAPPDATA%\chonkpilot\plugin.sock`、后台 fanout 总线事件、订阅过滤 | [server.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/server.go#L16-L29) · [transport.go](file:///e:/BizWorks/chonkpilot/src/lib/core/transport/transport.go#L34-L50) |
-| 握手 / 注册 / 订阅 | `plugin.hello`（id / name / version / features）→ 分配 `plugin:<id>:<8hex>`；`plugin.register`（features + subscriptions）；`plugin.subscribe/unsubscribe` | [control.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/control.go#L15-L94) |
-| 能力白名单 | `plugin/v1/*` ≈60 条 → 既有 MQ 主题（会话 / 任务 / 配置 / 文件 / 工具 / server / 运维） | [capabilities.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/capabilities.go#L18-L86) |
-| 反向 RPC | 宿主 → 插件：`plugin.tool.call` / `plugin.filter.run` / `plugin.tool.cancel`；工具主题经 `plugin.tool.bind` 绑定后转 RPC | [tools.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/tools.go#L29-L102) |
-| Filter / 前置钩子 | 4 个 stage（已接 `llm.before_start` / `llm.before_send` / `llm.before_simple` / `tool.before_call`），`pass/replace/drop`，fail-closed；工具 `pre_hook_subject` | [filter.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/filter.go#L10-L58) |
-| 进程监管 | `pluginhost.Host/Manager`：单实例锁、env 注入、`1s→30s` 退避、最多 3 次 | [host.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginhost/host.go#L189-L228) |
+| 插件 UDS 前门 | `pluginbridge`：帧 `{k,id,name,payload,ok,result,errors}`、UDS 默认 `%LOCALAPPDATA%\chonkpilot\plugin.sock`、后台 fanout 总线事件、订阅过滤 | `chonkpilot-plugin-framework/host/bridge/{server,transport}.go`（原 `src/lib/llm/pluginbridge` 已迁出） |
+| 握手 / 注册 / 订阅 | `plugin.hello`（id / name / version / features）→ 分配 `plugin:<id>:<8hex>`；`plugin.register`（features + subscriptions）；`plugin.subscribe/unsubscribe` | `chonkpilot-plugin-framework/host/bridge/control.go` |
+| 能力白名单 | `plugin/v1/*` ≈60 条 → 既有 MQ 主题（会话 / 任务 / 配置 / 文件 / 工具 / server / 运维） | `chonkpilot-plugin-framework/host/bridge/capabilities.go` |
+| 反向 RPC | 宿主 → 插件：`plugin.tool.call` / `plugin.filter.run` / `plugin.tool.cancel`；工具主题经 `plugin.tool.bind` 绑定后转 RPC | `chonkpilot-plugin-framework/host/bridge/tools.go` |
+| Filter / 前置钩子 | 4 个 stage（已接 `llm.before_start` / `llm.before_send` / `llm.before_simple` / `tool.before_call`），`pass/replace/drop`，fail-closed；工具 `pre_hook_subject` | `chonkpilot-plugin-framework/host/bridge/filter.go` |
+| 进程监管 | `host/mgr.Host/Manager`：单实例锁、env 注入、`1s→30s` 退避、最多 3 次 | `chonkpilot-plugin-framework/host/mgr/host.go` |
 | 索引队列 | ~~`plugin.index.take/ack/pending/workdirs` → data 门面待索引队列；vfts/codegraph indexer 已在用~~ **〔2026-10-25 退场，D-71〕**：四帧 + `queuehooks` + `index_queue` + 两个 indexer exe 已删除，插件改为订阅 `filesys.changed` 自管索引 | — |
 | gateway 注册 | `servers/register`（`mcp-servers-register`）支持 `stdio` / `http`(=Streamable HTTP) / `sse`、`namespace`、`hot_tools`、`headers`、`origin`、`timeout`、`isolate` | [gateway_servers.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/server/gateway_servers.go#L194-L227) |
 | 调用上下文注入 | 仅 `origin=builtin` 的下游收到 `_meta.chonkpilot{instance_id,work_dir,data_dir,session,turn,tool_call_id,top_session,parent,purpose}` | gateway 内核 `provider.go` / `contextmeta.go` |
@@ -349,7 +349,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 
 ### 5.3 能力方法面（插件 → 宿主）
 
-> 复用既有 `plugin/v1/*` 白名单（[capabilities.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/capabilities.go#L18-L86)），本设计**只增不改**。带 ★ = 本期新增。
+> 复用既有 `plugin/v1/*` 白名单（`chonkpilot-plugin-framework/host/bridge/capabilities.go`），本设计**只增不改**。带 ★ = 本期新增。
 
 | 分类 | 方法 | 说明 |
 |------|------|------|
@@ -420,7 +420,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 
 ### 5.6 插件 → 宿主「发送指令」
 
-统一走既有 `plugin/v1/gui.apply`（[gui.go](file:///e:/BizWorks/chonkpilot/src/lib/llm/pluginbridge/gui.go#L20-L45)）：
+统一走既有 `plugin/v1/gui.apply`（`chonkpilot-plugin-framework/host/bridge/gui.go`）：
 
 ```jsonc
 { "action": "preview-tab-open", "payload": { "kind": "plugin-page", "plugin": "websearch", "page": "config" } }
@@ -941,6 +941,8 @@ src/initdata/capability/plugins/websearch/
 ***
 
 ## 13. 落地阶段、测试、构建
+
+> **〔现状订正（2026-10-27）〕** 本表为 2026-10 实施计划快照：① 插件源码已整体迁至**同级仓 `chonkpilot-plugins/`**（P3–P5 的 `src/plugins/*` 落点均已迁出）；② `src/lib/pluginmgr` / `pluginbridge` 已并入 **`chonkpilot-plugin-framework`**（`host/{mgr,bridge}`），主仓仅保留 `src/lib/pluginhost/` 适配；③ `compress` 已内建（P5 不再有插件形态）。
 
 | 阶段 | 内容 | 主要落点 |
 |------|------|---------|

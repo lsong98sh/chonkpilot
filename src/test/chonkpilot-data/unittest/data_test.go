@@ -21,10 +21,11 @@ func openLayer(t *testing.T, layer data.Layer) *data.DB {
 	return db
 }
 
-// TestMigrationBuckets v14/v15/v16：按层建桶（不再三层同构）——各层只建自己实际使用的桶；
-// prj 层不再有 file_list（v15 退场，vfts 清单插件自持）；prjusr 不再有 index_queue
-// （v16 退场，索引由 vfts/codegraph 插件订阅 filesys.changed 自管）。
-func TestMigrationBuckets(t *testing.T) {
+// TestBuckets 按层建桶（不再三层同构）——各层只建自己实际使用的桶；
+// prj 层不再有 file_list（vfts 清单插件自持）；prjusr 不再有 index_queue
+// （索引由 vfts/codegraph 插件订阅 filesys.changed 自管）。
+// 2026-10-25：迁移体系整体移除，库结构 = bucketsFor 直建（无 _meta/_migrations）。
+func TestBuckets(t *testing.T) {
 	cases := []struct {
 		layer   data.Layer
 		has     []string
@@ -33,6 +34,9 @@ func TestMigrationBuckets(t *testing.T) {
 		{data.LayerUsr, []string{"config", "llms"}, []string{"sessions", "file_list", "inbox_items", "index_queue"}},
 		{data.LayerPrj, []string{"config"}, []string{"llms", "sessions", "inbox_items", "file_list", "index_queue"}},
 		{data.LayerPrjUsr, []string{"config", "sessions", "tasktree", "inbox_items", "dialogs"}, []string{"file_list", "index_queue"}},
+		// SESSION-DB-2：对话库 = Session 独占，只建会话正文域；配置（config）与对话目录（dialogs）
+		// 归宿主/server 独占库，不得出现在对话库内。
+		{data.LayerDialog, []string{"sessions", "turns", "messages", "inbox_items"}, []string{"config", "dialogs", "llms"}},
 	}
 	for _, c := range cases {
 		db := openLayer(t, c.layer)
@@ -193,43 +197,6 @@ func TestPaths(t *testing.T) {
 	}
 	if p := data.UserPath(); p != filepath.Join(root, "chonkpilot.db") {
 		t.Fatalf("UserPath = %s", p)
-	}
-}
-
-// TestConfigOpen：三层全开 + prjusr 落 <dataRoot>/users/<OS 用户名>（49 DATAROOT-1，无 project-id）。
-func TestConfigOpen(t *testing.T) {
-	root := t.TempDir()
-	dataRoot := filepath.Join(root, "data")
-	data.SetDataHome(filepath.Join(root, "usr", "chonkpilot.db"), dataRoot)
-	t.Cleanup(func() {
-		data.Reset()
-		data.SetDataHome("", "")
-	})
-
-	wd := t.TempDir()
-	cfg, err := data.OpenConfig(wd, "", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cfg.Close()
-
-	if cfg.Usr().Layer() != data.LayerUsr || cfg.Prj().Layer() != data.LayerPrj || cfg.PrjUsr().Layer() != data.LayerPrjUsr {
-		t.Fatal("layer mismatch")
-	}
-	if _, err := cfg.PrjUsr().Table("sessions").ListKeys(); err != nil {
-		t.Fatalf("prjusr sessions bucket missing: %v", err)
-	}
-	prjUsrPath := filepath.Join(dataRoot, "users", data.UserDirName(), "chonkpilot.db")
-	if cfg.PrjUsr().Path() != prjUsrPath {
-		t.Fatalf("prjusr path = %s, want %s", cfg.PrjUsr().Path(), prjUsrPath)
-	}
-	if cfg2, err := data.OpenConfig(wd, "", nil); err != nil {
-		t.Fatal(err)
-	} else {
-		if cfg2.PrjUsr().Path() != prjUsrPath {
-			t.Fatalf("prjusr path should be stable: %s vs %s", cfg2.PrjUsr().Path(), prjUsrPath)
-		}
-		cfg2.Close()
 	}
 }
 

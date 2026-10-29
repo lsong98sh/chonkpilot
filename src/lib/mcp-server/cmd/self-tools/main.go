@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/transport"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/transport"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

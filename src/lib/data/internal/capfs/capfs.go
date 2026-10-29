@@ -59,9 +59,6 @@ const (
 // 每级下的 6 个扁平子目录名（**删除**旧 `knowledge/**` 归并层；12-数据层）。
 const (
 	DirPrompts   = "prompts"   // 命令/提示词
-	DirTools     = "tools"     // 工具
-	DirResources = "resources" // 知识/资源
-	DirSkills    = "skills"    // 技能
 	DirAgents    = "agents"    // 智能体
 	DirScenarios = "scenarios" // 场景（场景根 = <级别根>/capability/scenarios）
 )
@@ -121,15 +118,8 @@ func PrjUsrRoot(workDir, dataDir string) string {
 	return filepath.Join(data.PrjUsrPath(workDir, dataDir), "capability")
 }
 
-// PromptsRoot 某级 capability 的 prompts 分类根（= <capRoot>/prompts）。
-// 属**知识库 prompt 分类**（如 code_review.prompt.md），与场景**无关**——场景根 = <capRoot>/scenarios
-// （capfs.ScenariosRoot，25-MCP与场景分层模型 §6）。
-func PromptsRoot(capRoot string) string {
-	return filepath.Join(capRoot, DirPrompts)
-}
-
 // SystemDir 某级 capability 的 system 分类根（= <capRoot>/system）：存放**非原语**系统文档
-// （如 summary.md、memory/<类别名>.md）。与 PromptsRoot 并列，但不属 `Types`（见 DirSystem）。
+// （如 summary.md、memory/<类别名>.md）；不属 `Types`（见 DirSystem）。
 func SystemDir(capRoot string) string {
 	return filepath.Join(capRoot, DirSystem)
 }
@@ -229,4 +219,58 @@ func LevelOfNode(node string) string {
 		return KindPrjUsr
 	}
 	return ""
+}
+
+// ── 写侧校验原语（S-5 · DATA-OPT-1 P3：校验规则收敛的唯一实现）──────────────
+//
+// 口径（输入校验专题 §2）：只加在**写侧**；失败由调用方转成自己的错误文案（各域既有错误串
+// 逐字不变 —— 本组函数只提供**判定**，不产生文案）。
+
+// ValidIdent 判定标识符字符集：非空且只含 `[A-Za-z0-9_-]`。
+// 长度上限 / 是否必填由调用方按各自口径另行判定（instance_id 64、project-id 8–64 等）。
+func ValidIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// PathProblem 是绝对路径校验的失败原因（PathOK = 通过）。
+type PathProblem int
+
+const (
+	// PathOK 通过。
+	PathOK PathProblem = iota
+	// PathTooLong 超过调用方给定的长度上限。
+	PathTooLong
+	// PathNotAbs 不是绝对路径。
+	PathNotAbs
+	// PathDotDot 含上级目录引用（`..` 段）。
+	PathDotDot
+)
+
+// ValidateAbsPath 校验绝对路径：长度（maxLen > 0 才判）+ 绝对路径 + 不含 `..` 段。
+// 调用方据返回的 PathProblem 拼自己的错误文案（口径见 config.validateAbsPath /
+// persist.validateInstancePath）。
+func ValidateAbsPath(val string, maxLen int) PathProblem {
+	if maxLen > 0 && len(val) > maxLen {
+		return PathTooLong
+	}
+	if !filepath.IsAbs(val) {
+		return PathNotAbs
+	}
+	for _, seg := range strings.FieldsFunc(filepath.ToSlash(val), func(r rune) bool { return r == '/' }) {
+		if seg == ".." {
+			return PathDotDot
+		}
+	}
+	return PathOK
 }

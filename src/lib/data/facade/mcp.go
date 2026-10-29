@@ -17,6 +17,11 @@
 // （代码零兼容），不再有回落。
 package facade
 
+import (
+	"reflect"
+	"strings"
+)
+
 // McpServer 是一个 MCP server 定义（领域字段；对齐既有 servers.list / 前端表单 / gateway
 // ServerEntry 字段名）。
 type McpServer struct {
@@ -54,6 +59,35 @@ type McpServer struct {
 	Isolate *bool `json:"isolate,omitempty"`
 	// Sandbox agentbox 沙箱开关（三态：nil/未设置 = 不隔离；仅 stdio 的 spawn 生效）。
 	Sandbox *bool `json:"sandbox,omitempty"`
+	// Extra 文件里本 DTO 未声明的其余字段（**只写不读**）：Save 时并入落盘 JSON 的顶层，
+	// 使外部定义 round-trip 不丢字段；未知字段与已知字段同名 → 已知字段优先、未知侧丢弃。
+	// JSON 序列化不出现（`json:"-"`）→ Get/List/refresh 载荷形状与改前逐字节一致。
+	Extra map[string]any `json:"-"`
+}
+
+// mcpServerFieldNames 是 McpServer 的 JSON 字段名集合（按 struct tag 解析，含 name/level）。
+// 用途 = 「未知字段保留」的已知边界：文件 / 载荷中不在此集合的字段 = 未知字段（原样保留）。
+var mcpServerFieldNames = func() map[string]bool {
+	t := reflect.TypeOf(McpServer{})
+	out := make(map[string]bool, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		name := strings.Split(t.Field(i).Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		out[name] = true
+	}
+	return out
+}()
+
+// McpServerFields 返回 McpServer 的 JSON 字段名集合（副本；供实现侧判定「未知字段」，
+// 与 DTO 字段增删自动同步，不需要各调用方各维护一份名单）。
+func McpServerFields() map[string]bool {
+	out := make(map[string]bool, len(mcpServerFieldNames))
+	for k := range mcpServerFieldNames {
+		out[k] = true
+	}
+	return out
 }
 
 // ── 请求 / 响应 ────────────────────────────────────────────────────
@@ -88,6 +122,12 @@ type McpGetRequest struct {
 type McpGetResponse struct {
 	// Server 定义（Level = 命中的级别）。
 	Server McpServer `json:"server"`
+}
+
+// McpGetRawResponse 是 MCP server **文件原始字段**读出参（含 DTO 未声明字段，round-trip 依据）。
+type McpGetRawResponse struct {
+	// Raw 文件字段原样（写盘形状：不含 name/level —— 二者由文件名与所在级承载）。
+	Raw map[string]any `json:"raw"`
 }
 
 // McpSaveRequest 是 MCP server 保存入参（按 Server.Level 落对应级文件；Level 空 = 用户级）。
@@ -139,6 +179,9 @@ type McpAPI interface {
 
 	// McpGet 按名定位（Level 空 = 具体级优先 prjusr → project → user → app）。
 	McpGet(req McpGetRequest) (McpGetResponse, error)
+
+	// McpGetRaw 按名定位并返回**文件原始字段 map**（含 DTO 未声明字段；只读，Get/List 形状不变）。
+	McpGetRaw(req McpGetRequest) (McpGetRawResponse, error)
 
 	// McpSave 保存（按 Server.Level 落对应级 `<名>.json`；OldName 非空且改名 → 先删旧文件）。
 	McpSave(req McpSaveRequest) (McpSaveResponse, error)

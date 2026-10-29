@@ -26,6 +26,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import harness  # noqa: E402  （统一的起停/回收：按需加载 + 结束即关）
 from chonk_client import retryable  # noqa: E402  （驱动指令的瞬态有界重试；口径见其模块头）
+from chonk_client import _find_parent_session_id, _find_session_id, _find_turn_id, _inject_dialog  # noqa: E402
+from chonk_client import resolve_dialog_id  # noqa: E402
 
 # GUI 产物候选（顺序 = 优先级）：dist/desktop（主力发行目录）→ src/gui/dist（旧路径，仅兼容回落）。
 EXE_CANDIDATES = harness.GUI_EXE_CANDIDATES
@@ -64,6 +66,11 @@ class GUIClient:
         self.wait_ready = wait_ready
         self.proc = None
         self._handle = None
+        # 一树一库自愈：session_id → dialog_id 缓存（+ 解析互斥，防重入）
+        self._dlg_cache = {}
+        self._dlg_busy = False
+        # turn_id → dialog_id（`append-message` / `complete-turn` 只带 turn_id）
+        self._turn_dlg = {}
 
     # ── 进程管理 ──
     def start(self):
@@ -73,6 +80,26 @@ class GUIClient:
                                          data_dir=self.data_dir, exe=self.exe,
                                          ready_timeout=self.wait_ready)
         self.proc = self._handle.proc
+        # 2026-10-26：宿主已改为「主窗口先出、插件平台后置」（首屏 ~2.4s，插件再 ~2s）。
+        # 断言前必须等插件平台就绪，否则 W2 等用例会在插件 spawn 的 CPU 高峰里跑（广播 >1s 才到）。
+        self.wait_plugins_ready()
+
+    def wait_plugins_ready(self, timeout=60):
+        """轮询既有方法面 `plugin-list` 直到插件平台应答（零新增 MQ 主题）。
+
+        返回 True/False；超时**不致命**（核心 UI 用例仍可跑），仅打印告警。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                res = self.publish("plugin-list", {})
+                if isinstance(res, dict) and "plugins" in res:
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.4)
+        print("[drive] warn: plugin platform not ready in %ss" % timeout)
+        return False
 
     def stop(self):
         if self._handle is not None:
@@ -150,7 +177,53 @@ class GUIClient:
           - data-session-* / data-tasktree-* / data-user-config-* … → envelope 字段 {req_id?, filter?, id?, data?}
             （internal/bridge/configmsg.go handleDataMsg 只解这四字段）
           - gui.* → payload 为扁平对象（guiDo 直接解析顶层）
+
+        一树一库自愈（2026-10-26，与 `ChonkClient.req` 同口径）：会话类 data 主题必须带
+        `dialog_id`（缺失 → `dialog_required: …`；旧布局已退场）→ 命中该错误时按
+        `data-session-list` 解析该会话 `dialog_id`，注入 payload 副本后**原样重试一次**。
         """
+        try:
+            res = self._req_once(typ, payload, timeout)
+        except RuntimeError as e:
+            if "dialog_required" not in str(e) or not isinstance(payload, (dict, list)):
+                raise
+            id_is_sess = typ.startswith("data-session-")
+            sid = _find_session_id(payload, id_is_sess)
+            tid = _find_turn_id(payload)
+            dlg = self._turn_dlg.get(tid, "") if (tid and not sid) else ""
+            if not dlg:
+                dlg = resolve_dialog_id(self, typ, sid)
+            if not dlg:
+                # 子会话建库：会话本身尚不存在 → 用**父会话**的 dialog_id（P3-4d 必需）
+                parent = _find_parent_session_id(payload)
+                if parent:
+                    dlg = resolve_dialog_id(self, "llm-start", parent)
+            if not dlg:
+                raise
+            print("[dialog] %s 缺 dialog_id → 自愈注入 %s 并重试一次" % (typ, dlg), flush=True)
+            res = self._req_once(typ, _inject_dialog(payload, sid, dlg, id_is_sess), timeout)
+            self._remember_dialog(typ, payload, dlg)
+            return res
+        self._remember_dialog(typ, payload, (res or {}).get("dialog_id") if isinstance(res, dict) else "")
+        return res
+
+    def _remember_dialog(self, typ, payload, dlg=""):
+        """记忆 `session_id → dialog_id` / `turn_id → dialog_id`（供后续缺字段的会话写原语复用）。"""
+        if not isinstance(payload, (dict, list)):
+            return
+        id_is_sess = typ.startswith("data-session-")
+        sid = _find_session_id(payload, id_is_sess)
+        if not dlg and sid:
+            dlg = self._dlg_cache.get(sid, "")
+        if not dlg:
+            return
+        if sid:
+            self._dlg_cache.setdefault(sid, dlg)
+        tid = _find_turn_id(payload)
+        if tid:
+            self._turn_dlg[tid] = dlg
+
+    def _req_once(self, typ, payload=None, timeout=30000):
         body = {"type": typ, "payload": json.dumps(payload) if payload is not None else "", "timeout": timeout}
         resp = self._post("/publish", body)
         if not isinstance(resp, dict) or resp.get("ok") is False:

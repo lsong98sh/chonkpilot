@@ -14,12 +14,22 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"github.com/lsong98sh/chonkpilot-session/store"
+	"github.com/lsong98sh/chonkpilot-agent/session/store"
 )
 
 // Query 是通用查询条件（类 Criteria）。唯一定义在 `chonkpilot-session/store`，
 // 此处为别名（组件与数据面同一契约，主仓调用点零改动）。
 type Query = store.Query
+
+// earlyProbeMax 是「提前退出」判定 more 时额外探查的**桶键上限**。
+//
+// 攒够 Offset+Limit 后必须确认「后面还有没有一条匹配行」才能给出精确的 more；若尾部整段被
+// Where 过滤掉（如末尾全是其它会话/状态的行），一路探到表尾就退化成全表扫描 —— 与提前退出的
+// 初衷相悖。512 的取值依据：列表页实际量级为数十至数百行（`messagePerTurnCap` / 列表页
+// 20~200），探测只需覆盖「页边界附近」的长度；每次探测至多一次回表 + 一次 JSON 反序列化
+// （微秒级），512 键合计 < 1ms，不改变单页查询的量级。超限则**保守**置 more=true：最坏代价是
+// 客户端多发一次请求拿到空页（与改前的无条件 more=true 等价），绝不丢行。
+const earlyProbeMax = 512
 
 // Query 执行通用查询：过滤/排序/分页/游标 → (recs, next_cursor, err)。
 // 返回的记录带 _key 主键字段。
@@ -30,19 +40,44 @@ type Query = store.Query
 // 无 OrderBy 时**一律回退全桶扫描**（A-05）：索引遍历序 =（索引 Order 字段,主键），而游标/
 // 断页（filterAfter）按（排序值,主键）定位，二者口径不同 → Offset/Cursor 翻页两页排序口径
 // 不一致会漏/重行；统一走桶序即两页同口径（含原 Cursor 单独回退场景）。
-// 顺序一致（OrderBy 命中索引 Order 的升序）时跳过内存排序，并允许攒够 Offset+Limit 后提前退出；
-// 无 OrderBy（桶序）或需排序时，收集完再排序分页。
+// 顺序一致（OrderBy 命中索引 Order 的升序，或 OrderBy 为空时的桶序）时跳过内存排序，并允许攒够
+// Offset+Limit 后提前退出——**带 Cursor 同样允许**（遍历序 == 结果序 → 越过游标的记录恰构成
+// 后缀）；需排序时（OrderDesc / OrderBy 不命中索引序）收集完再排序分页。
+// 提前退出时 more（是否仍有后续匹配行）取**精确值**：攒够本页后再探一条匹配行（上限
+// earlyProbeMax 个桶键，超限保守置真），不再无条件假定后面还有行（S-4）。
 // 返回语义（_key、next_cursor 编码、Offset/Limit/Cursor、坏行跳过）与全桶扫描逐字节一致。
 //
 // 索引就绪防线（Phase 3a）：二级索引桶只在**建桶之后由写入口写入**，故命中索引前先探测
 // 索引桶是否整桶为空；为空则视为「索引未就绪」，回落全表扫描（见函数内注释）。
 func (t *Table) Query(q Query) ([]Record, string, error) {
-	idx, prefixVals := indexFor(t.name, q.Where)
+	// ── 游标解码（前移到扫描之前）────────────────────────────────
+	// 提前退出（skipSort + Limit）需要在**流式遍历中**判定「本行是否已越过游标」，故游标必须先解码。
+	// 游标同时编码 (排序值, 主键)，同值 tie 组因此可按主键切分：越过游标后同值行按主键续接，
+	// 提前退出不会把 tie 组截断。坏游标仍返回同一错误（与原先「扫描后再解码」对外等价）。
+	var (
+		curVal, curKey string
+		cursorLast     any
+		hasCursor      bool
+	)
+	if q.Cursor != "" {
+		v, k, ok := decodeCursor(q.Cursor)
+		if !ok {
+			return nil, "", fmt.Errorf("data: bad cursor")
+		}
+		curVal, curKey, hasCursor = v, k, true
+		cursorLast = cursorValue(curVal)
+	}
+
 	// 无 OrderBy → 禁用索引路由，一律回退全桶扫描（A-05）：索引遍历序（索引 Order 字段,主键）
 	// ≠ 桶序，与游标续查/断页 filterAfter 的 (排序值,主键) 口径不符，两页排序口径不一致会漏/重行；
 	// 禁用后与全表扫描同口径（涵盖原「Cursor 且无 OrderBy」的回退场景，语义不回归）。
-	if q.OrderBy == "" {
-		idx = nil
+	// S-4（DATA-OPT-1 P3）：判定前移 —— 无 OrderBy 时**不再选路由索引**（其结果随即被丢弃）。
+	var (
+		idx        *Index
+		prefixVals []string
+	)
+	if q.OrderBy != "" {
+		idx, prefixVals = indexFor(t.name, q.Where)
 	}
 
 	var (
@@ -82,9 +117,15 @@ func (t *Table) Query(q Query) ([]Record, string, error) {
 		// **字典序安全字段**（RFC3339/定长文本）成立；数值字段会在此静默错序。
 		// 故索引的 Order 列仅允许字典序安全字段（约束见 indexes.go Index.Order）。
 		skipSort = q.OrderBy == "" || (idx != nil && q.OrderBy == idx.Order && !q.OrderDesc)
-		// 提前退出：仅当按所需顺序流式产出且有界（Limit>0 且无游标）。
-		if skipSort && q.Cursor == "" && q.Limit > 0 {
+		// 提前退出：按所需顺序流式产出（skipSort）且有界（Limit>0）时启用。
+		// **带游标也启用**（S-4 缺陷 2 修复）：否则每页都要扫到表尾 = O(全表)。
+		// 带游标时配额 = Limit（不是 Offset+Limit）——Cursor 优先于 Offset，下方会把 Offset 归零；
+		// 且只有**严格越过游标**的记录才计入配额（循环内 afterCursor 判定），游标之前的行不计入。
+		if skipSort && q.Limit > 0 {
 			earlyTarget = q.Offset + q.Limit
+			if hasCursor {
+				earlyTarget = q.Limit
+			}
 			if earlyTarget < 0 {
 				earlyTarget = 0
 			}
@@ -107,9 +148,20 @@ func (t *Table) Query(q Query) ([]Record, string, error) {
 		} else {
 			k, v = c.First()
 		}
+		// probe = 攒够配额后为判定 more 而额外探查的桶键数（护栏见 earlyProbeMax）。
+		probe := 0
 		for ; k != nil; k, v = c.Next() {
 			if idx != nil && !bytes.HasPrefix(k, start) {
 				break // 离开前缀区段 → 结束
+			}
+			if earlyTarget > 0 && len(all) >= earlyTarget {
+				// 本页已满：继续向后找一条**匹配行**，找到 → more 精确为真；扫到底都没有 → 保持假。
+				// 超过护栏（尾部整段被 Where 过滤的极端形态）→ 保守置真，不退化成全表扫描。
+				probe++
+				if probe > earlyProbeMax {
+					more = true // 保守：宁可多给一页（客户端多取一次得到空页），绝不丢行
+					break
+				}
 			}
 			var (
 				rec Record
@@ -137,8 +189,11 @@ func (t *Table) Query(q Query) ([]Record, string, error) {
 			if len(q.Where) > 0 && !matchWhere(rec, q.Where) {
 				continue
 			}
+			if earlyTarget > 0 && hasCursor && !afterCursor(rec, cursorLast, curKey, q.OrderBy, q.OrderDesc) {
+				continue // 游标之前的行不计入本页配额（其 (排序值,主键) 未越过游标位置）
+			}
 			if earlyTarget > 0 && len(all) >= earlyTarget {
-				more = true // 已攒够本页，仍有后续匹配行
+				more = true // 已攒够本页，且确实还有一条后续匹配行
 				break
 			}
 			all = append(all, rec)
@@ -156,14 +211,11 @@ func (t *Table) Query(q Query) ([]Record, string, error) {
 		})
 	}
 
-	// 游标续查（优先于 Offset）
-	if q.Cursor != "" {
-		lastVal, lastKey, ok := decodeCursor(q.Cursor)
-		if !ok {
-			return nil, "", fmt.Errorf("data: bad cursor")
-		}
+	// 游标续查（优先于 Offset）。提前退出路径已在扫描内滤过游标之前的行，此处对其幂等；
+	// 内存排序路径（skipSort=false，必须收全再排）由此收口。
+	if hasCursor {
 		q.Offset = 0 // Cursor 优先于 Offset：游标已定位本页起点，忽略 Offset（否则叠加造成二次截断）
-		all = filterAfter(all, lastVal, lastKey, q.OrderBy, q.OrderDesc)
+		all = filterAfter(all, cursorLast, curKey, q.OrderBy, q.OrderDesc)
 	}
 
 	start := q.Offset
@@ -250,14 +302,44 @@ func toFloat(v any) (float64, bool) {
 
 // ─── 排序 ───────────────────────────────────────────────
 
-func compare(a, b Record, field string, desc bool) bool {
-	av := fieldValue(a, field)
-	bv := fieldValue(b, field)
-	less := compareValue(av, bv)
-	if desc {
-		return !less && !equalValue(av, bv)
+// cmpAny 是**全序比较的唯一实现**（排序 compare 与游标断页 filterAfter 共用），返回当前值相对
+// 目标值的位置：-1 前 / 0 同 / +1 后。
+//
+// 全序口径（A-13/A-14）：两侧皆数值 → 数值序；数值恒 < 非数值；两侧皆非数值 → 字符串字典序。
+// 两处必须同一口径，否则混类型时排序与断页不一致（如 "10" 与 8 的字典序错位）→ 翻页漏/重行。
+func cmpAny(a, b any) int {
+	af, aok := toFloat(a)
+	bf, bok := toFloat(b)
+	switch {
+	case aok && bok:
+		switch {
+		case af > bf:
+			return 1
+		case af < bf:
+			return -1
+		}
+		return 0
+	case aok: // 数值 < 非数值
+		return -1
+	case bok:
+		return 1
 	}
-	return less
+	as, bs := fmt.Sprintf("%v", a), fmt.Sprintf("%v", b)
+	switch {
+	case as > bs:
+		return 1
+	case as < bs:
+		return -1
+	}
+	return 0
+}
+
+func compare(a, b Record, field string, desc bool) bool {
+	c := cmpAny(fieldValue(a, field), fieldValue(b, field))
+	if desc {
+		return c > 0
+	}
+	return c < 0
 }
 
 func fieldValue(rec Record, field string) any {
@@ -289,25 +371,6 @@ func keyString(rec Record) string {
 		return k
 	}
 	return ""
-}
-
-// compareValue 数值优先，其次字符串（时间 RFC3339 字符串可直接字典序比较）。
-//
-// 全序口径（A-13）：两侧皆数值 → 按数值序；数值恒 < 非数值；两侧皆非数值 → 字符串字典序。
-// 「非数值 vs 数值」的分支必须与「数值 vs 非数值」对称（返回 false = 非数值 > 数值），
-// 否则混类型下不满足严格弱序（如 1<"1" 与 "1"<1 同时为真）→ 排序结果不稳定。
-func compareValue(a, b any) bool {
-	if af, ok := toFloat(a); ok {
-		if bf, ok2 := toFloat(b); ok2 {
-			return af < bf
-		}
-		return true // 数值 < 非数值
-	}
-	if _, ok := toFloat(b); ok {
-		return false // 非数值 > 数值（与上一分支对称，保证全序一致）
-	}
-	as, bs := fmt.Sprintf("%v", a), fmt.Sprintf("%v", b)
-	return as < bs
 }
 
 // ─── 游标（§5.2.1 连续滚动）────────────────────────────
@@ -343,49 +406,41 @@ func decodeCursor(cursor string) (orderVal, pk string, ok bool) {
 //	升序：(orderVal > last) OR (orderVal == last AND key > lastKey)
 //	降序：反向
 //
-// 比较口径与 compareValue **全序一致**（A-14）：两侧皆数值才按数值序；数值恒 < 非数值；
-// 两侧皆非数值按字符串字典序。避免「一侧数值一侧字符串」时断页口径与排序口径不一致
-// （如 "10" 与 8 的字典序错位）导致翻页漏/重行。
-func filterAfter(all []Record, lastVal, lastKey, field string, desc bool) []Record {
-	lastF, lastErr := strconv.ParseFloat(lastVal, 64)
-	lastIsNum := lastErr == nil
+// 判定委托 afterCursor（与提前退出路径共用同一实现）。
+func filterAfter(all []Record, last any, lastKey, field string, desc bool) []Record {
 	out := make([]Record, 0, len(all))
 	for _, rec := range all {
-		key := keyString(rec)
-		cur := fieldValue(rec, field)
-		cf, curIsNum := toFloat(cur)
-		// cmp：当前行相对游标行的全序位置（-1 前 / 0 同 / +1 后），口径对齐 compareValue。
-		var cmp int
-		switch {
-		case curIsNum && lastIsNum:
-			switch {
-			case cf > lastF:
-				cmp = 1
-			case cf < lastF:
-				cmp = -1
-			}
-		case curIsNum: // 当前数值、游标非数值 → 数值 < 非数值 → 当前在前
-			cmp = -1
-		case lastIsNum: // 当前非数值、游标数值 → 当前在后
-			cmp = 1
-		default: // 两侧非数值 → 字符串字典序
-			cs := fieldString(rec, field)
-			switch {
-			case cs > lastVal:
-				cmp = 1
-			case cs < lastVal:
-				cmp = -1
-			}
-		}
-		var after bool
-		if desc {
-			after = cmp < 0 || (cmp == 0 && key > lastKey)
-		} else {
-			after = cmp > 0 || (cmp == 0 && key > lastKey)
-		}
-		if after {
+		if afterCursor(rec, last, lastKey, field, desc) {
 			out = append(out, rec)
 		}
 	}
 	return out
+}
+
+// afterCursor 判定单条记录是否**严格**位于游标（= (排序值, 主键)）之后。
+//
+// 比较口径 = cmpAny（A-14，与排序同一实现）：两侧皆数值才按数值序；数值恒 < 非数值；
+// 两侧皆非数值按字符串字典序。避免「一侧数值一侧字符串」时断页口径与排序口径不一致
+// （如 "10" 与 8 的字典序错位）导致翻页漏/重行。
+// 同排序值（tie 组）内按主键续接：只有主键**严格大于**游标主键的行才算「之后」——
+// 故游标可落在 tie 组内部，提前退出按此判定不会截断 tie 组。
+func afterCursor(rec Record, last any, lastKey, field string, desc bool) bool {
+	cur := fieldValue(rec, field)
+	if cur == nil {
+		cur = "" // 列缺失：与既有断页口径一致（空串参与比较）
+	}
+	// cmp：当前行相对游标行的全序位置（-1 前 / 0 同 / +1 后）。
+	cmp := cmpAny(cur, last)
+	if desc {
+		return cmp < 0 || (cmp == 0 && keyString(rec) > lastKey)
+	}
+	return cmp > 0 || (cmp == 0 && keyString(rec) > lastKey)
+}
+
+// cursorValue 游标值按字面形态归一：可解析为数值 → 数值（与排序侧同口径）；否则原字符串。
+func cursorValue(orderVal string) any {
+	if f, err := strconv.ParseFloat(orderVal, 64); err == nil {
+		return f
+	}
+	return orderVal
 }

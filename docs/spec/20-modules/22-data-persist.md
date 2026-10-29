@@ -1,6 +1,6 @@
 # 22 · data-persist（src/lib/data 数据面：存储内核 + persist 服务）
 
-> **〔🆕 2026-10-24 · `DATAROOT-1` 已实施〕** `projectid.go` **已删除**（上行列出的 `projectid.go` 不再存在）；prjusr 根 = `<workDir>/.chonkpilot/users/<OS 用户名>/`；凡本文提及「`project-id` 生成/复用/删除」的测试与描述**一律作废**，改为「同一 workDir 的路径稳定性」。
+> **数据根（当前口径）**：项目身份 = 归一化 `work_dir`，prjusr 根 = `<workDir>/.chonkpilot/users/<OS 用户名>/`；`projectid.go` 与 `project-id` 均已删除，无迁移、无兼容分支。
 
 > 状态：✅ 与代码一致
 > 关联：[12-数据层](../10-architecture/12-数据层.md)（层级/fallback 规则）· [02-配置层级](../00-overview/02-配置层级.md)
@@ -44,7 +44,8 @@
 
 - 回复：同主题 `publish` `{ok, result}` / `{ok, error}`（**无 `.reply` 后缀**）；桥内部另有 `req_id` 关联字段用于请求-响应配对，**不属对外契约 payload**（见 [61-消息一览](../60-reference/61-消息一览.md) §0.1）。
 - **载荷定死**（2026-10-25）：每个主题由一份 Go struct（`persist/payload.go`）解析，字段名/类型按 61 声明，内嵌 `Header{req_id,instance_id}`；兼容 `{data:{…}}` 与顶层扁平两形（`data` 优先、顶层补缺）。原通用宽松 `map` 解析（`dataReq`/`parseDataReq`）已删除。
-- **出参定死**（2026-10-25）：应答 `result` 同样由具名 struct 组装（`facade/wire/{wire.go,domains.go}` 的 `XxxPayload`，json tag = 61 契约字段名；「非空才写键」语义用 `omitempty` 承接），不再是 `map[string]any`。门面路径与 MQ 路径共用同一组构造函数，两路径应答逐字一致由测试（`eqWire`）守。
+- **出参定死**（2026-10-25）：应答 `result` 同样由具名 struct 组装（`facade/wire/{wire.go,domains.go}` 的 `XxxPayload`，json tag = 61 契约字段名；「非空才写键」语义用 `omitempty` 承接），不再是 `map[string]any`。门面路径与 MQ 路径共用同一组构造函数，两路径应答逐字一致由测试（`eqWire`）守。收尾新增通用 DTO：`OKIDPayload` / `OKDeletedPayload` / `ListPayload` / `DataPayload` / `PathPayload` / `SnapshotPayload`（**无 omitempty**，无快照仍输出 `null`）/ `InboxItemsPayload` / `SessionForkPayload` / `KnowledgeImportPayload`；persist 层已无手写回执 map（嵌套行 `items[]` / `errors[]` 仍为行 map，键集随数据变化）。
+  > **〔2026-10-28 · DATA-OPT-1 P3 / S-7〕行 DTO 去重**：与门面类型**字段 + json tag 逐字一致**的 6 个行 struct（`KnowledgeDirRow` / `KnowledgeFileRow` / `MemoryCategoryRow` / `MemoryDocRow` / `MemoryExtractRow` / `GroupRoundTargetRow`）已删除，payload 直接持有 `facade.*`（载荷形状不变；`nil` 仍归一为 `[]`）。`GroupParticipantRow` **保留**——`facade.GroupParticipant.Role` 带 `omitempty`，直接复用会把 `role:""` 从载荷省掉。
 - 防环：`handle` 先跳过已含 `ok` 字段的应答消息（请求与应答同主题）。
 - 广播：`save`/`delete` 后发 `data-<domain>-refresh`（**只发布不订阅**）。
 
@@ -55,7 +56,7 @@
 > ⚠️ **收窄在途**：上列「交出库句柄」的内核 API（`OpenLayer` / `Table` / `GetConfig`
 > / `SetConfig` / `DeleteConfig` / `Register` / `Unregister` / `Prj` / `PrjUsr` / `Usr` /
 > `OpenSharedLayer` / `BindOf`）**跨 module 生产调用已清零**（读点改走门面：
-> llm server 的 usr `mcps` 读 = `ConfigAPI.UserConfigMCPs`；CLI 数据根准备 =
+> llm server 的 usr `mcps` 读 = `ConfigAPI.UserConfigMCPs`；数据根准备 =
 > `data.CopyConfigTables` + `data.ReadProjectIDPath`，两者起**不暴露句柄**）。
 > 剩余消费方 = module 内（`internal/*` / `persist`）与测试；把这些符号移入 `internal`
 > 尚待拍板（测试面影响）。
@@ -102,19 +103,19 @@ usr 库：data.OpenSharedLayer(UserPath, LayerUsr)（UsrPath 可注入，测试�
 
 ### 4.3 打开与迁移（内核）
 
-`OpenLayer(path, layer)` → 建目录 `0700` → `bolt.Open(0600)` → 事务内：`readSchemaVersion` → 跑未应用 migration（记录 `_migrations`）→ `seedDefaults(tx, layer)`；失败 `Close` 并中止。
+`OpenLayer(path, layer)` → 建目录 `0700` → `bolt.Open(0600)` → 事务内 `ensureLayerBuckets`（按 `bucketsFor(layer)` 直建，幂等）；失败 `Close` 并中止。**无迁移体系**（无 `readSchemaVersion` / `_migrations` / `Migration`；2026-10-25 决策，2026-10-28 复核已无残留）。
 
-> **v12（🆕 2026-10-24 · SESSION-COMP-1 P0）**：新增 `dialogs`（prjusr 对话目录）与索引 `messages_by_client_msg`（`(session_id, client_msg_id)`），并回填既有 `messages` 索引项（幂等）。对话库 = `<prjusr>/dialogs/dialog-<hex(dialog_id)>.db`（一树一库，`data.DialogDBPath` / `OpenDialog` / `DeleteDialog`）；旧布局 `<prjusr>/sessions/<hex(session_id)>/` 仍在用（**P3 才切读**）。搬运与启动对账 = `internal/sessionstore.Migrate` / `Reconcile`，由 prj 键 **`session.db.shard`（`on`/`off`，缺省 `off`）** 控制，在 `instance-register` 后异步执行一次（每 prjusr 路径去重，失败告警可重试）。详见 [2G §9](../20-modules/2G-会话组件.md) / [49 `SESSION-COMP-1`](../40-roadmap/49-待实现项.md)。
+> **v12（🆕 2026-10-24 · SESSION-COMP-1 P0）**：新增 `dialogs`（prjusr 对话目录）与索引 `messages_by_client_msg`（`(session_id, client_msg_id)`），并回填既有 `messages` 索引项（幂等）。对话库 = `<prjusr>/dialogs/dialog-<hex(dialog_id)>.db`（一树一库，`data.DialogDBPath` / `OpenDialog` / `DeleteDialog`）。〔2026-10-28 订正（DATA-OPT-1 ②）：旧布局 `<prjusr>/sessions/<hex(session_id)>/`、`sessionstore.Migrate` 搬运与 `session.db.shard` 开关**已整体退场**；只保留 `sessionstore.Reconcile` 目录对账，`instance-register` 后异步执行一次（每 prjusr 路径去重，失败告警可重试）〕详见 [2G §9](../20-modules/2G-会话组件.md) / [49 `SESSION-COMP-1`](../40-roadmap/49-待实现项.md)。
 
 ---
 
 ## 5. 数据结构与存储
 
-见 [12-数据层 §6](../10-architecture/12-数据层.md)：三层同构桶（`_meta/_migrations/config/llms/mcps/sessions/turns/messages/scenarios/permission/tasktree/meta` + 索引桶）；config 记录 `{"v": value}`。
+见 [12-数据层 §6](../10-architecture/12-数据层.md)：按层建桶（`bucketsFor` 直建，**无** `_meta` / `_migrations`）；config 记录 `{"v": value}`。
 persist 运行态：实例视图（订阅 `instance-register/heartbeat/exit`）、按路径连接缓存（`shared` + 引用计数）。
 
 **`sessions` 行（prj/prjusr）**：`session_id` / `title` / `parent_id` / `created_at` / `updated_at`（+ 快照列 `history` / `snapshot_turn`）+ **子聊天固定参数可选列** `kind` / `lifecycle` / `agent` / `scenario_id` / `llm` / `purpose`（SUBCHAT-2 阶段 A/B-2，2026-10-16；**仅非空才写键** → 普通顶层会话行形状与既有逐字节一致）+ **`next_run_count`**（NEXTRUN-1，2026-10-21；`next_run` 连续自动接续计数，**非零才写键 / 归零即删键**；单事务读改写 `SessionNextRunCheckAndAdd|Reset|Get|Dec`，见 [21 §3.4](../20-modules/21-llm-server.md)）。
-- `kind`：`""` = 普通顶层会话 · `sub_chat` = 子聊天（`subchat_open` 创建）· `group_chat` = 群聊（N 个 agent、人只旁观）· `work_session` = **参与者的干活子会话**（群聊专属，`parent_id` = 群聊会话；SUBCHAT-3 阶段 E/D23，**与 `sub_session` 不同物**）· `sub_session` = `dsl_run` 的 LLM 步骤派生的子会话；不变量 `kind ∈ {sub_session, sub_chat, group_chat, work_session} ⟺ parent_id != ""`。
+- `kind`：`""` = 普通顶层会话 · `sub_chat` = 子聊天（`subchat_open` 创建）· `group_chat` = 群聊（N 个 agent、人只旁观）· `work_session` = **参与者的干活子会话**（群聊专属，`parent_id` = 群聊会话；SUBCHAT-3 阶段 E/D23，**与 `sub_session` 不同物**）· `sub_session` = 子轮次派生的子会话（历史口径：原 `dsl_run` 的 LLM 步骤）；不变量 `kind ∈ {sub_session, sub_chat, group_chat, work_session} ⟺ parent_id != ""`。
 - `lifecycle`：仅子聊天（`kind ∈ {sub_chat, group_chat}`）有，三态 `chatting` / `ready` / `finished`。
 - `purpose`：仅子聊天有，= 本次子聊天的**运行目的 / 展示名**（gateway 注入的 `tool_call_display_name`，单聊 §5.4）。
 - **读侧回退**：行缺 `kind` 且 `parent_id` 非空（2026-10-15 前落库的历史子会话行）⇒ 视为 `sub_session`（`facade/wire/wire.go SessionFromWire`）。
@@ -149,14 +150,14 @@ persist 运行态：实例视图（订阅 `instance-register/heartbeat/exit`）�
 
 - 未注册 instance → `ErrLayerUnavailable` / "instance not registered"。
 - 跨进程：**work-dir 占用锁**（`src/lib/core/lockfile`；启动 / 选目录入口非阻塞校验，I-74）拒绝同用户同项目双开 GUI；prj / prjusr 库的 bbolt 独占 flock 为底层兜底。
-- CLI：`dataDir` 非空时 prj 与 prjusr 同文件（`<dataDir>/chonkpilot.db`）。
+- desktop：`dataDir` 恒为空串 → prj 与 prjusr 分离（prj 项目内、prjusr `<workDir>/.chonkpilot/users/<OS 用户名>/`）。
 - 删除本层 key（`DeleteConfig`）= 恢复继承（不存在视为成功）。
 
 ---
 
 ## 9. 现状与待办
 
-- ✅ v6 骨架落地：三级路径、`project-id`、同构 migration、逐 key config。
+- ✅ v6 骨架落地：三级路径、同构 migration、逐 key config。
 - ✅ S2–S7 完成：死配置清理、专用表 `llms`/`mcps` 迁移、prjusr 落地（会话/轮次/消息/任务树/快照 + 个人运行态 key 路由）、capability 文件树（场景/知识库 + `summary.prompt.md`）、UI 改造、契约对齐——见 [02-配置层级 §10](../00-overview/02-配置层级.md)。
 - ✅ 场景已文件化：`<级别根>/capability/scenarios/<场景目录>/`（四级；原 `scenario_list` / `scenarios` 桶不再作为主数据）。
 
@@ -164,4 +165,4 @@ persist 运行态：实例视图（订阅 `instance-register/heartbeat/exit`）�
 
 ## 10. 关联测试
 
-`src/test/chonkpilot-data/unittest/`：路径解析、fallback 逐级覆盖与回落、`project-id` 生成/复用/删除、Query 过滤/排序/游标。
+`src/test/chonkpilot-data/unittest/`：路径解析、fallback 逐级覆盖与回落、同一 workDir 的路径稳定性、Query 过滤/排序/游标。

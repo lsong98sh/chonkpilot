@@ -14,6 +14,9 @@
   G4 `codegraph.action`  rebuild / retry → 状态流出现**进行中阶段**（`state=indexing` 且
                          `phase∈{configure,index}`）后回到 `ready`；clear → 回「未初始化」
                          （`state=""`、`indexedFiles=0`、`index.db` 被删除且落盘无命中）。
+                         **2026-10-28（CODEGRAPH-IDXDB-1 已修）**：重建后交叉硬断言
+                         `status.indexedFiles == 落盘 index.db 条数`；clear 后硬断言 status 回
+                         未初始化（此前因双 Workspace 缺陷不做交叉断言）。
   G5 prj `skip_dirs`     （**GUI 配置面**写入：设置 → 参数 → 项目标签页）→ prj 回读 + 重开页面回显；
                          B（终效）不可覆盖：find 已由 `file_find` 单工具承载，跳过目录为调用级
                          `targets[].skipDirs`，prj `skip_dirs` 不再参与执行（依据见 G5 docstring）。
@@ -30,14 +33,14 @@
   G9 vfts 侧同语义：`vfts.stack-gitignore` + exts/排除规则 → **插件自持清单
                          `<workdir>/.chonkpilot/vfts/file_list.json`** 的文件集合（**夹具 + 配置推导的
                          显式期望集合字面全等**，同 G3/G4/G7/G8 体例）+ `vfts.status`
-                         （vfts 引擎遍历与 codegraph 共用 `src/lib/ignore` 匹配器 → 行为一致）。
+                         （vfts 引擎遍历与 codegraph 共用插件仓 `shared/ignore` 匹配器 → 行为一致）。
 
 观测手段（**零新增 MQ 主题**，全部取自 61-消息一览既有面）：
   * 工具面 = 客户端能力面 `tools-list`（61 §4.5：桥 → gateway `mcp-tools-list`；桥按当前实例
     作用域过滤）→ `{tools:[{name}]}`。**2026-10-23 口径**：P0a 去 `self_` 前缀后，
     codegraph 插件注册的工具名 = manifest `mcp.hot_tools` 原名（无前缀）。
-  * 索引状态 = prj 键 `codegraph.status` / `vfts.status`（插件回写；prjusr 路由）→ `data-prj-config-list` 回读；**进行中瞬态**经既有广播 `data-prj-config-refresh`
-    （61 §3：persist 保存/删除后广播）捕获 → 不依赖轮询赛跑，不漏阶段。
+  * 索引状态 = **插件动作 `engine-status`** 现取（PLUGIN-UI-2，2026-10-28；与配置页 / 状态栏
+    `badge` 同一数据源）。插件**不再回写** prj 键 `codegraph.status` / `vfts.status`，宿主零引用。
   * vfts 文件清单 = 插件自持文件 `<workdir>/.chonkpilot/vfts/file_list.json`（每行含 `path`
     绝对路径）→ 逐文件命中集合（与落盘 codegraph 索引同判据口径）。
   * codegraph 落盘索引 = **bbolt 单文件库** `<ws>/.chonkpilot/codegraph/index.db`（引擎侧
@@ -83,9 +86,8 @@ CG_TOOLS = [
 ]
 VF_TOOL = "vfts_query"
 
-REFRESH = "data-prj-config-refresh"          # 既有广播（61 §3）
-STATUS_KEY = "codegraph.status"              # 插件回写的索引状态（61/64 §4.2）
-VSTATUS_KEY = "vfts.status"                  # vfts 插件回写的索引状态（同源口径）
+STATUS_KEY = "codegraph.status"              # 选择器 token（仅用于区分引擎；**不再读该 prj 键**）
+VSTATUS_KEY = "vfts.status"                  # 同上（vfts 引擎选择器）
 
 
 # ══════════════════════════════════════════════════════════
@@ -189,12 +191,12 @@ _G8_S3 = {
 }
 # G9：vfts 侧同语义（exts=".go" + stack-gitignore=true + 用户规则空）→ 与 G7 **同口径**：
 #   * 扩展名：本用例经 GUI 显式写 `vfts.exts=".go"`，**不使用引擎默认集**（默认含 .md/.txt/.json/.vue
-#     等，见 `src/plugins/vfts/server/ext.go:9-25 defaultExts`；与 codegraph 默认集不同）→ 生效集 = {".go"}
+#     等，见 `chonkpilot-plugins/codegraph/engines/vfts/server/ext.go:9-25 defaultExts`；与 codegraph 默认集不同）→ 生效集 = {".go"}
 #     → 夹具里 `gate_src/note.md` / `gate_find/*.txt` / `.gitignore` 一律不收录。
 #   * 排除：`vfts.skip-dirs` 空（无用户规则）；`vfts.stack-gitignore="true"` → 读 `WS/.gitignore`
 #     （`*.gen.go` / `!special.gen.go` / `gate_ign/sub/` / `!gate_ign/sub/u.go`）+ 内置强制（`.git/`、
-#     `.chonkpilot/`）+ 默认排除（node_modules/ 等，均不命中夹具路径）。语义由 `src/lib/ignore`
-#     单一实现（`ignore.WalkDir`）承载，与 codegraph 引擎/清单扫描共用 → 集合一致。
+#     `.chonkpilot/`）+ 默认排除（node_modules/ 等，均不命中夹具路径）。语义由插件仓
+#     `shared/ignore`（`ignore.WalkDir`）承载，与 codegraph 引擎/清单扫描共用 → 集合一致。
 _G9 = {
     "gate_src/alpha.go",             # 在：.go + .gitignore 无匹配
     "gate_skip/delta.go",            # 在：.go + .gitignore 无匹配（本用例未设 skip-dirs）
@@ -254,11 +256,94 @@ def prj_save(k, v):
 
 
 def status_obj(key=STATUS_KEY):
-    raw = prj().get(key) or ""
+    """索引状态（**插件自持**，PLUGIN-UI-2）：经插件动作面 `engine-status` 现取。
+
+    2026-10-28 起插件不再回写 prj 键 `codegraph.status` / `vfts.status`（宿主也零引用）；
+    本门禁改为问插件（与配置页 / 状态栏徽标同一数据源），返回该引擎的 status 对象。
+    """
+    eng = "vfts" if key == VSTATUS_KEY else "codegraph"
     try:
-        return json.loads(raw)
-    except Exception:
+        r = plugin_api("engine-status", {"workdir": WS, "engine": eng})
+    except TestError:
         return {}
+    if not isinstance(r, dict):
+        return {}
+    v = r.get(eng)
+    return v if isinstance(v, dict) else {}
+
+
+# ── 插件配置/动作面（PLUGIN-UI-1：`POST /plugins/codegraph/api/<action>`）──────
+# 2026-10-26（D-71）：codegraph 配置页已改为**插件自持 iframe**（`webui/config.html`），
+# 主仓不再有 CodegraphConfig.vue / `codegraph.*` 用户键 / `codegraph.action` 信号键。
+# 唯一配置源 = prj 键 `plugins.codegraph.*`；写入通道 = 插件动作面 `save`（页面按钮同一条）。
+# 这里经页面上下文 fetch 调同一条动作面（宿主请求头转发修复后可用），断言仍取数据面 + 落盘产物。
+
+def plugin_api(action, payload=None, timeout=180, _retries=3):
+    """调用 codegraph 插件动作面（= 配置页 `api(action, payload)` 同一 URL/头）。
+
+    瞬时锁重试（2026-10-26 批跑定位）：引擎落盘 `meta.json` 走「`.tmp` → rename」原子替换；
+    Windows 下目标文件若正被并发读句柄持有（同刻 status/索引读取），rename 报
+    `The process cannot access the file because it is being used by another process`
+    → 动作语义此时是「配置已写入，仅引擎下发失败」，**幂等可重放** → 有界重试。
+    """
+    body = json.dumps(json.dumps(payload or {}))
+    c.eval("window.__ckApiRes=null;fetch('/plugins/codegraph/api/%s',{method:'POST',"
+           "headers:{'Content-Type':'application/json','X-CK-Plugin-Id':'codegraph'},body:%s})"
+           ".then(async r=>{window.__ckApiRes={status:r.status,body:await r.text()}})"
+           ".catch(e=>{window.__ckApiRes={status:0,body:String(e)}});'ok'"
+           % (action, body))
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = deep(c.eval("window.__ckApiRes"))
+        if isinstance(r, dict):
+            code = r.get("status")
+            raw = r.get("body") or ""
+            try:
+                val = json.loads(raw) if raw else None
+            except Exception:
+                val = raw
+            if code != 200:
+                msg = str(val)
+                if _retries > 0 and ("being used by another process" in msg
+                                     or "used by another process" in msg):
+                    time.sleep(1.0)
+                    return plugin_api(action, payload, timeout, _retries - 1)
+                raise TestError("插件动作 %s 失败（HTTP %s）：%s" % (action, code, msg[:300]))
+            return val
+        time.sleep(0.2)
+    raise TestError("插件动作 %s 超时（%ss）" % (action, timeout))
+
+
+def cg_save(entries):
+    """保存 `plugins.codegraph.*` 子集（键可写短名：enabled/exts/skip-dirs/stack-gitignore/vfts.*）。"""
+    full = {(k if k.startswith("plugins.") else "plugins.codegraph." + k): v for k, v in entries.items()}
+    return plugin_api("save", {"workdir": WS, "entries": full})
+
+
+def cg_index():
+    """全量（重）建索引（= 配置页「立即索引」：`tool.call codegraph_initialize`）。"""
+    return plugin_api("tool.call", {"name": "codegraph_initialize", "args": {"workdir": WS}})
+
+
+def vfts_index():
+    """vfts 全量（重）建索引（= 配置页「立即索引」的 vfts 段：`tool.call vfts_index`）。"""
+    return plugin_api("tool.call", {"name": "vfts_index", "args": {"workdir": WS}})
+
+
+def vfts_index_retry(tries=5):
+    """vfts 建索引 + 有界重试：配置下发后的自动索引与我方「立即索引」可能并发，
+    引擎侧 zvec 读写锁冲突（`INTERNAL_ERROR: Can't lock read-write collection ... LOCK`）
+    属瞬态 → 退避重试（不是断言放宽：最终仍要求建索引成功）。"""
+    last = None
+    for _ in range(tries):
+        try:
+            return vfts_index()
+        except TestError as e:
+            last = e
+            if "LOCK" not in str(e) and "lock" not in str(e):
+                raise
+            time.sleep(1.5)
+    raise last
 
 
 # ── 工具面（客户端能力面 tools-list）─────────────────────
@@ -279,51 +364,28 @@ def wait_tools(pred, desc, max_wait=30):
     raise TestError("%s 超时（%ss）；当前工具面=%r" % (desc, max_wait, sorted(cur)))
 
 
-# ── 索引状态流（既有广播 data-prj-config-refresh，捕获瞬态阶段）──
-
-def arm_refresh():
-    c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
-    c.mq_on_capture([REFRESH])               # 每次调用先清空旧事件
-    time.sleep(0.2)
-
-
-def refresh_values(key=STATUS_KEY):
-    """本窗口捕获的 key 变更值（原始文本，去重保序）。"""
-    out = []
-    for e in c.events_of(REFRESH, clear=False):
-        p = e.get("payload") or {}
-        if isinstance(p, str):
-            try:
-                p = json.loads(p)
-            except Exception:
-                p = {}
-        if not isinstance(p, dict) or p.get("id") != key:
-            continue
-        lst = p.get("list") or {}
-        if key in lst and lst[key] not in out:
-            out.append(lst[key])
-    return out
-
-
-def stream_states(key=STATUS_KEY):
-    out = []
-    for raw in refresh_values(key):
-        try:
-            out.append(json.loads(raw))
-        except Exception:
-            out.append({"_raw": raw})
-    return out
-
-
-def wait_stream(pred, desc, max_wait=120):
+def wait_vfts_ready(pred, desc, max_wait=120, reindex_tries=3):
+    """等 vfts status 收敛；若进入 `state=error` 且原因为**瞬态锁**（zvec/rocksdb 的
+    `... LOCK: The process cannot access the file ...`，来自并发索引/查询句柄）→ 重新触发
+    「立即索引」再等（终态仍必须是 ready；断言不放宽，只是给瞬态锁一个自愈机会）。
+    """
     deadline = time.time() + max_wait
-    states = []
+    last = {}
     while time.time() < deadline:
-        states = stream_states()
-        if pred(states):
-            return states
-        time.sleep(0.2)
-    raise TestError("%s 超时（%ss）；已捕获状态流末段=%r" % (desc, max_wait, states[-6:]))
+        last = status_obj(VSTATUS_KEY)
+        if pred(last):
+            return last
+        msg = str(last.get("message") or "")
+        if last.get("state") == "error" and "LOCK" in msg.upper() and reindex_tries > 0:
+            reindex_tries -= 1
+            print("[G9] vfts 索引遇瞬时锁 → 重试一次：%s" % msg[:140], flush=True)
+            try:
+                vfts_index()
+            except TestError as e:
+                print("[G9] 重试触发失败：%r" % (e,), flush=True)
+            deadline = time.time() + max_wait
+        time.sleep(0.5)
+    raise TestError("%s 超时（%ss）；末次 status=%r" % (desc, max_wait, last))
 
 
 def wait_status(pred, desc, max_wait=120, key=STATUS_KEY):
@@ -381,14 +443,6 @@ def _want_filelist(expected, desc, max_wait=120):
                        sorted(got - want), sorted(want - got), sorted(got)))
 
 
-def _cycle_pred(ss):
-    """状态流里先出现 indexing（含 phase），其后回到 ready。"""
-    idx = next((i for i, s in enumerate(ss) if s.get("state") == "indexing"), None)
-    if idx is None:
-        return False
-    return any(s.get("state") == "ready" for s in ss[idx + 1:])
-
-
 # ── 前端页面/控件（口径同 run_config_ui.py 的 A 类用例）────
 
 def open_page(kind, root_sel):
@@ -408,75 +462,6 @@ def click_tab(root_sel, label):
     time.sleep(0.9)
     if r != "ok":
         raise TestError("切换页签失败 %s：%s" % (label, r))
-
-
-def panel_js(inner):
-    """在可见的项目配置面板（.project-config-panel）内执行 inner（内嵌 R）。"""
-    return ev("""(()=>{const R=[...document.querySelectorAll('.project-config-panel')]
-      .find(e=>e.getBoundingClientRect().width>0);if(!R)return null;%s})()""" % inner)
-
-
-def find_switch(label):
-    return panel_js("""
-const row=[...R.querySelectorAll('.switch-row,.cg-toggle,.vf-toggle,.history-toggle,.form-item')]
-  .find(x=>{const l=x.querySelector('.form-label');return l&&l.textContent.trim()===%s;});
-if(!row)return null;const sw=row.querySelector('.b-switch');if(!sw)return null;
-return {checked:sw.classList.contains('is-checked'),disabled:sw.classList.contains('is-disabled')};"""
-                    % json.dumps(label))
-
-
-def click_switch(label):
-    r = panel_js("""
-const row=[...R.querySelectorAll('.switch-row,.cg-toggle,.vf-toggle,.history-toggle,.form-item')]
-  .find(x=>{const l=x.querySelector('.form-label');return l&&l.textContent.trim()===%s;});
-if(!row)return 'no-row';const sw=row.querySelector('.b-switch');if(!sw)return 'no-sw';
-if(sw.classList.contains('is-disabled'))return 'disabled';sw.click();return 'ok';""" % json.dumps(label))
-    time.sleep(0.9)
-    return r
-
-
-def set_textarea(idx, value):
-    r = panel_js("""
-const ts=[...R.querySelectorAll('textarea.b-textarea')];const t=ts[%d];if(!t)return 'no-ta';
-Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(t,%s);
-t.dispatchEvent(new Event('input',{bubbles:true}));
-t.dispatchEvent(new Event('change',{bubbles:true}));return 'ok';"""
-                 % (idx, json.dumps(value)))
-    if r != "ok":
-        raise TestError("写文本框失败(idx=%d)：%s" % (idx, r))
-    time.sleep(0.3)
-
-
-def click_save():
-    r = panel_js("""
-const b=[...R.querySelectorAll('button.b-btn--primary')].filter(x=>x.getBoundingClientRect().width>0)[0];
-if(!b)return 'no-btn';b.click();return 'ok';""")
-    if r != "ok":
-        raise TestError("点击保存按钮失败：%s" % r)
-
-
-def set_stack_gitignore(checked):
-    """勾选/取消「叠加 gitignore」（「排除的目录和文件」label 右侧原生 input[type=checkbox]）。
-
-    口径 = `CodegraphConfig.vue` / `VftsConfig.vue` 的 `<label class="b-checkbox">` 内
-    `<input type=checkbox>`（`v-model` 绑 `change`）；原生 `click()` 同步翻转 checked 并触发
-    change → 组件 ref 更新。操作后校验 DOM 状态达预期。
-    """
-    r = panel_js("""
-const cb=R.querySelector('.b-checkbox input[type=checkbox]');if(!cb)return 'no-cb';
-if(cb.checked!==%s){cb.click();}
-return cb.checked?'on':'off';""" % ("true" if checked else "false"))
-    time.sleep(0.4)
-    if r not in ("on", "off"):
-        raise TestError("「叠加 gitignore」复选框操作失败：%s" % r)
-    if (r == "on") != bool(checked):
-        raise TestError("「叠加 gitignore」复选框未达预期（期望 checked=%s，实际 %s）" % (checked, r))
-
-
-def open_index_tab(tab_label):
-    """打开「设置 → 项目」配置面板并切到指定索引页签（CodeGraph 索引 / Vfts 全文索引）。"""
-    open_page("settings-project", ".project-config-panel")
-    click_tab(".project-config-panel", tab_label)
 
 
 # ── 设置 → 参数（settings-params）项目级控件 ─────────────
@@ -656,12 +641,53 @@ def _want_idx(expected, desc):
     return got
 
 
+def _want_idx_retry(expected, desc, settle_wait=60, retries=1):
+    """`_want_idx` 的**有界等待版** + 一次重建重试。
+
+    为什么不能只看插件状态：插件 `engine-status` 的 `indexedFiles` 可能仍是**上一次**索引的数值
+    （配置 apply 会先回写 skipDirs，而新一轮重建尚未落盘时，两者组合可"巧合满足"等待条件），
+    批跑负载下就会读到旧 `index.db`（2026-10-26 G8 误红定位）。故这里直接轮询**落盘产物**
+    （唯一权威），超时后重建一次再等；仍不符即真实回归（断言强度不变）。
+    """
+    want = set(expected)
+    deadline = time.time() + settle_wait
+    got = set()
+    while time.time() < deadline:
+        got = _idx_files()
+        if got == want:
+            return got
+        time.sleep(0.5)
+    if retries <= 0:
+        raise TestError("%s：落盘索引命中集合不符（实际 %d / 期望 %d）\n"
+                        "  多出（不应含却有）=%r\n  缺少（应含而缺）=%r"
+                        % (desc, len(got), len(want), sorted(got - want), sorted(want - got)))
+    print("[G8] 落盘命中集合未收敛 → 再重建一次（规则应用可能晚于首次索引）", flush=True)
+    cg_index()
+    return _want_idx_retry(expected, desc, settle_wait, retries - 1)
+
+
+def wait_applied(pred, desc, max_wait=30):
+    """等「prj 配置已被插件应用到引擎」（插件动作 `engine-status` 的状态收敛）。
+
+    超时**不判失败**（打印提示后继续）：状态上报可能晚于索引完成，最终判据仍以落盘
+    命中集合（`_want_idx_retry`）为准。
+    """
+    try:
+        return wait_status(pred, desc, max_wait=max_wait)
+    except TestError:
+        print("[G8] 提示：%s 未在 %ss 内回写 status（继续触发索引）" % (desc, max_wait), flush=True)
+        return status_obj()
+
+
 def case_g3_index_scope():
-    """写 exts/skip-dirs（**GUI 配置面**：文本框 + 保存按钮）→ 断言索引范围终效。
+    """写 exts/skip-dirs（插件配置动作面 `save` = 配置页「保存并应用」）→ 断言索引范围终效。
+
+    口径（2026-10-26，D-71）：配置源 = prj `plugins.codegraph.*`；索引触发 = 「立即索引」
+    （`tool.call codegraph_initialize`，与配置页按钮同一条）。
 
     可重复判据（三重，均来自产品面/落盘产物）：
-      ① prj 回读：`codegraph.exts` / `codegraph.skip-dirs` 等于写入值；
-      ② `codegraph.status`（引擎状态回写）：`exts` = 生效扩展名集合、`skipDirs` = 用户追加集、
+      ① prj 回读：`plugins.codegraph.exts` / `plugins.codegraph.skip-dirs` 等于写入值；
+      ② 插件动作 `engine-status` 现取状态：`exts` = 生效扩展名集合、`skipDirs` = 用户追加集、
          `indexedFiles` 命中文件数（与③期望集合规模一致）；
       ③ 落盘 bbolt 索引库 `<ws>/.chonkpilot/codegraph/index.db` 的**命中文件集合**
          （经引擎只读自检 `-dump` 读回）→ 与**夹具推导的显式期望集合字面全等**
@@ -672,8 +698,9 @@ def case_g3_index_scope():
       gate_ign/{keep,gen.gen,special.gen,sub/u}.go；note.md/.txt 非受支持语言；stack 关 → .gitignore 不读）；
       步骤 B：追加 skip-dirs=gate_skip → gate_skip/ 目录剪枝 → gate_skip/delta.go 出（6 → 5）。
     """
-    if prj().get("enable-codegraph") != "true":
-        prj_save("enable-codegraph", "true")           # 独立 work-dir：由上用例关闭后重新启用
+    if prj().get("plugins.codegraph.enabled") != "true":
+        cg_save({"enabled": "true"})                   # 独立 work-dir：由上用例关闭后重新启用
+        cg_index()
     base = wait_status(lambda o: o.get("state") == "ready", "启用后 codegraph 索引就绪")
     if base.get("indexedFiles") != len(_G3_AB):
         raise TestError("基线索引文件数应为 %d（夹具 .go 全集；note.md/.txt 非受支持语言；"
@@ -684,16 +711,14 @@ def case_g3_index_scope():
           % (base.get("exts"), base.get("indexedFiles"), len(_G3_AB)), flush=True)
 
     # ── 步骤 A：exts=".go"（+清空 skip-dirs）──
-    open_page("settings-project", ".project-config-panel")
-    click_tab(".project-config-panel", "CodeGraph 索引")
-    set_textarea(0, ".go")
-    set_textarea(1, "")
-    click_save()
+    cg_save({"exts": ".go", "skip-dirs": "", "stack-gitignore": "false"})
+    cg_index()
     a = wait_status(lambda o: o.get("state") == "ready" and o.get("exts") == [".go"],
                     "exts=.go 重建完成")
-    if prj().get("codegraph.exts") != ".go" or prj().get("codegraph.skip-dirs") != "":
+    if prj().get("plugins.codegraph.exts") != ".go" or \
+       prj().get("plugins.codegraph.skip-dirs") not in (None, ""):
         raise TestError("A：prj 回读不符（exts=%r skip-dirs=%r）"
-                        % (prj().get("codegraph.exts"), prj().get("codegraph.skip-dirs")))
+                        % (prj().get("plugins.codegraph.exts"), prj().get("plugins.codegraph.skip-dirs")))
     if a.get("indexedFiles") != len(_G3_AB):
         raise TestError("A：exts=.go 后 indexedFiles 应=%d，实际=%r"
                         % (len(_G3_AB), a.get("indexedFiles")))
@@ -703,13 +728,12 @@ def case_g3_index_scope():
           % (a.get("exts"), a.get("indexedFiles"), len(_G3_AB)), flush=True)
 
     # ── 步骤 B：追加 skip-dirs="gate_skip" ──
-    set_textarea(0, ".go")
-    set_textarea(1, "gate_skip")
-    click_save()
+    cg_save({"exts": ".go", "skip-dirs": "gate_skip"})
+    cg_index()
     b = wait_status(lambda o: o.get("state") == "ready" and "gate_skip" in (o.get("skipDirs") or []),
                     "skip-dirs=gate_skip 重建完成")
-    if prj().get("codegraph.skip-dirs") != "gate_skip":
-        raise TestError("B：prj 回读 codegraph.skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
+    if prj().get("plugins.codegraph.skip-dirs") != "gate_skip":
+        raise TestError("B：prj 回读 skip-dirs=%r" % (prj().get("plugins.codegraph.skip-dirs"),))
     if b.get("indexedFiles") != len(_G3_B):
         raise TestError("B：跳过 gate_skip 后 indexedFiles 应=%d，实际=%r"
                         % (len(_G3_B), b.get("indexedFiles")))
@@ -720,57 +744,56 @@ def case_g3_index_scope():
 
 
 # ══════════════════════════════════════════════════════════
-# G4 codegraph.action → rebuild / retry / clear
+# G4 重建（retry）/ 清除索引 → 状态与落盘产物
 # ══════════════════════════════════════════════════════════
 
-def _emit_action(action):
-    """写动作信号键（= `CodegraphConfig.vue emitAction()` 同一条消息面：
-    `api/config.setConfig('codegraph.action', action)` → `data-prj-config-save`）。"""
-    arm_refresh()
-    prj_save("codegraph.action", action)
-    if prj().get("codegraph.action") != action:
-        raise TestError("A：codegraph.action 回读=%r，期望 %r" % (prj().get("codegraph.action"), action))
-
-
 def case_g4_action_rebuild_retry_clear():
-    """rebuild/retry → 状态流出现进行中阶段（`state=indexing` + `phase∈{configure,index}`）并回到
-    `ready`；clear → 回「未初始化」（`state=""`、`indexedFiles=0`、`index.db` 被删且落盘无命中）。
+    """重建 → 回到 `ready` 且命中集合不变；清除 → 回「未初始化」（`indexedFiles=0`、index.db 删除）。
 
-    观测：`codegraph.status` 的写入经既有广播 `data-prj-config-refresh` 逐次到达前端 →
-    捕获**完整状态流**（不靠轮询赛跑，瞬态也不漏）。插件侧阶段写入点 =
-    `pushStatusPhase`（configure/index）；收口 = `refreshStatus`/`clearWorkspace`。
+    口径（2026-10-26，D-71）：旧 `codegraph.action` 信号键（`CodegraphConfig.vue emitAction`）
+    已随主仓页面下线 —— 配置页改为插件自持 iframe，动作面 =：
+      * 重建 / 重试 → `tool.call codegraph_initialize`（配置页「立即索引」，全量重建即重试）；
+      * 清除索引 → 插件动作 `clear`（配置页「清除索引」，等价引擎 `codegraph_configure{mode:clear}`）。
+    故本用例改断言**终态 + 落盘产物**（原 `indexing` 瞬态阶段的广播流断言随旧信号键一并退场）。
     """
     if status_obj().get("state") != "ready":
-        prj_save("enable-codegraph", "true")
+        cg_save({"enabled": "true"})
+        cg_index()
         wait_status(lambda o: o.get("state") == "ready", "前置：codegraph 就绪")
 
-    for action, why in (("rebuild", "强制全量重建"), ("retry", "重试失败（降级全量重建）")):
-        _emit_action(action)
-        ss = wait_stream(_cycle_pred, "%s 状态流：indexing → ready" % action)
-        phases = [s.get("phase") for s in ss if s.get("state") == "indexing"]
-        if not any(p in ("configure", "index") for p in phases):
-            raise TestError("%s：进行中阶段应含 configure/index，实际 phases=%r" % (action, phases))
-        if ss[-1].get("state") != "ready":
-            raise TestError("%s：状态流末尾应回到 ready，实际=%r" % (action, ss[-1]))
-        print("[G4] %s（%s）→ A: codegraph.action=%r；B: 状态流 %d 条，"
-              "进行中 phases=%r → 末态 state=%r"
-              % (action, why, prj().get("codegraph.action"), len(ss), phases, ss[-1].get("state")),
-              flush=True)
+    # 当前配置 = G3 B（exts=.go + skip-dirs=gate_skip）→ 重建后 indexedFiles 应仍为 |_G3_B|
+    # CODEGRAPH-IDXDB-1（2026-10-28 已修）：`status.indexedFiles` 与**落盘**索引库由同一索引快照
+    # 派生 → 此处**交叉硬断言两者相等**（此前因双 Workspace 缺陷不做交叉断言）。
+    for action, why in (("重建", "全量重建（= 配置页「立即索引」）"),
+                        ("重试", "失败后重试（同全量重建，引擎无独立 retry 面）")):
+        cg_index()
+        st = wait_status(lambda o: o.get("state") == "ready", "%s后回到 ready" % action)
+        if st.get("indexedFiles") != len(_G3_B):
+            raise TestError("%s：indexedFiles 应=%d（配置未变），实际=%r"
+                            % (action, len(_G3_B), st.get("indexedFiles")))
+        disk = _want_idx(_G3_B, "%s后落盘索引" % action)
+        if st.get("indexedFiles") != len(disk):
+            raise TestError("%s：status.indexedFiles=%r ≠ 落盘 files=%d（须由同一快照派生）"
+                            % (action, st.get("indexedFiles"), len(disk)))
+        print("[G4] %s（%s）→ state=%r indexedFiles=%r（= 落盘 %d）"
+              % (action, why, st.get("state"), st.get("indexedFiles"), len(disk)), flush=True)
 
-    # ── clear ──
-    _emit_action("clear")
-    ss = wait_stream(lambda x: any(s.get("state") in ("", "not_initialized") for s in x),
-                     "clear 后状态回未初始化")
-    st = status_obj()
-    if st.get("state") not in ("", "not_initialized"):
-        raise TestError("clear 后 codegraph.status.state=%r，期望未初始化" % (st.get("state"),))
-    if st.get("indexedFiles") != 0:
-        raise TestError("clear 后 indexedFiles 应=0，实际=%r" % (st.get("indexedFiles"),))
+    # ── 清除索引（插件动作 clear）──
+    # 终态判据 = 落盘产物（index.db 删除 + 命中集合为空）**且** status 回未初始化：
+    # CODEGRAPH-IDXDB-1 ③ 已修（clear 后插件立即回写运行时状态键），故两者都要断言。
+    cleared = plugin_api("clear", {"workdir": WS})
+    if not (isinstance(cleared, dict) and cleared.get("ok")):
+        raise TestError("clear 动作应答异常：%r" % (cleared,))
+    deadline = time.time() + 60
+    while time.time() < deadline and os.path.isfile(IDX_DB):
+        time.sleep(0.3)
     if os.path.isfile(IDX_DB):
         raise TestError("clear 后索引库 index.db 应被删除：%s" % IDX_DB)
     _want_idx(_CLEAR, "G4 clear 后落盘索引（应为空集）")
-    print("[G4] clear → A: codegraph.action=%r；B: state=%r indexedFiles=%r index.db 已删除且落盘命中集合为空"
-          % (prj().get("codegraph.action"), st.get("state"), st.get("indexedFiles")), flush=True)
+    st = wait_status(lambda o: (not o.get("state")) and int(o.get("indexedFiles") or 0) == 0,
+                     "clear 后 status 回未初始化")
+    print("[G4] clear → index.db 已删除、落盘为空集；status state=%r indexedFiles=%r"
+          % (st.get("state"), st.get("indexedFiles")), flush=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -853,12 +876,12 @@ def case_g7_codegraph_stack_gitignore():
       WS/.gitignore = `*.gen.go` / `!special.gen.go` / `gate_ign/sub/` / `!gate_ign/sub/u.go`
       WS/gate_ign/{keep.go, gen.gen.go, special.gen.go, sub/u.go}
 
-    链路：GUI 勾选 + `handleIndexSave`（**无条件写** exts/skip-dirs/stack-gitignore 三键，
-    `CodegraphConfig.vue:215-230`）→ `data-prj-config-refresh` → 插件 `readIndexConfig`
-    （原样透传 stack_gitignore，`codegraph.go:746-775`）→ 引擎 `excludeOptions`
-    （`server/index.go:134-141`）→ `ignore.WalkDir`（`src/lib/ignore/ignore.go`，逐级读各级 .gitignore）。
+    链路（2026-10-26，D-71）：插件配置动作面 `save`（= 配置页「保存并应用」，写 prj
+    `plugins.codegraph.*`）→ 插件 `data-prj-config-refresh` → 引擎 `codegraph_configure`
+    → 「立即索引」`codegraph_initialize` → 引擎 `excludeOptions` → `ignore.WalkDir`
+    （插件仓 `shared/ignore/ignore.go`，逐级读各级 .gitignore）。
 
-    判据 A（数据面回读）：`prj['codegraph.stack-gitignore']=="true"`、
+    判据 A（数据面回读）：`prj['plugins.codegraph.stack-gitignore']=="true"`、
     `status.stackGitignore==True`、`status.skipDirs` 空（用户规则空）。
     判据 B（终效，落盘 bbolt 索引库命中集合 + `status.indexedFiles`）：
       与夹具推导的**显式期望集合字面全等**（`_G7` 常量，一个不多一个不少）：
@@ -869,21 +892,18 @@ def case_g7_codegraph_stack_gitignore():
     全集 = gate_src/alpha.go + gate_skip/delta.go + keep.go + special.gen.go = **4**。
     收尾：取消勾选并保存（回 `stack-gitignore=false`）→ A 回落，避免污染后续用例。
     """
-    if prj().get("enable-codegraph") != "true":
-        prj_save("enable-codegraph", "true")
+    if prj().get("plugins.codegraph.enabled") != "true":
+        cg_save({"enabled": "true"})
 
-    open_index_tab("CodeGraph 索引")
-    set_textarea(0, ".go")
-    set_textarea(1, "")
-    set_stack_gitignore(True)
-    click_save()
+    cg_save({"exts": ".go", "skip-dirs": "", "stack-gitignore": "true"})
+    cg_index()
 
     st = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
                      and not (o.get("skipDirs") or []),
                      "叠加 gitignore 勾选后重建完成（stackGitignore=true）")
-    if prj().get("codegraph.stack-gitignore") != "true":
-        raise TestError("A：prj codegraph.stack-gitignore=%r，期望 'true'"
-                        % (prj().get("codegraph.stack-gitignore"),))
+    if prj().get("plugins.codegraph.stack-gitignore") != "true":
+        raise TestError("A：prj stack-gitignore=%r，期望 'true'"
+                        % (prj().get("plugins.codegraph.stack-gitignore"),))
     if (st.get("skipDirs") or []):
         raise TestError("A：勾选 stack-gitignore 时用户规则应为空，实际 skipDirs=%r"
                         % (st.get("skipDirs"),))
@@ -894,19 +914,19 @@ def case_g7_codegraph_stack_gitignore():
     _want_idx(_G7, "G7 勾选叠加 gitignore（.gitignore 文件级排除 + '!' 反选 + 目录剪枝）")
     print("[G7] 勾选叠加 gitignore → A: stack-gitignore=%r stackGitignore=%r skipDirs=%r；"
           "B: 落盘索引命中集合字面全等（含 keep/special、不含 gen.gen/sub/u），indexedFiles=%r"
-          % (prj().get("codegraph.stack-gitignore"), st.get("stackGitignore"),
+          % (prj().get("plugins.codegraph.stack-gitignore"), st.get("stackGitignore"),
              st.get("skipDirs"), st.get("indexedFiles")), flush=True)
 
     # 收尾：取消勾选 → stack-gitignore=false（A 回落）
-    set_stack_gitignore(False)
-    click_save()
+    cg_save({"stack-gitignore": "false"})
+    cg_index()
     st2 = wait_status(lambda o: o.get("state") == "ready" and not o.get("stackGitignore"),
                       "取消勾选后重建完成（stackGitignore 回落）")
-    if prj().get("codegraph.stack-gitignore") != "false":
-        raise TestError("收尾：codegraph.stack-gitignore=%r，期望 'false'"
-                        % (prj().get("codegraph.stack-gitignore"),))
+    if prj().get("plugins.codegraph.stack-gitignore") != "false":
+        raise TestError("收尾：stack-gitignore=%r，期望 'false'"
+                        % (prj().get("plugins.codegraph.stack-gitignore"),))
     print("[G7] 收尾 取消勾选 → A: stack-gitignore=%r stackGitignore=%r（回落）"
-          % (prj().get("codegraph.stack-gitignore"), st2.get("stackGitignore")), flush=True)
+          % (prj().get("plugins.codegraph.stack-gitignore"), st2.get("stackGitignore")), flush=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -931,62 +951,72 @@ def case_g8_user_rules_priority():
             同时 .gitignore 的 `*.gen.go` / `!special.gen.go` 仍生效（gen.gen.go 排除、special.gen.go 保留）。
     收尾：清空排除规则 + 关闭 stack（避免污染后续 / G9）。
     """
-    if prj().get("enable-codegraph") != "true":
-        prj_save("enable-codegraph", "true")
-    if prj().get("codegraph.stack-gitignore") not in (None, "", "false"):
+    if prj().get("plugins.codegraph.enabled") != "true":
+        cg_save({"enabled": "true"})
+    if prj().get("plugins.codegraph.stack-gitignore") not in (None, "", "false"):
         raise TestError("前置：stack-gitignore 应为关（G7 收尾回落后），实际=%r"
-                        % (prj().get("codegraph.stack-gitignore"),))
+                        % (prj().get("plugins.codegraph.stack-gitignore"),))
 
     # ── 步骤 1：用户规则 "*.gen.go"（仅用户规则，stack 关）──
-    open_index_tab("CodeGraph 索引")
-    set_textarea(0, ".go")
-    set_textarea(1, "*.gen.go")
-    click_save()
-    s1 = wait_status(lambda o: o.get("state") == "ready" and o.get("skipDirs") == ["*.gen.go"],
-                     "用户规则 *.gen.go 生效")
-    if prj().get("codegraph.skip-dirs") != "*.gen.go":
-        raise TestError("步骤1 A：prj skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
-    _want_idx(_G8_S1, "G8 步骤1（用户规则 *.gen.go，stack 关）")
+    cg_save({"exts": ".go", "skip-dirs": "*.gen.go", "stack-gitignore": "false"})
+    # 先等**插件已应用**新规则（status 由插件 configure 后回写）再触发索引：
+    # 批跑负载下 `save` 回执 → `data-prj-config-refresh` → 插件 apply 是异步的，
+    # 若此刻立刻「立即索引」，引擎会按**旧规则**建库 → 落盘命中集合断言误红（2026-10-26 定位）。
+    wait_applied(lambda o: o.get("skipDirs") == ["*.gen.go"], "用户规则 *.gen.go 已应用")
+    cg_index()
+    s1 = wait_applied(lambda o: o.get("state") == "ready"
+                      and o.get("skipDirs") == ["*.gen.go"]
+                      and o.get("indexedFiles") == len(_G8_S1),
+                      "用户规则 *.gen.go 生效（索引完成）", max_wait=60)
+    if prj().get("plugins.codegraph.skip-dirs") != "*.gen.go":
+        raise TestError("步骤1 A：prj skip-dirs=%r" % (prj().get("plugins.codegraph.skip-dirs"),))
+    _want_idx_retry(_G8_S1, "G8 步骤1（用户规则 *.gen.go，stack 关）")
     print("[G8] 步骤1 skip-dirs=%r → A: status.skipDirs=%r（原样未折名）；"
           "B: 命中集合字面全等（不含两个 gen、含 keep/sub/u）"
-          % (prj().get("codegraph.skip-dirs"), s1.get("skipDirs")), flush=True)
+          % (prj().get("plugins.codegraph.skip-dirs"), s1.get("skipDirs")), flush=True)
 
     # ── 步骤 2："*.gen.go, !special.gen.go"（保序含 '!'）──
-    set_textarea(1, "*.gen.go, !special.gen.go")
-    click_save()
-    s2 = wait_status(lambda o: o.get("state") == "ready"
-                     and o.get("skipDirs") == ["*.gen.go", "!special.gen.go"],
-                     "用户规则含 '!' 反选生效")
-    if prj().get("codegraph.skip-dirs") != "*.gen.go, !special.gen.go":
-        raise TestError("步骤2 A：prj skip-dirs=%r" % (prj().get("codegraph.skip-dirs"),))
-    _want_idx(_G8_S2, "G8 步骤2（用户规则 *.gen.go, !special.gen.go，stack 关）")
+    cg_save({"skip-dirs": "*.gen.go, !special.gen.go"})
+    wait_applied(lambda o: o.get("skipDirs") == ["*.gen.go", "!special.gen.go"],
+                 "用户规则含 '!' 反选已应用")
+    cg_index()
+    s2 = wait_applied(lambda o: o.get("state") == "ready"
+                      and o.get("skipDirs") == ["*.gen.go", "!special.gen.go"]
+                      and o.get("indexedFiles") == len(_G8_S2),
+                      "用户规则含 '!' 反选生效（索引完成）", max_wait=60)
+    if prj().get("plugins.codegraph.skip-dirs") != "*.gen.go, !special.gen.go":
+        raise TestError("步骤2 A：prj skip-dirs=%r" % (prj().get("plugins.codegraph.skip-dirs"),))
+    _want_idx_retry(_G8_S2, "G8 步骤2（用户规则 *.gen.go, !special.gen.go，stack 关）")
     print("[G8] 步骤2 skip-dirs=%r → A: status.skipDirs=%r（保序含 '!'）；"
           "B: 命中集合字面全等（special.gen.go 反选回来、gen.gen.go 仍排除）"
-          % (prj().get("codegraph.skip-dirs"), s2.get("skipDirs")), flush=True)
+          % (prj().get("plugins.codegraph.skip-dirs"), s2.get("skipDirs")), flush=True)
 
     # ── 步骤 3：勾选 stack + 用户规则 "!gate_ign/sub/"（用户规则压过 .gitignore 目录排除）──
-    set_stack_gitignore(True)
-    set_textarea(1, "!gate_ign/sub/")
-    click_save()
-    s3 = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
-                     and o.get("skipDirs") == ["!gate_ign/sub/"],
-                     "用户规则 !gate_ign/sub/ 压过 .gitignore 目录排除")
-    _want_idx(_G8_S3, "G8 步骤3（stack + 用户规则 !gate_ign/sub/）")
+    cg_save({"skip-dirs": "!gate_ign/sub/", "stack-gitignore": "true"})
+    wait_applied(lambda o: o.get("stackGitignore") is True
+                 and o.get("skipDirs") == ["!gate_ign/sub/"],
+                 "用户规则 !gate_ign/sub/ + stack 已应用")
+    cg_index()
+    s3 = wait_applied(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
+                      and o.get("skipDirs") == ["!gate_ign/sub/"]
+                      and o.get("indexedFiles") == len(_G8_S3),
+                      "用户规则 !gate_ign/sub/ 压过 .gitignore 目录排除（索引完成）", max_wait=60)
+    _want_idx_retry(_G8_S3, "G8 步骤3（stack + 用户规则 !gate_ign/sub/）")
     print("[G8] 步骤3 勾选 stack + 用户规则 %r → A: skipDirs=%r stackGitignore=%r；"
           "B: 命中集合字面全等（sub/u.go 重新出现；gen.gen.go 仍排除）"
-          % (prj().get("codegraph.skip-dirs"), s3.get("skipDirs"), s3.get("stackGitignore")),
+          % (prj().get("plugins.codegraph.skip-dirs"), s3.get("skipDirs"), s3.get("stackGitignore")),
           flush=True)
 
     # 收尾：清空规则 + 关闭 stack
-    set_textarea(1, "")
-    set_stack_gitignore(False)
-    click_save()
+    cg_save({"skip-dirs": "", "stack-gitignore": "false"})
+    cg_index()
     wait_status(lambda o: o.get("state") == "ready" and not o.get("skipDirs")
                 and not o.get("stackGitignore"), "G8 收尾（规则清空 + stack 关）")
-    if prj().get("codegraph.skip-dirs") not in (None, "") or \
-       prj().get("codegraph.stack-gitignore") != "false":
+    if prj().get("plugins.codegraph.skip-dirs") not in (None, "") or \
+       prj().get("plugins.codegraph.stack-gitignore") != "false":
         raise TestError("G8 收尾：skip-dirs=%r stack-gitignore=%r"
-                        % (prj().get("codegraph.skip-dirs"), prj().get("codegraph.stack-gitignore")))
+                        % (prj().get("plugins.codegraph.skip-dirs"),
+                           prj().get("plugins.codegraph.stack-gitignore")))
 
 
 # ══════════════════════════════════════════════════════════
@@ -994,57 +1024,48 @@ def case_g8_user_rules_priority():
 # ══════════════════════════════════════════════════════════
 
 def case_g9_vfts_gitignore_semantics():
-    """vfts 侧同语义：引擎遍历 + 清单扫描共用 `src/lib/ignore` → 与 codegraph 行为一致。
+    """vfts 侧同语义：引擎遍历 + 清单扫描共用插件仓 `shared/ignore` → 与 codegraph 行为一致。
 
     证据选择（**清单面**，非计数退化）：vfts 的文件清单是**插件自持文件**
-    `<workdir>/.chonkpilot/vfts/file_list.json`（`src/lib/ignore` 消费方之一 =
+    `<workdir>/.chonkpilot/vfts/file_list.json`（`shared/ignore` 消费方之一 =
     `plugin-vfts/manifest.go scanFiles` 走 `ignore.WalkDir`），逐文件读回 `path` ——
-    可逐文件断言「谁该在 / 谁不该在」，比 `vfts.status.indexedFiles` 计数强。
+    可逐文件断言「谁该在 / 谁不该在」，比 `engine-status` 的 `indexedFiles` 计数强。
 
-    链路同 G7：GUI Vfts 页写入 exts/排除规则/勾选 → `data-prj-config-refresh` → 插件
-    `ensureWorkspace`（`vfts.go`）→ 引擎 `vfts_index`（`server/index.go collectFiles`
-    走 `ignore.WalkDir`）+ 插件 `rebuildManifest`（`manifest.go` 走同一 `ignore.WalkDir`）。
+    链路（2026-10-26，D-71）：插件配置动作面 `save`（写 prj `plugins.codegraph.vfts.*`）
+    → `data-prj-config-refresh` → 插件 `apply`（`vfts_configure`）→ 「立即索引」`vfts_index`
+    （`server/index.go collectFiles` 走 `ignore.WalkDir`）+ 插件 `rebuildManifest`
+    （`manifest.go` 走同一 `ignore.WalkDir`）。
 
-    判据 A：`prj['vfts.exts']==".go"`、`prj['vfts.stack-gitignore']=="true"`、`prj['vfts.skip-dirs']` 空；
-            `vfts.status.stackGitignore==True`。
+    判据 A：`prj['plugins.codegraph.vfts.exts']==".go"`、
+            `prj['plugins.codegraph.vfts.stack-gitignore']=="true"`、
+            `prj['plugins.codegraph.vfts.skip-dirs']` 空；`engine-status` 的 `stackGitignore==True`。
     判据 B：`file_list.json` 文件集合与**夹具 + 配置推导的显式期望集合**（上方 `_G9` 常量）
             **字面全等**（一个不多一个不少；多出/缺少/实际三行差集打印在失败信息里）：
             4 个 .go = gate_src/alpha.go + gate_skip/delta.go + gate_ign/keep.go +
             gate_ign/special.gen.go；不含 gate_ign/gen.gen.go（`*.gen.go` 文件级排除）与
             gate_ign/sub/u.go（`gate_ign/sub/` 目录剪枝，其后代 `!` 无效）。
-            `vfts.status.indexedFiles==len(_G9)` 与集合规模一致。
-    收尾：清空规则 + 取消勾选 + 关闭 vfts（`enable-vfts=false`）。
+            `engine-status` 的 `indexedFiles==len(_G9)` 与集合规模一致。
+    收尾：清空规则 + 取消勾选 + 关闭 vfts（`plugins.codegraph.vfts.enabled=false`）。
     """
-    # 前置：开启 vfts（G2 已关闭）
-    if prj().get("enable-vfts") != "true":
-        open_index_tab("Vfts 全文索引")
-        st = find_switch("Vfts 全文索引")
-        if not st:
-            raise TestError("未找到「Vfts 全文索引」开关")
-        if st["checked"]:
-            raise TestError("前置：enable-vfts 应为关")
-        if click_switch("Vfts 全文索引") != "ok":
-            raise TestError("点击 Vfts 开关失败")
-        if prj().get("enable-vfts") != "true":
-            raise TestError("前置：点击后 enable-vfts=%r，期望 'true'" % (prj().get("enable-vfts"),))
+    # 前置：开启 vfts + 写 exts=".go" / 排除规则清空 / 叠加 gitignore
+    cg_save({"vfts.enabled": "true", "vfts.exts": ".go", "vfts.skip-dirs": "",
+             "vfts.stack-gitignore": "true"})
+    if prj().get("plugins.codegraph.vfts.enabled") != "true":
+        raise TestError("前置：plugins.codegraph.vfts.enabled=%r，期望 'true'"
+                        % (prj().get("plugins.codegraph.vfts.enabled"),))
+    vfts_index_retry()
 
-    # 写 exts=".go" / 排除规则清空 / 勾选叠加 gitignore
-    open_index_tab("Vfts 全文索引")
-    set_textarea(0, ".go")
-    set_textarea(1, "")
-    set_stack_gitignore(True)
-    click_save()
-
-    a = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
-                    and o.get("indexedFiles") == len(_G9),
-                    "vfts 叠加 gitignore 重建完成（ready / indexedFiles=%d）" % len(_G9),
-                    key=VSTATUS_KEY)
-    if prj().get("vfts.exts") != ".go":
-        raise TestError("A：prj vfts.exts=%r" % (prj().get("vfts.exts"),))
-    if prj().get("vfts.stack-gitignore") != "true":
-        raise TestError("A：prj vfts.stack-gitignore=%r" % (prj().get("vfts.stack-gitignore"),))
-    if prj().get("vfts.skip-dirs") not in (None, ""):
-        raise TestError("A：vfts.skip-dirs 应为空（用户规则空），实际=%r" % (prj().get("vfts.skip-dirs"),))
+    a = wait_vfts_ready(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
+                        and o.get("indexedFiles") == len(_G9),
+                        "vfts 叠加 gitignore 重建完成（ready / indexedFiles=%d）" % len(_G9))
+    if prj().get("plugins.codegraph.vfts.exts") != ".go":
+        raise TestError("A：prj vfts.exts=%r" % (prj().get("plugins.codegraph.vfts.exts"),))
+    if prj().get("plugins.codegraph.vfts.stack-gitignore") != "true":
+        raise TestError("A：prj vfts.stack-gitignore=%r"
+                        % (prj().get("plugins.codegraph.vfts.stack-gitignore"),))
+    if prj().get("plugins.codegraph.vfts.skip-dirs") not in (None, ""):
+        raise TestError("A：vfts.skip-dirs 应为空（用户规则空），实际=%r"
+                        % (prj().get("plugins.codegraph.vfts.skip-dirs"),))
 
     # B：清单逐文件集合字面全等（清单在引擎索引后由插件**异步重建** → 轮询至收敛，
     #    差集（多出/缺少/实际）打印在失败信息里；期望集合由夹具 + vfts 配置推导，见 `_G9`）
@@ -1052,20 +1073,17 @@ def case_g9_vfts_gitignore_semantics():
     print("[G9] vfts 勾选叠加 gitignore → A: exts=%r stackGitignore=%r skipDirs=%r；"
           "B: file_list 命中集合字面全等 %d 个（含 keep/special、不含 gen.gen/sub/u，"
           "与 codegraph 同匹配器）"
-          % (prj().get("vfts.exts"), a.get("stackGitignore"), a.get("skipDirs"), len(got)), flush=True)
+          % (prj().get("plugins.codegraph.vfts.exts"), a.get("stackGitignore"),
+             a.get("skipDirs"), len(got)), flush=True)
 
     # 收尾：清空规则 + 取消勾选 + 关闭 vfts
-    set_textarea(1, "")
-    set_stack_gitignore(False)
-    click_save()
-    time.sleep(1.0)
-    open_index_tab("Vfts 全文索引")
-    if click_switch("Vfts 全文索引") != "ok":
-        raise TestError("G9 收尾：关闭 Vfts 开关失败")
-    if prj().get("enable-vfts") != "false":
-        raise TestError("G9 收尾：enable-vfts=%r，期望 'false'" % (prj().get("enable-vfts"),))
-    print("[G9] 收尾 enable-vfts=%r stack-gitignore=%r（已回落）"
-          % (prj().get("enable-vfts"), prj().get("vfts.stack-gitignore")), flush=True)
+    cg_save({"vfts.skip-dirs": "", "vfts.stack-gitignore": "false", "vfts.enabled": "false"})
+    if prj().get("plugins.codegraph.vfts.enabled") != "false":
+        raise TestError("G9 收尾：vfts.enabled=%r，期望 'false'"
+                        % (prj().get("plugins.codegraph.vfts.enabled"),))
+    print("[G9] 收尾 vfts.enabled=%r stack-gitignore=%r（已回落）"
+          % (prj().get("plugins.codegraph.vfts.enabled"),
+             prj().get("plugins.codegraph.vfts.stack-gitignore")), flush=True)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1082,9 +1100,9 @@ def main():
          case_g1_plugin_codegraph_gate),
         ("G2 enable-codegraph/enable-vfts 历史键不再门控工具面",
          case_g2_legacy_enable_keys_inert),
-        ("G3 codegraph.exts/skip-dirs → 索引范围终效（status + bbolt 索引命中集合）",
+        ("G3 plugins.codegraph.exts/skip-dirs → 索引范围终效（status + bbolt 索引命中集合）",
          case_g3_index_scope),
-        ("G4 codegraph.action rebuild/retry 进行中阶段→ready；clear→未初始化",
+        ("G4 重建/重试→ready；清除→未初始化（插件动作面 tool.call/clear）",
          case_g4_action_rebuild_retry_clear),
         ("G5 prj skip_dirs → 配置面回读 + 重开页面回显（B 不可覆盖）",
          case_g5_prj_skip_dirs_config_face),

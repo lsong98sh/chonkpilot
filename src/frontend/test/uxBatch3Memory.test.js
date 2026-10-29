@@ -83,10 +83,10 @@ test('⑱A 立即沉淀：按钮 + 进行中 loading + 记忆库关闭时禁用�
 test('⑱A 主题：点分相对主题 memory.flush，前端字面量 = Go 插件订阅点', () => {
   const src = read(PAGE)
   assert.match(src, /const FLUSH_TOPIC = 'memory\.flush'/, '须用点分相对主题（桥/服务端直通总线）')
-  assert.match(src, /mq\.emit\(FLUSH_TOPIC, \{ session: sessionID \}/, '须经统一 mq.emit 发送（禁直调 window.go.*）')
+  assert.match(src, /mq\.emit\(FLUSH_TOPIC, \{ session: sessionID, dialog_id: dialogID \}/, '须经统一 mq.emit 发送（禁直调 window.go.*；61 §0.6：载荷须同级带 dialog_id）')
   assert.doesNotMatch(stripComments(src), /window\.go\.|gui\./, '不得绕过 mq 直调宿主')
 
-  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'lib', 'memory.go'), 'utf8')
+  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'lib', 'memory.go'), 'utf8')
   assert.match(go, /flushSubject = "memory\.flush"/, 'Go 插件主题字面量须与前端一致')
   assert.match(go, /d\.Bus\.On\(flushSubject, 0/, '插件须在 Start 订阅该主题')
   assert.match(go, /func \(p \*Plugin\) flush\(/, '插件须有 flush 实现')
@@ -94,12 +94,12 @@ test('⑱A 主题：点分相对主题 memory.flush，前端字面量 = Go 插�
 })
 
 test('⑱A 作用域与内容：显式动作取「当前会话」；不受 min-turn-tokens 门控', () => {
-  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'lib', 'memory.go'), 'utf8')
+  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'lib', 'memory.go'), 'utf8')
   // 作用域 = payload 的 instance + session（不跨实例/会话）
   assert.match(go, /InstanceID string `json:"instance_id"`[\s\S]{0,80}Session    string `json:"session"`/,
     'payload 须为 {instance_id, session}（实例字段必带）')
-  assert.match(go, /p\.enqueue\(turnEvent\{InstanceID: req\.InstanceID, Session: req\.Session\}, true\)/,
-    '手动沉淀须置待处理标记（force=true；作用域限定该会话）')
+  assert.match(go, /p\.enqueue\(turnEvent\{InstanceID: req\.InstanceID, Session: req\.Session, DialogID: req\.DialogID\}, true\)/,
+    '手动沉淀须置待处理标记（force=true；作用域限定该会话，并带上 dialog_id）')
   assert.match(go, /sessionHistorySubject = "data-session-history"/, '取轮次走既有 data-session-history 面')
   // 不受阈值门控：force=true 跳过累计门控（process 内 `if !force { … cfg.MinTokens … }`）
   assert.match(go, /func \(p \*Plugin\) process\(ev turnEvent, force bool\)/, '须有 process(ev, force) 共用回路')
@@ -186,14 +186,15 @@ test('⑱C 数据来源 = 既有 data-snapshot-get（压缩产物唯一落点）
   assert.match(src, /getActiveSessionID\(\)/, '须取当前活动会话（既有消息辅助）')
   assert.doesNotMatch(src, /dataRequest\('compress'|dataRequest\('compression/, '不得臆造压缩记录面')
 
-  // 跨端核实：压缩摘要真落库于会话快照（compress 插件 DoCompress 写回快照）
-  const go = readRepo('plugins/plugin-compress/compress.go')
-  assert.match(go, /"\[已压缩早前对话\] " \+ sum/, '压缩产物 = 快照首条 system 摘要（Go 侧标记）')
+  // 跨端核实：压缩摘要真落库于会话快照（内建压缩 compress.go 写回快照；原 plugin-compress 已于 2026-10-27 删除）
+  const go = readRepo('lib/llm/server/compress.go')
+  assert.match(go, /compressedSummaryPrefix = session\.SummaryPrefix/,
+    '压缩产物标记唯一来源 = 组件 SummaryPrefix（内建压缩绑定）')
   assert.match(src, /const COMPRESS_MARK = '\[已压缩早前对话\] '/, '前端识别标记须与 Go 侧一致')
   const go2 = readRepo('lib/data/persist/persist.go')
   assert.match(go2, /TopicDataSnapshotGet, msgkeys\.TopicDataSnapshotSet/, 'data-snapshot-get 须为既有注册主题')
-  const l2 = readRepo('test/chonkpilot-plugin-compress/unittest/compress_test.go')
-  assert.match(l2, /func TestCompressedSummaryPersistedInSnapshot/, 'L2 须有「压缩产物落快照可读回」用例')
+  const l1 = readRepo('lib/llm/server/compress_test.go')
+  assert.match(l1, /func TestCompressCommitSingleFlightAndCAS/, 'L1 须有「压缩产物落快照可读回 + CAS」用例')
 })
 
 test('⑱C 呈现：摘要原文（截断 + 展开全文）+ 触发范围 + 保留条数 + 空态', () => {

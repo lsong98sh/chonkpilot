@@ -35,16 +35,7 @@
     "category": "codegraph",
     "origin": "builtin"
   },
-  "config": {
-    "scope": "prjusr",
-    "fields": [
-      { "key": "autoIndex", "type": "boolean", "default": true, "label": "打开项目后自动增量索引" },
-      { "key": "exts", "type": "string", "default": "", "label": "索引扩展名（逗号分隔，空 = 使用引擎默认）" },
-      { "key": "skipDirs", "type": "string", "default": ".git,.svn,node_modules,dist,build,.trae", "label": "排除目录（逗号分隔）" },
-      { "key": "stackGitignore", "type": "boolean", "default": true, "label": "叠加 .gitignore 规则" },
-      { "key": "vftsDocs", "type": "boolean", "default": false, "label": "全文索引包含 Office/PDF 文档" }
-    ]
-  },
+  "config": { "scope": "prjusr" },
   "ui": {
     "selfServe": true,
     "views": [
@@ -62,6 +53,14 @@
         "icon": "pulse",
         "entry": "webui/status.html",
         "containers": ["preview", "tab", "drawer"]
+      },
+      {
+        "id": "badge",
+        "title": "索引进度",
+        "icon": "pulse",
+        "entry": "webui/badge.html",
+        "containers": ["statusbar"],
+        "default_size": { "width": 200, "height": 20 }
       }
     ],
     "menus": [
@@ -71,9 +70,8 @@
       {
         "id": "codegraph",
         "zone": "right",
-        "icon": "code",
-        "tooltip": "代码知识库",
-        "command": { "target": "host", "action": "open-view", "view": "status" }
+        "view": "badge",
+        "tooltip": "代码知识库索引进度（点击查看详情）"
       }
     ],
     "actions": [
@@ -87,7 +85,7 @@
         "container": "drawer"
       }
     ],
-    "rpc": ["ping", "status", "tool.call", "load", "save", "clear"]
+    "rpc": ["ping", "status", "badge", "engine-status", "tool.call", "load", "save", "clear"]
   },
   "permissions": {
     "data": [],

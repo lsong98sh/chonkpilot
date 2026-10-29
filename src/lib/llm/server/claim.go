@@ -41,10 +41,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/chonkpilot/chonkpilot-lib/idgen"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-lib/osuser"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/idgen"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/osuser"
 	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
@@ -54,23 +54,18 @@ const SubjectInstanceClaim = msgkeys.TopicInstanceClaim
 
 // 错误码（61 §4.6；复用既有 {ok,error} 信封，不新增字段）。
 const (
-	claimErrUnauthorized = "instance-unauthorized" // 未登录 / 令牌失效 → 前端跳登录
-	claimErrForbidden    = "instance-forbidden"    // 已登录但无权访问该 work_dir → 提示换目录（不跳登录）
+	claimErrForbidden = "instance-forbidden" // 已登录但无权访问该 work_dir → 提示换目录（不跳登录）
 )
 
 // claimReq 是 instance-claim 请求载荷（61 §4.1：{user?, work_dir?}）。
 //
 // instance_id 非消息面字段，而是**入口注入的连接绑定**（bridge injectInstance / httpapi
 // injectInstance 对单字方法面统一注入）；user / work_dir 均为**提议**，服务端以绑定为准。
-//
-// `token` 亦是**入口注入的连接层凭据**（非消息面字段；同 instance_id 既有口径）—— 服务端
-// 只按它解析身份，**不采信 payload 里的 `user` 作身份**（22 §1）。
 type claimReq struct {
 	InstanceID string `json:"instance_id"`
 	User       string `json:"user"`
 	WorkDir    string `json:"work_dir"`
-	Token      string `json:"token"`
-	// Local 是**入口注入的连接层信任标记**（🆕 2026-10-09；非消息面字段，同 instance_id/token 口径）：
+	// Local 是**入口注入的连接层信任标记**（🆕 2026-10-09；非消息面字段，同 instance_id 口径）：
 	// 本机 UDS 前门注入 true → work_dir 取客户端提议、免鉴权（61 §4.6「免鉴权由前门决定」）。
 	Local bool `json:"__local"`
 }
@@ -95,12 +90,11 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 	//    project-id 分支；显式 `--data-dir` 场景登记非空 → 认领必须原样保留（否则会把 bridge 写入
 	//    的数据根覆盖为空，prjusr 在 <dataDir> 与 ~/.chonkpilot/data/<prj-id> 之间漂移）。
 	rec, _ := s.im.Lookup(id)
-	boundWorkDir := rec.WorkDir
 	boundDataDir := rec.DataDir
 	clientType := rec.ClientType
 
 	// ③ 鉴权 + work_dir 归属校验（按**服务端判定的形态**分派；61 §4.6）。
-	workDir, dataDir, code := s.resolveClaimTarget(&req, boundWorkDir, boundDataDir, rec.WorkDir)
+	workDir, dataDir, code := s.resolveClaimTarget(&req, boundDataDir, rec.WorkDir)
 	if code != "" {
 		logf("[chonkpilot-server] instance-claim %s: work_dir=%q → %s（form=%s）\n",
 			id, req.WorkDir, code, s.Form())
@@ -152,15 +146,14 @@ func (s *Server) onInstanceClaim(_ context.Context, _ string, v *mq.Value) error
 //	                       通过 → work_dir = 规范化提议；data_dir = `<用户数据根>/<uid>/`。
 //
 // 返回 (work_dir, data_dir, 错误码)；错误码空 = 通过。
-func (s *Server) resolveClaimTarget(req *claimReq, boundWorkDir, boundDataDir, instWorkDir string) (string, string, string) {
+func (s *Server) resolveClaimTarget(req *claimReq, boundDataDir, instWorkDir string) (string, string, string) {
 	// 本地前门（🆕 2026-10-09：UDS = 本机信任）—— work_dir 取**客户端提议**；
 	// 提议为空则回落**连接已绑定实例的 work_dir**（`instWorkDir` = 实例登记的 work_dir）
 	// ——flash 薄壳的 SPA 按 desktop 语义认领时**不带 work_dir**（其 work_dir 已由 flash 自身
 	// `DialClaim` 绑定并经 instance-register 登记），缺失回落会让「免鉴权的本地前端认领」被
 	// 误判 forbidden（= 黑屏 + “无权访问该工作目录”）。
-	// **只认实例绑定**（不落 `boundWorkDir`/启动参数）：server 的启动 cwd（= `s.opts.WorkDir`，
-	// 独立 server 下即安装目录）**不是项目目录**，回落它会在实例未绑定时**静默绑定安装目录**
-	// → 使本分支的 forbidden 守卫失效（fail-open）。实例未绑定且无提议 → 明确失败。
+	// **只认实例绑定**（不落启动参数）：server 的启动 cwd **不是项目目录**，回落它会在实例未绑定时
+	// **静默绑定安装目录** → 使本分支的 forbidden 守卫失效（fail-open）。实例未绑定且无提议 → 明确失败。
 	// data_dir 随 work_dir 派生为 `<work_dir>/.chonkpilot`（与 desktop 单体口径一致）。
 	if req.Local {
 		wd := strings.TrimSpace(req.WorkDir)
@@ -213,13 +206,4 @@ func registerUserName(proposed string) string {
 func (s *Server) claimFail(v *mq.Value, code string) error {
 	v.Result = map[string]any{"ok": false, "error": code}
 	return errors.New(code)
-}
-
-// sameDir 比较两个目录是否同一（Windows 大小写不敏感；产品形态为 Windows）。
-// desktop 分支的「提议不得改写入口绑定」判定用（详略：只比字面清理后的路径，
-// 不做符号链接/8.3 短名归一）。
-func sameDir(a, b string) bool {
-	ca := filepath.Clean(filepath.FromSlash(strings.TrimSpace(a)))
-	cb := filepath.Clean(filepath.FromSlash(strings.TrimSpace(b)))
-	return strings.EqualFold(ca, cb)
 }

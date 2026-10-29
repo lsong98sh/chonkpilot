@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-lib/uds"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/uds"
 )
 
 // fakeFront 是最小 UDS 前门：claim 绑定实例；data-* 经**事件回投**应答（模拟 persist reply）；

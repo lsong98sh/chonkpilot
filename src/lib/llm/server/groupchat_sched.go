@@ -42,8 +42,8 @@ import (
 	"sync"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // 群聊机读约定常量（见文件头）。
@@ -134,6 +134,22 @@ func (s *Server) unregisterGroupRun(sc *groupSched) {
 		delete(s.groupRuns, sc.groupID)
 	}
 	s.groupMu.Unlock()
+}
+
+// stopAllGroupRuns 停机全部群聊调度（`Server.Stop` 兜底）：与 stopGroupRunsForInstance 同法，
+// 只是不按驱动实例过滤。
+func (s *Server) stopAllGroupRuns() {
+	s.groupMu.Lock()
+	runs := make([]*groupSched, 0, len(s.groupRuns))
+	for _, sc := range s.groupRuns {
+		runs = append(runs, sc)
+	}
+	s.groupMu.Unlock()
+	for _, sc := range runs {
+		if sc.cancel != nil {
+			sc.cancel()
+		}
+	}
 }
 
 // stopGroupRunsForInstance 停机由某实例**驱动**的全部群聊（关窗即停，§15.4 N23）：`instance-exit`
@@ -529,6 +545,7 @@ func groupWorkSessionID(groupID, agent string) string {
 }
 
 // sanitizeIDSeg 保留字母数字与 `_`/`-`，其余替换为 `_`（会话 id 安全段）。
+// utilguard:allow: 字符集不含 '.'，且空值回落 "agent"，与 strx.SafeSeg（保留 '.'、回落参数）不同。
 func sanitizeIDSeg(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -605,11 +622,19 @@ func (sc *groupSched) saveRoundTargets(round int, targets []groupParticipant) {
 
 // boardView 读群聊展示板消息视图（含 `sender_agent` / `mentions`；data-session-history）。
 // 读失败 → nil（调用方按「无结论」保守处理）。
+//
+// 一树一库：会话类读**必须带 dialog_id**（缺 → persist `dialog_required`）。此前这里裸发
+// 请求、缺该键 → 恒失败且被静默转成 nil → 「继续」把已产结论的参与者全部重跑。
 func (sc *groupSched) boardView() []map[string]any {
-	res, err := dataRequest(sc.s.bus, "data-session-history", map[string]any{
-		"instance_id": sc.instanceID, "session_id": sc.groupID,
-	})
+	payload := map[string]any{"instance_id": sc.instanceID, "session_id": sc.groupID}
+	if sc.s != nil {
+		if dlg := sc.s.ensureDialogIndex(sc.instanceID, sc.groupID); dlg != "" {
+			payload["dialog_id"] = dlg
+		}
+	}
+	res, err := dataRequest(sc.s.bus, "data-session-history", payload)
 	if err != nil {
+		logf("[chonkpilot-server] groupBoardView(%s): %v\n", sc.groupID, err)
 		return nil
 	}
 	msgs, _ := res["messages"].(map[string]any)

@@ -24,7 +24,7 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // agentWizardComposeTeamMember 是 team 中的一个成员（名称 + 角色标签）。

@@ -13,9 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestSessionTitleBroadcastMQ：改名成功 → 总线收到 data-session-title-changed
@@ -36,16 +35,8 @@ func TestSessionTitleBroadcastMQ(t *testing.T) {
 		missing = "no-such-session"
 	)
 	s.onInstanceRegister(instanceRegister, instancePayload(inst, wd, ""))
-	// P3-4c 起缺省一树一库；本用例断言**旧布局**的改名广播 → 显式退回 off。
-	if prj, release, err := s.PrjFor(inst, facade.Scope{WorkDir: wd}); err == nil {
-		if err := kernel.PrjConfigSetVal(prj, kernel.ConfigSessionShard, "off"); err != nil {
-			release()
-			t.Fatalf("set shard=off: %v", err)
-		}
-		release()
-	} else {
-		t.Fatalf("PrjFor: %v", err)
-	}
+	// 一树一库：会话行在对话库内 —— 根会话自举拿确定性 dialog_id，后续调用带上它。
+	dialogID := sessionstore.MigratedDialogID(sid)
 
 	got := make(chan map[string]any, 4)
 	sub, err := s.Bus.On("data-session-title-changed", 0, func(_ context.Context, _ string, v *mq.Value) error {
@@ -74,7 +65,7 @@ func TestSessionTitleBroadcastMQ(t *testing.T) {
 	emit("data-session-ensure-session", map[string]any{"instance_id": inst, "session_id": sid})
 
 	// ① 改名成功 → 广播 {session_id, title}，**不带 instance_id**（全局投递）
-	emit("data-session-title", map[string]any{"instance_id": inst, "id": sid, "title": newTi})
+	emit("data-session-title", map[string]any{"instance_id": inst, "dialog_id": dialogID, "id": sid, "title": newTi})
 	select {
 	case ev := <-got:
 		if ev["session_id"] != sid || ev["title"] != newTi {
@@ -88,7 +79,7 @@ func TestSessionTitleBroadcastMQ(t *testing.T) {
 	}
 
 	// ② 失败路径（会话不存在）→ 不广播
-	emit("data-session-title", map[string]any{"instance_id": inst, "id": missing, "title": "x"})
+	emit("data-session-title", map[string]any{"instance_id": inst, "dialog_id": dialogID, "id": missing, "title": "x"})
 	select {
 	case ev := <-got:
 		t.Fatalf("改名失败路径不应广播: %v", ev)

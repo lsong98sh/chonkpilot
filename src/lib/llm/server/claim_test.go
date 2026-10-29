@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // claimBroadcasts 订阅 instance-register 广播（claim 成功后服务端照发的观测口）。
@@ -167,10 +167,6 @@ func TestInstanceClaimWorkDirFromProposal(t *testing.T) {
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	t.Cleanup(data.Reset)
-
-	// 启动参数仍设置（用于验证「不再使用」）。
-	s.opts.WorkDir = testWorkDir
-	s.opts.DataDir = filepath.Join(testWorkDir, ".chonkpilot")
 
 	// ① 无提议、无实例登记 → 明确失败（不静默绑定启动参数 / 安装目录）。
 	if res, _ := claimOnce(t, s, map[string]any{}); res == nil || res["error"] != claimErrForbidden {

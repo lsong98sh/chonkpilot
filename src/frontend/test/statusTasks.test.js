@@ -6,19 +6,18 @@
  *  ② 点击条目 → 统一命令 `open-view`（目标 = 对应详情 view；经既有 `preview-tab-open` 落 preview）
  *  ③ 详情页注册（views.registry / view-definitions / CodeView 功能页）+ 详情页含「去设置」入口
  *  ④ 去 toast（源码契约）：记忆 / 压缩进度 / 完成 / 失败不再走 `sendNotify` 轻提示
- *  ⑤ 索引详情：进度 / 文件 / 符号 / chunk / 最近索引时间 / 错误文本（不编造字段）
+ *  ⑤ （已移除）索引详情：索引进度 UI 已归插件 codegraph（PLUGIN-UI-2），宿主不再持有该详情页
  *  ⑥ i18n：zh-CN / en-US 键齐备
  */
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { register } from 'node:module'
 
 import { parseNotice, reduceTask } from '../src/composables/useQueueStatus.js'
 import { taskEntry, taskTone } from '../src/utils/taskStatus.js'
-import { indexDetail, statusTime } from '../src/utils/indexStatus.js'
 import { EventNames } from '../src/events/event-names.js'
 import { VIEW_DEFINITIONS } from '../src/layout/view-definitions.js'
 
@@ -105,38 +104,24 @@ test('notice → 任务状态：进度取值 + 失败（plugin-failure）+ 失�
   assert.equal(nextRound.startedAt, 4000)
 })
 
-test('索引详情：状态 / 进度 / 文件·符号·chunk / 最近索引时间 / 错误文本', () => {
-  const cg = indexDetail({
-    enabledRaw: 'true',
-    statusRaw: JSON.stringify({
-      state: 'indexing', phase: 'index', progressDone: 3, progressTotal: 8,
-      indexedFiles: 12, indexedSymbols: 34, lastIndexedAt: 1700000000000000000,
-    }),
-    t,
-  })
-  assert.equal(cg.stateText, '索引中')
-  assert.equal(cg.tone, 'progress')
-  assert.equal(cg.done, 3)
-  assert.equal(cg.total, 8)
-  assert.equal(cg.hasProgress, true)
-  assert.equal(cg.files, 12)
-  assert.equal(cg.symbols, 34)
-  assert.equal(cg.phase, 'index')
-  assert.ok(statusTime(cg.lastIndexedAt).length > 0, 'UnixNano 应可格式化为本地时间')
-  const vf = indexDetail({
-    enabledRaw: 'true',
-    statusRaw: JSON.stringify({ state: 'error', message: 'boom', chunkCount: 9 }),
-    t,
-  })
-  assert.equal(vf.tone, 'error')
-  assert.equal(vf.error, 'boom')
-  assert.equal(vf.chunks, 9)
-  // 未启用 / 解析失败：不编造进度 / 时间
-  const off = indexDetail({ enabledRaw: 'false', statusRaw: 'garbage', t })
-  assert.equal(off.stateText, '未启用')
-  assert.equal(off.hasProgress, false)
-  assert.equal(off.lastIndexedAt, 0)
-  assert.equal(statusTime(0), '')
+test('索引详情（已归插件，PLUGIN-UI-2）：主仓源码零引用索引状态键与旧徽标', () => {
+  const fs = readFileSync
+  const dirs = ['layout', 'utils', 'views']
+  const offenders = []
+  const walk = (rel) => {
+    for (const name of readdirSync(join(srcDir, rel), { withFileTypes: true })) {
+      const p = `${rel}/${name.name}`
+      if (name.isDirectory()) walk(p)
+      else if (/\.(js|vue)$/.test(name.name)) {
+        const code = fs(join(srcDir, p), 'utf8')
+        if (/'status-index'|'index-badge'|"status-index"|'codegraph\.status'|'vfts\.status'/.test(code)) {
+          offenders.push(p)
+        }
+      }
+    }
+  }
+  for (const d of dirs) walk(d)
+  assert.deepEqual(offenders, [], '索引进度 UI 应完全归插件：宿主源码不得再引用这些键 / 旧视图')
 })
 
 /* ═══════════ ② 点击条目 → open-view ═══════════ */
@@ -168,11 +153,9 @@ test('详情页注册：view 注册表 + 组件映射 + CodeView 功能页', () 
   const reg = read('layout/views.registry.js')
   assert.match(reg, /\{ key: 'status-memory', component: MemoryStatusDetail \}/, '组件注册缺 status-memory')
   assert.match(reg, /\{ key: 'status-compress', component: CompressStatusDetail \}/, '组件注册缺 status-compress')
-  assert.match(reg, /\{ key: 'status-index', component: IndexStatusDetail \}/, '组件注册缺 status-index')
   const cv = read('views/codeview/CodeView.vue')
   assert.match(cv, /'status-memory': defineAsyncComponent/, 'CodeView 功能页缺 status-memory')
   assert.match(cv, /'status-compress': defineAsyncComponent/, 'CodeView 功能页缺 status-compress')
-  assert.match(cv, /'status-index': defineAsyncComponent/, 'CodeView 功能页缺 status-index')
   assert.match(cv, /case 'status-memory': return t\('statusBar\.detail\.memoryTitle'\)/, '页签标题应走 i18n')
 })
 
@@ -182,13 +165,10 @@ test('详情页含「去设置」入口（既有 project-config-open，配置仍
   assert.match(shell, /EventNames\.projectConfigOpen/, '「去设置」走既有 project-config-open')
   assert.match(shell, /tab: settingsTab/, '「去设置」应带目标页签')
   assert.match(shell, /statusBar\.detail\.goSettings/)
-  // 记忆 / 压缩 → context 页签；索引 → codegraph / vfts 页签
+  // 记忆 / 压缩 → context 页签
   assert.match(read('views/status/MemoryStatusDetail.vue'), /settings-tab="'context'"/)
   assert.match(read('views/status/CompressStatusDetail.vue'), /settings-tab="'context'"/)
-  const idx = read('views/status/IndexStatusDetail.vue')
-  assert.match(idx, /tab: 'codegraph'/, '索引详情应可去 CodeGraph 设置')
-  assert.match(idx, /tab: 'vfts'/, '索引详情应可去 Vfts 设置')
-  assert.match(idx, /statusBar\.detail\.astNote/, 'AST 口径应如实说明（并入索引阶段，不编造独立阶段）')
+  // 注：索引详情的「去设置」入口已随详情页归插件（PLUGIN-UI-2）。
 })
 
 /* ═══════════ ④ 去 toast ═══════════ */
@@ -218,12 +198,10 @@ test('i18n：状态条目 + 详情页键 zh/en 齐备', () => {
   const keys = [
     'task_memory_idle', 'task_compress_idle', 'task_memory_disabled', 'task_memory_error', 'task_compress_error',
     'task_open_memory', 'task_open_compress',
-    'detail.memoryTitle', 'detail.compressTitle', 'detail.indexTitle', 'detail.goSettings', 'detail.error',
+    'detail.memoryTitle', 'detail.compressTitle', 'detail.goSettings', 'detail.error',
     'detail.lastTask', 'detail.state', 'detail.updatedAt', 'detail.startedAt', 'detail.session', 'detail.turn',
-    'detail.noRecord', 'detail.timeline', 'detail.noTimeline', 'detail.codegraph', 'detail.vfts',
-    'detail.enabled', 'detail.yes', 'detail.no', 'detail.progress', 'detail.files', 'detail.symbols',
-    'detail.chunks', 'detail.lastIndexed', 'detail.loaded', 'detail.astNote', 'detail.phaseConfigure',
-    'detail.phaseIndex', 'detail.engineSummary',
+    'detail.noRecord', 'detail.timeline', 'detail.noTimeline',
+    'detail.enabled', 'detail.yes', 'detail.no', 'detail.progress',
   ]
   for (const loc of LOCALES) {
     const sb = readLocale(loc, 'statusBar.json')
@@ -233,7 +211,7 @@ test('i18n：状态条目 + 详情页键 zh/en 齐备', () => {
       assert.ok(v.length > 0, `${loc} 键 ${k} 为空`)
     }
     const lf = readLocale(loc, 'layoutFree.json').view
-    for (const k of ['memoryStatus', 'compressStatus', 'statusMemory', 'statusCompress', 'statusIndex']) {
+    for (const k of ['memoryStatus', 'compressStatus', 'statusMemory', 'statusCompress']) {
       assert.equal(typeof lf[k], 'string', `${loc} layoutFree.view.${k} 缺失`)
     }
   }

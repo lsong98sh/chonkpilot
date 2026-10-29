@@ -7,16 +7,16 @@
 // 进程（desktop）行为不变。
 package server
 
-import "time"
+import (
+	"time"
+
+	"github.com/lsong98sh/chonkpilot-agent/session/runner"
+)
 
 // instKey 组合运行态键：`<instance_id>\x00<id>`（instance 为空 → 原键，兼容旧语义）。
+// TURNRUN-1 批次 5 起键与注册表归 `chonkpilot-session/runner`，本函数仅为既有调用点保留适配名。
 // instance_id 与 id（turn/session/ask）都不会含 NUL → 用作分隔符无歧义。
-func instKey(instanceID, id string) string {
-	if instanceID == "" {
-		return id
-	}
-	return instanceID + "\x00" + id
-}
+func instKey(instanceID, id string) string { return runner.Key(instanceID, id) }
 
 // lookupTurnSessionLocked 取指定 instance 的运行 turn（接口形态；**须持 s.mu**）：
 //   - instance 非空 → 只在该 instance 的桶内命中（跨 instance 不可见）；

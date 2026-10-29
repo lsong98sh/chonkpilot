@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/winproc"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winproc"
 )
 
 // toolchainCandidate 单个工具链的探测描述。
@@ -51,7 +51,10 @@ var toolchainCandidates = []toolchainCandidate{
 		Dirs: []string{`%ProgramFiles%\Google\Chrome\Application`, `%ProgramFiles(x86)%\Google\Chrome\Application`, `%LOCALAPPDATA%\Google\Chrome\Application`}},
 }
 
-// callDetectToolchains 探测全部候选：{tools:[{id,name,path,version}]}（未找到 → path 空）。
+// callDetectToolchains 探测全部候选：
+// {tools:[{id,name,path,version}]}（未找到 → path 空）。**载荷与 61 §1 逐字一致**——
+// 版本规范化 / 最小版本判定在**前端**算（`src/frontend/src/utils/toolchainGuide.js`，
+// 配置取自既有 `data-user-config-load` 的 usr 视图），宿主不增任何附加字段。
 //
 // 每项**并发**探测：串行 = 7 项 × 2s（probeVersion 超时）最坏冻结 UI ~14s；并发后墙钟
 // ≈ 最慢单项（~2s）。tools 按下标写入 → 输出顺序与 toolchainCandidates 逐项一致（结构不变）。
@@ -63,11 +66,16 @@ func callDetectToolchains(b *Bridge, ctx context.Context, params []json.RawMessa
 		go func(i int, c toolchainCandidate) {
 			defer wg.Done()
 			path := findToolchain(c)
-			item := map[string]any{"id": c.ID, "name": c.Name, "path": path, "version": ""}
+			raw := ""
 			if path != "" {
-				item["version"] = toolchainVersion(c, path)
+				raw = toolchainVersion(c, path)
 			}
-			tools[i] = item
+			tools[i] = map[string]any{
+				"id":      c.ID,
+				"name":    c.Name,
+				"path":    path,
+				"version": raw,
+			}
 		}(i, c)
 	}
 	wg.Wait()

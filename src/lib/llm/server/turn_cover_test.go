@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestTurnReasoningSyncToolText：一轮完整会话 = reasoning 增量 → async tool-call →

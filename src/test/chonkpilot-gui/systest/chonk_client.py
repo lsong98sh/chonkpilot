@@ -38,6 +38,8 @@ class TestError(AssertionError):
 #     业务失败——元素不存在（`not found: …`）、脚本自身抛错、`/publish` 信封 `ok=false` 等——
 #     **立即上抛，绝不重试**；
 #   * **有界**：每次调用额外重试 ≤ `RETRY_MAX` 次（总尝试 = RETRY_MAX+1），退避 `RETRY_BACKOFF`；
+#     2026-10-27（42 (290)）：满负载批跑实测 UI 线程饥饿可持续数十秒（多套件连跑后累积），
+#     原 2 次重试（~6s 预算）不足以覆盖 → 上调为 4 次 + 单次 10s 预算（总预算 ~57s）。
 #   * **可观测**：每次重试打印一行 `[retry] <调用>: <错误>, attempt n/m, backoff Xs`
 #     （便于区分「真绿」与「重试后绿」）；
 #   * **作用域**：仅驱动/取数指令（`.eval/.click/.input/.text/.html/.exists/.console`）；
@@ -47,8 +49,8 @@ class TestError(AssertionError):
 # 关于「重试是否可能重复施加副作用」（如 `eval` 里 `el.click()`）：`EvalWithResult` 的超时
 # 覆盖「派发 + 执行 + 回调」全程；UI 线程饥饿时派发闭包**尚未执行**即超时（回调若已触发，
 # 结果会先入 `ch` 缓冲区）——故超时通常意味着该 JS 未运行，重试等价于「再派发一次」。
-RETRY_MAX = 2
-RETRY_BACKOFF = (0.5, 1.0)
+RETRY_MAX = 4
+RETRY_BACKOFF = (0.5, 1.0, 2.0, 4.0)
 TRANSIENT_ERRORS = ("ExecuteScript timed out", "timed out", "10061", "10054", "refused",
                     "reset", "RemoteDisconnected", "connection aborted")
 
@@ -83,14 +85,198 @@ def retryable(name):
     return deco
 
 
+def _find_session_id(payload, id_is_session=False):
+    """在 payload（可嵌套）里找首个会话 id。
+
+    识别键：`session_id` / `session` / `top_session`（任务树按 `top_session` 定位）；
+    `id_is_session=True` 时额外认 `id`（`data-session-get` / `-title` / `-delete` 用 `id` 指会话）。
+    """
+    def walk(o):
+        keys = ("session_id", "session", "top_session") + (("id",) if id_is_session else ())
+        if isinstance(o, dict):
+            for k in keys:
+                v = o.get(k)
+                if isinstance(v, str) and v:
+                    return v
+            for v in o.values():
+                r = walk(v)
+                if r:
+                    return r
+        elif isinstance(o, list):
+            for v in o:
+                r = walk(v)
+                if r:
+                    return r
+        return ""
+
+    return walk(payload)
+
+
+def _find_parent_session_id(payload):
+    """在 payload（可嵌套）里找首个 `parent_session_id`（子会话建库需带父会话的 dialog_id）。"""
+    def walk(o):
+        if isinstance(o, dict):
+            v = o.get("parent_session_id")
+            if isinstance(v, str) and v:
+                return v
+            for x in o.values():
+                r = walk(x)
+                if r:
+                    return r
+        elif isinstance(o, list):
+            for x in o:
+                r = walk(x)
+                if r:
+                    return r
+        return ""
+
+    return walk(payload)
+
+
+def _find_turn_id(payload):
+    """在 payload（可嵌套）里找首个 `turn_id`。
+
+    会话运行时写原语（`data-session-append-message` / `-complete-turn`）只带 `turn_id`，
+    不带会话 id → 驱动层用「turn → dialog」映射补 `dialog_id`（见 `ChonkClient.req`）。
+    """
+    def walk(o):
+        if isinstance(o, dict):
+            v = o.get("turn_id")
+            if isinstance(v, str) and v:
+                return v
+            for x in o.values():
+                r = walk(x)
+                if r:
+                    return r
+        elif isinstance(o, list):
+            for x in o:
+                r = walk(x)
+                if r:
+                    return r
+        return ""
+
+    return walk(payload)
+
+
+def _inject_dialog(payload, sid, dlg, id_is_session=False):
+    """返回 payload 副本：给「带该会话 id 的对象」补 `dialog_id`（顶层与 data 子对象同源）。
+
+    `id_is_session=True` 时把 `id == sid` 的对象也视为目标（`data-session-title` 等用 `id` 指会话）。
+    """
+    def walk(o):
+        if isinstance(o, dict):
+            new = dict(o)
+            changed = False
+            if sid == "":
+                # 全实例快照类主题（如 `data-tasktree-delete{node_id}`）载荷不带会话 id →
+                # 在**顶层**补 `dialog_id`。
+                if not new.get("dialog_id"):
+                    new["dialog_id"] = dlg
+                    changed = True
+                return new, changed
+            hit = new.get("session_id") == sid or new.get("session") == sid or new.get("top_session") == sid
+            if not hit and id_is_session and new.get("id") == sid:
+                hit = True
+            if hit and not new.get("dialog_id"):
+                new["dialog_id"] = dlg
+                changed = True
+            for k, v in list(new.items()):
+                nv, ch = walk(v)
+                if ch:
+                    new[k] = nv
+                    changed = True
+            return new, changed
+        if isinstance(o, list):
+            out = []
+            changed = False
+            for v in o:
+                nv, ch = walk(v)
+                out.append(nv)
+                changed = changed or ch
+            return (out if changed else o), changed
+        return o, False
+
+    return walk(payload)[0]
+
+
+def dialog_id_for(session_id):
+    """根会话的**确定性** dialog_id（与 Go `sessionstore.MigratedDialogID` 逐字同算法）。
+
+    `sha256("chonkpilot-dialog:" + 根 session_id)` 前 16 字节 → 版本 5 / RFC4122 variant 的 UUID 文本。
+    根会话首次 `data-session-ensure-session`（缺 `dialog_id`）即按此算法自举建对话库（旧布局已退场）。
+    """
+    import hashlib
+
+    b = bytearray(hashlib.sha256(("chonkpilot-dialog:" + session_id).encode("utf-8")).digest()[:16])
+    b[6] = (b[6] & 0x0F) | 0x50
+    b[8] = (b[8] & 0x3F) | 0x80
+    h = bytes(b).hex()
+    return "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+
+
+# 「创建类」主题：会话可能尚不存在 → 允许经 `data-session-ensure-session` 自举建对话（拿 dialog_id）。
+# 读/删类主题**不得**自举（否则「读已删除会话应返回 null」会被 ensure 重新建出来）。
+CREATING_TOPICS = ("chonk.session-start", "llm-start", "message-send", "data-session-ensure-session")
+
+
+def resolve_dialog_id(client, typ, sid):
+    """解析会话的 dialog_id（缓存 → `data-session-list` 现查 → 创建类主题自举）；失败 → ""。
+
+    `sid == ""`（载荷不带会话 id 的全实例快照类主题）→ 仅当实例内**恰有一个**对话时返回它。
+    """
+    cache = client._dlg_cache
+    if sid and sid in cache:
+        return cache[sid]
+    if sid == "" and len(cache) == 1:
+        return next(iter(cache.values()))
+    if client._dlg_busy:
+        return ""
+    client._dlg_busy = True
+    try:
+        try:
+            r = client._req_once("data-session-list", {})
+        except Exception:
+            r = None
+        for it in (((r or {}).get("list")) or []):
+            if isinstance(it, dict) and it.get("session_id") and it.get("dialog_id"):
+                cache[it["session_id"]] = it["dialog_id"]
+        if sid:
+            if sid in cache:
+                return cache[sid]
+            if typ in CREATING_TOPICS and typ != "data-session-ensure-session":
+                try:
+                    r2 = client._req_once("data-session-ensure-session", {"data": {"session_id": sid}})
+                except Exception:
+                    r2 = None
+                dlg = ((r2 or {}).get("dialog_id") or "")
+                if dlg:
+                    cache[sid] = dlg
+                    return dlg
+        else:
+            dialogs = {v for v in cache.values() if v}
+            if len(dialogs) == 1:
+                return next(iter(dialogs))
+    finally:
+        client._dlg_busy = False
+    return ""
+
+
 class ChonkClient:
-    def __init__(self, base="http://127.0.0.1:2345", timeout=10, window_id=""):
+    def __init__(self, base="http://127.0.0.1:2345", timeout=30, window_id=""):
+        # HTTP 读超时必须**大于**单次 `/eval` 的 JS 预算（2026-10-27，42 (290)）：预算已上调到 10s，
+        # 若 HTTP 超时仍是 10s，客户端会先断开 → 表现为 `timed out`（而非 `ExecuteScript timed out`），
+        # 既浪费整轮预算又让服务端后台脚本空跑。30s = 10s 预算 + 排队/传输余量。
         self.base = base
         self.timeout = timeout
         # 目标窗口（多窗口测试通道路由，见 24 §4.5 / main.go testServer）：
         # 空 = 主窗口（缺省，与单窗口行为逐字一致）；非空 = `gui.window.list` 的 window_id
         # → /eval、/publish、/wait-event、/screenshot 作用于该对话窗口。
         self.window_id = window_id
+        # 一树一库自愈：session_id → dialog_id 缓存（+ 解析互斥，防重入）
+        self._dlg_cache = {}
+        self._dlg_busy = False
+        # turn_id → dialog_id（`append-message` / `complete-turn` 只带 turn_id）
+        self._turn_dlg = {}
 
     def _post(self, path, payload):
         if self.window_id and isinstance(payload, dict) and "window_id" not in payload:
@@ -127,7 +313,7 @@ class ChonkClient:
         raise TestError(f"IDE 测试通道 {max_wait}s 内未就绪")
 
     @retryable("eval")
-    def eval(self, js, timeout=5000):
+    def eval(self, js, timeout=10000):
         """执行 JS，返回 EvalWithResult 解包后的原始结果（瞬态超时由装饰器有界重试）。"""
         r = self._post("/eval", {"js": js, "timeout": timeout})
         if not r.get("ok"):
@@ -135,42 +321,42 @@ class ChonkClient:
         return r.get("result")
 
     @retryable("click")
-    def click(self, selector, timeout=5000):
+    def click(self, selector, timeout=10000):
         r = self._post("/click", {"selector": selector, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/click 失败: {r.get('error')}")
         return r.get("result")
 
     @retryable("input")
-    def input(self, selector, value, timeout=5000):
+    def input(self, selector, value, timeout=10000):
         r = self._post("/input", {"selector": selector, "value": value, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/input 失败: {r.get('error')}")
         return r.get("result")
 
     @retryable("text")
-    def text(self, selector, timeout=5000):
+    def text(self, selector, timeout=10000):
         r = self._post("/text", {"selector": selector, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/text 失败: {r.get('error')}")
         return r.get("result")
 
     @retryable("html")
-    def html(self, selector, timeout=5000):
+    def html(self, selector, timeout=10000):
         r = self._post("/html", {"selector": selector, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/html 失败: {r.get('error')}")
         return r.get("result")
 
     @retryable("exists")
-    def exists(self, selector, timeout=5000):
+    def exists(self, selector, timeout=10000):
         r = self._post("/exists", {"selector": selector, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/exists 失败: {r.get('error')}")
         return r.get("result")
 
     @retryable("console")
-    def console(self, clear=False, timeout=5000):
+    def console(self, clear=False, timeout=10000):
         r = self._post("/console", {"clear": clear, "timeout": timeout})
         if not r.get("ok"):
             raise TestError(f"/console 失败: {r.get('error')}")
@@ -204,8 +390,59 @@ class ChonkClient:
 
         桥 PublishEvent → persist/gateway 写回 result；返回 result 载荷；
         信封 ok=false / errors 非空 / result.ok=false → 抛 TestError。
-        **不重试**（同 publish：请求-响应可能有副作用）。
+        **不重试**（同 publish：请求-响应可能有副作用）——**唯一例外**见下「一树一库自愈」。
+
+        一树一库自愈（2026-10-26）：会话类 data 主题必须带
+        `dialog_id`，缺失即 `dialog_required: …`（旧布局已退场，无开关）。产品前端已在收到该错误时补 `dialog_id`
+        重试一次（42 §2 (273) ④ `api/session.js#sessionReq`）→ 驱动层与之同口径：命中该错误
+        时按 `data-session-list` 解析一次该会话的 `dialog_id`，注入 payload 副本后
+        **原样重试一次**（仅此一类错误、仅此一次；其它错误照旧立即上抛）。
         """
+        try:
+            res = self._req_once(typ, payload, timeout)
+        except TestError as e:
+            if "dialog_required" not in str(e) or not isinstance(payload, (dict, list)):
+                raise
+            id_is_sess = typ.startswith("data-session-")
+            sid = _find_session_id(payload, id_is_sess)
+            tid = _find_turn_id(payload)
+            dlg = self._turn_dlg.get(tid, "") if (tid and not sid) else ""
+            if not dlg:
+                dlg = resolve_dialog_id(self, typ, sid)
+            if not dlg:
+                # 子会话建库：会话本身尚不存在 → 用**父会话**的 dialog_id（P3-4d 必需）
+                parent = _find_parent_session_id(payload)
+                if parent:
+                    dlg = resolve_dialog_id(self, "llm-start", parent)
+            if not dlg:
+                raise
+            print("[dialog] %s 缺 dialog_id → 自愈注入 %s 并重试一次" % (typ, dlg), flush=True)
+            res = self._req_once(typ, _inject_dialog(payload, sid, dlg, id_is_sess), timeout)
+            self._remember_dialog(typ, payload, dlg)
+            return res
+        if typ == "data-session-delete" and isinstance(payload, dict):
+            # 删除会级联删对话库 → 缓存的 dialog_id 失效（后续写路径不得再注入已删除的库）
+            self._dlg_cache.pop(str(payload.get("id") or ""), None)
+        self._remember_dialog(typ, payload, (res or {}).get("dialog_id") if isinstance(res, dict) else "")
+        return res
+
+    def _remember_dialog(self, typ, payload, dlg=""):
+        """记忆 `session_id → dialog_id` / `turn_id → dialog_id`（供后续缺字段的会话写原语复用）。"""
+        if not isinstance(payload, (dict, list)):
+            return
+        id_is_sess = typ.startswith("data-session-")
+        sid = _find_session_id(payload, id_is_sess)
+        if not dlg and sid:
+            dlg = self._dlg_cache.get(sid, "")
+        if not dlg:
+            return
+        if sid:
+            self._dlg_cache.setdefault(sid, dlg)
+        tid = _find_turn_id(payload)
+        if tid:
+            self._turn_dlg[tid] = dlg
+
+    def _req_once(self, typ, payload=None, timeout=20000):
         body = {"type": typ,
                 "payload": json.dumps(payload, ensure_ascii=False) if payload is not None else "",
                 "timeout": timeout}
@@ -226,13 +463,15 @@ class ChonkClient:
             raise TestError(res.get("error") or (typ + " failed"))
         return res
 
+    # ── dialog_id 解析见模块级 `resolve_dialog_id`（两个驱动类共用）──
+
     # ── mq 便捷方法（testplan 总纲：mq 驱动）──
 
-    def mq_emit(self, topic, payload=None, timeout=5000):
+    def mq_emit(self, topic, payload=None, timeout=10000):
         js = f"window.mq.emit({json.dumps(topic)}, {json.dumps(payload, ensure_ascii=False)})"
         return self.eval(js, timeout)
 
-    def mq_on_capture(self, topics, timeout=5000):
+    def mq_on_capture(self, topics, timeout=10000):
         """注册监听，把事件 push 到 window.__chonkEvents，返回已注册的 topics 集合。
 
         每次调用前先注销上一轮注册的 handler：mq.on 按「回调引用」去重（mq.js:132），

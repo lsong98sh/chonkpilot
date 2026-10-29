@@ -30,11 +30,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/chonkpilot/chonkpilot-lib/exedir"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
 	"github.com/chonkpilot/chonkpilot-gwadapter/facadeapi"
-	mcpgateway "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 func usage() {
@@ -123,6 +123,9 @@ func main() {
 		Servers:     servers,
 		CallTimeout: time.Duration(*callTimeout) * time.Second,
 		MaxTasks:    *maxTasks,
+		// GATEWAY-2 L8（2026-10-28）：下游 progress → 下行事件 mcp-tools-progress（61 §5.3）；
+		// elicitation 不注入（ElicitHandler 保持 nil，提问由 ask_user 承担）。
+		ProgressHandler: gwAdapter.ProgressHandler(),
 	})
 	if err != nil {
 		log.Fatalf("gateway: new: %v", err)

@@ -37,7 +37,9 @@ func TestCapWatchIgnoresDirsOutsideRoots(t *testing.T) {
 
 	cw.mu.Lock()
 	cw.want[normPath(root)] = true
-	cw.syncLocked() // 根不存在 → 回落到祖先 usrAnc 监听
+	cw.mu.Unlock()
+	cw.sync() // 根不存在 → 回落到祖先 usrAnc 监听（LLM-P4：收敛在 syncMu 内、IO 不持 mu）
+	cw.mu.Lock()
 	_, watchingAnc := cw.synced[normPath(usrAnc)]
 	cw.mu.Unlock()
 	if !watchingAnc {
@@ -98,9 +100,13 @@ func TestCapabilityHotReload(t *testing.T) {
 	prjRoot := persist.CapProjectRoot(testWorkDir)
 	// 先建一个既有工具：保证 instance-register 时项目根存在并被监听。
 	writeHotToolContract(t, prjRoot, "prj_before")
-	s.onInstanceRegister("instance-register", jb(map[string]any{
+	payload := jb(map[string]any{
 		"instance_id": "ins-hot", "client_type": "unittest", "work_dir": testWorkDir,
-	}))
+	})
+	// 实例 → work_dir 映射只有一份（共通实例视图 s.im）：生产链路由 im 先处理同一
+	// instance-register，此处直调 handler 须先补登记，重扫才看得到该实例。
+	s.im.HandleRegister(payload)
+	s.onInstanceRegister("instance-register", payload)
 	before := "ins-hot-project_prj_before"
 	if _, ok := waitTool(t, s, before, true, 2*time.Second); !ok {
 		t.Fatalf("初始项目级工具未接入 tools/list")
@@ -141,14 +147,14 @@ func TestAppCapabilityHotReload(t *testing.T) {
 	writeHotToolContract(t, appRoot, "app_before") // 启动前既有 app 工具（New 时 RegisterContracts）
 	s := newTestServerMCPAppRoot(t, llm, appRoot)
 
-	before := "self_app_before" // self 节点暴露名带 entry.ID 前缀（gateway applyPrefix）
+	before := "app_before" // P0a 2026-10-29：暴露名 = 原名（gateway applyPrefix 对 self 节点不再加前缀）
 	if _, ok := waitTool(t, s, before, true, 2*time.Second); !ok {
 		t.Fatalf("app 根既有工具未在启动时进入工具面")
 	}
 
 	// 模拟「构建期/外部更新」：向 app 根写入新契约。
 	writeHotToolContract(t, appRoot, "app_after")
-	after := "self_app_after"
+	after := "app_after"
 	elapsed, ok := waitTool(t, s, after, true, 5*time.Second)
 	if !ok {
 		t.Fatalf("app 根新增契约未在超时内热生效（watcher 未触发重扫）")

@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
@@ -27,6 +27,11 @@ const srcDir = join(here, '..', 'src')
 const repoRoot = join(here, '..', '..')
 const read = (rel) => readFileSync(join(srcDir, rel), 'utf8')
 const readRepo = (rel) => readFileSync(join(repoRoot, rel), 'utf8')
+// server 包已按职责拆分（2026-10-25）：源码守卫读整包（server.go 只剩 277 行）。
+const readServerPkg = () => readdirSync(join(repoRoot, 'lib', 'llm', 'server'))
+  .filter((f) => f.endsWith('.go') && !f.endsWith('_test.go'))
+  .map((f) => readFileSync(join(repoRoot, 'lib', 'llm', 'server', f), 'utf8'))
+  .join('\n')
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 
@@ -88,7 +93,7 @@ test('① SettingsPathsPage：usr 保存反馈标注「需重启」+ 页内提�
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '不得用 watch')
 
   // 后端核实：usr 路径键不重跑 loadExecConfig（仅 prj 执行配置热生效）
-  const go = readRepo('lib/llm/server/server.go')
+  const go = readServerPkg()
   assert.match(go, /var prjExecConfigKeys = map\[string\]bool\{/, '后端须存在 prj 热生效键表')
   assert.match(go, /"javaPath":\s+true/, 'prj 路径键在热生效表内')
   // prj 刷新链路才重跑 loadExecConfig（→ prj 路径即时生效）
@@ -126,7 +131,7 @@ test('② 后端语义核实：空信任目录 → 不施加目录隔离（stdio
   const gw = readFileSync(join(repoRoot, '..', '..', 'chonkpilot-mcp-gateway', 'gateway', 'serverslist.go'), 'utf8')
   assert.match(gw, /空目录不注入/, 'serverslist.go 须载明空允许目录不下发策略')
   assert.match(gw, /func \(e ServerEntry\) SandboxPolicyJSON/, '策略入口 = SandboxPolicyJSON')
-  const srv = readRepo('lib/llm/server/server.go')
+  const srv = readServerPkg()
   assert.match(srv, /当前 spawn 不再注入 CHONKPILOT_SANDBOX/, 'server.go 须载明内建 executor 沙箱待 L6（当前不注入）')
   // 可写目录提取口径（GATEWAY-2 重构后随 gateway 仓）：WritableRoots 仅取 r.Writable 的规则
   assert.match(gw, /func WritableRoots\(rules \[\]SandboxRule\) \[\]string/, '可写目录提取 = WritableRoots（按规则集）')
@@ -197,7 +202,7 @@ test('③ validatePositiveInt：对齐后端 Atoi 成功且 n>0 的口径', () =
   assert.equal(validatePositiveInt('').reason, 'empty')
 
   // 后端核实：仅 strconv.Atoi 成功且 n > 0 才生效（否则静默回落默认 300/16）
-  const go = readRepo('lib/llm/server/server.go')
+  const go = readServerPkg()
   assert.match(go, /strconv\.Atoi\(v\); err == nil && n > 0/, '后端生效条件 = Atoi 成功且 n>0')
   const defCfg = readRepo('lib/mcp-server/server/config.go')
   assert.match(defCfg, /TimeoutSec/, '后端默认值定义在 DefaultConfig')

@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // 订阅的事件主题（相对主题；总线注入前缀）。
@@ -53,7 +53,8 @@ type Options struct {
 	// onTaskCancel → provider.Invalidate）落地取消。空 = 不回调（层只做判定）。
 	// 回调在**层锁外**调用（执行侧可能同步回灌事件 → 避免自锁）。
 	OnCancelExec func(taskID string, exec Exec)
-	// DialogOf 解析「该实例下某会话所属对话 id」（一树一库 P3-4b；空 = 不写键 → 旧布局）。
+	// DialogOf 解析「该实例下某会话所属对话 id」（一树一库；解析为空 → 不带键，
+	// 由数据面按 61 §0.6 判 `dialog_required`）。
 	// 由宿主（llm server）注入；层不自行反查（61 §0.6：不做全局反查）。
 	DialogOf func(instanceID, sessionID string) string
 }

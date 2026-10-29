@@ -64,7 +64,7 @@
 
 | # | 决策 | 取值 |
 |---|------|------|
-| D1 | 触发方式 | **A（已定案 2026-10-04）**：**GUI 桥检测**（`gui.init-data` → `agent-wizard` 事件 + `wizard_required` 兜底）；**瘦插件不做**——A 已覆盖全部功能；browser 形态不自动弹（见 05 · [41 D-44](../../docs/spec/40-roadmap/41-未决项登记.md)） |
+| D1 | 触发方式 | **A（已定案 2026-10-04）**：**GUI 桥检测**（`gui.init-data` → `agent-wizard` 事件 + `wizard_required` 兜底）；**瘦插件不做**——A 已覆盖全部功能（见 05 · [41 D-44](../../docs/spec/40-roadmap/41-未决项登记.md)） |
 | D2 | 场景落级别 | 项目级（`<workDir>/.chonkpilot/capability/scenarios/`） |
 | D3 | 产物形式 | 引用出厂 agent + 生成场景层与主 agent |
 | D4 | 幂等 | `project_spec.md` 即「已初始化」标记 |
@@ -92,7 +92,7 @@
 | D26 | Step5 收右栏 | 进入「预览与生成」隐藏右侧「即将生成的智能体群」，宽度让给编辑区 |
 | D27 | 按钮语义 | 上一步 / 下一步(**生成**) / **默认**(Step2 内，一键全默认生成并关闭) / **存为预设**(写 `wizard/preset.json`、不写 spec、不关闭) / **关闭**(不写文件)；`project_spec.md` **只在生成成功时写**，见 01 §10 |
 | D28 | 自动弹策略 | **方案1**：不做持久"不再弹"开关；**只要无 `project_spec.md`，启动必弹**（无 spec 即未初始化） |
-| D30 | 实施口径（2026-10-04） | 检测落 **GUI 桥**（A 方案；**插件不做**——A 已覆盖全部功能；browser 不自动弹）；3 方法面 + `agent-wizard` 事件；生成经 data 门面**直调**（**无新 `data-*` 主题**）；辅助选项经 `ConfigKVSet` 写 prj 并广播 `data-prj-config-refresh` |
+| D30 | 实施口径（2026-10-04） | 检测落 **GUI 桥**（A 方案；**插件不做**——A 已覆盖全部功能）；3 方法面 + `agent-wizard` 事件；生成经 data 门面**直调**（**无新 `data-*` 主题**）；辅助选项经 `ConfigKVSet` 写 prj 并广播 `data-prj-config-refresh` |
 | D29 | 记忆种子可扫描性 | 8 类**非都能扫**：✅开发规范/构建发布/测试；🟡接口库/项目概要/共同库；❌典型参照/用户决策。种子**逐类标注来源与置信度**，扫不到**留空+待补充、不编造**，见 01 §7.5 |
 
-- **实施状态**：✅ **已完成（2026-10-04）** —— 数据域 `project`（`ProjectAPI`）· llm-server 三方法面（probe/generate/skip，generate 写 场景+记忆+配置+spec+可选 git init）· GUI 桥检测（A 方案）· 前端 5 步向导（含记忆/预览/【向导】按钮/i18n/刷新）· **21 个出厂预置 agent** · `docs/spec` 同步（[61](../../docs/spec/60-reference/61-消息一览.md)/[37](../../docs/spec/30-function-points/37-场景.md)/20-gui/22-data/64）· L1/L2 测试（含配置写回读 + `data-prj-config-refresh` 广播 + 预置 agent 守卫）· `.\build-desktop.ps1` 通过。**插件不做**（A 已覆盖全部功能）；browser 形态不自动弹（设计口径）。
+- **实施状态**：✅ **已完成（2026-10-04）** —— 数据域 `project`（`ProjectAPI`）· llm-server 三方法面（probe/generate/skip，generate 写 场景+记忆+配置+spec+可选 git init）· GUI 桥检测（A 方案）· 前端 5 步向导（含记忆/预览/【向导】按钮/i18n/刷新）· **21 个出厂预置 agent** · `docs/spec` 同步（[61](../../docs/spec/60-reference/61-消息一览.md)/[37](../../docs/spec/30-function-points/37-场景.md)/20-gui/22-data/64）· L1/L2 测试（含配置写回读 + `data-prj-config-refresh` 广播 + 预置 agent 守卫）· `.\build-desktop.ps1` 通过。**插件不做**（A 已覆盖全部功能）。

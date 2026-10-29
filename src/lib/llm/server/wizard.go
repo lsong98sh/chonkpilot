@@ -28,8 +28,8 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/winproc"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/winproc"
 )
 
 // agentWizardProbeReq / agentWizardSkipReq 是向导探测 / 跳过请求载荷（instance_id 由桥/入口注入）。

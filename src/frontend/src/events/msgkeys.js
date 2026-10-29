@@ -150,6 +150,8 @@ export const MsgTopics = {
   instanceExit: 'instance-exit',
   instanceBringToTop: 'instance-bring-to-top',
   instanceGotoTop: 'instance-goto-top',
+  workdirOpened: 'workdir-opened',
+  workdirClosed: 'workdir-closed',
   llmStart: 'llm-start',
   llmSend: 'llm-send',
   llmInboxAdd: 'llm-inbox-add',
@@ -209,6 +211,7 @@ export const MsgTopics = {
   mcpGatewayReload: 'mcp-gateway-reload',
   mcpTasksReport: 'mcp-tasks-report',
   mcpToolsTimeout: 'mcp-tools-timeout',
+  mcpToolsProgress: 'mcp-tools-progress',
   mcpGatewayChanged: 'mcp-gateway-changed',
   historyPreToolHook: 'history-pre-tool-hook',
   codegraphToolCall: 'codegraph-tool-call',
@@ -386,6 +389,7 @@ export const FieldKeys = {
   plugin: 'plugin',
   pre_hook_subject: 'pre_hook_subject',
   probe: 'probe',
+  progress: 'progress',
   project_spec: 'project_spec',
   prompt: 'prompt',
   prompts: 'prompts',
@@ -454,6 +458,7 @@ export const FieldKeys = {
   tool_call_status: 'tool_call_status',
   tools: 'tools',
   top_session: 'top_session',
+  total: 'total',
   touch_files: 'touch_files',
   transport: 'transport',
   treeData: 'treeData',
@@ -660,6 +665,7 @@ export const FieldDict = {
   pre_hook_subject: 'pre_hook_subject',
   prefix: 'prefix',
   probe: 'probe',
+  progress: 'progress',
   project_spec: 'project_spec',
   prompt: 'prompt',
   'prompt-use-case': 'useCase',
@@ -1020,6 +1026,7 @@ export const ConfigSuggestKeys = {
 
 /** memory.flush 字段键（payload/result/event 合并去重）。 */
 export const MemoryFlushKeys = {
+  dialog_id: 'dialog_id',
   instance_id: 'instance_id',
   ok: 'ok',
   queued: 'queued',
@@ -1845,6 +1852,20 @@ export const InstanceBringToTopKeys = {
   data_dir: 'data_dir',
 }
 
+/** workdir-opened 字段键（payload/result/event 合并去重）。 */
+export const WorkdirOpenedKeys = {
+  data_dir: 'data_dir',
+  instance_id: 'instance_id',
+  work_dir: 'work_dir',
+}
+
+/** workdir-closed 字段键（payload/result/event 合并去重）。 */
+export const WorkdirClosedKeys = {
+  data_dir: 'data_dir',
+  instance_id: 'instance_id',
+  work_dir: 'work_dir',
+}
+
 /** llm-start 字段键（payload/result/event 合并去重）。 */
 export const LlmStartKeys = {
   accepted: 'accepted',
@@ -1918,6 +1939,7 @@ export const AskUserReplyKeys = {
   answer: 'answer',
   ask_id: 'ask_id',
   custom: 'custom',
+  dialog_id: 'dialog_id',
 }
 
 /** tool-retry 字段键（payload/result/event 合并去重）。 */
@@ -2090,6 +2112,7 @@ export const SessionAskKeys = {
   answered: 'answered',
   ask_id: 'ask_id',
   custom: 'custom',
+  dialog_id: 'dialog_id',
   expires_at: 'expires_at',
   instance_id: 'instance_id',
   multi: 'multi',
@@ -2409,6 +2432,14 @@ export const McpToolsTimeoutKeys = {
   timeout_s: 'timeout_s',
   tool: 'tool',
   tool_call_id: 'tool_call_id',
+}
+
+/** mcp-tools-progress 字段键（payload/result/event 合并去重）。 */
+export const McpToolsProgressKeys = {
+  instance_id: 'instance_id',
+  progress: 'progress',
+  tool_call_id: 'tool_call_id',
+  total: 'total',
 }
 
 /** mcp-gateway-changed 字段键（payload/result/event 合并去重）。 */

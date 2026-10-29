@@ -13,11 +13,8 @@ import (
 // 无 ask_id 行不命中 / 未命中返回空。
 func TestAskPending(t *testing.T) {
 	s, scope := newSessionEnv(t)
-	disableShard(t, s, "ins-ask", scope) // 旧布局断言（P3-4d 起 shard 生效 → 跨对话库扫描）
-	prj, err := s.PrjUsrFor("ins-ask", scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
+	inst := "ins-ask"
+	dialogID, db := openEnvDialog(t, s, inst, scope)
 	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
 	rows := []struct {
 		key string
@@ -36,13 +33,15 @@ func TestAskPending(t *testing.T) {
 		{"M-msg", data.Record{"session_id": "s-ask", "turn_id": "t-ask", "role": "user", "content": "hi", "created_at": now}},
 	}
 	for _, r := range rows {
-		if err := prj.Table("messages").Insert(r.key, r.rec); err != nil {
+		if err := db.Table("messages").Insert(r.key, r.rec); err != nil {
 			t.Fatalf("insert %s: %v", r.key, err)
 		}
 	}
 
-	// 启动扫描口径：只回非终态。
-	resp, err := s.AskPending(facade.AskPendingRequest{InstanceID: "ins-ask", PendingOnly: true, Scope: scope})
+	// 启动扫描口径：只回非终态（带 dialog_id → 只查该库）。
+	resp, err := s.AskPending(facade.AskPendingRequest{
+		InstanceID: inst, DialogID: dialogID, PendingOnly: true, Scope: scope,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,13 +56,17 @@ func TestAskPending(t *testing.T) {
 	}
 
 	// 精确回查：含已终态（失效回执据此区分「已回答」与「可转新轮」）。
-	resp, err = s.AskPending(facade.AskPendingRequest{InstanceID: "ins-ask", AskID: "ask-2", Scope: scope})
+	resp, err = s.AskPending(facade.AskPendingRequest{
+		InstanceID: inst, DialogID: dialogID, AskID: "ask-2", Scope: scope,
+	})
 	if err != nil || len(resp.Items) != 1 || resp.Items[0].Status != "completed" {
 		t.Fatalf("精确回查错：%+v %v", resp.Items, err)
 	}
 
 	// 未命中：空。
-	resp, err = s.AskPending(facade.AskPendingRequest{InstanceID: "ins-ask", AskID: "ask-missing", Scope: scope})
+	resp, err = s.AskPending(facade.AskPendingRequest{
+		InstanceID: inst, DialogID: dialogID, AskID: "ask-missing", Scope: scope,
+	})
 	if err != nil || len(resp.Items) != 0 {
 		t.Fatalf("未命中应空：%+v %v", resp.Items, err)
 	}

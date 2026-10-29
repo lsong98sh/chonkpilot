@@ -30,6 +30,10 @@ const inboxMaxPending = 50
 // pending 永不自动删（用户输入不得静默丢失）。
 const inboxRetention = 7 * 24 * time.Hour
 
+// errInboxScanHit 是「幂等键命中 → 提前结束扫描」的内部哨兵（仅本文件使用，不外泄；
+// 见 InboxAppend 的单次流式扫描）。
+var errInboxScanHit = errors.New("inbox: idempotency hit")
+
 // cleanupInboxTTL 删除超过保留期的终态 inbox 行（consumed / discarded）。
 //
 // 触发点 = 启动/首次 llm-start 的 TurnCleanupStale（`data-session-cleanup-stale`），
@@ -63,26 +67,6 @@ func (s *Service) cleanupInboxTTL(prj *data.DB, now time.Time) {
 	}
 }
 
-// deleteInboxBySession 级联删除某会话的全部 inbox 行（含 pending）。
-// 会话删除（含幂等删除不存在的会话）调用；`inbox_items` 无二级索引 → 不传 OrderBy，
-// 量级小、全桶过滤可接受。
-func deleteInboxBySession(prj *data.DB, sessionID string) error {
-	recs, _, err := prj.Table(inboxTable).Query(data.Query{
-		Where: data.Record{"session_id": sessionID},
-	})
-	if err != nil {
-		return fmt.Errorf("query inbox_items: %w", err)
-	}
-	var errs []error
-	for _, r := range recs {
-		k := kernel.Sval(r[data.KeyField])
-		if err := prj.Table(inboxTable).Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) {
-			errs = append(errs, fmt.Errorf("delete inbox_items/%s: %w", k, err))
-		}
-	}
-	return errors.Join(errs...)
-}
-
 // InboxAppend 写入一条待处理发送。
 func (s *Service) InboxAppend(req facade.InboxAppendRequest) (facade.InboxAppendResponse, error) {
 	if req.SessionID == "" {
@@ -94,38 +78,38 @@ func (s *Service) InboxAppend(req facade.InboxAppendRequest) (facade.InboxAppend
 	if strings.TrimSpace(req.Content) == "" {
 		return facade.InboxAppendResponse{}, errors.New("inbox: content required")
 	}
-	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
-	if err != nil {
-		return facade.InboxAppendResponse{}, err
-	}
-	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	_, db, release, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
 	if err != nil {
 		return facade.InboxAppendResponse{}, err
 	}
 	defer release()
 
-	// 幂等：同会话 + 同幂等键已存在 → 直接返回既有行（网络重试不产生重复）。
-	if req.IdempotencyKey != "" {
-		recs, _, err := db.Table(inboxTable).Query(data.Query{
-			Where: data.Record{"session_id": req.SessionID, "idempotency_key": req.IdempotencyKey},
-			Limit: 1,
-		})
-		if err != nil {
-			return facade.InboxAppendResponse{}, err
+	// 幂等 + 上限（F-2，DATA-OPT-1 P4）：原实现是**两次无索引全扫**（幂等键 1 次 + pending 计数
+	// 1 次）。改为**单次流式扫描**同时完成两件事：
+	//   - 命中幂等键 → 立即返回既有行（与 `Query{Limit:1}` 的「桶序首条」逐项一致）；
+	//   - 未命中 → 累计本会话 pending 行数（与 `Where{session_id,status=pending}` 计数一致）。
+	pending := 0
+	idemHit := ""
+	err = db.Table(inboxTable).ForEach(func(k string, rec data.Record) error {
+		if kernel.Sval(rec["session_id"]) != req.SessionID {
+			return nil
 		}
-		if len(recs) > 0 {
-			return facade.InboxAppendResponse{OK: true, ID: kernel.Sval(recs[0][data.KeyField])}, nil
+		if req.IdempotencyKey != "" && kernel.Sval(rec["idempotency_key"]) == req.IdempotencyKey {
+			idemHit = k
+			return errInboxScanHit // 命中即收（不再扫剩余行）
 		}
-	}
-
-	// 上限：只统计 pending（consumed / discarded 不占额度）。
-	pending, _, err := db.Table(inboxTable).Query(data.Query{
-		Where: data.Record{"session_id": req.SessionID, "status": "pending"},
+		if kernel.Sval(rec["status"]) == "pending" {
+			pending++
+		}
+		return nil
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, errInboxScanHit) {
 		return facade.InboxAppendResponse{}, err
 	}
-	if len(pending) >= inboxMaxPending {
+	if idemHit != "" {
+		return facade.InboxAppendResponse{OK: true, ID: idemHit}, nil
+	}
+	if pending >= inboxMaxPending {
 		return facade.InboxAppendResponse{}, errors.New("inbox: full（每会话 pending 上限 50）")
 	}
 
@@ -176,11 +160,7 @@ func (s *Service) InboxList(req facade.InboxListRequest) (facade.InboxListRespon
 	if req.SessionID == "" {
 		return facade.InboxListResponse{}, errors.New("inbox: session_id required")
 	}
-	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
-	if err != nil {
-		return facade.InboxListResponse{}, err
-	}
-	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	_, db, release, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
 	if err != nil {
 		return facade.InboxListResponse{}, err
 	}
@@ -234,11 +214,7 @@ func (s *Service) InboxCommit(req facade.InboxCommitRequest) (facade.InboxCommit
 	if req.TurnID == "" {
 		return facade.InboxCommitResponse{}, errors.New("inbox: turn_id required")
 	}
-	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
-	if err != nil {
-		return facade.InboxCommitResponse{}, err
-	}
-	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	_, db, release, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
 	if err != nil {
 		return facade.InboxCommitResponse{}, err
 	}
@@ -305,11 +281,7 @@ func (s *Service) InboxUpdate(req facade.InboxUpdateRequest) (facade.InboxUpdate
 	if req.ID == "" {
 		return facade.InboxUpdateResponse{}, errors.New("inbox: id required")
 	}
-	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
-	if err != nil {
-		return facade.InboxUpdateResponse{}, err
-	}
-	db, release, err := s.contentDB(prj, req.DialogID, req.InstanceID, req.Scope)
+	_, db, release, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
 	if err != nil {
 		return facade.InboxUpdateResponse{}, err
 	}

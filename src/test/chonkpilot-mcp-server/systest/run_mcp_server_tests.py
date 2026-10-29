@@ -285,12 +285,12 @@ def suite_core(core, work):
     """core 工具面 + 四原语（prompts/resources）+ 能力声明 + 调用上下文。
 
     工具名 = 契约文件名（spec 25-mcp-server §3.1「原语名 = 文件名去后缀」）。现行工具面
-    （2026-10-25）= **core 2**（`script_run` / `web_fetch`）。`desktop_run` / `browser_run`
-    已随 GATEWAY-2 L9/L10 改为插件形态；**file 域 11 工具已随 file 插件迁出主仓**
-    （PLUGIN-SPLIT-1，执行体 = 插件 MCP server），故均不在本 `tools_list` 面。
+    （2026-10-28）= **core 1**（`web_fetch`；`script_run` 已迁为 task 插件 `task_run`）。
+    `desktop_run` / `browser_run` 已随 GATEWAY-2 L9/L10 改为插件形态；**file 域 11 工具已随
+    file 插件迁出主仓**（PLUGIN-SPLIT-1，执行体 = 插件 MCP server），故均不在本 `tools_list` 面。
     """
     names = {t["name"] for t in core.tools_list()}
-    expect = {"script_run", "web_fetch"}
+    expect = {"web_fetch"}
     # 平铺单实例：单根扫描 → 全部工具在同一端点（多 category 不构成路由，spec 25 §7）
     assert names == expect, f"tools 集合不符：多 {names - expect} / 缺 {expect - names}"
     ctx = call_context(work)
@@ -349,15 +349,11 @@ def suite_core(core, work):
         raise SkipTest("file 域已随插件迁出主仓（D-70）")
 
     def t_script_shell():
-        res = core.tool_call("script_run", {"runtime": "shell", "script": "echo mcp-ok"})
-        txt = res["content"][0]["text"]
-        assert "mcp-ok" in txt, txt
+        # 2026-10-28（P2-3）：script_run 随 task 插件迁出主仓 → 执行面断言改由插件侧覆盖。
+        raise SkipTest("script_run 已迁为 task 插件 task_run（P2-3）")
 
     def t_script_missing_runtime():
-        # python 未配置解释器 → 明确报错（引导安装），不崩溃
-        res = core.tool_call("script_run", {"runtime": "python", "script": "print(1)"})
-        txt = res["content"][0]["text"]
-        assert "python" in txt and "未配置" in txt, txt
+        raise SkipTest("script_run 已迁为 task 插件 task_run（P2-3）")
 
     def t_fetch():
         # 旧 fetch → 现行 web_fetch（URL 参数 url）
@@ -387,7 +383,8 @@ def suite_core(core, work):
         res = core.resource_read("mcp://chonkpilot/resources/core-overview")
         txt = res["contents"][0]["text"]
         # 2026-10-22：core 概览已随 GATEWAY-2 L2 改为**文件域 11 工具**口径
-        assert "file_read" in txt and "script_run" in txt, txt
+        # （2026-10-28 P2-3：脚本执行已迁为 task 插件 `task_run`）
+        assert "file_read" in txt and "task_run" in txt, txt
 
     def t_skills_in_prompts():
         # prompts/list 同表含 skills（_meta.type=skill；spec 25 §9）
@@ -409,11 +406,11 @@ def suite_core(core, work):
     def t_task_param_ignored():
         # MCP tasks 不属 mcp-server 契约面（server.go:71-159 只注册四原语；capabilities 无 tasks）：
         # tools/call 带 task 字段不生效 → 同步返回 result、无 task 对象
-        res = core.call("tools/call", {"name": "script_run",
-                                       "arguments": {"runtime": "shell", "script": "echo task-ok"},
+        res = core.call("tools/call", {"name": "web_fetch",
+                                       "arguments": {"url": f"http://127.0.0.1:{echo_port}/hello"},
                                        "task": {"ttl": 120000}})
         assert "task" not in res, res
-        assert "task-ok" in json.dumps(res, ensure_ascii=False), json.dumps(res, ensure_ascii=False)[:300]
+        assert "hello-mcp" in json.dumps(res, ensure_ascii=False), json.dumps(res, ensure_ascii=False)[:300]
         assert "tasks" not in core.capabilities, core.capabilities
 
     def t_tasks_list_unsupported():
@@ -437,9 +434,9 @@ def suite_desktop(desk, work):
     """desktop / browser 分类（2026-10-22 起）：**不再注册 MCP 工具**。
 
     GATEWAY-2 L9/L10 把浏览器 / 桌面自动化改为常驻插件（UDS `browser.sock` / `desktop.sock`，
-    端点 `start` / `stop` / `operation`）；2026-10-25（PLUGIN-SPLIT-1）file 域亦随插件迁出 →
-    本 server 的工具面只剩 core 2（`script_run` / `web_fetch`）；本套件改为**正向断言"未注册"**
-    （原 `desktop_run` 断言已随契约删除）。
+    端点 `start` / `stop` / `operation`）；2026-10-25（PLUGIN-SPLIT-1）file 域亦随插件迁出、
+    2026-10-28（P2-3）`script_run` 迁为 task 插件 `task_run` → 本 server 的工具面只剩 core 1
+    （`web_fetch`）；本套件改为**正向断言"未注册"**（原 `desktop_run` 断言已随契约删除）。
     """
 
     def t_tool_face_excludes_desktop_browser():
@@ -458,7 +455,7 @@ def suite_defaults_injection(defaults_core, work):
     2026-10-22 口径变更：`skip_dirs` 原为 `filesys_run` 的 FIND **脚本选项**；GATEWAY-2 L2 把
     文件域拆成独立工具后，`file_find` 契约**没有 skip_dirs 参数**。
     2026-10-25（PLUGIN-SPLIT-1）：file 域随插件事出主仓 → 本套件只验证**自定义 config 能被
-    装载**（用 `script_run` 作探针），文件域断言改由插件侧覆盖。
+    装载**（用 `web_fetch` 作探针），文件域断言改由插件侧覆盖。
     """
     os.makedirs(os.path.join(work, "vendor"), exist_ok=True)
     with open(os.path.join(work, "vendor", "dep.txt"), "w", encoding="utf-8") as f:
@@ -467,9 +464,9 @@ def suite_defaults_injection(defaults_core, work):
         f.write("SENTINEL_DEFAULT\n")
 
     def t_custom_config_probe():
-        res = defaults_core.tool_call("script_run", {"runtime": "shell", "script": "echo cfg-ok"})
+        res = defaults_core.tool_call("web_fetch", {"url": f"http://127.0.0.1:{echo_port}/hello"})
         txt = res["content"][0]["text"]
-        assert "cfg-ok" in txt, txt
+        assert "hello-mcp" in txt, txt
 
     for fn in [t_custom_config_probe]:
         check(f"[defaults] {fn.__name__[2:]}", fn)

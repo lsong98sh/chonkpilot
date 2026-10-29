@@ -10,11 +10,12 @@ SB2 断言入口已移除；A4「记忆总 token 数」入口由上下文管理�
 SB2b 断言启用记忆库后入口出现、数值为数字且点击可弹出记忆分类列表 → 选中 → 内容编辑弹框（可编辑）。
 新增调试图标（SB5：gui.devtools.open 可用；用户 F12 入口已在宿主层屏蔽）。
 
-2026-09-27（索引 / codegraph 状态区）：状态栏新增 `codegraph` / `vfts` 两枚徽标（恒显示），
-数据源 = 既有 prj 键（`enable-codegraph` / `codegraph.status` / `enable-vfts` / `vfts.status`），
-刷新 = 既有 `data-prj-config-refresh` 广播，点击走既有 `project-config-open`（**零新增消息面**）
-→ SB2 计入该区；SB6 覆盖「未启用 / 索引中 N/total / 完成 / 失败 + 原生 title + 点击开项目配置并定位页签」。
-徽标 = [图标] + 状态文本（无 Tooltip；悬停原生 `title`），点击带可选 `tab` 定位到项目配置对应页签。
+2026-09-27（索引 / codegraph 状态区）：曾新增 `codegraph` / `vfts` 两枚**宿主**徽标……
+2026-10-28（PLUGIN-UI-2，**口径变更**）：索引进度 UI 整体**归插件**——宿主删除
+`IndexBadgeView` / `IndexStatusDetail` 与两个 status 键的读取；状态栏改为内嵌 codegraph 插件的
+`badge` 视图（`ui.statusbar[].view=badge` → iframe `/plugins/codegraph/webui/badge.html`），
+文案 / 进度由插件经自有动作 `badge` 拉取渲染；点击 badge → 前端 `preview-tab-open{kind:'plugin-page'}`
+打开插件 `status` 完整页。SB2 改为「无宿主徽标」，SB6 覆盖「插件 badge 内嵌 / 终态文案 / 点开插件页 / 关引擎回未启用」。
 """
 import json
 import os
@@ -142,6 +143,31 @@ def idx_states(gui):
     return v if isinstance(v, dict) else {}
 
 
+def badge_text_js():
+    """读状态栏内嵌的**插件 badge iframe** 文本（同源 → contentDocument 可读）。
+
+    PLUGIN-UI-2：索引进度 UI 归插件，宿主不再有 `.sb-index` 徽标；进度文案由插件页自渲染。
+    """
+    return ("(()=>{const f=document.querySelector('.statusbar iframe');"
+            "if(!f||!f.contentDocument||!f.contentDocument.body)return '';"
+            "return (f.contentDocument.body.innerText||'').replace(/\\s+/g,' ').trim()})()")
+
+
+def plugin_page_src_js():
+    """页面上**所有**插件 iframe 的 src（空格拼接）：用于确认「点开的是插件 status 页」。"""
+    return ("(()=>[...document.querySelectorAll('iframe')]"
+            ".map(f=>f.getAttribute('src')||'').join(' '))()")
+
+
+def badge_diag(gui):
+    """badge 页的轮询诊断：poll 次数 / 最近成功时间 / 最近错误（失败信息用）。"""
+    return _deep(J(gui, "(()=>{const f=document.querySelector('.statusbar iframe');"
+                        "if(!f||!f.contentDocument||!f.contentDocument.body)return '{}';"
+                        "const b=f.contentDocument.body;"
+                        "return JSON.stringify({poll:b.getAttribute('data-poll'),"
+                        "ts:b.getAttribute('data-ts'),err:b.getAttribute('data-err')})})()"))
+
+
 def wait_settle(gui, key, max_wait=60):
     """等插件把真实索引跑进终态（ready/error）——之后插件空闲，再写合成状态即可稳定断言前端映射。"""
     deadline = time.time() + max_wait
@@ -192,8 +218,8 @@ def main():
         idx_badges = J(gui, "document.querySelectorAll('.statusbar .sb-index .sb-idx').length")
         # STB-1：记忆提取 / 上下文压缩各一枚长任务状态条目（空闲 / 未启用也显示 = 每类任务都有 view）
         tasks = J(gui, "document.querySelectorAll('.statusbar .sb-task[data-task]').length")
-        c.check("SB2 状态栏条目化：索引状态区两枚徽标 + 长任务两条目 + 无配置菜单 + 记忆入口默认隐藏",
-                int(menu) == 0 and int(mem) == 0 and int(idx_badges) == 2 and int(tasks) == 2 and int(secs) >= 1,
+        c.check("SB2 状态栏条目化：无宿主索引徽标（已归插件，SB6 断言）+ 长任务两条目 + 无配置菜单 + 记忆入口默认隐藏",
+                int(menu) == 0 and int(mem) == 0 and int(idx_badges) == 0 and int(tasks) == 2 and int(secs) >= 1,
                 f"sections={secs} menu={menu} mem={mem} idx={idx_badges} tasks={tasks}")
 
         # SB2b 记忆总 token 数入口（A4 迁移）：启用记忆库后状态栏出现入口，数值为数字，
@@ -220,104 +246,51 @@ def main():
         gui.req('data-prj-config-save', {'data': {'key': 'memory.enabled', 'value': 'false'}})
         time.sleep(0.5)
 
-        # ── SB6 索引 / codegraph 状态区（2026-09-27）─────────────────────────────
-        # 数据源 = 既有 prj 键 + 既有 data-prj-config-refresh 广播（零新增消息面）。
-        # ① 基线（独立 data-dir，无键）→ 两枚徽标均「未启用」
-        base = idx_states(gui)
-        c.check("SB6a 基线（无键）→ codegraph / vfts 均「未启用」",
-                set(base.keys()) == {'codegraph', 'vfts'}
-                and all(v.get('text') == '未启用' and 'is-disabled' in (v.get('cls') or '')
-                        for v in base.values()),
-                f"base={base!r}")
+        # ── SB6 索引进度徽标（PLUGIN-UI-2：UI 归插件）─────────────────────────
+        # 宿主不再有 `.sb-index` 徽标、也不再读 `codegraph.status` / `vfts.status`：
+        # 状态栏内嵌 codegraph 插件的 `badge` 视图（iframe，`ui.statusbar[].view=badge`），
+        # 文案 / 进度由插件经自有动作 `badge` 拉取并渲染；完整页 = 插件的 `status` 视图。
+        badge_src = wait_upto(
+            gui,
+            "(()=>{const f=document.querySelector('.statusbar iframe');return f?(f.getAttribute('src')||''):''})()",
+            lambda v: isinstance(v, str) and '/plugins/codegraph/' in v)
+        c.check("SB6a 状态栏内嵌插件 badge 视图（/plugins/codegraph/webui/badge.html + instance_id）",
+                isinstance(badge_src, str) and 'webui/badge.html' in badge_src and 'instance_id=' in badge_src,
+                f"src={badge_src!r}")
 
-        # ② enable-codegraph=true → 等插件真实索引进终态（ready/error）→ 再写合成状态
-        #    （插件只对 enable-* / 索引配置键作出反应，对 codegraph.status 的写入不响应 →
-        #     插件空闲后写合成状态可稳定断言前端映射：state→文案/N-total）
-        prj_save(gui, 'enable-codegraph', 'true')
-        settle_cg = wait_settle(gui, 'codegraph.status')
-        prj_save(gui, 'codegraph.status', json.dumps(
-            {'state': 'indexing', 'phase': 'index', 'progressDone': 3, 'progressTotal': 8}))
-        cg_idx = wait_upto(gui, "(()=>{const e=document.querySelector('.sb-index .sb-idx[data-engine=\"codegraph\"]');"
-                                "return e?((e.querySelector('.sb-idx-state')||{}).textContent||'').trim():''})()",
-                           lambda v: isinstance(v, str) and '3/8' in v)
-        c.check("SB6b codegraph 索引中：文案「索引中」+ 进度 3/8",
-                isinstance(cg_idx, str) and '索引中' in cg_idx and '3/8' in cg_idx,
-                f"text={cg_idx!r} settle={settle_cg!r}")
+        # ② 启用 codegraph → badge 由**插件自持**渲染：codegraph 段必须是四态之一（不再是「未启用」），
+        #    vfts 段仍「未启用」。真实索引是否 ready 取决于项目内容（本套件只验「状态由插件提供」）。
+        prj_save(gui, 'plugins.codegraph.enabled', 'true')
+        badge_txt = wait_upto(gui, badge_text_js(),
+                              lambda v: isinstance(v, str)
+                              and any(k in v for k in ('未初始化', '索引中', '完成', '失败')),
+                              max_wait=60)
+        cg_seg = (badge_txt or '').split(' ')[0]
+        c.check("SB6b 启用 codegraph → badge codegraph 段为插件上报状态（未初始化/索引中/完成/失败）",
+                cg_seg in ('未初始化', '完成', '失败') or cg_seg.startswith('索引中'),
+                f"text={badge_txt!r} diag={badge_diag(gui)!r}")
 
-        # ③ state=ready → 「完成」；悬停为原生 title（「点击查看索引详情：codegraph」）
-        prj_save(gui, 'codegraph.status', json.dumps(
-            {'state': 'ready', 'progressDone': 8, 'progressTotal': 8, 'indexedFiles': 2, 'indexedSymbols': 5}))
-        cg_ready = wait_upto(gui, "(()=>{const e=document.querySelector('.sb-index .sb-idx[data-engine=\"codegraph\"]');"
-                                  "return e?((e.querySelector('.sb-idx-state')||{}).textContent||'').trim():''})()",
-                             lambda v: v == '完成')
-        cg_title = J(gui, "(()=>{const e=document.querySelector('.sb-index .sb-idx[data-engine=\"codegraph\"]');"
-                          "return e?(e.getAttribute('title')||''):''})()")
-        c.check("SB6c codegraph 完成：「完成」+ 原生 title（点击查看索引详情：codegraph）",
-                cg_ready == '完成' and isinstance(cg_title, str)
-                and '点击查看' in cg_title and 'codegraph' in cg_title,
-                f"text={cg_ready!r} title={cg_title!r}")
-
-        # ④ state=error → 「失败」
-        prj_save(gui, 'codegraph.status', json.dumps({'state': 'error', 'message': 'kaboom'}))
-        cg_err = wait_upto(gui, "(()=>{const e=document.querySelector('.sb-index .sb-idx[data-engine=\"codegraph\"]');"
-                                "return e?((e.querySelector('.sb-idx-state')||{}).textContent||'').trim():''})()",
-                           lambda v: v == '失败')
-        c.check("SB6d codegraph 失败：「失败」", cg_err == '失败', f"text={cg_err!r}")
-
-        # ⑤ enable-vfts 同理覆盖一条（索引中 N/total）
-        prj_save(gui, 'enable-vfts', 'true')
-        settle_vf = wait_settle(gui, 'vfts.status')
-        prj_save(gui, 'vfts.status', json.dumps(
-            {'state': 'indexing', 'progressDone': 2, 'progressTotal': 4}))
-        vf_idx = wait_upto(gui, "(()=>{const e=document.querySelector('.sb-index .sb-idx[data-engine=\"vfts\"]');"
-                                "return e?((e.querySelector('.sb-idx-state')||{}).textContent||'').trim():''})()",
-                           lambda v: isinstance(v, str) and '2/4' in v)
-        c.check("SB6e vfts 索引中：「索引中 2/4」",
-                isinstance(vf_idx, str) and '索引中' in vf_idx and '2/4' in vf_idx,
-                f"text={vf_idx!r} settle={settle_vf!r}")
-
-        # ⑥ 点击徽标 → 统一命令 open-view{status-index} → preview 索引详情页（STB-1 口径变更：
-        #    不再直接跳项目配置；详情页内保留「去设置」入口，配置仍可达）。
-        #    此时 codegraph=error（kaboom）、vfts=indexing 2/4 → 详情页应同时呈现错误文本与进度。
-        J(gui, "document.querySelector('.sb-index .sb-idx[data-engine=\"codegraph\"]')?.click(); 'ok'")
-        tab_idx = wait_upto(gui, active_preview_tab_js(), lambda v: v == '代码索引详情')
-        idx_txt = _deep(wait_upto(gui, detail_text_js("index"),
-                                  lambda v: isinstance(v, str) and 'kaboom' in v and '2/4' in v))
-        go_set = J(gui, has_el_js('.task-detail[data-detail="index"] [data-action="go-settings"]'))
-        c.check("SB6f 点击 codegraph 徽标 → 预览区索引详情（错误 + vfts 进度 + 去设置）",
-                tab_idx == '代码索引详情' and isinstance(idx_txt, str) and 'kaboom' in idx_txt
-                and '2/4' in idx_txt and bool(go_set),
-                f"tab={tab_idx!r} txt={str(idx_txt)[:120]!r} go={go_set}")
+        # ③ 点击 badge → 前端 `preview-tab-open{kind:'plugin-page'}` → 打开插件完整状态页
+        clicked = J(gui, "(()=>{const f=document.querySelector('.statusbar iframe');"
+                         "if(!f||!f.contentDocument)return false;f.contentDocument.body.click();return true})()")
+        tab_idx = wait_upto(gui, active_preview_tab_js(),
+                            lambda v: isinstance(v, str) and '知识库状态' in v)
+        page_src = wait_upto(gui, plugin_page_src_js(),
+                             lambda v: isinstance(v, str) and 'webui/status.html' in v)
+        c.check("SB6c 点击 badge → 预览区打开插件状态页（知识库状态 / status.html）",
+                bool(clicked) and isinstance(tab_idx, str) and '知识库状态' in tab_idx
+                and isinstance(page_src, str) and 'webui/status.html' in page_src,
+                f"clicked={clicked} tab={tab_idx!r} src={page_src!r}")
         shot(gui, "04-detail-index.png")
 
-        # 详情页「去设置」→ 既有 project-config-open（配置仍可达）：CodeGraph / Vfts 页签
-        J(gui, "document.querySelector('.task-detail[data-detail=\"index\"] [data-action=\"go-settings\"]')?.click(); 'ok'")
-        opened = wait_upto(gui, "document.querySelectorAll('.project-config-panel').length", lambda v: int(v or 0) >= 1)
-        active_cg = wait_upto(gui, "(()=>{const e=document.querySelector('.project-config-panel .b-tabs-item.active');"
-                                   "return e?(e.textContent||'').trim():''})()",
-                              lambda v: v == 'CodeGraph 索引')
-        c.check("SB6f2 索引详情「去设置」→ 项目配置 CodeGraph 页签",
-                int(opened or 0) >= 1 and active_cg == 'CodeGraph 索引',
-                f"panels={opened} active={active_cg!r}")
-        # 回索引详情 → Vfts 区「去设置」→ 页内切到 Vfts 页签
-        J(gui, "document.querySelector('.sb-index .sb-idx[data-engine=\"vfts\"]')?.click(); 'ok'")
-        wait_upto(gui, active_preview_tab_js(), lambda v: v == '代码索引详情')
-        J(gui, "document.querySelector('.task-detail[data-detail=\"index\"] [data-action=\"go-settings-vfts\"]')?.click(); 'ok'")
-        active_vf = wait_upto(gui, "(()=>{const e=document.querySelector('.project-config-panel .b-tabs-item.active');"
-                                   "return e?(e.textContent||'').trim():''})()",
-                              lambda v: v == 'Vfts 全文索引')
-        c.check("SB6f3 索引详情 Vfts「去设置」→ 项目配置页切到 Vfts 页签",
-                active_vf == 'Vfts 全文索引', f"active={active_vf!r}")
-
-        # ⑥ 收尾还原键值（还原后两徽标回「未启用」）
-        prj_del(gui, 'codegraph.status')
-        prj_del(gui, 'vfts.status')
-        prj_save(gui, 'enable-codegraph', 'false')
-        prj_save(gui, 'enable-vfts', 'false')
-        back = _deep(wait_upto(gui, "JSON.stringify([...document.querySelectorAll('.sb-index .sb-idx .sb-idx-state')]"
-                                     ".map(e=>(e.textContent||'').trim()))",
-                                lambda v: _deep(v) == ['未启用', '未启用']))
-        c.check("SB6g 收尾还原 → 两徽标回「未启用」", back == ['未启用', '未启用'], f"back={back!r}")
+        # ④ 收尾还原：关两引擎 → badge 必须**重新拉取**并显示两枚「未启用」（证明轮询存活）
+        prj_save(gui, 'plugins.codegraph.enabled', 'false')
+        prj_save(gui, 'plugins.codegraph.vfts.enabled', 'false')
+        back = wait_upto(gui, badge_text_js(),
+                         lambda v: isinstance(v, str) and v.count('未启用') >= 2)
+        c.check("SB6g 收尾还原 → badge 两枚均回「未启用」（轮询刷新生效）",
+                isinstance(back, str) and back.count('未启用') >= 2,
+                f"text={back!r} diag={badge_diag(gui)!r}")
 
         # ── SB7 记忆提取状态条目 + 详情页（STB-1）─────────────────────────────
         # 数据源 = 既有通知面 tool-notify，经**后端 → 前端同一入口**（window.mq.emitRemote）注入；

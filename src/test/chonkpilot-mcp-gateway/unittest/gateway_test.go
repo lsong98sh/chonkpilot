@@ -1,7 +1,7 @@
 // Package mcpgatewaytest — chonkpilot-mcp-gateway 黑盒回归测试
 // （工程目录 chonkpilot-test/chonkpilot-mcp-gateway/unittest）。
 //
-// 通过公开包 github.com/lsong98sh/chonkpilot-mcp-gateway/gateway 集成测试：
+// 通过公开包 github.com/lsong98sh/chonkpilot-agent/gateway 集成测试：
 // 内存总线 + mock 工具经公开方法面 `tools/register`（handler_subject 回调）接入
 // → New/Start → 经总线方法面（mcp-* 相对主题，chonk. 前缀由总线注入）驱动：
 // 覆盖工具执行、自动异步（meta/请求级）、手动转后台、异步完成通知（mcp-tasks-report）、
@@ -22,11 +22,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	mcpgw "github.com/lsong98sh/chonkpilot-mcp-gateway/gateway"
+	mcpgw "github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
 )
 
@@ -41,7 +41,7 @@ type mockSpec struct {
 // startTestGW 建内存总线 + 真实 Gateway 装配；mock 工具经**公开方法面** `tools/register`
 // （handler_subject = 本测试订阅的回调主题）接入。
 // GATEWAY-2 L5：gateway 只接 Transport + Servers，不再接受进程内能力源（Params.MCPServer 已删除）；
-// 注册工具仍以 `self_<原名>` 暴露（注册提供方固定 entry.ID=self）。
+// 注册工具以**原名**暴露（P0a 2026-10-29：注册提供方 entry.ID=self 为内置 → 不再加 `self_` 前缀）。
 func startTestGW(t *testing.T, specs []mockSpec) (mq.Bus, *mcpgw.Gateway) {
 	t.Helper()
 	ctx := context.Background()
@@ -199,7 +199,7 @@ func TestSyncCall(t *testing.T) {
 			return mockResult("sync-ok"), nil
 		},
 	}})
-	res := callMethod(t, bus, "tools/call", map[string]any{"name": "self_tool_sync"})
+	res := callMethod(t, bus, "tools/call", map[string]any{"name": "tool_sync"})
 	if got := textOf(t, res); got != "sync-ok" {
 		t.Fatalf("sync result = %q, want sync-ok (res=%v)", got, res)
 	}
@@ -215,7 +215,7 @@ func TestAsyncByMeta(t *testing.T) {
 		},
 	}})
 	ch := subReport(t, bus)
-	res := callMethod(t, bus, "tools/call", map[string]any{"name": "self_tool_meta_async"})
+	res := callMethod(t, bus, "tools/call", map[string]any{"name": "tool_meta_async"})
 	taskID := pendingTaskID(t, res)
 	r := awaitReport(t, ch, taskID)
 	if r["state"] != "done" || r["result_summary"] != "meta-async-ok" {
@@ -234,7 +234,7 @@ func TestAsyncByRequest(t *testing.T) {
 	}})
 	ch := subReport(t, bus)
 	res := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_tool_sync2", "arguments": map[string]any{"async": "true"},
+		"name": "tool_sync2", "arguments": map[string]any{"async": "true"},
 	})
 	taskID := pendingTaskID(t, res)
 	r := awaitReport(t, ch, taskID)
@@ -267,7 +267,7 @@ func TestBackgroundManual(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		v := bus.Emit(ctx, subj("tools/call"), map[string]any{
-			"name": "self_tool_bg", "tool_call_id": "call-bg-1",
+			"name": "tool_bg", "tool_call_id": "call-bg-1",
 			"arguments": map[string]any{"async": "manual"},
 		}).Wait()
 		res, _ := v.Result.(map[string]any)
@@ -325,7 +325,7 @@ func TestBackgroundManualCompleted(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	res := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_tool_manual_sync", "tool_call_id": "call-manual-sync",
+		"name": "tool_manual_sync", "tool_call_id": "call-manual-sync",
 		"arguments": map[string]any{"async": "manual"},
 	})
 	if got := textOf(t, res); got != "manual-sync-ok" {
@@ -352,7 +352,7 @@ func TestBackgroundManualAfterDone(t *testing.T) {
 	}})
 	ch := subReport(t, bus)
 	res := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_tool_done_bg", "tool_call_id": "call-done-bg",
+		"name": "tool_done_bg", "tool_call_id": "call-done-bg",
 		"arguments": map[string]any{"async": "true"},
 	})
 	taskID := pendingTaskID(t, res)
@@ -373,7 +373,7 @@ func TestContractNeverOverridableByCallAlways(t *testing.T) {
 		},
 	}})
 	res := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_tool_never", "arguments": map[string]any{"async": "always"},
+		"name": "tool_never", "arguments": map[string]any{"async": "always"},
 	})
 	sc, _ := res["structuredContent"].(map[string]any)
 	if sc == nil || sc["status"] != "pending" || sc["task_id"] == "" {
@@ -414,7 +414,7 @@ func TestNeverTimeoutAwaitsDecision(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		v := bus.Emit(ctx, subj("tools/call"), map[string]any{
-			"name": "self_tool_slow", "tool_call_id": "call-never",
+			"name": "tool_slow", "tool_call_id": "call-never",
 			"arguments": map[string]any{"async": "never", "timeout": 0.1},
 		}).Wait()
 		res, _ := v.Result.(map[string]any)
@@ -468,7 +468,7 @@ func TestAutoTimeoutConverts(t *testing.T) {
 		},
 	}})
 	ch := subReport(t, bus)
-	res := callMethod(t, bus, "tools/call", map[string]any{"name": "self_tool_auto"})
+	res := callMethod(t, bus, "tools/call", map[string]any{"name": "tool_auto"})
 	taskID := pendingTaskID(t, res)
 	r := awaitReport(t, ch, taskID)
 	if r["state"] != "done" || r["result_summary"] != "auto-ok" {
@@ -488,7 +488,7 @@ func TestTaskReport(t *testing.T) {
 	got := subReport(t, bus)
 	// I-90：任务树归属随 tools/call 上下文下发 → 记入执行池 → 随完成回报回传（缺省为空）
 	res := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "self_tool_report", "instance_id": "ins-report",
+		"name": "tool_report", "instance_id": "ins-report",
 		"top_session": "top-report", "parent": "tk-report-parent",
 		"arguments": map[string]any{"async": "true"},
 	})
@@ -497,7 +497,7 @@ func TestTaskReport(t *testing.T) {
 	if r["state"] != "done" {
 		t.Fatalf("report = %v, want state=done", r)
 	}
-	if r["tool"] != "self_tool_report" {
+	if r["tool"] != "tool_report" {
 		t.Fatalf("report tool = %v", r["tool"])
 	}
 	if r["top_session"] != "top-report" || r["parent"] != "tk-report-parent" {
@@ -562,7 +562,7 @@ func TestTaskCancel(t *testing.T) {
 		},
 	}})
 	ch := subReport(t, bus)
-	res := callMethod(t, bus, "tools/call", map[string]any{"name": "self_tool_long", "arguments": map[string]any{"async": "true"}})
+	res := callMethod(t, bus, "tools/call", map[string]any{"name": "tool_long", "arguments": map[string]any{"async": "true"}})
 	taskID := pendingTaskID(t, res)
 	time.Sleep(50 * time.Millisecond) // 确保已 running
 	ok, err := gw.CancelExec("", taskID)
@@ -585,7 +585,7 @@ func TestTaskError(t *testing.T) {
 		},
 	}})
 	ch := subReport(t, bus)
-	res := callMethod(t, bus, "tools/call", map[string]any{"name": "self_tool_err", "arguments": map[string]any{"async": "true"}})
+	res := callMethod(t, bus, "tools/call", map[string]any{"name": "tool_err", "arguments": map[string]any{"async": "true"}})
 	taskID := pendingTaskID(t, res)
 	r := awaitReport(t, ch, taskID)
 	if r["state"] != "error" {
@@ -594,7 +594,7 @@ func TestTaskError(t *testing.T) {
 	if e, _ := r["result_summary"].(string); !strings.Contains(e, "boom") {
 		t.Fatalf("report result_summary = %v, want contains boom", r["result_summary"])
 	}
-	sync := callMethod(t, bus, "tools/call", map[string]any{"name": "self_tool_err"})
+	sync := callMethod(t, bus, "tools/call", map[string]any{"name": "tool_err"})
 	if sync["isError"] != true {
 		t.Fatalf("sync error result not isError: %v", sync)
 	}

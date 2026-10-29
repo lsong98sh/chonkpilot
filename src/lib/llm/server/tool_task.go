@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 // turnInstance 取轮次归属 instance（tc 为空 → ""）：旧调用方（无 turn 上下文的直接调用）不限定

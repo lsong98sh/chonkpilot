@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // memoryProjectCategories 是项目级类别（与 persist 内部清单一致，黑盒复制）。

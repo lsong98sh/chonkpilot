@@ -74,7 +74,7 @@ func TestLoadGatewayServersFileView(t *testing.T) {
 	s := &Server{cfg: api, opts: Options{UsrPath: path}}
 	entries := s.loadMcpFileEntries("")
 
-	byName := map[string]mcpEntry{}
+	byName := map[string]facade.McpServer{}
 	for _, e := range entries {
 		if _, dup := byName[e.Name]; dup {
 			t.Fatalf("同名跨级应只生效一份：%q 重复", e.Name)

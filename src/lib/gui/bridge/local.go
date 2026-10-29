@@ -25,11 +25,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chonkpilot/chonkpilot-gui/internal/folder"
-	"github.com/chonkpilot/chonkpilot-gui/models"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
-	"github.com/chonkpilot/chonkpilot-lib/paths"
+	"github.com/lsong98sh/chonkpilot-framework/host/folder"
+	"github.com/lsong98sh/chonkpilot-framework/host/models"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/paths"
 )
 
 // callOpenInConsole 在系统控制台（cmd 新窗口）打开到指定路径所在目录。

@@ -21,8 +21,8 @@ import (
 
 	webview2 "github.com/jchv/go-webview2"
 
-	"github.com/chonkpilot/chonkpilot-gui/internal/messages"
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/messages"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // guiCallFunc 是 gui.* 消息面内部复用的 callX 处理器签名（原 dataCall 随 /call 链删除）。

@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lsong98sh/chonkpilot-session"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 // defaultKeepFullTurns 完整区轮数缺省值（对应项目级键 `keep_full_max_turns`；与压缩侧

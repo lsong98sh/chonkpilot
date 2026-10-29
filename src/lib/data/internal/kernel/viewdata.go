@@ -1,5 +1,5 @@
 // 会话/消息视图与工具消息契约 helper（原 persist/view.go + persist_session.go 的 helper
-// 逐字下移；原 persist.go 的 svalOf 并入 SvalOf）。
+// 逐字下移；原 persist.go 的 svalOf 并入 Sval）。
 //
 // 存储形态（12-数据层）：messages 表 role=tool 的 content = {call,result,async} JSON。
 // messages 表主键 = NewMessageKey（自带时间序）。
@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -91,18 +90,13 @@ func ReasoningBrief(reasoning string) string {
 	return preview
 }
 
-// ToolLLMContent 提取 role=tool 记录给 LLM 重放用的**结果文本**：{call,result,async} →
-// result.content；无法解析（纯文本）→ 原样返回。
+// ToolLLMContentStatus 按行级 `tool_call_status` 提取 role=tool 记录给 LLM 重放用的*结果文本*：
+// {call,result,async} → result.content；无法解析（纯文本）→ 原样返回。未完成的工具按状态给出
+// **明确占位文案**（中途插话设计 §3.8：运行中 / 已中断 / 已取消的工具不得投影为空串——插入轮与
+// 重启后的「继续」都会带上未完成的工具行，空串会让 LLM 误判为"工具返回了空结果"）。
 //
 // 存储形态（content = {call,result,async} JSON）是给视图/前端消费的，不能直接喂回 LLM
 // （LLM 需要的是裸结果文本，与 tool_call_id 配对）；故读取侧在此归一。
-func ToolLLMContent(content string) string {
-	return ToolLLMContentStatus(content, "")
-}
-
-// ToolLLMContentStatus 同 ToolLLMContent，并按行级 `tool_call_status` 给出**明确占位文案**
-// （中途插话设计 §3.8：运行中 / 已中断 / 已取消的工具不得投影为空串——插入轮与重启后的
-// 「继续」都会带上未完成的工具行，空串会让 LLM 误判为"工具返回了空结果"）。
 //
 // status 为空（旧数据 / 无状态列）→ 与旧行为逐字节一致。
 func ToolLLMContentStatus(content, status string) string {
@@ -166,19 +160,9 @@ func ToolViewFields(m data.Record) (toolCallID, taskID, name, argsJSON, result, 
 	return
 }
 
-// Sval 把 Record 值转字符串（Record 由 json.Unmarshal 产生：string/float64/bool/nil）。
+// Sval 把 Record 值转字符串（Record 由 json.Unmarshal 产生：string/float64/bool/nil；
+// 数字归一为十进制字面量，其余按 fmt.Sprint）。
 func Sval(v any) string {
-	if v == nil {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return fmt.Sprint(v)
-}
-
-// SvalOf 取任意值的字符串形态（字符串原样；float64/int64 等数字归一为十进制）。
-func SvalOf(v any) string {
 	if v == nil {
 		return ""
 	}
@@ -215,13 +199,6 @@ func SessionActivity(s map[string]any) string {
 		return a
 	}
 	return Sval(s["updated_at"])
-}
-
-// SortSessionsByActivity 按最近活动降序稳定排序会话列表（data-session-list）。
-func SortSessionsByActivity(sessions []map[string]any) {
-	sort.SliceStable(sessions, func(i, j int) bool {
-		return SessionActivity(sessions[i]) > SessionActivity(sessions[j])
-	})
 }
 
 // LatestTopSession 返回**最近活动**的顶层会话记录（无则 nil）。
@@ -273,14 +250,6 @@ func TurnStatsByMap(byTurn map[string][]data.Record, turnID string) (int, int) {
 		sz += len(Sval(m["brief"]))
 	}
 	return cnt, sz
-}
-
-// TurnIDOfMsg 取消息所属 turn_id（兼容 key 兜底）。
-func TurnIDOfMsg(r data.Record) string {
-	if id := Sval(r["turn_id"]); id != "" {
-		return id
-	}
-	return Sval(r[data.KeyField])
 }
 
 // ── 消息全文（data-session-content）──
@@ -367,76 +336,38 @@ func MetaOfRecord(rec data.Record) map[string]any {
 	return nil
 }
 
-// MessageView 把 messages 表记录转为前端消费格式：
-//   - tool 消息（role=tool，content={call,result,async}）展开为 map
-//     （tool_call_id/tool/arguments/brief/simplified/status/...）
-//   - reasoning + brief 截断 3 行（has_more）
-//   - 其余原样透传
-func MessageView(m data.Record, brief bool) any {
-	role := Sval(m["role"])
-	typ := Sval(m["type"])
-	msgID := Sval(m["message_id"])
-	if msgID == "" {
-		msgID = Sval(m[data.KeyField])
-	}
-	if role == "tool" {
-		toolCallID, taskID, name, argsJSON, result, status := ToolViewFields(m)
-		if status == "" {
-			status = ToolStatusCompleted
-		}
-		pair := map[string]any{
-			"role":              role,
-			"type":              "tool_pair",
-			"message_id":        msgID,
-			"turn_id":           Sval(m["turn_id"]),
-			"tool_call_id":      toolCallID,
-			"task_id":           taskID,
-			"tool":              name,
-			"arguments":         argsJSON,
-			"brief":             Sval(m["brief"]), // 落库即 purpose（LLM 必填的调用理由）/简化调用内容
-			"result_success":    status == ToolStatusCompleted,
-			"simplified":        name + "(" + CompactArgs(argsJSON) + ")",
-			"result_simplified": SummarizeResult(result),
-			"status":            status,
-			"created_at":        Sval(m["created_at"]),
-		}
-		if brief {
-			pair["result"] = ""
-			pair["has_more"] = result != ""
-		} else {
-			pair["result"] = result
-		}
-		// _meta：该工具自身的 meta 子集（I-60）——前端工具卡片据此本地判断超时裁决项。
-		if meta := MetaOfRecord(m); len(meta) > 0 {
-			pair["_meta"] = meta
-		}
-		return pair
-	}
-	out := RecordView(m, "message_id")
-	if brief && role == "assistant" && typ == "reasoning" {
-		preview, hasMore := TruncateLines(Sval(m["content"]), 3)
-		out["content"] = preview
-		out["has_more"] = hasMore
-	}
-	return out
-}
-
 // CompactArgs 生成工具参数单行摘要（对齐旧 formatToolCallArgsCompact）。
+//
+// 按 **JSON 原始键序**取前 3 个参数（此前按 map 迭代 → 每次顺序可能不同，
+// 落库 brief / 视图 simplified 抖动）：流式 token 解码，不依赖 map 迭代序。
 func CompactArgs(argsStr string) string {
-	var argsMap map[string]any
-	if err := json.Unmarshal([]byte(argsStr), &argsMap); err != nil {
+	dec := json.NewDecoder(strings.NewReader(argsStr))
+	dec.UseNumber()
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
 		return ""
 	}
 	var parts []string
-	for k, v := range argsMap {
+	for dec.More() && len(parts) < 3 {
+		kt, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		k, _ := kt.(string)
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return ""
+		}
 		if s, ok := v.(string); ok && len(s) > 80 {
 			parts = append(parts, fmt.Sprintf("%s=...</%d chars>", k, len(s)))
 		} else {
 			parts = append(parts, fmt.Sprintf("%s=%v", k, v))
 		}
 	}
-	if len(parts) > 3 {
-		parts = parts[:3]
+	if len(parts) == 0 {
+		return ""
+	}
+	if dec.More() {
 		return strings.Join(parts, ", ") + ", ..."
 	}
 	return strings.Join(parts, ", ")

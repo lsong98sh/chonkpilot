@@ -17,7 +17,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/chonkpilot/chonkpilot-lib/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // 对齐 persist.go 私有常量（黑盒不可见，本地复制）：usr config 场景列表固定 key + 默认场景 key。
@@ -58,16 +58,7 @@ func newTestPersist(t *testing.T) (mq.Bus, *persist.Service, string) {
 func regInstance(t *testing.T, bus mq.Bus) string {
 	t.Helper()
 	wd := t.TempDir()
-	// P3-4c 起 `session.db.shard` 缺省 on；本套 L1 断言**旧布局**行为 → 登记前置 off
-	// （直接写 prj config，早于 persist 读取开关 / 异步搬运）。
 	data.Register("ins-test", wd, "")
-	if prj, release, err := data.Prj("ins-test"); err == nil {
-		if err := data.SetConfig(prj, "session.db.shard", "off"); err != nil {
-			release()
-			t.Fatalf("set session.db.shard=off: %v", err)
-		}
-		release()
-	}
 	pubFire(bus, "instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": wd,
 	}))
@@ -78,6 +69,48 @@ func regInstance(t *testing.T, bus mq.Bus) string {
 func jb(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// newDialog 建一个对话库并写入主会话行（一树一库：会话内容只落对话库），
+// 返回 dialog_id 与该库句柄（release 随用例结束；断言直读该句柄）。
+func newDialog(t *testing.T, inst, mainID string) (string, *data.DB) {
+	t.Helper()
+	pudb, err := data.PrjUsr(inst)
+	if err != nil {
+		t.Fatalf("PrjUsr(%s): %v", inst, err)
+	}
+	dialogID, err := data.NewDialogID()
+	if err != nil {
+		t.Fatalf("NewDialogID: %v", err)
+	}
+	db, release, err := data.OpenDialog(pudb.Path(), dialogID)
+	if err != nil {
+		t.Fatalf("OpenDialog: %v", err)
+	}
+	t.Cleanup(release)
+	now := time.Now().UTC().Format(data.RFC3339FixedNano)
+	if err := db.Table("sessions").Upsert(mainID, data.Record{
+		"session_id": mainID, "title": mainID, "parent_id": "", "kind": "main",
+		"created_at": now, "updated_at": now,
+	}); err != nil {
+		t.Fatalf("seed main session: %v", err)
+	}
+	return dialogID, db
+}
+
+// putDialogRow 写 prjusr `dialogs` 目录行（`data-session-list` / `-latest` 由目录派生）。
+func putDialogRow(t *testing.T, inst, dialogID, mainID, title, updatedAt string) {
+	t.Helper()
+	pudb, err := data.PrjUsr(inst)
+	if err != nil {
+		t.Fatalf("PrjUsr(%s): %v", inst, err)
+	}
+	if err := pudb.Table("dialogs").Upsert(dialogID, data.Record{
+		"dialog_id": dialogID, "file": data.DialogFileName(dialogID), "title": title,
+		"kind": "main", "main_session_id": mainID, "updated_at": updatedAt,
+	}); err != nil {
+		t.Fatalf("put dialogs row: %v", err)
+	}
 }
 
 // subRaw 以 v2 On 订阅主题，把回调适配为载荷风格 func(subject, payload)——测试收集器

@@ -45,7 +45,7 @@ test('① sessionMessages：「加载中」占位是独立状态，loadMessages 
   const src = readSrc('utils/sessionMessages.js')
   assert.match(src, /const pending = ref\(false\)/, 'pending 须为独立 ref')
   assert.match(src, /const pendingStatus = ref\(/, 'pendingStatus 须为独立 ref')
-  const load = fnBody(src, 'async function loadMessages(sessionId)')
+  const load = fnBody(src, 'async function loadMessages(sessionId, dialogId = \'\')')
   assert.doesNotMatch(load, /pending/, 'loadMessages（历史整体替换）不得改动 pending')
   assert.match(load, /messages\.value = res\.messages\.map\(dbMsgToView\)/, '历史回填仍整体替换 messages')
   // 真实内容 / 终态一律收起占位
@@ -92,7 +92,7 @@ test('④ sessionMessages：加载带代次守卫（切换会话丢弃过期批�
   const src = readSrc('utils/sessionMessages.js')
   assert.match(src, /let loadGen = 0/, '须有加载代次计数 loadGen')
   // 首屏加载：发请求前推进代次；await 后校验，过期即丢弃（不写任何状态）
-  const load = fnBody(src, 'async function loadMessages(sessionId)')
+  const load = fnBody(src, 'async function loadMessages(sessionId, dialogId = \'\')')
   assert.match(load, /const gen = \+\+loadGen/, 'loadMessages 须在发起请求前推进代次')
   assert.match(load, /if \(gen !== loadGen\) return/, 'loadMessages 须在 await 后校验代次并丢弃过期批次')
   // 加载更多：快照当前代次；await 后校验，过期即丢弃

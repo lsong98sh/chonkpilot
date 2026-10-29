@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chonkpilot/chonkpilot-lib/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // TestPromptVarGroupsShape：三组（toolchain/path/env）齐备；键集与常量源一致。
