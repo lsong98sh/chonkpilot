@@ -111,7 +111,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | iframe | `sandbox="allow-scripts allow-forms allow-same-origin"`、`referrerpolicy="no-referrer"` |
 | iframe → 宿主 | `postMessage({ckPlugin:1, id, type:'call', method, params})` → 宿主 `dispatch` → 回投 `{ckPlugin:1, id, type:'result', ok, result, errors}`；**来源校验** `e.source === iframe.contentWindow` |
 | 宿主 → iframe | `{ckPlugin:1, type:'event', topic, payload}`（来源 = `plugin-ui-event`，按 `id` 过滤）；`{ckPlugin:1, type:'theme', theme}`（主题快照，`load` 后推一次 + 主题变化再推，幂等不重建 iframe） |
-| `ckMq` | `load` 后注入 `window.ckMq = {on, off, emit}`（**不裸暴露宿主 mq**）；该 frame 的订阅登记在 `frameSubs`，**重新 load / 卸载 / `beforeunload`** 一律 `off`（防回调打到已销毁的 frame） |
+| `ckMq` | 平台基座在**宿主窗口**挂唯一入口 `window.ckMq`（`@ckfw/plugin-ui/ckMq.js`，`installGlobalCkMq()`）；插件页一律 `const mq = window.top.ckMq.new(window)` 取受控实现 `{on, off, emit}`（**不裸暴露宿主 mq**）。**路由键 = 订阅方 window 引用**（`WeakMap<win, Map<topic, Set<cb>>>`），topic / payload **一律不带 plugin id**；`new(win)` 只接受宿主窗口的**直接子 frame**（`win !== window && win.parent === window`），非法 / 跨源**抛错**。`PluginPageHost` 在 iframe 重载 / 卸载 / `beforeunload` 调 `window.ckMq.release(contentWindow)` 统一退订（防回调打到已销毁的 frame） |
 
 `dispatch` 支持的 method（`method` → 实际通道）：
 
@@ -122,7 +122,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | `action` | `pluginAction(id, action, payload)` → `POST /plugins/<id>/api/<action>`（带 `X-CK-Plugin-Id`） |
 | `open-url` / `close` | `window.open(..., 'noopener')` / `preview-tab-close-this` |
 
-> 插件页脚手架：插件仓提供 `webui/shared/{ck-mq.js, ck-plugin.js, ck-theme.js}`（`ckMq.__ckMqBind` 注入点可补投注入前排队调用）。
+> 插件页脚手架：插件仓提供 `webui/shared/{ck-plugin.js, ck-theme.js}`。**`ckMq` 不再有脚本文件**（原主仓 `src/frontend/public/shared/ck-mq.js` 与 `__ckMqBind` 注入点已删除）——插件页一律 `const mq = window.top.ckMq.new(window)`。**降级裁决（2026-10-30）= A（不兜底）**：插件页被直接打开（非宿主子 frame）时 `new()` 明确抛错，由插件自己决定是否退避；宿主只提供机制，不替客户端做兜底。
 
 ### 3.4 就绪态与自动重试（`usePluginReadiness`）
 
@@ -141,7 +141,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 |---|---|---|
 | 插件维护 | `preview-tab-open{kind:'plugin-manager'}`（设置菜单「插件维护」/ 工具栏「插件」） | 预览区页签 `CodeView` → `PluginManagerPage` |
 | 插件页（按钮/菜单/`pluginBar`） | `preview-tab-open{kind:'plugin-page', plugin, page, title}` | 预览区页签 `plugin-page:<plugin>:<page>` → `PluginPageHost` |
-| 布局命令（`open-tabs` 等，viewKey=`plugin:<id>:<view>`） | 命令对象 `open-dialog` / `open-tabs` / `open-drawer` / `toggle-drawer` / `close-tabs-active` / `publish-mq` | `commands.tabsRoute`：view 定义含 `preview` → 转 `plugin-page`；否则机制层 `lf-layout-open-tabs` |
+| 打开 view（`layout/openView.js#openView(viewKey)`） | 按**视图注册表声明**的承载方式分发，不另设「viewKey → 具体 Vue」翻译表：`host:'preview'` → `preview-tab-open{kind:viewKey}`；插件 view 的 `containers` 含 `preview` → `preview-tab-open{kind:'plugin-page', plugin, page}`；`host:'layout'`（布局区）/ `'bar'`（栏内嵌）/ `'dialog'` 不在此打开（由各自容器承载） |
 | 项目配置页（codegraph 配置） | `project-config-open{tab:'codegraph'}` | `ProjectConfig` 内直接复用 `PluginPageHost`（`pluginView('codegraph','config')`），**不新造容器** |
 
 **动作按钮（`ui.actions[]`）**：`PluginManagerPage` 渲染 → 便捷式 `view`+`container` 按容器打开本插件视图；命令式 `command` 原样交布局命令执行（与布局栏按钮同一 `commandToMq`）。
@@ -190,7 +190,14 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | 宿主 → iframe | `{ckPlugin:1, id, type:'result', ok, result, errors}` |
 | 宿主 → iframe | `{ckPlugin:1, type:'event', topic, payload}` |
 | 宿主 → iframe | `{ckPlugin:1, type:'theme', theme:{id, scheme, tokens}}` |
-| 宿主注入 | `window.ckMq = {on(topic,cb)→off, off(topic,cb?), emit(topic,payload)→Promise}` |
+| 宿主注入 | `window.top.ckMq.new(window) → {on(topic,cb)→off, off(topic,cb?), emit(topic,payload)→Promise}` |
+
+**ckMq 路由模型（2026-10-30 定稿）**
+
+- 唯一实现 = 平台基座 `chonkpilot-framework/host/web/src/plugin-ui/ckMq.js`（`createCkMq(bus)` + `installGlobalCkMq()`），主仓 `main.js` 装配时自挂 `window.ckMq`。
+- `new(win)` 是**注册**：把 `win` 与其订阅表关联；`release(win)` 是**注销**（frame 重载 / 卸载 / 页面 `beforeunload`）。
+- **归属标签 ≠ 路由键**：plugin id 只用于宿主侧归属（就绪态 / 配置 / 资源），**不得**出现在 topic 或 payload 里当路由键；定向投递由「订阅方 window 引用」自然完成。
+- 重复 `new(win)`（同一 frame 重载）先隐式 `release` 旧表，避免旧 JS 上下文的订阅残留。
 
 **自回显语义**：本地 `emit` 同上下文广播（发布者自订阅也收到）；跨进程后端/桥**不回显**（[11-MQ与消息](../10-architecture/11-MQ与消息.md)）。同源 + 可信代码前提下，topic 白名单是**约定**而非强制。
 

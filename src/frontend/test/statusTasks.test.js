@@ -22,12 +22,11 @@ import { EventNames } from '../src/events/event-names.js'
 import { VIEW_DEFINITIONS } from '../src/layout/view-definitions.js'
 import { readSrc } from './support/feSource.mjs'
 
-// `layout/commands.js` 依赖链含**无扩展名**相对导入（打包器口径）→ 先挂 SFC/补全钩子再动态 import
+// `layout/openView.js` 依赖链含**无扩展名**相对导入（打包器口径）→ 先挂 SFC/补全钩子再动态 import
 // （同 layoutAdapter.test.js 口径；静态 import 会在钩子注册前解析）。
 register('./support/vue-sfc-hooks.mjs', import.meta.url)
 await new Promise((r) => setTimeout(r, 0))
 const { openStatusDetail, STATUS_DETAIL_VIEWS } = await import('../src/layout/statusDetail.js')
-const { PREVIEW_TAB_TARGETS } = await import('../src/layout/commands.js')
 
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
@@ -127,15 +126,17 @@ test('索引详情（已归插件，PLUGIN-UI-2）：主仓源码零引用索引
 
 /* ═══════════ ② 点击条目 → open-view ═══════════ */
 
-test('点击条目 → open-view（目标 = 对应详情 view）→ 既有 preview-tab-open', async () => {
-  // 详情 view 已登记进命令解析的「功能页」白名单
-  for (const key of Object.values(STATUS_DETAIL_VIEWS)) {
-    assert.ok(PREVIEW_TAB_TARGETS.includes(key), `${key} 应登记为 preview 功能页目标`)
-  }
+test('点击条目 → openStatusDetail（按注册表 host 分发）→ 既有 preview-tab-open', async () => {
   for (const [kind, viewKey] of Object.entries(STATUS_DETAIL_VIEWS)) {
+    // 承载方式由定义自己声明（preview = 预览区功能页页签），不再靠功能页白名单翻译
+    assert.equal(
+      VIEW_DEFINITIONS.find((d) => d.key === viewKey)?.host,
+      'preview',
+      `${viewKey} 承载方式应为 preview`,
+    )
     const seen = []
     const r = openStatusDetail(kind, { bus: { emit: (topic, payload) => seen.push([topic, payload]) } })
-    assert.equal(r.ok, true, `${kind} 应可解析`)
+    assert.equal(r.ok, true, `${kind} 应可打开`)
     assert.equal(r.topic, EventNames.previewTabOpen)
     assert.deepEqual(r.payload, { kind: viewKey })
     assert.deepEqual(seen, [[EventNames.previewTabOpen, { kind: viewKey }]])

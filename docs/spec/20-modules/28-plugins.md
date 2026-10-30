@@ -258,7 +258,7 @@
 - 取值 = `currentInstanceId()`（认领优先、未认领回落首屏注入；`instance-claim` 为**入口绑定优先**、不会改写该值，[61 §4.1](../60-reference/61-消息一览.md)）。
 - **不影响资源面**：宿主按 `r.URL.Path` 取 `sub`、缓存键 = `(plugin_id, path, plugin_version)` → query 既不进路由也不进缓存（`src/lib/gui/pluginassets.go`）。
 - 插件页**首帧读取并自行持有**（页内跳转 / 刷新不保证 query 仍在）；`instance_id` **不是凭据**（[22-实例与会话标识](../10-architecture/22-实例与会话标识.md)），可出现在 URL。
-- 宿主侧不需要新增注入接口（`ckMq` / `ckPlugin` 维持现状）。
+- 宿主侧**不需要为 instance 新增注入接口**：`ckPlugin` 维持现状；`ckMq` 改为平台基座唯一入口 `window.top.ckMq.new(window)`（[2C §3.3/§4.3](2C-UI插件.md)；原 `public/shared/ck-mq.js` 已删除）。
 
 #### 3A.7.3 后端取法
 
@@ -300,7 +300,7 @@
 | manifest | `ui.views[]` 增一条视图（如 `{id:"badge", entry:"webui/badge.html", containers:["statusbar"], default_size:{width,height}}`）；`ui.statusbar[]` 条目用 `{id, zone, view:"<view id>", tooltip}` 引用它（原 `command` 形态保留给按钮条目） |
 | 宿主（Go） | `mgr.BarItem` 增 `View string`；`plugin.ui.rpc` 仅透传动作名（列表在 `ui.rpc`） |
 | 宿主（前端） | `pluginBarItems` 对带 `view` 的条目产出 `{kind:'view', viewKey:'plugin:<id>:<view>', width/height ← default_size}`，复用既有 `LfBarItem` view 分支（`LfViewHost` → `PluginPageHost` iframe）；**不写入布局文档**（插件禁用即消失） |
-| 插件 | 视图页自行取数（如 codegraph `badge.html` 经自有动作 `badge` 拉取，`instance_id` 取自 iframe URL）；点击打开完整页用既有 `ckMq.emit('preview-tab-open', {kind:'plugin-page', plugin, page})` |
+| 插件 | 视图页自行取数（如 codegraph `badge.html` 经自有动作 `badge` 拉取，`instance_id` 取自 iframe URL）；点击打开完整页用 `const mq = window.top.ckMq.new(window)` 后 `mq.emit('preview-tab-open', {kind:'plugin-page', plugin, page})` |
 
 **codegraph 现状**：`ui.views` = `config` / `status` / `badge`；`ui.statusbar[0].view = "badge"`（200×20：状态点 + 「索引中 N/M / 完成 / 失败 / 未初始化 / 未启用」，2s 轮询）。宿主 `IndexBadgeView` / `IndexStatusDetail` / `utils/indexStatus.js` 及其注册、默认布局条目已删除；`test_statusbar.py` SB2/SB6 按新口径断言。
 

@@ -2,12 +2,15 @@
  * 区块定义表（纯数据，UILAYOUT-1 §3.4 / §7 P3①）。
  *
  * 从 `views.registry.js` 拆出来的原因（分层）：
- *   - 本文件**只含定义**（零 Vue / 零 `.vue` import）→ 适配层其它模块（`commands.js` 落点解析、
+ *   - 本文件**只含定义**（零 Vue / 零 `.vue` import）→ 适配层其它模块（`openView.js` 落点分发、
  *     单测）可以只依赖定义，不必把宿主区块组件拖进依赖图；
  *   - 组件注册 / 解析只有一条路径：`view-registry.js`（UIREG-1；内置与插件视图共用 `registerViews`）。
  *
  * 定义字段：`key / labelKey / label / icon / mode / host / designable / params / default*`
  * （逐字段含义见 `views.registry.js` 文件头）。
+ *
+ * `host` = **承载方式声明**（不是"翻译表"）：`layout`（布局区）/ `bar`（栏内嵌）/
+ * `dialog`（对话框）/ `preview`（预览区功能页页签）。打开逻辑 `openView()` 按此分发。
  */
 
 /** 一期区块定义（顺序 = 编辑器下拉/文档默认顺序）。 */
@@ -189,15 +192,16 @@ export const VIEW_DEFINITIONS = [
     defaultWidth: 120,
     defaultHeight: 26,
   },
-  /* ── 长任务详情页（STB-1）：状态栏条目点击 → `open-view{status-*}` → preview 功能页 ──
-     数据驱动（真实任务状态），设计态不挂载真实组件（designable:false）。 */
+  /* ── 长任务详情页（STB-1）：状态栏条目点击 → `openView('status-*')` → preview 功能页 ──
+     数据驱动（真实任务状态），设计态不挂载真实组件（designable:false）。
+     承载方式如实声明为 `preview`（预览区功能页页签），不再借用 `layout`。 */
   {
     key: 'status-memory',
     labelKey: 'view.statusMemory',
     label: '记忆提取详情',
     icon: 'collection',
     mode: 'singleton',
-    host: 'layout',
+    host: 'preview',
     designable: false,
   },
   {
@@ -206,7 +210,7 @@ export const VIEW_DEFINITIONS = [
     label: '上下文压缩详情',
     icon: 'document',
     mode: 'singleton',
-    host: 'layout',
+    host: 'preview',
     designable: false,
   },
 ]
@@ -226,7 +230,7 @@ export function definitionOf(viewKey) {
   )
 }
 
-/** 该 view 允许被放的位置（layout | dialog | bar；未知 → null）。 */
+/** 该 view 声明的承载方式（layout | dialog | bar | preview；未知 → null）。 */
 export function hostOf(viewKey) {
   return definitionOf(viewKey)?.host || null
 }

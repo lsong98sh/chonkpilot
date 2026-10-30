@@ -30,21 +30,11 @@ import {
   createViewRegistry,
   registerViews,
 } from '../src/layout/view-registry.js'
-import { setLayoutTranslator } from '../../../../chonkpilot-framework/host/web/src/layout/i18n.js'
 import mq from '../../../../chonkpilot-framework/host/web/src/utils/mq.js'
 import { EventNames } from '../src/events/event-names.js'
 import { readSrc } from './support/feSource.mjs'
 
-const {
-  FILE_TARGET,
-  PREVIEW_TAB_TARGETS,
-  SESSION_TARGET,
-  TARGET,
-  describeCommand,
-  executeCommand,
-  normalizeCommand,
-  resolveCommand,
-} = await import('../src/layout/commands.js')
+const { openView } = await import('../src/layout/openView.js')
 const {
   DOC_VERSION,
   applyDocToConfig,
@@ -105,7 +95,7 @@ test('① 全部区块定义齐备，字段完整（key/labelKey/label/icon/mode
     assert.equal(d.labelKey, `view.${d.labelKey.split('.')[1]}`, `${d.key} 的 labelKey 须在 view.* 下`)
     assert.ok(d.icon, `${d.key} 缺 icon`)
     assert.equal(d.mode, 'singleton', `${d.key} 一期必须 singleton（§6：现有主题全局广播、无实例过滤）`)
-    assert.ok(['layout', 'bar', 'dialog'].includes(d.host), `${d.key} host 非法：${d.host}`)
+    assert.ok(['layout', 'bar', 'dialog', 'preview'].includes(d.host), `${d.key} host 非法：${d.host}`)
     assert.equal(typeof d.designable, 'boolean', `${d.key} 缺 designable`)
   }
   assert.equal(definitionOf('chat').host, 'layout')
@@ -116,8 +106,11 @@ test('① 全部区块定义齐备，字段完整（key/labelKey/label/icon/mode
   // 设计态兜底（§3.11）：需要真实数据的区块标记 designable:false
   assert.equal(definitionOf('task-detail').designable, false)
   assert.equal(definitionOf('dsl-steps').designable, false)
-  // 长任务详情（STB-1）：真实任务数据 → 设计态不挂载
-  for (const k of DETAIL_VIEWS) assert.equal(definitionOf(k).designable, false, `${k} designable 应为 false`)
+  // 长任务详情（STB-1）：真实任务数据 → 设计态不挂载；承载方式如实声明为预览区功能页
+  for (const k of DETAIL_VIEWS) {
+    assert.equal(definitionOf(k).designable, false, `${k} designable 应为 false`)
+    assert.equal(hostOf(k), 'preview', `${k} 承载方式应为 preview（预览区功能页页签）`)
+  }
 })
 
 test('① 组件映射：全部区块经统一注册 API（registerViews）接线，无静态组件表', () => {
@@ -139,123 +132,48 @@ test('① 组件映射：全部区块经统一注册 API（registerViews）接�
   assert.equal(reg.resolve('nope'), null)
 })
 
-/* ═══════════════ ② 命令模型与落点（§3.5 · P3②） ═══════════════ */
+/* ═══════════════ ② view 承载分发（openView；2026-10-30 删除 commands.js） ═══════════════ */
 
-test('② 4 类语法糖归一到 open-view / close-tabs-active（编辑 UI 不变）', () => {
-  assert.deepEqual(normalizeCommand({ type: 'open-dialog', viewKey: 'settings-llm' }), {
-    type: 'open-view',
-    viewKey: 'settings-llm',
-    instanceKey: null,
-    target: TARGET.DIALOG,
-    params: null,
-  })
-  const tabs = normalizeCommand({ type: 'open-tabs', viewKey: 'settings-mcp', targetLeafId: 'leaf_x' })
-  assert.equal(tabs.target, 'leaf_x', 'open-tabs 的 targetLeafId → target')
-  const drawer = normalizeCommand({ type: 'open-drawer', viewKey: 'explorer', drawerId: 'drawer_files' })
-  assert.equal(drawer.target, 'drawer_files')
-  assert.equal(drawer.drawerId, 'drawer_files')
-  assert.deepEqual(normalizeCommand({ type: 'close-tabs-active', targetLeafId: 'leaf_x' }), {
-    type: 'close-tabs-active',
-    target: 'leaf_x',
-  })
-  assert.equal(normalizeCommand({ type: 'open-view', viewKey: 'chat' }).target, 'auto')
-  assert.equal(normalizeCommand({}), null)
-  assert.equal(normalizeCommand({ type: 'nope' }), null)
-})
-
-test('② 落点映射：功能页 / 文件 / 会话 / 注册表区块 / 抽屉 / 拒绝分支', () => {
-  // 功能页类 → preview-tab-open { kind }
-  for (const kind of PREVIEW_TAB_TARGETS) {
-    const r = resolveCommand({ type: 'open-view', viewKey: kind })
-    assert.equal(r.ok, true, `${kind} 应可解析`)
+test('② openView 按注册表 host 声明分发（无 viewKey → 具体 Vue 的翻译表）', () => {
+  const bus = { emit: () => {} }
+  // host:'preview' → 预览区功能页（既有 preview-tab-open，零新增主题）
+  for (const key of DETAIL_VIEWS) {
+    const r = openView(key, { bus })
+    assert.equal(r.ok, true, `${key} 应可打开`)
     assert.equal(r.topic, EventNames.previewTabOpen)
-    assert.deepEqual(r.payload, { kind })
+    assert.deepEqual(r.payload, { kind: key })
   }
-  // 文件
-  const file = resolveCommand({ type: 'open-view', viewKey: FILE_TARGET, instanceKey: 'a/b.md' })
-  assert.equal(file.topic, EventNames.fileOpen)
-  assert.deepEqual(file.payload, { path: 'a/b.md', temporary: true })
-  assert.equal(resolveCommand({ type: 'open-view', viewKey: FILE_TARGET }).reasonKey, 'fileNeedPath')
-  // 会话
-  const sess = resolveCommand({ type: 'open-view', viewKey: SESSION_TARGET, instanceKey: 's-1' })
-  assert.equal(sess.topic, EventNames.sessionSelect)
-  assert.deepEqual(sess.payload, { session_id: 's-1' })
-  assert.equal(resolveCommand({ type: 'open-view', viewKey: SESSION_TARGET }).reasonKey, 'sessionNeedId')
-  // 注册表 layout 区块 → 机制层自由页签区（既有机制主题，零新增）
-  const area = resolveCommand({ type: 'open-view', viewKey: 'explorer' })
-  assert.equal(area.topic, LfEventNames.tabsOpen)
-  assert.deepEqual(area.payload, { targetLeafId: null, viewKey: 'explorer', instanceKey: null })
-  // 栏内嵌 view 不能进自由页签
-  assert.equal(resolveCommand({ type: 'open-view', viewKey: 'search' }).reasonKey, 'barViewNotInTabs')
-  // 抽屉
-  const drawer = resolveCommand({ type: 'open-view', viewKey: 'explorer', target: 'drawer', drawerId: 'd1' })
-  assert.equal(drawer.topic, LfEventNames.drawerOpen)
-  assert.deepEqual(drawer.payload, { drawerId: 'd1', viewKey: 'explorer', instanceKey: null })
-  assert.equal(
-    resolveCommand({ type: 'open-view', viewKey: 'explorer', target: 'drawer' }).reasonKey,
-    'drawerNeedId',
-  )
-  // target = 已知 drawerId
-  const byId = resolveCommand(
-    { type: 'open-view', viewKey: 'explorer', target: 'drawer_files' },
-    { hasDrawer: (id) => id === 'drawer_files' },
-  )
-  assert.equal(byId.topic, LfEventNames.drawerOpen)
-  assert.equal(byId.payload.drawerId, 'drawer_files')
-  // 对话框目标：一期无 host:'dialog' 区块 → 拒绝
-  assert.equal(resolveCommand({ type: 'open-dialog', viewKey: 'settings-llm' }).reasonKey, 'noDialogHost')
-  // 未知 view
-  assert.equal(resolveCommand({ type: 'open-view', viewKey: 'unknown-key' }).reasonKey, 'unknownTarget')
-  assert.equal(resolveCommand({ type: 'open-view' }).reasonKey, 'missingView')
-  assert.equal(resolveCommand(null).reasonKey, 'missingCommand')
-  // close-tabs-active → 既有「关激活页签」（§3.5）
-  const close = resolveCommand({ type: 'close-tabs-active' })
-  assert.equal(close.topic, EventNames.previewTabCloseThis)
+  // host:'layout' → 已在布局区里承载，不属"打开"语义
+  assert.equal(openView('chat', { bus }).reasonKey, 'notOpenable')
+  // host:'bar' → 栏内嵌 view，不可打开
+  assert.equal(openView('search', { bus }).reasonKey, 'barViewNotInTabs')
+  // 未注册的 key
+  assert.equal(openView('unknown-key', { bus }).reasonKey, 'unknownTarget')
+  assert.equal(openView('', { bus }).reasonKey, 'unknownTarget')
 })
 
-test('② mq 驱动 + 监听断言：命令落到既有主题、payload 与既有消费面一致', async () => {
+test('② mq 驱动 + 监听断言：openView 落既有主题；拒绝分支不产生消息', async () => {
   const seen = []
-  const offs = [
-    mq.on(EventNames.previewTabOpen, (p) => seen.push(['preview-tab-open', p])),
-    mq.on(EventNames.fileOpen, (p) => seen.push(['file-open', p])),
-    mq.on(LfEventNames.tabsOpen, (p) => seen.push([LfEventNames.tabsOpen, p])),
-  ]
+  const off = mq.on(EventNames.previewTabOpen, (p) => seen.push(p))
   try {
-    // open-dialog（对话框目标）在一期**无 dialog 宿主区块 → 拒绝**（§3.5），故这里用 open-tabs
-    executeCommand({ type: 'open-tabs', viewKey: 'settings-llm', targetLeafId: null })
-    executeCommand({ type: 'open-tabs', viewKey: 'settings-project', targetLeafId: null })
-    executeCommand({ type: 'open-view', viewKey: FILE_TARGET, instanceKey: 'x.md' })
-    executeCommand({ type: 'open-view', viewKey: 'chat' })
-    executeCommand({ type: 'open-dialog', viewKey: 'settings-llm' }) // 拒绝：不应产生任何消息
+    openView('status-memory')
+    openView('status-compress')
+    openView('chat') // 拒绝：不应产生任何消息
+    openView('search') // 拒绝
     await mq.emit(EventNames.previewTabOpen, { kind: 'noop' }) // 让本地分发跑完（同一次 tick）
   } finally {
-    offs.forEach((off) => off())
+    off()
   }
-  assert.deepEqual(seen, [
-    ['preview-tab-open', { kind: 'settings-llm' }],
-    ['preview-tab-open', { kind: 'settings-project' }],
-    ['file-open', { path: 'x.md', temporary: true }],
-    [LfEventNames.tabsOpen, { targetLeafId: null, viewKey: 'chat', instanceKey: null }],
-    ['preview-tab-open', { kind: 'noop' }],
-  ])
+  assert.deepEqual(seen, [{ kind: 'status-memory' }, { kind: 'status-compress' }, { kind: 'noop' }])
 })
 
-test('② 拒绝原因走注入的 i18n（`layoutFree.command.reject.*`）；摘要同源', () => {
-  setLayoutTranslator((key) => `T:${key}`)
-  const rej = resolveCommand({ type: 'open-view', viewKey: 'search' })
-  assert.equal(rej.reason, 'T:command.reject.barViewNotInTabs')
-  assert.equal(describeCommand({ type: 'open-tabs', viewKey: 'explorer' }), 'T:command.describe.openView')
-  assert.equal(describeCommand({ type: 'close-tabs-active' }), 'T:command.describe.closeActive')
-  assert.equal(describeCommand({}), 'T:command.describe.none')
-})
-
-test('② 零新增主题：commands.js 只用既有 EventNames（无裸 kebab 主题字面量）', () => {
-  const src = SRC('layout/commands.js')
-  assert.doesNotMatch(src, /emit\(\s*'/, '不得用裸主题字面量（须走 EventNames / LfEventNames）')
-  assert.match(src, /from '(?:\.\.\/events\/event-names|@ckfw\/events\/event-names\.js)'/, '宿主落点用宿主 EventNames')
-  assert.match(src, /from '@ckfw\/layout-free\/events\/event-names(?:\.js)?'/, '机制层落点用机制层 EventNames')
-  // 不 import `deps`/`stores`（适配层只做映射，执行经注入的 mq）
-  assert.doesNotMatch(src, /from '\.\.\/layout-free\/(stores|config)\//, '标注为不依赖机制层状态')
+test('② 零新增主题：openView.js 只用既有 EventNames（无裸 kebab 主题字面量 / 无翻译白名单）', () => {
+  const src = CODE('layout/openView.js')
+  assert.doesNotMatch(src, /emit\(\s*'/, '不得用裸主题字面量（须走 EventNames）')
+  assert.match(src, /from '(?:\.\.\/events\/event-names|@ckfw\/events\/event-names\.js)'/, '落点用宿主 EventNames')
+  assert.match(src, /definitionOf\(/, '承载方式须取自 view 注册表定义')
+  assert.doesNotMatch(src, /PREVIEW_TAB_TARGETS|normalizeCommand|resolveOpenView|describeCommand/, '不得再引入命令归一 / 功能页白名单')
+  assert.doesNotMatch(src, /from '\.\.\/layout-free\/(stores|config)\//, '适配层不依赖机制层状态')
 })
 
 /* ═══════════════ ③ 持久化（§3.9 · P3③） ═══════════════ */
@@ -496,7 +414,7 @@ test('⑤ 装配入口：layout/index.js 只注入宿主实现（mq/views/persis
     assert.ok(idx.includes(token), `layout/index.js 缺：${token}`)
   }
   // 依赖方向铁律（TOPO-1 §2.22.2）：framework 不得 import 主仓业务模块
-  for (const bad of ['api/file', 'plugins/i18n', 'views.registry.js', 'layout/commands.js']) {
+  for (const bad of ['api/file', 'plugins/i18n', 'views.registry.js', 'layout/openView.js']) {
     assert.ok(!idx.includes(bad), `layout/index.js 不得 import 业务模块：${bad}`)
   }
   // ChonkLayout：只传数据（layout / preview / selectedId），交互全走 mq（§3.2）

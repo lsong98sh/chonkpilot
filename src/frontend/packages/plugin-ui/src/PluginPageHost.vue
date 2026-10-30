@@ -158,82 +158,25 @@ function pushTheme() {
   }
 }
 
-/* ── 受控 mq 入口（PLUGIN-UI-1 第二段）────────────────────────────────
- * 同源 iframe 可直接取 `window.ckMq`；只暴露 on / off / emit（**不**裸暴露宿主 mq 对象）。
- * 该 frame 注册的全部订阅登记在 frameSubs：**重新 load 注入前 / 组件卸载 / 页面 beforeunload**
- * 一律 off，避免回调打到已销毁的 frame。
+/* ── 受控 mq 入口（PLUGIN-UI-1 第二段；2026-10-30 定稿）──────────────
+ * ckMq 已归平台基座（`@ckfw/plugin-ui/ckMq.js`，宿主 `main.js` 装配时自挂 `window.ckMq`）：
+ * 插件页自己调 `window.top.ckMq.new(window)` 注册订阅（路由键 = 订阅方 window 引用），
+ * 宿主**不再注入实现**（原 `__ckMqBind` / `win.ckMq = api` / `frameSubs` 已删除）。
+ * 本组件只负责**注销**：frame 重载由插件页 `new(win)` 隐式驳回旧表；卸载 / 页面 `beforeunload`
+ * 由这里 `release(contentWindow)`，避免宿主 mq 继续持有已销毁 frame 的回调。
  */
-const frameSubs = [] // [{ topic, cb, off }]
-let boundWin = null
-
-function clearFrameSubs() {
-  while (frameSubs.length) {
-    const s = frameSubs.pop()
-    try {
-      s.off()
-    } catch (_) {
-      /* 已注销：忽略 */
-    }
-  }
-}
-
-function makeCkMq(win) {
-  const live = () => boundWin === win
-  return {
-    on(topic, cb) {
-      if (!live() || !topic || typeof cb !== 'function') return () => {}
-      const off = mq.on(String(topic), (payload) => {
-        if (!live()) return
-        try {
-          cb(payload)
-        } catch (e) {
-          console.warn('[plugin] ckMq.on 回调异常:', e)
-        }
-      })
-      frameSubs.push({ topic: String(topic), cb, off })
-      return off
-    },
-    off(topic, cb) {
-      const t = String(topic)
-      for (let i = frameSubs.length - 1; i >= 0; i -= 1) {
-        const s = frameSubs[i]
-        if (s.topic !== t) continue
-        if (cb && s.cb !== cb) continue
-        frameSubs.splice(i, 1)
-        try {
-          s.off()
-        } catch (_) {
-          /* 已注销：忽略 */
-        }
-      }
-    },
-    emit(topic, payload) {
-      if (!live()) return Promise.resolve(null)
-      return mq.emit(topic, payload)
-    },
-  }
-}
-
-/** 在 iframe `load` 后注入 ckMq（先退掉旧 frame 的全部订阅，再绑定新实现）。 */
-function injectCkMq() {
+function releaseFrame() {
   const win = frameRef.value?.contentWindow
   if (!win) return
-  clearFrameSubs()
-  boundWin = win
-  const api = makeCkMq(win)
   try {
-    // 插件页引入 `public/shared/ck-mq.js` 时用它的注入点（可补投注入前的排队调用）；
-    // 未引入则直接挂 `window.ckMq`。
-    if (typeof win.__ckMqBind === 'function') win.__ckMqBind(api)
-    else win.ckMq = api
+    window.ckMq?.release(win)
   } catch (_) {
-    /* 跨源 / 已销毁 frame：忽略（不阻塞页面加载） */
+    /* 跨源 / 已销毁 frame：忽略 */
   }
 }
 
 function onFrameLoad() {
   onReadyLoad()
-  injectCkMq()
   pushTheme()
 }
 
@@ -241,7 +184,7 @@ let unsubUI = null
 let unsubTheme = null
 onMounted(() => {
   window.addEventListener('message', onMessage)
-  window.addEventListener('beforeunload', clearFrameSubs)
+  window.addEventListener('beforeunload', releaseFrame)
   unsubUI = mq.on('plugin-ui-event', (ev) => {
     if (!ev || ev.id !== props.pluginId) return
     frameRef.value?.contentWindow?.postMessage(
@@ -253,9 +196,8 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   window.removeEventListener('message', onMessage)
-  window.removeEventListener('beforeunload', clearFrameSubs)
-  clearFrameSubs()
-  boundWin = null
+  window.removeEventListener('beforeunload', releaseFrame)
+  releaseFrame()
   if (unsubUI) unsubUI()
   if (unsubTheme) unsubTheme()
 })

@@ -7,6 +7,7 @@ import '@ckfw/layout/theme.css'
 import { i18n } from './plugins/i18n'
 import { logError } from './api/log'
 import mq, { mqPlugin } from '@ckfw/utils/mq.js'
+import { installGlobalCkMq } from '@ckfw/plugin-ui/ckMq.js'
 import { dialog } from '@ckfw/components/dialog/index.js'
 import { setHostDeps } from '@ckfw/host-deps.js'
 import { registerSelectionSubscribers } from './stores/selectionSubscribers'
@@ -20,6 +21,9 @@ import { initPluginUIHost, initPlugins } from './pluginHost'
 
 // Go 端广播经 Eval 调用 window.mq.emitRemote(envelope)。
 window.mq = mq
+// 插件 iframe 的受控 mq 入口（PLUGIN-UI-1 / 2026-10-30）：插件页用
+// `window.top.ckMq.new(window)`；路由键 = 订阅方 window 引用，topic/payload 不带 plugin id。
+installGlobalCkMq()
 
 // framework 宿主端口注入（唯一外部耦合点）：framework 不 import 主仓任何业务模块
 setHostDeps({

@@ -4,7 +4,7 @@
  * 覆盖：
  *   ① 路由统一：`/plugins/<id>/<entry>`，helper 不再按 `self_serve` 分流；
  *   ② `PluginPageHost` sandbox 放开 same-origin（同源 iframe 才能拿到 ckMq），且不再接收分流属性；
- *   ③ ckMq 只暴露 on/off/emit，且订阅在 frame 重载 / 卸载 / beforeunload 时全部退订；
+ *   ③ ckMq：插件页 `window.top.ckMq.new(window)` 自注册，宿主只在卸载 / beforeunload `release`；
  *   ④ 内置插件（browser/codegraph/desktop/file/mcp/task/websearch）为 selfServe 单源
  *      （`src/initdata/.../<id>/webui` 已删除，唯一源 = `src/plugins/<id>/webui`）；
  *   ⑤~⑥ action 面 / codegraph 单源；
@@ -68,23 +68,40 @@ test('② PluginPageHost：sandbox 含 allow-same-origin；不再接收 selfServ
   assert.doesNotMatch(readiness, /`\/plugin-ui\/\$\{/, '不得内联旧前缀硬编码（统一走 pluginUiRoute）')
 })
 
-test('③ ckMq 受控入口：只有 on/off/emit；frame 重载 / 卸载 / beforeunload 全部退订', () => {
+test('③ ckMq 受控入口：插件页自注册 window.top.ckMq.new(window)，宿主只负责 release', () => {
   const host = readPkg('PluginPageHost.vue')
-  assert.match(host, /__ckMqBind/, '须支持 ck-mq.js 注入点（补投注入前排队调用）')
-  assert.match(host, /win\.ckMq = api/, '未引入 ck-mq.js 时须直接挂 contentWindow.ckMq')
-  for (const m of ['on(topic, cb)', 'off(topic, cb)', 'emit(topic, payload)']) {
-    assert.ok(host.includes(m), `ckMq 须暴露 ${m}`)
-  }
-  assert.doesNotMatch(host, /ckMq\s*=\s*mq\b/, '不得把宿主 mq 对象裸暴露为 ckMq')
-  assert.match(host, /function clearFrameSubs\(\)/, '须有统一退订函数')
-  assert.match(host, /window\.addEventListener\('beforeunload', clearFrameSubs\)/, 'beforeunload 须退订')
-  assert.match(host, /onBeforeUnmount\(\(\) => \{[\s\S]*clearFrameSubs\(\)/, '组件卸载须退订')
-  assert.match(host, /function injectCkMq\(\) \{[\s\S]*clearFrameSubs\(\)/, '重新注入前须退订旧 frame 订阅')
+  // 去注释后断言（注释里**引述**已删除的注入点名字）
+  const hostCode = host
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+  assert.doesNotMatch(hostCode, /__ckMqBind/, '不得再有 ck-mq.js 注入点（该脚本已删除）')
+  assert.doesNotMatch(hostCode, /win\.ckMq = api/, '不得再向 contentWindow 注入实现')
+  assert.match(hostCode, /window\.ckMq\?\.release\(/, '卸载 / beforeunload 须 release(contentWindow)')
+  assert.match(hostCode, /window\.addEventListener\('beforeunload', releaseFrame\)/, 'beforeunload 须退订')
+  assert.match(hostCode, /onBeforeUnmount\(\(\) => \{[\s\S]*releaseFrame\(\)/, '组件卸载须退订')
+  assert.equal(
+    existsSync(join(here, '..', 'public', 'shared', 'ck-mq.js')),
+    false,
+    'public/shared/ck-mq.js 须已删除（ckMq 迁入平台基座）',
+  )
 
-  const shared = readFileSync(join(here, '..', 'public', 'shared', 'ck-mq.js'), 'utf8')
-  for (const m of ['on:', 'off:', 'emit:']) assert.ok(shared.includes(m), `ck-mq.js 缺 ${m}`)
-  assert.ok(shared.includes('__ckMqBind'), 'ck-mq.js 须提供宿主注入点')
-  assert.doesNotMatch(shared, /emitRemote|\.pre\(|\.post\(/, 'ck-mq.js 不得透出宿主 mq 其它方法')
+  const ckMqPath = join(
+    here, '..', '..', '..', '..', 'chonkpilot-framework', 'host', 'web', 'src', 'plugin-ui', 'ckMq.js',
+  )
+  const ckMq = readFileSync(ckMqPath, 'utf8')
+  for (const token of [
+    'export function createCkMq',
+    'export function installGlobalCkMq',
+    'new: bindFrame',
+    'function release(win)',
+    'WeakMap',
+    '只接受宿主窗口的直接子 frame',
+  ]) {
+    assert.ok(ckMq.includes(token), `基座 ckMq.js 缺 ${token}`)
+  }
+  // 装配点：宿主窗口自挂 ckMq（唯一入口）
+  assert.match(read('main.js'), /installGlobalCkMq\(\)/, 'main.js 装配时须 installGlobalCkMq()')
 })
 
 test('④ 注册面 / 设置页 / 预览页签不再透传 self_serve（路由已统一）', () => {
@@ -184,7 +201,9 @@ test('⑧ 源码守卫：无 /plugin-ui/ 资源拼接（仅允许 _sdk/plugin.js
     for (const m of code.matchAll(/\/plugin-ui\/[^\s"'`)]*/g)) {
       if (m[0] === '/plugin-ui/_sdk/plugin.js') continue
       // 2026-10-25（D-70 ②）：`packages/plugin-ui/**` 是同仓 npm 包的真实导入路径，不是旧资源前缀。
-      if (code.slice(Math.max(0, m.index - 'packages'.length), m.index) === 'packages') continue
+      // 2026-10-30：平台基座经 `@ckfw/plugin-ui/**` 引用（vite alias），同属导入路径。
+      const prefix = code.slice(Math.max(0, m.index - 8), m.index)
+      if (prefix.endsWith('packages') || prefix.endsWith('@ckfw')) continue
       offenders.push(`${relative(srcDir, file)}: ${m[0]}`)
     }
   }
