@@ -30,9 +30,6 @@ replace (
 
 replace github.com/chonkpilot/chonkpilot-mcp-tools => ../lib/mcp-tools
 
-// L6 动态池（2026-10-28）：gateway 内核本地 replace（与主仓同级的克隆；发布新版本后删除本节）。
-replace github.com/lsong98sh/chonkpilot-mcp-gateway => ../../../chonkpilot-mcp-gateway
-
 // 开发期依赖策略（2026-10-29）：同机跨仓依赖一律本地 replace；正式发版时统一切回版本号并删除本节。
 replace github.com/lsong98sh/chonkpilot-plugin-framework => ../../../chonkpilot-framework/plugin/src
 
